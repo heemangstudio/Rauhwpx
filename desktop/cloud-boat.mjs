@@ -273,6 +273,16 @@ export function boatErrorFromResponse(status, body, { retryAfterMs = null, conte
   return new BoatError('BOAT_UNAVAILABLE', base);
 }
 
+/**
+ * 체험 계정의 자동 중지 한도(최대 2시간) 때문에 거절됐는지 본다. 코드 이름이 문서에 없어서
+ * 알려진 코드 외에도 자동 중지·TTL을 언급하는 요청 오류를 같은 거절로 본다. 402 결제 요구는 아니다.
+ */
+export function isTrialAutoStopRefusal(error) {
+  if (error?.boatCode === 'trial_auto_stop_required') return true;
+  if (![400, 403, 422].includes(error?.status)) return false;
+  return /auto[\s_-]?stop|ttl/i.test(`${error.boatCode ?? ''} ${error.detail ?? ''}`);
+}
+
 async function boundedText(response) {
   const declared = Number(response.headers.get('content-length'));
   if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
@@ -1187,7 +1197,7 @@ export class BoatCloud {
     try {
       result = await create(idempotencyKey, ttlSeconds);
     } catch (error) {
-      if (error?.boatCode !== 'trial_auto_stop_required' || ttlSeconds === BOAT_TRIAL_TTL_SECONDS) throw error;
+      if (!isTrialAutoStopRefusal(error) || ttlSeconds === BOAT_TRIAL_TTL_SECONDS) throw error;
       // The refused body never created a sandbox; a derived key keeps the retry idempotent.
       result = await create(`${idempotencyKey}-trial`, BOAT_TRIAL_TTL_SECONDS);
     }
@@ -1196,13 +1206,20 @@ export class BoatCloud {
     return sandbox;
   }
 
-  /** 체험 계정은 자동 중지를 끌 수 없다. 그때는 2시간으로 낮춰 다시 보낸다. */
+  /**
+   * 체험 계정은 자동 중지를 끌 수 없고 2시간을 넘길 수 없다. 한도에서 체험임을 알면 처음부터
+   * 줄여 보내고, 모르면 거절 응답을 보고 2시간으로 다시 보낸다.
+   */
   async #withTrialTtl(ttlSeconds, send) {
+    const capped = this.#limits?.trial === true
+      && (ttlSeconds === null || ttlSeconds > BOAT_TRIAL_TTL_SECONDS)
+      ? BOAT_TRIAL_TTL_SECONDS
+      : ttlSeconds;
     try {
-      return await send(ttlSeconds);
+      return await send(capped);
     } catch (error) {
-      if (error?.boatCode !== 'trial_auto_stop_required'
-        || (ttlSeconds !== null && ttlSeconds <= BOAT_TRIAL_TTL_SECONDS)) throw error;
+      if (!isTrialAutoStopRefusal(error)
+        || (capped !== null && capped <= BOAT_TRIAL_TTL_SECONDS)) throw error;
       return send(BOAT_TRIAL_TTL_SECONDS);
     }
   }

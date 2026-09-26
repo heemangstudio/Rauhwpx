@@ -66,6 +66,8 @@ async function startFakeBoat(t, options = {}) {
     deletions: new Map(),
     limits: { canStart: true, accessTier: 'standard', sandboxPlanKey: 'box_20', billingStatus: 'active' },
     trial: false,
+    trialRefusalCode: 'trial_auto_stop_required',
+    trialRefusalMessage: undefined,
     billingRequiredOnResume: false,
     claimPolls: [],
     claimCount: 0,
@@ -216,7 +218,7 @@ async function startFakeBoat(t, options = {}) {
       return send(res, 200, { ok: true, type: 'sandbox.list', sandboxes: [...state.sandboxes.values()].map(view) });
     }
     if (route === 'POST /api/v1/sandboxes') {
-      if (trialRefuses(body?.ttlSeconds)) return fail(res, 400, 'trial_auto_stop_required');
+      if (trialRefuses(body?.ttlSeconds)) return fail(res, 400, state.trialRefusalCode, state.trialRefusalMessage);
       const key = req.headers['idempotency-key'];
       if (key && state.idempotency.has(key)) {
         const prior = state.idempotency.get(key);
@@ -254,7 +256,7 @@ async function startFakeBoat(t, options = {}) {
       return send(res, 200, { ok: true, type: 'sandbox.info', sandbox: view(sandbox) });
     }
     if (req.method === 'PATCH' && !action) {
-      if ('ttlSeconds' in body && trialRefuses(body.ttlSeconds)) return fail(res, 400, 'trial_auto_stop_required');
+      if ('ttlSeconds' in body && trialRefuses(body.ttlSeconds)) return fail(res, 400, state.trialRefusalCode, state.trialRefusalMessage);
       if ('ttlSeconds' in body) sandbox.ttlSeconds = body.ttlSeconds;
       return send(res, 200, { ok: true, type: 'sandbox.info', sandbox: view(sandbox) });
     }
@@ -276,7 +278,7 @@ async function startFakeBoat(t, options = {}) {
     }
     if (req.method === 'POST' && action === 'resume') {
       if (state.billingRequiredOnResume) return fail(res, 402, 'billing_required');
-      if (trialRefuses(body?.ttlSeconds)) return fail(res, 400, 'trial_auto_stop_required');
+      if (trialRefuses(body?.ttlSeconds)) return fail(res, 400, state.trialRefusalCode, state.trialRefusalMessage);
       if (!['archived', 'error'].includes(sandbox.state)) return fail(res, 409, 'resume_failed');
       Object.assign(sandbox, { state: 'provisioning', gets: 0, ip: null, ttlSeconds: body?.ttlSeconds ?? sandbox.ttlSeconds });
       sandbox.resumes += 1;
@@ -644,6 +646,30 @@ test('trial accounts fall back to a two-hour auto-stop on resume and after setup
     { ttlSeconds: 7200 },
   ]);
   assert.equal(fake.state.sandboxes.get(sandbox.id).ttlSeconds, 7200);
+});
+
+test('known trial limits cap auto-stop up front, and unknown auto-stop refusals still fall back', async (t) => {
+  const fake = await startFakeBoat(t, { trial: true });
+  fake.state.limits = { ...fake.state.limits, accessTier: 'trial', sandboxPlanKey: 'trial' };
+  const { boat } = await makeBoat(t, fake);
+  await boat.connectApiKey(API_KEY);
+  const sandbox = fake.addSandbox({ state: 'archived', snapshotAvailable: true });
+  await boat.ensureRunning(sandbox.id);
+  assert.deepEqual(fake.requests('POST', `/api/v1/sandboxes/${sandbox.id}/resume`).map((entry) => entry.body), [
+    { ttlSeconds: 7200 },
+  ], 'a trial account never asks for an auto-stop it cannot have');
+
+  const other = await startFakeBoat(t, { trial: true });
+  other.state.trialRefusalCode = 'invalid_ttl';
+  other.state.trialRefusalMessage = 'Trial sandboxes must auto-stop within 2 hours';
+  const { boat: unknownBoat } = await makeBoat(t, other);
+  await unknownBoat.connectApiKey(API_KEY);
+  const resting = other.addSandbox({ state: 'archived', snapshotAvailable: true });
+  await unknownBoat.ensureRunning(resting.id);
+  assert.deepEqual(other.requests('POST', `/api/v1/sandboxes/${resting.id}/resume`).map((entry) => entry.body), [
+    { ttlSeconds: null },
+    { ttlSeconds: 7200 },
+  ]);
 });
 
 test('host keys are read through the commands API and pinned, replacing stale lines', async (t) => {
