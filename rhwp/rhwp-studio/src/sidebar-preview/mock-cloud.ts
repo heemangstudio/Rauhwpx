@@ -1,7 +1,7 @@
 import { createCloudController, type CloudDesktopApi } from '../cloud/desktop-cloud.ts';
 import type { AgentName, AgentStreamEvent } from '../agent/types.ts';
 import type { CloudSessionState, CloudLinkKind, CloudSessionScope, CloudSnapshot, CloudTransferRequest, CloudCheckpointPayload, CloudCommandRequest,
-  BoatServerState, BoatSetupStage, BoatSnapshot } from '../cloud/types.ts';
+  BoatServerSnapshot, BoatServerState, BoatSetupStage, BoatSnapshot } from '../cloud/types.ts';
 import { recordCloudUsage } from '../cloud/usage-history.ts';
 import { createEmptyThread } from '../agent/threads.ts';
 import { exportCloudTimeline } from '../cloud/timeline.ts';
@@ -24,6 +24,10 @@ export interface BoatPreviewScenario {
   existingServer: boolean;
   /** 남은 설치 실패 횟수. 실패할 때마다 하나씩 줄어든다. */
   installFailures: number;
+  /** 계정이 VM 의 자기 중지를 막아, 시작 후 정해진 시간에 멈춘다. */
+  timerAutoStop: boolean;
+  /** 예전 데스크톱처럼 다시 시도에도 첫 시도의 시작 시각을 보낸다. */
+  reuseSetupClock: boolean;
 }
 
 const BOAT_SANDBOX_ID = 'bx_7k2m9q4d';
@@ -61,6 +65,7 @@ export function createMockCloud(options: { dashboard?: boolean } = {}) {
   let boatClaims = 0;
   const boatScenario: BoatPreviewScenario = {
     invalidKey: false, billingRequired: false, expireFirstCode: false, existingServer: false, installFailures: 0,
+    timerAutoStop: false, reuseSetupClock: false,
   };
   const claims = new Map<string, { email: string; polls: number; expireNow: boolean }>();
   let holdWake = false;
@@ -173,7 +178,7 @@ export function createMockCloud(options: { dashboard?: boolean } = {}) {
   }
   function setLink(kind: CloudLinkKind) {
     state.link = { kind, error: kind === 'failed' ? 'ECONNRESET from preview fixture' : null,
-      attempt: kind === 'ready' ? 0 : 1, canRecreate: true };
+      attempt: kind === 'ready' ? 0 : 1, canRecreate: !boatActive() };
     publish();
   }
   function idle() {
@@ -191,9 +196,10 @@ export function createMockCloud(options: { dashboard?: boolean } = {}) {
     boat().account = { connected: true, method, email, canStart: !boatScenario.billingRequired, trial: false };
     if (boatScenario.existingServer && !boat().server) boat().server = boatServer('stopped');
   }
-  function boatServer(serverState: BoatServerState) {
-    return { sandboxId: BOAT_SANDBOX_ID, state: serverState, machine: 'default' as const, machineLabel: '4 vCPU · 8 GB',
-      region: 'EU' as const, monthHours: 12.5, idleStopMinutes: 30,
+  function boatServer(serverState: BoatServerState): BoatServerSnapshot {
+    return { sandboxId: BOAT_SANDBOX_ID, state: serverState, machine: 'default', machineLabel: '4 vCPU · 8 GB',
+      region: 'EU', monthHours: 12.5, idleStopMinutes: 30,
+      autoStop: boatScenario.timerAutoStop ? 'timer' : 'idle', timerHours: boatScenario.timerAutoStop ? 4 : null,
       message: serverState === 'error' ? 'boat가 VM을 다시 시작하지 못했습니다.' : null };
   }
   function useBoatProfile(serverState: BoatServerState, bumpEpoch = true) {
@@ -263,8 +269,13 @@ export function createMockCloud(options: { dashboard?: boolean } = {}) {
       if (refreshFails) throw new Error('Preview connection unavailable');
       return snapshot();
     },
-    async cloudDownloadCheckpoint({ sessionId, operationId }) {
+    async cloudDownloadCheckpoint({ sessionId, operationId, explicit }) {
       calls.downloads++;
+      // 자동 조회는 쉬는 boat VM 을 깨우지 않고 조용히 거절한다. 사용자가 누른 조회만 깨운다.
+      if (boatActive() && boat().server?.state !== 'running') {
+        if (!explicit) throw boatError('BOAT_SERVER_STOPPED', 'boat 서버가 정지되어 있습니다.');
+        await wakeBoat();
+      }
       const checkpoint = checkpoints.get(sessionId);
       if (!checkpoint || (operationId && checkpoint.operationId !== operationId)) throw new Error('완료된 턴이 없습니다.');
       return structuredClone(checkpoint);
@@ -499,7 +510,11 @@ export function createMockCloud(options: { dashboard?: boolean } = {}) {
     async cloudBoatSetup({ machine }) {
       calls.boat.push(`setup-${machine}`);
       const adopt = Boolean(boat().server);
-      boat().setup = { stage: adopt ? 'starting' : 'creating', startedAt: new Date().toISOString(),
+      // 예전 데스크톱의 설정 기록은 1분 전에 시작한 첫 시도의 시각을 계속 쓴다.
+      const startedAt = boatScenario.reuseSetupClock
+        ? boat().setup?.startedAt ?? new Date(Date.now() - 60_000).toISOString()
+        : new Date().toISOString();
+      boat().setup = { stage: adopt ? 'starting' : 'creating', startedAt,
         detail: adopt ? '기존 Rauhwpx Cloud VM 찾음' : 'Rauhwpx Cloud VM 요청', error: null, importedProviders: [] };
       publish();
       if (!adopt) {

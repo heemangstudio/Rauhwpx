@@ -98,7 +98,11 @@ const SANDBOX_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const BOAT_SANDBOX_ID_RE = /^bx_[a-z0-9]{8}$/;
 export const BOAT_MACHINE_TYPES = Object.freeze(['default', 'small']);
 
-/** boat.dev VM. 재개할 때마다 ssh 주소만 바뀌고 서버 키와 페어링은 그대로다. */
+/**
+ * boat.dev VM. 재개할 때마다 ssh 주소만 바뀌고 서버 키와 페어링은 그대로다.
+ * `autoStop`은 설치할 때 확인한 자기 중지 수단이다. 'idle'이면 VM이 쉬다가 스스로 멈추고,
+ * 'timer'(확인하지 못함, 예전 프로필 포함)면 켤 때마다 boat 자동 중지를 유한하게 건다.
+ */
 export function normalizeBoatProfile(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('boat server is invalid');
   const sandboxId = String(raw.sandboxId ?? '').trim();
@@ -111,6 +115,7 @@ export function normalizeBoatProfile(raw) {
     sandboxId,
     machine,
     createdAt: createdAt ? new Date(Date.parse(createdAt)).toISOString() : new Date(0).toISOString(),
+    autoStop: raw.autoStop === 'idle' ? 'idle' : 'timer',
   });
 }
 const LEGACY_RAUCLOUD_PROVIDER_ID = 'managed-cloud'; // raucloud-legacy: persisted profiles are upgraded on read.

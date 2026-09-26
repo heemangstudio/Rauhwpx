@@ -59,6 +59,8 @@ async function applyBoatState(preview: SidebarPreview, params: URLSearchParams):
     expireFirstCode: flags.has('expireFirstCode'),
     existingServer: flags.has('existingServer'),
     installFailures: flags.has('installFailure') ? 1 : 0,
+    timerAutoStop: flags.has('timerAutoStop'),
+    reuseSetupClock: flags.has('reuseSetupClock'),
   });
   const boatState = params.get('boat-state') as BoatPreviewState | null;
   if (boatState && BOAT_STATES.includes(boatState)) cloud.setBoatState(boatState);

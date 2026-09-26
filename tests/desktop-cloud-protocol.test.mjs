@@ -41,7 +41,7 @@ function cloudStartTransfer(extra = {}) {
 
 test('desktop checkpoint IPC preserves the immutable boundary operation id', async () => {
   const source = await readFile(new URL('../desktop/main.mjs', import.meta.url), 'utf8');
-  assert.match(source, /cloud:download-checkpoint[\s\S]*?\^\[A-Za-z0-9\._:-\]\{1,160\}\$[\s\S]*?downloadCheckpoint\(\{ sessionId, operationId, \.\.\.\(kind \? \{ kind \} : \{\}\) \}\)/);
+  assert.match(source, /cloud:download-checkpoint[\s\S]*?\^\[A-Za-z0-9\._:-\]\{1,160\}\$[\s\S]*?downloadCheckpoint\(\{\s*sessionId,\s*operationId,\s*\.\.\.\(kind \? \{ kind \} : \{\}\),\s*explicit: payload\?\.explicit === true,\s*\}\)/);
 });
 
 test('desktop takeover completion IPC passes through the applied operation id', async () => {

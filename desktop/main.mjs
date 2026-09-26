@@ -1400,10 +1400,12 @@ ipcMain.handle('cloud:force-quit-account', async (event) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().forceQuitAccountCloud());
 });
-ipcMain.handle('cloud:reconnect-link', async (event) => {
+ipcMain.handle('cloud:reconnect-link', async (event, payload = {}) => {
   const session = sessionForEvent(event);
-  // The user pressed reconnect, so a stopped boat VM may be started.
-  return scopedCloudSnapshot(session, await requireCloudCoordinator().reconnectCloud({ userIntent: true }));
+  // Only a pressed 다시 연결 button sends `explicit`; automatic reconnects never start a stopped boat VM.
+  return scopedCloudSnapshot(session, await requireCloudCoordinator().reconnectCloud({
+    userIntent: payload?.explicit === true,
+  }));
 });
 ipcMain.handle('cloud:recreate-link', async (event) => {
   const session = sessionForEvent(event);
@@ -1753,7 +1755,21 @@ ipcMain.handle('cloud:download-checkpoint', async (event, payload) => {
   }
   const kind = payload?.kind ?? null;
   if (kind !== null && kind !== 'turn') throw new Error('Invalid cloud checkpoint kind');
-  return requireCloudCoordinator().downloadCheckpoint({ sessionId, operationId, ...(kind ? { kind } : {}) });
+  try {
+    return {
+      ok: true,
+      value: await requireCloudCoordinator().downloadCheckpoint({
+        sessionId,
+        operationId,
+        ...(kind ? { kind } : {}),
+        explicit: payload?.explicit === true,
+      }),
+    };
+  } catch (error) {
+    // A stopped boat VM answers BOAT_SERVER_STOPPED; the envelope keeps that code across IPC.
+    if (error instanceof BoatError) return { ok: false, error: boatIpcFailure(error) };
+    throw error;
+  }
 });
 ipcMain.handle('cloud:publish-checkpoint', async (event, payload) => {
   const session = sessionForEvent(event);

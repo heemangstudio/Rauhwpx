@@ -21,6 +21,8 @@ import {
   BOAT_MACHINES,
   BOAT_REGION,
   BOAT_SETUP_TTL_SECONDS,
+  BOAT_TIMER_TTL_SECONDS,
+  BOAT_TRIAL_TTL_SECONDS,
   BoatError,
   boatHostEnv,
   boatMessage,
@@ -338,6 +340,18 @@ function boatDetail(error) {
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
     .trim();
   return text.slice(-600) || 'Unknown error';
+}
+
+const BOAT_STATE_UNKNOWN = '상태를 확인하지 못했습니다.';
+
+/**
+ * 켤 때마다 boat가 거는 고정 자동 중지(시간). 설정 중에는 설정용 한도, 자기 중지 수단이 없으면
+ * 타이머 한도, 체험 계정은 언제나 2시간이다. 유휴 중지만 있으면 null이다.
+ */
+function boatTimerHours(autoStop, { trial = false, setup = false } = {}) {
+  let seconds = setup ? BOAT_SETUP_TTL_SECONDS : autoStop === 'idle' ? null : BOAT_TIMER_TTL_SECONDS;
+  if (trial) seconds = Math.min(seconds ?? Infinity, BOAT_TRIAL_TTL_SECONDS);
+  return seconds == null ? null : Math.round(seconds / 360) / 10;
 }
 
 /** 사용자 동작이 실패하면 짧은 한국어 문장과 BOAT_ 코드를 돌려준다. */
@@ -1124,6 +1138,32 @@ export class CloudCoordinator extends EventEmitter {
   #noteBrokenLink(message) {
     if (this.#stopped) return;
     if (this.#link.kind !== 'ready' || this.#pendingProfileChanges) return;
+    this.#unlessBoatStopped(() => this.#markBrokenLink(message));
+  }
+
+  /**
+   * 링크 실패를 기록하기 전에, 활성 boat VM이 스스로 멈췄는지 재개 없이 한 번 읽는다.
+   * 멈춘 VM은 끊긴 링크가 아니라 `stopped`다. 링크는 조용히 두고, 깨우기가 스트림을 다시 연다.
+   */
+  #unlessBoatStopped(record) {
+    if (!this.#boat || !this.#boatActiveSandboxId) {
+      record();
+      return;
+    }
+    if (this.#boatBlocksBackground()) {
+      void this.#quietBoatLink();
+      return;
+    }
+    void this.refreshBoatStatus({ force: true, reason: 'link-check' }).then(() => {
+      if (this.#stopped) return;
+      if (this.#boatBlocksBackground()) void this.#quietBoatLink();
+      else record();
+    });
+  }
+
+  #markBrokenLink(message) {
+    if (this.#stopped) return;
+    if (this.#link.kind !== 'ready' || this.#pendingProfileChanges) return;
     this.#link = {
       kind: 'reconnecting',
       error: message ?? null,
@@ -1732,6 +1772,7 @@ export class CloudCoordinator extends EventEmitter {
     }
     const preflight = await this.#provisioner.preflight(profile.ssh, {
       onLine: (line) => this.#emit({ type: 'provision-log', line }),
+      strictHostKey: Boolean(profile.boat),
     });
     let health = null;
     if (current && profile.endpoint === current.endpoint) {
@@ -2429,6 +2470,10 @@ export class CloudCoordinator extends EventEmitter {
   }
 
   #noteTerminalStreamFailure(error) {
+    this.#unlessBoatStopped(() => this.#markTerminalStreamFailure(error));
+  }
+
+  #markTerminalStreamFailure(error) {
     this.#linkNeedsAction = true;
     this.#link = { ...this.#link, kind: 'failed', error: error.message };
     this.#abortSessionWatchers();
@@ -3367,7 +3412,10 @@ export class CloudCoordinator extends EventEmitter {
   }
 
   async downloadCheckpoint(input) {
-    await this.#wakeBoatForUser('checkpoint');
+    // 체크포인트 미러는 문서를 열 때와 실패 후 재시도로 스스로 부른다. 사용자가 누른 요청만
+    // 멈춘 VM 을 깨우고, 나머지는 쉬는 서버를 조용히 알린다.
+    if (input?.explicit === true) await this.#wakeBoatForUser('checkpoint');
+    else await this.#requireRunningBoat('checkpoint');
     return this.#withProfileOperation((profileEpoch) => this.#downloadCheckpoint(input, profileEpoch));
   }
 
@@ -4502,11 +4550,13 @@ export class CloudCoordinator extends EventEmitter {
   // ── boat.dev ─────────────────────────────────────────────────────────
   //
   // Wake rule: only user intent resumes a stopped boat VM (setup, 시작, a transfer,
-  // a message or command in a Cloud session, an explicit reconnect, edits and
-  // downloads). Every background path — the 20 s link watchdog, continuity
-  // triggers, the 60 s reconcile, prewarm and status polling — reads state and
-  // reports `stopped` instead. The only resume call site is #runBoatSync with
-  // allowResume, reached from #wakeBoatForUser and setup.
+  // a message or command in a Cloud session, a pressed 다시 연결, edits, downloads
+  // and merges). Every background path — the 20 s link watchdog, stream failures,
+  // automatic reconnects, continuity triggers, the 60 s reconcile, prewarm, status
+  // polling and the checkpoint mirror's fetch without an operation id — reads state
+  // and reports `stopped` (BOAT_SERVER_STOPPED for the mirror) instead. The only
+  // resume call site is #runBoatSync with allowResume, reached from
+  // #wakeBoatForUser, 시작 and setup.
 
   #requireBoat() {
     if (!this.#boat) throw new BoatError('BOAT_UNAVAILABLE', { detail: 'boat is not available in this build' });
@@ -4586,17 +4636,23 @@ export class CloudCoordinator extends EventEmitter {
     const sandboxId = profile?.boat?.sandboxId ?? this.#boatSetupSandboxId ?? null;
     const status = sandboxId && this.#boatStatus?.sandboxId === sandboxId ? this.#boatStatus : null;
     const machine = normalizeBoatMachine(profile?.boat?.machine ?? this.#boatSetupMachine);
+    const owned = Boolean(sandboxId) && profile?.boat?.sandboxId === sandboxId;
+    // A VM whose state was never read is not reported as stopped.
+    const unknown = status?.state == null && !this.#boatSetupPromise;
+    const autoStop = owned && profile.boat.autoStop === 'idle' ? 'idle' : 'timer';
     return {
       account,
       server: sandboxId ? {
         sandboxId,
-        state: status?.state ?? (this.#boatSetupPromise ? 'waking' : 'stopped'),
+        state: status?.state ?? (this.#boatSetupPromise ? 'waking' : 'error'),
         machine,
         machineLabel: BOAT_MACHINES[machine].label,
         region: BOAT_REGION,
         monthHours: status?.monthHours ?? null,
         idleStopMinutes: BOAT_IDLE_STOP_MINUTES,
-        message: status?.message ?? null,
+        autoStop,
+        timerHours: boatTimerHours(autoStop, { trial: account.trial === true, setup: !owned }),
+        message: unknown ? BOAT_STATE_UNKNOWN : status?.message ?? null,
       } : null,
       setup: this.#boatSetup ? {
         stage: this.#boatSetup.stage,
@@ -4723,6 +4779,32 @@ export class CloudCoordinator extends EventEmitter {
     await this.#boatSync({ allowResume: true, reason });
   }
 
+  /**
+   * 사용자 의도가 없는 서버 호출. 멈춘 VM은 깨우지 않고 BOAT_SERVER_STOPPED로 바로 끝낸다.
+   * 상태가 멈춤으로 알려져 있으면 boat API도 부르지 않으므로 반복 호출이 싸다.
+   * 상태를 모르거나 오래되었으면 재개 없이 한 번 읽고, 옮겨 간 VM이면 다시 핀한다.
+   */
+  async #requireRunningBoat(reason) {
+    if (!this.#boat || this.#stopped) return;
+    if (this.#profileOperationContext.getStore()?.active) return;
+    const profile = await this.#client.loadProfile().catch(() => null);
+    if (!profile?.boat) return;
+    const status = this.#boatStatus?.sandboxId === profile.boat.sandboxId ? this.#boatStatus : null;
+    const fresh = status?.state === 'running' && Date.now() - status.checkedAt < 30_000
+      && status.machineKey && this.#boatPinned.get(status.sandboxId) === status.machineKey;
+    if (this.#boatWakePromise && this.#boatWakeResumes) {
+      // A user wake in flight decides; this call waits for it instead of failing early.
+      await this.#boatWakePromise.catch(() => {});
+    } else if (!fresh && !this.#boatBlocksBackground()) {
+      await this.#boatSync({ allowResume: false, reason }).catch(() => {});
+    }
+    if (this.#boatBlocksBackground()) {
+      throw new BoatError('BOAT_SERVER_STOPPED', {
+        detail: `boat sandbox is ${this.#boatStatus?.state ?? 'unknown'}; ${reason} does not wake it`,
+      });
+    }
+  }
+
   #boatSync(options) {
     const resumes = options.allowResume === true;
     if (this.#boatWakePromise && (this.#boatWakeResumes || !resumes)) return this.#boatWakePromise;
@@ -4769,7 +4851,8 @@ export class CloudCoordinator extends EventEmitter {
         announce();
         ({ sandbox, resumed } = await this.#boat.ensureRunning(sandboxId, {
           allowResume: true,
-          resumeTtlSeconds: null,
+          // Without verified self-stop tooling every start keeps a finite boat auto-stop.
+          resumeTtlSeconds: profile.boat.autoStop === 'idle' ? null : BOAT_TIMER_TTL_SECONDS,
           // A resume takes seconds; a user waiting on a send should not wait out a create budget.
           timeoutMs: 3 * 60_000,
           onState: (current) => {
@@ -4787,12 +4870,17 @@ export class CloudCoordinator extends EventEmitter {
         savedTargetMatches = false;
       }
       // The IP changes on every resume and host keys are machine identity, so a
-      // moved VM is re-registered and re-pinned before any tunnel dials it.
-      const needsPin = resumed
-        || (this.#boatPinned.get(sandboxId) !== machineKey && !(trustSavedPins && savedTargetMatches));
+      // moved VM is re-registered and re-pinned before any tunnel dials it. The
+      // tunnel checks host keys strictly, so a saved address is trusted only while
+      // its pin is still on disk.
+      const savedPinUsable = trustSavedPins && savedTargetMatches
+        && await this.#boat.hasPin(sandboxId, profile.ssh).catch(() => false);
+      const needsPin = resumed || (this.#boatPinned.get(sandboxId) !== machineKey && !savedPinUsable);
       if (needsPin) {
         const ssh = await this.#boat.prepareSsh(sandboxId, { sandbox });
         profile = await this.#applyBoatSshTarget(profile, ssh);
+        // The old address stays pinned until the profile no longer points at it.
+        await this.#boat.prunePins(sandboxId, profile.ssh).catch(() => {});
         this.#boatPinned.set(sandboxId, machineKey);
       }
       if (announced) {
@@ -4818,7 +4906,13 @@ export class CloudCoordinator extends EventEmitter {
       } else {
         // Record where the VM really is (for example still `archived` after a 402).
         const sandbox = await this.#boat.getSandbox(sandboxId).catch(() => undefined);
-        if (sandbox !== undefined) this.#noteBoatSandbox(sandboxId, sandbox);
+        if (sandbox !== undefined) {
+          this.#noteBoatSandbox(sandboxId, sandbox);
+        } else if (announced || this.#boatStatus?.sandboxId !== sandboxId
+          || this.#boatStatus.state == null || this.#boatStatus.state === 'waking') {
+          // Offline, nobody knows how far the wake got. Do not stay `waking`.
+          this.#setBoatStatus(sandboxId, { state: 'error', checkedAt: Date.now(), machineKey: null });
+        }
         if (this.#boatStatus?.sandboxId === sandboxId && this.#boatStatus.state !== 'running') {
           this.#setBoatStatus(sandboxId, { message: error.message });
         }
@@ -5084,6 +5178,7 @@ export class CloudCoordinator extends EventEmitter {
       this.#emitBoatChange('billing', { force: true });
       throw new BoatError('BOAT_BILLING_REQUIRED');
     }
+    const resumeFrom = journal?.stage ?? null;
     journal ??= {
       version: 1,
       machine,
@@ -5098,14 +5193,14 @@ export class CloudCoordinator extends EventEmitter {
     this.#boatSetupMachine = journal.machine;
     this.#setBoatSetup({
       stage: 'creating',
-      startedAt: journal.startedAt,
+      // Each attempt has its own elapsed time; the journal keeps the first start for itself.
+      startedAt: new Date().toISOString(),
       detail: null,
       error: null,
       importedProviders: [],
     });
     let stage = 'creating';
     try {
-      await saveStage('creating');
       const paired = await this.#client.isPaired().catch(() => false);
       let sandboxId = journal.sandboxId ?? current?.boat?.sandboxId ?? null;
       if (sandboxId && !await boat.getSandbox(sandboxId)) {
@@ -5113,6 +5208,10 @@ export class CloudCoordinator extends EventEmitter {
         sandboxId = null;
         await saveStage('creating', { sandboxId: null, idempotencyKey: randomUUID() });
       }
+      // A setup that stopped while copying logins only repeats that stage on the paired VM.
+      const resumeCredentials = Boolean(sandboxId) && resumeFrom === 'credentials'
+        && current?.boat?.sandboxId === sandboxId && paired;
+      if (!resumeCredentials) await saveStage('creating');
       if (!sandboxId) {
         const existing = await boat.findRauhwpxSandbox();
         const sandbox = existing ?? await boat.createSandbox({
@@ -5126,8 +5225,13 @@ export class CloudCoordinator extends EventEmitter {
       this.#boatSetupSandboxId = sandboxId;
       this.#emitBoatChange('setup');
 
-      const resumeCredentials = current?.boat?.sandboxId === sandboxId && paired && journal.stage === 'credentials';
-      if (!resumeCredentials) {
+      let autoStop = current?.boat?.autoStop === 'idle' ? 'idle' : 'timer';
+      if (resumeCredentials) {
+        stage = 'starting';
+        this.#setBoatSetup({ stage, detail: null });
+        // The VM may have stopped since the failed attempt. Wake it before copying logins.
+        await this.#boatSync({ allowResume: true, reason: 'setup' });
+      } else {
         stage = 'starting';
         await saveStage('starting');
         this.#setBoatSetup({ stage, detail: null });
@@ -5155,6 +5259,8 @@ export class CloudCoordinator extends EventEmitter {
           hostEnv: boatHostEnv({ sandboxId, idleMinutes: BOAT_IDLE_STOP_MINUTES, user: ssh.user }),
           onLine: (line) => this.#boatSetupLine(line),
         });
+        // The installed idle script reports whether this VM can stop itself.
+        autoStop = await boat.probeSelfStop(sandboxId);
 
         stage = 'pairing';
         await saveStage('pairing');
@@ -5168,7 +5274,12 @@ export class CloudCoordinator extends EventEmitter {
           provider: current?.provider ?? 'codex',
           limits: current?.limits,
           serverPublicKey: receipt.serverPublicKey,
-          boat: { sandboxId, machine: bootMachine, createdAt: sandbox.createdAt ?? new Date().toISOString() },
+          boat: {
+            sandboxId,
+            machine: bootMachine,
+            createdAt: sandbox.createdAt ?? new Date().toISOString(),
+            autoStop,
+          },
         });
         await this.#waitForProfileHealth(candidate, { attempts: 12, timeoutMs: 15_000 });
         let credentials = null;
@@ -5190,6 +5301,8 @@ export class CloudCoordinator extends EventEmitter {
           } : { preserveCredentials: true }));
           await this.#adoptSelfHostedMode();
         });
+        // The saved profile now points at the new address, so older pins can go.
+        await boat.prunePins(sandboxId, candidate.ssh).catch(() => {});
         this.#setBoatStatus(sandboxId, {
           state: 'running',
           message: null,
@@ -5202,9 +5315,13 @@ export class CloudCoordinator extends EventEmitter {
       stage = 'credentials';
       await saveStage('credentials');
       this.#setBoatSetup({ stage, detail: null });
-      const importedProviders = await this.#importAllProviderLogins();
-      // The idle timer now stops the VM; boat's own auto-stop would cut work off mid-turn.
-      await boat.relaxAutoStop(sandboxId).catch((error) => {
+      const { imported: importedProviders, failures } = await this.#importAllProviderLogins();
+      if (failures.length && !importedProviders.length) {
+        throw new Error(`No provider login reached the boat server: ${failures.join('; ')}`);
+      }
+      // With self-stop tooling the idle timer stops the VM and boat's own auto-stop would
+      // cut work off mid-turn. Without it, a finite auto-stop keeps the VM from billing forever.
+      await boat.setAutoStop(sandboxId, autoStop === 'idle' ? null : BOAT_TIMER_TTL_SECONDS).catch((error) => {
         this.#emit({ type: 'boat-auto-stop-deferred', error: boatDetail(error) });
       });
       await boat.clearSetupJournal().catch(() => {});
@@ -5228,9 +5345,10 @@ export class CloudCoordinator extends EventEmitter {
     }
   }
 
-  /** 이 Mac에 로그인된 모든 제공자 자격 증명을 한 번에 서버로 옮긴다. */
+  /** 이 Mac에 로그인된 모든 제공자 자격 증명을 한 번에 서버로 옮긴다. 옮기지 못한 것은 failures에 남는다. */
   async #importAllProviderLogins() {
     const imported = [];
+    const failures = [];
     for (const provider of CLOUD_PROVIDERS) {
       const auth = await this.#providerAuthFor(provider).catch(() => null);
       if (!auth || (!Object.keys(auth.secrets ?? {}).length && !Object.keys(auth.files ?? {}).length)) continue;
@@ -5243,10 +5361,11 @@ export class CloudCoordinator extends EventEmitter {
         }
         imported.push(provider);
       } catch (error) {
+        failures.push(`${provider}: ${boatDetail(error)}`);
         this.#emit({ type: 'boat-credential-import-failed', provider, error: boatDetail(error) });
       }
     }
-    return imported;
+    return { imported, failures };
   }
 
   #emit(event) {

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHmac, generateKeyPairSync, randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -10,6 +10,7 @@ import test from 'node:test';
 import {
   BOAT_SANDBOX_NAME,
   BoatCloud,
+  __test as boatTest,
   boatHostEnv,
   boatServerState,
   installBoatStatusCadence,
@@ -21,7 +22,8 @@ import {
 } from '../desktop/cloud-boat.mjs';
 import { CloudCoordinator } from '../desktop/cloud-coordinator.mjs';
 import { normalizeCloudProfile } from '../desktop/cloud-profile.mjs';
-import { normalizeHostEnv, __test as provisionerTest } from '../desktop/cloud-provisioner.mjs';
+import { CloudProvisioner, normalizeHostEnv, __test as provisionerTest } from '../desktop/cloud-provisioner.mjs';
+import { __test as tunnelTest } from '../desktop/cloud-ssh-tunnel.mjs';
 
 const SERVER_KEY = `ed25519:${generateKeyPairSync('ed25519').publicKey.export({ type: 'spki', format: 'der' }).toString('base64url')}`;
 const API_KEY = 'boat_valid_key_123';
@@ -76,6 +78,8 @@ async function startFakeBoat(t, options = {}) {
     ipCounter: 10,
     getsToReady: 2,
     getsToArchive: 2,
+    /** What the installed boat-idle.sh --probe prints: cli | api | none, or null for no line. */
+    selfStop: 'cli',
     ...options,
   };
   let origin = '';
@@ -293,9 +297,12 @@ async function startFakeBoat(t, options = {}) {
     }
     if (req.method === 'POST' && action === 'commands') {
       if (!usable(sandbox)) return fail(res, 409, 'boat_starting');
-      const stdout = body.command.includes('/etc/ssh/ssh_host_')
-        ? state.hostKeys.map((entry) => `${entry.type} ${entry.key} root@boat\n`).join('')
-        : '';
+      let stdout = '';
+      if (body.command.includes('/etc/ssh/ssh_host_')) {
+        stdout = state.hostKeys.map((entry) => `${entry.type} ${entry.key} root@boat\n`).join('');
+      } else if (body.command.includes('boat-idle.sh') && state.selfStop) {
+        stdout = `rauhwpx-boat-self-stop ${state.selfStop}\n`;
+      }
       return send(res, 200, { ok: true, type: 'command.finished', success: true, exitCode: 0, stdout, stderr: '', timedOut: false });
     }
     if (req.method === 'GET' && action === 'usage') {
@@ -421,8 +428,12 @@ test('boat profiles are ssh-tunnel self-hosted profiles with a boat id', () => {
   assert.equal(profile.id, 'boat:bx_23456789');
   assert.equal(profile.transport, 'ssh-tunnel');
   assert.equal(profile.ssh.useTailscaleSsh, false);
-  assert.deepEqual(profile.boat, { sandboxId: 'bx_23456789', machine: 'default', createdAt: '2026-09-27T09:00:00.000Z' });
+  assert.deepEqual(profile.boat, {
+    sandboxId: 'bx_23456789', machine: 'default', createdAt: '2026-09-27T09:00:00.000Z', autoStop: 'timer',
+  }, 'a profile without verified self-stop tooling keeps the timer');
   assert.equal(normalizeCloudProfile(JSON.parse(JSON.stringify(profile))).boat.sandboxId, 'bx_23456789');
+  const idle = normalizeCloudProfile({ ...boatProfile('bx_23456789'), boat: { sandboxId: 'bx_23456789', autoStop: 'idle' } });
+  assert.equal(normalizeCloudProfile(JSON.parse(JSON.stringify(idle))).boat.autoStop, 'idle', 'the capability persists');
   assert.throws(() => normalizeCloudProfile({ ...boatProfile('bx_23456789'), boat: { sandboxId: 'bx_BAD' } }), /sandbox id/);
   assert.throws(() => normalizeCloudProfile({ ...boatProfile('bx_23456789'), boat: { sandboxId: 'bx_23456789', machine: 'large' } }), /machine/);
   assert.throws(() => normalizeCloudProfile({
@@ -627,7 +638,7 @@ test('trial accounts fall back to a two-hour auto-stop on resume and after setup
     { ttlSeconds: null },
     { ttlSeconds: 7200 },
   ]);
-  await boat.relaxAutoStop(sandbox.id);
+  await boat.setAutoStop(sandbox.id, null);
   assert.deepEqual(fake.requests('PATCH', `/api/v1/sandboxes/${sandbox.id}`).map((entry) => entry.body), [
     { ttlSeconds: null },
     { ttlSeconds: 7200 },
@@ -655,10 +666,17 @@ test('host keys are read through the commands API and pinned, replacing stale li
   assert.deepEqual({ host: ssh.host, port: ssh.port, user: ssh.user }, { host: newIp, port: 22, user: 'user' });
   assert.equal(ssh.keyPath, boat.sshKeyPath);
   assert.match(fake.state.sandboxes.get(sandbox.id).keys[0], /^ssh-ed25519 [A-Za-z0-9+/=]+ rauhwpx-boat$/);
-  const lines = (await readFile(knownHostsPath, 'utf8')).trim().split('\n');
-  assert.equal(lines.length, 2);
+  const newPin = `${newIp} ssh-ed25519 ${fake.state.hostKeys[0].key} rauhwpx-boat:${sandbox.id}`;
+  let lines = (await readFile(knownHostsPath, 'utf8')).trim().split('\n');
+  assert.equal(lines.length, 3, 'the old address stays pinned until the profile moves');
+  assert.match(lines[0], /^198\.51\.100\.1 /);
+  assert.match(lines[1], /^other\.example /);
+  assert.equal(lines[2], newPin);
+  assert.equal(await boat.hasPin(sandbox.id, ssh), true);
+  await boat.prunePins(sandbox.id, ssh);
+  lines = (await readFile(knownHostsPath, 'utf8')).trim().split('\n');
+  assert.deepEqual(lines.slice(1), [newPin]);
   assert.match(lines[0], /^other\.example /);
-  assert.equal(lines[1], `${newIp} ssh-ed25519 ${fake.state.hostKeys[0].key} rauhwpx-boat:${sandbox.id}`);
   if (process.platform !== 'win32') {
     assert.equal((await stat(knownHostsPath)).mode & 0o777, 0o600);
     assert.equal((await stat(boat.sshKeyPath)).mode & 0o777, 0o600);
@@ -669,6 +687,7 @@ test('host keys are read through the commands API and pinned, replacing stale li
   fake.state.sandboxes.get(sandbox.id).sshEndpoint = '192.0.2.44:22001';
   const forwarded = await boat.prepareSsh(sandbox.id);
   assert.deepEqual([forwarded.host, forwarded.port], ['192.0.2.44', 22001]);
+  await boat.prunePins(sandbox.id, forwarded);
   const pinned = await readFile(knownHostsPath, 'utf8');
   assert.match(pinned, /^\[192\.0\.2\.44\]:22001 ssh-ed25519 /m);
   assert.doesNotMatch(pinned, new RegExp(`^${newIp.replaceAll('.', '\\.')} `, 'm'), 'the previous address is unpinned');
@@ -779,6 +798,8 @@ test('a VM that stops itself while connected turns the failed link check into a 
   const { boat } = await makeBoat(t, fake);
   await boat.connectApiKey(API_KEY);
   const sandbox = fake.addSandbox({ state: 'ready' });
+  // Setup left this address pinned, so startup trusts it without re-registering.
+  await boat.pinHostKeys({ sandboxId: sandbox.id, host: sandbox.ip, keys: fake.state.hostKeys });
   const client = fakeClient({ profile: boatProfile(sandbox.id, sandbox.ip), paired: true });
   let reachable = true;
   client.health = async (override) => {
@@ -878,6 +899,11 @@ test('setup creates the VM, installs with boat host env, pairs and imports every
   assert.equal(client.calls.activated[0].profile.boat.sandboxId, sandbox.id);
   assert.equal(client.calls.activated[0].profile.id, `boat:${sandbox.id}`);
   assert.deepEqual(client.calls.putAuth, ['claude', 'codex']);
+  const [probe] = fake.requests('POST', `/api/v1/sandboxes/${sandbox.id}/commands`)
+    .filter((entry) => entry.body.command.includes('--probe'));
+  assert.match(probe.body.command, /sudo -n \/bin\/bash "\$f" --probe/, 'self-stop tooling is verified after install');
+  assert.equal(snapshot.profile.profile.boat.autoStop, undefined, 'the UI profile stays minimal');
+  assert.equal(client.calls.activated[0].profile.boat.autoStop, 'idle');
   assert.deepEqual(fake.requests('PATCH', `/api/v1/sandboxes/${sandbox.id}`).map((entry) => entry.body), [{ ttlSeconds: null }]);
   assert.deepEqual(snapshot.boat.setup.importedProviders, ['claude', 'codex']);
   assert.equal(snapshot.boat.setup.stage, 'done');
@@ -886,6 +912,8 @@ test('setup creates the VM, installs with boat host env, pairs and imports every
   assert.equal(snapshot.boat.server.machineLabel, '4 vCPU · 8 GB');
   assert.equal(snapshot.boat.server.region, 'EU');
   assert.equal(snapshot.boat.server.idleStopMinutes, 30);
+  assert.equal(snapshot.boat.server.autoStop, 'idle');
+  assert.equal(snapshot.boat.server.timerHours, null);
   assert.equal(snapshot.profile.profile.boat.sandboxId, sandbox.id);
   assert.equal(vault.values.has('cloud.boat.setup'), false, 'the setup journal is cleared');
   assert.ok(details.every((detail) => !detail || !/RAUHWpx_RECEIPT|ABCD-EFGH/.test(detail)), 'receipts never reach the renderer');
@@ -984,4 +1012,318 @@ test('setup refuses to start without a plan and disconnect can delete the VM', a
   assert.equal(after.boat.account.connected, false);
   assert.equal(after.boat.server, null);
   assert.equal(vault.values.has('cloud.boat.account'), false);
+});
+
+test('only an explicit reconnect resumes a stopped VM; the IPC defaults to automatic', async (t) => {
+  const fake = await startFakeBoat(t);
+  const { boat } = await makeBoat(t, fake);
+  await boat.connectApiKey(API_KEY);
+  const sandbox = fake.addSandbox({ state: 'archived', snapshotAvailable: true });
+  const client = fakeClient({ profile: boatProfile(sandbox.id), paired: true });
+  const coordinator = new CloudCoordinator({ client, store: store(), recoveryDir: '/unused', boat });
+  t.after(() => coordinator.stop());
+  await coordinator.start();
+  await eventually(async () => (await coordinator.snapshot()).boat?.server?.state === 'stopped');
+
+  await coordinator.reconnectCloud({ userIntent: false });
+  assert.equal(fake.requests('POST', /\/resume$/).length, 0, 'an automatic reconnect never resumes');
+  const woke = await coordinator.reconnectCloud({ userIntent: true });
+  assert.equal(fake.requests('POST', /\/resume$/).length, 1);
+  assert.equal(woke.boat.server.state, 'running');
+
+  const main = await readFile(new URL('../desktop/main.mjs', import.meta.url), 'utf8');
+  const preload = await readFile(new URL('../desktop/preload.cjs', import.meta.url), 'utf8');
+  assert.match(main, /cloud:reconnect-link'[\s\S]*?reconnectCloud\(\{\s*userIntent: payload\?\.explicit === true,\s*\}\)/);
+  assert.match(preload, /cloudReconnectLink: \(payload\) => ipcRenderer\.invoke\('cloud:reconnect-link', \{\s*explicit: payload\?\.explicit === true,/);
+  assert.match(preload, /cloudDownloadCheckpoint: \(payload\) => boatCall\('cloud:download-checkpoint', payload\)/);
+});
+
+test('a stream that fails because the VM stopped itself goes quiet instead of reconnecting', async (t) => {
+  const fake = await startFakeBoat(t);
+  const { boat } = await makeBoat(t, fake);
+  await boat.connectApiKey(API_KEY);
+  const sandbox = fake.addSandbox({ state: 'ready' });
+  await boat.pinHostKeys({ sandboxId: sandbox.id, host: sandbox.ip, keys: fake.state.hostKeys });
+  const client = fakeClient({ profile: boatProfile(sandbox.id, sandbox.ip), paired: true });
+  client.sessions = async () => [{ id: 'session_12345678', status: 'running' }];
+  let failStream = null;
+  client.watchSession = (_sessionId, _after, { signal }) => new Promise((_resolve, reject) => {
+    failStream = reject;
+    signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+  });
+  const coordinator = new CloudCoordinator({ client, store: store(), recoveryDir: '/unused', boat });
+  t.after(() => coordinator.stop());
+  await coordinator.start();
+  await eventually(async () => (await coordinator.snapshot()).boat?.server?.state === 'running');
+  await coordinator.reconnectCloud();
+  await eventually(() => failStream !== null);
+
+  const events = [];
+  coordinator.on('event', (event) => events.push(event.type));
+  Object.assign(fake.state.sandboxes.get(sandbox.id), { state: 'archived', ip: null, snapshotAvailable: true });
+  const probes = client.calls.health;
+  failStream(Object.assign(new Error('SSH tunnel disconnected'), { code: 'SSH_TUNNEL_UNAVAILABLE', retryable: true }));
+  await eventually(async () => (await coordinator.snapshot()).boat.server.state === 'stopped');
+  const quiet = await coordinator.snapshot();
+  assert.equal(quiet.link.kind, 'ready');
+  assert.ok(events.includes('remote-session-stream-error'));
+  assert.equal(events.includes('cloud-link-reconnecting'), false, 'a stopped VM is not a broken link');
+  assert.equal(client.calls.health, probes, 'nothing dials the stopped VM');
+  assert.equal(fake.requests('POST', /\/resume$/).length, 0);
+});
+
+test('only a checkpoint fetch the user asked for wakes a stopped VM', async (t) => {
+  const fake = await startFakeBoat(t);
+  const { boat } = await makeBoat(t, fake);
+  await boat.connectApiKey(API_KEY);
+  const sandbox = fake.addSandbox({ state: 'archived', snapshotAvailable: true });
+  const client = fakeClient({ profile: boatProfile(sandbox.id), paired: true });
+  client.downloadCheckpoint = async (_sessionId, { operationId }) => ({
+    name: 'doc.hwpx', bytes: Buffer.from('doc'), size: 3, sha256: 'a'.repeat(64), revision: 2, turn: 1,
+    boundaryOperation: operationId ?? 'op_latest', boundaryKind: 'turn',
+  });
+  const coordinator = new CloudCoordinator({ client, store: store(), recoveryDir: '/unused', boat });
+  t.after(() => coordinator.stop());
+  await coordinator.start();
+  await eventually(async () => (await coordinator.snapshot()).boat?.server?.state === 'stopped');
+
+  const reads = fake.requests('GET', `/api/v1/sandboxes/${sandbox.id}`).length;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await assert.rejects(coordinator.downloadCheckpoint({ sessionId: 'session_12345678' }), (error) => (
+      error.code === 'BOAT_SERVER_STOPPED' && error.message === 'boat 서버가 정지되어 있습니다.'
+    ));
+  }
+  assert.equal(fake.requests('GET', `/api/v1/sandboxes/${sandbox.id}`).length, reads, 'a known stop answers without boat calls');
+  assert.equal(fake.requests('POST', /\/resume$/).length, 0);
+  assert.equal(client.calls.health, 0);
+
+  // 미러의 재시도처럼 operation id 가 있어도 사용자가 누르지 않은 요청은 깨우지 않는다.
+  await assert.rejects(
+    coordinator.downloadCheckpoint({ sessionId: 'session_12345678', operationId: 'op_merge' }),
+    (error) => error.code === 'BOAT_SERVER_STOPPED',
+  );
+  assert.equal(fake.requests('POST', /\/resume$/).length, 0);
+
+  const merged = await coordinator.downloadCheckpoint({
+    sessionId: 'session_12345678', operationId: 'op_merge', explicit: true,
+  });
+  assert.equal(merged.operationId, 'op_merge');
+  assert.equal(fake.requests('POST', /\/resume$/).length, 1, 'a merge the user asked for wakes the VM');
+  const latest = await coordinator.downloadCheckpoint({ sessionId: 'session_12345678' });
+  assert.equal(latest.operationId, 'op_latest', 'a running VM serves the mirror');
+});
+
+test('without self-stop tooling setup and every wake keep a four-hour boat auto-stop', async (t) => {
+  const fake = await startFakeBoat(t, { selfStop: 'none' });
+  const { boat } = await makeBoat(t, fake);
+  await boat.connectApiKey(API_KEY);
+  const client = fakeClient();
+  const provisioner = {
+    provision: async () => ({
+      endpoint: 'http://127.0.0.1:7740/rauhwpx-cloud', serverPublicKey: SERVER_KEY, pairingCode: 'ABCD-EFGH-JKLM', transport: 'ssh-tunnel',
+    }),
+  };
+  const coordinator = new CloudCoordinator({
+    client, store: store(), recoveryDir: '/unused', provisioner, boat,
+    collectImportedAuth: async (provider) => (provider === 'claude' ? { secrets: {}, files: { '.claude/x.json': '{}' } } : null),
+  });
+  t.after(() => coordinator.stop());
+  const done = await coordinator.boatSetup({ machine: 'default' });
+  const [sandbox] = fake.state.sandboxes.values();
+  assert.deepEqual(fake.requests('PATCH', `/api/v1/sandboxes/${sandbox.id}`).map((entry) => entry.body), [{ ttlSeconds: 14400 }]);
+  assert.equal(client.calls.activated[0].profile.boat.autoStop, 'timer');
+  assert.equal(done.boat.server.autoStop, 'timer');
+  assert.equal(done.boat.server.timerHours, 4);
+
+  Object.assign(fake.state.sandboxes.get(sandbox.id), { state: 'archived', ip: null, snapshotAvailable: true });
+  await coordinator.boatRefresh();
+  await coordinator.command({ sessionId: 'session_12345678', command: 'pause' });
+  assert.equal(fake.requests('POST', '/api/v1/sandboxes')[0].body.ttlSeconds, 7200, 'setup has its own bound');
+  assert.deepEqual(fake.requests('POST', `/api/v1/sandboxes/${sandbox.id}/resume`).map((entry) => entry.body), [
+    { ttlSeconds: 14400 },
+  ], 'a later wake keeps the timer');
+
+  fake.state.limits = { ...fake.state.limits, accessTier: 'trial', sandboxPlanKey: 'trial' };
+  await coordinator.boatRefresh();
+  assert.equal((await coordinator.snapshot()).boat.server.timerHours, 2, 'trial accounts are capped at two hours');
+});
+
+test('a credentials retry wakes the paired VM first, and a fresh attempt gets its own start time', async (t) => {
+  const fake = await startFakeBoat(t);
+  const { boat } = await makeBoat(t, fake);
+  await boat.connectApiKey(API_KEY);
+  const client = fakeClient();
+  let importFails = true;
+  const resumesAtImport = [];
+  client.putProviderAuth = async (provider) => {
+    if (importFails) throw new Error('Cloud rejected the login');
+    resumesAtImport.push(fake.requests('POST', /\/resume$/).length);
+    client.calls.putAuth.push(provider);
+    return { ok: true };
+  };
+  let installs = 0;
+  const provisioner = {
+    provision: async () => {
+      installs += 1;
+      return { endpoint: 'http://127.0.0.1:7740/rauhwpx-cloud', serverPublicKey: SERVER_KEY, pairingCode: 'ABCD-EFGH-JKLM', transport: 'ssh-tunnel' };
+    },
+  };
+  const coordinator = new CloudCoordinator({
+    client, store: store(), recoveryDir: '/unused', provisioner, boat,
+    collectImportedAuth: async (provider) => (provider === 'pi' ? null : { secrets: {}, files: { [`.${provider}/auth.json`]: '{}' } }),
+  });
+  t.after(() => coordinator.stop());
+  await assert.rejects(coordinator.boatSetup({ machine: 'default' }), { code: 'BOAT_SETUP_FAILED' });
+  const failed = (await coordinator.snapshot()).boat.setup;
+  assert.equal(failed.stage, 'credentials', 'copying no login at all is a setup error');
+  assert.match(failed.error.detail, /claude: .*rejected/);
+  assert.equal(fake.requests('PATCH', /\/api\/v1\/sandboxes\//).length, 0);
+
+  const [sandbox] = fake.state.sandboxes.values();
+  Object.assign(fake.state.sandboxes.get(sandbox.id), { state: 'archived', ip: null, snapshotAvailable: true });
+  importFails = false;
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const starts = [];
+  coordinator.on('event', async (event) => {
+    if (event.type === 'boat-setup-progress') starts.push((await coordinator.snapshot()).boat.setup.startedAt);
+  });
+  const done = await coordinator.boatSetup({ machine: 'default' });
+  assert.equal(done.boat.setup.stage, 'done');
+  assert.deepEqual(done.boat.setup.importedProviders, ['claude', 'codex']);
+  assert.equal(installs, 1, 'the retry does not reinstall or re-pair');
+  assert.equal(client.calls.redeemed, 1);
+  const resumes = fake.requests('POST', `/api/v1/sandboxes/${sandbox.id}/resume`);
+  assert.equal(resumes.length, 1);
+  assert.deepEqual(resumesAtImport, [1, 1], 'the stopped VM is resumed before the logins are copied');
+  assert.ok(Date.parse(done.boat.setup.startedAt) > Date.parse(failed.startedAt), 'each attempt reports its own start');
+  assert.ok(starts.length && starts.every((value) => value === done.boat.setup.startedAt));
+});
+
+test('a wake that fails offline settles to an error, and a never-read VM is not reported stopped', async (t) => {
+  const fake = await startFakeBoat(t);
+  let offline = false;
+  const { boat } = await makeBoat(t, fake, {
+    fetchImpl: async (url, init) => {
+      if (String(url).endsWith('/resume')) offline = true;
+      if (offline) throw new TypeError('fetch failed');
+      return fetch(url, init);
+    },
+  });
+  await boat.connectApiKey(API_KEY);
+  const sandbox = fake.addSandbox({ state: 'archived', snapshotAvailable: true });
+  const client = fakeClient({ profile: boatProfile(sandbox.id), paired: true });
+  const coordinator = new CloudCoordinator({ client, store: store(), recoveryDir: '/unused', boat });
+  t.after(() => coordinator.stop());
+  const unread = await coordinator.snapshot();
+  assert.equal(unread.boat.server.state, 'error');
+  assert.equal(unread.boat.server.message, '상태를 확인하지 못했습니다.');
+
+  await assert.rejects(coordinator.command({ sessionId: 'session_12345678', command: 'pause' }), { code: 'BOAT_UNAVAILABLE' });
+  const settled = await coordinator.snapshot();
+  assert.equal(settled.boat.server.state, 'error', 'the wake does not stay waking');
+  assert.equal(settled.boat.server.message, 'boat에 연결하지 못했습니다.');
+});
+
+test('boat profiles never trust a first-seen SSH host key', async (t) => {
+  const boatArgs = tunnelTest.sshTunnelArguments(normalizeCloudProfile(boatProfile('bx_23456789')), '/tmp/known', 40001);
+  assert.ok(boatArgs.includes('StrictHostKeyChecking=yes'));
+  const vpsArgs = tunnelTest.sshTunnelArguments(normalizeCloudProfile({
+    ...boatProfile('bx_23456789'), boat: undefined, name: 'VPS',
+  }), '/tmp/known', 40001);
+  assert.ok(vpsArgs.includes('StrictHostKeyChecking=accept-new'));
+
+  const dir = await mkdtemp(path.join(tmpdir(), 'rauhwpx-boat-strict-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const preflights = [];
+  const provisioner = new CloudProvisioner({
+    spawnImpl: (_command, args) => {
+      preflights.push(args.find((arg) => arg.startsWith('StrictHostKeyChecking=')));
+      throw new Error('stop after preflight');
+    },
+    installerPath: path.join(dir, 'install.sh'),
+    knownHostsPath: path.join(dir, 'known'),
+    retrySleep: async () => {},
+  });
+  const ssh = { host: '203.0.113.20', user: 'user', port: 22, useTailscaleSsh: false };
+  await assert.rejects(provisioner.provision(ssh, { transport: 'ssh-tunnel', hostEnv: boatHostEnv({ sandboxId: 'bx_23456789' }) }));
+  await assert.rejects(provisioner.provision(ssh, { transport: 'ssh-tunnel' }));
+  assert.deepEqual(preflights, ['StrictHostKeyChecking=yes', 'StrictHostKeyChecking=accept-new']);
+
+  // A wake pins the new address before the profile moves and drops the old pin only afterwards.
+  const fake = await startFakeBoat(t);
+  const { boat, knownHostsPath } = await makeBoat(t, fake);
+  await boat.connectApiKey(API_KEY);
+  const sandbox = fake.addSandbox({ state: 'archived', snapshotAvailable: true });
+  await boat.pinHostKeys({ sandboxId: sandbox.id, host: '198.51.100.7', keys: fake.state.hostKeys });
+  const client = fakeClient({ profile: boatProfile(sandbox.id, '198.51.100.7'), paired: true });
+  const pinsAtSave = [];
+  const save = client.saveProfile;
+  client.saveProfile = async (next) => {
+    pinsAtSave.push(await readFile(knownHostsPath, 'utf8'));
+    return save(next);
+  };
+  const coordinator = new CloudCoordinator({ client, store: store(), recoveryDir: '/unused', boat });
+  t.after(() => coordinator.stop());
+  await coordinator.command({ sessionId: 'session_12345678', command: 'pause' });
+  const woken = fake.state.sandboxes.get(sandbox.id).ip;
+  assert.match(pinsAtSave[0], /^198\.51\.100\.7 /m, 'the old pin survives until the new address is saved');
+  assert.match(pinsAtSave[0], new RegExp(`^${woken.replaceAll('.', '\\.')} `, 'm'), 'the new address is pinned before any dial');
+  const after = await readFile(knownHostsPath, 'utf8');
+  assert.doesNotMatch(after, /^198\.51\.100\.7 /m);
+  assert.equal(await boat.hasPin(sandbox.id, { host: woken }), true);
+});
+
+test('boat-idle.sh --probe reports the self-stop tool the idle timer would use', {
+  skip: process.platform === 'win32' || spawnSync('bash', ['-c', 'true']).status !== 0,
+}, async (t) => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'rauhwpx-boat-idle-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const home = path.join(dir, 'home');
+  const bin = path.join(dir, 'bin');
+  await mkdir(path.join(home, '.local', 'bin'), { recursive: true });
+  await mkdir(bin);
+  const stub = async (name, body) => {
+    await writeFile(path.join(bin, name), `#!/bin/sh\n${body}\n`);
+    await chmod(path.join(bin, name), 0o755);
+  };
+  await stub('flock', 'exit 0');
+  await stub('curl', 'exit 0');
+  await stub('timeout', 'shift; exec "$@"');
+  await stub('runuser', 'while [ "$1" != "--" ]; do shift; done; shift; exec "$@"');
+  await stub('getent', `echo "user:x:1000:1000::${home}:/bin/bash"`);
+  await stub('rauhwpx-cloud', 'exit 99');
+  await stub('node', 'exit 99');
+  const envFile = path.join(dir, 'boat.env');
+  const source = await readFile(new URL('../cloud/install/boat-idle.sh', import.meta.url), 'utf8');
+  const script = path.join(dir, 'boat-idle.sh');
+  await writeFile(script, source
+    .replace('ENV_FILE=/etc/rauhwpx-boat.env', `ENV_FILE=${envFile}`)
+    .replace('CLOUD_CLI=/usr/local/bin/rauhwpx-cloud', `CLOUD_CLI=${bin}/rauhwpx-cloud`)
+    .replace('NODE=/opt/rauhwpx-node/bin/node', `NODE=${bin}/node`));
+  const probe = () => {
+    const result = spawnSync('bash', [script, '--probe'], {
+      encoding: 'utf8',
+      env: { PATH: `${bin}:/usr/bin:/bin` },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  const parse = (stdout) => {
+    const match = /^rauhwpx-boat-self-stop (cli|api|none)$/m.exec(stdout);
+    return match && match[1] !== 'none' ? 'idle' : 'timer';
+  };
+  assert.match(boatTest.SELF_STOP_COMMAND, /boat-idle\.sh.*--probe/);
+
+  assert.equal(probe(), 'rauhwpx-boat-self-stop none', 'no env file means the timer would never stop');
+  await writeFile(envFile, 'RAUHWpx_BOAT_SANDBOX_ID=bx_23456789\nRAUHWpx_BOAT_IDLE_MINUTES=30\nRAUHWpx_BOAT_USER=user\n');
+  assert.equal(probe(), 'rauhwpx-boat-self-stop none');
+  await writeFile(path.join(home, '.profile'), 'export ASCII_TOKEN=ascii_token_1234567890\nexport BOAT_ID=bx_23456789\n');
+  assert.equal(probe(), 'rauhwpx-boat-self-stop api');
+  await writeFile(path.join(home, '.local', 'bin', 'boat'), '#!/bin/sh\nexit 0\n');
+  await chmod(path.join(home, '.local', 'bin', 'boat'), 0o755);
+  assert.equal(probe(), 'rauhwpx-boat-self-stop cli');
+  assert.equal(parse(probe()), 'idle');
+  await writeFile(path.join(home, '.profile'), 'export BOAT_ID=bx_99999999\n');
+  assert.equal(probe(), 'rauhwpx-boat-self-stop none', 'a forked machine does not stop the configured one');
+  assert.equal(parse(probe()), 'timer');
 });

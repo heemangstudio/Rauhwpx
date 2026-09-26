@@ -78,6 +78,7 @@ export const auditScenarios: readonly AuditScenario[] = [
   scene('boat-progress', 'boat server', 'boat server setup progress', 'Inspect stage marks, elapsed time, and the truncated detail line.', { ...boatSetup, 'boat-state': 'setup', 'boat-screen': 'progress' }),
   scene('boat-failed', 'boat server', 'boat install failure', 'Inspect guidance and details; retry succeeds.', { ...boatSetup, 'boat-state': 'failed', 'boat-screen': 'failed' }),
   scene('boat-ready', 'boat server', 'boat server ready', 'Inspect the ready summary with imported logins.', { ...boatSetup, 'boat-state': 'connected', 'boat-screen': 'ready' }),
+  scene('boat-ready-timer', 'boat server', 'boat server ready on a timer', 'Inspect the auto-stop row when the account stops the VM a set time after each start.', { ...boatSetup, 'boat-scenario': 'timerAutoStop', 'boat-state': 'connected', 'boat-screen': 'ready' }),
   scene('boat-card-running', 'boat server', 'Running boat card', 'Inspect monthly hours, Stop, and the management menu.', { ...boatSetup, 'boat-state': 'running' }),
   scene('boat-card-stopped', 'boat server', 'Stopped boat card', 'Start the server from the card and watch it wake.', { ...boatSetup, 'boat-state': 'stopped' }),
   scene('boat-card-waking', 'boat server', 'Waking boat card', 'Inspect the pulsing dot and disabled Start.', { ...boatSetup, 'boat-state': 'waking' }),

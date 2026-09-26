@@ -3,7 +3,7 @@ import { canChangeCloudProviderSettings } from '../../cloud/provider-settings.ts
 
 import type { PortableCloudTimelineV1 } from '../../cloud/timeline.ts';
 import type { AgentStreamEvent, AgentWorkflow } from '../../agent/types.ts';
-import type { CloudController } from '../../cloud/desktop-cloud.ts';
+import { isBoatServerStopped, type CloudController } from '../../cloud/desktop-cloud.ts';
 import { browserCloudSupported } from '../../cloud/browser-cloud.ts';
 import type {
   CloudDownloadResult,
@@ -47,6 +47,7 @@ import { createCheckpointPublisher } from '../../cloud/checkpoint-publisher.ts';
 import { createCloudOnboarding, type CloudTransferIntent } from './cloud-onboarding.ts';
 import {
   BOAT_CARD_TITLE,
+  boatCardStatus,
   boatServerResting,
   boatServerWaking,
   snapshotBoatProfile,
@@ -98,11 +99,12 @@ function serverLabel(snapshot: CloudSnapshot): string {
 
 /**
  * 화면에 보일 연결 상태. 쉬고 있는 boat VM 은 끊긴 연결이 아니고(보내거나 여는 순간 데스크톱이
- * 깨운다), 깨어나는 VM 은 다시 연결하는 중과 같은 자리에 보인다.
+ * 깨운다), 깨어나는 VM 은 다시 연결하는 중과 같은 자리에 보인다. 실패한 연결은 VM 이 쉬고 있어도
+ * 그대로 보여 준다. 복구 줄의 다시 연결이 VM 을 깨운다.
  */
 function visibleLink(snapshot: CloudSnapshot): ReturnType<typeof inferCloudLink> {
   const link = inferCloudLink(snapshot);
-  if (link.kind === 'recreating') return link;
+  if (link.kind === 'recreating' || link.kind === 'failed') return link;
   if (boatServerWaking(snapshot)) return { ...link, kind: 'reconnecting', error: null };
   return boatServerResting(snapshot) ? { ...link, kind: 'ready', error: null } : link;
 }
@@ -293,8 +295,14 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
   mergeButton.type = 'button';
   mergeButton.hidden = true;
   mergeButton.addEventListener('click', () => { void mergeCheckpoint(); });
+  /** 쉬는 boat VM 이 조용히 거절한 체크포인트 조회. VM 이 다시 실행될 때 한 번 더 묻는다. */
+  const restingCheckpoints = new Set<string>();
+  /** 거절 뒤 VM 이 멈춘 상태를 한 번은 보여야 실행 중을 새 실행으로 믿는다. 낡은 running 에 다시 묻지 않는다. */
+  let restingSawStop = false;
   const checkpointMirror = createCheckpointMirror({
     allowSameRevisionOperations: Boolean(deps.onMergeCheckpoint),
+    retryable: (error) => !isBoatServerStopped(error),
+    // 자동 조회다. explicit 을 넘기지 않아 쉬는 boat VM 을 깨우지 않는다.
     download: (sessionId, operationId) => deps.controller.downloadCheckpoint(sessionId, operationId, !operationId && deps.onMergeCheckpoint ? 'turn' : undefined),
     apply: (checkpoint) => {
       if (checkpoint.kind !== 'turn') return;
@@ -435,7 +443,7 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
   const dashboard = createCloudDashboard({
     configuration: onboarding.settingsElement,
     refresh: () => deps.controller.refresh(selectedScope()),
-    reconnect: () => deps.controller.reconnectLink(),
+    reconnect: () => deps.controller.reconnectLink({ explicit: true }),
     mutationLocked: () => busy || authorityTransitionActive() || workspaceLocked,
     openTask: async (task) => {
       if (!await deps.onOpenTask(task)) return;
@@ -730,9 +738,10 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
     });
   }
 
-  function reconnectLink(): void {
+  /** explicit 은 사용자가 누른 다시 연결이다. 그때만 데스크톱이 쉬던 boat VM 을 깨운다. */
+  function reconnectLink(explicit: boolean): void {
     void recoveryOperation('reconnecting', async () => {
-      snapshot = await deps.controller.reconnectLink();
+      snapshot = await deps.controller.reconnectLink(explicit ? { explicit: true } : {});
       if (inferCloudLink(snapshot).kind === 'ready' && deps.isCloudMode()
         && (!bindingMatchesScope(snapshotBinding()) || !mountSnapshotTimeline())) {
         snapshot = await deps.controller.refresh(selectedScope());
@@ -956,7 +965,7 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
     const startId = offer.startId ?? mergeStartId(offer.sessionId);
     if (!startId) return deps.onError('Cloud 시작 대화를 불러온 뒤 병합합니다.');
     await operation(async () => {
-      const checkpoint = await deps.controller.downloadCheckpoint(offer.sessionId, offer.operationId, 'turn');
+      const checkpoint = await deps.controller.downloadCheckpoint(offer.sessionId, offer.operationId, 'turn', { explicit: true });
       if (snapshot.profileEpoch !== profileEpoch || mergeProfileKey(snapshot) !== profileKey || deps.getScope().documentId !== documentId) return;
       if (checkpoint.sessionId !== offer.sessionId || checkpoint.documentId !== documentId
         || checkpoint.kind !== 'turn' || checkpoint.revision !== offer.revision
@@ -975,7 +984,7 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
     const profileEpoch = snapshot.profileEpoch;
     const documentId = deps.getScope().documentId;
     void operation(async () => {
-      const checkpoint = await deps.controller.downloadCheckpoint(offer.sessionId, offer.operationId, 'turn');
+      const checkpoint = await deps.controller.downloadCheckpoint(offer.sessionId, offer.operationId, 'turn', { explicit: true });
       if (snapshot.profileEpoch !== profileEpoch || deps.getScope().documentId !== documentId) return;
       const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', checkpoint.bytes.slice().buffer))]
         .map((byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -1087,9 +1096,10 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
           }));
           break;
         }
-        const boatProfile = Boolean(snapshotBoatProfile(snapshot));
-        panelStatus.textContent = boatProfile
-          ? 'boat 서버가 준비되어 있습니다.'
+        // boat 는 설정 카드와 같은 한 줄로 서버 상태를 보여 준다.
+        const boatCard = snapshotBoatProfile(snapshot) ? boatCardStatus(snapshot) : null;
+        panelStatus.textContent = boatCard
+          ? BOAT_CARD_TITLE
           : profileReady
             ? appHosted ? 'Raucloud가 준비되어 있습니다.' : '내 서버가 준비되어 있습니다.'
             : snapshot.profile.kind === 'configured'
@@ -1097,16 +1107,17 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
               : 'Cloud 서버를 선택해야 합니다.';
         panelDetail.textContent = snapshot.profile.kind !== 'configured'
           ? 'Raucloud 또는 내 서버'
-          : boatProfile
-            ? BOAT_CARD_TITLE
+          : boatCard
+            ? boatCard.detail
             : snapshot.profile.mode === 'app-hosted'
               ? `${snapshot.profile.name} · ${snapshot.profile.sandbox.host || snapshot.profile.sandbox.sandboxId}`
               : `${snapshot.profile.profile.name} · ${snapshot.profile.profile.host}`;
+        const settingsNeeded = boatCard ? boatCard.dot === 'disconnected' : !profileReady;
         panelActions.append(action('Cloud 설정', () => {
           const focusTrigger = panelTrigger ?? sidebarButton;
           closePanel();
           onboarding.open('manage', focusTrigger);
-        }, profileReady ? undefined : 'ag-primary'));
+        }, settingsNeeded ? 'ag-primary' : undefined));
         break;
       case 'waiting-local-turn':
         panelStatus.textContent = session.message;
@@ -1335,7 +1346,7 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
       recoveryDetail.textContent = link.canRecreate
         ? '대화 기록 보존됨 · 다시 연결하거나 새 서버에서 이어가기'
         : '대화 기록 보존됨 · 서버 확인 후 다시 연결';
-      recoveryActions.append(action('다시 연결', reconnectLink, 'ag-primary'));
+      recoveryActions.append(action('다시 연결', () => reconnectLink(true), 'ag-primary'));
       if (link.canRecreate) {
         recoveryActions.append(action('서버 다시 만들기', recreateLink));
       }
@@ -1350,7 +1361,7 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
     const stripActions = el('div', 'ag-cloud-recovery-strip-actions');
     recoveryStrip.append(stripIndicator, stripTitle, recoveryStripProgress.element, stripActions);
     if (link.kind === 'failed') {
-      stripActions.append(action('다시 연결', reconnectLink, 'ag-primary'));
+      stripActions.append(action('다시 연결', () => reconnectLink(true), 'ag-primary'));
       if (link.canRecreate) stripActions.append(action('서버 다시 만들기', recreateLink));
     }
     for (const container of [recoveryActions, recoveryStrip]) {
@@ -1459,9 +1470,10 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
         deps.onCloudBinding(binding);
       }
     }
-    if (inferCloudLink(snapshot).kind === 'ready') {
+    // 쉬거나 깨어나는 boat VM 에는 묻지 않는다. 실행 중으로 바뀌면 다시 묻는다.
+    if (inferCloudLink(snapshot).kind === 'ready' && !boatServerResting(snapshot) && !boatServerWaking(snapshot)) {
       for (const session of snapshot.sessions) {
-        if (session.documentId !== deps.getScope().documentId) continue;
+        if (session.documentId !== deps.getScope().documentId || restingCheckpoints.has(session.sessionId)) continue;
         if ((session.kind === 'running' && session.turn > 0) || session.kind === 'completed' || session.kind === 'suspended') {
           if (!checkpointMirror.hasPending(session.sessionId) && !checkpointMirror.hasRevision(session.sessionId)) {
             mirrorCheckpoint(session.sessionId, 'reconnect');
@@ -1474,6 +1486,11 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
   function mirrorCheckpoint(sessionId: string, operationId: string): void {
     void checkpointMirror.mirror(sessionId, operationId).catch((error) => {
       if (error instanceof DOMException && error.name === 'AbortError') return;
+      if (isBoatServerStopped(error)) {
+        if (!restingCheckpoints.size) restingSawStop = snapshot.boat?.server?.state !== 'running';
+        restingCheckpoints.add(sessionId);
+        return;
+      }
       deps.onError(error instanceof Error ? error.message : String(error));
     });
   }
@@ -1544,6 +1561,7 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
     const profileChanged = next.profileEpoch !== checkpointProfileEpoch || mergeProfileKey(next) !== mergeProfileKey(snapshot);
     if (profileChanged) {
       checkpointProfileEpoch = next.profileEpoch;
+      restingCheckpoints.clear();
       mergeOffers.clear();
       reviewedRevisions.clear();
       checkedMergeRequests.clear();
@@ -1567,6 +1585,15 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
     onboarding.sync(next);
     syncAuthorityMutationLock();
     render();
+    if (restingCheckpoints.size) {
+      if (next.boat?.server?.state !== 'running') restingSawStop = true;
+      else if (restingSawStop && inferCloudLink(next).kind === 'ready') {
+        const parked = [...restingCheckpoints];
+        restingCheckpoints.clear();
+        restingSawStop = false;
+        for (const sessionId of parked) mirrorCheckpoint(sessionId, 'reconnect');
+      }
+    }
   });
   const unsubscribeEvents = deps.controller.subscribeEvents((raw) => {
     if (raw && typeof raw === 'object' && 'type' in raw && raw.type === 'notification-open'
@@ -1589,7 +1616,8 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
           const startId = mergeStartId(sessionId);
           if (operationId && startId && deps.onMergeCheckpoint) {
             const profileKey = mergeProfileKey(snapshot);
-            const checkpoint = await deps.controller.downloadCheckpoint(sessionId, operationId, 'turn');
+            // 알림을 누른 것은 사용자의 의도다. 쉬던 boat VM 을 깨워 변경을 가져온다.
+            const checkpoint = await deps.controller.downloadCheckpoint(sessionId, operationId, 'turn', { explicit: true });
             if (profileKey !== mergeProfileKey(snapshot) || task.documentId !== deps.getScope().documentId) return;
             if (checkpoint.sessionId !== sessionId || checkpoint.operationId !== operationId
               || checkpoint.documentId !== task.documentId || checkpoint.kind !== 'turn') {
@@ -1626,7 +1654,7 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
         return;
       }
       const link = inferCloudLink(snapshot);
-      if (link.kind === 'ready') reconnectLink();
+      if (link.kind === 'ready') reconnectLink(false);
       return;
     }
     const sessionId = typeof host?.sessionId === 'string' ? host.sessionId : '';

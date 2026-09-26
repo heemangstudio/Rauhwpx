@@ -1,5 +1,6 @@
 import type {
   BoatMachine,
+  BoatServerSnapshot,
   BoatSetupProgress,
   BoatSetupStage,
   BoatSignInChallenge,
@@ -544,6 +545,20 @@ export function snapshotBoatProfile(snapshot: CloudSnapshot): { sandboxId: strin
     : null;
 }
 
+/**
+ * 이번 시도에 속한 설정 기록. 실패가 없는 기록은 시작 시각과 상관없이 받는다(예전 데스크톱은 다시 시도에도
+ * 처음 시각을 보낸다). 이번 시도보다 먼저 시작된 실패만 지난 시도의 것으로 버린다.
+ */
+export function boatAttemptSetup(
+  setup: BoatSetupProgress | null | undefined,
+  attemptStartedAt: number,
+): BoatSetupProgress | null {
+  if (!setup) return null;
+  if (!setup.error) return setup;
+  const setupAt = Date.parse(setup.startedAt);
+  return !Number.isFinite(setupAt) || setupAt >= attemptStartedAt - BOAT_SETUP_CLOCK_SLACK_MS ? setup : null;
+}
+
 export function boatSetupRunning(setup: BoatSetupProgress | null | undefined): boolean {
   return Boolean(setup && !setup.error && setup.stage !== 'done');
 }
@@ -602,6 +617,15 @@ export function boatIdleLabel(minutes: number): string {
   return minutes % 60 === 0 && minutes >= 60 ? `${minutes / 60}시간 동안 쉬면` : `${minutes}분 동안 쉬면`;
 }
 
+/** 자동 중지 한 줄. 필드가 없는 데스크톱은 idle 로 읽는다. */
+export function boatAutoStopLabel(server: Pick<BoatServerSnapshot, 'idleStopMinutes'>
+  & Partial<Pick<BoatServerSnapshot, 'autoStop' | 'timerHours'>> | null | undefined): string {
+  if (server?.autoStop === 'timer' && typeof server.timerHours === 'number' && server.timerHours > 0) {
+    return `시작 후 ${formatBoatHours(server.timerHours)}`;
+  }
+  return boatIdleLabel(server?.idleStopMinutes ?? BOAT_DEFAULT_IDLE_MINUTES);
+}
+
 export function validateBoatEmail(email: string): string | null {
   const value = email.trim();
   if (!value) return '이메일이 필요합니다.';
@@ -648,17 +672,38 @@ export function boatSetupIssue(error: BoatSetupProgress['error'] | unknown): Clo
   };
 }
 
+/**
+ * 설정 진행·실패 기록이 화면을 차지해도 되는지. 다른 서버를 이미 쓰고 있으면 지난 boat 기록은
+ * 그 서버의 설정을 가리지 않는다.
+ */
+export function boatSetupOwnsEntry(snapshot: CloudSnapshot): boolean {
+  return snapshot.profile.kind === 'unconfigured';
+}
+
+/** 실패한 설정. 계정이 끊겨 있으면 다시 시도해도 같은 실패라 계정 연결로 보낸다. */
+function boatFailureState(
+  snapshot: CloudSnapshot,
+  intent: CloudSetupIntent,
+  draft: CloudProfileDraft,
+  error: BoatSetupProgress['error'],
+): BoatSetupState {
+  if (snapshot.boat?.account.connected === false) {
+    return { kind: 'boat-connect', draft, intent, email: '', error: null, pending: false };
+  }
+  return { kind: 'boat-failed', draft, intent, issue: boatSetupIssue(error) };
+}
+
 /** 이 화면에 들어올 때 이미 진행 중이거나 끝난 boat 설정이 있으면 그 자리로 간다. */
 function boatEntryState(snapshot: CloudSnapshot, intent: CloudSetupIntent): BoatSetupState | null {
-  const setup = snapshot.boat?.setup;
+  const setup = boatSetupOwnsEntry(snapshot) ? snapshot.boat?.setup : null;
   const draft = defaultCloudProfileDraft();
-  if (setup?.error) return { kind: 'boat-failed', draft, intent, issue: boatSetupIssue(setup.error) };
+  if (setup?.error) return boatFailureState(snapshot, intent, draft, setup.error);
   if (setup && boatSetupRunning(setup)) {
     const startedAt = Date.parse(setup.startedAt);
     return { kind: 'boat-progress', draft, intent, startedAt: Number.isFinite(startedAt) ? startedAt : Date.now() };
   }
   if (snapshotBoatProfile(snapshot)) {
-    return { kind: 'boat-ready', intent, importedProviders: setup?.importedProviders ?? [] };
+    return { kind: 'boat-ready', intent, importedProviders: snapshot.boat?.setup?.importedProviders ?? [] };
   }
   return null;
 }
@@ -680,11 +725,8 @@ export function reconcileBoatState(state: BoatSetupState, snapshot: CloudSnapsho
       return account.canStart === true ? { kind: 'boat-confirm', draft: state.draft, intent: state.intent } : state;
     case 'boat-progress': {
       const setup = boat?.setup;
-      const setupAt = setup ? Date.parse(setup.startedAt) : Number.NaN;
-      const current = Boolean(setup) && (!Number.isFinite(setupAt) || setupAt >= state.startedAt - BOAT_SETUP_CLOCK_SLACK_MS);
-      if (setup?.error && current) {
-        return { kind: 'boat-failed', draft: state.draft, intent: state.intent, issue: boatSetupIssue(setup.error) };
-      }
+      const attempt = boatAttemptSetup(setup, state.startedAt);
+      if (attempt?.error) return boatFailureState(snapshot, state.intent, state.draft, attempt.error);
       if (snapshotBoatProfile(snapshot) && (!setup || setup.stage === 'done')) {
         return { kind: 'boat-ready', intent: state.intent, importedProviders: setup?.importedProviders ?? [] };
       }
@@ -716,7 +758,8 @@ export interface BoatCardStatus {
 export function boatCardStatus(snapshot: CloudSnapshot, platform: BoatHostPlatform = 'mac'): BoatCardStatus | null {
   const boat = snapshot.boat ?? null;
   const profile = snapshotBoatProfile(snapshot);
-  const setup = boat?.setup ?? null;
+  // 다른 서버를 쓰는 동안 남은 boat 설정 기록은 카드를 차지하지 않는다.
+  const setup = boatSetupOwnsEntry(snapshot) ? boat?.setup ?? null : null;
   if (setup && boatSetupRunning(setup)) {
     return {
       title: BOAT_CARD_TITLE,
@@ -726,7 +769,7 @@ export function boatCardStatus(snapshot: CloudSnapshot, platform: BoatHostPlatfo
       menu: false,
     };
   }
-  if (!profile && setup?.error) {
+  if (setup?.error) {
     return {
       title: BOAT_CARD_TITLE,
       detail: setup.error.title,

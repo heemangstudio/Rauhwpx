@@ -25,6 +25,11 @@ export interface CloudProfileDraft {
 
 export type BoatMachine = 'default' | 'small';
 export type BoatServerState = 'stopped' | 'waking' | 'running' | 'stopping' | 'missing' | 'error';
+/**
+ * idle: VM 이 `idleStopMinutes` 동안 쉬면 스스로 멈춘다.
+ * timer: 계정이 VM 의 자기 중지를 허용하지 않아, 시작할 때마다 `timerHours` 뒤에 작업 중이어도 멈춘다.
+ */
+export type BoatAutoStop = 'idle' | 'timer';
 export type BoatSetupStage =
   | 'creating' | 'starting' | 'installing' | 'pairing' | 'credentials' | 'done';
 
@@ -47,6 +52,10 @@ export interface BoatServerSnapshot {
   /** Billable hours since the first day of the current calendar month (usage API), 1 decimal. */
   monthHours: number | null;
   idleStopMinutes: number;
+  /** 필드가 없는 데스크톱은 idle 로 읽는다. */
+  autoStop: BoatAutoStop;
+  /** timer 일 때 시작 후 멈추기까지의 시간. idle 이면 null. */
+  timerHours: number | null;
   message: string | null;
 }
 

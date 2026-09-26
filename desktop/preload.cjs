@@ -93,7 +93,10 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
   cloudSandboxStatus: () => ipcRenderer.invoke('cloud:sandbox-status'),
   cloudTeardownSandbox: (payload) => ipcRenderer.invoke('cloud:teardown-sandbox', payload),
   cloudForceQuitAccount: () => ipcRenderer.invoke('cloud:force-quit-account'),
-  cloudReconnectLink: () => ipcRenderer.invoke('cloud:reconnect-link'),
+  // `{ explicit: true }` only from a pressed 다시 연결 button; it may start a stopped boat VM.
+  cloudReconnectLink: (payload) => ipcRenderer.invoke('cloud:reconnect-link', {
+    explicit: payload?.explicit === true,
+  }),
   cloudRecreateLink: () => ipcRenderer.invoke('cloud:recreate-link'),
   cloudTakeoverSandbox: () => ipcRenderer.invoke('cloud:takeover-sandbox'),
   cloudAccountLogout: () => ipcRenderer.invoke('cloud:account-logout'),
@@ -104,7 +107,8 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
   cloudDismissSession: (payload) => ipcRenderer.invoke('cloud:dismiss-session', payload),
   cloudCompleteTakeover: (payload) => ipcRenderer.invoke('cloud:complete-takeover', payload),
   cloudDownloadResult: (payload) => ipcRenderer.invoke('cloud:download-result', payload),
-  cloudDownloadCheckpoint: (payload) => ipcRenderer.invoke('cloud:download-checkpoint', payload),
+  // boat 오류는 code를 가진 오류 모양 객체로 거절한다. 다른 오류는 invoke 거절 그대로다.
+  cloudDownloadCheckpoint: (payload) => boatCall('cloud:download-checkpoint', payload),
   cloudPrepareRestartDocument: (payload) => ipcRenderer.invoke('cloud:prepare-restart-document', payload),
   cloudPublishCheckpoint: (payload) => ipcRenderer.invoke('cloud:publish-checkpoint', payload),
   cloudOpenDisplay: (payload) => ipcRenderer.invoke('cloud:display-open', payload),

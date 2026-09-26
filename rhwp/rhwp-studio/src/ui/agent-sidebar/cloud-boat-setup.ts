@@ -7,6 +7,8 @@ import {
   BOAT_MACHINE,
   BOAT_MACHINE_LABELS,
   BOAT_REGION_LABEL,
+  boatAttemptSetup,
+  boatAutoStopLabel,
   boatIdleLabel,
   boatProvidersLabel,
   boatSetupIssue,
@@ -167,14 +169,20 @@ export function createBoatSetupView(ctx: BoatSetupContext): BoatSetupView {
     const previous = ctx.state();
     if (previous?.kind === 'boat-signin') ctx.setState({ ...previous, pending: true });
     else ctx.setState({ kind: 'boat-connect', draft, intent, email: trimmed, error: null, pending: true });
+    // 요청 중에 화면을 떠났으면 늦게 온 응답으로 되돌아오지 않는다.
+    const stillWaiting = () => {
+      const live = ctx.state();
+      return ctx.operationIsCurrent(operation)
+        && (live?.kind === 'boat-connect' || live?.kind === 'boat-signin') && live.pending;
+    };
     try {
       const challenge = await ctx.controller.boatStartEmailSignIn(trimmed);
-      if (!ctx.operationIsCurrent(operation)) return;
+      if (!stillWaiting()) return;
       ctx.setState({
         kind: 'boat-signin', draft, intent, email: trimmed, challenge, beat: 'open', expired: false, pending: false,
       }, '브라우저에서 boat에 로그인합니다.');
     } catch (cause) {
-      if (!ctx.operationIsCurrent(operation)) return;
+      if (!stillWaiting()) return;
       const message = cause instanceof Error ? cause.message : String(cause);
       ctx.setState({ kind: 'boat-connect', draft, intent, email: trimmed, error: message, pending: false }, message);
     }
@@ -233,6 +241,7 @@ export function createBoatSetupView(ctx: BoatSetupContext): BoatSetupView {
     }));
     parts.body.append(ctx.description('boat 계정에 Cloud 서버를 만듭니다. 사용 요금은 boat에서 청구합니다.'), form, withKey);
     const back = ctx.button('뒤로');
+    back.disabled = state.pending;
     back.addEventListener('click', () => ctx.chooseAgain(intent, draft));
     const primary = ctx.button('계속', 'primary');
     primary.disabled = state.pending;
@@ -280,6 +289,7 @@ export function createBoatSetupView(ctx: BoatSetupContext): BoatSetupView {
     const { draft, intent, challenge } = state;
     parts.title.textContent = 'boat 로그인';
     const back = ctx.button('뒤로');
+    back.disabled = state.pending;
     back.addEventListener('click', () => ctx.setState({
       kind: 'boat-connect', draft, intent, email: state.email, error: null, pending: false,
     }));
@@ -473,15 +483,21 @@ export function createBoatSetupView(ctx: BoatSetupContext): BoatSetupView {
       // 완료 스냅샷이 명령 응답보다 늦게 와도 작성해 둔 요청은 한 번만 보낸다.
       if (current('boat-ready') && intent === 'transfer') ctx.continueTransfer(intent);
     } catch (cause) {
-      if (!ctx.operationIsCurrent(operation) || !current('boat-progress')) return;
+      if (!ctx.operationIsCurrent(operation)) return;
+      // 실패 기록이 거절보다 먼저 와서 이미 실패 화면이어도, 계정 문제는 계정 연결로 보낸다.
+      const progress = current('boat-progress');
+      if (!progress && !current('boat-failed')) return;
       const code = (cause as { code?: unknown } | null)?.code;
-      if (code === 'BOAT_BILLING_REQUIRED') {
-        ctx.setState({ kind: 'boat-billing', draft, intent, opened: false, pending: false }, 'boat 요금제가 필요합니다.');
+      const message = cause instanceof Error ? cause.message : String(cause);
+      if (code === 'BOAT_AUTH_INVALID' || code === 'BOAT_NOT_CONNECTED') {
+        // 거절된 키는 입력칸 아래에 남긴다. 연결이 없을 뿐이면 빈 칸으로 다시 시작한다.
+        const error = code === 'BOAT_AUTH_INVALID' ? message : null;
+        ctx.setState({ kind: 'boat-connect', draft, intent, email: '', error, pending: false }, message);
         return;
       }
-      if (code === 'BOAT_AUTH_INVALID') {
-        const message = cause instanceof Error ? cause.message : String(cause);
-        ctx.setState({ kind: 'boat-connect', draft, intent, email: '', error: message, pending: false }, message);
+      if (!progress) return;
+      if (code === 'BOAT_BILLING_REQUIRED') {
+        ctx.setState({ kind: 'boat-billing', draft, intent, opened: false, pending: false }, 'boat 요금제가 필요합니다.');
         return;
       }
       ctx.setState({ kind: 'boat-failed', draft, intent, issue: boatSetupIssue(cause) }, 'boat 서버를 준비하지 못했습니다.');
@@ -511,9 +527,8 @@ export function createBoatSetupView(ctx: BoatSetupContext): BoatSetupView {
   }
 
   function activeSetup(state: Extract<BoatSetupState, { kind: 'boat-progress' }>): BoatSetupProgress {
-    const setup = ctx.snapshot().boat?.setup ?? null;
-    const setupAt = setup ? Date.parse(setup.startedAt) : Number.NaN;
-    if (setup && !setup.error && (!Number.isFinite(setupAt) || setupAt >= state.startedAt - 2_000)) return setup;
+    const setup = boatAttemptSetup(ctx.snapshot().boat?.setup, state.startedAt);
+    if (setup && !setup.error) return setup;
     return {
       stage: 'creating', startedAt: new Date(state.startedAt).toISOString(), detail: null, error: null, importedProviders: [],
     };
@@ -599,6 +614,9 @@ export function createBoatSetupView(ctx: BoatSetupContext): BoatSetupView {
     if (issue.detail.trim()) parts.body.append(ctx.issueDetails(issue, '자세히'));
     const context = ctx.transferContext(intent);
     if (context) parts.body.append(context);
+    const choose = linkButton('서버 다시 선택');
+    choose.addEventListener('click', () => ctx.chooseAgain(intent, draft));
+    parts.body.append(choose);
     const dismiss = ctx.button('닫기');
     dismiss.addEventListener('click', () => ctx.close());
     const retry = ctx.button('다시 시도', 'primary');
@@ -618,6 +636,7 @@ export function createBoatSetupView(ctx: BoatSetupContext): BoatSetupView {
     const rows: Array<[string, string]> = [
       ['사양', server?.machineLabel || BOAT_MACHINE_LABELS[machine]],
       ['지역', BOAT_REGION_LABEL],
+      ['자동 중지', boatAutoStopLabel(server)],
     ];
     if (state.importedProviders.length) rows.push(['로그인 정보', boatProvidersLabel(state.importedProviders)]);
     parts.body.append(facts(rows));

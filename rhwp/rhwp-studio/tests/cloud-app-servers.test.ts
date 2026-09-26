@@ -424,7 +424,7 @@ test('the dialog offers both servers and only restorable sandbox actions', () =>
   assert.match(preload, /cloudTeardownSandbox: \(payload\) => ipcRenderer\.invoke\('cloud:teardown-sandbox', payload\)/);
   assert.match(preload, /cloudTakeoverSandbox: \(\) => ipcRenderer\.invoke\('cloud:takeover-sandbox'\)/);
   assert.match(preload, /cloudForceQuitAccount: \(\) => ipcRenderer\.invoke\('cloud:force-quit-account'\)/);
-  assert.match(preload, /cloudReconnectLink: \(\) => ipcRenderer\.invoke\('cloud:reconnect-link'\)/);
+  assert.match(preload, /cloudReconnectLink: \([^)]*\) => ipcRenderer\.invoke\('cloud:reconnect-link'/);
   assert.match(preload, /cloudRecreateLink: \(\) => ipcRenderer\.invoke\('cloud:recreate-link'\)/);
   for (const channel of ['cloud:select-server-mode', 'cloud:spawn-sandbox', 'cloud:sandbox-status', 'cloud:teardown-sandbox', 'cloud:takeover-sandbox', 'cloud:force-quit-account', 'cloud:reconnect-link', 'cloud:recreate-link']) {
     assert.match(desktopMain, new RegExp(`ipcMain\\.handle\\('${channel}'`));

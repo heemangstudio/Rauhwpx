@@ -2,6 +2,7 @@ import './cloud-onboarding.css';
 
 import type { CloudController } from '../../cloud/desktop-cloud.ts';
 import type {
+  BoatServerState,
   CloudProfileDraft,
   CloudProviderSelection,
   CloudSnapshot,
@@ -142,7 +143,8 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
   let transferContinuationRequested = false;
   let transferIntent: CloudTransferIntent | null = null;
   let boatCardBusy = false;
-  let boatCardError: string | null = null;
+  /** 카드 동작이 실패한 한 줄. 그 뒤 boat 서버 상태가 새로 바뀌거나 카드가 boat 를 떠나면 지운다. */
+  let boatCardError: { text: string; server: string; state: BoatServerState | null } | null = null;
   let boatRenderKey = '';
 
   const overlay = el('div', 'ag-cloud-setup-overlay');
@@ -241,7 +243,7 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
     if (state?.kind !== 'boat-confirm' && state?.kind !== 'boat-ready') return '';
     const server = snapshot.boat?.server;
     return JSON.stringify([state.kind, server?.sandboxId, server?.machineLabel, server?.idleStopMinutes,
-      snapshotBoatProfile(snapshot)?.machine]);
+      server?.autoStop, server?.timerHours, snapshotBoatProfile(snapshot)?.machine]);
   }
 
   function setState(next: CloudSetupState, announcement = ''): void {
@@ -1204,6 +1206,49 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
     });
   }
 
+  function boatCardServer(): string {
+    return JSON.stringify([snapshot.profileEpoch, snapshotBoatProfile(snapshot)?.sandboxId ?? null]);
+  }
+
+  function failBoatCard(error: unknown): void {
+    boatCardError = {
+      text: error instanceof Error ? error.message : String(error),
+      server: boatCardServer(),
+      state: snapshot.boat?.server?.state ?? null,
+    };
+  }
+
+  /** 실패 직후 시작·중지 중이던 상태가 가라앉는 것은 같은 실패다. 그 뒤의 변화만 오류를 지운다. */
+  function boatCardErrorCurrent(onBoatCard: boolean): boolean {
+    if (!boatCardError || !onBoatCard || boatCardError.server !== boatCardServer()) return false;
+    const now = snapshot.boat?.server?.state ?? null;
+    if (now === boatCardError.state) return true;
+    const settling = (state: BoatServerState | null) => state === 'waking' || state === 'stopping';
+    if (settling(boatCardError.state) && !settling(now)) {
+      boatCardError.state = now;
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * 카드 버튼은 동작 중에 비활성화되어 포커스를 잃는다. 사용자가 다른 곳으로 옮기지 않았다면
+   * 끝난 뒤의 카드에서 가장 알맞은 버튼으로 돌려놓는다.
+   */
+  function restoreCardFocus(prefer: 'action' | 'more'): void {
+    if (disposed || !settingsElement.isConnected) return;
+    const focused = document.activeElement;
+    if (focused && focused !== document.body && !settingsElement.contains(focused)) return;
+    const usable = (node: HTMLButtonElement) => !node.hidden && !node.disabled && node.checkVisibility();
+    const order = prefer === 'more' ? [settingsMore, settingsAction] : [settingsAction, settingsMore];
+    const target = order.find(usable);
+    if (target) target.focus();
+    else {
+      settingsCard.tabIndex = -1;
+      settingsCard.focus();
+    }
+  }
+
   /** 시작·중지는 설정 창 없이 카드에서 끝난다. 실패는 카드 안의 한 줄로 남는다. */
   async function runBoatCardAction(kind: 'wake' | 'stop'): Promise<void> {
     if (boatCardBusy || mutationLocked) return;
@@ -1213,10 +1258,13 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
     try {
       snapshot = kind === 'wake' ? await deps.controller.boatWake() : await deps.controller.boatStop();
     } catch (error) {
-      boatCardError = error instanceof Error ? error.message : String(error);
+      failBoatCard(error);
     } finally {
       boatCardBusy = false;
-      if (!disposed) renderSettings();
+      if (!disposed) {
+        renderSettings();
+        restoreCardFocus('action');
+      }
     }
   }
 
@@ -1244,14 +1292,20 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
     boatCardBusy = true;
     boatCardError = null;
     renderSettings();
+    let removed = false;
     try {
       snapshot = await deps.controller.boatDisconnect(choice === 'delete');
+      removed = true;
       liveStatus.textContent = choice === 'delete' ? 'boat 서버를 삭제했습니다.' : 'boat 서버 연결을 해제했습니다.';
     } catch (error) {
-      boatCardError = error instanceof Error ? error.message : String(error);
+      failBoatCard(error);
     } finally {
       boatCardBusy = false;
-      if (!disposed) renderSettings();
+      if (!disposed) {
+        renderSettings();
+        // 해제·삭제 뒤에는 관리 버튼이 사라지므로 카드의 주 동작으로 옮긴다.
+        restoreCardFocus(removed ? 'action' : 'more');
+      }
     }
   }
 
@@ -1263,8 +1317,8 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
     settingsDot.dataset.state = 'unknown';
     delete settingsDot.dataset.pulse;
     settingsMore.hidden = true;
-    settingsError.hidden = !boatCardError;
-    settingsError.textContent = boatCardError ?? '';
+    settingsError.hidden = true;
+    settingsError.textContent = '';
     if (!snapshot.available) {
       settingsStatus.textContent = '이 빌드에서는 사용할 수 없습니다';
       settingsDetail.textContent = 'Cloud 지원 데스크톱 앱이 필요합니다.';
@@ -1272,7 +1326,12 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
       return;
     }
     const boat = boatCardStatus(snapshot, boatHostPlatform());
+    if (!boatCardErrorCurrent(Boolean(boat))) boatCardError = null;
     if (boat) {
+      if (boatCardError) {
+        settingsError.hidden = false;
+        settingsError.textContent = boatCardError.text;
+      }
       settingsStatus.textContent = boat.title;
       settingsDetail.textContent = boat.detail;
       settingsDetail.title = boat.detail;

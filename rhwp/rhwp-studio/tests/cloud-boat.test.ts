@@ -3,12 +3,15 @@ import test from 'node:test';
 
 import {
   createCloudController,
+  isBoatServerStopped,
   normalizeBoatError,
   parseBoatChallenge,
   parseCloudSnapshot,
 } from '../src/cloud/desktop-cloud.ts';
 import type { BoatSnapshot, CloudSnapshot } from '../src/cloud/types.ts';
 import {
+  boatAttemptSetup,
+  boatAutoStopLabel,
   boatCardStatus,
   boatStageRows,
   boatStateAfterAccount,
@@ -29,8 +32,13 @@ const account = (patch: Partial<BoatSnapshot['account']> = {}): BoatSnapshot['ac
 });
 const server = (state: NonNullable<BoatSnapshot['server']>['state'], monthHours: number | null = 12.5) => ({
   sandboxId: 'bx_7k2m9q4d', state, machine: 'default' as const, machineLabel: '4 vCPU · 8 GB', region: 'EU' as const,
-  monthHours, idleStopMinutes: 30, message: state === 'error' ? 'boat가 VM을 다시 시작하지 못했습니다.' : null,
+  monthHours, idleStopMinutes: 30, autoStop: 'idle' as const, timerHours: null,
+  message: state === 'error' ? 'boat가 VM을 다시 시작하지 못했습니다.' : null,
 });
+const vps = {
+  kind: 'configured', mode: 'self-hosted', connection: 'ready', serviceVersion: '1.2.0', message: null,
+  profile: { ...draft, name: 'My VPS', host: 'studio.example', transport: { kind: 'ssh-tunnel' } },
+} as const satisfies CloudSnapshot['profile'];
 
 function snapshot(boat: BoatSnapshot | null, boatProfile = false, link: CloudSnapshot['link'] = undefined): CloudSnapshot {
   return {
@@ -110,6 +118,54 @@ test('opening setup resumes the boat flow from the snapshot', () => {
   assert.equal(forgotten.kind, 'choose');
 });
 
+test('a failed or running boat setup never takes over while another server is configured', () => {
+  const error = { title: 'boat 서버를 준비하지 못했습니다', guidance: '다시 시도합니다.', detail: 'exit 100' };
+  const failed = { ...snapshot({ account: account(), server: null, setup: {
+    stage: 'installing', startedAt: '2026-09-27T10:00:00.000Z', detail: null, error, importedProviders: [] } }), profile: vps };
+  assert.equal(createCloudSetupState(failed, 'manage', { boat: true }).kind, 'connected');
+  assert.equal(boatCardStatus(failed), null);
+  const running = { ...failed, boat: { ...failed.boat!, setup: { ...failed.boat!.setup!, error: null } } };
+  assert.equal(createCloudSetupState(running, 'manage', { boat: true }).kind, 'connected');
+  assert.equal(boatCardStatus(running), null);
+  // 아무것도 설정하지 않았을 때는 그대로 실패 화면과 카드 줄을 보여 준다.
+  const unconfigured = { ...failed, profile: { kind: 'unconfigured' } } as CloudSnapshot;
+  assert.equal(createCloudSetupState(unconfigured, 'manage', { boat: true }).kind, 'boat-failed');
+  assert.equal(boatCardStatus(unconfigured)?.detail, error.title);
+});
+
+test('a setup failure without a boat account goes to the account screen instead of retrying', () => {
+  const error = { title: 'boat 서버를 준비하지 못했습니다', guidance: 'boat 계정을 다시 연결해야 합니다.', detail: 'BOAT_NOT_CONNECTED' };
+  const setup = { stage: 'creating' as const, startedAt: '2026-09-27T10:00:01.000Z', detail: null, error, importedProviders: [] };
+  const disconnected = snapshot({ account: account({ connected: false }), server: null, setup });
+  assert.equal(createCloudSetupState(disconnected, 'manage', { boat: true }).kind, 'boat-connect');
+  const progress: CloudSetupState = { kind: 'boat-progress', draft, intent: 'transfer',
+    startedAt: Date.parse('2026-09-27T10:00:00.000Z') };
+  const next = reconcileCloudSetupState(progress, disconnected);
+  assert.equal(next.kind, 'boat-connect');
+  assert.equal(next.kind === 'boat-connect' && next.intent, 'transfer');
+});
+
+test('a retry follows any progress without an error and drops only failures from earlier attempts', () => {
+  const attempt = Date.parse('2026-09-27T10:00:00.000Z');
+  const earlier = '2026-09-27T09:50:00.000Z';
+  const error = { title: 'Cloud 설치를 마치지 못했습니다', guidance: '', detail: '' };
+  const moving = { stage: 'installing' as const, startedAt: earlier, detail: 'podman', error: null, importedProviders: [] };
+  // 예전 데스크톱은 다시 시도에도 첫 시도의 시각을 보낸다. 실패가 없으면 이번 시도의 진행이다.
+  assert.equal(boatAttemptSetup(moving, attempt), moving);
+  assert.equal(boatAttemptSetup({ ...moving, error }, attempt), null);
+  const fresh = { ...moving, startedAt: '2026-09-27T10:00:01.000Z', error };
+  assert.equal(boatAttemptSetup(fresh, attempt), fresh);
+  assert.equal(boatAttemptSetup(null, attempt), null);
+});
+
+test('the auto-stop row reads idle or a timer, and older desktops read as idle', () => {
+  assert.equal(boatAutoStopLabel(server('running')), '30분 동안 쉬면');
+  assert.equal(boatAutoStopLabel({ ...server('running'), autoStop: 'timer', timerHours: 4 }), '시작 후 4시간');
+  assert.equal(boatAutoStopLabel({ ...server('running'), autoStop: 'timer', timerHours: 1.5 }), '시작 후 1.5시간');
+  assert.equal(boatAutoStopLabel({ idleStopMinutes: 60 }), '1시간 동안 쉬면');
+  assert.equal(boatAutoStopLabel(null), '30분 동안 쉬면');
+});
+
 test('setup stages mark done, active and pending in order', () => {
   assert.deepEqual(boatStageRows('installing').map((row) => row.status), ['done', 'done', 'active', 'pending', 'pending']);
   assert.deepEqual(boatStageRows('done').map((row) => row.status), ['done', 'done', 'done', 'done', 'done']);
@@ -162,6 +218,13 @@ test('boat snapshot parsing is tolerant and never drops the whole Cloud snapshot
       importedProviders: ['codex', 'grok', 'claude'] },
   } });
   assert.equal(parsed?.boat?.server?.monthHours, 12.5);
+  assert.deepEqual([parsed?.boat?.server?.autoStop, parsed?.boat?.server?.timerHours], ['idle', null]);
+  const timer = parseCloudSnapshot({ ...base, boat: { account: account(),
+    server: { ...server('running'), autoStop: 'timer', timerHours: 4 }, setup: null } });
+  assert.deepEqual([timer?.boat?.server?.autoStop, timer?.boat?.server?.timerHours], ['timer', 4]);
+  const idleWithHours = parseCloudSnapshot({ ...base, boat: { account: account(),
+    server: { ...server('running'), autoStop: 'idle', timerHours: 4 }, setup: null } });
+  assert.equal(idleWithHours?.boat?.server?.timerHours, null);
   assert.deepEqual(parsed?.boat?.setup?.importedProviders, ['claude', 'codex']);
   const malformed = parseCloudSnapshot({ ...base, boat: { account: { connected: 'yes' } } });
   assert.ok(malformed);
@@ -203,4 +266,46 @@ test('an older desktop without boat methods hides boat and rejects calls plainly
   assert.equal(current.boatSupported(), true);
   await assert.rejects(current.boatRefresh(), (error: Error & { code?: string }) =>
     error.message === 'boat에 연결할 수 없습니다.' && error.code === 'BOAT_UNAVAILABLE');
+});
+
+test('only a pressed reconnect asks the desktop to wake a resting boat server', async () => {
+  const payloads: unknown[] = [];
+  let release: (() => void) | null = null;
+  const controller = createCloudController({
+    cloudGetState: async () => snapshot(null),
+    cloudReconnectLink: async (payload?: unknown) => {
+      payloads.push(payload);
+      if (!release) await new Promise<void>((resolve) => { release = resolve; });
+      return snapshot(null);
+    },
+  } as never);
+  const automatic = controller.reconnectLink();
+  // 자동 재연결이 도는 중에도 사용자가 누른 다시 연결은 따로 간다.
+  const pressed = controller.reconnectLink({ explicit: true });
+  release!();
+  await Promise.all([automatic, pressed]);
+  assert.deepEqual(payloads, [undefined, { explicit: true }]);
+});
+
+test('a checkpoint fetch from a stopped boat server keeps its quiet code, and only a pressed fetch says explicit', async () => {
+  const payloads: unknown[] = [];
+  const controller = createCloudController({
+    cloudGetState: async () => snapshot(null),
+    cloudDownloadCheckpoint: async (payload: unknown) => {
+      payloads.push(payload);
+      throw new Error("Error invoking remote method 'cloud:download-checkpoint': Error: BOAT_SERVER_STOPPED: boat 서버가 정지되어 있습니다.");
+    },
+  } as never);
+  await assert.rejects(controller.downloadCheckpoint('session-a'), (error: unknown) => isBoatServerStopped(error));
+  await assert.rejects(controller.downloadCheckpoint('session-a', 'operation-a', 'turn', { explicit: true }));
+  assert.deepEqual(payloads, [
+    { sessionId: 'session-a' },
+    { sessionId: 'session-a', operationId: 'operation-a', kind: 'turn', explicit: true },
+  ]);
+  const other = createCloudController({
+    cloudGetState: async () => snapshot(null),
+    cloudDownloadCheckpoint: async () => { throw new Error('완료된 턴이 없습니다.'); },
+  } as never);
+  await assert.rejects(other.downloadCheckpoint('session-a'), (error: unknown) =>
+    !isBoatServerStopped(error) && (error as Error).message === '완료된 턴이 없습니다.');
 });

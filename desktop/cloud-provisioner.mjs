@@ -532,7 +532,11 @@ export class CloudProvisioner {
     return { ...recovered, preflight, recovered: true };
   }
 
-  async preflight(sshConfig, { onLine = () => {} } = {}) {
+  /**
+   * 처음 접속하는 VPS는 호스트 키를 처음 본 대로 받는다. boat VM은 호스트 키를 미리 핀하므로
+   * `strictHostKey`로 핀된 키만 받는다.
+   */
+  async preflight(sshConfig, { onLine = () => {}, strictHostKey = false } = {}) {
     const ssh = normalizeSshConfig(sshConfig);
     await fs.mkdir(path.dirname(this.knownHostsPath), { recursive: true, mode: 0o700 });
     const remote = [
@@ -547,7 +551,7 @@ export class CloudProvisioner {
     const result = await retryTransientSsh(() => runProcess(
       this.spawn,
       'ssh',
-      sshArguments(ssh, this.knownHostsPath, remote, { acceptNew: true }),
+      sshArguments(ssh, this.knownHostsPath, remote, { acceptNew: !strictHostKey }),
       { timeoutMs: 25_000, onLine },
     ), { onLine, sleep: this.retrySleep });
     const output = `${result.stdout}\n${result.stderr}`;
@@ -581,7 +585,7 @@ export class CloudProvisioner {
       throw new Error('Public HTTPS provisioning requires a valid DNS hostname');
     }
     const ssh = normalizeSshConfig(sshConfig);
-    const preflight = await this.preflight(ssh, { onLine });
+    const preflight = await this.preflight(ssh, { onLine, strictHostKey: hostEnv.kind === 'boat' });
     const bootstrap = preflight.platform === 'linux' ? await this.#bootstrap(preflight.arch) : null;
     if (preflight.platform === 'darwin' && transport !== 'ssh-tunnel') {
       throw new Error('Mac Cloud hosts require the SSH tunnel transport');

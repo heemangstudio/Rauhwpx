@@ -67,7 +67,8 @@ export interface CloudDesktopApi {
   cloudSandboxStatus?: () => Promise<unknown>;
   cloudTeardownSandbox?: (payload: { force?: boolean }) => Promise<unknown>;
   cloudForceQuitAccount?: () => Promise<unknown>;
-  cloudReconnectLink?: () => Promise<unknown>;
+  /** explicit 은 사용자가 누른 다시 연결이다. 데스크톱은 이때만 쉬던 boat VM 을 깨운다. 예전 데스크톱은 인자를 무시한다. */
+  cloudReconnectLink?: (payload?: { explicit?: boolean }) => Promise<unknown>;
   cloudRecreateLink?: () => Promise<unknown>;
   cloudTakeoverSandbox?: () => Promise<unknown>;
   cloudTransfer?: (payload: CloudTransferRequest) => Promise<unknown>;
@@ -77,7 +78,10 @@ export interface CloudDesktopApi {
   cloudDismissSession?: (payload: { sessionId: string }) => Promise<unknown>;
   cloudCompleteTakeover?: (payload: { sessionId: string; operationId: string }) => Promise<unknown>;
   cloudDownloadResult?: (payload: { sessionId: string }) => Promise<unknown>;
-  cloudDownloadCheckpoint?: (payload: { sessionId: string; operationId?: string; kind?: 'turn' }) => Promise<unknown>;
+  /** explicit 은 사용자가 누른 동작이다. 데스크톱은 이때만 쉬던 boat VM 을 깨운다. 예전 데스크톱은 무시한다. */
+  cloudDownloadCheckpoint?: (payload: {
+    sessionId: string; operationId?: string; kind?: 'turn'; explicit?: boolean;
+  }) => Promise<unknown>;
   cloudPrepareRestartDocument?: (payload: { sessionId: string }) => Promise<unknown>;
   cloudPublishCheckpoint?: (payload: { sessionId: string; operationId?: string }) => Promise<unknown>;
   cloudOpenDisplay?: (payload: { sessionId: string }) => Promise<unknown>;
@@ -117,7 +121,8 @@ export interface CloudController {
   sandboxStatus(): Promise<CloudSnapshot>;
   teardownSandbox(options?: { force?: boolean }): Promise<CloudSnapshot>;
   forceQuitAccount(): Promise<CloudSnapshot>;
-  reconnectLink(): Promise<CloudSnapshot>;
+  /** 사용자가 누른 다시 연결만 explicit 을 넘긴다. 자동 재연결은 쉬던 boat VM 을 깨우지 않는다. */
+  reconnectLink(options?: { explicit?: boolean }): Promise<CloudSnapshot>;
   recreateLink(): Promise<CloudSnapshot>;
   takeoverSandbox(): Promise<CloudSnapshot>;
   transfer(request: CloudTransferRequest): Promise<CloudSnapshot>;
@@ -127,7 +132,16 @@ export interface CloudController {
   dismissSession(sessionId: string): Promise<CloudSnapshot>;
   completeTakeover(sessionId: string, operationId: string): Promise<CloudSnapshot>;
   downloadResult(sessionId: string): Promise<CloudDownloadResult>;
-  downloadCheckpoint(sessionId: string, operationId?: string, kind?: 'turn'): Promise<CloudCheckpointPayload>;
+  /**
+   * 사용자가 누른 병합·사본 저장·알림 열기만 explicit 을 넘긴다. 미러의 자동 조회는 넘기지 않고,
+   * 쉬는 boat VM 은 `BOAT_SERVER_STOPPED` 로 조용히 거절된다.
+   */
+  downloadCheckpoint(
+    sessionId: string,
+    operationId?: string,
+    kind?: 'turn',
+    options?: { explicit?: boolean },
+  ): Promise<CloudCheckpointPayload>;
   prepareRestartDocument(sessionId: string): Promise<CloudDocumentPayload>;
   publishCheckpoint(sessionId: string, operationId?: string): Promise<CloudCheckpointPayload>;
   openDisplay(sessionId: string, listener: (event: CloudDisplayEvent) => void): Promise<CloudDisplayConnection>;
@@ -575,6 +589,8 @@ function parseTakeover(value: unknown): CloudTakeoverPayload | null {
 }
 
 const BOAT_SERVER_STATES = ['stopped', 'waking', 'running', 'stopping', 'missing', 'error'] as const;
+/** 정지된 boat VM 에 explicit 없이 체크포인트를 물으면 데스크톱이 이 code 로 조용히 거절한다. */
+export const BOAT_SERVER_STOPPED = 'BOAT_SERVER_STOPPED';
 const BOAT_SETUP_STAGES = ['creating', 'starting', 'installing', 'pairing', 'credentials', 'done'] as const;
 const BOAT_PROVIDERS = ['claude', 'codex', 'pi'] as const;
 
@@ -591,6 +607,11 @@ function parseBoatServer(value: unknown): BoatServerSnapshot | null {
     ? Math.round(server.monthHours * 10) / 10
     : null;
   const idle = strictInteger(server.idleStopMinutes);
+  const timerHours = typeof server.timerHours === 'number' && Number.isFinite(server.timerHours)
+    && server.timerHours > 0 && server.timerHours <= 720
+    ? Math.round(server.timerHours * 10) / 10
+    : null;
+  const autoStop = server.autoStop === 'timer' ? 'timer' : 'idle';
   return {
     sandboxId,
     state,
@@ -599,6 +620,8 @@ function parseBoatServer(value: unknown): BoatServerSnapshot | null {
     region: 'EU',
     monthHours: hours,
     idleStopMinutes: idle !== null && idle >= 5 && idle <= 240 ? idle : 30,
+    autoStop,
+    timerHours: autoStop === 'timer' ? timerHours : null,
     message: optionalText(server.message),
   };
 }
@@ -684,6 +707,18 @@ export function normalizeBoatError(error: unknown): Error & { code?: string } {
   const normalized = new Error(text || 'boat에 연결하지 못했습니다.') as Error & { code?: string };
   if (code) normalized.code = code;
   return normalized;
+}
+
+export function isBoatServerStopped(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && (error as { code?: unknown }).code === BOAT_SERVER_STOPPED);
+}
+
+/** 체크포인트 거절 중 쉬는 boat VM 만 code 를 되살린다. 나머지 오류는 그대로 둔다. */
+function checkpointError(error: unknown): unknown {
+  const shaped = error && typeof error === 'object' ? error as { message?: unknown; code?: unknown } : null;
+  if (shaped?.code === BOAT_SERVER_STOPPED) return error;
+  const message = typeof shaped?.message === 'string' ? shaped.message : '';
+  return message.includes(BOAT_SERVER_STOPPED) ? normalizeBoatError(error) : error;
 }
 
 export function parseCloudSnapshot(value: unknown): CloudSnapshot | null {
@@ -981,8 +1016,13 @@ export function createCloudController(
     }
   };
 
-  const recover = (kind: 'reconnecting' | 'recreating', run: () => Promise<CloudSnapshot>): Promise<CloudSnapshot> => {
-    const pending = recoveryCalls.get(kind);
+  const recover = (
+    kind: 'reconnecting' | 'recreating',
+    run: () => Promise<CloudSnapshot>,
+    key: string = kind,
+  ): Promise<CloudSnapshot> => {
+    // 자동 재연결이 도는 중에 사용자가 누른 다시 연결은 따로 보낸다. 그래야 쉬던 VM 을 깨운다.
+    const pending = recoveryCalls.get(key);
     if (pending) return pending;
     const epoch = snapshot.profileEpoch;
     publish({ ...snapshot, link: {
@@ -995,8 +1035,8 @@ export function createCloudController(
           error: error instanceof Error ? error.message : String(error) } });
       }
       throw error;
-    }).finally(() => { recoveryCalls.delete(kind); });
-    recoveryCalls.set(kind, operation);
+    }).finally(() => { recoveryCalls.delete(key); });
+    recoveryCalls.set(key, operation);
     return operation;
   };
 
@@ -1083,10 +1123,15 @@ export function createCloudController(
     sandboxStatus: () => call('cloudSandboxStatus'),
     teardownSandbox: (options = {}) => call('cloudTeardownSandbox', { force: options.force === true }),
     forceQuitAccount: () => call('cloudForceQuitAccount'),
-    reconnectLink: () => recover('reconnecting', async () => {
-      if (typeof resolvedApi?.cloudReconnectLink === 'function') return call('cloudReconnectLink');
-      return call('cloudGetState', activeScope);
-    }),
+    reconnectLink: (options = {}) => {
+      const explicit = options.explicit === true;
+      return recover('reconnecting', async () => {
+        if (typeof resolvedApi?.cloudReconnectLink === 'function') {
+          return call('cloudReconnectLink', explicit ? { explicit: true } : undefined);
+        }
+        return call('cloudGetState', activeScope);
+      }, explicit ? 'reconnecting:explicit' : 'reconnecting');
+    },
     recreateLink: () => recover('recreating', async () => {
       if (typeof resolvedApi?.cloudRecreateLink === 'function') return call('cloudRecreateLink');
       if (snapshot.profile.kind === 'configured' && snapshot.profile.mode === 'app-hosted') {
@@ -1140,11 +1185,14 @@ export function createCloudController(
       return { bytes: result.bytes, fileName: string(result.fileName), sha256: string(result.sha256),
         originSha256: result.originSha256 as string | null, restartToken: string(result.restartToken) };
     },
-    async downloadCheckpoint(sessionId, operationId, kind) {
+    async downloadCheckpoint(sessionId, operationId, kind, options = {}) {
       const profileEpoch = snapshot.profileEpoch;
       const fn = resolvedApi?.cloudDownloadCheckpoint;
       if (typeof fn !== 'function') throw new Error('이 앱 빌드는 클라우드 문서 미러를 지원하지 않습니다.');
-      const result = parseCloudCheckpoint(await fn({ sessionId, ...(operationId ? { operationId } : {}), ...(kind ? { kind } : {}) }));
+      const raw = await fn({ sessionId, ...(operationId ? { operationId } : {}), ...(kind ? { kind } : {}),
+        ...(options.explicit === true ? { explicit: true } : {}) })
+        .catch((error: unknown) => { throw checkpointError(error); });
+      const result = parseCloudCheckpoint(raw);
       if (profileEpoch !== snapshot.profileEpoch) {
         throw Object.assign(new Error('Cloud 프로필이 작업 중 변경됐습니다.'), { code: 'PROFILE_CHANGED' });
       }

@@ -28,7 +28,8 @@ function sshTunnelArguments(profile, knownHostsPath, localPort) {
     '-o', 'ExitOnForwardFailure=yes',
     '-o', 'ClearAllForwardings=yes',
     '-o', sshOptionFilePath('UserKnownHostsFile', knownHostsPath),
-    '-o', 'StrictHostKeyChecking=accept-new',
+    // boat VM은 접속 전에 boat API로 호스트 키를 핀한다. 핀이 없으면 처음 보는 키를 믿지 않는다.
+    '-o', `StrictHostKeyChecking=${profile.boat ? 'yes' : 'accept-new'}`,
     '-p', String(ssh.port),
     ...(ssh.keyPath ? ['-i', ssh.keyPath, '-o', 'IdentitiesOnly=yes'] : []),
     '-L', `127.0.0.1:${localPort}:${api.remoteHost}:${api.remotePort}`,

@@ -23,6 +23,11 @@ export const BOAT_TRIAL_TTL_SECONDS = 7200;
  * timer is installed, so an abandoned setup cannot bill forever.
  */
 export const BOAT_SETUP_TTL_SECONDS = 7200;
+/**
+ * VM이 스스로 멈출 수단(boat CLI나 ASCII_TOKEN)을 확인하지 못했을 때 켤 때마다 거는
+ * boat 자동 중지. 유휴 타이머가 멈추지 못해도 요금이 끝없이 쌓이지 않는다.
+ */
+export const BOAT_TIMER_TTL_SECONDS = 4 * 60 * 60;
 export const BOAT_MACHINES = Object.freeze({
   default: Object.freeze({ vcpu: 4, memoryGB: 8, label: '4 vCPU · 8 GB' }),
   small: Object.freeze({ vcpu: 2, memoryGB: 4, label: '2 vCPU · 4 GB' }),
@@ -50,6 +55,18 @@ const HOST_KEY_TYPES = new Set([
   'ecdsa-sha2-nistp521',
   'ssh-rsa',
 ]);
+const SELF_STOP_SCRIPT = '/opt/rauhwpx-cloud/current/install/boat-idle.sh';
+/**
+ * 설치된 유휴 스크립트의 확인 모드를 root로 부른다. 스크립트가 타이머와 같은 설정·탐색으로
+ * 샌드박스 사용자의 로그인 셸을 살핀다. 확인 모드가 없는 스크립트는 실제로 멈출 수 있어 부르지 않는다.
+ */
+const SELF_STOP_COMMAND = [
+  `f=${SELF_STOP_SCRIPT}`,
+  'grep -q rauhwpx-boat-self-stop "$f" 2>/dev/null || exit 0',
+  'sudo -n /bin/bash "$f" --probe 2>/dev/null',
+  'exit 0',
+].join('; ');
+const SELF_STOP_RE = /^rauhwpx-boat-self-stop (cli|api|none)$/m;
 const HOST_KEY_COMMAND = [
   'for f in /etc/ssh/ssh_host_ed25519_key.pub /etc/ssh/ssh_host_ecdsa_key.pub /etc/ssh/ssh_host_rsa_key.pub',
   'do [ -r "$f" ] && cat "$f"',
@@ -420,10 +437,11 @@ function hostEntryMatches(entry, pattern) {
 }
 
 /**
- * 이 샌드박스에 대해 예전에 핀한 줄(옛 IP 포함)과, 새 주소에 남은 다른 키를 모두 지우고
- * 새 키를 표식과 함께 붙인다. `@` 표식 줄과 다른 호스트 줄은 건드리지 않는다.
+ * 새 주소에 남은 다른 키를 지우고 새 키를 표식과 함께 붙인다. 이 샌드박스의 옛 주소 핀은
+ * `keepOtherPins`면 남기고(새 주소가 프로필에 저장되기 전), 아니면 모두 지운다.
+ * `@` 표식 줄과 다른 호스트 줄은 건드리지 않는다.
  */
-export function rewriteKnownHosts(text, { sandboxId, pattern = null, keys = [] }) {
+export function rewriteKnownHosts(text, { sandboxId, pattern = null, keys = [], keepOtherPins = false }) {
   const marker = `${PIN_MARKER_PREFIX}${sandboxId}`;
   const kept = [];
   for (const line of String(text ?? '').split(/\r?\n/)) {
@@ -434,8 +452,9 @@ export function rewriteKnownHosts(text, { sandboxId, pattern = null, keys = [] }
       continue;
     }
     const fields = trimmed.split(/\s+/);
-    if (fields.slice(3).includes(marker)) continue;
-    if (pattern && fields[0].split(',').some((entry) => hostEntryMatches(entry, pattern))) continue;
+    const atPattern = Boolean(pattern) && fields[0].split(',').some((entry) => hostEntryMatches(entry, pattern));
+    if (atPattern) continue;
+    if (fields.slice(3).includes(marker) && !keepOtherPins) continue;
     kept.push(trimmed);
   }
   if (pattern) {
@@ -1198,10 +1217,10 @@ export class BoatCloud {
     }));
   }
 
-  /** 유휴 중지가 설치된 뒤에는 boat 자동 중지를 끈다(체험 계정은 2시간). */
-  async relaxAutoStop(sandboxId) {
+  /** boat 자동 중지를 바꾼다. null은 끄기다(체험 계정은 2시간으로 낮춘다). */
+  async setAutoStop(sandboxId, ttlSeconds = null) {
     const id = assertSandboxId(sandboxId);
-    const result = await this.#withTrialTtl(null, (ttl) => this.#api('PATCH', `/sandboxes/${id}`, {
+    const result = await this.#withTrialTtl(ttlSeconds, (ttl) => this.#api('PATCH', `/sandboxes/${id}`, {
       json: { ttlSeconds: ttl },
       idempotent: true,
       context: 'update',
@@ -1360,6 +1379,26 @@ export class BoatCloud {
     };
   }
 
+  /**
+   * VM이 스스로 멈출 수 있는지 설치된 boat-idle.sh의 확인 모드로 본다. 타이머와 같은 탐색이므로
+   * 둘의 판단이 어긋나지 않는다. 확인하지 못하면 'timer'다.
+   * @returns {Promise<'idle' | 'timer'>}
+   */
+  async probeSelfStop(sandboxId, { signal } = {}) {
+    try {
+      const result = await this.runCommand(sandboxId, SELF_STOP_COMMAND, {
+        timeoutSeconds: 120,
+        idempotent: true,
+        signal,
+      });
+      const match = SELF_STOP_RE.exec(result.stdout);
+      return match && match[1] !== 'none' ? 'idle' : 'timer';
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      return 'timer';
+    }
+  }
+
   async registerSshKey(sandboxId, publicKey, { signal } = {}) {
     const id = assertSandboxId(sandboxId);
     const { body } = await this.#api('POST', `/sandboxes/${id}/sshkey`, {
@@ -1470,12 +1509,40 @@ export class BoatCloud {
     });
   }
 
+  /** 새 주소를 핀한다. 옛 주소 핀은 프로필이 새 주소를 저장한 뒤 prunePins가 지운다. */
   async pinHostKeys({ sandboxId, host, port = 22, keys }) {
     const id = assertSandboxId(sandboxId);
     if (!Array.isArray(keys) || !keys.length) throw new BoatError('BOAT_HOST_KEY_UNVERIFIED');
     const pattern = knownHostsPattern(host, port);
-    await this.#rewritePins((text) => rewriteKnownHosts(text, { sandboxId: id, pattern, keys }));
+    await this.#rewritePins((text) => rewriteKnownHosts(text, { sandboxId: id, pattern, keys, keepOtherPins: true }));
     return pattern;
+  }
+
+  /** 저장된 주소의 핀만 남긴다. */
+  async prunePins(sandboxId, { host, port = 22 }) {
+    const id = assertSandboxId(sandboxId);
+    const keep = knownHostsPattern(host, port);
+    const marker = `${PIN_MARKER_PREFIX}${id}`;
+    await this.#rewritePins((text) => {
+      const lines = String(text ?? '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      const kept = lines.filter((line) => {
+        const fields = line.split(/\s+/);
+        return !fields.slice(3).includes(marker) || fields[0] === keep;
+      });
+      return kept.length ? `${kept.join('\n')}\n` : '';
+    });
+  }
+
+  /** 이 샌드박스 표식으로 저장된 주소의 핀이 있으면 true다. */
+  async hasPin(sandboxId, { host, port = 22 }) {
+    const id = assertSandboxId(sandboxId);
+    const pattern = knownHostsPattern(host, port);
+    const marker = `${PIN_MARKER_PREFIX}${id}`;
+    const text = await fs.readFile(this.#knownHostsPath, 'utf8').catch(() => '');
+    return text.split(/\r?\n/).some((line) => {
+      const fields = line.trim().split(/\s+/);
+      return fields[0] === pattern && fields.slice(3).includes(marker);
+    });
   }
 
   async removePins(sandboxId) {
@@ -1499,7 +1566,10 @@ export class BoatCloud {
     }
   }
 
-  /** 키 등록 → 호스트 키 핀 → SSH 응답 대기. 재개할 때마다 IP가 바뀌므로 매번 다시 한다. */
+  /**
+   * 키 등록 → 호스트 키 핀 → SSH 응답 대기. 재개할 때마다 IP가 바뀌므로 매번 다시 한다.
+   * 옛 주소 핀은 남는다. 호출자가 새 주소를 프로필에 저장한 뒤 prunePins를 부른다.
+   */
   async prepareSsh(sandboxId, { sandbox = null, signal } = {}) {
     const id = assertSandboxId(sandboxId);
     const identity = await this.ensureSshIdentity();
@@ -1522,4 +1592,5 @@ export const __test = {
   retryAfterMsFrom,
   HOST_KEY_COMMAND,
   MESSAGES,
+  SELF_STOP_COMMAND,
 };
