@@ -7,6 +7,8 @@ TAILSCALE_HTTPS_PORT=${RAUHWpx_TAILSCALE_HTTPS_PORT:-443}
 NODE_VERSION=${RAUHWpx_NODE_VERSION:-24.19.0}
 COSIGN_VERSION=3.1.2
 BASE_PATH=/rauhwpx-cloud
+HOST_KIND=${RAUHWpx_HOST_KIND:-}
+INSTALL_MARKER=/run/rauhwpx-cloud-install.pid
 
 fail() {
   echo "Rauhwpx cloud install failed: $*" >&2
@@ -24,6 +26,26 @@ if [[ "$TRANSPORT" == tailscale ]]; then
   (( TAILSCALE_HTTPS_PORT >= 1 && TAILSCALE_HTTPS_PORT <= 65535 )) \
     || fail "RAUHWpx_TAILSCALE_HTTPS_PORT must be an integer from 1 to 65535"
 fi
+[[ -z "$HOST_KIND" || "$HOST_KIND" == boat ]] || fail "RAUHWpx_HOST_KIND must be empty or boat"
+if [[ "$HOST_KIND" == boat ]]; then
+  BOAT_SANDBOX_ID=${RAUHWpx_BOAT_SANDBOX_ID:-}
+  BOAT_IDLE_MINUTES=${RAUHWpx_BOAT_IDLE_MINUTES:-30}
+  BOAT_USER=${RAUHWpx_BOAT_USER:-user}
+  [[ "$TRANSPORT" == ssh-tunnel ]] || fail "boat hosts require RAUHWpx_TRANSPORT=ssh-tunnel"
+  [[ "$BOAT_SANDBOX_ID" =~ ^bx_[a-z0-9]{8}$ ]] \
+    || fail "RAUHWpx_BOAT_SANDBOX_ID must be bx_ followed by 8 lowercase letters or digits"
+  [[ "$BOAT_IDLE_MINUTES" =~ ^[0-9]{1,3}$ ]] || fail "RAUHWpx_BOAT_IDLE_MINUTES must be an integer from 5 to 240"
+  BOAT_IDLE_MINUTES=$((10#$BOAT_IDLE_MINUTES))
+  (( BOAT_IDLE_MINUTES >= 5 && BOAT_IDLE_MINUTES <= 240 )) \
+    || fail "RAUHWpx_BOAT_IDLE_MINUTES must be an integer from 5 to 240"
+  [[ "$BOAT_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ && "$BOAT_USER" != root && "$BOAT_USER" != rauhwpx-cloud ]] \
+    || fail "RAUHWpx_BOAT_USER must name the sandbox login user"
+  id -u "$BOAT_USER" >/dev/null 2>&1 || fail "RAUHWpx_BOAT_USER $BOAT_USER does not exist"
+fi
+
+# boat 유휴 타이머는 이 표식의 설치 프로세스가 살아 있는 동안 VM을 멈추지 않는다.
+echo "$$" >"$INSTALL_MARKER"
+trap 'rm -f "$INSTALL_MARKER"' EXIT
 
 source /etc/os-release
 case "${ID:-}" in
@@ -42,7 +64,7 @@ apt-get update -qq
 apt-get install -y --no-install-recommends ca-certificates curl xz-utils podman crun uidmap slirp4netns fuse-overlayfs dbus-user-session
 
 TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+trap 'rm -rf "$TMP" "$INSTALL_MARKER"' EXIT
 
 install_node() {
   local filename="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz"
@@ -112,15 +134,29 @@ ARCHIVE="$TMP/$(basename "$ARCHIVE_URL")"
 curl --fail --location --silent --show-error "$ARCHIVE_URL" --output "$ARCHIVE"
 curl --fail --location --silent --show-error "${RAUHWpx_RELEASE_SHA256_URL:-${ARCHIVE_URL}.sha256}" --output "$ARCHIVE.sha256"
 (cd "$TMP" && sha256sum --check "$(basename "$ARCHIVE").sha256")
-curl --fail --location --silent --show-error "${RAUHWpx_RELEASE_BUNDLE_URL:-${ARCHIVE_URL}.sigstore.json}" --output "$ARCHIVE.sigstore.json"
-cosign verify-blob "$ARCHIVE" \
-  --bundle "$ARCHIVE.sigstore.json" \
-  --certificate-identity-regexp '^https://github\.com/(ghandhitechnology|heemangstudio)/Rauhwpx/\.github/workflows/release\.yml@refs/tags/' \
-  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' >/dev/null
+DEV_UNSIGNED_SHA256=${RAUHWpx_DEV_UNSIGNED_SHA256:-}
+if [[ -n "$DEV_UNSIGNED_SHA256" ]]; then
+  # 패키징하지 않은 개발 앱만 로컬에서 만든 런타임을 설치한다. 서명 대신 앱이 계산한
+  # 정확한 SHA-256으로 아카이브를 고정하고, 원격 URL로는 이 경로를 쓸 수 없다.
+  [[ "$DEV_UNSIGNED_SHA256" =~ ^[a-f0-9]{64}$ ]] || fail "RAUHWpx_DEV_UNSIGNED_SHA256 must be a lowercase SHA-256"
+  [[ "$ARCHIVE_URL" == file://* ]] || fail "unsigned development runtimes must be local files"
+  [[ "$(sha256sum "$ARCHIVE" | cut -d' ' -f1)" == "$DEV_UNSIGNED_SHA256" ]] \
+    || fail "development runtime does not match its pinned SHA-256"
+  echo "Installing an unsigned development Cloud runtime"
+else
+  curl --fail --location --silent --show-error "${RAUHWpx_RELEASE_BUNDLE_URL:-${ARCHIVE_URL}.sigstore.json}" --output "$ARCHIVE.sigstore.json"
+  cosign verify-blob "$ARCHIVE" \
+    --bundle "$ARCHIVE.sigstore.json" \
+    --certificate-identity-regexp '^https://github\.com/(ghandhitechnology|heemangstudio)/Rauhwpx/\.github/workflows/release\.yml@refs/tags/' \
+    --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' >/dev/null
+fi
 
 mkdir "$TMP/unpacked"
 tar -xzf "$ARCHIVE" -C "$TMP/unpacked" --strip-components=1
 [[ -f "$TMP/unpacked/package.json" && -f "$TMP/unpacked/src/main.mjs" ]] || fail "release archive is incomplete"
+if [[ "$HOST_KIND" == boat && ! -f "$TMP/unpacked/install/rauhwpx-boat-idle.timer" ]]; then
+  fail "this Cloud release does not support boat hosts"
+fi
 VERSION=$(/opt/rauhwpx-node/bin/node -p "require('$TMP/unpacked/package.json').version")
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] || fail "release version is invalid"
 DESTINATION="/opt/rauhwpx-cloud/releases/$VERSION"
@@ -139,6 +175,15 @@ install -m 0644 "$DESTINATION/install/rauhwpx-cloud.service" /etc/systemd/system
 install -m 0644 "$DESTINATION/install/rauhwpx-cloud-update.service" /etc/systemd/system/rauhwpx-cloud-update.service
 install -m 0644 "$DESTINATION/install/rauhwpx-cloud-update.timer" /etc/systemd/system/rauhwpx-cloud-update.timer
 install -m 0755 "$DESTINATION/install/rauhwpx-cloud" /usr/local/bin/rauhwpx-cloud
+if [[ "$HOST_KIND" == boat ]]; then
+  BOAT_ENV=$(mktemp)
+  printf 'RAUHWpx_BOAT_SANDBOX_ID=%s\nRAUHWpx_BOAT_IDLE_MINUTES=%s\nRAUHWpx_BOAT_USER=%s\n' \
+    "$BOAT_SANDBOX_ID" "$BOAT_IDLE_MINUTES" "$BOAT_USER" >"$BOAT_ENV"
+  install -m 0600 -o root -g root "$BOAT_ENV" /etc/rauhwpx-boat.env
+  rm -f "$BOAT_ENV"
+  install -m 0644 "$DESTINATION/install/rauhwpx-boat-idle.service" /etc/systemd/system/rauhwpx-boat-idle.service
+  install -m 0644 "$DESTINATION/install/rauhwpx-boat-idle.timer" /etc/systemd/system/rauhwpx-boat-idle.timer
+fi
 
 touch /etc/rauhwpx-cloud.env
 chmod 0600 /etc/rauhwpx-cloud.env
@@ -188,6 +233,12 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 curl --fail --silent http://127.0.0.1:7740/v1/health >/dev/null || fail "service health check failed"
+if [[ "$HOST_KIND" == boat ]]; then
+  # 설치도 사용이다. 활동 시각을 새로 남겨 데스크톱이 페어링하기 전에 VM이 멈추지 않게 한다.
+  touch /var/lib/rauhwpx-cloud/activity.stamp
+  chown rauhwpx-cloud:rauhwpx-cloud /var/lib/rauhwpx-cloud/activity.stamp
+  systemctl enable --now rauhwpx-boat-idle.timer
+fi
 
 TAILSCALE_RECEIPT_PORT=
 if [[ "$TRANSPORT" == tailscale ]]; then

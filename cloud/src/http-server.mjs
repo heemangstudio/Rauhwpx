@@ -36,6 +36,7 @@ import {
 
 const MAX_JSON_BYTES = 1024 * 1024;
 const MAX_EVENT_PAYLOAD_BYTES = 64 * 1024;
+const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const LEGACY_DISPLAY_VIEWER_ID = '$legacy';
 const responseProof = Symbol('rauhwpxResponseProof');
 
@@ -182,6 +183,7 @@ export function createCloudHttpHandler({
   seedProvider,
   raucloudLease = null,
   conversationBackup = null,
+  activity = null,
 }, { workerOnly = false } = {}) {
   const authenticate = (request) => auth.authenticate(bearer(request));
   const authenticateWorker = (request, sessionId, options) => (
@@ -554,6 +556,11 @@ export function createCloudHttpHandler({
       if (workerOnly) throw new CloudError('NOT_FOUND', 'Worker endpoint was not found', 404);
 
       const device = authenticate(request);
+      // Only an authenticated device's writes count as use. Reads, SSE streams,
+      // token refresh, health checks and live-view interest renewals also come
+      // from open windows and background reconnects.
+      if (pathname.startsWith('/v1/') && MUTATING_METHODS.has(request.method)
+        && !pathname.endsWith('/display/interest')) activity?.touch();
       if (request.method === 'GET' && pathname === '/v1/profile') {
         json(response, 200, {
           server: { id: identity.serverId, publicKey: identity.serverPublicKey, protocolVersion: PROTOCOL_VERSION },

@@ -7,6 +7,7 @@ import { normalizeSshConfig, normalizeTailscaleHttpsPort, sshOptionFilePath } fr
 
 const OUTPUT_LIMIT = 2 * 1024 * 1024;
 const BOOTSTRAP_LIMIT = 1024 * 1024 * 1024;
+const DEV_SHA256_RE = /^[a-f0-9]{64}$/;
 const INSTALL_TIMEOUT_MS = 30 * 60_000;
 const EXPECTED_CLOUD_PROTOCOL = 1;
 const CHANNELS = new Set(['stable', 'prerelease']);
@@ -144,13 +145,80 @@ function sshDestination(ssh) {
   return `${ssh.user}@${ssh.host}`;
 }
 
-function installRemoteCommand({ channel, transport, publicHost, tailscaleHttpsPort }) {
+const HOST_ENV_KEYS = Object.freeze([
+  'RAUHWpx_HOST_KIND',
+  'RAUHWpx_BOAT_SANDBOX_ID',
+  'RAUHWpx_BOAT_IDLE_MINUTES',
+  'RAUHWpx_BOAT_USER',
+]);
+const NO_HOST_ENV = Object.freeze({ kind: '', assignments: Object.freeze([]) });
+const BOAT_ENV_FILE = '/etc/rauhwpx-boat.env';
+
+/**
+ * 설치 스크립트에 넘기는 호스트 설정. 원격 셸에 그대로 이어 붙이므로 값마다 좁은
+ * 정규식을 통과해야 하고, 모르는 키는 거절한다.
+ */
+export function normalizeHostEnv(raw, { transport } = {}) {
+  if (raw == null) return NO_HOST_ENV;
+  if (typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Cloud host settings are invalid');
+  for (const key of Object.keys(raw)) {
+    if (!HOST_ENV_KEYS.includes(key)) throw new Error('Cloud host settings contain an unsupported key');
+  }
+  const kind = String(raw.RAUHWpx_HOST_KIND ?? '');
+  if (kind !== '' && kind !== 'boat') throw new Error('Cloud host kind must be empty or boat');
+  if (kind === '') {
+    if (HOST_ENV_KEYS.slice(1).some((key) => raw[key] != null && raw[key] !== '')) {
+      throw new Error('boat host settings require the boat host kind');
+    }
+    return NO_HOST_ENV;
+  }
+  if (transport !== 'ssh-tunnel') throw new Error('boat Cloud hosts require the SSH tunnel transport');
+  const sandboxId = String(raw.RAUHWpx_BOAT_SANDBOX_ID ?? '');
+  if (!/^bx_[a-z0-9]{8}$/.test(sandboxId)) throw new Error('boat sandbox id is invalid');
+  const idleText = raw.RAUHWpx_BOAT_IDLE_MINUTES == null || raw.RAUHWpx_BOAT_IDLE_MINUTES === ''
+    ? '30'
+    : String(raw.RAUHWpx_BOAT_IDLE_MINUTES);
+  const idleMinutes = /^\d{1,3}$/.test(idleText) ? Number(idleText) : NaN;
+  if (!Number.isInteger(idleMinutes) || idleMinutes < 5 || idleMinutes > 240) {
+    throw new Error('boat idle minutes must be an integer from 5 to 240');
+  }
+  const user = String(raw.RAUHWpx_BOAT_USER ?? 'user');
+  if (!/^[a-z_][a-z0-9_-]{0,31}$/.test(user) || user === 'root') throw new Error('boat SSH user is invalid');
+  return Object.freeze({
+    kind,
+    sandboxId,
+    idleMinutes,
+    user,
+    assignments: Object.freeze([
+      'RAUHWpx_HOST_KIND=boat',
+      `RAUHWpx_BOAT_SANDBOX_ID=${sandboxId}`,
+      `RAUHWpx_BOAT_IDLE_MINUTES=${idleMinutes}`,
+      `RAUHWpx_BOAT_USER=${user}`,
+    ]),
+  });
+}
+
+/** 이미 설치된 서비스를 재사용하려면 boat 유휴 설정도 같아야 한다. 다르면 설치를 다시 돌린다. */
+function boatConfigProbe(hostEnv, envFile = BOAT_ENV_FILE) {
+  if (hostEnv?.kind !== 'boat') return [];
+  const value = (name) => `"$(sudo -n sed -n -E "s/^(RAUHWpx_)?${name}=[\\"']?([^\\"']*)[\\"']?\\$/\\2/p" '${envFile}' | tail -1)"`;
+  return [
+    `sudo -n test -f '${envFile}' || exit 0`,
+    `[ ${value('BOAT_SANDBOX_ID')} = ${hostEnv.sandboxId} ] || exit 0`,
+    `[ ${value('BOAT_IDLE_MINUTES')} = ${hostEnv.idleMinutes} ] || exit 0`,
+    `[ ${value('BOAT_USER')} = ${hostEnv.user} ] || exit 0`,
+    'sudo -n systemctl is-enabled --quiet rauhwpx-boat-idle.timer || exit 0',
+  ];
+}
+
+function installRemoteCommand({ channel, transport, publicHost, tailscaleHttpsPort, hostEnv = NO_HOST_ENV }) {
   return [
     'sudo -n env',
     `RAUHWpx_CHANNEL=${channel}`,
     `RAUHWpx_TRANSPORT=${transport}`,
     ...(transport === 'tailscale' ? [`RAUHWpx_TAILSCALE_HTTPS_PORT=${tailscaleHttpsPort}`] : []),
     ...(transport === 'public-https' ? [`RAUHWpx_PUBLIC_HOST=${publicHost}`] : []),
+    ...hostEnv.assignments,
     'bash -s',
   ].join(' ');
 }
@@ -161,7 +229,18 @@ function bootstrapArchitecture(machineArchitecture) {
   throw new Error('VPS architecture must be amd64 or arm64');
 }
 
-function bundledInstallRemoteCommand({ channel, transport, publicHost, tailscaleHttpsPort, assetArchitecture }) {
+function bundledInstallRemoteCommand({
+  channel,
+  transport,
+  publicHost,
+  tailscaleHttpsPort,
+  assetArchitecture,
+  hostEnv = NO_HOST_ENV,
+  devUnsignedSha256 = '',
+}) {
+  if (devUnsignedSha256 && !DEV_SHA256_RE.test(devUnsignedSha256)) {
+    throw new Error('Development Cloud runtime SHA-256 is invalid');
+  }
   const archive = `rauhwpx-cloud-linux-${assetArchitecture}.tar.gz`;
   const install = [
     'sudo -n env',
@@ -169,6 +248,8 @@ function bundledInstallRemoteCommand({ channel, transport, publicHost, tailscale
     `RAUHWpx_TRANSPORT=${transport}`,
     ...(transport === 'tailscale' ? [`RAUHWpx_TAILSCALE_HTTPS_PORT=${tailscaleHttpsPort}`] : []),
     ...(transport === 'public-https' ? [`RAUHWpx_PUBLIC_HOST=${publicHost}`] : []),
+    ...hostEnv.assignments,
+    ...(devUnsignedSha256 ? [`RAUHWpx_DEV_UNSIGNED_SHA256=${devUnsignedSha256}`] : []),
     `RAUHWpx_RELEASE_URL=file://$TMP/${archive}`,
     'bash "$TMP/install.sh"',
   ].join(' ');
@@ -179,7 +260,7 @@ function bundledInstallRemoteCommand({ channel, transport, publicHost, tailscale
     'tar -xzf - -C "$TMP"',
     `test -f "$TMP/${archive}"`,
     `test -f "$TMP/${archive}.sha256"`,
-    `test -f "$TMP/${archive}.sigstore.json"`,
+    ...(devUnsignedSha256 ? [] : [`test -f "$TMP/${archive}.sigstore.json"`]),
     'test -f "$TMP/install.sh"',
     install,
   ].join('; ');
@@ -214,6 +295,7 @@ function existingInstallRemoteCommand({
   tailscaleHttpsPort,
   requiredVersion = '',
   requestId,
+  hostEnv = NO_HOST_ENV,
 }) {
   const receiptCache = receiptCacheCommands('linux', requestId);
   const endpoint = transport === 'tailscale'
@@ -250,6 +332,7 @@ function existingInstallRemoteCommand({
       `[ "$EXISTING_VERSION" = "${requiredVersion}" ] || exit 0`,
     ] : []),
     'sudo -n curl --fail --silent http://127.0.0.1:7740/v1/health >/dev/null || exit 0',
+    ...boatConfigProbe(hostEnv),
     ...endpoint,
     'sudo -n curl --fail --silent --connect-timeout 10 "$ENDPOINT/v1/health" >/dev/null || exit 0',
     ...receiptCache.before,
@@ -368,6 +451,7 @@ export class CloudProvisioner {
     appVersion = '',
     knownHostsPath,
     retrySleep = (ms) => delay(ms),
+    devUnsignedRuntime = false,
   }) {
     if (!installerPath) throw new Error('CloudProvisioner requires an installer path');
     if (!knownHostsPath) throw new Error('CloudProvisioner requires a known-hosts path');
@@ -377,6 +461,8 @@ export class CloudProvisioner {
     this.appVersion = appVersion;
     this.knownHostsPath = knownHostsPath;
     this.retrySleep = retrySleep;
+    // 패키징하지 않은 개발 앱만 켠다. 서명 번들 대신 옆에 둔 .dev-sha256 값으로 런타임을 고정한다.
+    this.devUnsignedRuntime = devUnsignedRuntime === true;
   }
 
   async #bootstrap(machineArchitecture) {
@@ -397,7 +483,18 @@ export class CloudProvisioner {
     if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(this.appVersion)) {
       throw new Error('Bundled Cloud runtime requires a valid app version');
     }
-    return { assetArchitecture, bytes: await fs.readFile(filename) };
+    let devUnsignedSha256 = '';
+    if (this.devUnsignedRuntime) {
+      const pin = await fs.readFile(`${filename}.dev-sha256`, 'utf8').catch((error) => {
+        if (error?.code === 'ENOENT') return '';
+        throw error;
+      });
+      devUnsignedSha256 = pin.trim();
+      if (devUnsignedSha256 && !DEV_SHA256_RE.test(devUnsignedSha256)) {
+        throw new Error('Development Cloud runtime SHA-256 is invalid');
+      }
+    }
+    return { assetArchitecture, devUnsignedSha256, bytes: await fs.readFile(filename) };
   }
 
   async #reuseExisting(ssh, options, onLine) {
@@ -471,10 +568,12 @@ export class CloudProvisioner {
     transport = 'tailscale',
     tailscaleHttpsPort = 443,
     publicHost = '',
+    hostEnv: rawHostEnv = null,
     onLine = () => {},
   } = {}) {
     if (!CHANNELS.has(channel)) throw new Error('Unsupported cloud install channel');
     if (!['tailscale', 'public-https', 'ssh-tunnel'].includes(transport)) throw new Error('Unsupported cloud transport');
+    const hostEnv = normalizeHostEnv(rawHostEnv, { transport });
     const servePort = transport === 'tailscale'
       ? normalizeTailscaleHttpsPort(tailscaleHttpsPort)
       : 443;
@@ -486,6 +585,9 @@ export class CloudProvisioner {
     const bootstrap = preflight.platform === 'linux' ? await this.#bootstrap(preflight.arch) : null;
     if (preflight.platform === 'darwin' && transport !== 'ssh-tunnel') {
       throw new Error('Mac Cloud hosts require the SSH tunnel transport');
+    }
+    if (preflight.platform === 'darwin' && hostEnv.kind) {
+      throw new Error('boat Cloud hosts must run Linux');
     }
     if (preflight.platform === 'darwin') {
       const existing = await this.#reuseExisting(ssh, {
@@ -519,22 +621,28 @@ export class CloudProvisioner {
       publicHost,
       tailscaleHttpsPort: servePort,
       requiredVersion: bootstrap ? this.appVersion : '',
+      hostEnv,
     }, onLine);
     if (existing) return { ...existing, preflight, reused: true };
     if (bootstrap) {
-      onLine('Using the verified Cloud runtime bundled with Rauhwpx');
+      onLine(bootstrap.devUnsignedSha256
+        ? 'Using the local development Cloud runtime'
+        : 'Using the verified Cloud runtime bundled with Rauhwpx');
       const remote = bundledInstallRemoteCommand({
         channel,
         transport,
         publicHost,
         tailscaleHttpsPort: servePort,
         assetArchitecture: bootstrap.assetArchitecture,
+        hostEnv,
+        devUnsignedSha256: bootstrap.devUnsignedSha256,
       });
       return this.#installWithRecovery(ssh, {
         transport,
         publicHost,
         tailscaleHttpsPort: servePort,
         requiredVersion: this.appVersion,
+        hostEnv,
       }, preflight, onLine, () => runProcess(
         this.spawn,
         'ssh',
@@ -549,11 +657,13 @@ export class CloudProvisioner {
       transport,
       publicHost,
       tailscaleHttpsPort: servePort,
+      hostEnv,
     });
     return this.#installWithRecovery(ssh, {
       transport,
       publicHost,
       tailscaleHttpsPort: servePort,
+      hostEnv,
     }, preflight, onLine, () => runProcess(
       this.spawn,
       'ssh',
@@ -585,6 +695,7 @@ export class CloudProvisioner {
 }
 
 export const __test = {
+  boatConfigProbe,
   bootstrapArchitecture,
   bundledInstallRemoteCommand,
   existingInstallRemoteCommand,

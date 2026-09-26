@@ -16,7 +16,21 @@ import {
   isPermanentTransferError,
   PERMANENT_TRANSFER_CODES,
 } from './cloud-provider-auth.mjs';
-import { normalizeCloudProfile, normalizeTailscaleHttpsPort } from './cloud-profile.mjs';
+import {
+  BOAT_IDLE_STOP_MINUTES,
+  BOAT_MACHINES,
+  BOAT_REGION,
+  BOAT_SETUP_TTL_SECONDS,
+  BoatError,
+  boatHostEnv,
+  boatMessage,
+  boatServerState,
+  isUsableSandboxState,
+  normalizeBoatMachine,
+  resolveSshTarget,
+  sandboxMachineKey,
+} from './cloud-boat.mjs';
+import { CLOUD_PROVIDERS, normalizeCloudProfile, normalizeTailscaleHttpsPort } from './cloud-profile.mjs';
 import { sha256Hex, writeVerifiedRecoveryFile } from './cloud-handoff.mjs';
 import { applyCloudRecovery } from './cloud-result.mjs';
 import { hasProviderAuth } from './provider-auth.mjs';
@@ -219,7 +233,12 @@ function uiProfileToStored(input, current = null) {
     && current?.ssh?.host === host
     && current?.ssh?.user === sshUser
     && current?.ssh?.port === sshPort;
+  // A draft keeps its boat VM only when it names the VM this profile already owns.
+  const boat = source.boat?.sandboxId && current?.boat?.sandboxId === source.boat.sandboxId
+    ? current.boat
+    : null;
   return normalizeCloudProfile({
+    ...(boat ? { boat } : {}),
     name: source.name ?? current?.name,
     endpoint,
     api,
@@ -279,6 +298,62 @@ function goalFromTransfer(payload) {
   const text = payload?.initialMessage?.text;
   if (typeof text === 'string' && text.trim()) return text.trim().slice(0, 64 * 1024);
   throw transferError('Cloud start requires an initial message', 'INITIAL_MESSAGE_REQUIRED');
+}
+
+const BOAT_SETUP_TITLE = 'boat 서버를 준비하지 못했습니다';
+const BOAT_SETUP_GUIDANCE = Object.freeze({
+  BOAT_BILLING_REQUIRED: 'boat 요금제가 필요합니다.',
+  BOAT_RATE_LIMITED: '잠시 후 다시 시도할 수 있습니다.',
+  BOAT_AUTH_INVALID: 'boat 계정을 다시 연결해야 합니다.',
+  BOAT_NOT_CONNECTED: 'boat 계정을 다시 연결해야 합니다.',
+  BOAT_UNAVAILABLE: '네트워크 연결을 확인한 뒤 다시 시도할 수 있습니다.',
+  BOAT_SERVER_MISSING: '다시 시도하면 새 서버를 만듭니다.',
+});
+const BOAT_PASS_THROUGH_CODES = new Set([
+  'BOAT_BILLING_REQUIRED',
+  'BOAT_RATE_LIMITED',
+  'BOAT_AUTH_INVALID',
+  'BOAT_NOT_CONNECTED',
+  'BOAT_TRIAL_BLOCKED',
+  'BOAT_BUSY',
+]);
+
+/** 설치 로그 한 줄을 화면용으로 줄인다. 영수증·페어링 코드·토큰처럼 보이는 줄은 버린다. */
+function summarizeInstallLine(line) {
+  const text = String(line ?? '')
+    .replace(/\u001b\[[0-9;]*[A-Za-z]/g, '')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text || /RAUHWpx_RECEIPT|pairing|token|secret|password|authorization|api[_-]?key/i.test(text)) return null;
+  const safe = text
+    .replace(/[A-Za-z0-9+/_-]{32,}={0,2}/g, '…')
+    .replace(/\b[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}\b/g, '…');
+  return safe.length > 140 ? `${safe.slice(0, 139)}…` : safe;
+}
+
+function boatDetail(error) {
+  const text = String(error?.detail ?? error?.message ?? error ?? '')
+    .replace(/\b(?:boat|sandbox|clm)_[A-Za-z0-9_-]{6,}/g, '<redacted>')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+    .trim();
+  return text.slice(-600) || 'Unknown error';
+}
+
+/** 사용자 동작이 실패하면 짧은 한국어 문장과 BOAT_ 코드를 돌려준다. */
+function boatUserError(error) {
+  if (error instanceof BoatError) return error;
+  if (error?.code === 'PROFILE_CHANGED' || error?.name === 'AbortError') return error;
+  return new BoatError('BOAT_UNAVAILABLE', {
+    message: 'boat 서버에 연결하지 못했습니다.',
+    detail: boatDetail(error),
+    cause: error,
+  });
+}
+
+function boatSetupError(error) {
+  if (error instanceof BoatError && BOAT_PASS_THROUGH_CODES.has(error.code)) return error;
+  return new BoatError('BOAT_SETUP_FAILED', { detail: boatDetail(error), cause: error });
 }
 
 const CLIENT_TO_SERVER_COMMAND = Object.freeze({
@@ -361,6 +436,26 @@ export class CloudCoordinator extends EventEmitter {
   #linkProbeBusy = false;
   #collectProviderAuth;
   #collectImportedAuth;
+  #boat = null;
+  /** Sandbox id of the active profile's boat VM, kept in sync with every profile change. */
+  #boatActiveSandboxId = null;
+  /** { sandboxId, state: BoatServerState|null, monthHours, message, checkedAt, machineKey } */
+  #boatStatus = null;
+  #boatStatusPromise = null;
+  #boatStatusRefreshedAt = 0;
+  #boatConnected = null;
+  #boatSetup = null;
+  #boatSetupPromise = null;
+  #boatSetupSandboxId = null;
+  #boatSetupMachine = null;
+  #boatSetupLineAt = 0;
+  #boatWakePromise = null;
+  #boatWakeResumes = false;
+  #boatActions = new Map();
+  #boatFollowers = new Map();
+  #boatTransition = null;
+  #boatPinned = new Map();
+  #boatEmitted = '';
 
   constructor({
     client,
@@ -370,8 +465,10 @@ export class CloudCoordinator extends EventEmitter {
     appServers = [],
     collectProviderAuth = null,
     collectImportedAuth = null,
+    boat = null,
   } = {}) {
     super();
+    this.#boat = boat ?? null;
     this.#client = client;
     this.#store = store;
     this.#provisioner = provisioner;
@@ -477,6 +574,7 @@ export class CloudCoordinator extends EventEmitter {
         }
       }
     }
+    if (this.#boat) await this.#restoreBoatSetup();
     const records = (await this.#store.load()).filter((record) => destinationMatchesProfile(record.destination, profile));
     for (const record of records) {
       if (record.resolvedAt && record.recoveryCleanupPath) {
@@ -496,7 +594,9 @@ export class CloudCoordinator extends EventEmitter {
         this.#scheduleResultRecovery(record.id, 0);
         continue;
       }
-      if (record.cloudSessionId && (
+      // A boat VM may be stopped. Its streams start after a status read instead
+      // of dialing a machine that is not there.
+      if (!profile?.boat && record.cloudSessionId && (
         ['queued', 'running', 'suspended', 'completed'].includes(record.state)
         || record.pendingTurnBoundary
       )) {
@@ -505,6 +605,13 @@ export class CloudCoordinator extends EventEmitter {
           void this.#retryQueuedMessages(record).catch(() => {});
         }
       }
+    }
+    this.#boatActiveSandboxId = profile?.boat?.sandboxId ?? null;
+    if (this.#boat && profile?.boat) {
+      this.#setBoatStatus(profile.boat.sandboxId, {});
+      void this.#boatStartupReconcile().catch((error) => {
+        this.#emit({ type: 'boat-status-deferred', reason: 'startup', error: boatDetail(error) });
+      });
     }
     return this.snapshot();
   }
@@ -533,9 +640,15 @@ export class CloudCoordinator extends EventEmitter {
       this.#accountStatusPromise,
       mergePrefetch,
       this.#continuityPromise,
+      this.#boatSetupPromise,
+      this.#boatWakePromise,
+      this.#boatStatusPromise,
+      ...this.#boatActions.values(),
       ...this.#conversationRestores.values(),
       ...this.#queuedMessageRetries.values(),
     ].filter(Boolean);
+    for (const controller of this.#boatFollowers.values()) controller.abort();
+    this.#boatFollowers.clear();
     for (const controller of this.#watchers.values()) controller.abort();
     this.#watchers.clear();
     this.#clearWatchRestartTimers();
@@ -689,8 +802,11 @@ export class CloudCoordinator extends EventEmitter {
       throw new Error('Cloud profile changes require writer ownership');
     }
     await this.#closeProfileStreams();
+    // The next profile may not be a boat VM at all. Callers that activate one set its state.
+    this.#boatStatus = null;
     try {
       const result = await operation();
+      this.#boatActiveSandboxId = (await this.#client.loadProfile().catch(() => null))?.boat?.sandboxId ?? null;
       this.#profileEpoch += 1;
       context.profileEpoch = this.#profileEpoch;
       this.#remoteSessions.clear();
@@ -914,11 +1030,15 @@ export class CloudCoordinator extends EventEmitter {
                   ? { kind: 'ssh-tunnel' }
                   : { kind: 'https', endpoint: profile.endpoint },
               serverPublicKey: profile.serverPublicKey || undefined,
+              ...(profile.boat
+                ? { boat: { sandboxId: profile.boat.sandboxId, machine: profile.boat.machine } }
+                : {}),
             },
             connection,
             serviceVersion: null,
             message: profileMessage,
           };
+    const boat = this.#boat ? await this.#boatSnapshot(profile) : undefined;
     return {
       revision: ++this.#revision,
       profileEpoch,
@@ -961,6 +1081,7 @@ export class CloudCoordinator extends EventEmitter {
       timeline: selected?.timeline ?? remote?.timeline ?? null,
       updatedAt: now,
       ...(this.#accountSnapshot ? { account: this.#accountSnapshot } : {}),
+      ...(boat ? { boat } : {}),
       ...extra,
       link: this.#publicLink(profile),
     };
@@ -980,6 +1101,11 @@ export class CloudCoordinator extends EventEmitter {
   }
 
   reconnectCloud(options = {}) {
+    if (options.userIntent) {
+      // An explicit reconnect is the user asking for Cloud, so a stopped boat VM is started first.
+      const { userIntent: _intent, ...rest } = options;
+      return this.#wakeBoatForUser('reconnect').then(() => this.reconnectCloud(rest));
+    }
     if (options.background && this.#linkNeedsAction) return this.snapshot();
     if (!options.background) this.#linkNeedsAction = false;
     if (this.#reconnectPromise) return this.#reconnectPromise;
@@ -1024,6 +1150,8 @@ export class CloudCoordinator extends EventEmitter {
     this.#linkWatchdog = setInterval(() => {
       if (this.#stopped || this.#link.kind === 'recreating' || this.#linkProbeBusy || this.#linkHealPromise) return;
       if (this.#pendingProfileChanges) return;
+      // Background checks never wake a stopped boat VM; only the user does.
+      if (this.#boatBlocksBackground()) return;
       if (this.#link.kind === 'failed') {
         if (this.#linkNeedsAction) return;
         // Retry quietly after longer outages. Keep the recovery controls stable
@@ -1051,7 +1179,7 @@ export class CloudCoordinator extends EventEmitter {
   }
 
   async #probeLiveLink() {
-    if (this.#stopped || this.#link.kind !== 'ready' || this.#linkProbeBusy) return;
+    if (this.#stopped || this.#link.kind !== 'ready' || this.#linkProbeBusy || this.#boatBlocksBackground()) return;
     this.#linkProbeBusy = true;
     try {
       const profile = await this.#client.loadProfile().catch(() => null);
@@ -1093,11 +1221,13 @@ export class CloudCoordinator extends EventEmitter {
       };
       return this.snapshot({ profileConnection: 'error', profileMessage: this.#link.error });
     }
+    if (profile.boat && this.#boatBlocksBackground()) return this.#quietBoatLink();
     const controller = new AbortController();
     this.#reconnectController = controller;
     try {
       const health = await this.#waitForProfileHealth(profile, { attempts: 2, timeoutMs: 2_000, signal: controller.signal });
       this.#assertProfileEpoch(profileEpoch);
+      if (profile.boat) this.#noteBoatReachable(profile.boat.sandboxId);
       this.#abortSessionWatchers();
       // Reconcile the remote session list as well as health. A successful
       // health probe alone does not restore the conversation after a restart.
@@ -1139,6 +1269,11 @@ export class CloudCoordinator extends EventEmitter {
     } catch (error) {
       if (controller.signal.aborted || this.#stopped || profileEpoch !== this.#profileEpoch) throw error;
       this.#abortSessionWatchers();
+      if (profile.boat) {
+        // One boat status read tells a stopped VM apart from a broken link. It never resumes.
+        await this.refreshBoatStatus({ force: true, reason: 'link-check' });
+        if (this.#boatBlocksBackground()) return this.#quietBoatLink();
+      }
       if (!this.#streamShouldRestart(error) && error?.status !== 404 && error?.code !== 'SESSION_NOT_FOUND') {
         this.#linkNeedsAction = true;
       }
@@ -1400,6 +1535,11 @@ export class CloudCoordinator extends EventEmitter {
     await this.#refreshMergeRequests({ force: true });
     const profile = await this.#client.loadProfile().catch(() => null);
     if (!profile) return this.snapshot();
+    if (profile.boat) {
+      // Startup, unlock, online and the 60 s cadence only read state; they never resume the VM.
+      if (this.#boatStatus?.state == null) await this.refreshBoatStatus({ force: true, reason });
+      if (this.#boatBlocksBackground()) return this.snapshot();
+    }
     if (profile.mode === 'app-hosted') {
       const provider = this.#sandboxProvider(profile.sandbox);
       if (provider) {
@@ -1450,6 +1590,7 @@ export class CloudCoordinator extends EventEmitter {
     const profile = await this.#client.loadProfile().catch(() => null);
     this.#assertProfileEpoch(profileEpoch);
     if (this.#link.kind !== 'ready') return this.snapshot(options);
+    if (profile?.boat && this.#boatBlocksBackground()) return this.snapshot(options);
     if (profile && await this.#client.isPaired().catch(() => false)) {
       try {
         const health = typeof this.#client.restoreSession === 'function'
@@ -1629,6 +1770,9 @@ export class CloudCoordinator extends EventEmitter {
       transport: profile.transport,
       tailscaleHttpsPort: profile.tailscaleHttpsPort,
       publicHost: profile.transport === 'public-https' ? new URL(profile.endpoint).hostname : '',
+      ...(profile.boat
+        ? { hostEnv: boatHostEnv({ sandboxId: profile.boat.sandboxId, user: profile.ssh.user }) }
+        : {}),
       onLine: (line) => this.#emit({ type: 'provision-log', line }),
     });
     const updated = normalizeCloudProfile({
@@ -2456,9 +2600,10 @@ export class CloudCoordinator extends EventEmitter {
     if (this.#stopped) {
       return Promise.reject(transferError('Cloud coordinator is stopped', 'COORDINATOR_STOPPED'));
     }
-    const operation = this.#withProfileOperation((profileEpoch) => (
+    // Sending to Cloud is user intent: a stopped boat VM is resumed before admission.
+    const operation = this.#wakeBoatForUser('transfer').then(() => this.#withProfileOperation((profileEpoch) => (
       this.#transfer(payload, options, profileEpoch)
-    ));
+    )));
     this.#transferOperations.add(operation);
     return operation.finally(() => this.#transferOperations.delete(operation));
   }
@@ -2670,13 +2815,15 @@ export class CloudCoordinator extends EventEmitter {
   }
 
   async command(input) {
+    await this.#wakeBoatForUser('command');
     if (input?.command === 'queue-message' || input?.command === 'redirect') {
       await this.#ensureConversationWorker(input.sessionId);
     }
     return this.#withProfileOperation((profileEpoch) => this.#command(input, profileEpoch));
   }
 
-  prepareEditDraft(input) {
+  async prepareEditDraft(input) {
+    await this.#wakeBoatForUser('edit');
     return this.#withProfileOperation((profileEpoch) => this.#prepareEditDraft(input, profileEpoch));
   }
 
@@ -2743,6 +2890,7 @@ export class CloudCoordinator extends EventEmitter {
   }
 
   async resumeEditedDocument(input) {
+    await this.#wakeBoatForUser('edit');
     await this.#ensureConversationWorker(input?.sessionId);
     return this.#withProfileOperation((profileEpoch) => this.#resumeEditedDocument(input, profileEpoch));
   }
@@ -3061,7 +3209,10 @@ export class CloudCoordinator extends EventEmitter {
     return snapshot;
   }
 
-  downloadResult(input) {
+  async downloadResult(input) {
+    // A verified local copy needs no server, so it must not wake a stopped boat VM.
+    const handoff = await this.handoffForSession(input?.sessionId).catch(() => null);
+    if (!(handoff?.recoveryPath && handoff.resultDigest)) await this.#wakeBoatForUser('download');
     return this.#withProfileOperation((profileEpoch) => this.#downloadResult(input, profileEpoch));
   }
 
@@ -3215,7 +3366,8 @@ export class CloudCoordinator extends EventEmitter {
     });
   }
 
-  downloadCheckpoint(input) {
+  async downloadCheckpoint(input) {
+    await this.#wakeBoatForUser('checkpoint');
     return this.#withProfileOperation((profileEpoch) => this.#downloadCheckpoint(input, profileEpoch));
   }
 
@@ -3248,7 +3400,8 @@ export class CloudCoordinator extends EventEmitter {
     };
   }
 
-  publishCheckpoint(input) {
+  async publishCheckpoint(input) {
+    await this.#wakeBoatForUser('checkpoint');
     return this.#withProfileOperation((profileEpoch) => {
       const key = `${profileEpoch}:${input.sessionId}`;
       const previous = this.#publicationChains.get(key) ?? Promise.resolve();
@@ -3494,6 +3647,8 @@ export class CloudCoordinator extends EventEmitter {
   #watch(handoffId, sessionId, after, profileEpoch = this.#profileEpoch) {
     const watcherKey = `${profileEpoch}:${sessionId}`;
     if (this.#stopped || !sessionId || profileEpoch !== this.#profileEpoch || this.#watchers.has(watcherKey)) return;
+    // Streams to a stopped boat VM would only retry SSH. A wake restarts them.
+    if (this.#boatBlocksBackground()) return;
     const controller = new AbortController();
     this.#watchers.set(watcherKey, controller);
     this.#armLinkWatchdog();
@@ -4344,6 +4499,756 @@ export class CloudCoordinator extends EventEmitter {
     return downloaded.timeline;
   }
 
+  // ── boat.dev ─────────────────────────────────────────────────────────
+  //
+  // Wake rule: only user intent resumes a stopped boat VM (setup, 시작, a transfer,
+  // a message or command in a Cloud session, an explicit reconnect, edits and
+  // downloads). Every background path — the 20 s link watchdog, continuity
+  // triggers, the 60 s reconcile, prewarm and status polling — reads state and
+  // reports `stopped` instead. The only resume call site is #runBoatSync with
+  // allowResume, reached from #wakeBoatForUser and setup.
+
+  #requireBoat() {
+    if (!this.#boat) throw new BoatError('BOAT_UNAVAILABLE', { detail: 'boat is not available in this build' });
+    if (this.#stopped) throw transferError('Cloud coordinator is stopped', 'COORDINATOR_STOPPED');
+    return this.#boat;
+  }
+
+  #boatBlocksBackground() {
+    const status = this.#boatStatus;
+    return Boolean(this.#boatActiveSandboxId) && status?.sandboxId === this.#boatActiveSandboxId
+      && status.state != null && status.state !== 'running';
+  }
+
+  #setBoatStatus(sandboxId, patch) {
+    const previous = this.#boatStatus?.sandboxId === sandboxId ? this.#boatStatus : null;
+    this.#boatStatus = {
+      sandboxId,
+      state: null,
+      monthHours: null,
+      message: null,
+      checkedAt: 0,
+      machineKey: null,
+      ...previous,
+      ...patch,
+    };
+    return this.#boatStatus;
+  }
+
+  #noteBoatSandbox(sandboxId, sandbox, { waking = false } = {}) {
+    let state = sandbox ? boatServerState(sandbox.state) : 'missing';
+    // A wake owns the transition, so an early `archived` read does not flash `stopped`;
+    // a stop owns it the same way until boat reports the archive.
+    if (waking && ['stopped', 'stopping'].includes(state)) state = 'waking';
+    if (this.#boatTransition === 'stopping' && state === 'running') state = 'stopping';
+    return this.#setBoatStatus(sandboxId, {
+      state,
+      message: state === 'error' ? boatMessage('BOAT_SERVER_FAILED') : null,
+      checkedAt: Date.now(),
+      machineKey: sandbox ? sandboxMachineKey(sandbox) : null,
+    });
+  }
+
+  #noteBoatReachable(sandboxId) {
+    if (this.#boatStatus?.sandboxId !== sandboxId || this.#boatStatus.state === 'running') return;
+    if (this.#boatTransition === 'stopping') return;
+    this.#setBoatStatus(sandboxId, { state: 'running', message: null, checkedAt: Date.now() });
+    this.#emitBoatChange('reachable');
+  }
+
+  /** A stopped boat VM is not a broken link. The chat stays usable and sending wakes it. */
+  #quietBoatLink() {
+    // A user wake owns the link while it runs; its progress must not be reset here.
+    if (this.#boatWakePromise && this.#boatWakeResumes) return this.snapshot();
+    this.#abortSessionWatchers();
+    if (this.#link.kind !== 'recreating') {
+      this.#link = { kind: 'ready', error: null, attempt: 0, canRecreate: false };
+    }
+    this.#linkNeedsAction = false;
+    return this.snapshot();
+  }
+
+  #emitBoatChange(reason, { force = false } = {}) {
+    const status = this.#boatStatus;
+    const signature = JSON.stringify([
+      status?.sandboxId, status?.state, status?.monthHours, status?.message,
+      this.#boatSetup, this.#boatConnected, this.#boat?.limits?.canStart, this.#boat?.limits?.trial,
+    ]);
+    if (!force && signature === this.#boatEmitted) return;
+    this.#boatEmitted = signature;
+    this.#emit({ type: 'boat-changed', reason, state: status?.state ?? null });
+  }
+
+  async #boatSnapshot(profile) {
+    const account = await this.#boat.accountSnapshot().catch(() => ({
+      connected: false, method: null, email: null, canStart: null, trial: null,
+    }));
+    const sandboxId = profile?.boat?.sandboxId ?? this.#boatSetupSandboxId ?? null;
+    const status = sandboxId && this.#boatStatus?.sandboxId === sandboxId ? this.#boatStatus : null;
+    const machine = normalizeBoatMachine(profile?.boat?.machine ?? this.#boatSetupMachine);
+    return {
+      account,
+      server: sandboxId ? {
+        sandboxId,
+        state: status?.state ?? (this.#boatSetupPromise ? 'waking' : 'stopped'),
+        machine,
+        machineLabel: BOAT_MACHINES[machine].label,
+        region: BOAT_REGION,
+        monthHours: status?.monthHours ?? null,
+        idleStopMinutes: BOAT_IDLE_STOP_MINUTES,
+        message: status?.message ?? null,
+      } : null,
+      setup: this.#boatSetup ? {
+        stage: this.#boatSetup.stage,
+        startedAt: this.#boatSetup.startedAt,
+        detail: this.#boatSetup.detail ?? null,
+        error: this.#boatSetup.error ?? null,
+        importedProviders: [...(this.#boatSetup.importedProviders ?? [])],
+      } : null,
+    };
+  }
+
+  /** 창이 보이거나 설정이 진행 중일 때 main의 주기 갱신이 부른다. VM을 깨우지 않는다. */
+  refreshBoatStatus(options = {}) {
+    if (!this.#boat || this.#stopped) return Promise.resolve(null);
+    if (this.#boatStatusPromise) return this.#boatStatusPromise;
+    if (!options.force && Date.now() - this.#boatStatusRefreshedAt < 15_000) return Promise.resolve(null);
+    const operation = this.#refreshBoatStatus(options).catch((error) => {
+      this.#emit({ type: 'boat-status-deferred', reason: options.reason ?? 'cadence', error: boatDetail(error) });
+      return null;
+    }).finally(() => {
+      if (this.#boatStatusPromise === operation) this.#boatStatusPromise = null;
+    });
+    this.#boatStatusPromise = operation;
+    return operation;
+  }
+
+  boatSetupActive() {
+    return Boolean(this.#boatSetupPromise);
+  }
+
+  async #refreshBoatStatus({ reason = 'cadence' } = {}) {
+    this.#boatStatusRefreshedAt = Date.now();
+    this.#boatConnected = await this.#boat.isConnected();
+    if (!this.#boatConnected) {
+      this.#emitBoatChange(reason);
+      return null;
+    }
+    await this.#boat.refreshLimits().catch((error) => {
+      if (error?.code === 'BOAT_AUTH_INVALID') this.#boatConnected = false;
+    });
+    const profile = await this.#client.loadProfile().catch(() => null);
+    const sandboxId = profile?.boat?.sandboxId ?? this.#boatSetupSandboxId;
+    if (!sandboxId) {
+      this.#emitBoatChange(reason);
+      return null;
+    }
+    const previous = this.#boatStatus?.sandboxId === sandboxId ? this.#boatStatus.state : null;
+    let sandbox;
+    try {
+      sandbox = await this.#boat.getSandbox(sandboxId);
+    } catch (error) {
+      if (error?.code === 'BOAT_AUTH_INVALID') this.#boatConnected = false;
+      this.#emitBoatChange(reason);
+      throw error;
+    }
+    const waking = Boolean(this.#boatWakePromise && this.#boatWakeResumes) || Boolean(this.#boatSetupPromise);
+    const status = this.#noteBoatSandbox(sandboxId, sandbox, { waking });
+    if (sandbox) {
+      const usage = await this.#boat.usage(sandboxId).catch(() => null);
+      if (usage) this.#setBoatStatus(sandboxId, { monthHours: usage.monthHours });
+    }
+    if (profile?.boat?.sandboxId === sandboxId) this.#afterBoatStatus(previous, status.state);
+    this.#emitBoatChange(reason);
+    return this.#boatStatus;
+  }
+
+  #afterBoatStatus(previous, next) {
+    if (this.#boatWakePromise || this.#boatSetupPromise) return;
+    if (next !== 'running') {
+      // The VM stopped on its own (idle stop, dashboard, another Mac). Go quiet.
+      if (previous === 'running' || previous == null) {
+        this.#abortSessionWatchers();
+        if (this.#link.kind !== 'recreating') {
+          this.#link = { kind: 'ready', error: null, attempt: 0, canRecreate: false };
+        }
+        this.#linkNeedsAction = false;
+      }
+      return;
+    }
+    if (previous == null || previous === 'running') return;
+    // Someone else started it. Follow the new address without resuming anything.
+    this.#profileOperationContext.exit(() => {
+      setTimeout(() => {
+        if (this.#stopped) return;
+        void this.#boatSync({ allowResume: false, reason: 'followed' })
+          .then(() => this.#resumeRecoveriesForCurrentProfile())
+          // The VM is up again, so a link that failed while it was down can heal.
+          .then(() => (this.#link.kind === 'failed' ? this.reconnectCloud() : null))
+          .catch(() => {});
+      }, 0).unref?.();
+    });
+  }
+
+  async #boatStartupReconcile() {
+    await this.refreshBoatStatus({ force: true, reason: 'startup' });
+    if (this.#boatBlocksBackground()) return;
+    if (this.#boatStatus?.state === 'running') {
+      await this.#boatSync({ allowResume: false, reason: 'startup', trustSavedPins: true }).catch(() => {});
+    }
+    await this.#resumeRecoveriesForCurrentProfile();
+  }
+
+  /** main이 사용자 동작(보내기, 다운로드 등) 직전에 부른다. 프로필 읽기 잠금 밖이어야 한다. */
+  async wakeBoatForUser({ reason = 'user', sessionId = null } = {}) {
+    if (reason === 'download' && sessionId) {
+      const handoff = await this.handoffForSession(sessionId).catch(() => null);
+      if (handoff?.recoveryPath && handoff.resultDigest) return;
+    }
+    await this.#wakeBoatForUser(reason);
+  }
+
+  async #wakeBoatForUser(reason) {
+    if (!this.#boat || this.#stopped) return;
+    // Inside a profile reader the caller already woke the VM; a writer cannot start here.
+    if (this.#profileOperationContext.getStore()?.active) return;
+    if (this.#boatSetupPromise) await this.#boatSetupPromise.catch(() => {});
+    const profile = await this.#client.loadProfile().catch(() => null);
+    if (!profile?.boat) return;
+    const status = this.#boatStatus;
+    // A fresh running read of the machine we already pinned needs no boat round trip.
+    if (status?.sandboxId === profile.boat.sandboxId && status.state === 'running'
+      && Date.now() - status.checkedAt < 30_000
+      && status.machineKey && this.#boatPinned.get(status.sandboxId) === status.machineKey) return;
+    await this.#boatSync({ allowResume: true, reason });
+  }
+
+  #boatSync(options) {
+    const resumes = options.allowResume === true;
+    if (this.#boatWakePromise && (this.#boatWakeResumes || !resumes)) return this.#boatWakePromise;
+    const previous = this.#boatWakePromise;
+    const operation = (async () => {
+      if (previous) await previous.catch(() => {});
+      return this.#runBoatSync(options);
+    })().finally(() => {
+      if (this.#boatWakePromise === operation) {
+        this.#boatWakePromise = null;
+        this.#boatWakeResumes = false;
+      }
+    });
+    this.#boatWakePromise = operation;
+    this.#boatWakeResumes = resumes;
+    return operation;
+  }
+
+  async #runBoatSync({ allowResume = false, reason = 'user', trustSavedPins = false } = {}) {
+    let profile = await this.#client.loadProfile().catch(() => null);
+    if (!profile?.boat) return profile;
+    const sandboxId = profile.boat.sandboxId;
+    const wasRunning = this.#boatStatus?.sandboxId === sandboxId && this.#boatStatus.state === 'running';
+    let announced = false;
+    const announce = () => {
+      if (announced) return;
+      announced = true;
+      this.#setBoatStatus(sandboxId, { state: 'waking', message: null });
+      if (this.#link.kind !== 'recreating') {
+        this.#link = { kind: 'reconnecting', error: null, attempt: this.#link.attempt + 1, canRecreate: false };
+      }
+      this.#emitBoatChange('waking', { force: true });
+    };
+    try {
+      let sandbox = await this.#boat.getSandbox(sandboxId);
+      if (!sandbox) throw new BoatError('BOAT_SERVER_MISSING');
+      let resumed = false;
+      if (!isUsableSandboxState(sandbox.state)) {
+        if (!allowResume) {
+          this.#noteBoatSandbox(sandboxId, sandbox);
+          this.#emitBoatChange(reason);
+          return profile;
+        }
+        announce();
+        ({ sandbox, resumed } = await this.#boat.ensureRunning(sandboxId, {
+          allowResume: true,
+          resumeTtlSeconds: null,
+          // A resume takes seconds; a user waiting on a send should not wait out a create budget.
+          timeoutMs: 3 * 60_000,
+          onState: (current) => {
+            this.#noteBoatSandbox(sandboxId, current, { waking: true });
+            this.#emitBoatChange('waking');
+          },
+        }));
+      }
+      const machineKey = sandboxMachineKey(sandbox);
+      let savedTargetMatches = false;
+      try {
+        const target = resolveSshTarget(sandbox);
+        savedTargetMatches = target.host === profile.ssh.host && target.port === profile.ssh.port;
+      } catch {
+        savedTargetMatches = false;
+      }
+      // The IP changes on every resume and host keys are machine identity, so a
+      // moved VM is re-registered and re-pinned before any tunnel dials it.
+      const needsPin = resumed
+        || (this.#boatPinned.get(sandboxId) !== machineKey && !(trustSavedPins && savedTargetMatches));
+      if (needsPin) {
+        const ssh = await this.#boat.prepareSsh(sandboxId, { sandbox });
+        profile = await this.#applyBoatSshTarget(profile, ssh);
+        this.#boatPinned.set(sandboxId, machineKey);
+      }
+      if (announced) {
+        // systemd restarts the Cloud service after a resume; allow a wake-sized budget.
+        await this.#waitForProfileHealth(profile, { attempts: 10, timeoutMs: 15_000 });
+      }
+      this.#setBoatStatus(sandboxId, { state: 'running', message: null, checkedAt: Date.now(), machineKey });
+      if (announced) {
+        if (this.#link.kind === 'reconnecting') {
+          this.#link = { kind: 'ready', error: null, attempt: 0, canRecreate: false };
+        }
+        this.#linkNeedsAction = false;
+      }
+      this.#emitBoatChange(reason, { force: announced });
+      if (!wasRunning && allowResume) void this.#resumeRecoveriesForCurrentProfile().catch(() => {});
+      if (resumed) void this.refreshBoatStatus({ force: true, reason: 'woke' });
+      return profile;
+    } catch (rawError) {
+      const error = boatUserError(rawError);
+      if (!allowResume) throw error;
+      if (error.code === 'BOAT_SERVER_MISSING') {
+        this.#setBoatStatus(sandboxId, { state: 'missing', message: null, checkedAt: Date.now() });
+      } else {
+        // Record where the VM really is (for example still `archived` after a 402).
+        const sandbox = await this.#boat.getSandbox(sandboxId).catch(() => undefined);
+        if (sandbox !== undefined) this.#noteBoatSandbox(sandboxId, sandbox);
+        if (this.#boatStatus?.sandboxId === sandboxId && this.#boatStatus.state !== 'running') {
+          this.#setBoatStatus(sandboxId, { message: error.message });
+        }
+      }
+      if (this.#boatStatus?.state === 'running' || error.code === 'BOAT_UNAVAILABLE') {
+        this.#link = { kind: 'failed', error: error.message, attempt: this.#link.attempt, canRecreate: false };
+        this.#linkNeedsAction = true;
+      } else if (this.#link.kind === 'reconnecting') {
+        this.#link = { kind: 'ready', error: null, attempt: 0, canRecreate: false };
+      }
+      this.#emitBoatChange('wake-failed', { force: true });
+      throw error;
+    }
+  }
+
+  /** 재개 후 바뀐 ssh 주소만 저장한다. 서버 키가 같아 페어링과 기기 자격 증명은 그대로다. */
+  async #applyBoatSshTarget(profile, ssh) {
+    if (profile.ssh.host === ssh.host && profile.ssh.port === ssh.port
+      && profile.ssh.user === ssh.user && profile.ssh.keyPath === ssh.keyPath) return profile;
+    const save = async () => {
+      const latest = await this.#client.loadProfile().catch(() => null);
+      if (latest?.boat?.sandboxId !== profile.boat.sandboxId || latest.serverPublicKey !== profile.serverPublicKey) {
+        throw Object.assign(new Error('Cloud profile changed during the boat wake'), { code: 'PROFILE_CHANGED' });
+      }
+      const updated = normalizeCloudProfile({
+        ...latest,
+        ssh: { ...latest.ssh, host: ssh.host, port: ssh.port, user: ssh.user, keyPath: ssh.keyPath },
+      });
+      await this.#client.saveProfile(updated);
+      return updated;
+    };
+    return this.#profileOperationContext.getStore()?.ownership === 'writer'
+      ? save()
+      : this.#withProfileWriter(save);
+  }
+
+  #followBoat(key, step, { intervalMs, timeoutMs, onEnd = () => {} }) {
+    this.#boatFollowers.get(key)?.abort();
+    const controller = new AbortController();
+    this.#boatFollowers.set(key, controller);
+    const deadline = Date.now() + timeoutMs;
+    void (async () => {
+      while (!controller.signal.aborted && !this.#stopped && Date.now() < deadline) {
+        try {
+          await delay(intervalMs, undefined, { signal: controller.signal, ref: false });
+        } catch {
+          break;
+        }
+        let done = false;
+        try { done = await step(); } catch { done = false; }
+        if (done) break;
+      }
+    })().finally(() => {
+      if (this.#boatFollowers.get(key) === controller) {
+        this.#boatFollowers.delete(key);
+        onEnd();
+      }
+    });
+  }
+
+  #boatAction(kind, operation) {
+    const existing = this.#boatActions.get(kind);
+    if (existing) return existing;
+    if (this.#boatActions.size) return Promise.reject(new BoatError('BOAT_BUSY', { message: '다른 boat 작업을 처리하는 중입니다.' }));
+    const run = Promise.resolve().then(operation).finally(() => {
+      if (this.#boatActions.get(kind) === run) this.#boatActions.delete(kind);
+    });
+    this.#boatActions.set(kind, run);
+    return run;
+  }
+
+  async boatStartEmailSignIn({ email } = {}) {
+    return this.#requireBoat().startEmailSignIn(email);
+  }
+
+  async boatPollSignIn({ claimId } = {}) {
+    const result = await this.#requireBoat().pollSignIn(claimId);
+    if (result.status !== 'connected') return result;
+    this.#boatConnected = true;
+    void this.refreshBoatStatus({ force: true, reason: 'connected' });
+    this.#emitBoatChange('connected', { force: true });
+    return { status: 'connected', snapshot: await this.snapshot() };
+  }
+
+  async boatConnectApiKey({ apiKey } = {}) {
+    await this.#requireBoat().connectApiKey(apiKey);
+    this.#boatConnected = true;
+    void this.refreshBoatStatus({ force: true, reason: 'connected' });
+    this.#emitBoatChange('connected', { force: true });
+    return this.snapshot();
+  }
+
+  async boatOpenLink({ kind, claimId = null } = {}) {
+    const boat = this.#requireBoat();
+    const result = await boat.openLink({ kind, claimId });
+    if (kind === 'checkout') {
+      // The waiting screen advances by itself once the plan lets the account start VMs.
+      this.#followBoat('billing', async () => {
+        const limits = await boat.refreshLimits();
+        this.#emitBoatChange('billing');
+        return limits.canStart === true;
+      }, { intervalMs: 5_000, timeoutMs: 30 * 60_000 });
+    }
+    return result;
+  }
+
+  async boatRefresh() {
+    this.#requireBoat();
+    await this.refreshBoatStatus({ force: true, reason: 'manual' });
+    return this.snapshot();
+  }
+
+  async boatWake() {
+    this.#requireBoat();
+    if (this.#boatSetupPromise) throw new BoatError('BOAT_BUSY');
+    const profile = await this.#client.loadProfile().catch(() => null);
+    if (!profile?.boat) throw new BoatError('BOAT_SERVER_MISSING');
+    await this.#boatSync({ allowResume: true, reason: 'explicit' });
+    return this.reconnectCloud();
+  }
+
+  boatStop() {
+    return this.#boatAction('stop', async () => {
+      const boat = this.#requireBoat();
+      const profile = await this.#client.loadProfile().catch(() => null);
+      if (!profile?.boat) throw new BoatError('BOAT_SERVER_MISSING');
+      if (this.#boatSetupPromise) throw new BoatError('BOAT_BUSY');
+      if (this.#boatWakePromise) await this.#boatWakePromise.catch(() => {});
+      const sandboxId = profile.boat.sandboxId;
+      this.#boatTransition = 'stopping';
+      this.#abortSessionWatchers();
+      this.#setBoatStatus(sandboxId, { state: 'stopping', message: null, checkedAt: Date.now() });
+      this.#emitBoatChange('stopping', { force: true });
+      try {
+        const sandbox = await boat.stopSandbox(sandboxId);
+        if (sandbox?.state === 'archived') this.#setBoatStatus(sandboxId, { state: 'stopped' });
+      } catch (error) {
+        this.#boatTransition = null;
+        await this.#refreshBoatStatus({ reason: 'stop-failed' }).catch(() => {});
+        this.#emitBoatChange('stop-failed', { force: true });
+        throw boatUserError(error);
+      }
+      await this.#quietBoatLink();
+      this.#followBoat('stop', async () => {
+        await this.#refreshBoatStatus({ reason: 'stopping' });
+        return this.#boatStatus?.state !== 'stopping';
+      }, {
+        intervalMs: 3_000,
+        timeoutMs: 3 * 60_000,
+        onEnd: () => {
+          this.#boatTransition = null;
+          void this.refreshBoatStatus({ force: true, reason: 'stopped' });
+        },
+      });
+      return this.snapshot();
+    });
+  }
+
+  boatDisconnect({ deleteServer = false } = {}) {
+    return this.#boatAction('disconnect', async () => {
+      const boat = this.#requireBoat();
+      if (this.#boatSetupPromise) throw new BoatError('BOAT_BUSY');
+      if (this.#boatWakePromise) await this.#boatWakePromise.catch(() => {});
+      const profile = await this.#client.loadProfile().catch(() => null);
+      const journal = await boat.loadSetupJournal().catch(() => null);
+      const sandboxId = profile?.boat?.sandboxId ?? journal?.sandboxId ?? this.#boatSetupSandboxId ?? null;
+      if (deleteServer === true && sandboxId) {
+        if (!await boat.isConnected()) throw new BoatError('BOAT_NOT_CONNECTED');
+        this.#abortSessionWatchers();
+        try {
+          await boat.deleteSandbox(sandboxId);
+        } catch (error) {
+          throw boatUserError(error);
+        }
+        if (profile?.boat) await this.#abandonLiveHandoffs();
+      }
+      for (const controller of this.#boatFollowers.values()) controller.abort();
+      this.#boatFollowers.clear();
+      if (profile?.boat) {
+        await this.#withProfileWriter(() => this.#changeProfile(() => this.#client.forgetProfile()));
+        this.#link = { kind: 'ready', error: null, attempt: 0, canRecreate: false };
+      }
+      if (sandboxId) {
+        this.#boatPinned.delete(sandboxId);
+        await boat.removePins(sandboxId).catch(() => {});
+      }
+      await boat.clearSetupJournal().catch(() => {});
+      await boat.disconnect();
+      this.#boatStatus = null;
+      this.#boatSetup = null;
+      this.#boatSetupSandboxId = null;
+      this.#boatSetupMachine = null;
+      this.#boatTransition = null;
+      this.#boatConnected = false;
+      this.#emitBoatChange('disconnected', { force: true });
+      return this.snapshot();
+    });
+  }
+
+  async #restoreBoatSetup() {
+    const journal = await this.#boat.loadSetupJournal().catch(() => null);
+    if (!journal) return;
+    // The app closed mid-setup. Show where it stopped; 다시 시도 continues from the journal.
+    this.#boatSetupSandboxId = journal.sandboxId;
+    this.#boatSetupMachine = journal.machine;
+    this.#boatSetup = {
+      stage: journal.stage,
+      startedAt: journal.startedAt,
+      detail: null,
+      error: {
+        title: BOAT_SETUP_TITLE,
+        guidance: '다시 시도하면 이어서 진행합니다.',
+        detail: 'Setup stopped when the app closed.',
+      },
+      importedProviders: [],
+    };
+  }
+
+  #setBoatSetup(patch) {
+    this.#boatSetup = { ...this.#boatSetup, ...patch };
+    this.#emit({ type: 'boat-setup-progress', stage: this.#boatSetup.stage });
+    this.#emitBoatChange('setup');
+  }
+
+  #boatSetupLine(line) {
+    const detail = summarizeInstallLine(line);
+    if (!detail || !this.#boatSetup) return;
+    this.#boatSetup = { ...this.#boatSetup, detail };
+    const now = Date.now();
+    if (now - this.#boatSetupLineAt < 750) return;
+    this.#boatSetupLineAt = now;
+    this.#emitBoatChange('setup-detail');
+  }
+
+  boatSetup({ machine = 'default' } = {}) {
+    try {
+      this.#requireBoat();
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    if (this.#boatSetupPromise) return this.#boatSetupPromise;
+    if (this.#boatActions.size) return Promise.reject(new BoatError('BOAT_BUSY'));
+    const operation = this.#runBoatSetup(normalizeBoatMachine(machine)).finally(() => {
+      if (this.#boatSetupPromise === operation) this.#boatSetupPromise = null;
+    });
+    this.#boatSetupPromise = operation;
+    return operation;
+  }
+
+  async #runBoatSetup(machine) {
+    const boat = this.#boat;
+    const current = await this.#client.loadProfile().catch(() => null);
+    if (current?.mode === 'app-hosted') {
+      throw new BoatError('BOAT_BUSY', { message: 'Raucloud 서버를 먼저 종료해야 합니다.' });
+    }
+    if (!await boat.isConnected()) throw new BoatError('BOAT_NOT_CONNECTED');
+    let journal = await boat.loadSetupJournal().catch(() => null);
+    if (journal && !journal.sandboxId && journal.machine !== machine) journal = null;
+    const limits = await boat.refreshLimits();
+    const hasServer = Boolean(journal?.sandboxId || current?.boat);
+    if (limits.canStart === false && !hasServer) {
+      this.#boatSetup = null;
+      this.#emitBoatChange('billing', { force: true });
+      throw new BoatError('BOAT_BILLING_REQUIRED');
+    }
+    journal ??= {
+      version: 1,
+      machine,
+      startedAt: new Date().toISOString(),
+      idempotencyKey: randomUUID(),
+      sandboxId: null,
+      stage: 'creating',
+    };
+    const saveStage = async (stage, patch = {}) => {
+      journal = await boat.saveSetupJournal({ ...journal, ...patch, stage });
+    };
+    this.#boatSetupMachine = journal.machine;
+    this.#setBoatSetup({
+      stage: 'creating',
+      startedAt: journal.startedAt,
+      detail: null,
+      error: null,
+      importedProviders: [],
+    });
+    let stage = 'creating';
+    try {
+      await saveStage('creating');
+      const paired = await this.#client.isPaired().catch(() => false);
+      let sandboxId = journal.sandboxId ?? current?.boat?.sandboxId ?? null;
+      if (sandboxId && !await boat.getSandbox(sandboxId)) {
+        // The journal's VM is gone; a fresh key keeps the next create from replaying it.
+        sandboxId = null;
+        await saveStage('creating', { sandboxId: null, idempotencyKey: randomUUID() });
+      }
+      if (!sandboxId) {
+        const existing = await boat.findRauhwpxSandbox();
+        const sandbox = existing ?? await boat.createSandbox({
+          machine: journal.machine,
+          idempotencyKey: journal.idempotencyKey,
+        });
+        sandboxId = sandbox.id;
+        if (existing) this.#boatSetupMachine = normalizeBoatMachine(existing.type ?? journal.machine);
+        await saveStage('creating', { sandboxId });
+      }
+      this.#boatSetupSandboxId = sandboxId;
+      this.#emitBoatChange('setup');
+
+      const resumeCredentials = current?.boat?.sandboxId === sandboxId && paired && journal.stage === 'credentials';
+      if (!resumeCredentials) {
+        stage = 'starting';
+        await saveStage('starting');
+        this.#setBoatSetup({ stage, detail: null });
+        const { sandbox } = await boat.ensureRunning(sandboxId, {
+          allowResume: true,
+          // Until the idle timer exists, a finite auto-stop bounds an abandoned setup.
+          resumeTtlSeconds: BOAT_SETUP_TTL_SECONDS,
+          onState: (currentSandbox) => {
+            this.#noteBoatSandbox(sandboxId, currentSandbox, { waking: true });
+            this.#emitBoatChange('setup');
+          },
+        });
+        this.#noteBoatSandbox(sandboxId, sandbox);
+        const ssh = await boat.prepareSsh(sandboxId, { sandbox });
+        this.#boatPinned.set(sandboxId, ssh.machineKey);
+        const bootMachine = normalizeBoatMachine(sandbox.type ?? this.#boatSetupMachine);
+        this.#boatSetupMachine = bootMachine;
+
+        stage = 'installing';
+        await saveStage('installing');
+        this.#setBoatSetup({ stage, detail: null });
+        const receipt = await this.#provisioner.provision(ssh, {
+          channel: 'stable',
+          transport: 'ssh-tunnel',
+          hostEnv: boatHostEnv({ sandboxId, idleMinutes: BOAT_IDLE_STOP_MINUTES, user: ssh.user }),
+          onLine: (line) => this.#boatSetupLine(line),
+        });
+
+        stage = 'pairing';
+        await saveStage('pairing');
+        this.#setBoatSetup({ stage, detail: null });
+        const candidate = normalizeCloudProfile({
+          mode: 'self-hosted',
+          name: 'boat',
+          ssh: { host: ssh.host, port: ssh.port, user: ssh.user, keyPath: ssh.keyPath, useTailscaleSsh: false },
+          api: { kind: 'ssh-tunnel', remoteHost: '127.0.0.1', remotePort: 7740, basePath: '/rauhwpx-cloud' },
+          transport: 'ssh-tunnel',
+          provider: current?.provider ?? 'codex',
+          limits: current?.limits,
+          serverPublicKey: receipt.serverPublicKey,
+          boat: { sandboxId, machine: bootMachine, createdAt: sandbox.createdAt ?? new Date().toISOString() },
+        });
+        await this.#waitForProfileHealth(candidate, { attempts: 12, timeoutMs: 15_000 });
+        let credentials = null;
+        if (receipt.pairingCode) {
+          const pairing = await this.#client.redeemPairingCode(receipt.pairingCode, hostname(), {
+            profile: candidate,
+            persist: false,
+          });
+          credentials = pairing.credentials;
+        } else if (!(current?.serverPublicKey === candidate.serverPublicKey && paired)) {
+          throw new Error('The boat installer did not return a pairing code');
+        }
+        await this.#withProfileWriter(async () => {
+          const latest = await this.#client.loadProfile().catch(() => null);
+          this.#assertNotReplacingSandbox(latest, candidate);
+          await this.#changeProfile(() => this.#client.activateProfile(candidate, credentials ? {
+            tokens: credentials,
+            device: credentials.device,
+          } : { preserveCredentials: true }));
+          await this.#adoptSelfHostedMode();
+        });
+        this.#setBoatStatus(sandboxId, {
+          state: 'running',
+          message: null,
+          checkedAt: Date.now(),
+          machineKey: ssh.machineKey,
+        });
+        if (this.#link.kind !== 'recreating') this.#link = { kind: 'ready', error: null, attempt: 0, canRecreate: false };
+      }
+
+      stage = 'credentials';
+      await saveStage('credentials');
+      this.#setBoatSetup({ stage, detail: null });
+      const importedProviders = await this.#importAllProviderLogins();
+      // The idle timer now stops the VM; boat's own auto-stop would cut work off mid-turn.
+      await boat.relaxAutoStop(sandboxId).catch((error) => {
+        this.#emit({ type: 'boat-auto-stop-deferred', error: boatDetail(error) });
+      });
+      await boat.clearSetupJournal().catch(() => {});
+      this.#boatSetupSandboxId = null;
+      this.#setBoatSetup({ stage: 'done', detail: null, error: null, importedProviders });
+      void this.refreshBoatStatus({ force: true, reason: 'setup' });
+      const snapshot = await this.snapshot();
+      this.#emit({ type: 'boat-setup-completed', snapshot });
+      return snapshot;
+    } catch (error) {
+      const failure = boatSetupError(error);
+      const guidance = BOAT_SETUP_GUIDANCE[error?.code] ?? (stage === 'installing'
+        ? '다시 시도하면 설치를 이어서 진행합니다.'
+        : '다시 시도하면 이어서 진행합니다.');
+      this.#setBoatSetup({
+        stage,
+        detail: null,
+        error: { title: BOAT_SETUP_TITLE, guidance, detail: boatDetail(error) },
+      });
+      throw failure;
+    }
+  }
+
+  /** 이 Mac에 로그인된 모든 제공자 자격 증명을 한 번에 서버로 옮긴다. */
+  async #importAllProviderLogins() {
+    const imported = [];
+    for (const provider of CLOUD_PROVIDERS) {
+      const auth = await this.#providerAuthFor(provider).catch(() => null);
+      if (!auth || (!Object.keys(auth.secrets ?? {}).length && !Object.keys(auth.files ?? {}).length)) continue;
+      try {
+        const result = await this.#client.putProviderAuth(provider, auth);
+        if (result === null) {
+          const seed = await this.#providerAuth(provider);
+          if (!hasProviderAuth(seed) || typeof this.#client.seedProviderCredentials !== 'function') continue;
+          await this.#client.seedProviderCredentials(seed);
+        }
+        imported.push(provider);
+      } catch (error) {
+        this.#emit({ type: 'boat-credential-import-failed', provider, error: boatDetail(error) });
+      }
+    }
+    return imported;
+  }
+
   #emit(event) {
     this.#profileOperationContext.exit(() => {
       this.emit('event', {
@@ -4393,6 +5298,7 @@ export class CloudCoordinator extends EventEmitter {
   #watchRemote(sessionId, profileEpoch = this.#profileEpoch) {
     const watcherKey = `${profileEpoch}:${sessionId}`;
     if (this.#stopped || !sessionId || profileEpoch !== this.#profileEpoch || this.#watchers.has(watcherKey)) return;
+    if (this.#boatBlocksBackground()) return;
     const controller = new AbortController();
     this.#watchers.set(watcherKey, controller);
     this.#armLinkWatchdog();

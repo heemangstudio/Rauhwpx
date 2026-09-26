@@ -35,10 +35,23 @@ import type {
   CloudResultAction,
   CloudResultResolution,
   AccountSnapshot,
+  BoatAccountSnapshot,
+  BoatLinkKind,
+  BoatMachine,
+  BoatServerSnapshot,
+  BoatSetupProgress,
+  BoatSignInChallenge,
+  BoatSignInPoll,
+  BoatSnapshot,
   CloudLinkState,
 } from './types.ts';
 
 const SANDBOX_LIFECYCLES = ['idle', 'provisioning', 'ready', 'error', 'tearing-down'] as const;
+/** 이 중 하나라도 없는 데스크톱은 boat 설정을 끝까지 진행할 수 없다. */
+const BOAT_REQUIRED_METHODS = [
+  'cloudBoatStartEmailSignIn', 'cloudBoatPollSignIn', 'cloudBoatConnectApiKey', 'cloudBoatOpenLink',
+  'cloudBoatSetup', 'cloudBoatWake', 'cloudBoatStop', 'cloudBoatRefresh', 'cloudBoatDisconnect',
+] as const;
 
 export interface CloudDesktopApi {
   cloudGetState?: (payload: CloudSessionScope) => Promise<unknown>;
@@ -77,6 +90,15 @@ export interface CloudDesktopApi {
     editSessionId: string;
     changeSummary?: string;
   }) => Promise<unknown>;
+  cloudBoatStartEmailSignIn?: (payload: { email: string }) => Promise<unknown>;
+  cloudBoatPollSignIn?: (payload: { claimId: string }) => Promise<unknown>;
+  cloudBoatConnectApiKey?: (payload: { apiKey: string }) => Promise<unknown>;
+  cloudBoatOpenLink?: (payload: { kind: BoatLinkKind; claimId?: string }) => Promise<unknown>;
+  cloudBoatSetup?: (payload: { machine: BoatMachine }) => Promise<unknown>;
+  cloudBoatWake?: () => Promise<unknown>;
+  cloudBoatStop?: () => Promise<unknown>;
+  cloudBoatRefresh?: () => Promise<unknown>;
+  cloudBoatDisconnect?: (payload: { deleteServer: boolean }) => Promise<unknown>;
   onCloudEvent?: (callback: (event: unknown) => void) => (() => void) | void;
   onCloudDisplayEvent?: (callback: (event: unknown) => void) => (() => void) | void;
 }
@@ -112,6 +134,17 @@ export interface CloudController {
   resolveResult(sessionId: string, action: CloudResultAction): Promise<CloudResultResolution>;
   beginEdit(sessionId: string): Promise<CloudEditDraftSession>;
   continueEdit(sessionId: string, editSessionId: string, changeSummary?: string): Promise<CloudSnapshot>;
+  /** boat 설정에 필요한 메서드를 모두 가진 데스크톱인지. 없으면 boat 선택지를 숨긴다. */
+  boatSupported(): boolean;
+  boatStartEmailSignIn(email: string): Promise<BoatSignInChallenge>;
+  boatPollSignIn(claimId: string): Promise<BoatSignInPoll>;
+  boatConnectApiKey(apiKey: string): Promise<CloudSnapshot>;
+  boatOpenLink(kind: BoatLinkKind, claimId?: string): Promise<boolean>;
+  boatSetup(machine: BoatMachine): Promise<CloudSnapshot>;
+  boatWake(): Promise<CloudSnapshot>;
+  boatStop(): Promise<CloudSnapshot>;
+  boatRefresh(): Promise<CloudSnapshot>;
+  boatDisconnect(deleteServer: boolean): Promise<CloudSnapshot>;
   subscribe(listener: (snapshot: CloudSnapshot) => void): () => void;
   subscribeEvents(listener: (event: unknown) => void): () => void;
   dispose(): void;
@@ -188,9 +221,15 @@ function parseProfileDraft(value: unknown): CloudProfileDraft | null {
   if (!parsedAuth || !parsedTransport) return null;
   const serverPublicKey = string(profile.serverPublicKey).trim();
   if (serverPublicKey && !/^ed25519:[A-Za-z0-9_-]{59}$/.test(serverPublicKey)) return null;
+  const boatRaw = record(profile.boat);
+  const boatSandboxId = string(boatRaw?.sandboxId).trim();
+  const boat = boatRaw && boatSandboxId && boatSandboxId.length <= 64
+    ? { sandboxId: boatSandboxId, machine: boatRaw.machine === 'small' ? 'small' as const : 'default' as const }
+    : null;
   return {
     name, host, sshUser, sshPort, tailscaleHttpsPort, auth: parsedAuth, transport: parsedTransport,
     ...(serverPublicKey ? { serverPublicKey } : {}),
+    ...(boat ? { boat } : {}),
   };
 }
 
@@ -535,6 +574,118 @@ function parseTakeover(value: unknown): CloudTakeoverPayload | null {
   };
 }
 
+const BOAT_SERVER_STATES = ['stopped', 'waking', 'running', 'stopping', 'missing', 'error'] as const;
+const BOAT_SETUP_STAGES = ['creating', 'starting', 'installing', 'pairing', 'credentials', 'done'] as const;
+const BOAT_PROVIDERS = ['claude', 'codex', 'pi'] as const;
+
+function optionalText(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function parseBoatServer(value: unknown): BoatServerSnapshot | null {
+  const server = record(value);
+  const sandboxId = string(server?.sandboxId).trim();
+  const state = BOAT_SERVER_STATES.find((entry) => entry === server?.state);
+  if (!server || !sandboxId || !state) return null;
+  const hours = typeof server.monthHours === 'number' && Number.isFinite(server.monthHours) && server.monthHours >= 0
+    ? Math.round(server.monthHours * 10) / 10
+    : null;
+  const idle = strictInteger(server.idleStopMinutes);
+  return {
+    sandboxId,
+    state,
+    machine: server.machine === 'small' ? 'small' : 'default',
+    machineLabel: string(server.machineLabel).trim(),
+    region: 'EU',
+    monthHours: hours,
+    idleStopMinutes: idle !== null && idle >= 5 && idle <= 240 ? idle : 30,
+    message: optionalText(server.message),
+  };
+}
+
+function parseBoatSetup(value: unknown): BoatSetupProgress | null {
+  const setup = record(value);
+  const stage = BOAT_SETUP_STAGES.find((entry) => entry === setup?.stage);
+  const startedAt = strictIso(setup?.startedAt);
+  if (!setup || !stage || !startedAt) return null;
+  const error = record(setup.error);
+  const imported = Array.isArray(setup.importedProviders) ? setup.importedProviders : [];
+  return {
+    stage,
+    startedAt,
+    detail: optionalText(setup.detail),
+    error: error && optionalText(error.title)
+      ? { title: string(error.title).trim(), guidance: string(error.guidance).trim(), detail: string(error.detail) }
+      : null,
+    importedProviders: BOAT_PROVIDERS.filter((provider) => imported.includes(provider)),
+  };
+}
+
+/** boat 부분이 어긋나도 Cloud 전체를 버리지 않는다. 읽을 수 없는 조각만 비운다. */
+export function parseBoatSnapshot(value: unknown): BoatSnapshot | null {
+  const raw = record(value);
+  const account = record(raw?.account);
+  if (!raw || !account || typeof account.connected !== 'boolean') return null;
+  const parsedAccount: BoatAccountSnapshot = {
+    connected: account.connected,
+    method: account.method === 'email' || account.method === 'api-key' ? account.method : null,
+    email: optionalText(account.email),
+    canStart: typeof account.canStart === 'boolean' ? account.canStart : null,
+    trial: typeof account.trial === 'boolean' ? account.trial : null,
+  };
+  return {
+    account: parsedAccount,
+    server: parseBoatServer(raw.server),
+    setup: parseBoatSetup(raw.setup),
+  };
+}
+
+export function parseBoatChallenge(value: unknown): BoatSignInChallenge | null {
+  const raw = record(value);
+  const claimId = string(raw?.claimId).trim();
+  const userCode = string(raw?.userCode).replace(/\s+/g, '');
+  const expiresAt = strictIso(raw?.expiresAt);
+  let verificationUri = '';
+  try {
+    const url = new URL(string(raw?.verificationUri));
+    if (url.protocol === 'https:' && (url.hostname === 'boat.dev' || url.hostname.endsWith('.boat.dev'))) {
+      verificationUri = url.href;
+    }
+  } catch { /* 아래에서 거절한다. */ }
+  const interval = strictInteger(raw?.intervalSeconds);
+  if (!raw || !claimId || !/^[A-Za-z0-9]{4,12}$/.test(userCode) || !expiresAt || !verificationUri) return null;
+  return {
+    claimId,
+    verificationUri,
+    userCode,
+    expiresAt,
+    intervalSeconds: interval !== null && interval >= 1 && interval <= 60 ? interval : 5,
+  };
+}
+
+/**
+ * preload 는 { message, code } 모양으로 거절하고, 봉투 없이 거절된 invoke 는 메시지 앞에 채널 이름이
+ * 붙고 code 를 잃는다. 어느 쪽이든 사용자에게 보일 문장과 `BOAT_…` code 만 남긴다.
+ */
+export function normalizeBoatError(error: unknown): Error & { code?: string } {
+  const shaped = error && typeof error === 'object' ? error as { message?: unknown; code?: unknown } : null;
+  const message = typeof shaped?.message === 'string' ? shaped.message : String(error ?? '');
+  const own = shaped?.code;
+  let text = message
+    .replace(/^Error invoking remote method '[^']*':\s*/, '')
+    .replace(/^(?:[A-Za-z]*Error):\s*/, '')
+    .trim();
+  let code = typeof own === 'string' && own ? own : undefined;
+  const prefixed = /^\[?(BOAT_[A-Z_]+)\]?:?\s*/.exec(text);
+  if (prefixed) {
+    code ??= prefixed[1];
+    text = text.slice(prefixed[0].length).trim();
+  }
+  const normalized = new Error(text || 'boat에 연결하지 못했습니다.') as Error & { code?: string };
+  if (code) normalized.code = code;
+  return normalized;
+}
+
 export function parseCloudSnapshot(value: unknown): CloudSnapshot | null {
   const raw = record(value);
   if (!raw) return null;
@@ -611,6 +762,7 @@ export function parseCloudSnapshot(value: unknown): CloudSnapshot | null {
   });
   if (parsedMergeRequests.some((item) => !item)) return null;
   const link = raw.link === undefined ? undefined : parseCloudLink(raw.link);
+  const boat = raw.boat === undefined ? undefined : parseBoatSnapshot(raw.boat);
   return {
     revision,
     profileEpoch,
@@ -628,6 +780,7 @@ export function parseCloudSnapshot(value: unknown): CloudSnapshot | null {
     ...(account ? { account } : {}),
     ...(takeover ? { takeover } : {}),
     ...(link ? { link } : {}),
+    ...(boat !== undefined ? { boat } : {}),
   };
 }
 
@@ -814,6 +967,18 @@ export function createCloudController(
     const fn = resolvedApi?.[method];
     if (typeof fn !== 'function') throw new Error('이 앱 빌드는 클라우드 에이전트를 지원하지 않습니다.');
     return accept(await (fn as (arg?: unknown) => Promise<unknown>)(payload));
+  };
+
+  const boatInvoke = async (method: keyof CloudDesktopApi, payload?: unknown): Promise<unknown> => {
+    const fn = resolvedApi?.[method];
+    if (typeof fn !== 'function') {
+      throw Object.assign(new Error('이 앱 빌드는 boat 서버를 지원하지 않습니다.'), { code: 'BOAT_UNSUPPORTED' });
+    }
+    try {
+      return await (fn as (arg?: unknown) => Promise<unknown>)(payload);
+    } catch (error) {
+      throw normalizeBoatError(error);
+    }
   };
 
   const recover = (kind: 'reconnecting' | 'recreating', run: () => Promise<CloudSnapshot>): Promise<CloudSnapshot> => {
@@ -1120,6 +1285,28 @@ export function createCloudController(
       editSessionId,
       ...(changeSummary ? { changeSummary } : {}),
     }),
+    boatSupported: () => BOAT_REQUIRED_METHODS.every((method) => typeof resolvedApi?.[method] === 'function'),
+    async boatStartEmailSignIn(email) {
+      const challenge = parseBoatChallenge(await boatInvoke('cloudBoatStartEmailSignIn', { email }));
+      if (!challenge) throw normalizeBoatError('boat 로그인 코드를 받지 못했습니다.');
+      return challenge;
+    },
+    async boatPollSignIn(claimId) {
+      const raw = record(await boatInvoke('cloudBoatPollSignIn', { claimId }));
+      if (raw?.status === 'pending' || raw?.status === 'expired') return { status: raw.status };
+      if (raw?.status === 'connected') return { status: 'connected', snapshot: accept(raw.snapshot) };
+      throw normalizeBoatError('boat 로그인 상태를 확인하지 못했습니다.');
+    },
+    boatConnectApiKey: async (apiKey) => accept(await boatInvoke('cloudBoatConnectApiKey', { apiKey })),
+    async boatOpenLink(kind, claimId) {
+      const raw = record(await boatInvoke('cloudBoatOpenLink', { kind, ...(claimId ? { claimId } : {}) }));
+      return raw?.opened === true;
+    },
+    boatSetup: async (machine) => accept(await boatInvoke('cloudBoatSetup', { machine })),
+    boatWake: async () => accept(await boatInvoke('cloudBoatWake')),
+    boatStop: async () => accept(await boatInvoke('cloudBoatStop')),
+    boatRefresh: async () => accept(await boatInvoke('cloudBoatRefresh')),
+    boatDisconnect: async (deleteServer) => accept(await boatInvoke('cloudBoatDisconnect', { deleteServer })),
     subscribe(listener) {
       listeners.add(listener);
       listener(snapshot);

@@ -1,6 +1,7 @@
 import { checkPiModels } from './pi-models.check.mjs';
 import { checkCloudMergeRecovery } from './cloud-merge-recovery.check.mjs';
 import { checkCloudSetup } from './cloud-setup.check.mjs';
+import { checkBoatSetup } from './boat-setup.check.mjs';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -145,6 +146,8 @@ try {
   }
   await step('First Cloud server creation, cancel, refresh and recreation',
     () => checkCloudSetup(page, origin, artifacts));
+  await step('boat server setup by email and API key, card start/stop, disconnect and delete at 280/480/900px',
+    () => checkBoatSetup(page, origin, artifacts));
   await step('Cloud disconnect, reconnect, rebuild, and shutdown recovery',
     () => checkCloudRecovery(page, origin, artifacts));
   await step('Cloud streamed text survives delayed timelines and terminal errors do not reconnect',

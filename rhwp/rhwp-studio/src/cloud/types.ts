@@ -19,7 +19,70 @@ export interface CloudProfileDraft {
   auth: CloudSshAuthDraft;
   transport: CloudTransportDraft;
   serverPublicKey?: string;
+  /** boat.dev 계정의 VM. 데스크톱이 SSH 주소를 재개할 때마다 바꾼다. */
+  boat?: { sandboxId: string; machine: BoatMachine };
 }
+
+export type BoatMachine = 'default' | 'small';
+export type BoatServerState = 'stopped' | 'waking' | 'running' | 'stopping' | 'missing' | 'error';
+export type BoatSetupStage =
+  | 'creating' | 'starting' | 'installing' | 'pairing' | 'credentials' | 'done';
+
+export interface BoatAccountSnapshot {
+  connected: boolean;
+  method: 'email' | 'api-key' | null;
+  email: string | null;
+  /** From GET /limits. null when unknown. */
+  canStart: boolean | null;
+  trial: boolean | null;
+}
+
+export interface BoatServerSnapshot {
+  sandboxId: string;
+  state: BoatServerState;
+  machine: BoatMachine;
+  /** Human label, e.g. "4 vCPU · 8 GB". */
+  machineLabel: string;
+  region: 'EU';
+  /** Billable hours since the first day of the current calendar month (usage API), 1 decimal. */
+  monthHours: number | null;
+  idleStopMinutes: number;
+  message: string | null;
+}
+
+export interface BoatSetupProgress {
+  stage: BoatSetupStage;
+  startedAt: string;
+  /** Latest human-readable line (installer output is summarized, never raw secrets). */
+  detail: string | null;
+  error: { title: string; guidance: string; detail: string } | null;
+  /** Providers whose login was copied to the server during setup. */
+  importedProviders: Array<'claude' | 'codex' | 'pi'>;
+}
+
+export interface BoatSnapshot {
+  account: BoatAccountSnapshot;
+  server: BoatServerSnapshot | null;
+  setup: BoatSetupProgress | null;
+}
+
+export interface BoatSignInChallenge {
+  /** Opaque id held by the desktop; the claim token never leaves main. */
+  claimId: string;
+  /** https://boat.dev/... */
+  verificationUri: string;
+  /** 6 digits. */
+  userCode: string;
+  expiresAt: string;
+  intervalSeconds: number;
+}
+
+export type BoatSignInPoll =
+  | { status: 'pending' }
+  | { status: 'expired' }
+  | { status: 'connected'; snapshot: CloudSnapshot };
+
+export type BoatLinkKind = 'verification' | 'checkout' | 'api-keys' | 'dashboard';
 
 export type CloudServerMode = 'self-hosted' | 'app-hosted';
 export type CloudConnectionState = 'unknown' | 'testing' | 'ready' | 'error';
@@ -264,6 +327,8 @@ export interface CloudSnapshot {
   account?: AccountSnapshot | null;
   takeover?: CloudTakeoverPayload;
   link?: CloudLinkState;
+  /** boat.dev 계정·VM 상태. boat 를 모르는 데스크톱에서는 없다. */
+  boat?: BoatSnapshot | null;
 }
 
 export interface CloudTakeoverPayload {

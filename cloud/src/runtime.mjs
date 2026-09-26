@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, unlinkSync } from 'node:fs';
 import { chmod, chown } from 'node:fs/promises';
 import http from 'node:http';
+import { ActivityStamp } from './activity.mjs';
 import { AuthService } from './auth.mjs';
 import { BlobStore } from './blob-store.mjs';
 import { openDatabase } from './database.mjs';
@@ -54,6 +55,8 @@ export function createCloudRuntime(config, dependencies = {}) {
     maxQueuedSessions: config.maxQueuedSessions,
   });
   sessionStore.setRuntimeInvalidationHandler?.((sessionId) => displayFrameStore.closeSession(sessionId));
+  const activity = dependencies.activity ?? new ActivityStamp(config.dataDirectory);
+  sessionStore.setActivityHandler?.(() => activity.touch());
   const logger = dependencies.logger ?? new RedactedLogger(database);
   const vault = dependencies.vault ?? new SecretVault(database, { dataDirectory: config.dataDirectory });
   const providerManager = dependencies.providerManager ?? new ProviderManager(sessionStore, {
@@ -108,6 +111,7 @@ export function createCloudRuntime(config, dependencies = {}) {
     seedProvider,
     raucloudLease,
     conversationBackup,
+    activity,
     applyProviderAuth: async (provider, raw) => {
       const imported = await applyProviderAuth(provider, parseProviderAuth(provider, raw), {
         vault,
@@ -131,6 +135,7 @@ export function createCloudRuntime(config, dependencies = {}) {
     blobStore,
     displayFrameStore,
     sessionStore,
+    activity,
     logger,
     providerManager,
     scheduler,

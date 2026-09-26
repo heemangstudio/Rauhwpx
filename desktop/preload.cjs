@@ -1,5 +1,20 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
+/**
+ * boat 채널은 { ok, value | error } 봉투를 돌려준다. contextBridge는 거절된 Error에서
+ * message만 복사하므로, code와 한국어 message를 함께 가진 오류 모양 객체로 거절한다.
+ */
+async function boatCall(channel, payload) {
+  const response = await ipcRenderer.invoke(channel, payload);
+  if (response && response.ok === true) return response.value;
+  const failure = response && typeof response.error === 'object' && response.error ? response.error : {};
+  const message = typeof failure.message === 'string' && failure.message
+    ? failure.message
+    : 'boat 요청을 처리하지 못했습니다.';
+  const code = typeof failure.code === 'string' && failure.code ? failure.code : 'BOAT_UNAVAILABLE';
+  throw { name: 'BoatError', message, code, toString: () => message };
+}
+
 contextBridge.exposeInMainWorld('rhwpDesktop', {
   getSessionContext: () => ipcRenderer.invoke('desktop:get-session-context'),
   getUniqueInstalls: () => ipcRenderer.invoke('desktop:get-unique-installs'),
@@ -99,6 +114,15 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
   cloudBeginEdit: (payload) => ipcRenderer.invoke('cloud:begin-edit', payload),
   cloudContinueEdit: (payload) => ipcRenderer.invoke('cloud:continue-edit', payload),
   cloudPersistEditDraft: (payload) => ipcRenderer.invoke('cloud:edit-draft-save', payload),
+  cloudBoatStartEmailSignIn: (payload) => boatCall('cloud:boat-email-start', payload),
+  cloudBoatPollSignIn: (payload) => boatCall('cloud:boat-email-poll', payload),
+  cloudBoatConnectApiKey: (payload) => boatCall('cloud:boat-connect-key', payload),
+  cloudBoatOpenLink: (payload) => boatCall('cloud:boat-open-link', payload),
+  cloudBoatSetup: (payload) => boatCall('cloud:boat-setup', payload),
+  cloudBoatWake: () => boatCall('cloud:boat-wake'),
+  cloudBoatStop: () => boatCall('cloud:boat-stop'),
+  cloudBoatRefresh: () => boatCall('cloud:boat-refresh'),
+  cloudBoatDisconnect: (payload) => boatCall('cloud:boat-disconnect', payload),
   onCloudEvent: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('cloud:event', listener);

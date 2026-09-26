@@ -560,7 +560,7 @@ try {
     }))),
     [
       { mode: 'app-hosted', heading: 'Raucloud', note: 'Railway 사용 가능', checked: 'true' },
-      { mode: 'self-hosted', heading: '내 서버 사용', note: 'Ubuntu·Debian VPS · SSH', checked: 'false' },
+      { mode: 'self-hosted', heading: '내 서버 사용', note: 'Mac mini·Ubuntu·Debian · SSH', checked: 'false' },
     ],
   );
   assert.equal(await page.$eval('.ag-cloud-setup-options', (node) => node.getAttribute('role')), 'radiogroup');

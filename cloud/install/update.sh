@@ -101,6 +101,11 @@ install -d -m 0700 -o rauhwpx-cloud -g rauhwpx-cloud /run/rauhwpx-cloud
 PREVIOUS=$(readlink -f /opt/rauhwpx-cloud/current)
 cp /etc/rauhwpx-cloud.env "$TMP/environment.previous"
 SWITCHED=0
+install_boat_units() {
+  [[ -f /etc/rauhwpx-boat.env && -f "$1/install/rauhwpx-boat-idle.timer" ]] || return 0
+  install -m 0644 "$1/install/rauhwpx-boat-idle.service" /etc/systemd/system/rauhwpx-boat-idle.service
+  install -m 0644 "$1/install/rauhwpx-boat-idle.timer" /etc/systemd/system/rauhwpx-boat-idle.timer
+}
 rollback() {
   local status=${1:-$?}
   trap - ERR
@@ -111,6 +116,7 @@ rollback() {
     install -m 0644 "$PREVIOUS/install/rauhwpx-cloud.service" /etc/systemd/system/rauhwpx-cloud.service
     install -m 0644 "$PREVIOUS/install/rauhwpx-cloud-update.service" /etc/systemd/system/rauhwpx-cloud-update.service
     install -m 0644 "$PREVIOUS/install/rauhwpx-cloud-update.timer" /etc/systemd/system/rauhwpx-cloud-update.timer
+    install_boat_units "$PREVIOUS"
     systemctl daemon-reload
     systemctl restart rauhwpx-cloud.service
   fi
@@ -132,6 +138,7 @@ rm -f "$temporary"
 install -m 0644 "$DESTINATION/install/rauhwpx-cloud.service" /etc/systemd/system/rauhwpx-cloud.service
 install -m 0644 "$DESTINATION/install/rauhwpx-cloud-update.service" /etc/systemd/system/rauhwpx-cloud-update.service
 install -m 0644 "$DESTINATION/install/rauhwpx-cloud-update.timer" /etc/systemd/system/rauhwpx-cloud-update.timer
+install_boat_units "$DESTINATION"
 systemctl daemon-reload
 systemctl restart rauhwpx-cloud.service
 for _ in $(seq 1 30); do

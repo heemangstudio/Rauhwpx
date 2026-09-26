@@ -4,6 +4,7 @@ import { inferCloudLink } from '../../cloud/link.ts';
 import { cloudDashboardSessions } from '../../cloud/usage-history.ts';
 import { createLinkProgress } from './cloud-link-progress.ts';
 import { createIcon } from './icons.ts';
+import { boatServerResting, boatServerWaking } from './cloud-onboarding-state.ts';
 
 type Task = CloudSnapshot['sessions'][number];
 interface CloudDashboardDeps {
@@ -155,8 +156,12 @@ export function createCloudDashboard(deps: CloudDashboardDeps) {
     if (!snapshot) return;
     refresh.disabled = pending || !snapshot.available;
     refresh.setAttribute('aria-busy', String(pending));
-    reconnect.hidden = snapshot.profile.kind !== 'configured' || inferCloudLink(snapshot).kind === 'ready';
+    // 쉬거나 깨어나는 boat VM 은 카드의 시작·중지가 맡는다.
+    reconnect.hidden = snapshot.profile.kind !== 'configured' || inferCloudLink(snapshot).kind === 'ready'
+      || boatServerResting(snapshot) || boatServerWaking(snapshot);
     reconnect.disabled = pending || deps.mutationLocked();
+    // boat 서버는 Rauhwpx 계정과 하루 사용량을 쓰지 않으므로 카드에서 그 줄을 뺀다.
+    if (statusCard) statusCard.dataset.server = snapshot.boat?.server ? 'boat' : '';
     const allowance = snapshot.account?.signedIn ? snapshot.account.quota : null;
     if (!allowance || allowance.dailyLimitMs <= 0) {
       usage.hidden = true;

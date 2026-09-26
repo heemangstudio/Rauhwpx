@@ -360,7 +360,29 @@ test('provisioner selects and installs an architecture-matched bundled runtime',
   assert.match(command, /rauhwpx-cloud-linux-arm64\.tar\.gz/);
   assert.match(command, /RAUHWpx_RELEASE_URL=file:\/\/\$TMP\/rauhwpx-cloud-linux-arm64\.tar\.gz/);
   assert.match(command, /RAUHWpx_TAILSCALE_HTTPS_PORT=8443/);
+  assert.match(command, /sigstore\.json/);
+  assert.doesNotMatch(command, /RAUHWpx_DEV_UNSIGNED_SHA256/);
   assert.doesNotMatch(command, /github\.com/);
+
+  const sha = 'a'.repeat(64);
+  const development = provisionerTest.bundledInstallRemoteCommand({
+    channel: 'stable',
+    transport: 'ssh-tunnel',
+    publicHost: '',
+    tailscaleHttpsPort: 443,
+    assetArchitecture: 'amd64',
+    devUnsignedSha256: sha,
+  });
+  assert.match(development, new RegExp(`RAUHWpx_DEV_UNSIGNED_SHA256=${sha}`));
+  assert.doesNotMatch(development, /sigstore\.json/);
+  assert.throws(() => provisionerTest.bundledInstallRemoteCommand({
+    channel: 'stable',
+    transport: 'ssh-tunnel',
+    publicHost: '',
+    tailscaleHttpsPort: 443,
+    assetArchitecture: 'amd64',
+    devUnsignedSha256: 'x; rm -rf /',
+  }), /SHA-256 is invalid/);
 });
 
 test('provisioner reuses a compatible installation without downloading a release', () => {

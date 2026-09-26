@@ -6780,7 +6780,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     const execution = composerExecution(workspace.composerTarget());
     const connectionNoticeVisible = workspace.composerTarget().kind === 'cloud-blocked'
       && !cloudUi.recoveryStrip.hidden;
-    composerTargetMessage.hidden = execution.kind !== 'blocked' || connectionNoticeVisible;
+    // 서버 시작·재생성 카드가 떠 있으면 같은 상태를 알림 줄과 입력칸에서 반복하지 않는다.
+    const transitionCardVisible = workspace.composerTarget().kind === 'workspace-blocked'
+      && !cloudUi.recoveryStrip.hidden;
+    composerTargetMessage.hidden = execution.kind !== 'blocked' || connectionNoticeVisible || transitionCardVisible;
     composerTargetMessage.textContent = execution.kind === 'blocked' ? execution.message : '';
     if (mergeResolverLocked) {
       input.disabled = true;
@@ -6796,7 +6799,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       input.disabled = !connectionNoticeVisible || attachmentsSending;
       send.disabled = true;
       composerSkillClear.disabled = true;
-      input.placeholder = connectionNoticeVisible ? '연결되면 보낼 메시지 작성' : execution.message;
+      input.placeholder = connectionNoticeVisible
+        ? '연결되면 보낼 메시지 작성'
+        : transitionCardVisible ? '' : execution.message;
     } else if (execution.kind === 'cloud-start') {
       input.disabled = attachmentsSending;
       send.disabled = activeComposerSkill !== null || attachmentsSending || referenceLibrary.hasBlockingDrafts();

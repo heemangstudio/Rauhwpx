@@ -1,0 +1,302 @@
+/* boat 설정 화면과 Cloud 서버 카드의 boat 줄.
+   설정 창(.ag-cloud-setup-dialog)이 정한 --ag-* 면·글자·머리선만 쓴다. */
+
+/* 조용한 글자 버튼 — 입력칸 바로 아래의 다른 길. */
+.ag-cloud-setup-link {
+  justify-self: start;
+  min-height: 24px;
+  margin-top: -8px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: var(--ag-r-chip);
+  background: transparent;
+  color: var(--ag-text-secondary);
+  font: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+  text-underline-offset: 3px;
+  white-space: nowrap;
+  cursor: default;
+  transition:
+    color var(--ag-dur-fast) var(--ag-ease-out),
+    text-decoration-color var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+.ag-cloud-setup-link:hover:not(:disabled) {
+  color: var(--ag-text);
+  text-decoration-color: currentColor;
+}
+
+.ag-cloud-setup-link:disabled {
+  opacity: 0.52;
+}
+
+.ag-cloud-setup-link:focus-visible,
+.ag-cloud-setup-code-copy:focus-visible,
+.ag-cloud-settings-more:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+/* 로그인 코드 — 가라앉은 면 위의 고정폭 숫자. 선택하면 통째로 잡힌다. */
+.ag-cloud-setup-code {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 56px;
+  padding: 8px 8px 8px 16px;
+  border-radius: var(--radius-lg, 8px);
+  background: var(--ag-surface-subtle);
+  box-shadow: inset 0 0 0 1px var(--ag-border);
+}
+
+.ag-cloud-setup-code-value {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 0.42em;
+  overflow: hidden;
+  color: var(--ag-text);
+  font: 600 24px/1.2 var(--font-mono, ui-monospace, monospace);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.14em;
+  white-space: nowrap;
+  -webkit-user-select: all;
+  user-select: all;
+}
+
+.ag-cloud-setup-code[data-expired='true'] .ag-cloud-setup-code-value {
+  color: var(--ag-text-muted);
+}
+
+.ag-cloud-setup-code-copy {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ag-r-field);
+  background: transparent;
+  color: var(--ag-text-secondary);
+  cursor: default;
+  transition:
+    background-color var(--ag-dur-fast) var(--ag-ease-out),
+    color var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+.ag-cloud-setup-code-copy:hover:not(:disabled) {
+  background: var(--ui-hover-quiet, var(--ag-hover));
+  color: var(--ag-text);
+}
+
+.ag-cloud-setup-code-copy:disabled {
+  opacity: 0.45;
+}
+
+.ag-cloud-setup-code-copy[data-copied='true'] {
+  color: var(--accent-primary);
+}
+
+.ag-cloud-setup-code-copy .ag-icon {
+  width: 14px;
+  height: 14px;
+}
+
+/* 기다리는 줄 — 스피너 하나와 짧은 상태. */
+.ag-cloud-setup-waiting {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 20px;
+  margin: 0;
+  color: var(--ag-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ag-cloud-setup-waiting-spinner {
+  width: 12px;
+  height: 12px;
+}
+
+/* 사양·지역 같은 사실. 머리선 사이의 이름 · 값 한 줄. */
+.ag-cloud-setup-facts {
+  display: grid;
+  margin: 0;
+}
+
+.ag-cloud-setup-fact {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 9px 0;
+}
+
+.ag-cloud-setup-fact + .ag-cloud-setup-fact {
+  border-top: 1px solid var(--ag-border);
+}
+
+.ag-cloud-setup-fact dt {
+  flex: 0 0 auto;
+  color: var(--ag-text-secondary);
+  font-size: 12px;
+}
+
+.ag-cloud-setup-fact dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--ag-text);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+/* 준비 단계 — 끝남(체크) · 진행(스피너) · 대기(빈 점). */
+.ag-cloud-setup-stages {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ag-cloud-setup-stage {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: start;
+  column-gap: 10px;
+  padding: 6px 0;
+}
+
+.ag-cloud-setup-stage-mark {
+  display: grid;
+  width: 16px;
+  height: 20px;
+  place-items: center;
+  color: var(--ag-text-muted);
+}
+
+.ag-cloud-setup-stage-mark .ag-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.ag-cloud-setup-stage[data-status='done'] .ag-cloud-setup-stage-mark {
+  color: var(--accent-primary);
+}
+
+.ag-cloud-setup-stage[data-status='pending'] .ag-cloud-setup-stage-mark {
+  color: color-mix(in srgb, var(--ag-text-muted) 55%, transparent);
+}
+
+.ag-cloud-setup-stage-spinner {
+  width: 12px;
+  height: 12px;
+  color: var(--ag-text-secondary);
+}
+
+.ag-cloud-setup-stage-copy {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.ag-cloud-setup-stage-label {
+  color: var(--ag-text-secondary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.ag-cloud-setup-stage[data-status='active'] .ag-cloud-setup-stage-label {
+  color: var(--ag-text);
+  font-weight: 600;
+}
+
+.ag-cloud-setup-stage[data-status='pending'] .ag-cloud-setup-stage-label {
+  color: var(--ag-text-muted);
+}
+
+.ag-cloud-setup-stage-detail {
+  overflow: hidden;
+  color: var(--ag-text-muted);
+  font-size: 11px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-cloud-setup-stage-time {
+  color: var(--ag-text-muted);
+  font-size: 11px;
+  line-height: 20px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 설정 카드의 boat 줄 — 오른쪽 끝의 관리 메뉴와 실패 문구. */
+.ag-cloud-settings-more {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--n-text-secondary, var(--ag-text-secondary));
+  cursor: default;
+  transition:
+    background-color var(--ag-dur-fast) var(--ag-ease-out),
+    color var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+.ag-cloud-settings-more[hidden] {
+  display: none;
+}
+
+.ag-cloud-settings-more:hover:not(:disabled),
+.ag-cloud-settings-more[aria-expanded='true'] {
+  background: var(--ui-hover-quiet, var(--ag-hover));
+  color: var(--n-text, var(--ag-text));
+}
+
+.ag-cloud-settings-more:disabled {
+  opacity: 0.45;
+}
+
+.ag-cloud-settings-more .ag-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.ag-cloud-settings-error {
+  color: color-mix(in srgb, var(--ag-err) 80%, var(--ag-text));
+  font-size: 11.5px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.ag-cloud-settings-error[hidden] {
+  display: none;
+}
+
+/* 시작·중지 중인 VM 은 스피너가 아니라 숨 쉬는 점으로 알린다. */
+.ag-cloud-settings-dot[data-pulse='true'] {
+  animation: ag-conn-pulse 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-cloud-settings-dot[data-pulse='true'] {
+    animation: none;
+  }
+}
+
+/* boat 서버 카드에는 Rauhwpx 계정 줄과 하루 사용량이 필요 없다. */
+.ag-cloud-settings-card[data-server="boat"] :is(.ag-account-session-row, .ag-account-login-box, .ag-settings-cliproxy-error, .ag-cd-usage) {
+  display: none;
+}

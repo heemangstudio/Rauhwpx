@@ -45,6 +45,12 @@ import {
 import { createCheckpointMirror } from '../../cloud/checkpoint-mirror.ts';
 import { createCheckpointPublisher } from '../../cloud/checkpoint-publisher.ts';
 import { createCloudOnboarding, type CloudTransferIntent } from './cloud-onboarding.ts';
+import {
+  BOAT_CARD_TITLE,
+  boatServerResting,
+  boatServerWaking,
+  snapshotBoatProfile,
+} from './cloud-onboarding-state.ts';
 import { createCloudDashboard } from './cloud-dashboard.ts';
 import { createLinkProgress } from './cloud-link-progress.ts';
 import { createCloudSyncIcon, createIcon } from './icons.ts';
@@ -84,9 +90,25 @@ function cloudOwnsConversation(snapshot: CloudSnapshot): boolean {
 }
 
 function serverLabel(snapshot: CloudSnapshot): string {
+  if (snapshotBoatProfile(snapshot)) return 'boat 서버';
   return snapshot.profile.kind === 'configured' && snapshot.profile.mode === 'app-hosted'
     ? 'Raucloud'
     : '내 서버';
+}
+
+/**
+ * 화면에 보일 연결 상태. 쉬고 있는 boat VM 은 끊긴 연결이 아니고(보내거나 여는 순간 데스크톱이
+ * 깨운다), 깨어나는 VM 은 다시 연결하는 중과 같은 자리에 보인다.
+ */
+function visibleLink(snapshot: CloudSnapshot): ReturnType<typeof inferCloudLink> {
+  const link = inferCloudLink(snapshot);
+  if (link.kind === 'recreating') return link;
+  if (boatServerWaking(snapshot)) return { ...link, kind: 'reconnecting', error: null };
+  return boatServerResting(snapshot) ? { ...link, kind: 'ready', error: null } : link;
+}
+
+function linkAttention(snapshot: CloudSnapshot): boolean {
+  return cloudLinkNeedsAttention(visibleLink(snapshot));
 }
 
 function serverIdentity(snapshot: CloudSnapshot): string {
@@ -979,19 +1001,21 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
   }
 
   function renderPanel(): void {
-    const link = inferCloudLink(snapshot);
+    const link = visibleLink(snapshot);
+    const attention = linkAttention(snapshot);
     const activeSessionId = snapshot.session.kind === 'idle' ? null : snapshot.session.sessionId;
     // Keep focused/pressed buttons mounted across status and timeline updates.
     const renderKey = JSON.stringify([link.kind === 'ready' ? snapshot.session : null,
       link.kind === 'ready' ? snapshot.sessions : null, snapshot.profile, snapshot.server,
-      snapshot.account, link.kind, busy, recoveryBusy, Boolean(pendingTakeover), Boolean(pendingResultReplace),
+      snapshot.account, snapshot.boat, link.kind, attention, busy, recoveryBusy,
+      Boolean(pendingTakeover), Boolean(pendingResultReplace),
       Boolean(downloadedResult), localTurnPending, currentMergeOffer(),
       snapshot.queuedMessages.map(({ id, delivery }) => [id, delivery]),
       [...pendingOutboundDeliveries.values()].filter(({ sessionId }) => sessionId === activeSessionId).length]);
     if (renderKey === panelRenderKey) return;
     panelRenderKey = renderKey;
     if (!selectedSessionId && activeSessionId) selectedSessionId = activeSessionId;
-    sessionPicker.hidden = snapshot.sessions.length <= 1 || cloudLinkNeedsAttention(link);
+    sessionPicker.hidden = snapshot.sessions.length <= 1 || attention;
     sessionSelect.replaceChildren(...snapshot.sessions.map((session) => {
       const option = document.createElement('option');
       option.value = session.sessionId;
@@ -1006,7 +1030,7 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
     panelConflict.hidden = true;
     panelHandoff.hidden = true;
     const session = snapshot.session;
-    if (cloudLinkNeedsAttention(link)) {
+    if (attention) {
       panelStatus.textContent = '';
       panelDetail.textContent = '';
       if (session.kind === 'idle') {
@@ -1063,16 +1087,21 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
           }));
           break;
         }
-        panelStatus.textContent = profileReady
-          ? appHosted ? 'Raucloud가 준비되어 있습니다.' : '내 서버가 준비되어 있습니다.'
-          : snapshot.profile.kind === 'configured'
-            ? appHosted ? 'Raucloud 상태를 확인해야 합니다.' : 'VPS 연결을 확인해야 합니다.'
-            : 'Cloud 서버를 선택해야 합니다.';
+        const boatProfile = Boolean(snapshotBoatProfile(snapshot));
+        panelStatus.textContent = boatProfile
+          ? 'boat 서버가 준비되어 있습니다.'
+          : profileReady
+            ? appHosted ? 'Raucloud가 준비되어 있습니다.' : '내 서버가 준비되어 있습니다.'
+            : snapshot.profile.kind === 'configured'
+              ? appHosted ? 'Raucloud 상태를 확인해야 합니다.' : 'VPS 연결을 확인해야 합니다.'
+              : 'Cloud 서버를 선택해야 합니다.';
         panelDetail.textContent = snapshot.profile.kind !== 'configured'
           ? 'Raucloud 또는 내 서버'
-          : snapshot.profile.mode === 'app-hosted'
-            ? `${snapshot.profile.name} · ${snapshot.profile.sandbox.host || snapshot.profile.sandbox.sandboxId}`
-            : `${snapshot.profile.profile.name} · ${snapshot.profile.profile.host}`;
+          : boatProfile
+            ? BOAT_CARD_TITLE
+            : snapshot.profile.mode === 'app-hosted'
+              ? `${snapshot.profile.name} · ${snapshot.profile.sandbox.host || snapshot.profile.sandbox.sandboxId}`
+              : `${snapshot.profile.profile.name} · ${snapshot.profile.profile.host}`;
         panelActions.append(action('Cloud 설정', () => {
           const focusTrigger = panelTrigger ?? sidebarButton;
           closePanel();
@@ -1263,16 +1292,20 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
   }
 
   function renderRecovery(): void {
-    const link = inferCloudLink(snapshot);
-    const needsAttention = cloudLinkNeedsAttention(link);
+    const link = visibleLink(snapshot);
+    const waking = boatServerWaking(snapshot);
+    const needsAttention = linkAttention(snapshot);
     const busyKind = recoveryBusy === 'reconnecting' || recoveryBusy === 'recreating' ? recoveryBusy : null;
-    const activeKind = busyKind ?? (link.kind === 'reconnecting' || link.kind === 'recreating' ? link.kind : null);
+    // 멈춰 있던 boat VM 을 깨우는 동안은 연결 복구가 아니라 서버 시작으로 알린다.
+    const activeKind = waking
+      ? 'waking'
+      : busyKind ?? (link.kind === 'reconnecting' || link.kind === 'recreating' ? link.kind : null);
     for (const progress of [recoveryProgress, recoveryStripProgress]) {
       if (activeKind) progress.start(activeKind);
       else progress.settle(link.kind === 'ready' ? 'done' : 'failed');
     }
     recoveryStrip.hidden = !needsAttention || !deps.isCloudMode();
-    const renderKey = JSON.stringify([link.kind, link.canRecreate, busy, recoveryBusy, authorityTransitionActive()]);
+    const renderKey = JSON.stringify([link.kind, link.canRecreate, waking, busy, recoveryBusy, authorityTransitionActive()]);
     if (renderKey === recoveryRenderKey) return;
     recoveryRenderKey = renderKey;
     statusPanel.dataset.link = link.kind;
@@ -1281,12 +1314,17 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
     recoveryActions.replaceChildren();
     recoveryStrip.replaceChildren();
     recoveryStrip.dataset.kind = activeKind ?? link.kind;
+    recoveryDetail.hidden = false;
     if (!needsAttention) {
       recoveryTitle.textContent = '';
       recoveryDetail.textContent = '';
       return;
     }
-    if (activeKind === 'reconnecting') {
+    if (activeKind === 'waking') {
+      recoveryTitle.textContent = 'boat 서버를 시작하는 중';
+      recoveryDetail.textContent = '';
+      recoveryDetail.hidden = true;
+    } else if (activeKind === 'reconnecting') {
       recoveryTitle.textContent = 'Cloud에 다시 연결하는 중';
       recoveryDetail.textContent = '저장된 작업과 완료된 결과를 확인하고 있습니다.';
     } else if (activeKind === 'recreating') {
@@ -1353,7 +1391,8 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
     sidebarButton.classList.toggle('ag-active', active || setupActive);
     workspaceButton.classList.toggle('ag-active', active || setupActive);
     const running = snapshot.session.kind === 'running';
-    const link = inferCloudLink(snapshot);
+    const link = visibleLink(snapshot);
+    const waking = boatServerWaking(snapshot);
     const buttonState = setupActive
       ? 'setup'
       : link.kind !== 'ready'
@@ -1366,7 +1405,7 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
     sidebarButtonLabel.textContent = setupActive
       ? '준비 중'
       : link.kind === 'reconnecting'
-        ? '다시 연결 중'
+        ? waking ? '서버 시작 중' : '다시 연결 중'
         : link.kind === 'recreating'
           ? '서버 생성 중'
           : link.kind === 'failed'
@@ -1377,7 +1416,7 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
     const label = setupActive
       ? 'Cloud 환경 설정 중'
       : link.kind === 'reconnecting'
-        ? '연결을 다시 맺는 중입니다'
+        ? waking ? 'boat 서버를 시작하는 중입니다' : '연결을 다시 맺는 중입니다'
         : link.kind === 'recreating'
           ? '서버를 다시 만드는 중입니다'
           : link.kind === 'failed'
@@ -1460,7 +1499,8 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
 
   function activateFrom(trigger: HTMLButtonElement): void {
     const setupRequested = cloudSetupScopes.has(cloudSetupScopeKey());
-    const profileReady = snapshot.profile.kind === 'configured' && snapshot.profile.connection === 'ready';
+    const profileReady = (snapshot.profile.kind === 'configured' && snapshot.profile.connection === 'ready')
+      || boatServerResting(snapshot) || boatServerWaking(snapshot);
     cloudSetupScopes.add(cloudSetupScopeKey());
     renderButtons();
     if (setupActive || (snapshot.session.kind === 'idle' && (!setupRequested || !profileReady))) {

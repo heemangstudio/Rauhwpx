@@ -11,6 +11,12 @@ const TAKEOVER_RETENTION_MS = 24 * 60 * 60 * 1000;
 const STAGED_RETENTION_MS = 24 * 60 * 60 * 1000;
 const WORKER_RESULT_RETRY_MS = 5 * 60 * 1000;
 const MUTABLE_STATES = new Set(['staged', 'queued', 'running', 'suspended']);
+// Idle housekeeping transitions happen because nobody is around. Counting them
+// as activity would restart the host's idle clock when a warm conversation
+// sleeps or retention purges a session.
+const IDLE_HOUSEKEEPING_EVENTS = new Set([
+  'runtime.sleep_requested', 'runtime.sleeping', 'runtime.sleep_cancelled', 'session.purged',
+]);
 
 function parseEvent(row) {
   const payload = JSON.parse(row.payload_json);
@@ -29,6 +35,7 @@ export class SessionStore {
     now = Date.now,
     maxQueuedSessions = DEFAULT_LIMITS.maxQueuedSessions,
     onRuntimeInvalidated = null,
+    onActivity = null,
   } = {}) {
     this.database = database;
     this.blobStore = blobStore;
@@ -37,10 +44,15 @@ export class SessionStore {
     this.events = new EventEmitter();
     this.events.setMaxListeners(0);
     this.onRuntimeInvalidated = onRuntimeInvalidated;
+    this.onActivity = onActivity;
   }
 
   setRuntimeInvalidationHandler(listener) {
     this.onRuntimeInvalidated = typeof listener === 'function' ? listener : null;
+  }
+
+  setActivityHandler(listener) {
+    this.onActivity = typeof listener === 'function' ? listener : null;
   }
 
   setProviderStatus(provider, status) {
@@ -384,8 +396,13 @@ export class SessionStore {
     return () => this.events.off(key, listener);
   }
 
-  #notify(event) {
+  #notify(event, { runStateChange = true } = {}) {
     this.onStateChanged?.(event.sessionId);
+    // Store transitions mark host activity; worker-authored progress does not,
+    // because a working session already keeps the host busy.
+    if (runStateChange && !IDLE_HOUSEKEEPING_EVENTS.has(event.type)) {
+      try { this.onActivity?.(event.sessionId); } catch { /* Activity stamps must not fail session work. */ }
+    }
     queueMicrotask(() => this.events.emit(`session:${event.sessionId}`, event));
   }
 
@@ -411,7 +428,7 @@ export class SessionStore {
   appendEvent(sessionId, type, payload) {
     let event;
     transaction(this.database, () => { event = this.#appendEventInTransaction(sessionId, type, payload); });
-    this.#notify(event);
+    this.#notify(event, { runStateChange: false });
     return event;
   }
 
@@ -420,7 +437,7 @@ export class SessionStore {
     transaction(this.database, () => {
       events = entries.map(({ type, payload }) => this.#appendEventInTransaction(sessionId, type, payload ?? {}));
     });
-    for (const event of events) this.#notify(event);
+    for (const event of events) this.#notify(event, { runStateChange: false });
     return events;
   }
 

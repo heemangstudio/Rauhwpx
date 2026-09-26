@@ -95,6 +95,24 @@ export function normalizeSshConfig(raw = {}) {
 }
 
 const SANDBOX_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const BOAT_SANDBOX_ID_RE = /^bx_[a-z0-9]{8}$/;
+export const BOAT_MACHINE_TYPES = Object.freeze(['default', 'small']);
+
+/** boat.dev VM. 재개할 때마다 ssh 주소만 바뀌고 서버 키와 페어링은 그대로다. */
+export function normalizeBoatProfile(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('boat server is invalid');
+  const sandboxId = String(raw.sandboxId ?? '').trim();
+  if (!BOAT_SANDBOX_ID_RE.test(sandboxId)) throw new Error('boat sandbox id is invalid');
+  const machine = raw.machine == null || raw.machine === '' ? 'default' : String(raw.machine);
+  if (!BOAT_MACHINE_TYPES.includes(machine)) throw new Error('boat machine type is invalid');
+  const createdAt = String(raw.createdAt ?? '').trim();
+  if (createdAt && !Number.isFinite(Date.parse(createdAt))) throw new Error('boat creation time is invalid');
+  return Object.freeze({
+    sandboxId,
+    machine,
+    createdAt: createdAt ? new Date(Date.parse(createdAt)).toISOString() : new Date(0).toISOString(),
+  });
+}
 const LEGACY_RAUCLOUD_PROVIDER_ID = 'managed-cloud'; // raucloud-legacy: persisted profiles are upgraded on read.
 
 export function normalizeRaucloudProviderId(value) {
@@ -201,11 +219,15 @@ export function normalizeCloudProfile(raw = {}) {
   const mode = raw.mode == null ? 'self-hosted' : String(raw.mode);
   if (!CLOUD_SERVER_MODES.includes(mode)) throw new Error(`Unsupported cloud server mode: ${mode}`);
   const appHosted = mode === 'app-hosted';
-  const ssh = appHosted ? null : normalizeSshConfig(raw.ssh);
+  const boat = raw.boat == null ? null : normalizeBoatProfile(raw.boat);
+  if (boat && appHosted) throw new Error('boat servers are self-hosted profiles');
+  // A boat VM has no public HTTPS endpoint; the Cloud service stays on its loopback.
+  const ssh = appHosted ? null : normalizeSshConfig(boat ? { ...raw.ssh, useTailscaleSsh: false } : raw.ssh);
   const sandbox = appHosted ? normalizeSandbox(raw.sandbox) : null;
   const api = appHosted
     ? { kind: 'public-https', endpoint: normalizeCloudEndpoint(raw.endpoint) }
-    : normalizeApi(raw, ssh);
+    : normalizeApi(boat && !raw.api && raw.transport == null ? { ...raw, transport: 'ssh-tunnel' } : raw, ssh);
+  if (boat && api.kind !== 'ssh-tunnel') throw new Error('boat servers require the SSH tunnel transport');
   const provider = raw.provider == null ? 'codex' : String(raw.provider).toLowerCase();
   if (!CLOUD_PROVIDERS.includes(provider)) throw new Error(`Unsupported cloud provider: ${provider}`);
   const serverPublicKey = String(raw.serverPublicKey ?? '').trim();
@@ -236,12 +258,15 @@ export function normalizeCloudProfile(raw = {}) {
   return Object.freeze({
     version: 2,
     mode,
-    id: appHosted ? `app-hosted:${sandbox.providerId}:${sandbox.sandboxId}` : 'personal-vps',
-    name: String(raw.name ?? '').trim().slice(0, 80) || (appHosted ? 'App sandbox' : 'Personal VPS'),
+    id: appHosted
+      ? `app-hosted:${sandbox.providerId}:${sandbox.sandboxId}`
+      : boat ? `boat:${boat.sandboxId}` : 'personal-vps',
+    name: String(raw.name ?? '').trim().slice(0, 80) || (appHosted ? 'App sandbox' : boat ? 'boat' : 'Personal VPS'),
     endpoint,
     api,
     ssh,
     sandbox,
+    ...(boat ? { boat } : {}),
     provider,
     limits: normalizeCloudLimits(raw.limits),
     serverPublicKey,

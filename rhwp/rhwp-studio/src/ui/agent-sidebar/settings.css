@@ -2439,10 +2439,16 @@
 
 .ag-root .ag-settings-page .ag-settings-nav-button {
   min-height: 34px;
+  overflow: hidden;
   border: 0;
   border-radius: 8px;
   color: var(--n-text-secondary);
   font-weight: 600;
+  /* 탭은 글자 길이만큼 자리를 나눠 "Cloud 작업"이 중간에서 갈라지거나 잘리지 않는다. */
+  flex: 1 1 auto;
+  padding-inline: 8px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   transition:
     background-color var(--ag-dur-fast) var(--ag-ease-out),
     color var(--ag-dur-fast) var(--ag-ease-out),
