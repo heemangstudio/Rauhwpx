@@ -95,7 +95,7 @@ import {
 import { createChevron, createColumnIcon } from '../chevron.ts';
 import { showContextMenu } from '../native-context-menu.ts';
 import { setMiddleTruncatedText } from '../middle-truncate.ts';
-import { createHieumGlyph, createIcon, createStopIcon } from './icons.ts';
+import { createInkRing, createIcon, createStopIcon } from './icons.ts';
 import { detectPlatformKind } from '../../engine/navigation-keymap.ts';
 import { AGENT_LABEL, createProviderIcon, PROVIDER_ORDER } from './providers.ts';
 import { createEffortSlider } from './effort-slider.ts';
@@ -2995,7 +2995,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   turnPending.setAttribute('role', 'status');
   turnPending.setAttribute('aria-live', 'polite');
   const turnPendingLabel = el('span', 'ag-turn-pending-label');
-  turnPending.append(createHieumGlyph(), turnPendingLabel);
+  turnPending.append(createInkRing(), turnPendingLabel);
   messages.append(turnPending, messagesEnd);
   /** 마지막 내용의 아래끝이 대화 영역 아래로 내려가 있으면 뒤처진 상태다. */
   function lastConversationContent(): HTMLElement | null {
