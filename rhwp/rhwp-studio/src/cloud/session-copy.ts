@@ -37,7 +37,7 @@ export function suspendedSessionTitle(code: string | null | undefined, provider:
  * (예: "claude must be authenticated")만 빌린다. 알 수 없는 code 는 null.
  */
 export function cloudErrorCodeText(code: string | null | undefined, message = ''): string | null {
-  const named = /^\s*(claude|codex|pi|grok|cursor|opencode)\b/i.exec(message)?.[1]?.toLowerCase() as AgentName | undefined;
+  const named = /^\s*(claude|codex|pi)\b/i.exec(message)?.[1]?.toLowerCase() as AgentName | undefined;
   switch (code) {
     case 'AUTH_REQUIRED':
     case 'PROVIDER_AUTH_EXPIRED':
