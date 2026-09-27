@@ -40,6 +40,7 @@ import {
   type LocalFontFaceNames,
   type LocalFontRecord,
 } from './local-fonts.ts';
+import { convertHftFamilyToOpenType } from './hft-font.ts';
 
 // ─── preload 계약 ─────────────────────────────────────────────
 
@@ -568,6 +569,29 @@ export function matchDesktopFont(requested: string, lookup: DesktopFontLookup): 
   };
 }
 
+const HFT_SCRIPT_ORDER = ['hangul', 'latin', 'hanja', 'symbol', 'japanese', 'other', 'user'];
+
+/**
+ * 한컴 HFT 글꼴은 문자군(한글·영문·한자·기호 …)마다 파일이 따로다. 요청 이름의 한컴 목록에서
+ * 문자군 순서대로 HFT face를 모아 하나의 글꼴로 합칠 수 있게 한다. HFT가 아니면 빈 배열이다.
+ */
+export function hftFamilyParts(names: readonly string[], lookup: DesktopFontLookup): SystemFontFace[] {
+  const byScript = new Map<string, SystemFontFace>();
+  for (const name of names) {
+    for (const entry of lookup.hancom.get(exactFontKey(name)) ?? []) {
+      const face = entry.faceId ? lookup.byId.get(entry.faceId) : undefined;
+      const script = entry.script.toLowerCase();
+      if (face?.format === 'hft' && !byScript.has(script)) byScript.set(script, face);
+    }
+  }
+  const rank = (script: string): number => {
+    const at = HFT_SCRIPT_ORDER.indexOf(script);
+    return at < 0 ? HFT_SCRIPT_ORDER.length : at;
+  };
+  const ordered = [...byScript].sort(([a], [b]) => rank(a) - rank(b)).map(([, face]) => face);
+  return ordered.filter((face, i) => ordered.indexOf(face) === i);
+}
+
 export function isDesktopFontMatch(value: DesktopFontMatch | DesktopFontMiss): value is DesktopFontMatch {
   return 'anchor' in value;
 }
@@ -954,6 +978,26 @@ interface FacePlanEntry extends DesktopFontSlotFace {
   names: LocalFontFaceNames;
   faceKey: string;
   report: DesktopFontFaceReport;
+  /** 보통 슬롯의 한컴 HFT: 문자군별 파일을 합쳐 한 face로 등록한다. */
+  hftParts?: SystemFontFace[];
+}
+
+class UnsupportedHftError extends Error {}
+
+/** 문자군별 HFT 파일을 읽어 OpenType 하나로 합친다. 일부 파일을 못 읽어도 나머지로 만든다. */
+async function readHftFamily(host: SystemFontHost, parts: readonly SystemFontFace[], family: string): Promise<ArrayBuffer> {
+  const reads = await Promise.allSettled(parts.map(face => readDesktopFace(host, face.id)));
+  const files = reads.flatMap((read, i) => (
+    read.status === 'fulfilled' ? [{ bytes: read.value, fileName: fileName(parts[i]!.path) }] : []
+  ));
+  if (!files.length) throw (reads.find(read => read.status === 'rejected') as PromiseRejectedResult).reason;
+  // 변환은 글꼴 하나에 수백 ms까지 걸린다. 앞선 입력·그리기가 먼저 돌도록 한 번 양보한다.
+  await new Promise(resolve => setTimeout(resolve, 0));
+  try {
+    return convertHftFamilyToOpenType(files, family);
+  } catch (error) {
+    throw new UnsupportedHftError(errorText(error));
+  }
 }
 
 interface GroupPlan {
@@ -1112,10 +1156,14 @@ export async function prepareDesktopFontsForDocument(
   for (const plan of plans.values()) {
     plan.faces = plan.match.slots.map(({ slot, face }) => {
       const names = faceNamesFor(plan, slot, face);
+      const hftParts = slot === 'regular' && face.format === 'hft'
+        ? hftFamilyParts([...plan.requested, plan.match.matchedName], lookup)
+        : [];
       return {
         slot,
         face,
         names,
+        ...(hftParts.length ? { hftParts } : {}),
         faceKey: localFontFaceKey(names),
         report: {
           slot,
@@ -1187,7 +1235,9 @@ export async function prepareDesktopFontsForDocument(
       let readError: unknown = null;
       if (!isRegistered()) {
         try {
-          bytes = await readDesktopFace(host, entry.face.id);
+          bytes = entry.hftParts
+            ? await readHftFamily(host, entry.hftParts, plan.match.family)
+            : await readDesktopFace(host, entry.face.id);
         } catch (error) {
           readError = error;
         }
@@ -1203,7 +1253,8 @@ export async function prepareDesktopFontsForDocument(
       const source = bytes;
       const result = await serialRegistration(() => registerLocalFontFace(source, {
         source: 'desktop',
-        fileName: fileName(entry.face.path),
+        // 합친 HFT는 이미 OpenType이다. 확장자로 HFT 재변환 경로를 타지 않게 한다.
+        fileName: entry.hftParts ? `${fileName(entry.face.path)}.otf` : fileName(entry.face.path),
         sourcePath: entry.face.path,
         desktopFaceId: entry.face.id,
         names: entry.names,
@@ -1237,7 +1288,7 @@ export async function prepareDesktopFontsForDocument(
       if (metrics.detail !== undefined) entry.report.metricsDetail = metrics.detail;
     } catch (error) {
       const message = errorText(error);
-      entry.report.status = 'failed';
+      entry.report.status = error instanceof UnsupportedHftError ? 'unsupported-hft' : 'failed';
       entry.report.error = message;
       // 파일이 바뀌었으면 다음 요청에서 색인을 새로 받는다.
       if (/stale/i.test(message)) indexStale = true;

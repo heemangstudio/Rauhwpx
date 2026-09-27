@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { convertHftToOpenType } from '../src/core/hft-font.ts';
+import { convertHftFamilyToOpenType, convertHftToOpenType } from '../src/core/hft-font.ts';
 import { sfntCoversText } from '../src/core/sfnt-cmap.ts';
 
 /** 직접 만든 contour만 포함한다. 상용 서체 데이터는 fixture로 저장하지 않는다. */
@@ -100,4 +100,53 @@ test('renaming an equation HFT file preserves its internal bank and style identi
   }
   assert.equal(names.get(1), 'HSUSRI');
   assert.equal(names.get(2), 'Italic');
+});
+
+/**
+ * 본문 한글 HFT 구조: 고정 폭, 블록 두 개(표준 순서 블록 + Johab 코드 목록 블록), 4-byte 기록 머리.
+ * 표준 순서 블록의 i번째 glyph는 KS X 1001 한글 i번째 음절(가, 각, …)이다.
+ */
+function syntheticHangulHft(): ArrayBuffer {
+  const square = [3, 50, 50, 5, 100, 6, 100, 5, 156, 4];
+  const record = Uint8Array.from([4, 0, square.length + 2, 0, ...square]);
+  const block = (codes: number[] | null, count: number): Uint8Array => {
+    const list = codes ? [...u16le(4 + codes.length * 2), 1, 0, ...codes.flatMap(u16le)] : [4, 0, 0xff, 0xff];
+    const head = 22 + list.length;
+    const offsets = Array.from({ length: count }, (_, i) => head + count * 4 + i * record.length - (head - 2));
+    const bytes = Uint8Array.from([
+      ...u32le(0), ...u16le(0x11), ...u16le(0x8000), ...u16le(0xffff), ...u16le(count), ...u16le(1000),
+      0, 0, 0, 0, 0, 0, 0, 0, ...list, ...offsets.flatMap(u32le), ...Array.from({ length: count }, () => [...record]).flat(),
+    ]);
+    new DataView(bytes.buffer).setUint32(0, bytes.length, true);
+    return bytes;
+  };
+  const blocks = [block(null, 2), block([0x8461], 1)];
+  const widthAt = 0x200; const outlineAt = widthAt + 12;
+  const outline = Uint8Array.from([0, 0, 0, 0, ...u16le(1000), 1, 0, 2, 0, 0x0e, 0, 0, 0, ...blocks.flatMap(b => [...b])]);
+  new DataView(outline.buffer).setUint32(0, outline.length, true);
+  const bytes = new Uint8Array(outlineAt + outline.length);
+  const view = new DataView(bytes.buffer);
+  bytes.set(new TextEncoder().encode('Han Unified Font File 1.0\x1a'));
+  view.setUint32(0x1a, 0x01020304, true); view.setUint32(0x24, bytes.length, true); view.setUint16(0x194, 200, true);
+  view.setUint32(0x1aa, widthAt, true); view.setUint32(0x1ae, outlineAt, true);
+  view.setUint32(widthAt, 12, true); view.setUint16(widthAt + 4, 0x8000, true); view.setUint16(widthAt + 6, 0xffff, true);
+  view.setUint16(widthAt + 10, 1000, true);
+  bytes.set(outline, outlineAt);
+  return bytes.buffer;
+}
+function u16le(n: number): number[] { return [n & 255, (n >> 8) & 255]; }
+function u32le(n: number): number[] { return [...u16le(n & 0xffff), ...u16le(n >>> 16)]; }
+
+test('body HFT banks merge into one font: KS X 1001 Hangul order, Johab code list and Latin', () => {
+  const hangul = convertHftToOpenType(syntheticHangulHft(), 'HG.HFT')!;
+  assert.equal(sfntCoversText(hangul, '가각ㅏ'), true);
+  assert.equal(sfntCoversText(hangul, '갂'), false, 'syllables outside the file keep their fallback');
+  const merged = convertHftFamilyToOpenType([
+    { bytes: syntheticHangulHft(), fileName: 'HG.HFT' },
+    { bytes: syntheticHft(), fileName: 'EN.HFT' },
+    { bytes: new ArrayBuffer(64), fileName: 'broken.HFT' },
+  ], 'Example');
+  assert.equal(sfntCoversText(merged, '가A'), true);
+  const protectedFile = new Uint8Array(syntheticHangulHft()); protectedFile[0x1a8] = 2;
+  assert.throws(() => convertHftToOpenType(protectedFile.buffer, 'HG.HFT'), /보호된/);
 });
