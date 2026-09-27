@@ -229,6 +229,32 @@ export const HFT_SUCCESSOR_FONTS: ReadonlyMap<string, string> = new Map([
   ['한양견고딕', '#견고딕'], ['한양그래픽', '#그래픽'], ['한양궁서', '#궁서'], ['명조', '#신명조'],
 ]);
 
+/**
+ * 한컴 HFT 한글 파일은 KS X 1001 2,350자만 담는다. 나머지 음절(똠·쌰·뷁 …)을 한컴은 가족마다
+ * 정해진 글꼴로 그린다. 표는 한컴 Mac PDF 출력(가족별 한 줄 시험 문서)에서 읽었다.
+ * 한컴이 조합형 명조/고딕 HFT(보호됨)로 그리는 가족은 같은 계열의 한컴바탕/한컴돋움으로 둔다.
+ */
+type HftHangulFallback = '한컴바탕' | '한컴돋움' | '굴림' | '함초롬바탕';
+const HFT_HANGUL_FALLBACK = new Map<string, HftHangulFallback>([
+  // 한컴 PDF에 TTF 글자로 실린 가족
+  ['신명 견명조', '한컴바탕'], ['한양견명조', '한컴바탕'], ['한양신명조', '함초롬바탕'],
+  ['신명 중고딕', '한컴돋움'], ['신명 태고딕', '한컴돋움'], ['신명 견고딕', '한컴돋움'],
+  ['신명 태그래픽', '한컴돋움'], ['한양견고딕', '한컴돋움'], ['한양중고딕', '한컴돋움'],
+  ['신명 신그래픽', '굴림'], ['#신그래픽', '굴림'],
+  // 한컴이 조합형 명조 HFT로 그리는 가족
+  ['신명 중명조', '한컴바탕'], ['신명 신명조', '한컴바탕'], ['신명 세명조', '한컴바탕'],
+  ['신명 순명조', '한컴바탕'], ['#신명조', '한컴바탕'], ['#견명조', '한컴바탕'], ['#중명조', '한컴바탕'],
+  ['명조', '한컴바탕'],
+  // 한컴이 조합형 고딕 HFT로 그리는 가족
+  ['#태고딕', '한컴돋움'], ['신명 디나루', '한컴돋움'], ['#견고딕', '한컴돋움'], ['#중고딕', '한컴돋움'],
+  ['#디나루', '한컴돋움'], ['#신디나루', '한컴돋움'], ['#세고딕', '한컴돋움'],
+]);
+
+export function hancomHftFallback(fontName: string): HftHangulFallback {
+  const name = fontName.trim();
+  return HFT_HANGUL_FALLBACK.get(name) ?? (/고딕|그래픽|나루|헤드/.test(name) ? '한컴돋움' : '한컴바탕');
+}
+
 /** 불러온 `#` 대체 face. 대체 가족이 없거나 아직 불러오지 않았으면 null. */
 export function loadedHftSuccessor(fontName: string): { name: string; family: string } | null {
   const name = HFT_SUCCESSOR_FONTS.get(fontName.trim());
@@ -377,12 +403,21 @@ export function fontFamilyChainForDisplay(
       families,
       localRecord.runtimeFamily ?? repairedLocalFontFamily(localRecord) ?? localRecord.family,
     );
+    // 변환한 한컴 HFT에 없는 글자는 한컴과 같은 번들 TTF로 넘긴다.
+    if (/\.hft$/i.test(localRecord.sourcePath ?? '')) {
+      const fallback = resolveLocalFont(hancomHftFallback(fontName));
+      if (fallback) pushUniqueFontFamily(families, fallback.runtimeFamily ?? repairedLocalFontFamily(fallback) ?? fallback.family);
+    }
   } else if (originalAllowed) {
     pushUniqueFontFamily(families, fontName);
   }
   if (!localRecord) {
     const successor = loadedHftSuccessor(fontName);
-    if (successor) pushUniqueFontFamily(families, successor.family);
+    if (successor) {
+      pushUniqueFontFamily(families, successor.family);
+      const fallback = resolveLocalFont(hancomHftFallback(fontName));
+      if (fallback) pushUniqueFontFamily(families, fallback.runtimeFamily ?? repairedLocalFontFamily(fallback) ?? fallback.family);
+    }
   }
 
   const resolved = resolveFont(fontName, altType, langId);

@@ -40,7 +40,7 @@ import {
   type LocalFontFaceNames,
   type LocalFontRecord,
 } from './local-fonts.ts';
-import { HFT_SUCCESSOR_FONTS } from './font-substitution.ts';
+import { HFT_SUCCESSOR_FONTS, hancomHftFallback } from './font-substitution.ts';
 import {
   HFT_WORKER_FAILED,
   convertHftFamily,
@@ -1166,9 +1166,14 @@ export async function prepareDesktopFontsForDocument(
   } catch {
     declared = [];
   }
+  // HFT 한글은 2,350자뿐이라 한컴처럼 나머지 음절을 그릴 번들 TTF(한컴바탕/한컴돋움)도 연결한다.
+  const hftNames = [...names, ...declared].filter(name => (
+    HFT_SUCCESSOR_FONTS.has(name.trim()) || hftFamilyParts([name], lookup).length > 0
+  ));
   for (const name of uniqueFontNames([
     ...declared.filter(name => hftFamilyParts([name], lookup).length > 0),
     ...[...names, ...declared].flatMap(name => HFT_SUCCESSOR_FONTS.get(name.trim()) ?? []),
+    ...hftNames.map(hancomHftFallback),
   ])) {
     const key = exactFontKey(name);
     if (attemptedFonts.has(key) || names.includes(name)) continue;
