@@ -120,7 +120,7 @@ import { maybeStartInitialSetup, type InitialSetupUi } from '../initial-setup/in
 import { loadInitialSetup, saveInitialSetup } from '../initial-setup/state.ts';
 import { summarizePendingDiffs } from './pending-diff-summary.ts';
 import { createReferenceLibrary } from './reference-library.ts';
-import { createCloudController, type CloudController } from '../../cloud/desktop-cloud.ts';
+import { cloudErrorText, createCloudController, type CloudController } from '../../cloud/desktop-cloud.ts';
 import {
   canSelectCloudWorkspace,
   canSelectLocalWorkspace,
@@ -2318,7 +2318,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       persistComposerDraft();
       updateComposer();
     },
-    onError: (message) => {
+    onError: (raw) => {
+      const message = cloudErrorText(raw);
       systemMessage(message);
       showToast({ message, durationMs: 5000 });
     },

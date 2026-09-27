@@ -640,6 +640,26 @@ export function createBoatSetupView(ctx: BoatSetupContext): BoatSetupView {
     ];
     if (state.importedProviders.length) rows.push(['로그인 정보', boatProvidersLabel(state.importedProviders)]);
     parts.body.append(facts(rows));
+    // 서버의 에이전트 로그인이 만료되면 이 Mac 의 로그인을 다시 보낸다. 더 새로운 서버 쪽 로그인은 서버가 지킨다.
+    const reimport = linkButton('로그인 다시 가져오기');
+    const outcome = ctx.description('');
+    outcome.hidden = true;
+    reimport.addEventListener('click', async () => {
+      reimport.disabled = true;
+      reimport.setAttribute('aria-busy', 'true');
+      try {
+        await ctx.controller.reimportLogins();
+        outcome.textContent = '로그인을 다시 가져왔습니다.';
+      } catch (cause) {
+        outcome.textContent = cause instanceof Error ? cause.message : String(cause);
+      } finally {
+        outcome.hidden = false;
+        ctx.announce(outcome.textContent ?? '');
+        reimport.disabled = false;
+        reimport.removeAttribute('aria-busy');
+      }
+    });
+    parts.body.append(reimport, outcome);
     const primary = ctx.button(state.intent === 'transfer' ? 'Cloud로 계속' : '완료', 'primary');
     primary.classList.add(AUTOFOCUS);
     primary.addEventListener('click', () => {

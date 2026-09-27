@@ -43,10 +43,16 @@ import type {
   BoatSignInChallenge,
   BoatSignInPoll,
   BoatSnapshot,
+  BoatWakeStage,
+  CloudHostKeyInspection,
+  CloudLinkReason,
   CloudLinkState,
 } from './types.ts';
 
 const SANDBOX_LIFECYCLES = ['idle', 'provisioning', 'ready', 'error', 'tearing-down'] as const;
+const BOAT_WAKE_STAGES: readonly BoatWakeStage[] = ['starting', 'service', 'connecting'];
+const LINK_REASONS: readonly CloudLinkReason[] = ['network', 'pairing', 'boat-auth', 'host-key', 'server', 'session-missing'];
+const CLOUD_AGENTS: readonly AgentName[] = ['claude', 'codex', 'pi'];
 /** 이 중 하나라도 없는 데스크톱은 boat 설정을 끝까지 진행할 수 없다. */
 const BOAT_REQUIRED_METHODS = [
   'cloudBoatStartEmailSignIn', 'cloudBoatPollSignIn', 'cloudBoatConnectApiKey', 'cloudBoatOpenLink',
@@ -70,6 +76,11 @@ export interface CloudDesktopApi {
   /** explicit 은 사용자가 누른 다시 연결이다. 데스크톱은 이때만 쉬던 boat VM 을 깨운다. 예전 데스크톱은 인자를 무시한다. */
   cloudReconnectLink?: (payload?: { explicit?: boolean }) => Promise<unknown>;
   cloudRecreateLink?: () => Promise<unknown>;
+  cloudRestartService?: () => Promise<unknown>;
+  cloudInspectHostKey?: () => Promise<unknown>;
+  cloudTrustHostKey?: (payload: { fingerprint: string }) => Promise<unknown>;
+  cloudReimportLogins?: (payload: { provider?: AgentName }) => Promise<unknown>;
+  cloudDiscardMissingSessions?: () => Promise<unknown>;
   cloudTakeoverSandbox?: () => Promise<unknown>;
   cloudTransfer?: (payload: CloudTransferRequest) => Promise<unknown>;
   cloudSetTransferIntent?: (payload: CloudTransferIntentRequest) => Promise<unknown>;
@@ -124,6 +135,14 @@ export interface CloudController {
   /** 사용자가 누른 다시 연결만 explicit 을 넘긴다. 자동 재연결은 쉬던 boat VM 을 깨우지 않는다. */
   reconnectLink(options?: { explicit?: boolean }): Promise<CloudSnapshot>;
   recreateLink(): Promise<CloudSnapshot>;
+  /** 내 서버·boat 의 Cloud 서비스를 다시 시작한다. 이 기능이 없는 데스크톱이면 false 다. */
+  canRestartService(): boolean;
+  restartService(): Promise<CloudSnapshot>;
+  inspectHostKey(): Promise<CloudHostKeyInspection>;
+  trustHostKey(fingerprint: string): Promise<CloudSnapshot>;
+  /** 이 Mac 의 제공자 로그인을 서버로 다시 보낸다. provider 가 없으면 모두 보낸다. */
+  reimportLogins(provider?: AgentName): Promise<CloudSnapshot>;
+  discardMissingSessions(): Promise<CloudSnapshot>;
   takeoverSandbox(): Promise<CloudSnapshot>;
   transfer(request: CloudTransferRequest): Promise<CloudSnapshot>;
   setTransferIntent(request: CloudTransferIntentRequest): Promise<CloudSnapshot>;
@@ -538,7 +557,14 @@ function parseSession(value: unknown): CloudSessionState | null {
       return typeof state.message === 'string' ? { ...base, kind: state.kind, message: state.message } : null;
     case 'suspended':
       return typeof state.reason === 'string' && typeof state.resumable === 'boolean'
-        ? { ...base, kind: state.kind, reason: state.reason, resumable: state.resumable }
+        ? {
+            ...base,
+            kind: state.kind,
+            reason: state.reason,
+            code: typeof state.code === 'string' && state.code ? state.code : null,
+            provider: CLOUD_AGENTS.find((agent) => agent === state.provider) ?? null,
+            resumable: state.resumable,
+          }
         : null;
     case 'taking-over':
       return typeof state.message === 'string' ? { ...base, kind: state.kind, message: state.message } : null;
@@ -623,6 +649,9 @@ function parseBoatServer(value: unknown): BoatServerSnapshot | null {
     autoStop,
     timerHours: autoStop === 'timer' ? timerHours : null,
     message: optionalText(server.message),
+    wakeStage: state === 'waking' && BOAT_WAKE_STAGES.includes(server.wakeStage as BoatWakeStage)
+      ? server.wakeStage as BoatWakeStage
+      : null,
   };
 }
 
@@ -709,8 +738,44 @@ export function normalizeBoatError(error: unknown): Error & { code?: string } {
   return normalized;
 }
 
+/**
+ * IPC 거절은 메시지 앞에 채널 이름과 오류 이름이 붙는다. 사용자에게는 그 뒤의 문장만 보인다.
+ * 한국어가 아닌 원문(진단용 영어)은 짧은 한국어 문장으로 바꾼다.
+ */
+export function cloudErrorText(error: unknown, fallback = 'Cloud 요청을 처리하지 못했습니다.'): string {
+  const shaped = error && typeof error === 'object' ? error as { message?: unknown } : null;
+  const raw = typeof shaped?.message === 'string' ? shaped.message : String(error ?? '');
+  const text = raw
+    .replace(/^Error invoking remote method '[^']*':\s*/, '')
+    .replace(/^(?:[A-Za-z]*Error)(?: \[[A-Za-z]+\])?:\s*/, '')
+    .trim();
+  if (/[가-힣]/.test(text)) return text;
+  if (text) console.warn('[cloud]', text);
+  return fallback;
+}
+
+/** IPC 거절을 사용자 문장과 원래 code 를 가진 오류로 바꾼다. 취소는 그대로 둔다. */
+export function normalizeCloudError(error: unknown): unknown {
+  if (error instanceof DOMException && error.name === 'AbortError') return error;
+  const normalized = new Error(cloudErrorText(error)) as Error & { code?: string; retryable?: boolean };
+  const shaped = error && typeof error === 'object' ? error as { code?: unknown; retryable?: unknown } : null;
+  if (typeof shaped?.code === 'string' && shaped.code) normalized.code = shaped.code;
+  if (shaped?.retryable === false) normalized.retryable = false;
+  return normalized;
+}
+
 export function isBoatServerStopped(error: unknown): boolean {
   return Boolean(error && typeof error === 'object' && (error as { code?: unknown }).code === BOAT_SERVER_STOPPED);
+}
+
+/**
+ * 다시 물어도 같은 답이 오는 체크포인트 거절. 작업 상태가 바뀔 때까지 미러가 다시 묻지 않는다.
+ * 쉬는 boat VM 은 여기에 들지 않는다. 그 거절은 VM 이 다시 켜지면 풀린다.
+ */
+export function isTerminalCheckpointError(error: unknown): boolean {
+  if (!error || typeof error !== 'object' || isBoatServerStopped(error)) return false;
+  const shaped = error as { code?: unknown; retryable?: unknown };
+  return shaped.code === 'CHECKPOINT_NOT_FOUND' || shaped.code === 'SESSION_NOT_FOUND' || shaped.retryable === false;
 }
 
 /** 체크포인트 거절 중 쉬는 boat VM 만 code 를 되살린다. 나머지 오류는 그대로 둔다. */
@@ -828,11 +893,13 @@ function parseCloudLink(value: unknown): CloudLinkState | null {
   if (raw.error !== null && raw.error !== undefined && typeof raw.error !== 'string') return null;
   if (typeof raw.canRecreate !== 'boolean') return null;
   const attempt = integer(raw.attempt);
+  const reason = raw.kind === 'failed' ? LINK_REASONS.find((entry) => entry === raw.reason) ?? null : null;
   return {
     kind: raw.kind,
     error: typeof raw.error === 'string' ? raw.error : null,
     attempt,
     canRecreate: raw.canRecreate,
+    ...(reason ? { reason, message: optionalText(raw.message) } : {}),
   };
 }
 
@@ -1001,7 +1068,13 @@ export function createCloudController(
   const call = async (method: keyof CloudDesktopApi, payload?: unknown): Promise<CloudSnapshot> => {
     const fn = resolvedApi?.[method];
     if (typeof fn !== 'function') throw new Error('이 앱 빌드는 클라우드 에이전트를 지원하지 않습니다.');
-    return accept(await (fn as (arg?: unknown) => Promise<unknown>)(payload));
+    let raw: unknown;
+    try {
+      raw = await (fn as (arg?: unknown) => Promise<unknown>)(payload);
+    } catch (error) {
+      throw normalizeCloudError(error);
+    }
+    return accept(raw);
   };
 
   const boatInvoke = async (method: keyof CloudDesktopApi, payload?: unknown): Promise<unknown> => {
@@ -1140,6 +1213,26 @@ export function createCloudController(
       }
       return call('cloudGetState', activeScope);
     }),
+    canRestartService: () => typeof resolvedApi?.cloudRestartService === 'function',
+    restartService: () => recover('reconnecting', () => call('cloudRestartService'), 'restart'),
+    async inspectHostKey() {
+      const fn = resolvedApi?.cloudInspectHostKey;
+      if (typeof fn !== 'function') throw new Error('이 앱 빌드는 SSH 키 확인을 지원하지 않습니다.');
+      let raw: Record<string, unknown> | null;
+      try {
+        raw = record(await fn());
+      } catch (error) {
+        throw normalizeCloudError(error);
+      }
+      const fingerprint = string(raw?.fingerprint);
+      if (!/^SHA256:[A-Za-z0-9+/]{43}$/.test(fingerprint) || !string(raw?.host)) {
+        throw new Error('서버의 SSH 키를 읽지 못했습니다.');
+      }
+      return { host: string(raw?.host), port: integer(raw?.port, 22), fingerprint };
+    },
+    trustHostKey: (fingerprint) => recover('reconnecting', () => call('cloudTrustHostKey', { fingerprint }), 'host-key'),
+    reimportLogins: (provider) => call('cloudReimportLogins', provider ? { provider } : {}),
+    discardMissingSessions: () => call('cloudDiscardMissingSessions'),
     takeoverSandbox: () => call('cloudTakeoverSandbox'),
     transfer: (request) => call('cloudTransfer', request),
     setTransferIntent: (request) => call('cloudSetTransferIntent', request),

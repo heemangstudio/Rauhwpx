@@ -1,4 +1,5 @@
 import './cloud-link-progress.css';
+import type { BoatWakeStage } from '../../cloud/types.ts';
 
 /** waking = 멈춰 있던 boat VM 을 보내기·열기 때문에 깨우는 중. */
 export type LinkProgressKind = 'reconnecting' | 'recreating' | 'waking';
@@ -6,9 +7,21 @@ export type LinkProgressKind = 'reconnecting' | 'recreating' | 'waking';
 const TICK_MS = 1000;
 const COMPLETION_LINGER_MS = 600;
 
+/** 깨우기 단계를 경과 시간 옆에 붙일 짧은 이름. */
+export function boatWakeStageLabel(stage: BoatWakeStage | null | undefined): string | null {
+  switch (stage) {
+    case 'starting': return '서버 켜는 중';
+    case 'service': return '서비스 준비 중';
+    case 'connecting': return '연결 중';
+    default: return null;
+  }
+}
+
 export interface LinkProgress {
   readonly element: HTMLElement;
   start(kind: LinkProgressKind): void;
+  /** 경과 시간 앞에 붙는 현재 단계. null 이면 경과 시간만 보인다. */
+  setStage(stage: string | null): void;
   settle(outcome: 'done' | 'failed'): void;
   dispose(): void;
 }
@@ -32,13 +45,15 @@ export function createLinkProgress(): LinkProgress {
   element.append(track, eta);
 
   let kind: LinkProgressKind | null = null;
+  let stage: string | null = null;
   let startedAt = 0;
   let tickTimer = 0;
   let lingerTimer = 0;
 
   function paint(elapsedMs: number): void {
     const seconds = Math.floor(elapsedMs / 1000);
-    const label = seconds < 60 ? `${seconds}초 경과` : `${Math.floor(seconds / 60)}분 ${seconds % 60}초 경과`;
+    const elapsed = seconds < 60 ? `${seconds}초 경과` : `${Math.floor(seconds / 60)}분 ${seconds % 60}초 경과`;
+    const label = stage ? `${stage} · ${elapsed}` : elapsed;
     eta.textContent = label;
     if (track.getAttribute('aria-valuetext') !== label) track.setAttribute('aria-valuetext', label);
   }
@@ -67,6 +82,11 @@ export function createLinkProgress(): LinkProgress {
       tick();
       window.clearInterval(tickTimer);
       tickTimer = window.setInterval(tick, TICK_MS);
+    },
+    setStage(next) {
+      if (stage === next) return;
+      stage = next;
+      if (kind) tick();
     },
     settle(outcome) {
       if (!kind) return;

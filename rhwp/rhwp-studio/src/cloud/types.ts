@@ -42,9 +42,14 @@ export interface BoatAccountSnapshot {
   trial: boolean | null;
 }
 
+/** 깨우는 중의 단계. starting = VM 켜는 중, service = Cloud 서비스 준비 중, connecting = 터널 연결 중. */
+export type BoatWakeStage = 'starting' | 'service' | 'connecting';
+
 export interface BoatServerSnapshot {
   sandboxId: string;
   state: BoatServerState;
+  /** state 가 waking 일 때만 있다. 예전 데스크톱은 보내지 않는다. */
+  wakeStage?: BoatWakeStage | null;
   machine: BoatMachine;
   /** Human label, e.g. "4 vCPU · 8 GB". */
   machineLabel: string;
@@ -99,11 +104,30 @@ export type CloudConnectionState = 'unknown' | 'testing' | 'ready' | 'error';
 /** Live transport to the Cloud server. Missing on older snapshots; infer from profile.connection. */
 export type CloudLinkKind = 'ready' | 'reconnecting' | 'recreating' | 'failed';
 
+/**
+ * 끊긴 링크의 이유. network 만 데스크톱이 스스로 다시 시도한다. 나머지는 사용자가 할 일이 있다.
+ * pairing = 기기 페어링이 풀림, boat-auth = boat 계정·키 문제, host-key = 서버 SSH 키가 바뀜,
+ * server = 서비스가 답하지 않거나 작업 실행기가 멈춤, session-missing = 서버에 이전 작업이 없음.
+ */
+export type CloudLinkReason = 'network' | 'pairing' | 'boat-auth' | 'host-key' | 'server' | 'session-missing';
+
 export interface CloudLinkState {
   kind: CloudLinkKind;
+  /** 진단용 원문. 화면에는 message 를 쓴다. */
   error: string | null;
   attempt: number;
   canRecreate: boolean;
+  /** kind 가 failed 일 때만 있다. 예전 데스크톱은 보내지 않는다. */
+  reason?: CloudLinkReason | null;
+  /** reason 에 맞춘 짧은 한국어 문장. */
+  message?: string | null;
+}
+
+/** 내 서버가 지금 내미는 SSH 호스트 키. 사용자가 지문을 확인한 뒤에만 저장한다. */
+export interface CloudHostKeyInspection {
+  host: string;
+  port: number;
+  fingerprint: string;
 }
 
 /** Raucloud usage shared by every device on an account. Durations use milliseconds. */
@@ -259,7 +283,11 @@ export type CloudSessionState =
     })
   | (CloudSessionBase & {
       kind: 'suspended';
+      /** 서버가 보낸 원문. 화면에는 code 로 고른 문장을 쓴다. */
       reason: string;
+      /** 서버의 suspendedReason.code. 예: PROVIDER_AUTH_EXPIRED, WORKER_UNSTABLE. */
+      code?: string | null;
+      provider?: AgentName | null;
       resumable: boolean;
     })
   | (CloudSessionBase & {

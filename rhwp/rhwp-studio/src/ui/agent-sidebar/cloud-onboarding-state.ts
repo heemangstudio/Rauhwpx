@@ -473,12 +473,25 @@ function entryState(
   return chooseState(snapshot, intent, defaultCloudProfileDraft(fallback), boatAvailable);
 }
 
+/**
+ * 복구 줄에서 바로 여는 화면. pair = 이미 설치한 환경에 다시 페어링, boat-key = boat 서버를 둔 채
+ * API 키만 다시 넣기.
+ */
+export type CloudSetupEntry = 'pair' | 'boat-key';
+
 export function createCloudSetupState(
   snapshot: CloudSnapshot,
   intent: CloudSetupIntent,
-  options: { boat?: boolean } = {},
+  options: { boat?: boolean; entry?: CloudSetupEntry } = {},
 ): CloudSetupState {
-  return entryState(snapshot, intent, snapshotProfile(snapshot), options.boat === true);
+  const profile = snapshotProfile(snapshot);
+  if (options.entry === 'pair' && profile && !snapshotBoatProfile(snapshot)) {
+    return { kind: 'existing', draft: profile, intent, errors: {}, pairingCode: '' };
+  }
+  if (options.entry === 'boat-key' && snapshotBoatProfile(snapshot)) {
+    return { kind: 'boat-key', draft: defaultCloudProfileDraft(), intent, apiKey: '', error: null, pending: false };
+  }
+  return entryState(snapshot, intent, profile, options.boat === true);
 }
 
 export function reconcileCloudSetupState(state: CloudSetupState, snapshot: CloudSnapshot): CloudSetupState {
@@ -646,6 +659,10 @@ export function boatStateAfterAccount(
 ): BoatSetupState {
   const account = snapshot.boat?.account;
   if (!account?.connected) return { kind: 'boat-connect', draft, intent, email: '', error: null, pending: false };
+  // 이미 있는 boat 서버에 계정을 다시 이은 것이다. 새로 설정하지 않는다.
+  if (snapshotBoatProfile(snapshot)) {
+    return { kind: 'boat-ready', intent, importedProviders: snapshot.boat?.setup?.importedProviders ?? [] };
+  }
   if (account.canStart === false) return { kind: 'boat-billing', draft, intent, opened: false, pending: false };
   return { kind: 'boat-confirm', draft, intent };
 }
@@ -703,6 +720,10 @@ function boatEntryState(snapshot: CloudSnapshot, intent: CloudSetupIntent): Boat
     return { kind: 'boat-progress', draft, intent, startedAt: Number.isFinite(startedAt) ? startedAt : Date.now() };
   }
   if (snapshotBoatProfile(snapshot)) {
+    // 계정이 끊긴 boat 서버는 계정 연결로 간다. 서버와 페어링은 그대로 둔다.
+    if (snapshot.boat?.account.connected === false) {
+      return { kind: 'boat-connect', draft, intent, email: '', error: null, pending: false };
+    }
     return { kind: 'boat-ready', intent, importedProviders: snapshot.boat?.setup?.importedProviders ?? [] };
   }
   return null;
@@ -749,7 +770,8 @@ export interface BoatCardStatus {
   detail: string;
   dot: 'connected' | 'connecting' | 'disconnected' | 'unknown';
   pulse: boolean;
-  action: { kind: 'wake' | 'stop' | 'open'; label: string; disabled: boolean } | null;
+  /** account 는 서버를 둔 채 boat 계정만 다시 잇는 API 키 입력이다. */
+  action: { kind: 'wake' | 'stop' | 'open' | 'account'; label: string; disabled: boolean } | null;
   /** 연결 해제·서버 삭제 메뉴. 설정이 진행 중일 때만 숨긴다. */
   menu: boolean;
 }
@@ -785,6 +807,11 @@ export function boatCardStatus(snapshot: CloudSnapshot, platform: BoatHostPlatfo
     : '';
   const link = inferCloudLink(snapshot);
   const base = { title: BOAT_CARD_TITLE, menu: true };
+  // 키가 끊기면 시작·중지·상태 읽기가 모두 막힌다. 서버 상태보다 이것을 먼저 보인다.
+  if (boat?.account.connected === false) {
+    return { ...base, detail: 'boat 계정 연결이 끊겼습니다', dot: 'disconnected', pulse: false,
+      action: { kind: 'account', label: 'API 키 입력', disabled: false } };
+  }
   switch (server?.state) {
     case 'running':
       if (link.kind === 'reconnecting' || link.kind === 'recreating') {

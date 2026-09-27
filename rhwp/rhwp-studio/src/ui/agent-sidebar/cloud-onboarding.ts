@@ -29,6 +29,7 @@ import {
   type BoatHostPlatform,
   type CloudProfileField,
   type CloudSetupChoice,
+  type CloudSetupEntry,
   type CloudSetupIntent,
   type CloudSetupIssue,
   type CloudSetupStage,
@@ -58,7 +59,8 @@ export interface CloudTransferIntent {
 
 export interface CloudOnboarding {
   settingsElement: HTMLElement;
-  open(intent: CloudSetupIntent, trigger: HTMLElement): void;
+  /** entry 를 주면 그 화면에서 바로 시작한다. 복구 줄의 다시 페어링과 API 키 입력이 쓴다. */
+  open(intent: CloudSetupIntent, trigger: HTMLElement, entry?: CloudSetupEntry): void;
   sync(snapshot: CloudSnapshot): void;
   handleAccountEvent(event: { signedIn: boolean; error?: string }): void;
   setMutationLocked(locked: boolean): void;
@@ -192,9 +194,10 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
   const settingsAction = el('button', 'ag-settings-btn ag-cloud-settings-action') as HTMLButtonElement;
   settingsAction.type = 'button';
   // boat VM 은 카드에서 바로 시작·중지한다. 나머지는 설정 창을 연다.
-  let settingsActionKind: 'open' | 'wake' | 'stop' = 'open';
+  let settingsActionKind: 'open' | 'wake' | 'stop' | 'account' = 'open';
   settingsAction.addEventListener('click', () => {
     if (settingsActionKind === 'open') open('manage', settingsAction);
+    else if (settingsActionKind === 'account') open('manage', settingsAction, 'boat-key');
     else void runBoatCardAction(settingsActionKind);
   });
   const settingsMore = el('button', 'ag-cloud-settings-more') as HTMLButtonElement;
@@ -1409,7 +1412,7 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
         : 'connecting';
   }
 
-  function open(intent: CloudSetupIntent, nextTrigger: HTMLElement): void {
+  function open(intent: CloudSetupIntent, nextTrigger: HTMLElement, entry?: CloudSetupEntry): void {
     if (mutationLocked) return;
     if (!accountAuthPending) justSignedIn = false;
     trigger = nextTrigger;
@@ -1424,7 +1427,7 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
         if (value) dialog.style.setProperty(name, value);
       }
     }
-    const preservedFailure = preserveOnOpen
+    const preservedFailure = !entry && preserveOnOpen
       && (state?.kind === 'install-failed' || state?.kind === 'sandbox-failed');
     if (!operationActive(state) && !preservedFailure) {
       transferContinuationRequested = false;
@@ -1432,7 +1435,7 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
         ? deps.captureTransferIntent?.()
           ?? (deps.getTransferSelection ? { selection: deps.getTransferSelection() } : null)
         : null;
-      state = createCloudSetupState(snapshot, intent, { boat: deps.controller.boatSupported() });
+      state = createCloudSetupState(snapshot, intent, { boat: deps.controller.boatSupported(), entry });
       resetConditionalDrafts(hasDraft(state) ? state.draft : currentDraft());
     }
     deps.onSetupStateChange(operationActive(state));
