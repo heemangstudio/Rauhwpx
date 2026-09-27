@@ -2911,6 +2911,11 @@ button.ag-skill-copy {
     display var(--ag-dur-fast) allow-discrete;
 }
 
+/* Cloud 문서 전환·병합 줄(8px 간격 + 36px)이 떠 있으면 그 위로 비켜 선다. */
+.ag-chat-page:has(.ag-cloud-document-controls > :not([hidden])) .ag-latest-pill {
+  bottom: calc(52px + var(--ag-fleet-dock-h, 0px));
+}
+
 .ag-latest-pill[hidden] {
   display: none;
   opacity: 0;
@@ -4844,6 +4849,11 @@ button.ag-skill-copy {
 }
 
 .ag-calibration-chip[hidden] {
+  display: none;
+}
+
+/* Cloud 문서 전환·병합 줄은 같은 자리에 떠 있다. 그 줄이 보이는 동안 칩은 물러났다가 사라지면 다시 뜬다. */
+.ag-chat-page:has(.ag-cloud-document-controls > :not([hidden])) > .ag-calibration-chip {
   display: none;
 }
 
