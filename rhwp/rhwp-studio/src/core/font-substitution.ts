@@ -11,7 +11,7 @@
  */
 
 import { REGISTERED_FONTS } from './font-loader.ts';
-import { repairedLocalFontFamily, resolveLocalFont } from './local-fonts.ts';
+import { getLocalFontLookupGeneration, repairedLocalFontFamily, resolveLocalFont } from './local-fonts.ts';
 import { equationFontFamilies } from './equation-font.ts';
 
 // 치환 엔트리: [원본폰트, 원본타입, 대체폰트, 대체타입]
@@ -325,6 +325,10 @@ export function fontFamilyWithFallback(fontName: string): string {
   return formatCssFontFamilies([fontName, ...systemFallbackFamilies(fontName)]);
 }
 
+/** 기본 옵션 체인 캐시. Canvas font setter 가 텍스트 run 마다 부르므로 로컬 글꼴 조회 세대 단위로 재사용한다. */
+const _displayChainCache = new Map<string, string>();
+let _displayChainGeneration = -1;
+
 /**
  * 문서 원본 글꼴명을 보존하면서 표시/측정용 CSS font-family chain을 만든다.
  *
@@ -342,6 +346,29 @@ export function fontFamilyChainForDisplay(
 ): string {
   if (!fontName || GENERIC_FONTS.has(fontName)) return fontName;
 
+  const cacheable = options.confirmedLocalFonts === undefined
+    && options.includeUnconfirmedOriginal === undefined;
+  if (!cacheable) return buildFontFamilyChainForDisplay(fontName, altType, langId, options);
+  const generation = getLocalFontLookupGeneration();
+  if (generation !== _displayChainGeneration) {
+    _displayChainCache.clear();
+    _displayChainGeneration = generation;
+  }
+  const cacheKey = langId + '\0' + fontName + '\0' + altType;
+  let chain = _displayChainCache.get(cacheKey);
+  if (chain === undefined) {
+    chain = buildFontFamilyChainForDisplay(fontName, altType, langId, options);
+    _displayChainCache.set(cacheKey, chain);
+  }
+  return chain;
+}
+
+function buildFontFamilyChainForDisplay(
+  fontName: string,
+  altType: number,
+  langId: number,
+  options: FontFamilyChainOptions,
+): string {
   const families: string[] = [];
   const confirmedLocalFonts = options.confirmedLocalFonts ?? [];
   const confirmedLocalFontSet = new Set(
