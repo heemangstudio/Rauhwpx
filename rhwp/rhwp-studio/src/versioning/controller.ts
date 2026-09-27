@@ -64,7 +64,7 @@ import {
   reconcileCompositeHistoryTransition,
 } from './composite-merge.ts';
 import { mergeResourceDependencyErrors } from './merge-validation.ts';
-import { retainedMergeDraftLocalState } from './merge-draft.ts';
+import { carriedMergeResolutions, retainedMergeDraftLocalState } from './merge-draft.ts';
 import { VersionMaintenance } from './maintenance.ts';
 import {
   VERSION_COMPARE_OPTIONS,
@@ -1470,22 +1470,14 @@ export class DocumentVersionController implements VersionManagerController {
     );
     this.#assertWorkspaceToken(workspace);
 
-    const priorByFingerprint = new Map<string, MergeResolution>();
-    if (previousDraft) {
-      for (const conflict of previousDraft.conflicts) {
-        const resolution = previousDraft.resolutions[conflict.id];
-        if (resolution) priorByFingerprint.set(conflict.fingerprint, resolution);
-      }
-    }
-    const resolutions = Object.fromEntries(analysis.conflicts.flatMap((conflict) => {
-      const resolution = priorByFingerprint.get(conflict.fingerprint);
-      return resolution ? [[conflict.id, resolution] as const] : [];
-    }));
+    const resolutions = carriedMergeResolutions(previousDraft, analysis.analysisVersion, analysis.conflicts);
     const retainedLocalState = retainedMergeDraftLocalState(
       previousDraft,
       targetBranch,
       sourceBranch,
       resolutions,
+      analysis.analysisVersion,
+      analysis.conflicts,
     );
     const now = Date.now();
     const draft: VersionMergeDraft = {

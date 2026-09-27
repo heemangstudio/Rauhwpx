@@ -9207,6 +9207,14 @@ mod tests {
             Some("가X나다Z라마바Y사")
         );
         assert_eq!(merge_text("ab", "aCb", "aIb"), None);
+        assert_eq!(
+            merge_text("가🙂나🚀다", "가😄나🚀다!", "가🙂나🌙다").as_deref(),
+            Some("가😄나🌙다!")
+        );
+        assert_eq!(
+            merge_text("one two three", "ONE two three", "ONE two THREE").as_deref(),
+            Some("ONE two THREE")
+        );
     }
     #[test]
     fn multi_hunk_budget_keeps_uncertain_text_for_review() {
