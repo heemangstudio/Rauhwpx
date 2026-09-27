@@ -83,6 +83,46 @@ test.after(async () => {
   await server?.close();
 });
 
+test('snapshot cache shares an export across reads and invalidates on editor or file context changes', { timeout: 30_000 }, async () => {
+  const page = await browser!.newPage();
+  try {
+    await page.goto(`${baseUrl}/tests/fixtures/version-store-idb.html`);
+    const result = await page.evaluate(async () => {
+      const [{ WasmBridge }, { VersionSnapshotCache }] = await Promise.all([
+        import('/src/core/wasm-bridge.ts'), import('/src/versioning/snapshot.ts'),
+      ]);
+      const wasm = new WasmBridge();
+      await wasm.initialize();
+      const bytes = new Uint8Array(await (await fetch('/samples/shift-return.hwp')).arrayBuffer());
+      wasm.loadDocument(bytes, 'shift-return.hwp');
+      let exports = 0;
+      const originalExport = wasm.exportHwp.bind(wasm);
+      wasm.exportHwp = () => { exports++; return originalExport(); };
+      const cache = new VersionSnapshotCache();
+      try {
+        const initial = cache.fingerprint(wasm, 'document-a', 0);
+        const captured = cache.capture(wasm, 'document-a', 0);
+        const reused = cache.capture(wasm, 'document-a', 0) === captured;
+        const initialExports = exports;
+        wasm.insertText(0, 0, 0, '새 내용');
+        const edited = cache.capture(wasm, 'document-a', 1);
+        const editExports = exports;
+        cache.capture(wasm, 'document-b', 1);
+        const documentExports = exports;
+        wasm.fileName = 'renamed.hwp';
+        cache.capture(wasm, 'document-b', 1);
+        const renamedExports = exports;
+        cache.clear();
+        cache.capture(wasm, 'document-b', 1);
+        return { initialExports, editExports, documentExports, renamedExports, finalExports: exports,
+          sameFingerprint: initial === captured.fingerprint, reused, changed: edited.fingerprint !== initial };
+      } finally { wasm.releaseDocument(); }
+    });
+    assert.deepEqual(result, { initialExports: 1, editExports: 2, documentExports: 3,
+      renamedExports: 4, finalExports: 5, sameFingerprint: true, reused: true, changed: true });
+  } finally { await page.close(); }
+});
+
 test('dirty merge entry commits only after the user chooses the current branch', { timeout: 30_000 }, async (context) => {
   assert.ok(browser, 'Browser setup did not complete');
   const page = await browser.newPage();
