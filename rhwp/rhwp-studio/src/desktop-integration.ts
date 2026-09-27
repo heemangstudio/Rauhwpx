@@ -165,7 +165,7 @@ export interface RhwpDesktopApi {
   cloudSandboxStatus?: () => Promise<unknown>;
   cloudTeardownSandbox?: (payload: { force?: boolean }) => Promise<unknown>;
   cloudForceQuitAccount?: () => Promise<unknown>;
-  cloudReconnectLink?: () => Promise<unknown>;
+  cloudReconnectLink?: (payload?: { explicit?: boolean }) => Promise<unknown>;
   cloudRecreateLink?: () => Promise<unknown>;
   /** Checkpoints the prior controller and explicitly transfers the account-global worker lease. */
   cloudTakeoverSandbox?: () => Promise<unknown>;
@@ -178,7 +178,7 @@ export interface RhwpDesktopApi {
   cloudDismissSession?: (payload: { sessionId: string }) => Promise<unknown>;
   cloudCompleteTakeover?: (payload: { sessionId: string; operationId: string }) => Promise<unknown>;
   cloudDownloadResult?: (payload: { sessionId: string }) => Promise<unknown>;
-  cloudDownloadCheckpoint?: (payload: { sessionId: string; operationId?: string; kind?: 'turn' }) => Promise<unknown>;
+  cloudDownloadCheckpoint?: (payload: { sessionId: string; operationId?: string; kind?: 'turn'; explicit?: boolean }) => Promise<unknown>;
   cloudPrepareRestartDocument?: (payload: { sessionId: string }) => Promise<unknown>;
   cloudOpenDisplay?: (payload: { sessionId: string }) => Promise<unknown>;
   cloudCloseDisplay?: (payload: { connectionId: string }) => Promise<unknown>;

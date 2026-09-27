@@ -49,6 +49,7 @@ const STROKE_PATHS = {
   search: 'M5.3 2.5a2.8 2.8 0 1 0 0 5.6 2.8 2.8 0 0 0 0-5.6M7.3 7.3l2.2 2.2',
   /* 여섯 점으로 만든 작은 그립 — 목록 순서 이동 */
   grip: 'M4 2.5h.1M8 2.5h.1M4 6h.1M8 6h.1M4 9.5h.1M8 9.5h.1',
+  /* 가로 세 점 — 더 보기 메뉴 */
   /* 문서에 직접 쓰는 skill — 짧고 삐딱한 연필 한 자루. */
   skillEdit: 'M2.1 9.9l.7-2.5 5-5 1.9 1.9-5 5zM7.1 3.1 9 5M2.8 7.4l1.9 1.9',
   /* 내부 작업 skill — 안테나·입 없이 사각 몸체와 두 눈만 둔다. */
@@ -70,6 +71,10 @@ const STROKE_PATHS = {
   heart: 'M6 10S1.8 7.5 1.8 4.6a2.3 2.3 0 0 1 4.2-1.3 2.3 2.3 0 0 1 4.2 1.3C10.2 7.5 6 10 6 10z',
   bolt: 'M7 1.5 3 6.3h2.8L5 10.5l4-5H6.2z',
   shield: 'M6 1.5 10 3v3.2c0 2.2-1.5 3.9-4 4.8-2.5-.9-4-2.6-4-4.8V3zM4.3 6l1.1 1.1L7.8 4.7',
+  /* 가로 점 셋 — 더 많은 동작. 작은 고리에 스트로크를 둘러 꽉 찬 점으로 읽힌다. */
+  more: 'M2.4 6a.6.6 0 1 0 1.2 0a.6.6 0 1 0-1.2 0M5.4 6a.6.6 0 1 0 1.2 0a.6.6 0 1 0-1.2 0M8.4 6a.6.6 0 1 0 1.2 0a.6.6 0 1 0-1.2 0',
+  /* 속이 빈 점 — 아직 시작하지 않은 단계. */
+  pending: 'M6 4a2 2 0 1 0 0 4 2 2 0 0 0 0-4',
 } as const;
 
 /** 사각 프레임(개체)만 채우기 없이 rect 로 그린다. */
@@ -167,45 +172,37 @@ export function createCloudSyncIcon(className = ''): SVGSVGElement {
   return svg;
 }
 
-/** 편집 중 상태용 ㅎ. 세 획이 삐딱 루프로 자리를 바꾼다. */
-export function createHieumGlyph(className = ''): SVGSVGElement {
+/** 응답 대기·편집 상태에 쓰는 잉크 고리. 가운데 점은 회전하지 않는다. */
+export function createInkRing(className = ''): SVGSVGElement {
   const svg = document.createElementNS(NS, 'svg');
-  svg.setAttribute('class', className ? `ag-hieum ${className}` : 'ag-hieum');
-  svg.setAttribute('viewBox', '0 0 12 12');
-  svg.setAttribute('width', '14');
-  svg.setAttribute('height', '14');
+  svg.setAttribute('class', className ? `ag-ink-ring ${className}` : 'ag-ink-ring');
+  svg.setAttribute('viewBox', '-10 -10 120 120');
+  svg.setAttribute('width', '24');
+  svg.setAttribute('height', '24');
   svg.setAttribute('aria-hidden', 'true');
   svg.setAttribute('focusable', 'false');
 
-  const top = document.createElementNS(NS, 'line');
-  top.setAttribute('class', 'ag-hieum-top');
-  top.setAttribute('x1', '4.5');
-  top.setAttribute('y1', '1.45');
-  top.setAttribute('x2', '7.5');
-  top.setAttribute('y2', '1.45');
-
-  const mid = document.createElementNS(NS, 'line');
-  mid.setAttribute('class', 'ag-hieum-mid');
-  mid.setAttribute('x1', '2.55');
-  mid.setAttribute('y1', '3.5');
-  mid.setAttribute('x2', '9.45');
-  mid.setAttribute('y2', '3.5');
-
-  const ring = document.createElementNS(NS, 'circle');
-  ring.setAttribute('class', 'ag-hieum-ring');
-  ring.setAttribute('cx', '6');
-  ring.setAttribute('cy', '8.05');
-  ring.setAttribute('r', '2.6');
-
-  for (const part of [top, mid, ring]) {
-    part.setAttribute('fill', 'none');
-    part.setAttribute('stroke', 'currentColor');
-    part.setAttribute('stroke-width', '1');
-    part.setAttribute('stroke-linecap', 'round');
-    part.setAttribute('stroke-linejoin', 'round');
+  const trails = document.createElementNS(NS, 'g');
+  trails.setAttribute('class', 'ag-ink-ring-trails');
+  const pathData = 'M50 13 C90 7 104 65 69 81 C33 108 2 61 24 31 C43 0 85 31 73 61 C60 91 16 75 23 44 C29 18 67 11 78 41 C89 71 50 98 29 73 C1 44 30 10 50 13Z';
+  for (const transform of [
+    '',
+    'rotate(20 50 50) scale(.9) translate(5.5 5.5)',
+    'rotate(40 50 50)',
+    'rotate(60 50 50) scale(.85) translate(9 9)',
+  ]) {
+    const path = document.createElementNS(NS, 'path');
+    path.setAttribute('d', pathData);
+    if (transform) path.setAttribute('transform', transform);
+    trails.appendChild(path);
   }
 
-  svg.append(top, mid, ring);
+  const center = document.createElementNS(NS, 'circle');
+  center.setAttribute('class', 'ag-ink-ring-center');
+  center.setAttribute('cx', '50');
+  center.setAttribute('cy', '50');
+  center.setAttribute('r', '5');
+  svg.append(trails, center);
   return svg;
 }
 

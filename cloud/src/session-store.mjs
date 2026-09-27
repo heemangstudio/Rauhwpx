@@ -10,7 +10,16 @@ const SUSPENDED_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const TAKEOVER_RETENTION_MS = 24 * 60 * 60 * 1000;
 const STAGED_RETENTION_MS = 24 * 60 * 60 * 1000;
 const WORKER_RESULT_RETRY_MS = 5 * 60 * 1000;
+// A session whose worker keeps dying is suspended instead of requeued forever.
+const WORKER_REQUEUE_LIMIT = 3;
+const WORKER_REQUEUE_WINDOW_MS = 15 * 60 * 1000;
 const MUTABLE_STATES = new Set(['staged', 'queued', 'running', 'suspended']);
+// Idle housekeeping transitions happen because nobody is around. Counting them
+// as activity would restart the host's idle clock when a warm conversation
+// sleeps or retention purges a session.
+const IDLE_HOUSEKEEPING_EVENTS = new Set([
+  'runtime.sleep_requested', 'runtime.sleeping', 'runtime.sleep_cancelled', 'session.purged',
+]);
 
 function parseEvent(row) {
   const payload = JSON.parse(row.payload_json);
@@ -25,10 +34,13 @@ function parseEvent(row) {
 }
 
 export class SessionStore {
+  #workerRequeues = new Map();
+
   constructor(database, blobStore, {
     now = Date.now,
     maxQueuedSessions = DEFAULT_LIMITS.maxQueuedSessions,
     onRuntimeInvalidated = null,
+    onActivity = null,
   } = {}) {
     this.database = database;
     this.blobStore = blobStore;
@@ -37,10 +49,15 @@ export class SessionStore {
     this.events = new EventEmitter();
     this.events.setMaxListeners(0);
     this.onRuntimeInvalidated = onRuntimeInvalidated;
+    this.onActivity = onActivity;
   }
 
   setRuntimeInvalidationHandler(listener) {
     this.onRuntimeInvalidated = typeof listener === 'function' ? listener : null;
+  }
+
+  setActivityHandler(listener) {
+    this.onActivity = typeof listener === 'function' ? listener : null;
   }
 
   setProviderStatus(provider, status) {
@@ -72,15 +89,18 @@ export class SessionStore {
 
   providerStatus(provider) {
     const row = this.database.prepare('SELECT * FROM provider_status WHERE provider = ?').get(provider);
+    // A login that failed mid-turn stays unusable until its credentials are written again.
+    const expired = Boolean(row?.auth_expired_at);
+    const authenticated = Boolean(row?.authenticated) && !expired;
     return row ? {
       provider: row.provider,
       available: Boolean(row.available),
-      authenticated: Boolean(row.authenticated),
-      authRequired: Boolean(row.available && !row.authenticated),
+      authenticated,
+      authRequired: Boolean(row.available) && !authenticated,
       version: row.version,
-      errorCode: row.error_code,
-      errorMessage: row.error_message,
-      setupAction: row.setup_action,
+      errorCode: expired ? 'PROVIDER_AUTH_EXPIRED' : row.error_code,
+      errorMessage: expired ? 'Provider login expired or was revoked' : row.error_message,
+      setupAction: expired ? `sudo rauhwpx-cloud provider login ${provider}` : row.setup_action,
       checkedAt: row.checked_at,
     } : {
       provider,
@@ -93,6 +113,18 @@ export class SessionStore {
       setupAction: `sudo rauhwpx-cloud provider install ${provider}`,
       checkedAt: null,
     };
+  }
+
+  providerAuthExpired(provider) {
+    return Boolean(this.database.prepare('SELECT auth_expired_at FROM provider_status WHERE provider = ?').get(provider)?.auth_expired_at);
+  }
+
+  markProviderAuthExpired(provider) {
+    this.database.prepare('UPDATE provider_status SET auth_expired_at = ? WHERE provider = ?').run(this.now(), provider);
+  }
+
+  clearProviderAuthExpired(provider) {
+    this.database.prepare('UPDATE provider_status SET auth_expired_at = NULL WHERE provider = ?').run(provider);
   }
 
   listProviderStatus() {
@@ -384,8 +416,13 @@ export class SessionStore {
     return () => this.events.off(key, listener);
   }
 
-  #notify(event) {
+  #notify(event, { runStateChange = true } = {}) {
     this.onStateChanged?.(event.sessionId);
+    // Store transitions mark host activity; worker-authored progress does not,
+    // because a working session already keeps the host busy.
+    if (runStateChange && !IDLE_HOUSEKEEPING_EVENTS.has(event.type)) {
+      try { this.onActivity?.(event.sessionId); } catch { /* Activity stamps must not fail session work. */ }
+    }
     queueMicrotask(() => this.events.emit(`session:${event.sessionId}`, event));
   }
 
@@ -411,7 +448,7 @@ export class SessionStore {
   appendEvent(sessionId, type, payload) {
     let event;
     transaction(this.database, () => { event = this.#appendEventInTransaction(sessionId, type, payload); });
-    this.#notify(event);
+    this.#notify(event, { runStateChange: false });
     return event;
   }
 
@@ -420,7 +457,7 @@ export class SessionStore {
     transaction(this.database, () => {
       events = entries.map(({ type, payload }) => this.#appendEventInTransaction(sessionId, type, payload ?? {}));
     });
-    for (const event of events) this.#notify(event);
+    for (const event of events) this.#notify(event, { runStateChange: false });
     return events;
   }
 
@@ -618,6 +655,7 @@ export class SessionStore {
       this.database.prepare(`
         UPDATE sessions SET pause_requested_at = NULL, paused_writer_generation = NULL, started_at = NULL WHERE id = ?
       `).run(session.id);
+      this.#workerRequeues.delete(session.id);
       return updateStatus('queued', 'session.queued', { resumed: true }, now + STAGED_RETENTION_MS);
     }
     if (command.type === 'session.resume_edited') {
@@ -1929,6 +1967,7 @@ export class SessionStore {
       });
       return this.getSession(sessionId);
     });
+    if (outcome === 'completed') this.#workerRequeues.delete(sessionId);
     if (event) this.#notify(event);
     if (result.status !== 'running') this.#invalidateRuntime(sessionId);
     return result;
@@ -2013,6 +2052,7 @@ export class SessionStore {
         UPDATE session_messages SET status = 'queued', delivered_at = NULL
         WHERE session_id = ? AND status = 'delivered'
       `).run(sessionId);
+      if (reason?.code === 'PROVIDER_AUTH_EXPIRED') this.markProviderAuthExpired(row.provider);
       event = this.#appendEventInTransaction(sessionId, 'session.suspended', {
         status: 'suspended', reason, turnRecovery,
       });
@@ -2081,6 +2121,8 @@ export class SessionStore {
 
   requeueInterruptedSession(sessionId, reason = 'worker_lost') {
     let event = null;
+    let requeues = null;
+    let unstable = false;
     const session = transaction(this.database, () => {
       const row = this.getSessionRow(sessionId);
       if (row.status !== 'running') return this.getSession(sessionId);
@@ -2095,28 +2137,48 @@ export class SessionStore {
         return this.getSession(sessionId);
       }
       const paused = Boolean(row.pause_requested_at);
-      const status = paused ? 'suspended' : 'queued';
       const now = this.now();
+      requeues = (this.#workerRequeues.get(sessionId) ?? []).filter((at) => now - at < WORKER_REQUEUE_WINDOW_MS);
+      unstable = !paused && requeues.length >= WORKER_REQUEUE_LIMIT;
+      if (!paused && !unstable) requeues.push(now);
+      const suspendReason = paused
+        ? { code: 'USER_PAUSED', message: 'Pause recovered after worker exit' }
+        : unstable ? { code: 'WORKER_UNSTABLE', message: 'The Cloud worker stopped repeatedly' } : null;
+      const status = suspendReason ? 'suspended' : 'queued';
       const turnRecovery = this.#recoverInterruptedTurnInTransaction(row, now);
       this.database.prepare(`
         UPDATE sessions SET status = ?, state_version = state_version + 1, pause_requested_at = NULL, finishing_at = NULL, sandbox_id = NULL,
           worker_token_hash = NULL, worker_heartbeat_at = NULL, started_at = NULL,
           current_turn_id = NULL, current_wait_id = NULL,
           execution_phase = CASE WHEN protocol_version = 2 THEN 'waiting' ELSE execution_phase END,
+          suspended_reason = COALESCE(?, suspended_reason),
           expires_at = ?, updated_at = ? WHERE id = ?
-      `).run(status, now + (paused ? SUSPENDED_RETENTION_MS : STAGED_RETENTION_MS), now, sessionId);
+      `).run(
+        status,
+        unstable ? JSON.stringify(suspendReason) : null,
+        now + (suspendReason ? SUSPENDED_RETENTION_MS : STAGED_RETENTION_MS),
+        now,
+        sessionId,
+      );
       this.database.prepare(`
         UPDATE session_messages SET status = 'queued', delivered_at = NULL
         WHERE session_id = ? AND status = 'delivered'
       `).run(sessionId);
-      event = this.#appendEventInTransaction(sessionId, paused ? 'session.suspended' : 'session.recovered', {
+      event = this.#appendEventInTransaction(sessionId, suspendReason ? 'session.suspended' : 'session.recovered', {
         status,
-        action: paused ? 'pause_recovered' : 'requeued',
-        reason: paused ? { code: 'USER_PAUSED', message: 'Pause recovered after worker exit' } : reason,
+        action: paused ? 'pause_recovered' : unstable ? 'worker_unstable' : 'requeued',
+        reason: suspendReason ?? reason,
         turnRecovery,
       });
       return this.getSession(sessionId);
     });
+    if (requeues) {
+      for (const [id, times] of this.#workerRequeues) {
+        if (!times.some((at) => this.now() - at < WORKER_REQUEUE_WINDOW_MS)) this.#workerRequeues.delete(id);
+      }
+      if (unstable || requeues.length === 0) this.#workerRequeues.delete(sessionId);
+      else this.#workerRequeues.set(sessionId, requeues);
+    }
     if (event) this.#notify(event);
     if (session.status !== 'running') this.#invalidateRuntime(sessionId);
     return session;

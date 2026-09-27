@@ -18,6 +18,8 @@ import {
 
 const PROFILE_SECRET = 'cloud.profile';
 const REFRESH_SECRET = 'cloud.refresh';
+/** Server answers that retire a refresh token for good; retrying the same token cannot succeed. */
+const REVOKED_REFRESH_CODES = new Set(['REFRESH_TOKEN_INVALID', 'REFRESH_TOKEN_REUSED']);
 const DEVICE_SECRET = 'cloud.device';
 const SERVER_MODE_SECRET = 'cloud.server-mode';
 const PENDING_APP_SANDBOX_SECRET = 'cloud.pending-app-sandbox';
@@ -1691,15 +1693,35 @@ export class CloudClient {
           code: 'PAIRING_REQUIRED',
           retryable: false,
         });
-        const tokens = await this.#request('/v1/token/refresh', {
-          method: 'POST',
-          auth: false,
-          body: { refreshToken },
-          profile,
-          retryAuth: false,
-          retryAttempts: SAFE_REQUEST_ATTEMPTS,
-          timeoutMs: 10_000,
-        });
+        let tokens;
+        try {
+          tokens = await this.#request('/v1/token/refresh', {
+            method: 'POST',
+            auth: false,
+            body: { refreshToken },
+            profile,
+            retryAuth: false,
+            retryAttempts: SAFE_REQUEST_ATTEMPTS,
+            timeoutMs: 10_000,
+          });
+        } catch (error) {
+          if (!REVOKED_REFRESH_CODES.has(error?.code)) throw error;
+          // The server rejected this token for good. Keeping it would fail every
+          // later request the same way, so the device reports itself unpaired.
+          await this.#withCredentialLock(async () => {
+            if (generation !== this.#profileGeneration || !sameProfileIdentity(profile, this.#profile)) return;
+            if (await this.#vault.get(REFRESH_SECRET) !== refreshToken) return;
+            await this.#vault.delete(REFRESH_SECRET);
+            this.#accessToken = '';
+            this.#accessExpiresAt = 0;
+          });
+          throw new CloudHttpError('This device must be paired with the VPS again', {
+            status: 401,
+            code: 'PAIRING_REQUIRED',
+            retryable: false,
+            details: { cause: error.code },
+          });
+        }
         if (!validTokenBundle(tokens)) throw new CloudHttpError('Cloud token response is invalid');
         return this.#withCredentialLock(async () => {
           const storedRefreshToken = await this.#vault.get(REFRESH_SECRET);

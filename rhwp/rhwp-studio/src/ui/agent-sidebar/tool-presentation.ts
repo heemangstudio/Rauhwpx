@@ -527,7 +527,7 @@ const SPECS: Record<string, ToolSpec> = {
   update_plan_progress: { category: 'other', label: '계획 진행 갱신', summary: (a) => str(a['status']) },
   download_file: { category: 'other', label: '파일 내려받기', summary: (a) => str(a['filename']) || host(str(a['url'])) },
   publish_artifact: { category: 'other', label: '파일 내보내기', summary: (a) => str(a['fileName']) },
-  publish_cloud_document: { category: 'other', label: '클라우드 게시' },
+  publish_cloud_document: { category: 'other', label: 'Cloud 게시' },
   delegate_copy_layout: { category: 'other', label: '레이아웃 복제 맡기기', summary: (a) => str(a['documentName']) },
   update_copy_layout_job: { category: 'other', label: '복제 작업 갱신', summary: (a) => str(a['phase']) },
   run_copy_layout_helper: { category: 'other', label: '복제 도우미 실행', summary: (a) => str(a['action']) },

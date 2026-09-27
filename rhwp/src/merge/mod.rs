@@ -27,7 +27,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Debug;
 use std::time::Duration;
 use wasm_bindgen::prelude::*;
@@ -527,6 +527,81 @@ fn edit(b: &str, x: &str) -> Edit {
         repl: x[p..x.len() - s].to_vec(),
     }
 }
+// Limit the quadratic alignment work for very long paragraphs. The old
+// prefix/suffix edit remains a conservative fallback above this budget.
+const TEXT_DIFF_CELL_BUDGET: usize = 1_000_000;
+
+fn text_edits(base: &str, changed: &str) -> Vec<Edit> {
+    let b: Vec<char> = base.chars().collect();
+    let x: Vec<char> = changed.chars().collect();
+    if b.is_empty()
+        || x.is_empty()
+        || b.len().saturating_mul(x.len()) > TEXT_DIFF_CELL_BUDGET
+        || b.len().saturating_add(x.len()) > 10_000
+    {
+        return vec![edit(base, changed)];
+    }
+    let width = x.len() + 1;
+    let mut lengths = vec![0u32; (b.len() + 1) * width];
+    for bi in (0..b.len()).rev() {
+        for xi in (0..x.len()).rev() {
+            lengths[bi * width + xi] = if b[bi] == x[xi] {
+                lengths[(bi + 1) * width + xi + 1] + 1
+            } else {
+                lengths[(bi + 1) * width + xi].max(lengths[bi * width + xi + 1])
+            };
+        }
+    }
+    let (mut bi, mut xi) = (0, 0);
+    let mut pending: Option<Edit> = None;
+    let mut edits = vec![];
+    while bi < b.len() || xi < x.len() {
+        if bi < b.len() && xi < x.len() && b[bi] == x[xi] {
+            if let Some(value) = pending.take() {
+                edits.push(value);
+            }
+            bi += 1;
+            xi += 1;
+        } else if bi < b.len()
+            && (xi == x.len() || lengths[(bi + 1) * width + xi] >= lengths[bi * width + xi + 1])
+        {
+            pending
+                .get_or_insert_with(|| Edit {
+                    start: bi,
+                    end: bi,
+                    repl: vec![],
+                })
+                .end += 1;
+            bi += 1;
+        } else {
+            pending
+                .get_or_insert_with(|| Edit {
+                    start: bi,
+                    end: bi,
+                    repl: vec![],
+                })
+                .repl
+                .push(x[xi]);
+            xi += 1;
+        }
+    }
+    if let Some(value) = pending {
+        edits.push(value);
+    }
+    edits
+}
+
+fn edits_overlap(left: &Edit, right: &Edit) -> bool {
+    if left.start == right.start && left.end == right.end && left.repl == right.repl {
+        return false;
+    }
+    if left.start == left.end && right.start == right.end {
+        return left.start == right.start;
+    }
+    left.start < right.end && right.start < left.end
+        || left.start == left.end && right.start <= left.start && left.start <= right.end
+        || right.start == right.end && left.start <= right.start && right.start <= left.end
+}
 fn apply_edits(b: &str, es: &[&Edit]) -> String {
     let mut v = b.chars().collect::<Vec<_>>();
     let mut es = es.to_vec();
@@ -537,15 +612,25 @@ fn apply_edits(b: &str, es: &[&Edit]) -> String {
     v.into_iter().collect()
 }
 fn merge_text(b: &str, c: &str, i: &str) -> Option<String> {
+    let current = text_edits(b, c);
+    let incoming = text_edits(b, i);
+    if current
+        .iter()
+        .any(|left| incoming.iter().any(|right| edits_overlap(left, right)))
+    {
+        return None;
+    }
+    let mut combined = current.iter().chain(&incoming).collect::<Vec<_>>();
+    combined.sort_by_key(|value| (value.start, value.end));
+    combined.dedup_by(|left, right| {
+        left.start == right.start && left.end == right.end && left.repl == right.repl
+    });
+    Some(apply_edits(b, &combined))
+}
+fn merge_text_single_span(b: &str, c: &str, i: &str) -> Option<String> {
     let ce = edit(b, c);
     let ie = edit(b, i);
-    let disjoint = ce.end <= ie.start || ie.end <= ce.start;
-    let same_insert = ce.start == ce.end && ie.start == ie.end && ce.start == ie.start;
-    if disjoint && !same_insert {
-        Some(apply_edits(b, &[&ce, &ie]))
-    } else {
-        None
-    }
+    (!edits_overlap(&ce, &ie)).then(|| apply_edits(b, &[&ce, &ie]))
 }
 fn both_text(b: &str, c: &str, i: &str, inc_first: bool) -> Option<String> {
     let ce = edit(b, c);
@@ -1030,6 +1115,7 @@ fn merge_text_field(
     i: &str,
     r: Option<&BTreeMap<String, MergeResolution>>,
     x: &mut Ctx,
+    allow_multiple_hunks: bool,
 ) -> Result<String, String> {
     if c == i {
         x.auto += 1;
@@ -1043,7 +1129,12 @@ fn merge_text_field(
         x.auto += 1;
         return Ok(c.into());
     }
-    if let Some(value) = merge_text(b, c, i) {
+    let automatic = if allow_multiple_hunks {
+        merge_text(b, c, i)
+    } else {
+        merge_text_single_span(b, c, i)
+    };
+    if let Some(value) = automatic {
         x.auto += 2;
         return Ok(value);
     }
@@ -3033,7 +3124,20 @@ fn merge_para(
     pf!(numbering_restart, "numbering");
     let mut text_path = path.to_vec();
     text_path.push("text".into());
-    out.text = merge_text_field(&text_path, &b.text, &c.text, &i.text, r, x)?;
+    // Formatting/field offsets are merged separately by the document model.
+    // Multi-hunk text alignment is safe only for paragraphs without ranges.
+    let plain = [b, c, i].iter().all(|p| {
+        p.controls.is_empty()
+            && p.ctrl_data_records.is_empty()
+            && p.field_ranges.is_empty()
+            && p.range_tags.is_empty()
+            && p.tab_extended.is_empty()
+            && p.markpen_marks.is_empty()
+            && (p.char_shapes.is_empty()
+                || p.char_shapes.len() == 1 && p.char_shapes[0].start_pos == 0)
+            && p.orphan_field_ends.is_empty()
+    });
+    out.text = merge_text_field(&text_path, &b.text, &c.text, &i.text, r, x, plain)?;
     let mut pp = path.to_vec();
     pp.push("controls".into());
     let identities = |values: &[Control]| {
@@ -3252,6 +3356,250 @@ fn merge_para(
     crate::document_core::queries::field_query::rebuild_char_offsets(&mut out);
     Ok(out)
 }
+// The persistent manifest normally supplies IDs. For legacy or ambiguous
+// manifests, match only unique, well-supported paragraphs inside the space
+// between already matched anchors. An uncertain match stays a separate node.
+fn paragraph_match_keys(
+    b: &[Paragraph],
+    c: &[Paragraph],
+    i: &[Paragraph],
+) -> Option<(Vec<String>, Vec<String>, Vec<String>)> {
+    fn embedded(values: &[Paragraph], label: &str) -> Vec<String> {
+        let ids = values
+            .iter()
+            .map(|p| {
+                let raw = p.raw_header_extra.get(6..10)?;
+                let id = u32::from_le_bytes(raw.try_into().ok()?);
+                (id != 0).then(|| id.to_string())
+            })
+            .collect::<Vec<_>>();
+        let mut counts = BTreeMap::<String, usize>::new();
+        for id in ids.iter().flatten() {
+            *counts.entry(id.clone()).or_default() += 1;
+        }
+        values
+            .iter()
+            .enumerate()
+            .map(|(n, _)| {
+                ids[n]
+                    .as_ref()
+                    .filter(|id| counts.get(*id) == Some(&1))
+                    .cloned()
+                    .unwrap_or_else(|| format!("{label}:{n}"))
+            })
+            .collect()
+    }
+    fn similar(a: &Paragraph, b: &Paragraph) -> Option<f32> {
+        let plain = |p: &Paragraph| {
+            p.controls.is_empty()
+                && p.ctrl_data_records.is_empty()
+                && p.field_ranges.is_empty()
+                && p.range_tags.is_empty()
+                && p.orphan_field_ends.is_empty()
+                && p.markpen_marks.is_empty()
+                && p.tab_extended.is_empty()
+                && (p.char_shapes.is_empty()
+                    || p.char_shapes.len() == 1 && p.char_shapes[0].start_pos == 0)
+        };
+        if !plain(a) || !plain(b) || a.style_id != b.style_id || a.para_shape_id != b.para_shape_id
+        {
+            return None;
+        }
+        let al = a.text.chars().count();
+        let bl = b.text.chars().count();
+        if al == 0 || bl == 0 || al.saturating_mul(bl) > 65_536 {
+            return None;
+        }
+        let edits = text_edits(&a.text, &b.text);
+        let changed = edits
+            .iter()
+            .map(|e| e.end - e.start + e.repl.len())
+            .sum::<usize>();
+        Some(1.0 - changed as f32 / (al + bl) as f32)
+    }
+    fn exact_hash(p: &Paragraph) -> [u8; 32] {
+        let mut normalized = p.clone();
+        normalized.char_count = 0;
+        normalized.char_offsets.clear();
+        normalized.line_segs.clear();
+        for byte in normalized.raw_header_extra.iter_mut().take(10) {
+            *byte = 0;
+        }
+        *dh(&normalized).as_bytes()
+    }
+    fn align(
+        base: &[Paragraph],
+        side: &[Paragraph],
+        bk: &[String],
+        sk: &mut [String],
+        label: &str,
+    ) {
+        let side_positions = sk
+            .iter()
+            .enumerate()
+            .map(|(index, key)| (key, index))
+            .collect::<BTreeMap<_, _>>();
+        let mut anchored = bk
+            .iter()
+            .enumerate()
+            .filter_map(|(bn, key)| side_positions.get(key).map(|sn| (bn, *sn)))
+            .collect::<BTreeMap<_, _>>();
+        if anchored
+            .values()
+            .scan(None, |previous, &next| {
+                let ordered = previous.is_none_or(|value| value < next);
+                *previous = Some(next);
+                Some(ordered)
+            })
+            .any(|ordered| !ordered)
+        {
+            // Explicit identities can move. Their ordering is handled by the
+            // structural merge; heuristic matching cannot cross those moves.
+            return;
+        }
+        // Unique content anchors also work for rich paragraphs whose ranges
+        // cannot be inferred from text similarity.
+        let mut base_hashes = HashMap::<[u8; 32], Vec<usize>>::new();
+        let mut side_hashes = HashMap::<[u8; 32], Vec<usize>>::new();
+        let mut base_hash_order = Vec::with_capacity(base.len());
+        for (bn, paragraph) in base.iter().enumerate() {
+            let hash = exact_hash(paragraph);
+            base_hashes.entry(hash).or_default().push(bn);
+            base_hash_order.push(hash);
+        }
+        for (sn, paragraph) in side.iter().enumerate() {
+            side_hashes
+                .entry(exact_hash(paragraph))
+                .or_default()
+                .push(sn);
+        }
+        for (bn, hash) in base_hash_order.iter().enumerate() {
+            if base_hashes
+                .get(hash)
+                .is_none_or(|positions| positions.len() != 1)
+            {
+                continue;
+            }
+            let Some(side_positions) = side_hashes.get(hash).filter(|v| v.len() == 1) else {
+                continue;
+            };
+            let sn = side_positions[0];
+            if anchored.contains_key(&bn)
+                || !bk[bn].starts_with("base:")
+                || !sk[sn].starts_with(label)
+            {
+                continue;
+            }
+            let previous = anchored.range(..bn).next_back().map(|(_, n)| *n);
+            let next = anchored.range(bn + 1..).next().map(|(_, n)| *n);
+            if previous.is_some_and(|v| sn <= v) || next.is_some_and(|v| sn >= v) {
+                continue;
+            }
+            sk[sn] = bk[bn].clone();
+            anchored.insert(bn, sn);
+        }
+        let mut proposals = vec![];
+        for (bn, bp) in base.iter().enumerate() {
+            if anchored.contains_key(&bn) || !bk[bn].starts_with("base:") {
+                continue;
+            }
+            let lower_anchor = anchored
+                .range(..bn)
+                .next_back()
+                .map(|(n, side)| (*n, *side));
+            let upper_anchor = anchored.range(bn + 1..).next().map(|(n, side)| (*n, *side));
+            let (base_start, base_end) = (
+                lower_anchor.map_or(0, |(n, _)| n + 1),
+                upper_anchor.map_or(base.len(), |(n, _)| n),
+            );
+            let (side_start, side_end) = (
+                lower_anchor.map_or(0, |(_, n)| n + 1),
+                upper_anchor.map_or(side.len(), |(_, n)| n),
+            );
+            if base_start > base_end || side_start > side_end {
+                continue;
+            }
+            if (base_end - base_start).saturating_mul(side_end - side_start) > 4096 {
+                continue;
+            }
+            let mut scores = side[side_start..side_end]
+                .iter()
+                .enumerate()
+                .filter_map(|(sn, sp)| {
+                    let sn = sn + side_start;
+                    if !sk[sn].starts_with(label) {
+                        return None;
+                    }
+                    similar(bp, sp).map(|score| (sn, score))
+                })
+                .collect::<Vec<_>>();
+            scores.sort_by(|a, b| b.1.total_cmp(&a.1));
+            let Some(&(sn, score)) = scores.first() else {
+                continue;
+            };
+            if score < 0.72
+                || scores
+                    .get(1)
+                    .is_some_and(|(_, other)| score - *other < 0.12)
+            {
+                continue;
+            }
+            let rival = base[base_start..base_end]
+                .iter()
+                .enumerate()
+                .filter(|(other, _)| {
+                    let other = *other + base_start;
+                    other != bn && !anchored.contains_key(&other) && bk[other].starts_with("base:")
+                })
+                .filter_map(|(_, para)| similar(para, &side[sn]))
+                .fold(0.0f32, f32::max);
+            if score - rival < 0.12 {
+                continue;
+            }
+            proposals.push((bn, sn, score));
+        }
+        proposals.sort_by(|a, b| b.2.total_cmp(&a.2));
+        for (bn, sn, _) in proposals {
+            if !sk[sn].starts_with(label) {
+                continue;
+            }
+            if anchored.contains_key(&bn) {
+                continue;
+            }
+            let previous = anchored.range(..bn).next_back().map(|(_, n)| *n);
+            let next = anchored.range(bn + 1..).next().map(|(_, n)| *n);
+            if previous.is_some_and(|v| sn <= v) || next.is_some_and(|v| sn >= v) {
+                continue;
+            }
+            sk[sn] = bk[bn].clone();
+            anchored.insert(bn, sn);
+        }
+    }
+    let bk = embedded(b, "base");
+    let mut ck = embedded(c, "current");
+    let mut ik = embedded(i, "incoming");
+    align(b, c, &bk, &mut ck, "current:");
+    align(b, i, &bk, &mut ik, "incoming:");
+    for (keys, label) in [(&ck, "current:"), (&ik, "incoming:")] {
+        let keyset = keys.iter().collect::<BTreeSet<_>>();
+        let unmatched_base = bk
+            .iter()
+            .any(|key| key.starts_with("base:") && !keyset.contains(key));
+        let unmatched_side = keys.iter().any(|key| key.starts_with(label));
+        if unmatched_base && unmatched_side {
+            return None;
+        }
+    }
+    // Without an inherited identity, simultaneous insertions at the same
+    // level cannot be distinguished reliably from the same inserted node.
+    if ck.iter().any(|key| key.starts_with("current:"))
+        && ik.iter().any(|key| key.starts_with("incoming:"))
+    {
+        return None;
+    }
+    Some((bk, ck, ik))
+}
+
 fn merge_paras(
     path: &[String],
     b: &[Paragraph],
@@ -3260,22 +3608,17 @@ fn merge_paras(
     r: Option<&BTreeMap<String, MergeResolution>>,
     x: &mut Ctx,
 ) -> Result<Vec<Paragraph>, String> {
-    fn pid(p: &Paragraph) -> Option<String> {
-        let raw = p.raw_header_extra.get(6..10)?;
-        let id = u32::from_le_bytes(raw.try_into().ok()?);
-        (id != 0).then(|| id.to_string())
-    }
-    fn pm<'a>(v: &'a [Paragraph]) -> Option<(Vec<String>, BTreeMap<String, &'a Paragraph>)> {
+    fn pm<'a>(
+        v: &'a [Paragraph],
+        keys: &[String],
+    ) -> (Vec<String>, BTreeMap<String, &'a Paragraph>) {
         let mut o = vec![];
         let mut m = BTreeMap::new();
-        for p in v {
-            let id = pid(p)?;
-            if m.insert(id.clone(), p).is_some() {
-                return None;
-            }
-            o.push(id)
+        for (p, id) in v.iter().zip(keys) {
+            m.insert(id.clone(), p);
+            o.push(id.clone())
         }
-        Some((o, m))
+        (o, m)
     }
     if dh(c) == dh(b) {
         x.auto += 1;
@@ -3285,7 +3628,19 @@ fn merge_paras(
         x.auto += 1;
         return Ok(c.to_vec());
     }
-    if let (Some((bo, bm)), Some((co, cm)), Some((io, im))) = (pm(b), pm(c), pm(i)) {
+    // Preserve positional paths for unchanged-length legacy documents. Review
+    // units and saved choices refer to those paths when no manifest IDs exist.
+    let keyed = paragraph_match_keys(b, c, i).filter(|(bk, ck, ik)| {
+        b.len() != c.len()
+            || b.len() != i.len()
+            || bk
+                .iter()
+                .chain(ck)
+                .chain(ik)
+                .all(|key| key.parse::<u32>().is_ok())
+    });
+    if let Some((bk, ck, ik)) = keyed {
+        let ((bo, bm), (co, cm), (io, im)) = (pm(b, &bk), pm(c, &ck), pm(i, &ik));
         let keys = bm
             .keys()
             .chain(cm.keys())
@@ -7698,6 +8053,188 @@ fn parse_manifests(
         serde_json::from_str(incoming).map_err(|e| format!("invalid incoming manifest: {e}"))?,
     ))
 }
+fn reconcile_fresh_paragraph_identities(
+    base: &Document,
+    side: &Document,
+    base_manifest: &ManifestHints,
+    side_manifest: &ManifestHints,
+) -> ManifestHints {
+    fn plain(p: &Paragraph) -> bool {
+        p.field_ranges.is_empty()
+            && p.range_tags.is_empty()
+            && p.markpen_marks.is_empty()
+            && p.orphan_field_ends.is_empty()
+            && p.tab_extended.is_empty()
+            && (p.char_shapes.is_empty()
+                || p.char_shapes.len() == 1 && p.char_shapes[0].start_pos == 0)
+    }
+    fn unchanged_declarations(base: &Paragraph, side: &Paragraph) -> bool {
+        base.controls.len() == side.controls.len()
+            && base
+                .controls
+                .iter()
+                .zip(&side.controls)
+                .enumerate()
+                .all(|(index, (old, new))| {
+                    matches!(old, Control::SectionDef(_) | Control::ColumnDef(_))
+                        && dh(old) == dh(new)
+                        && base.ctrl_data_records.get(index).cloned().flatten()
+                            == side.ctrl_data_records.get(index).cloned().flatten()
+                })
+            && base
+                .ctrl_data_records
+                .iter()
+                .skip(base.controls.len())
+                .all(Option::is_none)
+            && side
+                .ctrl_data_records
+                .iter()
+                .skip(side.controls.len())
+                .all(Option::is_none)
+    }
+    fn score(base: &Paragraph, side: &Paragraph) -> f32 {
+        if base.style_id != side.style_id || base.para_shape_id != side.para_shape_id {
+            return 0.0;
+        }
+        if base.text == side.text && !base.text.is_empty() {
+            let mut old_index = 0;
+            let compatible = side.controls.iter().enumerate().all(|(index, control)| {
+                let raw = side.ctrl_data_records.get(index).cloned().flatten();
+                if old_index < base.controls.len()
+                    && dh(&base.controls[old_index]) == dh(control)
+                    && base.ctrl_data_records.get(old_index).cloned().flatten() == raw
+                {
+                    old_index += 1;
+                    true
+                } else {
+                    matches!(control, Control::Picture(picture) if picture.caption.is_none())
+                        && raw.is_none()
+                }
+            }) && old_index == base.controls.len()
+                && base
+                    .ctrl_data_records
+                    .iter()
+                    .skip(base.controls.len())
+                    .all(Option::is_none)
+                && side
+                    .ctrl_data_records
+                    .iter()
+                    .skip(side.controls.len())
+                    .all(Option::is_none);
+            if compatible {
+                return 1.0;
+            }
+        }
+        if !plain(base) || !plain(side) || !unchanged_declarations(base, side) {
+            return 0.0;
+        }
+        let length = base.text.chars().count() + side.text.chars().count();
+        if length == 0
+            || base
+                .text
+                .chars()
+                .count()
+                .saturating_mul(side.text.chars().count())
+                > 65_536
+        {
+            return 0.0;
+        }
+        let changed = text_edits(&base.text, &side.text)
+            .iter()
+            .map(|edit| edit.end - edit.start + edit.repl.len())
+            .sum::<usize>();
+        1.0 - changed as f32 / length as f32
+    }
+    let mut result = side_manifest.clone();
+    if base.sections.len() != side.sections.len() {
+        return result;
+    }
+    let base_ids = base_manifest
+        .entries
+        .iter()
+        .filter_map(|entry| entry.identity.as_deref())
+        .collect::<BTreeSet<_>>();
+    let mut assigned = result
+        .entries
+        .iter()
+        .filter_map(|entry| entry.identity.clone())
+        .collect::<BTreeSet<_>>();
+    for section in 0..base.sections.len() {
+        let old = &base.sections[section].paragraphs;
+        let new = &side.sections[section].paragraphs;
+        if old.len() != new.len() || old.len().saturating_mul(new.len()) > 4096 {
+            continue;
+        }
+        for index in 0..old.len() {
+            let raw_id = |paragraph: &Paragraph| {
+                paragraph
+                    .raw_header_extra
+                    .get(6..10)
+                    .and_then(|raw| raw.try_into().ok())
+                    .map(u32::from_le_bytes)
+                    .unwrap_or(0)
+            };
+            let old_raw_id = raw_id(&old[index]);
+            let new_raw_id = raw_id(&new[index]);
+            if new_raw_id != 0 && old_raw_id != new_raw_id {
+                continue;
+            }
+            let path = vec![
+                "sections".into(),
+                section.to_string(),
+                "paragraphs".into(),
+                index.to_string(),
+            ];
+            let Some(base_identity) = base_manifest
+                .entries
+                .iter()
+                .find(|entry| entry.kind == "paragraph" && entry.path == path)
+                .and_then(|entry| entry.identity.as_ref())
+            else {
+                continue;
+            };
+            let Some(side_entry) = result
+                .entries
+                .iter_mut()
+                .find(|entry| entry.kind == "paragraph" && entry.path == path)
+            else {
+                continue;
+            };
+            if side_entry.identity.as_deref() == Some(base_identity) {
+                continue;
+            }
+            if side_entry.identity.as_deref().is_none_or(|identity| {
+                !identity.starts_with("node:") || base_ids.contains(identity)
+            }) || assigned.contains(base_identity)
+            {
+                continue;
+            }
+            let value = score(&old[index], &new[index]);
+            if value < 0.72 {
+                continue;
+            }
+            let second_base = old
+                .iter()
+                .enumerate()
+                .filter(|(other, _)| *other != index)
+                .map(|(_, paragraph)| score(paragraph, &new[index]))
+                .fold(0.0f32, f32::max);
+            let second_side = new
+                .iter()
+                .enumerate()
+                .filter(|(other, _)| *other != index)
+                .map(|(_, paragraph)| score(&old[index], paragraph))
+                .fold(0.0f32, f32::max);
+            if value - second_base < 0.12 || value - second_side < 0.12 {
+                continue;
+            }
+            assigned.remove(side_entry.identity.as_deref().unwrap());
+            side_entry.identity = Some(base_identity.clone());
+            assigned.insert(base_identity.clone());
+        }
+    }
+    result
+}
 fn manifest_documents(
     b: &[u8],
     c: &[u8],
@@ -7711,11 +8248,13 @@ fn manifest_documents(
         parse(c, "current")?,
         parse(i, "incoming")?,
     );
-    let ids = manifest_identity_ids([bm, cm, im]);
+    let current_manifest = reconcile_fresh_paragraph_identities(&bd, &cd, bm, cm);
+    let incoming_manifest = reconcile_fresh_paragraph_identities(&bd, &id, bm, im);
+    let ids = manifest_identity_ids([bm, &current_manifest, &incoming_manifest]);
     let mut restore = ManifestRestore::default();
     // Current identity metadata wins on materialization, then incoming, then base.
-    apply_manifest_ids(&mut cd, cm, &ids, &mut restore);
-    apply_manifest_ids(&mut id, im, &ids, &mut restore);
+    apply_manifest_ids(&mut cd, &current_manifest, &ids, &mut restore);
+    apply_manifest_ids(&mut id, &incoming_manifest, &ids, &mut restore);
     apply_manifest_ids(&mut bd, bm, &ids, &mut restore);
     Ok((bd, cd, id, restore))
 }
@@ -8653,6 +9192,157 @@ mod tests {
         )
         .unwrap();
         assert_eq!(m["t"], "aICb")
+    }
+    #[test]
+    fn multi_hunk_text_merge_keeps_distant_edits() {
+        let base = "one two three four five";
+        let current = "ONE two three four FIVE";
+        let incoming = "one two THREE four five";
+        assert_eq!(
+            merge_text(base, current, incoming).as_deref(),
+            Some("ONE two THREE four FIVE")
+        );
+        assert_eq!(
+            merge_text("가나다라마바사", "가X나다라마바Y사", "가나다Z라마바사").as_deref(),
+            Some("가X나다Z라마바Y사")
+        );
+        assert_eq!(merge_text("ab", "aCb", "aIb"), None);
+        assert_eq!(
+            merge_text("가🙂나🚀다", "가😄나🚀다!", "가🙂나🌙다").as_deref(),
+            Some("가😄나🌙다!")
+        );
+        assert_eq!(
+            merge_text("one two three", "ONE two three", "ONE two THREE").as_deref(),
+            Some("ONE two THREE")
+        );
+    }
+    #[test]
+    fn multi_hunk_budget_keeps_uncertain_text_for_review() {
+        let base = "a".repeat(1_200);
+        let mut current = base.clone();
+        current.replace_range(0..1, "b");
+        current.replace_range(1_199..1_200, "c");
+        let mut incoming = base.clone();
+        incoming.replace_range(600..601, "d");
+        assert_eq!(merge_text(&base, &current, &incoming), None);
+        let mut ctx = Ctx::new(MergeOptions::default());
+        let chosen = merge_text_field(
+            &["text".into()],
+            &base,
+            &current,
+            &incoming,
+            None,
+            &mut ctx,
+            true,
+        )
+        .unwrap();
+        assert_eq!(chosen, current);
+        assert_eq!(ctx.conflicts.len(), 1);
+    }
+    #[test]
+    fn rich_text_offsets_are_not_auto_combined_across_multiple_hunks() {
+        let mut base = Paragraph {
+            text: "one two three four five".into(),
+            ..Paragraph::default()
+        };
+        base.char_shapes = vec![
+            CharShapeRef {
+                start_pos: 0,
+                char_shape_id: 1,
+            },
+            CharShapeRef {
+                start_pos: 8,
+                char_shape_id: 2,
+            },
+        ];
+        let mut current = base.clone();
+        current.text = "ONE two three four FIVE".into();
+        let mut incoming = base.clone();
+        incoming.text = "one two THREE four five".into();
+        let mut ctx = Ctx::new(MergeOptions::default());
+        let output = merge_para(
+            &["paragraph".into()],
+            &base,
+            &current,
+            &incoming,
+            None,
+            &mut ctx,
+        )
+        .unwrap();
+        assert_eq!(output.text, current.text);
+        assert!(ctx
+            .conflicts
+            .iter()
+            .any(|item| item.path.last().is_some_and(|p| p == "text")));
+    }
+    #[test]
+    fn ambiguous_paragraphs_match_only_with_unique_context() {
+        let para = |text: &str| Paragraph {
+            text: text.into(),
+            ..Paragraph::default()
+        };
+        let base = vec![para("alpha content"), para("omega content")];
+        let current = vec![
+            para("new section"),
+            para("alpha contents"),
+            para("omega content"),
+        ];
+        let incoming = vec![para("alpha content"), para("omega contents")];
+        let (bk, ck, ik) = paragraph_match_keys(&base, &current, &incoming).unwrap();
+        assert_eq!(ck[1], bk[0]);
+        assert_eq!(ck[2], bk[1]);
+        assert_eq!(ik[0], bk[0]);
+        assert_eq!(ik[1], bk[1]);
+        assert_ne!(ck[0], bk[0]);
+        let repeated = vec![para("same content"), para("same content")];
+        let changed = vec![
+            para("new content"),
+            para("same contents"),
+            para("same content"),
+        ];
+        assert!(paragraph_match_keys(&repeated, &changed, &repeated).is_none());
+        assert!(paragraph_match_keys(&[], &[para("new")], &[para("new")]).is_none());
+        let mut long = (0..80)
+            .map(|n| para(&format!("unique paragraph {n}")))
+            .collect::<Vec<_>>();
+        long[35]
+            .controls
+            .push(Control::Bookmark(crate::model::control::Bookmark::default()));
+        let mut with_insertion = long.clone();
+        with_insertion.insert(0, para("new beginning"));
+        let (base_keys, current_keys, _) =
+            paragraph_match_keys(&long, &with_insertion, &long).unwrap();
+        assert!(base_keys
+            .iter()
+            .enumerate()
+            .all(|(n, key)| current_keys[n + 1] == *key));
+        let mut changed_control = long.clone();
+        changed_control[35].text.push('!');
+        changed_control.insert(0, para("new beginning"));
+        assert!(paragraph_match_keys(&long, &changed_control, &long).is_none());
+
+        let base = vec![para("original paragraph"), para("other paragraph")];
+        let current = vec![
+            para("original paragraph"),
+            para("original paragraphs"),
+            para("other paragraph"),
+        ];
+        let (base_keys, current_keys, _) = paragraph_match_keys(&base, &current, &base).unwrap();
+        assert_eq!(current_keys[0], base_keys[0]);
+        assert_eq!(current_keys[2], base_keys[1]);
+        assert_ne!(current_keys[1], base_keys[0]);
+
+        let mut crossed_base = vec![para("left"), para("middle"), para("right")];
+        for (index, id) in [(0, 1u32), (2, 2)] {
+            crossed_base[index].raw_header_extra.resize(10, 0);
+            crossed_base[index].raw_header_extra[6..10].copy_from_slice(&id.to_le_bytes());
+        }
+        let crossed_side = vec![
+            crossed_base[2].clone(),
+            para("middle changed"),
+            crossed_base[0].clone(),
+        ];
+        assert!(paragraph_match_keys(&crossed_base, &crossed_side, &crossed_base).is_none());
     }
     #[test]
     fn keyed_and_delete_edit() {

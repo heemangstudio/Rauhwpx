@@ -5,10 +5,16 @@ FROM node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba32756
 ARG CHROMIUM_VERSION=153.0.8010.52-1~deb12u1
 ARG FFMPEG_VERSION=7:5.1.9-0+deb12u1
 ARG TINI_VERSION=0.19.0-1+b3
+# 고정한 보안 업데이트 판은 새 판이 나오면 미러에서 사라진다. 같은 날짜의 스냅숏을
+# 보조 저장소로 두어 고정 버전을 계속 설치할 수 있게 한다. apt 가 서명을 검증한다.
+ARG DEBIAN_SNAPSHOT=20260921T000000Z
+RUN printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/%s bookworm main\ndeb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/%s bookworm-security main\n' \
+    "$DEBIAN_SNAPSHOT" "$DEBIAN_SNAPSHOT" >/etc/apt/sources.list.d/pinned-snapshot.list
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     ca-certificates \
     chromium="$CHROMIUM_VERSION" \
+    chromium-common="$CHROMIUM_VERSION" \
     curl \
     ffmpeg="$FFMPEG_VERSION" \
     fonts-noto-cjk \

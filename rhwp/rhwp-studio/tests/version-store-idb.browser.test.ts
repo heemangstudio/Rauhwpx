@@ -164,6 +164,8 @@ test('browser IndexedDB reuses its connection and reads repository indexes witho
         versioning.repositoryId('legacy-repository'),
         versioning.branchName('main'),
       );
+      const firstBackfill = await store.backfillObjectSizes(1);
+      const secondBackfill = await store.backfillObjectSizes(1);
       await store.clearForTests();
 
       const bytes = (value: number) => new Uint8Array([value, value + 1]);
@@ -219,11 +221,24 @@ test('browser IndexedDB reuses its connection and reads repository indexes witho
           beforeOrdinal: firstPage[0]?.ordinal,
           limit: 1,
         });
-        const usage = await store.getRepositoryStorageUsage(created.repository.id);
+        const originalGet = IDBObjectStore.prototype.get;
+        IDBObjectStore.prototype.get = function (key) {
+          if (this.name === 'blobs' || this.name === 'compareSnapshots') {
+            throw new Error(`usage cloned payload from ${this.name}`);
+          }
+          return originalGet.call(this, key);
+        };
+        let usage;
+        let blobSizes;
+        try {
+          usage = await store.getRepositoryStorageUsage(created.repository.id);
+          blobSizes = await store.getBlobSizes([created.commit.blobId, checkpoint.commit.blobId]);
+        } finally {
+          IDBObjectStore.prototype.get = originalGet;
+        }
         const found = await store.findRepositoryByDocumentId(created.repository.documentId);
         const refs = await store.listRefs(created.repository.id);
         const shelves = await store.listShelves(created.repository.id);
-        const blobSizes = await store.getBlobSizes([created.commit.blobId, checkpoint.commit.blobId]);
         return {
           openCount,
           migratedSchemaVersion: migrated?.schemaVersion,
@@ -235,6 +250,8 @@ test('browser IndexedDB reuses its connection and reads repository indexes witho
           migratedRootManifest: migratedRoot?.mergeManifestId,
           migratedParentManifests: migratedManifest.parentManifestIds,
           migratedBranchGeneration: migratedBranch?.generation,
+          firstBackfill,
+          secondBackfill,
           staleRejected,
           ordinals: [firstPage[0]?.ordinal, secondPage[0]?.ordinal],
           usage,
@@ -260,6 +277,8 @@ test('browser IndexedDB reuses its connection and reads repository indexes witho
     assert.equal(result.migratedCommitManifest, result.migratedManifestId);
     assert.deepEqual(result.migratedParentManifests, [result.migratedRootManifest]);
     assert.equal(result.migratedBranchGeneration, 'legacy-v2:legacy-repository:main');
+    assert.deepEqual(result.firstBackfill, { processed: 1, hasMore: true });
+    assert.deepEqual(result.secondBackfill, { processed: 1, hasMore: true });
     assert.equal(result.staleRejected, true);
     assert.deepEqual(result.ordinals, [2, 1]);
     assert.equal(result.usage.commitCount, 2);
@@ -270,6 +289,123 @@ test('browser IndexedDB reuses its connection and reads repository indexes witho
     assert.equal(result.shelfCount, 0);
     assert.deepEqual(result.blobSizes, [2, 2]);
     assert.equal(result.head, result.commit);
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});
+
+test('deleted branch recovery survives IndexedDB reopen and a reused branch name', { timeout: 30_000 }, async () => {
+  const executablePath = browserExecutable();
+  const root = fileURLToPath(new URL('../', import.meta.url));
+  const server = await createServer({
+    root,
+    configFile: false,
+    logLevel: 'silent',
+    server: { host: '127.0.0.1', port: 0 },
+  });
+  let browser: Awaited<ReturnType<typeof puppeteer.launch>> | undefined;
+  try {
+    await server.listen();
+    const address = server.httpServer?.address();
+    assert.ok(address && typeof address !== 'string');
+    browser = await puppeteer.launch({
+      executablePath,
+      headless: true,
+      args: browserLaunchArgs(),
+    });
+    const page = await browser.newPage();
+    await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/version-store-idb.html`);
+    const result = await page.evaluate(async () => {
+      const versioning = await import('/src/versioning/index.ts');
+      await new Promise<void>((resolve, reject) => {
+        const request = indexedDB.deleteDatabase(versioning.VERSION_DATABASE_NAME);
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+        request.onblocked = () => reject(new Error('deleteDatabase was blocked'));
+      });
+      const bytes = (value: number) => new Uint8Array([value, value + 1, value + 2]);
+      const payload = (value: number) => ({
+        bytes: bytes(value),
+        compareSnapshot: {
+          meta: { name: `Version ${value}`, sectionCount: 1, pageCount: 1 },
+          paragraphs: [], controls: [],
+        },
+        contentFingerprint: versioning.fingerprintBytes(bytes(value)),
+        title: `Version ${value}`,
+        titleRevision: 0,
+        titleOrigin: 'manual' as const,
+        author: { kind: 'user' as const, label: 'Browser test' },
+      });
+      const first = new versioning.VersionGraphStore();
+      const created = await first.createRepository({
+        documentId: versioning.documentId(`recovery-${crypto.randomUUID()}`),
+        lastSavedFingerprint: payload(1).contentFingerprint,
+        initial: payload(1),
+      });
+      const branch = await first.createBranch({
+        repositoryId: created.repository.id,
+        name: versioning.branchName('Recover me'),
+        target: created.commit.id,
+        expectedRepositoryRevision: created.repository.revision,
+      });
+      const checkpoint = await first.createCheckpoint({
+        repositoryId: created.repository.id,
+        branch: branch.branch.name,
+        expectedRepositoryRevision: branch.repository.revision,
+        expectedBranchRevision: branch.branch.revision,
+        reason: 'manual',
+        ...payload(2),
+      });
+      await first.deleteBranch({
+        repositoryId: created.repository.id,
+        branch: branch.branch.name,
+        currentBranch: created.branch.name,
+        expectedRepositoryRevision: checkpoint.repository.revision,
+        expectedBranchRevision: checkpoint.branch.revision,
+      });
+      await first.close();
+
+      const reopened = new versioning.VersionGraphStore();
+      const entries = await reopened.listRecoveryEntries(created.repository.id);
+      const deleted = entries.find((entry) => entry.operation === 'branch-deleted'
+        && entry.previousHead === checkpoint.commit.id);
+      if (!deleted) throw new Error('Deleted branch recovery entry was not persisted');
+      const repository = await reopened.getRepository(created.repository.id);
+      if (!repository) throw new Error('Repository was not persisted');
+      const reused = await reopened.createBranch({
+        repositoryId: repository.id,
+        name: branch.branch.name,
+        target: created.commit.id,
+        expectedRepositoryRevision: repository.revision,
+      });
+      const recovered = await reopened.recoverBranch({
+        repositoryId: repository.id,
+        entryId: deleted.id,
+        name: versioning.branchName('Recovered copy'),
+        expectedRepositoryRevision: reused.repository.revision,
+      });
+      await reopened.close();
+
+      const finalStore = new versioning.VersionGraphStore();
+      const persisted = await finalStore.getBranch(repository.id, recovered.branch.name);
+      await finalStore.close();
+      return {
+        entryCount: entries.length,
+        reusedTarget: reused.branch.target,
+        recoveredTarget: recovered.branch.target,
+        recoveredGeneration: recovered.branch.generation,
+        priorGeneration: checkpoint.branch.generation,
+        persistedTarget: persisted?.target,
+        expectedRoot: created.commit.id,
+        expectedRecovered: checkpoint.commit.id,
+      };
+    });
+    assert.ok(result.entryCount > 0);
+    assert.equal(result.reusedTarget, result.expectedRoot);
+    assert.equal(result.recoveredTarget, result.expectedRecovered);
+    assert.notEqual(result.recoveredGeneration, result.priorGeneration);
+    assert.equal(result.persistedTarget, result.expectedRecovered);
   } finally {
     await browser?.close();
     await server.close();

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { retainedMergeDraftLocalState } from '../src/versioning/merge-draft.ts';
+import { carriedMergeResolutions, retainedMergeDraftLocalState } from '../src/versioning/merge-draft.ts';
 import {
   blobId,
   branchGeneration,
@@ -84,4 +84,33 @@ test('same branch name/head with a new generation is stale and resets local stat
     history: [],
     historyIndex: 0,
   });
+});
+
+test('analysis upgrades invalidate decisions, resolver undo and manual assets', () => {
+  const target = branch('main', 'current', 'target-generation');
+  const source = branch('source', 'incoming', 'source-generation');
+  const previous = draft(target, source);
+  previous.analysisVersion = 2;
+  previous.conflicts = [{ id: 'unit', fingerprint: 'same', kind: 'paragraph', path: [],
+    reason: 'same-field-changed', base: 'a', current: 'b', incoming: 'c', supportsBoth: false }];
+  previous.resolutions = { unit: { kind: 'incoming' } };
+  assert.deepEqual(carriedMergeResolutions(previous, 3, previous.conflicts), {});
+  assert.deepEqual(retainedMergeDraftLocalState(previous, target, source, {}, 3, previous.conflicts), {
+    manualAssetBlobIds: [], history: [], historyIndex: 0,
+  });
+});
+
+test('only unique review units with unchanged dependencies carry a resolution', () => {
+  const previous = draft(branch('main', 'current', 'target'), branch('source', 'incoming', 'source'));
+  previous.analysisVersion = 3;
+  const unit = { id: 'old', fingerprint: 'same', kind: 'paragraph', path: [],
+    reason: 'same-field-changed' as const, base: 'a', current: 'b', incoming: 'c',
+    supportsBoth: false, dependencyIds: ['resource:a'] };
+  previous.conflicts = [unit];
+  previous.resolutions = { old: { kind: 'incoming' } };
+  assert.deepEqual(carriedMergeResolutions(previous, 3, [{ ...unit, id: 'new' }]), { new: { kind: 'incoming' } });
+  assert.deepEqual(carriedMergeResolutions(previous, 3, [{ ...unit, dependencyIds: ['resource:b'] }]), {});
+  assert.deepEqual(carriedMergeResolutions(previous, 3, [unit, { ...unit, id: 'duplicate' }]), {});
+  previous.conflicts.push({ ...unit, id: 'duplicate' });
+  assert.deepEqual(carriedMergeResolutions(previous, 3, [unit]), {});
 });

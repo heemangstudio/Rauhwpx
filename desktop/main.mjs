@@ -60,6 +60,7 @@ import {
 } from './studio-protocol.mjs';
 import { createSecretVault, handleSecretRequest } from './secret-vault.mjs';
 import { CloudClient } from './cloud-client.mjs';
+import { BoatCloud, BoatError, installBoatStatusCadence } from './cloud-boat.mjs';
 import {
   createRaucloudBrokerProvider,
   raucloudBrokerUrl,
@@ -364,6 +365,20 @@ class AgentHubOwner {
           return;
         }
         if (!secretVault) return;
+        // boat credentials stay in the main process; the hub never needs them.
+        if (message?.type === 'rhwp-secret-request' && typeof message.key === 'string'
+          && message.key.startsWith('cloud.boat.')) {
+          if (source.connected) {
+            source.send({
+              type: 'rhwp-secret-response',
+              id: message.id,
+              ok: false,
+              error: 'This secret is not available to the agent hub.',
+              code: 'SECRET_ACCESS_DENIED',
+            });
+          }
+          return;
+        }
         void handleSecretRequest(secretVault, message).then((response) => {
           if (response && source.connected) source.send(response);
         });
@@ -443,6 +458,7 @@ let cloudAccountSession = null;
 let cloudCoordinator = null;
 let cloudTransport = null;
 let stopCloudContinuityTriggers = () => {};
+let stopBoatStatusCadence = () => {};
 const cloudDisplayConnections = new CloudDisplayRegistry({
   openDisplay: (sessionId, listener, options) => requireCloudCoordinator().openDisplay(
     sessionId,
@@ -773,6 +789,7 @@ const updateLifecycle = createUpdateLifecycle({
   cleanupTasks: [
     () => cloudDisplayConnections.closeAll(),
     () => stopCloudContinuityTriggers(),
+    () => stopBoatStatusCadence(),
     () => cloudCoordinator?.stop(),
     () => hubOwner.teardown(),
   ],
@@ -1383,9 +1400,36 @@ ipcMain.handle('cloud:force-quit-account', async (event) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().forceQuitAccountCloud());
 });
-ipcMain.handle('cloud:reconnect-link', async (event) => {
+ipcMain.handle('cloud:reconnect-link', async (event, payload = {}) => {
   const session = sessionForEvent(event);
-  return scopedCloudSnapshot(session, await requireCloudCoordinator().reconnectCloud());
+  // Only a pressed 다시 연결 button sends `explicit`; automatic reconnects never start a stopped boat VM.
+  return scopedCloudSnapshot(session, await requireCloudCoordinator().reconnectCloud({
+    userIntent: payload?.explicit === true,
+  }));
+});
+ipcMain.handle('cloud:restart-service', async (event) => {
+  const session = sessionForEvent(event);
+  return scopedCloudSnapshot(session, await requireCloudCoordinator().restartCloudService());
+});
+ipcMain.handle('cloud:inspect-host-key', async (event) => {
+  sessionForEvent(event);
+  return requireCloudCoordinator().inspectHostKey();
+});
+ipcMain.handle('cloud:trust-host-key', async (event, payload = {}) => {
+  const session = sessionForEvent(event);
+  return scopedCloudSnapshot(session, await requireCloudCoordinator().trustHostKey({
+    fingerprint: typeof payload?.fingerprint === 'string' ? payload.fingerprint : '',
+  }));
+});
+ipcMain.handle('cloud:reimport-logins', async (event, payload = {}) => {
+  const session = sessionForEvent(event);
+  return scopedCloudSnapshot(session, await requireCloudCoordinator().reimportProviderLogins({
+    provider: typeof payload?.provider === 'string' ? payload.provider : null,
+  }));
+});
+ipcMain.handle('cloud:discard-missing-sessions', async (event) => {
+  const session = sessionForEvent(event);
+  return scopedCloudSnapshot(session, await requireCloudCoordinator().discardMissingSessions());
 });
 ipcMain.handle('cloud:recreate-link', async (event) => {
   const session = sessionForEvent(event);
@@ -1405,6 +1449,78 @@ ipcMain.handle('cloud:account-logout', async (event) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().logoutRaucloud());
 });
+const BOAT_LINK_KINDS = new Set(['verification', 'checkout', 'api-keys', 'dashboard']);
+
+/**
+ * boat 채널은 예외 대신 봉투를 돌려준다. invoke 거절은 메시지만 남기고 code를 잃기 때문에
+ * preload가 봉투를 풀어 code와 한국어 메시지를 함께 전달한다.
+ */
+function boatIpcFailure(error) {
+  const code = typeof error?.code === 'string' && /^BOAT_[A-Z_]+$/.test(error.code) ? error.code : 'BOAT_UNAVAILABLE';
+  const message = error instanceof BoatError
+    || (typeof error?.message === 'string' && /[가-힣]/.test(error.message))
+    ? error.message
+    : 'boat 요청을 처리하지 못했습니다.';
+  return { code, message };
+}
+
+function handleBoat(channel, run) {
+  ipcMain.handle(channel, async (event, payload) => {
+    const session = sessionForEvent(event);
+    try {
+      return { ok: true, value: await run(session, payload && typeof payload === 'object' ? payload : {}) };
+    } catch (error) {
+      console.warn(`[rauhwpx] ${channel} failed:`, error?.code ?? '', error?.detail ?? error?.message ?? error);
+      return { ok: false, error: boatIpcFailure(error) };
+    }
+  });
+}
+
+function boatText(value, maxLength) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return text.length <= maxLength ? text : '';
+}
+
+handleBoat('cloud:boat-email-start', (_session, payload) => (
+  requireCloudCoordinator().boatStartEmailSignIn({ email: boatText(payload.email, 254) })
+));
+handleBoat('cloud:boat-email-poll', async (session, payload) => {
+  const claimId = boatText(payload.claimId, 64);
+  if (!/^[0-9a-f-]{36}$/i.test(claimId)) return { status: 'expired' };
+  const result = await requireCloudCoordinator().boatPollSignIn({ claimId });
+  return result.status === 'connected'
+    ? { status: 'connected', snapshot: await scopedCloudSnapshot(session, result.snapshot) }
+    : { status: result.status };
+});
+handleBoat('cloud:boat-connect-key', async (session, payload) => (
+  scopedCloudSnapshot(session, await requireCloudCoordinator().boatConnectApiKey({
+    apiKey: boatText(payload.apiKey, 512),
+  }))
+));
+handleBoat('cloud:boat-open-link', (_session, payload) => {
+  const kind = BOAT_LINK_KINDS.has(payload.kind) ? payload.kind : null;
+  if (!kind) throw new BoatError('BOAT_LINK_UNAVAILABLE');
+  return requireCloudCoordinator().boatOpenLink({ kind, claimId: boatText(payload.claimId, 64) || null });
+});
+handleBoat('cloud:boat-setup', async (session, payload) => (
+  scopedCloudSnapshot(session, await requireCloudCoordinator().boatSetup({
+    machine: payload.machine === 'small' ? 'small' : 'default',
+  }))
+));
+handleBoat('cloud:boat-wake', async (session) => (
+  scopedCloudSnapshot(session, await requireCloudCoordinator().boatWake())
+));
+handleBoat('cloud:boat-stop', async (session) => (
+  scopedCloudSnapshot(session, await requireCloudCoordinator().boatStop())
+));
+handleBoat('cloud:boat-refresh', async (session) => (
+  scopedCloudSnapshot(session, await requireCloudCoordinator().boatRefresh())
+));
+handleBoat('cloud:boat-disconnect', async (session, payload) => (
+  scopedCloudSnapshot(session, await requireCloudCoordinator().boatDisconnect({
+    deleteServer: payload.deleteServer === true,
+  }))
+));
 ipcMain.handle('cloud:transfer-intent', async (event, payload = {}) => {
   const session = sessionForEvent(event);
   const scope = normalizeCloudScope(payload);
@@ -1616,6 +1732,8 @@ ipcMain.handle('cloud:complete-takeover', async (event, payload) => {
 ipcMain.handle('cloud:download-result', async (event, payload) => {
   const session = sessionForEvent(event);
   const coordinator = requireCloudCoordinator();
+  // Wake before taking the handoff reader: a resumed boat VM may need a new SSH address.
+  await coordinator.wakeBoatForUser({ reason: 'download', sessionId: payload?.sessionId });
   return coordinator.withActiveHandoff(payload.sessionId, async () => {
     const result = await coordinator.downloadResult(payload);
     const handoff = await coordinator.handoffForSession(payload?.sessionId);
@@ -1661,7 +1779,26 @@ ipcMain.handle('cloud:download-checkpoint', async (event, payload) => {
   }
   const kind = payload?.kind ?? null;
   if (kind !== null && kind !== 'turn') throw new Error('Invalid cloud checkpoint kind');
-  return requireCloudCoordinator().downloadCheckpoint({ sessionId, operationId, ...(kind ? { kind } : {}) });
+  try {
+    return {
+      ok: true,
+      value: await requireCloudCoordinator().downloadCheckpoint({
+        sessionId,
+        operationId,
+        ...(kind ? { kind } : {}),
+        explicit: payload?.explicit === true,
+      }),
+    };
+  } catch (error) {
+    // A stopped boat VM answers BOAT_SERVER_STOPPED; the envelope keeps that code across IPC.
+    if (error instanceof BoatError) return { ok: false, error: boatIpcFailure(error) };
+    // A missing checkpoint stays missing until the session changes. The mirror stops asking.
+    const status = Number(error?.status);
+    if (error?.retryable === false && status >= 400 && status < 500 && typeof error?.code === 'string') {
+      return { ok: false, error: { code: error.code, message: 'Cloud 체크포인트를 찾지 못했습니다.', retryable: false } };
+    }
+    throw error;
+  }
 });
 ipcMain.handle('cloud:publish-checkpoint', async (event, payload) => {
   const session = sessionForEvent(event);
@@ -1672,6 +1809,7 @@ ipcMain.handle('cloud:publish-checkpoint', async (event, payload) => {
     throw new Error('Invalid cloud checkpoint operation id');
   }
   const coordinator = requireCloudCoordinator();
+  await coordinator.wakeBoatForUser({ reason: 'checkpoint' });
   return coordinator.withActiveHandoff(sessionId, async (handoff) => {
     const lease = documentLeases.leaseForSession(session.sessionId);
     if (!handoff || !lease || lease.identity.documentId !== handoff.originDocumentId
@@ -1873,12 +2011,20 @@ if (!hasSingleInstanceLock) {
       }),
     });
     const knownHostsPath = join(app.getPath('userData'), 'cloud', 'ssh-known-hosts');
+    const boatCloud = new BoatCloud({
+      vault: secretVault,
+      fetchImpl: (...args) => net.fetch(...args),
+      dataDir: join(app.getPath('userData'), 'cloud'),
+      knownHostsPath,
+      openExternal: (url) => shell.openExternal(url),
+    });
     cloudTransport = new CloudApiTransport({
       tunnelManager: new SshTunnelManager({ knownHostsPath }),
     });
     const cloudClient = new CloudClient({
       vault: secretVault,
-      fetchImpl: (...args) => net.fetch(...args),
+      // Node fetch keeps session/display streams from exhausting Chromium's
+      // per-origin HTTP/1 connection pool and starving Cloud control requests.
       transport: cloudTransport,
     });
     cloudCoordinator = new CloudCoordinator({
@@ -1891,6 +2037,7 @@ if (!hasSingleInstanceLock) {
         bootstrapDir: unpackedPath(join(__dirname, '..', 'cloud', 'release')),
         appVersion: app.getVersion(),
         knownHostsPath,
+        devUnsignedRuntime: !app.isPackaged && process.env.RAUHWpx_CLOUD_DEV_UNSIGNED === '1',
       }),
       recoveryDir: join(app.getPath('userData'), 'cloud', 'recovery'),
       appServers: [createRaucloudBrokerProvider({
@@ -1913,9 +2060,20 @@ if (!hasSingleInstanceLock) {
         readSecret: (key) => secretVault.get(key),
         readFileImpl: readFile,
       }),
+      boat: boatCloud,
     });
     cloudCoordinator.on('event', queueCloudBroadcast);
     await cloudCoordinator.start();
+    // boat status is read only while someone can see it (or setup runs); it never wakes the VM.
+    stopBoatStatusCadence = installBoatStatusCadence({
+      isWanted: () => cloudCoordinator?.boatSetupActive() || sessions.windows().some((window) => (
+        !window.isDestroyed() && window.isVisible() && !window.isMinimized()
+      )),
+      refresh: () => cloudCoordinator?.refreshBoatStatus({ reason: 'cadence' }),
+    });
+    app.on('browser-window-focus', () => {
+      void cloudCoordinator?.refreshBoatStatus({ reason: 'focus' });
+    });
     stopCloudContinuityTriggers = installCloudContinuityTriggers({
       powerMonitor,
       isOnline: () => net.isOnline(),

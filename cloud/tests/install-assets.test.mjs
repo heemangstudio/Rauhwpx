@@ -19,6 +19,10 @@ test('installer is streamable, channel-aware, preserves Serve routes, and emits 
   assert.match(source, /no compatible stable cloud asset was found/);
   assert.match(source, /RAUHWpx_RECEIPT=/);
   assert.match(source, /pairingCode/);
+  // 서명 없는 개발 런타임은 로컬 파일과 앱이 고정한 SHA-256으로만 설치된다.
+  assert.match(source, /\[\[ "\$ARCHIVE_URL" == file:\/\/\* \]\] \|\| fail "unsigned development runtimes must be local files"/);
+  assert.match(source, /development runtime does not match its pinned SHA-256/);
+  assert.match(source, /else\n\s+curl[^\n]*sigstore\.json[^\n]*\n\s+cosign verify-blob/);
   assert.match(source, /RAUHWpx_TAILSCALE_HTTPS_PORT/);
   assert.match(source, /TAILSCALE_HTTPS_PORT must be an integer from 1 to 65535/);
   assert.match(source, /tailscale serve --bg --yes --https="\$TAILSCALE_HTTPS_PORT" --set-path=/);
@@ -35,7 +39,7 @@ test('installer is streamable, channel-aware, preserves Serve routes, and emits 
   assert.match(source, /chmod -R a\+rX "\$DESTINATION"/);
   assert.match(source, /XDG_RUNTIME_DIR=\/run\/rauhwpx-cloud/);
   assert.match(source, /cd \/var\/lib\/rauhwpx-cloud\s+\/usr\/sbin\/runuser --user rauhwpx-cloud/);
-  assert.match(source, /podman --cgroup-manager=cgroupfs build --tag/);
+  assert.match(source, /podman (\$\{IMAGE_STORE_ARGS:-\} )?--cgroup-manager=cgroupfs build --tag/);
   assert.match(source, /podman --cgroup-manager=cgroupfs run --rm[\s\S]*--uidmap 0:1:1000[\s\S]*--gidmap 1000:0:1[\s\S]*--entrypoint \/app\/bin\/rhwp/);
   assert.doesNotMatch(source, /(^|\s)(?:exec\s+)?runuser\s+--user/m);
   assert.match(source, /provider install claude/);
@@ -57,7 +61,7 @@ test('installer is streamable, channel-aware, preserves Serve routes, and emits 
   assert.match(update, /environment\.previous/);
   assert.match(update, /No newer Rauhwpx cloud release was found/);
   assert.match(update, /cd \/var\/lib\/rauhwpx-cloud\s+\/usr\/sbin\/runuser --user rauhwpx-cloud/);
-  assert.match(update, /podman --cgroup-manager=cgroupfs build --tag/);
+  assert.match(update, /podman (\$\{IMAGE_STORE_ARGS:-\} )?--cgroup-manager=cgroupfs build --tag/);
   assert.match(update, /podman --cgroup-manager=cgroupfs run --rm[\s\S]*--uidmap 0:1:1000[\s\S]*--gidmap 1000:0:1[\s\S]*--entrypoint \/app\/bin\/rhwp/);
   assert.match(update, /chmod -R a\+rX "\$DESTINATION"/);
   assert.doesNotMatch(update, /(^|\s)(?:exec\s+)?runuser\s+--user/m);
@@ -216,4 +220,54 @@ test('worker runtime images pin ffmpeg, probe x11grab, and expose no display por
   assert.equal(new Set(ffmpegVersions).size, 1, 'worker runtime images must pin the same ffmpeg build');
   const publisher = await fs.readFile(path.join(root, 'document-runtime/session-frame-publisher.mjs'), 'utf8');
   assert.doesNotMatch(publisher, /\.\.\/src\//, 'dedicated worker image does not package control-plane src');
+});
+
+test('boat hosts add an idle stop timer that ships in the release archive', async () => {
+  const install = await fs.readFile(path.join(root, 'install/install.sh'), 'utf8');
+  const update = await fs.readFile(path.join(root, 'install/update.sh'), 'utf8');
+  const release = await fs.readFile(path.join(root, 'install/package-release.sh'), 'utf8');
+  const script = await fs.readFile(path.join(root, 'install/boat-idle.sh'), 'utf8');
+  const service = await fs.readFile(path.join(root, 'install/rauhwpx-boat-idle.service'), 'utf8');
+  const timer = await fs.readFile(path.join(root, 'install/rauhwpx-boat-idle.timer'), 'utf8');
+  assert.match(install, /RAUHWpx_HOST_KIND must be empty or boat/);
+  assert.match(install, /boat hosts require RAUHWpx_TRANSPORT=ssh-tunnel/);
+  // 깨울 때 서비스가 기다리지 않도록 작업 환경 이미지는 필요할 때 읽어 오는 /home 에 둔다.
+  assert.match(install, /additionalimagestores = \["%s\/containers\/storage"\]/);
+  assert.match(install, /mount_program = "\/usr\/bin\/fuse-overlayfs"/);
+  assert.match(install, /IMAGE_STORE_ARGS="--root /);
+  assert.match(install, /upsert_env RAUHWpx_WORKER_CONTROL_DIR \/run\/rauhwpx-cloud\/worker-control/);
+  assert.match(install, /ProtectHome=tmpfs\\nBindPaths=%s/);
+  assert.match(install, /systemctl restart rauhwpx-cloud\.service/);
+  assert.ok(install.includes('[[ "$BOAT_SANDBOX_ID" =~ ^bx_[a-z0-9]{8}$ ]]'));
+  assert.match(install, /BOAT_IDLE_MINUTES >= 5 && BOAT_IDLE_MINUTES <= 240/);
+  assert.match(install, /BOAT_USER=\$\{RAUHWpx_BOAT_USER:-user\}/);
+  assert.match(install, /install -m 0600 -o root -g root "\$BOAT_ENV" \/etc\/rauhwpx-boat\.env/);
+  assert.match(install, /systemctl enable --now rauhwpx-boat-idle\.timer/);
+  // The reuse probe reads /etc/rauhwpx-cloud.env; boat settings live in their own file.
+  assert.doesNotMatch(install, /upsert_env RAUHWpx_(?:HOST_KIND|BOAT)/);
+  assert.match(update, /install_boat_units "\$DESTINATION"/);
+  assert.match(update, /install_boat_units "\$PREVIOUS"/);
+  assert.match(service, /^ExecStart=\/opt\/rauhwpx-cloud\/current\/install\/boat-idle\.sh$/m);
+  assert.match(service, /^ConditionPathExists=\/etc\/rauhwpx-boat\.env$/m);
+  assert.match(timer, /^OnBootSec=10min$/m);
+  assert.match(timer, /^OnUnitActiveSec=1min$/m);
+  assert.match(script, /flock -n 9/);
+  assert.match(script, /BOOT_GRACE_SECONDS=600/);
+  assert.match(script, /idle --json/);
+  assert.match(script, /runuser -u "\$BOAT_USER"/);
+  assert.match(script, /type -P boat/);
+  assert.match(script, /\.local\/bin\/boat/);
+  assert.match(script, /ASCII_TOKEN/);
+  // The token reaches curl through a stdin config, never the process argument list.
+  assert.match(script, /--config -/);
+  assert.doesNotMatch(script, /--header ["']Authorization/);
+  const syntax = spawnSync('/bin/bash', ['-n', path.join(root, 'install/boat-idle.sh')], { encoding: 'utf8' });
+  assert.equal(syntax.status, 0, syntax.stderr);
+  // install.sh and update.sh install files from the unpacked release; package-release.sh copies install/ whole.
+  assert.match(release, /"\$ROOT\/install" /);
+  for (const source of [install, update]) {
+    for (const [, filename] of source.matchAll(/\$(?:DESTINATION|PREVIOUS|1)\/install\/([A-Za-z0-9._-]+)/g)) {
+      assert.ok(existsSync(path.join(root, 'install', filename)), filename);
+    }
+  }
 });

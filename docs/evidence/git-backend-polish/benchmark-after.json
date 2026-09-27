@@ -1,0 +1,48 @@
+{
+  "fixture": {
+    "historyCommits": 205,
+    "unrelatedCommits": 200,
+    "imageCommits": 6,
+    "imageBlobBytes": 8388608,
+    "repetitions": 5
+  },
+  "measurements": {
+    "checkpoint": {
+      "medianMs": 16.9,
+      "payloadReads": 0,
+      "globalScans": 0
+    },
+    "historyRefresh": {
+      "medianMs": 26.2,
+      "payloadReads": 0,
+      "globalScans": 0
+    },
+    "ancestry": {
+      "medianMs": 3.5,
+      "payloadReads": 0,
+      "globalScans": 0
+    },
+    "export": {
+      "medianMs": 2805.5,
+      "payloadReads": 2050,
+      "globalScans": 0
+    },
+    "imageAccounting": {
+      "medianMs": 0.8,
+      "payloadReads": 0,
+      "globalScans": 0
+    },
+    "imageCheckpoint": {
+      "medianMs": 584.1,
+      "payloadReads": 0,
+      "globalScans": 0
+    },
+    "imageExport": {
+      "medianMs": 3784.8,
+      "payloadReads": 35,
+      "globalScans": 0
+    }
+  },
+  "sampledPeakHeapBytes": 148565934,
+  "memoryNote": "Renderer JS heap sampled every 10ms and after each operation; native IndexedDB memory is excluded."
+}

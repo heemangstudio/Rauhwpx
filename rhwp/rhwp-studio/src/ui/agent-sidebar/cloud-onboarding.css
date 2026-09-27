@@ -22,10 +22,11 @@
   top: var(--cloud-sidebar-top);
   width: var(--cloud-sidebar-width);
   height: var(--cloud-sidebar-height);
-  align-items: center;
+  /* 단계마다 높이가 달라도 창 윗변은 제자리에 있고 아래로만 자란다. */
+  align-items: start;
   background: transparent;
   backdrop-filter: blur(5px);
-  padding: 16px;
+  padding: clamp(16px, 14vh, 128px) 16px 16px;
 }
 
 .ag-cloud-setup-anchored .ag-cloud-setup-dialog {
@@ -33,9 +34,25 @@
   max-height: 100%;
 }
 
-.ag-cloud-setup-anchored .ag-cloud-setup-header,
+/* 제목과 본문 사이는 본문 요소 사이 간격과 같은 리듬으로 둔다. 닫기 단추는 제목 줄 높이를 늘리지 않는다. */
+.ag-cloud-setup-anchored .ag-cloud-setup-header {
+  align-items: center;
+  padding: 14px 10px 2px 16px;
+}
+
 .ag-cloud-setup-anchored .ag-cloud-setup-body {
-  padding: 14px;
+  padding: 12px 16px 16px;
+}
+
+.ag-cloud-setup-anchored .ag-cloud-setup-close {
+  width: 26px;
+  height: 26px;
+  margin: -2px 0;
+}
+
+/* 사이드바에 붙은 창은 본문과 같은 좌우 여백으로 버튼 끝을 맞춘다. */
+.ag-cloud-setup-anchored .ag-cloud-setup-footer {
+  padding: 12px 16px;
 }
 
 .ag-cloud-setup-anchored .ag-cloud-setup-title {
@@ -68,8 +85,12 @@
   background: var(--ag-bg);
   color: var(--ag-text);
   font: var(--font-weight-regular, 400) var(--font-size-md, 13px)/1.55 var(--font-family-ui, sans-serif);
+  /* 한국어는 어절 단위로 줄을 바꾼다. 긴 영문 토큰만 필요할 때 끊는다. */
+  word-break: keep-all;
+  overflow-wrap: break-word;
   box-shadow: var(--n-elev-3);
   animation: ag-cloud-setup-enter var(--ag-dur-slow) var(--ag-spring) both;
+  container: cloud-setup / inline-size;
 }
 
 .ag-cloud-setup-dialog:focus { outline: none; }
@@ -520,6 +541,7 @@
   bottom: 0;
   display: flex;
   flex: 0 0 auto;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
   padding: 14px 22px;
@@ -528,6 +550,7 @@
 }
 
 .ag-cloud-setup-button {
+  flex: 0 0 auto;
   min-height: 34px;
   padding: 0 12px;
   border: 1px solid var(--ag-border-strong);
@@ -537,7 +560,16 @@
   font: inherit;
   font-size: var(--font-size-sm, 11px);
   font-weight: 650;
+  /* 버튼 글자는 줄바꿈하지 않는다. 자리가 모자라면 버튼 묶음이 다음 줄로 간다. */
+  white-space: nowrap;
   cursor: default;
+}
+
+/* 좁은 창에서는 줄마다 버튼이 폭을 나눠 가져, 넘친 버튼도 한 벌로 보인다. */
+@container cloud-setup (max-width: 360px) {
+  .ag-cloud-setup-footer .ag-cloud-setup-button {
+    flex: 1 0 auto;
+  }
 }
 
 .ag-cloud-setup-button:hover:not(:disabled) {
@@ -556,6 +588,13 @@
   color: var(--n-on-accent);
 }
 
+/* 채운 기본 버튼은 호버에도 채움을 유지하고 조금만 어두워진다. */
+.ag-cloud-setup-button.ag-primary:hover:not(:disabled) {
+  background: var(--accent-primary);
+  color: var(--n-on-accent);
+  filter: brightness(0.94);
+}
+
 .ag-cloud-setup-button:focus-visible,
 .ag-cloud-setup-close:focus-visible,
 .ag-cloud-setup-advanced > summary:focus-visible,
@@ -570,11 +609,11 @@
   width: min(500px, 100%);
 }
 
-.ag-cloud-setup-dialog:has(.ag-cloud-setup-options) .ag-cloud-setup-header {
+.ag-cloud-setup-overlay:not(.ag-cloud-setup-anchored) .ag-cloud-setup-dialog:has(.ag-cloud-setup-options) .ag-cloud-setup-header {
   padding: 14px 20px 0;
 }
 
-.ag-cloud-setup-dialog:has(.ag-cloud-setup-options) .ag-cloud-setup-body {
+.ag-cloud-setup-overlay:not(.ag-cloud-setup-anchored) .ag-cloud-setup-dialog:has(.ag-cloud-setup-options) .ag-cloud-setup-body {
   gap: 12px;
   padding: 8px 20px 18px;
 }
@@ -585,12 +624,12 @@
 }
 
 .ag-cloud-setup-dialog:has(.ag-cloud-setup-options) .ag-cloud-setup-option-info {
-  width: 28px;
-  height: 28px;
-  margin-inline: 8px;
+  width: 22px;
+  height: 22px;
+  margin-inline: 10px;
 }
 
-.ag-cloud-setup-dialog:has(.ag-cloud-setup-options) .ag-cloud-setup-footer {
+.ag-cloud-setup-overlay:not(.ag-cloud-setup-anchored) .ag-cloud-setup-dialog:has(.ag-cloud-setup-options) .ag-cloud-setup-footer {
   padding: 10px 20px;
 }
 
@@ -694,7 +733,7 @@
   }
 
   .ag-cloud-setup-button {
-    flex: 1 1 auto;
+    flex: 1 0 auto;
   }
 }
 

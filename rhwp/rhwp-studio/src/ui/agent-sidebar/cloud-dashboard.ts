@@ -4,6 +4,7 @@ import { inferCloudLink } from '../../cloud/link.ts';
 import { cloudDashboardSessions } from '../../cloud/usage-history.ts';
 import { createLinkProgress } from './cloud-link-progress.ts';
 import { createIcon } from './icons.ts';
+import { boatServerResting, boatServerWaking } from './cloud-onboarding-state.ts';
 
 type Task = CloudSnapshot['sessions'][number];
 interface CloudDashboardDeps {
@@ -12,6 +13,8 @@ interface CloudDashboardDeps {
   reconnect(): Promise<CloudSnapshot>;
   openTask(task: Task): Promise<void>;
   mutationLocked(): boolean;
+  /** 이 작업의 변경을 로컬 문서에 모두 반영했는지. */
+  taskMerged?(task: Task): boolean;
 }
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text = '') {
   const node = document.createElement(tag);
@@ -20,10 +23,10 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text 
   return node;
 }
 /** Saved task state is independent of the viewing connection. */
-export function cloudTaskStatus(task: Task): { label: string; state: string } {
+export function cloudTaskStatus(task: Task, merged = false): { label: string; state: string } {
   if (task.kind === 'failed' || task.kind === 'running' && (task.wait || task.phase.startsWith('awaiting-')
     || task.phase === 'waiting' && task.turn > 0)) return { label: '확인 필요', state: 'attention' };
-  if (task.kind === 'completed') return { label: '검토 준비됨', state: 'ready' };
+  if (task.kind === 'completed') return merged ? { label: '반영됨', state: 'done' } : { label: '검토 준비됨', state: 'ready' };
   if (task.kind === 'suspended') return { label: task.resumable ? '일시 중지' : '종료됨', state: 'paused' };
   if (task.kind === 'cancelled') return { label: '취소됨', state: 'paused' };
   return { label: '작업 중', state: 'working' };
@@ -109,7 +112,8 @@ export function createCloudDashboard(deps: CloudDashboardDeps) {
   function renderSessions() {
     if (!snapshot) return;
     const tasks = cloudDashboardSessions(snapshot);
-    const signature = JSON.stringify(tasks.map(task => [task.sessionId, task.documentName, cloudTaskStatus(task)]));
+    const status = (task: Task) => cloudTaskStatus(task, deps.taskMerged?.(task) ?? false);
+    const signature = JSON.stringify(tasks.map(task => [task.sessionId, task.documentName, status(task)]));
     if (signature !== sessionsSignature) {
       sessionsSignature = signature;
       const focusedId = chatList.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.sessionId : undefined;
@@ -121,16 +125,16 @@ export function createCloudDashboard(deps: CloudDashboardDeps) {
         const row = el('li', 'ag-cd-chat');
         const open = button('', 'ag-cd-task');
         open.dataset.sessionId = task.sessionId;
-        const status = cloudTaskStatus(task);
+        const taskStatus = status(task);
         const name = task.documentName || '이름 없는 문서';
-        open.setAttribute('aria-label', `${name}, ${status.label}`);
+        open.setAttribute('aria-label', `${name}, ${taskStatus.label}`);
         open.title = name;
         const mark = el('span', 'ag-cd-chat-mark');
         mark.setAttribute('aria-hidden', 'true');
         mark.append(createIcon('document'));
         const copy = el('span', 'ag-cd-chat-copy');
-        const badge = el('span', 'ag-cd-task-status', status.label);
-        badge.dataset.state = status.state;
+        const badge = el('span', 'ag-cd-task-status', taskStatus.label);
+        badge.dataset.state = taskStatus.state;
         copy.append(el('strong', '', name), badge);
         open.append(mark, copy);
         open.addEventListener('click', async () => {
@@ -155,8 +159,12 @@ export function createCloudDashboard(deps: CloudDashboardDeps) {
     if (!snapshot) return;
     refresh.disabled = pending || !snapshot.available;
     refresh.setAttribute('aria-busy', String(pending));
-    reconnect.hidden = snapshot.profile.kind !== 'configured' || inferCloudLink(snapshot).kind === 'ready';
+    // 쉬거나 깨어나는 boat VM 은 카드의 시작·중지가 맡는다.
+    reconnect.hidden = snapshot.profile.kind !== 'configured' || inferCloudLink(snapshot).kind === 'ready'
+      || boatServerResting(snapshot) || boatServerWaking(snapshot);
     reconnect.disabled = pending || deps.mutationLocked();
+    // boat 서버는 Rauhwpx 계정과 하루 사용량을 쓰지 않으므로 카드에서 그 줄을 뺀다.
+    if (statusCard) statusCard.dataset.server = snapshot.boat?.server ? 'boat' : '';
     const allowance = snapshot.account?.signedIn ? snapshot.account.quota : null;
     if (!allowance || allowance.dailyLimitMs <= 0) {
       usage.hidden = true;

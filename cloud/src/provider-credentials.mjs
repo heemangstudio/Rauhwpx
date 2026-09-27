@@ -1,4 +1,4 @@
-import { lstatSync, mkdirSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { CloudError, PROVIDERS } from './protocol.mjs';
 
@@ -42,7 +42,36 @@ export function hasProviderAuth(auth) {
   return Boolean(auth?.apiKey || auth?.files?.length);
 }
 
-export function writeProviderAuthFiles(providerAuthDirectory, provider, files) {
+// Refreshed logins carry a timestamp: Claude's OAuth expiry, Codex's last refresh.
+function credentialFreshness(relative, content) {
+  try {
+    const value = JSON.parse(content);
+    if (relative.endsWith('.claude/.credentials.json')) {
+      const expiresAt = value?.claudeAiOauth?.expiresAt;
+      return Number.isFinite(expiresAt) ? expiresAt : null;
+    }
+    if (relative.endsWith('.codex/auth.json')) {
+      const refreshedAt = typeof value?.last_refresh === 'string' ? Date.parse(value.last_refresh) : NaN;
+      return Number.isFinite(refreshedAt) ? refreshedAt : null;
+    }
+  } catch { /* Unreadable credentials carry no freshness. */ }
+  return null;
+}
+
+/** True when the stored credential was refreshed after the incoming copy. */
+export function storedCredentialIsNewer(destination, relative, content) {
+  const incoming = credentialFreshness(relative, content);
+  if (incoming === null) return false;
+  let stored;
+  try {
+    stored = credentialFreshness(relative, readFileSync(destination, 'utf8'));
+  } catch {
+    return false;
+  }
+  return stored !== null && stored > incoming;
+}
+
+export function writeProviderAuthFiles(providerAuthDirectory, provider, files, { keepNewer = true, kept = [] } = {}) {
   assertProviderName(provider);
   if (!Array.isArray(files) || files.length === 0) return [];
   const root = path.join(providerAuthDirectory, provider);
@@ -67,6 +96,10 @@ export function writeProviderAuthFiles(providerAuthDirectory, provider, files) {
     } catch (error) {
       if (error.code === 'PROVIDER_STATE_UNSAFE') throw error;
       if (error.code !== 'ENOENT') throw error;
+    }
+    if (keepNewer && storedCredentialIsNewer(destination, relative, content)) {
+      kept.push(relative);
+      continue;
     }
     writeFileSync(destination, content, { encoding: 'utf8', mode: 0o600 });
     written.push(relative);

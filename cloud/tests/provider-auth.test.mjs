@@ -102,7 +102,7 @@ test('an imported Claude login lands on the CLAUDE_CONFIG_DIR the CLI is given',
   const { vault, authDirectory } = await vaultFixture(t);
   const manager = new ProviderCliManager(
     { providerAuthDirectory: authDirectory, providerCliDirectory: path.join(authDirectory, 'cli') },
-    { probe: async () => ({}) },
+    { authExpired: () => false, credentialsWritten: async () => ({}) },
     vault,
   );
 
@@ -119,6 +119,38 @@ test('an imported Claude login lands on the CLAUDE_CONFIG_DIR the CLI is given',
     await fs.readFile(path.join(environment.CLAUDE_CONFIG_DIR, '.credentials.json'), 'utf8'),
     AUTH_BUNDLES.claude.files['.claude/.credentials.json'],
   );
+});
+
+test('re-imports keep a newer server login unless that login expired mid-turn', async (t) => {
+  const { vault, authDirectory, sessions } = await vaultFixture(t);
+  const providerManager = new ProviderManager(sessions, {
+    providerAuthDirectory: authDirectory,
+    vault,
+    spawnProcess: (command) => versionProcess(command),
+  });
+  const cli = new ProviderCliManager(
+    { providerAuthDirectory: authDirectory, providerCliDirectory: path.join(authDirectory, 'cli') },
+    providerManager,
+    vault,
+  );
+  const credentials = path.join(authDirectory, 'claude', '.claude', '.credentials.json');
+  const login = (expiresAt) => ({ path: '.claude/.credentials.json', content: JSON.stringify({ claudeAiOauth: { expiresAt } }) });
+
+  await cli.seed('claude', { files: [login(2_000)] });
+  const kept = await cli.seed('claude', { files: [login(1_000), { path: '.claude.json', content: '{"userID":"u"}' }] });
+  assert.deepEqual(kept.keptFiles, ['.claude/.credentials.json']);
+  assert.equal(JSON.parse(await fs.readFile(credentials, 'utf8')).claudeAiOauth.expiresAt, 2_000);
+  assert.equal(await fs.readFile(path.join(authDirectory, 'claude', '.claude.json'), 'utf8'), '{"userID":"u"}');
+
+  sessions.markProviderAuthExpired('claude');
+  const expired = await providerManager.probe('claude');
+  assert.equal(expired.authenticated, false);
+  assert.equal(expired.errorCode, 'PROVIDER_AUTH_EXPIRED');
+
+  const replaced = await cli.seed('claude', { files: [login(1_000)] });
+  assert.equal(replaced.keptFiles, undefined);
+  assert.equal(replaced.authenticated, true);
+  assert.equal(JSON.parse(await fs.readFile(credentials, 'utf8')).claudeAiOauth.expiresAt, 1_000);
 });
 
 test('ProviderManager treats imported files and vault secrets as authenticated', async (t) => {
