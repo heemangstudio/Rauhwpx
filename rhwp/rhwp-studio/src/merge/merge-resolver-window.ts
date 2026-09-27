@@ -17,7 +17,7 @@ import { DocumentPreviewPane } from './document-preview-pane.ts';
 import { adjacentPreviewRole, syncPreviewTabState, wrappedFocusIndex } from './accessibility.ts';
 import { MergeCompletionCoordinator } from './completion-coordinator.ts';
 import { buildManualConflictEditor } from './manual-conflict-editor.ts';
-import { formatMergeValue, mergeErrorMessage, mergePathLabel, mergeTokenLabel } from './merge-labels.ts';
+import { formatMergeValue, mergeErrorMessage, mergeTokenLabel } from './merge-labels.ts';
 import { MergeResolverState } from './resolver-state.ts';
 import './merge-resolver.css';
 
@@ -39,6 +39,35 @@ const REASON_LABELS: Record<string, string> = {
   'budget-exceeded': '분석 제한 시간을 초과함',
 };
 
+const ICONS = {
+  undo: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5 3 6.5l3 3M3.5 6.5h6a3.25 3.25 0 0 1 0 6.5H7.5"/></svg>',
+  redo: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m10 3.5 3 3-3 3M12.5 6.5h-6a3.25 3.25 0 0 0 0 6.5h2"/></svg>',
+  close: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg>',
+  more: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.5" cy="8" r="1.1"/><circle cx="8" cy="8" r="1.1"/><circle cx="12.5" cy="8" r="1.1"/></svg>',
+} as const;
+
+type RowState = 'pending' | 'required' | MergeResolution['kind'];
+
+const ROW_GLYPHS: Record<RowState, string> = {
+  pending: '',
+  required: '',
+  current: '✕',
+  incoming: '✓',
+  both: '✓',
+  manual: '✎',
+};
+
+const ROW_STATE_LABELS: Record<RowState, string> = {
+  pending: '검토 전',
+  required: '선택 필요',
+  current: '거절',
+  incoming: '수락',
+  both: '둘 다 선택',
+  manual: '직접 편집',
+};
+
+const IS_MAC = typeof navigator !== 'undefined' && /Mac|iP(?:hone|ad|od)/.test(navigator.platform);
+
 let mergeResolverSequence = 0;
 
 function element<K extends keyof HTMLElementTagNameMap>(
@@ -50,6 +79,15 @@ function element<K extends keyof HTMLElementTagNameMap>(
   node.className = className;
   if (text !== undefined) node.textContent = text;
   return node;
+}
+
+function iconButton(className: string, icon: string, label: string, title = label): HTMLButtonElement {
+  const button = element('button', `merge-icon-button ${className}`);
+  button.type = 'button';
+  button.innerHTML = icon;
+  button.setAttribute('aria-label', label);
+  button.title = title;
+  return button;
 }
 
 function conflictLabel(conflict: MergeConflict): string {
@@ -66,6 +104,10 @@ export class MergeResolverWindow {
   private panes = new Map<MergePreviewRole, DocumentPreviewPane>();
   private conflictButtons = new Map<string, HTMLButtonElement>();
   private selectedConflictId: string | null = null;
+  private renderedConflictId: string | null = null;
+  private renderedManual = false;
+  private resolutionButtons: Array<{ button: HTMLButtonElement; resolution: MergeResolution }> = [];
+  private pageNavigationSlot: HTMLElement | null = null;
   private editorEl: HTMLElement | null = null;
   private conflictListEl: HTMLElement | null = null;
   private conflictFilter: 'all' | 'unresolved' | 'resolved' = 'all';
@@ -75,7 +117,6 @@ export class MergeResolverWindow {
   private redoButton: HTMLButtonElement | null = null;
   private statusEl: HTMLElement | null = null;
   private actionStatusEl: HTMLElement | null = null;
-  private progressEl: HTMLProgressElement | null = null;
   private titleInput: HTMLInputElement | null = null;
   private modeSelect: HTMLSelectElement | null = null;
   private activePreview: MergePreviewRole = 'result';
@@ -121,6 +162,7 @@ export class MergeResolverWindow {
     this.activePreview = this.state.unresolvedCount > 0 ? 'incoming' : 'result';
     this.previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     this.completionPromise = new Promise((resolve) => { this.resolveCompletion = resolve; });
+    this.renderedConflictId = null;
     this.build();
     document.body.appendChild(this.root!);
     document.body.classList.add('merge-resolver-open');
@@ -183,18 +225,16 @@ export class MergeResolverWindow {
       ? 'Cloud 문서 → 현재 문서' : `${options.sourceBranch} → ${options.currentBranch}`);
     headingWrap.append(heading, direction);
     const headerActions = element('div', 'merge-resolver-header-actions');
-    const applyAll = element('button', 'merge-secondary-button', '모두 적용');
+    const applyAll = element('button', 'merge-secondary-button', '모두 수락');
     applyAll.type = 'button';
-    applyAll.title = '호환되는 변경을 모두 선택합니다';
+    applyAll.title = '호환되는 변경 모두 수락';
     applyAll.addEventListener('click', () => {
       this.resolveBulk(options.analysis.conflicts.filter((item) => item.automatic === true), { kind: 'incoming' }, '호환되는 변경');
       const unresolved = options.analysis.conflicts.find((item) => !this.state?.get(item.id));
       if (unresolved) this.selectConflict(unresolved.id);
     });
-    const saveClose = element('button', 'merge-secondary-button', '저장하고 닫기');
-    saveClose.type = 'button';
+    const saveClose = iconButton('merge-close-button', ICONS.close, '병합 초안을 저장하고 닫기', '저장하고 닫기');
     saveClose.addEventListener('click', () => { void this.close().catch(() => undefined); });
-    saveClose.setAttribute('aria-label', '병합 초안을 저장하고 닫기');
     headerActions.append(applyAll, saveClose);
     header.append(headingWrap, headerActions);
 
@@ -220,14 +260,11 @@ export class MergeResolverWindow {
     const sidebar = element('aside', 'merge-conflict-sidebar');
     sidebar.setAttribute('aria-label', '변경 목록');
     const top = element('div', 'merge-sidebar-top');
-    const title = element('h2', '', '변경');
     const globalActions = element('div', 'merge-bulk-actions');
     const current = element('button', 'merge-small-button', '모두 거절');
-    const incoming = element('button', 'merge-small-button', '호환 변경 모두 수락');
-    current.type = incoming.type = 'button';
+    current.type = 'button';
     current.addEventListener('click', () => this.resolveBulk(this.options!.analysis.conflicts, { kind: 'current' }, '전체 변경'));
-    incoming.addEventListener('click', () => this.resolveBulk(this.options!.analysis.conflicts.filter((item) => item.automatic === true), { kind: 'incoming' }, '호환되는 변경'));
-    globalActions.append(current, incoming);
+    globalActions.append(current);
     const filters = element('div', 'merge-conflict-filters');
     const statusFilter = document.createElement('select');
     statusFilter.setAttribute('aria-label', '검토 상태로 변경 필터링');
@@ -251,7 +288,7 @@ export class MergeResolverWindow {
     filters.append(statusFilter, search);
     const tools = element('details', 'merge-conflict-tools');
     tools.append(element('summary', '', '검색 · 일괄 선택'), globalActions, filters);
-    top.append(title, tools);
+    top.append(tools);
     this.conflictListEl = element('div', 'merge-conflict-list');
     this.conflictListEl.setAttribute('role', 'tree');
     this.conflictListEl.addEventListener('keydown', (event) => this.onConflictListKeyDown(event));
@@ -261,8 +298,12 @@ export class MergeResolverWindow {
 
   private buildPreviewArea(): HTMLElement {
     const area = element('main', 'merge-preview-area');
+    const bar = element('div', 'merge-preview-bar');
     const tabs = element('div', 'merge-preview-tabs');
     tabs.setAttribute('role', 'tablist');
+    tabs.setAttribute('aria-label', '미리보기');
+    this.pageNavigationSlot = element('div', 'merge-preview-page-slot');
+    bar.append(tabs, this.pageNavigationSlot);
     const grid = element('div', 'merge-preview-grid');
     for (const role of PREVIEW_ROLES) {
       const tab = element('button', 'merge-preview-tab', ROLE_LABELS[role]);
@@ -291,7 +332,8 @@ export class MergeResolverWindow {
       this.panes.set(role, pane);
       grid.appendChild(pane.element);
     }
-    area.append(tabs, grid);
+    this.pageNavigationSlot.replaceChildren(this.panes.get(this.activePreview)!.navigation);
+    area.append(bar, grid);
     return area;
   }
 
@@ -304,23 +346,22 @@ export class MergeResolverWindow {
 
   private buildFooter(): HTMLElement {
     const footer = element('footer', 'merge-resolver-footer');
-    const progressWrap = element('div', 'merge-validation-status');
-    this.progressEl = document.createElement('progress');
-    this.progressEl.max = 1;
-    this.progressEl.value = 0;
-    this.progressEl.setAttribute('aria-label', '병합 결과 검증 진행률');
-    progressWrap.append(this.progressEl, element('span', 'merge-validation-label', '변경을 확인하세요.'));
+    const validationStatus = element('div', 'merge-validation-status');
+    validationStatus.append(element('span', 'merge-validation-label'));
 
     const historyActions = element('div', 'merge-history-actions');
-    this.undoButton = element('button', 'merge-secondary-button', '실행 취소');
-    this.redoButton = element('button', 'merge-secondary-button', '다시 실행');
-    this.undoButton.type = this.redoButton.type = 'button';
+    this.undoButton = iconButton('merge-undo-button', ICONS.undo, '실행 취소', IS_MAC ? '실행 취소 ⌘Z' : '실행 취소 Ctrl+Z');
+    this.redoButton = iconButton('merge-redo-button', ICONS.redo, '다시 실행', IS_MAC ? '다시 실행 ⇧⌘Z' : '다시 실행 Ctrl+Y');
     this.undoButton.addEventListener('click', () => this.undo());
     this.redoButton.addEventListener('click', () => this.redo());
     historyActions.append(this.undoButton, this.redoButton);
 
     const mergeOptions = element('details', 'merge-options');
-    mergeOptions.append(element('summary', '', '더 보기'));
+    const optionsSummary = element('summary', 'merge-icon-button');
+    optionsSummary.innerHTML = ICONS.more;
+    optionsSummary.setAttribute('aria-label', '더 보기');
+    optionsSummary.title = '더 보기';
+    mergeOptions.append(optionsSummary);
     const mergeMeta = element('div', 'merge-completion-meta');
     const titleLabel = element('label', 'merge-field-label', '버전 이름');
     this.titleInput = document.createElement('input');
@@ -372,17 +413,16 @@ export class MergeResolverWindow {
     }
     mergeOptions.append(mergeMeta);
     finalActions.append(this.completionButton);
-    footer.append(progressWrap, historyActions, mergeOptions, finalActions);
+    footer.append(validationStatus, historyActions, mergeOptions, finalActions);
     return footer;
   }
 
   private renderConflictList(): void {
     const list = this.conflictListEl;
     if (!list || !this.options || !this.state) return;
-    list.replaceChildren();
-    this.conflictButtons.clear();
     if (this.options.analysis.conflicts.length === 0) {
-      list.appendChild(element('p', 'merge-clean-message', '검토할 변경이 없습니다.'));
+      this.conflictButtons.clear();
+      list.replaceChildren(element('p', 'merge-clean-message', '검토할 변경이 없습니다.'));
       return;
     }
     const visibleConflicts = this.options.analysis.conflicts.filter((conflict) => {
@@ -393,35 +433,51 @@ export class MergeResolverWindow {
       const searchable = `${conflict.kind} ${conflict.reason} ${conflict.path.join(' ')}`.toLocaleLowerCase();
       return searchable.includes(this.conflictQuery);
     });
+    // 같은 행이 그대로 보이면 제자리에서 갱신해 포커스와 전환 효과를 유지한다.
+    const unchanged = visibleConflicts.length > 0
+      && visibleConflicts.length === list.children.length
+      && visibleConflicts.every((conflict, index) => list.children[index] === this.conflictButtons.get(conflict.id));
+    if (unchanged) {
+      for (const conflict of visibleConflicts) this.updateConflictRow(this.conflictButtons.get(conflict.id)!, conflict);
+      return;
+    }
+    list.replaceChildren();
+    this.conflictButtons.clear();
     if (visibleConflicts.length === 0) {
       list.appendChild(element('p', 'merge-clean-message', '조건에 맞는 변경이 없습니다.'));
       return;
     }
     for (const conflict of visibleConflicts) {
-        const button = element('button', 'merge-conflict-item');
-        button.type = 'button';
-        button.dataset.conflictId = conflict.id;
-        button.setAttribute('role', 'treeitem');
-        button.setAttribute('aria-selected', String(this.selectedConflictId === conflict.id));
-        button.classList.toggle('is-resolved', Boolean(this.state.get(conflict.id)));
-        const kind = element('span', 'merge-conflict-kind', this.state.get(conflict.id)?.kind === 'incoming' ? '✓' : this.state.get(conflict.id)?.kind === 'current' ? '✕' : '○');
-        const label = element('span', 'merge-conflict-label', conflictLabel(conflict));
-        const resolution = this.state.get(conflict.id);
-        const resolutionLabel = resolution?.kind === 'current'
-          ? '거절'
-          : resolution?.kind === 'incoming'
-            ? '수락'
-            : resolution?.kind === 'both'
-              ? '둘 다 선택'
-              : resolution?.kind === 'manual'
-                ? '직접 편집'
-                : conflict.automatic === false ? '선택 필요' : '검토 전';
-        const status = element('span', 'merge-conflict-state', resolutionLabel);
-        button.append(kind, label, status);
-        button.addEventListener('click', () => this.selectConflict(conflict.id));
-        this.conflictButtons.set(conflict.id, button);
-        list.appendChild(button);
+      const button = element('button', 'merge-conflict-item');
+      button.type = 'button';
+      button.dataset.conflictId = conflict.id;
+      button.setAttribute('role', 'treeitem');
+      const kind = element('span', 'merge-conflict-kind');
+      kind.setAttribute('aria-hidden', 'true');
+      button.append(
+        kind,
+        element('span', 'merge-conflict-label', conflictLabel(conflict)),
+        element('span', 'merge-conflict-state merge-visually-hidden'),
+      );
+      this.updateConflictRow(button, conflict);
+      button.addEventListener('click', () => this.selectConflict(conflict.id));
+      this.conflictButtons.set(conflict.id, button);
+      list.appendChild(button);
     }
+  }
+
+  private updateConflictRow(button: HTMLButtonElement, conflict: MergeConflict): void {
+    const resolution = this.state?.get(conflict.id);
+    const state: RowState = resolution?.kind ?? (conflict.automatic === false ? 'required' : 'pending');
+    const selected = this.selectedConflictId === conflict.id;
+    button.classList.toggle('is-resolved', Boolean(resolution));
+    button.classList.toggle('is-selected', selected);
+    button.setAttribute('aria-selected', String(selected));
+    button.setAttribute('aria-label', `${conflictLabel(conflict)}, ${ROW_STATE_LABELS[state]}`);
+    const kind = button.querySelector<HTMLElement>('.merge-conflict-kind')!;
+    kind.dataset.state = state;
+    kind.textContent = ROW_GLYPHS[state];
+    button.querySelector<HTMLElement>('.merge-conflict-state')!.textContent = ROW_STATE_LABELS[state];
   }
 
   private selectConflict(id: string): void {
@@ -434,21 +490,42 @@ export class MergeResolverWindow {
       button.classList.toggle('is-selected', selected);
       button.setAttribute('aria-selected', String(selected));
     }
-    this.renderConflictEditor(conflict);
+    // 같은 항목의 선택만 바뀌었으면 편집기를 다시 만들지 않아 펼침 상태와 전환 효과를 지킨다.
+    const manual = this.state.get(id)?.kind === 'manual';
+    if (this.renderedConflictId === id && this.renderedManual === manual) this.syncResolutionButtons(id);
+    else this.renderConflictEditor(conflict);
     if (conflict.position) {
       for (const pane of this.panes.values()) pane.focus(null, conflict.position);
     }
   }
 
+  private syncResolutionButtons(id: string): void {
+    const selected = this.state?.get(id);
+    for (const { button, resolution } of this.resolutionButtons) {
+      const matches = selected?.kind === resolution.kind
+        && (selected.kind !== 'both' || (resolution.kind === 'both' && selected.order === resolution.order));
+      button.classList.toggle('is-selected', matches);
+      button.setAttribute('aria-pressed', String(matches));
+    }
+  }
+
+  /** 결정에 필요한 사실만 한 줄로 보인다. 없으면 줄 자체를 만들지 않는다. */
+  private conflictMeta(conflict: MergeConflict): string {
+    const facts: string[] = [];
+    if (conflict.automatic === false) facts.push('양쪽에서 변경됨');
+    else if (conflict.automatic === undefined) facts.push(REASON_LABELS[conflict.reason] ?? conflict.reason);
+    // 의존 항목 하나는 이 변경 자신이므로 둘 이상 묶였을 때만 알린다.
+    const linked = conflict.dependencyIds?.filter((dependency) => dependency !== conflict.id).length ?? 0;
+    if (linked > 1) facts.push(`연결된 변경 ${linked}개`);
+    return facts.join(' · ');
+  }
+
   private renderConflictEditor(conflict: MergeConflict): void {
     const editor = this.editorEl!;
     editor.replaceChildren();
-    const heading = element('div', 'merge-editor-heading');
-    heading.append(
-      element('h2', '', conflictLabel(conflict)),
-      element('p', 'merge-conflict-path', conflict.path.length ? mergePathLabel(conflict.path) : ''),
-      element('p', 'merge-conflict-reason', conflict.automatic === true ? '' : conflict.automatic === false ? '양쪽에서 바뀐 내용을 확인하세요.' : REASON_LABELS[conflict.reason] ?? conflict.reason),
-    );
+    this.renderedConflictId = conflict.id;
+    this.renderedManual = this.state!.get(conflict.id)?.kind === 'manual';
+    this.resolutionButtons = [];
     const values = element('div', 'merge-value-comparison');
     for (const [label, value] of [
       ['기준', conflict.base],
@@ -463,21 +540,17 @@ export class MergeResolverWindow {
 
     const controls = element('div', 'merge-resolution-controls');
     controls.setAttribute('role', 'group');
-    controls.setAttribute('aria-label', '변경 적용 방법 선택');
+    controls.setAttribute('aria-label', `${conflictLabel(conflict)} 적용 방법`);
     const addResolution = (label: string, resolution: MergeResolution): void => {
       const button = element('button', 'merge-resolution-button', label);
       button.type = 'button';
-      const selected = this.state!.get(conflict.id);
-      const matches = selected?.kind === resolution.kind
-        && (selected.kind !== 'both' || (resolution.kind === 'both' && selected.order === resolution.order));
-      button.classList.toggle('is-selected', matches);
-      button.setAttribute('aria-pressed', String(matches));
       const value = resolution.kind === 'current' ? conflict.current : resolution.kind === 'incoming' ? conflict.incoming : null;
       if (typeof value === 'string' && value.trim()) {
         const preview = value.replace(/\s+/g, ' ').trim();
         button.append(element('small', 'merge-choice-preview', preview.length > 160 ? `${preview.slice(0, 160)}…` : preview));
       }
       button.addEventListener('click', () => this.resolveConflict(conflict.id, resolution));
+      this.resolutionButtons.push({ button, resolution });
       controls.appendChild(button);
     };
     addResolution('✕ 거절', { kind: 'current' });
@@ -486,9 +559,12 @@ export class MergeResolverWindow {
       addResolution('둘 다 유지: 현재 변경 먼저', { kind: 'both', order: 'current-first' });
       addResolution('둘 다 유지: 가져올 변경 먼저', { kind: 'both', order: 'incoming-first' });
     }
+    this.syncResolutionButtons(conflict.id);
+    const meta = this.conflictMeta(conflict);
+    if (meta) editor.appendChild(element('p', 'merge-conflict-meta', meta));
     const valueDetails = element('details', 'merge-value-details');
     valueDetails.append(element('summary', '', '변경 내용 비교'), values);
-    editor.append(heading, controls, valueDetails);
+    editor.append(controls, valueDetails);
     const existing = this.state!.get(conflict.id);
     const manualConflict = conflict.id.startsWith('review:') && conflict.supportsManual
       ? { ...conflict, current: (conflict.current as { text: string }).text, incoming: (conflict.incoming as { text: string }).text }
@@ -505,12 +581,6 @@ export class MergeResolverWindow {
       manualDetails.open = existing?.kind === 'manual';
       manualDetails.append(element('summary', '', '직접 수정'), manual);
       editor.appendChild(manualDetails);
-    } else {
-      editor.appendChild(element(
-        'p',
-        'merge-manual-unavailable',
-        '연결된 변경을 함께 선택합니다.',
-      ));
     }
   }
 
@@ -594,8 +664,7 @@ export class MergeResolverWindow {
     this.materializeAbort = abort;
     this.validation = null;
     this.materialized = null;
-    this.setValidationLabel('병합 결과를 만들고 검증하는 중입니다…');
-    if (this.progressEl) this.progressEl.removeAttribute('value');
+    this.setValidationLabel('확인 중…', 'busy');
     this.updateControls();
     try {
       const materialized = await this.options.materialize({
@@ -619,12 +688,12 @@ export class MergeResolverWindow {
       if (abort.signal.aborted || sequence !== this.materializeSequence) return;
       this.materialized = materialized;
       this.validation = materialized.validation;
-      if (this.progressEl) this.progressEl.value = materialized.validation.valid ? 1 : 0;
-      this.setValidationLabel(materialized.validation.valid
-        ? '결과를 다시 열어 문서 구조와 리소스를 검증했습니다.'
-        : `검증 실패: ${materialized.validation.errors
+      if (materialized.validation.valid) this.setValidationLabel('');
+      else {
+        this.setValidationLabel(`검증 실패: ${materialized.validation.errors
           .map((error) => mergeErrorMessage(error, '문서 구조를 검증하지 못했습니다.'))
-          .join(' ')}`);
+          .join(' ')}`, 'error');
+      }
       if (materialized.document) {
         try {
           await this.panes.get('result')?.load(materialized.document);
@@ -641,8 +710,7 @@ export class MergeResolverWindow {
         valid: false,
         errors: [mergeErrorMessage(cause, '병합 결과 문서를 검증하지 못했습니다.')],
       };
-      if (this.progressEl) this.progressEl.value = 0;
-      this.setValidationLabel(`검증 실패: ${this.validation.errors.join(' ')}`);
+      this.setValidationLabel(`검증 실패: ${this.validation.errors.join(' ')}`, 'error');
     } finally {
       if (sequence === this.materializeSequence) this.updateControls();
     }
@@ -724,6 +792,8 @@ export class MergeResolverWindow {
       pane.element.classList.toggle('is-active', candidate === role);
       pane.element.inert = candidate !== role;
     }
+    const navigation = this.panes.get(role)?.navigation;
+    if (navigation && navigation.parentElement !== this.pageNavigationSlot) this.pageNavigationSlot?.replaceChildren(navigation);
     syncPreviewTabState(this.root?.querySelectorAll<HTMLElement>('.merge-preview-tab') ?? [], role);
   }
 
@@ -755,15 +825,15 @@ export class MergeResolverWindow {
       this.completionButton.disabled = this.busy || (!applied
         && (this.state.unresolvedCount > 0 || !this.validation?.valid || !this.materialized));
     }
-    if (this.state.unresolvedCount > 0) {
-      this.setValidationLabel(`검토할 변경 ${this.state.unresolvedCount}개`);
-      if (this.progressEl) this.progressEl.value = 0;
-    }
+    if (this.state.unresolvedCount > 0) this.setValidationLabel(`검토할 변경 ${this.state.unresolvedCount}개`);
   }
 
-  private setValidationLabel(text: string): void {
+  private setValidationLabel(text: string, kind?: 'busy' | 'error'): void {
     const label = this.root?.querySelector<HTMLElement>('.merge-validation-label');
-    if (label) label.textContent = text;
+    if (!label) return;
+    label.textContent = text;
+    if (kind) label.dataset.kind = kind;
+    else delete label.dataset.kind;
   }
 
   private async runBusy(label: string, action: () => Promise<void>): Promise<void> {
@@ -815,6 +885,9 @@ export class MergeResolverWindow {
     this.options = null;
     this.state = null;
     this.selectedConflictId = null;
+    this.renderedConflictId = null;
+    this.resolutionButtons = [];
+    this.pageNavigationSlot = null;
     this.validation = null;
     this.materialized = null;
     this.actionStatusEl = null;

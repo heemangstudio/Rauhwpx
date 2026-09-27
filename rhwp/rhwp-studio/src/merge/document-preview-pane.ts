@@ -12,8 +12,12 @@ export interface DocumentPreviewPaneOptions {
 }
 
 /** Reusable, read-only document page preview used by merge and comparison surfaces. */
+type PreviewStatusState = 'idle' | 'loading' | 'ready' | 'error';
+
 export class DocumentPreviewPane {
   readonly element: HTMLElement;
+  /** Page stepper. Comparison panes keep it in their own header; merge panes let the host place it. */
+  readonly navigation: HTMLElement;
   private readonly titleEl: HTMLHeadingElement;
   private readonly statusEl: HTMLDivElement;
   private readonly canvasWrap: HTMLDivElement;
@@ -40,12 +44,11 @@ export class DocumentPreviewPane {
     this.element.dataset.role = options.role;
     this.element.setAttribute('aria-label', `${options.title} 문서 미리보기`);
 
-    const header = document.createElement('header');
-    header.className = 'merge-preview-head';
     this.titleEl = document.createElement('h3');
     this.titleEl.textContent = options.title;
     const navigation = document.createElement('div');
     navigation.className = 'merge-preview-page-navigation';
+    this.navigation = navigation;
     const previous = document.createElement('button');
     previous.type = 'button';
     previous.className = 'merge-icon-button';
@@ -64,12 +67,11 @@ export class DocumentPreviewPane {
     this.pageTotal = document.createElement('span');
     this.pageTotal.textContent = '/ –';
     navigation.append(previous, this.pageInput, this.pageTotal, next);
-    header.append(this.titleEl, navigation);
 
     this.statusEl = document.createElement('div');
     this.statusEl.className = 'merge-preview-status';
     this.statusEl.setAttribute('role', 'status');
-    this.statusEl.textContent = '미리보기를 불러오지 않았습니다.';
+    this.setStatus('', 'idle');
     this.canvasWrap = document.createElement('div');
     this.canvasWrap.className = 'merge-preview-canvas-wrap';
     this.canvas = document.createElement('canvas');
@@ -78,7 +80,13 @@ export class DocumentPreviewPane {
     this.marker.className = 'merge-preview-marker';
     this.marker.hidden = true;
     this.canvasWrap.append(this.canvas, this.marker);
-    this.element.append(header, this.statusEl, this.canvasWrap);
+    if (options.variant === 'comparison') {
+      const header = document.createElement('header');
+      header.className = 'merge-preview-head';
+      header.append(this.titleEl, navigation);
+      this.element.append(header);
+    }
+    this.element.append(this.statusEl, this.canvasWrap);
 
     previous.addEventListener('click', () => this.setPage(this.pageIndex - 1));
     next.addEventListener('click', () => this.setPage(this.pageIndex + 1));
@@ -110,11 +118,11 @@ export class DocumentPreviewPane {
     this.source = source;
     const token = ++this.loadingToken;
     if (!source) {
-      this.statusEl.textContent = '결과 미리보기를 준비합니다.';
+      this.setStatus('준비 중…', 'loading');
       this.clearCanvas();
       return;
     }
-    this.statusEl.textContent = `${source.label ?? source.fileName} 미리보기를 불러오는 중입니다…`;
+    this.setStatus('불러오는 중…', 'loading');
     try {
       this.wasm ??= new WasmBridge();
       await this.wasm.initialize();
@@ -127,7 +135,7 @@ export class DocumentPreviewPane {
       this.render();
     } catch (error) {
       if (token !== this.loadingToken) return;
-      this.statusEl.textContent = `미리보기 실패: ${mergeErrorMessage(error, '문서를 미리 볼 수 없습니다.')}`;
+      this.setStatus(`미리보기 실패: ${mergeErrorMessage(error, '문서를 미리 볼 수 없습니다.')}`, 'error');
       this.clearCanvas();
     }
   }
@@ -152,11 +160,11 @@ export class DocumentPreviewPane {
         this.anchor = { ...rect, width: 12 };
         this.setPage(rect.pageIndex);
       } catch {
-        this.statusEl.textContent = '위치 정보가 없어 문서 미리보기만 표시합니다.';
+        this.setStatus('위치를 찾지 못했습니다.', 'error');
         this.clearCanvas();
       }
     } else {
-      this.statusEl.textContent = '위치 정보가 없어 문서 미리보기만 표시합니다.';
+      this.setStatus('위치를 찾지 못했습니다.', 'error');
       this.clearCanvas();
     }
   }
@@ -174,12 +182,15 @@ export class DocumentPreviewPane {
     if (!this.wasm || !this.source || this.canvasWrap.clientWidth <= 0) return;
     try {
       const info = this.wasm.getPageInfo(this.pageIndex);
-      const scale = Math.max(0.15, Math.min(this.maxScale, (this.canvasWrap.clientWidth - 16) / Math.max(1, info.width)));
+      const style = getComputedStyle(this.canvasWrap);
+      const inset = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      const available = Math.max(1, this.canvasWrap.clientWidth - Math.max(16, inset));
+      const scale = Math.max(0.15, Math.min(this.maxScale, available / Math.max(1, info.width)));
       this.canvas.width = Math.max(1, Math.floor(info.width * scale));
       this.canvas.height = Math.max(1, Math.floor(info.height * scale));
       this.wasm.renderPageToCanvasFiltered(this.pageIndex, this.canvas, scale, 'all');
       this.pageInput.value = String(this.pageIndex + 1);
-      this.statusEl.textContent = `${this.source.label ?? this.source.fileName} / ${this.pageIndex + 1}쪽`;
+      this.setStatus(`${this.source.label ?? this.source.fileName} / ${this.pageIndex + 1}쪽`, 'ready');
       if (this.anchor?.pageIndex === this.pageIndex) {
         this.marker.hidden = false;
         this.marker.style.left = `${this.canvas.offsetLeft + Math.floor(this.anchor.x * scale)}px`;
@@ -190,9 +201,14 @@ export class DocumentPreviewPane {
         this.marker.hidden = true;
       }
     } catch (error) {
-      this.statusEl.textContent = `미리보기 실패: ${mergeErrorMessage(error, '문서를 미리 볼 수 없습니다.')}`;
+      this.setStatus(`미리보기 실패: ${mergeErrorMessage(error, '문서를 미리 볼 수 없습니다.')}`, 'error');
       this.clearCanvas();
     }
+  }
+
+  private setStatus(text: string, state: PreviewStatusState): void {
+    this.statusEl.textContent = text;
+    this.statusEl.dataset.state = state;
   }
 
   private clearCanvas(): void {
