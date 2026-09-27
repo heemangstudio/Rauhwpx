@@ -237,6 +237,11 @@ if [[ "$TRANSPORT" == tailscale ]]; then
   upsert_env RAUHWpx_TAILSCALE_HTTPS_PORT "$TAILSCALE_HTTPS_PORT"
 fi
 upsert_env RAUHWpx_PROVIDER_CLI_DIR /opt/rauhwpx-cloud/provider-cli
+if [[ "$HOST_KIND" == boat ]]; then
+  # boat 는 깨울 때 서비스 시작과 겹쳐 /var/lib 를 복원하며 그 사이에 만든 소켓을 지울 수 있다.
+  # 실행 중에만 필요한 작업자 제어 소켓은 복원 대상이 아닌 /run 에 둔다.
+  upsert_env RAUHWpx_WORKER_CONTROL_DIR /run/rauhwpx-cloud/worker-control
+fi
 upsert_env RAUHWpx_WORKER_IMAGE "ghcr.io/ghandhitechnology/rauhwpx-cloud-worker:${CHANNEL}"
 upsert_env PATH "/opt/rauhwpx-cloud/provider-cli/current/node_modules/.bin:/opt/rauhwpx-node/bin:/usr/local/bin:/usr/bin:/bin"
 
