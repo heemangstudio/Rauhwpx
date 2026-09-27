@@ -1851,10 +1851,28 @@ fn quantize_hwp_px(px: f64) -> f64 {
     hwp as f64 / 75.0
 }
 
+/// KoPub 서체 판정 (돋움, 바탕). 글자마다 불리므로 서체명별로 캐시한다.
+fn kopub_face_kind(primary_name: &str) -> (bool, bool) {
+    thread_local! {
+        static KOPUB_KIND_CACHE: std::cell::RefCell<std::collections::HashMap<String, (bool, bool)>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
+    }
+    KOPUB_KIND_CACHE.with(|cache| {
+        if let Some(kind) = cache.borrow().get(primary_name) {
+            return *kind;
+        }
+        let lower = primary_name.to_lowercase();
+        let kind = (
+            primary_name.contains("KoPub돋움체") || lower.contains("kopub dotum"),
+            primary_name.contains("KoPub바탕체") || lower.contains("kopub batang"),
+        );
+        cache.borrow_mut().insert(primary_name.to_string(), kind);
+        kind
+    })
+}
+
 fn kopub_char_width(primary_name: &str, c: char, font_size: f64) -> Option<f64> {
-    let lower = primary_name.to_lowercase();
-    let is_dotum = primary_name.contains("KoPub돋움체") || lower.contains("kopub dotum");
-    let is_batang = primary_name.contains("KoPub바탕체") || lower.contains("kopub batang");
+    let (is_dotum, is_batang) = kopub_face_kind(primary_name);
     if !is_dotum && !is_batang {
         return None;
     }

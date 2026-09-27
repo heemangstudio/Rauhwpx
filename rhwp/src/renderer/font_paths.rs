@@ -398,13 +398,25 @@ pub fn register_font_face_availability(extra: &[PathBuf]) {
 
 /// 측정 경로용 — `name` face 가 custom font source 에 실재(로드 가능)한가.
 pub fn custom_font_face_available(name: &str) -> bool {
-    let Some(alias) = normalize_face_alias(name) else {
-        return false;
-    };
-    CUSTOM_FACE_NAMES
-        .read()
-        .map(|names| names.contains(&alias))
-        .unwrap_or(false)
+    thread_local! {
+        /// 글자 폭 측정마다 불리므로 이름 정규화(공백 정리·소문자화) 결과만 캐시한다.
+        /// 등록 여부는 매번 레지스트리에서 읽는다.
+        static ALIAS_CACHE: std::cell::RefCell<std::collections::HashMap<String, Option<String>>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
+    }
+    ALIAS_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if !cache.contains_key(name) {
+            cache.insert(name.to_string(), normalize_face_alias(name));
+        }
+        let Some(alias) = cache.get(name).and_then(|alias| alias.as_ref()) else {
+            return false;
+        };
+        CUSTOM_FACE_NAMES
+            .read()
+            .map(|names| names.contains(alias))
+            .unwrap_or(false)
+    })
 }
 
 /// `name` face 의 등록 파일 경로와 TTC face index — 측정·페인트 경로가
