@@ -1079,6 +1079,13 @@ impl HwpDocument {
             .map_err(|e| e.into())
     }
 
+    /// 쪽의 줄 상자·베이스라인·런 x 범위를 압축 JSON 으로 반환한다 (에이전트 측정용).
+    #[wasm_bindgen(js_name = getPageLineLayout)]
+    pub fn get_page_line_layout(&self, page_num: u32) -> Result<String, JsValue> {
+        self.get_page_line_layout_native(page_num)
+            .map_err(|e| e.into())
+    }
+
     /// 컨트롤(표, 이미지 등) 레이아웃 정보를 반환한다.
     #[wasm_bindgen(js_name = getPageControlLayout)]
     pub fn get_page_control_layout(&self, page_num: u32) -> Result<String, JsValue> {
@@ -7447,6 +7454,41 @@ impl HwpDocument {
         self.discard_picture_transform_native(id);
     }
 
+    /// 에이전트 대기 편집 전에 본문 문단 하나를 통째로 보관한다 (문단 단위 역연산).
+    #[wasm_bindgen(js_name = captureParagraph)]
+    pub fn capture_paragraph(&mut self, section_idx: u32, para_idx: u32) -> Result<u32, JsValue> {
+        self.capture_paragraph_native(section_idx as usize, para_idx as usize)
+            .map_err(|e| e.into())
+    }
+
+    /// 보관한 문단으로 지정 위치의 본문 문단을 되돌린다. 보관본은 유지된다.
+    #[wasm_bindgen(js_name = restoreCapturedParagraph)]
+    pub fn restore_captured_paragraph(
+        &mut self,
+        id: u32,
+        section_idx: u32,
+        para_idx: u32,
+    ) -> Result<(), JsValue> {
+        self.restore_captured_paragraph_native(id, section_idx as usize, para_idx as usize)
+            .map_err(|e| e.into())
+    }
+
+    #[wasm_bindgen(js_name = discardParagraphCapture)]
+    pub fn discard_paragraph_capture(&mut self, id: u32) {
+        self.discard_paragraph_capture_native(id);
+    }
+
+    /// 레이아웃을 뺀 본문 문단 내용 지문 — 되돌리기 전 사용자 수정 여부 판별용.
+    #[wasm_bindgen(js_name = getParagraphContentDigest)]
+    pub fn get_paragraph_content_digest(
+        &self,
+        section_idx: u32,
+        para_idx: u32,
+    ) -> Result<String, JsValue> {
+        self.paragraph_content_digest_native(section_idx as usize, para_idx as usize)
+            .map_err(|e| e.into())
+    }
+
     /// Document 스냅샷을 저장하고 ID를 반환한다.
     #[wasm_bindgen(js_name = saveSnapshot)]
     pub fn save_snapshot(&mut self) -> u32 {
@@ -9482,6 +9524,34 @@ pub fn extract_thumbnail(data: &[u8]) -> JsValue {
         }
         None => JsValue::NULL,
     }
+}
+
+/// 사용자가 설치한 폰트 바이트에서 advance 폭을 추출해 레이아웃 메트릭으로 등록한다.
+///
+/// `aliases_json`: 폰트명 별칭 JSON 배열. 같은 별칭 + bold + italic 은 교체한다.
+/// 반환: `{"registered":true,"key":..,"unitsPerEm":..,"mappedChars":..,
+/// "coversHangul":..,"coversLatin":..,"replaced":..}` 또는
+/// `{"registered":false,"reason":".."}`. 반영하려면 이후 `refreshLayout` 호출.
+#[wasm_bindgen(js_name = registerRuntimeFontMetrics)]
+pub fn register_runtime_font_metrics(
+    bytes: &[u8],
+    aliases_json: &str,
+    bold: bool,
+    italic: bool,
+) -> String {
+    crate::renderer::runtime_font_metrics::register_json(bytes, aliases_json, bold, italic)
+}
+
+/// 등록된 런타임 폰트 메트릭을 모두 제거한다.
+#[wasm_bindgen(js_name = clearRuntimeFontMetrics)]
+pub fn clear_runtime_font_metrics() {
+    crate::renderer::runtime_font_metrics::clear();
+}
+
+/// 등록된 런타임 폰트 메트릭 목록 JSON 배열 (진단용, 페이스별 폭 조회 횟수 포함).
+#[wasm_bindgen(js_name = getRuntimeFontMetricsReport)]
+pub fn get_runtime_font_metrics_report() -> String {
+    crate::renderer::runtime_font_metrics::report_json()
 }
 
 fn base64_encode(data: &[u8]) -> String {

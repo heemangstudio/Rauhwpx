@@ -44,16 +44,26 @@ impl RunMetrics {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static CSS_RUN_CACHE: std::cell::RefCell<std::collections::HashMap<(String, String), RunMetrics>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// 폰트 등록 변화 후 canvas 실측 캐시를 비운다.
+pub(crate) fn clear_css_run_cache() {
+    #[cfg(target_arch = "wasm32")]
+    CSS_RUN_CACHE.with(|cache| cache.borrow_mut().clear());
+}
+
 /// painter fallback 체인으로 run을 측정한다. 브라우저 canvas가 없으면 None.
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn measure_css_run(font: &str, text: &str) -> Option<RunMetrics> {
     use std::cell::RefCell;
-    use std::collections::HashMap;
     use wasm_bindgen::JsCast;
 
     thread_local! {
         static CONTEXT: RefCell<Option<web_sys::CanvasRenderingContext2d>> = const { RefCell::new(None) };
-        static CACHE: RefCell<HashMap<(String, String), RunMetrics>> = RefCell::new(HashMap::new());
     }
 
     CONTEXT.with(|slot| {
@@ -71,7 +81,7 @@ pub(crate) fn measure_css_run(font: &str, text: &str) -> Option<RunMetrics> {
         context.set_font(font);
         // 세션 서체를 가져오면 같은 요청 font라도 실제 runtime family가 달라진다.
         let key = (context.font(), text.to_string());
-        if let Some(hit) = CACHE.with(|cache| cache.borrow().get(&key).copied()) {
+        if let Some(hit) = CSS_RUN_CACHE.with(|cache| cache.borrow().get(&key).copied()) {
             return Some(hit);
         }
         let measured = context.measure_text(text).ok()?;
@@ -82,7 +92,7 @@ pub(crate) fn measure_css_run(font: &str, text: &str) -> Option<RunMetrics> {
         if !metrics.is_valid() {
             return None;
         }
-        CACHE.with(|cache| {
+        CSS_RUN_CACHE.with(|cache| {
             let mut cache = cache.borrow_mut();
             if cache.len() >= 4096 {
                 cache.clear();

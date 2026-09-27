@@ -114,6 +114,8 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     ipcRenderer.on('cloud:edit-draft-save-requested', listener);
     return () => ipcRenderer.removeListener('cloud:edit-draft-save-requested', listener);
   },
+  listSystemFonts: (options) => ipcRenderer.invoke('desktop:fonts-list', options),
+  readSystemFont: (id) => ipcRenderer.invoke('desktop:fonts-read', id),
   ensureAgentHub: () => ipcRenderer.invoke('agent-hub:ensure'),
   respondToCloseRequest: (requestId, allowClose) => (
     ipcRenderer.invoke('desktop:close-response', requestId, allowClose)

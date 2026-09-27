@@ -6,6 +6,7 @@
  * 패키지된 PWA/브라우저는 Node 를 띄울 수 없어 no-op 이다.
  */
 
+import type { SystemFontIndex } from './core/desktop-fonts.ts';
 import type {
   FileSystemFileHandleLike,
   FileSystemWritableFileStreamLike,
@@ -198,6 +199,10 @@ export interface RhwpDesktopApi {
   }) => void) => (() => void) | void;
   onEditCommand?: (callback: (command: string) => void) => void;
   onPastePlainText?: (callback: (text: string) => void) => void;
+  /** 시스템·사용자·한컴 오피스 글꼴 색인. 권한 요청 없이 이미 설치된 글꼴만 다룬다. */
+  listSystemFonts?: (options?: { refresh?: boolean }) => Promise<SystemFontIndex>;
+  /** TTC face는 단독 SFNT로 추출해 돌려준다. 파일이 바뀌었으면 'stale' 오류를 던진다. */
+  readSystemFont?: (id: string) => Promise<Uint8Array>;
   /** macOS 프록시 아이콘과 미저장 점. 경로는 메인이 핸들로 찾는다. */
   setDocumentState?: (state: { edited: boolean }) => void;
   notifyAgentTurnFinished?: (payload: { title: string; body: string }) => void;

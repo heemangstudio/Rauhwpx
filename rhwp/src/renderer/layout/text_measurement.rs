@@ -1065,6 +1065,11 @@ mod wasm_internals {
         static JS_MEASURE_CACHE: RefCell<MeasureCache> = RefCell::new(MeasureCache::new(256));
     }
 
+    /// 폰트 등록 변화·레이아웃 새로고침 시 JS 실측 캐시를 비운다.
+    pub(super) fn clear_js_measure_cache() {
+        JS_MEASURE_CACHE.with(|cache| cache.borrow_mut().entries.clear());
+    }
+
     /// 캐시 키 생성: hash(measure_font + char)
     fn measure_cache_key(measure_font: &str, c: char) -> u64 {
         use std::collections::hash_map::DefaultHasher;
@@ -1177,6 +1182,16 @@ mod wasm_internals {
         // native EmbeddedTextMeasurer 동기화: 미등록 폰트의 한글(CJK)은 font_size (1.0 em).
         (font_size * 75.0).round() as i32
     }
+}
+
+/// 폰트명 기준 폭 캐시(JS 실측 LRU, 수식 canvas 실측)를 모두 비운다.
+///
+/// 런타임 폰트 메트릭 등록/해제와 `refresh_layout_native` 에서 호출해
+/// 이후 레이아웃이 새 폭으로 다시 측정되게 한다.
+pub(crate) fn clear_measure_caches() {
+    #[cfg(target_arch = "wasm32")]
+    wasm_internals::clear_js_measure_cache();
+    crate::renderer::equation::measure::clear_css_run_cache();
 }
 
 // ── WasmTextMeasurer ────────────────────────────────────────────────
@@ -1846,6 +1861,71 @@ pub(super) fn measure_known_font_run_width(
     })
 }
 
+/// 한컴 반각/전각 보정을 적용한 글리프 폭 (폰트 단위).
+///
+/// 내장 메트릭과 런타임 폰트 메트릭이 같은 보정을 거쳐야 하위 경로(양자화,
+/// 줄바꿈)에서 동일하게 동작한다. `is_monospace` 는 따옴표/가운뎃점에서만
+/// 평가된다.
+fn hancom_glyph_units(c: char, glyph_w: u16, em_size: u16, is_monospace: impl Fn() -> bool) -> u16 {
+    // 한컴은 스마트 따옴표 등을 반각으로 처리.
+    // 폰트 메트릭에서 전각(em_size)으로 기록되어 있어도 em/2로 강제.
+    // [Issue #630] U+00B7 (가운뎃점) 은 본 분기에서 제외 — 한컴 저장본의
+    // tab_extended 가 전각 측정 기반으로 산출되므로 반각 강제 시 right-tab
+    // 정렬이 8.67px 좌측 이탈. 폰트 메트릭 그대로 사용 (전각).
+    let is_halfwidth_punct = matches!(
+        c,
+        '\u{2018}'..='\u{2027}' // ''‚‛""„‟†‡•‣․‥…‧ 구두점/기호
+    );
+    // 휴먼명조/HY중고딕/HY신명조/HY견명조 등 일부 폰트 DB 가 U+2018/U+2019/
+    // U+2027 을 fullwidth (1.0 em) 로 잘못 기록한 케이스 정정. em/2 (0.5 em)
+    // 강제 시 한컴 대비 약 4px (font-size 20px 기준, 0.5→0.3 em 차) 과대.
+    // glyph_w 가 비정상 fullwidth (>= em_size) 일 때만 0.3 em 강제 — 함초롬
+    // 바탕 (0.32) / Pretendard (0.22) 등 정상 DB 값은 조건 미충족으로 영향 없음.
+    let quote_width_is_authentic = matches!(c, '\u{2018}' | '\u{2019}') && is_monospace();
+    let is_narrow_unicode_punct =
+        matches!(c, '\u{2018}' | '\u{2019}' | '\u{2027}') && !quote_width_is_authentic;
+    // [U+00B7 .notdef 위장값 정정] 비례폰트(휴먼명조 등)가 `·` (가운뎃점)
+    // 글리프를 갖지 않으면 cmap 이 .notdef(glyph 0) 로 매핑돼 advance 가
+    // em_size(전각) 로 기록된다. 한컴은 이 경우 점 글리프를 가진 대체
+    // 폰트(바탕 ≈0.33em 등)로 `·` 를 렌더하므로 전각 advance 는 PDF 대비
+    // 과대 (시·군 점 좌우 공백 큼). 비례폰트에서 U+00B7 이 전각이면 위장값
+    // 으로 보고 0.3em 으로 정정한다. 고정폭(monospace) 폰트(돋움체 등)는
+    // 모든 글리프가 em_size 이므로 제외 — 해당 `·` 는 진짜 전각이다
+    // (Issue #630, aift 목차 right-tab 정합 보존).
+    let is_b7_notdef_artifact = c == '\u{00B7}' && glyph_w >= em_size && !is_monospace();
+    if (is_narrow_unicode_punct && glyph_w >= em_size) || is_b7_notdef_artifact {
+        (em_size as f64 * 0.3) as u16
+    } else if (is_halfwidth_punct || is_halfwidth_cjk_quote(c))
+        && !quote_width_is_authentic
+        && glyph_w >= em_size
+    {
+        em_size / 2
+    } else {
+        glyph_w
+    }
+}
+
+/// 런타임 폰트 메트릭(사용자 설치 폰트)으로 문자 폭 측정.
+/// 내장 메트릭과 같은 반각 보정 + HWPUNIT 절삭을 적용한다.
+fn measure_char_width_runtime(
+    primary_name: &str,
+    bold: bool,
+    italic: bool,
+    c: char,
+    font_size: f64,
+) -> Option<f64> {
+    let advance =
+        crate::renderer::runtime_font_metrics::char_advance(primary_name, bold, italic, c)?;
+    let w = if c == ' ' {
+        advance.units
+    } else {
+        hancom_glyph_units(c, advance.units, advance.em_size, || advance.monospace)
+    };
+    Some(quantize_hwp_px(
+        w as f64 * font_size / advance.em_size as f64,
+    ))
+}
+
 fn measure_char_width_with_policy(
     font_family: &str,
     bold: bool,
@@ -1904,6 +1984,17 @@ fn measure_char_width_with_policy(
         // HFT 폭 테이블 밖의 글자는 한컴이 대체 TTF 로 그린다.
         return measure_char_width_with_policy(fallback, bold, italic, c, font_size, policy);
     } else {
+        // 내장 메트릭이 없거나 추출 범위 밖의 문자 → 사용자 설치 폰트의 실제 폭.
+        // 내장 메트릭이 해당 범위를 수록했는데 글리프가 없으면 실제 폰트에도
+        // 없으므로 기존 폴백 체인을 유지한다.
+        if requested
+            .as_ref()
+            .is_none_or(|metric| !metric_has_source_range(metric.metric, c))
+        {
+            if let Some(w) = measure_char_width_runtime(primary_name, bold, italic, c, font_size) {
+                return Some(w);
+            }
+        }
         let (_, fallback_chain) = font_family.split_once(',')?;
         return measure_char_width_with_policy(fallback_chain, bold, italic, c, font_size, policy);
     };
@@ -1912,44 +2003,9 @@ fn measure_char_width_with_policy(
         mm.metric.em_size / 2
     } else {
         let glyph_w = mm.metric.get_width(c)?;
-        // 한컴은 스마트 따옴표 등을 반각으로 처리.
-        // 폰트 메트릭에서 전각(em_size)으로 기록되어 있어도 em/2로 강제.
-        // [Issue #630] U+00B7 (가운뎃점) 은 본 분기에서 제외 — 한컴 저장본의
-        // tab_extended 가 전각 측정 기반으로 산출되므로 반각 강제 시 right-tab
-        // 정렬이 8.67px 좌측 이탈. 폰트 메트릭 그대로 사용 (전각).
-        let is_halfwidth_punct = matches!(
-            c,
-            '\u{2018}'..='\u{2027}' // ''‚‛""„‟†‡•‣․‥…‧ 구두점/기호
-        );
-        // 휴먼명조/HY중고딕/HY신명조/HY견명조 등 일부 폰트 DB 가 U+2018/U+2019/
-        // U+2027 을 fullwidth (1.0 em) 로 잘못 기록한 케이스 정정. em/2 (0.5 em)
-        // 강제 시 한컴 대비 약 4px (font-size 20px 기준, 0.5→0.3 em 차) 과대.
-        // glyph_w 가 비정상 fullwidth (>= em_size) 일 때만 0.3 em 강제 — 함초롬
-        // 바탕 (0.32) / Pretendard (0.22) 등 정상 DB 값은 조건 미충족으로 영향 없음.
-        let quote_width_is_authentic =
-            matches!(c, '\u{2018}' | '\u{2019}') && is_monospace_metric(mm.metric);
-        let is_narrow_unicode_punct =
-            matches!(c, '\u{2018}' | '\u{2019}' | '\u{2027}') && !quote_width_is_authentic;
-        // [U+00B7 .notdef 위장값 정정] 비례폰트(휴먼명조 등)가 `·` (가운뎃점)
-        // 글리프를 갖지 않으면 cmap 이 .notdef(glyph 0) 로 매핑돼 advance 가
-        // em_size(전각) 로 기록된다. 한컴은 이 경우 점 글리프를 가진 대체
-        // 폰트(바탕 ≈0.33em 등)로 `·` 를 렌더하므로 전각 advance 는 PDF 대비
-        // 과대 (시·군 점 좌우 공백 큼). 비례폰트에서 U+00B7 이 전각이면 위장값
-        // 으로 보고 0.3em 으로 정정한다. 고정폭(monospace) 폰트(돋움체 등)는
-        // 모든 글리프가 em_size 이므로 제외 — 해당 `·` 는 진짜 전각이다
-        // (Issue #630, aift 목차 right-tab 정합 보존).
-        let is_b7_notdef_artifact =
-            c == '\u{00B7}' && glyph_w >= mm.metric.em_size && !is_monospace_metric(mm.metric);
-        if (is_narrow_unicode_punct && glyph_w >= mm.metric.em_size) || is_b7_notdef_artifact {
-            (mm.metric.em_size as f64 * 0.3) as u16
-        } else if (is_halfwidth_punct || is_halfwidth_cjk_quote(c))
-            && !quote_width_is_authentic
-            && glyph_w >= mm.metric.em_size
-        {
-            mm.metric.em_size / 2
-        } else {
-            glyph_w
-        }
+        hancom_glyph_units(c, glyph_w, mm.metric.em_size, || {
+            is_monospace_metric(mm.metric)
+        })
     };
     // em 단위 → px: w / em_size * font_size, 그 후 HWP 양자화
     let em = mm.metric.em_size as f64;
@@ -3675,6 +3731,90 @@ mod tests {
             "휴먼명조 따옴표는 이 변경의 범위 밖이라 종전 0.300 em 이어야 한다. \
              ‘={left:.4}em ’={right:.4}em"
         );
+    }
+
+    // ── 런타임 폰트 메트릭 (사용자 설치 폰트) ──
+
+    #[test]
+    fn runtime_font_metrics_replace_heuristic_widths_until_cleared() {
+        use crate::renderer::runtime_font_metrics as runtime;
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/ttfs/opensource/");
+        let regular = std::fs::read(format!("{dir}NotoSansKR-Regular.ttf")).unwrap();
+        let light = std::fs::read(format!("{dir}NotoSansKR-ExtraLight.ttf")).unwrap();
+        let advance_px = |bytes: &[u8], c: char, fs: f64| {
+            let face = ttf_parser::Face::parse(bytes, 0).unwrap();
+            let gid = face.glyph_index(c).unwrap();
+            let adv = face.glyph_hor_advance(gid).unwrap() as f64;
+            quantize_hwp_px(adv * fs / face.units_per_em() as f64)
+        };
+        let fs = 20.0;
+        let w =
+            |fam: &str, bold: bool, c: char| measure_char_width_embedded(fam, bold, false, c, fs);
+
+        // 내장 메트릭 없는 별칭은 휴리스틱 경로(None)로 간다.
+        assert_eq!(w("테스트글꼴", false, '가'), None);
+        assert_eq!(w("테스트글꼴", false, 'i'), None);
+
+        let aliases = vec!["테스트글꼴".to_string(), "Test Font".to_string()];
+        let first = runtime::register(&regular, &aliases, false, false).unwrap();
+        assert!(first.covers_hangul && first.covers_latin && !first.replaced);
+        assert!(
+            runtime::register(&regular, &aliases, false, false)
+                .unwrap()
+                .replaced
+        );
+
+        let hangul = advance_px(&regular, '가', fs);
+        let latin_i = advance_px(&regular, 'i', fs);
+        assert_eq!(w("테스트글꼴", false, '가'), Some(hangul));
+        assert_eq!(w("테스트글꼴", false, 'i'), Some(latin_i));
+        assert!(
+            (latin_i - fs * 0.5).abs() > 1.0,
+            "'i' 는 0.5em 휴리스틱과 달라야 한다"
+        );
+        // 이름 정규화(공백·대소문자·따옴표) 와 CSS 체인의 첫 폰트명 조회.
+        assert_eq!(w("\"test   FONT\", sans-serif", false, 'i'), Some(latin_i));
+        // 공백은 내장 메트릭과 같이 em/2.
+        assert_eq!(w("테스트글꼴", false, ' '), Some(quantize_hwp_px(fs * 0.5)));
+        // 레이아웃 경로 전체에서 사용된다.
+        let style = TextStyle {
+            font_family: "테스트글꼴".into(),
+            font_size: fs,
+            ..Default::default()
+        };
+        assert!((estimate_text_width_unrounded("가i", &style) - (hangul + latin_i)).abs() < 1e-9);
+
+        // Bold 페이스가 없으면 Regular 폭 그대로 + 합성 Bold 획.
+        let bold_style = TextStyle {
+            bold: true,
+            ..style.clone()
+        };
+        assert_eq!(w("테스트글꼴", true, 'i'), Some(latin_i));
+        assert!(crate::renderer::faux_bold_stroke_width(&bold_style, fs).is_some());
+        // Bold 페이스를 등록하면 그 폭을 쓰고 합성 획은 없다.
+        runtime::register(&light, &aliases, true, false).unwrap();
+        assert_eq!(
+            w("테스트글꼴", true, 'W'),
+            Some(advance_px(&light, 'W', fs))
+        );
+        assert_ne!(advance_px(&light, 'W', fs), advance_px(&regular, 'W', fs));
+        assert_eq!(
+            w("테스트글꼴", false, 'W'),
+            Some(advance_px(&regular, 'W', fs))
+        );
+        assert!(crate::renderer::faux_bold_stroke_width(&bold_style, fs).is_none());
+
+        // 내장 메트릭이 있는 이름은 기존 동작 그대로.
+        let baked = w("함초롬돋움", false, 'i');
+        runtime::register(&light, &["함초롬돋움".to_string()], false, false).unwrap();
+        assert_eq!(w("함초롬돋움", false, 'i'), baked);
+
+        assert!(runtime::report_json().contains("\"hits\":"));
+        assert!(runtime::register(b"not a font", &aliases, false, false).is_err());
+
+        runtime::clear();
+        assert_eq!(w("테스트글꼴", false, '가'), None);
+        assert!(crate::renderer::faux_bold_stroke_width(&bold_style, fs).is_none());
     }
 
     // Stage 4 검증으로 native tab_type 정정 (정정 2) 은 회귀 발견되어 철회.

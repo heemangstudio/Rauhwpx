@@ -87,9 +87,38 @@ import {
 } from '@/core/theme';
 import { initWindowActivity } from '@/core/window-activity';
 import { analyzeDocumentFonts } from '@/core/document-font-status';
+import { createHubFontHost } from '@/core/hub-fonts';
+import { configureFontDetection, detectAllFonts, fontDetectionMessage } from '@/core/font-detection';
+import { showDocumentFontsDialog } from '@/ui/document-fonts-dialog';
 import {
-  detectLocalFonts, getLocalFontState, getLocalFonts, importLocalFontFiles, localFontImportMessage, loadStoredLocalFonts,
-  repairLocalFontFacesFor, setActiveDocumentFonts,
+  configureDesktopFonts,
+  finalizeDesktopFontReport,
+  fontReportsChangedLayout,
+  hasSystemFontHost,
+  setHubFontHost,
+  isDesktopFontIndexReady,
+  isDesktopFontsSupported,
+  loadDesktopFontIndex,
+  prepareDesktopFontsForDocument,
+  prepareLocalFontAccessMetrics,
+  prepareSystemFontsForDocument,
+  settleWithin,
+  syncImportedFontMetrics,
+  unattemptedDesktopFonts,
+  type DesktopFontReport,
+} from '@/core/desktop-fonts';
+import {
+  chooseFontFolder,
+  getFontFolderState,
+  isFontFolderSupported,
+  onFontFolderStateChange,
+  reconnectFontFolder,
+  restoreFontFolder,
+  type FontFolderState,
+} from '@/core/font-folder';
+import {
+  getLocalFonts, importLocalFontFiles, localFontImportMessage, loadStoredLocalFonts,
+  repairLocalFontFacesFor, resolveLocalFont, setActiveDocumentFonts,
 } from '@/core/local-fonts';
 import { userSettings, type EditorScalarSettings } from '@/core/user-settings';
 import { AutosaveManager, type AutosaveScheduleSettings, type AutosaveStatus } from '@/recovery/autosave-manager';
@@ -870,7 +899,7 @@ const commandServices: CommandServices = {
     return {
       opCount: sets().reduce((sum, set) => sum + set.ops.length, 0),
       approveAll: () => sets().every((set) => pending.approve(set.id)),
-      rejectAll: () => { for (const set of sets()) pending.reject(set.id); },
+      rejectAll: () => pending.rejectAll(),
     };
   },
 };
@@ -1037,6 +1066,200 @@ async function updateLoadProgress(percent: number, label: string): Promise<void>
   await waitForNextPaint();
 }
 
+/** 문서 로드가 데스크톱 글꼴 연결을 기다리는 최대 시간. 넘기면 백그라운드에서 마저 연결한다. */
+const DESKTOP_FONT_LOAD_BUDGET_MS = 4000;
+const DESKTOP_FONT_EDIT_DEBOUNCE_MS = 600;
+let desktopFontEditTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** 브라우저에서 저장된 글꼴 폴더를 다시 연결하는 작업. 첫 문서 로드가 잠깐 기다린다. */
+let fontFolderRestore: Promise<unknown> | null = null;
+
+function initializeDesktopFonts(): void {
+  // "로컬 글꼴 감지"는 설치 글꼴·데스크톱·허브·글꼴 폴더를 한 번에 모두 돌린다.
+  configureFontDetection({
+    documentFonts: () => {
+      try {
+        return wasm.pageCount > 0 ? wasm.getDocumentInfo().fontsUsed : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+    applyReports: (reports) => {
+      applyLateFontReports(reports);
+      eventBus.emit('local-fonts-changed', {
+        fonts: getLocalFonts({ includeRegistered: true }),
+        source: 'detect-all',
+      });
+      prepareCanvasKitLocalFonts(wasm.getDocumentInfo().fontsUsed);
+      prepareLocalFontRepairs(wasm.getDocumentInfo().fontsUsed);
+    },
+  });
+  // 런타임 메트릭은 데스크톱·글꼴 폴더·가져온 파일·로컬 글꼴 감지 모두에 쓴다.
+  configureDesktopFonts({
+    metrics: wasm.getRuntimeFontMetricsApi(),
+    onLateRegistration: applyLateDesktopFontReport,
+  });
+  if (isDesktopFontsSupported()) {
+    // 첫 문서가 열리기 전에 색인을 미리 받아 둔다.
+    void loadDesktopFontIndex().catch((error) => {
+      console.warn('[DesktopFonts] 글꼴 색인 준비 실패:', error);
+    });
+    return;
+  }
+  if (!isFontFolderSupported()) return;
+  installFontFolderStatusButton();
+  onFontFolderStateChange(handleFontFolderState);
+  fontFolderRestore = restoreFontFolder().catch((error) => {
+    console.warn('[FontFolder] 저장된 글꼴 폴더를 다시 연결하지 못했습니다:', error);
+  });
+}
+
+/** 권한을 다시 받아야 할 때만 상태 바에 한 번 누르는 버튼을 띄운다. */
+function installFontFolderStatusButton(): void {
+  const button = document.getElementById('sb-font-folder') as HTMLButtonElement | null;
+  if (!button) return;
+  button.addEventListener('click', () => {
+    // 권한 요청은 클릭 처리 안에서 바로 해야 한다.
+    reconnectFontFolder().catch((error) => {
+      console.warn('[FontFolder] 다시 연결 실패:', error);
+      showToast({ message: '글꼴 폴더를 다시 연결하지 못했습니다.', durationMs: 5000 });
+    });
+  });
+}
+
+function handleFontFolderState(state: FontFolderState): void {
+  const button = document.getElementById('sb-font-folder') as HTMLButtonElement | null;
+  if (button) button.hidden = state.status !== 'needs-permission';
+  if (state.status === 'connected') connectPendingDocumentFonts();
+}
+
+/**
+ * 브라우저에서 로컬 에이전트 허브가 내주는 설치 글꼴을 쓴다. 폴더 선택·권한 요청이 필요 없다.
+ * 데스크톱 preload나 연결한 글꼴 폴더가 있으면 그쪽이 먼저다.
+ */
+function installHubFonts(bridge: AgentBridge): void {
+  if (isDesktopFontsSupported()) return;
+  setHubFontHost(createHubFontHost({ access: () => bridge.getHubFontAccess() }));
+  bridge.onEvent((event) => {
+    if (event.type === 'connection' && event.state === 'connected') connectPendingDocumentFonts();
+  });
+}
+
+/** 글꼴 색인 host가 새로 준비되면 열린 문서에서 아직 시도하지 않은 글꼴을 연결한다. */
+function connectPendingDocumentFonts(): void {
+  if (wasm.pageCount === 0 || !hasSystemFontHost()) return;
+  let fontsUsed: string[] | undefined;
+  try {
+    fontsUsed = wasm.getDocumentInfo().fontsUsed;
+  } catch {
+    return;
+  }
+  const pending = unattemptedDesktopFonts(fontsUsed);
+  if (!pending.length) return;
+  void prepareDesktopFontsForDocument(pending)
+    .then((report) => {
+      applyLateDesktopFontReport(report);
+      updateFontStatusButton();
+    })
+    .catch((error) => console.warn('[SystemFonts] 문서 글꼴 연결 실패:', error));
+}
+
+/** 문서 로드 뒤에 끝난 연결 결과를 레이아웃·화면·CanvasKit에 반영한다. */
+function applyLateDesktopFontReport(report: DesktopFontReport): void {
+  applyLateFontReports([report]);
+}
+
+function applyLateFontReports(reports: readonly DesktopFontReport[]): void {
+  if (fontReportsChangedLayout(reports)) eventBus.emit('font-files-imported');
+  for (const report of reports) finalizeDesktopFontReport(report);
+}
+
+/** 로컬 글꼴 감지 결과가 바뀌면 현재 문서 글꼴의 레이아웃 메트릭을 등록한다. */
+function syncLocalFontAccessMetrics(): void {
+  let fontsUsed: string[] | undefined;
+  try {
+    fontsUsed = wasm.pageCount > 0 ? wasm.getDocumentInfo().fontsUsed : undefined;
+  } catch {
+    return;
+  }
+  if (!fontsUsed?.length) return;
+  void prepareLocalFontAccessMetrics(fontsUsed)
+    .then((report) => {
+      if (report && report.totals.metricsRegistered > 0) applyLateFontReports([report]);
+    })
+    .catch((error) => console.warn('[LocalFonts] 레이아웃 메트릭 등록 실패:', error));
+}
+
+/** 편집·에이전트·붙여넣기로 새 글꼴이 문서에 들어오면 데스크톱 글꼴에서 찾아 연결한다. */
+function scheduleDesktopFontSync(): void {
+  if (!hasSystemFontHost()) return;
+  if (desktopFontEditTimer !== null) clearTimeout(desktopFontEditTimer);
+  desktopFontEditTimer = setTimeout(() => {
+    desktopFontEditTimer = null;
+    let fontsUsed: string[] | undefined;
+    try {
+      fontsUsed = wasm.getDocumentInfo().fontsUsed;
+    } catch {
+      return;
+    }
+    const pending = unattemptedDesktopFonts(fontsUsed);
+    if (!pending.length) return;
+    void prepareDesktopFontsForDocument(pending)
+      .then(applyLateDesktopFontReport)
+      .catch((error) => console.warn('[DesktopFonts] 새 글꼴 연결 실패:', error));
+  }, DESKTOP_FONT_EDIT_DEBOUNCE_MS);
+}
+
+/**
+ * 실제 글꼴로 보이지 않는 문서 글꼴이 있으면 상태 바에 "글꼴 N개 대체됨"을 띄운다.
+ * 누르면 대체된 글꼴과 대신 쓰는 글꼴, 연결된 글꼴 목록을 연다.
+ */
+function updateFontStatusButton(): void {
+  const button = document.getElementById('sb-font-status') as HTMLButtonElement | null;
+  if (!button) return;
+  let fontsUsed: string[] | undefined;
+  try {
+    fontsUsed = wasm.pageCount > 0 ? wasm.getDocumentInfo().fontsUsed : undefined;
+  } catch {
+    fontsUsed = undefined;
+  }
+  const report = fontsUsed?.length ? analyzeDocumentFonts(fontsUsed) : null;
+  const substituted = report ? report.total - report.summary.available : 0;
+  button.hidden = substituted <= 0;
+  button.textContent = substituted > 0 ? `글꼴 ${substituted}개 대체됨` : '';
+}
+
+function installFontStatusButton(): void {
+  const button = document.getElementById('sb-font-status') as HTMLButtonElement | null;
+  if (!button) return;
+  button.addEventListener('click', () => {
+    let fontsUsed: string[] | undefined;
+    try {
+      fontsUsed = wasm.getDocumentInfo().fontsUsed;
+    } catch {
+      return;
+    }
+    if (!fontsUsed?.length) return;
+    const offerFolder = !isDesktopFontsSupported() && isFontFolderSupported()
+      && getFontFolderState().status !== 'connected';
+    showDocumentFontsDialog(analyzeDocumentFonts(fontsUsed), {
+      sourceFileFor: (name) => resolveLocalFont(name)?.sourcePath?.split(/[\\/]/).pop() ?? null,
+      connectFolder: offerFolder
+        ? () => {
+          const connect = getFontFolderState().status === 'needs-permission' ? reconnectFontFolder : chooseFontFolder;
+          connect().catch((error: unknown) => {
+            console.warn('[FontFolder] 연결 실패:', error);
+            showToast({ message: '글꼴 폴더를 연결하지 못했습니다.', durationMs: 5000 });
+          });
+        }
+        : null,
+    });
+  });
+  for (const event of ['local-fonts-changed', 'font-files-imported'] as const) {
+    eventBus.on(event, updateFontStatusButton);
+  }
+}
+
 /**
  * CanvasKit은 browser CSS font fallback을 사용하지 않는다. 초기 페이지를 먼저 표시한 뒤,
  * 저장된 권한 범위 안에서 필요한 local face를 준비하고 등록된 경우에만 다시 그린다.
@@ -1102,6 +1325,7 @@ async function initialize(): Promise<void> {
     if (import.meta.env.DEV) {
       initRhwpDev(wasm);
     }
+    initializeDesktopFonts();
     const renderBackendRequest = resolveRenderBackendRequest(window.location.search);
     const canvaskitModeRequest = resolveCanvasKitRenderModeRequest(window.location.search);
     const canvaskitMode = canvaskitModeRequest.mode;
@@ -1386,6 +1610,7 @@ async function initialize(): Promise<void> {
         isReadOnly: () => documentReadOnly,
       });
       agentBridgeRef = agentBridge;
+      installHubFonts(agentBridge);
       agentBridge.onEditingLeaseChange(setAgentEditingLease);
       installDesktopAgentAttention({
         onEvent: (cb) => agentBridge.onEvent(cb),
@@ -1709,8 +1934,11 @@ function setupZoomControls(): void {
 let totalSections = 1;
 
 function setupEventListeners(): void {
+  installFontStatusButton();
   eventBus.on('font-files-imported', () => {
     try {
+      // 직접 가져온 파일도 레이아웃 메트릭에 올린다.
+      syncImportedFontMetrics();
       wasm.refreshLayout();
       eventBus.emit('document-view-changed');
       prepareCanvasKitLocalFonts(wasm.getDocumentInfo().fontsUsed);
@@ -1718,6 +1946,7 @@ function setupEventListeners(): void {
       console.warn('[LocalFonts] 글꼴 가져오기 뒤 문서 갱신 실패:', error);
     }
   });
+  eventBus.on('local-fonts-changed', () => syncLocalFontAccessMetrics());
   eventBus.on('current-page-changed', (page, _total) => {
     const pageIdx = page as number;
     sbPage().textContent = `${pageIdx + 1} / ${_total} 쪽`;
@@ -1766,6 +1995,7 @@ function setupEventListeners(): void {
     scheduleCloudEditDraftSave();
     schedulePaperStatus();
     scheduleCharacterStatus(true);
+    scheduleDesktopFontSync();
   });
 
   eventBus.on('renderer-selection-changed', (payload) => {
@@ -1999,11 +2229,39 @@ async function initializeDocument(
   try {
     await updateLoadProgress(55, '폰트 준비 중...');
     setActiveDocumentFonts(docInfo.fontsUsed ?? []);
+    const desktopFontsStartedAt = performance.now();
+    // 저장된 글꼴 폴더 핸들을 먼저 확인한다 (IndexedDB 조회뿐이라 짧다).
+    if (fontFolderRestore) await settleWithin(fontFolderRestore, DESKTOP_FONT_LOAD_BUDGET_MS);
+    // 웹 글꼴과 함께 사용자 PC의 글꼴(데스크톱 색인·글꼴 폴더·로컬 글꼴 감지)을 연결한다.
+    // 첫 페이지가 실제 글꼴로 조판되도록 제한 시간 안에 끝나면 레이아웃을 다시 계산한 뒤 그린다.
+    const fontsUsed = docInfo.fontsUsed;
+    const desktopFonts = fontsUsed?.length
+      ? (async () => {
+        await loadStoredLocalFonts();
+        return prepareSystemFontsForDocument(fontsUsed);
+      })().catch((error): DesktopFontReport[] => {
+        console.warn('[DesktopFonts] 문서 글꼴 연결 실패:', error);
+        return [];
+      })
+      : null;
     if (docInfo.fontsUsed?.length) {
       await loadWebFonts(docInfo.fontsUsed, (loaded, total) => {
         const fontPercent = total > 0 ? 55 + Math.round((loaded / total) * 20) : 65;
         msg.textContent = `파일 로딩 ${fontPercent}% - 폰트 로딩 중... (${loaded}/${total})`;
       }, extensionViewerSettings);
+    }
+    if (desktopFonts) {
+      const budget = DESKTOP_FONT_LOAD_BUDGET_MS - (performance.now() - desktopFontsStartedAt);
+      const settled = await settleWithin(desktopFonts, budget);
+      if (settled) {
+        const reports = settled.value;
+        if (fontReportsChangedLayout(reports)) wasm.refreshLayout();
+        for (const report of reports) finalizeDesktopFontReport(report);
+      } else {
+        console.info(`[DesktopFonts] ${DESKTOP_FONT_LOAD_BUDGET_MS}ms 안에 끝나지 않아 백그라운드에서 계속 연결합니다.`);
+        // 글꼴 등록은 세션 전체에 적용되므로 그사이 다른 문서가 열렸어도 현재 문서를 다시 조판한다.
+        void desktopFonts.then(applyLateFontReports);
+      }
     }
     await updateLoadProgress(75, '문서 상태 적용 중...');
     totalSections = docInfo.sectionCount ?? 1;
@@ -2055,6 +2313,7 @@ async function initializeDocument(
     scheduleCharacterStatus(true);
     // 최종 단계 뒤에는 비동기 작업이 없으므로 100% progress paint를 기다리지 않는다.
     msg.textContent = documentReadOnly ? '읽기 전용' : '';
+    updateFontStatusButton();
 
     // #2527: 자동 보정을 하지 않으므로 로드 직후 문서는 항상 clean.
     documentState.markClean('document-initialized');
@@ -2079,9 +2338,28 @@ async function promptLocalFontsIfNeeded(docInfo: DocumentInfo): Promise<void> {
     const report = analyzeDocumentFonts(docInfo.fontsUsed);
     if (!report.shouldPromptLocalAccess) return;
 
+    const folderState = getFontFolderState();
+    // 글꼴 폴더나 에이전트 허브의 글꼴 색인을 받았으면 데스크톱처럼 문서를 열 때 묻지 않는다.
+    // 연결하지 못한 글꼴 수는 상태 바에, 감지·가져오기는 설정에 있다.
+    if (folderState.status === 'connected' || folderState.status === 'connecting') return;
+    if (isDesktopFontIndexReady()) return;
+    const reconnect = folderState.status === 'needs-permission';
+    const offerFolder = !isDesktopFontsSupported() && isFontFolderSupported()
+      && (folderState.status === 'none' || folderState.status === 'error' || reconnect);
     const choice = await showLocalFontsModalIfNeeded(report, {
       disableExternalWebFonts: extensionViewerSettings.disableExternalWebFonts,
+      folder: offerFolder
+        ? { reconnect, connect: () => (reconnect ? reconnectFontFolder() : chooseFontFolder()) }
+        : null,
     });
+    if (typeof choice === 'object' && choice.type === 'folder') {
+      // 색인은 뒤에서 이어 가고, 연결되면 handleFontFolderState가 문서 글꼴을 연결해 다시 조판한다.
+      void choice.result.catch((error: unknown) => {
+        console.warn('[FontFolder] 연결 실패:', error);
+        showToast({ message: '글꼴 폴더를 연결하지 못했습니다.', durationMs: 5000 });
+      });
+      return;
+    }
     if (typeof choice === 'object' && choice.type === 'import') {
       try {
         const result = await importLocalFontFiles(choice.files);
@@ -2101,23 +2379,10 @@ async function promptLocalFontsIfNeeded(docInfo: DocumentInfo): Promise<void> {
     }
     if (choice !== 'detect') return;
 
-    msg.textContent = '로컬 글꼴 감지 중...';
-    const fonts = await detectLocalFonts({
-      force: true,
-      includeRegistered: true,
-      candidateFamilies: docInfo.fontsUsed,
-    });
-    const nextReport = analyzeDocumentFonts(docInfo.fontsUsed);
-    eventBus.emit('local-fonts-changed', { fonts, report: nextReport });
-    prepareCanvasKitLocalFonts(docInfo.fontsUsed);
-    prepareLocalFontRepairs(docInfo.fontsUsed);
-    const state = getLocalFontState();
-    const resultLabel = state.source === 'font-presence-probe' ? '확인됨' : '감지됨';
-    msg.textContent = `로컬 글꼴 ${fonts.length}개 ${resultLabel}`;
-    showToast({
-      message: `로컬 글꼴 ${fonts.length}개를 ${resultLabel.replace('됨', '')}하고 저장했습니다.\n다음 문서 로드부터 감지 결과를 재사용합니다.`,
-      durationMs: 5000,
-    });
+    msg.textContent = '글꼴 감지 중...';
+    const result = await detectAllFonts();
+    msg.textContent = '';
+    showToast({ message: fontDetectionMessage(result), durationMs: 5000 });
   } catch (error) {
     console.warn('[local-fonts] 감지 안내/실행 실패 (치명적이지 않음):', error);
     msg.textContent = '';

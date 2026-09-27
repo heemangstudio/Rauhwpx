@@ -36,6 +36,8 @@ const NON_EDIT_EXPORTS = new Set([
   'setActiveFieldByPath',
   'clearClipboard',
   'updateViewport',
+  // 세션 전역 글꼴 메트릭 레지스트리 초기화 (문서 편집 아님)
+  'clearRuntimeFontMetrics',
 ]);
 
 test('every mutation-like Rust export has an agent edit path or explicit non-edit classification', () => {

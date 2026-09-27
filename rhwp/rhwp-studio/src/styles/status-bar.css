@@ -41,6 +41,38 @@
 }
 .stb-message:empty { display: none; }
 
+#status-bar .stb-action {
+  flex: 0 0 auto;
+  height: 22px;
+  margin: 0 8px 0 0;
+  padding: 0 8px;
+  border: 1px solid var(--ui-border, currentColor);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ui-text);
+  font: inherit;
+  cursor: pointer;
+}
+#status-bar .stb-action:hover { background: var(--ui-hover); }
+#status-bar .stb-action:active { background: var(--ui-active); }
+#status-bar .stb-action[hidden] { display: none; }
+
+/* 문서 글꼴 상태. 누르면 글꼴 목록을 연다. */
+#status-bar .stb-link {
+  flex: 0 0 auto;
+  height: 22px;
+  margin: 0 8px 0 0;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ui-text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+#status-bar .stb-link:hover { background: var(--ui-hover); color: var(--ui-text); }
+#status-bar .stb-link[hidden] { display: none; }
+
 .stb-right,
 .stb-fit-controls {
   display: flex;
