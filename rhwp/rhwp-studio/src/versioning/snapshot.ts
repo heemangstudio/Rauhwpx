@@ -24,6 +24,46 @@ export interface CapturedVersionSnapshot {
   compareSnapshot: CompareDocumentSnapshot;
 }
 
+/** One editor revision owns one export, shared by dirty checks and checkpoints. */
+export class VersionSnapshotCache {
+  #key: string | null = null;
+  #content: { bytes: Uint8Array; fingerprint: ContentFingerprint } | null = null;
+  #snapshot: CapturedVersionSnapshot | null = null;
+
+  clear(): void {
+    this.#key = null;
+    this.#content = null;
+    this.#snapshot = null;
+  }
+
+  invalidateUnless(fingerprint: string): void {
+    if (this.#content?.fingerprint !== fingerprint) this.clear();
+  }
+
+  #getContent(wasm: WasmBridge, documentId: string | null, revision: number) {
+    const key = JSON.stringify([documentId, revision, currentSaveFormat(wasm), wasm.fileName, wasm.getSourceFormat()]);
+    if (this.#key !== key || !this.#content) {
+      const bytes = exportVersionContent(wasm);
+      this.#content = { bytes, fingerprint: fingerprintBytes(bytes) };
+      this.#key = key;
+      this.#snapshot = null;
+    }
+    return this.#content;
+  }
+
+  fingerprint(wasm: WasmBridge, documentId: string | null, revision: number): ContentFingerprint {
+    return this.#getContent(wasm, documentId, revision).fingerprint;
+  }
+
+  capture(wasm: WasmBridge, documentId: string | null, revision: number): CapturedVersionSnapshot {
+    const content = this.#getContent(wasm, documentId, revision);
+    return this.#snapshot ??= {
+      ...content,
+      compareSnapshot: buildSnapshotFromWasm(wasm, wasm.fileName, VERSION_COMPARE_OPTIONS),
+    };
+  }
+}
+
 export interface VersionDiffAnalysis {
   stats: VersionStats;
   titleSummary: CheckpointTitleSummary;

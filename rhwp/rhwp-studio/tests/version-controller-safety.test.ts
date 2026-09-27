@@ -123,7 +123,7 @@ test('loadMore releases loading and file saves preserve the uncommitted working 
   assert.match(loadMore, /finally \{/);
   assert.match(loadMore, /this\.#state\.loading = false/);
   const constructor = method('constructor(deps:', 'getState()');
-  assert.match(constructor, /captureVersionSnapshot\(this\.#wasm\)/);
+  assert.match(constructor, /this\.#snapshotCache\.capture\(this\.#wasm, this\.#getDocumentId\(\), this\.#editorRevision\)/);
   assert.match(constructor, /id !== this\.#getDocumentId\(\)/);
   assert.match(constructor, /this\.#store\.markSaved\(/);
   assert.doesNotMatch(constructor, /#createCheckpoint\(/);
@@ -142,7 +142,7 @@ test('active branch refresh keeps memory before falling back to the repository d
 
 test('sidebar dirty state is cached against HEAD and full repository usage is reported', () => {
   const semantic = method('async #refreshSemanticDirty(', '#isSemanticDirty(');
-  assert.match(semantic, /fingerprintVersionContent\(this\.#wasm\)/);
+  assert.match(semantic, /this\.#snapshotCache\.fingerprint\(this\.#wasm, expectedDocumentId, revision\)/);
   assert.match(semantic, /currentFingerprint !== head\.contentFingerprint/);
 
   const build = method('async #buildState(', '#syncTransientState(');

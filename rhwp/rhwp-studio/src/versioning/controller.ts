@@ -65,8 +65,10 @@ import {
 } from './composite-merge.ts';
 import { mergeResourceDependencyErrors } from './merge-validation.ts';
 import { retainedMergeDraftLocalState } from './merge-draft.ts';
+import { VersionMaintenance } from './maintenance.ts';
 import {
   VERSION_COMPARE_OPTIONS,
+  VersionSnapshotCache,
   analyzeVersionDiff,
   captureVersionSnapshot,
   fingerprintVersionContent,
@@ -245,6 +247,8 @@ export class DocumentVersionController implements VersionManagerController {
   readonly #compareStore: CompareSessionStore;
   readonly #compareWindow = new CompareResultWindow();
   readonly #mergeWorker = new MergeWorkerClient();
+  readonly #snapshotCache = new VersionSnapshotCache();
+  readonly #maintenance: VersionMaintenance;
   readonly #mergeResolver = new MergeResolverWindow();
   #state = emptyState();
   #repository: VersionRepository | null = null;
@@ -272,6 +276,11 @@ export class DocumentVersionController implements VersionManagerController {
   constructor(deps: VersionControllerDeps) {
     this.#store = deps.store ?? new VersionGraphStore();
     this.#ownsStore = !deps.store;
+    this.#maintenance = new VersionMaintenance(this.#store, {
+      enqueue: (operation) => this.#enqueue(operation),
+      locks: typeof navigator !== 'undefined' ? navigator.locks : null,
+      onError: (error) => console.warn('Version maintenance could not finish', error),
+    });
     this.#wasm = deps.wasm;
     this.#eventBus = deps.eventBus;
     this.#documentState = deps.documentState;
@@ -296,7 +305,7 @@ export class DocumentVersionController implements VersionManagerController {
       this.#eventBus.on('document-saved', () => {
         // A file save updates disk state; only an explicit commit advances HEAD.
         const id = this.#getDocumentId();
-        const capture = this.#wasm.hasLoadedDocument() ? captureVersionSnapshot(this.#wasm) : null;
+        const capture = this.#wasm.hasLoadedDocument() ? this.#snapshotCache.capture(this.#wasm, this.#getDocumentId(), this.#editorRevision) : null;
         if (id && capture) this.#savedBaseline = { documentId: id, capture };
         void this.#enqueue(async () => {
           if (!capture || id !== this.#getDocumentId()) return;
@@ -323,9 +332,10 @@ export class DocumentVersionController implements VersionManagerController {
   }
 
   async documentLoaded(): Promise<void> {
+    this.#snapshotCache.clear();
     const id = this.#getDocumentId();
     if (id && !this.#wasm.isNewDocument && !this.#documentState.isDirty()) {
-      this.#savedBaseline = { documentId: id, capture: captureVersionSnapshot(this.#wasm) };
+      this.#savedBaseline = { documentId: id, capture: this.#snapshotCache.capture(this.#wasm, this.#getDocumentId(), this.#editorRevision) };
     } else {
       this.#savedBaseline = null;
     }
@@ -357,6 +367,9 @@ export class DocumentVersionController implements VersionManagerController {
       }
       const id = this.#getDocumentId();
       if (!id) throw new VersionError('SAVE_REQUIRED', 'A saved document ID is required');
+      if (typeof navigator !== 'undefined' && navigator.storage?.persist) {
+        void navigator.storage.persist().catch(() => false);
+      }
       const workspace = this.#captureWorkspaceToken();
       const existing = await this.#store.findRepositoryByDocumentId(documentId(id));
       this.#assertWorkspaceToken(workspace, { editor: false });
@@ -364,7 +377,7 @@ export class DocumentVersionController implements VersionManagerController {
         await this.#refreshData(true);
         return;
       }
-      const capture = baseline ?? captureVersionSnapshot(this.#wasm);
+      const capture = baseline ?? this.#snapshotCache.capture(this.#wasm, this.#getDocumentId(), this.#editorRevision);
       const mergeManifestEntries = await this.#mergeWorker.buildDocumentManifest(capture.bytes);
       this.#assertWorkspaceToken(workspace, { editor: false });
       const analysis = analyzeVersionDiff(null, capture.compareSnapshot);
@@ -695,7 +708,7 @@ export class DocumentVersionController implements VersionManagerController {
       ]);
       this.#assertWorkspaceToken(workspace);
       if (!stored || !blob) throw new VersionError('CORRUPT_BLOB', 'Version comparison data is missing');
-      const current = captureVersionSnapshot(this.#wasm);
+      const current = this.#snapshotCache.capture(this.#wasm, this.#getDocumentId(), this.#editorRevision);
       const session = compareSnapshots(stored.snapshot, current.compareSnapshot, VERSION_COMPARE_OPTIONS);
       this.#assertWorkspaceToken(workspace);
       this.#compareStore.set(session);
@@ -901,7 +914,7 @@ export class DocumentVersionController implements VersionManagerController {
       try {
         this.#assertWorkspaceToken(workspace);
         this.#repository = created.repository;
-        this.#applyBranchContent(handler, blob.bytes, target, created.branch, current, previousCommit);
+        await this.#applyBranchContent(handler, blob.bytes, target, created.branch, current, previousCommit);
       } catch (error) {
         const compensated = await this.#store.deleteBranch({
           repositoryId: created.repository.id,
@@ -957,7 +970,7 @@ export class DocumentVersionController implements VersionManagerController {
       }
       const handler = this.#requireInputHandler();
       handler.prepareSnapshotCapacity(2);
-      this.#applyBranchContent(handler, blob.bytes, target, next, previous, previousCommit);
+      await this.#applyBranchContent(handler, blob.bytes, target, next, previous, previousCommit);
       await this.#refreshData(true);
     });
   }
@@ -1102,7 +1115,7 @@ export class DocumentVersionController implements VersionManagerController {
       const workspace = this.#captureWorkspaceToken();
       const repository = this.#requireRepository();
       const branch = this.#requireActiveBranch();
-      const capture = captureVersionSnapshot(this.#wasm);
+      const capture = this.#snapshotCache.capture(this.#wasm, this.#getDocumentId(), this.#editorRevision);
       const head = await this.#requireCommit(branch.target);
       if (capture.fingerprint === head.contentFingerprint) {
         throw new VersionError('NO_CHANGES', 'There are no changes to shelf');
@@ -1198,7 +1211,7 @@ export class DocumentVersionController implements VersionManagerController {
       const payload = await getHistoryPayload(id);
       this.#assertWorkspaceToken(workspace);
       if (!payload) throw new Error('이전 기록을 읽지 못했습니다.');
-      const current = captureVersionSnapshot(this.#wasm);
+      const current = this.#snapshotCache.capture(this.#wasm, this.#getDocumentId(), this.#editorRevision);
       const legacy = this.#state.legacy.find((item) => item.id === id);
       const leftName = legacy?.title ?? '이전 기록';
       const session = payload.kind === 'ir'
@@ -1236,7 +1249,7 @@ export class DocumentVersionController implements VersionManagerController {
       await this.#guardMutation();
       const id = this.#getDocumentId();
       if (!id) throw new VersionError('SAVE_REQUIRED', 'A saved document ID is required');
-      const capture = captureVersionSnapshot(this.#wasm);
+      const capture = this.#snapshotCache.capture(this.#wasm, this.#getDocumentId(), this.#editorRevision);
       if (!this.#repository) {
         const workspace = this.#captureWorkspaceToken();
         const mergeManifestEntries = await this.#mergeWorker.buildDocumentManifest(capture.bytes);
@@ -1299,6 +1312,8 @@ export class DocumentVersionController implements VersionManagerController {
     this.#mergeWorker.dispose();
     if (this.#mergeResolver.isOpen()) void this.#mergeResolver.close();
     this.#setMergeResolverLock(false);
+    this.#maintenance.dispose();
+    this.#snapshotCache.clear();
     if (this.#ownsStore) void this.#store.close();
   }
 
@@ -1798,10 +1813,19 @@ export class DocumentVersionController implements VersionManagerController {
     let mergeCommitted = false;
     let compensating = false;
     let transitionRefs: (direction: 'undo' | 'redo') => void = () => undefined;
+    const historyWorkspace = this.#captureWorkspaceToken();
+    const releaseHistory = await this.#maintenance.retainHistory(repository.id);
+    try {
+      this.#assertWorkspaceToken(historyWorkspace);
+    } catch (error) {
+      releaseHistory();
+      throw error;
+    }
 
     const completed = await commitCompositeMerge({
       applyEditor: () => {
         handler.replaceContentFromBytes(captured.bytes, {
+          afterDiscard: releaseHistory,
           afterUndo: () => {
             if (mergeCommitted && !compensating) queueMicrotask(() => transitionRefs('undo'));
           },
@@ -1876,7 +1900,7 @@ export class DocumentVersionController implements VersionManagerController {
           compensating = false;
         }
       },
-    });
+    }).catch((error) => { releaseHistory(); throw error; });
     const postTarget = completed.branch;
     let postSource = completed.sourceBranch;
     let refState = {
@@ -2195,7 +2219,10 @@ export class DocumentVersionController implements VersionManagerController {
     const repository = await this.#store.findRepositoryByDocumentId(documentId(id));
     if (epoch !== this.#refreshEpoch || this.#getDocumentId() !== id) return;
     this.#repository = repository;
-    if (repository) this.#savedBaseline = null;
+    if (repository) {
+      this.#savedBaseline = null;
+      this.#maintenance.schedule(repository.id);
+    }
     if (!repository && this.#autoEnable() && (!this.#documentState.isDirty() || this.#savedBaseline?.documentId === id)
       && !this.#agentBridge.isTurnRunning()) {
       await this.#enableVersioning();
@@ -2367,7 +2394,7 @@ export class DocumentVersionController implements VersionManagerController {
       || this.#getDocumentId() !== expectedDocumentId
       || this.#editorRevision !== revision
     ) return;
-    const currentFingerprint = fingerprintVersionContent(this.#wasm);
+    const currentFingerprint = this.#snapshotCache.fingerprint(this.#wasm, expectedDocumentId, revision);
     if (
       epoch !== this.#refreshEpoch
       || this.#getDocumentId() !== expectedDocumentId
@@ -2428,7 +2455,7 @@ export class DocumentVersionController implements VersionManagerController {
     const workspace = this.#captureWorkspaceToken();
     const repository = this.#requireRepository();
     const branch = this.#requireActiveBranch();
-    const capture = captured ?? captureVersionSnapshot(this.#wasm);
+    const capture = captured ?? this.#snapshotCache.capture(this.#wasm, this.#getDocumentId(), this.#editorRevision);
     const head = await this.#requireCommit(branch.target);
     this.#assertWorkspaceToken(workspace);
     const message = options.message?.trim() ?? '';
@@ -2514,7 +2541,7 @@ export class DocumentVersionController implements VersionManagerController {
   async #prepareMergeWorkingTree(): Promise<boolean> {
     const workspace = this.#captureWorkspaceToken();
     const branch = this.#requireActiveBranch();
-    const capture = captureVersionSnapshot(this.#wasm);
+    const capture = this.#snapshotCache.capture(this.#wasm, this.#getDocumentId(), this.#editorRevision);
     const head = await this.#requireCommit(branch.target);
     this.#assertWorkspaceToken(workspace);
     if (capture.fingerprint === head.contentFingerprint) return true;
@@ -2584,7 +2611,7 @@ export class DocumentVersionController implements VersionManagerController {
   async #checkpointDirty(reason: 'pre-restore' | 'pre-switch' | 'pre-merge'): Promise<void> {
     const workspace = this.#captureWorkspaceToken();
     const branch = this.#requireActiveBranch();
-    const capture = captureVersionSnapshot(this.#wasm);
+    const capture = this.#snapshotCache.capture(this.#wasm, this.#getDocumentId(), this.#editorRevision);
     const head = await this.#requireCommit(branch.target);
     this.#assertWorkspaceToken(workspace);
     if (capture.fingerprint === head.contentFingerprint) {
@@ -2598,7 +2625,7 @@ export class DocumentVersionController implements VersionManagerController {
     // A composite merge Redo may be the only remaining owner of its merge
     // commit after Undo. Do not collect that commit out from under history.
     if (this.#getInputHandler()?.canRedo()) return;
-    await this.#store.collectGarbage(repository.id, repository.revision);
+    this.#maintenance.schedule(repository.id);
   }
 
   #requestGeneratedTitle(commit: VersionCommit, summary: CheckpointTitleSummary): void {
@@ -2627,40 +2654,49 @@ export class DocumentVersionController implements VersionManagerController {
     }).catch(() => undefined);
   }
 
-  #applyBranchContent(
+  async #applyBranchContent(
     handler: InputHandler,
     bytes: Uint8Array,
     target: VersionCommit,
     next: BranchRef,
     previous: BranchRef,
     previousCommit: VersionCommit | null = null,
-  ): void {
-    handler.replaceContentFromBytes(bytes, {
-      afterUndo: () => {
-        queueMicrotask(() => {
-          this.#setActiveBranch(previous.name);
-          if (previousCommit) {
+  ): Promise<void> {
+    const workspace = this.#captureWorkspaceToken();
+    const releaseHistory = await this.#maintenance.retainHistory(target.repositoryId);
+    try {
+      this.#assertWorkspaceToken(workspace);
+      handler.replaceContentFromBytes(bytes, {
+        afterDiscard: releaseHistory,
+        afterUndo: () => {
+          queueMicrotask(() => {
+            this.#setActiveBranch(previous.name);
+            if (previousCommit) {
+              this.#setDirtyForFingerprint(
+                previousCommit.contentFingerprint,
+                'version-branch-undo',
+                previousCommit.contentFingerprint,
+              );
+            }
+            void this.refresh();
+          });
+        },
+        afterRedo: () => {
+          queueMicrotask(() => {
+            this.#setActiveBranch(next.name);
             this.#setDirtyForFingerprint(
-              previousCommit.contentFingerprint,
-              'version-branch-undo',
-              previousCommit.contentFingerprint,
+              target.contentFingerprint,
+              'version-branch-redo',
+              target.contentFingerprint,
             );
-          }
-          void this.refresh();
-        });
-      },
-      afterRedo: () => {
-        queueMicrotask(() => {
-          this.#setActiveBranch(next.name);
-          this.#setDirtyForFingerprint(
-            target.contentFingerprint,
-            'version-branch-redo',
-            target.contentFingerprint,
-          );
-          void this.refresh();
-        });
-      },
-    });
+            void this.refresh();
+          });
+        },
+      });
+    } catch (error) {
+      releaseHistory();
+      throw error;
+    }
     this.#setActiveBranch(next.name);
     this.#setDirtyForFingerprint(
       target.contentFingerprint,
@@ -2714,6 +2750,7 @@ export class DocumentVersionController implements VersionManagerController {
   }
 
   #recordSemanticDirty(fingerprint: string, headFingerprint?: string): void {
+    this.#snapshotCache.invalidateUnless(fingerprint);
     const active = this.#refs.find((ref): ref is BranchRef => (
       ref.kind === 'branch' && ref.name === this.#activeBranch
     ));

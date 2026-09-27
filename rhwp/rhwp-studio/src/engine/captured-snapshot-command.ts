@@ -7,6 +7,8 @@ export interface CapturedSnapshotCallbacks {
   afterUndo?: () => void;
   /** Runs synchronously after the after snapshot has been restored. */
   afterRedo?: () => void;
+  /** Releases resources retained for this command's Undo/Redo lifetime. */
+  afterDiscard?: () => void;
 }
 
 /**
@@ -74,5 +76,8 @@ export class CapturedSnapshotCommand implements EditCommand {
       wasm.discardSnapshot(this.afterId);
       this.afterId = null;
     }
+    const release = this.callbacks.afterDiscard;
+    this.callbacks = {};
+    release?.();
   }
 }
