@@ -80,8 +80,8 @@ CI는 변경 경로에 따라 작업을 선택합니다. 실제 명령과 조건
 
 | 파일 | 역할 |
 | --- | --- |
-| [README.md](README.md) | 제품 소개, 설치, 릴리스 (영어) |
-| [README.ko.md](README.ko.md) | 제품 소개, 설치, 릴리스 (한국어) |
+| [README.md](README.md) | 제품 소개, 설치, 릴리스 (한국어) |
+| [README.en.md](README.en.md) | 제품 소개, 설치, 릴리스 (영어) |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 로컬 설정, 검사, PR |
 | [PRODUCT.md](PRODUCT.md) | 제품 기록 |
 | [DESIGN.md](DESIGN.md) | 스튜디오 시각 시스템 |
