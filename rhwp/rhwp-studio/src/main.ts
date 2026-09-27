@@ -489,7 +489,7 @@ async function prepareCloudTransferDocument(startId: string, restart?: { documen
   }
   const sourceFormat = wasm.getSourceFormat();
   if (sourceFormat !== 'hwp' && sourceFormat !== 'hwpx' && sourceFormat !== 'hml') {
-    throw new Error(`클라우드에서 지원하지 않는 문서 형식입니다: ${sourceFormat}`);
+    throw new Error(`Cloud에서 지원하지 않는 문서 형식입니다: ${sourceFormat}`);
   }
   const format = sourceFormat;
   let bytes = exportDocumentForFormat(wasm, format);
@@ -748,7 +748,7 @@ async function applyCloudResult(result: CloudDownloadResult, resolution: CloudRe
       showToast({ message: `${reason}두 파일을 모두 보관했습니다: 원본, ${copy}`, durationMs: 4500 });
       return null;
     }
-    showToast({ message: '클라우드 결과를 버렸습니다.', durationMs: 3000 });
+    showToast({ message: 'Cloud 결과를 버렸습니다.', durationMs: 3000 });
     return null;
   }
   const requestId = `cloud-result-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -760,11 +760,11 @@ async function applyCloudResult(result: CloudDownloadResult, resolution: CloudRe
       off();
       if (timeout) clearTimeout(timeout);
       if (outcome.ok) resolve();
-      else reject(new Error(outcome.error || '클라우드 결과 열기가 취소되었습니다.'));
+      else reject(new Error(outcome.error || 'Cloud 결과 열기가 취소되었습니다.'));
     });
     timeout = setTimeout(() => {
       off();
-      reject(new Error('클라우드 결과 열기 시간이 초과되었습니다.'));
+      reject(new Error('Cloud 결과 열기 시간이 초과되었습니다.'));
     }, 90_000);
   });
   eventBus.emit('open-document-bytes', {
@@ -777,11 +777,11 @@ async function applyCloudResult(result: CloudDownloadResult, resolution: CloudRe
   try {
     await opened;
     if (!activeDocumentId) throw new Error('Cloud 결과에 로컬 문서 ID를 할당하지 못했습니다.');
-    showToast({ message: `${result.fileName}에 클라우드 결과를 반영했습니다.`, durationMs: 3500 });
+    showToast({ message: `${result.fileName}에 Cloud 결과를 반영했습니다.`, durationMs: 3500 });
     return { documentId: activeDocumentId, fileName: result.fileName };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    showToast({ message: `클라우드 결과를 열지 못했습니다: ${message}`, durationMs: 4500 });
+    showToast({ message: `Cloud 결과를 열지 못했습니다: ${message}`, durationMs: 4500 });
     throw error;
   }
 }
@@ -791,7 +791,7 @@ async function applyCloudTakeover(takeover: CloudTakeoverPayload): Promise<{
   fileName: string;
 } | null> {
   if (!takeover.document) {
-    showToast({ message: '클라우드 작업을 중단하고 이 기기로 편집 권한을 가져왔습니다.', durationMs: 3500 });
+    showToast({ message: 'Cloud 작업을 중단하고 이 기기로 편집 권한을 가져왔습니다.', durationMs: 3500 });
     return null;
   }
   const requestId = `cloud-takeover-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -803,11 +803,11 @@ async function applyCloudTakeover(takeover: CloudTakeoverPayload): Promise<{
       off();
       if (timeout) clearTimeout(timeout);
       if (result.ok) resolve();
-      else reject(new Error(result.error || '클라우드 체크포인트 열기가 취소되었습니다.'));
+      else reject(new Error(result.error || 'Cloud 체크포인트 열기가 취소되었습니다.'));
     });
     timeout = setTimeout(() => {
       off();
-      reject(new Error('클라우드 체크포인트 열기 시간이 초과되었습니다.'));
+      reject(new Error('Cloud 체크포인트 열기 시간이 초과되었습니다.'));
     }, 90_000);
   });
   eventBus.emit('open-document-bytes', {
@@ -818,9 +818,9 @@ async function applyCloudTakeover(takeover: CloudTakeoverPayload): Promise<{
     skipUnsavedGuard: true,
   });
   await opened;
-  if (!activeDocumentId) throw new Error('클라우드 체크포인트에 로컬 문서 ID를 할당하지 못했습니다.');
+  if (!activeDocumentId) throw new Error('Cloud 체크포인트에 로컬 문서 ID를 할당하지 못했습니다.');
   showToast({
-    message: `${takeover.document.fileName}의 최신 클라우드 체크포인트를 열었습니다.`,
+    message: `${takeover.document.fileName}의 최신 Cloud 체크포인트를 열었습니다.`,
     durationMs: 4000,
   });
   return { documentId: activeDocumentId, fileName: takeover.document.fileName };

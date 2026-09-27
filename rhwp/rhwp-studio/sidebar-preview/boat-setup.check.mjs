@@ -11,6 +11,8 @@ const THEMES = ['light', 'dark'];
  */
 export async function checkBoatSetup(page, origin, artifacts) {
   await page.browserContext().overridePermissions(origin, ['clipboard-read', 'clipboard-write', 'clipboard-sanitized-write']);
+  // 폭마다 첫 연결부터 걷는다. 앞 폭에서 기억한 boat 이메일이 빈 입력 검사를 가리지 않게 지운다.
+  await page.evaluateOnNewDocument(() => localStorage.removeItem('rhwp-boat-email'));
   const settle = (ms = 60) => new Promise((done) => setTimeout(done, ms));
   const title = (text) => page.waitForFunction((expected) => {
     const overlay = document.querySelector('.ag-cloud-setup-overlay');
@@ -156,7 +158,7 @@ export async function checkBoatSetup(page, origin, artifacts) {
       await title('boat 서버 만들기');
       await focused('서버 만들기', `${at} create`);
       assert.deepEqual(await page.$$eval('.ag-cloud-setup-fact', (rows) => rows.map((row) => row.textContent)),
-        ['사양4 vCPU · 8 GB', '지역EU', '자동 중지30분 동안 쉬면']);
+        ['사양4 vCPU · 8 GB', '지역EU', '자동 중지30분 쓰지 않으면']);
       await fits(`${at} create`);
       await page.keyboard.press('Enter');
       await title('boat 서버 준비 중');
@@ -184,8 +186,14 @@ export async function checkBoatSetup(page, origin, artifacts) {
       assert.equal(await page.$eval('.ag-cloud-settings-more', (node) => node.title), 'boat 서버 관리');
       await page.click('.ag-cloud-settings-more');
       await page.waitForSelector('.context-menu');
-      await page.keyboard.press('ArrowDown');
-      await page.keyboard.press('Enter');
+      // 실행 중인 서버의 메뉴는 로그인 다시 가져오기부터 시작한다. 한 번 가져온 뒤 연결을 푼다.
+      await page.evaluate(() => [...document.querySelectorAll('.context-menu .md-item')].find((node) => node.textContent === '로그인 다시 가져오기').click());
+      await page.waitForFunction(() => document.querySelector('.ag-cloud-settings-live')?.textContent === '로그인을 다시 가져왔습니다.'
+        || (window.sidebarPreview.cloud.calls.boat.at(-1) === 'reimport'), { timeout: 5_000 });
+      await page.waitForFunction(() => !document.querySelector('.ag-cloud-settings-more')?.disabled);
+      await page.click('.ag-cloud-settings-more');
+      await page.waitForSelector('.context-menu');
+      await page.evaluate(() => [...document.querySelectorAll('.context-menu .md-item')].find((node) => node.textContent === '연결 해제').click());
       await page.waitForFunction(() => document.querySelector('.ag-cloud-settings-status')?.textContent === '설정되지 않음');
       assert.equal((await calls()).at(-1), 'disconnect');
       await cardFocused(`${at} disconnect`);
@@ -194,11 +202,11 @@ export async function checkBoatSetup(page, origin, artifacts) {
       assert.equal(await page.$eval('.ag-cloud-setup-option[data-server-mode="boat"]', (node) => node.getAttribute('aria-checked')),
         'true', `${at} a connected account preselects boat`);
       await click('계속');
-      await title('boat 서버 연결');
-      await click('서버 연결');
-      await title('boat 서버가 준비되었습니다');
+      await title('기존 boat 서버 연결');
+      await click('연결');
+      await title('boat 서버 준비 완료');
       await focused('완료', `${at} ready`);
-      assert.deepEqual(await facts(), ['사양4 vCPU · 8 GB', '지역EU', '자동 중지30분 동안 쉬면', '로그인 정보Claude · Codex']);
+      assert.deepEqual(await facts(), ['사양4 vCPU · 8 GB', '지역EU', '자동 중지30분 쓰지 않으면', '로그인 정보Claude · Codex']);
       await fits(`${at} ready`);
       await page.keyboard.press('Enter');
       await page.waitForFunction(() => document.querySelector('.ag-cloud-setup-overlay').hidden);
@@ -242,7 +250,7 @@ export async function checkBoatSetup(page, origin, artifacts) {
       await fits(`${at} rejected key`);
       if (width === 480) await page.screenshot({ path: resolve(artifacts, `boat-key-rejected-${theme}.png`) });
       await page.keyboard.press('Enter');
-      await title('boat 요금제 필요');
+      await title('boat 요금제 선택');
       await focused('결제 페이지 열기', `${at} checkout`);
       await fits(`${at} billing`);
       await page.keyboard.press('Enter');
@@ -262,8 +270,8 @@ export async function checkBoatSetup(page, origin, artifacts) {
         'true', `${at} the chooser keeps boat selected`);
       await fits(`${at} chooser after failure`);
       await click('계속');
-      await title('boat 서버 연결');
-      await click('서버 연결');
+      await title('기존 boat 서버 연결');
+      await click('연결');
       await title('boat 서버를 준비하지 못했습니다');
       assert.equal((await calls()).filter((call) => call.startsWith('setup-')).length, 2, `${at} chooser retry`);
       await click('다시 시도');
@@ -271,7 +279,7 @@ export async function checkBoatSetup(page, origin, artifacts) {
       await page.waitForFunction(() => document.querySelector('.ag-cloud-setup-title')?.textContent === 'boat 서버 준비 중'
         && document.querySelector('.ag-cloud-setup-stage[data-status="done"]'), { timeout: 10_000 })
         .catch(() => assert.fail(`${at} retry progress stays on the first stage`));
-      await title('boat 서버가 준비되었습니다');
+      await title('boat 서버 준비 완료');
       assert.deepEqual(await facts(), ['사양4 vCPU · 8 GB', '지역EU', '자동 중지시작 후 4시간', '로그인 정보Claude · Codex']);
       await fits(`${at} ready on a timer`);
       if (width === 480) await page.screenshot({ path: resolve(artifacts, `boat-ready-timer-${theme}.png`) });

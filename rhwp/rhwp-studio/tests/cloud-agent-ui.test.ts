@@ -19,12 +19,12 @@ test('header supports Local/Cloud selection and starts Cloud on first Send', () 
   assert.match(sidebar, /cloudSend/);
   assert.match(sidebar, /function startCloudFromFirstMessage/);
   assert.match(sidebar, /CLOUD_UNSAVED_MESSAGE/);
-  assert.match(cloudStart, /클라우드 사용 전 문서를 저장해주세요/);
+  assert.match(cloudStart, /Cloud를 쓰려면 먼저 문서를 저장하세요\./);
   assert.match(sidebar, /execution\.kind === 'cloud-start'/);
   assert.match(sidebar, /if \(currentDocumentId && !input\.value && !referenceLibrary\.hasDrafts\(\)\) void deleteCloudComposerDraft/);
   assert.match(sidebarCss, /\.ag-send-cloud/);
   assert.match(sidebarCss, /\.ag-cloud-start-placeholder/);
-  assert.doesNotMatch(sidebar, /클라우드로 계속/);
+  assert.doesNotMatch(sidebar, /Cloud로 계속/);
 });
 
 test('safe-close and offline review copy require production-backed acknowledgments', () => {

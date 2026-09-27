@@ -40,6 +40,7 @@ import { AGENT_LABEL, createProviderIcon } from './providers.ts';
 import { createBoatSetupView } from './cloud-boat-setup.ts';
 import { confirmSheet } from './sheet.ts';
 import { showContextMenu } from '../native-context-menu.ts';
+import { showToast } from '../toast.ts';
 
 export interface CloudOnboardingDeps {
   controller: CloudController;
@@ -831,7 +832,31 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
     return row;
   }
 
+  let renderedStep = '';
+
+  /**
+   * 단계가 바뀌면 창 높이를 이전 높이에서 새 높이로 이어 주고 본문을 살짝 떠오르게 한다.
+   * 같은 단계를 다시 그리는 경우(진행 시간·상태 갱신)는 움직이지 않는다.
+   */
   function renderDialog(): void {
+    if (!state) return;
+    const before = overlay.hidden ? 0 : dialog.getBoundingClientRect().height;
+    renderDialogContent();
+    const step = `${state?.kind ?? ''}:${title.textContent ?? ''}`;
+    const changed = step !== renderedStep;
+    renderedStep = step;
+    if (!changed || before <= 0 || typeof dialog.animate !== 'function'
+      || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+    const after = dialog.getBoundingClientRect().height;
+    if (Math.abs(after - before) > 1) {
+      dialog.animate([{ height: `${before}px` }, { height: `${after}px` }],
+        { duration: 240, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' });
+    }
+    body.animate([{ opacity: 0, transform: 'translateY(4px)' }, { opacity: 1, transform: 'none' }],
+      { duration: 200, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' });
+  }
+
+  function renderDialogContent(): void {
     if (!state) return;
     body.replaceChildren();
     footer.replaceChildren();
@@ -869,7 +894,7 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
           mode === 'app-hosted',
           provider
             ? provider.configured
-              ? appHostedLock ?? `${provider.displayName} 사용 가능`
+              ? appHostedLock ?? 'Rauhwpx 관리형'
               : '이 빌드에서 사용 불가'
             : '이 빌드에 없음',
           Boolean(raucloudHardLock(snapshot)),
@@ -890,7 +915,7 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
           '내 서버 사용',
           '보유한 Mac mini, Ubuntu 또는 Debian 서버에 개인 Cloud 환경을 설치합니다. SSH와 비밀번호 없는 sudo가 필요합니다.',
           mode === 'self-hosted',
-          'Mac mini·Ubuntu·Debian · SSH',
+          'Mac mini · Linux · SSH',
         ),
       );
       body.appendChild(options);
@@ -1276,13 +1301,36 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
     const bounds = settingsMore.getBoundingClientRect();
     settingsMore.setAttribute('aria-expanded', 'true');
     const missing = snapshot.boat?.server?.state === 'missing';
+    const running = snapshot.boat?.server?.state === 'running';
     const choice = await showContextMenu([
+      // 서버의 에이전트 로그인이 만료되면 이 기기의 로그인을 다시 보낸다. 더 새로운 서버 쪽 로그인은 서버가 지킨다.
+      { id: 'reimport', label: '로그인 다시 가져오기', enabled: running },
+      { type: 'separator' },
       { id: 'disconnect', label: '연결 해제' },
       { type: 'separator' },
       { id: 'delete', label: '서버 삭제', danger: true, enabled: !missing },
     ], { x: bounds.left, y: bounds.bottom + 4 });
     settingsMore.setAttribute('aria-expanded', 'false');
     if (disposed || !choice) return;
+    if (choice === 'reimport') {
+      boatCardBusy = true;
+      boatCardError = null;
+      renderSettings();
+      try {
+        snapshot = await deps.controller.reimportLogins();
+        liveStatus.textContent = '로그인을 다시 가져왔습니다.';
+        showToast({ message: '로그인을 다시 가져왔습니다.', durationMs: 2500 });
+      } catch (error) {
+        failBoatCard(error);
+      } finally {
+        boatCardBusy = false;
+        if (!disposed) {
+          renderSettings();
+          restoreCardFocus('more');
+        }
+      }
+      return;
+    }
     if (choice === 'delete') {
       const confirmed = await confirmSheet(
         settingsElement,

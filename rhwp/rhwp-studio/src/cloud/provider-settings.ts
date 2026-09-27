@@ -22,6 +22,7 @@ export function cloudProviderSettingsTarget(
     || binding.threadId !== session.threadId || binding.documentId !== session.documentId
     || !canChangeCloudProviderSettings(session)) return null;
   if (composer.kind !== 'cloud-ready'
-    && !(composer.kind === 'cloud-blocked' && composer.reason === 'not-accepting-messages')) return null;
+    && !(composer.kind === 'cloud-blocked'
+      && (composer.reason === 'not-accepting-messages' || composer.reason === 'session-suspended'))) return null;
   return { ...binding, expectedVersion: session.version };
 }

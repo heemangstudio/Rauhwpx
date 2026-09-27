@@ -313,7 +313,7 @@ export function mapSandboxIssue(error: unknown): CloudSetupIssue {
   }
   if (/before shutting it down|has_work/.test(normalized)) {
     return {
-      title: '진행 중인 클라우드 작업이 있습니다',
+      title: '진행 중인 Cloud 작업이 있습니다',
       guidance: '작업을 마치거나 취소한 뒤 종료합니다.',
       detail,
     };
@@ -340,7 +340,9 @@ export function mapSandboxIssue(error: unknown): CloudSetupIssue {
 }
 
 export function mapCloudSetupIssue(error: unknown, transport: CloudProfileDraft['transport']['kind'] = 'tailscale'): CloudSetupIssue {
-  const detail = error instanceof Error ? error.message : String(error);
+  // 화면 문장으로 바뀐 오류는 원문을 detail 에 둔다. 원인은 원문으로 가른다.
+  const raw = (error as { detail?: unknown } | null)?.detail;
+  const detail = typeof raw === 'string' && raw ? raw : error instanceof Error ? error.message : String(error);
   const normalized = detail.toLowerCase();
   if (/shut down the app-provided sandbox|sandbox_still_active/.test(normalized)) return mapSandboxIssue(error);
   if (/spawn .*enoent|enoent.*spawn|ssh .*not (?:found|installed)/.test(normalized)) {
@@ -579,7 +581,7 @@ export function boatSetupRunning(setup: BoatSetupProgress | null | undefined): b
 export function boatStageLabel(stage: BoatVisibleStage, platform: BoatHostPlatform = 'mac'): string {
   switch (stage) {
     case 'creating': return '서버 만들기';
-    case 'starting': return '시작';
+    case 'starting': return '서버 켜기';
     case 'installing': return 'Cloud 설치';
     case 'pairing': return platform === 'windows' ? '이 PC 연결' : platform === 'other' ? '이 컴퓨터 연결' : '이 Mac 연결';
     case 'credentials': return '로그인 정보 옮기기';
@@ -627,7 +629,7 @@ export function boatProvidersLabel(providers: readonly BoatProvider[]): string {
 }
 
 export function boatIdleLabel(minutes: number): string {
-  return minutes % 60 === 0 && minutes >= 60 ? `${minutes / 60}시간 동안 쉬면` : `${minutes}분 동안 쉬면`;
+  return minutes % 60 === 0 && minutes >= 60 ? `${minutes / 60}시간 쓰지 않으면` : `${minutes}분 쓰지 않으면`;
 }
 
 /** 자동 중지 한 줄. 필드가 없는 데스크톱은 idle 로 읽는다. */
@@ -724,6 +726,8 @@ function boatEntryState(snapshot: CloudSnapshot, intent: CloudSetupIntent): Boat
     if (snapshot.boat?.account.connected === false) {
       return { kind: 'boat-connect', draft, intent, email: '', error: null, pending: false };
     }
+    // 계정에서 지워진 서버는 같은 설정으로 새로 만든다.
+    if (snapshot.boat?.server?.state === 'missing') return { kind: 'boat-confirm', draft, intent };
     return { kind: 'boat-ready', intent, importedProviders: snapshot.boat?.setup?.importedProviders ?? [] };
   }
   return null;
@@ -785,7 +789,7 @@ export function boatCardStatus(snapshot: CloudSnapshot, platform: BoatHostPlatfo
   if (setup && boatSetupRunning(setup)) {
     return {
       title: BOAT_CARD_TITLE,
-      detail: boatStageLabel(setup.stage as BoatVisibleStage, platform),
+      detail: `설정 중 · ${boatStageLabel(setup.stage as BoatVisibleStage, platform)}`,
       dot: 'connecting', pulse: true,
       action: { kind: 'open', label: '진행 보기', disabled: false },
       menu: false,
@@ -834,7 +838,8 @@ export function boatCardStatus(snapshot: CloudSnapshot, platform: BoatHostPlatfo
       return { ...base, detail: '중지하는 중', dot: 'connecting', pulse: true,
         action: { kind: 'stop', label: '중지', disabled: true } };
     case 'missing':
-      return { ...base, detail: '서버를 찾을 수 없습니다', dot: 'disconnected', pulse: false, action: null };
+      return { ...base, detail: '서버를 찾을 수 없습니다', dot: 'disconnected', pulse: false,
+        action: { kind: 'open', label: '다시 만들기', disabled: false } };
     case 'error':
       return { ...base, detail: server.message ?? '서버에 문제가 있습니다', dot: 'disconnected', pulse: false,
         action: { kind: 'wake', label: '시작', disabled: false } };

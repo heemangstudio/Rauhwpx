@@ -1773,7 +1773,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   const localModeButton = el('button', 'ag-workspace-mode-option', '로컬');
   localModeButton.type = 'button';
   localModeButton.dataset.workspaceMode = 'local';
-  const cloudModeButton = el('button', 'ag-workspace-mode-option', '클라우드');
+  const cloudModeButton = el('button', 'ag-workspace-mode-option', 'Cloud');
   cloudModeButton.type = 'button';
   cloudModeButton.dataset.workspaceMode = 'cloud';
   workspaceModeSwitch.append(localModeButton, cloudModeButton);
@@ -1825,10 +1825,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     cloudModeButton.setAttribute('aria-disabled', String(cloudModeButton.disabled));
     cloudModeButton.setAttribute(
       'aria-label',
-      localTurnBlocksCloud ? '클라우드 - 로컬 응답이 끝난 후 전환 가능' : '클라우드',
+      localTurnBlocksCloud ? 'Cloud - 로컬 응답이 끝난 후 전환 가능' : 'Cloud',
     );
     cloudModeButton.title = localTurnBlocksCloud
-      ? '로컬 응답이 끝난 후 클라우드로 전환할 수 있습니다.'
+      ? '로컬 응답이 끝난 후 Cloud로 전환할 수 있습니다.'
       : '';
     syncWorkspaceMode(workspace.mode(), target);
     syncExecutionLocation();
@@ -2094,7 +2094,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
         || activeComposerSkill !== null) return;
       if (!input.value.trim() && !referenceLibrary.hasDrafts()) {
         if (currentThread.messages.length === 0) return;
-        input.value = '현재 대화와 계획을 바탕으로 클라우드에서 이어서 진행해 주세요.';
+        input.value = '현재 대화와 계획을 바탕으로 Cloud에서 이어서 진행해 주세요.';
         resizeComposerInput();
       }
       void startCloudFromFirstMessage();
@@ -2616,15 +2616,15 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     const loginHint = (code === 'AUTH_REQUIRED' || code === 'PROVIDER_AUTH_EXPIRED')
       && !cloudController.canReimportLogins() ? ` ${providerLoginHint(selectedAgent)}` : '';
     const message = `${error instanceof Error ? error.message : String(error)}${loginHint}`;
-    systemMessage(`클라우드 전송 실패: ${message}`);
-    showToast({ message: `클라우드 전송 실패: ${message}`, durationMs: 5000 });
+    systemMessage(`Cloud 전송 실패: ${message}`);
+    showToast({ message: `Cloud 전송 실패: ${message}`, durationMs: 5000 });
   }
 
   function cancelPendingCloudTransfer(): void {
     if (!cloudTransferPending) return;
     cloudTransferPending = false;
     cloudUi.setWaitingForLocalTurn(false);
-    const cancellation = new Error('클라우드 전송 예약을 취소했습니다.');
+    const cancellation = new Error('Cloud 전송 예약을 취소했습니다.');
     void clearCloudTransferIntent().then(
       () => failPendingCloudTransfer(cancellation),
       (error) => failPendingCloudTransfer(error),
@@ -2755,7 +2755,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       return;
     }
     if (!deps.prepareCloudTransfer) {
-      systemMessage('이 데스크톱 빌드는 문서를 클라우드로 전송할 수 없습니다.');
+      systemMessage('이 데스크톱 빌드는 문서를 Cloud로 전송할 수 없습니다.');
       return;
     }
     const context = getDocumentContext?.();
@@ -2865,7 +2865,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
           [file.bytes.slice().buffer], file.name, { type: file.mimeType },
         )));
       }
-      systemMessage(`클라우드 전송 준비 실패: ${error instanceof Error ? error.message : String(error)}`);
+      systemMessage(`Cloud 전송 준비 실패: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       attachmentsSending = false;
       preparationLock.release();
@@ -3464,10 +3464,15 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     })
     : null;
   dockResizeObserver?.observe(fleetView.root);
+  // 이 높이는 입력기 위 여백도 정한다. 관찰 콜백 안에서 배치를 바꾸면 다른 관찰자와 고리를 이루므로 다음 프레임에 쓴다.
+  let cloudControlsFrame = 0;
   const cloudControlsResizeObserver = typeof ResizeObserver === 'function'
     ? new ResizeObserver((entries) => {
       const height = entries[0]?.contentRect.height ?? 0;
-      composer.style.setProperty('--ag-cloud-controls-h', height > 0 ? `${Math.ceil(height) + 8}px` : '0px');
+      cancelAnimationFrame(cloudControlsFrame);
+      cloudControlsFrame = requestAnimationFrame(() => {
+        composer.style.setProperty('--ag-cloud-controls-h', height > 0 ? `${Math.ceil(height) + 8}px` : '0px');
+      });
     })
     : null;
   cloudControlsResizeObserver?.observe(cloudDocumentControls);
@@ -5029,7 +5034,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
           void cloudUi.setWorkflow(cloudWorkflow, execution).catch((error) => {
             input.value = workflowInvocation?.[0] ?? '';
             resizeComposerInput();
-            systemMessage(`클라우드 모드를 바꾸지 못했습니다: ${error instanceof Error ? error.message : String(error)}`);
+            systemMessage(`Cloud 모드를 바꾸지 못했습니다: ${error instanceof Error ? error.message : String(error)}`);
           }).finally(() => {
             workflowLock.release();
             updateComposer();
@@ -5530,7 +5535,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       bubble.appendChild(el(
         'span',
         `ag-msg-delivery ag-${message.delivery}`,
-        message.delivery === 'accepted-cloud' ? '클라우드에 전달됨' : '다음 턴에 전달',
+        message.delivery === 'accepted-cloud' ? 'Cloud에 전달됨' : '다음 턴에 전달',
       ));
     }
     if (message.attachments?.length) {
@@ -6831,9 +6836,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       input.disabled = !connectionNoticeVisible || attachmentsSending;
       send.disabled = true;
       composerSkillClear.disabled = true;
-      input.placeholder = connectionNoticeVisible
-        ? '연결되면 보낼 메시지 작성'
-        : transitionCardVisible ? '' : execution.message;
+      // 막힌 이유는 입력칸 위 안내가 한 번만 말한다.
+      input.placeholder = connectionNoticeVisible ? '연결되면 보낼 메시지 작성' : '';
     } else if (execution.kind === 'cloud-start') {
       input.disabled = attachmentsSending;
       send.disabled = activeComposerSkill !== null || attachmentsSending || referenceLibrary.hasBlockingDrafts();
@@ -6847,7 +6851,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       composerSkillClear.disabled = attachmentsSending;
       input.placeholder = activeComposerSkill
         ? 'Cloud 메시지에서는 로컬 스킬을 사용할 수 없습니다'
-        : '다음 Cloud 턴에 전달할 메시지';
+        : 'Cloud에 보낼 메시지';
     } else if (selectedAgent === 'rau' && !rauSetupComplete) {
       input.disabled = true;
       send.disabled = true;
@@ -8314,7 +8318,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
         applyWorkflow(next);
         persistCurrentThread();
       }).catch((error) => {
-        systemMessage(`클라우드 모드를 바꾸지 못했습니다: ${error instanceof Error ? error.message : String(error)}`);
+        systemMessage(`Cloud 모드를 바꾸지 못했습니다: ${error instanceof Error ? error.message : String(error)}`);
       }).finally(() => {
         workflowLock.release();
         updateComposer();
@@ -9219,7 +9223,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       for (const url of reviewImageUrls.values()) URL.revokeObjectURL(url);
       reviewImageUrls.clear();
       threadComposerDrafts.clear();
-      cloudTransferCloseWaiter?.reject(new Error('클라우드 전송을 기다리는 동안 사이드바가 닫혔습니다.'));
+      cloudTransferCloseWaiter?.reject(new Error('Cloud 전송을 기다리는 동안 사이드바가 닫혔습니다.'));
       cloudTransferCloseWaiter = null;
       questionController.dispose();
       unsubBridge();

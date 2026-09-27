@@ -68,6 +68,14 @@
 
 .ag-cloud-setup-code[data-expired='true'] .ag-cloud-setup-code-value {
   color: var(--ag-text-muted);
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.ag-cloud-setup-code-copy[hidden] {
+  display: none;
 }
 
 .ag-cloud-setup-code-copy {
@@ -283,6 +291,16 @@
 
 .ag-cloud-settings-error[hidden] {
   display: none;
+}
+
+/* 상태가 바뀌면 점의 색이 건너뛰지 않고 번진다. */
+.ag-cloud-settings-dot {
+  transition: background-color var(--ag-dur-slow, 300ms) var(--ag-ease-out, ease-out);
+}
+
+/* 진행 중인 상태는 경고 테두리색(어두운 테마에서 탁한 올리브) 대신 맑은 호박색으로 둔다. */
+.ag-cloud-settings-dot[data-state='connecting'] {
+  background: #f2a33a;
 }
 
 /* 시작·중지 중인 VM 은 스피너가 아니라 숨 쉬는 점으로 알린다. */

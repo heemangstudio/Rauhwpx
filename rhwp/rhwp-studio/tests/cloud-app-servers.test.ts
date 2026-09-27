@@ -223,7 +223,7 @@ test('the controller forwards every server mode call to its own IPC channel', as
   ]);
 
   const bare = createCloudController({} as never);
-  await assert.rejects(bare.spawnSandbox(), /클라우드 에이전트를 지원하지 않습니다/);
+  await assert.rejects(bare.spawnSandbox(), /Cloud 에이전트를 지원하지 않습니다/);
   controller.dispose();
 });
 
@@ -362,7 +362,7 @@ test('app server failures read as something the user can act on', () => {
   assert.equal(mapSandboxIssue(new Error('App sandbox did not answer its health check')).title, '샌드박스가 응답하지 않습니다');
   assert.equal(
     mapSandboxIssue(new Error('Finish or cancel the cloud work on this sandbox before shutting it down.')).title,
-    '진행 중인 클라우드 작업이 있습니다',
+    '진행 중인 Cloud 작업이 있습니다',
   );
   assert.equal(mapSandboxIssue(new Error('App sandbox failed identity verification')).title, '샌드박스 ID를 확인하지 못했습니다');
   assert.equal(mapSandboxIssue(new Error('something else')).title, 'Raucloud를 준비하지 못했습니다');

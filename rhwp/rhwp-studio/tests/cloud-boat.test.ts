@@ -159,11 +159,11 @@ test('a retry follows any progress without an error and drops only failures from
 });
 
 test('the auto-stop row reads idle or a timer, and older desktops read as idle', () => {
-  assert.equal(boatAutoStopLabel(server('running')), '30분 동안 쉬면');
+  assert.equal(boatAutoStopLabel(server('running')), '30분 쓰지 않으면');
   assert.equal(boatAutoStopLabel({ ...server('running'), autoStop: 'timer', timerHours: 4 }), '시작 후 4시간');
   assert.equal(boatAutoStopLabel({ ...server('running'), autoStop: 'timer', timerHours: 1.5 }), '시작 후 1.5시간');
-  assert.equal(boatAutoStopLabel({ idleStopMinutes: 60 }), '1시간 동안 쉬면');
-  assert.equal(boatAutoStopLabel(null), '30분 동안 쉬면');
+  assert.equal(boatAutoStopLabel({ idleStopMinutes: 60 }), '1시간 쓰지 않으면');
+  assert.equal(boatAutoStopLabel(null), '30분 쓰지 않으면');
 });
 
 test('setup stages mark done, active and pending in order', () => {
@@ -184,11 +184,11 @@ test('the settings card describes each server state in one line', () => {
   assert.equal(card('waking')?.pulse, true);
   assert.deepEqual(card('stopping')?.action, { kind: 'stop', label: '중지', disabled: true });
   assert.equal(card('missing')?.detail, '서버를 찾을 수 없습니다');
-  assert.equal(card('missing')?.action, null);
+  assert.deepEqual(card('missing')?.action, { kind: 'open', label: '다시 만들기', disabled: false });
   assert.equal(card('error')?.detail, 'boat가 VM을 다시 시작하지 못했습니다.');
   const setup = boatCardStatus(snapshot({ account: account(), server: null, setup: {
     stage: 'installing', startedAt: '2026-09-27T10:00:00.000Z', detail: null, error: null, importedProviders: [] } }));
-  assert.equal(setup?.detail, 'Cloud 설치');
+  assert.equal(setup?.detail, '설정 중 · Cloud 설치');
   assert.equal(setup?.menu, false);
   assert.equal(boatCardStatus(snapshot({ account: account(), server: null, setup: null })), null);
   const lost = boatCardStatus(snapshot({ account: account(), server: server('running'), setup: null }, true,

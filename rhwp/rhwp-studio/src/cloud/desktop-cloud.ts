@@ -762,9 +762,13 @@ export function cloudErrorText(error: unknown, fallback = 'Cloud 요청을 처�
 /** IPC 거절을 사용자 문장과 원래 code 를 가진 오류로 바꾼다. 취소는 그대로 둔다. */
 export function normalizeCloudError(error: unknown): unknown {
   if (error instanceof DOMException && error.name === 'AbortError') return error;
-  const normalized = new Error(cloudErrorText(error)) as Error & { code?: string; retryable?: boolean };
-  const shaped = error && typeof error === 'object' ? error as { code?: unknown; retryable?: unknown } : null;
+  const normalized = new Error(cloudErrorText(error)) as Error & { code?: string; retryable?: boolean; detail?: string };
+  const shaped = error && typeof error === 'object' ? error as { code?: unknown; retryable?: unknown; message?: unknown } : null;
   if (typeof shaped?.code === 'string' && shaped.code) normalized.code = shaped.code;
+  // 원문은 화면 문장이 아니라 원인 분류와 자세히에 쓴다.
+  const raw = typeof shaped?.message === 'string' ? shaped.message : '';
+  const detail = raw.replace(/^Error invoking remote method '[^']*':\s*/, '').replace(/^(?:[A-Za-z]*Error)(?: \[[A-Za-z]+\])?:\s*/, '').trim();
+  if (detail && detail !== normalized.message) normalized.detail = detail;
   if (shaped?.retryable === false) normalized.retryable = false;
   return normalized;
 }
@@ -1063,7 +1067,7 @@ export function createCloudController(
 
   const accept = (value: unknown): CloudSnapshot => {
     const parsed = unwrapSnapshot(value);
-    if (!parsed) throw new Error('클라우드 서비스가 올바르지 않은 상태를 반환했습니다.');
+    if (!parsed) throw new Error('Cloud 서비스가 올바르지 않은 상태를 반환했습니다.');
     if (parsed.profileEpoch < snapshot.profileEpoch) {
       throw Object.assign(new Error('Cloud 프로필이 작업 중 변경됐습니다.'), { code: 'PROFILE_CHANGED' });
     }
@@ -1072,7 +1076,7 @@ export function createCloudController(
 
   const call = async (method: keyof CloudDesktopApi, payload?: unknown): Promise<CloudSnapshot> => {
     const fn = resolvedApi?.[method];
-    if (typeof fn !== 'function') throw new Error('이 앱 빌드는 클라우드 에이전트를 지원하지 않습니다.');
+    if (typeof fn !== 'function') throw new Error('이 앱 빌드는 Cloud 에이전트를 지원하지 않습니다.');
     let raw: unknown;
     try {
       raw = await (fn as (arg?: unknown) => Promise<unknown>)(payload);
@@ -1259,12 +1263,12 @@ export function createCloudController(
     async downloadResult(sessionId) {
       const profileEpoch = snapshot.profileEpoch;
       const fn = resolvedApi?.cloudDownloadResult;
-      if (typeof fn !== 'function') throw new Error('이 앱 빌드는 클라우드 결과 다운로드를 지원하지 않습니다.');
+      if (typeof fn !== 'function') throw new Error('이 앱 빌드는 Cloud 결과 다운로드를 지원하지 않습니다.');
       const result = parseDownloadResult(await fn({ sessionId }));
       if (profileEpoch !== snapshot.profileEpoch) {
         throw Object.assign(new Error('Cloud 프로필이 작업 중 변경됐습니다.'), { code: 'PROFILE_CHANGED' });
       }
-      if (!result) throw new Error('다운로드한 클라우드 결과가 올바르지 않습니다.');
+      if (!result) throw new Error('다운로드한 Cloud 결과가 올바르지 않습니다.');
       return result;
     },
     async prepareRestartDocument(sessionId) {
@@ -1287,7 +1291,7 @@ export function createCloudController(
     async downloadCheckpoint(sessionId, operationId, kind, options = {}) {
       const profileEpoch = snapshot.profileEpoch;
       const fn = resolvedApi?.cloudDownloadCheckpoint;
-      if (typeof fn !== 'function') throw new Error('이 앱 빌드는 클라우드 문서 미러를 지원하지 않습니다.');
+      if (typeof fn !== 'function') throw new Error('이 앱 빌드는 Cloud 문서 미러를 지원하지 않습니다.');
       const raw = await fn({ sessionId, ...(operationId ? { operationId } : {}), ...(kind ? { kind } : {}),
         ...(options.explicit === true ? { explicit: true } : {}) })
         .catch((error: unknown) => { throw checkpointError(error); });
@@ -1295,7 +1299,7 @@ export function createCloudController(
       if (profileEpoch !== snapshot.profileEpoch) {
         throw Object.assign(new Error('Cloud 프로필이 작업 중 변경됐습니다.'), { code: 'PROFILE_CHANGED' });
       }
-      if (!result) throw new Error('다운로드한 클라우드 체크포인트가 올바르지 않습니다.');
+      if (!result) throw new Error('다운로드한 Cloud 체크포인트가 올바르지 않습니다.');
       return result;
     },
     async publishCheckpoint(sessionId, operationId) {
@@ -1346,7 +1350,7 @@ export function createCloudController(
       if (!connectionId || !capability || capability.sessionId !== sessionId) {
         if (connectionId) pendingDisplayEvents.delete(connectionId);
         if (connectionId) await resolvedApi.cloudCloseDisplay({ connectionId }).catch(() => {});
-        throw new Error('클라우드 디스플레이 연결 정보가 올바르지 않습니다.');
+        throw new Error('Cloud 디스플레이 연결 정보가 올바르지 않습니다.');
       }
       if (disposed || generation !== displayGeneration || profileEpoch !== snapshot.profileEpoch) {
         pendingDisplayEvents.delete(connectionId);
@@ -1387,9 +1391,9 @@ export function createCloudController(
     async resolveResult(sessionId, action) {
       const profileEpoch = snapshot.profileEpoch;
       const fn = resolvedApi?.cloudResolveResult;
-      if (typeof fn !== 'function') throw new Error('이 앱 빌드는 클라우드 결과 반영을 지원하지 않습니다.');
+      if (typeof fn !== 'function') throw new Error('이 앱 빌드는 Cloud 결과 반영을 지원하지 않습니다.');
       const resolution = parseCloudResultResolution(await fn({ sessionId, action }));
-      if (!resolution) throw new Error('클라우드 결과 반영 정보가 올바르지 않습니다.');
+      if (!resolution) throw new Error('Cloud 결과 반영 정보가 올바르지 않습니다.');
       if (profileEpoch !== snapshot.profileEpoch || resolution.snapshot.profileEpoch !== profileEpoch) {
         throw Object.assign(new Error('Cloud 프로필이 작업 중 변경됐습니다.'), { code: 'PROFILE_CHANGED' });
       }

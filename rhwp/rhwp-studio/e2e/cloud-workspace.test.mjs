@@ -712,7 +712,7 @@ try {
     scrollLeft: scrollBeforeReturn,
     scrollTop: 91,
     draft: 'Keep cloud draft while editing locally.',
-    placeholder: '다음 Cloud 턴에 전달할 메시지',
+    placeholder: 'Cloud에 보낼 메시지',
     targetMessage: '',
     targetMessageHidden: true,
     commandCount: 5,

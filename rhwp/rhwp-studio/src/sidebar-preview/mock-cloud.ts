@@ -536,7 +536,7 @@ export function createMockCloud(options: { dashboard?: boolean } = {}) {
         publish();
         throw boatError('BOAT_SETUP_FAILED', 'Cloud 설치를 마치지 못했습니다.');
       }
-      setBoatStage('installing', 'Cloud 서비스 내려받기 · rauhwpx-cloud 1.2.0 (linux-amd64)');
+      setBoatStage('installing', '작업 환경 준비 · 7/23');
       await boatWait(1_500);
       setBoatStage('installing', '서비스 등록');
       await boatWait(1_300);
@@ -569,6 +569,11 @@ export function createMockCloud(options: { dashboard?: boolean } = {}) {
     async cloudBoatRefresh() {
       calls.boat.push('refresh');
       await boatWait(300);
+      return snapshot();
+    },
+    async cloudReimportLogins() {
+      calls.boat.push('reimport');
+      await boatWait(900);
       return snapshot();
     },
     async cloudBoatDisconnect({ deleteServer }) {
@@ -702,7 +707,7 @@ export function createMockCloud(options: { dashboard?: boolean } = {}) {
         connectBoatAccount('api-key', null);
         boat().server = boatServer('running');
         boat().setup = { stage: 'installing', startedAt: new Date(Date.now() - 83_000).toISOString(),
-          detail: 'Cloud 서비스 내려받기 · rauhwpx-cloud 1.2.0 (linux-amd64)', importedProviders: [],
+          detail: '작업 환경 준비 · 7/23', importedProviders: [],
           error: kind === 'failed' ? { title: 'Cloud 설치를 마치지 못했습니다', guidance: '네트워크를 확인한 뒤 다시 시도합니다.',
             detail: 'install.sh: apt-get install podman\nE: Unable to fetch some archives, maybe run apt-get update\nexit status 100' } : null };
       } else {

@@ -456,10 +456,10 @@ function publicSession(session: Record<string, unknown>, ownDeviceId: string | n
     documentName: String(origin?.name ?? 'Cloud document'),
   };
   if (session.takeoverReady === true || session.takeoverRequested === true) {
-    return { ...base, kind: 'taking-over', message: session.takeoverReady ? '안전한 클라우드 경계가 준비됐습니다.' : '안전한 경계를 기다리는 중입니다.' };
+    return { ...base, kind: 'taking-over', message: session.takeoverReady ? '안전한 Cloud 경계가 준비됐습니다.' : '안전한 경계를 기다리는 중입니다.' };
   }
   if (session.status === 'staged' || session.status === 'queued') {
-    return { ...base, kind: 'queued', position: 1, message: '클라우드 실행 자리를 기다리고 있습니다.' };
+    return { ...base, kind: 'queued', position: 1, message: 'Cloud 실행 자리를 기다리고 있습니다.' };
   }
   if (session.status === 'running' && session.pauseRequested === true) {
     return { ...base, kind: 'pausing', message: '다음 안전한 경계에서 멈추는 중입니다.' };
@@ -474,7 +474,7 @@ function publicSession(session: Record<string, unknown>, ownDeviceId: string | n
       turnLimit: Math.max(1, Number(limits?.maxTurns) || 100),
       elapsedMs: Math.max(0, Date.now() - Date.parse(startedAt)),
       timeLimitMs: Math.max(1, Number(limits?.maxDurationSeconds) || 28_800) * 1_000,
-      currentActivity: '클라우드 에이전트가 문서에서 작업 중입니다.',
+      currentActivity: 'Cloud 에이전트가 문서에서 작업 중입니다.',
       phase: phase(session.executionPhase),
       wait: wait ? { id: String(wait.id), kind: wait.kind, payload: record(wait.payload) ?? {} } : null,
     };
@@ -483,7 +483,7 @@ function publicSession(session: Record<string, unknown>, ownDeviceId: string | n
     return {
       ...base,
       kind: 'suspended',
-      reason: String(reason?.message ?? '클라우드 에이전트에 확인이 필요합니다.'),
+      reason: String(reason?.message ?? 'Cloud 에이전트에 확인이 필요합니다.'),
       code: typeof reason?.code === 'string' ? reason.code : null,
       provider: typeof session.provider === 'string' ? session.provider : null,
       resumable: !['TURN_LIMIT', 'DURATION_LIMIT'].includes(String(reason?.code ?? '')),
@@ -513,7 +513,7 @@ function publicSession(session: Record<string, unknown>, ownDeviceId: string | n
     ...base,
     kind: 'failed',
     code: String(reason?.code ?? 'CLOUD_ERROR'),
-    message: String(reason?.message ?? '클라우드 세션이 실패했습니다.'),
+    message: String(reason?.message ?? 'Cloud 세션이 실패했습니다.'),
     retryable: session.status === 'failed',
   };
 }
@@ -1823,7 +1823,7 @@ export function createBrowserCloudApi(options: BrowserCloudOptions = {}) {
             const boundary = record(takeover?.boundary);
             const operationId = String(boundary?.operationId ?? '');
             if (!takeover || takeover.status !== 'ready' || !boundary || !operationId) {
-              throw new Error('클라우드 이어받기 경계를 준비하지 못했습니다.');
+              throw new Error('Cloud 이어받기 경계를 준비하지 못했습니다.');
             }
             requireCurrentProfile(selectedProfile, generation);
             takeoverState = {

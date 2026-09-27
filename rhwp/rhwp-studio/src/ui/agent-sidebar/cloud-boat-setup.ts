@@ -96,6 +96,17 @@ function facts(rows: Array<[string, string]>): HTMLElement {
   return list;
 }
 
+/** 다시 연결할 때 같은 이메일을 또 치지 않도록 마지막으로 쓴 boat 이메일을 기억한다. */
+const BOAT_EMAIL_KEY = 'rhwp-boat-email';
+
+function rememberedBoatEmail(): string {
+  try { return localStorage.getItem(BOAT_EMAIL_KEY) ?? ''; } catch { return ''; }
+}
+
+function rememberBoatEmail(email: string): void {
+  try { localStorage.setItem(BOAT_EMAIL_KEY, email); } catch { /* 저장소가 막혀 있으면 기억하지 않는다. */ }
+}
+
 export function createBoatSetupView(ctx: BoatSetupContext): BoatSetupView {
   let signInPoll: { claimId: string; timer: number; failures: number } | null = null;
   let billingTimer = 0;
@@ -166,6 +177,7 @@ export function createBoatSetupView(ctx: BoatSetupContext): BoatSetupView {
     }
     const operation = ctx.beginOperation();
     const trimmed = email.trim();
+    rememberBoatEmail(trimmed);
     const previous = ctx.state();
     if (previous?.kind === 'boat-signin') ctx.setState({ ...previous, pending: true });
     else ctx.setState({ kind: 'boat-connect', draft, intent, email: trimmed, error: null, pending: true });
@@ -221,7 +233,7 @@ export function createBoatSetupView(ctx: BoatSetupContext): BoatSetupView {
     parts.title.textContent = 'boat 계정 연결';
     const form = el('form', 'ag-cloud-setup-form');
     const email = field('이메일', 'ag-boat-email', {
-      type: 'email', value: state.email, autocomplete: 'email', error: state.error, busy: state.pending,
+      type: 'email', value: state.email || rememberedBoatEmail(), autocomplete: 'email', error: state.error, busy: state.pending,
     });
     email.input.addEventListener('input', () => {
       const live = current('boat-connect');
@@ -330,7 +342,7 @@ export function createBoatSetupView(ctx: BoatSetupContext): BoatSetupView {
     copy.title = '코드 복사';
     copy.setAttribute('aria-label', '코드 복사');
     copy.append(createIcon('copy'));
-    copy.disabled = state.expired;
+    copy.hidden = state.expired;
     copy.addEventListener('click', async () => {
       try {
         await navigator.clipboard.writeText(challenge.userCode);
@@ -430,8 +442,8 @@ export function createBoatSetupView(ctx: BoatSetupContext): BoatSetupView {
 
   function renderBilling(state: Extract<BoatSetupState, { kind: 'boat-billing' }>, parts: BoatSetupParts): void {
     const { draft, intent } = state;
-    parts.title.textContent = 'boat 요금제 필요';
-    parts.body.append(ctx.description('서버를 만들려면 boat 요금제가 필요합니다.'));
+    parts.title.textContent = 'boat 요금제 선택';
+    parts.body.append(ctx.description('결제를 마치면 설정이 바로 이어집니다.'));
     if (state.opened) parts.body.append(waitingRow('결제 확인 중'));
     const back = ctx.button('뒤로');
     back.addEventListener('click', () => ctx.chooseAgain(intent, draft));
@@ -506,8 +518,9 @@ export function createBoatSetupView(ctx: BoatSetupContext): BoatSetupView {
 
   function renderConfirm(state: Extract<BoatSetupState, { kind: 'boat-confirm' }>, parts: BoatSetupParts): void {
     const { draft, intent } = state;
-    const existing = ctx.snapshot().boat?.server ?? null;
-    parts.title.textContent = existing ? 'boat 서버 연결' : 'boat 서버 만들기';
+    const server = ctx.snapshot().boat?.server ?? null;
+    const existing = server && server.state !== 'missing' ? server : null;
+    parts.title.textContent = existing ? '기존 boat 서버 연결' : 'boat 서버 만들기';
     parts.body.append(facts([
       ['사양', existing?.machineLabel || BOAT_MACHINE_LABELS[existing?.machine ?? BOAT_MACHINE]],
       ['지역', BOAT_REGION_LABEL],
@@ -517,7 +530,7 @@ export function createBoatSetupView(ctx: BoatSetupContext): BoatSetupView {
     if (context) parts.body.append(context);
     const back = ctx.button('뒤로');
     back.addEventListener('click', () => ctx.chooseAgain(intent, draft));
-    const primary = ctx.button(existing ? '서버 연결' : '서버 만들기', 'primary');
+    const primary = ctx.button(existing ? '연결' : '서버 만들기', 'primary');
     primary.classList.add(AUTOFOCUS);
     primary.addEventListener('click', () => {
       if (!current('boat-confirm')) return;
@@ -610,8 +623,14 @@ export function createBoatSetupView(ctx: BoatSetupContext): BoatSetupView {
   function renderFailed(state: Extract<BoatSetupState, { kind: 'boat-failed' }>, parts: BoatSetupParts): void {
     const { draft, intent, issue } = state;
     parts.title.textContent = 'boat 서버를 준비하지 못했습니다';
-    parts.body.append(ctx.description(issue.guidance || issue.title));
-    if (issue.detail.trim()) parts.body.append(ctx.issueDetails(issue, '자세히'));
+    const guidance = issue.guidance || issue.title;
+    parts.body.append(ctx.description(guidance));
+    // 코드 줄과 안내를 되풀이하는 줄을 빼고도 남는 정보가 있을 때만 자세히를 둔다.
+    // 던져진 오류보다 설정 기록의 설치 출력이 더 구체적이면 그것을 보인다.
+    const recorded = ctx.snapshot().boat?.setup?.error?.detail ?? '';
+    const extra = (recorded.trim() || issue.detail).split('\n').map((line) => line.trim())
+      .filter((line) => line && line !== guidance && !/^[A-Z][A-Z0-9_]+$/.test(line)).join('\n');
+    if (extra) parts.body.append(ctx.issueDetails({ ...issue, detail: extra }, '자세히'));
     const context = ctx.transferContext(intent);
     if (context) parts.body.append(context);
     const choose = linkButton('서버 다시 선택');
@@ -632,7 +651,7 @@ export function createBoatSetupView(ctx: BoatSetupContext): BoatSetupView {
     const snapshot = ctx.snapshot();
     const server = snapshot.boat?.server ?? null;
     const machine = server?.machine ?? snapshotBoatProfile(snapshot)?.machine ?? BOAT_MACHINE;
-    parts.title.textContent = 'boat 서버가 준비되었습니다';
+    parts.title.textContent = 'boat 서버 준비 완료';
     const rows: Array<[string, string]> = [
       ['사양', server?.machineLabel || BOAT_MACHINE_LABELS[machine]],
       ['지역', BOAT_REGION_LABEL],
@@ -640,26 +659,6 @@ export function createBoatSetupView(ctx: BoatSetupContext): BoatSetupView {
     ];
     if (state.importedProviders.length) rows.push(['로그인 정보', boatProvidersLabel(state.importedProviders)]);
     parts.body.append(facts(rows));
-    // 서버의 에이전트 로그인이 만료되면 이 Mac 의 로그인을 다시 보낸다. 더 새로운 서버 쪽 로그인은 서버가 지킨다.
-    const reimport = linkButton('로그인 다시 가져오기');
-    const outcome = ctx.description('');
-    outcome.hidden = true;
-    reimport.addEventListener('click', async () => {
-      reimport.disabled = true;
-      reimport.setAttribute('aria-busy', 'true');
-      try {
-        await ctx.controller.reimportLogins();
-        outcome.textContent = '로그인을 다시 가져왔습니다.';
-      } catch (cause) {
-        outcome.textContent = cause instanceof Error ? cause.message : String(cause);
-      } finally {
-        outcome.hidden = false;
-        ctx.announce(outcome.textContent ?? '');
-        reimport.disabled = false;
-        reimport.removeAttribute('aria-busy');
-      }
-    });
-    parts.body.append(reimport, outcome);
     const primary = ctx.button(state.intent === 'transfer' ? 'Cloud로 계속' : '완료', 'primary');
     primary.classList.add(AUTOFOCUS);
     primary.addEventListener('click', () => {
