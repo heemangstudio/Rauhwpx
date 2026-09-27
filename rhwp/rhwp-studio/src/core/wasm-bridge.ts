@@ -1756,6 +1756,13 @@ export class WasmBridge {
 
   // ─── 커서 이동 API ─────────────────────────────────────────
 
+  /** 본문 문단이 걸친 전역 쪽 번호 목록. 조판 결과만 읽는다. API 가 없는 구버전 WASM 이면 null. */
+  getParagraphPages(sec: number, para: number): number[] | null {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    if (typeof this.doc.getParagraphPages !== 'function') return null;
+    return Array.from(this.doc.getParagraphPages(sec, para));
+  }
+
   getLineInfo(sec: number, para: number, charOffset: number): LineInfo {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse(this.doc.getLineInfo(sec, para, charOffset));
