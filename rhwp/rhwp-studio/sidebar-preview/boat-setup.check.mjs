@@ -99,8 +99,7 @@ export async function checkBoatSetup(page, origin, artifacts) {
     assert.deepEqual(await page.$$eval('.ag-cloud-setup-option', (nodes) => nodes.map((node) => [
       node.dataset.serverMode, node.querySelector('.ag-cloud-setup-option-note')?.textContent,
     ])).then((rows) => rows.map(([mode]) => mode)), ['app-hosted', 'boat', 'self-hosted']);
-    assert.equal(await page.$eval('.ag-cloud-setup-option[data-server-mode="boat"] .ag-cloud-setup-option-note',
-      (node) => node.textContent), '내 boat 계정 · EU');
+    assert.equal(await page.$('.ag-cloud-setup-option[data-server-mode="boat"] .ag-cloud-setup-option-note'), null);
     await page.click('.ag-cloud-setup-option[data-server-mode="boat"]');
     await page.waitForFunction(() => document.querySelector('.ag-cloud-setup-option[data-server-mode="boat"]')
       ?.getAttribute('aria-checked') === 'true');

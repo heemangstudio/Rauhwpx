@@ -906,7 +906,6 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
           'boat',
           'boat.dev 계정에 전용 VM을 만듭니다. 쉬는 동안 자동으로 멈추고, 요금은 boat에서 청구합니다.',
           mode === 'boat',
-          '내 boat 계정 · EU',
         ));
       }
       options.append(
