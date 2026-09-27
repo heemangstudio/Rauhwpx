@@ -23,6 +23,8 @@ export function selectChecks(paths) {
     } else if (/^rhwp\/(?:rau-credits|rhwp-shared|rhwp-chrome|rhwp-firefox|rhwp-safari)\//.test(file)) {
       enable('app');
       if (file.startsWith('rhwp/rhwp-shared/') || file === 'rhwp/rau-credits/catalog.mjs') enable('browser');
+      // 데스크톱 글꼴 색인이 이 모듈을 쓴다.
+      if (file.startsWith('rhwp/rhwp-shared/fonts/')) enable('sessions');
     } else {
       enable(...groups);
     }

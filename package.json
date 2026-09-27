@@ -71,6 +71,7 @@
     "asar": true,
     "files": [
       "desktop/**/*",
+      "rhwp/rhwp-shared/fonts/*.mjs",
       "cloud/install/install.sh",
       "cloud/install/install-macos.sh",
       "cloud/release/rauhwpx-cloud-bootstrap-linux-*.tar.gz",

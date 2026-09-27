@@ -100,6 +100,7 @@ import {
   writeLaunchOwnerMetadata,
 } from './runtime-cleanup.mjs';
 import { reportUniqueInstall, uniqueInstallsPublicUrl } from './unique-install.mjs';
+import { createSystemFontService } from './system-fonts.mjs';
 import {
   nativeExtractorFileName,
   sourceStagedNativeExtractorPath,
@@ -482,6 +483,10 @@ const sessions = new SessionManager({
 const documentLeases = new DocumentLeaseManager();
 const nativeFiles = new NativeFileHandleRegistry();
 const nativeBookmarkFile = join(app.getPath('userData'), 'native-document-bookmarks.json');
+const systemFonts = createSystemFontService({
+  cacheDir: join(app.getPath('userData'), 'fonts'),
+  log: (line) => console.log(`[rauhwpx] fonts: ${line}`),
+});
 const cloudEditDraftStore = new CloudEditDraftStore({
   root: join(app.getPath('userData'), 'cloud', 'edit-drafts'),
 });
@@ -1094,6 +1099,15 @@ ipcMain.handle('desktop:get-unique-installs', async (event) => {
 ipcMain.handle('desktop:get-session-context', (event) => {
   sessionForEvent(event);
   return sessions.contextForSender(event.sender);
+});
+ipcMain.handle('desktop:fonts-list', (event, options = {}) => {
+  sessionForEvent(event);
+  if (process.env.RHWP_SYSTEM_FONTS === 'off') throw new Error('System font discovery is disabled');
+  return systemFonts.list({ refresh: options?.refresh === true });
+});
+ipcMain.handle('desktop:fonts-read', (event, id) => {
+  sessionForEvent(event);
+  return systemFonts.readFace(id);
 });
 ipcMain.handle('desktop:get-launch-files', (event) => {
   const session = sessionForEvent(event);

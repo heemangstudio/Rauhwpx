@@ -79,7 +79,7 @@ pub struct MetricMatch {
 /// 한계: Latin 폭 미세 차이, weight 축은 2단계로 근사 (본한글vf 는 wght 중간값을
 /// Regular/Bold 중 가까운 쪽으로). CJK 폰트는 weight 별 한글 폭 차이가 작으므로
 /// 실무 허용. 정식 DB 엔트리 추가는 별도 이슈.
-fn resolve_metric_alias(name: &str) -> &str {
+pub(crate) fn resolve_metric_alias(name: &str) -> &str {
     match name {
         "함초롬돋움" => "HCR Dotum",
         // [#2279] 한컴돋움/한컴바탕의 실체는 Haansoft Dotum/Batang

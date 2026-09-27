@@ -714,6 +714,8 @@ impl DocumentCore {
             next_snapshot_id: 0,
             picture_transform_store: Vec::new(),
             next_picture_transform_id: 0,
+            paragraph_capture_store: Vec::new(),
+            next_paragraph_capture_id: 0,
             hidden_header_footer: std::collections::HashSet::new(),
             file_name: String::new(),
             active_field: None,
@@ -1695,6 +1697,7 @@ impl DocumentCore {
         self.invalidate_page_tree_cache();
         self.snapshot_store.clear();
         self.next_snapshot_id = 0;
+        self.paragraph_capture_store.clear();
         self.source_format = crate::parser::FileFormat::Hwp;
         self.validation_report = ValidationReport::new();
 
@@ -2376,6 +2379,8 @@ impl DocumentCore {
     /// 노출하면 안 된다. 특히 에이전트 미리보기처럼 split/delete/format을 한 논리
     /// 연산으로 묶는 경로는 이 메서드로 연산 경계에서 단 한 번 권위 조판을 확정한다.
     pub fn refresh_layout_native(&mut self) {
+        // 폰트 등록 변화 후 새로고침이 캐시된 폭을 재사용하지 않도록 비운다.
+        crate::renderer::layout::clear_measure_caches();
         self.styles = resolve_styles(&self.document.doc_info, self.dpi);
         self.composed = self
             .document

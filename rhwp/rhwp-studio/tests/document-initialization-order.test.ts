@@ -52,5 +52,6 @@ test('CanvasKit local face 등록은 문서 초기화 대신 현재 뷰 재그�
 
 test('로컬 글꼴 감지는 Canvas2D 문서를 전체 재로딩하지 않는다', () => {
   const main = source('src/main.ts');
-  assert.doesNotMatch(main, /eventBus\.on\('local-fonts-changed',[\s\S]*?canvasView\?\.loadDocument\(\);/);
+  // 핸들러 본문(다음 eventBus.on 전까지)만 본다. 감지 뒤에는 메트릭 등록과 다시 조판만 한다.
+  assert.doesNotMatch(main, /eventBus\.on\('local-fonts-changed',(?:(?!eventBus\.on\()[\s\S])*?canvasView\?\.loadDocument\(\);/);
 });

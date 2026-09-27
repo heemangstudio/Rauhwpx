@@ -2274,11 +2274,11 @@ pub(crate) use paragraph_layout::ensure_min_baseline;
 pub(crate) use picture_footnote::caption_height_px;
 pub(crate) use table_layout::border_style_has_diagonal;
 pub(crate) use text_measurement::{
-    compute_char_positions, compute_glyph_positions, enter_resolved_shaping_fonts,
-    estimate_text_width, estimate_text_width_unrounded, extract_tab_leaders_with_extended,
-    find_next_tab_stop, is_cjk_char, is_halfwidth_cjk_quote, is_halfwidth_forced_punct,
-    registered_glyph_advance, resolved_to_text_style, split_into_clusters,
-    with_resolved_shaping_fonts, ResolvedShapingFont, ResolvedShapingFontScope,
+    clear_measure_caches, compute_char_positions, compute_glyph_positions,
+    enter_resolved_shaping_fonts, estimate_text_width, estimate_text_width_unrounded,
+    extract_tab_leaders_with_extended, find_next_tab_stop, is_cjk_char, is_halfwidth_cjk_quote,
+    is_halfwidth_forced_punct, registered_glyph_advance, resolved_to_text_style,
+    split_into_clusters, with_resolved_shaping_fonts, ResolvedShapingFont, ResolvedShapingFontScope,
 };
 // [Task #826] map_pua_bullet_char 는 통합 테스트 (tests/issue_826.rs) 에서 직접 검증
 // (PUA substitution 매핑 정합) — pub 노출.

@@ -1771,6 +1771,11 @@
 /* 설명 없는 행은 min-height를 풀어서 라벨+컨트롤만으로 높이를 잡는다. */
 .ag-settings-control-row:not(:has(.ag-settings-control-description)),
 .ag-settings-control-row.ag-settings-toggle-row:not(:has(.ag-settings-control-description)),
+.ag-settings-resource-header[hidden],
+.ag-settings-actions .ag-settings-btn[hidden] {
+  display: none;
+}
+
 .ag-settings-resource-header:not(:has(.ag-settings-control-description)) {
   min-height: 0;
 }

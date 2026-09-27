@@ -57,6 +57,8 @@ const archivedFiles = listPackage(archive).map(normalizeArchivePath);
 const requiredArchiveFiles = [
   '/desktop/main.mjs',
   '/desktop/unique-install.mjs',
+  '/desktop/system-fonts.mjs',
+  '/rhwp/rhwp-shared/fonts/font-index-core.mjs',
   '/rhwp/rhwp-studio/dist/index.html',
 ];
 for (const path of requiredArchiveFiles) {

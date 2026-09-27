@@ -113,3 +113,25 @@ export default function init(): Promise<void>;
 
 /** 버전 문자열 반환 */
 export function version(): string;
+
+/**
+ * 사용자가 설치한 폰트 바이트로 레이아웃용 글자 폭 메트릭을 등록한다.
+ * aliasesJson 은 폰트명 별칭 JSON 배열. 같은 별칭 + bold + italic 은 교체한다.
+ * 반환 JSON: `{registered:true,key,unitsPerEm,mappedChars,coversHangul,coversLatin,replaced}`
+ * 또는 `{registered:false,reason}`. 반영하려면 이후 refreshLayout 을 호출한다.
+ */
+export function registerRuntimeFontMetrics(
+  bytes: Uint8Array,
+  aliasesJson: string,
+  bold: boolean,
+  italic: boolean,
+): string;
+
+/** 등록된 런타임 폰트 메트릭을 모두 제거한다. */
+export function clearRuntimeFontMetrics(): void;
+
+/**
+ * 등록된 런타임 폰트 메트릭 JSON 배열:
+ * `[{aliases,bold,italic,unitsPerEm,mappedChars,coversHangul,pages,hits}]`.
+ */
+export function getRuntimeFontMetricsReport(): string;

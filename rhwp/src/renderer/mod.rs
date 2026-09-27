@@ -36,6 +36,7 @@ pub mod pdf;
 pub mod pua_oldhangul;
 pub mod render_normalization;
 pub mod render_tree;
+pub(crate) mod runtime_font_metrics;
 pub mod scheduler;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-skia"))]
 pub mod skia;
@@ -299,9 +300,12 @@ pub(crate) fn faux_bold_stroke_width(style: &TextStyle, font_size: f64) -> Optio
         return None;
     }
     let primary = style_resolver::primary_font_name(&style.font_family);
-    font_metrics_data::find_metric(primary, true, style.italic)?
-        .bold_fallback
-        .then_some(font_size * FAUX_BOLD_STROKE_EM)
+    let bold_fallback = match font_metrics_data::find_metric(primary, true, style.italic) {
+        Some(metric) => metric.bold_fallback,
+        // 내장 메트릭이 없으면 런타임 레지스트리의 페이스 선택을 따른다.
+        None => runtime_font_metrics::bold_fallback(primary, style.italic)?,
+    };
+    bold_fallback.then_some(font_size * FAUX_BOLD_STROKE_EM)
 }
 
 /// 위/아래 첨자 glyph 크기 비율. 한컴(macOS) PDF 실측: 15pt 본문 → 9.6pt (80/125 장치 단위).

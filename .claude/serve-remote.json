@@ -20,7 +20,8 @@
       "env": {
         "RHWP_PUBLIC_HOST": "${TS_DNSNAME}",
         "RHWP_PUBLIC_HTTPS_PORT": "${HTTPS_PORT}",
-        "VITE_RHWP_AGENT_URL": "wss://${TS_DNSNAME}:8444"
+        "VITE_RHWP_AGENT_URL": "wss://${TS_DNSNAME}:8444",
+        "RHWP_AGENT_PORT": "5175"
       }
     },
     {

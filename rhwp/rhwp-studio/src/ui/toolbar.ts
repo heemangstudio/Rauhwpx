@@ -5,6 +5,7 @@ import type { CommandDispatcher } from '@/command/dispatcher';
 import { userSettings } from '@/core/user-settings';
 import type { FontSet } from '@/core/user-settings';
 import { getLocalFonts } from '@/core/local-fonts';
+import { getDesktopFontMenuNames } from '@/core/desktop-fonts';
 import {
   filterFontMenuEntries,
   fontMenuEmptyMessage,
@@ -966,8 +967,13 @@ export class Toolbar {
         return recentFonts;
       case 'fontSets':
         return fontSets;
+      // 데스크톱 앱은 색인의 설치 글꼴도 보여 준다. 적용하면 문서 글꼴로 자동 연결된다.
       case 'system':
-        return getLocalFonts().map(name => ({ value: name, label: name }));
+        return getLocalFonts()
+          .concat(getDesktopFontMenuNames())
+          .filter(uniqueFontName())
+          .sort((a, b) => a.localeCompare(b, 'ko'))
+          .map(name => ({ value: name, label: name }));
       case 'all':
         return this.uniqueFontMenuEntries([
           ...current,
@@ -976,6 +982,7 @@ export class Toolbar {
           ...baseFonts,
           ...fontSets,
           ...getLocalFonts().map(name => ({ value: name, label: name })),
+          ...getDesktopFontMenuNames().map(name => ({ value: name, label: name })),
         ]);
     }
   }
@@ -1024,4 +1031,13 @@ export class Toolbar {
     }
     this.eventBus.emit('format-char', { fontIds: ids } as CharProperties);
   }
+}
+
+function uniqueFontName(): (name: string) => boolean {
+  const seen = new Set<string>();
+  return (name) => {
+    if (seen.has(name)) return false;
+    seen.add(name);
+    return true;
+  };
 }
