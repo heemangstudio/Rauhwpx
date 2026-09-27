@@ -10,6 +10,7 @@ const STOP_TIMEOUT_MS = 5_000;
 const HEALTH_PROBE_TIMEOUT_MS = 1_500;
 const MAX_HEALTH_BYTES = 64 * 1024;
 const DIRECT_SIGNAL = new AbortController().signal;
+const HOST_KEY_FAILURE_RE = /Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED|No \S+ host key is known for|Host key for \S+ has changed/i;
 
 function destination(ssh) {
   return `${ssh.user}@${ssh.host}`;
@@ -25,10 +26,11 @@ function sshTunnelArguments(profile, knownHostsPath, localPort) {
     '-o', 'ConnectTimeout=12',
     '-o', 'ServerAliveInterval=15',
     '-o', 'ServerAliveCountMax=3',
+    // ClearAllForwardings 는 OpenSSH 10 에서 명령줄의 -L 까지 지워 터널이 열리지 않는다.
     '-o', 'ExitOnForwardFailure=yes',
-    '-o', 'ClearAllForwardings=yes',
     '-o', sshOptionFilePath('UserKnownHostsFile', knownHostsPath),
-    '-o', 'StrictHostKeyChecking=accept-new',
+    // boat VM은 접속 전에 boat API로 호스트 키를 핀한다. 핀이 없으면 처음 보는 키를 믿지 않는다.
+    '-o', `StrictHostKeyChecking=${profile.boat ? 'yes' : 'accept-new'}`,
     '-p', String(ssh.port),
     ...(ssh.keyPath ? ['-i', ssh.keyPath, '-o', 'IdentitiesOnly=yes'] : []),
     '-L', `127.0.0.1:${localPort}:${api.remoteHost}:${api.remotePort}`,
@@ -144,7 +146,10 @@ function waitForForward(child, port, timeoutMs = START_TIMEOUT_MS, {
     const onError = (error) => finish(error);
     const onClose = (code, signal) => finish(Object.assign(new Error(
       `SSH tunnel exited with ${code ?? signal}${stderr.trim() ? `: ${stderr.trim().slice(-800)}` : ''}`,
-    ), { code: 'SSH_TUNNEL_UNAVAILABLE', retryable: true }));
+    ), HOST_KEY_FAILURE_RE.test(stderr)
+      // 바뀐 호스트 키는 다시 시도해도 같다. 사람이 새 키를 확인하거나 boat 가 다시 핀해야 한다.
+      ? { code: 'SSH_HOST_KEY_CHANGED', retryable: false }
+      : { code: 'SSH_TUNNEL_UNAVAILABLE', retryable: true }));
     child.stderr.on('data', (chunk) => { stderr = `${stderr}${chunk}`.slice(-8_192); });
     child.once('error', onError);
     child.once('close', onClose);
@@ -349,4 +354,4 @@ export class CloudApiTransport {
   }
 }
 
-export const __test = { reservePort, sshTunnelArguments, waitForForward, withSignal };
+export const __test = { HOST_KEY_FAILURE_RE, reservePort, sshTunnelArguments, waitForForward, withSignal };

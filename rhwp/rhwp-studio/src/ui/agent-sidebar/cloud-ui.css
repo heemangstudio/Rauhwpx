@@ -150,7 +150,8 @@
   display: none;
 }
 
-.ag-cloud-recovery[data-kind='reconnecting'] {
+.ag-cloud-recovery[data-kind='reconnecting'],
+.ag-cloud-recovery[data-kind='waking'] {
   background: color-mix(in srgb, var(--ui-warning-border, #d9a441) 5%, var(--ag-bg));
 }
 
@@ -169,7 +170,8 @@
   color: var(--ui-warning-border, #d9a441);
 }
 
-.ag-cloud-recovery[data-kind='reconnecting'] .ag-cloud-recovery-chip {
+.ag-cloud-recovery[data-kind='reconnecting'] .ag-cloud-recovery-chip,
+.ag-cloud-recovery[data-kind='waking'] .ag-cloud-recovery-chip {
   background: color-mix(in srgb, var(--ui-warning-border, #d9a441) 12%, transparent);
   color: var(--ui-warning-border, #d9a441);
 }
@@ -189,12 +191,14 @@
 }
 
 .ag-cloud-recovery[data-kind='reconnecting'] .ag-cloud-recovery-icon-work,
-.ag-cloud-recovery[data-kind='recreating'] .ag-cloud-recovery-icon-work {
+.ag-cloud-recovery[data-kind='recreating'] .ag-cloud-recovery-icon-work,
+.ag-cloud-recovery[data-kind='waking'] .ag-cloud-recovery-icon-work {
   display: block;
 }
 
 .ag-cloud-recovery[data-kind='reconnecting'] .ag-cloud-recovery-icon-off,
-.ag-cloud-recovery[data-kind='recreating'] .ag-cloud-recovery-icon-off {
+.ag-cloud-recovery[data-kind='recreating'] .ag-cloud-recovery-icon-off,
+.ag-cloud-recovery[data-kind='waking'] .ag-cloud-recovery-icon-off {
   display: none;
 }
 
@@ -448,6 +452,11 @@
   display: none;
 }
 
+/* 진행 막대는 제목 바로 아래 붙는다. 제목의 32px 누름 영역이 둘 사이를 벌리지 않게 한다. */
+.ag-cloud-recovery-strip:has(> .ag-cloud-link-progress:not([hidden])) {
+  row-gap: 2px;
+}
+
 .ag-cloud-recovery-strip-actions {
   grid-column: 1 / -1;
   display: flex;
@@ -462,11 +471,13 @@
   width: 7px;
   height: 7px;
   border-radius: 999px;
-  background: var(--ui-warning-border, #d9a441);
+  /* 설정 카드의 진행 점과 같은 맑은 호박색. */
+  background: #f2a33a;
 }
 
 .ag-cloud-recovery-strip[data-kind='reconnecting'] .ag-cloud-recovery-strip-pulse,
-.ag-cloud-recovery-strip[data-kind='recreating'] .ag-cloud-recovery-strip-pulse {
+.ag-cloud-recovery-strip[data-kind='recreating'] .ag-cloud-recovery-strip-pulse,
+.ag-cloud-recovery-strip[data-kind='waking'] .ag-cloud-recovery-strip-pulse {
   background: var(--accent-primary);
   animation: ag-cloud-breathe 1.8s ease-in-out infinite;
 }

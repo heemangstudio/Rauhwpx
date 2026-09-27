@@ -1,4 +1,5 @@
 import type { CloudCheckpointPayload } from '../cloud/types.ts';
+import type { CloudMergeOptions } from './types.ts';
 import type { AgentBridge } from '../agent/bridge.ts';
 import type { CheckpointTitleSummary } from '../agent/types.ts';
 import { CompareSessionStore } from '../compare/session.ts';
@@ -47,6 +48,7 @@ import {
   VersionError,
   type BranchName,
   type BranchRef,
+  type RepositoryId,
   type CommitId,
   type VersionCommit,
   type VersionRef,
@@ -57,6 +59,7 @@ import {
   type VersionBlob,
   type MergeResolution,
 } from './index.ts';
+import { cloudBranchNameCandidates } from './cloud-branch-name.ts';
 import { hashBytes, fingerprintBytes } from './hash.ts';
 import {
   commitCompositeMerge,
@@ -168,8 +171,21 @@ function errorMessage(error: unknown): string {
     CORRUPT_BLOB: '저장된 버전 데이터가 손상되어 작업을 중단했습니다.',
     RESTORE_PARSE_FAILED: '이 버전을 안전하게 읽지 못해 현재 문서를 바꾸지 않았습니다.',
     STORAGE_QUOTA: '버전 저장 공간이 부족합니다. 사용하지 않는 데이터를 정리하세요.',
+    MERGE_IN_PROGRESS: '열린 변경 검토를 먼저 마치거나 닫으세요.',
+    MERGE_DRAFT_NOT_FOUND: '병합 초안을 찾을 수 없습니다.',
+    MERGE_UNRESOLVED: '모든 충돌을 먼저 해결하세요.',
+    MERGE_VALIDATION_FAILED: '병합 결과를 검증하지 못했습니다.',
+    REPOSITORY_NOT_FOUND: '버전 기록을 찾을 수 없습니다.',
+    COMMIT_NOT_FOUND: '버전을 찾을 수 없습니다.',
+    REF_NOT_FOUND: '브랜치를 찾을 수 없습니다.',
+    SHELF_NOT_FOUND: '보관한 변경을 찾을 수 없습니다.',
+    DEFAULT_BRANCH: '기본 브랜치는 삭제할 수 없습니다.',
+    CANCELLED: '작업을 취소했습니다.',
+    CLOUD_START_MISSING: '이 기기에 Cloud 시작 기록이 없습니다.',
   };
-  return messages[error.code] ?? error.message;
+  // 구체적인 한국어 메시지가 있으면 그대로, 영어 내부 메시지는 코드별 문구로 바꾼다.
+  if (/[\uac00-\ud7a3]/.test(error.message)) return error.message;
+  return messages[error.code] ?? '버전 작업을 마치지 못했습니다.';
 }
 
 function branchStorageKey(id: string): string {
@@ -266,6 +282,8 @@ export class DocumentVersionController implements VersionManagerController {
   #operation = Promise.resolve();
   #mergeResolverActive = false;
   #mergeCompletion: Promise<boolean> | null = null;
+  /** Cloud 병합을 준비하며 보관한 내 편집. 저장하고 닫은 검토를 끝낼 때까지 기억했다가 다시 적용을 제안한다. */
+  #preparedShelf: { documentId: string; id: VersionShelf['id'] } | null = null;
   #mergeLockedHandler: InputHandler | null = null;
   #mergePreviousUserEditingLocked = false;
   readonly #pendingMergeFinalizers = new WeakMap<
@@ -425,17 +443,16 @@ export class DocumentVersionController implements VersionManagerController {
         return blob.bytes;
       }
       const sourceBranch = sourceStartId
-        ? await this.#store.getBranch(repository.id, this.#cloudBranchName(sourceStartId))
+        ? await this.#findCloudBranch(repository, sourceStartId)
         : null;
       this.#assertWorkspaceToken(workspace);
       if (sourceStartId && !sourceBranch) return bytes;
       const capture = await this.#captureIncoming(bytes, fileName);
       this.#assertWorkspaceToken(workspace);
-      const name = this.#cloudBranchName(startId);
-      let branch = await this.#store.getBranch(repository.id, name);
+      let branch = await this.#findCloudBranch(repository, startId);
       if (!branch) {
         const created = await this.#store.createBranch({
-          repositoryId: repository.id, name, target: sourceBranch?.target ?? this.#requireActiveBranch().target,
+          repositoryId: repository.id, name: await this.#freeCloudBranchName(repository.id, startId), target: sourceBranch?.target ?? this.#requireActiveBranch().target,
           expectedRepositoryRevision: repository.revision,
         });
         this.#repository = created.repository;
@@ -466,11 +483,16 @@ export class DocumentVersionController implements VersionManagerController {
     });
   }
 
-  async mergeCloudCheckpoint(startId: string, checkpoint: CloudCheckpointPayload): Promise<boolean> {
+  async mergeCloudCheckpoint(
+    startId: string,
+    checkpoint: CloudCheckpointPayload,
+    options: CloudMergeOptions = {},
+  ): Promise<boolean> {
     const source = await this.#enqueue(async () => {
       await this.#refreshData(false);
       await this.#guardMutation(true);
-      const workspace = this.#captureWorkspaceToken();
+      if (!this.#repository) throw new VersionError('CLOUD_START_MISSING', '이 기기에 Cloud 시작 기록이 없습니다.');
+      let workspace = this.#captureWorkspaceToken();
       const repository = this.#requireRepository();
       if (checkpoint.documentId !== workspace.documentId || checkpoint.kind !== 'turn'
         || !Number.isSafeInteger(checkpoint.revision) || checkpoint.revision < 1) {
@@ -481,50 +503,93 @@ export class DocumentVersionController implements VersionManagerController {
       if (digest !== checkpoint.sha256 || checkpoint.bytes.length !== checkpoint.byteLength) {
         throw new VersionError('CORRUPT_BLOB', 'Cloud 문서 검증에 실패했습니다. 다시 다운로드하세요.');
       }
-      const name = this.#cloudBranchName(startId);
-      const anchor = await this.#store.getCommit(commitId(`cloud-base:${repository.id}:${startId}`));
-      const branch = await this.#store.getBranch(repository.id, name);
-      if (!anchor || !branch) {
-        throw new Error('이 기기에 병합에 필요한 Cloud 시작 기록이 없습니다. Cloud 상태에서 완료 문서를 사본으로 저장할 수 있습니다.');
-      }
-      if (branch.name === this.#requireActiveBranch().name) {
-        throw new Error('Cloud 결과를 받을 로컬 브랜치를 먼저 선택하세요.');
-      }
       const id = this.#cloudCheckpointCommitId(checkpoint);
+      const legacyId = commitId(`cloud:${repository.id}:${checkpoint.sessionId}:${checkpoint.revision}`);
+      const blobId = hashBytes(checkpoint.bytes);
+      let branch = await this.#ensureCloudBranch(repository, startId, checkpoint.sessionId);
+      if (!branch) throw new VersionError('CLOUD_START_MISSING', '이 기기에 Cloud 시작 기록이 없습니다.');
+      if (branch.name === this.#requireActiveBranch().name) {
+        // Cloud 브랜치를 보고 있으면 받을 로컬 브랜치를 제안하고, 확인한 뒤에만 옮긴다.
+        const target = this.#cloudMergeTarget(repository, branch.name);
+        if (!target) throw new Error('Cloud 변경을 받을 다른 브랜치가 없습니다. 버전 기록에서 브랜치를 만드세요.');
+        if (options.switchTo !== target.name) {
+          throw new VersionError('CLOUD_BRANCH_ACTIVE', `Cloud 변경은 ${target.name} 브랜치에서 검토합니다.`, { detail: target.name });
+        }
+        await this.#switchBranch(target.name);
+        branch = await this.#store.getBranch(repository.id, branch.name);
+        if (!branch) throw new VersionError('CLOUD_START_MISSING', '이 기기에 Cloud 시작 기록이 없습니다.');
+      }
+      // 브랜치를 다시 만들거나 옮겼으면 저장소 리비전이 바뀐다.
+      workspace = this.#captureWorkspaceToken();
+      const source = branch;
+      const active = this.#requireActiveBranch();
       let existing = await this.#store.getCommit(id);
       if (!existing) {
-        const legacy = await this.#store.getCommit(commitId(`cloud:${repository.id}:${checkpoint.sessionId}:${checkpoint.revision}`));
-        if (legacy?.blobId === hashBytes(checkpoint.bytes)) existing = legacy;
+        const legacy = await this.#store.getCommit(legacyId);
+        if (legacy?.blobId === blobId) existing = legacy;
       }
+      // Cloud 턴은 문서 전체라 새 턴이 옛 턴을 담는다. 새 턴이 이미 반영됐으면 옛 신호는 끝난 일이다.
+      const superseded = async (head: CommitId) => {
+        const relation = await this.#store.getMergeRelation(repository.id, active.target, head);
+        this.#assertWorkspaceToken(workspace);
+        if (relation.relation === 'already-integrated') return { name: source.name, integrated: true, draftId: null };
+        throw new VersionError('CLOUD_CHECKPOINT_SUPERSEDED', '더 최신 Cloud 변경을 이미 가져왔습니다.');
+      };
       if (existing) {
-        if (existing.blobId !== hashBytes(checkpoint.bytes)) {
+        if (existing.blobId !== blobId) {
           throw new VersionError('CORRUPT_BLOB', '같은 Cloud 버전의 문서 내용이 달라졌습니다.');
         }
-        if (existing.id !== branch.target) {
-          const relation = await this.#store.getMergeRelation(repository.id, this.#requireActiveBranch().target, existing.id);
+        if (existing.id !== source.target) {
+          const relation = await this.#store.getMergeRelation(repository.id, active.target, existing.id);
           this.#assertWorkspaceToken(workspace);
-          if (relation.relation === 'already-integrated') return { name, integrated: true };
-          throw new VersionError('STALE_WORKSPACE', '더 최신 Cloud 변경을 이미 가져왔습니다. 최신 작업을 선택하세요.');
+          if (relation.relation === 'already-integrated') return { name: source.name, integrated: true, draftId: null };
+          return superseded(source.target);
         }
       } else {
         // Pin the source head. An old or replayed boundary must never move it backwards.
-        const head = await this.#requireCommit(branch.target);
+        const head = await this.#requireCommit(source.target);
         const prefix = `cloud:${repository.id}:${checkpoint.sessionId}:`;
         if (head.id.startsWith(prefix) && Number(head.id.slice(prefix.length).split(':')[0]) > checkpoint.revision) {
-          throw new VersionError('STALE_WORKSPACE', '더 최신 Cloud 변경을 이미 가져왔습니다.');
+          return superseded(head.id);
         }
         const capture = await this.#captureIncoming(checkpoint.bytes, checkpoint.fileName);
         this.#assertWorkspaceToken(workspace);
-        await this.#appendBranchSnapshot(branch, capture, `Cloud · ${checkpoint.turn}턴`, 'agent', id);
+        await this.#appendBranchSnapshot(source, capture, `Cloud · ${checkpoint.turn}턴`, 'agent', id);
       }
-      const latest = await this.#store.getBranch(repository.id, name);
+      const latest = await this.#store.getBranch(repository.id, source.name);
       const relation = await this.#store.getMergeRelation(repository.id, this.#requireActiveBranch().target, latest!.target);
-      return { name, integrated: relation.relation === 'already-integrated' };
+      // 저장하고 닫은 검토가 있으면 새로 시작하지 않고 이어서 연다.
+      const draft = (await this.#store.listMergeDrafts(repository.id))
+        .filter((item) => !item.shelfApply && item.sourceBranch === source.name
+          && item.targetBranch === this.#requireActiveBranch().name)
+        .sort((left, right) => right.updatedAt - left.updatedAt)[0];
+      return { name: source.name, integrated: relation.relation === 'already-integrated', draftId: draft?.id ?? null };
     });
     if (source.integrated) return true;
     this.#mergeCompletion = null;
-    await this.startMerge(source.name);
-    return this.#mergeCompletion ? await this.#mergeCompletion : false;
+    await this.#enqueue(() => (source.draftId
+      ? this.#resumeMerge(source.draftId, true)
+      : this.#startMerge(source.name, true)));
+    const applied = this.#mergeCompletion ? await this.#mergeCompletion : false;
+    const shelf = this.#preparedShelf;
+    if (applied && shelf) {
+      this.#preparedShelf = null;
+      if (shelf.documentId === this.#getDocumentId() && this.#shelves.some((item) => item.id === shelf.id)) {
+        options.onStashed?.(() => this.applyShelf(shelf.id, true));
+      }
+    }
+    return applied;
+  }
+
+  /** The name of this start's Cloud branch, including one the user renamed. */
+  async cloudBranchName(startId: string): Promise<string | null> {
+    const repository = this.#repository;
+    if (!repository) return null;
+    try {
+      return (await this.#findCloudBranch(repository, startId))?.name ?? null;
+    } catch {
+      return null;
+    }
   }
 
   #cloudCheckpointCommitId(checkpoint: Pick<CloudCheckpointPayload, 'sessionId' | 'revision' | 'operationId'>): CommitId {
@@ -532,8 +597,90 @@ export class DocumentVersionController implements VersionManagerController {
     return commitId(`cloud:${this.#requireRepository().id}:${checkpoint.sessionId}:${checkpoint.revision}:${operation}`);
   }
 
-  #cloudBranchName(startId: string): BranchName {
-    return branchName(`Cloud ${hashBytes(new TextEncoder().encode(startId)).slice(7, 23)}`);
+  /**
+   * The branch holding this start's anchor; a name alone may belong to another Cloud start.
+   * A renamed branch still counts when its head walks back over Cloud commits to the anchor.
+   */
+  async #findCloudBranch(repository: VersionRepository, startId: string): Promise<BranchRef | null> {
+    const anchorId = commitId(`cloud-base:${repository.id}:${startId}`);
+    if (!await this.#store.getCommit(anchorId)) return null;
+    for (const name of cloudBranchNameCandidates(startId)) {
+      const branch = await this.#store.getBranch(repository.id, name);
+      if (!branch) continue;
+      const relation = await this.#store.getMergeRelation(repository.id, branch.target, anchorId);
+      if (relation.relation === 'already-integrated') return branch;
+    }
+    // 병합한 로컬 브랜치도 기준점을 품는다. Cloud 커밋만 따라 내려가 기준점에 닿는 브랜치만 인정한다.
+    const cloudPrefix = `cloud:${repository.id}:`;
+    const matches: BranchRef[] = [];
+    for (const ref of await this.#store.listRefs(repository.id)) {
+      if (ref.kind !== 'branch' || ref.name === repository.defaultBranch) continue;
+      let id: string = ref.target;
+      for (let depth = 0; depth < 10_000 && id.startsWith(cloudPrefix); depth += 1) {
+        const commit = await this.#store.getCommit(commitId(id));
+        if (!commit || commit.parents.length !== 1) break;
+        id = commit.parents[0];
+      }
+      if (id === anchorId) matches.push(ref);
+    }
+    return matches.find((branch) => branch.name.startsWith('Cloud ')) ?? matches[0] ?? null;
+  }
+
+  /**
+   * Finds this start's Cloud branch, or recreates a deleted one from its surviving history:
+   * the newest imported turn of the session, else the start anchor.
+   */
+  async #ensureCloudBranch(
+    repository: VersionRepository,
+    startId: string,
+    sessionId: string,
+  ): Promise<BranchRef | null> {
+    const found = await this.#findCloudBranch(repository, startId);
+    if (found) return found;
+    const anchorId = commitId(`cloud-base:${repository.id}:${startId}`);
+    if (!await this.#store.getCommit(anchorId)) return null;
+    // 이미 받은 턴에서 다시 시작해야 병합 기준이 최신 턴이 되어 같은 변경이 충돌로 보이지 않는다.
+    const prefix = `cloud:${repository.id}:${sessionId}:`;
+    let target: CommitId = anchorId;
+    let newest = 0;
+    for (let beforeOrdinal: number | undefined; ;) {
+      const page = await this.#store.listCommits(repository.id, { beforeOrdinal, limit: 500 });
+      for (const commit of page) {
+        const revision = commit.id.startsWith(prefix) ? Number(commit.id.slice(prefix.length).split(':')[0]) : 0;
+        if (!(revision > newest)) continue;
+        const relation = await this.#store.getMergeRelation(repository.id, commit.id, anchorId);
+        if (relation.relation === 'already-integrated') {
+          newest = revision;
+          target = commit.id;
+        }
+      }
+      if (page.length < 500) break;
+      beforeOrdinal = Math.min(...page.map((commit) => commit.ordinal));
+    }
+    const created = await this.#store.createBranch({
+      repositoryId: repository.id,
+      name: await this.#freeCloudBranchName(repository.id, startId),
+      target,
+      expectedRepositoryRevision: this.#requireRepository().revision,
+    });
+    this.#repository = created.repository;
+    await this.#refreshData(true);
+    return created.branch;
+  }
+
+  /** The local branch that receives Cloud changes while the Cloud branch itself is checked out. */
+  #cloudMergeTarget(repository: VersionRepository, cloudBranch: BranchName): BranchRef | null {
+    const branches = this.#refs.filter((ref): ref is BranchRef => ref.kind === 'branch' && ref.name !== cloudBranch);
+    return branches.find((branch) => branch.name === repository.defaultBranch)
+      ?? branches.find((branch) => !branch.name.startsWith('Cloud '))
+      ?? null;
+  }
+
+  async #freeCloudBranchName(repositoryId: RepositoryId, startId: string): Promise<BranchName> {
+    for (const name of cloudBranchNameCandidates(startId)) {
+      if (!await this.#store.getBranch(repositoryId, name)) return name;
+    }
+    throw new VersionError('INVALID_REF_NAME', 'Cloud 브랜치 이름을 정하지 못했습니다.');
   }
 
   async #captureIncoming(bytes: Uint8Array, fileName: string): Promise<CapturedVersionSnapshot> {
@@ -933,7 +1080,10 @@ export class DocumentVersionController implements VersionManagerController {
   }
 
   async switchBranch(name: string): Promise<void> {
-    await this.#enqueue(async () => {
+    await this.#enqueue(() => this.#switchBranch(name));
+  }
+
+  async #switchBranch(name: string): Promise<void> {
       await this.#refreshData(false);
       await this.#guardMutation(true);
       await this.#checkpointDirty('pre-switch');
@@ -972,7 +1122,6 @@ export class DocumentVersionController implements VersionManagerController {
       handler.prepareSnapshotCapacity(2);
       await this.#applyBranchContent(handler, blob.bytes, target, next, previous, previousCommit);
       await this.#refreshData(true);
-    });
   }
 
   async renameBranch(name: string, nextName: string): Promise<void> {
@@ -1048,31 +1197,35 @@ export class DocumentVersionController implements VersionManagerController {
   }
 
   async startMerge(sourceBranch: string): Promise<void> {
-    await this.#enqueue(async () => {
-      await this.#refreshData(false);
-      await this.#guardMutation(true);
-      if (!await this.#prepareMergeWorkingTree()) return;
-      await this.#refreshData(false);
-      await this.#openMergeResolver(branchName(sourceBranch));
-    });
+    await this.#enqueue(() => this.#startMerge(sourceBranch, false));
+  }
+
+  async #startMerge(sourceBranch: string, cloud: boolean): Promise<void> {
+    await this.#refreshData(false);
+    await this.#guardMutation(true);
+    if (!await this.#prepareMergeWorkingTree({ name: sourceBranch, cloud })) return;
+    await this.#refreshData(false);
+    await this.#openMergeResolver(branchName(sourceBranch));
   }
 
   async resumeMerge(id: string): Promise<void> {
-    await this.#enqueue(async () => {
-      await this.#refreshData(false);
-      await this.#guardMutation(true);
-      const repository = this.#requireRepository();
-      const draft = await this.#store.getMergeDraft(mergeDraftId(id));
-      if (!draft || draft.repositoryId !== repository.id) {
-        throw new VersionError('MERGE_DRAFT_NOT_FOUND', '병합 초안을 찾을 수 없습니다.');
-      }
-      if (draft.targetBranch !== this.#requireActiveBranch().name) {
-        throw new VersionError('STALE_WORKSPACE', `병합을 이어가려면 먼저 ${draft.targetBranch} 브랜치로 전환하세요.`);
-      }
-      if (!await this.#prepareMergeWorkingTree()) return;
-      await this.#refreshData(false);
-      await this.#openMergeResolver(draft.sourceBranch, draft);
-    });
+    await this.#enqueue(() => this.#resumeMerge(id, false));
+  }
+
+  async #resumeMerge(id: string, cloud: boolean): Promise<void> {
+    await this.#refreshData(false);
+    await this.#guardMutation(true);
+    const repository = this.#requireRepository();
+    const draft = await this.#store.getMergeDraft(mergeDraftId(id));
+    if (!draft || draft.repositoryId !== repository.id) {
+      throw new VersionError('MERGE_DRAFT_NOT_FOUND', '병합 초안을 찾을 수 없습니다.');
+    }
+    if (draft.targetBranch !== this.#requireActiveBranch().name) {
+      throw new VersionError('STALE_WORKSPACE', `병합을 이어가려면 먼저 ${draft.targetBranch} 브랜치로 전환하세요.`);
+    }
+    if (!await this.#prepareMergeWorkingTree({ name: draft.sourceBranch, cloud })) return;
+    await this.#refreshData(false);
+    await this.#openMergeResolver(draft.sourceBranch, draft);
   }
 
   async discardMergeDraft(id: string): Promise<void> {
@@ -1106,10 +1259,10 @@ export class DocumentVersionController implements VersionManagerController {
   }
 
   async createShelf(title?: string): Promise<void> {
-    await this.#enqueue(() => this.#createShelf(title));
+    await this.#enqueue(async () => { await this.#createShelf(title); });
   }
 
-  async #createShelf(title?: string): Promise<void> {
+  async #createShelf(title?: string): Promise<VersionShelf['id']> {
       await this.#refreshData(false);
       await this.#guardMutation(true);
       const workspace = this.#captureWorkspaceToken();
@@ -1152,13 +1305,14 @@ export class DocumentVersionController implements VersionManagerController {
       this.#repository = result.repository;
       this.#setDirtyForFingerprint(head.contentFingerprint, 'version-shelf', head.contentFingerprint);
       await this.#refreshData(true);
+      return result.shelf.id;
   }
 
   async applyShelf(id: string, remove: boolean): Promise<void> {
     await this.#enqueue(async () => {
       await this.#refreshData(false);
       await this.#guardMutation(true);
-      if (!await this.#prepareMergeWorkingTree()) return;
+      if (!await this.#prepareMergeWorkingTree({ name: '보관한 변경', cloud: false })) return;
       const workspace = this.#captureWorkspaceToken();
       const repository = this.#requireRepository();
       const shelf = await this.#store.getShelf(shelfId(id));
@@ -1366,32 +1520,32 @@ export class DocumentVersionController implements VersionManagerController {
 
   #guardSaved(): void {
     if (!this.#getDocumentId() || this.#wasm.pageCount === 0 || this.#wasm.isNewDocument) {
-      throw new VersionError('SAVE_REQUIRED', 'The document must be saved first');
+      throw new VersionError('SAVE_REQUIRED', '먼저 문서를 저장하세요.');
     }
   }
 
   async #guardMutation(resolvePending = false): Promise<void> {
     this.#guardSaved();
     if (this.#mergeResolverActive) {
-      throw new VersionError('MERGE_IN_PROGRESS', 'Finish or close the open merge review first');
+      throw new VersionError('MERGE_IN_PROGRESS', '열린 변경 검토를 먼저 마치거나 닫으세요.');
     }
     const documentAtStart = this.#getDocumentId();
     if (this.#agentBridge.isTurnRunning()) {
-      throw new VersionError('ACTIVE_AGENT_TURN', 'An agent turn is still running');
+      throw new VersionError('ACTIVE_AGENT_TURN', '에이전트 응답이 끝난 뒤 다시 시도하세요.');
     }
     if (!this.#agentBridge.pendingEdits.hasPending()) return;
-    if (!resolvePending) throw new VersionError('PENDING_AGENT_REVIEW', 'Agent edits are awaiting review');
+    if (!resolvePending) throw new VersionError('PENDING_AGENT_REVIEW', '대기 중인 에이전트 편집을 먼저 처리하세요.');
     const sets = () => this.#agentBridge.pendingEdits.getChangeSets().filter((set) => set.ops.length > 0);
     const opCount = sets().reduce((count, set) => count + set.ops.length, 0);
     if (opCount === 0) return;
     const choice = await showPendingAgentEditsDialog(opCount);
     if (this.#getDocumentId() !== documentAtStart) {
-      throw new VersionError('STALE_WORKSPACE', 'The active document changed during version review');
+      throw new VersionError('STALE_WORKSPACE', '검토하는 동안 열린 문서가 바뀌었습니다.');
     }
-    if (choice === 'cancel') throw new VersionError('PENDING_AGENT_REVIEW', 'The version action was cancelled');
+    if (choice === 'cancel') throw new VersionError('CANCELLED', '작업을 취소했습니다.');
     if (choice === 'approve') {
       if (!sets().every((set) => this.#agentBridge.pendingEdits.approve(set.id))) {
-        throw new VersionError('PENDING_AGENT_REVIEW', 'Some agent edits could not be approved');
+        throw new VersionError('PENDING_AGENT_REVIEW', '일부 에이전트 편집을 승인하지 못했습니다.');
       }
     } else {
       for (const set of sets()) this.#agentBridge.pendingEdits.reject(set.id);
@@ -2414,7 +2568,7 @@ export class DocumentVersionController implements VersionManagerController {
   }
 
   #requireRepository(): VersionRepository {
-    if (!this.#repository) throw new VersionError('VERSIONING_DISABLED', 'Versioning is not enabled');
+    if (!this.#repository) throw new VersionError('VERSIONING_DISABLED', '이 문서에서 버전 기록을 먼저 켜세요.');
     return this.#repository;
   }
 
@@ -2530,7 +2684,8 @@ export class DocumentVersionController implements VersionManagerController {
     return result.commit;
   }
 
-  async #prepareMergeWorkingTree(): Promise<boolean> {
+  async #prepareMergeWorkingTree(incoming?: { name: string; cloud: boolean }): Promise<boolean> {
+    const documentId = this.#getDocumentId();
     const workspace = this.#captureWorkspaceToken();
     const branch = this.#requireActiveBranch();
     const capture = this.#snapshotCache.capture(this.#wasm, this.#getDocumentId(), this.#editorRevision);
@@ -2540,14 +2695,15 @@ export class DocumentVersionController implements VersionManagerController {
     this.#setMergeResolverLock(true);
     let choice: Awaited<ReturnType<typeof prepareUncommittedMerge>>;
     try {
-      choice = await prepareUncommittedMerge(branch.name);
+      choice = await prepareUncommittedMerge(branch.name, incoming);
       this.#assertWorkspaceToken(workspace);
     } finally {
       this.#setMergeResolverLock(false);
     }
     if (choice.kind === 'cancel') return false;
     if (choice.kind === 'stash') {
-      await this.#createShelf('병합 전 내 변경');
+      const id = await this.#createShelf('병합 전 내 변경');
+      if (incoming?.cloud && documentId) this.#preparedShelf = { documentId, id };
     } else if (choice.kind === 'commit') {
       await this.#createCheckpoint({ reason: 'manual', message: '병합 전 내 변경' }, capture);
     } else if (choice.kind === 'branch') {

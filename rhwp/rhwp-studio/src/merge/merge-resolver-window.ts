@@ -19,6 +19,7 @@ import { MergeCompletionCoordinator } from './completion-coordinator.ts';
 import { buildManualConflictEditor } from './manual-conflict-editor.ts';
 import { formatMergeValue, mergeErrorMessage, mergeTokenLabel } from './merge-labels.ts';
 import { MergeResolverState } from './resolver-state.ts';
+import { isLegacyCloudBranchName } from '../versioning/cloud-branch-name.ts';
 import './merge-resolver.css';
 
 const PREVIEW_ROLES: MergePreviewRole[] = ['base', 'current', 'incoming', 'result'];
@@ -221,7 +222,7 @@ export class MergeResolverWindow {
     const headingWrap = element('div', 'merge-resolver-heading');
     const heading = element('h1', '', '변경 검토');
     heading.id = 'merge-resolver-title';
-    const direction = element('p', 'merge-direction', options.sourceBranch.startsWith('Cloud ')
+    const direction = element('p', 'merge-direction', isLegacyCloudBranchName(options.sourceBranch)
       ? 'Cloud 문서 → 현재 문서' : `${options.sourceBranch} → ${options.currentBranch}`);
     headingWrap.append(heading, direction);
     const headerActions = element('div', 'merge-resolver-header-actions');

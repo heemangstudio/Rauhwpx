@@ -4,6 +4,7 @@ import { statfs } from 'node:fs/promises';
 const PAUSE_ACK_TIMEOUT_MS = 5 * 60 * 1000;
 const TAKEOVER_ACK_TIMEOUT_MS = 5 * 60 * 1000;
 const MAINTENANCE_INTERVAL_MS = 60 * 60 * 1000;
+const DEGRADED_FAILURE_COUNT = 3;
 
 export class Scheduler {
   constructor(sessionStore, runner, {
@@ -31,6 +32,29 @@ export class Scheduler {
     this.lastMaintenanceAt = 0;
     this.timer = null;
     this.ticking = null;
+    this.failures = {
+      scheduler: { failures: 0, since: null },
+      worker: { failures: 0, since: null },
+    };
+  }
+
+  #recordFailure(reason) {
+    const streak = this.failures[reason];
+    streak.since ??= this.now();
+    streak.failures += 1;
+  }
+
+  #recordSuccess(reason) {
+    this.failures[reason] = { failures: 0, since: null };
+  }
+
+  // Null while healthy; otherwise the failure streak that crossed the threshold.
+  health() {
+    for (const reason of ['scheduler', 'worker']) {
+      const { failures, since } = this.failures[reason];
+      if (failures >= DEGRADED_FAILURE_COUNT) return { reason, since, failures };
+    }
+    return null;
   }
 
   async recover() {
@@ -40,7 +64,13 @@ export class Scheduler {
 
   async tick() {
     if (this.ticking) return this.ticking;
-    this.ticking = this.#tick().finally(() => { this.ticking = null; });
+    this.ticking = this.#tick().then(
+      () => this.#recordSuccess('scheduler'),
+      (error) => {
+        this.#recordFailure('scheduler');
+        throw error;
+      },
+    ).finally(() => { this.ticking = null; });
     return this.ticking;
   }
 
@@ -132,8 +162,10 @@ export class Scheduler {
           controlSocket: this.controlEndpoint?.socketPath,
         });
         this.sessionStore.attachSandbox(session.id, sandboxId);
+        this.#recordSuccess('worker');
         this.logger?.info('sandbox.started', { sandboxId }, session.id);
       } catch (error) {
+        this.#recordFailure('worker');
         this.logger?.error('sandbox.start_failed', { code: error.code, message: error.message }, session.id);
         this.sessionStore.suspend(session.id, { code: 'WORKER_START_FAILED', message: error.message });
       }

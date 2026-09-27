@@ -6,6 +6,30 @@ import {
 } from '../rhwp/rhwp-agent/claude-credentials.mjs';
 
 const CLAUDE_CREDENTIAL_DESTINATION = '.claude/.credentials.json';
+// ~/.claude.json 은 프로젝트 기록과 캐시로 수백 KB가 되고 서버의 파일 한도(64 KB)를 넘는다.
+// 원격 CLI 가 로그인 상태로 시작하는 데 필요한 계정·온보딩 값만 옮기고 나머지는 이 Mac 에 둔다.
+const CLAUDE_CONFIG_KEYS = Object.freeze([
+  'oauthAccount',
+  'userID',
+  'hasCompletedOnboarding',
+  'lastOnboardingVersion',
+  'hasAvailableSubscription',
+  'customApiKeyResponses',
+  'primaryApiKey',
+]);
+
+export function portableClaudeConfig(content) {
+  let parsed;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const portable = {};
+  for (const key of CLAUDE_CONFIG_KEYS) if (parsed[key] !== undefined) portable[key] = parsed[key];
+  return Object.keys(portable).length ? JSON.stringify(portable) : null;
+}
 
 /** Claude Code's live config directory, plus whether an override named it. */
 function claudeProfile({ homeDir, env }) {
@@ -25,6 +49,7 @@ export const DESKTOP_PROVIDER_AUTH = Object.freeze({
       Object.freeze({
         destination: '.claude.json',
         resolve: ({ homeDir }) => path.join(homeDir, '.claude.json'),
+        portable: portableClaudeConfig,
       }),
       Object.freeze({
         destination: '.claude/.credentials.json',
@@ -73,7 +98,8 @@ export async function collectProviderAuth(provider, {
   for (const source of spec.files) {
     const filename = source.resolve({ homeDir, env: env ?? {} });
     if (!filename) continue;
-    const content = await readFileImpl(filename, 'utf8').catch(() => null);
+    const raw = await readFileImpl(filename, 'utf8').catch(() => null);
+    const content = typeof raw === 'string' && source.portable ? source.portable(raw) : raw;
     if (typeof content === 'string' && content.trim()) files[source.destination] = content;
   }
   // A macOS profile can hold its Claude login only in the Keychain, where the
@@ -91,6 +117,24 @@ export async function collectProviderAuth(provider, {
   }
   if (!Object.keys(secrets).length && !Object.keys(files).length) return null;
   return { secrets, files };
+}
+
+/**
+ * 옮길 가치가 있는 로그인인지 본다. Claude 로그인은 만료됐고 갱신 토큰도 없으면 서버에서도 쓸 수 없다.
+ * 모양을 모르는 파일은 쓸 수 있다고 본다. 서버의 CLI 가 최종 판단한다.
+ */
+export function providerLoginUsable(provider, auth, now = Date.now()) {
+  const secrets = auth?.secrets ?? {};
+  const files = auth?.files ?? {};
+  if (Object.keys(secrets).length) return true;
+  if (!Object.keys(files).length) return false;
+  if (provider !== 'claude' || !files[CLAUDE_CREDENTIAL_DESTINATION]) return true;
+  try {
+    const oauth = JSON.parse(files[CLAUDE_CREDENTIAL_DESTINATION])?.claudeAiOauth;
+    return !(Number(oauth?.expiresAt) < now && !oauth?.refreshToken);
+  } catch {
+    return true;
+  }
 }
 
 export const PERMANENT_TRANSFER_CODES = Object.freeze([

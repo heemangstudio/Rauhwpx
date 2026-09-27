@@ -10,6 +10,7 @@ const scene = (id: string, group: string, title: string, hint: string, params: R
   ({ id, group, title, hint, params });
 const dashboard = { cloud: '1', dashboard: '1', page: 'settings', destination: 'cloud' };
 const live = { cloud: '1', 'cloud-turn': '1' };
+const boatSetup = { cloud: '1', page: 'settings', destination: 'cloud', 'cloud-state': 'unconfigured' };
 
 export const auditScenarios: readonly AuditScenario[] = [
   scene('chat-empty', 'Conversation', 'New conversation', 'Inspect the empty state, composer, provider controls, and keyboard focus.', {}),
@@ -65,6 +66,26 @@ export const auditScenarios: readonly AuditScenario[] = [
   scene('cloud-suspended', 'Cloud workspace', 'Suspended Cloud session', 'Inspect suspended session guidance and recovery.', { ...live, 'cloud-phase': 'suspended' }),
   scene('cloud-disconnected', 'Cloud workspace', 'Cloud connection lost', 'Inspect retained workspace frame and reconnect/rebuild actions.', { ...live, 'cloud-link': 'failed' }),
   scene('cloud-ready', 'Cloud workspace', 'Cloud connection ready', 'Inspect the connected workspace and document controls.', { ...live, 'cloud-link': 'ready' }),
+  scene('boat-choose', 'boat server', 'Server choice with boat', 'Inspect the three server rows and the boat info popover.', { ...boatSetup, 'boat-screen': 'choose' }),
+  scene('boat-connect', 'boat server', 'Connect a boat account', 'Inspect the email field, API key path, focus, and Enter.', { ...boatSetup, 'boat-screen': 'connect' }),
+  scene('boat-key-error', 'boat server', 'Rejected API key', 'Inspect the inline field error after boat rejects a key.', { ...boatSetup, 'boat-scenario': 'invalidKey', 'boat-screen': 'key-error' }),
+  scene('boat-signin', 'boat server', 'boat sign-in link', 'Inspect the first beat: open the sign-in page, then confirm.', { ...boatSetup, 'boat-screen': 'signin' }),
+  scene('boat-code', 'boat server', 'boat sign-in code', 'Inspect the code, copy confirmation, and waiting row.', { ...boatSetup, 'boat-screen': 'code' }),
+  scene('boat-code-expired', 'boat server', 'Expired sign-in code', 'Inspect the expired code and the new code action.', { ...boatSetup, 'boat-scenario': 'expireFirstCode', 'boat-screen': 'expired' }),
+  scene('boat-billing', 'boat server', 'boat plan required', 'Open checkout; the fixture pays after a few seconds and advances.', { ...boatSetup, 'boat-state': 'billing', 'boat-screen': 'billing' }),
+  scene('boat-confirm', 'boat server', 'Create a boat server', 'Inspect the size, region, and auto-stop rows.', { ...boatSetup, 'boat-state': 'connected', 'boat-screen': 'confirm' }),
+  scene('boat-adopt', 'boat server', 'Adopt an existing boat server', 'Inspect the connect-existing wording for a server already on the account.', { ...boatSetup, 'boat-state': 'existing', 'boat-screen': 'confirm' }),
+  scene('boat-progress', 'boat server', 'boat server setup progress', 'Inspect stage marks, elapsed time, and the truncated detail line.', { ...boatSetup, 'boat-state': 'setup', 'boat-screen': 'progress' }),
+  scene('boat-failed', 'boat server', 'boat install failure', 'Inspect guidance and details; retry succeeds.', { ...boatSetup, 'boat-state': 'failed', 'boat-screen': 'failed' }),
+  scene('boat-ready', 'boat server', 'boat server ready', 'Inspect the ready summary with imported logins.', { ...boatSetup, 'boat-state': 'connected', 'boat-screen': 'ready' }),
+  scene('boat-ready-timer', 'boat server', 'boat server ready on a timer', 'Inspect the auto-stop row when the account stops the VM a set time after each start.', { ...boatSetup, 'boat-scenario': 'timerAutoStop', 'boat-state': 'connected', 'boat-screen': 'ready' }),
+  scene('boat-card-running', 'boat server', 'Running boat card', 'Inspect monthly hours, Stop, and the management menu.', { ...boatSetup, 'boat-state': 'running' }),
+  scene('boat-card-stopped', 'boat server', 'Stopped boat card', 'Start the server from the card and watch it wake.', { ...boatSetup, 'boat-state': 'stopped' }),
+  scene('boat-card-waking', 'boat server', 'Waking boat card', 'Inspect the pulsing dot and disabled Start.', { ...boatSetup, 'boat-state': 'waking' }),
+  scene('boat-card-stopping', 'boat server', 'Stopping boat card', 'Inspect the pulsing dot and disabled Stop.', { ...boatSetup, 'boat-state': 'stopping' }),
+  scene('boat-card-missing', 'boat server', 'Missing boat server', 'Inspect the missing state and the management menu.', { ...boatSetup, 'boat-state': 'missing' }),
+  scene('boat-card-setup', 'boat server', 'boat setup in settings', 'Inspect the active stage name while setup runs hidden.', { ...boatSetup, 'boat-state': 'setup' }),
+  scene('boat-chat-waking', 'boat server', 'Waking boat server for a send', 'Inspect the Cloud link progress while the stopped server starts.', { cloud: '1', 'boat-state': 'stopped', 'boat-chat': 'waking' }),
 ];
 
 const reviewedKey = 'sidebar-preview-audit-reviewed-v1';

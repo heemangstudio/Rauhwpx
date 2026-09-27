@@ -1,5 +1,24 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
+/**
+ * boat 채널은 { ok, value | error } 봉투를 돌려준다. contextBridge는 거절된 Error에서
+ * message만 복사하므로, code와 한국어 message를 함께 가진 오류 모양 객체로 거절한다.
+ */
+async function boatCall(channel, payload) {
+  const response = await ipcRenderer.invoke(channel, payload);
+  if (response && response.ok === true) return response.value;
+  const failure = response && typeof response.error === 'object' && response.error ? response.error : {};
+  const message = typeof failure.message === 'string' && failure.message
+    ? failure.message
+    : 'boat 요청을 처리하지 못했습니다.';
+  const code = typeof failure.code === 'string' && failure.code ? failure.code : 'BOAT_UNAVAILABLE';
+  throw {
+    name: 'BoatError', message, code,
+    ...(failure.retryable === false ? { retryable: false } : {}),
+    toString: () => message,
+  };
+}
+
 contextBridge.exposeInMainWorld('rhwpDesktop', {
   getSessionContext: () => ipcRenderer.invoke('desktop:get-session-context'),
   getUniqueInstalls: () => ipcRenderer.invoke('desktop:get-unique-installs'),
@@ -78,8 +97,16 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
   cloudSandboxStatus: () => ipcRenderer.invoke('cloud:sandbox-status'),
   cloudTeardownSandbox: (payload) => ipcRenderer.invoke('cloud:teardown-sandbox', payload),
   cloudForceQuitAccount: () => ipcRenderer.invoke('cloud:force-quit-account'),
-  cloudReconnectLink: () => ipcRenderer.invoke('cloud:reconnect-link'),
+  // `{ explicit: true }` only from a pressed 다시 연결 button; it may start a stopped boat VM.
+  cloudReconnectLink: (payload) => ipcRenderer.invoke('cloud:reconnect-link', {
+    explicit: payload?.explicit === true,
+  }),
   cloudRecreateLink: () => ipcRenderer.invoke('cloud:recreate-link'),
+  cloudRestartService: () => ipcRenderer.invoke('cloud:restart-service'),
+  cloudInspectHostKey: () => ipcRenderer.invoke('cloud:inspect-host-key'),
+  cloudTrustHostKey: (payload) => ipcRenderer.invoke('cloud:trust-host-key', payload),
+  cloudReimportLogins: (payload) => ipcRenderer.invoke('cloud:reimport-logins', payload),
+  cloudDiscardMissingSessions: () => ipcRenderer.invoke('cloud:discard-missing-sessions'),
   cloudTakeoverSandbox: () => ipcRenderer.invoke('cloud:takeover-sandbox'),
   cloudAccountLogout: () => ipcRenderer.invoke('cloud:account-logout'),
   cloudTransfer: (payload) => ipcRenderer.invoke('cloud:transfer', payload),
@@ -89,7 +116,8 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
   cloudDismissSession: (payload) => ipcRenderer.invoke('cloud:dismiss-session', payload),
   cloudCompleteTakeover: (payload) => ipcRenderer.invoke('cloud:complete-takeover', payload),
   cloudDownloadResult: (payload) => ipcRenderer.invoke('cloud:download-result', payload),
-  cloudDownloadCheckpoint: (payload) => ipcRenderer.invoke('cloud:download-checkpoint', payload),
+  // boat 오류는 code를 가진 오류 모양 객체로 거절한다. 다른 오류는 invoke 거절 그대로다.
+  cloudDownloadCheckpoint: (payload) => boatCall('cloud:download-checkpoint', payload),
   cloudPrepareRestartDocument: (payload) => ipcRenderer.invoke('cloud:prepare-restart-document', payload),
   cloudPublishCheckpoint: (payload) => ipcRenderer.invoke('cloud:publish-checkpoint', payload),
   cloudOpenDisplay: (payload) => ipcRenderer.invoke('cloud:display-open', payload),
@@ -99,6 +127,15 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
   cloudBeginEdit: (payload) => ipcRenderer.invoke('cloud:begin-edit', payload),
   cloudContinueEdit: (payload) => ipcRenderer.invoke('cloud:continue-edit', payload),
   cloudPersistEditDraft: (payload) => ipcRenderer.invoke('cloud:edit-draft-save', payload),
+  cloudBoatStartEmailSignIn: (payload) => boatCall('cloud:boat-email-start', payload),
+  cloudBoatPollSignIn: (payload) => boatCall('cloud:boat-email-poll', payload),
+  cloudBoatConnectApiKey: (payload) => boatCall('cloud:boat-connect-key', payload),
+  cloudBoatOpenLink: (payload) => boatCall('cloud:boat-open-link', payload),
+  cloudBoatSetup: (payload) => boatCall('cloud:boat-setup', payload),
+  cloudBoatWake: () => boatCall('cloud:boat-wake'),
+  cloudBoatStop: () => boatCall('cloud:boat-stop'),
+  cloudBoatRefresh: () => boatCall('cloud:boat-refresh'),
+  cloudBoatDisconnect: (payload) => boatCall('cloud:boat-disconnect', payload),
   onCloudEvent: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('cloud:event', listener);

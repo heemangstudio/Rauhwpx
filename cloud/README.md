@@ -96,6 +96,20 @@ OAuth and device-code state stays under `/var/lib/rauhwpx-cloud/provider-auth`. 
 
 Set `RAUHWpx_CHANNEL=prerelease` for the persistent prerelease channel. Tailscale is the default transport. For public HTTPS, set `RAUHWpx_TRANSPORT=public-https` and `RAUHWpx_PUBLIC_HOST=cloud.example.com`. The installer configures Caddy and verifies the public endpoint. Set `RAUHWpx_CONFIGURE_CADDY=0` only when an existing HTTPS proxy already forwards `/rauhwpx-cloud` to `127.0.0.1:7740`.
 
+## boat hosts
+
+`RAUHWpx_HOST_KIND=boat` installs on a boat.dev sandbox and requires `RAUHWpx_TRANSPORT=ssh-tunnel`. `RAUHWpx_BOAT_SANDBOX_ID` names the sandbox (`bx_` and 8 lowercase letters or digits), `RAUHWpx_BOAT_IDLE_MINUTES` sets the idle stop delay (default 30, 5 to 240), and `RAUHWpx_BOAT_USER` names the login user that holds the in-sandbox boat credential (default `user`). The installer writes them to `/etc/rauhwpx-boat.env` (root, 0600) and enables `rauhwpx-boat-idle.timer`, which runs `install/boat-idle.sh` from the current release every minute, starting 10 minutes after boot.
+
+The service touches `<dataDir>/activity.stamp`, at most every 30 seconds, for authenticated `POST`, `PUT`, `PATCH`, and `DELETE` requests and for session transitions. Reads, event streams, token refresh, idle sleep, and retention purges do not count. `rauhwpx-cloud idle --json` reports the host state:
+
+```json
+{"ok":true,"busy":false,"runningSessions":0,"queuedSessions":0,"activeUploads":0,"lastActivityAt":"2026-09-27T10:00:00.000Z","idleSeconds":1843}
+```
+
+The host is busy while a session is queued, a running session is working or has a pending pause, takeover, end, redirect, sleep, completion, or provider change, or an upload received a chunk in the last 5 minutes. A conversation waiting for its next message or for a plan, question, or approval decision is idle. After the VM resumes, a waiting conversation is queued again, and a turn that was waiting for a decision stops for review before it resumes.
+
+`boat-idle.sh` stops the sandbox when the host is not busy and both the last activity and the boot are at least the idle delay ago. It runs `boat stop <id>` as the boat user through a login shell and falls back to `POST /sandboxes/<id>/stop` with that user's `ASCII_TOKEN`. It skips while an install or update runs, when the machine reports another sandbox ID, and for 10 minutes after a stop request. Each decision writes one line to `journalctl -u rauhwpx-boat-idle`.
+
 ## App-provided sandboxes
 
 The desktop offers two server modes. Self-hosted installs this service on a user VPS over SSH. App-hosted asks a configured provider to create a sandbox, pairs without SSH, and tears the sandbox down on request. Railway is the first provider. `desktop/cloud-app-server.mjs` holds the registry contract of `configuration`, `spawn`, `status`, and `teardown`, so another provider is an added module rather than a new code path.

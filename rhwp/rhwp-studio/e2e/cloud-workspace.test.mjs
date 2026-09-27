@@ -549,13 +549,16 @@ try {
   assert.equal(await page.$eval('.ag-cloud-merge-button', (button) => button.disabled), false,
     'the merge button unlocks when Cloud session binding finishes');
   await page.click('.ag-cloud-merge-button');
-  await page.waitForFunction(() => document.body.textContent.includes('Cloud 시작 대화를 불러온 뒤')).catch(async (error) => {
+  // Without a local start record the review offers a copy instead of merging.
+  await page.waitForFunction(() => document.querySelector('.ag-sheet-title')?.textContent === '사본으로 저장할까요?').catch(async (error) => {
     console.error('Cloud merge guard state:', await page.evaluate(() => ({
       messages: document.querySelector('.ag-messages')?.textContent,
       merge: [...document.querySelectorAll('.ag-cloud-merge-button')].map((button) => ({ hidden: button.hidden, disabled: button.disabled, visible: button.checkVisibility(), text: button.textContent })),
     })));
     throw error;
   });
+  await page.$eval('.ag-sheet-cancel', (button) => button.click());
+  await page.waitForSelector('.ag-sheet', { hidden: true });
   assert.equal(await page.evaluate(() => window.__cloudWorkspaceHarness.calls
     .filter((call) => call.method === 'cloudPublishCheckpoint').length), 0);
   assert.equal(await page.evaluate(() => window.__inputHandler.isReadOnly()), false);
@@ -709,7 +712,7 @@ try {
     scrollLeft: scrollBeforeReturn,
     scrollTop: 91,
     draft: 'Keep cloud draft while editing locally.',
-    placeholder: '다음 Cloud 턴에 전달할 메시지',
+    placeholder: 'Cloud에 보낼 메시지',
     targetMessage: '',
     targetMessageHidden: true,
     commandCount: 5,

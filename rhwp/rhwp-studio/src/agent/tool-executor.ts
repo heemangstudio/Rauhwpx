@@ -261,7 +261,7 @@ export interface ToolCapabilityContext {
   /** Server state last synchronized by the Studio bridge. */
   activePhase?: AgentPhase;
   activeCapabilityEpoch?: number | null;
-  /** 현재 채팅의 권한 프로필 — 안전 모드에서는 클라우드 게시를 막는다. */
+  /** 현재 채팅의 권한 프로필 — 안전 모드에서는 Cloud 게시를 막는다. */
   permissionProfile?: PermissionProfile;
   template?: DocumentTemplate;
   /** Exact hub turn/cancellation fence captured for this request. */

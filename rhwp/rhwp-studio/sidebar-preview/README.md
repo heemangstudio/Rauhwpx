@@ -20,7 +20,7 @@ Electron, agent hub, credentials, or cloud connection.
 
 ## Live UI audit
 
-Open **http://127.0.0.1:7715/?audit=1** for a searchable checklist of 54 sidebar
+Open **http://127.0.0.1:7715/?audit=1** for a searchable checklist of 71 sidebar
 scenarios and 22 production dialog/menu launchers. The **Scenes** tab covers
 responses, rich Markdown, plan approval, questions, edit review, active subagents,
 connection failures, each provider's setup, Browserbase, preferences, history,
@@ -104,6 +104,20 @@ settings layout. The ordinary chat focus button still uses the preview placehold
 Dashboard fixtures expose quota exhaustion, sign-out, self-hosted and unavailable
 states through the typed `setDashboardState` method. Sample history is isolated to
 the preview account and only seeded with `dashboard=1`.
+
+## boat server
+
+The **boat server** audit group covers the chooser, email and API-key sign-in, the
+expired code, the plan requirement, create/adopt confirmation, setup progress, the
+install failure, the ready summary (idle and timer auto-stop), each settings card state,
+and the chat link while a stopped server wakes. The fake controller answers every boat
+method with realistic delays and never contacts boat.dev; checkpoint fetches from a
+resting server reject with `BOAT_SERVER_STOPPED`. `window.sidebarPreview.cloud.setBoatState()`,
+`setBoatScenario({ invalidKey, billingRequired, expireFirstCode, existingServer,
+installFailures, timerAutoStop, reuseSetupClock })`, `setBoatSpeed()` and `holdBoatWake()`
+set up other cases.
+`node sidebar-preview/boat-setup.check.mjs` walks both setup paths and the card
+actions at 280/480/900px in light and dark; `npm run test:sidebar` includes it.
 
 ## Changes drawer
 

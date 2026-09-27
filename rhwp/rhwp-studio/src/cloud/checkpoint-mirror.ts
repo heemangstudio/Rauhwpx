@@ -6,12 +6,15 @@ export function createCheckpointMirror({
   retryBaseMs = 250,
   retryMaxMs = 10_000,
   allowSameRevisionOperations = false,
+  retryable = () => true,
 }: {
   download(sessionId: string, operationId?: string): Promise<CloudCheckpointPayload>;
   apply(checkpoint: CloudCheckpointPayload): void | Promise<void>;
   retryBaseMs?: number;
   retryMaxMs?: number;
   allowSameRevisionOperations?: boolean;
+  /** false 면 다시 묻지 않고 그 오류로 끝낸다. 호출한 쪽이 언제 다시 물을지 정한다. */
+  retryable?(error: unknown): boolean;
 }) {
   type PendingOperation = {
     sessionId: string;
@@ -92,9 +95,15 @@ export function createCheckpointMirror({
       operation.attempts += 1;
       const delay = Math.min(retryMaxMs, retryBaseMs * (2 ** Math.min(operation.attempts - 1, 8)));
       operation.timer = setTimeout(() => enqueue(operation), delay);
-    }, () => {
+    }, (error: unknown) => {
       operation.running = false;
       if (operation.generation !== generation || disposed) return;
+      if (!retryable(error)) {
+        const key = keyFor(operation.sessionId, operation.operationId);
+        if (pending.get(key) === operation) pending.delete(key);
+        operation.reject(error);
+        return;
+      }
       operation.attempts += 1;
       const delay = Math.min(retryMaxMs, retryBaseMs * (2 ** Math.min(operation.attempts - 1, 8)));
       operation.timer = setTimeout(() => enqueue(operation), delay);

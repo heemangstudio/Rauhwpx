@@ -82,7 +82,7 @@ test('every provider can supply a cloud seed payload', async (t) => {
   t.after(() => fs.rm(home, { recursive: true, force: true }));
   const cliRoot = path.join(home, 'cli');
   await fs.mkdir(path.join(home, '.claude'), { recursive: true });
-  await fs.writeFile(path.join(home, '.claude.json'), '{"oauth":"claude"}');
+  await fs.writeFile(path.join(home, '.claude.json'), '{"oauthAccount":{"emailAddress":"claude@example.com"}}');
   await fs.writeFile(path.join(home, '.claude', '.credentials.json'), '{"token":"claude"}');
   await fs.mkdir(path.join(home, '.codex'), { recursive: true });
   await fs.writeFile(path.join(home, '.codex', 'auth.json'), '{"token":"codex"}');
@@ -237,4 +237,30 @@ test('a profile with no login and no Keychain item collects nothing', async (t) 
     platform: 'darwin',
     readClaudeKeychain,
   }), null);
+});
+
+test('a large ~/.claude.json travels as its login fields only', async (t) => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'rauhwpx-claude-config-'));
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const config = {
+    oauthAccount: { emailAddress: 'andy@example.com' },
+    userID: 'user-1',
+    hasCompletedOnboarding: true,
+    projects: { '/Users/andy/secret-project': { history: 'x'.repeat(200_000) } },
+  };
+  await fs.writeFile(path.join(home, '.claude.json'), JSON.stringify(config));
+  await fs.mkdir(path.join(home, '.claude'), { recursive: true });
+  await fs.writeFile(path.join(home, '.claude', '.credentials.json'), '{"claudeAiOauth":{"accessToken":"t"}}');
+  const expected = { oauthAccount: config.oauthAccount, userID: 'user-1', hasCompletedOnboarding: true };
+
+  const transfer = await collectTransferAuth('claude', { homeDir: home, env: {}, readClaudeKeychain: async () => null });
+  assert.deepEqual(JSON.parse(transfer.files['.claude.json']), expected);
+  assert.ok(transfer.files['.claude/.credentials.json']);
+
+  const seed = await collectProviderAuth('claude', {
+    vault: memoryVault(), homeDir: home, cliRoot: path.join(home, 'cli'), readClaudeKeychain: async () => null,
+  });
+  const seeded = Object.fromEntries(seed.files.map((file) => [file.path, file.content]));
+  assert.deepEqual(JSON.parse(seeded['.claude.json']), expected);
+  assert.ok(seeded['.claude/.credentials.json']);
 });

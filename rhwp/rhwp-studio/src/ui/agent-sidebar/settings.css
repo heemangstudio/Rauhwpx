@@ -2439,10 +2439,15 @@
 
 .ag-root .ag-settings-page .ag-settings-nav-button {
   min-height: 34px;
+  overflow: hidden;
   border: 0;
   border-radius: 8px;
   color: var(--n-text-secondary);
   font-weight: 600;
+  flex: 0 0 auto;
+  padding-inline: 8px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   transition:
     background-color var(--ag-dur-fast) var(--ag-ease-out),
     color var(--ag-dur-fast) var(--ag-ease-out),
@@ -2474,6 +2479,8 @@
   }
 
   .ag-root .ag-settings-page .ag-settings-nav-button {
+    /* 좁은 설정에서는 탭이 가로줄의 폭을 나눈다. */
+    flex: 1 1 auto;
     min-height: 28px;
     border-radius: 7px;
     font-size: 12px;

@@ -2911,6 +2911,11 @@ button.ag-skill-copy {
     display var(--ag-dur-fast) allow-discrete;
 }
 
+/* Cloud 문서 전환·병합 줄(8px 간격 + 36px)이 떠 있으면 그 위로 비켜 선다. */
+.ag-chat-page:has(.ag-cloud-document-controls > :not([hidden])) .ag-latest-pill {
+  bottom: calc(52px + var(--ag-fleet-dock-h, 0px));
+}
+
 .ag-latest-pill[hidden] {
   display: none;
   opacity: 0;
@@ -4847,6 +4852,11 @@ button.ag-skill-copy {
   display: none;
 }
 
+/* Cloud 문서 전환·병합 줄은 같은 자리에 떠 있다. 그 줄이 보이는 동안 칩은 물러났다가 사라지면 다시 뜬다. */
+.ag-chat-page:has(.ag-cloud-document-controls > :not([hidden])) > .ag-calibration-chip {
+  display: none;
+}
+
 .ag-calibration-chip-open {
   display: inline-flex;
   align-items: center;
@@ -4913,13 +4923,17 @@ button.ag-skill-copy {
 .ag-composer {
   position: relative;
   flex: 0 0 auto;
-  margin: 0 12px 12px;
+  /* Cloud 문서 전환·검토 줄이 떠 있는 만큼 위를 비워, 그 위의 변경 막대·계획과 겹치지 않는다. */
+  margin: var(--ag-cloud-controls-h, 0px) 12px 12px;
   padding: 6px 8px 5px;
   border: 1px solid var(--ag-border-strong);
   border-radius: var(--ag-r-panel);
   background: var(--ag-input-bg);
   box-shadow: var(--n-elev-2);
-  transition: border-color var(--ag-dur-fast) var(--ag-ease-out), box-shadow var(--ag-dur-fast) var(--ag-ease-out);
+  transition:
+    border-color var(--ag-dur-fast) var(--ag-ease-out),
+    box-shadow var(--ag-dur-fast) var(--ag-ease-out),
+    margin-top var(--ag-dur-base) var(--ag-ease-out);
 }
 
 .ag-composer-target-message {
@@ -4932,6 +4946,14 @@ button.ag-skill-copy {
 
 .ag-composer-target-message[hidden] {
   display: none;
+}
+
+.ag-composer-target-message[data-action="open-cloud"] {
+  cursor: pointer;
+}
+
+.ag-composer-target-message[data-action="open-cloud"]:hover {
+  color: var(--ag-text);
 }
 
 .ag-cloud-start-placeholder {
@@ -8354,10 +8376,16 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   z-index: 4;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  /* 보는 문서는 왼쪽, 가져올 변경은 오른쪽. 좁으면 검토 단추가 다음 줄로 내려가 이름을 자르지 않는다. */
+  justify-content: space-between;
   flex-wrap: wrap;
   gap: 6px;
   pointer-events: none;
+}
+
+.ag-cloud-document-controls > .ag-cloud-merge-button {
+  margin-left: auto;
+  min-width: 0;
 }
 
 .ag-cloud-document-controls:not(:has(> :not([hidden]))) {
@@ -8369,35 +8397,62 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   background: var(--ag-bg);
   border: 1px solid var(--ag-border);
   border-radius: 9px;
-  box-shadow: var(--n-elev-2);
+  box-shadow: var(--n-elev-1);
+  animation: ag-cloud-control-in var(--ag-dur-base) var(--ag-ease-out) both;
+}
+
+@keyframes ag-cloud-control-in {
+  from { opacity: 0; transform: translateY(4px); }
 }
 
 .ag-cloud-document-controls .ag-workspace-mode-option {
   min-height: 28px;
 }
 
+/* 검토할 변경이 오면 강조색으로 불러 세우고, 작업 중에는 조용히 기다린다. 긴 브랜치 이름은 줄임표로 접는다. */
 .ag-cloud-document-controls .ag-cloud-merge-button {
-  min-height: 34px;
+  min-height: 32px;
   max-width: 100%;
-  padding: 6px 10px;
-  color: var(--ag-text);
+  overflow: hidden;
+  padding: 6px 12px;
+  border-color: color-mix(in srgb, var(--ag-accent) 38%, var(--ag-border));
+  background: color-mix(in srgb, var(--ag-accent) 12%, var(--ag-bg));
+  color: var(--ag-accent);
   font: inherit;
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   cursor: default;
+  transition:
+    background var(--ag-dur-fast) var(--ag-ease-out),
+    color var(--ag-dur-fast) var(--ag-ease-out),
+    border-color var(--ag-dur-fast) var(--ag-ease-out);
 }
 
 .ag-cloud-document-controls .ag-cloud-merge-button:hover:not(:disabled) {
-  background: var(--ag-hover);
+  background: color-mix(in srgb, var(--ag-accent) 20%, var(--ag-bg));
+}
+
+.ag-cloud-document-controls .ag-cloud-merge-button:active:not(:disabled) {
+  background: color-mix(in srgb, var(--ag-accent) 26%, var(--ag-bg));
 }
 
 .ag-cloud-document-controls .ag-cloud-merge-button:disabled {
+  border-color: var(--ag-border);
+  background: var(--ag-bg);
   color: var(--ag-text-muted);
+  font-weight: 500;
   cursor: default;
 }
 
 .ag-cloud-document-controls .ag-cloud-merge-button:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-cloud-document-controls > :not([hidden]) { animation: none; }
 }
 
 /* 새 대화의 실행 위치 선택과 시작한 대화의 위치 표시. */
@@ -8436,6 +8491,23 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 .ag-root .ag-execution-location .ag-execution-location-option[hidden],
 .ag-execution-location span[hidden] { display: none; }
 .ag-execution-location-option:disabled { opacity: 0.4; }
+
+/* 좁은 사이드바에서는 Local·Cloud 글자를 거두고 아이콘만 남겨, 머리줄의 다른 단추가 잘리지 않게 한다. */
+.ag-header {
+  container: ag-header / inline-size;
+}
+
+@container ag-header (max-width: 360px) {
+  .ag-root .ag-execution-location .ag-execution-location-option {
+    width: 28px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .ag-execution-location .ag-execution-location-option span {
+    display: none;
+  }
+}
 
 
 .ag-provider-item:disabled {

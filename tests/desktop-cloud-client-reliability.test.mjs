@@ -538,6 +538,27 @@ test('refresh rotation retries a lost response with the same refresh token', asy
   assert.deepEqual(refreshBodies[1], refreshBodies[0]);
 });
 
+test('a revoked refresh token is dropped and reported as an unpaired device', async () => {
+  const vault = memoryVault();
+  let refreshes = 0;
+  const client = new CloudClient({
+    vault,
+    fetchImpl: async (url) => {
+      if (url.endsWith('/v1/token/refresh')) {
+        refreshes += 1;
+        return jsonResponse({ error: { code: 'REFRESH_TOKEN_REUSED', message: 'revoked' } }, 401);
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    },
+  });
+
+  await assert.rejects(client.profile(), (error) => error.code === 'PAIRING_REQUIRED'
+    && error.details?.cause === 'REFRESH_TOKEN_REUSED' && error.retryable === false);
+  assert.equal(await client.isPaired(), false, 'the dead token no longer counts as paired');
+  await assert.rejects(client.profile(), (error) => error.code === 'PAIRING_REQUIRED');
+  assert.equal(refreshes, 1, 'the revoked token is never sent again');
+});
+
 test('a transport failure does not blindly replay session creation', async () => {
   let sessionCreateCalls = 0;
   const client = new CloudClient({

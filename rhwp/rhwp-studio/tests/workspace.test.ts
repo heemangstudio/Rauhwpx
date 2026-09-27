@@ -255,7 +255,9 @@ test('every workspace mode derives its composer target from the lease and select
       }), cloudTarget);
     } else {
       assert.equal(cloudTarget.kind, 'cloud-blocked');
-      if (cloudTarget.kind === 'cloud-blocked') assert.equal(cloudTarget.reason, 'not-accepting-messages');
+      if (cloudTarget.kind === 'cloud-blocked') {
+        assert.equal(cloudTarget.reason, session.kind === 'suspended' ? 'session-suspended' : 'not-accepting-messages');
+      }
     }
     assert.deepEqual(deriveComposerTarget('cloud', snapshot(session, true)), cloudTarget);
   }
