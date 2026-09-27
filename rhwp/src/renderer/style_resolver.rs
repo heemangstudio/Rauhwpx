@@ -605,16 +605,8 @@ fn custom_hft_face_available(name: &str) -> bool {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[wasm_bindgen::prelude::wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(catch, js_namespace = globalThis, js_name = hasImportedFontMetricsFace)]
-    fn imported_hft_face_available(name: &str) -> Result<bool, wasm_bindgen::JsValue>;
-}
-
-#[cfg(target_arch = "wasm32")]
 fn custom_hft_face_available(name: &str) -> bool {
     crate::renderer::layout::active_shaping_face_available(name)
-        || imported_hft_face_available(name).unwrap_or(false)
 }
 
 fn resolve_legacy_latin_font(name: &str, lang_index: usize) -> Option<&'static str> {

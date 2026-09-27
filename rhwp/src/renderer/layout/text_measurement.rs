@@ -2092,61 +2092,10 @@ fn custom_font_face_available(name: &str) -> bool {
 }
 
 #[cfg(target_arch = "wasm32")]
-use wasm_bindgen::prelude::*;
-
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(catch, js_namespace = globalThis, js_name = getImportedFontMetricsRevision)]
-    fn imported_font_metrics_revision() -> Result<u32, JsValue>;
-    #[wasm_bindgen(catch, js_namespace = globalThis, js_name = getImportedFontMetricsBytes)]
-    fn imported_font_metrics_bytes(
-        name: &str,
-        bold: bool,
-        italic: bool,
-    ) -> Result<JsValue, JsValue>;
-}
-
-#[cfg(target_arch = "wasm32")]
-#[derive(Default)]
-struct WasmCustomFontMetrics {
-    revision: u32,
-    fonts: std::collections::HashMap<(String, bool, bool), Option<std::sync::Arc<[u8]>>>,
-    advances: std::collections::HashMap<(String, bool, bool, char), Option<f64>>,
-}
-
-#[cfg(target_arch = "wasm32")]
-thread_local! {
-    static WASM_CUSTOM_FONT_METRICS: std::cell::RefCell<WasmCustomFontMetrics> =
-        std::cell::RefCell::new(WasmCustomFontMetrics::default());
-}
-
-#[cfg(target_arch = "wasm32")]
-fn imported_face_bytes(name: &str, bold: bool, italic: bool) -> Option<std::sync::Arc<[u8]>> {
-    let revision = imported_font_metrics_revision().unwrap_or(0);
-    let key = (name.to_lowercase(), bold, italic);
-    WASM_CUSTOM_FONT_METRICS.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if cache.revision != revision {
-            cache.revision = revision;
-            cache.fonts.clear();
-            cache.advances.clear();
-        }
-        if let Some(bytes) = cache.fonts.get(&key) {
-            return bytes.clone();
-        }
-        let bytes = imported_font_metrics_bytes(name, bold, italic)
-            .ok()
-            .filter(|value| !value.is_null() && !value.is_undefined())
-            .map(|value| std::sync::Arc::<[u8]>::from(js_sys::Uint8Array::new(&value).to_vec()));
-        cache.fonts.insert(key, bytes.clone());
-        bytes
-    })
-}
-
-#[cfg(target_arch = "wasm32")]
 fn custom_font_face_available(name: &str) -> bool {
-    active_shaping_face_available(name) || imported_face_bytes(name, false, false).is_some()
+    // 가져온 브라우저 폰트는 Canvas 가 그린다. 조판 폭은 내장 메트릭을 우선하고,
+    // 미수록 글자만 런타임 레지스트리에서 잰다. 문서 내장 shaping face는 자체 폭을 쓴다.
+    active_shaping_face_available(name)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2157,25 +2106,7 @@ fn custom_face_char_em_advance(name: &str, bold: bool, italic: bool, c: char) ->
 
 #[cfg(target_arch = "wasm32")]
 fn custom_face_char_em_advance(name: &str, bold: bool, italic: bool, c: char) -> Option<f64> {
-    let embedded = embedded_face_char_em_advance(name, bold, italic, c);
-    if embedded.is_some() {
-        return embedded;
-    }
-    let bytes = imported_face_bytes(name, bold, italic)?;
-    let key = (name.to_lowercase(), bold, italic, c);
-    WASM_CUSTOM_FONT_METRICS.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if let Some(advance) = cache.advances.get(&key) {
-            return *advance;
-        }
-        let advance = ttf_parser::Face::parse(&bytes, 0).ok().and_then(|face| {
-            let glyph = face.glyph_index(c)?;
-            let advance = face.glyph_hor_advance(glyph)?;
-            (face.units_per_em() > 0).then(|| f64::from(advance) / f64::from(face.units_per_em()))
-        });
-        cache.advances.insert(key, advance);
-        advance
-    })
+    embedded_face_char_em_advance(name, bold, italic, c)
 }
 
 fn measure_char_width_with_policy(
