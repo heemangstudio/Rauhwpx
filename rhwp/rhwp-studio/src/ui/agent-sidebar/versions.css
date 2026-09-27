@@ -592,6 +592,13 @@
   min-height: 52px;
 }
 
+.ag-versions-head > div:first-child { margin-right: auto; }
+.ag-versions-recovery { padding: 12px 16px; overflow-y: auto; }
+.ag-version-recovery-row { display: flex; align-items: center; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--version-rule); }
+.ag-version-recovery-details { display: grid; gap: 4px; flex: 1; min-width: 0; }
+.ag-version-recovery-details strong { overflow-wrap: anywhere; font-size: 13px; }
+.ag-version-recovery-details span { color: var(--ag-text-secondary); font-size: 11px; }
+
 .ag-versions-title {
   margin: 0;
   line-height: 1.25;

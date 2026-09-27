@@ -30,6 +30,7 @@ import type {
   VersionManagerState,
   VersionMergeDraftView,
   VersionShelfView,
+  VersionRecoveryView,
 } from '../ui/agent-sidebar/version-manager.ts';
 import {
   VersionGraphStore,
@@ -1000,6 +1001,34 @@ export class DocumentVersionController implements VersionManagerController {
         currentBranch: active.name,
         expectedRepositoryRevision: repository.revision,
         expectedBranchRevision: branch.revision,
+      });
+      await this.#refreshData(true);
+    });
+  }
+
+  async listRecoveryEntries(): Promise<VersionRecoveryView[]> {
+    return this.#enqueue(async () => {
+      await this.#refreshData(false);
+      const repository = this.#requireRepository();
+      const workspace = this.#captureWorkspaceToken();
+      const entries = await this.#store.listRecoveryEntries(repository.id);
+      this.#assertWorkspaceToken(workspace, { editor: false });
+      return entries.map((entry) => ({
+        id: entry.id, name: entry.name, operation: entry.operation,
+        headId: String(entry.previousHead ?? entry.newHead),
+        createdAt: entry.createdAt, expiresAt: entry.expiresAt,
+      }));
+    });
+  }
+
+  async recoverBranch(entryId: string, name: string): Promise<void> {
+    await this.#enqueue(async () => {
+      await this.#refreshData(false);
+      await this.#guardMutation();
+      const repository = this.#requireRepository();
+      await this.#store.recoverBranch({
+        repositoryId: repository.id, entryId, name: branchName(name),
+        expectedRepositoryRevision: repository.revision,
       });
       await this.#refreshData(true);
     });

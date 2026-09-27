@@ -164,6 +164,8 @@ test('browser IndexedDB reuses its connection and reads repository indexes witho
         versioning.repositoryId('legacy-repository'),
         versioning.branchName('main'),
       );
+      const firstBackfill = await store.backfillObjectSizes(1);
+      const secondBackfill = await store.backfillObjectSizes(1);
       await store.clearForTests();
 
       const bytes = (value: number) => new Uint8Array([value, value + 1]);
@@ -219,11 +221,24 @@ test('browser IndexedDB reuses its connection and reads repository indexes witho
           beforeOrdinal: firstPage[0]?.ordinal,
           limit: 1,
         });
-        const usage = await store.getRepositoryStorageUsage(created.repository.id);
+        const originalGet = IDBObjectStore.prototype.get;
+        IDBObjectStore.prototype.get = function (key) {
+          if (this.name === 'blobs' || this.name === 'compareSnapshots') {
+            throw new Error(`usage cloned payload from ${this.name}`);
+          }
+          return originalGet.call(this, key);
+        };
+        let usage;
+        let blobSizes;
+        try {
+          usage = await store.getRepositoryStorageUsage(created.repository.id);
+          blobSizes = await store.getBlobSizes([created.commit.blobId, checkpoint.commit.blobId]);
+        } finally {
+          IDBObjectStore.prototype.get = originalGet;
+        }
         const found = await store.findRepositoryByDocumentId(created.repository.documentId);
         const refs = await store.listRefs(created.repository.id);
         const shelves = await store.listShelves(created.repository.id);
-        const blobSizes = await store.getBlobSizes([created.commit.blobId, checkpoint.commit.blobId]);
         return {
           openCount,
           migratedSchemaVersion: migrated?.schemaVersion,
@@ -235,6 +250,8 @@ test('browser IndexedDB reuses its connection and reads repository indexes witho
           migratedRootManifest: migratedRoot?.mergeManifestId,
           migratedParentManifests: migratedManifest.parentManifestIds,
           migratedBranchGeneration: migratedBranch?.generation,
+          firstBackfill,
+          secondBackfill,
           staleRejected,
           ordinals: [firstPage[0]?.ordinal, secondPage[0]?.ordinal],
           usage,
@@ -260,6 +277,8 @@ test('browser IndexedDB reuses its connection and reads repository indexes witho
     assert.equal(result.migratedCommitManifest, result.migratedManifestId);
     assert.deepEqual(result.migratedParentManifests, [result.migratedRootManifest]);
     assert.equal(result.migratedBranchGeneration, 'legacy-v2:legacy-repository:main');
+    assert.deepEqual(result.firstBackfill, { processed: 1, hasMore: true });
+    assert.deepEqual(result.secondBackfill, { processed: 1, hasMore: true });
     assert.equal(result.staleRejected, true);
     assert.deepEqual(result.ordinals, [2, 1]);
     assert.equal(result.usage.commitCount, 2);

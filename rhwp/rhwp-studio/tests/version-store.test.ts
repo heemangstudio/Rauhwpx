@@ -276,7 +276,7 @@ test('commit listing pages by descending ordinal', async () => {
   assert.deepEqual(await store.listCommits(repo.id, { beforeOrdinal: 1 }), []);
 });
 
-test('branch deletion keeps history until explicit garbage collection', async () => {
+test('branch deletion keeps history recoverable for 30 days', async () => {
   const { store, repository: repo, branch: main, commit: root } = await repository();
   const branched = await store.createBranch({
     repositoryId: repo.id,
@@ -304,10 +304,134 @@ test('branch deletion keeps history until explicit garbage collection', async ()
   assert.ok(await store.getCommit(experimentCommit.commit.id));
   assert.ok(await store.getBlob(experimentCommit.commit.blobId));
   const collected = await store.collectGarbage(repo.id, deleted.revision);
-  assert.deepEqual(collected.garbageCollected, { commits: 1, blobs: 1, compareSnapshots: 1 });
-  assert.equal(await store.getCommit(experimentCommit.commit.id), null);
-  assert.equal(await store.getBlob(experimentCommit.commit.blobId), null);
+  assert.deepEqual(collected.garbageCollected, { commits: 0, blobs: 0, compareSnapshots: 0 });
+  const entry = (await store.listRecoveryEntries(repo.id)).find((item) => (
+    item.operation === 'branch-deleted' && item.previousHead === experimentCommit.commit.id
+  ));
+  assert.ok(entry);
+  const restored = await store.recoverBranch({
+    repositoryId: repo.id,
+    entryId: entry.id,
+    expectedRepositoryRevision: collected.repository.revision,
+  });
+  assert.equal(restored.branch.target, experimentCommit.commit.id);
+  assert.notEqual(restored.branch.generation, experimentCommit.branch.generation);
+  assert.ok((await store.listRecoveryEntries(repo.id)).some((item) => item.id === entry.id));
+  assert.ok((await store.listRecoveryEntries(repo.id)).some((item) => (
+    item.operation === 'branch-created' && item.newHead === experimentCommit.commit.id
+      && item.name === restored.branch.name
+  )));
+  assert.ok(await store.getBlob(experimentCommit.commit.blobId));
   assert.ok(await store.getCommit(root.id));
+});
+
+test('replacing draft assets reclaims dropped blobs after the last reference', async () => {
+  const created = await repository();
+  const { store, repository: repo, commit: root } = created;
+  const source = await store.createBranch({
+    repositoryId: repo.id,
+    name: branchName('Draft source'),
+    target: root.id,
+    expectedRepositoryRevision: repo.revision,
+  });
+  const assetBytes = new Uint8Array([51, 52, 53]);
+  const assetId = hashBytes(assetBytes);
+  const draft = mergeDraft(created, source.branch);
+  draft.manualAssetBlobIds = [assetId];
+  const saved = await store.putMergeDraft({
+    draft,
+    expectedUpdatedAt: null,
+    assetBlobs: [{ id: assetId, byteLength: assetBytes.byteLength, bytes: assetBytes }],
+  });
+  assert.ok(await store.getBlob(assetId));
+  await store.putMergeDraft({
+    draft: { ...saved, manualAssetBlobIds: [] },
+    expectedUpdatedAt: saved.updatedAt,
+  });
+  assert.equal(await store.getBlob(assetId), null);
+});
+
+test('bounded garbage collection expires recovery roots and retains objects shared by another repository', async (context) => {
+  const { store, repository: repo, branch: main, commit: root } = await repository();
+  const branch = await store.createBranch({
+    repositoryId: repo.id,
+    name: branchName('Disposable'),
+    target: root.id,
+    expectedRepositoryRevision: repo.revision,
+  });
+  const sharedPayload = payload(42, 'Shared');
+  const committed = await store.createCheckpoint({
+    repositoryId: repo.id,
+    branch: branch.branch.name,
+    expectedRepositoryRevision: branch.repository.revision,
+    expectedBranchRevision: branch.branch.revision,
+    reason: 'manual',
+    ...sharedPayload,
+  });
+  const other = await store.createRepository({
+    documentId: documentId('document-2'),
+    lastSavedFingerprint: sharedPayload.contentFingerprint,
+    initial: sharedPayload,
+  });
+  const deleted = await store.deleteBranch({
+    repositoryId: repo.id,
+    branch: branch.branch.name,
+    currentBranch: main.name,
+    expectedRepositoryRevision: committed.repository.revision,
+    expectedBranchRevision: committed.branch.revision,
+  });
+  const future = Date.now() + 31 * 24 * 60 * 60 * 1000;
+  context.mock.method(Date, 'now', () => future);
+  let revision = deleted.revision;
+  let totalCommits = 0;
+  for (let index = 0; index < 10; index += 1) {
+    const result = await store.collectGarbage(repo.id, revision, { limit: 1 });
+    revision = result.repository.revision;
+    totalCommits += result.garbageCollected.commits;
+    if (!result.hasMore) break;
+  }
+  assert.equal(totalCommits, 1);
+  assert.equal(await store.getCommit(committed.commit.id), null);
+  assert.ok(await store.getBlob(other.commit.blobId));
+  assert.ok(await store.getCompareSnapshot(other.commit.compareSnapshotId));
+});
+
+test('bounded garbage collection removes orphan children before their parents', async (context) => {
+  const { store, repository: repo, branch: main, commit: root } = await repository();
+  const branch = await store.createBranch({
+    repositoryId: repo.id,
+    name: branchName('Discard'),
+    target: root.id,
+    expectedRepositoryRevision: repo.revision,
+  });
+  const first = await store.createCheckpoint({
+    repositoryId: repo.id, branch: branch.branch.name,
+    expectedRepositoryRevision: branch.repository.revision,
+    expectedBranchRevision: branch.branch.revision,
+    reason: 'manual', ...payload(30),
+  });
+  const second = await store.createCheckpoint({
+    repositoryId: repo.id, branch: branch.branch.name,
+    expectedRepositoryRevision: first.repository.revision,
+    expectedBranchRevision: first.branch.revision,
+    reason: 'manual', ...payload(31),
+  });
+  const deleted = await store.deleteBranch({
+    repositoryId: repo.id, branch: branch.branch.name,
+    currentBranch: main.name,
+    expectedRepositoryRevision: second.repository.revision,
+    expectedBranchRevision: second.branch.revision,
+  });
+  const future = Date.now() + 31 * 24 * 60 * 60 * 1000;
+  context.mock.method(Date, 'now', () => future);
+  const firstBatch = await store.collectGarbage(repo.id, deleted.revision, { limit: 1 });
+  assert.equal(firstBatch.garbageCollected.commits, 1);
+  assert.equal(await store.getCommit(second.commit.id), null);
+  assert.ok(await store.getCommit(first.commit.id));
+  const intermediate = await store.exportRepositorySnapshot(repo.id);
+  assert.ok(intermediate.commits.every((commit) => commit.parents.every((parent) => (
+    intermediate.commits.some((candidate) => candidate.id === parent)
+  ))));
 });
 
 test('tags and shelves keep history reachable during permanent branch deletion', async () => {
@@ -746,8 +870,8 @@ test('branch deletion invalidates matching merge drafts and releases their unsha
     expectedBranchRevision: incoming.branch.revision,
   });
   const collected = await store.collectGarbage(repo.id, deleted.revision);
-  assert.equal(collected.garbageCollected.commits, 1);
-  assert.equal(await store.getCommit(incoming.commit.id), null);
+  assert.equal(collected.garbageCollected.commits, 0);
+  assert.ok(await store.getCommit(incoming.commit.id));
   assert.equal(await store.getMergeDraft(saved.id), null);
   assert.equal(await store.getBlob(assetId), null);
 });
