@@ -747,7 +747,9 @@ function validateRepositorySnapshot(input: VersionRepositorySnapshot): VersionRe
   const repository = snapshot.repository;
   const id = repositoryId(repository.id);
   documentId(repository.documentId);
-  if (repository.schemaVersion !== 2 || repository.revision < 1 || repository.nextOrdinal < 2) {
+  if (repository.schemaVersion !== 2
+    || !Number.isSafeInteger(repository.revision) || repository.revision < 1
+    || !Number.isSafeInteger(repository.nextOrdinal) || repository.nextOrdinal < 2) {
     throw new VersionError('VERSION_STORE_FAILED', 'Portable history repository metadata is invalid');
   }
 
@@ -794,8 +796,15 @@ function validateRepositorySnapshot(input: VersionRepositorySnapshot): VersionRe
     throw new VersionError('VERSION_STORE_FAILED', 'Portable history contains duplicate merge manifests');
   }
   for (const commit of commits.values()) {
+    if (!Array.isArray(commit.parents) || commit.parents.length > 2
+      || new Set(commit.parents).size !== commit.parents.length) {
+      throw new VersionError('VERSION_STORE_FAILED', `Portable commit ${commit.id} has invalid parents`);
+    }
     if (!commit.parents.every((parent) => commits.has(parent))) {
       throw new VersionError('COMMIT_NOT_FOUND', `Portable commit ${commit.id} has a missing parent`);
+    }
+    if (commit.parents.some((parent) => commits.get(parent)!.ordinal >= commit.ordinal)) {
+      throw new VersionError('VERSION_STORE_FAILED', `Portable commit ${commit.id} violates commit order`);
     }
     if (
       !blobs.has(commit.blobId)
@@ -804,8 +813,11 @@ function validateRepositorySnapshot(input: VersionRepositorySnapshot): VersionRe
     ) {
       throw new VersionError('CORRUPT_BLOB', `Portable commit ${commit.id} has missing content`);
     }
-    if (commit.mergeManifestId && !manifests.has(commit.mergeManifestId)) {
-      throw new VersionError('CORRUPT_BLOB', `Portable commit ${commit.id} has a missing merge manifest`);
+    if (commit.mergeManifestId) {
+      const manifest = manifests.get(commit.mergeManifestId);
+      if (!manifest || manifest.commitId !== commit.id) {
+        throw new VersionError('CORRUPT_BLOB', `Portable commit ${commit.id} has an invalid merge manifest`);
+      }
     }
   }
   if (repository.nextOrdinal <= Math.max(...ordinals)) {
@@ -850,9 +862,19 @@ function validateRepositorySnapshot(input: VersionRepositorySnapshot): VersionRe
     if (
       manifest.repositoryId !== id
       || !commits.has(manifest.commitId)
+      || !Array.isArray(manifest.parentManifestIds)
+      || new Set(manifest.parentManifestIds).size !== manifest.parentManifestIds.length
       || !manifest.parentManifestIds.every((parent) => manifests.has(parent))
     ) {
       throw new VersionError('VERSION_STORE_FAILED', `Portable merge manifest ${manifest.id} is invalid`);
+    }
+    const commit = commits.get(manifest.commitId)!;
+    if (manifest.parentManifestIds.some((parent) => {
+      const parentManifest = manifests.get(parent)!;
+      const parentCommit = commits.get(parentManifest.commitId);
+      return !parentCommit || parentCommit.ordinal >= commit.ordinal;
+    })) {
+      throw new VersionError('VERSION_STORE_FAILED', `Portable merge manifest ${manifest.id} violates commit order`);
     }
   }
   const draftIds = new Set<MergeDraftId>();

@@ -351,3 +351,66 @@ test('import rejects a same-ID repository whose local history has diverged', asy
     (error) => error instanceof VersionError && error.code === 'REPOSITORY_EXISTS',
   );
 });
+
+test('import rejects a cyclic commit graph even when document objects are intact', async () => {
+  const fixture = await historyFixture();
+  const cyclic = structuredClone(fixture.snapshot);
+  const head = cyclic.commits.find((commit) => commit.id === fixture.head.id)!;
+  const index = cyclic.commits.indexOf(head);
+  cyclic.commits[index] = { ...head, parents: [head.id] };
+  const destination = new VersionGraphStore({ indexedDB: null });
+  await assert.rejects(destination.importRepositorySnapshot(cyclic), /violates commit order/);
+  assert.equal(await destination.getRepository(fixture.snapshot.repository.id), null);
+});
+
+test('import distinguishes malformed parents and permits an independent root', async () => {
+  const fixture = await historyFixture();
+  const root = fixture.snapshot.commits.find((commit) => commit.parents.length === 0)!;
+  const head = fixture.snapshot.commits.find((commit) => commit.id === fixture.head.id)!;
+  const malformed = structuredClone(fixture.snapshot);
+  malformed.commits[malformed.commits.findIndex((commit) => commit.id === head.id)] = {
+    ...head,
+    parents: [root.id, root.id],
+  };
+  await assert.rejects(
+    new VersionGraphStore({ indexedDB: null }).importRepositorySnapshot(malformed),
+    (error) => error instanceof VersionError && error.code === 'VERSION_STORE_FAILED'
+      && /invalid parents/.test(error.message),
+  );
+
+  const independent = structuredClone(fixture.snapshot);
+  independent.commits[independent.commits.findIndex((commit) => commit.id === head.id)] = {
+    ...head,
+    parents: [],
+  };
+  const imported = await new VersionGraphStore({ indexedDB: null }).importRepositorySnapshot(independent);
+  assert.equal(imported.imported, true);
+});
+
+test('import checks merge manifest ownership before storing the graph', async () => {
+  const fixture = await historyFixture();
+  const malformed = structuredClone(fixture.snapshot);
+  const head = malformed.commits.find((commit) => commit.id === fixture.head.id)!;
+  const root = malformed.commits.find((commit) => commit.id !== head.id)!;
+  malformed.commits[malformed.commits.indexOf(head)] = { ...head, mergeManifestId: root.mergeManifestId };
+  await assert.rejects(
+    new VersionGraphStore({ indexedDB: null }).importRepositorySnapshot(malformed),
+    (error) => error instanceof VersionError && error.code === 'CORRUPT_BLOB'
+      && /invalid merge manifest/.test(error.message),
+  );
+});
+
+test('import rejects non-finite repository revision and ordinal metadata', async () => {
+  const fixture = await historyFixture();
+  for (const metadata of [
+    { revision: Number.POSITIVE_INFINITY },
+    { nextOrdinal: Number.NaN },
+  ]) {
+    const malformed = structuredClone(fixture.snapshot);
+    malformed.repository = { ...malformed.repository, ...metadata };
+    await assert.rejects(
+      new VersionGraphStore({ indexedDB: null }).importRepositorySnapshot(malformed),
+      /repository metadata is invalid/,
+    );
+  }
+});
