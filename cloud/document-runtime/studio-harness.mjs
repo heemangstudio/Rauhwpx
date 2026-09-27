@@ -41,6 +41,8 @@ function runtimeError(code, message, cause) {
 // A bare "401" or "Unauthorized" only counts in an HTTP status position.
 const PROVIDER_AUTH_FAILURE_PATTERNS = [
   /\bplease run \/login\b/i,
+  /\bfailed to authenticate\b/i,
+  /\bunauthorized \(401\)/i,
   /\binvalid api key\b/i,
   /\boauth token\b[^\n]{0,40}\b(?:expired|revoked)\b/i,
   /\bauthentication_error\b/,
