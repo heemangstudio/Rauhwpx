@@ -195,7 +195,41 @@ pub(crate) fn resolve_metric_alias(name: &str) -> &str {
     }
 }
 
+type CachedMetricMatch = Option<(&'static FontMetric, bool)>;
+
+thread_local! {
+    /// 글꼴명별 조회 결과 캐시 (index = bold*2 + italic). 글자 폭 측정마다 별칭 match 와
+    /// 전체 테이블 선형 탐색을 반복하지 않게 한다. 테이블이 정적이라 무효화가 필요 없다.
+    static METRIC_LOOKUP_CACHE: std::cell::RefCell<
+        std::collections::HashMap<String, [Option<CachedMetricMatch>; 4]>,
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
 pub fn find_metric(name: &str, bold: bool, italic: bool) -> Option<MetricMatch> {
+    let slot = usize::from(bold) * 2 + usize::from(italic);
+    let cached = METRIC_LOOKUP_CACHE
+        .with(|cache| cache.borrow().get(name).and_then(|entries| entries[slot]));
+    let found = match cached {
+        Some(found) => found,
+        None => {
+            let found =
+                find_metric_uncached(name, bold, italic).map(|m| (m.metric, m.bold_fallback));
+            METRIC_LOOKUP_CACHE.with(|cache| {
+                cache
+                    .borrow_mut()
+                    .entry(name.to_string())
+                    .or_insert([None; 4])[slot] = Some(found);
+            });
+            found
+        }
+    };
+    found.map(|(metric, bold_fallback)| MetricMatch {
+        metric,
+        bold_fallback,
+    })
+}
+
+fn find_metric_uncached(name: &str, bold: bool, italic: bool) -> Option<MetricMatch> {
     if let Some(metric) = super::hft_metrics::find_metric(name, bold, italic) {
         return Some(metric);
     }
