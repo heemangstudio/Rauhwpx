@@ -734,7 +734,7 @@ export async function registerLocalFontFace(
       return { ok: true, record: latest.record, bytes: latest.bytes, convertedFromHft: false, reused: true };
     }
     document.fonts.add(face);
-    if (existing) document.fonts.delete(existing.face);
+    if (latest) document.fonts.delete(latest.face);
     importedFontFaces.set(faceKey, {
       record,
       // FontFace가 자체 사본을 가지므로 데스크톱 face는 JS 사본을 버린다. HFT에서 옮긴 수식 글꼴은

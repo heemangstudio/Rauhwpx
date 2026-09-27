@@ -409,6 +409,53 @@ test('직접 가져온 face는 늦게 끝난 데스크톱 등록보다 우선한
   }
 });
 
+test('늦게 로드된 가져온 face는 앞서 등록된 데스크톱 FontFace를 제거한다', async () => {
+  const g = globalThis as unknown as { FontFace?: unknown; document?: unknown };
+  const originalDocument = g.document;
+  const originalFontFace = g.FontFace;
+  let releaseImported: (() => void) | undefined;
+  const faces = new Set<{ family: string }>();
+  g.FontFace = class {
+    family: string;
+    constructor(family: string) { this.family = family; }
+    async load(): Promise<this> {
+      if (this.family.startsWith('rhwp-imported')) {
+        await new Promise<void>(resolve => { releaseImported = resolve; });
+      }
+      return this;
+    }
+  };
+  g.document = { fonts: {
+    add(face: { family: string }) { faces.add(face); },
+    delete(face: { family: string }) { return faces.delete(face); },
+  } };
+  resetLocalFontsForTests();
+  const names = {
+    family: 'Shared Font', fullName: 'Shared Font Regular', postscriptName: 'SharedFont-Regular',
+    style: 'Regular', aliases: [],
+  };
+  try {
+    const pendingImported = registerLocalFontFace(new ArrayBuffer(1024), {
+      source: 'imported', fileName: 'imported.ttf', names,
+    });
+    assert.ok(releaseImported);
+    const desktop = await registerLocalFontFace(new ArrayBuffer(1024), {
+      source: 'desktop', fileName: 'desktop.ttf', desktopFaceId: 'desktop-face', names,
+    });
+    assert.equal(desktop.ok, true);
+    assert.equal(faces.size, 1);
+    releaseImported?.();
+    const imported = await pendingImported;
+    assert.equal(imported.ok, true);
+    assert.equal(getSessionLocalFontFace(localFontFaceKey(names))?.record.source, 'imported');
+    assert.deepEqual([...faces].map(face => face.family), [imported.record.runtimeFamily]);
+  } finally {
+    resetLocalFontsForTests();
+    g.document = originalDocument;
+    g.FontFace = originalFontFace;
+  }
+});
+
 test('글꼴 폴더와 허브 색인을 합치고, 한쪽이 실패해도 나머지로 연결한다', async () => {
   const folder = {
     kind: 'browser-folder' as const,
