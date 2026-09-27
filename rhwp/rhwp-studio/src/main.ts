@@ -938,6 +938,8 @@ const sbCount = () => document.getElementById('sb-count')!;
 let statusSectionIndex = 0;
 let paperStatusFrame = 0;
 let characterStatusFrame = 0;
+let characterRecountTimer: ReturnType<typeof setTimeout> | null = null;
+const CHARACTER_RECOUNT_IDLE_MS = 300;
 const statusCharacterCounter = new StatusCharacterCounter();
 const statusNumber = new Intl.NumberFormat('ko-KR');
 
@@ -992,8 +994,26 @@ function updateCharacterStatus(): void {
 }
 
 function scheduleCharacterStatus(invalidate = false): void {
-  if (invalidate) statusCharacterCounter.invalidate();
+  if (invalidate) {
+    cancelCharacterRecount();
+    statusCharacterCounter.invalidate();
+  }
   if (!characterStatusFrame) characterStatusFrame = requestAnimationFrame(updateCharacterStatus);
+}
+
+/** 편집 뒤 전체 글자 수는 문서 전체를 다시 세므로 타이핑이 멈춘 뒤 한 번만 갱신한다. */
+function scheduleCharacterRecount(): void {
+  cancelCharacterRecount();
+  characterRecountTimer = setTimeout(() => {
+    characterRecountTimer = null;
+    scheduleCharacterStatus(true);
+  }, CHARACTER_RECOUNT_IDLE_MS);
+}
+
+function cancelCharacterRecount(): void {
+  if (characterRecountTimer === null) return;
+  clearTimeout(characterRecountTimer);
+  characterRecountTimer = null;
 }
 let autosaveStatusRestoreTimer: ReturnType<typeof setTimeout> | null = null;
 let autosavePreviousMessage: string | null = null;
@@ -1994,14 +2014,14 @@ function setupEventListeners(): void {
   eventBus.on('document-mutated', (reason) => {
     documentState.markDirty(typeof reason === 'string' ? reason : 'document-mutated');
     schedulePaperStatus();
-    scheduleCharacterStatus(true);
+    scheduleCharacterRecount();
   });
 
   eventBus.on('document-changed', (reason) => {
     documentState.markDirty(typeof reason === 'string' ? reason : 'document-changed');
     scheduleCloudEditDraftSave();
     schedulePaperStatus();
-    scheduleCharacterStatus(true);
+    scheduleCharacterRecount();
     scheduleDesktopFontSync();
   });
 
