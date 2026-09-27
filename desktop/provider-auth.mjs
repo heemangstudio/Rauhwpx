@@ -5,6 +5,10 @@ import { AppServerError } from './cloud-app-server.mjs';
 import {
   readClaudeKeychainCredential,
 } from '../rhwp/rhwp-agent/claude-credentials.mjs';
+import { portableClaudeConfig } from './cloud-provider-auth.mjs';
+
+// ~/.claude.json 은 한도를 넘기 쉬워 원본 대신 로그인에 필요한 값만 읽어 보낸다.
+const MAX_CLAUDE_CONFIG_SOURCE_BYTES = 16 * 1024 * 1024;
 
 export const PROVIDER_AUTH_FILES = Object.freeze({
   claude: Object.freeze(['.claude.json', '.claude/.credentials.json']),
@@ -126,9 +130,12 @@ function sourceCandidates(provider, { homeDir, cliRoot, env }) {
 async function readAuthFile(candidate) {
   try {
     const stat = await fs.lstat(candidate.path);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_AUTH_FILE_BYTES) return null;
-    const content = await fs.readFile(candidate.path, 'utf8');
-    if (!content) return null;
+    const claudeConfig = candidate.dest === '.claude.json';
+    const limit = claudeConfig ? MAX_CLAUDE_CONFIG_SOURCE_BYTES : MAX_AUTH_FILE_BYTES;
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > limit) return null;
+    const raw = await fs.readFile(candidate.path, 'utf8');
+    const content = claudeConfig ? portableClaudeConfig(raw) : raw;
+    if (!content || Buffer.byteLength(content) > MAX_AUTH_FILE_BYTES) return null;
     return { path: candidate.dest, content };
   } catch {
     return null;

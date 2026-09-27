@@ -328,11 +328,23 @@ function summarizeInstallLine(line) {
     .replace(/\s+/g, ' ')
     .trim();
   if (!text || /RAUHWpx_RECEIPT|pairing|token|secret|password|authorization|api[_-]?key/i.test(text)) return null;
-  const safe = text
-    .replace(/[A-Za-z0-9+/_-]{32,}={0,2}/g, '…')
-    .replace(/\b[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}\b/g, '…');
-  return safe.length > 140 ? `${safe.slice(0, 139)}…` : safe;
+  // 설치 스크립트의 원문 대신 사용자가 읽을 단계 이름만 보인다. 모르는 줄은 앞 단계를 유지한다.
+  const step = /^STEP (\d+)\/(\d+):/.exec(text);
+  if (step) return `작업 환경 준비 · ${step[1]}/${step[2]}`;
+  for (const [pattern, label] of INSTALL_PHASES) if (pattern.test(text)) return label;
+  return null;
 }
+
+const INSTALL_PHASES = Object.freeze([
+  [/^(?:preflight=|os=|arch=)/, '서버 확인'],
+  [/compatible Cloud service already installed/i, '설치된 Cloud 확인'],
+  [/Using the (?:local development|verified) Cloud runtime/i, 'Cloud 전송'],
+  [/apt-get|Reading package lists|Building dependency tree|newest version|Setting up|Unpacking/i, '시스템 패키지 설치'],
+  [/tar\.gz: OK|Installing an unsigned development|cosign|verify/i, 'Cloud 확인'],
+  [/added \d+ packages|"provider":"(?:claude|codex|pi)"/, '에이전트 설치'],
+  [/system migrate|Trying to pull|Getting image source|Copying blob/i, '작업 환경 준비'],
+  [/Created symlink|systemctl|health/i, '서비스 시작'],
+]);
 
 function boatDetail(error) {
   const text = String(error?.detail ?? error?.message ?? error ?? '')
@@ -5682,4 +5694,5 @@ export const __test = {
   destinationFromReadiness,
   sameDestination,
   nonRetryableTransferError,
+  summarizeInstallLine,
 };

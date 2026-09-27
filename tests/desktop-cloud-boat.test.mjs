@@ -20,7 +20,7 @@ import {
   parseHostKeys,
   rewriteKnownHosts,
 } from '../desktop/cloud-boat.mjs';
-import { CloudCoordinator } from '../desktop/cloud-coordinator.mjs';
+import { CloudCoordinator, __test as coordinatorTest } from '../desktop/cloud-coordinator.mjs';
 import { normalizeCloudProfile } from '../desktop/cloud-profile.mjs';
 import { CloudProvisioner, normalizeHostEnv, __test as provisionerTest } from '../desktop/cloud-provisioner.mjs';
 import { __test as tunnelTest } from '../desktop/cloud-ssh-tunnel.mjs';
@@ -1357,4 +1357,14 @@ test('boat-idle.sh --probe reports the self-stop tool the idle timer would use',
   await writeFile(path.join(home, '.profile'), 'export BOAT_ID=bx_99999999\n');
   assert.equal(probe(), 'rauhwpx-boat-self-stop none', 'a forked machine does not stop the configured one');
   assert.equal(parse(probe()), 'timer');
+});
+
+test('setup progress shows Korean phase names instead of raw installer output', () => {
+  const { summarizeInstallLine } = coordinatorTest;
+  assert.equal(summarizeInstallLine('preflight=ok'), '서버 확인');
+  assert.equal(summarizeInstallLine('Using the compatible Cloud service already installed on this VPS'), '설치된 Cloud 확인');
+  assert.equal(summarizeInstallLine('podman is already the newest version (4.9.3)'), '시스템 패키지 설치');
+  assert.equal(summarizeInstallLine('STEP 6/23: RUN apt-get update && apt-get install chromium'), '작업 환경 준비 · 6/23');
+  assert.equal(summarizeInstallLine('npm notice New major version of npm available!'), null, 'unknown lines keep the previous phase');
+  assert.equal(summarizeInstallLine('RAUHWpx_RECEIPT={"pairingCode":"ABCD-EFGH-JKLM"}'), null);
 });
