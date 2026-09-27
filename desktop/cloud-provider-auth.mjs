@@ -119,6 +119,24 @@ export async function collectProviderAuth(provider, {
   return { secrets, files };
 }
 
+/**
+ * 옮길 가치가 있는 로그인인지 본다. Claude 로그인은 만료됐고 갱신 토큰도 없으면 서버에서도 쓸 수 없다.
+ * 모양을 모르는 파일은 쓸 수 있다고 본다. 서버의 CLI 가 최종 판단한다.
+ */
+export function providerLoginUsable(provider, auth, now = Date.now()) {
+  const secrets = auth?.secrets ?? {};
+  const files = auth?.files ?? {};
+  if (Object.keys(secrets).length) return true;
+  if (!Object.keys(files).length) return false;
+  if (provider !== 'claude' || !files[CLAUDE_CREDENTIAL_DESTINATION]) return true;
+  try {
+    const oauth = JSON.parse(files[CLAUDE_CREDENTIAL_DESTINATION])?.claudeAiOauth;
+    return !(Number(oauth?.expiresAt) < now && !oauth?.refreshToken);
+  } catch {
+    return true;
+  }
+}
+
 export const PERMANENT_TRANSFER_CODES = Object.freeze([
   'AUTH_REQUIRED',
   'PROVIDER_UNAVAILABLE',

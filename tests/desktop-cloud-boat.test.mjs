@@ -306,6 +306,9 @@ async function startFakeBoat(t, options = {}) {
       let stdout = '';
       if (body.command.includes('/etc/ssh/ssh_host_')) {
         stdout = state.hostKeys.map((entry) => `${entry.type} ${entry.key} root@boat\n`).join('');
+      } else if (body.command.includes('rauhwpx-cloud pairing create')) {
+        state.pairingCodes = (state.pairingCodes ?? 0) + 1;
+        stdout = `${JSON.stringify({ code: 'ABCD-EFGH-JKLM', expiresAt: '2026-09-27T10:10:00.000Z', serverPublicKey: SERVER_KEY })}\n`;
       } else if (body.command.includes('boat-idle.sh') && state.selfStop) {
         stdout = `rauhwpx-boat-self-stop ${state.selfStop}\n`;
       } else if (body.command.includes('/rauhwpx-cloud/v1/health')) {
@@ -1082,6 +1085,58 @@ test('only an explicit reconnect resumes a stopped VM; the IPC defaults to autom
   assert.match(main, /cloud:reconnect-link'[\s\S]*?reconnectCloud\(\{\s*userIntent: payload\?\.explicit === true,\s*\}\)/);
   assert.match(preload, /cloudReconnectLink: \(payload\) => ipcRenderer\.invoke\('cloud:reconnect-link', \{\s*explicit: payload\?\.explicit === true,/);
   assert.match(preload, /cloudDownloadCheckpoint: \(payload\) => boatCall\('cloud:download-checkpoint', payload\)/);
+});
+
+test('an explicit reconnect re-pairs a revoked boat device and re-pins a changed host key', async (t) => {
+  const fake = await startFakeBoat(t);
+  const { boat, knownHostsPath } = await makeBoat(t, fake);
+  await boat.connectApiKey(API_KEY);
+  const sandbox = fake.addSandbox({ state: 'ready' });
+  await boat.pinHostKeys({ sandboxId: sandbox.id, host: sandbox.ip, keys: fake.state.hostKeys });
+  const client = fakeClient({ profile: boatProfile(sandbox.id, sandbox.ip), paired: true });
+  let revoked = true;
+  client.sessions = async () => {
+    client.calls.sessions += 1;
+    if (revoked) throw Object.assign(new Error('unpaired'), { status: 401, code: 'PAIRING_REQUIRED', retryable: false });
+    return [];
+  };
+  const activate = client.activateProfile;
+  client.activateProfile = async (next, options) => { revoked = false; return activate(next, options); };
+  const coordinator = new CloudCoordinator({ client, store: store(), recoveryDir: '/unused', boat });
+  t.after(() => coordinator.stop());
+  await coordinator.start();
+  await eventually(async () => (await coordinator.snapshot()).boat?.server?.state === 'running');
+
+  const unpaired = await coordinator.reconnectCloud();
+  assert.equal(unpaired.link.reason, 'pairing');
+  assert.equal(fake.state.pairingCodes ?? 0, 0, 'an automatic reconnect never re-pairs');
+  const probes = client.calls.sessions;
+  await coordinator.reconnectCloud({ background: true });
+  assert.equal(client.calls.sessions, probes, 'a pairing failure does not loop in the background');
+
+  const repaired = await coordinator.reconnectCloud({ userIntent: true });
+  assert.equal(repaired.link.kind, 'ready');
+  assert.equal(fake.state.pairingCodes, 1);
+  assert.equal(client.calls.redeemed, 1);
+  assert.equal(client.calls.activated.length, 1);
+
+  // boat restored the VM with new host keys at the same address. The saved pin no longer matches.
+  fake.state.hostKeys = [{ type: 'ssh-ed25519', key: sshBlob('ssh-ed25519') }];
+  const newKey = fake.state.hostKeys[0].key;
+  client.health = async (override) => {
+    client.calls.health += 1;
+    if (!(await readFile(knownHostsPath, 'utf8')).includes(newKey)) {
+      throw Object.assign(new Error('SSH tunnel exited with 255: Host key verification failed.'), {
+        code: 'SSH_HOST_KEY_CHANGED', retryable: false,
+      });
+    }
+    return { ok: true, protocolVersion: 1, serverPublicKey: (override ?? await client.loadProfile()).serverPublicKey };
+  };
+  const changed = await coordinator.reconnectCloud();
+  assert.equal(changed.link.reason, 'host-key');
+  const repinned = await coordinator.reconnectCloud({ userIntent: true });
+  assert.equal(repinned.link.kind, 'ready');
+  assert.ok((await readFile(knownHostsPath, 'utf8')).includes(newKey), 'the new host key is pinned');
 });
 
 test('a stream that fails because the VM stopped itself goes quiet instead of reconnecting', async (t) => {

@@ -1407,6 +1407,30 @@ ipcMain.handle('cloud:reconnect-link', async (event, payload = {}) => {
     userIntent: payload?.explicit === true,
   }));
 });
+ipcMain.handle('cloud:restart-service', async (event) => {
+  const session = sessionForEvent(event);
+  return scopedCloudSnapshot(session, await requireCloudCoordinator().restartCloudService());
+});
+ipcMain.handle('cloud:inspect-host-key', async (event) => {
+  sessionForEvent(event);
+  return requireCloudCoordinator().inspectHostKey();
+});
+ipcMain.handle('cloud:trust-host-key', async (event, payload = {}) => {
+  const session = sessionForEvent(event);
+  return scopedCloudSnapshot(session, await requireCloudCoordinator().trustHostKey({
+    fingerprint: typeof payload?.fingerprint === 'string' ? payload.fingerprint : '',
+  }));
+});
+ipcMain.handle('cloud:reimport-logins', async (event, payload = {}) => {
+  const session = sessionForEvent(event);
+  return scopedCloudSnapshot(session, await requireCloudCoordinator().reimportProviderLogins({
+    provider: typeof payload?.provider === 'string' ? payload.provider : null,
+  }));
+});
+ipcMain.handle('cloud:discard-missing-sessions', async (event) => {
+  const session = sessionForEvent(event);
+  return scopedCloudSnapshot(session, await requireCloudCoordinator().discardMissingSessions());
+});
 ipcMain.handle('cloud:recreate-link', async (event) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().recreateCloud());
@@ -1768,6 +1792,11 @@ ipcMain.handle('cloud:download-checkpoint', async (event, payload) => {
   } catch (error) {
     // A stopped boat VM answers BOAT_SERVER_STOPPED; the envelope keeps that code across IPC.
     if (error instanceof BoatError) return { ok: false, error: boatIpcFailure(error) };
+    // A missing checkpoint stays missing until the session changes. The mirror stops asking.
+    const status = Number(error?.status);
+    if (error?.retryable === false && status >= 400 && status < 500 && typeof error?.code === 'string') {
+      return { ok: false, error: { code: error.code, message: 'Cloud 체크포인트를 찾지 못했습니다.', retryable: false } };
+    }
     throw error;
   }
 });

@@ -10,6 +10,7 @@ const STOP_TIMEOUT_MS = 5_000;
 const HEALTH_PROBE_TIMEOUT_MS = 1_500;
 const MAX_HEALTH_BYTES = 64 * 1024;
 const DIRECT_SIGNAL = new AbortController().signal;
+const HOST_KEY_FAILURE_RE = /Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED|No \S+ host key is known for|Host key for \S+ has changed/i;
 
 function destination(ssh) {
   return `${ssh.user}@${ssh.host}`;
@@ -145,7 +146,10 @@ function waitForForward(child, port, timeoutMs = START_TIMEOUT_MS, {
     const onError = (error) => finish(error);
     const onClose = (code, signal) => finish(Object.assign(new Error(
       `SSH tunnel exited with ${code ?? signal}${stderr.trim() ? `: ${stderr.trim().slice(-800)}` : ''}`,
-    ), { code: 'SSH_TUNNEL_UNAVAILABLE', retryable: true }));
+    ), HOST_KEY_FAILURE_RE.test(stderr)
+      // 바뀐 호스트 키는 다시 시도해도 같다. 사람이 새 키를 확인하거나 boat 가 다시 핀해야 한다.
+      ? { code: 'SSH_HOST_KEY_CHANGED', retryable: false }
+      : { code: 'SSH_TUNNEL_UNAVAILABLE', retryable: true }));
     child.stderr.on('data', (chunk) => { stderr = `${stderr}${chunk}`.slice(-8_192); });
     child.once('error', onError);
     child.once('close', onClose);
@@ -350,4 +354,4 @@ export class CloudApiTransport {
   }
 }
 
-export const __test = { reservePort, sshTunnelArguments, waitForForward, withSignal };
+export const __test = { HOST_KEY_FAILURE_RE, reservePort, sshTunnelArguments, waitForForward, withSignal };

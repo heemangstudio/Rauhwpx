@@ -15,6 +15,7 @@ import {
   DESKTOP_PROVIDER_AUTH,
   isPermanentTransferError,
   PERMANENT_TRANSFER_CODES,
+  providerLoginUsable,
 } from './cloud-provider-auth.mjs';
 import {
   BOAT_IDLE_STOP_MINUTES,
@@ -320,6 +321,55 @@ const BOAT_PASS_THROUGH_CODES = new Set([
   'BOAT_BUSY',
 ]);
 
+/**
+ * 끊긴 링크를 사용자가 할 수 있는 일로 나눈다. network 만 조용히 다시 시도하고, 나머지는
+ * 다시 시도해도 같은 실패라 사용자 동작을 기다린다. message 는 복구 줄에 그대로 보인다.
+ */
+const LINK_REASON_MESSAGES = Object.freeze({
+  network: 'Cloud 서버에 연결할 수 없습니다.',
+  pairing: '이 기기의 Cloud 페어링이 풀렸습니다.',
+  'boat-auth': 'boat 계정 연결이 끊겼습니다.',
+  'host-key': '서버의 SSH 키가 바뀌었습니다.',
+  server: 'Cloud 서비스가 응답하지 않습니다.',
+  'session-missing': '서버에서 이전 작업을 찾지 못했습니다.',
+});
+const PAIRING_FAILURE_CODES = new Set([
+  'PAIRING_REQUIRED', 'REFRESH_TOKEN_INVALID', 'REFRESH_TOKEN_REUSED', 'UNAUTHORIZED',
+  'SERVER_IDENTITY_MISMATCH', 'SERVER_IDENTITY_INVALID',
+]);
+const BOAT_AUTH_CODES = new Set(['BOAT_AUTH_INVALID', 'BOAT_NOT_CONNECTED', 'BOAT_FORBIDDEN']);
+const HOST_KEY_CODES = new Set(['SSH_HOST_KEY_CHANGED', 'BOAT_HOST_KEY_UNVERIFIED']);
+const SERVER_FAILURE_CODES = new Set(['CLOUD_SERVER_DEGRADED', 'CLOUD_SERVICE_DOWN', 'CLOUD_PROTOCOL_INCOMPATIBLE']);
+/** 서버가 제공자 로그인 문제로 멈춘 작업. 이어 가기 전에 이 Mac 의 로그인을 다시 보낸다. */
+const PROVIDER_AUTH_CODES = new Set(['PROVIDER_AUTH_EXPIRED', 'AUTH_REQUIRED']);
+const PROVIDER_LABELS = Object.freeze({ claude: 'Claude', codex: 'Codex', pi: 'Pi' });
+
+export function classifyLinkFailure(error) {
+  const code = String(error?.code ?? '').toUpperCase();
+  let reason = 'network';
+  if (BOAT_AUTH_CODES.has(code)) reason = 'boat-auth';
+  else if (HOST_KEY_CODES.has(code)) reason = 'host-key';
+  else if (code.startsWith('BOAT_')) reason = 'network';
+  else if (PAIRING_FAILURE_CODES.has(code) || error?.status === 401) reason = 'pairing';
+  else if (SERVER_FAILURE_CODES.has(code)) reason = 'server';
+  else if (code === 'SESSION_NOT_FOUND' || error?.status === 404) reason = 'session-missing';
+  const message = code === 'BOAT_FORBIDDEN' ? 'boat API 키에 필요한 권한이 없습니다.'
+    : code.startsWith('SERVER_IDENTITY_') ? '서버가 다시 설치되어 다시 페어링해야 합니다.'
+      : code === 'CLOUD_PROTOCOL_INCOMPATIBLE' ? 'Cloud 서비스 버전이 이 앱과 맞지 않습니다.'
+        : code === 'CLOUD_SERVER_DEGRADED' ? 'Cloud 서버가 작업을 실행하지 못하고 있습니다.'
+          : LINK_REASON_MESSAGES[reason];
+  return { reason, message };
+}
+
+function userFacingError(message, code, cause) {
+  return Object.assign(new Error(message, cause ? { cause } : undefined), { code, retryable: false });
+}
+
+function providerLoginRequired(provider) {
+  return userFacingError(`이 Mac에서 ${PROVIDER_LABELS[provider] ?? provider}에 다시 로그인해야 합니다.`,
+    'PROVIDER_LOGIN_REQUIRED');
+}
+
 /** 설치 로그 한 줄을 화면용으로 줄인다. 영수증·페어링 코드·토큰처럼 보이는 줄은 버린다. */
 function summarizeInstallLine(line) {
   const text = String(line ?? '')
@@ -460,6 +510,11 @@ export class CloudCoordinator extends EventEmitter {
   #linkHealPromise = null;
   #linkWatchdog = null;
   #linkProbeBusy = false;
+  /** 서버 목록에 없던 로컬 작업. 복구 줄의 기록 지우기가 정리한다. */
+  #missingSessionIds = new Set();
+  #serviceActionPromise = null;
+  /** 배경 상태 읽기에서 boat 가 권한 없음(403)으로 거절했다. 새 키를 넣을 때까지 계정이 끊긴 것으로 보인다. */
+  #boatForbidden = false;
   #collectProviderAuth;
   #collectImportedAuth;
   #boat = null;
@@ -595,7 +650,7 @@ export class CloudCoordinator extends EventEmitter {
             this.#link = { kind: 'ready', error: null, attempt: 0, canRecreate: true };
           } catch (error) {
             this.#setSandboxLifecycle('error', `The saved app sandbox is not reachable: ${error.message}`);
-            this.#link = { kind: 'failed', error: error.message, attempt: 1, canRecreate: true };
+            this.#failLink(error, { canRecreate: true });
           }
         }
       }
@@ -1114,11 +1169,32 @@ export class CloudCoordinator extends EventEmitter {
   }
 
   #publicLink(profile) {
+    const failed = this.#link.kind === 'failed';
     return {
       kind: this.#link.kind,
       error: this.#link.error,
       attempt: this.#link.attempt,
       canRecreate: this.#canRecreateProfile(profile),
+      reason: failed ? this.#link.reason ?? 'network' : null,
+      message: failed ? this.#link.message ?? LINK_REASON_MESSAGES.network : null,
+    };
+  }
+
+  /**
+   * 실패한 링크를 이유와 함께 기록한다. network 가 아닌 실패와 다시 시도할 수 없는 실패는
+   * 사용자 동작을 기다리므로 watchdog 이 같은 실패를 되풀이하지 않는다.
+   */
+  #failLink(error, { canRecreate = this.#link.canRecreate, needsAction = null, message = null } = {}) {
+    const classified = classifyLinkFailure(error);
+    this.#linkNeedsAction = needsAction
+      ?? (classified.reason !== 'network' || !this.#streamShouldRestart(error));
+    this.#link = {
+      kind: 'failed',
+      error: error?.message ?? String(error ?? ''),
+      attempt: this.#link.attempt,
+      canRecreate,
+      reason: classified.reason,
+      message: message ?? classified.message,
     };
   }
 
@@ -1130,7 +1206,7 @@ export class CloudCoordinator extends EventEmitter {
     if (options.userIntent) {
       // An explicit reconnect is the user asking for Cloud, so a stopped boat VM is started first.
       const { userIntent: _intent, ...rest } = options;
-      return this.#wakeBoatForUser('reconnect').then(() => this.reconnectCloud(rest));
+      return this.#reconnectForUser(rest);
     }
     if (options.background && this.#linkNeedsAction) return this.snapshot();
     if (!options.background) this.#linkNeedsAction = false;
@@ -1138,6 +1214,202 @@ export class CloudCoordinator extends EventEmitter {
     const operation = this.#withProfileOperation((profileEpoch) => this.#reconnectCloud(profileEpoch, options));
     this.#reconnectPromise = operation.finally(() => { this.#reconnectPromise = null; });
     return this.#reconnectPromise;
+  }
+
+  /**
+   * 사용자가 누른 다시 연결. 앱이 다룰 수 있는 boat VM 이면 바뀐 호스트 키를 다시 핀하고 풀린
+   * 페어링을 다시 맺은 뒤 한 번 더 연결한다. 사용자는 버튼 하나만 누른다.
+   */
+  async #reconnectForUser(options) {
+    try {
+      await this.#wakeBoatForUser('reconnect');
+    } catch (error) {
+      if (!BOAT_AUTH_CODES.has(error?.code)) throw error;
+      this.#failLink(error, { canRecreate: false, needsAction: true });
+      const snapshot = await this.snapshot();
+      this.#emit({ type: 'cloud-link-failed', snapshot, error: error.message });
+      return snapshot;
+    }
+    const snapshot = await this.reconnectCloud(options);
+    if (this.#link.kind !== 'failed' || !await this.#healBoatLink()) return snapshot;
+    return this.reconnectCloud(options);
+  }
+
+  /** 앱이 고칠 수 있는 boat 링크 실패를 고친다. 다시 연결해 볼 가치가 있으면 true 다. */
+  async #healBoatLink() {
+    const profile = await this.#client.loadProfile().catch(() => null);
+    if (!this.#boat || !profile?.boat || this.#stopped) return false;
+    const sandboxId = profile.boat.sandboxId;
+    try {
+      if (this.#link.reason === 'host-key') {
+        // 핀 기록을 비우면 다음 동기화가 boat 명령 API 로 호스트 키를 다시 읽어 핀한다.
+        this.#boatPinned.delete(sandboxId);
+        await this.#boatSync({ allowResume: true, reason: 'repin' });
+        return true;
+      }
+      if (this.#link.reason === 'pairing') {
+        await this.#repairBoatPairing(profile);
+        return true;
+      }
+      if (this.#link.reason === 'network' && this.#boatStatus?.state === 'running'
+        && !await this.#boat.waitForServiceHealth(sandboxId, { timeoutMs: 4_000 })) {
+        // VM 은 켜져 있는데 안의 서비스가 답하지 않는다. 다시 연결로는 풀리지 않는다.
+        this.#failLink(transferError('Cloud service is not answering inside the boat VM', 'CLOUD_SERVICE_DOWN'));
+      }
+    } catch (error) {
+      if (error?.code === 'PROFILE_CHANGED' || error?.name === 'AbortError') return false;
+      this.#failLink(error, { needsAction: true });
+      this.#emit({ type: 'cloud-link-heal-failed', error: error.message });
+    }
+    return false;
+  }
+
+  /** boat VM 안에서 새 페어링 코드를 받아 이 기기를 다시 페어링한다. 서버 신원도 VM 이 알려 준 값으로 맞춘다. */
+  async #repairBoatPairing(profile) {
+    const sandboxId = profile.boat.sandboxId;
+    const pairing = await this.#boat.createPairingCode(sandboxId);
+    const candidate = normalizeCloudProfile({ ...profile, serverPublicKey: pairing.serverPublicKey });
+    await this.#waitForProfileHealth(candidate, { attempts: 3, timeoutMs: 10_000 });
+    const redeemed = await this.#client.redeemPairingCode(pairing.code, hostname(), {
+      profile: candidate,
+      persist: false,
+    });
+    await this.#withProfileWriter(async () => {
+      const latest = await this.#client.loadProfile().catch(() => null);
+      if (latest?.boat?.sandboxId !== sandboxId) {
+        throw Object.assign(new Error('Cloud profile changed during re-pairing'), { code: 'PROFILE_CHANGED' });
+      }
+      await this.#changeProfile(() => this.#client.activateProfile(
+        normalizeCloudProfile({ ...latest, serverPublicKey: pairing.serverPublicKey }),
+        { tokens: redeemed.credentials, device: redeemed.credentials.device },
+      ));
+    });
+    this.#emit({ type: 'boat-repaired' });
+  }
+
+  /**
+   * 서비스는 설치되어 있는데 답하지 않거나 작업 실행기가 멈춘 서버를 다시 시작한다. boat 는 boat 명령
+   * API 로, 내 서버는 설치할 때 쓴 SSH 로 부른다. 앱이 만든 Raucloud 는 서버 다시 만들기가 맡는다.
+   */
+  restartCloudService() {
+    if (this.#serviceActionPromise) return this.#serviceActionPromise;
+    const operation = this.#restartCloudService().finally(() => {
+      if (this.#serviceActionPromise === operation) this.#serviceActionPromise = null;
+    });
+    this.#serviceActionPromise = operation;
+    return operation;
+  }
+
+  async #restartCloudService() {
+    const profile = await this.#client.loadProfile().catch(() => null);
+    if (profile?.mode !== 'self-hosted') {
+      throw userFacingError('이 서버는 앱에서 다시 시작할 수 없습니다.', 'CLOUD_RESTART_UNSUPPORTED');
+    }
+    if (profile.boat) await this.#wakeBoatForUser('restart');
+    this.#abortSessionWatchers();
+    this.#link = { kind: 'reconnecting', error: null, attempt: this.#link.attempt + 1, canRecreate: false };
+    this.#emit({ type: 'cloud-link-reconnecting' });
+    try {
+      if (profile.boat) await this.#boat.restartService(profile.boat.sandboxId);
+      else await this.#provisioner.restartService(profile.ssh);
+    } catch (error) {
+      this.#failLink(transferError(error?.message ?? 'Cloud service restart failed', 'CLOUD_SERVICE_DOWN'), {
+        canRecreate: false, needsAction: true,
+      });
+      const snapshot = await this.snapshot();
+      this.#emit({ type: 'cloud-link-failed', snapshot, error: error?.message ?? String(error) });
+      throw userFacingError('Cloud 서비스를 다시 시작하지 못했습니다.', 'CLOUD_RESTART_FAILED', error);
+    }
+    this.#emit({ type: 'cloud-service-restarted' });
+    return this.reconnectCloud();
+  }
+
+  /** 내 서버가 지금 내미는 SSH 호스트 키의 지문. 사용자가 확인한 뒤에만 trustHostKey 로 저장한다. */
+  async inspectHostKey() {
+    const profile = await this.#client.loadProfile().catch(() => null);
+    if (profile?.mode !== 'self-hosted' || profile.boat || typeof this.#provisioner?.scanHostKey !== 'function') {
+      throw userFacingError('이 서버의 SSH 키는 앱에서 확인할 수 없습니다.', 'HOST_KEY_UNSUPPORTED');
+    }
+    try {
+      const scanned = await this.#provisioner.scanHostKey(profile.ssh);
+      return { host: scanned.host, port: scanned.port, fingerprint: scanned.fingerprint };
+    } catch (error) {
+      throw userFacingError('서버의 SSH 키를 읽지 못했습니다.', 'HOST_KEY_UNAVAILABLE', error);
+    }
+  }
+
+  async trustHostKey({ fingerprint } = {}) {
+    if (typeof fingerprint !== 'string' || !/^SHA256:[A-Za-z0-9+/]{43}$/.test(fingerprint)) {
+      throw userFacingError('SSH 키 지문이 올바르지 않습니다.', 'HOST_KEY_INVALID');
+    }
+    const profile = await this.#client.loadProfile().catch(() => null);
+    if (profile?.mode !== 'self-hosted' || profile.boat) {
+      throw userFacingError('이 서버의 SSH 키는 앱에서 확인할 수 없습니다.', 'HOST_KEY_UNSUPPORTED');
+    }
+    try {
+      await this.#provisioner.trustHostKey(profile.ssh, fingerprint);
+    } catch (error) {
+      throw userFacingError(error?.code === 'SSH_HOST_KEY_MISMATCH'
+        ? '확인하는 동안 SSH 키가 다시 바뀌었습니다.'
+        : 'SSH 키를 저장하지 못했습니다.', error?.code ?? 'HOST_KEY_UNAVAILABLE', error);
+    }
+    this.#emit({ type: 'host-key-trusted' });
+    return this.reconnectCloud();
+  }
+
+  /**
+   * 이 Mac 의 제공자 로그인을 서버로 다시 보낸다. provider 를 주면 그 로그인만 보내고, 이 Mac 에서도
+   * 쓸 수 없는 로그인이면 다시 로그인하라고 알린다.
+   */
+  async reimportProviderLogins({ provider = null } = {}) {
+    if (provider !== null && !CLOUD_PROVIDERS.includes(provider)) {
+      throw userFacingError('알 수 없는 에이전트입니다.', 'INVALID_PROVIDER');
+    }
+    await this.#wakeBoatForUser('credentials');
+    await this.#importProviderLoginsOrThrow(provider ? [provider] : CLOUD_PROVIDERS);
+    return this.snapshot();
+  }
+
+  async #importProviderLoginsOrThrow(providers) {
+    const { imported, missing } = await this.#importAllProviderLogins(providers);
+    if (providers.length === 1 && missing.includes(providers[0])) throw providerLoginRequired(providers[0]);
+    if (!imported.length) {
+      throw userFacingError('로그인을 Cloud 서버로 옮기지 못했습니다.', 'PROVIDER_IMPORT_FAILED');
+    }
+    this.#emit({ type: 'provider-logins-imported', providers: imported });
+    return imported;
+  }
+
+  /** 서버 목록에 없는 로컬 작업 기록을 지운다. 되살릴 서버 쪽 작업이 없어서 기다려도 돌아오지 않는다. */
+  async discardMissingSessions() {
+    const sessionIds = [...this.#missingSessionIds];
+    this.#missingSessionIds.clear();
+    await this.#discardLocalSessions(sessionIds);
+    return this.reconnectCloud();
+  }
+
+  #discardLocalSessions(sessionIds) {
+    return this.#withProfileOperation(async (profileEpoch) => {
+      for (const sessionId of sessionIds) {
+        for (const [key, controller] of this.#watchers) {
+          if (key.endsWith(`:${sessionId}`)) {
+            controller.abort();
+            this.#watchers.delete(key);
+          }
+        }
+        this.#remoteSessions.delete(sessionId);
+        const handoff = await this.#handoffForSession(sessionId, profileEpoch);
+        if (!handoff) continue;
+        for (const timers of [this.#recoveryTimers, this.#resultRecoveryTimers]) {
+          clearTimeout(timers.get(handoff.id));
+          timers.delete(handoff.id);
+        }
+        await this.#store.dismiss(handoff.id);
+        this.#assertProfileEpoch(profileEpoch);
+        this.#emit({ type: 'session-dismissed', sessionId });
+      }
+      return this.snapshot();
+    });
   }
 
   recreateCloud() {
@@ -1236,7 +1508,9 @@ export class CloudCoordinator extends EventEmitter {
     try {
       const profile = await this.#client.loadProfile().catch(() => null);
       if (!profile) return;
-      await this.#waitForProfileHealth(profile, { attempts: 1 });
+      const health = await this.#waitForProfileHealth(profile, { attempts: 1 });
+      // 서비스는 답하지만 작업 실행기가 멈춘 서버는 초록 링크 뒤에 작업을 가둔다.
+      if (health?.degraded) this.#noteBrokenLink('Cloud scheduler is degraded');
     } catch (error) {
       this.#noteBrokenLink(error.message);
     } finally {
@@ -1265,12 +1539,9 @@ export class CloudCoordinator extends EventEmitter {
       this.#link = { ...this.#link, canRecreate };
     }
     if (!profile) {
-      this.#link = {
-        kind: 'failed',
-        error: 'Cloud 서버가 설정되어 있지 않습니다.',
-        attempt: this.#link.attempt,
-        canRecreate: false,
-      };
+      this.#failLink(transferError('Cloud 서버가 설정되어 있지 않습니다.', 'CLOUD_NOT_CONFIGURED'), {
+        canRecreate: false, message: 'Cloud 서버가 설정되어 있지 않습니다.',
+      });
       return this.snapshot({ profileConnection: 'error', profileMessage: this.#link.error });
     }
     if (profile.boat && this.#boatBlocksBackground()) return this.#quietBoatLink();
@@ -1280,6 +1551,9 @@ export class CloudCoordinator extends EventEmitter {
       const health = await this.#waitForProfileHealth(profile, { attempts: 2, timeoutMs: 2_000, signal: controller.signal });
       this.#assertProfileEpoch(profileEpoch);
       if (profile.boat) this.#noteBoatReachable(profile.boat.sandboxId);
+      if (health?.degraded) {
+        throw transferError(`Cloud ${health.degraded.reason ?? 'scheduler'} is failing`, 'CLOUD_SERVER_DEGRADED');
+      }
       this.#abortSessionWatchers();
       // Reconcile the remote session list as well as health. A successful
       // health probe alone does not restore the conversation after a restart.
@@ -1302,8 +1576,10 @@ export class CloudCoordinator extends EventEmitter {
           controller.signal.throwIfAborted();
           present = new Set(sessions.map((session) => session.id ?? session.sessionId));
         }
-        if (knownSessions.some((id) => !present.has(id))) {
-          throw transferError('Cloud 서버에서 이전 작업을 찾지 못했습니다. 서버를 다시 만들어 이 대화에서 이어가세요.', 'SESSION_NOT_FOUND');
+        const missing = knownSessions.filter((id) => !present.has(id));
+        this.#missingSessionIds = new Set(missing);
+        if (missing.length) {
+          throw transferError('Cloud 서버에서 이전 작업을 찾지 못했습니다.', 'SESSION_NOT_FOUND');
         }
         const previous = this.#remoteSessions;
         this.#remoteSessions = new Map(sessions.map((session) => {
@@ -1326,15 +1602,7 @@ export class CloudCoordinator extends EventEmitter {
         await this.refreshBoatStatus({ force: true, reason: 'link-check' });
         if (this.#boatBlocksBackground()) return this.#quietBoatLink();
       }
-      if (!this.#streamShouldRestart(error) && error?.status !== 404 && error?.code !== 'SESSION_NOT_FOUND') {
-        this.#linkNeedsAction = true;
-      }
-      this.#link = {
-        kind: 'failed',
-        error: error.message,
-        attempt: this.#link.attempt,
-        canRecreate,
-      };
+      this.#failLink(error, { canRecreate });
       const snapshot = await this.snapshot({
         profileConnection: 'error',
         profileMessage: error.message,
@@ -1369,12 +1637,7 @@ export class CloudCoordinator extends EventEmitter {
       this.#emit({ type: 'cloud-link-ready', snapshot });
       return snapshot;
     } catch (error) {
-      this.#link = {
-        kind: 'failed',
-        error: error.message,
-        attempt: this.#link.attempt,
-        canRecreate: true,
-      };
+      this.#failLink(error, { canRecreate: true, needsAction: false });
       const snapshot = await this.snapshot({
         profileConnection: 'error',
         profileMessage: error.message,
@@ -2486,8 +2749,7 @@ export class CloudCoordinator extends EventEmitter {
   }
 
   #markTerminalStreamFailure(error) {
-    this.#linkNeedsAction = true;
-    this.#link = { ...this.#link, kind: 'failed', error: error.message };
+    this.#failLink(error, { needsAction: true });
     this.#abortSessionWatchers();
     this.#emit({ type: 'cloud-link-failed', error: error.message });
   }
@@ -2609,6 +2871,10 @@ export class CloudCoordinator extends EventEmitter {
     }));
     if (profile.mode === 'self-hosted') await this.#adoptSelfHostedMode();
     else this.#setSandboxLifecycle('ready');
+    // 다시 페어링은 끊긴 링크를 고치는 길이기도 하다. 확인한 서버로 링크를 바로 되살린다.
+    if (this.#link.kind === 'failed') {
+      this.#link = { kind: 'ready', error: null, attempt: 0, canRecreate: this.#canRecreateProfile(profile) };
+    }
     const snapshot = await this.snapshot();
     this.#emit({ type: 'paired', snapshot });
     return snapshot;
@@ -2873,10 +3139,33 @@ export class CloudCoordinator extends EventEmitter {
 
   async command(input) {
     await this.#wakeBoatForUser('command');
+    if (input?.command === 'resume' || input?.command === 'retry') {
+      await this.#reseedBeforeResume(input.sessionId);
+    }
     if (input?.command === 'queue-message' || input?.command === 'redirect') {
       await this.#ensureConversationWorker(input.sessionId);
     }
-    return this.#withProfileOperation((profileEpoch) => this.#command(input, profileEpoch));
+    try {
+      return await this.#withProfileOperation((profileEpoch) => this.#command(input, profileEpoch));
+    } catch (error) {
+      // 서버에 없는 작업을 끝내려는 요청이다. 남은 로컬 기록만 지우면 대화가 끝난다.
+      if ((input?.command === 'end' || input?.command === 'cancel')
+        && (error?.code === 'SESSION_NOT_FOUND' || error?.status === 404)) {
+        return this.#discardLocalSessions([input.sessionId]);
+      }
+      throw error;
+    }
+  }
+
+  /** 제공자 로그인 문제로 멈춘 작업은 이어 가기 전에 이 Mac 의 로그인을 다시 보낸다. */
+  async #reseedBeforeResume(sessionId) {
+    const records = await this.#store.list().catch(() => []);
+    const record = records.find((entry) => entry.cloudSessionId === sessionId || entry.id === sessionId);
+    const remote = this.#remoteSessions.get(sessionId);
+    const code = record?.suspendedCode ?? remote?.suspendedReason?.code ?? null;
+    const provider = record?.provider ?? remote?.provider ?? null;
+    if (!PROVIDER_AUTH_CODES.has(code) || !CLOUD_PROVIDERS.includes(provider)) return;
+    await this.#importProviderLoginsOrThrow([provider]);
   }
 
   async prepareEditDraft(input) {
@@ -4591,17 +4880,27 @@ export class CloudCoordinator extends EventEmitter {
       message: null,
       checkedAt: 0,
       machineKey: null,
+      wakeStage: null,
       ...previous,
       ...patch,
     };
+    if (this.#boatStatus.state !== 'waking') this.#boatStatus.wakeStage = null;
     return this.#boatStatus;
   }
 
-  #noteBoatSandbox(sandboxId, sandbox, { waking = false } = {}) {
+  /** 깨우기의 현재 단계(starting → service → connecting)를 알린다. 화면이 경과 시간 옆에 보인다. */
+  #setBoatWakeStage(sandboxId, wakeStage) {
+    this.#setBoatStatus(sandboxId, { state: 'waking', wakeStage });
+    this.#emitBoatChange('waking', { force: true });
+  }
+
+  #noteBoatSandbox(sandboxId, sandbox, { waking = false, holdWake = false } = {}) {
     let state = sandbox ? boatServerState(sandbox.state) : 'missing';
     // A wake owns the transition, so an early `archived` read does not flash `stopped`;
     // a stop owns it the same way until boat reports the archive.
     if (waking && ['stopped', 'stopping'].includes(state)) state = 'waking';
+    // 사용자 깨우기는 서비스와 터널까지 확인한 뒤에 끝난다. 그 전의 running 읽기는 아직 깨우는 중이다.
+    if (holdWake && state === 'running') state = 'waking';
     if (this.#boatTransition === 'stopping' && state === 'running') state = 'stopping';
     return this.#setBoatStatus(sandboxId, {
       state,
@@ -4633,7 +4932,7 @@ export class CloudCoordinator extends EventEmitter {
   #emitBoatChange(reason, { force = false } = {}) {
     const status = this.#boatStatus;
     const signature = JSON.stringify([
-      status?.sandboxId, status?.state, status?.monthHours, status?.message,
+      status?.sandboxId, status?.state, status?.wakeStage, status?.monthHours, status?.message, this.#boatForbidden,
       this.#boatSetup, this.#boatConnected, this.#boat?.limits?.canStart, this.#boat?.limits?.trial,
     ]);
     if (!force && signature === this.#boatEmitted) return;
@@ -4642,9 +4941,11 @@ export class CloudCoordinator extends EventEmitter {
   }
 
   async #boatSnapshot(profile) {
-    const account = await this.#boat.accountSnapshot().catch(() => ({
+    const stored = await this.#boat.accountSnapshot().catch(() => ({
       connected: false, method: null, email: null, canStart: null, trial: null,
     }));
+    // 권한이 모자란 키도 새 키가 필요하다는 점에서 끊긴 계정과 같다.
+    const account = this.#boatForbidden ? { ...stored, connected: false } : stored;
     const sandboxId = profile?.boat?.sandboxId ?? this.#boatSetupSandboxId ?? null;
     const status = sandboxId && this.#boatStatus?.sandboxId === sandboxId ? this.#boatStatus : null;
     const machine = normalizeBoatMachine(profile?.boat?.machine ?? this.#boatSetupMachine);
@@ -4665,6 +4966,7 @@ export class CloudCoordinator extends EventEmitter {
         autoStop,
         timerHours: boatTimerHours(autoStop, { trial: account.trial === true, setup: !owned }),
         message: unknown ? BOAT_STATE_UNKNOWN : status?.message ?? null,
+        wakeStage: status?.state === 'waking' ? status.wakeStage ?? null : null,
       } : null,
       setup: this.#boatSetup ? {
         stage: this.#boatSetup.stage,
@@ -4717,11 +5019,14 @@ export class CloudCoordinator extends EventEmitter {
       sandbox = await this.#boat.getSandbox(sandboxId);
     } catch (error) {
       if (error?.code === 'BOAT_AUTH_INVALID') this.#boatConnected = false;
+      if (error?.code === 'BOAT_FORBIDDEN') this.#boatForbidden = true;
       this.#emitBoatChange(reason);
       throw error;
     }
-    const waking = Boolean(this.#boatWakePromise && this.#boatWakeResumes) || Boolean(this.#boatSetupPromise);
-    const status = this.#noteBoatSandbox(sandboxId, sandbox, { waking });
+    this.#boatForbidden = false;
+    const userWake = Boolean(this.#boatWakePromise && this.#boatWakeResumes);
+    const waking = userWake || Boolean(this.#boatSetupPromise);
+    const status = this.#noteBoatSandbox(sandboxId, sandbox, { waking, holdWake: userWake });
     if (sandbox) {
       const usage = await this.#boat.usage(sandboxId).catch(() => null);
       if (usage) this.#setBoatStatus(sandboxId, { monthHours: usage.monthHours });
@@ -4844,7 +5149,7 @@ export class CloudCoordinator extends EventEmitter {
     const announce = () => {
       if (announced) return;
       announced = true;
-      this.#setBoatStatus(sandboxId, { state: 'waking', message: null });
+      this.#setBoatStatus(sandboxId, { state: 'waking', message: null, wakeStage: 'starting' });
       if (this.#link.kind !== 'recreating') {
         this.#link = { kind: 'reconnecting', error: null, attempt: this.#link.attempt + 1, canRecreate: false };
       }
@@ -4868,11 +5173,12 @@ export class CloudCoordinator extends EventEmitter {
           // A resume takes seconds; a user waiting on a send should not wait out a create budget.
           timeoutMs: 3 * 60_000,
           onState: (current) => {
-            this.#noteBoatSandbox(sandboxId, current, { waking: true });
+            this.#noteBoatSandbox(sandboxId, current, { waking: true, holdWake: true });
             this.#emitBoatChange('waking');
           },
         }));
       }
+      this.#boatForbidden = false;
       const machineKey = sandboxMachineKey(sandbox);
       let savedTargetMatches = false;
       try {
@@ -4898,7 +5204,9 @@ export class CloudCoordinator extends EventEmitter {
       if (announced) {
         // boat 는 홈 밖의 파일을 모두 복원한 뒤 서비스를 시작한다. VM 안의 health 로 그 순간을
         // 기다린 뒤 터널을 한 번만 연다. 확인하지 못하면 터널 쪽 재시도가 그대로 남는다.
+        this.#setBoatWakeStage(sandboxId, 'service');
         const ready = await this.#boat.waitForServiceHealth(sandboxId);
+        this.#setBoatWakeStage(sandboxId, 'connecting');
         await this.#waitForProfileHealth(profile, ready
           ? { attempts: 4, timeoutMs: 15_000 }
           : { attempts: 10, timeoutMs: 15_000 });
@@ -4916,6 +5224,7 @@ export class CloudCoordinator extends EventEmitter {
       return profile;
     } catch (rawError) {
       const error = boatUserError(rawError);
+      if (error.code === 'BOAT_FORBIDDEN') this.#boatForbidden = true;
       if (!allowResume) throw error;
       if (error.code === 'BOAT_SERVER_MISSING') {
         this.#setBoatStatus(sandboxId, { state: 'missing', message: null, checkedAt: Date.now() });
@@ -4933,9 +5242,9 @@ export class CloudCoordinator extends EventEmitter {
           this.#setBoatStatus(sandboxId, { message: error.message });
         }
       }
-      if (this.#boatStatus?.state === 'running' || error.code === 'BOAT_UNAVAILABLE') {
-        this.#link = { kind: 'failed', error: error.message, attempt: this.#link.attempt, canRecreate: false };
-        this.#linkNeedsAction = true;
+      if (this.#boatStatus?.state === 'running' || error.code === 'BOAT_UNAVAILABLE'
+        || BOAT_AUTH_CODES.has(error.code)) {
+        this.#failLink(rawError?.code ? rawError : error, { canRecreate: false, needsAction: true });
       } else if (this.#link.kind === 'reconnecting') {
         this.#link = { kind: 'ready', error: null, attempt: 0, canRecreate: false };
       }
@@ -5007,18 +5316,28 @@ export class CloudCoordinator extends EventEmitter {
   async boatPollSignIn({ claimId } = {}) {
     const result = await this.#requireBoat().pollSignIn(claimId);
     if (result.status !== 'connected') return result;
-    this.#boatConnected = true;
-    void this.refreshBoatStatus({ force: true, reason: 'connected' });
-    this.#emitBoatChange('connected', { force: true });
+    this.#afterBoatAccountConnected();
     return { status: 'connected', snapshot: await this.snapshot() };
   }
 
   async boatConnectApiKey({ apiKey } = {}) {
     await this.#requireBoat().connectApiKey(apiKey);
+    this.#afterBoatAccountConnected();
+    return this.snapshot();
+  }
+
+  #afterBoatAccountConnected() {
     this.#boatConnected = true;
+    this.#boatForbidden = false;
     void this.refreshBoatStatus({ force: true, reason: 'connected' });
     this.#emitBoatChange('connected', { force: true });
-    return this.snapshot();
+    // 계정 때문에 끊긴 링크는 새 계정으로 바로 다시 잇는다. 사용자가 방금 연결을 요청했다.
+    if (this.#link.kind === 'failed' && this.#link.reason === 'boat-auth') {
+      this.#linkNeedsAction = false;
+      this.#profileOperationContext.exit(() => {
+        void this.reconnectCloud({ userIntent: true }).catch(() => {});
+      });
+    }
   }
 
   async boatOpenLink({ kind, claimId = null } = {}) {
@@ -5363,13 +5682,20 @@ export class CloudCoordinator extends EventEmitter {
     }
   }
 
-  /** 이 Mac에 로그인된 모든 제공자 자격 증명을 한 번에 서버로 옮긴다. 옮기지 못한 것은 failures에 남는다. */
-  async #importAllProviderLogins() {
+  /**
+   * 이 Mac에 로그인된 제공자 자격 증명을 한 번에 서버로 옮긴다. 옮기지 못한 것은 failures에,
+   * 이 Mac 에도 쓸 수 있는 로그인이 없는 것은 missing 에 남는다.
+   */
+  async #importAllProviderLogins(providers = CLOUD_PROVIDERS) {
     const imported = [];
     const failures = [];
-    for (const provider of CLOUD_PROVIDERS) {
+    const missing = [];
+    for (const provider of providers) {
       const auth = await this.#providerAuthFor(provider).catch(() => null);
-      if (!auth || (!Object.keys(auth.secrets ?? {}).length && !Object.keys(auth.files ?? {}).length)) continue;
+      if (!providerLoginUsable(provider, auth)) {
+        missing.push(provider);
+        continue;
+      }
       try {
         const result = await this.#client.putProviderAuth(provider, auth);
         if (result === null) {
@@ -5383,7 +5709,7 @@ export class CloudCoordinator extends EventEmitter {
         this.#emit({ type: 'boat-credential-import-failed', provider, error: boatDetail(error) });
       }
     }
-    return { imported, failures };
+    return { imported, failures, missing };
   }
 
   #emit(event) {
@@ -5549,18 +5875,18 @@ export class CloudCoordinator extends EventEmitter {
     if (session.takeoverReady) return {
       ...base,
       kind: 'taking-over',
-      message: 'The frozen cloud boundary is ready to open on this device.',
+      message: '이 기기에서 열 준비가 되었습니다.',
     };
     if (session.takeoverRequested) return {
       ...base,
       kind: 'taking-over',
-      message: 'Waiting for the next frozen cloud boundary…',
+      message: '다음 안전한 경계를 기다리는 중입니다.',
     };
-    if (state === 'queued') return { ...base, kind: 'queued', position: 1, message: 'Waiting for a cloud worker.' };
+    if (state === 'queued') return { ...base, kind: 'queued', position: 1, message: '실행 자리를 기다리고 있습니다.' };
     if (state === 'running' && session.pauseRequested) return {
       ...base,
       kind: 'pausing',
-      message: 'Pausing at the next stable tool boundary…',
+      message: '안전한 경계에서 멈추는 중입니다.',
     };
     if (state === 'running') return {
       ...base,
@@ -5570,14 +5896,16 @@ export class CloudCoordinator extends EventEmitter {
       turnLimit: session.limits?.maxTurns ?? 100,
       elapsedMs: Math.max(0, Date.now() - Date.parse(asIso(session.startedAt, new Date().toISOString()))),
       timeLimitMs: (session.limits?.maxDurationSeconds ?? 28_800) * 1000,
-      currentActivity: 'Cloud agent is working.',
+      currentActivity: '',
       phase: this.#publicExecutionPhase(session.executionPhase),
       wait: session.currentWait ?? null,
     };
     if (state === 'suspended') return {
       ...base,
       kind: 'suspended',
-      reason: session.suspendedReason?.message ?? 'Cloud agent needs attention.',
+      reason: session.suspendedReason?.message ?? '',
+      code: session.suspendedReason?.code ?? null,
+      provider: session.provider ?? null,
       resumable: !['TURN_LIMIT', 'DURATION_LIMIT'].includes(session.suspendedReason?.code),
     };
     if (state === 'completed') return {
@@ -5600,7 +5928,7 @@ export class CloudCoordinator extends EventEmitter {
       ...base,
       kind: 'failed',
       code: session.status === 'purged' ? 'RESULT_PURGED' : 'CLOUD_ERROR',
-      message: session.status === 'purged' ? 'Sensitive cloud data has been purged.' : 'Cloud session failed.',
+      message: session.status === 'purged' ? '결과가 서버에서 지워졌습니다.' : 'Cloud 작업이 실패했습니다.',
       retryable: false,
     };
   }
@@ -5623,12 +5951,12 @@ export class CloudCoordinator extends EventEmitter {
     if (record.takeoverReady) return {
       ...base,
       kind: 'taking-over',
-      message: 'The frozen cloud boundary is ready to open on this device.',
+      message: '이 기기에서 열 준비가 되었습니다.',
     };
     if (record.takeoverRequested) return {
       ...base,
       kind: 'taking-over',
-      message: 'Waiting for the next frozen cloud boundary…',
+      message: '다음 안전한 경계를 기다리는 중입니다.',
     };
     if (['preparing', 'uploading', 'committing'].includes(record.state)) {
       return {
@@ -5637,14 +5965,14 @@ export class CloudCoordinator extends EventEmitter {
         stage: record.state,
         completedBytes: record.completedBytes ?? 0,
         totalBytes: record.documentSize ?? 0,
-        message: record.statusMessage ?? 'Transferring this session to the VPS…',
+        message: record.statusMessage ?? '문서와 대화를 전송하는 중입니다.',
       };
     }
-    if (record.state === 'queued') return { ...base, kind: 'queued', position: 1, message: record.statusMessage ?? 'Waiting for a cloud worker.' };
+    if (record.state === 'queued') return { ...base, kind: 'queued', position: 1, message: record.statusMessage ?? '실행 자리를 기다리고 있습니다.' };
     if (record.state === 'running' && record.pauseRequested) return {
       ...base,
       kind: 'pausing',
-      message: record.statusMessage ?? 'Pausing at the next stable tool boundary…',
+      message: record.statusMessage ?? '안전한 경계에서 멈추는 중입니다.',
     };
     if (record.state === 'running') return {
       ...base,
@@ -5654,14 +5982,16 @@ export class CloudCoordinator extends EventEmitter {
       turnLimit: record.limits?.maxTurns ?? 100,
       elapsedMs: Math.max(0, Date.now() - Date.parse(asIso(record.startedAt, record.updatedAt))),
       timeLimitMs: (record.limits?.maxDurationMinutes ?? 480) * 60_000,
-      currentActivity: record.statusMessage ?? 'Cloud agent is working.',
+      currentActivity: record.statusMessage ?? '',
       phase: this.#publicExecutionPhase(record.executionPhase),
       wait: record.currentWait ?? null,
     };
     if (record.state === 'suspended') return {
       ...base,
       kind: 'suspended',
-      reason: record.statusMessage ?? record.error ?? 'Cloud agent needs attention.',
+      reason: record.statusMessage ?? record.error ?? '',
+      code: record.suspendedCode ?? null,
+      provider: record.provider ?? null,
       resumable: !['TURN_LIMIT', 'DURATION_LIMIT'].includes(record.suspendedCode),
     };
     if (['completed', 'downloading', 'downloaded'].includes(record.state)) return {
@@ -5684,7 +6014,7 @@ export class CloudCoordinator extends EventEmitter {
       ...base,
       kind: 'failed',
       code: record.state === 'expired' ? 'RESULT_EXPIRED' : record.errorCode || 'CLOUD_ERROR',
-      message: record.error ?? record.statusMessage ?? 'Cloud session failed.',
+      message: record.error ?? record.statusMessage ?? 'Cloud 작업이 실패했습니다.',
       retryable: typeof record.retryable === 'boolean' ? record.retryable : record.state !== 'expired',
     };
   }
@@ -5699,4 +6029,5 @@ export const __test = {
   sameDestination,
   nonRetryableTransferError,
   summarizeInstallLine,
+  classifyLinkFailure,
 };

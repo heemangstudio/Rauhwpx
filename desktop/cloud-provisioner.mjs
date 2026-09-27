@@ -1,5 +1,5 @@
 import { spawn as nodeSpawn } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -382,6 +382,20 @@ function existingMacosInstallRemoteCommand({ requiredVersion = '', requestId } =
   ].join('; ');
 }
 
+const SCANNED_KEY_TYPES = new Set(['ssh-ed25519', 'ecdsa-sha2-nistp256', 'ecdsa-sha2-nistp384', 'ecdsa-sha2-nistp521', 'ssh-rsa']);
+
+/** ssh-keyscan 출력에서 키와 OpenSSH 식 SHA256 지문을 뽑는다. */
+function parseScannedHostKeys(text) {
+  const keys = [];
+  for (const line of String(text ?? '').split(/\r?\n/)) {
+    const [, type, key] = line.trim().split(/\s+/);
+    if (line.startsWith('#') || !SCANNED_KEY_TYPES.has(type) || !/^[A-Za-z0-9+/]+={0,2}$/.test(key ?? '')) continue;
+    const digest = createHash('sha256').update(Buffer.from(key, 'base64')).digest('base64').replace(/=+$/, '');
+    if (!keys.some((entry) => entry.key === key)) keys.push({ type, key, fingerprint: `SHA256:${digest}` });
+  }
+  return keys;
+}
+
 export function sshArguments(sshConfig, knownHostsPath, remoteCommand, { acceptNew = false } = {}) {
   const ssh = normalizeSshConfig(sshConfig);
   return [
@@ -676,6 +690,57 @@ export class CloudProvisioner {
     ));
   }
 
+  /** 설치 스크립트가 등록한 서비스를 다시 시작한다. Mac 호스트는 launchd, Linux 는 systemd 다. */
+  async restartService(sshConfig) {
+    const ssh = normalizeSshConfig(sshConfig);
+    const remote = [
+      'set -eu',
+      'if [ "$(uname -s)" = Darwin ]; then sudo -n launchctl kickstart -k system/com.hataewook.rauhwpx-cloud;',
+      'else sudo -n systemctl restart rauhwpx-cloud.service; fi',
+    ].join(' ');
+    await retryTransientSsh(() => runProcess(
+      this.spawn,
+      'ssh',
+      sshArguments(ssh, this.knownHostsPath, remote),
+      { timeoutMs: 120_000 },
+    ), { sleep: this.retrySleep });
+  }
+
+  /**
+   * 서버가 지금 내미는 호스트 키를 읽는다. 저장된 키와 다를 때 사용자에게 보일 지문을 만든다.
+   * 이 결과만으로는 아무것도 믿지 않는다. trustHostKey 가 같은 지문을 다시 확인한 뒤에만 저장한다.
+   */
+  async scanHostKey(sshConfig) {
+    const ssh = normalizeSshConfig(sshConfig);
+    const result = await runProcess(
+      this.spawn,
+      'ssh-keyscan',
+      ['-T', '10', '-p', String(ssh.port), ssh.host],
+      { timeoutMs: 20_000 },
+    );
+    const keys = parseScannedHostKeys(result.stdout);
+    if (!keys.length) throw Object.assign(new Error('The server did not present an SSH host key'), { code: 'SSH_HOST_KEY_UNAVAILABLE' });
+    const preferred = keys.find((entry) => entry.type === 'ssh-ed25519') ?? keys[0];
+    return { host: ssh.host, port: ssh.port, fingerprint: preferred.fingerprint, keys };
+  }
+
+  /** 사용자가 확인한 지문이 여전히 서버의 키일 때만 그 주소의 옛 핀을 지우고 새 키를 저장한다. */
+  async trustHostKey(sshConfig, fingerprint) {
+    const scanned = await this.scanHostKey(sshConfig);
+    if (!scanned.keys.some((entry) => entry.fingerprint === fingerprint)) {
+      throw Object.assign(new Error('The SSH host key changed again before it was confirmed'), { code: 'SSH_HOST_KEY_MISMATCH' });
+    }
+    const pattern = scanned.port === 22 ? scanned.host : `[${scanned.host}]:${scanned.port}`;
+    await fs.mkdir(path.dirname(this.knownHostsPath), { recursive: true, mode: 0o700 });
+    // ssh-keygen -R 은 해시된 줄도 지운다. 파일이 없거나 줄이 없으면 실패해도 괜찮다.
+    await runProcess(this.spawn, 'ssh-keygen', ['-R', pattern, '-f', this.knownHostsPath], { timeoutMs: 10_000 })
+      .catch(() => {});
+    await fs.rm(`${this.knownHostsPath}.old`, { force: true }).catch(() => {});
+    const lines = scanned.keys.map((entry) => `${pattern} ${entry.type} ${entry.key}`).join('\n');
+    await fs.appendFile(this.knownHostsPath, `${lines}\n`, { mode: 0o600 });
+    return { fingerprint };
+  }
+
   async verify(sshConfig, { onLine = () => {} } = {}) {
     const ssh = normalizeSshConfig(sshConfig);
     const remote = [
@@ -700,6 +765,7 @@ export class CloudProvisioner {
 
 export const __test = {
   boatConfigProbe,
+  parseScannedHostKeys,
   bootstrapArchitecture,
   bundledInstallRemoteCommand,
   existingInstallRemoteCommand,

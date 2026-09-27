@@ -12,7 +12,11 @@ async function boatCall(channel, payload) {
     ? failure.message
     : 'boat 요청을 처리하지 못했습니다.';
   const code = typeof failure.code === 'string' && failure.code ? failure.code : 'BOAT_UNAVAILABLE';
-  throw { name: 'BoatError', message, code, toString: () => message };
+  throw {
+    name: 'BoatError', message, code,
+    ...(failure.retryable === false ? { retryable: false } : {}),
+    toString: () => message,
+  };
 }
 
 contextBridge.exposeInMainWorld('rhwpDesktop', {
@@ -98,6 +102,11 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     explicit: payload?.explicit === true,
   }),
   cloudRecreateLink: () => ipcRenderer.invoke('cloud:recreate-link'),
+  cloudRestartService: () => ipcRenderer.invoke('cloud:restart-service'),
+  cloudInspectHostKey: () => ipcRenderer.invoke('cloud:inspect-host-key'),
+  cloudTrustHostKey: (payload) => ipcRenderer.invoke('cloud:trust-host-key', payload),
+  cloudReimportLogins: (payload) => ipcRenderer.invoke('cloud:reimport-logins', payload),
+  cloudDiscardMissingSessions: () => ipcRenderer.invoke('cloud:discard-missing-sessions'),
   cloudTakeoverSandbox: () => ipcRenderer.invoke('cloud:takeover-sandbox'),
   cloudAccountLogout: () => ipcRenderer.invoke('cloud:account-logout'),
   cloudTransfer: (payload) => ipcRenderer.invoke('cloud:transfer', payload),

@@ -62,6 +62,11 @@ const SELF_STOP_SCRIPT = '/opt/rauhwpx-cloud/current/install/boat-idle.sh';
  */
 // VM 안에서 Cloud 서비스의 공개 health 만 읽는다. 인증 정보는 담기지 않는다.
 const SERVICE_HEALTH_COMMAND = 'curl -fsS --max-time 3 http://127.0.0.1:7740/rauhwpx-cloud/v1/health';
+// 설치 스크립트와 같은 CLI 로 한 번 쓰는 페어링 코드를 만든다. 코드는 boat 의 TLS 채널로만 오간다.
+const PAIRING_COMMAND = "sudo -n /usr/local/bin/rauhwpx-cloud pairing create 'Rauhwpx desktop'";
+const RESTART_COMMAND = 'sudo -n systemctl restart rauhwpx-cloud.service';
+const PAIRING_CODE_RE = /^[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$/;
+const SERVER_KEY_RE = /^ed25519:[A-Za-z0-9_-]{59}$/;
 const SELF_STOP_COMMAND = [
   `f=${SELF_STOP_SCRIPT}`,
   'grep -q rauhwpx-boat-self-stop "$f" 2>/dev/null || exit 0',
@@ -1441,6 +1446,35 @@ export class BoatCloud {
   }
 
   /**
+   * VM 안의 Cloud CLI 로 새 페어링 코드와 서버 신원을 받는다. 페어링이 끊긴 기기가 설치를 다시 하지 않고
+   * 이어 붙는 길이다. 코드는 한 번만 쓰이므로 다시 보내지 않는다.
+   */
+  async createPairingCode(sandboxId, { signal } = {}) {
+    const result = await this.runCommand(sandboxId, PAIRING_COMMAND, { timeoutSeconds: 30, signal });
+    const line = result.stdout.split(/\r?\n/).map((entry) => entry.trim()).findLast((entry) => entry.startsWith('{'));
+    let pairing = null;
+    try { pairing = line ? JSON.parse(line) : null; } catch { pairing = null; }
+    if (result.exitCode !== 0 || !PAIRING_CODE_RE.test(String(pairing?.code ?? ''))
+      || !SERVER_KEY_RE.test(String(pairing?.serverPublicKey ?? ''))) {
+      throw new BoatError('BOAT_SERVER_FAILED', {
+        detail: `pairing create exited ${result.exitCode}${result.stderr ? `: ${redact(result.stderr)}` : ''}`,
+      });
+    }
+    return { code: pairing.code, serverPublicKey: pairing.serverPublicKey };
+  }
+
+  /** Cloud 서비스를 다시 시작하고 VM 안의 health 가 돌아올 때까지 기다린다. */
+  async restartService(sandboxId, { signal } = {}) {
+    const result = await this.runCommand(sandboxId, RESTART_COMMAND, { timeoutSeconds: 90, signal });
+    if (result.exitCode !== 0) {
+      throw new BoatError('BOAT_SERVER_FAILED', {
+        detail: `service restart exited ${result.exitCode}${result.stderr ? `: ${redact(result.stderr)}` : ''}`,
+      });
+    }
+    return this.waitForServiceHealth(sandboxId, { timeoutMs: 90_000, signal });
+  }
+
+  /**
    * VM이 스스로 멈출 수 있는지 설치된 boat-idle.sh의 확인 모드로 본다. 타이머와 같은 탐색이므로
    * 둘의 판단이 어긋나지 않는다. 확인하지 못하면 'timer'다.
    * @returns {Promise<'idle' | 'timer'>}
@@ -1653,5 +1687,7 @@ export const __test = {
   retryAfterMsFrom,
   HOST_KEY_COMMAND,
   MESSAGES,
+  PAIRING_COMMAND,
+  RESTART_COMMAND,
   SELF_STOP_COMMAND,
 };
