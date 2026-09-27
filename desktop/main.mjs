@@ -2023,7 +2023,8 @@ if (!hasSingleInstanceLock) {
     });
     const cloudClient = new CloudClient({
       vault: secretVault,
-      fetchImpl: (...args) => net.fetch(...args),
+      // Node fetch keeps session/display streams from exhausting Chromium's
+      // per-origin HTTP/1 connection pool and starving Cloud control requests.
       transport: cloudTransport,
     });
     cloudCoordinator = new CloudCoordinator({
