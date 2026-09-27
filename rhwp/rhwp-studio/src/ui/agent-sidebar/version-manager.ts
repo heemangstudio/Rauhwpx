@@ -3,6 +3,7 @@ import './versions.css';
 import { confirmSheet } from './sheet.ts';
 import type { DiffItem } from '../../compare/types.ts';
 import { createIcon } from './icons.ts';
+import { versionErrorOf } from '../../versioning/types.ts';
 
 export type VersionTab = 'history' | 'branches' | 'shelves';
 
@@ -580,6 +581,8 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     try {
       await action();
     } catch (error) {
+      // 사용자가 확인 창에서 취소한 것은 오류로 알리지 않는다.
+      if (versionErrorOf(error)?.code === 'CANCELLED') return;
       const message = error instanceof Error ? error.message : String(error);
       notice.textContent = message;
       notice.hidden = false;

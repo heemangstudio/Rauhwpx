@@ -1685,8 +1685,9 @@ async function initialize(): Promise<void> {
           applyCloudResult,
           publishCloudCheckpoint,
           isCloudCheckpointMerged: (checkpoint) => versionController.isCloudCheckpointMerged(checkpoint),
-          mergeCloudCheckpoint: async (startId, checkpoint) => {
-            const applied = await versionController.mergeCloudCheckpoint(startId, checkpoint);
+          cloudBranchName: (startId) => versionController.cloudBranchName(startId),
+          mergeCloudCheckpoint: async (startId, checkpoint, options) => {
+            const applied = await versionController.mergeCloudCheckpoint(startId, checkpoint, options);
             if (applied) await versionController.refresh();
             return applied;
           },

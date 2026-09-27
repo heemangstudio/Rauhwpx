@@ -224,6 +224,10 @@ try {
     await clickText('button', '변경 검토');
     await page.waitForFunction(() => window.sidebarPreview.versions.getState().branches
       .some(branch => branch.name === 'Cloud · 팀 회의록 · 1턴'));
+    // 반영 알림 토스트가 사이드바 머리글을 잠시 덮는다. 닫고 버전 기록을 연다.
+    await page.waitForSelector('.rhwp-toast-close');
+    await page.click('.rhwp-toast-close');
+    await page.waitForSelector('.rhwp-toast', { hidden: true });
     await page.click('[aria-label="버전"]');
     await page.waitForSelector('.ag-root.ag-versions-open');
     await clickText('.ag-versions-tab', '브랜치');

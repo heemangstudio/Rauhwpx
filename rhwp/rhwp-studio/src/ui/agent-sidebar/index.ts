@@ -162,6 +162,7 @@ import type {
   CloudTransferReference,
 } from '../../cloud/types.ts';
 import { cloudProviderSettingsTarget } from '../../cloud/provider-settings.ts';
+import type { CloudMergeOptions } from '../../versioning/types.ts';
 import { createCloudAgentUi, type CloudCommandTarget } from './cloud-ui.ts';
 import { createExecutionLocation } from './execution-location.ts';
 import { createCloudWorkspace } from '../cloud-workspace.ts';
@@ -212,7 +213,9 @@ export interface AgentSidebarDeps {
   workspace?: WorkspaceController;
   prepareCloudTransfer?: (startId: string, restart?: { document: CloudDocumentPayload; sourceStartId?: string }) => Promise<CloudDocumentPayload | null>;
   isCloudCheckpointMerged?: (checkpoint: Pick<CloudCheckpointPayload, 'documentId' | 'sessionId' | 'revision' | 'operationId' | 'sha256'>) => Promise<boolean>;
-  mergeCloudCheckpoint?: (startId: string, checkpoint: CloudCheckpointPayload) => Promise<boolean>;
+  mergeCloudCheckpoint?: (startId: string, checkpoint: CloudCheckpointPayload, options?: CloudMergeOptions) => Promise<boolean>;
+  /** Cloud 시작 기록이 담긴 로컬 브랜치 이름. 사용자가 바꾼 이름도 찾는다. */
+  cloudBranchName?: (startId: string) => Promise<string | null>;
   beginCloudAuthorityTransition?: () => { release(): void };
   setCloudDocumentLease?: (cloudOwned: boolean, sessionId: string | null) => void;
   applyCloudResult?: (result: CloudDownloadResult, resolution: CloudResultResolution) => Promise<{
@@ -2234,9 +2237,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       return thread?.cloudSessionId === sessionId ? thread.cloudStartId : undefined;
     },
     isCloudCheckpointMerged: deps.isCloudCheckpointMerged,
-    onMergeCheckpoint: deps.mergeCloudCheckpoint ? async (startId, checkpoint) => {
+    getCloudBranchName: deps.cloudBranchName,
+    subscribeVersions: versionController ? (listener) => versionController.subscribe((state) => {
+      listener(JSON.stringify([state.documentId, state.activeBranch,
+        state.branches.map((branch) => [branch.name, branch.headId])]));
+    }) : undefined,
+    onMergeCheckpoint: deps.mergeCloudCheckpoint ? async (startId, checkpoint, options) => {
       workspace.setWorkspaceView('local');
-      return deps.mergeCloudCheckpoint!(startId, checkpoint);
+      return deps.mergeCloudCheckpoint!(startId, checkpoint, options);
     } : undefined,
     onResultResolved: async (result, resolution) => {
       if (resolution.action !== 'replace') {
@@ -2322,6 +2330,17 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       const message = cloudErrorText(raw);
       systemMessage(message);
       showToast({ message, durationMs: 5000 });
+    },
+    onNotice: (message, action) => {
+      showToast({
+        message,
+        durationMs: action ? 10_000 : 3000,
+        ...(action ? { action: { label: action.label, onClick: () => {
+          void action.run().catch((error) => showToast({
+            message: error instanceof Error ? error.message : String(error), durationMs: 5000,
+          }));
+        } } } : {}),
+      });
     },
   });
   const executionLocationOptions = {
