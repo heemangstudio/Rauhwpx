@@ -414,3 +414,39 @@ test('import rejects non-finite repository revision and ordinal metadata', async
     );
   }
 });
+
+test('lazy manifest upgrades preserve descendants and later collect detached analyses', async () => {
+  const fixture = await historyFixture();
+  const legacy = structuredClone(fixture.snapshot);
+  const root = legacy.commits.find((commit) => commit.parents.length === 0)!;
+  const head = legacy.commits.find((commit) => commit.id === fixture.head.id)!;
+  const rootManifest = legacy.mergeManifests.find((manifest) => manifest.commitId === root.id)!;
+  const headManifest = legacy.mergeManifests.find((manifest) => manifest.commitId === head.id)!;
+  const legacyId = `legacy-${rootManifest.id}` as typeof rootManifest.id;
+  rootManifest.id = legacyId;
+  rootManifest.analysisVersion = 0;
+  root.mergeManifestId = legacyId;
+  const legacyHeadId = `legacy-${headManifest.id}` as typeof headManifest.id;
+  headManifest.id = legacyHeadId;
+  head.mergeManifestId = legacyHeadId;
+  headManifest.parentManifestIds = [legacyId];
+  const store = new VersionGraphStore({ indexedDB: null });
+  await store.importRepositorySnapshot(legacy);
+  const refreshedRoot = await store.ensureMergeManifest(legacy.repository.id, root.id);
+  assert.notEqual(refreshedRoot.id, legacyId);
+  const intermediate = await store.exportRepositorySnapshot(legacy.repository.id);
+  assert.ok(intermediate.mergeManifests.some((manifest) => manifest.id === legacyId));
+  await new VersionGraphStore({ indexedDB: null }).importRepositorySnapshot(intermediate);
+
+  await store.ensureMergeManifest(legacy.repository.id, head.id);
+  const repository = (await store.getRepository(legacy.repository.id))!;
+  const firstPass = await store.collectGarbage(repository.id, repository.revision, { limit: 1 });
+  assert.equal(firstPass.hasMore, true);
+  await new VersionGraphStore({ indexedDB: null }).importRepositorySnapshot(
+    await store.exportRepositorySnapshot(repository.id),
+  );
+  await store.collectGarbage(repository.id, firstPass.repository.revision, { limit: 10 });
+  const cleaned = await store.exportRepositorySnapshot(repository.id);
+  assert.ok(!cleaned.mergeManifests.some((manifest) => manifest.id === legacyId));
+  await new VersionGraphStore({ indexedDB: null }).importRepositorySnapshot(cleaned);
+});

@@ -152,6 +152,8 @@ async function openPage(): Promise<Page> {
       switchBranch: async (name: string) => { calls.push(['switch', name]); },
       renameBranch: noOp,
       deleteBranch: noOp,
+      listRecoveryEntries: async () => [{ id: 'deleted-docs', name: 'docs', operation: 'branch-deleted', headId: 'docs3', createdAt: now, expiresAt: now + 30 * 86_400_000 }],
+      recoverBranch: async (id: string, name: string) => { calls.push(['recover', id, name]); },
       startMerge: async (name: string) => { calls.push(['merge', name]); },
       resumeMerge: noOp,
       discardMergeDraft: noOp,
@@ -201,6 +203,23 @@ test('closing the page cancels an open merge prompt before it can start work', a
   } finally {
     await page.close();
   }
+});
+
+test('recovery uses a fresh branch name and leaves the current document selected', async () => {
+  const page = await openPage();
+  try {
+    await page.click('[aria-label="버전 더 보기"]');
+    await page.waitForSelector('.context-menu');
+    await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('.context-menu *')]
+      .find((node) => node.textContent === '기록 복구')?.click());
+    await page.waitForSelector('.ag-version-recovery-row', { visible: true });
+    await page.click('[aria-label="docs 브랜치 복구"]');
+    assert.equal(await page.$eval('.ag-version-prompt-input', (input) => (input as HTMLInputElement).value), 'docs-복구');
+    await page.keyboard.press('Enter');
+    await page.waitForFunction(() => (window as any).__versionManagerHarness.calls.length === 1);
+    assert.deepEqual(await page.evaluate(() => (window as any).__versionManagerHarness.calls), [['recover', 'deleted-docs', 'docs-복구']]);
+    assert.equal(await page.$eval('[data-tab="branches"]', (node) => node.getAttribute('aria-selected')), 'true');
+  } finally { await page.close(); }
 });
 
 test('branch graph stays operable, directional, locked, and responsive', async () => {

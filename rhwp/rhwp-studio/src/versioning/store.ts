@@ -39,6 +39,7 @@ import {
   type VersionMergeManifest,
   type VersionMergeMetadata,
   type VersionRef,
+  type VersionRecoveryEntry,
   type VersionRepository,
   type VersionShelf,
   type VersionStats,
@@ -46,7 +47,9 @@ import {
 } from './types.ts';
 
 export const VERSION_DATABASE_NAME = 'rhwpStudioVersionGraph';
-export const VERSION_DATABASE_VERSION = 2;
+export const VERSION_DATABASE_VERSION = 3;
+
+const RECOVERY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 const STORE_NAMES = [
   'repositories',
@@ -57,10 +60,15 @@ const STORE_NAMES = [
   'shelves',
   'mergeManifests',
   'mergeDrafts',
+  'objectSizes',
+  'recoveryEntries',
+  'maintenance',
 ] as const;
 
 type StoreName = typeof STORE_NAMES[number];
 type RefRow = VersionRef & { key: string };
+type ObjectSizeRow = { id: string; kind: 'blob' | 'compareSnapshot'; byteLength: number };
+type MaintenanceRow = { id: string; phase: 'blobs' | 'compareSnapshots' | 'done'; cursor?: string };
 
 interface StoreRows {
   repositories: VersionRepository;
@@ -71,16 +79,26 @@ interface StoreRows {
   shelves: VersionShelf;
   mergeManifests: VersionMergeManifest;
   mergeDrafts: VersionMergeDraft;
+  objectSizes: ObjectSizeRow;
+  recoveryEntries: VersionRecoveryEntry;
+  maintenance: MaintenanceRow;
 }
 
 interface GraphTransaction {
   get<Name extends StoreName>(store: Name, key: IDBValidKey): Promise<StoreRows[Name] | undefined>;
+  has(store: StoreName, key: IDBValidKey): Promise<boolean>;
   getAll<Name extends StoreName>(store: Name): Promise<StoreRows[Name][]>;
   findRepositoryByDocumentId(documentId: DocumentId): Promise<VersionRepository | undefined>;
   listCommits(repositoryId: RepositoryId, beforeOrdinal: number, limit: number): Promise<VersionCommit[]>;
   listRefs(repositoryId: RepositoryId): Promise<RefRow[]>;
   listShelves(repositoryId: RepositoryId, limit?: number): Promise<VersionShelf[]>;
   listMergeDrafts(repositoryId: RepositoryId): Promise<VersionMergeDraft[]>;
+  listRecoveryEntries(repositoryId: RepositoryId): Promise<VersionRecoveryEntry[]>;
+  listRepositoryCommits(repositoryId: RepositoryId): Promise<VersionCommit[]>;
+  listRepositoryManifests(repositoryId: RepositoryId): Promise<VersionMergeManifest[]>;
+  listObjectRows(kind: 'blobs' | 'compareSnapshots', after: string | undefined, limit: number): Promise<(VersionBlob | VersionCompareSnapshot)[]>;
+  isBlobReferenced(id: BlobId): Promise<boolean>;
+  isCompareSnapshotReferenced(id: CompareSnapshotId): Promise<boolean>;
   put<Name extends StoreName>(store: Name, row: StoreRows[Name]): Promise<void>;
   delete(store: StoreName, key: IDBValidKey): Promise<void>;
   clear(store: StoreName): Promise<void>;
@@ -339,6 +357,14 @@ export interface GarbageCollectionResult {
 export interface CollectGarbageResult {
   repository: VersionRepository;
   garbageCollected: GarbageCollectionResult;
+  hasMore: boolean;
+}
+
+export interface RecoverBranchInput {
+  repositoryId: RepositoryId;
+  entryId: string;
+  name?: BranchName;
+  expectedRepositoryRevision: number;
 }
 
 const EMPTY_STATS: VersionStats = { added: 0, removed: 0, modified: 0 };
@@ -353,6 +379,9 @@ function memoryState(): MemoryState {
     shelves: new Map(),
     mergeManifests: new Map(),
     mergeDrafts: new Map(),
+    objectSizes: new Map(),
+    recoveryEntries: new Map(),
+    maintenance: new Map(),
   };
 }
 
@@ -374,6 +403,9 @@ function forkMemoryState(state: MemoryState): MemoryState {
     shelves: cloneMap(state.shelves),
     mergeManifests: cloneMap(state.mergeManifests),
     mergeDrafts: cloneMap(state.mergeDrafts),
+    objectSizes: cloneMap(state.objectSizes),
+    recoveryEntries: cloneMap(state.recoveryEntries),
+    maintenance: cloneMap(state.maintenance),
   };
 }
 
@@ -387,6 +419,9 @@ function memoryTransaction(state: MemoryState): GraphTransaction {
     async get(store, key) {
       const row = state[store].get(key);
       return row === undefined ? undefined : cloneValue(row);
+    },
+    async has(store, key) {
+      return state[store].has(key);
     },
     async getAll(store) {
       return [...state[store].values()].map(cloneValue);
@@ -418,12 +453,40 @@ function memoryTransaction(state: MemoryState): GraphTransaction {
         .filter((draft) => draft.repositoryId === repositoryId)
         .map(cloneValue);
     },
+    async listRecoveryEntries(repositoryId) {
+      return [...state.recoveryEntries.values()]
+        .filter((entry) => entry.repositoryId === repositoryId)
+        .map(cloneValue);
+    },
+    async listRepositoryCommits(repositoryId) {
+      return [...state.commits.values()].filter((row) => row.repositoryId === repositoryId).map(cloneValue);
+    },
+    async listRepositoryManifests(repositoryId) {
+      return [...state.mergeManifests.values()].filter((row) => row.repositoryId === repositoryId).map(cloneValue);
+    },
+    async listObjectRows(kind, after, limit) {
+      return [...state[kind].values()].filter((row) => !after || row.id > after).sort((a, b) => a.id.localeCompare(b.id)).slice(0, limit).map(cloneValue);
+    },
+    async isBlobReferenced(id) {
+      return [...state.commits.values()].some((row) => row.blobId === id)
+        || [...state.shelves.values()].some((row) => row.blobId === id)
+        || [...state.mergeDrafts.values()].some((row) => row.manualAssetBlobIds.includes(id));
+    },
+    async isCompareSnapshotReferenced(id) {
+      return [...state.commits.values()].some((row) => row.compareSnapshotId === id)
+        || [...state.shelves.values()].some((row) => row.compareSnapshotId === id);
+    },
     async put(store, row) {
       const target = state[store] as Map<IDBValidKey, typeof row>;
       target.set(rowKey(store, row), cloneValue(row));
+      if (store === 'blobs' || store === 'compareSnapshots') {
+        const object = row as VersionBlob | VersionCompareSnapshot;
+        state.objectSizes.set(`${store}:${object.id}`, { id: `${store}:${object.id}`, kind: store === 'blobs' ? 'blob' : 'compareSnapshot', byteLength: object.byteLength });
+      }
     },
     async delete(store, key) {
       state[store].delete(key);
+      if (store === 'blobs' || store === 'compareSnapshots') state.objectSizes.delete(`${store}:${String(key)}`);
     },
     async clear(store) {
       state[store].clear();
@@ -450,6 +513,9 @@ function indexedDbTransaction(transaction: IDBTransaction): GraphTransaction {
   return {
     async get(store, key) {
       return requestResult(transaction.objectStore(store).get(key)) as Promise<never>;
+    },
+    async has(store, key) {
+      return (await requestResult(transaction.objectStore(store).getKey(key))) !== undefined;
     },
     async getAll(store) {
       return requestResult(transaction.objectStore(store).getAll()) as Promise<never>;
@@ -496,11 +562,49 @@ function indexedDbTransaction(transaction: IDBTransaction): GraphTransaction {
       const index = transaction.objectStore('mergeDrafts').index('repositoryId');
       return requestResult(index.getAll(IDBKeyRange.only(repositoryId))) as Promise<VersionMergeDraft[]>;
     },
+    async listRecoveryEntries(repositoryId) {
+      const index = transaction.objectStore('recoveryEntries').index('repositoryId');
+      return requestResult(index.getAll(IDBKeyRange.only(repositoryId))) as Promise<VersionRecoveryEntry[]>;
+    },
+    async listRepositoryCommits(repositoryId) {
+      const index = transaction.objectStore('commits').index('repositoryId');
+      return requestResult(index.getAll(IDBKeyRange.only(repositoryId))) as Promise<VersionCommit[]>;
+    },
+    async listRepositoryManifests(repositoryId) {
+      const index = transaction.objectStore('mergeManifests').index('repositoryId');
+      return requestResult(index.getAll(IDBKeyRange.only(repositoryId))) as Promise<VersionMergeManifest[]>;
+    },
+    async listObjectRows(kind, after, limit) {
+      const range = after ? IDBKeyRange.lowerBound(after, true) : undefined;
+      return requestResult(transaction.objectStore(kind).getAll(range, limit)) as Promise<(VersionBlob | VersionCompareSnapshot)[]>;
+    },
+    async isBlobReferenced(id) {
+      const only = IDBKeyRange.only(id);
+      return Boolean(await requestResult(transaction.objectStore('commits').index('blobId').getKey(only)))
+        || Boolean(await requestResult(transaction.objectStore('shelves').index('blobId').getKey(only)))
+        || Boolean(await requestResult(transaction.objectStore('mergeDrafts').index('manualAssetBlobIds').getKey(only)));
+    },
+    async isCompareSnapshotReferenced(id) {
+      const only = IDBKeyRange.only(id);
+      return Boolean(await requestResult(transaction.objectStore('commits').index('compareSnapshotId').getKey(only)))
+        || Boolean(await requestResult(transaction.objectStore('shelves').index('compareSnapshotId').getKey(only)));
+    },
     async put(store, row) {
       await requestResult(transaction.objectStore(store).put(row));
+      if (store === 'blobs' || store === 'compareSnapshots') {
+        const object = row as VersionBlob | VersionCompareSnapshot;
+        await requestResult(transaction.objectStore('objectSizes').put({
+          id: `${store}:${object.id}`,
+          kind: store === 'blobs' ? 'blob' : 'compareSnapshot',
+          byteLength: object.byteLength,
+        } satisfies ObjectSizeRow));
+      }
     },
     async delete(store, key) {
       await requestResult(transaction.objectStore(store).delete(key));
+      if (store === 'blobs' || store === 'compareSnapshots') {
+        await requestResult(transaction.objectStore('objectSizes').delete(`${store}:${String(key)}`));
+      }
     },
     async clear(store) {
       await requestResult(transaction.objectStore(store).clear());
@@ -670,10 +774,10 @@ async function repositorySnapshotFromTransaction(
 ): Promise<VersionRepositorySnapshot> {
   const repository = await tx.get('repositories', id);
   if (!repository) missing('REPOSITORY_NOT_FOUND', 'Version repository was not found');
-  const commits = (await tx.getAll('commits')).filter((row) => row.repositoryId === id);
+  const commits = await tx.listRepositoryCommits(id);
   const refs = (await tx.listRefs(id)).map(fromRefRow);
   const shelves = await tx.listShelves(id);
-  const mergeManifests = (await tx.getAll('mergeManifests')).filter((row) => row.repositoryId === id);
+  const mergeManifests = await tx.listRepositoryManifests(id);
   const mergeDrafts = await tx.listMergeDrafts(id);
   const blobIds = new Set<BlobId>([
     ...commits.map((commit) => commit.blobId),
@@ -953,6 +1057,29 @@ function isDefaultBranch(repository: VersionRepository, name: BranchName): boole
   return normalizedRefKey(repository.defaultBranch ?? branchName('main')) === normalizedRefKey(name);
 }
 
+async function logRecovery(
+  tx: GraphTransaction,
+  operation: VersionRecoveryEntry['operation'],
+  previous: VersionRef | null,
+  next: VersionRef | null,
+): Promise<void> {
+  const ref = previous ?? next;
+  if (!ref) return;
+  const createdAt = Date.now();
+  await tx.put('recoveryEntries', {
+    id: createId('recovery'),
+    repositoryId: ref.repositoryId,
+    operation,
+    name: next?.name ?? previous!.name,
+    ...(previous && next && previous.name !== next.name ? { previousName: previous.name } : {}),
+    previousHead: previous?.target ?? null,
+    newHead: next?.target ?? null,
+    ...(ref.kind === 'branch' ? { generation: ref.generation } : {}),
+    createdAt,
+    expiresAt: createdAt + RECOVERY_RETENTION_MS,
+  });
+}
+
 function assertDraftMatchesRefs(
   draft: VersionMergeDraft,
   target: BranchRef,
@@ -986,18 +1113,8 @@ async function deleteMergeDrafts(
 
   const candidateAssets = new Set(removed.flatMap((draft) => draft.manualAssetBlobIds));
   if (candidateAssets.size === 0) return;
-  const [commits, shelves, remainingDrafts] = await Promise.all([
-    tx.getAll('commits'),
-    tx.getAll('shelves'),
-    tx.getAll('mergeDrafts'),
-  ]);
-  const retained = new Set([
-    ...commits.map((commit) => commit.blobId),
-    ...shelves.map((shelf) => shelf.blobId),
-    ...remainingDrafts.flatMap((draft) => draft.manualAssetBlobIds),
-  ]);
   for (const assetId of candidateAssets) {
-    if (!retained.has(assetId)) await tx.delete('blobs', assetId);
+    if (!await tx.isBlobReferenced(assetId)) await tx.delete('blobs', assetId);
   }
 }
 
@@ -1062,8 +1179,31 @@ export class VersionGraphStore {
           store.createIndex('repositoryId', 'repositoryId');
           store.createIndex('repositoryUpdatedAt', ['repositoryId', 'updatedAt']);
         }
+        if (!database.objectStoreNames.contains('objectSizes')) {
+          database.createObjectStore('objectSizes', { keyPath: 'id' });
+        }
+        if (!database.objectStoreNames.contains('recoveryEntries')) {
+          const store = database.createObjectStore('recoveryEntries', { keyPath: 'id' });
+          store.createIndex('repositoryId', 'repositoryId');
+          store.createIndex('expiresAt', 'expiresAt');
+        }
+        if (!database.objectStoreNames.contains('maintenance')) {
+          database.createObjectStore('maintenance', { keyPath: 'id' });
+        }
+        const upgrade = (event.target as IDBOpenDBRequest).transaction;
+        if (upgrade) {
+          for (const [storeName, field] of [
+            ['commits', 'blobId'], ['commits', 'compareSnapshotId'],
+            ['shelves', 'blobId'], ['shelves', 'compareSnapshotId'],
+            ['mergeDrafts', 'manualAssetBlobIds'],
+          ] as const) {
+            const store = upgrade.objectStore(storeName);
+            if (!store.indexNames.contains(field)) {
+              store.createIndex(field, field, { multiEntry: field === 'manualAssetBlobIds' });
+            }
+          }
+        }
         if (event.oldVersion > 0 && event.oldVersion < 2) {
-          const upgrade = (event.target as IDBOpenDBRequest).transaction;
           const refsCursor = upgrade?.objectStore('refs').openCursor();
           if (refsCursor) refsCursor.onsuccess = () => {
             const cursor = refsCursor.result;
@@ -1227,25 +1367,13 @@ export class VersionGraphStore {
       for (const shelf of imported.shelves) await tx.delete('shelves', shelf.id);
       for (const manifest of imported.mergeManifests) await tx.delete('mergeManifests', manifest.id);
       for (const draft of imported.mergeDrafts) await tx.delete('mergeDrafts', draft.id);
+      for (const entry of await tx.listRecoveryEntries(id)) await tx.delete('recoveryEntries', entry.id);
       await tx.delete('repositories', id);
-
-      const remainingCommits = await tx.getAll('commits');
-      const remainingShelves = await tx.getAll('shelves');
-      const remainingDrafts = await tx.getAll('mergeDrafts');
-      const retainedBlobIds = new Set<BlobId>([
-        ...remainingCommits.map((commit) => commit.blobId),
-        ...remainingShelves.map((shelf) => shelf.blobId),
-        ...remainingDrafts.flatMap((draft) => draft.manualAssetBlobIds),
-      ]);
-      const retainedCompareSnapshotIds = new Set<CompareSnapshotId>([
-        ...remainingCommits.map((commit) => commit.compareSnapshotId),
-        ...remainingShelves.map((shelf) => shelf.compareSnapshotId),
-      ]);
       for (const blob of imported.blobs) {
-        if (!retainedBlobIds.has(blob.id)) await tx.delete('blobs', blob.id);
+        if (!await tx.isBlobReferenced(blob.id)) await tx.delete('blobs', blob.id);
       }
       for (const stored of imported.compareSnapshots) {
-        if (!retainedCompareSnapshotIds.has(stored.id)) {
+        if (!await tx.isCompareSnapshotReferenced(stored.id)) {
           await tx.delete('compareSnapshots', stored.id);
         }
       }
@@ -1373,6 +1501,7 @@ export class VersionGraphStore {
       await tx.put('commits', commit);
       await tx.put('repositories', repository);
       await tx.put('refs', toRefRow(branch));
+      await logRecovery(tx, 'branch-created', null, branch);
       return { repository, branch, commit };
     }));
   }
@@ -1479,14 +1608,15 @@ export class VersionGraphStore {
         revision: branch.revision + 1,
       };
 
-      if (!await tx.get('blobs', payload.blob.id)) await tx.put('blobs', payload.blob);
-      if (!await tx.get('compareSnapshots', payload.compareSnapshot.id)) {
+      if (!await tx.has('blobs', payload.blob.id)) await tx.put('blobs', payload.blob);
+      if (!await tx.has('compareSnapshots', payload.compareSnapshot.id)) {
         await tx.put('compareSnapshots', payload.compareSnapshot);
       }
       if (!await tx.get('mergeManifests', manifest.id)) await tx.put('mergeManifests', manifest);
       await tx.put('commits', commit);
       await tx.put('repositories', updatedRepository);
       await tx.put('refs', toRefRow(updatedBranch));
+      await logRecovery(tx, 'head-moved', branch, updatedBranch);
       return { repository: updatedRepository, branch: updatedBranch, commit };
     }));
   }
@@ -1514,8 +1644,7 @@ export class VersionGraphStore {
       if (!await tx.get('repositories', repositoryId)) {
         missing('REPOSITORY_NOT_FOUND', 'Version repository was not found');
       }
-      const commits = (await tx.getAll('commits'))
-        .filter((commit) => commit.repositoryId === repositoryId);
+      const commits = await tx.listRepositoryCommits(repositoryId);
       const byId = new Map(commits.map((commit) => [commit.id, commit]));
       assertCommitInRepository(byId.get(currentHead), repositoryId, 'Current merge head was not found');
       assertCommitInRepository(byId.get(incomingHead), repositoryId, 'Incoming merge head was not found');
@@ -1532,8 +1661,7 @@ export class VersionGraphStore {
       if (!await tx.get('repositories', repositoryId)) {
         missing('REPOSITORY_NOT_FOUND', 'Version repository was not found');
       }
-      const commits = (await tx.getAll('commits'))
-        .filter((commit) => commit.repositoryId === repositoryId);
+      const commits = await tx.listRepositoryCommits(repositoryId);
       const byId = new Map(commits.map((commit) => [commit.id, commit]));
       assertCommitInRepository(byId.get(currentHead), repositoryId, 'Current merge head was not found');
       assertCommitInRepository(byId.get(incomingHead), repositoryId, 'Incoming merge head was not found');
@@ -1616,13 +1744,17 @@ export class VersionGraphStore {
       if (!await tx.get('repositories', repositoryId)) {
         missing('REPOSITORY_NOT_FOUND', 'Version repository was not found');
       }
-      const repositoryCommits = (await tx.getAll('commits'))
-        .filter((commit) => commit.repositoryId === repositoryId);
+      const repositoryCommits = await tx.listRepositoryCommits(repositoryId);
       const byId = new Map(repositoryCommits.map((commit) => [commit.id, commit]));
       assertCommitInRepository(byId.get(commitId), repositoryId);
-      const storedManifests = (await tx.getAll('mergeManifests'))
-        .filter((manifest) => manifest.repositoryId === repositoryId);
-      const manifestByCommit = new Map(storedManifests.map((manifest) => [manifest.commitId, manifest]));
+      const storedManifests = await tx.listRepositoryManifests(repositoryId);
+      const manifestByCommit = new Map<CommitId, VersionMergeManifest>();
+      for (const manifest of storedManifests) {
+        if (!manifestByCommit.has(manifest.commitId)
+          || byId.get(manifest.commitId)?.mergeManifestId === manifest.id) {
+          manifestByCommit.set(manifest.commitId, manifest);
+        }
+      }
       const visiting = new Set<CommitId>();
       const ensured = new Map<CommitId, VersionMergeManifest>();
       const ensure = async (id: CommitId): Promise<VersionMergeManifest> => {
@@ -1664,7 +1796,8 @@ export class VersionGraphStore {
           parentManifests,
         );
         const updated = { ...commit, mergeManifestId: manifest.id };
-        if (existing && existing.id !== manifest.id) await tx.delete('mergeManifests', existing.id);
+        // Descendant manifests may still reference the prior analysis. GC
+        // removes it once no retained manifest needs it.
         await tx.put('mergeManifests', manifest);
         await tx.put('commits', updated);
         byId.set(id, updated);
@@ -1717,12 +1850,12 @@ export class VersionGraphStore {
         return [verified.id, verified];
       }));
       for (const assetId of input.draft.manualAssetBlobIds) {
-        if (!assets.has(assetId) && !await tx.get('blobs', assetId)) {
+        if (!assets.has(assetId) && !await tx.has('blobs', assetId)) {
           throw new VersionError('CORRUPT_BLOB', `Merge draft asset ${assetId} was not found`);
         }
       }
       for (const asset of assets.values()) {
-        if (!await tx.get('blobs', asset.id)) await tx.put('blobs', asset);
+        if (!await tx.has('blobs', asset.id)) await tx.put('blobs', asset);
       }
       const now = Date.now();
       const draft: VersionMergeDraft = {
@@ -1738,6 +1871,14 @@ export class VersionGraphStore {
         throw new VersionError('VERSION_STORE_FAILED', 'Merge draft history index is invalid');
       }
       await tx.put('mergeDrafts', draft);
+      if (existing) {
+        const retained = new Set(draft.manualAssetBlobIds);
+        for (const assetId of new Set(existing.manualAssetBlobIds)) {
+          if (!retained.has(assetId) && !await tx.isBlobReferenced(assetId)) {
+            await tx.delete('blobs', assetId);
+          }
+        }
+      }
       return draft;
     }));
   }
@@ -1786,8 +1927,12 @@ export class VersionGraphStore {
         ...shelves.map((shelf) => shelf.compareSnapshotId),
       ]);
       const [blobs, snapshots] = await Promise.all([
-        Promise.all([...blobIds].map((blob) => tx.get('blobs', blob))),
-        Promise.all([...compareSnapshotIds].map((snapshot) => tx.get('compareSnapshots', snapshot))),
+        Promise.all([...blobIds].map(async (id) => (
+          await tx.get('objectSizes', `blobs:${id}`) ?? await tx.get('blobs', id)
+        ))),
+        Promise.all([...compareSnapshotIds].map(async (id) => (
+          await tx.get('objectSizes', `compareSnapshots:${id}`) ?? await tx.get('compareSnapshots', id)
+        ))),
       ]);
       const blobBytes = blobs.reduce((total, blob) => total + (blob?.byteLength ?? 0), 0);
       const compareSnapshotBytes = snapshots.reduce(
@@ -1809,6 +1954,40 @@ export class VersionGraphStore {
     });
   }
 
+  /** Backfills v1/v2 object sizes in small persistent batches without blocking database upgrade. */
+  async backfillObjectSizes(limit = 100): Promise<{ processed: number; hasMore: boolean }> {
+    const bounded = Math.min(Math.max(1, Math.floor(limit) || 100), 500);
+    return this.#serialize('object-size-backfill', () => this.#transaction('readwrite', async (tx) => {
+      const state = await tx.get('maintenance', 'object-size-backfill')
+        ?? { id: 'object-size-backfill', phase: 'blobs' as const };
+      if (state.phase === 'done') return { processed: 0, hasMore: false };
+      let phase: 'blobs' | 'compareSnapshots' | 'done' = state.phase;
+      let cursor = state.cursor;
+      let processed = 0;
+      while (processed < bounded && phase !== 'done') {
+        const rows = await tx.listObjectRows(phase, cursor, Math.min(64, bounded - processed));
+        if (rows.length === 0) {
+          phase = phase === 'blobs' ? 'compareSnapshots' : 'done';
+          cursor = undefined;
+          continue;
+        }
+        for (const row of rows) {
+          if (!await tx.get('objectSizes', `${phase}:${row.id}`)) {
+            await tx.put('objectSizes', {
+              id: `${phase}:${row.id}`,
+              kind: phase === 'blobs' ? 'blob' : 'compareSnapshot',
+              byteLength: row.byteLength,
+            });
+          }
+          cursor = row.id;
+          processed += 1;
+        }
+      }
+      await tx.put('maintenance', { id: state.id, phase, ...(cursor ? { cursor } : {}) });
+      return { processed, hasMore: phase !== 'done' };
+    }));
+  }
+
   async getBlob(id: BlobId): Promise<VersionBlob | null> {
     return this.#transaction('readonly', async (tx) => {
       const blob = await tx.get('blobs', id);
@@ -1825,8 +2004,13 @@ export class VersionGraphStore {
     return this.#transaction('readonly', async (tx) => {
       const sizes = new Map<BlobId, number>();
       for (const id of unique) {
-        const blob = await tx.get('blobs', id);
-        if (blob) sizes.set(id, blob.byteLength);
+        const metadata = await tx.get('objectSizes', `blobs:${id}`);
+        if (metadata) {
+          sizes.set(id, metadata.byteLength);
+        } else {
+          const blob = await tx.get('blobs', id);
+          if (blob) sizes.set(id, blob.byteLength);
+        }
       }
       return sizes;
     });
@@ -1884,6 +2068,7 @@ export class VersionGraphStore {
       const updatedRepository = nextRepositoryRevision(repository);
       await tx.put('refs', toRefRow(updatedBranch));
       await tx.put('repositories', updatedRepository);
+      await logRecovery(tx, 'head-moved', branch, updatedBranch);
       return { repository: updatedRepository, branch: updatedBranch };
     }));
   }
@@ -1913,8 +2098,7 @@ export class VersionGraphStore {
       const sourceBranch = fromRefRow(sourceRow) as BranchRef;
       assertRefRevision(sourceBranch, input.expectedSourceRevision);
       if (sourceBranch.target !== input.target) stale('The merge source head changed');
-      const commits = (await tx.getAll('commits'))
-        .filter((commit) => commit.repositoryId === input.repositoryId);
+      const commits = await tx.listRepositoryCommits(input.repositoryId);
       const byId = new Map(commits.map((commit) => [commit.id, commit]));
       assertCommitInRepository(byId.get(input.target), input.repositoryId);
       if (!isAncestor(targetBranch.target, sourceBranch.target, byId) || targetBranch.target === sourceBranch.target) {
@@ -1937,7 +2121,11 @@ export class VersionGraphStore {
       };
       const updatedRepository = nextRepositoryRevision(repository);
       await tx.put('refs', toRefRow(updatedBranch));
-      if (input.deleteSource) await tx.delete('refs', sourceKey);
+      await logRecovery(tx, 'head-moved', targetBranch, updatedBranch);
+      if (input.deleteSource) {
+        await tx.delete('refs', sourceKey);
+        await logRecovery(tx, 'branch-deleted', sourceBranch, null);
+      }
       if (input.draftId || input.deleteSource) {
         await deleteMergeDrafts(tx, input.repositoryId, (draft) => (
           draft.id === input.draftId || (input.deleteSource && draftNamesBranch(draft, sourceBranch.name))
@@ -1985,6 +2173,7 @@ export class VersionGraphStore {
       }
       if (draft.shelfApply.remove) await tx.delete('shelves', shelf.id);
       await tx.delete('refs', sourceKey);
+      await logRecovery(tx, 'branch-deleted', source, null);
       await deleteMergeDrafts(tx, repository.id, (item) => draftNamesBranch(item, source.name));
       const updated = nextRepositoryRevision(repository);
       await tx.put('repositories', updated);
@@ -2087,14 +2276,18 @@ export class VersionGraphStore {
         nextOrdinal: repository.nextOrdinal + 1,
         lastSavedFingerprint: input.lastSavedFingerprint ?? repository.lastSavedFingerprint,
       });
-      if (!await tx.get('blobs', payload.blob.id)) await tx.put('blobs', payload.blob);
-      if (!await tx.get('compareSnapshots', payload.compareSnapshot.id)) {
+      if (!await tx.has('blobs', payload.blob.id)) await tx.put('blobs', payload.blob);
+      if (!await tx.has('compareSnapshots', payload.compareSnapshot.id)) {
         await tx.put('compareSnapshots', payload.compareSnapshot);
       }
       await tx.put('mergeManifests', manifest);
       await tx.put('commits', commit);
       await tx.put('refs', toRefRow(updatedBranch));
-      if (input.deleteSource) await tx.delete('refs', sourceKey);
+      await logRecovery(tx, 'head-moved', targetBranch, updatedBranch);
+      if (input.deleteSource) {
+        await tx.delete('refs', sourceKey);
+        await logRecovery(tx, 'branch-deleted', sourceBranch, null);
+      }
       if (input.draftId || input.deleteSource) {
         await deleteMergeDrafts(tx, input.repositoryId, (draft) => (
           draft.id === input.draftId || (input.deleteSource && draftNamesBranch(draft, sourceBranch.name))
@@ -2177,10 +2370,16 @@ export class VersionGraphStore {
       const changed = targetBranch.target !== currentTarget.target || sourceChanged;
       if (!changed) return { repository, targetBranch, sourceBranch };
       await tx.put('refs', toRefRow(targetBranch));
+      if (targetBranch.target !== currentTarget.target) await logRecovery(tx, 'head-moved', currentTarget, targetBranch);
       if (sourceBranch) await tx.put('refs', toRefRow(sourceBranch));
       else {
         await tx.delete('refs', sourceKey);
+        if (currentSource) await logRecovery(tx, 'branch-deleted', currentSource, null);
         await deleteMergeDrafts(tx, input.repositoryId, (draft) => draftNamesBranch(draft, input.sourceBranch));
+      }
+      if (sourceBranch && !currentSource) await logRecovery(tx, 'branch-created', null, sourceBranch);
+      else if (sourceBranch && currentSource && sourceBranch.target !== currentSource.target) {
+        await logRecovery(tx, 'head-moved', currentSource, sourceBranch);
       }
       const updatedRepository = nextRepositoryRevision(repository);
       await tx.put('repositories', updatedRepository);
@@ -2212,6 +2411,7 @@ export class VersionGraphStore {
       const updatedRepository = nextRepositoryRevision(repository);
       await tx.put('refs', toRefRow(branch));
       await tx.put('repositories', updatedRepository);
+      await logRecovery(tx, 'branch-created', null, branch);
       return { repository: updatedRepository, branch };
     }));
   }
@@ -2238,6 +2438,7 @@ export class VersionGraphStore {
       await tx.delete('refs', oldKey);
       await tx.put('refs', toRefRow(branch));
       await tx.put('repositories', updatedRepository);
+      await logRecovery(tx, 'branch-renamed', current, branch);
       return { repository: updatedRepository, branch };
     }));
   }
@@ -2258,11 +2459,12 @@ export class VersionGraphStore {
       if (!row || row.kind !== 'branch') missing('REF_NOT_FOUND', 'Branch was not found');
       assertRefRevision(fromRefRow(row), input.expectedBranchRevision);
 
-      const refs = (await tx.getAll('refs')).filter((ref) => ref.repositoryId === input.repositoryId);
+      const refs = await tx.listRefs(input.repositoryId);
       if (refs.filter((ref) => ref.kind === 'branch').length <= 1) {
         throw new VersionError('LAST_BRANCH', 'The final branch cannot be deleted');
       }
       await tx.delete('refs', key);
+      await logRecovery(tx, 'branch-deleted', fromRefRow(row), null);
       await deleteMergeDrafts(tx, input.repositoryId, (draft) => draftNamesBranch(draft, input.branch));
       const updatedRepository = nextRepositoryRevision(repository);
       await tx.put('repositories', updatedRepository);
@@ -2270,24 +2472,68 @@ export class VersionGraphStore {
     }));
   }
 
+  async listRecoveryEntries(repositoryId: RepositoryId): Promise<VersionRecoveryEntry[]> {
+    return this.#transaction('readonly', async (tx) => (await tx.listRecoveryEntries(repositoryId))
+      .filter((entry) => entry.expiresAt > Date.now())
+      .sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id)));
+  }
+
+  async recoverBranch(input: RecoverBranchInput): Promise<{ repository: VersionRepository; branch: BranchRef }> {
+    return this.#serialize(input.repositoryId, () => this.#transaction('readwrite', async (tx) => {
+      const repository = await tx.get('repositories', input.repositoryId);
+      if (!repository) missing('REPOSITORY_NOT_FOUND', 'Version repository was not found');
+      assertRepositoryRevision(repository, input.expectedRepositoryRevision);
+      const entry = await tx.get('recoveryEntries', input.entryId);
+      if (!entry || entry.repositoryId !== input.repositoryId || entry.expiresAt <= Date.now()) {
+        missing('REF_NOT_FOUND', 'Recovery entry was not found');
+      }
+      const target = entry.previousHead ?? entry.newHead;
+      if (!target) missing('COMMIT_NOT_FOUND', 'Recovery commit was not found');
+      assertCommitInRepository(await tx.get('commits', target), input.repositoryId);
+      const name = branchName(input.name ?? entry.previousName ?? entry.name);
+      if (await tx.get('refs', refKey(input.repositoryId, 'branch', name))) {
+        throw new VersionError('BRANCH_EXISTS', `Branch ${name} already exists`);
+      }
+      const branch: BranchRef = {
+        repositoryId: input.repositoryId,
+        kind: 'branch',
+        name,
+        generation: newBranchGeneration(),
+        target,
+        revision: 1,
+      };
+      const updatedRepository = nextRepositoryRevision(repository);
+      await tx.put('refs', toRefRow(branch));
+      await logRecovery(tx, 'branch-created', null, branch);
+      await tx.put('repositories', updatedRepository);
+      return { repository: updatedRepository, branch };
+    }));
+  }
+
   async collectGarbage(
     repositoryId: RepositoryId,
     expectedRepositoryRevision: number,
+    options: { limit?: number } = {},
   ): Promise<CollectGarbageResult> {
+    const limit = Math.min(Math.max(1, Math.floor(options.limit ?? 100)), 500);
     return this.#serialize(repositoryId, () => this.#transaction('readwrite', async (tx) => {
       const repository = await tx.get('repositories', repositoryId);
       if (!repository) missing('REPOSITORY_NOT_FOUND', 'Version repository was not found');
       assertRepositoryRevision(repository, expectedRepositoryRevision);
 
-      const refs = (await tx.getAll('refs')).filter((ref) => ref.repositoryId === repositoryId);
-      const allCommits = await tx.getAll('commits');
-      const repositoryCommits = allCommits.filter((commit) => commit.repositoryId === repositoryId);
+      const refs = await tx.listRefs(repositoryId);
+      const repositoryCommits = await tx.listRepositoryCommits(repositoryId);
       const commitById = new Map(repositoryCommits.map((commit) => [commit.id, commit]));
-      const shelves = await tx.getAll('shelves');
-      const repositoryShelves = shelves.filter((shelf) => shelf.repositoryId === repositoryId);
-      const drafts = await tx.getAll('mergeDrafts');
-      const repositoryDrafts = drafts.filter((draft) => draft.repositoryId === repositoryId);
+      const manifestById = new Map((await tx.listRepositoryManifests(repositoryId))
+        .map((manifest) => [manifest.id, manifest]));
+      const repositoryShelves = await tx.listShelves(repositoryId);
+      const repositoryDrafts = await tx.listMergeDrafts(repositoryId);
+      const now = Date.now();
+      const entries = await tx.listRecoveryEntries(repositoryId);
+      const activeEntries = entries.filter((entry) => entry.expiresAt > now);
+      const expiredEntries = entries.filter((entry) => entry.expiresAt <= now);
       const reachable = new Set<CommitId>();
+      const seenManifests = new Set<string>();
       const frontier = [
         ...refs.map((ref) => ref.target),
         ...repositoryShelves.map((shelf) => shelf.baseCommitId),
@@ -2295,6 +2541,10 @@ export class VersionGraphStore {
           draft.currentHead,
           draft.sourceHead,
           ...draft.baseCommitIds,
+        ]),
+        ...activeEntries.flatMap((entry) => [
+          ...(entry.previousHead ? [entry.previousHead] : []),
+          ...(entry.newHead ? [entry.newHead] : []),
         ]),
       ];
       while (frontier.length > 0) {
@@ -2304,49 +2554,75 @@ export class VersionGraphStore {
         if (!commit) continue;
         reachable.add(id);
         frontier.push(...commit.parents);
+        const manifestFrontier = commit.mergeManifestId ? [commit.mergeManifestId] : [];
+        while (manifestFrontier.length > 0) {
+          const manifestId = manifestFrontier.pop()!;
+          if (seenManifests.has(manifestId)) continue;
+          seenManifests.add(manifestId);
+          const manifest = manifestById.get(manifestId);
+          if (!manifest) continue;
+          frontier.push(manifest.commitId);
+          manifestFrontier.push(...manifest.parentManifestIds);
+        }
       }
 
-      const removedCommits = repositoryCommits.filter((commit) => !reachable.has(commit.id));
-      const removedIds = new Set(removedCommits.map((commit) => commit.id));
-      const remainingCommits = allCommits.filter((commit) => !removedIds.has(commit.id));
-      const referencedBlobs = new Set([
-        ...remainingCommits.map((commit) => commit.blobId),
-        ...shelves.map((shelf) => shelf.blobId),
-        ...drafts.flatMap((draft) => draft.manualAssetBlobIds),
-      ]);
-      const referencedSnapshots = new Set([
-        ...remainingCommits.map((commit) => commit.compareSnapshotId),
-        ...shelves.map((shelf) => shelf.compareSnapshotId),
-      ]);
-      const blobsToDelete = new Set(
-        (await tx.getAll('blobs')).map((blob) => blob.id).filter((id) => !referencedBlobs.has(id)),
-      );
-      const snapshotsToDelete = new Set(
-        (await tx.getAll('compareSnapshots'))
-          .map((snapshot) => snapshot.id)
-          .filter((id) => !referencedSnapshots.has(id)),
-      );
-      const referencedManifestIds = new Set(
-        remainingCommits.flatMap((commit) => commit.mergeManifestId ? [commit.mergeManifestId] : []),
-      );
-      const manifestsToDelete = (await tx.getAll('mergeManifests'))
-        .filter((manifest) => !referencedManifestIds.has(manifest.id));
-
+      const unreachable = repositoryCommits
+        .filter((commit) => !reachable.has(commit.id))
+        .sort((left, right) => right.ordinal - left.ordinal);
+      const removedCommits = unreachable.slice(0, limit);
+      const removedRecovery = expiredEntries.slice(0, Math.max(0, limit - removedCommits.length));
       for (const commit of removedCommits) await tx.delete('commits', commit.id);
-      for (const id of blobsToDelete) await tx.delete('blobs', id);
-      for (const id of snapshotsToDelete) await tx.delete('compareSnapshots', id);
-      for (const manifest of manifestsToDelete) await tx.delete('mergeManifests', manifest.id);
+      for (const entry of removedRecovery) await tx.delete('recoveryEntries', entry.id);
+      const blobsToDelete = new Set(removedCommits.map((commit) => commit.blobId));
+      const snapshotsToDelete = new Set(removedCommits.map((commit) => commit.compareSnapshotId));
+      for (const id of blobsToDelete) {
+        if (await tx.isBlobReferenced(id)) blobsToDelete.delete(id);
+        else await tx.delete('blobs', id);
+      }
+      for (const id of snapshotsToDelete) {
+        if (await tx.isCompareSnapshotReferenced(id)) snapshotsToDelete.delete(id);
+        else await tx.delete('compareSnapshots', id);
+      }
+      const removedIds = new Set(removedCommits.map((commit) => commit.id));
+      // A commit and every analysis owned by it leave together. Otherwise a
+      // small batch can export a manifest whose owning commit was just removed.
+      for (const manifest of manifestById.values()) {
+        if (removedIds.has(manifest.commitId)) await tx.delete('mergeManifests', manifest.id);
+      }
+      const retainedManifestIds = new Set<string>();
+      const manifestFrontier = repositoryCommits
+        .filter((commit) => !removedIds.has(commit.id))
+        .flatMap((commit) => commit.mergeManifestId ? [commit.mergeManifestId] : []);
+      while (manifestFrontier.length > 0) {
+        const id = manifestFrontier.pop()!;
+        if (retainedManifestIds.has(id)) continue;
+        retainedManifestIds.add(id);
+        manifestFrontier.push(...(manifestById.get(id)?.parentManifestIds ?? []));
+      }
+      const orphanManifests = [...manifestById.values()]
+        .filter((manifest) => !removedIds.has(manifest.commitId)
+          && !retainedManifestIds.has(manifest.id))
+        .sort((left, right) => (commitById.get(right.commitId)?.ordinal ?? 0)
+          - (commitById.get(left.commitId)?.ordinal ?? 0));
+      const removedManifests = orphanManifests.slice(0,
+        Math.max(0, limit - removedCommits.length - removedRecovery.length));
+      for (const manifest of removedManifests) await tx.delete('mergeManifests', manifest.id);
 
       const garbageCollected = {
         commits: removedCommits.length,
         blobs: blobsToDelete.size,
         compareSnapshots: snapshotsToDelete.size,
       };
-      const changed = manifestsToDelete.length > 0
-        || Object.values(garbageCollected).some((count) => count > 0);
+      const changed = removedRecovery.length > 0 || removedCommits.length > 0 || removedManifests.length > 0;
       const updatedRepository = changed ? nextRepositoryRevision(repository) : repository;
       if (changed) await tx.put('repositories', updatedRepository);
-      return { repository: updatedRepository, garbageCollected };
+      return {
+        repository: updatedRepository,
+        garbageCollected,
+        hasMore: unreachable.length > removedCommits.length
+          || expiredEntries.length > removedRecovery.length
+          || orphanManifests.length > removedManifests.length,
+      };
     }));
   }
 
@@ -2373,6 +2649,7 @@ export class VersionGraphStore {
       const updatedRepository = nextRepositoryRevision(repository);
       await tx.put('refs', toRefRow(tag));
       await tx.put('repositories', updatedRepository);
+      await logRecovery(tx, 'tag-created', null, tag);
       return { repository: updatedRepository, tag };
     }));
   }
@@ -2395,6 +2672,7 @@ export class VersionGraphStore {
       const updatedRepository = nextRepositoryRevision(repository);
       await tx.put('refs', toRefRow(tag));
       await tx.put('repositories', updatedRepository);
+      if (tag.target !== current.target) await logRecovery(tx, 'tag-moved', current, tag);
       return { repository: updatedRepository, tag };
     }));
   }
@@ -2411,6 +2689,7 @@ export class VersionGraphStore {
       const updatedRepository = nextRepositoryRevision(repository);
       await tx.delete('refs', key);
       await tx.put('repositories', updatedRepository);
+      await logRecovery(tx, 'tag-deleted', fromRefRow(row), null);
       return updatedRepository;
     }));
   }
@@ -2443,8 +2722,8 @@ export class VersionGraphStore {
         createdAt: input.createdAt ?? Date.now(),
       };
       const updatedRepository = nextRepositoryRevision(repository);
-      if (!await tx.get('blobs', payload.blob.id)) await tx.put('blobs', payload.blob);
-      if (!await tx.get('compareSnapshots', payload.compareSnapshot.id)) {
+      if (!await tx.has('blobs', payload.blob.id)) await tx.put('blobs', payload.blob);
+      if (!await tx.has('compareSnapshots', payload.compareSnapshot.id)) {
         await tx.put('compareSnapshots', payload.compareSnapshot);
       }
       await tx.put('shelves', shelf);
@@ -2473,22 +2752,10 @@ export class VersionGraphStore {
       if (!shelf || shelf.repositoryId !== input.repositoryId) missing('SHELF_NOT_FOUND', 'Shelf was not found');
       await tx.delete('shelves', input.shelfId);
 
-      const commits = await tx.getAll('commits');
-      const remainingShelves = (await tx.getAll('shelves')).filter((candidate) => candidate.id !== input.shelfId);
-      const draftAssetIds = new Set(
-        (await tx.getAll('mergeDrafts')).flatMap((draft) => draft.manualAssetBlobIds),
-      );
-      if (
-        !commits.some((commit) => commit.blobId === shelf.blobId)
-        && !remainingShelves.some((candidate) => candidate.blobId === shelf.blobId)
-        && !draftAssetIds.has(shelf.blobId)
-      ) {
+      if (!await tx.isBlobReferenced(shelf.blobId)) {
         await tx.delete('blobs', shelf.blobId);
       }
-      if (
-        !commits.some((commit) => commit.compareSnapshotId === shelf.compareSnapshotId)
-        && !remainingShelves.some((candidate) => candidate.compareSnapshotId === shelf.compareSnapshotId)
-      ) {
+      if (!await tx.isCompareSnapshotReferenced(shelf.compareSnapshotId)) {
         await tx.delete('compareSnapshots', shelf.compareSnapshotId);
       }
       const updatedRepository = nextRepositoryRevision(repository);

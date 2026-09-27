@@ -2,6 +2,7 @@ import type {
   VersionCommitView,
   VersionManagerController,
   VersionManagerState,
+  VersionRecoveryView,
 } from '../ui/agent-sidebar/version-manager.ts';
 import { layoutCommitGraph, orderBranchHeadFrontier, type GraphCommit } from '../versioning/graph-layout.ts';
 import { commitId } from '../versioning/types.ts';
@@ -53,6 +54,11 @@ export function createMockVersions(
   branchedHistory = false,
 ): VersionManagerController {
   const listeners = new Set<(state: VersionManagerState) => void>();
+  const recovery: VersionRecoveryView[] = [{
+    id: 'recovery-sample', name: '이전 초안', operation: 'branch-deleted',
+    headId: 'b2a1b2c', createdAt: Date.now() - 86_400_000,
+    expiresAt: Date.now() + 29 * 86_400_000,
+  }];
   const commit = (
     id: string,
     title: string,
@@ -284,7 +290,22 @@ export function createMockVersions(
       changed();
     },
     deleteBranch: async (name) => {
+      const branch = state.branches.find((item) => item.name === name);
+      if (branch) recovery.unshift({
+        id: crypto.randomUUID(), name, operation: 'branch-deleted', headId: branch.headId,
+        createdAt: Date.now(), expiresAt: Date.now() + 30 * 86_400_000,
+      });
       state.branches = state.branches.filter((branch) => branch.name !== name);
+      changed();
+    },
+    listRecoveryEntries: async () => structuredClone(recovery),
+    recoverBranch: async (entryId, name) => {
+      if (state.branches.some((branch) => branch.name.normalize('NFC').toLowerCase() === name.normalize('NFC').toLowerCase())) {
+        throw new Error('같은 이름의 브랜치가 이미 있습니다.');
+      }
+      const entry = recovery.find((item) => item.id === entryId);
+      if (!entry) throw new Error('복구할 기록을 찾을 수 없습니다.');
+      state.branches.push({ name, headId: entry.headId, isActive: false, isDefault: false, updatedAt: Date.now() });
       changed();
     },
     startMerge: async (sourceBranch) => {
