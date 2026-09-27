@@ -1181,7 +1181,7 @@ export async function prepareDesktopFontsForDocument(
     plan.startedAt ||= now();
     const bold = entry.slot === 'bold' || entry.slot === 'bold-italic';
     const italic = entry.slot === 'italic' || entry.slot === 'bold-italic';
-    const isRegistered = () => getSessionLocalFontFace(entry.faceKey)?.record.source === 'desktop';
+    const isRegistered = () => getSessionLocalFontFace(entry.faceKey) !== null;
     try {
       let bytes: ArrayBuffer | null = null;
       let readError: unknown = null;
@@ -1213,6 +1213,12 @@ export async function prepareDesktopFontsForDocument(
       if (!result.ok) {
         entry.report.status = result.reason === 'unsupported-hft' ? 'unsupported-hft' : 'failed';
         entry.report.error = result.error ? `${result.reason}: ${result.error}` : result.reason;
+        return;
+      }
+      if (result.reused) {
+        plan.bytes -= entry.report.bytes;
+        entry.report.bytes = 0;
+        await reuseRegisteredFace(plan, entry, bold, italic);
         return;
       }
       facesRegistered += 1;
