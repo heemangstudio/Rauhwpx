@@ -596,7 +596,7 @@ export type RegisterLocalFontFaceFailure =
   | 'load-failed';
 
 export type RegisterLocalFontFaceResult =
-  | { ok: true; record: LocalFontRecord; bytes: ArrayBuffer; convertedFromHft: boolean }
+  | { ok: true; record: LocalFontRecord; bytes: ArrayBuffer; convertedFromHft: boolean; reused?: true }
   | { ok: false; reason: RegisterLocalFontFaceFailure; error?: string };
 
 const runtimeFamilyByKey = new Map<string, string>();
@@ -695,6 +695,10 @@ export async function registerLocalFontFace(
 
   const faceKey = localFontFaceKey(record);
   const existing = importedFontFaces.get(faceKey);
+  // 사용자가 가져온 face는 뒤늦게 끝난 데스크톱 색인 등록보다 우선한다.
+  if (options.source === 'desktop' && existing?.record.source === 'imported' && existing.bytes) {
+    return { ok: true, record: existing.record, bytes: existing.bytes, convertedFromHft: false, reused: true };
+  }
   const sameSourceExisting = existing && (existing.record.source ?? 'imported') === options.source ? existing : undefined;
   const usage = sessionFontUsage(options.source);
   if (!sameSourceExisting && usage.faces >= limits.faces) {
@@ -724,8 +728,13 @@ export async function registerLocalFontFace(
       weight: importedFontWeight(record.style),
     });
     await face.load();
+    // FontFace.load 중 사용자가 같은 face를 가져왔을 수 있다.
+    const latest = importedFontFaces.get(faceKey);
+    if (options.source === 'desktop' && latest?.record.source === 'imported' && latest.bytes) {
+      return { ok: true, record: latest.record, bytes: latest.bytes, convertedFromHft: false, reused: true };
+    }
     document.fonts.add(face);
-    if (existing) document.fonts.delete(existing.face);
+    if (latest) document.fonts.delete(latest.face);
     importedFontFaces.set(faceKey, {
       record,
       // FontFace가 자체 사본을 가지므로 데스크톱 face는 JS 사본을 버린다. HFT에서 옮긴 수식 글꼴은
@@ -734,7 +743,7 @@ export async function registerLocalFontFace(
       byteLength: bytes.byteLength,
       face,
     });
-    if (options.source === 'imported') importedFontGeneration++;
+    if (options.source === 'imported' || convertedFromHft) importedFontGeneration++;
     desktopFontBytesInflight.delete(faceKey);
     refreshImportedFontLookup();
     return { ok: true, record, bytes, convertedFromHft };

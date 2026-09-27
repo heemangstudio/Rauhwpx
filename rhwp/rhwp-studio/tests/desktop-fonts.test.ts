@@ -18,8 +18,10 @@ import {
   DESKTOP_FONT_MAX_AGGREGATE_BYTES,
   LOCAL_FONT_MAX_AGGREGATE_BYTES,
   LOCAL_FONT_MAX_BYTES_PER_FACE,
+  getImportedFontGeneration,
   getImportedLocalFontBytes,
   getSessionLocalFontFace,
+  hasImportedLocalFontFace,
   loadLocalFontBytesFor,
   localFontFaceKey,
   registerLocalFontFace,
@@ -305,6 +307,148 @@ test('데스크톱 글꼴은 가져온 파일과 별도 한도를 쓴다', async
       source: 'imported', fileName: 'small.ttf', names: names(100),
     });
     assert.equal(small.ok, true);
+  } finally {
+    resetLocalFontsForTests();
+    g.document = originalDocument;
+    g.FontFace = originalFontFace;
+  }
+});
+
+test('데스크톱 색인은 이미 가져온 regular·bold face와 WASM 바이트를 보존한다', async () => {
+  const g = globalThis as unknown as { FontFace?: unknown; document?: unknown };
+  const originalDocument = g.document;
+  const originalFontFace = g.FontFace;
+  const added: string[] = [];
+  g.FontFace = class {
+    family: string;
+    constructor(family: string) { this.family = family; }
+    async load(): Promise<this> { return this; }
+  };
+  g.document = { fonts: { add(face: { family: string }) { added.push(face.family); }, delete() { return true; } } };
+  resetLocalFontsForTests();
+  const names = (style: string) => ({
+    family: 'Shared Font', fullName: `Shared Font ${style}`,
+    postscriptName: `SharedFont-${style}`, style, aliases: [],
+  });
+  const bytes = (marker: number) => {
+    const data = new Uint8Array(1024);
+    data[0] = marker;
+    return data.buffer;
+  };
+  try {
+    for (const [style, marker] of [['Regular', 1], ['Bold', 2]] as const) {
+      const result = await registerLocalFontFace(bytes(marker), {
+        source: 'imported', fileName: `${style}.ttf`, names: names(style),
+      });
+      assert.equal(result.ok, true);
+    }
+    const generation = getImportedFontGeneration();
+    for (const style of ['Regular', 'Bold']) {
+      const result = await registerLocalFontFace(bytes(9), {
+        source: 'desktop', fileName: `${style}.ttf`, desktopFaceId: style, names: names(style),
+      });
+      assert.equal(result.ok && result.reused, true);
+      assert.equal(getSessionLocalFontFace(localFontFaceKey(names(style)))?.record.source, 'imported');
+    }
+    assert.equal(getImportedFontGeneration(), generation);
+    assert.equal(getImportedLocalFontBytes('Shared Font', false, false)?.byteLength, 1024);
+    assert.equal(new Uint8Array(getImportedLocalFontBytes('Shared Font', false, false)!)[0], 1);
+    assert.equal(new Uint8Array(getImportedLocalFontBytes('Shared Font', true, false)!)[0], 2);
+    assert.equal(added.length, 2);
+  } finally {
+    resetLocalFontsForTests();
+    g.document = originalDocument;
+    g.FontFace = originalFontFace;
+  }
+});
+
+test('직접 가져온 face는 늦게 끝난 데스크톱 등록보다 우선한다', async () => {
+  const g = globalThis as unknown as { FontFace?: unknown; document?: unknown };
+  const originalDocument = g.document;
+  const originalFontFace = g.FontFace;
+  let releaseDesktop: (() => void) | undefined;
+  const added: string[] = [];
+  g.FontFace = class {
+    family: string;
+    constructor(family: string) { this.family = family; }
+    async load(): Promise<this> {
+      if (this.family.startsWith('rhwp-desktop')) {
+        await new Promise<void>(resolve => { releaseDesktop = resolve; });
+      }
+      return this;
+    }
+  };
+  g.document = { fonts: { add(face: { family: string }) { added.push(face.family); }, delete() { return true; } } };
+  resetLocalFontsForTests();
+  const names = {
+    family: 'Shared Font', fullName: 'Shared Font Regular', postscriptName: 'SharedFont-Regular',
+    style: 'Regular', aliases: [],
+  };
+  try {
+    const pendingDesktop = registerLocalFontFace(new ArrayBuffer(1024), {
+      source: 'desktop', fileName: 'desktop.ttf', desktopFaceId: 'desktop-face', names,
+    });
+    assert.ok(releaseDesktop);
+    const imported = await registerLocalFontFace(new ArrayBuffer(1024), {
+      source: 'imported', fileName: 'imported.ttf', names,
+    });
+    assert.equal(imported.ok, true);
+    const generation = getImportedFontGeneration();
+    releaseDesktop?.();
+    const desktop = await pendingDesktop;
+    assert.equal(desktop.ok && desktop.reused, true);
+    assert.equal(getSessionLocalFontFace(localFontFaceKey(names))?.record.source, 'imported');
+    assert.equal(hasImportedLocalFontFace(names.family), true);
+    assert.ok(getImportedLocalFontBytes(names.family));
+    assert.equal(getImportedFontGeneration(), generation);
+    assert.equal(added.length, 1);
+  } finally {
+    resetLocalFontsForTests();
+    g.document = originalDocument;
+    g.FontFace = originalFontFace;
+  }
+});
+
+test('늦게 로드된 가져온 face는 앞서 등록된 데스크톱 FontFace를 제거한다', async () => {
+  const g = globalThis as unknown as { FontFace?: unknown; document?: unknown };
+  const originalDocument = g.document;
+  const originalFontFace = g.FontFace;
+  let releaseImported: (() => void) | undefined;
+  const faces = new Set<{ family: string }>();
+  g.FontFace = class {
+    family: string;
+    constructor(family: string) { this.family = family; }
+    async load(): Promise<this> {
+      if (this.family.startsWith('rhwp-imported')) {
+        await new Promise<void>(resolve => { releaseImported = resolve; });
+      }
+      return this;
+    }
+  };
+  g.document = { fonts: {
+    add(face: { family: string }) { faces.add(face); },
+    delete(face: { family: string }) { return faces.delete(face); },
+  } };
+  resetLocalFontsForTests();
+  const names = {
+    family: 'Shared Font', fullName: 'Shared Font Regular', postscriptName: 'SharedFont-Regular',
+    style: 'Regular', aliases: [],
+  };
+  try {
+    const pendingImported = registerLocalFontFace(new ArrayBuffer(1024), {
+      source: 'imported', fileName: 'imported.ttf', names,
+    });
+    assert.ok(releaseImported);
+    const desktop = await registerLocalFontFace(new ArrayBuffer(1024), {
+      source: 'desktop', fileName: 'desktop.ttf', desktopFaceId: 'desktop-face', names,
+    });
+    assert.equal(desktop.ok, true);
+    assert.equal(faces.size, 1);
+    releaseImported?.();
+    const imported = await pendingImported;
+    assert.equal(imported.ok, true);
+    assert.equal(getSessionLocalFontFace(localFontFaceKey(names))?.record.source, 'imported');
+    assert.deepEqual([...faces].map(face => face.family), [imported.record.runtimeFamily]);
   } finally {
     resetLocalFontsForTests();
     g.document = originalDocument;

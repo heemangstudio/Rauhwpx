@@ -64,11 +64,10 @@ try {
           return {
             imported: imported.imported.map(face => {
               const chain = substitution.fontFamilyChainForDisplay(face.family);
-              const revision = globalThis.getImportedFontMetricsRevision?.();
-              const bridgeHasFace = globalThis.hasImportedFontMetricsFace?.(face.family);
+              const sessionFace = local.getSessionLocalFontFace(local.localFontFaceKey(face));
               if (!chain.includes(`"${face.runtimeFamily}"`)
-                || revision !== local.getImportedFontGeneration()
-                || bridgeHasFace !== true) {
+                || sessionFace?.record.source !== 'imported'
+                || !sessionFace.bytes) {
                 throw new Error(`Font module state diverged for ${face.family}; restart the Studio dev server`);
               }
               return { family: face.family, style: face.style, runtimeFamily: face.runtimeFamily };

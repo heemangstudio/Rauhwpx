@@ -231,7 +231,7 @@ export interface WebCanvasImageCacheStats {
 
 import { fontFamilyChainForDisplay } from './font-substitution';
 import { createEquationFontResolver, createEquationLiteralFontResolver, createEquationTextMeasurer } from './equation-font';
-import { getImportedFontGeneration, getImportedLocalFontBytes, hasImportedLocalFontFace, resolveLocalFont } from './local-fonts';
+import { getImportedLocalFontBytes, resolveLocalFont } from './local-fonts';
 import type { RuntimeFontMetricsApi } from './desktop-fonts.ts';
 import type { FileSystemFileHandleLike } from '@/command/file-system-access';
 import {
@@ -272,12 +272,6 @@ let canvasFontSubstitutionInstalled = false;
 function installCanvasFontSubstitution(): void {
   if (canvasFontSubstitutionInstalled) return;
   if (typeof CanvasRenderingContext2D === 'undefined') return;
-
-  // The WASM HcrDeclared measurer uses the same imported face and hmtx as the
-  // Canvas painter. The generation lets it drop cached metrics after reimport.
-  (globalThis as Record<string, unknown>).getImportedFontMetricsRevision = getImportedFontGeneration;
-  (globalThis as Record<string, unknown>).getImportedFontMetricsBytes = getImportedLocalFontBytes;
-  (globalThis as Record<string, unknown>).hasImportedFontMetricsFace = hasImportedLocalFontFace;
 
   (globalThis as Record<string, unknown>).resolveEquationFontFamily = createEquationFontResolver(
     resolveLocalFont,
