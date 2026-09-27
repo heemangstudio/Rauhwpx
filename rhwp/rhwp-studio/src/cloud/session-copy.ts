@@ -32,6 +32,26 @@ export function suspendedSessionTitle(code: string | null | undefined, provider:
   }
 }
 
+/**
+ * 서버 거절 code 의 한 줄. 서버 원문은 영어라서 code 로 고르고, 원문 맨 앞의 제공자 이름
+ * (예: "claude must be authenticated")만 빌린다. 알 수 없는 code 는 null.
+ */
+export function cloudErrorCodeText(code: string | null | undefined, message = ''): string | null {
+  const named = /^\s*(claude|codex|pi|grok|cursor|opencode)\b/i.exec(message)?.[1]?.toLowerCase() as AgentName | undefined;
+  switch (code) {
+    case 'AUTH_REQUIRED':
+    case 'PROVIDER_AUTH_EXPIRED':
+    case 'PROVIDER_UNAVAILABLE':
+      return suspendedSessionTitle(code, named ?? null);
+    default: return null;
+  }
+}
+
+/** 로그인 문제를 서버에서 풀 때 쓸 명령. 브라우저처럼 로그인을 보낼 수 없는 곳에서 안내한다. */
+export function providerLoginHint(provider: string | null | undefined): string {
+  return provider ? `서버에서 sudo rauhwpx-cloud provider login ${provider} 실행 후 계속하세요.` : '';
+}
+
 /** 실패한 Cloud 작업의 한 줄. 한국어 원문은 그대로 쓴다. */
 export function failedSessionTitle(code: string, message: string): string {
   if (code === 'RESULT_EXPIRED') return '결과 보관 기간이 지났습니다.';

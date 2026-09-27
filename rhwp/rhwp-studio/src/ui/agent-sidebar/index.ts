@@ -121,6 +121,7 @@ import { loadInitialSetup, saveInitialSetup } from '../initial-setup/state.ts';
 import { summarizePendingDiffs } from './pending-diff-summary.ts';
 import { createReferenceLibrary } from './reference-library.ts';
 import { cloudErrorText, createCloudController, type CloudController } from '../../cloud/desktop-cloud.ts';
+import { providerLoginHint } from '../../cloud/session-copy.ts';
 import {
   canSelectCloudWorkspace,
   canSelectLocalWorkspace,
@@ -2610,7 +2611,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       persistCurrentThread();
       mountCloudStartPlaceholder(cloudStartPhaseLabel('failed'), true);
     }
-    const message = error instanceof Error ? error.message : String(error);
+    const code = (error as { code?: unknown } | null)?.code;
+    // 브라우저는 이 기기의 로그인을 보낼 수 없어, 서버에서 로그인할 명령을 함께 알린다.
+    const loginHint = (code === 'AUTH_REQUIRED' || code === 'PROVIDER_AUTH_EXPIRED')
+      && !cloudController.canReimportLogins() ? ` ${providerLoginHint(selectedAgent)}` : '';
+    const message = `${error instanceof Error ? error.message : String(error)}${loginHint}`;
     systemMessage(`클라우드 전송 실패: ${message}`);
     showToast({ message: `클라우드 전송 실패: ${message}`, durationMs: 5000 });
   }
@@ -3345,6 +3350,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   composerTargetMessage.hidden = true;
   composerTargetMessage.setAttribute('role', 'status');
   composerTargetMessage.setAttribute('aria-live', 'polite');
+  // 멈춘 Cloud 작업의 안내는 고칠 동작이 있는 Cloud 작업 창으로 이어진다.
+  composerTargetMessage.addEventListener('click', () => {
+    if (composerTargetMessage.dataset.action === 'open-cloud') cloudUi.sidebarButton.click();
+  });
   const composerSkill = el('span', 'ag-skill-token ag-composer-skill');
   composerSkill.hidden = true;
   const composerSkillIcon = el('span', 'ag-skill-token-icon');
@@ -6805,6 +6814,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       && !cloudUi.recoveryStrip.hidden;
     composerTargetMessage.hidden = execution.kind !== 'blocked' || connectionNoticeVisible || transitionCardVisible;
     composerTargetMessage.textContent = execution.kind === 'blocked' ? execution.message : '';
+    const composerTarget = workspace.composerTarget();
+    composerTargetMessage.dataset.action = composerTarget.kind === 'cloud-blocked'
+      && composerTarget.reason === 'session-suspended' ? 'open-cloud' : '';
     if (mergeResolverLocked) {
       input.disabled = true;
       send.disabled = true;

@@ -484,6 +484,8 @@ function publicSession(session: Record<string, unknown>, ownDeviceId: string | n
       ...base,
       kind: 'suspended',
       reason: String(reason?.message ?? '클라우드 에이전트에 확인이 필요합니다.'),
+      code: typeof reason?.code === 'string' ? reason.code : null,
+      provider: typeof session.provider === 'string' ? session.provider : null,
       resumable: !['TURN_LIMIT', 'DURATION_LIMIT'].includes(String(reason?.code ?? '')),
     };
   }

@@ -1,3 +1,4 @@
+import { cloudErrorCodeText } from './session-copy.ts';
 import type { RhwpDesktopApi } from '../desktop-integration.ts';
 import type { AgentName } from '../agent/types.ts';
 import { browserCloudSupported, createBrowserCloudApi } from './browser-cloud.ts';
@@ -137,6 +138,8 @@ export interface CloudController {
   recreateLink(): Promise<CloudSnapshot>;
   /** 내 서버·boat 의 Cloud 서비스를 다시 시작한다. 이 기능이 없는 데스크톱이면 false 다. */
   canRestartService(): boolean;
+  /** 이 기기의 제공자 로그인을 서버로 다시 보낼 수 있는가(데스크톱만). */
+  canReimportLogins(): boolean;
   restartService(): Promise<CloudSnapshot>;
   inspectHostKey(): Promise<CloudHostKeyInspection>;
   trustHostKey(fingerprint: string): Promise<CloudSnapshot>;
@@ -750,6 +753,8 @@ export function cloudErrorText(error: unknown, fallback = 'Cloud 요청을 처�
     .replace(/^(?:[A-Za-z]*Error)(?: \[[A-Za-z]+\])?:\s*/, '')
     .trim();
   if (/[가-힣]/.test(text)) return text;
+  const coded = cloudErrorCodeText((error as { code?: string } | null)?.code, text);
+  if (coded) return coded;
   if (text) console.warn('[cloud]', text);
   return fallback;
 }
@@ -1214,6 +1219,7 @@ export function createCloudController(
       return call('cloudGetState', activeScope);
     }),
     canRestartService: () => typeof resolvedApi?.cloudRestartService === 'function',
+    canReimportLogins: () => typeof resolvedApi?.cloudReimportLogins === 'function',
     restartService: () => recover('reconnecting', () => call('cloudRestartService'), 'restart'),
     async inspectHostKey() {
       const fn = resolvedApi?.cloudInspectHostKey;

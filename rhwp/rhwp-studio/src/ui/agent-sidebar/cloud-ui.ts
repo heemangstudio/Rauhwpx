@@ -26,6 +26,7 @@ import {
 } from '../../cloud/link.ts';
 import {
   PROVIDER_AUTH_SUSPEND_CODES,
+  providerLoginHint,
   WORKER_SUSPEND_CODES,
   failedSessionTitle,
   sessionProgressText,
@@ -1413,9 +1414,12 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
         moreActions().append(action('대화 끝내기', () => command('end'), 'ag-danger'));
         break;
       case 'suspended': {
-        const providerAuth = PROVIDER_AUTH_SUSPEND_CODES.has(session.code ?? '');
+        // 데스크톱은 이 Mac 의 로그인을 다시 보낸다. 브라우저는 보낼 로그인이 없어 서버에서 로그인할 명령을 알린다.
+        const providerAuth = PROVIDER_AUTH_SUSPEND_CODES.has(session.code ?? '') && deps.controller.canReimportLogins();
         panelStatus.textContent = suspendedSessionTitle(session.code, session.provider, session.reason);
-        panelDetail.textContent = '';
+        panelDetail.textContent = PROVIDER_AUTH_SUSPEND_CODES.has(session.code ?? '') && !providerAuth
+          ? providerLoginHint(session.provider)
+          : '';
         if (!deps.onMergeCheckpoint) panelActions.append(action('원본에 반영', publishCheckpoint));
         else {
           const offer = sessionMergeOffer(session.sessionId);

@@ -4944,6 +4944,14 @@ button.ag-skill-copy {
   display: none;
 }
 
+.ag-composer-target-message[data-action="open-cloud"] {
+  cursor: pointer;
+}
+
+.ag-composer-target-message[data-action="open-cloud"]:hover {
+  color: var(--ag-text);
+}
+
 .ag-cloud-start-placeholder {
   color: var(--ag-text-secondary);
 }
