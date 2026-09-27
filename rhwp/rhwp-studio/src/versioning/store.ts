@@ -2584,6 +2584,11 @@ export class VersionGraphStore {
         else await tx.delete('compareSnapshots', id);
       }
       const removedIds = new Set(removedCommits.map((commit) => commit.id));
+      // A commit and every analysis owned by it leave together. Otherwise a
+      // small batch can export a manifest whose owning commit was just removed.
+      for (const manifest of manifestById.values()) {
+        if (removedIds.has(manifest.commitId)) await tx.delete('mergeManifests', manifest.id);
+      }
       const retainedManifestIds = new Set<string>();
       const manifestFrontier = repositoryCommits
         .filter((commit) => !removedIds.has(commit.id))
@@ -2595,7 +2600,8 @@ export class VersionGraphStore {
         manifestFrontier.push(...(manifestById.get(id)?.parentManifestIds ?? []));
       }
       const orphanManifests = [...manifestById.values()]
-        .filter((manifest) => !retainedManifestIds.has(manifest.id))
+        .filter((manifest) => !removedIds.has(manifest.commitId)
+          && !retainedManifestIds.has(manifest.id))
         .sort((left, right) => (commitById.get(right.commitId)?.ordinal ?? 0)
           - (commitById.get(left.commitId)?.ordinal ?? 0));
       const removedManifests = orphanManifests.slice(0,

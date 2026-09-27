@@ -424,14 +424,23 @@ test('bounded garbage collection removes orphan children before their parents', 
   });
   const future = Date.now() + 31 * 24 * 60 * 60 * 1000;
   context.mock.method(Date, 'now', () => future);
-  const firstBatch = await store.collectGarbage(repo.id, deleted.revision, { limit: 1 });
-  assert.equal(firstBatch.garbageCollected.commits, 1);
-  assert.equal(await store.getCommit(second.commit.id), null);
-  assert.ok(await store.getCommit(first.commit.id));
-  const intermediate = await store.exportRepositorySnapshot(repo.id);
-  assert.ok(intermediate.commits.every((commit) => commit.parents.every((parent) => (
-    intermediate.commits.some((candidate) => candidate.id === parent)
-  ))));
+  let revision = deleted.revision;
+  let removed = 0;
+  for (let batch = 0; batch < 20; batch += 1) {
+    const result = await store.collectGarbage(repo.id, revision, { limit: 1 });
+    revision = result.repository.revision;
+    removed += result.garbageCollected.commits;
+    const intermediate = await store.exportRepositorySnapshot(repo.id);
+    await new VersionGraphStore({ indexedDB: null }).importRepositorySnapshot(intermediate);
+    if (batch === 0) {
+      assert.equal(result.garbageCollected.commits, 1);
+      assert.equal(await store.getCommit(second.commit.id), null);
+      assert.ok(await store.getCommit(first.commit.id));
+    }
+    if (!result.hasMore) break;
+  }
+  assert.equal(removed, 2);
+  assert.equal(await store.getCommit(first.commit.id), null);
 });
 
 test('tags and shelves keep history reachable during permanent branch deletion', async () => {
