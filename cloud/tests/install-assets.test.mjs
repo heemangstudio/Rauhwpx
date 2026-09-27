@@ -39,7 +39,7 @@ test('installer is streamable, channel-aware, preserves Serve routes, and emits 
   assert.match(source, /chmod -R a\+rX "\$DESTINATION"/);
   assert.match(source, /XDG_RUNTIME_DIR=\/run\/rauhwpx-cloud/);
   assert.match(source, /cd \/var\/lib\/rauhwpx-cloud\s+\/usr\/sbin\/runuser --user rauhwpx-cloud/);
-  assert.match(source, /podman --cgroup-manager=cgroupfs build --tag/);
+  assert.match(source, /podman (\$\{IMAGE_STORE_ARGS:-\} )?--cgroup-manager=cgroupfs build --tag/);
   assert.match(source, /podman --cgroup-manager=cgroupfs run --rm[\s\S]*--uidmap 0:1:1000[\s\S]*--gidmap 1000:0:1[\s\S]*--entrypoint \/app\/bin\/rhwp/);
   assert.doesNotMatch(source, /(^|\s)(?:exec\s+)?runuser\s+--user/m);
   assert.match(source, /provider install claude/);
@@ -61,7 +61,7 @@ test('installer is streamable, channel-aware, preserves Serve routes, and emits 
   assert.match(update, /environment\.previous/);
   assert.match(update, /No newer Rauhwpx cloud release was found/);
   assert.match(update, /cd \/var\/lib\/rauhwpx-cloud\s+\/usr\/sbin\/runuser --user rauhwpx-cloud/);
-  assert.match(update, /podman --cgroup-manager=cgroupfs build --tag/);
+  assert.match(update, /podman (\$\{IMAGE_STORE_ARGS:-\} )?--cgroup-manager=cgroupfs build --tag/);
   assert.match(update, /podman --cgroup-manager=cgroupfs run --rm[\s\S]*--uidmap 0:1:1000[\s\S]*--gidmap 1000:0:1[\s\S]*--entrypoint \/app\/bin\/rhwp/);
   assert.match(update, /chmod -R a\+rX "\$DESTINATION"/);
   assert.doesNotMatch(update, /(^|\s)(?:exec\s+)?runuser\s+--user/m);
@@ -231,6 +231,11 @@ test('boat hosts add an idle stop timer that ships in the release archive', asyn
   const timer = await fs.readFile(path.join(root, 'install/rauhwpx-boat-idle.timer'), 'utf8');
   assert.match(install, /RAUHWpx_HOST_KIND must be empty or boat/);
   assert.match(install, /boat hosts require RAUHWpx_TRANSPORT=ssh-tunnel/);
+  // 깨울 때 서비스가 기다리지 않도록 작업 환경 이미지는 필요할 때 읽어 오는 /home 에 둔다.
+  assert.match(install, /additionalimagestores = \["%s\/containers\/storage"\]/);
+  assert.match(install, /IMAGE_STORE_ARGS="--root /);
+  assert.match(install, /ProtectHome=tmpfs\\nBindPaths=%s/);
+  assert.match(install, /systemctl restart rauhwpx-cloud\.service/);
   assert.ok(install.includes('[[ "$BOAT_SANDBOX_ID" =~ ^bx_[a-z0-9]{8}$ ]]'));
   assert.match(install, /BOAT_IDLE_MINUTES >= 5 && BOAT_IDLE_MINUTES <= 240/);
   assert.match(install, /BOAT_USER=\$\{RAUHWpx_BOAT_USER:-user\}/);

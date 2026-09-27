@@ -61,7 +61,7 @@ esac
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y --no-install-recommends ca-certificates curl xz-utils podman crun uidmap slirp4netns fuse-overlayfs dbus-user-session
+apt-get install -y --no-install-recommends acl ca-certificates curl xz-utils podman crun uidmap slirp4netns fuse-overlayfs dbus-user-session
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP" "$INSTALL_MARKER"' EXIT
@@ -183,6 +183,39 @@ if [[ "$HOST_KIND" == boat ]]; then
   rm -f "$BOAT_ENV"
   install -m 0644 "$DESTINATION/install/rauhwpx-boat-idle.service" /etc/systemd/system/rauhwpx-boat-idle.service
   install -m 0644 "$DESTINATION/install/rauhwpx-boat-idle.timer" /etc/systemd/system/rauhwpx-boat-idle.timer
+  # boat 는 깨울 때 샌드박스 사용자 홈 밖의 파일을 모두 복원한 뒤에야 서비스를 시작하고, 그 홈은
+  # 필요할 때 읽어 온다. 스냅숏에 담기는 것도 그 홈뿐이다. 수 GB인 작업 환경 이미지를 그 안에
+  # 두어 서비스가 복원을 기다리지 않게 한다.
+  BOAT_HOME=$(getent passwd "$BOAT_USER" | cut -d: -f6)
+  [[ "$BOAT_HOME" == /home/* && -d "$BOAT_HOME" ]] || fail "boat user home was not found"
+  BOAT_STORAGE="$BOAT_HOME/.rauhwpx-cloud"
+  install -d -m 0700 -o rauhwpx-cloud -g rauhwpx-cloud "$BOAT_STORAGE" "$BOAT_STORAGE/containers"
+  # 서비스 사용자는 홈 목록을 볼 수 없고 자기 저장소로 지나갈 수만 있다.
+  setfacl -m "u:rauhwpx-cloud:--x" "$BOAT_HOME"
+  # 제공자 CLI(수백 MB)도 같은 이유로 홈 저장소에 두고 /opt 에는 링크만 남긴다. 아래 제공자
+  # 설치가 새 위치를 다시 채운다.
+  install -d -m 0755 -o rauhwpx-cloud -g rauhwpx-cloud "$BOAT_STORAGE/provider-cli"
+  if [[ ! -L /opt/rauhwpx-cloud/provider-cli ]]; then
+    rm -rf /opt/rauhwpx-cloud/provider-cli
+    ln -s "$BOAT_STORAGE/provider-cli" /opt/rauhwpx-cloud/provider-cli
+  fi
+  install -d -m 0700 -o rauhwpx-cloud -g rauhwpx-cloud \
+    /var/lib/rauhwpx-cloud/.config /var/lib/rauhwpx-cloud/.config/containers
+  # 이미지는 홈의 저장소에 빌드하고, 실행은 그 저장소를 읽기 전용 추가 저장소로 쓴다. 쓰기 계층과
+  # uid 매핑 사본은 /var/lib 에 남아 사용자 네임스페이스의 마운트 제약을 피한다.
+  STORAGE_CONF=$(mktemp)
+  printf '[storage]\ndriver = "overlay"\n[storage.options]\nadditionalimagestores = ["%s/containers/storage"]\n' \
+    "$BOAT_STORAGE" >"$STORAGE_CONF"
+  install -m 0600 -o rauhwpx-cloud -g rauhwpx-cloud "$STORAGE_CONF" /var/lib/rauhwpx-cloud/.config/containers/storage.conf
+  # 빌드는 --root 로 이 저장소에 직접 쓴다(rootless podman 은 CONTAINERS_STORAGE_CONF 보다 사용자 설정을 따른다).
+  printf '%s/containers/storage\n' "$BOAT_STORAGE" >"$STORAGE_CONF"
+  install -m 0600 -o rauhwpx-cloud -g rauhwpx-cloud "$STORAGE_CONF" /var/lib/rauhwpx-cloud/.config/containers/image-store
+  rm -f "$STORAGE_CONF"
+  # 예전 위치의 이미지는 다음 빌드가 새 위치에 다시 만들므로 지운다.
+  rm -rf /var/lib/rauhwpx-cloud/.local/share/containers /home/rauhwpx-cloud
+  install -d -m 0755 /etc/systemd/system/rauhwpx-cloud.service.d
+  printf '[Service]\n# 다른 홈은 계속 가리고 작업 환경 저장소 하나만 서비스에 연다.\nProtectHome=tmpfs\nBindPaths=%s\n' \
+    "$BOAT_STORAGE" >/etc/systemd/system/rauhwpx-cloud.service.d/boat-storage.conf
 fi
 
 touch /etc/rauhwpx-cloud.env
@@ -211,6 +244,23 @@ systemctl daemon-reload
 /usr/local/bin/rauhwpx-cloud provider install claude
 /usr/local/bin/rauhwpx-cloud provider install codex
 /usr/local/bin/rauhwpx-cloud provider install pi
+# 예전 설치가 제공자 홈에 남긴 npm 캐시는 스냅숏·백업만 키운다.
+rm -rf /var/lib/rauhwpx-cloud/provider-auth/*/.npm
+
+# 다시 설치할 때 돌던 서비스가 띄운 rootless podman 일시정지 프로세스는 그 서비스의 마운트
+# 네임스페이스를 붙들고 있어 새 저장소 경로를 보지 못한다. 서비스와 남은 프로세스를 멈추고
+# 설치가 끝나면 다시 시작한다.
+systemctl stop rauhwpx-cloud.service 2>/dev/null || true
+IMAGE_STORE_ARGS=
+if [[ -f /var/lib/rauhwpx-cloud/.config/containers/image-store ]]; then
+  IMAGE_STORE=$(head -1 /var/lib/rauhwpx-cloud/.config/containers/image-store)
+  IMAGE_STORE_ARGS="--root $IMAGE_STORE --runroot /run/rauhwpx-cloud/image-store"
+  # 이미지 저장소는 컨테이너를 갖지 않으므로 이전 설정으로 만든 libpod DB 를 지워 실행 경로 불일치를 막는다.
+  rm -rf "$IMAGE_STORE/libpod" "$IMAGE_STORE/db.sql"
+fi
+pkill -KILL -u rauhwpx-cloud 2>/dev/null || true
+# 서비스를 멈추면 systemd 가 RuntimeDirectory(/run/rauhwpx-cloud)를 지우므로 podman 용으로 다시 만든다.
+install -d -m 0700 -o rauhwpx-cloud -g rauhwpx-cloud /run/rauhwpx-cloud
 
 (
   # 이전 실행이 subuid 없이 만든 일시정지 프로세스가 남아 있으면 단일 UID 매핑이 유지된다.
@@ -221,7 +271,7 @@ systemctl daemon-reload
     podman --cgroup-manager=cgroupfs system migrate
   /usr/sbin/runuser --user rauhwpx-cloud --preserve-environment -- \
     env HOME=/var/lib/rauhwpx-cloud USER=rauhwpx-cloud LOGNAME=rauhwpx-cloud XDG_RUNTIME_DIR=/run/rauhwpx-cloud \
-    podman --cgroup-manager=cgroupfs build --tag "ghcr.io/ghandhitechnology/rauhwpx-cloud-worker:${CHANNEL}" \
+    podman ${IMAGE_STORE_ARGS:-} --cgroup-manager=cgroupfs build --tag "ghcr.io/ghandhitechnology/rauhwpx-cloud-worker:${CHANNEL}" \
     --file "$DESTINATION/install/Containerfile.worker" "$DESTINATION"
   /usr/sbin/runuser --user rauhwpx-cloud --preserve-environment -- \
     env HOME=/var/lib/rauhwpx-cloud USER=rauhwpx-cloud LOGNAME=rauhwpx-cloud XDG_RUNTIME_DIR=/run/rauhwpx-cloud \
@@ -232,7 +282,10 @@ systemctl daemon-reload
     --entrypoint /app/bin/rhwp "ghcr.io/ghandhitechnology/rauhwpx-cloud-worker:${CHANNEL}" --version >/dev/null
 )
 
-systemctl enable --now rauhwpx-cloud.service rauhwpx-cloud-update.timer
+# 다시 설치할 때 이미 돌던 서비스가 새 릴리스와 유닛 설정을 쓰도록 enable 뒤에 다시 시작한다.
+systemctl enable rauhwpx-cloud.service rauhwpx-cloud-update.timer
+systemctl restart rauhwpx-cloud.service
+systemctl start rauhwpx-cloud-update.timer
 for _ in $(seq 1 60); do
   if curl --fail --silent http://127.0.0.1:7740/v1/health >/dev/null; then break; fi
   sleep 1

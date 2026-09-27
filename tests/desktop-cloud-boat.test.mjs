@@ -67,6 +67,8 @@ async function startFakeBoat(t, options = {}) {
     limits: { canStart: true, accessTier: 'standard', sandboxPlanKey: 'box_20', billingStatus: 'active' },
     trial: false,
     trialRefusalCode: 'trial_auto_stop_required',
+    healthChecks: 0,
+    serviceWarmupChecks: 2,
     trialRefusalMessage: undefined,
     billingRequiredOnResume: false,
     claimPolls: [],
@@ -306,6 +308,13 @@ async function startFakeBoat(t, options = {}) {
         stdout = state.hostKeys.map((entry) => `${entry.type} ${entry.key} root@boat\n`).join('');
       } else if (body.command.includes('boat-idle.sh') && state.selfStop) {
         stdout = `rauhwpx-boat-self-stop ${state.selfStop}\n`;
+      } else if (body.command.includes('/rauhwpx-cloud/v1/health')) {
+        // 깨운 직후 몇 번은 서비스가 아직 복원 중이다.
+        state.healthChecks += 1;
+        if (state.healthChecks <= state.serviceWarmupChecks) {
+          return send(res, 200, { ok: true, type: 'command.finished', success: false, exitCode: 7, stdout: '', stderr: 'connection refused', timedOut: false });
+        }
+        stdout = '{"ok":true,"version":"2.0.4"}';
       }
       return send(res, 200, { ok: true, type: 'command.finished', success: true, exitCode: 0, stdout, stderr: '', timedOut: false });
     }
@@ -867,9 +876,15 @@ test('boat stop and explicit wake report their transitions', async (t) => {
   await coordinator.boatRefresh();
   assert.equal((await coordinator.snapshot()).boat.server.state, 'stopped');
 
+  const healthBefore = client.calls.health;
   const woke = await coordinator.boatWake();
   assert.equal(woke.boat.server.state, 'running');
   assert.equal(fake.requests('POST', `/api/v1/sandboxes/${sandbox.id}/resume`).length, 1);
+  // 서비스가 복원되는 동안은 VM 안의 health 만 묻고, 준비된 뒤 터널 확인은 한 번이면 된다.
+  const inside = fake.requests('POST', `/api/v1/sandboxes/${sandbox.id}/commands`)
+    .filter((entry) => entry.body.command.includes('/rauhwpx-cloud/v1/health'));
+  assert.equal(inside.length, fake.state.serviceWarmupChecks + 1);
+  assert.ok(client.calls.health - healthBefore <= 2, "no tunnel retry churn while the service restores");
 });
 
 test('setup creates the VM, installs with boat host env, pairs and imports every login', async (t) => {

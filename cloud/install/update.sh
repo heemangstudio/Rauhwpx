@@ -84,6 +84,11 @@ chown -R root:root "$DESTINATION"
 chmod -R a+rX "$DESTINATION"
 chmod +x "$DESTINATION/bin/rauhwpx-cloud" "$DESTINATION/install/"*.sh "$DESTINATION/install/rauhwpx-cloud"
 WORKER_IMAGE="ghcr.io/ghandhitechnology/rauhwpx-cloud-worker:release-$VERSION"
+# boat 호스트는 이미지를 홈의 추가 저장소에 빌드한다(install.sh 참고).
+IMAGE_STORE_ARGS=
+if [[ -f /var/lib/rauhwpx-cloud/.config/containers/image-store ]]; then
+  IMAGE_STORE_ARGS="--root $(head -1 /var/lib/rauhwpx-cloud/.config/containers/image-store) --runroot /run/rauhwpx-cloud/image-store"
+fi
 install -d -m 0700 -o rauhwpx-cloud -g rauhwpx-cloud /run/rauhwpx-cloud
 (
   # 이전 실행이 subuid 없이 만든 일시정지 프로세스가 남아 있으면 단일 UID 매핑이 유지된다.
@@ -94,7 +99,7 @@ install -d -m 0700 -o rauhwpx-cloud -g rauhwpx-cloud /run/rauhwpx-cloud
     podman --cgroup-manager=cgroupfs system migrate
   /usr/sbin/runuser --user rauhwpx-cloud --preserve-environment -- \
     env HOME=/var/lib/rauhwpx-cloud USER=rauhwpx-cloud LOGNAME=rauhwpx-cloud XDG_RUNTIME_DIR=/run/rauhwpx-cloud \
-    podman --cgroup-manager=cgroupfs build --tag "$WORKER_IMAGE" --file "$DESTINATION/install/Containerfile.worker" "$DESTINATION"
+    podman ${IMAGE_STORE_ARGS:-} --cgroup-manager=cgroupfs build --tag "$WORKER_IMAGE" --file "$DESTINATION/install/Containerfile.worker" "$DESTINATION"
   /usr/sbin/runuser --user rauhwpx-cloud --preserve-environment -- \
     env HOME=/var/lib/rauhwpx-cloud USER=rauhwpx-cloud LOGNAME=rauhwpx-cloud XDG_RUNTIME_DIR=/run/rauhwpx-cloud \
     podman --cgroup-manager=cgroupfs run --rm \

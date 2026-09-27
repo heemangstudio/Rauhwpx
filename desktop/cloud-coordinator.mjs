@@ -4896,8 +4896,12 @@ export class CloudCoordinator extends EventEmitter {
         this.#boatPinned.set(sandboxId, machineKey);
       }
       if (announced) {
-        // systemd restarts the Cloud service after a resume; allow a wake-sized budget.
-        await this.#waitForProfileHealth(profile, { attempts: 10, timeoutMs: 15_000 });
+        // boat 는 홈 밖의 파일을 모두 복원한 뒤 서비스를 시작한다. VM 안의 health 로 그 순간을
+        // 기다린 뒤 터널을 한 번만 연다. 확인하지 못하면 터널 쪽 재시도가 그대로 남는다.
+        const ready = await this.#boat.waitForServiceHealth(sandboxId);
+        await this.#waitForProfileHealth(profile, ready
+          ? { attempts: 4, timeoutMs: 15_000 }
+          : { attempts: 10, timeoutMs: 15_000 });
       }
       this.#setBoatStatus(sandboxId, { state: 'running', message: null, checkedAt: Date.now(), machineKey });
       if (announced) {

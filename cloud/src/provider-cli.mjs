@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { chmodSync, lstatSync, mkdirSync, readFileSync } from 'node:fs';
-import { copyFile, mkdir, readlink, rename, rm, symlink } from 'node:fs/promises';
+import { chmodSync, lstatSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
+import { copyFile, mkdir, mkdtemp, readlink, rename, rm, symlink } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CloudError, PROVIDERS } from './protocol.mjs';
@@ -49,7 +50,9 @@ export class ProviderCliManager {
   }
 
   async #installNpmBundle(env) {
-    const destination = this.config.providerCliDirectory;
+    // boat 호스트는 이 디렉터리가 홈 저장소로 가는 링크다. npm 은 링크를 거친 프로젝트 루트를
+    // 링크 노드로 읽어 lock 이 어긋났다고 거절하므로 실제 경로에서 설치한다.
+    const destination = realpathSync(this.config.providerCliDirectory);
     const source = path.resolve(directory, '../install/provider-runtime');
     const identifier = randomUUID();
     const stagingName = `bundle-${identifier}`;
@@ -62,9 +65,15 @@ export class ProviderCliManager {
     try {
       await copyFile(path.join(source, 'package.json'), path.join(staging, 'package.json'));
       await copyFile(path.join(source, 'package-lock.json'), path.join(staging, 'package-lock.json'));
-      await run('npm', [
-        'ci', '--prefix', staging, '--omit=dev', '--no-audit', '--no-fund',
-      ], { env });
+      // npm 캐시가 제공자 홈(provider-auth)에 남으면 수백 MB가 스냅숏과 백업에 실린다.
+      const npmCache = await mkdtemp(path.join(os.tmpdir(), 'rauhwpx-npm-'));
+      try {
+        await run('npm', [
+          'ci', '--prefix', staging, '--omit=dev', '--no-audit', '--no-fund',
+        ], { env: { ...env, npm_config_cache: npmCache } });
+      } finally {
+        await rm(npmCache, { recursive: true, force: true });
+      }
       for (const provider of PROVIDERS.filter((name) => lock[name].kind === 'npm')) {
         await run(path.join(staging, 'node_modules', '.bin', lock[provider].bin), ['--version'], { env, stdio: 'ignore' });
       }

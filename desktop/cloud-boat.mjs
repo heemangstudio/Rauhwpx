@@ -60,6 +60,8 @@ const SELF_STOP_SCRIPT = '/opt/rauhwpx-cloud/current/install/boat-idle.sh';
  * 설치된 유휴 스크립트의 확인 모드를 root로 부른다. 스크립트가 타이머와 같은 설정·탐색으로
  * 샌드박스 사용자의 로그인 셸을 살핀다. 확인 모드가 없는 스크립트는 실제로 멈출 수 있어 부르지 않는다.
  */
+// VM 안에서 Cloud 서비스의 공개 health 만 읽는다. 인증 정보는 담기지 않는다.
+const SERVICE_HEALTH_COMMAND = 'curl -fsS --max-time 3 http://127.0.0.1:7740/rauhwpx-cloud/v1/health';
 const SELF_STOP_COMMAND = [
   `f=${SELF_STOP_SCRIPT}`,
   'grep -q rauhwpx-boat-self-stop "$f" 2>/dev/null || exit 0',
@@ -1412,6 +1414,30 @@ export class BoatCloud {
       stderr: typeof body.stderr === 'string' ? body.stderr : '',
       timedOut: body.timedOut === true,
     };
+  }
+
+  /**
+   * 깨운 VM 에서 Cloud 서비스가 응답할 때까지 boat 명령 API 로 VM 안의 health 를 짧게 묻는다.
+   * boat 는 홈 밖의 파일을 모두 복원한 뒤에 서비스를 시작하므로 그 전에 SSH 터널을 여닫지 않는다.
+   * 제한 시간 안에 응답하지 않아도 오류 없이 false 를 돌려 터널 쪽 확인에 맡긴다.
+   */
+  async waitForServiceHealth(sandboxId, { timeoutMs = 150_000, intervalMs = 500, signal } = {}) {
+    const deadline = this.#now() + timeoutMs;
+    while (this.#now() < deadline) {
+      if (signal?.aborted) throw signal.reason ?? new Error('boat wake was cancelled');
+      try {
+        const result = await this.runCommand(sandboxId, SERVICE_HEALTH_COMMAND, {
+          timeoutSeconds: 5,
+          idempotent: true,
+          signal,
+        });
+        if (result.exitCode === 0 && /"ok"\s*:\s*true/.test(result.stdout)) return true;
+      } catch (error) {
+        if (signal?.aborted) throw error;
+      }
+      await this.#sleep(intervalMs, signal);
+    }
+    return false;
   }
 
   /**
