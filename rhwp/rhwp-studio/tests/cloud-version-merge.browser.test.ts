@@ -474,6 +474,34 @@ test('a restarted Cloud session inherits its source branch and preserves newer l
   } finally { await page.close(); }
 });
 
+test('Cloud starts with the same friendly name keep separate branches', { timeout: 45_000 }, async () => {
+  const page = await browser!.newPage();
+  try {
+    await openCloudDocument(page, 'hwp', 'friendly-name');
+    const names = await page.evaluate(async () => {
+      const { controller, checkpoint, startId } = (window as any).__cloud;
+      const { cloudBranchNameCandidates } = await import('/src/versioning/cloud-branch-name.ts');
+      const own = cloudBranchNameCandidates(startId);
+      let twinId = '';
+      for (let i = 0; !twinId; i += 1) {
+        if (cloudBranchNameCandidates(`twin-${i}`)[0] === own[0]) twinId = `twin-${i}`;
+      }
+      await controller.prepareCloudBranch(twinId, checkpoint.bytes, checkpoint.fileName);
+      const cloudBranches = controller.getState().branches
+        .map((branch: any) => branch.name).filter((name: string) => name.startsWith('Cloud '));
+      return { own: own[0], twin: cloudBranchNameCandidates(twinId)[1], cloudBranches };
+    });
+    assert.match(names.own, /^Cloud [a-z]+-[a-z]+$/);
+    assert.deepEqual([...names.cloudBranches].sort(), [names.own, names.twin].sort());
+    await page.evaluate(() => (window as any).__cloud.begin());
+    await page.waitForSelector('.version-merge-preparation');
+    await page.click('.version-merge-preparation button[type="submit"]');
+    await page.waitForSelector('.merge-direction');
+    assert.match(await page.$eval('.merge-direction', (node) => node.textContent ?? ''), new RegExp(`^${names.own} →`));
+    await finishReview(page);
+  } finally { await page.close(); }
+});
+
 test('stash application rolls the editor back on a failed transaction and can be retried', { timeout: 45_000 }, async () => {
   const page = await browser!.newPage();
   try {

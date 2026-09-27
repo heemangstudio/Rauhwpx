@@ -46,6 +46,7 @@ import {
   VersionError,
   type BranchName,
   type BranchRef,
+  type RepositoryId,
   type CommitId,
   type VersionCommit,
   type VersionRef,
@@ -56,6 +57,7 @@ import {
   type VersionBlob,
   type MergeResolution,
 } from './index.ts';
+import { cloudBranchNameCandidates } from './cloud-branch-name.ts';
 import { hashBytes, fingerprintBytes } from './hash.ts';
 import {
   commitCompositeMerge,
@@ -411,17 +413,16 @@ export class DocumentVersionController implements VersionManagerController {
         return blob.bytes;
       }
       const sourceBranch = sourceStartId
-        ? await this.#store.getBranch(repository.id, this.#cloudBranchName(sourceStartId))
+        ? await this.#findCloudBranch(repository.id, sourceStartId)
         : null;
       this.#assertWorkspaceToken(workspace);
       if (sourceStartId && !sourceBranch) return bytes;
       const capture = await this.#captureIncoming(bytes, fileName);
       this.#assertWorkspaceToken(workspace);
-      const name = this.#cloudBranchName(startId);
-      let branch = await this.#store.getBranch(repository.id, name);
+      let branch = await this.#findCloudBranch(repository.id, startId);
       if (!branch) {
         const created = await this.#store.createBranch({
-          repositoryId: repository.id, name, target: sourceBranch?.target ?? this.#requireActiveBranch().target,
+          repositoryId: repository.id, name: await this.#freeCloudBranchName(repository.id, startId), target: sourceBranch?.target ?? this.#requireActiveBranch().target,
           expectedRepositoryRevision: repository.revision,
         });
         this.#repository = created.repository;
@@ -467,10 +468,8 @@ export class DocumentVersionController implements VersionManagerController {
       if (digest !== checkpoint.sha256 || checkpoint.bytes.length !== checkpoint.byteLength) {
         throw new VersionError('CORRUPT_BLOB', 'Cloud 문서 검증에 실패했습니다. 다시 다운로드하세요.');
       }
-      const name = this.#cloudBranchName(startId);
-      const anchor = await this.#store.getCommit(commitId(`cloud-base:${repository.id}:${startId}`));
-      const branch = await this.#store.getBranch(repository.id, name);
-      if (!anchor || !branch) {
+      const branch = await this.#findCloudBranch(repository.id, startId);
+      if (!branch) {
         throw new Error('이 기기에 병합에 필요한 Cloud 시작 기록이 없습니다. Cloud 상태에서 완료 문서를 사본으로 저장할 수 있습니다.');
       }
       if (branch.name === this.#requireActiveBranch().name) {
@@ -489,7 +488,7 @@ export class DocumentVersionController implements VersionManagerController {
         if (existing.id !== branch.target) {
           const relation = await this.#store.getMergeRelation(repository.id, this.#requireActiveBranch().target, existing.id);
           this.#assertWorkspaceToken(workspace);
-          if (relation.relation === 'already-integrated') return { name, integrated: true };
+          if (relation.relation === 'already-integrated') return { name: branch.name, integrated: true };
           throw new VersionError('STALE_WORKSPACE', '더 최신 Cloud 변경을 이미 가져왔습니다. 최신 작업을 선택하세요.');
         }
       } else {
@@ -503,9 +502,9 @@ export class DocumentVersionController implements VersionManagerController {
         this.#assertWorkspaceToken(workspace);
         await this.#appendBranchSnapshot(branch, capture, `Cloud · ${checkpoint.turn}턴`, 'agent', id);
       }
-      const latest = await this.#store.getBranch(repository.id, name);
+      const latest = await this.#store.getBranch(repository.id, branch.name);
       const relation = await this.#store.getMergeRelation(repository.id, this.#requireActiveBranch().target, latest!.target);
-      return { name, integrated: relation.relation === 'already-integrated' };
+      return { name: branch.name, integrated: relation.relation === 'already-integrated' };
     });
     if (source.integrated) return true;
     this.#mergeCompletion = null;
@@ -518,8 +517,24 @@ export class DocumentVersionController implements VersionManagerController {
     return commitId(`cloud:${this.#requireRepository().id}:${checkpoint.sessionId}:${checkpoint.revision}:${operation}`);
   }
 
-  #cloudBranchName(startId: string): BranchName {
-    return branchName(`Cloud ${hashBytes(new TextEncoder().encode(startId)).slice(7, 23)}`);
+  /** The branch holding this start's anchor; a name alone may belong to another Cloud start. */
+  async #findCloudBranch(repositoryId: RepositoryId, startId: string): Promise<BranchRef | null> {
+    const anchorId = commitId(`cloud-base:${repositoryId}:${startId}`);
+    if (!await this.#store.getCommit(anchorId)) return null;
+    for (const name of cloudBranchNameCandidates(startId)) {
+      const branch = await this.#store.getBranch(repositoryId, name);
+      if (!branch) continue;
+      const relation = await this.#store.getMergeRelation(repositoryId, branch.target, anchorId);
+      if (relation.relation === 'already-integrated') return branch;
+    }
+    return null;
+  }
+
+  async #freeCloudBranchName(repositoryId: RepositoryId, startId: string): Promise<BranchName> {
+    for (const name of cloudBranchNameCandidates(startId)) {
+      if (!await this.#store.getBranch(repositoryId, name)) return name;
+    }
+    throw new VersionError('INVALID_REF_NAME', 'Cloud 브랜치 이름을 정하지 못했습니다.');
   }
 
   async #captureIncoming(bytes: Uint8Array, fileName: string): Promise<CapturedVersionSnapshot> {
