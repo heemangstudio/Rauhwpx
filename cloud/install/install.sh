@@ -105,7 +105,11 @@ loginctl enable-linger rauhwpx-cloud >/dev/null 2>&1 || true
 install -d -m 0700 -o rauhwpx-cloud -g rauhwpx-cloud /var/lib/rauhwpx-cloud /var/lib/rauhwpx-cloud/provider-auth
 install -d -m 0700 -o rauhwpx-cloud -g rauhwpx-cloud /run/rauhwpx-cloud
 install -d -m 0755 /opt/rauhwpx-cloud/releases
-install -d -m 0755 -o rauhwpx-cloud -g rauhwpx-cloud /opt/rauhwpx-cloud/provider-cli
+if [[ "$HOST_KIND" != boat ]]; then
+  # 이전 boat 설치의 링크가 복원되지 않은 홈을 가리킬 수 있다.
+  [[ ! -L /opt/rauhwpx-cloud/provider-cli ]] || rm /opt/rauhwpx-cloud/provider-cli
+  install -d -m 0755 -o rauhwpx-cloud -g rauhwpx-cloud /opt/rauhwpx-cloud/provider-cli
+fi
 
 if [[ -n ${RAUHWpx_RELEASE_URL:-} ]]; then
   ARCHIVE_URL=$RAUHWpx_RELEASE_URL
@@ -114,19 +118,19 @@ else
   RELEASES_JSON=$(curl --fail --location --silent --show-error \
     'https://api.github.com/repos/heemangstudio/Rauhwpx/releases?per_page=30')
   if [[ "$CHANNEL" == prerelease ]]; then
-    ARCHIVE_URL=$(/opt/rauhwpx-node/bin/node -e '
-      const releases=JSON.parse(process.argv[1]); const name=process.argv[2];
+    ARCHIVE_URL=$(printf '%s' "$RELEASES_JSON" | /opt/rauhwpx-node/bin/node -e '
+      const releases=JSON.parse(require("node:fs").readFileSync(0,"utf8")); const name=process.argv[1];
       const release=releases.find((item)=>item.prerelease && !item.draft && item.assets?.some((asset)=>asset.name===name));
       const url=release?.assets.find((asset)=>asset.name===name)?.browser_download_url;
       if (!url) process.exit(1); process.stdout.write(url);
-    ' "$RELEASES_JSON" "$ASSET") || fail "no compatible prerelease cloud asset was found"
+    ' "$ASSET") || fail "no compatible prerelease cloud asset was found"
   else
-    ARCHIVE_URL=$(/opt/rauhwpx-node/bin/node -e '
-      const releases=JSON.parse(process.argv[1]); const name=process.argv[2];
+    ARCHIVE_URL=$(printf '%s' "$RELEASES_JSON" | /opt/rauhwpx-node/bin/node -e '
+      const releases=JSON.parse(require("node:fs").readFileSync(0,"utf8")); const name=process.argv[1];
       const release=releases.find((item)=>!item.prerelease && !item.draft && item.assets?.some((asset)=>asset.name===name));
       const url=release?.assets.find((asset)=>asset.name===name)?.browser_download_url;
       if (!url) process.exit(1); process.stdout.write(url);
-    ' "$RELEASES_JSON" "$ASSET") || fail "no compatible stable cloud asset was found"
+    ' "$ASSET") || fail "no compatible stable cloud asset was found"
   fi
 fi
 
@@ -189,7 +193,8 @@ if [[ "$HOST_KIND" == boat ]]; then
   BOAT_HOME=$(getent passwd "$BOAT_USER" | cut -d: -f6)
   [[ "$BOAT_HOME" == /home/* && -d "$BOAT_HOME" ]] || fail "boat user home was not found"
   BOAT_STORAGE="$BOAT_HOME/.rauhwpx-cloud"
-  install -d -m 0700 -o rauhwpx-cloud -g rauhwpx-cloud "$BOAT_STORAGE" "$BOAT_STORAGE/containers"
+  install -d -m 0700 -o rauhwpx-cloud -g rauhwpx-cloud \
+    "$BOAT_STORAGE" "$BOAT_STORAGE/containers" "$BOAT_STORAGE/containers/storage"
   # 서비스 사용자는 홈 목록을 볼 수 없고 자기 저장소로 지나갈 수만 있다.
   setfacl -m "u:rauhwpx-cloud:--x" "$BOAT_HOME"
   # 제공자 CLI(수백 MB)도 같은 이유로 홈 저장소에 두고 /opt 에는 링크만 남긴다. 아래 제공자
@@ -197,8 +202,8 @@ if [[ "$HOST_KIND" == boat ]]; then
   install -d -m 0755 -o rauhwpx-cloud -g rauhwpx-cloud "$BOAT_STORAGE/provider-cli"
   if [[ ! -L /opt/rauhwpx-cloud/provider-cli ]]; then
     rm -rf /opt/rauhwpx-cloud/provider-cli
-    ln -s "$BOAT_STORAGE/provider-cli" /opt/rauhwpx-cloud/provider-cli
   fi
+  ln -sfn "$BOAT_STORAGE/provider-cli" /opt/rauhwpx-cloud/provider-cli
   install -d -m 0700 -o rauhwpx-cloud -g rauhwpx-cloud \
     /var/lib/rauhwpx-cloud/.config /var/lib/rauhwpx-cloud/.config/containers
   # 이미지는 홈의 저장소에 빌드하고, 실행은 그 저장소를 읽기 전용 추가 저장소로 쓴다. 쓰기 계층은
@@ -268,6 +273,8 @@ fi
 pkill -KILL -u rauhwpx-cloud 2>/dev/null || true
 # 서비스를 멈추면 systemd 가 RuntimeDirectory(/run/rauhwpx-cloud)를 지우므로 podman 용으로 다시 만든다.
 install -d -m 0700 -o rauhwpx-cloud -g rauhwpx-cloud /run/rauhwpx-cloud
+# 강제 종료된 일시정지 프로세스의 PID가 남으면 migrate가 죽은 네임스페이스에 다시 붙으려 한다.
+rm -f /run/rauhwpx-cloud/libpod/tmp/pause.pid
 
 (
   # 이전 실행이 subuid 없이 만든 일시정지 프로세스가 남아 있으면 단일 UID 매핑이 유지된다.

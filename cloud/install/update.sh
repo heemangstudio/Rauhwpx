@@ -23,19 +23,19 @@ else
   RELEASES_JSON=$(curl --fail --location --silent --show-error \
     'https://api.github.com/repos/heemangstudio/Rauhwpx/releases?per_page=30')
   if [[ "$CHANNEL" == prerelease ]]; then
-    ARCHIVE_URL=$(/opt/rauhwpx-node/bin/node -e '
-      const releases=JSON.parse(process.argv[1]); const name=process.argv[2];
+    ARCHIVE_URL=$(printf '%s' "$RELEASES_JSON" | /opt/rauhwpx-node/bin/node -e '
+      const releases=JSON.parse(require("node:fs").readFileSync(0,"utf8")); const name=process.argv[1];
       const release=releases.find((item)=>item.prerelease && !item.draft && item.assets?.some((asset)=>asset.name===name));
       const url=release?.assets.find((asset)=>asset.name===name)?.browser_download_url;
       if (!url) process.exit(1); process.stdout.write(url);
-    ' "$RELEASES_JSON" "$ASSET") || { echo "no compatible prerelease cloud asset was found" >&2; exit 1; }
+    ' "$ASSET") || { echo "no compatible prerelease cloud asset was found" >&2; exit 1; }
   else
-    ARCHIVE_URL=$(/opt/rauhwpx-node/bin/node -e '
-      const releases=JSON.parse(process.argv[1]); const name=process.argv[2];
+    ARCHIVE_URL=$(printf '%s' "$RELEASES_JSON" | /opt/rauhwpx-node/bin/node -e '
+      const releases=JSON.parse(require("node:fs").readFileSync(0,"utf8")); const name=process.argv[1];
       const release=releases.find((item)=>!item.prerelease && !item.draft && item.assets?.some((asset)=>asset.name===name));
       const url=release?.assets.find((asset)=>asset.name===name)?.browser_download_url;
       if (!url) process.exit(1); process.stdout.write(url);
-    ' "$RELEASES_JSON" "$ASSET") || { echo "no compatible stable cloud asset was found" >&2; exit 1; }
+    ' "$ASSET") || { echo "no compatible stable cloud asset was found" >&2; exit 1; }
   fi
 fi
 

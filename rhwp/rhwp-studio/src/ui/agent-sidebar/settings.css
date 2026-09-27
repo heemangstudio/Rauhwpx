@@ -2444,8 +2444,7 @@
   border-radius: 8px;
   color: var(--n-text-secondary);
   font-weight: 600;
-  /* 탭은 글자 길이만큼 자리를 나눠 "Cloud 작업"이 중간에서 갈라지거나 잘리지 않는다. */
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   padding-inline: 8px;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -2480,6 +2479,8 @@
   }
 
   .ag-root .ag-settings-page .ag-settings-nav-button {
+    /* 좁은 설정에서는 탭이 가로줄의 폭을 나눈다. */
+    flex: 1 1 auto;
     min-height: 28px;
     border-radius: 7px;
     font-size: 12px;
