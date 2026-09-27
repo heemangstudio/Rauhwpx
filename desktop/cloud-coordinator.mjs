@@ -5223,6 +5223,8 @@ export class CloudCoordinator extends EventEmitter {
         await saveStage('creating', { sandboxId });
       }
       this.#boatSetupSandboxId = sandboxId;
+      // 이어 한 설정과 이전 판이 만든 VM 도 다른 Mac 이 이름으로 찾을 수 있게 맞춘다.
+      await boat.nameSandbox(sandboxId);
       this.#emitBoatChange('setup');
 
       let autoStop = current?.boat?.autoStop === 'idle' ? 'idle' : 'timer';

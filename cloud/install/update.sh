@@ -86,12 +86,17 @@ chmod +x "$DESTINATION/bin/rauhwpx-cloud" "$DESTINATION/install/"*.sh "$DESTINAT
 WORKER_IMAGE="ghcr.io/ghandhitechnology/rauhwpx-cloud-worker:release-$VERSION"
 install -d -m 0700 -o rauhwpx-cloud -g rauhwpx-cloud /run/rauhwpx-cloud
 (
+  # 이전 실행이 subuid 없이 만든 일시정지 프로세스가 남아 있으면 단일 UID 매핑이 유지된다.
+  # migrate 가 그 프로세스를 다시 띄워 /etc/subuid 범위를 반영한다.
   cd /var/lib/rauhwpx-cloud
   /usr/sbin/runuser --user rauhwpx-cloud --preserve-environment -- \
-    env HOME=/var/lib/rauhwpx-cloud XDG_RUNTIME_DIR=/run/rauhwpx-cloud \
+    env HOME=/var/lib/rauhwpx-cloud USER=rauhwpx-cloud LOGNAME=rauhwpx-cloud XDG_RUNTIME_DIR=/run/rauhwpx-cloud \
+    podman --cgroup-manager=cgroupfs system migrate
+  /usr/sbin/runuser --user rauhwpx-cloud --preserve-environment -- \
+    env HOME=/var/lib/rauhwpx-cloud USER=rauhwpx-cloud LOGNAME=rauhwpx-cloud XDG_RUNTIME_DIR=/run/rauhwpx-cloud \
     podman --cgroup-manager=cgroupfs build --tag "$WORKER_IMAGE" --file "$DESTINATION/install/Containerfile.worker" "$DESTINATION"
   /usr/sbin/runuser --user rauhwpx-cloud --preserve-environment -- \
-    env HOME=/var/lib/rauhwpx-cloud XDG_RUNTIME_DIR=/run/rauhwpx-cloud \
+    env HOME=/var/lib/rauhwpx-cloud USER=rauhwpx-cloud LOGNAME=rauhwpx-cloud XDG_RUNTIME_DIR=/run/rauhwpx-cloud \
     podman --cgroup-manager=cgroupfs run --rm \
     --uidmap 0:1:1000 --uidmap 1000:0:1 --uidmap 1001:1001:64535 \
     --gidmap 0:1:1000 --gidmap 1000:0:1 --gidmap 1001:1001:64535 \

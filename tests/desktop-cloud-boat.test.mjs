@@ -226,7 +226,8 @@ async function startFakeBoat(t, options = {}) {
         const sandbox = state.sandboxes.get(prior.id);
         return send(res, 202, { ok: true, type: 'sandbox.created', status: 'provisioning', ttlSeconds: sandbox.ttlSeconds, sandbox: view(sandbox) });
       }
-      const sandbox = addSandbox({ name: body.name, type: body.type, ttlSeconds: body.ttlSeconds });
+      // 실제 boat 처럼 생성 요청의 name 은 무시하고 날짜 이름을 붙인다.
+      const sandbox = addSandbox({ name: 'Box 2026-09-27 09:00', type: body.type, ttlSeconds: body.ttlSeconds });
       if (key) state.idempotency.set(key, { id: sandbox.id, raw });
       if (state.failNextCreateAfterCommit) {
         state.failNextCreateAfterCommit = false;
@@ -258,6 +259,7 @@ async function startFakeBoat(t, options = {}) {
     if (req.method === 'PATCH' && !action) {
       if ('ttlSeconds' in body && trialRefuses(body.ttlSeconds)) return fail(res, 400, state.trialRefusalCode, state.trialRefusalMessage);
       if ('ttlSeconds' in body) sandbox.ttlSeconds = body.ttlSeconds;
+      if (typeof body.name === 'string') sandbox.name = body.name;
       return send(res, 200, { ok: true, type: 'sandbox.info', sandbox: view(sandbox) });
     }
     if (req.method === 'DELETE' && !action) {
@@ -641,7 +643,7 @@ test('trial accounts fall back to a two-hour auto-stop on resume and after setup
     { ttlSeconds: 7200 },
   ]);
   await boat.setAutoStop(sandbox.id, null);
-  assert.deepEqual(fake.requests('PATCH', `/api/v1/sandboxes/${sandbox.id}`).map((entry) => entry.body), [
+  assert.deepEqual(fake.requests('PATCH', `/api/v1/sandboxes/${sandbox.id}`).map((entry) => entry.body).filter((body) => 'ttlSeconds' in body), [
     { ttlSeconds: null },
     { ttlSeconds: 7200 },
   ]);
@@ -913,6 +915,9 @@ test('setup creates the VM, installs with boat host env, pairs and imports every
   assert.deepEqual([...new Set(stages)], ['creating', 'starting', 'installing', 'pairing', 'credentials', 'done']);
   assert.equal(fake.requests('POST', '/api/v1/sandboxes').length, 1);
   const [sandbox] = fake.state.sandboxes.values();
+  // boat 가 생성 이름을 무시하므로 만든 뒤 이름을 바꿔 다른 Mac 이 찾을 수 있어야 한다.
+  assert.equal(sandbox.name, BOAT_SANDBOX_NAME);
+  assert.equal((await boat.findRauhwpxSandbox())?.id, sandbox.id);
   assert.equal(provisionCalls.length, 1);
   const [{ ssh, options }] = provisionCalls;
   assert.deepEqual({ host: ssh.host, port: ssh.port, user: ssh.user }, { host: sandbox.ip, port: 22, user: 'user' });
@@ -930,7 +935,7 @@ test('setup creates the VM, installs with boat host env, pairs and imports every
   assert.match(probe.body.command, /sudo -n \/bin\/bash "\$f" --probe/, 'self-stop tooling is verified after install');
   assert.equal(snapshot.profile.profile.boat.autoStop, undefined, 'the UI profile stays minimal');
   assert.equal(client.calls.activated[0].profile.boat.autoStop, 'idle');
-  assert.deepEqual(fake.requests('PATCH', `/api/v1/sandboxes/${sandbox.id}`).map((entry) => entry.body), [{ ttlSeconds: null }]);
+  assert.deepEqual(fake.requests('PATCH', `/api/v1/sandboxes/${sandbox.id}`).map((entry) => entry.body).filter((body) => 'ttlSeconds' in body), [{ ttlSeconds: null }]);
   assert.deepEqual(snapshot.boat.setup.importedProviders, ['claude', 'codex']);
   assert.equal(snapshot.boat.setup.stage, 'done');
   assert.equal(snapshot.boat.setup.error, null);
@@ -1156,7 +1161,7 @@ test('without self-stop tooling setup and every wake keep a four-hour boat auto-
   t.after(() => coordinator.stop());
   const done = await coordinator.boatSetup({ machine: 'default' });
   const [sandbox] = fake.state.sandboxes.values();
-  assert.deepEqual(fake.requests('PATCH', `/api/v1/sandboxes/${sandbox.id}`).map((entry) => entry.body), [{ ttlSeconds: 14400 }]);
+  assert.deepEqual(fake.requests('PATCH', `/api/v1/sandboxes/${sandbox.id}`).map((entry) => entry.body).filter((body) => 'ttlSeconds' in body), [{ ttlSeconds: 14400 }]);
   assert.equal(client.calls.activated[0].profile.boat.autoStop, 'timer');
   assert.equal(done.boat.server.autoStop, 'timer');
   assert.equal(done.boat.server.timerHours, 4);
@@ -1203,7 +1208,7 @@ test('a credentials retry wakes the paired VM first, and a fresh attempt gets it
   const failed = (await coordinator.snapshot()).boat.setup;
   assert.equal(failed.stage, 'credentials', 'copying no login at all is a setup error');
   assert.match(failed.error.detail, /claude: .*rejected/);
-  assert.equal(fake.requests('PATCH', /\/api\/v1\/sandboxes\//).length, 0);
+  assert.equal(fake.requests('PATCH', /\/api\/v1\/sandboxes\//).filter((entry) => 'ttlSeconds' in entry.body).length, 0);
 
   const [sandbox] = fake.state.sandboxes.values();
   Object.assign(fake.state.sandboxes.get(sandbox.id), { state: 'archived', ip: null, snapshotAvailable: true });

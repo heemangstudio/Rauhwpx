@@ -25,8 +25,8 @@ function sshTunnelArguments(profile, knownHostsPath, localPort) {
     '-o', 'ConnectTimeout=12',
     '-o', 'ServerAliveInterval=15',
     '-o', 'ServerAliveCountMax=3',
+    // ClearAllForwardings 는 OpenSSH 10 에서 명령줄의 -L 까지 지워 터널이 열리지 않는다.
     '-o', 'ExitOnForwardFailure=yes',
-    '-o', 'ClearAllForwardings=yes',
     '-o', sshOptionFilePath('UserKnownHostsFile', knownHostsPath),
     // boat VM은 접속 전에 boat API로 호스트 키를 핀한다. 핀이 없으면 처음 보는 키를 믿지 않는다.
     '-o', `StrictHostKeyChecking=${profile.boat ? 'yes' : 'accept-new'}`,

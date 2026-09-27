@@ -1203,7 +1203,25 @@ export class BoatCloud {
     }
     const sandbox = normalizeSandbox(result.body.sandbox);
     if (!sandbox) throw new BoatError('BOAT_UNAVAILABLE', { detail: 'boat create returned no sandbox' });
-    return sandbox;
+    // boat 는 생성 요청의 name 을 무시하고 "Box <날짜>"로 짓는다. 다른 Mac 이 이 VM 을
+    // 이름으로 찾아 이어 쓰므로 만든 직후 이름을 바꾼다.
+    return { ...sandbox, name: await this.nameSandbox(sandbox.id, sandbox.name) };
+  }
+
+  /** VM 이름을 Rauhwpx Cloud 로 맞춘다. 실패해도 설정은 계속되고 다음 설정·깨우기에서 다시 시도한다. */
+  async nameSandbox(sandboxId, currentName = null) {
+    const id = assertSandboxId(sandboxId);
+    if (currentName === BOAT_SANDBOX_NAME) return currentName;
+    try {
+      const { body } = await this.#api('PATCH', `/sandboxes/${id}`, {
+        json: { name: BOAT_SANDBOX_NAME },
+        idempotent: true,
+        context: 'rename',
+      });
+      return body?.sandbox?.name ?? BOAT_SANDBOX_NAME;
+    } catch {
+      return currentName;
+    }
   }
 
   /**
