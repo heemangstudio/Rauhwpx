@@ -233,6 +233,7 @@ test('boat hosts add an idle stop timer that ships in the release archive', asyn
   assert.match(install, /boat hosts require RAUHWpx_TRANSPORT=ssh-tunnel/);
   // 깨울 때 서비스가 기다리지 않도록 작업 환경 이미지는 필요할 때 읽어 오는 /home 에 둔다.
   assert.match(install, /additionalimagestores = \["%s\/containers\/storage"\]/);
+  assert.match(install, /mount_program = "\/usr\/bin\/fuse-overlayfs"/);
   assert.match(install, /IMAGE_STORE_ARGS="--root /);
   assert.match(install, /upsert_env RAUHWpx_WORKER_CONTROL_DIR \/run\/rauhwpx-cloud\/worker-control/);
   assert.match(install, /ProtectHome=tmpfs\\nBindPaths=%s/);

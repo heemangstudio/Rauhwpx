@@ -201,10 +201,12 @@ if [[ "$HOST_KIND" == boat ]]; then
   fi
   install -d -m 0700 -o rauhwpx-cloud -g rauhwpx-cloud \
     /var/lib/rauhwpx-cloud/.config /var/lib/rauhwpx-cloud/.config/containers
-  # 이미지는 홈의 저장소에 빌드하고, 실행은 그 저장소를 읽기 전용 추가 저장소로 쓴다. 쓰기 계층과
-  # uid 매핑 사본은 /var/lib 에 남아 사용자 네임스페이스의 마운트 제약을 피한다.
+  # 이미지는 홈의 저장소에 빌드하고, 실행은 그 저장소를 읽기 전용 추가 저장소로 쓴다. 쓰기 계층은
+  # /var/lib 에 남아 사용자 네임스페이스의 마운트 제약을 피한다. 읽기 전용 이미지는 uid 매핑 사본을
+  # 기록하지 못해 작업마다 이미지 전체를 다시 복사하고, 그 복사는 서비스의 RestrictSUIDSGID 에 막힌다.
+  # fuse-overlayfs 는 마운트할 때 uid 를 옮기므로 복사 없이 바로 시작한다.
   STORAGE_CONF=$(mktemp)
-  printf '[storage]\ndriver = "overlay"\n[storage.options]\nadditionalimagestores = ["%s/containers/storage"]\n' \
+  printf '[storage]\ndriver = "overlay"\n[storage.options]\nadditionalimagestores = ["%s/containers/storage"]\n[storage.options.overlay]\nmount_program = "/usr/bin/fuse-overlayfs"\n' \
     "$BOAT_STORAGE" >"$STORAGE_CONF"
   install -m 0600 -o rauhwpx-cloud -g rauhwpx-cloud "$STORAGE_CONF" /var/lib/rauhwpx-cloud/.config/containers/storage.conf
   # 빌드는 --root 로 이 저장소에 직접 쓴다(rootless podman 은 CONTAINERS_STORAGE_CONF 보다 사용자 설정을 따른다).
