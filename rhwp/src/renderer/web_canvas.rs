@@ -1030,7 +1030,8 @@ impl WebCanvasRenderer {
             } else {
                 ""
             };
-            let font_family = super::canvas_font_family_chain(&run.style.font_family);
+            let font_family =
+                super::canvas_font_family_chain(&run.style.font_family, &run.style.font_subst);
             let font = format!(
                 "{}{}{:.3}px {}",
                 font_style_str, font_weight, font_size, font_family
@@ -1394,11 +1395,13 @@ impl WebCanvasRenderer {
     }
 
     fn render_footnote_marker(&mut self, bbox: &BoundingBox, marker: &FootnoteMarkerNode) {
-        let sup_size = (marker.base_font_size * 0.55).max(7.0);
+        // 각주 번호 위첨자: 본문 글꼴의 0.75 배율 (한컴 PDF 정합)
+        let sup_size = (marker.base_font_size * 0.75).max(7.0);
         let font = format!("{:.1}px {}", sup_size, marker.font_family);
         self.ctx.set_font(&font);
         self.ctx.set_fill_style_str(&color_to_css(marker.color));
-        let y = bbox.y + bbox.height * 0.4;
+        // 본문 baseline 에서 (본문-위첨자) 크기 차만큼만 올려 top 정렬
+        let y = bbox.y + marker.baseline - (marker.base_font_size - sup_size) * 0.85;
         let _ = self.ctx.fill_text(&marker.text, bbox.x, y);
     }
 
@@ -1424,7 +1427,7 @@ impl WebCanvasRenderer {
             if !self.render_profile.shows_editor_visuals() {
                 return;
             }
-            self.set_line_dash(&StrokeDash::Dash);
+            self.set_line_dash(&StrokeDash::Dash, 1.0);
             self.ctx.set_stroke_style_str("#999999");
             self.ctx.set_line_width(1.0);
             self.ctx
@@ -1469,7 +1472,7 @@ impl WebCanvasRenderer {
         }
         self.ctx.set_fill_style_str(&color_to_css(ph.fill_color));
         self.ctx.fill_rect(bbox.x, bbox.y, bbox.width, bbox.height);
-        self.set_line_dash(&StrokeDash::Dash);
+        self.set_line_dash(&StrokeDash::Dash, 1.0);
         self.ctx
             .set_stroke_style_str(&color_to_css(ph.stroke_color));
         self.ctx.set_line_width(1.0);
@@ -1752,7 +1755,7 @@ impl WebCanvasRenderer {
     }
 
     /// 선 대시 패턴 설정
-    fn set_line_dash(&self, dash: &StrokeDash) {
+    fn set_line_dash(&self, dash: &StrokeDash, width: f64) {
         self.ctx
             .set_line_cap(if matches!(dash, StrokeDash::Circle) {
                 "round"
@@ -1774,9 +1777,11 @@ impl WebCanvasRenderer {
                 arr
             }
             StrokeDash::Dot => {
+                // 점선은 선 굵기 비례 간격 (한컴 규칙)
+                let (on, off) = crate::renderer::dot_dash_segments(width);
                 let arr = js_sys::Array::new();
-                arr.push(&JsValue::from_f64(2.0));
-                arr.push(&JsValue::from_f64(2.0));
+                arr.push(&JsValue::from_f64(on));
+                arr.push(&JsValue::from_f64(off));
                 arr
             }
             StrokeDash::Circle => {
@@ -2047,7 +2052,7 @@ impl WebCanvasRenderer {
             if let Some(stroke) = style.stroke_color {
                 self.ctx.set_stroke_style_str(&color_to_css(stroke));
                 self.ctx.set_line_width(style.stroke_width.max(0.5));
-                self.set_line_dash(&style.stroke_dash);
+                self.set_line_dash(&style.stroke_dash, style.stroke_width.max(0.5));
                 self.ctx.stroke();
                 let _ = self.ctx.set_line_dash(&js_sys::Array::new());
             }
@@ -2081,7 +2086,10 @@ impl WebCanvasRenderer {
                 };
                 self.ctx
                     .set_line_width(aligned.map_or(stroke_width, |(_, _, _, _, width)| width));
-                self.set_line_dash(&style.stroke_dash);
+                self.set_line_dash(
+                    &style.stroke_dash,
+                    aligned.map_or(stroke_width, |(_, _, _, _, width)| width),
+                );
                 if let Some((left, top, width, height, _)) = aligned {
                     self.ctx.stroke_rect(left, top, width, height);
                 } else {
@@ -2136,7 +2144,7 @@ impl WebCanvasRenderer {
         if let Some(stroke) = style.stroke_color {
             self.ctx.set_stroke_style_str(&color_to_css(stroke));
             self.ctx.set_line_width(style.stroke_width.max(0.5));
-            self.set_line_dash(&style.stroke_dash);
+            self.set_line_dash(&style.stroke_dash, style.stroke_width.max(0.5));
             self.ctx.stroke();
             let _ = self.ctx.set_line_dash(&js_sys::Array::new());
         }
@@ -2257,7 +2265,7 @@ impl WebCanvasRenderer {
         if let Some(stroke) = style.stroke_color {
             self.ctx.set_stroke_style_str(&color_to_css(stroke));
             self.ctx.set_line_width(style.stroke_width.max(0.5));
-            self.set_line_dash(&style.stroke_dash);
+            self.set_line_dash(&style.stroke_dash, style.stroke_width.max(0.5));
             self.ctx.stroke();
             let _ = self.ctx.set_line_dash(&js_sys::Array::new());
         }
@@ -2512,7 +2520,7 @@ impl Renderer for WebCanvasRenderer {
             ""
         };
 
-        let font_family = super::canvas_font_family_chain(&style.font_family);
+        let font_family = super::canvas_font_family_chain(&style.font_family, &style.font_subst);
 
         let font = format!(
             "{}{}{:.3}px {}",
@@ -2940,7 +2948,7 @@ impl Renderer for WebCanvasRenderer {
         }
 
         self.ctx.set_stroke_style_str(&color);
-        self.set_line_dash(&style.dash);
+        self.set_line_dash(&style.dash, width);
 
         // 이중선/삼중선: SVG draw_multi_line과 동일한 오프셋 비율 방식
         // (width_ratio, offset_ratio) — offset은 선 중심으로부터의 거리 비율
@@ -3329,7 +3337,7 @@ impl WebCanvasRenderer {
             glyph_color.clone()
         };
 
-        let font_family = super::canvas_font_family_chain(&style.font_family);
+        let font_family = super::canvas_font_family_chain(&style.font_family, &style.font_subst);
         let font_weight = if style.bold { "bold " } else { "" };
         let font_style_str = if style.italic { "italic " } else { "" };
         let font = format!(
@@ -3490,7 +3498,7 @@ impl WebCanvasRenderer {
             glyph_color.clone()
         };
 
-        let font_family = super::canvas_font_family_chain(&style.font_family);
+        let font_family = super::canvas_font_family_chain(&style.font_family, &style.font_subst);
 
         let cx = bbox_x + box_size / 2.0;
         let cy = bbox_y + bbox_h - box_size / 2.0;

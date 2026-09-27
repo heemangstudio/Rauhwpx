@@ -30,6 +30,13 @@ const HANCOM_PUA_FALLBACK_FAMILIES: &[&str] = &[
     "함초롬바탕",
 ];
 
+/// 글꼴에 없는 글자를 그릴 한컴(macOS) 대체 서체.
+///
+/// 한컴 macOS 는 run 의 서체에 글리프가 없으면 서체 계열과 무관하게 함초롬돋움으로
+/// 그린다. 정답지 근거: footnote-01 의 휴먼명조 `․ ‧ ❍ ❏`, tb-org-02 의 한컴 고딕 `⋅`
+/// 가 모두 HCRDotum 으로 임베드된다 (Windows 한컴 2022 는 한컴바탕 — macOS 우선).
+const HANCOM_MISSING_GLYPH_FAMILIES: &[&str] = &["HCR Dotum", "함초롬돋움"];
+
 /// 픽셀 캔버스에서는 글리프를 윤곽선(path)으로 직접 채워 그린다.
 ///
 /// macOS 의 Skia 글리프 마스크는 CoreText 가 `glyf` 헤더 bbox 크기로 만든다.
@@ -141,6 +148,12 @@ const SANS_CJK_FALLBACK_FAMILIES: &[&str] = &[
     "Malgun Gothic",
     "맑은 고딕",
     "Apple SD Gothic Neo",
+    // 동-장르 한컴 번들을 이종(세리프) 계열 후보보다 앞에 둔다 — 위
+    // SERIF_CJK_FALLBACK_FAMILIES 와 같은 규칙.
+    "Haansoft Dotum",
+    "한컴돋움",
+    "HCR Dotum",
+    "함초롬돋움",
     "Noto Serif KR",
     "Noto Serif CJK KR",
     "Nanum Myeongjo",
@@ -159,6 +172,14 @@ const SERIF_CJK_FALLBACK_FAMILIES: &[&str] = &[
     "Batang",
     "바탕",
     "AppleMyungjo",
+    // 세리프 계열이 하나도 없는 호스트(한글 팩 미설치 Windows Server 등)에서
+    // 명조 본문이 산세리프(Malgun Gothic)로 떨어지는 것을 막는다 — 한컴은
+    // 미설치 폰트를 자체 번들 서체로 치환하므로(generic_fallback CSS 체인과
+    // 같은 규칙) 동-장르 한컴 번들을 이종 계열 후보보다 앞에 둔다.
+    "Haansoft Batang",
+    "한컴바탕",
+    "HCR Batang",
+    "함초롬바탕",
     "Noto Sans KR",
     "Noto Sans CJK KR",
     "Nanum Gothic",
@@ -326,6 +347,22 @@ impl SkiaTextReplay<'_> {
                     (false, true) => FontStyle::italic(),
                     (false, false) => FontStyle::normal(),
                 };
+                // 합성 진하게 대상(macOS 한컴이 Bold face 를 제공하지 않거나 DB 에
+                // Bold 메트릭이 없는 서체)은 Regular face 를 해석해 획으로 굵게를
+                // 만든다 — SVG/Canvas 와 같은 규칙. Bold face 파일이 해석돼도
+                // 한컴 출력과 모양·폭이 다르므로 내려준다.
+                let font_style = if style.bold
+                    && crate::renderer::faux_bold_stroke_width(style, f64::from(font_size))
+                        .is_some()
+                {
+                    if style.italic {
+                        FontStyle::italic()
+                    } else {
+                        FontStyle::normal()
+                    }
+                } else {
+                    font_style
+                };
                 let mut families = Vec::new();
                 // [#3314] 접미사 face("Noto Serif KR Black") 미설치 시 base
                 // family 가 아래 generic 폴백보다 먼저 구제 — SVG 체인과 정합.
@@ -336,6 +373,11 @@ impl SkiaTextReplay<'_> {
                 }
                 if let Some(base) = base_family.as_deref() {
                     families.push(base);
+                }
+                // 문서 선언 대체 글꼴(<hh:substFont>/HWP5 alt_name): 원본 face 가
+                // 없을 때 한컴이 쓰는 지정 대체 — generic CJK 폴백보다 먼저 시도.
+                if !style.font_subst.is_empty() {
+                    families.push(style.font_subst.as_str());
                 }
                 // 한글 fallback (CJK glyph 미보유 폰트로 fallback 시 사각형 방지).
                 // 명조/바탕/궁서 계열을 sans로 바꾸면 글리프 폭·획·줄바꿈이 모두
@@ -370,11 +412,19 @@ impl SkiaTextReplay<'_> {
                                 typeface_for_style(self.bundled_typefaces, family, font_style)
                             })
                     };
-                    // 설치되지 않은 한컴 HFT 영문 글꼴은 대체 서체를 선호 순서대로 하나씩
-                    // 해석한다 (SVG/Canvas 의 generic_fallback 체인 순서와 같다).
+                    // 설치되지 않은 한컴 HFT 영문 글꼴·표준 Windows 한글 폰트는
+                    // 대체 서체를 선호 순서대로 하나씩 해석한다 (한컴 FontMap 치환과
+                    // 같다 — 바탕 계열은 한컴바탕, 돋움 계열은 한컴돋움).
                     // custom 우선 루프에 섞으면 --font-path 의 Palatino Linotype
                     // Regular 가 시스템 Palatino(Bold 보유)를 앞질러 굵은 글자가 가늘어진다.
-                    let substitutes = crate::renderer::hft_substitute_faces(&style.font_family);
+                    // 이 대체가 없으면 세리프 요청(바탕)이 generic 산세리프
+                    // (맑은 고딕 등)에 떨어져 본문 전체가 굵은 고딕으로 렌더된다.
+                    let substitutes: Vec<&str> =
+                        crate::renderer::hft_substitute_faces(&style.font_family)
+                            .iter()
+                            .chain(crate::renderer::hancom_substitute_faces(&style.font_family))
+                            .copied()
+                            .collect();
                     if !substitutes.is_empty() && resolve_family(&style.font_family).is_none() {
                         for family in substitutes {
                             if let Some(tf) = resolve_family(family) {
@@ -382,20 +432,24 @@ impl SkiaTextReplay<'_> {
                             }
                         }
                     }
+                    // family 우선(CSS 순서)으로 custom→system을 잇는다.
+                    // 소스 우선(custom 전체 → system 전체)으로 두면 --font-path 의
+                    // 깊은 폴백이 시스템의 더 앞선 후보를 제친다 — exam_kor 의
+                    // '제 1 교시'(한양견명조, 세리프)가 serif 계열 AppleMyungjo
+                    // (후보 5) 대신 custom Malgun Gothic(후보 9)으로 그려졌다.
                     for family in &families {
                         if let Some(tf) =
-                            typeface_for_style(self.custom_typefaces, family, font_style)
+                            typeface_for_style(self.custom_typefaces, family, font_style).or_else(
+                                || {
+                                    match_system_family_style(
+                                        self.font_mgr,
+                                        self.system_families,
+                                        family,
+                                        font_style,
+                                    )
+                                },
+                            )
                         {
-                            push(&mut chain, &mut seen, tf);
-                        }
-                    }
-                    for family in &families {
-                        if let Some(tf) = match_system_family_style(
-                            self.font_mgr,
-                            self.system_families,
-                            family,
-                            font_style,
-                        ) {
                             push(&mut chain, &mut seen, tf);
                         }
                     }
@@ -434,8 +488,31 @@ impl SkiaTextReplay<'_> {
                     if let Some(tf) = legacy_typeface_for_style(self.font_mgr, font_style) {
                         push(&mut chain, &mut seen, tf);
                     }
+                    // 글리프 누락 대체는 run 서체 바로 뒤에서 함초롬돋움이 먼저 받는다.
+                    // run 서체(chain[0]) 선택과 그 서체가 가진 글자는 바뀌지 않는다.
+                    if let Some(fallback) = HANCOM_MISSING_GLYPH_FAMILIES
+                        .iter()
+                        .find_map(|family| resolve_family(family))
+                    {
+                        let name = fallback.family_name();
+                        if chain.first().is_some_and(|tf| tf.family_name() != name) {
+                            chain.retain(|tf| tf.family_name() != name);
+                            chain.insert(1, fallback);
+                        }
+                    }
                     chain
                 };
+                if std::env::var_os("RHWP_DEBUG_FONTS").is_some() {
+                    eprintln!(
+                        "[FONT] text={:?} family={:?} chain={:?}",
+                        text,
+                        style.font_family,
+                        typeface_chain
+                            .iter()
+                            .map(|tf| tf.family_name())
+                            .collect::<Vec<_>>()
+                    );
+                }
                 let primary_typeface = typeface_chain.first().cloned();
                 let has_explicit_glyph = |ch: char| {
                     typeface_chain
@@ -803,9 +880,15 @@ impl SkiaTextReplay<'_> {
                 let is_middle_dot = |cluster: &str| cluster == "\u{00B7}";
                 // 합성 진하게: 해석된 서체에 Bold face 가 없으면 한컴처럼 fill+stroke 로
                 // 획을 더한다. 두께는 svg/web_canvas 의 faux_bold_stroke_width 와 같은 비율.
-                let faux_bold_width = style
-                    .bold
-                    .then(|| font_size * crate::renderer::FAUX_BOLD_STROKE_EM as f32);
+                // 서체별 실측 비율(맑은 고딕 1/30 등)을 우선 쓰고 아니면 기본 1/40.
+                let faux_bold_width =
+                    crate::renderer::faux_bold_stroke_width(style, f64::from(font_size))
+                        .map(|w| w as f32)
+                        .or_else(|| {
+                            style
+                                .bold
+                                .then(|| font_size * crate::renderer::FAUX_BOLD_STROKE_EM as f32)
+                        });
                 let draw_text_pass = |color: Color, stroke_width: f32, dx: f32, dy: f32| {
                     let mut text_paint = Paint::default();
                     text_paint.set_anti_alias(true);

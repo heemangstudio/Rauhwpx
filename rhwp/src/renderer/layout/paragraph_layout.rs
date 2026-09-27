@@ -343,6 +343,17 @@ fn numbering_marker_text_style(
     }
 }
 
+/// 개요 번호/글머리표 마커의 점유 폭.
+///
+/// 마커 문자로 U+00AD(soft hyphen) 같이 본문에서는 폭 0 으로 처리되는 문자가
+/// 쓰이면 한컴도 그 글리프를 그리며 반각(font_size/2)의 폭을 차지한다.
+/// 폭 0 규칙은 본문 텍스트용이므로 마커 폭에서는 반각으로 보정한다.
+fn numbering_marker_width(num_text: &str, num_style: &TextStyle) -> f64 {
+    let base = estimate_text_width(num_text, num_style);
+    let zero_w = num_text.chars().filter(|&c| c == '\u{00AD}').count() as f64;
+    base + zero_w * num_style.font_size * 0.5
+}
+
 fn tac_picture_or_shape_height_for_line(
     para: Option<&Paragraph>,
     raw_line_height: f64,
@@ -1986,8 +1997,34 @@ fn compute_line_extra_spacing(
             (0.0, 0.0, 0.0)
         }
     } else if needs_distribute && total_char_count > 1 {
-        // 배분/나눔 정렬: 모든 글자에 균등 분배
-        let raw = (available_width - total_text_width) / total_char_count as f64;
+        // 배분 정렬: 여유 폭은 보이는 글자 사이 틈(n_visible-1 개)에만 균등 분배한다.
+        // 줄 끝 후행 공백은 한컴처럼 폭과 글자 수에서 모두 빼고 마지막 글자 뒤 자연
+        // 위치에 둔다 — 공백까지 글자로 세면 마지막 글자가 줄 오른쪽 끝에 닿지 않는다.
+        let all_chars: Vec<char> = comp_line
+            .runs
+            .iter()
+            .flat_map(|r| effective_text_for_metrics(r).chars())
+            .collect();
+        let trailing_spaces = all_chars.iter().rev().take_while(|c| **c == ' ').count();
+        let visible_count = total_char_count - trailing_spaces;
+        // 후행 공백 폭은 run 별 스타일로 각각 잰다 (선택 영역이 여러 run 에 걸칠 수 있음).
+        let mut trailing_width = 0.0;
+        for run in comp_line.runs.iter().rev() {
+            let text = effective_text_for_metrics(run);
+            let count = text.chars().rev().take_while(|ch| *ch == ' ').count();
+            if count > 0 {
+                let ts = resolved_to_text_style(styles, run.char_style_id, run.lang_index);
+                trailing_width += estimate_text_width(&" ".repeat(count), &ts);
+            }
+            if count < text.chars().count() {
+                break;
+            }
+        }
+        let raw = if visible_count > 1 {
+            (available_width - (total_text_width - trailing_width)) / (visible_count - 1) as f64
+        } else {
+            0.0
+        };
         if suppress_cell_overflow_spacing && raw < 0.0 {
             (0.0, 0.0, 0.0)
         } else {
@@ -2376,6 +2413,19 @@ impl LayoutEngine {
                 12.0
             }
         };
+        // paraPr vertical=CENTER: 저장 baseline=50%는 마커 — 기준선 =
+        // line_height/2 + 0.35×font (layout_composed_paragraph 와 동일 규칙).
+        let para_vertical_center = para_style.map(|s| s.vertical_align).unwrap_or(0) == 2;
+        let stored_or_centered_baseline = |ls: &crate::model::paragraph::LineSeg| -> f64 {
+            if para_vertical_center {
+                hwpunit_to_px(ls.line_height, self.dpi) / 2.0 + para_max_font_size * 0.35
+            } else {
+                ensure_min_baseline(
+                    hwpunit_to_px(ls.baseline_distance, self.dpi),
+                    para_max_font_size,
+                )
+            }
+        };
         let stored_line_baseline_at = |char_idx: usize| -> Option<f64> {
             if para.line_segs.len() < 2 {
                 return None;
@@ -2386,26 +2436,16 @@ impl LayoutEngine {
                     .get(i)
                     .is_some_and(|seg| seg.text_start <= pos)
             })?;
-            let seg = para.line_segs.get(idx)?;
-            Some(ensure_min_baseline(
-                hwpunit_to_px(seg.baseline_distance, self.dpi),
-                para_max_font_size,
-            ))
+            Some(stored_or_centered_baseline(para.line_segs.get(idx)?))
         };
         let baseline_dist = if let Some(ls) = para.line_segs.first() {
-            ensure_min_baseline(
-                hwpunit_to_px(ls.baseline_distance, self.dpi),
-                para_max_font_size,
-            )
+            stored_or_centered_baseline(ls)
         } else {
             line_height * 0.8
         };
         // 텍스트 줄(표 아래) 전용 메트릭: line_seg[1]이 있으면 사용
         let text_line_baseline = if let Some(ls) = para.line_segs.get(1) {
-            ensure_min_baseline(
-                hwpunit_to_px(ls.baseline_distance, self.dpi),
-                para_max_font_size,
-            )
+            stored_or_centered_baseline(ls)
         } else {
             baseline_dist
         };
@@ -2561,7 +2601,8 @@ impl LayoutEngine {
                                 fn_num,
                             );
                             let base_ts = resolved_to_text_style(styles, current_cs_id, 0);
-                            let sup_font_size = (base_ts.font_size * 0.55).max(7.0);
+                            // 각주 번호 위첨자: 본문 글꼴의 0.75 배율 (한컴 PDF 정합)
+                            let sup_font_size = (base_ts.font_size * 0.75).max(7.0);
                             let sup_ts = TextStyle {
                                 font_size: sup_font_size,
                                 font_family: base_ts.font_family.clone(),
@@ -2581,6 +2622,7 @@ impl LayoutEngine {
                                     number: fn_num,
                                     text: fn_text,
                                     base_font_size: base_ts.font_size,
+                                    baseline: run_bbox_h,
                                     font_family: base_ts.font_family.clone(),
                                     color: base_ts.color,
                                     section_index,
@@ -3401,12 +3443,11 @@ impl LayoutEngine {
                         - zero_endnote_boundary_result_shift)
                         .max(col_area_y);
                     let inline_x = row_inline_x[tac_row];
-                    let eq_anchor = crate::renderer::equation::control_baseline_hwp(
-                        eq,
-                        layout_box.baseline * 7200.0 / self.dpi,
-                    ) * self.dpi
-                        / 7200.0;
-                    let eq_y = row_y + baseline - eq_anchor;
+                    // 수식 본문의 자연 기준선을 줄 기준선에 맞춘다. 한컴은 선언
+                    // baseLine% 위치에 수식 기준선을 놓아 텍스트 기준선과 일치시킨다
+                    // (eq-002: 선언 17.06pt vs 자연 기준선 ~10.6pt — anchor를 그대로
+                    // 쓰면 내용이 ~6pt 위로 치솟는다).
+                    let eq_y = row_y + baseline - layout_box.baseline;
                     let eq_x = inline_x + hwpunit_to_px(eq.common.margin.left as i32, self.dpi);
                     let eq_w = hwpunit_to_px(eq.common.width as i32, self.dpi);
                     let (eq_cell_idx, eq_cell_para_idx) = if let Some(ref ctx) = cell_ctx {
@@ -3740,18 +3781,17 @@ impl LayoutEngine {
             .get(start_line..end)
             .map_or(true, |slice| slice.iter().all(|l| l.runs.is_empty()));
 
-        // 개요 번호/글머리표 마커 폭 사전 계산 (첫 줄 가용폭 차감용)
-        let numbering_width = if start_line == 0 {
-            if let Some(ref num_text) = composed.numbering_text {
-                let num_style = numbering_marker_text_style(
-                    styles,
-                    para,
-                    composed.lines.first().and_then(|l| l.runs.first()),
-                );
-                estimate_text_width(num_text, &num_style)
-            } else {
-                0.0
-            }
+        // 개요 번호/글머리표 마커 폭 사전 계산 (행잉 인덴트용)
+        // 마커 자체는 문단 첫 줄에만 그리지만, 문단이 페이지/단 경계에서 나뉘어
+        // start_line > 0 인 청크로 이월돼도 후속 줄의 행잉 인덴트(마커 폭만큼의
+        // 들여쓰기)는 유지돼야 하므로 start_line 과 무관하게 계산한다.
+        let numbering_width = if let Some(ref num_text) = composed.numbering_text {
+            let num_style = numbering_marker_text_style(
+                styles,
+                para,
+                composed.lines.first().and_then(|l| l.runs.first()),
+            );
+            numbering_marker_width(num_text, &num_style)
         } else {
             0.0
         };
@@ -4149,8 +4189,14 @@ impl LayoutEngine {
                 let font_bl = max_fs * 0.85;
                 (font_lh, ensure_min_baseline(font_bl, max_fs))
             } else {
-                (
-                    line_height,
+                // paraPr vertical=CENTER (attr1 bit20-21=2): 한컴이 저장하는
+                // baseline=50%는 실측값이 아니라 "줄 상자 세로 가운데 정렬" 마커다.
+                // 그릴 때 기준선 = line_height/2 + (asc−desc)/2
+                //            = line_height/2 + 0.35×font  (asc 85%/desc 15% 관례)
+                // (표 셀 vertsize1200/baseline600 저장 → PDF 실측 10.2pt 정합).
+                let baseline = if para_style.map(|s| s.vertical_align).unwrap_or(0) == 2 {
+                    line_height / 2.0 + max_fs * 0.35
+                } else {
                     ensure_min_baseline(
                         crate::renderer::corrected_line_baseline_for_source(
                             hwpunit_to_px(comp_line.baseline_distance, self.dpi),
@@ -4158,8 +4204,9 @@ impl LayoutEngine {
                             source_metrics_reflowed,
                         ),
                         max_fs,
-                    ),
-                )
+                    )
+                };
+                (line_height, baseline)
             };
             let has_stored_equation_line_metrics = para
                 .and_then(|p| p.line_segs.get(line_idx))
@@ -4614,8 +4661,11 @@ impl LayoutEngine {
                         .count()
                 })
                 .sum();
-            let suppress_cell_overflow_spacing =
-                cell_ctx.is_some() && total_text_width > available_width * 1.15;
+            // SQUEEZE 셀은 넘침을 자간 압축으로 흡수하는 게 본래 동작이므로
+            // 셀 오버플로우 간격 억제 대상에서 제외한다.
+            let suppress_cell_overflow_spacing = cell_ctx.is_some()
+                && !cell_ctx.as_ref().is_some_and(|c| c.line_wrap_squeeze())
+                && total_text_width > available_width * 1.15;
             // 양쪽 정렬 줄 머리 공백은 한컴처럼 자연 폭으로 두고 줄 안 공백에만 여유를
             // 나눈다 (hy-001 ` ㅇ ` 줄 실측). 렌더에서 그 공백만 여유를 빼도록 run 을 나눈다.
             let leading_space_split = if alignment == Alignment::Justify
@@ -4768,7 +4818,7 @@ impl LayoutEngine {
                 if let Some(ref num_text) = composed.numbering_text {
                     let num_style =
                         numbering_marker_text_style(styles, para, comp_line.runs.first());
-                    let num_width = estimate_text_width(num_text, &num_style);
+                    let num_width = numbering_marker_width(num_text, &num_style);
                     line_numbering_marker_width = num_width;
                     let num_id = tree.next_id();
                     let num_node = RenderNode::new(
@@ -5956,7 +6006,8 @@ impl LayoutEngine {
                                 fnum,
                             );
                             let base_ts = &text_style;
-                            let sup_size = (base_ts.font_size * 0.55).max(7.0);
+                            // 각주 번호 위첨자: 본문 글꼴의 0.75 배율 (한컴 PDF 정합)
+                            let sup_size = (base_ts.font_size * 0.75).max(7.0);
                             let sup_ts = TextStyle {
                                 font_size: sup_size,
                                 font_family: base_ts.font_family.clone(),
@@ -5971,6 +6022,7 @@ impl LayoutEngine {
                                     number: fnum,
                                     text: fn_text,
                                     base_font_size: base_ts.font_size,
+                                    baseline,
                                     font_family: base_ts.font_family.clone(),
                                     color: base_ts.color,
                                     section_index,
@@ -6293,12 +6345,8 @@ impl LayoutEngine {
                             // 텍스트와 섞인 인라인 수식뿐 아니라 공백 run 안의 TAC 수식도
                             // baseline을 맞춘다. 수식 renderer는 bbox 높이로 세로 스케일하지
                             // 않으므로 y에 직접 붙이면 큰 루트/분수 수식이 아래 줄을 덮는다.
-                            let eq_anchor = crate::renderer::equation::control_baseline_hwp(
-                                eq,
-                                layout_box.baseline * 7200.0 / self.dpi,
-                            ) * self.dpi
-                                / 7200.0;
-                            let eq_y = y + baseline - eq_anchor;
+                            // 수식 본문의 자연 기준선을 줄 기준선에 맞춘다 (위와 동일).
+                            let eq_y = y + baseline - layout_box.baseline;
                             let eq_x = x + hwpunit_to_px(eq.common.margin.left as i32, self.dpi);
                             let eq_w = hwpunit_to_px(eq.common.width as i32, self.dpi);
                             let (eq_cell_idx, eq_cell_para_idx) = if let Some(ref ctx) = cell_ctx {
@@ -6424,6 +6472,7 @@ impl LayoutEngine {
                                         cell_index: 0,
                                         cell_para_index: 0,
                                         text_direction: 0,
+                                        line_wrap_squeeze: false,
                                     });
                                     c
                                 });
@@ -7230,7 +7279,7 @@ impl LayoutEngine {
                         para.and_then(|p| p.controls.get(ctrl_idx)),
                         fnum,
                     );
-                    let sup_size = (ts.font_size * 0.55).max(7.0);
+                    let sup_size = (ts.font_size * 0.75).max(7.0);
                     let sup_ts = TextStyle {
                         font_size: sup_size,
                         font_family: ts.font_family.clone(),
@@ -8251,6 +8300,7 @@ mod saved_native_cell_vpos_tests {
                 cell_index: 0,
                 cell_para_index: 0,
                 text_direction: 0,
+                line_wrap_squeeze: false,
             }],
         };
         let area = LayoutRect {
