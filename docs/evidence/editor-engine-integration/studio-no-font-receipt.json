@@ -1,0 +1,131 @@
+{
+  "random-01-issue_241": {
+    "pages": 1,
+    "imports": 0,
+    "page_errors": [],
+    "guard": {
+      "bytes": false,
+      "has": false,
+      "generation": false,
+      "hooksAbsent": true,
+      "noHmrModule": true
+    },
+    "captures": [
+      {
+        "sha256": "e863266c42daca96a3b91ac252fc64f8af7a99ef3a068abe9e12f5932639eb3e",
+        "width": 1653,
+        "height": 2338
+      }
+    ]
+  },
+  "random-02": {
+    "pages": 1,
+    "imports": 0,
+    "page_errors": [],
+    "guard": {
+      "bytes": false,
+      "has": false,
+      "generation": false,
+      "hooksAbsent": true,
+      "noHmrModule": true
+    },
+    "captures": [
+      {
+        "sha256": "9be9f9d6e8ac747b83d6bc7161834d224b481c7884408e82144f3a0da976955c",
+        "width": 1653,
+        "height": 2338
+      }
+    ]
+  },
+  "random-03-exam_math_8": {
+    "pages": 1,
+    "imports": 0,
+    "page_errors": [],
+    "guard": {
+      "bytes": false,
+      "has": false,
+      "generation": false,
+      "hooksAbsent": true,
+      "noHmrModule": true
+    },
+    "captures": [
+      {
+        "sha256": "853fc43006b3d0879663ba920ba63cefda46fddceba01ac6d52168b0e99b06ff",
+        "width": 2141,
+        "height": 3102
+      }
+    ]
+  },
+  "random-04": {
+    "pages": 4,
+    "imports": 0,
+    "page_errors": [],
+    "guard": {
+      "bytes": false,
+      "has": false,
+      "generation": false,
+      "hooksAbsent": true,
+      "noHmrModule": true
+    },
+    "captures": [
+      {
+        "sha256": "5b31678cb8a020b90c7e3ff6e3288042245c323a18ee0075825b24cbd64c226e",
+        "width": 1653,
+        "height": 2338
+      },
+      {
+        "sha256": "6ddd0df68a97b38ac3ca1e6a253347285b28c27a5f13c27d3985c553a9da0880",
+        "width": 1653,
+        "height": 2338
+      },
+      {
+        "sha256": "e34465363bb55b1a129b11f3cc6f32920892324c2f41967b8e78b466ce6f185e",
+        "width": 1653,
+        "height": 2338
+      },
+      {
+        "sha256": "95a69e7e77ec9a02d69e93a1d2ce313b938170dfce438fc9b6a7850b7cdc64ea",
+        "width": 1653,
+        "height": 2338
+      }
+    ]
+  },
+  "random-05-text-align-2": {
+    "pages": 1,
+    "imports": 0,
+    "page_errors": [],
+    "guard": {
+      "bytes": false,
+      "has": false,
+      "generation": false,
+      "hooksAbsent": true,
+      "noHmrModule": true
+    },
+    "captures": [
+      {
+        "sha256": "0c47ec17fb99fc207e55b22f90e15cd9729ddcbd939576e505669d16ef7f0b95",
+        "width": 1653,
+        "height": 2338
+      }
+    ]
+  },
+  "random-06-pua-test": {
+    "pages": 1,
+    "imports": 0,
+    "page_errors": [],
+    "guard": {
+      "bytes": false,
+      "has": false,
+      "generation": false,
+      "hooksAbsent": true,
+      "noHmrModule": true
+    },
+    "captures": [
+      {
+        "sha256": "1a53fb0973f9d940bca22084ac33efdbfc9448c3a5143431f4098bda31eeaaba",
+        "width": 1653,
+        "height": 2338
+      }
+    ]
+  }
+}
