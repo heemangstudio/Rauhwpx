@@ -23,6 +23,10 @@ pub struct ResolvedCharStyle {
     pub font_family: String,
     /// 7개 언어 카테고리별 글꼴 이름
     pub font_families: Vec<String>,
+    /// 7개 언어 카테고리별 문서 선언 대체 글꼴 face (HWPX `<hh:substFont>` /
+    /// HWP5 alt_name). 원본 글꼴 미설치 시 generic 폴백보다 먼저 시도할 이름.
+    /// 빈 문자열 = 선언된 대체 글꼴 없음.
+    pub subst_families: Vec<String>,
     /// 글꼴 크기 (px)
     pub font_size: f64,
     /// 진하게
@@ -85,6 +89,7 @@ impl Default for ResolvedCharStyle {
             font_metrics_policy: Default::default(),
             font_family: String::new(),
             font_families: Vec::new(),
+            subst_families: Vec::new(),
             font_size: 12.0,
             bold: false,
             italic: false,
@@ -127,6 +132,21 @@ impl ResolvedCharStyle {
             }
         }
         &self.font_family
+    }
+
+    /// 지정 언어 카테고리 글꼴의 문서 선언 대체 글꼴 face 를 반환한다.
+    /// 해당 언어에 없으면 한국어(0번) 폴백. 없으면 빈 문자열.
+    pub fn font_subst_for_lang(&self, lang_index: usize) -> &str {
+        if lang_index < self.subst_families.len() {
+            let name = &self.subst_families[lang_index];
+            if !name.is_empty() {
+                return name;
+            }
+        }
+        self.subst_families
+            .first()
+            .map(|s| s.as_str())
+            .unwrap_or("")
     }
 
     /// 지정 언어 카테고리의 자간(px)을 반환한다.
@@ -198,6 +218,8 @@ pub struct ResolvedParaStyle {
     pub keep_lines: bool,
     /// 문단 앞에서 항상 쪽 나눔 — attr1 bit 19
     pub page_break_before: bool,
+    /// 문단 세로 정렬 — attr1 bit 20-21 (0=BASELINE, 1=TOP, 2=CENTER, 3=BOTTOM)
+    pub vertical_align: u8,
 }
 
 impl Default for ResolvedParaStyle {
@@ -226,6 +248,7 @@ impl Default for ResolvedParaStyle {
             keep_with_next: false,
             keep_lines: false,
             page_break_before: false,
+            vertical_align: 0,
         }
     }
 }
@@ -358,12 +381,14 @@ fn resolve_single_char_style(cs: &CharShape, doc_info: &DocInfo, dpi: f64) -> Re
 
     // 7개 언어 카테고리별 폰트 이름, 자간, 장평 해소
     let mut font_families = Vec::with_capacity(LANG_COUNT);
+    let mut subst_families = Vec::with_capacity(LANG_COUNT);
     let mut letter_spacings = Vec::with_capacity(LANG_COUNT);
     let mut ratios = Vec::with_capacity(LANG_COUNT);
 
     for lang in 0..LANG_COUNT {
         let font_id = cs.font_ids[lang];
         font_families.push(lookup_font_name(doc_info, lang, font_id));
+        subst_families.push(lookup_subst_font_name(doc_info, lang, font_id));
 
         let spacing_percent = cs.spacings[lang] as f64;
         letter_spacings.push(font_size * spacing_percent / 100.0);
@@ -380,6 +405,7 @@ fn resolve_single_char_style(cs: &CharShape, doc_info: &DocInfo, dpi: f64) -> Re
         font_metrics_policy: doc_info.font_metrics_policy,
         font_family,
         font_families,
+        subst_families,
         font_size,
         bold: cs.bold,
         italic: cs.italic,
@@ -507,6 +533,33 @@ fn lookup_font_name(doc_info: &DocInfo, lang_index: usize, font_id: u16) -> Stri
     String::new()
 }
 
+/// FontFace 테이블에서 문서가 선언한 대체 글꼴 face 조회.
+///
+/// HWPX 는 `<hh:substFont face="...">`, HWP5 는 FACE_NAME 의 alt_name 으로
+/// "원본 글꼴이 없을 때 쓸 글꼴"을 문서가 직접 지정한다. 한컴은 원본 미설치 시
+/// 이 face 로 대체해 그리므로, 렌더러의 폰트 체인에서 원본 뒤·generic 폴백 앞에
+/// 넣을 수 있도록 이름을 그대로 전달한다 (설치 여부 판정은 렌더 시점의 체인이
+/// 처리 — 원본이 있으면 subst 는 자연스럽게 도달하지 않는다).
+fn lookup_subst_font_name(doc_info: &DocInfo, lang_index: usize, font_id: u16) -> String {
+    if lang_index < doc_info.font_faces.len() {
+        let lang_fonts = &doc_info.font_faces[lang_index];
+        if (font_id as usize) < lang_fonts.len() {
+            let font = &lang_fonts[font_id as usize];
+            if let Some(subst) = &font.subst_font {
+                if !subst.face.is_empty() {
+                    return subst.face.clone();
+                }
+            }
+            if let Some(alt) = &font.alt_name {
+                if !alt.is_empty() {
+                    return alt.clone();
+                }
+            }
+        }
+    }
+    String::new()
+}
+
 /// 폰트명에서 원본(첫 번째) 폰트명만 추출 (폴백 제거)
 pub fn primary_font_name(font_family: &str) -> &str {
     font_family.split(',').next().unwrap_or(font_family).trim()
@@ -522,6 +575,11 @@ pub(crate) fn resolve_font_substitution(
     alt_type: u8,
     lang_index: usize,
 ) -> Option<&'static str> {
+    // 실제 face가 준비된 HFT는 대체 서체명으로 바꾸지 않는다. 글꼴을 나중에
+    // 가져온 경우에도 refreshLayout이 이 스타일을 다시 해소한다.
+    if alt_type == 2 && custom_hft_face_available(name) {
+        return None;
+    }
     // HWP3 원본/일부 한컴 재저장본은 HCI 영문 폰트를 TTF(type=1) 또는
     // unknown(type=0)으로 싣기도 한다. 한컴은 같은 face를 보여주므로
     // alt_type 차이와 무관하게 legacy 영문 HFT 치환을 우선 적용한다.
@@ -538,6 +596,25 @@ pub(crate) fn resolve_font_substitution(
 
     // TTF(type=1) 또는 알수없음(type=0) 치환
     resolve_ttf_font(name)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn custom_hft_face_available(name: &str) -> bool {
+    crate::renderer::layout::active_shaping_face_available(name)
+        || crate::renderer::font_paths::custom_font_face_available(name)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(catch, js_namespace = globalThis, js_name = hasImportedFontMetricsFace)]
+    fn imported_hft_face_available(name: &str) -> Result<bool, wasm_bindgen::JsValue>;
+}
+
+#[cfg(target_arch = "wasm32")]
+fn custom_hft_face_available(name: &str) -> bool {
+    crate::renderer::layout::active_shaping_face_available(name)
+        || imported_hft_face_available(name).unwrap_or(false)
 }
 
 fn resolve_legacy_latin_font(name: &str, lang_index: usize) -> Option<&'static str> {
@@ -643,7 +720,10 @@ fn resolve_hft_font(name: &str, lang_index: usize) -> Option<&'static str> {
         "가는안상수체" | "중간안상수체" | "굵은안상수체" => Some("돋움"),
         "양재 매화" | "양재 소슬" | "양재 샤넬" | "옥수수" => Some("돋움"),
         "양재 본목각M" | "복숭아" => Some("돋움"),
-        "신명 세고딕" | "신명 디나루" | "신명 세나루" => Some("돋움"),
+        // 디나루는 번들 HFT의 자체 폭(숫자 0.66em, 빈칸 0.40em)으로
+        // 조판한다. 글리프만 renderer::hft_substitute_faces에서 치환한다.
+        "신명 디나루" => None,
+        "신명 세고딕" | "신명 세나루" => Some("돋움"),
         "#세고딕" | "#신세고딕" | "#중고딕" | "#태고딕" | "#신문고딕" | "#신문태고" | "#세나루"
         | "#신세나루" | "#디나루" | "#신디나루" => Some("돋움"),
         // 그래픽/궁서/기타
@@ -931,6 +1011,7 @@ fn resolve_single_para_style(
         keep_with_next: (ps.attr1 >> 17) & 1 != 0 || (ps.attr2 >> 6) & 1 != 0,
         keep_lines: (ps.attr1 >> 18) & 1 != 0 || (ps.attr2 >> 7) & 1 != 0,
         page_break_before: (ps.attr1 >> 19) & 1 != 0 || (ps.attr2 >> 8) & 1 != 0,
+        vertical_align: ((ps.attr1 >> 20) & 0x03) as u8,
     }
 }
 

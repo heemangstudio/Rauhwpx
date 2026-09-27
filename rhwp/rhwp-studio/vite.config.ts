@@ -4,6 +4,7 @@ import { readFileSync, readFile } from 'fs';
 import { VitePWA } from 'vite-plugin-pwa';
 import { rhwpAgentHubPlugin } from './vite-plugin-agent-hub.mjs';
 import { rhwpPinnedDocumentPlugin } from './vite-plugin-pinned-document.mjs';
+import { rhwpDevFontPackPlugin } from './vite-plugin-dev-font-pack.mjs';
 
 const appPackage = JSON.parse(
   readFileSync(resolve(__dirname, '..', '..', 'package.json'), 'utf-8'),
@@ -70,6 +71,7 @@ export default defineConfig({
   plugins: [
     rhwpAgentHubPlugin(__dirname),
     rhwpPinnedDocumentPlugin(__dirname),
+    rhwpDevFontPackPlugin(),
     {
       name: 'ignore-subsecond-patch-artifacts',
       handleHotUpdate(context) {

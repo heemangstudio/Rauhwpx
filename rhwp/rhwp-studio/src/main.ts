@@ -1322,6 +1322,13 @@ async function initialize(): Promise<void> {
     await loadWebFonts([], undefined, extensionViewerSettings);  // CSS @font-face 등록 + CRITICAL 폰트만 로드
     msg.textContent = 'WASM 로딩 중...';
     await wasm.initialize();
+    if (import.meta.env.DEV && import.meta.env.VITE_RHWP_DEV_FONT_PACK === '1') {
+      msg.textContent = '글꼴 준비 중...';
+      const { loadConfiguredDevFontPack } = await import('./core/dev-font-pack.ts');
+      await loadConfiguredDevFontPack((loaded, total) => {
+        msg.textContent = `글꼴 준비 중... (${loaded}/${total})`;
+      });
+    }
     if (import.meta.env.DEV) {
       initRhwpDev(wasm);
     }
@@ -1711,8 +1718,8 @@ async function initialize(): Promise<void> {
     rendererInitialized = true;
   } catch (error) {
     rendererInitializationError = error instanceof Error ? error.message : String(error);
-    msg.textContent = `WASM 초기화 실패: ${error}`;
-    console.error('[main] WASM 초기화 실패:', error);
+    msg.textContent = `초기화 실패: ${error}`;
+    console.error('[main] 초기화 실패:', error);
   }
 }
 

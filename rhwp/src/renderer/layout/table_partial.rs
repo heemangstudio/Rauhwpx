@@ -447,6 +447,12 @@ impl LayoutEngine {
                 .collect();
 
             // 텍스트 오버플로우 시 좌우 패딩 축소
+            // SQUEEZE 셀은 좌우 여백을 1mm(284hu)까지만 줄인다 (압축 존 확보).
+            let min_pad = if cell.line_wrap == crate::model::table::CellLineWrap::Squeeze {
+                hwpunit_to_px(284, self.dpi)
+            } else {
+                1.0
+            };
             let (new_pl, new_pr) = self.shrink_cell_padding_for_overflow(
                 pad_left,
                 pad_right,
@@ -455,6 +461,7 @@ impl LayoutEngine {
                 &cell.paragraphs,
                 styles,
                 cell.apply_inner_margin,
+                min_pad,
             );
             pad_left = new_pl;
             pad_right = new_pr;
@@ -793,6 +800,8 @@ impl LayoutEngine {
                         cell_index: cell_idx,
                         cell_para_index: cp_idx,
                         text_direction: cell.text_direction,
+                        line_wrap_squeeze: cell.line_wrap
+                            == crate::model::table::CellLineWrap::Squeeze,
                     }],
                 };
                 let cell_context_opt = Some(cell_context.clone());
@@ -836,7 +845,17 @@ impl LayoutEngine {
                             outline_numbering_id,
                         )
                     } else {
-                        None
+                        // 이월 청크도 마커 텍스트가 필요 (행잉 인덴트 유지).
+                        // 카운터 이중 진행 방지를 위해 상태를 저장·복원한다.
+                        let saved = self.numbering_state.borrow().clone();
+                        let numbered = self.apply_paragraph_numbering(
+                            Some(composed),
+                            para,
+                            styles,
+                            outline_numbering_id,
+                        );
+                        *self.numbering_state.borrow_mut() = saved;
+                        numbered
                     };
                     let composed_for_layout = numbered_comp.as_ref().unwrap_or(composed);
                     // [Task #1728 v2] 셀-내 continuation 조각(cut su>0)의 첫 가시 문단
@@ -1555,6 +1574,7 @@ impl LayoutEngine {
                                             cell_index: 0,
                                             cell_para_index: 0,
                                             text_direction: 0,
+                                            line_wrap_squeeze: false,
                                         });
                                         new_ctx
                                     });
@@ -2462,6 +2482,7 @@ impl LayoutEngine {
                 cell_index: 65534,
                 cell_para_index: 0,
                 text_direction: 0,
+                line_wrap_squeeze: false,
             }],
         });
         if render_top_caption {

@@ -607,11 +607,20 @@ impl SkiaLayerRenderer {
         let clip_enabled = output_options.clip_enabled;
         let apply_dash = |paint: &mut Paint, dash: StrokeDash| {
             let base_width = paint.stroke_width().max(1.0);
+            // 점선은 선 굵기 비례 간격(한컴 규칙)이라 이미 실제 선폭이 곱해져 나온다.
+            let interval_scale = if matches!(dash, StrokeDash::Dot) {
+                1.0
+            } else {
+                base_width
+            };
             let intervals: Option<[f32; 6]> = match dash {
                 StrokeDash::Solid => None,
                 StrokeDash::Dash => Some([6.0, 3.0, 0.0, 0.0, 0.0, 0.0]),
                 StrokeDash::LongDash => Some([10.0, 3.0, 0.0, 0.0, 0.0, 0.0]),
-                StrokeDash::Dot => Some([2.0, 2.0, 0.0, 0.0, 0.0, 0.0]),
+                StrokeDash::Dot => {
+                    let (on, off) = crate::renderer::dot_dash_segments(paint.stroke_width() as f64);
+                    Some([on as f32, off as f32, 0.0, 0.0, 0.0, 0.0])
+                }
                 StrokeDash::Circle => {
                     paint.set_stroke_cap(paint::Cap::Round);
                     Some([0.1, 3.0, 0.0, 0.0, 0.0, 0.0])
@@ -623,7 +632,7 @@ impl SkiaLayerRenderer {
                 let intervals = intervals
                     .into_iter()
                     .filter(|value| *value > 0.0)
-                    .map(|value| value * base_width)
+                    .map(|value| value * interval_scale)
                     .collect::<Vec<_>>();
                 if let Some(effect) = PathEffect::dash(&intervals, 0.0) {
                     paint.set_path_effect(effect);
@@ -990,15 +999,18 @@ impl SkiaLayerRenderer {
                         PaintOp::FootnoteMarker { bbox, marker } => {
                             let style = crate::renderer::TextStyle {
                                 font_family: marker.font_family.clone(),
-                                font_size: (marker.base_font_size * 0.55).max(7.0),
+                                // 각주 번호 위첨자: 본문 글꼴의 0.75 배율 (한컴 PDF 정합)
+                                font_size: (marker.base_font_size * 0.75).max(7.0),
                                 color: marker.color,
                                 ..Default::default()
                             };
+                            let sup_size = style.font_size;
                             text_replay.draw_text(
                                 &marker.text,
                                 *bbox,
                                 &style,
-                                bbox.height * 0.4,
+                                // 본문 baseline 에서 (본문-위첨자) 크기 차만큼만 올려 top 정렬
+                                marker.baseline - (marker.base_font_size - sup_size) * 0.85,
                                 0.0,
                                 false,
                                 None,
@@ -1266,6 +1278,8 @@ impl SkiaLayerRenderer {
                             render_equation(
                                 canvas,
                                 &self.font_mgr,
+                                &self.custom_typefaces,
+                                &self.bundled_typefaces,
                                 &self.system_families,
                                 &equation.layout_box,
                                 bbox.x,
@@ -3236,6 +3250,7 @@ mod tests {
             number: 1,
             text: "1)".to_string(),
             base_font_size: 18.0,
+            baseline: 20.0,
             font_family: String::new(),
             color: 0x00000000,
             section_index: 0,
