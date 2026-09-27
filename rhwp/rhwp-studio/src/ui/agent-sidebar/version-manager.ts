@@ -4,6 +4,7 @@ import { confirmSheet } from './sheet.ts';
 import type { DiffItem } from '../../compare/types.ts';
 import { createIcon } from './icons.ts';
 import { showContextMenu } from '../native-context-menu.ts';
+import { createChevron } from '../chevron.ts';
 
 export type VersionTab = 'history' | 'branches' | 'shelves';
 
@@ -421,20 +422,26 @@ export function createVersionManagerPage(controller: VersionManagerController): 
 
   const head = el('header', 'ag-versions-head');
   const titleWrap = el('div', 'ag-versions-title-wrap');
+  const backButton = el('button', 'ag-header-icon-btn ag-versions-back');
+  backButton.type = 'button';
+  backButton.setAttribute('aria-label', '버전으로 돌아가기');
+  backButton.appendChild(createChevron());
+  backButton.hidden = true;
   const title = el('h2', 'ag-versions-title', '버전');
   title.id = 'ag-versions-title';
   const subtitle = el('span', 'ag-versions-subtitle');
-  titleWrap.append(title, subtitle);
+  titleWrap.append(backButton, title, subtitle);
   const closeButton = el('button', 'ag-header-icon-btn ag-versions-close');
   closeButton.type = 'button';
   closeButton.setAttribute('aria-label', '버전 닫기');
   closeButton.title = '버전 닫기';
   closeButton.appendChild(createIcon('close'));
   head.append(titleWrap, closeButton);
-  const moreButton = el('button', 'ag-header-icon-btn', '⋯');
+  const moreButton = el('button', 'ag-header-icon-btn');
   moreButton.type = 'button';
   moreButton.setAttribute('aria-label', '버전 더 보기');
   moreButton.setAttribute('aria-haspopup', 'menu');
+  moreButton.appendChild(createIcon('more'));
   closeButton.before(moreButton);
 
   const notice = el('div', 'ag-versions-notice');
@@ -676,6 +683,11 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     tabs.hidden = recovering;
     toolbar.hidden = recovering;
     recoveryPanel.hidden = !recovering;
+    backButton.hidden = !recovering;
+    titleWrap.classList.toggle('ag-recovering', recovering);
+    moreButton.hidden = recovering;
+    title.textContent = recovering ? '복구' : '버전';
+    subtitle.hidden = recovering;
     branchStrip.hidden = tab !== 'history';
     createBranchButton.hidden = tab !== 'branches';
     shelf.hidden = tab !== 'shelves';
@@ -693,10 +705,6 @@ export function createVersionManagerPage(controller: VersionManagerController): 
 
   function renderRecovery(): void {
     recoveryPanel.replaceChildren();
-    const back = el('button', 'ag-versions-quiet', '← 기록으로 돌아가기');
-    back.type = 'button';
-    back.addEventListener('click', () => { recovering = false; renderTabs(); moreButton.focus(); });
-    recoveryPanel.append(back);
     if (!recoveryEntries.length) recoveryPanel.append(el('p', 'ag-versions-placeholder', '복구할 기록이 없습니다.'));
     const labels: Record<string, string> = {
       'branch-created': '브랜치 생성', 'branch-deleted': '브랜치 삭제',
@@ -706,8 +714,9 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     for (const entry of recoveryEntries) {
       const row = el('div', 'ag-version-recovery-row');
       const details = el('div', 'ag-version-recovery-details');
-      details.append(el('strong', '', entry.name), el('span', '', `${labels[entry.operation] ?? entry.operation} · ${formatTime(entry.createdAt)} · ${entry.headId.slice(0, 8)}`));
-      const recover = el('button', 'ag-versions-secondary', '복구');
+      details.append(el('strong', '', entry.name), el('span', '', `${labels[entry.operation] ?? entry.operation} · ${formatTime(entry.createdAt)}`));
+      details.title = entry.headId.slice(0, 8);
+      const recover = el('button', 'ag-versions-quiet', '복구');
       recover.type = 'button';
       recover.dataset.versionMutation = 'true';
       recover.setAttribute('aria-label', `${entry.name} 브랜치 복구`);
@@ -729,6 +738,13 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     renderMutationState();
   }
 
+  function leaveRecovery(): void {
+    recovering = false;
+    renderTabs();
+    moreButton.focus();
+  }
+  backButton.addEventListener('click', leaveRecovery);
+
   moreButton.addEventListener('click', () => void (async () => {
     const rect = moreButton.getBoundingClientRect();
     const choice = await showContextMenu([
@@ -743,7 +759,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
       recovering = true;
       renderTabs();
       renderRecovery();
-      recoveryPanel.querySelector('button')?.focus();
+      (recoveryPanel.querySelector('button') ?? backButton).focus();
     });
   })());
 
@@ -1201,7 +1217,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     event.preventDefault();
     event.stopPropagation();
     if (dateTooltip.classList.contains('ag-visible')) { hideDateTooltip(); return; }
-    if (recovering) { recovering = false; renderTabs(); moreButton.focus(); return; }
+    if (recovering) { leaveRecovery(); return; }
     page.dispatchEvent(new CustomEvent('ag-versions-close'));
   });
 

@@ -2,8 +2,37 @@ import type {
   BlobId,
   BranchRef,
   MergeResolution,
+  MergeConflict,
   VersionMergeDraft,
 } from './types.ts';
+
+function unitIdentity(unit: MergeConflict): string {
+  return JSON.stringify([
+    unit.fingerprint, unit.kind, unit.automatic === true,
+    [...(unit.dependencyIds ?? [])].sort(), unit.supportsBoth, unit.supportsManual,
+  ]);
+}
+
+/** Decisions are portable only between uniquely identified units of the same analysis. */
+export function carriedMergeResolutions(
+  previous: VersionMergeDraft | undefined,
+  analysisVersion: number,
+  conflicts: readonly MergeConflict[],
+): Record<string, MergeResolution> {
+  if (!previous || previous.analysisVersion !== analysisVersion) return {};
+  const prior = new Map<string, MergeResolution | null>();
+  for (const unit of previous.conflicts) {
+    const identity = unitIdentity(unit);
+    prior.set(identity, prior.has(identity) ? null : previous.resolutions[unit.id] ?? null);
+  }
+  const counts = new Map<string, number>();
+  for (const unit of conflicts) counts.set(unitIdentity(unit), (counts.get(unitIdentity(unit)) ?? 0) + 1);
+  return Object.fromEntries(conflicts.flatMap((unit) => {
+    const identity = unitIdentity(unit);
+    const choice = prior.get(identity);
+    return choice && counts.get(identity) === 1 ? [[unit.id, structuredClone(choice)]] : [];
+  }));
+}
 
 function resolutionAssetIds(resolutions: Readonly<Record<string, MergeResolution>>): BlobId[] {
   const ids = new Set<BlobId>();
@@ -25,9 +54,15 @@ export function retainedMergeDraftLocalState(
   target: BranchRef,
   source: BranchRef,
   carriedResolutions: Readonly<Record<string, MergeResolution>>,
+  analysisVersion = previous?.analysisVersion,
+  conflicts: readonly MergeConflict[] = previous?.conflicts ?? [],
 ): Pick<VersionMergeDraft, 'manualAssetBlobIds' | 'history' | 'historyIndex'> {
   const headsChanged = Boolean(previous && (
-    previous.currentHead !== target.target
+    previous.analysisVersion !== analysisVersion
+    || JSON.stringify(previous.conflicts.map((unit) => [unit.id, unitIdentity(unit)]))
+      !== JSON.stringify(conflicts.map((unit) => [unit.id, unitIdentity(unit)]))
+    || new Set(conflicts.map(unitIdentity)).size !== conflicts.length
+    || previous.currentHead !== target.target
     || previous.sourceHead !== source.target
     || previous.targetBranchGeneration !== target.generation
     || previous.sourceBranchGeneration !== source.generation
