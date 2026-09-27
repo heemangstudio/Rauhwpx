@@ -9145,6 +9145,24 @@ impl LayoutEngine {
         })
     }
 
+    /// 문단별로 mixed nested 조각 유닛을 가졌는지 표시한다. 조각 유닛이 없는 문단은
+    /// `mixed_nested_split_from_cut` 이 항상 `None` 이다.
+    pub(crate) fn cell_mixed_nested_paragraphs(
+        &self,
+        cell: &crate::model::table::Cell,
+        table: &crate::model::table::Table,
+        styles: &ResolvedStyleSet,
+    ) -> Vec<bool> {
+        let units = self.cell_units(cell, table, styles);
+        let mut flags = vec![false; cell.paragraphs.len()];
+        for unit in units.iter().filter(|unit| unit.mixed_nested_fragment) {
+            if let Some(flag) = flags.get_mut(unit.para_idx) {
+                *flag = true;
+            }
+        }
+        flags
+    }
+
     pub(crate) fn mixed_nested_split_from_cut(
         &self,
         cell: &crate::model::table::Cell,
@@ -9326,23 +9344,28 @@ impl LayoutEngine {
         let hi = end_unit.min(units.len()).max(lo);
         let mut extra = 0.0;
 
-        for para_idx in 0..cell.paragraphs.len() {
-            let mut offset = 0.0;
-            let mut total = 0.0;
-            let mut visible_units: Vec<(f64, bool)> = Vec::new();
-            for (idx, unit) in units.iter().enumerate() {
-                if unit.para_idx != para_idx || !unit.mixed_nested_fragment {
-                    continue;
-                }
-                total += unit.height;
-                if idx < lo {
-                    offset += unit.height;
-                }
-                if idx >= lo && idx < hi {
-                    visible_units.push((unit.height, unit.mixed_nested_trailing));
-                }
+        // 문단별 (offset, total, visible) 을 유닛 한 번 순회로 모은다. 종전의 문단 × 유닛
+        // 이중 순회는 거대 셀(issue1949)에서 쪽 트리 빌드마다 수십 ms 를 썼다.
+        // 문단 안 합산 순서는 유닛 순서 그대로라 결과가 같다.
+        let mut flows: Vec<(f64, f64, Vec<(f64, bool)>)> =
+            vec![(0.0, 0.0, Vec::new()); cell.paragraphs.len()];
+        for (idx, unit) in units.iter().enumerate() {
+            if !unit.mixed_nested_fragment {
+                continue;
             }
+            let Some((offset, total, visible_units)) = flows.get_mut(unit.para_idx) else {
+                continue;
+            };
+            *total += unit.height;
+            if idx < lo {
+                *offset += unit.height;
+            }
+            if idx >= lo && idx < hi {
+                visible_units.push((unit.height, unit.mixed_nested_trailing));
+            }
+        }
 
+        for (offset, total, mut visible_units) in flows {
             if total <= 0.5 || offset <= 0.5 {
                 continue;
             }
