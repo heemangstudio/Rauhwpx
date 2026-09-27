@@ -220,6 +220,23 @@ function pushUniqueFontFamily(families: string[], fontName: string): void {
   families.push(name);
 }
 
+/**
+ * 한컴 번들의 한양 HFT는 glyph 기록이 보호되어 변환할 수 없다. 같은 한컴 번들의 `#` 가족이
+ * 같은 이름·같은 계열 서체라 가장 가까운 대체다. 표시에만 쓰고 조판 메트릭은 바꾸지 않는다.
+ */
+export const HFT_SUCCESSOR_FONTS: ReadonlyMap<string, string> = new Map([
+  ['한양신명조', '#신명조'], ['한양견명조', '#견명조'], ['한양중고딕', '#중고딕'],
+  ['한양견고딕', '#견고딕'], ['한양그래픽', '#그래픽'], ['한양궁서', '#궁서'], ['명조', '#신명조'],
+]);
+
+/** 불러온 `#` 대체 face. 대체 가족이 없거나 아직 불러오지 않았으면 null. */
+export function loadedHftSuccessor(fontName: string): { name: string; family: string } | null {
+  const name = HFT_SUCCESSOR_FONTS.get(fontName.trim());
+  const record = name ? resolveLocalFont(name) : null;
+  if (!name || !record) return null;
+  return { name, family: record.runtimeFamily ?? repairedLocalFontFamily(record) ?? record.family };
+}
+
 const HFT_SUBSTITUTE_FACES = new Map<string, readonly string[]>([
   ['HCI Poppy', ['Palatino', 'Palatino Linotype', 'Book Antiqua']],
 ]);
@@ -362,6 +379,10 @@ export function fontFamilyChainForDisplay(
     );
   } else if (originalAllowed) {
     pushUniqueFontFamily(families, fontName);
+  }
+  if (!localRecord) {
+    const successor = loadedHftSuccessor(fontName);
+    if (successor) pushUniqueFontFamily(families, successor.family);
   }
 
   const resolved = resolveFont(fontName, altType, langId);

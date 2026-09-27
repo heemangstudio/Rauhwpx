@@ -598,15 +598,18 @@ pub(crate) fn resolve_font_substitution(
     resolve_ttf_font(name)
 }
 
+// 런타임 메트릭 페이스: Studio가 한컴 HFT를 변환해 등록한 face. 등록됐으면 원래 이름으로 조판한다.
 #[cfg(not(target_arch = "wasm32"))]
 fn custom_hft_face_available(name: &str) -> bool {
     crate::renderer::layout::active_shaping_face_available(name)
         || crate::renderer::font_paths::custom_font_face_available(name)
+        || crate::renderer::runtime_font_metrics::has_face(name)
 }
 
 #[cfg(target_arch = "wasm32")]
 fn custom_hft_face_available(name: &str) -> bool {
     crate::renderer::layout::active_shaping_face_available(name)
+        || crate::renderer::runtime_font_metrics::has_face(name)
 }
 
 fn resolve_legacy_latin_font(name: &str, lang_index: usize) -> Option<&'static str> {
@@ -1119,6 +1122,20 @@ mod tests {
     use crate::model::document::DocInfo;
     use crate::model::style::*;
     use crate::renderer::DEFAULT_DPI;
+
+    #[test]
+    fn registered_runtime_face_keeps_the_original_hft_name() {
+        use crate::renderer::runtime_font_metrics as runtime;
+        // 한컴 HFT 원본 face가 없으면 HY 대체명으로 조판한다.
+        assert_eq!(resolve_font_substitution("신명 태고딕", 2, 0), Some("HY중고딕"));
+        // Studio가 HFT를 변환해 런타임 face로 등록하면 원래 이름을 그대로 쓴다.
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/ttfs/opensource/");
+        let bytes = std::fs::read(format!("{dir}NotoSansKR-Regular.ttf")).unwrap();
+        runtime::register(&bytes, &["신명 태고딕".to_string()], false, false).unwrap();
+        assert_eq!(resolve_font_substitution("신명 태고딕", 2, 0), None);
+        runtime::clear();
+        assert_eq!(resolve_font_substitution("신명 태고딕", 2, 0), Some("HY중고딕"));
+    }
 
     fn make_doc_info_with_font() -> DocInfo {
         DocInfo {

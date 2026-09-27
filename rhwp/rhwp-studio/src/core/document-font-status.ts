@@ -1,5 +1,5 @@
 import { REGISTERED_FONTS, resolveRegisteredFontFaceIdentity } from './font-loader.ts';
-import { resolveFont } from './font-substitution.ts';
+import { loadedHftSuccessor, resolveFont } from './font-substitution.ts';
 import { isSystemFontIndexComplete } from './desktop-fonts.ts';
 import {
   getDetectedLocalFonts,
@@ -75,6 +75,8 @@ function normalizeDocumentFonts(fonts: readonly string[] | undefined): string[] 
 
 function resolveWebSubstitute(fontName: string): string | null {
   if (REGISTERED_FONTS.has(fontName)) return fontName;
+  const successor = loadedHftSuccessor(fontName);
+  if (successor) return successor.name;
 
   const resolved = resolveFont(fontName, 0, 0);
   if (resolved && resolved !== fontName && REGISTERED_FONTS.has(resolved)) {

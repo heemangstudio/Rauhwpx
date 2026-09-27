@@ -171,8 +171,11 @@ function readHft(bytes: Uint8Array, filename: string): HftFont {
       if (!empty && !(first < 0x100 && code === 0x20)) {
         const glyphLength = r.u16(lengthAt);
         if (glyphLength < 2 || lengthAt + glyphLength > end) throw new Error('잘못된 HFT glyph 길이입니다.');
+        // outline의 마지막 1 byte(대개 close, 때로는 좌표 0)는 길이 밖, 다음 기록의 첫 byte에 있다.
+        // 넘어온 byte가 명령 자리의 0이면 outline 끝 표시로 읽는다.
+        const dataEnd = Math.min(lengthAt + glyphLength + 1, blockEnd);
         try {
-          outline = decodeOutline(bytes.subarray(lengthAt + 2, lengthAt + glyphLength), baseline);
+          outline = decodeOutline(bytes.subarray(lengthAt + 2, dataEnd), baseline);
         } catch (error) {
           // 수천 자짜리 본문 서체의 손상 glyph 몇 개는 fallback에 맡긴다. 1%를 넘으면 파일을 거절한다.
           if (++corrupt > Math.floor(count / 100)) throw error;
@@ -200,13 +203,20 @@ function equationUnicodes(code: number): number[] {
   return greek ? [code - 0x190, 0xe000 + code - 0x500] : [0xe000 + code - 0x500];
 }
 
+/** 영문 bank의 ASCII 뒤 한컴 전용 칸: 둥근 따옴표와 가운뎃점. */
+const LATIN_EXTRA = new Map([[0x81, 0x201c], [0x82, 0x201d], [0x83, 0x2018], [0x84, 0x2019], [0x85, 0xb7]]);
+
 /**
- * 본문 HFT의 문자 bank. 한글·한자는 KS X 1001 행(94자) 순서, 기호는 행마다 96칸
- * (0xA0~0xFF, 양 끝 빈칸) 순서이고, 코드 목록이 있는 한글 블록은 Johab 코드다.
- * 영문 bank는 ASCII만 확실하므로 그 밖의 한컴 전용 코드는 대응하지 않는다.
+ * 본문 HFT의 문자 bank. 한글·한자는 KS X 1001 행(94자) 순서이고, 기호(0xA1행~)와
+ * 일본 가나(0xAA행~)는 행마다 96칸(0xA0~0xFF, 양 끝 빈칸) 순서다. 코드 목록이 있는
+ * 한글 블록은 Johab 코드다.
  */
 function hftUnicodes(bankFirst: number, code: number, implicitIndex: number): number[] {
-  if (bankFirst < 0x100) return code >= 0x20 && code <= 0x7e ? [code] : [];
+  if (bankFirst < 0x100) {
+    if (code >= 0x20 && code <= 0x7e) return [code];
+    const extra = LATIN_EXTRA.get(code);
+    return extra ? [extra] : [];
+  }
   if (bankFirst >= 0x8000) {
     if (implicitIndex < 0) return johabUnicodes(code);
     return implicitIndex < 25 * 94 ? ksx1001(0xb0 + Math.floor(implicitIndex / 94), 0xa1 + implicitIndex % 94) : [];
@@ -215,12 +225,14 @@ function hftUnicodes(bankFirst: number, code: number, implicitIndex: number): nu
     const i = code - 0x4000;
     return i >= 0 && i < 52 * 94 ? ksx1001(0xca + Math.floor(i / 94), 0xa1 + i % 94) : [];
   }
-  if (bankFirst >= 0x3400 && bankFirst < 0x4000) {
-    const i = code - 0x3400;
-    const row = Math.floor(i / 96);
-    return i >= 0 && row < 12 ? ksx1001(0xa1 + row, 0xa0 + i % 96) : [];
-  }
+  if (bankFirst >= 0x3400 && bankFirst < 0x4000) return ksx1001Rows96(code - 0x3400, 0xa1, 12);
+  if (bankFirst >= 0x1f00 && bankFirst < 0x2000) return ksx1001Rows96(code - 0x1f00, 0xaa, 2);
   return [];
+}
+
+function ksx1001Rows96(i: number, firstLead: number, rows: number): number[] {
+  const row = Math.floor(i / 96);
+  return i >= 0 && row < rows ? ksx1001(firstLead + row, 0xa0 + i % 96) : [];
 }
 
 let eucKr: TextDecoder | null | undefined;
@@ -297,19 +309,20 @@ function decodeOutline(bytes: Uint8Array, baseline: number): Outline {
   };
   while (at < bytes.length) {
     const op = read();
+    if (op === 0) break; // 일부 glyph는 0으로 outline 끝을 표시한다.
     if (op === 1) move(number(), 0);
     else if (op === 2) move(0, number());
     else if (op === 3) move(number(), number());
     else if (op === 4) {
-      if (!open) throw new Error('잘못된 HFT contour입니다.');
-      outline.push({ op: 'close', points: [] }); open = false; [x, y] = start;
+      // 이미 닫힌 contour의 close는 아무것도 하지 않는다.
+      if (open) { outline.push({ op: 'close', points: [] }); open = false; [x, y] = start; }
     } else if (op === 5 || op === 6 || op === 7) {
-      if (!open) throw new Error('잘못된 HFT contour입니다.');
+      if (!open) move(0, 0); // close 뒤 moveto 없이 그리면 그 자리에서 새 contour가 시작된다.
       const dx = op === 6 ? 0 : number();
       const dy = op === 5 ? 0 : number();
       outline.push({ op: 'line', points: [point(dx, dy)] });
     } else if (op === 9 || op === 10 || op === 11) {
-      if (!open) throw new Error('잘못된 HFT contour입니다.');
+      if (!open) move(0, 0);
       const a = point(op === 10 ? 0 : number(), op === 9 ? 0 : number());
       const b = point(number(), number());
       const c = point(op === 9 ? 0 : number(), op === 10 ? 0 : number());
