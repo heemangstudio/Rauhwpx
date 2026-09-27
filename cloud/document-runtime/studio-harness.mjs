@@ -37,6 +37,36 @@ function runtimeError(code, message, cause) {
   return Object.assign(new Error(message, cause ? { cause } : undefined), { code });
 }
 
+// Claude Code, Codex and Pi report expired or revoked logins in these forms.
+// A bare "401" or "Unauthorized" only counts in an HTTP status position.
+const PROVIDER_AUTH_FAILURE_PATTERNS = [
+  /\bplease run \/login\b/i,
+  /\binvalid api key\b/i,
+  /\boauth token\b[^\n]{0,40}\b(?:expired|revoked)\b/i,
+  /\bauthentication_error\b/,
+  /\bnot logged in\b/i,
+  /\binvalid_grant\b/,
+  /\brefresh_token_(?:expired|reused|invalidated)\b/,
+  /\brefresh token\b[^\n]{0,40}\b(?:expired|revoked|invalid(?:ated)?)\b/i,
+  /\baccess token could not be refreshed\b/i,
+  /\bplease log ?in again\b/i,
+  /\btoken_expired\b/,
+  /\bno api key found\b/i,
+  /\bno auth credentials found\b/i,
+  /\b401 unauthorized\b/i,
+  /\b(?:api error|http(?:\/[\d.]+)?|status(?: code)?)\s*:?\s*401\b/i,
+  /"(?:code|status)"\s*:\s*401\b/,
+  /^\s*(?:error:\s*)?401\b/i,
+  /^\s*(?:error:\s*)?unauthorized\.?\s*$/i,
+];
+
+export const PROVIDER_AUTH_EXPIRED_MESSAGE = 'Provider login expired or was revoked';
+
+export function isProviderAuthFailure(text) {
+  if (typeof text !== 'string' || !text) return false;
+  return PROVIDER_AUTH_FAILURE_PATTERNS.some((pattern) => pattern.test(text));
+}
+
 async function withTimeout(operation, timeoutMs, code, message) {
   let timer;
   const timeout = new Promise((_, reject) => {
@@ -527,7 +557,9 @@ export async function observeStudioTurn({
       }
       if (entry.event?.type === 'implementation-started') implementationStarted = true;
       if (entry.event?.type === 'hub-error') {
-        throw runtimeError(String(entry.event.code || 'AGENT_HUB_ERROR'), String(entry.event.message || 'Agent hub failed'));
+        const message = String(entry.event.message || 'Agent hub failed');
+        if (isProviderAuthFailure(message)) throw runtimeError('PROVIDER_AUTH_EXPIRED', PROVIDER_AUTH_EXPIRED_MESSAGE);
+        throw runtimeError(String(entry.event.code || 'AGENT_HUB_ERROR'), message);
       }
       const agentEvent = entry.event?.type === 'agent' ? entry.event.event : null;
       if (agentEvent?.type === 'turn-start') sawStart = true;

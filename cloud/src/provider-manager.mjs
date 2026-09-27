@@ -102,6 +102,16 @@ export class ProviderManager {
     });
   }
 
+  authExpired(provider) {
+    return this.sessionStore.providerAuthExpired?.(provider) === true;
+  }
+
+  // Fresh credentials replace a login that expired mid-turn.
+  credentialsWritten(provider) {
+    this.sessionStore.clearProviderAuthExpired?.(provider);
+    return this.probe(provider);
+  }
+
   async probeAll(providers = PROVIDERS) {
     const results = [];
     // Provider CLIs are memory-heavy in small app sandboxes. Sequential probes

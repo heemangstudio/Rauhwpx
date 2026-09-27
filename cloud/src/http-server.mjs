@@ -184,6 +184,7 @@ export function createCloudHttpHandler({
   raucloudLease = null,
   conversationBackup = null,
   activity = null,
+  scheduler = null,
 }, { workerOnly = false } = {}) {
   const authenticate = (request) => auth.authenticate(bearer(request));
   const authenticateWorker = (request, sessionId, options) => (
@@ -217,6 +218,7 @@ export function createCloudHttpHandler({
         }
       }
       if (request.method === 'GET' && pathname === '/v1/health') {
+        const degraded = scheduler?.health?.() ?? null;
         json(response, 200, {
           ok: true,
           version: SERVICE_VERSION,
@@ -227,6 +229,7 @@ export function createCloudHttpHandler({
           supportedWorkflows: EXECUTION_WORKFLOWS,
           serverPublicKey: identity.serverPublicKey,
           serverId: identity.serverId,
+          ...(degraded ? { degraded } : {}),
         });
         return;
       }

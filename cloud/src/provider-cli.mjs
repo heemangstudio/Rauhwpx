@@ -135,8 +135,13 @@ export class ProviderCliManager {
     if (apiKey !== null && String(apiKey).trim()) {
       this.vault.set(provider, KEY_NAMES[provider], String(apiKey).trim());
     }
-    writeProviderAuthFiles(this.config.providerAuthDirectory, provider, files);
-    return this.providerManager.probe(provider);
+    const keptFiles = [];
+    writeProviderAuthFiles(this.config.providerAuthDirectory, provider, files, {
+      keepNewer: !this.providerManager.authExpired(provider),
+      kept: keptFiles,
+    });
+    const status = await this.providerManager.credentialsWritten(provider);
+    return keptFiles.length ? { ...status, keptFiles } : status;
   }
 
   async seedSession(encoded = process.env.RAUHWpx_PROVIDER_SESSION) {
@@ -164,7 +169,7 @@ export class ProviderCliManager {
     const env = this.environment(provider);
     const command = path.join(this.config.providerCliDirectory, 'current', 'node_modules', '.bin', item.bin);
     await run(command, argumentsByProvider[provider], { env: { ...env, NO_OPEN_BROWSER: '1' } });
-    return this.providerManager.probe(provider);
+    return this.providerManager.credentialsWritten(provider);
   }
 
   status(provider) {

@@ -381,6 +381,47 @@ test('scheduler starts up to the configured cap and suspends failed sandboxes du
   assert.equal(new Scheduler({}, {}, { maxRunningSessions: 4 }).maxRunningSessions, 4);
 });
 
+test('scheduler suspends a session whose worker keeps exiting instead of requeueing it forever', async (t) => {
+  const { root, database } = await fixture(t);
+  const blobs = new BlobStore(database, { root: path.join(root, 'objects') });
+  const sessions = new SessionStore(database, blobs);
+  database.prepare(`INSERT INTO devices(id, name, created_at, last_seen_at) VALUES ('device', 'Device', 1, 1)`).run();
+  sessions.setProviderStatus('codex', { available: true, version: '1' });
+  const documentBytes = Buffer.from('document');
+  const digest = createHash('sha256').update(documentBytes).digest('hex');
+  const initialized = await blobs.initUpload({ deviceId: 'device', sha256: digest, size: documentBytes.length, name: 'doc', kind: 'document' });
+  await blobs.appendChunk({ uploadId: initialized.uploadId, deviceId: 'device', offset: 0, bytes: documentBytes });
+  sessions.createSession({ id: 'device' }, {
+    sessionId: 'session-flapping', provider: 'codex', goal: 'Work',
+    originDocument: { blobId: digest, size: documentBytes.length, name: 'doc' },
+    resources: [], timeline: null, limits: { maxDurationSeconds: 3600, maxTurns: 10 },
+  });
+  sessions.executeCommand({ id: 'device' }, 'session-flapping', {
+    commandId: 'activate-flapping', type: 'session.activate', payload: { expectedVersion: 1 },
+  });
+  let starts = 0;
+  // Every worker exits before the next tick, so its sandbox is never live.
+  const runner = { async list() { return []; }, async start() { starts += 1; return `sandbox-${starts}`; }, async stop() {} };
+  const scheduler = new Scheduler(sessions, runner, { logger: { info() {}, error() {} }, maxRunningSessions: 1 });
+  for (let tick = 0; tick < 4; tick += 1) {
+    await scheduler.tick();
+    assert.equal(sessions.getSession('session-flapping').status, 'running');
+  }
+  await scheduler.tick();
+  const suspended = sessions.getSession('session-flapping');
+  assert.equal(starts, 4, 'three requeues are allowed before the session is suspended');
+  assert.equal(suspended.status, 'suspended');
+  assert.deepEqual(suspended.suspendedReason, { code: 'WORKER_UNSTABLE', message: 'The Cloud worker stopped repeatedly' });
+  assert.equal(sessions.listEvents('session-flapping', 0, 100).at(-1).type, 'session.suspended');
+
+  sessions.executeCommand({ id: 'device' }, 'session-flapping', {
+    commandId: 'resume-flapping', type: 'session.resume', payload: { expectedVersion: suspended.stateVersion },
+  });
+  await scheduler.tick();
+  await scheduler.tick();
+  assert.equal(sessions.getSession('session-flapping').status, 'running', 'resuming resets the requeue count');
+});
+
 test('doctor separates managed CLI health from optional provider authentication', async () => {
   const states = new Map([
     ['claude', { provider: 'claude', available: true, authenticated: false }],

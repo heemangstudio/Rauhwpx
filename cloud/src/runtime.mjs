@@ -112,12 +112,14 @@ export function createCloudRuntime(config, dependencies = {}) {
     raucloudLease,
     conversationBackup,
     activity,
+    scheduler,
     applyProviderAuth: async (provider, raw) => {
       const imported = await applyProviderAuth(provider, parseProviderAuth(provider, raw), {
         vault,
         authDirectory: config.providerAuthDirectory,
+        keepNewer: !providerManager.authExpired(provider),
       });
-      const status = await providerManager.probe(provider);
+      const status = await providerManager.credentialsWritten(provider);
       return { ...imported, provider: status };
     },
   };
