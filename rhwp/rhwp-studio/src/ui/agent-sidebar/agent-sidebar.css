@@ -5028,10 +5028,76 @@ button.ag-skill-copy {
   white-space: nowrap;
 }
 
-.ag-hieum {
+/* 글자 위치는 고정하고 명암만 왼쪽에서 오른쪽으로 흐르게 한다. */
+@supports (background-clip: text) {
+  .ag-turn-pending-label {
+    background-image: linear-gradient(105deg,
+      var(--ag-text-muted) 0%, var(--ag-text-muted) 38%,
+      var(--ag-text) 49%, var(--ag-text-muted) 60%, var(--ag-text-muted) 100%);
+    background-size: 260% 100%;
+    background-position: 100% 0;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: ag-loading-shimmer 3.2s cubic-bezier(.4, 0, .6, 1) infinite;
+  }
+}
+
+.ag-ink-ring {
   display: block;
   flex: 0 0 auto;
   overflow: visible;
+}
+
+.ag-ink-ring-trails {
+  transform-origin: 50px 50px;
+  animation: ag-ink-rotate 12s linear infinite;
+}
+
+.ag-ink-ring-trails path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-dasharray: 125 230;
+  animation: ag-ink-flow 5.4s cubic-bezier(.45, 0, .55, 1) infinite;
+}
+
+.ag-ink-ring-trails path:nth-child(2) { opacity: .7; animation-delay: -.6s; }
+.ag-ink-ring-trails path:nth-child(3) { opacity: .42; animation-delay: -1.2s; }
+.ag-ink-ring-trails path:nth-child(4) { opacity: .24; animation-delay: -1.8s; }
+
+.ag-ink-ring-center {
+  fill: currentColor;
+  transform-origin: 50px 50px;
+  animation: ag-ink-breathe 2.7s cubic-bezier(.45, 0, .55, 1) infinite;
+}
+
+@keyframes ag-loading-shimmer {
+  0%, 12% { background-position: 100% 0; }
+  78%, 100% { background-position: 0% 0; }
+}
+
+@keyframes ag-ink-rotate { to { transform: rotate(360deg); } }
+@keyframes ag-ink-flow { to { stroke-dashoffset: -355; } }
+@keyframes ag-ink-breathe {
+  0%, 100% { transform: scale(.6); opacity: .3; }
+  50% { transform: scale(1); opacity: .8; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-ink-ring-trails,
+  .ag-ink-ring-trails path,
+  .ag-ink-ring-center,
+  .ag-turn-pending-label {
+    animation: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce), (forced-colors: active) {
+  .ag-turn-pending-label {
+    background: none;
+    -webkit-text-fill-color: currentColor;
+  }
 }
 
 .ag-composer-overlay:not(.ag-has-activity) {

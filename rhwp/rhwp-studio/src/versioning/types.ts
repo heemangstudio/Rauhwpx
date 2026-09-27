@@ -115,6 +115,21 @@ export type TagRef = VersionRefBase & {
 
 export type VersionRef = BranchRef | TagRef;
 
+/** Local recovery marker. Portable history intentionally does not include these entries. */
+export interface VersionRecoveryEntry {
+  id: string;
+  repositoryId: RepositoryId;
+  operation: 'branch-created' | 'branch-deleted' | 'branch-renamed' | 'head-moved'
+    | 'tag-created' | 'tag-deleted' | 'tag-moved';
+  name: string;
+  previousName?: string;
+  previousHead: CommitId | null;
+  newHead: CommitId | null;
+  generation?: BranchGeneration;
+  createdAt: number;
+  expiresAt: number;
+}
+
 export interface VersionBlob {
   id: BlobId;
   byteLength: number;

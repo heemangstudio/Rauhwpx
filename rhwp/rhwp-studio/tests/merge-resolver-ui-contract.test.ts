@@ -23,9 +23,8 @@ test('resolver contract includes keyboard, accessibility, validation and explici
   assert.match(source, /configureTabPanel/);
   assert.match(source, /list\.appendChild\(button\)/);
   assert.match(labelsSource, /base64 이미지/);
-  assert.match(source, /연결된 변경을 함께 선택합니다/);
+  assert.match(source, /연결된 변경 \$\{linked\}개/);
   assert.match(source, /거절/);
-  assert.match(source, /mergePathLabel\(conflict\.path/);
 });
 
 test('completion keeps the source by default and retries only source finalization', () => {

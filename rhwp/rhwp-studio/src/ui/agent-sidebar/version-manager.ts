@@ -4,6 +4,8 @@ import { confirmSheet } from './sheet.ts';
 import type { DiffItem } from '../../compare/types.ts';
 import { createIcon } from './icons.ts';
 import { versionErrorOf } from '../../versioning/types.ts';
+import { showContextMenu } from '../native-context-menu.ts';
+import { createChevron } from '../chevron.ts';
 
 export type VersionTab = 'history' | 'branches' | 'shelves';
 
@@ -97,6 +99,8 @@ export interface VersionManagerController {
   switchBranch(name: string): Promise<void>;
   renameBranch(name: string, nextName: string): Promise<void>;
   deleteBranch(name: string): Promise<void>;
+  listRecoveryEntries(): Promise<VersionRecoveryView[]>;
+  recoverBranch(entryId: string, name: string): Promise<void>;
   startMerge(sourceBranch: string): Promise<void>;
   resumeMerge(draftId: string): Promise<void>;
   discardMergeDraft(draftId: string): Promise<void>;
@@ -107,6 +111,15 @@ export interface VersionManagerController {
   compareLegacy(id: string): Promise<void>;
   setAiTitlesEnabled(enabled: boolean): void;
   dispose?(): void;
+}
+
+export interface VersionRecoveryView {
+  id: string;
+  name: string;
+  operation: string;
+  headId: string;
+  createdAt: number;
+  expiresAt: number;
 }
 
 export interface VersionManagerPage {
@@ -410,16 +423,27 @@ export function createVersionManagerPage(controller: VersionManagerController): 
 
   const head = el('header', 'ag-versions-head');
   const titleWrap = el('div', 'ag-versions-title-wrap');
+  const backButton = el('button', 'ag-header-icon-btn ag-versions-back');
+  backButton.type = 'button';
+  backButton.setAttribute('aria-label', '버전으로 돌아가기');
+  backButton.appendChild(createChevron());
+  backButton.hidden = true;
   const title = el('h2', 'ag-versions-title', '버전');
   title.id = 'ag-versions-title';
   const subtitle = el('span', 'ag-versions-subtitle');
-  titleWrap.append(title, subtitle);
+  titleWrap.append(backButton, title, subtitle);
   const closeButton = el('button', 'ag-header-icon-btn ag-versions-close');
   closeButton.type = 'button';
   closeButton.setAttribute('aria-label', '버전 닫기');
   closeButton.title = '버전 닫기';
   closeButton.appendChild(createIcon('close'));
   head.append(titleWrap, closeButton);
+  const moreButton = el('button', 'ag-header-icon-btn');
+  moreButton.type = 'button';
+  moreButton.setAttribute('aria-label', '버전 더 보기');
+  moreButton.setAttribute('aria-haspopup', 'menu');
+  moreButton.appendChild(createIcon('more'));
+  closeButton.before(moreButton);
 
   const notice = el('div', 'ag-versions-notice');
   notice.setAttribute('role', 'status');
@@ -540,6 +564,9 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     panel.setAttribute('aria-labelledby', `ag-versions-${id}-tab`);
   }
   body.append(historyPanel, branchesPanel, shelvesPanel);
+  const recoveryPanel = el('div', 'ag-versions-panel ag-versions-recovery');
+  recoveryPanel.hidden = true;
+  body.append(recoveryPanel);
 
   const footer = el('footer', 'ag-versions-footer');
   const storage = el('span', 'ag-versions-storage');
@@ -556,6 +583,8 @@ export function createVersionManagerPage(controller: VersionManagerController): 
   let active = false;
   let actionPending = false;
   let activeTextPrompt: VersionTextPrompt | null = null;
+  let recovering = false;
+  let recoveryEntries: VersionRecoveryView[] = [];
   const comparedCommits = new Set<string>();
 
   async function promptVersionText(options: VersionTextPromptOptions): Promise<string | null> {
@@ -654,6 +683,14 @@ export function createVersionManagerPage(controller: VersionManagerController): 
 
   function renderTabs(): void {
     hideDateTooltip();
+    tabs.hidden = recovering;
+    toolbar.hidden = recovering;
+    recoveryPanel.hidden = !recovering;
+    backButton.hidden = !recovering;
+    titleWrap.classList.toggle('ag-recovering', recovering);
+    moreButton.hidden = recovering;
+    title.textContent = recovering ? '복구' : '버전';
+    subtitle.hidden = recovering;
     branchStrip.hidden = tab !== 'history';
     createBranchButton.hidden = tab !== 'branches';
     shelf.hidden = tab !== 'shelves';
@@ -664,10 +701,70 @@ export function createVersionManagerPage(controller: VersionManagerController): 
       button.tabIndex = selected ? 0 : -1;
     }
     for (const [id, panel] of tabPanels) {
-      panel.hidden = id !== tab;
-      panel.inert = id !== tab;
+      panel.hidden = recovering || id !== tab;
+      panel.inert = recovering || id !== tab;
     }
   }
+
+  function renderRecovery(): void {
+    recoveryPanel.replaceChildren();
+    if (!recoveryEntries.length) recoveryPanel.append(el('p', 'ag-versions-placeholder', '복구할 기록이 없습니다.'));
+    const labels: Record<string, string> = {
+      'branch-created': '브랜치 생성', 'branch-deleted': '브랜치 삭제',
+      'branch-renamed': '이름 변경', 'head-moved': '커밋 변경',
+      'tag-created': '태그 생성', 'tag-deleted': '태그 삭제', 'tag-moved': '태그 변경',
+    };
+    for (const entry of recoveryEntries) {
+      const row = el('div', 'ag-version-recovery-row');
+      const details = el('div', 'ag-version-recovery-details');
+      details.append(el('strong', '', entry.name), el('span', '', `${labels[entry.operation] ?? entry.operation} · ${formatTime(entry.createdAt)}`));
+      details.title = entry.headId.slice(0, 8);
+      const recover = el('button', 'ag-versions-quiet', '복구');
+      recover.type = 'button';
+      recover.dataset.versionMutation = 'true';
+      recover.setAttribute('aria-label', `${entry.name} 브랜치 복구`);
+      recover.addEventListener('click', () => void (async () => {
+        const occupied = current.branches.some((branch) => branch.name.normalize('NFC').toLowerCase() === entry.name.normalize('NFC').toLowerCase());
+        const name = await askName('복구할 브랜치 이름', occupied ? `${entry.name.slice(0, 55)}-복구` : entry.name);
+        if (!name) return;
+        await perform(async () => {
+          await controller.recoverBranch(entry.id, name);
+          recovering = false;
+          tab = 'branches';
+          render(controller.getState());
+          tabButtons.get('branches')?.focus();
+        });
+      })());
+      row.append(details, recover);
+      recoveryPanel.append(row);
+    }
+    renderMutationState();
+  }
+
+  function leaveRecovery(): void {
+    recovering = false;
+    renderTabs();
+    moreButton.focus();
+  }
+  backButton.addEventListener('click', leaveRecovery);
+
+  moreButton.addEventListener('click', () => void (async () => {
+    const rect = moreButton.getBoundingClientRect();
+    const choice = await showContextMenu([
+      { id: 'recovery', label: '기록 복구', enabled: current.enabled },
+    ], { x: rect.left, y: rect.bottom });
+    if (choice !== 'recovery' || !active) return;
+    await perform(async () => {
+      const documentId = current.documentId;
+      const entries = await controller.listRecoveryEntries();
+      if (!active || current.documentId !== documentId) return;
+      recoveryEntries = entries;
+      recovering = true;
+      renderTabs();
+      renderRecovery();
+      (recoveryPanel.querySelector('button') ?? backButton).focus();
+    });
+  })());
 
   function commitBadges(commit: VersionCommitView): HTMLElement {
     const badges = el('span', 'ag-version-badges');
@@ -1024,6 +1121,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
   }
 
   function render(next = current): void {
+    if (next.documentId !== current.documentId) { recovering = false; recoveryEntries = []; }
     if (next !== current && invalidatesCompletedComparisons(current, next)) {
       comparedCommits.clear();
     }
@@ -1046,6 +1144,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     renderHistory();
     renderBranches();
     renderShelves();
+    if (recovering) renderRecovery();
     renderMutationState();
   }
 
@@ -1121,6 +1220,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     event.preventDefault();
     event.stopPropagation();
     if (dateTooltip.classList.contains('ag-visible')) { hideDateTooltip(); return; }
+    if (recovering) { leaveRecovery(); return; }
     page.dispatchEvent(new CustomEvent('ag-versions-close'));
   });
 
