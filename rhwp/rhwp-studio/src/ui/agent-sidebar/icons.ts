@@ -167,45 +167,37 @@ export function createCloudSyncIcon(className = ''): SVGSVGElement {
   return svg;
 }
 
-/** 편집 중 상태용 ㅎ. 세 획이 삐딱 루프로 자리를 바꾼다. */
-export function createHieumGlyph(className = ''): SVGSVGElement {
+/** 응답 대기·편집 상태에 쓰는 잉크 고리. 가운데 점은 회전하지 않는다. */
+export function createInkRing(className = ''): SVGSVGElement {
   const svg = document.createElementNS(NS, 'svg');
-  svg.setAttribute('class', className ? `ag-hieum ${className}` : 'ag-hieum');
-  svg.setAttribute('viewBox', '0 0 12 12');
-  svg.setAttribute('width', '14');
-  svg.setAttribute('height', '14');
+  svg.setAttribute('class', className ? `ag-ink-ring ${className}` : 'ag-ink-ring');
+  svg.setAttribute('viewBox', '-10 -10 120 120');
+  svg.setAttribute('width', '24');
+  svg.setAttribute('height', '24');
   svg.setAttribute('aria-hidden', 'true');
   svg.setAttribute('focusable', 'false');
 
-  const top = document.createElementNS(NS, 'line');
-  top.setAttribute('class', 'ag-hieum-top');
-  top.setAttribute('x1', '4.5');
-  top.setAttribute('y1', '1.45');
-  top.setAttribute('x2', '7.5');
-  top.setAttribute('y2', '1.45');
-
-  const mid = document.createElementNS(NS, 'line');
-  mid.setAttribute('class', 'ag-hieum-mid');
-  mid.setAttribute('x1', '2.55');
-  mid.setAttribute('y1', '3.5');
-  mid.setAttribute('x2', '9.45');
-  mid.setAttribute('y2', '3.5');
-
-  const ring = document.createElementNS(NS, 'circle');
-  ring.setAttribute('class', 'ag-hieum-ring');
-  ring.setAttribute('cx', '6');
-  ring.setAttribute('cy', '8.05');
-  ring.setAttribute('r', '2.6');
-
-  for (const part of [top, mid, ring]) {
-    part.setAttribute('fill', 'none');
-    part.setAttribute('stroke', 'currentColor');
-    part.setAttribute('stroke-width', '1');
-    part.setAttribute('stroke-linecap', 'round');
-    part.setAttribute('stroke-linejoin', 'round');
+  const trails = document.createElementNS(NS, 'g');
+  trails.setAttribute('class', 'ag-ink-ring-trails');
+  const pathData = 'M50 13 C90 7 104 65 69 81 C33 108 2 61 24 31 C43 0 85 31 73 61 C60 91 16 75 23 44 C29 18 67 11 78 41 C89 71 50 98 29 73 C1 44 30 10 50 13Z';
+  for (const transform of [
+    '',
+    'rotate(20 50 50) scale(.9) translate(5.5 5.5)',
+    'rotate(40 50 50)',
+    'rotate(60 50 50) scale(.85) translate(9 9)',
+  ]) {
+    const path = document.createElementNS(NS, 'path');
+    path.setAttribute('d', pathData);
+    if (transform) path.setAttribute('transform', transform);
+    trails.appendChild(path);
   }
 
-  svg.append(top, mid, ring);
+  const center = document.createElementNS(NS, 'circle');
+  center.setAttribute('class', 'ag-ink-ring-center');
+  center.setAttribute('cx', '50');
+  center.setAttribute('cy', '50');
+  center.setAttribute('r', '5');
+  svg.append(trails, center);
   return svg;
 }
 
