@@ -1,6 +1,6 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
-import { mkdirSync, promises as fs } from 'node:fs';
+import { existsSync, mkdirSync, promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -302,7 +302,13 @@ async function resolveSourceClaudeAuth() {
     configPath: SOURCE_CLAUDE_CONFIG,
   };
 }
-let sourceClaudeAuth = await resolveSourceClaudeAuth();
+// Keychain 읽기(/usr/bin/security)는 접근 허가 창이 뜨면 몇 초씩 걸리므로 준비 줄을 막지 않는다.
+// 기동 직후 bootWork 가 한 번 읽을 때까지는 디스크 경로를 쓴다.
+const provisionalClaudeAuth = Object.freeze({
+  credentialsPath: SOURCE_CLAUDE_CREDENTIALS,
+  configPath: SOURCE_CLAUDE_CONFIG,
+});
+let sourceClaudeAuth = provisionalClaudeAuth;
 function claudeRuntimeEnv(isolatedHome) {
   return {
     ...cliSetup.envFor('claude'),
@@ -319,22 +325,58 @@ function claudeRuntimeEnv(isolatedHome) {
 process.env.PATH = [cliSetup.nodeHostDir(), cliSetup.binDir, process.env.PATH]
   .filter(Boolean)
   .join(path.delimiter);
-const [initialClaudeSetup, initialCodexSetup] = await Promise.all([
-  cliSetup.status('claude'),
-  cliSetup.status('codex'),
-]);
-let cliSetupStatus = {
-  claude: initialClaudeSetup,
-  codex: initialCodexSetup,
+/**
+ * `--version` 실행과 Keychain 확인은 bootWork 로 미룬다. 그 전까지는 설치 여부만
+ * 동기로 채운 임시 상태를 쓰고, 버전·로그인을 보는 경로는 ensureBootWork() 를 기다린다.
+ */
+function provisionalCliSetupStatus(agent) {
+  return {
+    installed: existsSync(cliSetup.binPath(agent)),
+    installing: false,
+    version: null,
+    authenticated: false,
+    authMethod: null,
+    keyTail: null,
+    latestVersion: null,
+    updateRequired: false,
+    error: null,
+  };
+}
+const provisionalCliSetup = {
+  claude: provisionalCliSetupStatus('claude'),
+  codex: provisionalCliSetupStatus('codex'),
 };
+let cliSetupStatus = { ...provisionalCliSetup };
 /** pi 상태는 동기 경로(resolveModel/startSession)에서도 필요해 캐시해 둔다. */
 let piStatus = await piManager.status();
 /** OpenRouter 잔액. 키가 있을 때만 채워지고 사용량 리포트에 얹힌다. */
 let openRouterCredits = null;
 let openRouterCreditsKey = null;
-if (piStatus.installed) {
-  // 저장소가 갱신되면 확장/스킬도 따라와야 한다 — 실패해도 허브는 그대로 뜬다.
-  await piManager.syncAssets().catch((error) => log(`pi asset sync failed: ${error?.message ?? error}`));
+
+/**
+ * 준비 줄 뒤로 미룬 기동 작업: Claude 자격 증명 위치(Keychain), CLI 상태(--version),
+ * pi 확장/스킬 동기화(fs.cp). 한 번만 돌고 실패해도 거절하지 않는다. 세션 시작처럼
+ * 결과에 기대는 경로는 이 약속을 기다린다.
+ */
+let bootWorkPromise = null;
+function ensureBootWork() {
+  bootWorkPromise ??= Promise.all([
+    resolveSourceClaudeAuth().then((auth) => {
+      // 기동 중에 로그인 흐름이 먼저 새 값을 넣었다면 그대로 둔다.
+      if (sourceClaudeAuth !== provisionalClaudeAuth) return;
+      sourceClaudeAuth = auth;
+      // 준비 전에 만든 기록의 격리 홈도 실제 자격 증명으로 다시 맞춘다.
+      refreshSessionCredentials('claude');
+    }).catch((error) => log(`claude credential lookup failed: ${error?.message ?? error}`)),
+    ...['claude', 'codex'].map((agent) => cliSetup.status(agent).then((status) => {
+      if (cliSetupStatus[agent] === provisionalCliSetup[agent]) cliSetupStatus[agent] = status;
+    }).catch((error) => log(`${agent} setup status failed: ${error?.message ?? error}`))),
+    // 저장소가 갱신되면 확장/스킬도 따라와야 한다 — 실패해도 허브는 그대로 뜬다.
+    piStatus.installed
+      ? piManager.syncAssets().catch((error) => log(`pi asset sync failed: ${error?.message ?? error}`))
+      : null,
+  ]).then(() => {});
+  return bootWorkPromise;
 }
 const providerHealth = createProviderHealth({
   piBin: () => (piStatus.installed ? piManager.piBin : null),
@@ -356,7 +398,10 @@ const providerLimits = createProviderLimitsClient({
   // 429 after the automatic post-login refresh.
   forceCooldownMs: 5 * 60 * 1000,
   getProviderEnv: (agent) => cliSetup.envFor(agent),
-  getAuthMethod: (agent) => cliSetupStatus[agent]?.authMethod,
+  getAuthMethod: async (agent) => {
+    await ensureBootWork();
+    return cliSetupStatus[agent]?.authMethod;
+  },
   getCodexBin: () => cliSetupStatus.codex?.installed ? cliSetup.binPath('codex') : 'codex',
 });
 const referenceStore = await new ReferenceStore({ projectRoot: ROOT }).init();
@@ -733,6 +778,7 @@ async function runAutomaticHarnessUpdates() {
     return;
   }
   harnessUpdateRunning = true;
+  await ensureBootWork();
   let nextDelay = HARNESS_UPDATE_INTERVAL_MS;
   const canActivate = () => !hasAgentSessions();
   const before = {
@@ -2226,6 +2272,7 @@ async function launchTemplateJob(record, job) {
   job.providerRoot = providerRoot;
   await fs.mkdir(jobDir, { recursive: true, mode: 0o700 });
   await fs.mkdir(providerRoot, { recursive: true, mode: 0o700 });
+  await ensureBootWork();
   prepareCodexHome(codexHome, sourceCodexAuthPath);
   prepareClaudeHome(isolatedHome, sourceClaudeAuth);
   job.jobDir = jobDir;
@@ -2748,6 +2795,7 @@ async function startSession(
   requestedServiceTier,
 ) {
   if (record.processCleanupUncertain === true) throw agentProcessCleanupUncertain();
+  await ensureBootWork();
   const model = await resolveModel(agent, requestedModel, record);
   const effort = resolveEffort(agent, model, requestedEffort, record);
   const permissionProfile = resolvePermissionProfile(requestedPermission);
@@ -3934,6 +3982,7 @@ async function handleStudioMessage(record, sock, msg) {
           onCommitted: commitAuthRun,
         })
           .then(async (status) => {
+            await ensureBootWork();
             cliSetupStatus[agent] = status;
             if (agent === 'codex') sourceCodexAuthPath = await findSourceCodexAuthPath();
             if (agent === 'claude') sourceClaudeAuth = await resolveSourceClaudeAuth();
@@ -6232,6 +6281,7 @@ httpServer.listen(REQUESTED_PORT, '127.0.0.1', () => {
   process.stdout.write(`RHWP_HUB_READY ${JSON.stringify({ port: hubPort, pid: process.pid, launchId: LAUNCH_ID })}\n`);
   log(`rhwp-agent hub listening on ws://127.0.0.1:${hubPort} (protocol v${PROTOCOL_VERSION})`);
   log('claude/codex/pi can be installed and authenticated from Studio settings');
+  void ensureBootWork();
   scheduleHarnessUpdates(HARNESS_UPDATE_INITIAL_DELAY_MS);
 });
 

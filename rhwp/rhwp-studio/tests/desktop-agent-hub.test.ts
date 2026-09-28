@@ -328,7 +328,7 @@ test('desktop shell owns one ephemeral authenticated hub and exposes session IPC
   assert.match(desktopMain, /if \(!app\.isPackaged\)[\s\S]*app\.setPath\('userData', developmentUserData\)/);
   assert.match(desktopMain, /\.run', 'desktop-user-data'/);
   assert.match(desktopMain, /app\.on\('second-instance'/);
-  assert.match(desktopMain, /await hubOwner\.ensure\(\);[\s\S]*await createWindow\(request\)/);
+  assert.match(desktopMain, /const hubStartup = hubOwner\.ensure\(\);[\s\S]*await openLaunch\(request\)[\s\S]*await Promise\.all\(\[hubStartup, cloudReady, staleCleanup\]\)/);
   assert.match(desktopMain, /ipcMain\.handle\('desktop:get-session-context'/);
   assert.match(desktopMain, /sessions\.sessionForSender\(event\.sender\)/);
   assert.match(desktopMain, /RHWP_AGENT_PORT: '0'/);
