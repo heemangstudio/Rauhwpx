@@ -803,6 +803,11 @@ impl LayoutEngine {
             } else {
                 0
             };
+            // 문단마다 컷 유닛 전체를 훑는 mixed nested 조회는 조각 유닛이 있는 문단에서만
+            // 결과가 있다. 셀당 한 번 표시해 두고 나머지 문단은 조회를 건너뛴다 — 거대 셀
+            // (issue1949)에서 문단 × 유닛 순회가 쪽 트리 빌드마다 수십 ms 였다.
+            let mixed_nested_paras: Option<Vec<bool>> =
+                cut_units.map(|_| self.cell_mixed_nested_paragraphs(cell, table, styles));
             for (cp_idx, (composed, para)) in composed_paras
                 .iter()
                 .zip(cell.paragraphs.iter())
@@ -818,9 +823,15 @@ impl LayoutEngine {
                 } else {
                     (0, composed.lines.len())
                 };
-                let mixed_nested_split = cut_units.and_then(|(su, eu)| {
-                    self.mixed_nested_split_from_cut(cell, table, styles, su, eu, cp_idx)
-                });
+                let mixed_nested_split = cut_units
+                    .filter(|_| {
+                        mixed_nested_paras
+                            .as_ref()
+                            .is_some_and(|flags| flags.get(cp_idx).copied().unwrap_or(false))
+                    })
+                    .and_then(|(su, eu)| {
+                        self.mixed_nested_split_from_cut(cell, table, styles, su, eu, cp_idx)
+                    });
                 let visible_non_inline_controls = cut_units.is_some_and(|(su, eu)| {
                     self.cell_cut_contains_non_inline_control_units(
                         cell, table, styles, su, eu, cp_idx,

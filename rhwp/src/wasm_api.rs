@@ -3637,6 +3637,20 @@ impl HwpDocument {
         .map_err(|e| e.into())
     }
 
+    /// 본문 문단이 걸친 전역 쪽 번호 목록 (오름차순).
+    ///
+    /// 레이아웃 없이 조판 결과만 읽는다. 지연 pagination 중이어도 줄 구성이 바뀌지 않은
+    /// 편집 뒤에는 그대로 유효하므로, 쪽을 넘나드는 문단의 입력 후 다시 그릴 쪽을 고를 때 쓴다.
+    #[wasm_bindgen(js_name = getParagraphPages)]
+    pub fn get_paragraph_pages(
+        &self,
+        section_idx: u32,
+        para_idx: u32,
+    ) -> Result<Vec<u32>, JsValue> {
+        self.find_pages_for_paragraph(section_idx as usize, para_idx as usize)
+            .map_err(|e| e.into())
+    }
+
     // ─── Phase 3: 커서 이동 API ──────────────────────────────
 
     /// 문단 내 줄 정보를 반환한다 (커서 수직 이동/Home/End용).

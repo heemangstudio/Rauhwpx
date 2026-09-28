@@ -135,9 +135,15 @@ const PROBE_TEXTS = [
 ];
 const LOCAL_FONT_NAME_READ_CONCURRENCY = 4;
 let importedFontGeneration = 0;
+/** resolveLocalFont·repairedLocalFontFamily 결과가 바뀔 수 있을 때마다 증가한다 (글꼴 체인 캐시 무효화 기준). */
+let localFontLookupGeneration = 0;
 
 export function getImportedFontGeneration(): number {
   return importedFontGeneration;
+}
+
+export function getLocalFontLookupGeneration(): number {
+  return localFontLookupGeneration;
 }
 export const LOCAL_FONT_BYTE_READ_CONCURRENCY = 4;
 export const LOCAL_FONT_MAX_BYTES_PER_FACE = 32 * 1024 * 1024;
@@ -522,12 +528,14 @@ function cacheLocalFontSnapshot(snapshot: LocalFontSnapshot | null): void {
   cachedSnapshot = snapshot;
   cachedFontRecords = snapshotRecords(snapshot);
   cachedFontLookup = buildLocalFontLookup(cachedFontRecords);
+  localFontLookupGeneration++;
 }
 
 function refreshImportedFontLookup(): void {
   importedFontLookup = buildLocalFontLookup(
     Array.from(importedFontFaces.values(), entry => entry.record),
   );
+  localFontLookupGeneration++;
 }
 
 export function importedFontWeight(style: string): string {
@@ -722,6 +730,7 @@ export async function registerLocalFontFace(
     ?? `${prefix}-${++nextImportedFamilyId}`;
   if (options.runtimeFamilyKey) runtimeFamilyByKey.set(options.runtimeFamilyKey, record.runtimeFamily);
   record.aliases.push(record.runtimeFamily);
+  localFontLookupGeneration++;
   try {
     const face = new FontFace(record.runtimeFamily, bytes, {
       style: importedFontSlant(record.style),
@@ -1027,6 +1036,7 @@ async function registerRepairedLocalFamily(faces: readonly LocalFontRecord[]): P
     }
   }
   for (const record of registered) repairedLocalFamilyByFaceKey.set(localFontFaceKey(record), family);
+  if (registered.length > 0) localFontLookupGeneration++;
   return registered.length > 0;
 }
 
@@ -1713,6 +1723,7 @@ export function resetLocalFontsForTests(): void {
   localFontBytesByPostscriptName.clear();
   sfntBoundsRepairByFaceKey.clear();
   repairedLocalFamilyByFaceKey.clear();
+  localFontLookupGeneration++;
   localFamilyRepairs.clear();
   nextRepairedFamilyId = 0;
   activeDocumentFontAliases = new Set();
