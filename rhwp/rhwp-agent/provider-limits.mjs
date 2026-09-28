@@ -192,19 +192,30 @@ export function createProviderLimitsClient({
       return null;
     }
     const configDir = providerEnv.CLAUDE_CONFIG_DIR || path.join(homeDir, '.claude');
+    // A terminal login carries the profile scope the usage endpoint needs. The
+    // app's setup-token is inference-only, so it is the fallback.
+    const live = (candidate) => {
+      const expiresAt = Number(candidate?.claudeAiOauth?.expiresAt);
+      return candidate?.claudeAiOauth?.accessToken && !(Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt <= now())
+        ? candidate : null;
+    };
     let raw = null;
-    if (providerEnv.CLAUDE_CODE_OAUTH_TOKEN) raw = { claudeAiOauth: { accessToken: providerEnv.CLAUDE_CODE_OAUTH_TOKEN } };
-    if (!raw && platform === 'darwin') {
-      raw = await keychainRead(claudeKeychainService({
+    if (platform === 'darwin') {
+      raw = live(await keychainRead(claudeKeychainService({
         configDir,
         hasConfigDir: Boolean(providerEnv.CLAUDE_CONFIG_DIR),
-      }));
+      })));
     }
-    raw ??= await readCredentials(path.join(configDir, '.credentials.json'));
+    raw ??= live(await readCredentials(path.join(configDir, '.credentials.json')));
+    let inferenceOnly = false;
+    if (!raw && providerEnv.CLAUDE_CODE_OAUTH_TOKEN) {
+      raw = { claudeAiOauth: { accessToken: providerEnv.CLAUDE_CODE_OAUTH_TOKEN } };
+      inferenceOnly = true;
+    }
     const oauth = raw?.claudeAiOauth;
     const token = oauth?.accessToken;
     if (typeof token !== 'string' || !token) return null;
-    return { token, accountKey: hash(`claude:${oauth.accountUuid ?? tokenIdentity(token) ?? token}`), planType: oauth.subscriptionType ?? null };
+    return { token, inferenceOnly, accountKey: hash(`claude:${oauth.accountUuid ?? tokenIdentity(token) ?? token}`), planType: oauth.subscriptionType ?? null };
   }
 
   async function request(url, auth, init = {}) {
@@ -240,6 +251,9 @@ export function createProviderLimitsClient({
         let body;
         try { body = await readUsage(); } catch (error) {
           if (error.code !== 'PROVIDER_AUTH_REQUIRED') throw error;
+          // Usage needs a profile scope a setup-token does not have. That is
+          // not a sign-in problem, so the meter simply stays empty.
+          if (auth.inferenceOnly) return blankQuota();
           // An active Claude CLI can rotate its token between the keychain read
           // and the request. Re-read once without rotating its refresh token.
           const renewed = await credentials('claude');

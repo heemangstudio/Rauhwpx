@@ -632,7 +632,7 @@ test('OpenCode 설정은 허브의 터미널 로그인 지원 여부를 따르�
   );
   assert.match(bridgeSource, /requestAgentSetupStatus\(refresh = false\)/);
   assert.match(bridgeSource, /type: 'agent-setup-status-request', \.\.\.\(refresh \? \{ refresh: true \} : \{\}\)/);
-  assert.match(settings, /agent === 'opencode' \? 'CLI 자격 증명' : '웹 계정'/);
+  assert.match(settings, /agent === 'opencode' \? 'CLI 자격 증명'\s*: status\.authSource === 'local' \? '터미널 로그인' : '웹 계정'/);
   // 설치 감지만으로 완료하지 않고 허브가 확인한 인증 상태를 요구한다.
   assert.match(settings, /const connected = configured \|\| \(available && status\?\.authenticated === true\)/);
   assert.match(settings, /label = detected \? '로그인 필요' : '연결하기'/);

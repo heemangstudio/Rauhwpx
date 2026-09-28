@@ -332,19 +332,20 @@ test('a failed legacy-key migration keeps the key and does not abort startup', a
   assert.equal((await manager.status('claude')).authMethod, 'api-key');
 });
 
-test('an expired Claude access token counts as signed in only while a refresh token exists', async (t) => {
+test('an expired terminal Claude login is not reported as usable, even with a refresh token', async (t) => {
+  // Sessions receive the access token directly, and refreshing it would write
+  // to the user's own Claude profile. The app asks for its own login instead.
   const homeDir = await tmpRoot(t);
   const manager = await createCliSetupManager({ rootDir: await tmpRoot(t), homeDir, platform: 'linux', baseEnv: {} }).init();
   const credentialFile = path.join(homeDir, '.claude', '.credentials.json');
   await fs.mkdir(path.dirname(credentialFile), { recursive: true });
-  const expiresAt = Date.now() - 60_000;
 
-  await fs.writeFile(credentialFile, JSON.stringify({ claudeAiOauth: { accessToken: 'access', refreshToken: 'refresh', expiresAt } }));
-  const refreshable = await manager.status('claude');
-  assert.equal(refreshable.authenticated, true);
-  assert.equal(refreshable.authMethod, 'oauth');
+  await fs.writeFile(credentialFile, JSON.stringify({ claudeAiOauth: { accessToken: 'access', refreshToken: 'refresh', expiresAt: Date.now() + 3_600_000 } }));
+  const live = await manager.status('claude');
+  assert.equal(live.authenticated, true);
+  assert.equal(live.authSource, 'local');
 
-  await fs.writeFile(credentialFile, JSON.stringify({ claudeAiOauth: { accessToken: 'access', expiresAt } }));
+  await fs.writeFile(credentialFile, JSON.stringify({ claudeAiOauth: { accessToken: 'access', refreshToken: 'refresh', expiresAt: Date.now() - 60_000 } }));
   const expired = await manager.status('claude');
   assert.equal(expired.authenticated, false);
   assert.equal(expired.authMethod, null);

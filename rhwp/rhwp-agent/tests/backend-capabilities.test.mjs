@@ -694,16 +694,17 @@ test('Codex recreates a purged isolated home before spawning', (t) => {
   session.dispose();
 });
 
-test('Claude isolation seeds only the shared login files with a Windows copy fallback', (t) => {
+test('Claude isolation seeds only the portable config and drops stale credential copies', (t) => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'rhwp-claude-copy-test-'));
   const sourceHome = path.join(root, 'source');
   const isolatedHome = path.join(root, 'isolated');
-  const credentialsPath = path.join(sourceHome, '.claude', '.credentials.json');
   const configPath = path.join(sourceHome, '.claude.json');
-  mkdirSync(path.dirname(credentialsPath), { recursive: true });
-  writeFileSync(credentialsPath, '{"oauth":"shared"}');
+  mkdirSync(sourceHome, { recursive: true });
   writeFileSync(configPath, '{"account":"shared"}');
   t.after(() => rmSync(root, { recursive: true, force: true }));
+  // An older build copied the login in; it must not shadow the env token.
+  mkdirSync(path.join(isolatedHome, '.claude'), { recursive: true });
+  writeFileSync(path.join(isolatedHome, '.claude', '.credentials.json'), '{"oauth":"stale"}');
 
   const windowsDeps = {
     platform: 'win32',
@@ -713,56 +714,12 @@ test('Claude isolation seeds only the shared login files with a Windows copy fal
       throw error;
     },
   };
-  prepareClaudeHome(isolatedHome, { credentialsPath, configPath }, windowsDeps);
-
-  assert.equal(readFileSync(path.join(isolatedHome, '.claude', '.credentials.json'), 'utf8'), '{"oauth":"shared"}');
+  prepareClaudeHome(isolatedHome, { configPath }, windowsDeps);
   assert.equal(readFileSync(path.join(isolatedHome, '.claude.json'), 'utf8'), '{"account":"shared"}');
-  assert.deepEqual(readdirSync(path.join(isolatedHome, '.claude')), ['.credentials.json']);
-  writeFileSync(path.join(isolatedHome, '.claude', '.credentials.json'), '{"oauth":"first-refresh"}');
-  writeFileSync(path.join(isolatedHome, '.claude.json'), '{"account":"first-refresh"}');
-  prepareClaudeHome(isolatedHome, { credentialsPath, configPath }, windowsDeps);
-  assert.equal(readFileSync(credentialsPath, 'utf8'), '{"oauth":"first-refresh"}');
-  assert.equal(readFileSync(configPath, 'utf8'), '{"account":"first-refresh"}');
-  writeFileSync(path.join(isolatedHome, '.claude', '.credentials.json'), '{"oauth":"refreshed"}');
+  assert.deepEqual(readdirSync(path.join(isolatedHome, '.claude')), []);
   writeFileSync(path.join(isolatedHome, '.claude.json'), '{"account":"refreshed"}');
   flushClaudeCredentialMirrors(isolatedHome);
-  assert.equal(readFileSync(credentialsPath, 'utf8'), '{"oauth":"refreshed"}');
   assert.equal(readFileSync(configPath, 'utf8'), '{"account":"refreshed"}');
-});
-
-test('Claude custom config credentials are copied per session and CAS refreshed', (t) => {
-  const root = mkdtempSync(path.join(os.tmpdir(), 'rhwp-claude-custom-isolation-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  const customConfigDir = path.join(root, 'host-custom-config');
-  const credentialsPath = path.join(customConfigDir, '.credentials.json');
-  const configPath = path.join(root, 'host', '.claude.json');
-  const firstHome = path.join(root, 'session-a');
-  const secondHome = path.join(root, 'session-b');
-  mkdirSync(customConfigDir, { recursive: true });
-  mkdirSync(path.dirname(configPath), { recursive: true });
-  writeFileSync(credentialsPath, '{"oauth":"host-old"}');
-  writeFileSync(configPath, '{"account":"host"}');
-
-  prepareClaudeHome(firstHome, { credentialsPath, configPath });
-  prepareClaudeHome(secondHome, { credentialsPath, configPath });
-  const firstCredential = path.join(firstHome, '.claude', '.credentials.json');
-  const secondCredential = path.join(secondHome, '.claude', '.credentials.json');
-  assert.equal(lstatSync(firstCredential).isSymbolicLink(), false);
-  assert.equal(lstatSync(secondCredential).isSymbolicLink(), false);
-
-  writeFileSync(firstCredential, '{"oauth":"session-a-refresh"}');
-  assert.equal(readFileSync(credentialsPath, 'utf8'), '{"oauth":"host-old"}');
-  assert.equal(readFileSync(secondCredential, 'utf8'), '{"oauth":"host-old"}');
-  assert.equal(flushClaudeCredentialMirrors(firstHome), true);
-  assert.equal(readFileSync(credentialsPath, 'utf8'), '{"oauth":"session-a-refresh"}');
-
-  writeFileSync(secondCredential, '{"oauth":"session-b-refresh"}');
-  assert.equal(flushClaudeCredentialMirrors(secondHome), true);
-  assert.equal(
-    readFileSync(credentialsPath, 'utf8'),
-    '{"oauth":"session-a-refresh"}',
-    'the later session cannot overwrite a host credential changed since its seed',
-  );
 });
 
 test('Codex auth falls back to a copy when Windows rejects symlink creation', (t) => {

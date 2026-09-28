@@ -97,6 +97,16 @@ export function defaultCliRoot(homeDir = os.homedir(), env = process.env, platfo
 }
 
 const CLAUDE_CREDENTIAL_DESTINATION = '.claude/.credentials.json';
+const CLAUDE_APP_TOKEN_SECRET = 'rhwp.claude.oauth-token';
+const CLAUDE_APP_TOKEN_FALLBACK_LIFETIME_MS = 364 * 24 * 60 * 60 * 1000;
+
+async function appTokenExpiry(cliRoot) {
+  try {
+    const value = JSON.parse(await fs.readFile(path.join(cliRoot, 'config.json'), 'utf8'))?.claude?.tokenExpiresAt;
+    if (Number.isFinite(value) && value > 0) return value;
+  } catch {}
+  return Date.now() + CLAUDE_APP_TOKEN_FALLBACK_LIFETIME_MS;
+}
 
 /**
  * Claude Code's live config directory, which a CLAUDE_CONFIG_DIR override moves
@@ -173,6 +183,20 @@ export async function collectProviderAuth(provider, {
     if (!file) continue;
     seen.add(file.path);
     files.push(file);
+  }
+  // The app's own Claude login (a `claude setup-token` token) is what local
+  // sessions use, so it outranks whatever the user's terminal profile holds.
+  const appToken = name === 'claude' ? await readSecret(vault, CLAUDE_APP_TOKEN_SECRET) : null;
+  if (appToken) {
+    const expiresAt = await appTokenExpiry(cliRoot);
+    const index = files.findIndex((file) => file.path === CLAUDE_CREDENTIAL_DESTINATION);
+    const file = {
+      path: CLAUDE_CREDENTIAL_DESTINATION,
+      content: JSON.stringify({ claudeAiOauth: { accessToken: appToken, expiresAt, scopes: ['user:inference'] } }),
+    };
+    if (index >= 0) files[index] = file;
+    else files.push(file);
+    seen.add(CLAUDE_CREDENTIAL_DESTINATION);
   }
   // A macOS profile can hold its Claude login only in the Keychain, where the
   // file scan above cannot see it. The cloud accepts the same credential file,

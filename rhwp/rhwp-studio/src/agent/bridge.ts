@@ -888,6 +888,12 @@ function readAgentSetupStatus(value: unknown, agent: AgentName): AgentSetupStatu
     version: typeof src['version'] === 'string' ? src['version'] : null,
     authenticated: src['authenticated'] === true,
     authMethod,
+    authSource: src['authSource'] === 'app' || src['authSource'] === 'api-key' || src['authSource'] === 'local'
+      ? src['authSource']
+      : null,
+    authVerifiedAt: typeof src['authVerifiedAt'] === 'number' && Number.isFinite(src['authVerifiedAt'])
+      ? src['authVerifiedAt']
+      : null,
     keyTail: typeof src['keyTail'] === 'string' ? src['keyTail'] : null,
     account: typeof src['account'] === 'string' ? src['account'] : null,
     authenticating: src['authenticating'] === true,

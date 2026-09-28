@@ -3498,6 +3498,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   /** 로그인 창이 열렸던 프로바이더 — 그 뒤의 로그인 상태는 새 자격 증명이다. */
   const authRunSeen = new Set<AgentName>();
 
+  /** 인증 실패를 본 시각. 허브가 그 뒤에 자격 증명을 다시 확인하면 칩을 거둔다. */
+  const authFailedAt = new Map<AgentName, number>();
+  /** 턴이 도는 중에 로그인이 돌아와 턴이 끝난 뒤 다시 열 세션. */
+  const reconnectRestartPending = new Set<AgentName>();
+
   function receiveSetupStatuses(statuses: AgentSetupStatusMap): void {
     setupStatuses = statuses;
     for (const agent of PROVIDER_ORDER) {
@@ -3507,6 +3512,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       } else if (authRunSeen.has(agent)) {
         authRunSeen.delete(agent);
         if (status?.authenticated) authFailedAgents.delete(agent);
+      }
+      const failedAt = authFailedAt.get(agent);
+      if (failedAt !== undefined && status?.authenticated
+        && typeof status.authVerifiedAt === 'number' && status.authVerifiedAt >= failedAt) {
+        authFailedAgents.delete(agent);
+        authFailedAt.delete(agent);
       }
     }
     resumeReconnectedProviders();
@@ -3540,7 +3551,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       if (!status?.connected || status.authenticating || authFailedAgents.has(agent)) continue;
       reconnectWaiting.delete(agent);
       if (agent !== selectedAgent || composerExecution(workspace.composerTarget()).kind !== 'local') continue;
-      if (!turnRunning) restartAgentSession();
+      if (turnRunning) reconnectRestartPending.add(agent);
+      else restartAgentSession();
       showToast({ message: `${AGENT_LABEL[agent]} 다시 연결됨`, durationMs: 2400 });
     }
   }
@@ -3550,6 +3562,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   function noteProviderAuthFailure(agent: AgentName, message: string | null | undefined): void {
     if (!message || !PROVIDER_AUTH_ERROR.test(message)) return;
     authFailedAgents.add(agent);
+    authFailedAt.set(agent, Date.now());
     updateReconnectChip();
     updateCalibrationChip();
     void bridge.requestAgentSetupStatus(true);
@@ -8240,6 +8253,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
           && !event.errorMessage
           && turnFailedToolCount === 0;
         if (completed && authFailedAgents.delete(event.agent)) updateComposer();
+        if (reconnectRestartPending.delete(event.agent) && event.agent === selectedAgent
+          && composerExecution(workspace.composerTarget()).kind === 'local') {
+          restartAgentSession();
+        }
         if (planCardPending && !turnPresentedPlan) {
           systemMessage('계획 카드가 도착하지 않았습니다');
         }

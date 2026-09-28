@@ -830,7 +830,10 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   const setupAccountValue = el('span', 'ag-agent-setup-row-value');
   const setupDoneChange = el('button', 'ag-settings-btn', '로그인 방식 변경');
   setupDoneChange.type = 'button';
-  setupAccountRow.append(el('span', 'ag-agent-setup-row-label', '계정'), setupAccountValue, setupDoneChange);
+  const setupAccountLogout = el('button', 'ag-settings-btn', '로그아웃');
+  setupAccountLogout.type = 'button';
+  setupAccountLogout.hidden = true;
+  setupAccountRow.append(el('span', 'ag-agent-setup-row-label', '계정'), setupAccountValue, setupDoneChange, setupAccountLogout);
   const setupVersionRow = el('div', 'ag-agent-setup-row');
   const setupVersionValue = el('span', 'ag-agent-setup-row-value');
   const setupUpdate = el('button', 'ag-settings-btn ag-agent-setup-update', '업데이트');
@@ -1043,6 +1046,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   });
   setupDoneDisconnect.addEventListener('click', () => {
     void disconnectRau();
+  });
+  setupAccountLogout.addEventListener('click', () => {
+    void disconnectProvider('claude');
   });
   setupOverlay.addEventListener('pointerdown', (event) => {
     if (event.target === setupOverlay) closeAgentSetup();
@@ -2717,11 +2723,14 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       : status?.account
         ? status.account
         : status?.authenticated
-          ? agent === 'opencode' ? 'CLI 자격 증명' : '웹 계정'
+          ? agent === 'opencode' ? 'CLI 자격 증명'
+            : status.authSource === 'local' ? '터미널 로그인' : '웹 계정'
           : 'CLI 로그인';
     setupAccountValue.title = setupAccountValue.textContent;
     setupDoneChange.hidden = agent === 'rau';
     setupDoneChange.disabled = setupBusy;
+    setupAccountLogout.hidden = agent !== 'claude' || !connected;
+    setupAccountLogout.disabled = setupBusy || connectionState !== 'connected';
     setupVersionRow.hidden = agent === 'rau' || !(updateVersion || (showConnected && status?.version));
     setupVersionValue.replaceChildren(status?.version ?? '');
     if (updateVersion) {
@@ -2802,6 +2811,21 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     else if (!setupMessage) setupMessage = '설치 실패';
     renderAgentSetup();
     renderProviders();
+  }
+
+  async function disconnectProvider(agent: AgentName): Promise<void> {
+    if (setupBusy || connectionState !== 'connected') return;
+    setupBusy = true;
+    setupMessage = '';
+    renderAgentSetup();
+    const statuses = await bridge.disconnectAgent(agent);
+    if (disposed) return;
+    setupBusy = false;
+    if (statuses) setupStatuses = statuses;
+    else if (!setupMessage) setupMessage = '로그아웃 실패';
+    renderAgentSetup();
+    renderProviders();
+    renderUsage();
   }
 
   async function disconnectRau(): Promise<void> {

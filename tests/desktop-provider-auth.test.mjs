@@ -264,3 +264,24 @@ test('a large ~/.claude.json travels as its login fields only', async (t) => {
   assert.deepEqual(JSON.parse(seeded['.claude.json']), expected);
   assert.ok(seeded['.claude/.credentials.json']);
 });
+
+test('the app Claude token outranks the terminal profile in both cloud paths', async (t) => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-provider-app-token-'));
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  await fs.mkdir(path.join(home, '.claude'), { recursive: true });
+  await fs.writeFile(path.join(home, '.claude', '.credentials.json'), '{"claudeAiOauth":{"accessToken":"terminal"}}');
+  const token = `sk-ant-oat01-${'a'.repeat(40)}`;
+  const vault = memoryVault({ 'rhwp.claude.oauth-token': token });
+
+  const seed = await collectProviderAuth('claude', {
+    vault, homeDir: home, cliRoot: path.join(home, 'cli'), readClaudeKeychain: async () => null,
+  });
+  const seeded = seed.files.filter((file) => file.path === '.claude/.credentials.json');
+  assert.equal(seeded.length, 1);
+  assert.equal(JSON.parse(seeded[0].content).claudeAiOauth.accessToken, token);
+
+  const transfer = await collectTransferAuth('claude', {
+    homeDir: home, env: {}, readSecret: (id) => vault.get(id), readClaudeKeychain: async () => null,
+  });
+  assert.equal(JSON.parse(transfer.files['.claude/.credentials.json']).claudeAiOauth.accessToken, token);
+});
