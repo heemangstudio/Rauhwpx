@@ -225,18 +225,29 @@ UI 활자는 하나다. 시스템 스택(`-apple-system` → `맑은 고딕` →
 
 ## Motion
 
-지수형 ease-out 에서 이미 보이는 상태로 안착한다. 바운스·스프링
-오버슈트는 쓰지 않는다.
+넘침 없는 임계 감쇠 스프링 하나와 ease-out 하나만 쓴다. 바운스는 없다.
 
 ```
---ag-dur-fast / -base / -slow   150ms / 180ms / 300ms
---ag-ease-out                   cubic-bezier(0.22, 1, 0.36, 1)
---ag-transition-color           색·배경·테두리색·불투명도, fast
+--ag-dur-fast / -exit / -base / -slow   150ms / 180ms / 220ms / 320ms
+--ag-spring(-edge)   임계 감쇠 스프링의 linear() 표본 (첫 프레임 약 15%, 150ms 에 95%)
+--ag-ease-out        cubic-bezier(0.22, 1, 0.36, 1) — 색·불투명도·닫힘
+--ag-transition-color  색·배경·테두리색·불투명도, fast
 ```
+
+- 면(사이드바·시트·설정 페이지)은 slow, 작은 등장·펼침은 base, 닫힘은 exit,
+  호버·누름 피드백은 fast. 지연을 겹쳐 쌓지 않는다.
+- 사이드바와 용지는 `motion-model.ts` 의 스프링 하나가 드러난 폭을 풀고, 사이드바·
+  문서 층·눈금자에 같은 startTime 의 WAAPI transform 으로 건다. 둘이 어긋날 수 없고,
+  도중에 되돌리면 지금 위치·속도에서 이어 간다. 레이아웃은 닫을 때 시작에서,
+  펼칠 때 끝에서 한 번만 커밋한다. 반 장치 픽셀 안에 들면 멈춘다. 대화 스크롤도
+  같은 스프링으로 매 프레임 목표를 다시 재며 따라가고, 2px 아래 보정은 무시한다.
+- 움직임은 transform·opacity 로 그린다. 높이가 바뀌는 펼침은 높이와 세로 여백을
+  같은 곡선으로 함께 옮긴다. 용지는 장치 픽셀 위에서 쉰다.
+- 전체 화면 전환은 base 길이의 교차 페이드 하나다. 그 아래에서 용지를 한 번 더
+  미끄러뜨리지 않는다.
 
 호버는 `--ag-transition-color` 로 색만 바꾸고, 레이아웃 속성은 전환하지
-않는다. 누름은 전환 없이 바로 보인다. 사이드바 transform, 편집 영역 inset,
-용지 재정렬 루프는 같은 slow 계약을 쓴다(`motion.css`). 서로 다른 시간축으로 패널과 용지가 따로 움직이지 않는다.
+않는다. 누름은 전환 없이 바로 보인다.
 
 테마 전환은 한 번에 바뀐다. `theme.ts` 가 바뀌는 순간 `html.theme-switching`
 을 두 프레임 동안 붙여 모든 transition 을 끈다.

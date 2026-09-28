@@ -33,6 +33,10 @@
   transition: opacity var(--ag-dur-base) var(--ag-ease-out);
 }
 
+.ag-sheet-layer.ag-sheet-closing .ag-sheet-backdrop {
+  transition-duration: var(--ag-dur-exit);
+}
+
 .ag-sheet {
   position: relative;
   box-sizing: border-box;
@@ -49,16 +53,6 @@
   transform: translateY(calc(100% + 16px));
   transition: transform var(--ag-dur-slow) var(--ag-spring);
   touch-action: none;
-}
-
-/* 스프링이 살짝 넘칠 때 아래 틈이 보이지 않도록 면을 늘린다. */
-.ag-sheet::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 100%;
-  height: 24px;
 }
 
 .ag-sheet-layer[data-placement='center'] .ag-sheet {
@@ -88,7 +82,7 @@
 
 .ag-sheet-layer.ag-sheet-closing .ag-sheet {
   transition:
-    transform var(--ag-dur-base) var(--ag-ease-out),
+    transform var(--ag-dur-exit) var(--ag-ease-out),
     opacity var(--ag-dur-fast) var(--ag-ease-out);
 }
 

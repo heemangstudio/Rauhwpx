@@ -1,4 +1,5 @@
 import type { PageInfo } from '@/core/types';
+import { snapToDevicePixel } from '../core/pixel-snap.ts';
 
 /** 그리드 모드 전환 줌 임계값 */
 const GRID_ZOOM_THRESHOLD = 0.5;
@@ -180,11 +181,14 @@ export class VirtualScroll {
       ? Math.max(baseWidth, viewportWidth) + slack * 2
       : viewportWidth;
     const shift = (total - baseWidth) / 2;
+    // 브라우저에서는 페이지 왼쪽을 장치 픽셀에 맞춘다 — 반 픽셀 위에 놓인 캔버스는
+    // 비트맵이 다시 샘플링되어 쉬는 동안에도 흐려진다.
+    const dpr = typeof globalThis.devicePixelRatio === 'number' ? globalThis.devicePixelRatio : null;
     this.pageLefts = this.pageLefts.map((left, pageIdx) => {
       const resolved = left >= 0
         ? left
         : (baseWidth - (this.pageWidths[pageIdx] ?? 0)) / 2;
-      return resolved + shift;
+      return dpr === null ? resolved + shift : snapToDevicePixel(resolved + shift, dpr);
     });
     this.totalWidth = total;
   }

@@ -22,6 +22,13 @@ const DISMISS_DISTANCE_PX = 72;
 const DISMISS_VELOCITY = 0.6; // px/ms
 
 let openCount = 0;
+/** 아직 닫히지 않은 시트의 취소 함수. 사이드바를 접을 때 한꺼번에 닫는다. */
+const liveSheets = new Set<() => void>();
+
+/** 열린 시트를 모두 취소(false)로 닫는다. 보이지 않는 시트가 키 입력을 받지 않게 한다. */
+export function dismissOpenSheets(): void {
+  for (const dismiss of [...liveSheets]) dismiss();
+}
 
 function reducedMotion(): boolean {
   try {
@@ -109,19 +116,39 @@ export function showSheet(options: SheetOptions): Promise<boolean> {
     const finish = (result: boolean): void => {
       if (settled) return;
       settled = true;
+      liveSheets.delete(dismiss);
       document.removeEventListener('keydown', onKeyDown, true);
       layer.classList.remove('ag-sheet-open');
       layer.classList.add('ag-sheet-closing');
       sheet.style.removeProperty('transform');
-      const remove = () => layer.remove();
+      // 시트 자신의 transform 전이가 끝날 때만 걷는다. 안쪽 버튼의 배경색 전이가
+      // 거품처럼 올라와 슬라이드 중간에 층을 지우지 않게 한다. transitioncancel 은
+      // 듣지 않는다. 여는 전이를 닫는 전이가 대체할 때도 cancel 이 오기 때문이며,
+      // 실제로 전이가 사라진 경우는 대체 타이머가 거둔다.
+      let fallback: number | null = null;
+      const onSheetTransitionEnd = (event: TransitionEvent): void => {
+        if (event.target !== sheet || event.propertyName !== 'transform') return;
+        remove();
+      };
+      const remove = (): void => {
+        sheet.removeEventListener('transitionend', onSheetTransitionEnd);
+        if (fallback !== null) window.clearTimeout(fallback);
+        fallback = null;
+        layer.remove();
+      };
       if (reducedMotion()) remove();
       else {
-        sheet.addEventListener('transitionend', remove, { once: true });
-        window.setTimeout(remove, 480);
+        sheet.addEventListener('transitionend', onSheetTransitionEnd);
+        fallback = window.setTimeout(remove, 480);
       }
-      if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
+      // 포커스가 시트 밖으로 이미 옮겨 갔으면(사이드바 접기 단추 등) 그대로 둔다.
+      const active = document.activeElement;
+      const focusInSheet = !active || active === document.body || layer.contains(active);
+      if (focusInSheet && previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
       resolve(result);
     };
+    const dismiss = (): void => finish(false);
+    liveSheets.add(dismiss);
 
     function onKeyDown(event: KeyboardEvent): void {
       if (event.key === 'Escape') {

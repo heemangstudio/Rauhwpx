@@ -6,6 +6,7 @@ import {
   type MarkdownRenderOptions,
 } from './plan-markdown.ts';
 import { createIcon } from './icons.ts';
+import { parseCssTimeMs } from './motion-model.ts';
 
 type KatexModule = typeof import('katex');
 
@@ -162,11 +163,19 @@ function blockNodesOf(target: HTMLElement): HTMLElement[] {
 }
 
 /** 클래스를 남기지 않는 애니메이션이라 다음 비교에서 노드가 달라 보이지 않는다. */
+/**
+ * 새 블록의 짧은 등장(base 토큰, ease-out 토큰). 동작 줄이기(1ms 토큰)나 20ms 아래에서는
+ * 걸지 않는다 — 1ms 애니메이션도 첫 프레임을 opacity 0 으로 그려 한 번 깜빡인다.
+ */
 function markEntering(node: Element): void {
-  const duration = Number.parseFloat(getComputedStyle(node).getPropertyValue('--ag-dur-slow')) || 300;
+  const root = getComputedStyle(document.documentElement);
+  const duration = parseCssTimeMs(root.getPropertyValue('--ag-dur-base'), 220);
+  if (duration < 20) return;
+  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+  const easing = root.getPropertyValue('--ag-ease-out').trim() || 'cubic-bezier(0.22, 1, 0.36, 1)';
   node.animate(
     [{ opacity: 0, transform: 'translateY(3px)' }, { opacity: 1, transform: 'none' }],
-    { duration, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' },
+    { duration, easing },
   );
 }
 

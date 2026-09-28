@@ -13,6 +13,14 @@
 
 /* 모션 토큰은 motion.css 에 있다. */
 
+/* 판 폭은 물려주지 않는 속성으로 판에만 건다. --ag-sidebar-width 를 판에 걸면
+   끄는 프레임마다 판 안의 모든 요소가 상속값 때문에 다시 스타일을 탄다. */
+@property --ag-root-width {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 480px;
+}
+
 /* 편집 영역(가로 눈금자 + 용지)만 밀어 사이드바와 폭을 맞춘다.
    여백은 전이하지 않는다 — 매 프레임 레이아웃을 다시 타기 때문이다. index.ts 가
    여백을 한 번에 커밋하고, 그 사이 움직임은 문서 층 transform 으로만 그린다. */
@@ -36,7 +44,7 @@ body.ag-sidebar-resizing {
   }
 
   .ag-root {
-    width: min(var(--ag-sidebar-width), 100vw);
+    width: min(var(--ag-root-width), 100vw);
   }
 
 }
@@ -211,7 +219,7 @@ body.ag-sidebar-resizing {
 
   position: fixed;
   right: 0;
-  width: var(--ag-sidebar-width);
+  width: var(--ag-root-width);
   z-index: 50;
   display: flex;
   flex-direction: column;
@@ -225,7 +233,8 @@ body.ag-sidebar-resizing {
   line-height: 1.55;
   isolation: isolate;
   contain: layout style;
-  transition: transform var(--ag-dur-slow) var(--ag-spring-edge);
+  /* 여닫는 슬라이드는 CSS 전이가 아니라 index.ts 의 스프링(WAAPI)이 문서 층과
+     같은 시각·같은 값으로 그린다. 여기서 전이를 걸면 두 시간축이 갈라진다. */
 }
 
 body.ag-sidebar-animating .ag-root {
@@ -318,7 +327,6 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
 
 @media (prefers-reduced-motion: reduce) {
   .ag-root {
-    transition: none;
     will-change: auto;
   }
 }
@@ -957,8 +965,8 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   flex-direction: column;
   background: var(--ag-bg);
   transition:
-    opacity var(--ag-dur-base) var(--ag-sidebar-ease, var(--ag-ease-out)),
-    transform var(--ag-dur-slow) var(--ag-sidebar-ease, var(--ag-ease-out)),
+    opacity var(--ag-dur-base) var(--ag-ease-out),
+    transform var(--ag-dur-slow) var(--ag-spring),
     visibility 0s linear 0s;
 }
 
@@ -978,9 +986,11 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   transform: translateX(-16px);
   visibility: hidden;
   pointer-events: none;
+  /* 나가는 면은 불투명한 채로 밀려나고 끝에서 한 번에 숨는다. 들어오는 면이
+     그 위에서 떠오르므로 두 면이 반쯤 비치며 겹쳐 보이지 않는다. */
   transition:
-    opacity var(--ag-dur-base) var(--ag-sidebar-ease, var(--ag-ease-out)),
-    transform var(--ag-dur-slow) var(--ag-sidebar-ease, var(--ag-ease-out)),
+    opacity 0s linear var(--ag-dur-slow),
+    transform var(--ag-dur-slow) var(--ag-spring),
     visibility 0s linear var(--ag-dur-slow);
   z-index: 0;
 }
@@ -995,9 +1005,11 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   transform: translateX(20px);
   visibility: hidden;
   pointer-events: none;
+  /* 나가는 면은 불투명한 채로 밀려나고 끝에서 한 번에 숨는다. 들어오는 면이
+     그 위에서 떠오르므로 두 면이 반쯤 비치며 겹쳐 보이지 않는다. */
   transition:
-    opacity var(--ag-dur-base) var(--ag-sidebar-ease, var(--ag-ease-out)),
-    transform var(--ag-dur-slow) var(--ag-sidebar-ease, var(--ag-ease-out)),
+    opacity 0s linear var(--ag-dur-slow),
+    transform var(--ag-dur-slow) var(--ag-spring),
     visibility 0s linear var(--ag-dur-slow);
   z-index: 0;
 }
@@ -1008,8 +1020,8 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   visibility: visible;
   pointer-events: auto;
   transition:
-    opacity var(--ag-dur-base) var(--ag-sidebar-ease, var(--ag-ease-out)),
-    transform var(--ag-dur-slow) var(--ag-sidebar-ease, var(--ag-ease-out)),
+    opacity var(--ag-dur-base) var(--ag-ease-out),
+    transform var(--ag-dur-slow) var(--ag-spring),
     visibility 0s linear 0s;
   z-index: 1;
 }
@@ -1022,8 +1034,8 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   visibility: visible;
   pointer-events: auto;
   transition:
-    opacity var(--ag-dur-base) var(--ag-sidebar-ease, var(--ag-ease-out)),
-    transform var(--ag-dur-slow) var(--ag-sidebar-ease, var(--ag-ease-out)),
+    opacity var(--ag-dur-base) var(--ag-ease-out),
+    transform var(--ag-dur-slow) var(--ag-spring),
     visibility 0s linear 0s;
   z-index: 1;
 }
@@ -2844,7 +2856,7 @@ button.ag-skill-copy {
 }
 
 .ag-msg.ag-msg-enter {
-  animation: ag-message-arrive var(--ag-dur-slow) var(--ag-ease-out) both;
+  animation: ag-message-arrive var(--ag-dur-base) var(--ag-ease-out) both;
 }
 
 /* 첫 답변은 읽을 수 있는 상태로 짧게 자리 잡는다. */
@@ -3036,7 +3048,7 @@ button.ag-skill-copy {
   flex-direction: column;
   gap: 4px;
   padding-left: 18px;
-  animation: ag-step-arrive var(--ag-dur-slow) var(--ag-motion-out) both;
+  animation: ag-step-arrive var(--ag-dur-base) var(--ag-ease-out) both;
 }
 
 .ag-progress-step::before {
@@ -3193,6 +3205,9 @@ button.ag-skill-copy {
 .ag-activity-collapsed .ag-activity-collapse {
   grid-template-rows: 0fr;
   opacity: 0;
+  transition:
+    grid-template-rows var(--ag-dur-exit) var(--ag-ease-out),
+    opacity var(--ag-dur-fast) var(--ag-ease-out);
 }
 
 .ag-activity-content {
@@ -3448,11 +3463,14 @@ button.ag-skill-copy {
   interpolate-size: allow-keywords;
 }
 
+/* 높이와 세로 여백을 같은 곡선으로 함께 접는다. 여백만 남으면 끝에서 12px 이
+   한 프레임에 튄다. 닫힘은 exit 토큰으로 더 짧다. */
 .ag-tool-body,
 .ag-restored-task-body {
   overflow: clip;
   transition:
-    height var(--ag-dur-base) var(--ag-ease-out),
+    height var(--ag-dur-base) var(--ag-spring),
+    padding-block var(--ag-dur-base) var(--ag-spring),
     opacity var(--ag-dur-fast) var(--ag-ease-out),
     display var(--ag-dur-base) allow-discrete;
 }
@@ -3460,13 +3478,20 @@ button.ag-skill-copy {
 .ag-tool-body[hidden],
 .ag-restored-task-body[hidden] {
   height: 0;
+  padding-block: 0;
   opacity: 0;
+  transition:
+    height var(--ag-dur-exit) var(--ag-ease-out),
+    padding-block var(--ag-dur-exit) var(--ag-ease-out),
+    opacity var(--ag-dur-fast) var(--ag-ease-out),
+    display var(--ag-dur-exit) allow-discrete;
 }
 
 @starting-style {
   .ag-tool-body:not([hidden]),
   .ag-restored-task-body:not([hidden]) {
     height: 0;
+    padding-block: 0;
     opacity: 0;
   }
 }
@@ -6124,7 +6149,7 @@ body.ag-col-resizing {
    바뀌기 전·후 화면을 잡고, 작업 공간 쪽 화면만 0.985 ↔ 1 로 살짝 커지거나
    줄어든다. 새 화면은 살아 있는 스냅샷이라 용지 재정렬도 같은 시간축에 보인다. */
 :root {
-  --ag-fs-crossfade-duration: 220ms;
+  --ag-fs-crossfade-duration: var(--ag-dur-base);
 }
 
 html.ag-fs-vt::view-transition-group(root) {
@@ -6156,11 +6181,8 @@ html.ag-fs-vt-exit::view-transition-new(root) {
 }
 
 /* 모드 전환과 겹쳐 닫히는 오버레이가 무대 위를 한 번 더 미끄러지지
-   않게, 전환 동안은 패널의 접힘 슬라이드와 스킬·설정 페이지 전환을 끈다. */
-.ag-root.ag-fs-motion {
-  transition: none;
-}
-
+   않게, 전환 동안은 스킬·설정 페이지 전환을 끈다. 사이드바와 용지는
+   index.ts 가 교차 페이드 뒤에서 즉시 제자리로 옮긴다. */
 .ag-root.ag-fs-motion .ag-skills-page,
 .ag-root.ag-fs-motion .ag-settings-page,
 .ag-root.ag-fs-motion .ag-stage {
@@ -7729,7 +7751,7 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 .ag-fleet-row {
   container: fleet-row / inline-size;
   min-width: 0;
-  animation: ag-step-arrive var(--ag-dur-slow) var(--ag-motion-out) both;
+  animation: ag-step-arrive var(--ag-dur-base) var(--ag-ease-out) both;
 }
 
 .ag-fleet-row + .ag-fleet-row {

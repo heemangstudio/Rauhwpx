@@ -107,6 +107,7 @@ export class CanvasView {
 
     this.scrollContent = container.querySelector('#scroll-content')!;
     this.viewportManager.attachTo(container);
+    this.unsubscribers.push(this.watchDevicePixelRatio());
 
     this.unsubscribers.push(
       eventBus.on('viewport-scroll', () => {
@@ -816,6 +817,29 @@ export class CanvasView {
       this.pageRenderer.cancelAll();
       this.updateVisiblePages();
     });
+  }
+
+  /**
+   * 창이 다른 배율의 화면으로 옮겨 가면(크기 변화 없이) 쪽 배치를 새 장치 픽셀에 다시 맞춘다.
+   * resolution 미디어 쿼리는 현재 배율에서 벗어날 때 한 번 바뀌므로 매번 새 배율로 다시 건다.
+   */
+  private watchDevicePixelRatio(): () => void {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return () => {};
+    let query: MediaQueryList | null = null;
+    const onChange = (): void => {
+      arm();
+      if (!this.disposed) this.onViewportResize();
+    };
+    const arm = (): void => {
+      query?.removeEventListener('change', onChange);
+      query = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+      query.addEventListener('change', onChange);
+    };
+    arm();
+    return () => {
+      query?.removeEventListener('change', onChange);
+      query = null;
+    };
   }
 
   /** 뷰포트 리사이즈 처리 */

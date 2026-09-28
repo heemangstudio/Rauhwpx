@@ -9,7 +9,7 @@
 import './motion.css';
 import './agent-sidebar.css';
 import './plan-presentation.css';
-import { confirmSheet } from './sheet.ts';
+import { confirmSheet, dismissOpenSheets } from './sheet.ts';
 import { createChangesDrawer, createJumpButton, renderPendingOpDiff, renderPendingOpsDiff, summarizeDiffItems } from './changes-drawer.ts';
 import { TurnChanges, invalidatedMessage } from './turn-changes.ts';
 import type { DiffItem } from '../../compare/types.ts';
@@ -54,6 +54,19 @@ import { loadAgentPrefs, type AgentPrefs } from '../../agent/agent-prefs.ts';
 import { userSettings } from '../../core/user-settings.ts';
 import { renderChatMarkdown, type ChatMarkdownOptions } from './chat-markdown.ts';
 import { safeMarkdownHref } from './plan-markdown.ts';
+import {
+  clampFinite,
+  finiteOr,
+  parseCssTimeMs,
+  planSpring,
+  sampleSpring,
+  springForDuration,
+  snapToDevicePixel,
+  springStateAt,
+  stepSpring,
+  type SpringPlan,
+  type SpringState,
+} from './motion-model.ts';
 import {
   createEmptyThread,
   createPendingUserQuestionDraftSnapshot,
@@ -344,7 +357,23 @@ const COMPOSER_REST_GESTURE_MS = 120;
 const COMPOSER_REST_MAX_INPUT_PX = 40;
 /** 대화 끝이 이만큼 가려져야 입력기를 접는다. 접힐 때 넓어지는 높이보다 커야 한다. */
 const COMPOSER_REST_END_CLEARANCE_PX = 80;
+/** --ag-dur-slow 를 못 읽을 때의 사이드바 스프링 시간(motion.css 와 같은 값). */
 const SIDEBAR_MOTION_DURATION_MS = 320;
+
+/** 사이드바가 드러난 폭 하나를 움직이는 스프링과, 그 값으로 그린 WAAPI 묶음. */
+interface InsetMotion {
+  plan: SpringPlan;
+  /** 모든 애니메이션이 공유하는 document.timeline 시각(ms) */
+  startTime: number;
+  animations: Animation[];
+  paneWidth: number;
+  open: boolean;
+  /** 펼칠 때처럼 레이아웃 커밋을 끝까지 미룬 경우 */
+  deferCommit: boolean;
+  /** false 면 사이드바는 제자리이고 문서 층만 움직인다(폭 초기화). */
+  drivesSidebar: boolean;
+}
+
 /* 전체 화면 전환은 한 번의 교차 페이드다(agent-sidebar.css
    --ag-fs-crossfade-duration 과 같은 값). 타이머는 끝날 때까지의 여유분을 포함한다. */
 const FS_CROSSFADE_MS = 220;
@@ -407,7 +436,8 @@ function transferHasFiles(data: DataTransfer | null): boolean {
 }
 
 function maxSidebarWidth(minWidth: number, viewportWidth = window.innerWidth): number {
-  return Math.max(minWidth, Math.floor(viewportWidth * 0.5));
+  const viewport = Number.isFinite(viewportWidth) ? viewportWidth : minWidth * 2;
+  return Math.max(minWidth, Math.floor(viewport * 0.5));
 }
 
 function clampSidebarWidth(
@@ -415,9 +445,11 @@ function clampSidebarWidth(
   minWidth: number,
   viewportWidth = window.innerWidth,
 ): number {
+  // NaN·무한대 폭은 기본 폭으로 본다 — 한 번 새면 transform·여백이 모두 NaN 이 된다.
+  const safe = Number.isFinite(width) ? width : SIDEBAR_WIDTH_DEFAULT;
   return Math.min(
     maxSidebarWidth(minWidth, viewportWidth),
-    Math.max(minWidth, Math.round(width)),
+    Math.max(minWidth, Math.round(safe)),
   );
 }
 
@@ -679,9 +711,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   let conversationScrollRaf: number | null = null;
   let conversationScrollTargetNode: HTMLElement | null = null;
   let conversationScrollSmooth = false;
-  let conversationScrollStart = 0;
-  let conversationScrollFrom = 0;
-  let conversationScrollTo = 0;
+  /** 대화 스크롤 스프링 상태(scrollTop px, px/s). null = 멈춤 */
+  let conversationScrollState: SpringState | null = null;
+  /** 진행 중인 대화 스크롤의 스프링 설정. undefined 면 다음 프레임에서 읽는다. */
+  let conversationScrollConfigCache: ReturnType<typeof springForDuration> | undefined;
+  let conversationScrollLastFrame = 0;
   let conversationScrollLock = false;
   let conversationScrollUnlock: number | null = null;
   let conversationScrollPaused = false;
@@ -719,8 +753,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       if (open) collapseTurnActivity();
     },
   });
-  /** 편집 영역 inset 전이 중 문서·눈금자에 건 transform 애니메이션 (null = 전이 없음) */
-  let insetAnimations: Animation[] | null = null;
+  /** 진행 중인 사이드바·문서 층 스프링 (null = 멈춤) */
+  let insetMotion: InsetMotion | null = null;
+  /** 멈춰 있을 때 사이드바가 드러나 있는지. 되돌리기 없이 새로 출발할 때의 시작 위치다. */
+  let sidebarShownAtRest = false;
+  /** 스프링이 멈춘 뒤 한 번 부를 일 (끌기 도중 다시 펼친 뒤 폭 추종 재개 등) */
+  let afterInsetSettle: (() => void) | null = null;
+  /** 손잡이를 끄는 중 (접힘·다시 펼침 구간 포함) */
+  let widthDragging = false;
   /** 지금 레이아웃에 반영된 편집 영역 오른쪽 inset(px). 전이 폭 계산의 기준이다. */
   let committedEditorInsetPx = 0;
   let resizeMoveRaf: number | null = null;
@@ -904,9 +944,24 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   let sidebarWidthMin = SIDEBAR_WIDTH_MIN_FALLBACK;
   let sidebarWidth = readStoredSidebarWidth(sidebarWidthMin);
 
+  /** --ag-sidebar-width 를 읽는 요소들. 끄는 동안에는 이들에만 걸어 문서 전체 재스타일을 피한다. */
+  const SIDEBAR_WIDTH_CONSUMERS = ['editor-area', 'cloud-workspace', 'agent-editing-frame', 'agent-editing-status'];
+
+  function writeSidebarWidthVar(px: number): void {
+    const value = `${px}px`;
+    root.style.setProperty('--ag-root-width', value);
+    for (const id of SIDEBAR_WIDTH_CONSUMERS) {
+      document.getElementById(id)?.style.setProperty('--ag-sidebar-width', value);
+    }
+    // 루트 값은 나중에 붙는 요소가 물려받을 기준값이다. 끄는 도중에는 프레임마다
+    // 모든 요소가 다시 스타일을 타므로, 끌기가 끝날 때 한 번만 맞춘다.
+    if (!widthDragging) document.documentElement.style.setProperty('--ag-sidebar-width', value);
+  }
+
   function applySidebarWidth(width: number, opts?: { persist?: boolean; recenter?: boolean }): number {
+    const previous = sidebarWidth;
     sidebarWidth = clampSidebarWidth(width, sidebarWidthMin);
-    document.documentElement.style.setProperty('--ag-sidebar-width', `${sidebarWidth}px`);
+    writeSidebarWidthVar(sidebarWidth);
     resizeHandle.setAttribute('aria-valuenow', String(sidebarWidth));
     resizeHandle.setAttribute('aria-valuemin', String(sidebarWidthMin));
     resizeHandle.setAttribute('aria-valuemax', String(maxSidebarWidth(sidebarWidthMin)));
@@ -914,6 +969,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     // 전이 대기 중(펼침 커밋 전)에는 inset 이 아직 레이아웃에 없다.
     if (document.body.classList.contains('ag-sidebar-inset')) {
       committedEditorInsetPx = effectiveEditorInset(true);
+    }
+    // 여닫는 도중 폭이 바뀌면(끌다가 다시 펼치기) 지금 위치·속도에서 새 폭으로 이어 간다.
+    if (insetMotion && sidebarWidth !== previous) {
+      if (insetMotion.drivesSidebar) startInsetRecenterLoop();
+      else startInsetRecenterLoop({ instant: true });
     }
     if (opts?.recenter !== false) notifyInsetChanged();
     return sidebarWidth;
@@ -935,113 +995,170 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     committedEditorInsetPx = effectiveEditorInset(applied);
   }
 
-  /** 문서 층이 지금 화면에서 밀려 있는 양(px). 진행 중인 전이를 이어받을 때 쓴다. */
-  function currentInsetShift(target: Element | null): number {
-    if (!target || !insetAnimations) return 0;
-    const transform = getComputedStyle(target).transform;
-    if (!transform || transform === 'none') return 0;
-    try {
-      return new DOMMatrixReadOnly(transform).m41;
-    } catch {
-      return 0;
-    }
+  /** 사이드바 판의 실제 폭(px). 좁은 화면에서는 CSS 가 화면 폭으로 묶는다. */
+  function sidebarPaneWidth(): number {
+    const viewport = Math.max(0, finiteOr(window.innerWidth, sidebarWidth));
+    return window.matchMedia('(max-width: 767px)').matches
+      ? Math.min(sidebarWidth, viewport)
+      : sidebarWidth;
+  }
+
+  /** WAAPI 와 같은 시계(ms). 입력 프레임의 타임라인 시각을 써서 첫 프레임부터 움직인다. */
+  function motionNow(): number {
+    const timeline = Number(document.timeline?.currentTime);
+    const wall = performance.now();
+    return Number.isFinite(timeline) ? Math.max(timeline, wall - 1000 / 60) : wall;
+  }
+
+  function slowMotionConfig(): ReturnType<typeof springForDuration> {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return null;
+    const token = getComputedStyle(document.documentElement).getPropertyValue('--ag-dur-slow');
+    return springForDuration(parseCssTimeMs(token, SIDEBAR_MOTION_DURATION_MS), {
+      dpr: window.devicePixelRatio,
+    });
   }
 
   function cancelInsetAnimations(): void {
-    if (insetAnimations) {
-      for (const animation of insetAnimations) {
-        animation.onfinish = null;
-        animation.cancel();
-      }
+    const motion = insetMotion;
+    insetMotion = null;
+    if (!motion) return;
+    for (const animation of motion.animations) {
+      animation.onfinish = null;
+      animation.cancel();
     }
-    insetAnimations = null;
   }
 
   function clearInsetRecenterLoop(): void {
     cancelInsetAnimations();
+    afterInsetSettle = null;
     document.body.classList.remove('ag-sidebar-animating');
   }
 
-  /** 사이드바 transform 전이와 같은 시간·곡선을 쓴다 (motion.css 토큰을 .ag-root 가 해석한 값). */
-  function sidebarMotionTiming(): { duration: number; easing: string } {
-    const style = getComputedStyle(root);
-    const rawDuration = style.transitionDuration.split(',')[0]?.trim() ?? '';
-    const seconds = parseFloat(rawDuration);
-    const duration = Number.isFinite(seconds) && seconds > 0
-      ? (rawDuration.endsWith('ms') ? seconds : seconds * 1000)
-      : SIDEBAR_MOTION_DURATION_MS;
-    const easing = style.transitionTimingFunction.split(/,(?![^(]*\))/)[0]?.trim() || 'ease-out';
-    return { duration, easing };
-  }
-
-  /**
-   * 사이드바 inset 변화를 편집 영역에 반영한다. 레이아웃(여백·가운데 정렬)은 한 번만 바꾸고,
-   * 그 사이의 움직임은 문서 층과 가로 눈금자의 transform(컴포지터)으로만 그린다.
-   * - inset 이 줄거나 폭만 바뀌면: 시작할 때 커밋하고 이전 위치에서 제자리로 미끄러진다.
-   * - 펼칠 때: 사이드바가 덮어 오는 동안 전체 폭을 유지하고 끝에서 커밋한다
-   *   (시작에서 줄이면 사이드바가 닿기 전 빈 띠가 드러난다).
-   */
-  function startInsetRecenterLoop(): void {
-    const wantInset = document.body.classList.contains('ag-sidebar-open');
-    if (!eventBus) {
-      commitEditorInset(wantInset);
-      return;
-    }
-    const scrollContent = document.getElementById('scroll-content');
+  /** 사이드바 뒤를 따르는 문서 층. 상태 알약은 편집 영역 오른쪽 끝을 따라 두 배 움직인다. */
+  function insetLayers(): Array<{ element: HTMLElement; factor: number }> {
     const layers: Array<{ element: HTMLElement; factor: number }> = [];
+    const scrollContent = document.getElementById('scroll-content');
     const hRuler = document.getElementById('h-ruler');
     const editingStatus = document.getElementById('agent-editing-status');
     if (scrollContent) layers.push({ element: scrollContent, factor: 1 });
     if (hRuler) layers.push({ element: hRuler, factor: 1 });
-    // 상태 알약은 용지 가운데가 아니라 편집 영역 오른쪽 끝을 따르므로 두 배 움직인다.
     if (editingStatus && !editingStatus.hidden) layers.push({ element: editingStatus, factor: 2 });
+    return layers;
+  }
 
-    const fromShift = currentInsetShift(scrollContent);
+  function settleInsetMotion(): void {
+    const motion = insetMotion;
+    // finish 이벤트는 같은 프레임의 페인트 전에 돈다. 커밋·재정렬과 transform 제거를
+    // 한 번에 해 끝 프레임에서 용지가 튀지 않게 한다.
+    document.body.classList.remove('ag-sidebar-animating');
+    if (motion) {
+      sidebarShownAtRest = motion.open;
+      if (motion.deferCommit) commitEditorInset(motion.open);
+    }
+    notifyInsetChanged();
     cancelInsetAnimations();
-    const prevInset = committedEditorInsetPx;
-    const nextInset = effectiveEditorInset(wantInset);
-    // 커밋하면 용지 가운데가 inset 변화의 절반만큼 왼쪽으로 옮겨 간다.
-    const commitShift = (nextInset - prevInset) / 2;
-    const deferCommit = wantInset && !document.body.classList.contains('ag-sidebar-inset');
-    const from = deferCommit ? fromShift : fromShift + commitShift;
-    const to = deferCommit ? -commitShift : 0;
+    const after = afterInsetSettle;
+    afterInsetSettle = null;
+    after?.();
+  }
 
-    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (reduceMotion || !scrollContent || (Math.abs(from) < 0.5 && Math.abs(to) < 0.5)) {
+  /**
+   * 사이드바가 드러난 폭 vis 하나를 임계 감쇠 스프링으로 움직이고, 사이드바 transform 과
+   * 문서 층 transform 을 모두 그 값에서 계산해 같은 startTime 의 WAAPI 로 건다. 두 쪽이
+   * 한 값·한 시계를 쓰므로 어긋날 수 없다. 레이아웃(여백·가운데 정렬)은 한 번만 바꾼다.
+   * - inset 이 줄면: 시작할 때 커밋하고 문서는 이전 화면 위치에서 제자리로 미끄러진다.
+   * - inset 이 늘면(펼칠 때): 사이드바가 덮어 오는 동안 전체 폭을 유지하고 끝에서 커밋한다
+   *   (시작에서 줄이면 사이드바가 닿기 전 빈 띠가 드러난다).
+   * - 움직이는 도중 다시 부르면 지금 위치·속도에서 새 목표로 이어 간다.
+   * - docFromVis: 사이드바는 제자리에 두고 문서만 이 폭에서 새 폭으로 옮긴다(폭 초기화).
+   */
+  function startInsetRecenterLoop(opts?: { instant?: boolean; docFromVis?: number }): void {
+    const wantOpen = document.body.classList.contains('ag-sidebar-open');
+    const paneWidth = sidebarPaneWidth();
+    const target = wantOpen ? paneWidth : 0;
+    const now = motionNow();
+    const running = insetMotion;
+    const drivesSidebar = opts?.docFromVis === undefined;
+    let state: SpringState;
+    if (running && !running.drivesSidebar && drivesSidebar) {
+      // 폭 초기화 중의 plan 값은 용지 쪽 폭이라 사이드바에 쓸 수 없다. 사이드바는
+      // 제자리에서 출발하고, 용지에 남은 몇 px 는 새 슬라이드 아래에서 맞춰진다.
+      state = { x: sidebarShownAtRest ? paneWidth : 0, v: 0 };
+    } else if (running) {
+      state = springStateAt(running.plan, now - running.startTime);
+      // 새 폭이 좁아졌으면 드러난 폭도 그 안으로 묶는다.
+      state = { x: clampFinite(state.x, 0, Math.max(paneWidth, running.paneWidth), 0), v: state.v };
+    } else if (!drivesSidebar) {
+      state = { x: clampFinite(opts?.docFromVis ?? target, 0, paneWidth * 4, target), v: 0 };
+    } else {
+      state = { x: sidebarShownAtRest ? paneWidth : 0, v: 0 };
+    }
+    cancelInsetAnimations();
+
+    const config = opts?.instant || fullscreen || !eventBus ? null : slowMotionConfig();
+    const plan = config ? planSpring(state, target, config) : null;
+    const nextInset = effectiveEditorInset(wantOpen);
+    if (!plan || plan.durationMs <= 0) {
       document.body.classList.remove('ag-sidebar-animating');
-      commitEditorInset(wantInset);
+      sidebarShownAtRest = wantOpen;
+      commitEditorInset(wantOpen);
       notifyInsetChanged();
+      const after = afterInsetSettle;
+      afterInsetSettle = null;
+      after?.();
       return;
     }
 
+    const deferCommit = nextInset > committedEditorInsetPx;
     document.body.classList.add('ag-sidebar-animating');
     if (!deferCommit) {
       // 레이아웃은 지금 한 번 바꾸고, 문서는 이전 화면 위치에서 출발시킨다.
-      commitEditorInset(wantInset);
+      commitEditorInset(wantOpen);
       notifyInsetChanged();
     }
 
-    const { duration, easing } = sidebarMotionTiming();
-    const animations = layers.map(({ element, factor }) => element.animate(
-      [
-        { transform: `translateX(${from * factor}px)` },
-        { transform: `translateX(${to * factor}px)` },
-      ],
-      { duration, easing, fill: 'both' },
-    ));
-    insetAnimations = animations;
-    animations[0].onfinish = () => {
-      if (insetAnimations !== animations) return;
-      // finish 이벤트는 같은 프레임의 페인트 전에 돈다. 커밋·재정렬과 transform 제거를
-      // 한 번에 해 끝 프레임에서 용지가 튀지 않게 한다.
+    const samples = sampleSpring(plan);
+    const docFollows = effectiveEditorInset(true) > 0;
+    const committed = committedEditorInsetPx;
+    const timing: KeyframeAnimationOptions = { duration: plan.durationMs, easing: 'linear', fill: 'both' };
+    const animations: Animation[] = [];
+    if (drivesSidebar) {
+      animations.push(root.animate(
+        samples.map(({ offset, value }) => ({ offset, transform: `translateX(${paneWidth - value}px)` })),
+        timing,
+      ));
+    }
+    for (const { element, factor } of insetLayers()) {
+      const shifts = samples.map(({ value }) => factor * (committed - (docFollows ? value : 0)) / 2);
+      if (shifts.every((shift) => Math.abs(shift) < 0.01)) continue;
+      animations.push(element.animate(
+        samples.map(({ offset }, i) => ({ offset, transform: `translateX(${shifts[i]}px)` })),
+        timing,
+      ));
+    }
+    if (!animations.length) {
       document.body.classList.remove('ag-sidebar-animating');
-      if (deferCommit) commitEditorInset(wantInset);
+      sidebarShownAtRest = wantOpen;
+      commitEditorInset(wantOpen);
       notifyInsetChanged();
-      cancelInsetAnimations();
+      return;
+    }
+    // 모든 층을 같은 시각에 묶는다. 대기(pending) 상태로 두면 층마다 시작 프레임이 갈린다.
+    for (const animation of animations) animation.startTime = now;
+    const motion: InsetMotion = {
+      plan, startTime: now, animations, paneWidth, open: wantOpen, deferCommit, drivesSidebar,
+    };
+    insetMotion = motion;
+    animations[0].onfinish = () => {
+      if (insetMotion !== motion) return;
+      settleInsetMotion();
     };
   }
 
   function setCollapsed(collapsed: boolean, opts?: { recenter?: boolean }): void {
+    // 접힌 사이드바 안의 시트는 보이지 않으므로 취소로 닫고, 포커스·키가 닿지 않게 한다.
+    if (collapsed) dismissOpenSheets();
+    root.inert = collapsed;
     root.classList.toggle('ag-collapsed', collapsed);
     document.body.classList.toggle('ag-sidebar-open', !collapsed);
     const label = collapsed ? '에이전트 사이드바 펼치기' : '에이전트 사이드바 숨기기';
@@ -1049,12 +1166,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     collapseTab.setAttribute('aria-label', label);
     collapseTab.title = label;
     eventBus?.emit('agent-sidebar-visibility-changed', { open: !collapsed });
-    if (opts?.recenter !== false) {
-      startInsetRecenterLoop();
-    } else {
-      cancelInsetAnimations();
-      commitEditorInset(!collapsed);
-    }
+    startInsetRecenterLoop(opts?.recenter === false ? { instant: true } : undefined);
   }
 
   applySidebarWidth(sidebarWidth, { persist: false, recenter: false });
@@ -1068,12 +1180,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   let resizeStartWidth = sidebarWidth;
   /** 드래그 도중 접힌 상태 — 놓기 전에 돌아오면 다시 펼친다. */
   let resizeDragCollapsed = false;
-  let resizeResumeTimer: number | null = null;
 
   function clearResizeResumeTimer(): void {
-    if (resizeResumeTimer === null) return;
-    window.clearTimeout(resizeResumeTimer);
-    resizeResumeTimer = null;
+    afterInsetSettle = null;
   }
 
   function detachResizeWindowListeners(): void {
@@ -1084,6 +1193,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
 
   function beginSidebarResize(startX: number): void {
     resizing = true;
+    widthDragging = true;
     resizeArmed = false;
     resizeStartX = startX;
     resizeStartWidth = sidebarWidth;
@@ -1108,12 +1218,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       document.body.classList.remove('ag-sidebar-resizing');
       setCollapsed(overshoot);
       if (!overshoot) {
-        resizeResumeTimer = window.setTimeout(() => {
-          resizeResumeTimer = null;
+        // 다시 펼침 스프링이 멈추면 곧바로 폭 추종으로 돌아간다(시간 추측 타이머 없이).
+        const resume = () => {
           if (resizing && !resizeDragCollapsed) {
             document.body.classList.add('ag-sidebar-resizing', 'ag-sidebar-animating');
           }
-        }, SIDEBAR_MOTION_DURATION_MS);
+        };
+        if (insetMotion) afterInsetSettle = resume;
+        else resume();
       }
     }
     if (resizeDragCollapsed) return;
@@ -1140,11 +1252,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       applyResizeMove();
     }
     resizing = false;
+    widthDragging = false;
     resizeArmed = false;
     clearResizeResumeTimer();
     document.body.classList.remove('ag-sidebar-resizing');
     // 접힘 전이가 도는 중이면 ag-sidebar-animating 은 그 루프가 거둔다.
-    if (insetAnimations === null) document.body.classList.remove('ag-sidebar-animating');
+    if (insetMotion === null) document.body.classList.remove('ag-sidebar-animating');
     detachResizeWindowListeners();
     if (resizeDragCollapsed) {
       // 다시 펼칠 때는 끌기 전 폭으로 돌아온다.
@@ -1177,8 +1290,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     if (root.classList.contains('ag-collapsed')) return;
     e.preventDefault();
     if (sidebarWidth === clampSidebarWidth(SIDEBAR_WIDTH_DEFAULT, sidebarWidthMin)) return;
+    const fromVis = committedEditorInsetPx;
     applySidebarWidth(SIDEBAR_WIDTH_DEFAULT, { persist: true, recenter: false });
-    startInsetRecenterLoop();
+    startInsetRecenterLoop(fromVis > 0 ? { docFromVis: fromVis } : undefined);
   });
   resizeHandle.addEventListener('keydown', (e) => {
     if (root.classList.contains('ag-collapsed')) return;
@@ -4501,9 +4615,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       restoreSidebarLayout();
       setConfigPanelOpen(false);
       measure();
-      // 용지가 사이드바 폭만큼 제자리를 찾는다 — 새 화면은 살아 있는
-      // 스냅샷이라 교차 페이드와 같은 시간축에 보인다.
-      startInsetRecenterLoop();
+      // 용지는 즉시 제자리로 옮긴다 — 교차 페이드가 이미 두 화면을 잇는다.
+      // 여기서 슬라이드를 한 번 더 걸면 페이드 아래에서 두 번째 움직임이 된다.
+      startInsetRecenterLoop({ instant: true });
       scrollConversationToEnd();
       return;
     }
@@ -4539,8 +4653,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     setConfigPanelOpen(false);
     // 인라인 top/bottom 을 모드에 맞게 다시 잰다.
     measure();
-    // 문서가 가려지거나 다시 드러나므로 용지 정렬을 다시 잡는다.
-    startInsetRecenterLoop();
+    // 문서가 가려지거나 다시 드러나므로 용지 정렬을 즉시 다시 잡는다.
+    startInsetRecenterLoop({ instant: true });
     scrollConversationToEnd();
   }
 
@@ -5576,14 +5690,22 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     const top = document.getElementById('editor-area')?.getBoundingClientRect().top ?? 96;
     const statusTop =
       document.getElementById('status-bar')?.getBoundingClientRect().top ?? window.innerHeight;
-    root.style.top = `${Math.max(0, top)}px`;
-    root.style.bottom = `${Math.max(0, window.innerHeight - statusTop)}px`;
+    // 장치 픽셀에 맞춰 두어 안쪽의 시트·입력기가 반 픽셀 위에서 쉬지 않게 한다.
+    const dpr = window.devicePixelRatio;
+    root.style.top = `${snapToDevicePixel(Math.max(0, top), dpr)}px`;
+    root.style.bottom = `${snapToDevicePixel(Math.max(0, window.innerHeight - statusTop), dpr)}px`;
     refreshSidebarWidthMin();
     const clamped = clampSidebarWidth(sidebarWidth, sidebarWidthMin);
     if (clamped !== sidebarWidth) {
       applySidebarWidth(clamped, { persist: true, recenter: true });
     }
   }
+  // 창 크기가 바뀌면 진행 중인 여닫기를 끝 상태로 바로 맞춘다. 움직이는 동안 보기는
+  // 레이아웃을 다시 잡지 않으므로, 새 창 폭의 가운데 정렬은 커밋에서 한 번에 맞춘다.
+  function onWindowResizeSettleInset(): void {
+    if (insetMotion) startInsetRecenterLoop({ instant: true });
+  }
+  window.addEventListener('resize', onWindowResizeSettleInset);
   window.addEventListener('resize', measure);
   measure();
   void document.fonts?.ready?.then(() => refreshSidebarWidthMin());
@@ -7236,7 +7358,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   function cancelConversationScroll(): void {
     conversationScrollTargetNode = null;
     conversationScrollSmooth = false;
-    conversationScrollStart = 0;
+    conversationScrollState = null;
+    conversationScrollConfigCache = undefined;
+    conversationScrollLastFrame = 0;
     if (conversationScrollRaf !== null) window.cancelAnimationFrame(conversationScrollRaf);
     conversationScrollRaf = null;
   }
@@ -7253,6 +7377,25 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     }
   }
 
+  /** 이보다 작은 보정은 따라가지 않는다 — 블록마다 1px 씩 오르내리는 떨림을 막는다. */
+  const CONVERSATION_SCROLL_DEADBAND_PX = 2;
+
+  /**
+   * 대화 스크롤 스프링. 전송은 slow 토큰, 스트리밍·턴 끝 재정렬은 base 토큰으로 움직인다.
+   * 동작 줄이기(1ms 토큰)에서는 null — 바로 옮긴다.
+   */
+  function conversationScrollConfig(smooth: boolean): ReturnType<typeof springForDuration> {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return null;
+    const style = getComputedStyle(document.documentElement);
+    const token = style.getPropertyValue(smooth ? '--ag-dur-slow' : '--ag-dur-base');
+    return springForDuration(parseCssTimeMs(token, smooth ? 320 : 180), { dpr: window.devicePixelRatio });
+  }
+
+  /** 목표는 매 프레임 다시 잰다 — 전송 직후 끝 여백·입력기 높이가 바뀌어도 빗나가지 않는다. */
+  function roundedConversationTarget(node: HTMLElement): number {
+    return Math.round(conversationScrollTarget(node));
+  }
+
   function animateConversationScroll(now: number): void {
     conversationScrollRaf = null;
     const node = conversationScrollTargetNode;
@@ -7260,42 +7403,64 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       cancelConversationScroll();
       return;
     }
-
-    if (!conversationScrollSmooth) {
+    const target = roundedConversationTarget(node);
+    const actual = messages.scrollTop;
+    // 설정은 스크롤을 시작할 때 한 번 읽는다. 매 프레임 계산 스타일을 읽으면 스타일 재계산이 강제된다.
+    const config = conversationScrollConfigCache
+      ?? (conversationScrollConfigCache = conversationScrollConfig(conversationScrollSmooth));
+    if (!config) {
       lockConversationScroll(80);
-      messages.scrollTop = conversationScrollTarget(node);
-      conversationScrollTargetNode = null;
+      messages.scrollTop = target;
+      cancelConversationScroll();
       return;
     }
-    // 전송 때만 고정된 위치로 짧게 이동한다. 스트리밍 중에는 새 높이에
-    // 바로 맞춰 매 토큰마다 움직이는 목표를 뒤쫓지 않는다.
-    const progress = Math.min(1, (now - conversationScrollStart) / 260);
-    const eased = 1 - (1 - progress) ** 4;
+    let state = conversationScrollState ?? { x: actual, v: 0 };
+    // 브라우저가 스크롤을 잘라 냈으면(내용이 줄어듦) 실제 위치에서 이어 간다.
+    if (Math.abs(actual - state.x) > 1.5) state = { x: actual, v: state.v };
+    const dt = conversationScrollLastFrame > 0 ? now - conversationScrollLastFrame : 1000 / 60;
+    const next = stepSpring(state, target, dt, config);
+    conversationScrollLastFrame = now;
     lockConversationScroll(80);
-    messages.scrollTop = conversationScrollFrom + (conversationScrollTo - conversationScrollFrom) * eased;
-    if (progress === 1) {
-      conversationScrollTargetNode = null;
-      conversationScrollSmooth = false;
-      conversationScrollStart = 0;
+    if (next.settled) {
+      messages.scrollTop = target;
+      cancelConversationScroll();
       return;
     }
+    conversationScrollState = { x: next.x, v: next.v };
+    messages.scrollTop = snapToDevicePixel(next.x, window.devicePixelRatio);
     conversationScrollRaf = window.requestAnimationFrame(animateConversationScroll);
   }
 
   function scrollConversationToMessage(node: HTMLElement, opts?: { smooth?: boolean }): void {
-    if (conversationScrollSmooth && conversationScrollTargetNode === node && opts?.smooth !== true) return;
     followConversation = true;
     conversationScrollPaused = false;
     syncConversationSpacer();
-    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    const smooth = opts?.smooth === true && !reduce;
-    if (smooth && (!conversationScrollSmooth || conversationScrollTargetNode !== node)) {
-      conversationScrollStart = performance.now();
-      conversationScrollFrom = messages.scrollTop;
-      conversationScrollTo = conversationScrollTarget(node);
+    const smooth = opts?.smooth === true;
+    const running = conversationScrollRaf !== null;
+    if (!running) {
+      // 멈춰 있을 때 2px 아래 보정은 무시한다. 목표를 정수로 반올림해 오르내림이 없다.
+      const delta = roundedConversationTarget(node) - messages.scrollTop;
+      if (Math.abs(delta) < CONVERSATION_SCROLL_DEADBAND_PX) {
+        conversationScrollTargetNode = null;
+        return;
+      }
+      const config = conversationScrollConfig(smooth);
+      conversationScrollConfigCache = config;
+      if (config && smooth) {
+        // 전송은 정지에서 출발한다. 사이드바와 같은 출발 보정으로 첫 프레임부터 움직인다.
+        const from = messages.scrollTop;
+        conversationScrollState = { x: from, v: planSpring({ x: from, v: 0 }, from + delta, config).v0 };
+      } else {
+        conversationScrollState = null;
+      }
+      conversationScrollLastFrame = 0;
     }
+    // 움직이는 중에는 목표만 바꾼다 — 위치·속도가 그대로 이어진다.
     conversationScrollTargetNode = node;
-    conversationScrollSmooth = smooth;
+    const nextSmooth = conversationScrollSmooth && running ? true : smooth;
+    // 도중에 slow↔base 가 바뀌면 다음 프레임에서 설정을 다시 읽는다.
+    if (running && nextSmooth !== conversationScrollSmooth) conversationScrollConfigCache = undefined;
+    conversationScrollSmooth = nextSmooth;
     if (conversationScrollRaf === null) conversationScrollRaf = window.requestAnimationFrame(animateConversationScroll);
   }
 
@@ -9457,6 +9622,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
         window.clearTimeout(deferredVersionsOpenTimer);
         deferredVersionsOpenTimer = null;
       }
+      window.removeEventListener('resize', onWindowResizeSettleInset);
       window.removeEventListener('resize', measure);
       clearCompactRailHoverOpen();
       clearCompactRailHoverClose();
