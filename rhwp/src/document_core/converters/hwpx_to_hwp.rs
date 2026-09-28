@@ -57,6 +57,8 @@ pub struct AdapterReport {
     pub cells_list_attr_bit16_set: u32,
     /// HWPX 출처 셀 LIST_HEADER width_ref/raw_list_extra materialize 횟수
     pub cells_list_header_contract_materialized: u32,
+    /// Native HWPX disabled cell margins materialized as the table margin for HWP5.
+    pub cells_padding_normalized_for_hwp: u32,
     /// paragraph/char shape 참조 BorderFill 무채움 정규화 횟수
     pub border_fills_no_fill_normalized: u32,
     /// HWPX 출처 FileHeader를 HWP5 compressed 저장 관례로 보정한 횟수
@@ -133,6 +135,7 @@ impl AdapterReport {
                 + self.table_record_extra_materialized
                 + self.cells_list_attr_bit16_set
                 + self.cells_list_header_contract_materialized
+                + self.cells_padding_normalized_for_hwp
                 + self.border_fills_no_fill_normalized
                 + self.file_header_compression_normalized
                 + self.doc_properties_section_count_normalized
@@ -183,6 +186,13 @@ impl AdapterReport {
 pub fn convert_hwpx_to_hwp_ir(doc: &mut Document) -> AdapterReport {
     let mut report = AdapterReport::new();
 
+    // The HWPX hasMargin switch makes a disabled cellMargin inert even when
+    // inMargin is all zero. HWP5's legacy all-zero fallback would reactivate
+    // that saved cellMargin after export unless the effective value is stored.
+    if doc.layout_profile().native_hwpx_cell_margin() {
+        materialize_native_hwpx_cell_margins(doc, &mut report);
+    }
+
     normalize_file_header_for_hwp(doc, &mut report);
     normalize_doc_properties_for_hwp(doc, &mut report);
     materialize_hwp5_bin_data_order(doc, &mut report);
@@ -205,6 +215,101 @@ pub fn convert_hwpx_to_hwp_ir(doc: &mut Document) -> AdapterReport {
     }
 
     report
+}
+
+fn materialize_native_hwpx_cell_margins(doc: &mut Document, report: &mut AdapterReport) {
+    fn visit_shape(shape: &mut ShapeObject, report: &mut AdapterReport) {
+        if let Some(drawing) = shape.drawing_mut() {
+            if let Some(text_box) = &mut drawing.text_box {
+                visit_paragraphs(&mut text_box.paragraphs, report);
+            }
+            if let Some(caption) = &mut drawing.caption {
+                visit_paragraphs(&mut caption.paragraphs, report);
+            }
+        }
+        match shape {
+            ShapeObject::Group(group) => {
+                if let Some(caption) = &mut group.caption {
+                    visit_paragraphs(&mut caption.paragraphs, report);
+                }
+                for child in &mut group.children {
+                    visit_shape(child, report);
+                }
+            }
+            ShapeObject::Picture(picture) => {
+                if let Some(caption) = &mut picture.caption {
+                    visit_paragraphs(&mut caption.paragraphs, report);
+                }
+            }
+            ShapeObject::Chart(chart) => {
+                if let Some(caption) = &mut chart.caption {
+                    visit_paragraphs(&mut caption.paragraphs, report);
+                }
+            }
+            ShapeObject::Ole(ole) => {
+                if let Some(caption) = &mut ole.caption {
+                    visit_paragraphs(&mut caption.paragraphs, report);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn visit_paragraphs(paragraphs: &mut [Paragraph], report: &mut AdapterReport) {
+        for para in paragraphs {
+            for control in &mut para.controls {
+                match control {
+                    Control::Table(table) => {
+                        for cell in &mut table.cells {
+                            if !cell.apply_inner_margin {
+                                let effective = cell.effective_hwpx_padding(&table.padding);
+                                if (
+                                    cell.padding.left,
+                                    cell.padding.right,
+                                    cell.padding.top,
+                                    cell.padding.bottom,
+                                ) != (
+                                    effective.left,
+                                    effective.right,
+                                    effective.top,
+                                    effective.bottom,
+                                ) {
+                                    cell.padding = effective;
+                                    report.cells_padding_normalized_for_hwp += 1;
+                                }
+                            }
+                            visit_paragraphs(&mut cell.paragraphs, report);
+                        }
+                        if let Some(caption) = &mut table.caption {
+                            visit_paragraphs(&mut caption.paragraphs, report);
+                        }
+                    }
+                    Control::Header(header) => visit_paragraphs(&mut header.paragraphs, report),
+                    Control::Footer(footer) => visit_paragraphs(&mut footer.paragraphs, report),
+                    Control::Picture(picture) => {
+                        if let Some(caption) = &mut picture.caption {
+                            visit_paragraphs(&mut caption.paragraphs, report);
+                        }
+                    }
+                    Control::Shape(shape) => visit_shape(shape, report),
+                    Control::Footnote(note) => visit_paragraphs(&mut note.paragraphs, report),
+                    Control::Endnote(note) => visit_paragraphs(&mut note.paragraphs, report),
+                    Control::HiddenComment(comment) => {
+                        visit_paragraphs(&mut comment.paragraphs, report)
+                    }
+                    Control::Field(field) => visit_paragraphs(&mut field.memo_paragraphs, report),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    for section in &mut doc.sections {
+        for master_page in &mut section.section_def.master_pages {
+            visit_paragraphs(&mut master_page.paragraphs, report);
+        }
+        visit_paragraphs(&mut section.paragraphs, report);
+    }
 }
 
 /// HWPX embedded BinData를 한컴 HWP 저장 관례에 맞춰 materialize한다.
@@ -1813,6 +1918,112 @@ pub fn convert_if_hwpx_source(doc: &mut Document, source_format: FileFormat) -> 
 mod tests {
     use super::*;
     use crate::model::paragraph::CharShapeRef;
+
+    #[test]
+    fn native_hwpx_disabled_cell_margin_stays_inert_after_hwp_conversion() {
+        use crate::model::document::HWP5_ORIGIN_HWPX_MARKER_PATH;
+        use crate::model::provenance::SourceFormat;
+        use crate::model::Padding;
+
+        let saved = Padding {
+            left: 510,
+            right: 510,
+            top: 141,
+            bottom: 141,
+        };
+        let table = Table {
+            row_count: 1,
+            col_count: 1,
+            padding: Padding::default(),
+            cells: vec![Cell {
+                padding: saved,
+                apply_inner_margin: false,
+                ..Cell::default()
+            }],
+            ..Table::default()
+        };
+        let mut native = Document::default();
+        native.provenance.format = SourceFormat::Hwpx;
+        native.sections.push(Section {
+            paragraphs: vec![Paragraph {
+                controls: vec![Control::Table(Box::new(table))],
+                ..Paragraph::default()
+            }],
+            ..Section::default()
+        });
+        let mut hwp5_origin = native.clone();
+        hwp5_origin
+            .hwpx_aux_entries
+            .push((HWP5_ORIGIN_HWPX_MARKER_PATH.to_string(), b"1".to_vec()));
+
+        let report = convert_hwpx_to_hwp_ir(&mut native);
+        let native_table = native.sections[0].paragraphs[0]
+            .controls
+            .iter()
+            .find_map(|control| match control {
+                Control::Table(table) => Some(table),
+                _ => None,
+            })
+            .expect("converted table");
+        assert_eq!(report.cells_padding_normalized_for_hwp, 1);
+        let actual = native_table.cells[0].padding;
+        assert_eq!(
+            (actual.left, actual.right, actual.top, actual.bottom),
+            (0, 0, 0, 0)
+        );
+        let effective = native_table.cells[0].effective_padding(&native_table.padding);
+        assert_eq!(
+            (
+                effective.left,
+                effective.right,
+                effective.top,
+                effective.bottom
+            ),
+            (0, 0, 0, 0),
+            "legacy HWP5 rendering must not reactivate the stored 141-HU cell margin"
+        );
+
+        let hwp_bytes = crate::serializer::cfb_writer::serialize_hwp(&native)
+            .expect("serialize converted HWP5");
+        let reparsed = crate::parser::parse_hwp_strict(&hwp_bytes).expect("reparse HWP5");
+        let reparsed_table = reparsed.sections[0]
+            .paragraphs
+            .iter()
+            .find_map(|para| {
+                para.controls.iter().find_map(|control| match control {
+                    Control::Table(table) => Some(table),
+                    _ => None,
+                })
+            })
+            .expect("reparsed table");
+        let effective = reparsed_table.cells[0].effective_padding(&reparsed_table.padding);
+        assert_eq!(
+            (
+                effective.left,
+                effective.right,
+                effective.top,
+                effective.bottom
+            ),
+            (0, 0, 0, 0),
+            "HWP5 export and reimport must preserve disabled HWPX cell margins"
+        );
+
+        let report = convert_hwpx_to_hwp_ir(&mut hwp5_origin);
+        let origin_table = hwp5_origin.sections[0].paragraphs[0]
+            .controls
+            .iter()
+            .find_map(|control| match control {
+                Control::Table(table) => Some(table),
+                _ => None,
+            })
+            .expect("converted table");
+        assert_eq!(report.cells_padding_normalized_for_hwp, 0);
+        let actual = origin_table.cells[0].padding;
+        assert_eq!(
+            (actual.left, actual.right, actual.top, actual.bottom),
+            (saved.left, saved.right, saved.top, saved.bottom)
+        );
+    }
 
     #[test]
     fn border_fill_refs_collected_inside_footnote_and_caption() {

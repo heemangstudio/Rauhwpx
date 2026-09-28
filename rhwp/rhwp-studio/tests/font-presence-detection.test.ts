@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { isFontFamilyAvailable, filterAvailableFontFamilies } from '../src/core/font-presence.ts';
+import {
+  createDeclaredFontAvailabilityProbe,
+  isFontFamilyAvailable,
+  filterAvailableFontFamilies,
+} from '../src/core/font-presence.ts';
 
 /**
  * 캔버스 글립 폭 프로브를 가짜 컨텍스트로 검증한다.
@@ -60,4 +64,26 @@ test('프로브 컨텍스트가 없으면 미설치로 간주한다', () => {
       value: previousDocument,
     });
   }
+});
+
+test('페인트용 Canvas 치환 뒤에도 원본 face 의 설치 여부를 판정한다', () => {
+  const ctx = makeProbeContext(['Apple SD Gothic Neo']);
+  const original = Object.getOwnPropertyDescriptor(ctx, 'font')!;
+  Object.defineProperty(ctx, 'font', {
+    get: original.get,
+    set(value: string) {
+      // 페인트 경로는 미설치 선언 face 에 실제 설치된 fallback 을 붙인다.
+      original.set!.call(ctx, value.includes('"') ? '72px "Apple SD Gothic Neo", serif' : value);
+    },
+  });
+  const available = createDeclaredFontAvailabilityProbe(
+    ctx,
+    { get: original.get!, set: original.set! },
+    family => family === 'Imported Face',
+  );
+
+  assert.equal(isFontFamilyAvailable('Missing Face', ctx), true);
+  assert.equal(available('Missing Face'), false);
+  assert.equal(available('Apple SD Gothic Neo'), true);
+  assert.equal(available('Imported Face'), true);
 });

@@ -137,7 +137,7 @@ static OPERATORS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(
         ("PM", "±"),
         ("MINUSPLUS", "∓"),
         ("MP", "∓"),
-        ("CDOT", "·"),
+        ("CDOT", "⋅"),
         ("CIRC", "∘"),
         ("BULLET", "•"),
         ("AST", "∗"),
@@ -249,7 +249,7 @@ static OPERATORS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(
         ("aleph", "ℵ"),
         ("therefore", "∴"),
         ("because", "∵"),
-        ("cdot", "·"),
+        ("cdot", "⋅"),
         ("times", "×"),
         ("div", "÷"),
         ("pm", "±"),
@@ -678,6 +678,8 @@ mod tests {
     #[test]
     fn test_operators() {
         assert_eq!(lookup_symbol("TIMES"), Some("×"));
+        assert_eq!(lookup_symbol("CDOT"), Some("⋅"));
+        assert_eq!(lookup_symbol("cdot"), Some("⋅"));
         assert_eq!(lookup_symbol("PLUSMINUS"), Some("±"));
         assert_eq!(lookup_symbol("INF"), Some("∞"));
     }

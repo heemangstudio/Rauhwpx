@@ -260,6 +260,20 @@ impl Cell {
         }
     }
 
+    /// Native HWPX has an explicit `hasMargin` switch. Its table `inMargin`
+    /// remains authoritative even when every axis is zero; the saved cell
+    /// `cellMargin` is only active when the switch is set.
+    pub fn effective_hwpx_padding(
+        &self,
+        table_padding: &crate::model::Padding,
+    ) -> crate::model::Padding {
+        if self.apply_inner_margin {
+            self.padding
+        } else {
+            *table_padding
+        }
+    }
+
     pub fn cell_protect(&self) -> bool {
         self.list_header_width_ref & CELL_FLAG_PROTECT != 0
     }

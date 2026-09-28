@@ -125,6 +125,8 @@ pub(crate) fn clamp_tab_leader_end_x(
 pub struct TextStyle {
     /// Font substitution policy shared by wrapping and glyph positioning.
     pub font_metrics_policy: crate::model::provenance::FontMetricsPolicy,
+    /// 라틴 run의 일반 공백은 글꼴 고유 advance를 쓴다. 한글 공백은 반각을 유지한다.
+    pub latin_space: bool,
     /// 글꼴 이름
     pub font_family: String,
     /// 문서가 선언한 대체 글꼴 face (HWPX `<hh:substFont>` / HWP5 alt_name).
@@ -250,6 +252,7 @@ impl Default for TextStyle {
     fn default() -> Self {
         Self {
             font_metrics_policy: Default::default(),
+            latin_space: false,
             font_family: String::new(),
             font_subst: String::new(),
             font_size: 0.0,
@@ -892,6 +895,85 @@ pub(crate) fn composed_line_max_font_size(
         .and_then(|shape_id| styles.char_styles.get(shape_id as usize))
         .map(|style| style.font_size)
         .unwrap_or(0.0)
+}
+
+/// 한컴의 글꼴 기준 줄 상자 높이. 글꼴의 hhea/typographic 수직 메트릭에
+/// 한컴의 줄 상자 여유(130%)를 적용한다. 실폰트가 없으면 일반 CJK 수직
+/// 메트릭(1.3em)을 사용한다.
+pub(crate) fn composed_line_font_box_height(
+    line: &composer::ComposedLine,
+    styles: &style_resolver::ResolvedStyleSet,
+) -> f64 {
+    line.runs
+        .iter()
+        .filter_map(|run| {
+            let style = styles.char_styles.get(run.char_style_id as usize)?;
+            Some(char_style_font_box_height(style, run.lang_index))
+        })
+        .fold(0.0, f64::max)
+}
+
+pub(crate) fn char_style_font_box_height(
+    style: &style_resolver::ResolvedCharStyle,
+    lang_index: usize,
+) -> f64 {
+    let face = style.font_family_for_lang(lang_index);
+    #[cfg(not(target_arch = "wasm32"))]
+    let ratio = font_paths::custom_face_line_height_ratio(face, style.bold, style.italic)
+        .or_else(|| runtime_font_metrics::line_height_ratio(face, style.bold, style.italic));
+    #[cfg(target_arch = "wasm32")]
+    let ratio = runtime_font_metrics::line_height_ratio(face, style.bold, style.italic);
+    style.font_size * ratio.unwrap_or(1.3) * line_box_script_scale(lang_index)
+}
+
+/// 한컴의 CJK 줄 상자는 글꼴 hhea 높이의 130%, 라틴/기타 문자는 hhea 높이 그대로다.
+fn line_box_script_scale(lang_index: usize) -> f64 {
+    if matches!(lang_index, 0 | 2 | 3) {
+        1.3
+    } else {
+        1.0
+    }
+}
+
+/// 생성된 줄의 기준선: 폰트 어센트에 글꼴 줄 상자의 추가 여백 절반을 더한다.
+/// 실폰트가 없으면 원본 기준선을 보존하도록 None을 반환한다.
+pub(crate) fn char_style_font_baseline_distance(
+    style: &style_resolver::ResolvedCharStyle,
+    lang_index: usize,
+) -> Option<f64> {
+    let face = style.font_family_for_lang(lang_index);
+    #[cfg(not(target_arch = "wasm32"))]
+    let ratios = font_paths::custom_face_line_height_ratio(face, style.bold, style.italic)
+        .zip(font_paths::custom_face_ascender_ratio(
+            face,
+            style.bold,
+            style.italic,
+        ))
+        .or_else(|| {
+            runtime_font_metrics::line_height_ratio(face, style.bold, style.italic).zip(
+                runtime_font_metrics::ascender_ratio(face, style.bold, style.italic),
+            )
+        });
+    #[cfg(target_arch = "wasm32")]
+    let ratios = runtime_font_metrics::line_height_ratio(face, style.bold, style.italic).zip(
+        runtime_font_metrics::ascender_ratio(face, style.bold, style.italic),
+    );
+    ratios.map(|(line_height, ascent)| {
+        style.font_size * (ascent + (line_box_script_scale(lang_index) - 1.0) * line_height / 2.0)
+    })
+}
+
+pub(crate) fn composed_line_font_baseline_distance(
+    line: &composer::ComposedLine,
+    styles: &style_resolver::ResolvedStyleSet,
+) -> Option<f64> {
+    line.runs
+        .iter()
+        .filter_map(|run| {
+            let style = styles.char_styles.get(run.char_style_id as usize)?;
+            char_style_font_baseline_distance(style, run.lang_index)
+        })
+        .reduce(f64::max)
 }
 
 /// 순수 텍스트 줄의 저장 metrics가 글자와 문단 스타일로부터 가능한 줄 advance보다

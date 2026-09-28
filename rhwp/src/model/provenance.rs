@@ -82,6 +82,10 @@ pub struct LayoutCompatibilityProfile {
     hwpx_stored_layout: bool,
     hwp5_origin_hwpx: bool,
     native_hwp5_layout: bool,
+    native_hwpx_cell_margin: bool,
+    do_not_align_last_forbidden: bool,
+    adjust_baseline_in_fixed_line_spacing: bool,
+    ms_word_compatible_layout: bool,
     /// 이 세션에서 편집 명령이 문서를 변조했다(native HWP5 섹션의 raw_stream 소실).
     /// 저장 시점 형상 전용 보정(선언 높이 fit-down 등)은 편집 문서에서 꺼야 한다 —
     /// 한글 편집기도 편집 중에는 측정 기반으로 재조판한다.
@@ -102,6 +106,10 @@ impl LayoutCompatibilityProfile {
             hwpx_stored_layout,
             hwp5_origin_hwpx,
             native_hwp5_layout,
+            native_hwpx_cell_margin: false,
+            do_not_align_last_forbidden: false,
+            adjust_baseline_in_fixed_line_spacing: false,
+            ms_word_compatible_layout: false,
             session_edited: false,
         }
     }
@@ -111,6 +119,43 @@ impl LayoutCompatibilityProfile {
     pub(crate) fn with_session_edited(mut self, enabled: bool) -> Self {
         self.session_edited = enabled;
         self
+    }
+
+    pub(crate) fn with_adjust_baseline_in_fixed_line_spacing(mut self, enabled: bool) -> Self {
+        self.adjust_baseline_in_fixed_line_spacing = enabled;
+        self
+    }
+
+    pub fn adjust_baseline_in_fixed_line_spacing(&self) -> bool {
+        self.adjust_baseline_in_fixed_line_spacing
+    }
+
+    pub(crate) fn with_ms_word_compatible_layout(mut self, enabled: bool) -> Self {
+        self.ms_word_compatible_layout = enabled;
+        self
+    }
+
+    pub fn ms_word_compatible_layout(&self) -> bool {
+        self.ms_word_compatible_layout
+    }
+
+    pub(crate) fn with_do_not_align_last_forbidden(mut self, enabled: bool) -> Self {
+        self.do_not_align_last_forbidden = enabled;
+        self
+    }
+
+    pub fn do_not_align_last_forbidden(&self) -> bool {
+        self.do_not_align_last_forbidden
+    }
+
+    pub(crate) fn with_native_hwpx_cell_margin(mut self, enabled: bool) -> Self {
+        self.native_hwpx_cell_margin = enabled;
+        self
+    }
+
+    /// HWPX `hasMargin` selects the cell margin or the explicit table margin.
+    pub fn native_hwpx_cell_margin(&self) -> bool {
+        self.native_hwpx_cell_margin
     }
 
     /// 이 세션에서 편집 명령이 문서를 변조했는가.

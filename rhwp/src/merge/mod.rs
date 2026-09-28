@@ -6441,6 +6441,12 @@ fn merge_doc_info(
         distribute_doc_data_removed: t!(distribute_doc_data_removed, "document-property"),
         raw_stream_dirty: true,
         hwpx_head_tail: t!(hwpx_head_tail, "document-property"),
+        hwpx_target_program: t!(hwpx_target_program, "document-property"),
+        do_not_align_last_forbidden: t!(do_not_align_last_forbidden, "document-property"),
+        adjust_baseline_in_fixed_line_spacing: t!(
+            adjust_baseline_in_fixed_line_spacing,
+            "document-property"
+        ),
         hwpml_version: t!(hwpml_version, "document-property"),
     })
 }

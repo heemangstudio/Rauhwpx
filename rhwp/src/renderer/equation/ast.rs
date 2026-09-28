@@ -127,6 +127,12 @@ pub enum EqNode {
         body: Box<EqNode>,
     },
 
+    /// HWP rm/it 선언의 실제 토큰 경계. 글꼴 효과는 FontStyle과 같지만 수식 간격에 영향을 준다.
+    FontDeclaration {
+        style: FontStyleKind,
+        body: Box<EqNode>,
+    },
+
     /// 색상: COLOR{R,G,B}{body}
     Color {
         r: u8,

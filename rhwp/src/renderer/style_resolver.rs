@@ -19,6 +19,8 @@ pub const LANG_COUNT: usize = 7;
 #[derive(Debug, Clone)]
 pub struct ResolvedCharStyle {
     pub font_metrics_policy: crate::model::provenance::FontMetricsPolicy,
+    /// MS Word compatibility uses the Latin face's own space advance.
+    pub latin_font_space: bool,
     /// 글꼴 이름 (한국어 = 기본값, font_families[0]과 동일)
     pub font_family: String,
     /// 7개 언어 카테고리별 글꼴 이름
@@ -87,6 +89,7 @@ impl Default for ResolvedCharStyle {
     fn default() -> Self {
         Self {
             font_metrics_policy: Default::default(),
+            latin_font_space: false,
             font_family: String::new(),
             font_families: Vec::new(),
             subst_families: Vec::new(),
@@ -403,6 +406,10 @@ fn resolve_single_char_style(cs: &CharShape, doc_info: &DocInfo, dpi: f64) -> Re
 
     ResolvedCharStyle {
         font_metrics_policy: doc_info.font_metrics_policy,
+        latin_font_space: doc_info
+            .hwpx_target_program
+            .as_deref()
+            .is_some_and(|program| program.eq_ignore_ascii_case("MS_WORD")),
         font_family,
         font_families,
         subst_families,
@@ -478,7 +485,8 @@ pub fn detect_lang_category(ch: char) -> usize {
         // Katakana Phonetic Extensions
         0x31F0..=0x31FF => 3,
 
-        // 기호: 수학 기호, 화살표, 기술 기호, 도형, Dingbats 등
+        // 기호: 그리스 문자, 수학 기호, 화살표, 기술 기호, 도형, Dingbats 등
+        0x0370..=0x03FF | 0x1F00..=0x1FFF |
         0x2190..=0x21FF | 0x2200..=0x22FF | 0x2300..=0x23FF |
         0x2500..=0x257F | 0x2580..=0x259F | 0x25A0..=0x25FF |
         0x2600..=0x26FF | 0x2700..=0x27BF |
@@ -1120,6 +1128,16 @@ mod tests {
     use crate::model::style::*;
     use crate::renderer::DEFAULT_DPI;
 
+    #[test]
+    fn latin_font_space_follows_document_compatibility_target() {
+        let mut info = make_doc_info_with_font();
+        for (target, expected) in [("HWP201X", false), ("MS_WORD", true)] {
+            info.hwpx_target_program = Some(target.into());
+            let styles = resolve_styles(&info, DEFAULT_DPI);
+            assert_eq!(styles.char_styles[0].latin_font_space, expected);
+        }
+    }
+
     fn make_doc_info_with_font() -> DocInfo {
         DocInfo {
             font_faces: vec![
@@ -1447,6 +1465,8 @@ mod tests {
 
     #[test]
     fn test_detect_lang_category_symbol() {
+        assert_eq!(detect_lang_category('μ'), 5); // 그리스 문자
+        assert_eq!(detect_lang_category('Ω'), 5);
         assert_eq!(detect_lang_category('→'), 5); // 화살표
         assert_eq!(detect_lang_category('★'), 5); // 도형
         assert_eq!(detect_lang_category('①'), 5); // 원숫자
