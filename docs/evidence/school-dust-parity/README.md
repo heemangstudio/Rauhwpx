@@ -2,34 +2,44 @@
 
 Reference: a seven-page PDF exported by Hancom Office for macOS from the supplied report. The private source document, full-page captures, and proprietary fonts are not included.
 
-The native comparison uses 200 dpi renders and the Hancom parity harness. Its mismatch percentage measures differing pixels after the harness tolerances.
+The comparison uses 200 dpi renders and the Hancom parity harness. Percentages measure differing pixels after the harness tolerances; they are not raw pixel identity.
 
-| Page | Final native mismatch |
-| --- | ---: |
-| 1 | 0.00% |
-| 2 | 7.02% |
-| 3 | 0.00% |
-| 4 | 5.38% |
-| 5 | 0.02% |
-| 6 | 0.02% |
-| 7 | 0.00% |
+| Page | Native mismatch | Studio mismatch |
+| --- | ---: | ---: |
+| 1 | 0.00% | 0.00% |
+| 2 | 0.00% | 0.00% |
+| 3 | 0.00% | 0.00% |
+| 4 | 0.00% | 0.00% |
+| 5 | 0.02% | 0.02% |
+| 6 | 0.02% | 0.06% |
+| 7 | 0.00% | 0.00% |
 
-The original renderer produced five pages instead of seven, with an 81.68% worst-page mismatch. The updated renderer produces seven pages. All 70 comparison bands were reviewed.
+The original renderer produced five pages instead of seven, with an 81.68% worst-page mismatch. Both final renderers produce seven pages. Review of all 70 comparison bands found no high or medium visual defects; residual differences are font-edge and raster rounding noise.
 
 ![Floating title before, after, and in Hancom](title-placement.png)
 
-## Remaining differences
+The title comparison starts with the original renderer. The equation comparison below starts after the initial pagination fixes, so all three crops show the same content.
 
-Full visual parity is not verified. Equation appearance still differs, and the following table row begins approximately 2.41 pt too low on page 2 and 4.76 pt too low on page 4. Greek μ font selection and associated spaces also differ. There is a small Canvas2D spacing difference on one pledge line and minor border/raster rounding.
-
-A controlled empty-paragraph/font-slot experiment could not be completed because Hancom became unresponsive. The implementation does not include an unverified document-specific adjustment for those residuals.
+![Equation layout before, after, and in Hancom](equation-layout.png)
 
 ## Browser verification
 
-Studio uses the production font-import event so imported metrics reach WASM. The reference font set includes ten fonts, including HYhwpEQ for equations. Studio renders seven pages with no browser errors. Its per-page mismatch is 0.00%, 7.13%, 0.00%, 5.51%, 0.02%, 0.06%, and 2.17%. Tests also cover fonts imported after opening and a fresh context without direct font imports. The desktop font loader supplies fonts in that last case.
+Studio imports eleven reference fonts through the production font-import event, including HYhwpEQ and Times New Roman Bold. Importing before or after opening the document produces pixel-identical captures on all seven pages, with zero browser errors. A fresh context without direct imports also renders seven pages without errors; the desktop font loader supplies system fonts in that control.
 
-## Regression checks
+## Scope and regression checks
 
-Compatibility metadata scopes generated line metrics and consecutive large-table flow to MS Word HWPX. Existing HWP-generated layout and editing cases are checked separately. Header coordinates were updated only after comparison with the existing official PDF; the expected number position is within 0.08 px of its mapped PDF origin. One SVG golden changed only in numerical serialization below 1.14e-13 px. The table-text SVG remains byte-identical to its original golden.
+Compatibility metadata scopes generated line metrics and table flow to MS Word HWPX. Equation geometry uses modern source-font metrics only when the matching font is available; legacy HFT and fallback behavior remain separate. Generated equation line corrections live in the render projection and preserve authored source geometry. Fraction clearance, declaration boundaries, and neighboring non-fraction content have focused behavioral coverage.
 
-The complete Rust run recorded 5,172 passes, six failures, and 66 ignored tests. Five failures reproduced on the base commit. The remaining failure used an intermediate table-text golden; restoring its original, byte-identical golden made all three active SVG tests pass. No introduced failure remains after that targeted rerun. Studio unit tests recorded 2,495 passes and one skip, and TypeScript and Rust formatting checks passed.
+Controlled Hancom exports check source-font availability, explicit and implicit equation spacing, fraction children, script placement, and saved-height independence at multiple font sizes. In a separate 20 pt fraction control, the native bar center remains 0.7 pt above the reference with the correct 0.8 pt stroke; no fitted offset was added. This does not affect the target report's visual-parity verdict.
+
+The final complete Rust run (`cargo test --profile release-test --features native-skia --no-fail-fast`) recorded 5,208 passes, five existing base failures, and 66 ignored tests. No newly failing test remains.
+
+The five failures also reproduce on current main `a4e301b8`:
+
+- `sample16_hwp5_2022_page3_latin_font_matches_legacy_hancom_mapping`
+- `issue_1139_endnote_equation_cursor_rects_do_not_rewind_to_line_start`
+- `issue_1256_2022_sep_page10_question12_keeps_between_notes_gap`
+- `issue_1549_multi_positive_float_host_title_renders_above_tables`
+- `visible_host_title_still_pushes_its_float_table_down`
+
+Studio unit tests: 2,498 passed, one skipped. WASM and native builds, TypeScript, Rust formatting, and whitespace checks pass. Earlier direct edit/undo checks preserved the report's visible seven-page layout; bibliography undo can coalesce adjacent same-style JSON runs.

@@ -202,7 +202,7 @@ pub struct EqLayout {
 
 /// 비율 상수
 pub(crate) const SCRIPT_SCALE: f64 = 0.7; // 첨자 크기 비율
-const FRAC_LINE_PAD: f64 = 0.2; // 분수선 상하 여백 (font_size 비율)
+pub(crate) const FRAC_LINE_PAD: f64 = 0.2; // 분수선 상하 여백 (font_size 비율)
 const FRAC_LINE_THICK: f64 = 0.04; // 분수선 두께 (font_size 비율)
 const SQRT_PAD: f64 = 0.1; // 제곱근 내부 상단 여백
 const PAREN_PAD: f64 = 0.08; // 괄호 내부 좌우 여백
@@ -397,7 +397,24 @@ impl EqLayout {
                 _ => 0.0,
             }
         };
-        trailing.max(leading)
+        let gap = trailing.max(leading);
+        // 현대 분수의 bar 폭은 자체 thin 여백을 포함한다. 별도 원자 간격은
+        // 연산자 뒤 분수에 0.1em을 더하고, 분수 뒤 연산자에는 0.1em만 둔다.
+        if matches!(next_node, EqNode::Fraction { .. })
+            && matches!(prev.right, MathClass::Rel | MathClass::Bin)
+        {
+            gap + 0.1
+        } else if matches!(prev_node, EqNode::Fraction { .. })
+            && matches!(next.left, MathClass::Rel | MathClass::Bin)
+        {
+            if declaration {
+                0.0
+            } else {
+                0.1
+            }
+        } else {
+            gap
+        }
     }
 
     /// 인접 원자 사이 간격 (em). 한컴 수식의 legacy 서체(HYhwpEQ 등)는 글립을
@@ -1190,7 +1207,13 @@ impl EqLayout {
             // HFT serif cap은 약 0.70em이다. 분모 cap과 bar 사이의 기존
             // FRAC_LINE_PAD clearance를 유지하고 HFT axis(0.375em)를 뺀다.
             let numer_shift = if self.hft { 0.625 } else { 0.65 };
-            n_box.y = (baseline - fs * numer_shift - n_box.baseline).max(0.0);
+            n_box.y = if modern_hy {
+                // 분자에 아래 첨자가 있어도 분자 상자가 분수선 여백을 침범하지 않는다.
+                // baseline 대칭만 맞추면 늘어난 descent만큼 분자가 선 쪽으로 내려간다.
+                (frac_line_from_top - pad - n_box.height).max(0.0)
+            } else {
+                (baseline - fs * numer_shift - n_box.baseline).max(0.0)
+            };
             let denom_shift = if self.hft {
                 0.70 + FRAC_LINE_PAD - 0.375
             } else {
@@ -2447,6 +2470,40 @@ mod tests {
     }
 
     #[test]
+    fn modern_fraction_operator_glue_preserves_direction_and_style_boundaries() {
+        use super::super::symbols::FontStyleKind;
+        let variable = EqNode::Text("a".into());
+        let fraction = EqNode::Fraction {
+            numer: Box::new(variable.clone()),
+            denom: Box::new(EqNode::Text("b".into())),
+        };
+        let styled = EqNode::FontStyle {
+            style: FontStyleKind::Roman,
+            body: Box::new(fraction.clone()),
+        };
+        let inner = Atom::of(MathClass::Inner);
+        let gap = EqLayout::modern_atom_space_em;
+        for (symbol, class, ordinary) in [("=", MathClass::Rel, 0.21), ("+", MathClass::Bin, 0.14)]
+        {
+            let operator = EqNode::Symbol(symbol.into());
+            let atom = Atom::of(class);
+            for body in [&fraction, &styled] {
+                assert!((gap(&operator, atom, body, inner) - ordinary - 0.1).abs() < 1e-9);
+                assert_eq!(gap(body, inner, &operator, atom), 0.1);
+                let reset = EqNode::FontDeclaration {
+                    style: FontStyleKind::Roman,
+                    body: Box::new(operator.clone()),
+                };
+                assert_eq!(gap(body, inner, &reset, atom), 0.0);
+            }
+            assert_eq!(
+                gap(&operator, atom, &variable, Atom::of(MathClass::Ord)),
+                ordinary
+            );
+        }
+    }
+
+    #[test]
     fn modern_declarations_restart_incoming_operator_glue_and_scripts_keep_full_glue() {
         use super::super::symbols::FontStyleKind;
         let variable = EqNode::Text("x".into());
@@ -2734,6 +2791,40 @@ mod tests {
                     panic!("sub")
                 };
                 assert!((sub.y - base.baseline * 0.4).abs() < 1e-8);
+            }
+        }
+    }
+
+    #[test]
+    fn modern_fraction_numerator_keeps_bottom_clearance_with_scripts() {
+        for fs in [10.0, 20.0] {
+            for script in ["x over y", "x_i over y", "x^2 over y"] {
+                let ast = EqParser::new(tokenize(script)).parse();
+                let modern = EqLayout::with_font(fs, "HYhwpEQ").layout(&ast);
+                let LayoutKind::Fraction { numer, denom, .. } = &modern.kind else {
+                    panic!("fraction")
+                };
+                let bar_y = fraction_line_y(numer, fs);
+                assert!((bar_y - numer.y - numer.height - fs * FRAC_LINE_PAD).abs() < 1e-9);
+                let symmetric_numer_y = (modern.baseline - fs * 0.65 - numer.baseline).max(0.0);
+                if script.contains('_') {
+                    assert!(numer.y < symmetric_numer_y);
+                } else {
+                    assert!((numer.y - symmetric_numer_y).abs() < 1e-9);
+                }
+                let previous_denom_y = (modern.baseline + fs * 0.65 - denom.baseline)
+                    .max(bar_y + fs * FRAC_LINE_THICK);
+                assert!((denom.y - previous_denom_y).abs() < 1e-9);
+                let legacy = EqLayout::with_font(fs, "HYhwpEQ")
+                    .with_version("")
+                    .layout(&ast);
+                let LayoutKind::Fraction { numer, .. } = &legacy.kind else {
+                    panic!("fraction")
+                };
+                assert!(
+                    (numer.y - (legacy.baseline - fs * 0.625 - numer.baseline).max(0.0)).abs()
+                        < 1e-9
+                );
             }
         }
     }

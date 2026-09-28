@@ -334,6 +334,107 @@ mod synthetic_percent_line_spacing_tests {
     }
 
     #[test]
+    fn generated_fraction_reflows_independent_saved_heights() {
+        struct ClearFontMetrics;
+        impl Drop for ClearFontMetrics {
+            fn drop(&mut self) {
+                crate::renderer::runtime_font_metrics::clear();
+            }
+        }
+        let _clear_font_metrics = ClearFontMetrics;
+        crate::renderer::runtime_font_metrics::register(
+            include_bytes!("../../../tests/fixtures/fonts/RHWPShapingFixture.ttf"),
+            &["HYhwpEQ".to_string()],
+            false,
+            false,
+        )
+        .expect("register equation face metrics");
+        let styles = ResolvedStyleSet {
+            para_styles: vec![ResolvedParaStyle {
+                line_spacing: 135.0,
+                ..ResolvedParaStyle::default()
+            }],
+            ..ResolvedStyleSet::default()
+        };
+        let make = |script: &str, object_height: u32, line_height: i32, tag: u32| {
+            let mut eq = crate::model::control::Equation::default();
+            eq.script = script.to_string();
+            eq.font_name = "HYhwpEQ".to_string();
+            eq.version_info = "Equation Version 60".to_string();
+            eq.common.treat_as_char = true;
+            eq.common.height = object_height;
+            Paragraph {
+                controls: vec![Control::Equation(Box::new(eq))],
+                line_segs: vec![LineSeg {
+                    line_height,
+                    text_height: line_height,
+                    baseline_distance: line_height * 60 / 100,
+                    line_spacing: 350,
+                    tag,
+                    ..LineSeg::default()
+                }],
+                ..Paragraph::default()
+            }
+        };
+        let generated = LineSeg::TAG_IMPLEMENTATION_PROPERTY;
+        let fraction = crate::renderer::equation::intrinsic_metrics_px_with_version(
+            "1 over x",
+            1000,
+            96.0,
+            "HYhwpEQ",
+            "Equation Version 60",
+        );
+        let flow = crate::renderer::equation::generated_fraction_flow_height_px(
+            "1 over x",
+            1000,
+            96.0,
+            "HYhwpEQ",
+            "Equation Version 60",
+        )
+        .expect("fraction occupies the equation box bottom");
+        assert!((fraction.height - flow - crate::renderer::hwpunit_to_px(200, 96.0)).abs() < 0.01);
+        let source = vec![
+            make("1 over x", 2_440, 2_440, generated),
+            make("1 over x", 4_880, 2_440, generated),
+            make("1 over x", 2_440, 4_880, generated),
+            make("C", 2_440, 2_440, generated),
+            make("1 over x", 2_440, 2_440, 0),
+        ];
+        let mut projected = source.clone();
+        assert!(DocumentCore::project_synthetic_percent_line_spacing(
+            &mut projected,
+            &styles,
+            96.0,
+        ));
+        for para in &projected[1..3] {
+            assert_eq!(
+                para.line_segs[0].line_height,
+                projected[0].line_segs[0].line_height
+            );
+            assert_eq!(
+                para.line_segs[0].text_height,
+                projected[0].line_segs[0].text_height
+            );
+            assert_eq!(
+                para.line_segs[0].line_spacing,
+                projected[0].line_segs[0].line_spacing
+            );
+        }
+        assert!(projected[3].line_segs[0].line_height < projected[0].line_segs[0].line_height);
+        let metrics = |para: &Paragraph| {
+            let seg = &para.line_segs[0];
+            (
+                seg.line_height,
+                seg.text_height,
+                seg.line_spacing,
+                seg.baseline_distance,
+                seg.tag,
+            )
+        };
+        assert_eq!(metrics(&projected[4]), metrics(&source[4]));
+    }
+
+    #[test]
     fn generated_short_equation_uses_font_pitch_and_intrinsic_overflow() {
         const FONT: &[u8] = include_bytes!("../../../tests/fixtures/fonts/RHWPShapingFixture.ttf");
         let face = "__rhwp_equation_pitch_fixture__";
@@ -1317,10 +1418,107 @@ impl DocumentCore {
                         }
                     }
                 }
+                // A generated modern equation line stores an estimated object
+                // box. Rebuild its occupied height from the equation nucleus;
+                // a fraction's trailing rule clearance is paint-only when the
+                // object does not affect line spacing.
+                let tall_equation_projection = (|| {
+                    let style = style?;
+                    let [seg] = para.line_segs.as_slice() else {
+                        return None;
+                    };
+                    let [Control::Equation(eq)] = para.controls.as_slice() else {
+                        return None;
+                    };
+                    if style.line_spacing_type != LineSpacingType::Percent
+                        || seg.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY == 0
+                        || !para
+                            .text
+                            .chars()
+                            .all(|c| c.is_whitespace() || c == '\u{0002}' || c == '\u{fffc}')
+                        || !eq.common.treat_as_char
+                        || eq.common.affect_line_spacing
+                        || eq.version_info != "Equation Version 60"
+                        || !crate::renderer::equation::font::is_legacy_equation_font(&eq.font_name)
+                    {
+                        return None;
+                    }
+                    let em = crate::renderer::hwpunit_to_px(eq.font_size as i32, dpi);
+                    let font_height = crate::renderer::runtime_font_metrics::line_height_ratio(
+                        &eq.font_name,
+                        false,
+                        false,
+                    )
+                    .or_else(|| {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        {
+                            crate::renderer::font_paths::custom_face_line_height_ratio(
+                                &eq.font_name,
+                                false,
+                                false,
+                            )
+                        }
+                        #[cfg(target_arch = "wasm32")]
+                        {
+                            None
+                        }
+                    })?;
+                    if em <= 0.0 {
+                        return None;
+                    }
+                    let fraction_flow =
+                        crate::renderer::equation::generated_fraction_flow_height_px(
+                            &eq.script,
+                            eq.font_size,
+                            dpi,
+                            &eq.font_name,
+                            &eq.version_info,
+                        );
+                    let raw_object_height =
+                        crate::renderer::hwpunit_to_px(eq.common.height as i32, dpi);
+                    let raw_line_height = crate::renderer::hwpunit_to_px(seg.line_height, dpi);
+                    if fraction_flow.is_none()
+                        && raw_object_height <= em * font_height
+                        && raw_line_height <= em * font_height
+                    {
+                        return None;
+                    }
+                    let intrinsic = crate::renderer::equation::intrinsic_metrics_px_with_version(
+                        &eq.script,
+                        eq.font_size,
+                        dpi,
+                        &eq.font_name,
+                        &eq.version_info,
+                    );
+                    let height = fraction_flow
+                        .unwrap_or(intrinsic.height)
+                        .max(em * font_height);
+                    let spacing = em * font_height * (style.line_spacing - 100.0) / 100.0;
+                    Some((
+                        crate::renderer::px_to_hwpunit_round(height, dpi),
+                        crate::renderer::px_to_hwpunit_round(intrinsic.baseline, dpi),
+                        crate::renderer::px_to_hwpunit_round(spacing, dpi),
+                    ))
+                })();
+                if let Some((height, baseline, spacing)) = tall_equation_projection {
+                    let seg = &mut para.line_segs[0];
+                    seg.line_height = height;
+                    seg.text_height = height;
+                    seg.baseline_distance = baseline;
+                    seg.line_spacing = spacing;
+                    if let Control::Equation(eq) = &mut para.controls[0] {
+                        eq.common.height = height.max(1) as u32;
+                        eq.baseline = 0;
+                    }
+                    changed = true;
+                }
                 // An EQEDIT-only generated line records the object's em-sized box, not
                 // the Mac font line box. Keep the object's intrinsic overflow, then
                 // derive the percent pitch and baseline from its actual equation face.
                 let equation_projection = (|| {
+                    if tall_equation_projection.is_some() {
+                        return None;
+                    }
                     let style = style?;
                     if style.line_spacing_type != LineSpacingType::Percent
                         || para.line_segs.len() != 1

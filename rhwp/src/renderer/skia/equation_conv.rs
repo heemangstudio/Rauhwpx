@@ -216,8 +216,8 @@ fn render_box(
                 italic,
                 bold,
             );
-            // 한컴 legacy 분수선은 e06d 막대 글립을 상자 폭으로 늘려 칠한다
-            // (eq-002 실측: 기준선 아래 0.3em, 내용 크기의 1.256배).
+            // HY 분수선은 e06d 막대를 상자 폭으로 늘려 칠한다. 현대 수식의
+            // 세로 크기는 본문 em과 같고, 구형 HFT만 기존 1.256배를 사용한다.
             let bar_painted = draw_legacy_pua_glyph(
                 canvas,
                 fonts,
@@ -225,7 +225,7 @@ fn render_box(
                 '\u{e06d}',
                 x + *bar_inset,
                 y + lb.baseline + fs * 0.3,
-                fs * 1.256,
+                fs * if fonts.modern { 1.0 } else { 1.256 },
                 Some(lb.width - *bar_inset * 2.0),
                 color,
             );

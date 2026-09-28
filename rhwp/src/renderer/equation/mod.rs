@@ -60,12 +60,8 @@ pub(crate) fn control_line_flow_height(
 ) -> f64 {
     let modern_hy_face = eq.version_info == "Equation Version 60"
         && font::is_legacy_equation_font(&eq.font_name)
-        && (crate::renderer::runtime_font_metrics::line_height_ratio(
-            &eq.font_name,
-            false,
-            false,
-        )
-        .is_some()
+        && (crate::renderer::runtime_font_metrics::line_height_ratio(&eq.font_name, false, false)
+            .is_some()
             || {
                 #[cfg(not(target_arch = "wasm32"))]
                 {
@@ -212,6 +208,51 @@ pub fn intrinsic_metrics_px_with_version(
     }
 }
 
+/// The fraction box includes a trailing rule clearance for paint. A generated
+/// inline equation with `affectLSpacing=0` can let that clearance overhang its
+/// occupied line. Other nuclei in the same row still determine the line bottom.
+fn fraction_occupied_bottom(box_: &layout::LayoutBox, pad: f64) -> Option<f64> {
+    use layout::LayoutKind;
+
+    match &box_.kind {
+        LayoutKind::Fraction { .. } => Some((box_.height - pad).max(0.0)),
+        LayoutKind::Row(children) => {
+            let mut contains_fraction = false;
+            let bottom = children.iter().fold(0.0_f64, |bottom, child| {
+                let flow = fraction_occupied_bottom(child, pad);
+                contains_fraction |= flow.is_some();
+                bottom.max(child.y + flow.unwrap_or(child.height))
+            });
+            contains_fraction.then_some(bottom)
+        }
+        LayoutKind::Paren { body, .. }
+        | LayoutKind::FontStyle { body, .. }
+        | LayoutKind::Decoration { body, .. } => {
+            let body_bottom = fraction_occupied_bottom(body, pad)? + body.y;
+            let own_bottom = (box_.height > body.y + body.height + 0.01)
+                .then_some(box_.height)
+                .unwrap_or(0.0);
+            Some(body_bottom.max(own_bottom))
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn generated_fraction_flow_height_px(
+    script: &str,
+    font_size: u32,
+    dpi: f64,
+    font_name: &str,
+    version_info: &str,
+) -> Option<f64> {
+    let em = super::hwpunit_to_px(font_size.max(1) as i32, dpi);
+    let ast = parser::EqParser::new(tokenizer::tokenize(script)).parse();
+    let box_ = layout::EqLayout::with_font(em, font_name)
+        .with_version(version_info)
+        .layout(&ast);
+    fraction_occupied_bottom(&box_, em * layout::FRAC_LINE_PAD)
+}
+
 /// 저장 개체 폭 안에 배치한 수식의 실제 paint 폭(HWPUNIT).
 ///
 /// painter는 `layout_in_control_width`로 원자 간격을 줄여 저장 폭에 맞춘다. 최소 간격으로도
@@ -276,6 +317,44 @@ pub fn intrinsic_size_hwp_with_font(script: &str, font_size: u32, font_name: &st
 #[cfg(test)]
 mod metric_tests {
     use super::*;
+
+    #[test]
+    fn fraction_clearance_does_not_shrink_a_neighboring_nucleus() {
+        use layout::{LayoutBox, LayoutKind};
+
+        let leaf = |height| LayoutBox {
+            glyph_advances: None,
+            x: 0.0,
+            y: 0.0,
+            width: 10.0,
+            height,
+            baseline: height * 0.8,
+            kind: LayoutKind::Text("x".to_string()),
+        };
+        let fraction = LayoutBox {
+            glyph_advances: None,
+            x: 0.0,
+            y: 0.0,
+            width: 10.0,
+            height: 24.4,
+            baseline: 14.7,
+            kind: LayoutKind::Fraction {
+                numer: Box::new(leaf(10.0)),
+                denom: Box::new(leaf(10.0)),
+                bar_inset: 0.0,
+            },
+        };
+        let row = LayoutBox {
+            glyph_advances: None,
+            x: 0.0,
+            y: 0.0,
+            width: 20.0,
+            height: 24.4,
+            baseline: 14.7,
+            kind: LayoutKind::Row(vec![fraction, leaf(23.4)]),
+        };
+        assert_eq!(fraction_occupied_bottom(&row, 2.0), Some(23.4));
+    }
 
     #[test]
     fn source_control_metrics_keep_margins_baseline_and_natural_glyph_size_separate() {
