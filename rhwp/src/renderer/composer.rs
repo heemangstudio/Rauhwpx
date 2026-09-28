@@ -1090,6 +1090,12 @@ fn is_script_numeral(ch: char) -> bool {
     matches!(ch, '\u{00B2}' | '\u{00B3}' | '\u{00B9}' | '\u{2070}' | '\u{2074}'..='\u{2079}' | '\u{2080}'..='\u{2089}')
 }
 
+/// Greek letters use the symbol face but follow Latin word spacing after a
+/// Latin run. The letter itself must keep its symbol font slot.
+fn is_greek_letter(ch: char) -> bool {
+    matches!(ch, '\u{0370}'..='\u{03FF}' | '\u{1F00}'..='\u{1FFF}') && ch.is_alphabetic()
+}
+
 /// TextRun 목록을 언어 카테고리 경계에 따라 세분화한다.
 ///
 /// 동일 CharShape 내에서도 한글→영문 전환 시 별도 Run으로 분리하여
@@ -1106,7 +1112,13 @@ pub(crate) fn split_runs_by_lang(runs: Vec<ComposedTextRun>) -> Vec<ComposedText
         if is_script_numeral(ch) {
             next_lang = Some(0);
         } else if !is_lang_neutral(ch) && !super::style_resolver::is_latin_slot_punctuation(ch) {
-            next_lang = Some(detect_lang_category(ch));
+            // A Greek letter is painted with the symbol face, yet the space
+            // before it still belongs to the preceding Latin word.
+            next_lang = Some(if is_greek_letter(ch) {
+                1
+            } else {
+                detect_lang_category(ch)
+            });
         }
     }
     let mut run_start = 0;

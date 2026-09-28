@@ -1615,6 +1615,50 @@ fn script_numerals_keep_glyph_slots_but_bound_half_em_spaces() {
 }
 
 #[test]
+fn greek_unit_keeps_latin_space_before_symbol_face_letters() {
+    let split = split_runs_by_lang(vec![ComposedTextRun {
+        text: "12 μg/m³, 글 34 μg/m³.".into(),
+        ..Default::default()
+    }]);
+    let chars: Vec<_> = split
+        .iter()
+        .flat_map(|run| run.text.chars().map(move |ch| (ch, run.lang_index)))
+        .collect();
+    assert_eq!(
+        chars.iter().map(|(ch, _)| *ch).collect::<String>(),
+        "12 μg/m³, 글 34 μg/m³."
+    );
+    let spaces: Vec<_> = chars
+        .iter()
+        .filter(|(ch, _)| *ch == ' ')
+        .map(|(_, lang)| *lang)
+        .collect();
+    assert_eq!(spaces, [1, 0, 0, 1]);
+    assert!(chars
+        .iter()
+        .filter(|(ch, _)| *ch == 'μ')
+        .all(|(_, lang)| *lang == 5));
+
+    // A non-letter symbol still takes its own slot; punctuation remains Latin.
+    for (text, expected_space) in [("10 →", 5), ("10, 32", 1), ("10 Ω", 1)] {
+        let split = split_runs_by_lang(vec![ComposedTextRun {
+            text: text.into(),
+            ..Default::default()
+        }]);
+        let spaces: Vec<_> = split
+            .iter()
+            .flat_map(|run| {
+                run.text
+                    .chars()
+                    .filter(|ch| *ch == ' ')
+                    .map(move |_| run.lang_index)
+            })
+            .collect();
+        assert_eq!(spaces[0], expected_space, "{text}");
+    }
+}
+
+#[test]
 fn generated_reflow_recovers_space_context_across_prior_line_breaks() {
     let para = Paragraph {
         text: "가, 나\tB".into(),
