@@ -175,6 +175,17 @@ pub(super) fn parse_hwpx_header_with_margin_units(
                 let name = e.name();
                 let local = local_name(name.as_ref());
                 match local {
+                    b"compatibleDocument" => {
+                        doc_info.hwpx_target_program = e
+                            .attributes()
+                            .flatten()
+                            .find(|attr| attr.key.as_ref() == b"targetProgram")
+                            .map(|attr| attr_str(&attr));
+                    }
+                    b"doNotAlignLastForbidden" => doc_info.do_not_align_last_forbidden = true,
+                    b"adjustBaselineInFixedLinespacing" => {
+                        doc_info.adjust_baseline_in_fixed_line_spacing = true
+                    }
                     b"fontface" => {
                         // <hh:fontface lang="HANGUL"> → 언어 그룹 설정
                         for attr in e.attributes().flatten() {
@@ -238,6 +249,17 @@ pub(super) fn parse_hwpx_header_with_margin_units(
                 let name = e.name();
                 let local = local_name(name.as_ref());
                 match local {
+                    b"compatibleDocument" => {
+                        doc_info.hwpx_target_program = e
+                            .attributes()
+                            .flatten()
+                            .find(|attr| attr.key.as_ref() == b"targetProgram")
+                            .map(|attr| attr_str(&attr));
+                    }
+                    b"doNotAlignLastForbidden" => doc_info.do_not_align_last_forbidden = true,
+                    b"adjustBaselineInFixedLinespacing" => {
+                        doc_info.adjust_baseline_in_fixed_line_spacing = true
+                    }
                     b"beginNum" => parse_begin_num(e, &mut doc_props),
                     b"font" => {
                         parse_font(e, &mut reader, &mut doc_info, current_font_group, false)?;
@@ -2122,6 +2144,24 @@ fn parse_numbering_para_head_attrs(
                 head.number_format = parse_numbering_format_code(&attr_str(&attr));
                 head.attr = (head.attr & !(0x0f << 5)) | ((head.number_format as u32) << 5);
             }
+            b"align" => {
+                let align = match attr_str(&attr).as_str() {
+                    "CENTER" => 1,
+                    "RIGHT" => 2,
+                    _ => 0,
+                };
+                head.attr = (head.attr & !3) | align;
+            }
+            b"useInstWidth" => {
+                head.attr = (head.attr & !(1 << 2)) | (u32::from(parse_bool(&attr)) << 2)
+            }
+            b"autoIndent" => {
+                head.attr = (head.attr & !(1 << 3)) | (u32::from(parse_bool(&attr)) << 3)
+            }
+            b"textOffsetType" => {
+                head.attr =
+                    (head.attr & !(1 << 4)) | (u32::from(attr_str(&attr) == "HWPUNIT") << 4);
+            }
             b"charPrIDRef" => head.char_shape_id = parse_u32(&attr),
             b"widthAdjust" => head.width_adjust = parse_i16(&attr),
             b"textOffset" => head.text_distance = parse_i16(&attr),
@@ -2355,6 +2395,48 @@ fn parse_border_width(attr: &quick_xml::events::attributes::Attribute) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compatible_target_program_is_parsed_from_both_element_forms() {
+        for element in [
+            r#"<hh:compatibleDocument targetProgram="MS_WORD"/>"#,
+            r#"<hh:compatibleDocument targetProgram="MS_WORD"></hh:compatibleDocument>"#,
+        ] {
+            let xml = format!("<hh:head><hh:refList/>{element}</hh:head>");
+            let (info, _) = parse_hwpx_header(&xml).unwrap();
+            assert_eq!(info.hwpx_target_program.as_deref(), Some("MS_WORD"));
+        }
+        let (info, _) = parse_hwpx_header("<hh:head><hh:refList/></hh:head>").unwrap();
+        assert_eq!(info.hwpx_target_program, None);
+    }
+
+    #[test]
+    fn fixed_baseline_compatibility_is_explicit() {
+        for element in [
+            "<hh:adjustBaselineInFixedLinespacing/>",
+            "<hh:adjustBaselineInFixedLinespacing></hh:adjustBaselineInFixedLinespacing>",
+        ] {
+            let xml = format!("<hh:head><hh:refList/><hh:compatibleDocument><hh:layoutCompatibility>{element}</hh:layoutCompatibility></hh:compatibleDocument></hh:head>");
+            let (info, _) = parse_hwpx_header(&xml).unwrap();
+            assert!(info.adjust_baseline_in_fixed_line_spacing);
+        }
+        let (info, _) = parse_hwpx_header("<hh:head><hh:refList/></hh:head>").unwrap();
+        assert!(!info.adjust_baseline_in_fixed_line_spacing);
+    }
+
+    #[test]
+    fn last_forbidden_alignment_compatibility_is_explicit() {
+        for element in [
+            "<hh:doNotAlignLastForbidden/>",
+            "<hh:doNotAlignLastForbidden></hh:doNotAlignLastForbidden>",
+        ] {
+            let xml = format!("<hh:head><hh:refList/><hh:compatibleDocument><hh:layoutCompatibility>{element}</hh:layoutCompatibility></hh:compatibleDocument></hh:head>");
+            let (info, _) = parse_hwpx_header(&xml).unwrap();
+            assert!(info.do_not_align_last_forbidden);
+        }
+        let (info, _) = parse_hwpx_header("<hh:head><hh:refList/></hh:head>").unwrap();
+        assert!(!info.do_not_align_last_forbidden);
+    }
 
     #[test]
     fn package_version_selects_margin_units_without_using_header_version() {
@@ -2593,7 +2675,8 @@ mod tests {
     <hh:numberings itemCnt="1">
       <hh:numbering id="1" start="0">
         <hh:paraHead start="1" level="1" numFormat="DIGIT"
-          widthAdjust="800" textOffset="50" charPrIDRef="7">^1.</hh:paraHead>
+          widthAdjust="800" textOffset="50" textOffsetType="HWPUNIT"
+          align="RIGHT" useInstWidth="1" autoIndent="1" charPrIDRef="7">^1.</hh:paraHead>
         <hh:paraHead start="3" level="2" numFormat="HANGUL_SYLLABLE">(^2)</hh:paraHead>
       </hh:numbering>
     </hh:numberings>
@@ -2610,6 +2693,7 @@ mod tests {
         assert_eq!(numbering.level_start_numbers[1], 3);
         assert_eq!(numbering.heads[0].number_format, 0);
         assert_eq!(numbering.heads[1].number_format, 8);
+        assert_eq!(numbering.heads[0].attr & 0x1f, 0b11110);
         assert_eq!(numbering.heads[0].width_adjust, 800);
         assert_eq!(numbering.heads[0].text_distance, 50);
         assert_eq!(numbering.heads[0].char_shape_id, 7);

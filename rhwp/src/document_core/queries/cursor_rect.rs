@@ -999,12 +999,10 @@ impl DocumentCore {
         }
 
         impl ParaLineHit {
-            fn cursor_x(self, is_list_para: bool, char_offset: usize) -> f64 {
-                if is_list_para && char_offset == 0 {
-                    self.marker_end_x
-                        .or(self.first_body_x)
-                        .unwrap_or(self.line_x)
-                } else if is_list_para {
+            fn cursor_x(self, is_list_para: bool) -> f64 {
+                if is_list_para {
+                    // 빈 줄 anchor도 마커와 본문 간격을 반영한 실제 배치다.
+                    // 글립 폭만 재측정한 marker_end보다 우선해야 hit-test와 일치한다.
                     self.first_body_x
                         .or(self.marker_end_x)
                         .unwrap_or(self.line_x)
@@ -1259,7 +1257,7 @@ impl DocumentCore {
             list_marker_char_shape_id,
             &self.styles,
         ) {
-            let x = line_hit.cursor_x(is_list_para, char_offset);
+            let x = line_hit.cursor_x(is_list_para);
             let y = line_hit.y;
             let h = line_hit.height;
             // 인라인 도형 컨트롤이 있는 경우: char_offset에 따라 x 위치 조정

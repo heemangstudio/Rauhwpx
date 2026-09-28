@@ -8,8 +8,9 @@ use super::style_resolver::ResolvedStyleSet;
 use super::{hwpunit_to_px, DEFAULT_DPI};
 use crate::model::control::Control;
 use crate::model::footnote::{Footnote, FootnoteShape};
-use crate::model::paragraph::Paragraph;
+use crate::model::paragraph::{LineSeg, Paragraph};
 use crate::model::shape::{Caption, CommonObjAttr, TextWrap, VertRelTo};
+use crate::model::style::LineSpacingType;
 use crate::model::table::{Table, TablePageBreak};
 
 /// treat_as_char 표가 인라인(텍스트와 나란히)인지 판별
@@ -162,19 +163,152 @@ pub(crate) fn grow_rows_for_span_requirements(
 
 /// Whether a composed table-cell line contributes its stored trailing spacing.
 ///
-/// Full-cell and partial-cell paint both stop at the final visible line box.  The
-/// one exception is a non-inline CellBreak table: there the last spacing is a
-/// structural pagination advance between paragraph units, not trailing paint.
+/// Full-cell and partial-cell paint both stop at the final visible line box.
+/// A non-inline CellBreak table keeps the last spacing as a structural advance;
+/// so does an HWPX RowBreak cell with a stored structural advance.
 #[inline]
 pub(crate) fn include_table_cell_line_spacing(
     table: &Table,
     is_cell_last_line: bool,
     cell_para_count: usize,
+    hwpx_structural_tail: i32,
 ) -> bool {
     !is_cell_last_line
-        || (cell_para_count > 1
-            && !table.common.treat_as_char
-            && matches!(table.page_break, TablePageBreak::CellBreak))
+        || (!table.common.treat_as_char
+            && ((cell_para_count > 1 && matches!(table.page_break, TablePageBreak::CellBreak))
+                || (hwpx_structural_tail != 0
+                    && matches!(
+                        table.page_break,
+                        TablePageBreak::CellBreak | TablePageBreak::RowBreak
+                    ))))
+}
+
+#[inline]
+pub(crate) fn include_table_cell_spacing_after(
+    table: &Table,
+    is_last_para: bool,
+    hwpx_structural_tail: i32,
+) -> bool {
+    !is_last_para
+        || (!table.common.treat_as_char
+            && hwpx_structural_tail > 0
+            && matches!(
+                table.page_break,
+                TablePageBreak::CellBreak | TablePageBreak::RowBreak
+            ))
+}
+
+/// HWPX generated percent lines and authored compressed lines carry their
+/// signed pitch through the final line, including a one-paragraph cell.
+pub(crate) fn hwpx_structural_cell_tail(
+    para: &Paragraph,
+    styles: &ResolvedStyleSet,
+    dpi: f64,
+) -> i32 {
+    let Some(style) = styles.para_styles.get(para.para_shape_id as usize) else {
+        return 0;
+    };
+    let Some(last) = para.line_segs.last() else {
+        return 0;
+    };
+    if !para.controls.is_empty() {
+        return 0;
+    }
+    let line_height = hwpunit_to_px(last.line_height, dpi);
+    let line_spacing = hwpunit_to_px(last.line_spacing, dpi);
+    if last.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY == 0 && line_spacing < 0.0 {
+        let expected_pitch = match style.line_spacing_type {
+            LineSpacingType::Fixed => style.line_spacing,
+            LineSpacingType::Percent => line_height * style.line_spacing / 100.0,
+            _ => return 0,
+        };
+        return if (line_height + line_spacing - expected_pitch).abs() <= 0.25 {
+            last.line_spacing
+        } else {
+            0
+        };
+    }
+    if style.line_spacing_type != LineSpacingType::Percent
+        || line_spacing <= 0.0
+        || !crate::renderer::para_has_no_stored_line_segs(para)
+    {
+        return 0;
+    }
+    let Some(font_size) = para
+        .char_shape_id_at(last.text_start as usize)
+        .or_else(|| para.char_shapes.first().map(|shape| shape.char_shape_id))
+        .and_then(|id| styles.char_styles.get(id as usize))
+        .map(|style| style.font_size)
+    else {
+        return 0;
+    };
+    if (line_height - font_size).abs() <= 0.25 {
+        last.line_spacing
+    } else {
+        0
+    }
+}
+
+#[cfg(test)]
+mod hwpx_synthetic_tail_tests {
+    use super::*;
+    use crate::model::paragraph::{CharShapeRef, LineSeg};
+    use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle};
+
+    #[test]
+    fn rowbreak_trailing_advance_uses_generated_or_authored_pitch() {
+        let table = Table {
+            page_break: TablePageBreak::RowBreak,
+            ..Table::default()
+        };
+        let styles = ResolvedStyleSet {
+            char_styles: vec![ResolvedCharStyle {
+                font_size: hwpunit_to_px(1_000, 96.0),
+                ..ResolvedCharStyle::default()
+            }],
+            para_styles: vec![ResolvedParaStyle {
+                line_spacing: 135.0,
+                ..ResolvedParaStyle::default()
+            }],
+            ..ResolvedStyleSet::default()
+        };
+        let mut paragraph = Paragraph {
+            text: "가".to_string(),
+            char_shapes: vec![CharShapeRef::default()],
+            line_segs: vec![LineSeg {
+                line_height: 1_000,
+                line_spacing: 1_282,
+                tag: LineSeg::TAG_IMPLEMENTATION_PROPERTY,
+                ..LineSeg::default()
+            }],
+            ..Paragraph::default()
+        };
+        let eligible = hwpx_structural_cell_tail(&paragraph, &styles, 96.0);
+        assert!(eligible > 0);
+        assert!(!include_table_cell_line_spacing(&table, true, 2, 0));
+        assert!(include_table_cell_line_spacing(&table, true, 2, eligible));
+        assert!(include_table_cell_line_spacing(&table, true, 1, eligible));
+        assert!(include_table_cell_spacing_after(&table, true, eligible));
+
+        paragraph.line_segs[0].tag = LineSeg::TAG_SINGLE_SEGMENT_LINE;
+        assert_eq!(hwpx_structural_cell_tail(&paragraph, &styles, 96.0), 0);
+        assert!(!include_table_cell_line_spacing(&table, true, 2, 0));
+
+        paragraph.line_segs[0].line_height = 1_903;
+        paragraph.line_segs[0].line_spacing = -373;
+        let fixed_styles = ResolvedStyleSet {
+            para_styles: vec![ResolvedParaStyle {
+                line_spacing_type: LineSpacingType::Fixed,
+                line_spacing: hwpunit_to_px(1_530, 96.0),
+                ..ResolvedParaStyle::default()
+            }],
+            ..styles
+        };
+        let fixed_tail = hwpx_structural_cell_tail(&paragraph, &fixed_styles, 96.0);
+        assert!(fixed_tail < 0);
+        assert!(include_table_cell_line_spacing(&table, true, 1, fixed_tail));
+        assert!(!include_table_cell_spacing_after(&table, true, fixed_tail));
+    }
 }
 
 /// 문단의 측정된 높이 정보
@@ -390,6 +524,7 @@ pub struct MeasuredSection {
 pub struct HeightMeasurer {
     dpi: f64,
     preserve_first_cell_spacing_before: bool,
+    native_hwpx_cell_margin: bool,
     is_hwp3_variant: bool,
     session_edited: bool,
     use_hwp3_origin_flow_spacing_before: bool,
@@ -402,6 +537,7 @@ impl HeightMeasurer {
         Self {
             dpi,
             preserve_first_cell_spacing_before: false,
+            native_hwpx_cell_margin: false,
             is_hwp3_variant: false,
             session_edited: false,
             use_hwp3_origin_flow_spacing_before: false,
@@ -429,6 +565,23 @@ impl HeightMeasurer {
     pub fn with_hwpx_cell_spacing(mut self, enabled: bool) -> Self {
         self.preserve_first_cell_spacing_before = enabled;
         self
+    }
+
+    pub fn with_native_hwpx_cell_margin(mut self, enabled: bool) -> Self {
+        self.native_hwpx_cell_margin = enabled;
+        self
+    }
+
+    fn effective_cell_padding(
+        &self,
+        cell: &crate::model::table::Cell,
+        table: &Table,
+    ) -> crate::model::Padding {
+        if self.native_hwpx_cell_margin {
+            cell.effective_hwpx_padding(&table.padding)
+        } else {
+            cell.effective_padding(&table.padding)
+        }
     }
 
     pub fn with_hwp3_origin_flow_spacing_before(mut self, enabled: bool) -> Self {
@@ -1140,7 +1293,9 @@ impl HeightMeasurer {
                 // #493 세로 Shift 리사이즈(셀보호2.hwp 셀[20] aim=true pad top/bottom=0)가
                 // 이 의미에 의존한다 (#1809 완전 통일 시도는 해당 테스트 회귀로 원복 —
                 // vertical_shift_local_height_keeps_unrelated_cells_stable).
-                let eff_pad = if cell.apply_inner_margin {
+                let eff_pad = if self.native_hwpx_cell_margin {
+                    cell.effective_hwpx_padding(&table.padding)
+                } else if cell.apply_inner_margin {
                     cell.padding
                 } else {
                     cell.effective_padding(&table.padding)
@@ -1188,11 +1343,12 @@ impl HeightMeasurer {
                             // [Task #671] line_segs 비어 있는 셀 paragraph 의 단일 ComposedLine
                             // 압축 결과를 셀 가용 너비에 맞춰 다중 ComposedLine 으로 재분할.
                             // 측정/렌더링 일관성 (layout 의 recompose_for_cell_width 호출과 동일).
-                            crate::renderer::composer::recompose_for_cell_width(
+                            crate::renderer::composer::recompose_for_cell_width_for_source(
                                 &mut comp,
                                 p,
                                 cell_inner_width,
                                 styles,
+                                self.native_hwpx_cell_margin,
                             );
                             let para_style = styles.para_styles.get(p.para_shape_id as usize);
                             let is_last_para = pidx + 1 == cell_para_count;
@@ -1201,7 +1357,12 @@ impl HeightMeasurer {
                             } else {
                                 0.0
                             };
-                            let spacing_after = if !is_last_para {
+                            let tail = if self.native_hwpx_cell_margin {
+                                hwpx_structural_cell_tail(p, styles, self.dpi)
+                            } else {
+                                0
+                            };
+                            let spacing_after = if include_table_cell_spacing_after(table, is_last_para, tail) {
                                 para_style.map(|s| s.spacing_after).unwrap_or(0.0)
                             } else {
                                 0.0
@@ -1357,13 +1518,13 @@ impl HeightMeasurer {
                                                         && is_cell_last_line),
                                             )
                                         };
-                                        // Paint excludes the final visible gap.  Only a
-                                        // fragmentable, non-inline CellBreak cell keeps it as a
-                                        // structural paragraph-unit advance.
+                                        // Generated HWPX RowBreak cells also retain the final
+                                        // paragraph-unit advance after font reflow.
                                         let include_trailing_ls = include_table_cell_line_spacing(
                                             table,
                                             is_cell_last_line,
                                             cell_para_count,
+                                            tail,
                                         );
                                         if include_trailing_ls {
                                             h + hwpunit_to_px(line.line_spacing, self.dpi)
@@ -1544,23 +1705,24 @@ impl HeightMeasurer {
                 // structural trailing 을 보존하므로 required 가 선언높이를 초과할 수 있다
                 // (2501937 row0: 콘텐츠 10016HU + trailing 600HU + pad → 149.1px >
                 // 선언 142.2px). 초과분이 전적으로 그 trailing 이면 선언높이로 clamp.
-                // TAC/RowBreak 는 측정 단계에서 마지막 가시 gap 을 이미 제외하므로 같은
-                // helper 로 0을 반환해 여기서 이중 차감하지 않는다.
+                // 일반 TAC/RowBreak 는 마지막 가시 gap 을 제외한다. HWPX 합성
+                // RowBreak 의 양수 gap 은 재조판 결과이므로 선언높이로 clamp 하지 않는다.
                 let cell_last_trailing_ls = if cell.text_direction == 0
                     && !has_nested_table_in_cell
                     && cell.paragraphs.len() > 1
                     && !matches!(table.page_break, TablePageBreak::RowBreak)
-                    && include_table_cell_line_spacing(table, true, cell.paragraphs.len())
+                    && include_table_cell_line_spacing(table, true, cell.paragraphs.len(), 0)
                 {
                     cell.paragraphs
                         .last()
                         .map(|p| {
                             let mut comp = compose_paragraph(p);
-                            crate::renderer::composer::recompose_for_cell_width(
+                            crate::renderer::composer::recompose_for_cell_width_for_source(
                                 &mut comp,
                                 p,
                                 cell_inner_width,
                                 styles,
+                                self.native_hwpx_cell_margin,
                             );
                             comp.lines
                                 .last()
@@ -1695,7 +1857,7 @@ impl HeightMeasurer {
                 // 레이아웃(resolve_cell_padding)과 정합한다. 직접 분기가 남으면
                 // HWPX→HWP 변환의 micro-grid 계약(aim 일괄 세트)만으로 병합 셀
                 // 행높이 측정이 갈린다 (admrul_0296 행 32.37→31.60, 표 3.87px).
-                let eff_pad = cell.effective_padding(&table.padding);
+                let eff_pad = self.effective_cell_padding(cell, table);
                 let (pad_top, pad_bottom) = (
                     hwpunit_to_px(eff_pad.top as i32, self.dpi),
                     hwpunit_to_px(eff_pad.bottom as i32, self.dpi),
@@ -1736,11 +1898,12 @@ impl HeightMeasurer {
                             let mut comp = compose_paragraph(p);
                             // [Task #671] line_segs 비어 있는 셀 paragraph 의 단일 ComposedLine
                             // 압축 결과를 셀 가용 너비에 맞춰 다중 ComposedLine 으로 재분할.
-                            crate::renderer::composer::recompose_for_cell_width(
+                            crate::renderer::composer::recompose_for_cell_width_for_source(
                                 &mut comp,
                                 p,
                                 cell_inner_width,
                                 styles,
+                                self.native_hwpx_cell_margin,
                             );
                             let para_style = styles.para_styles.get(p.para_shape_id as usize);
                             let is_last_para = pidx + 1 == cell_para_count;
@@ -1749,7 +1912,12 @@ impl HeightMeasurer {
                             } else {
                                 0.0
                             };
-                            let spacing_after = if !is_last_para {
+                            let tail = if self.native_hwpx_cell_margin {
+                                hwpx_structural_cell_tail(p, styles, self.dpi)
+                            } else {
+                                0
+                            };
+                            let spacing_after = if include_table_cell_spacing_after(table, is_last_para, tail) {
                                 para_style.map(|s| s.spacing_after).unwrap_or(0.0)
                             } else {
                                 0.0
@@ -1909,6 +2077,7 @@ impl HeightMeasurer {
                                             table,
                                             is_cell_last_line,
                                             cell_para_count,
+                                            tail,
                                         );
                                         if include_trailing_ls {
                                             h + hwpunit_to_px(line.line_spacing, self.dpi)
@@ -2136,7 +2305,7 @@ impl HeightMeasurer {
                 .filter(|cell| (cell.row as usize) < row_count)
                 .map(|cell| {
                     // [#1809] aim 직접 분기 → 단일 출처 통일 (위 2-c단계와 동일 근거)
-                    let eff_pad = cell.effective_padding(&table.padding);
+                    let eff_pad = self.effective_cell_padding(cell, table);
                     let pad_top = hwpunit_to_px(eff_pad.top as i32, self.dpi);
                     let pad_bottom = hwpunit_to_px(eff_pad.bottom as i32, self.dpi);
 
@@ -2155,11 +2324,17 @@ impl HeightMeasurer {
                         } else {
                             0.0
                         };
-                        let spacing_after = if !is_last_para {
-                            para_style.map(|s| s.spacing_after).unwrap_or(0.0)
+                        let tail = if self.native_hwpx_cell_margin {
+                            hwpx_structural_cell_tail(p, styles, self.dpi)
                         } else {
-                            0.0
+                            0
                         };
+                        let spacing_after =
+                            if include_table_cell_spacing_after(table, is_last_para, tail) {
+                                para_style.map(|s| s.spacing_after).unwrap_or(0.0)
+                            } else {
+                                0.0
+                            };
                         // LINE_SEG의 line_height에 이미 중첩 표 높이가 반영되어 있으므로
                         // 별도 추가 줄로 넣으면 이중 계산됨
                         if comp.lines.is_empty() {

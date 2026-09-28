@@ -2299,6 +2299,7 @@ fn export_pdf(args: &[String]) -> i32 {
             }
         };
 
+        rhwp::renderer::font_paths::register_font_face_availability(&pdf_options.font_paths);
         let mut doc = match rhwp::wasm_api::HwpDocument::from_local_file_bytes_with_font_metrics(
             &data,
             font_metrics,

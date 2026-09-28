@@ -35,6 +35,22 @@ use crate::renderer::float_placement::{
 
 // 표 수평 정렬 보조 타입은 table_layout.rs에 통합됨
 
+/// 셀 안에서 다음 쪽으로 이어지는 조각의 외곽은 본문 아래까지 열린다.
+/// 콘텐츠 유닛 높이와 컷·클립은 유지하고 배경/테두리 영역만 확장한다.
+fn partial_table_paint_height(
+    native_hwpx: bool,
+    page_break: crate::model::table::TablePageBreak,
+    has_end_cut: bool,
+    natural_height: f64,
+    available_height: f64,
+) -> f64 {
+    if native_hwpx && page_break != crate::model::table::TablePageBreak::None && has_end_cut {
+        natural_height.max(available_height)
+    } else {
+        natural_height
+    }
+}
+
 /// Text before an inline control occupies the same line as the control.
 /// The partial-cell control fallback paints objects separately from its text
 /// pass, so it must advance past that text before positioning the object.
@@ -141,6 +157,35 @@ mod inline_fallback_alignment_tests {
     use crate::renderer::composer::{ComposedLine, ComposedTextRun};
 
     #[test]
+    fn continued_cell_fragment_paint_reaches_body_bottom_without_changing_other_breaks() {
+        use crate::model::table::TablePageBreak::{CellBreak, RowBreak};
+        assert_eq!(
+            partial_table_paint_height(true, CellBreak, true, 80.0, 90.0),
+            90.0
+        );
+        assert_eq!(
+            partial_table_paint_height(true, CellBreak, false, 80.0, 90.0),
+            80.0
+        );
+        assert_eq!(
+            partial_table_paint_height(true, RowBreak, true, 80.0, 90.0),
+            90.0
+        );
+        assert_eq!(
+            partial_table_paint_height(true, RowBreak, false, 80.0, 90.0),
+            80.0
+        );
+        assert_eq!(
+            partial_table_paint_height(false, CellBreak, true, 80.0, 90.0),
+            80.0
+        );
+        assert_eq!(
+            partial_table_paint_height(true, CellBreak, true, 100.0, 90.0),
+            100.0
+        );
+    }
+
+    #[test]
     fn centered_and_right_inline_picture_share_the_text_line_width() {
         let styles = ResolvedStyleSet::default();
         let composed = ComposedParagraph {
@@ -160,6 +205,7 @@ mod inline_fallback_alignment_tests {
             para_style_id: 0,
             inline_controls: vec![],
             numbering_text: None,
+            numbering_head: None,
             tac_controls: vec![(2, 3600, 0)],
             footnote_positions: vec![],
             tab_extended: vec![],
@@ -277,6 +323,7 @@ impl LayoutEngine {
         row_count: usize,
         table_x: f64,
         table_y: f64,
+        paint_bottom: f64,
         row_heights: &[f64],
         resolved_row_heights: &[f64],
         row_col_x: &[Vec<f64>],
@@ -399,6 +446,11 @@ impl LayoutEngine {
                 )
                 && (straddles_fragment_start || straddles_fragment_end);
 
+            let paint_cell_h = if cell_end_row >= render_range_end && !is_repeated_header_cell {
+                cell_h.max(paint_bottom - cell_y)
+            } else {
+                cell_h
+            };
             let cell_id = tree.next_id();
             let mut cell_node = RenderNode::new(
                 cell_id,
@@ -423,15 +475,22 @@ impl LayoutEngine {
                 None
             };
 
-            // 셀 배경
+            // 연속 조각의 배경만 본문 아래까지 칠한다. 셀 bbox·콘텐츠 clip은
+            // 논리 높이를 유지해야 caret/hit-test와 편집 중 캐시가 같은 기하를 쓴다.
+            // 확장 배경은 셀 clip 밖의 표 자식으로 두고 콘텐츠보다 먼저 칠한다.
+            let background_parent = if paint_cell_h > cell_h {
+                &mut *table_node
+            } else {
+                &mut cell_node
+            };
             self.render_cell_background(
                 tree,
-                &mut cell_node,
+                background_parent,
                 border_style,
                 cell_x,
                 cell_y,
                 cell_w,
-                cell_h,
+                paint_cell_h,
                 bin_data_content,
             );
 
@@ -474,11 +533,12 @@ impl LayoutEngine {
             // 결과를 셀 가용 너비 (inner_width) 에 맞춰 다중 ComposedLine 으로 재분할.
             for (cpi, para) in cell.paragraphs.iter().enumerate() {
                 if let Some(comp) = composed_paras.get_mut(cpi) {
-                    crate::renderer::composer::recompose_for_cell_width(
+                    crate::renderer::composer::recompose_for_cell_width_for_source(
                         comp,
                         para,
                         inner_width,
                         styles,
+                        self.profile.get().native_hwpx_cell_margin(),
                     );
                     // [#2291] 부실 저장(ls==1·실폭 초과) 재분할 — 가로쓰기 셀 한정.
                     if cell.text_direction == 0 {
@@ -2358,6 +2418,17 @@ impl LayoutEngine {
             y_start
         };
 
+        let paint_height = partial_table_paint_height(
+            self.profile.get().native_hwpx_cell_margin(),
+            table.page_break,
+            !end_cut.is_empty(),
+            partial_table_height,
+            col_area.y + col_area.height - table_y,
+        );
+        if let Some(bottom) = grid_row_y.last_mut() {
+            *bottom = paint_height;
+        }
+
         // ── 5. 표 노드 생성 ──
         let table_id = tree.next_id();
         let mut table_node = RenderNode::new(
@@ -2384,7 +2455,7 @@ impl LayoutEngine {
                     table_x,
                     table_y,
                     table_width,
-                    partial_table_height,
+                    paint_height,
                     bin_data_content,
                 );
             }
@@ -2414,6 +2485,7 @@ impl LayoutEngine {
             row_count,
             table_x,
             table_y,
+            table_y + paint_height,
             &row_heights,
             &resolved_row_heights,
             &row_col_x,

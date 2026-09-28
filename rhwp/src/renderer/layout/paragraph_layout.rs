@@ -335,7 +335,16 @@ fn numbering_marker_text_style(
     styles: &ResolvedStyleSet,
     para: Option<&Paragraph>,
     first_run: Option<&ComposedTextRun>,
+    head: Option<&crate::model::style::NumberingHead>,
 ) -> TextStyle {
+    if let Some(head) = head.filter(|head| {
+        styles
+            .char_styles
+            .get(head.char_shape_id as usize)
+            .is_some()
+    }) {
+        return resolved_to_text_style(styles, head.char_shape_id, 0);
+    }
     if let Some(run) = first_run {
         resolved_to_text_style(styles, run.char_style_id, run.lang_index)
     } else {
@@ -352,6 +361,25 @@ fn numbering_marker_width(num_text: &str, num_style: &TextStyle) -> f64 {
     let base = estimate_text_width(num_text, num_style);
     let zero_w = num_text.chars().filter(|&c| c == '\u{00AD}').count() as f64;
     base + zero_w * num_style.font_size * 0.5
+}
+
+/// 문단 머리의 본문 간격은 공백 글자 폭이 아니라 글자 크기 비율 또는 HWPUNIT이다.
+fn numbering_marker_advance(
+    text: &str,
+    style: &TextStyle,
+    head: Option<&crate::model::style::NumberingHead>,
+    dpi: f64,
+) -> f64 {
+    let width = numbering_marker_width(text, style);
+    let Some(head) = head else {
+        return width;
+    };
+    let distance = if head.attr & (1 << 4) == 0 {
+        style.font_size * f64::from(head.text_distance) / 100.0
+    } else {
+        hwpunit_to_px(i32::from(head.text_distance), dpi)
+    };
+    (width + hwpunit_to_px(i32::from(head.width_adjust), dpi) + distance).max(0.0)
 }
 
 fn tac_picture_or_shape_height_for_line(
@@ -1825,25 +1853,53 @@ fn line_trailing_letter_spacing(
 
 /// 가운데/오른쪽 정렬 폭에서 제외할 줄 끝 여분 폭(px) — 줄 끝 공백과 마지막 글자 뒤
 /// 자간. 한컴은 둘 다 정렬 폭에 넣지 않는다 (hy-001 `과  장 ` 오른쪽 정렬 셀 실측).
-fn line_trailing_alignment_excess(
+fn line_trailing_space_width(
     comp_line: &ComposedLine,
     styles: &ResolvedStyleSet,
     tab_width: f64,
 ) -> f64 {
-    let mut spaces_width = 0.0;
+    let mut width = 0.0;
     for run in comp_line.runs.iter().rev() {
         let text = effective_text_for_metrics(run);
-        let spaces = text.chars().rev().take_while(|c| *c == ' ').count();
-        if spaces > 0 {
-            let mut ts = resolved_to_text_style(styles, run.char_style_id, run.lang_index);
-            ts.default_tab_width = tab_width;
-            spaces_width += estimate_text_width(&" ".repeat(spaces), &ts);
+        let count = text.chars().rev().take_while(|c| *c == ' ').count();
+        if count > 0 {
+            let mut style = resolved_to_text_style(styles, run.char_style_id, run.lang_index);
+            style.default_tab_width = tab_width;
+            width += estimate_text_width(&" ".repeat(count), &style);
         }
-        if spaces < text.chars().count() {
+        if count < text.chars().count() {
             break;
         }
     }
-    spaces_width + line_trailing_letter_spacing(comp_line, styles, tab_width)
+    width
+}
+
+fn line_trailing_alignment_excess(
+    comp_line: &ComposedLine,
+    styles: &ResolvedStyleSet,
+    tab_width: f64,
+    do_not_align_last_forbidden: bool,
+) -> f64 {
+    let spaces_width = line_trailing_space_width(comp_line, styles, tab_width);
+    let mut forbidden_width = 0.0;
+    for run in comp_line.runs.iter().rev() {
+        let text = effective_text_for_metrics(run);
+        let spaces = text.chars().rev().take_while(|c| *c == ' ').count();
+        if spaces < text.chars().count() {
+            if do_not_align_last_forbidden {
+                if let Some(ch) = text.trim_end_matches(' ').chars().last() {
+                    if crate::renderer::composer::is_line_start_forbidden(ch) {
+                        let mut ts =
+                            resolved_to_text_style(styles, run.char_style_id, run.lang_index);
+                        ts.letter_spacing = 0.0;
+                        forbidden_width = estimate_text_width(&ch.to_string(), &ts);
+                    }
+                }
+            }
+            break;
+        }
+    }
+    spaces_width + forbidden_width + line_trailing_letter_spacing(comp_line, styles, tab_width)
 }
 
 /// [Task #2067] 정렬(양쪽/배분/나눔)·오버플로우에 따른 여분 간격 계산.
@@ -3709,7 +3765,15 @@ impl LayoutEngine {
         // column-top 이 아닌 것처럼 spacing_before 를 전량 적용한다.
         let keep_continuation_spacing_before =
             self.keep_continuation_column_top_spacing_before.get();
-        if start_line == 0 && spacing_before > 0.0 {
+        let stored_textbox_before_is_positioned =
+            matches!(col_node.node_type, RenderNodeType::TextBox)
+                && self.profile.get().hwpx_stored_layout()
+                && col_area.y > col_node.bbox.y
+                && para.and_then(|p| p.line_segs.first()).is_some_and(|seg| {
+                    seg.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY == 0
+                        && hwpunit_to_px(seg.vertical_pos, self.dpi) >= spacing_before
+                });
+        if start_line == 0 && spacing_before > 0.0 && !stored_textbox_before_is_positioned {
             if !is_column_top
                 || keep_continuation_spacing_before
                 || (cell_ctx.is_some() && self.preserve_first_cell_spacing_before())
@@ -3781,17 +3845,21 @@ impl LayoutEngine {
             .get(start_line..end)
             .map_or(true, |slice| slice.iter().all(|l| l.runs.is_empty()));
 
-        // 개요 번호/글머리표 마커 폭 사전 계산 (행잉 인덴트용)
-        // 마커 자체는 문단 첫 줄에만 그리지만, 문단이 페이지/단 경계에서 나뉘어
-        // start_line > 0 인 청크로 이월돼도 후속 줄의 행잉 인덴트(마커 폭만큼의
-        // 들여쓰기)는 유지돼야 하므로 start_line 과 무관하게 계산한다.
+        // 페이지/단 경계에서 시작한 조각도 자동 내어쓰기의 점유 폭이 필요하다.
+        // 수동 내어쓰기는 문단 여백만 사용하므로 뒤에서 후속 줄의 마커 폭을 제외한다.
         let numbering_width = if let Some(ref num_text) = composed.numbering_text {
             let num_style = numbering_marker_text_style(
                 styles,
                 para,
                 composed.lines.first().and_then(|l| l.runs.first()),
+                composed.numbering_head.as_ref(),
             );
-            numbering_marker_width(num_text, &num_style)
+            numbering_marker_advance(
+                num_text,
+                &num_style,
+                composed.numbering_head.as_ref(),
+                self.dpi,
+            )
         } else {
             0.0
         };
@@ -4196,15 +4264,41 @@ impl LayoutEngine {
                 // (표 셀 vertsize1200/baseline600 저장 → PDF 실측 10.2pt 정합).
                 let baseline = if para_style.map(|s| s.vertical_align).unwrap_or(0) == 2 {
                     line_height / 2.0 + max_fs * 0.35
+                } else if self.profile.get().adjust_baseline_in_fixed_line_spacing()
+                    && ls_type == LineSpacingType::Fixed
+                    && ls_val > 0.0
+                {
+                    ls_val * 0.8
                 } else {
-                    ensure_min_baseline(
+                    let baseline = ensure_min_baseline(
                         crate::renderer::corrected_line_baseline_for_source(
                             hwpunit_to_px(comp_line.baseline_distance, self.dpi),
                             max_fs,
                             source_metrics_reflowed,
                         ),
                         max_fs,
-                    )
+                    );
+                    // 줄 상자보다 짧은 저장 간격은 고정된 유효 pitch 안에 기준선을 둔다.
+                    // 생성 줄이나 개체 줄의 기준선/기하에는 이 저장 텍스트 규칙을 적용하지 않는다.
+                    let cap_to_stored_pitch =
+                        self.profile.get().adjust_baseline_in_fixed_line_spacing()
+                            && ls_type == LineSpacingType::Percent
+                            && comp_line.line_spacing < 0
+                            && para.is_some_and(|p| {
+                                p.controls.is_empty()
+                                    && p.line_segs.get(line_idx).is_some_and(|seg| {
+                                        seg.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY == 0
+                                    })
+                            });
+                    let pitch = hwpunit_to_px(
+                        comp_line.line_height.saturating_add(comp_line.line_spacing),
+                        self.dpi,
+                    );
+                    if cap_to_stored_pitch && pitch > 0.0 {
+                        baseline.min(pitch * 0.8)
+                    } else {
+                        baseline
+                    }
                 };
                 (line_height, baseline)
             };
@@ -4461,8 +4555,14 @@ impl LayoutEngine {
             } else {
                 0.0
             };
-            // 번호/글머리표 마커: 모든 줄에서 마커 폭만큼 가용폭 차감 (행잉 인덴트)
-            let num_offset = if numbering_width > 0.0 {
+            // 첫 줄은 마커와 본문 간격을, 후속 줄은 자동 내어쓰기일 때만 차감한다.
+            let num_offset = if numbering_width > 0.0
+                && (line_idx == 0
+                    || composed
+                        .numbering_head
+                        .as_ref()
+                        .is_none_or(|head| head.attr & (1 << 3) != 0))
+            {
                 numbering_width
             } else {
                 0.0
@@ -4663,9 +4763,21 @@ impl LayoutEngine {
                 .sum();
             // SQUEEZE 셀은 넘침을 자간 압축으로 흡수하는 게 본래 동작이므로
             // 셀 오버플로우 간격 억제 대상에서 제외한다.
+            let generated_hanging_space_only = self.profile.get().native_hwpx_cell_margin()
+                && !needs_justify
+                && !needs_distribute
+                && para.is_some_and(|p| {
+                    p.controls.is_empty()
+                        && !p.line_segs.is_empty()
+                        && p.line_segs
+                            .iter()
+                            .all(|seg| seg.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY != 0)
+                })
+                && total_text_width - line_trailing_space_width(comp_line, styles, tab_width)
+                    <= available_width;
             let suppress_cell_overflow_spacing = cell_ctx.is_some()
                 && !cell_ctx.as_ref().is_some_and(|c| c.line_wrap_squeeze())
-                && total_text_width > available_width * 1.15;
+                && (total_text_width > available_width * 1.15 || generated_hanging_space_only);
             // 양쪽 정렬 줄 머리 공백은 한컴처럼 자연 폭으로 두고 줄 안 공백에만 여유를
             // 나눈다 (hy-001 ` ㅇ ` 줄 실측). 렌더에서 그 공백만 여유를 빼도록 run 을 나눈다.
             let leading_space_split = if alignment == Alignment::Justify
@@ -4755,7 +4867,14 @@ impl LayoutEngine {
             } else {
                 // 가운데/오른쪽 정렬은 줄 끝 공백과 마지막 글자 뒤 자간을 폭에서 뺀다
                 // (한컴 기준 — 눈에 보이는 글자 끝이 정렬 기준).
-                total_text_width - line_trailing_alignment_excess(comp_line, styles, tab_width)
+                total_text_width
+                    - line_trailing_alignment_excess(
+                        comp_line,
+                        styles,
+                        tab_width,
+                        matches!(alignment, Alignment::Center | Alignment::Right)
+                            && self.profile.get().do_not_align_last_forbidden(),
+                    )
             };
 
             // [Task #1285] 답안지 머리말의 `수험번호` 라벨은
@@ -4816,10 +4935,14 @@ impl LayoutEngine {
             // 개요 번호/글머리표: 첫 줄에서 별도 TextRunNode로 렌더링 (char_start: None)
             if line_idx == start_line && start_line == 0 {
                 if let Some(ref num_text) = composed.numbering_text {
-                    let num_style =
-                        numbering_marker_text_style(styles, para, comp_line.runs.first());
+                    let num_style = numbering_marker_text_style(
+                        styles,
+                        para,
+                        comp_line.runs.first(),
+                        composed.numbering_head.as_ref(),
+                    );
                     let num_width = numbering_marker_width(num_text, &num_style);
-                    line_numbering_marker_width = num_width;
+                    line_numbering_marker_width = numbering_width;
                     let num_id = tree.next_id();
                     let num_node = RenderNode::new(
                         num_id,
@@ -4845,7 +4968,7 @@ impl LayoutEngine {
                         BoundingBox::new(x, y, num_width, line_height),
                     );
                     line_node.children.push(num_node);
-                    x += num_width;
+                    x += numbering_width;
                 }
             }
 
@@ -7645,6 +7768,7 @@ impl LayoutEngine {
     ) -> Option<ComposedParagraph> {
         let para_style = styles.para_styles.get(para.para_shape_id as usize)?;
 
+        let mut numbering_head = None;
         let head_text = match para_style.head_type {
             HeadType::None => return None,
             HeadType::Outline | HeadType::Number => {
@@ -7682,16 +7806,8 @@ impl LayoutEngine {
                 if text.is_empty() {
                     return None;
                 }
-                let has_distance = numbering
-                    .heads
-                    .get(level_idx)
-                    .map(|h| h.text_distance > 0)
-                    .unwrap_or(false);
-                if has_distance {
-                    format!("{} ", text)
-                } else {
-                    text
-                }
+                numbering_head = numbering.heads.get(level_idx).copied();
+                text
             }
             HeadType::Bullet => {
                 // Bullet: numbering_id(1-based)로 Bullet 참조
@@ -7721,6 +7837,7 @@ impl LayoutEngine {
         let comp = composed?;
         let mut modified = comp.clone();
         modified.numbering_text = Some(head_text);
+        modified.numbering_head = numbering_head;
 
         Some(modified)
     }
@@ -8137,6 +8254,7 @@ mod trailing_tac_width_tests {
             para_style_id: 0,
             inline_controls: Vec::new(),
             numbering_text: None,
+            numbering_head: None,
             tac_controls: Vec::new(),
             footnote_positions: Vec::new(),
             tab_extended: Vec::new(),
@@ -8282,6 +8400,7 @@ mod saved_native_cell_vpos_tests {
             para_style_id: 0,
             inline_controls: Vec::new(),
             numbering_text: None,
+            numbering_head: None,
             tac_controls: Vec::new(),
             footnote_positions: Vec::new(),
             tab_extended: Vec::new(),
@@ -8761,5 +8880,401 @@ mod pua_mapping_tests {
         assert_eq!(map_pua_bullet_char('\u{F0090}'), '\u{F0090}');
         assert_eq!(map_pua_bullet_char('\u{F0000}'), '\u{F0000}');
         assert_eq!(map_pua_bullet_char('\u{F00CF}'), '\u{F00CF}');
+    }
+}
+
+#[cfg(test)]
+mod numbering_geometry_tests {
+    use super::*;
+    use crate::model::paragraph::CharShapeRef;
+    use crate::model::style::{Numbering, NumberingHead};
+    use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle};
+
+    #[test]
+    fn explicit_number_style_and_gap_preserve_manual_hanging_indent_across_pages() {
+        let para = Paragraph {
+            text: "가나".into(),
+            char_shapes: vec![CharShapeRef::default()],
+            line_segs: (0..2)
+                .map(|i| LineSeg {
+                    text_start: i,
+                    vertical_pos: i as i32 * 2000,
+                    line_height: 1800,
+                    baseline_distance: 1400,
+                    segment_width: 20000,
+                    tag: LineSeg::TAG_SINGLE_SEGMENT_LINE,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let mut numbering = Numbering {
+            level_start_numbers: [1; 7],
+            ..Default::default()
+        };
+        numbering.level_formats[0] = "^1.".into();
+        numbering.heads[0] = NumberingHead {
+            attr: 1 << 2,
+            char_shape_id: 1,
+            text_distance: 110,
+            ..Default::default()
+        };
+        let styles = ResolvedStyleSet {
+            char_styles: vec![
+                ResolvedCharStyle {
+                    font_size: 14.0,
+                    ..Default::default()
+                },
+                ResolvedCharStyle {
+                    font_size: 18.0,
+                    ..Default::default()
+                },
+            ],
+            para_styles: vec![ResolvedParaStyle {
+                alignment: Alignment::Left,
+                head_type: HeadType::Number,
+                numbering_id: 1,
+                margin_left: 20.0,
+                indent: -16.0,
+                ..Default::default()
+            }],
+            numberings: vec![numbering],
+            ..Default::default()
+        };
+        let engine = LayoutEngine::with_default_dpi();
+        let composed = compose_paragraph(&para);
+        let composed = engine
+            .apply_paragraph_numbering(Some(&composed), &para, &styles, 0)
+            .unwrap();
+        for start in [0, 1] {
+            let mut tree = PageRenderTree::new(0, 400.0, 600.0);
+            let mut column = RenderNode::new(
+                0,
+                RenderNodeType::Column(0),
+                BoundingBox::new(0.0, 0.0, 400.0, 600.0),
+            );
+            engine.layout_composed_paragraph(
+                &mut tree,
+                &mut column,
+                &composed,
+                &styles,
+                &LayoutRect {
+                    x: 50.0,
+                    y: 0.0,
+                    width: 300.0,
+                    height: 600.0,
+                },
+                0.0,
+                start,
+                2,
+                0,
+                0,
+                None,
+                false,
+                false,
+                0.0,
+                None,
+                Some(&para),
+                None,
+                None,
+            );
+            let last = column.children.last().unwrap();
+            let body = last.children.iter().find(|node| matches!(&node.node_type, RenderNodeType::TextRun(run) if run.char_start == Some(1))).unwrap();
+            assert!(
+                (body.bbox.x - 86.0).abs() < 0.01,
+                "continuation x={}",
+                body.bbox.x
+            );
+            if start == 0 {
+                let first = &column.children[0];
+                let marker = &first.children[0];
+                let RenderNodeType::TextRun(run) = &marker.node_type else {
+                    panic!("marker")
+                };
+                assert_eq!(run.style.font_size, 18.0);
+                assert_eq!(run.text, "1.");
+                let text = first.children.iter().find(|node| matches!(&node.node_type, RenderNodeType::TextRun(run) if run.char_start == Some(0))).unwrap();
+                assert!((text.bbox.x - marker.bbox.x - marker.bbox.width - 19.8).abs() < 0.01);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod terminal_alignment_tests {
+    use super::*;
+    use crate::renderer::style_resolver::ResolvedCharStyle;
+
+    #[test]
+    fn forbidden_terminal_advance_is_excluded_only_with_compatibility_flag() {
+        let styles = ResolvedStyleSet {
+            char_styles: vec![ResolvedCharStyle {
+                font_size: 20.0,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        for text in ["이름:", "(인)", "이름1"] {
+            let para = Paragraph {
+                text: text.into(),
+                ..Default::default()
+            };
+            let composed = compose_paragraph(&para);
+            let line = &composed.lines[0];
+            let ordinary = line_trailing_alignment_excess(line, &styles, 40.0, false);
+            let compatible = line_trailing_alignment_excess(line, &styles, 40.0, true);
+            if text.ends_with('1') {
+                assert_eq!(compatible, ordinary);
+            } else {
+                let last = line.runs.last().unwrap();
+                let ts = resolved_to_text_style(&styles, last.char_style_id, last.lang_index);
+                let terminal = text.chars().last().unwrap().to_string();
+                assert!(
+                    (compatible - ordinary - estimate_text_width(&terminal, &ts)).abs() < 0.001
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod compatibility_line_position_tests {
+    use super::*;
+    use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle};
+
+    fn layout_line(
+        fixed: f64,
+        adjust_fixed: bool,
+        textbox: bool,
+        synthetic: bool,
+        gap: i32,
+    ) -> (f64, f64) {
+        let para = Paragraph {
+            text: "가".into(),
+            line_segs: vec![LineSeg {
+                vertical_pos: 300,
+                line_height: 1500,
+                text_height: 1500,
+                baseline_distance: 1350,
+                line_spacing: gap,
+                tag: if synthetic {
+                    LineSeg::TAG_IMPLEMENTATION_PROPERTY
+                } else {
+                    LineSeg::TAG_SINGLE_SEGMENT_LINE
+                },
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let styles = ResolvedStyleSet {
+            char_styles: vec![ResolvedCharStyle {
+                font_size: 12.0,
+                ..Default::default()
+            }],
+            para_styles: vec![ResolvedParaStyle {
+                alignment: Alignment::Left,
+                line_spacing_type: if fixed > 0.0 {
+                    LineSpacingType::Fixed
+                } else {
+                    LineSpacingType::Percent
+                },
+                line_spacing: if fixed > 0.0 {
+                    fixed
+                } else {
+                    100.0 + f64::from(gap) / 15.0
+                },
+                spacing_before: if textbox { 4.0 } else { 0.0 },
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let engine = LayoutEngine::with_default_dpi();
+        engine.profile.set(
+            crate::model::provenance::LayoutCompatibilityProfile::new(
+                false, false, true, false, false,
+            )
+            .with_adjust_baseline_in_fixed_line_spacing(adjust_fixed),
+        );
+        let composed = compose_paragraph(&para);
+        let mut tree = PageRenderTree::new(0, 200.0, 200.0);
+        let mut container = RenderNode::new(
+            0,
+            if textbox {
+                RenderNodeType::TextBox
+            } else {
+                RenderNodeType::Column(0)
+            },
+            BoundingBox::new(0.0, 0.0, 200.0, 200.0),
+        );
+        let y = if textbox { 4.0 } else { 0.0 };
+        engine.layout_composed_paragraph(
+            &mut tree,
+            &mut container,
+            &composed,
+            &styles,
+            &LayoutRect {
+                x: 0.0,
+                y,
+                width: 200.0,
+                height: 200.0,
+            },
+            y,
+            0,
+            1,
+            0,
+            0,
+            textbox.then(|| CellContext {
+                parent_para_index: 0,
+                path: vec![crate::renderer::layout::CellPathEntry {
+                    control_index: 0,
+                    cell_index: 0,
+                    cell_para_index: 0,
+                    text_direction: 0,
+                    line_wrap_squeeze: false,
+                }],
+            }),
+            true,
+            false,
+            0.0,
+            None,
+            Some(&para),
+            None,
+            None,
+        );
+        let line = container
+            .children
+            .iter()
+            .find(|n| matches!(n.node_type, RenderNodeType::TextLine(_)))
+            .unwrap();
+        let RenderNodeType::TextLine(line_data) = &line.node_type else {
+            unreachable!()
+        };
+        (line.bbox.y, line_data.baseline)
+    }
+
+    #[test]
+    fn fixed_line_baseline_uses_compatibility_contract_and_preserves_unflagged_baseline() {
+        for fixed in [12.0, 20.0, 59.0] {
+            assert!((layout_line(fixed, true, false, false, 0).1 - fixed * 0.8).abs() < 0.001);
+            assert!((layout_line(fixed, false, false, false, 0).1 - 18.0).abs() < 0.001);
+        }
+        assert_eq!(layout_line(0.0, true, false, false, 0).1, 18.0);
+    }
+
+    #[test]
+    fn authored_negative_gap_caps_baseline_but_preserves_synthetic_and_unflagged_lines() {
+        for (gap, baseline) in [(-435, 11.36), (-330, 12.48), (-195, 13.92)] {
+            assert!((layout_line(0.0, true, false, false, gap).1 - baseline).abs() < 0.001);
+            assert_eq!(layout_line(0.0, false, false, false, gap).1, 18.0);
+            assert_eq!(layout_line(0.0, true, false, true, gap).1, 18.0);
+        }
+        assert_eq!(layout_line(0.0, true, false, false, 150).1, 18.0);
+    }
+
+    #[test]
+    fn native_hanging_space_overflow_preserves_visible_glyph_advances() {
+        for (synthetic, width, natural) in [
+            (true, 82.0, true),
+            (false, 82.0, false),
+            (true, 79.0, false),
+        ] {
+            let para = Paragraph {
+                text: "가나다라마바사아 ".into(),
+                line_segs: vec![LineSeg {
+                    line_height: 1_000,
+                    baseline_distance: 850,
+                    tag: if synthetic {
+                        LineSeg::TAG_IMPLEMENTATION_PROPERTY
+                    } else {
+                        LineSeg::TAG_SINGLE_SEGMENT_LINE
+                    },
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let styles = ResolvedStyleSet {
+                char_styles: vec![ResolvedCharStyle {
+                    font_size: 10.0,
+                    ..Default::default()
+                }],
+                para_styles: vec![ResolvedParaStyle {
+                    alignment: Alignment::Left,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let engine = LayoutEngine::with_default_dpi();
+            engine.profile.set(
+                crate::model::provenance::LayoutCompatibilityProfile::new(
+                    false, false, true, false, false,
+                )
+                .with_native_hwpx_cell_margin(true),
+            );
+            let composed = compose_paragraph(&para);
+            let mut tree = PageRenderTree::new(0, 200.0, 200.0);
+            let mut container = RenderNode::new(
+                0,
+                RenderNodeType::Column(0),
+                BoundingBox::new(0.0, 0.0, width, 200.0),
+            );
+            let context = CellContext {
+                parent_para_index: 0,
+                path: vec![crate::renderer::layout::CellPathEntry {
+                    control_index: 0,
+                    cell_index: 0,
+                    cell_para_index: 0,
+                    text_direction: 0,
+                    line_wrap_squeeze: false,
+                }],
+            };
+            engine.layout_composed_paragraph(
+                &mut tree,
+                &mut container,
+                &composed,
+                &styles,
+                &LayoutRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width,
+                    height: 200.0,
+                },
+                0.0,
+                0,
+                1,
+                0,
+                0,
+                Some(context),
+                true,
+                false,
+                0.0,
+                None,
+                Some(&para),
+                None,
+                None,
+            );
+            let run = container
+                .children
+                .iter()
+                .flat_map(|line| &line.children)
+                .find_map(|node| {
+                    if let RenderNodeType::TextRun(run) = &node.node_type {
+                        Some(run)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap();
+            if natural {
+                assert_eq!(run.style.extra_char_spacing, 0.0);
+            } else {
+                assert!(run.style.extra_char_spacing < 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn authored_textbox_position_already_contains_paragraph_before_spacing() {
+        assert_eq!(layout_line(0.0, false, true, false, 0).0, 4.0);
+        assert_eq!(layout_line(0.0, false, true, true, 0).0, 8.0);
     }
 }

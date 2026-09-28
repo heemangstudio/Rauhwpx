@@ -954,6 +954,51 @@ fn para_has_non_whitespace_text(para: &Paragraph) -> bool {
         .any(|c| c > '\u{001F}' && c != '\u{FFFC}' && !c.is_whitespace())
 }
 
+/// 독립 문단에 앵커된 연속 자리차지 표 중 후속 표가 한 쪽보다 크면 새 쪽에서 시작한다.
+/// 두 표가 모두 짧으면 같은 쪽에 두고, 첫 표가 분할됐는지와 무관하게 판단한다.
+fn following_flowing_table_needs_fresh_page(
+    paragraphs: &[Paragraph],
+    para_idx: usize,
+    table: &crate::model::table::Table,
+    current_items: &[PageItem],
+    table_total: f64,
+    available: f64,
+) -> bool {
+    if para_idx == 0
+        || !table.common.flow_with_text
+        || table.common.treat_as_char
+        || !matches!(
+            table.common.vert_rel_to,
+            crate::model::shape::VertRelTo::Para
+        )
+        || table_total <= available
+    {
+        return false;
+    }
+    let Some(previous) = paragraphs.get(para_idx - 1) else {
+        return false;
+    };
+    let Some(current) = paragraphs.get(para_idx) else {
+        return false;
+    };
+    if para_has_visible_text(previous)
+        || para_has_visible_text(current)
+        || current.controls.len() != 1
+    {
+        return false;
+    }
+    let [Control::Table(previous_table)] = previous.controls.as_slice() else {
+        return false;
+    };
+    if !previous_table.common.flow_with_text || !is_para_topbottom_float(&previous_table.common) {
+        return false;
+    }
+    current_items.iter().any(|item| {
+        matches!(item, PageItem::Table { para_index, .. } | PageItem::PartialTable { para_index, .. }
+            if *para_index == para_idx - 1)
+    })
+}
+
 /// 저장 vpos 가 일정 간격으로 진행하는 빈 줄 묶음 뒤에 명시적 쪽나누기가
 /// 이어지는지 판정한다. 이는 단순 trailing empty 가 아니라 편집기가 의도적으로
 /// 현재 쪽을 채운 뒤 별도의 쪽나누기를 둔 구조이므로, reset-bridge 흡수 대상이
@@ -12446,7 +12491,13 @@ impl TypesetEngine {
         // 다만 이것은 한글 2020/2022 정합 모델이 아니다. 일부 Paper 앵커 개체는 실제 렌더
         // extent 를 page-local pagination 에 반영해야 하며, #2019 v3 에서 이 부분을 다시
         // 풀어야 한다. 자리차지·tac=true 는 helper 에서 제외되어 예약 유지.
-        if crate::renderer::layout::para_is_floating_overlay_anchor(para) {
+        if crate::renderer::layout::para_is_floating_overlay_anchor(para)
+            && crate::renderer::layout::stored_behind_text_host_line_advance_hu(
+                para,
+                self.profile.get().native_hwpx_cell_margin(),
+            )
+            .is_none()
+        {
             let (lh, ls) = empty_paragraph_fallback_line_metrics(
                 para,
                 styles,
@@ -17188,6 +17239,20 @@ impl TypesetEngine {
         // 이월이 실제 발생한 경우에만 placement 기준을 fresh page-local current_height 로
         // 재설정한다. #1860 의 budget_para_start_height 는 별도 예산 계약이므로 불변이다.
         let mut placement_para_start_height = para_start_height;
+        if st.profile.ms_word_compatible_layout()
+            && st.col_count == 1
+            && following_flowing_table_needs_fresh_page(
+                paragraphs_all,
+                para_idx,
+                table,
+                &st.current_items,
+                table_total,
+                available,
+            )
+        {
+            st.advance_column_or_new_page();
+            placement_para_start_height = st.current_height;
+        }
         if is_para_topbottom_float(&table.common)
             && matches!(
                 table.page_break,
@@ -19546,6 +19611,119 @@ mod tests {
     }
 
     #[test]
+    fn consecutive_flowing_tables_start_second_chain_on_fresh_page() {
+        fn flowing_table(row_height: u32) -> Table {
+            Table {
+                row_count: 2,
+                col_count: 1,
+                page_break: TablePageBreak::RowBreak,
+                common: CommonObjAttr {
+                    flow_with_text: true,
+                    text_wrap: TextWrap::TopAndBottom,
+                    vert_rel_to: VertRelTo::Para,
+                    width: 40_000,
+                    height: row_height * 2,
+                    ..Default::default()
+                },
+                cells: (0..2)
+                    .map(|row| Cell {
+                        row,
+                        col: 0,
+                        row_span: 1,
+                        col_span: 1,
+                        width: 40_000,
+                        height: row_height,
+                        paragraphs: vec![Paragraph {
+                            text: "A".to_string(),
+                            line_segs: vec![LineSeg {
+                                line_height: 1_000,
+                                text_height: 1_000,
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            }
+        }
+        fn starts(row_height: u32, native_hwpx: bool, ms_word: bool) -> (usize, usize) {
+            let paras = [flowing_table(10_000), flowing_table(row_height)]
+                .into_iter()
+                .map(|table| Paragraph {
+                    line_segs: vec![LineSeg {
+                        line_height: 1_000,
+                        text_height: 1_000,
+                        ..Default::default()
+                    }],
+                    controls: vec![Control::Table(Box::new(table))],
+                    ..Default::default()
+                })
+                .collect::<Vec<_>>();
+            let styles = ResolvedStyleSet::default();
+            let page_def = a4_page_def();
+            let col_def = ColumnDef::default();
+            let composed = Vec::new();
+            let (_, measured) = Paginator::with_default_dpi()
+                .paginate(&paras, &composed, &styles, &page_def, &col_def, 0);
+            let profile = crate::model::provenance::LayoutCompatibilityProfile::new(
+                false,
+                false,
+                native_hwpx,
+                false,
+                !native_hwpx,
+            )
+            .with_native_hwpx_cell_margin(native_hwpx)
+            .with_ms_word_compatible_layout(ms_word);
+            let result = TypesetEngine::with_default_dpi().typeset_section_with_variant(
+                &paras,
+                &composed,
+                &styles,
+                &page_def,
+                &col_def,
+                0,
+                &measured.tables,
+                false,
+                profile,
+                false,
+                false,
+                None,
+                None,
+                &std::collections::HashSet::new(),
+                EndnoteDeferral::None,
+            );
+            let start_page = |para_idx| {
+                result
+                    .pages
+                    .iter()
+                    .position(|page| {
+                        page.column_contents.iter().flat_map(|col| &col.items).any(|item| {
+                            matches!(item, PageItem::Table { para_index, .. }
+                                if *para_index == para_idx)
+                                || matches!(item, PageItem::PartialTable { para_index, start_row: 0, .. }
+                                    if *para_index == para_idx)
+                        })
+                    })
+                    .expect("table start must be present")
+            };
+            (start_page(0), start_page(1))
+        }
+
+        // 두 표가 남은 본문에 모두 들어가면 같은 쪽에 둔다.
+        assert_eq!(starts(10_000, true, true), (0, 0));
+        // 두 번째 표는 한 쪽보다 커서 연속분이 필요하다. 첫 표의 아래에
+        // 첫 행만 끼워 넣지 않고 새 쪽에서 연속분을 시작한다.
+        assert_eq!(starts(45_000, true, true), (0, 1));
+        // HWP201X uses its stored table flow instead of the MS Word-compatible
+        // fresh-page sequence, even though both are native HWPX documents.
+        assert_eq!(starts(45_000, true, false), (0, 0));
+        // Native HWP5 has its own saved pagination contract; this HWPX
+        // floating-table sequence must not alter its partial-table placement.
+        assert_eq!(starts(45_000, false, false), (0, 0));
+    }
+
+    #[test]
     fn issue2439_native_empty_host_rowbreak_evidence_is_narrow() {
         let table = Table {
             page_break: TablePageBreak::RowBreak,
@@ -21619,6 +21797,7 @@ mod tests {
             para_style_id: 0,
             inline_controls: Vec::new(),
             numbering_text: None,
+            numbering_head: None,
             tac_controls: vec![(0, 49070, 0)],
             footnote_positions: Vec::new(),
             tab_extended: Vec::new(),

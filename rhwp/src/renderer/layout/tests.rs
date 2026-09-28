@@ -3211,6 +3211,7 @@ fn test_tac_leading_width_block_table_full_line() {
         para_style_id: 0,
         inline_controls: Vec::new(),
         numbering_text: None,
+        numbering_head: None,
         tac_controls: Vec::new(), // block 취급이라 비어있음
         footnote_positions: Vec::new(),
         tab_extended: Vec::new(),
@@ -3306,6 +3307,7 @@ fn test_tac_leading_width_inline_table_partial() {
         para_style_id: 0,
         inline_controls: Vec::new(),
         numbering_text: None,
+        numbering_head: None,
         tac_controls: vec![(2, 1000, 0)], // pos=2 (ab 뒤), control_index=0
         footnote_positions: Vec::new(),
         tab_extended: Vec::new(),
@@ -4193,4 +4195,36 @@ fn tac_picture_effective_margin_left_matches_paragraph_layout_single_margin_rule
             < 1e-9,
         "indent>0 이면 margin_left + indent 만 반영해야 함 (inner_pad 이중 가산 없이)"
     );
+}
+
+#[test]
+fn behind_text_picture_host_keeps_only_authoritative_text_line_advance() {
+    let mut para = Paragraph::default();
+    let mut picture = crate::model::image::Picture::default();
+    picture.common.text_wrap = TextWrap::BehindText;
+    picture.common.vert_rel_to = VertRelTo::Paper;
+    picture.common.treat_as_char = false;
+    picture.common.height = 60000;
+    para.controls.push(Control::Picture(Box::new(picture)));
+    para.line_segs.push(LineSeg {
+        line_height: 1000,
+        text_height: 1000,
+        baseline_distance: 750,
+        line_spacing: 300,
+        ..Default::default()
+    });
+    assert_eq!(
+        stored_behind_text_host_line_advance_hu(&para, true),
+        Some(1300)
+    );
+    assert_eq!(stored_behind_text_host_line_advance_hu(&para, false), None);
+
+    // 배경 개체의 높이가 들어간 줄은 텍스트 줄의 진행량이 아니다.
+    para.line_segs[0].line_height = 60000;
+    assert_eq!(stored_behind_text_host_line_advance_hu(&para, true), None);
+    para.line_segs[0].line_height = 1000;
+    para.line_segs[0].tag = LineSeg::TAG_IMPLEMENTATION_PROPERTY;
+    assert_eq!(stored_behind_text_host_line_advance_hu(&para, true), None);
+    para.line_segs.clear();
+    assert_eq!(stored_behind_text_host_line_advance_hu(&para, true), None);
 }

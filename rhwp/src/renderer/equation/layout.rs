@@ -907,9 +907,8 @@ impl EqLayout {
                 .as_deref()
                 .is_some_and(super::font::is_legacy_equation_font);
         let (w, bar_inset) = if modern_hy {
-            // 한컴 legacy 분수는 자식을 thin 여백에 좌측 정렬하고 폭은
-            // thin + 자식 advance + thin 이다. 막대(e06d)는 상자 폭까지 늘어난다
-            // (eq-002 실측: ¼ 막대 7.2pt = thin+0.5em 자식+thin @9.06).
+            // 분수 폭은 가장 긴 자식 advance와 양쪽 thin 여백이다.
+            // eq-002의 1/4는 두 숫자의 advance가 같아 중앙 정렬해도 원점이 같다.
             let child_advance = |node: &EqNode, lb: &LayoutBox| {
                 self.node_advance_right(node, fs).unwrap_or(lb.width)
             };
@@ -932,10 +931,9 @@ impl EqLayout {
         let mut total_h = numer_h + line_thick + denom_h;
 
         let mut n_box = n;
-        // 한컴 legacy 분수는 분자/분모를 thin 여백 위치에 좌측 정렬한다
-        // (eq-002 실측: ¼의 1·4가 같은 x — 폭 다른 글립이 중앙 정렬이면 어긋난다).
+        // legacy 원자 폭은 잉크 경계이므로 분수 정렬에는 실제 advance를 사용한다.
         n_box.x = if modern_hy {
-            fs * THIN_SPACE_EM
+            (w - self.node_advance_right(numer, fs).unwrap_or(n_box.width)) / 2.0
         } else {
             (w - n_box.width) / 2.0
         };
@@ -943,7 +941,7 @@ impl EqLayout {
 
         let mut d_box = d;
         d_box.x = if modern_hy {
-            fs * THIN_SPACE_EM
+            (w - self.node_advance_right(denom, fs).unwrap_or(d_box.width)) / 2.0
         } else {
             (w - d_box.width) / 2.0
         };
@@ -2176,12 +2174,10 @@ mod tests {
     }
 
     #[test]
-    fn modern_hy_fraction_left_aligns_children_in_thin_margins() {
+    fn modern_hy_fraction_centers_unequal_children_and_preserves_thin_margins() {
         for fs in [11.0, 22.0] {
             let engine = EqLayout::with_font(fs, "HYhwpEQ");
-            // 한컴 버전60+HYhwpEQ 분수는 자식을 thin 여백에 좌측 정렬하고 폭은
-            // 최장 자식 advance + 양쪽 thin이다 (eq-002 실측: ¼ 막대 폭과
-            // `1`·`4`의 동일한 시작점).
+            // 폭이 다른 자식은 중앙 정렬하고 가장 긴 자식은 thin 여백을 지킨다.
             let thin = fs * THIN_SPACE_EM;
             let ast = EqParser::new(tokenize("1 over i")).parse();
             let narrow = engine.layout(&ast);
@@ -2205,8 +2201,8 @@ mod tests {
             };
             let want_w = (adv(n_node, numer).max(adv(d_node, denom)) + thin * 2.0).max(fs * 0.628);
             assert!((narrow.width - want_w).abs() < 1e-8);
-            assert!((numer.x - thin).abs() < 1e-8);
-            assert!((denom.x - thin).abs() < 1e-8);
+            assert!((numer.x + adv(n_node, numer) / 2.0 - narrow.width / 2.0).abs() < 1e-8);
+            assert!((denom.x + adv(d_node, denom) / 2.0 - narrow.width / 2.0).abs() < 1e-8);
             assert_eq!(*bar_inset, 0.0);
 
             let wide_ast = EqParser::new(tokenize("12345 over 6")).parse();
@@ -2216,6 +2212,14 @@ mod tests {
             };
             assert!(wide.width > fs);
             assert!((numer.x - thin).abs() < 1e-8);
+
+            // 기존 1/4 참조는 같은 숫자 advance 때문에 원점이 같다.
+            let equal_ast = EqParser::new(tokenize("1 over 4")).parse();
+            let equal = engine.layout(&equal_ast);
+            let LayoutKind::Fraction { numer, denom, .. } = &equal.kind else {
+                panic!("fraction")
+            };
+            assert!((numer.x - denom.x).abs() < 1e-8);
 
             let legacy = engine
                 .with_version("")

@@ -19,6 +19,8 @@ pub const LANG_COUNT: usize = 7;
 #[derive(Debug, Clone)]
 pub struct ResolvedCharStyle {
     pub font_metrics_policy: crate::model::provenance::FontMetricsPolicy,
+    /// MS Word compatibility uses the Latin face's own space advance.
+    pub latin_font_space: bool,
     /// 글꼴 이름 (한국어 = 기본값, font_families[0]과 동일)
     pub font_family: String,
     /// 7개 언어 카테고리별 글꼴 이름
@@ -87,6 +89,7 @@ impl Default for ResolvedCharStyle {
     fn default() -> Self {
         Self {
             font_metrics_policy: Default::default(),
+            latin_font_space: false,
             font_family: String::new(),
             font_families: Vec::new(),
             subst_families: Vec::new(),
@@ -403,6 +406,10 @@ fn resolve_single_char_style(cs: &CharShape, doc_info: &DocInfo, dpi: f64) -> Re
 
     ResolvedCharStyle {
         font_metrics_policy: doc_info.font_metrics_policy,
+        latin_font_space: doc_info
+            .hwpx_target_program
+            .as_deref()
+            .is_some_and(|program| program.eq_ignore_ascii_case("MS_WORD")),
         font_family,
         font_families,
         subst_families,
@@ -1119,6 +1126,16 @@ mod tests {
     use crate::model::document::DocInfo;
     use crate::model::style::*;
     use crate::renderer::DEFAULT_DPI;
+
+    #[test]
+    fn latin_font_space_follows_document_compatibility_target() {
+        let mut info = make_doc_info_with_font();
+        for (target, expected) in [("HWP201X", false), ("MS_WORD", true)] {
+            info.hwpx_target_program = Some(target.into());
+            let styles = resolve_styles(&info, DEFAULT_DPI);
+            assert_eq!(styles.char_styles[0].latin_font_space, expected);
+        }
+    }
 
     fn make_doc_info_with_font() -> DocInfo {
         DocInfo {
