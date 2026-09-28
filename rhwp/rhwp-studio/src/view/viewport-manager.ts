@@ -94,7 +94,9 @@ export class ViewportManager {
     const deltaY = this.wheelDeltaPixels(e.deltaY, e.deltaMode);
 
     if (!e.ctrlKey && !e.metaKey) {
-      if (this.container && !e.shiftKey) {
+      // 가로 스크롤이 없는 문서는 축 잠금이 의미가 없으므로 preventDefault 없이
+      // 바로 돌려보내 브라우저 네이티브(컴포지터) 스크롤에 맡긴다.
+      if (this.container && !e.shiftKey && this.isHorizontallyScrollable()) {
         // 트랙패드 스크롤은 세로 의도여도 가로 성분이 섞인다. 제스처가 시작될 때
         // 우세한 축을 잠가, 세로 스크롤 중 문서가 옆으로 미끄러지지 않게 한다.
         const now = e.timeStamp || performance.now();
@@ -131,6 +133,12 @@ export class ViewportManager {
       this.zoomTarget * Math.exp(-boundedDelta * WHEEL_ZOOM_SENSITIVITY),
       anchor,
     );
+  }
+
+  /** 확대로 용지가 뷰포트보다 넓어져 가로 스크롤이 생긴 상태인가 */
+  private isHorizontallyScrollable(): boolean {
+    const container = this.container;
+    return !!container && container.scrollWidth > container.clientWidth + 1;
   }
 
   private wheelDeltaPixels(delta: number, deltaMode: number): number {

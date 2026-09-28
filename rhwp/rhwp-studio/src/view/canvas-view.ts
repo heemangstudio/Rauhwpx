@@ -65,6 +65,10 @@ export class CanvasView {
   private currentVisiblePages: number[] = [];
   private editingPageIndex: number | null = null;
   private activePageSnapshot: ActivePageSnapshot | null = null;
+  /** viewport-scroll 에서 호출된 updateVisiblePages 인가 (current-page-changed 중복 억제용) */
+  private scrollDrivenVisibleUpdate = false;
+  /** 마지막으로 발행한 current-page-changed 의 `쪽|전체 쪽 수` */
+  private lastCurrentPageKey = '';
   private headerFooterEditState: HeaderFooterModeState | null = null;
   private gridOverlaysByPage = new Map<number, HTMLElement[]>();
   private unsubscribers: (() => void)[] = [];
@@ -106,7 +110,14 @@ export class CanvasView {
 
     this.unsubscribers.push(
       eventBus.on('viewport-scroll', () => {
-        if (!this.viewportManager.isZoomAnimating()) this.updateVisiblePages();
+        if (this.viewportManager.isZoomAnimating()) return;
+        // 순수 스크롤 프레임에서는 쪽이 실제로 바뀔 때만 상태 표시줄을 갱신한다.
+        this.scrollDrivenVisibleUpdate = true;
+        try {
+          this.updateVisiblePages();
+        } finally {
+          this.scrollDrivenVisibleUpdate = false;
+        }
       }),
       eventBus.on('viewport-resize', () => this.onViewportResize()),
       eventBus.on('viewport-inset-changed', () => this.recenterHorizontally()),
@@ -456,14 +467,16 @@ export class CanvasView {
 
     this.activePageSnapshot = next;
     if (snapshotChanged) this.eventBus.emit('active-page-changed', next);
-    // 전체 쪽 수·구역 쪽번호가 pagination으로 바뀔 수 있으므로 snapshot이 같아도
-    // 기존 상태 표시줄 이벤트는 매 visible-page 갱신마다 유지한다.
+    // 전체 쪽 수·구역 쪽번호가 pagination으로 바뀔 수 있으므로 스크롤 외 갱신에서는
+    // snapshot이 같아도 상태 표시줄 이벤트를 유지한다. 순수 스크롤 프레임은 쪽·쪽 수가
+    // 그대로면 생략해 매 프레임 getPageInfo·DOM 쓰기를 피한다.
     if (next) {
-      this.eventBus.emit(
-        'current-page-changed',
-        next.pageIndex,
-        this.virtualScroll.pageCount,
-      );
+      const pageCount = this.virtualScroll.pageCount;
+      const key = `${next.pageIndex}|${pageCount}`;
+      if (!this.scrollDrivenVisibleUpdate || key !== this.lastCurrentPageKey) {
+        this.lastCurrentPageKey = key;
+        this.eventBus.emit('current-page-changed', next.pageIndex, pageCount);
+      }
     }
   }
 
