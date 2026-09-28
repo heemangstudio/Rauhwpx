@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { copyFile, link, open, opendir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, link, open, opendir, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
 import { basename, dirname, extname, isAbsolute, join, normalize, win32 } from 'node:path';
 
 import { retryWindows } from './fs-replace.mjs';
