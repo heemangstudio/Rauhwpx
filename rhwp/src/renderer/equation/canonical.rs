@@ -9,20 +9,28 @@ pub enum CanonicalScriptError {
 }
 
 pub fn to_hwp_script(node: &EqNode) -> Result<String, CanonicalScriptError> {
+    script_with_style(node, true)
+}
+
+fn script_with_style(node: &EqNode, italic: bool) -> Result<String, CanonicalScriptError> {
     let mut output = String::new();
-    write_node(node, &mut output)?;
+    write_node(node, &mut output, italic)?;
     Ok(output.trim().to_string())
 }
 
-fn group(node: &EqNode) -> Result<String, CanonicalScriptError> {
-    Ok(format!("{{{}}}", to_hwp_script(node)?))
+fn group(node: &EqNode, italic: bool) -> Result<String, CanonicalScriptError> {
+    Ok(format!("{{{}}}", script_with_style(node, italic)?))
 }
 
-fn write_node(node: &EqNode, output: &mut String) -> Result<(), CanonicalScriptError> {
+fn write_node(
+    node: &EqNode,
+    output: &mut String,
+    italic: bool,
+) -> Result<(), CanonicalScriptError> {
     match node {
         EqNode::Row(children) => {
             for child in children {
-                let text = to_hwp_script(child)?;
+                let text = script_with_style(child, italic)?;
                 if text.is_empty() {
                     continue;
                 }
@@ -38,58 +46,58 @@ fn write_node(node: &EqNode, output: &mut String) -> Result<(), CanonicalScriptE
         }
         EqNode::MathSymbol(symbol) => output.push_str(math_symbol_name(symbol)),
         EqNode::Fraction { numer, denom } => {
-            output.push_str(&group(numer)?);
+            output.push_str(&group(numer, italic)?);
             output.push_str(" over ");
-            output.push_str(&group(denom)?);
+            output.push_str(&group(denom, italic)?);
         }
         EqNode::Atop { top, bottom } => {
-            output.push_str(&group(top)?);
+            output.push_str(&group(top, italic)?);
             output.push_str(" atop ");
-            output.push_str(&group(bottom)?);
+            output.push_str(&group(bottom, italic)?);
         }
         EqNode::Sqrt { index, body } => {
             if let Some(index) = index {
                 output.push_str("root ");
-                output.push_str(&group(index)?);
+                output.push_str(&group(index, italic)?);
                 output.push_str(" of ");
             } else {
                 output.push_str("sqrt ");
             }
-            output.push_str(&group(body)?);
+            output.push_str(&group(body, italic)?);
         }
         EqNode::Superscript { base, sup } => {
-            output.push_str(&group(base)?);
+            output.push_str(&group(base, italic)?);
             output.push('^');
-            output.push_str(&group(sup)?);
+            output.push_str(&group(sup, italic)?);
         }
         EqNode::Subscript { base, sub } => {
-            output.push_str(&group(base)?);
+            output.push_str(&group(base, italic)?);
             output.push('_');
-            output.push_str(&group(sub)?);
+            output.push_str(&group(sub, italic)?);
         }
         EqNode::SubSup { base, sub, sup } => {
-            output.push_str(&group(base)?);
+            output.push_str(&group(base, italic)?);
             output.push('_');
-            output.push_str(&group(sub)?);
+            output.push_str(&group(sub, italic)?);
             output.push('^');
-            output.push_str(&group(sup)?);
+            output.push_str(&group(sup, italic)?);
         }
         EqNode::BigOp { symbol, sub, sup } => {
             output.push_str(big_operator_name(symbol));
             if let Some(sub) = sub {
                 output.push('_');
-                output.push_str(&group(sub)?);
+                output.push_str(&group(sub, italic)?);
             }
             if let Some(sup) = sup {
                 output.push('^');
-                output.push_str(&group(sup)?);
+                output.push_str(&group(sup, italic)?);
             }
         }
         EqNode::Limit { is_upper, sub } => {
             output.push_str(if *is_upper { "Lim" } else { "lim" });
             if let Some(sub) = sub {
                 output.push('_');
-                output.push_str(&group(sub)?);
+                output.push_str(&group(sub, italic)?);
             }
         }
         EqNode::Matrix { rows, style } => {
@@ -108,12 +116,12 @@ fn write_node(node: &EqNode, output: &mut String) -> Result<(), CanonicalScriptE
                     if column_index > 0 {
                         output.push_str(" & ");
                     }
-                    output.push_str(&to_hwp_script(cell)?);
+                    output.push_str(&script_with_style(cell, italic)?);
                 }
             }
             output.push('}');
         }
-        EqNode::Cases { rows } => write_rows("cases", rows, output)?,
+        EqNode::Cases { rows } => write_rows("cases", rows, output, italic)?,
         EqNode::Pile { rows, align } => write_rows(
             match align {
                 PileAlign::Center => "pile",
@@ -122,6 +130,7 @@ fn write_node(node: &EqNode, output: &mut String) -> Result<(), CanonicalScriptE
             },
             rows,
             output,
+            italic,
         )?,
         EqNode::EqAlign { rows } => {
             output.push_str("eqalign {");
@@ -129,9 +138,9 @@ fn write_node(node: &EqNode, output: &mut String) -> Result<(), CanonicalScriptE
                 if index > 0 {
                     output.push_str(" # ");
                 }
-                output.push_str(&to_hwp_script(left)?);
+                output.push_str(&script_with_style(left, italic)?);
                 output.push_str(" & ");
-                output.push_str(&to_hwp_script(right)?);
+                output.push_str(&script_with_style(right, italic)?);
             }
             output.push('}');
         }
@@ -139,26 +148,31 @@ fn write_node(node: &EqNode, output: &mut String) -> Result<(), CanonicalScriptE
             output.push_str(if under.is_some() { "rel " } else { "buildrel " });
             output.push_str(arrow);
             output.push(' ');
-            output.push_str(&group(over)?);
+            output.push_str(&group(over, italic)?);
             if let Some(under) = under {
                 output.push(' ');
-                output.push_str(&group(under)?);
+                output.push_str(&group(under, italic)?);
             }
         }
         EqNode::Paren { left, right, body } => {
             output.push_str("left ");
             output.push_str(bracket_name(left, true));
             output.push(' ');
-            output.push_str(&to_hwp_script(body)?);
+            output.push_str(&script_with_style(body, italic)?);
             output.push_str(" right ");
             output.push_str(bracket_name(right, false));
         }
         EqNode::Decoration { kind, body } => {
             output.push_str(decoration_name(*kind));
             output.push(' ');
-            output.push_str(&group(body)?);
+            output.push_str(&group(body, italic)?);
         }
         EqNode::FontStyle { style, body } => {
+            // 명시적 복원으로 생긴 기본 it 래퍼는 출력 시 중복하지 않는다.
+            if *style == FontStyleKind::Italic && italic {
+                write_node(body, output, italic)?;
+                return Ok(());
+            }
             let name = match style {
                 FontStyleKind::Roman => "rm",
                 FontStyleKind::Italic => "it",
@@ -167,13 +181,25 @@ fn write_node(node: &EqNode, output: &mut String) -> Result<(), CanonicalScriptE
                     return Err(CanonicalScriptError::UnsupportedFontStyle(*unsupported))
                 }
             };
+            // HWP rm/it는 중괄호 밖으로도 이어진다. AST의 범위가 끝나면
+            // 상속한 스타일을 명시적으로 복원해야 다음 형제를 바꾸지 않는다.
+            let body_italic = match style {
+                FontStyleKind::Roman => false,
+                FontStyleKind::Italic => true,
+                _ => italic,
+            };
+            output.push('{');
             output.push_str(name);
             output.push(' ');
-            output.push_str(&group(body)?);
+            output.push_str(&group(body, body_italic)?);
+            if body_italic != italic {
+                output.push_str(if italic { " it" } else { " rm" });
+            }
+            output.push('}');
         }
         EqNode::Color { r, g, b, body } => {
             output.push_str(&format!("color {{{r},{g},{b}}} "));
-            output.push_str(&group(body)?);
+            output.push_str(&group(body, italic)?);
         }
         EqNode::Space(SpaceKind::Normal) => output.push('~'),
         EqNode::Space(SpaceKind::Thin) => output.push('`'),
@@ -193,6 +219,7 @@ fn write_rows(
     command: &str,
     rows: &[EqNode],
     output: &mut String,
+    italic: bool,
 ) -> Result<(), CanonicalScriptError> {
     output.push_str(command);
     output.push_str(" {");
@@ -200,7 +227,7 @@ fn write_rows(
         if index > 0 {
             output.push_str(" # ");
         }
-        output.push_str(&to_hwp_script(row)?);
+        output.push_str(&script_with_style(row, italic)?);
     }
     output.push('}');
     Ok(())
@@ -413,12 +440,50 @@ mod tests {
             r"\int_0^1 x dx",
             r"\left( x \right)^2",
             r"\begin{matrix} a & b \\ c & d \end{matrix}",
-            r"\begin{cases} x & \text{if } x \ge 0 \\ -x & \text{otherwise} \end{cases}",
         ] {
             let output = canonical(script);
             assert!(!output.contains('\\'), "{script} -> {output}");
             assert_eq!(parse(&output), parse(script), "{script} -> {output}");
         }
+    }
+
+    #[test]
+    fn scoped_text_in_cases_preserves_structure_and_inherited_styles() {
+        // lexical it 복원이 만드는 기본 스타일 래퍼만 제거한다. Roman 내부의
+        // 명시적 Italic 전환은 남겨 구조뿐 아니라 실제 스타일도 비교한다.
+        fn normalize(node: EqNode, italic: bool) -> EqNode {
+            match node {
+                EqNode::Row(nodes) => {
+                    EqNode::Row(nodes.into_iter().map(|n| normalize(n, italic)).collect())
+                }
+                EqNode::Cases { rows } => EqNode::Cases {
+                    rows: rows.into_iter().map(|n| normalize(n, italic)).collect(),
+                },
+                EqNode::FontStyle {
+                    style: FontStyleKind::Italic,
+                    body,
+                } if italic => normalize(*body, italic),
+                EqNode::FontStyle { style, body } => EqNode::FontStyle {
+                    style,
+                    body: Box::new(normalize(
+                        *body,
+                        match style {
+                            FontStyleKind::Roman => false,
+                            FontStyleKind::Italic => true,
+                            _ => italic,
+                        },
+                    )),
+                },
+                other => other,
+            }
+        }
+        let script = r"\begin{cases} x & \text{if } x \ge 0 \\ -x & \text{otherwise} \end{cases}";
+        let output = canonical(script);
+        assert_eq!(
+            normalize(parse(&output), true),
+            normalize(parse(script), true)
+        );
+        assert_eq!(canonical(&output), output);
     }
 
     #[test]

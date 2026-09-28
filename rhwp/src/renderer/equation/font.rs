@@ -58,6 +58,10 @@ pub(crate) fn is_legacy_equation_font(name: &str) -> bool {
 /// 호출자는 실제 서체와 해당 글립의 존재를 먼저 확인해야 한다.
 /// 반환 bool은 남아 있는 합성 기울임이다. 소문자/그리스 문자는 이미 기울어진 자형이다.
 pub(crate) fn legacy_equation_glyph(character: char, italic: bool) -> (char, bool) {
+    // rm·함수 이름은 본문 Roman cmap, 수학 이탤릭 변수는 PUA cmap을 쓴다.
+    if character.is_ascii_alphabetic() && !italic {
+        return (character, false);
+    }
     let code = match character {
         'A'..='Z' => {
             return (
@@ -136,7 +140,8 @@ mod tests {
         assert_eq!(legacy_equation_glyph('p', true), ('\u{e0f4}', false));
         assert_eq!(legacy_equation_glyph('i', true), ('\u{e0ed}', false));
         assert_eq!(legacy_equation_glyph('f', true), ('\u{e0ea}', false));
-        assert_eq!(legacy_equation_glyph('p', false), ('\u{e029}', false));
+        assert_eq!(legacy_equation_glyph('p', false), ('p', false));
+        assert_eq!(legacy_equation_glyph('P', false), ('P', false));
         assert_eq!(legacy_equation_glyph('1', false), ('\u{e034}', false));
         assert_eq!(legacy_equation_glyph('L', true), ('\u{e00b}', true));
         assert_eq!(legacy_equation_glyph('α', true), ('\u{e09d}', false));

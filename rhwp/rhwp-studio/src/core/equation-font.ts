@@ -31,6 +31,7 @@ export function isLegacyEquationFont(name?: string): boolean {
 
 /** renderer/equation/font.rs의 HYhwpEQ cmap. 로드된 해당 서체에만 사용한다. */
 export function legacyEquationGlyph(character: string, italic: boolean): [string, boolean] {
+  if (!italic && /^[A-Za-z]$/.test(character)) return [character, false];
   const code = character.codePointAt(0)!;
   if (character >= 'A' && character <= 'Z') return [String.fromCodePoint(0xe000 + code - 65), italic];
   if (character >= 'a' && character <= 'z') return [String.fromCodePoint((italic ? 0xe0e5 : 0xe01a) + code - 97), false];

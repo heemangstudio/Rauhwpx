@@ -63,6 +63,13 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    /// 선언 face 존재 여부는 브라우저에 질의하되 문서 재조판 전까지 재사용한다.
+    static BROWSER_FONT_AVAIL: std::cell::RefCell<std::collections::HashMap<String, bool>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct MeasureFontPathsScope(Vec<std::path::PathBuf>);
 
@@ -87,7 +94,8 @@ pub(crate) fn enter_measure_font_paths(paths: Vec<std::path::PathBuf>) -> Measur
 /// 문서 선언 글꼴이 현재 렌더 환경에 실재하는지 — substFont 대체 규칙의 근거.
 ///
 /// 임베디드(BinData) face 는 shaping scope 에 등록돼 있으면 설치와 동일하게 본다.
-/// wasm 은 파일시스템 판정이 불가하므로 설치된 것으로 간주해 기존 동작을 유지한다.
+/// wasm 은 Studio 가 Canvas 원본 setter 로 측정한 브라우저 face 존재 여부를 사용한다.
+/// 다른 WASM 호스트가 그 훅을 제공하지 않으면 기존의 설치 가정으로 폴백한다.
 fn declared_family_available(font_family: &str) -> bool {
     let primary = super::super::style_resolver::primary_font_name(font_family);
     if primary.is_empty() {
@@ -115,7 +123,26 @@ fn declared_family_available(font_family: &str) -> bool {
     }
     #[cfg(target_arch = "wasm32")]
     {
-        true
+        use wasm_bindgen::{JsCast, JsValue};
+
+        if let Some(hit) = BROWSER_FONT_AVAIL.with(|cache| cache.borrow().get(primary).copied()) {
+            return hit;
+        }
+        let global = js_sys::global();
+        let available =
+            js_sys::Reflect::get(&global, &JsValue::from_str("isDeclaredFontFamilyAvailable"))
+                .ok()
+                .and_then(|value| value.dyn_into::<js_sys::Function>().ok())
+                .and_then(|probe| probe.call1(&global, &JsValue::from_str(primary)).ok())
+                .and_then(|value| value.as_bool());
+        if let Some(available) = available {
+            BROWSER_FONT_AVAIL.with(|cache| {
+                cache.borrow_mut().insert(primary.to_string(), available);
+            });
+            available
+        } else {
+            true
+        }
     }
 }
 
@@ -1313,7 +1340,10 @@ mod wasm_internals {
 /// 이후 레이아웃이 새 폭으로 다시 측정되게 한다.
 pub(crate) fn clear_measure_caches() {
     #[cfg(target_arch = "wasm32")]
-    wasm_internals::clear_js_measure_cache();
+    {
+        wasm_internals::clear_js_measure_cache();
+        BROWSER_FONT_AVAIL.with(|cache| cache.borrow_mut().clear());
+    }
     crate::renderer::equation::measure::clear_css_run_cache();
 }
 

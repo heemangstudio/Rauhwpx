@@ -485,7 +485,8 @@ pub fn detect_lang_category(ch: char) -> usize {
         // Katakana Phonetic Extensions
         0x31F0..=0x31FF => 3,
 
-        // 기호: 수학 기호, 화살표, 기술 기호, 도형, Dingbats 등
+        // 기호: 그리스 문자, 수학 기호, 화살표, 기술 기호, 도형, Dingbats 등
+        0x0370..=0x03FF | 0x1F00..=0x1FFF |
         0x2190..=0x21FF | 0x2200..=0x22FF | 0x2300..=0x23FF |
         0x2500..=0x257F | 0x2580..=0x259F | 0x25A0..=0x25FF |
         0x2600..=0x26FF | 0x2700..=0x27BF |
@@ -1464,6 +1465,8 @@ mod tests {
 
     #[test]
     fn test_detect_lang_category_symbol() {
+        assert_eq!(detect_lang_category('μ'), 5); // 그리스 문자
+        assert_eq!(detect_lang_category('Ω'), 5);
         assert_eq!(detect_lang_category('→'), 5); // 화살표
         assert_eq!(detect_lang_category('★'), 5); // 도형
         assert_eq!(detect_lang_category('①'), 5); // 원숫자

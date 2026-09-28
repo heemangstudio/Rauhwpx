@@ -150,9 +150,16 @@ mod synthetic_percent_line_spacing_tests {
             &styles,
             96.0,
         ));
-        assert_eq!(
-            empty_projection[0].line_segs[0].line_spacing,
-            projected_line.line_spacing
+        // A line with no glyphs uses the Latin face, even when the paragraph's
+        // Hangul face would have a larger CJK line box.
+        let empty_pitch = 1_000.0 * 1.3 * 1.35;
+        assert!(
+            (f64::from(
+                empty_projection[0].line_segs[0].line_height
+                    + empty_projection[0].line_segs[0].line_spacing
+            ) - empty_pitch)
+                .abs()
+                <= 1.0
         );
     }
 
@@ -210,6 +217,52 @@ mod synthetic_percent_line_spacing_tests {
                 .abs()
                 <= 1.0
         );
+    }
+
+    #[test]
+    fn generated_empty_line_uses_latin_face_when_script_faces_differ() {
+        const FONT: &[u8] = include_bytes!("../../../tests/fixtures/fonts/RHWPShapingFixture.ttf");
+        let latin_face = "__rhwp_empty_latin_fixture__";
+        crate::renderer::runtime_font_metrics::register(
+            FONT,
+            &[latin_face.to_string()],
+            false,
+            false,
+        )
+        .expect("register Latin face");
+        let styles = ResolvedStyleSet {
+            char_styles: vec![ResolvedCharStyle {
+                font_family: "__rhwp_missing_empty_hangul_face__".to_string(),
+                font_families: vec![
+                    "__rhwp_missing_empty_hangul_face__".to_string(),
+                    latin_face.to_string(),
+                ],
+                font_size: crate::renderer::hwpunit_to_px(1_000, 96.0),
+                ..ResolvedCharStyle::default()
+            }],
+            para_styles: vec![ResolvedParaStyle {
+                line_spacing: 135.0,
+                ..ResolvedParaStyle::default()
+            }],
+            ..ResolvedStyleSet::default()
+        };
+        let tag = LineSeg::TAG_IMPLEMENTATION_PROPERTY;
+        let mut empty = paragraph(tag);
+        empty.text.clear();
+        let mut projected = vec![paragraph(tag), empty];
+        assert!(DocumentCore::project_synthetic_percent_line_spacing(
+            &mut projected,
+            &styles,
+            96.0,
+        ));
+        crate::renderer::runtime_font_metrics::clear();
+
+        let visible_pitch = projected[0].line_segs[0].line_height
+            + projected[0].line_segs[0].line_spacing;
+        let empty_pitch = projected[1].line_segs[0].line_height
+            + projected[1].line_segs[0].line_spacing;
+        assert!((f64::from(visible_pitch) - 1_000.0 * 1.3 * 1.3 * 1.35).abs() <= 1.0);
+        assert!((f64::from(empty_pitch) - 1_000.0 * 1.35).abs() <= 1.0);
     }
 
     #[test]
@@ -1277,12 +1330,14 @@ impl DocumentCore {
                                 })
                                 .flatten();
                             let box_height = if let Some(style) = empty_style {
-                                crate::renderer::char_style_font_box_height(style, 0)
+                                // Hancom composes an empty line with the Latin face. This
+                                // matters when the run's Hangul and Latin faces differ.
+                                crate::renderer::char_style_font_box_height(style, 1)
                             } else {
                                 crate::renderer::composed_line_font_box_height(line, styles)
                             };
                             let baseline = if let Some(style) = empty_style {
-                                crate::renderer::char_style_font_baseline_distance(style, 0)
+                                crate::renderer::char_style_font_baseline_distance(style, 1)
                             } else {
                                 crate::renderer::composed_line_font_baseline_distance(line, styles)
                             };

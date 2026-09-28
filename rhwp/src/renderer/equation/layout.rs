@@ -254,6 +254,14 @@ impl EqLayout {
         self
     }
 
+    fn quoted_inherits_style(&self) -> bool {
+        !self.hft
+            && self
+                .font_family
+                .as_deref()
+                .is_some_and(super::font::is_legacy_equation_font)
+    }
+
     /// 인접 원자 사이 간격 (em). 한컴 수식의 legacy 서체(HYhwpEQ 등)는 글립을
     /// advance가 아니라 잉크 가장자리끼리 포개고, 원자 종류별 고정 간격을 둔다
     /// (eq-002 PDF 잉크 간격 실측: `=`→`−` 0.00em, `=`→숫자 0.20em,
@@ -267,6 +275,15 @@ impl EqLayout {
         next: Atom,
         script: bool,
     ) -> f64 {
+        // 서체·색상 래퍼는 수학 원자의 간격 분류를 바꾸지 않는다.
+        fn unstyled(mut node: &EqNode) -> &EqNode {
+            while let EqNode::FontStyle { body, .. } | EqNode::Color { body, .. } = node {
+                node = body;
+            }
+            node
+        }
+        let prev_node = unstyled(prev_node);
+        let next_node = unstyled(next_node);
         if self
             .font_family
             .as_deref()
@@ -373,6 +390,9 @@ impl EqLayout {
     fn node_run_metrics(&self, node: &EqNode, fs: f64) -> Option<super::measure::LegacyRunMetrics> {
         let (text, italic, bold) = match node {
             EqNode::Text(s) => (s.as_str(), self.is_italic_text(s), self.bold),
+            EqNode::Quoted(s) if self.quoted_inherits_style() => {
+                (s.as_str(), self.is_italic_text(s), self.bold)
+            }
             EqNode::Number(s) | EqNode::Quoted(s) => (s.as_str(), false, self.bold),
             EqNode::Symbol(s) => (s.as_str(), false, false),
             EqNode::MathSymbol(s) => {
@@ -403,6 +423,9 @@ impl EqLayout {
     fn node_run_metrics_wasm(&self, node: &EqNode, fs: f64) -> Option<(f64, f64)> {
         let (text, italic, bold) = match node {
             EqNode::Text(s) => (s.as_str(), self.is_italic_text(s), self.bold),
+            EqNode::Quoted(s) if self.quoted_inherits_style() => {
+                (s.as_str(), self.is_italic_text(s), self.bold)
+            }
             EqNode::Number(s) | EqNode::Quoted(s) => (s.as_str(), false, self.bold),
             EqNode::Symbol(s) => (s.as_str(), false, false),
             EqNode::MathSymbol(s) => {
@@ -651,6 +674,7 @@ impl EqLayout {
             EqNode::Symbol(s) => self.layout_symbol(s, fs),
             EqNode::MathSymbol(s) => self.layout_math_symbol(s, fs),
             EqNode::Function(s) => self.layout_function(s, fs),
+            EqNode::Quoted(s) if self.quoted_inherits_style() => self.layout_text(s, fs),
             EqNode::Quoted(s) => self.layout_number(s, fs),
             EqNode::Fraction { numer, denom } => self.layout_fraction(numer, denom, fs),
             EqNode::Atop { top, bottom } => self.layout_atop(top, bottom, fs),
@@ -2164,6 +2188,24 @@ mod tests {
         // 함수 이름(Op) 뒤 피연산자는 thin space, 괄호(Open)는 붙는다.
         assert!(close(&gaps("sin x"), &[fs * THIN_SPACE_EM]));
         assert!(gaps("sin (x)")[0].abs() < 1e-9);
+    }
+
+    #[test]
+    fn modern_hy_quoted_text_inherits_math_and_roman_styles() {
+        use super::super::symbols::FontStyleKind;
+        let quoted = EqNode::Quoted("PM".into());
+        let text = EqNode::Text("PM".into());
+        let math = EqLayout::with_font(20.0, "HYhwpEQ");
+        let roman = math.styled(FontStyleKind::Roman);
+        for engine in [&math, &roman] {
+            let actual = engine.layout(&quoted);
+            assert!(matches!(actual.kind, LayoutKind::Text(_)));
+            assert_eq!(actual.width, engine.layout(&text).width);
+        }
+        // 구형 HFT·일반 fallback의 literal 계약은 바꾸지 않는다.
+        for engine in [math.with_version(""), EqLayout::new(20.0)] {
+            assert!(matches!(engine.layout(&quoted).kind, LayoutKind::Number(_)));
+        }
     }
 
     #[test]

@@ -33,7 +33,7 @@ test('legacy math cmap keeps intrinsic italic, roman, digits and Greek distinct'
     { text: '\ue0f4\ue0ed\ue0ea\ue034\ue048\ue09d\ue09c', italic: false },
     { text: '\ue00b', italic: true },
   ]);
-  assert.deepEqual(legacyEquationRuns('pα', false), [{ text: '\ue029α', italic: false }]);
+  assert.deepEqual(legacyEquationRuns('PMexp1+α', false), [{ text: 'PMexp\ue034\ue048α', italic: false }]);
 });
 
 /** 최소 SFNT: format4 cmap의 한 문자만 가진다. 누락 글립 경계도 검증한다. */
