@@ -30,7 +30,7 @@ test('changes drawer exposes synchronized accessible state', () => {
 });
 
 test('the same review node returns to its inline sidebar position after focus mode', () => {
-  assert.match(source, /chatPage\.append\(header, messages, review, compactChanges, planSurface, calibrationChip, questionController\.root, composer\)/);
+  assert.match(source, /chatPage\.append\(header, messages, review, compactChanges, planSurface, reconnectChip, calibrationChip, questionController\.root, composer\)/);
   assert.match(source, /changesDrawer\.reviewSlot\.appendChild\(review\)/);
   assert.match(source, /planColumn\.appendChild\(planSurface\)/);
   assert.match(source, /chatPage\.append\(review, compactChanges, planSurface, questionController\.root, composer\)/);

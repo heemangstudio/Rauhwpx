@@ -4910,6 +4910,20 @@ button.ag-skill-copy {
   color: var(--ag-text);
 }
 
+/* 재연결 칩 — 문체 칩과 같은 자리. 닫기 없이, 로그인이 돌아오면 스스로 걷힌다. */
+.ag-reconnect-chip {
+  padding: 2px;
+}
+
+.ag-reconnect-chip-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  margin-right: -2px;
+  border-radius: 50%;
+  background: var(--ag-danger, #ff3b30);
+}
+
 .ag-calibration-chip :is(button):focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 1px;

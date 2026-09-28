@@ -20,6 +20,7 @@ import type { SidebarBridge } from '../../agent/bridge.ts';
 import type {
   AgentName,
   AgentPhase,
+  AgentSetupStatusMap,
   AgentStreamEvent,
   AgentWorkflow,
   AgentWorkflowState,
@@ -3257,7 +3258,92 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       && !writingStyleActive
       && !turnRunning
       && currentThread.messages.some((message) => message.role === 'assistant');
-    calibrationChip.hidden = !eligible;
+    calibrationChip.hidden = !eligible || !reconnectChip.hidden;
+  }
+
+  /* 프로바이더 재연결 칩 — 고른 프로바이더의 로그인이 풀리면 같은 자리에 뜬다.
+     누르면 설정의 로그인 모달로 바로 가고, 로그인이 돌아오면 세션을 새로 연다. */
+  const reconnectChip = el('div', 'ag-calibration-chip ag-reconnect-chip');
+  reconnectChip.hidden = true;
+  reconnectChip.setAttribute('role', 'status');
+  const reconnectChipOpen = el('button', 'ag-calibration-chip-open');
+  reconnectChipOpen.type = 'button';
+  const reconnectChipText = el('span', 'ag-calibration-chip-text');
+  reconnectChipOpen.append(
+    el('span', 'ag-reconnect-chip-dot'),
+    reconnectChipText,
+    el('span', 'ag-calibration-chip-action', '다시 로그인'),
+  );
+  reconnectChip.append(reconnectChipOpen);
+  let setupStatuses: AgentSetupStatusMap | null = null;
+  /** 턴이 인증 오류로 끝났지만 허브의 상태는 아직 로그인으로 보이는 프로바이더. */
+  const authFailedAgents = new Set<AgentName>();
+  /** 칩을 띄운 뒤 로그인이 돌아오면 세션을 다시 열 프로바이더. */
+  const reconnectWaiting = new Set<AgentName>();
+  reconnectChipOpen.addEventListener('click', () => {
+    const agent = reconnectChip.dataset.agent as AgentName | undefined;
+    if (!agent) return;
+    requestSettingsOpen('ai');
+    settingsPanel.beginAgentConnect(agent, { reauth: authFailedAgents.has(agent) });
+  });
+  /** 로그인 창이 열렸던 프로바이더 — 그 뒤의 로그인 상태는 새 자격 증명이다. */
+  const authRunSeen = new Set<AgentName>();
+
+  function receiveSetupStatuses(statuses: AgentSetupStatusMap): void {
+    setupStatuses = statuses;
+    for (const agent of PROVIDER_ORDER) {
+      const status = statuses[agent];
+      if (status?.authenticating) {
+        authRunSeen.add(agent);
+      } else if (authRunSeen.has(agent)) {
+        authRunSeen.delete(agent);
+        if (status?.authenticated) authFailedAgents.delete(agent);
+      }
+    }
+    resumeReconnectedProviders();
+  }
+
+  function providerNeedsLogin(agent: AgentName): boolean {
+    if (!(PROVIDER_ORDER as readonly AgentName[]).includes(agent)) return false;
+    const status = setupStatuses?.[agent];
+    if (!status || status.authenticating) return false;
+    // 설치만 됐고 한 번도 연결하지 않은 프로바이더는 입력기 메뉴에 없다.
+    return (status.available && !status.authenticated) || authFailedAgents.has(agent);
+  }
+
+  function updateReconnectChip(): void {
+    const agent = selectedAgent;
+    const show = connState === 'connected'
+      && composerExecution(workspace.composerTarget()).kind === 'local'
+      && providerNeedsLogin(agent);
+    if (show) {
+      reconnectWaiting.add(agent);
+      reconnectChip.dataset.agent = agent;
+      reconnectChipText.textContent = `${AGENT_LABEL[agent]} 로그인 필요`;
+    }
+    reconnectChip.hidden = !show;
+  }
+
+  /** 로그인이 돌아온 프로바이더의 세션을 새 자격 증명으로 다시 연다. */
+  function resumeReconnectedProviders(): void {
+    for (const agent of [...reconnectWaiting]) {
+      const status = setupStatuses?.[agent];
+      if (!status?.connected || status.authenticating || authFailedAgents.has(agent)) continue;
+      reconnectWaiting.delete(agent);
+      if (agent !== selectedAgent || composerExecution(workspace.composerTarget()).kind !== 'local') continue;
+      if (!turnRunning) restartAgentSession();
+      showToast({ message: `${AGENT_LABEL[agent]} 다시 연결됨`, durationMs: 2400 });
+    }
+  }
+
+  /** CLI 가 돌려준 인증 실패 문구 — 허브 상태가 늦게 따라올 때를 잡는다. */
+  const PROVIDER_AUTH_ERROR = /\/login|not logged in|log ?in again|oauth token|token (?:has )?expired|invalid api key|authentication|unauthori[sz]ed|\b401\b/i;
+  function noteProviderAuthFailure(agent: AgentName, message: string | null | undefined): void {
+    if (!message || !PROVIDER_AUTH_ERROR.test(message)) return;
+    authFailedAgents.add(agent);
+    updateReconnectChip();
+    updateCalibrationChip();
+    void bridge.requestAgentSetupStatus(true);
   }
   const composerUtilities = el('div', 'ag-composer-utilities');
   composerUtilities.setAttribute('aria-label', '채팅 도구');
@@ -3479,7 +3565,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   // 사이드바에서는 변경 검토와 계획을 분리한다. 계획은 입력기 바로 위에
   // 머물러 접었을 때 작은 진행 표시로 이어지고, 변경 검토는 가려지지 않는다.
   // 질문 카드와 입력기는 인접 형제여야 하나의 입력 면으로 이어진다.
-  chatPage.append(header, messages, review, compactChanges, planSurface, calibrationChip, questionController.root, composer);
+  chatPage.append(header, messages, review, compactChanges, planSurface, reconnectChip, calibrationChip, questionController.root, composer);
   messages.after(latestDock);
 
   /** 입력기 하단 한 줄이 겹치지 않고 붙는 폭을 재서 사이드바 최솟값으로 쓴다.
@@ -6807,6 +6893,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
 
   function updateComposer(): void {
     if (composerRest.resting && !canComposerRest()) composerRest.setResting(false);
+    updateReconnectChip();
     updateCalibrationChip();
     syncCloudProviderSelection();
     syncProviderMenu();
@@ -7848,12 +7935,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
         fleetView.sweep();
         sweepTasksTranscript();
         if (event.errorMessage) systemMessage(event.errorMessage);
+        noteProviderAuthFailure(event.agent, event.errorMessage);
         const completed =
           event.stopReason !== 'interrupted'
           && event.stopReason !== 'failed'
           && event.stopReason !== 'exited'
           && !event.errorMessage
           && turnFailedToolCount === 0;
+        if (completed && authFailedAgents.delete(event.agent)) updateComposer();
         if (planCardPending && !turnPresentedPlan) {
           systemMessage('계획 카드가 도착하지 않았습니다');
         }
@@ -7868,6 +7957,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       }
       case 'error':
         systemMessage(event.message);
+        noteProviderAuthFailure(event.agent, event.message);
         break;
     }
   }
@@ -8109,6 +8199,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
         refreshSidebarWidthMin();
         break;
       case 'agent-setup-status':
+        receiveSetupStatuses(e.statuses);
         connectedProviders.clear();
         for (const agent of PROVIDER_ORDER) {
           if (e.statuses[agent]?.connected) connectedProviders.add(agent);

@@ -340,7 +340,7 @@ export interface SettingsPanel {
    * 모달을 연 뒤 허브 상태에 따라 설치 또는 대표 인증 경로를 바로 시작한다.
    * 이미 로그인된 프로바이더는 완료 화면만 보여 준다.
    */
-  beginAgentConnect(agent: AgentName): void;
+  beginAgentConnect(agent: AgentName, options?: { reauth?: boolean }): void;
   closeAgentSetup(): void;
   handleEvent(ev: SidebarEvent): void;
   dispose(): void;
@@ -2443,7 +2443,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     return health?.available === true || status?.available === true || status?.installed === true;
   }
 
-  async function continueAgentConnect(agent: AgentName): Promise<void> {
+  async function continueAgentConnect(agent: AgentName, reauth = false): Promise<void> {
     await refreshSetupStatuses();
     if (agent === 'rau') {
       if (disposed || setupAgent !== agent) return;
@@ -2464,7 +2464,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     if (disposed || setupAgent !== agent) return;
     renderAgentSetup();
     if (connectionState !== 'connected') return;
-    if (isAgentLoggedIn(agent)) return;
+    // 허브는 로그인으로 보지만 CLI 가 인증을 거절했으면 다시 로그인한다.
+    if (isAgentLoggedIn(agent) && !reauth) return;
     if (isAgentInstalled(agent) || (agent === 'pi' && piStatus?.installed === true)) {
       await startPreferredSetupAuth(agent);
       return;
@@ -2488,9 +2489,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     await startSetupAuth('oauth');
   }
 
-  function beginAgentConnect(agent: AgentName): void {
+  function beginAgentConnect(agent: AgentName, options?: { reauth?: boolean }): void {
     openAgentSetup(agent);
-    void continueAgentConnect(agent);
+    void continueAgentConnect(agent, options?.reauth === true);
   }
 
   function openAgentSetup(agent: AgentName): void {
