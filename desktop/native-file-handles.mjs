@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { copyFile, link, open, opendir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, link, open, opendir, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
 import { basename, dirname, extname, isAbsolute, join, normalize, win32 } from 'node:path';
 
 import { retryWindows } from './fs-replace.mjs';
@@ -289,31 +289,55 @@ function windowsMetadataCommandEnv(systemRoot, sourceEnv = process.env) {
   return env;
 }
 
-export function rewriteIcaclsSavedAcl(buffer, destinationBaseName) {
-  if (
-    typeof destinationBaseName !== 'string'
-    || destinationBaseName.length === 0
-    || /[\r\n]/.test(destinationBaseName)
-  ) {
-    const error = new Error('Invalid icacls restore destination');
-    error.code = 'NATIVE_FILE_METADATA_COPY_FAILED';
-    throw error;
-  }
+export function readIcaclsSavedDacl(buffer) {
   const payload = buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe
     ? buffer.subarray(2)
     : buffer;
-  const text = payload.toString('utf16le');
-  const nl = text.includes('\r\n') ? '\r\n' : '\n';
-  const idx = text.indexOf(nl);
-  if (idx <= 0) {
+  const dacl = payload.toString('utf16le').split(/\r?\n/)[1]?.trim();
+  if (!dacl?.startsWith('D:')) {
     const error = new Error('icacls save file did not contain a DACL entry');
     error.code = 'NATIVE_FILE_METADATA_COPY_FAILED';
     throw error;
   }
-  return Buffer.concat([
-    Buffer.from([0xff, 0xfe]),
-    Buffer.from(`${destinationBaseName}${text.slice(idx)}`, 'utf16le'),
-  ]);
+  return dacl;
+}
+
+// FileSecurity persists only the sections it changed, so applying the DACL
+// needs WRITE_DAC on the temp file and no SeRestorePrivilege. Plain .NET calls
+// skip cmdlet module autoloading, which takes 20+ s with the pinned env.
+const WINDOWS_SET_DACL_SCRIPT = [
+  "$ErrorActionPreference = 'Stop'",
+  '$security = [System.Security.AccessControl.FileSecurity]::new()',
+  "$security.SetSecurityDescriptorSddlForm($env:RAUHWPX_DACL_SDDL, 'Access')",
+  '[System.IO.File]::SetAccessControl($env:RAUHWPX_DACL_TARGET, $security)',
+].join('; ');
+// CLR startup stalls without these, even with -NoProfile. PATH and
+// PSModulePath stay pinned so a user-writable entry cannot load a module.
+const WINDOWS_POWERSHELL_ENV_KEYS = Object.freeze([
+  'TEMP',
+  'TMP',
+  'USERNAME',
+  'USERDOMAIN',
+  'USERPROFILE',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  'APPDATA',
+  'LOCALAPPDATA',
+  'PROCESSOR_ARCHITECTURE',
+  'NUMBER_OF_PROCESSORS',
+  'ProgramData',
+  'ProgramFiles',
+]);
+
+async function readSavedDacl(aclFile) {
+  try {
+    return readIcaclsSavedDacl(await readFile(aclFile));
+  } catch (error) {
+    // Test doubles that succeed without writing a save file still allow the
+    // replace to proceed. A real icacls /save that exits 0 creates this file.
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
 }
 
 async function copyWindowsDacl(
@@ -329,26 +353,47 @@ async function copyWindowsDacl(
     throw error;
   }
   const icacls = win32.join(systemRoot, 'System32', 'icacls.exe');
-  const options = {
-    platform: 'win32',
-    env: windowsMetadataCommandEnv(systemRoot, sourceEnv),
-  };
-  const aclFile = `${temporaryPath}${WINDOWS_ICACLS_DACL_SUFFIX}`;
+  const env = windowsMetadataCommandEnv(systemRoot, sourceEnv);
+  const options = { platform: 'win32', env };
+  const sourceAclFile = `${temporaryPath}${WINDOWS_ICACLS_DACL_SUFFIX}`;
+  const temporaryAclFile = `${temporaryPath}.target${WINDOWS_ICACLS_DACL_SUFFIX}`;
   try {
-    await runCommandImpl(icacls, [sourcePath, '/save', aclFile, '/q'], options);
-    let saved;
-    try {
-      saved = await readFile(aclFile);
-    } catch (error) {
-      // Test doubles that succeed without writing a save file still allow the
-      // replace to proceed. A real icacls /save that exits 0 creates this file.
-      if (error?.code === 'ENOENT') return;
-      throw error;
+    await runCommandImpl(icacls, [sourcePath, '/save', sourceAclFile, '/q'], options);
+    const sourceDacl = await readSavedDacl(sourceAclFile);
+    if (sourceDacl === null) return;
+    await runCommandImpl(icacls, [temporaryPath, '/save', temporaryAclFile, '/q'], options);
+    // Most documents carry only entries inherited from their folder, and the
+    // temp file beside them already inherits the same ones.
+    if (sourceDacl === await readSavedDacl(temporaryAclFile)) return;
+    // icacls /restore demands SeRestorePrivilege, which standard and
+    // non-elevated users lack (exit 1300), so apply the DACL directly.
+    const powershellHome = win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0');
+    const powershellEnv = {
+      ...env,
+      PSModulePath: win32.join(powershellHome, 'Modules'),
+      RAUHWPX_DACL_SDDL: sourceDacl,
+      RAUHWPX_DACL_TARGET: temporaryPath,
+    };
+    for (const key of WINDOWS_POWERSHELL_ENV_KEYS) {
+      const value = sourceEnv?.[key];
+      if (typeof value === 'string' && value) powershellEnv[key] = value;
     }
-    await writeFile(aclFile, rewriteIcaclsSavedAcl(saved, win32.basename(temporaryPath)));
-    await runCommandImpl(icacls, [win32.dirname(temporaryPath), '/restore', aclFile, '/q'], options);
+    await runCommandImpl(
+      win32.join(powershellHome, 'powershell.exe'),
+      [
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-EncodedCommand',
+        Buffer.from(WINDOWS_SET_DACL_SCRIPT, 'utf16le').toString('base64'),
+      ],
+      { ...options, env: powershellEnv },
+    );
   } finally {
-    await rm(aclFile, { force: true }).catch(() => {});
+    await rm(sourceAclFile, { force: true }).catch(() => {});
+    await rm(temporaryAclFile, { force: true }).catch(() => {});
   }
 }
 
@@ -654,9 +699,8 @@ export async function writeNativeFileAtomically(
     temporaryFile = undefined;
 
     if (sourceInfo && platform === 'win32') {
-      // Copy only the DACL after the temp handle is closed. icacls /save
-      // stores DACL entries, not owner or SACL, and PowerShell Get-Acl hangs
-      // on GitHub Actions Windows when the destination is still open.
+      // Copy only the DACL, after the temp handle is closed. icacls /save
+      // reads DACL entries, not owner or SACL.
       await copyWindowsDacl(
         filePath,
         temporaryPath,
