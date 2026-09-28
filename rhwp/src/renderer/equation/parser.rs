@@ -369,20 +369,12 @@ impl EqParser {
             return self.parse_latex_fraction();
         }
 
-        // LaTeX \text{...} — 로만체 텍스트
-        // 제한: 토크나이저가 일반 공백을 건너뛰므로 \text{a b} 내부 공백은 보존되지 않음.
-        // 공백이 필요하면 hwpeq 관례대로 ~ 사용 (\text{if~}).
-        if cu == "TEXT" {
+        // LaTeX \text/\operatorname의 로만체 인자는 HWP 선언과 별도 범위다.
+        // 토크나이저가 일반 공백을 건너뛰므로 명시 공백은 ~로 입력한다.
+        if matches!(cu, "TEXT" | "OPERATORNAME") {
+            let declaration = self.font_declaration.take();
             let body = self.parse_single_or_group();
-            return EqNode::FontStyle {
-                style: FontStyleKind::Roman,
-                body: Box::new(body),
-            };
-        }
-
-        // LaTeX \operatorname{...} — 로만체 연산자명
-        if cu == "OPERATORNAME" {
-            let body = self.parse_single_or_group();
+            self.font_declaration = declaration;
             return EqNode::FontStyle {
                 style: FontStyleKind::Roman,
                 body: Box::new(body),
@@ -2108,6 +2100,8 @@ mod tests {
             ),
             ("rm {A} B", vec![("A", false), ("B", false)]),
             ("{rm A} B", vec![("A", false), ("B", false)]),
+            (r"it \text{B} C", vec![("B", false), ("C", true)]),
+            (r"it \operatorname{B} C", vec![("B", false), ("C", true)]),
             (
                 r#"rm A: ~ "PM" it T rm RH"#,
                 vec![("A", false), ("PM", false), ("T", true), ("RH", false)],
