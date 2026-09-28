@@ -719,7 +719,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       if (open) collapseTurnActivity();
     },
   });
-  let insetRecenterRaf: number | null = null;
+  /** 편집 영역 inset 전이 중 문서·눈금자에 건 transform 애니메이션 (null = 전이 없음) */
+  let insetAnimations: Animation[] | null = null;
+  /** 지금 레이아웃에 반영된 편집 영역 오른쪽 inset(px). 전이 폭 계산의 기준이다. */
+  let committedEditorInsetPx = 0;
   let resizeMoveRaf: number | null = null;
   let resizeMoveX = 0;
   // ── 문서별 채팅 격리 ──────────────────────────────────
@@ -908,6 +911,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     resizeHandle.setAttribute('aria-valuemin', String(sidebarWidthMin));
     resizeHandle.setAttribute('aria-valuemax', String(maxSidebarWidth(sidebarWidthMin)));
     if (opts?.persist) persistSidebarWidth(sidebarWidth);
+    // 전이 대기 중(펼침 커밋 전)에는 inset 이 아직 레이아웃에 없다.
+    if (document.body.classList.contains('ag-sidebar-inset')) {
+      committedEditorInsetPx = effectiveEditorInset(true);
+    }
     if (opts?.recenter !== false) notifyInsetChanged();
     return sidebarWidth;
   }
@@ -916,40 +923,122 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     eventBus?.emit('viewport-inset-changed');
   }
 
-  function clearInsetRecenterLoop(): void {
-    if (insetRecenterRaf !== null) {
-      cancelAnimationFrame(insetRecenterRaf);
-      insetRecenterRaf = null;
+  /** body.ag-sidebar-inset 이 켜졌을 때 편집 영역이 실제로 비켜 줄 폭 (CSS 규칙과 같은 조건). */
+  function effectiveEditorInset(applied: boolean): number {
+    if (!applied || fullscreen) return 0;
+    if (window.matchMedia('(max-width: 767px)').matches) return 0;
+    return sidebarWidth;
+  }
+
+  function commitEditorInset(applied: boolean): void {
+    document.body.classList.toggle('ag-sidebar-inset', applied);
+    committedEditorInsetPx = effectiveEditorInset(applied);
+  }
+
+  /** 문서 층이 지금 화면에서 밀려 있는 양(px). 진행 중인 전이를 이어받을 때 쓴다. */
+  function currentInsetShift(target: Element | null): number {
+    if (!target || !insetAnimations) return 0;
+    const transform = getComputedStyle(target).transform;
+    if (!transform || transform === 'none') return 0;
+    try {
+      return new DOMMatrixReadOnly(transform).m41;
+    } catch {
+      return 0;
     }
+  }
+
+  function cancelInsetAnimations(): void {
+    if (insetAnimations) {
+      for (const animation of insetAnimations) {
+        animation.onfinish = null;
+        animation.cancel();
+      }
+    }
+    insetAnimations = null;
+  }
+
+  function clearInsetRecenterLoop(): void {
+    cancelInsetAnimations();
     document.body.classList.remove('ag-sidebar-animating');
   }
 
-  /** inset 애니메이션 동안 매 프레임 용지 좌표·스크롤을 다시 맞춘다. */
+  /** 사이드바 transform 전이와 같은 시간·곡선을 쓴다 (motion.css 토큰을 .ag-root 가 해석한 값). */
+  function sidebarMotionTiming(): { duration: number; easing: string } {
+    const style = getComputedStyle(root);
+    const rawDuration = style.transitionDuration.split(',')[0]?.trim() ?? '';
+    const seconds = parseFloat(rawDuration);
+    const duration = Number.isFinite(seconds) && seconds > 0
+      ? (rawDuration.endsWith('ms') ? seconds : seconds * 1000)
+      : SIDEBAR_MOTION_DURATION_MS;
+    const easing = style.transitionTimingFunction.split(/,(?![^(]*\))/)[0]?.trim() || 'ease-out';
+    return { duration, easing };
+  }
+
+  /**
+   * 사이드바 inset 변화를 편집 영역에 반영한다. 레이아웃(여백·가운데 정렬)은 한 번만 바꾸고,
+   * 그 사이의 움직임은 문서 층과 가로 눈금자의 transform(컴포지터)으로만 그린다.
+   * - inset 이 줄거나 폭만 바뀌면: 시작할 때 커밋하고 이전 위치에서 제자리로 미끄러진다.
+   * - 펼칠 때: 사이드바가 덮어 오는 동안 전체 폭을 유지하고 끝에서 커밋한다
+   *   (시작에서 줄이면 사이드바가 닿기 전 빈 띠가 드러난다).
+   */
   function startInsetRecenterLoop(): void {
-    if (!eventBus) return;
-    clearInsetRecenterLoop();
-    document.body.classList.add('ag-sidebar-animating');
+    const wantInset = document.body.classList.contains('ag-sidebar-open');
+    if (!eventBus) {
+      commitEditorInset(wantInset);
+      return;
+    }
+    const scrollContent = document.getElementById('scroll-content');
+    const layers: Array<{ element: HTMLElement; factor: number }> = [];
+    const hRuler = document.getElementById('h-ruler');
+    const editingStatus = document.getElementById('agent-editing-status');
+    if (scrollContent) layers.push({ element: scrollContent, factor: 1 });
+    if (hRuler) layers.push({ element: hRuler, factor: 1 });
+    // 상태 알약은 용지 가운데가 아니라 편집 영역 오른쪽 끝을 따르므로 두 배 움직인다.
+    if (editingStatus && !editingStatus.hidden) layers.push({ element: editingStatus, factor: 2 });
+
+    const fromShift = currentInsetShift(scrollContent);
+    cancelInsetAnimations();
+    const prevInset = committedEditorInsetPx;
+    const nextInset = effectiveEditorInset(wantInset);
+    // 커밋하면 용지 가운데가 inset 변화의 절반만큼 왼쪽으로 옮겨 간다.
+    const commitShift = (nextInset - prevInset) / 2;
+    const deferCommit = wantInset && !document.body.classList.contains('ag-sidebar-inset');
+    const from = deferCommit ? fromShift : fromShift + commitShift;
+    const to = deferCommit ? -commitShift : 0;
 
     const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (reduceMotion) {
-      notifyInsetChanged();
+    if (reduceMotion || !scrollContent || (Math.abs(from) < 0.5 && Math.abs(to) < 0.5)) {
       document.body.classList.remove('ag-sidebar-animating');
+      commitEditorInset(wantInset);
+      notifyInsetChanged();
       return;
     }
 
-    const startedAt = performance.now();
-    const durationMs = SIDEBAR_MOTION_DURATION_MS;
-    const tick = (now: number) => {
+    document.body.classList.add('ag-sidebar-animating');
+    if (!deferCommit) {
+      // 레이아웃은 지금 한 번 바꾸고, 문서는 이전 화면 위치에서 출발시킨다.
+      commitEditorInset(wantInset);
       notifyInsetChanged();
-      if (now - startedAt < durationMs) {
-        insetRecenterRaf = requestAnimationFrame(tick);
-        return;
-      }
-      insetRecenterRaf = null;
+    }
+
+    const { duration, easing } = sidebarMotionTiming();
+    const animations = layers.map(({ element, factor }) => element.animate(
+      [
+        { transform: `translateX(${from * factor}px)` },
+        { transform: `translateX(${to * factor}px)` },
+      ],
+      { duration, easing, fill: 'both' },
+    ));
+    insetAnimations = animations;
+    animations[0].onfinish = () => {
+      if (insetAnimations !== animations) return;
+      // finish 이벤트는 같은 프레임의 페인트 전에 돈다. 커밋·재정렬과 transform 제거를
+      // 한 번에 해 끝 프레임에서 용지가 튀지 않게 한다.
       document.body.classList.remove('ag-sidebar-animating');
+      if (deferCommit) commitEditorInset(wantInset);
       notifyInsetChanged();
+      cancelInsetAnimations();
     };
-    insetRecenterRaf = requestAnimationFrame(tick);
   }
 
   function setCollapsed(collapsed: boolean, opts?: { recenter?: boolean }): void {
@@ -960,7 +1049,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     collapseTab.setAttribute('aria-label', label);
     collapseTab.title = label;
     eventBus?.emit('agent-sidebar-visibility-changed', { open: !collapsed });
-    if (opts?.recenter !== false) startInsetRecenterLoop();
+    if (opts?.recenter !== false) {
+      startInsetRecenterLoop();
+    } else {
+      cancelInsetAnimations();
+      commitEditorInset(!collapsed);
+    }
   }
 
   applySidebarWidth(sidebarWidth, { persist: false, recenter: false });
@@ -1050,7 +1144,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     clearResizeResumeTimer();
     document.body.classList.remove('ag-sidebar-resizing');
     // 접힘 전이가 도는 중이면 ag-sidebar-animating 은 그 루프가 거둔다.
-    if (insetRecenterRaf === null) document.body.classList.remove('ag-sidebar-animating');
+    if (insetAnimations === null) document.body.classList.remove('ag-sidebar-animating');
     detachResizeWindowListeners();
     if (resizeDragCollapsed) {
       // 다시 펼칠 때는 끌기 전 폭으로 돌아온다.
@@ -1766,7 +1860,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   cloudDocumentButton.title = 'Cloud 에이전트가 작업 중인 문서를 봅니다';
 
 
-  const workspaceTitle = el('div', 'ag-workspace-title', '대화');
+  // 대화 화면에서는 제목을 비운다 — 대화 위에 '대화'라고 적는 것은 정보가 없다.
+  const workspaceTitle = el('div', 'ag-workspace-title');
 
   const workspaceModeSwitch = el('div', 'ag-workspace-mode-switch ag-composer-mode-switch');
   workspaceModeSwitch.setAttribute('role', 'group');
@@ -1999,9 +2094,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   environmentPlan.appendChild(createIcon('plan'));
   const environmentPlanCopy = el('span', 'ag-environment-plan-copy');
   const environmentPlanLabel = el('span', 'ag-environment-plan-label', '계획');
-  const environmentPlanTitle = el('span', 'ag-environment-plan-title', '계획 없음');
+  const environmentPlanTitle = el('span', 'ag-environment-plan-title');
   environmentPlanCopy.append(environmentPlanLabel, environmentPlanTitle);
-  const environmentPlanStatus = el('span', 'ag-environment-plan-status');
+  const environmentPlanStatus = el('span', 'ag-environment-plan-status', '없음');
   const environmentPlanChevron = createChevron('ag-environment-plan-chevron');
   environmentPlan.append(environmentPlanCopy, environmentPlanStatus, environmentPlanChevron);
   environmentPlanSection.appendChild(environmentPlan);
@@ -4338,8 +4433,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     );
     const hasPlan = activePlan !== null && chatWorkflow === 'plan';
     environmentPlan.disabled = !hasPlan;
-    environmentPlanTitle.textContent = activePlan?.title || '계획 없음';
-    environmentPlanStatus.textContent = hasPlan ? PLANNING_PHASE_LABEL[planningPhase] : '';
+    environmentPlanTitle.textContent = hasPlan ? activePlan?.title || '' : '';
+    environmentPlanStatus.textContent = hasPlan ? PLANNING_PHASE_LABEL[planningPhase] : '없음';
     environmentPlan.setAttribute(
       'aria-label',
       hasPlan
@@ -4555,7 +4650,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     settingsBtn.setAttribute('aria-expanded', 'false');
     workspaceSettingsBtn.setAttribute('aria-expanded', 'false');
     workspaceSettingsBtn.classList.remove('ag-active');
-    workspaceTitle.textContent = '대화';
+    workspaceTitle.textContent = '';
     settingsPage.setAttribute('aria-hidden', 'true');
     settingsPanel.close();
   }
@@ -4645,7 +4740,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     settingsBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
     workspaceSettingsBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
     workspaceSettingsBtn.classList.toggle('ag-active', open);
-    workspaceTitle.textContent = open ? '설정' : '대화';
+    workspaceTitle.textContent = open ? '설정' : '';
     settingsPage.setAttribute('aria-hidden', open ? 'false' : 'true');
     if (fullscreen) {
       // 전체 화면에서 목록 관련 aria 는 레일 접힘 상태를 뜻하므로 덮어쓰지 않는다.
@@ -4787,6 +4882,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   input.addEventListener('compositionend', () => { composerInputComposing = false; });
 
   function resizeComposerInput(): void {
+    // 값을 코드로 바꾼 뒤에도 이 경로를 지나므로 보내기 버튼의 쉼 상태를 함께 맞춘다.
+    syncSendIdle();
     const from = Number.parseFloat(input.style.height);
     if (composerInputTransitionTimer !== null) {
       window.clearTimeout(composerInputTransitionTimer);
@@ -5064,6 +5161,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
 
   input.addEventListener('input', () => {
     cloudMessageRetry = null;
+    syncSendIdle();
     if (questionController.hasPending()) {
       questionController.handleComposerInput();
       resizeComposerInput();
@@ -6891,6 +6989,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     if (getChatStatus(currentThread.id) === 'needs-input') clearChatStatus(currentThread.id);
   }
 
+  /** 입력이 비어 있으면 보내기 버튼을 가라앉힌 색으로 쉬게 한다 — 눌림 동작은 그대로다. */
+  function syncSendIdle(): void {
+    const idle = !send.classList.contains('ag-stop')
+      && input.value.trim() === ''
+      && activeComposerSkill === null;
+    send.classList.toggle('ag-send-idle', idle);
+  }
+
   function updateComposer(): void {
     if (composerRest.resting && !canComposerRest()) composerRest.setResting(false);
     updateReconnectChip();
@@ -6992,6 +7098,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     send.title = sendLabel;
     send.classList.toggle('ag-stop', stopping);
     send.classList.toggle('ag-send-cloud', cloudSend);
+    syncSendIdle();
     // 실행 중에는 Enter 가 전송이 아니므로 힌트를 숨긴다.
     sendHint.hidden = (localTurnRunning && !(questionPending && questionUsesComposer)) || attachmentsSending || chatStartPendingThreadId !== null
       || workflowTransitionPending || planActionPending
@@ -9393,6 +9500,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       disposeCloudDependencies(ownsCloudDependencies, workspace, cloudController);
       document.body.classList.remove(
         'ag-sidebar-open',
+        'ag-sidebar-inset',
         'ag-sidebar-resizing',
         'ag-fullscreen-open',
         'ag-col-resizing',

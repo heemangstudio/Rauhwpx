@@ -5,6 +5,7 @@ import {
   type MarkdownNode,
   type MarkdownRenderOptions,
 } from './plan-markdown.ts';
+import { createIcon } from './icons.ts';
 
 type KatexModule = typeof import('katex');
 
@@ -105,9 +106,53 @@ export function stableStreamingBlocks(blocks: readonly Block[], source: string):
 function renderBlockNode(block: Block): HTMLElement | null {
   const fragment = document.createDocumentFragment();
   appendMarkdownBlocks(fragment, [block], document, CHAT_MARKDOWN_OPTIONS);
-  const node = fragment.firstElementChild as HTMLElement | null;
+  let node = fragment.firstElementChild as HTMLElement | null;
+  if (node && block.kind === 'code') node = wrapCodeBlock(node, block.lang, block.code);
   node?.setAttribute('data-md-block', '');
   return node;
+}
+
+const PLAIN_CODE_LANGS = new Set(['', 'text', 'plain', 'plaintext', 'txt']);
+
+/** 채팅 코드 블록에 조용한 머리(언어 이름 + 복사 버튼)를 붙인다. */
+function wrapCodeBlock(pre: HTMLElement, lang: string, code: string): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'ag-md-codeblock';
+  const head = document.createElement('div');
+  head.className = 'ag-md-codeblock-head';
+  // 평문 코드 블록은 언어 이름이 정보가 없으므로 머리 줄 없이 복사 버튼만 띄운다.
+  const plain = PLAIN_CODE_LANGS.has((lang || '').trim().toLowerCase());
+  if (plain) wrap.classList.add('ag-md-codeblock-plain');
+  const copy = document.createElement('button');
+  copy.type = 'button';
+  copy.className = 'ag-md-codeblock-copy';
+  copy.title = '복사';
+  copy.setAttribute('aria-label', '코드 복사');
+  copy.appendChild(createIcon('copy'));
+  let resetTimer: number | null = null;
+  copy.addEventListener('click', (event) => {
+    event.stopPropagation();
+    void navigator.clipboard?.writeText(code).then(() => {
+      copy.classList.add('ag-copied');
+      copy.replaceChildren(createIcon('check'));
+      if (resetTimer !== null) window.clearTimeout(resetTimer);
+      resetTimer = window.setTimeout(() => {
+        resetTimer = null;
+        copy.classList.remove('ag-copied');
+        copy.replaceChildren(createIcon('copy'));
+      }, 1400);
+    }).catch(() => {});
+  });
+  if (plain) {
+    head.append(copy);
+  } else {
+    const label = document.createElement('span');
+    label.className = 'ag-md-codeblock-lang';
+    label.textContent = lang;
+    head.append(label, copy);
+  }
+  wrap.append(head, pre);
+  return wrap;
 }
 
 /** 본문 블록만 고른다. 복사 버튼처럼 답변에 덧붙인 요소는 맞추기 대상이 아니다. */

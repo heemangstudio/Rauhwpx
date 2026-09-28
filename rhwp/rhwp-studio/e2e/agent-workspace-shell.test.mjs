@@ -36,7 +36,7 @@ await runTest('agent fullscreen workspace shell', async ({ page }) => {
   assert.equal(conversation.barRect?.height, 48);
   assert.equal(conversation.threadsRect?.y, 48);
   assert.equal(conversation.chatRect?.y, 48);
-  assert.equal(conversation.title, '대화');
+  assert.equal(conversation.title, '');
   await screenshot(page, 'agent-workspace-conversation');
 
   await page.click('.ag-workspace-settings-btn');
@@ -164,5 +164,5 @@ await runTest('agent fullscreen workspace shell', async ({ page }) => {
     title: document.querySelector('.ag-workspace-title')?.textContent,
   }));
   assert.equal(returned.fullscreen, true);
-  assert.equal(returned.title, '대화');
+  assert.equal(returned.title, '');
 });

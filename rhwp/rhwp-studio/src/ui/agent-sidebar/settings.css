@@ -22,8 +22,8 @@
 
 .ag-settings-section-title {
   margin: 0;
-  font-size: var(--font-size-sm, 11px);
-  font-weight: 700;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-strong);
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--ag-text-muted);
@@ -40,8 +40,8 @@
   display: grid;
   gap: 16px;
   padding: 18px;
-  border: 1px solid var(--ag-border, #d9d9dc);
-  border-radius: 14px;
+  border: 1px solid var(--ag-border);
+  border-radius: var(--ag-r-card);
   background: color-mix(in srgb, var(--ag-surface) 96%, var(--ag-text));
 }
 
@@ -66,8 +66,8 @@
 }
 
 .ag-settings-account-name {
-  color: var(--ag-text, #17171a);
-  font-size: 14px;
+  color: var(--ag-text);
+  font-size: var(--ag-fs-body);
 }
 
 .ag-settings-account-detail,
@@ -75,7 +75,7 @@
 .ag-settings-account-status {
   margin: 0;
   color: var(--ag-text-muted);
-  font-size: 12px;
+  font-size: var(--ag-fs-meta);
   line-height: 1.5;
 }
 
@@ -91,19 +91,19 @@
 
 .ag-settings-cloud-quota .ag-settings-meter-fill {
   width: 0;
-  background: #6e7786;
+  background: var(--n-ink);
 }
 
 .ag-settings-account-card[data-state='subtle'] .ag-settings-meter-fill {
-  background: #9b814f;
+  background: var(--ui-warning-border);
 }
 
 .ag-settings-account-card[data-state='warning'] .ag-settings-meter-fill {
-  background: #b45d4d;
+  background: var(--ag-err);
 }
 
 .ag-settings-account-card[data-state='warning'] .ag-settings-meter-value {
-  color: #a74d3f;
+  color: var(--ag-err);
 }
 
 .ag-settings-account-card[data-state='logged-out'] .ag-settings-meter-track {
@@ -119,12 +119,20 @@
 .ag-settings-row {
   display: flex;
   align-items: center;
-  gap: 9px;
-  min-height: 38px;
-  padding: 7px 10px;
-  border: 1px solid var(--ag-border);
-  border-radius: var(--ag-r-field);
-  background: var(--ag-bg-2);
+  gap: 10px;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: var(--n-ink-fill-soft);
+}
+
+/* Cloud 서버 카드 안의 계정 줄은 카드의 한 행이다. */
+.ag-cloud-settings-card > .ag-settings-row {
+  min-height: 56px;
+  padding: 12px var(--ag-set-inset, 16px);
+  border-radius: 0;
+  background-color: transparent;
 }
 
 .ag-settings-provider-list {
@@ -163,7 +171,7 @@
 }
 
 .ag-settings-provider-row[data-agent='rau'] {
-  border-color: #fff;
+  border-color: transparent;
 }
 
 .ag-settings-row-text {
@@ -178,21 +186,21 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-weight: 600;
+  font-weight: var(--ag-fw-medium);
   color: var(--ag-text);
 }
 
 .ag-settings-row-detail {
   overflow: hidden;
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-secondary);
   color: var(--ag-text-secondary);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .ag-settings-row-detail.ag-update-required {
-  color: var(--ag-warning, #d99532);
-  font-weight: 600;
+  color: var(--ui-warning-text);
+  font-weight: var(--ag-fw-medium);
 }
 
 .ag-settings-toggle-row {
@@ -208,15 +216,17 @@
   opacity: 0;
 }
 
+/* 스위치 하나의 모양: 꺼짐 = 옅은 잉크 트랙, 켜짐 = 잉크 트랙. 손잡이는 두 테마 모두 흰색(--ag-knob). */
 .ag-settings-toggle-track {
   position: relative;
+  box-sizing: border-box;
   flex: 0 0 auto;
-  width: 30px;
-  height: 18px;
-  border: 1px solid var(--ag-border-strong);
-  border-radius: 999px;
-  background: var(--ag-input-bg);
-  transition: border-color var(--ag-dur-fast) var(--ag-ease-out), background var(--ag-dur-fast) var(--ag-ease-out);
+  width: 34px;
+  height: 20px;
+  border: 0;
+  border-radius: var(--ag-r-pill);
+  background: var(--n-ink-quaternary);
+  transition: background-color var(--ag-dur-fast) var(--ag-ease-out);
 }
 
 .ag-settings-toggle-track::after {
@@ -224,25 +234,24 @@
   position: absolute;
   top: 2px;
   left: 2px;
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
-  background: var(--ag-text-muted);
-  transition: transform var(--ag-dur-fast) var(--ag-ease-out), background var(--ag-dur-fast) var(--ag-ease-out);
+  background: var(--ag-knob);
+  box-shadow: var(--n-elev-1);
+  transition: transform var(--ag-dur-fast) var(--ag-ease-out);
 }
 
 .ag-settings-toggle-input:checked + .ag-settings-toggle-track {
-  border-color: var(--accent-primary);
-  background: var(--accent-primary);
+  background: var(--ag-primary-bg);
 }
 
 .ag-settings-toggle-input:checked + .ag-settings-toggle-track::after {
-  transform: translateX(12px);
-  background: var(--n-on-accent);
+  transform: translateX(14px);
 }
 
 .ag-settings-toggle-input:focus-visible + .ag-settings-toggle-track {
-  outline: 2px solid var(--focus-ring);
+  outline: var(--ag-focus-ring);
   outline-offset: 2px;
 }
 
@@ -259,11 +268,11 @@
 }
 
 .ag-settings-dot[data-state='connecting'] {
-  background: var(--ui-warning-border, #f0d060);
+  background: var(--ui-warning-border);
 }
 
 .ag-settings-dot[data-state='replaced'] {
-  background: var(--ui-warning-border, #f0d060);
+  background: var(--ui-warning-border);
 }
 
 .ag-settings-dot[data-state='disconnected'] {
@@ -281,25 +290,33 @@
 .ag-settings-btn {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  height: 28px;
-  padding: 0 9px;
-  border: 1px solid var(--ag-border-strong);
-  border-radius: var(--ag-r-chip);
-  background: var(--ag-bg);
-  color: var(--ag-text-secondary);
+  gap: 6px;
+  height: 32px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--ag-r-pill);
+  background: var(--n-ink-fill-hover);
+  color: var(--n-ink);
   font: inherit;
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
   cursor: default;
+  transition: var(--ag-transition-color);
 }
 
 .ag-settings-btn:hover:not(:disabled) {
-  background: var(--ag-hover);
-  color: var(--ag-text);
+  background: var(--n-ink-fill-pressed);
+  color: var(--n-ink);
+}
+
+.ag-settings-btn:active:not(:disabled) {
+  background: var(--n-ink-hairline-strong);
+  transition: none;
 }
 
 .ag-settings-btn:disabled {
-  opacity: 0.5;
+  background: var(--n-ink-fill-soft);
+  color: var(--n-ink-quaternary);
   cursor: default;
 }
 
@@ -310,23 +327,30 @@
 
 .ag-settings-primary {
   align-self: flex-start;
-  height: 30px;
-  padding: 0 12px;
-  border: 1px solid var(--accent-primary);
-  border-radius: var(--ag-r-field);
-  background: var(--accent-primary);
-  color: var(--n-on-accent);
+  height: 32px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: var(--ag-r-pill);
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
   font: inherit;
-  font-weight: 600;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
   cursor: default;
+  transition: var(--ag-transition-color);
 }
 
 .ag-settings-primary:hover:not(:disabled) {
-  filter: brightness(0.94);
+  background: var(--ag-primary-bg-hover);
+}
+
+.ag-settings-primary:active:not(:disabled) {
+  background: var(--ag-primary-bg-pressed);
+  transition: none;
 }
 
 .ag-settings-primary:disabled {
-  opacity: 0.5;
+  background: var(--ag-primary-bg-disabled);
   cursor: default;
 }
 
@@ -335,8 +359,8 @@
 .ag-settings-input:focus-visible,
 .ag-settings-select:focus-visible,
 .ag-pi-chip:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 1px;
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
 }
 
 /* ── 기본 설정 (native select) ───────────────────────── */
@@ -384,14 +408,14 @@
 
 .ag-settings-cliproxy-error {
   margin: 0;
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-secondary);
   color: color-mix(in srgb, var(--ag-err) 80%, var(--ag-text));
 }
 
 .ag-settings-note,
 .ag-settings-current {
   margin: 0;
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-secondary);
   color: var(--ag-text-muted);
 }
 
@@ -401,7 +425,7 @@
 }
 
 .ag-settings-status.ag-settings-status-warn {
-  color: var(--ag-warning, #d99532);
+  color: var(--ui-warning-text);
 }
 
 /* ── 앱 전용 AGENTS.md ──────────────────────────────── */
@@ -410,9 +434,9 @@
   display: grid;
   gap: 7px;
   padding: 10px;
-  border: 1px solid color-mix(in srgb, var(--ag-accent) 55%, var(--ag-border));
-  border-radius: var(--radius-sm, 6px);
-  background: color-mix(in srgb, var(--ag-accent) 7%, transparent);
+  border: 0;
+  border-radius: var(--ag-r-card);
+  background: var(--n-ink-fill-soft);
 }
 
 .ag-settings-instructions-proposal[hidden] {
@@ -426,7 +450,7 @@
 
 .ag-settings-instructions-proposal-reason {
   color: var(--ag-text-secondary);
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-secondary);
   line-height: 1.45;
 }
 
@@ -456,14 +480,14 @@
   background: var(--ag-input-bg);
   color: var(--ag-text);
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-mono);
   line-height: 1.55;
   tab-size: 2;
 }
 
 .ag-settings-instructions-editor:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 1px;
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
 }
 
 .ag-settings-instructions-editor:disabled {
@@ -472,7 +496,7 @@
 
 .ag-settings-instructions-status {
   margin: 0;
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-secondary);
   color: var(--ag-text-secondary);
 }
 
@@ -521,7 +545,7 @@
   display: grid;
   place-items: center;
   padding: 24px;
-  background: color-mix(in srgb, #101114 54%, transparent);
+  background: var(--overlay-bg);
   opacity: 0;
   transition: opacity var(--ag-dur-fast) var(--ag-ease-out);
 }
@@ -542,12 +566,12 @@
   width: min(380px, calc(100vw - 32px));
   display: grid;
   gap: 12px;
-  padding: 18px;
-  border: 1px solid var(--ag-border-strong);
-  border-radius: 16px;
+  padding: 24px;
+  border: 1px solid var(--n-ink-hairline);
+  border-radius: var(--ag-r-sheet);
   background: var(--ag-bg);
   color: var(--ag-text);
-  box-shadow: var(--n-elev-3);
+  box-shadow: var(--ag-elev-sheet);
   transform: translateY(8px) scale(0.985);
   transition: transform var(--ag-dur-fast) var(--ag-ease-out);
 }
@@ -558,8 +582,9 @@
 
 .ag-template-name-title {
   margin: 0;
-  font-size: 17px;
-  font-weight: 700;
+  font-size: var(--ag-fs-title);
+  font-weight: var(--ag-fw-strong);
+  letter-spacing: var(--ag-track-tight);
 }
 
 .ag-template-name-input {
@@ -576,8 +601,8 @@
 }
 
 .ag-template-name-input:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 1px;
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
 }
 
 .ag-template-name-actions {
@@ -599,7 +624,7 @@
   display: grid;
   place-items: center;
   padding: 24px;
-  background: color-mix(in srgb, #101114 54%, transparent);
+  background: var(--overlay-bg);
   opacity: 0;
   transition: opacity var(--ag-dur-fast) var(--ag-ease-out);
 }
@@ -618,7 +643,8 @@
   --ag-text-secondary: var(--n-text-secondary);
   --ag-text-muted: var(--n-text-muted);
   --ag-hover: var(--n-fill-hover);
-  --ag-ok: #5cbb7f;
+  /* :root 에 성공색 토큰이 없어 .ag-root 의 값을 옮긴다(어두운 테마 값은 아래). */
+  --ag-ok: #2f7d4f; /* token-ok */
   --ag-err: var(--ui-danger);
   --ag-r-chip: var(--n-radius-chip);
   --ag-r-field: var(--n-radius-field);
@@ -626,13 +652,17 @@
   width: min(440px, calc(100vw - 32px));
   max-height: min(720px, calc(100vh - 48px));
   overflow: hidden;
-  border: 1px solid var(--ag-border-strong);
-  border-radius: 14px;
+  border: 1px solid var(--n-ink-hairline);
+  border-radius: var(--ag-r-sheet);
   background: var(--n-surface);
   color: var(--n-text);
-  box-shadow: var(--n-elev-3);
+  box-shadow: var(--ag-elev-sheet);
   transform: translateY(10px) scale(0.985);
   transition: transform var(--ag-dur-base) var(--ag-ease-out);
+}
+
+:root[data-theme-effective='dark'] .ag-agent-setup-dialog {
+  --ag-ok: #5cbb7f; /* token-ok */
 }
 
 .ag-agent-setup-overlay.ag-open .ag-agent-setup-dialog {
@@ -662,8 +692,8 @@
 
 .ag-agent-setup-title {
   margin: 0;
-  font-size: 15px;
-  font-weight: 600;
+  font-size: var(--ag-fs-title);
+  font-weight: var(--ag-fw-strong);
   line-height: 1.25;
 }
 
@@ -673,7 +703,7 @@
   gap: 6px;
   margin: 0;
   color: var(--ag-text-muted);
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-secondary);
 }
 
 .ag-agent-setup-state[hidden] {
@@ -693,7 +723,7 @@
   align-self: flex-start;
   place-items: center;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--ag-r-pill);
   background: transparent;
   color: var(--ag-text-secondary);
   cursor: default;
@@ -734,7 +764,7 @@
   flex: 0 0 auto;
   place-items: center;
   border: 1px solid var(--ag-border);
-  border-radius: 8px;
+  border-radius: var(--ag-r-inner);
   background: var(--ag-bg-2);
 }
 
@@ -758,7 +788,7 @@
   gap: 12px;
   padding: 14px;
   border: 1px solid var(--ag-border);
-  border-radius: 12px;
+  border-radius: var(--ag-r-card);
   background: var(--ag-bg-2);
 }
 
@@ -775,7 +805,7 @@
   height: 38px;
   flex: 0 0 auto;
   place-items: center;
-  border-radius: 10px;
+  border-radius: var(--ag-r-card);
   background: var(--ag-bg);
 }
 
@@ -785,7 +815,7 @@
 }
 
 .ag-agent-setup-hero-title {
-  font-size: 22px;
+  font-size: var(--ag-fs-display);
   line-height: 1.15;
 }
 
@@ -796,7 +826,7 @@
   flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--ag-border);
-  border-radius: 10px;
+  border-radius: var(--ag-r-card);
   background: var(--ag-bg-2);
 }
 
@@ -816,7 +846,7 @@
 .ag-agent-setup-row-label {
   flex: 0 0 36px;
   color: var(--ag-text-muted);
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-secondary);
 }
 
 .ag-agent-setup-row-value {
@@ -824,7 +854,7 @@
   min-width: 0;
   overflow: hidden;
   color: var(--ag-text);
-  font-size: 12px;
+  font-size: var(--ag-fs-secondary);
   font-variant-numeric: tabular-nums;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -846,12 +876,13 @@
 }
 
 .ag-agent-setup-update:not(:disabled) {
-  border-color: color-mix(in srgb, var(--accent-primary) 55%, var(--ag-border-strong));
-  color: var(--accent-primary);
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
 }
 
 .ag-agent-setup-update:hover:not(:disabled) {
-  color: var(--accent-primary);
+  background: var(--ag-primary-bg-hover);
+  color: var(--ag-primary-fg);
 }
 
 /* Rau OAuth 완료는 계정 카드 위에서 잠깐만 알린다. */
@@ -865,7 +896,7 @@
   gap: 9px;
   padding: 9px 11px;
   border: 1px solid color-mix(in srgb, var(--ag-ok) 42%, var(--ag-border));
-  border-radius: 9px;
+  border-radius: var(--ag-r-inner);
   background: color-mix(in srgb, var(--ag-ok) 8%, var(--ag-bg));
 }
 
@@ -875,11 +906,11 @@
   height: 20px;
   flex: 0 0 auto;
   place-items: center;
-  border-radius: 5px;
+  border-radius: var(--ag-r-pill);
   background: color-mix(in srgb, var(--ag-ok) 15%, transparent);
   color: var(--ag-ok);
-  font-size: 12px;
-  font-weight: 800;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
 }
 
 .ag-agent-setup-auth-feedback-copy {
@@ -890,12 +921,12 @@
 }
 
 .ag-agent-setup-auth-feedback-copy strong {
-  font-size: var(--font-size-base, 12px);
+  font-size: var(--ag-fs-secondary);
 }
 
 .ag-agent-setup-auth-feedback-copy span {
   color: var(--ag-text-muted);
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-secondary);
 }
 
 /* ── Rau 계정 카드 ─────────────────────────────────── */
@@ -910,7 +941,7 @@
   gap: 8px;
   padding: 14px;
   border: 1px solid var(--ag-border);
-  border-radius: 12px;
+  border-radius: var(--ag-r-card);
   background: var(--ag-bg-2);
 }
 
@@ -918,8 +949,8 @@
   margin: 0;
   overflow-wrap: anywhere;
   color: var(--ag-text);
-  font-size: 15px;
-  font-weight: 600;
+  font-size: var(--ag-fs-title);
+  font-weight: var(--ag-fw-strong);
   line-height: 1.35;
 }
 
@@ -938,7 +969,7 @@
 }
 
 .ag-agent-setup-account-meter .ag-settings-meter-value {
-  font-size: var(--font-size-base, 12px);
+  font-size: var(--ag-fs-meta);
 }
 
 .ag-agent-setup-account-meter .ag-settings-meter-track {
@@ -950,15 +981,15 @@
   border-radius: inherit;
   background: linear-gradient(
     90deg,
-    var(--ag-accent),
-    color-mix(in srgb, var(--ag-accent) 62%, var(--ag-ok))
+    var(--n-ink),
+    var(--n-ink)
   );
 }
 
 .ag-agent-setup-account-meter.ag-settings-meter-warn .ag-settings-meter-fill {
   background: linear-gradient(
     90deg,
-    color-mix(in srgb, var(--ag-err) 82%, var(--ag-accent)),
+    var(--ag-err),
     var(--ag-err)
   );
 }
@@ -966,7 +997,7 @@
 .ag-agent-setup-progress {
   height: 3px;
   overflow: hidden;
-  border-radius: 2px;
+  border-radius: var(--ag-r-pill);
   background: var(--ag-border);
 }
 
@@ -975,14 +1006,14 @@
   width: 0;
   height: 100%;
   border-radius: inherit;
-  background: var(--accent-primary);
+  background: var(--n-ink);
   transition: width var(--ag-dur-slow) var(--ag-ease-out);
 }
 
 .ag-agent-setup-progress-label {
   margin: -5px 0 0;
   color: var(--ag-text-muted);
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-meta);
   font-variant-numeric: tabular-nums;
 }
 
@@ -999,27 +1030,37 @@
 
 .ag-agent-setup-primary {
   align-self: stretch;
-  min-height: 36px;
-  border: 1px solid var(--accent-primary);
-  border-radius: 8px;
-  background: var(--accent-primary);
-  color: var(--n-on-accent);
+  min-height: 40px;
+  border: 0;
+  border-radius: var(--ag-r-pill);
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
+  transition: var(--ag-transition-color);
   font: inherit;
-  font-size: 13px;
-  font-weight: 600;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
   cursor: default;
 }
 
+.ag-agent-setup-primary:hover:not(:disabled) {
+  background: var(--ag-primary-bg-hover);
+}
+
+.ag-agent-setup-primary:active:not(:disabled) {
+  background: var(--ag-primary-bg-pressed);
+  transition: none;
+}
+
 .ag-agent-setup-primary:disabled {
-  opacity: 0.5;
+  background: var(--ag-primary-bg-disabled);
   cursor: default;
 }
 
 .ag-agent-setup-section-title {
   margin: 0 0 -4px;
   color: var(--ag-text-muted);
-  font-size: var(--font-size-sm, 11px);
-  font-weight: 600;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-strong);
 }
 
 /* 로그인 방법 행: 제목과 설명은 왼쪽, 오른쪽에는 목록과 같은 꺾쇠. */
@@ -1043,8 +1084,8 @@
 
 .ag-agent-auth-card strong {
   grid-column: 1;
-  font-size: 13px;
-  font-weight: 600;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
 }
 
 .ag-agent-auth-card::after {
@@ -1077,7 +1118,7 @@
   min-height: 58px;
   padding: 11px 13px;
   border: 1px solid var(--ag-border-strong);
-  border-radius: 11px;
+  border-radius: var(--ag-r-inner);
   background: var(--ag-bg-2);
   color: var(--ag-text);
   text-align: left;
@@ -1088,7 +1129,7 @@
 .ag-agent-auth-choice span {
   grid-column: 1;
   color: var(--ag-text-muted);
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-secondary);
   font-weight: 400;
 }
 
@@ -1102,7 +1143,7 @@
 
 .ag-agent-key-box > .ag-agent-setup-copy {
   grid-column: 1 / -1;
-  font-size: 12px;
+  font-size: var(--ag-fs-secondary);
 }
 
 .ag-agent-key-box > .ag-settings-field {
@@ -1123,7 +1164,7 @@
   max-width: none;
   height: 34px;
   padding: 0 10px;
-  border-radius: 8px;
+  border-radius: var(--ag-r-row);
 }
 
 .ag-agent-key-box > .ag-agent-setup-primary {
@@ -1139,7 +1180,7 @@
   gap: 10px;
   padding: 11px 13px;
   border: 1px solid var(--ag-border-strong);
-  border-radius: 11px;
+  border-radius: var(--ag-r-card);
   background: var(--ag-bg-2);
 }
 
@@ -1170,7 +1211,7 @@
   background: var(--ag-bg);
   color: var(--accent-primary);
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-mono);
   text-decoration: none;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1202,7 +1243,7 @@
   color: var(--ag-text);
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 19px;
-  font-weight: 700;
+  font-weight: var(--ag-fw-strong);
   letter-spacing: 0.08em;
   user-select: all;
 }
@@ -1211,7 +1252,7 @@
 .ag-agent-login-wait {
   margin: 0;
   color: var(--ag-text-muted);
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-meta);
   line-height: 1.5;
 }
 
@@ -1229,7 +1270,7 @@
   align-items: center;
   gap: 10px;
   color: var(--ag-text-muted);
-  font-size: 10px;
+  font-size: var(--ag-fs-meta);
 }
 
 .ag-agent-auth-divider::before,
@@ -1329,14 +1370,14 @@
   align-items: center;
   gap: 5px;
   max-width: 100%;
-  height: 24px;
-  padding: 0 8px;
-  border: 1px solid var(--ag-accent);
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
   border-radius: var(--ag-r-chip);
-  background: var(--ag-bg);
+  background: var(--n-ink-fill-hover);
   color: var(--ag-text);
   font: inherit;
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-secondary);
   cursor: default;
 }
 
@@ -1435,18 +1476,18 @@
 
 .ag-settings-meter-label {
   color: var(--ag-text-secondary);
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-secondary);
 }
 
 .ag-settings-meter-value {
   font-family: var(--ag-mono);
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-mono);
   color: var(--ag-text);
 }
 
 .ag-settings-meter-track {
   height: 5px;
-  border-radius: 3px;
+  border-radius: var(--ag-r-pill);
   background: color-mix(in srgb, var(--ag-text-muted) 22%, transparent);
   overflow: hidden;
 }
@@ -1481,13 +1522,13 @@
 
 .ag-settings-meter-fill {
   height: 100%;
-  border-radius: 3px;
-  background: var(--ag-accent);
+  border-radius: var(--ag-r-pill);
+  background: var(--n-ink);
   transition: width var(--ag-dur-base) var(--ag-motion-out, var(--ag-ease-out));
 }
 
 .ag-settings-meter-warn .ag-settings-meter-fill {
-  background: color-mix(in srgb, var(--ag-err) 78%, var(--ag-accent));
+  background: var(--ag-err);
 }
 
 .ag-settings-meter-warn .ag-settings-meter-value {
@@ -1495,7 +1536,7 @@
 }
 
 .ag-settings-usage-day {
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-secondary);
   color: var(--ag-text-secondary);
 }
 
@@ -1516,7 +1557,7 @@
   display: flex;
   align-items: baseline;
   gap: 8px;
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-secondary);
 }
 
 .ag-settings-model-name {
@@ -1555,7 +1596,7 @@
   display: grid;
   place-items: center;
   padding: 24px;
-  background: var(--modal-overlay-bg, rgba(17, 18, 20, 0.48));
+  background: var(--overlay-bg);
 }
 
 .ag-settings-fallback-dialog {
@@ -1566,10 +1607,10 @@
   max-height: calc(100vh - 48px);
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid var(--ag-border-strong);
-  border-radius: 8px;
+  border: 1px solid var(--n-ink-hairline);
+  border-radius: var(--ag-r-sheet);
   background: var(--ag-bg);
-  box-shadow: var(--n-elev-4);
+  box-shadow: var(--ag-elev-sheet);
   color: var(--ag-text);
 }
 
@@ -1584,7 +1625,9 @@
 
 .ag-settings-fallback-header h1 {
   margin: 0;
-  font-size: var(--font-size-lg, 15px);
+  font-size: var(--ag-fs-title);
+  font-weight: var(--ag-fw-strong);
+  letter-spacing: var(--ag-track-tight);
 }
 
 .ag-settings-fallback-body {
@@ -1611,7 +1654,6 @@
 .ag-settings-page > .ag-threads-header {
   min-height: 48px;
   padding: 0 14px;
-  border-bottom: 1px solid var(--ag-border);
 }
 
 .ag-settings-layout {
@@ -1639,8 +1681,8 @@
   background: transparent;
   color: var(--ag-text-secondary);
   font: inherit;
-  font-size: var(--font-size-base, 12px);
-  font-weight: 650;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
   text-align: left;
   cursor: default;
 }
@@ -1651,14 +1693,14 @@
 }
 
 .ag-settings-nav-button.ag-active {
-  border-color: color-mix(in srgb, var(--ag-accent) 30%, var(--ag-border));
-  background: var(--ag-selected);
+  border-color: transparent;
+  background: var(--n-ink-fill-selected);
   color: var(--ag-text);
 }
 
 .ag-settings-nav-button:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 1px;
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
 }
 
 .ag-settings-body {
@@ -1730,15 +1772,15 @@
 .ag-settings-group-title {
   margin: 0;
   color: var(--ag-text);
-  font-size: var(--font-size-lg, 15px);
-  font-weight: 720;
+  font-size: var(--ag-fs-title);
+  font-weight: var(--ag-fw-strong);
   letter-spacing: -0.02em;
 }
 
 .ag-settings-group-description {
   margin: 5px 0 0;
   color: var(--ag-text-muted);
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-secondary);
   line-height: 1.5;
 }
 
@@ -1790,13 +1832,13 @@
 
 .ag-settings-control-label {
   color: var(--ag-text);
-  font-size: var(--font-size-base, 12px);
-  font-weight: 650;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
 }
 
 .ag-settings-control-description {
   color: var(--ag-text-muted);
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-secondary);
   line-height: 1.45;
 }
 
@@ -1814,11 +1856,11 @@
   height: 26px;
   padding: 0 8px;
   border: 0;
-  border-radius: calc(var(--ag-r-chip) - 2px);
+  border-radius: var(--ag-r-pill);
   background: transparent;
   color: var(--ag-text-secondary);
   font: inherit;
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-secondary);
   cursor: default;
   transition:
     background-color var(--ag-dur-fast) var(--ag-ease-out),
@@ -1830,13 +1872,13 @@
   background: var(--ag-bg);
   box-shadow: var(--n-elev-1);
   color: var(--ag-text);
-  font-weight: 700;
+  font-weight: var(--ag-fw-medium);
 }
 
 .ag-settings-segment:focus-visible,
 .ag-settings-number-input:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 1px;
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
 }
 
 .ag-settings-number-field {
@@ -1845,7 +1887,7 @@
   align-items: center;
   gap: 5px;
   color: var(--ag-text-muted);
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-secondary);
 }
 
 .ag-settings-number-input {
@@ -1900,9 +1942,9 @@
 }
 
 .ag-settings-disclosure-toggle:focus-visible {
-  outline: 2px solid var(--focus-ring);
+  outline: var(--ag-focus-ring);
   outline-offset: 2px;
-  border-radius: 4px;
+  border-radius: var(--ag-r-pill);
 }
 
 .ag-settings-disclosure-chevron {
@@ -1918,9 +1960,9 @@
 
 .ag-settings-disclosure-count {
   overflow: hidden;
-  color: var(--ag-text-muted);
-  font-size: var(--font-size-sm, 11px);
-  font-weight: 500;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-regular);
   font-variant-numeric: tabular-nums;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1986,7 +2028,7 @@
   background: var(--ag-selected);
   color: var(--ag-text-muted);
   font-size: var(--ag-micro);
-  font-weight: 700;
+  font-weight: var(--ag-fw-medium);
 }
 
 .ag-settings-apply-footer {
@@ -2005,7 +2047,7 @@
   flex: 1 1 auto;
   margin: 0;
   color: var(--ag-text-secondary);
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-secondary);
 }
 
 .ag-settings-conflict {
@@ -2015,11 +2057,11 @@
   justify-content: space-between;
   margin-bottom: 18px;
   padding: 10px 12px;
-  border: 1px solid color-mix(in srgb, var(--ag-warning, #d99532) 55%, var(--ag-border));
+  border: 1px solid color-mix(in srgb, var(--ui-warning-text) 55%, var(--ag-border));
   border-radius: var(--ag-r-field);
-  background: color-mix(in srgb, var(--ag-warning, #d99532) 10%, var(--ag-bg));
+  background: color-mix(in srgb, var(--ui-warning-text) 10%, var(--ag-bg));
   color: var(--ag-text-secondary);
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-secondary);
 }
 
 .ag-settings-conflict[hidden] {
@@ -2037,7 +2079,7 @@
   display: grid;
   place-items: center;
   padding: 20px;
-  background: color-mix(in srgb, var(--n-black, #000) 34%, transparent);
+  background: var(--overlay-bg);
 }
 
 .ag-settings-dirty-dialog {
@@ -2049,21 +2091,24 @@
 
   box-sizing: border-box;
   width: min(420px, 100%);
-  padding: 20px;
-  border: 1px solid var(--ag-border-strong);
-  border-radius: var(--ag-r-panel);
+  padding: 24px;
+  border: 1px solid var(--n-ink-hairline);
+  border-radius: var(--ag-r-sheet);
   background: var(--n-surface);
-  box-shadow: var(--n-elev-4);
+  box-shadow: var(--ag-elev-sheet);
   color: var(--ag-text);
 }
 
 .ag-settings-dirty-title {
   margin: 0 0 8px;
-  font-size: 16px;
+  font-size: var(--ag-fs-title);
+  font-weight: var(--ag-fw-strong);
+  letter-spacing: var(--ag-track-tight);
 }
 
 .ag-settings-dirty-description {
-  margin: 0 0 18px;
+  margin: 0 0 20px;
+  font-size: var(--ag-fs-body);
   color: var(--ag-text-secondary);
   line-height: 1.55;
 }
@@ -2094,7 +2139,7 @@
     min-width: 0;
     min-height: 34px;
     padding: 0 4px;
-    font-size: 11px;
+    font-size: var(--ag-fs-secondary);
     text-align: center;
   }
 
@@ -2135,32 +2180,32 @@
 .ag-settings-quota-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .ag-settings-quota-toolbar .ag-settings-section-title { margin: 0; }
 .ag-settings-quota-toolbar .ag-settings-btn { width: auto; flex: 0 0 auto; }
-.ag-settings-quota-card { padding: 12px; border: 1px solid var(--ag-border, #dededb); border-radius: 8px; }
+.ag-settings-quota-card { padding: 12px; border: 1px solid var(--ag-border); border-radius: var(--ag-r-card); }
 .ag-settings-quota-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 .ag-settings-quota-identity { display: flex; align-items: baseline; gap: 8px; }
 .ag-settings-quota-header .ag-settings-usage-updated { margin: 0; }
-.ag-settings-quota-title { margin: 0; font-size: 14px; }
+.ag-settings-quota-title { margin: 0; font-size: var(--ag-fs-body); }
 .ag-settings-quota-card > .ag-settings-note { margin: 6px 0; }
 .ag-settings-quota-meter { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 8px; margin: 10px 0; align-items: baseline; }
 .ag-settings-quota-meter:last-child { margin-bottom: 0; }
-.ag-settings-quota-caption { grid-column: 1; grid-row: 1; font-size: 12px; font-weight: 600; }
-.ag-settings-quota-track { grid-column: 1 / -1; grid-row: 2; height: 7px; overflow: hidden; border-radius: 4px; background: color-mix(in srgb, currentColor 10%, transparent); }
+.ag-settings-quota-caption { grid-column: 1; grid-row: 1; font-size: var(--ag-fs-meta); font-weight: var(--ag-fw-medium); }
+.ag-settings-quota-track { grid-column: 1 / -1; grid-row: 2; height: 7px; overflow: hidden; border-radius: var(--ag-r-pill); background: color-mix(in srgb, currentColor 10%, transparent); }
 .ag-settings-quota-fill { height: 100%; border-radius: inherit; }
-.ag-settings-quota-fill[data-health="high"] { background: #29835e; }
-.ag-settings-quota-fill[data-health="medium"] { background: #bd841c; }
-.ag-settings-quota-fill[data-health="low"] { background: #c34742; }
-.ag-settings-quota-card[data-state="error"] { border-color: #c34742; }
+.ag-settings-quota-fill[data-health="high"] { background: var(--n-ink); }
+.ag-settings-quota-fill[data-health="medium"] { background: var(--ui-warning-border); }
+.ag-settings-quota-fill[data-health="low"] { background: var(--ag-err); }
+.ag-settings-quota-card[data-state="error"] { border-color: var(--ag-err); }
 .ag-settings-quota-card > button + button { margin-left: 8px; }
 .ag-settings-quota-meter .ag-settings-usage-updated { grid-column: 2; grid-row: 1; margin: 0; max-width: 120px; text-align: right; }
 
 .ag-settings-usage-disclosure {
   border-top: 1px solid var(--ag-border);
-  font-size: 12px;
+  font-size: var(--ag-fs-secondary);
 }
 .ag-settings-usage-disclosure > summary {
   padding: 12px 0;
   color: var(--ag-text-secondary);
-  font-weight: 600;
+  font-weight: var(--ag-fw-medium);
   cursor: default;
 }
 .ag-settings-usage-table {
@@ -2182,8 +2227,8 @@
 }
 .ag-settings-usage-table thead th {
   color: var(--ag-text-secondary);
-  font-size: 11px;
-  font-weight: 500;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
 }
 .ag-settings-usage-table .ag-settings-usage-block {
   display: table-row-group;
@@ -2202,7 +2247,7 @@
   background: transparent;
   color: var(--ag-text);
   font: inherit;
-  font-weight: 600;
+  font-weight: var(--ag-fw-medium);
   cursor: default;
 }
 .ag-settings-usage-toggle::after { content: '›'; color: var(--ag-text-secondary); }
@@ -2216,8 +2261,8 @@
 .ag-settings-usage-expanded .ag-settings-usage-session { color: var(--ag-text-secondary); }
 .ag-settings-usage-expanded :is(.ag-settings-row-detail, .ag-settings-meters, .ag-settings-usage-models, .ag-settings-usage-updated):empty { display: none; }
 @container settings-hub (max-width: 360px) {
-  .ag-settings-usage-table .ag-settings-usage-day { font-size: 10px; }
-  .ag-settings-usage-toggle { gap: 3px; font-size: 11px; }
+  .ag-settings-usage-table .ag-settings-usage-day { font-size: var(--ag-fs-meta); }
+  .ag-settings-usage-toggle { gap: 3px; font-size: var(--ag-fs-secondary); }
 }
 
 .ag-settings-quota-header-actions { display: flex; align-items: center; gap: 6px; }
@@ -2237,7 +2282,7 @@
 }
 .ag-settings-quota-refresh:hover { background: var(--ag-bg-2); color: var(--ag-text); }
 .ag-settings-quota-refresh:disabled { opacity: .45; cursor: wait; }
-.ag-settings-quota-refresh:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
+.ag-settings-quota-refresh:focus-visible { outline: var(--ag-focus-ring); outline-offset: var(--ag-focus-offset); }
 
 /* 연결 목록: 프로바이더는 접히는 행, 펼친 내용은 같은 행의 표면을 이어 쓴다. */
 .ag-settings-provider-list { gap: 0; }
@@ -2279,7 +2324,7 @@
 .ag-settings-provider-summary .ag-settings-row-detail { text-align: right; }
 .ag-settings-provider-summary:focus-visible { outline: none; background-color: var(--n-fill-hover); }
 .ag-settings-provider-panel { padding: 4px 14px 16px; }
-.ag-settings-provider-message { margin: 4px 0 12px; color: var(--ag-text-secondary); font-size: 12px; overflow-wrap: anywhere; }
+.ag-settings-provider-message { margin: 4px 0 12px; color: var(--ag-text-secondary); font-size: var(--ag-fs-secondary); overflow-wrap: anywhere; }
 .ag-settings-provider-panel .ag-provider-setup-btn { width: auto; margin: 0; }
 
 /* Native details keeps keyboard and focus behavior while its content animates. */
@@ -2341,8 +2386,8 @@
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 8px;
-  font-size: 20px;
-  font-weight: 600;
+  font-size: var(--ag-fs-display);
+  font-weight: var(--ag-fw-strong);
   font-variant-numeric: tabular-nums;
 }
 .ag-settings-balance-amount .ag-settings-row-detail { font-weight: 400; }
@@ -2352,7 +2397,7 @@
   overflow: hidden;
   min-width: 0;
   border: 1px solid var(--ag-border-strong);
-  border-radius: 12px;
+  border-radius: var(--ag-r-row);
   background: var(--ag-raised);
   animation: ag-step-arrive var(--ag-dur-base) var(--ag-motion-out) both;
 }
@@ -2363,19 +2408,20 @@
   justify-content: space-between;
   gap: 12px;
   padding: 10px 12px;
-  font-weight: 600;
+  font-weight: var(--ag-fw-medium);
 }
 .ag-setup-terminal-hint {
   margin: 0;
   padding: 0 12px 10px;
   color: var(--ag-text-muted);
-  font-size: 11px;
+  font-size: var(--ag-fs-meta);
 }
 .ag-setup-terminal-screen {
   height: clamp(200px, 36vh, 340px);
   padding: 10px;
-  background: #000;
-  color: #f5f5f7;
+  /* 터미널 화면은 xterm 테마와 같은 검정이다. */
+  background: #000; /* token-ok */
+  color: #f5f5f7; /* token-ok */
 }
 .ag-setup-terminal-screen .xterm { height: 100%; }
 @media (prefers-reduced-motion: reduce) {
@@ -2389,42 +2435,36 @@
 }
 
 /* ─── 설정 표면 체계 (마지막에 덮는 기준 블록) ─────────────
-   바탕(sunken) 위에 카드(raised) 묶음. 구역 = 머리말 한 줄 + 카드 한 장,
-   카드 안 행은 들여 그은 머리선으로만 나눈다. 글자는 세 단계:
-   본문(--n-text) · 보조(--n-text-secondary) · 흐림(--n-text-muted). */
+   바탕(surface) 위에 카드(raised) 묶음. 구역 = 머리말 한 줄 + 카드 한 장,
+   카드 안 행은 들여 그은 머리선으로만 나눈다. 카드는 테두리·그림자 없이
+   톤으로만 떠 있다. 글자는 잉크 농도 두 단계: 본문(--n-ink) · 보조
+   (--n-ink-secondary). 활자·모서리·버튼은 --ag-* 척도를 쓴다. */
 .ag-settings-page {
-  --ag-set-bg: var(--n-surface-sunken);
+  --ag-set-bg: var(--n-surface);
   --ag-set-card: var(--n-surface-raised);
-  --ag-set-field: color-mix(in srgb, var(--n-surface-sunken) 45%, var(--n-surface-raised));
-  --ag-set-sep: var(--n-hairline);
-  --ag-set-edge: var(--n-hairline);
-  --ag-set-radius: 12px;
-  --ag-set-inset: 14px;
-  --ag-bg-2: var(--ag-set-field);
+  --ag-set-field: transparent;
+  --ag-set-sep: var(--n-ink-hairline);
+  --ag-set-edge: transparent;
+  --ag-set-radius: var(--ag-r-card);
+  --ag-set-inset: 16px;
+  --ag-bg-2: var(--n-ink-fill-soft);
   --ag-input-bg: var(--ag-set-field);
   background: var(--ag-set-bg);
-  font-family: var(--font-family-ui, -apple-system, BlinkMacSystemFont, sans-serif);
-}
-
-:root[data-theme-effective='dark'] .ag-settings-page {
-  --ag-set-bg: var(--n-surface-sunken);
-  --ag-set-card: var(--n-surface-raised);
-  --ag-set-field: color-mix(in srgb, var(--n-surface-sunken) 60%, var(--n-surface-raised));
-  --ag-set-sep: color-mix(in srgb, var(--n-hairline) 80%, var(--n-surface-raised));
-  --ag-set-edge: color-mix(in srgb, var(--n-hairline) 70%, transparent);
+  font-family: var(--ag-font);
 }
 
 .ag-settings-page > .ag-threads-header {
   position: relative;
   z-index: 2;
-  border-bottom: 1px solid var(--ag-set-sep);
   background: var(--ag-set-bg);
 }
 
+/* 패널 제목 하나의 크기: 사이드바 문서 이름·전체 화면 문서 이름·설정 제목이 같다. */
 .ag-settings-page .ag-threads-title {
-  color: var(--n-text);
-  font-size: 15px;
-  font-weight: 700;
+  color: var(--n-ink);
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-strong);
+  letter-spacing: var(--ag-track-tight);
 }
 
 .ag-settings-page .ag-settings-body,
@@ -2433,61 +2473,71 @@
 }
 
 .ag-settings-page .ag-settings-nav {
+  gap: 2px;
   border-right: 1px solid var(--ag-set-sep);
   background: transparent;
 }
 
+/* 넓은 폭: 왼쪽 세로 목록. 고른 행은 옅은 잉크로 채운다. */
 .ag-root .ag-settings-page .ag-settings-nav-button {
   min-height: 34px;
   overflow: hidden;
   border: 0;
-  border-radius: 8px;
-  color: var(--n-text-secondary);
-  font-weight: 600;
+  border-radius: var(--ag-r-row);
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
   flex: 0 0 auto;
-  padding-inline: 8px;
+  padding-inline: 12px;
   white-space: nowrap;
   text-overflow: ellipsis;
-  transition:
-    background-color var(--ag-dur-fast) var(--ag-ease-out),
-    color var(--ag-dur-fast) var(--ag-ease-out),
-    box-shadow var(--ag-dur-fast) var(--ag-ease-out);
+  transition: var(--ag-transition-color);
 }
 
 .ag-root .ag-settings-page .ag-settings-nav-button:hover:not(.ag-active) {
-  background: var(--n-fill-hover);
-  color: var(--n-text);
+  background: var(--n-ink-fill-hover);
+  color: var(--n-ink);
+}
+
+.ag-root .ag-settings-page .ag-settings-nav-button:active:not(.ag-active) {
+  background: var(--n-ink-fill-pressed);
+  transition: none;
 }
 
 .ag-root .ag-settings-page .ag-settings-nav-button.ag-active {
   border: 0;
-  background: var(--ag-set-card);
-  box-shadow: var(--n-elev-1), inset 0 0 0 1px var(--ag-set-edge);
-  color: var(--n-text);
-  font-weight: 700;
+  background: var(--n-ink-fill-selected);
+  box-shadow: none;
+  color: var(--n-ink);
+  font-weight: var(--ag-fw-medium);
 }
 
-/* 좁은 폭: 탭 줄을 분할 컨트롤 하나로. */
+/* 좁은 폭: 탭 줄을 알약 분할 컨트롤 하나로. */
 @container settings-hub (max-width: 760px) {
   .ag-settings-page .ag-settings-nav {
-    margin: 12px 14px 0;
+    margin: 12px 16px 0;
     padding: 3px;
     gap: 2px;
     border: 0;
-    border-radius: 10px;
-    background: color-mix(in srgb, var(--n-fill-active) 70%, var(--ag-set-bg));
+    border-radius: var(--ag-r-pill);
+    background: var(--n-ink-fill-hover);
   }
 
   .ag-root .ag-settings-page .ag-settings-nav-button {
     /* 좁은 설정에서는 탭이 가로줄의 폭을 나눈다. */
     flex: 1 1 auto;
-    min-height: 28px;
-    border-radius: 7px;
-    font-size: 12px;
+    min-height: 30px;
+    border-radius: var(--ag-r-pill);
+    font-size: var(--ag-fs-secondary);
+  }
+
+  .ag-root .ag-settings-page .ag-settings-nav-button.ag-active {
+    background: var(--ag-set-card);
+    box-shadow: var(--n-elev-1);
   }
 
   .ag-settings-page .ag-settings-destination-content {
-    padding: 20px 14px 88px;
+    padding: 20px 16px 88px;
   }
 }
 
@@ -2497,7 +2547,7 @@
 .ag-settings-page .ag-cd-config > .ag-settings-section,
 .ag-settings-page .ag-settings-group {
   gap: 8px;
-  padding: 0 0 22px;
+  padding: 0 0 24px;
 }
 
 .ag-settings-page .ag-settings-destination-content > .ag-settings-section + .ag-settings-section,
@@ -2511,16 +2561,16 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  min-height: 20px;
+  min-height: 24px;
   padding: 0 4px;
 }
 
 .ag-settings-page .ag-settings-section-title,
 .ag-settings-page .ag-settings-group-title {
   margin: 0;
-  color: var(--n-text-secondary);
-  font-size: 12px;
-  font-weight: 700;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
   letter-spacing: 0;
   text-transform: none;
 }
@@ -2539,26 +2589,26 @@
 }
 
 /* 머리말 오른쪽의 아이콘 동작 (새로고침 등). */
-.ag-settings-page .ag-settings-btn.ag-settings-section-action {
-  width: 24px;
-  height: 24px;
+.ag-root .ag-settings-page .ag-settings-btn.ag-settings-section-action {
+  width: 28px;
+  height: 28px;
   margin: -2px 0;
   padding: 0;
   justify-content: center;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--ag-r-pill);
   background: transparent;
-  color: var(--n-text-muted);
+  color: var(--n-ink-secondary);
 }
 
 .ag-settings-page .ag-settings-section-action .ag-icon {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
 }
 
-.ag-settings-page .ag-settings-btn.ag-settings-section-action:hover:not(:disabled) {
-  background: var(--n-fill-hover);
-  color: var(--n-text);
+.ag-root .ag-settings-page .ag-settings-btn.ag-settings-section-action:hover:not(:disabled) {
+  background: var(--n-ink-fill-hover);
+  color: var(--n-ink);
 }
 
 .ag-settings-page .ag-settings-section-body,
@@ -2567,7 +2617,7 @@
   overflow: hidden;
   border-radius: var(--ag-set-radius);
   background: var(--ag-set-card);
-  box-shadow: var(--n-elev-1), inset 0 0 0 1px var(--ag-set-edge);
+  box-shadow: inset 0 0 0 1px var(--ag-set-edge);
 }
 
 .ag-settings-page .ag-settings-section-body:empty,
@@ -2596,8 +2646,8 @@
   .ag-settings-resource-row,
   .ag-settings-quota-card
 ) {
-  min-height: 44px;
-  padding: 10px var(--ag-set-inset);
+  min-height: 48px;
+  padding: 12px var(--ag-set-inset);
 }
 
 /* 머리선은 왼쪽 여백만큼 들여 긋는다. background-color 와 따로 둬 호버 색과 겹친다. */
@@ -2608,97 +2658,111 @@
   background-repeat: no-repeat;
 }
 
-/* 글자 단계: 행 이름은 본문색, 상태·설명은 보조색, 도움말만 흐림. */
+/* 글자 단계: 행 이름은 본문, 상태·설명은 보조. */
 .ag-settings-page .ag-settings-row-name,
 .ag-settings-page .ag-settings-control-label {
-  color: var(--n-text);
-  font-size: 12.5px;
-  font-weight: 600;
+  color: var(--n-ink);
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-regular);
+  letter-spacing: var(--ag-track-tight);
 }
 
 .ag-settings-page .ag-settings-row-detail {
-  color: var(--n-text-secondary);
-  font-size: 11.5px;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
 }
 
 .ag-settings-page :is(.ag-settings-control-description, .ag-settings-note, .ag-settings-group-description) {
-  color: var(--n-text-muted);
-  font-size: 11.5px;
-  line-height: 1.45;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary);
 }
 
 .ag-settings-page .ag-settings-note:empty {
   display: none;
 }
 
-/* 버튼: 보조 버튼도 누를 수 있게 보인다 — 채운 면 + 또렷한 테두리. */
-.ag-settings-page .ag-settings-btn {
-  height: 28px;
-  padding: 0 11px;
-  border: 1px solid var(--n-hairline-strong);
-  border-radius: 7px;
-  background: var(--ag-set-card);
-  color: var(--n-text);
-  font-size: 12px;
-  font-weight: 600;
+/* 버튼: 보조 = 옅은 잉크 채움 알약, 기본 = 잉크 알약. 테두리는 긋지 않는다.
+   sidebar-button-modern.css 가 뒤에 로드되므로 .ag-root 를 붙여 이긴다. */
+.ag-root .ag-settings-page .ag-settings-btn {
+  height: 32px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--ag-r-pill);
+  background: var(--n-ink-fill-hover);
+  color: var(--n-ink);
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
   white-space: nowrap;
-  transition:
-    background-color var(--ag-dur-fast) var(--ag-ease-out),
-    border-color var(--ag-dur-fast) var(--ag-ease-out);
+  transition: var(--ag-transition-color);
 }
 
-.ag-settings-page .ag-settings-btn:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--n-text) 35%, var(--n-hairline-strong));
-  background: var(--n-fill-hover);
-  color: var(--n-text);
+.ag-root .ag-settings-page .ag-settings-btn:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--n-ink-fill-pressed);
+  color: var(--n-ink);
 }
 
-.ag-settings-page .ag-settings-btn:active:not(:disabled) {
-  background: var(--n-fill-active);
+.ag-root .ag-settings-page .ag-settings-btn:active:not(:disabled) {
+  background: var(--n-ink-hairline-strong);
+  transition: none;
 }
 
-.ag-settings-page .ag-settings-primary {
-  height: 30px;
-  border-radius: 8px;
-  font-size: 12px;
+.ag-root .ag-settings-page .ag-settings-primary {
+  height: 32px;
+  padding: 0 16px;
+  border-radius: var(--ag-r-pill);
+  font-size: var(--ag-fs-secondary);
 }
 
-.ag-settings-page :is(.ag-settings-btn, .ag-settings-primary):disabled {
-  opacity: 0.45;
+.ag-root .ag-settings-page :is(.ag-settings-btn, .ag-settings-primary):disabled {
+  opacity: 1;
+  background: var(--n-ink-fill-soft);
+  color: var(--n-ink-quaternary);
 }
 
-/* 입력칸은 카드보다 한 단 낮은 면이라 칸 경계가 보인다. */
+.ag-root .ag-settings-page .ag-settings-primary:disabled {
+  background: var(--ag-primary-bg-disabled);
+  color: var(--ag-primary-fg);
+}
+
+/* 입력칸: 카드 위의 테두리 한 줄. 초점은 액센트 링이 맡는다. */
 .ag-settings-page :is(.ag-settings-input, .ag-settings-select, .ag-settings-number-input, .ag-settings-instructions-editor) {
-  border-color: var(--n-hairline-strong);
+  border-color: var(--n-ink-hairline-strong);
+  border-radius: var(--ag-r-row);
   background: var(--ag-set-field);
-  color: var(--n-text);
+  color: var(--n-ink);
+}
+
+.ag-settings-page :is(.ag-settings-input, .ag-settings-select, .ag-settings-number-input) {
+  height: 32px;
+  padding-inline: 10px;
 }
 
 .ag-settings-page :is(.ag-settings-input, .ag-settings-instructions-editor)::placeholder {
-  color: var(--n-text-placeholder);
-}
-
-/* 스위치 하나의 모양: 꺼짐 = 진한 머리선 트랙, 켜짐 = 강조색, 손잡이는 늘 흰색. */
-.ag-settings-page .ag-settings-toggle-track {
-  border-color: transparent;
-  background: var(--n-hairline-strong);
-}
-
-.ag-settings-page .ag-settings-toggle-track::after {
-  background: #fff;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
-}
-
-.ag-settings-page .ag-settings-toggle-input:checked + .ag-settings-toggle-track::after {
-  background: #fff;
+  color: var(--n-ink-secondary);
 }
 
 .ag-root .ag-settings-page .ag-skill-toggle {
-  background: var(--n-hairline-strong);
+  width: 34px;
+  height: 20px;
+  flex-basis: 34px;
+  background: var(--n-ink-quaternary);
+}
+
+.ag-root .ag-settings-page .ag-skill-toggle::after {
+  width: 16px;
+  height: 16px;
+  background: var(--ag-knob);
+  box-shadow: var(--n-elev-1);
 }
 
 .ag-root .ag-settings-page .ag-skill-toggle[aria-pressed='true'] {
-  background: var(--accent-primary);
+  background: var(--ag-primary-bg);
+}
+
+.ag-root .ag-settings-page .ag-skill-toggle[aria-pressed='true']::after {
+  background: var(--ag-knob);
 }
 
 /* 행 안의 컨트롤은 설명 유무와 관계없이 세로 가운데에 선다. */
@@ -2707,8 +2771,8 @@
 }
 
 .ag-settings-page .ag-settings-disclosure-header {
-  min-height: 44px;
-  padding: 6px var(--ag-set-inset);
+  min-height: 48px;
+  padding: 8px var(--ag-set-inset);
   border-bottom: 0;
 }
 
@@ -2718,17 +2782,23 @@
 }
 
 .ag-settings-page .ag-settings-provider-summary {
-  min-height: 44px;
-  padding: 8px var(--ag-set-inset);
+  min-height: 48px;
+  padding: 10px var(--ag-set-inset);
+  transition: var(--ag-transition-color);
 }
 
 .ag-settings-page .ag-settings-provider-panel {
-  padding: 2px var(--ag-set-inset) 14px;
+  padding: 2px var(--ag-set-inset) 16px;
 }
 
 .ag-settings-page .ag-settings-provider-row[open],
 .ag-settings-page .ag-settings-provider-summary:hover {
-  background-color: var(--n-fill-hover);
+  background-color: var(--n-ink-fill-soft);
+}
+
+.ag-settings-page .ag-settings-provider-summary:active {
+  background-color: var(--n-ink-fill-hover);
+  transition: none;
 }
 
 .ag-settings-page .ag-settings-provider-row[open] > .ag-settings-provider-summary {
@@ -2736,8 +2806,8 @@
 }
 
 .ag-settings-page .ag-settings-dot {
-  width: 7px;
-  height: 7px;
+  width: 8px;
+  height: 8px;
 }
 
 .ag-settings-page .ag-provider-quotas {
@@ -2748,15 +2818,26 @@
 
 .ag-settings-page .ag-provider-quotas > .ag-settings-quota-card {
   margin: 0;
-  padding: 12px var(--ag-set-inset);
+  padding: 14px var(--ag-set-inset);
   border: 0;
   border-radius: 0;
 }
 
 .ag-settings-page .ag-settings-quota-title {
-  color: var(--n-text);
-  font-size: 12.5px;
-  font-weight: 700;
+  color: var(--n-ink);
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-medium);
+}
+
+.ag-settings-page .ag-settings-quota-caption {
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-regular);
+  font-variant-numeric: var(--ag-numeric);
+}
+
+.ag-settings-page .ag-settings-quota-track {
+  height: 6px;
+  background: var(--n-ink-fill-selected);
 }
 
 /* 로컬 기록은 사용량 카드의 마지막 줄에서 펼친다. */
@@ -2768,12 +2849,13 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 40px;
+  min-height: 44px;
   padding: 0 var(--ag-set-inset);
-  color: var(--n-text-secondary);
-  font-size: 12px;
-  font-weight: 600;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
   list-style: none;
+  transition: var(--ag-transition-color);
 }
 
 .ag-settings-page .ag-settings-usage-disclosure > summary::-webkit-details-marker { display: none; }
@@ -2783,8 +2865,8 @@
   width: 6px;
   height: 6px;
   margin: 0 3px 3px 0;
-  border-right: 1.5px solid var(--n-text-muted);
-  border-bottom: 1.5px solid var(--n-text-muted);
+  border-right: 1.5px solid var(--n-ink-tertiary);
+  border-bottom: 1.5px solid var(--n-ink-tertiary);
   transform: rotate(45deg);
   transition: transform var(--ag-dur-fast) var(--ag-ease-out);
 }
@@ -2795,12 +2877,12 @@
 }
 
 .ag-settings-page .ag-settings-usage-disclosure > summary:hover {
-  background-color: var(--n-fill-hover);
-  color: var(--n-text);
+  background-color: var(--n-ink-fill-soft);
+  color: var(--n-ink);
 }
 
 .ag-settings-page .ag-settings-usage-disclosure[open] > .ag-settings-usage-table {
-  margin: 0 var(--ag-set-inset) 10px;
+  margin: 0 var(--ag-set-inset) 12px;
   width: calc(100% - 2 * var(--ag-set-inset));
 }
 
@@ -2814,26 +2896,30 @@
   display: flex;
   align-items: center;
   min-width: 0;
-  min-height: 42px;
+  min-height: 48px;
   gap: 8px;
-  padding: 0 calc(var(--ag-set-inset) + 16px) 0 var(--ag-set-inset);
+  padding: 0 calc(var(--ag-set-inset) + 18px) 0 var(--ag-set-inset);
   background-color: transparent;
   cursor: default;
-  transition: background-color var(--ag-dur-fast) var(--ag-ease-out);
+  transition: var(--ag-transition-color);
 }
 
 .ag-settings-page .ag-settings-defaults .ag-settings-provider-mark,
 .ag-settings-page .ag-settings-defaults .ag-settings-provider-mark .ag-provider-icon {
   flex: 0 0 auto;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
 }
 
 .ag-settings-page .ag-settings-defaults .ag-settings-field:hover,
 .ag-settings-page .ag-settings-defaults .ag-settings-field:focus-within {
-  background-color: var(--n-fill-hover);
+  background-color: var(--n-ink-fill-soft);
 }
 
+.ag-settings-page .ag-settings-defaults .ag-settings-field:active {
+  background-color: var(--n-ink-fill-hover);
+  transition: none;
+}
 
 .ag-settings-page .ag-settings-defaults .ag-settings-field[hidden] {
   display: none;
@@ -2842,9 +2928,10 @@
 .ag-settings-page .ag-settings-defaults .ag-settings-field-label {
   flex: 1 1 auto;
   min-width: 0;
-  color: var(--n-text);
-  font-size: 12.5px;
-  font-weight: 600;
+  color: var(--n-ink);
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-regular);
+  letter-spacing: var(--ag-track-tight);
 }
 
 /* 값은 글자 폭만큼만 차지해 제공자 표식이 값 바로 앞에 붙는다. */
@@ -2855,15 +2942,16 @@
   width: auto;
   max-width: 68%;
   min-width: 0;
-  height: 40px;
+  height: 44px;
   padding: 0;
   border: 0;
   border-radius: 0;
   background: transparent;
-  color: var(--n-text-secondary);
+  color: var(--n-ink-secondary);
   font: inherit;
-  font-size: 12.5px;
-  font-weight: 600;
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-regular);
+  letter-spacing: var(--ag-track-tight);
   text-overflow: ellipsis;
   outline: none;
   cursor: default;
@@ -2871,7 +2959,7 @@
 
 .ag-settings-page .ag-settings-defaults .ag-settings-select option {
   background: var(--ag-set-card);
-  color: var(--n-text);
+  color: var(--n-ink);
 }
 
 .ag-settings-page .ag-settings-defaults .ag-settings-field::after {
@@ -2881,8 +2969,8 @@
   right: calc(var(--ag-set-inset) + 2px);
   width: 6px;
   height: 6px;
-  border-right: 1.5px solid var(--n-text-muted);
-  border-bottom: 1.5px solid var(--n-text-muted);
+  border-right: 1.5px solid var(--n-ink-tertiary);
+  border-bottom: 1.5px solid var(--n-ink-tertiary);
   transform: translateY(-70%) rotate(45deg);
   pointer-events: none;
 }
@@ -2899,18 +2987,19 @@
   min-height: 36px;
   margin: 0 0 8px;
   padding: 0 4px;
-  border-radius: 8px;
-  color: var(--n-text-secondary);
-  font-size: 12px;
-  font-weight: 700;
+  border-radius: var(--ag-r-row);
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
   list-style: none;
   cursor: default;
+  transition: var(--ag-transition-color);
 }
 
 .ag-settings-advanced > summary::-webkit-details-marker { display: none; }
 
 .ag-settings-advanced > summary:hover {
-  color: var(--n-text);
+  color: var(--n-ink);
 }
 
 .ag-settings-advanced > summary::before {
@@ -2927,7 +3016,7 @@
 
 .ag-settings-advanced > summary:focus-visible,
 .ag-settings-page .ag-settings-usage-disclosure > summary:focus-visible {
-  outline: 2px solid var(--focus-ring);
+  outline: var(--ag-focus-ring);
   outline-offset: -2px;
 }
 
@@ -2946,8 +3035,8 @@
 }
 
 .ag-root .ag-settings-page .ag-settings-nav-button:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: -2px;
+  outline: var(--ag-focus-ring);
+  outline-offset: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2960,8 +3049,8 @@
 
 @media (prefers-contrast: more) {
   .ag-settings-page {
-    --ag-set-edge: var(--n-hairline-strong);
-    --ag-set-sep: var(--n-hairline-strong);
+    --ag-set-edge: var(--n-ink-hairline-strong);
+    --ag-set-sep: var(--n-ink-hairline-strong);
   }
 }
 
@@ -2973,8 +3062,8 @@
 
 .ag-settings-model-catalog-card {
   overflow: hidden;
-  border: 1px solid var(--ag-set-sep);
-  border-radius: 12px;
+  border: 0;
+  border-radius: var(--ag-r-card);
   background: var(--ag-set-card);
 }
 
@@ -3010,24 +3099,24 @@
   background: transparent;
   color: var(--ag-text-muted);
   font: inherit;
-  font-size: 12px;
-  font-weight: 500;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
   cursor: default;
-  transition: border-color 150ms ease-out, color 150ms ease-out;
+  transition: var(--ag-transition-color);
 }
 
 .ag-settings-model-tab .ag-provider-icon { width: 14px; height: 14px; }
 .ag-settings-model-tab.ag-active {
   color: var(--ag-text);
-  border-bottom-color: var(--ag-accent);
-  font-weight: 600;
+  border-bottom-color: var(--n-ink);
+  font-weight: var(--ag-fw-medium);
 }
 .ag-settings-model-tab:hover:not(.ag-active) { color: var(--ag-text); }
 
 .ag-settings-model-count,
 .ag-settings-model-status {
   color: var(--ag-text-muted);
-  font-size: 11px;
+  font-size: var(--ag-fs-meta);
   font-variant-numeric: tabular-nums;
 }
 
@@ -3039,16 +3128,16 @@
   min-width: 0;
   height: 31px;
   padding: 0 9px;
-  border: 1px solid var(--ag-set-sep);
-  border-radius: 7px;
-  background: color-mix(in srgb, var(--ag-set-bg) 65%, var(--ag-set-card));
-  color: var(--ag-text-muted);
-  transition: border-color 150ms ease-out, background 150ms ease-out;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: var(--n-ink-fill-hover);
+  color: var(--n-ink-secondary);
+  transition: var(--ag-transition-color);
 }
 
 .ag-settings-model-search:focus-within {
-  border-color: color-mix(in srgb, var(--ag-accent) 65%, transparent);
-  background: var(--ag-set-card);
+  outline: var(--ag-focus-ring);
+  outline-offset: 0;
 }
 
 .ag-settings-model-search-input {
@@ -3059,7 +3148,7 @@
   background: transparent;
   color: var(--ag-text);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--ag-fs-secondary);
 }
 .ag-settings-model-search-input::placeholder { color: var(--ag-text-muted); }
 .ag-settings-model-search-input::-webkit-search-cancel-button { cursor: default; }
@@ -3072,11 +3161,11 @@
   height: 31px;
   padding: 0;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--ag-r-pill);
   background: transparent;
   color: var(--ag-text-muted);
   cursor: default;
-  transition: background 150ms ease-out, color 150ms ease-out;
+  transition: var(--ag-transition-color);
 }
 .ag-settings-model-refresh:hover:not(:disabled) { background: var(--ag-hover); color: var(--ag-text); }
 .ag-settings-model-refresh:disabled { opacity: 0.45; cursor: default; }
@@ -3105,20 +3194,20 @@
   font: inherit;
   text-align: left;
   cursor: default;
-  transition: background 150ms ease-out;
+  transition: var(--ag-transition-color);
 }
 .ag-settings-model-row + .ag-settings-model-row { border-top: 1px solid var(--ag-set-sep); }
-.ag-settings-model-row.ag-active { background: color-mix(in srgb, var(--ag-accent) 4%, transparent); }
-.ag-settings-model-row:hover { background: color-mix(in srgb, var(--ag-accent) 7%, transparent); }
-.ag-settings-model-row:active { background: color-mix(in srgb, var(--ag-accent) 12%, transparent); }
+.ag-settings-model-row.ag-active { background: transparent; }
+.ag-settings-model-row:hover { background: var(--n-ink-fill-soft); }
+.ag-settings-model-row:active { background: var(--n-ink-fill-hover); transition: none; }
 .ag-settings-model-row:disabled { cursor: default; opacity: 0.55; }
 
 .ag-settings-model-row-text { display: block; flex: 1; min-width: 0; }
 .ag-settings-model-row-name {
   display: block;
   overflow: hidden;
-  font-size: 12px;
-  font-weight: 500;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
   line-height: 1.4;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3127,35 +3216,35 @@
   display: block;
   overflow: hidden;
   color: var(--n-text-muted, var(--ag-text-muted));
-  font-size: 11px;
+  font-size: var(--ag-fs-secondary);
   line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .ag-settings-model-row-trailing { display: flex; flex: 0 0 auto; align-items: center; gap: 7px; }
-.ag-settings-model-default { color: var(--ag-text-muted); font-size: 10px; }
+.ag-settings-model-default { color: var(--ag-text-muted); font-size: var(--ag-fs-meta); }
 .ag-settings-model-check {
   display: grid;
   place-items: center;
   width: 16px;
   height: 16px;
-  border: 1px solid color-mix(in srgb, var(--ag-text) 24%, transparent);
-  border-radius: 5px;
+  border: 1.5px solid var(--n-ink-quaternary);
+  border-radius: var(--ag-r-pill);
   color: transparent;
-  transition: background 150ms ease-out, border-color 150ms ease-out, color 150ms ease-out;
+  transition: var(--ag-transition-color);
 }
 .ag-settings-model-check .ag-icon { width: 11px; height: 11px; }
 .ag-settings-model-row.ag-active .ag-settings-model-check {
-  border-color: var(--ag-accent);
-  background: var(--ag-accent);
-  color: #fff;
+  border-color: var(--ag-primary-bg);
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
 }
-.ag-settings-model-empty { padding: 28px 15px; color: var(--ag-text-muted); font-size: 12px; text-align: center; }
+.ag-settings-model-empty { padding: 28px 15px; color: var(--ag-text-muted); font-size: var(--ag-fs-secondary); text-align: center; }
 .ag-settings-model-status { min-height: 27px; padding: 6px 13px 7px; }
 
 .ag-settings-model-tab:focus-visible,
 .ag-settings-model-refresh:focus-visible {
-  outline: 2px solid var(--focus-ring);
+  outline: var(--ag-focus-ring);
   outline-offset: -3px;
 }
 /* 줄 전체가 초점을 받는 항목은 테두리 대신 배경으로 표시한다. */
@@ -3197,7 +3286,7 @@
 
 .ag-settings-page .ag-settings-browserbase-section .ag-settings-status {
   color: var(--n-text-secondary);
-  font-size: 11.5px;
+  font-size: var(--ag-fs-secondary);
 }
 
 .ag-settings-page .ag-settings-browserbase-section .ag-settings-status.ag-settings-status-warn {
@@ -3216,8 +3305,8 @@
 
 #ag-settings-pane-ai .ag-settings-browserbase-section .ag-settings-field-label {
   color: var(--n-text);
-  font-size: 12.5px;
-  font-weight: 600;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
 }
 
 #ag-settings-pane-ai .ag-settings-browserbase-section .ag-settings-input {
@@ -3226,7 +3315,7 @@
   max-width: none;
   height: 30px;
   padding: 0 9px;
-  border-radius: 7px;
+  border-radius: var(--ag-r-row);
 }
 
 .ag-settings-page .ag-settings-instructions-section .ag-settings-actions {
@@ -3323,9 +3412,9 @@
   }
 
   .ag-settings-model-tabs { gap: 8px; }
-  .ag-settings-model-tab { gap: 4px; font-size: 11px; }
+  .ag-settings-model-tab { gap: 4px; font-size: var(--ag-fs-secondary); }
   .ag-settings-model-tab .ag-provider-icon { width: 12px; height: 12px; }
-  .ag-settings-model-count { font-size: 10px; }
+  .ag-settings-model-count { font-size: var(--ag-fs-meta); }
 }
 
 /* ─── 스킬 목적지: 검색 줄 + 카드 한 장의 목록 ─────────── */
@@ -3334,44 +3423,46 @@
 }
 
 .ag-settings-page .ag-skills-search {
-  height: 32px;
-  padding: 0 12px;
-  border: 1px solid var(--n-hairline-strong);
-  border-radius: 8px;
-  background: var(--ag-set-card);
-  color: var(--n-text);
+  height: 36px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--ag-r-pill);
+  background: var(--n-ink-fill-hover);
+  color: var(--n-ink);
+  font-size: var(--ag-fs-body);
 }
 
 .ag-settings-page .ag-skills-search::placeholder {
-  color: var(--n-text-placeholder);
+  color: var(--n-ink-secondary);
 }
 
 .ag-settings-page .ag-skills-search:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 1px;
+  outline: var(--ag-focus-ring);
+  outline-offset: 0;
 }
 
 .ag-settings-page .ag-skills-toolbar .ag-skill-text {
-  height: 32px;
-  padding: 0 12px;
-  border: 1px solid var(--n-hairline-strong);
-  border-radius: 8px;
-  background: var(--ag-set-card);
-  color: var(--n-text);
-  font-size: 12px;
-  font-weight: 600;
+  height: 36px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--ag-r-pill);
+  background: var(--n-ink-fill-hover);
+  color: var(--n-ink);
+  transition: var(--ag-transition-color);
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
 }
 
 .ag-settings-page .ag-skills-toolbar .ag-skill-text:hover,
 .ag-settings-page .ag-skills-toolbar .ag-skill-text[aria-expanded='true'] {
-  background: var(--n-fill-hover);
+  background: var(--n-ink-fill-pressed);
 }
 
 .ag-settings-page .ag-skills-import-panel {
   border: 0;
   border-radius: var(--ag-set-radius);
   background: var(--ag-set-card);
-  box-shadow: var(--n-elev-1), inset 0 0 0 1px var(--ag-set-edge);
+  box-shadow: none;
 }
 
 .ag-settings-page .ag-skills-list {
@@ -3380,7 +3471,7 @@
   padding: 0;
   border-radius: var(--ag-set-radius);
   background: var(--ag-set-card);
-  box-shadow: var(--n-elev-1), inset 0 0 0 1px var(--ag-set-edge);
+  box-shadow: none;
 }
 
 .ag-settings-page .ag-skills-list > :not([hidden]) ~ :not([hidden]) {
@@ -3404,13 +3495,13 @@
 .ag-settings-page .ag-skill-item:focus-within,
 .ag-settings-page .ag-skill-item.ag-skill-expanded {
   border: 0;
-  background-color: var(--n-fill-hover);
+  background-color: var(--n-ink-fill-soft);
 }
 
 .ag-settings-page .ag-skill-item.ag-skill-imported,
 .ag-settings-page .ag-skill-item.ag-skill-drag-settled {
   border: 0;
-  background-color: color-mix(in srgb, var(--ag-accent) 10%, var(--ag-set-card));
+  background-color: var(--n-ink-fill-selected);
   box-shadow: none;
 }
 
@@ -3419,20 +3510,21 @@
 }
 
 .ag-settings-page .ag-skill-item.ag-skill-dragging {
-  border-radius: 10px;
+  border-radius: var(--ag-r-row);
   background-color: var(--ag-set-card);
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.22), inset 0 0 0 1px var(--ag-set-edge);
+  box-shadow: var(--ag-elev-popover);
 }
 
 .ag-settings-page .ag-skill-item-name {
-  color: var(--n-text);
-  font-size: 12.5px;
-  font-weight: 600;
+  color: var(--n-ink);
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-regular);
+  letter-spacing: var(--ag-track-tight);
 }
 
 .ag-settings-page .ag-skill-item-description {
-  color: var(--n-text-muted);
-  font-size: 11.5px;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
 }
 
 /* 삭제는 스위치 앞에 두어 스위치 열이 행마다 같은 자리에 선다. */
@@ -3454,8 +3546,8 @@
   min-height: 40px;
   padding: 0 var(--ag-set-inset);
   border-radius: 0;
-  color: var(--n-text);
-  font-weight: 600;
+  color: var(--n-ink);
+  font-weight: var(--ag-fw-medium);
   text-align: left;
 }
 
@@ -3466,33 +3558,33 @@
   border: 0;
   border-radius: 0 0 var(--ag-set-radius) var(--ag-set-radius);
   background-color: transparent;
-  color: var(--n-text-secondary);
-  font-size: 12.5px;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
 }
 
 .ag-settings-page .ag-skill-new::before {
   width: 18px;
   height: 18px;
   border: 0;
-  color: var(--accent-primary);
+  color: var(--n-ink-secondary);
   font-size: 18px;
 }
 
 .ag-settings-page .ag-skill-new:hover,
 .ag-settings-page .ag-skill-new:focus-visible {
   border: 0;
-  background-color: var(--n-fill-hover);
-  color: var(--n-text);
+  background-color: var(--n-ink-fill-soft);
+  color: var(--n-ink);
 }
 
 .ag-settings-page .ag-skills-empty {
   padding: 14px var(--ag-set-inset);
-  color: var(--n-text-muted);
+  color: var(--n-ink-secondary);
   text-align: left;
 }
 
 
 .ag-settings-page .ag-skill-new:focus-visible {
-  outline: 2px solid var(--focus-ring);
+  outline: var(--ag-focus-ring);
   outline-offset: -2px;
 }

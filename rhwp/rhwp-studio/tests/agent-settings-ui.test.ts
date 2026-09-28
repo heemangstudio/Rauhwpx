@@ -105,7 +105,7 @@ test('모든 설정 진입점은 목적지를 보존하는 하나의 허브를 �
 test('집중 모드는 설정 제목·기어·대화 복귀 동작을 유지한다', () => {
   assert.match(source, /ag-workspace-settings-back/);
   assert.match(source, /ag-workspace-settings-btn/);
-  assert.match(source, /workspaceTitle\.textContent = open \? '설정' : '대화'/);
+  assert.match(source, /workspaceTitle\.textContent = open \? '설정' : ''/);
   assert.match(source, /requestSettingsClose\(workspaceSettingsBtn\)/);
   assert.match(css, /\.ag-fullscreen \.ag-settings-page \{[\s\S]*grid-row: 2/);
   assert.match(css, /\.ag-fullscreen\.ag-settings-open \.ag-workspace-settings-back/);
@@ -298,7 +298,7 @@ test('각 프로바이더 설정은 별도 시작 화면 없이 설정 모달에
   assert.doesNotMatch(settings, /body\.append\([\s\S]*piSection\.root/);
   assert.match(settingsCss, /\.ag-agent-setup-overlay/);
   assert.match(settingsCss, /\.ag-agent-setup-dialog/);
-  assert.match(settingsCss, /\.ag-agent-setup-hero-title \{[\s\S]*font-size: 22px/);
+  assert.match(settingsCss, /\.ag-agent-setup-hero-title \{[\s\S]*font-size: var\(--ag-fs-display\)/);
   assert.match(settings, /setSetupInstallProgress\(ev\.percent, ev\.phase \?\? ev\.state\)/);
   assert.match(settings, /setPiInstallProgress\(ev\.percent, ev\.state/);
   assert.match(settings, /INSTALL_PROGRESS_CEILING/);
@@ -493,7 +493,7 @@ test('사이드바 버튼은 마지막에 불러온 얇고 반듯한 스타일�
     source.indexOf("import './sidebar-button-modern.css';")
       > source.indexOf("from './settings.ts';"),
   );
-  assert.match(buttonCss, /--ag-button-radius: 5px/);
+  assert.match(buttonCss, /--ag-button-radius: var\(--ag-r-row\)/);
   assert.doesNotMatch(buttonCss, /filter: none !important/);
   assert.match(buttonCss, /\.ag-root \.ag-settings-nav-button \{[\s\S]*min-height: 34px/);
   assert.match(buttonCss, /\.ag-root \.ag-send \{[\s\S]*height: var\(--ag-button-height\)/);
@@ -569,7 +569,7 @@ test('Rau 설정 카드는 로그인된 계정과 체험 크레딧 잔량 막대
   assert.match(settings, /체험 크레딧 소진 · 다른 모델 연결/);
   assert.doesNotMatch(settings, /연결된 키 \*\*\*\*/);
   assert.match(settings, /renderUsage\(\): void \{\s*\n\s*quotaCards.render\(usage\);\s*\n\s*renderPiUsage\(\);/);
-  assert.match(settingsCss, /\.ag-agent-setup-account \{[\s\S]*?border-radius: 12px/);
+  assert.match(settingsCss, /\.ag-agent-setup-account \{[\s\S]*?border-radius: var\(--ag-r-card\)/);
   assert.match(settingsCss, /\.ag-agent-setup-account-meter \.ag-settings-meter-track \{[\s\S]*?height: 8px/);
 });
 
@@ -593,7 +593,7 @@ test('Rau 재설정은 압축 동작만 두고 OAuth 완료를 잠깐 알린다'
   assert.match(settings, /setupDonePane\.classList\.toggle\('ag-agent-setup-rau-actions', agent === 'rau'/);
   assert.match(settingsCss, /\.ag-agent-setup-done\.ag-agent-setup-rau-actions \{[\s\S]*flex-direction: row/);
   assert.match(settingsCss, /\.ag-agent-setup-rau-actions > \[hidden\] \{\s*display: none/);
-  assert.match(settingsCss, /\.ag-agent-setup-auth-feedback-mark \{[\s\S]*width: 20px;[\s\S]*border-radius: 5px/);
+  assert.match(settingsCss, /\.ag-agent-setup-auth-feedback-mark \{[\s\S]*width: 20px;[\s\S]*border-radius: var\(--ag-r-pill\)/);
 });
 
 test('Rau 로그아웃 뒤 설치된 런타임을 연결 상태로 오인하지 않는다', () => {
