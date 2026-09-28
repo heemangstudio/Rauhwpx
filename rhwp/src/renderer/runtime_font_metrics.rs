@@ -93,6 +93,9 @@ struct RuntimeFace {
     bold: bool,
     italic: bool,
     units_per_em: u16,
+    line_height_ratio: f64,
+    ascender_ratio: f64,
+    line_gap_ratio: f64,
     advances: AdvanceTable,
     monospace: bool,
     covers_hangul: bool,
@@ -201,7 +204,7 @@ fn parse_face(
     keys: &[String],
     bold: bool,
     italic: bool,
-) -> Result<(u16, AdvanceTable), String> {
+) -> Result<(u16, f64, f64, f64, AdvanceTable), String> {
     if bytes.is_empty() {
         return Err("empty font data".to_string());
     }
@@ -212,6 +215,11 @@ fn parse_face(
     if units_per_em == 0 {
         return Err("font has no unitsPerEm".to_string());
     }
+    let line_height_ratio = (face.ascender() as f64 - face.descender() as f64
+        + face.line_gap() as f64)
+        / units_per_em as f64;
+    let ascender_ratio = face.ascender() as f64 / units_per_em as f64;
+    let line_gap_ratio = face.line_gap() as f64 / units_per_em as f64;
     let cmap = face
         .tables()
         .cmap
@@ -234,7 +242,13 @@ fn parse_face(
     if advances.mapped == 0 {
         return Err("font has no mapped unicode glyphs".to_string());
     }
-    Ok((units_per_em, advances))
+    Ok((
+        units_per_em,
+        line_height_ratio,
+        ascender_ratio,
+        line_gap_ratio,
+        advances,
+    ))
 }
 
 /// 폰트 바이트에서 advance 테이블을 추출해 등록한다.
@@ -273,7 +287,8 @@ pub(crate) fn register(
         }
     }
 
-    let (units_per_em, advances) = parse_face(bytes, &keys, bold, italic)?;
+    let (units_per_em, line_height_ratio, ascender_ratio, line_gap_ratio, advances) =
+        parse_face(bytes, &keys, bold, italic)?;
     let covers_hangul = ['가', '한', '힣']
         .into_iter()
         .all(|c| advances.get(c as u32).is_some());
@@ -288,6 +303,9 @@ pub(crate) fn register(
         bold,
         italic,
         units_per_em,
+        line_height_ratio,
+        ascender_ratio,
+        line_gap_ratio,
         covers_hangul,
         hits: Cell::new(0),
         advances,
@@ -321,6 +339,32 @@ pub(crate) fn register(
     Ok(RegisterOutcome {
         replaced,
         ..outcome
+    })
+}
+
+pub(crate) fn line_height_ratio(primary_name: &str, bold: bool, italic: bool) -> Option<f64> {
+    REGISTRY.with(|registry| {
+        let registry = registry.borrow();
+        let (idx, _) = select_face(&registry, primary_name, bold, italic)?;
+        let ratio = registry.faces[idx].line_height_ratio;
+        (ratio > 0.0).then_some(ratio)
+    })
+}
+
+pub(crate) fn ascender_ratio(primary_name: &str, bold: bool, italic: bool) -> Option<f64> {
+    REGISTRY.with(|registry| {
+        let registry = registry.borrow();
+        let (idx, _) = select_face(&registry, primary_name, bold, italic)?;
+        let ratio = registry.faces[idx].ascender_ratio;
+        (ratio > 0.0).then_some(ratio)
+    })
+}
+
+pub(crate) fn line_gap_ratio(primary_name: &str, bold: bool, italic: bool) -> Option<f64> {
+    REGISTRY.with(|registry| {
+        let registry = registry.borrow();
+        let (idx, _) = select_face(&registry, primary_name, bold, italic)?;
+        Some(registry.faces[idx].line_gap_ratio)
     })
 }
 

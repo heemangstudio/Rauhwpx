@@ -282,6 +282,9 @@ static CUSTOM_FACE_VARIANTS: std::sync::LazyLock<
 /// 파일별 hmtx 캐시 — face 단위가 아니라 파일 단위로 한 번만 파싱한다.
 struct RealFaceHmtx {
     units_per_em: u16,
+    line_height_ratio: f64,
+    ascender_ratio: f64,
+    line_gap_ratio: f64,
     /// codepoint → horizontal advance (font units). cmap 에 없는 문자는
     /// 키가 없다 — 호출자는 베이크드 메트릭 경로로 폴백한다.
     advance_by_char: std::collections::HashMap<u32, u16>,
@@ -457,6 +460,11 @@ fn real_face_hmtx(file: &Path, index: u32) -> Option<std::sync::Arc<RealFaceHmtx
     }
     let metrics = std::sync::Arc::new(RealFaceHmtx {
         units_per_em: face.units_per_em(),
+        line_height_ratio: (face.ascender() as f64 - face.descender() as f64
+            + face.line_gap() as f64)
+            / face.units_per_em() as f64,
+        ascender_ratio: face.ascender() as f64 / face.units_per_em() as f64,
+        line_gap_ratio: face.line_gap() as f64 / face.units_per_em() as f64,
         advance_by_char,
     });
     if let Ok(mut cache) = REAL_FACE_HMTX.write() {
@@ -485,6 +493,59 @@ pub fn custom_face_char_em_advance(name: &str, bold: bool, italic: bool, c: char
     let metrics = real_face_hmtx(&variant.file, variant.index)?;
     let advance = *metrics.advance_by_char.get(&(c as u32))?;
     (metrics.units_per_em > 0).then(|| advance as f64 / metrics.units_per_em as f64)
+}
+
+/// 등록된 실폰트의 수평 줄 메트릭(hhea 또는 USE_TYPO_METRICS)을 em 비율로 반환한다.
+pub fn custom_face_line_height_ratio(name: &str, bold: bool, italic: bool) -> Option<f64> {
+    let alias = normalize_face_alias(name)?;
+    let variant = CUSTOM_FACE_VARIANTS.read().ok().and_then(|sources| {
+        sources.get(&alias).and_then(|faces| {
+            faces
+                .iter()
+                .min_by_key(|face| {
+                    face.weight.abs_diff(if bold { 700 } else { 400 })
+                        + 1000 * u16::from(face.italic != italic)
+                })
+                .cloned()
+        })
+    })?;
+    let ratio = real_face_hmtx(&variant.file, variant.index)?.line_height_ratio;
+    (ratio > 0.0).then_some(ratio)
+}
+
+/// 등록된 실폰트의 hhea 외부 행간을 em 비율로 반환한다.
+pub fn custom_face_line_gap_ratio(name: &str, bold: bool, italic: bool) -> Option<f64> {
+    let alias = normalize_face_alias(name)?;
+    let variant = CUSTOM_FACE_VARIANTS.read().ok().and_then(|sources| {
+        sources.get(&alias).and_then(|faces| {
+            faces
+                .iter()
+                .min_by_key(|face| {
+                    face.weight.abs_diff(if bold { 700 } else { 400 })
+                        + 1000 * u16::from(face.italic != italic)
+                })
+                .cloned()
+        })
+    })?;
+    Some(real_face_hmtx(&variant.file, variant.index)?.line_gap_ratio)
+}
+
+/// 등록된 실폰트의 수평 어센트를 em 비율로 반환한다.
+pub fn custom_face_ascender_ratio(name: &str, bold: bool, italic: bool) -> Option<f64> {
+    let alias = normalize_face_alias(name)?;
+    let variant = CUSTOM_FACE_VARIANTS.read().ok().and_then(|sources| {
+        sources.get(&alias).and_then(|faces| {
+            faces
+                .iter()
+                .min_by_key(|face| {
+                    face.weight.abs_diff(if bold { 700 } else { 400 })
+                        + 1000 * u16::from(face.italic != italic)
+                })
+                .cloned()
+        })
+    })?;
+    let ratio = real_face_hmtx(&variant.file, variant.index)?.ascender_ratio;
+    (ratio > 0.0).then_some(ratio)
 }
 
 /// `fontdb` 에 조달 순서대로 폰트를 적재한다.

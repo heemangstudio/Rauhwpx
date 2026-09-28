@@ -1287,6 +1287,7 @@ impl SkiaLayerRenderer {
                                 equation.color,
                                 equation.font_size,
                                 &equation.font_name,
+                                &equation.version_info,
                             );
                         }
                         PaintOp::FormObject { bbox, form } => {

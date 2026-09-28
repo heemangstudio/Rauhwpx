@@ -119,7 +119,7 @@ pub(crate) fn write_header_limited(
                 .map_err(|e| SerializeError::XmlError(format!("head tail splice: {e}")))?;
         }
         None => {
-            write_compatible_document(&mut w)?;
+            write_compatible_document(&mut w, &doc.doc_info)?;
             write_doc_option(&mut w)?;
             write_track_change_config(&mut w)?;
         }
@@ -1380,14 +1380,30 @@ fn write_style<W: Write>(w: &mut Writer<W>, id: u16, st: &Style) -> Result<(), S
 // =====================================================================
 // <hh:compatibleDocument>, <hh:docOption>, <hh:trackchageConfig>
 // =====================================================================
-fn write_compatible_document<W: Write>(w: &mut Writer<W>) -> Result<(), SerializeError> {
-    start_tag_attrs(w, "hh:compatibleDocument", &[("targetProgram", "HWP201X")])?;
+fn write_compatible_document<W: Write>(
+    w: &mut Writer<W>,
+    doc_info: &DocInfo,
+) -> Result<(), SerializeError> {
+    start_tag_attrs(
+        w,
+        "hh:compatibleDocument",
+        &[(
+            "targetProgram",
+            doc_info.hwpx_target_program.as_deref().unwrap_or("HWP201X"),
+        )],
+    )?;
     super::utils::start_tag(w, "hh:layoutCompatibility")?;
     empty_tag(w, "hh:char", &[])?;
     empty_tag(w, "hh:paragraph", &[])?;
     empty_tag(w, "hh:section", &[])?;
     empty_tag(w, "hh:object", &[])?;
     empty_tag(w, "hh:field", &[])?;
+    if doc_info.adjust_baseline_in_fixed_line_spacing {
+        empty_tag(w, "hh:adjustBaselineInFixedLinespacing", &[])?;
+    }
+    if doc_info.do_not_align_last_forbidden {
+        empty_tag(w, "hh:doNotAlignLastForbidden", &[])?;
+    }
     end_tag(w, "hh:layoutCompatibility")?;
     end_tag(w, "hh:compatibleDocument")?;
     Ok(())
@@ -1605,6 +1621,26 @@ mod tests {
             "원본 부재 시 하드코딩 폴백: {xml}"
         );
         assert!(xml.contains(r#"<hh:trackchageConfig flags="0"/>"#));
+    }
+
+    #[test]
+    fn fallback_header_preserves_layout_compatibility_flags() {
+        let bytes = include_bytes!("../../../samples/hwpx/ref/ref_empty.hwpx");
+        let mut doc = parse_hwpx(bytes).expect("parse");
+        doc.doc_info.hwpx_head_tail = None;
+        doc.doc_info.adjust_baseline_in_fixed_line_spacing = true;
+        doc.doc_info.do_not_align_last_forbidden = true;
+        doc.doc_info.hwpx_target_program = Some("MS_WORD".to_string());
+
+        let generated = super::super::serialize_hwpx(&doc).expect("serialize");
+        let reparsed = parse_hwpx(&generated).expect("reparse");
+        assert!(reparsed.doc_info.adjust_baseline_in_fixed_line_spacing);
+        assert!(reparsed.doc_info.do_not_align_last_forbidden);
+        assert_eq!(
+            reparsed.doc_info.hwpx_target_program.as_deref(),
+            Some("MS_WORD")
+        );
+        assert!(reparsed.layout_profile().ms_word_compatible_layout());
     }
 
     #[test]

@@ -2719,6 +2719,16 @@ fn write_equation_layout_box(buf: &mut String, layout: &LayoutBox) {
         layout.x, layout.y, layout.width, layout.height, layout.baseline,
     );
     write_equation_layout_kind(buf, &layout.kind);
+    if let Some(advances) = &layout.glyph_advances {
+        buf.push_str(",\"glyphAdvances\":[");
+        for (index, advance) in advances.iter().enumerate() {
+            if index > 0 {
+                buf.push(',');
+            }
+            let _ = write!(buf, "{advance:.6}");
+        }
+        buf.push(']');
+    }
     buf.push('}');
 }
 
@@ -2850,7 +2860,12 @@ fn write_equation_layout_kind(buf: &mut String, kind: &LayoutKind) {
             }
             buf.push_str("]}");
         }
-        LayoutKind::Paren { left, right, body } => {
+        LayoutKind::Paren {
+            left,
+            right,
+            body,
+            modern_extent,
+        } => {
             let _ = write!(
                 buf,
                 "{{\"type\":\"paren\",\"left\":{},\"right\":{},\"body\":",
@@ -2858,6 +2873,9 @@ fn write_equation_layout_kind(buf: &mut String, kind: &LayoutKind) {
                 json_escape(right),
             );
             write_equation_layout_box(buf, body);
+            if let Some((top, height)) = modern_extent {
+                let _ = write!(buf, ",\"modernExtent\":[{},{}]", top, height);
+            }
             buf.push('}');
         }
         LayoutKind::Decoration { kind, body } => {
@@ -3124,6 +3142,29 @@ mod tests {
         RenderLayerInfo, TextRunNode,
     };
     use serde_json::Value;
+
+    #[test]
+    fn equation_layout_serializes_measured_advances_only_when_present() {
+        let mut layout = LayoutBox {
+            glyph_advances: Some(vec![6.3, 6.3]),
+            x: 0.0,
+            y: 0.0,
+            width: 12.6,
+            height: 10.0,
+            baseline: 8.0,
+            kind: LayoutKind::Number("12".into()),
+        };
+        let mut json = String::new();
+        write_equation_layout_box(&mut json, &layout);
+        let parsed: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["glyphAdvances"], serde_json::json!([6.3, 6.3]));
+        assert_eq!(parsed["kind"]["text"], "12");
+        layout.glyph_advances = None;
+        json.clear();
+        write_equation_layout_box(&mut json, &layout);
+        let parsed: Value = serde_json::from_str(&json).unwrap();
+        assert!(parsed.get("glyphAdvances").is_none());
+    }
 
     #[test]
     fn serializes_text_and_shape_ops_for_browser_replay() {
@@ -4399,6 +4440,7 @@ mod tests {
                         EquationNode {
                             svg_content: "<text>x</text>".to_string(),
                             layout_box: LayoutBox {
+                                glyph_advances: None,
                                 x: 0.0,
                                 y: 0.0,
                                 width: 8.0,

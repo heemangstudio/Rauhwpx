@@ -905,6 +905,21 @@ fn parse_paragraph(
         para.line_segs.clear();
     }
 
+    // 저장된 텍스트 줄의 인라인 탭 너비는 한컴이 이미 계산한 이동량이다.
+    // 이를 다시 너비의 배수에 맞추면 가운데 정렬과 run 분할에 따라 탭이 줄어든다.
+    // 개체가 있는 줄과 재조판 줄은 측정 폭이 달라질 수 있어 기존 탭 재계산을 유지한다.
+    if para.controls.is_empty()
+        && !para.line_segs.is_empty()
+        && para
+            .line_segs
+            .iter()
+            .all(|seg| seg.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY == 0 && seg.line_height > 0)
+    {
+        for tab in &mut para.tab_extended {
+            tab[5] &= !0x8000;
+        }
+    }
+
     // [Task #1058 후속] HWPX `<hp:p id>` → HWP PARA_HEADER instance_id 매핑.
     // raw_header_extra 구조 (serializer 정합 — body_text.rs:241):
     //   raw_header_extra[0..6] = numCharShapes(2) + numRangeTags(2) + numLineSegs(2)
@@ -7298,6 +7313,26 @@ mod tests {
         assert_eq!(para.text, "A\t(페이지 표기)");
         // ext[5] 상위 비트 = HWPX 탭(간격 의미) 마커
         assert_eq!(para.tab_extended, vec![[17283, 0, 0x0203, 0, 0, 0x8000, 9]]);
+    }
+
+    #[test]
+    fn stored_text_line_preserves_resolved_inline_tab_distance() {
+        for (flags, expected_marker) in [(393216, 0), (2147876864u32, 0x8000)] {
+            let xml = format!(
+                r#"<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+                xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+                <hp:p paraPrIDRef="0"><hp:run charPrIDRef="0">
+                <hp:t>가<hp:tab width="700" leader="0" type="1"/>12</hp:t>
+                </hp:run><hp:linesegarray><hp:lineseg textpos="0" vertpos="0"
+                vertsize="1000" textheight="1000" baseline="750" spacing="0"
+                horzpos="0" horzsize="20000" flags="{flags}"/></hp:linesegarray>
+                </hp:p></hs:sec>"#
+            );
+            let section = parse_hwpx_section(&xml).unwrap();
+            let tab = section.paragraphs[0].tab_extended[0];
+            assert_eq!(tab[0], 700);
+            assert_eq!(tab[5], expected_marker);
+        }
     }
 
     #[test]

@@ -100,6 +100,8 @@ pub struct ComposedParagraph {
     /// 개요 번호/글머리표 등 문단 머리 텍스트 (렌더링 전용)
     /// 문서 좌표 char_offset에 포함되지 않으며 별도 TextRunNode로 렌더링된다.
     pub numbering_text: Option<String>,
+    /// 개요 번호의 글자 모양·간격·자동 내어쓰기. 원본 문단은 변경하지 않는다.
+    pub numbering_head: Option<crate::model::style::NumberingHead>,
     /// treat_as_char 컨트롤의 텍스트 위치와 점유 폭(HWPUNIT) 목록.
     /// 그림의 점유 폭에는 좌우 외곽 여백이 포함되며, 그림 자체의 폭은
     /// `Picture.common.width` 로 유지한다.
@@ -353,6 +355,7 @@ pub fn compose_paragraph(para: &Paragraph) -> ComposedParagraph {
         para_style_id: para.para_shape_id,
         inline_controls,
         numbering_text: None,
+        numbering_head: None,
         tac_controls,
         footnote_positions,
         tab_extended: para.tab_extended.clone(),
@@ -1082,14 +1085,44 @@ pub(crate) fn find_active_char_shape_visible(
     active_id
 }
 
+/// 위/아래 첨자 숫자는 영문 글꼴로 그려져도 인접 공백은 반각이다.
+fn is_script_numeral(ch: char) -> bool {
+    matches!(ch, '\u{00B2}' | '\u{00B3}' | '\u{00B9}' | '\u{2070}' | '\u{2074}'..='\u{2079}' | '\u{2080}'..='\u{2089}')
+}
+
+/// Greek letters use the symbol face but follow Latin word spacing after a
+/// Latin run. The letter itself must keep its symbol font slot.
+fn is_greek_letter(ch: char) -> bool {
+    matches!(ch, '\u{0370}'..='\u{03FF}' | '\u{1F00}'..='\u{1FFF}') && ch.is_alphabetic()
+}
+
 /// TextRun 목록을 언어 카테고리 경계에 따라 세분화한다.
 ///
 /// 동일 CharShape 내에서도 한글→영문 전환 시 별도 Run으로 분리하여
 /// 각 언어에 맞는 폰트를 적용할 수 있도록 한다.
 ///
-/// 공백/구두점은 이전 문자의 언어를 따른다 (불필요한 Run 분할 방지).
+/// 일반 공백은 양쪽이 라틴 문맥일 때 라틴 폭을 쓰고, 한글과 맞닿으면 반각을 쓴다.
 pub(crate) fn split_runs_by_lang(runs: Vec<ComposedTextRun>) -> Vec<ComposedTextRun> {
     let mut result = Vec::new();
+    let chars: Vec<char> = runs.iter().flat_map(|run| run.text.chars()).collect();
+    let mut following_lang = vec![None; chars.len()];
+    let mut next_lang = None;
+    for (index, ch) in chars.iter().copied().enumerate().rev() {
+        following_lang[index] = next_lang;
+        if is_script_numeral(ch) {
+            next_lang = Some(0);
+        } else if !is_lang_neutral(ch) && !super::style_resolver::is_latin_slot_punctuation(ch) {
+            // A Greek letter is painted with the symbol face, yet the space
+            // before it still belongs to the preceding Latin word.
+            next_lang = Some(if is_greek_letter(ch) {
+                1
+            } else {
+                detect_lang_category(ch)
+            });
+        }
+    }
+    let mut run_start = 0;
+    let mut preceding_script_numeral = false;
 
     for run in runs {
         let chars: Vec<char> = run.text.chars().collect();
@@ -1098,25 +1131,42 @@ pub(crate) fn split_runs_by_lang(runs: Vec<ComposedTextRun>) -> Vec<ComposedText
             continue;
         }
 
-        // 첫 번째 비중립 문자의 언어를 찾아 초기 언어로 설정
-        let initial_lang = chars
-            .iter()
-            .map(|&c| detect_lang_category(c))
-            .find(|&lang| lang != 0 || chars.iter().all(|&c| detect_lang_category(c) == 0))
-            .unwrap_or(0);
+        // 글자모양 경계는 언어 경계가 아니다. 뒤 글자가 없는 중립 run은
+        // 앞 글자의 언어를 이어받는다.
+        let initial_lang = result
+            .last()
+            .map(|run: &ComposedTextRun| run.lang_index)
+            .unwrap_or_else(|| {
+                chars
+                    .iter()
+                    .copied()
+                    .find(|&c| !is_lang_neutral(c))
+                    .map(detect_lang_category)
+                    .unwrap_or(0)
+            });
 
         let mut current_lang = initial_lang;
         let mut current_start = 0;
 
         for (i, &ch) in chars.iter().enumerate() {
-            let char_lang = detect_lang_category(ch);
-
-            // 언어 중립 문자(공백/구두점 등 = 기본값 0)는 이전 언어를 따름
-            // 단, detect_lang_category가 0을 반환하는 것은 한국어 또는 중립 두 가지 경우:
-            //   - 한글 음절/자모: 명시적으로 0번 매치
-            //   - 공백/구두점: _ => 0 폴백
-            // 한글 음절은 확실한 한국어이므로 구분해야 함
-            let is_neutral = is_lang_neutral(ch);
+            // 라틴 문맥 안의 공백만 글꼴 advance를 쓰고 한글 경계는 반각을 유지한다.
+            // 글자모양 run 경계를 넘어 다음 글자를 확인해야 독립 공백 run도 동일하다.
+            let char_lang = if ch == ' ' {
+                let next = following_lang[run_start + i].unwrap_or(current_lang);
+                if preceding_script_numeral {
+                    0
+                } else if current_lang == 1 {
+                    next
+                } else {
+                    current_lang
+                }
+            } else {
+                detect_lang_category(ch)
+            };
+            if ch != ' ' {
+                preceding_script_numeral = is_script_numeral(ch);
+            }
+            let is_neutral = ch != ' ' && is_lang_neutral(ch);
 
             // 탭 뒤 구간이 여러 언어 run 으로 쪼개지면 탭에서 run 을 끝낸다.
             // 오른쪽/가운데 탭 정렬은 "\t 로 끝나는 run" 뒤의 여러 run 을 한 블록으로
@@ -1162,6 +1212,7 @@ pub(crate) fn split_runs_by_lang(runs: Vec<ComposedTextRun>) -> Vec<ComposedText
             }
         }
 
+        run_start += chars.len();
         // 마지막 구간
         let text: String = chars[current_start..].iter().collect();
         if !text.is_empty() {
@@ -2069,12 +2120,62 @@ pub fn recompose_for_cell_width(
     recompose_for_cell_width_impl(composed, para, cell_inner_width_px, styles, 0.0);
 }
 
+/// Native HWPX generated line segments describe a prior font layout. Rewrap
+/// their text against the current cell width while retaining authored lines.
+pub fn recompose_for_native_hwpx_cell_width(
+    composed: &mut ComposedParagraph,
+    para: &Paragraph,
+    cell_inner_width_px: f64,
+    styles: &ResolvedStyleSet,
+) {
+    recompose_for_cell_width_impl_with_generated(
+        composed,
+        para,
+        cell_inner_width_px,
+        styles,
+        0.0,
+        para.controls.is_empty(),
+    );
+}
+
+pub fn recompose_for_cell_width_for_source(
+    composed: &mut ComposedParagraph,
+    para: &Paragraph,
+    cell_inner_width_px: f64,
+    styles: &ResolvedStyleSet,
+    native_hwpx: bool,
+) {
+    if native_hwpx {
+        recompose_for_native_hwpx_cell_width(composed, para, cell_inner_width_px, styles);
+    } else {
+        recompose_for_cell_width(composed, para, cell_inner_width_px, styles);
+    }
+}
+
 fn recompose_for_cell_width_impl(
     composed: &mut ComposedParagraph,
     para: &Paragraph,
     cell_inner_width_px: f64,
     styles: &ResolvedStyleSet,
     first_line_reserve_px: f64,
+) {
+    recompose_for_cell_width_impl_with_generated(
+        composed,
+        para,
+        cell_inner_width_px,
+        styles,
+        first_line_reserve_px,
+        false,
+    );
+}
+
+fn recompose_for_cell_width_impl_with_generated(
+    composed: &mut ComposedParagraph,
+    para: &Paragraph,
+    cell_inner_width_px: f64,
+    styles: &ResolvedStyleSet,
+    first_line_reserve_px: f64,
+    allow_generated_multiline: bool,
 ) {
     let has_synthetic_line_segs = !para.line_segs.is_empty()
         && para
@@ -2085,7 +2186,7 @@ fn recompose_for_cell_width_impl(
     if has_authoritative_line_segs {
         return;
     }
-    if para.line_segs.len() >= 2 && has_synthetic_line_segs {
+    if para.line_segs.len() >= 2 && has_synthetic_line_segs && !allow_generated_multiline {
         // HWPX 로드 단계에서 셀 폭/높이/anchor 속성으로 합성한 lineSeg 경계는
         // 이미 문서 속성 기반 보정 결과다. 여기서 다시 폭 기준으로 합치고
         // 재분할하면 RowBreak 표의 쪽 나눔 기준 줄 수가 원본 세로 정보와 어긋난다.
@@ -2119,6 +2220,14 @@ fn recompose_for_cell_width_impl(
                 (
                     (cell_inner_width_px - first_left.max(0.0) - ps.margin_right).max(0.0),
                     (cell_inner_width_px - continuation_left.max(0.0) - ps.margin_right).max(0.0),
+                )
+            } else if allow_generated_multiline && has_synthetic_line_segs {
+                // 생성 HWPX 줄은 실제 문단 영역으로 재조판한다. 렌더링에서
+                // 차감할 여백을 여기서 남겨 두면 넘친 한 줄이 압축되어 행 높이가 줄어든다.
+                (
+                    (cell_inner_width_px - (ps.margin_left + ps.indent).max(0.0) - ps.margin_right)
+                        .max(0.0),
+                    (cell_inner_width_px - ps.margin_left.max(0.0) - ps.margin_right).max(0.0),
                 )
             } else {
                 (cell_inner_width_px, cell_inner_width_px)
@@ -2200,7 +2309,18 @@ fn recompose_for_cell_width_impl(
         g.has_line_break = false;
         groups.push((g, false));
     }
-    for (gi, (combined_line, ends_with_break)) in groups.into_iter().enumerate() {
+    for (gi, (mut combined_line, ends_with_break)) in groups.into_iter().enumerate() {
+        // 합성 줄의 끝에서는 뒤쪽 언어를 볼 수 없었다. 실제 문단 그룹을 합친
+        // 뒤 공백 문맥을 다시 계산하되, 제어 표시용 run의 메타데이터는 보존한다.
+        if allow_generated_multiline
+            && has_synthetic_line_segs
+            && combined_line
+                .runs
+                .iter()
+                .all(|run| run.footnote_marker.is_none() && run.display_text.is_none())
+        {
+            combined_line.runs = split_runs_by_lang(combined_line.runs);
+        }
         // 내어쓰기 첫 줄 폭은 문단의 첫 줄에만 적용 — \n 이후 그룹은 전부 연속 폭.
         let g_first = if gi == 0 { eff_first_px } else { eff_cont_px };
         let start = composed.lines.len();
@@ -2233,6 +2353,7 @@ fn recompose_for_cell_width_impl(
                 styles,
                 char_break,
                 space_condense,
+                allow_generated_multiline && has_synthetic_line_segs,
             );
             // 분할 결과의 공백-단독 조각도 hanging — 직전 조각에 흡수한다.
             let mut folded: Vec<ComposedLine> = Vec::with_capacity(frags.len());
@@ -2453,6 +2574,7 @@ fn split_composed_line_by_width(
     styles: &ResolvedStyleSet,
     char_break: bool,
     space_condense: f64,
+    native_word_flow: bool,
 ) -> Vec<ComposedLine> {
     let mut result: Vec<ComposedLine> = Vec::new();
     // [#2070] 내어쓰기(intent<0) 이중 폭: 첫 출력 줄은 first_width, 이후 연속
@@ -2516,7 +2638,7 @@ fn split_composed_line_by_width(
         }
     };
 
-    for run in &src.runs {
+    for (run_index, run) in src.runs.iter().enumerate() {
         let ts = resolved_to_text_style(styles, run.char_style_id, run.lang_index);
         // 현재 run 의 template 변경 (char_style 다른 run 들 처리)
         if current_run_template
@@ -2618,8 +2740,15 @@ fn split_composed_line_by_width(
             // 공백 또는 마지막 글자 직전이 단어 경계
             if ch == ' ' || ch == '\t' {
                 let word_width = crate::renderer::layout::estimate_text_width_unrounded(&word, &ts);
+                // 줄 끝 빈칸은 다음 어절 앞까지 진행폭에 남기되 줄 채움에서는 제외한다.
+                let terminal_space = if native_word_flow && ch == ' ' {
+                    crate::renderer::layout::estimate_text_width_unrounded(" ", &ts)
+                } else {
+                    0.0
+                };
+                let fitting_width = word_width - terminal_space;
                 // 현재 단어가 추가되면 max_width 초과하는지 검사
-                if current_width - space_w * space_condense + word_width > limit(&result)
+                if current_width - space_w * space_condense + fitting_width > limit(&result)
                     && (chars_in_line > 0 || !current_run_text.is_empty())
                 {
                     // 현재 줄을 flush 후 새 줄 시작
@@ -2639,7 +2768,7 @@ fn split_composed_line_by_width(
                     hung = false;
                 }
                 // 단어 자체가 max_width 초과 시 글자 단위 break
-                if word_width > limit(&result) && current_width == 0.0 {
+                if fitting_width > limit(&result) && current_width == 0.0 {
                     for wch in word.chars() {
                         let wch_str: String = std::iter::once(wch).collect();
                         let wch_width =
@@ -2679,7 +2808,29 @@ fn split_composed_line_by_width(
         // run 끝에 남은 단어 처리
         if !word.is_empty() {
             let word_width = crate::renderer::layout::estimate_text_width_unrounded(&word, &ts);
-            if current_width - space_w * space_condense + word_width > limit(&result)
+            // 글자모양/언어 run 경계는 어절 경계가 아니다. 다음 run의 같은 어절까지
+            // 함께 들어갈 때만 현재 줄에 둔다. run 자체와 문자 위치는 그대로 보존한다.
+            let mut continuation_width = 0.0;
+            if native_word_flow {
+                for next in &src.runs[run_index + 1..] {
+                    let prefix: String = next
+                        .text
+                        .chars()
+                        .take_while(|c| *c != ' ' && *c != '\t')
+                        .collect();
+                    let next_style =
+                        resolved_to_text_style(styles, next.char_style_id, next.lang_index);
+                    continuation_width += crate::renderer::layout::estimate_text_width_unrounded(
+                        &prefix,
+                        &next_style,
+                    );
+                    if prefix.len() < next.text.len() {
+                        break;
+                    }
+                }
+            }
+            if current_width - space_w * space_condense + word_width + continuation_width
+                > limit(&result)
                 && (chars_in_line > 0 || !current_run_text.is_empty())
             {
                 flush_run(

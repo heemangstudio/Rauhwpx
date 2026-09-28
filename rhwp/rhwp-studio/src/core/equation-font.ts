@@ -31,6 +31,7 @@ export function isLegacyEquationFont(name?: string): boolean {
 
 /** renderer/equation/font.rs의 HYhwpEQ cmap. 로드된 해당 서체에만 사용한다. */
 export function legacyEquationGlyph(character: string, italic: boolean): [string, boolean] {
+  if (!italic && /^[A-Za-z]$/.test(character)) return [character, false];
   const code = character.codePointAt(0)!;
   if (character >= 'A' && character <= 'Z') return [String.fromCodePoint(0xe000 + code - 65), italic];
   if (character >= 'a' && character <= 'z') return [String.fromCodePoint((italic ? 0xe0e5 : 0xe01a) + code - 97), false];
@@ -47,13 +48,22 @@ export function legacyEquationGlyph(character: string, italic: boolean): [string
   return symbols[character] ? [String.fromCodePoint(symbols[character]), false] : [character, italic];
 }
 
-export function legacyEquationRuns(text: string, italic: boolean): Array<{ text: string; italic: boolean }> {
-  const runs: Array<{ text: string; italic: boolean }> = [];
+/** 현대 HY 조판의 정수 글립 advance. 글립 자체는 원본 크기로 그린다. */
+export function modernEquationAdvance(rawAdvance: number, fontSize: number, syntheticItalic = false): number {
+  const gridSize = Math.max(1, Math.round(fontSize / 2)) * 2;
+  return Math.round(rawAdvance / fontSize * gridSize) * (syntheticItalic ? 1 : 0.9);
+}
+
+export function legacyEquationRuns(text: string, italic: boolean, modernOrigins = false): Array<{ text: string; italic: boolean; baselineEm?: number }> {
+  const runs: Array<{ text: string; italic: boolean; baselineEm?: number }> = [];
   for (const character of text) {
     const [glyph, skew] = legacyEquationGlyph(character, italic);
+    const baselineEm = modernOrigins
+      ? (/[0-9⋅×]/u.test(character) || (italic && /[A-Za-z\u0391-\u03c9]/u.test(character)) ? 0.06 : 0)
+      : undefined;
     const last = runs.at(-1);
-    if (last?.italic === skew) last.text += glyph;
-    else runs.push({ text: glyph, italic: skew });
+    if (!modernOrigins && last?.italic === skew && last.baselineEm === baselineEm) last.text += glyph;
+    else runs.push({ text: glyph, italic: skew, ...(baselineEm === undefined ? {} : { baselineEm }) });
   }
   return runs;
 }
@@ -115,11 +125,21 @@ export function createEquationTextMeasurer(
   return (source, text, size, italic, hft, literal, bold = false) => {
     if (!Number.isFinite(size) || size <= 0 || !text) return null;
     if (isLegacyEquationFont(source) && !hft) {
-      const glyphs = [...text].map(character => legacyEquationGlyph(character, italic)[0]).join('');
+      const mapped = [...text].map(character => legacyEquationGlyph(character, italic));
+      const glyphs = mapped.map(([glyph]) => glyph).join('');
       if (exact(source, glyphs)) {
         const bytes = readBytes(source);
-        const metrics = bytes && sfntTrueTypeRunMetrics(bytes, glyphs, size);
-        if (metrics) return metrics;
+        if (bytes) {
+          let advance = 0; let inkLeft = Number.NaN; let inkRight = 0; let complete = true;
+          for (const [glyph, syntheticItalic] of mapped) {
+            const metrics = sfntTrueTypeRunMetrics(bytes, glyph, size);
+            if (!metrics) { complete = false; break; }
+            if (Number.isNaN(inkLeft)) inkLeft = metrics.inkLeft;
+            inkRight = Math.max(inkRight, advance + metrics.inkRight);
+            advance += modernEquationAdvance(metrics.advance, size, syntheticItalic);
+          }
+          if (complete) return { advance, inkLeft, inkRight };
+        }
       }
     }
     if (!context) context = globalThis.document?.createElement('canvas').getContext('2d') ?? null;

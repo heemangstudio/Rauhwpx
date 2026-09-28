@@ -1797,7 +1797,13 @@ fn inline_control_metrics_hwp(ctrl: &Control) -> Option<InlineControlMetricsHwp>
                 .saturating_add(i32::from(margin.left))
                 .saturating_add(i32::from(margin.right))
                 .min(eq.common.width as i32);
-            let height = (eq.common.height as i32).max(natural_height as i32);
+            let flow_height = crate::renderer::equation::control_line_flow_height(
+                eq,
+                natural_height as f64,
+                natural_baseline as f64,
+                eq.font_size as f64,
+            );
+            let height = (eq.common.height as i32).max(flow_height.round() as i32);
             let baseline =
                 crate::renderer::equation::control_baseline_hwp(eq, natural_baseline as f64);
             (
@@ -1924,6 +1930,63 @@ mod inline_equation_metric_tests {
         // 인라인 배치 폭도 같은 규칙(저장 폭이 아닌 paint 폭+여백)을 따라야 한다.
         let composed = crate::renderer::composer::compose_paragraph(&para);
         assert_eq!(composed.tac_controls[0].1, metrics.width);
+    }
+
+    #[test]
+    fn equation_reflow_respects_affect_line_spacing_for_ink_below_the_line() {
+        struct ClearFontMetrics;
+        impl Drop for ClearFontMetrics {
+            fn drop(&mut self) {
+                crate::renderer::runtime_font_metrics::clear();
+            }
+        }
+        let _clear_font_metrics = ClearFontMetrics;
+        crate::renderer::runtime_font_metrics::register(
+            include_bytes!("../../../tests/fixtures/fonts/RHWPShapingFixture.ttf"),
+            &["HYhwpEQ".to_string()],
+            false,
+            false,
+        )
+        .expect("register equation face metrics");
+        let mut eq = Equation::default();
+        eq.version_info = "Equation Version 60".to_string();
+        eq.common.treat_as_char = true;
+        eq.common.height = 1_000;
+        eq.common.width = 3_000;
+        eq.font_size = 1_000;
+        eq.script = "x over y".to_string();
+        eq.baseline = 80;
+        let (_, natural_height, natural_baseline) =
+            crate::renderer::equation::intrinsic_metrics_hwp(&eq.script, eq.font_size);
+        assert!(natural_height > eq.common.height);
+
+        let mut control = Control::Equation(Box::new(eq));
+        let without = inline_control_metrics_hwp(&control).unwrap();
+        if let Control::Equation(eq) = &mut control {
+            eq.common.affect_line_spacing = true;
+        }
+        let with = inline_control_metrics_hwp(&control).unwrap();
+        let expected_without = 1_000.max(
+            crate::renderer::equation::line_flow_height(
+                natural_height as f64,
+                natural_baseline as f64,
+                1_000.0,
+                false,
+            )
+            .round() as i32,
+        );
+        assert_eq!(without.height, expected_without);
+        assert_eq!(with.height, natural_height as i32);
+        assert!(with.height > without.height);
+        if let Control::Equation(eq) = &mut control {
+            eq.version_info.clear();
+            eq.common.affect_line_spacing = false;
+        }
+        assert_eq!(
+            inline_control_metrics_hwp(&control).unwrap().height,
+            natural_height as i32,
+            "legacy HFT keeps the full natural box"
+        );
     }
 
     #[test]

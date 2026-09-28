@@ -70,6 +70,24 @@ export function isFontFamilyAvailable(family: string, context?: ProbeContext | n
   return false;
 }
 
+/**
+ * Canvas 의 font setter 를 치환하기 전에 캡처한 accessor 로 선언 face 를 확인한다.
+ * 페인트용 setter 가 fallback 체인을 삽입한 뒤에는 존재하지 않는 face 도 설치된
+ * fallback 의 폭으로 측정되므로, 조판기의 substFont 판정에는 원본 setter 가 필요하다.
+ */
+export function createDeclaredFontAvailabilityProbe(
+  context: ProbeContext,
+  originalFont: { get: () => string; set: (value: string) => void },
+  importedFaceAvailable: (family: string) => boolean,
+): (family: string) => boolean {
+  const rawContext: ProbeContext = {
+    get font() { return originalFont.get.call(context); },
+    set font(value: string) { originalFont.set.call(context, value); },
+    measureText(text: string) { return context.measureText(text); },
+  };
+  return family => importedFaceAvailable(family) || isFontFamilyAvailable(family, rawContext);
+}
+
 /** 여러 서체를 한 컨텍스트로 일괄 판정한다. */
 export function filterAvailableFontFamilies(families: readonly string[]): string[] {
   const ctx = createFontProbeContext();
