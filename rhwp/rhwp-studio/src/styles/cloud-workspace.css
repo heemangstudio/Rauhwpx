@@ -149,7 +149,7 @@
   resize: none;
 }
 
-body.ag-sidebar-open #cloud-workspace {
+body.ag-sidebar-inset #cloud-workspace {
   margin-right: var(--ag-sidebar-width);
 }
 
@@ -157,18 +157,8 @@ body.ag-fullscreen-open #cloud-workspace {
   margin-right: 0;
 }
 
-body.ag-sidebar-resizing #cloud-workspace {
-  transition: none;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  #cloud-workspace {
-    transition: margin-right var(--ag-sidebar-duration) var(--ag-sidebar-ease);
-  }
-}
-
 @media (max-width: 767px) {
-  body.ag-sidebar-open #cloud-workspace {
+  body.ag-sidebar-inset #cloud-workspace {
     margin-right: 0;
   }
 }

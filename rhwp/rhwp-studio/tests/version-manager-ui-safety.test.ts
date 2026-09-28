@@ -134,7 +134,7 @@ test('브랜치 탭은 평평한 ref 행과 축약된 동작을 유지한다', (
   assert.match(source, /controller\.resumeMerge\(draft\.id\)/);
   assert.match(source, /controller\.discardMergeDraft\(draft\.id\)/);
   assert.match(css, /\.ag-versions-ref-row \{[\s\S]*border-bottom:/);
-  assert.match(css, /\.ag-versions-ref-actions button \{[\s\S]*min-height: 25px;/);
+  assert.match(css, /.ag-versions-ref-actions button \{[\s\S]*min-height: 28px;/);
   assert.doesNotMatch(css, /:has\(/);
 });
 

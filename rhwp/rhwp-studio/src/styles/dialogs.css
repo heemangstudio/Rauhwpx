@@ -228,14 +228,7 @@
   background: var(--accent-light);
 }
 
-.dialog-btn-primary.hml-save-format-primary {
-  background: #2563eb;
-  border-color: #1d4ed8;
-}
 
-.dialog-btn-primary.hml-save-format-primary:hover {
-  background: #1d4ed8;
-}
 
 /* 브라우저 인쇄 기반 PDF 저장 안내/진행 */
 .dialog-pdf-print {
@@ -438,22 +431,23 @@
   max-width: calc(100vw - 24px);
   max-height: calc(100dvh - 24px);
   overflow: hidden;
-  border-color: var(--ui-border);
-  border-radius: 12px;
+  border-color: var(--n-ink-hairline);
+  border-radius: var(--ag-r-sheet);
   background: var(--ui-surface);
   color: var(--ui-text);
-  box-shadow: var(--shadow-dialog);
+  box-shadow: var(--ag-elev-sheet);
 }
 
 .modal-overlay > .dialog-wrap > .dialog-title {
   flex: 0 0 auto;
-  min-height: 52px;
-  padding: 14px 20px;
-  border-bottom: 1px solid var(--ui-border);
+  min-height: 56px;
+  padding: 16px 16px 12px 24px;
+  border-bottom: 0;
   background: var(--ui-surface);
   color: var(--ui-text);
-  font-size: 15px;
-  font-weight: 650;
+  font-size: var(--ag-fs-title);
+  font-weight: var(--ag-fw-strong);
+  letter-spacing: var(--ag-track-tight);
 }
 
 .modal-overlay > .dialog-wrap > .dialog-body {
@@ -465,38 +459,55 @@
 .modal-overlay > .dialog-wrap > .dialog-footer {
   flex: 0 0 auto;
   gap: 8px;
-  padding: 12px 20px 16px;
-  border-top: 1px solid var(--ui-border);
+  padding: 12px 24px 20px;
+  border-top: 0;
   background: var(--ui-surface);
 }
 
+/* 편집기 대화상자의 닫기·버튼은 에이전트 시트와 같은 알약이다.
+   본문 서식 칸의 조밀한 배치는 그대로 둔다. */
 .modal-overlay > .dialog-wrap .dialog-close {
-  width: 30px;
-  height: 30px;
-  border-radius: 5px;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--ag-r-pill);
   color: var(--ui-text-secondary);
   font-size: 21px;
+  transition: var(--ag-transition-color);
 }
 
-.modal-overlay > .dialog-wrap .dialog-close:hover { background: var(--ui-hover); color: var(--ui-text); }
+.modal-overlay > .dialog-wrap .dialog-close:hover { background: var(--n-ink-fill-hover); color: var(--ui-text); }
+.modal-overlay > .dialog-wrap .dialog-close:active { background: var(--n-ink-fill-pressed); transition: none; }
 .modal-overlay > .dialog-wrap .dialog-btn {
   min-width: 76px;
-  height: 34px;
-  border-color: var(--ui-border-strong);
-  border-radius: 6px;
-  background: var(--ui-surface);
+  height: 36px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: var(--ag-r-pill);
+  background: var(--n-ink-fill-hover);
   color: var(--ui-text);
-  font-weight: 600;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
+  transition: var(--ag-transition-color);
 }
-.modal-overlay > .dialog-wrap .dialog-btn:hover { background: var(--ui-hover); }
-.modal-overlay > .dialog-wrap .dialog-btn-primary:not(.hml-save-format-primary) {
-  border-color: var(--ui-text);
-  background: var(--ui-text);
-  color: var(--ui-surface);
+.modal-overlay > .dialog-wrap .dialog-btn:hover { background: var(--n-ink-fill-pressed); }
+.modal-overlay > .dialog-wrap .dialog-btn:active { background: var(--n-ink-hairline-strong); transition: none; }
+.modal-overlay > .dialog-wrap .dialog-btn-primary {
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
+}
+.modal-overlay > .dialog-wrap .dialog-btn-primary:hover { background: var(--ag-primary-bg-hover); }
+.modal-overlay > .dialog-wrap .dialog-btn-primary:active { background: var(--ag-primary-bg-pressed); }
+.modal-overlay > .dialog-wrap .dialog-btn:disabled {
+  background: var(--n-ink-fill-soft);
+  color: var(--n-ink-quaternary);
+}
+.modal-overlay > .dialog-wrap .dialog-btn-primary:disabled {
+  background: var(--ag-primary-bg-disabled);
+  color: var(--ag-primary-fg);
 }
 .modal-overlay > .dialog-wrap :is(button, input, select, textarea):focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
 }
 
 /* Shared shell for the document-format and insertion dialogs brought onto the
@@ -509,11 +520,11 @@
   max-width: calc(100vw - 32px);
   max-height: min(760px, calc(100dvh - 32px));
   overflow: hidden;
-  border: 1px solid var(--ui-border);
-  border-radius: 12px;
+  border: 1px solid var(--n-ink-hairline);
+  border-radius: var(--ag-r-sheet);
   background: var(--ui-surface);
   color: var(--ui-text);
-  box-shadow: var(--shadow-dialog);
+  box-shadow: var(--ag-elev-sheet);
   font-family: var(--font-family-ui);
   color-scheme: inherit;
 }
@@ -521,15 +532,14 @@
 .modal-overlay :is(.sym-dialog, .ps-dialog, .tcp-dialog, .tcp-border-bg-dialog) > .dialog-title,
 .modal-overlay:has(.page-setup-sections) .dialog-wrap > .dialog-title {
   flex: 0 0 auto;
-  min-height: 52px;
-  padding: 14px 20px;
+  min-height: 56px;
+  padding: 16px 16px 12px 24px;
   border: 0;
-  border-bottom: 1px solid var(--ui-border);
   background: var(--ui-surface);
   color: var(--ui-text);
-  font-size: 15px;
-  font-weight: 650;
-  letter-spacing: -0.015em;
+  font-size: var(--ag-fs-title);
+  font-weight: var(--ag-fw-strong);
+  letter-spacing: var(--ag-track-tight);
   cursor: grab;
 }
 
@@ -541,9 +551,9 @@
 .modal-overlay :is(.sym-dialog, .ps-dialog, .tcp-dialog, .tcp-border-bg-dialog) .dialog-close,
 .modal-overlay:has(.page-setup-sections) .dialog-wrap .dialog-close {
   flex: 0 0 auto;
-  width: 30px;
-  height: 30px;
-  border-radius: 4px;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--ag-r-pill);
   background: transparent;
   color: var(--ui-text-secondary);
   font-size: 21px;
@@ -551,7 +561,7 @@
 
 .modal-overlay :is(.sym-dialog, .ps-dialog, .tcp-dialog, .tcp-border-bg-dialog) .dialog-close:hover,
 .modal-overlay:has(.page-setup-sections) .dialog-wrap .dialog-close:hover {
-  background: var(--ui-hover);
+  background: var(--n-ink-fill-hover);
   color: var(--ui-text);
 }
 
@@ -560,60 +570,58 @@
   flex: 0 0 auto;
   justify-content: flex-end;
   gap: 8px;
-  padding: 12px 20px 16px;
-  border-top: 1px solid var(--ui-border);
+  padding: 12px 24px 20px;
+  border-top: 0;
   background: var(--ui-surface);
 }
 
 .modal-overlay :is(.sym-dialog, .ps-dialog, .tcp-dialog, .tcp-border-bg-dialog) .dialog-btn,
 .modal-overlay:has(.page-setup-sections) .dialog-wrap .dialog-btn {
   min-width: 76px;
-  height: 34px;
-  border: 1px solid var(--ui-border-strong);
-  border-radius: 6px;
-  background: var(--ui-surface);
+  height: 36px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: var(--ag-r-pill);
+  background: var(--n-ink-fill-hover);
   color: var(--ui-text);
-  font: 600 12px var(--font-family-ui);
+  font: var(--ag-fw-medium) var(--ag-fs-secondary) var(--font-family-ui);
+  transition: var(--ag-transition-color);
 }
 
 .modal-overlay :is(.sym-dialog, .ps-dialog, .tcp-dialog, .tcp-border-bg-dialog) .dialog-btn:hover,
 .modal-overlay:has(.page-setup-sections) .dialog-wrap .dialog-btn:hover {
-  background: var(--ui-hover);
-  border-color: var(--ui-text);
+  background: var(--n-ink-fill-pressed);
 }
 
 .modal-overlay :is(.sym-dialog, .ps-dialog, .tcp-dialog, .tcp-border-bg-dialog) .dialog-btn-primary,
 .modal-overlay:has(.page-setup-sections) .dialog-wrap .dialog-btn-primary {
-  border-color: var(--ui-text);
-  background: var(--ui-text);
-  color: var(--ui-surface);
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
 }
 
 .modal-overlay :is(.sym-dialog, .ps-dialog, .tcp-dialog, .tcp-border-bg-dialog) .dialog-btn-primary:hover,
 .modal-overlay:has(.page-setup-sections) .dialog-wrap .dialog-btn-primary:hover {
-  background: var(--ui-text);
-  border-color: var(--ui-text);
-  opacity: 0.82;
+  background: var(--ag-primary-bg-hover);
 }
 
 .modal-overlay :is(.sym-dialog, .ps-dialog, .tcp-dialog, .tcp-border-bg-dialog) :is(button, input, select, textarea):focus-visible,
 .modal-overlay:has(.page-setup-sections) .dialog-wrap :is(button, input, select, textarea):focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
 }
 
 .modal-overlay :is(.sym-dialog, .ps-dialog, .tcp-dialog, .tcp-border-bg-dialog) .dialog-section,
 .modal-overlay:has(.page-setup-sections) .dialog-wrap .dialog-section {
-  border-color: var(--ui-border);
-  border-radius: 8px;
+  border-color: var(--n-ink-hairline);
+  border-radius: var(--ag-r-row);
   background: var(--ui-surface);
 }
 
 .modal-overlay :is(.sym-dialog, .ps-dialog, .tcp-dialog, .tcp-border-bg-dialog) .dialog-section-title,
 .modal-overlay:has(.page-setup-sections) .dialog-wrap .dialog-section-title {
   color: var(--ui-text-secondary);
-  font-size: 12px;
-  font-weight: 650;
+  font-size: var(--ag-fs-meta);
+  font-weight: var(--ag-fw-medium);
 }
 
 .modal-overlay:has(.page-setup-sections) .dialog-wrap > .dialog-body {
@@ -623,7 +631,7 @@
   padding: 16px 20px;
 }
 
-.modal-overlay:has(.page-setup-sections) { padding: 16px; box-sizing: border-box; background: #0009; }
+.modal-overlay:has(.page-setup-sections) { padding: 16px; box-sizing: border-box; background: var(--overlay-bg); }
 .modal-overlay:has(.page-setup-sections) .dialog-label { min-width: 0; text-align: left; font-size: 12px; font-weight: 550; }
 
 .modal-overlay:has(.page-setup-sections) .page-setup-sections { gap: 12px; }
@@ -1354,39 +1362,35 @@
   align-items: flex-start;
   padding: calc(var(--desktop-titlebar-height, 32px) + 6px) 16px 16px;
   box-sizing: border-box;
-  background: rgba(0, 0, 0, 0.08);
-}
-
-:root[data-theme-effective='dark'] .modal-overlay.modal-overlay--sheet {
-  background: rgba(0, 0, 0, 0.24);
+  background: var(--overlay-bg);
 }
 
 .modal-overlay.modal-overlay--sheet > .dialog-wrap.dialog-sheet {
   max-width: 100%;
   max-height: calc(100dvh - var(--desktop-titlebar-height, 32px) - 22px);
-  border-color: var(--ui-border-strong);
-  border-radius: 12px;
+  border-color: var(--n-ink-hairline);
+  border-radius: var(--ag-r-sheet);
   animation: dialog-sheet-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .modal-overlay.modal-overlay--sheet > .dialog-wrap.dialog-sheet > .dialog-title {
   min-height: 0;
-  padding: 18px 20px 0;
+  padding: 20px 24px 0;
   border-bottom: 0;
   background: transparent;
-  font-size: 13px;
-  font-weight: 700;
+  font-size: var(--ag-fs-title);
+  font-weight: var(--ag-fw-strong);
   cursor: default;
 }
 
 .modal-overlay.modal-overlay--sheet > .dialog-wrap.dialog-sheet > .dialog-body {
-  padding: 6px 20px 18px;
+  padding: 8px 24px 20px;
 }
 
 .dialog-sheet-message {
   color: var(--ui-text-secondary);
-  font-size: 13px;
-  line-height: 1.55;
+  font-size: var(--ag-fs-body);
+  line-height: var(--ag-lh-secondary);
   white-space: pre-line;
   overflow-wrap: anywhere;
 }
@@ -1395,32 +1399,15 @@
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
-  padding: 0 20px 18px;
+  padding: 0 24px 20px;
   border-top: 0;
   background: transparent;
 }
 
 .modal-overlay.modal-overlay--sheet > .dialog-wrap.dialog-sheet .dialog-btn {
   min-width: 72px;
-  height: 28px;
-  padding: 0 14px;
-  border-radius: 6px;
-  font-weight: 500;
-}
-
-.modal-overlay.modal-overlay--sheet > .dialog-wrap.dialog-sheet .dialog-btn-primary {
-  border-color: var(--accent-primary);
-  background: var(--accent-primary);
-  color: var(--n-on-accent, #fff);
-}
-
-.modal-overlay.modal-overlay--sheet > .dialog-wrap.dialog-sheet .dialog-btn-primary:hover:not(:disabled) {
-  border-color: var(--accent-hover);
-  background: var(--accent-hover);
-}
-
-.modal-overlay.modal-overlay--sheet > .dialog-wrap.dialog-sheet .dialog-btn:disabled {
-  opacity: 0.45;
+  height: 36px;
+  padding: 0 16px;
 }
 
 @keyframes dialog-sheet-in {

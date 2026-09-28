@@ -13,6 +13,7 @@
     "generate:agent-edit-capabilities": "node scripts/generate-agent-edit-capabilities.mjs",
     "build": "npm run generate:agent-edit-capabilities && tsc && vite build",
     "preview": "vite preview",
+    "lint:css-tokens": "node scripts/check-css-tokens.mjs",
     "test": "npm run generate:agent-edit-capabilities && node scripts/run-tests.mjs unit",
     "e2e": "node e2e/text-flow.test.mjs",
     "e2e:cloud-onboarding": "node e2e/cloud-onboarding.test.mjs",

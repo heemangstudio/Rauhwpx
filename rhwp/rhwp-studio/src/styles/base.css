@@ -230,15 +230,22 @@
   /* 밝은 테마의 액센트는 짙은 파랑이라 흰 글자가 맞는다. */
   --n-on-accent: #ffffff;
 
-  /* 모서리: 칩 → 입력/버튼 → 패널 */
-  --n-radius-chip: 4px;
-  --n-radius-field: 6px;
-  --n-radius-panel: 8px;
+  /* 모서리: 칩 → 입력/버튼 → 패널. 에이전트 UI 만 쓰며 --ag-r-* 척도와 같다
+     (알약 / 행 10 / 카드 16). 편집기 크롬은 --radius-* 를 쓴다. */
+  --n-radius-chip: 999px;
+  --n-radius-field: 10px;
+  --n-radius-panel: 16px;
 
   /* 높이: 오프셋 + 부드러운 블러 */
   --n-elev-1: 0 1px 2px rgba(0, 0, 0, 0.04), 0 1px 1px rgba(0, 0, 0, 0.03);
   --n-elev-2: 0 4px 12px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04);
   --n-elev-3: 0 12px 32px rgba(0, 0, 0, 0.14), 0 2px 6px rgba(0, 0, 0, 0.06);
+  /* 떠 있는 입력·팝오버: 가까운 접지 한 겹 + 넓고 옅은 번짐 한 겹 */
+  --n-elev-float: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.08);
+  --n-elev-popover: 0 2px 6px rgba(0, 0, 0, 0.06), 0 12px 32px rgba(0, 0, 0, 0.12);
+
+  /* 잉크 위에 얹히는 반전 글자(채워진 기본 버튼) */
+  --n-ink-inverse: #ffffff;
 
   /* 가장자리: 면과 면이 만나는 자리. 또렷한 선은 각 요소가 이미 가진
      헤어라인 border 가 긋고, 여기서는 그 아래로 번지는 블러만 얹는다.
@@ -389,6 +396,11 @@
   --n-elev-1: 0 1px 2px rgba(0, 0, 0, 0.35), 0 1px 1px rgba(0, 0, 0, 0.25);
   --n-elev-2: 0 4px 12px rgba(0, 0, 0, 0.45), 0 1px 3px rgba(0, 0, 0, 0.3);
   --n-elev-3: 0 12px 32px rgba(0, 0, 0, 0.55), 0 2px 6px rgba(0, 0, 0, 0.35);
+  /* 어두운 면에서는 잉크가 흰색이라 그림자는 검정으로 따로 준다 */
+  --n-elev-float: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.4);
+  --n-elev-popover: 0 2px 6px rgba(0, 0, 0, 0.35), 0 12px 32px rgba(0, 0, 0, 0.5);
+
+  --n-ink-inverse: #171717;
 
   /* 어두운 책상 위에서는 검은 블러가 거의 안 보인다. 층을 만드는 일은
      밝기 차(면 램프)와 각 요소의 밝은 헤어라인이 대신하고, 블러는
@@ -406,6 +418,29 @@
     0 0 0 1px rgba(0, 0, 0, 0.6),
     0 2px 6px rgba(0, 0, 0, 0.6),
     0 16px 40px -10px rgba(0, 0, 0, 0.8);
+}
+
+/* ─── 잉크 계열 ──────────────────────────────────────
+   글자·채움·헤어라인을 한 잉크(--n-text)의 농도로만 만든다. 두 테마
+   모두 같은 식이라 잉크만 바뀌면 전부 따라온다. --n-text 를 다시
+   정하는 면(.ag-root)에서도 그 잉크로 다시 계산되도록 함께 선언한다.
+   secondary 66% 는 에이전트 면 중 가장 어두운 sunken(#e8eaee) 위에서도
+   4.5:1 을 넘는다(밝은 5.1:1 / 어두운 5.9:1). tertiary·quaternary 는
+   글자 대비를 요구하지 않는 아이콘·비활성에만 쓴다.
+   편집기 크롬의 --n-fill-* / --n-hairline 은 그대로 두고, 에이전트 UI 가
+   이 계열로 다시 묶는다(agent-sidebar.css 토큰 블록). */
+:root,
+.ag-root {
+  --n-ink: var(--n-text);
+  --n-ink-secondary: color-mix(in oklab, var(--n-text) 66%, transparent);
+  --n-ink-tertiary: color-mix(in oklab, var(--n-text) 40%, transparent);
+  --n-ink-quaternary: color-mix(in oklab, var(--n-text) 25%, transparent);
+  --n-ink-fill-hover: color-mix(in oklab, var(--n-text) 5%, transparent);
+  --n-ink-fill-selected: color-mix(in oklab, var(--n-text) 7%, transparent);
+  --n-ink-fill-pressed: color-mix(in oklab, var(--n-text) 11%, transparent);
+  --n-ink-fill-soft: color-mix(in oklab, var(--n-text) 4%, transparent);
+  --n-ink-hairline: color-mix(in oklab, var(--n-text) 9%, transparent);
+  --n-ink-hairline-strong: color-mix(in oklab, var(--n-text) 16%, transparent);
 }
 
 /* ─── 리셋 ──────────────────────────────────────────── */

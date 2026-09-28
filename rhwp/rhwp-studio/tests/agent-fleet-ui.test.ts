@@ -572,8 +572,8 @@ test('살아 있는 기록은 한 번에 하나만 펼친다 — 팝업과 도�
 });
 
 test('행 높이는 고정 그리드로 못 박혀 있고 진행 표시는 공용 스피너 하나다', () => {
-  assert.match(css, /\.ag-fleet-head\s*\{[^}]*grid-template-rows:\s*16px 14px;/s);
-  assert.match(css, /\.ag-fleet-head\s*\{[^}]*grid-template-columns:\s*12px minmax\(0, 1fr\) auto 11px;/s);
+  assert.match(css, /\.ag-fleet-head\s*\{[^}]*grid-template-rows:\s*20px 18px;/s);
+  assert.match(css, /\.ag-fleet-head\s*\{[^}]*grid-template-columns:\s*12px minmax\(0, 1fr\) auto 12px;/s);
   assert.match(css, /\.ag-fleet-dot\.ag-run\s*\{\s*background:\s*var\(--ag-run\);/);
   assert.match(css, /\.ag-fleet-dot\.ag-ok\s*\{\s*background:\s*var\(--ag-ok\);/);
   assert.match(css, /\.ag-fleet-dot\.ag-err\s*\{\s*background:\s*var\(--ag-err\);/);
@@ -596,7 +596,7 @@ test('단계 레일은 겹친 알약 대신 한 줄 연결 타임라인이다', 
 
 test('편대 도크는 입력기 위 알약과 팝업으로 그려진다', () => {
   assert.match(css, /\.ag-fleet-dock\s*\{[^}]*position:\s*absolute;/s);
-  assert.match(css, /\.ag-fleet-dock-pill\s*\{[^}]*border-radius:\s*999px;/s);
+  assert.match(css, /\.ag-fleet-dock-pill\s*\{[^}]*border-radius:\s*var\(--ag-r-pill\);/s);
   assert.match(css, /\.ag-fleet-popup\s*\{[^}]*max-height:\s*min\(320px, 40vh\);/s);
   // 알약은 도는 동안 휠, 끝나면 상태 점을 같은 칸에 그린다.
   assert.match(css, /\.ag-fleet-dock-pill:not\(\.ag-live\) > \.ag-pixel-wheel \{\s*\n\s*display: none;/);

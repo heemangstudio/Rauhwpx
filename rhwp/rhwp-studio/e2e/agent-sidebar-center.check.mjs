@@ -38,7 +38,7 @@ await runTest('agent sidebar center diagnostic', async ({ page }) => {
 
   // ── 재현 A: inset 변경과 같은 태스크에서 문서 재로드 (ResizeObserver 이전) ──
   await page.evaluate(async () => {
-    document.body.classList.remove('ag-sidebar-open'); // 편집 영역 넓힘
+    document.body.classList.remove('ag-sidebar-inset'); // 편집 영역 넓힘
     await window.__canvasView.loadDocument();          // stale 폭으로 중앙 계산
   });
   await page.evaluate(() => new Promise(r => setTimeout(r, 600)));
@@ -47,7 +47,7 @@ await runTest('agent sidebar center diagnostic', async ({ page }) => {
 
   // ── 재현 B: 반대 방향 (좁아지는 즉시 로드) ──
   await page.evaluate(async () => {
-    document.body.classList.add('ag-sidebar-open'); // 편집 영역 좁힘
+    document.body.classList.add('ag-sidebar-inset'); // 편집 영역 좁힘
     await window.__canvasView.loadDocument();
   });
   await page.evaluate(() => new Promise(r => setTimeout(r, 600)));

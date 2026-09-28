@@ -5,13 +5,13 @@ import { showToast } from '@/ui/toast';
 
 type LinkHit = { target: HyperlinkTarget; link: HyperlinkInfo; position: DocumentPosition };
 
-export function hyperlinkAtPointer(self: any, e: MouseEvent): LinkHit | null {
+export function hyperlinkAtPointer(self: any, e: MouseEvent, cachedContentRect?: DOMRect | null): LinkHit | null {
   if (!self.wasm?.getHyperlinkContext || !self.canEditHyperlink?.() || self.connectorDrawingMode
     || self.polygonDrawingMode || self.imagePlacementMode || self.textboxPlacementMode) return null;
   const content = self.container.querySelector('#scroll-content');
   if (!content) return null;
   try {
-    const box = content.getBoundingClientRect();
+    const box = cachedContentRect ?? content.getBoundingClientRect();
     const x = e.clientX - box.left, y = e.clientY - box.top;
     const page = self.virtualScroll.getPageAtPoint(x, y);
     if (page < 0 || page >= self.wasm.pageCount) return null;
@@ -37,13 +37,29 @@ export function hyperlinkAtPointer(self: any, e: MouseEvent): LinkHit | null {
   return null;
 }
 
-export function hoverHyperlink(self: any, e: MouseEvent): boolean {
+/** 포인터·스크롤·줌·문서가 그대로면 직전 hover 판정을 재사용하기 위한 키 */
+function hyperlinkHoverKey(self: any, e: MouseEvent): string {
+  return [
+    Math.round(e.clientX),
+    Math.round(e.clientY),
+    self.viewportManager?.getScrollX?.() ?? 0,
+    self.viewportManager?.getScrollY?.() ?? 0,
+    self.viewportManager?.getZoom?.() ?? 1,
+    self.wasm?.documentGeneration ?? 0,
+  ].join('|');
+}
+
+export function hoverHyperlink(self: any, e: MouseEvent, cachedContentRect?: DOMRect | null): boolean {
+  // 1px 안쪽 흔들림이나 스크롤 뒤 합성 mousemove 는 같은 결과이므로 hitTest 를 다시 타지 않는다.
+  const key = hyperlinkHoverKey(self, e);
+  if (key === self.hyperlinkHoverKey) return !!self.hyperlinkHover;
+  self.hyperlinkHoverKey = key;
   if (self.hyperlinkHover) {
     self.container.removeAttribute('title');
     if (self.container.style.cursor === 'pointer') self.container.style.cursor = '';
     self.hyperlinkHover = false;
   }
-  const hit = hyperlinkAtPointer(self, e);
+  const hit = hyperlinkAtPointer(self, e, cachedContentRect);
   if (!hit) return false;
   self.container.title = hit.link.uri;
   self.container.style.cursor = 'pointer';

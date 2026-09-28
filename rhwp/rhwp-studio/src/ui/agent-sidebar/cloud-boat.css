@@ -12,7 +12,7 @@
   background: transparent;
   color: var(--ag-text-secondary);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--ag-fs-secondary);
   text-decoration: underline;
   text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
   text-underline-offset: 3px;
@@ -35,8 +35,8 @@
 .ag-cloud-setup-link:focus-visible,
 .ag-cloud-setup-code-copy:focus-visible,
 .ag-cloud-settings-more:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 1px;
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
 }
 
 /* 로그인 코드 — 가라앉은 면 위의 고정폭 숫자. 선택하면 통째로 잡힌다. */
@@ -46,9 +46,8 @@
   gap: 8px;
   min-height: 56px;
   padding: 8px 8px 8px 16px;
-  border-radius: var(--radius-lg, 8px);
-  background: var(--ag-surface-subtle);
-  box-shadow: inset 0 0 0 1px var(--ag-border);
+  border-radius: var(--ag-r-row);
+  background: var(--n-ink-fill-hover);
 }
 
 .ag-cloud-setup-code-value {
@@ -58,7 +57,7 @@
   gap: 0.42em;
   overflow: hidden;
   color: var(--ag-text);
-  font: 600 24px/1.2 var(--font-mono, ui-monospace, monospace);
+  font: var(--ag-fw-strong) 24px/1.2 var(--ag-mono);
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.14em;
   white-space: nowrap;
@@ -86,17 +85,15 @@
   place-items: center;
   padding: 0;
   border: 0;
-  border-radius: var(--ag-r-field);
+  border-radius: var(--ag-r-pill);
   background: transparent;
   color: var(--ag-text-secondary);
   cursor: default;
-  transition:
-    background-color var(--ag-dur-fast) var(--ag-ease-out),
-    color var(--ag-dur-fast) var(--ag-ease-out);
+  transition: var(--ag-transition-color);
 }
 
 .ag-cloud-setup-code-copy:hover:not(:disabled) {
-  background: var(--ui-hover-quiet, var(--ag-hover));
+  background: var(--n-ink-fill-hover);
   color: var(--ag-text);
 }
 
@@ -105,7 +102,7 @@
 }
 
 .ag-cloud-setup-code-copy[data-copied='true'] {
-  color: var(--accent-primary);
+  color: var(--ag-ok, var(--n-ink));
 }
 
 .ag-cloud-setup-code-copy .ag-icon {
@@ -121,7 +118,7 @@
   min-height: 20px;
   margin: 0;
   color: var(--ag-text-muted);
-  font-size: 12px;
+  font-size: var(--ag-fs-secondary);
   line-height: 1.5;
 }
 
@@ -151,14 +148,14 @@
 .ag-cloud-setup-fact dt {
   flex: 0 0 auto;
   color: var(--ag-text-secondary);
-  font-size: 12px;
+  font-size: var(--ag-fs-secondary);
 }
 
 .ag-cloud-setup-fact dd {
   min-width: 0;
   margin: 0;
   color: var(--ag-text);
-  font-size: 13px;
+  font-size: var(--ag-fs-secondary);
   font-variant-numeric: tabular-nums;
   text-align: right;
   overflow-wrap: anywhere;
@@ -194,11 +191,11 @@
 }
 
 .ag-cloud-setup-stage[data-status='done'] .ag-cloud-setup-stage-mark {
-  color: var(--accent-primary);
+  color: var(--n-ink);
 }
 
 .ag-cloud-setup-stage[data-status='pending'] .ag-cloud-setup-stage-mark {
-  color: color-mix(in srgb, var(--ag-text-muted) 55%, transparent);
+  color: var(--n-ink-quaternary);
 }
 
 .ag-cloud-setup-stage-spinner {
@@ -215,13 +212,13 @@
 
 .ag-cloud-setup-stage-label {
   color: var(--ag-text-secondary);
-  font-size: 13px;
+  font-size: var(--ag-fs-secondary);
   line-height: 20px;
 }
 
 .ag-cloud-setup-stage[data-status='active'] .ag-cloud-setup-stage-label {
   color: var(--ag-text);
-  font-weight: 600;
+  font-weight: var(--ag-fw-medium);
 }
 
 .ag-cloud-setup-stage[data-status='pending'] .ag-cloud-setup-stage-label {
@@ -231,7 +228,7 @@
 .ag-cloud-setup-stage-detail {
   overflow: hidden;
   color: var(--ag-text-muted);
-  font-size: 11px;
+  font-size: var(--ag-fs-secondary);
   line-height: 16px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -239,7 +236,7 @@
 
 .ag-cloud-setup-stage-time {
   color: var(--ag-text-muted);
-  font-size: 11px;
+  font-size: var(--ag-fs-meta);
   line-height: 20px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -254,13 +251,11 @@
   place-items: center;
   padding: 0;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--ag-r-pill);
   background: transparent;
-  color: var(--n-text-secondary, var(--ag-text-secondary));
+  color: var(--n-ink-secondary);
   cursor: default;
-  transition:
-    background-color var(--ag-dur-fast) var(--ag-ease-out),
-    color var(--ag-dur-fast) var(--ag-ease-out);
+  transition: var(--ag-transition-color);
 }
 
 .ag-cloud-settings-more[hidden] {
@@ -269,8 +264,8 @@
 
 .ag-cloud-settings-more:hover:not(:disabled),
 .ag-cloud-settings-more[aria-expanded='true'] {
-  background: var(--ui-hover-quiet, var(--ag-hover));
-  color: var(--n-text, var(--ag-text));
+  background: var(--n-ink-fill-hover);
+  color: var(--n-ink);
 }
 
 .ag-cloud-settings-more:disabled {
@@ -284,7 +279,7 @@
 
 .ag-cloud-settings-error {
   color: color-mix(in srgb, var(--ag-err) 80%, var(--ag-text));
-  font-size: 11.5px;
+  font-size: var(--ag-fs-secondary);
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
@@ -298,9 +293,9 @@
   transition: background-color var(--ag-dur-slow, 300ms) var(--ag-ease-out, ease-out);
 }
 
-/* 진행 중인 상태는 경고 테두리색(어두운 테마에서 탁한 올리브) 대신 맑은 호박색으로 둔다. */
+/* 진행 중인 상태는 경고 테두리색(어두운 테마에서 탁한 올리브) 대신 실행 표시등의 호박색으로 둔다. */
 .ag-cloud-settings-dot[data-state='connecting'] {
-  background: #f2a33a;
+  background: var(--ag-run, var(--ui-warning-border));
 }
 
 /* 시작·중지 중인 VM 은 스피너가 아니라 숨 쉬는 점으로 알린다. */

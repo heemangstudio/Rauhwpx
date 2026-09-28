@@ -5,6 +5,8 @@ import {
   type MarkdownNode,
   type MarkdownRenderOptions,
 } from './plan-markdown.ts';
+import { createIcon } from './icons.ts';
+import { parseCssTimeMs } from './motion-model.ts';
 
 type KatexModule = typeof import('katex');
 
@@ -105,9 +107,53 @@ export function stableStreamingBlocks(blocks: readonly Block[], source: string):
 function renderBlockNode(block: Block): HTMLElement | null {
   const fragment = document.createDocumentFragment();
   appendMarkdownBlocks(fragment, [block], document, CHAT_MARKDOWN_OPTIONS);
-  const node = fragment.firstElementChild as HTMLElement | null;
+  let node = fragment.firstElementChild as HTMLElement | null;
+  if (node && block.kind === 'code') node = wrapCodeBlock(node, block.lang, block.code);
   node?.setAttribute('data-md-block', '');
   return node;
+}
+
+const PLAIN_CODE_LANGS = new Set(['', 'text', 'plain', 'plaintext', 'txt']);
+
+/** 채팅 코드 블록에 조용한 머리(언어 이름 + 복사 버튼)를 붙인다. */
+function wrapCodeBlock(pre: HTMLElement, lang: string, code: string): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'ag-md-codeblock';
+  const head = document.createElement('div');
+  head.className = 'ag-md-codeblock-head';
+  // 평문 코드 블록은 언어 이름이 정보가 없으므로 머리 줄 없이 복사 버튼만 띄운다.
+  const plain = PLAIN_CODE_LANGS.has((lang || '').trim().toLowerCase());
+  if (plain) wrap.classList.add('ag-md-codeblock-plain');
+  const copy = document.createElement('button');
+  copy.type = 'button';
+  copy.className = 'ag-md-codeblock-copy';
+  copy.title = '복사';
+  copy.setAttribute('aria-label', '코드 복사');
+  copy.appendChild(createIcon('copy'));
+  let resetTimer: number | null = null;
+  copy.addEventListener('click', (event) => {
+    event.stopPropagation();
+    void navigator.clipboard?.writeText(code).then(() => {
+      copy.classList.add('ag-copied');
+      copy.replaceChildren(createIcon('check'));
+      if (resetTimer !== null) window.clearTimeout(resetTimer);
+      resetTimer = window.setTimeout(() => {
+        resetTimer = null;
+        copy.classList.remove('ag-copied');
+        copy.replaceChildren(createIcon('copy'));
+      }, 1400);
+    }).catch(() => {});
+  });
+  if (plain) {
+    head.append(copy);
+  } else {
+    const label = document.createElement('span');
+    label.className = 'ag-md-codeblock-lang';
+    label.textContent = lang;
+    head.append(label, copy);
+  }
+  wrap.append(head, pre);
+  return wrap;
 }
 
 /** 본문 블록만 고른다. 복사 버튼처럼 답변에 덧붙인 요소는 맞추기 대상이 아니다. */
@@ -117,11 +163,19 @@ function blockNodesOf(target: HTMLElement): HTMLElement[] {
 }
 
 /** 클래스를 남기지 않는 애니메이션이라 다음 비교에서 노드가 달라 보이지 않는다. */
+/**
+ * 새 블록의 짧은 등장(base 토큰, ease-out 토큰). 동작 줄이기(1ms 토큰)나 20ms 아래에서는
+ * 걸지 않는다 — 1ms 애니메이션도 첫 프레임을 opacity 0 으로 그려 한 번 깜빡인다.
+ */
 function markEntering(node: Element): void {
-  const duration = Number.parseFloat(getComputedStyle(node).getPropertyValue('--ag-dur-slow')) || 300;
+  const root = getComputedStyle(document.documentElement);
+  const duration = parseCssTimeMs(root.getPropertyValue('--ag-dur-base'), 220);
+  if (duration < 20) return;
+  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+  const easing = root.getPropertyValue('--ag-ease-out').trim() || 'cubic-bezier(0.22, 1, 0.36, 1)';
   node.animate(
     [{ opacity: 0, transform: 'translateY(3px)' }, { opacity: 1, transform: 'none' }],
-    { duration, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' },
+    { duration, easing },
   );
 }
 

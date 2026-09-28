@@ -35,6 +35,13 @@ export class Ruler {
   private vCtx: CanvasRenderingContext2D | null;
   private rafId = 0;
   private unsubscribers: (() => void)[] = [];
+  /** 스크롤 외 입력(문단·테마·문서 변경 등)이 바뀌어 두 축을 모두 다시 그려야 하는가 */
+  private forceRedraw = true;
+  /** 마지막으로 그린 축별 입력 키. 스크롤 프레임에서 입력이 같으면 그리기를 생략한다. */
+  private lastHKey = '';
+  private lastVKey = '';
+  /** getComputedStyle 은 스타일 재계산을 유발하므로 테마·문서 변경 때만 다시 읽는다. */
+  private cachedPalette: RulerPalette | null = null;
 
   /** 현재 커서 문단의 왼쪽 여백 (px, zoom=1 기준) */
   private paraMarginLeftPx = 0;
@@ -71,12 +78,19 @@ export class Ruler {
     this.vCtx = vCanvas.getContext('2d');
 
     this.unsubscribers.push(
-      eventBus.on('viewport-scroll', () => this.scheduleUpdate()),
-      eventBus.on('zoom-changed', () => this.scheduleUpdate()),
+      // 스크롤·줌 프레임은 축별 입력 키로 변화 여부를 판단한다.
+      eventBus.on('viewport-scroll', () => this.scheduleUpdate(false)),
+      eventBus.on('zoom-changed', () => this.scheduleUpdate(false)),
       eventBus.on('viewport-resize', () => this.scheduleUpdate()),
+      // 사이드바 inset 커밋은 페인트 직전에 한 번 일어난다. 문서 층과 같은 프레임에
+      // 새 좌표로 그려야 transform 이 풀리는 순간 눈금자가 한 프레임 어긋나지 않는다.
+      eventBus.on('viewport-inset-changed', () => this.updateNow()),
       eventBus.on('document-changed', () => this.scheduleUpdate()),
       eventBus.on('document-view-changed', () => this.scheduleUpdate()),
-      eventBus.on('theme-changed', () => this.scheduleUpdate()),
+      eventBus.on('theme-changed', () => {
+        this.cachedPalette = null;
+        this.scheduleUpdate();
+      }),
       eventBus.on('cursor-para-changed', (props) => this.onParaChanged(props as ParaProperties)),
       eventBus.on('cursor-cell-changed', (data) => this.onCellChanged(data as { inCell: boolean; cellX?: number; cellWidth?: number })),
       eventBus.on('cursor-rect-updated', (rect: any) => {
@@ -108,13 +122,15 @@ export class Ruler {
   }
 
   private palette(): RulerPalette {
-    return {
+    if (this.cachedPalette) return this.cachedPalette;
+    this.cachedPalette = {
       bgMargin: cssVar('--ruler-bg', '#d0d0d0'),
       bgBody: cssVar('--ruler-body', '#ffffff'),
       tick: cssVar('--ruler-tick', '#555555'),
       text: cssVar('--ruler-text', '#333333'),
       marker: cssVar('--ruler-marker', '#4080c0'),
     };
+    return this.cachedPalette;
   }
 
   /** paint 직전에만 크기를 맞춘다. 같은 width/height 대입도 bitmap을 지우므로 생략한다. */
@@ -144,8 +160,9 @@ export class Ruler {
     this.syncCanvasSize(window.devicePixelRatio || 1);
   }
 
-  /** requestAnimationFrame으로 스로틀링하여 그리기 예약 */
-  private scheduleUpdate(): void {
+  /** requestAnimationFrame으로 스로틀링하여 그리기 예약. force=false 면 입력이 바뀐 축만 그린다. */
+  private scheduleUpdate(force = true): void {
+    if (force) this.forceRedraw = true;
     if (this.rafId) return;
     this.rafId = requestAnimationFrame(() => {
       this.rafId = 0;
@@ -153,12 +170,42 @@ export class Ruler {
     });
   }
 
+  /** 예약된 그리기를 당겨 지금 두 축을 모두 그린다. */
+  private updateNow(): void {
+    if (this.rafId) {
+      cancelAnimationFrame(this.rafId);
+      this.rafId = 0;
+    }
+    this.forceRedraw = true;
+    this.update();
+  }
+
   /** 크기 변경과 두 축 paint 사이에 프레임을 넘기지 않는다 (#6187). */
   update(): void {
     const dpr = window.devicePixelRatio || 1;
     this.syncCanvasSize(dpr);
-    this.drawHorizontal();
-    this.drawVertical();
+    const force = this.forceRedraw;
+    this.forceRedraw = false;
+    if (force) this.cachedPalette = null;
+
+    // 축별로 그림을 결정하는 입력만 모은다. 세로 스크롤 중에는 가로 눈금자가,
+    // 가로 팬 중에는 세로 눈금자가 그대로이므로 다시 그리지 않는다.
+    const pageIdx = this.rulerPageIndex();
+    const zoom = this.viewportManager.getZoom();
+    const hKey = pageIdx === null
+      ? `none|${this.hCanvas.width}`
+      : `${pageIdx}|${zoom}|${this.getPageScreenLeft(pageIdx, this.viewportManager.getScrollX())}|${this.hCanvas.width}|${dpr}`;
+    const vKey = pageIdx === null
+      ? `none|${this.vCanvas.height}`
+      : `${pageIdx}|${zoom}|${this.virtualScroll.getPageOffset(pageIdx) - this.viewportManager.getScrollY()}|${this.vCanvas.height}|${dpr}`;
+    if (force || hKey !== this.lastHKey) {
+      this.lastHKey = hKey;
+      this.drawHorizontal();
+    }
+    if (force || vKey !== this.lastVKey) {
+      this.lastVKey = vKey;
+      this.drawVertical();
+    }
   }
 
   /** 페이지 좌측 화면 좌표를 계산한다 (scroll-container 뷰포트 기준). */

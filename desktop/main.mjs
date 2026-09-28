@@ -584,6 +584,8 @@ function applyCloudSnapshot(session, snapshot) {
 }
 
 async function scopedCloudSnapshot(session, operation = null, { refresh = false } = {}) {
+  // 시작 중의 이벤트 방송이 반쯤 채워진 스냅숏을 보내지 않도록 Cloud 시작을 기다린다.
+  await cloudStartup;
   const scope = session.cloudScope ?? { threadId: '', documentId: null };
   const options = {
     originSessionId: session.sessionId,
@@ -736,6 +738,21 @@ function queueCloudBroadcast(payload) {
 function requireCloudCoordinator() {
   if (!cloudCoordinator) throw new Error('Cloud service is not ready');
   return cloudCoordinator;
+}
+
+// 첫 창은 Cloud 시작을 기다리지 않고 뜬다. cloud IPC와 스냅숏은 시작이 끝날 때까지
+// 기다리고, 시작이 실패하면 같은 오류로 거절된다.
+let settleCloudStartup = { resolve: () => {}, reject: () => {} };
+const cloudStartup = new Promise((resolve, reject) => {
+  settleCloudStartup = { resolve, reject };
+});
+cloudStartup.catch(() => {});
+
+function handleCloudIpc(channel, handler) {
+  ipcMain.handle(channel, async (event, ...args) => {
+    await cloudStartup;
+    return handler(event, ...args);
+  });
 }
 
 const RAUCLOUD_DEVICE_SECRET = 'cloud.managed-device-id';
@@ -934,9 +951,12 @@ function cascadedWindowPosition() {
 }
 
 async function createWindow(launch = launchRequest(), { generatedDocument = null } = {}) {
-  await hubOwner.ensure();
-  const closeHubContext = hubOwner.context();
-  if (!closeHubContext) throw new Error('Agent hub context is unavailable');
+  // 허브는 창과 나란히 뜬다. 렌더러의 세션 문맥 요청(desktop:get-session-context)이
+  // 허브 준비를 기다리므로 창 생성은 허브를 막지 않는다.
+  let closeHubContext = hubOwner.context();
+  void hubOwner.ensure().then((result) => {
+    closeHubContext = result.context ?? closeHubContext;
+  }, () => {});
   const backgroundColor = nativeTheme.shouldUseDarkColors ? '#141416' : '#f5f5f7';
   const isMac = process.platform === 'darwin';
   // 실행 후 첫 창만 지난 프레임을 되살리고, 이후 창은 28px 계단식으로 연다.
@@ -1010,7 +1030,8 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
       if (quitRequested && !quitting) app.quit();
     });
     const hub = hubOwner.context() ?? closeHubContext;
-    void closeHubSession({
+    // 허브가 한 번도 뜨지 않았다면 등록된 허브 세션도 없다.
+    if (hub) void closeHubSession({
       port: hub.port,
       token: hubToken,
       launchId,
@@ -1360,92 +1381,92 @@ ipcMain.handle('desktop:document-release', (event) => {
   const session = sessionForEvent(event);
   documentLeases.releaseSession(session.sessionId);
 });
-ipcMain.handle('cloud:get-state', async (event, payload = {}) => {
+handleCloudIpc('cloud:get-state', async (event, payload = {}) => {
   const session = sessionForEvent(event);
   session.cloudScope = normalizeCloudScope(payload);
   return scopedCloudSnapshot(session, null, { refresh: true });
 });
-ipcMain.handle('cloud:save-profile', async (event, payload) => {
+handleCloudIpc('cloud:save-profile', async (event, payload) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().saveProfile(payload));
 });
-ipcMain.handle('cloud:test-profile', async (event, payload) => {
+handleCloudIpc('cloud:test-profile', async (event, payload) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().testProfile(payload));
 });
-ipcMain.handle('cloud:provision', async (event, payload) => {
+handleCloudIpc('cloud:provision', async (event, payload) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().provision(payload));
 });
-ipcMain.handle('cloud:pair', async (event, payload) => {
+handleCloudIpc('cloud:pair', async (event, payload) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().pair(payload));
 });
-ipcMain.handle('cloud:select-server-mode', async (event, payload = {}) => {
+handleCloudIpc('cloud:select-server-mode', async (event, payload = {}) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().selectServerMode(payload?.mode));
 });
-ipcMain.handle('cloud:spawn-sandbox', async (event, payload = {}) => {
+handleCloudIpc('cloud:spawn-sandbox', async (event, payload = {}) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().spawnAppServer({
     providerId: payload?.providerId ?? null,
     selectedProvider: payload?.selectedProvider ?? null,
   }));
 });
-ipcMain.handle('cloud:sandbox-status', async (event) => {
+handleCloudIpc('cloud:sandbox-status', async (event) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().appServerStatus());
 });
-ipcMain.handle('cloud:force-quit-account', async (event) => {
+handleCloudIpc('cloud:force-quit-account', async (event) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().forceQuitAccountCloud());
 });
-ipcMain.handle('cloud:reconnect-link', async (event, payload = {}) => {
+handleCloudIpc('cloud:reconnect-link', async (event, payload = {}) => {
   const session = sessionForEvent(event);
   // Only a pressed 다시 연결 button sends `explicit`; automatic reconnects never start a stopped boat VM.
   return scopedCloudSnapshot(session, await requireCloudCoordinator().reconnectCloud({
     userIntent: payload?.explicit === true,
   }));
 });
-ipcMain.handle('cloud:restart-service', async (event) => {
+handleCloudIpc('cloud:restart-service', async (event) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().restartCloudService());
 });
-ipcMain.handle('cloud:inspect-host-key', async (event) => {
+handleCloudIpc('cloud:inspect-host-key', async (event) => {
   sessionForEvent(event);
   return requireCloudCoordinator().inspectHostKey();
 });
-ipcMain.handle('cloud:trust-host-key', async (event, payload = {}) => {
+handleCloudIpc('cloud:trust-host-key', async (event, payload = {}) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().trustHostKey({
     fingerprint: typeof payload?.fingerprint === 'string' ? payload.fingerprint : '',
   }));
 });
-ipcMain.handle('cloud:reimport-logins', async (event, payload = {}) => {
+handleCloudIpc('cloud:reimport-logins', async (event, payload = {}) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().reimportProviderLogins({
     provider: typeof payload?.provider === 'string' ? payload.provider : null,
   }));
 });
-ipcMain.handle('cloud:discard-missing-sessions', async (event) => {
+handleCloudIpc('cloud:discard-missing-sessions', async (event) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().discardMissingSessions());
 });
-ipcMain.handle('cloud:recreate-link', async (event) => {
+handleCloudIpc('cloud:recreate-link', async (event) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().recreateCloud());
 });
-ipcMain.handle('cloud:teardown-sandbox', async (event, payload = {}) => {
+handleCloudIpc('cloud:teardown-sandbox', async (event, payload = {}) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().teardownAppServer({
     force: payload?.force === true,
   }));
 });
-ipcMain.handle('cloud:takeover-sandbox', async (event) => {
+handleCloudIpc('cloud:takeover-sandbox', async (event) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().takeoverAppServer());
 });
-ipcMain.handle('cloud:account-logout', async (event) => {
+handleCloudIpc('cloud:account-logout', async (event) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().logoutRaucloud());
 });
@@ -1468,6 +1489,7 @@ function handleBoat(channel, run) {
   ipcMain.handle(channel, async (event, payload) => {
     const session = sessionForEvent(event);
     try {
+      await cloudStartup;
       return { ok: true, value: await run(session, payload && typeof payload === 'object' ? payload : {}) };
     } catch (error) {
       console.warn(`[rauhwpx] ${channel} failed:`, error?.code ?? '', error?.detail ?? error?.message ?? error);
@@ -1521,7 +1543,7 @@ handleBoat('cloud:boat-disconnect', async (session, payload) => (
     deleteServer: payload.deleteServer === true,
   }))
 ));
-ipcMain.handle('cloud:transfer-intent', async (event, payload = {}) => {
+handleCloudIpc('cloud:transfer-intent', async (event, payload = {}) => {
   const session = sessionForEvent(event);
   const scope = normalizeCloudScope(payload);
   session.cloudScope = scope;
@@ -1540,7 +1562,7 @@ ipcMain.handle('cloud:transfer-intent', async (event, payload = {}) => {
   }
   return scopedCloudSnapshot(session);
 });
-ipcMain.handle('cloud:read-reference', async (event, payload = {}) => {
+handleCloudIpc('cloud:read-reference', async (event, payload = {}) => {
   sessionForEvent(event);
   const id = String(payload.id ?? '');
   const scope = String(payload.scope ?? '');
@@ -1573,7 +1595,7 @@ ipcMain.handle('cloud:read-reference', async (event, payload = {}) => {
   if (!expectedDigest || expectedDigest !== digest) throw new Error('Reference export failed integrity verification');
   return { bytes: new Uint8Array(bytes), sha256: digest, size: bytes.length };
 });
-ipcMain.handle('cloud:transfer', async (event, payload) => {
+handleCloudIpc('cloud:transfer', async (event, payload) => {
   const session = sessionForEvent(event);
   session.cloudScope = normalizeCloudScope(payload);
   if (payload?.permissionProfile !== 'unrestricted') {
@@ -1608,12 +1630,12 @@ ipcMain.handle('cloud:transfer', async (event, payload) => {
     session.cloudTransferPromise = null;
   }
 });
-ipcMain.handle('cloud:command', async (event, payload) => {
+handleCloudIpc('cloud:command', async (event, payload) => {
   const session = sessionForEvent(event);
   const operation = await requireCloudCoordinator().command(payload);
   return scopedCloudSnapshot(session, operation);
 });
-ipcMain.handle('cloud:begin-edit', async (event, payload = {}) => {
+handleCloudIpc('cloud:begin-edit', async (event, payload = {}) => {
   const session = sessionForEvent(event);
   const sessionId = String(payload?.sessionId ?? '');
   if (!/^[A-Za-z0-9_-]{8,128}$/.test(sessionId)) throw new Error('Invalid cloud session id');
@@ -1657,7 +1679,7 @@ ipcMain.handle('cloud:begin-edit', async (event, payload = {}) => {
     },
   };
 });
-ipcMain.handle('cloud:edit-draft-save', async (event, payload = {}) => {
+handleCloudIpc('cloud:edit-draft-save', async (event, payload = {}) => {
   const session = sessionForEvent(event);
   const identity = session.cloudEditDraft;
   const requestId = typeof payload?.requestId === 'string' ? payload.requestId : null;
@@ -1684,7 +1706,7 @@ ipcMain.handle('cloud:edit-draft-save', async (event, payload = {}) => {
     throw error;
   }
 });
-ipcMain.handle('cloud:continue-edit', async (event, payload = {}) => {
+handleCloudIpc('cloud:continue-edit', async (event, payload = {}) => {
   const session = sessionForEvent(event);
   const sessionId = String(payload?.sessionId ?? '');
   const editSessionId = String(payload?.editSessionId ?? '');
@@ -1719,17 +1741,17 @@ ipcMain.handle('cloud:continue-edit', async (event, payload = {}) => {
     editDraft: null,
   };
 });
-ipcMain.handle('cloud:dismiss-session', async (event, payload) => {
+handleCloudIpc('cloud:dismiss-session', async (event, payload) => {
   const session = sessionForEvent(event);
   const operation = await requireCloudCoordinator().dismissSession(payload);
   return scopedCloudSnapshot(session, operation);
 });
-ipcMain.handle('cloud:complete-takeover', async (event, payload) => {
+handleCloudIpc('cloud:complete-takeover', async (event, payload) => {
   const session = sessionForEvent(event);
   const operation = await requireCloudCoordinator().completeTakeover(payload);
   return scopedCloudSnapshot(session, operation);
 });
-ipcMain.handle('cloud:download-result', async (event, payload) => {
+handleCloudIpc('cloud:download-result', async (event, payload) => {
   const session = sessionForEvent(event);
   const coordinator = requireCloudCoordinator();
   // Wake before taking the handoff reader: a resumed boat VM may need a new SSH address.
@@ -1760,7 +1782,7 @@ ipcMain.handle('cloud:download-result', async (event, payload) => {
     };
   });
 });
-ipcMain.handle('cloud:prepare-restart-document', async (event, payload) => {
+handleCloudIpc('cloud:prepare-restart-document', async (event, payload) => {
   const session = sessionForEvent(event);
   const sessionId = String(payload?.sessionId ?? '');
   if (!/^[A-Za-z0-9_-]{8,128}$/.test(sessionId)) throw new Error('Invalid cloud session id');
@@ -1769,7 +1791,7 @@ ipcMain.handle('cloud:prepare-restart-document', async (event, payload) => {
     originPath: documentLeases.leaseForSession(session.sessionId)?.canonicalPath ?? null,
   });
 });
-ipcMain.handle('cloud:download-checkpoint', async (event, payload) => {
+handleCloudIpc('cloud:download-checkpoint', async (event, payload) => {
   sessionForEvent(event);
   const sessionId = String(payload?.sessionId ?? '');
   if (!/^[A-Za-z0-9_-]{8,128}$/.test(sessionId)) throw new Error('Invalid cloud session id');
@@ -1800,7 +1822,7 @@ ipcMain.handle('cloud:download-checkpoint', async (event, payload) => {
     throw error;
   }
 });
-ipcMain.handle('cloud:publish-checkpoint', async (event, payload) => {
+handleCloudIpc('cloud:publish-checkpoint', async (event, payload) => {
   const session = sessionForEvent(event);
   const sessionId = String(payload?.sessionId ?? '');
   if (!/^[A-Za-z0-9_-]{8,128}$/.test(sessionId)) throw new Error('Invalid cloud session id');
@@ -1819,7 +1841,7 @@ ipcMain.handle('cloud:publish-checkpoint', async (event, payload) => {
     return coordinator.publishCheckpoint({ sessionId, operationId });
   });
 });
-ipcMain.handle('cloud:display-open', async (event, payload = {}) => {
+handleCloudIpc('cloud:display-open', async (event, payload = {}) => {
   sessionForEvent(event);
   const sessionId = String(payload?.sessionId ?? '');
   if (!/^[A-Za-z0-9_-]{8,128}$/.test(sessionId)) throw new Error('Invalid cloud session id');
@@ -1828,19 +1850,19 @@ ipcMain.handle('cloud:display-open', async (event, payload = {}) => {
     if (!sender.isDestroyed()) sender.send('cloud:display-event', { connectionId, event: displayEvent });
   });
 });
-ipcMain.handle('cloud:display-close', async (event, payload = {}) => {
+handleCloudIpc('cloud:display-close', async (event, payload = {}) => {
   sessionForEvent(event);
   const connectionId = typeof payload?.connectionId === 'string' ? payload.connectionId : '';
   if (!connectionId) return false;
   return cloudDisplayConnections.close(event.sender.id, connectionId);
 });
-ipcMain.handle('cloud:display-input', async (event, payload = {}) => {
+handleCloudIpc('cloud:display-input', async (event, payload = {}) => {
   sessionForEvent(event);
   const connectionId = typeof payload?.connectionId === 'string' ? payload.connectionId : '';
   if (!connectionId) throw new Error('Invalid cloud display connection id');
   return cloudDisplayConnections.sendInput(event.sender.id, connectionId, payload.event);
 });
-ipcMain.handle('cloud:resolve-result', async (event, payload = {}) => {
+handleCloudIpc('cloud:resolve-result', async (event, payload = {}) => {
   const session = sessionForEvent(event);
   const coordinator = requireCloudCoordinator();
   return coordinator.withActiveHandoff(payload.sessionId, async (handoff) => {
@@ -1968,7 +1990,8 @@ if (!hasSingleInstanceLock) {
       writeLaunchOwnerMetadata(runtimeDir, owner),
       writeLaunchOwnerMetadata(workDir, owner),
     ]);
-    await Promise.all([
+    // 지난 실행의 찌꺼기 정리는 첫 창을 막지 않는다.
+    const staleCleanup = Promise.all([
       bestEffortStartupCleanup(
         'stale runtime',
         removeStaleLaunchDirectories(runtimeRoot, launchId, {
@@ -1989,18 +2012,24 @@ if (!hasSingleInstanceLock) {
         'legacy launch workspace',
         removeLegacyLaunchDirectories(legacyWorkRoot, launchId),
       ),
-      ...(devUrl ? [bestEffortStartupCleanup(
+    ]);
+    if (devUrl) {
+      await bestEffortStartupCleanup(
         'development browser cache',
         prepareDevelopmentCaches(
           electronSession.defaultSession,
           join(runtimeDir, 'code-cache'),
         ),
-      )] : []),
-    ]);
+      );
+    }
     secretVault = createSecretVault({
       filePath: join(app.getPath('userData'), 'secrets.json'),
       safeStorage,
     });
+    // 허브는 비밀 저장소가 생긴 직후 띄워 첫 창과 나란히 준비한다(허브의 비밀 요청은 이 저장소로 간다).
+    // 실패는 아래에서 기다려 예전처럼 알린다.
+    const hubStartup = hubOwner.ensure();
+    hubStartup.catch(() => {});
     cloudAccountSession = createAccountSession({
       secretStore: secretVault,
       creditsClient: createRauCreditsClient({
@@ -2063,29 +2092,31 @@ if (!hasSingleInstanceLock) {
       boat: boatCloud,
     });
     cloudCoordinator.on('event', queueCloudBroadcast);
-    await cloudCoordinator.start();
-    // boat status is read only while someone can see it (or setup runs); it never wakes the VM.
-    stopBoatStatusCadence = installBoatStatusCadence({
-      isWanted: () => cloudCoordinator?.boatSetupActive() || sessions.windows().some((window) => (
-        !window.isDestroyed() && window.isVisible() && !window.isMinimized()
-      )),
-      refresh: () => cloudCoordinator?.refreshBoatStatus({ reason: 'cadence' }),
+    // Cloud 시작(계정·프로필 확인, 네트워크 왕복)은 첫 창과 나란히 진행한다.
+    const cloudReady = cloudCoordinator.start().then(() => {
+      // boat status is read only while someone can see it (or setup runs); it never wakes the VM.
+      stopBoatStatusCadence = installBoatStatusCadence({
+        isWanted: () => cloudCoordinator?.boatSetupActive() || sessions.windows().some((window) => (
+          !window.isDestroyed() && window.isVisible() && !window.isMinimized()
+        )),
+        refresh: () => cloudCoordinator?.refreshBoatStatus({ reason: 'cadence' }),
+      });
+      app.on('browser-window-focus', () => {
+        void cloudCoordinator?.refreshBoatStatus({ reason: 'focus' });
+      });
+      stopCloudContinuityTriggers = installCloudContinuityTriggers({
+        powerMonitor,
+        isOnline: () => net.isOnline(),
+        reconcile: (options) => cloudCoordinator?.reconcileContinuity(options),
+        keepWarm: (options) => cloudCoordinator?.prewarmAppServer(options),
+      });
     });
-    app.on('browser-window-focus', () => {
-      void cloudCoordinator?.refreshBoatStatus({ reason: 'focus' });
-    });
-    stopCloudContinuityTriggers = installCloudContinuityTriggers({
-      powerMonitor,
-      isOnline: () => net.isOnline(),
-      reconcile: (options) => cloudCoordinator?.reconcileContinuity(options),
-      keepWarm: (options) => cloudCoordinator?.prewarmAppServer(options),
-    });
+    cloudReady.then(settleCloudStartup.resolve, settleCloudStartup.reject);
     configureAutoUpdater();
     await loadNativeBookmarks();
     await windowFrames.load();
     installMenu();
     if (!devUrl) installStudioProtocol({ protocol, net, root: studioDist() });
-    await hubOwner.ensure();
     desktopReady = true;
     const launches = pendingLaunches.splice(0);
     let failedLaunches = 0;
@@ -2101,6 +2132,8 @@ if (!hasSingleInstanceLock) {
       app.quit();
       return;
     }
+    // 허브나 Cloud 시작 실패는 창이 뜬 뒤에도 예전처럼 오류 창을 띄우고 종료한다.
+    await Promise.all([hubStartup, cloudReady, staleCleanup]);
     void finishUniqueInstallMetric();
     if (app.isPackaged && ['darwin', 'linux'].includes(process.platform)) {
       setTimeout(() => {
@@ -2109,7 +2142,8 @@ if (!hasSingleInstanceLock) {
     }
   }).catch((error) => {
     resolveUniqueInstallSync();
-    showLaunchError(error);
+    // 창이 먼저 뜨므로 시작 중에 종료하면 허브/Cloud 시작이 거절될 수 있다. 그때는 알리지 않는다.
+    if (!quitting) showLaunchError(error);
     app.quit();
   });
 

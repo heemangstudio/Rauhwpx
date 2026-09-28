@@ -2010,30 +2010,35 @@ export function onMouseMove(this: any, e: MouseEvent): void {
     return;
   }
 
-  if (hoverHyperlink(this, e)) return;
-
-  // 표 경계선 hover 감지 (RAF throttle)
-  if (this.tableResizeRenderer) {
-    if (this.resizeHoverRafId) return;
-    this.resizeHoverRafId = requestAnimationFrame(() => {
-      this.resizeHoverRafId = 0;
-      this.handleResizeHover(e);
-    });
-  } else {
-    if (this.container.style.cursor) {
+  // 하이퍼링크·표 경계선 hover 는 wasm hitTest 를 타므로 한 프레임에 한 번,
+  // 그 프레임의 마지막 포인터 위치로만 판정한다.
+  this.pendingHoverEvent = e;
+  if (this.resizeHoverRafId) return;
+  this.resizeHoverRafId = requestAnimationFrame(() => {
+    this.resizeHoverRafId = 0;
+    const hoverEvent: MouseEvent | null = this.pendingHoverEvent;
+    this.pendingHoverEvent = null;
+    if (!hoverEvent) return;
+    // 같은 프레임의 hover 판정들이 scroll-content 사각형을 한 번만 읽는다.
+    const scrollContent = this.container.querySelector('#scroll-content') as HTMLElement | null;
+    const contentRect = scrollContent?.getBoundingClientRect() ?? null;
+    if (hoverHyperlink(this, hoverEvent, contentRect)) return;
+    if (this.tableResizeRenderer) {
+      handleResizeHover.call(this, hoverEvent, contentRect);
+    } else if (this.container.style.cursor) {
       this.container.style.cursor = '';
     }
-  }
+  });
 }
 
-export function handleResizeHover(this: any, e: MouseEvent): void {
+export function handleResizeHover(this: any, e: MouseEvent, cachedContentRect?: DOMRect | null): void {
   if (!this.tableResizeRenderer) return;
   hideProtectedCellHover(this);
 
   const zoom = this.viewportManager.getZoom();
   const scrollContent = this.container.querySelector('#scroll-content');
   if (!scrollContent) return;
-  const contentRect = scrollContent.getBoundingClientRect();
+  const contentRect = cachedContentRect ?? scrollContent.getBoundingClientRect();
   const contentX = e.clientX - contentRect.left;
   const contentY = e.clientY - contentRect.top;
   const pageIdx = this.virtualScroll.getPageAtPoint(contentX, contentY);

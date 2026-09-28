@@ -7,7 +7,9 @@
  *  이전 위치에서 새 위치로 translate 로 이어 붙여 튀지 않게 한다.
  *  전환 도중 방향이 바뀌면 현재 보이는 위치에서 새 목표로 곧바로 향한다. */
 
-const FALLBACK_EASING = 'cubic-bezier(0.32, 0.72, 0, 1)';
+import { parseCssTimeMs } from './motion-model.ts';
+
+const FALLBACK_EASING = 'cubic-bezier(0.25, 1, 0.5, 1)';
 const CLEANUP_BUFFER_MS = 50;
 
 export interface ComposerRestingMotion {
@@ -38,7 +40,7 @@ export function createComposerRestingMotion(opts: {
 
   function timing(): { duration: number; easing: string } {
     const style = getComputedStyle(composer);
-    const duration = Number.parseFloat(style.getPropertyValue('--ag-dur-slow')) || 300;
+    const duration = parseCssTimeMs(style.getPropertyValue('--ag-dur-slow'), 320);
     const easing = style.getPropertyValue('--ag-spring').trim() || FALLBACK_EASING;
     return { duration, easing };
   }
@@ -89,6 +91,9 @@ export function createComposerRestingMotion(opts: {
       from.width = `${fromWidth}px`;
       to.width = `${target.width}px`;
     }
+    // 모든 조각을 입력이 들어온 프레임의 시각에 묶는다. 대기(pending) 상태로 두면
+    // 첫 프레임이 거의 움직이지 않고 조각마다 한 프레임씩 어긋날 수 있다.
+    const startTime = Number(document.timeline?.currentTime);
     const running: Animation[] = [animate(composer, [from, to], duration, easing)];
     const bottom = composer.getBoundingClientRect().bottom;
     for (const part of visibleParts()) {
@@ -101,6 +106,7 @@ export function createComposerRestingMotion(opts: {
         { transform: 'none' },
       ], duration, easing));
     }
+    if (Number.isFinite(startTime)) for (const tween of running) tween.startTime = startTime;
     tweens = running;
     const [heightTween] = running;
     const finish = (): void => {

@@ -52,7 +52,7 @@ test('pending question stays above the composer while its transcript position is
   assert.match(css, /--ag-question-surface: var\(--ag-input-bg\)/);
   assert.match(css, /--ag-question-border/);
   assert.match(css, /\.ag-user-question:not\(\[data-inactive='true'\]\) \+ \.ag-composer/);
-  assert.match(css, /\.ag-user-question\s*\{[^}]*margin:\s*0 12px;[^}]*border-bottom:\s*0;[^}]*border-radius:\s*12px 12px 0 0;/s);
+  assert.match(css, /\.ag-user-question\s*\{[^}]*margin:\s*0 12px;[^}]*border-bottom:\s*0;[^}]*border-radius:\s*var\(--ag-r-composer\) var\(--ag-r-composer\) 0 0;/s);
 });
 
 test('question resolution replaces its chronological anchor with immutable history', () => {
