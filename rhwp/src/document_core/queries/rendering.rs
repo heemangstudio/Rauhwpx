@@ -3646,6 +3646,7 @@ impl DocumentCore {
         let measurer = HeightMeasurer::new(self.dpi)
             .with_hwp3_variant(profile.hwp3_layout())
             .with_hwpx_cell_spacing(profile.hwpx_stored_layout() || profile.hwp5_origin_hwpx())
+            .with_native_hwpx_cell_margin(profile.native_hwpx_cell_margin())
             .with_hwp3_origin_flow_spacing_before(hwp3_origin_flow_spacing_before)
             .with_session_edited(profile.session_edited())
             .with_render_normalization(std::sync::Arc::clone(&self.render_normalization.overlay));
@@ -4027,6 +4028,7 @@ impl DocumentCore {
         let measurer = HeightMeasurer::new(self.dpi)
             .with_hwp3_variant(profile.hwp3_layout())
             .with_hwpx_cell_spacing(profile.hwpx_stored_layout() || profile.hwp5_origin_hwpx())
+            .with_native_hwpx_cell_margin(profile.native_hwpx_cell_margin())
             .with_hwp3_origin_flow_spacing_before(hwp3_origin_flow_spacing_before)
             .with_session_edited(profile.session_edited())
             .with_render_normalization(std::sync::Arc::clone(&self.render_normalization.overlay));
@@ -4812,6 +4814,8 @@ impl DocumentCore {
         let can_project_body_spacing =
             matches!(self.source_format, crate::parser::FileFormat::Hwpx)
                 && self.document.layout_profile().hwp5_origin_hwpx();
+        let can_project_synthetic_spacing =
+            self.document.layout_profile().ms_word_compatible_layout();
         let sec_count = self.document.sections.len();
         self.render_normalization
             .section_revisions
@@ -4864,6 +4868,7 @@ impl DocumentCore {
                 )
                 .then_some(paragraphs)
             });
+            let metric_projected = metric_projection.is_some();
             let body_projection = can_project_body_spacing
                 .then(|| {
                     crate::renderer::composer::doubled_body_spacing_projection(
@@ -4876,8 +4881,9 @@ impl DocumentCore {
             let body_spacing_projected = body_projection.is_some();
             if matches.is_empty()
                 && !has_cell_stack
-                && metric_projection.is_none()
+                && !metric_projected
                 && !body_spacing_projected
+                && !can_project_synthetic_spacing
             {
                 out.push(None);
                 continue;
@@ -4887,6 +4893,17 @@ impl DocumentCore {
             let mut np = body_projection
                 .or(metric_projection)
                 .unwrap_or_else(|| section.paragraphs.clone());
+            let synthetic_spacing_projected = can_project_synthetic_spacing
+                && Self::project_synthetic_percent_line_spacing(&mut np, &self.styles, self.dpi);
+            if matches.is_empty()
+                && !has_cell_stack
+                && !synthetic_spacing_projected
+                && !body_spacing_projected
+                && !metric_projected
+            {
+                out.push(None);
+                continue;
+            }
             if has_cell_stack {
                 for p in np.iter_mut() {
                     reclassify_cell_floating_stacks(p, min_height_hu);
@@ -4900,7 +4917,7 @@ impl DocumentCore {
                 .iter()
                 .enumerate()
                 .map(|(i, p)| {
-                    if matches.binary_search(&i).is_ok() {
+                    if matches.binary_search(&i).is_ok() || synthetic_spacing_projected {
                         let mut c = compose_paragraph(p);
                         // [#2004] composer 가 line_seg 부족(HWP5 빈-문단)으로 1줄로 붕괴하면
                         // 그림 수만큼 줄을 합성(모두 char_start 동일)해 Stage2 stacked 게이트
@@ -4978,7 +4995,21 @@ impl DocumentCore {
                 self.dpi,
             );
         }
-        let source_composed = self.composed[section_idx][para_idx].clone();
+        let synthetic_spacing_projected =
+            if self.document.layout_profile().ms_word_compatible_layout() {
+                Self::project_synthetic_percent_line_spacing(
+                    std::slice::from_mut(&mut source_para),
+                    &self.styles,
+                    self.dpi,
+                )
+            } else {
+                false
+            };
+        let source_composed = if synthetic_spacing_projected {
+            compose_paragraph(&source_para)
+        } else {
+            self.composed[section_idx][para_idx].clone()
+        };
         let Some(Some(section)) = self.render_normalization.sections.get_mut(section_idx) else {
             return;
         };

@@ -231,7 +231,8 @@ export interface WebCanvasImageCacheStats {
 
 import { fontFamilyChainForDisplay } from './font-substitution';
 import { createEquationFontResolver, createEquationLiteralFontResolver, createEquationTextMeasurer } from './equation-font';
-import { getImportedLocalFontBytes, resolveLocalFont } from './local-fonts';
+import { getImportedLocalFontBytes, hasImportedLocalFontFace, resolveLocalFont } from './local-fonts';
+import { createDeclaredFontAvailabilityProbe } from './font-presence';
 import type { RuntimeFontMetricsApi } from './desktop-fonts.ts';
 import type { FileSystemFileHandleLike } from '@/command/file-system-access';
 import {
@@ -268,6 +269,25 @@ function substituteCssFontFamily(cssFont: string): string {
 }
 
 let canvasFontSubstitutionInstalled = false;
+
+/**
+ * Canvas 텍스트 페인트의 폰트 치환과 별개로, 원본 face 의 실제 존재 여부를 조판기에 알린다.
+ * 패치 전 font setter 를 쓰지 않으면 없는 face 도 fallback 체인으로 치환되어 항상
+ * "설치됨" 으로 검출된다. 가져온 face 는 로컬 등록부에서도 확인한다.
+ */
+function installDeclaredFontAvailabilityProbe(): void {
+  const host = globalThis as Record<string, unknown>;
+  if (typeof host.isDeclaredFontFamilyAvailable === 'function') return;
+  if (typeof CanvasRenderingContext2D === 'undefined') return;
+  const descriptor = Object.getOwnPropertyDescriptor(CanvasRenderingContext2D.prototype, 'font');
+  const context = document.createElement('canvas').getContext('2d');
+  if (!descriptor?.get || !descriptor.set || !context) return;
+  host.isDeclaredFontFamilyAvailable = createDeclaredFontAvailabilityProbe(
+    context,
+    { get: descriptor.get, set: descriptor.set },
+    hasImportedLocalFontFace,
+  );
+}
 
 function installCanvasFontSubstitution(): void {
   if (canvasFontSubstitutionInstalled) return;
@@ -371,6 +391,7 @@ export class WasmBridge {
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
+    installDeclaredFontAvailabilityProbe();
     installCanvasFontSubstitution();
     this.installMeasureTextWidth();
     await init();

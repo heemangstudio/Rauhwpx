@@ -1677,6 +1677,37 @@ fn para_has_visible_textless_float_shape_item(
         })
 }
 
+/// 글뒤로 그림의 개체 영역과 별개로 저장된 빈 텍스트 줄은 본문 흐름에 남는다.
+/// 개체 높이로 늘어난 줄과 합성 lineseg 는 이 근거로 사용할 수 없다.
+pub(crate) fn stored_behind_text_host_line_advance_hu(
+    para: &Paragraph,
+    native_hwpx: bool,
+) -> Option<i32> {
+    if !native_hwpx
+        || !para_is_floating_overlay_anchor(para)
+        || !para.controls.iter().all(|control| {
+            matches!(control, Control::Picture(pic)
+                if matches!(pic.common.text_wrap, TextWrap::BehindText))
+        })
+        || para.line_segs.is_empty()
+        || !para.line_segs.iter().all(|seg| {
+            seg.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY == 0
+                && seg.line_height > 0
+                && seg.line_height == seg.text_height
+                && seg.baseline_distance > 0
+                && seg.baseline_distance <= seg.text_height
+        })
+    {
+        return None;
+    }
+    Some(
+        para.line_segs
+            .iter()
+            .map(|seg| (seg.line_height + seg.line_spacing).max(0))
+            .sum(),
+    )
+}
+
 fn textless_infront_para_host_requires_line_advance(para: &Paragraph) -> bool {
     if para_has_visible_text(para) {
         return false;
@@ -6929,10 +6960,15 @@ impl LayoutEngine {
                         // 개체를 렌더한다. 여기서 layout_paragraph 를 태우면 보이지 않는
                         // 빈 줄이 저장 vpos 기준으로 페이지 밖에 기록되어 overflow 오탐이 난다.
                         para_start_y.entry(*para_index).or_insert(y_offset);
+                        if let Some(advance) = stored_behind_text_host_line_advance_hu(
+                            para,
+                            self.profile.get().native_hwpx_cell_margin(),
+                        ) {
+                            return (y_offset + hwpunit_to_px(advance, self.dpi), false);
+                        }
                         if textless_infront_para_host_requires_line_advance(para) {
                             // HWPX 글앞으로 도장처럼 문단 기준으로 붙는 host 는 빈
                             // 텍스트를 그리지 않더라도 한컴처럼 줄 진행량은 예약한다.
-                            // BehindText 배경 그림은 기존 비예약 경로를 유지한다.
                             let advance = paragraph_line_advance_px(
                                 para,
                                 composed.get(*para_index),
@@ -9520,8 +9556,18 @@ impl LayoutEngine {
                 })
             })
             .unwrap_or(false);
-        if has_prior_non_picture_tac {
-            // 선행 TAC Table/Shape 가 있는 경우만 진행된 y_offset 으로 갱신.
+        let current_is_tac = paragraphs
+            .get(para_index)
+            .and_then(|para| para.controls.get(control_index))
+            .is_some_and(|control| match control {
+                Control::Table(table) => table.common.treat_as_char,
+                Control::Picture(picture) => picture.common.treat_as_char,
+                Control::Shape(shape) => shape.common().treat_as_char,
+                _ => false,
+            });
+        if current_is_tac && has_prior_non_picture_tac {
+            // 선행 TAC Table/Shape 뒤의 TAC 만 진행된 줄로 이동한다. 문단 기준
+            // floating 개체는 앞선 인라인 개체와 같은 문단 시작점에 고정된다.
             let needs_update = para_start_y
                 .get(&para_index)
                 .map(|&existing| y_offset > existing + 1.0)

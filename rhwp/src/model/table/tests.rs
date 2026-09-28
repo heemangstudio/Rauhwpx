@@ -1,5 +1,23 @@
 use super::*;
 
+#[test]
+fn native_hwpx_cell_margin_switch_respects_explicit_zero_table_margin() {
+    let table_margin = Padding::default();
+    let mut cell = Cell::default();
+    cell.padding = Padding {
+        left: 200,
+        right: 300,
+        top: 141,
+        bottom: 141,
+    };
+
+    assert_eq!(cell.effective_hwpx_padding(&table_margin).top, 0);
+    assert_eq!(cell.effective_hwpx_padding(&table_margin).left, 0);
+    cell.apply_inner_margin = true;
+    assert_eq!(cell.effective_hwpx_padding(&table_margin).top, 141);
+    assert_eq!(cell.effective_hwpx_padding(&table_margin).left, 200);
+}
+
 /// 테스트용 N×M 표 생성 헬퍼
 fn make_table(rows: u16, cols: u16) -> Table {
     let cell_width: HwpUnit = 3600; // 약 12.7mm

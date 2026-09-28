@@ -63,6 +63,13 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    /// 선언 face 존재 여부는 브라우저에 질의하되 문서 재조판 전까지 재사용한다.
+    static BROWSER_FONT_AVAIL: std::cell::RefCell<std::collections::HashMap<String, bool>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct MeasureFontPathsScope(Vec<std::path::PathBuf>);
 
@@ -87,7 +94,8 @@ pub(crate) fn enter_measure_font_paths(paths: Vec<std::path::PathBuf>) -> Measur
 /// 문서 선언 글꼴이 현재 렌더 환경에 실재하는지 — substFont 대체 규칙의 근거.
 ///
 /// 임베디드(BinData) face 는 shaping scope 에 등록돼 있으면 설치와 동일하게 본다.
-/// wasm 은 파일시스템 판정이 불가하므로 설치된 것으로 간주해 기존 동작을 유지한다.
+/// wasm 은 Studio 가 Canvas 원본 setter 로 측정한 브라우저 face 존재 여부를 사용한다.
+/// 다른 WASM 호스트가 그 훅을 제공하지 않으면 기존의 설치 가정으로 폴백한다.
 fn declared_family_available(font_family: &str) -> bool {
     let primary = super::super::style_resolver::primary_font_name(font_family);
     if primary.is_empty() {
@@ -115,7 +123,26 @@ fn declared_family_available(font_family: &str) -> bool {
     }
     #[cfg(target_arch = "wasm32")]
     {
-        true
+        use wasm_bindgen::{JsCast, JsValue};
+
+        if let Some(hit) = BROWSER_FONT_AVAIL.with(|cache| cache.borrow().get(primary).copied()) {
+            return hit;
+        }
+        let global = js_sys::global();
+        let available =
+            js_sys::Reflect::get(&global, &JsValue::from_str("isDeclaredFontFamilyAvailable"))
+                .ok()
+                .and_then(|value| value.dyn_into::<js_sys::Function>().ok())
+                .and_then(|probe| probe.call1(&global, &JsValue::from_str(primary)).ok())
+                .and_then(|value| value.as_bool());
+        if let Some(available) = available {
+            BROWSER_FONT_AVAIL.with(|cache| {
+                cache.borrow_mut().insert(primary.to_string(), available);
+            });
+            available
+        } else {
+            true
+        }
     }
 }
 
@@ -738,7 +765,9 @@ impl TextMeasurer for EmbeddedTextMeasurer {
             if c == '\u{F081C}' {
                 return 0.0;
             }
-            let base_w_raw = if let Some(w) = (c == '\u{318D}')
+            let base_w_raw = if let Some(w) = latin_space_width(style, c, font_size) {
+                w
+            } else if let Some(w) = (c == '\u{318D}')
                 .then(|| area_dot_fallback_width(&style.font_family, font_size))
                 .flatten()
             {
@@ -942,7 +971,9 @@ impl TextMeasurer for EmbeddedTextMeasurer {
         // [#2132] 폭 산출원 훅 — embedded 메트릭 lookup + 폴백 사다리 (Task #257 포함).
         let char_px_raw = |_i: usize, c: char, _chars: &[char], cluster_len: &[usize]| -> f64 {
             let i = _i;
-            if let Some(w) = (c == '\u{318D}')
+            if let Some(w) = latin_space_width(style, c, font_size) {
+                w
+            } else if let Some(w) = (c == '\u{318D}')
                 .then(|| area_dot_fallback_width(&style.font_family, font_size))
                 .flatten()
             {
@@ -1309,7 +1340,10 @@ mod wasm_internals {
 /// 이후 레이아웃이 새 폭으로 다시 측정되게 한다.
 pub(crate) fn clear_measure_caches() {
     #[cfg(target_arch = "wasm32")]
-    wasm_internals::clear_js_measure_cache();
+    {
+        wasm_internals::clear_js_measure_cache();
+        BROWSER_FONT_AVAIL.with(|cache| cache.borrow_mut().clear());
+    }
     crate::renderer::equation::measure::clear_css_run_cache();
 }
 
@@ -1363,7 +1397,9 @@ impl TextMeasurer for WasmTextMeasurer {
             if c == '\u{F081C}' {
                 return 0.0;
             }
-            let char_px_raw = if cluster_len[i] > 1 {
+            let char_px_raw = if let Some(w) = latin_space_width(style, c, font_size) {
+                w
+            } else if cluster_len[i] > 1 {
                 hangul_hwp as f64 / 75.0
             } else {
                 wasm_internals::measure_char_width_hwp(
@@ -1538,7 +1574,9 @@ impl TextMeasurer for WasmTextMeasurer {
         );
         // [#2132] 폭 산출원 훅 — wasm canvas 측정.
         let char_px_raw = |i: usize, c: char, _chars: &[char], cluster_len: &[usize]| -> f64 {
-            if cluster_len[i] > 1 {
+            if let Some(w) = latin_space_width(style, c, font_size) {
+                w
+            } else if cluster_len[i] > 1 {
                 hangul_hwp as f64 / 75.0
             } else {
                 wasm_internals::measure_char_width_hwp(
@@ -1700,6 +1738,7 @@ pub(crate) fn resolved_to_text_style(
     if let Some(cs) = styles.char_styles.get(char_style_id as usize) {
         TextStyle {
             font_metrics_policy: cs.font_metrics_policy,
+            latin_space: cs.latin_font_space && lang_index == 1,
             font_family: cs.font_family_for_lang(lang_index).to_string(),
             font_subst: cs.font_subst_for_lang(lang_index).to_string(),
             font_size: cs.font_size,
@@ -2127,6 +2166,21 @@ fn custom_face_char_em_advance(name: &str, bold: bool, italic: bool, c: char) ->
     embedded_face_char_em_advance(name, bold, italic, c)
 }
 
+/// macOS 한컴은 라틴 문맥에서 폰트의 공백 advance를 사용한다.
+/// 한글 문맥과 묶음 빈칸은 기존 반각 계약을 유지한다.
+fn latin_space_width(style: &TextStyle, c: char, font_size: f64) -> Option<f64> {
+    if c != ' ' || !style.latin_space || style.font_metrics_policy != FontMetricsPolicy::HcrDeclared
+    {
+        return None;
+    }
+    let family = style.font_family.split(',').next()?.trim();
+    let em = custom_face_char_em_advance(family, style.bold, style.italic, ' ').or_else(|| {
+        let metric = font_metrics_data::find_metric(family, style.bold, style.italic)?.metric;
+        Some(f64::from(metric.get_width(' ')?) / f64::from(metric.em_size))
+    })?;
+    Some(quantize_hwp_px(em * font_size))
+}
+
 fn measure_char_width_with_policy(
     font_family: &str,
     bold: bool,
@@ -2456,7 +2510,9 @@ pub(crate) fn estimate_text_width_unrounded(text: &str, style: &TextStyle) -> f6
         if c == '\u{F081C}' {
             return 0.0;
         }
-        let base_w_raw = if let Some(w) = (c == '\u{318D}')
+        let base_w_raw = if let Some(w) = latin_space_width(style, c, font_size) {
+            w
+        } else if let Some(w) = (c == '\u{318D}')
             .then(|| area_dot_fallback_width(&style.font_family, font_size))
             .flatten()
         {
@@ -4083,4 +4139,20 @@ mod tests {
     // HWP5 의 `tab_extended[0]` 가 이미 right-tab 결과 위치 (= 우측 끝 - 한컴_seg_w)
     // 로 저장되어 있어 LEFT fallback 이 인코딩 의도와 정합. 본 테스트는 합성 데이터
     // 기반의 잘못된 가정 (RIGHT 정확 매치) 을 검증하던 것이라 삭제.
+    #[test]
+    fn latin_space_uses_font_advance_without_changing_korean_or_nbsp() {
+        let mut style = TextStyle {
+            font_family: "HCR Batang".to_string(),
+            font_size: 20.0,
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            ..Default::default()
+        };
+        for (latin_space, expected) in [(false, 10.0), (true, 6.0)] {
+            style.latin_space = latin_space;
+            assert!((estimate_text_width(" ", &style) - expected).abs() < 0.02);
+            assert!((estimate_text_width_unrounded(" ", &style) - expected).abs() < 0.02);
+            assert!((compute_char_positions(" ", &style)[1] - expected).abs() < 0.02);
+            assert!((compute_char_positions("\u{00A0}", &style)[1] - 10.0).abs() < 0.02);
+        }
+    }
 }

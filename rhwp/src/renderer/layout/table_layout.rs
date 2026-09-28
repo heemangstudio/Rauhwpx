@@ -4,7 +4,8 @@ use super::super::composer::{
     compose_paragraph, inline_picture_occupied_width_hu, ComposedLine, ComposedParagraph,
 };
 use super::super::height_measurer::{
-    grow_rows_for_span_requirements, include_table_cell_line_spacing, MeasuredTable,
+    grow_rows_for_span_requirements, hwpx_structural_cell_tail, include_table_cell_line_spacing,
+    include_table_cell_spacing_after, MeasuredTable,
 };
 use super::super::page_layout::LayoutRect;
 use super::super::render_tree::*;
@@ -2544,11 +2545,12 @@ impl LayoutEngine {
                 // [Task #671] line_segs 비어 있는 셀 paragraph 의 단일 ComposedLine
                 // 압축 결과를 셀 가용 너비에 맞춰 다중 ComposedLine 으로 재분할.
                 // 측정/렌더링 일관성 보장 (table_layout.rs:1226 의 렌더링 경로와 동일).
-                crate::renderer::composer::recompose_for_cell_width(
+                crate::renderer::composer::recompose_for_cell_width_for_source(
                     &mut comp,
                     p,
                     cell_inner_width_px,
                     styles,
+                    self.profile.get().native_hwpx_cell_margin(),
                 );
                 self.calc_para_lines_height(
                     &comp.lines,
@@ -2832,6 +2834,15 @@ impl LayoutEngine {
         table: &crate::model::table::Table,
         allow_saved_small_cell_margin: bool,
     ) -> (f64, f64, f64, f64) {
+        if self.profile.get().native_hwpx_cell_margin() {
+            let pad = cell.effective_hwpx_padding(&table.padding);
+            return (
+                hwpunit_to_px(pad.left as i32, self.dpi),
+                hwpunit_to_px(pad.right as i32, self.dpi),
+                hwpunit_to_px(pad.top as i32, self.dpi),
+                hwpunit_to_px(pad.bottom as i32, self.dpi),
+            );
+        }
         // HWP 스펙: aim(apply_inner_margin)=true → cell.padding,
         //           aim=false → table.padding 우선.
         // 한컴은 aim=false일 때 cell.padding 원값을 파일에 보존하더라도 렌더에는 쓰지 않는다.
@@ -5072,11 +5083,12 @@ impl LayoutEngine {
             // 줄겹침 시각 결함 정정. 정상 line_segs 인코딩된 paragraph 는 무영향.
             for (cpi, para) in cell.paragraphs.iter().enumerate() {
                 if let Some(comp) = composed_paras.get_mut(cpi) {
-                    crate::renderer::composer::recompose_for_cell_width(
+                    crate::renderer::composer::recompose_for_cell_width_for_source(
                         comp,
                         para,
                         inner_width,
                         styles,
+                        self.profile.get().native_hwpx_cell_margin(),
                     );
                 }
             }
@@ -5444,6 +5456,7 @@ impl LayoutEngine {
         let measurer = super::super::height_measurer::HeightMeasurer::new(self.dpi)
             .with_hwp3_variant(self.profile.get().hwp3_layout())
             .with_hwpx_cell_spacing(self.preserve_first_cell_spacing_before())
+            .with_native_hwpx_cell_margin(self.profile.get().native_hwpx_cell_margin())
             .with_render_normalization(self.render_normalization_overlay());
         measurer.cell_controls_height(&cell.paragraphs, styles, 0, 0.0)
     }
@@ -5943,11 +5956,12 @@ impl LayoutEngine {
             let mut cell_units = Vec::new();
             for (pi, para) in cell.paragraphs.iter().enumerate() {
                 let mut comp = compose_paragraph(para);
-                crate::renderer::composer::recompose_for_cell_width(
+                crate::renderer::composer::recompose_for_cell_width_for_source(
                     &mut comp,
                     para,
                     inner_width,
                     styles,
+                    self.profile.get().native_hwpx_cell_margin(),
                 );
                 // [#2279 axis A] 종전에는 comp.lines 빈 문단을 통째 skip 해 (a) 2단계
                 // 중첩 표(빈 문단 소속)와 (b) 빈 문단 줄박스가 유닛에서 누락됐다 —
@@ -6108,11 +6122,12 @@ impl LayoutEngine {
                     );
                     for (pi, para) in cell.paragraphs.iter().enumerate() {
                         let mut comp = compose_paragraph(para);
-                        crate::renderer::composer::recompose_for_cell_width(
+                        crate::renderer::composer::recompose_for_cell_width_for_source(
                             &mut comp,
                             para,
                             inner_width,
                             styles,
+                            self.profile.get().native_hwpx_cell_margin(),
                         );
                         let nctl = para.controls.len();
                         eprintln!(
@@ -6691,7 +6706,13 @@ impl LayoutEngine {
                 self.paragraph_cell_non_inline_control_flow_parts(&p.controls, inner_width);
             let para_non_inline_h = para_top_and_bottom_h + para_other_non_inline_h;
             let mut comp = compose_paragraph(p);
-            crate::renderer::composer::recompose_for_cell_width(&mut comp, p, inner_width, styles);
+            crate::renderer::composer::recompose_for_cell_width_for_source(
+                &mut comp,
+                p,
+                inner_width,
+                styles,
+                self.profile.get().native_hwpx_cell_margin(),
+            );
             // [#2291] 부실 저장(ls==1 인데 실폭 초과) 문단 재분할 — 가로쓰기 셀 한정.
             if cell.text_direction == 0 {
                 crate::renderer::composer::recompose_stored_single_line_if_overflowing(
@@ -6802,7 +6823,12 @@ impl LayoutEngine {
             } else {
                 0.0
             };
-            let spacing_after = if !is_last_para {
+            let tail = if self.profile.get().native_hwpx_cell_margin() {
+                hwpx_structural_cell_tail(p, styles, self.dpi)
+            } else {
+                0
+            };
+            let spacing_after = if include_table_cell_spacing_after(table, is_last_para, tail) {
                 para_style.map(|s| s.spacing_after).unwrap_or(0.0)
             } else {
                 0.0
@@ -6870,6 +6896,13 @@ impl LayoutEngine {
             };
             let corrected_h = |line: &ComposedLine, li: usize| -> f64 {
                 let raw_lh = hwpunit_to_px(line.line_height, self.dpi);
+                // A generated equation line can have an occupied ascent larger
+                // than its saved em box. Use the same ascent/descent calculation
+                // as paragraph paint so row cuts retain that occupied height.
+                let occupied_lh =
+                    crate::renderer::equation::composed_line_flow_height_px(p, &comp, li, self.dpi)
+                        .map(|height| raw_lh.max(height))
+                        .unwrap_or(raw_lh);
                 // [Task #1811] HWPX RowBreak 셀의 synthetic lineSeg 는 저장 근거가 아니라
                 // reflow 산물이다. row cut 측정에서 다시 corrected_line_height 를 적용하면
                 // HWP 기준보다 줄 유닛이 커져 p4→p5 split 이 한 유닛 빨라진다.
@@ -6877,7 +6910,7 @@ impl LayoutEngine {
                     && is_block_rowbreak
                     && para_uses_synthetic_line_segs
                 {
-                    return raw_lh;
+                    return occupied_lh;
                 }
                 // [#2112] 실제 저장 LINE_SEG 를 보유한 셀 문단은 저장 줄높이를 신뢰한다.
                 // 한글은 압축 줄높이(lh < 글자크기)를 저장값대로 렌더하는데 corrected
@@ -6885,7 +6918,7 @@ impl LayoutEngine {
                 // +76.8px, 표 합계 +335px → 다쪽 표 쪽수 밀림). 보정은 lineseg 부재
                 // 폴백(#674/#993 원 목적)에만 유지.
                 if p.line_segs.iter().any(|ls| !line_seg_is_synthetic(ls)) {
-                    return raw_lh;
+                    return occupied_lh;
                 }
                 match para_style {
                     Some(ps) => {
@@ -6935,8 +6968,9 @@ impl LayoutEngine {
                                     // [#2070 실험] 셀 마지막 줄 = em (5축 전면).
                                     || cell_last_line_idx == Some(li)),
                         )
+                        .max(occupied_lh)
                     }
-                    None => raw_lh,
+                    None => occupied_lh,
                 }
             };
             let has_table_in_para = p.controls.iter().any(|c| matches!(c, Control::Table(_)));
@@ -7158,8 +7192,12 @@ impl LayoutEngine {
                         let h = corrected_h(line, li);
                         let ls = hwpunit_to_px(line.line_spacing, self.dpi);
                         let is_cell_last_line = is_last_para && li + 1 == line_count;
-                        let include_trailing_ls =
-                            include_table_cell_line_spacing(table, is_cell_last_line, para_count);
+                        let include_trailing_ls = include_table_cell_line_spacing(
+                            table,
+                            is_cell_last_line,
+                            para_count,
+                            tail,
+                        );
                         let mut lh = if include_trailing_ls { h + ls } else { h };
                         if li == 0 {
                             lh += spacing_before;
@@ -7414,6 +7452,7 @@ impl LayoutEngine {
                                 table,
                                 is_cell_last_line,
                                 para_count,
+                                tail,
                             );
                             let mut lh = if include_trailing_ls { h + ls } else { h };
                             if li == 0 {
@@ -7492,7 +7531,7 @@ impl LayoutEngine {
                     let ls = hwpunit_to_px(line.line_spacing, self.dpi);
                     let is_cell_last_line = is_last_para && li + 1 == line_count;
                     let include_trailing_ls =
-                        include_table_cell_line_spacing(table, is_cell_last_line, para_count);
+                        include_table_cell_line_spacing(table, is_cell_last_line, para_count, tail);
                     let mut lh = if include_trailing_ls { h + ls } else { h };
                     if collapse_empty_rowbreak_spacer {
                         lh = 0.0;
@@ -11432,6 +11471,7 @@ mod row_cut_tests {
             para_style_id: 0,
             inline_controls: Vec::new(),
             numbering_text: None,
+            numbering_head: None,
             tac_controls: Vec::new(),
             footnote_positions: Vec::new(),
             tab_extended: Vec::new(),

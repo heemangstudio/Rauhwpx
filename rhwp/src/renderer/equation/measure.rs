@@ -237,6 +237,7 @@ pub(crate) fn measure_legacy_run_native(
     font_size: f64,
     italic: bool,
     bold: bool,
+    modern: bool,
 ) -> Option<LegacyRunMetrics> {
     use skia_safe::{Font, FontMgr, FontStyle, Typeface};
     use std::cell::RefCell;
@@ -246,7 +247,7 @@ pub(crate) fn measure_legacy_run_native(
         // 해석 성공분만 캐시 — 미해소(None)는 저장하지 않아 재시도한다.
         static LEGACY_FACE: RefCell<Option<Option<(Typeface, std::rc::Rc<LegacyTables>)>>> =
             const { RefCell::new(None) };
-        static RUN_CACHE: RefCell<HashMap<(String, u64, bool, bool), Option<LegacyRunMetrics>>> =
+        static RUN_CACHE: RefCell<HashMap<(String, u64, bool, bool, bool), Option<LegacyRunMetrics>>> =
             RefCell::new(HashMap::new());
         // 미해소 run 마다 CoreText 시스템 family 목록을 다시 만들면 폰트 서비스 IPC가
         // 반복된다. custom face 는 나중에 등록될 수 있으므로 그 조회만 매번 재시도한다.
@@ -258,7 +259,7 @@ pub(crate) fn measure_legacy_run_native(
             (font_mgr, has_legacy_face)
         };
     }
-    let key = (text.to_string(), font_size.to_bits(), italic, bold);
+    let key = (text.to_string(), font_size.to_bits(), italic, bold, modern);
     if let Some(hit) = RUN_CACHE.with(|cache| cache.borrow().get(&key).copied()) {
         return hit;
     }
@@ -294,7 +295,7 @@ pub(crate) fn measure_legacy_run_native(
     // painter 와 같은 문자→PUA 매핑.
     let glyphs: String = text
         .chars()
-        .map(|c| super::font::legacy_equation_glyph(c, italic).0)
+        .map(|c| super::font::legacy_equation_glyph(c, italic, modern).0)
         .collect();
     if !glyphs
         .chars()
@@ -307,14 +308,23 @@ pub(crate) fn measure_legacy_run_native(
     let mut advance = 0.0f64;
     let mut ink_left = f64::NAN;
     let mut ink_right = 0.0f64;
-    for gid in font.str_to_glyphs_vec(&glyphs) {
-        let adv = tables.advance(gid) * font_size;
+    for (character, gid) in text.chars().zip(font.str_to_glyphs_vec(&glyphs)) {
+        let raw_advance = tables.advance(gid) * font_size;
+        let adv = if modern {
+            super::font::modern_glyph_advance(
+                raw_advance,
+                font_size,
+                super::font::legacy_equation_glyph(character, italic, true).1,
+            )
+        } else {
+            raw_advance
+        };
         if let Some((x_min, _y_min, x_max, _y_max)) = tables.ink(gid) {
             let left = advance + x_min * font_size;
             if ink_left.is_nan() {
                 ink_left = left;
             }
-            ink_right = advance + x_max * font_size;
+            ink_right = ink_right.max(advance + x_max * font_size);
         }
         advance += adv;
     }

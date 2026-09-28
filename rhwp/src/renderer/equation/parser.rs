@@ -26,6 +26,10 @@ pub struct EqParser {
     depth: usize,
     /// 깊이 초과 경고를 이미 냈는지 (중복 경고 방지)
     depth_warned: bool,
+    /// HWP의 rm/it 선언은 중괄호를 넘어 다음 선언까지 뒤따르는 원자에 적용된다.
+    font_declaration: Option<FontStyleKind>,
+    /// 닫는 경계 앞 선언은 다음 실제 원자까지 간격 경계를 전달한다.
+    pending_font_declaration: Option<FontStyleKind>,
 }
 
 impl EqParser {
@@ -36,6 +40,8 @@ impl EqParser {
             warnings: Vec::new(),
             depth: 0,
             depth_warned: false,
+            font_declaration: None,
+            pending_font_declaration: None,
         }
     }
 
@@ -201,6 +207,8 @@ impl EqParser {
             return EqNode::Empty;
         }
         self.depth += 1;
+        let declaration = self.font_declaration;
+        let pending = self.pending_font_declaration.take();
         let mut node = self.parse_element_inner();
         // 공백 없이 이어진 문자/숫자는 하나의 피연산자다. 토크나이저가 ASCII와
         // Unicode 경계에서 나누어도 dΔx, 10a^3 전체가 OVER의 분자가 되어야 한다.
@@ -233,7 +241,48 @@ impl EqParser {
             node = EqNode::Row(parts).simplify();
         }
         self.depth -= 1;
-        node
+        self.finish_font_element(node, declaration, pending)
+    }
+
+    fn finish_font_element(
+        &mut self,
+        node: EqNode,
+        declaration: Option<FontStyleKind>,
+        pending: Option<FontStyleKind>,
+    ) -> EqNode {
+        if let Some(style) = pending {
+            if matches!(node, EqNode::Empty | EqNode::Space(_) | EqNode::Newline) {
+                self.pending_font_declaration.get_or_insert(style);
+            } else {
+                let body = match node {
+                    EqNode::FontStyle { style: inner, body } if inner == style => *body,
+                    other => other,
+                };
+                return EqNode::FontDeclaration {
+                    style,
+                    body: Box::new(body),
+                };
+            }
+        }
+        Self::apply_font_declaration(node, declaration)
+    }
+
+    fn apply_font_declaration(node: EqNode, declaration: Option<FontStyleKind>) -> EqNode {
+        match declaration {
+            Some(style) if !matches!(node, EqNode::Empty) => {
+                if matches!(&node, EqNode::FontStyle { style: inner, .. } if *inner == style)
+                    || matches!(&node, EqNode::FontDeclaration { .. })
+                {
+                    node
+                } else {
+                    EqNode::FontStyle {
+                        style,
+                        body: Box::new(node),
+                    }
+                }
+            }
+            _ => node,
+        }
     }
 
     fn is_literal_operand(node: &EqNode) -> bool {
@@ -243,7 +292,8 @@ impl EqParser {
             EqNode::MathSymbol(text) => text.chars().all(|c| matches!(c, '\u{0391}'..='\u{03c9}')),
             EqNode::Superscript { base, .. }
             | EqNode::Subscript { base, .. }
-            | EqNode::SubSup { base, .. } => Self::is_literal_operand(base),
+            | EqNode::SubSup { base, .. }
+            | EqNode::FontStyle { body: base, .. } => Self::is_literal_operand(base),
             _ => false,
         }
     }
@@ -348,20 +398,12 @@ impl EqParser {
             return self.parse_latex_fraction();
         }
 
-        // LaTeX \text{...} — 로만체 텍스트
-        // 제한: 토크나이저가 일반 공백을 건너뛰므로 \text{a b} 내부 공백은 보존되지 않음.
-        // 공백이 필요하면 hwpeq 관례대로 ~ 사용 (\text{if~}).
-        if cu == "TEXT" {
+        // LaTeX \text/\operatorname의 로만체 인자는 HWP 선언과 별도 범위다.
+        // 토크나이저가 일반 공백을 건너뛰므로 명시 공백은 ~로 입력한다.
+        if matches!(cu, "TEXT" | "OPERATORNAME") {
+            let declaration = self.font_declaration.take();
             let body = self.parse_single_or_group();
-            return EqNode::FontStyle {
-                style: FontStyleKind::Roman,
-                body: Box::new(body),
-            };
-        }
-
-        // LaTeX \operatorname{...} — 로만체 연산자명
-        if cu == "OPERATORNAME" {
-            let body = self.parse_single_or_group();
+            self.font_declaration = declaration;
             return EqNode::FontStyle {
                 style: FontStyleKind::Roman,
                 body: Box::new(body),
@@ -628,15 +670,36 @@ impl EqParser {
             .get(cmd)
             .or_else(|| FONT_STYLES.get(cmd_lower.as_str()))
         {
-            // 다음 토큰이 구조 명령어(LEFT, RIGHT 등)이면 body 없이 반환
-            // rm P it LEFT(...) 에서 it이 LEFT를 body로 먹지 않도록
-            let body = if self.current_type() == TokenType::Command
-                && is_structure_command(&self.current_value().to_ascii_uppercase())
-            {
-                EqNode::Empty
-            } else {
-                self.parse_single_or_group()
-            };
+            if !from_latex && matches!(cmd_lower.as_str(), "rm" | "it") {
+                self.font_declaration = Some(style);
+                // 닫는 경계와 뒤따르는 연산자를 선언의 인자로 삼지 않는다.
+                if self.at_end()
+                    || self.current_type() == TokenType::RBrace
+                    || (self.current_type() == TokenType::Command
+                        && matches!(
+                            self.current_value().to_ascii_uppercase().as_str(),
+                            "RIGHT" | "OVER" | "ATOP"
+                        ))
+                {
+                    self.pending_font_declaration = Some(style);
+                    return EqNode::Empty;
+                }
+                let body = self.parse_element();
+                // 첫 피연산자에 상속 선언이 이미 적용됐으므로 중복 래퍼를 제거한다.
+                let body = match body {
+                    EqNode::FontStyle { style: inner, body } if inner == style => *body,
+                    other => other,
+                };
+                return EqNode::FontDeclaration {
+                    style,
+                    body: Box::new(body),
+                };
+            }
+            // LaTeX의 \mathrm{...} 등은 인자 범위에만 적용된다. 외부 HWP 선언이
+            // 내부의 명시적 스타일보다 우선하지 않도록 인자를 독립적으로 파싱한다.
+            let saved_declaration = self.font_declaration.take();
+            let body = self.parse_single_or_group();
+            self.font_declaration = saved_declaration;
             return EqNode::FontStyle {
                 style,
                 body: Box::new(body),
@@ -794,9 +857,11 @@ impl EqParser {
             return EqNode::Empty;
         }
         self.depth += 1;
+        let declaration = self.font_declaration;
+        let pending = self.pending_font_declaration.take();
         let node = self.parse_single_or_group_inner();
         self.depth -= 1;
-        node
+        self.finish_font_element(node, declaration, pending)
     }
 
     /// 단일 토큰 또는 그룹 파싱 (첨자/인자용)
@@ -826,6 +891,14 @@ impl EqParser {
                     EqNode::MathSymbol(symbol.to_string())
                 } else if is_function(&val) {
                     EqNode::Function(lookup_function(&val).unwrap_or(&val).to_string())
+                } else if !from_latex
+                    && !is_structure_command(&val.to_ascii_uppercase())
+                    && !FONT_STYLES.contains_key(val.to_ascii_lowercase().as_str())
+                    && !DECORATIONS.contains_key(val.to_ascii_lowercase().as_str())
+                {
+                    // 무브레이스 첨자의 변수는 한 토큰이다. i가 다음 ^2까지
+                    // 소비하면 x_i^2가 x_(i^2)로 바뀌어 동시 첨자를 잃는다.
+                    EqNode::Text(val)
                 } else {
                     // [#1204-B] decoration/구조 명령(bar, sqrt 등)도 단일 인자/body 로
                     // 올 수 있다 (`rm bar {...}`). parse_command 로 위임 — 미지 명령은
@@ -2028,13 +2101,91 @@ mod tests {
     }
 
     #[test]
+    fn unbraced_variable_subscript_does_not_consume_following_superscript() {
+        assert_eq!(parse("x_i^2"), parse("x_{i}^{2}"));
+        assert!(matches!(parse("x_i^2"), EqNode::SubSup { .. }));
+        assert!(matches!(parse("x_{i^2}"), EqNode::Subscript { .. }));
+    }
+
+    #[test]
+    fn hwp_font_declarations_persist_across_groups_until_next_declaration() {
+        fn letters(node: &EqNode, italic: bool, out: &mut Vec<(String, bool)>) {
+            match node {
+                EqNode::FontStyle { style, body } | EqNode::FontDeclaration { style, body } => {
+                    letters(
+                        body,
+                        match style {
+                            FontStyleKind::Roman => false,
+                            FontStyleKind::Italic => true,
+                            _ => italic,
+                        },
+                        out,
+                    )
+                }
+                EqNode::Text(text) | EqNode::Quoted(text) => out.push((text.clone(), italic)),
+                EqNode::Row(nodes) => {
+                    for node in nodes {
+                        letters(node, italic, out);
+                    }
+                }
+                EqNode::Fraction { numer, denom } => {
+                    letters(numer, italic, out);
+                    letters(denom, italic, out);
+                }
+                _ => {}
+            }
+        }
+        for (script, expected) in [
+            (
+                "rm A B it C D",
+                vec![("A", false), ("B", false), ("C", true), ("D", true)],
+            ),
+            ("rm {A} B", vec![("A", false), ("B", false)]),
+            ("{rm A} B", vec![("A", false), ("B", false)]),
+            (r"it \text{B} C", vec![("B", false), ("C", true)]),
+            (r"it \operatorname{B} C", vec![("B", false), ("C", true)]),
+            (
+                r#"rm A: ~ "PM" it T rm RH"#,
+                vec![("A", false), ("PM", false), ("T", true), ("RH", false)],
+            ),
+            (
+                r"rm A \mathit{B} C",
+                vec![("A", false), ("B", true), ("C", false)],
+            ),
+            (
+                "{rm A} over {B} C",
+                vec![("A", false), ("B", false), ("C", false)],
+            ),
+        ] {
+            let ast = parse(script);
+            let mut actual = Vec::new();
+            letters(&ast, true, &mut actual);
+            let expected: Vec<_> = expected
+                .into_iter()
+                .map(|(s, i)| (s.to_string(), i))
+                .collect();
+            assert_eq!(actual, expected, "{script}: {ast:?}");
+            let canonical = super::super::canonical::to_hwp_script(&ast).unwrap();
+            let mut roundtrip = Vec::new();
+            letters(&parse(&canonical), true, &mut roundtrip);
+            assert_eq!(roundtrip, expected, "canonical {canonical}");
+        }
+        // 뒤의 항을 분모에 흡수하지 않으며 그룹 종료 선언은 닫는 괄호를 소비하지 않는다.
+        let ast = parse("rm A over B C");
+        assert!(
+            matches!(ast, EqNode::Row(ref nodes) if matches!(nodes.first(), Some(EqNode::Fraction { .. })) && nodes.len() == 2)
+        );
+        assert!(EqParser::new(tokenize("{A rm} B")).parse() != EqNode::Empty);
+    }
+
+    #[test]
     fn test_font_style() {
         let ast = parse("rm abc");
         match &ast {
-            EqNode::FontStyle { style, body } => {
+            EqNode::FontDeclaration { style, body } => {
                 assert_eq!(*style, FontStyleKind::Roman);
             }
-            _ => panic!("Expected FontStyle, got {:?}", ast),
+            _ => panic!("Expected FontDeclaration, got {:?}", ast),
         }
     }
 
@@ -2527,7 +2678,7 @@ mod latex_compat_tests {
         assert!(matches!(parse("SUM_{i=0}^n"), EqNode::BigOp { .. }));
         assert!(matches!(
             parse("rm abc"),
-            EqNode::FontStyle {
+            EqNode::FontDeclaration {
                 style: FontStyleKind::Roman,
                 ..
             }

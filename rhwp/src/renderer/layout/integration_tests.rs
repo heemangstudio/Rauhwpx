@@ -2748,6 +2748,137 @@ mod tests {
     }
 
     #[test]
+    fn floating_shape_after_inline_shape_keeps_paragraph_anchor() {
+        let engine = LayoutEngine::with_default_dpi();
+        let page_def = PageDef {
+            width: 59500,
+            height: 84100,
+            margin_left: 5100,
+            margin_right: 5000,
+            margin_header: 6700,
+            ..Default::default()
+        };
+        let layout = PageLayoutInfo::from_page_def_default(&page_def, &ColumnDef::default());
+        let make_shape = |width, offset, tac, wrap| {
+            let mut shape = RectangleShape {
+                common: CommonObjAttr {
+                    width,
+                    height: 2700,
+                    horizontal_offset: offset,
+                    treat_as_char: tac,
+                    flow_with_text: true,
+                    allow_overlap: true,
+                    vert_rel_to: VertRelTo::Para,
+                    vert_align: VertAlign::Top,
+                    horz_rel_to: HorzRelTo::Column,
+                    horz_align: HorzAlign::Left,
+                    text_wrap: wrap,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            shape.drawing.shape_attr.original_width = width;
+            shape.drawing.shape_attr.current_width = width;
+            shape.drawing.shape_attr.original_height = 2700;
+            shape.drawing.shape_attr.current_height = 2700;
+            Control::Shape(Box::new(ShapeObject::Rectangle(shape)))
+        };
+        let para = Paragraph {
+            text: " ".to_string(),
+            char_count: 18,
+            char_offsets: vec![16],
+            controls: vec![
+                make_shape(6800, 0, true, TextWrap::TopAndBottom),
+                make_shape(40000, 9000, false, TextWrap::InFrontOfText),
+            ],
+            line_segs: vec![LineSeg {
+                line_height: 2940,
+                text_height: 2940,
+                baseline_distance: 2700,
+                segment_width: 48340,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let paragraphs = vec![para];
+        let composed = paragraphs.iter().map(compose_paragraph).collect::<Vec<_>>();
+        let styles = ResolvedStyleSet {
+            hwp3_variant: false,
+            page_number_char_shape: None,
+            char_styles: vec![ResolvedCharStyle::default()],
+            para_styles: vec![ResolvedParaStyle::default()],
+            border_styles: Vec::new(),
+            numberings: Vec::new(),
+            bullets: Vec::new(),
+        };
+        let page_content = PageContent {
+            page_index: 0,
+            page_number: 0,
+            section_index: 0,
+            layout,
+            column_contents: vec![ColumnContent {
+                column_index: 0,
+                start_height: 0.0,
+                endnote_flow: false,
+                items: vec![
+                    PageItem::FullParagraph { para_index: 0 },
+                    PageItem::Shape {
+                        para_index: 0,
+                        control_index: 0,
+                    },
+                    PageItem::Shape {
+                        para_index: 0,
+                        control_index: 1,
+                    },
+                ],
+                zone_layout: None,
+                zone_y_offset: 0.0,
+                wrap_around_paras: Vec::new(),
+                used_height: 0.0,
+                wrap_anchors: std::collections::HashMap::new(),
+            }],
+            active_header: None,
+            active_footer: None,
+            page_number_pos: None,
+            page_hide: None,
+            footnotes: Vec::new(),
+            active_master_page: None,
+            extra_master_pages: Vec::new(),
+        };
+        let tree = engine.build_render_tree(
+            &page_content,
+            &paragraphs,
+            &paragraphs,
+            &paragraphs,
+            &composed,
+            &styles,
+            &Default::default(),
+            &[],
+            None,
+            &[],
+            None,
+            0,
+            &[],
+        );
+        let mut nodes = Vec::new();
+        collect_render_nodes(&tree.root, &mut nodes);
+        let shape_y = |width: i32| {
+            nodes.iter().find_map(|node| {
+                (matches!(node.node_type, RenderNodeType::Rectangle(_))
+                    && (node.bbox.width - crate::renderer::hwpunit_to_px(width, engine.dpi)).abs()
+                        < 0.1)
+                    .then_some(node.bbox.y)
+            })
+        };
+        let inline_y = shape_y(6800).expect("inline label shape");
+        let floating_y = shape_y(40000).expect("floating title shape");
+        assert!(
+            (floating_y - inline_y).abs() < 0.1,
+            "both shapes share a paragraph anchor: inline={inline_y}, floating={floating_y}"
+        );
+    }
+
+    #[test]
     fn aift_saved_residual_rowbreak_keeps_terminal_blank_continuation() {
         let Some(core) = load_document("samples/aift.hwp") else {
             return;

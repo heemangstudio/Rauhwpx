@@ -30,7 +30,10 @@ pub fn render_equation_svg_with_font(
 ) -> String {
     let mut svg = String::new();
     let family = escape_xml(&super::font::equation_css_font_family(font_name));
-    svg.push_str(&format!("<g font-family=\"{}\">", family));
+    svg.push_str(&format!(
+        "<g font-family=\"{}\" xml:space=\"preserve\">",
+        family
+    ));
     render_box(
         &mut svg,
         layout,
@@ -57,6 +60,21 @@ fn render_box(
 ) {
     let x = parent_x + lb.x;
     let y = parent_y + lb.y;
+    if let Some(glyphs) = lb.positioned_glyphs() {
+        for mut glyph in glyphs {
+            let (text, glyph_italic) = match &glyph.kind {
+                LayoutKind::Text(s) => (s, italic),
+                LayoutKind::MathSymbol(s) => (s, italic && super::font::is_greek_variable(s)),
+                LayoutKind::Number(s) | LayoutKind::Function(s) => (s, false),
+                _ => unreachable!(),
+            };
+            glyph.y +=
+                super::font::modern_glyph_baseline_em(text.chars().next().unwrap(), glyph_italic)
+                    * leaf_font_size(&glyph, fs);
+            render_box(svg, &glyph, x, y, color, fs, italic, bold);
+        }
+        return;
+    }
 
     match &lb.kind {
         LayoutKind::Row(children) => {
@@ -68,7 +86,7 @@ fn render_box(
             let text_x = x;
             let text_y = y + lb.baseline;
             let esc = escape_xml(text);
-            let fi = fs;
+            let fi = leaf_font_size(lb, fs);
             // CJK/한글 텍스트는 이탤릭 없이 렌더링 (수학 변수명만 이탤릭).
             // FontStyle::Roman(`rm` 적용)으로 italic=false 가 전달된 경우에도 이탤릭을 적용하지 않는다.
             let has_cjk = text.chars().any(|c| {
@@ -91,7 +109,7 @@ fn render_box(
             let text_x = x;
             let text_y = y + lb.baseline;
             let esc = escape_xml(text);
-            let fi = fs;
+            let fi = leaf_font_size(lb, fs);
             let style_attr = if bold { " font-weight=\"bold\"" } else { "" };
             svg.push_str(&format!(
                 "<text x=\"{:.2}\" y=\"{:.2}\" font-size=\"{:.2}\" fill=\"{}\"{}{}>{}</text>\n",
@@ -102,7 +120,7 @@ fn render_box(
             let text_x = x + lb.width / 2.0;
             let text_y = y + lb.baseline;
             let esc = escape_xml(text);
-            let fi = fs;
+            let fi = leaf_font_size(lb, fs);
             svg.push_str(&format!(
                 "<text x=\"{:.2}\" y=\"{:.2}\" font-size=\"{:.2}\" fill=\"{}\" text-anchor=\"middle\"{}>{}</text>\n",
                 text_x, text_y, fi, color, EQ_FONT_FAMILY, esc,
@@ -126,7 +144,13 @@ fn render_box(
                 };
                 svg.push_str(&format!(
                     "<text x=\"{:.2}\" y=\"{:.2}\" font-size=\"{:.2}\" fill=\"{}\"{}{}>{}</text>\n",
-                    text_x, text_y, fs, color, italic_attr, EQ_FONT_FAMILY, esc,
+                    text_x,
+                    text_y,
+                    leaf_font_size(lb, fs),
+                    color,
+                    italic_attr,
+                    EQ_FONT_FAMILY,
+                    esc,
                 ));
             }
         }
@@ -134,7 +158,7 @@ fn render_box(
             let text_x = x;
             let text_y = y + lb.baseline;
             let esc = escape_xml(name);
-            let fi = fs;
+            let fi = leaf_font_size(lb, fs);
             svg.push_str(&format!(
                 "<text x=\"{:.2}\" y=\"{:.2}\" font-size=\"{:.2}\" fill=\"{}\"{}>{}</text>\n",
                 text_x, text_y, fi, color, EQ_FONT_FAMILY, esc,
@@ -377,9 +401,15 @@ fn render_box(
                 render_box(svg, right, x, y, color, fs, italic, bold);
             }
         }
-        LayoutKind::Paren { left, right, body } => {
+        LayoutKind::Paren {
+            left,
+            right,
+            body,
+            modern_extent,
+        } => {
             // 텍스트 높이 파렌(`(`, `)`)은 폰트 글리프로 렌더, 그 외는 path. (Task #283)
             let use_glyph = lb.height <= fs * 1.2;
+            let (paint_top, paint_height) = modern_extent.unwrap_or((0.0, lb.height));
             let paren_w = if use_glyph { fs * 0.333 } else { fs * 0.27 };
             // 왼쪽 괄호
             if !left.is_empty() {
@@ -389,7 +419,16 @@ fn render_box(
                         x, y + lb.baseline, fs, color, EQ_FONT_FAMILY, escape_xml(left),
                     ));
                 } else {
-                    draw_stretch_bracket(svg, left, x, y, paren_w, lb.height, color, fs);
+                    draw_stretch_bracket(
+                        svg,
+                        left,
+                        x,
+                        y + paint_top,
+                        paren_w,
+                        paint_height,
+                        color,
+                        fs,
+                    );
                 }
             }
             // 본체
@@ -403,7 +442,16 @@ fn render_box(
                         right_x, y + lb.baseline, fs, color, EQ_FONT_FAMILY, escape_xml(right),
                     ));
                 } else {
-                    draw_stretch_bracket(svg, right, right_x, y, paren_w, lb.height, color, fs);
+                    draw_stretch_bracket(
+                        svg,
+                        right,
+                        right_x,
+                        y + paint_top,
+                        paren_w,
+                        paint_height,
+                        color,
+                        fs,
+                    );
                 }
             }
         }
@@ -714,6 +762,57 @@ mod tests {
         let ast = EqParser::new(tokens).parse();
         let layout = EqLayout::new(20.0).layout(&ast);
         render_equation_svg(&layout, "#000000", 20.0)
+    }
+
+    #[test]
+    fn leaf_font_size_matches_measured_scripts_without_scaling_limit_name() {
+        use super::super::{layout::EqLayout, parser::parse};
+        let engine = EqLayout::with_font(10.0, "HYhwpEQ");
+        let svg = render_equation_svg_with_font(
+            &engine.layout(&parse("x_i")),
+            "black",
+            10.0,
+            Some("HYhwpEQ"),
+        );
+        assert!(svg.contains("font-size=\"6.80\""), "{svg}");
+        let limit = render_equation_svg_with_font(
+            &engine.layout(&parse("lim_x")),
+            "black",
+            10.0,
+            Some("HYhwpEQ"),
+        );
+        let name = limit
+            .lines()
+            .find(|line| line.contains(">lim</text>"))
+            .expect("limit name");
+        assert!(name.contains("font-size=\"10.00\""), "{limit}");
+    }
+
+    #[test]
+    fn measured_glyph_positions_preserve_unicode_text_and_spaces() {
+        let layout = LayoutBox {
+            glyph_advances: Some(vec![6.3, 2.0, 7.0]),
+            x: 0.0,
+            y: 0.0,
+            width: 15.3,
+            height: 10.0,
+            baseline: 8.0,
+            kind: LayoutKind::Text("1 α".into()),
+        };
+        let svg = render_equation_svg(&layout, "black", 10.0);
+        assert!(svg.contains("xml:space=\"preserve\""));
+        assert!(svg.contains("x=\"0.00\""));
+        assert!(svg.contains("x=\"6.30\""));
+        assert!(svg.contains("x=\"8.30\""));
+        assert!(svg.contains("> </text>"));
+        assert!(svg.contains(">α</text>"));
+        assert!(matches!(&layout.kind, LayoutKind::Text(text) if text == "1 α"));
+
+        let mut fallback = layout.clone();
+        fallback.glyph_advances = None;
+        let fallback_svg = render_equation_svg(&fallback, "black", 10.0);
+        assert!(fallback_svg.contains(">1 α</text>"));
+        assert_eq!(fallback_svg.matches("<text ").count(), 1);
     }
 
     #[test]

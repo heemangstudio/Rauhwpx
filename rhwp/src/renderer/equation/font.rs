@@ -57,7 +57,11 @@ pub(crate) fn is_legacy_equation_font(name: &str) -> bool {
 /// HYhwpEQ의 수식 전용 cmap. ASCII 영역은 본문 자형이며, 수식 자형은 PUA에 있다.
 /// 호출자는 실제 서체와 해당 글립의 존재를 먼저 확인해야 한다.
 /// 반환 bool은 남아 있는 합성 기울임이다. 소문자/그리스 문자는 이미 기울어진 자형이다.
-pub(crate) fn legacy_equation_glyph(character: char, italic: bool) -> (char, bool) {
+pub(crate) fn legacy_equation_glyph(character: char, italic: bool, modern: bool) -> (char, bool) {
+    // rm·함수 이름은 본문 Roman cmap, 수학 이탤릭 변수는 PUA cmap을 쓴다.
+    if modern && character.is_ascii_alphabetic() && !italic {
+        return (character, false);
+    }
     let code = match character {
         'A'..='Z' => {
             return (
@@ -113,9 +117,84 @@ pub(crate) fn is_greek_variable(text: &str) -> bool {
     text.chars().any(|c| matches!(c, '\u{0391}'..='\u{03c9}'))
 }
 
+/// 버전60 수학 자형의 원점은 연산자/본문 Roman 기준선보다 0.06em 낮다.
+/// 소스 PDF의 단일 run 안에서도 숫자와 소수점의 원점이 달라진다.
+pub(crate) fn modern_glyph_baseline_em(character: char, italic: bool) -> f64 {
+    if character.is_ascii_digit()
+        || matches!(character, '⋅' | '×')
+        || (italic
+            && (character.is_ascii_alphabetic() || is_greek_variable(&character.to_string())))
+    {
+        0.06
+    } else {
+        0.0
+    }
+}
+
+/// 현대 HY 조판은 96dpi의 짝수 pixel 크기에서 정수 advance를 얻고 90%로 배치한다.
+/// 합성 이탤릭 글립은 축소하지 않는다. 출력 글립 크기는 그대로 유지한다.
+/// 한컴 10/11/12/13/16/20pt 및 Roman/이탤릭 대조에서 확인했다.
+pub(crate) fn modern_glyph_advance(
+    raw_advance: f64,
+    font_size: f64,
+    synthetic_italic: bool,
+) -> f64 {
+    let grid_size = (font_size / 2.0).round().max(1.0) * 2.0;
+    (raw_advance / font_size * grid_size).round() * if synthetic_italic { 1.0 } else { 0.9 }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modern_hinted_advance_matches_size_steps_without_scaling_the_glyph() {
+        for (points, digit_advance) in [
+            (10.0, 4.725),
+            (11.0, 4.725),
+            (12.0, 5.4),
+            (13.0, 6.075),
+            (16.0, 7.425),
+            (20.0, 8.775),
+        ] {
+            let px = points * 4.0 / 3.0;
+            assert!(
+                (modern_glyph_advance(px * 0.5, px, false) * 3.0 / 4.0 - digit_advance).abs()
+                    < 1e-9
+            );
+        }
+    }
+
+    #[test]
+    fn modern_advance_shrink_follows_the_mapped_synthetic_style() {
+        for (character, italic, shrink) in [
+            ('A', true, 1.0),
+            ('A', false, 0.9),
+            ('a', true, 0.9),
+            ('α', true, 0.9),
+        ] {
+            let (_, synthetic) = legacy_equation_glyph(character, italic, true);
+            assert_eq!(modern_glyph_advance(10.0, 20.0, synthetic), 10.0 * shrink);
+        }
+    }
+
+    #[test]
+    fn modern_math_origin_and_roman_mapping_preserve_hft_fallback() {
+        assert_eq!(legacy_equation_glyph('P', false, true), ('P', false));
+        assert_eq!(
+            legacy_equation_glyph('P', false, false),
+            ('\u{e00f}', false)
+        );
+        assert_eq!(
+            legacy_equation_glyph('p', false, false),
+            ('\u{e029}', false)
+        );
+        assert_eq!(modern_glyph_baseline_em('2', false), 0.06);
+        assert_eq!(modern_glyph_baseline_em('x', true), 0.06);
+        assert_eq!(modern_glyph_baseline_em('x', false), 0.0);
+        assert_eq!(modern_glyph_baseline_em('.', false), 0.0);
+        assert_eq!(modern_glyph_baseline_em('+', false), 0.0);
+    }
 
     #[test]
     fn legacy_equation_fallback_keeps_real_italic_faces_before_regular_math_faces() {
@@ -133,15 +212,16 @@ mod tests {
 
     #[test]
     fn legacy_math_cmap_keeps_roman_and_intrinsic_italic_distinct() {
-        assert_eq!(legacy_equation_glyph('p', true), ('\u{e0f4}', false));
-        assert_eq!(legacy_equation_glyph('i', true), ('\u{e0ed}', false));
-        assert_eq!(legacy_equation_glyph('f', true), ('\u{e0ea}', false));
-        assert_eq!(legacy_equation_glyph('p', false), ('\u{e029}', false));
-        assert_eq!(legacy_equation_glyph('1', false), ('\u{e034}', false));
-        assert_eq!(legacy_equation_glyph('L', true), ('\u{e00b}', true));
-        assert_eq!(legacy_equation_glyph('α', true), ('\u{e09d}', false));
-        assert_eq!(legacy_equation_glyph('Ω', true), ('\u{e09c}', false));
-        assert_eq!(legacy_equation_glyph('α', false), ('α', false));
-        assert_eq!(legacy_equation_glyph('한', false), ('한', false));
+        assert_eq!(legacy_equation_glyph('p', true, true), ('\u{e0f4}', false));
+        assert_eq!(legacy_equation_glyph('i', true, true), ('\u{e0ed}', false));
+        assert_eq!(legacy_equation_glyph('f', true, true), ('\u{e0ea}', false));
+        assert_eq!(legacy_equation_glyph('p', false, true), ('p', false));
+        assert_eq!(legacy_equation_glyph('P', false, true), ('P', false));
+        assert_eq!(legacy_equation_glyph('1', false, true), ('\u{e034}', false));
+        assert_eq!(legacy_equation_glyph('L', true, true), ('\u{e00b}', true));
+        assert_eq!(legacy_equation_glyph('α', true, true), ('\u{e09d}', false));
+        assert_eq!(legacy_equation_glyph('Ω', true, true), ('\u{e09c}', false));
+        assert_eq!(legacy_equation_glyph('α', false, true), ('α', false));
+        assert_eq!(legacy_equation_glyph('한', false, true), ('한', false));
     }
 }
