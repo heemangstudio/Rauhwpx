@@ -6896,6 +6896,13 @@ impl LayoutEngine {
             };
             let corrected_h = |line: &ComposedLine, li: usize| -> f64 {
                 let raw_lh = hwpunit_to_px(line.line_height, self.dpi);
+                // A generated equation line can have an occupied ascent larger
+                // than its saved em box. Use the same ascent/descent calculation
+                // as paragraph paint so row cuts retain that occupied height.
+                let occupied_lh =
+                    crate::renderer::equation::composed_line_flow_height_px(p, &comp, li, self.dpi)
+                        .map(|height| raw_lh.max(height))
+                        .unwrap_or(raw_lh);
                 // [Task #1811] HWPX RowBreak 셀의 synthetic lineSeg 는 저장 근거가 아니라
                 // reflow 산물이다. row cut 측정에서 다시 corrected_line_height 를 적용하면
                 // HWP 기준보다 줄 유닛이 커져 p4→p5 split 이 한 유닛 빨라진다.
@@ -6903,7 +6910,7 @@ impl LayoutEngine {
                     && is_block_rowbreak
                     && para_uses_synthetic_line_segs
                 {
-                    return raw_lh;
+                    return occupied_lh;
                 }
                 // [#2112] 실제 저장 LINE_SEG 를 보유한 셀 문단은 저장 줄높이를 신뢰한다.
                 // 한글은 압축 줄높이(lh < 글자크기)를 저장값대로 렌더하는데 corrected
@@ -6911,7 +6918,7 @@ impl LayoutEngine {
                 // +76.8px, 표 합계 +335px → 다쪽 표 쪽수 밀림). 보정은 lineseg 부재
                 // 폴백(#674/#993 원 목적)에만 유지.
                 if p.line_segs.iter().any(|ls| !line_seg_is_synthetic(ls)) {
-                    return raw_lh;
+                    return occupied_lh;
                 }
                 match para_style {
                     Some(ps) => {
@@ -6961,8 +6968,9 @@ impl LayoutEngine {
                                     // [#2070 실험] 셀 마지막 줄 = em (5축 전면).
                                     || cell_last_line_idx == Some(li)),
                         )
+                        .max(occupied_lh)
                     }
-                    None => raw_lh,
+                    None => occupied_lh,
                 }
             };
             let has_table_in_para = p.controls.iter().any(|c| matches!(c, Control::Table(_)));

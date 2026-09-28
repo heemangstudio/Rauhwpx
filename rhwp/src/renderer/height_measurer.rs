@@ -1518,6 +1518,12 @@ impl HeightMeasurer {
                                                         && is_cell_last_line),
                                             )
                                         };
+                                        let h = h.max(
+                                            crate::renderer::equation::composed_line_flow_height_px(
+                                                p, &comp, i, self.dpi,
+                                            )
+                                            .unwrap_or(0.0),
+                                        );
                                         // Generated HWPX RowBreak cells also retain the final
                                         // paragraph-unit advance after font reflow.
                                         let include_trailing_ls = include_table_cell_line_spacing(
@@ -2073,6 +2079,12 @@ impl HeightMeasurer {
                                                         && is_cell_last_line),
                                             )
                                         };
+                                        let h = h.max(
+                                            crate::renderer::equation::composed_line_flow_height_px(
+                                                p, &comp, i, self.dpi,
+                                            )
+                                            .unwrap_or(0.0),
+                                        );
                                         let include_trailing_ls = include_table_cell_line_spacing(
                                             table,
                                             is_cell_last_line,
@@ -2399,6 +2411,12 @@ impl HeightMeasurer {
                                                 && is_cell_last_line),
                                     )
                                 };
+                                let h = h.max(
+                                    crate::renderer::equation::composed_line_flow_height_px(
+                                        p, &comp, li, self.dpi,
+                                    )
+                                    .unwrap_or(0.0),
+                                );
                                 let ls = hwpunit_to_px(line.line_spacing, self.dpi);
                                 let mut line_h = if !is_cell_last_line { h + ls } else { h };
                                 if li == 0 {
@@ -3554,6 +3572,95 @@ mod tests {
                 "tac={treat_as_char} break={page_break:?}: cut={cut} measured={measured}",
             );
         }
+    }
+
+    #[test]
+    fn inline_equation_ascent_is_counted_by_row_measurement_and_cut() {
+        use crate::model::control::Equation;
+        use crate::model::provenance::LayoutCompatibilityProfile;
+
+        let mut eq = Equation::default();
+        eq.common.treat_as_char = true;
+        eq.common.height = 1_020;
+        eq.common.width = 3_000;
+        eq.font_size = 1_000;
+        eq.script = "x^{2}".to_string();
+        eq.baseline = 78;
+        let paragraph = Paragraph {
+            controls: vec![Control::Equation(Box::new(eq))],
+            line_segs: vec![LineSeg {
+                line_height: 1_020,
+                line_spacing: 350,
+                baseline_distance: 796,
+                tag: LineSeg::TAG_IMPLEMENTATION_PROPERTY,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let table = Table {
+            row_count: 1,
+            col_count: 1,
+            page_break: TablePageBreak::RowBreak,
+            common: CommonObjAttr {
+                treat_as_char: false,
+                width: 10_000,
+                ..Default::default()
+            },
+            cells: vec![Cell {
+                row_span: 1,
+                col_span: 1,
+                width: 10_000,
+                height: 1_000,
+                paragraphs: vec![paragraph],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let styles = ResolvedStyleSet::default();
+        let measured = HeightMeasurer::with_default_dpi()
+            .with_hwpx_cell_spacing(true)
+            .measure_table(&table, 0, 0, &styles)
+            .row_heights[0];
+        let layout = LayoutEngine::new(DEFAULT_DPI);
+        layout.set_layout_profile(LayoutCompatibilityProfile::new(
+            false, false, true, false, false,
+        ));
+        let cut = layout.row_cut_content_height(&table, 0, &[], &[], &styles);
+        assert!(measured > hwpunit_to_px(1_020, DEFAULT_DPI));
+        assert!(
+            (measured - cut).abs() < 0.001,
+            "measured={measured} cut={cut}"
+        );
+
+        let generated = &table.cells[0].paragraphs[0];
+        let generated_comp = compose_paragraph(generated);
+        assert!(crate::renderer::equation::composed_line_flow_height_px(
+            generated,
+            &generated_comp,
+            0,
+            DEFAULT_DPI,
+        )
+        .is_some());
+        let mut authored = generated.clone();
+        authored.line_segs[0].tag = 0;
+        let authored_comp = compose_paragraph(&authored);
+        assert!(crate::renderer::equation::composed_line_flow_height_px(
+            &authored,
+            &authored_comp,
+            0,
+            DEFAULT_DPI,
+        )
+        .is_none());
+        let mut mixed = generated.clone();
+        mixed.text = "text".to_string();
+        let mixed_comp = compose_paragraph(&mixed);
+        assert!(crate::renderer::equation::composed_line_flow_height_px(
+            &mixed,
+            &mixed_comp,
+            0,
+            DEFAULT_DPI,
+        )
+        .is_none());
     }
 
     #[test]

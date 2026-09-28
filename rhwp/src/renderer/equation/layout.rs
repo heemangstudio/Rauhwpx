@@ -23,6 +23,9 @@ extern "C" {
 /// 수식 레이아웃 박스
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct LayoutBox {
+    /// 원본 현대 HY 메트릭으로 계산한 글자별 advance. None은 기존 fallback 배치다.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub glyph_advances: Option<Vec<f64>>,
     /// X 위치 (부모 기준 상대 좌표)
     pub x: f64,
     /// Y 위치 (부모 기준 상대 좌표)
@@ -35,6 +38,52 @@ pub struct LayoutBox {
     pub baseline: f64,
     /// 렌더링 요소
     pub kind: LayoutKind,
+}
+
+impl LayoutBox {
+    pub(crate) fn positioned_glyphs(&self) -> Option<Vec<LayoutBox>> {
+        let advances = self.glyph_advances.as_ref()?;
+        let text = match &self.kind {
+            LayoutKind::Text(s)
+            | LayoutKind::Number(s)
+            | LayoutKind::Symbol(s)
+            | LayoutKind::MathSymbol(s)
+            | LayoutKind::Function(s) => s,
+            _ => return None,
+        };
+        if text.chars().count() != advances.len()
+            || advances
+                .iter()
+                .any(|advance| !advance.is_finite() || *advance < 0.0)
+        {
+            return None;
+        }
+        let mut x = 0.0;
+        Some(
+            text.chars()
+                .zip(advances)
+                .map(|(ch, advance)| {
+                    let kind = match &self.kind {
+                        LayoutKind::Text(_) => LayoutKind::Text(ch.to_string()),
+                        LayoutKind::Number(_) => LayoutKind::Number(ch.to_string()),
+                        LayoutKind::Function(_) => LayoutKind::Function(ch.to_string()),
+                        _ => LayoutKind::MathSymbol(ch.to_string()),
+                    };
+                    let glyph = LayoutBox {
+                        glyph_advances: None,
+                        x,
+                        y: 0.0,
+                        width: *advance,
+                        height: self.height,
+                        baseline: self.baseline,
+                        kind,
+                    };
+                    x += advance;
+                    glyph
+                })
+                .collect(),
+        )
+    }
 }
 
 /// 레이아웃 요소 종류
@@ -116,6 +165,9 @@ pub enum LayoutKind {
         left: String,
         right: String,
         body: Box<LayoutBox>,
+        /// 현대 HY 괄호의 페인트 상단/높이. 논리 상자 및 HFT 배치는 유지한다.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        modern_extent: Option<(f64, f64)>,
     },
     /// 장식
     Decoration {
@@ -254,12 +306,98 @@ impl EqLayout {
         self
     }
 
-    fn quoted_inherits_style(&self) -> bool {
+    fn is_modern_hy(&self) -> bool {
         !self.hft
             && self
                 .font_family
                 .as_deref()
                 .is_some_and(super::font::is_legacy_equation_font)
+    }
+
+    fn has_modern_hy_metrics(&self, fs: f64) -> bool {
+        self.is_modern_hy()
+            && self
+                .node_advance_right(&EqNode::Number("0".into()), fs)
+                .is_some()
+    }
+
+    fn leading_font_declaration(node: &EqNode) -> bool {
+        match node {
+            EqNode::FontDeclaration { .. } => true,
+            EqNode::FontStyle { body, .. } | EqNode::Color { body, .. } => {
+                Self::leading_font_declaration(body)
+            }
+            _ => false,
+        }
+    }
+
+    fn modern_atom_space_em(prev_node: &EqNode, prev: Atom, next_node: &EqNode, next: Atom) -> f64 {
+        let declaration = Self::leading_font_declaration(next_node);
+        fn unstyled(mut node: &EqNode) -> &EqNode {
+            while let EqNode::FontStyle { body, .. }
+            | EqNode::FontDeclaration { body, .. }
+            | EqNode::Color { body, .. } = node
+            {
+                node = body;
+            }
+            node
+        }
+        let prev_node = unstyled(prev_node);
+        let next_node = unstyled(next_node);
+        fn symbol(node: &EqNode) -> Option<&str> {
+            match node {
+                EqNode::Symbol(s) | EqNode::MathSymbol(s) => Some(s.as_str()),
+                _ => None,
+            }
+        }
+        // ⋅의 1em 글립 자체에 좌우 여백이 있으므로 중복 이항 간격을 넣지 않는다.
+        if symbol(prev_node) == Some("⋅") || symbol(next_node) == Some("⋅") {
+            return 0.0;
+        }
+        let unary = |node: &EqNode, atom: Atom| {
+            atom.left == MathClass::Ord
+                && symbol(node).is_some_and(|s| symbol_class(s) == MathClass::Bin)
+        };
+        if unary(next_node, next) {
+            return 0.0;
+        }
+        if unary(prev_node, prev) {
+            return 0.14;
+        }
+        let trailing: f64 = match prev.right {
+            MathClass::Rel => 0.21,
+            MathClass::Bin => 0.14,
+            MathClass::Punct => 0.07,
+            _ => 0.0,
+        };
+        let script = matches!(
+            prev_node,
+            EqNode::Superscript { .. } | EqNode::Subscript { .. } | EqNode::SubSup { .. }
+        );
+        // 첨자 뒤에는 원자 간격을 온전히 둔다. 단일 글립 사이의 70% 간격과 구별한다.
+        // 명시 rm/it는 새 조판 run을 시작하여 다음 연산자의 앞 간격을 끊는다.
+        let leading = if declaration {
+            0.0
+        } else {
+            match next.left {
+                MathClass::Rel => {
+                    if script {
+                        0.30
+                    } else {
+                        0.21
+                    }
+                }
+                MathClass::Bin => {
+                    if script {
+                        0.20
+                    } else {
+                        0.14
+                    }
+                }
+                _ => 0.0,
+            }
+        };
+        trailing.max(leading)
     }
 
     /// 인접 원자 사이 간격 (em). 한컴 수식의 legacy 서체(HYhwpEQ 등)는 글립을
@@ -277,10 +415,16 @@ impl EqLayout {
     ) -> f64 {
         // 서체·색상 래퍼는 수학 원자의 간격 분류를 바꾸지 않는다.
         fn unstyled(mut node: &EqNode) -> &EqNode {
-            while let EqNode::FontStyle { body, .. } | EqNode::Color { body, .. } = node {
+            while let EqNode::FontStyle { body, .. }
+            | EqNode::FontDeclaration { body, .. }
+            | EqNode::Color { body, .. } = node
+            {
                 node = body;
             }
             node
+        }
+        if self.has_modern_hy_metrics(self.font_size) {
+            return Self::modern_atom_space_em(prev_node, prev, next_node, next);
         }
         let prev_node = unstyled(prev_node);
         let next_node = unstyled(next_node);
@@ -294,7 +438,9 @@ impl EqLayout {
             let mut node = next_node;
             loop {
                 match node {
-                    EqNode::FontStyle { body, .. } | EqNode::Color { body, .. } => node = body,
+                    EqNode::FontStyle { body, .. }
+                    | EqNode::FontDeclaration { body, .. }
+                    | EqNode::Color { body, .. } => node = body,
                     EqNode::Sqrt { .. }
                     | EqNode::Paren { .. }
                     | EqNode::Fraction { .. }
@@ -390,7 +536,7 @@ impl EqLayout {
     fn node_run_metrics(&self, node: &EqNode, fs: f64) -> Option<super::measure::LegacyRunMetrics> {
         let (text, italic, bold) = match node {
             EqNode::Text(s) => (s.as_str(), self.is_italic_text(s), self.bold),
-            EqNode::Quoted(s) if self.quoted_inherits_style() => {
+            EqNode::Quoted(s) if self.is_modern_hy() => {
                 (s.as_str(), self.is_italic_text(s), self.bold)
             }
             EqNode::Number(s) | EqNode::Quoted(s) => (s.as_str(), false, self.bold),
@@ -409,13 +555,13 @@ impl EqLayout {
                 }
             }
             EqNode::Function(s) => (s.as_str(), false, false),
-            EqNode::FontStyle { style, body } => {
+            EqNode::FontStyle { style, body } | EqNode::FontDeclaration { style, body } => {
                 return self.styled(*style).node_run_metrics(body, fs);
             }
             EqNode::Color { body, .. } => return self.node_run_metrics(body, fs),
             _ => return None,
         };
-        super::measure::measure_legacy_run_native(text, fs, italic, bold)
+        super::measure::measure_legacy_run_native(text, fs, italic, bold, !self.hft)
     }
 
     /// 브라우저에서도 네이티브와 같은 원본 glyf/hmtx 잉크 경계를 사용한다.
@@ -423,7 +569,7 @@ impl EqLayout {
     fn node_run_metrics_wasm(&self, node: &EqNode, fs: f64) -> Option<(f64, f64)> {
         let (text, italic, bold) = match node {
             EqNode::Text(s) => (s.as_str(), self.is_italic_text(s), self.bold),
-            EqNode::Quoted(s) if self.quoted_inherits_style() => {
+            EqNode::Quoted(s) if self.is_modern_hy() => {
                 (s.as_str(), self.is_italic_text(s), self.bold)
             }
             EqNode::Number(s) | EqNode::Quoted(s) => (s.as_str(), false, self.bold),
@@ -442,7 +588,7 @@ impl EqLayout {
                 }
             }
             EqNode::Function(s) => (s.as_str(), false, false),
-            EqNode::FontStyle { style, body } => {
+            EqNode::FontStyle { style, body } | EqNode::FontDeclaration { style, body } => {
                 return self.styled(*style).node_run_metrics_wasm(body, fs);
             }
             EqNode::Color { body, .. } => return self.node_run_metrics_wasm(body, fs),
@@ -529,7 +675,7 @@ impl EqLayout {
                 .as_deref()
                 .is_some_and(super::font::is_legacy_equation_font);
             return (
-                if legacy {
+                if legacy && !self.is_modern_hy() {
                     metrics.ink_right
                 } else {
                     metrics.advance
@@ -556,11 +702,17 @@ impl EqLayout {
             .is_some_and(super::font::is_legacy_equation_font)
         {
             if let Some(metrics) =
-                super::measure::measure_legacy_run_native(text, font_size, italic, bold)
+                super::measure::measure_legacy_run_native(text, font_size, italic, bold, !self.hft)
             {
-                // 박스 폭 = 마지막 글립의 잉크 오른쪽 끝 — 행 커서가 잉크 가장자리를
-                // 쫓아가도록 advance가 아닌 잉크 경계를 돌려준다.
-                return (metrics.ink_right, 0.0);
+                // HFT는 잉크 끝을 연결하고 현대 HY는 힌팅된 advance를 연결한다.
+                return (
+                    if self.is_modern_hy() {
+                        metrics.advance
+                    } else {
+                        metrics.ink_right
+                    },
+                    0.0,
+                );
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -667,14 +819,14 @@ impl EqLayout {
     }
 
     fn layout_node(&self, node: &EqNode, fs: f64) -> LayoutBox {
-        match node {
+        let mut result = match node {
             EqNode::Row(children) => self.layout_row(children, fs),
             EqNode::Text(s) => self.layout_text(s, fs),
             EqNode::Number(s) => self.layout_number(s, fs),
             EqNode::Symbol(s) => self.layout_symbol(s, fs),
             EqNode::MathSymbol(s) => self.layout_math_symbol(s, fs),
             EqNode::Function(s) => self.layout_function(s, fs),
-            EqNode::Quoted(s) if self.quoted_inherits_style() => self.layout_text(s, fs),
+            EqNode::Quoted(s) if self.is_modern_hy() => self.layout_text(s, fs),
             EqNode::Quoted(s) => self.layout_number(s, fs),
             EqNode::Fraction { numer, denom } => self.layout_fraction(numer, denom, fs),
             EqNode::Atop { top, bottom } => self.layout_atop(top, bottom, fs),
@@ -691,10 +843,13 @@ impl EqLayout {
             EqNode::Pile { rows, align } => self.layout_pile(rows, *align, fs),
             EqNode::Paren { left, right, body } => self.layout_paren(left, right, body, fs),
             EqNode::Decoration { kind, body } => self.layout_decoration(*kind, body, fs),
-            EqNode::FontStyle { style, body } => self.layout_font_style(*style, body, fs),
+            EqNode::FontStyle { style, body } | EqNode::FontDeclaration { style, body } => {
+                self.layout_font_style(*style, body, fs)
+            }
             EqNode::Color { body, .. } => self.layout_node(body, fs),
             EqNode::Space(kind) => self.layout_space(*kind, fs),
             EqNode::Newline => LayoutBox {
+                glyph_advances: None,
                 x: 0.0,
                 y: 0.0,
                 width: 0.0,
@@ -703,6 +858,7 @@ impl EqLayout {
                 kind: LayoutKind::Newline,
             },
             EqNode::Empty => LayoutBox {
+                glyph_advances: None,
                 x: 0.0,
                 y: 0.0,
                 width: 0.0,
@@ -710,7 +866,37 @@ impl EqLayout {
                 baseline: 0.0,
                 kind: LayoutKind::Empty,
             },
+        };
+        if self.is_modern_hy() {
+            let leaf = match node {
+                EqNode::Text(text)
+                | EqNode::Quoted(text)
+                | EqNode::Number(text)
+                | EqNode::Symbol(text)
+                | EqNode::Function(text) => Some(text),
+                EqNode::MathSymbol(text) if !is_integral_symbol(text) => Some(text),
+                _ => None,
+            };
+            if let Some(text) = leaf {
+                result.glyph_advances = text
+                    .chars()
+                    .map(|ch| {
+                        let value = ch.to_string();
+                        let single = match node {
+                            EqNode::Text(_) => EqNode::Text(value),
+                            EqNode::Quoted(_) => EqNode::Quoted(value),
+                            EqNode::Number(_) => EqNode::Number(value),
+                            EqNode::Symbol(_) => EqNode::Symbol(value),
+                            EqNode::MathSymbol(_) => EqNode::MathSymbol(value),
+                            EqNode::Function(_) => EqNode::Function(value),
+                            _ => unreachable!(),
+                        };
+                        self.node_advance_right(&single, fs)
+                    })
+                    .collect();
+            }
         }
+        result
     }
 
     fn layout_row(&self, children: &[EqNode], fs: f64) -> LayoutBox {
@@ -722,6 +908,7 @@ impl EqLayout {
 
         if laid.is_empty() {
             return LayoutBox {
+                glyph_advances: None,
                 x: 0.0,
                 y: 0.0,
                 width: 0.0,
@@ -746,18 +933,30 @@ impl EqLayout {
             .font_family
             .as_deref()
             .is_some_and(super::font::is_legacy_equation_font);
-        let mut previous: Option<(&EqNode, Atom)> = None;
+        let mut previous: Option<(&EqNode, Atom, f64)> = None;
         let mut x = 0.0;
         let mut boxes = Vec::with_capacity(laid.len());
         for ((node, mut b), atom) in laid.into_iter().zip(atoms) {
             match atom {
                 AtomSlot::Atom(atom) => {
-                    if let Some((prev_node, prev)) = previous {
+                    if let Some((prev_node, prev, overhang)) = previous {
+                        if !Self::leading_font_declaration(node) {
+                            x -= overhang;
+                        }
                         x += self.atom_space_em(prev_node, prev, node, atom, script)
                             * fs
                             * self.operator_padding_scale;
                     }
-                    previous = Some((node, atom));
+                    previous = Some((
+                        node,
+                        atom,
+                        if self.has_modern_hy_metrics(fs) && Self::ends_in_capital_superscript(node)
+                        {
+                            Self::modern_script_overhang(&b)
+                        } else {
+                            0.0
+                        },
+                    ));
                 }
                 AtomSlot::Break => previous = None,
                 // 명시 공백(~, `)은 원자 간격에 더해지며 양옆 원자의 관계를 끊지 않는다.
@@ -766,7 +965,7 @@ impl EqLayout {
             // legacy 서체는 글립을 advance가 아닌 잉크 가장자리로 포갠다:
             // 원점 = 커서(앞 글립 잉크 끝) − 이 글립 lsb. 첫 원자는 원점을
             // 상자 왼쪽에 둔다 (eq-002: `=` 원점이 좌측 여백 바로 뒤).
-            let lsb = if legacy && !boxes.is_empty() {
+            let lsb = if legacy && !self.has_modern_hy_metrics(fs) && !boxes.is_empty() {
                 self.node_ink_left(node, fs)
             } else {
                 0.0
@@ -790,6 +989,7 @@ impl EqLayout {
 
         let width = if legacy { extent } else { x };
         LayoutBox {
+            glyph_advances: None,
             x: 0.0,
             y: 0.0,
             width,
@@ -809,6 +1009,7 @@ impl EqLayout {
         let (advance, overhang) =
             self.text_metrics(text, fs, self.is_italic_text(text), self.bold, true);
         LayoutBox {
+            glyph_advances: None,
             x: 0.0,
             y: 0.0,
             width: advance + overhang,
@@ -832,7 +1033,7 @@ impl EqLayout {
             {
                 self.text_metrics(text, fs, true, false, false).1
             }
-            EqNode::FontStyle { style, body } => {
+            EqNode::FontStyle { style, body } | EqNode::FontDeclaration { style, body } => {
                 self.styled(*style).trailing_italic_correction(body, fs)
             }
             EqNode::Color { body, .. } => self.trailing_italic_correction(body, fs),
@@ -846,6 +1047,7 @@ impl EqLayout {
     fn layout_number(&self, text: &str, fs: f64) -> LayoutBox {
         let w = self.text_metrics(text, fs, false, self.bold, false).0;
         LayoutBox {
+            glyph_advances: None,
             x: 0.0,
             y: 0.0,
             width: w,
@@ -859,6 +1061,7 @@ impl EqLayout {
     fn layout_symbol(&self, text: &str, fs: f64) -> LayoutBox {
         let w = self.text_metrics(text, fs, false, false, false).0;
         LayoutBox {
+            glyph_advances: None,
             x: 0.0,
             y: 0.0,
             width: w,
@@ -875,6 +1078,7 @@ impl EqLayout {
             let op_fs = fs * INTEGRAL_SCALE;
             let geom = integral_geom(fs);
             return LayoutBox {
+                glyph_advances: None,
                 x: 0.0,
                 y: 0.0,
                 // Task #1233: 첨자 없는 bare 적분도 뒤 피연산자와 trailing 간격 유지.
@@ -891,6 +1095,7 @@ impl EqLayout {
         let italic = self.italic && super::font::is_greek_variable(text);
         let (advance, overhang) = self.text_metrics(text, fs, italic, false, false);
         LayoutBox {
+            glyph_advances: None,
             x: 0.0,
             y: 0.0,
             width: advance + overhang,
@@ -904,6 +1109,7 @@ impl EqLayout {
         // 함수 이름은 Op 원자다. 뒤 피연산자와의 thin space는 layout_row가 넣는다.
         let w = self.text_metrics(name, fs, false, false, false).0;
         LayoutBox {
+            glyph_advances: None,
             x: 0.0,
             y: 0.0,
             width: w,
@@ -1009,6 +1215,7 @@ impl EqLayout {
         }
 
         LayoutBox {
+            glyph_advances: None,
             x: 0.0,
             y: 0.0,
             width: w,
@@ -1044,6 +1251,7 @@ impl EqLayout {
         bottom_box.y = top_h;
 
         LayoutBox {
+            glyph_advances: None,
             x: 0.0,
             y: 0.0,
             width: w,
@@ -1103,6 +1311,7 @@ impl EqLayout {
         });
 
         LayoutBox {
+            glyph_advances: None,
             x: 0.0,
             y: 0.0,
             width: total_w,
@@ -1125,6 +1334,72 @@ impl EqLayout {
             fs * 0.68
         } else {
             fs * SCRIPT_SCALE
+        }
+    }
+
+    fn ends_in_latin_capital(node: &EqNode) -> bool {
+        match node {
+            EqNode::Text(text) | EqNode::Quoted(text) => text
+                .chars()
+                .last()
+                .is_some_and(|ch| ch.is_ascii_uppercase()),
+            EqNode::FontStyle { body, .. }
+            | EqNode::FontDeclaration { body, .. }
+            | EqNode::Color { body, .. } => Self::ends_in_latin_capital(body),
+            EqNode::Row(children) => children.last().is_some_and(Self::ends_in_latin_capital),
+            _ => false,
+        }
+    }
+
+    fn ends_in_capital_superscript(node: &EqNode) -> bool {
+        match node {
+            EqNode::Superscript { base, .. } | EqNode::SubSup { base, .. } => {
+                Self::ends_in_latin_capital(base)
+            }
+            EqNode::FontStyle { body, .. }
+            | EqNode::FontDeclaration { body, .. }
+            | EqNode::Color { body, .. } => Self::ends_in_capital_superscript(body),
+            EqNode::Row(children) => children
+                .last()
+                .is_some_and(Self::ends_in_capital_superscript),
+            _ => false,
+        }
+    }
+
+    fn modern_capital_superscript_gap(&self, node: &EqNode, fs: f64) -> f64 {
+        if self.has_modern_hy_metrics(fs) && Self::ends_in_latin_capital(node) {
+            // 현대 HY의 Latin 대문자 위첨자 보정. HFT의 1/6em 간격과 구별한다.
+            fs * 0.15
+        } else {
+            0.0
+        }
+    }
+
+    /// 위첨자의 대문자 보정은 잉크 범위를 넓히지만 다음 수학 원자의 커서는 넓히지 않는다.
+    /// 명시 서체 선언은 이전 run의 전체 범위를 닫으므로 이 overhang을 유지한다.
+    fn modern_script_overhang(layout: &LayoutBox) -> f64 {
+        match &layout.kind {
+            LayoutKind::FontStyle { body, .. } => Self::modern_script_overhang(body),
+            LayoutKind::Row(children) => {
+                let Some((last, preceding)) = children.split_last() else {
+                    return 0.0;
+                };
+                let logical = preceding.iter().map(|child| child.x + child.width).fold(
+                    last.x + last.width - Self::modern_script_overhang(last),
+                    f64::max,
+                );
+                (layout.width - logical).max(0.0)
+            }
+            LayoutKind::Superscript { base, sup } => (sup.x - base.width).max(0.0),
+            LayoutKind::SubSup { base, sub, sup } => {
+                let correction = (sup.x - base.width).max(0.0);
+                let logical = base
+                    .width
+                    .max(sub.x + sub.width)
+                    .max(sup.x + sup.width - correction);
+                (layout.width - logical).max(0.0)
+            }
+            _ => 0.0,
         }
     }
 
@@ -1153,10 +1428,16 @@ impl EqLayout {
             base_box.x = 0.0;
             base_box.y = base_y;
             let mut sup_box = s;
-            sup_box.x = base_box.width + fs * THIN_SPACE_EM;
+            sup_box.x = base_box.width
+                + if self.has_modern_hy_metrics(fs) {
+                    self.modern_capital_superscript_gap(base, fs)
+                } else {
+                    fs * THIN_SPACE_EM
+                };
             sup_box.y = sup_y;
             let total_w = sup_box.x + sup_box.width;
             return LayoutBox {
+                glyph_advances: None,
                 x: 0.0,
                 y: 0.0,
                 width: total_w,
@@ -1197,7 +1478,9 @@ impl EqLayout {
         let mut sup_box = s;
         // 한컴 legacy 수식의 위첨자 간격은 base 잉크 끝에서 ~thin
         // (eq-002 실측: `3`→`⅛` 상자 1.62pt@9.06).
-        let sup_gap = if self
+        let sup_gap = if self.has_modern_hy_metrics(fs) {
+            0.0
+        } else if self
             .font_family
             .as_deref()
             .is_some_and(super::font::is_legacy_equation_font)
@@ -1212,6 +1495,7 @@ impl EqLayout {
         let total_w = sup_box.x + sup_box.width;
 
         LayoutBox {
+            glyph_advances: None,
             x: 0.0,
             y: 0.0,
             width: total_w,
@@ -1228,7 +1512,13 @@ impl EqLayout {
         let b = self.layout_node(base, fs);
         let s = self.layout_node(sub, self.script_font_size(fs));
 
-        let sub_shift = b.baseline * 0.4;
+        // 버전60의 아래첨자 기준선은 본체 em 하단보다 0.05em 아래다.
+        // 단일 글자는 본체 기준선 +0.25em, 분수는 분모 아래에 같은 간격을 둔다.
+        let sub_shift = if self.is_modern_hy() {
+            content_bottom(&b) + fs * 0.05 - s.baseline
+        } else {
+            b.baseline * 0.4
+        };
         let total_h = (b.height).max(sub_shift + s.height);
 
         let mut base_box = b;
@@ -1238,7 +1528,9 @@ impl EqLayout {
         let mut sub_box = s;
         // 아래첨자는 이탤릭 보정 전 advance에 붙는다 (TeX rule 18).
         // legacy 서체는 첨자 앞 thin space를 둔다 (위첨자와 같은 규칙).
-        let sub_gap = if self
+        let sub_gap = if self.has_modern_hy_metrics(fs) {
+            0.0
+        } else if self
             .font_family
             .as_deref()
             .is_some_and(super::font::is_legacy_equation_font)
@@ -1253,6 +1545,7 @@ impl EqLayout {
         let total_w = base_box.width.max(sub_box.x + sub_box.width);
 
         LayoutBox {
+            glyph_advances: None,
             x: 0.0,
             y: 0.0,
             width: total_w,
@@ -1314,6 +1607,7 @@ impl EqLayout {
                 .max(sup_box.y + sup_box.height);
 
             return LayoutBox {
+                glyph_advances: None,
                 x: 0.0,
                 y: 0.0,
                 width: total_w,
@@ -1325,6 +1619,31 @@ impl EqLayout {
                     sup: Box::new(sup_box),
                 },
             };
+        }
+
+        if self.is_modern_hy() {
+            let mut upper = self.layout_superscript(base, sup, fs);
+            let lower = self.layout_subscript(base, sub, fs);
+            if let (LayoutKind::Superscript { base, sup }, LayoutKind::Subscript { sub, .. }) =
+                (&mut upper.kind, lower.kind)
+            {
+                let mut sub = sub;
+                sub.y += base.y;
+                return LayoutBox {
+                    glyph_advances: None,
+                    x: 0.0,
+                    y: 0.0,
+                    width: upper.width.max(sub.x + sub.width),
+                    height: upper.height.max(sub.y + sub.height),
+                    baseline: upper.baseline,
+                    kind: LayoutKind::SubSup {
+                        base: base.clone(),
+                        sub,
+                        sup: sup.clone(),
+                    },
+                };
+            }
+            unreachable!("script layout kinds");
         }
 
         let sup_shift = b.baseline - sp.height * 0.7;
@@ -1354,7 +1673,9 @@ impl EqLayout {
         base_box.y = base_y;
 
         // legacy 서체는 첨자 앞 thin space (layout_superscript/subscript와 같은 규칙).
-        let script_gap = if self
+        let script_gap = if self.has_modern_hy_metrics(fs) {
+            0.0
+        } else if self
             .font_family
             .as_deref()
             .is_some_and(super::font::is_legacy_equation_font)
@@ -1364,7 +1685,7 @@ impl EqLayout {
             0.0
         };
         let mut sup_box = sp;
-        sup_box.x = base_box.width + script_gap;
+        sup_box.x = base_box.width + script_gap + self.modern_capital_superscript_gap(base, fs);
         sup_box.y = 0.0;
 
         let mut sub_box = sb;
@@ -1374,6 +1695,7 @@ impl EqLayout {
         let total_w = (sup_box.x + sup_box.width).max(sub_box.x + sub_box.width);
 
         LayoutBox {
+            glyph_advances: None,
             x: 0.0,
             y: 0.0,
             width: total_w,
@@ -1445,6 +1767,7 @@ impl EqLayout {
         });
 
         LayoutBox {
+            glyph_advances: None,
             x: 0.0,
             y: 0.0,
             // Task #1233: 피연산자가 연산자에 붙지 않도록 trailing 간격 추가.
@@ -1508,6 +1831,7 @@ impl EqLayout {
         });
 
         LayoutBox {
+            glyph_advances: None,
             x: 0.0,
             y: 0.0,
             // Task #1233: 적분 뒤 피연산자(예: f(x)dx)가 첨자에 붙지 않도록 trailing 간격.
@@ -1544,6 +1868,7 @@ impl EqLayout {
         });
 
         LayoutBox {
+            glyph_advances: None,
             x: 0.0,
             y: 0.0,
             width: w,
@@ -1559,6 +1884,7 @@ impl EqLayout {
     fn layout_matrix(&self, rows: &[Vec<EqNode>], style: MatrixStyle, fs: f64) -> LayoutBox {
         if rows.is_empty() {
             return LayoutBox {
+                glyph_advances: None,
                 x: 0.0,
                 y: 0.0,
                 width: 0.0,
@@ -1634,6 +1960,7 @@ impl EqLayout {
         }
 
         LayoutBox {
+            glyph_advances: None,
             x: 0.0,
             y: 0.0,
             width: full_w,
@@ -1662,6 +1989,7 @@ impl EqLayout {
 
         // 중괄호 포함 레이아웃 → Paren으로 래핑
         let inner = LayoutBox {
+            glyph_advances: None,
             x: 0.0,
             y: 0.0,
             width: full_w,
@@ -1671,12 +1999,14 @@ impl EqLayout {
         };
 
         LayoutBox {
+            glyph_advances: None,
             x: 0.0,
             y: 0.0,
             width: full_w + fs * 0.3,
             height: total_h,
             baseline: total_h / 2.0,
             kind: LayoutKind::Paren {
+                modern_extent: None,
                 left: "{".to_string(),
                 right: String::new(),
                 body: Box::new(inner),
@@ -1730,6 +2060,7 @@ impl EqLayout {
         }
 
         LayoutBox {
+            glyph_advances: None,
             x: 0.0,
             y: 0.0,
             width: max_w,
@@ -1779,6 +2110,7 @@ impl EqLayout {
         let total_h = (y - row_gap).max(0.0);
 
         LayoutBox {
+            glyph_advances: None,
             x: 0.0,
             y: 0.0,
             width: total_w,
@@ -1806,6 +2138,7 @@ impl EqLayout {
         let total_h = y - row_gap;
 
         LayoutBox {
+            glyph_advances: None,
             x: 0.0,
             y: 0.0,
             width: max_w,
@@ -1851,12 +2184,15 @@ impl EqLayout {
         let total_w = left_w + pad + body_box.width + pad + right_w;
 
         LayoutBox {
+            glyph_advances: None,
             x: 0.0,
             y: 0.0,
             width: total_w,
             height: body_box.height,
             baseline: body_box.baseline,
             kind: LayoutKind::Paren {
+                modern_extent: (use_stretch_round && self.is_modern_hy())
+                    .then(|| modern_round_paren_extent(&body_box, body_box.baseline, fs)),
                 left: left.to_string(),
                 right: right.to_string(),
                 body: Box::new(body_box),
@@ -1877,6 +2213,7 @@ impl EqLayout {
         body_box.y = deco_h;
 
         LayoutBox {
+            glyph_advances: None,
             x: 0.0,
             y: 0.0,
             width: body_box.width,
@@ -1898,6 +2235,7 @@ impl EqLayout {
         let styled = self.styled(style);
         let b = styled.layout_node(body, fs);
         LayoutBox {
+            glyph_advances: None,
             x: 0.0,
             y: 0.0,
             width: b.width,
@@ -1928,11 +2266,15 @@ impl EqLayout {
 
     fn layout_space(&self, kind: SpaceKind, fs: f64) -> LayoutBox {
         let w = match kind {
+            SpaceKind::Normal if self.is_modern_hy() => fs * 0.5,
             SpaceKind::Normal => fs * 0.33,
+            // 현대 backtick은 normal 공백(0.5em)의 1/4이다.
+            SpaceKind::Thin if self.is_modern_hy() => fs * 0.5 / 4.0,
             SpaceKind::Thin => fs * 0.17,
             SpaceKind::Tab => fs * 1.0,
         };
         LayoutBox {
+            glyph_advances: None,
             x: 0.0,
             y: 0.0,
             width: w,
@@ -1946,6 +2288,23 @@ impl EqLayout {
 /// 적분 기호 여부 판별
 pub(crate) fn is_integral_symbol(symbol: &str) -> bool {
     matches!(symbol, "∫" | "∬" | "∭" | "∮" | "∯" | "∰")
+}
+
+/// 잎의 높이는 측정에 사용한 em이다. 복합 상자(Limit/BigOp 등)는 부모 크기를
+/// 유지해야 하며, 상자 전체 높이를 글자 크기로 해석하면 안 된다.
+pub(crate) fn leaf_font_size(lb: &LayoutBox, inherited: f64) -> f64 {
+    let leaf = matches!(
+        &lb.kind,
+        LayoutKind::Text(_)
+            | LayoutKind::Number(_)
+            | LayoutKind::Symbol(_)
+            | LayoutKind::Function(_)
+    ) || matches!(&lb.kind, LayoutKind::MathSymbol(s) if !is_integral_symbol(s));
+    if leaf && lb.height > 0.0 {
+        lb.height
+    } else {
+        inherited
+    }
 }
 
 /// 상자를 구성하는 자식들의 실제 배치 하단 (상자 좌표계). 잎 상자는 em 꼬리를
@@ -1965,6 +2324,14 @@ fn content_bottom(lb: &LayoutBox) -> f64 {
         }
         _ => lb.height,
     }
+}
+
+/// 현대 HY 둥근 괄호는 가로 글립 폭을 유지하고 실제 자식 높이를 덮는다.
+/// 축은 HYhwpEQ 등호의 glyf yMin=164, yMax=403 (1024 UPEM) 중앙이다.
+pub(crate) fn modern_round_paren_extent(body: &LayoutBox, baseline: f64, fs: f64) -> (f64, f64) {
+    let height = content_bottom(body).max(fs);
+    let axis = fs * (164.0 + 403.0) / (2.0 * 1024.0);
+    (baseline - axis - height / 2.0, height)
 }
 
 /// 텍스트 폭 추정
@@ -2002,7 +2369,7 @@ fn estimate_unicode_char_width(ch: char) -> f64 {
         // 그리스 대문자 — 일반 라틴 대문자와 유사
         'Α'..='Ω' | 'ϒ' => 0.65,
         // 수학 연산자 — 중간 너비
-        '±' | '∓' | '×' | '÷' | '·' | '∘' | '†' | '‡' | '•' => 0.6,
+        '±' | '∓' | '×' | '÷' | '·' | '⋅' | '∘' | '†' | '‡' | '•' => 0.6,
         // 관계 기호 — 등호 너비와 유사
         '≠' | '≤' | '≥' | '≈' | '≡' | '≅' | '∼' | '≃' | '≍' | '≐' | '∝' | '≺' | '≻' => {
             0.7
@@ -2055,6 +2422,131 @@ mod tests {
         let lb = parse_and_layout("abc", 20.0);
         assert!(lb.width > 0.0);
         assert!(lb.height > 0.0);
+    }
+
+    #[test]
+    fn modern_spacing_uses_symmetric_operators_and_keeps_unary_and_dot_glue() {
+        let var = EqNode::Text("a".into());
+        let plus = EqNode::Symbol("+".into());
+        let equal = EqNode::Symbol("=".into());
+        let dot = EqNode::MathSymbol("⋅".into());
+        let comma = EqNode::Symbol(",".into());
+        let ord = Atom::of(MathClass::Ord);
+        let bin = Atom::of(MathClass::Bin);
+        let rel = Atom::of(MathClass::Rel);
+        let gap = EqLayout::modern_atom_space_em;
+        assert_eq!(gap(&var, ord, &plus, bin), 0.14);
+        assert_eq!(gap(&plus, bin, &var, ord), 0.14);
+        assert_eq!(gap(&var, ord, &equal, rel), 0.21);
+        assert_eq!(gap(&equal, rel, &var, ord), 0.21);
+        assert_eq!(gap(&equal, rel, &plus, ord), 0.0);
+        assert_eq!(gap(&plus, ord, &var, ord), 0.14);
+        assert_eq!(gap(&var, ord, &dot, bin), 0.0);
+        assert_eq!(gap(&dot, bin, &var, ord), 0.0);
+        assert_eq!(gap(&comma, Atom::of(MathClass::Punct), &var, ord), 0.07);
+    }
+
+    #[test]
+    fn modern_declarations_restart_incoming_operator_glue_and_scripts_keep_full_glue() {
+        use super::super::symbols::FontStyleKind;
+        let variable = EqNode::Text("x".into());
+        let script = EqNode::Superscript {
+            base: Box::new(variable.clone()),
+            sup: Box::new(EqNode::Number("2".into())),
+        };
+        let plus = EqNode::Symbol("+".into());
+        let equal = EqNode::Symbol("=".into());
+        let declared = EqNode::FontDeclaration {
+            style: FontStyleKind::Roman,
+            body: Box::new(equal.clone()),
+        };
+        let inherited = EqNode::FontStyle {
+            style: FontStyleKind::Roman,
+            body: Box::new(equal.clone()),
+        };
+        let declared_variable = EqNode::FontDeclaration {
+            style: FontStyleKind::Italic,
+            body: Box::new(variable.clone()),
+        };
+        let ord = Atom::of(MathClass::Ord);
+        let bin = Atom::of(MathClass::Bin);
+        let rel = Atom::of(MathClass::Rel);
+        let gap = EqLayout::modern_atom_space_em;
+        assert_eq!(gap(&script, ord, &plus, bin), 0.20);
+        assert_eq!(gap(&script, ord, &equal, rel), 0.30);
+        assert_eq!(gap(&script, ord, &inherited, rel), 0.30);
+        assert_eq!(gap(&script, ord, &declared, rel), 0.0);
+        assert_eq!(gap(&plus, bin, &declared_variable, ord), 0.14);
+    }
+
+    #[test]
+    fn superscript_overhang_preserves_a_wider_subscript_extent() {
+        use super::super::parser::parse;
+        assert!(EqLayout::ends_in_capital_superscript(&parse("rm R_i^2")));
+        assert!(!EqLayout::ends_in_capital_superscript(&parse("x_i^2")));
+        assert!(!EqLayout::ends_in_capital_superscript(&parse("int_0^2")));
+        let mut layout = parse_and_layout("R_i^2", 10.0);
+        let LayoutKind::SubSup { base, sub, sup } = &mut layout.kind else {
+            panic!("sub/sup layout");
+        };
+        base.width = 10.0;
+        sub.x = 10.0;
+        sub.width = 6.0;
+        sup.x = 12.0;
+        sup.width = 3.0;
+        layout.width = 16.0;
+        assert_eq!(EqLayout::modern_script_overhang(&layout), 0.0);
+        let LayoutKind::SubSup { sub, .. } = &mut layout.kind else {
+            unreachable!()
+        };
+        sub.width = 1.0;
+        layout.width = 15.0;
+        assert_eq!(EqLayout::modern_script_overhang(&layout), 2.0);
+    }
+
+    #[test]
+    fn modern_parenthesis_paint_tracks_content_without_changing_logical_bounds() {
+        let ast = EqParser::new(tokenize("LEFT ( a over b RIGHT )")).parse();
+        for fs in [10.0, 20.0] {
+            let modern = EqLayout::with_font(fs, "HYhwpEQ")
+                .with_version("60")
+                .layout(&ast);
+            let LayoutKind::Paren {
+                body,
+                modern_extent: Some((top, height)),
+                ..
+            } = &modern.kind
+            else {
+                panic!("modern round fraction parenthesis must carry its paint extent");
+            };
+            assert_eq!(modern.height, body.height);
+            assert_eq!(modern.baseline, body.baseline);
+            assert!(*height > fs * 2.0 && *height <= modern.height);
+            assert!(*top >= -fs * 0.1 && top + height <= modern.height + fs * 0.1);
+            for engine in [
+                EqLayout::with_font(fs, "HYhwpEQ").with_version(""),
+                EqLayout::new(fs),
+            ] {
+                assert!(matches!(
+                    engine.layout(&ast).kind,
+                    LayoutKind::Paren {
+                        modern_extent: None,
+                        ..
+                    }
+                ));
+            }
+        }
+        let short = EqParser::new(tokenize("LEFT ( x RIGHT )")).parse();
+        assert!(matches!(
+            EqLayout::with_font(10.0, "HYhwpEQ")
+                .with_version("60")
+                .layout(&short)
+                .kind,
+            LayoutKind::Paren {
+                modern_extent: None,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -2168,6 +2660,8 @@ mod tests {
             a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-9)
         };
         assert!(close(&gaps("a+b"), &[medium, medium]));
+        assert!(close(&gaps("a CDOT b"), &[medium, medium]));
+        assert!(close(&gaps(r"a \cdot b"), &[medium, medium]));
         // 관계 기호 뒤·행 첫머리의 -는 부호(Ord)라 피연산자에 붙는다.
         assert!(close(&gaps("a=-b"), &[thick, thick, 0.0]));
         assert!(close(&gaps("-a+b"), &[0.0, medium, medium]));
@@ -2188,6 +2682,60 @@ mod tests {
         // 함수 이름(Op) 뒤 피연산자는 thin space, 괄호(Open)는 붙는다.
         assert!(close(&gaps("sin x"), &[fs * THIN_SPACE_EM]));
         assert!(gaps("sin (x)")[0].abs() < 1e-9);
+    }
+
+    #[test]
+    fn modern_hy_scripts_share_anchors_and_explicit_spaces_scale_with_em() {
+        for fs in [10.0, 20.0] {
+            let engine = EqLayout::with_font(fs, "HYhwpEQ");
+            let sub = engine.layout(&EqParser::new(tokenize("x_i")).parse());
+            let sup = engine.layout(&EqParser::new(tokenize("x^2")).parse());
+            let both = engine.layout(&EqParser::new(tokenize("x_i^2")).parse());
+            let LayoutKind::Subscript { sub: lower, .. } = &sub.kind else {
+                panic!("sub")
+            };
+            assert!((lower.y + lower.baseline - sub.baseline - fs * 0.25).abs() < 1e-8);
+            let LayoutKind::Superscript { sup: upper, .. } = &sup.kind else {
+                panic!("sup")
+            };
+            let LayoutKind::SubSup {
+                sub: combined_lower,
+                sup: combined_upper,
+                ..
+            } = &both.kind
+            else {
+                panic!("both")
+            };
+            assert!(
+                (combined_lower.y + combined_lower.baseline - both.baseline - fs * 0.25).abs()
+                    < 1e-8
+            );
+            assert!(
+                (combined_upper.y + combined_upper.baseline
+                    - both.baseline
+                    - (upper.y + upper.baseline - sup.baseline))
+                    .abs()
+                    < 1e-8
+            );
+            assert_eq!(engine.layout_space(SpaceKind::Normal, fs).width, fs * 0.5);
+            assert_eq!(
+                engine.layout_space(SpaceKind::Thin, fs).width * 4.0,
+                engine.layout_space(SpaceKind::Normal, fs).width
+            );
+            // HFT와 일반 수식의 기존 첨자/공백 계약은 그대로 둔다.
+            for fallback in [engine.with_version(""), EqLayout::new(fs)] {
+                assert_eq!(
+                    fallback.layout_space(SpaceKind::Normal, fs).width,
+                    fs * 0.33
+                );
+                assert_eq!(fallback.layout_space(SpaceKind::Thin, fs).width, fs * 0.17);
+                let old = fallback.layout(&EqParser::new(tokenize("x_i")).parse());
+                let LayoutKind::Subscript { base, sub } = old.kind else {
+                    panic!("sub")
+                };
+                assert!((sub.y - base.baseline * 0.4).abs() < 1e-8);
+            }
+        }
     }
 
     #[test]
@@ -2631,7 +3179,8 @@ fn atom_of(node: &EqNode) -> AtomSlot {
         | EqNode::Subscript { base, .. }
         | EqNode::SubSup { base, .. }
         | EqNode::Color { body: base, .. }
-        | EqNode::FontStyle { body: base, .. } => {
+        | EqNode::FontStyle { body: base, .. }
+        | EqNode::FontDeclaration { body: base, .. } => {
             return match atom_of(base) {
                 AtomSlot::Atom(atom) => AtomSlot::Atom(atom),
                 _ => AtomSlot::Atom(Atom::of(MathClass::Ord)),
@@ -2762,8 +3311,8 @@ pub(crate) fn symbol_class(text: &str) -> MathClass {
         | "≤" | "≥" | "≠" | "≈" | "≡" | "∼" | "≃" | "≅" | "∝" | "≪" | "≫" | "→" | "←" | "↔"
         | "⇒" | "⇐" | "⇔" | "∈" | "∉" | "∋" | "⊂" | "⊃" | "⊆" | "⊇" | "≒" | "≐" | "∥" | "↦"
         | "⟶" | "⟵" | "⟹" | "⟸" | "⟺" => MathClass::Rel,
-        "+" | "-" | "−" | "*" | "×" | "÷" | "±" | "∓" | "·" | "∙" | "∘" | "⊕" | "⊖" | "⊗" | "⊙"
-        | "∪" | "∩" | "∧" | "∨" | "⊔" | "⊓" | "∖" => MathClass::Bin,
+        "+" | "-" | "−" | "*" | "×" | "÷" | "±" | "∓" | "·" | "⋅" | "∙" | "∘" | "⊕" | "⊖" | "⊗"
+        | "⊙" | "∪" | "∩" | "∧" | "∨" | "⊔" | "⊓" | "∖" => MathClass::Bin,
         "(" | "[" | "{" | "⟨" | "⌈" | "⌊" => MathClass::Open,
         ")" | "]" | "}" | "⟩" | "⌉" | "⌋" | "!" => MathClass::Close,
         "," | ";" => MathClass::Punct,

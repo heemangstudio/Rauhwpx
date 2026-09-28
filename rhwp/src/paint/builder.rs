@@ -1169,6 +1169,7 @@ mod tests {
         EquationNode {
             svg_content: "<text>x</text>".to_string(),
             layout_box: LayoutBox {
+                glyph_advances: None,
                 x: 0.0,
                 y: 0.0,
                 width: 8.0,

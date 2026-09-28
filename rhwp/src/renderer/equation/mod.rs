@@ -33,6 +33,139 @@ pub(crate) fn control_baseline_hwp(eq: &crate::model::control::Equation, natural
     }
 }
 
+/// The equation's ink box may extend below its line box. When `affectLSpacing` is
+/// false, its lower script overhang does not enlarge the line; a superscript
+/// above EqLayout's ordinary 0.8em ascent still needs room. The authored object
+/// height is combined with this result by the caller.
+pub(crate) fn line_flow_height(
+    natural_height: f64,
+    natural_baseline: f64,
+    em: f64,
+    affect_line_spacing: bool,
+) -> f64 {
+    if affect_line_spacing || em <= 0.0 {
+        natural_height
+    } else {
+        em + (natural_baseline - em * 0.8).max(0.0)
+    }
+}
+
+/// Older HFT controls retain their established full natural box. The reduced
+/// lower overhang belongs to modern EQEDIT layout.
+pub(crate) fn control_line_flow_height(
+    eq: &crate::model::control::Equation,
+    natural_height: f64,
+    natural_baseline: f64,
+    em: f64,
+) -> f64 {
+    let modern_hy_face = eq.version_info == "Equation Version 60"
+        && font::is_legacy_equation_font(&eq.font_name)
+        && (crate::renderer::runtime_font_metrics::line_height_ratio(
+            &eq.font_name,
+            false,
+            false,
+        )
+        .is_some()
+            || {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    crate::renderer::font_paths::custom_face_line_height_ratio(
+                        &eq.font_name,
+                        false,
+                        false,
+                    )
+                    .is_some()
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    false
+                }
+            });
+    if !modern_hy_face {
+        natural_height
+    } else {
+        line_flow_height(
+            natural_height,
+            natural_baseline,
+            em,
+            eq.common.affect_line_spacing,
+        )
+    }
+}
+
+/// Occupied ascent and descent of one inline equation at its source anchor.
+pub(crate) fn control_flow_ascent_descent_px(
+    eq: &crate::model::control::Equation,
+    dpi: f64,
+) -> (f64, f64) {
+    let metrics = intrinsic_metrics_px_with_version(
+        &eq.script,
+        eq.font_size,
+        dpi,
+        &eq.font_name,
+        &eq.version_info,
+    );
+    let stored_height = crate::renderer::hwpunit_to_px(eq.common.height as i32, dpi);
+    let flow_height = control_line_flow_height(
+        eq,
+        metrics.height,
+        metrics.baseline,
+        crate::renderer::hwpunit_to_px(eq.font_size as i32, dpi),
+    );
+    let anchor = control_baseline_hwp(eq, metrics.baseline * 7200.0 / dpi) * dpi / 7200.0;
+    (
+        anchor + crate::renderer::hwpunit_to_px(eq.common.margin.top as i32, dpi),
+        stored_height.max(flow_height) - anchor
+            + crate::renderer::hwpunit_to_px(eq.common.margin.bottom as i32, dpi),
+    )
+}
+
+/// Occupied ascent and descent for equations attached to one composed line.
+/// Table measurement must use the same box that paragraph paint uses; the
+/// generated LineSeg can still contain its pre-import em height.
+pub(crate) fn composed_line_flow_height_px(
+    para: &crate::model::paragraph::Paragraph,
+    composed: &crate::renderer::composer::ComposedParagraph,
+    line_index: usize,
+    dpi: f64,
+) -> Option<f64> {
+    use crate::model::control::Control;
+    use crate::model::paragraph::LineSeg;
+    // Authored line boxes already incorporate their equation occupancy. Paint
+    // trusts those metrics, whereas implementation-property LineSegs are
+    // regenerated from the currently available equation face.
+    if para.line_segs.is_empty()
+        || !para.text.trim().is_empty()
+        || para.controls.len() != 1
+        || para
+            .line_segs
+            .iter()
+            .any(|line| line.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY == 0)
+    {
+        return None;
+    }
+    let mut max_ascent = 0.0f64;
+    let mut max_descent = 0.0f64;
+    let mut found = false;
+    for control in composed
+        .inline_controls
+        .iter()
+        .filter(|control| control.line_index == line_index)
+    {
+        let Some(Control::Equation(eq)) = para.controls.get(control.control_index) else {
+            continue;
+        };
+        if !eq.common.treat_as_char {
+            continue;
+        }
+        let (ascent, descent) = control_flow_ascent_descent_px(eq, dpi);
+        max_ascent = max_ascent.max(ascent);
+        max_descent = max_descent.max(descent);
+        found = true;
+    }
+    found.then_some(max_ascent + max_descent)
+}
+
 /// Natural equation box metrics in the renderer's pixel coordinate system.
 ///
 /// Inline layout must use the same ascent/descent as the painter.  Deriving a
@@ -190,5 +323,51 @@ mod metric_tests {
             baseline < (height as f64 * 0.85).round() as u32,
             "a summation baseline must not be synthesized from 85% of its total height"
         );
+    }
+
+    #[test]
+    fn lower_ink_overhang_changes_flow_only_when_requested() {
+        let em = 10.0;
+        let ascent_with_superscript = 9.8;
+        assert_eq!(
+            line_flow_height(11.8, ascent_with_superscript, em, false),
+            11.8
+        );
+        assert_eq!(
+            line_flow_height(13.6, ascent_with_superscript, em, false),
+            11.8
+        );
+        assert_eq!(
+            line_flow_height(13.6, ascent_with_superscript, em, true),
+            13.6
+        );
+    }
+    #[test]
+    fn reduced_flow_requires_a_loaded_modern_hy_face() {
+        struct ClearFontMetrics;
+        impl Drop for ClearFontMetrics {
+            fn drop(&mut self) {
+                crate::renderer::runtime_font_metrics::clear();
+            }
+        }
+        let _clear_font_metrics = ClearFontMetrics;
+        let mut eq = crate::model::control::Equation::default();
+        eq.common.affect_line_spacing = false;
+        eq.font_name = "UnloadedEquationFace".to_string();
+        assert_eq!(control_line_flow_height(&eq, 13.6, 9.8, 10.0), 13.6);
+        crate::renderer::runtime_font_metrics::register(
+            include_bytes!("../../../tests/fixtures/fonts/RHWPShapingFixture.ttf"),
+            &["HYhwpEQ".to_string()],
+            false,
+            false,
+        )
+        .expect("register equation face metrics");
+        eq.font_name = "HYhwpEQ".to_string();
+        assert_eq!(control_line_flow_height(&eq, 13.6, 9.8, 10.0), 11.8);
+        eq.version_info.clear();
+        assert_eq!(control_line_flow_height(&eq, 13.6, 9.8, 10.0), 13.6);
+        eq.version_info = "Equation Version 60".to_string();
+        eq.font_name = "OtherEquationFace".to_string();
+        assert_eq!(control_line_flow_height(&eq, 13.6, 9.8, 10.0), 13.6);
     }
 }

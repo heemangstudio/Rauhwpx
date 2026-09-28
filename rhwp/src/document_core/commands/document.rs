@@ -262,12 +262,75 @@ mod synthetic_percent_line_spacing_tests {
             &styles,
             96.0,
         ));
-        let visible_pitch = projected[0].line_segs[0].line_height
-            + projected[0].line_segs[0].line_spacing;
-        let empty_pitch = projected[1].line_segs[0].line_height
-            + projected[1].line_segs[0].line_spacing;
+        let visible_pitch =
+            projected[0].line_segs[0].line_height + projected[0].line_segs[0].line_spacing;
+        let empty_pitch =
+            projected[1].line_segs[0].line_height + projected[1].line_segs[0].line_spacing;
         assert!((f64::from(visible_pitch) - 1_000.0 * 1.3 * 1.3 * 1.35).abs() <= 1.0);
         assert!((f64::from(empty_pitch) - 1_000.0 * 1.35).abs() <= 1.0);
+    }
+
+    #[test]
+    fn generated_equation_width_uses_script_metrics_without_touching_authored_widths() {
+        const FONT: &[u8] = include_bytes!("../../../tests/fixtures/fonts/RHWPShapingFixture.ttf");
+        struct MetricsGuard;
+        impl Drop for MetricsGuard {
+            fn drop(&mut self) {
+                crate::renderer::runtime_font_metrics::clear();
+            }
+        }
+        let _metrics = MetricsGuard;
+        let face = "__rhwp_generated_equation_width_fixture__";
+        crate::renderer::runtime_font_metrics::register(FONT, &[face.to_string()], false, false)
+            .unwrap();
+        let mut eq = crate::model::control::Equation::default();
+        eq.font_name = face.to_string();
+        eq.font_size = 1_000;
+        eq.script = "x + y".to_string();
+        eq.common.treat_as_char = true;
+        eq.common.width = 100;
+        let narrow = Paragraph {
+            controls: vec![Control::Equation(Box::new(eq.clone()))],
+            line_segs: vec![LineSeg {
+                line_height: 2_000,
+                line_spacing: 500,
+                tag: LineSeg::TAG_IMPLEMENTATION_PROPERTY,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut wide = narrow.clone();
+        if let Control::Equation(eq) = &mut wide.controls[0] {
+            eq.common.width = 90_000;
+        }
+        let mut authored = narrow.clone();
+        authored.line_segs[0].tag = 0;
+        let source = vec![narrow.clone(), wide.clone(), authored];
+        let mut projected = source.clone();
+        assert!(DocumentCore::project_synthetic_percent_line_spacing(
+            &mut projected,
+            &ResolvedStyleSet::default(),
+            96.0
+        ));
+        let width = |p: &Paragraph| match &p.controls[0] {
+            Control::Equation(eq) => eq.common.width,
+            _ => unreachable!(),
+        };
+        assert_eq!(width(&projected[0]), width(&projected[1]));
+        assert!(width(&projected[0]) > 100 && width(&projected[0]) < 90_000);
+        assert_eq!(width(&projected[2]), 100);
+        assert_eq!(width(&source[0]), 100);
+        assert_eq!(width(&source[1]), 90_000);
+        let pitch = |p: &Paragraph| {
+            let seg = &p.line_segs[0];
+            (
+                seg.line_height,
+                seg.line_spacing,
+                seg.baseline_distance,
+                seg.vertical_pos,
+            )
+        };
+        assert_eq!(pitch(&projected[0]), pitch(&source[0]));
     }
 
     #[test]
@@ -1204,6 +1267,56 @@ impl DocumentCore {
             let mut changed = false;
             for para in paragraphs {
                 let style = styles.para_styles.get(para.para_shape_id as usize);
+                // 변환기가 쓴 합성 EQEDIT 폭은 script/font의 실제 폭과 다를 수 있다.
+                // Hancom은 가져올 때 이를 다시 계산한다. 렌더 복제본에서만 갱신하여
+                // composer의 가운데 정렬과 모든 paint 경로가 같은 자연 폭을 보게 한다.
+                if para.line_segs.len() == 1
+                    && para.line_segs[0].tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY != 0
+                    && para
+                        .text
+                        .chars()
+                        .all(|c| c.is_whitespace() || c == '\u{0002}' || c == '\u{fffc}')
+                {
+                    if let [Control::Equation(eq)] = para.controls.as_mut_slice() {
+                        let available = crate::renderer::runtime_font_metrics::line_height_ratio(
+                            &eq.font_name,
+                            false,
+                            false,
+                        )
+                        .is_some()
+                            || {
+                                #[cfg(not(target_arch = "wasm32"))]
+                                {
+                                    crate::renderer::font_paths::custom_face_line_height_ratio(
+                                        &eq.font_name,
+                                        false,
+                                        false,
+                                    )
+                                    .is_some()
+                                }
+                                #[cfg(target_arch = "wasm32")]
+                                {
+                                    false
+                                }
+                            };
+                        if eq.common.treat_as_char && available {
+                            let metrics =
+                                crate::renderer::equation::intrinsic_metrics_px_with_version(
+                                    &eq.script,
+                                    eq.font_size,
+                                    dpi,
+                                    &eq.font_name,
+                                    &eq.version_info,
+                                );
+                            let width = crate::renderer::px_to_hwpunit_round(metrics.width, dpi)
+                                .max(1) as u32;
+                            if eq.common.width != width {
+                                eq.common.width = width;
+                                changed = true;
+                            }
+                        }
+                    }
+                }
                 // An EQEDIT-only generated line records the object's em-sized box, not
                 // the Mac font line box. Keep the object's intrinsic overflow, then
                 // derive the percent pitch and baseline from its actual equation face.
@@ -1287,8 +1400,14 @@ impl DocumentCore {
                         &eq.font_name,
                         &eq.version_info,
                     );
+                    let flow_height = crate::renderer::equation::control_line_flow_height(
+                        eq,
+                        intrinsic.height,
+                        intrinsic.baseline,
+                        em,
+                    );
                     let pitch = raw_height * font_height * style.line_spacing / 100.0
-                        + (intrinsic.height - em).max(0.0);
+                        + (flow_height - em).max(0.0);
                     let baseline = (crate::renderer::hwpunit_to_px(seg.baseline_distance, dpi)
                         + em * font_gap)
                         .max(intrinsic.baseline);
@@ -1297,7 +1416,7 @@ impl DocumentCore {
                         return None;
                     }
                     let actual_baseline = raw_height * f64::from(baseline_percent) / 100.0;
-                    let occupied_height = raw_height.max(intrinsic.height);
+                    let occupied_height = raw_height.max(flow_height);
                     Some((pitch - occupied_height, actual_baseline, baseline_percent))
                 })();
                 if let Some((spacing, baseline, baseline_percent)) = equation_projection {

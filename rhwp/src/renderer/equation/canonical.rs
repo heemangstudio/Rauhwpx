@@ -32,73 +32,84 @@ impl FontState {
 }
 
 pub fn to_hwp_script(node: &EqNode) -> Result<String, CanonicalScriptError> {
-    script_with_style(
-        node,
-        FontState {
-            italic: true,
-            bold: false,
-        },
-        &mut false,
-    )
+    let initial = FontState {
+        italic: true,
+        bold: false,
+    };
+    let mut active = initial;
+    script_with_style(node, initial, &mut active)
 }
 
-// HWP rm persists across braces. A later child under a scoped bold style must
-// reopen its own bold argument after rm has cleared the active weight.
-fn begins_bold_scope(node: &EqNode) -> bool {
-    match node {
-        EqNode::FontStyle {
-            style: FontStyleKind::Bold,
-            ..
-        } => true,
-        EqNode::FontStyle {
-            style: FontStyleKind::Roman | FontStyleKind::Italic,
-            body,
-        } => begins_bold_scope(body),
-        _ => false,
-    }
-}
-
+/// HWP 글꼴 선언은 중괄호를 넘어 유지된다. 원하는 스타일과 실제 출력 상태를
+/// 분리해 상속된 FontStyle에 불필요한 rm/it 경계를 만들지 않는다.
 fn script_with_style(
     node: &EqNode,
     state: FontState,
-    roman_declared: &mut bool,
+    active: &mut FontState,
 ) -> Result<String, CanonicalScriptError> {
     let mut output = String::new();
-    if state.bold && *roman_declared && !begins_bold_scope(node) {
-        let mut scoped_declaration = false;
-        write_node(node, &mut output, state, &mut scoped_declaration)?;
-        let bold = format!("{{bold {{{}}}}}", output.trim());
-        return Ok(if state.italic {
-            bold
-        } else {
-            format!("{{rm {{{bold}}}}}")
-        });
+    let has_own_glyph = matches!(
+        node,
+        EqNode::Text(_)
+            | EqNode::Number(_)
+            | EqNode::Symbol(_)
+            | EqNode::MathSymbol(_)
+            | EqNode::Function(_)
+            | EqNode::Quoted(_)
+            | EqNode::BigOp { .. }
+            | EqNode::Limit { .. }
+    );
+    if has_own_glyph {
+        if !state.bold && active.bold {
+            output.push_str("rm ");
+            *active = active.styled(FontStyleKind::Roman);
+        }
+        if state.italic != active.italic {
+            output.push_str(if state.italic { "it " } else { "rm " });
+            *active = active.styled(if state.italic {
+                FontStyleKind::Italic
+            } else {
+                FontStyleKind::Roman
+            });
+        }
     }
-    write_node(node, &mut output, state, roman_declared)?;
+    if state.bold
+        && !active.bold
+        && !matches!(
+            node,
+            EqNode::FontDeclaration { .. } | EqNode::FontStyle { .. }
+        )
+    {
+        let old_active = *active;
+        active.bold = true;
+        let mut body = String::new();
+        write_node(node, &mut body, state, active)?;
+        *active = old_active;
+        output.push_str(&format!("{{bold {{{}}}}}", body.trim()));
+    } else {
+        write_node(node, &mut output, state, active)?;
+    }
     Ok(output.trim().to_string())
 }
 
 fn group(
     node: &EqNode,
     state: FontState,
-    roman_declared: &mut bool,
+    active: &mut FontState,
 ) -> Result<String, CanonicalScriptError> {
-    Ok(format!(
-        "{{{}}}",
-        script_with_style(node, state, roman_declared)?
-    ))
+    Ok(format!("{{{}}}", script_with_style(node, state, active)?))
 }
 
 fn write_node(
     node: &EqNode,
     output: &mut String,
     state: FontState,
-    roman_declared: &mut bool,
+    active: &mut FontState,
 ) -> Result<(), CanonicalScriptError> {
     match node {
         EqNode::Row(children) => {
             for child in children {
-                let text = script_with_style(child, state, roman_declared)?;
+                let text = script_with_style(child, state, active)?;
                 if text.is_empty() {
                     continue;
                 }
@@ -114,58 +125,58 @@ fn write_node(
         }
         EqNode::MathSymbol(symbol) => output.push_str(math_symbol_name(symbol)),
         EqNode::Fraction { numer, denom } => {
-            output.push_str(&group(numer, state, roman_declared)?);
+            output.push_str(&group(numer, state, active)?);
             output.push_str(" over ");
-            output.push_str(&group(denom, state, roman_declared)?);
+            output.push_str(&group(denom, state, active)?);
         }
         EqNode::Atop { top, bottom } => {
-            output.push_str(&group(top, state, roman_declared)?);
+            output.push_str(&group(top, state, active)?);
             output.push_str(" atop ");
-            output.push_str(&group(bottom, state, roman_declared)?);
+            output.push_str(&group(bottom, state, active)?);
         }
         EqNode::Sqrt { index, body } => {
             if let Some(index) = index {
                 output.push_str("root ");
-                output.push_str(&group(index, state, roman_declared)?);
+                output.push_str(&group(index, state, active)?);
                 output.push_str(" of ");
             } else {
                 output.push_str("sqrt ");
             }
-            output.push_str(&group(body, state, roman_declared)?);
+            output.push_str(&group(body, state, active)?);
         }
         EqNode::Superscript { base, sup } => {
-            output.push_str(&group(base, state, roman_declared)?);
+            output.push_str(&group(base, state, active)?);
             output.push('^');
-            output.push_str(&group(sup, state, roman_declared)?);
+            output.push_str(&group(sup, state, active)?);
         }
         EqNode::Subscript { base, sub } => {
-            output.push_str(&group(base, state, roman_declared)?);
+            output.push_str(&group(base, state, active)?);
             output.push('_');
-            output.push_str(&group(sub, state, roman_declared)?);
+            output.push_str(&group(sub, state, active)?);
         }
         EqNode::SubSup { base, sub, sup } => {
-            output.push_str(&group(base, state, roman_declared)?);
+            output.push_str(&group(base, state, active)?);
             output.push('_');
-            output.push_str(&group(sub, state, roman_declared)?);
+            output.push_str(&group(sub, state, active)?);
             output.push('^');
-            output.push_str(&group(sup, state, roman_declared)?);
+            output.push_str(&group(sup, state, active)?);
         }
         EqNode::BigOp { symbol, sub, sup } => {
             output.push_str(big_operator_name(symbol));
             if let Some(sub) = sub {
                 output.push('_');
-                output.push_str(&group(sub, state, roman_declared)?);
+                output.push_str(&group(sub, state, active)?);
             }
             if let Some(sup) = sup {
                 output.push('^');
-                output.push_str(&group(sup, state, roman_declared)?);
+                output.push_str(&group(sup, state, active)?);
             }
         }
         EqNode::Limit { is_upper, sub } => {
             output.push_str(if *is_upper { "Lim" } else { "lim" });
             if let Some(sub) = sub {
                 output.push('_');
-                output.push_str(&group(sub, state, roman_declared)?);
+                output.push_str(&group(sub, state, active)?);
             }
         }
         EqNode::Matrix { rows, style } => {
@@ -184,12 +195,12 @@ fn write_node(
                     if column_index > 0 {
                         output.push_str(" & ");
                     }
-                    output.push_str(&script_with_style(cell, state, roman_declared)?);
+                    output.push_str(&script_with_style(cell, state, active)?);
                 }
             }
             output.push('}');
         }
-        EqNode::Cases { rows } => write_rows("cases", rows, output, state, roman_declared)?,
+        EqNode::Cases { rows } => write_rows("cases", rows, output, state, active)?,
         EqNode::Pile { rows, align } => write_rows(
             match align {
                 PileAlign::Center => "pile",
@@ -199,7 +210,7 @@ fn write_node(
             rows,
             output,
             state,
-            roman_declared,
+            active,
         )?,
         EqNode::EqAlign { rows } => {
             output.push_str("eqalign {");
@@ -207,9 +218,9 @@ fn write_node(
                 if index > 0 {
                     output.push_str(" # ");
                 }
-                output.push_str(&script_with_style(left, state, roman_declared)?);
+                output.push_str(&script_with_style(left, state, active)?);
                 output.push_str(" & ");
-                output.push_str(&script_with_style(right, state, roman_declared)?);
+                output.push_str(&script_with_style(right, state, active)?);
             }
             output.push('}');
         }
@@ -217,65 +228,58 @@ fn write_node(
             output.push_str(if under.is_some() { "rel " } else { "buildrel " });
             output.push_str(arrow);
             output.push(' ');
-            output.push_str(&group(over, state, roman_declared)?);
+            output.push_str(&group(over, state, active)?);
             if let Some(under) = under {
                 output.push(' ');
-                output.push_str(&group(under, state, roman_declared)?);
+                output.push_str(&group(under, state, active)?);
             }
         }
         EqNode::Paren { left, right, body } => {
             output.push_str("left ");
             output.push_str(bracket_name(left, true));
             output.push(' ');
-            output.push_str(&script_with_style(body, state, roman_declared)?);
+            output.push_str(&script_with_style(body, state, active)?);
             output.push_str(" right ");
             output.push_str(bracket_name(right, false));
         }
         EqNode::Decoration { kind, body } => {
             output.push_str(decoration_name(*kind));
             output.push(' ');
-            output.push_str(&group(body, state, roman_declared)?);
+            output.push_str(&group(body, state, active)?);
         }
-        EqNode::FontStyle { style, body } => {
-            if (*style == FontStyleKind::Italic && state.italic)
-                || (*style == FontStyleKind::Roman && !state.italic && !state.bold)
-            {
-                write_node(body, output, state, roman_declared)?;
-                return Ok(());
-            }
+        EqNode::FontDeclaration { style, body } => {
             let name = match style {
                 FontStyleKind::Roman => "rm",
                 FontStyleKind::Italic => "it",
-                FontStyleKind::Bold => "bold",
                 unsupported => {
                     return Err(CanonicalScriptError::UnsupportedFontStyle(*unsupported))
                 }
             };
-            let body_state = state.styled(*style);
-            output.push('{');
             output.push_str(name);
             output.push(' ');
+            *active = active.styled(*style);
+            output.push_str(&script_with_style(body, state.styled(*style), active)?);
+        }
+        EqNode::FontStyle { style, body } => {
+            if !matches!(
+                style,
+                FontStyleKind::Roman | FontStyleKind::Italic | FontStyleKind::Bold
+            ) {
+                return Err(CanonicalScriptError::UnsupportedFontStyle(*style));
+            }
             if *style == FontStyleKind::Bold {
-                // The parser scopes declarations inside a bold argument.
-                let mut scoped_declaration = false;
-                output.push_str(&group(body, body_state, &mut scoped_declaration)?);
+                let old_active = *active;
+                active.bold = true;
+                let body = script_with_style(body, state.styled(*style), active)?;
+                *active = old_active;
+                output.push_str(&format!("{{bold {{{body}}}}}"));
             } else {
-                if *style == FontStyleKind::Roman {
-                    *roman_declared = true;
-                }
-                output.push_str(&group(body, body_state, roman_declared)?);
+                output.push_str(&script_with_style(body, state.styled(*style), active)?);
             }
-            if body_state.italic != state.italic {
-                output.push_str(if state.italic { " it" } else { " rm" });
-                if !state.italic {
-                    *roman_declared = true;
-                }
-            }
-            output.push('}');
         }
         EqNode::Color { r, g, b, body } => {
             output.push_str(&format!("color {{{r},{g},{b}}} "));
-            output.push_str(&group(body, state, roman_declared)?);
+            output.push_str(&group(body, state, active)?);
         }
         EqNode::Space(SpaceKind::Normal) => output.push('~'),
         EqNode::Space(SpaceKind::Thin) => output.push('`'),
@@ -296,7 +300,7 @@ fn write_rows(
     rows: &[EqNode],
     output: &mut String,
     state: FontState,
-    roman_declared: &mut bool,
+    active: &mut FontState,
 ) -> Result<(), CanonicalScriptError> {
     output.push_str(command);
     output.push_str(" {");
@@ -304,7 +308,7 @@ fn write_rows(
         if index > 0 {
             output.push_str(" # ");
         }
-        output.push_str(&script_with_style(row, state, roman_declared)?);
+        output.push_str(&script_with_style(row, state, active)?);
     }
     output.push('}');
     Ok(())
@@ -392,7 +396,7 @@ fn math_symbol_name(symbol: &str) -> &str {
         "∓" => "mp",
         "×" => "times",
         "÷" => "div",
-        "·" => "cdot",
+        "⋅" => "cdot",
         "∘" => "circ",
         "•" => "bullet",
         "≠" => "neq",
@@ -507,6 +511,15 @@ mod tests {
     }
 
     #[test]
+    fn dot_operator_commands_preserve_their_glyph_and_literal_middle_dot() {
+        for script in ["a CDOT b", r"a \cdot b", "a · b"] {
+            let output = canonical(script);
+            assert_eq!(parse(&output), parse(script), "{script} -> {output}");
+        }
+        assert_ne!(parse("a CDOT b"), parse("a · b"));
+    }
+
+    #[test]
     fn canonicalizes_common_latex_without_backslash_commands() {
         for script in [
             r"\frac{1}{2}",
@@ -540,7 +553,22 @@ mod tests {
                     style: FontStyleKind::Italic,
                     body,
                 } if italic => normalize(*body, italic),
+                EqNode::FontDeclaration {
+                    style: FontStyleKind::Italic,
+                    body,
+                } if italic => normalize(*body, italic),
                 EqNode::FontStyle { style, body } => EqNode::FontStyle {
+                    style,
+                    body: Box::new(normalize(
+                        *body,
+                        match style {
+                            FontStyleKind::Roman => false,
+                            FontStyleKind::Italic => true,
+                            _ => italic,
+                        },
+                    )),
+                },
+                EqNode::FontDeclaration { style, body } => EqNode::FontStyle {
                     style,
                     body: Box::new(normalize(
                         *body,
@@ -565,7 +593,9 @@ mod tests {
 
     fn letter_styles(node: &EqNode, state: FontState, out: &mut Vec<(String, bool, bool)>) {
         match node {
-            EqNode::FontStyle { style, body } => letter_styles(body, state.styled(*style), out),
+            EqNode::FontStyle { style, body } | EqNode::FontDeclaration { style, body } => {
+                letter_styles(body, state.styled(*style), out)
+            }
             EqNode::Row(nodes) => {
                 for node in nodes {
                     letter_styles(node, state, out);
@@ -689,6 +719,63 @@ mod tests {
     #[test]
     fn persistent_roman_simultaneous_scripts_are_canonical_once() {
         let output = canonical("rm x_i^2");
+        assert_eq!(canonical(&output), output);
+    }
+
+    #[test]
+    fn explicit_declarations_survive_canonical_roundtrips_without_inherited_boundaries() {
+        for (script, expected, boundaries) in [
+            ("rm A B + C", "rm A B + C", vec![true, false, false, false]),
+            (
+                "it R^2 rm = 1",
+                "it {R}^{2} rm = 1",
+                vec![true, true, false],
+            ),
+            ("{rm} + x", "rm + x", vec![true, false]),
+            ("x {rm} = y", "x rm = y", vec![false, true, false]),
+        ] {
+            let output = canonical(script);
+            assert_eq!(output, expected);
+            assert_eq!(canonical(&output), output);
+            let EqNode::Row(nodes) = parse(&output) else {
+                panic!("행이어야 함: {output}");
+            };
+            assert_eq!(
+                nodes
+                    .iter()
+                    .map(|node| matches!(node, EqNode::FontDeclaration { .. }))
+                    .collect::<Vec<_>>(),
+                boundaries,
+                "{output}"
+            );
+        }
+        assert!(matches!(
+            parse(r"\text{A}"),
+            EqNode::FontStyle {
+                style: FontStyleKind::Roman,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn declaration_inside_bold_does_not_add_a_boundary_after_its_argument() {
+        let ast = EqNode::Row(vec![
+            EqNode::FontStyle {
+                style: FontStyleKind::Bold,
+                body: Box::new(EqNode::FontDeclaration {
+                    style: FontStyleKind::Roman,
+                    body: Box::new(EqNode::Text("x".into())),
+                }),
+            },
+            EqNode::Text("y".into()),
+        ]);
+        let output = to_hwp_script(&ast).unwrap();
+        assert_eq!(output, "{bold {rm x}} y");
+        let EqNode::Row(nodes) = parse(&output) else {
+            panic!("행이어야 함: {output}");
+        };
+        assert!(matches!(nodes[1], EqNode::Text(ref text) if text == "y"));
         assert_eq!(canonical(&output), output);
     }
 

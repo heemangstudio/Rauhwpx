@@ -10,8 +10,8 @@ use super::text_replay::draw_text_run;
 
 use crate::renderer::equation::ast::MatrixStyle;
 use crate::renderer::equation::layout::{
-    integral_geom, is_integral_symbol, LayoutBox, LayoutKind, BIG_OP_SCALE, INTEGRAL_SCALE,
-    SCRIPT_SCALE,
+    integral_geom, is_integral_symbol, leaf_font_size, LayoutBox, LayoutKind, BIG_OP_SCALE,
+    INTEGRAL_SCALE, SCRIPT_SCALE,
 };
 use crate::renderer::equation::symbols::{DecoKind, FontStyleKind};
 
@@ -22,6 +22,7 @@ struct EqFonts<'a> {
     custom: &'a TypefaceCatalog,
     bundled: &'a TypefaceCatalog,
     system: &'a SystemFontFamilies,
+    modern: bool,
 }
 
 impl EqFonts<'_> {
@@ -44,6 +45,7 @@ pub fn render_equation(
     color: u32,
     base_font_size: f64,
     font_name: &str,
+    version_info: &str,
 ) {
     let font_families = crate::renderer::equation::font::equation_font_families(Some(font_name));
     let fonts = EqFonts {
@@ -51,6 +53,7 @@ pub fn render_equation(
         custom: custom_typefaces,
         bundled: bundled_typefaces,
         system: system_families,
+        modern: !version_info.is_empty(),
     };
     render_box(
         canvas,
@@ -80,6 +83,23 @@ fn render_box(
 ) {
     let x = parent_x + lb.x;
     let y = parent_y + lb.y;
+    if let Some(glyphs) = lb.positioned_glyphs() {
+        for glyph in glyphs {
+            render_box(
+                canvas,
+                fonts,
+                font_families,
+                &glyph,
+                x,
+                y,
+                color,
+                fs,
+                italic,
+                bold,
+            );
+        }
+        return;
+    }
 
     match &lb.kind {
         LayoutKind::Row(children) => {
@@ -106,7 +126,7 @@ fn render_box(
                 text,
                 x,
                 y + lb.baseline,
-                font_size_from_box(lb, fs),
+                leaf_font_size(lb, fs),
                 italic && !text.chars().any(|c| matches!(c, '\u{3000}'..='\u{9FFF}' | '\u{F900}'..='\u{FAFF}' | '\u{AC00}'..='\u{D7AF}')),
                 bold,
                 color,
@@ -121,7 +141,7 @@ fn render_box(
                 text,
                 x,
                 y + lb.baseline,
-                font_size_from_box(lb, fs),
+                leaf_font_size(lb, fs),
                 false,
                 bold,
                 color,
@@ -136,7 +156,7 @@ fn render_box(
                 text,
                 x + lb.width / 2.0,
                 y + lb.baseline,
-                font_size_from_box(lb, fs),
+                leaf_font_size(lb, fs),
                 false,
                 false,
                 color,
@@ -156,7 +176,7 @@ fn render_box(
                     text,
                     x,
                     y + lb.baseline,
-                    font_size_from_box(lb, fs),
+                    leaf_font_size(lb, fs),
                     italic && crate::renderer::equation::font::is_greek_variable(text),
                     false,
                     color,
@@ -172,7 +192,7 @@ fn render_box(
                 name,
                 x,
                 y + lb.baseline,
-                font_size_from_box(lb, fs),
+                leaf_font_size(lb, fs),
                 false,
                 false,
                 color,
@@ -628,7 +648,12 @@ fn render_box(
                 );
             }
         }
-        LayoutKind::Paren { left, right, body } => {
+        LayoutKind::Paren {
+            left,
+            right,
+            body,
+            modern_extent,
+        } => {
             let paren_w = fs * 0.333;
             let use_glyph = lb.height <= fs * 1.2;
             // legacy는 큰 괄호도 e044/e045 글립을 slot 폭으로 늘려 칠고 세로는
@@ -643,7 +668,11 @@ fn render_box(
                         font_families,
                         g,
                         ink,
-                        (x, y + lb.baseline - fs * 1.05, fs * 0.39, fs * 1.31),
+                        if let Some((top, height)) = *modern_extent {
+                            (x + ink.0 * fs, y + top, (ink.2 - ink.0) * fs, height)
+                        } else {
+                            (x, y + lb.baseline - fs * 1.05, fs * 0.39, fs * 1.31)
+                        },
                         color,
                     )
                 };
@@ -700,12 +729,21 @@ fn render_box(
                         font_families,
                         g,
                         ink,
-                        (
-                            x + lb.width - fs * 0.39,
-                            y + lb.baseline - fs * 1.05,
-                            fs * 0.39,
-                            fs * 1.31,
-                        ),
+                        if let Some((top, height)) = *modern_extent {
+                            (
+                                x + lb.width - fs * 0.39 + ink.0 * fs,
+                                y + top,
+                                (ink.2 - ink.0) * fs,
+                                height,
+                            )
+                        } else {
+                            (
+                                x + lb.width - fs * 0.39,
+                                y + lb.baseline - fs * 1.05,
+                                fs * 0.39,
+                                fs * 1.31,
+                            )
+                        },
                         color,
                     )
                 };
@@ -808,16 +846,31 @@ fn draw_text(
         if let Some(typeface) = fonts.resolve(family, FontStyle::normal()) {
             let mapped: Vec<_> = text
                 .chars()
-                .map(|c| crate::renderer::equation::font::legacy_equation_glyph(c, italic))
+                .map(|c| {
+                    let (glyph, skew) = crate::renderer::equation::font::legacy_equation_glyph(
+                        c,
+                        italic,
+                        fonts.modern,
+                    );
+                    let shift = if fonts.modern {
+                        crate::renderer::equation::font::modern_glyph_baseline_em(c, italic)
+                    } else {
+                        0.0
+                    };
+                    (glyph, skew, shift)
+                })
                 .collect();
-            let glyphs: String = mapped.iter().map(|(c, _)| *c).collect();
+            let glyphs: String = mapped.iter().map(|(c, _, _)| *c).collect();
             if typeface_covers_text(&typeface, &glyphs) {
-                let mut runs: Vec<(String, bool)> = Vec::new();
-                for (character, skew) in mapped {
-                    if let Some(run) = runs.last_mut().filter(|run| run.1 == skew) {
+                let mut runs: Vec<(String, bool, f64)> = Vec::new();
+                for (character, skew, shift) in mapped {
+                    if let Some(run) = runs
+                        .last_mut()
+                        .filter(|run| run.1 == skew && run.2 == shift)
+                    {
                         run.0.push(character);
                     } else {
-                        runs.push((character.to_string(), skew));
+                        runs.push((character.to_string(), skew, shift));
                     }
                 }
                 let mut font = Font::new(typeface, font_size as f32);
@@ -828,9 +881,15 @@ fn draw_text(
                 paint.set_color(color);
                 let width = font.measure_str(&glyphs, Some(&paint)).0 as f64;
                 let mut pen = x - if centered { width / 2.0 } else { 0.0 };
-                for (run, skew) in runs {
+                for (run, skew, shift) in runs {
                     font.set_skew_x(if skew { -0.2 } else { 0.0 });
-                    draw_text_run(canvas, &run, (pen as f32, baseline_y as f32), &font, &paint);
+                    draw_text_run(
+                        canvas,
+                        &run,
+                        (pen as f32, (baseline_y + shift * font_size) as f32),
+                        &font,
+                        &paint,
+                    );
                     pen += font.measure_str(&run, Some(&paint)).0 as f64;
                 }
                 return;
@@ -1218,14 +1277,6 @@ fn draw_decoration(
     }
 }
 
-fn font_size_from_box(lb: &LayoutBox, base_fs: f64) -> f64 {
-    if lb.height > 0.0 {
-        lb.height
-    } else {
-        base_fs
-    }
-}
-
 fn estimate_op_width(text: &str, fs: f64) -> f64 {
     text.chars().count() as f64 * fs * 0.6
 }
@@ -1303,6 +1354,7 @@ mod tests {
             custom: &custom,
             bundled: &bundled,
             system: &system_families,
+            modern: true,
         };
 
         let selected = equation_typeface_for_text_in_families(
@@ -1350,6 +1402,7 @@ mod tests {
             custom: &custom,
             bundled: &bundled,
             system: &system_families,
+            modern: true,
         };
 
         let selected = equation_typeface_for_text_in_families(

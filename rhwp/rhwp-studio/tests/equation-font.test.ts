@@ -34,6 +34,19 @@ test('legacy math cmap keeps intrinsic italic, roman, digits and Greek distinct'
     { text: '\ue00b', italic: true },
   ]);
   assert.deepEqual(legacyEquationRuns('PMexp1+α', false), [{ text: 'PMexp\ue034\ue048α', italic: false }]);
+  assert.deepEqual(legacyEquationRuns('x1.2=rm', true, true), [
+    { text: '\ue0fc', italic: false, baselineEm: 0.06 },
+    { text: '\ue034', italic: false, baselineEm: 0.06 },
+    { text: '\ue053', italic: false, baselineEm: 0 },
+    { text: '\ue035', italic: false, baselineEm: 0.06 },
+    { text: '\ue047', italic: false, baselineEm: 0 },
+    { text: '\ue0f6', italic: false, baselineEm: 0.06 },
+    { text: '\ue0f1', italic: false, baselineEm: 0.06 },
+  ]);
+  assert.deepEqual(legacyEquationRuns('A1', false, true), [
+    { text: 'A', italic: false, baselineEm: 0 },
+    { text: '\ue034', italic: false, baselineEm: 0.06 },
+  ]);
 });
 
 /** 최소 SFNT: format4 cmap의 한 문자만 가진다. 누락 글립 경계도 검증한다. */
@@ -122,5 +135,23 @@ test('수식 측정은 실제 글립의 잉크와 굵기 및 run 커닝을 보�
   } finally {
     if (original) Object.defineProperty(globalThis, 'document', original);
     else Reflect.deleteProperty(globalThis, 'document');
+  }
+});
+
+
+test('modern equation advances reproduce the hinted size steps while preserving paint size', async () => {
+  const { modernEquationAdvance } = await import('../src/core/equation-font.ts');
+  for (const [points, digitAdvance] of [[10, 4.725], [11, 4.725], [12, 5.4], [13, 6.075], [16, 7.425], [20, 8.775]]) {
+    const pixels = points * 4 / 3;
+    assert.ok(Math.abs(modernEquationAdvance(pixels * 0.5, pixels) * 3 / 4 - digitAdvance) < 1e-9);
+  }
+});
+
+
+test('modern advance shrink follows synthetic glyph style rather than the italic request', async () => {
+  const { modernEquationAdvance, legacyEquationRuns } = await import('../src/core/equation-font.ts');
+  for (const [character, italic, shrink] of [['A', true, 1], ['A', false, 0.9], ['a', true, 0.9], ['α', true, 0.9]] as const) {
+    const synthetic = legacyEquationRuns(character, italic)[0].italic;
+    assert.equal(modernEquationAdvance(10, 20, synthetic), 10 * shrink);
   }
 });

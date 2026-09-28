@@ -433,23 +433,9 @@ fn line_equation_metrics_px(
             continue;
         }
 
-        let metrics = crate::renderer::equation::intrinsic_metrics_px_with_version(
-            &eq.script,
-            eq.font_size,
-            dpi,
-            &eq.font_name,
-            &eq.version_info,
-        );
-        let stored_height = hwpunit_to_px(eq.common.height as i32, dpi);
-        let anchor =
-            crate::renderer::equation::control_baseline_hwp(eq, metrics.baseline * 7200.0 / dpi)
-                * dpi
-                / 7200.0;
-        max_ascent = max_ascent.max(anchor + hwpunit_to_px(eq.common.margin.top as i32, dpi));
-        max_descent = max_descent.max(
-            stored_height.max(metrics.height) - anchor
-                + hwpunit_to_px(eq.common.margin.bottom as i32, dpi),
-        );
+        let (ascent, descent) = crate::renderer::equation::control_flow_ascent_descent_px(eq, dpi);
+        max_ascent = max_ascent.max(ascent);
+        max_descent = max_descent.max(descent);
         found = true;
     }
 
@@ -485,7 +471,47 @@ fn align_line_metrics_to_equation(
 
 #[cfg(test)]
 mod inline_equation_alignment_tests {
-    use super::align_line_metrics_to_equation;
+    use super::{align_line_metrics_to_equation, line_equation_metrics_px};
+
+    #[test]
+    fn inline_equation_flow_metrics_exclude_lower_ink_when_spacing_is_unaffected() {
+        use crate::model::control::{Control, Equation};
+        use crate::model::paragraph::Paragraph;
+
+        struct ClearFontMetrics;
+        impl Drop for ClearFontMetrics {
+            fn drop(&mut self) {
+                crate::renderer::runtime_font_metrics::clear();
+            }
+        }
+        let _clear_font_metrics = ClearFontMetrics;
+        crate::renderer::runtime_font_metrics::register(
+            include_bytes!("../../../tests/fixtures/fonts/RHWPShapingFixture.ttf"),
+            &["HYhwpEQ".to_string()],
+            false,
+            false,
+        )
+        .expect("register equation face metrics");
+
+        let mut eq = Equation::default();
+        eq.version_info = "Equation Version 60".to_string();
+        eq.common.treat_as_char = true;
+        eq.common.height = 1_000;
+        eq.font_size = 1_000;
+        eq.script = "x over y".to_string();
+        eq.baseline = 80;
+        let mut para = Paragraph {
+            controls: vec![Control::Equation(Box::new(eq))],
+            ..Paragraph::default()
+        };
+        let false_metrics = line_equation_metrics_px(Some(&para), &[(0, 0.0, 0)], 96.0).unwrap();
+        if let Control::Equation(eq) = &mut para.controls[0] {
+            eq.common.affect_line_spacing = true;
+        }
+        let true_metrics = line_equation_metrics_px(Some(&para), &[(0, 0.0, 0)], 96.0).unwrap();
+        assert_eq!(false_metrics.0, true_metrics.0);
+        assert!(true_metrics.1 > false_metrics.1);
+    }
 
     #[test]
     fn replaces_legacy_object_height_baseline_with_equation_baseline() {

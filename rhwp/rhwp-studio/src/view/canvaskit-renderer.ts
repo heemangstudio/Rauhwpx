@@ -2918,6 +2918,25 @@ export class CanvasKitLayerRenderer {
       this.renderEquationBox(canvas, box, x, y, color, size, fontName, childItalic, childBold, depth + 1, budget)
     );
 
+    if (layout.glyphAdvances) {
+      const kind = layout.kind;
+      const text = kind.type === 'function' ? kind.name
+        : ['text', 'number', 'symbol', 'mathSymbol'].includes(kind.type) && 'text' in kind ? kind.text : null;
+      if (text === null || [...text].length !== layout.glyphAdvances.length
+        || layout.glyphAdvances.length > budget.remainingNodes
+        || depth === CanvasKitLayerRenderer.MAX_EQUATION_LAYOUT_DEPTH
+        || !layout.glyphAdvances.every(value => Number.isFinite(value) && value >= 0)) return false;
+      let pen = 0;
+      return [...text].every((character, index) => {
+        const advance = layout.glyphAdvances![index];
+        const glyphKind: LayerEquationLayoutBox['kind'] = kind.type === 'function'
+          ? { type: 'function', name: character }
+          : { type: kind.type === 'symbol' ? 'mathSymbol' : kind.type as 'text' | 'number' | 'mathSymbol', text: character };
+        const glyph = { ...layout, glyphAdvances: undefined, x: pen, y: 0, width: advance, kind: glyphKind };
+        pen += advance;
+        return child(glyph, layout.height);
+      });
+    }
     switch (layout.kind.type) {
       case 'row':
         return layout.kind.children.every((box) => child(box));
@@ -3071,6 +3090,24 @@ export class CanvasKitLayerRenderer {
       case 'eqAlign':
         return layout.kind.rows.every((row) => child(row.left) && child(row.right));
       case 'paren':
+        if (layout.kind.modernExtent) {
+          const [top, height] = layout.kind.modernExtent;
+          const bracket = (text: string, bx: number): boolean => {
+            if (!text) return true;
+            const bottom = text === '(' ? -207 / 1024 : -208 / 1024;
+            const glyphTop = 826 / 1024;
+            const scaleY = height / ((glyphTop - bottom) * fontSize);
+            canvas.save();
+            try {
+              canvas.translate(bx, y + top + glyphTop * fontSize * scaleY);
+              canvas.scale(1, scaleY);
+              return this.drawEquationText(canvas, text, 0, 0, fontSize, color,
+                false, false, 0, false, fontName);
+            } finally { canvas.restore(); }
+          };
+          return bracket(layout.kind.left, x) && child(layout.kind.body)
+            && bracket(layout.kind.right, x + layout.width - fontSize * 0.39);
+        }
         return (layout.kind.left
           ? this.drawEquationBracket(canvas, layout.kind.left, x, y, layout.height, color, fontSize, fontName)
           : true)
@@ -3201,10 +3238,10 @@ export class CanvasKitLayerRenderer {
     try {
       let face: EquationTypeface | undefined;
       let glyphIds: Uint16Array | null = null;
-      let runs = [{ text, italic }];
+      let runs: Array<{ text: string; italic: boolean; baselineEm?: number }> = [{ text, italic }];
       for (const candidate of this.findEquationTypefaces(fontName, italic, bold)) {
         font = createOutlineSkiaFont(this.canvasKit, candidate.typeface, fontSize);
-        const candidateRuns = candidate.legacy ? legacyEquationRuns(text, italic) : [{ text, italic: candidate.syntheticItalic }];
+        const candidateRuns = candidate.legacy ? legacyEquationRuns(text, italic, !hft) : [{ text, italic: candidate.syntheticItalic }];
         const candidateText = candidateRuns.map(run => run.text).join('');
         glyphIds = font.getGlyphIDs(candidateText, Array.from(candidateText).length);
         if (glyphIds && !glyphIds.some(glyphId => glyphId === 0)) {
@@ -3229,7 +3266,7 @@ export class CanvasKitLayerRenderer {
       let pen = centered ? x + (targetWidth - drawWidth) / 2 : x;
       for (const run of runs) {
         adjustableFont.setSkewX?.(run.italic ? -0.2 : 0);
-        canvas.drawText(run.text, pen, baselineY, paint, font);
+        canvas.drawText(run.text, pen, baselineY + (run.baselineEm ?? 0) * fontSize, paint, font);
         const ids = font.getGlyphIDs(run.text, Array.from(run.text).length);
         pen += (ids ? font.getGlyphWidths(ids) : null)?.reduce((sum, width) => sum + width, 0) ?? 0;
       }

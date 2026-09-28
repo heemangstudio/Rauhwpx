@@ -67,6 +67,12 @@ fn render_box(
 ) {
     let x = parent_x + lb.x;
     let y = parent_y + lb.y;
+    if let Some(glyphs) = lb.positioned_glyphs() {
+        for glyph in glyphs {
+            render_box(ctx, &glyph, x, y, color, fs, italic, bold, font_family);
+        }
+        return;
+    }
 
     match &lb.kind {
         LayoutKind::Row(children) => {
@@ -75,10 +81,8 @@ fn render_box(
             }
         }
         LayoutKind::Text(text) => {
-            // [Issue #900] SVG 경로 (svg_render.rs:43, commit 5a6f9a87 / Task #142) 와
-            // 동기화 — font_size_from_box(lb.height) 는 복합 박스 (Limit, BigOp 등)
-            // 의 전체 높이를 font-size 로 오용. 부모 전달 fs 사용.
-            let fi = fs;
+            // 첨자 잎은 레이아웃의 실제 em(legacy 0.68)을 사용한다.
+            let fi = leaf_font_size(lb, fs);
             // CJK 문자는 italic 미적용. FontStyle::Roman(`rm`)으로 italic=false 가
             // 전달된 경우에도 italic 미적용 (svg_render.rs Text arm 과 동일 정책).
             let has_cjk = text.chars().any(|c| {
@@ -103,14 +107,12 @@ fn render_box(
             );
         }
         LayoutKind::Number(text) => {
-            // [Issue #900] svg_render.rs Number arm 과 동기화 — fs 사용.
-            let fi = fs;
+            let fi = leaf_font_size(lb, fs);
             ctx.set_fill_style_str(color);
             draw_text(ctx, text, x, y + lb.baseline, fi, false, bold, font_family);
         }
         LayoutKind::Symbol(text) => {
-            // [Issue #900] svg_render.rs Symbol arm 과 동기화 — fs 사용.
-            let fi = fs;
+            let fi = leaf_font_size(lb, fs);
             ctx.set_fill_style_str(color);
             ctx.set_text_align("center");
             draw_text(
@@ -128,7 +130,7 @@ fn render_box(
         LayoutKind::MathSymbol(text) => {
             // [Issue #900] svg_render.rs MathSymbol arm 과 동기화 (commit 292dbbef).
             // Task #1317: 적분 기호(∫)는 폰트 text 가 아닌 stroke path 로 렌더(geom SSOT,
-            // svg_render.rs 와 동일). 그 외 MathSymbol 은 부모 전달 fs 로 text 렌더.
+            // svg_render.rs 와 동일). 그 외 MathSymbol 은 측정된 잎 크기로 렌더.
             if super::layout::is_integral_symbol(text) {
                 draw_integral(ctx, x, y, fs, color);
             } else {
@@ -138,7 +140,7 @@ fn render_box(
                     text,
                     x,
                     y + lb.baseline,
-                    fs,
+                    leaf_font_size(lb, fs),
                     italic && super::font::is_greek_variable(text),
                     false,
                     font_family,
@@ -146,8 +148,7 @@ fn render_box(
             }
         }
         LayoutKind::Function(name) => {
-            // [Issue #900] svg_render.rs Function arm 과 동기화 — fs 사용.
-            let fi = fs;
+            let fi = leaf_font_size(lb, fs);
             ctx.set_fill_style_str(color);
             draw_text(ctx, name, x, y + lb.baseline, fi, false, false, font_family);
         }
@@ -415,22 +416,53 @@ fn render_box(
                 render_box(ctx, right, x, y, color, fs, italic, bold, font_family);
             }
         }
-        LayoutKind::Paren { left, right, body } => {
+        LayoutKind::Paren {
+            left,
+            right,
+            body,
+            modern_extent,
+        } => {
             // 텍스트 높이 파렌(`(`, `)`)은 폰트 글리프로 렌더, 그 외는 path. (Task #283)
             let use_glyph = lb.height <= fs * 1.2;
+            let (paint_top, paint_height) = modern_extent.unwrap_or((0.0, lb.height));
             let paren_w = if use_glyph { fs * 0.333 } else { fs * 0.27 };
             if !left.is_empty() {
-                if use_glyph && (left == "(" || left == ")") {
+                if !use_glyph
+                    && draw_modern_round_paren(ctx, left, x, y, lb, body, fs, color, font_family)
+                {
+                } else if use_glyph && (left == "(" || left == ")") {
                     ctx.set_fill_style_str(color);
                     draw_text(ctx, left, x, y + lb.baseline, fs, false, false, font_family);
                 } else {
-                    draw_stretch_bracket(ctx, left, x, y, paren_w, lb.height, color, fs);
+                    draw_stretch_bracket(
+                        ctx,
+                        left,
+                        x,
+                        y + paint_top,
+                        paren_w,
+                        paint_height,
+                        color,
+                        fs,
+                    );
                 }
             }
             render_box(ctx, body, x, y, color, fs, italic, bold, font_family);
             if !right.is_empty() {
                 let right_x = x + lb.width - paren_w;
-                if use_glyph && (right == "(" || right == ")") {
+                if !use_glyph
+                    && draw_modern_round_paren(
+                        ctx,
+                        right,
+                        x + lb.width - fs * 0.39,
+                        y,
+                        lb,
+                        body,
+                        fs,
+                        color,
+                        font_family,
+                    )
+                {
+                } else if use_glyph && (right == "(" || right == ")") {
                     ctx.set_fill_style_str(color);
                     draw_text(
                         ctx,
@@ -443,7 +475,16 @@ fn render_box(
                         font_family,
                     );
                 } else {
-                    draw_stretch_bracket(ctx, right, right_x, y, paren_w, lb.height, color, fs);
+                    draw_stretch_bracket(
+                        ctx,
+                        right,
+                        right_x,
+                        y + paint_top,
+                        paren_w,
+                        paint_height,
+                        color,
+                        fs,
+                    );
                 }
             }
         }
@@ -518,6 +559,49 @@ fn draw_legacy_pua_glyph(
 }
 
 /// PUA는 로드와 cmap이 확인된 세션 서체에만 전달한다. 누락 시 원래 Unicode로 fallback한다.
+fn draw_modern_round_paren(
+    ctx: &CanvasRenderingContext2d,
+    bracket: &str,
+    x: f64,
+    y: f64,
+    lb: &LayoutBox,
+    _body: &LayoutBox,
+    fs: f64,
+    color: &str,
+    font: &EquationFont,
+) -> bool {
+    if font.hft || !super::font::is_legacy_equation_font(&font.source) {
+        return false;
+    }
+    let (glyph, bottom, top) = match bracket {
+        "(" => ('\u{e044}', -207.0 / 1024.0, 826.0 / 1024.0),
+        ")" => ('\u{e045}', -208.0 / 1024.0, 826.0 / 1024.0),
+        _ => return false,
+    };
+    if !matches!(
+        resolve_equation_font_family(&font.source, &glyph.to_string()),
+        Ok(Some(_))
+    ) {
+        return false;
+    }
+    let LayoutKind::Paren {
+        modern_extent: Some((target_top, height)),
+        ..
+    } = &lb.kind
+    else {
+        return false;
+    };
+    let (target_top, height) = (*target_top, *height);
+    let scale_y = height / ((top - bottom) * fs);
+    ctx.save();
+    let _ = ctx.translate(x, y + target_top + top * fs * scale_y);
+    let _ = ctx.scale(1.0, scale_y);
+    ctx.set_fill_style_str(color);
+    draw_text(ctx, bracket, 0.0, 0.0, fs, false, false, font);
+    ctx.restore();
+    true
+}
+
 fn draw_text(
     ctx: &CanvasRenderingContext2d,
     text: &str,
@@ -532,24 +616,35 @@ fn draw_text(
         return;
     }
     if super::font::is_legacy_equation_font(&font.source) {
-        let mapped: Vec<(char, bool)> = text
+        let mapped: Vec<(char, bool, f64)> = text
             .chars()
-            .map(|c| super::font::legacy_equation_glyph(c, italic))
+            .map(|c| {
+                let (glyph, skew) = super::font::legacy_equation_glyph(c, italic, !font.hft);
+                let shift = if font.hft {
+                    0.0
+                } else {
+                    super::font::modern_glyph_baseline_em(c, italic)
+                };
+                (glyph, skew, shift)
+            })
             .collect();
-        let glyphs: String = mapped.iter().map(|(c, _)| *c).collect();
+        let glyphs: String = mapped.iter().map(|(c, _, _)| *c).collect();
         if let Ok(Some(family)) = resolve_equation_font_family(&font.source, &glyphs) {
             let family = format!("'{}'", family.replace('\\', "\\\\").replace('\'', "\\'"));
             let alignment = ctx.text_align();
-            let mut runs: Vec<(String, bool, f64)> = Vec::new();
-            for (character, skew) in mapped {
-                if let Some(run) = runs.last_mut().filter(|run| run.1 == skew) {
+            let mut runs: Vec<(String, bool, f64, f64)> = Vec::new();
+            for (character, skew, shift) in mapped {
+                if let Some(run) = runs
+                    .last_mut()
+                    .filter(|run| run.1 == skew && run.3 == shift)
+                {
                     run.0.push(character);
                 } else {
-                    runs.push((character.to_string(), skew, 0.0));
+                    runs.push((character.to_string(), skew, 0.0, shift));
                 }
             }
             let mut width = 0.0;
-            for (text, skew, advance) in &mut runs {
+            for (text, skew, advance, _) in &mut runs {
                 set_font(ctx, size, *skew, bold, &family);
                 *advance = ctx.measure_text(text).map(|m| m.width()).unwrap_or(0.0);
                 width += *advance;
@@ -560,9 +655,9 @@ fn draw_text(
                 0.0
             };
             ctx.set_text_align("start");
-            for (text, skew, advance) in runs {
+            for (text, skew, advance, shift) in runs {
                 set_font(ctx, size, skew, bold, &family);
-                let _ = ctx.fill_text(&text, pen, y);
+                let _ = ctx.fill_text(&text, pen, y + size * shift);
                 pen += advance;
             }
             ctx.set_text_align(&alignment);
