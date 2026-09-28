@@ -221,6 +221,13 @@ mod synthetic_percent_line_spacing_tests {
 
     #[test]
     fn generated_empty_line_uses_latin_face_when_script_faces_differ() {
+        struct ClearFontMetrics;
+        impl Drop for ClearFontMetrics {
+            fn drop(&mut self) {
+                crate::renderer::runtime_font_metrics::clear();
+            }
+        }
+        let _clear_font_metrics = ClearFontMetrics;
         const FONT: &[u8] = include_bytes!("../../../tests/fixtures/fonts/RHWPShapingFixture.ttf");
         let latin_face = "__rhwp_empty_latin_fixture__";
         crate::renderer::runtime_font_metrics::register(
@@ -255,8 +262,6 @@ mod synthetic_percent_line_spacing_tests {
             &styles,
             96.0,
         ));
-        crate::renderer::runtime_font_metrics::clear();
-
         let visible_pitch = projected[0].line_segs[0].line_height
             + projected[0].line_segs[0].line_spacing;
         let empty_pitch = projected[1].line_segs[0].line_height

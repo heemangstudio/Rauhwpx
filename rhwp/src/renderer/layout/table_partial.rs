@@ -35,17 +35,26 @@ use crate::renderer::float_placement::{
 
 // 표 수평 정렬 보조 타입은 table_layout.rs에 통합됨
 
+/// 이어지는 HWPX 표 테두리가 본문 경계에서 남기는 1pt 페인트 여유.
+const NATIVE_HWPX_CONTINUED_BORDER_INSET_HU: i32 = 100;
+
 /// 셀 안에서 다음 쪽으로 이어지는 조각의 외곽은 본문 아래까지 열린다.
-/// 콘텐츠 유닛 높이와 컷·클립은 유지하고 배경/테두리 영역만 확장한다.
+/// 한컴은 본문 하단에서 1pt 안쪽에 열린 테두리를 멈춘다. 콘텐츠 유닛 높이와
+/// 컷·클립은 유지하고 배경/테두리 영역만 확장한다.
 fn partial_table_paint_height(
     native_hwpx: bool,
     page_break: crate::model::table::TablePageBreak,
     has_end_cut: bool,
     natural_height: f64,
     available_height: f64,
+    dpi: f64,
 ) -> f64 {
     if native_hwpx && page_break != crate::model::table::TablePageBreak::None && has_end_cut {
-        natural_height.max(available_height)
+        // HWPX의 쪽 크기/여백은 HWPUNIT(1/100pt)로 저장된다. 이어지는 조각의
+        // 테두리는 본문 경계보다 100 HWPUNIT 위에서 끝나며, 실제 조각이 그보다
+        // 길면 자르지 않는다.
+        natural_height
+            .max(available_height - hwpunit_to_px(NATIVE_HWPX_CONTINUED_BORDER_INSET_HU, dpi))
     } else {
         natural_height
     }
@@ -157,30 +166,30 @@ mod inline_fallback_alignment_tests {
     use crate::renderer::composer::{ComposedLine, ComposedTextRun};
 
     #[test]
-    fn continued_cell_fragment_paint_reaches_body_bottom_without_changing_other_breaks() {
+    fn continued_cell_fragment_paint_stops_one_point_before_body_bottom() {
         use crate::model::table::TablePageBreak::{CellBreak, RowBreak};
         assert_eq!(
-            partial_table_paint_height(true, CellBreak, true, 80.0, 90.0),
-            90.0
+            partial_table_paint_height(true, CellBreak, true, 80.0, 90.0, 72.0),
+            89.0
         );
         assert_eq!(
-            partial_table_paint_height(true, CellBreak, false, 80.0, 90.0),
+            partial_table_paint_height(true, CellBreak, false, 80.0, 90.0, 72.0),
             80.0
         );
         assert_eq!(
-            partial_table_paint_height(true, RowBreak, true, 80.0, 90.0),
-            90.0
+            partial_table_paint_height(true, RowBreak, true, 80.0, 90.0, 72.0),
+            89.0
         );
         assert_eq!(
-            partial_table_paint_height(true, RowBreak, false, 80.0, 90.0),
+            partial_table_paint_height(true, RowBreak, false, 80.0, 90.0, 72.0),
             80.0
         );
         assert_eq!(
-            partial_table_paint_height(false, CellBreak, true, 80.0, 90.0),
+            partial_table_paint_height(false, CellBreak, true, 80.0, 90.0, 72.0),
             80.0
         );
         assert_eq!(
-            partial_table_paint_height(true, CellBreak, true, 100.0, 90.0),
+            partial_table_paint_height(true, CellBreak, true, 100.0, 90.0, 72.0),
             100.0
         );
     }
@@ -2435,6 +2444,7 @@ impl LayoutEngine {
             !end_cut.is_empty(),
             partial_table_height,
             col_area.y + col_area.height - table_y,
+            self.dpi,
         );
         if let Some(bottom) = grid_row_y.last_mut() {
             *bottom = paint_height;
