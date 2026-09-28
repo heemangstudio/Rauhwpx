@@ -36,7 +36,7 @@ import {
   NativeFileHandleRegistry,
   nativePathOwnershipKey,
   readPortableHistoryBytes,
-  rewriteIcaclsSavedAcl,
+  readIcaclsSavedDacl,
   runNativeMetadataCommand,
   validateNativeDocumentBytes,
   validateNativeDocumentPath,
@@ -1125,93 +1125,83 @@ test('macOS metadata-copy failure leaves the destination and removes the temp fi
   });
 });
 
-test('icacls save files are rewritten to the temp destination name', () => {
-  const saved = Buffer.concat([
-    Buffer.from([0xff, 0xfe]),
-    Buffer.from('report.hwp\r\nD:P(A;;FA;;;BA)\r\n', 'utf16le'),
-  ]);
-  const rewritten = rewriteIcaclsSavedAcl(saved, 'report.hwp.rauhwpx-1.tmp');
-  assert.equal(rewritten[0], 0xff);
-  assert.equal(rewritten[1], 0xfe);
-  assert.equal(
-    rewritten.subarray(2).toString('utf16le'),
-    'report.hwp.rauhwpx-1.tmp\r\nD:P(A;;FA;;;BA)\r\n',
-  );
+function icaclsSaveFile(name: string, dacl: string) {
+  return Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(`${name}\r\n${dacl}\r\n`, 'utf16le')]);
+}
+
+test('icacls save files yield the DACL line', () => {
+  assert.equal(readIcaclsSavedDacl(icaclsSaveFile('report.hwp', 'D:P(A;;FA;;;BA)')), 'D:P(A;;FA;;;BA)');
   assert.throws(
-    () => rewriteIcaclsSavedAcl(saved, 'evil\r\nD:P(A;;FA;;;WD)'),
+    () => readIcaclsSavedDacl(Buffer.from('report.hwp\r\n', 'utf16le')),
     { code: 'NATIVE_FILE_METADATA_COPY_FAILED' },
   );
 });
 
-test('Windows replacement copies only the source DACL before compare and rename', async () => {
+async function writeWithFakeIcacls(target: string, daclFor: (path: string) => string) {
+  const events: string[] = [];
+  const commandCalls: Array<{ command: string; args: string[]; options: { env: Record<string, string> } }> = [];
+  await writeNativeFileAtomically(target, new Uint8Array([7, 8]), {
+    platform: 'win32',
+    windowsSystemRoot: 'C:\\Windows',
+    windowsProcessEnv: {
+      GITHUB_TOKEN: 'must-not-leak',
+      RHWP_AGENT_TOKEN: 'must-not-leak',
+      PATH: 'C:\\evil',
+      TEMP: 'C:\\Users\\runner\\AppData\\Local\\Temp',
+      USERPROFILE: 'C:\\Users\\runner',
+      ComSpec: 'C:\\Windows\\System32\\cmd.exe',
+      PATHEXT: '.COM;.EXE;.BAT;.CMD',
+    },
+    expectedFingerprint: TEST_NATIVE_FINGERPRINT,
+    fingerprintImpl: async () => {
+      events.push('fingerprint');
+      return TEST_NATIVE_FINGERPRINT;
+    },
+    runCommandImpl: async (command: string, args: string[], options: { env: Record<string, string> }) => {
+      commandCalls.push({ command, args, options });
+      if (args[1] === '/save') {
+        const probe = await openFs(args[0], 'r+');
+        await probe.close();
+        events.push('dacl');
+        await writeFs(args[2], icaclsSaveFile(basename(args[0]), daclFor(args[0])));
+      } else {
+        events.push('apply');
+      }
+    },
+    renameImpl: async (from: string, to: string) => {
+      events.push('rename-aside');
+      const { rename } = await import('node:fs/promises');
+      await rename(from, to);
+    },
+    linkImpl: async (from: string, to: string) => {
+      if (to === target) events.push('publish');
+      const { link } = await import('node:fs/promises');
+      await link(from, to);
+    },
+  });
+  return { events, commandCalls };
+}
+
+test('Windows replacement skips the DACL write when the temp file already matches', async () => {
   await withTemporaryDirectory(async (directory) => {
     const target = join(directory, 'report.hwp');
     await writeFs(target, 'previous');
-    const events: string[] = [];
-    const commandCalls: Array<{ command: string; args: string[]; options: { env: Record<string, string> } }> = [];
-    await writeNativeFileAtomically(target, new Uint8Array([7, 8]), {
-      platform: 'win32',
-      windowsSystemRoot: 'C:\\Windows',
-      windowsProcessEnv: {
-        GITHUB_TOKEN: 'must-not-leak',
-        RHWP_AGENT_TOKEN: 'must-not-leak',
-        PATH: 'C:\\evil',
-        TEMP: 'C:\\Users\\runner\\AppData\\Local\\Temp',
-        USERPROFILE: 'C:\\Users\\runner',
-        ComSpec: 'C:\\Windows\\System32\\cmd.exe',
-        PATHEXT: '.COM;.EXE;.BAT;.CMD',
-      },
-      expectedFingerprint: TEST_NATIVE_FINGERPRINT,
-      fingerprintImpl: async () => {
-        events.push('fingerprint');
-        return TEST_NATIVE_FINGERPRINT;
-      },
-      runCommandImpl: async (command: string, args: string[], options: { env: Record<string, string> }) => {
-        commandCalls.push({ command, args, options });
-        if (args.includes('/save')) {
-          const aclFile = args[2];
-          const tempPath = aclFile.replace(/\.rauhwpx-dacl$/, '');
-          const probe = await openFs(tempPath, 'r+');
-          await probe.close();
-          events.push('dacl');
-          await writeFs(aclFile, Buffer.concat([
-            Buffer.from([0xff, 0xfe]),
-            Buffer.from(`${basename(target)}\r\nD:P(A;;FA;;;BA)\r\n`, 'utf16le'),
-          ]));
-        }
-      },
-      renameImpl: async (from: string, to: string) => {
-        events.push('rename-aside');
-        const { rename } = await import('node:fs/promises');
-        await rename(from, to);
-      },
-      linkImpl: async (from: string, to: string) => {
-        if (to === target) events.push('publish');
-        const { link } = await import('node:fs/promises');
-        await link(from, to);
-      },
-    });
-    assert.deepEqual(events, ['dacl', 'rename-aside', 'fingerprint', 'publish']);
+    const { events, commandCalls } = await writeWithFakeIcacls(target, () => 'D:AI(A;ID;FA;;;BA)');
+    assert.deepEqual(events, ['dacl', 'dacl', 'rename-aside', 'fingerprint', 'publish']);
     assert.equal(commandCalls.length, 2);
-    assert.equal(commandCalls[0].command, 'C:\\Windows\\System32\\icacls.exe');
-    assert.equal(commandCalls[1].command, 'C:\\Windows\\System32\\icacls.exe');
+    for (const call of commandCalls) {
+      assert.equal(call.command, 'C:\\Windows\\System32\\icacls.exe');
+      assert.equal(call.args[1], '/save');
+      assert.match(call.args[2], /\.rauhwpx-.*\.tmp(\.target)?\.rauhwpx-dacl$/);
+      assert.equal(call.args[3], '/q');
+    }
     assert.equal(commandCalls[0].args[0], target);
-    assert.equal(commandCalls[0].args[1], '/save');
-    assert.match(commandCalls[0].args[2], /\.rauhwpx-.*\.tmp\.rauhwpx-dacl$/);
-    assert.equal(commandCalls[0].args[3], '/q');
-    assert.equal(commandCalls[1].args[1], '/restore');
-    assert.equal(commandCalls[1].args[2], commandCalls[0].args[2]);
-    assert.equal(commandCalls[1].args[3], '/q');
-    assert.doesNotMatch(commandCalls.map((call) => call.args.join(' ')).join(' '), /setowner|\/S\b|powershell/i);
+    assert.match(commandCalls[1].args[0], /\.rauhwpx-.*\.tmp$/);
     const env = commandCalls[0].options.env;
     assert.equal(env.SystemRoot, 'C:\\Windows');
     assert.equal(env.WINDIR, 'C:\\Windows');
     assert.equal(env.SystemDrive, 'C:');
     assert.equal(env.PATH, 'C:\\Windows\\System32');
-    assert.equal(env.GITHUB_TOKEN, undefined);
-    assert.equal(env.RHWP_AGENT_TOKEN, undefined);
-    assert.equal(env.TEMP, undefined);
-    assert.equal(env.USERPROFILE, undefined);
     assert.deepEqual(Object.keys(env).sort(), [
       'ComSpec',
       'PATH',
@@ -1220,6 +1210,30 @@ test('Windows replacement copies only the source DACL before compare and rename'
       'SystemRoot',
       'WINDIR',
     ]);
+    assert.deepEqual(await readdir(directory), ['report.hwp']);
+  });
+});
+
+test('Windows replacement applies a differing source DACL without icacls /restore', async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const target = join(directory, 'report.hwp');
+    await writeFs(target, 'previous');
+    const { events, commandCalls } = await writeWithFakeIcacls(
+      target,
+      (path) => (path === target ? 'D:PAI(A;;FA;;;BA)' : 'D:AI(A;ID;FA;;;WD)'),
+    );
+    assert.deepEqual(events, ['dacl', 'dacl', 'apply', 'rename-aside', 'fingerprint', 'publish']);
+    assert.equal(commandCalls.length, 3);
+    assert.doesNotMatch(commandCalls.map((call) => call.args.join(' ')).join(' '), /\/restore|setowner/i);
+    const apply = commandCalls[2];
+    assert.equal(apply.command, 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+    const script = Buffer.from(apply.args.at(-1)!, 'base64').toString('utf16le');
+    assert.match(script, /SetSecurityDescriptorSddlForm\(\$env:RAUHWPX_DACL_SDDL, 'Access'\)/);
+    assert.equal(apply.options.env.RAUHWPX_DACL_SDDL, 'D:PAI(A;;FA;;;BA)');
+    assert.match(apply.options.env.RAUHWPX_DACL_TARGET, /\.rauhwpx-.*\.tmp$/);
+    assert.equal(apply.options.env.GITHUB_TOKEN, undefined);
+    assert.equal(await readFs(target, 'utf8'), '\x07\x08');
+    assert.deepEqual(await readdir(directory), ['report.hwp']);
   });
 });
 
