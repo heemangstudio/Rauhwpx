@@ -1135,6 +1135,8 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
   }
   window.webContents.on('did-finish-load', () => {
     session.rendererLoaded = true;
+    // A reload after a failed first load brings back the document and its prompt.
+    session.rendererLoadFailed = false;
     // A request sent to a previous document can never be answered (dev reload).
     session.pendingCloseRequestId = null;
     if (launchFiles.length > 0 && !window.isDestroyed()) {
