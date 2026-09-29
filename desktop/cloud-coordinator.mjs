@@ -152,6 +152,39 @@ function canConfirmDurableHandoff(record) {
     || record.destination.durableConversationRestore === true;
 }
 
+const TERMINAL_HANDOFF_STATES = new Set(['downloaded', 'cancelled', 'expired', 'failed']);
+/** Deterministic stream failures: replaying the same event fails the same way. */
+const REJECTED_EVENT_CODES = new Set(['HANDOFF_TRANSITION_INVALID', 'CLOUD_EVENT_INVALID']);
+
+function invalidCloudEvent(message) {
+  return Object.assign(new Error(message), { code: 'CLOUD_EVENT_INVALID', retryable: false });
+}
+
+/**
+ * A verified result whose download confirmation is still owed to the server. It
+ * stays owed after the user resolves the result and the local copy is cleaned up.
+ */
+function resultConfirmationPending(record) {
+  return record?.state === 'downloading' && Boolean(record.resultDigest)
+    && Boolean(record.recoveryPath || record.resolvedAt);
+}
+
+/** The server will never accept this confirmation, so retrying it only repeats the failure. */
+function resultConfirmationRejected(error) {
+  const code = String(error?.code ?? '').toUpperCase();
+  if (code === 'SESSION_NOT_FOUND' || code === 'RESULT_NOT_FOUND') return true;
+  const status = Number(error?.status);
+  return Number.isInteger(status) && status >= 400 && status < 500 && ![401, 408, 429].includes(status);
+}
+
+/** The server no longer holds the checkpoint, timeline or session an artifact sync asked for. */
+function missingCloudArtifact(error) {
+  const code = String(error?.code ?? '').toUpperCase();
+  return error?.status === 404 || code === 'CHECKPOINT_NOT_FOUND' || code === 'SESSION_NOT_FOUND';
+}
+
+const ARTIFACT_SYNC_RETRY_MAX_MS = 5 * 60_000;
+
 function sameDestination(left, right) {
   if (!left || !right) return false;
   return ['endpoint', 'serverPublicKey', 'mode', 'sandboxId', 'sandboxProvider', 'protocolVersion']
@@ -457,6 +490,8 @@ export class CloudCoordinator extends EventEmitter {
   #resultRecoveryTimers = new Map();
   #transferControllers = new Map();
   #transferPromises = new Map();
+  /** handoff id -> the one transfer or recovery that may upload it right now. */
+  #transferOwners = new Map();
   #transferOperations = new Set();
   #transferRemoteSessions = new Map();
   #transferCancelPromises = new Map();
@@ -474,6 +509,8 @@ export class CloudCoordinator extends EventEmitter {
   #remoteWatchSequence = new Map();
   #timelinePending = new Map();
   #artifactSyncs = new Map();
+  /** artifact sync key -> consecutive failed passes, for retry backoff. */
+  #artifactSyncFailures = new Map();
   #publicationChains = new Map();
   #transferAdmissionChain = Promise.resolve();
   #snapshotChain = Promise.resolve();
@@ -505,6 +542,9 @@ export class CloudCoordinator extends EventEmitter {
   #provisionPromise = null;
   #preferredMode = null;
   #stopped = false;
+  /** Aborted by stop() so long waits (pause polling, boat wake) end with the app. */
+  #stopController = new AbortController();
+  #stopTimeoutMs;
   #link = { kind: 'ready', error: null, attempt: 0, canRecreate: false };
   #linkNeedsAction = false;
   #linkHealPromise = null;
@@ -547,8 +587,10 @@ export class CloudCoordinator extends EventEmitter {
     collectProviderAuth = null,
     collectImportedAuth = null,
     boat = null,
+    stopTimeoutMs = 8_000,
   } = {}) {
     super();
+    this.#stopTimeoutMs = Number.isFinite(stopTimeoutMs) ? Math.max(0, stopTimeoutMs) : 8_000;
     this.#boat = boat ?? null;
     this.#client = client;
     this.#store = store;
@@ -630,6 +672,7 @@ export class CloudCoordinator extends EventEmitter {
 
   async start() {
     this.#stopped = false;
+    if (this.#stopController.signal.aborted) this.#stopController = new AbortController();
     await this.#refreshAccountStatus({ force: true });
     void this.prewarmAppServer({ reason: 'startup' });
     await this.#refreshMergeRequests({ force: true });
@@ -656,11 +699,22 @@ export class CloudCoordinator extends EventEmitter {
       }
     }
     if (this.#boat) await this.#restoreBoatSetup();
-    const records = (await this.#store.load()).filter((record) => destinationMatchesProfile(record.destination, profile));
+    let stored = [];
+    try {
+      stored = await this.#store.load();
+    } catch (error) {
+      // The file stays untouched and the store stays unloaded, so the next read retries it.
+      if (error?.code !== 'HANDOFF_STORE_UNREADABLE') throw error;
+      this.#emit({ type: 'handoff-store-unreadable', error: error.message });
+    }
+    if (this.#store.quarantinePath) {
+      this.#emit({ type: 'handoff-store-quarantined', path: this.#store.quarantinePath });
+    }
+    const records = stored.filter((record) => destinationMatchesProfile(record.destination, profile));
     for (const record of records) {
       if (record.resolvedAt && record.recoveryCleanupPath) {
         await this.#cleanupResolvedRecovery(record);
-        continue;
+        if (!resultConfirmationPending(record)) continue;
       }
       if (['preparing', 'uploading', 'committing'].includes(record.state) && record.documentStagingPath) {
         this.#scheduleTransferRecovery(record.id, 0);
@@ -671,7 +725,7 @@ export class CloudCoordinator extends EventEmitter {
           this.#emit({ type: 'payload-cleanup-failed', handoffId: record.id, error: error.message });
         });
       }
-      if (record.state === 'downloading' && record.recoveryPath && record.resultDigest) {
+      if (resultConfirmationPending(record)) {
         this.#scheduleResultRecovery(record.id, 0);
         continue;
       }
@@ -699,6 +753,7 @@ export class CloudCoordinator extends EventEmitter {
 
   async stop() {
     this.#stopped = true;
+    this.#stopController.abort(transferError('Cloud coordinator is stopped', 'COORDINATOR_STOPPED'));
     const mergePrefetch = this.#mergeRecovery.prefetchInflight;
     this.#mergeRecovery.reset();
     this.#conversationRecovery.reset();
@@ -746,7 +801,19 @@ export class CloudCoordinator extends EventEmitter {
     // aborting lets its cleanup path run instead of orphaning the service.
     this.#spawnController?.abort(new Error('Cloud coordinator stopped'));
     this.#spawnController = null;
-    await Promise.allSettled(pending);
+    // Boat setup, provisioning and pause polling can run for many minutes. Quit
+    // waits a bounded time for them; their journals resume on the next start.
+    let settled = 0;
+    const deadline = new AbortController();
+    const timedOut = await Promise.race([
+      Promise.allSettled(pending.map((operation) => Promise.resolve(operation).finally(() => { settled += 1; })))
+        .then(() => false),
+      delay(this.#stopTimeoutMs, true, { ref: false, signal: deadline.signal }).catch(() => false),
+    ]);
+    deadline.abort();
+    if (timedOut) {
+      this.#emit({ type: 'coordinator-stop-timeout', pending: pending.length - settled });
+    }
     await this.#store.flush?.();
   }
 
@@ -893,6 +960,7 @@ export class CloudCoordinator extends EventEmitter {
       this.#remoteSessions.clear();
       this.#remoteWatchSequence.clear();
       this.#timelinePending.clear();
+      this.#artifactSyncFailures.clear();
       this.#linkNeedsAction = false;
       return result;
     } finally {
@@ -1012,7 +1080,12 @@ export class CloudCoordinator extends EventEmitter {
     void this.#refreshMergeRequests();
     const profile = await this.#client.loadProfile().catch(() => null);
     const paired = profile ? await this.#client.isPaired().catch(() => false) : false;
-    const records = await this.#store.list();
+    // An unreadable store stays unloaded and untouched, and every later read tries
+    // it again. Snapshots show no handoffs meanwhile instead of failing Cloud IPC.
+    const records = await this.#store.list().catch((error) => {
+      if (error?.code !== 'HANDOFF_STORE_UNREADABLE') throw error;
+      return [];
+    });
     this.#assertProfileEpoch(profileEpoch);
     const visibleRecords = records.filter((record) => (
       !record.resolvedAt && destinationMatchesProfile(record.destination, profile)
@@ -1567,9 +1640,11 @@ export class CloudCoordinator extends EventEmitter {
         let sessions = await this.#client.sessions({ timeoutMs: 2_000, retryAttempts: 1, signal: controller.signal });
         controller.signal.throwIfAborted();
         let present = new Set(sessions.map((session) => session.id ?? session.sessionId));
+        const restoreFailures = [];
         const restored = await this.#restoreKnownConversations(profile, health, {
           presentSessionIds: present,
           signal: controller.signal,
+          failures: restoreFailures,
         });
         if (restored > 0) {
           sessions = await this.#client.sessions({ timeoutMs: 2_000, retryAttempts: 1, signal: controller.signal });
@@ -1579,6 +1654,13 @@ export class CloudCoordinator extends EventEmitter {
         const missing = knownSessions.filter((id) => !present.has(id));
         this.#missingSessionIds = new Set(missing);
         if (missing.length) {
+          // A restore that failed on a passing broker or network error is still
+          // recoverable, so the link retries it instead of asking the user to
+          // discard the conversation.
+          const transient = restoreFailures.find(({ sessionId, error }) => (
+            missing.includes(sessionId) && !nonRetryableTransferError(error)
+          ));
+          if (transient) throw transient.error;
           throw transferError('Cloud 서버에서 이전 작업을 찾지 못했습니다.', 'SESSION_NOT_FOUND');
         }
         const previous = this.#remoteSessions;
@@ -1751,9 +1833,31 @@ export class CloudCoordinator extends EventEmitter {
     return operation;
   }
 
+  /**
+   * Restore after activating a worker is best effort. The worker stays up either
+   * way; continuity and the next reconnect retry whatever is left behind.
+   */
+  async #restoreConversationsAfterActivation(profile, health, options = {}) {
+    try {
+      await this.#restoreKnownConversations(profile, health, options);
+    } catch (error) {
+      if (error?.code === 'PROFILE_CHANGED') throw error;
+      this.#emit({ type: 'conversation-restore-deferred', error: error.message, code: error?.code ?? null });
+    }
+    await this.#resumeRecoveriesForCurrentProfile().catch((error) => {
+      this.#emit({ type: 'profile-recovery-resume-failed', error: error.message });
+    });
+  }
+
+  /**
+   * Restores every known conversation the replacement worker lacks. One record
+   * that fails does not stop the others; its error lands on the record, and
+   * `failures` (when given) collects it for the caller.
+   */
   async #restoreKnownConversations(profile, health, {
     presentSessionIds = null,
     signal = null,
+    failures = null,
   } = {}) {
     if (profile?.mode !== 'app-hosted' || !conversationRestoreSupported(health)
       || typeof this.#client.restoreSession !== 'function') return 0;
@@ -1807,6 +1911,8 @@ export class CloudCoordinator extends EventEmitter {
           serverVersion: session.stateVersion ?? session.version ?? latest.serverVersion,
           statusMessage: session.suspendedReason?.message ?? session.statusMessage ?? null,
           suspendedCode: session.suspendedReason?.code ?? null,
+          error: null,
+          errorCode: null,
           provider: session.provider ?? latest.provider,
           executionConfig: session.executionConfig ?? latest.executionConfig,
           executionPhase: session.executionPhase ?? latest.executionPhase ?? null,
@@ -1820,18 +1926,41 @@ export class CloudCoordinator extends EventEmitter {
         return session;
       })();
       if (!previous) this.#conversationRestores.set(record.cloudSessionId, operation);
+      let session;
       try {
-        const session = await operation;
-        present.add(record.cloudSessionId);
-        this.#remoteSessions.set(record.cloudSessionId, session);
-        restored += 1;
-        await this.#retryQueuedMessages(await this.#store.get(record.id), profileEpoch);
-        this.#emit({ type: 'cloud-conversation-restored', sessionId: record.cloudSessionId });
+        session = await operation;
+      } catch (error) {
+        if (error?.code === 'PROFILE_CHANGED' || error?.name === 'AbortError' || signal?.aborted) throw error;
+        failures?.push({ sessionId: record.cloudSessionId, error });
+        await this.#store.patch(record.id, {
+          error: error.message,
+          errorCode: String(error?.code ?? '') || null,
+          statusMessage: '대화를 새 Cloud 서버로 옮기지 못했습니다.',
+        }).catch(() => {});
+        this.#emit({
+          type: 'cloud-conversation-restore-failed',
+          sessionId: record.cloudSessionId,
+          error: error.message,
+          code: error?.code ?? null,
+        });
+        continue;
       } finally {
         if (!previous && this.#conversationRestores.get(record.cloudSessionId) === operation) {
           this.#conversationRestores.delete(record.cloudSessionId);
         }
       }
+      present.add(record.cloudSessionId);
+      this.#remoteSessions.set(record.cloudSessionId, session);
+      restored += 1;
+      // A failed follow-up replay stays pending on the record for the next
+      // attempt; it must not undo the restore that just succeeded.
+      const latest = await this.#store.get(record.id);
+      if (latest) {
+        await this.#retryQueuedMessages(latest, profileEpoch).catch((error) => {
+          if (error?.code === 'PROFILE_CHANGED') throw error;
+        });
+      }
+      this.#emit({ type: 'cloud-conversation-restored', sessionId: record.cloudSessionId });
     }
     return restored;
   }
@@ -2387,8 +2516,7 @@ export class CloudCoordinator extends EventEmitter {
           this.#emit({ type: 'server-mode-persist-failed', mode: 'app-hosted', error: error.message });
           return 'app-hosted';
         });
-        await this.#restoreKnownConversations(current, health);
-        await this.#resumeRecoveriesForCurrentProfile();
+        await this.#restoreConversationsAfterActivation(current, health);
         return this.snapshot({ extra: { sandbox: { ok: true, reused: true } } });
       }
       // lifecycle 'idle': the deployment was deleted out-of-band, so a fresh
@@ -2400,6 +2528,9 @@ export class CloudCoordinator extends EventEmitter {
     this.#setSandboxLifecycle('provisioning', 'Starting an app-provided sandbox.');
     this.#emit({ type: 'sandbox-provision-started', providerId: provider.id });
     let spawned = null;
+    // Once the saved profile points at the new worker, it is the user's server.
+    // A later failure must not tear it down underneath that profile.
+    let activated = false;
     const controller = new AbortController();
     this.#spawnController = controller;
     try {
@@ -2455,8 +2586,8 @@ export class CloudCoordinator extends EventEmitter {
         tokens: pairing.credentials,
         device: pairing.credentials.device,
       }));
-      await this.#restoreKnownConversations(profile, health, { presentSessionIds: new Set() });
-      await this.#resumeRecoveriesForCurrentProfile();
+      activated = true;
+      await this.#restoreConversationsAfterActivation(profile, health, { presentSessionIds: new Set() });
       await this.#client.clearPendingAppSandbox?.().catch((error) => {
         this.#emit({ type: 'sandbox-journal-clear-failed', error: error.message });
       });
@@ -2472,7 +2603,12 @@ export class CloudCoordinator extends EventEmitter {
       if (error?.cleanupFailed) {
         this.#emit({ type: 'sandbox-cleanup-failed', providerId: provider.id, error: error.cleanupFailed });
       }
-      if (spawned?.sandbox) {
+      if (activated) {
+        // The profile owns the worker now, so the creation journal is complete.
+        await this.#client.clearPendingAppSandbox?.().catch((journalError) => {
+          this.#emit({ type: 'sandbox-journal-clear-failed', error: journalError.message });
+        });
+      } else if (spawned?.sandbox) {
         try {
           await provider.teardown(spawned.sandbox);
           await this.#client.clearPendingAppSandbox?.();
@@ -2729,12 +2865,12 @@ export class CloudCoordinator extends EventEmitter {
     this.#watchRestartTimers.clear();
   }
 
-  #scheduleWatchRestart(start) {
+  #scheduleWatchRestart(start, delayMs = 1_000) {
     if (this.#stopped) return;
     const timer = setTimeout(() => {
       this.#watchRestartTimers.delete(timer);
       if (!this.#stopped) void Promise.resolve(start()).catch(() => {});
-    }, 1_000);
+    }, delayMs);
     this.#watchRestartTimers.add(timer);
   }
 
@@ -2985,6 +3121,26 @@ export class CloudCoordinator extends EventEmitter {
       },
       resources: payload?.references,
     });
+    // One upload per handoff. Claim it before the next await so a recovery that a
+    // reconnect schedules meanwhile sees the claim instead of starting a second
+    // upload of the same session, and a repeated send joins the one in flight.
+    const owner = this.#transferOwners.get(record.id);
+    if (owner) {
+      // Share the outcome of the upload already in flight, including its failure.
+      await owner;
+      const latest = await this.#store.get(record.id);
+      return this.snapshot({ selectedSessionId: latest?.cloudSessionId ?? record.id });
+    }
+    const operation = this.#runTransfer(record, { payload, bytes, goal, restartHandoff, profileEpoch });
+    this.#transferOwners.set(record.id, operation);
+    try {
+      return await operation;
+    } finally {
+      if (this.#transferOwners.get(record.id) === operation) this.#transferOwners.delete(record.id);
+    }
+  }
+
+  async #runTransfer(record, { payload, bytes, goal, restartHandoff, profileEpoch }) {
     if (restartHandoff && (record.documentDigest !== sha256Hex(bytes)
       || record.originDocumentId !== payload.documentId || record.threadId !== payload.threadId)) {
       throw transferError('복구 시작 ID가 다른 전송에 사용됐습니다.', 'RESTART_DOCUMENT_INVALID');
@@ -2994,19 +3150,19 @@ export class CloudCoordinator extends EventEmitter {
         restartRecovery: { ...restartHandoff.restartRecovery, startId: record.id },
       });
     }
-    if (restartHandoff && record.cloudSessionId
-      && ['queued', 'running', 'suspended', 'completed', 'downloading', 'downloaded'].includes(record.state)) {
-      return this.snapshot({ selectedSessionId: record.cloudSessionId });
+    const latest = await this.#store.get(record.id) ?? record;
+    // The same start already reached the server (an earlier send or a recovery
+    // finished it), so a repeated send is answered from that session.
+    if (latest.cloudSessionId
+      && ['queued', 'running', 'suspended', 'completed', 'downloading', 'downloaded'].includes(latest.state)) {
+      return this.snapshot({ selectedSessionId: latest.cloudSessionId });
     }
-    const inflight = this.#transferPromises.get(record.id);
-    if (inflight) {
-      await inflight;
-      return this.snapshot({ selectedSessionId: record.id });
-    }
-    await this.#store.transition(record.id, 'uploading');
-    let committed = false;
+    // A committing transfer resumes its upload in place; only earlier states move to uploading.
+    if (latest.state !== 'committing') await this.#store.transition(record.id, 'uploading');
+    let committed = latest.state === 'committing';
     const controller = new AbortController();
     this.#transferControllers.set(record.id, controller);
+    let transferPromise = null;
     try {
       this.#emit({
         type: 'session-transfer',
@@ -3016,7 +3172,7 @@ export class CloudCoordinator extends EventEmitter {
       });
       if (this.#stopped) throw transferError('Cloud coordinator is stopped', 'COORDINATOR_STOPPED');
       await this.#seedRemoteProvider(record.provider);
-      const transferPromise = this.#client.transfer({
+      transferPromise = this.#client.transfer({
         sessionId: record.id,
         threadId: record.threadId,
         documentId: record.originDocumentId,
@@ -3132,9 +3288,16 @@ export class CloudCoordinator extends EventEmitter {
       this.#emit({ type: 'session-transfer-failed', handoffId: record.id, error: error.message });
       throw error;
     } finally {
-      this.#transferPromises.delete(record.id);
-      this.#transferControllers.delete(record.id);
+      this.#releaseTransferHandles(record.id, transferPromise, controller);
     }
+  }
+
+  /** Drops only this call's handles, so a later cancel still reaches whichever upload owns the handoff. */
+  #releaseTransferHandles(handoffId, transferPromise, controller) {
+    if (transferPromise && this.#transferPromises.get(handoffId) === transferPromise) {
+      this.#transferPromises.delete(handoffId);
+    }
+    if (this.#transferControllers.get(handoffId) === controller) this.#transferControllers.delete(handoffId);
   }
 
   async command(input) {
@@ -3186,10 +3349,17 @@ export class CloudCoordinator extends EventEmitter {
       remote = paused.session ?? remote;
     }
     const deadline = Date.now() + 5 * 60_000;
+    const stopSignal = this.#stopController.signal;
     let attempt = 0;
     while (remote.status !== 'suspended' && Date.now() < deadline) {
-      await delay(Math.min(2_000, 250 * (2 ** Math.min(attempt, 3))));
-      remote = await this.#client.session(sessionId);
+      // Quit must not wait out a five-minute pause poll.
+      if (this.#stopped) throw transferError('Cloud coordinator is stopped', 'COORDINATOR_STOPPED');
+      await delay(Math.min(2_000, 250 * (2 ** Math.min(attempt, 3))), undefined, { signal: stopSignal })
+        .catch((error) => {
+          if (stopSignal.aborted) throw transferError('Cloud coordinator is stopped', 'COORDINATOR_STOPPED');
+          throw error;
+        });
+      remote = await this.#client.session(sessionId, { signal: stopSignal });
       this.#assertProfileEpoch(profileEpoch);
       attempt += 1;
     }
@@ -3599,6 +3769,8 @@ export class CloudCoordinator extends EventEmitter {
       });
       await this.#store.patch(handoff.id, {
         recoveryPath,
+        // Confirmation recovery must name the same result after the local copy is gone.
+        resultId,
         resultDigest: result.sha256,
         resultSize: result.size,
         resultName: fileName,
@@ -3617,15 +3789,27 @@ export class CloudCoordinator extends EventEmitter {
         });
         await this.#store.transition(handoff.id, 'downloaded', { downloadedAt });
       } catch (error) {
-        const current = await this.#store.get(handoff.id);
-        const attempt = Number(current?.confirmationAttempt ?? 0) + 1;
-        await this.#store.patch(handoff.id, {
-          downloadedAt,
-          error: error.message,
-          confirmationAttempt: attempt,
-        });
-        this.#scheduleResultRecovery(handoff.id, attempt);
-        this.#emit({ type: 'result-confirmation-deferred', sessionId, error: error.message });
+        if (resultConfirmationRejected(error)) {
+          // The verified bytes are already on disk and the server will never take
+          // this confirmation, so the download is finished here.
+          await this.#store.transition(handoff.id, 'downloaded', {
+            downloadedAt,
+            confirmationError: error.message,
+          });
+          this.#emit({
+            type: 'result-confirmation-abandoned', sessionId, error: error.message, code: error?.code ?? null,
+          });
+        } else {
+          const current = await this.#store.get(handoff.id);
+          const attempt = Number(current?.confirmationAttempt ?? 0) + 1;
+          await this.#store.patch(handoff.id, {
+            downloadedAt,
+            error: error.message,
+            confirmationAttempt: attempt,
+          });
+          this.#scheduleResultRecovery(handoff.id, attempt);
+          this.#emit({ type: 'result-confirmation-deferred', sessionId, error: error.message });
+        }
       }
       const snapshot = await this.snapshot({ selectedSessionId: sessionId });
       this.#emit({ type: 'result-downloaded', snapshot, sessionId });
@@ -3966,7 +4150,7 @@ export class CloudCoordinator extends EventEmitter {
         if (timer) clearTimeout(timer);
         this.#recoveryTimers.delete(record.id);
         this.#scheduleTransferRecovery(record.id, Number(record.recoveryAttempt ?? 0));
-      } else if (record.state === 'downloading' && record.recoveryPath && record.resultDigest) {
+      } else if (resultConfirmationPending(record)) {
         const timer = this.#resultRecoveryTimers.get(record.id);
         if (timer) clearTimeout(timer);
         this.#resultRecoveryTimers.delete(record.id);
@@ -4005,116 +4189,24 @@ export class CloudCoordinator extends EventEmitter {
     const onEvent = (event) => this.#profileOperationContext.exit(() => this.#withProfileOperation(async () => {
       if (controller.signal.aborted || this.#watchers.get(watcherKey) !== controller) return;
       this.#assertProfileEpoch(profileEpoch);
-      const source = event.session ?? event.payload?.session ?? event.payload ?? event;
-      let current = await this.#store.get(handoffId);
-      this.#assertProfileEpoch(profileEpoch);
-      if (!current) return;
-      const serverState = String(source.state ?? source.status ?? '').toLowerCase();
-      const state = serverState === 'purged'
-        ? (['downloading', 'downloaded'].includes(current.state) ? current.state : 'expired')
-        : cloudState(serverState, current.state);
-      const pauseRequested = event.type === 'session.pause_requested'
-        ? true
-        : state !== 'running'
-          ? false
-          : source.pauseRequested ?? current.pauseRequested ?? false;
-      const takeoverRequested = event.type === 'session.takeover_requested'
-        ? true
-        : event.type === 'session.takeover_ready'
-          ? false
-          : source.takeoverRequested ?? current.takeoverRequested ?? false;
-      const takeoverReady = event.type === 'session.takeover_ready'
-        ? true
-        : current.takeoverReady ?? false;
-      const currentWait = event.type === 'wait.created'
-        ? {
-            id: source.waitId,
-            kind: source.kind,
-            payload: source.payload ?? {},
-          }
-        : event.type === 'wait.resolved' || event.type === 'conversation.ending'
-          ? null
-          : source.currentWait ?? current.currentWait ?? null;
-      let pendingTurnBoundary = current.pendingTurnBoundary ?? null;
-      if (event.type === 'boundary.committed' && ['turn', 'operation'].includes(source.kind)) {
-        if (typeof source.operationId !== 'string' || !source.operationId
-          || !Number.isSafeInteger(source.turnNumber) || source.turnNumber < 0
-          || !Number.isSafeInteger(source.revision) || source.revision < 1) {
-          throw new Error('Cloud turn boundary is invalid');
-        }
-        pendingTurnBoundary = {
-          operationId: source.operationId,
-          turnNumber: source.turnNumber,
-          revision: source.revision,
-        };
-        if (Number.isSafeInteger(event.sequence) && event.sequence > current.lastEventSequence) {
-          current = await this.#store.patch(handoffId, { pendingTurnBoundary });
-        }
+      try {
+        await this.#applySessionEvent(event, { handoffId, sessionId, controller, profileEpoch });
+      } catch (error) {
+        if (!REJECTED_EVENT_CODES.has(error?.code)) throw error;
+        // Replaying this event fails the same way on every reconnect, which would
+        // stall the stream and loop the link. Step the cursor past it without
+        // changing state; I/O and profile errors still propagate and retry.
+        await this.#store.applyEvent(handoffId, { sequence: event.sequence, patch: {} });
+        this.#assertProfileEpoch(profileEpoch);
+        this.#emit({
+          type: 'session-event-rejected',
+          sessionId,
+          sequence: event.sequence,
+          eventType: event.type ?? null,
+          error: error.message,
+          code: error.code,
+        });
       }
-      let pendingOriginPublications = current.pendingOriginPublications ?? [];
-      if (event.type === 'document.publish_requested') {
-        if (typeof source.operationId !== 'string' || !/^[A-Za-z0-9._:-]{1,160}$/.test(source.operationId)) {
-          throw new Error('Cloud publication operation is invalid');
-        }
-        if (!pendingOriginPublications.includes(source.operationId)) {
-          pendingOriginPublications = [...pendingOriginPublications, source.operationId];
-          // Persist the explicit request before advancing the event cursor.
-          current = await this.#store.patch(handoffId, (latest) => ({
-            pendingOriginPublications: (latest.pendingOriginPublications ?? []).includes(source.operationId)
-              ? latest.pendingOriginPublications : [...(latest.pendingOriginPublications ?? []), source.operationId],
-          }));
-        }
-      }
-      const updated = await this.#store.applyEvent(handoffId, {
-        sequence: event.sequence,
-        state,
-        patch: (latest) => ({
-          serverVersion: source.stateVersion ?? source.version ?? current.serverVersion,
-          statusMessage: source.statusMessage ?? source.message ?? source.reason?.message ?? null,
-          suspendedCode: source.suspendedReason?.code ?? source.reason?.code ?? current.suspendedCode,
-          resultId: source.result?.id ?? source.resultId ?? current.resultId,
-          resultDigest: source.result?.sha256 ?? current.resultDigest,
-          resultSize: source.result?.size ?? current.resultSize,
-          resultExpiresAt: source.result?.expiresAt ?? current.resultExpiresAt,
-          startedAt: source.startedAt ?? current.startedAt,
-          completedAt: source.completedAt ?? current.completedAt,
-          turnsUsed: source.turnsUsed ?? current.turnsUsed,
-          pauseRequested,
-          takeoverRequested,
-          takeoverReady,
-          takeoverBoundary: source.boundary ?? current.takeoverBoundary,
-          provider: source.provider ?? current.provider,
-          executionConfig: source.executionConfig ?? current.executionConfig,
-          configurationSupported: source.configurationSupported ?? current.configurationSupported,
-          configurationPending: source.configurationPending ?? current.configurationPending,
-          configurationEditable: source.configurationEditable ?? current.configurationEditable,
-          executionPhase: source.executionPhase ?? current.executionPhase ?? null,
-          currentWait,
-          ...(['message.queued', 'message.accepted'].includes(event.type) ? {
-            queuedMessages: (latest.queuedMessages ?? []).map((message) => (
-              message.id === source.messageId ? {
-                ...message,
-                state: event.type === 'message.accepted' ? 'accepted' : message.state,
-              } : message
-            )),
-          } : {}),
-          pendingTurnBoundary: latest.pendingTurnBoundary ?? null,
-          pendingOriginPublications: latest.pendingOriginPublications ?? [],
-        }),
-      });
-      this.#assertProfileEpoch(profileEpoch);
-      this.#emit({
-        type: 'session-event',
-        sessionId,
-        event,
-        handoff: updated,
-      });
-      if (event.type === 'timeline.updated' || state === 'completed') this.#timelinePending.set(sessionId, true);
-      if (updated?.pendingTurnBoundary || updated?.pendingOriginPublications?.length
-        || this.#timelinePending.get(sessionId) || state === 'completed') {
-        this.#scheduleArtifactSync(sessionId, handoffId, profileEpoch);
-      }
-      if (['downloaded', 'cancelled', 'expired', 'failed'].includes(updated?.state)) controller.abort();
     }, { expectedEpoch: profileEpoch }));
     let restartWatch = false;
     this.#profileOperationContext.exit(() => {
@@ -4142,6 +4234,129 @@ export class CloudCoordinator extends EventEmitter {
           }
         });
     });
+  }
+
+  async #applySessionEvent(event, { handoffId, sessionId, controller, profileEpoch }) {
+    const source = event.session ?? event.payload?.session ?? event.payload ?? event;
+    let current = await this.#store.get(handoffId);
+    this.#assertProfileEpoch(profileEpoch);
+    if (!current) return;
+    const serverState = String(source.state ?? source.status ?? '').toLowerCase();
+    // A purge ends live work; it never reopens finished records or a result still being confirmed.
+    const state = serverState === 'purged'
+      ? (['downloading', ...TERMINAL_HANDOFF_STATES].includes(current.state) ? current.state : 'expired')
+      : cloudState(serverState, current.state);
+    const pauseRequested = event.type === 'session.pause_requested'
+      ? true
+      : state !== 'running'
+        ? false
+        : source.pauseRequested ?? current.pauseRequested ?? false;
+    const takeoverRequested = event.type === 'session.takeover_requested'
+      ? true
+      : event.type === 'session.takeover_ready'
+        ? false
+        : source.takeoverRequested ?? current.takeoverRequested ?? false;
+    const takeoverReady = event.type === 'session.takeover_ready'
+      ? true
+      : current.takeoverReady ?? false;
+    const currentWait = event.type === 'wait.created'
+      ? {
+          id: source.waitId,
+          kind: source.kind,
+          payload: source.payload ?? {},
+        }
+      : event.type === 'wait.resolved' || event.type === 'conversation.ending'
+        ? null
+        : source.currentWait ?? current.currentWait ?? null;
+    if (event.type === 'boundary.committed' && ['turn', 'operation'].includes(source.kind)) {
+      if (typeof source.operationId !== 'string' || !source.operationId
+        || !Number.isSafeInteger(source.turnNumber) || source.turnNumber < 0
+        || !Number.isSafeInteger(source.revision) || source.revision < 1) {
+        throw invalidCloudEvent('Cloud turn boundary is invalid');
+      }
+      // A command response can move the event cursor past boundaries still queued
+      // in this stream. Capture by identity and revision instead of by sequence,
+      // so such a boundary is still archived and replays stay no-ops.
+      if (source.operationId !== current.lastSyncedBoundaryOperation
+        && source.operationId !== current.pendingTurnBoundary?.operationId
+        && source.revision > (current.lastSyncedRevision ?? 0)
+        && source.revision >= (current.pendingTurnBoundary?.revision ?? 0)) {
+        current = await this.#store.patch(handoffId, {
+          pendingTurnBoundary: {
+            operationId: source.operationId,
+            turnNumber: source.turnNumber,
+            revision: source.revision,
+          },
+        });
+      }
+    }
+    if (event.type === 'document.publish_requested') {
+      if (typeof source.operationId !== 'string' || !/^[A-Za-z0-9._:-]{1,160}$/.test(source.operationId)) {
+        throw invalidCloudEvent('Cloud publication operation is invalid');
+      }
+      if (!(current.pendingOriginPublications ?? []).includes(source.operationId)) {
+        // Persist the explicit request before advancing the event cursor.
+        current = await this.#store.patch(handoffId, (latest) => ({
+          pendingOriginPublications: (latest.pendingOriginPublications ?? []).includes(source.operationId)
+            ? latest.pendingOriginPublications : [...(latest.pendingOriginPublications ?? []), source.operationId],
+        }));
+      }
+    }
+    if (event.type === 'message.accepted' && typeof source.messageId === 'string'
+      && (current.queuedMessages ?? []).some((message) => (
+        message.id === source.messageId && message.state !== 'accepted'
+      ))) {
+      // Acceptance only moves a message forward (queued -> accepted), so it applies
+      // even when a command response already moved the cursor past this event.
+      // Delivery stays pending until the command's own durable receipt arrives.
+      current = await this.#store.patch(handoffId, (latest) => ({
+        queuedMessages: (latest.queuedMessages ?? []).map((message) => (
+          message.id === source.messageId ? { ...message, state: 'accepted' } : message
+        )),
+      }));
+    }
+    const updated = await this.#store.applyEvent(handoffId, {
+      sequence: event.sequence,
+      state,
+      patch: (latest) => ({
+        serverVersion: source.stateVersion ?? source.version ?? current.serverVersion,
+        statusMessage: source.statusMessage ?? source.message ?? source.reason?.message ?? null,
+        suspendedCode: source.suspendedReason?.code ?? source.reason?.code ?? current.suspendedCode,
+        resultId: source.result?.id ?? source.resultId ?? current.resultId,
+        resultDigest: source.result?.sha256 ?? current.resultDigest,
+        resultSize: source.result?.size ?? current.resultSize,
+        resultExpiresAt: source.result?.expiresAt ?? current.resultExpiresAt,
+        startedAt: source.startedAt ?? current.startedAt,
+        completedAt: source.completedAt ?? current.completedAt,
+        turnsUsed: source.turnsUsed ?? current.turnsUsed,
+        pauseRequested,
+        takeoverRequested,
+        takeoverReady,
+        takeoverBoundary: source.boundary ?? current.takeoverBoundary,
+        provider: source.provider ?? current.provider,
+        executionConfig: source.executionConfig ?? current.executionConfig,
+        configurationSupported: source.configurationSupported ?? current.configurationSupported,
+        configurationPending: source.configurationPending ?? current.configurationPending,
+        configurationEditable: source.configurationEditable ?? current.configurationEditable,
+        executionPhase: source.executionPhase ?? current.executionPhase ?? null,
+        currentWait,
+        pendingTurnBoundary: latest.pendingTurnBoundary ?? null,
+        pendingOriginPublications: latest.pendingOriginPublications ?? [],
+      }),
+    });
+    this.#assertProfileEpoch(profileEpoch);
+    this.#emit({
+      type: 'session-event',
+      sessionId,
+      event,
+      handoff: updated,
+    });
+    if (event.type === 'timeline.updated' || state === 'completed') this.#timelinePending.set(sessionId, true);
+    if (updated?.pendingTurnBoundary || updated?.pendingOriginPublications?.length
+      || this.#timelinePending.get(sessionId) || state === 'completed') {
+      this.#scheduleArtifactSync(sessionId, handoffId, profileEpoch);
+    }
+    if (TERMINAL_HANDOFF_STATES.has(updated?.state)) controller.abort();
   }
 
   async #finalizeTransferCancellation(record) {
@@ -4223,6 +4438,8 @@ export class CloudCoordinator extends EventEmitter {
   }
 
   async #recoverIncompleteTransfer(record) {
+    let controller = null;
+    let transferPromise = null;
     try {
       const latest = await this.#store.get(record.id);
       if (!latest || !['preparing', 'uploading', 'committing'].includes(latest.state)) return;
@@ -4255,9 +4472,9 @@ export class CloudCoordinator extends EventEmitter {
       if (record.state === 'preparing') record = await this.#store.transition(record.id, 'uploading');
       await this.#seedRemoteProvider(record.provider);
       let committed = false;
-      const controller = new AbortController();
+      controller = new AbortController();
       this.#transferControllers.set(record.id, controller);
-      const transferPromise = this.#client.transfer({
+      transferPromise = this.#client.transfer({
         sessionId: record.id,
         threadId: record.threadId,
         documentId: record.originDocumentId,
@@ -4384,20 +4601,34 @@ export class CloudCoordinator extends EventEmitter {
         this.#scheduleTransferRecovery(record.id, attempt);
       }
     } finally {
-      this.#transferPromises.delete(record.id);
-      this.#transferControllers.delete(record.id);
+      this.#releaseTransferHandles(record.id, transferPromise, controller);
     }
   }
 
   async #runTransferRecovery(handoffId, attempt) {
     const outcome = await this.#withProfileOperation(async () => {
-      const record = await this.#store.get(handoffId);
-      if (!record || !['preparing', 'uploading', 'committing'].includes(record.state)
-        || !record.documentStagingPath) return 'done';
-      const profile = await this.#client.loadProfile().catch(() => null);
-      if (!destinationMatchesProfile(record.destination, profile)) return 'parked';
-      await this.#recoverIncompleteTransfer(record);
-      return 'ran';
+      const owner = this.#transferOwners.get(handoffId);
+      if (owner) {
+        // A send or another recovery already uploads this handoff. Look again once
+        // it settles, in case it stopped short without scheduling its own retry.
+        void owner.catch(() => {}).then(() => this.#scheduleTransferRecovery(handoffId, attempt));
+        return 'owned';
+      }
+      const recovery = (async () => {
+        const record = await this.#store.get(handoffId);
+        if (!record || !['preparing', 'uploading', 'committing'].includes(record.state)
+          || !record.documentStagingPath) return 'done';
+        const profile = await this.#client.loadProfile().catch(() => null);
+        if (!destinationMatchesProfile(record.destination, profile)) return 'parked';
+        await this.#recoverIncompleteTransfer(record);
+        return 'ran';
+      })();
+      this.#transferOwners.set(handoffId, recovery);
+      try {
+        return await recovery;
+      } finally {
+        if (this.#transferOwners.get(handoffId) === recovery) this.#transferOwners.delete(handoffId);
+      }
     });
     if (outcome === 'parked') this.#scheduleTransferRecovery(handoffId, attempt, true);
   }
@@ -4421,18 +4652,49 @@ export class CloudCoordinator extends EventEmitter {
     this.#recoveryTimers.set(handoffId, timer);
   }
 
+  async #verifyLocalResult(record) {
+    const bytes = await readFile(record.recoveryPath);
+    if (bytes.length !== record.resultSize || sha256Hex(bytes) !== record.resultDigest) {
+      throw Object.assign(new Error('Verified cloud result recovery no longer matches its receipt'), {
+        code: 'RESULT_RECOVERY_MISMATCH',
+      });
+    }
+    if (record.timelineRecoveryPath && record.timelineDigest) {
+      const timelineBytes = await readFile(record.timelineRecoveryPath);
+      if (timelineBytes.length !== record.timelineSize || sha256Hex(timelineBytes) !== record.timelineDigest) {
+        throw Object.assign(new Error('Verified cloud timeline recovery no longer matches its receipt'), {
+          code: 'RESULT_RECOVERY_MISMATCH',
+        });
+      }
+    }
+  }
+
   async #recoverDownloadedResult(record) {
+    // A resolved result has already been applied and its local copy cleaned up.
+    // Only its receipt remains, and that is all the confirmation needs.
+    if (record.recoveryPath) {
+      try {
+        await this.#verifyLocalResult(record);
+      } catch (error) {
+        if (error?.code !== 'ENOENT' && error?.code !== 'RESULT_RECOVERY_MISMATCH') throw error;
+        // The verified copy is gone or damaged. Reopen the normal download path,
+        // which fetches the result again while the server still holds it.
+        const reset = await this.#store.transition(record.id, 'completed', {
+          recoveryPath: null,
+          timelineRecoveryPath: null,
+          confirmationAttempt: 0,
+          error: error.message,
+        });
+        this.#emit({
+          type: 'result-recovery-reset',
+          sessionId: record.cloudSessionId,
+          handoff: reset,
+          error: error.message,
+        });
+        return;
+      }
+    }
     try {
-      const bytes = await readFile(record.recoveryPath);
-      if (bytes.length !== record.resultSize || sha256Hex(bytes) !== record.resultDigest) {
-        throw new Error('Verified cloud result recovery no longer matches its receipt');
-      }
-      if (record.timelineRecoveryPath && record.timelineDigest) {
-        const timelineBytes = await readFile(record.timelineRecoveryPath);
-        if (timelineBytes.length !== record.timelineSize || sha256Hex(timelineBytes) !== record.timelineDigest) {
-          throw new Error('Verified cloud timeline recovery no longer matches its receipt');
-        }
-      }
       await this.#client.confirmResultDownloaded(record.resultId ?? record.cloudSessionId, {
         sha256: record.resultDigest,
         size: record.resultSize,
@@ -4440,17 +4702,41 @@ export class CloudCoordinator extends EventEmitter {
         retryAttempts: 1,
         timeoutMs: 10_000,
       });
+    } catch (error) {
+      if (!resultConfirmationRejected(error)) throw error;
+      // The bytes were verified when they were written, and the server will never
+      // accept this confirmation. Finish locally instead of retrying forever.
       const updated = await this.#store.transition(record.id, 'downloaded', {
-        downloadedAt: new Date().toISOString(),
+        downloadedAt: record.downloadedAt ?? new Date().toISOString(),
         confirmationAttempt: 0,
+        confirmationError: error.message,
         error: null,
       });
       this.#emit({
-        type: 'result-confirmation-recovered',
+        type: 'result-confirmation-abandoned',
         sessionId: record.cloudSessionId,
         handoff: updated,
-        snapshot: await this.snapshot({ selectedSessionId: record.cloudSessionId }),
+        error: error.message,
+        code: error?.code ?? null,
       });
+      return;
+    }
+    const updated = await this.#store.transition(record.id, 'downloaded', {
+      downloadedAt: record.downloadedAt ?? new Date().toISOString(),
+      confirmationAttempt: 0,
+      error: null,
+    });
+    this.#emit({
+      type: 'result-confirmation-recovered',
+      sessionId: record.cloudSessionId,
+      handoff: updated,
+      snapshot: await this.snapshot({ selectedSessionId: record.cloudSessionId }),
+    });
+  }
+
+  async #retryDownloadedResult(record) {
+    try {
+      await this.#recoverDownloadedResult(record);
     } catch (error) {
       const latest = await this.#store.get(record.id).catch(() => null);
       const attempt = Number(latest?.confirmationAttempt ?? 0) + 1;
@@ -4463,10 +4749,10 @@ export class CloudCoordinator extends EventEmitter {
   async #runResultRecovery(handoffId, attempt) {
     const outcome = await this.#withProfileOperation(async () => {
       const record = await this.#store.get(handoffId);
-      if (record?.state !== 'downloading' || !record.recoveryPath || !record.resultDigest) return 'done';
+      if (!resultConfirmationPending(record)) return 'done';
       const profile = await this.#client.loadProfile().catch(() => null);
       if (!destinationMatchesProfile(record.destination, profile)) return 'parked';
-      await this.#recoverDownloadedResult(record);
+      await this.#retryDownloadedResult(record);
       return 'ran';
     });
     if (outcome === 'parked') this.#scheduleResultRecovery(handoffId, attempt, true);
@@ -4686,23 +4972,39 @@ export class CloudCoordinator extends EventEmitter {
       void this.#withProfileOperation(async () => {
         while (state.again && !this.#stopped) {
           state.again = false;
-          if (handoffId) await this.#retryPendingTurnBoundary(sessionId, handoffId);
+          if (handoffId) {
+            const boundary = (await this.#store.get(handoffId))?.pendingTurnBoundary ?? null;
+            await this.#unlessArtifactGone(handoffId, () => this.#retryPendingTurnBoundary(sessionId, handoffId), {
+              kind: 'turn-boundary',
+              drop: (latest) => ({
+                pendingTurnBoundary: latest.pendingTurnBoundary?.operationId === boundary?.operationId
+                  ? null : latest.pendingTurnBoundary ?? null,
+              }),
+            });
+          }
           if (handoffId) {
             const pending = (await this.#store.get(handoffId))?.pendingOriginPublications ?? [];
             for (const operationId of pending) {
-              // A worker can announce completed work, but local edits now live on
-              // an independent branch. Archive it for user-initiated merge only.
-              const checkpoint = await this.#downloadCheckpoint({ sessionId, operationId }, profileEpoch);
-              const archivePath = path.join(this.#recoveryDir, 'merge',
-                String(handoffId).replace(/[^A-Za-z0-9_-]/g, '_'),
-                `revision-${checkpoint.revision}${path.extname(checkpoint.fileName) || '.hwpx'}`);
-              await writeVerifiedRecoveryFile({
-                filePath: archivePath, bytes: checkpoint.bytes, expectedDigest: checkpoint.sha256,
+              await this.#unlessArtifactGone(handoffId, async () => {
+                // A worker can announce completed work, but local edits now live on
+                // an independent branch. Archive it for user-initiated merge only.
+                const checkpoint = await this.#downloadCheckpoint({ sessionId, operationId }, profileEpoch);
+                const archivePath = path.join(this.#recoveryDir, 'merge',
+                  String(handoffId).replace(/[^A-Za-z0-9_-]/g, '_'),
+                  `revision-${checkpoint.revision}${path.extname(checkpoint.fileName) || '.hwpx'}`);
+                await writeVerifiedRecoveryFile({
+                  filePath: archivePath, bytes: checkpoint.bytes, expectedDigest: checkpoint.sha256,
+                });
+                this.#assertProfileEpoch(profileEpoch);
+                await this.#store.patch(handoffId, (latest) => ({
+                  pendingOriginPublications: (latest.pendingOriginPublications ?? []).filter((id) => id !== operationId),
+                }));
+              }, {
+                kind: 'publication',
+                drop: (latest) => ({
+                  pendingOriginPublications: (latest.pendingOriginPublications ?? []).filter((id) => id !== operationId),
+                }),
               });
-              this.#assertProfileEpoch(profileEpoch);
-              await this.#store.patch(handoffId, (latest) => ({
-                pendingOriginPublications: (latest.pendingOriginPublications ?? []).filter((id) => id !== operationId),
-              }));
             }
           }
           if (this.#timelinePending.get(sessionId)) {
@@ -4721,16 +5023,65 @@ export class CloudCoordinator extends EventEmitter {
             }
           }
         }
-      }, { expectedEpoch: profileEpoch }).catch((error) => {
+      }, { expectedEpoch: profileEpoch }).then(() => {
+        this.#artifactSyncFailures.delete(key);
+      }, async (error) => {
         state.failed = true;
         if (error?.code === 'PROFILE_CHANGED' || this.#stopped) return;
         this.#emit({ type: 'turn-autosync-error', sessionId, error: error.message });
-        this.#scheduleWatchRestart(() => this.#scheduleArtifactSync(sessionId, handoffId, profileEpoch));
+        if (handoffId && missingCloudArtifact(error)) {
+          // A finished handoff whose server copy is gone can never sync again.
+          const current = await this.#store.get(handoffId).catch(() => null);
+          if (TERMINAL_HANDOFF_STATES.has(current?.state)) {
+            this.#timelinePending.delete(sessionId);
+            this.#artifactSyncFailures.delete(key);
+            return;
+          }
+        }
+        // Each pass can download a full checkpoint and timeline, so repeated
+        // failures back off instead of retrying every second for the app's lifetime.
+        const failures = (this.#artifactSyncFailures.get(key) ?? 0) + 1;
+        this.#artifactSyncFailures.set(key, failures);
+        this.#scheduleWatchRestart(
+          () => this.#scheduleArtifactSync(sessionId, handoffId, profileEpoch),
+          Math.min(ARTIFACT_SYNC_RETRY_MAX_MS, 1_000 * (2 ** (failures - 1))),
+        );
       }).finally(() => {
         this.#artifactSyncs.delete(key);
         if (state.again && !state.failed) this.#scheduleArtifactSync(sessionId, handoffId, profileEpoch);
       });
     });
+  }
+
+  /**
+   * Runs one artifact sync step. When the server no longer holds the artifact and
+   * the handoff has already finished, nothing can ever fetch it again, so the
+   * step is dropped instead of retried. Live handoffs keep it pending: the
+   * restart guard relies on a pending boundary until it is archived.
+   */
+  async #unlessArtifactGone(handoffId, step, { kind, drop }) {
+    try {
+      return await step();
+    } catch (error) {
+      if (!missingCloudArtifact(error)) throw error;
+      const current = await this.#store.get(handoffId);
+      if (!TERMINAL_HANDOFF_STATES.has(current?.state)) throw error;
+      const updated = await this.#store.patch(handoffId, drop);
+      this.#emit({
+        type: 'artifact-sync-abandoned',
+        sessionId: current.cloudSessionId,
+        kind,
+        error: error.message,
+        handoff: updated,
+      });
+      if (!updated.pendingTurnBoundary && !updated.pendingOriginPublications?.length && !updated.takeoverReady) {
+        // Nothing is left to fetch for this finished handoff, so its stream can close.
+        const watcherKey = `${this.#profileEpoch}:${current.cloudSessionId}`;
+        this.#watchers.get(watcherKey)?.abort();
+        this.#watchers.delete(watcherKey);
+      }
+      return null;
+    }
   }
 
   async #syncLocalTimeline(sessionId, handoffId) {
@@ -5576,6 +5927,7 @@ export class CloudCoordinator extends EventEmitter {
           allowResume: true,
           // Until the idle timer exists, a finite auto-stop bounds an abandoned setup.
           resumeTtlSeconds: BOAT_SETUP_TTL_SECONDS,
+          signal: this.#stopController.signal,
           onState: (currentSandbox) => {
             this.#noteBoatSandbox(sandboxId, currentSandbox, { waking: true });
             this.#emitBoatChange('setup');
