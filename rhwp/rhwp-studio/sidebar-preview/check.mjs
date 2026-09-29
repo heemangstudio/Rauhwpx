@@ -426,11 +426,26 @@ try {
     const messages = await page.$('.ag-messages');
     const box = await messages.boundingBox();
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    // 따라가기 스크롤이 멈춘 뒤의 위치를 기준으로 삼는다. 움직이는 중에 읽으면 휠이 그 움직임과 겹친다.
+    await page.waitForFunction(() => new Promise((done) => {
+      const node = document.querySelector('.ag-messages');
+      const before = node.scrollTop;
+      setTimeout(() => done(Math.abs(node.scrollTop - before) < 1), 250);
+    }));
     const followedTop = await messages.evaluate((node) => node.scrollTop);
-    await page.mouse.wheel({ deltaY: -350 });
+    // 답변 아래 끝 여백까지 화면 밖으로 넘길 만큼 올린다.
+    await page.mouse.wheel({ deltaY: -700 });
     await page.waitForFunction((top) => document.querySelector('.ag-messages').scrollTop < top - 80, {}, followedTop);
-    const pausedTop = await messages.evaluate((node) => node.scrollTop);
+    // 입력기는 대화 끝이 충분히 가려진 뒤 이어지는 위 스크롤에서 접힌다.
+    const scrolledTop = await messages.evaluate((node) => node.scrollTop);
+    await page.mouse.wheel({ deltaY: -60 });
     await page.waitForSelector('.ag-composer.ag-resting');
+    await page.waitForFunction((top) => new Promise((done) => {
+      const node = document.querySelector('.ag-messages');
+      const before = node.scrollTop;
+      setTimeout(() => done(before < top && Math.abs(node.scrollTop - before) < 1), 250);
+    }), {}, scrolledTop);
+    const pausedTop = await messages.evaluate((node) => node.scrollTop);
     // 멈춘 턴은 닫히지 않은 마지막 문단을 그리지 않으므로 그 앞 목록까지 기다린다.
     await page.waitForFunction(() => document.querySelector('.ag-messages').textContent.includes('단계별 일정과 담당자를 확인합니다.'));
     assert(Math.abs((await messages.evaluate((node) => node.scrollTop)) - pausedTop) < 4);
