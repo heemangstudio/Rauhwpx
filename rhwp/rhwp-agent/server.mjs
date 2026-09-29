@@ -1,6 +1,6 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
-import { existsSync, mkdirSync, promises as fs } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,13 +11,7 @@ import {
   flushClaudeCredentialMirrors,
   prepareClaudeHome,
 } from './agents/claude.mjs';
-import {
-  claudeCredentialExpiry,
-  parseClaudeOAuthCredential,
-  readClaudeCredentialFile,
-  readClaudeOAuthCredential,
-  writeClaudeCredentialFile,
-} from './claude-credentials.mjs';
+import { deleteClaudeKeychainItem } from './claude-credentials.mjs';
 import {
   createCodexSession,
   flushCodexCredentialMirror,
@@ -225,29 +219,22 @@ function toolArgSchema(tool, definition) {
 const HOST_PROFILE_HOME = process.platform === 'win32' && process.env.USERPROFILE
   ? path.resolve(process.env.USERPROFILE)
   : os.homedir();
-const SOURCE_CLAUDE_CONFIG_DIR = typeof process.env.CLAUDE_CONFIG_DIR === 'string'
-  && process.env.CLAUDE_CONFIG_DIR.trim()
-  ? path.resolve(process.env.CLAUDE_CONFIG_DIR)
-  : path.join(HOST_PROFILE_HOME, '.claude');
-const SOURCE_CLAUDE_CREDENTIALS = path.join(SOURCE_CLAUDE_CONFIG_DIR, '.credentials.json');
 const SOURCE_CLAUDE_CONFIG = path.join(HOST_PROFILE_HOME, '.claude.json');
-const sourceCodexHomes = [...new Set([
-  process.env.CODEX_HOME,
-  path.join(HOST_PROFILE_HOME, '.codex'),
-].filter(Boolean))];
-async function findSourceCodexAuthPath() {
-  for (const sourceCodexHome of sourceCodexHomes) {
-    const authPath = path.join(sourceCodexHome, 'auth.json');
-    try {
-      const authStat = await fs.lstat(authPath);
-      if (authStat.isFile() && !authStat.isSymbolicLink()) return authPath;
-    } catch (error) {
-      if (error?.code !== 'ENOENT') throw error;
-    }
+// 설정 상태·사용량과 같은 프로필만 본다. 선택한 CODEX_HOME 이 비어 있어도 다른 프로필로 넘어가지 않는다.
+const sourceCodexHome = process.env.CODEX_HOME?.trim()
+  ? path.resolve(process.env.CODEX_HOME)
+  : path.join(HOST_PROFILE_HOME, '.codex');
+function findSourceCodexAuthPath() {
+  const authPath = path.join(sourceCodexHome, 'auth.json');
+  try {
+    const authStat = lstatSync(authPath);
+    if (authStat.isFile() && !authStat.isSymbolicLink()) return authPath;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
   }
   return undefined;
 }
-let sourceCodexAuthPath = await findSourceCodexAuthPath();
+let sourceCodexAuthPath = findSourceCodexAuthPath();
 const writingStyleStore = await new WritingStyleStore().init();
 const agentInstructionsStore = await new AgentInstructionsStore().init();
 const skillRegistry = await new SkillRegistry({ bundledRoot: BUNDLED_SKILLS, writingStyleStore }).init();
@@ -271,55 +258,12 @@ function mutateSharedNpmPrefix(operation) {
   npmPrefixMutationQueue = running.catch(() => {});
   return running;
 }
-const cliSetup = await createCliSetupManager({ secretStore }).init();
-const CLAUDE_CREDENTIAL_SEED_FILE = path.join(
-  cliSetup.rootDir,
-  'claude-source-credentials',
-  '.credentials.json',
-);
+const cliSetup = await createCliSetupManager({ secretStore, deleteKeychainItem: deleteClaudeKeychainItem }).init();
 /**
- * Codex is usable the moment its profile holds an `auth.json`, because that
- * file is copied into every isolated home. Claude's login can instead live only
- * in the macOS Keychain, where the same seeding path cannot reach it, so a
- * Keychain-only profile is materialized once into a hub-owned file.
- *
- * The profile's own credential file always wins, and a previously materialized
- * seed is kept while it is at least as fresh as the Keychain — an isolated
- * session refreshes its token through copy-back, and that refreshed value must
- * not be replaced by the older Keychain copy.
+ * Claude children get their login from CLAUDE_CODE_OAUTH_TOKEN (see
+ * cliSetup.envFor), so isolated homes only receive the portable config.
  */
-async function resolveSourceClaudeAuth() {
-  const fallback = {
-    credentialsPath: SOURCE_CLAUDE_CREDENTIALS,
-    configPath: SOURCE_CLAUDE_CONFIG,
-  };
-  const resolved = await readClaudeOAuthCredential({
-    homeDir: HOST_PROFILE_HOME,
-    configDir: SOURCE_CLAUDE_CONFIG_DIR,
-    env: process.env,
-    platform: process.platform,
-  }).catch(() => null);
-  if (!resolved) return fallback;
-  if (resolved.source === 'file') return { credentialsPath: resolved.file, configPath: SOURCE_CLAUDE_CONFIG };
-  const fromKeychain = parseClaudeOAuthCredential(resolved.text);
-  const seeded = await readClaudeCredentialFile(CLAUDE_CREDENTIAL_SEED_FILE);
-  if (seeded && claudeCredentialExpiry(seeded) >= claudeCredentialExpiry(fromKeychain)) {
-    return { credentialsPath: CLAUDE_CREDENTIAL_SEED_FILE, configPath: SOURCE_CLAUDE_CONFIG };
-  }
-  const written = await writeClaudeCredentialFile(CLAUDE_CREDENTIAL_SEED_FILE, resolved.text)
-    .then(() => true, () => false);
-  return {
-    credentialsPath: written ? CLAUDE_CREDENTIAL_SEED_FILE : SOURCE_CLAUDE_CREDENTIALS,
-    configPath: SOURCE_CLAUDE_CONFIG,
-  };
-}
-// Keychain 읽기(/usr/bin/security)는 접근 허가 창이 뜨면 몇 초씩 걸리므로 준비 줄을 막지 않는다.
-// 기동 직후 bootWork 가 한 번 읽을 때까지는 디스크 경로를 쓴다.
-const provisionalClaudeAuth = Object.freeze({
-  credentialsPath: SOURCE_CLAUDE_CREDENTIALS,
-  configPath: SOURCE_CLAUDE_CONFIG,
-});
-let sourceClaudeAuth = provisionalClaudeAuth;
+const sourceClaudeAuth = Object.freeze({ configPath: SOURCE_CLAUDE_CONFIG });
 function claudeRuntimeEnv(isolatedHome) {
   return {
     ...cliSetup.envFor('claude'),
@@ -372,13 +316,9 @@ let openRouterCreditsKey = null;
 let bootWorkPromise = null;
 function ensureBootWork() {
   bootWorkPromise ??= Promise.all([
-    resolveSourceClaudeAuth().then((auth) => {
-      // 기동 중에 로그인 흐름이 먼저 새 값을 넣었다면 그대로 둔다.
-      if (sourceClaudeAuth !== provisionalClaudeAuth) return;
-      sourceClaudeAuth = auth;
-      // 준비 전에 만든 기록의 격리 홈도 실제 자격 증명으로 다시 맞춘다.
-      refreshSessionCredentials('claude');
-    }).catch((error) => log(`claude credential lookup failed: ${error?.message ?? error}`)),
+    // 저장된 Claude 토큰이 아직 받아들여지는지 한 번 확인한다. 네트워크가 없으면 그대로 둔다.
+    cliSetup.verifyAuth('claude')
+      .catch((error) => log(`claude credential check failed: ${error?.message ?? error}`)),
     ...['claude', 'codex'].map((agent) => cliSetup.status(agent).then((status) => {
       if (cliSetupStatus[agent] === provisionalCliSetup[agent]) cliSetupStatus[agent] = status;
     }).catch((error) => log(`${agent} setup status failed: ${error?.message ?? error}`))),
@@ -445,6 +385,7 @@ const sessions = new HubSessionRegistry({
     const codexHome = path.join(isolatedHome, '.codex');
     mkdirSync(workDir, { recursive: true, mode: 0o700 });
     mkdirSync(hubStorageDir, { recursive: true, mode: 0o700 });
+    syncSourceCodexAuth();
     prepareCodexHome(codexHome, sourceCodexAuthPath);
     prepareClaudeHome(isolatedHome, sourceClaudeAuth);
     const downloadManager = new DownloadManager({ rootDir: hubStorageDir, writableRoot: workDir });
@@ -624,6 +565,23 @@ function consumeAuthorizedInstructionDraft(record, msg) {
   return draft;
 }
 
+/**
+ * 허브 밖에서 `codex login`/로그아웃한 결과를 반영한다. 원본 auth.json 이 생기거나
+ * 사라졌으면 이미 열린 세션의 격리 홈도 다시 연결한다.
+ */
+function syncSourceCodexAuth() {
+  let next;
+  try { next = findSourceCodexAuthPath(); } catch (error) {
+    log(`codex credential lookup failed: ${error?.message ?? error}`);
+    return;
+  }
+  if (next === sourceCodexAuthPath) return;
+  sourceCodexAuthPath = next;
+  try { refreshSessionCredentials('codex'); } catch (error) {
+    log(`codex session credential refresh failed: ${error?.message ?? error}`);
+  }
+}
+
 function refreshSessionCredentials(agent) {
   for (const record of sessions.values()) {
     if (agent === 'codex') prepareCodexHome(record.codexHome, sourceCodexAuthPath);
@@ -745,11 +703,18 @@ function broadcastAgentSetupStatuses(statuses) {
 
 
 async function agentSetupStatuses(ownerSessionId = null, refresh = false) {
+  // A forced refresh follows a failed turn or a user action, so check the
+  // credential with Anthropic instead of trusting what is on disk.
+  if (refresh) {
+    await cliSetup.verifyAuth('claude', { force: true })
+      .catch((error) => log(`claude credential check failed: ${error?.message ?? error}`));
+  }
   const [claudeSetup, codexSetup, health] = await Promise.all([
     cliSetup.status('claude'),
     cliSetup.status('codex'),
     providerHealth.check(refresh),
   ]);
+  syncSourceCodexAuth();
   const withDetectedHarness = (status, provider) => {
     const available = provider?.available === true;
     const connected = available && status.authenticated;
@@ -1105,14 +1070,18 @@ async function modelCatalog(agent, record, { refresh = false } = {}) {
     env: claudeRuntimeEnv(record.isolatedHome),
     cwd: record.workDir ?? ROOT,
   }, { refresh });
-  else if (agent === 'codex') models = await codexModelCatalog({
-    bin: cliSetupStatus.codex?.installed ? cliSetup.binPath('codex') : 'codex',
-    env: cliSetup.envFor('codex'),
-    isolatedHome: record.isolatedHome,
-    codexHome: record.codexHome,
-    cwd: record.workDir ?? ROOT,
-  }, { refresh });
-  else throw unknownAgentError(agent);
+  else if (agent === 'codex') {
+    const options = {
+      bin: cliSetupStatus.codex?.installed ? cliSetup.binPath('codex') : 'codex',
+      env: cliSetup.envFor('codex'),
+      isolatedHome: record.isolatedHome,
+      codexHome: record.codexHome,
+      cwd: record.workDir ?? ROOT,
+    };
+    models = await codexModelCatalog(options, { refresh });
+    // 새로고침한 목록과 sol/luna 같은 별칭이 같은 모델을 가리키게 한다.
+    if (refresh) resolveCodexModel.remember(options, models);
+  } else throw unknownAgentError(agent);
   record.modelCatalogs ??= {};
   record.modelCatalogs[agent] = models;
   return models;
@@ -2872,6 +2841,8 @@ async function startSession(
 ) {
   if (record.processCleanupUncertain === true) throw agentProcessCleanupUncertain();
   await ensureBootWork();
+  // A reused terminal login may have been refreshed since the last status read.
+  if (agent === 'claude') await cliSetup.refreshAuth('claude').catch(() => {});
   const model = await resolveModel(agent, requestedModel, record);
   const effort = resolveEffort(agent, model, requestedEffort, record);
   const permissionProfile = resolvePermissionProfile(requestedPermission);
@@ -3922,13 +3893,21 @@ async function handleStudioMessage(record, sock, msg) {
           piStatus = status;
         })
         : cliSetup.install(agent, progress).then((status) => { cliSetupStatus[agent] = status; });
+      // 설치 중이라는 사실과 결과는 모든 Studio 에 알린다. 요청한 탭이 재접속해도 설치 상태를 잃지 않는다.
+      void agentSetupStatuses().then(broadcastAgentSetupStatuses).catch(() => {});
       void installing
-        .then(() => agentSetupStatuses(record.sessionId))
-        .then((statuses) => {
-          replyToStudio(record, sock, { v: 1, type: 'agent-setup-status', requestId, statuses });
-          void providerHealth.check(true).then((providers) => replyToStudio(record, sock, { v: 1, type: 'provider-status', providers }));
+        // 새 바이너리를 감지한 뒤 상태를 만들어야 완료 프레임의 available/connected 가 맞다.
+        .then(() => providerHealth.check(true))
+        .then(async (providers) => {
+          broadcastToStudios({ v: 1, type: 'provider-status', providers });
+          const statuses = await agentSetupStatuses();
+          replyToStudio(record, sock, { v: 1, type: 'agent-setup-status', requestId, statuses: withAuthRunStatus(statuses, record.sessionId) });
+          broadcastAgentSetupStatuses(statuses);
         })
-        .catch((e) => sendAgentSetupError(record, sock, requestId, agent, e, 'AGENT_INSTALL_FAILED'));
+        .catch((e) => {
+          sendAgentSetupError(record, sock, requestId, agent, e, 'AGENT_INSTALL_FAILED');
+          void agentSetupStatuses().then(broadcastAgentSetupStatuses).catch(() => {});
+        });
       return;
     }
     case 'agent-setup-auth': {
@@ -4060,8 +4039,7 @@ async function handleStudioMessage(record, sock, msg) {
           .then(async (status) => {
             await ensureBootWork();
             cliSetupStatus[agent] = status;
-            if (agent === 'codex') sourceCodexAuthPath = await findSourceCodexAuthPath();
-            if (agent === 'claude') sourceClaudeAuth = await resolveSourceClaudeAuth();
+            if (agent === 'codex') sourceCodexAuthPath = findSourceCodexAuthPath();
             refreshSessionCredentials(agent);
             if (agent === 'claude' || agent === 'codex') {
               providerLimits.invalidate();
@@ -4134,12 +4112,28 @@ async function handleStudioMessage(record, sock, msg) {
         });
         void broadcastFreshAgentSetupStatuses();
       } catch (error) {
+        // 이미 끝난 실행을 겨냥한 취소(재연결 뒤 늦게 도착한 취소 등)는 목적을 이미 이룬 것이다.
+        if (authRuns.get(agent)?.runId !== msg.authRunId) return;
         sendAgentSetupError(record, sock, null, agent, error, 'AGENT_AUTH_FAILED');
       }
       return;
     }
     case 'agent-setup-disconnect': {
-      sendAgentSetupError(record, sock, msg.requestId ?? null, msg.agent, new Error('Provider disconnect is not supported.'));
+      const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
+      if (msg.agent !== 'claude') {
+        sendAgentSetupError(record, sock, requestId, msg.agent, new Error('Provider disconnect is not supported.'));
+        return;
+      }
+      const run = authRuns.get('claude');
+      if (run) authRuns.cancelOwned({ agent: 'claude', runId: run.runId, ownerSessionId: run.ownerSessionId, reason: 'disconnected' });
+      void cliSetup.disconnect('claude')
+        .then(async () => {
+          providerLimits.invalidate();
+          const statuses = await agentSetupStatuses(record.sessionId);
+          replyToStudio(record, sock, { v: 1, type: 'agent-setup-status', requestId, statuses });
+          await broadcastFreshAgentSetupStatuses();
+        })
+        .catch((e) => sendAgentSetupError(record, sock, requestId, 'claude', e, 'AGENT_AUTH_FAILED'));
       return;
     }
     case 'usage-request': {
@@ -4358,6 +4352,7 @@ async function handleStudioMessage(record, sock, msg) {
               workDir: record.workDir,
               isolatedHome: record.isolatedHome,
               sessionId: record.sessionId,
+              providerEnvs: { claude: claudeRuntimeEnv(record.isolatedHome) },
               spawnProcess: (command, args, options) => auxSpawnProcess(record, command, args, options),
               terminateProcess: terminateProcessTree,
               cleanupProcessOutcome: (child) => beginAuxiliaryProcessCleanupOutcome(record, child),

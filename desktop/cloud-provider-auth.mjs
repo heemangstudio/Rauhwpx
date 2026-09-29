@@ -102,6 +102,20 @@ export async function collectProviderAuth(provider, {
     const content = typeof raw === 'string' && source.portable ? source.portable(raw) : raw;
     if (typeof content === 'string' && content.trim()) files[source.destination] = content;
   }
+  // The app's own Claude login outranks the terminal profile, as it does for
+  // local sessions. The cloud CLI reads it from the same credential file.
+  if (provider === 'claude') {
+    const appToken = await Promise.resolve(readSecret('rhwp.claude.oauth-token')).catch(() => null);
+    if (typeof appToken === 'string' && appToken.trim()) {
+      files[CLAUDE_CREDENTIAL_DESTINATION] = JSON.stringify({
+        claudeAiOauth: {
+          accessToken: appToken.trim(),
+          expiresAt: Date.now() + 364 * 24 * 60 * 60 * 1000,
+          scopes: ['user:inference'],
+        },
+      });
+    }
+  }
   // A macOS profile can hold its Claude login only in the Keychain, where the
   // file scan above cannot see it. The cloud accepts the same credential file,
   // so the item is materialized into that destination. The Keychain itself is

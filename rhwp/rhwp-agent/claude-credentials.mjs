@@ -169,10 +169,82 @@ export async function readClaudeOAuthCredential({
   return null;
 }
 
+/** Remove a Keychain item Claude Code created for a throwaway profile. */
+export async function deleteClaudeKeychainItem(service, { platform = process.platform, exec = runFile } = {}) {
+  if (platform !== 'darwin' || !service || service === CLAUDE_KEYCHAIN_SERVICE) return false;
+  try {
+    await exec('/usr/bin/security', ['delete-generic-password', '-s', service], { timeout: KEYCHAIN_TIMEOUT_MS, windowsHide: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Write a resolved credential to a private seed file for isolated consumers. */
 export async function writeClaudeCredentialFile(file, text) {
   await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   await fs.writeFile(file, text, { encoding: 'utf8', mode: 0o600 });
   await fs.chmod(file, 0o600).catch(() => {});
   return file;
+}
+
+/** Long-lived tokens minted by `claude setup-token`. */
+export const CLAUDE_SETUP_TOKEN_PATTERN = /^sk-ant-oat\d{2}-[A-Za-z0-9_-]{20,}$/;
+const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-_]/g;
+
+/**
+ * Pull the token out of `claude setup-token` terminal output. The CLI prints it
+ * between "Your OAuth token (valid for …):" and "Store this token securely",
+ * and the terminal may wrap it across lines at any column.
+ *
+ * @returns {{ token: string } | null}
+ */
+export function parseClaudeSetupTokenOutput(output) {
+  const text = String(output ?? '').replace(ANSI_PATTERN, '').replace(/\r/g, '');
+  const start = text.lastIndexOf('sk-ant-oat');
+  if (start < 0) return null;
+  const endMarker = text.indexOf('Store this token', start);
+  let tail = text.slice(start, endMarker > start ? endMarker : undefined);
+  // Without the closing line, the token ends at the first blank line.
+  if (endMarker <= start) tail = tail.split(/\n[ \t]*\n/)[0].match(/^[A-Za-z0-9_\-\s]+/)?.[0] ?? '';
+  const token = tail.replace(/[\s│|]/g, '');
+  return CLAUDE_SETUP_TOKEN_PATTERN.test(token) ? { token } : null;
+}
+
+/**
+ * Ask Anthropic whether a credential still works without spending tokens.
+ * `invalid` is reserved for an explicit authentication rejection, so an
+ * offline or rate-limited check never signs the user out.
+ *
+ * @returns {Promise<'valid'|'invalid'|'unknown'>}
+ */
+export async function verifyClaudeCredential({
+  token = null,
+  apiKey = null,
+  fetchImpl = globalThis.fetch,
+  timeoutMs = 8_000,
+} = {}) {
+  if (!token && !apiKey) return 'invalid';
+  if (typeof fetchImpl !== 'function') return 'unknown';
+  const headers = {
+    'anthropic-version': '2023-06-01',
+    'content-type': 'application/json',
+    ...(token
+      ? { Authorization: `Bearer ${token}`, 'anthropic-beta': 'oauth-2025-04-20' }
+      : { 'x-api-key': apiKey }),
+  };
+  try {
+    const response = await fetchImpl('https://api.anthropic.com/v1/messages/count_tokens', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ model: 'claude-haiku-4-5', messages: [{ role: 'user', content: 'ping' }] }),
+      redirect: 'error',
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    await response.body?.cancel?.().catch?.(() => {});
+    if (response.ok) return 'valid';
+    return response.status === 401 || response.status === 403 ? 'invalid' : 'unknown';
+  } catch {
+    return 'unknown';
+  }
 }

@@ -405,6 +405,10 @@ export interface AgentSetupStatus {
   version: string | null;
   authenticated: boolean;
   authMethod: AgentAuthMethod | null;
+  /** Claude only: app login token, API key, or a reused terminal login. */
+  authSource?: 'app' | 'api-key' | 'local' | null;
+  /** Claude only: when Anthropic last accepted the active credential (epoch ms). */
+  authVerifiedAt?: number | null;
   keyTail: string | null;
   /** 로그인한 계정 이메일 — hosted account login may provide it. */
   account?: string | null;

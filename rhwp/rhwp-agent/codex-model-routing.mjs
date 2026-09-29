@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import spawn from 'cross-spawn';
 import { CodexJsonRpcConnection } from './agents/codex-app-server.mjs';
 import { applyManagedCliLaunch } from './npm-cli-launch.mjs';
@@ -138,10 +141,26 @@ export function normalizeCodexModels(models) {
   return catalog;
 }
 
+/**
+ * 캐시 키. 같은 프로필이라도 로그인한 계정이나 API 키가 바뀌면 이전 계정의
+ * 모델 목록을 쓰지 않도록 자격 증명 지문을 붙인다.
+ */
+function catalogKey(options) {
+  let identity = options.env?.OPENAI_API_KEY ?? '';
+  if (options.codexHome) {
+    try {
+      const auth = JSON.parse(readFileSync(path.join(options.codexHome, 'auth.json'), 'utf8'));
+      identity += `\0${auth?.tokens?.account_id ?? auth?.OPENAI_API_KEY ?? auth?.tokens?.refresh_token ?? ''}`;
+    } catch {}
+  }
+  const fingerprint = identity ? createHash('sha256').update(identity).digest('hex').slice(0, 16) : '';
+  return `${options.bin ?? 'codex'}\0${options.codexHome ?? ''}\0${fingerprint}`;
+}
+
 export function createCodexModelCatalog({ discover = discoverCodexModels, now = Date.now } = {}) {
   const cache = new Map();
   return async function codexModelCatalog(options = {}, { refresh = false } = {}) {
-    const key = `${options.bin ?? 'codex'}\0${options.codexHome ?? ''}`;
+    const key = catalogKey(options);
     let entry = cache.get(key);
     if (refresh || !entry || entry.expiresAt <= now()) {
       const pending = Promise.resolve().then(() => discover(options)).then((models) => {
@@ -162,9 +181,9 @@ export function createCodexModelCatalog({ discover = discoverCodexModels, now = 
 
 export function createCodexModelResolver({ discover = discoverCodexModels, now = Date.now } = {}) {
   const cache = new Map();
-  return async function resolveCodexModel(lineup, options = {}) {
+  async function resolveCodexModel(lineup, options = {}) {
     if (!LINEUPS.has(lineup)) throw new Error(`Unknown Codex lineup: ${String(lineup)}`);
-    const key = `${options.bin ?? 'codex'}\0${options.codexHome ?? ''}`;
+    const key = catalogKey(options);
     let cached = cache.get(key);
     if (!cached || cached.expiresAt <= now()) {
       const pending = Promise.resolve().then(() => discover(options)).then(
@@ -184,5 +203,10 @@ export function createCodexModelResolver({ discover = discoverCodexModels, now =
       });
     }
     return model;
+  }
+  /** 새로 받은 모델 목록으로 별칭 해석을 맞춘다. 강제 새로고침한 목록과 별칭이 어긋나지 않게 한다. */
+  resolveCodexModel.remember = (options, models) => {
+    cache.set(catalogKey(options), { models, failed: false, expiresAt: now() + CACHE_MS });
   };
+  return resolveCodexModel;
 }

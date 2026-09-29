@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import {
   codexLineup,
@@ -31,6 +34,36 @@ test('catalog caches per profile and refresh bypasses its cache', async () => {
   assert.deepEqual((await catalog(options)).map((entry) => entry.id), ['gpt-1']);
   assert.deepEqual((await catalog(options, { refresh: true })).map((entry) => entry.id), ['gpt-2']);
   assert.equal(calls, 2);
+});
+
+test('a different Codex account in the same profile gets its own catalog and alias', async (t) => {
+  const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-codex-account-'));
+  t.after(() => fs.rm(codexHome, { recursive: true, force: true }));
+  const login = (account) => fs.writeFile(path.join(codexHome, 'auth.json'), JSON.stringify({ tokens: { account_id: account } }));
+  let current = 'gpt-10-sol';
+  const discover = async () => [{ model: current }];
+  const catalog = createCodexModelCatalog({ discover });
+  const resolve = createCodexModelResolver({ discover });
+  const options = { bin: 'codex', codexHome };
+  await login('account-a');
+  assert.deepEqual((await catalog(options)).map((entry) => entry.id), ['gpt-10-sol']);
+  assert.equal(await resolve('sol', options), 'gpt-10-sol');
+  current = 'gpt-11-sol';
+  await login('account-b');
+  assert.deepEqual((await catalog(options)).map((entry) => entry.id), ['gpt-11-sol']);
+  assert.equal(await resolve('sol', options), 'gpt-11-sol');
+});
+
+test('a refreshed catalog updates alias routing through remember()', async () => {
+  let current = 'gpt-10-sol';
+  const discover = async () => [{ model: current }];
+  const catalog = createCodexModelCatalog({ discover });
+  const resolve = createCodexModelResolver({ discover });
+  const options = { bin: 'codex', codexHome: '/test' };
+  assert.equal(await resolve('sol', options), 'gpt-10-sol');
+  current = 'gpt-11-sol';
+  resolve.remember(options, await catalog(options, { refresh: true }));
+  assert.equal(await resolve('sol', options), 'gpt-11-sol');
 });
 
 test('an empty Codex response is a catalog error', async () => {

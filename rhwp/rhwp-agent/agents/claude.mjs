@@ -126,9 +126,13 @@ export function flushClaudeCredentialMirrors(isolatedHome) {
   return pending.length === 0;
 }
 
-/** Seed only Claude's shared login files into an otherwise isolated home. */
+/**
+ * Seed Claude's portable config into an otherwise isolated home. The login is
+ * never copied: every Claude child receives it through CLAUDE_CODE_OAUTH_TOKEN
+ * or ANTHROPIC_API_KEY, so a stale credential file left by an older build is
+ * removed rather than allowed to shadow it.
+ */
 export function prepareClaudeHome(isolatedHome, {
-  credentialsPath,
   configPath,
 } = {}, deps = {}) {
   const key = path.resolve(isolatedHome);
@@ -140,11 +144,8 @@ export function prepareClaudeHome(isolatedHome, {
   }
   claudeMirrorsByHome.delete(key);
   mkdirSync(isolatedHome, { recursive: true, mode: 0o700 });
+  rmSync(path.join(isolatedHome, '.claude', '.credentials.json'), { force: true });
   const mirrors = [seedClaudeCredential(
-    credentialsPath,
-    path.join(isolatedHome, '.claude', '.credentials.json'),
-    deps,
-  ), seedClaudeCredential(
     configPath,
     path.join(isolatedHome, '.claude.json'),
     deps,

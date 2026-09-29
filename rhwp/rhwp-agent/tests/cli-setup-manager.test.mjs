@@ -101,7 +101,7 @@ test('supported CLIs install into the shared app prefix', async (t) => {
 
 test('API keys stay provider-scoped and persist outside the public setup config', async (t) => {
   const rootDir = await tmpRoot(t);
-  const manager = await createCliSetupManager({ rootDir, baseEnv: { ANTHROPIC_API_KEY: 'inherited', OPENAI_API_KEY: 'inherited' } }).init();
+  const manager = await createCliSetupManager({ rootDir, baseEnv: { ANTHROPIC_API_KEY: 'inherited', OPENAI_API_KEY: 'inherited' }, verifyClaude: async () => 'unknown' }).init();
   await manager.authenticate('claude', 'api-key', 'sk-ant-private-1234');
 
   assert.equal(manager.envFor('claude').ANTHROPIC_API_KEY, 'sk-ant-private-1234');
@@ -114,10 +114,45 @@ test('API keys stay provider-scoped and persist outside the public setup config'
   assert.equal((await reloaded.status('claude')).keyTail, '1234');
 });
 
+test('a rejected or cancelled API-key login leaves no stored key', async (t) => {
+  const rootDir = await tmpRoot(t);
+  const stored = new Map();
+  let releaseWrite;
+  const writeHeld = new Promise((resolve) => { releaseWrite = resolve; });
+  const secretStore = {
+    available: true,
+    async get(key) { return stored.get(key) ?? null; },
+    async set(key, value) { if (key === 'rhwp.codex.api-key') await writeHeld; stored.set(key, value); return true; },
+    async delete(key) { return stored.delete(key); },
+  };
+  const manager = await createCliSetupManager({
+    rootDir, secretStore, homeDir: rootDir, platform: 'linux', baseEnv: {},
+    verifyClaude: async ({ apiKey }) => (apiKey === 'sk-ant-rejected' ? 'invalid' : 'valid'),
+  }).init();
+
+  await assert.rejects(() => manager.authenticate('claude', 'api-key', 'sk-ant-rejected'), { code: 'AGENT_KEY_INVALID' });
+  assert.equal((await manager.status('claude')).authenticated, false);
+  assert.equal(stored.has('rhwp.claude.api-key'), false);
+
+  const abort = new AbortController();
+  let committed = false;
+  const pending = manager.authenticate('codex', 'api-key', 'sk-cancelled', null, {
+    signal: abort.signal, onCommitted: () => { committed = true; },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  abort.abort();
+  releaseWrite();
+  await assert.rejects(pending, { code: 'AGENT_AUTH_CANCELLED' });
+  assert.equal(committed, false);
+  assert.equal(stored.has('rhwp.codex.api-key'), false);
+  assert.equal(manager.envFor('codex').OPENAI_API_KEY, undefined);
+  assert.equal((await manager.status('codex')).authMethod, null);
+});
+
 test('vault-backed API keys are bounded and never enter fallback files', async (t) => {
   const rootDir = await tmpRoot(t);
   const secretStore = createMemorySecretStore();
-  const manager = await createCliSetupManager({ rootDir, secretStore }).init();
+  const manager = await createCliSetupManager({ rootDir, secretStore, verifyClaude: async () => 'unknown' }).init();
   await assert.rejects(
     () => manager.authenticate('codex', 'api-key', 'x'.repeat(API_KEY_MAX_BYTES + 1)),
     (error) => error.code === 'AGENT_KEY_INVALID',
@@ -332,20 +367,71 @@ test('a failed legacy-key migration keeps the key and does not abort startup', a
   assert.equal((await manager.status('claude')).authMethod, 'api-key');
 });
 
-test('an expired Claude access token counts as signed in only while a refresh token exists', async (t) => {
+test('an expired terminal Claude login is not reported as usable, even with a refresh token', async (t) => {
+  // Sessions receive the access token directly, and refreshing it would write
+  // to the user's own Claude profile. The app asks for its own login instead.
   const homeDir = await tmpRoot(t);
   const manager = await createCliSetupManager({ rootDir: await tmpRoot(t), homeDir, platform: 'linux', baseEnv: {} }).init();
   const credentialFile = path.join(homeDir, '.claude', '.credentials.json');
   await fs.mkdir(path.dirname(credentialFile), { recursive: true });
-  const expiresAt = Date.now() - 60_000;
 
-  await fs.writeFile(credentialFile, JSON.stringify({ claudeAiOauth: { accessToken: 'access', refreshToken: 'refresh', expiresAt } }));
-  const refreshable = await manager.status('claude');
-  assert.equal(refreshable.authenticated, true);
-  assert.equal(refreshable.authMethod, 'oauth');
+  await fs.writeFile(credentialFile, JSON.stringify({ claudeAiOauth: { accessToken: 'access', refreshToken: 'refresh', expiresAt: Date.now() + 3_600_000 } }));
+  const live = await manager.status('claude');
+  assert.equal(live.authenticated, true);
+  assert.equal(live.authSource, 'local');
 
-  await fs.writeFile(credentialFile, JSON.stringify({ claudeAiOauth: { accessToken: 'access', expiresAt } }));
+  await fs.writeFile(credentialFile, JSON.stringify({ claudeAiOauth: { accessToken: 'access', refreshToken: 'refresh', expiresAt: Date.now() - 60_000 } }));
   const expired = await manager.status('claude');
   assert.equal(expired.authenticated, false);
   assert.equal(expired.authMethod, null);
+});
+
+test('installs share the prefix one at a time and report installing until they finish', async (t) => {
+  const rootDir = await tmpRoot(t);
+  const { calls, spawnProcess: spawnFake } = fakeSpawner(path.join(rootDir, 'prefix'));
+  let active = 0;
+  let peak = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const spawnProcess = (command, argv, options) => {
+    if (!argv.includes('install')) return spawnFake(command, argv, options);
+    active += 1;
+    peak = Math.max(peak, active);
+    const proc = new FakeProcess();
+    void gate.then(() => spawnFake(command, argv, options).once('close', (code) => {
+      active -= 1;
+      proc.emit('close', code, null);
+    }));
+    return proc;
+  };
+  const manager = await createCliSetupManager({ rootDir, spawnProcess }).init();
+
+  const codex = manager.install('codex');
+  const claude = manager.install('claude');
+  const duplicate = manager.install('codex');
+  assert.equal((await manager.status('claude')).installing, true);
+  release();
+  const [codexDone, claudeDone] = await Promise.all([codex, claude, duplicate]);
+  assert.equal(peak, 1);
+  assert.equal(calls.filter((call) => call.argv.includes('install')).length, 2);
+  assert.equal(codexDone.installing, false);
+  assert.equal(claudeDone.installing, false);
+});
+
+test('Codex version output is parsed to its semantic version', async (t) => {
+  const rootDir = await tmpRoot(t);
+  const binDir = path.join(rootDir, 'prefix', 'node_modules', '.bin');
+  await fs.mkdir(binDir, { recursive: true });
+  await fs.writeFile(path.join(binDir, 'codex'), '');
+  const spawnProcess = () => {
+    const proc = new FakeProcess();
+    queueMicrotask(() => { proc.stdout.emit('data', 'codex-cli 0.159.0\n'); proc.emit('close', 0, null); });
+    return proc;
+  };
+  const fetchImpl = async () => new Response(JSON.stringify({ version: '0.159.0' }), { status: 200 });
+  const manager = await createCliSetupManager({ rootDir, spawnProcess, fetchImpl, platform: 'linux' }).init();
+
+  const status = await manager.automaticUpdate('codex');
+  assert.equal(status.version, '0.159.0');
+  assert.equal(status.updateRequired, false);
 });

@@ -281,7 +281,7 @@ test('각 프로바이더 설정은 별도 시작 화면 없이 설정 모달에
   assert.match(settings, /setup\.addEventListener\('click', \(\) => openAgentSetup\(agent\)\)/);
   assert.match(settings, /setupDialog\.setAttribute\('role', 'dialog'\)/);
   assert.match(settings, /setupDialog\.setAttribute\('aria-modal', 'true'\)/);
-  assert.match(settings, /bridge\.installAgent\(setupAgent\)/);
+  assert.match(settings, /bridge\.installAgent\(agent\)/);
   assert.match(settings, /bridge\.authenticateAgent\(authenticatingAgent, method/);
   assert.match(settings, /'브라우저로 로그인'/);
   assert.match(settings, /'API 키 입력'/);
@@ -632,7 +632,7 @@ test('OpenCode 설정은 허브의 터미널 로그인 지원 여부를 따르�
   );
   assert.match(bridgeSource, /requestAgentSetupStatus\(refresh = false\)/);
   assert.match(bridgeSource, /type: 'agent-setup-status-request', \.\.\.\(refresh \? \{ refresh: true \} : \{\}\)/);
-  assert.match(settings, /agent === 'opencode' \? 'CLI 자격 증명' : '웹 계정'/);
+  assert.match(settings, /agent === 'opencode' \? 'CLI 자격 증명'\s*: status\.authSource === 'local' \? '터미널 로그인' : '웹 계정'/);
   // 설치 감지만으로 완료하지 않고 허브가 확인한 인증 상태를 요구한다.
   assert.match(settings, /const connected = configured \|\| \(available && status\?\.authenticated === true\)/);
   assert.match(settings, /label = detected \? '로그인 필요' : '연결하기'/);
