@@ -431,7 +431,8 @@ try {
     await page.waitForFunction((top) => document.querySelector('.ag-messages').scrollTop < top - 80, {}, followedTop);
     const pausedTop = await messages.evaluate((node) => node.scrollTop);
     await page.waitForSelector('.ag-composer.ag-resting');
-    await page.waitForFunction(() => document.querySelector('.ag-messages').textContent.includes('필요한 부분을 선택'));
+    // 멈춘 턴은 닫히지 않은 마지막 문단을 그리지 않으므로 그 앞 목록까지 기다린다.
+    await page.waitForFunction(() => document.querySelector('.ag-messages').textContent.includes('단계별 일정과 담당자를 확인합니다.'));
     assert(Math.abs((await messages.evaluate((node) => node.scrollTop)) - pausedTop) < 4);
     await page.mouse.wheel({ deltaY: 1800 });
     await page.waitForFunction(() => {
@@ -439,11 +440,16 @@ try {
       return node.scrollHeight - node.scrollTop - node.clientHeight < 4;
     });
     await page.waitForSelector('.ag-composer:not(.ag-resting)');
+    // 실행 중인 답변은 첫 줄에 고정되고 끝을 쫓지 않는다. 턴을 멈춰 답변을 확정한 뒤,
+    // 그 아래로 붙는 내용은 다시 끝을 따라가는지 본다.
+    await page.$eval('.ag-send', (button) => button.click());
+    await page.waitForFunction(() => !window.sidebarPreview.bridge.isTurnRunning());
     const resumedTop = await messages.evaluate((node) => node.scrollTop);
     await page.evaluate(() => {
       const messages = document.querySelector('.ag-messages');
       const more = document.createElement('div');
-      more.style.minHeight = '200px';
+      // 끝 여백이 흡수하지 못할 만큼 길게 붙인다.
+      more.style.minHeight = '1200px';
       messages.insertBefore(more, messages.querySelector('.ag-messages-end'));
     });
     await page.waitForFunction((top) => document.querySelector('.ag-messages').scrollTop > top + 100, {}, resumedTop);

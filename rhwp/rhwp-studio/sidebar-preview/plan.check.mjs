@@ -105,7 +105,13 @@ export async function checkPlanPreview(page, origin, artifacts) {
   await page.click('#play');
   await page.waitForSelector('.ag-plan-card', { visible: true });
   assert.equal(await page.$eval('#theme', node => node.value), 'dark');
-  assert(await page.$eval('.ag-root', node => node.getBoundingClientRect().width <= 320));
+  // 최소 폭은 입력기 설정 줄(계획 단계 배지 포함)의 글자 폭으로 정해져 글꼴마다 다르다.
+  // 280px 요청은 그 최소 폭으로 붙는다.
+  const narrow = await page.$eval('.ag-resize-handle', handle => ({
+    width: Math.round(handle.closest('.ag-root').getBoundingClientRect().width),
+    min: Number(handle.getAttribute('aria-valuemin')),
+  }));
+  assert.equal(narrow.width, narrow.min);
   assert.equal(await page.$eval('.ag-root', node => node.scrollWidth > node.clientWidth), false);
   await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'reduce' }]);
   assert.equal(await page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches), true);

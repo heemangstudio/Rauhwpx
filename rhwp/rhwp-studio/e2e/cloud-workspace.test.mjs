@@ -635,7 +635,9 @@ try {
   await page.evaluate(() => window.__cloudWorkspaceHarness.failNextConfiguration());
   await page.click('[aria-label="프로바이더 선택"]');
   await page.$eval('.ag-provider-item[data-agent="pi"]', (node) => node.click());
-  await page.waitForFunction(() => document.querySelector('.ag-messages').textContent.includes('Provider is not connected on Cloud'));
+  // 영어 진단 원문은 화면에 그대로 보이지 않고 한국어 문장으로 바뀐다(cloudErrorText).
+  await page.waitForFunction(() => document.querySelector('.ag-messages').textContent.includes('모델 설정을 바꾸지 못했습니다'));
+  assert.equal(await page.$eval('.ag-messages', (node) => node.textContent.includes('Provider is not connected on Cloud')), false);
   assert.equal(await page.$eval('.ag-root', (node) => node.dataset.agent), 'claude');
   assert.equal(await page.$eval('.ag-llm-name', (node) => node.textContent), 'Haiku 4.5');
   assert.equal(await page.$eval('.ag-effort-name', (node) => node.textContent), 'Low');
@@ -1143,8 +1145,8 @@ try {
   }
   assert.ok(alongsideResult.exportSize > 0);
   assert.equal(alongsideResult.lease.active, false);
-  // Failed and interrupted turns roll back only their own staged insertion.
-  // Cover native edits both before and after that insertion.
+  // 실패·중단된 턴의 편집은 바로 버리지 않고 중단 표시와 함께 검토로 남긴다(#373).
+  // 검토에서 거절하면 그 턴의 삽입만 되돌아가고, 앞뒤의 사용자 편집은 남는다.
   for (const [userFirst, stopReason] of [[true, 'error'], [false, 'cancelled']]) {
     const suffix = userFirst ? 'BEFORE' : 'AFTER';
     const userMarker = `사용자 유지 PR188_ROLLBACK_USER_${suffix}`;
@@ -1175,17 +1177,24 @@ try {
         charOffset: section.paragraphs[paraIdx]?.length ?? 0, text: `\n${marker}` }, 'codex');
     }, agentMarker);
     if (!userFirst) await userInput();
-    const rolledBack = await workerPage.evaluate(({ turnId, stopReason }) => {
-      window.__agentBridge.handleAgentEvent({ type: 'turn-end', agent: 'codex', turnId, stopReason });
+    const { held, rolledBack } = await workerPage.evaluate(({ turnId, stopReason }) => {
+      const bridge = window.__agentBridge;
       const wasm = window.__wasm;
-      return Array.from({ length: wasm.getSectionCount() }, (_, sectionIdx) =>
+      const readText = () => Array.from({ length: wasm.getSectionCount() }, (_, sectionIdx) =>
         Array.from({ length: wasm.getParagraphCount(sectionIdx) }, (_, paraIdx) =>
           wasm.getTextRange(sectionIdx, paraIdx, 0, 100000)).join('\n')).join('\n');
+      bridge.handleAgentEvent({ type: 'turn-end', agent: 'codex', turnId, stopReason });
+      const stopped = bridge.pendingEdits.getChangeSets().filter((set) => set.turnStopped && set.ops.length > 0);
+      const held = { text: readText(), stoppedSets: stopped.length };
+      for (const set of stopped) bridge.pendingEdits.reject(set.id);
+      return { held, rolledBack: readText() };
     }, { turnId: `rollback-${suffix}`, stopReason });
+    assert.equal(held.stoppedSets, 1, 'failed/interrupted turn is held for review as stopped');
+    assert.equal(held.text.split(agentMarker).length - 1, 1, 'held agent insertion stays until review');
     for (const marker of ['함께 편집 PR188_ALONGSIDE_USER', 'PR188_ALONGSIDE_AGENT', userMarker]) {
       assert.equal(rolledBack.split(marker).length - 1, 1, `rollback preserves ${marker}`);
     }
-    assert.equal(rolledBack.includes(agentMarker), false, 'failed/interrupted agent insertion is removed');
+    assert.equal(rolledBack.includes(agentMarker), false, 'rejected failed/interrupted agent insertion is removed');
   }
   assert.equal(await page.evaluate(() => Array.from(window.__wasm.exportHwp()).join(',')), localBeforeWorker,
     'concurrent edits stay in the worker document and leave the original local document unchanged');

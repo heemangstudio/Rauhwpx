@@ -44,6 +44,11 @@ export async function checkChangesPreview(page, origin, artifacts) {
   await page.waitForSelector('.ag-changes-commit-detail .ag-changes-item');
   assert.equal(await page.$eval('.ag-changes-commit-toggle', (node) => node.getAttribute('aria-expanded')), 'true');
   assert.match(await page.$eval('.ag-changes-commit-detail', (node) => node.textContent), /추진 일정과 기대 효과를 정리했습니다/);
+  // 미리보기의 반영 알림 토스트가 검토 열 머리글을 잠시 덮는다. 닫고 되돌린다.
+  if (await page.$('.rhwp-toast-close')) {
+    await page.click('.rhwp-toast-close');
+    await page.waitForSelector('.rhwp-toast', { hidden: true });
+  }
   await page.click('.ag-review-column-head .ag-review-column-undo');
   await page.waitForFunction(() => window.sidebarPreview.undoState.calls === 1);
   await page.waitForFunction(() => document.querySelectorAll('.ag-changes-diff-list .ag-changes-item').length === 0);
