@@ -13,13 +13,15 @@ on:
         default: '36622094496'
 
 permissions:
-  actions: read
   contents: read
 
 jobs:
   seed-cache:
     runs-on: windows-latest
     timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
     steps:
       - name: Require the approved recovery source and default branch
         shell: bash
