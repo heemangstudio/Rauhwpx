@@ -428,15 +428,20 @@ fn write_table(writer: &mut XmlWriter, table: &Table, path: &str) -> Result<(), 
         .max()
         .map(|max_row| (max_row.saturating_add(1)).min(table.row_count))
         .unwrap_or(table.row_count);
+    // 셀 인덱스를 행 기준으로 한 번 안정 정렬해 행마다 전 셀을 다시 훑지 않는다.
+    // 같은 행 안에서는 원래 셀 순서를 유지한다.
+    let mut order: Vec<usize> = (0..table.cells.len()).collect();
+    order.sort_by_key(|&index| table.cells[index].row);
+    let mut next = 0;
     for row in 0..row_end {
         writer.open("ROW", &[]);
-        for (cell_index, cell) in table
-            .cells
-            .iter()
-            .enumerate()
-            .filter(|(_, cell)| cell.row == row)
+        while let Some(&cell_index) = order
+            .get(next)
+            .filter(|&&index| table.cells[index].row == row)
         {
+            let cell = &table.cells[cell_index];
             write_cell(writer, cell, &format!("{path}/CELL[{cell_index}]"))?;
+            next += 1;
         }
         writer.close("ROW");
     }

@@ -4,7 +4,7 @@
 //!
 //! 규칙:
 //! - `mimetype`은 ZIP 최초 엔트리, STORED(무압축), extra field 없음 (OPC 규격)
-//! - 그 외 파일은 DEFLATED
+//! - 이미 압축된 이미지(PNG/GIF/WebP) 바이너리는 STORED, 그 외 파일은 DEFLATED
 //! - mtime은 1980-01-01 00:00로 고정(결정적 출력)
 
 use std::collections::HashSet;
@@ -176,25 +176,38 @@ impl HwpxZipWriter {
 
     /// STORED(무압축)로 엔트리를 추가한다. `mimetype`에 사용.
     pub fn write_stored(&mut self, name: &str, data: &[u8]) -> Result<(), SerializeError> {
-        let next_expanded_bytes = self.validate_entry(name, data.len())?;
-        let opts = SimpleFileOptions::default()
-            .compression_method(CompressionMethod::Stored)
-            .last_modified_time(Self::fixed_mtime());
-        self.inner
-            .start_file(name, opts)
-            .map_err(|e| SerializeError::ZipError(e.to_string()))?;
-        self.inner
-            .write_all(data)
-            .map_err(|e| SerializeError::ZipError(e.to_string()))?;
-        self.commit_entry(name, next_expanded_bytes);
-        Ok(())
+        self.write_with(name, data, CompressionMethod::Stored)
     }
 
     /// DEFLATED(압축)로 엔트리를 추가한다.
     pub fn write_deflated(&mut self, name: &str, data: &[u8]) -> Result<(), SerializeError> {
+        self.write_with(name, data, CompressionMethod::Deflated)
+    }
+
+    /// 바이너리(BinData·미리보기 이미지) 엔트리를 추가한다.
+    ///
+    /// PNG/GIF/WebP 는 페이로드 자체가 압축돼 있어 재압축 이득이 5% 안팎이고 저장
+    /// 시간만 든다. 한컴도 이들 BinData 와 `Preview/PrvImage.png` 를 STORED 로 쓰므로
+    /// 무압축 저장한다. JPEG 는 EXIF/XMP·썸네일 세그먼트가 잘 압축돼(샘플 전수
+    /// 38% 감소) DEFLATED 로 두고, BMP·OLE 등도 DEFLATED 로 둔다.
+    pub fn write_media(&mut self, name: &str, data: &[u8]) -> Result<(), SerializeError> {
+        let method = if is_precompressed_image(data) {
+            CompressionMethod::Stored
+        } else {
+            CompressionMethod::Deflated
+        };
+        self.write_with(name, data, method)
+    }
+
+    fn write_with(
+        &mut self,
+        name: &str,
+        data: &[u8],
+        method: CompressionMethod,
+    ) -> Result<(), SerializeError> {
         let next_expanded_bytes = self.validate_entry(name, data.len())?;
         let opts = SimpleFileOptions::default()
-            .compression_method(CompressionMethod::Deflated)
+            .compression_method(method)
             .last_modified_time(Self::fixed_mtime());
         self.inner
             .start_file(name, opts)
@@ -216,6 +229,13 @@ impl HwpxZipWriter {
     }
 }
 
+/// 매직 바이트로 재압축 이득이 없는 이미지(PNG/GIF/WebP)인지 판별한다.
+fn is_precompressed_image(data: &[u8]) -> bool {
+    data.starts_with(b"\x89PNG\r\n\x1a\n")
+        || data.starts_with(b"GIF8")
+        || (data.len() >= 12 && data.starts_with(b"RIFF") && &data[8..12] == b"WEBP")
+}
+
 impl Default for HwpxZipWriter {
     fn default() -> Self {
         Self::new()
@@ -233,6 +253,45 @@ mod tests {
         writer.write_stored("mimetype", b"abc").unwrap();
         assert_eq!(writer.remaining_entry_limit("next.bin").unwrap(), 2);
         assert!(writer.write_deflated("next.bin", b"def").is_err());
+    }
+
+    #[test]
+    fn media_entries_store_png_and_deflate_jpeg_bmp_and_xml() {
+        let mut writer = HwpxZipWriter::new();
+        writer
+            .write_media("BinData/image1.png", b"\x89PNG\r\n\x1a\n0000")
+            .unwrap();
+        writer
+            .write_media("BinData/image2.jpg", &[0xFF, 0xD8, 0xFF, 0xE0, 0, 0])
+            .unwrap();
+        writer
+            .write_media("BinData/image3.bmp", b"BM000000")
+            .unwrap();
+        writer
+            .write_deflated("Contents/section0.xml", b"<hs:sec/>")
+            .unwrap();
+        let bytes = writer.finish().unwrap();
+
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let method = |archive: &mut zip::ZipArchive<Cursor<Vec<u8>>>, name: &str| {
+            archive.by_name(name).unwrap().compression()
+        };
+        assert_eq!(
+            method(&mut archive, "BinData/image1.png"),
+            CompressionMethod::Stored
+        );
+        assert_eq!(
+            method(&mut archive, "BinData/image2.jpg"),
+            CompressionMethod::Deflated
+        );
+        assert_eq!(
+            method(&mut archive, "BinData/image3.bmp"),
+            CompressionMethod::Deflated
+        );
+        assert_eq!(
+            method(&mut archive, "Contents/section0.xml"),
+            CompressionMethod::Deflated
+        );
     }
 
     #[test]

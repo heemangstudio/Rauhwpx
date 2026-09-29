@@ -113,12 +113,16 @@ pub fn write_table<W: Write>(
     write_cellzone_list(w, table)?;
 
     // tr[]: 행 단위 반복. 각 행에 속한 셀 (cell.row == r) 을 col 오름차순으로 출력.
+    // 셀을 (row, col) 로 한 번만 안정 정렬하고 커서로 훑는다 — 행마다 전 셀을
+    // 필터링하면 행 수 × 셀 수라 큰 표에서 저장이 제곱으로 느려진다.
+    let mut ordered: Vec<&Cell> = table.cells.iter().collect();
+    ordered.sort_by_key(|c| (c.row, c.col));
+    let mut next = 0;
     for row_idx in 0..table.row_count {
         start_tag(w, "hp:tr")?;
-        let mut row_cells: Vec<&Cell> = table.cells.iter().filter(|c| c.row == row_idx).collect();
-        row_cells.sort_by_key(|c| c.col);
-        for cell in row_cells {
+        while let Some(cell) = ordered.get(next).filter(|c| c.row == row_idx) {
             write_cell(w, cell, ctx)?;
+            next += 1;
         }
         end_tag(w, "hp:tr")?;
     }
@@ -354,8 +358,7 @@ fn write_sub_list_paragraphs<W: Write>(
     let mut vert_cursor: u32 = 0;
     for para in paragraphs {
         ctx.para_shape_ids.reference(para.para_shape_id);
-        let sid = ctx.effective_style_id(para.style_id);
-        ctx.style_ids.reference(sid as u16);
+        let sid = ctx.reference_style(para.style_id);
 
         let rendered = render_paragraph_parts(para, vert_cursor, ctx);
         if rendered.is_err() {
@@ -1828,5 +1831,27 @@ mod tests {
             "탭 포함 분할: run1=a+tab, run2=b 여야 함: {}",
             xml
         );
+    }
+
+    #[test]
+    fn table_saves_when_document_has_no_styles() {
+        use crate::model::control::Control;
+        use crate::model::document::Section;
+        use crate::model::style::{CharShape, ParaShape};
+
+        // `<hh:styles>` 없는 문서(tac-host-spacing.hwpx 등)는 스타일이 0개다. 셀 문단의
+        // 강등된 styleIDRef(0)를 참조로 기록하면 미등록 참조로 저장이 실패했다.
+        let mut doc = Document::default();
+        doc.doc_info.char_shapes.push(CharShape::default());
+        doc.doc_info.para_shapes.push(ParaShape::default());
+        let mut para = Paragraph::default();
+        para.controls
+            .push(Control::Table(Box::new(empty_table(2, 2))));
+        let mut section = Section::default();
+        section.paragraphs.push(para);
+        doc.sections.push(section);
+        assert!(doc.doc_info.styles.is_empty());
+
+        crate::serializer::hwpx::serialize_hwpx(&doc).expect("스타일 없는 문서의 표 저장");
     }
 }

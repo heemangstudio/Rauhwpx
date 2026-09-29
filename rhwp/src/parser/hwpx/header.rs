@@ -671,6 +671,11 @@ fn hwp5_default_font_name(name: &str) -> Option<&'static str> {
 
 // ─── CharShape ───
 
+/// charPr/paraPr `id` 로 배열 위치를 정할 때 허용하는 최대값.
+/// 모델의 문단모양 ID 는 u16 이고 실문서는 수천 개 이하다. 이보다 큰 id 로
+/// `resize_with` 하면 수십억 개 할당(64bit OOM)이나 `idx + 1` 오버플로(wasm32)가 난다.
+const MAX_HEADER_SHAPE_ID: usize = u16::MAX as usize;
+
 fn parse_char_shape(
     e: &quick_xml::events::BytesStart,
     reader: &mut Reader<&[u8]>,
@@ -936,8 +941,9 @@ fn parse_char_shape(
     // 그대로 push 하면 id 가 등장 순서와 다르거나(재정렬) 중간이 비어 있을 때
     // (스타일 삭제 등) charPrIDRef 참조가 엉뚱한 CharShape 로 해석된다.
     // id 가 없는(비정상) 항목만 등장 순서 fallback 으로 push.
+    // 비정상적으로 큰 id 는 빈 칸 채우기 할당이 폭주하므로 id 없음과 같이 취급한다.
     match id {
-        Some(idx) => {
+        Some(idx) if idx <= MAX_HEADER_SHAPE_ID => {
             if doc_info.char_shapes.len() <= idx {
                 doc_info
                     .char_shapes
@@ -945,7 +951,7 @@ fn parse_char_shape(
             }
             doc_info.char_shapes[idx] = cs;
         }
-        None => doc_info.char_shapes.push(cs),
+        _ => doc_info.char_shapes.push(cs),
     }
     Ok(())
 }
@@ -1041,9 +1047,9 @@ fn parse_para_shape(
     }
 
     // `id` 속성은 paraPrIDRef 가 참조하는 실제 배열 인덱스다. charPr 과 동일한
-    // 이유로 등장 순서 push 대신 id 로 배치한다.
+    // 이유로 등장 순서 push 대신 id 로 배치한다(상한 초과 id 는 등장 순서 push).
     match id {
-        Some(idx) => {
+        Some(idx) if idx <= MAX_HEADER_SHAPE_ID => {
             if doc_info.para_shapes.len() <= idx {
                 doc_info
                     .para_shapes
@@ -1051,7 +1057,7 @@ fn parse_para_shape(
             }
             doc_info.para_shapes[idx] = ps;
         }
-        None => doc_info.para_shapes.push(ps),
+        _ => doc_info.para_shapes.push(ps),
     }
     Ok(())
 }
@@ -2395,6 +2401,16 @@ fn parse_border_width(attr: &quick_xml::events::attributes::Attribute) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oversized_shape_ids_do_not_drive_allocation() {
+        let xml = r#"<hh:head><hh:refList><hh:charProperties itemCnt="2"><hh:charPr id="0" height="1000"></hh:charPr><hh:charPr id="4294967295" height="2000"></hh:charPr></hh:charProperties><hh:paraProperties itemCnt="2"><hh:paraPr id="0"></hh:paraPr><hh:paraPr id="4294967295"></hh:paraPr></hh:paraProperties></hh:refList></hh:head>"#;
+        let (info, _) = parse_hwpx_header(xml).unwrap();
+        assert_eq!(info.char_shapes.len(), 2);
+        assert_eq!(info.char_shapes[0].base_size, 1000);
+        assert_eq!(info.char_shapes[1].base_size, 2000);
+        assert_eq!(info.para_shapes.len(), 2);
+    }
 
     #[test]
     fn compatible_target_program_is_parsed_from_both_element_forms() {

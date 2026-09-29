@@ -503,8 +503,7 @@ pub fn write_draw_text<W: Write>(
     let mut vert_cursor: u32 = 0;
     for para in tb.paragraphs.iter() {
         ctx.para_shape_ids.reference(para.para_shape_id);
-        let sid = ctx.effective_style_id(para.style_id);
-        ctx.style_ids.reference(sid as u16);
+        let sid = ctx.reference_style(para.style_id);
 
         let rendered = render_paragraph_parts(para, vert_cursor, ctx);
         if rendered.is_err() {
