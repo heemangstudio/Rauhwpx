@@ -399,6 +399,40 @@ test('the request deadline remains active while a real HTTP body is stalled', as
   assert.ok(Date.now() - started < 500, 'the short injected deadline should terminate the stalled body promptly');
 });
 
+test('a slow but steady result body outlives the header deadline and still verifies', async (t) => {
+  const bytes = Buffer.alloc(10 * 1024, 0x61);
+  const baseUrl = await startFaultServer(t, (_request, response) => {
+    response.writeHead(200, {
+      'content-length': bytes.length,
+      'content-type': 'application/octet-stream',
+      'x-content-sha256': sha256(bytes),
+      'x-document-name': 'large.hwpx',
+    });
+    response.flushHeaders();
+    let offset = 0;
+    const timer = setInterval(() => {
+      response.write(bytes.subarray(offset, offset + 1024));
+      offset += 1024;
+      if (offset >= bytes.length) {
+        clearInterval(timer);
+        response.end();
+      }
+    }, 20);
+    response.on('close', () => clearInterval(timer));
+  });
+  const client = new CloudClient({
+    vault: memoryVault(),
+    transport: localTransport(baseUrl),
+  });
+
+  const started = Date.now();
+  // Ten chunks 20 ms apart take about 200 ms, well past the 80 ms deadline, but no gap reaches it.
+  const result = await client.downloadResult('session-1234', { retryAttempts: 1, timeoutMs: 80 });
+  assert.ok(Date.now() - started >= 150, 'the body really arrived slower than the deadline');
+  assert.equal(result.sha256, sha256(bytes));
+  assert.equal(result.size, bytes.length);
+});
+
 test('a wrong-content-type event stream has a bounded body deadline', async (t) => {
   const baseUrl = await startFaultServer(t, (_request, response) => {
     response.writeHead(200, {

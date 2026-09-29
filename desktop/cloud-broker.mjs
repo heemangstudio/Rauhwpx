@@ -11,6 +11,8 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 // silent-request limit while allowing those builds more time during rollout.
 const SETUP_REQUEST_TIMEOUT_MS = 4 * 60_000 + 30_000;
 export const RAUCLOUD_SETUP_TIMEOUT_MS = 30 * 60_000;
+/** Consecutive retryable status failures tolerated while a worker is allocated. */
+const MAX_ALLOCATION_STATUS_FAILURES = 5;
 
 const LIFECYCLE = Object.freeze({
   requested: 'provisioning',
@@ -537,9 +539,22 @@ export function createRaucloudBrokerProvider(options = {}) {
       await onSandboxCreated(sandbox);
       try {
         onLine(state.raucloud.reused ? 'Reconnecting to your warm Cloud worker' : 'Preparing your private Cloud worker');
+        let statusFailures = 0;
         for (let attempt = 0; !receipt && attempt < allocationAttempts; attempt += 1) {
           await client.sleep(allocationPollMs, { signal });
-          payload = await client.status({ runId: id, signal });
+          try {
+            payload = await client.status({ runId: id, signal });
+            statusFailures = 0;
+          } catch (error) {
+            // A Wi-Fi blip or a short sleep during a long cold start must not throw
+            // away the worker the broker is still preparing. Keep polling through a
+            // few transient failures; the attempt budget still bounds the wait.
+            statusFailures += 1;
+            if (signal?.aborted || error?.retryable !== true
+              || statusFailures > MAX_ALLOCATION_STATUS_FAILURES) throw error;
+            onLine('Waiting for Raucloud to respond');
+            continue;
+          }
           state = normalizedStatus(payload, 'provisioning');
           receipt = receiptFrom(payload);
           if (state.lifecycle === 'error' || ['failed', 'stopped', 'expired'].includes(state.status)) {

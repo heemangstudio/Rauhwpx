@@ -188,7 +188,12 @@ async function retryDelay(attempt, { baseMs = DEFAULT_RETRY_BASE_MS, signal } = 
   }
 }
 
-async function boundedResponseBytes(response, maximum = Infinity, { timeoutMs = 0 } = {}) {
+/**
+ * Reads a response body under a size cap. `timeoutMs` bounds the whole body;
+ * `idleTimeoutMs` only bounds the gap between chunks, so a large download on a
+ * slow link keeps going while a stalled one still fails promptly.
+ */
+async function boundedResponseBytes(response, maximum = Infinity, { timeoutMs = 0, idleTimeoutMs = 0 } = {}) {
   const limit = Number.isFinite(maximum) && maximum >= 0 ? maximum : Infinity;
   const declaredHeader = response.headers.get('content-length');
   const declared = declaredHeader === null ? NaN : Number(declaredHeader);
@@ -208,15 +213,24 @@ async function boundedResponseBytes(response, maximum = Infinity, { timeoutMs = 
     code: 'ETIMEDOUT',
     retryable: true,
   });
-  const timeout = timeoutMs > 0 ? setTimeout(() => {
+  const expire = () => {
     timedOut = true;
     void reader.cancel(timeoutError).catch(() => {});
-  }, timeoutMs) : null;
+  };
+  const timeout = timeoutMs > 0 ? setTimeout(expire, timeoutMs) : null;
+  let idle = null;
+  const armIdle = () => {
+    if (!(idleTimeoutMs > 0)) return;
+    clearTimeout(idle);
+    idle = setTimeout(expire, idleTimeoutMs);
+  };
+  armIdle();
   try {
     for (;;) {
       const { done, value } = await reader.read();
       if (timedOut) throw timeoutError;
       if (done) break;
+      armIdle();
       const chunk = Buffer.from(value);
       size += chunk.length;
       if (size > limit) {
@@ -231,6 +245,7 @@ async function boundedResponseBytes(response, maximum = Infinity, { timeoutMs = 
     }
   } finally {
     if (timeout) clearTimeout(timeout);
+    clearTimeout(idle);
     reader.releaseLock();
   }
   return Buffer.concat(chunks, size);
@@ -1836,17 +1851,21 @@ export class CloudClient {
           : controller?.signal ?? options.signal,
         cache: 'no-store',
       });
+      // Headers arrived in time. A result, checkpoint or timeline body can take
+      // longer than the header deadline on a slow link, so the body gets its own
+      // idle deadline below instead of this total one.
+      if (timeout) clearTimeout(timeout);
       const expectedDigest = proofContext ? verifyResponseProof(profile, response, proofContext) : null;
       const isEventStream = options.stream === true && response.ok
         && response.headers.get('content-type')?.toLowerCase().startsWith('text/event-stream');
       if (!isEventStream) {
+        const streamFallback = options.stream === true && timeoutMs === 0;
         const bytes = await boundedResponseBytes(response, options.maxResponseBytes, {
           // Real SSE streams are intentionally unbounded in time. If a proxy
           // serves a non-streaming error body instead, bound that body just like
           // every ordinary control response.
-          timeoutMs: options.stream === true && timeoutMs === 0
-            ? options.nonStreamTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
-            : 0,
+          timeoutMs: streamFallback ? options.nonStreamTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS : 0,
+          idleTimeoutMs: streamFallback ? 0 : requestTimeoutMs,
         });
         if (proofContext && digest(bytes) !== expectedDigest) {
           throw new CloudHttpError('Cloud response body failed identity verification', {
