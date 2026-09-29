@@ -1264,6 +1264,39 @@ test('reopening an externally changed file in the same window lets the next save
   });
 });
 
+test('reopening a file rewritten with identical bytes clears the save conflict', async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const target = join(directory, 'report.hwp');
+    const original = minimalCfbBytes(1);
+    await writeFs(target, original);
+    const registry = new NativeFileHandleRegistry();
+    const opened = await registry.create('session-a', target);
+    assert.equal(opened.ok, true);
+    if (!opened.ok) return;
+    const handleId = opened.descriptor.handleId;
+    const active = identity('document-a', 'blake3:a');
+    const leases = new DocumentLeaseManager({ createId: () => 'open' });
+    const reservation = leases.reserve('session-a', active, registry.pathForSender('session-a', handleId));
+    assert.equal(reservation.ok, true);
+    if (!reservation.ok) return;
+    leases.commit('session-a', reservation.reservationId);
+
+    // A sync client replaces the file with the same bytes: new inode, same digest.
+    const replacement = join(directory, 'sync.tmp');
+    await writeFs(replacement, original);
+    await renameFs(replacement, target);
+    await assert.rejects(
+      registry.write('session-a', handleId, minimalCfbBytes(3), active, leases),
+      { code: NATIVE_FILE_CONFLICT_CODE },
+    );
+
+    const loaded = (await registry.read('session-a', handleId)).bytes;
+    assert.equal(await registry.adoptLoadedContent('session-a', handleId, sha256Digest(loaded)), true);
+    await registry.write('session-a', handleId, minimalCfbBytes(4), active, leases);
+    assert.deepEqual(new Uint8Array(await readFs(target)), minimalCfbBytes(4));
+  });
+});
+
 test('adopting loaded content never overrides a save that finished meanwhile', async () => {
   let finishFingerprint: ((value: unknown) => void) | undefined;
   let holdFingerprint = false;

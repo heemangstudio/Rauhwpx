@@ -1130,7 +1130,15 @@ export class NativeFileHandleRegistry {
     const entry = this.#entryForSender(senderSessionId, handleId);
     if (entry.legacyPortableHistoryFolder) return false;
     if (typeof digest !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(digest)) return false;
-    if (entry.diskFingerprint?.state === 'file' && entry.diskFingerprint.digest === digest) return true;
+    if (entry.diskFingerprint?.state === 'file' && entry.diskFingerprint.digest === digest) {
+      // Same bytes as the baseline. A sync client rewriting identical bytes, or
+      // deleting a leftover temp link, still changes the file generation and
+      // every save would conflict. Skip the rehash only if a stat agrees.
+      const info = await this.#stat(entry.canonicalPath, { bigint: true }).catch(() => null);
+      if (info?.isFile?.() && nativeFileGeneration(info) === entry.diskFingerprint.generation) {
+        return true;
+      }
+    }
     if (entry.activeWrites > 0) return false;
     const epoch = entry.fingerprintEpoch;
     const fingerprint = await this.#fingerprint(entry.canonicalPath);
