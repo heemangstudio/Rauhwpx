@@ -897,7 +897,9 @@ export default async function rhwpPiExtension(pi: ExtensionAPI): Promise<void> {
             ? await prepareInsertImageArgs(args, readFile, config)
             : args;
           const result = await client.call(def.name, payload, signal);
-          return { content: toToolContent(result), details: result };
+          // details 는 세션 JSONL 과 stdout 이벤트마다 다시 직렬화된다. 결과는 content 에
+          // 이미 있으므로 복제하지 않는다(이미지 base64 가 두 번 실리는 것을 막는다).
+          return { content: toToolContent(result), details: {} };
         } catch (e) {
           // pi 는 throw 한 에러만 isError 로 표시한다 — 코드가 앞에 붙은 한 줄로 던진다.
           throw new Error(formatErrorText(e));
