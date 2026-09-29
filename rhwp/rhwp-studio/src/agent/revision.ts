@@ -13,6 +13,11 @@
  * 내용이 변하지 않는 이벤트는 bump 하지 않는다 — 과잉 bump 하나가
  * REVISION_MISMATCH → 재조회 → LLM 왕복 하나를 통째로 낭비시키기 때문이다:
  * 저장 계열의 dirty false 전이는 직렬화만 했을 뿐 내용이 같다.
+ *
+ * 문서 인스턴스: 깨끗한 문서를 닫고 다른 깨끗한 문서를 열면 어떤 이벤트도 revision 을
+ * 올리지 않는다 (dirty 전이가 없다). 그래서 revision 을 읽을 때마다 문서 인스턴스 번호를
+ * 확인하고, 바뀌었으면 저널에 없는 bump 를 하나 넣는다 — 이전 문서에서 든
+ * expectedRevision·sinceRevision·앵커 revision 은 모두 gap 으로 거절된다.
  */
 import type { EventBus } from '../core/event-bus.ts';
 
@@ -27,12 +32,36 @@ const REVISION_EVENTS = ['document-mutated', 'document-changed'] as const;
  */
 const CLEAN_REASONS_WITHOUT_BUMP = new Set(['save', 'save-as', 'host-save', 'save-with-history', 'pinned-save']);
 
+/** revision 시작값 기준 시각 (2026-01-01 UTC). */
+const REVISION_SEED_EPOCH_MS = Date.UTC(2026, 0, 1);
+
+/**
+ * 페이지 로드마다 다른 revision 시작값 — 기준 시각 이후 경과한 1/100초.
+ * 새로고침한 Studio 가 허브에 남은 턴의 옛 expectedRevision 과 같은 값에서 다시 세지
+ * 않게 한다. 이전 페이지가 평균 초당 100 번 넘게 bump 하지 않은 한 범위가 겹치지 않는다.
+ */
+export function timeSeededRevision(now = Date.now()): number {
+  return 1 + Math.max(0, Math.floor((now - REVISION_SEED_EPOCH_MS) / 10));
+}
+
+export interface RevisionTrackerOptions {
+  /** 현재 문서 인스턴스 번호 (WasmBridge.documentInstance). 바뀌면 revision 을 한 번 올린다. */
+  documentInstance?: () => number | undefined;
+  /** 시작 revision — 기본 1. */
+  initialRevision?: number;
+}
+
 export class RevisionTracker {
-  private rev = 1;
+  private rev: number;
   private inWindow = false;
   private unsubscribes: Array<() => void> = [];
+  private readonly readInstance: (() => number | undefined) | null;
+  private instance: number | undefined;
 
-  constructor(eventBus: EventBus) {
+  constructor(eventBus: EventBus, options: RevisionTrackerOptions = {}) {
+    this.rev = options.initialRevision ?? 1;
+    this.readInstance = options.documentInstance ?? null;
+    this.instance = this.readInstance?.();
     const bump = () => {
       if (this.inWindow) return;
       this.rev++;
@@ -55,7 +84,20 @@ export class RevisionTracker {
   }
 
   get revision(): number {
+    this.syncDocumentInstance();
     return this.rev;
+  }
+
+  /**
+   * 문서 인스턴스가 바뀌었으면 dedupe 창과 무관하게 한 번 올린다. 창에 들어가지 않는다 —
+   * 같은 틱에 이어지는 새 문서의 첫 쓰기 bump 가 흡수되면 이전 문서의 revision 이 다시 맞는다.
+   */
+  private syncDocumentInstance(): void {
+    if (!this.readInstance) return;
+    const current = this.readInstance();
+    if (current === undefined || current === this.instance) return;
+    this.instance = current;
+    this.rev++;
   }
 
   dispose(): void {

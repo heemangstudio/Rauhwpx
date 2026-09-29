@@ -17,7 +17,7 @@ import {
   websocketHubUrl,
   type RendererSessionContext,
 } from '../desktop-integration.ts';
-import { RevisionTracker } from './revision.ts';
+import { RevisionTracker, timeSeededRevision } from './revision.ts';
 import { AgentToolExecutor, toolTraceNow, type ToolTraceTimings } from './tool-executor.ts';
 import { PendingEditManager, editReportNote } from './pending-edits.ts';
 import { PendingOverlayRenderer } from './pending-overlay.ts';
@@ -1374,7 +1374,12 @@ export class AgentBridgeImpl implements AgentBridge {
   private activeTemplateId: string | null = null;
 
   constructor(deps: AgentBridgeDeps, opts?: AgentBridgeOptions) {
-    this.revision = new RevisionTracker(deps.eventBus);
+    // revision 은 문서 인스턴스에 묶고, 페이지 로드마다 다른 값에서 시작한다 — 다른 문서나
+    // 새로고침 이전 페이지에서 든 expectedRevision 이 우연히 맞아 엉뚱한 문서에 쓰이지 않게 한다.
+    this.revision = new RevisionTracker(deps.eventBus, {
+      documentInstance: () => deps.wasm.documentInstance,
+      initialRevision: timeSeededRevision(),
+    });
     this.overlay = new PendingOverlayRenderer({
       getCaretPosition: () => deps.inputHandler.getCursorPosition(),
       canvasView: deps.canvasView,
@@ -1753,6 +1758,14 @@ export class AgentBridgeImpl implements AgentBridge {
     this.connect();
   }
 
+  /** 허브 세션이 있어야만 성립하는 채팅 상태(턴·열린 편집 턴·시작된 에이전트·질문)가 남아 있는가. */
+  private chatLiveLocally(): boolean {
+    return this.turnRunning
+      || this.pendingTurnOpen
+      || Boolean(this.activeAgent)
+      || Boolean(this.pendingUserQuestion);
+  }
+
   /** 재시도 계기(시도 횟수·남은 시간)를 실은 connection 이벤트. */
   private emitConnection(retryInMs?: number): void {
     this.emit({
@@ -2034,12 +2047,18 @@ export class AgentBridgeImpl implements AgentBridge {
         if (this.pendingChatStart) return;
         const session = msg.session;
         const sessionThreadId = typeof session?.threadId === 'string' ? session.threadId : '';
-        if (this.threadId && sessionThreadId !== this.threadId) {
+        if (this.threadId && session && sessionThreadId !== this.threadId) {
           // pendingChatStart 는 자기 응답이 올 때까지 살아 있으므로,
           // 재연결 소켓은 이미 마지막으로 선택한 스레드를 다시 보낸 상태다.
           return;
         }
+        // session:null 은 허브에 에이전트 세션이 없다는 권위 있는 답이다 (허브 재시작 등).
+        // 스레드만 복원된 유휴 상태는 그대로 두고, 살아 있다고 믿던 채팅만 아래에서 정리한다 —
+        // 그러지 않으면 turnRunning·편집 잠금이 새 허브가 보내지 않을 turn-end 를 영영 기다린다.
+        if (!session && this.threadId && !this.chatLiveLocally()) return;
         const wasRunning = this.turnRunning;
+        const lostAgent = this.activeAgent ?? this.editingAgent;
+        let hubLostTurn = false;
         if (session && isAgentName(session.agent)) {
           this.selectedAgent = session.agent;
           this.activeAgent = session.agent;
@@ -2119,7 +2138,9 @@ export class AgentBridgeImpl implements AgentBridge {
             }
           }
         } else {
+          hubLostTurn = wasRunning;
           this.activeAgent = null;
+          this.planExecutionTurn = null;
           const droppedQuestion = this.pendingUserQuestion;
           this.pendingUserQuestion = null;
           this.pendingUserQuestionId = null;
@@ -2172,6 +2193,19 @@ export class AgentBridgeImpl implements AgentBridge {
           // setState 는 상태가 같으면 무시하므로 직접 emit 해 사이드바가
           // isTurnRunning() 으로 재동기화하도록 한다.
           this.emitConnection();
+        }
+        if (hubLostTurn) {
+          // 허브가 턴과 함께 사라졌다 — 새 허브는 turn-end 를 보내지 않으므로 사이드바의
+          // 진행 표시·스트림·도구 행을 같은 경로로 마무리한다. 편집은 검토 대기로 남아 있다.
+          this.emit({
+            type: 'agent',
+            event: {
+              type: 'turn-end',
+              agent: lostAgent,
+              stopReason: 'exited',
+              errorMessage: '에이전트 허브가 다시 시작되어 작업이 중단됐습니다.',
+            },
+          });
         }
         break;
       }

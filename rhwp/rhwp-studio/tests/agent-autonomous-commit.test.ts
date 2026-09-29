@@ -8,7 +8,9 @@ const pending = readFileSync(new URL('../src/agent/pending-edits.ts', import.met
 test('successful turns route by permission profile and stopped turns hold edits for review', () => {
   assert.match(pending, /endTurn\(outcome: 'review' \| 'commit' = 'review', opts: \{ turnStopped\?: boolean \}/);
   assert.match(pending, /if \(opts\.turnStopped\) set\.turnStopped = true/);
-  assert.match(pending, /if \(outcome === 'commit' && !this\.approve\(set\.id\)\) this\.reject\(set\.id\)/);
+  // 자동 커밋이 실패해도 성공한 턴을 되돌리지 않고 검토 대기로 남긴다 (agent-turn-outcome 이 동작을 본다).
+  assert.match(pending, /if \(outcome === 'commit' && !this\.approve\(set\.id\) && this\.sets\.includes\(set\)\)/);
+  assert.doesNotMatch(pending, /!this\.approve\(set\.id\)\) this\.reject\(set\.id\)/);
   // 비성공 종료로 가는 'reject' 경로는 없다 — 되돌림은 사용자의 reject() 뿐이다.
   assert.doesNotMatch(pending, /outcome === 'reject'/);
   assert.match(bridge, /this\.turnHadError = true/);

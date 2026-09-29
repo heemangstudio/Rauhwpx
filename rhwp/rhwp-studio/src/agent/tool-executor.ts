@@ -76,8 +76,10 @@ function engineTrappedError(detail: string): AgentToolError {
       + 'After the document is reopened, re-read it with get_structure.',
   );
 }
-/** 중첩 표 탐침에서 훑을 셀 문단 컨트롤 수 — 셀 문단의 컨트롤은 보통 한둘이다 */
+/** 중첩 표 탐침에서 훑을 셀 문단 컨트롤 수 — 셀 문단의 컨트롤은 보통 한둘이다 (엔진 질의가 없는 wasm 용) */
 const NESTED_TABLE_PROBE_CONTROLS = 4;
+/** getTableControlsInSelection 의 끝 오프셋 — 문단 끝까지(글자처럼 취급하지 않는 표 포함) 덮는다 */
+const CELL_SELECTION_END_OFFSET = 0x7fffffff;
 
 const MAX_SVG_BYTES = 800_000;
 // WebSocket text frames cap at 100 MiB. Base64 expands by 4/3, so 64 MiB
@@ -1290,11 +1292,16 @@ export class AgentToolExecutor {
   }
 
   /**
-   * 본문 최상위 표 컨트롤 열거 — 페이지 컨트롤 레이아웃에서 수집한다. pages 를 주면 그 쪽들만 훑는다.
+   * 본문 최상위 표 컨트롤 열거. 문서 전체는 문단/컨트롤 모델에서 바로 읽고, pages 를 주면
+   * 그 쪽들의 페이지 컨트롤 레이아웃에서 수집한다.
    * (중첩 표·머리말/각주 내부 표는 Phase-1 범위 밖이라 제외)
    */
   private listTables(pages?: { first: number; last: number }): StructureTableAddress[] {
     const { wasm } = this.deps;
+    if (!pages) {
+      const fromModel = this.listTablesFromModel();
+      if (fromModel) return fromModel;
+    }
     const seen = new Set<string>();
     const out: StructureTableAddress[] = [];
     const pageCount = wasm.pageCount;
@@ -1321,6 +1328,35 @@ export class AgentToolExecutor {
       }
     }
     out.sort((a, b) => a.sectionIdx - b.sectionIdx || a.paraIdx - b.paraIdx || a.controlIdx - b.controlIdx);
+    return out;
+  }
+
+  /**
+   * 구역 본문 문단의 표 컨트롤을 엔진 모델 질의로 모은다 (문단·컨트롤 순서).
+   * 페이지 레이아웃 스윕은 쪽마다 렌더 트리를 만들어, 쪽 캐시(32쪽)보다 긴 문서에서는
+   * find_text·앵커 쓰기·범위 삭제 가드마다 모든 쪽을 다시 조판하고 보이는 쪽 캐시까지 밀어낸다.
+   * 질의가 없거나 실패하면 null — 호출자가 레이아웃 스윕으로 돌아간다.
+   */
+  private listTablesFromModel(): StructureTableAddress[] | null {
+    const { wasm } = this.deps;
+    if (typeof wasm.getTableControlsInSelection !== 'function') return null;
+    const out: StructureTableAddress[] = [];
+    try {
+      const sectionCount = wasm.getSectionCount();
+      for (let sectionIdx = 0; sectionIdx < sectionCount; sectionIdx++) {
+        const paraCount = wasm.getParagraphCount(sectionIdx);
+        if (paraCount <= 0) continue;
+        const refs = wasm.getTableControlsInSelection(
+          sectionIdx, 0, [], 0, 0, paraCount - 1, CELL_SELECTION_END_OFFSET,
+        );
+        for (const ref of refs) {
+          if (!Number.isInteger(ref.ppi) || !Number.isInteger(ref.ci)) return null;
+          out.push({ sectionIdx, paraIdx: ref.ppi, controlIdx: ref.ci });
+        }
+      }
+    } catch {
+      return null;
+    }
     return out;
   }
 
@@ -2451,45 +2487,117 @@ export class AgentToolExecutor {
     // 표 셀 내부 텍스트도 검색한다 — 매치에는 write 툴에 그대로 넘길 수 있는 cell 주소가 실린다.
     if (!truncated) {
       const MAX_NESTED_DEPTH = 4;
-      const MAX_NESTED_TABLES = 4096;
-      const MAX_NESTED_PARAGRAPHS = 5000;
-      let nestedTables = 0;
-      let nestedParagraphs = 0;
-      const scanNested = (sectionIdx: number, tableParaIdx: number, outer: CellAddr,
-        hostPath: CellPathEntry[], depth: number): void => {
-        if (truncated || depth >= MAX_NESTED_DEPTH) return;
-        for (let controlIndex = 0; controlIndex < NESTED_TABLE_PROBE_CONTROLS; controlIndex++) {
-          const tablePath = [...hostPath, { controlIndex, cellIndex: 0, cellParaIndex: 0 }];
+      const readCellParagraph = (sectionIdx: number, tableParaIdx: number, outer: CellAddr,
+        path: CellPathEntry[]): boolean => {
+        const pathJson = JSON.stringify(path);
+        try {
+          const len = wasm.getCellParagraphLengthByPath(sectionIdx, tableParaIdx, pathJson);
+          if (len > 0) {
+            const text = wasm.getTextInCellByPath(sectionIdx, tableParaIdx, pathJson, 0, len);
+            return pushMatches(sectionIdx, path[path.length - 1].cellParaIndex, text, { ...outer, path: [...path] });
+          }
+        } catch { /* 접근 실패한 셀 문단은 건너뛴다 */ }
+        return true;
+      };
+      // 셀 문단마다 중첩 표를 품는지 엔진에 물어 스캔한다. 표가 없는 문단도 컨트롤 수만큼
+      // 경로 API 를 던지게 하던 탐침(셀 문단 1만 개면 4만 번)을 셀당 질의 한 번으로 바꾼다.
+      // 정확한 표만 받으므로 조기 중단 예산도 없다 — truncated 는 maxResults 에서만 선다.
+      let scanCell: (sectionIdx: number, tableParaIdx: number, outer: CellAddr,
+        container: CellPathEntry[], paragraphCount: number, depth: number, textDone: boolean) => boolean;
+      if (typeof wasm.getTableControlsInSelection === 'function') {
+        /** container 셀의 문단들에 든 표 경로 — 문단·컨트롤 순서. 질의 실패는 표 없음으로 본다. */
+        const nestedTablesIn = (sectionIdx: number, tableParaIdx: number, container: CellPathEntry[],
+          paragraphCount: number): CellPathEntry[][] => {
+          if (paragraphCount <= 0) return [];
+          try {
+            return wasm.getTableControlsInSelection(
+              sectionIdx, tableParaIdx, container, 0, 0, paragraphCount - 1, CELL_SELECTION_END_OFFSET,
+            ).flatMap((ref) => (ref.cellPath && ref.cellPath.length === container.length + 1 ? [ref.cellPath] : []));
+          } catch {
+            return [];
+          }
+        };
+        const scanTable = (sectionIdx: number, tableParaIdx: number, outer: CellAddr,
+          tablePath: CellPathEntry[], depth: number): boolean => {
           let cellCount: number;
           try {
             cellCount = wasm.getTableDimensionsByPath(sectionIdx, tableParaIdx, JSON.stringify(tablePath)).cellCount;
-          } catch { continue; }
-          // 예산은 실제로 찾은 중첩 표만 센다 — 표가 아닌 컨트롤의 탐침 실패까지 세면
-          // 셀 문단 ~1000개짜리 표 하나로 예산이 바닥나 뒤쪽 표가 통째로 검색에서 빠진다.
-          if (++nestedTables > MAX_NESTED_TABLES) { truncated = true; return; }
+          } catch { return true; }
+          const hostPath = tablePath.slice(0, -1);
+          const { controlIndex } = tablePath[tablePath.length - 1];
           for (let cellIndex = 0; cellIndex < cellCount; cellIndex++) {
-            const path = [...hostPath, { controlIndex, cellIndex, cellParaIndex: 0 }];
+            const container = [...hostPath, { controlIndex, cellIndex, cellParaIndex: 0 }];
             let paragraphCount: number;
             try {
-              paragraphCount = wasm.getCellParagraphCountByPath(sectionIdx, tableParaIdx, JSON.stringify(path));
+              paragraphCount = wasm.getCellParagraphCountByPath(sectionIdx, tableParaIdx, JSON.stringify(container));
             } catch { continue; }
-            for (let cp = 0; cp < paragraphCount; cp++) {
-              if (++nestedParagraphs > MAX_NESTED_PARAGRAPHS) { truncated = true; return; }
-              path[path.length - 1] = { controlIndex, cellIndex, cellParaIndex: cp };
-              const pathJson = JSON.stringify(path);
-              try {
-                const len = wasm.getCellParagraphLengthByPath(sectionIdx, tableParaIdx, pathJson);
-                if (len > 0) {
-                  const text = wasm.getTextInCellByPath(sectionIdx, tableParaIdx, pathJson, 0, len);
-                  if (!pushMatches(sectionIdx, cp, text, { ...outer, path: [...path] })) return;
-                }
-              } catch { /* 접근 실패한 셀 문단은 건너뛴다 */ }
-              scanNested(sectionIdx, tableParaIdx, outer, path, depth + 1);
-              if (truncated) return;
+            if (!scanCell(sectionIdx, tableParaIdx, outer, container, paragraphCount, depth, false)) return false;
+          }
+          return true;
+        };
+        scanCell = (sectionIdx, tableParaIdx, outer, container, paragraphCount, depth, textDone) => {
+          const tables = depth < MAX_NESTED_DEPTH
+            ? nestedTablesIn(sectionIdx, tableParaIdx, container, paragraphCount)
+            : [];
+          // 중첩 셀은 문단 텍스트와 그 문단의 표를 번갈아, 최상위 셀은 텍스트를 먼저 다 읽은 뒤
+          // 표를 훑는다 (예전 탐침 경로와 같은 매치 순서 — occurrence 번호가 바뀌지 않는다).
+          let next = 0;
+          for (let cp = 0; cp < paragraphCount; cp++) {
+            if (!textDone) {
+              const path = [...container];
+              path[path.length - 1] = { ...path[path.length - 1], cellParaIndex: cp };
+              if (!readCellParagraph(sectionIdx, tableParaIdx, outer, path)) return false;
+            }
+            for (; next < tables.length && tables[next][container.length - 1].cellParaIndex <= cp; next++) {
+              if (!scanTable(sectionIdx, tableParaIdx, outer, tables[next], depth + 1)) return false;
             }
           }
-        }
-      };
+          return true;
+        };
+      } else {
+        // 엔진 질의가 없는 wasm(테스트 가짜 등) — 앞쪽 컨트롤 몇 개를 경로 API 로 탐침한다.
+        const MAX_NESTED_TABLES = 4096;
+        const MAX_NESTED_PARAGRAPHS = 5000;
+        let nestedTables = 0;
+        let nestedParagraphs = 0;
+        const scanNested = (sectionIdx: number, tableParaIdx: number, outer: CellAddr,
+          hostPath: CellPathEntry[], depth: number): void => {
+          if (truncated || depth >= MAX_NESTED_DEPTH) return;
+          for (let controlIndex = 0; controlIndex < NESTED_TABLE_PROBE_CONTROLS; controlIndex++) {
+            const tablePath = [...hostPath, { controlIndex, cellIndex: 0, cellParaIndex: 0 }];
+            let cellCount: number;
+            try {
+              cellCount = wasm.getTableDimensionsByPath(sectionIdx, tableParaIdx, JSON.stringify(tablePath)).cellCount;
+            } catch { continue; }
+            // 예산은 실제로 찾은 중첩 표만 센다 — 표가 아닌 컨트롤의 탐침 실패까지 세면
+            // 셀 문단 ~1000개짜리 표 하나로 예산이 바닥나 뒤쪽 표가 통째로 검색에서 빠진다.
+            if (++nestedTables > MAX_NESTED_TABLES) { truncated = true; return; }
+            for (let cellIndex = 0; cellIndex < cellCount; cellIndex++) {
+              const path = [...hostPath, { controlIndex, cellIndex, cellParaIndex: 0 }];
+              let paragraphCount: number;
+              try {
+                paragraphCount = wasm.getCellParagraphCountByPath(sectionIdx, tableParaIdx, JSON.stringify(path));
+              } catch { continue; }
+              for (let cp = 0; cp < paragraphCount; cp++) {
+                if (++nestedParagraphs > MAX_NESTED_PARAGRAPHS) { truncated = true; return; }
+                path[path.length - 1] = { controlIndex, cellIndex, cellParaIndex: cp };
+                if (!readCellParagraph(sectionIdx, tableParaIdx, outer, path)) return;
+                scanNested(sectionIdx, tableParaIdx, outer, path, depth + 1);
+                if (truncated) return;
+              }
+            }
+          }
+        };
+        scanCell = (sectionIdx, tableParaIdx, outer, container, paragraphCount, depth) => {
+          for (let cp = 0; cp < paragraphCount; cp++) {
+            const hostPath = [...container];
+            hostPath[hostPath.length - 1] = { ...hostPath[hostPath.length - 1], cellParaIndex: cp };
+            scanNested(sectionIdx, tableParaIdx, outer, hostPath, depth);
+            if (truncated) return false;
+          }
+          return true;
+        };
+      }
       cellScan: for (const t of this.listTables()) {
         if (!tableInScope(t.sectionIdx, t.paraIdx, t.controlIdx)) continue;
         try {
@@ -2504,11 +2612,8 @@ export class AgentToolExecutor {
               const text = wasm.getTextInCell(t.sectionIdx, t.paraIdx, t.controlIdx, cellIdx, cp, 0, len);
               if (!pushMatches(t.sectionIdx, cp, text, cell)) break cellScan;
             }
-            for (let cp = 0; cp < cellParaCount; cp++) {
-              scanNested(t.sectionIdx, t.paraIdx, cell,
-                [{ controlIndex: t.controlIdx, cellIndex: cellIdx, cellParaIndex: cp }], 1);
-              if (truncated) break cellScan;
-            }
+            const container = [{ controlIndex: t.controlIdx, cellIndex: cellIdx, cellParaIndex: 0 }];
+            if (!scanCell(t.sectionIdx, t.paraIdx, cell, container, cellParaCount, 1, true)) break cellScan;
           }
         } catch {
           continue; // 접근 실패한 표는 건너뛴다 (best-effort)
@@ -2568,7 +2673,11 @@ export class AgentToolExecutor {
       ...(changeSetId !== null ? { changeSetId } : {}),
       replacedCount,
       truncated,
-      ...(truncated ? { note: `only the first ${maxMatches} matches were replaced — call replace_all again with the returned revision to continue.` } : {}),
+      ...(truncated ? {
+        note: matches.length >= maxMatches
+          ? `only the first ${maxMatches} matches were replaced — call replace_all again with the returned revision to continue.`
+          : `the search stopped at its nested-table budget after ${matches.length} match(es), so later tables were not searched — a plain replace_all rerun stops at the same place; replace the rest with anchored writes scoped by anchor.within (cell or paraRange).`,
+      } : {}),
     };
   }
 
@@ -2638,6 +2747,14 @@ export class AgentToolExecutor {
       throw new AgentToolError(
         'INVALID_ARGS',
         `anchor ${JSON.stringify(this.truncateForMessage(text))} matched nothing in the document — check the exact wording with find_text`,
+      );
+    }
+    // 스캔이 cap 에 닿기 전에 멈췄다면(중첩 표 탐침 예산) 뒤쪽을 보지 못했다 — 매치가 하나뿐이어도
+    // 유일하다고 단정하면 여러 실제 매치 중 첫 번째를 고쳐 쓴다. occurrence 는 스캔 순서의 앞쪽이라 그대로 맞다.
+    if (truncated && occurrence === undefined && matches.length < cap) {
+      throw new AgentToolError(
+        'INVALID_ARGS',
+        `anchor ${JSON.stringify(this.truncateForMessage(text))} matched ${matches.length} time(s) before the search stopped at its nested-table budget, so it may not be unique — narrow it with anchor.within (sectionIdx, paraRange or cell) or pass occurrence`,
       );
     }
     let picked = matches[0];
@@ -4664,15 +4781,27 @@ export class AgentToolExecutor {
   }
 
   /**
-   * 셀 문단 cellParaIdx 가 중첩 표를 품고 있는지 탐침한다.
+   * 셀 문단 cellParaIdx 가 중첩 표를 품고 있는지 본다.
    *
-   * 경로 API 는 마지막 경로 항목이 실제 표일 때만 성공하므로, 성공 = 그 셀 문단에
-   * 표가 있다는 뜻이다. 경로 키 이름은 Rust parse_cell_path 와 같다
-   * (controlIndex/cellIndex/cellParaIndex). 표가 몇 번째 컨트롤인지 모르니 앞쪽
-   * 컨트롤 몇 개만 훑는다 — 셀 문단의 컨트롤 수는 원래 한둘이다.
+   * 엔진의 getTableControlsInSelection 이 그 문단 하나의 표 컨트롤을 정확히 돌려준다.
+   * 그 질의가 없는 wasm 에서는 경로 API 를 탐침한다 — 마지막 경로 항목이 실제 표일 때만
+   * 성공하므로 성공 = 표가 있다는 뜻이고, 표가 몇 번째 컨트롤인지 모르니 앞쪽 컨트롤
+   * 몇 개만 훑는다. 경로 키 이름은 Rust parse_cell_path 와 같다 (controlIndex/cellIndex/cellParaIndex).
    */
   private cellParaHostsNestedTable(sectionIdx: number, cell: CellAddr, cellParaIdx: number): boolean {
     const { wasm } = this.deps;
+    if (typeof wasm.getTableControlsInSelection === 'function') {
+      const container = cell.path?.map((entry) => ({ ...entry }))
+        ?? [{ controlIndex: cell.controlIdx, cellIndex: cell.cellIdx, cellParaIndex: cellParaIdx }];
+      container[container.length - 1].cellParaIndex = cellParaIdx;
+      try {
+        return wasm.getTableControlsInSelection(
+          sectionIdx, cell.paraIdx, container, cellParaIdx, 0, cellParaIdx, CELL_SELECTION_END_OFFSET,
+        ).length > 0;
+      } catch {
+        return false;
+      }
+    }
     if (typeof wasm.getTableDimensionsByPath !== 'function') return false;
     for (let ctrl = 0; ctrl < NESTED_TABLE_PROBE_CONTROLS; ctrl++) {
       const parentPath = cell.path?.map((entry) => ({ ...entry }))

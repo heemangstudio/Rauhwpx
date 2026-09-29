@@ -7,7 +7,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addTable, expectErr, makeEnv } from './agent-test-env.ts';
+import { addTable, expectErr, makeEnv, type FakeTable } from './agent-test-env.ts';
 
 // ─── position 해석 ────────────────────────────────────────
 
@@ -133,6 +133,139 @@ test('큰 표 뒤의 표도 검색된다 — 표가 아닌 컨트롤 탐침은 �
   assert.equal(target.cells[0][0], '목표! 셀');
 });
 
+// ─── 중첩 표 스캔 ─────────────────────────────────────────
+
+interface NestedSpec { controlIndex: number; cells: string[][] }
+type PathEntry = { controlIndex: number; cellIndex: number; cellParaIndex: number };
+
+/**
+ * "표 문단:셀 문단 경로"(호스트) → 그 문단에 든 중첩 표 목록. 경로 API 와 getTableControlsInSelection 을
+ * 엔진 계약대로 흉내 낸다 — 표가 아닌 경로의 getTableDimensionsByPath 는 던진다.
+ */
+function installNestedTables(wasm: Record<string, unknown>, hosts: Map<string, NestedSpec[]>, withQuery: boolean,
+  bodyTables: FakeTable[] = []) {
+  const key = (para: number, path: PathEntry[]) =>
+    `${para}:${JSON.stringify(path.map((e) => [e.controlIndex, e.cellIndex, e.cellParaIndex]))}`;
+  const tableAt = (para: number, path: PathEntry[]): NestedSpec => {
+    const table = hosts.get(key(para, path.slice(0, -1)))?.find((t) => t.controlIndex === path[path.length - 1].controlIndex);
+    if (!table) throw new Error('경로에 표가 없습니다');
+    return table;
+  };
+  const leaf = (para: number, json: string) => {
+    const path = JSON.parse(json) as PathEntry[];
+    const last = path[path.length - 1];
+    return tableAt(para, path).cells[last.cellIndex][last.cellParaIndex];
+  };
+  const counts = { query: 0, bodyQuery: 0, dims: 0, dimsFailed: 0 };
+  wasm['getTableDimensionsByPath'] = (_s: number, para: number, json: string) => {
+    counts.dims++;
+    try {
+      const table = tableAt(para, JSON.parse(json) as PathEntry[]);
+      return { rowCount: table.cells.length, colCount: 1, cellCount: table.cells.length };
+    } catch (error) {
+      counts.dimsFailed++;
+      throw error;
+    }
+  };
+  wasm['getCellParagraphCountByPath'] = (_s: number, para: number, json: string) => {
+    const path = JSON.parse(json) as PathEntry[];
+    return tableAt(para, path).cells[path[path.length - 1].cellIndex].length;
+  };
+  wasm['getCellParagraphLengthByPath'] = (_s: number, para: number, json: string) => leaf(para, json).length;
+  wasm['getTextInCellByPath'] = (_s: number, para: number, json: string, off: number, count: number) =>
+    leaf(para, json).slice(off, off + count);
+  if (withQuery) {
+    wasm['getTableControlsInSelection'] = (sec: number, parentPara: number, container: PathEntry[],
+      startPara: number, _so: number, endPara: number) => {
+      if (container.length === 0) {
+        // 본문 문단 범위의 최상위 표 (문단·컨트롤 순서)
+        counts.bodyQuery++;
+        return bodyTables
+          .filter((t) => t.paraIdx >= startPara && t.paraIdx <= endPara)
+          .sort((a, b) => a.paraIdx - b.paraIdx || a.controlIdx - b.controlIdx)
+          .map((t) => ({ sec, ppi: t.paraIdx, ci: t.controlIdx }));
+      }
+      counts.query++;
+      const refs: Array<{ sec: number; ppi: number; ci: number; cellPath: PathEntry[] }> = [];
+      for (let p = startPara; p <= endPara; p++) {
+        const host = container.map((e, i) => (i === container.length - 1 ? { ...e, cellParaIndex: p } : { ...e }));
+        for (const table of hosts.get(key(parentPara, host)) ?? []) {
+          refs.push({ sec, ppi: parentPara, ci: container[0].controlIndex,
+            cellPath: [...host, { controlIndex: table.controlIndex, cellIndex: 0, cellParaIndex: 0 }] });
+        }
+      }
+      return refs;
+    };
+  }
+  return counts;
+}
+
+test('표는 엔진 모델 질의로 찾는다 — 쪽 레이아웃 스윕도, 표가 아닌 셀 문단에 던지는 탐침도 없다', async () => {
+  let counts!: ReturnType<typeof installNestedTables>;
+  let layoutSweeps = 0;
+  const h = makeEnv(['본문', '', ''], (wasm, _body, tables) => {
+    counts = installNestedTables(wasm, new Map(), true, tables);
+    const layout = wasm['getPageControlLayout'] as (page: number) => unknown;
+    wasm['getPageControlLayout'] = (page: number) => { layoutSweeps++; return layout(page); };
+  });
+  addTable(h, 1, Array.from({ length: 110 }, () => Array.from({ length: 10 }, () => '칸')));
+  const target = addTable(h, 2, [['목표 셀', '옆']]);
+  const found = await h.call('find_text', { query: '목표' });
+  assert.equal(found['truncated'], false);
+  assert.equal((found['matches'] as unknown[]).length, 1);
+  assert.equal(counts.dimsFailed, 0, '셀 문단 1100개에 실패하는 경로 탐침이 하나도 없다');
+  assert.equal(counts.query, 1100 + 2, '셀마다 한 번');
+  assert.equal(counts.bodyQuery, 1, '구역마다 한 번');
+  // 쪽 레이아웃 스윕은 쪽 캐시보다 긴 문서에서 모든 쪽을 다시 조판한다.
+  assert.equal(layoutSweeps, 0);
+  await h.call('insert_text', { anchor: { text: '목표' }, text: '!' });
+  assert.equal(target.cells[0][0], '목표! 셀');
+});
+
+test('다섯 번째 이후 컨트롤의 중첩 표와 5000 문단 너머의 표도 끝까지 검색된다', async () => {
+  const hosts = new Map<string, NestedSpec[]>();
+  // 첫 셀 문단의 컨트롤 5 번이 표다 — 앞쪽 컨트롤 4개만 보던 탐침은 이 표를 놓쳤다.
+  hosts.set('1:[[0,0,0]]', [{ controlIndex: 5, cells: [['깊은 바늘']] }]);
+  // 다음 셀에 셀 문단 6000개짜리 중첩 표 — 예전 예산(5000 문단)이면 여기서 검색이 끝났다.
+  hosts.set('1:[[0,1,0]]', [{ controlIndex: 0, cells: [Array.from({ length: 6000 }, (_, i) => `줄 ${i}`)] }]);
+  let counts!: ReturnType<typeof installNestedTables>;
+  const h = makeEnv(['본문', '', ''], (wasm, _body, tables) => { counts = installNestedTables(wasm, hosts, true, tables); });
+  addTable(h, 1, [['호스트', '큰 표']]);
+  const last = addTable(h, 2, [['마지막 바늘', '옆']]);
+  const found = await h.call('find_text', { query: '바늘' });
+  assert.equal(found['truncated'], false);
+  const matches = found['matches'] as Array<{ cellPath?: PathEntry[] }>;
+  assert.equal(matches.length, 2);
+  assert.deepEqual(matches[0].cellPath, [
+    { controlIndex: 0, cellIndex: 0, cellParaIndex: 0 },
+    { controlIndex: 5, cellIndex: 0, cellParaIndex: 0 },
+  ]);
+  assert.equal(counts.dimsFailed, 0);
+  const tail = await h.call('find_text', { query: '줄 5999' });
+  assert.equal((tail['matches'] as unknown[]).length, 1);
+  await h.call('insert_text', { anchor: { text: '마지막 바늘' }, text: '!' });
+  assert.equal(last.cells[0][0], '마지막 바늘!');
+});
+
+test('검색이 예산에서 멈췄으면 매치 하나를 유일하다고 단정하지 않는다 (탐침 폴백)', async () => {
+  const hosts = new Map<string, NestedSpec[]>();
+  hosts.set('1:[[0,0,0]]', [{ controlIndex: 0, cells: [Array.from({ length: 5001 }, () => '칸')] }]);
+  const h = makeEnv(['목표 본문', '', ''], (wasm) => { installNestedTables(wasm, hosts, false); });
+  addTable(h, 1, [['호스트']]);
+  addTable(h, 2, [['목표 표']]);
+  const found = await h.call('find_text', { query: '목표' });
+  assert.equal(found['truncated'], true);
+  assert.equal((found['matches'] as unknown[]).length, 1, '뒤쪽 표의 매치는 예산 때문에 보지 못했다');
+  const e = await expectErr(h.call('insert_text', { anchor: { text: '목표' }, text: '!' }), 'INVALID_ARGS');
+  assert.match(e.message, /may not be unique/);
+  assert.equal(h.body[0], '목표 본문', '모호한 앵커는 문서를 건드리지 않는다');
+  await h.call('insert_text', { anchor: { text: '목표', occurrence: 1 }, text: '!' });
+  assert.equal(h.body[0], '목표! 본문');
+  const replaced = await h.call('replace_all', { query: '본문', replacement: '글' });
+  assert.equal(replaced['truncated'], true);
+  assert.match(String(replaced['note']), /nested-table budget/);
+});
+
 test('apply_char_format + anchor: 매치 범위에 서식이 적용된다', async () => {
   const h = makeEnv(['강조할 부분']);
   const r = await h.call('apply_char_format', { anchor: { text: '부분' }, bold: true });
@@ -225,6 +358,30 @@ test('apply_edits: 앞 항목이 만든 모호함을 뒤 항목이 occurrence �
 });
 
 // ─── revision ─────────────────────────────────────────────
+
+test('다른 문서를 열면 이전 문서에서 든 revision 은 좌표·앵커·sinceRevision 어디에도 통과하지 않는다', async () => {
+  let instance = 1;
+  const h = makeEnv(['첫 문서 본문'], (wasm) => {
+    Object.defineProperty(wasm, 'documentInstance', { get: () => instance });
+  });
+  const stale = h.revision.revision;
+  // 같은 문서라면 저널이 덮어 stale 앵커 쓰기가 통과하는 조건을 먼저 만든다.
+  await h.call('insert_text', { sectionIdx: 0, paraIdx: 0, charOffset: 0, text: 'A' });
+  const lastOnA = h.revision.revision;
+  // 깨끗한 문서 B 로 교체 — dirty 전이도 문서 변경 이벤트도 없다.
+  instance = 2;
+  h.body.splice(0, h.body.length, '둘째 문서 본문');
+  await expectErr(h.call('insert_text', {
+    expectedRevision: lastOnA, sectionIdx: 0, paraIdx: 0, charOffset: 0, text: 'x',
+  }), 'REVISION_MISMATCH');
+  await expectErr(h.call('insert_text', { expectedRevision: lastOnA, anchor: { text: '본문' }, text: '!' }), 'REVISION_MISMATCH');
+  await expectErr(h.call('insert_text', { expectedRevision: stale, anchor: { text: '본문' }, text: '!' }), 'REVISION_MISMATCH');
+  await expectErr(h.call('get_structure', { sinceRevision: lastOnA }), 'FULL_REFRESH_REQUIRED');
+  assert.equal(h.body[0], '둘째 문서 본문');
+  // 새로 읽은 revision 으로는 그대로 쓴다.
+  await h.call('insert_text', { anchor: { text: '본문' }, text: '!' });
+  assert.equal(h.body[0], '둘째 문서 본문!');
+});
 
 test('anchor 쓰기는 stale revision 이라도 저널이 덮는 정밀 편집만 있으면 통과한다', async () => {
   const h = makeEnv(['형제 문단', '내 문단']);

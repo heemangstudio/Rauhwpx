@@ -109,6 +109,28 @@ function makeCellWasm() {
       }
       return { rowCount: 1, colCount: 1, cellCount: 1 };
     },
+    // 엔진 질의 — 본문(빈 컨테이너)이면 문단 범위의 최상위 표를, 컨테이너 셀이면 그 문단 범위에서
+    // nestedTableParas 에 등록된 문단의 표(컨트롤 0)를 돌려준다.
+    getTableControlsInSelection(
+      this: any, sec: number, para: number,
+      container: Array<{ controlIndex: number; cellIndex: number; cellParaIndex: number }>,
+      startPara: number, _so: number, endPara: number,
+    ) {
+      if (container.length === 0) {
+        return startPara <= 1 && endPara >= 1 ? [{ sec, ppi: 1, ci: 0, cellPath: undefined }] : [];
+      }
+      const host = container[container.length - 1];
+      if (para !== 1) return [];
+      const refs: unknown[] = [];
+      for (let p = startPara; p <= endPara; p++) {
+        if (!this.nestedTableParas.has(`${host.cellIndex}:${p}`)) continue;
+        refs.push({
+          sec, ppi: para, ci: container[0].controlIndex,
+          cellPath: [...container.slice(0, -1), { ...host, cellParaIndex: p }, { controlIndex: 0, cellIndex: 0, cellParaIndex: 0 }],
+        });
+      }
+      return refs;
+    },
     getCellCharPropertiesAt: () => ({}),
     getCellParaPropertiesAt: () => ({ pageBreakBefore: false }),
     applyParaFormatInCell: () => okJson(),

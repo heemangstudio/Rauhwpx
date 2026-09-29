@@ -309,6 +309,11 @@ export class PendingEditManager {
   private opSeq = 0;
   private lastDigest: string | null;
   /**
+   * 대기 편집이 기록된 문서 인스턴스 (WasmBridge.documentInstance). 가짜 wasm 처럼 번호가
+   * 없으면 undefined 이고, 그때만 digest 비교로 문서 교체를 추정한다.
+   */
+  private documentInstance: number | undefined;
+  /**
    * 사용자(비-에이전트) 문서 변이 카운터. replace op 의 스냅샷은 문서 전체 클론이라
    * 복원하면 스냅샷 이후의 모든 변이를 지운다 — pending 중 사용자 편집은 주소로
    * 관측하지 않으므로(untracked drift), 이 카운터가 스냅샷 시점과 달라졌으면
@@ -345,6 +350,12 @@ export class PendingEditManager {
   constructor(deps: PendingEditDeps) {
     this.deps = deps;
     this.lastDigest = deps.wasm.documentDigest;
+    this.documentInstance = this.readDocumentInstance();
+    // 문서 교체는 dirty 전이 없이도 일어난다(깨끗한 문서 → 깨끗한 문서). 교체 신호마다
+    // 인스턴스를 확인해, 이전 문서의 set 이 새 문서의 첫 쓰기와 섞이기 전에 잊는다.
+    for (const name of ['document-swapped', 'document-context-changed'] as const) {
+      this.unsubs.push(deps.eventBus.on(name, () => this.syncDocumentInstance()));
+    }
     this.unsubs.push(deps.eventBus.on('document-mutated', (reason) => {
       // 매니저 자신의 변이는 'agent-*' 이유로 발행되지만, approve 가 부르는
       // InputHandler 경로는 'input-handler-edit' 로 재진입하므로 플래그로도 막는다.
@@ -356,10 +367,19 @@ export class PendingEditManager {
       // undo/redo 후에는 대기 편집을 유지할 수 없다. 다만 그냥 버리면(R3 위반)
       // 이미 적용된 에이전트 삽입/서식이 승인 절차 없이 문서에 영구히 남으므로,
       // 텍스트 검증을 통과한 op 만 best-effort 로 되돌린 뒤 전부 해제한다.
+      // 다른 문서로 바뀐 뒤라면 이전 문서의 op 을 새 문서에 되돌리지 않고 먼저 잊는다.
+      this.syncDocumentInstance();
       if (this.sets.length > 0) this.revertAllAndDiscard('undo/redo');
     }));
     this.unsubs.push(deps.eventBus.on('document-dirty-changed', () => {
       const digest = this.deps.wasm.documentDigest;
+      if (this.documentInstance !== undefined) {
+        // 인스턴스 번호가 있으면 그것이 기준이다. digest 는 원본 바이트의 해시라 같은 파일을
+        // 다시 열면 그대로이고, 다른 문서를 열어도 dirty 전이가 없으면 관측되지 않는다.
+        this.syncDocumentInstance();
+        this.lastDigest = digest;
+        return;
+      }
       if (digest === this.lastDigest) return;
       // 문서 로드 자체는 dirty 전이를 만들지 않는다(로드 직후 항상 clean 이라
       // markClean 이 no-op). 따라서 매니저 생성 시점에는 문서가 없어(null)
@@ -377,6 +397,7 @@ export class PendingEditManager {
   }
 
   beginTurn(agent: AgentName): void {
+    this.syncDocumentInstance();
     if (this.open) this.finalizeOpenSet();
     const set: PendingChangeSet = {
       id: this.nextId('cs'), agent, status: 'open', ops: [], createdAt: Date.now(),
@@ -391,12 +412,17 @@ export class PendingEditManager {
    * 편집을 되돌리지 않고 검토 대기로 남긴다 — 되돌림은 사용자의 reject() 뿐이다.
    */
   endTurn(outcome: 'review' | 'commit' = 'review', opts: { turnStopped?: boolean } = {}): void {
+    this.syncDocumentInstance();
     if (!this.open) return;
     const set = this.open;
     if (opts.turnStopped) set.turnStopped = true;
     this.finalizeOpenSet();
     if (set.ops.length === 0) return;
-    if (outcome === 'commit' && !this.approve(set.id)) this.reject(set.id);
+    // 자동 커밋이 실패해도(스냅샷 저장 실패 등) 성공한 턴의 편집을 되돌리지 않는다.
+    // approve 의 실패 경로가 미리보기를 복원하고 검토 대기로 돌려 두었으니 카드만 다시 알린다.
+    if (outcome === 'commit' && !this.approve(set.id) && this.sets.includes(set)) {
+      this.emitChange({ type: 'set-finalized', changeSetId: set.id });
+    }
   }
 
   insertText(
@@ -912,6 +938,9 @@ export class PendingEditManager {
    * 롤백은 바깥 기준으로 온전하지 않고 이벤트도 바깥 구간 끝으로 미뤄지므로 부르지 않는다.
    */
   runAtomicBatch<T>(fn: () => T, opts?: { onRolledBack?: () => void }): T {
+    // 롤백 기준 상태를 잡기 전에 이전 문서의 set 을 잊는다 — 안 그러면 실패한 배치의
+    // 롤백이 이전 문서의 op 을 새 문서의 대기 편집으로 되살린다.
+    this.syncDocumentInstance();
     const wasm = this.deps.wasm;
     const pendingState = this.capturePendingState();
     const setIdsBefore = new Set(this.sets.map((s) => s.id));
@@ -1051,6 +1080,7 @@ export class PendingEditManager {
    * 잠시 캡처해 단일 undo 항목으로 채택한다 ("이미 적용된 것을 유지").
    */
   approve(changeSetId: string): boolean {
+    this.syncDocumentInstance();
     const set = this.sets.find((s) => s.id === changeSetId);
     if (!set) return false;
     // 되돌림이 시작되기 전에 사용자 편집 카운터를 한 번만 샘플링한다 —
@@ -1171,6 +1201,7 @@ export class PendingEditManager {
 
   /** reject — 적용된 op 을 되돌린다. 되돌리지 못한 op 은 문서에 남기고 보고한다. 히스토리 항목 없음. */
   reject(changeSetId: string): void {
+    this.syncDocumentInstance();
     const set = this.sets.find((s) => s.id === changeSetId);
     if (!set) return;
     // approve 와 같은 이유로 되돌림 시작 전에 한 번만 샘플링한다.
@@ -1191,6 +1222,7 @@ export class PendingEditManager {
    * 것이 없는 set 은 정착 순번을 끝에 한 번만 올려 앞 set 의 스냅샷을 살린다.
    */
   rejectAll(): void {
+    this.syncDocumentInstance();
     const targets = this.sets.filter((set) => set.ops.length > 0).reverse();
     if (targets.length === 0) return;
     const userEditSeqNow = this.userEditSeq;
@@ -1273,6 +1305,7 @@ export class PendingEditManager {
   }
 
   private ensureOpenSet(agent: AgentName): PendingChangeSet {
+    this.syncDocumentInstance();
     if (this.open) {
       // 허브 세션은 한 번에 하나뿐이다 — 턴이 열려 있으면 그 턴이 귀속의 기준이다.
       // 라벨이 어긋난다고 열린 턴을 닫고 다른 이름으로 새 set 을 열면, 리뷰 카드가
@@ -1322,6 +1355,44 @@ export class PendingEditManager {
     for (const set of this.sets) this.discardOpSnapshots(set.ops);
     this.sets = [];
     this.open = null;
+    this.syncTemplateLock();
+    this.deps.overlay.clear();
+    this.emitChange({ type: 'invalidated', reason });
+  }
+
+  private readDocumentInstance(): number | undefined {
+    const instance: unknown = this.deps.wasm.documentInstance;
+    return typeof instance === 'number' ? instance : undefined;
+  }
+
+  /** 다른 문서가 열렸으면 이전 문서에 기록된 대기 편집을 잊는다. */
+  private syncDocumentInstance(): void {
+    const current = this.readDocumentInstance();
+    if (current === undefined || current === this.documentInstance) return;
+    this.documentInstance = current;
+    this.lastDigest = this.deps.wasm.documentDigest;
+    this.forgetAll('document replaced');
+  }
+
+  /**
+   * 이전 문서의 set 을 wasm 호출 없이 버린다. 그 문서는 이미 해제됐고, 엔진 스냅샷·문단
+   * 보관본 id 는 문서마다 0 부터 다시 매겨지므로 새 문서에 discard 를 부르면 새 문서의
+   * 스냅샷을 지울 수 있다. 히스토리 예산에 등록한 점유만 반환한다. 편집이 없는 열린 set 은
+   * 문서를 가리키지 않으므로 턴 표시로 남긴다.
+   */
+  private forgetAll(reason: string): void {
+    const stale = this.sets.filter((set) => set.ops.length > 0);
+    if (stale.length === 0) return;
+    for (const set of stale) {
+      for (const op of set.ops) {
+        if ((op.kind === 'object' || op.kind === 'insert') && op.paraCapture) op.paraCapture = null;
+        if ((op.kind !== 'replace' && op.kind !== 'template' && op.kind !== 'object') || op.snapshotId == null) continue;
+        op.snapshotId = null;
+        this.deps.inputHandler.releaseExternalSnapshot?.();
+      }
+    }
+    this.sets = this.sets.filter((set) => set.ops.length === 0);
+    if (this.open && !this.sets.includes(this.open)) this.open = null;
     this.syncTemplateLock();
     this.deps.overlay.clear();
     this.emitChange({ type: 'invalidated', reason });

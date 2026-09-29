@@ -161,14 +161,18 @@ export function makeEnv(
   extend?.(wasm as unknown as Record<string, unknown>, body, tables);
 
   const bus = new EventBus();
-  const revision = new RevisionTracker(bus);
+  // extend 가 documentInstance 를 달면 실제 브리지처럼 revision 을 문서 인스턴스에 묶는다.
+  const revision = new RevisionTracker(bus, {
+    documentInstance: () => (wasm as { documentInstance?: number }).documentInstance,
+  });
+  let released = 0;
   const inputHandler = {
     executeOperation: (op: { operation?: (w: unknown) => unknown }) => { op.operation?.(wasm); },
     getCursorPosition: () => ({ sectionIndex: 0, paragraphIndex: 0, charOffset: 0 }),
     getSelection: () => null,
     prepareSnapshotCapacity: () => {},
     retainExternalSnapshot: () => {},
-    releaseExternalSnapshot: () => {},
+    releaseExternalSnapshot: () => { released++; },
   };
   const pending = new PendingEditManager({
     wasm: wasm as never,
@@ -186,7 +190,7 @@ export function makeEnv(
   });
   const call = (tool: string, args: Record<string, unknown> = {}) =>
     executor.execute(tool, { expectedRevision: revision.revision, ...args }, 'claude') as Promise<Record<string, unknown>>;
-  return { call, pending, revision, bus, body, tables, calls };
+  return { call, pending, revision, bus, body, tables, calls, wasm, releasedSnapshots: () => released };
 }
 
 export function addTable(env: ReturnType<typeof makeEnv>, paraIdx: number, cells: string[][]): FakeTable {

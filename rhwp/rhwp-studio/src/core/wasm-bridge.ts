@@ -379,6 +379,15 @@ export class WasmBridge {
   private set documentGeneration(value: number) {
     this._documentGeneration = value;
   }
+  /**
+   * 문서 인스턴스 번호 — 문서를 내리거나 다른 문서를 들일 때만 오른다. documentGeneration 과
+   * 달리 스냅샷 복원·내용 교체로는 오르지 않아, 에이전트 revision 과 대기 편집이 "같은 문서"를
+   * 판별하는 기준이 된다 (대기 편집은 스테이징·승인·거절마다 스냅샷을 복원한다).
+   */
+  private _documentInstance = 0;
+  get documentInstance(): number {
+    return this._documentInstance;
+  }
   private initialized = false;
   private _fileName = FALLBACK_DOCUMENT_FILE_NAME;
   private _currentFileHandle: FileSystemFileHandleLike | null = null;
@@ -479,6 +488,7 @@ export class WasmBridge {
    */
   releaseDocument(): void {
     this.documentGeneration++;
+    this._documentInstance++;
     if (this.doc) {
       try {
         this.doc.free();
@@ -535,6 +545,7 @@ export class WasmBridge {
     }
     const next = prepared.take();
     this.documentGeneration++;
+    this._documentInstance++;
     if (this.doc) {
       try {
         this.doc.free();

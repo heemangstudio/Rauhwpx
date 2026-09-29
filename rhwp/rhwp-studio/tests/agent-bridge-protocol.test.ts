@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { EventBus } from '../src/core/event-bus.ts';
-import { RevisionTracker } from '../src/agent/revision.ts';
+import { RevisionTracker, timeSeededRevision } from '../src/agent/revision.ts';
 import {
   AgentToolExecutor,
   DOCUMENT_WRITE_TOOLS,
@@ -70,6 +70,36 @@ test('RevisionTracker: 문서 로드/교체(dirty→false, 저장 아님)는 반
   bus.emit('document-dirty-changed', { dirty: false });
   assert.equal(tracker.revision, 3);
   tracker.dispose();
+});
+
+test('RevisionTracker: 문서 인스턴스가 바뀌면 dirty 전이 없이도 bump 하고, 같은 틱의 쓰기 bump 도 흡수하지 않는다', async () => {
+  // 깨끗한 A → 깨끗한 B 전환은 어떤 revision 이벤트도 내지 않는다 — 인스턴스 번호만 바뀐다.
+  const bus = new EventBus();
+  let instance = 1;
+  const tracker = new RevisionTracker(bus, { documentInstance: () => instance });
+  bus.emit('document-mutated', 'test');
+  await microtask();
+  const onA = tracker.revision;
+  instance = 2;
+  assert.equal(tracker.revision, onA + 1, '다른 문서는 다른 revision 이다');
+  assert.equal(tracker.revision, onA + 1, '같은 인스턴스를 다시 읽어도 더 오르지 않는다');
+  // 인스턴스 bump 는 dedupe 창을 열지 않는다 — 같은 틱의 새 문서 첫 쓰기도 revision 을 올린다.
+  bus.emit('document-mutated', 'agent-pending-edit');
+  assert.equal(tracker.revision, onA + 2);
+  tracker.dispose();
+});
+
+test('RevisionTracker: initialRevision 을 시작값으로 쓰고, 시각 기반 시작값은 새로고침마다 커진다', () => {
+  const bus = new EventBus();
+  const tracker = new RevisionTracker(bus, { initialRevision: 5_000 });
+  assert.equal(tracker.revision, 5_000);
+  bus.emit('document-changed');
+  assert.equal(tracker.revision, 5_001);
+  tracker.dispose();
+  const before = timeSeededRevision(Date.UTC(2026, 8, 29, 12, 0, 0));
+  const after = timeSeededRevision(Date.UTC(2026, 8, 29, 12, 0, 1));
+  assert.ok(Number.isSafeInteger(before) && before > 1);
+  assert.equal(after - before, 100, '1초에 100 — 이전 페이지가 초당 100번 넘게 bump 하지 않으면 범위가 겹치지 않는다');
 });
 
 // ─── AgentToolExecutor (stub deps) ──────────────────────────
