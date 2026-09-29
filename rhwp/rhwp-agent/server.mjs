@@ -4321,6 +4321,7 @@ async function handleStudioMessage(record, sock, msg) {
               workDir: record.workDir,
               isolatedHome: record.isolatedHome,
               sessionId: record.sessionId,
+              providerEnvs: { claude: claudeRuntimeEnv(record.isolatedHome) },
               spawnProcess: (command, args, options) => auxSpawnProcess(record, command, args, options),
               terminateProcess: terminateProcessTree,
               cleanupProcessOutcome: (child) => beginAuxiliaryProcessCleanupOutcome(record, child),
