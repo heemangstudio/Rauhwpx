@@ -265,22 +265,25 @@ export function displayedScale(size: number, original: number): string {
   return ((size / original) * 100).toFixed(2);
 }
 
-/** 채우기 무늬 선택지 → 엔진 무늬 코드 (없음 = -1) */
+/**
+ * 채우기 무늬 선택지 → 엔진 무늬 코드. 모델은 OWPML hatchStyle 순서의 1~6 을 쓰고
+ * (1 가로줄, 2 세로줄, 3 역대각선, 4 대각선, 5 십자, 6 X자), 0 이하는 무늬 없음이다.
+ */
 const FILL_PATTERN_CODES: Record<string, number> = {
   none: -1,
-  hline: 0,
-  vline: 1,
-  dline1: 2,
-  dline2: 3,
+  hline: 1,
+  vline: 2,
+  dline1: 3,
+  dline2: 4,
   cross: 5,
 };
 
 /**
- * 엔진 무늬 코드를 선택지 값으로 바꾼다. 선택지에 없는 코드(예: 4 십자)는 ''
+ * 엔진 무늬 코드를 선택지 값으로 바꾼다. 선택지에 없는 코드(예: 6 X자)는 ''
  * — 다이얼로그는 빈 선택으로 두고, 사용자가 고르지 않으면 원래 코드를 보존한다.
  */
 export function fillPatternOption(code: number | undefined): string {
-  if (code === undefined) return 'none';
+  if (code === undefined || code <= 0) return 'none';
   const entry = Object.entries(FILL_PATTERN_CODES).find(([, value]) => value === code);
   return entry ? entry[0] : '';
 }

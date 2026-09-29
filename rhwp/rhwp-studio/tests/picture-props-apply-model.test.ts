@@ -347,7 +347,7 @@ const fixtures: PatchFixture[] = [
       fillType: 'solid',
       fillBgColor: 197121,
       fillPatColor: 394500,
-      fillPatType: 2,
+      fillPatType: 3,
       fillAlpha: 26,
     },
   },
@@ -833,6 +833,21 @@ test('an untouched radial gradient keeps its gradient type', () => {
   });
 });
 
+test('hatch options round-trip through the model 1-6 codes', () => {
+  assert.equal(fillPatternOption(-1), 'none');
+  assert.equal(fillPatternOption(0), 'none');
+  assert.equal(fillPatternOption(1), 'hline');
+  assert.equal(fillPatternOption(2), 'vline');
+  assert.equal(fillPatternOption(3), 'dline1');
+  assert.equal(fillPatternOption(4), 'dline2');
+  const props = shapeProps({ fillType: 'solid', fillBgColor: 0xffffff, fillPatColor: 0, fillPatType: 0 });
+  const form = populatedShapeForm(props as ShapeProperties & Record<string, number>);
+  form.shapeFill.patternType = 'hline';
+  assert.deepEqual(buildPicturePropsPatch('shape', props as unknown as PictureProperties, props, form), {
+    fillPatType: 1,
+  });
+});
+
 test('a picked hatch pattern maps to the engine pattern code', () => {
   const props = shapeProps({ fillType: 'solid', fillBgColor: 0xffffff, fillPatColor: 0, fillPatType: -1 });
   const form = populatedShapeForm(props as ShapeProperties & Record<string, number>);
@@ -844,7 +859,7 @@ test('a picked hatch pattern maps to the engine pattern code', () => {
 });
 
 test('a pattern code the dialog cannot show is preserved until the user picks one', () => {
-  const props = shapeProps({ fillType: 'solid', fillBgColor: 0xffffff, fillPatColor: 0, fillPatType: 4 });
+  const props = shapeProps({ fillType: 'solid', fillBgColor: 0xffffff, fillPatColor: 0, fillPatType: 6 });
   const form = populatedShapeForm(props as ShapeProperties & Record<string, number>);
   assert.equal(form.shapeFill.patternType, '', 'unknown codes populate as an empty selection');
 
