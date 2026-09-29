@@ -53,7 +53,13 @@ pub fn render_equation(
         custom: custom_typefaces,
         bundled: bundled_typefaces,
         system: system_families,
-        modern: !version_info.is_empty(),
+        // 레이아웃의 is_modern_hy와 같은 pt 경계 — 한컴이 10pt 미만 버전60
+        // 수식을 현대 조판하지 않으므로 그리기도 legacy로 돌린다. 비legacy
+        // 서체는 크기와 무관하게 현대 모델을 유지한다(96dpi layout px 기준
+        // 10pt = 13.333px).
+        modern: !version_info.is_empty()
+            && (!crate::renderer::equation::font::is_legacy_equation_font(font_name)
+                || base_font_size >= 10.0 * 96.0 / 72.0),
     };
     render_box(
         canvas,

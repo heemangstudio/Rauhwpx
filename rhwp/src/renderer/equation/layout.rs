@@ -198,6 +198,9 @@ pub struct EqLayout {
     bold: bool,
     /// 원자 사이 수식 간격(thin/medium/thick)의 배율. 저장 개체 폭에 맞출 때만 줄인다.
     operator_padding_scale: f64,
+    /// 수식 기본 크기(pt). 문서 경로에서만 설정된다 — 한컴이 10pt 미만 버전60
+    /// 수식을 현대 조판하지 않는 경계를 가린다. 미설정이면 크기 판정을 건너뛴다.
+    eq_base_pt: Option<f64>,
 }
 
 /// 비율 상수
@@ -283,6 +286,7 @@ impl EqLayout {
             italic: true,
             bold: false,
             operator_padding_scale: 1.0,
+            eq_base_pt: None,
         }
     }
 
@@ -294,6 +298,7 @@ impl EqLayout {
             italic: true,
             bold: false,
             operator_padding_scale: 1.0,
+            eq_base_pt: None,
         }
     }
 
@@ -306,12 +311,35 @@ impl EqLayout {
         self
     }
 
+    /// 측정기의 현대 advance 적용 여부. 비legacy 서체는 크기와 무관하게 현대
+    /// 모델을 유지하고, HYhwpEQ 계열은 위의 pt 경계를 따른다.
+    fn modern_run_metrics(&self) -> bool {
+        !self.hft
+            && (self.is_modern_hy()
+                || !self
+                    .font_family
+                    .as_deref()
+                    .is_some_and(super::font::is_legacy_equation_font))
+    }
+
+    /// 수식 기본 크기를 pt로 알려 준다. dpi-확장된 px(font_size)로는 서로 다른
+    /// 렌더 해상도에서 같은 판정이 어긋나므로 문서 쪽 호출자가 HWPUNIT을 넘긴다.
+    pub fn with_base_pt(mut self, pt: f64) -> Self {
+        self.eq_base_pt = (pt.is_finite() && pt > 0.0).then_some(pt);
+        self
+    }
+
     fn is_modern_hy(&self) -> bool {
+        // 한컴은 버전60 수식이라도 기본 10pt 미만에서는 현대 조판을 쓰지 않는다 —
+        // eq-002(9.06pt) 공식 PDF 실측 간격이 현대표의 절반 수준(legacy 표와 일치):
+        // `=`→`−` ~0.02em, `=`→숫자 ~0.10em, `−`→`3` ~0.05em, 첨자 간격 ~0.29em.
+        // 업스트림의 현대 지표 실측 범위도 10–20pt이므로 그 아래만 legacy로 돌린다.
         !self.hft
             && self
                 .font_family
                 .as_deref()
                 .is_some_and(super::font::is_legacy_equation_font)
+            && self.eq_base_pt.map_or(true, |pt| pt >= 10.0)
     }
 
     fn has_modern_hy_metrics(&self, fs: f64) -> bool {
@@ -617,7 +645,7 @@ impl EqLayout {
             EqNode::Color { body, .. } => return self.node_run_metrics(body, fs),
             _ => return None,
         };
-        super::measure::measure_legacy_run_native(text, fs, italic, bold, !self.hft)
+        super::measure::measure_legacy_run_native(text, fs, italic, bold, self.modern_run_metrics())
     }
 
     /// 브라우저에서도 네이티브와 같은 원본 glyf/hmtx 잉크 경계를 사용한다.
@@ -755,9 +783,13 @@ impl EqLayout {
             .as_deref()
             .is_some_and(super::font::is_legacy_equation_font)
         {
-            if let Some(metrics) =
-                super::measure::measure_legacy_run_native(text, font_size, italic, bold, !self.hft)
-            {
+            if let Some(metrics) = super::measure::measure_legacy_run_native(
+                text,
+                font_size,
+                italic,
+                bold,
+                self.modern_run_metrics(),
+            ) {
                 // HFT는 잉크 끝을 연결하고 현대 HY는 힌팅된 advance를 연결한다.
                 return (
                     if self.is_modern_hy() {
@@ -1185,11 +1217,7 @@ impl EqLayout {
         // 현대 HY 분수는 최소 1em 개체/0.8em 선을 사용한다. 좁은 분수를
         // 글립 advance까지 줄이면 같은 분자도 분모에 따라 시작점이 달라진다.
         // 긴 분수는 기존 0.15em 선 여백을 유지한다 (eq-01의 12pt 분수).
-        let modern_hy = !self.hft
-            && self
-                .font_family
-                .as_deref()
-                .is_some_and(super::font::is_legacy_equation_font);
+        let modern_hy = self.is_modern_hy();
         let (w, bar_inset) = if modern_hy {
             // 분수 폭은 가장 긴 자식 advance와 양쪽 thin 여백이다.
             // eq-002의 1/4는 두 숫자의 advance가 같아 중앙 정렬해도 원점이 같다.
@@ -2333,9 +2361,8 @@ impl EqLayout {
     }
 
     fn layout_space(&self, kind: SpaceKind, fs: f64) -> LayoutBox {
-        // `~` 반각 공백은 현대 HY 수식에서 0.5em (한컴 정합, eq-01 실측
-        // 가→배 잉크 간격 6pt@12.96 ≈ 0.51em); 그 외 경로는 Times 계열
-        // 스페이스 0.33em 유지.
+        // `~` 반각 공백은 현대 경로에서 0.5em (eq-01 실측: 가→배 잉크 간격
+        // 6pt@12.96 ≈ 0.44em); 나머지 경로는 Times 계열 스페이스 0.33em 유지.
         // `` ` `` 는 sqrt→sup처럼 복합 원자 사이에 들어갈 때 잔여 간격과 합쳐지므로
         // eq-01 `가`배` 1.5pt@12(0.125em)로 줄이면 eq-002가 역행 — 0.17 유지.
         let w = match kind {

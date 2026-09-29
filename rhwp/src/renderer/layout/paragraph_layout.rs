@@ -3587,6 +3587,7 @@ impl LayoutEngine {
                         &eq.font_name,
                     )
                     .with_version(&eq.version_info)
+                    .with_base_pt(eq.font_size as f64 / 100.0)
                     .layout_in_control_width(&ast, hwpunit_to_px(eq.common.width as i32, self.dpi));
                     let color_str =
                         crate::renderer::equation::svg_render::eq_color_to_svg(eq.color);
@@ -3837,7 +3838,7 @@ impl LayoutEngine {
         let col_area_w_hu = px_to_hwpunit(col_area.width, self.dpi);
 
         // treat_as_char 컨트롤의 px 폭 목록 (절대 char 위치, px 폭, control_index) — 정렬 보장
-        let tac_offsets_px: Vec<(usize, f64, usize)> = {
+        let mut tac_offsets_px: Vec<(usize, f64, usize)> = {
             let mut v: Vec<(usize, f64, usize)> = composed
                 .tac_controls
                 .iter()
@@ -3846,6 +3847,35 @@ impl LayoutEngine {
             v.sort_by_key(|(p, _, _)| *p);
             v
         };
+        // 미주 수식-only 문단의 연속 TAC 수식은 한컴처럼 paint 폭(+outMargin)으로
+        // 열 안을 채우며 자동 줄바꿈한다 — min(선언 폭, paint+여백) (issue_1256
+        // 문12 미주). 본문 수식은 개체 상자(선언 폭+여백)를 예약하므로 이 조정은
+        // 미주 영역의 수식-only 흐름에서만 적용한다 (eq-002 본문 실측과 구분).
+        let eq_only_tac_flow = para_index >= self.endnote_para_base.get()
+            && para.is_some_and(|p| {
+                !tac_offsets_px.is_empty()
+                    && composed.lines.iter().all(|line| line.runs.is_empty())
+                    && tac_offsets_px
+                        .iter()
+                        .all(|(_, _, ci)| matches!(p.controls.get(*ci), Some(Control::Equation(_))))
+            });
+        if eq_only_tac_flow {
+            if let Some(p) = para {
+                for (_, w, ci) in tac_offsets_px.iter_mut() {
+                    if let Some(Control::Equation(eq)) = p.controls.get(*ci) {
+                        let painted_px = hwpunit_to_px(
+                            super::super::equation::fitted_width_hwp(eq) as i32,
+                            self.dpi,
+                        ) + hwpunit_to_px(
+                            i32::from(eq.common.margin.left) + i32::from(eq.common.margin.right),
+                            self.dpi,
+                        );
+                        let declared_px = hwpunit_to_px(eq.common.width as i32, self.dpi);
+                        *w = painted_px.min(declared_px);
+                    }
+                }
+            }
+        }
         // 문단 배경색: border_fill_id 조회
         let para_border_fill_id = para_style.map(|s| s.border_fill_id).unwrap_or(0);
         let para_fill_color = if para_border_fill_id > 0 {
@@ -6589,6 +6619,7 @@ impl LayoutEngine {
                                     &eq.font_name,
                                 )
                                 .with_version(&eq.version_info)
+                                .with_base_pt(eq.font_size as f64 / 100.0)
                                 .layout_in_control_width(
                                     &ast,
                                     hwpunit_to_px(eq.common.width as i32, self.dpi),
