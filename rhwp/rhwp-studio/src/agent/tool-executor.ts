@@ -7,6 +7,7 @@
  * revision을 포함하고, 모든 write는 expectedRevision을 먼저 검사한다.
  */
 import type { WasmBridge } from '../core/wasm-bridge.ts';
+import { engineTrap, reportEngineTrap } from '../core/engine-trap.ts';
 import type { InputHandler } from '../engine/input-handler.ts';
 import type { DocumentDirtyState } from '../core/document-dirty-state.ts';
 import type { CellPathEntry, ControlLayoutItem, DocumentPosition, LineLayoutItem, ParaProperties, SelectionRect } from '../core/types.ts';
@@ -64,6 +65,17 @@ export interface AgentToolExecutorDeps {
 }
 
 const DOC_NOT_LOADED_MESSAGE = '문서가 로드되지 않았습니다';
+
+/** 엔진 trap 뒤에는 같은 인스턴스로 다시 시도해도 실패한다 — 재시도 대신 사용자 안내로 넘긴다. */
+function engineTrappedError(detail: string): AgentToolError {
+  return new AgentToolError(
+    'ENGINE_TRAPPED',
+    `The document engine crashed (${detail}) and stopped to protect the document. `
+      + 'Do not retry document tools: tell the user the editor must be reopened. '
+      + 'The last painted pages stay on screen and the user can save a copy. '
+      + 'After the document is reopened, re-read it with get_structure.',
+  );
+}
 /** 중첩 표 탐침에서 훑을 셀 문단 컨트롤 수 — 셀 문단의 컨트롤은 보통 한둘이다 */
 const NESTED_TABLE_PROBE_CONTROLS = 4;
 
@@ -808,6 +820,8 @@ export class AgentToolExecutor {
     capability?: ToolCapabilityContext,
   ): Promise<unknown> {
     try {
+      const trap = engineTrap();
+      if (trap) throw engineTrappedError(trap.message);
       assertToolRequestActive(capability);
       assertToolCapability(tool, capability);
       if (isDocumentWriteTool(tool) && this.deps.isReadOnly?.()) {
@@ -838,6 +852,7 @@ export class AgentToolExecutor {
     } catch (e) {
       if (e instanceof AgentToolError) throw e;
       const message = e instanceof Error ? e.message : String(e);
+      if (reportEngineTrap(e)) throw engineTrappedError(message);
       if (message.includes(DOC_NOT_LOADED_MESSAGE)) {
         throw new AgentToolError('DOC_NOT_LOADED', 'No document is loaded in the studio; ask the user to open one.');
       }
@@ -3997,8 +4012,9 @@ export class AgentToolExecutor {
             const expectedRevision = itemRevision + (this.revision - revBeforeBatch);
             itemResult = this.dispatch(edit.tool, { ...edit.args, expectedRevision }, agent);
           } catch (e) {
-            const code = e instanceof AgentToolError ? e.code : 'RPC_ERROR';
             const message = e instanceof Error ? e.message : String(e);
+            if (!(e instanceof AgentToolError) && reportEngineTrap(e)) throw engineTrappedError(message);
+            const code = e instanceof AgentToolError ? e.code : 'RPC_ERROR';
             throw new AgentToolError(
               code,
               `edits[${index}] (${edit.tool}) failed — the whole batch was rolled back, nothing was applied: ${message}`,
@@ -4085,6 +4101,7 @@ export class AgentToolExecutor {
       return { tool, ...rest };
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
+      if (!(e instanceof AgentToolError) && reportEngineTrap(e)) throw engineTrappedError(message);
       const code = e instanceof AgentToolError
         ? e.code
         : message.includes(DOC_NOT_LOADED_MESSAGE) ? 'DOC_NOT_LOADED' : 'RPC_ERROR';

@@ -18,14 +18,27 @@ pub(crate) struct RunMetrics {
     pub ink_right: f64,
 }
 
+/// JS 측정기 결과 객체의 속성을 읽는다.
+///
+/// 측정기는 서체를 못 찾으면 null 을 돌려준다. null 에 `Reflect.get` 을 부르면 TypeError 가
+/// 나는데, wasm-bindgen 의 catch 경로는 예외마다 externref 표 슬롯을 돌려받지 못한다. 수식이
+/// 있는 문단을 다시 조판할 때마다 수십 번씩 쌓여 표가 V8 상한(1천만 칸)에 닿으면
+/// `__externref_table_alloc` 이 trap 하고 엔진 인스턴스 전체가 멈춘다. 객체일 때만 읽는다.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn js_property(
+    value: &wasm_bindgen::JsValue,
+    key: &str,
+) -> Option<wasm_bindgen::JsValue> {
+    if !value.is_object() {
+        return None;
+    }
+    js_sys::Reflect::get(value, &wasm_bindgen::JsValue::from_str(key)).ok()
+}
+
 impl RunMetrics {
     #[cfg(target_arch = "wasm32")]
     pub fn from_js(value: wasm_bindgen::JsValue) -> Option<Self> {
-        let number = |key: &str| {
-            js_sys::Reflect::get(&value, &wasm_bindgen::JsValue::from_str(key))
-                .ok()?
-                .as_f64()
-        };
+        let number = |key: &str| js_property(&value, key)?.as_f64();
         let metrics = Self {
             advance: number("advance")?,
             ink_right: number("inkRight")?,

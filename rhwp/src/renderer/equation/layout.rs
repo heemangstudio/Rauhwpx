@@ -614,9 +614,7 @@ impl EqLayout {
         let family = self.font_family.as_deref()?;
         let value = measure_equation_text(family, text, fs, italic, self.hft, true, bold).ok()?;
         let advance = super::measure::RunMetrics::from_js(value.clone())?.advance;
-        let ink_left = js_sys::Reflect::get(&value, &wasm_bindgen::JsValue::from_str("inkLeft"))
-            .ok()?
-            .as_f64()?;
+        let ink_left = super::measure::js_property(&value, "inkLeft")?.as_f64()?;
         (ink_left.is_finite() && advance.is_finite()).then_some((advance, ink_left))
     }
 

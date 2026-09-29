@@ -1,4 +1,5 @@
 import init, { HwpDocument, version } from '@wasm/rhwp.js';
+import { guardEngineCalls } from './engine-trap';
 import { withBodyTextPaginationBatch } from './pagination-batch';
 import { requireCharShapeRunsDocument, parseCharShapeRuns, validateCharShapeRuns } from './char-shape-runs';
 import type { CharShapeRun } from './types';
@@ -395,6 +396,7 @@ export class WasmBridge {
     installCanvasFontSubstitution();
     this.installMeasureTextWidth();
     await init();
+    guardEngineCalls(HwpDocument.prototype);
     if (!disconnectSubsecondDevtools) {
       disconnectSubsecondDevtools = connectSubsecondDevtools(
         wasmExports as unknown as SubsecondWasmExports,

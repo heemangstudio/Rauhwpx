@@ -648,6 +648,7 @@ const ERROR_TEXT: Record<string, string> = {
   REVISION_MISMATCH: '문서 버전 불일치',
   TEMPLATE_REVISION_MISMATCH: '서식 틀 버전 불일치',
   DOC_NOT_LOADED: '열린 문서 없음',
+  ENGINE_TRAPPED: '문서 엔진 멈춤',
   RENDER_UNAVAILABLE: '그림으로 그릴 수 없음',
   INVALID_SCRIPT: '수식 문법 오류',
   RESULT_TOO_LARGE: '결과가 너무 큼',

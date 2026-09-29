@@ -690,12 +690,8 @@ fn draw_legacy_literal(
             let resolved = resolve_equation_literal_font(&glyph)
                 .ok()
                 .and_then(|value| {
-                    let family = js_sys::Reflect::get(&value, &JsValue::from_str("family"))
-                        .ok()?
-                        .as_string()?;
-                    let scale = js_sys::Reflect::get(&value, &JsValue::from_str("emScale"))
-                        .ok()?
-                        .as_f64()?;
+                    let family = super::measure::js_property(&value, "family")?.as_string()?;
+                    let scale = super::measure::js_property(&value, "emScale")?.as_f64()?;
                     (scale.is_finite() && scale > 0.0 && scale <= 1.0).then_some((family, scale))
                 });
             if let Some((family, scale)) = resolved {
