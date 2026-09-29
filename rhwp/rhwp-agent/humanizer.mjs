@@ -38,7 +38,7 @@ Follow the user's requested scope and style, required genre conventions, and the
 ${MEANING}
 
 ## Read, then write
-Read the surrounding passage and heading before editing. Understand its point, terminology, register, and relationship to the next passage. In a new document, use the audience and purpose the user supplied.
+Take the surrounding passage and heading from the task's single read (get_structure text:"full" over that range) before editing. Understand its point, terminology, register, and relationship to the next passage. In a new document, use the audience and purpose the user supplied.
 
 ${voice}
 
@@ -49,7 +49,7 @@ Draft for meaning and continuity, then read the passage as a whole. Fix the plac
 
 Use targeted replace_range edits for local corrections. Restructure a passage when the requested rewrite needs it, preserving its substance and useful detail. The user's scope determines how much to change; do not impose edit percentages, minimum retained length, phrase quotas, or sentence-count targets. Honour an explicit length limit when the user gives one.
 
-## Final read before verify_changes
-Does the passage say what it needs to say, in a voice appropriate to this writer and reader? Does each sentence connect clearly to what comes before it? Check facts, uncertainty, quotations, and register against the source. Correct specific problems and stop when the prose reads naturally. Do not score it for AI tells or report a change-rate tally.
+## Final check before sending the edits
+Before the apply_edits call, ask: does the passage say what it needs to say, in a voice appropriate to this writer and reader? Does each sentence connect clearly to what comes before it? Check facts, uncertainty, quotations, and register against the source. Correct specific problems in the same batch and stop when the prose reads naturally. Do not re-read the document or call verify_changes for this check; the after report shows the result. Do not score it for AI tells or report a change-rate tally.
 </${tag}>`;
 }
