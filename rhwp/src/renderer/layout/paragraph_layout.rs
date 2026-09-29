@@ -9278,6 +9278,7 @@ mod compatibility_line_position_tests {
                     cell_para_index: 0,
                     text_direction: 0,
                     line_wrap_squeeze: false,
+                    row_span: 1,
                 }],
             }),
             true,
@@ -9372,6 +9373,7 @@ mod compatibility_line_position_tests {
                     cell_para_index: 0,
                     text_direction: 0,
                     line_wrap_squeeze: false,
+                    row_span: 1,
                 }],
             };
             engine.layout_composed_paragraph(
