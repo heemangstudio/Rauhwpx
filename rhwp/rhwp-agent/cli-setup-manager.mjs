@@ -18,6 +18,7 @@ import {
 import { cleanupStaleOAuthCredentialStaging } from './oauth-credential-transaction.mjs';
 import { createSetupTerminal } from './setup-terminal.mjs';
 import { fetchLatestPackage, replaceFileAtomically } from './harness-update.mjs';
+import { processTreeSpawnOptions, terminateAndWaitForProcessTreeExit } from './process-tree.mjs';
 
 const require = createRequire(import.meta.url);
 let crossSpawn = null;
@@ -60,6 +61,11 @@ export function defaultCliSetupRoot(env = process.env, platform = process.platfo
 }
 function setupError(code, message) { const error = new Error(message); error.code = code; return error; }
 function keyTail(value) { const text = String(value ?? '').trim(); return text ? text.slice(-4) : null; }
+/** `codex-cli 0.159.0`, `2.1.284 (Claude Code)` 처럼 CLI 마다 다른 --version 출력에서 버전만 꺼낸다. */
+export function parseCliVersion(output) {
+  const text = String(output ?? '').trim();
+  return text.match(/\bv?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/)?.[1] ?? (text.split(/\s+/)[0] || null);
+}
 function cleanOutput(value) { return redactDiagnosticText(String(value ?? '')).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').trim().slice(-1600); }
 
 /** 앱에 번들된 Agent SDK 가 쓰는 Claude Code 버전. 관리형 CLI 가 없을 때 실제로 실행되는 런타임이다. */
@@ -157,6 +163,9 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
   const authProcesses = new Map();
   const authTerminals = new Map();
   const loginScreens = new Map();
+  /** 진행 중인 설치. 같은 prefix 의 npm 은 package.json 을 서로 덮어쓰므로 설치는 한 번에 하나씩 돈다. */
+  const installs = new Map();
+  let installQueue = Promise.resolve();
   let nodeHostShimDir = null;
   let loaded = false;
   let loadPromise = null;
@@ -327,13 +336,20 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
     let child;
     // 실행 파일이 없거나(설치 중 교체) 실행 권한이 없거나 EMFILE 이면 spawn 이 던지거나 'error' 를 낸다.
     // 처리하지 않은 'error' 이벤트는 허브 프로세스를 끝내므로 실패한 실행 결과로 바꾼다.
-    try { child = spawnProcess(command, args, { ...options, stdio: ['ignore', 'pipe', 'pipe'], env: options.env ?? baseEnv }); } catch (error) { return { code: null, stdout: '', stderr: String(error?.message ?? error) }; }
+    const { tree = false, timeoutMs = STATUS_TIMEOUT_MS, ...spawnOptions } = options;
+    try { child = spawnProcess(command, args, { ...spawnOptions, ...(tree ? processTreeSpawnOptions(platform) : {}), stdio: ['ignore', 'pipe', 'pipe'], env: options.env ?? baseEnv }); } catch (error) { return { code: null, stdout: '', stderr: String(error?.message ?? error) }; }
     let stdout = ''; let stderr = '';
     child.stdout?.on('data', (chunk) => { stdout += String(chunk); }); child.stderr?.on('data', (chunk) => { stderr += String(chunk); });
     return await new Promise((resolve) => {
-      const timer = setTimeout(() => { child.kill?.(); resolve({ code: null, stdout, stderr: `${stderr}\ntimeout` }); }, options.timeoutMs ?? STATUS_TIMEOUT_MS);
-      child.on('error', (error) => { clearTimeout(timer); resolve({ code: null, stdout, stderr: `${stderr}\n${error?.message ?? error}` }); });
-      child.once('close', (code, signal) => { clearTimeout(timer); resolve({ code, signal, stdout, stderr }); });
+      // 설치(tree)는 npm 이 띄운 자식까지 끝난 뒤에 실패를 알린다. 남은 npm 이 다음 설치와 겹쳐 파일을 쓰지 않게 하기 위해서다.
+      let timedOut = false;
+      const timer = setTimeout(async () => {
+        timedOut = true;
+        if (tree) await terminateAndWaitForProcessTreeExit(child).catch(() => false); else child.kill?.();
+        resolve({ code: null, stdout, stderr: `${stderr}\ntimeout` });
+      }, timeoutMs);
+      child.on('error', (error) => { clearTimeout(timer); if (!timedOut) resolve({ code: null, stdout, stderr: `${stderr}\n${error?.message ?? error}` }); });
+      child.once('close', (code, signal) => { clearTimeout(timer); if (!timedOut) resolve({ code, signal, stdout, stderr }); });
     });
   }
   /** `codex login` 이 남긴 auth.json 을 확인한다. 허브도 같은 파일을 세션에 연결해 쓴다. */
@@ -348,7 +364,7 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
   }
   async function status(agent) {
     assertAgent(agent); await load(); const bin = binPath(agent); let version = null;
-    if (existsSync(bin)) { const result = await run(bin, ['--version'], { env: envFor(agent) }); if (result.code === 0) version = cleanOutput(result.stdout).split(/\s+/)[0] || null; }
+    if (existsSync(bin)) { const result = await run(bin, ['--version'], { env: envFor(agent) }); if (result.code === 0) version = parseCliVersion(cleanOutput(result.stdout)); }
     let authenticated = Boolean(apiKeys[agent]);
     let authMethod = authenticated ? 'api-key' : null;
     if (agent === 'codex' && !authenticated && await readCodexLogin()) {
@@ -371,12 +387,23 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
     const runtimeVersion = version ?? (agent === 'claude' ? bundledClaudeVersion : null);
     const latestVersion = latestVersions[agent];
     const updateRequired = Boolean(runtimeVersion && latestVersion && isNewerVersion(latestVersion, runtimeVersion));
-    return { installed: Boolean(version || existsSync(bin)), installing: false, version: runtimeVersion, authenticated, authMethod, ...(agent === 'claude' ? { authSource, authVerifiedAt } : {}), keyTail: keyTail(apiKeys[agent]), latestVersion, updateRequired, error: null };
+    return { installed: Boolean(version || existsSync(bin)), installing: installs.has(agent), version: runtimeVersion, authenticated, authMethod, ...(agent === 'claude' ? { authSource, authVerifiedAt } : {}), keyTail: keyTail(apiKeys[agent]), latestVersion, updateRequired, error: null };
   }
+  /** 같은 에이전트 설치가 이미 돌고 있으면 그 결과를 함께 기다린다. */
   async function install(agent, onProgress) {
-    const item = assertAgent(agent); await load(); onProgress?.({ state: 'installing', phase: 'install', activity: true }); await fs.mkdir(rootDir, { recursive: true, mode: 0o700 });
-    const result = await run(npmLaunch.command, [...npmLaunch.leadingArgs, 'install', '--prefix', prefixDir, `${item.package}@latest`], { env: baseEnv, timeoutMs: INSTALL_TIMEOUT_MS });
-    if (result.code !== 0) throw setupError('AGENT_INSTALL_FAILED', cleanOutput(result.stderr || result.stdout) || 'CLI 설치에 실패했어요.'); onProgress?.({ state: 'done' }); return status(agent);
+    const item = assertAgent(agent);
+    onProgress?.({ state: 'installing', phase: 'install', activity: true });
+    const running = installs.get(agent);
+    if (running) return running;
+    const task = installQueue.then(async () => {
+      await load(); await fs.mkdir(rootDir, { recursive: true, mode: 0o700 });
+      const result = await run(npmLaunch.command, [...npmLaunch.leadingArgs, 'install', '--prefix', prefixDir, `${item.package}@latest`], { env: baseEnv, timeoutMs: INSTALL_TIMEOUT_MS, tree: true });
+      if (result.code !== 0) throw setupError('AGENT_INSTALL_FAILED', cleanOutput(result.stderr || result.stdout) || 'CLI 설치에 실패했어요.');
+    });
+    installQueue = task.catch(() => {});
+    const settled = task.finally(() => installs.delete(agent)).then(() => { onProgress?.({ state: 'done' }); return status(agent); });
+    installs.set(agent, settled);
+    return settled;
   }
   async function authenticate(agent, method, key, onProgress, { signal, onCommitted, terminal = false } = {}) {
     assertAgent(agent); await load();

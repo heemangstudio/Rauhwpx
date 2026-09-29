@@ -385,3 +385,53 @@ test('an expired terminal Claude login is not reported as usable, even with a re
   assert.equal(expired.authenticated, false);
   assert.equal(expired.authMethod, null);
 });
+
+test('installs share the prefix one at a time and report installing until they finish', async (t) => {
+  const rootDir = await tmpRoot(t);
+  const { calls, spawnProcess: spawnFake } = fakeSpawner(path.join(rootDir, 'prefix'));
+  let active = 0;
+  let peak = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const spawnProcess = (command, argv, options) => {
+    if (!argv.includes('install')) return spawnFake(command, argv, options);
+    active += 1;
+    peak = Math.max(peak, active);
+    const proc = new FakeProcess();
+    void gate.then(() => spawnFake(command, argv, options).once('close', (code) => {
+      active -= 1;
+      proc.emit('close', code, null);
+    }));
+    return proc;
+  };
+  const manager = await createCliSetupManager({ rootDir, spawnProcess }).init();
+
+  const codex = manager.install('codex');
+  const claude = manager.install('claude');
+  const duplicate = manager.install('codex');
+  assert.equal((await manager.status('claude')).installing, true);
+  release();
+  const [codexDone, claudeDone] = await Promise.all([codex, claude, duplicate]);
+  assert.equal(peak, 1);
+  assert.equal(calls.filter((call) => call.argv.includes('install')).length, 2);
+  assert.equal(codexDone.installing, false);
+  assert.equal(claudeDone.installing, false);
+});
+
+test('Codex version output is parsed to its semantic version', async (t) => {
+  const rootDir = await tmpRoot(t);
+  const binDir = path.join(rootDir, 'prefix', 'node_modules', '.bin');
+  await fs.mkdir(binDir, { recursive: true });
+  await fs.writeFile(path.join(binDir, 'codex'), '');
+  const spawnProcess = () => {
+    const proc = new FakeProcess();
+    queueMicrotask(() => { proc.stdout.emit('data', 'codex-cli 0.159.0\n'); proc.emit('close', 0, null); });
+    return proc;
+  };
+  const fetchImpl = async () => new Response(JSON.stringify({ version: '0.159.0' }), { status: 200 });
+  const manager = await createCliSetupManager({ rootDir, spawnProcess, fetchImpl, platform: 'linux' }).init();
+
+  const status = await manager.automaticUpdate('codex');
+  assert.equal(status.version, '0.159.0');
+  assert.equal(status.updateRequired, false);
+});
