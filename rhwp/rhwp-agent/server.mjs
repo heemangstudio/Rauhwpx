@@ -1070,14 +1070,18 @@ async function modelCatalog(agent, record, { refresh = false } = {}) {
     env: claudeRuntimeEnv(record.isolatedHome),
     cwd: record.workDir ?? ROOT,
   }, { refresh });
-  else if (agent === 'codex') models = await codexModelCatalog({
-    bin: cliSetupStatus.codex?.installed ? cliSetup.binPath('codex') : 'codex',
-    env: cliSetup.envFor('codex'),
-    isolatedHome: record.isolatedHome,
-    codexHome: record.codexHome,
-    cwd: record.workDir ?? ROOT,
-  }, { refresh });
-  else throw unknownAgentError(agent);
+  else if (agent === 'codex') {
+    const options = {
+      bin: cliSetupStatus.codex?.installed ? cliSetup.binPath('codex') : 'codex',
+      env: cliSetup.envFor('codex'),
+      isolatedHome: record.isolatedHome,
+      codexHome: record.codexHome,
+      cwd: record.workDir ?? ROOT,
+    };
+    models = await codexModelCatalog(options, { refresh });
+    // 새로고침한 목록과 sol/luna 같은 별칭이 같은 모델을 가리키게 한다.
+    if (refresh) resolveCodexModel.remember(options, models);
+  } else throw unknownAgentError(agent);
   record.modelCatalogs ??= {};
   record.modelCatalogs[agent] = models;
   return models;
