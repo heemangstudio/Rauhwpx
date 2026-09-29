@@ -1059,6 +1059,11 @@ test('presence from a connection that died without closing expires so the room c
   const connections = () => database.prepare('SELECT connection_id FROM session_presence WHERE session_id = ?')
     .all(sessionId).map((row) => row.connection_id);
   assert.deepEqual(connections(), ['live-connection'], 'keepalives hold a live stream; the dead one expires');
+  clock.now += 5 * 60_000;
+  sessions.requestIdleSleeps();
+  sessions.touchPresence(sessionId, origin.device.id, 'live-connection');
+  assert.deepEqual(connections(), ['live-connection'], 'a keepalive after a clock jump restores its row');
+  sessions.closePresence(sessionId, origin.device.id, 'live-connection');
   clock.now += 31 * 60_000;
   assert.deepEqual(sessions.requestIdleSleeps(), [sessionId]);
   assert.deepEqual(connections(), []);

@@ -1059,10 +1059,14 @@ export class SessionStore {
 
   touchPresence(sessionId, deviceId, connectionId) {
     const now = this.now();
+    // The stale sweep in requestIdleSleeps can remove a live stream's row
+    // when the wall clock jumps (host suspend) before its next keepalive, so
+    // a keepalive restores the row instead of only refreshing it.
     const changed = this.database.prepare(`
-      UPDATE session_presence SET last_seen_at = ?
-      WHERE session_id = ? AND device_id = ? AND connection_id = ?
-    `).run(now, sessionId, deviceId, connectionId);
+      INSERT INTO session_presence(session_id, device_id, connection_id, last_seen_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(session_id, device_id, connection_id) DO UPDATE SET last_seen_at = excluded.last_seen_at
+    `).run(sessionId, deviceId, connectionId, now);
     if (changed.changes) {
       this.database.prepare('UPDATE sessions SET last_presence_at = ? WHERE id = ?').run(now, sessionId);
     }
