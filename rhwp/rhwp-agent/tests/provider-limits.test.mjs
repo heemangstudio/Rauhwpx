@@ -142,13 +142,16 @@ test('re-reads a rotated Claude login after an authentication failure', async ()
   assert.deepEqual(seen, ['Bearer expired', 'Bearer rotated']);
 });
 
-test('selects configured Codex home first and falls back only if its auth file is missing', async () => {
+test('reads only the selected Codex home, never another profile when it is empty', async () => {
   const homes = [];
+  const credentials = { '/selected/codex/auth.json': null, '/fixture-home/.codex/auth.json': { tokens: { access_token: 'test', account_id: 'account' } } };
   const { client } = fixture({ env: { CODEX_HOME: '/selected/codex' },
-    readCredentials: async (file) => file === '/fixture-home/.codex/auth.json' ? { tokens: { access_token: 'test', account_id: 'account' } } : null,
+    readCredentials: async (file) => credentials[file] ?? null,
     codexRpc: async ({ env }) => { homes.push(env.CODEX_HOME); return rpcUsage(); } });
-  await client.refresh();
-  assert.deepEqual(homes, ['/fixture-home/.codex']);
+  assert.equal((await client.refresh(true)).codex.status, 'unavailable');
+  credentials['/selected/codex/auth.json'] = { tokens: { access_token: 'selected', account_id: 'account' } };
+  await client.refresh(true);
+  assert.deepEqual(homes, ['/selected/codex']);
 });
 
 test('supplements a weekly-only RPC result with HTTP session usage and detailed reset expiry', async () => {

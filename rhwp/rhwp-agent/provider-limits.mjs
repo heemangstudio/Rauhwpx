@@ -180,16 +180,14 @@ export function createProviderLimitsClient({
     const method = await getAuthMethod(provider);
     if (method === 'api-key') return null;
     if (provider === 'codex') {
-      const homes = [...new Set([providerEnv.CODEX_HOME, path.join(homeDir, '.codex')].filter(Boolean).map((home) => path.resolve(home)))];
-      for (const home of homes) {
-        const raw = await readCredentials(path.join(home, 'auth.json'));
-        if (!raw) continue;
-        const token = raw.tokens?.access_token;
-        if (raw.auth_mode === 'apikey' || typeof token !== 'string' || !token) return null;
-        const accountId = typeof raw.tokens.account_id === 'string' ? raw.tokens.account_id : null;
-        return { token, accountId, home, env: providerEnv, accountKey: hash(`codex:${accountId ?? ''}:${tokenIdentity(token) ?? (accountId ? '' : token)}`) };
-      }
-      return null;
+      // 설정 상태와 같은 프로필만 읽는다. 선택한 CODEX_HOME 이 비어 있으면 다른 계정으로 넘어가지 않는다.
+      const home = path.resolve(providerEnv.CODEX_HOME?.trim() ? providerEnv.CODEX_HOME : path.join(homeDir, '.codex'));
+      const raw = await readCredentials(path.join(home, 'auth.json'));
+      if (!raw) return null;
+      const token = raw.tokens?.access_token;
+      if (raw.auth_mode === 'apikey' || typeof token !== 'string' || !token) return null;
+      const accountId = typeof raw.tokens.account_id === 'string' ? raw.tokens.account_id : null;
+      return { token, accountId, home, env: providerEnv, accountKey: hash(`codex:${accountId ?? ''}:${tokenIdentity(token) ?? (accountId ? '' : token)}`) };
     }
     const configDir = providerEnv.CLAUDE_CONFIG_DIR || path.join(homeDir, '.claude');
     // A terminal login carries the profile scope the usage endpoint needs. The
