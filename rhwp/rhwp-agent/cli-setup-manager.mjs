@@ -380,7 +380,34 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
   }
   async function authenticate(agent, method, key, onProgress, { signal, onCommitted, terminal = false } = {}) {
     assertAgent(agent); await load();
-    if (method === 'api-key') { if (typeof key !== 'string' || !textFitsByteLimit(key, API_KEY_MAX_BYTES) || !key.trim()) throw setupError('AGENT_KEY_INVALID', 'API 키를 입력해 주세요.'); settleApiKey(agent, key.trim()); if (agent === 'claude') { settleClaudeToken(null, null); claudeAuth.useLocalLogin = true; } if (secretStore?.available) await secretStore.set(`rhwp.${agent}.api-key`, apiKeys[agent]); await persist(); onCommitted?.(); onProgress?.({ state: 'done' }); return status(agent); }
+    if (method === 'api-key') {
+      if (typeof key !== 'string' || !textFitsByteLimit(key, API_KEY_MAX_BYTES) || !key.trim()) throw setupError('AGENT_KEY_INVALID', 'API 키를 입력해 주세요.');
+      const cancelled = () => setupError('AGENT_AUTH_CANCELLED', '로그인을 취소했어요.');
+      if (signal?.aborted) throw cancelled();
+      const verdict = agent === 'claude' ? await verifyClaude({ apiKey: key.trim(), fetchImpl }) : null;
+      if (verdict === 'invalid') throw setupError('AGENT_KEY_INVALID', 'Anthropic 이 이 API 키를 받아들이지 않았어요.');
+      if (signal?.aborted) throw cancelled();
+      const previous = { key: apiKeys[agent], token: claudeAuth.token, tokenExpiresAt: claudeAuth.tokenExpiresAt, useLocalLogin: claudeAuth.useLocalLogin };
+      settleApiKey(agent, key.trim()); if (agent === 'claude') { settleClaudeToken(null, null); claudeAuth.useLocalLogin = true; }
+      try {
+        if (secretStore?.available) await secretStore.set(`rhwp.${agent}.api-key`, apiKeys[agent]);
+        await persist();
+        // 저장하는 동안 취소됐으면 커밋하지 않고 이전 자격 증명으로 되돌린다.
+        if (signal?.aborted) throw cancelled();
+        onCommitted?.();
+      } catch (error) {
+        settleApiKey(agent, previous.key);
+        if (agent === 'claude') { settleClaudeToken(previous.token, previous.tokenExpiresAt); claudeAuth.useLocalLogin = previous.useLocalLogin; }
+        if (!previous.key && secretStore?.available) await secretStore.delete?.(`rhwp.${agent}.api-key`)?.catch?.(() => {});
+        await persist().catch(() => {});
+        throw error;
+      }
+      if (agent === 'claude') {
+        claudeAuth.rejected.delete(apiKeys.claude);
+        if (verdict === 'valid') claudeAuth.verified = { secret: apiKeys.claude, result: 'valid', at: now() };
+      }
+      onProgress?.({ state: 'done' }); return status(agent);
+    }
     if (!['oauth', 'login'].includes(method)) throw setupError('AGENT_AUTH_INVALID', '지원하지 않는 로그인 방식이에요.');
     if (agent !== 'claude') {
       const argv = agent === 'codex' ? ['login', '--device-auth'] : ['login'];

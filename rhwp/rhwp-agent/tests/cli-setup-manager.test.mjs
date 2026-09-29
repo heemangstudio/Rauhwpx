@@ -101,7 +101,7 @@ test('supported CLIs install into the shared app prefix', async (t) => {
 
 test('API keys stay provider-scoped and persist outside the public setup config', async (t) => {
   const rootDir = await tmpRoot(t);
-  const manager = await createCliSetupManager({ rootDir, baseEnv: { ANTHROPIC_API_KEY: 'inherited', OPENAI_API_KEY: 'inherited' } }).init();
+  const manager = await createCliSetupManager({ rootDir, baseEnv: { ANTHROPIC_API_KEY: 'inherited', OPENAI_API_KEY: 'inherited' }, verifyClaude: async () => 'unknown' }).init();
   await manager.authenticate('claude', 'api-key', 'sk-ant-private-1234');
 
   assert.equal(manager.envFor('claude').ANTHROPIC_API_KEY, 'sk-ant-private-1234');
@@ -114,10 +114,45 @@ test('API keys stay provider-scoped and persist outside the public setup config'
   assert.equal((await reloaded.status('claude')).keyTail, '1234');
 });
 
+test('a rejected or cancelled API-key login leaves no stored key', async (t) => {
+  const rootDir = await tmpRoot(t);
+  const stored = new Map();
+  let releaseWrite;
+  const writeHeld = new Promise((resolve) => { releaseWrite = resolve; });
+  const secretStore = {
+    available: true,
+    async get(key) { return stored.get(key) ?? null; },
+    async set(key, value) { if (key === 'rhwp.codex.api-key') await writeHeld; stored.set(key, value); return true; },
+    async delete(key) { return stored.delete(key); },
+  };
+  const manager = await createCliSetupManager({
+    rootDir, secretStore, homeDir: rootDir, platform: 'linux', baseEnv: {},
+    verifyClaude: async ({ apiKey }) => (apiKey === 'sk-ant-rejected' ? 'invalid' : 'valid'),
+  }).init();
+
+  await assert.rejects(() => manager.authenticate('claude', 'api-key', 'sk-ant-rejected'), { code: 'AGENT_KEY_INVALID' });
+  assert.equal((await manager.status('claude')).authenticated, false);
+  assert.equal(stored.has('rhwp.claude.api-key'), false);
+
+  const abort = new AbortController();
+  let committed = false;
+  const pending = manager.authenticate('codex', 'api-key', 'sk-cancelled', null, {
+    signal: abort.signal, onCommitted: () => { committed = true; },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  abort.abort();
+  releaseWrite();
+  await assert.rejects(pending, { code: 'AGENT_AUTH_CANCELLED' });
+  assert.equal(committed, false);
+  assert.equal(stored.has('rhwp.codex.api-key'), false);
+  assert.equal(manager.envFor('codex').OPENAI_API_KEY, undefined);
+  assert.equal((await manager.status('codex')).authMethod, null);
+});
+
 test('vault-backed API keys are bounded and never enter fallback files', async (t) => {
   const rootDir = await tmpRoot(t);
   const secretStore = createMemorySecretStore();
-  const manager = await createCliSetupManager({ rootDir, secretStore }).init();
+  const manager = await createCliSetupManager({ rootDir, secretStore, verifyClaude: async () => 'unknown' }).init();
   await assert.rejects(
     () => manager.authenticate('codex', 'api-key', 'x'.repeat(API_KEY_MAX_BYTES + 1)),
     (error) => error.code === 'AGENT_KEY_INVALID',
