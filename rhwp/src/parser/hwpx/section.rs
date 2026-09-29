@@ -749,6 +749,16 @@ fn parse_paragraph(
     let mut field_end_idx: usize = 0;
 
     for part in &text_parts {
+        // bookmark/hiddenComment 는 text_parts 마커 없이 controls 에만 쌓이는 폭 0 컨트롤이다.
+        // 마커를 소비하는 컨트롤보다 앞에 오면 control_idx 가 밀려 Field 를 놓치므로 건너뛴다.
+        if matches!(part.as_str(), "\u{0002}" | "\u{0003}" | "\u{0012}") {
+            while matches!(
+                para.controls.get(control_idx),
+                Some(Control::Bookmark(_) | Control::HiddenComment(_))
+            ) {
+                control_idx += 1;
+            }
+        }
         match part.as_str() {
             "\u{0003}" => {
                 if matches!(para.controls.get(control_idx), Some(Control::Field(_))) {
@@ -2080,9 +2090,14 @@ fn parse_table(
     // row_sizes 설정 (행별 셀 수, HWP 스펙 UINT16[NRows] 계약과 동일 — 높이가 아니다).
     // model::table::Table::rebuild_row_sizes, parser::control(HWP5), html_table_import,
     // document_core::commands::object_ops::table 이 모두 이 필드를 "행별 셀 개수"로 채운다.
-    table.row_sizes = (0..table.row_count)
-        .map(|r| table.cells.iter().filter(|c| c.row == r).count() as i16)
-        .collect();
+    // 셀을 한 번만 훑어 센다(행 범위 밖 셀은 무시).
+    let mut row_cell_counts = vec![0usize; table.row_count as usize];
+    for cell in &table.cells {
+        if let Some(count) = row_cell_counts.get_mut(cell.row as usize) {
+            *count += 1;
+        }
+    }
+    table.row_sizes = row_cell_counts.into_iter().map(|n| n as i16).collect();
 
     materialize_hwpx_table_attrs(&mut table, table_record_flags);
     table.rebuild_grid();
@@ -7914,6 +7929,26 @@ mod tests {
         let p = &section.paragraphs[0];
         assert_eq!(p.field_ranges.len(), 1, "동일 문단 필드는 field_range");
         assert!(p.orphan_field_ends.is_empty(), "고아 기록 없음");
+    }
+
+    #[test]
+    fn bookmark_before_field_begin_keeps_field_range() {
+        // bookmark/hiddenComment 는 마커 없는 폭 0 컨트롤 — 뒤따르는 fieldBegin 의
+        // control_idx 가 밀려 필드 범위가 소실되면 안 된다.
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+        xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="0"><hp:t>앞</hp:t><hp:ctrl><hp:bookmark name="bm"/></hp:ctrl><hp:ctrl><hp:fieldBegin id="7" type="CLICK_HERE" name="f" fieldid="7"/></hp:ctrl><hp:t>값</hp:t><hp:ctrl><hp:fieldEnd beginIDRef="7" fieldid="7"/></hp:ctrl></hp:run>
+  </hp:p>
+</hs:sec>"#;
+        let section = parse_hwpx_section(xml).unwrap();
+        let p = &section.paragraphs[0];
+        assert_eq!(p.field_ranges.len(), 1);
+        assert!(p.orphan_field_ends.is_empty());
+        let range = &p.field_ranges[0];
+        assert!(matches!(p.controls[range.control_idx], Control::Field(_)));
+        assert_eq!((range.start_char_idx, range.end_char_idx), (1, 2));
     }
 
     /// #1512: 비-Memo 필드도 고유 OWPML `id` 를 field_id 로 써야 한다. 같은 종류 필드가

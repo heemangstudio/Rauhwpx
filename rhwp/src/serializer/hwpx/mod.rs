@@ -49,7 +49,7 @@ fn write_bounded_binary_entry(
             "{label} entry could not be materialized within HWPX limits: {href}"
         ))
     })?;
-    writer.write_deflated(href, bytes.as_ref())
+    writer.write_media(href, bytes.as_ref())
 }
 
 /// Document IR을 HWPX(ZIP+XML) 바이트로 직렬화한다.
@@ -116,7 +116,7 @@ pub fn serialize_hwpx(doc: &Document) -> Result<Vec<u8>, SerializeError> {
         doc.hwpx_aux_entry("Preview/PrvText.txt")
             .unwrap_or(PRV_TEXT),
     )?;
-    z.write_deflated(
+    z.write_media(
         "Preview/PrvImage.png",
         doc.hwpx_aux_entry("Preview/PrvImage.png")
             .unwrap_or(PRV_IMAGE_PNG),

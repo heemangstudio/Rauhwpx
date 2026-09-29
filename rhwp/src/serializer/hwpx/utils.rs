@@ -36,6 +36,16 @@ impl BoundedXmlString {
         Ok(output)
     }
 
+    /// 이미 만든 문자열을 복사 없이 이어받는다.
+    pub(crate) fn from_string(value: String, max_bytes: usize) -> Result<Self, SerializeError> {
+        if value.len() > max_bytes {
+            return Err(SerializeError::XmlError(format!(
+                "HWPX XML exceeds the {max_bytes} byte generation limit"
+            )));
+        }
+        Ok(Self { value, max_bytes })
+    }
+
     pub(crate) fn len(&self) -> usize {
         self.value.len()
     }

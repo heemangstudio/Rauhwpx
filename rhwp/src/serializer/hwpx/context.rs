@@ -333,6 +333,19 @@ impl SerializeContext {
             0
         }
     }
+
+    /// 중첩 문단(셀·글상자·메모)의 styleIDRef 를 강등하고 참조로 기록한다.
+    ///
+    /// `<hh:styles>` 가 없는 문서는 스타일이 하나도 등록되지 않아 강등 대상 0 도
+    /// 미등록이다. 이때 참조를 기록하면 `assert_all_refs_resolved` 가 실패해 저장이
+    /// 막히므로, 등록된 스타일이 있을 때만 참조를 기록한다(최상위 문단과 동일).
+    pub fn reference_style(&mut self, raw: u8) -> u8 {
+        let sid = self.effective_style_id(raw);
+        if self.style_ids.registered_count() > 0 {
+            self.style_ids.reference(sid as u16);
+        }
+        sid
+    }
 }
 
 fn mime_from_ext(ext: &str) -> &'static str {
