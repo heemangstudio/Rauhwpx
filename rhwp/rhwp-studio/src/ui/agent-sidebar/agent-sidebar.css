@@ -6320,7 +6320,9 @@ html.ag-fs-vt-exit::view-transition-new(root) {
   grid-column: 1 / -1;
   grid-row: 1;
   display: grid;
-  grid-template-columns: minmax(230px, var(--ag-rail-w, 264px)) minmax(280px, 1fr) minmax(230px, auto);
+  /* 첫 칸은 레일 폭과 정확히 같아야 한다. 레일 최소 폭(200px)보다 큰 하한을
+     두면 제목이 레일 면을 넘어 대화 면 위에서 잘린다. */
+  grid-template-columns: var(--ag-rail-w, 264px) minmax(280px, 1fr) minmax(230px, auto);
   align-items: stretch;
   min-width: 0;
   background: var(--ag-bg);
