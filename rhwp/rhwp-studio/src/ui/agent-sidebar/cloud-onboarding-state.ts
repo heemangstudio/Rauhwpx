@@ -260,7 +260,9 @@ export function validateCloudProfileDraft(
 }
 
 export function mapSandboxIssue(error: unknown): CloudSetupIssue {
-  const detail = error instanceof Error ? error.message : String(error);
+  // 화면 문장으로 바뀐 오류는 원문을 detail 에 둔다. 원인은 원문으로 가른다.
+  const raw = (error as { detail?: unknown } | null)?.detail;
+  const detail = typeof raw === 'string' && raw ? raw : error instanceof Error ? error.message : String(error);
   const normalized = detail.toLowerCase();
   if (/not configured|railway_token|railway_project_id|railway_environment_id/.test(normalized)) {
     return {

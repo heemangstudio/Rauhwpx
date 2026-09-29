@@ -89,7 +89,8 @@ try {
       body:not(.ag-sidebar-open) aside { display:none }
       @media(max-width:767px) { aside { display:none } }`;
     document.head.append(style);
-    document.body.className = 'ag-sidebar-open';
+    // 사이드바 펼침 애니메이션이 끝나면 ag-sidebar-inset 이 붙고, 그때 작업 영역이 비켜 준다.
+    document.body.className = 'ag-sidebar-open ag-sidebar-inset';
     document.body.innerHTML = '<main id="workspace-stack"></main><aside><h3>Cloud conversation</h3><p>The viewer fits beside this sidebar.</p></aside>';
     const { createCloudWorkspace } = await import('/src/ui/cloud-workspace.ts');
     window.pendingInputs = 0;
@@ -187,10 +188,10 @@ try {
   await page.setViewport({ width:1280, height:900 });
   await page.evaluate(() => document.documentElement.style.setProperty('--ag-sidebar-width', '560px'));
   await checkFit();
-  await page.evaluate(() => document.body.classList.remove('ag-sidebar-open'));
+  await page.evaluate(() => document.body.classList.remove('ag-sidebar-open', 'ag-sidebar-inset'));
   await checkFit();
   await page.evaluate(() => {
-    document.body.classList.add('ag-sidebar-open');
+    document.body.classList.add('ag-sidebar-open', 'ag-sidebar-inset');
     document.documentElement.style.removeProperty('--ag-sidebar-width');
   });
   await checkFit();

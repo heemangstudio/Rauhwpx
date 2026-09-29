@@ -3454,13 +3454,26 @@ fn issue_1256_2022_sep_page10_question12_keeps_between_notes_gap() {
         max_formula_right <= 760.5,
         "문12 수식-only 흐름은 오른쪽 단을 넘지 않아야 함(#1310): max_right={max_formula_right}"
     );
+    // #374(9a7b639a)는 인라인 수식 줄 전진을 한컴 macOS 실측(eq-002)에 맞춰
+    // min(선언 폭, paint 폭+양쪽 여백)으로 바꿨다(macOS 한컴 우선 정책). 이 규칙에서는
+    // 세 번째 TAC 수식(가장 넓은 수식)이 첫 visual row 안에 들어간다. 위 PDF 는 한컴
+    // Windows(Hwp 2024) 출력이라 저장 폭 기준으로 줄바꿈하며, 이 문서의 한컴 macOS
+    // 출력은 아직 없다. 넘친 수식이 이어지는 visual row 는 여전히 #1310 내어쓰기
+    // 60.5pt 전체 x 에서 시작해야 한다.
+    let first_row_widest = question12_formulas
+        .iter()
+        .filter(|bbox| (bbox.y - question12_formula.y).abs() <= 3.0)
+        .any(|bbox| bbox.width > 170.0);
+    assert!(
+        first_row_widest,
+        "문12 세 번째 TAC 수식은 #374 수식 전진 규칙에서 첫 visual row에 남아야 함: {question12_formulas:?}"
+    );
     assert!(
         question12_formulas.iter().any(|bbox| {
             (bbox.x - (question12_formula.x + 80.7)).abs() <= 7.0
                 && bbox.y > question12_formula.y + 25.0
-                && bbox.width > 170.0
         }),
-        "문12 첫 수식 줄에서 넘친 세 번째 TAC 수식은 다음 visual row로 줄바꿈되고 한컴 UI 내어쓰기 60.5pt 전체 x를 적용해야 함(#1310): {question12_formulas:?}"
+        "문12 수식-only 문단의 후속 visual row는 한컴 UI 내어쓰기 60.5pt 전체 x를 적용해야 함(#1310): {question12_formulas:?}"
     );
     let formula_bottom = question12_formulas
         .iter()

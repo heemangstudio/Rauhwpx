@@ -1,6 +1,8 @@
 //! Issue #1549: visible host 문단(텍스트=섹션 제목)에 양수 offset co-anchored
-//! TopAndBottom float 표가 여러 개 있을 때, host 제목이 표 *아래*로 밀려 렌더되던
-//! 회귀를 막는다. 한컴은 제목을 문단 앵커(표 위)에 두고 양수 offset 표를 그 아래에 둔다.
+//! TopAndBottom float 표가 여러 개 있을 때의 제목·표 배치.
+//! 처음에는 제목을 문단 앵커(표 위)에 두도록 고정했으나, #374(9a7b639a) 검증에서 이
+//! fixture 를 한컴 macOS 로 내보낸 결과(docs/evidence/pr374-parity/README.md)는 표 A·B·C 를
+//! 차례로 쌓고 제목을 마지막 표 아래에 둔다. 지금은 그 순서를 고정한다.
 //!
 //! fixture: samples/issue1549_multipositive_float_tables.hwpx
 //!   = issue1510 구조에서 float 표 offset 을 모두 작은 양수로 narrow
@@ -66,41 +68,70 @@ fn find_title_bbox(root: &RenderNode, needle: &str) -> Option<(f64, f64)> {
     None
 }
 
+fn table_bboxes(root: &RenderNode) -> Vec<(f64, f64)> {
+    TARGET_TABLES
+        .iter()
+        .map(|&ci| find_table_bbox(root, ci).unwrap_or_else(|| panic!("table ci={ci} bbox")))
+        .collect()
+}
+
+/// 한컴 macOS 내보내기(#374 검증, Hancom Mac 12.30): 첫 표 A 는 본문 상단 +
+/// 바깥 위 여백 + 자기 offset(138.6px)에서 시작하고, 제목은 co-anchored 표들 아래에 온다.
 #[test]
-fn issue_1549_multi_positive_float_host_title_renders_above_tables() {
+fn issue_1549_multi_positive_float_host_title_renders_below_tables() {
     let doc = load_doc(HWPX_SAMPLE);
     let tree = doc
         .build_page_render_tree(0)
         .expect("build_page_render_tree(0)");
 
-    let (title_top, title_bottom) =
-        find_title_bbox(&tree.root, TITLE_NEEDLE).expect("host title text bbox");
-    let table_tops: Vec<f64> = TARGET_TABLES
-        .iter()
-        .map(|&ci| {
-            find_table_bbox(&tree.root, ci)
-                .unwrap_or_else(|| panic!("table ci={ci} bbox"))
-                .0
-        })
-        .collect();
-    let first_table_top = table_tops.iter().cloned().fold(f64::INFINITY, f64::min);
+    let (title_top, _) = find_title_bbox(&tree.root, TITLE_NEEDLE).expect("host title text bbox");
+    let tables = table_bboxes(&tree.root);
+    let first_table_top = tables.iter().map(|t| t.0).fold(f64::INFINITY, f64::min);
+    let last_table_bottom = tables.iter().map(|t| t.1).fold(f64::NEG_INFINITY, f64::max);
 
     assert!(
-        title_top < first_table_top + 0.5,
-        "host title must render at the paragraph anchor, above its co-anchored \
-         positive-offset float tables (Hancom places the title above the tables): \
-         title_top={title_top:.1}, table_tops={table_tops:?}",
+        (first_table_top - 138.6).abs() <= 1.0,
+        "first co-anchored float table must start at its declared offset like Hancom \
+         (138.6px): first_table_top={first_table_top:.1}, tables={tables:?}",
     );
-    // 한컴은 제목을 자기 줄에 두고 표를 그 줄 *아래*에 둔다. 표가 제목 줄을 침범하면
-    // 안 된다(작은 양수 offset 에서 제목·표가 같은 y 로 밀려 겹치던 회귀 가드).
     assert!(
-        first_table_top + 0.5 >= title_bottom,
-        "co-anchored float table must clear the host title line, not overlap it: \
-         title=({title_top:.1}..{title_bottom:.1}), first_table_top={first_table_top:.1}",
+        title_top + 0.5 >= last_table_bottom,
+        "host title must render below its co-anchored positive-offset float tables \
+         (Hancom macOS export): title_top={title_top:.1}, tables={tables:?}",
     );
 }
 
-/// 제목을 앵커로 되돌리면(위 테스트), 옛 버그가 우연히 제공하던 flow advance 가
+/// 한컴 macOS 는 표 A·B·C 를 겹침 없이 차례로 쌓고(B 상단 ≈ 221px, C 상단 ≈ 308px)
+/// 제목을 C 아래(≈ 344px)에 두어 2쪽이 된다. 지금 엔진은 C 를 B 와 같은 y 에 겹쳐 그리고
+/// 쪽 나눔도 1쪽이라, 레이아웃·조판 양쪽을 고쳐야 하는 알려진 차이로 남긴다.
+#[test]
+#[ignore = "known layout debt: co-anchored float C overlaps B; Hancom macOS stacks A/B/C and paginates to 2 pages"]
+fn issue_1549_multi_positive_float_tables_stack_without_overlap() {
+    let doc = load_doc(HWPX_SAMPLE);
+    let tree = doc
+        .build_page_render_tree(0)
+        .expect("build_page_render_tree(0)");
+
+    let (title_top, _) = find_title_bbox(&tree.root, TITLE_NEEDLE).expect("host title text bbox");
+    let tables = table_bboxes(&tree.root);
+    for pair in tables.windows(2) {
+        assert!(
+            pair[1].0 + 0.5 >= pair[0].1,
+            "co-anchored float tables must stack without overlap: tables={tables:?}",
+        );
+    }
+    assert!(
+        title_top + 0.5 >= tables[2].1,
+        "host title must follow the last stacked table: title_top={title_top:.1}, tables={tables:?}",
+    );
+    assert_eq!(
+        doc.page_count(),
+        2,
+        "Hancom macOS paginates this fixture to 2 pages"
+    );
+}
+
+/// 제목을 앵커로 되돌리면(#1549 초기 수정), 옛 버그가 우연히 제공하던 flow advance 가
 /// 사라져 뒤따르는 *빈-host(text 없는)* para float 표가 선행 float 점유밴드 위로
 /// 올라와 겹칠 수 있다(작업일지류 실문서 회귀). 빈-host float 도 선행 exclusion
 /// 밴드 아래로 클램프되는지 가드한다.

@@ -503,12 +503,20 @@ function cloudMock() {
 }
 
 const port = await availablePort();
+// 개발 서버가 띄우는 실제 허브는 이 컴퓨터의 Claude·Codex 를 읽고 업데이트 토스트를 띄운다.
+// 그 토스트가 Cloud 설정 버튼을 가려 클릭을 가로채므로, 아무도 듣지 않는 포트를 허브로 지정한다.
+let deadHubPort = await availablePort();
+while (deadHubPort === port) deadHubPort = await availablePort();
 const viteUrl = `http://127.0.0.1:${port}`;
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rauhwpx-cloud-onboarding-'));
 const vite = spawn(
   process.execPath,
   [path.join(studioRoot, 'node_modules', 'vite', 'bin', 'vite.js'), '--host', '127.0.0.1', '--port', String(port), '--strictPort'],
-  { cwd: studioRoot, env: { ...process.env, BROWSER: 'none' }, stdio: ['ignore', 'ignore', 'ignore'] },
+  {
+    cwd: studioRoot,
+    env: { ...process.env, BROWSER: 'none', RHWP_SKIP_AGENT_HUB: '1', RHWP_AGENT_PORT: String(deadHubPort) },
+    stdio: ['ignore', 'ignore', 'ignore'],
+  },
 );
 let browser;
 

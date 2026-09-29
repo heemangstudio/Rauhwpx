@@ -1337,9 +1337,23 @@ pub fn base_family_without_weight_suffix(font_family: &str) -> Option<String> {
     (tokens.len() < original_len).then(|| tokens.join(" "))
 }
 
+/// 체인에 넣을 문서 선언 대체 글꼴.
+///
+/// 한컴이 정한 설치 대체 서체가 있는 HFT 글꼴(HCI Poppy → Palatino 등)은 그
+/// 서체가 generic 체인 맨 앞에 온다. 문서 대체 글꼴(예: Batang)을 그 앞에 두면
+/// 영문 글리프가 명조로 그려지므로 넣지 않는다.
+fn chain_font_subst<'a>(font_family: &str, font_subst: &'a str) -> &'a str {
+    if hft_substitute_faces(font_family).is_empty() {
+        font_subst
+    } else {
+        ""
+    }
+}
+
 /// [#3314] 렌더용 폴백 체인 문자열: `요청 face → (base family) → generic 체인`.
 pub fn render_font_family_chain(font_family: &str, font_subst: &str) -> String {
     let fb = generic_fallback(font_family);
+    let font_subst = chain_font_subst(font_family, font_subst);
     let subst = if font_subst.is_empty() {
         String::new()
     } else {
@@ -1362,6 +1376,7 @@ pub fn canvas_font_family_chain(font_family: &str, font_subst: &str) -> String {
     }
 
     let fallback = generic_fallback(font_family);
+    let font_subst = chain_font_subst(font_family, font_subst);
     let subst = if font_subst.is_empty() {
         String::new()
     } else {
@@ -2153,6 +2168,11 @@ mod tests {
         // 문서 선언 대체 글꼴은 base 뒤·generic 앞에 삽입
         let sub = render_font_family_chain("나눔고딕", "한컴바탕");
         assert!(sub.starts_with("나눔고딕,'한컴바탕',"));
+        // HFT 설치 대체 서체가 있으면 문서 대체 글꼴이 그 앞을 가로채지 않는다
+        let poppy = render_font_family_chain("HCI Poppy", "Batang");
+        assert!(poppy.starts_with("HCI Poppy,'Palatino','Palatino Linotype',"));
+        assert!(canvas_font_family_chain("HCI Poppy", "Batang")
+            .starts_with("\"HCI Poppy\", 'Palatino','Palatino Linotype',"));
 
         assert_eq!(
             canvas_font_family_chain("Noto Serif KR Black", ""),
