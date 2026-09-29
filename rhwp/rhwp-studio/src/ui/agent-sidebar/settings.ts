@@ -404,6 +404,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   let setupStatuses: AgentSetupStatusMap | null = null;
   let setupAgent: AgentName | null = null;
   let setupBusy = false;
+  /** 이 탭이 보낸 뒤 아직 응답을 받지 못한 설치 요청. */
+  const pendingInstalls = new Set<AgentName>();
   let setupCloseTimer: ReturnType<typeof setTimeout> | null = null;
   let setupMessage = '';
   let setupReauth = false;
@@ -2799,16 +2801,21 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       await runPiInstall();
       return;
     }
+    const agent = setupAgent;
     setupBusy = true;
     setupMessage = '';
     resetSetupInstallProgress();
     setSetupInstallProgress(8, 'preparing');
     renderAgentSetup();
-    const statuses = await bridge.installAgent(setupAgent);
+    pendingInstalls.add(agent);
+    const statuses = await bridge.installAgent(agent).finally(() => pendingInstalls.delete(agent));
     if (disposed) return;
-    setupBusy = false;
     if (statuses) setupStatuses = statuses;
-    else if (!setupMessage) setupMessage = '설치 실패';
+    // 그사이 다른 프로바이더 창을 열었다면 그 창의 진행 상태는 건드리지 않는다.
+    if (setupAgent === agent) {
+      setupBusy = false;
+      if (!statuses && !setupMessage) setupMessage = '설치 실패';
+    }
     renderAgentSetup();
     renderProviders();
   }
@@ -3788,6 +3795,14 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
             setupUserCode = selectedStatus.pairingCode ?? setupUserCode;
             if (setupAgent === 'rau' || setupAgent === 'claude') setupCodePending = true;
           }
+          // 재접속했거나 다른 탭에서 시작한 설치도 끝날 때까지 설치 중으로 보인다.
+          const installInFlight = setupAgent !== null && setupAgent !== 'pi'
+            && (selectedStatus?.installing === true || pendingInstalls.has(setupAgent));
+          if (installInFlight && isSetupOpen() && !setupBusy) {
+            setupBusy = true;
+            setupMessage = '';
+            if (setupProgressPercent <= 0) setSetupInstallProgress(8, 'preparing');
+          }
           if (rauWasIncomplete && ev.statuses.rau?.setupComplete === true) {
             persistPrefs({
               ...prefs,
@@ -3799,7 +3814,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
           const inFlight = setupAgent !== null && setupBusy
             && ((ev.statuses[setupAgent]?.authenticating === true
                 && ev.statuses[setupAgent]?.authOwnedByThisSession === true)
-              || ev.statuses[setupAgent]?.installing === true);
+              || ev.statuses[setupAgent]?.installing === true
+              || pendingInstalls.has(setupAgent));
           if (!inFlight) {
             setupBusy = false;
             setupReauth = false;

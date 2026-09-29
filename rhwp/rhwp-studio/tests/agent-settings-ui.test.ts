@@ -281,7 +281,7 @@ test('각 프로바이더 설정은 별도 시작 화면 없이 설정 모달에
   assert.match(settings, /setup\.addEventListener\('click', \(\) => openAgentSetup\(agent\)\)/);
   assert.match(settings, /setupDialog\.setAttribute\('role', 'dialog'\)/);
   assert.match(settings, /setupDialog\.setAttribute\('aria-modal', 'true'\)/);
-  assert.match(settings, /bridge\.installAgent\(setupAgent\)/);
+  assert.match(settings, /bridge\.installAgent\(agent\)/);
   assert.match(settings, /bridge\.authenticateAgent\(authenticatingAgent, method/);
   assert.match(settings, /'브라우저로 로그인'/);
   assert.match(settings, /'API 키 입력'/);
