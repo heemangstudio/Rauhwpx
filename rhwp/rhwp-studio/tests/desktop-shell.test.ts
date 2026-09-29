@@ -300,6 +300,7 @@ test('desktop close and native-file IPC contracts stay sender-owned', () => {
     'desktop:native-file-validate-save',
     'desktop:native-file-write',
     'desktop:native-file-is-same',
+    'desktop:native-file-adopt-loaded',
     'desktop:remember-native-document',
     'desktop:reopen-native-document',
     'desktop:document-reserve',
@@ -454,6 +455,12 @@ test('window close never deadlocks on a dead renderer', () => {
     /window\.on\('close',[\s\S]*?isDestroyed\(\) \|\| window\.webContents\.isCrashed\(\)\) return;[\s\S]*?event\.preventDefault\(\)/,
   );
   assert.match(desktopMain, /render-process-gone[\s\S]*?pendingCloseRequestId = null/);
+  // A dead renderer frees its document so reopening the file does not focus the blank window.
+  // desktop-document-ownership.test.ts covers releaseRendererDocuments itself.
+  assert.match(
+    desktopMain,
+    /render-process-gone[\s\S]*?releaseRendererDocuments\(session\.sessionId, \{ documentLeases, nativeFiles \}\);\s*launchFiles\.length = 0;/,
+  );
 });
 
 test('one failed startup launch does not abort the remaining launches', () => {

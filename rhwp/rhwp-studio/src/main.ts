@@ -125,11 +125,14 @@ import { userSettings, type EditorScalarSettings } from '@/core/user-settings';
 import { AutosaveManager, type AutosaveScheduleSettings, type AutosaveStatus } from '@/recovery/autosave-manager';
 import {
   clearRecoverableAutosaveDrafts,
-  deleteAutosaveDraft,
+  defaultAutosaveLocks,
+  getAutosaveDraft,
   listRecoverableAutosaveDrafts,
-  type AutosaveDraft,
+  markAutosaveDraftsOffered,
+  type AutosaveDraftSummary,
 } from '@/recovery/autosave-store';
-import { recoveryFileName } from '@/recovery/recovery-format';
+import { HostSaveTracker } from '@/recovery/host-save';
+import { offerAutosaveRecovery, restoreAutosaveDraft } from '@/recovery/recovery-flow';
 import { showAutosaveRecoveryDialog } from '@/recovery/recovery-ui';
 import { isPinnedDocumentEnabled, startPinnedDocument } from '@/recovery/pinned-document';
 import { CellSelectionRenderer } from '@/engine/cell-selection-renderer';
@@ -151,6 +154,7 @@ import {
 import { calculateFitPageZoom, calculateFitWidthZoom } from '@/view/zoom-fit';
 import { installEmbedRuntime } from '@/embed/runtime';
 import {
+  adoptLoadedNativeFileContent,
   bindNativeFileHandleIdentity,
   cancelDesktopDocument,
   captureDesktopNativeDroppedFile,
@@ -265,6 +269,7 @@ const autosaveManager = new AutosaveManager({
   exportBytes: () => wasm.exportHwp(),
   schedule: autosaveScheduleFromUserSettings(),
   onStatus: handleAutosaveStatus,
+  locks: defaultAutosaveLocks(),
 });
 void rendererSessionContextPromise.then((context) => {
   if (context) {
@@ -315,21 +320,24 @@ function saveTrappedDocumentCopy(): void {
  * 호스트 저장 완료 통지 (#2660).
  *
  * 호스트가 내보내기 바이트의 영속화(업로드/핸드오프)를 마친 뒤 호출한다.
- * draft 삭제 "완료"까지 await하므로, resolve 이후 팝업을 닫아도 IndexedDB
- * 삭제가 잘리지 않는다. export 시점에는 호출하지 않는다(실패 시 백업 보존).
+ * 마지막 RPC export 이후 편집이 있으면 dirty 와 복구용 draft 를 남긴다.
  */
+const hostSave = new HostSaveTracker({
+  documentState,
+  setFileName: (fileName) => { wasm.fileName = fileName; },
+  emitSaved: () => {
+    eventBus.emit('document-context-changed');
+    eventBus.emit('document-saved', {
+      reason: 'host-save',
+      fileName: wasm.fileName,
+      sourceFormat: wasm.getSourceFormat(),
+    });
+  },
+  discardDraft: (reason) => autosaveManager.discardCurrentDraft(reason),
+});
+
 async function completeHostSave(fileName?: string): Promise<{ ok: true; wasDirty: boolean }> {
-  const wasDirty = documentState.isDirty();
-  if (fileName) wasm.fileName = fileName;
-  documentState.markClean('host-save');
-  eventBus.emit('document-context-changed');
-  eventBus.emit('document-saved', {
-    reason: 'host-save',
-    fileName: wasm.fileName,
-    sourceFormat: wasm.getSourceFormat(),
-  });
-  await autosaveManager.discardCurrentDraft('host-save');
-  return { ok: true, wasDirty };
+  return hostSave.complete(fileName);
 }
 
 // 호스트 통합용 공개 API — 팝업/포크 등 SDK 없이 스튜디오 페이지 안에서 통합하는
@@ -1627,7 +1635,7 @@ async function initialize(): Promise<void> {
     });
     if (isPinnedDocumentEnabled()) void loadPinnedDocument();
     else void loadFromUrlParam();
-    void offerAutosaveRecoveryIfIdle();
+    void offerAutosaveRecoveryAtStartup();
     installPwaFileHandling(window as FileHandlingWindowLike, {
       openDocumentBytes(payload) {
         eventBus.emit('open-document-bytes', payload);
@@ -2577,6 +2585,10 @@ async function loadBytes(
     suppressDialogs?: boolean;
     grant?: VerifiedDocumentGrant | null;
     preparedDocument?: PreparedWasmDocument;
+    /** 복구한 draft 의 id. 새 id 대신 이 id 로 자동 저장해 복구본을 제자리에서 갱신한다. */
+    autosaveDraftId?: string;
+    /** fileHandle 이 가리키는 파일 전체 바이트. data 가 그 안의 문서일 때(RHWPX) 넘긴다. */
+    nativeSourceBytes?: Uint8Array;
   } = {},
 ): Promise<void> {
   const ownership = await reserveDocumentOpen(
@@ -2618,9 +2630,13 @@ async function loadBytes(
     ownership.identity.sourceDigest,
   )
     .catch((error) => console.warn('[desktop] native document bookmark failed:', error));
+  // 같은 창에서 같은 파일을 다시 열면 핸들이 재사용된다. 방금 연 바이트를 저장 충돌 기준으로 삼는다.
+  await adoptLoadedNativeFileContent(fileHandle, options.nativeSourceBytes ?? data)
+    .catch((error) => console.warn('[desktop] 네이티브 파일 저장 기준 갱신 실패:', error));
   await releaseReplacedNativeFileHandle(previousFileHandle, fileHandle)
     .catch((error) => console.warn('[desktop] 교체된 네이티브 파일 핸들 해제 실패:', error));
   prepareCanvasRendererDocument();
+  hostSave.reset();
   eventBus.emit('document-swapped');
   await updateLoadProgress(45, '자동 저장 준비 중...');
   forgetConvertedHmlSaveHandle(fileHandle);
@@ -2650,7 +2666,11 @@ async function loadBytes(
   }
 
   await autosaveManager.beginDocument(
-    { fileName: wasm.fileName, sourceFormat: wasm.getSourceFormat() },
+    {
+      fileName: wasm.fileName,
+      sourceFormat: wasm.getSourceFormat(),
+      ...(options.autosaveDraftId ? { draftId: options.autosaveDraftId } : {}),
+    },
     { discardPreviousDraft: true },
   );
   await updateLoadProgress(50, '문서 초기화 중...');
@@ -2754,44 +2774,45 @@ async function loadPinnedDocument(): Promise<void> {
   }
 }
 
-async function offerAutosaveRecoveryIfIdle(): Promise<void> {
+async function offerAutosaveRecoveryAtStartup(): Promise<void> {
   if (shouldSkipInitialAutosaveRecovery()) return;
 
   try {
     await rendererSessionContextPromise;
-    const drafts = (await listRecoverableAutosaveDrafts())
-      .filter((draft) => draft.data.byteLength > 0);
-    if (drafts.length === 0) return;
-    if (wasm.pageCount > 0 || documentState.isDirty()) return;
-
-    const choice = await showAutosaveRecoveryDialog(drafts);
-    if (choice.action === 'later') return;
-    if (choice.action === 'delete-all') {
-      await clearRecoverableAutosaveDrafts();
-      showToast({ message: '복구 후보를 삭제했습니다.', durationMs: 2200 });
-      return;
-    }
-
-    const draft = drafts.find((item) => item.id === choice.draftId);
-    if (!draft) return;
-    try {
-      await restoreAutosaveDraft(draft);
-    } catch (error) {
-      showLoadError(error);
-    }
+    await offerAutosaveRecovery({
+      listRecoverable: () => listRecoverableAutosaveDrafts(),
+      hasOpenDocument: () => wasm.pageCount > 0 || documentState.isDirty(),
+      notifyAvailable: (open) => showToast({
+        message: '복구할 수 있는 자동 저장본이 있습니다.',
+        durationMs: 0,
+        action: { label: '복구', onClick: open },
+      }),
+      markOffered: (ids) => markAutosaveDraftsOffered(ids),
+      showDialog: (drafts) => showAutosaveRecoveryDialog(drafts),
+      clearRecoverable: () => clearRecoverableAutosaveDrafts(),
+      canReplaceCurrentDocument: () => canReplaceCurrentDocument(),
+      restore: (draft) => restoreAutosaveDraftIntoEditor(draft),
+      toast: (message, durationMs) => showToast({ message, durationMs }),
+      onRestoreError: (error) => showLoadError(error),
+    });
   } catch (error) {
     console.warn('[autosave] 복구 후보 확인 실패:', error);
   }
 }
 
-async function restoreAutosaveDraft(draft: AutosaveDraft): Promise<void> {
-  const fileName = recoveryFileName(draft.fileName);
-  await loadBytes(new Uint8Array(draft.data), fileName, null, performance.now(), { skipRecent: true });
-  await deleteAutosaveDraft(draft.id);
-  documentState.markDirty('autosave-recovered');
-  showToast({
-    message: `"${fileName}" 복구본을 열었습니다.\n원본 파일은 자동으로 덮어쓰지 않습니다.`,
-    durationMs: 5000,
+function restoreAutosaveDraftIntoEditor(draft: AutosaveDraftSummary): Promise<void> {
+  return restoreAutosaveDraft(draft, {
+    readDraft: (id) => getAutosaveDraft(id),
+    releaseCurrentDocument: () => {
+      if (documentState.isDirty()) documentState.markClean('autosave-restore-replace');
+    },
+    load: (bytes, fileName, draftId) => loadBytes(bytes, fileName, null, performance.now(), {
+      skipRecent: true,
+      autosaveDraftId: draftId,
+    }),
+    markDirty: () => documentState.markDirty('autosave-recovered'),
+    flush: () => autosaveManager.flushNow('autosave-recovered'),
+    toast: (message, durationMs) => showToast({ message, durationMs }),
   });
 }
 
@@ -2808,6 +2829,7 @@ async function createNewDocument(): Promise<void> {
     const docInfo = wasm.createNewDocument();
     await commitDesktopDocument(reservationId);
     activeDocumentId = identity.documentId;
+    hostSave.reset();
     await releaseReplacedNativeFileHandle(previousFileHandle, wasm.currentFileHandle)
       .catch((error) => console.warn('[desktop] 새 문서 전환 핸들 해제 실패:', error));
     prepareCanvasRendererDocument();
@@ -2883,6 +2905,7 @@ async function openDocumentBytes(data: OpenDocumentBytesEvent) {
               documentId: bundle.snapshot.repository.documentId,
             },
             preparedDocument,
+            nativeSourceBytes: data.bytes,
           },
         );
         persistActiveBranch(bundle.snapshot.repository.documentId, bundle.activeBranch);
@@ -3152,14 +3175,17 @@ installEmbedRuntime({
     },
     async exportHwp() {
       await initPromise;
+      hostSave.recordExport();
       return wasm.exportHwp();
     },
     async exportHwpx() {
       await initPromise;
+      hostSave.recordExport();
       return wasm.exportHwpx();
     },
     async exportHml() {
       await initPromise;
+      hostSave.recordExport();
       return wasm.exportHml();
     },
     async getHmlSaveState() {

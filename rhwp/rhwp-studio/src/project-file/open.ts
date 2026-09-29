@@ -114,6 +114,7 @@ async function tryRemembered(
   }
   if (restored === 'owned') return ownedElsewhere(deps);
   if (!restored) return null;
+  let opened: ProjectOpenOutcome | null = null;
   try {
     const { bytes, name } = await deps.readHandle(restored);
     const facts: CandidateFacts = {
@@ -121,10 +122,13 @@ async function tryRemembered(
       entry: await entryAgainst(restored, claim.liveHandle),
       location: 'remembered',
     };
-    return await bindIfConfirmed(claim, facts, bytes, name, async () => restored, deps);
+    opened = await bindIfConfirmed(claim, facts, bytes, name, async () => restored, deps);
   } catch {
-    return null;
+    opened = null;
   }
+  // 복원한 핸들은 이 창에 경로를 등록한다. 쓰지 않으면 풀어야 다른 창이 그 파일을 열 수 있다.
+  if (!opened) await releaseUnusedHandle(restored);
+  return opened;
 }
 
 async function tryNearby(
@@ -187,20 +191,29 @@ async function pickForProject(
     try {
       ({ bytes, name } = await deps.readHandle(picked));
     } catch {
+      await releaseUnusedHandle(picked);
       deps.toast?.('선택한 파일을 읽지 못했습니다.', 4000);
       return { kind: 'not-this-file' };
     }
 
-    const facts: CandidateFacts = {
-      digest: deps.digestOf(bytes),
-      entry: await entryAgainst(picked, claim.liveHandle),
-      location: await deps.locationOf?.(picked, claim.documentId) ?? 'unknown',
-    };
-    const verdict = judgeCandidate(claim, facts);
-    if (verdict.kind === 'confirmed') {
-      await deps.loadBound(bytes, name, picked, claim.documentId);
-      return { kind: 'opened' };
+    let verdict: IdentityVerdict;
+    try {
+      const facts: CandidateFacts = {
+        digest: deps.digestOf(bytes),
+        entry: await entryAgainst(picked, claim.liveHandle),
+        location: await deps.locationOf?.(picked, claim.documentId) ?? 'unknown',
+      };
+      verdict = judgeCandidate(claim, facts);
+      if (verdict.kind === 'confirmed') {
+        await deps.loadBound(bytes, name, picked, claim.documentId);
+        return { kind: 'opened' };
+      }
+    } catch (error) {
+      await releaseUnusedHandle(picked);
+      throw error;
     }
+    // 이 프로젝트 문서가 아닌 파일은 열지 않는다. 고른 핸들이 경로를 붙잡지 않게 푼다.
+    await releaseUnusedHandle(picked);
     if (verdict.kind === 'refuted' && !retried) {
       retried = true;
       deps.toast?.('이 파일은 이 프로젝트 문서가 아닙니다. 다시 선택하세요.', 4000);
@@ -223,8 +236,25 @@ async function bindIfConfirmed(
   const handle = await acquire();
   if (handle === 'owned') return ownedElsewhere(deps);
   if (!handle) return null;
-  await deps.loadBound(bytes, name, handle, claim.documentId);
+  try {
+    await deps.loadBound(bytes, name, handle, claim.documentId);
+  } catch (error) {
+    await releaseUnusedHandle(handle);
+    throw error;
+  }
   return { kind: 'opened' };
+}
+
+/**
+ * 이번 호출이 새로 만든 저장 대상만 푼다. 현재 문서가 이미 쓰는 핸들은
+ * releaseUnusedSaveTarget 이 건드리지 않는다.
+ */
+async function releaseUnusedHandle(handle: FileSystemFileHandleLike): Promise<void> {
+  try {
+    await handle.releaseUnusedSaveTarget?.();
+  } catch {
+    /* 해제 실패는 창을 닫을 때 정리된다 */
+  }
 }
 
 async function entryAgainst(

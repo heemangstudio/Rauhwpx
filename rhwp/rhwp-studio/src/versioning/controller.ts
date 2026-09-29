@@ -323,6 +323,13 @@ export class DocumentVersionController implements VersionManagerController {
       this.#eventBus.on('document-saved', () => {
         // A file save updates disk state; only an explicit commit advances HEAD.
         const id = this.#getDocumentId();
+        if (this.#documentState.isDirty()) {
+          // Edits landed while the bytes were being written, so the live document
+          // is not what the file holds. Recording it as saved would let a later
+          // restore or switch to this content mark the unsaved edits clean.
+          this.#savedBaseline = null;
+          return;
+        }
         const capture = this.#wasm.hasLoadedDocument() ? this.#snapshotCache.capture(this.#wasm, this.#getDocumentId(), this.#editorRevision) : null;
         if (id && capture) this.#savedBaseline = { documentId: id, capture };
         void this.#enqueue(async () => {

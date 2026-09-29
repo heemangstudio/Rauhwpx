@@ -38,7 +38,7 @@ runTest('Task #2660 호스트 저장 완료 통지 (notifySaved)', async ({ page
       req.onsuccess = req.onerror = req.onblocked = () => resolveClear();
     });
     const listDraftIds = async () => {
-      const req = indexedDB.open('rhwpStudioAutosave', 1);
+      const req = indexedDB.open('rhwpStudioAutosave');
       const db = await new Promise((resolveDb, rejectDb) => {
         req.onupgradeneeded = () => {
           if (!req.result.objectStoreNames.contains('drafts')) {
@@ -155,7 +155,7 @@ runTest('Task #2660 호스트 저장 완료 통지 (notifySaved)', async ({ page
 
   const partB = await page.evaluate(async () => {
     const listDraftIds = async () => {
-      const req = indexedDB.open('rhwpStudioAutosave', 1);
+      const req = indexedDB.open('rhwpStudioAutosave');
       const db = await new Promise((resolveDb, rejectDb) => {
         req.onupgradeneeded = () => {
           if (!req.result.objectStoreNames.contains('drafts')) {

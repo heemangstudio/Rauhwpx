@@ -111,6 +111,7 @@ export interface RhwpDesktopApi {
     identity: DocumentOwnershipIdentity,
   ) => Promise<{ name: string; byteLength: number }>;
   isSameNativeFile?: (firstHandleId: string, secondHandleId: string) => Promise<boolean>;
+  adoptNativeFileContent?: (handleId: string, digest: string) => Promise<boolean>;
   rememberNativeDocument?: (
     documentId: string,
     handleId: string,
@@ -795,6 +796,24 @@ export async function pickDesktopPortableHistorySaveFile(
   if ('owned' in result) throw new Error('다른 창에서 이미 열려 있는 기록 파일입니다.');
   if (!validNativeDescriptor(result)) throw new Error('Desktop history save picker returned an invalid handle');
   return createNativeFileHandle(result, api, { saveTarget: result.saveTargetCreated !== false });
+}
+
+/**
+ * 네이티브 핸들로 읽은 바이트를 문서로 연 뒤 호출한다. 이 창이 이미 가진 경로를 다시 열면
+ * 데스크톱은 기존 핸들을 재사용하므로, 디스크 기준이 처음 연 버전에 머물러 외부에서 바뀐 파일을
+ * 다시 연 뒤에도 저장마다 충돌이 난다. 디스크가 방금 연 바이트와 같을 때만 기준을 옮긴다.
+ */
+export async function adoptLoadedNativeFileContent(
+  handle: FileSystemFileHandleLike | null | undefined,
+  bytes: Uint8Array,
+): Promise<boolean> {
+  const metadata = handle ? nativeHandleMetadata.get(handle) : null;
+  if (!metadata?.api.adoptNativeFileContent) return false;
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', copy.buffer));
+  const hex = [...digest].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  return await metadata.api.adoptNativeFileContent(metadata.handleId, `sha256:${hex}`) === true;
 }
 
 export async function rememberNativeDocument(

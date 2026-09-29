@@ -33,7 +33,7 @@ async function clearAutosaveDb(page) {
 
 async function putDraft(page, draft) {
   await page.evaluate(async (input) => {
-    const req = indexedDB.open('rhwpStudioAutosave', 1);
+    const req = indexedDB.open('rhwpStudioAutosave');
     const db = await new Promise((resolve, reject) => {
       req.onupgradeneeded = () => {
         const nextDb = req.result;
@@ -45,11 +45,17 @@ async function putDraft(page, draft) {
       req.onsuccess = () => resolve(req.result);
     });
     await new Promise((resolve, reject) => {
-      const tx = db.transaction('drafts', 'readwrite');
+      // 앱이 이미 v3 로 올린 DB 면 목록용 메타 저장소에도 같은 행을 넣는다.
+      const withMeta = db.objectStoreNames.contains('draftMeta');
+      const tx = db.transaction(withMeta ? ['drafts', 'draftMeta'] : 'drafts', 'readwrite');
       tx.objectStore('drafts').put({
         ...input,
         data: new Uint8Array(input.data).buffer,
       });
+      if (withMeta) {
+        const { data: _data, ...meta } = input;
+        tx.objectStore('draftMeta').put(meta);
+      }
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
@@ -57,9 +63,10 @@ async function putDraft(page, draft) {
   }, draft);
 }
 
-async function draftExists(page, id) {
+/** 복구한 창이 같은 id 로 다시 기록했으면 lock 소유 표시(ownerInstanceId)가 붙는다. */
+async function draftAdoptedByLivePage(page, id) {
   return await page.evaluate(async (draftId) => {
-    const req = indexedDB.open('rhwpStudioAutosave', 1);
+    const req = indexedDB.open('rhwpStudioAutosave');
     const db = await new Promise((resolve, reject) => {
       req.onupgradeneeded = () => {
         const nextDb = req.result;
@@ -73,7 +80,7 @@ async function draftExists(page, id) {
     const found = await new Promise((resolve, reject) => {
       const tx = db.transaction('drafts', 'readonly');
       const getReq = tx.objectStore('drafts').get(draftId);
-      getReq.onsuccess = () => resolve(Boolean(getReq.result));
+      getReq.onsuccess = () => resolve(Boolean(getReq.result?.ownerInstanceId));
       getReq.onerror = () => reject(getReq.error);
     });
     db.close();
@@ -164,7 +171,7 @@ runTest('Task #1448 자동 백업 복구', async ({ page }) => {
   assert(newDocState.fileName.includes('복구본') && newDocState.fileName.endsWith('.hwp'),
     `새 문서 복구본 파일명 확인 (${newDocState.fileName})`);
   assert(newDocState.isDirty === true, '새 문서 복구본은 저장 전 dirty 상태 유지');
-  assert(!await draftExists(page, 'e2e-new-draft'), '복구 성공 후 원본 새 문서 draft 삭제');
+  assert(await draftAdoptedByLivePage(page, 'e2e-new-draft'), '복구본은 지우지 않고 복구한 창이 같은 id 로 이어 쓴다');
   await screenshot(page, 'autosave-recovery-new-document');
   await page.evaluate(() => window.__documentState?.markClean?.('e2e-next-case'));
 
@@ -190,7 +197,7 @@ runTest('Task #1448 자동 백업 복구', async ({ page }) => {
   assert(hwpState.fileName.includes('복구본') && hwpState.fileName.endsWith('.hwp'),
     `HWP 복구본 파일명 확인 (${hwpState.fileName})`);
   assert(hwpState.isDirty === true, '복구본은 저장 전 dirty 상태 유지');
-  assert(!await draftExists(page, 'e2e-hwp-draft'), '복구 성공 후 원본 HWP draft 삭제');
+  assert(await draftAdoptedByLivePage(page, 'e2e-hwp-draft'), 'HWP 복구본을 복구한 창이 이어 쓴다');
   await screenshot(page, 'autosave-recovery-hwp');
   await page.evaluate(() => window.__documentState?.markClean?.('e2e-next-case'));
 
@@ -219,6 +226,6 @@ runTest('Task #1448 자동 백업 복구', async ({ page }) => {
     `HWPX 출처 복구본은 .hwp 파일명 (${hwpxState.fileName})`);
   assert(hwpxState.sourceFormat === 'hwp', `복구 데이터는 HWP로 로드됨 (${hwpxState.sourceFormat})`);
   assert(hwpxState.isDirty === true, 'HWPX 출처 복구본도 저장 전 dirty 상태 유지');
-  assert(!await draftExists(page, 'e2e-hwpx-draft'), '복구 성공 후 원본 HWPX draft 삭제');
+  assert(await draftAdoptedByLivePage(page, 'e2e-hwpx-draft'), 'HWPX 출처 복구본을 복구한 창이 이어 쓴다');
   await screenshot(page, 'autosave-recovery-hwpx');
 });
