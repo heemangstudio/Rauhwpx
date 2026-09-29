@@ -758,6 +758,67 @@ test('a corrupt desktop vault fails closed until an explicit quarantining reset'
   await fs.rm(root, { recursive: true, force: true });
 });
 
+test('a transient vault read failure is retried instead of latching as corruption', async (t) => {
+  if (process.platform === 'win32' || process.getuid?.() === 0) {
+    t.skip('POSIX permissions are not enforced for this user');
+    return;
+  }
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-vault-transient-'));
+  const filePath = path.join(root, 'secrets.json');
+  t.after(async () => {
+    await fs.chmod(filePath, 0o600).catch(() => {});
+    await fs.rm(root, { recursive: true, force: true });
+  });
+  await createSecretVault({ filePath, safeStorage: vaultSafeStorage(), platform: 'darwin' })
+    .set('rhwp.test', 'kept-secret');
+
+  const vault = createSecretVault({ filePath, safeStorage: vaultSafeStorage(), platform: 'darwin' });
+  await fs.chmod(filePath, 0o000);
+  await assert.rejects(() => vault.get('rhwp.test'), { code: 'SECRET_VAULT_UNAVAILABLE' });
+  await assert.rejects(() => vault.set('rhwp.other', 'value'), { code: 'SECRET_VAULT_UNAVAILABLE' });
+  await fs.chmod(filePath, 0o600);
+  assert.equal(await vault.get('rhwp.test'), 'kept-secret');
+  await vault.set('rhwp.other', 'value');
+  assert.equal(await vault.get('rhwp.test'), 'kept-secret');
+
+  // Malformed content still fails closed on every call.
+  await fs.writeFile(filePath, '{not-json');
+  const corrupt = createSecretVault({ filePath, safeStorage: vaultSafeStorage(), platform: 'darwin' });
+  await assert.rejects(() => corrupt.get('rhwp.test'), { code: 'SECRET_VAULT_CORRUPT' });
+  await assert.rejects(() => corrupt.get('rhwp.test'), { code: 'SECRET_VAULT_CORRUPT' });
+});
+
+test('a failed optional re-encryption still returns the decrypted secret', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-vault-reencrypt-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const filePath = path.join(root, 'secrets.json');
+  const original = JSON.stringify({
+    version: 1,
+    secrets: { 'rhwp.test': Buffer.from('protected:old-key-secret').toString('base64') },
+  });
+  await fs.writeFile(filePath, original);
+  const warn = t.mock.method(console, 'warn', () => {});
+  const vault = createSecretVault({
+    filePath,
+    platform: 'darwin',
+    safeStorage: {
+      ...vaultSafeStorage(),
+      async decryptStringAsync(value) {
+        return { shouldReEncrypt: true, result: value.toString().replace(/^protected:/, '') };
+      },
+    },
+    fileOperations: {
+      rename: async () => { throw errorWithCode('ENOSPC'); },
+    },
+  });
+
+  assert.equal(await vault.get('rhwp.test'), 'old-key-secret');
+  assert.equal(await vault.get('rhwp.test'), 'old-key-secret');
+  assert.equal(warn.mock.callCount(), 2);
+  assert.equal(await fs.readFile(filePath, 'utf8'), original);
+  assert.deepEqual(await pendingVaultTemps(root), []);
+});
+
 test('the desktop vault rejects oversized files and plaintext secrets before allocation or encryption', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-vault-limits-'));
   const filePath = path.join(root, 'secrets.json');

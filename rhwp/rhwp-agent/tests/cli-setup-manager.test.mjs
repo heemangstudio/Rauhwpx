@@ -254,3 +254,98 @@ test('Codex ChatGPT login in auth.json counts as signed in', async (t) => {
   assert.equal(signedIn.authenticated, true);
   assert.equal(signedIn.authMethod, 'oauth');
 });
+
+test('a CLI that cannot be spawned fails its run instead of crashing the hub', async (t) => {
+  const rootDir = await tmpRoot(t);
+  let throwSynchronously = false;
+  const spawnProcess = () => {
+    if (throwSynchronously) throw Object.assign(new Error('spawn EMFILE'), { code: 'EMFILE' });
+    // Without an 'error' listener, this emit is an uncaught exception that ends the hub.
+    const proc = new EventEmitter();
+    process.nextTick(() => proc.emit('error', Object.assign(new Error('spawn EACCES'), { code: 'EACCES' })));
+    return proc;
+  };
+  const manager = await createCliSetupManager({
+    rootDir, spawnProcess, homeDir: rootDir, platform: 'linux', baseEnv: {}, bundledClaudeVersion: '2.1.0',
+  }).init();
+  const bin = manager.binPath('claude');
+  await fs.mkdir(path.dirname(bin), { recursive: true });
+  await fs.writeFile(bin, '');
+
+  const status = await manager.status('claude');
+  assert.equal(status.installed, true);
+  assert.equal(status.version, '2.1.0');
+  await assert.rejects(
+    () => manager.install('claude'),
+    (error) => error.code === 'AGENT_INSTALL_FAILED' && /EACCES/.test(error.message),
+  );
+
+  throwSynchronously = true;
+  assert.equal((await manager.status('claude')).version, '2.1.0');
+  await assert.rejects(
+    () => manager.install('codex'),
+    (error) => error.code === 'AGENT_INSTALL_FAILED' && /EMFILE/.test(error.message),
+  );
+});
+
+test('a transient secret-store failure at startup is retried instead of dropping the API key', async (t) => {
+  const rootDir = await tmpRoot(t);
+  const stored = new Map([['rhwp.claude.api-key', 'sk-ant-api-retry-1234']]);
+  let failures = 1;
+  const secretStore = {
+    available: true,
+    async get(key) {
+      if (failures > 0) {
+        failures -= 1;
+        throw Object.assign(new Error('Secure secret storage did not respond.'), { code: 'SECRET_STORE_TIMEOUT' });
+      }
+      return stored.get(key) ?? null;
+    },
+    async set(key, value) { stored.set(key, value); return true; },
+    async delete(key) { return stored.delete(key); },
+  };
+  const manager = await createCliSetupManager({ rootDir, secretStore, homeDir: rootDir, platform: 'linux', baseEnv: {} }).init();
+  assert.equal(manager.envFor('claude').ANTHROPIC_API_KEY, undefined);
+
+  const status = await manager.status('claude');
+  assert.equal(status.authenticated, true);
+  assert.equal(status.authMethod, 'api-key');
+  assert.equal(manager.envFor('claude').ANTHROPIC_API_KEY, 'sk-ant-api-retry-1234');
+});
+
+test('a failed legacy-key migration keeps the key and does not abort startup', async (t) => {
+  const rootDir = await tmpRoot(t);
+  const configPath = path.join(rootDir, 'config.json');
+  await fs.writeFile(configPath, JSON.stringify({ claude: { key: 'sk-ant-legacy-9999' } }));
+  const secretStore = {
+    available: true,
+    async get() { return null; },
+    async set() {
+      throw Object.assign(new Error('A Secret Service or KWallet system keyring is required.'), { code: 'SECRET_STORE_FAILED' });
+    },
+    async delete() { return false; },
+  };
+  const manager = await createCliSetupManager({ rootDir, secretStore, homeDir: rootDir, platform: 'linux', baseEnv: {} }).init();
+
+  assert.equal(manager.envFor('claude').ANTHROPIC_API_KEY, 'sk-ant-legacy-9999');
+  assert.match(await fs.readFile(configPath, 'utf8'), /sk-ant-legacy-9999/);
+  assert.equal((await manager.status('claude')).authMethod, 'api-key');
+});
+
+test('an expired Claude access token counts as signed in only while a refresh token exists', async (t) => {
+  const homeDir = await tmpRoot(t);
+  const manager = await createCliSetupManager({ rootDir: await tmpRoot(t), homeDir, platform: 'linux', baseEnv: {} }).init();
+  const credentialFile = path.join(homeDir, '.claude', '.credentials.json');
+  await fs.mkdir(path.dirname(credentialFile), { recursive: true });
+  const expiresAt = Date.now() - 60_000;
+
+  await fs.writeFile(credentialFile, JSON.stringify({ claudeAiOauth: { accessToken: 'access', refreshToken: 'refresh', expiresAt } }));
+  const refreshable = await manager.status('claude');
+  assert.equal(refreshable.authenticated, true);
+  assert.equal(refreshable.authMethod, 'oauth');
+
+  await fs.writeFile(credentialFile, JSON.stringify({ claudeAiOauth: { accessToken: 'access', expiresAt } }));
+  const expired = await manager.status('claude');
+  assert.equal(expired.authenticated, false);
+  assert.equal(expired.authMethod, null);
+});

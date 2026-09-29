@@ -262,6 +262,53 @@ test('restart commits a locally published pending session and clears a remotely 
   assert.equal(await revokedStore.get(ACCOUNT_SESSION_SECRET_ID), null);
 });
 
+test('an unrecognized status response keeps the stored session instead of signing out', async () => {
+  const current = token('h');
+  const memory = createMemoryAccountBackendAdapter({ initialSessions: [{ token: current }] });
+  // A proxy or captive portal 2xx page parses to {} in the credits client.
+  const backend = { ...memory, async readStatus() { return {}; } };
+  const secretStore = createMemorySecretStore({ [ACCOUNT_SESSION_SECRET_ID]: current });
+  const session = createAccountSession({ secretStore, backend });
+
+  const status = await session.status();
+  assert.equal(status.state, 'unknown');
+  assert.equal(status.error, 'ACCOUNT_SESSION_RESPONSE_INVALID');
+  assert.equal(await secretStore.get(ACCOUNT_SESSION_SECRET_ID), current);
+});
+
+test('an undecryptable stored session is replaced by a new login, other store errors still block it', async () => {
+  const backend = createMemoryAccountBackendAdapter({ account: { email: 'new@example.com' } });
+  const stored = new Map([[ACCOUNT_SESSION_SECRET_ID, 'ciphertext-from-another-keyring']]);
+  let decryptable = false;
+  const secretStore = {
+    async get(key) {
+      if (!decryptable) {
+        throw Object.assign(new Error('A stored credential cannot be decrypted.'), { code: 'SECRET_VAULT_DECRYPT_FAILED' });
+      }
+      return stored.get(key) ?? null;
+    },
+    async set(key, value) { stored.set(key, value); decryptable = true; return true; },
+    async delete(key) { return stored.delete(key); },
+  };
+  const session = createAccountSession({ secretStore, backend });
+  assert.equal((await session.status()).state, 'unknown');
+
+  const status = await logIn(session);
+  assert.equal(status.signedIn, true);
+  assert.match(stored.get(ACCOUNT_SESSION_SECRET_ID), /^rau_account_v1_/);
+  assert.equal((await session.status()).signedIn, true);
+
+  const timedOut = createAccountSession({
+    backend,
+    secretStore: {
+      async get() { throw Object.assign(new Error('Secure secret storage did not respond.'), { code: 'SECRET_STORE_TIMEOUT' }); },
+      async set() { return true; },
+      async delete() { return true; },
+    },
+  });
+  await assert.rejects(() => timedOut.startLogin(), { code: 'SECRET_STORE_TIMEOUT' });
+});
+
 test('an uncertain replacement commit keeps the recoverable new token for restart', async () => {
   const previous = token('g');
   const memory = createMemoryAccountBackendAdapter({

@@ -296,8 +296,13 @@ export function createAccountSession({
       if (remote?.signedIn === true && remote?.state === 'signed-in') {
         return publicStatus(remote, now);
       }
-      await secretStore.delete(secretId);
-      return publicStatus({ state: 'signed-out' }, now);
+      // 서버가 명시적으로 로그아웃을 알린 경우에만 토큰을 지운다. 프록시·포털의 2xx 페이지처럼
+      // 알 수 없는 응답 한 번으로 저장된 로그인을 영구히 잃지 않게 한다.
+      if (remote?.state === 'signed-out' && remote?.signedIn === false) {
+        await secretStore.delete(secretId);
+        return publicStatus({ state: 'signed-out' }, now);
+      }
+      return publicStatus({ state: 'unknown', error: 'ACCOUNT_SESSION_RESPONSE_INVALID' }, now);
     } catch (error) {
       if (['ACCOUNT_SESSION_INVALID', 'ACCOUNT_SESSION_UNAUTHORIZED'].includes(error?.code)) {
         await secretStore.delete(secretId);
@@ -315,7 +320,15 @@ export function createAccountSession({
     startLogin(options = {}) {
       return serialize(async () => {
         throwIfAborted(options.signal);
-        const previousToken = await localToken();
+        let previousToken;
+        try {
+          previousToken = await localToken();
+        } catch (error) {
+          // 복호화할 수 없는 토큰(OS 키체인 초기화, 다른 기기로 옮긴 사용자 데이터)은 쓸 수 없으므로
+          // 새 로그인이 덮어쓰게 한다. 시간 초과 같은 다른 오류는 읽을 수 있는 세션을 지키도록 그대로 던진다.
+          if (error?.code !== 'SECRET_VAULT_DECRYPT_FAILED') throw error;
+          previousToken = null;
+        }
         const started = await ownedBackend.startLogin({
           ...options,
           currentToken: previousToken,
