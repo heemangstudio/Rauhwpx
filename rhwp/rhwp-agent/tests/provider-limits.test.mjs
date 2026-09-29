@@ -121,10 +121,22 @@ test('API-key mode and signed-out providers report unavailable without probing s
 test('uses scoped Claude Keychain credentials and never falls back to another keychain account', async () => {
   const services = [];
   const { client } = fixture({ platform: 'darwin', env: { CLAUDE_CONFIG_DIR: '/custom/claude' },
+    readCredentials: async () => null,
     keychainRead: async (service) => { services.push(service); return { claudeAiOauth: { accessToken: 'scoped-secret' } }; } });
   await client.refresh();
   const suffix = createHash('sha256').update('/custom/claude').digest('hex').slice(0, 8);
   assert.deepEqual(services, [`Claude Code-credentials-${suffix}`, `Claude Code-credentials-${suffix}`]);
+});
+
+test('reads the Claude login from the same file sessions use before the Keychain', async () => {
+  const seen = [];
+  const { client } = fixture({ platform: 'darwin',
+    readCredentials: async (file) => file.endsWith('.credentials.json') ? { claudeAiOauth: { accessToken: 'file-account' } } : null,
+    keychainRead: async () => ({ claudeAiOauth: { accessToken: 'keychain-account' } }),
+    fetchImpl: async (_url, init) => { seen.push(init.headers.Authorization); return json({ five_hour: { utilization: 5 } }); },
+  });
+  assert.equal((await client.refresh()).claude.status, 'ok');
+  assert.deepEqual(seen, ['Bearer file-account']);
 });
 
 test('re-reads a rotated Claude login after an authentication failure', async () => {
