@@ -5545,11 +5545,11 @@ function attachSocket(record, sock, role) {
         }
         record.studioMessageQueue = record.studioMessageQueue
           .then(() => {
+            if (msg.hubTrace) msg.hubTrace.respDeq = traceNow();
             // 닫힌 소켓의 명령은 버리되 tool-response 는 처리한다 — hubId 로만 살아 있는
             // pendingCalls 를 마무리하고, 교체된 인스턴스의 호출은 이미 실패 처리돼 있다.
             // 느린 항목 뒤에 줄 서 있던 응답이 소켓 종료로 사라지면 30초 타임아웃까지 간다.
             if (record.studioSocket !== sock && msg.type !== 'tool-response') return;
-            if (msg.hubTrace) msg.hubTrace.respDeq = traceNow();
             return handleStudioMessage(record, sock, msg);
           })
           .catch((error) => {
