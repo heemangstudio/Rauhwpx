@@ -631,18 +631,20 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'get_structure',
-    description: `Entry point: the outline as compact lines (legend on line 2): per paragraph address, length and text preview each top-level table as a cellIdx grid after its anchor paragraph. Call first for addresses and the revision. format:"json" for JSON. Nested cell text: find_text/get_selection.`,
+    description: `Entry point: compact lines with addresses, text, page breaks and heading/bold tags; tables as cellIdx grids after their anchor paragraph. pages:[first,last] (0-based) reads those pages; text:"full" gives whole texts (16k-char budget).`,
     shape: {
       maxPreviewChars: z.number().int().min(0).default(120).optional(),
       maxParagraphs: z.number().int().min(1).default(500).optional(),
       format: z.enum(['text', 'json']).default('text').optional(),
+      text: z.enum(['preview', 'full']).optional(),
+      pages: z.array(z.number().int()).length(2).optional(),
       sinceRevision: z.number().int().min(0).optional()
         .describe('Changed paragraphs only (rhwp tool rules)'),
       range: z.object({
         sectionIdx: z.number().int(),
         fromPara: z.number().int().min(0),
         toPara: z.number().int().min(0),
-      }).strict().optional().describe('Only this body paragraph range (inclusive).'),
+      }).strict().optional().describe('Body paragraphs, inclusive'),
     },
   },
   {
@@ -907,7 +909,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'apply_char_format',
-    description: `Apply character formatting to startOffset..endOffset of one paragraph, or to an anchor's match. widthPercent/letterSpacingPercent take a percent or a 7-slot array (per-script override). ${WRITE_POINTER}`,
+    description: `Apply character formatting to startOffset..endOffset of one paragraph, or to an anchor's match. Absolute values; no need to read the format first. widthPercent/letterSpacingPercent take a percent or a 7-slot array. ${WRITE_POINTER}`,
     shape: {
       expectedRevision: z.number().int(),
       render: renderParam(),

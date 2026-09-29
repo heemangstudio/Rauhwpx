@@ -4036,7 +4036,8 @@ export class WasmBridge {
     return JSON.parse((this.doc as any).replaceAll(query, newText, caseSensitive));
   }
 
-  getPositionOfPage(globalPage: number): { ok: boolean; sec?: number; para?: number; charOffset?: number } {
+  /** continued = 그 쪽이 앞 쪽에서 넘어온 문단(또는 표 행) 중간에서 시작한다. */
+  getPositionOfPage(globalPage: number): { ok: boolean; sec?: number; para?: number; charOffset?: number; continued?: boolean } {
     if (!this.doc || typeof (this.doc as any).getPositionOfPage !== 'function') return { ok: false };
     return JSON.parse((this.doc as any).getPositionOfPage(globalPage));
   }
