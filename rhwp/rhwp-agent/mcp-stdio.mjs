@@ -90,6 +90,8 @@ function ensureConnected() {
       if (COPY_LAYOUT_JOB_ID) url.searchParams.set('workerJobId', COPY_LAYOUT_JOB_ID);
       url.searchParams.set('workflow', WORKFLOW);
       if (CAPABILITY_EPOCH) url.searchParams.set('capabilityEpoch', CAPABILITY_EPOCH);
+      // 허브가 이보다 큰 결과를 보내면 소켓이 1009 로 끊기므로 미리 알려 RESULT_TOO_LARGE 로 받는다.
+      url.searchParams.set('maxPayload', String(MAX_PROVIDER_FRAME_BYTES));
       sock = new WebSocket(url, { maxPayload: MAX_PROVIDER_FRAME_BYTES });
     } catch (e) {
       connecting = null;

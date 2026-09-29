@@ -67,6 +67,8 @@ test('hub reuses fleet task events and keeps worker tools source-bound', () => {
   assert.match(server, /active\.status !== 'completed' && active\.status !== 'failed'/);
   assert.match(server, /workerJob\.snapshotPending/);
   assert.match(server, /claimCopyLayoutSnapshot\(workerJob\)[\s\S]*record\.pendingCalls\.set/);
+  // A worker MCP socket that closes mid-materialization must not strand the claim.
+  assert.match(server, /'provider-disconnected'\);[\s\S]{0,300}releaseCopyLayoutSnapshot\(record\.templateJobs\.get\(entry\.copyLayoutJobId\)\)/);
   assert.match(server, /claimCopyLayoutPublication\(workerJob, workerCandidate\)[\s\S]*record\.artifactStore\.publish/);
   assert.match(server, /workerJob\.generatedCandidates\.get\(workerCandidate\.iteration\) !== workerCandidate/);
   assert.match(server, /copyLayoutCandidateClaims\(workerJob, published\)/);
