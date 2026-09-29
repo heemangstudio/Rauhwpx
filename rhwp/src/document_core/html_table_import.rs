@@ -6,7 +6,6 @@ use crate::error::HwpError;
 use crate::model::control::Control;
 use crate::model::paragraph::Paragraph;
 use crate::model::shape::common_obj_offsets;
-use crate::renderer::style_resolver::resolve_styles;
 
 impl DocumentCore {
     pub(crate) fn parse_table_html(&mut self, paragraphs: &mut Vec<Paragraph>, table_html: &str) {
@@ -773,7 +772,7 @@ impl DocumentCore {
         // 새로 추가
         self.document.doc_info.border_fills.push(bf);
         self.document.doc_info.raw_stream_dirty = true;
-        self.styles = resolve_styles(&self.document.doc_info, self.dpi);
+        self.styles = self.resolve_document_styles();
         self.document.doc_info.border_fills.len() as u16
     }
 
@@ -909,7 +908,7 @@ impl DocumentCore {
         // 새로 추가
         self.document.doc_info.border_fills.push(bf);
         self.document.doc_info.raw_stream_dirty = true;
-        self.styles = resolve_styles(&self.document.doc_info, self.dpi);
+        self.styles = self.resolve_document_styles();
         self.document.doc_info.border_fills.len() as u16
     }
 

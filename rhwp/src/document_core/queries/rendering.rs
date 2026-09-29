@@ -25,7 +25,6 @@ use crate::renderer::pagination::{
     HeaderFooterRef, MasterPageRef, PageContent, PaginationResult, Paginator,
 };
 use crate::renderer::render_tree::PageRenderTree;
-use crate::renderer::style_resolver::resolve_styles;
 use crate::renderer::svg::SvgRenderer;
 use crate::renderer::svg_layer::SvgLayerRenderer;
 use crate::renderer::typeset::TypesetEngine;
@@ -6254,7 +6253,7 @@ impl DocumentCore {
     }
 
     pub(crate) fn rebuild_section(&mut self, section_idx: usize) {
-        self.styles = resolve_styles(&self.document.doc_info, self.dpi);
+        self.styles = self.resolve_document_styles();
         self.recompose_section(section_idx);
         self.paginate();
     }

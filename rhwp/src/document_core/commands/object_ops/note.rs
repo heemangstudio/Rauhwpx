@@ -126,6 +126,9 @@ impl DocumentCore {
 
         let section = &mut self.document.sections[section_idx];
         section.raw_stream = None;
+        // 이벤트를 쌓지 않으므로 주석을 담은 본문 문단의 revision 을 올린다.
+        self.event_log
+            .mark_paragraph_changed(section_idx, parent_para_idx);
         self.recompose_section(section_idx);
         self.paginate_if_needed();
 
@@ -512,10 +515,11 @@ impl DocumentCore {
             idx
         };
 
-        paragraph
-            .controls
-            .insert(insert_idx, Control::Footnote(Box::new(footnote)));
-        paragraph.ctrl_data_records.insert(insert_idx, None);
+        Self::insert_control_with_data_slot(
+            paragraph,
+            insert_idx,
+            Control::Footnote(Box::new(footnote)),
+        );
 
         // char_offsets 조정: char_offset 위치에 8바이트 갭 생성
         // char_offsets[i]는 텍스트 i번째 문자의 UTF-16 오프셋 (컨트롤은 갭으로 표현)
@@ -758,10 +762,11 @@ impl DocumentCore {
             idx
         };
 
-        paragraph
-            .controls
-            .insert(insert_idx, Control::Endnote(Box::new(endnote)));
-        paragraph.ctrl_data_records.insert(insert_idx, None);
+        Self::insert_control_with_data_slot(
+            paragraph,
+            insert_idx,
+            Control::Endnote(Box::new(endnote)),
+        );
 
         paragraph.shift_for_inline_control_insert(char_offset);
         paragraph.char_count += 8;

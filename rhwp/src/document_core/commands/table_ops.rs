@@ -1865,8 +1865,7 @@ impl DocumentCore {
         }
 
         // 스타일 재계산
-        self.styles =
-            crate::renderer::style_resolver::resolve_styles(&self.document.doc_info, self.dpi);
+        self.styles = self.resolve_document_styles();
     }
 
     /// 표를 담은 본문 문단의 IR 이 바뀌었음을 revision 에 남긴다.

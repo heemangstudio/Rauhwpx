@@ -135,6 +135,9 @@ impl DocumentCore {
             paragraph.ctrl_data_records[control_idx] = None;
         }
         section.raw_stream = None;
+        // 이벤트를 쌓지 않으므로 스냅샷 복원이 바뀐 문단을 재사용하지 않게 표시한다.
+        self.event_log
+            .mark_paragraph_changed(section_idx, parent_para_idx);
         self.reflow_paragraph(section_idx, parent_para_idx);
         self.recompose_section(section_idx);
         self.paginate_if_needed();
@@ -538,6 +541,9 @@ impl DocumentCore {
         // 재조판
         let section = &mut self.document.sections[section_idx];
         section.raw_stream = None;
+        // 이벤트를 쌓지 않으므로 수식을 담은 본문 문단의 revision 을 올린다.
+        self.event_log
+            .mark_paragraph_changed(section_idx, parent_para_idx);
         self.recompose_section(section_idx);
         self.paginate_if_needed();
 

@@ -1008,60 +1008,8 @@ impl DocumentCore {
             ));
         }
 
-        // char_offsets 조정 (delete_picture_control_native와 동일)
-        let text_chars: Vec<char> = para.text.chars().collect();
-        let mut ci = 0usize;
-        let mut prev_end: u32 = 0;
-        let mut gap_start: Option<u32> = None;
-        'outer: for i in 0..text_chars.len() {
-            let offset = if i < para.char_offsets.len() {
-                para.char_offsets[i]
-            } else {
-                prev_end
-            };
-            while prev_end + 8 <= offset && ci < para.controls.len() {
-                if ci == control_idx {
-                    gap_start = Some(prev_end);
-                    break 'outer;
-                }
-                ci += 1;
-                prev_end += 8;
-            }
-            let char_size: u32 = if text_chars[i] == '\t' {
-                8
-            } else if text_chars[i].len_utf16() == 2 {
-                2
-            } else {
-                1
-            };
-            prev_end = offset + char_size;
-        }
-        if gap_start.is_none() {
-            while ci < para.controls.len() {
-                if ci == control_idx {
-                    gap_start = Some(prev_end);
-                    break;
-                }
-                ci += 1;
-                prev_end += 8;
-            }
-        }
-        if let Some(gs) = gap_start {
-            let threshold = gs + 8;
-            for offset in para.char_offsets.iter_mut() {
-                if *offset >= threshold {
-                    *offset -= 8;
-                }
-            }
-        }
-
-        para.controls.remove(control_idx);
-        if control_idx < para.ctrl_data_records.len() {
-            para.ctrl_data_records.remove(control_idx);
-        }
-        if para.char_count >= 8 {
-            para.char_count -= 8;
-        }
+        // 그림 삭제와 같은 갭 제거 — char_offsets·글자 모양·영역 태그·필드 참조를 함께 당긴다.
+        Self::remove_inline_control_with_metadata(para, control_idx);
 
         // line_segs 재계산: 도형 높이가 반영된 line_segs를 텍스트 기반으로 리셋
         Self::reflow_paragraph_line_segs_after_control_delete(para, &self.styles, self.dpi);
@@ -1500,10 +1448,11 @@ impl DocumentCore {
             };
 
             // 컨트롤 추가
-            paragraph
-                .controls
-                .insert(insert_idx, Control::Shape(Box::new(shape_obj)));
-            paragraph.ctrl_data_records.insert(insert_idx, None);
+            Self::insert_control_with_data_slot(
+                paragraph,
+                insert_idx,
+                Control::Shape(Box::new(shape_obj)),
+            );
 
             // char_offsets: 컨트롤은 텍스트축 배열에 원소로 들어가지 않고 "8 code unit 갭"으로
             // 표현된다. insert_idx 는 controls 축 인덱스이므로, 이를 char_offsets(텍스트축,
@@ -2127,10 +2076,11 @@ impl DocumentCore {
             let text_len = para.text.chars().count();
             let safe_offset = text_positions.get(ctrl_insert).copied().unwrap_or(text_len);
 
-            para.controls
-                .insert(ctrl_insert, Control::Shape(Box::new(group_obj)));
-            let cdr_insert = ctrl_insert.min(para.ctrl_data_records.len());
-            para.ctrl_data_records.insert(cdr_insert, None);
+            Self::insert_control_with_data_slot(
+                para,
+                ctrl_insert,
+                Control::Shape(Box::new(group_obj)),
+            );
 
             // char_offsets: 텍스트 문자 매핑이므로 컨트롤 인덱스와 무관 — 삽입 지점(safe_offset)
             // 이후 char_offsets 만 +8 시프트한다.
@@ -2316,9 +2266,7 @@ impl DocumentCore {
             }
 
             // 문단에 삽입
-            para.controls
-                .insert(insert_idx, Control::Shape(Box::new(child)));
-            para.ctrl_data_records.insert(insert_idx, None);
+            Self::insert_control_with_data_slot(para, insert_idx, Control::Shape(Box::new(child)));
             para.char_count += 8;
             para.control_mask |= 0x00000800;
             para.has_para_text = true;

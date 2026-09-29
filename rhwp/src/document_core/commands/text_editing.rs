@@ -15,7 +15,7 @@ use crate::model::style::ParaShapeMods;
 use crate::renderer::composer::{compose_paragraph, reflow_line_segs, ComposedParagraph};
 use crate::renderer::page_layout::PageLayoutInfo;
 use crate::renderer::pagination::PageItem;
-use crate::renderer::style_resolver::{resolve_styles, ResolvedStyleSet};
+use crate::renderer::style_resolver::ResolvedStyleSet;
 
 #[derive(Debug, Clone)]
 enum ParagraphSplitIntent {
@@ -752,7 +752,15 @@ impl DocumentCore {
                 self.recompose_paragraph(section_idx, para_idx);
                 self.paginate();
             }
-        } else {
+        } else if self
+            .render_normalization
+            .sections
+            .get(section_idx)
+            .is_some_and(|section| section.is_some())
+        {
+            // 렌더 투영이 없는 구역(대부분의 문서)에서는 갱신이 아무 일도 하지 않는다.
+            // 그런데도 함수는 투영 확인 전에 문단·조판 결과(경우에 따라 스타일 세트 전체)를
+            // 복제하므로, 키 입력마다 버려질 복제를 여기서 막는다.
             self.refresh_render_normalized_body_paragraph_after_edit(section_idx, para_idx);
         }
 
@@ -1798,7 +1806,7 @@ impl DocumentCore {
             None => return,
         };
 
-        let styles = resolve_styles(&self.document.doc_info, self.dpi);
+        let styles = self.resolve_document_styles();
         let cell_width_px = hwpunit_to_px(cell_width as i32, self.dpi);
         let pad_left_px = hwpunit_to_px(pad_left as i32, self.dpi);
         let pad_right_px = hwpunit_to_px(pad_right as i32, self.dpi);
@@ -2021,7 +2029,7 @@ impl DocumentCore {
         else {
             return;
         };
-        let styles = resolve_styles(&self.document.doc_info, self.dpi);
+        let styles = self.resolve_document_styles();
         let dpi = self.dpi;
         let cell_width_px = hwpunit_to_px(cell_width as i32, dpi);
         let pad_left_px = hwpunit_to_px(pad_left as i32, dpi);
@@ -2052,7 +2060,7 @@ impl DocumentCore {
         start_para: usize,
         ignore_reset_at: Option<usize>,
     ) {
-        let styles = resolve_styles(&self.document.doc_info, self.dpi);
+        let styles = self.resolve_document_styles();
         let dpi = self.dpi;
         let is_hwp3_variant = self.document.layout_profile().hwp3_layout();
         if let Ok(paras) = self.get_cell_paragraphs_mut_by_path(section_idx, parent_para_idx, path)
@@ -2099,7 +2107,22 @@ impl DocumentCore {
                 start_offset, end_offset
             )));
         }
-        if cell_ctx.is_none() {
+        if let Some((ppi, ci, cei)) = cell_ctx {
+            // 셀 양 끝 문단이 실제로 있는지 변형 전에 확인한다. 같은 문단·빈 범위는 셀을
+            // 해석하지 않고 mark_cell_control_dirty 로 가므로, 거르지 않으면 범위 밖 부모
+            // 문단 인덱싱이 panic 한다(wasm 에서는 인스턴스 전체가 멈춘다).
+            for cell_para in [start_para, end_para] {
+                if self
+                    .get_cell_paragraph_ref(section_idx, ppi, ci, cei, cell_para)
+                    .is_none()
+                {
+                    return Err(HwpError::RenderError(format!(
+                        "셀 문단을 찾을 수 없음 (문단 {}, 컨트롤 {}, 셀 {}, 셀 문단 {})",
+                        ppi, ci, cei, cell_para
+                    )));
+                }
+            }
+        } else {
             let para_count = self.document.sections[section_idx].paragraphs.len();
             if start_para >= para_count || end_para >= para_count {
                 return Err(HwpError::RenderError(format!(
@@ -2229,6 +2252,9 @@ impl DocumentCore {
                     self.remove_composed_paragraph(section_idx, start_para + 1);
                     self.document.sections[section_idx].paragraphs[start_para].merge_from(&next);
                 }
+                // 문단 수가 줄었다. 아래 TextDeleted 는 순서 변경 이벤트가 아니므로
+                // 순서 revision 을 따로 올린다 (스냅샷이 밀린 인덱스의 문단을 공유하지 않게).
+                self.event_log.mark_paragraph_sequence_changed(section_idx);
                 // [Task #2299] 리셋 판별용 — reflow 이전 저장 흐름 end 캡처.
                 let stored_end_for_reset = crate::renderer::composer::paragraph_flow_end(
                     &self.document.sections[section_idx].paragraphs[start_para],
@@ -2944,9 +2970,9 @@ impl DocumentCore {
         };
 
         // 구역의 초기 ColumnDef 찾기 (find_initial_column_def와 동일 로직)
-        let mut found = false;
+        let mut found: Option<usize> = None;
         let paragraphs = &mut self.document.sections[section_idx].paragraphs;
-        for para in paragraphs.iter_mut() {
+        for (para_idx, para) in paragraphs.iter_mut().enumerate() {
             for ctrl in para.controls.iter_mut() {
                 if let Control::ColumnDef(ref mut cd) = ctrl {
                     cd.column_count = column_count;
@@ -2957,17 +2983,17 @@ impl DocumentCore {
                         cd.widths.clear();
                         cd.gaps.clear();
                     }
-                    found = true;
+                    found = Some(para_idx);
                     break;
                 }
             }
-            if found {
+            if found.is_some() {
                 break;
             }
         }
 
         // 기존 ColumnDef가 없으면 첫 문단에 삽입
-        if !found {
+        if found.is_none() {
             let cd = ColumnDef {
                 column_count,
                 column_type: col_type,
@@ -2980,7 +3006,14 @@ impl DocumentCore {
                 self.document.sections[section_idx].paragraphs[0]
                     .controls
                     .push(Control::ColumnDef(cd));
+                found = Some(0);
             }
+        }
+
+        // 이벤트를 쌓지 않으므로 ColumnDef 를 담은 문단의 revision 을 올린다.
+        // 빠뜨리면 스냅샷 복원이 바뀐 문단을 재사용해 다단 undo 가 무시된다.
+        if let Some(para_idx) = found {
+            self.event_log.mark_paragraph_changed(section_idx, para_idx);
         }
 
         // 조판 갱신
@@ -4568,6 +4601,16 @@ impl DocumentCore {
     ) -> Result<String, HwpError> {
         {
             let paras = self.get_cell_paragraphs_mut_by_path(section_idx, parent_para_idx, path)?;
+            // 변형 전에 끝점을 검증한다. 뒤집히거나 범위 밖인 끝 문단을 그대로 두면 아래
+            // 역순 제거·병합이 엉뚱한 문단을 합치거나 셀 문단을 통째로 지운 뒤 ok 를 낸다.
+            if start_para > end_para || end_para >= paras.len() {
+                return Err(HwpError::RenderError(format!(
+                    "셀 문단 범위 오류 (start={}, end={}, 총 {}개)",
+                    start_para,
+                    end_para,
+                    paras.len()
+                )));
+            }
             if start_para == end_para {
                 let count = end_offset.saturating_sub(start_offset);
                 if count > 0 {

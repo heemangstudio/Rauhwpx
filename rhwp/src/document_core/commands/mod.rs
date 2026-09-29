@@ -3,6 +3,8 @@ mod cell_clipboard;
 mod clipboard;
 mod document;
 mod document_transfer;
+#[cfg(test)]
+mod edit_integrity_tests;
 mod footnote_ops;
 mod foreign_paste;
 mod formatting;

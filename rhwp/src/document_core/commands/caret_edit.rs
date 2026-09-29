@@ -214,6 +214,15 @@ impl DocumentCore {
                 end_offset,
             );
         }
+        // 개체를 지우기 전에 양 끝점을 검증한다. 시작 문단을 먼저 벗겨 낸 뒤 끝점이 틀려
+        // Err 로 끝나면 revision 없이 IR 만 바뀌어 스냅샷과 어긋난다.
+        if start_section > end_section {
+            return Err(HwpError::RenderError(
+                "시작 구역이 끝 구역보다 뒤에 있음".to_string(),
+            ));
+        }
+        body_paragraph_mut(self, start_section, start_para)?;
+        body_paragraph_mut(self, end_section, end_para)?;
         let text_start = strip_paragraph_logical_range(
             body_paragraph_mut(self, start_section, start_para)?,
             start_offset,
