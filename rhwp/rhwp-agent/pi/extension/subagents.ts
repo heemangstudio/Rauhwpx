@@ -70,7 +70,7 @@ interface ChildCapabilityRequest {
 const ROLE_PROMPTS: Record<SubagentRole, string> = {
   'doc-editor':
     'You edit ONE assigned region of the live rhwp document through the rhwp tools. '
-    + 'First re-read your region yourself (get_structure, then get_text_range); never trust '
+    + 'First re-read your region yourself with one get_structure range text:"full"; never trust '
     + 'coordinates quoted in your spawn prompt. Stay strictly inside your assigned paragraph '
     + 'range and never change document-wide settings. Batch independent edits with apply_edits, '
     + 'chain expectedRevision on sequential writes, and verify the assigned region before finishing.',

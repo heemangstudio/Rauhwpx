@@ -84,12 +84,27 @@ const MAX_SVG_BYTES = 800_000;
 // leaves room for the protocol envelope while still covering normal HWP/HWPX files.
 const MAX_DOCUMENT_SNAPSHOT_BYTES = 64 * 1024 * 1024;
 /** get_structure compact 텍스트의 범례 — 결과 머리에 한 번만 싣는다. */
-const STRUCTURE_LEGEND = 'Lines: "s<sec> p<paraIdx> (<length>) <text>"; … = preview cut, ⇥ = tab, "pA-pB empty" = empty paragraphs. '
+const STRUCTURE_LEGEND = 'Lines: "s<sec> p<paraIdx> (<length>) <text>"; … = text cut, ⇥ = tab, "pA-pB empty" = empty paragraphs. '
+  + '"-- page N --" = the lines below are on 0-based page N ("pX continues" = page N starts inside pX). '
+  + 'Short paragraphs may carry tags after the length, e.g. "(12 h1 B 14pt)": h/#/• + level = outline heading / numbered / bulleted paragraph (its number or bullet is generated, not text); '
+  + 'B/I/U = bold/italic/underline throughout; Npt = size when not the body size; no tag = plain body text. '
   + 'Each table follows its anchor paragraph as "table s<sec> p<paraIdx> c<controlIdx> <rows>x<cols>" plus "r<row> [cellIdx] text | …" lines; '
   + 'rsN/csN = span when not 1, ⏎ = next cell paragraph (cellParaIdx 0,1,…), ⊞ = cell paragraph holding a nested table (use find_text/get_selection). '
   + 'cell = {paraIdx: table p, controlIdx: table c, cellIdx}. format:"json" gives JSON.';
 
-interface StructureParagraph { paraIdx: number; length: number; text: string }
+/**
+ * get_structure text:"full" 한 번에 싣는 본문·셀 글자 수. Claude Code 의 MCP 출력 한도(기본 25k 토큰)
+ * 안에 머물도록 한국어 1-1.5자/토큰으로 잡는다 — 넘치면 continue 안내로 이어 읽는다.
+ */
+const STRUCTURE_FULL_TEXT_CHARS = 16_000;
+/** 서식 태그를 조사할 제목 후보 문단의 최대 길이 — 긴 본문 문단은 조회 없이 건너뛴다. */
+const STRUCTURE_TAG_MAX_CHARS = 60;
+/** 태그 판정에 비교할 글자 모양 수 — 이보다 많이 섞인 문단은 강조 태그를 달지 않는다. */
+const STRUCTURE_TAG_MAX_SHAPES = 4;
+/** 본문 기준 글자 크기를 정할 표본 문단 수. */
+const STRUCTURE_BODY_SIZE_SAMPLES = 64;
+
+interface StructureParagraph { paraIdx: number; length: number; text: string; tag?: string }
 interface StructureCellParagraph { cellParaIdx: number; length: number; text: string }
 interface StructureTable {
   paraIdx: number;
@@ -101,19 +116,38 @@ interface StructureTable {
     cellIdx: number; row: number; col: number; rowSpan: number; colSpan: number;
     paragraphs: StructureCellParagraph[];
   }>;
-  /** 문단 예산이 이 표의 셀 텍스트 수집 도중/이전에 소진됐다 (JSON 출력에는 싣지 않는다) */
+  /** 문단·글자 예산이 이 표의 셀 텍스트 수집 도중/이전에 소진됐다 (JSON 출력에는 싣지 않는다) */
   textCut: boolean;
 }
-/** get_structure range 인자 — 파싱·검증 후 수집을 이 본문 문단 범위로 좁힌다. */
+/** get_structure range 인자 — 파싱·검증 후 수집을 이 본문 문단 범위로 좁힌다. pages 도 구역별 범위로 풀린다. */
 interface StructureRange { sectionIdx: number; fromPara: number; toPara: number }
+/** 쪽 경계 — page 쪽이 (sectionIdx, paraIdx) 에서 시작한다. continued 면 그 문단 중간에서 시작한다. */
+interface StructurePageMark { page: number; sectionIdx: number; paraIdx: number; continued: boolean }
+/**
+ * get_structure 수집 한도 — 문단 수(maxParagraphs)와 text:"full" 의 전체 글자 수를 함께 센다.
+ * chars 가 null 이면 preview 모드로 문단마다 previewChars 까지만 싣는다.
+ */
+interface StructureBudget {
+  maxParagraphs: number;
+  count: number;
+  previewChars: number;
+  chars: number | null;
+}
 interface StructureData {
   sectionCount: number;
   pageCount: number;
   truncated: boolean;
   range?: StructureRange;
+  pages?: { first: number; last: number };
+  fullText: boolean;
+  /** text:"full" 예산이 끊긴 뒤 이어 읽을 본문 범위 — 그 뒤 구역도 남았으면 continueMoreSections */
+  continueFrom?: StructureRange;
+  continueMoreSections?: boolean;
+  pageMarks: StructurePageMark[];
   sections: Array<{ sectionIdx: number; paragraphCount: number; paragraphs: StructureParagraph[] }>;
   tablesBySection: Map<number, StructureTable[]>;
 }
+type StructureTableAddress = { sectionIdx: number; paraIdx: number; controlIdx: number };
 
 /** get_structure(sinceRevision) 한 변경 구간 — 현재 좌표 범위 + 대체된 from-시점 범위 + 그 구간의 문단/표. */
 interface StructureDeltaChange {
@@ -131,6 +165,11 @@ function cleanStructureText(text: string): string {
 }
 function previewStructureText(text: string, length: number): string {
   return cleanStructureText(text) + (text.length < length ? '…' : '');
+}
+/** 본문 문단 한 줄 — "s0 p12 (40) text…", 서식 태그가 있으면 길이 뒤에 "(12 h1 B 14pt)". */
+function structureParagraphLine(sec: number, para: StructureParagraph): string {
+  const head = `s${sec} p${para.paraIdx} (${para.length}${para.tag ? ` ${para.tag}` : ''})`;
+  return para.length > 0 ? `${head} ${previewStructureText(para.text, para.length)}` : head;
 }
 
 /** anchor.within 의 검색 범위 — collectTextMatches 의 선택적 scope 인자와 같은 모양. */
@@ -265,6 +304,16 @@ const BATCHABLE_READ_TOOLS: ReadonlySet<string> = new Set([
   'verify_changes',
 ]);
 
+/**
+ * 허브가 도구 추적을 켠 요청(RHWP_TOOL_TRACE=1 → tool-request.trace)에만 붙는 스튜디오 구간
+ * 타이밍. 값은 epoch ms 라 허브·mcp-stdio 행과 같은 시간축에 놓인다.
+ */
+export type ToolTraceTimings = Record<string, number>;
+
+export function toolTraceNow(): number {
+  return Math.round((performance.timeOrigin + performance.now()) * 1000) / 1000;
+}
+
 export interface ToolCapabilityContext {
   workflow: AgentWorkflow;
   /** Phase and epoch carried by this tool-request. Kept unknown so malformed frames fail closed. */
@@ -278,6 +327,8 @@ export interface ToolCapabilityContext {
   template?: DocumentTemplate;
   /** Exact hub turn/cancellation fence captured for this request. */
   requestIsActive?: () => boolean;
+  /** 추적 중인 요청만: 실행 구간(기준선·dispatch·after 보고) 타이밍을 채운다. */
+  trace?: ToolTraceTimings;
 }
 
 export function assertToolRequestActive(capability?: ToolCapabilityContext): void {
@@ -791,6 +842,13 @@ export class AgentToolExecutor {
   private templateKey: string | null = null;
   private templateInspectionKey: string | null = null;
   private documentInspectionRevision: number | null = null;
+  /** get_structure 서식 태그의 본문 기준 글자 크기 (HWPUNIT) — structureMemoKey 마다 다시 표본을 뜬다. */
+  private structureBodySizeMemo: { key: string; size: number | null } | null = null;
+  /**
+   * 같은 문서·revision 의 문단 서식 태그 — 병렬 읽기(편대 에이전트가 같은 revision 에서 각자 구조를
+   * 읽는 경우)마다 서식 조회를 되풀이하지 않는다. 키는 structureMemoKey 다.
+   */
+  private structureTagMemo: { key: string; tags: Map<string, string | undefined> } | null = null;
   // 병렬 서브에이전트 리베이스용 편집 저널 — 정밀 기록된 핵심 텍스트 쓰기만 담고,
   // 기록되지 않은 revision bump 는 자동으로 '불명'(리베이스 불가) 취급된다.
   private journal = new EditJournal();
@@ -819,6 +877,8 @@ export class AgentToolExecutor {
     agent: AgentName = 'claude',
     capability?: ToolCapabilityContext,
   ): Promise<unknown> {
+    const trace = capability?.trace;
+    if (trace) trace.exec0 = toolTraceNow();
     try {
       const trap = engineTrap();
       if (trap) throw engineTrappedError(trap.message);
@@ -845,10 +905,14 @@ export class AgentToolExecutor {
         && !ENGINE_WRITE_TOOLS.has(tool);
       const render = staged ? optRenderMode(args) : undefined;
       const baseline = staged ? this.captureWriteBaseline() : null;
+      if (trace) trace.dispatch0 = toolTraceNow();
       // await 필수 — 비동기 툴(insert_chart)의 rejection 도 여기서 에러 코드로 매핑된다
       const result = await this.dispatch(tool, args, agent, capability);
+      if (trace) trace.dispatch1 = toolTraceNow();
       assertToolRequestActive(capability);
-      return baseline ? await this.attachWriteReport(result, baseline, render) : result;
+      const reported = baseline ? await this.attachWriteReport(result, baseline, render) : result;
+      if (trace) trace.report1 = toolTraceNow();
+      return reported;
     } catch (e) {
       if (e instanceof AgentToolError) throw e;
       const message = e instanceof Error ? e.message : String(e);
@@ -1226,15 +1290,17 @@ export class AgentToolExecutor {
   }
 
   /**
-   * 본문 최상위 표 컨트롤 열거 — 페이지 컨트롤 레이아웃에서 수집한다.
+   * 본문 최상위 표 컨트롤 열거 — 페이지 컨트롤 레이아웃에서 수집한다. pages 를 주면 그 쪽들만 훑는다.
    * (중첩 표·머리말/각주 내부 표는 Phase-1 범위 밖이라 제외)
    */
-  private listTables(): Array<{ sectionIdx: number; paraIdx: number; controlIdx: number }> {
+  private listTables(pages?: { first: number; last: number }): StructureTableAddress[] {
     const { wasm } = this.deps;
     const seen = new Set<string>();
-    const out: Array<{ sectionIdx: number; paraIdx: number; controlIdx: number }> = [];
+    const out: StructureTableAddress[] = [];
     const pageCount = wasm.pageCount;
-    for (let page = 0; page < pageCount; page++) {
+    const firstPage = pages ? Math.max(0, pages.first) : 0;
+    const lastPage = pages ? Math.min(pageCount - 1, pages.last) : pageCount - 1;
+    for (let page = firstPage; page <= lastPage; page++) {
       let layout: { controls: Array<Record<string, unknown>> };
       try {
         layout = wasm.getPageControlLayout(page) as unknown as { controls: Array<Record<string, unknown>> };
@@ -1263,6 +1329,7 @@ export class AgentToolExecutor {
   /**
    * get_structure — 기본은 한 줄씩의 compact 텍스트(범례 한 줄 + 문단/표 줄), format:'json' 은
    * 예전 JSON 모양을 그대로 돌려준다. revisionLabel 은 머리 줄에 쓰인다 (템플릿은 템플릿 revision).
+   * pages 는 쪽 범위를 구역별 본문 범위로 풀고, text:"full" 은 문단·셀 전문을 글자 예산 안에서 싣는다.
    */
   private getStructure(args: Record<string, unknown>, revisionLabel?: string): unknown {
     this.requireDocLoaded();
@@ -1270,15 +1337,19 @@ export class AgentToolExecutor {
     if (format !== 'text' && format !== 'json') {
       throw new AgentToolError('INVALID_ARGS', `format must be 'text' or 'json' (got ${JSON.stringify(format)})`);
     }
+    const given = (key: string): boolean => args[key] !== undefined && args[key] !== null;
+    if (given('pages') && (given('range') || given('sinceRevision'))) {
+      throw new AgentToolError('INVALID_ARGS', 'pages cannot be combined with range or sinceRevision — pass one of them');
+    }
     // sinceRevision 델타는 라이브 문서 저널에만 의미가 있다 — 템플릿 읽기는
     // revisionLabel 경로로 들어오므로 여기서 걸러진다.
-    if (args['sinceRevision'] !== undefined && args['sinceRevision'] !== null && revisionLabel === undefined) {
+    if (given('sinceRevision') && revisionLabel === undefined) {
       return this.getStructureDelta(args, format as 'text' | 'json');
     }
     const data = this.collectStructure(args);
-    // 템플릿 매핑 게이트의 "문서를 봤다" 표시는 전체 읽기만 세운다 — range/sinceRevision
-    // 부분 읽기로는 구조 전체를 검토했다고 볼 수 없다.
-    if (!data.range) this.documentInspectionRevision = this.revision;
+    // 템플릿 매핑 게이트의 "문서를 봤다" 표시는 전체 읽기만 세운다 — range/pages/sinceRevision
+    // 부분 읽기나 text:"full" 예산에 끊긴 읽기로는 구조 전체를 검토했다고 볼 수 없다.
+    if (!data.range && !data.pages && !data.continueFrom) this.documentInspectionRevision = this.revision;
     if (format === 'json') {
       const sectionsOut = data.sections.map((s) => {
         const tables = data.tablesBySection.get(s.sectionIdx);
@@ -1292,6 +1363,9 @@ export class AgentToolExecutor {
         pageCount: data.pageCount,
         truncated: data.truncated,
         ...(data.range ? { range: data.range } : {}),
+        ...(data.pages ? { pages: [data.pages.first, data.pages.last] } : {}),
+        ...(data.continueFrom ? { continueFrom: data.continueFrom } : {}),
+        ...(data.pageMarks.length > 0 ? { pageStarts: data.pageMarks } : {}),
         sections: sectionsOut,
       };
     }
@@ -1304,67 +1378,164 @@ export class AgentToolExecutor {
     };
   }
 
-  /** get_structure 의 문단·표 수집 — 본문 문단이 먼저 예산(maxParagraphs)을 쓰고 표 셀 문단이 나머지를 쓴다. range 가 있으면 그 범위만 읽는다. */
+  /** get_structure text 인자 — 'preview'(기본, 문단마다 maxPreviewChars) 또는 'full'(전문, 글자 예산). */
+  private parseStructureTextMode(args: Record<string, unknown>): boolean {
+    const mode = args['text'] ?? 'preview';
+    if (mode !== 'preview' && mode !== 'full') {
+      throw new AgentToolError('INVALID_ARGS', `text must be 'preview' or 'full' (got ${JSON.stringify(mode)})`);
+    }
+    return mode === 'full';
+  }
+
+  private structureBudget(args: Record<string, unknown>, fullText: boolean): StructureBudget {
+    return {
+      maxParagraphs: Math.min(Math.max(optInt(args, 'maxParagraphs', 500), 1), 2000),
+      count: 0,
+      previewChars: Math.min(Math.max(optInt(args, 'maxPreviewChars', 120), 0), 500),
+      chars: fullText ? STRUCTURE_FULL_TEXT_CHARS : null,
+    };
+  }
+
+  /** 문단 하나에 이번 예산으로 실을 글자 수 — preview 는 문단당 한도, full 은 남은 전체 예산. */
+  private static structureTake(budget: StructureBudget, length: number): number {
+    return Math.max(0, Math.min(length, budget.chars ?? budget.previewChars));
+  }
+
+  /** get_structure 의 문단·표 수집 — 범위(range/pages/문서 전체)를 구역별 본문 범위로 풀어 읽는다. */
   private collectStructure(args: Record<string, unknown>): StructureData {
-    const maxPreviewChars = Math.min(Math.max(optInt(args, 'maxPreviewChars', 120), 0), 500);
-    const maxParagraphs = Math.min(Math.max(optInt(args, 'maxParagraphs', 500), 1), 2000);
+    const fullText = this.parseStructureTextMode(args);
+    const budget = this.structureBudget(args, fullText);
     const range = this.parseStructureRange(args);
+    const pages = this.parseStructurePages(args);
     const { wasm } = this.deps;
     const sectionCount = wasm.getSectionCount();
+    const pageCount = wasm.pageCount;
+    const spans: StructureRange[] = pages?.spans
+      ?? (range ? [range] : Array.from({ length: sectionCount }, (_, sec) => ({
+        sectionIdx: sec, fromPara: 0, toPara: wasm.getParagraphCount(sec) - 1,
+      })));
+    const tables = this.listTables(pages ? { first: pages.first, last: pages.last } : undefined);
+    const bodySize = this.structureBodySize();
+    const collected = fullText
+      ? this.collectStructureFullText(spans, tables, budget, bodySize)
+      : this.collectStructurePreview(spans, tables, budget, bodySize);
+    const pageMarks = pages?.marks
+      ?? (pageCount <= PAGE_START_SCAN_LIMIT ? this.structurePageMarks(0, pageCount - 1) ?? [] : []);
+    return {
+      sectionCount,
+      pageCount,
+      range,
+      ...(pages ? { pages: { first: pages.first, last: pages.last } } : {}),
+      fullText,
+      pageMarks,
+      ...collected,
+    };
+  }
+
+  /** preview 수집 — 본문 문단이 먼저 예산(maxParagraphs)을 쓰고 표 셀 문단이 나머지를 쓴다. */
+  private collectStructurePreview(
+    spans: StructureRange[],
+    tables: StructureTableAddress[],
+    budget: StructureBudget,
+    bodySize: number | null,
+  ): Pick<StructureData, 'sections' | 'tablesBySection' | 'truncated'> {
+    const { wasm } = this.deps;
     const sections: StructureData['sections'] = [];
-    const budget = { count: 0 };
     let truncated = false;
-    for (let sec = 0; sec < sectionCount; sec++) {
-      if (range && sec !== range.sectionIdx) continue;
-      const paragraphCount = wasm.getParagraphCount(sec);
-      const span = this.collectStructureSpan(
-        sec, range ? range.fromPara : 0, range ? range.toPara : paragraphCount - 1,
-        maxPreviewChars, maxParagraphs, budget,
-      );
-      truncated ||= span.truncated;
-      sections.push({ sectionIdx: sec, paragraphCount, paragraphs: span.paragraphs });
+    for (const span of spans) {
+      const collected = this.collectStructureSpan(span.sectionIdx, span.fromPara, span.toPara, budget, bodySize);
+      truncated ||= collected.truncated;
+      sections.push({
+        sectionIdx: span.sectionIdx,
+        paragraphCount: wasm.getParagraphCount(span.sectionIdx),
+        paragraphs: collected.paragraphs,
+      });
       if (truncated) break;
     }
-
     // 표: 섹션별 tables[] 로 셀 주소 + 셀 텍스트를 노출한다 (문단 예산 공유).
     const tablesBySection = new Map<number, StructureTable[]>();
-    for (let sec = 0; sec < sectionCount; sec++) {
-      if (range && sec !== range.sectionIdx) continue;
-      const paraCount = wasm.getParagraphCount(sec);
-      const collected = this.collectStructureTables(
-        sec, range ? range.fromPara : 0, range ? range.toPara : paraCount - 1,
-        maxPreviewChars, maxParagraphs, budget,
-      );
+    for (const span of spans) {
+      const collected = this.collectStructureTables(span.sectionIdx, span.fromPara, span.toPara, tables, budget);
       truncated ||= collected.truncated;
-      for (const table of collected.tables) {
-        const list = tablesBySection.get(sec) ?? [];
-        list.push(table);
-        tablesBySection.set(sec, list);
+      if (collected.tables.length === 0) continue;
+      tablesBySection.set(span.sectionIdx, [...(tablesBySection.get(span.sectionIdx) ?? []), ...collected.tables]);
+    }
+    return { sections, tablesBySection, truncated };
+  }
+
+  /**
+   * text:"full" 수집 — 문단 → 그 문단의 표 순서로 전문을 싣고, 글자 예산이 다하면 문단 경계에서
+   * 끊어 continueFrom 을 남긴다. 표 셀 텍스트가 예산을 넘기면 그 표만 textCut 으로 좌표를 남긴다.
+   */
+  private collectStructureFullText(
+    spans: StructureRange[],
+    tables: StructureTableAddress[],
+    budget: StructureBudget,
+    bodySize: number | null,
+  ): Pick<StructureData, 'sections' | 'tablesBySection' | 'truncated' | 'continueFrom' | 'continueMoreSections'> {
+    const { wasm } = this.deps;
+    const tablesByPara = new Map<string, StructureTableAddress[]>();
+    for (const t of tables) {
+      const key = `${t.sectionIdx}:${t.paraIdx}`;
+      tablesByPara.set(key, [...(tablesByPara.get(key) ?? []), t]);
+    }
+    const sections: StructureData['sections'] = [];
+    const tablesBySection = new Map<number, StructureTable[]>();
+    let continueFrom: StructureRange | undefined;
+    let continueMoreSections = false;
+    let emitted = false;
+    outer:
+    for (const [spanIdx, span] of spans.entries()) {
+      const sec = span.sectionIdx;
+      const paragraphs: StructureParagraph[] = [];
+      sections.push({ sectionIdx: sec, paragraphCount: wasm.getParagraphCount(sec), paragraphs });
+      for (let para = span.fromPara; para <= span.toPara; para++) {
+        const length = wasm.getParagraphLength(sec, para);
+        const left = budget.chars ?? 0;
+        // 이미 무언가 실었다면 다 들어가지 않는 문단 앞에서 끊는다 — 첫 문단은 잘라서라도 싣는다.
+        if (budget.count >= budget.maxParagraphs || left <= 0 || (emitted && length > left)) {
+          continueFrom = { sectionIdx: sec, fromPara: para, toPara: span.toPara };
+          continueMoreSections = spanIdx < spans.length - 1;
+          break outer;
+        }
+        const take = AgentToolExecutor.structureTake(budget, length);
+        const text = take > 0 ? wasm.getTextRange(sec, para, 0, take) : '';
+        budget.chars = left - take;
+        budget.count++;
+        emitted = true;
+        paragraphs.push(this.structureParagraph(sec, para, length, text, bodySize));
+        for (const address of tablesByPara.get(`${sec}:${para}`) ?? []) {
+          const table = this.collectStructureTable(address, budget);
+          if (table) tablesBySection.set(sec, [...(tablesBySection.get(sec) ?? []), table]);
+        }
       }
     }
-    return { sectionCount, pageCount: wasm.pageCount, truncated, range, sections, tablesBySection };
+    return {
+      sections, tablesBySection, truncated: continueFrom !== undefined,
+      ...(continueFrom ? { continueFrom, continueMoreSections } : {}),
+    };
   }
 
   private collectStructureSpan(
     sectionIdx: number,
     fromPara: number,
     toPara: number,
-    maxPreviewChars: number,
-    maxParagraphs: number,
-    budget: { count: number },
+    budget: StructureBudget,
+    bodySize: number | null,
   ): { paragraphs: StructureParagraph[]; truncated: boolean } {
     const { wasm } = this.deps;
     const paragraphs: StructureParagraph[] = [];
     let truncated = false;
     for (let para = fromPara; para <= toPara; para++) {
-      if (budget.count >= maxParagraphs) {
+      if (budget.count >= budget.maxParagraphs || (budget.chars !== null && budget.chars <= 0)) {
         truncated = true;
         break;
       }
       const length = wasm.getParagraphLength(sectionIdx, para);
-      const previewLen = Math.min(length, maxPreviewChars);
-      const text = previewLen > 0 ? wasm.getTextRange(sectionIdx, para, 0, previewLen) : '';
-      paragraphs.push({ paraIdx: para, length, text });
+      const take = AgentToolExecutor.structureTake(budget, length);
+      const text = take > 0 ? wasm.getTextRange(sectionIdx, para, 0, take) : '';
+      if (budget.chars !== null) budget.chars -= take;
+      paragraphs.push(this.structureParagraph(sectionIdx, para, length, text, bodySize));
       budget.count++;
     }
     return { paragraphs, truncated };
@@ -1375,55 +1546,224 @@ export class AgentToolExecutor {
     sectionIdx: number,
     fromPara: number,
     toPara: number,
-    maxPreviewChars: number,
-    maxParagraphs: number,
-    budget: { count: number },
+    tables: StructureTableAddress[],
+    budget: StructureBudget,
   ): { tables: StructureTable[]; truncated: boolean } {
-    const { wasm } = this.deps;
-    const tables: StructureTable[] = [];
-    let tablesTruncated = false;
-    for (const t of this.listTables()) {
+    const out: StructureTable[] = [];
+    let truncated = false;
+    for (const t of tables) {
       if (t.sectionIdx !== sectionIdx || t.paraIdx < fromPara || t.paraIdx > toPara) continue;
-      let table: StructureTable;
-      try {
-        const dims = wasm.getTableDimensions(t.sectionIdx, t.paraIdx, t.controlIdx);
-        table = {
-          paraIdx: t.paraIdx, controlIdx: t.controlIdx,
-          rowCount: dims.rowCount, colCount: dims.colCount, cellCount: dims.cellCount,
-          cells: [],
-          textCut: false,
-        };
-        for (let cellIdx = 0; cellIdx < dims.cellCount; cellIdx++) {
-          const info = wasm.getCellInfo(t.sectionIdx, t.paraIdx, t.controlIdx, cellIdx);
-          const cellParaCount = wasm.getCellParagraphCount(t.sectionIdx, t.paraIdx, t.controlIdx, cellIdx);
-          const cellParas: StructureCellParagraph[] = [];
-          for (let cp = 0; cp < cellParaCount; cp++) {
-            // 예산 소진 시에도 표/셀 좌표(주소 지정에 필수)는 계속 내보내고
-            // 셀 텍스트 수집만 멈춘다 — 표가 통째로 사라지면 셀 주소를 만들 수 없다.
-            if (budget.count >= maxParagraphs) {
-              tablesTruncated = true;
-              table.textCut = true;
-              break;
-            }
-            const length = wasm.getCellParagraphLength(t.sectionIdx, t.paraIdx, t.controlIdx, cellIdx, cp);
-            const previewLen = Math.min(length, maxPreviewChars);
-            const text = previewLen > 0
-              ? wasm.getTextInCell(t.sectionIdx, t.paraIdx, t.controlIdx, cellIdx, cp, 0, previewLen)
-              : '';
-            cellParas.push({ cellParaIdx: cp, length, text });
-            budget.count++;
-          }
-          table.cells.push({
-            cellIdx, row: info.row, col: info.col, rowSpan: info.rowSpan, colSpan: info.colSpan,
-            paragraphs: cellParas,
-          });
-        }
-      } catch {
-        continue; // 접근 실패한 표는 건너뛴다 (best-effort)
-      }
-      tables.push(table);
+      const table = this.collectStructureTable(t, budget);
+      if (!table) continue; // 접근 실패한 표는 건너뛴다 (best-effort)
+      truncated ||= table.textCut;
+      out.push(table);
     }
-    return { tables, truncated: tablesTruncated };
+    return { tables: out, truncated };
+  }
+
+  /**
+   * 표 하나의 셀 주소와 셀 문단 텍스트. 예산이 다하면 셀 텍스트 수집만 멈추고 표/셀 좌표(주소
+   * 지정에 필수)는 계속 내보낸다 — 표가 통째로 사라지면 셀 주소를 만들 수 없다. 접근 실패는 null.
+   */
+  private collectStructureTable(t: StructureTableAddress, budget: StructureBudget): StructureTable | null {
+    const { wasm } = this.deps;
+    try {
+      const dims = wasm.getTableDimensions(t.sectionIdx, t.paraIdx, t.controlIdx);
+      const table: StructureTable = {
+        paraIdx: t.paraIdx, controlIdx: t.controlIdx,
+        rowCount: dims.rowCount, colCount: dims.colCount, cellCount: dims.cellCount,
+        cells: [],
+        textCut: false,
+      };
+      for (let cellIdx = 0; cellIdx < dims.cellCount; cellIdx++) {
+        const info = wasm.getCellInfo(t.sectionIdx, t.paraIdx, t.controlIdx, cellIdx);
+        const cellParaCount = wasm.getCellParagraphCount(t.sectionIdx, t.paraIdx, t.controlIdx, cellIdx);
+        const cellParas: StructureCellParagraph[] = [];
+        for (let cp = 0; cp < cellParaCount; cp++) {
+          if (budget.count >= budget.maxParagraphs || (budget.chars !== null && budget.chars <= 0)) {
+            table.textCut = true;
+            break;
+          }
+          const length = wasm.getCellParagraphLength(t.sectionIdx, t.paraIdx, t.controlIdx, cellIdx, cp);
+          const take = AgentToolExecutor.structureTake(budget, length);
+          const text = take > 0
+            ? wasm.getTextInCell(t.sectionIdx, t.paraIdx, t.controlIdx, cellIdx, cp, 0, take)
+            : '';
+          if (budget.chars !== null) budget.chars -= take;
+          cellParas.push({ cellParaIdx: cp, length, text });
+          budget.count++;
+        }
+        table.cells.push({
+          cellIdx, row: info.row, col: info.col, rowSpan: info.rowSpan, colSpan: info.colSpan,
+          paragraphs: cellParas,
+        });
+      }
+      return table;
+    } catch {
+      return null;
+    }
+  }
+
+  /** 본문 문단 한 줄 — 제목처럼 짧은 문단에는 개요/목록 수준과 강조 태그를 붙인다. */
+  private structureParagraph(
+    sectionIdx: number,
+    paraIdx: number,
+    length: number,
+    text: string,
+    bodySize: number | null,
+  ): StructureParagraph {
+    const tag = this.structureTag(sectionIdx, paraIdx, length, text, bodySize);
+    return tag ? { paraIdx, length, text, tag } : { paraIdx, length, text };
+  }
+
+  /**
+   * 짧은 문단(STRUCTURE_TAG_MAX_CHARS 이하)의 서식 태그 — "h1"/"#2"/"•1" 개요·번호·글머리 수준
+   * (번호는 생성 문자라 텍스트에 없다), 문단 전체가 같은 굵게/기울임/밑줄이면 B/I/U, 본문과 다른
+   * 크기면 "14pt". 글자 모양이 섞인 문단은 강조 태그를 달지 않는다. 기본 본문은 태그가 없다.
+   */
+  private structureTag(
+    sectionIdx: number,
+    paraIdx: number,
+    length: number,
+    text: string,
+    bodySize: number | null,
+  ): string | undefined {
+    if (length === 0 || length > STRUCTURE_TAG_MAX_CHARS) return undefined;
+    const memoKey = this.structureMemoKey();
+    if (this.structureTagMemo?.key !== memoKey) {
+      this.structureTagMemo = { key: memoKey, tags: new Map() };
+    }
+    const memo = this.structureTagMemo.tags;
+    const key = `${sectionIdx}:${paraIdx}:${length}:${bodySize ?? ''}`;
+    if (memo.has(key)) return memo.get(key);
+    const tag = this.readStructureTag(sectionIdx, paraIdx, length, text, bodySize);
+    memo.set(key, tag);
+    return tag;
+  }
+
+  private readStructureTag(
+    sectionIdx: number,
+    paraIdx: number,
+    length: number,
+    text: string,
+    bodySize: number | null,
+  ): string | undefined {
+    const { wasm } = this.deps;
+    const parts: string[] = [];
+    try {
+      const para = wasm.getParaPropertiesAt(sectionIdx, paraIdx);
+      const head = (para.headType ?? 'None').toLowerCase();
+      const mark = head === 'outline' ? 'h' : head === 'number' ? '#' : head === 'bullet' ? '•' : '';
+      if (mark) parts.push(`${mark}${(para.paraLevel ?? 0) + 1}`);
+    } catch { /* 문단 서식 읽기 실패 — 수준 태그 없이 */ }
+    const emphasis = this.uniformEmphasis(sectionIdx, paraIdx, length, text);
+    if (emphasis) {
+      if (emphasis.bold) parts.push('B');
+      if (emphasis.italic) parts.push('I');
+      if (emphasis.underline) parts.push('U');
+      if (emphasis.size !== null && bodySize !== null && emphasis.size !== bodySize) {
+        parts.push(`${Math.round(emphasis.size) / 100}pt`);
+      }
+    }
+    return parts.length > 0 ? parts.join(' ') : undefined;
+  }
+
+  /** 문단의 눈에 보이는 글자 모양이 모두 같은 굵게/기울임/밑줄/크기면 그 값, 섞였거나 읽을 수 없으면 null. */
+  private uniformEmphasis(
+    sectionIdx: number,
+    paraIdx: number,
+    length: number,
+    text: string,
+  ): { bold: boolean; italic: boolean; underline: boolean; size: number | null } | null {
+    const { wasm } = this.deps;
+    try {
+      let offsets = [0];
+      let runs: Array<{ startOffset: number; endOffset: number; charShapeId: number }> | null = null;
+      try {
+        runs = wasm.getCharShapeRuns(sectionIdx, paraIdx, 0, length);
+      } catch { /* 모양 구간을 못 읽는 엔진 — 첫 글자 모양만 본다 */ }
+      if (runs && runs.length > 1) {
+        const full = text.length >= length ? text : wasm.getTextRange(sectionIdx, paraIdx, 0, length);
+        const firstOffsetByShape = new Map<number, number>();
+        for (const run of runs) {
+          // 공백만 덮는 모양(제목 뒤 빈칸 등)은 판정에서 뺀다.
+          if (full.slice(run.startOffset, run.endOffset).trim() === '') continue;
+          if (!firstOffsetByShape.has(run.charShapeId)) firstOffsetByShape.set(run.charShapeId, run.startOffset);
+        }
+        if (firstOffsetByShape.size > STRUCTURE_TAG_MAX_SHAPES) return null;
+        if (firstOffsetByShape.size > 0) offsets = [...firstOffsetByShape.values()];
+      }
+      let first: { bold: boolean; italic: boolean; underline: boolean; size: number | null } | null = null;
+      for (const offset of offsets) {
+        const props = wasm.getCharPropertiesAt(sectionIdx, paraIdx, offset);
+        const cur = {
+          bold: props.bold === true,
+          italic: props.italic === true,
+          underline: props.underline === true,
+          size: typeof props.fontSize === 'number' ? props.fontSize : null,
+        };
+        if (!first) {
+          first = cur;
+        } else if (cur.bold !== first.bold || cur.italic !== first.italic
+          || cur.underline !== first.underline || cur.size !== first.size) {
+          return null;
+        }
+      }
+      return first;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 본문 기준 글자 크기(HWPUNIT) — 문단을 고르게 표본으로 떠서 문단 수로 센 최빈 크기. 글자 수로
+   * 가중하면 목차 점선 줄 몇 개가 짧은 본문 줄 수십 개를 이긴다. 같은 문서·revision 안에서는 다시
+   * 재지 않는다. 읽을 수 없으면 null (크기 태그를 달지 않는다).
+   */
+  private structureBodySize(): number | null {
+    const memoKey = this.structureMemoKey();
+    if (this.structureBodySizeMemo?.key === memoKey) return this.structureBodySizeMemo.size;
+    const { wasm } = this.deps;
+    let size: number | null = null;
+    try {
+      const sectionCount = wasm.getSectionCount();
+      const counts = Array.from({ length: sectionCount }, (_, sec) => wasm.getParagraphCount(sec));
+      const total = counts.reduce((a, b) => a + b, 0);
+      const step = Math.max(1, Math.ceil(total / STRUCTURE_BODY_SIZE_SAMPLES));
+      const weights = new Map<number, number>();
+      for (let sec = 0; sec < sectionCount; sec++) {
+        for (let para = 0; para < counts[sec]; para += step) {
+          const length = wasm.getParagraphLength(sec, para);
+          if (length === 0) continue;
+          // 들여쓰기 공백은 다른 크기일 때가 많다 — 첫 글자에서 잰다.
+          const head = wasm.getTextRange(sec, para, 0, Math.min(length, 32));
+          const offset = head.search(/\S/);
+          if (offset < 0) continue;
+          const fontSize = wasm.getCharPropertiesAt(sec, para, offset).fontSize;
+          if (typeof fontSize !== 'number') continue;
+          weights.set(fontSize, (weights.get(fontSize) ?? 0) + 1);
+        }
+      }
+      let best = 0;
+      for (const [candidate, weight] of weights) {
+        if (weight > best) {
+          best = weight;
+          size = candidate;
+        }
+      }
+    } catch {
+      size = null;
+    }
+    this.structureBodySizeMemo = { key: memoKey, size };
+    return size;
+  }
+
+  /**
+   * get_structure 서식 메모 키 — revision 과 문서 세대. 깨끗한 문서를 다른 문서로 바꿔 열면
+   * revision 이 그대로일 수 있어, 로드·교체·스냅샷 복원마다 오르는 documentGeneration 을 함께 본다.
+   */
+  private structureMemoKey(): string {
+    return `${this.revision}:${this.deps.wasm.documentGeneration ?? 0}`;
   }
 
   /** get_structure range 인자 파싱 — sectionIdx/fromPara/toPara 경계를 지금 문서에서 검증한다. */
@@ -1450,6 +1790,83 @@ export class AgentToolExecutor {
   }
 
   /**
+   * get_structure pages [first, last] (0-based, 포함) — 쪽 시작 위치로 구역별 본문 범위를 만든다.
+   * 끝은 last+1 쪽의 시작 문단 직전이고, 그 문단이 last 쪽에서 이미 시작했다면 그 문단까지다.
+   */
+  private parseStructurePages(args: Record<string, unknown>): {
+    first: number; last: number; spans: StructureRange[]; marks: StructurePageMark[];
+  } | undefined {
+    const raw = args['pages'];
+    if (raw === undefined || raw === null) return undefined;
+    if (!Array.isArray(raw) || raw.length !== 2 || !raw.every((n) => typeof n === 'number' && Number.isSafeInteger(n))) {
+      throw new AgentToolError('INVALID_ARGS', `pages must be [firstPage, lastPage] as 0-based integers (got ${JSON.stringify(raw)})`);
+    }
+    const [first, last] = raw as [number, number];
+    const { wasm } = this.deps;
+    const pageCount = wasm.pageCount;
+    if (first < 0 || first > last || last >= pageCount) {
+      throw new AgentToolError('INVALID_ARGS', `pages [${first}, ${last}] must satisfy 0 <= first <= last <= ${pageCount - 1} (0-based; the document has ${pageCount} pages)`);
+    }
+    const scanned = this.structurePageMarks(first, Math.min(last + 1, pageCount - 1));
+    if (!scanned) {
+      throw new AgentToolError('INVALID_ARGS', 'Page positions are unavailable in this engine build — use range instead of pages');
+    }
+    const marks = scanned.filter((m) => m.page <= last);
+    const start = marks[0];
+    const sectionCount = wasm.getSectionCount();
+    let end: { sec: number; para: number };
+    const next = scanned.find((m) => m.page === last + 1);
+    if (!next) {
+      end = { sec: sectionCount - 1, para: wasm.getParagraphCount(sectionCount - 1) - 1 };
+    } else if (next.continued) {
+      end = { sec: next.sectionIdx, para: next.paraIdx };
+    } else if (next.paraIdx > 0) {
+      end = { sec: next.sectionIdx, para: next.paraIdx - 1 };
+    } else if (next.sectionIdx > 0) {
+      end = { sec: next.sectionIdx - 1, para: wasm.getParagraphCount(next.sectionIdx - 1) - 1 };
+    } else {
+      end = { sec: start.sectionIdx, para: start.paraIdx };
+    }
+    if (end.sec < start.sectionIdx || (end.sec === start.sectionIdx && end.para < start.paraIdx)) {
+      end = { sec: start.sectionIdx, para: start.paraIdx };
+    }
+    const spans: StructureRange[] = [];
+    for (let sec = start.sectionIdx; sec <= end.sec; sec++) {
+      const fromPara = sec === start.sectionIdx ? start.paraIdx : 0;
+      const toPara = sec === end.sec ? end.para : wasm.getParagraphCount(sec) - 1;
+      if (fromPara <= toPara) spans.push({ sectionIdx: sec, fromPara, toPara });
+    }
+    return { first, last, spans, marks };
+  }
+
+  /**
+   * first..last 쪽의 시작 위치 — getPositionOfPage 는 pagination 을 직접 훑으므로 페이지 트리를
+   * 만들지 않는다. 떠 있는 개체 앵커처럼 앞 쪽보다 앞선 위치는 앞 쪽 위치에 붙인다. 옛 WASM 은 null.
+   */
+  private structurePageMarks(first: number, last: number): StructurePageMark[] | null {
+    const { wasm } = this.deps;
+    if (typeof wasm.getPositionOfPage !== 'function' || last < first) return null;
+    try {
+      const marks: StructurePageMark[] = [];
+      let prev: StructurePageMark | null = null;
+      for (let page = first; page <= last; page++) {
+        const pos = wasm.getPositionOfPage(page);
+        if (!pos.ok || typeof pos.sec !== 'number' || typeof pos.para !== 'number') return null;
+        let mark: StructurePageMark = { page, sectionIdx: pos.sec, paraIdx: pos.para, continued: pos.continued === true };
+        if (prev && (mark.sectionIdx < prev.sectionIdx
+          || (mark.sectionIdx === prev.sectionIdx && mark.paraIdx <= prev.paraIdx))) {
+          mark = { page, sectionIdx: prev.sectionIdx, paraIdx: prev.paraIdx, continued: true };
+        }
+        marks.push(mark);
+        prev = mark;
+      }
+      return marks;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * get_structure(sinceRevision) — 저널이 (since, 현재] 구간을 덮으면 바뀐 문단만
    * 싣고, 덮지 못하면 FULL_REFRESH_REQUIRED 를 던진다 (저널 보존 한도를 넘은
    * revision 이거나 사용자 편집·비저널 bump 가 끼어 있다).
@@ -1472,9 +1889,11 @@ export class AgentToolExecutor {
       );
     }
     const range = this.parseStructureRange(args);
-    const maxPreviewChars = Math.min(Math.max(optInt(args, 'maxPreviewChars', 120), 0), 500);
-    const maxParagraphs = Math.min(Math.max(optInt(args, 'maxParagraphs', 500), 1), 2000);
-    const budget = { count: 0 };
+    const budget = this.structureBudget(args, this.parseStructureTextMode(args));
+    // 표 목록(쪽마다 컨트롤 레이아웃)과 본문 크기 표본은 바뀐 구간이 있을 때만 한 번 만든다 —
+    // 변경 없는 델타는 큰 문서에서도 싸야 한다.
+    let bodySize: number | null | undefined;
+    let tables: StructureTableAddress[] | undefined;
     const changes: StructureDeltaChange[] = [];
     let truncated = false;
     outer:
@@ -1491,12 +1910,14 @@ export class AgentToolExecutor {
         const paraCount = this.deps.wasm.getParagraphCount(sec);
         lo = Math.max(0, Math.min(lo, paraCount - 1));
         hi = Math.max(lo, Math.min(hi, paraCount - 1));
-        const span = this.collectStructureSpan(sec, lo, hi, maxPreviewChars, maxParagraphs, budget);
-        const tables = this.collectStructureTables(sec, lo, hi, maxPreviewChars, maxParagraphs, budget);
-        truncated ||= span.truncated || tables.truncated;
+        if (bodySize === undefined) bodySize = this.structureBodySize();
+        tables ??= this.listTables();
+        const span = this.collectStructureSpan(sec, lo, hi, budget, bodySize);
+        const spanTables = this.collectStructureTables(sec, lo, hi, tables, budget);
+        truncated ||= span.truncated || spanTables.truncated;
         changes.push({
           sectionIdx: sec, paraStart: lo, paraEnd: hi, wasRanges: ch.wasRanges,
-          paragraphs: span.paragraphs, tables: tables.tables,
+          paragraphs: span.paragraphs, tables: spanTables.tables,
         });
         if (truncated) break outer;
       }
@@ -1537,7 +1958,7 @@ export class AgentToolExecutor {
   ): string {
     const lines: string[] = [];
     lines.push(`revision ${this.revision} · ${pageCount} pages · changes since revision ${since}`
-      + (truncated ? ' · TRUNCATED by maxParagraphs (raise it or use find_text)' : ''));
+      + (truncated ? ' · TRUNCATED (raise maxParagraphs or read the rest with range)' : ''));
     lines.push(STRUCTURE_LEGEND);
     lines.push(
       `Delta: "s<sec> changed pA[-pB] (was pX[-pY],…)" = paragraphs that changed since revision ${since}, in current indexes; `
@@ -1559,9 +1980,7 @@ export class AgentToolExecutor {
           : change.wasRanges.map(([a, b]) => (a === b ? `p${a}` : `p${a}-p${b}`)).join(', ');
         lines.push(`s${sec} changed ${spanText} (was ${wasText}):`);
         // 델타 구간 안에서는 빈 문단도 접지 않는다 — 에이전트는 바뀐 문단만 다시 본다.
-        for (const para of change.paragraphs) {
-          lines.push(`s${sec} p${para.paraIdx} (${para.length})${para.length > 0 ? ` ${previewStructureText(para.text, para.length)}` : ''}`);
-        }
+        for (const para of change.paragraphs) lines.push(structureParagraphLine(sec, para));
         for (const table of change.tables) {
           this.emitStructureTable(lines, sec, table);
         }
@@ -1580,7 +1999,7 @@ export class AgentToolExecutor {
   /** compact 구조 텍스트의 표 블록 — "  table s0 p5 c0 3x4" 머리 + 행마다 "[cellIdx] text | …". */
   private emitStructureTable(lines: string[], sec: number, table: StructureTable): void {
     lines.push(`  table s${sec} p${table.paraIdx} c${table.controlIdx} ${table.rowCount}x${table.colCount}`
-      + (table.textCut ? ' (cell text cut by maxParagraphs)' : ''));
+      + (table.textCut ? ' (cell text cut here; read the rest with get_text_range cell)' : ''));
     const rows = new Map<number, string[]>();
     for (const cell of table.cells) {
       const spans = `${cell.rowSpan !== 1 ? ` rs${cell.rowSpan}` : ''}${cell.colSpan !== 1 ? ` cs${cell.colSpan}` : ''}`;
@@ -1607,19 +2026,31 @@ export class AgentToolExecutor {
    * compact 구조 텍스트. 문단 한 줄 "s0 p12 (40) text…", 빈 문단 연속은 "s0 p13-p17 empty" 로 접고,
    * 표는 앵커 문단 바로 뒤에 "table s0 p5 c0 3x4" + 행마다 "[cellIdx] text | …" 로 적는다.
    * 스팬은 1 이 아닐 때만 rs/cs 로, 셀 문단 경계는 ⏎, 중첩 표를 품은 셀 문단은 ⊞ 로 표시한다.
+   * 쪽이 바뀌는 자리에는 "-- page N --" 을 넣는다 (문단 중간에서 넘어가면 그 문단 뒤에 "(pX continues)").
    */
   private renderCompactStructure(data: StructureData, revisionLabel: string): string {
     const lines: string[] = [];
     const sectionWord = data.sectionCount === 1 ? 'section' : 'sections';
-    lines.push(`${revisionLabel} · ${data.pageCount} pages · ${data.sectionCount} ${sectionWord}`
-      + (data.range ? ` · range s${data.range.sectionIdx} p${data.range.fromPara}-p${data.range.toPara}` : '')
-      + (data.truncated ? ' · TRUNCATED by maxParagraphs (raise it or use find_text)' : ''));
+    const scope = data.pages
+      ? ` · pages ${data.pages.first}-${data.pages.last}`
+      : data.range ? ` · range s${data.range.sectionIdx} p${data.range.fromPara}-p${data.range.toPara}` : '';
+    const cont = data.continueFrom;
+    const truncation = !data.truncated
+      ? ''
+      : cont
+        ? ` · TRUNCATED — continue with range {sectionIdx:${cont.sectionIdx}, fromPara:${cont.fromPara}, toPara:${cont.toPara}} text:"full"`
+          + (data.continueMoreSections ? ', then the later sections' : '')
+        : ' · TRUNCATED by maxParagraphs (raise it or use find_text)';
+    lines.push(`${revisionLabel} · ${data.pageCount} pages · ${data.sectionCount} ${sectionWord}${scope}`
+      + (data.fullText ? ' · full text' : '') + truncation);
     lines.push(STRUCTURE_LEGEND);
     for (const section of data.sections) {
       const sec = section.sectionIdx;
       lines.push(`s${sec} · ${section.paragraphCount} paragraphs`);
       const tables = [...(data.tablesBySection.get(sec) ?? [])];
-      const emitTable = (table: StructureTable): void => this.emitStructureTable(lines, sec, table);
+      const marks = data.pageMarks.filter((m) => m.sectionIdx === sec);
+      const firstPara = section.paragraphs[0]?.paraIdx;
+      let markAt = 0;
       let emptyStart = -1;
       let emptyEnd = -1;
       const flushEmpty = (): void => {
@@ -1629,7 +2060,26 @@ export class AgentToolExecutor {
           : `s${sec} p${emptyStart}-p${emptyEnd} empty`);
         emptyStart = -1;
       };
+      const pushMark = (m: StructurePageMark, showContinues: boolean): void => {
+        flushEmpty();
+        lines.push(showContinues && m.continued ? `-- page ${m.page} (p${m.paraIdx} continues) --` : `-- page ${m.page} --`);
+      };
+      if (firstPara !== undefined) {
+        // 목록 첫 문단보다 앞에서 시작한 쪽은 "이 아래는 그 쪽" 이라는 뜻으로 마지막 하나만 적는다.
+        let context: StructurePageMark | null = null;
+        while (markAt < marks.length && marks[markAt].paraIdx < firstPara) context = marks[markAt++];
+        const startsHere = markAt < marks.length && marks[markAt].paraIdx === firstPara;
+        if (context && !(startsHere && !marks[markAt].continued)) pushMark(context, false);
+        // 첫 문단 중간에서 시작하는 쪽이 목록의 첫 쪽이면(pages 범위의 첫 쪽) 그 표시를 문단 앞에 둔다.
+        if (!context && startsHere && marks[markAt].continued) pushMark(marks[markAt++], true);
+      }
       for (const para of section.paragraphs) {
+        // 앞 문단 중간에서 넘어간 쪽, 그리고 이 문단에서 새로 시작하는 쪽을 문단 줄 앞에 적는다.
+        while (markAt < marks.length && (marks[markAt].paraIdx < para.paraIdx
+          || (marks[markAt].paraIdx === para.paraIdx && !marks[markAt].continued))) {
+          pushMark(marks[markAt], marks[markAt].paraIdx < para.paraIdx);
+          markAt++;
+        }
         const anchored = tables.filter((t) => t.paraIdx === para.paraIdx);
         if (para.length === 0 && anchored.length === 0) {
           if (emptyStart < 0) emptyStart = para.paraIdx;
@@ -1637,15 +2087,21 @@ export class AgentToolExecutor {
           continue;
         }
         flushEmpty();
-        lines.push(`s${sec} p${para.paraIdx} (${para.length})${para.length > 0 ? ` ${previewStructureText(para.text, para.length)}` : ''}`);
+        lines.push(structureParagraphLine(sec, para));
         for (const table of anchored) {
-          emitTable(table);
+          this.emitStructureTable(lines, sec, table);
           tables.splice(tables.indexOf(table), 1);
         }
       }
+      // 마지막 문단 중간에서 넘어간 쪽 — 목록 밖 문단에서 시작하는 쪽은 적지 않는다.
+      const lastPara = section.paragraphs.at(-1)?.paraIdx;
+      while (lastPara !== undefined && markAt < marks.length && marks[markAt].paraIdx <= lastPara) {
+        if (marks[markAt].continued) pushMark(marks[markAt], true);
+        markAt++;
+      }
       flushEmpty();
       // 예산이 끊긴 뒤의 표는 좌표라도 남긴다 (셀 주소 지정에 필수).
-      for (const table of tables) emitTable(table);
+      for (const table of tables) this.emitStructureTable(lines, sec, table);
     }
     return lines.join('\n');
   }

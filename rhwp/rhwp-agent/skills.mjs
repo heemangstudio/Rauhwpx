@@ -25,6 +25,10 @@ const MAX_DISABLED_SKILLS = 1_000;
 const MAX_CATALOG_SKILLS = 1_000;
 const MAX_SKILL_PATH_DEPTH = 32;
 const CATALOG_LINE_BUDGET = 8_000;
+// 본문을 카탈로그에 바로 싣는 짧은 스킬 — 매칭 턴마다 read_product_skill 왕복(모델 요청 하나)을 없앤다.
+// 리소스가 없는 스킬만, 합계 한도 안에서 작은 것부터 싣고 나머지는 설명 줄로 남긴다.
+const INLINE_SKILL_BODY_BYTES = 1_200;
+const INLINE_SKILL_TOTAL_BYTES = 3_000;
 const DESCRIPTION_LINE_LIMIT = 1_000;
 const RESERVED_NAMES = new Set(['skills', 'skill-create', 'skill-edit', 'skill-delete']);
 const SEALED_NAME = 'present-plan';
@@ -567,6 +571,8 @@ export class SkillRegistry {
     const enabled = catalog.rows.filter((row) => row.enabled && row.kind !== 'broken');
     const sealed = enabled.find((row) => row.kind === 'sealed') ?? null;
     const rest = enabled.filter((row) => row.kind !== 'sealed');
+    const requested = typeof explicitName === 'string' ? explicitName : '';
+    const inline = await this._inlineSkillBodies(rest.filter((row) => row.kind === 'skill' && row.name !== requested));
     const lines = [];
     let budget = CATALOG_LINE_BUDGET;
     if (sealed) {
@@ -576,6 +582,7 @@ export class SkillRegistry {
     }
     let omitted = false;
     for (const row of rest) {
+      if (inline.has(row.name)) continue;
       const line = `- ${row.name}: ${row.description}`;
       const cost = line.length + (lines.length ? 1 : 0);
       if (cost > budget) {
@@ -586,6 +593,10 @@ export class SkillRegistry {
       budget -= cost;
     }
     if (omitted) lines.push('(more skills omitted)');
+    for (const row of rest) {
+      const body = inline.get(row.name);
+      if (body) lines.push(`<product_skill name="${row.name}">\n${row.description}\n\n${body}\n</product_skill>`);
+    }
     const metadata = lines.join('\n');
     let activated = '';
     if (phase === 'planning') {
@@ -605,7 +616,6 @@ export class SkillRegistry {
         }
       }
     }
-    const requested = typeof explicitName === 'string' ? explicitName : '';
     const active = requested && requested !== SEALED_NAME
       ? enabled.find((row) => row.name === requested && row.kind === 'skill')
       : null;
@@ -623,7 +633,10 @@ export class SkillRegistry {
       language: styleStatus?.language === 'en' ? 'en' : 'ko',
       personalProfile: Boolean(styleStatus?.active),
     });
-    const skills = `<rhwp_product_skills>\nOnly the skills in this catalog are product skills. If the request clearly matches one, call read_product_skill for its SKILL.md before acting, then read supporting resources progressively. Do not use provider-global skills.\n${metadata || '(no enabled skills)'}\n</rhwp_product_skills>${activated}`;
+    const loadedNote = inline.size > 0
+      ? ' Skills shown in <product_skill> blocks are already loaded: when the request matches one, follow it directly without read_product_skill.'
+      : '';
+    const skills = `<rhwp_product_skills>\nOnly the skills in this catalog are product skills.${loadedNote} If the request clearly matches a skill listed by name only, call read_product_skill for its SKILL.md before acting, then read supporting resources progressively. Do not use provider-global skills.\n${metadata || '(no enabled skills)'}\n</rhwp_product_skills>${activated}`;
     return `${writingStyle ? `${writingStyle}\n\n` : ''}${humanizer ? `${humanizer}\n\n` : ''}${skills}\n\n<user_request>\n${text}\n</user_request>`;
   }
 
@@ -1075,6 +1088,41 @@ export class SkillRegistry {
     } catch {
       return '';
     }
+  }
+
+  /**
+   * 카탈로그에 본문째 실을 스킬 — 리소스 없이 SKILL.md 하나뿐이고 본문이 INLINE_SKILL_BODY_BYTES
+   * 이하인 스킬을 작은 것부터 합계 INLINE_SKILL_TOTAL_BYTES 까지 고른다. name → 본문(frontmatter 제외).
+   */
+  async _inlineSkillBodies(rows) {
+    const candidates = [];
+    for (const row of rows) {
+      const entry = await this._loadEntry(row.origin === 'user' ? this.userRoot : this.bundledRoot, row.name);
+      if (!entry || entry.broken) continue;
+      if ([...entry.files.keys()].some((file) => file !== 'SKILL.md' && file !== APP_ORIGIN_FILE)) continue;
+      const bytes = entry.files.get('SKILL.md');
+      if (!bytes) continue;
+      let markdown;
+      try {
+        markdown = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+      } catch {
+        continue;
+      }
+      const front = frontmatterSplit(markdown);
+      if (!front) continue;
+      const body = markdown.slice(front.length).trim();
+      const size = Buffer.byteLength(body);
+      if (body && size <= INLINE_SKILL_BODY_BYTES) candidates.push({ name: row.name, body, size });
+    }
+    candidates.sort((a, b) => a.size - b.size || a.name.localeCompare(b.name));
+    const inline = new Map();
+    let total = 0;
+    for (const candidate of candidates) {
+      if (total + candidate.size > INLINE_SKILL_TOTAL_BYTES) break;
+      inline.set(candidate.name, candidate.body);
+      total += candidate.size;
+    }
+    return inline;
   }
 
   async _visibleMarkdown(row) {

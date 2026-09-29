@@ -1,5 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { performance } from 'node:perf_hooks';
 import WebSocket from 'ws';
 import {
   HUB_CAPABILITY_AUDIENCES,
@@ -34,6 +35,11 @@ const MAX_INFLIGHT_CALLS = 64;
 // 어댑터가 루트를 넘겨주면 그 밖의 절대경로 읽기는 전부 거부한다.
 const IMAGE_ALLOWED_ROOTS = imageRootsFromEnv(process.env);
 
+/** epoch ms (µs 정밀도) — 허브의 도구 추적(tool-trace.mjs)과 같은 시간축. */
+function traceNow() {
+  return Math.round((performance.timeOrigin + performance.now()) * 1000) / 1000;
+}
+
 function log(msg) {
   process.stderr.write(`[rhwp-mcp] ${msg}\n`);
 }
@@ -64,7 +70,7 @@ let ws = null;
 /** @type {Promise<WebSocket> | null} */
 let connecting = null;
 let nextId = 1;
-/** @type {Map<number, { resolve: (v: any) => void, reject: (e: any) => void, timer: NodeJS.Timeout | null }>} */
+/** @type {Map<number, { resolve: (v: any) => void, reject: (e: any) => void, timer: NodeJS.Timeout | null, timing: any }>} */
 const inflight = new Map();
 
 function failAllInflight(err) {
@@ -112,6 +118,7 @@ function ensureConnected() {
       resolve(sock);
     });
     sock.on('message', (data) => {
+      const receivedAt = traceNow();
       let msg;
       try {
         msg = JSON.parse(data.toString());
@@ -124,6 +131,13 @@ function ensureConnected() {
         if (!entry) return;
         inflight.delete(msg.id);
         if (entry.timer) clearTimeout(entry.timer);
+        // 허브가 추적 중일 때만 결과 프레임에 trace 가 붙는다.
+        if (msg.trace && entry.timing) {
+          entry.timing.wsRecv = receivedAt;
+          entry.timing.parsed = traceNow();
+          entry.timing.seq = msg.trace.seq;
+          entry.timing.resultBytes = data.length ?? 0;
+        }
         if (msg.ok) entry.resolve(msg.result);
         else entry.reject(hubError(msg.error?.code ?? 'RPC_ERROR', msg.error?.message ?? 'unknown hub error'));
       } else if (msg?.type === 'protocol-error') {
@@ -148,8 +162,9 @@ function ensureConnected() {
   return connecting;
 }
 
-async function callHub(tool, args) {
+async function callHub(tool, args, timing = null) {
   const sock = await ensureConnected();
+  if (timing) timing.connected = traceNow();
   if (inflight.size >= MAX_INFLIGHT_CALLS) {
     throw hubError('TOO_MANY_INFLIGHT_CALLS', `At most ${MAX_INFLIGHT_CALLS} tool calls may be in flight`);
   }
@@ -164,7 +179,8 @@ async function callHub(tool, args) {
         inflight.delete(id);
         reject(hubError('TOOL_TIMEOUT', 'The hub did not respond within 180s; if this was a document edit, re-read before retrying to avoid duplicates'));
       }, CALL_TIMEOUT_MS);
-    inflight.set(id, { resolve, reject, timer });
+    inflight.set(id, { resolve, reject, timer, timing });
+    if (timing) timing.clientId = id;
     try {
       sock.send(JSON.stringify({
         v: 5,
@@ -175,11 +191,33 @@ async function callHub(tool, args) {
         workflow: WORKFLOW,
         ...(CAPABILITY_EPOCH ? { capabilityEpoch: CAPABILITY_EPOCH } : {}),
       }));
+      if (timing) timing.wsSend = traceNow();
     } catch (e) {
       inflight.delete(id);
       if (timer) clearTimeout(timer);
       reject(hubError('HUB_UNAVAILABLE', `failed to send to hub: ${e?.message ?? e}`));
     }
+  });
+}
+
+/**
+ * 허브가 추적 중이면(결과 프레임에 trace.seq) 이 프로세스 구간 타이밍을 허브로 돌려보낸다.
+ * CLI 응답을 늦추지 않도록 결과를 반환한 다음 틱에 보낸다.
+ */
+function reportTiming(timing, extra) {
+  if (!timing?.seq) return;
+  timing.mcpOut = traceNow();
+  const meta = extra?._meta;
+  const toolUseId = meta && typeof meta['claudecode/toolUseId'] === 'string' ? meta['claudecode/toolUseId'] : null;
+  const trace = {
+    ...timing,
+    rpcId: typeof extra?.requestId === 'number' || typeof extra?.requestId === 'string' ? extra.requestId : null,
+    ...(toolUseId ? { toolUseId } : {}),
+  };
+  setImmediate(() => {
+    try {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ v: 5, type: 'tool-trace', trace }));
+    } catch {}
   });
 }
 
@@ -193,12 +231,16 @@ function registerTool(def) {
     inputSchema: def.shape,
     annotations: toolAnnotations(def.category),
     _meta: { 'rhwp/toolCategory': def.category },
-  }, async (args) => {
+  }, async (args, extra) => {
+    const timing = { tool: def.name, mcpIn: traceNow() };
     try {
       def.validate?.(args ?? {});
-      const result = await callHub(def.name, args ?? {});
-      return { content: toToolContent(result) };
+      const result = await callHub(def.name, args ?? {}, timing);
+      const content = toToolContent(result);
+      reportTiming(timing, extra);
+      return { content };
     } catch (e) {
+      reportTiming(timing, extra);
       return { content: [{ type: 'text', text: `${e.code ?? 'RPC_ERROR'}: ${e.message}` }], isError: true };
     }
   });
@@ -225,12 +267,16 @@ function registerInsertImageTool(def) {
       annotations: toolAnnotations(def.category),
       _meta: { 'rhwp/toolCategory': def.category },
     },
-    async (args) => {
+    async (args, extra) => {
+      const timing = { tool: def.name, mcpIn: traceNow() };
       try {
         const payload = await prepareInsertImageArgs(args, IMAGE_ALLOWED_ROOTS);
-        const result = await callHub('insert_image', payload);
-        return { content: toToolContent(result) };
+        const result = await callHub('insert_image', payload, timing);
+        const content = toToolContent(result);
+        reportTiming(timing, extra);
+        return { content };
       } catch (e) {
+        reportTiming(timing, extra);
         const code = e.code ?? (e.syscall === 'open' ? 'FILE_NOT_FOUND' : 'RPC_ERROR');
         return { content: [{ type: 'text', text: `${code}: ${e.message}` }], isError: true };
       }

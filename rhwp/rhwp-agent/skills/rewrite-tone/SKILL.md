@@ -4,7 +4,7 @@ description: Rewrite selected Korean HWP/HWPX text into a requested tone such as
 icon: pencil
 ---
 
-Read the exact source range and identify the requested audience and tone.
+Read the exact source range once with `get_structure` `text: "full"` and identify the requested audience and tone.
 
 1. Preserve facts, names, dates, numbers, obligations, and logical qualifications.
 2. Change only wording and sentence structure needed for the requested tone.

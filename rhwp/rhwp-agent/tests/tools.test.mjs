@@ -342,6 +342,12 @@ test('get_structure: sinceRevision·range·compact 기본값 계약', () => {
   assert.ok(shape.range.safeParse({ sectionIdx: 0, fromPara: 2, toPara: 5 }).success);
   assert.ok(!shape.range.safeParse({ sectionIdx: 0, fromPara: 2 }).success, 'range 는 세 필드가 모두 필수');
   assert.ok(!shape.range.safeParse({ sectionIdx: 0, fromPara: 2, toPara: 5, extra: 1 }).success, 'strict — 모르는 키 거절');
+  assert.ok(shape.pages.safeParse([0, 2]).success);
+  assert.ok(!shape.pages.safeParse([0]).success, 'pages 는 [first, last] 두 칸');
+  assert.ok(shape.text.safeParse('full').success);
+  assert.ok(!shape.text.safeParse('all').success);
+  assert.match(RHWP_TOOL_RULES, /pages:\[first,last\] \(0-based\) when the user names pages/);
+  assert.match(RHWP_TOOL_RULES, /get_page_geometry is for placement only/);
 });
 
 test('document snapshots are a read-only, argument-free current-document export', () => {

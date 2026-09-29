@@ -56,6 +56,13 @@ import { BrowserbaseFleet, normalizeBrowserbaseOverride, validateBrowserbaseCred
 import { createProviderHealth } from './provider-health.mjs';
 import { createUsageStore } from './usage-store.mjs';
 import { appendToolTelemetryRow, startToolCall, ToolTurnTelemetry } from './tool-telemetry.mjs';
+import {
+  TOOL_TRACE_ENABLED,
+  configureToolTrace,
+  sanitizeTraceFields,
+  traceNow,
+  writeToolTrace,
+} from './tool-trace.mjs';
 import { createProviderLimitsClient } from './provider-limits.mjs';
 import {
   createPiManager,
@@ -161,6 +168,7 @@ const RUNTIME_ROOT = process.env.RHWP_RUNTIME_DIR
 const RECORDS_ROOT = path.join(WORK_ROOT, 'sessions');
 await fs.mkdir(RECORDS_ROOT, { recursive: true, mode: 0o700 });
 ensureCredentialRetentionRootSync(WORK_ROOT);
+const TOOL_TRACE_PATH = configureToolTrace(WORK_ROOT);
 let hubPort = REQUESTED_PORT;
 const STUDIO_TOOL_TIMEOUT_MS = 30_000;
 const MAX_CHAT_MESSAGE_CHARS = 128_000;
@@ -2450,10 +2458,27 @@ function createTemplateJob(record, activeSession, binding) {
   return job;
 }
 
+const TRACED_PROVIDER_EVENTS = new Set(['turn-start', 'turn-end', 'tool-call', 'tool-result', 'task-start', 'task-end']);
+
 function makeBackendEventHandler(record, generation) {
   return (evt) => {
     const activeSession = record.agentSession;
     if (!activeSession || activeSession.generation !== generation) return;
+    if (TOOL_TRACE_ENABLED && TRACED_PROVIDER_EVENTS.has(evt.type)) {
+      writeToolTrace({
+        kind: 'provider',
+        t: traceNow(),
+        ev: evt.type,
+        agent: evt.agent ?? activeSession.agent,
+        turnId: activeSession.turnId ?? null,
+        ...(evt.callId ? { callId: evt.callId } : {}),
+        ...(evt.tool ? { tool: evt.tool } : {}),
+        ...(evt.taskId ? { taskId: evt.taskId } : {}),
+        ...(evt.parentTaskId ? { parentTaskId: evt.parentTaskId } : {}),
+        ...(evt.type === 'tool-result' ? { ok: evt.ok !== false } : {}),
+        ...(evt.type === 'turn-end' && evt.status ? { status: String(evt.status) } : {}),
+      });
+    }
     // The fallback question tool is a first-class blocking interaction. Keep
     // its provider bookkeeping out of the generic tool activity transcript;
     // the dedicated requested/resolved lifecycle is the only Studio surface.
@@ -4432,6 +4457,14 @@ async function handleStudioMessage(record, sock, msg) {
       }
       record.pendingCalls.delete(msg.id);
       clearTimeout(entry.timer);
+      if (entry.trace && msg.hubTrace) {
+        Object.assign(entry.trace, {
+          hubRespIn: msg.hubTrace.respIn,
+          hubRespDeq: msg.hubTrace.respDeq,
+          respBytes: msg.hubTrace.respBytes,
+          studio: sanitizeTraceFields(msg.trace),
+        });
+      }
       const releaseSnapshotClaim = () => {
         if (entry.tool !== 'materialize_document_snapshot' || !entry.copyLayoutJobId) return;
         const job = record.templateJobs.get(entry.copyLayoutJobId);
@@ -4571,8 +4604,16 @@ async function handleStudioMessage(record, sock, msg) {
   }
 }
 
-function handleMcpMessage(record, sock, msg) {
+let toolTraceSeq = 0;
+
+function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
   switch (msg.type) {
+    case 'tool-trace': {
+      // mcp-stdio 가 결과를 CLI 에 돌려준 뒤 보내는 자기 구간 타이밍. 추적이 켜진 허브만 받는다.
+      if (!TOOL_TRACE_ENABLED) return;
+      writeToolTrace({ kind: 'mcp', agent: sock.agentLabel ?? null, ...sanitizeTraceFields(msg.trace) });
+      return;
+    }
     case 'tool-call': {
       const clientId = msg.id;
       if (!Number.isSafeInteger(clientId) || clientId < 0) {
@@ -4594,6 +4635,27 @@ function handleMcpMessage(record, sock, msg) {
       let providerTurn = null;
       let callSettled = false;
       const telemetryCall = startToolCall(tool, msg.args);
+      // 추적 행 — 허브 구간(수신→스튜디오 전달→응답 수신→큐 통과→MCP 로 전송)과 스튜디오 구간.
+      const trace = TOOL_TRACE_ENABLED ? {
+        kind: 'hub',
+        seq: ++toolTraceSeq,
+        tool,
+        agent: sock.agentLabel ?? null,
+        clientId,
+        turnId: sock.agentTurnId ?? null,
+        parentTaskId: sock.parentTaskId ?? msg.parentTaskId ?? null,
+        callBytes: frameBytes,
+        hubIn: traceIn,
+      } : null;
+      const sendTraced = (frame) => {
+        if (!trace) return sendJson(sock, frame);
+        const delivered = sendJson(sock, { ...frame, trace: { seq: trace.seq } });
+        trace.hubOut = traceNow();
+        trace.ok = frame.ok === true;
+        if (!frame.ok) trace.error = frame.error?.code ?? null;
+        writeToolTrace(trace);
+        return delivered;
+      };
       const sendError = (error, fallback = 'TOOL_ERROR') => {
         if (callSettled) return false;
         const terminalQuestionOutcome = tool === 'ask_user_question'
@@ -4607,7 +4669,7 @@ function handleMcpMessage(record, sock, msg) {
           errorCode: reported?.code ?? fallback,
           errorMessage: String(reported?.message ?? reported),
         });
-        return sendJson(sock, {
+        return sendTraced({
           v: 1,
           type: 'tool-result',
           id: clientId,
@@ -4624,9 +4686,10 @@ function handleMcpMessage(record, sock, msg) {
           || (sock.piSubagentId && !currentPiSubagentForSocket(record, sock)))) {
           return sendError(noActiveProviderTurnError());
         }
+        const resultFrame = { v: PROTOCOL_VERSION, type: 'tool-result', id: clientId, ok: true, result };
         let frame;
         try {
-          frame = JSON.stringify({ v: PROTOCOL_VERSION, type: 'tool-result', id: clientId, ok: true, result });
+          frame = JSON.stringify(trace ? { ...resultFrame, trace: { seq: trace.seq } } : resultFrame);
         } catch (error) {
           return sendError(error, 'RPC_ERROR');
         }
@@ -4643,7 +4706,13 @@ function handleMcpMessage(record, sock, msg) {
         }
         callSettled = true;
         telemetryCall.finish(toolTelemetryForTurn(record, providerTurn), { result });
-        return sendRaw(sock, frame);
+        const delivered = sendRaw(sock, frame);
+        if (trace) {
+          trace.hubOut = traceNow();
+          trace.ok = true;
+          writeToolTrace(trace);
+        }
+        return delivered;
       };
       if (!workerJob) {
         const activeSession = record.agentSession;
@@ -5363,8 +5432,11 @@ function handleMcpMessage(record, sock, msg) {
           copyLayoutJobId: workerJob?.jobId ?? null,
           sessionGeneration: record.agentSession?.generation ?? null,
           renderSavePath,
+          trace,
         });
+        if (trace) trace.hubId = hubId;
         const forwarded = sendJson(record.studioSocket, {
+          ...(trace ? { trace: 1 } : {}),
           v: 1, type: 'tool-request', id: hubId,
           // 호출을 보낸 MCP 소켓의 에이전트 라벨을 단다 — 현재 세션 기준으로 찍으면
           // 세션 교체 직후 남은 호출이 엉뚱한 에이전트로 기록될 수 있다.
@@ -5379,6 +5451,7 @@ function handleMcpMessage(record, sock, msg) {
           ...(providerTurn ? { providerTurnId: providerTurn.turnId } : {}),
           ...(sock.parentTaskId ? { parentTaskId: sock.parentTaskId } : {}),
         });
+        if (trace) trace.hubFwd = traceNow();
         if (!forwarded) {
           clearTimeout(timer);
           record.pendingCalls.delete(hubId);
@@ -5418,6 +5491,7 @@ function attachSocket(record, sock, role) {
   let queuedStudioBytes = 0;
   let queuedStudioMessages = 0;
   sock.on('message', async (data, isBinary) => {
+    const traceIn = TOOL_TRACE_ENABLED ? traceNow() : 0;
     if (record.disposed) {
       try { sock.close(1001, 'hub session closed'); } catch {}
       return;
@@ -5466,8 +5540,12 @@ function attachSocket(record, sock, role) {
       if (role === 'studio') {
         // WebSocket 은 async 메시지 리스너를 동시에 실행한다. Studio 명령을 직렬화해
         // 빠른 중지/시작/열기 조작이 옛 채팅을 되살리지 못하게 한다.
+        if (traceIn && msg?.type === 'tool-response' && msg.trace) {
+          msg.hubTrace = { respIn: traceIn, respBytes: frameBytes };
+        }
         record.studioMessageQueue = record.studioMessageQueue
           .then(() => {
+            if (msg.hubTrace) msg.hubTrace.respDeq = traceNow();
             // 닫힌 소켓의 명령은 버리되 tool-response 는 처리한다 — hubId 로만 살아 있는
             // pendingCalls 를 마무리하고, 교체된 인스턴스의 호출은 이미 실패 처리돼 있다.
             // 느린 항목 뒤에 줄 서 있던 응답이 소켓 종료로 사라지면 30초 타임아웃까지 간다.
@@ -5479,7 +5557,7 @@ function attachSocket(record, sock, role) {
           })
           .finally(releaseStudioBudget);
       } else {
-        handleMcpMessage(record, sock, msg);
+        handleMcpMessage(record, sock, msg, traceIn, frameBytes);
       }
     } catch (e) {
       releaseStudioBudget();
@@ -6365,6 +6443,7 @@ httpServer.listen(REQUESTED_PORT, '127.0.0.1', () => {
   process.stdout.write(`RHWP_HUB_READY ${JSON.stringify({ port: hubPort, pid: process.pid, launchId: LAUNCH_ID })}\n`);
   log(`rhwp-agent hub listening on ws://127.0.0.1:${hubPort} (protocol v${PROTOCOL_VERSION})`);
   log('claude/codex/pi can be installed and authenticated from Studio settings');
+  if (TOOL_TRACE_PATH) log(`tool trace enabled: ${TOOL_TRACE_PATH}`);
   void ensureBootWork();
   scheduleHarnessUpdates(HARNESS_UPDATE_INITIAL_DELAY_MS);
 });

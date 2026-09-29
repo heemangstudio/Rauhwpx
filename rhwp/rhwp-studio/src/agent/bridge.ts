@@ -18,7 +18,7 @@ import {
   type RendererSessionContext,
 } from '../desktop-integration.ts';
 import { RevisionTracker } from './revision.ts';
-import { AgentToolExecutor } from './tool-executor.ts';
+import { AgentToolExecutor, toolTraceNow, type ToolTraceTimings } from './tool-executor.ts';
 import { PendingEditManager, editReportNote } from './pending-edits.ts';
 import { PendingOverlayRenderer } from './pending-overlay.ts';
 import { readProviderQuota, readRemoteBalance } from './provider-quota-protocol.ts';
@@ -1320,6 +1320,8 @@ export class AgentBridgeImpl implements AgentBridge {
   private interruptedProviderTurnId: string | null = null;
   private editingAgent: AgentName = 'codex';
   private activeToolRequests = 0;
+  /** 마지막 허브 프레임을 받은 시각 (epoch ms) — 추적 중인 tool-request 의 수신 시각으로 쓴다. */
+  private frameReceivedAt = 0;
   private activeToolRequestControllers = new Map<number, {
     controller: AbortController;
     turnBound: boolean;
@@ -1695,6 +1697,7 @@ export class AgentBridgeImpl implements AgentBridge {
     };
     ws.onmessage = (ev) => {
       if (this.disposed || this.ws !== ws) return;
+      this.frameReceivedAt = performance.timeOrigin + performance.now();
       this.handleFrame(ev.data);
     };
     ws.onclose = (ev) => {
@@ -2905,6 +2908,10 @@ export class AgentBridgeImpl implements AgentBridge {
       this.workflow = msg.workflow;
       this.phase = msg.phase;
     }
+    // 허브가 추적 중이면(RHWP_TOOL_TRACE) 스튜디오 구간 타이밍을 응답에 싣는다.
+    const trace: ToolTraceTimings | null = msg.trace
+      ? { stIn: Math.round(this.frameReceivedAt * 1000) / 1000, stStart: toolTraceNow() }
+      : null;
     this.activeToolRequests += 1;
     this.syncEditingLease();
     void this.executor
@@ -2917,12 +2924,15 @@ export class AgentBridgeImpl implements AgentBridge {
         permissionProfile: this.permissionProfile,
         template: readDocumentTemplate(msg.template) ?? undefined,
         requestIsActive,
+        ...(trace ? { trace } : {}),
       })
       .then((result) => {
         if (!requestIsActive()) return;
         const reported = this.withEditReport(result);
+        if (trace) trace.stSend = toolTraceNow();
         this.sendToolResponse({
           v: AGENT_PROTOCOL_VERSION, type: 'tool-response', id, ok: true, result: reported,
+          ...(trace ? { trace } : {}),
         });
         this.notifyToolExecuted({ type: 'tool-executed', tool, args, ok: true, result: reported, ...parentTask });
       })
@@ -2932,7 +2942,11 @@ export class AgentBridgeImpl implements AgentBridge {
           e instanceof AgentToolError
             ? { code: e.code, message: e.message }
             : { code: 'RPC_ERROR', message: e instanceof Error ? e.message : String(e) };
-        this.sendToolResponse({ v: AGENT_PROTOCOL_VERSION, type: 'tool-response', id, ok: false, error });
+        if (trace) trace.stSend = toolTraceNow();
+        this.sendToolResponse({
+          v: AGENT_PROTOCOL_VERSION, type: 'tool-response', id, ok: false, error,
+          ...(trace ? { trace } : {}),
+        });
         this.notifyToolExecuted({ type: 'tool-executed', tool, args, ok: false, error, ...parentTask });
       })
       .finally(() => {

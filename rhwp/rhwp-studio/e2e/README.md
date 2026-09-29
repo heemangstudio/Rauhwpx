@@ -13,4 +13,19 @@ Name regression scripts `*.test.mjs` and make assertion failures exit nonzero.
 Helpers, render reports, and benchmark runners are not regression coverage
 merely because they execute.
 
+## Agent tool latency
+
+`npm run e2e:agent-tool-concurrency-bench` sends tool calls through a real
+`mcp-stdio.mjs` child, the hub and Studio at concurrency 1, 4 and 8, and splits
+each call into stages. `npm run e2e:agent-claude-live-bench` runs the real
+`claude` CLI from the sidebar composer and reports per-call latency, model
+requests per turn and whether parallel tool calls overlapped. It also records how
+many paragraphs each turn rewrote or bolded, so fewer requests can be checked
+against the same work. It uses account quota.
+
+Both start the hub with `RHWP_TOOL_TRACE=1`. The hub then writes one JSONL row
+per tool call (`RHWP_TOOL_TRACE_FILE`, default `<work dir>/tool-trace.jsonl`),
+and `mcp-stdio` and Studio add their own timestamps. Without the variable no
+trace fields are sent.
+
 For fixture setup and development prerequisites, see [CONTRIBUTING](../../../CONTRIBUTING.md).

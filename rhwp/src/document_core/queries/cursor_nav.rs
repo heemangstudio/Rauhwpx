@@ -97,6 +97,10 @@ pub(crate) fn plan_selection_pages(
     }
 }
 
+/// 본문 선택 rect 조회가 공유 페이지 트리 캐시를 쓰는 최대 쪽 수. 이보다 넓은 선택은
+/// 함수 로컬로 빌드해 LRU(32쪽)를 긴 선택 한 번으로 밀어내지 않는다.
+const SELECTION_SHARED_TREE_MAX_PAGES: usize = 3;
+
 impl DocumentCore {
     pub(crate) fn get_line_info_native(
         &self,
@@ -2295,7 +2299,8 @@ impl DocumentCore {
         }
 
         // ── 후보 페이지별 렌더 트리 캐시 ──
-        let mut tree_cache: Vec<(u32, crate::renderer::render_tree::PageRenderTree)> = Vec::new();
+        type SharedTree = std::sync::Arc<crate::renderer::render_tree::PageRenderTree>;
+        let mut tree_cache: Vec<(u32, SharedTree)> = Vec::new();
 
         // 선택 범위에 관련된 페이지 번호 수집 (중복 제거)
         let lookup_para = if let Some(addr) = cell_ctx.as_ref() {
@@ -2330,15 +2335,23 @@ impl DocumentCore {
             SelectionPagePlan::FullFallback(pages) => (pages, false),
         };
 
+        // 페이지 트리는 공유 캐시(쪽 LRU)에서 참조로 빌린다 — 에이전트 스테이징 오버레이는
+        // 편집 op 마다 같은 쪽을 다시 묻는다. 셀 선택의 positional/missing/invalid hint
+        // fallback 은 기존 함수 로컬 수명을 유지한다. 115쪽 fallback을 shared cache에 영구
+        // 보관해 메모리 체류를 늘리지 않는다. 본문 선택도 몇 쪽 안쪽일 때만 공유한다.
+        let share_trees = used_hints
+            || (cell_ctx.is_none() && page_nums.len() <= SELECTION_SHARED_TREE_MAX_PAGES);
+        let fetch_tree = |pn: u32, held: usize| -> Result<SharedTree, HwpError> {
+            if share_trees && (used_hints || held < SELECTION_SHARED_TREE_MAX_PAGES) {
+                self.build_page_tree_shared(pn)
+            } else {
+                Ok(SharedTree::new(self.build_page_tree(pn)?))
+            }
+        };
+
         // 주요 페이지 트리 미리 빌드
         for &pn in &page_nums {
-            let tree = if used_hints {
-                self.build_page_tree_cached(pn)?
-            } else {
-                // positional/missing/invalid hint는 기존 함수 로컬 수명을 유지한다.
-                // 115쪽 fallback을 shared cache에 영구 보관해 메모리 체류를 늘리지 않는다.
-                self.build_page_tree(pn)?
-            };
+            let tree = fetch_tree(pn, tree_cache.len())?;
             tree_cache.push((pn, tree));
         }
 
@@ -2432,11 +2445,7 @@ impl DocumentCore {
                 if let Ok(pp) = self.find_pages_for_paragraph(section_idx, para_idx) {
                     for &pn in &pp {
                         if !tree_cache.iter().any(|(p, _)| *p == pn) {
-                            let tree = if used_hints {
-                                self.build_page_tree_cached(pn)?
-                            } else {
-                                self.build_page_tree(pn)?
-                            };
+                            let tree = fetch_tree(pn, tree_cache.len())?;
                             tree_cache.push((pn, tree));
                         }
                     }
