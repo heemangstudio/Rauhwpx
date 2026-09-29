@@ -4234,6 +4234,7 @@ test('desktop cloud bursts send history once per window and preserve ordered pro
     webContents: { index, send: (channel, payload) => messages.push({ channel, payload }) },
   }));
   let flush;
+  let snapshotGate = null;
   const queue = runInNewContext(`
     let cloudBroadcastChain = Promise.resolve();
     const CLOUD_BROADCAST_COALESCE_MS = 100;
@@ -4246,6 +4247,7 @@ test('desktop cloud bursts send history once per window and preserve ordered pro
     sessions: { windows: () => windows, sessionForSender: (sender) => sender.index },
     scopedCloudSnapshot: async (session) => {
       snapshotCalls.push(session);
+      await snapshotGate;
       return snapshots[session];
     },
     setTimeout: (callback) => { flush = callback; return { unref() {} }; },
@@ -4299,4 +4301,32 @@ test('desktop cloud bursts send history once per window and preserve ordered pro
   assert.ok(bytes(sent[1][0].payload) < 16_384, 'another window should receive only its scoped history');
   assert.ok(previousBytes > currentBytes * 30, `${previousBytes} -> ${currentBytes} bytes`);
   t.diagnostic(`32 deltas plus one operation with a 1 MiB timeline: ${previousBytes} -> ${currentBytes} bytes`);
+
+  // A slow broadcast holds later events for one ordered follow-up batch instead
+  // of stacking another snapshot rebuild behind it.
+  const later = (sequence) => ({ ...inputs[0], event: { ...inputs[0].event, sequence: 100 + sequence } });
+  let release;
+  snapshotGate = new Promise((resolve) => { release = resolve; });
+  flush = null;
+  queue.push(later(0));
+  const startSlow = flush;
+  flush = null;
+  startSlow();
+  queue.push(later(1));
+  queue.push(later(2));
+  assert.equal(flush, null, 'no broadcast is armed while one is in flight');
+  assert.deepEqual(snapshotCalls, [0, 1, 0, 1]);
+  release();
+  await queue.done();
+  snapshotGate = null;
+  assert.equal(typeof flush, 'function', 'the held events are armed once the broadcast settles');
+  flush();
+  await queue.done();
+  assert.deepEqual(snapshotCalls, [0, 1, 0, 1, 0, 1]);
+  for (const messages of sent) {
+    assert.deepEqual(
+      messages.slice(1).map(({ payload }) => [...payload.events].map((item) => item.event.sequence)),
+      [[100], [101, 102]],
+    );
+  }
 });

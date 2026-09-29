@@ -121,6 +121,11 @@ const hubToken = createHubToken();
 const devOrigin = devUrl ? new URL(devUrl).origin : null;
 
 const CLOUD_CLOSE_WAIT_MS = 120_000;
+// A hub that dies at every boot stops respawning here; the next window or
+// sidebar request tries again.
+const MAX_HUB_AUTO_RESTARTS = 5;
+// A live hub that misses the short health probe gets one longer probe first.
+const HUB_BUSY_HEALTH_TIMEOUT_MS = 2500;
 // Vite gives every hot update a new timestamped URL. Reusing Electron's
 // persistent HTTP cache across dev runs otherwise leaves one JS/WASM entry per
 // edit and per worktree in the production profile.
@@ -213,6 +218,13 @@ class AgentHubOwner {
 
   scheduleRestart() {
     if (this.#disposed || quitting || this.#restartTimer || this.#restartRequired) return;
+    if (this.#restartAttempt >= MAX_HUB_AUTO_RESTARTS) {
+      // Warn once; a successful start resets #restartAttempt to 0.
+      if (this.#restartAttempt++ === MAX_HUB_AUTO_RESTARTS) {
+        console.warn('[rauhwpx] agent hub keeps exiting; automatic restarts stopped until the next window or sidebar request');
+      }
+      return;
+    }
     const delay = nextHubRestartDelay(this.#restartAttempt++);
     console.warn(`[rauhwpx] owned agent hub exited; restarting in ${delay}ms`);
     this.#restartTimer = setTimeout(() => {
@@ -307,13 +319,20 @@ class AgentHubOwner {
     mkdirSync(this.runtimeDir, { recursive: true, mode: 0o700 });
     mkdirSync(this.workDir, { recursive: true, mode: 0o700 });
     if (this.#child && this.#context) {
-      const healthy = await isHubHealthy(this.#context.port, {
+      const child = this.#child;
+      const context = this.#context;
+      const probe = (timeoutMs) => isHubHealthy(context.port, {
         token: hubToken,
         launchId,
-        expectedPid: this.#child.pid,
+        expectedPid: child.pid,
         expectedLaunchId: launchId,
+        ...(timeoutMs ? { timeoutMs } : {}),
       });
-      if (healthy) return { started: false, ready: true, context: this.#context };
+      // A busy hub (GC, a large payload, waking from sleep) must not lose every
+      // agent session over one missed probe. An exited child is onExit's job.
+      const running = () => child.exitCode == null && child.signalCode == null;
+      const healthy = await probe() || (running() && await probe(HUB_BUSY_HEALTH_TIMEOUT_MS));
+      if (healthy && this.#context === context) return { started: false, ready: true, context };
       await this.stopCurrent();
     } else if (this.#child) {
       await this.stopCurrent();
@@ -647,6 +666,10 @@ async function broadcastCloudEvent(payload) {
 
 const pendingMergeNotifications = new Map();
 let mergeNotificationTimer = null;
+// Held until click or close so the click handler is not garbage-collected.
+const cloudMergeNotifications = new Set();
+// At most one broadcast runs; events that arrive meanwhile join the next batch.
+let cloudBroadcastInFlight = false;
 
 async function openCloudNotification(payload) {
   const windows = sessions.windows().filter((candidate) => !candidate.isDestroyed());
@@ -701,11 +724,15 @@ function notifyCloudMergeReady(payload) {
             ? `${first.fileName}${Number.isSafeInteger(first.turn) ? ` · ${first.turn}턴` : ''}`
             : '검토할 Cloud 변경이 도착했습니다.',
       });
+      cloudMergeNotifications.add(notification);
+      const release = () => cloudMergeNotifications.delete(notification);
       notification.on('click', () => {
+        release();
         void openCloudNotification(first).catch((error) => {
           console.warn('[rauhwpx] cloud notification open failed:', error);
         });
       });
+      notification.on('close', release);
       notification.show();
     } catch (error) {
       console.warn('[rauhwpx] cloud notification failed:', error);
@@ -722,15 +749,25 @@ function queueCloudBroadcast(payload) {
   // Renderers reconcile from the per-window snapshot added at broadcast time.
   const { handoff, snapshot, ...notification } = payload;
   cloudBroadcastPending.push(notification);
-  if (cloudBroadcastTimer) return;
+  scheduleCloudBroadcast();
+}
+
+function scheduleCloudBroadcast() {
+  // A slow broadcast (many windows, a long timeline) must not stack snapshot
+  // rebuilds behind it; the next batch is armed once it settles.
+  if (cloudBroadcastTimer || cloudBroadcastInFlight) return;
   cloudBroadcastTimer = setTimeout(() => {
     cloudBroadcastTimer = null;
     const events = cloudBroadcastPending;
     cloudBroadcastPending = [];
     if (!events.length) return;
-    cloudBroadcastChain = cloudBroadcastChain
-      .then(() => broadcastCloudEvent({ type: 'cloud-event-batch', events }))
-      .catch((error) => console.warn('[rauhwpx] cloud event broadcast failed:', error));
+    cloudBroadcastInFlight = true;
+    cloudBroadcastChain = broadcastCloudEvent({ type: 'cloud-event-batch', events })
+      .catch((error) => console.warn('[rauhwpx] cloud event broadcast failed:', error))
+      .finally(() => {
+        cloudBroadcastInFlight = false;
+        if (cloudBroadcastPending.length) scheduleCloudBroadcast();
+      });
   }, CLOUD_BROADCAST_COALESCE_MS);
   cloudBroadcastTimer.unref?.();
 }
@@ -909,7 +946,9 @@ async function checkForAppUpdates({ manual = true } = {}) {
       }
       const result = await autoUpdater.checkForUpdates();
       // Keep a user-requested automatic download interactive until it settles.
+      // The updater 'error' listener already logs a failed background download.
       if (manualUpdateCheck && result?.downloadPromise) await result.downloadPromise;
+      else void result?.downloadPromise?.catch(() => {});
       return result;
     } catch (error) {
       if (manualUpdateCheck) await updateLifecycle.reportError(error);
@@ -953,10 +992,7 @@ function cascadedWindowPosition() {
 async function createWindow(launch = launchRequest(), { generatedDocument = null } = {}) {
   // 허브는 창과 나란히 뜬다. 렌더러의 세션 문맥 요청(desktop:get-session-context)이
   // 허브 준비를 기다리므로 창 생성은 허브를 막지 않는다.
-  let closeHubContext = hubOwner.context();
-  void hubOwner.ensure().then((result) => {
-    closeHubContext = result.context ?? closeHubContext;
-  }, () => {});
+  void hubOwner.ensure().catch(() => {});
   const backgroundColor = nativeTheme.shouldUseDarkColors ? '#141416' : '#f5f5f7';
   const isMac = process.platform === 'darwin';
   // 실행 후 첫 창만 지난 프레임을 되살리고, 이후 창은 28px 계단식으로 연다.
@@ -996,24 +1032,38 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
   session.cloudEditDraft = session.generatedDocument?.cloudEditDraft ?? null;
   session.allowCloseOnce = false;
   session.pendingCloseRequestId = null;
+  // The renderer registers its close listener while main.ts evaluates, and an
+  // earlier request is dropped. A close before the first load waits for it.
+  session.rendererLoaded = false;
+  session.closeDeferred = false;
+  session.rendererLoadFailed = false;
   session.cloudLocked = false;
   session.cloudHandoffId = null;
   session.cloudTransferPromise = null;
   session.cloudScope = { threadId: '', documentId: null };
   session.cloudTransferIntent = null;
-  window.on('close', (event) => {
-    if (session.allowCloseOnce) return;
-    // A dead renderer can never answer the Save–Discard–Cancel prompt.
-    // Blocking the close here would leave an unclosable window that also
-    // stalls quit, so let the close proceed instead.
-    if (window.webContents.isDestroyed() || window.webContents.isCrashed()) return;
-    event.preventDefault();
+  const requestRendererClose = () => {
     if (session.pendingCloseRequestId) return;
     session.pendingCloseRequestId = randomUUID();
     window.webContents.send('desktop:close-requested', {
       requestId: session.pendingCloseRequestId,
       reason: quitRequested ? 'quit' : 'close',
     });
+  };
+  window.on('close', (event) => {
+    if (session.allowCloseOnce) return;
+    // A dead renderer can never answer the Save–Discard–Cancel prompt.
+    // Blocking the close here would leave an unclosable window that also
+    // stalls quit, so let the close proceed instead.
+    if (window.webContents.isDestroyed() || window.webContents.isCrashed()) return;
+    // A window whose first load failed has no document and no listener.
+    if (session.rendererLoadFailed) return;
+    event.preventDefault();
+    if (!session.rendererLoaded) {
+      session.closeDeferred = true;
+      return;
+    }
+    requestRendererClose();
   });
   window.on('closed', () => {
     for (const [requestId, pending] of pendingCloudEditDraftSaves) {
@@ -1029,8 +1079,8 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
     if (quitRequested) setImmediate(() => {
       if (quitRequested && !quitting) app.quit();
     });
-    const hub = hubOwner.context() ?? closeHubContext;
-    // 허브가 한 번도 뜨지 않았다면 등록된 허브 세션도 없다.
+    // 멈추거나 죽은 허브는 세션을 스스로 정리한다. 그 포트로 소유자 토큰을 보내지 않는다.
+    const hub = hubOwner.context();
     if (hub) void closeHubSession({
       port: hub.port,
       token: hubToken,
@@ -1084,12 +1134,26 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
     });
   }
   window.webContents.on('did-finish-load', () => {
+    session.rendererLoaded = true;
+    // A request sent to a previous document can never be answered (dev reload).
+    session.pendingCloseRequestId = null;
     if (launchFiles.length > 0 && !window.isDestroyed()) {
       window.webContents.send('desktop:open-files', launchFiles);
     }
     if (session.generatedDocument && !window.isDestroyed()) {
       window.webContents.send('desktop:open-generated-document', session.generatedDocument);
     }
+    if (session.closeDeferred && !window.isDestroyed()) {
+      session.closeDeferred = false;
+      requestRendererClose();
+    }
+  });
+  window.webContents.on('did-fail-load', (_event, errorCode, _description, _url, isMainFrame) => {
+    // -3 (ERR_ABORTED) means another navigation took over. Once loaded, a
+    // window always keeps its close prompt.
+    if (!isMainFrame || errorCode === -3 || session.rendererLoaded) return;
+    session.rendererLoadFailed = true;
+    if (session.closeDeferred && !window.isDestroyed()) window.close();
   });
   window.once('ready-to-show', () => {
     if (window.isDestroyed()) return;
@@ -2157,7 +2221,7 @@ if (!hasSingleInstanceLock) {
     const window = windows.at(-1);
     if (window?.isMinimized()) window.restore();
     window?.focus();
-    void hubOwner.ensure();
+    void hubOwner.ensure().catch((error) => console.warn('[rauhwpx] agent hub ensure failed:', error));
   });
 
   app.on('window-all-closed', () => {
