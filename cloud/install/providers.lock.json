@@ -14,7 +14,7 @@
   "pi": {
     "kind": "npm",
     "package": "@earendil-works/pi-coding-agent",
-    "version": "0.84.2",
+    "version": "0.87.1",
     "bin": "pi"
   }
 }

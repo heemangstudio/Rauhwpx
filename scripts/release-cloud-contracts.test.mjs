@@ -6,6 +6,7 @@ import { RAILWAY_DEFAULT_IMAGE } from '../desktop/cloud-railway.mjs';
 import { RAILWAY_DEFAULT_IMAGE as HOSTED_RAILWAY_DEFAULT_IMAGE } from '../rhwp/rau-credits/cloud-provisioner.mjs';
 
 const release = yaml.load(readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8'));
+const nightly = yaml.load(readFileSync(new URL('../.github/workflows/nightly.yml', import.meta.url), 'utf8'));
 const desktopPackage = yaml.load(readFileSync(new URL('../.github/actions/package-desktop/action.yml', import.meta.url), 'utf8'));
 
 test('desktop, cloud runtime metadata and default sandbox image use one release version', () => {
@@ -51,6 +52,25 @@ test('every desktop release bundles both cloud runtimes before packaging', () =>
   const desktopPackaging = desktopSteps.findIndex((step) => step.run?.includes('npm run package:mac'));
   assert.ok(desktopNative >= 0 && desktopNative < desktopWasm
     && desktopWasm < desktopStudio && desktopStudio < desktopPackaging);
+});
+
+test('desktop installers share one Linux-built WASM package', () => {
+  // Windows wasm-opt crashed in Binaryen on engine code that optimizes fine on Linux.
+  const upload = release.jobs.wasm.steps.find((step) => step.uses?.startsWith('actions/upload-artifact@'));
+  assert.equal(upload.with.name, 'release-wasm');
+  assert.match(release.jobs.wasm['runs-on'], /ubuntu/);
+  for (const platform of ['macos', 'windows']) {
+    assert.ok(release.jobs[platform].needs.includes('wasm'), platform);
+    const step = release.jobs[platform].steps.find((item) => item.uses === './.github/actions/package-desktop');
+    assert.equal(step.with['wasm-artifact'], 'release-wasm', platform);
+    const nightlyStep = nightly.jobs[platform].steps.find((item) => item.uses === './.github/actions/package-desktop');
+    assert.equal(nightlyStep.with['wasm-artifact'], 'tested-wasm', `nightly ${platform}`);
+  }
+  assert.ok(release.jobs.linux.needs.includes('wasm'));
+  const linuxWasm = release.jobs.linux.steps.find((step) => step.uses === './.github/actions/build-wasm');
+  assert.equal(linuxWasm.with.artifact, 'release-wasm');
+  const desktopWasm = desktopPackage.runs.steps.find((step) => step.uses === './.github/actions/build-wasm');
+  assert.equal(desktopWasm.with.artifact, '${{ inputs.wasm-artifact }}');
 });
 
 test('cloud release preserves architecture artifacts, signing and sandbox smoke checks', () => {
