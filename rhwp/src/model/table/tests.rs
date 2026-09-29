@@ -762,6 +762,32 @@ fn test_rebuild_grid_merged() {
 }
 
 #[test]
+fn rebuild_grid_clamps_hostile_spans_to_table_and_grid() {
+    // 병합 범위 0xFFFF 셀 하나가 65535×65535 회 순회(셀당 1초 이상)를 일으키면 안 된다.
+    let hostile_cell = Cell {
+        row_span: u16::MAX,
+        col_span: u16::MAX,
+        ..Default::default()
+    };
+    let mut table = Table {
+        row_count: 1,
+        col_count: 1,
+        cells: vec![hostile_cell.clone()],
+        ..Default::default()
+    };
+    table.rebuild_grid();
+    assert_eq!(table.cell_grid, vec![Some(0)]);
+
+    // 행/열 수까지 손상되어 그리드가 상한으로 잘린 경우에도 그리드 안쪽 행만 돈다.
+    table.row_count = u16::MAX;
+    table.col_count = u16::MAX;
+    table.cells = vec![hostile_cell];
+    table.rebuild_grid();
+    assert_eq!(table.cell_grid.len(), MAX_TABLE_GRID_CELLS);
+    assert!(table.cell_grid.iter().all(|slot| *slot == Some(0)));
+}
+
+#[test]
 fn test_cell_at_basic() {
     let table = make_table(2, 3);
     for r in 0..2u16 {

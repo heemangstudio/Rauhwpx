@@ -595,10 +595,18 @@ impl Table {
             requested
         };
         self.cell_grid = vec![None; grid_len];
+        // 병합 범위는 파일의 u16 그대로라 0xFFFF 가 올 수 있다. 종전엔 쓰기만
+        // `gi < len` 으로 막고 루프는 65535×65535 회를 돌아 36바이트 셀 하나로
+        // 1초 넘게 멈췄다. 순회 범위를 표와 그리드 안으로 자른다.
+        let grid_rows = if cc == 0 { 0 } else { grid_len.div_ceil(cc) };
         for (idx, cell) in self.cells.iter().enumerate() {
-            for r in cell.row..(cell.row + cell.row_span) {
-                for c in cell.col..(cell.col + cell.col_span) {
-                    let gi = (r as usize) * cc + (c as usize);
+            let row_end = (cell.row as usize + cell.row_span as usize)
+                .min(rc)
+                .min(grid_rows);
+            let col_end = (cell.col as usize + cell.col_span as usize).min(cc);
+            for r in cell.row as usize..row_end {
+                for c in cell.col as usize..col_end {
+                    let gi = r * cc + c;
                     if gi < self.cell_grid.len() {
                         self.cell_grid[gi] = Some(idx);
                     }

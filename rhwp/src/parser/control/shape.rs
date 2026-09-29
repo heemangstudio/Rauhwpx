@@ -138,32 +138,32 @@ pub(crate) fn parse_gso_control(ctrl_data: &[u8], child_records: &[Record]) -> C
             .iter()
             .position(|r| r.tag_id == tags::HWPTAG_LIST_HEADER);
         if let Some(start) = caption_start {
-            let caption_records: Vec<Record> =
-                child_records[start..comp_idx].iter().cloned().collect();
+            let caption_records = &child_records[start..comp_idx];
             if !caption_records.is_empty() {
-                caption = Some(parse_caption(&caption_records));
+                caption = Some(parse_caption(caption_records));
             }
         }
     }
 
     // 텍스트박스 LIST_HEADER + 문단 수집: SHAPE_COMPONENT 이후의 LIST_HEADER
-    let mut list_started = false;
-    let mut list_header_data: Option<&[u8]> = None;
-    let mut list_records: Vec<&Record> = Vec::new();
     let after_shape_comp = shape_comp_idx.map(|i| i + 1).unwrap_or(0);
-    for record in &child_records[after_shape_comp..] {
-        if !list_started && record.tag_id == tags::HWPTAG_LIST_HEADER {
-            list_started = true;
-            list_header_data = Some(&record.data);
-            continue;
+    let list_header_idx = child_records[after_shape_comp..]
+        .iter()
+        .position(|r| r.tag_id == tags::HWPTAG_LIST_HEADER)
+        .map(|i| after_shape_comp + i);
+    let list_header_data: Option<&[u8]> = list_header_idx.map(|i| child_records[i].data.as_slice());
+    // 묶음 개체 분기(아래)는 글상자를 버리고 자식을 parse_container_children 으로 다시
+    // 파싱하므로, 그 분기로 갈 때는 하위 글상자 문단을 미리 파싱하지 않는다
+    // (종전엔 묶음 단계마다 하위 글상자 전체를 다시 파싱했다).
+    let text_box_discarded = is_container
+        && chart_data_bytes.is_none()
+        && shape_tag_id != Some(tags::HWPTAG_SHAPE_COMPONENT_OLE)
+        && shape_tag_id != Some(tags::HWPTAG_SHAPE_COMPONENT_PICTURE);
+    if let Some(lh) = list_header_idx {
+        let list_records = &child_records[lh + 1..];
+        if !list_records.is_empty() && !text_box_discarded {
+            text_paragraphs = parse_paragraph_list(list_records);
         }
-        if list_started {
-            list_records.push(record);
-        }
-    }
-    if !list_records.is_empty() {
-        let owned: Vec<Record> = list_records.iter().map(|r| (*r).clone()).collect();
-        text_paragraphs = parse_paragraph_list(&owned);
     }
 
     // 글상자 설정
@@ -633,6 +633,10 @@ fn parse_shape_component_full(data: &[u8]) -> ShapeComponentParsed {
 /// SHAPE_COMPONENT_CONTAINER 또는 첫 SHAPE_COMPONENT 이후의 레코드에서
 /// SHAPE_COMPONENT + 도형 태그 쌍을 찾아 각각을 개별 ShapeObject로 파싱한다.
 fn parse_container_children(child_records: &[Record]) -> Vec<ShapeObject> {
+    // 묶음 중첩도 문단 목록과 같은 깊이 상한을 공유한다
+    let Some(_nesting) = crate::parser::body_text::NestingGuard::enter() else {
+        return Vec::new();
+    };
     let mut children = Vec::new();
 
     // SHAPE_COMPONENT_CONTAINER 이후 또는 구버전 그룹의 첫 SHAPE_COMPONENT 이후
@@ -727,23 +731,40 @@ fn parse_container_children(child_records: &[Record]) -> Vec<ShapeObject> {
             }
         }
 
-        // LIST_HEADER 이후 문단 수집 (자식 범위 내)
-        let mut list_started = false;
-        let mut list_header_data: Option<&[u8]> = None;
-        let mut list_records: Vec<&Record> = Vec::new();
-        for record in &child_slice[1..] {
-            if record.tag_id == tags::HWPTAG_LIST_HEADER && !list_started {
-                list_started = true;
-                list_header_data = Some(&record.data);
-                continue;
-            }
-            if list_started {
-                list_records.push(record);
-            }
+        // 중첩 Group 감지: shape_tag_id가 없고 하위 SHAPE_COMPONENT가 있으면 재귀.
+        // 글상자 파싱보다 먼저 판정해, 묶음이 버릴 하위 글상자 문단을 미리 파싱하지 않는다.
+        let has_nested_shapes = shape_tag_id.is_none()
+            && child_slice.len() > 1
+            && child_slice[1..].iter().any(|r| {
+                r.tag_id == tags::HWPTAG_SHAPE_COMPONENT && r.level > child_slice[0].level
+            });
+        // CONTAINER 태그가 있거나 하위 SHAPE_COMPONENT가 있으면 중첩 Group.
+        // 자식이 없어도 component ctrl_id 가 '$con' 이면 빈 묶음이다 (#1892 —
+        // 사각형 폴백으로 빠지면 재파스 렌더 트리가 Group→Rect 로 갈라진다).
+        let has_container_tag = child_slice[1..]
+            .iter()
+            .any(|r| r.tag_id == tags::HWPTAG_SHAPE_COMPONENT_CONTAINER);
+        if has_container_tag
+            || has_nested_shapes
+            || child_drawing.shape_attr.ctrl_id == tags::SHAPE_CONTAINER_ID
+        {
+            let mut group = GroupShape::default();
+            group.shape_attr = child_drawing.shape_attr.clone();
+            group.children = parse_container_children(child_slice);
+            children.push(ShapeObject::Group(group));
+            continue;
         }
+
+        // LIST_HEADER 이후 문단 수집 (자식 범위 내)
+        let list_header_idx = child_slice[1..]
+            .iter()
+            .position(|r| r.tag_id == tags::HWPTAG_LIST_HEADER)
+            .map(|i| i + 1);
+        let list_header_data: Option<&[u8]> =
+            list_header_idx.map(|i| child_slice[i].data.as_slice());
+        let list_records: &[Record] = list_header_idx.map_or(&[], |i| &child_slice[i + 1..]);
         if !list_records.is_empty() {
-            let owned: Vec<Record> = list_records.iter().map(|r| (*r).clone()).collect();
-            let paragraphs = parse_paragraph_list(&owned);
+            let paragraphs = parse_paragraph_list(list_records);
             if !paragraphs.is_empty() {
                 let mut text_box = crate::model::shape::TextBox {
                     paragraphs,
@@ -786,29 +807,6 @@ fn parse_container_children(child_records: &[Record]) -> Vec<ShapeObject> {
                 }
                 child_drawing.text_box = Some(text_box);
             }
-        }
-
-        // 중첩 Group 감지: shape_tag_id가 없고 하위 SHAPE_COMPONENT가 있으면 재귀
-        let has_nested_shapes = shape_tag_id.is_none()
-            && child_slice.len() > 1
-            && child_slice[1..].iter().any(|r| {
-                r.tag_id == tags::HWPTAG_SHAPE_COMPONENT && r.level > child_slice[0].level
-            });
-        // CONTAINER 태그가 있거나 하위 SHAPE_COMPONENT가 있으면 중첩 Group.
-        // 자식이 없어도 component ctrl_id 가 '$con' 이면 빈 묶음이다 (#1892 —
-        // 사각형 폴백으로 빠지면 재파스 렌더 트리가 Group→Rect 로 갈라진다).
-        let has_container_tag = child_slice[1..]
-            .iter()
-            .any(|r| r.tag_id == tags::HWPTAG_SHAPE_COMPONENT_CONTAINER);
-        if has_container_tag
-            || has_nested_shapes
-            || child_drawing.shape_attr.ctrl_id == tags::SHAPE_CONTAINER_ID
-        {
-            let mut group = GroupShape::default();
-            group.shape_attr = child_drawing.shape_attr.clone();
-            group.children = parse_container_children(child_slice);
-            children.push(ShapeObject::Group(group));
-            continue;
         }
 
         // 도형 생성
@@ -1066,7 +1064,9 @@ fn parse_arc_shape_data(data: &[u8], arc: &mut ArcShape) {
 fn parse_polygon_shape_data(data: &[u8], poly: &mut PolygonShape) {
     let mut r = ByteReader::new(data);
     let cnt_raw = r.read_i32().unwrap_or(0);
-    let cnt = if cnt_raw < 0 { 0 } else { cnt_raw as usize };
+    // 남은 바이트로 읽을 수 있는 점(8바이트) 수로 제한한다. i32::MAX 같은 과대 count 는
+    // 읽기 실패분을 (0,0) 으로 채우며 수 GB 를 할당했다(wasm 4GB 한도 초과).
+    let cnt = (cnt_raw.max(0) as usize).min(r.remaining() / 8);
     poly.points.clear();
     for _ in 0..cnt {
         let x = r.read_i32().unwrap_or(0);
@@ -1088,8 +1088,9 @@ fn parse_curve_shape_data(data: &[u8], curve: &mut CurveShape) {
     // 검증 없이 `as usize` 로 캐스팅하면 부호 확장으로 usize::MAX 근처의 거대한
     // 값이 되어 아래 루프가 사실상 종료되지 않는(수십억 회) DoS 를 유발한다.
     // 캐스팅 전에 음수를 0(빈 곡선)으로 처리한다. (#3012 다각형과 동일 클래스)
+    // 과대 count 는 다각형과 같이 남은 바이트로 읽을 수 있는 점 수로 제한한다.
     let cnt_raw = r.read_i32().unwrap_or(0);
-    let cnt = if cnt_raw < 0 { 0 } else { cnt_raw as usize };
+    let cnt = (cnt_raw.max(0) as usize).min(r.remaining() / 8);
     curve.points.clear();
     for _ in 0..cnt {
         let x = r.read_i32().unwrap_or(0);
@@ -1198,6 +1199,24 @@ mod task195_tests {
             "음수 count는 빈 세그먼트 목록으로 처리되어야 함: {}",
             curve.segment_types.len()
         );
+    }
+
+    #[test]
+    fn polygon_and_curve_count_is_bounded_by_remaining_bytes() {
+        // count=i32::MAX 에 데이터 4바이트뿐이면 점을 하나도 만들지 않아야 한다
+        // (종전: 실패한 읽기를 (0,0) 으로 채워 약 17GB 를 할당).
+        let mut data = Vec::new();
+        data.extend_from_slice(&i32::MAX.to_le_bytes());
+        data.extend_from_slice(&[0u8; 4]);
+
+        let mut poly = PolygonShape::default();
+        parse_polygon_shape_data(&data, &mut poly);
+        assert!(poly.points.is_empty());
+
+        let mut curve = CurveShape::default();
+        parse_curve_shape_data(&data, &mut curve);
+        assert!(curve.points.is_empty());
+        assert!(curve.segment_types.is_empty());
     }
 
     #[test]
