@@ -2333,17 +2333,14 @@ impl EqLayout {
     }
 
     fn layout_space(&self, kind: SpaceKind, fs: f64) -> LayoutBox {
-        // `~` 반각 공백은 legacy(HYhwpEQ)에서 0.51em (eq-01 실측: 가→배
-        // 잉크 간격 6pt@12.96); 그 외 경로는 Times 계열 스페이스 0.33em 유지.
+        // `~` 반각 공백은 현대 HY 수식에서 0.5em (한컴 정합, eq-01 실측
+        // 가→배 잉크 간격 6pt@12.96 ≈ 0.51em); 그 외 경로는 Times 계열
+        // 스페이스 0.33em 유지.
         // `` ` `` 는 sqrt→sup처럼 복합 원자 사이에 들어갈 때 잔여 간격과 합쳐지므로
         // eq-01 `가`배` 1.5pt@12(0.125em)로 줄이면 eq-002가 역행 — 0.17 유지.
-        let legacy = self
-            .font_family
-            .as_deref()
-            .is_some_and(super::font::is_legacy_equation_font);
         let w = match kind {
             SpaceKind::Normal if self.is_modern_hy() => fs * 0.5,
-            SpaceKind::Normal => fs * if legacy { 0.51 } else { 0.33 },
+            SpaceKind::Normal => fs * 0.33,
             // 현대 backtick은 normal 공백(0.5em)의 1/4이다.
             SpaceKind::Thin if self.is_modern_hy() => fs * 0.5 / 4.0,
             SpaceKind::Thin => fs * 0.17,
