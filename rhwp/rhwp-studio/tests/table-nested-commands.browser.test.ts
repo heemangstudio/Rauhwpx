@@ -183,3 +183,77 @@ test('중첩 표 안의 표 명령은 바깥 표를 고치지 않고 안쪽 표�
     await server.close();
   }
 });
+
+// 셀 목록은 병합 기준 셀만 담는다. 계산식 대화상자가 cellIndex 를 열 수로 나눠 좌표를 만들면
+// 병합 머리글 아래에서 커서 셀이 아닌 다른 셀에 결과를 쓴다.
+test('병합 표에서 계산식 대화상자는 커서 셀에 결과를 쓴다', { timeout: 60_000 }, async () => {
+  const server = await createServer({
+    root: studioRoot,
+    configFile: false,
+    cacheDir: resolve(studioRoot, 'node_modules/.vite-table-nested-commands-test'),
+    logLevel: 'silent',
+    resolve: {
+      alias: {
+        '@': resolve(studioRoot, 'src'),
+        '@wasm/rhwp.js': resolve(wasmPackageRoot, 'rhwp.js'),
+        '@wasm': wasmPackageRoot,
+      },
+    },
+    server: {
+      host: '127.0.0.1',
+      port: 0,
+      hmr: false,
+      fs: { allow: [studioRoot, wasmPackageRoot] },
+    },
+  });
+  let browser: Awaited<ReturnType<typeof puppeteer.launch>> | undefined;
+  try {
+    await server.listen();
+    const address = server.httpServer?.address();
+    assert.ok(address && typeof address !== 'string');
+    browser = await puppeteer.launch({ executablePath: browserExecutable(), headless: true, args: browserLaunchArgs() });
+    const page = await browser.newPage();
+    await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/version-store-idb.html`);
+    const result = await page.evaluate(async () => {
+      const [{ WasmBridge }, { EventBus }, { FormulaDialog }] = await Promise.all([
+        import('/src/core/wasm-bridge.ts'),
+        import('/src/core/event-bus.ts'),
+        import('/src/ui/formula-dialog.ts'),
+      ]);
+      const wasm = new WasmBridge();
+      await wasm.initialize();
+      wasm.createNewDocument();
+      const table = wasm.createTableEx({ sectionIdx: 0, paraIdx: 0, charOffset: 0, rowCount: 3, colCount: 3 });
+      const ppi = table.paraIdx;
+      const ci = table.controlIdx;
+      wasm.mergeTableCells(0, ppi, ci, 0, 0, 0, 2);
+      const cellCount = wasm.getTableDimensions(0, ppi, ci).cellCount;
+      const indexAt = (row: number, col: number) => {
+        for (let i = 0; i < cellCount; i++) {
+          const info = wasm.getCellInfo(0, ppi, ci, i);
+          if (info.row === row && info.col === col) return i;
+        }
+        throw new Error(`no cell (${row},${col})`);
+      };
+      const text = (idx: number) => wasm.getTextInCell(0, ppi, ci, idx, 0, 0, wasm.getCellParagraphLength(0, ppi, ci, idx, 0));
+      wasm.insertTextInCell(0, ppi, ci, indexAt(2, 0), 0, 0, '4');
+      wasm.insertTextInCell(0, ppi, ci, indexAt(2, 1), 0, 0, '5');
+      const target = indexAt(2, 2);
+
+      const dialog = new FormulaDialog(wasm, new EventBus(), { sec: 0, ppi, ci, cellIndex: target });
+      dialog.show();
+      const internals = dialog as unknown as { formulaInput: HTMLInputElement; onConfirm(): boolean };
+      internals.formulaInput.value = '=SUM(left)';
+      const confirmed = internals.onConfirm();
+      dialog.hide?.();
+      return { confirmed, target: text(target), left: text(indexAt(2, 0)) };
+    });
+
+    assert.equal(result.confirmed, true);
+    assert.equal(result.target, '9', '결과는 커서 셀에 들어간다');
+    assert.equal(result.left, '4', '왼쪽 셀은 그대로다');
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});
