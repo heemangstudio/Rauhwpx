@@ -169,8 +169,10 @@ export class ViewportManager {
    */
   clampScrollToContent(contentWidth: number, contentHeight: number): void {
     if (!this.container) return;
-    const maxTop = Math.max(0, contentHeight - this.viewportHeight);
-    const maxLeft = Math.max(0, contentWidth - this.viewportWidth);
+    // ResizeObserver 캐시는 한 프레임 늦을 수 있다(사이드바 폭 변화 등). 캐시 폭이 실제보다
+    // 크면 끝에 붙은 스크롤을 잘못 당기므로 client 크기를 직접 읽는다 (캐시는 observer 몫).
+    const maxTop = Math.max(0, contentHeight - this.container.clientHeight);
+    const maxLeft = Math.max(0, contentWidth - this.container.clientWidth);
     if (this.container.scrollTop > maxTop) this.setScrollTop(maxTop);
     else this.scrollY = this.container.scrollTop;
     if (this.container.scrollLeft > maxLeft) this.setScrollLeft(maxLeft);

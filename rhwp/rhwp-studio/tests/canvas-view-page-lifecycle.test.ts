@@ -115,6 +115,12 @@ test('ViewportManager.clampScrollToContent 는 옛 쪽이 남아 늘어난 스�
     manager.clampScrollToContent(900, 5_000);
     assert.equal(container.scrollTop, 200);
     assert.equal(manager.getScrollY(), 200);
+
+    // observer 가 아직 못 본 좁아진 뷰포트: 캐시 폭(900)이 아니라 실제 폭으로 끝을 잰다.
+    container.clientWidth = 700;
+    container.scrollLeft = 300;
+    manager.clampScrollToContent(1_000, 5_000);
+    assert.equal(container.scrollLeft, 300);
     manager.detach();
   } finally {
     (globalThis as { ResizeObserver?: unknown }).ResizeObserver = previous;
