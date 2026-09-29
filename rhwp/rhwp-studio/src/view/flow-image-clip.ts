@@ -1,3 +1,5 @@
+import { assertBase64EncodedImageDecodeDimensions } from './canvaskit/image-header.ts';
+
 export interface FlowImageBbox {
   x: number;
   y: number;
@@ -134,6 +136,30 @@ export function collectFlowImagePaintOps(
 
   visit(root, null, undefined);
   return images;
+}
+
+/** 브라우저 `<img>` 가 직접 그릴 수 있는 형식. WMF 등은 엔진 canvas 의 변환 경로로만 그려진다. */
+const DOM_DISPLAYABLE_IMAGE_MIMES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'image/bmp',
+  'image/svg+xml',
+]);
+
+/**
+ * flow 그림을 DOM `<img>` 층에 맡겨도 되는지. 형식을 브라우저가 모르거나 디코드 한도를 넘으면
+ * `<img>` 로는 보이지 않으므로, 쪽 전체를 엔진 flow-static canvas 로 그려야 한다.
+ */
+export function isDomDisplayableFlowImage(image: Pick<FlowImagePaintOp, 'mime' | 'base64'>): boolean {
+  if (!DOM_DISPLAYABLE_IMAGE_MIMES.has(image.mime)) return false;
+  try {
+    assertBase64EncodedImageDecodeDimensions(image.base64, '문서 그림');
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function visibleFlowImageBbox(image: FlowImagePaintOp): FlowImageBbox | null {

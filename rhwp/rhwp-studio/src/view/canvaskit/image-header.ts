@@ -12,6 +12,9 @@ export const MAX_ENCODED_IMAGE_BYTES = 64 * 1024 * 1024;
 // duplicate an entire embedded image just to read its dimensions.
 const MAX_ENCODED_IMAGE_HEADER_BYTES = 4 * 1024 * 1024;
 const MAX_SVG_ROOT_BYTES = 64 * 1024;
+// PNG/GIF/BMP/WebP 크기는 앞 30바이트, SVG 루트는 64KB 안에 있다. 대부분의 그림은 이 조각만
+// 풀고 끝내고, JPEG 크기 marker 가 긴 메타데이터 뒤로 밀린 경우에만 위 한도까지 다시 읽는다.
+const INITIAL_ENCODED_IMAGE_HEADER_BYTES = MAX_SVG_ROOT_BYTES + 32 * 1024;
 const SVG_DEFAULT_WIDTH = 300;
 const SVG_DEFAULT_HEIGHT = 150;
 
@@ -230,17 +233,35 @@ export function assertBase64EncodedImageDecodeDimensions(
     throw new Error(`${label} 데이터가 안전 한도를 초과합니다.`);
   }
 
-  const maxHeaderChars = Math.ceil(MAX_ENCODED_IMAGE_HEADER_BYTES / 3) * 4;
-  const prefixLength = base64.length <= maxHeaderChars
-    ? base64.length
-    : maxHeaderChars - (maxHeaderChars % 4);
-  let binary: string;
+  const initialChars = Math.ceil(INITIAL_ENCODED_IMAGE_HEADER_BYTES / 3) * 4;
+  if (base64.length > initialChars) {
+    // 작은 조각으로 크기를 읽었으면 그 결과가 전체 prefix 를 읽은 결과와 같다. 못 읽었거나
+    // (JPEG 메타데이터, 줄바꿈 섞인 base64) 조각이 깨지면 아래 한도 경로로 다시 읽는다.
+    let initial: Uint8Array | null = null;
+    try {
+      initial = decodeBase64Prefix(base64, INITIAL_ENCODED_IMAGE_HEADER_BYTES);
+    } catch {
+      initial = null;
+    }
+    if (initial && encodedImageDimensions(initial)) {
+      return assertEncodedImageDecodeDimensions(initial, label);
+    }
+  }
+  let header: Uint8Array;
   try {
-    binary = atob(base64.slice(0, prefixLength));
+    header = decodeBase64Prefix(base64, MAX_ENCODED_IMAGE_HEADER_BYTES);
   } catch {
     throw new Error(`${label} 데이터가 올바른 base64 형식이 아닙니다.`);
   }
-  const header = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) header[i] = binary.charCodeAt(i);
   return assertEncodedImageDecodeDimensions(header, label);
+}
+
+/** base64 앞부분을 최대 maxBytes 바이트까지 푼다. 형식이 깨졌으면 atob 예외를 그대로 던진다. */
+function decodeBase64Prefix(base64: string, maxBytes: number): Uint8Array {
+  const maxChars = Math.ceil(maxBytes / 3) * 4;
+  const prefixLength = base64.length <= maxChars ? base64.length : maxChars - (maxChars % 4);
+  const binary = atob(base64.slice(0, prefixLength));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
 }

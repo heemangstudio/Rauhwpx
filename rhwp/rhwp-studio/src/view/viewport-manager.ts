@@ -160,6 +160,23 @@ export class ViewportManager {
     this.updateViewportSize();
   }
 
+  /**
+   * 문서가 짧아진 직후 스크롤 좌표를 새 내용 끝 안으로 당긴다.
+   *
+   * 옛 쪽 canvas 는 absolute 로 아직 DOM 에 남아 스크롤 영역을 붙잡고 있어, 브라우저는 그것을
+   * 치우기 전까지 scrollTop 을 당기지 않는다. 캐시 좌표로 쪽 창을 계산하면 문서 끝 너머를 보고
+   * 모든 쪽을 해제해, 늦게 오는 scroll 이벤트 전까지 화면이 빈다.
+   */
+  clampScrollToContent(contentWidth: number, contentHeight: number): void {
+    if (!this.container) return;
+    const maxTop = Math.max(0, contentHeight - this.viewportHeight);
+    const maxLeft = Math.max(0, contentWidth - this.viewportWidth);
+    if (this.container.scrollTop > maxTop) this.setScrollTop(maxTop);
+    else this.scrollY = this.container.scrollTop;
+    if (this.container.scrollLeft > maxLeft) this.setScrollLeft(maxLeft);
+    else this.scrollX = this.container.scrollLeft;
+  }
+
   getScrollY(): number {
     return this.scrollY;
   }

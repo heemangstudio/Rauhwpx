@@ -196,6 +196,8 @@ Object.assign(handler, {
   cursor: { getPosition: () => pos(0, 0), getRect: () => null },
   isOperationAllowedInEditMode: () => true,
   flushDeferredPaginationIfNeeded: () => {},
+  // handleUndo/handleRedo 는 먼저 열린 IME 조합을 확인한다.
+  imeSession: { isComposing: false },
 });
 const notices = [];
 globalThis.alert = message => notices.push(message);

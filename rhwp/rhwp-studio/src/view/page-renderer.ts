@@ -2,15 +2,17 @@ import type { WasmBridge } from '@/core/wasm-bridge';
 import type { LayerRenderProfile, PageInfo } from '@/core/types';
 import { layerPaintOpReplayPlane } from './canvaskit/replay-plane';
 import type { CanvasKitLayerRenderer, CanvasKitRenderDiagnostics } from './canvaskit-renderer';
-import { assertBase64EncodedImageDecodeDimensions } from './canvaskit/image-header';
-import { collectVectorRawSvgDataUrls } from './raw-svg-prefetch';
+import { collectLayerImagePrefetch } from './raw-svg-prefetch';
 import { ImagePrefetcher } from './image-prefetch';
 import {
   collectFlowImagePaintOps,
+  isDomDisplayableFlowImage,
   planFlowImageClip,
   type FlowImagePaintOp,
 } from './flow-image-clip';
 import type { RenderBackend } from './render-backend';
+// 브라우저 테스트가 이 모듈을 alias 없는 Vite 로 읽으므로 상대 경로로 가져온다.
+import { engineTrap, reportEngineTrap } from '../core/engine-trap.ts';
 
 interface LayerPlaneSummary {
   hasBehind: boolean;
@@ -59,21 +61,33 @@ interface ReRenderJob {
   completed: boolean;
 }
 
+/**
+ * 쪽별 지연 재렌더 상태. 같은 key(그림 수·서명)는 한 번만 끝까지 다시 그리면 된다.
+ * settled 는 재렌더가 실제로 끝났을 때만 true — 디코드 도중 취소된 key 는 다시 걸어야 한다.
+ */
+interface ImageRetryState {
+  key: string;
+  settled: boolean;
+}
+
+interface AppliedOverlays {
+  layers: LayerPlaneSummary;
+  /** 본문 그림을 DOM `<img>` 층으로 실제로 띄웠는가 (flow canvas 에는 그림이 없다). */
+  domFlowImages: boolean;
+}
+
+type LayerImagePrefetchResult = 'decoded' | 'none' | 'wait';
+
 const IMAGE_RE_RENDER_FALLBACK_DELAY_MS = 1500;
 // 순수 SVG 차트/OLE는 prefetch 대상 data URL이 없을 수 있다. 첫 paint가 시작한
 // 이미지 decode를 빠르게 반영하되, 일반 이미지처럼 전역 반복 재렌더는 피한다.
 const RAW_SVG_EARLY_RE_RENDER_DELAYS_MS = [0, 32, 96, 240] as const;
 const HWP_UNITS_PER_CSS_PIXEL = 75;
-// Prefetch is an opportunistic decode hint. The normal renderer still handles
-// every image, so cap the temporary data-URL set to keep a pathological page
-// from retaining a second copy of its entire image payload.
-const MAX_PREFETCH_IMAGES_PER_PAGE = 256;
-const MAX_PREFETCH_DATA_URL_CHARS = 16 * 1024 * 1024;
 
 export class PageRenderer {
   private readonly imagePrefetcher = new ImagePrefetcher();
   private reRenderJobs = new Map<number, ReRenderJob>();
-  private imageRetryCounts = new Map<number, string>();
+  private imageRetryStates = new Map<number, ImageRetryState>();
   private layerSummaryCache = new Map<number, LayerSummaryCacheEntry>();
   private canvaskitDiagnosticsByPage = new Map<number, CanvasKitRenderDiagnostics>();
   private pageInfoByPage = new Map<number, PageInfo>();
@@ -148,7 +162,7 @@ export class PageRenderer {
     // 1) 본문 Canvas 는 'flow' 필터로 BehindText/InFrontOfText plane 제외
     // 2) behind/front plane 은 같은 부모 컨테이너에 별도 canvas layer 로 합성
     this.drawMarginGuides(pageIdx, canvas, renderScale);
-    let overlays: LayerPlaneSummary;
+    let overlays: AppliedOverlays;
     try {
       overlays = this.applyOverlays(
         pageIdx,
@@ -170,16 +184,21 @@ export class PageRenderer {
       overlays = this.applyOverlays(pageIdx, canvas, renderScale, dpr, context, layers, false, []);
     }
     this.rememberLayerPlaneSummary(pageIdx, canvas, renderScale, layers);
+    const summary = overlays.layers;
     // rawSvg(차트/OLE)도 web_canvas draw_image 비동기 디코드 경로를 타므로
-    // image 와 함께 재렌더 트리거 카운트에 합산한다(#1456).
+    // image 와 함께 재렌더 트리거 카운트에 합산한다(#1456). DOM `<img>` 가 맡은 본문
+    // 그림만 빼고, canvas 가 그리는 앞/뒤 층 그림은 계속 센다.
+    const canvasImageCount = overlays.domFlowImages
+      ? Math.max(0, summary.imageCount - summary.flowImageCount)
+      : summary.imageCount;
     this.scheduleReRender(
       pageIdx,
       canvas,
       renderScale,
-      usesDomFlowImages ? overlays.rawSvgCount : overlays.imageCount + overlays.rawSvgCount,
-      overlays.rawSvgCount,
+      canvasImageCount + summary.rawSvgCount,
+      summary.rawSvgCount,
       {
-        retrySignature: overlays.signature,
+        retrySignature: summary.signature,
         reuseStaticFlow,
         reuseStaticOverlay: context.reason === 'text-edit' && context.allowStaticOverlayReuse === true,
       },
@@ -188,7 +207,7 @@ export class PageRenderer {
       needsTextEditStaticLayerVerification:
         context.reason === 'text-edit' &&
         context.allowStaticOverlayReuse === true &&
-        ((reuseStaticFlow && !usesDomFlowImages) || layers.hasBehind || layers.hasFront),
+        ((reuseStaticFlow && !overlays.domFlowImages) || layers.hasBehind || layers.hasFront),
     };
   }
 
@@ -259,14 +278,14 @@ export class PageRenderer {
       const renderedCanvas = this.canvaskitRenderer.renderPage(tree, canvas, renderScale, pageInfo);
       this.canvaskitDiagnosticsByPage.set(pageIdx, this.canvaskitRenderer.diagnostics());
       this.cancelReRender(pageIdx);
-      this.imageRetryCounts.delete(pageIdx);
+      this.imageRetryStates.delete(pageIdx);
       return renderedCanvas;
     } catch (error) {
       this.canvaskitRenderer.recordRenderFailure(error, !renderStarted);
       this.canvaskitDiagnosticsByPage.set(pageIdx, this.canvaskitRenderer.diagnostics());
       console.error(`[PageRenderer] CanvasKit 페이지 렌더링 실패 (page=${pageIdx}):`, error);
       this.cancelReRender(pageIdx);
-      this.imageRetryCounts.delete(pageIdx);
+      this.imageRetryStates.delete(pageIdx);
       if (!renderStarted) throw error;
       const replacement = parent && canvasChildIndex >= 0
         ? parent.children.item(canvasChildIndex)
@@ -295,9 +314,9 @@ export class PageRenderer {
     layers: LayerPlaneSummary,
     reuseStaticFlow: boolean,
     flowImages: readonly FlowImagePaintOp[],
-  ): LayerPlaneSummary {
+  ): AppliedOverlays {
     const parent = canvas.parentElement;
-    if (!parent) return emptyLayerPlaneSummary();
+    if (!parent) return { layers: emptyLayerPlaneSummary(), domFlowImages: false };
 
     const allowReuse =
       context.reason === 'text-edit' && context.allowStaticOverlayReuse === true;
@@ -315,21 +334,29 @@ export class PageRenderer {
     const left = canvas.style.left;
     const transform = canvas.style.transform;
 
+    let domFlowImages = false;
     if (reuseStaticFlow) {
-      if (flowImages.length > 0) {
-        const flowImageLayer = this.createOrReuseFlowImageLayer(
+      const flowImageLayer = flowImages.length > 0
+        ? this.createOrReuseFlowImageLayer(
           pageIdx,
           canvas,
           renderScale / safeDpr,
           layers,
           allowReuse,
           flowImages,
-        );
+        )
+        : null;
+      if (flowImageLayer) {
+        domFlowImages = true;
+        this.removeOverlayLayer(parent, pageIdx, 'flow-static');
         this.applyPageLayerBox(flowImageLayer, top, left, transform, cssWidth, cssHeight);
         flowImageLayer.style.zIndex = '0';
         parent.insertBefore(flowImageLayer, canvas);
       } else {
-        // RawSvg 차트/OLE는 첫 Canvas2D 렌더가 이미지 디코드를 시작해야 지연 재렌더에서 보인다.
+        this.removeFlowImageLayer(parent, pageIdx);
+        // RawSvg 차트/OLE, 그리고 브라우저 `<img>` 가 못 그리는 그림(WMF, 한도 초과 raster)은
+        // 엔진 flow-static canvas 로 그린다. 첫 Canvas2D 렌더가 이미지 디코드를 시작해야 지연
+        // 재렌더에서 보인다.
         const flowStatic = this.createOrReuseFilteredCanvasLayer(
           pageIdx,
           canvas,
@@ -347,14 +374,15 @@ export class PageRenderer {
       canvas.style.zIndex = layers.hasFront ? '1' : '1';
     } else {
       this.removeOverlayLayer(parent, pageIdx, 'flow-static');
+      this.removeFlowImageLayer(parent, pageIdx);
     }
 
     if (!layers.hasBehind && !layers.hasFront) {
-      if (reuseStaticFlow) return layers;
+      if (reuseStaticFlow) return { layers, domFlowImages };
       this.removePageLayers(parent, pageIdx);
       canvas.style.background = '';
       canvas.style.zIndex = '';
-      return layers;
+      return { layers, domFlowImages };
     }
 
     // BehindText 가 있는 페이지는 flow Canvas 를 투명 배경으로 두고,
@@ -414,7 +442,7 @@ export class PageRenderer {
     } else {
       this.removeOverlayLayer(parent, pageIdx, 'front');
     }
-    return layers;
+    return { layers, domFlowImages };
   }
 
   private createOrReuseFlowImageLayer(
@@ -424,13 +452,16 @@ export class PageRenderer {
     summary: LayerPlaneSummary,
     allowReuse: boolean,
     images: readonly FlowImagePaintOp[],
-  ): HTMLElement {
+  ): HTMLElement | null {
     const key = this.buildStaticOverlayKey(pageIdx, sourceCanvas, displayScale, 'flow-static', summary);
-    const selector = `[data-rhwp-flow-image-page="${pageIdx}"]`;
-    const existing = sourceCanvas.parentElement?.querySelector<HTMLElement>(selector) ?? null;
+    const existing = this.findFlowImageLayer(sourceCanvas.parentElement, pageIdx);
     if (allowReuse && existing?.dataset.rhwpStaticOverlayKey === key) return existing;
 
     existing?.remove();
+    // flow canvas 는 이미 본문 그림을 뺀 채 그려졌다. `<img>` 가 못 그리는 그림이 하나라도
+    // 있으면 이 층을 만들지 않고, 호출자가 엔진 flow-static canvas 로 쪽 전체를 그리게 한다.
+    // 헤더 검사는 층을 새로 만들 때만 한다 — 같은 key 로 재사용한 층은 이미 통과했다.
+    if (!images.every(isDomDisplayableFlowImage)) return null;
     const layer = document.createElement('div');
     layer.dataset.rhwpOverlay = `flow-images-${pageIdx}`;
     layer.dataset.rhwpOverlayPage = String(pageIdx);
@@ -440,11 +471,6 @@ export class PageRenderer {
     layer.style.background = 'var(--doc-paper)';
 
     for (const image of images) {
-      try {
-        assertBase64EncodedImageDecodeDimensions(image.base64, '문서 그림');
-      } catch {
-        continue;
-      }
       // clip이 실제 그림보다 작을 때만 별도 wrapper를 둔다. 일반 그림은 기존 DOM
       // 경로를 그대로 사용해 정적 이미지 분리의 비용 이점을 유지한다.
       // 회전한 그림은 미회전 bbox 가 아니라 회전 후 AABB 로 판단한다 — bbox 로 자르면
@@ -597,6 +623,14 @@ export class PageRenderer {
 
   private removeOverlayLayer(parent: HTMLElement, pageIdx: number, layerKind: StaticCanvasLayerKind): void {
     this.findOverlayLayer(parent, pageIdx, layerKind)?.remove();
+  }
+
+  private findFlowImageLayer(parent: HTMLElement | null, pageIdx: number): HTMLElement | null {
+    return parent?.querySelector<HTMLElement>(`[data-rhwp-flow-image-page="${pageIdx}"]`) ?? null;
+  }
+
+  private removeFlowImageLayer(parent: HTMLElement, pageIdx: number): void {
+    this.findFlowImageLayer(parent, pageIdx)?.remove();
   }
 
   private buildStaticOverlayKey(
@@ -870,8 +904,8 @@ export class PageRenderer {
    * 비동기 이미지 로드 대응: data URL 이미지가 첫 렌더링 시
    * 아직 디코딩되지 않았을 수 있으므로 점진적 재렌더링한다.
    *
-   * decode 완료 후 한 번 다시 그린다. base64를 직접 추출할 수 없는 경우에는
-   * fallback 시점에 한 번만 다시 그려 이미지 누락 안전망을 유지한다.
+   * decode 완료 후 한 번 다시 그린다. 미리 디코드할 수 없는 그림은 fallback 시점에
+   * 한 번만 다시 그려 이미지 누락 안전망을 유지하고, 비동기 그림이 없으면 다시 그리지 않는다.
    */
   private scheduleReRender(
     pageIdx: number,
@@ -883,39 +917,72 @@ export class PageRenderer {
   ): void {
     if (imageCount <= 0) {
       this.cancelReRender(pageIdx);
-      this.imageRetryCounts.delete(pageIdx);
+      this.imageRetryStates.delete(pageIdx);
       return;
     }
     const retryKey = `${imageCount}:${rawSvgCount}:${policy.retrySignature}`;
-    if (this.imageRetryCounts.get(pageIdx) === retryKey) return;
+    const previous = this.imageRetryStates.get(pageIdx);
+    if (previous?.key === retryKey) {
+      // 같은 내용은 이미 다시 그렸거나 진행 중인 작업이 맡고 있다.
+      if (previous.settled || this.reRenderJobs.has(pageIdx)) return;
+      // 디코드 도중 취소된 같은 내용(편집·새로고침·스크롤)은 그림이 아직 비어 있을 수 있다.
+      // 트리를 다시 읽고 디코드를 새로 거는 대신 fallback 한 번만 다시 건다 — 에이전트
+      // 연속 편집마다 수 MB 트리를 다시 읽지 않는다.
+      this.startReRenderJob(pageIdx, canvas, renderScale, policy, previous, {
+        rawSvgCount: 0,
+        prefetch: false,
+      });
+      return;
+    }
 
     this.cancelReRender(pageIdx);
-    this.imageRetryCounts.set(pageIdx, retryKey);
+    const state: ImageRetryState = { key: retryKey, settled: false };
+    this.imageRetryStates.set(pageIdx, state);
+    this.startReRenderJob(pageIdx, canvas, renderScale, policy, state, {
+      rawSvgCount,
+      prefetch: true,
+    });
+  }
 
+  private startReRenderJob(
+    pageIdx: number,
+    canvas: HTMLCanvasElement,
+    renderScale: number,
+    policy: ReRenderPolicy,
+    state: ImageRetryState,
+    options: { rawSvgCount: number; prefetch: boolean },
+  ): void {
     const job: ReRenderJob = {
       prefetchAbort: new AbortController(),
       fallbackTimer: 0 as unknown as ReturnType<typeof setTimeout>,
       earlyRawSvgTimers: [],
       completed: false,
     };
-    const finish = () => {
-      if (job.completed || this.reRenderJobs.get(pageIdx) !== job) return;
+    const isCurrent = () => !job.completed && this.reRenderJobs.get(pageIdx) === job;
+    /** 작업을 끝낸다. 이 key 는 다시 그릴 필요가 없다. */
+    const settle = (): boolean => {
+      if (!isCurrent()) return false;
       job.completed = true;
       job.prefetchAbort.abort();
       clearTimeout(job.fallbackTimer);
       for (const timer of job.earlyRawSvgTimers) clearTimeout(timer);
       this.reRenderJobs.delete(pageIdx);
-      if (canvas.parentElement) {
-        this.reRenderPageCanvases(pageIdx, canvas, renderScale, policy);
-      }
+      state.settled = true;
+      return true;
+    };
+    const finish = () => {
+      // trap 한 엔진으로 다시 그리면 마지막으로 그린 쪽만 지운다. 작업은 onEngineTrap 이 끊는다.
+      if (engineTrap() || !settle()) return;
+      if (canvas.parentElement) this.reRenderPageCanvases(pageIdx, canvas, renderScale, policy);
     };
     job.fallbackTimer = setTimeout(finish, IMAGE_RE_RENDER_FALLBACK_DELAY_MS);
     this.reRenderJobs.set(pageIdx, job);
+    if (!options.prefetch) return;
 
-    if (rawSvgCount > 0) {
+    if (options.rawSvgCount > 0) {
       for (const delay of RAW_SVG_EARLY_RE_RENDER_DELAYS_MS) {
         const timer = setTimeout(() => {
-          if (job.completed || this.reRenderJobs.get(pageIdx) !== job) return;
+          if (!isCurrent() || engineTrap()) return;
           if (canvas.parentElement) {
             this.reRenderPageCanvases(pageIdx, canvas, renderScale, policy);
           }
@@ -926,10 +993,12 @@ export class PageRenderer {
 
     // 자체 prefetch로 실제 decode를 마친 경우에만 fallback보다 먼저 다시 그린다.
     queueMicrotask(() => {
-      if (job.completed || this.reRenderJobs.get(pageIdx) !== job) return;
+      if (!isCurrent()) return;
       this.prefetchLayerImages(pageIdx, job.prefetchAbort.signal)
-        .then((decoded) => {
-          if (decoded) finish();
+        .then((result) => {
+          if (result === 'decoded') finish();
+          // 첫 paint 가 이미 완전하다 — fallback 재렌더도 필요 없다.
+          else if (result === 'none') settle();
         })
         .catch(() => {});
     });
@@ -942,60 +1011,69 @@ export class PageRenderer {
     policy: ReRenderPolicy,
   ): void {
     const parent = flowCanvas.parentElement;
-    if (!parent) return;
+    if (!parent || engineTrap()) return;
 
-    let renderedStaticFlow = false;
-    if (policy.reuseStaticFlow) {
-      const flowStatic = this.findOverlayLayer(parent, pageIdx, 'flow-static');
-      if (flowStatic) {
-        flowStatic.width = flowCanvas.width;
-        flowStatic.height = flowCanvas.height;
-        try {
-          this.wasm.renderPageToCanvasFiltered(
-            pageIdx,
-            flowStatic,
-            renderScale,
-            'flow-static',
-            this.renderProfile,
-          );
+    // canvas 크기는 엔진이 렌더에 성공한 뒤 스스로 맞춘다. 여기서 먼저 width 를 대입하면
+    // 실패한 호출(trap 등)이 멀쩡한 층을 빈 비트맵으로 남긴다.
+    try {
+      let renderedStaticFlow = false;
+      if (policy.reuseStaticFlow) {
+        const flowStatic = this.findOverlayLayer(parent, pageIdx, 'flow-static');
+        if (flowStatic) {
+          try {
+            this.wasm.renderPageToCanvasFiltered(
+              pageIdx,
+              flowStatic,
+              renderScale,
+              'flow-static',
+              this.renderProfile,
+            );
+            renderedStaticFlow = true;
+          } catch (error) {
+            if (reportEngineTrap(error)) return;
+            this.flowSplitSupported = false;
+            flowStatic.remove();
+            console.warn('[PageRenderer] flow-static 지연 재렌더 실패, 기존 flow 재렌더로 fallback:', error);
+          }
+        } else if (this.findFlowImageLayer(parent, pageIdx)) {
+          // 본문 그림은 DOM `<img>` 가 그린다. flow-dynamic canvas 에는 비동기 그림이 없으므로
+          // 다시 그리지 않는다 — 'flow' 로 덮으면 불투명 용지가 `<img>` 층을 가린다.
           renderedStaticFlow = true;
-        } catch (error) {
-          this.flowSplitSupported = false;
-          flowStatic.remove();
-          console.warn('[PageRenderer] flow-static 지연 재렌더 실패, 기존 flow 재렌더로 fallback:', error);
         }
       }
-    }
 
-    if (!renderedStaticFlow) {
-      this.wasm.renderPageToCanvasFiltered(
-        pageIdx,
-        flowCanvas,
-        renderScale,
-        'flow',
-        this.renderProfile,
-      );
-      this.drawMarginGuides(pageIdx, flowCanvas, renderScale);
-    }
-
-    if (policy.reuseStaticOverlay) return;
-
-    parent.querySelectorAll<HTMLCanvasElement>(
-      `[data-rhwp-overlay-page="${pageIdx}"][data-rhwp-layer-kind]`,
-    ).forEach((layerCanvas) => {
-      const kind = layerCanvas.dataset.rhwpLayerKind;
-      if (kind === 'background' || kind === 'behind' || kind === 'front') {
-        layerCanvas.width = flowCanvas.width;
-        layerCanvas.height = flowCanvas.height;
+      if (!renderedStaticFlow) {
         this.wasm.renderPageToCanvasFiltered(
           pageIdx,
-          layerCanvas,
+          flowCanvas,
           renderScale,
-          kind,
+          'flow',
           this.renderProfile,
         );
+        this.drawMarginGuides(pageIdx, flowCanvas, renderScale);
       }
-    });
+
+      if (policy.reuseStaticOverlay) return;
+
+      parent.querySelectorAll<HTMLCanvasElement>(
+        `[data-rhwp-overlay-page="${pageIdx}"][data-rhwp-layer-kind]`,
+      ).forEach((layerCanvas) => {
+        const kind = layerCanvas.dataset.rhwpLayerKind;
+        if (kind === 'background' || kind === 'behind' || kind === 'front') {
+          this.wasm.renderPageToCanvasFiltered(
+            pageIdx,
+            layerCanvas,
+            renderScale,
+            kind,
+            this.renderProfile,
+          );
+        }
+      });
+    } catch (error) {
+      if (reportEngineTrap(error)) return;
+      // 타이머에서 도는 보조 재렌더라 받을 호출자가 없다. 다음 편집/스크롤 렌더가 다시 그린다.
+      console.error(`[PageRenderer] 페이지 ${pageIdx} 지연 재렌더 실패:`, error);
+    }
   }
 
   /**
@@ -1003,70 +1081,30 @@ export class PageRenderer {
    * 자체 prefetch 하여 모든 이미지가 브라우저에 디코드 완료될 때까지 대기.
    * Task #1154 — IMAGE_CACHE 의 비동기 디코드 누락 안전망.
    */
-  private async prefetchLayerImages(pageIdx: number, signal: AbortSignal): Promise<boolean> {
-    if (signal.aborted) return false;
-    let json: string;
+  private async prefetchLayerImages(
+    pageIdx: number,
+    signal: AbortSignal,
+  ): Promise<LayerImagePrefetchResult> {
+    if (signal.aborted) return 'wait';
+    let plan: ReturnType<typeof collectLayerImagePrefetch>;
     try {
-      json = this.wasm.getPageLayerTree(pageIdx);
+      // 트리 JSON 의 op 는 bbox 가 mime 앞에 온다 — 정규식이 아니라 구조를 따라 읽는다.
+      plan = collectLayerImagePrefetch(JSON.parse(this.wasm.getPageLayerTree(pageIdx)));
     } catch {
-      return false;
+      // 트리를 못 읽으면 무엇이 비었는지 모른다. 조기/fallback 타이머에 맡긴다.
+      return 'wait';
     }
-    const seen = new Set<string>();
-    let seenUrlChars = 0;
-    const enqueueValidated = (dataUrl: string) => {
-      if (
-        seen.has(dataUrl)
-        || seen.size >= MAX_PREFETCH_IMAGES_PER_PAGE
-        || seenUrlChars + dataUrl.length > MAX_PREFETCH_DATA_URL_CHARS
-      ) return;
-      seen.add(dataUrl);
-      seenUrlChars += dataUrl.length;
-    };
-    const enqueueRaster = (mime: string, base64: string) => {
-      try {
-        assertBase64EncodedImageDecodeDimensions(base64, '문서 그림');
-      } catch {
-        return;
-      }
-      enqueueValidated(`data:${mime};base64,${base64}`);
-    };
-    // image 항목들의 mime + base64 추출 (간단한 정규식)
-    const re = /"type":"image"[^}]*?(?:"wrap":"(behindText|inFrontOfText)")?[^}]*?"mime":"([^"]+)","base64":"([^"]+)"/g;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(json)) !== null) {
-      enqueueRaster(m[2], m[3]);
-    }
-    // rawSvg 항목 (OLE/차트 미리보기) 의 embedded data URL 추출.
-    // svg 필드는 JSON 인코딩 문자열이며 내부에 data:image/MIME;base64,... 가 등장한다.
-    // rawSvg 의 wrap 은 항상 flow 이므로 overlay 필터링 불필요.
-    const dataUrlRe = /data:(image\/[A-Za-z0-9.+-]+);base64,([A-Za-z0-9+/=]+)/g;
-    let d: RegExpExecArray | null;
-    while ((d = dataUrlRe.exec(json)) !== null) {
-      enqueueRaster(d[1], d[2]);
-    }
-    // 벡터 rawSvg(차트/OLE 미리보기)는 내부 raster data URL 이 없어 위 정규식으로
-    // 잡히지 않는다. web_canvas.render_raw_svg 와 동일하게 조각을 wrap 한 SVG data URL
-    // 을 프리페치해야 비동기 로드 완료 신호를 얻어 지연 재렌더(finish)가 발동하고,
-    // WASM 캐시의 SVG 이미지가 로드 완료 상태로 flow-static overlay 에 그려진다.
-    if (json.includes('"type":"rawSvg"')) {
-      try {
-        const vectorRawSvgUrls: string[] = [];
-        collectVectorRawSvgDataUrls(JSON.parse(json), vectorRawSvgUrls);
-        // These URLs are generated from bounded page vector fragments, not encoded rasters.
-        for (const dataUrl of vectorRawSvgUrls) enqueueValidated(dataUrl);
-      } catch {
-        // 파싱 실패 시 raster 프리페치 결과만 사용한다.
-      }
-    }
-    if (seen.size === 0) {
-      // URL을 수집하지 못한 순수 rawSvg는 upstream의 조기 재렌더 경로를 사용한다.
-      return true;
-    }
-    await this.imagePrefetcher.prefetch([...seen], signal);
-    return !signal.aborted;
+    // 미리 디코드할 URL 을 못 모은 비동기 그림(WMF, 한도 초과 등)과 순수 rawSvg 는
+    // upstream 의 조기 재렌더 + fallback 경로를 그대로 쓴다.
+    if (plan.kind !== 'decoded') return plan.kind;
+    await this.imagePrefetcher.prefetch(plan.urls, signal);
+    return signal.aborted ? 'wait' : 'decoded';
   }
 
-  /** 특정 페이지의 지연 재렌더링을 취소한다 */
+  /**
+   * 특정 페이지의 지연 재렌더링을 취소한다. retry key 는 settled=false 로 남아, 같은 내용을
+   * 다시 그릴 때 fallback 재렌더를 다시 건다.
+   */
   cancelReRender(pageIdx: number): void {
     const job = this.reRenderJobs.get(pageIdx);
     if (job) {
@@ -1087,7 +1125,7 @@ export class PageRenderer {
   }
 
   resetImageRetryState(): void {
-    this.imageRetryCounts.clear();
+    this.imageRetryStates.clear();
     this.layerSummaryCache.clear();
     this.canvaskitDiagnosticsByPage.clear();
     this.pageInfoByPage.clear();
