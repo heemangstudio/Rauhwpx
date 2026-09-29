@@ -2,6 +2,8 @@
 //!
 //! 본문, 표 셀, 글상자 등 중첩 컨트롤 내부 텍스트를 포함한 전체 검색.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use crate::document_core::helpers::get_textbox_from_shape;
 use crate::document_core::DocumentCore;
 use crate::error::HwpError;
@@ -330,76 +332,116 @@ impl DocumentCore {
             return Ok(r#"{"ok":true,"count":0}"#.to_string());
         }
 
-        // 모든 매치를 찾되, 역순으로 치환 (오프셋 변동 방지)
-        let mut all_hits = search_all(self, query, case_sensitive);
-        // 역순 정렬: 뒤에서부터 치환하여 앞쪽 오프셋에 영향 없도록
-        all_hits.reverse();
-
-        let count = all_hits.len();
-
-        for hit in &all_hits {
-            if let Some((parent_para, ctrl_idx, cell_idx, cell_para_idx)) = hit.cell_context {
-                // 표 셀 내부 치환
-                let section = self
-                    .document
-                    .sections
-                    .get_mut(hit.sec)
-                    .ok_or_else(|| HwpError::RenderError("구역 범위 초과".into()))?;
-                let para = section
-                    .paragraphs
-                    .get_mut(parent_para)
-                    .ok_or_else(|| HwpError::RenderError("문단 범위 초과".into()))?;
-
-                let cell_para = match para.controls.get_mut(ctrl_idx) {
-                    Some(Control::Table(table)) => {
-                        let cell = table
-                            .cells
-                            .get_mut(cell_idx)
-                            .ok_or_else(|| HwpError::RenderError("셀 범위 초과".into()))?;
-                        cell.paragraphs
-                            .get_mut(cell_para_idx)
-                            .ok_or_else(|| HwpError::RenderError("셀 문단 범위 초과".into()))?
-                    }
-                    Some(Control::Shape(shape)) => {
-                        let tb = crate::document_core::helpers::get_textbox_from_shape_mut(shape)
-                            .ok_or_else(|| HwpError::RenderError("글상자 없음".into()))?;
-                        tb.paragraphs
-                            .get_mut(cell_para_idx)
-                            .ok_or_else(|| HwpError::RenderError("글상자 문단 범위 초과".into()))?
-                    }
-                    _ => continue,
-                };
-                cell_para.delete_text_at(hit.char_offset, hit.length);
-                cell_para.insert_text_at(hit.char_offset, new_text);
-            } else {
-                // 본문 문단 치환 — delete_text_native + insert_text_native는 recompose를 호출하므로
-                // 성능을 위해 직접 문단 수준 조작 후 마지막에 일괄 recompose
-                let section = self
-                    .document
-                    .sections
-                    .get_mut(hit.sec)
-                    .ok_or_else(|| HwpError::RenderError("구역 범위 초과".into()))?;
-                let para = section
-                    .paragraphs
-                    .get_mut(hit.para)
-                    .ok_or_else(|| HwpError::RenderError("문단 범위 초과".into()))?;
-                para.delete_text_at(hit.char_offset, hit.length);
-                para.insert_text_at(hit.char_offset, new_text);
+        // 같은 컨테이너(본문 문단 또는 셀·글상자 문단) 안에서 앞 매치와 겹치는 매치는
+        // 건너뛴다. "aaa" 의 "aa" 는 0 과 1 에서 모두 잡히는데, 둘 다 역순으로 치환하면
+        // 앞 치환이 뒤 치환의 결과를 지워 원문 글자가 하나 더 사라진다.
+        // search_all 은 컨테이너별 매치를 오름차순으로 이어서 낸다.
+        let mut hits: Vec<SearchHit> = Vec::new();
+        for hit in search_all(self, query, case_sensitive) {
+            let overlaps_previous = hits.last().is_some_and(|prev| {
+                prev.sec == hit.sec
+                    && prev.para == hit.para
+                    && prev.cell_context == hit.cell_context
+                    && hit.char_offset < prev.char_offset + prev.length
+            });
+            if !overlaps_previous {
+                hits.push(hit);
             }
         }
 
-        // 변경된 섹션들 recompose
-        if count > 0 {
-            let mut affected_sections: Vec<usize> = all_hits.iter().map(|h| h.sec).collect();
-            affected_sections.sort();
-            affected_sections.dedup();
-            for sec_idx in affected_sections {
-                // 편집 시 raw 스트림 무효화 (재직렬화 유도) — 캐시가 남으면 export_hwp가
-                // 원본 바이트를 그대로 반환해 치환 결과가 저장에서 유실된다 (#1385)
-                self.document.sections[sec_idx].raw_stream = None;
-                self.recompose_section(sec_idx);
+        // 뒤에서부터 치환해 앞쪽 매치 오프셋이 밀리지 않게 한다. 문단 수준에서 직접
+        // 바꾸고(매치마다 재조판하지 않도록) 아래에서 바뀐 문단만 한 번씩 리플로우한다.
+        let mut count = 0usize;
+        let mut body_paras: BTreeSet<(usize, usize)> = BTreeSet::new();
+        let mut cell_paras: BTreeSet<(usize, usize, usize, usize, usize)> = BTreeSet::new();
+        for hit in hits.iter().rev() {
+            let target = match hit.cell_context {
+                Some((parent_para, ctrl_idx, cell_idx, cell_para_idx)) => self
+                    .cell_container_paragraphs_mut(hit.sec, parent_para, ctrl_idx, cell_idx)
+                    .ok()
+                    .and_then(|paragraphs| paragraphs.get_mut(cell_para_idx)),
+                None => self
+                    .document
+                    .sections
+                    .get_mut(hit.sec)
+                    .and_then(|section| section.paragraphs.get_mut(hit.para)),
+            };
+            let Some(para) = target else {
+                continue;
+            };
+            para.delete_text_at(hit.char_offset, hit.length);
+            para.insert_text_at(hit.char_offset, new_text);
+            count += 1;
+            match hit.cell_context {
+                Some((parent_para, ctrl_idx, cell_idx, cell_para_idx)) => {
+                    cell_paras.insert((hit.sec, parent_para, ctrl_idx, cell_idx, cell_para_idx));
+                }
+                None => {
+                    body_paras.insert((hit.sec, hit.para));
+                }
             }
         }
+        if count == 0 {
+            return Ok(r#"{"ok":true,"count":0}"#.to_string());
+        }
+
+        // 셀·글상자 문단: 셀 폭으로 리플로우한 뒤 컨테이너마다 가장 앞 문단부터 vpos 를
+        // 다시 잇는다. 리플로우는 첫 줄 vpos 를 보존하므로 한 번의 재계산으로 충분하다.
+        let mut cell_starts: BTreeMap<(usize, usize, usize, usize), usize> = BTreeMap::new();
+        for &(sec, parent_para, ctrl_idx, cell_idx, cell_para_idx) in &cell_paras {
+            self.reflow_cell_paragraph(sec, parent_para, ctrl_idx, cell_idx, cell_para_idx);
+            cell_starts
+                .entry((sec, parent_para, ctrl_idx, cell_idx))
+                .or_insert(cell_para_idx);
+        }
+        let mut touched: BTreeSet<(usize, usize)> = body_paras.clone();
+        for (&(sec, parent_para, ctrl_idx, cell_idx), &start) in &cell_starts {
+            self.recalculate_cell_paragraph_vpos_native(
+                sec,
+                parent_para,
+                ctrl_idx,
+                cell_idx,
+                start,
+                None,
+            );
+            self.mark_cell_control_dirty(sec, parent_para, ctrl_idx);
+            touched.insert((sec, parent_para));
+        }
+
+        // 본문 문단: 단일 편집과 같은 순서(리플로우 이전 저장 end 캡처 → 리플로우 →
+        // 뒤 문단 vpos 재계산)를 앞 문단부터 적용한다. 한 번에 몰아 재계산하면 길어진
+        // 뒤쪽 문단 경계를 쪽 리셋으로 오판한다.
+        let doc_hwp3_layout = self.document.layout_profile().hwp3_layout();
+        for &(sec, para) in &body_paras {
+            let stored_end_for_reset = crate::renderer::composer::paragraph_flow_end(
+                &self.document.sections[sec].paragraphs[para],
+            );
+            self.reflow_paragraph(sec, para);
+            crate::renderer::composer::recalculate_section_vpos(
+                &mut self.document.sections[sec].paragraphs,
+                para,
+                None,
+                stored_end_for_reset,
+                &self.styles,
+                self.dpi,
+                doc_hwp3_layout,
+            );
+        }
+
+        // 바뀐 최상위 문단의 revision 을 올린다. 올리지 않으면 스냅샷 복원이 현재
+        // (치환된) 문단을 그대로 재사용해 모두 바꾸기 undo 가 아무것도 되돌리지 않는다.
+        for &(sec, para) in &touched {
+            self.event_log.mark_paragraph_changed(sec, para);
+        }
+
+        let affected_sections: BTreeSet<usize> = touched.iter().map(|&(sec, _)| sec).collect();
+        for sec_idx in affected_sections {
+            // 편집 시 raw 스트림 무효화 (재직렬화 유도) — 캐시가 남으면 export_hwp가
+            // 원본 바이트를 그대로 반환해 치환 결과가 저장에서 유실된다 (#1385)
+            self.document.sections[sec_idx].raw_stream = None;
+            self.recompose_section(sec_idx);
+        }
+        self.paginate_if_needed();
 
         Ok(format!("{{\"ok\":true,\"count\":{}}}", count))
     }

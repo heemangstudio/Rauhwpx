@@ -1235,7 +1235,7 @@ impl DocumentCore {
         )
     }
 
-    fn replace_text_in_cell_native_impl(
+    pub(crate) fn replace_text_in_cell_native_impl(
         &mut self,
         section_idx: usize,
         parent_para_idx: usize,
@@ -1661,67 +1661,50 @@ impl DocumentCore {
         Ok(super::super::helpers::json_ok_with(&result_fields))
     }
 
-    /// 표 셀 또는 글상자 내부 문단에 대한 가변 참조를 얻는다.
-    pub(crate) fn get_cell_paragraph_mut(
+    /// 평면 셀 좌표가 가리키는 문단 목록(표 셀, 표 캡션 `cell_idx == 65534`, 글상자,
+    /// 그림 캡션)에 대한 가변 참조를 얻는다.
+    ///
+    /// 분할·병합·범위 삭제가 모두 이 해석기 하나로 컨테이너를 찾는다. 컨트롤 종류별 분기를
+    /// 따로 두면 표 셀만 아는 경로가 캡션에서 `cells[65534]` 로 panic 하거나, 문단을 자른
+    /// 뒤에야 Err 를 내 반쯤 적용된 편집을 남긴다.
+    pub(crate) fn cell_container_paragraphs_mut(
         &mut self,
         section_idx: usize,
         parent_para_idx: usize,
         control_idx: usize,
         cell_idx: usize,
-        cell_para_idx: usize,
-    ) -> Result<&mut crate::model::paragraph::Paragraph, HwpError> {
-        if section_idx >= self.document.sections.len() {
-            return Err(HwpError::RenderError(format!(
-                "구역 인덱스 {} 범위 초과",
-                section_idx
-            )));
-        }
-        let section = &mut self.document.sections[section_idx];
-        if parent_para_idx >= section.paragraphs.len() {
-            return Err(HwpError::RenderError(format!(
-                "부모 문단 인덱스 {} 범위 초과",
-                parent_para_idx
-            )));
-        }
-        let para = &mut section.paragraphs[parent_para_idx];
-        if control_idx >= para.controls.len() {
-            return Err(HwpError::RenderError(format!(
-                "컨트롤 인덱스 {} 범위 초과",
-                control_idx
-            )));
-        }
-        match &mut para.controls[control_idx] {
+    ) -> Result<&mut Vec<Paragraph>, HwpError> {
+        let section = self.document.sections.get_mut(section_idx).ok_or_else(|| {
+            HwpError::RenderError(format!("구역 인덱스 {} 범위 초과", section_idx))
+        })?;
+        let para = section.paragraphs.get_mut(parent_para_idx).ok_or_else(|| {
+            HwpError::RenderError(format!("부모 문단 인덱스 {} 범위 초과", parent_para_idx))
+        })?;
+        let control = para.controls.get_mut(control_idx).ok_or_else(|| {
+            HwpError::RenderError(format!("컨트롤 인덱스 {} 범위 초과", control_idx))
+        })?;
+        match control {
             Control::Table(t) => {
                 // cell_idx == 65534: 표 캡션 접근 (TypeScript에서 표 캡션 편집 시 사용)
                 if cell_idx == 65534 {
-                    let cap = t.caption.as_mut().ok_or_else(|| {
-                        HwpError::RenderError("지정된 표 컨트롤에 캡션이 없습니다".to_string())
-                    })?;
-                    if cell_para_idx >= cap.paragraphs.len() {
-                        return Err(HwpError::RenderError(format!(
-                            "캡션 문단 인덱스 {} 범위 초과 (총 {}개)",
-                            cell_para_idx,
-                            cap.paragraphs.len()
-                        )));
-                    }
-                    return Ok(&mut cap.paragraphs[cell_para_idx]);
+                    return t
+                        .caption
+                        .as_mut()
+                        .map(|cap| &mut cap.paragraphs)
+                        .ok_or_else(|| {
+                            HwpError::RenderError("지정된 표 컨트롤에 캡션이 없습니다".to_string())
+                        });
                 }
-                if cell_idx >= t.cells.len() {
-                    return Err(HwpError::RenderError(format!(
-                        "셀 인덱스 {} 범위 초과 (총 {}개)",
-                        cell_idx,
-                        t.cells.len()
-                    )));
-                }
-                let cell = &mut t.cells[cell_idx];
-                if cell_para_idx >= cell.paragraphs.len() {
-                    return Err(HwpError::RenderError(format!(
-                        "셀 문단 인덱스 {} 범위 초과 (총 {}개)",
-                        cell_para_idx,
-                        cell.paragraphs.len()
-                    )));
-                }
-                Ok(&mut cell.paragraphs[cell_para_idx])
+                let cell_count = t.cells.len();
+                t.cells
+                    .get_mut(cell_idx)
+                    .map(|cell| &mut cell.paragraphs)
+                    .ok_or_else(|| {
+                        HwpError::RenderError(format!(
+                            "셀 인덱스 {} 범위 초과 (총 {}개)",
+                            cell_idx, cell_count
+                        ))
+                    })
             }
             Control::Shape(shape) => {
                 if cell_idx != 0 {
@@ -1730,38 +1713,49 @@ impl DocumentCore {
                         cell_idx
                     )));
                 }
-                let tb =
-                    super::super::helpers::get_textbox_from_shape_mut(shape).ok_or_else(|| {
+                super::super::helpers::get_textbox_from_shape_mut(shape)
+                    .map(|tb| &mut tb.paragraphs)
+                    .ok_or_else(|| {
                         HwpError::RenderError(
                             "지정된 Shape 컨트롤에 텍스트 박스가 없습니다".to_string(),
                         )
-                    })?;
-                if cell_para_idx >= tb.paragraphs.len() {
-                    return Err(HwpError::RenderError(format!(
-                        "글상자 문단 인덱스 {} 범위 초과 (총 {}개)",
-                        cell_para_idx,
-                        tb.paragraphs.len()
-                    )));
-                }
-                Ok(&mut tb.paragraphs[cell_para_idx])
+                    })
             }
-            Control::Picture(pic) => {
-                let cap = pic.caption.as_mut().ok_or_else(|| {
+            Control::Picture(pic) => pic
+                .caption
+                .as_mut()
+                .map(|cap| &mut cap.paragraphs)
+                .ok_or_else(|| {
                     HwpError::RenderError("지정된 그림 컨트롤에 캡션이 없습니다".to_string())
-                })?;
-                if cell_para_idx >= cap.paragraphs.len() {
-                    return Err(HwpError::RenderError(format!(
-                        "캡션 문단 인덱스 {} 범위 초과 (총 {}개)",
-                        cell_para_idx,
-                        cap.paragraphs.len()
-                    )));
-                }
-                Ok(&mut cap.paragraphs[cell_para_idx])
-            }
+                }),
             _ => Err(HwpError::RenderError(
                 "지정된 컨트롤이 표, 글상자 또는 그림이 아닙니다".to_string(),
             )),
         }
+    }
+
+    /// 표 셀·표 캡션·글상자·그림 캡션 내부 문단에 대한 가변 참조를 얻는다.
+    pub(crate) fn get_cell_paragraph_mut(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+        cell_idx: usize,
+        cell_para_idx: usize,
+    ) -> Result<&mut crate::model::paragraph::Paragraph, HwpError> {
+        let paragraphs = self.cell_container_paragraphs_mut(
+            section_idx,
+            parent_para_idx,
+            control_idx,
+            cell_idx,
+        )?;
+        let total = paragraphs.len();
+        paragraphs.get_mut(cell_para_idx).ok_or_else(|| {
+            HwpError::RenderError(format!(
+                "셀 문단 인덱스 {} 범위 초과 (총 {}개)",
+                cell_para_idx, total
+            ))
+        })
     }
 
     /// 부모 컨트롤(표 또는 글상자)의 dirty를 마킹한다.
@@ -2146,38 +2140,65 @@ impl DocumentCore {
                         self.get_cell_paragraph_mut(section_idx, ppi, ci, cei, start_para)?;
                     cell_para.delete_text_at(start_offset, count);
                     self.reflow_cell_paragraph(section_idx, ppi, ci, cei, start_para);
+                    // 줄 수가 줄면 뒤 문단도 올라와야 한다 (셀 삭제 단일 경로와 같다).
+                    self.recalculate_cell_paragraph_vpos_native(
+                        section_idx,
+                        ppi,
+                        ci,
+                        cei,
+                        start_para,
+                        None,
+                    );
                 }
             } else {
-                // 다중 문단 셀 내 삭제
-                // 1) 마지막 문단 앞부분 삭제
-                if end_offset > 0 {
-                    let cell_para =
-                        self.get_cell_paragraph_mut(section_idx, ppi, ci, cei, end_para)?;
-                    cell_para.delete_text_at(0, end_offset);
-                }
-                // 2) 중간 문단 역순 제거 — 셀 내 문단은 cell.paragraphs에서 직접 제거
-                for mid_para in (start_para + 1..end_para).rev() {
-                    let cell = self.get_cell_mut(section_idx, ppi, ci, cei)?;
-                    if mid_para < cell.paragraphs.len() {
-                        cell.paragraphs.remove(mid_para);
+                // 다중 문단 셀 내 삭제 — 표 셀·표 캡션·글상자·그림 캡션을 같은 컨테이너
+                // 해석기로 한 번만 찾고, 변형 전에 끝점을 그 목록에 대해 다시 확인한다.
+                // 표 셀만 아는 경로로 중간 단계에서 Err 가 나면 양 끝 문단만 잘린 채 남는다.
+                let original_vpos = {
+                    let paragraphs =
+                        self.cell_container_paragraphs_mut(section_idx, ppi, ci, cei)?;
+                    if end_para >= paragraphs.len() {
+                        return Err(HwpError::RenderError(format!(
+                            "셀 문단 인덱스 {} 범위 초과 (총 {}개)",
+                            end_para,
+                            paragraphs.len()
+                        )));
                     }
-                }
-                // 3) 첫 문단 뒷부분 삭제
-                {
+                    let original_vpos = paragraphs[start_para]
+                        .line_segs
+                        .first()
+                        .map(|seg| seg.vertical_pos);
+                    // 1) 마지막 문단 앞부분 삭제
+                    if end_offset > 0 {
+                        paragraphs[end_para].delete_text_at(0, end_offset);
+                    }
+                    // 2) 중간 문단 역순 제거
+                    paragraphs.drain(start_para + 1..end_para);
+                    // 3) 첫 문단 뒷부분 삭제
+                    let para_len = paragraphs[start_para].text.chars().count();
+                    if start_offset < para_len {
+                        paragraphs[start_para]
+                            .delete_text_at(start_offset, para_len - start_offset);
+                    }
+                    // 4) 첫-마지막 문단 병합 (마지막 문단이 이제 start_para+1에 위치)
+                    let next_para = paragraphs.remove(start_para + 1);
+                    paragraphs[start_para].merge_from(&next_para);
+                    original_vpos
+                };
+                self.reflow_cell_paragraph(section_idx, ppi, ci, cei, start_para);
+                if let Some(vpos) = original_vpos {
                     let cell_para =
                         self.get_cell_paragraph_mut(section_idx, ppi, ci, cei, start_para)?;
-                    let para_len = cell_para.text.chars().count();
-                    if start_offset < para_len {
-                        cell_para.delete_text_at(start_offset, para_len - start_offset);
-                    }
+                    shift_paragraph_vpos_origin(cell_para, vpos);
                 }
-                // 4) 첫-마지막 문단 병합 (마지막 문단이 이제 start_para+1에 위치)
-                let cell = self.get_cell_mut(section_idx, ppi, ci, cei)?;
-                if start_para + 1 < cell.paragraphs.len() {
-                    let next_para = cell.paragraphs.remove(start_para + 1);
-                    cell.paragraphs[start_para].merge_from(&next_para);
-                }
-                self.reflow_cell_paragraph(section_idx, ppi, ci, cei, start_para);
+                self.recalculate_cell_paragraph_vpos_native(
+                    section_idx,
+                    ppi,
+                    ci,
+                    cei,
+                    start_para,
+                    None,
+                );
             }
 
             // 부모 컨트롤 dirty 마킹 + 재페이지네이션
@@ -2385,32 +2406,6 @@ impl DocumentCore {
             "\"sectionIdx\":{},\"paraIdx\":{},\"charOffset\":{}",
             start_section_idx, start_para_idx, start_char_offset
         )))
-    }
-
-    /// 표 셀에 대한 가변 참조를 얻는다.
-    pub(crate) fn get_cell_mut(
-        &mut self,
-        section_idx: usize,
-        parent_para_idx: usize,
-        control_idx: usize,
-        cell_idx: usize,
-    ) -> Result<&mut crate::model::table::Cell, HwpError> {
-        let section = &mut self.document.sections[section_idx];
-        let para = section.paragraphs.get_mut(parent_para_idx).ok_or_else(|| {
-            HwpError::RenderError(format!("부모 문단 인덱스 {} 범위 초과", parent_para_idx))
-        })?;
-        let ctrl = para.controls.get_mut(control_idx).ok_or_else(|| {
-            HwpError::RenderError(format!("컨트롤 인덱스 {} 범위 초과", control_idx))
-        })?;
-        match ctrl {
-            Control::Table(ref mut table) => table
-                .cells
-                .get_mut(cell_idx)
-                .ok_or_else(|| HwpError::RenderError(format!("셀 인덱스 {} 범위 초과", cell_idx))),
-            _ => Err(HwpError::RenderError(
-                "테이블 컨트롤이 아닙니다".to_string(),
-            )),
-        }
     }
 
     // ─── Phase 4 네이티브 끝 ────────────────────────────────
@@ -3002,10 +2997,14 @@ impl DocumentCore {
                 direction: ColumnDirection::LeftToRight,
                 ..Default::default()
             };
-            if !self.document.sections[section_idx].paragraphs.is_empty() {
-                self.document.sections[section_idx].paragraphs[0]
-                    .controls
-                    .push(Control::ColumnDef(cd));
+            // 단 정의는 문단 맨 앞(텍스트 위치 0) 컨트롤이다. 컨트롤 목록 끝에 붙이면
+            // PARA_TEXT 자리 없이 들어가 뒤 인라인 개체들이 한 자리씩 밀린다.
+            if let Some(para) = self.document.sections[section_idx].paragraphs.first_mut() {
+                let insert_idx = Self::leading_structural_control_end(para);
+                Self::insert_control_with_data_slot(para, insert_idx, Control::ColumnDef(cd));
+                para.shift_for_inline_control_insert(0);
+                para.char_count += 8;
+                para.has_para_text = true;
                 found = Some(0);
             }
         }
@@ -3437,42 +3436,32 @@ impl DocumentCore {
         char_offset: usize,
         intent: ParagraphSplitIntent,
     ) -> Result<String, HwpError> {
-        // 셀 문단 검증 및 분할
-        let cell_para = self.get_cell_paragraph_mut(
-            section_idx,
-            parent_para_idx,
-            control_idx,
-            cell_idx,
-            cell_para_idx,
-        )?;
-        let original_vpos = cell_para.line_segs.first().map(|seg| seg.vertical_pos);
-        let mut new_para = cell_para.split_at(char_offset);
+        // 셀 문단 검증 및 분할. 컨테이너(표 셀·표 캡션·글상자·그림 캡션)를 먼저 해석해
+        // 자른 뒷부분을 같은 목록에 넣는다 — 자른 뒤에 컨테이너를 다시 찾다 실패하면
+        // 문단 뒷부분이 사라진다.
+        let new_cell_para_idx = cell_para_idx + 1;
+        let (original_vpos, mut new_para) = {
+            let paragraphs = self.cell_container_paragraphs_mut(
+                section_idx,
+                parent_para_idx,
+                control_idx,
+                cell_idx,
+            )?;
+            let total = paragraphs.len();
+            let cell_para = paragraphs.get_mut(cell_para_idx).ok_or_else(|| {
+                HwpError::RenderError(format!(
+                    "셀 문단 인덱스 {} 범위 초과 (총 {}개)",
+                    cell_para_idx, total
+                ))
+            })?;
+            let original_vpos = cell_para.line_segs.first().map(|seg| seg.vertical_pos);
+            (original_vpos, cell_para.split_at(char_offset))
+        };
         self.apply_paragraph_split_intent(&mut new_para, &intent);
 
-        // 새 문단을 셀/글상자에 삽입
-        let new_cell_para_idx = cell_para_idx + 1;
-        match self.document.sections[section_idx].paragraphs[parent_para_idx]
-            .controls
-            .get_mut(control_idx)
-        {
-            Some(Control::Table(table)) => {
-                table.cells[cell_idx]
-                    .paragraphs
-                    .insert(new_cell_para_idx, new_para);
-                table.dirty = true;
-            }
-            Some(Control::Shape(shape)) => {
-                if let Some(tb) = super::super::helpers::get_textbox_from_shape_mut(shape) {
-                    tb.paragraphs.insert(new_cell_para_idx, new_para);
-                }
-            }
-            Some(Control::Picture(pic)) => {
-                if let Some(ref mut cap) = pic.caption {
-                    cap.paragraphs.insert(new_cell_para_idx, new_para);
-                }
-            }
-            _ => {}
-        }
+        // 새 문단을 같은 컨테이너에 삽입 (위에서 해석에 성공했으므로 다시 실패하지 않는다)
+        self.cell_container_paragraphs_mut(section_idx, parent_para_idx, control_idx, cell_idx)?
+            .insert(new_cell_para_idx, new_para);
         // 양쪽 문단 리플로우
         self.reflow_cell_paragraph(
             section_idx,
@@ -3544,71 +3533,34 @@ impl DocumentCore {
             ));
         }
 
-        // 검증: 셀 문단 인덱스 범위 확인
-        {
-            let cell_para = self.get_cell_paragraph_mut(
-                section_idx,
-                parent_para_idx,
-                control_idx,
-                cell_idx,
-                cell_para_idx,
-            )?;
-            let _ = cell_para; // 검증만 수행
-        }
-
-        // 문단 제거 및 이전 문단에 병합
+        // 문단 제거 및 이전 문단에 병합. 표 셀·표 캡션·글상자·그림 캡션을 같은 해석기로
+        // 찾고, 문단 인덱스를 확인한 뒤에만 변형한다.
         let prev_idx = cell_para_idx - 1;
-        let original_vpos = self
-            .get_cell_paragraph_ref(
-                section_idx,
-                parent_para_idx,
-                control_idx,
-                cell_idx,
-                prev_idx,
-            )
-            .and_then(|para| para.line_segs.first().map(|seg| seg.vertical_pos));
-        let merge_point;
         // 사라지는 문단의 스코프 메타를 캡처해 결과에 실어 보낸다 — undo(split)가 이걸
         // 되돌려주지 않으면 되살아난 문단이 앞 문단 서식을 뒤집어쓴다 (Task #2342).
-        let removed_meta;
-        match self.document.sections[section_idx].paragraphs[parent_para_idx]
-            .controls
-            .get_mut(control_idx)
-        {
-            Some(Control::Table(table)) => {
-                let removed = table.cells[cell_idx].paragraphs.remove(cell_para_idx);
-                removed_meta = removed.capture_meta();
-                merge_point = table.cells[cell_idx].paragraphs[prev_idx].merge_from(&removed);
-                table.dirty = true;
+        let (original_vpos, merge_point, removed_meta) = {
+            let paragraphs = self.cell_container_paragraphs_mut(
+                section_idx,
+                parent_para_idx,
+                control_idx,
+                cell_idx,
+            )?;
+            if cell_para_idx >= paragraphs.len() {
+                return Err(HwpError::RenderError(format!(
+                    "셀 문단 인덱스 {} 범위 초과 (총 {}개)",
+                    cell_para_idx,
+                    paragraphs.len()
+                )));
             }
-            Some(Control::Shape(shape)) => {
-                if let Some(tb) = super::super::helpers::get_textbox_from_shape_mut(shape) {
-                    let removed = tb.paragraphs.remove(cell_para_idx);
-                    removed_meta = removed.capture_meta();
-                    merge_point = tb.paragraphs[prev_idx].merge_from(&removed);
-                } else {
-                    return Err(HwpError::RenderError(
-                        "지정된 Shape 컨트롤에 텍스트 박스가 없습니다".to_string(),
-                    ));
-                }
-            }
-            Some(Control::Picture(pic)) => {
-                if let Some(ref mut cap) = pic.caption {
-                    let removed = cap.paragraphs.remove(cell_para_idx);
-                    removed_meta = removed.capture_meta();
-                    merge_point = cap.paragraphs[prev_idx].merge_from(&removed);
-                } else {
-                    return Err(HwpError::RenderError(
-                        "지정된 그림 컨트롤에 캡션이 없습니다".to_string(),
-                    ));
-                }
-            }
-            _ => {
-                return Err(HwpError::RenderError(
-                    "지정된 컨트롤이 표, 글상자 또는 그림이 아닙니다".to_string(),
-                ));
-            }
-        }
+            let original_vpos = paragraphs[prev_idx]
+                .line_segs
+                .first()
+                .map(|seg| seg.vertical_pos);
+            let removed = paragraphs.remove(cell_para_idx);
+            let removed_meta = removed.capture_meta();
+            let merge_point = paragraphs[prev_idx].merge_from(&removed);
+            (original_vpos, merge_point, removed_meta)
+        };
         // 병합된 문단 리플로우
         self.reflow_cell_paragraph(
             section_idx,

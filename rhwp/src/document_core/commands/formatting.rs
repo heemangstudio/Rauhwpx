@@ -2368,13 +2368,13 @@ impl DocumentCore {
             .iter()
             .position(|c| matches!(c, Control::PageHide(_)));
 
+        // 컨트롤은 PARA_TEXT 에서 8 유닛 자리를 차지한다. 자리(char_offsets 갭)를 같이
+        // 넣고 빼지 않으면 뒤 컨트롤들이 앞 컨트롤의 자리로 밀려 인라인 그림·표가 저장·
+        // 렌더에서 다른 글자 위치로 옮겨진다.
         if all_false {
-            // 모두 false → 기존 PageHide 제거
+            // 모두 false → 기존 PageHide 제거 (자리·글자 모양·필드 참조까지 당긴다)
             if let Some(idx) = existing_idx {
-                para.controls.remove(idx);
-                if idx < para.ctrl_data_records.len() {
-                    para.ctrl_data_records.remove(idx);
-                }
+                Self::remove_inline_control_with_metadata(para, idx);
             }
         } else {
             let ph = PageHide {
@@ -2389,9 +2389,13 @@ impl DocumentCore {
                 // 기존 컨트롤 갱신
                 para.controls[idx] = Control::PageHide(ph);
             } else {
-                // 새 컨트롤 삽입 (문단 맨 앞)
-                para.controls.insert(0, Control::PageHide(ph));
-                para.ctrl_data_records.insert(0, None);
+                // 새 컨트롤을 문단 맨 앞(텍스트 위치 0) 자리에 넣는다. 맨 앞의 구역·단
+                // 정의 뒤에 두어 구역 정의가 첫 컨트롤로 남게 한다.
+                let insert_idx = Self::leading_structural_control_end(para);
+                Self::insert_control_with_data_slot(para, insert_idx, Control::PageHide(ph));
+                para.shift_for_inline_control_insert(0);
+                para.char_count += 8;
+                para.has_para_text = true;
             }
         }
 

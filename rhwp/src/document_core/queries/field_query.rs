@@ -562,6 +562,11 @@ impl DocumentCore {
         stored_end: Option<i32>,
     ) -> Result<(), HwpError> {
         let section_idx = location.section_index;
+        // 호출자는 이미 필드 문단을 바꿨다. 아래 재조판이 Err 로 끝나도 스냅샷 복원이
+        // 바뀐 문단을 재사용하지 않도록 최상위 호스트 문단 revision 을 먼저 올린다
+        // (값 설정·필드 제거는 이벤트를 쌓지 않는다).
+        self.event_log
+            .mark_paragraph_changed(section_idx, location.para_index);
         if self.composed.len() <= section_idx {
             self.composed.resize_with(section_idx + 1, Vec::new);
         }

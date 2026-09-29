@@ -183,6 +183,22 @@ impl DocumentCore {
         para.ctrl_data_records.insert(idx, None);
     }
 
+    /// 문단 맨 앞(텍스트 위치 0)에 모인 구역·단 정의 컨트롤 바로 뒤 인덱스.
+    ///
+    /// 감추기·단 정의처럼 문단 머리에 새로 넣는 컨트롤의 자리다. 구역 정의는 구역 첫
+    /// 문단의 첫 컨트롤로 남고, 텍스트 뒤 인라인 개체의 자리는 건드리지 않는다.
+    pub(crate) fn leading_structural_control_end(para: &Paragraph) -> usize {
+        let positions = para.control_text_positions();
+        para.controls
+            .iter()
+            .enumerate()
+            .position(|(i, ctrl)| {
+                positions.get(i).is_none_or(|&pos| pos > 0)
+                    || !matches!(ctrl, Control::SectionDef(_) | Control::ColumnDef(_))
+            })
+            .unwrap_or(para.controls.len())
+    }
+
     /// 컨트롤 삭제 후 문단의 line_segs를 재계산한다.
     ///
     /// 그림/도형 삭제 시 문단의 line_segs에 컨트롤 높이가 그대로 남아,
