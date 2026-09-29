@@ -7,7 +7,8 @@ const hooks = registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier.startsWith('@/ui/')) {
       const exports = ['TableCellPropsDialog', 'TableCreateDialog', 'CellSplitDialog',
-        'CellBorderBgDialog', 'FormulaDialog', 'TableDeleteRowColumnDialog', 'TableInsertRowColumnDialog'];
+        'CellBorderBgDialog', 'FormulaDialog', 'TableDeleteRowColumnDialog', 'TableInsertRowColumnDialog',
+        'showToast'];
       return { url: `data:text/javascript,${encodeURIComponent(exports.map(name =>
         `export class ${name} {}`).join('\n'))}`, shortCircuit: true };
     }

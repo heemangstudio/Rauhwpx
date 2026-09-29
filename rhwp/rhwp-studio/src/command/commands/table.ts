@@ -12,6 +12,7 @@ import {
   type TableInsertRowColumnMode,
 } from '@/ui/table-row-column-dialog';
 import { remapTableCellPosition, tableModelPathJson } from '@/core/table-structural-cursor';
+import { showToast } from '@/ui/toast';
 
 const inTable = (ctx: EditorContext) => ctx.inTable;
 const inTableOrCellSelection = (ctx: EditorContext) => ctx.inTable || ctx.inCellSelectionMode;
@@ -29,6 +30,65 @@ type TableCursorPosition = TableCellCommandContext['pos'];
 
 function tablePathJson(pos: TableCursorPosition): string | null {
   return pos.cellPath?.length ? JSON.stringify(pos.cellPath) : null;
+}
+
+/**
+ * cellPath 깊이 2 이상 = 중첩 표. 이때 평면 필드(parentParaIndex/controlIndex/cellIndex/
+ * cellParaIndex)는 바깥 표를 가리키므로, 평면 API 에 넘기면 바깥 표를 읽고 고친다.
+ */
+function isNestedPath(path: readonly unknown[] | null | undefined): boolean {
+  return (path?.length ?? 0) > 1;
+}
+
+/** 커서나 셀 블록 선택이 중첩 표 안에 있는지. */
+function isInNestedTable(
+  ih: TableCellCommandContext['ih'],
+  pos: TableCursorPosition,
+): boolean {
+  if (isNestedPath(pos.cellPath)) return true;
+  return Boolean(ih.isInCellSelectionMode?.() && isNestedPath(ih.getCellTableContext?.()?.cellPath));
+}
+
+/** 경로 기반 엔진·대화상자 API 가 없는 명령은 바깥 표를 대신 고치지 않도록 멈춘다. */
+function refuseNestedTable(): void {
+  showToast({ message: '중첩 표에서는 지원하지 않습니다.', durationMs: 2500 });
+}
+
+/**
+ * 셀 숫자 서식 명령이 읽고 바꿀 현재 셀 문단.
+ * 중첩 표는 경로 API 로 안쪽 셀을 다룬다 (평면 좌표는 바깥 셀의 host 문단을 가리킨다).
+ */
+function currentCellParagraphText(services: CommandServices, pos: TableCursorPosition) {
+  const sec = pos.sectionIndex, ppi = pos.parentParaIndex!, ci = pos.controlIndex!, cei = pos.cellIndex!;
+  const cpi = pos.cellParaIndex ?? 0;
+  const path = isNestedPath(pos.cellPath) ? tablePathJson(pos) : null;
+  const len = path
+    ? services.wasm.getCellParagraphLengthByPath(sec, ppi, path)
+    : services.wasm.getCellParagraphLength(sec, ppi, ci, cei, cpi);
+  const text = len <= 0 ? '' : path
+    ? services.wasm.getTextInCellByPath(sec, ppi, path, 0, len)
+    : services.wasm.getTextInCell(sec, ppi, ci, cei, cpi, 0, len);
+  return {
+    len,
+    text,
+    /** snapshot operation 안에서 호출한다 (delete+insert 원자화). */
+    replace(wasm: CommandServices['wasm'], result: string): void {
+      if (path) {
+        wasm.deleteTextInCellByPath(sec, ppi, path, 0, len);
+        wasm.insertTextInCellByPath(sec, ppi, path, 0, result);
+      } else {
+        wasm.deleteTextInCell(sec, ppi, ci, cei, cpi, 0, len);
+        wasm.insertTextInCell(sec, ppi, ci, cei, cpi, 0, result);
+      }
+    },
+  };
+}
+
+/** 중첩 표에서 cellIndex 번째 셀을 가리키는 경로. */
+function nestedCellPathJson(pos: TableCursorPosition, cellIndex: number): string {
+  const path = pos.cellPath ?? [];
+  const last = path[path.length - 1];
+  return JSON.stringify([...path.slice(0, -1), { ...last, cellIndex, cellParaIndex: 0 }]);
 }
 
 function cellInfoAt(wasm: CommandServices['wasm'], pos: TableCursorPosition) {
@@ -113,6 +173,11 @@ function blockCalcCommand(id: string, label: string, func: string, shortcut: str
       if (!ih) return;
       const pos = ih.getCursorPosition();
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
+      // 경로 기반 계산식 API 가 없다. 평면 좌표로 계산하면 바깥 표 셀을 읽고 덮어쓴다.
+      if (isInNestedTable(ih, pos)) {
+        refuseNestedTable();
+        return;
+      }
       try {
         const cellInfo = services.wasm.getCellInfo(pos.sectionIndex, pos.parentParaIndex, pos.controlIndex, pos.cellIndex);
         const row = cellInfo.row;
@@ -129,7 +194,11 @@ function blockCalcCommand(id: string, label: string, func: string, shortcut: str
           kind: 'snapshot',
           operationType: 'tableBlockCalc',
           operation: (wasm) => {
-            wasm.evaluateTableFormula(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, row, col, formula, true);
+            const written = JSON.parse(
+              wasm.evaluateTableFormula(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, row, col, formula, true),
+            );
+            // 기록하지 못했으면 빈 되돌리기 항목을 남기지 않는다 (throw → 스냅샷 복원·폐기).
+            if (!written.ok) throw new Error(written.error ?? '블록 계산 결과를 기록하지 못했습니다');
             return pos;
           },
         }), '블록 계산');
@@ -145,6 +214,11 @@ function openFormulaDialog(services: Parameters<CommandDef['execute']>[0]): void
   if (!ih) return;
   const pos = ih.getCursorPosition();
   if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
+  // 계산식 대화상자는 평면 좌표로만 쓴다. 중첩 표에서는 바깥 표에 결과를 쓰게 된다.
+  if (isInNestedTable(ih, pos)) {
+    refuseNestedTable();
+    return;
+  }
   const dialog = new FormulaDialog(services.wasm, services.eventBus, {
     sec: pos.sectionIndex,
     ppi: pos.parentParaIndex,
@@ -336,6 +410,11 @@ export const tableCommands: CommandDef[] = [
       if (ih.isInTableObjectSelection()) {
         const ref = ih.getSelectedTableRef();
         if (!ref) return;
+        // 대화상자는 경로를 받지 않는다. 중첩 표 참조의 sec/ppi/ci 는 바깥 표다.
+        if (isNestedPath(ref.cellPath)) {
+          refuseNestedTable();
+          return;
+        }
         const tableCtx = { sec: ref.sec, ppi: ref.ppi, ci: ref.ci };
         const dialog = new TableCellPropsDialog(services.wasm, services.eventBus, tableCtx, 0, 'table', services);
         dialog.show();
@@ -344,6 +423,10 @@ export const tableCommands: CommandDef[] = [
 
       const pos = ih.getCursorPosition();
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
+      if (isInNestedTable(ih, pos)) {
+        refuseNestedTable();
+        return;
+      }
       const tableCtx = { sec: pos.sectionIndex, ppi: pos.parentParaIndex, ci: pos.controlIndex };
       const dialog = new TableCellPropsDialog(services.wasm, services.eventBus, tableCtx, pos.cellIndex, 'cell', services);
       dialog.show();
@@ -358,6 +441,10 @@ export const tableCommands: CommandDef[] = [
       if (!ih) return;
       const pos = ih.getCursorPosition();
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
+      if (isInNestedTable(ih, pos)) {
+        refuseNestedTable();
+        return;
+      }
       const tableCtx = { sec: pos.sectionIndex, ppi: pos.parentParaIndex, ci: pos.controlIndex };
       const selectionRange = ih.isInCellSelectionMode?.() ? ih.getSelectedCellRange?.() ?? null : null;
       const dialog = new CellBorderBgDialog(
@@ -382,6 +469,10 @@ export const tableCommands: CommandDef[] = [
       if (!ih.hasMultiCellSelection()) return;
       const pos = ih.getCursorPosition();
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
+      if (isInNestedTable(ih, pos)) {
+        refuseNestedTable();
+        return;
+      }
       const tableCtx = { sec: pos.sectionIndex, ppi: pos.parentParaIndex, ci: pos.controlIndex };
       const dialog = new CellBorderBgDialog(
         services.wasm,
@@ -779,10 +870,19 @@ export const tableCommands: CommandDef[] = [
       let sec: number, ppi: number, ci: number;
       const ref = ih.getSelectedTableRef();
       if (ref) {
+        // 캡션 API 는 평면 좌표만 받는다. 중첩 표에서는 바깥 표에 캡션을 넣게 된다.
+        if (isNestedPath(ref.cellPath)) {
+          refuseNestedTable();
+          return;
+        }
         sec = ref.sec; ppi = ref.ppi; ci = ref.ci;
       } else {
         const pos = ih.getCursorPosition();
         if (pos.parentParaIndex === undefined || pos.controlIndex === undefined) return;
+        if (isInNestedTable(ih, pos)) {
+          refuseNestedTable();
+          return;
+        }
         sec = pos.sectionIndex; ppi = pos.parentParaIndex; ci = pos.controlIndex;
       }
       // 현재 캡션 상태 조회
@@ -824,18 +924,28 @@ export const tableCommands: CommandDef[] = [
       const pos = ih.getCursorPosition();
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
       const sec = pos.sectionIndex, ppi = pos.parentParaIndex, ci = pos.controlIndex;
+      // 중첩 표는 평면 좌표가 바깥 표를 가리키므로 경로 API 로 안쪽 표를 다룬다.
+      const path = isNestedPath(pos.cellPath) ? tablePathJson(pos) : null;
       try {
         if (hasNonRectangularCellSelection(ih)) return;
-        const dims = services.wasm.getTableDimensions(sec, ppi, ci);
+        const dims = path
+          ? services.wasm.getTableDimensionsByPath(sec, ppi, path)
+          : services.wasm.getTableDimensions(sec, ppi, ci);
         const range = equalizeTargetRange(ih, dims);
-        const bboxes = services.wasm.getTableCellBboxes(sec, ppi, ci);
+        const bboxes = path
+          ? services.wasm.getTableCellBboxesByPath(sec, ppi, path)
+          : services.wasm.getTableCellBboxes(sec, ppi, ci);
         const bboxByCellIdx = new Map(bboxes.map(bbox => [bbox.cellIdx, bbox]));
         const cells: Array<{ idx: number; height: number; renderHeight: number }> = [];
         for (let i = 0; i < dims.cellCount; i++) {
-          const info = services.wasm.getCellInfo(sec, ppi, ci, i);
+          const info = path
+            ? services.wasm.getCellInfoByPath(sec, ppi, nestedCellPathJson(pos, i))
+            : services.wasm.getCellInfo(sec, ppi, ci, i);
           if (!isCellInRange(info, range)) continue;
           if (info.rowSpan > 1) continue;
-          const h = services.wasm.getCellProperties(sec, ppi, ci, i).height;
+          const h = (path
+            ? services.wasm.getCellPropertiesByPath(sec, ppi, path, i)
+            : services.wasm.getCellProperties(sec, ppi, ci, i)).height;
           const bbox = bboxByCellIdx.get(i);
           const renderHeight = bbox ? Math.round(bbox.h * 75) : h;
           cells.push({ idx: i, height: h, renderHeight });
@@ -859,7 +969,8 @@ export const tableCommands: CommandDef[] = [
           kind: 'snapshot',
           operationType: 'equalizeTableCellHeights',
           operation: (wasm) => {
-            wasm.resizeTableCells(sec, ppi, ci, updates);
+            if (path) wasm.resizeTableCellsByPath(sec, ppi, path, updates);
+            else wasm.resizeTableCells(sec, ppi, ci, updates);
             return pos;
           },
         }), '셀 높이를 같게');
@@ -880,18 +991,28 @@ export const tableCommands: CommandDef[] = [
       const pos = ih.getCursorPosition();
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
       const sec = pos.sectionIndex, ppi = pos.parentParaIndex, ci = pos.controlIndex;
+      // 중첩 표는 평면 좌표가 바깥 표를 가리키므로 경로 API 로 안쪽 표를 다룬다.
+      const path = isNestedPath(pos.cellPath) ? tablePathJson(pos) : null;
       try {
         if (hasNonRectangularCellSelection(ih)) return;
-        const dims = services.wasm.getTableDimensions(sec, ppi, ci);
+        const dims = path
+          ? services.wasm.getTableDimensionsByPath(sec, ppi, path)
+          : services.wasm.getTableDimensions(sec, ppi, ci);
         const range = equalizeTargetRange(ih, dims);
-        const bboxes = services.wasm.getTableCellBboxes(sec, ppi, ci);
+        const bboxes = path
+          ? services.wasm.getTableCellBboxesByPath(sec, ppi, path)
+          : services.wasm.getTableCellBboxes(sec, ppi, ci);
         const bboxByCellIdx = new Map(bboxes.map(bbox => [bbox.cellIdx, bbox]));
         const cells: Array<{ idx: number; col: number; width: number; renderWidth: number }> = [];
         for (let i = 0; i < dims.cellCount; i++) {
-          const info = services.wasm.getCellInfo(sec, ppi, ci, i);
+          const info = path
+            ? services.wasm.getCellInfoByPath(sec, ppi, nestedCellPathJson(pos, i))
+            : services.wasm.getCellInfo(sec, ppi, ci, i);
           if (!isCellInRange(info, range)) continue;
           if (info.rowSpan > 1) continue;
-          const w = services.wasm.getCellProperties(sec, ppi, ci, i).width;
+          const w = (path
+            ? services.wasm.getCellPropertiesByPath(sec, ppi, path, i)
+            : services.wasm.getCellProperties(sec, ppi, ci, i)).width;
           const bbox = bboxByCellIdx.get(i);
           const renderWidth = bbox ? Math.round(bbox.w * 75) : w;
           cells.push({ idx: i, col: info.col, width: w, renderWidth });
@@ -916,7 +1037,8 @@ export const tableCommands: CommandDef[] = [
           kind: 'snapshot',
           operationType: 'equalizeTableCellWidths',
           operation: (wasm) => {
-            wasm.resizeTableCells(sec, ppi, ci, updates);
+            if (path) wasm.resizeTableCellsByPath(sec, ppi, path, updates);
+            else wasm.resizeTableCells(sec, ppi, ci, updates);
             return pos;
           },
         }), '셀 너비를 같게');
@@ -951,12 +1073,10 @@ export const tableCommands: CommandDef[] = [
       if (!ih) return;
       const pos = ih.getCursorPosition();
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
-      const sec = pos.sectionIndex, ppi = pos.parentParaIndex, ci = pos.controlIndex, cei = pos.cellIndex;
-      const cpi = pos.cellParaIndex ?? 0;
       try {
-        const len = services.wasm.getCellParagraphLength(sec, ppi, ci, cei, cpi);
-        if (len <= 0) return;
-        const text = services.wasm.getTextInCell(sec, ppi, ci, cei, cpi, 0, len);
+        const cell = currentCellParagraphText(services, pos);
+        if (cell.len <= 0) return;
+        const text = cell.text;
         const trimmed = text.trim();
         if (!trimmed) return;
         const stripped = trimmed.replace(/,/g, '');
@@ -978,8 +1098,7 @@ export const tableCommands: CommandDef[] = [
           kind: 'snapshot',
           operationType: 'cellNumberFormat',
           operation: (wasm) => {
-            wasm.deleteTextInCell(sec, ppi, ci, cei, cpi, 0, len);
-            wasm.insertTextInCell(sec, ppi, ci, cei, cpi, 0, result);
+            cell.replace(wasm, result);
             return pos;
           },
         }), '셀 숫자 서식');
@@ -997,12 +1116,10 @@ export const tableCommands: CommandDef[] = [
       if (!ih) return;
       const pos = ih.getCursorPosition();
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
-      const sec = pos.sectionIndex, ppi = pos.parentParaIndex, ci = pos.controlIndex, cei = pos.cellIndex;
-      const cpi = pos.cellParaIndex ?? 0;
       try {
-        const len = services.wasm.getCellParagraphLength(sec, ppi, ci, cei, cpi);
-        if (len <= 0) return;
-        const text = services.wasm.getTextInCell(sec, ppi, ci, cei, cpi, 0, len);
+        const cell = currentCellParagraphText(services, pos);
+        if (cell.len <= 0) return;
+        const text = cell.text;
         const trimmed = text.trim();
         const raw = trimmed.replace(/,/g, '');
         const match = raw.match(/^([+-]?)(\d+)(\.(\d*))?$/);
@@ -1020,8 +1137,7 @@ export const tableCommands: CommandDef[] = [
           kind: 'snapshot',
           operationType: 'cellNumberFormat',
           operation: (wasm) => {
-            wasm.deleteTextInCell(sec, ppi, ci, cei, cpi, 0, len);
-            wasm.insertTextInCell(sec, ppi, ci, cei, cpi, 0, result);
+            cell.replace(wasm, result);
             return pos;
           },
         }), '셀 숫자 서식');
@@ -1039,12 +1155,10 @@ export const tableCommands: CommandDef[] = [
       if (!ih) return;
       const pos = ih.getCursorPosition();
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
-      const sec = pos.sectionIndex, ppi = pos.parentParaIndex, ci = pos.controlIndex, cei = pos.cellIndex;
-      const cpi = pos.cellParaIndex ?? 0;
       try {
-        const len = services.wasm.getCellParagraphLength(sec, ppi, ci, cei, cpi);
-        if (len <= 0) return;
-        const text = services.wasm.getTextInCell(sec, ppi, ci, cei, cpi, 0, len);
+        const cell = currentCellParagraphText(services, pos);
+        if (cell.len <= 0) return;
+        const text = cell.text;
         const trimmed = text.trim();
         const raw = trimmed.replace(/,/g, '');
         const match = raw.match(/^([+-]?)(\d+)\.(\d+)$/);
@@ -1062,8 +1176,7 @@ export const tableCommands: CommandDef[] = [
           kind: 'snapshot',
           operationType: 'cellNumberFormat',
           operation: (wasm) => {
-            wasm.deleteTextInCell(sec, ppi, ci, cei, cpi, 0, len);
-            wasm.insertTextInCell(sec, ppi, ci, cei, cpi, 0, result);
+            cell.replace(wasm, result);
             return pos;
           },
         }), '셀 숫자 서식');

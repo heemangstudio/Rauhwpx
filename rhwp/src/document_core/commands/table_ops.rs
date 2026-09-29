@@ -3749,12 +3749,29 @@ impl DocumentCore {
         let row_count = table.row_count as usize;
         let col_count = table.col_count as usize;
 
+        // table.cells 는 병합의 기준(anchor) 셀만 담는다. row*col_count+col 로 찾으면 앞쪽에
+        // 병합 셀이 하나만 있어도 뒤 셀이 전부 밀려 다른 셀을 읽고 쓴다. 좌표→셀을 anchor 로 찾는다.
+        // 병합으로 가려진 칸은 값이 없어 병합 셀을 한 번만 센다.
+        let anchors: std::collections::HashMap<(usize, usize), usize> = table
+            .cells
+            .iter()
+            .enumerate()
+            .map(|(idx, cell)| ((cell.row as usize, cell.col as usize), idx))
+            .collect();
+        let target_cell_idx = anchors.get(&(target_row, target_col)).copied();
+        if write_result && target_cell_idx.is_none() {
+            return Err(HwpError::RenderError(format!(
+                "계산식 대상 셀 ({},{})을 찾을 수 없습니다",
+                target_row, target_col
+            )));
+        }
+
         // 셀 값 조회 함수: 셀의 첫 문단 텍스트를 숫자로 파싱
         let cells = &table.cells;
         let get_cell = |col: usize, row: usize| -> Option<f64> {
-            let idx = row * col_count + col;
-            cells
-                .get(idx)
+            anchors
+                .get(&(row, col))
+                .and_then(|&idx| cells.get(idx))
                 .and_then(|cell| cell.paragraphs.first())
                 .and_then(|p| parse_cell_number(&p.text))
         };
@@ -3771,9 +3788,8 @@ impl DocumentCore {
 
         let display = format_table_calc_result(result, format_json);
 
-        // 결과를 셀에 기록
-        if write_result {
-            let cell_idx = target_row * col_count + target_col;
+        // 결과를 셀에 기록 (대상 anchor 셀은 위에서 확인했다)
+        if let Some(cell_idx) = target_cell_idx.filter(|_| write_result) {
             let section_mut = self.document.sections.get_mut(section_idx).unwrap();
             let para_mut = section_mut.paragraphs.get_mut(parent_para_idx).unwrap();
             if let Some(Control::Table(ref mut t)) = para_mut.controls.get_mut(control_idx) {
@@ -4245,5 +4261,121 @@ mod neighbor_border_raw_data_tests {
             "DocInfo 패스스루가 무효화되지 않으면 push 한 BORDER_FILL 이 저장되지 않아 \
              본문의 border_fill_id 가 dangling 이 된다"
         );
+    }
+}
+
+#[cfg(test)]
+mod table_formula_merged_cell_tests {
+    //! 병합 셀이 있는 표의 블록 계산·계산식 좌표 회귀 테스트.
+    //!
+    //! table.cells 는 병합 기준 셀만 담는데 계산식이 row*col_count+col 로 셀을 찾아,
+    //! 머리글 행 하나만 병합돼도 엉뚱한 셀을 더하고 다른 셀에 결과를 덮어쓰거나
+    //! 아무것도 쓰지 않고 성공을 반환했다.
+
+    use crate::document_core::DocumentCore;
+    use crate::model::control::Control;
+    use crate::model::table::Table;
+
+    /// 첫 행을 3칸 병합한 3x3 표. 1~2행에 숫자를 채운다.
+    fn merged_header_table() -> (DocumentCore, usize, usize) {
+        let mut core = DocumentCore::new_empty();
+        core.create_blank_document_native().unwrap();
+        core.create_table_native(0, 0, 0, 3, 3).unwrap();
+        let (pi, ci) = core.document.sections[0]
+            .paragraphs
+            .iter()
+            .enumerate()
+            .find_map(|(pi, para)| {
+                para.controls
+                    .iter()
+                    .position(|ctrl| matches!(ctrl, Control::Table(_)))
+                    .map(|ci| (pi, ci))
+            })
+            .expect("표 컨트롤");
+        core.merge_table_cells_native(0, pi, ci, 0, 0, 0, 2)
+            .unwrap();
+        for (row, col, text) in [
+            (1, 0, "1"),
+            (1, 1, "2"),
+            (1, 2, "30"),
+            (2, 0, "4"),
+            (2, 1, "5"),
+        ] {
+            let idx = anchor_index(table(&core, pi, ci), row, col);
+            core.insert_text_in_cell_native(0, pi, ci, idx, 0, 0, text)
+                .unwrap();
+        }
+        (core, pi, ci)
+    }
+
+    fn table(core: &DocumentCore, pi: usize, ci: usize) -> &Table {
+        match &core.document.sections[0].paragraphs[pi].controls[ci] {
+            Control::Table(t) => t,
+            _ => unreachable!(),
+        }
+    }
+
+    fn anchor_index(table: &Table, row: u16, col: u16) -> usize {
+        table
+            .cells
+            .iter()
+            .position(|cell| cell.row == row && cell.col == col)
+            .unwrap_or_else(|| panic!("({row},{col}) 기준 셀"))
+    }
+
+    fn texts(core: &DocumentCore, pi: usize, ci: usize) -> Vec<(u16, u16, String)> {
+        table(core, pi, ci)
+            .cells
+            .iter()
+            .map(|cell| (cell.row, cell.col, cell.paragraphs[0].text.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn block_sum_reads_and_writes_grid_cells_below_a_merged_header() {
+        let (mut core, pi, ci) = merged_header_table();
+        assert_eq!(
+            table(&core, pi, ci).cells.len(),
+            7,
+            "병합으로 가려진 칸은 셀 목록에 없다"
+        );
+
+        let left = core
+            .evaluate_table_formula(0, pi, ci, 2, 2, "=SUM(left)", false)
+            .unwrap();
+        assert!(left.contains("\"result\":9"), "{left}");
+
+        let before = texts(&core, pi, ci);
+        let out = core
+            .evaluate_table_formula(0, pi, ci, 2, 2, "=SUM(above)", true)
+            .unwrap();
+        assert!(
+            out.contains("\"result\":30"),
+            "병합 머리글은 세지 않고 (1,2)만 더한다: {out}"
+        );
+
+        let after = texts(&core, pi, ci);
+        for (cell_before, cell_after) in before.iter().zip(&after) {
+            let expected = if (cell_before.0, cell_before.1) == (2, 2) {
+                "30".to_string()
+            } else {
+                cell_before.2.clone()
+            };
+            assert_eq!(
+                cell_after.2, expected,
+                "({},{}) 셀 내용",
+                cell_after.0, cell_after.1
+            );
+        }
+    }
+
+    #[test]
+    fn formula_write_to_a_covered_slot_fails_without_touching_cells() {
+        let (mut core, pi, ci) = merged_header_table();
+        let before = texts(&core, pi, ci);
+        assert!(core
+            .evaluate_table_formula(0, pi, ci, 0, 1, "=1+1", true)
+            .is_err());
+        assert_eq!(texts(&core, pi, ci), before);
     }
 }

@@ -89,11 +89,12 @@ export async function withDatabase<T>(
   label: string,
   operation: (db: IDBDatabase) => Promise<T>,
   fallback: (error?: unknown) => Promise<T>,
+  options: { timeoutMs?: number } = {},
 ): Promise<T> {
   const db = await open();
   if (!db) return fallback();
   try {
-    return await withTimeout(operation(db), IDB_OPERATION_TIMEOUT_MS, label);
+    return await withTimeout(operation(db), options.timeoutMs ?? IDB_OPERATION_TIMEOUT_MS, label);
   } catch (error) {
     console.warn(`[${label}] IndexedDB 작업 실패, 폴백:`, error);
     return fallback(error);
@@ -105,8 +106,9 @@ export async function withDatabase<T>(
 export function transactionDone(tx: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-    tx.onabort = () => reject(tx.error);
+    // 명시적 abort() 는 tx.error 가 null 이다. 호출부가 원인을 알 수 있게 Error 로 거부한다.
+    tx.onerror = () => reject(tx.error ?? new Error('IndexedDB transaction failed'));
+    tx.onabort = () => reject(tx.error ?? new Error('IndexedDB transaction aborted'));
   });
 }
 

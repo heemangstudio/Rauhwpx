@@ -180,7 +180,7 @@ test('handle-backed Save/Save As만 active document identity를 recent-store에 
   );
   assert.match(
     commands,
-    /services\.wasm\.fileName = result\.fileName;[\s\S]*?markClean\(reason\);[\s\S]*?emit\('document-context-changed'\)/,
+    /services\.wasm\.fileName = result\.fileName;[\s\S]*?markCleanIfUnchanged\(revision, reason\);[\s\S]*?emit\('document-context-changed'\)/,
   );
   assert.match(
     commands,

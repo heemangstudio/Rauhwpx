@@ -382,6 +382,11 @@ let extensionViewerSettings: ExtensionViewerSettings = {
   disableExternalWebFonts: false,
 };
 
+/** 제한 시간을 넘겨 늦게 도착한 웹폰트로 이미 그린 페이지를 다시 그린다. */
+function repaintAfterLateWebFonts(): void {
+  if (wasm.hasLoadedDocument()) eventBus.emit('document-view-changed');
+}
+
 function createActiveDocumentId(): string {
   return globalThis.crypto?.randomUUID?.()
     ?? `document_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
@@ -1366,7 +1371,8 @@ async function initialize(): Promise<void> {
     msg.textContent = extensionViewerSettings.disableExternalWebFonts
       ? '로컬 폰트 준비 중...'
       : '웹폰트 로딩 중...';
-    await loadWebFonts([], undefined, extensionViewerSettings);  // CSS @font-face 등록 + CRITICAL 폰트만 로드
+    // CSS @font-face 등록 + CRITICAL 폰트만 로드
+    await loadWebFonts([], undefined, { ...extensionViewerSettings, onLateLoad: repaintAfterLateWebFonts });
     msg.textContent = 'WASM 로딩 중...';
     await wasm.initialize();
     if (import.meta.env.DEV && import.meta.env.VITE_RHWP_DEV_FONT_PACK === '1') {
@@ -2303,7 +2309,7 @@ async function initializeDocument(
       await loadWebFonts(docInfo.fontsUsed, (loaded, total) => {
         const fontPercent = total > 0 ? 55 + Math.round((loaded / total) * 20) : 65;
         msg.textContent = `파일 로딩 ${fontPercent}% - 폰트 로딩 중... (${loaded}/${total})`;
-      }, extensionViewerSettings);
+      }, { ...extensionViewerSettings, onLateLoad: repaintAfterLateWebFonts });
     }
     if (desktopFonts) {
       const budget = DESKTOP_FONT_LOAD_BUDGET_MS - (performance.now() - desktopFontsStartedAt);
