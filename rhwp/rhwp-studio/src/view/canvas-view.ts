@@ -108,7 +108,7 @@ export class CanvasView {
 
     this.scrollContent = container.querySelector('#scroll-content')!;
     this.viewportManager.attachTo(container);
-    this.unsubscribers.push(this.watchDevicePixelRatio());
+    this.unsubscribers.push(this.watchDevicePixelRatio(), this.watchCanvasContextRestore());
 
     this.unsubscribers.push(
       eventBus.on('viewport-scroll', () => {
@@ -848,6 +848,44 @@ export class CanvasView {
     return () => {
       query?.removeEventListener('change', onChange);
       query = null;
+    };
+  }
+
+  /**
+   * GPU 프로세스가 재시작하거나 GPU 메모리를 회수하면 Chromium 은 2D 컨텍스트를 잃었다가
+   * 빈 비트맵으로 되살린다. pool 에 남은 쪽은 다시 그려지지 않으므로 복원된 쪽을 한 프레임에
+   * 모아 다시 그린다. contextrestored 는 버블링하지 않아 캡처 단계에서 받는다.
+   */
+  private watchCanvasContextRestore(): () => void {
+    const restoredPages = new Set<number>();
+    let frame: number | null = null;
+    const flush = (): void => {
+      frame = null;
+      if (this.disposed) return;
+      const pages = Array.from(restoredPages);
+      restoredPages.clear();
+      for (const pageIdx of pages) {
+        if (!this.canvasPool.has(pageIdx)) continue;
+        this.refreshInvalidatedPageNow(pageIdx, { reason: 'unknown', allowStaticOverlayReuse: false });
+      }
+      // 머리말/꼬리말 편집 미리보기 캔버스도 같은 순간에 비워진다.
+      this.renderHeaderFooterEditOverlays(true);
+    };
+    const onRestored = (event: Event): void => {
+      const canvas = event.target;
+      if (this.disposed || !(canvas instanceof HTMLCanvasElement)) return;
+      // 쪽 캔버스와 그 위 개체 레이어 캔버스는 쪽 단위로 함께 다시 그린다.
+      const owner = canvas.closest<HTMLElement>('[data-rhwp-page-index], [data-rhwp-overlay-page]');
+      const pageIdx = Number(owner?.dataset.rhwpPageIndex ?? owner?.dataset.rhwpOverlayPage);
+      if (Number.isInteger(pageIdx) && this.canvasPool.has(pageIdx)) restoredPages.add(pageIdx);
+      frame ??= requestAnimationFrame(flush);
+    };
+    this.scrollContent.addEventListener('contextrestored', onRestored, true);
+    return () => {
+      this.scrollContent.removeEventListener('contextrestored', onRestored, true);
+      if (frame !== null) cancelAnimationFrame(frame);
+      frame = null;
+      restoredPages.clear();
     };
   }
 
