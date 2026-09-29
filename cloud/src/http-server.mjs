@@ -192,7 +192,17 @@ export function createCloudHttpHandler({
   );
 
   return async function cloudHttpHandler(request, response) {
-    const requestUrl = new URL(request.url ?? '/', `http://${request.headers.host || '127.0.0.1'}`);
+    // Only the path and query are read, so the Host header never takes part
+    // in parsing. An unparseable target must not reject this async listener,
+    // which would take the whole process down.
+    let requestUrl;
+    try {
+      requestUrl = new URL(request.url ?? '/', 'http://localhost');
+    } catch {
+      response.writeHead(400, { 'Content-Length': '0', 'Cache-Control': 'no-store', Connection: 'close' });
+      response.end();
+      return;
+    }
     const pathname = normalizePath(requestUrl.pathname, config.basePath);
     const browserCors = !workerOnly && pathname.startsWith('/v1')
       ? applyBrowserCors(request, response, config.browserOrigins)
@@ -960,12 +970,18 @@ export function createCloudHttpHandler({
         : { level: 'info', event: 'http.request_rejected' };
       const log = logger?.[entry.level];
       if (typeof log === 'function') {
-        log.call(logger, entry.event, {
-          method: request.method,
-          pathname,
-          code: error.code,
-          message: error.message,
-        });
+        // Shutdown cuts in-flight requests and then closes SQLite, so their
+        // failures can arrive after the log table is gone.
+        try {
+          log.call(logger, entry.event, {
+            method: request.method,
+            pathname,
+            code: error.code,
+            message: error.message,
+          });
+        } catch (logError) {
+          if (logError?.code !== 'ERR_INVALID_STATE') throw logError;
+        }
       }
       if (!response.headersSent) json(response, error.status ?? 500, errorBody(error));
       else response.destroy();

@@ -85,7 +85,13 @@ export class Scheduler {
       });
       this.lastMaintenanceAt = this.now();
     }
-    await this.sessionStore.expireRetainedSessions();
+    // Retention cleanup is housekeeping: a row that fails to purge must not
+    // stall heartbeat checks and admission, or reject startup.
+    try {
+      await this.sessionStore.expireRetainedSessions();
+    } catch (error) {
+      this.logger?.error('retention.expire_failed', { code: error.code, message: error.message });
+    }
     this.sessionStore.requestIdleSleeps?.();
     const liveIds = new Set(
       sandboxes.filter((sandbox) => sandbox.running !== false).map((sandbox) => sandbox.sandboxId),

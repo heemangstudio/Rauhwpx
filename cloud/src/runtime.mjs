@@ -214,7 +214,12 @@ export function createCloudRuntime(config, dependencies = {}) {
       // workers cannot survive a restart and double-execute their session.
       await runner.stopAll?.();
       displayFrameStore.closeAll();
-      await Promise.allSettled([close(publicServer), close(workerServer)]);
+      const closing = [close(publicServer), close(workerServer)];
+      // server.close() waits for open event streams, which never end on their
+      // own. Workers are stopped and commands are idempotent, so cut them.
+      publicServer.closeAllConnections();
+      workerServer.closeAllConnections();
+      await Promise.allSettled(closing);
       if (config.workerControlMode === 'socket' && existsSync(config.workerControlSocket)) unlinkSync(config.workerControlSocket);
       database.close();
     },

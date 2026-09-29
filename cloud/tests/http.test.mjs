@@ -8,6 +8,7 @@ import {
 } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -238,6 +239,25 @@ test('public API pins every response, supports the Tailscale path, and rejects w
   });
   assert.equal(worker.status, 404);
   assert.equal(worker.headers.get('x-rauhwpx-server-key'), identity.serverPublicKey);
+});
+
+function rawStatus(base, head) {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(Number(new URL(base).port), '127.0.0.1');
+    let received = '';
+    socket.setEncoding('latin1');
+    socket.on('data', (chunk) => { received += chunk; });
+    socket.on('error', reject);
+    socket.on('close', () => resolve(Number(received.split(' ')[1])));
+    socket.end(`${head}\r\nConnection: close\r\n\r\n`);
+  });
+}
+
+test('malformed Host headers and request targets never take the process down', async (t) => {
+  const { base } = await fixture(t);
+  assert.equal(await rawStatus(base, 'GET /rauhwpx-cloud/v1/health HTTP/1.1\r\nHost: a b'), 200);
+  assert.equal(await rawStatus(base, 'GET //[/ HTTP/1.1\r\nHost: localhost'), 400);
+  assert.equal((await fetch(`${base}/rauhwpx-cloud/v1/health`)).status, 200);
 });
 
 test('health reports degraded scheduling only after three consecutive tick failures', async (t) => {

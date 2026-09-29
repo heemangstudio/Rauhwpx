@@ -13,6 +13,10 @@ const WORKER_RESULT_RETRY_MS = 5 * 60 * 1000;
 // A session whose worker keeps dying is suspended instead of requeued forever.
 const WORKER_REQUEUE_LIMIT = 3;
 const WORKER_REQUEUE_WINDOW_MS = 15 * 60 * 1000;
+// Live event streams touch presence every 15 s. A row this old belongs to a
+// connection that died without closing (crash, SIGKILL, shutdown after SQLite
+// closed) and must stop holding its room awake.
+const PRESENCE_STALE_MS = 2 * 60 * 1000;
 const MUTABLE_STATES = new Set(['staged', 'queued', 'running', 'suspended']);
 // Idle housekeeping transitions happen because nobody is around. Counting them
 // as activity would restart the host's idle clock when a warm conversation
@@ -930,9 +934,11 @@ export class SessionStore {
       `).get();
       if (!row) return null;
       const now = this.now();
+      // A sleep request from an earlier worker must not put the new one to
+      // sleep; the next idle tick asks again if nobody is present.
       const updated = this.database.prepare(`
         UPDATE sessions SET status = 'running', configuration_restart_requested_at = NULL, configuration_restart_after_revision = NULL,
-          paused_writer_generation = NULL, state_version = state_version + 1,
+          paused_writer_generation = NULL, sleep_requested_at = NULL, state_version = state_version + 1,
           execution_phase = CASE WHEN protocol_version = 2 THEN 'working' ELSE execution_phase END,
           started_at = COALESCE(started_at, ?), worker_heartbeat_at = ?, updated_at = ?
         WHERE id = ? AND status = 'queued'
@@ -1053,10 +1059,14 @@ export class SessionStore {
 
   touchPresence(sessionId, deviceId, connectionId) {
     const now = this.now();
+    // The stale sweep in requestIdleSleeps can remove a live stream's row
+    // when the wall clock jumps (host suspend) before its next keepalive, so
+    // a keepalive restores the row instead of only refreshing it.
     const changed = this.database.prepare(`
-      UPDATE session_presence SET last_seen_at = ?
-      WHERE session_id = ? AND device_id = ? AND connection_id = ?
-    `).run(now, sessionId, deviceId, connectionId);
+      INSERT INTO session_presence(session_id, device_id, connection_id, last_seen_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(session_id, device_id, connection_id) DO UPDATE SET last_seen_at = excluded.last_seen_at
+    `).run(sessionId, deviceId, connectionId, now);
     if (changed.changes) {
       this.database.prepare('UPDATE sessions SET last_presence_at = ? WHERE id = ?').run(now, sessionId);
     }
@@ -1079,6 +1089,7 @@ export class SessionStore {
     const events = [];
     const requested = transaction(this.database, () => {
       const now = this.now();
+      this.database.prepare('DELETE FROM session_presence WHERE last_seen_at <= ?').run(now - PRESENCE_STALE_MS);
       const rows = this.database.prepare(`
         SELECT s.id FROM sessions s
         WHERE s.protocol_version = ? AND s.room_status = 'active' AND s.status = 'running'
@@ -2190,13 +2201,24 @@ export class SessionStore {
       SELECT id FROM sessions
       WHERE status IN ('staged', 'suspended', 'completed', 'cancelled', 'failed') AND expires_at <= ?
     `).all(this.now());
-    for (const row of rows) await this.purgeExpiredSession(row.id);
+    // One session that cannot be purged must not keep every later expired
+    // session retained; the first failure is rethrown after the sweep.
+    let failure = null;
+    const purge = async (sessionId) => {
+      try {
+        await this.purgeExpiredSession(sessionId);
+      } catch (error) {
+        failure ??= error;
+      }
+    };
+    for (const row of rows) await purge(row.id);
     const legacyPurgedUploads = this.database.prepare(`
       SELECT DISTINCT u.session_id AS id FROM uploads u
       JOIN sessions s ON s.id = u.session_id
       WHERE s.status = 'purged'
     `).all();
-    for (const row of legacyPurgedUploads) await this.purgeExpiredSession(row.id);
+    for (const row of legacyPurgedUploads) await purge(row.id);
+    if (failure) throw failure;
     return rows.length;
   }
 
@@ -2298,6 +2320,9 @@ export class SessionStore {
       this.database.prepare('DELETE FROM session_presence WHERE session_id = ?').run(sessionId);
       this.database.prepare('DELETE FROM session_runtime_leases WHERE session_id = ?').run(sessionId);
       this.database.prepare('DELETE FROM session_messages WHERE session_id = ?').run(sessionId);
+      // session_human_edits.command_id references commands without ON DELETE,
+      // so the edit records must go first or the commands delete fails.
+      this.database.prepare('DELETE FROM session_human_edits WHERE session_id = ?').run(sessionId);
       this.database.prepare('DELETE FROM commands WHERE session_id = ?').run(sessionId);
       this.database.prepare('DELETE FROM session_events WHERE session_id = ?').run(sessionId);
       this.database.prepare(`
@@ -2306,7 +2331,7 @@ export class SessionStore {
           pause_requested_at = NULL, takeover_requested_at = NULL, takeover_requested_by = NULL,
           frozen_checkpoint_operation_id = NULL, room_status = CASE WHEN protocol_version = 2 THEN 'purged' ELSE room_status END,
           execution_phase = CASE WHEN protocol_version = 2 THEN 'idle' ELSE execution_phase END,
-          current_turn_id = NULL, current_wait_id = NULL,
+          current_turn_id = NULL, current_wait_id = NULL, latest_human_edit_id = NULL,
           sandbox_id = NULL, worker_token_hash = NULL, worker_heartbeat_at = NULL, suspended_reason = NULL, updated_at = ? WHERE id = ?
       `).run(now, sessionId);
       this.#appendEventInTransaction(sessionId, 'session.purged', { status: 'purged', reason });
