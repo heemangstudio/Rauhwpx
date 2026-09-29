@@ -887,6 +887,7 @@ export class PendingEditManager {
   replaceTextBatch(
     items: Array<{ range: DocRange; text: string }>,
     agent: AgentName,
+    opts?: { onRolledBack?: () => void },
   ): { changeSetId: string } {
     if (items.length === 0) throw new AgentToolError('INVALID_ARGS', 'batch is empty');
     return this.runAtomicBatch(() => {
@@ -895,7 +896,7 @@ export class PendingEditManager {
         changeSetId = this.replaceText(item.range, item.text, agent, { retainSnapshot: false }).changeSetId;
       }
       return { changeSetId };
-    });
+    }, opts);
   }
 
   /**
@@ -906,8 +907,11 @@ export class PendingEditManager {
    * per-op 보존 스냅샷은 유지된다(reject/undo 복원 충실도) — retainSnapshot:false
    * 를 명시한 replace_all 벌크만 클론을 생략하고 역연산 폴백으로 되돌린다.
    * apply_edits / replace_all / apply_list 같은 다중 op 툴 경로 전용.
+   * onRolledBack 은 가장 바깥 배치가 문서 스냅샷 복원까지 성공했을 때만 불린다 — 호출자가
+   * 롤백의 동기화 이벤트가 올린 revision 을 내용 불변으로 기록할 수 있게 한다. 중첩 배치의
+   * 롤백은 바깥 기준으로 온전하지 않고 이벤트도 바깥 구간 끝으로 미뤄지므로 부르지 않는다.
    */
-  runAtomicBatch<T>(fn: () => T): T {
+  runAtomicBatch<T>(fn: () => T, opts?: { onRolledBack?: () => void }): T {
     const wasm = this.deps.wasm;
     const pendingState = this.capturePendingState();
     const setIdsBefore = new Set(this.sets.map((s) => s.id));
@@ -923,7 +927,11 @@ export class PendingEditManager {
       return fn();
     } catch (err) {
       this.bulkTextInserted.length = textInsertedBefore;
-      try { wasm.restoreSnapshot(snapId); } catch { /* best effort */ }
+      let restored = false;
+      try {
+        wasm.restoreSnapshot(snapId);
+        restored = true;
+      } catch { /* best effort */ }
       // 배치 중 추가된 op 이 보존 스냅샷을 점유했을 수 있다 — 롤백으로 op 이
       // 사라지기 전에 해제한다 (예산 누수 방지).
       const opIdsBefore = new Set(pendingState.flatMap((s) => s.ops.map((op) => op.id)));
@@ -937,6 +945,7 @@ export class PendingEditManager {
       this.emitDocEvents('agent-pending-edit');
       this.syncOverlay();
       this.emitChange({ type: 'ops-changed' });
+      if (restored && !wasAtomic) opts?.onRolledBack?.();
       throw err;
     } finally {
       wasm.discardSnapshot(snapId);

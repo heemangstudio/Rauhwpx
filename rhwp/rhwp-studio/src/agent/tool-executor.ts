@@ -1081,6 +1081,23 @@ export class AgentToolExecutor {
     this.journal.record(revBefore, this.revision, { sectionIdx, paraStart, paraEnd, paraDelta });
   }
 
+  /**
+   * 원자 배치 실행 — 실패한 배치는 문서·pending 을 배치 이전으로 되돌리지만 롤백의
+   * 동기화 이벤트가 revision 을 올린다. 복원이 온전했으면 그 bump 를 내용 불변으로
+   * 저널에 남겨, 교정한 재시도(와 형제의 stale 쓰기)가 같은 expectedRevision 으로
+   * 통과하게 한다. apply_edits 안에 중첩된 배치는 onRolledBack 이 오지 않아 바깥 호출이 처리한다.
+   */
+  private runAtomicCovered<T>(run: (opts: { onRolledBack: () => void }) => T): T {
+    const revBefore = this.revision;
+    let rolledBack = false;
+    try {
+      return run({ onRolledBack: () => { rolledBack = true; } });
+    } catch (err) {
+      if (rolledBack && this.revision > revBefore) this.journal.coverNoop(revBefore, this.revision);
+      throw err;
+    }
+  }
+
   /** cell 이 있으면 셀 내부 문단 좌표로, 없으면 본문 문단 좌표로 검증한다 */
   private validateAddress(sectionIdx: number, paraIdx: number, charOffset?: number, cell?: CellAddr): number {
     const { wasm } = this.deps;
@@ -1963,20 +1980,22 @@ export class AgentToolExecutor {
     // 표 셀 내부 텍스트도 검색한다 — 매치에는 write 툴에 그대로 넘길 수 있는 cell 주소가 실린다.
     if (!truncated) {
       const MAX_NESTED_DEPTH = 4;
-      const MAX_NESTED_PROBES = 4096;
+      const MAX_NESTED_TABLES = 4096;
       const MAX_NESTED_PARAGRAPHS = 5000;
-      let probes = 0;
+      let nestedTables = 0;
       let nestedParagraphs = 0;
       const scanNested = (sectionIdx: number, tableParaIdx: number, outer: CellAddr,
         hostPath: CellPathEntry[], depth: number): void => {
         if (truncated || depth >= MAX_NESTED_DEPTH) return;
         for (let controlIndex = 0; controlIndex < NESTED_TABLE_PROBE_CONTROLS; controlIndex++) {
-          if (++probes > MAX_NESTED_PROBES) { truncated = true; return; }
           const tablePath = [...hostPath, { controlIndex, cellIndex: 0, cellParaIndex: 0 }];
           let cellCount: number;
           try {
             cellCount = wasm.getTableDimensionsByPath(sectionIdx, tableParaIdx, JSON.stringify(tablePath)).cellCount;
           } catch { continue; }
+          // 예산은 실제로 찾은 중첩 표만 센다 — 표가 아닌 컨트롤의 탐침 실패까지 세면
+          // 셀 문단 ~1000개짜리 표 하나로 예산이 바닥나 뒤쪽 표가 통째로 검색에서 빠진다.
+          if (++nestedTables > MAX_NESTED_TABLES) { truncated = true; return; }
           for (let cellIndex = 0; cellIndex < cellCount; cellIndex++) {
             const path = [...hostPath, { controlIndex, cellIndex, cellParaIndex: 0 }];
             let paragraphCount: number;
@@ -2070,7 +2089,7 @@ export class AgentToolExecutor {
     let replacedCount = 0;
     let changeSetId: string | null = null;
     if (items.length > 0) {
-      changeSetId = this.deps.pending.replaceTextBatch(items, agent).changeSetId;
+      changeSetId = this.runAtomicCovered((opts) => this.deps.pending.replaceTextBatch(items, agent, opts)).changeSetId;
       replacedCount = items.length;
     }
     return {
@@ -2127,8 +2146,15 @@ export class AgentToolExecutor {
     const scope = this.rebaseAnchorScope(args, this.anchorScope(a['within']));
     // occurrence 번째까지는 읽어야 하고, 없으면 단일/다매치 판별용 소수만 본다.
     const cap = Math.min(Math.max(occurrence ?? 0, 8), 64);
-    const { matches } = this.collectTextMatches(text, false, cap, scope);
+    const { matches, truncated } = this.collectTextMatches(text, false, cap, scope);
     if (matches.length === 0) {
+      // 매치 0건의 truncated 는 중첩 표 예산 소진이다 — 뒤쪽 표를 보지 못했으므로 없다고 단정하지 않는다.
+      if (truncated) {
+        throw new AgentToolError(
+          'INVALID_ARGS',
+          `anchor ${JSON.stringify(this.truncateForMessage(text))} was not found before the search stopped at its nested-table budget — narrow it with anchor.within (sectionIdx, paraRange or cell)`,
+        );
+      }
       if (scope) {
         const outside = this.collectTextMatches(text, false, 6).matches;
         if (outside.length > 0) {
@@ -3988,7 +4014,7 @@ export class AgentToolExecutor {
     let unjournaled = false;
     this.journalBatch = buffered;
     try {
-      this.deps.pending.runAtomicBatch(() => {
+      this.runAtomicCovered((opts) => this.deps.pending.runAtomicBatch(() => {
         edits.forEach((edit, index) => {
           let itemResult: unknown;
           const journaledBefore = buffered.length;
@@ -4010,7 +4036,7 @@ export class AgentToolExecutor {
           results.push({ tool: edit.tool, ...rest });
           if (buffered.length === journaledBefore) unjournaled = true;
         });
-      });
+      }, opts));
     } finally {
       this.journalBatch = null;
     }
@@ -5405,7 +5431,7 @@ export class AgentToolExecutor {
     // 구간 종료 시 한 번씩, 중간 실패 시 문단 일부만 적용된 상태가 남지 않는다.
     let changeSetId = '';
     const revBefore = this.revision;
-    this.deps.pending.runAtomicBatch(() => {
+    this.runAtomicCovered((opts) => this.deps.pending.runAtomicBatch(() => {
       for (let p = startParaIdx; p <= endParaIdx; p++) {
         const obj: ObjectOp = {
           type: 'paraFormat', sectionIdx, paraIdx: p,
@@ -5415,7 +5441,7 @@ export class AgentToolExecutor {
         };
         changeSetId = this.deps.pending.addObjectOp(agent, obj).changeSetId;
       }
-    });
+    }, opts));
     this.recordJournal(revBefore, sectionIdx, startParaIdx, endParaIdx, 0);
     return {
       revision: this.revision,
@@ -6101,7 +6127,7 @@ export class AgentToolExecutor {
     };
     const changeSetId = ops.length === 1
       ? stage()
-      : this.deps.pending.runAtomicBatch(stage);
+      : this.runAtomicCovered((opts) => this.deps.pending.runAtomicBatch(stage, opts));
     return {
       revision: this.revision,
       changeSetId,

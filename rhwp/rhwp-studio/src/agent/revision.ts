@@ -25,7 +25,7 @@ const REVISION_EVENTS = ['document-mutated', 'document-changed'] as const;
  * 놓치면 이전 문서에서 든 expectedRevision 이 새 문서에 통과한다. 모르는 이유는
  * 안전하게 bump 한다.
  */
-const CLEAN_REASONS_WITHOUT_BUMP = new Set(['save', 'save-as', 'host-save']);
+const CLEAN_REASONS_WITHOUT_BUMP = new Set(['save', 'save-as', 'host-save', 'save-with-history', 'pinned-save']);
 
 export class RevisionTracker {
   private rev = 1;

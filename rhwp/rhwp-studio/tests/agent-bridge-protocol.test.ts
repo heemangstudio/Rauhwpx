@@ -48,7 +48,7 @@ test('RevisionTracker: dispose 후에는 bump하지 않음', () => {
 test('RevisionTracker: 저장(dirty→false)은 bump하지 않고, dirty→true는 bump한다', async () => {
   const bus = new EventBus();
   const tracker = new RevisionTracker(bus);
-  for (const reason of ['save', 'save-as', 'host-save']) {
+  for (const reason of ['save', 'save-as', 'host-save', 'save-with-history', 'pinned-save']) {
     bus.emit('document-dirty-changed', { dirty: false, reason });
     assert.equal(tracker.revision, 1, `${reason} 는 bump 하지 않는다`);
     await microtask();

@@ -132,6 +132,16 @@ test('journal: 대상 범위는 엔트리를 rev 순서로 통과하며 점진 �
   assert.deepEqual(journal.rebase(10, 12, 0, 3, 3), { ok: false, shift: 0, reason: 'overlap' });
 });
 
+test('journal: coverNoop 은 내용 불변 bump 로 커버리지를 잇고 이동·델타는 만들지 않는다', () => {
+  const journal = new EditJournal();
+  journal.record(10, 11, { sectionIdx: 0, paraStart: 1, paraEnd: 1, paraDelta: 1 });
+  journal.coverNoop(11, 13);
+  assert.equal(journal.covers(10, 13), true);
+  assert.deepEqual(journal.rebase(11, 13, 0, 0, 5), { ok: true, shift: 0 });
+  assert.deepEqual(journal.rebase(10, 13, 0, 5, 6), { ok: true, shift: 1 });
+  assert.equal(journal.diff(11, 13, () => 10)!.size, 0);
+});
+
 // ─── 실행기 통합: 병렬 형제 에이전트 시나리오 ─────────────────────
 
 test('rebase: 앞 문단의 삽입(+1)이 뒤 문단을 노린 stale 쓰기를 이동시킨다', async () => {
@@ -333,4 +343,27 @@ test('rebase: 저널을 남기지 않는 항목이 섞인 apply_edits 는 구간
   });
   await assert.rejects(exec(h, 'insert_text', { expectedRevision: shared, sectionIdx: 0, paraIdx: 2, charOffset: 0, text: '>' }),
     (e: unknown) => e instanceof AgentToolError && e.code === 'REVISION_MISMATCH');
+});
+
+test('rebase: 실패해 롤백된 apply_edits 의 bump 는 저널에 남아 배치 전 revision 의 재시도가 통과한다', async () => {
+  const h = makeHarness(['가', '나', '다']);
+  const before = h.revision();
+  await assert.rejects(exec(h, 'apply_edits', {
+    expectedRevision: before,
+    edits: [
+      { tool: 'insert_text', args: { sectionIdx: 0, paraIdx: 0, charOffset: 1, text: '!' } },
+      { tool: 'insert_text', args: { sectionIdx: 0, paraIdx: 9, charOffset: 0, text: '>' } },
+    ],
+  }), (e: unknown) => e instanceof AgentToolError && e.code === 'INVALID_ARGS');
+  assert.equal(h.text(0), '가', '배치 전체가 되돌아간다');
+  assert.ok(h.revision() > before, '롤백의 동기화 이벤트는 revision 을 올린다');
+  const delta = await exec(h, 'get_structure', { sinceRevision: before, format: 'json' });
+  assert.deepEqual(delta['changes'], []);
+  assert.deepEqual(delta['indexShifts'], []);
+  const retry = await exec(h, 'apply_edits', {
+    expectedRevision: before,
+    edits: [{ tool: 'insert_text', args: { sectionIdx: 0, paraIdx: 0, charOffset: 1, text: '!' } }],
+  });
+  assert.equal(retry['applied'], 1);
+  assert.equal(h.text(0), '가!');
 });
