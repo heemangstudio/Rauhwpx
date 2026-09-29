@@ -20,7 +20,20 @@ interface FontEntry {
 export interface WebFontLoadOptions {
   /** true면 CDN 등 외부 URL 웹폰트 등록/로드를 건너뛴다. */
   disableExternalWebFonts?: boolean;
+  /**
+   * 호출 전체가 기다리는 최대 시간(ms). 넘으면 대체 글꼴로 계속하고 남은 글꼴은
+   * 백그라운드에서 받는다. 기본값은 DEFAULT_WEB_FONT_LOAD_BUDGET_MS.
+   */
+  budgetMs?: number;
+  /** 한도를 넘긴 뒤 백그라운드에서 받은 글꼴 파일. 이미 그린 페이지를 다시 그릴 때 쓴다. */
+  onLateLoad?: (files: string[]) => void;
 }
+
+/**
+ * FontFace.load() 에는 전체 제한 시간이 없다. CDN 이 응답하지 않거나 절전 복귀 뒤 반쯤 열린
+ * 연결에 걸리면 앱 시작과 문서 열기가 '웹폰트 로딩 중...' 에서 멈춘다.
+ */
+export const DEFAULT_WEB_FONT_LOAD_BUDGET_MS = 6_000;
 
 export interface CanvasKitBundledFontSource {
   url: string;
@@ -197,6 +210,33 @@ let fontFaceRegistrationMode: 'all' | 'local-only' | null = null;
 
 /** 이미 로드 완료된 woff2 파일 (중복 네트워크 요청 방지) */
 const loadedFiles = new Set<string>();
+
+/** 받는 중인 파일. 한도를 넘겨 백그라운드로 넘어간 요청을 다음 호출이 다시 만들지 않는다. */
+const inFlightFiles = new Map<string, Promise<boolean>>();
+
+function loadFontFile(entry: FontEntry, names: readonly string[]): Promise<boolean> {
+  const existing = inFlightFiles.get(entry.file);
+  if (existing) return existing;
+  const fmt = entry.format ?? 'woff2';
+  // 한 틱 미뤄 실행해 동기 예외가 나도 inFlightFiles 등록·해제 순서가 뒤집히지 않게 한다.
+  const request = Promise.resolve().then(async () => {
+    try {
+      for (const name of names) {
+        const face = new FontFace(name, `url(${entry.file}) format('${fmt}')`);
+        const result = await face.load();
+        document.fonts.add(result);
+      }
+      loadedFiles.add(entry.file);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      inFlightFiles.delete(entry.file);
+    }
+  });
+  inFlightFiles.set(entry.file, request);
+  return request;
+}
 
 function isExternalFontFile(file: string): boolean {
   return /^https?:\/\//i.test(file);
@@ -418,30 +458,48 @@ export async function loadWebFonts(
 
   let loaded = 0;
   let failed = 0;
+  // 한도를 넘긴 뒤에는 진행률을 알리지 않는다 (이미 다음 단계 상태 문구를 덮어쓰지 않도록).
+  let timedOut = false;
   const BATCH = 4;
 
-  for (let i = 0; i < uniqueToLoad.length; i += BATCH) {
-    const batch = uniqueToLoad.slice(i, i + BATCH);
-    await Promise.all(batch.map(async (f) => {
-      try {
-        const names = fileToNames.get(f.file) ?? [f.name];
-        const fmt = f.format ?? 'woff2';
-        for (const name of names) {
-          const face = new FontFace(name, `url(${f.file}) format('${fmt}')`);
-          const result = await face.load();
-          document.fonts.add(result);
+  const work = (async () => {
+    for (let i = 0; i < uniqueToLoad.length; i += BATCH) {
+      const batch = uniqueToLoad.slice(i, i + BATCH);
+      await Promise.all(batch.map(async (f) => {
+        const ok = await loadFontFile(f, fileToNames.get(f.file) ?? [f.name]);
+        if (ok) loaded++;
+        else failed++;
+        if (timedOut) {
+          if (ok) options?.onLateLoad?.([f.file]);
+          return;
         }
-        loadedFiles.add(f.file);
-        loaded++;
-      } catch {
-        failed++;
+        onProgress?.(loaded + failed, total);
+      }));
+      if (i + BATCH < uniqueToLoad.length) {
+        await new Promise(r => setTimeout(r, 0));
       }
-      onProgress?.(loaded + failed, total);
-    }));
-    if (i + BATCH < uniqueToLoad.length) {
-      await new Promise(r => setTimeout(r, 0));
     }
-  }
+    console.log(`[FontLoader] 폰트 로드 완료: ${loaded}개 성공, ${failed}개 실패 (총 ${loadedFiles.size}개 woff2 로드됨)`);
+  })();
 
-  console.log(`[FontLoader] 폰트 로드 완료: ${loaded}개 성공, ${failed}개 실패 (총 ${loadedFiles.size}개 woff2 로드됨)`);
+  const budgetMs = options?.budgetMs ?? DEFAULT_WEB_FONT_LOAD_BUDGET_MS;
+  if (!Number.isFinite(budgetMs)) {
+    await work;
+    return;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const budget = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      resolve();
+    }, Math.max(0, budgetMs));
+  });
+  await Promise.race([work, budget]);
+  clearTimeout(timer);
+  if (timedOut) {
+    console.warn(
+      `[FontLoader] ${budgetMs}ms 안에 웹폰트를 받지 못해 대체 글꼴로 계속합니다 `
+      + `(${loaded + failed}/${total}). 남은 글꼴은 백그라운드에서 받습니다.`,
+    );
+  }
 }

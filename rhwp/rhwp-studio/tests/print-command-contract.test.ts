@@ -99,6 +99,15 @@ test('인쇄 전용 문서는 same-origin 미리보기 loading surface를 제공
   assert.match(commandSource, /id = 'close-btn'/);
 });
 
+test('준비 중 미리보기 창을 닫으면 쪽 준비를 멈추고 취소로 끝낸다', () => {
+  assert.match(commandSource, /if \(isCancelled\(\)\) throw new PrintSurfaceClosedError\(\);/);
+  assert.match(commandSource, /\}, \(\) => previewWindow\.closed\);/);
+  assert.match(
+    commandSource,
+    /catch \(err\) \{\s*if \(err instanceof PrintSurfaceClosedError\) \{[\s\S]*?return;\s*\}/,
+  );
+});
+
 test('print pipeline은 저장 handle·파일명·dirty 상태를 변경하지 않는다', () => {
   const printSection = commandSource.slice(
     commandSource.indexOf('async function preparePrintPages'),
