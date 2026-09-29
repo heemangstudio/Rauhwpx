@@ -2812,6 +2812,7 @@ mod tests {
             border_styles: Vec::new(),
             numberings: Vec::new(),
             bullets: Vec::new(),
+            default_latin_font_family: "함초롬돋움".to_string(),
         };
         let page_content = PageContent {
             page_index: 0,
