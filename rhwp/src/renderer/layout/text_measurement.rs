@@ -1155,7 +1155,6 @@ impl TextMeasurer for EmbeddedTextMeasurer {
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_internals {
-    use crate::renderer::TextStyle;
     use std::cell::RefCell;
     use wasm_bindgen::prelude::*;
 
@@ -1246,27 +1245,10 @@ mod wasm_internals {
         })
     }
 
-    /// 1000pt 측정용 CSS font 문자열 생성
-    pub(super) fn build_1000pt_font_string(style: &TextStyle) -> String {
-        let font_weight = style
-            .css_font_weight()
-            .map(|weight| format!("{} ", weight))
-            .unwrap_or_default();
-        let font_style = if style.italic { "italic " } else { "" };
-        let font_family = if style.font_family.is_empty() {
-            "sans-serif".to_string()
-        } else {
-            let fallback = crate::renderer::generic_fallback(&style.font_family);
-            format!("\"{}\", {}", style.font_family, fallback)
-        };
-        format!("{}{}1000px {}", font_style, font_weight, font_family)
-    }
-
     /// 한컴 webhwp 방식 문자 폭 측정 (HWP 단위 양자화)
     ///
     /// 파이프라인: 내장 메트릭 → JS 1000px 측정 → font_size/1000 스케일링 → HWP 단위(×75) → 정수 반올림 → px
     pub(super) fn measure_char_width_hwp(
-        measure_font: &str,
         font_family: &str,
         bold: bool,
         italic: bool,
@@ -1318,7 +1300,6 @@ mod wasm_internals {
     /// 누적, 목차 페이지번호의 디지트 x 좌표가 행별로 어긋났다.
     /// 미등록 한글 폰트(나눔바른고딕 등)에서도 native 와 일관된 폭으로 폴백한다.
     pub(super) fn measure_hangul_width_hwp(
-        _measure_font: &str,
         font_family: &str,
         bold: bool,
         italic: bool,
@@ -1360,9 +1341,7 @@ pub struct WasmTextMeasurer;
 impl TextMeasurer for WasmTextMeasurer {
     fn estimate_text_width(&self, text: &str, style: &TextStyle) -> f64 {
         let (font_size, ratio, tab_w) = style_params(style);
-        let measure_font = wasm_internals::build_1000pt_font_string(style);
         let hangul_hwp = wasm_internals::measure_hangul_width_hwp(
-            &measure_font,
             &style.font_family,
             style.bold,
             style.italic,
@@ -1403,7 +1382,6 @@ impl TextMeasurer for WasmTextMeasurer {
                 hangul_hwp as f64 / 75.0
             } else {
                 wasm_internals::measure_char_width_hwp(
-                    &measure_font,
                     &style.font_family,
                     style.bold,
                     style.italic,
@@ -1564,9 +1542,7 @@ impl TextMeasurer for WasmTextMeasurer {
 
     fn compute_char_positions(&self, text: &str, style: &TextStyle) -> Vec<f64> {
         let (font_size, _ratio, _tab_w) = style_params(style);
-        let measure_font = wasm_internals::build_1000pt_font_string(style);
         let hangul_hwp = wasm_internals::measure_hangul_width_hwp(
-            &measure_font,
             &style.font_family,
             style.bold,
             style.italic,
@@ -1580,7 +1556,6 @@ impl TextMeasurer for WasmTextMeasurer {
                 hangul_hwp as f64 / 75.0
             } else {
                 wasm_internals::measure_char_width_hwp(
-                    &measure_font,
                     &style.font_family,
                     style.bold,
                     style.italic,

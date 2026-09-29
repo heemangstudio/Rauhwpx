@@ -338,6 +338,53 @@ fn test_compose_trailing_forced_line_break_keeps_single_marked_line() {
     assert_eq!(composed.lines[0].char_start, 0);
 }
 
+/// TAC 표 문단의 Shift+Enter 분할은 문자 인덱스로 자른다. 한글 앞 텍스트에서
+/// 바이트 오프셋을 쓰면 '\n' 이 앞 줄 run 에 섞이고 표 줄 char_start 가 밀린다.
+#[test]
+fn test_compose_tac_table_forced_line_break_uses_char_index() {
+    use crate::model::table::Table;
+
+    let mut table = Table::default();
+    table.common.treat_as_char = true;
+    let para = Paragraph {
+        text: "표 제목\n".to_string(),
+        char_offsets: vec![0, 1, 2, 3, 4],
+        char_count: 14,
+        char_shapes: vec![CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 3,
+        }],
+        controls: vec![Control::Table(Box::new(table))],
+        line_segs: vec![
+            LineSeg {
+                text_start: 0,
+                line_height: 400,
+                baseline_distance: 320,
+                ..Default::default()
+            },
+            LineSeg {
+                text_start: 5,
+                line_height: 2000,
+                baseline_distance: 1600,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+
+    let composed = compose_paragraph(&para);
+    let pre: String = composed.lines[0]
+        .runs
+        .iter()
+        .map(|r| r.text.as_str())
+        .collect();
+    assert_eq!(pre, "표 제목");
+    assert!(composed.lines[0].has_line_break);
+    assert_eq!(composed.lines[0].char_start, 0);
+    assert!(composed.lines[1].runs.is_empty());
+    assert_eq!(composed.lines[1].char_start, 5);
+}
+
 /// 다중 줄 + 다중 스타일 (줄 경계에서 스타일 변경)
 #[test]
 fn test_compose_multi_line_multi_style() {

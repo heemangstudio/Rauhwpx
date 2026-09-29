@@ -332,6 +332,16 @@ fn grapheme_char_widths(width: f64, len: usize) -> Vec<f64> {
     widths
 }
 
+/// 글자 스타일의 font_size 만 조회한다. `resolved_to_text_style(..).font_size` 와 같은
+/// 값이지만, 글자마다 폰트명 String 2개와 TextStyle 전체를 만들지 않는다.
+fn style_font_size(styles: &ResolvedStyleSet, style_id: u32) -> f64 {
+    styles
+        .char_styles
+        .get(style_id as usize)
+        .map(|cs| cs.font_size)
+        .unwrap_or(0.0)
+}
+
 fn measure_grapheme_metrics(
     text_chars: &[char],
     start: usize,
@@ -356,14 +366,10 @@ fn measure_grapheme_metrics(
         let index = start + offset;
         let utf16_pos = char_offsets.get(index).copied().unwrap_or(index as u32);
         let style_id = find_active_char_shape(char_shapes, utf16_pos);
-        let lang = if is_lang_neutral(ch) {
-            current_lang
-        } else {
+        if !is_lang_neutral(ch) {
             current_lang = detect_lang_category(ch);
-            current_lang
-        };
-        let style = resolved_to_text_style(styles, style_id, lang);
-        max_font_size = max_font_size.max(style.font_size.max(12.0));
+        }
+        max_font_size = max_font_size.max(style_font_size(styles, style_id).max(12.0));
     }
     (width, max_font_size, current_lang)
 }
@@ -461,12 +467,8 @@ fn tokenize_paragraph_with_controls(
                         pos as u32
                     };
                     let style_id = find_active_char_shape(char_shapes, utf16_pos);
-                    let ts = resolved_to_text_style(styles, style_id, current_lang);
-                    let fs = if ts.font_size > 0.0 {
-                        ts.font_size
-                    } else {
-                        12.0
-                    };
+                    let font_size = style_font_size(styles, style_id);
+                    let fs = if font_size > 0.0 { font_size } else { 12.0 };
                     tokens.push(BreakToken::InlineControl {
                         idx: pos,
                         width_hwp,
@@ -499,12 +501,8 @@ fn tokenize_paragraph_with_controls(
                 i as u32
             };
             let style_id = find_active_char_shape(char_shapes, utf16_pos);
-            let ts = resolved_to_text_style(styles, style_id, current_lang);
-            let font_size = if ts.font_size > 0.0 {
-                ts.font_size
-            } else {
-                12.0
-            };
+            let font_size = style_font_size(styles, style_id);
+            let font_size = if font_size > 0.0 { font_size } else { 12.0 };
             tokens.push(BreakToken::Tab {
                 idx: i,
                 max_font_size: font_size,
@@ -548,7 +546,6 @@ fn tokenize_paragraph_with_controls(
                 let start = i;
                 let mut max_fs = 0.0f64;
                 let mut token_text = String::new();
-                let mut token_lang = current_lang;
 
                 while i < text_len {
                     let c = text_chars[i];
@@ -574,20 +571,11 @@ fn tokenize_paragraph_with_controls(
                         i as u32
                     };
                     let style_id = find_active_char_shape(char_shapes, utf16_pos);
-                    let lang = if is_lang_neutral(c) {
-                        token_lang
-                    } else {
-                        let detected = detect_lang_category(c);
-                        token_lang = detected;
-                        current_lang = detected;
-                        detected
-                    };
-                    let ts = resolved_to_text_style(styles, style_id, lang);
-                    let fs = if ts.font_size > 0.0 {
-                        ts.font_size
-                    } else {
-                        12.0
-                    };
+                    if !is_lang_neutral(c) {
+                        current_lang = detect_lang_category(c);
+                    }
+                    let font_size = style_font_size(styles, style_id);
+                    let fs = if font_size > 0.0 { font_size } else { 12.0 };
                     if fs > max_fs {
                         max_fs = fs;
                     }
@@ -609,19 +597,11 @@ fn tokenize_paragraph_with_controls(
                         i as u32
                     };
                     let style_id = find_active_char_shape(char_shapes, utf16_pos);
-                    let lang = if is_lang_neutral(c) {
-                        current_lang
-                    } else {
-                        let detected = detect_lang_category(c);
-                        current_lang = detected;
-                        detected
-                    };
-                    let ts = resolved_to_text_style(styles, style_id, lang);
-                    let fs = if ts.font_size > 0.0 {
-                        ts.font_size
-                    } else {
-                        12.0
-                    };
+                    if !is_lang_neutral(c) {
+                        current_lang = detect_lang_category(c);
+                    }
+                    let font_size = style_font_size(styles, style_id);
+                    let fs = if font_size > 0.0 { font_size } else { 12.0 };
                     if fs > max_fs {
                         max_fs = fs;
                     }
@@ -701,13 +681,8 @@ fn tokenize_paragraph_with_controls(
                             i as u32
                         };
                         let style_id = find_active_char_shape(char_shapes, utf16_pos);
-                        let lang = 1usize; // English
-                        let ts = resolved_to_text_style(styles, style_id, lang);
-                        let fs = if ts.font_size > 0.0 {
-                            ts.font_size
-                        } else {
-                            12.0
-                        };
+                        let font_size = style_font_size(styles, style_id);
+                        let fs = if font_size > 0.0 { font_size } else { 12.0 };
                         if fs > max_fs {
                             max_fs = fs;
                         }
@@ -722,18 +697,11 @@ fn tokenize_paragraph_with_controls(
                         i as u32
                     };
                     let style_id = find_active_char_shape(char_shapes, utf16_pos);
-                    let lang = if is_lang_neutral(c) {
-                        current_lang
-                    } else {
+                    if !is_lang_neutral(c) {
                         current_lang = 1; // English
-                        1
-                    };
-                    let ts = resolved_to_text_style(styles, style_id, lang);
-                    let fs = if ts.font_size > 0.0 {
-                        ts.font_size
-                    } else {
-                        12.0
-                    };
+                    }
+                    let font_size = style_font_size(styles, style_id);
+                    let fs = if font_size > 0.0 { font_size } else { 12.0 };
                     if fs > max_fs {
                         max_fs = fs;
                     }
