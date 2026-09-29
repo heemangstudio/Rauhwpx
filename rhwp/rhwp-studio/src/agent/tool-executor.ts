@@ -844,6 +844,11 @@ export class AgentToolExecutor {
   private documentInspectionRevision: number | null = null;
   /** get_structure 서식 태그의 본문 기준 글자 크기 (HWPUNIT) — revision 마다 다시 표본을 뜬다. */
   private structureBodySizeMemo: { revision: number; size: number | null } | null = null;
+  /**
+   * 같은 revision 의 문단 서식 태그 — 병렬 읽기(편대 에이전트가 같은 revision 에서 각자 구조를
+   * 읽는 경우)마다 서식 조회를 되풀이하지 않는다. 모든 문서 변이는 revision 을 올린다.
+   */
+  private structureTagMemo: { revision: number; tags: Map<string, string | undefined> } | null = null;
   // 병렬 서브에이전트 리베이스용 편집 저널 — 정밀 기록된 핵심 텍스트 쓰기만 담고,
   // 기록되지 않은 revision bump 는 자동으로 '불명'(리베이스 불가) 취급된다.
   private journal = new EditJournal();
@@ -1624,6 +1629,24 @@ export class AgentToolExecutor {
     bodySize: number | null,
   ): string | undefined {
     if (length === 0 || length > STRUCTURE_TAG_MAX_CHARS) return undefined;
+    if (this.structureTagMemo?.revision !== this.revision) {
+      this.structureTagMemo = { revision: this.revision, tags: new Map() };
+    }
+    const memo = this.structureTagMemo.tags;
+    const key = `${sectionIdx}:${paraIdx}:${length}:${bodySize ?? ''}`;
+    if (memo.has(key)) return memo.get(key);
+    const tag = this.readStructureTag(sectionIdx, paraIdx, length, text, bodySize);
+    memo.set(key, tag);
+    return tag;
+  }
+
+  private readStructureTag(
+    sectionIdx: number,
+    paraIdx: number,
+    length: number,
+    text: string,
+    bodySize: number | null,
+  ): string | undefined {
     const { wasm } = this.deps;
     const parts: string[] = [];
     try {

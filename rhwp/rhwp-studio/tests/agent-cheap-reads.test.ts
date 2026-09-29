@@ -357,3 +357,12 @@ test('get_structure 태그: 짧은 문단에 개요 수준·굵게·본문과 �
   const paras = (json['sections'] as Array<{ paragraphs: Array<{ tag?: string }> }>)[0].paragraphs;
   assert.deepEqual(paras.map((p) => p.tag), ['h1 B 14pt', '#2 B', undefined, undefined, undefined, undefined]);
 });
+
+test('get_structure 태그: 쓰기로 revision 이 오르면 서식을 다시 읽는다', async () => {
+  const formats: Record<number, { bold?: boolean }> = {};
+  const h = makeEnv(['제목', '본문'], withFormats(formats));
+  assert.match(mcpText(await h.call('get_structure')), /s0 p0 \(2\) 제목/);
+  formats[0] = { bold: true };
+  await h.call('insert_text', { sectionIdx: 0, paraIdx: 1, charOffset: 2, text: '.' });
+  assert.match(mcpText(await h.call('get_structure')), /s0 p0 \(2 B\) 제목/);
+});
