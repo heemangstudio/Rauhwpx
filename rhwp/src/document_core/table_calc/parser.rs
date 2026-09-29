@@ -39,20 +39,44 @@ pub enum BinOpKind {
     Div,
 }
 
+/// 계산식 길이 상한 (문자 수). 셀 계산식은 짧다 — 긴 입력은 파싱 전에 거절한다.
+const MAX_FORMULA_CHARS: usize = 4096;
+
+/// 괄호·단항 '-'·함수 호출 중첩 상한. 재귀 하강 파서라 중첩마다 스택을 쓰며, wasm
+/// 스택은 네이티브보다 훨씬 작다.
+const MAX_NESTING_DEPTH: usize = 64;
+
 /// 계산식 문자열을 파싱하여 AST를 반환한다.
+///
+/// 너무 길거나 중첩이 너무 깊으면 `None` 이다.
 pub fn parse_formula(input: &str) -> Option<FormulaNode> {
+    if input.chars().count() > MAX_FORMULA_CHARS {
+        return None;
+    }
     let tokens = tokenize(input);
     if tokens.is_empty() {
         return None;
     }
-    let mut parser = Parser { tokens, pos: 0 };
+    let mut parser = Parser {
+        tokens,
+        pos: 0,
+        depth: 0,
+        too_deep: false,
+    };
     let node = parser.parse_expr();
+    if parser.too_deep {
+        return None;
+    }
     Some(node)
 }
 
 struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    /// 현재 중첩 깊이 (괄호·단항 '-'·함수 인수).
+    depth: usize,
+    /// 중첩 상한을 넘었는가. 넘으면 더 내려가지 않고 파싱 실패로 끝낸다.
+    too_deep: bool,
 }
 
 impl Parser {
@@ -139,6 +163,19 @@ impl Parser {
 
     /// factor = NUMBER | cell_ref (':' cell_ref)? | func_call | '(' expr ')' | '-' factor
     fn parse_factor(&mut self) -> FormulaNode {
+        if self.depth >= MAX_NESTING_DEPTH {
+            // 더 내려가지 않는다 — 남은 토큰은 버리고 parse_formula 가 None 을 낸다.
+            self.too_deep = true;
+            self.pos = self.tokens.len();
+            return FormulaNode::Number(0.0);
+        }
+        self.depth += 1;
+        let node = self.parse_factor_inner();
+        self.depth -= 1;
+        node
+    }
+
+    fn parse_factor_inner(&mut self) -> FormulaNode {
         match self.peek().cloned() {
             Some(Token::Number(n)) => {
                 self.advance();

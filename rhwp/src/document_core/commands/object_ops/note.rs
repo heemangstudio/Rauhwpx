@@ -773,14 +773,18 @@ impl DocumentCore {
         paragraph.control_mask |= 1u32 << 0x0011;
         paragraph.has_para_text = true;
 
-        let mut next_number = start_number;
-        Self::renumber_paragraph_endnotes_with_shape(
+        // 뒤 문단의 미주 번호도 밀린다. 그 문단들의 revision 을 올려야 삽입을 되돌릴 때
+        // 스냅샷 복원이 옛 번호로 돌아간다.
+        let renumbered_paras = Self::renumber_section_endnotes_with_shape(
             &mut self.document.sections[section_idx].paragraphs,
-            &mut next_number,
+            start_number,
             number_format_code,
             prefix_char,
             suffix_char,
         );
+        for pi in renumbered_paras {
+            self.event_log.mark_paragraph_changed(section_idx, pi);
+        }
 
         self.reflow_footnote_paragraph(section_idx, para_idx, insert_idx, 0);
 

@@ -3748,6 +3748,12 @@ impl DocumentCore {
 
         let row_count = table.row_count as usize;
         let col_count = table.col_count as usize;
+        if target_row >= row_count || target_col >= col_count {
+            return Err(HwpError::RenderError(format!(
+                "계산식 셀 ({},{})가 표 크기 {}×{} 밖입니다",
+                target_row, target_col, row_count, col_count
+            )));
+        }
 
         // table.cells 는 병합의 기준(anchor) 셀만 담는다. row*col_count+col 로 찾으면 앞쪽에
         // 병합 셀이 하나만 있어도 뒤 셀이 전부 밀려 다른 셀을 읽고 쓴다. 좌표→셀을 anchor 로 찾는다.
@@ -3758,6 +3764,8 @@ impl DocumentCore {
             .enumerate()
             .map(|(idx, cell)| ((cell.row as usize, cell.col as usize), idx))
             .collect();
+        // 기록 대상도 anchor 칸이어야 한다. 병합으로 가려진 칸에 쓰라는 요청은 셀을 건드리지
+        // 않고 거절한다 (Studio 는 getCellInfo 의 anchor 좌표를 넘긴다).
         let target_cell_idx = anchors.get(&(target_row, target_col)).copied();
         if write_result && target_cell_idx.is_none() {
             return Err(HwpError::RenderError(format!(
@@ -3769,6 +3777,9 @@ impl DocumentCore {
         // 셀 값 조회 함수: 셀의 첫 문단 텍스트를 숫자로 파싱
         let cells = &table.cells;
         let get_cell = |col: usize, row: usize| -> Option<f64> {
+            if row >= row_count || col >= col_count {
+                return None;
+            }
             anchors
                 .get(&(row, col))
                 .and_then(|&idx| cells.get(idx))
@@ -3788,24 +3799,42 @@ impl DocumentCore {
 
         let display = format_table_calc_result(result, format_json);
 
-        // 결과를 셀에 기록 (대상 anchor 셀은 위에서 확인했다)
-        if let Some(cell_idx) = target_cell_idx.filter(|_| write_result) {
-            let section_mut = self.document.sections.get_mut(section_idx).unwrap();
-            let para_mut = section_mut.paragraphs.get_mut(parent_para_idx).unwrap();
-            if let Some(Control::Table(ref mut t)) = para_mut.controls.get_mut(control_idx) {
-                if let Some(cell) = t.cells.get_mut(cell_idx) {
-                    if let Some(cell_para) = cell.paragraphs.first_mut() {
-                        cell_para.text = display.clone();
-                        let new_len = cell_para.text.chars().count();
-                        cell_para.char_offsets = (0..new_len).map(|i| i as u32).collect();
-                    }
-                }
-            }
-            // raw_stream 무효화
+        // 결과를 셀에 기록 — 일반 셀 편집 경로로 첫 문단 텍스트를 교체한다. 글자 위치·
+        // 글자 모양·줄 정보가 텍스트와 맞게 옮겨지고, 리플로우·표 dirty·문단 revision
+        // 갱신(스냅샷 undo)·쪽 나눔까지 같이 처리된다. 대상 anchor 셀은 위에서 확인했다.
+        if let Some(target_cell_idx) = target_cell_idx.filter(|_| write_result) {
+            let old_len = self
+                .get_cell_paragraph_ref(
+                    section_idx,
+                    parent_para_idx,
+                    control_idx,
+                    target_cell_idx,
+                    0,
+                )
+                .ok_or_else(|| HwpError::RenderError("계산식 셀에 문단이 없습니다".into()))?
+                .text
+                .chars()
+                .count();
+            // 캐럿의 "컨트롤 뒤 입력" 표시는 사용자 입력용이다 — 계산 결과 기록이
+            // 소비하지 않게 잠시 비웠다가 되돌린다.
+            let pending_caret = self.caret_insert_after_control.take();
+            let written = self.replace_text_in_cell_native_impl(
+                section_idx,
+                parent_para_idx,
+                control_idx,
+                target_cell_idx,
+                0,
+                0,
+                old_len,
+                &display,
+                true,
+            );
+            self.caret_insert_after_control = pending_caret;
+            written?;
+            // 셀 편집 경로도 비우지만, 이 뮤테이터의 무효화 계약을 본문에 드러내 둔다.
             if let Some(sec) = self.document.sections.get_mut(section_idx) {
                 sec.raw_stream = None;
             }
-            self.recompose_section(section_idx);
         }
 
         Ok(format!(

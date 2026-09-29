@@ -2382,13 +2382,16 @@ impl DocumentCore {
             }
         }
     }
+    /// 문단들(표 셀·글상자 안 포함)의 미주 번호와 모양을 차례로 다시 매긴다.
+    /// 반환값은 고친 미주 수다.
     pub(crate) fn renumber_paragraph_endnotes_with_shape(
         paragraphs: &mut [crate::model::paragraph::Paragraph],
         next_number: &mut u16,
         number_format_code: u8,
         prefix_char: char,
         suffix_char: char,
-    ) {
+    ) -> usize {
+        let mut renumbered = 0;
         for para in paragraphs {
             for ctrl in &mut para.controls {
                 match ctrl {
@@ -2401,10 +2404,11 @@ impl DocumentCore {
                             suffix_char,
                         );
                         *next_number = next_number.saturating_add(1);
+                        renumbered += 1;
                     }
                     Control::Table(table) => {
                         for cell in &mut table.cells {
-                            Self::renumber_paragraph_endnotes_with_shape(
+                            renumbered += Self::renumber_paragraph_endnotes_with_shape(
                                 &mut cell.paragraphs,
                                 next_number,
                                 number_format_code,
@@ -2417,7 +2421,7 @@ impl DocumentCore {
                         if let Some(text_box) =
                             shape.drawing_mut().and_then(|d| d.text_box.as_mut())
                         {
-                            Self::renumber_paragraph_endnotes_with_shape(
+                            renumbered += Self::renumber_paragraph_endnotes_with_shape(
                                 &mut text_box.paragraphs,
                                 next_number,
                                 number_format_code,
@@ -2430,6 +2434,35 @@ impl DocumentCore {
                 }
             }
         }
+        renumbered
+    }
+
+    /// 구역의 미주를 처음부터 다시 매기고, 미주를 품은 최상위 문단 인덱스를 돌려준다.
+    ///
+    /// 미주 번호는 다른 문단에 있어도 바뀐다. 호출자는 돌려받은 문단의 revision 을 올려야
+    /// 스냅샷 복원(undo·에이전트 롤백)이 옛 번호로 되돌린다.
+    pub(crate) fn renumber_section_endnotes_with_shape(
+        paragraphs: &mut [crate::model::paragraph::Paragraph],
+        start_number: u16,
+        number_format_code: u8,
+        prefix_char: char,
+        suffix_char: char,
+    ) -> Vec<usize> {
+        let mut next_number = start_number;
+        let mut touched = Vec::new();
+        for (pi, para) in paragraphs.iter_mut().enumerate() {
+            let renumbered = Self::renumber_paragraph_endnotes_with_shape(
+                std::slice::from_mut(para),
+                &mut next_number,
+                number_format_code,
+                prefix_char,
+                suffix_char,
+            );
+            if renumbered > 0 {
+                touched.push(pi);
+            }
+        }
+        touched
     }
     /// 현재 구역의 미주 모양을 조회한다.
     pub fn get_endnote_shape_native(&self, section_idx: usize) -> Result<String, HwpError> {
@@ -2571,15 +2604,31 @@ impl DocumentCore {
         let number_format_code = Self::footnote_shape_number_format_code(shape.number_format);
         let prefix_char = shape.prefix_char;
         let suffix_char = shape.suffix_char;
-        let mut next_number = start_number;
-        Self::renumber_paragraph_endnotes_with_shape(
+        let renumbered_paras = Self::renumber_section_endnotes_with_shape(
             &mut section.paragraphs,
-            &mut next_number,
+            start_number,
             number_format_code,
             prefix_char,
             suffix_char,
         );
+        // HWP5 저장은 구역 첫 문단의 SectionDef 컨트롤에서 미주 모양 레코드를 쓴다. 쪽
+        // 설정 같은 다른 구역 설정처럼 그 컨트롤에도 반영해야 화면에만 보이고 저장에서
+        // 사라지는 일이 없다.
+        let updated_shape = section.section_def.endnote_shape.clone();
+        if let Some(para) = section.paragraphs.get_mut(0) {
+            for ctrl in &mut para.controls {
+                if let Control::SectionDef(ref mut sd) = ctrl {
+                    sd.endnote_shape = updated_shape.clone();
+                }
+            }
+        }
         section.raw_stream = None;
+        // 이벤트를 쌓지 않는 편집이라 SectionDef 문단과 번호가 바뀐 문단의 revision 을
+        // 직접 올린다.
+        self.event_log.mark_paragraph_changed(section_idx, 0);
+        for pi in renumbered_paras {
+            self.event_log.mark_paragraph_changed(section_idx, pi);
+        }
 
         self.recompose_section(section_idx);
         self.paginate_if_needed();

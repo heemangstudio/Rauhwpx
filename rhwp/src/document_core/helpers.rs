@@ -1065,7 +1065,7 @@ pub(crate) fn find_closing_tag_chars(chars: &[char], start_pos: usize, tag_name:
 
 /// HTML 태그의 style 속성에서 인라인 스타일 문자열을 추출한다.
 pub(crate) fn parse_inline_style(tag: &str) -> String {
-    let tag_lower = tag.to_lowercase();
+    let tag_lower = tag.to_ascii_lowercase();
     if let Some(style_start) = tag_lower.find("style=\"") {
         let after = &tag[style_start + 7..];
         if let Some(end) = after.find('"') {
@@ -1214,7 +1214,7 @@ pub(crate) fn parse_html_attr_f64(tag: &str, attr: &str) -> Option<f64> {
     // width="200" 또는 width='200' 형식
     let patterns = [format!("{}=\"", attr), format!("{}='", attr)];
     for pat in &patterns {
-        if let Some(start) = tag.to_lowercase().find(&pat.to_lowercase()) {
+        if let Some(start) = tag.to_ascii_lowercase().find(&pat.to_ascii_lowercase()) {
             let after = &tag[start + pat.len()..];
             let delim = if pat.ends_with('"') { '"' } else { '\'' };
             if let Some(end) = after.find(delim) {
