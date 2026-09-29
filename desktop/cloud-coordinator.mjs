@@ -1080,7 +1080,12 @@ export class CloudCoordinator extends EventEmitter {
     void this.#refreshMergeRequests();
     const profile = await this.#client.loadProfile().catch(() => null);
     const paired = profile ? await this.#client.isPaired().catch(() => false) : false;
-    const records = await this.#store.list();
+    // An unreadable store stays unloaded and untouched, and every later read tries
+    // it again. Snapshots show no handoffs meanwhile instead of failing Cloud IPC.
+    const records = await this.#store.list().catch((error) => {
+      if (error?.code !== 'HANDOFF_STORE_UNREADABLE') throw error;
+      return [];
+    });
     this.#assertProfileEpoch(profileEpoch);
     const visibleRecords = records.filter((record) => (
       !record.resolvedAt && destinationMatchesProfile(record.destination, profile)

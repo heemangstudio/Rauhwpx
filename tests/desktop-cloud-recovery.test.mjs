@@ -834,17 +834,26 @@ test('quit ends a pause-boundary poll instead of waiting out its five minutes', 
   assert.ok(performance.now() - before < 1_000);
 });
 
-test('startup continues with an unreadable handoff store and reports it', async () => {
-  const coordinator = new CloudCoordinator({
-    client: { loadProfile: async () => null },
-    store: {
-      load: async () => { throw Object.assign(new Error('EIO'), { code: 'HANDOFF_STORE_UNREADABLE' }); },
-      list: async () => [],
-      flush: async () => {},
+test('startup continues with an unreadable handoff store and reports it', async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'rauhwpx-unreadable-store-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let failing = true;
+  const store = new CloudHandoffStore({
+    filePath: path.join(directory, 'handoffs.json'),
+    sleep: async () => {},
+    readFile: async () => {
+      if (failing) throw Object.assign(new Error('EIO: i/o error'), { code: 'EIO' });
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' });
     },
   });
+  const coordinator = new CloudCoordinator({ client: { loadProfile: async () => null }, store });
   const events = collect(coordinator);
-  await coordinator.start();
+  // Cloud IPC waits on start(), so an unreadable store must not reject it.
+  const snapshot = await coordinator.start();
+  assert.ok(snapshot);
   assert.ok(events.some((event) => event.type === 'handoff-store-unreadable'));
+  failing = false;
+  await coordinator.snapshot();
+  assert.deepEqual(await store.list(), [], 'the store loads once the read succeeds');
   await coordinator.stop();
 });
