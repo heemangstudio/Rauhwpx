@@ -182,7 +182,7 @@ test('a live window keeps its draft; closing it makes the draft recoverable at o
   const owner = await freshPage();
   const observer = await freshPage();
   try {
-    await owner.evaluate(async () => {
+    const stored = await owner.evaluate(async () => {
       const store = await import('/src/recovery/autosave-store.ts');
       const { AutosaveManager } = await import('/src/recovery/autosave-manager.ts');
       const manager = new AutosaveManager({
@@ -198,7 +198,9 @@ test('a live window keeps its draft; closing it makes the draft recoverable at o
       await manager.beginDocument({ fileName: 'live.hwp', sourceFormat: 'hwp' });
       await manager.flushNow('typing');
       (window as unknown as { keep: unknown }).keep = manager;
+      return (await store.listAutosaveDrafts()).map((row) => [row.id, Boolean(row.ownerInstanceId)]);
     });
+    assert.deepEqual(stored, [['owned-draft', true]], 'the draft records the lock-holding instance');
     const listRecoverable = () => observer.evaluate(async () => {
       const store = await import('/src/recovery/autosave-store.ts');
       // Far in the future: every heartbeat is stale, so only the owner lock can keep the draft.
@@ -207,7 +209,15 @@ test('a live window keeps its draft; closing it makes the draft recoverable at o
     });
     assert.deepEqual(await listRecoverable(), [], 'the owner page still holds its lock');
     await owner.close();
-    assert.deepEqual(await listRecoverable(), ['owned-draft']);
+    // The browser drops a closed page's locks asynchronously, so page.close() can resolve
+    // a moment before the lock manager sees it. No heartbeat has to expire, though.
+    const deadline = Date.now() + 5_000;
+    let recoverable = await listRecoverable();
+    while (recoverable.length === 0 && Date.now() < deadline) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+      recoverable = await listRecoverable();
+    }
+    assert.deepEqual(recoverable, ['owned-draft']);
   } finally {
     if (!owner.isClosed()) await owner.close();
     await observer.close();
