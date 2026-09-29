@@ -4084,6 +4084,17 @@ fn parse_shape_object(
                     b"drawText" => {
                         let mut tb = TextBox::default();
                         tb.max_width = common.width;
+                        // drawText lastWidth = 텍스트가 조판된 폭. curSz 와 같으면
+                        // 도형 확대 후에도 한컴이 내부 글꼴을 축소하지 않는다
+                        // (shape_layout 의 폰트 스케일 게이트가 사용).
+                        for attr in ce.attributes().flatten() {
+                            if attr.key.as_ref() == b"lastWidth" {
+                                let v = parse_i32(&attr);
+                                if v > 0 {
+                                    tb.max_width = v as u32;
+                                }
+                            }
+                        }
                         parse_draw_text(reader, &mut tb)?;
                         text_box = Some(tb);
                     }

@@ -726,6 +726,11 @@ pub(crate) fn cell_valign_top_offset(
 ) -> f64 {
     use crate::model::table::VerticalAlign;
     let inner = (cell_h - pad_top - pad_bottom).max(0.0);
+    if std::env::var("RHWP_DIAG_VALOFF").is_ok() {
+        eprintln!(
+            "VALOFF valign={valign:?} cell_h={cell_h:.2} pad=({pad_top:.2},{pad_bottom:.2}) content={content_h:.2}"
+        );
+    }
     if content_h <= inner + 0.01 {
         return match valign {
             VerticalAlign::Top => pad_top,
@@ -1353,6 +1358,7 @@ impl LayoutEngine {
                                 para_y,
                                 allow_para_top_bleed,
                                 column_is_empty_on_entry,
+                                table_meta.map(|(pi, _)| pi),
                             )
                         } else {
                             y_start
@@ -1713,6 +1719,7 @@ impl LayoutEngine {
                 para_y,
                 allow_para_top_bleed,
                 column_is_empty_on_entry,
+                table_meta.map(|(pi, _)| pi),
             );
             if depth > 0 && render_caption {
                 computed_y + top_caption_flow_extra(&table.caption, caption_height, caption_spacing)
@@ -2041,6 +2048,7 @@ impl LayoutEngine {
                             cell_para_index: 0,
                             text_direction: 0,
                             line_wrap_squeeze: false,
+                            row_span: 1,
                         }],
                     })
                     .or_else(|| {
@@ -2171,7 +2179,13 @@ impl LayoutEngine {
                     }
                 }
             }
-            constraints.sort_by_key(|&(_, span, _)| span);
+            // 시작 열 오름차순(같은 시작이면 짧은 span 우선)으로 고정해야
+            // 겹친 제약이 왼쪽→오른쪽으로 전파된다 — 나중에 선언된 span 이
+            // 먼저 미지 열을 채우면 앞쪽 span 의 나머지 열이 틀어진다
+            // (39-excavation 결재 표: c2 는 r3 의 (c1,c2) 제약에서 3090,
+            // c3 는 r0-2 의 (c2,c3)=6304 에서 3214 로 확정되고 잔여 283 이
+            // 마지막 열 c4 에 가산되어 2577 이 되어야 함).
+            constraints.sort_by_key(|&(c, span, _)| (span, c));
 
             let max_iter = col_count + constraints.len();
             for _ in 0..max_iter {
@@ -2296,8 +2310,15 @@ impl LayoutEngine {
         if let Some(mt) = measured_table {
             let mut rh = mt.row_heights.clone();
             rh.resize(row_count, hwpunit_to_px(400, self.dpi));
+            if std::env::var("RHWP_DEBUG_ROWFIT").is_ok() {
+                eprintln!("ROWFIT-MT tbl={} rows={:?}", table.common.ctrl_id, rh);
+            }
             if fit_common_height {
-                self.fit_row_heights_to_common_height(table, &mut rh);
+                self.fit_row_heights_to_common_height(
+                    table,
+                    &mut rh,
+                    hwpunit_to_px(table.cell_spacing as i32, self.dpi),
+                );
             }
             return rh;
         }
@@ -2357,9 +2378,29 @@ impl LayoutEngine {
                     // extending through the row border (table-in-tbox row 1).
                     let stored_line_flow_overflows_visible_text =
                         Self::cell_has_visible_text(cell) && line_based > row_heights[r] + 0.5;
+                    // [macOS 정합] 무표시-텍스트 저장 셀은 저장 lh 가 선언 h 를
+                    // 채우지 못해도(line_based < h) lh+pad 최소 높이를 강제해
+                    // 행을 키운다 — 09-table-004 r1 (저장 h=482 < lh 300+pad 282=582,
+                    // 한컴 행 실측 5.7pt ≈ 582HU). 선언 h 에 꽉 맞는 저장 셀
+                    // (#2211: lh≈h, 주보 p1)은 여전히 pad 미가산으로 유지.
+                    let textless_stored_underfills_declared = relaxed_pad
+                        && Self::cell_has_stored_line_segs(cell)
+                        && !Self::cell_has_visible_text(cell)
+                        && line_based + 0.5 < row_heights[r]
+                        && line_based + pad_top + pad_bottom > row_heights[r] + 0.5;
+                    // 저장 LINE_SEG 흐름이 선언 셀 높이와 사실상 같은 셀(lh≈h)은
+                    // 작성 지오메트리에 pad가 이미 포함된 정합이므로 pad를 다시
+                    // 더하지 않는다 (#2211). 흐름이 선언 h와 다르면(위든 아래든)
+                    // 한컴은 pad+흐름으로 행을 계산한다 — 06 pi20 r0(textless,
+                    // h=200, ls=100, pad=282 → 공식 3.9pt≈382HU), r1-r3
+                    // (textless, h=280, ls=1000 → 공식 12.8pt≈1282HU).
+                    let stored_flow_is_authored_exact = cell.height < 0x80000000
+                        && (line_based - hwpunit_to_px(cell.height as i32, self.dpi)).abs() <= 0.5;
                     let line_req = if relaxed_pad
                         && Self::cell_has_stored_line_segs(cell)
+                        && stored_flow_is_authored_exact
                         && !stored_line_flow_overflows_visible_text
+                        && !textless_stored_underfills_declared
                     {
                         line_based
                     } else {
@@ -2462,7 +2503,14 @@ impl LayoutEngine {
                 // 개체 기반 지오메트리는 pad 가산 유지.
                 let (line_based, object_based) =
                     self.calc_cell_paragraphs_content_parts(&cell.paragraphs, styles, inner_width);
-                let line_req = if relaxed_pad && Self::cell_has_stored_line_segs(cell) {
+                // 1-b 와 동일: 저장 흐름 ≈ 선언 h 이면 작성 정합(pad 미가산),
+                // 아니면 pad+흐름.
+                let stored_flow_is_authored_exact = cell.height < 0x80000000
+                    && (line_based - hwpunit_to_px(cell.height as i32, self.dpi)).abs() <= 0.5;
+                let line_req = if relaxed_pad
+                    && Self::cell_has_stored_line_segs(cell)
+                    && stored_flow_is_authored_exact
+                {
                     line_based
                 } else {
                     line_based + pad_top + pad_bottom
@@ -2485,7 +2533,11 @@ impl LayoutEngine {
             }
         }
         if fit_common_height {
-            self.fit_row_heights_to_common_height(table, &mut row_heights);
+            self.fit_row_heights_to_common_height(
+                table,
+                &mut row_heights,
+                hwpunit_to_px(table.cell_spacing as i32, self.dpi),
+            );
         }
         row_heights
     }
@@ -2494,6 +2546,7 @@ impl LayoutEngine {
         &self,
         table: &crate::model::table::Table,
         row_heights: &mut [f64],
+        cell_spacing: f64,
     ) {
         if row_heights.is_empty() {
             return;
@@ -2506,9 +2559,57 @@ impl LayoutEngine {
         if target_height > 0.0 {
             let current: f64 = row_heights.iter().sum();
             let residual = target_height - current;
+            if std::env::var("RHWP_DEBUG_ROWFIT").is_ok() {
+                let mut tops = Vec::with_capacity(row_heights.len());
+                let mut c = 0.0f64;
+                for (i, h) in row_heights.iter().enumerate() {
+                    tops.push((c * 100.0).round() / 100.0);
+                    c += h + if i + 1 < row_heights.len() {
+                        cell_spacing
+                    } else {
+                        0.0
+                    };
+                }
+                eprintln!(
+                    "ROWFIT tbl={} target={:.2} current={:.2} residual={:.2} crit={:?} rows={:?} tops={:?}",
+                    table.common.ctrl_id,
+                    target_height,
+                    current,
+                    residual,
+                    table.common.height_criterion,
+                    row_heights,
+                    tops
+                );
+            }
             if residual > 0.5 {
                 if let Some(last) = row_heights.last_mut() {
                     *last += residual;
+                }
+            } else if residual < -0.5
+                && table.common.height_criterion == crate::model::shape::SizeCriterion::Absolute
+                && table.common.treat_as_char
+                && row_heights.len() > 1
+                && current <= target_height * 1.5
+            {
+                // 절대 선언 높이보다 행 합이 크면 한컴은 마지막 행을 표
+                // 하단에 맞춰(bottom-anchor) 놓고, 위쪽 행들은 남은 공간에
+                // 맞춰 위에서부터 눌린다 (조직도형 표: 선언 139.01pt 의
+                // 경계 실측과 일치, r20-r22 빈 행이 흡수).
+                // TAC/개체 표 한정 — 본문 흐름 표는 선언 sz 가 저장 스냅샷일
+                // 뿐이며 콘텐츠가 넘치면 한컴은 표를 키워 쪽을 넘긴다
+                // (10-inner-table-01: 선언 871.7px vs 측정 1796.6px →
+                // 본 행 압축 시 실데이터 행이 소실).
+                // 1.5× 상한은 height_measurer 의 TAC_SHRINK_MAX_OVERFLOW_RATIO
+                // (#1835 오라클: stale 선언높이를 크게 초과한 콘텐츠는 누르지
+                // 않고 내용 높이로 확장)와 동일 경계 — 여기서도 그 규칙을 지킨다.
+                let last_row_top = target_height - row_heights[row_heights.len() - 1];
+                let mut cursor = 0.0;
+                for i in 0..row_heights.len() - 1 {
+                    let remaining = last_row_top - cursor;
+                    if row_heights[i] > remaining {
+                        row_heights[i] = remaining.max(0.0);
+                    }
+                    cursor += row_heights[i] + cell_spacing;
                 }
             }
         }
@@ -3063,10 +3164,10 @@ impl LayoutEngine {
             let ref_x = col_area.x + host_margin_left;
             let ref_w = col_area.width - host_margin_left - host_margin_right;
             match host_alignment {
-                Alignment::Center | Alignment::Distribute => {
-                    ref_x + (ref_w - table_width).max(0.0) / 2.0
-                }
-                Alignment::Right => ref_x + (ref_w - table_width).max(0.0),
+                // 본문보다 넓은 표도 한컴은 중앙/우측 정렬을 그대로 적용해
+                // 좌우 여백 밖으로 균등하게 넘쳐 그린다 (35-voucher p2 478pt 표).
+                Alignment::Center | Alignment::Distribute => ref_x + (ref_w - table_width) / 2.0,
+                Alignment::Right => ref_x + (ref_w - table_width),
                 _ => ref_x,
             }
         } else if depth == 0 {
@@ -3128,15 +3229,18 @@ impl LayoutEngine {
             };
             let x = match horz_align {
                 HorzAlign::Left | HorzAlign::Inside => ref_x + h_offset + outer_left,
+                // 기준 영역보다 넓은 표도 한컴은 중앙 정렬로 양쪽에 균등하게 넘긴다
+                // (35-voucher-application p2: 478pt 표가 453.6pt 본문보다 넓어
+                // 왼쪽 여백 밖 58.6pt 에 시작).
                 HorzAlign::Center => {
                     ref_x
-                        + (ref_w - table_width).max(0.0) / 2.0
+                        + (ref_w - table_width) / 2.0
                         + h_offset
                         + (outer_left - outer_right) / 2.0
                 }
                 // Task #347: picture_footnote.rs:185와 동일하게 - h_offset (오른쪽 끝에서 안쪽으로 오프셋).
                 HorzAlign::Right | HorzAlign::Outside => {
-                    ref_x + (ref_w - table_width).max(0.0) - h_offset - outer_right
+                    ref_x + (ref_w - table_width) - h_offset - outer_right
                 }
             };
             if std::env::var("RHWP_DIAG_TX").is_ok() {
@@ -3161,12 +3265,15 @@ impl LayoutEngine {
             let om_right = hwpunit_to_px(table.outer_margin_right as i32, self.dpi);
             let area_x = col_area.x + om_left;
             let area_w = (col_area.width - om_left - om_right).max(0.0);
+            // depth>0 도 문서의 horzOffset 을 정렬 결과에 반영한다
+            // (38 생년월일 난표 horzOffset=197HU → 셀 안쪽 +1.97pt).
+            let h_offset = hwpunit_to_px(table.common.horizontal_offset as i32, self.dpi);
             match host_alignment {
                 Alignment::Center | Alignment::Distribute => {
-                    area_x + (area_w - table_width).max(0.0) / 2.0
+                    area_x + (area_w - table_width) / 2.0 + h_offset
                 }
-                Alignment::Right => area_x + (area_w - table_width).max(0.0),
-                _ => area_x,
+                Alignment::Right => area_x + (area_w - table_width) - h_offset,
+                _ => area_x + h_offset,
             }
         }
     }
@@ -3184,6 +3291,7 @@ impl LayoutEngine {
         para_y: Option<f64>,
         allow_para_top_bleed: bool,
         column_is_empty: bool,
+        host_para_index: Option<usize>,
     ) -> f64 {
         let table_treat_as_char = table.common.treat_as_char;
         let table_text_wrap = if depth == 0 {
@@ -3203,7 +3311,22 @@ impl LayoutEngine {
         {
             // 자리차지(1) / 글뒤로(2) / 글앞으로(3): v_offset 기반 절대 위치
 
-            let v_offset = hwpunit_to_px(table.common.vertical_offset as i32, self.dpi);
+            // host 텍스트가 이전 쪽에 pre-emit 된 통째 이월 표(pageBreak=NONE)는
+            // 앵커 문단이 이 쪽에 없으므로 문단 기준 vertical_offset 을 적용하지
+            // 않는다 — 한컴은 이월 표를 쪽 상단 + outer_margin_top 에 둔다
+            // (hwp_table_test pi=20: v_off 2831HU 무시). typeset 의 동일 억제와 짝.
+            let deferred_whole_host_pre_emitted =
+                matches!(
+                    table.common.vert_rel_to,
+                    crate::model::shape::VertRelTo::Para
+                ) && matches!(table.page_break, crate::model::table::TablePageBreak::None)
+                    && host_para_index
+                        .is_some_and(|pi| self.pre_emitted_host_paras.borrow().contains(&pi));
+            let v_offset = if deferred_whole_host_pre_emitted {
+                0.0
+            } else {
+                hwpunit_to_px(table.common.vertical_offset as i32, self.dpi)
+            };
             // 문단 기준일 때 para_y 사용 (같은 문단의 여러 표가 동일 기준점 공유)
             let anchor_y = para_y.unwrap_or(y_start);
             // bit 13: VertRelTo가 'para'일 때 본문 영역으로 제한
@@ -3448,6 +3571,7 @@ impl LayoutEngine {
                         text_direction: cell.text_direction,
                         line_wrap_squeeze: cell.line_wrap
                             == crate::model::table::CellLineWrap::Squeeze,
+                        row_span: cell.row_span,
                     }],
                 })
             };
@@ -4394,6 +4518,7 @@ impl LayoutEngine {
                                 &eq.font_name,
                             )
                             .with_version(&eq.version_info)
+                            .with_base_pt(eq.font_size as f64 / 100.0)
                             .layout_in_control_width(
                                 &ast,
                                 hwpunit_to_px(eq.common.width as i32, self.dpi),
@@ -4455,8 +4580,37 @@ impl LayoutEngine {
                         } else {
                             inner_area.y
                         };
-                        let nested_y =
-                            nested_y + para_relative_float_table_lead(nested_table, self.dpi);
+                        // PARA 기준 어울림 표의 실제 프레임은 문단 시작에서
+                        // vertOffset+outMarginTop 만큼 내려간 위치에 놓인다 —
+                        // om_top 은 compute_table_y_position 의 중첩 표 분기
+                        // (depth>0: y_start+om_top)가 이미 가산하므로 여기서는
+                        // vertOffset 리드만 더한다. 이중 가산 시 35/38 신청서 점선
+                        // 박스가 +1×outMargin 만큼 내려간다.
+                        let is_para_float_nested = !nested_table.common.treat_as_char
+                            && matches!(nested_table.common.vert_rel_to, VertRelTo::Para)
+                            && matches!(
+                                nested_table.common.text_wrap,
+                                TextWrap::TopAndBottom | TextWrap::Square
+                            );
+                        // para_y 는 첫 줄 상단(= 문단 시작+spacing_before)이다 —
+                        // 개체 원점은 문단 시작이므로 spacing_before 를 차감한다.
+                        // 명시 vertOffset>0 고정 앵커만 — voff=0 유동 중첩 표의
+                        // 저장 vpos 는 이미 기준을 포함한다 (giant_cell 내부표).
+                        let nested_para_sb = if is_para_float_nested
+                            && has_preceding_text
+                            && signed_hwpunit(nested_table.common.vertical_offset) > 0
+                        {
+                            styles
+                                .para_styles
+                                .get(para.para_shape_id as usize)
+                                .map(|s| s.spacing_before)
+                                .unwrap_or(0.0)
+                        } else {
+                            0.0
+                        };
+                        let nested_y = nested_y
+                            + para_relative_float_table_lead(nested_table, self.dpi)
+                            - nested_para_sb;
                         let nested_ctx = cell_context.as_ref().map(|ctx| {
                             let mut new_ctx = ctx.clone();
                             new_ctx.path.push(CellPathEntry {
@@ -4465,6 +4619,7 @@ impl LayoutEngine {
                                 cell_para_index: 0,
                                 text_direction: 0,
                                 line_wrap_squeeze: false,
+                                row_span: 1,
                             });
                             new_ctx
                         });
@@ -4528,14 +4683,69 @@ impl LayoutEngine {
                                 } else {
                                     para_y_before_compose
                                 };
-                                let table_anchor_y = if native_saved_text_frame_outer_box {
-                                    table_anchor_y
-                                        + hwpunit_to_px(
-                                            nested_table.outer_margin_top as i32,
-                                            self.dpi,
-                                        )
+                                // [#7150] 본문 경로와 같은 규칙: TAC 표가 차지하는 저장 줄의
+                                // lh 가 (표 높이 + outMargin 상/하)를 포함하면 한컴은 표를
+                                // 줄 top + outMargin.top 에 놓는다. 표 전용 줄에서만 성립하며,
+                                // 텍스트와 같은 줄을 공유하면 저장 lh 가 표+여백이 아니므로
+                                // 자연히 비적용 (인라인 글자 취급 → 기준선 정렬 유지).
+                                let tac_om_top =
+                                    hwpunit_to_px(nested_table.outer_margin_top as i32, self.dpi);
+                                let tac_om_bottom = hwpunit_to_px(
+                                    nested_table.outer_margin_bottom as i32,
+                                    self.dpi,
+                                );
+                                let tac_stored_lh_covers_om = (tac_om_top > 0.0
+                                    || tac_om_bottom > 0.0)
+                                    && para
+                                        .line_segs
+                                        .last()
+                                        .map(|s| {
+                                            let lh = hwpunit_to_px(s.line_height, self.dpi);
+                                            let expect = hwpunit_to_px(
+                                                nested_table.common.height as i32,
+                                                self.dpi,
+                                            ) + tac_om_top
+                                                + tac_om_bottom;
+                                            (expect - 0.2..=expect + 0.2).contains(&lh)
+                                        })
+                                        .unwrap_or(false);
+                                let table_anchor_y = if native_saved_text_frame_outer_box
+                                    || tac_stored_lh_covers_om
+                                {
+                                    table_anchor_y + tac_om_top
                                 } else {
                                     table_anchor_y
+                                };
+                                // [#7150 계약 확장] 위 분기의 `tac_stored_lh_covers_om` 이
+                                // `line_segs.last()` 만 보므로, 선행 텍스트가 없는데
+                                // segs 가 여러 줄인 호스트(첫 seg 가 표의 저장 줄)는
+                                // 잡지 못한다. 그 경우만 first seg 로 같은 근거를 검사한다.
+                                // 이미 om_top 을 더한 경우(tac_stored_lh_covers_om 또는
+                                // native_saved_text_frame_outer_box)에는 추가하지 않는다.
+                                let table_anchor_y = {
+                                    let host_seg = if has_preceding_text && para.line_segs.len() > 1
+                                    {
+                                        None
+                                    } else {
+                                        para.line_segs.first()
+                                    };
+                                    let seg_covers_om = host_seg.is_some_and(|seg| {
+                                        let seg_lh = hwpunit_to_px(seg.line_height, self.dpi);
+                                        let box_h = hwpunit_to_px(
+                                            nested_table.common.height as i32,
+                                            self.dpi,
+                                        ) + tac_om_top
+                                            + tac_om_bottom;
+                                        (box_h - 0.2..=box_h + 0.2).contains(&seg_lh)
+                                    });
+                                    if !native_saved_text_frame_outer_box
+                                        && !tac_stored_lh_covers_om
+                                        && seg_covers_om
+                                    {
+                                        table_anchor_y + tac_om_top
+                                    } else {
+                                        table_anchor_y
+                                    }
                                 };
                                 let ctrl_area = LayoutRect {
                                     x: inline_x + tac_om_l,
@@ -4883,8 +5093,19 @@ impl LayoutEngine {
                 if !is_last_para {
                     if let Some(next_para) = cell.paragraphs.get(cp_idx + 1) {
                         if let Some(next_seg) = next_para.line_segs.first() {
-                            let next_vpos_y =
-                                text_y_start + hwpunit_to_px(next_seg.vertical_pos, self.dpi);
+                            // vpos는 다음 문단 첫 줄의 절대 top인데
+                            // layout_composed_paragraph()가 spacing_before를 다시
+                            // 더하므로 미리 빼야 최종 line top이 저장 vpos와
+                            // 일치한다 (저장 vpos 앵커 경로의
+                            // `anchored_y - spacing_before`와 동일 규칙).
+                            let next_spacing_before = styles
+                                .para_styles
+                                .get(next_para.para_shape_id as usize)
+                                .map(|s| s.spacing_before)
+                                .unwrap_or(0.0);
+                            let next_vpos_y = text_y_start
+                                + hwpunit_to_px(next_seg.vertical_pos, self.dpi)
+                                - next_spacing_before;
                             // layout_table 기반 para_y와 다음 문단 vpos 중
                             // 더 큰 값 사용 (표가 LINE_SEG보다 클 수 있으므로)
                             para_y = para_y.max(next_vpos_y);
@@ -5303,11 +5524,24 @@ impl LayoutEngine {
                 && stored_flow_extent + 0.5 < total_content_height
                 && non_flow_object_extent <= stored_flow_extent + 0.5
                 && stored_flow_extent + 0.5 >= 0.5 * stored_flow_line_sum;
-            let total_content_height = if trust_stored_cell_flow {
+            // [Task #2211 연장] 다중 행 걸침(rowspan>1) 셀은 저장 흐름의 첫 줄
+            // vpos 리드가 중앙 정렬 extent 에 포함되면 안 된다 — 한컴은 걸침 셀
+            // 콘텐츠를 첫 줄 기준으로 정규화해 배치한다 (06-multi-table-001 p2
+            // 통합고용정책국: extent 3500HU(lead500+3줄) → 실정렬은 3000HU 기준).
+            // 단일 행 셀은 리드가 실제 상단 여백이라 유지한다. 비-flow 개체가
+            // 지배하는 셀(nested/wrap bottom > extent)은 객체 지오메트리라 제외.
+            let rowspan_norm = cell.row_span > 1
+                && stored_flow_extent > 0.0
+                && non_flow_object_extent <= stored_flow_extent + 0.5;
+            let mut total_content_height = if trust_stored_cell_flow {
                 stored_flow_extent
             } else {
                 total_content_height
             };
+            if rowspan_norm {
+                total_content_height =
+                    (total_content_height - first_line_vpos.unwrap_or(0.0)).max(0.0);
+            }
             let use_top_vpos_anchor = matches!(effective_valign, VerticalAlign::Top);
             // 위 정렬 저장 vpos 앵커의 기준 여백. 줄이 셀 안에는 들어가지만 안 여백까지는
             // 못 들어가면 위 여백을 남는 만큼만 쓴다 (cell_valign_top_offset 과 같은 규칙).
@@ -5423,6 +5657,10 @@ impl LayoutEngine {
                 }
             }
 
+            // 셀 자식 노드를 페인트 평면(글뒤로<플로우<글앞으로)과 z_order 로 정렬한다.
+            // 셀 안 글앞으로 도형이 인라인 그림/텍스트 뒤에 emit 되어도 위에 그려지도록
+            // (본문 col_node 정렬과 동일 규칙).
+            cell_node.children.sort_by_key(Self::paper_node_sort_key);
             table_node.children.push(cell_node);
 
             // (c) 셀 대각선 렌더링 (셀 콘텐츠 위에 그림)
@@ -5492,28 +5730,101 @@ impl LayoutEngine {
     ) -> f64 {
         paragraphs
             .iter()
-            .map(|p| {
-                let nested_h: f64 = p
-                    .controls
-                    .iter()
-                    .map(|ctrl| {
-                        if let Control::Table(t) = ctrl {
-                            self.calc_nested_table_height(t, styles)
+            .enumerate()
+            .map(|(pidx, p)| {
+                let para_top = p
+                    .line_segs
+                    .first()
+                    .map(|s| hwpunit_to_px(s.vertical_pos, self.dpi))
+                    .unwrap_or(0.0);
+                // 저장 vpos 에는 문단 앞 간격이 포함된다 — 개체 수직 원점은 문단
+                // 시작이므로 spacing_before 만큼 올려 기준을 잡는다
+                // (height_measurer::cell_nested_controls_bottom 와 동일 공식).
+                let para_base = {
+                    let sb = if pidx > 0 || self.preserve_first_cell_spacing_before() {
+                        styles
+                            .para_styles
+                            .get(p.para_shape_id as usize)
+                            .map(|s| s.spacing_before)
+                            .unwrap_or(0.0)
+                    } else {
+                        0.0
+                    };
+                    (para_top - sb).max(0.0)
+                };
+                // ctrl → (적층 높이 기여분, PARA 기준 프레임의 절대 하단)
+                let ctrl_bottom = |ctrl: &Control| -> (f64, f64) {
+                    if let Control::Table(t) = ctrl {
+                        // PARA 기준 어울림 표는 고정 프레임 개체다: 박스는
+                        // 문단 시작+vertOffset+outMarginTop 에 선언 높이로 배치된다.
+                        // 하단 범위 = para_base+vertOffset+om_top+선언h+om_bottom.
+                        if !t.common.treat_as_char
+                            && matches!(t.common.vert_rel_to, VertRelTo::Para)
+                        {
+                            let voff = hwpunit_to_px(
+                                crate::renderer::float_placement::signed_hwpunit(
+                                    t.common.vertical_offset,
+                                )
+                                .max(0),
+                                self.dpi,
+                            );
+                            let om = hwpunit_to_px(t.outer_margin_top as i32, self.dpi)
+                                + hwpunit_to_px(t.outer_margin_bottom as i32, self.dpi);
+                            let declared = hwpunit_to_px(t.common.height as i32, self.dpi);
+                            // 내용이 선언 프레임보다 길면 셀이 넘침까지 포함한다
+                            // (성장 전용 — 2097 75544 중첩 표 내용 초과분 보존).
+                            let frame = declared.max(self.calc_nested_table_height(t, styles) - om);
+                            (0.0, para_base + voff + om + frame)
                         } else {
-                            0.0
+                            (
+                                self.calc_nested_table_height(t, styles),
+                                para_top + self.calc_nested_table_height(t, styles),
+                            )
                         }
-                    })
-                    .sum();
-                if nested_h <= 0.0 {
+                    } else {
+                        (0.0, 0.0)
+                    }
+                };
+                let (nested_h, float_bottom) = {
+                    // 같은 줄에 나란히 놓이는 TAC 표는 높이가 겹친다 — 줄별
+                    // 최댓값만 세로 범위에 반영한다 (tac_table_ctrls_by_line 참조).
+                    let comp = crate::renderer::composer::compose_paragraph(p);
+                    let groups = crate::renderer::composer::tac_table_ctrls_by_line(p, &comp);
+                    let mut grouped = std::collections::HashSet::new();
+                    let mut fb = 0.0f64;
+                    let mut h: f64 = groups
+                        .iter()
+                        .map(|g| {
+                            g.iter()
+                                .filter_map(|&ci| {
+                                    if matches!(p.controls[ci], Control::Table(_)) {
+                                        grouped.insert(ci);
+                                        let (h, b) = ctrl_bottom(&p.controls[ci]);
+                                        fb = fb.max(b);
+                                        Some(h)
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .fold(0.0f64, f64::max)
+                        })
+                        .sum();
+                    for (ci, ctrl) in p.controls.iter().enumerate() {
+                        if grouped.contains(&ci) {
+                            continue;
+                        }
+                        let (ch, b) = ctrl_bottom(ctrl);
+                        h += ch;
+                        fb = fb.max(b);
+                    }
+                    (h, fb)
+                };
+                let stacked = if nested_h <= 0.0 {
                     0.0
                 } else {
-                    let para_top = p
-                        .line_segs
-                        .first()
-                        .map(|s| hwpunit_to_px(s.vertical_pos, self.dpi))
-                        .unwrap_or(0.0);
                     para_top + nested_h
-                }
+                };
+                stacked.max(float_bottom)
             })
             .fold(0.0f64, f64::max)
     }
@@ -8924,7 +9235,40 @@ impl LayoutEngine {
         start_unit: usize,
         end_unit: usize,
     ) -> Option<f64> {
-        let ranges = self.cell_line_ranges_from_cut(cell, table, styles, start_unit, end_unit);
+        self.saved_cell_cut_line_extent_height_impl(
+            cell, table, styles, start_unit, end_unit, false,
+        )
+    }
+
+    /// `saved_cell_cut_line_extent_height` 와 같되 컷 꼬리의 빈 스페이서 유닛의
+    /// 저장 줄상자까지 익스텐트에 포함한다. 선언 높이 잔여 밴드
+    /// (allocated_row_heights)에 배치된 조각의 Center 정렬은 한컴이 그 빈
+    /// 줄상자 높이도 가시분에 계상한다 (10-inner-table-01 r6c1 2쪽).
+    pub(crate) fn saved_cell_cut_line_extent_height_incl_spacers(
+        &self,
+        cell: &crate::model::table::Cell,
+        table: &crate::model::table::Table,
+        styles: &ResolvedStyleSet,
+        start_unit: usize,
+        end_unit: usize,
+    ) -> Option<f64> {
+        self.saved_cell_cut_line_extent_height_impl(cell, table, styles, start_unit, end_unit, true)
+    }
+
+    fn saved_cell_cut_line_extent_height_impl(
+        &self,
+        cell: &crate::model::table::Cell,
+        table: &crate::model::table::Table,
+        styles: &ResolvedStyleSet,
+        start_unit: usize,
+        end_unit: usize,
+        incl_spacers: bool,
+    ) -> Option<f64> {
+        let ranges = if incl_spacers {
+            self.cell_line_ranges_from_cut_incl_spacers(cell, table, styles, start_unit, end_unit)
+        } else {
+            self.cell_line_ranges_from_cut(cell, table, styles, start_unit, end_unit)
+        };
         let mut first_pos = None;
         let mut previous_pos = None;
         let mut last_end = None;
@@ -9095,9 +9439,37 @@ impl LayoutEngine {
         end_unit: usize,
     ) -> Vec<(usize, usize)> {
         let units = self.cell_units(cell, table, styles);
-        let mut ranges = vec![(0usize, 0usize); cell.paragraphs.len()];
-        let mut seen = vec![false; cell.paragraphs.len()];
         let (lo, hi) = continuation_visible_unit_bounds(&units, start_unit, end_unit);
+        Self::unit_span_line_ranges(&units, cell.paragraphs.len(), lo, hi)
+    }
+
+    /// `cell_line_ranges_from_cut` 와 같되 컷 양끝의 빈 스페이서 유닛(공백
+    /// 문단 줄상자)을 가시 범위에서 자르지 않는다. 한컴은 분할 셀의 선언 높이
+    /// 잔여 밴드 정렬 기준(저장 vpos 익스텐트)을 계산할 때 그 빈 줄상자 높이도
+    /// 가시분에 포함한다 (10-inner-table-01 r6c1 2쪽).
+    pub(crate) fn cell_line_ranges_from_cut_incl_spacers(
+        &self,
+        cell: &crate::model::table::Cell,
+        table: &crate::model::table::Table,
+        styles: &ResolvedStyleSet,
+        start_unit: usize,
+        end_unit: usize,
+    ) -> Vec<(usize, usize)> {
+        let units = self.cell_units(cell, table, styles);
+        let lo = start_unit.min(units.len());
+        let hi = end_unit.min(units.len()).max(lo);
+        Self::unit_span_line_ranges(&units, cell.paragraphs.len(), lo, hi)
+    }
+
+    /// 유닛 범위 `[lo, hi)` 를 문단별 줄 범위로 변환한다.
+    fn unit_span_line_ranges(
+        units: &[CellUnit],
+        para_count: usize,
+        lo: usize,
+        hi: usize,
+    ) -> Vec<(usize, usize)> {
+        let mut ranges = vec![(0usize, 0usize); para_count];
+        let mut seen = vec![false; para_count];
         for u in units.iter().take(hi).skip(lo) {
             if u.para_idx >= ranges.len() {
                 continue;
@@ -9557,7 +9929,12 @@ impl LayoutEngine {
         cut: &[usize],
         styles: &ResolvedStyleSet,
     ) -> Option<f64> {
-        if !self.profile.get().native_hwp5_layout()
+        // 저장 LINE_SEG 의 페이지 재설정(vpos 리셋) 계약은 HWP5 원본뿐 아니라
+        // 같은 값을 저장하는 HWPX(`hwpx_stored_layout`·`hwp5_origin_hwpx`)에도
+        // 있다 — 한컴은 양쪽 모두 분할 행의 선언 높이 잔여 밴드를 유지한다
+        // (10-inner-table-01 r6: 선언 48776HU 잔여분이 2쪽에 그대로 남음).
+        let prof = self.profile.get();
+        if !(prof.native_hwp5_layout() || prof.hwpx_stored_layout() || prof.hwp5_origin_hwpx())
             || table.common.treat_as_char
             || table.row_count < 2
             || !matches!(
@@ -9686,7 +10063,7 @@ impl LayoutEngine {
                     styles,
                 )
             };
-            let h = if is_whole_row {
+            let mut h = if is_whole_row {
                 if no_ls_label_cell {
                     cell_h_px
                 } else {
@@ -9697,6 +10074,17 @@ impl LayoutEngine {
                 // 분할 행 — cell.height 강제 없음.
                 content + pad_cell
             };
+            // 저장 LINE_SEG 의 절대 vpos 익스텐트가 재합성 유닛 합보다 크면 그쪽이
+            // 한컴이 실제 배치한 행 콘텐츠 높이다 — 중첩 표 앞뒤의 객체줄 상자·
+            // 줄간격처럼 유닛 합이 놓치는 구간을 저장 익스텐트가 보전한다
+            // (10-inner-table-01 r7c1: 저장 43253HU vs 재합성 −26px).
+            if is_whole_row {
+                if let Some(saved) =
+                    self.saved_cell_cut_line_extent_height(cell, table, styles, su, eu)
+                {
+                    h = h.max(saved);
+                }
+            }
             if h > max_h {
                 max_h = h;
             }
@@ -10159,7 +10547,7 @@ mod row_cut_tests {
     }
 
     #[test]
-    fn textless_stored_line_flow_overflow_does_not_readd_vertical_padding() {
+    fn textless_stored_line_flow_overflow_readds_vertical_padding() {
         let eng = LayoutEngine::new(DEFAULT_DPI);
         let styles = ResolvedStyleSet::default();
 
@@ -10179,11 +10567,14 @@ mod row_cut_tests {
             let t = table(vec![stored]);
 
             let rows = eng.resolve_row_heights(&t, 1, 1, None, &styles, true);
-            let stored_flow = hwpunit_to_px(2_400, DEFAULT_DPI);
+            // 텍스트 없는 저장 spacer 도 흐름이 선언 h와 다르면 pad를 더한
+            // 높이로 성장한다 (06 pi20 r1-r3: textless, h=280, ls=1000 →
+            // 한컴 1282HU=12.8pt). pad 미가산은 흐름≈h 작성-정합 셀 한정.
+            let stored_flow = hwpunit_to_px(2_400 + 282, DEFAULT_DPI);
             assert!(
                 (rows[0] - stored_flow).abs() < 0.01,
-                "textless stored spacer may grow to its line flow but must not gain vertical \
-                 padding: text={text:?}, rows={rows:?}"
+                "textless stored spacer overflowing declared height gains vertical \
+                 padding (Hancom: flow+pad): text={text:?}, rows={rows:?}"
             );
         }
     }
@@ -10977,6 +11368,7 @@ mod row_cut_tests {
             Some(col_area.y),
             false,
             false,
+            None,
         );
 
         assert!((table_x - (col_area.x + outer_left)).abs() < 0.001);
@@ -11041,6 +11433,7 @@ mod row_cut_tests {
             Some(area.y),
             false,
             false,
+            None,
         );
         assert!((x - area.x - margin).abs() < 0.001, "x={x}");
         assert!((y - area.y - margin).abs() < 0.001, "y={y}");
@@ -11072,6 +11465,7 @@ mod row_cut_tests {
             Some(area.y),
             false,
             false,
+            None,
         );
         assert!((x - area.x - margin).abs() < 0.001, "converted HWPX x={x}");
         assert!((y - area.y - margin).abs() < 0.001, "converted HWPX y={y}");
@@ -11123,6 +11517,7 @@ mod row_cut_tests {
             Some(col_area.y),
             false,
             false,
+            None,
         );
 
         assert_eq!(table_x, col_area.x);
@@ -11269,6 +11664,7 @@ mod row_cut_tests {
             Some(col_area.y),
             false,
             false,
+            None,
         );
 
         assert!((table_x - (col_area.x + outer_margin)).abs() < 0.001);
@@ -11297,6 +11693,7 @@ mod row_cut_tests {
             Some(col_area.y),
             false,
             false,
+            None,
         );
 
         assert_eq!(table_y, col_area.y);

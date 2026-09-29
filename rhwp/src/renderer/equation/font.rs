@@ -54,6 +54,12 @@ pub(crate) fn is_legacy_equation_font(name: &str) -> bool {
     name.trim().eq_ignore_ascii_case("HYhwpEQ")
 }
 
+/// 한컴 수식기가 run 안 글립을 포개는 비율 — 자형은 그대로 두고 진행폭만
+/// 이 배율로 좁혀 식자한다(02-eq-01 공식 PDF 실측: 한글 pitch 0.9em 고정,
+/// 숫자 pitch 0.45em = hmtx 0.5×0.9, '%' pitch 0.75em = 0.833×0.9).
+/// 레이아웃 측정과 네이티브 painter가 같은 값을 써야 박스와 잉크가 맞는다.
+pub(crate) const EQUATION_GLYPH_TRACKING: f64 = 0.9;
+
 /// HYhwpEQ의 수식 전용 cmap. ASCII 영역은 본문 자형이며, 수식 자형은 PUA에 있다.
 /// 호출자는 실제 서체와 해당 글립의 존재를 먼저 확인해야 한다.
 /// 반환 bool은 남아 있는 합성 기울임이다. 소문자/그리스 문자는 이미 기울어진 자형이다.

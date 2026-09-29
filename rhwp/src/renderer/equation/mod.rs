@@ -58,7 +58,10 @@ pub(crate) fn control_line_flow_height(
     natural_baseline: f64,
     em: f64,
 ) -> f64 {
+    // 레이아웃의 is_modern_hy pt 경계와 같은 판정 — 10pt 미만 버전60은
+    // 현대가 아니라 legacy 흐름 높이를 쓴다(크기는 HWPUNIT이라 dpi와 무관하다).
     let modern_hy_face = eq.version_info == "Equation Version 60"
+        && eq.font_size >= 1000
         && font::is_legacy_equation_font(&eq.font_name)
         && (crate::renderer::runtime_font_metrics::line_height_ratio(&eq.font_name, false, false)
             .is_some()
@@ -200,6 +203,7 @@ pub fn intrinsic_metrics_px_with_version(
     let ast = parser::EqParser::new(tokens).parse();
     let layout = layout::EqLayout::with_font(font_size_px, font_name)
         .with_version(version_info)
+        .with_base_pt(font_size as f64 / 100.0)
         .layout(&ast);
     IntrinsicMetrics {
         width: layout.width,
@@ -249,6 +253,7 @@ pub(crate) fn generated_fraction_flow_height_px(
     let ast = parser::EqParser::new(tokenizer::tokenize(script)).parse();
     let box_ = layout::EqLayout::with_font(em, font_name)
         .with_version(version_info)
+        .with_base_pt(font_size as f64 / 100.0)
         .layout(&ast);
     fraction_occupied_bottom(&box_, em * layout::FRAC_LINE_PAD)
 }
@@ -263,6 +268,7 @@ pub fn fitted_width_hwp(eq: &crate::model::control::Equation) -> u32 {
     let stored = super::hwpunit_to_px(eq.common.width as i32, super::DEFAULT_DPI);
     let layout = layout::EqLayout::with_font(font_size_px, &eq.font_name)
         .with_version(&eq.version_info)
+        .with_base_pt(eq.font_size as f64 / 100.0)
         .layout_in_control_width(&ast, stored);
     super::px_to_hwpunit(layout.width, super::DEFAULT_DPI).max(1) as u32
 }

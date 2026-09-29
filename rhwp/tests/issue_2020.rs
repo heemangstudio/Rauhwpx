@@ -200,14 +200,16 @@ fn issue_2020_passport_corner_quote_does_not_leave_extra_gap() {
         .map(|idx| idx + close_idx + 1)
         .expect("Hangul after closing corner quote");
 
-    // 낫표 칸은 반각이다. 전각 `「` glyph 는 찌그러뜨리지 않고 칸 오른쪽 끝에 맞추므로
-    // (한컴 macOS, `renderer::halfwidth_punct_glyph_offset`) glyph 원점 → '여' 는 전각 폭,
-    // 닫는 `」` 는 칸 시작에 그리므로 glyph 원점 → '제' 는 반각 폭이다.
+    // 낫표 「」 칸은 전각이다 — 한컴(macOS)은 선언 face 의 기록 전각 폭으로
+    // 조판한다. 기대 렌더의 「/」 칸이 본문 한글과 같은 피치이고, 코퍼스 공식
+    // PDF 도 「 0.82–1.00em 실측 (35-voucher '「곡성군' 「=10.6pt@11.04pt,
+    // 38-cheongyang '「전자정부법」' 「=」=9.0pt@9.0pt). glyph 원점 → 다음
+    // 글자 간격은 양쪽 다 1em 이다.
     let open_gap = chars[yeo_idx].0 - chars[open_idx].0;
     let close_gap = chars[je_idx].0 - chars[close_idx].0;
     assert!(
-        close_gap <= 8.5 && (open_gap - 2.0 * close_gap).abs() <= 0.5,
-        "낫표 칸은 반각, 여는 낫표 glyph 는 칸 끝에 맞춰야 함: \
+        open_gap >= 12.5 && (open_gap - close_gap).abs() <= 0.5,
+        "낫표 「」 칸은 전각, 「·」 glyph 원점에서 다음 글자까지 1em: \
          open_gap={open_gap:.2}, close_gap={close_gap:.2}, line={line_text}"
     );
 }

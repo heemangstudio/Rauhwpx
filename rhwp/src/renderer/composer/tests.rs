@@ -1480,11 +1480,16 @@ fn test_expand_tone_marks_to_spacing_dot() {
 
 #[test]
 fn test_expand_hancom_relationship_line_pua_to_box_drawing() {
+    // [macOS 정합] 본문 표시 문자열은 원문 PUA 를 유지한다 (Task #826 폭 정정:
+    // 치환 문자로 바꾸면 요청 서체의 실측 advance 가 반영돼 28-agritech-review
+    // 의 0.485em 선문자가 1em 으로 벌어진다). 공개 폰트 환경(글리프 부재)에서는
+    // paint 단계 pua_missing_glyph_substitute 가 box drawing 으로 대체한다 —
+    // 두부가 아닌 box drawing 표시라는 핀 의도는 그대로다.
     let out = expand_pua_render_text("\u{F0811}\u{F0817}\u{F081A}");
-    assert_eq!(
-        out, "┌└─",
-        "한컴 관계도 PUA 선문자는 공개 폰트 환경에서 두부가 아닌 box drawing 문자로 표시되어야 함"
-    );
+    assert_eq!(out, "\u{F0811}\u{F0817}\u{F081A}", "본문 텍스트는 PUA 유지");
+    assert_eq!(pua_missing_glyph_substitute('\u{F0811}'), Some('┌'));
+    assert_eq!(pua_missing_glyph_substitute('\u{F0817}'), Some('└'));
+    assert_eq!(pua_missing_glyph_substitute('\u{F081A}'), Some('─'));
 }
 
 /// [#2244] KBU=1(글자 단위) 줄바꿈에서 행두 금칙 문자 retraction —

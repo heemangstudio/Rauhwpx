@@ -208,7 +208,14 @@ impl LayoutEngine {
         for col in &columns {
             col_x -= col.col_width;
 
-            let free_space = (inner_area.height - col.total_height).max(0.0);
+            // [macOS 정합] 세로쓰기 글자열의 세로 중앙 정렬은 글자당 line box
+            // (vertsize+spacing, 예: 10pt+6pt=16pt) 만큼의 높이로 블록을 계산한 뒤
+            // 실제 글리프는 문자 advance(10pt) 피치로 블록 상단부터 칠한다 —
+            // 09-table-004 '데이터' 셀: 한컴은 3×16pt 블록을 중앙에 두어 첫 글자가
+            // 18.2pt 오프셋에서 시작한다 (잘린 paint 피치 기준 중앙 26.2pt와 다름).
+            let n_chars = col.end_idx.saturating_sub(col.start_idx) as f64;
+            let valign_height = col.total_height + n_chars * col.absorbed_spacing;
+            let free_space = (inner_area.height - valign_height).max(0.0);
             let y_start = inner_area.y
                 + match col.alignment {
                     Alignment::Center | Alignment::Distribute => free_space / 2.0,
@@ -285,6 +292,7 @@ impl LayoutEngine {
                                     cell_para_index: ci.cell_para_index,
                                     text_direction: 0,
                                     line_wrap_squeeze: false,
+                                    row_span: 1,
                                 }],
                             })
                         },
@@ -392,6 +400,7 @@ impl LayoutEngine {
             ),
             None => (0, 0, 0, None),
         };
+        let children_start = cell_node.children.len();
         self.layout_shape_object(
             tree,
             cell_node,
@@ -410,6 +419,17 @@ impl LayoutEngine {
             shape_table_cell_ref,
             false,
         );
+        // 셀 안 비인라인(글앞으로/글뒤로 등) 도형에도 본문과 같은 렌더 레이어
+        // (text_wrap 페인트 평면 + z_order)를 부여한다. 레이어가 없으면 도형이
+        // 플로우 컨텐츠와 문서 순서로 칠해져, 컨트롤 순서가 뒤인 셀 인라인 그림이
+        // 글앞으로 도형 위를 덮는다 (본문 경로 layout.rs 의 set_layer 후처리와 동일).
+        if !child_common.treat_as_char {
+            let layer =
+                Self::render_layer_from_common(child_common, outer_para_idx, inner_ctrl_idx);
+            for child in &mut cell_node.children[children_start..] {
+                child.set_layer(layer);
+            }
+        }
     }
 
     /// TextBox 내부에 포함된 표를 레이아웃한다.
@@ -698,6 +718,7 @@ impl LayoutEngine {
                         text_direction: cell.text_direction,
                         line_wrap_squeeze: cell.line_wrap
                             == crate::model::table::CellLineWrap::Squeeze,
+                        row_span: cell.row_span,
                     });
                     (
                         sec_idx,
@@ -791,6 +812,7 @@ impl LayoutEngine {
                                         text_direction: cell.text_direction,
                                         line_wrap_squeeze: cell.line_wrap
                                             == crate::model::table::CellLineWrap::Squeeze,
+                                        row_span: cell.row_span,
                                     });
                                     CellContext {
                                         parent_para_index: outer_pi,
@@ -848,6 +870,7 @@ impl LayoutEngine {
                 }
             }
 
+            cell_node.children.sort_by_key(Self::paper_node_sort_key);
             table_node.children.push(cell_node);
         }
 

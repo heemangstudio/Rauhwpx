@@ -645,6 +645,22 @@ impl LayoutEngine {
                         );
                     }
                 }
+                // 선언 높이 잔여 밴드(allocated_row_heights)로 배치된 컷 조각은 저장
+                // LINE_SEG 의 vpos 익스텐트를 가시 높이로 본다 — 재합성 높이는 빈
+                // 줄상자·문단 간격을 빼먹어 Center 정렬 여유가 틀어진다
+                // (10-inner-table-01 r6 2쪽: 저장 8300HU ≈ 230.5px vs 재합성 177px).
+                if allocated_row_heights
+                    .iter()
+                    .any(|&(row, _)| row == cell_row)
+                {
+                    if let Some((su, eu)) = cut_units {
+                        if let Some(saved) = self.saved_cell_cut_line_extent_height_incl_spacers(
+                            cell, table, styles, su, eu,
+                        ) {
+                            total = total.max(saved - pad_top - pad_bottom);
+                        }
+                    }
+                }
                 total
             } else {
                 // 중첩 표가 있는 셀: LINE_SEG.line_height에 중첩 표 높이가 미포함되므로
@@ -712,6 +728,14 @@ impl LayoutEngine {
             } else {
                 cell.vertical_align
             };
+            if std::env::var("RHWP_DIAG_VALIGN").is_ok() {
+                eprintln!(
+                    "VALIGN cell r{} c{} cell_h={:.1} pad_t={:.2} pad_b={:.2} content_h={:.2} align={:?} split={} straddle={} preserves={} ranges={:?}",
+                    cell_row, cell.col, cell_h, pad_top, pad_bottom, total_content_height,
+                    effective_align, cell_was_split, is_rowbreak_straddle, preserves_fragment_alignment,
+                    line_ranges
+                );
+            }
             let text_y_start = cell_y
                 + super::table_layout::cell_valign_top_offset(
                     effective_align,
@@ -766,6 +790,7 @@ impl LayoutEngine {
                         );
                     }
                 }
+                cell_node.children.sort_by_key(Self::paper_node_sort_key);
                 table_node.children.push(cell_node);
                 continue;
             }
@@ -882,6 +907,7 @@ impl LayoutEngine {
                         text_direction: cell.text_direction,
                         line_wrap_squeeze: cell.line_wrap
                             == crate::model::table::CellLineWrap::Squeeze,
+                        row_span: cell.row_span,
                     }],
                 };
                 let cell_context_opt = Some(cell_context.clone());
@@ -1453,6 +1479,7 @@ impl LayoutEngine {
                                         &eq.font_name,
                                     )
                                     .with_version(&eq.version_info)
+                                    .with_base_pt(eq.font_size as f64 / 100.0)
                                     .layout_in_control_width(
                                         &ast,
                                         hwpunit_to_px(eq.common.width as i32, self.dpi),
@@ -1655,6 +1682,7 @@ impl LayoutEngine {
                                             cell_para_index: 0,
                                             text_direction: 0,
                                             line_wrap_squeeze: false,
+                                            row_span: 1,
                                         });
                                         new_ctx
                                     });
@@ -1719,8 +1747,17 @@ impl LayoutEngine {
                     if !is_last_para {
                         if let Some(next_para) = cell.paragraphs.get(cp_idx + 1) {
                             if let Some(next_seg) = next_para.line_segs.first() {
-                                let next_vpos_y =
-                                    text_y_start + hwpunit_to_px(next_seg.vertical_pos, self.dpi);
+                                // vpos는 다음 문단 첫 줄의 절대 top — 이후
+                                // spacing_before가 다시 더해지므로 미리 뺀다
+                                // (table_layout.rs 의 동일 보정과 동일 규칙).
+                                let next_spacing_before = styles
+                                    .para_styles
+                                    .get(next_para.para_shape_id as usize)
+                                    .map(|s| s.spacing_before)
+                                    .unwrap_or(0.0);
+                                let next_vpos_y = text_y_start
+                                    + hwpunit_to_px(next_seg.vertical_pos, self.dpi)
+                                    - next_spacing_before;
                                 para_y = para_y.max(next_vpos_y);
                             }
                         }
@@ -1757,6 +1794,7 @@ impl LayoutEngine {
                 }
             }
 
+            cell_node.children.sort_by_key(Self::paper_node_sort_key);
             table_node.children.push(cell_node);
         }
     }
@@ -1814,11 +1852,24 @@ impl LayoutEngine {
         // 새로 조판되는 셀을 가진 문단 기준 자리차지 RowBreak 표는 조각마다 바깥 여백
         // 위를 다시 연다 — typeset `partial_rowbreak_fragment_spacing_px` 와 같은 조건.
         let reflowed_fragment_outer_margin = reflowed_rowbreak_fragment_repeats_outer_margin(table);
+        // 저장 레이아웃(HWPX 원본/hwp5 기원) 자리차지 RowBreak 표도 한컴은
+        // **블록-셀 컷과 단일-유닛 평면 컷(giant cell 의 cut=[k]) 연속분만 제외**하고
+        // 바깥 여백 상자를 반복한다 — 조각 상단 +outer_margin_top, 쪽 하단 예산
+        // −outer_margin_bottom (10-inner-table-01: outMargin 141HU, cut=[1,25]
+        // 행/유닛 경로 컷). typeset 의 `partial_rowbreak_fragment_spacing_px` 에도
+        // 같은 게이트를 적용한다.
+        let stored_fragment_outer_margin =
+            crate::renderer::float_placement::stored_layout_rowbreak_repeats_outer_margin(
+                self.profile.get().hwpx_stored_layout() || self.profile.get().hwp5_origin_hwpx(),
+                table,
+            ) && !is_block_split
+                && start_cut.len() != 1;
         let repeat_rowbreak_outer_top = is_continuation
             // The render-only picture-stack projection adds this inset before
             // calling layout_partial_table; reopening it here would double it.
             && projected_cell_stack_continuation_outer_top_hu(table, true) == 0
             && (reflowed_fragment_outer_margin
+                || stored_fragment_outer_margin
                 || native_rowbreak_para_float_uses_outer_margin_box(
                     table,
                     self.profile.get().native_hwp5_layout(),
@@ -1956,7 +2007,12 @@ impl LayoutEngine {
             } else {
                 // 첫 조각도 typeset 예산(host_spacing.before 의 outer_margin_top)과 같은
                 // 자리에 그린다 (86712 p18 법령 인용 표: 앵커 줄 + 283HU, 한컴 PDF 실측).
-                let first_fragment_outer_top = if !is_continuation && reflowed_fragment_outer_margin
+                // 단, 이 컬럼에 이미 표가 방출된 "연속 표"는 상단 마진 상자를 다시 열지
+                // 않는다 — 간격은 직전 표의 om_bottom·행간으로 이미 정해진다
+                // (issue_1133 hwpx 연속 블록 표: +om_top 은 간격을 120.6→122.5로 부풀린다).
+                let first_fragment_outer_top = if !is_continuation
+                    && (reflowed_fragment_outer_margin
+                        || (stored_fragment_outer_margin && !prev_table_end.is_finite()))
                 {
                     hwpunit_to_px(table.outer_margin_top as i32, self.dpi)
                 } else {
@@ -2576,6 +2632,7 @@ impl LayoutEngine {
                 cell_para_index: 0,
                 text_direction: 0,
                 line_wrap_squeeze: false,
+                row_span: 1,
             }],
         });
         if render_top_caption {

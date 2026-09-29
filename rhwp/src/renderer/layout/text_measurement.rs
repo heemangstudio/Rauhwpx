@@ -768,7 +768,13 @@ impl TextMeasurer for EmbeddedTextMeasurer {
             let base_w_raw = if let Some(w) = latin_space_width(style, c, font_size) {
                 w
             } else if let Some(w) = (c == '\u{318D}')
-                .then(|| area_dot_fallback_width(&style.font_family, font_size))
+                .then(|| {
+                    area_dot_fallback_width(
+                        &style.font_family,
+                        font_size,
+                        style.font_metrics_policy,
+                    )
+                })
                 .flatten()
             {
                 w
@@ -974,7 +980,13 @@ impl TextMeasurer for EmbeddedTextMeasurer {
             if let Some(w) = latin_space_width(style, c, font_size) {
                 w
             } else if let Some(w) = (c == '\u{318D}')
-                .then(|| area_dot_fallback_width(&style.font_family, font_size))
+                .then(|| {
+                    area_dot_fallback_width(
+                        &style.font_family,
+                        font_size,
+                        style.font_metrics_policy,
+                    )
+                })
                 .flatten()
             {
                 w
@@ -1959,19 +1971,25 @@ fn haansoft_latin_override(primary_name: &str, c: char) -> Option<f64> {
 
 /// [#2070] ㆍ(U+318D) 폭. 한컴은 이 글자를 해당 글꼴 자체의 advance 로 그린다.
 /// - 한양신명조 = 전각 (사다리 v3 실측).
-/// - HY 계열은 HFT 원본(명조 등)을 대신하는 TTF 다. 메트릭 DB 의 HY 수록분은 전각이지만
-///   한컴은 원본 HFT 의 반각 글리프로 그린다 (80168 '명조'→HY견명조: 개정안{{7}} p9/p13
-///   '시ㆍ도조례' 1줄 오라클, 개정안{{1}} P21 마크와 반각 양립 검증).
+/// - HY 계열 반각 강제는 **HancomWindows 정책 한정** 이다: Windows 한컴은 HFT
+///   원본(명조 등)의 반각 글리프로 그렸다 (80168 개정안 '시ㆍ도조례' 오라클).
+///   macOS 한컴은 대체 TTF 자체(HYmjrE·HYgtrE 모두 ㆍ=1.0em)로 그린다 —
+///   28-agritech-review 제목 실측. HcrDeclared(mac)에서는 HY 에도 embedded
+///   메트릭(전각)을 신뢰한다.
 /// - 그 밖에 메트릭 DB 가 이 글자를 수록한 글꼴(함초롬·한컴 번들, 맑은 고딕 등 시스템
 ///   TTF)은 embedded 메트릭을 신뢰한다 (None 반환). 86712 법령 인용 셀의 맑은 고딕
 ///   ㆍ = 1.0em (한컴 PDF 실측) — 종전 반각 폭으로 줄이 덜 접혀 쪽 경계가 한 줄씩 밀렸다.
 /// - 메트릭이 없는 글꼴은 종전대로 반각.
-pub(crate) fn area_dot_fallback_width(font_family: &str, font_size: f64) -> Option<f64> {
+pub(crate) fn area_dot_fallback_width(
+    font_family: &str,
+    font_size: f64,
+    policy: FontMetricsPolicy,
+) -> Option<f64> {
     let fam = font_family.split(',').next().unwrap_or("").trim();
     if fam.contains("한양신명조") {
         return Some(font_size);
     }
-    if fam.starts_with("HY") {
+    if policy == FontMetricsPolicy::HancomWindows && fam.starts_with("HY") {
         return Some(font_size * 0.5);
     }
     if measure_char_width_embedded(fam, false, false, '\u{318D}', font_size).is_some() {
@@ -2026,16 +2044,40 @@ pub(super) fn measure_known_font_run_width(
 /// 내장 메트릭과 런타임 폰트 메트릭이 같은 보정을 거쳐야 하위 경로(양자화,
 /// 줄바꿈)에서 동일하게 동작한다. `is_monospace` 는 따옴표/가운뎃점에서만
 /// 평가된다.
-fn hancom_glyph_units(c: char, glyph_w: u16, em_size: u16, is_monospace: impl Fn() -> bool) -> u16 {
+/// 함초롬 PUA 폭 테이블이 폭 0 으로 선언한 문자 — 한컴이 잉크 없는 빈 글리프
+/// 마커로 취급한다 (예: U+F03FF — 공식 PDF 에서 advance 만 차지하고 흔적 없음).
+/// 렌더러는 tofu 대신 이 판별로 잉크를 생략한다.
+pub(crate) fn is_hancom_blank_pua_marker(c: char) -> bool {
+    let cp = c as u32;
+    if !(0xF0000..=0xF08FF).contains(&cp) {
+        return false;
+    }
+    font_metrics_data::find_metric("함초롬돋움", false, false)
+        .is_some_and(|m| metric_has_source_range(m.metric, c) && m.metric.get_width(c).is_none())
+}
+
+fn hancom_glyph_units(
+    c: char,
+    glyph_w: u16,
+    em_size: u16,
+    policy: FontMetricsPolicy,
+    is_monospace: impl Fn() -> bool,
+) -> u16 {
     // 한컴은 스마트 따옴표 등을 반각으로 처리.
     // 폰트 메트릭에서 전각(em_size)으로 기록되어 있어도 em/2로 강제.
     // [Issue #630] U+00B7 (가운뎃점) 은 본 분기에서 제외 — 한컴 저장본의
     // tab_extended 가 전각 측정 기반으로 산출되므로 반각 강제 시 right-tab
     // 정렬이 8.67px 좌측 이탈. 폰트 메트릭 그대로 사용 (전각).
+    // [macOS 정합] 「」(U+300C/300D): 한컴(macOS)은 선언 face 의 기록
+    // 전각 폭 그대로 조판한다 — 공식 PDF 실측 「→다음 글자 0.82–1.00em
+    // (35-voucher '「곡성군' 10.6pt@11.04pt, 38-cheongyang '「전자정부법」'
+    // 「=」=9.0pt@9.0pt, 36-apartment-form 「 셀, issue_2020 passport 기대
+    // 렌더의 「/」 등폭 칸). 반각 강제는 HancomWindows 규약으로만 남긴다.
     let is_halfwidth_punct = matches!(
         c,
         '\u{2018}'..='\u{2027}' // ''‚‛""„‟†‡•‣․‥…‧ 구두점/기호
-    );
+    ) || (is_halfwidth_cjk_quote(c)
+        && policy == FontMetricsPolicy::HancomWindows);
     // 휴먼명조/HY중고딕/HY신명조/HY견명조 등 일부 폰트 DB 가 U+2018/U+2019/
     // U+2027 을 fullwidth (1.0 em) 로 잘못 기록한 케이스 정정. em/2 (0.5 em)
     // 강제 시 한컴 대비 약 4px (font-size 20px 기준, 0.5→0.3 em 차) 과대.
@@ -2055,10 +2097,9 @@ fn hancom_glyph_units(c: char, glyph_w: u16, em_size: u16, is_monospace: impl Fn
     let is_b7_notdef_artifact = c == '\u{00B7}' && glyph_w >= em_size && !is_monospace();
     if (is_narrow_unicode_punct && glyph_w >= em_size) || is_b7_notdef_artifact {
         (em_size as f64 * 0.3) as u16
-    } else if (is_halfwidth_punct || is_halfwidth_cjk_quote(c))
-        && !quote_width_is_authentic
-        && glyph_w >= em_size
-    {
+    } else if is_halfwidth_punct && !quote_width_is_authentic && glyph_w >= em_size {
+        // 「」도 위 판정에서 반각으로 좁힐 때만 여기 도달한다 (HancomWindows
+        // 규약). macOS(HcrDeclared)는 전각 기록 폭 그대로다.
         em_size / 2
     } else {
         glyph_w
@@ -2073,13 +2114,16 @@ fn measure_char_width_runtime(
     italic: bool,
     c: char,
     font_size: f64,
+    policy: FontMetricsPolicy,
 ) -> Option<f64> {
     let advance =
         crate::renderer::runtime_font_metrics::char_advance(primary_name, bold, italic, c)?;
     let w = if c == ' ' {
         advance.units
     } else {
-        hancom_glyph_units(c, advance.units, advance.em_size, || advance.monospace)
+        hancom_glyph_units(c, advance.units, advance.em_size, policy, || {
+            advance.monospace
+        })
     };
     Some(quantize_hwp_px(
         w as f64 * font_size / advance.em_size as f64,
@@ -2164,6 +2208,79 @@ fn measure_char_width_with_policy(
     font_size: f64,
     policy: FontMetricsPolicy,
 ) -> Option<f64> {
+    let width = measure_char_width_inner(font_family, bold, italic, c, font_size, policy)?;
+    // 합성 진하게 자간 보정은 최상위 호출에서 한 번만 적용한다 — 내부의 폴백
+    // 재귀는 `_inner` 를 직접 불러 face 결정과 무관하게 폭만 낸다.
+    Some(width + synthetic_bold_tracking_px(font_family, bold, italic, font_size, policy))
+}
+
+/// [macOS 정합] 한컴(macOS)은 Bold face 가 없는 서체를 합성 진하게
+/// (fill+stroke, `2 Tr`)로 그릴 때 글자 advance 에도 획 두께를 더해 자간을
+/// 벌린다 — 09-table-004 의 bold 한양중고딕 셀이 문자당 ~+0.025em 벌어져
+/// 렌더된다 (행 단위 우측 정렬선까지 드리프트). 실제 Bold face 가 그려질 때
+/// (함초롬돋움 → HCR Dotum Bold 등) 또는 시스템/generic 폴백 경로에서는
+/// 판정 불가로 보정하지 않는다.
+fn synthetic_bold_tracking_px(
+    font_family: &str,
+    bold: bool,
+    italic: bool,
+    font_size: f64,
+    policy: FontMetricsPolicy,
+) -> f64 {
+    if !bold || policy == FontMetricsPolicy::HancomWindows {
+        return 0.0;
+    }
+    // 네이티브에서 custom face 가 하나도 등록되지 않았으면(--font-path 없는
+    // 단위 테스트 등) face 판정 자체가 불가하다 — 미등록으로 보정하면
+    // 모든 굵은 글자에 자간이 붙어 기존 폭과 엇갈린다. wasm 은 registry 가
+    // 없으므로 이 판정을 건너뛴다.
+    #[cfg(not(target_arch = "wasm32"))]
+    if !crate::renderer::font_paths::custom_faces_loaded() {
+        return 0.0;
+    }
+    let primary = font_family.split(',').next().unwrap_or(font_family).trim();
+    if let Some(em) = crate::renderer::macos_synthetic_bold_em(primary, policy) {
+        return font_size * em;
+    }
+    // [macOS 정합] 한컴은 번들에 없는 face(HFT 한양중고딕 등)를 치환 조판할
+    // 때만 획 두께를 advance 에 더한다. 번들에 실재하는 face(굴림 등)는
+    // Bold variant 유무와 무관하게 실폰트 advance 를 그대로 쓴다 —
+    // 29-civil-petition 의 bold 굴림 표제는 자간 보정 없이 렌더되고,
+    // 09-table-004 의 bold 한양중고딕(미등록 → 한컴돋움 치환)은 보정된다.
+    // 런타임 레지스트리(사용자 설치 폰트)에 등록된 face 는 실폰트 hmtx 가
+    // 쓰이므로 합성 자간 보정을 붙이지 않는다 — Regular 폴백 Bold 도 실폰트
+    // advance 그대로다.
+    if crate::renderer::runtime_font_metrics::bold_fallback(primary, italic).is_some() {
+        return 0.0;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // [macOS 정합] 치환 조판 대상이 아니라 한컴 번들 자체 face
+        // (휴먼명조→HMKMM.TTF, HCI Poppy→HMEPO*.HFT 등 PrivateFont_ko-KR.dat /
+        // Shared/Fonts 에 실재)로 그려지는 Bold 런은 실폰트 advance 를 유지한다 —
+        // 31-port-call: bold 휴먼명조(방도·입파도)·HCI Poppy(' WAJ-01(') 가
+        // 한컴 PDF 와 동일 폭으로 렌더 (보정 시 글자당 ~+0.32pt 드리프트).
+        if crate::renderer::font_paths::custom_face_resolves_bold(primary, bold, italic).is_none()
+            && !font_metrics_data::hancom_bundled_face(primary)
+        {
+            return font_size * crate::renderer::FAUX_BOLD_STROKE_EM;
+        }
+    }
+    // 번들에 해석되는 face 는 보정하지 않는다. wasm 은 custom 폰트 registry 가
+    // 없어 판정 불가 — 보정하지 않는다.
+    #[cfg(target_arch = "wasm32")]
+    let _ = italic;
+    0.0
+}
+
+fn measure_char_width_inner(
+    font_family: &str,
+    bold: bool,
+    italic: bool,
+    c: char,
+    font_size: f64,
+    policy: FontMetricsPolicy,
+) -> Option<f64> {
     if c == '\u{00AD}' {
         return Some(0.0);
     }
@@ -2200,10 +2317,11 @@ fn measure_char_width_with_policy(
     if policy == FontMetricsPolicy::HcrDeclared && face_available && c != ' ' {
         if let Some(mut em_advance) = custom_face_char_em_advance(primary_name, bold, italic, c) {
             // 한컴 반각 강제는 문서 규약이라 실폰트에도 동일하게 적용한다 —
-            // 실 hmtx 가 전각이면 구두점/인용부호를 em/2 로 줄인다.
-            if (matches!(c, '\u{2018}'..='\u{2027}') || is_halfwidth_cjk_quote(c))
-                && em_advance >= 1.0
-            {
+            // 실 hmtx 가 전각이면 구두점/인용부호를 em/2 로 줄인다. 「」는
+            // macOS 한컴이 선언 폭 그대로 조판하므로 여기서는 실 hmtx 를
+            // 그대로 쓴다 (실 hmtx 가 반각 폭이면 그 자체가 정본이다 —
+            // 공식 PDF 실측 「 0.82–1.00em: 35/38-cheongyang, 36-apartment-form).
+            if matches!(c, '\u{2018}'..='\u{2027}') && em_advance >= 1.0 {
                 em_advance = 0.5;
             }
             return Some(quantize_hwp_px(em_advance * font_size));
@@ -2241,14 +2359,7 @@ fn measure_char_width_with_policy(
             fallback
         } else {
             let (_, fallback_chain) = font_family.split_once(',')?;
-            return measure_char_width_with_policy(
-                fallback_chain,
-                bold,
-                italic,
-                c,
-                font_size,
-                policy,
-            );
+            return measure_char_width_inner(fallback_chain, bold, italic, c, font_size, policy);
         }
     } else if let Some(fallback) = requested
         .is_some()
@@ -2256,7 +2367,42 @@ fn measure_char_width_with_policy(
         .flatten()
     {
         // HFT 폭 테이블 밖의 글자는 한컴이 대체 TTF 로 그린다.
-        return measure_char_width_with_policy(fallback, bold, italic, c, font_size, policy);
+        return measure_char_width_inner(fallback, bold, italic, c, font_size, policy);
+    } else if let Some(hcr) = (policy == FontMetricsPolicy::HcrDeclared
+        && primary_name != "함초롬돋움"
+        && requested.is_some())
+    .then(|| font_metrics_data::find_metric("함초롬돋움", metric_bold, italic))
+    .flatten()
+    .filter(|metric| metric.metric.get_width(c).is_some())
+    .filter(|_| {
+        // 치환은 실폰트/메트릭 어디에도 글리프가 없을 때만 의미가 있다 —
+        // 요청 face 가 글리프를 갖는 문자는 위 face 경로에서 이미 처리됨.
+        // 임베디드 메트릭이 없는 미등록/빈 서체명은 범용 폴백(휴리스틱)
+        // 경로를 유지한다. 런타임 레지스트리(문서 내장 HFT 폭 등)에
+        // 글자가 있으면 그 폭이 정본 — 한컴 PUA 마커(F012B 인 도장
+        // 글리프 등)가 문서 자체 폭표로 잴 문자라 치환하면 안 된다
+        // (issue_2020 복학원서: 한양신명조 U+F012B 를 함초롬돋움
+        // 970em 로 치환하면 leading 이 6.7→12.9px 로 불어남).
+        custom_face_char_em_advance(
+                primary_name, bold, italic, c,
+            )
+            .is_none()
+                && crate::renderer::runtime_font_metrics::char_advance(
+                    primary_name, bold, italic, c,
+                )
+                .is_none()
+                // 문서 의미 마커(=표시 문자열이 정의된 한컴 PUA: F012B (인) 등)는
+                // 한컴이 문서 고유 폭으로 그리므로 서체 치환 대상이 아니다
+                // (issue_2020 복학원서: 한양신명조 U+F012B 를 함초롬돋움
+                // 970em 으로 치환하면 leading 6.7→12.9px).
+                && crate::renderer::composer::pua_plain_text_display(c).is_none()
+    }) {
+        // macOS 한컴은 요청 서체에 없는 글리프를 함초롬돋움으로 치환해 그린다
+        // (렌더링 체인의 HANCOM_MISSING_GLYPH_FAMILIES 와 동일 규칙). 바탕체
+        // 등 비HCR 메트릭은 한컴 PUA 폭 테이블을 수록하지 않으므로, 치환 서체
+        // 메트릭으로 조판해야 한컴 조판 폭과 맞는다 (25 근로조건서 의 U+F02EC
+        // 글머리: 요청 서체 미수록 → 함초롬돋움 970/1000em ≈ 실측 11.7pt@12pt).
+        hcr
     } else {
         // 내장 메트릭이 없거나 추출 범위 밖의 문자 → 사용자 설치 폰트의 실제 폭.
         // 내장 메트릭이 해당 범위를 수록했는데 글리프가 없으면 실제 폰트에도
@@ -2265,19 +2411,80 @@ fn measure_char_width_with_policy(
             .as_ref()
             .is_none_or(|metric| !metric_has_source_range(metric.metric, c))
         {
-            if let Some(w) = measure_char_width_runtime(primary_name, bold, italic, c, font_size) {
+            if let Some(w) =
+                measure_char_width_runtime(primary_name, bold, italic, c, font_size, policy)
+            {
                 return Some(w);
+            }
+            // 체인이 더 이어지지 않는 단일 face 명의인데 선언 face 가 글리프를
+            // 갖지 못하는 문자 — 페인트는 fontdb 가 generic 폴백 체인을 따라
+            // 글리프 보유 face 로 굽는다. 측정도 같은 순서로 첫 실재 face 의
+            // 실 hmtx 를 쓴다. 공백 제외 — 한컴은 빈칸을 항상 em/2 로 잰다.
+            // PUA 전 구간 제외 — 문서 의미 마커(사각문자·도장형 등)는 한컴이
+            // 문서 고유 폭으로 그리므로 실폰트 hmtx 를 대입하면 안 된다
+            // (25-leave-request 의 U+F03FF 글머리 등).
+            if c != ' '
+                && font_family.split_once(',').is_none()
+                && !matches!(c as u32, 0xE000..=0xF8FF | 0xF0000..=0xFFFFD | 0x100000..=0x10FFFD)
+            {
+                for name in crate::renderer::generic_fallback(font_family).split(',') {
+                    let name = name.trim().trim_matches(|q| q == '\'' || q == '"');
+                    if name.is_empty() || name.eq_ignore_ascii_case(primary_name) {
+                        continue;
+                    }
+                    if let Some(em) = custom_face_char_em_advance(name, bold, italic, c) {
+                        return Some(quantize_hwp_px(em * font_size));
+                    }
+                }
+            }
+        }
+        // [macOS 정합] paint 단계가 함초롬돋움 계열 글리프로 치환하는 한컴
+        // PUA 문자(pua_missing_glyph_substitute 수록분)는 조판 폭도 그 face 의
+        // 값으로 맞춘다 — text_replay 의 HANCOM_MISSING_GLYPH_FAMILIES 와 같은
+        // 규칙 (28-agritech-review 선문자 가 0.5em 폴백 대신 함초롬돋움 실측
+        // 0.485em; 29-civil-petition U+F09E 는 함초롬돋움 미수록이라 Haansoft
+        // Batang 0.458em). 치환 대상이 아닌 PUA(U+F012B 날인 기호 등)나
+        // 미수록 일반 문자는 증거가 없어 기존 폴백 체인/휴리스틱을 유지한다 —
+        // 복학원서 접수증 TAC leading 의 F012B=0.5em 이 issue_2020 으로 핀됨.
+        if policy == FontMetricsPolicy::HcrDeclared
+            && super::super::composer::pua_missing_glyph_substitute(c).is_some()
+        {
+            if primary_name != "함초롬돋움" {
+                let hcr_covers = font_metrics_data::find_metric("함초롬돋움", bold, italic)
+                    .is_some_and(|m| m.metric.get_width(c).is_some());
+                if hcr_covers {
+                    return measure_char_width_inner(
+                        "함초롬돋움",
+                        bold,
+                        italic,
+                        c,
+                        font_size,
+                        policy,
+                    );
+                }
+            }
+            for cand in [
+                "Haansoft Batang",
+                "함초롬바탕",
+                "Haansoft Dotum",
+                "함초롬돋움",
+                "HCR Batang",
+                "HCR Dotum",
+            ] {
+                if let Some(em_advance) = custom_face_char_em_advance(cand, bold, italic, c) {
+                    return Some(quantize_hwp_px(em_advance * font_size));
+                }
             }
         }
         let (_, fallback_chain) = font_family.split_once(',')?;
-        return measure_char_width_with_policy(fallback_chain, bold, italic, c, font_size, policy);
+        return measure_char_width_inner(fallback_chain, bold, italic, c, font_size, policy);
     };
     // HWP 반각 처리: space 및 한컴이 반각으로 처리하는 구두점/기호
     let w = if c == ' ' && !super::super::hft_metrics::has_native_space_width(mm.metric.name) {
         mm.metric.em_size / 2
     } else {
         let glyph_w = mm.metric.get_width(c)?;
-        hancom_glyph_units(c, glyph_w, mm.metric.em_size, || {
+        hancom_glyph_units(c, glyph_w, mm.metric.em_size, policy, || {
             is_monospace_metric(mm.metric)
         })
     };
@@ -2488,7 +2695,9 @@ pub(crate) fn estimate_text_width_unrounded(text: &str, style: &TextStyle) -> f6
         let base_w_raw = if let Some(w) = latin_space_width(style, c, font_size) {
             w
         } else if let Some(w) = (c == '\u{318D}')
-            .then(|| area_dot_fallback_width(&style.font_family, font_size))
+            .then(|| {
+                area_dot_fallback_width(&style.font_family, font_size, style.font_metrics_policy)
+            })
             .flatten()
         {
             w
@@ -2632,16 +2841,20 @@ fn is_narrow_paren_for_font(font_family: &str, c: char) -> bool {
     primary.contains("휴먼명조") || primary.contains("한양중고딕") || primary.contains("HY중고딕")
 }
 
-/// 한컴이 수평 조판에서 반각 advance 로 처리하는 CJK 낫표.
+/// 「」 낫표 판별.
 ///
-/// 일부 등록 폰트는 `「」` glyph advance 를 전각으로 제공하지만, 한컴 PDF 기준
-/// 본문 조판에서는 법령명 낫표 뒤에 전각 공백처럼 보이는 간격이 생기지 않는다.
+/// 주의: 폭 강제에 쓰지 않는다 — 베이크드 메트릭이 이미 폰트별 한컴 조판 폭을
+/// 기록한다 (함초롬 계열 0.5em, HFT 계열 전각). 과거에는 전각 기록값을 em/2 로
+/// 강제했으나 한컴 macOS 는 HFT 폰트의 `」` 를 전각으로 조판한다
+/// (36-apartment-form 지원제외대상 표 실측: `」` 뒤 반쪽 여백).
 pub(crate) fn is_halfwidth_cjk_quote(c: char) -> bool {
     matches!(c, '\u{300C}' | '\u{300D}')
 }
 
-/// 등록 글꼴의 glyph 가 전각이면 레이아웃이 반각(또는 더 좁은) advance 로 줄이는 구두점.
-/// (`measure_char_width_with_policy` 의 반각 강제 대상과 같다.)
+/// glyph 배치 시 특수 오프셋이 필요한 구두점.
+/// 측정이 줄인 전각 구두점(' ' ‥ 등)과 「」 낫표를 포함한다 — 「」는 폰트가
+/// 전각을 기록해도 paint 서체가 반각 글리프를 제공할 수 있어(HY신명조 조판은
+/// 전각, 그리기는 함초롬 계열 치환) 셀 안 정렬 보정이 필요하다.
 pub(crate) fn is_halfwidth_forced_punct(c: char) -> bool {
     matches!(c, '\u{2018}'..='\u{2027}') || is_halfwidth_cjk_quote(c)
 }
@@ -3081,8 +3294,8 @@ mod tests {
             w("함초롬돋움", '가')
         );
         // ㆍ(U+318D): 한컴 계열은 area_dot 폴백 대신 embedded 메트릭(1.0em) 신뢰
-        assert!(area_dot_fallback_width("한컴돋움", fs).is_none());
-        assert!(area_dot_fallback_width("한컴바탕", fs).is_none());
+        assert!(area_dot_fallback_width("한컴돋움", fs, FontMetricsPolicy::HcrDeclared).is_none());
+        assert!(area_dot_fallback_width("한컴바탕", fs, FontMetricsPolicy::HcrDeclared).is_none());
     }
 
     // ── #2430 한양·휴먼 HFT 실측 메트릭의 native/WASM 정합 보장 ──
@@ -3930,8 +4143,12 @@ mod tests {
         );
     }
 
+    /// [macOS 정합] 한컴(macOS)은 「 를 선언 face 의 기록 전각 폭으로 조판한다 —
+    /// 공식 PDF 실측 「→다음 글자 0.82–1.00em (35-voucher '「곡성군'
+    /// 10.6pt@11.04pt, 38-cheongyang '「전자정부법」' 「=」=9.0pt@9.0pt,
+    /// 모두 돋움체 계열 선언). 반각 강제는 HancomWindows 규약에만 적용된다.
     #[test]
-    fn test_2020_corner_quote_halfwidth_in_registered_font() {
+    fn test_2020_corner_quote_fullwidth_in_registered_font() {
         let m = EmbeddedTextMeasurer;
         let style = TextStyle {
             font_family: "돋움체".to_string(),
@@ -3945,8 +4162,8 @@ mod tests {
         let hangul_advance = positions[2] - positions[1];
 
         assert!(
-            quote_advance <= style.font_size * 0.6,
-            "`「` 는 등록 폰트에서도 반각 advance 로 측정되어야 함. got {:.2}",
+            quote_advance >= style.font_size * 0.9,
+            "`「` 는 등록 폰트에서도 전각 advance 로 측정되어야 함. got {:.2}",
             quote_advance
         );
         assert!(

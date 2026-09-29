@@ -417,6 +417,16 @@ pub fn fit_measured_table_to_declared_height(
     // 페이지가 앞당겨진다(#1073).
     let min_reasonable = current_row_sum * 0.75;
     let max_reasonable = current_row_sum * 1.35;
+    if std::env::var("RHWP_DEBUG_ROWFIT").is_ok() {
+        eprintln!(
+            "MEASFIT tbl={} target={:.2} current={:.2} crit={:?} rows={:?}",
+            table.common.ctrl_id,
+            target_row_sum,
+            current_row_sum,
+            table.common.height_criterion,
+            fitted.row_heights
+        );
+    }
     if target_row_sum < min_reasonable || target_row_sum > max_reasonable {
         return fitted;
     }
@@ -1185,37 +1195,111 @@ impl HeightMeasurer {
         }
         paragraphs
             .iter()
-            .map(|p| {
-                let nested_h: f64 = p
-                    .controls
-                    .iter()
-                    .filter_map(|ctrl| {
-                        if let Control::Table(nested) = ctrl {
-                            let stretch =
-                                self.render_normalization.nested_table_width_scale(nested);
-                            let mt =
-                                self.measure_table_impl(nested, 0, 0, styles, depth + 1, stretch);
-                            // [#2148 실험] NO_LS 중첩 표 선언 신뢰 — 성장 전용 max.
-                            let declared = hwpunit_to_px(nested.common.height as i32, self.dpi);
+            .enumerate()
+            .map(|(pidx, p)| {
+                let para_top = p
+                    .line_segs
+                    .first()
+                    .map(|s| hwpunit_to_px(s.vertical_pos, self.dpi))
+                    .unwrap_or(0.0);
+                // 저장 vpos(첫 줄 상단)에는 문단 앞 간격(spacing_before)이 이미
+                // 들어 있다 — PARA 기준 개체의 수직 원점은 문단 자체의 시작
+                // (간격 이전)이므로 vpos 에서 spacing_before 를 빼야 한다
+                // (38 청양 체크리스트 셀: vpos 200 = spacing_before 200 + 기준 0).
+                let para_base = {
+                    let sb = if pidx > 0 || self.preserve_first_cell_spacing_before {
+                        styles
+                            .para_styles
+                            .get(p.para_shape_id as usize)
+                            .map(|s| s.spacing_before)
+                            .unwrap_or(0.0)
+                    } else {
+                        0.0
+                    };
+                    (para_top - sb).max(0.0)
+                };
+                // 같은 줄에 나란히 놓이는 TAC 표는 높이가 겹친다 — 줄별 최댓값만
+                // 세로 범위에 반영한다 (composer::tac_table_ctrls_by_line 참조).
+                let comp = crate::renderer::composer::compose_paragraph(p);
+                let groups = crate::renderer::composer::tac_table_ctrls_by_line(p, &comp);
+                let mut grouped = std::collections::HashSet::new();
+                // 반환: (적층 높이 기여분, PARA 기준 프레임의 절대 하단)
+                let table_h = |ctrl: &Control| -> Option<(f64, Option<f64>)> {
+                    if let Control::Table(nested) = ctrl {
+                        let stretch = self.render_normalization.nested_table_width_scale(nested);
+                        let mt = self.measure_table_impl(nested, 0, 0, styles, depth + 1, stretch);
+                        // [#2148 실험] NO_LS 중첩 표 선언 신뢰 — 성장 전용 max.
+                        let declared = hwpunit_to_px(nested.common.height as i32, self.dpi);
+                        // PARA 기준 어울림 표는 고정 프레임 개체다: 박스는
+                        // 문단 시작+vertOffset+outMarginTop 에 선언 높이로 배치되고
+                        // (내용이 프레임보다 길면 넘침) 하단 범위 =
+                        // para_base+vertOffset+om_top+선언h+om_bottom
+                        // (35/38 신청서 점선 박스·체크리스트 중첩 표 — 한컴 cellSz 가
+                        // vertOffset+선언h+cell pad 와 정확히 일치).
+                        if !nested.common.treat_as_char
+                            && matches!(nested.common.vert_rel_to, VertRelTo::Para)
+                        {
+                            let voff = hwpunit_to_px(
+                                crate::renderer::float_placement::signed_hwpunit(
+                                    nested.common.vertical_offset,
+                                )
+                                .max(0),
+                                self.dpi,
+                            );
+                            let om_top = hwpunit_to_px(nested.outer_margin_top as i32, self.dpi);
+                            let om_bottom =
+                                hwpunit_to_px(nested.outer_margin_bottom as i32, self.dpi);
+                            // 내용이 선언 프레임보다 길면 셀이 넘침까지
+                            // 포함한다 — 선언 고정 프레임은 성장 전용.
+                            let frame = declared.max(mt.total_height);
+                            Some((0.0, Some(para_base + voff + om_top + frame + om_bottom)))
+                        } else {
                             // [#2169] om 가산은 additive 경로(cell_controls_height)
                             // 전담 — vpos 기반 max 경로는 저장 vpos 가 배치를 이미
                             // 반영하므로 미가산 (자기-export HWPX 왕복 이중가산 방지).
-                            Some(mt.total_height.max(declared))
-                        } else {
-                            None
+                            Some((mt.total_height.max(declared), None))
                         }
+                    } else {
+                        None
+                    }
+                };
+                let mut nested_h: f64 = groups
+                    .iter()
+                    .map(|g| {
+                        g.iter()
+                            .filter_map(|&ci| {
+                                grouped.insert(ci);
+                                table_h(&p.controls[ci])
+                            })
+                            .fold(0.0f64, |acc, (h, _)| acc.max(h))
                     })
                     .sum();
-                if nested_h <= 0.0 {
+                let mut float_bottom = 0.0f64;
+                for (ci, ctrl) in p.controls.iter().enumerate() {
+                    if grouped.contains(&ci) {
+                        continue;
+                    }
+                    if let Some((h, fb)) = table_h(ctrl) {
+                        nested_h += h;
+                        if let Some(fb) = fb {
+                            float_bottom = float_bottom.max(fb);
+                        }
+                    }
+                }
+                // grouped TAC 표 내부의 PARA 프레임 하단도 반영한다.
+                for g in &groups {
+                    for &ci in g {
+                        if let Some((_, Some(fb))) = table_h(&p.controls[ci]) {
+                            float_bottom = float_bottom.max(fb);
+                        }
+                    }
+                }
+                let stacked = if nested_h <= 0.0 {
                     0.0
                 } else {
-                    let para_top = p
-                        .line_segs
-                        .first()
-                        .map(|s| hwpunit_to_px(s.vertical_pos, self.dpi))
-                        .unwrap_or(0.0);
                     para_top + nested_h
-                }
+                };
+                stacked.max(float_bottom)
             })
             .fold(0.0f64, f64::max)
     }
@@ -1661,10 +1745,14 @@ impl HeightMeasurer {
                 };
 
                 // 패딩 포함 총 필요 높이
-                // [Task #501] cell.padding 이 IR cell.height 의 절반을 초과하는 비정상
+                // [Task #501] cell.padding 이 IR cell.height 자체를 초과하는 비정상
                 // 케이스 (mel-001 p2 셀[21]: cell.h=1280 HU, pad.top+bottom=3400 HU) 가드:
                 // 비정상 padding 이 row_heights 를 확장하면 TAC 표 비례 축소가 모든 행에
                 // 영향. content_height 가 IR cell.height 안에 들어가면 IR 권위 우선.
+                // [macOS 정합] 문턱을 pad>h 로 좁힌다 — 빈 저장 셀의
+                // lh+pad 가 h 를 살짝 넘는 정상 케이스(09-table-004 r1:
+                // h=482 < lh300+pad282=582 → 한컴 행 5.7pt)까지 IR 고정하면
+                // 한컴이 강제하는 최소 행높이를 놓친다.
                 let total_pad = pad_top + pad_bottom;
                 let cell_h_px = if cell.height < 0x80000000 {
                     hwpunit_to_px(cell.height as i32, self.dpi)
@@ -1688,10 +1776,25 @@ impl HeightMeasurer {
                         .paragraphs
                         .iter()
                         .all(|p| !crate::renderer::para_has_no_stored_line_segs(p));
-                let required_height = if cell_h_px > 0.0
-                    && total_pad > cell_h_px * 0.5
-                    && content_height <= cell_h_px
-                {
+                // [저장 LINE_SEG 셀 — 상위 표 한정] layout 의 authored-exact 미러:
+                // 측정 흐름이 선언 셀 h와 사실상 같으면 작성 지오메트리에 pad가
+                // 이미 포함된 정합 → 흐름 그대로(#2211); 다르면 한컴은
+                // pad+흐름으로 행을 계산한다 (06-multi-table-001 pi20:
+                // textless r0 h=200/ls=100 → ≈382HU, r1-r3 h=280/ls=1000 →
+                // ≈1282HU). depth>0 는 기존 relaxed_pad_mirror 경로 유지 —
+                // 중첩 셀은 #2214 계보 저장 지오메트리 그대로.
+                let all_stored_ls = !cell.paragraphs.is_empty()
+                    && cell
+                        .paragraphs
+                        .iter()
+                        .all(|p| !crate::renderer::para_has_no_stored_line_segs(p));
+                let required_height = if all_stored_ls && depth == 0 && cell_h_px > 0.0 {
+                    if (content_height - cell_h_px).abs() <= 0.5 {
+                        content_height
+                    } else {
+                        content_height + total_pad
+                    }
+                } else if cell_h_px > 0.0 && total_pad > cell_h_px && content_height <= cell_h_px {
                     cell_h_px
                 } else if relaxed_pad_mirror {
                     let non_inline_h = self.measure_non_inline_controls_height(&cell.paragraphs);
@@ -1774,7 +1877,7 @@ impl HeightMeasurer {
                             .iter()
                             .all(|p| !crate::renderer::para_has_no_stored_line_segs(p));
                     eprintln!(
-                        "DIAG_ROWH r={} c={} decl={:.1} req={:.1} content={:.1} pad={:.1} trail={:.1} stored={} nested={}",
+                        "DIAG_ROWH d={depth} r={} c={} decl={:.1} req={:.1} content={:.1} pad={:.1} trail={:.1} stored={} nested={}",
                         cell.row,
                         cell.col,
                         cell_h_px,
@@ -1822,8 +1925,21 @@ impl HeightMeasurer {
                     let unknown_rows: Vec<usize> =
                         (r..r + span).filter(|&i| row_heights[i] == 0.0).collect();
                     if unknown_rows.len() == 1 {
+                        // 미지 행이 걸침 중간 행이면 잔여는 걸침 끝 행이 흡수한다 —
+                        // 한컴은 병합 내부의 빈 행을 부풀리지 않는다 (06-multi-table
+                        // -001 p2 통합고용정책국 셀 상단 +5.2px). 끝 행이 미지면
+                        // 대입과 동치 (해당 행은 0). 시작 행이 미지면 시작 행이 받는다 —
+                        // 걸침 셀 시작 행은 셀 상자 높이를 직접 구성하므로, 끝 행으로
+                        // 보낸 잔여는 선언 행 그리드 스냅(coherent_declared_row_grid)에
+                        // 지워져 걸침 합이 선언 높이보다 작아진다 (task2146 r11: rs=7
+                        // 선언 671.4px 의 유일 미지 행 = 시작 행).
                         let remaining = (total_h - known_sum).max(0.0);
-                        row_heights[unknown_rows[0]] = remaining;
+                        let u = unknown_rows[0];
+                        if u == r {
+                            row_heights[u] = remaining;
+                        } else {
+                            row_heights[r + span - 1] += remaining;
+                        }
                         progress = true;
                     }
                 }
@@ -1836,11 +1952,12 @@ impl HeightMeasurer {
                 let unknown_rows: Vec<usize> =
                     (r..r + span).filter(|&i| row_heights[i] == 0.0).collect();
                 if !unknown_rows.is_empty() {
+                    // 다수 미지 행: 한컴은 걸침 셀 높이를 끝 행에 몰아 넣는다
+                    // (grow_rows_for_span_requirements / #2291 하단 정렬 규칙과 동일).
+                    // 균등 배분하면 미지 행이 괘선 사이에서 부풀어 걸침 시작 셀의
+                    // 상단이 내려간다 (06-multi-table-001 p2 통합고용정책국 +5.2px).
                     let remaining = (total_h - known_sum).max(0.0);
-                    let per_row = remaining / unknown_rows.len() as f64;
-                    for i in unknown_rows {
-                        row_heights[i] = per_row;
-                    }
+                    row_heights[r + span - 1] += remaining;
                 }
             }
             // [#2291/#2237] 병합 셀 **선언** 높이가 걸친 행합을 초과하면 잔여를
@@ -2179,9 +2296,28 @@ impl HeightMeasurer {
             }
         }
 
-        // 3단계: 높이가 0인 행은 기본값 적용
-        for h in &mut row_heights {
-            if *h <= 0.0 {
+        // 3단계: 높이가 0인 행은 기본값 적용.
+        // 단, 모든 셀이 복수 행 병합에 속한 행(걸침 내부 행)은 한컴이 실제로 0 으로
+        // 붕괴시킨다 — 걸침 셀이 시각적으로 그 구간을 메우므로 행 자체 높이는
+        // 필요 없다. 400HU 로 채우면 걸침 시작 셀의 상단이 내려간다
+        // (06-multi-table-001 p2: 행15·16 → 통합고용정책국 +5.2px).
+        let mut row_has_rs1 = vec![false; row_count];
+        let mut row_covered = vec![false; row_count];
+        for cell in &table.cells {
+            let r = cell.row as usize;
+            if r >= row_count {
+                continue;
+            }
+            if cell.row_span <= 1 {
+                row_has_rs1[r] = true;
+            }
+            let span_end = (r + cell.row_span.max(1) as usize).min(row_count);
+            for rr in r..span_end {
+                row_covered[rr] = true;
+            }
+        }
+        for (i, h) in row_heights.iter_mut().enumerate() {
+            if *h <= 0.0 && !(row_covered[i] && !row_has_rs1[i]) {
                 *h = hwpunit_to_px(400, self.dpi);
             }
         }

@@ -2020,8 +2020,24 @@ fn paragraph_saved_vpos_reset_starts_new_page_after(
     }
 
     let next_first_vpos = next_para.line_segs.first().map(|s| s.vertical_pos);
-    let curr_last_vpos = current_para.line_segs.last().map(|s| s.vertical_pos);
+    // 직전 문단이 "컬럼을 채웠는가" — 단일 단에서 Table control 을 둔 문단은
+    // 마지막 seg 가 표 전체를 가리켜 시작 vpos 가 작아(표 시작 2600, 끝 67529)
+    // start 기준이 저장된 쪽 경계 리셋을 놓친다 (36-apartment-form 뒷면/처리절차).
+    // 표 없는 문단과 모든 다단은 기존 start 기준 유지 — wrap-around 그림 앵커 뒤의
+    // 문단은 seg 겹침 내에서 정상 vpos 를 가지므로 end 기준이면 오발동한다.
     let multi_col = col_count > 1;
+    let prev_has_table_anchor = !multi_col
+        && current_para
+            .controls
+            .iter()
+            .any(|c| matches!(c, Control::Table(_)));
+    let curr_last_vpos = current_para.line_segs.last().map(|s| {
+        if prev_has_table_anchor {
+            s.vertical_pos.saturating_add(s.line_height)
+        } else {
+            s.vertical_pos
+        }
+    });
     let allowed_top_vpos = if is_hwp3_variant { 1500 } else { 0 };
 
     matches!((next_first_vpos, curr_last_vpos), (Some(nv), Some(cl))
@@ -4041,12 +4057,31 @@ impl TypesetEngine {
                     let prev_para = &paragraphs[para_idx - 1];
                     let curr_first_vpos = para.line_segs.first().map(|s| s.vertical_pos);
                     let prev_last_vpos = prev_para.line_segs.last().map(|s| s.vertical_pos);
+                    // 단일 단 + Table control 을 둔 문단만 end(vpos+line_height)
+                    // 기준 — 표 seg 시작 vpos 가 작아 start 기준이 리셋을 놓친다
+                    // (36-apartment-form). 다단과 표 없는 문단은 start 기준 유지
+                    // (wrap-around 앵커 뒤 문단은 seg 겹침 내 정상 vpos).
+                    let prev_last_vpos_end = prev_para
+                        .line_segs
+                        .last()
+                        .map(|s| s.vertical_pos.saturating_add(s.line_height));
+                    let prev_has_table_anchor = prev_para
+                        .controls
+                        .iter()
+                        .any(|c| matches!(c, Control::Table(_)));
                     if let (Some(cv), Some(pv)) = (curr_first_vpos, prev_last_vpos) {
                         let trigger = if st.col_count > 1 {
                             cv < pv && pv > 5000
                         } else {
                             // [#2098] 쪽-하단 고정 틀 앵커(vpos=0 절대배치)는 흐름 리셋 신호가 아니다.
-                            cv == 0 && pv > 5000 && !para_is_page_bottom_fixed_table_anchor(para)
+                            let prev_boundary = if prev_has_table_anchor {
+                                prev_last_vpos_end.unwrap_or(pv)
+                            } else {
+                                pv
+                            };
+                            cv == 0
+                                && prev_boundary > 5000
+                                && !para_is_page_bottom_fixed_table_anchor(para)
                         };
                         if trigger {
                             st.advance_column_or_new_page();
@@ -4418,6 +4453,20 @@ impl TypesetEngine {
                         .last()
                         .map(|s| s.vertical_pos + s.line_height)
                         .unwrap_or(pv);
+                    // "직전 문단이 끝난 위치" — 단일 단에서 Table control 을 둔
+                    // 문단만 seg 끝 기준 (표 seg 시작 vpos 가 작아 start 기준이
+                    // 리셋을 놓침: 36-apartment-form 표 seg 시작 2600, 끝 67529
+                    // → 뒷면 vpos=0 리셋). 다단과 표 없는 문단은 start 기준.
+                    let prev_boundary_vpos = if st.col_count == 1
+                        && prev_para
+                            .controls
+                            .iter()
+                            .any(|c| matches!(c, Control::Table(_)))
+                    {
+                        prev_vpos_end
+                    } else {
+                        pv
+                    };
                     // [Task #1086 Stage 3] HWP3-origin page tolerance 대상 문서는
                     // 새 페이지 첫 문단을 vpos=0 이 아니라 200/500HU 근방으로
                     // 인코딩하기도 한다(hwpspec.hwp s2:pi=89, pi=104). 단일 단에서
@@ -4498,11 +4547,11 @@ impl TypesetEngine {
                         if is_distribute {
                             cv < prev_vpos_end && prev_vpos_end > 0
                         } else {
-                            cv < pv && pv > 5000
+                            cv < prev_boundary_vpos && prev_boundary_vpos > 5000
                         }
                     } else {
                         (cv == 0
-                            && pv > 5000
+                            && prev_boundary_vpos > 5000
                             && !hwp3_content_vpos_zero_reset
                             && !para_is_page_bottom_fixed_table_anchor(para))
                             || near_page_top_reset
@@ -13799,8 +13848,24 @@ impl TypesetEngine {
                 crate::model::shape::TextWrap::TopAndBottom
             )
             && para.text.is_empty();
+        // 후행 빈 앵커 TopAndBottom 표가 양수 vertOffset 을 가지면 그 offset 자체가
+        // 표-표 간격을 인코딩하므로 앞 앵커의 host line_spacing 을 더하면 이중 계상
+        // 된다 (29-civil-petition p2 의 "- 신청서 작성요령 -" 상자가 23px 아래로 밀림).
+        let next_anchor_offset_encodes_gap = next_para
+            .map(|p| {
+                para_is_empty_topbottom_table_anchor(p)
+                    && p.controls.iter().any(|c| {
+                        matches!(c, Control::Table(t)
+                            if is_para_topbottom_float(&t.common)
+                                && signed_hwpunit(t.common.vertical_offset) > 0)
+                    })
+            })
+            .unwrap_or(false);
         let next_is_empty_table_anchor = next_para
-            .map(|p| para_is_empty_topbottom_table_anchor(p) || para_is_empty_tac_table_anchor(p))
+            .map(|p| {
+                (para_is_empty_topbottom_table_anchor(p) && !next_anchor_offset_encodes_gap)
+                    || para_is_empty_tac_table_anchor(p)
+            })
             .unwrap_or(false);
         let suppress_empty_anchor_spacing =
             is_topbottom_empty_anchor && !next_is_empty_table_anchor;
@@ -15395,7 +15460,11 @@ impl TypesetEngine {
         // [참고2 fix] 배열순서가 아닌 배치순서 기준 (typeset_table_paragraph 산출).
         let is_first_table = is_first_placed;
         let defer_host_line = st.defer_host_line_item_para == Some(para_idx);
-        let pre_height: f64 = if pre_table_end_line > 0 && is_first_table {
+        // host 텍스트가 이월 전 쪽에 이미 PartialParagraph 로 pre-emit 된 문단은
+        // 이 쪽에서 텍스트 항목을 다시 emit/계상하지 않는다 (typeset None-표
+        // 통째 이월 경로; pre_emit_visible_rowbreak_host_text 참고).
+        let host_pre_emitted = st.pre_emitted_host_paras.contains(&para_idx);
+        let pre_height: f64 = if pre_table_end_line > 0 && is_first_table && !host_pre_emitted {
             let h = fmt.line_advances_sum(0..pre_table_end_line);
             if !defer_host_line {
                 st.current_items.push(PageItem::PartialParagraph {
@@ -15476,7 +15545,16 @@ impl TypesetEngine {
             let table_bottom = v_off_px + table_total_height;
             st.current_height += pre_height.max(table_bottom);
         } else if is_visible_para_float {
-            let v_off_px = hwpunit_to_px(signed_vertical_offset, self.dpi);
+            // host 텍스트가 이전 쪽에 pre-emit 된 통째 이월 표(pageBreak=NONE)는
+            // 앵커 문단이 이 쪽에 없으므로 vertical_offset 을 적용하지 않는다 —
+            // 한컴은 이월 표를 쪽 상단 + outer_margin_top 에 배치한다
+            // (hwp_table_test pi=20: v_off 2831HU 무시). layout 의
+            // compute_table_y_position 억제와 짝을 이룬다.
+            let v_off_px = if host_pre_emitted {
+                0.0
+            } else {
+                hwpunit_to_px(signed_vertical_offset, self.dpi)
+            };
             let outer_top_px = hwpunit_to_px(table.outer_margin_top as i32, self.dpi);
             let table_top = if signed_vertical_offset > 0 {
                 let stored_top = para_start_height + outer_top_px + v_off_px;
@@ -15609,7 +15687,7 @@ impl TypesetEngine {
 
         // [#2813] 이연된 host 앵커 줄 아이템 — 마지막 float 뒤에 한글 문서순으로
         // 삽입한다. 렌더는 이 순서대로 표를 흐름 상단부터, 줄을 저장 vpos 로 놓는다.
-        if defer_host_line && is_last_placed {
+        if defer_host_line && is_last_placed && !host_pre_emitted {
             st.current_items.push(PageItem::PartialParagraph {
                 para_index: para_idx,
                 start_line: 0,
@@ -15656,8 +15734,11 @@ impl TypesetEngine {
         let has_post_text = !para.text.is_empty()
             && total_lines > post_table_start
             && !whitespace_only_single_tac_host_line;
-        let should_add_post_text =
-            is_last_table && tac_table_count <= 1 && has_post_text && !pre_text_exists;
+        let should_add_post_text = is_last_table
+            && tac_table_count <= 1
+            && has_post_text
+            && !pre_text_exists
+            && !host_pre_emitted;
         if should_add_post_text {
             let post_height: f64 = fmt.line_advances_sum(post_table_start..total_lines);
             // [#2808] 소비 조건을 layout 의 same_owner_table_precedes 와 동일하게
@@ -17703,13 +17784,31 @@ impl TypesetEngine {
         // 포함 판정은 fresh 쪽에 들어가는 표(1220000-201800008: 표 920.8px ≤ 본문
         // 933.5px, 스페이싱 포함 934.4px)를 쪽-초과로 오판해 기존 분할(2쪽)을
         // 통째+후행 문단 밀림(3쪽)으로 회귀시킨다.
+        // 같은 규칙이 잔여 부족에도 적용된다: fresh 쪽(본문+슬랙)에 들어가는
+        // None 표는 현재 쪽 잔여를 행 분할로 채우지 않고 통째로 다음 쪽에 둔다
+        // (hwp_table_test.hwpx pi=20: 11x3 표, 한글은 호스트 텍스트 줄만 현재
+        // 쪽에 두고 표를 다음 쪽에 통째 배치 — rhwp 는 0..2/2..11 분할).
         let below_body_slack =
             (st.layout.page_height - (st.layout.body_area.y + st.layout.body_area.height)).max(0.0);
         let table_only_height = (table_total - host_spacing_total).max(0.0);
+        // vertOffset>0 으로 앵커가 고정되고 호스트 문단에 텍스트가 있는 None 표만
+        // 통째 이월 — 유동(voff=0) 또는 빈 호스트의 None 표는 한글이 행 분할한다
+        // (text_footnote_tail_overpagination pi=1371 voff=0 / pi=4342 voff=60·빈 호스트:
+        // 한컴이 쪽 경계에서 행 분할).
+        let deferred_whole_anchor =
+            crate::renderer::float_placement::signed_hwpunit(table.common.vertical_offset) > 0
+                && !para.text.is_empty();
         if matches!(table.page_break, crate::model::table::TablePageBreak::None)
-            && table_only_height > st.base_available_height()
             && table_only_height <= st.base_available_height() + below_body_slack
+            && (table_only_height > st.base_available_height() || deferred_whole_anchor)
         {
+            // 호스트 문단의 텍스트 줄은 현재 쪽에 남긴다 (한글 문서순:
+            // 텍스트 → 표 이월). pre-emit 은 layout 의 표 항목 host 렌더를
+            // 억제해 이월된 쪽에서 같은 텍스트가 다시 그려지는 것을 막는다.
+            // vertOffset 고정 앵커가 없는 oversized 폴백은 기존처럼 host 처리 없이 이동.
+            if deferred_whole_anchor {
+                self.pre_emit_visible_rowbreak_host_text(st, para_idx, para, composed_all, styles);
+            }
             if !st.current_items.is_empty() {
                 st.advance_column_or_new_page();
             }
@@ -17823,12 +17922,25 @@ impl TypesetEngine {
         // 일반 행 강제 배치 경로가 통째로 밀어넣어 본문 초과(예: pi=242 vert_off 38px,
         // 잔여 65.4px 로 보였으나 실가용 23.4px < 행0 34.9px). 루프 내 page_avail
         // (host_before_overhead/vert_offset_overhead) 와 동일 overhead 를 가드에도 적용.
+        // 첫 조각 하단 예산에도 저장레이아웃 바깥 여백 반복을 얹는다 — 다만
+        // 평면 유닛 컷이 나올 수 있는 표(쪽 용량을 넘는 거대 행 존재, giant cell
+        // 계열)은 제외: 그쪽은 셀 내부 유닛 컷이라 한글이 마진을 반복하지 않는다
+        // (아래 fragment 루프의 첫 조각 분기와 동일 조건).
+        let first_frag_has_flat_cut_row = cut_row_h.iter().any(|&h| h > table_available);
+        let stored_first_frag_outer_margin =
+            crate::renderer::float_placement::stored_layout_rowbreak_repeats_outer_margin(
+                st.profile.hwpx_stored_layout() || st.profile.hwp5_origin_hwpx(),
+                table,
+            ) && table.row_count > 1
+                && !first_frag_has_flat_cut_row;
         let first_frag_overhead = {
             let (host_before, fragment_outer_bottom) = partial_rowbreak_fragment_spacing_px(
                 table,
                 ft.host_spacing.before,
                 false,
-                ft.strict_following_plain_text_fit || saved_residual_split_hu.is_some(),
+                ft.strict_following_plain_text_fit
+                    || saved_residual_split_hu.is_some()
+                    || stored_first_frag_outer_margin,
                 native_cellbreak_fragment_spacing_hu,
                 self.dpi,
             );
@@ -18214,12 +18326,36 @@ impl TypesetEngine {
             // typeset 의 page_avail = (table_available - cur_h) 은 두 overhead 를
             // 포함하지 않아 split 결정 시 actual 가용보다 과대 평가됨 → partial 오버플로우.
             // aift.hwp p44 pi=584: 41.6 px split_end → 실제 가용 36 px → overflow 37.6 px.
+            let stored_layout_repeat_outer_margin =
+                crate::renderer::float_placement::stored_layout_rowbreak_repeats_outer_margin(
+                    st.profile.hwpx_stored_layout() || st.profile.hwp5_origin_hwpx(),
+                    table,
+                );
+            // 저장 레이아웃 바깥 여백 반복: 블록-셀 컷과 단일-유닛 평면 컷
+            // (giant cell 의 cut=[k] 평면 유닛 스트림) 연속분은 제외 — 거기서
+            // 반복하면 쪽당 예산이 마진만큼 과소계상돼 과다 페이지가 생긴다.
+            // 행 경계·구조화 셀 중간 컷([row,unit] 경로, 10-inner-table-01 p2
+            // 의 cut=[1,25]) 연속분은 한글이 마진을 반복한다 (상단 141HU).
+            // 첫 조각은 아직 cut 이 없으므로 다중 행 표(행 경계로 끊기는 표)만
+            // 예약한다 — 제외하면 첫 쪽 하단이 om_bottom 만큼 깊게 끊겨 연속분
+            // 전체가 위로 밀린다 (10-inner-table-01 p2 −3.26px). 단, 평면 유닛
+            // 컷이 나올 수 있는 표(쪽 용량 초과 거대 행)는 제외 — 첫 쪽 끝이
+            // 유닛 컷이면 한글이 하단 마진을 예약하지 않는다 (issue2214 핀).
+            let stored_row_boundary_repeat = stored_layout_repeat_outer_margin
+                && if is_continuation {
+                    !start_cut_is_block && start_cut.len() != 1
+                } else {
+                    table.row_count > 1
+                        && !cut_row_h.iter().any(|&h| h > table_available)
+                };
             let (host_before_overhead, fragment_outer_bottom_overhead) =
                 partial_rowbreak_fragment_spacing_px(
                     table,
                     host_spacing_before,
                     is_continuation,
-                    strict_following_plain_text_fit || saved_residual_split_hu.is_some(),
+                    strict_following_plain_text_fit
+                        || saved_residual_split_hu.is_some()
+                        || stored_row_boundary_repeat,
                     native_cellbreak_fragment_spacing_hu,
                     self.dpi,
                 );
@@ -19278,7 +19414,30 @@ impl TypesetEngine {
                         page_number_pos = Some(pnp.clone());
                     }
                     Control::NewNumber(nn) => {
-                        if nn.number_type == crate::model::control::AutoNumberType::Page {
+                        // 한컴 호환: 본문 텍스트가 없고 인라인 개체(표·그림)만 담긴
+                        // 컨테이너 문단의 newNum 은 쪽 번호 재시작에 발화하지 않는다
+                        // (06-multi-table-001: [TAC 표][newNum] 만 담긴 문단이 2쪽
+                        // 맨 위에 오지만 한컴은 "- 2 -" 연속 번호를 출력).
+                        // engine.rs 의 collect_header_footer_controls 와 동일 규칙.
+                        // 인라인 개체·필드 마커(0x02·0x03·0x04·0x12·FFFC 등)만으로
+                        // 채워진 문단은 텍스트가 없는 것으로 본다 — 파서가 표/제어
+                        // 컨트롤 자리에 0x0002 를 넣어 is_empty 가 깨지기 때문.
+                        let text_is_marker_only = para.text.chars().all(|c| {
+                            matches!(c, '\u{0000}'..='\u{0008}'
+                                | '\u{000B}' | '\u{000C}'
+                                | '\u{000E}'..='\u{001F}'
+                                | '\u{FFFC}')
+                        });
+                        let host_is_object_container = text_is_marker_only
+                            && para.controls.iter().any(|c| {
+                                matches!(
+                                    c,
+                                    Control::Table(_) | Control::Picture(_) | Control::Shape(_)
+                                )
+                            });
+                        if nn.number_type == crate::model::control::AutoNumberType::Page
+                            && !host_is_object_container
+                        {
                             new_page_numbers.push((pi, nn.number));
                         }
                     }
