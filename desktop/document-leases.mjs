@@ -18,6 +18,17 @@ function identityKeys(identity, canonicalPath) {
   return keys;
 }
 
+/**
+ * Release every document claim a window's renderer held. Runs on window close
+ * and when the renderer dies: a crashed renderer's blank window would
+ * otherwise keep owning the path, so opening that file again only focused the
+ * dead window. In-flight native writes keep their path until they finish.
+ */
+export function releaseRendererDocuments(sessionId, { documentLeases, nativeFiles }) {
+  documentLeases.releaseSession(sessionId);
+  nativeFiles.releaseSession(sessionId);
+}
+
 export class DocumentLeaseManager {
   #claimsByKey = new Map();
   #leasesBySession = new Map();

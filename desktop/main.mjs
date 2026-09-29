@@ -36,7 +36,7 @@ import {
   waitForHub,
   waitForHubReadyLine,
 } from './agent-hub.mjs';
-import { DocumentLeaseManager } from './document-leases.mjs';
+import { DocumentLeaseManager, releaseRendererDocuments } from './document-leases.mjs';
 import { quarantineBookmarkState, readBookmarkState } from './bookmark-state.mjs';
 import {
   MAX_GENERATED_DOCUMENT_BYTES,
@@ -1073,8 +1073,7 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
     }
     closeDisplayConnection();
     agentAttention.forget(windowId);
-    documentLeases.releaseSession(session.sessionId);
-    nativeFiles.releaseSession(session.sessionId);
+    releaseRendererDocuments(session.sessionId, { documentLeases, nativeFiles });
     sessions.removeWindow(window);
     if (quitRequested) setImmediate(() => {
       if (quitRequested && !quitting) app.quit();
@@ -1122,6 +1121,11 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
     // An unanswered close prompt died with the renderer; clear it so the
     // window can close (the close handler skips the prompt for dead renderers).
     session.pendingCloseRequestId = null;
+    // The dead renderer's document is gone. Free its path so opening the file
+    // again starts a working window instead of focusing this blank one, and so
+    // a reload does not resend handles that no longer exist.
+    releaseRendererDocuments(session.sessionId, { documentLeases, nativeFiles });
+    launchFiles.length = 0;
   });
   window.webContents.once('destroyed', closeDisplayConnection);
   window.webContents.setWindowOpenHandler(({ url }) => {
@@ -1370,6 +1374,11 @@ ipcMain.handle('desktop:native-file-write', async (event, handleId, bytes, ident
 ipcMain.handle('desktop:native-file-is-same', (event, firstHandleId, secondHandleId) => {
   const session = sessionForEvent(event);
   return nativeFiles.isSameEntry(session.sessionId, firstHandleId, secondHandleId);
+});
+ipcMain.handle('desktop:native-file-adopt-loaded', (event, handleId, digest) => {
+  const session = sessionForEvent(event);
+  if (typeof handleId !== 'string' || !handleId) return false;
+  return nativeFiles.adoptLoadedContent(session.sessionId, handleId, digest);
 });
 ipcMain.handle('desktop:remember-native-document', async (event, documentId, handleId, digest) => {
   const session = sessionForEvent(event);

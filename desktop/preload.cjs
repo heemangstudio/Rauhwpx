@@ -57,6 +57,11 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     firstHandleId,
     secondHandleId,
   ),
+  adoptNativeFileContent: (handleId, digest) => ipcRenderer.invoke(
+    'desktop:native-file-adopt-loaded',
+    handleId,
+    digest,
+  ),
   rememberNativeDocument: (documentId, handleId, digest) => ipcRenderer.invoke(
     'desktop:remember-native-document',
     documentId,

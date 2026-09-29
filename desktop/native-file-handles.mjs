@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { copyFile, link, open, opendir, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
+import { copyFile, link, lstat, open, opendir, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
 import { basename, dirname, extname, isAbsolute, join, normalize, win32 } from 'node:path';
 
 import { retryWindows } from './fs-replace.mjs';
@@ -629,6 +629,33 @@ export function nativePathOwnershipKey(filePath, { platform = process.platform }
     : normalized;
 }
 
+// Codes a link probe returns on volumes without hard links: exFAT/FAT USB
+// drives (ENOTSUP on macOS, EPERM on Linux vfat) and SMB/NFS shares that
+// refuse links (EOPNOTSUPP, ENOSYS, EINVAL). libuv maps Windows
+// ERROR_INVALID_FUNCTION, which CreateHardLink returns on FAT, to EISDIR.
+const HARD_LINK_UNSUPPORTED_CODES = new Set(['ENOTSUP', 'EOPNOTSUPP', 'EPERM', 'ENOSYS', 'EINVAL']);
+
+function hardLinksUnsupported(error, platform) {
+  return HARD_LINK_UNSUPPORTED_CODES.has(error?.code)
+    || (platform === 'win32' && error?.code === 'EISDIR');
+}
+
+/**
+ * The new bytes are already at filePath, but the save cannot be reported as
+ * complete. The registry adopts publishedFingerprint so the next save is
+ * compared against the bytes that really are on disk.
+ */
+function publishedWriteError(error, publishedFingerprint) {
+  let failure = error;
+  if (!(failure instanceof Error) || !Object.isExtensible(failure)) {
+    failure = new Error(error?.message ?? String(error), { cause: error });
+    if (error?.code) failure.code = error.code;
+  }
+  failure.published = true;
+  failure.publishedFingerprint = publishedFingerprint;
+  return failure;
+}
+
 export async function writeNativeFileAtomically(
   filePath,
   bytes,
@@ -637,6 +664,7 @@ export async function writeNativeFileAtomically(
     openImpl = open,
     copyFileImpl = copyFile,
     linkImpl = link,
+    lstatImpl = lstat,
     renameImpl = rename,
     rmImpl = rm,
     statImpl = stat,
@@ -647,6 +675,7 @@ export async function writeNativeFileAtomically(
     windowsProcessEnv = process.env,
     expectedFingerprint,
     sleep,
+    logger = console,
   } = {},
 ) {
   const temporaryPath = `${filePath}.rauhwpx-${process.pid}-${randomUUID()}.tmp`;
@@ -656,8 +685,8 @@ export async function writeNativeFileAtomically(
   const linkProbePath = `${filePath}.rauhwpx-${process.pid}-${randomUUID()}.link-probe`;
   let temporaryFile;
   let backupMoved = false;
-  let published = false;
   let linkProbeCreated = false;
+  let publishByRename = false;
   try {
     let sourceInfo = null;
     try {
@@ -713,10 +742,19 @@ export async function writeNativeFileAtomically(
     try {
       await linkImpl(temporaryPath, linkProbePath);
       linkProbeCreated = true;
-      await rmImpl(linkProbePath, { force: true });
-      linkProbeCreated = false;
     } catch (error) {
-      throw nativeFileAtomicUnsupportedError(error);
+      // Volumes without hard links still support an atomic rename. Other probe
+      // failures (EIO, EACCES) mean the folder cannot be written safely.
+      if (!hardLinksUnsupported(error, platform)) throw nativeFileAtomicUnsupportedError(error);
+      publishByRename = true;
+    }
+    if (linkProbeCreated) {
+      try {
+        await rmImpl(linkProbePath, { force: true });
+        linkProbeCreated = false;
+      } catch (error) {
+        throw nativeFileAtomicUnsupportedError(error);
+      }
     }
 
     if (effectiveExpectedFingerprint.state === 'file') {
@@ -734,34 +772,36 @@ export async function writeNativeFileAtomically(
         throw nativeFileConflictError();
       }
     }
-    try {
-      // A hard link publishes the prepared inode only while the destination
-      // is absent. If an editor or sync client creates a new path after the
-      // rename-aside compare, EEXIST turns the save into a conflict.
-      await linkImpl(temporaryPath, filePath);
-    } catch (error) {
-      if (error?.code === 'EEXIST') throw nativeFileConflictError();
-      throw nativeFileAtomicUnsupportedError(error);
+    if (publishByRename) {
+      // rename() replaces an existing destination, so first check that
+      // nothing took the path after the rename-aside compare.
+      let destinationTaken = true;
+      try {
+        await lstatImpl(filePath);
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+        destinationTaken = false;
+      }
+      if (destinationTaken) throw nativeFileConflictError();
+      await retryWindows(() => renameImpl(temporaryPath, filePath), platform, sleep);
+    } else {
+      try {
+        // A hard link publishes the prepared inode only while the destination
+        // is absent. If an editor or sync client creates a new path after the
+        // rename-aside compare, EEXIST turns the save into a conflict.
+        await linkImpl(temporaryPath, filePath);
+      } catch (error) {
+        if (error?.code === 'EEXIST') throw nativeFileConflictError();
+        throw nativeFileAtomicUnsupportedError(error);
+      }
     }
-    published = true;
-    await retryWindows(() => rmImpl(temporaryPath, { force: true }), platform, sleep);
-
-    await syncParentImpl(filePath, platform);
-    if (backupMoved) {
-      await retryWindows(() => rmImpl(backupPath, { force: true }), platform, sleep);
-      backupMoved = false;
-      await syncParentImpl(filePath, platform);
-    }
-    const savedInfo = await statImpl(filePath, { bigint: true });
-    if (!savedInfo.isFile()) throw nativeFileConflictError();
-    return nativeFileFingerprint(savedInfo, contentDigest(bytes));
   } catch (error) {
     const restoreErrors = [];
     await temporaryFile?.close().catch(() => {});
     if (linkProbeCreated) {
       await rmImpl(linkProbePath, { force: true }).catch(() => {});
     }
-    if (backupMoved && !published) {
+    if (backupMoved) {
       try {
         await linkImpl(backupPath, filePath);
         await rmImpl(backupPath, { force: true });
@@ -769,9 +809,9 @@ export async function writeNativeFileAtomically(
       } catch (restoreError) {
         try {
           // COPYFILE_EXCL is the non-overwriting rollback for filesystems
-          // whose hard-link support changed after the probe. It is also worth
-          // retrying after EEXIST because a sync client may remove its
-          // conflicting path between these two exclusive operations.
+          // without hard links, or whose support changed after the probe. It
+          // is also worth retrying after EEXIST because a sync client may
+          // remove its conflicting path between these two exclusive operations.
           await copyFileImpl(backupPath, filePath, constants.COPYFILE_EXCL);
           await rmImpl(backupPath, { force: true });
           backupMoved = false;
@@ -788,11 +828,51 @@ export async function writeNativeFileAtomically(
     if (!error?.processCleanupUncertain) {
       await rmImpl(temporaryPath, { force: true }).catch(() => {});
     }
-    if (backupMoved && !published) {
+    if (backupMoved) {
       throw nativeFileRecoveryRequiredError(error, backupPath, restoreErrors);
     }
     throw error;
   }
+
+  // Published: filePath now holds the new bytes. A cleanup failure must not
+  // turn this into a failed save, or the registry keeps the old fingerprint
+  // and every later save to this document reports a conflict.
+  if (!publishByRename) {
+    await retryWindows(() => rmImpl(temporaryPath, { force: true }), platform, sleep)
+      .catch((error) => logger?.warn?.('[native-save] temporary link cleanup failed:', error));
+  }
+  let durabilityError = null;
+  try {
+    await syncParentImpl(filePath, platform);
+  } catch (error) {
+    // The new bytes are visible, but the rename may not survive a power loss.
+    // Report it and keep the recovery copy of the previous document.
+    durabilityError = error;
+  }
+  if (!durabilityError && backupMoved) {
+    try {
+      await retryWindows(() => rmImpl(backupPath, { force: true }), platform, sleep);
+      await syncParentImpl(filePath, platform);
+    } catch (error) {
+      logger?.warn?.('[native-save] recovery copy cleanup failed:', error);
+    }
+  }
+  let publishedFingerprint = null;
+  let fingerprintError = null;
+  try {
+    // Stat after cleanup so nlink counts a temp link that could not be removed.
+    const savedInfo = await statImpl(filePath, { bigint: true });
+    if (savedInfo.isFile()) {
+      publishedFingerprint = nativeFileFingerprint(savedInfo, contentDigest(bytes));
+    } else {
+      fingerprintError = nativeFileConflictError();
+    }
+  } catch (error) {
+    fingerprintError = error;
+  }
+  if (durabilityError) throw publishedWriteError(durabilityError, publishedFingerprint);
+  if (!publishedFingerprint) throw publishedWriteError(fingerprintError, null);
+  return publishedFingerprint;
 }
 
 function isPortableHistoryBundleName(filePath) {
@@ -1025,6 +1105,9 @@ export class NativeFileHandleRegistry {
       releaseRequested: false,
       legacyPortableHistoryFolder,
       diskFingerprint,
+      // Bumped by every write so a slower adoptLoadedContent read never
+      // replaces a fingerprint that a save produced in the meantime.
+      fingerprintEpoch: 0,
     };
     this.#byId.set(entry.handleId, entry);
     this.#byPath.set(ownershipPath, entry);
@@ -1033,6 +1116,44 @@ export class NativeFileHandleRegistry {
 
   async createSaveTarget(sessionId, filePath) {
     return this.create(sessionId, filePath, { allowMissing: true });
+  }
+
+  /**
+   * The renderer finished loading bytes whose SHA-256 is `digest` through this
+   * handle. Opening a path this window already owns reuses its entry, whose
+   * fingerprint still describes the version first opened. After an external
+   * change every save would then conflict until the window closed. Adopt the
+   * disk state only when it holds exactly the loaded bytes, so a load that was
+   * cancelled or read a different version can never enable a silent overwrite.
+   */
+  async adoptLoadedContent(senderSessionId, handleId, digest) {
+    const entry = this.#entryForSender(senderSessionId, handleId);
+    if (entry.legacyPortableHistoryFolder) return false;
+    if (typeof digest !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(digest)) return false;
+    if (entry.diskFingerprint?.state === 'file' && entry.diskFingerprint.digest === digest) {
+      // Same bytes as the baseline. A sync client rewriting identical bytes, or
+      // deleting a leftover temp link, still changes the file generation and
+      // every save would conflict. Skip the rehash only if a stat agrees.
+      const info = await this.#stat(entry.canonicalPath, { bigint: true }).catch(() => null);
+      if (info?.isFile?.() && nativeFileGeneration(info) === entry.diskFingerprint.generation) {
+        return true;
+      }
+    }
+    if (entry.activeWrites > 0) return false;
+    const epoch = entry.fingerprintEpoch;
+    const fingerprint = await this.#fingerprint(entry.canonicalPath);
+    if (
+      entry.activeWrites > 0
+      || entry.fingerprintEpoch !== epoch
+      || this.#byId.get(handleId) !== entry
+      || !isNativeFileFingerprint(fingerprint)
+      || fingerprint.state !== 'file'
+      || fingerprint.digest !== digest
+    ) {
+      return false;
+    }
+    entry.diskFingerprint = fingerprint;
+    return true;
   }
 
   // The last accepted load/save fingerprint, never a fresh read of an external edit.
@@ -1092,9 +1213,23 @@ export class NativeFileHandleRegistry {
         // Revalidate after earlier queued writes. A stale window/document must
         // never reach the filesystem merely because it entered the queue first.
         this.validateSave(senderSessionId, handleId, identity, leases);
-        const savedFingerprint = await this.#writeFile(entry.canonicalPath, bytes, {
-          expectedFingerprint: entry.diskFingerprint,
-        });
+        entry.fingerprintEpoch += 1;
+        let savedFingerprint;
+        try {
+          savedFingerprint = await this.#writeFile(entry.canonicalPath, bytes, {
+            expectedFingerprint: entry.diskFingerprint,
+          });
+        } catch (error) {
+          // The bytes reached disk before a durability or cleanup step failed.
+          // Keeping the old fingerprint would turn every later save into a
+          // conflict, and reopening to clear it would discard the edits.
+          const published = error?.published === true ? error.publishedFingerprint : null;
+          if (isNativeFileFingerprint(published) && published.state === 'file') {
+            entry.diskFingerprint = published;
+            this.#refreshBookmarkDigest(identity, entry, bytes);
+          }
+          throw error;
+        }
         entry.diskFingerprint = isNativeFileFingerprint(savedFingerprint)
           ? savedFingerprint
           : await this.#fingerprint(entry.canonicalPath);

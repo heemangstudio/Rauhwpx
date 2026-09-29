@@ -1,5 +1,5 @@
 import { ModalDialog } from '@/ui/dialog';
-import type { AutosaveDraft } from './autosave-store.ts';
+import type { AutosaveDraftSummary } from './autosave-store.ts';
 import { describeDraft } from './recovery-format.ts';
 
 export type AutosaveRecoveryChoice =
@@ -11,7 +11,7 @@ class AutosaveRecoveryDialog extends ModalDialog {
   private resolve!: (choice: AutosaveRecoveryChoice) => void;
   private selectedDraftId: string;
 
-  constructor(private readonly drafts: AutosaveDraft[]) {
+  constructor(private readonly drafts: readonly AutosaveDraftSummary[]) {
     super('문서 복구', 520);
     this.selectedDraftId = drafts[0]?.id ?? '';
   }
@@ -128,6 +128,6 @@ class AutosaveRecoveryDialog extends ModalDialog {
   }
 }
 
-export function showAutosaveRecoveryDialog(drafts: AutosaveDraft[]): Promise<AutosaveRecoveryChoice> {
+export function showAutosaveRecoveryDialog(drafts: readonly AutosaveDraftSummary[]): Promise<AutosaveRecoveryChoice> {
   return new AutosaveRecoveryDialog(drafts).showAsync();
 }

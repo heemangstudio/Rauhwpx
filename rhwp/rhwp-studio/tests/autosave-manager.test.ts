@@ -57,7 +57,7 @@ test('AutosaveManager는 dirty 이벤트 후 현재 문서를 draft로 저장한
 
 test('AutosaveManager scopes draft ownership and heartbeat to the renderer session', async () => {
   const { store, saved } = createStore();
-  const heartbeats: Array<{ launchId: string; sessionId: string; at: number }> = [];
+  const heartbeats: Array<{ launchId: string; sessionId: string; instanceId?: string; at: number }> = [];
   store.touchSession = async (owner, at) => {
     heartbeats.push({ ...owner, at });
   };
@@ -66,6 +66,7 @@ test('AutosaveManager scopes draft ownership and heartbeat to the renderer sessi
     schedule: { recoveryEnabled: false, idleEnabled: false },
     now: () => 5_000,
     idFactory: () => 'draft-owned',
+    instanceId: 'page-a',
     owner: { launchId: 'launch-a', sessionId: 'window-a' },
     heartbeatIntervalMs: 0,
     store,
@@ -75,7 +76,11 @@ test('AutosaveManager scopes draft ownership and heartbeat to the renderer sessi
   await manager.beginDocument({ fileName: 'owned.hwp', sourceFormat: 'hwp' });
   await manager.flushNow('manual');
 
-  assert.deepEqual(heartbeats.at(-1), { launchId: 'launch-a', sessionId: 'window-a', at: 5_000 });
+  assert.deepEqual(heartbeats.at(-1), {
+    launchId: 'launch-a', sessionId: 'window-a', instanceId: 'page-a', at: 5_000,
+  });
+  // lock 없이 실행한 페이지의 draft 는 instance 를 기록하지 않아 heartbeat 규칙을 따른다.
+  assert.equal(saved[0]?.ownerInstanceId, undefined);
   assert.equal(saved[0]?.ownerLaunchId, 'launch-a');
   assert.equal(saved[0]?.ownerSessionId, 'window-a');
   assert.equal(saved[0]?.ownerHeartbeatAt, 5_000);
@@ -287,4 +292,105 @@ test('AutosaveManager는 대기 중인 저장이 없으면 설정 변경만으�
   await sleep(10);
 
   assert.equal(saved.length, 0);
+});
+
+test('a failed draft write reports an error and retries while the document sits idle', async () => {
+  const states: string[] = [];
+  const attempts: string[] = [];
+  let failures = 2;
+  const store: AutosaveStoreLike = {
+    async saveDraft(draft) {
+      attempts.push(draft.id);
+      if (failures > 0) {
+        failures -= 1;
+        throw new DOMException('disk full', 'QuotaExceededError');
+      }
+    },
+    async deleteDraft() {},
+  };
+  const manager = new AutosaveManager({
+    exportBytes: () => new Uint8Array([1]),
+    schedule: { recoveryEnabled: false, idleEnabled: false },
+    idFactory: () => 'draft-retry',
+    retryDelayMs: 2,
+    store,
+    logger: { debug() {}, warn() {} },
+    onStatus: (status) => states.push(status.state),
+  });
+
+  await manager.beginDocument({ fileName: 'retry.hwp', sourceFormat: 'hwp' });
+  await manager.flushNow('typing');
+  assert.deepEqual(states, ['saving', 'error']);
+  await sleep(100);
+  assert.deepEqual(attempts, ['draft-retry', 'draft-retry', 'draft-retry']);
+  assert.deepEqual(states, ['saving', 'error', 'saving', 'error', 'saving', 'saved']);
+  manager.dispose();
+});
+
+test('a recovered draft keeps its id and is never deleted before a rewrite succeeds', async () => {
+  const ops: string[] = [];
+  let failNext = true;
+  const store: AutosaveStoreLike = {
+    async saveDraft(draft) {
+      if (failNext) {
+        failNext = false;
+        throw new Error('write failed');
+      }
+      ops.push(`save:${draft.id}`);
+    },
+    async deleteDraft(id) {
+      ops.push(`delete:${id}`);
+    },
+  };
+  const manager = new AutosaveManager({
+    exportBytes: () => new Uint8Array([1]),
+    schedule: { recoveryEnabled: false, idleEnabled: false },
+    idFactory: () => 'fresh-id',
+    retryDelayMs: 60_000,
+    store,
+    logger: { debug() {}, warn() {} },
+  });
+
+  await manager.beginDocument({ fileName: 'crashed.hwp', sourceFormat: 'hwp', draftId: 'recovered' });
+  await manager.flushNow('autosave-recovered');
+  assert.deepEqual(ops, [], 'a failed rewrite leaves the recovered draft in place');
+  await manager.flushNow('typing');
+  assert.deepEqual(ops, ['save:recovered']);
+  assert.equal(manager.getCurrentDraftId(), 'recovered');
+  manager.dispose();
+});
+
+test('drafts carry the page instance only once its owner lock is held', async () => {
+  const { store, saved } = createStore();
+  const requested: string[] = [];
+  let released = false;
+  const locks = {
+    async request(name: string, callback: () => unknown) {
+      requested.push(name);
+      await callback();
+      released = true;
+      return undefined;
+    },
+    async query() { return { held: [] }; },
+  };
+  const manager = new AutosaveManager({
+    exportBytes: () => new Uint8Array([1]),
+    schedule: { recoveryEnabled: false, idleEnabled: false },
+    idFactory: () => 'draft-locked',
+    instanceId: 'page-1',
+    owner: { launchId: 'launch', sessionId: 'window' },
+    heartbeatIntervalMs: 0,
+    locks,
+    store,
+    logger: { debug() {}, warn() {} },
+  });
+
+  await manager.beginDocument({ fileName: 'locked.hwp', sourceFormat: 'hwp' });
+  await manager.flushNow('typing');
+  assert.deepEqual(requested, ['rhwp-autosave-owner:page-1']);
+  assert.equal(saved[0]?.ownerInstanceId, 'page-1');
+  assert.equal(released, false, 'the lock is held for the page lifetime');
+  manager.dispose();
+  await tick();
+  assert.equal(released, true);
 });
