@@ -84,7 +84,8 @@ impl core::fmt::Debug for RecordSize {
 
 impl RecordSize {
     pub fn byte_count(&self) -> usize {
-        self.0 as usize * 2
+        // wasm32 의 usize 는 32비트라 `u32 * 2` 가 넘칠 수 있다 (디버그 패닉/릴리스 wrap).
+        (self.0 as usize).saturating_mul(2)
     }
 
     pub fn word_size(&self) -> usize {

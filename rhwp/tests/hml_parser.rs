@@ -991,3 +991,70 @@ fn parse_document_dispatches_hml_into_document_ir() {
 
     assert_eq!(document.sections[0].paragraphs[0].text, "안녕 HML 123");
 }
+
+/// TAIL 아래 미지원 자식 `count` 개. 자식마다 경고 하나와 보존 캡슐 하나가 생긴다.
+fn hml_with_tail_children(count: usize) -> Vec<u8> {
+    let mut xml = String::from(r#"<HWPML Version="2.91"><HEAD/><BODY><SECTION/></BODY><TAIL>"#);
+    for _ in 0..count {
+        xml.push_str("<a/>");
+    }
+    xml.push_str("</TAIL></HWPML>");
+    xml.into_bytes()
+}
+
+/// 보존 캡슐 순서(`order`)를 캡슐마다 앞선 캡슐 전부를 다시 세어 구하던 때는
+/// 20만 개에 수 분이 걸렸다(4만 개 1.4초, 개수의 제곱에 비례).
+#[test]
+fn many_preserved_tail_children_parse_in_linear_time() {
+    const CHILDREN: usize = 200_000;
+    let limits = HmlLimits {
+        max_preserved_fragments: CHILDREN,
+        max_warnings: CHILDREN,
+        ..HmlLimits::default()
+    };
+    let xml = hml_with_tail_children(CHILDREN);
+
+    let started = std::time::Instant::now();
+    let parsed = parse_hml_with_limits(&xml, &limits).expect("TAIL children should parse");
+    let elapsed = started.elapsed();
+
+    assert_eq!(parsed.preserved_fragments.len(), CHILDREN);
+    assert_eq!(parsed.warnings.len(), CHILDREN);
+    let last = parsed.preserved_fragments.last().expect("fragments");
+    assert_eq!((last.parent.as_str(), last.order), ("TAIL", CHILDREN - 1));
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "{CHILDREN} TAIL children took {elapsed:?}"
+    );
+}
+
+#[test]
+fn preserved_fragment_count_is_capped_by_default() {
+    let max = HmlLimits::default().max_preserved_fragments;
+
+    let at_cap = parse_hml(&hml_with_tail_children(max)).expect("cap-sized TAIL should parse");
+    assert_eq!(at_cap.preserved_fragments.len(), max);
+
+    assert!(matches!(
+        parse_hml(&hml_with_tail_children(max + 1)),
+        Err(HmlError::LimitExceeded(_))
+    ));
+}
+
+#[test]
+fn warnings_beyond_the_cap_collapse_into_one_summary() {
+    let limits = HmlLimits {
+        max_warnings: 5,
+        ..HmlLimits::default()
+    };
+
+    let parsed = parse_hml_with_limits(&hml_with_tail_children(12), &limits)
+        .expect("TAIL children should parse");
+
+    assert_eq!(parsed.preserved_fragments.len(), 12);
+    assert_eq!(parsed.warnings.len(), 6);
+    assert!(parsed.warnings[..5]
+        .iter()
+        .all(|warning| warning.code == HmlWarningCode::UnsupportedElement));
+    assert_eq!(parsed.warnings[5].code, HmlWarningCode::LossyConversion);
+}

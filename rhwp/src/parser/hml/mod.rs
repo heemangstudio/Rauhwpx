@@ -41,13 +41,14 @@ pub fn parse_hml(bytes: &[u8]) -> Result<HmlParseResult, HmlError> {
 
 pub fn parse_hml_with_limits(bytes: &[u8], limits: &HmlLimits) -> Result<HmlParseResult, HmlError> {
     let decoded = encoding::decode(bytes, limits.max_xml_bytes)?;
-    let source = reader::read_hml(&decoded.text, limits)?;
+    let mut source = reader::read_hml(&decoded.text, limits)?;
     let version = Some(source.version.clone());
     let sub_version = source.sub_version.clone();
     let style = source.style.clone();
     let resource_count = source.resource_count;
-    let warnings = source.warnings.clone();
-    let preserved_fragments = source.preserved_fragments.clone();
+    // 어댑터는 경고·보존 캡슐을 읽지 않는다. 복제하지 않고 옮긴다.
+    let warnings = std::mem::take(&mut source.warnings);
+    let preserved_fragments = std::mem::take(&mut source.preserved_fragments);
     let document = adapter::into_document(source)?;
     Ok(HmlParseResult {
         document,

@@ -275,29 +275,29 @@ impl From<Pen> for Stroke {
 
         match v.style.style {
             PenStyle::PS_DASH => {
-                stroke.dash_array = format!("{v} {v}", v = v.width.x * 10);
+                stroke.dash_array = format!("{v} {v}", v = i32::from(v.width.x) * 10);
             }
             PenStyle::PS_ALTERNATE | PenStyle::PS_DOT => {
-                stroke.dash_array = format!("{} {}", v.width.x, v.width.x * 10);
+                stroke.dash_array = format!("{} {}", v.width.x, i32::from(v.width.x) * 10);
             }
             PenStyle::PS_DASHDOT => {
                 stroke.dash_array = format!(
                     "{} {} {} {}",
-                    v.width.x * 10,
-                    v.width.x * 2,
+                    i32::from(v.width.x) * 10,
+                    i32::from(v.width.x) * 2,
                     v.width.x,
-                    v.width.x * 2,
+                    i32::from(v.width.x) * 2,
                 );
             }
             PenStyle::PS_DASHDOTDOT => {
                 stroke.dash_array = format!(
                     "{} {} {} {} {} {}",
-                    v.width.x * 10,
-                    v.width.x * 2,
+                    i32::from(v.width.x) * 10,
+                    i32::from(v.width.x) * 2,
                     v.width.x,
-                    v.width.x * 2,
+                    i32::from(v.width.x) * 2,
                     v.width.x,
-                    v.width.x * 2,
+                    i32::from(v.width.x) * 2,
                 );
             }
             _ => {}
@@ -396,7 +396,7 @@ impl Font {
         };
 
         if self.orientation != 0 {
-            let ori = self.orientation - self.escapement;
+            let ori = i32::from(self.orientation) - i32::from(self.escapement);
 
             if ori != 0 {
                 elem = elem.set("rotate", -ori / 10);
@@ -406,7 +406,12 @@ impl Font {
         if self.escapement != 0 {
             elem = elem.set(
                 "transform",
-                format!("rotate({}, {} {})", -self.escapement / 10, point.x, point.y),
+                format!(
+                    "rotate({}, {} {})",
+                    -i32::from(self.escapement) / 10,
+                    point.x,
+                    point.y
+                ),
             );
         }
 
@@ -437,7 +442,7 @@ impl Font {
 
         elem = elem
             .set("font-family", format!("'{}'", font_family.join("','")))
-            .set("font-size", self.height.abs())
+            .set("font-size", self.height.unsigned_abs())
             .set("font-weight", self.weight);
 
         (elem, styles)

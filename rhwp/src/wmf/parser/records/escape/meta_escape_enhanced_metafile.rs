@@ -40,9 +40,10 @@ impl crate::wmf::parser::META_ESCAPE {
                 + enhanced_metafile_data_size_bytes,
         );
 
-        let expected_byte_count = enhanced_metafile_data_size + 34;
+        // u32 덧셈은 거대한 data size 에서 넘친다 — u64 로 비교한다.
+        let expected_byte_count = u64::from(enhanced_metafile_data_size) + 34;
 
-        if u32::from(byte_count) != expected_byte_count {
+        if u64::from(byte_count) != expected_byte_count {
             return Err(crate::wmf::parser::ParseError::UnexpectedPattern {
                 cause: format!(
                     "The byte_count `{byte_count:#010X}` field must be same \

@@ -44,7 +44,18 @@ impl META_POLYLINE {
             crate::wmf::parser::read_i16_from_le_bytes(buf)?;
         record_size.consume(number_of_points_bytes);
 
-        let mut a_points = Vec::with_capacity(number_of_points as usize);
+        // NumberOfPoints 는 부호 있는 i16 이다. 음수를 `as usize` 로 예약하면
+        // capacity overflow 로 패닉한다. 예약량은 레코드가 실제로 담을 수 있는
+        // PointS(4바이트) 개수로 제한한다.
+        if number_of_points < 0 {
+            return Err(crate::wmf::parser::ParseError::UnexpectedPattern {
+                cause: format!(
+                    "The number_of_points `{number_of_points}` field must not be negative"
+                ),
+            });
+        }
+        let mut a_points =
+            Vec::with_capacity((number_of_points as usize).min(record_size.remaining_bytes() / 4));
 
         for _ in 0..number_of_points {
             let (v, c) = crate::wmf::parser::PointS::parse(buf)?;

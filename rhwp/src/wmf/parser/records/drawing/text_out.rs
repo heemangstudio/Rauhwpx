@@ -57,10 +57,18 @@ impl META_TEXTOUT {
         let (string_length, string_length_bytes) = crate::wmf::parser::read_i16_from_le_bytes(buf)?;
         record_size.consume(string_length_bytes);
 
-        let string_len = string_length + (string_length % 2);
+        // StringLength 는 부호 있는 i16 이다. 음수를 `as usize` 로 넘기면 거의
+        // usize::MAX 가 할당 길이가 되고, 32767 은 짝수 보정에서 i16 이 넘친다.
+        if string_length < 0 {
+            return Err(crate::wmf::parser::ParseError::UnexpectedPattern {
+                cause: format!("The string_length `{string_length}` field must not be negative"),
+            });
+        }
+        let string_len = string_length as usize;
+        let string_len = string_len + (string_len % 2);
 
         let ((string, string_bytes), (y_start, y_start_bytes), (x_start, x_start_bytes)) = (
-            crate::wmf::parser::read_variable(buf, string_len as usize)?,
+            crate::wmf::parser::read_variable(buf, string_len)?,
             crate::wmf::parser::read_i16_from_le_bytes(buf)?,
             crate::wmf::parser::read_i16_from_le_bytes(buf)?,
         );
