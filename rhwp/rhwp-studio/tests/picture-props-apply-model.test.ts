@@ -5,6 +5,10 @@ import { codeOnly, functionBodyFrom } from './support/source-guard.ts';
 import type { CellPathLike, PictureProperties, ShapeProperties } from '../src/core/types.ts';
 import {
   buildPicturePropsPatch,
+  colorRefToHex,
+  displayedMm,
+  displayedScale,
+  fillPatternOption,
   resolvePicturePropsApplyTarget,
   type PicturePropsApplyForm,
   type PicturePropsObjectType,
@@ -149,7 +153,7 @@ const fixtures: PatchFixture[] = [
     update(form) {
       Object.assign(form.common, {
         width: '12.5',
-        height: '0',
+        height: '20.00',
         textWrap: 'Tight',
         horzRelTo: 'Page',
         horzAlign: 'Center',
@@ -164,7 +168,6 @@ const fixtures: PatchFixture[] = [
     },
     expected: {
       width: 3543,
-      height: 0,
       textWrap: 'Tight',
       horzRelTo: 'Page',
       horzAlign: 'Center',
@@ -279,7 +282,7 @@ const fixtures: PatchFixture[] = [
     },
   },
   {
-    name: 'line-style absent textbox controls retain zero and Top normalization',
+    name: 'absent textbox and fill controls leave those properties untouched',
     objectType: 'line',
     shapeProps: shapeProps({
       tbMarginLeft: 10,
@@ -290,18 +293,13 @@ const fixtures: PatchFixture[] = [
       fillType: 'solid',
       roundRate: 20,
     }),
-    expected: {
-      tbMarginLeft: 0,
-      tbMarginRight: 0,
-      tbMarginTop: 0,
-      tbMarginBottom: 0,
-      tbVerticalAlign: 'Top',
-      roundRate: 0,
-      fillType: 'none',
+    update(form) {
+      form.shapeCorner = { customChecked: true, customValue: '20', activeIndex: -1 };
     },
+    expected: {},
   },
   {
-    name: 'normal shape controls retain always-send shadow keys when values are unchanged',
+    name: 'an unchanged disabled shadow sends nothing',
     objectType: 'shape',
     shapeProps: shapeProps(),
     update(form) {
@@ -313,7 +311,7 @@ const fixtures: PatchFixture[] = [
         offsetY: '0',
       };
     },
-    expected: { shadowType: 0, shadowOffsetX: 0, shadowOffsetY: 0 },
+    expected: {},
   },
   {
     name: 'line snapshot preserves detached shape controls from a reused dialog instance',
@@ -335,7 +333,7 @@ const fixtures: PatchFixture[] = [
       form.shapeFill = {
         solidChecked: true,
         solidColors: { face: '#010203', pattern: '#040506' },
-        patternType: '2',
+        patternType: 'dline1',
         transparency: '10',
       };
     },
@@ -377,7 +375,7 @@ const fixtures: PatchFixture[] = [
     },
   },
   {
-    name: 'solid fill always sends colors, pattern fallback, and alpha',
+    name: 'switching to a solid fill sends the displayed colors, pattern, and alpha',
     objectType: 'shape',
     shapeProps: shapeProps(),
     update(form) {
@@ -385,7 +383,7 @@ const fixtures: PatchFixture[] = [
         solidChecked: true,
         gradientChecked: false,
         solidColors: { face: '#ff0000', pattern: '#00ff00' },
-        patternType: '0',
+        patternType: 'none',
         transparency: '50',
       };
     },
@@ -398,7 +396,7 @@ const fixtures: PatchFixture[] = [
     },
   },
   {
-    name: 'gradient fill preserves per-control fallback and always-send policy',
+    name: 'an existing gradient sends only edited gradient fields and keeps its type',
     objectType: 'group',
     shapeProps: shapeProps({ fillType: 'gradient' }),
     update(form) {
@@ -413,18 +411,16 @@ const fixtures: PatchFixture[] = [
       };
     },
     expected: {
-      gradientType: 1,
       gradientAngle: -15,
       gradientCenterX: 25,
-      gradientCenterY: 0,
       gradientBlur: 8,
       fillAlpha: 51,
     },
   },
   {
-    name: 'disabled shadow always sends type zero and zero offsets',
+    name: 'turning a shadow off sends only the shadow type',
     objectType: 'shape',
-    shapeProps: shapeProps(),
+    shapeProps: shapeProps({ shadowType: 2, shadowOffsetX: 283, shadowOffsetY: 283 } as Partial<ShapeProperties>),
     update(form) {
       form.shapeShadow = {
         present: true,
@@ -434,10 +430,10 @@ const fixtures: PatchFixture[] = [
         offsetY: '4',
       };
     },
-    expected: { shadowType: 0, shadowOffsetX: 0, shadowOffsetY: 0 },
+    expected: { shadowType: 0 },
   },
   {
-    name: 'enabled shadow always sends color and converted offsets',
+    name: 'enabling a shadow sends its color and converted offsets',
     objectType: 'shape',
     shapeProps: shapeProps(),
     update(form) {
@@ -457,8 +453,9 @@ const fixtures: PatchFixture[] = [
     },
   },
   {
-    name: 'caption center always sends hasCaption false without detail fields',
+    name: 'choosing the center cell removes an existing caption without detail fields',
     objectType: 'image',
+    props: pictureProps({ hasCaption: true, captionDirection: 'Bottom', captionWidth: 8504, captionSpacing: 850 }),
     update(form) {
       form.caption = {
         present: true,
@@ -471,23 +468,40 @@ const fixtures: PatchFixture[] = [
     expected: { hasCaption: false },
   },
   {
-    name: 'image scale overwrites common width and height patch values',
+    name: 'typed width and height win over the scale fields',
     objectType: 'image',
     update(form) {
       form.common.width = '99';
       form.common.height = '99';
       form.image.scale = { x: '50', y: '25' };
     },
+    expected: { width: 28063, height: 28063 },
+  },
+  {
+    name: 'an edited scale resizes when the size fields are untouched',
+    objectType: 'image',
+    update(form) {
+      form.image.scale = { x: '50', y: '25' };
+    },
     expected: { width: 500, height: 200 },
   },
   {
-    name: 'negative width/height input clamps to 0 instead of applying negative HWPUNIT',
+    name: 'non-positive width/height input is ignored instead of collapsing the object',
     objectType: 'image',
     update(form) {
       form.common.width = '-50';
-      form.common.height = '-30';
+      form.common.height = '0';
     },
-    expected: { width: 0, height: 0 },
+    expected: {},
+  },
+  {
+    name: 'an emptied width field does not write a zero width',
+    objectType: 'image',
+    update(form) {
+      form.common.width = '';
+      form.common.height = 'abc';
+    },
+    expected: {},
   },
   {
     name: 'image geometry, effects, border, and clamped transparency preserve field policy',
@@ -744,3 +758,182 @@ for (const objectType of ['image', 'shape', 'line', 'group', 'ole'] as const) {
     assert.equal('vertOffset' in patch, false, '바꾸지 않은 음수 세로 위치는 보존한다');
   });
 }
+
+// 채우기·그림자·크기 칸을 대화상자가 채우는 그대로 재현한다(picture-props-dialog populateFromProps).
+function populatedShapeForm(props: ShapeProperties & Record<string, number | string | undefined>): PicturePropsApplyForm {
+  const form = applyForm();
+  form.common.width = displayedMm(props.width);
+  form.common.height = displayedMm(props.height);
+  form.common.horzOffset = displayedMm(props.horzOffset);
+  form.common.vertOffset = displayedMm(props.vertOffset);
+  const fillType = props.fillType ?? 'none';
+  form.shapeFill = {
+    solidChecked: fillType === 'solid',
+    gradientChecked: fillType === 'gradient',
+    solidColors: {
+      face: props.fillBgColor === undefined ? '#ffffff' : colorRefToHex(props.fillBgColor),
+      pattern: props.fillPatColor === undefined ? '#000000' : colorRefToHex(props.fillPatColor),
+    },
+    patternType: fillPatternOption(props.fillPatType),
+    gradientType: 'linear',
+    gradientAngle: String(props.gradientAngle ?? 0),
+    gradientCenterX: String(props.gradientCenterX ?? 0),
+    gradientCenterY: String(props.gradientCenterY ?? 0),
+    gradientBlur: String(props.gradientBlur ?? 0),
+    transparency: String(Math.round((props.fillAlpha ?? 0) * 100 / 255)),
+  };
+  const shadowType = Number(props.shadowType ?? 0);
+  form.shapeShadow = {
+    present: true,
+    activeIndex: shadowType,
+    color: colorRefToHex(Number(props.shadowColor ?? 0xb2b2b2)),
+    offsetX: (Number(props.shadowOffsetX ?? 0) / (7200 / 25.4)).toFixed(1),
+    offsetY: (Number(props.shadowOffsetY ?? 0) / (7200 / 25.4)).toFixed(1),
+  };
+  return form;
+}
+
+test('untouched hatch pattern, alpha, and shadow survive a description-only edit', () => {
+  const props = shapeProps({
+    width: 14001,
+    height: 9999,
+    fillType: 'solid',
+    fillBgColor: 0x00ccbbaa,
+    fillPatColor: 0x00112233,
+    fillPatType: 3,
+    fillAlpha: 100,
+    shadowType: 1,
+    shadowColor: 0x00808080,
+    shadowOffsetX: 283,
+    shadowOffsetY: -142,
+  } as Partial<ShapeProperties>);
+  const form = populatedShapeForm(props as ShapeProperties & Record<string, number>);
+  form.common.description = 'edited';
+
+  assert.deepEqual(buildPicturePropsPatch('shape', props as unknown as PictureProperties, props, form), {
+    description: 'edited',
+  });
+});
+
+test('an untouched radial gradient keeps its gradient type', () => {
+  const props = shapeProps({
+    fillType: 'gradient',
+    gradientType: 2,
+    gradientAngle: 30,
+    gradientCenterX: 50,
+    gradientCenterY: 40,
+    gradientBlur: 10,
+    fillAlpha: 0,
+  });
+  const form = populatedShapeForm(props as ShapeProperties & Record<string, number>);
+  form.common.description = 'edited';
+
+  assert.deepEqual(buildPicturePropsPatch('shape', props as unknown as PictureProperties, props, form), {
+    description: 'edited',
+  });
+});
+
+test('a picked hatch pattern maps to the engine pattern code', () => {
+  const props = shapeProps({ fillType: 'solid', fillBgColor: 0xffffff, fillPatColor: 0, fillPatType: -1 });
+  const form = populatedShapeForm(props as ShapeProperties & Record<string, number>);
+  form.shapeFill.patternType = 'cross';
+
+  assert.deepEqual(buildPicturePropsPatch('shape', props as unknown as PictureProperties, props, form), {
+    fillPatType: 5,
+  });
+});
+
+test('a pattern code the dialog cannot show is preserved until the user picks one', () => {
+  const props = shapeProps({ fillType: 'solid', fillBgColor: 0xffffff, fillPatColor: 0, fillPatType: 4 });
+  const form = populatedShapeForm(props as ShapeProperties & Record<string, number>);
+  assert.equal(form.shapeFill.patternType, '', 'unknown codes populate as an empty selection');
+
+  assert.deepEqual(buildPicturePropsPatch('shape', props as unknown as PictureProperties, props, form), {});
+});
+
+test('untouched size, margin, border, crop, padding, and caption fields never drift', () => {
+  const HWP_PER_MM = 7200 / 25.4;
+  let checked = 0;
+  for (let size = 1000; size <= 60000; size += 37) {
+    const side = Math.round(size / 13);
+    const props = pictureProps({
+      width: size,
+      height: size + 7,
+      originalWidth: size * 3 + 1,
+      originalHeight: size * 2 + 5,
+      outerMarginLeft: side,
+      outerMarginTop: side + 1,
+      outerMarginRight: side + 2,
+      outerMarginBottom: side + 3,
+      borderWidth: side % 500,
+      cropLeft: side,
+      cropTop: side + 4,
+      cropRight: side + 5,
+      cropBottom: side + 6,
+      paddingLeft: side + 7,
+      paddingTop: side + 8,
+      paddingRight: side + 9,
+      paddingBottom: side + 10,
+      hasCaption: true,
+      captionDirection: 'Left',
+      captionVertAlign: 'Center',
+      captionWidth: size % 20000,
+      captionSpacing: side,
+      captionIncludeMargin: true,
+    });
+    const form = applyForm();
+    form.common.width = displayedMm(props.width);
+    form.common.height = displayedMm(props.height);
+    form.common.horzOffset = displayedMm(props.horzOffset);
+    form.common.vertOffset = displayedMm(props.vertOffset);
+    form.outerMargin = {
+      left: displayedMm(props.outerMarginLeft),
+      top: displayedMm(props.outerMarginTop),
+      right: displayedMm(props.outerMarginRight),
+      bottom: displayedMm(props.outerMarginBottom),
+    };
+    form.caption = {
+      present: true,
+      activeIndex: 3,
+      size: displayedMm(props.captionWidth),
+      gap: displayedMm(props.captionSpacing),
+      includeMargin: true,
+    };
+    form.line = { color: colorRefToHex(props.borderColor), width: displayedMm(props.borderWidth) };
+    form.image = {
+      scale: {
+        x: displayedScale(props.width, props.originalWidth),
+        y: displayedScale(props.height, props.originalHeight),
+      },
+      crop: {
+        left: displayedMm(props.cropLeft), top: displayedMm(props.cropTop),
+        right: displayedMm(props.cropRight), bottom: displayedMm(props.cropBottom),
+      },
+      padding: {
+        left: displayedMm(props.paddingLeft), top: displayedMm(props.paddingTop),
+        right: displayedMm(props.paddingRight), bottom: displayedMm(props.paddingBottom),
+      },
+      effectControlsPresent: false,
+    };
+    assert.deepEqual(buildPicturePropsPatch('image', props, null, form), {}, `size ${size}`);
+    checked++;
+  }
+  assert.ok(checked > 1000);
+  // 표시값을 되돌린 값이 원본과 다른 경우가 실제로 섞여 있어야 이 검사가 의미 있다.
+  assert.notEqual(Math.round(Number(displayedMm(14001)) * HWP_PER_MM), 14001);
+});
+
+test('a typed width is applied as typed even though the scale field still shows the old ratio', () => {
+  const props = pictureProps({ width: 14001, height: 9001, originalWidth: 7000, originalHeight: 4500 });
+  const form = applyForm();
+  form.common.width = '50.00';
+  form.common.height = displayedMm(props.height);
+  form.image.scale = {
+    x: displayedScale(props.width, props.originalWidth),
+    y: displayedScale(props.height, props.originalHeight),
+  };
+
+  assert.deepEqual(buildPicturePropsPatch('image', props, null, form), {
+    width: Math.round(50 * (7200 / 25.4)),
+  });
+});

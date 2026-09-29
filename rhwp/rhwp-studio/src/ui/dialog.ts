@@ -1,4 +1,6 @@
 import { enableDialogDrag } from './dialog-drag';
+import { isTopModal, popModal, pushModal } from './modal-stack';
+import { showToast } from './toast';
 
 let sheetTitleSeq = 0;
 
@@ -75,7 +77,16 @@ export abstract class ModalDialog {
     confirmBtn.className = 'dialog-btn dialog-btn-primary';
     confirmBtn.textContent = '확인';
     confirmBtn.addEventListener('click', () => {
-      const shouldClose = this.onConfirm();
+      let shouldClose: void | boolean;
+      try {
+        shouldClose = this.onConfirm();
+      } catch (error) {
+        // 적용이 실패하면 대화상자를 그대로 두고 이유를 알린다. 예외가 클릭 핸들러
+        // 밖으로 새면 아무 안내 없이 대화상자만 남는다.
+        console.warn(`[${this.title}] 적용 실패:`, error);
+        showToast({ message: `${this.title}: ${error instanceof Error ? error.message : String(error)}` });
+        return;
+      }
       if (shouldClose !== false) this.hide();
     });
 
@@ -107,10 +118,15 @@ export abstract class ModalDialog {
   show(): void {
     this.build();
     document.body.appendChild(this.overlay);
+    pushModal(this);
 
+    // 다시 열 때 이전 리스너를 떼지 않으면 키마다 두 번 처리된다.
+    if (this.captureHandler) document.removeEventListener('keydown', this.captureHandler, true);
     // document capture 단계에서 키 이벤트를 가로채 편집 영역 도달 차단
     // input/textarea/select 내부 조작과 Tab 포커스 이동은 허용한다.
+    // 위에 다른 대화상자가 열려 있으면 그 대화상자가 키를 처리한다.
     this.captureHandler = (e: KeyboardEvent) => {
+      if (!isTopModal(this)) return;
       const target = e.target as HTMLElement | null;
       const isEditable = target instanceof HTMLInputElement
         || target instanceof HTMLTextAreaElement
@@ -153,6 +169,7 @@ export abstract class ModalDialog {
       document.removeEventListener('keydown', this.captureHandler, true);
       this.captureHandler = null;
     }
+    popModal(this);
     this.overlay?.remove();
     this.afterClose?.();
   }

@@ -16,9 +16,14 @@ import type { EventBus } from '@/core/event-bus';
 import type { CommandServices } from '@/command/types';
 import { userSettings } from '@/core/user-settings';
 import { enableDialogDrag } from './dialog-drag';
+import { popModal, pushModal } from './modal-stack';
 import {
   buildPicturePropsPatch,
+  captionGridIndex,
+  colorRefToHex,
   displayedMm,
+  displayedScale,
+  fillPatternOption,
   resolvePicturePropsApplyTarget,
   type PicturePropsApplyForm,
   type PicturePropsApplyTarget,
@@ -32,13 +37,6 @@ function hwpToMm(hwp: number): number {
   return hwp / HWP_PER_MM;
 }
 
-/** HWP ColorRef (BGR u32) → HTML hex (#rrggbb) */
-function colorRefToHex(c: number): string {
-  const b = (c >> 16) & 0xFF;
-  const g = (c >> 8) & 0xFF;
-  const r = c & 0xFF;
-  return '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
-}
 
 /** 탭 이름 — 그림용 */
 const PICTURE_TAB_NAMES = ['기본', '여백/캡션', '선', '그림', '그림자', '반사', '네온', '열은 테두리'];
@@ -292,10 +290,12 @@ export class PicturePropsDialog {
     this.populateFromProps();
     this.switchTab(0);
     document.body.appendChild(this.overlay);
+    pushModal(this);
     setTimeout(() => this.widthInput?.select(), 50);
   }
 
   hide(): void {
+    popModal(this);
     this.overlay?.remove();
   }
 
@@ -314,6 +314,9 @@ export class PicturePropsDialog {
     // 다이얼로그 컨테이너
     this.dialog = document.createElement('div');
     this.dialog.className = 'dialog-wrap pp-dialog';
+    // 대화상자 안의 키가 문서 단축키로 새지 않도록 모달 대화상자로 표시한다.
+    this.dialog.setAttribute('role', 'dialog');
+    this.dialog.setAttribute('aria-modal', 'true');
 
     // 타이틀 바
     const titleBar = document.createElement('div');
@@ -2144,8 +2147,8 @@ export class PicturePropsDialog {
         this.picEmbedCheck.checked = true;
       }
     }
-    this.widthInput.value = hwpToMm(this.props.width).toFixed(2);
-    this.heightInput.value = hwpToMm(this.props.height).toFixed(2);
+    this.widthInput.value = displayedMm(this.props.width);
+    this.heightInput.value = displayedMm(this.props.height);
     this.sizeFixedCheck.checked = this.props.sizeProtect ?? false;
     this.treatAsCharCheck.checked = this.props.treatAsChar;
     this.selectWrap(this.wrapValues.indexOf(this.props.textWrap));
@@ -2185,10 +2188,10 @@ export class PicturePropsDialog {
       }
 
       if (isOle) {
-        if (this.outerMarginLeftInput) this.outerMarginLeftInput.value = hwpToMm(this.props.outerMarginLeft ?? 0).toFixed(2);
-        if (this.outerMarginRightInput) this.outerMarginRightInput.value = hwpToMm(this.props.outerMarginRight ?? 0).toFixed(2);
-        if (this.outerMarginTopInput) this.outerMarginTopInput.value = hwpToMm(this.props.outerMarginTop ?? 0).toFixed(2);
-        if (this.outerMarginBottomInput) this.outerMarginBottomInput.value = hwpToMm(this.props.outerMarginBottom ?? 0).toFixed(2);
+        if (this.outerMarginLeftInput) this.outerMarginLeftInput.value = displayedMm(this.props.outerMarginLeft ?? 0);
+        if (this.outerMarginRightInput) this.outerMarginRightInput.value = displayedMm(this.props.outerMarginRight ?? 0);
+        if (this.outerMarginTopInput) this.outerMarginTopInput.value = displayedMm(this.props.outerMarginTop ?? 0);
+        if (this.outerMarginBottomInput) this.outerMarginBottomInput.value = displayedMm(this.props.outerMarginBottom ?? 0);
         if (this.captionBtns.length > 0) {
           this.captionBtns.forEach(b => b.disabled = false);
           this.captionSizeInput.disabled = false;
@@ -2196,10 +2199,10 @@ export class PicturePropsDialog {
           this.captionExpandCheck.disabled = false;
 
           if (this.props.hasCaption) {
-            const gridIdx = this.captionGridIndex(this.props.captionDirection, this.props.captionVertAlign);
+            const gridIdx = captionGridIndex(this.props.captionDirection, this.props.captionVertAlign);
             this.captionBtns.forEach((b, j) => b.classList.toggle('active', j === gridIdx));
-            this.captionSizeInput.value = hwpToMm(this.props.captionWidth ?? 0).toFixed(2);
-            this.captionGapInput.value = hwpToMm(this.props.captionSpacing ?? 0).toFixed(2);
+            this.captionSizeInput.value = displayedMm(this.props.captionWidth ?? 0);
+            this.captionGapInput.value = displayedMm(this.props.captionSpacing ?? 0);
             this.captionExpandCheck.checked = !!this.props.captionIncludeMargin;
           } else {
             this.captionBtns.forEach(b => b.classList.remove('active'));
@@ -2210,10 +2213,10 @@ export class PicturePropsDialog {
         }
       } else {
         // 글상자 탭 — 여백
-        if (this.tbMarginLeftInput) this.tbMarginLeftInput.value = hwpToMm(sp.tbMarginLeft ?? 510).toFixed(2);
-        if (this.tbMarginRightInput) this.tbMarginRightInput.value = hwpToMm(sp.tbMarginRight ?? 510).toFixed(2);
-        if (this.tbMarginTopInput) this.tbMarginTopInput.value = hwpToMm(sp.tbMarginTop ?? 141).toFixed(2);
-        if (this.tbMarginBottomInput) this.tbMarginBottomInput.value = hwpToMm(sp.tbMarginBottom ?? 141).toFixed(2);
+        if (this.tbMarginLeftInput) this.tbMarginLeftInput.value = displayedMm(sp.tbMarginLeft ?? 510);
+        if (this.tbMarginRightInput) this.tbMarginRightInput.value = displayedMm(sp.tbMarginRight ?? 510);
+        if (this.tbMarginTopInput) this.tbMarginTopInput.value = displayedMm(sp.tbMarginTop ?? 141);
+        if (this.tbMarginBottomInput) this.tbMarginBottomInput.value = displayedMm(sp.tbMarginBottom ?? 141);
 
         // 글상자 탭 — 세로 정렬 아이콘 버튼
         const va = sp.tbVerticalAlign ?? 'Top';
@@ -2225,7 +2228,7 @@ export class PicturePropsDialog {
         this.lineColorInput.value = colorRefToHex(sp.borderColor);
       }
       if (this.lineWidthInput && sp.borderWidth !== undefined) {
-        this.lineWidthInput.value = hwpToMm(sp.borderWidth).toFixed(2);
+        this.lineWidthInput.value = displayedMm(sp.borderWidth);
       }
 
       // 선 탭 — 선 종류/끝모양/화살표
@@ -2268,8 +2271,9 @@ export class PicturePropsDialog {
         if (this.solidPatColor && sp.fillPatColor !== undefined) {
           this.solidPatColor.value = colorRefToHex(sp.fillPatColor);
         }
-        if (this.solidPatternSelect && sp.fillPatType !== undefined) {
-          // fillPatType은 정수 — select 값으로 매핑은 추후 세분화
+        if (this.solidPatternSelect) {
+          // 선택지에 없는 무늬 코드는 빈 선택으로 두어, 고르지 않으면 원래 코드를 보존한다.
+          this.solidPatternSelect.value = fillPatternOption(sp.fillPatType);
         }
 
         // 채우기 — 그러데이션
@@ -2337,10 +2341,10 @@ export class PicturePropsDialog {
       }
 
       // 여백/캡션 탭 — 바깥 여백
-      if (this.outerMarginLeftInput) this.outerMarginLeftInput.value = hwpToMm(pp.outerMarginLeft ?? 0).toFixed(2);
-      if (this.outerMarginRightInput) this.outerMarginRightInput.value = hwpToMm(pp.outerMarginRight ?? 0).toFixed(2);
-      if (this.outerMarginTopInput) this.outerMarginTopInput.value = hwpToMm(pp.outerMarginTop ?? 0).toFixed(2);
-      if (this.outerMarginBottomInput) this.outerMarginBottomInput.value = hwpToMm(pp.outerMarginBottom ?? 0).toFixed(2);
+      if (this.outerMarginLeftInput) this.outerMarginLeftInput.value = displayedMm(pp.outerMarginLeft ?? 0);
+      if (this.outerMarginRightInput) this.outerMarginRightInput.value = displayedMm(pp.outerMarginRight ?? 0);
+      if (this.outerMarginTopInput) this.outerMarginTopInput.value = displayedMm(pp.outerMarginTop ?? 0);
+      if (this.outerMarginBottomInput) this.outerMarginBottomInput.value = displayedMm(pp.outerMarginBottom ?? 0);
 
       // 여백/캡션 탭 — 캡션 바인딩
       if (this.captionBtns.length > 0) {
@@ -2352,10 +2356,10 @@ export class PicturePropsDialog {
 
         if (pp.hasCaption) {
           // 방향 + 세로 정렬 → 3×3 그리드 인덱스 매핑
-          const gridIdx = this.captionGridIndex(pp.captionDirection, pp.captionVertAlign);
+          const gridIdx = captionGridIndex(pp.captionDirection, pp.captionVertAlign);
           this.captionBtns.forEach((b, j) => b.classList.toggle('active', j === gridIdx));
-          this.captionSizeInput.value = hwpToMm(pp.captionWidth ?? 0).toFixed(2);
-          this.captionGapInput.value = hwpToMm(pp.captionSpacing ?? 0).toFixed(2);
+          this.captionSizeInput.value = displayedMm(pp.captionWidth ?? 0);
+          this.captionGapInput.value = displayedMm(pp.captionSpacing ?? 0);
           this.captionExpandCheck.checked = !!pp.captionIncludeMargin;
         } else {
           this.captionBtns.forEach(b => b.classList.remove('active'));
@@ -2370,27 +2374,27 @@ export class PicturePropsDialog {
         this.lineColorInput.value = colorRefToHex(pp.borderColor);
       }
       if (this.lineWidthInput && pp.borderWidth !== undefined) {
-        this.lineWidthInput.value = hwpToMm(pp.borderWidth).toFixed(2);
+        this.lineWidthInput.value = displayedMm(pp.borderWidth);
       }
 
       // 그림 탭 — 확대/축소 비율
       if (this.picScaleXInput && pp.originalWidth > 0) {
-        this.picScaleXInput.value = ((pp.width / pp.originalWidth) * 100).toFixed(2);
-        this.picScaleYInput.value = ((pp.height / pp.originalHeight) * 100).toFixed(2);
+        this.picScaleXInput.value = displayedScale(pp.width, pp.originalWidth);
+        this.picScaleYInput.value = pp.originalHeight > 0 ? displayedScale(pp.height, pp.originalHeight) : '100.00';
       }
       // 그림 탭 — 자르기
       if (this.picCropLeftInput) {
-        this.picCropLeftInput.value = hwpToMm(pp.cropLeft ?? 0).toFixed(2);
-        this.picCropTopInput.value = hwpToMm(pp.cropTop ?? 0).toFixed(2);
-        this.picCropRightInput.value = hwpToMm(pp.cropRight ?? 0).toFixed(2);
-        this.picCropBottomInput.value = hwpToMm(pp.cropBottom ?? 0).toFixed(2);
+        this.picCropLeftInput.value = displayedMm(pp.cropLeft ?? 0);
+        this.picCropTopInput.value = displayedMm(pp.cropTop ?? 0);
+        this.picCropRightInput.value = displayedMm(pp.cropRight ?? 0);
+        this.picCropBottomInput.value = displayedMm(pp.cropBottom ?? 0);
       }
       // 그림 탭 — 안쪽 여백 (그림 여백)
       if (this.picPadLeftInput) {
-        this.picPadLeftInput.value = hwpToMm(pp.paddingLeft ?? 0).toFixed(2);
-        this.picPadTopInput.value = hwpToMm(pp.paddingTop ?? 0).toFixed(2);
-        this.picPadRightInput.value = hwpToMm(pp.paddingRight ?? 0).toFixed(2);
-        this.picPadBottomInput.value = hwpToMm(pp.paddingBottom ?? 0).toFixed(2);
+        this.picPadLeftInput.value = displayedMm(pp.paddingLeft ?? 0);
+        this.picPadTopInput.value = displayedMm(pp.paddingTop ?? 0);
+        this.picPadRightInput.value = displayedMm(pp.paddingRight ?? 0);
+        this.picPadBottomInput.value = displayedMm(pp.paddingBottom ?? 0);
       }
       // 그림 탭 — 효과
       if (this.picEffectRadios.length > 0) {
@@ -2468,15 +2472,6 @@ export class PicturePropsDialog {
   }
 
   /** 캡션 direction + vertAlign → 3×3 그리드 인덱스 */
-  private captionGridIndex(dir: string, vAlign: string): number {
-    // 0:왼위 1:위 2:오위 3:왼 4:중앙 5:오 6:왼아 7:아래 8:오아
-    const col = dir === 'Left' ? 0 : dir === 'Right' ? 2 : 1;
-    const row = (dir === 'Left' || dir === 'Right')
-      ? (vAlign === 'Top' ? 0 : vAlign === 'Bottom' ? 2 : 1)
-      : (dir === 'Top' ? 0 : 2);
-    return row * 3 + col;
-  }
-
   /**
    * 개체 설명문 서브 대화상자 표시
    */

@@ -138,12 +138,12 @@ function mutatorCallCount(src: string): number {
 const BASELINE: Readonly<Record<string, number>> = {
   'src/command/commands/hyperlink.ts': 7, // #6963: 삽입·주소/표시 문자열 수정·해제 및 본문/셀 글자 삽입 모두 executeOperation snapshot 내부
   'src/command/commands/edit.ts': 1,
-  'src/command/commands/format.ts': 1,
   'src/command/commands/insert.ts': 19, // #327 18 + #7105 promoteOleEquation (recordObjectMutation snapshot 내부)
   'src/command/commands/page.ts': 10,
   'src/command/commands/table.ts': 38, // 중첩 표 삭제를 포함한 구조 변경은 executeOperation snapshot 내부에서 by-path API로 라우팅
   'src/ui/bookmark-dialog.ts': 3,
-  'src/ui/cell-border-bg-dialog.ts': 5,
+  'src/ui/cell-border-bg-dialog.ts': 3, // 각 셀마다 적용은 셀별 패치 한 곳(snapshot 내부)
+  'src/ui/char-shape-dialog.ts': 2, // 글꼴 이름 → ID (findOrCreateFontId/ForLang) 변환을 format·스타일 편집에서 한곳으로 모음
   'src/ui/column-settings-dialog.ts': 1,
   'src/ui/endnote-shape-dialog.ts': 1,
   'src/ui/equation-editor-dialog.ts': 6, // 본문/일반 셀/중첩 셀 수식 삽입·편집 모두 snapshot 내부
@@ -157,7 +157,7 @@ const BASELINE: Readonly<Record<string, number>> = {
   'src/ui/picture-props-dialog.ts': 5,
   'src/ui/section-settings-dialog.ts': 2,
   'src/ui/style-dialog.ts': 2, // +1: [#3387] 삭제를 snapshot 으로 라우팅하며 services 미주입 fallback 분기 추가(원장은 표면 수만 세므로 라우팅해도 줄지 않는다)
-  'src/ui/style-edit-dialog.ts': 6,
+  'src/ui/style-edit-dialog.ts': 4,
   'src/ui/table-cell-props-dialog.ts': 2,
   'src/ui/toolbar.ts': 4,
   // engine/input-handler* — 드래그/nudge 등 직접-뮤테이션 최고밀도 영역.
