@@ -336,6 +336,29 @@ test('scheduler does not requeue a running session whose full sandbox ID is stil
   assert.deepEqual(stops, []);
 });
 
+test('a failing retention purge is logged without stalling admission or startup', async () => {
+  const purgeError = Object.assign(new Error('FOREIGN KEY constraint failed'), { code: 'ERR_SQLITE_ERROR' });
+  const logged = [];
+  let claims = 0;
+  const sessionStore = {
+    database: {
+      prepare(sql) {
+        if (sql.includes("SELECT * FROM sessions WHERE status = 'running'")) return { all: () => [] };
+        if (sql.includes("SELECT COUNT(*) AS count FROM sessions WHERE status = 'running'")) return { get: () => ({ count: 0 }) };
+        throw new Error(`Unexpected scheduler query: ${sql}`);
+      },
+    },
+    expireRetainedSessions: async () => { throw purgeError; },
+    claimNextSession: () => { claims += 1; return null; },
+  };
+  const logger = { error: (event, fields) => logged.push({ event, ...fields }) };
+  const scheduler = new Scheduler(sessionStore, { list: async () => [] }, { logger });
+  await scheduler.tick();
+  assert.equal(claims, 1);
+  assert.deepEqual(logged, [{ event: 'retention.expire_failed', code: 'ERR_SQLITE_ERROR', message: 'FOREIGN KEY constraint failed' }]);
+  assert.equal(scheduler.health(), null);
+});
+
 test('scheduler starts up to the configured cap and suspends failed sandboxes durably', async (t) => {
   const { root, database } = await fixture(t);
   const blobs = new BlobStore(database, { root: path.join(root, 'objects') });
