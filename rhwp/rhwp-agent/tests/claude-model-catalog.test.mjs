@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import {
   createClaudeModelCatalog,
@@ -67,6 +70,32 @@ test('Claude discovery opens only a control channel and closes it', async () => 
   });
   assert.deepEqual(models, [{ value: 'sonnet' }]);
   assert.equal(closed, true);
+});
+
+test('Claude discovery runs the same PATH executable as chat, not the SDK bundle', { skip: process.platform === 'win32' }, async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-claude-path-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  await fs.writeFile(path.join(dir, 'claude'), '#!/bin/sh\n', { mode: 0o755 });
+  let executable;
+  await discoverClaudeModels({
+    bin: 'claude', env: { PATH: dir },
+    queryModels: ({ options }) => {
+      executable = options.pathToClaudeCodeExecutable;
+      return { supportedModels: async () => [], close: () => {} };
+    },
+  });
+  assert.equal(executable, path.join(dir, 'claude'));
+});
+
+test('Claude catalog does not reuse another credential\'s models', async () => {
+  let account = 'a';
+  const catalog = createClaudeModelCatalog({
+    discover: async () => [{ value: `claude-sonnet-${account === 'a' ? 10 : 11}` }],
+  });
+  const sonnet = (models) => models.find((model) => model.id.startsWith('claude-sonnet-1'))?.id;
+  assert.equal(sonnet(await catalog({ bin: 'claude', env: { CLAUDE_CODE_OAUTH_TOKEN: 'token-a' } })), 'claude-sonnet-10');
+  account = 'b';
+  assert.equal(sonnet(await catalog({ bin: 'claude', env: { CLAUDE_CODE_OAUTH_TOKEN: 'token-b' } })), 'claude-sonnet-11');
 });
 
 test('Claude discovery closes a stalled control channel at its deadline', async () => {
