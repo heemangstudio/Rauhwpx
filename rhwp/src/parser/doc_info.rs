@@ -808,8 +808,9 @@ fn parse_numbering(data: &[u8]) -> Result<Numbering, DocInfoError> {
             number_format,
         };
 
-        // 번호 형식 문자열 (가변 길이)
-        let format_len = r.read_u16().unwrap_or(0) as usize;
+        // 번호 형식 문자열 (가변 길이). 길이는 남은 WCHAR 수로 제한한다
+        // (과대 길이는 레코드마다 최대 65,535회의 실패한 읽기를 반복했다).
+        let format_len = (r.read_u16().unwrap_or(0) as usize).min(r.remaining() / 2);
         if format_len > 0 {
             let mut format_str = String::new();
             for _ in 0..format_len {
