@@ -366,3 +366,20 @@ test('get_structure 태그: 쓰기로 revision 이 오르면 서식을 다시 �
   await h.call('insert_text', { sectionIdx: 0, paraIdx: 1, charOffset: 2, text: '.' });
   assert.match(mcpText(await h.call('get_structure')), /s0 p0 \(2 B\) 제목/);
 });
+
+test('get_structure 태그: 깨끗한 문서를 바꿔 열어 revision 이 그대로여도 새 문서의 서식을 읽는다', async () => {
+  const formats: Record<number, { bold?: boolean; size?: number }> = { 0: { bold: true, size: 1400 } };
+  let fake: Record<string, unknown> = {};
+  const h = makeEnv(['제목', '본문 하나', '본문 둘'], (wasm, body) => {
+    withFormats(formats)(wasm, body);
+    wasm['documentGeneration'] = 1;
+    fake = wasm;
+  });
+  assert.match(mcpText(await h.call('get_structure')), /s0 p0 \(2 B 14pt\) 제목/);
+  // 같은 좌표·길이의 다른 문서가 열렸다 — 로드는 revision 을 올리지 않고 문서 세대만 올린다.
+  const revision = h.revision.revision;
+  formats[0] = {};
+  fake['documentGeneration'] = 2;
+  assert.equal(h.revision.revision, revision);
+  assert.match(mcpText(await h.call('get_structure')), /s0 p0 \(2\) 제목/);
+});

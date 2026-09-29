@@ -842,13 +842,13 @@ export class AgentToolExecutor {
   private templateKey: string | null = null;
   private templateInspectionKey: string | null = null;
   private documentInspectionRevision: number | null = null;
-  /** get_structure 서식 태그의 본문 기준 글자 크기 (HWPUNIT) — revision 마다 다시 표본을 뜬다. */
-  private structureBodySizeMemo: { revision: number; size: number | null } | null = null;
+  /** get_structure 서식 태그의 본문 기준 글자 크기 (HWPUNIT) — structureMemoKey 마다 다시 표본을 뜬다. */
+  private structureBodySizeMemo: { key: string; size: number | null } | null = null;
   /**
-   * 같은 revision 의 문단 서식 태그 — 병렬 읽기(편대 에이전트가 같은 revision 에서 각자 구조를
-   * 읽는 경우)마다 서식 조회를 되풀이하지 않는다. 모든 문서 변이는 revision 을 올린다.
+   * 같은 문서·revision 의 문단 서식 태그 — 병렬 읽기(편대 에이전트가 같은 revision 에서 각자 구조를
+   * 읽는 경우)마다 서식 조회를 되풀이하지 않는다. 키는 structureMemoKey 다.
    */
-  private structureTagMemo: { revision: number; tags: Map<string, string | undefined> } | null = null;
+  private structureTagMemo: { key: string; tags: Map<string, string | undefined> } | null = null;
   // 병렬 서브에이전트 리베이스용 편집 저널 — 정밀 기록된 핵심 텍스트 쓰기만 담고,
   // 기록되지 않은 revision bump 는 자동으로 '불명'(리베이스 불가) 취급된다.
   private journal = new EditJournal();
@@ -1629,8 +1629,9 @@ export class AgentToolExecutor {
     bodySize: number | null,
   ): string | undefined {
     if (length === 0 || length > STRUCTURE_TAG_MAX_CHARS) return undefined;
-    if (this.structureTagMemo?.revision !== this.revision) {
-      this.structureTagMemo = { revision: this.revision, tags: new Map() };
+    const memoKey = this.structureMemoKey();
+    if (this.structureTagMemo?.key !== memoKey) {
+      this.structureTagMemo = { key: memoKey, tags: new Map() };
     }
     const memo = this.structureTagMemo.tags;
     const key = `${sectionIdx}:${paraIdx}:${length}:${bodySize ?? ''}`;
@@ -1716,11 +1717,12 @@ export class AgentToolExecutor {
 
   /**
    * 본문 기준 글자 크기(HWPUNIT) — 문단을 고르게 표본으로 떠서 문단 수로 센 최빈 크기. 글자 수로
-   * 가중하면 목차 점선 줄 몇 개가 짧은 본문 줄 수십 개를 이긴다. 같은 revision 안에서는 다시 재지
-   * 않는다. 읽을 수 없으면 null (크기 태그를 달지 않는다).
+   * 가중하면 목차 점선 줄 몇 개가 짧은 본문 줄 수십 개를 이긴다. 같은 문서·revision 안에서는 다시
+   * 재지 않는다. 읽을 수 없으면 null (크기 태그를 달지 않는다).
    */
   private structureBodySize(): number | null {
-    if (this.structureBodySizeMemo?.revision === this.revision) return this.structureBodySizeMemo.size;
+    const memoKey = this.structureMemoKey();
+    if (this.structureBodySizeMemo?.key === memoKey) return this.structureBodySizeMemo.size;
     const { wasm } = this.deps;
     let size: number | null = null;
     try {
@@ -1752,8 +1754,16 @@ export class AgentToolExecutor {
     } catch {
       size = null;
     }
-    this.structureBodySizeMemo = { revision: this.revision, size };
+    this.structureBodySizeMemo = { key: memoKey, size };
     return size;
+  }
+
+  /**
+   * get_structure 서식 메모 키 — revision 과 문서 세대. 깨끗한 문서를 다른 문서로 바꿔 열면
+   * revision 이 그대로일 수 있어, 로드·교체·스냅샷 복원마다 오르는 documentGeneration 을 함께 본다.
+   */
+  private structureMemoKey(): string {
+    return `${this.revision}:${this.deps.wasm.documentGeneration ?? 0}`;
   }
 
   /** get_structure range 인자 파싱 — sectionIdx/fromPara/toPara 경계를 지금 문서에서 검증한다. */
@@ -1880,8 +1890,10 @@ export class AgentToolExecutor {
     }
     const range = this.parseStructureRange(args);
     const budget = this.structureBudget(args, this.parseStructureTextMode(args));
-    const bodySize = this.structureBodySize();
-    const tables = this.listTables();
+    // 표 목록(쪽마다 컨트롤 레이아웃)과 본문 크기 표본은 바뀐 구간이 있을 때만 한 번 만든다 —
+    // 변경 없는 델타는 큰 문서에서도 싸야 한다.
+    let bodySize: number | null | undefined;
+    let tables: StructureTableAddress[] | undefined;
     const changes: StructureDeltaChange[] = [];
     let truncated = false;
     outer:
@@ -1898,6 +1910,8 @@ export class AgentToolExecutor {
         const paraCount = this.deps.wasm.getParagraphCount(sec);
         lo = Math.max(0, Math.min(lo, paraCount - 1));
         hi = Math.max(lo, Math.min(hi, paraCount - 1));
+        if (bodySize === undefined) bodySize = this.structureBodySize();
+        tables ??= this.listTables();
         const span = this.collectStructureSpan(sec, lo, hi, budget, bodySize);
         const spanTables = this.collectStructureTables(sec, lo, hi, tables, budget);
         truncated ||= span.truncated || spanTables.truncated;

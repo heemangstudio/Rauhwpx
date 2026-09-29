@@ -124,7 +124,8 @@ function parseCompactStructure(result) {
   const paragraphs = [];
   const tables = [];
   for (const line of text.split('\n')) {
-    let m = /^s0 p(\d+) \((\d+)\)(?: (.*))?$/.exec(line);
+    // 짧은 문단은 길이 뒤에 서식 태그가 붙는다 — "s0 p3 (12 h1 B 14pt) 제목".
+    let m = /^s0 p(\d+) \((\d+)(?: [^)]*)?\)(?: (.*))?$/.exec(line);
     if (m) {
       paragraphs.push({ paraIdx: Number(m[1]), length: Number(m[2]), text: (m[3] ?? '').replace(/…$/, '') });
       continue;
