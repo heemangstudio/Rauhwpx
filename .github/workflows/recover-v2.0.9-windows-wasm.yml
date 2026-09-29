@@ -75,6 +75,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = e16bc1a112087e79e074a1e3a702e10b22f6d763
+          git fetch --no-tags origin "$TESTED_SHA"
           test "$(git rev-parse "$TESTED_SHA:scripts/wasm-source-fingerprint.mjs")" = "$(git rev-parse HEAD:scripts/wasm-source-fingerprint.mjs)"
           git worktree add --detach "$RUNNER_TEMP/tested-source" "$TESTED_SHA"
           tested_digest="$(cd "$RUNNER_TEMP/tested-source" && node scripts/wasm-source-fingerprint.mjs)"
