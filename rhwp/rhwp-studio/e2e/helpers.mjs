@@ -67,7 +67,7 @@ function resolveChromePath() {
 
 const CHROME_PATH = resolveChromePath();
 
-function sampleFetchPath(filename) {
+export function sampleFetchPath(filename) {
   const value = String(filename || '').trim();
   if (!value || value.includes('\0') || value.includes('\\') || value.includes('?') || value.includes('#')) {
     throw new Error(`잘못된 샘플 파일명: ${filename}`);

@@ -668,6 +668,9 @@ export async function runLibraryMove(
       documentId: getActiveDocumentId(),
       fileName: services.getContext().hasDocument ? services.wasm.fileName : null,
       hasDocument: services.getContext().hasDocument,
+      // 검토 대기 편집은 저장 경로에서 수락/거절을 물어야 하므로 바뀐 내용으로 친다.
+      isDirty: services.documentState.isDirty()
+        || (services.getPendingAgentEdits?.()?.opCount ?? 0) > 0,
     }),
     saveCurrent: () => saveCurrentDocument(services),
     listRecent: listRecentDocs,
