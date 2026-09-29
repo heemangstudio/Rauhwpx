@@ -410,12 +410,12 @@ export const tableCommands: CommandDef[] = [
       if (ih.isInTableObjectSelection()) {
         const ref = ih.getSelectedTableRef();
         if (!ref) return;
-        // 대화상자는 경로를 받지 않는다. 중첩 표 참조의 sec/ppi/ci 는 바깥 표다.
+        // 중첩 표 참조의 sec/ppi/ci 는 바깥 표다. 대화상자도 cellPath 로 한 번 더 거절한다.
         if (isNestedPath(ref.cellPath)) {
           refuseNestedTable();
           return;
         }
-        const tableCtx = { sec: ref.sec, ppi: ref.ppi, ci: ref.ci };
+        const tableCtx = { sec: ref.sec, ppi: ref.ppi, ci: ref.ci, cellPath: ref.cellPath };
         const dialog = new TableCellPropsDialog(services.wasm, services.eventBus, tableCtx, 0, 'table', services);
         dialog.show();
         return;
@@ -427,7 +427,7 @@ export const tableCommands: CommandDef[] = [
         refuseNestedTable();
         return;
       }
-      const tableCtx = { sec: pos.sectionIndex, ppi: pos.parentParaIndex, ci: pos.controlIndex };
+      const tableCtx = { sec: pos.sectionIndex, ppi: pos.parentParaIndex, ci: pos.controlIndex, cellPath: pos.cellPath };
       const dialog = new TableCellPropsDialog(services.wasm, services.eventBus, tableCtx, pos.cellIndex, 'cell', services);
       dialog.show();
     },
@@ -445,7 +445,7 @@ export const tableCommands: CommandDef[] = [
         refuseNestedTable();
         return;
       }
-      const tableCtx = { sec: pos.sectionIndex, ppi: pos.parentParaIndex, ci: pos.controlIndex };
+      const tableCtx = { sec: pos.sectionIndex, ppi: pos.parentParaIndex, ci: pos.controlIndex, cellPath: pos.cellPath };
       const selectionRange = ih.isInCellSelectionMode?.() ? ih.getSelectedCellRange?.() ?? null : null;
       const dialog = new CellBorderBgDialog(
         services.wasm,
@@ -473,7 +473,7 @@ export const tableCommands: CommandDef[] = [
         refuseNestedTable();
         return;
       }
-      const tableCtx = { sec: pos.sectionIndex, ppi: pos.parentParaIndex, ci: pos.controlIndex };
+      const tableCtx = { sec: pos.sectionIndex, ppi: pos.parentParaIndex, ci: pos.controlIndex, cellPath: pos.cellPath };
       const dialog = new CellBorderBgDialog(
         services.wasm,
         services.eventBus,

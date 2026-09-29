@@ -35,8 +35,40 @@ import {
   DECORATION_LINE_SHAPES,
   changedFiniteSelectValue,
 } from './decoration-line-shapes';
+import {
+  applyLangArrayEdit,
+  applyLangFontEdit,
+  clampCharOffset,
+  clampRelativeSize,
+  clampShadowOffset,
+  langFieldTouched,
+  resolveCharShapeFontChange,
+  sameLangArray,
+  type LangArrayKey,
+} from './char-shape-model';
+import { popModal, pushModal } from './modal-stack';
 
 const LANG_NAMES = ['대표', '한글', '영문', '한자', '일어', '외국어', '기호', '사용자'];
+
+/** 글자 모양 대화상자의 변경분 — 언어별 글꼴 이름(fontNames, 7칸)은 대화상자 전용이다. */
+export type CharShapeDialogMods = Partial<CharProperties> & { fontNames?: string[] };
+
+/**
+ * 대화상자가 돌려준 글꼴 이름을 엔진 글꼴 ID로 바꾼다 (WASM parse_char_shape_mods 는 ID만 읽는다).
+ * `fontName` 은 전 언어, `fontNames` 는 언어별 7칸이다.
+ */
+export function resolveCharShapeFontMods(wasm: WasmBridge, mods: CharShapeDialogMods): void {
+  if (mods.fontName) {
+    const fontId = wasm.findOrCreateFontId(mods.fontName);
+    if (fontId >= 0) mods.fontId = fontId;
+  }
+  delete mods.fontName;
+  if (mods.fontNames) {
+    const ids = mods.fontNames.map((name, lang) => wasm.findOrCreateFontIdForLang(lang, name));
+    if (ids.length === 7 && ids.every(id => id >= 0)) mods.fontIds = ids;
+  }
+  delete mods.fontNames;
+}
 
 function selectPreservingUnknown(select: HTMLSelectElement, value: number): void {
   const stringValue = String(value);
@@ -161,9 +193,17 @@ export class CharShapeDialog {
   private currentLang = 0;
   private props: CharProperties | null = null;
   private initialProps: CharProperties | null = null;
+  /** 언어별 칸에 마지막으로 보여 준 값 — 사용자가 고친 칸만 반영하는 기준 */
+  private shownLangValues: Record<string, string> = {};
+  private shownFont = '';
+  /** 언어별 글꼴 편집 (0=한글 … 6=사용자, 편집 안 한 칸은 undefined) */
+  private fontEdits: (string | undefined)[] = [];
+  private shownBaseSize = '';
+  private shownShadowX = '';
+  private shownShadowY = '';
 
   /** 적용 콜백 */
-  onApply: ((mods: Partial<CharProperties>) => void) | null = null;
+  onApply: ((mods: CharShapeDialogMods) => void) | null = null;
   /** 대화상자 닫힘 콜백 (적용·취소·ESC 모두) */
   onClose: (() => void) | null = null;
 
@@ -177,14 +217,17 @@ export class CharShapeDialog {
     this.props = JSON.parse(JSON.stringify(charProps));
     this.initialProps = JSON.parse(JSON.stringify(charProps));
     this.currentLang = 0;
+    this.fontEdits = [];
     this.langSelect.value = '0';
     this.populateFromProps();
     this.switchTab(0);
     document.body.appendChild(this.overlay);
+    pushModal(this);
     this.baseSizeInput.select();
   }
 
   hide(): void {
+    popModal(this);
     this.overlay?.remove();
     if (this.onClose) this.onClose();
   }
@@ -204,6 +247,9 @@ export class CharShapeDialog {
     // ── 다이얼로그 컨테이너
     this.dialog = document.createElement('div');
     this.dialog.className = 'dialog-wrap cs-dialog';
+    // 대화상자 안의 키가 문서 단축키로 새지 않도록 모달 대화상자로 표시한다.
+    this.dialog.setAttribute('role', 'dialog');
+    this.dialog.setAttribute('aria-modal', 'true');
 
     // 타이틀 바
     const titleBar = document.createElement('div');
@@ -817,7 +863,7 @@ export class CharShapeDialog {
     const arrIdx = this.currentLang === 0 ? 0 : this.currentLang - 1;
 
     const families = this.props.fontFamilies || [];
-    const fontName = families[arrIdx] || '';
+    const fontName = this.fontEdits[arrIdx] ?? (families[arrIdx] || '');
     this.fontSelect.value = fontName;
     if (this.fontSelect.value !== fontName && fontName) {
       const opt = document.createElement('option');
@@ -836,33 +882,39 @@ export class CharShapeDialog {
     this.langInputs['cs-spacing'].value = String(spacings[arrIdx]);
     this.langInputs['cs-relative-size'].value = String(relativeSizes[arrIdx]);
     this.langInputs['cs-char-offset'].value = String(charOffsets[arrIdx]);
+
+    this.shownFont = this.fontSelect.value;
+    this.shownLangValues = {};
+    for (const [id, input] of Object.entries(this.langInputs)) this.shownLangValues[id] = input.value;
   }
 
+  /**
+   * 현재 언어 칸에서 사용자가 고친 값만 언어 배열에 반영한다.
+   * 보여 준 값을 그대로 쓰면 대표(한글 값)가 모든 언어를 덮어 언어별 장평·자간이 사라진다.
+   */
   private saveLangFields(): void {
     if (!this.props) return;
-    const arrIdx = this.currentLang === 0 ? -1 : this.currentLang - 1;
 
     // 단축키 커맨드(input-handler.ts adjustCharRatio/adjustCharSpacing)와 동일하게 clamp.
     // <input type=number>의 min/max 속성은 스피너 클릭에만 강제되고 직접 타이핑에는 적용되지 않는다.
     const ratio = Math.max(50, Math.min(200, parseInt(this.langInputs['cs-ratio'].value) || 100));
     const spacing = Math.max(-50, Math.min(50, parseInt(this.langInputs['cs-spacing'].value) || 0));
-    const relSize = parseInt(this.langInputs['cs-relative-size'].value) || 100;
-    const charOff = parseInt(this.langInputs['cs-char-offset'].value) || 0;
+    const relSize = clampRelativeSize(parseInt(this.langInputs['cs-relative-size'].value) || 100);
+    const charOff = clampCharOffset(parseInt(this.langInputs['cs-char-offset'].value) || 0);
 
-    if (arrIdx === -1) {
-      this.props.ratios = Array(7).fill(ratio) as number[];
-      this.props.spacings = Array(7).fill(spacing) as number[];
-      this.props.relativeSizes = Array(7).fill(relSize) as number[];
-      this.props.charOffsets = Array(7).fill(charOff) as number[];
-    } else {
-      if (!this.props.ratios) this.props.ratios = [100, 100, 100, 100, 100, 100, 100];
-      if (!this.props.spacings) this.props.spacings = [0, 0, 0, 0, 0, 0, 0];
-      if (!this.props.relativeSizes) this.props.relativeSizes = [100, 100, 100, 100, 100, 100, 100];
-      if (!this.props.charOffsets) this.props.charOffsets = [0, 0, 0, 0, 0, 0, 0];
-      this.props.ratios[arrIdx] = ratio;
-      this.props.spacings[arrIdx] = spacing;
-      this.props.relativeSizes[arrIdx] = relSize;
-      this.props.charOffsets[arrIdx] = charOff;
+    const fields: [string, LangArrayKey, number][] = [
+      ['cs-ratio', 'ratios', ratio],
+      ['cs-spacing', 'spacings', spacing],
+      ['cs-relative-size', 'relativeSizes', relSize],
+      ['cs-char-offset', 'charOffsets', charOff],
+    ];
+    for (const [id, key, value] of fields) {
+      if (!langFieldTouched(this.shownLangValues[id], this.langInputs[id].value)) continue;
+      this.props[key] = applyLangArrayEdit(this.props[key], key, this.currentLang, value);
+    }
+    const font = this.fontSelect.value;
+    if (font && font !== this.shownFont) {
+      this.fontEdits = applyLangFontEdit(this.fontEdits, this.currentLang, font);
     }
   }
 
@@ -875,6 +927,7 @@ export class CharShapeDialog {
     if (!p) return;
 
     this.baseSizeInput.value = ((p.fontSize || 1000) / 100).toFixed(1);
+    this.shownBaseSize = this.baseSizeInput.value;
     this.updateLangFields();
 
     this.setAttrBtn('bold', p.bold);
@@ -898,6 +951,8 @@ export class CharShapeDialog {
     this.shadowColorInput.value = p.shadowColor || '#b2b2b2';
     this.shadowXInput.value = String(p.shadowOffsetX || 10);
     this.shadowYInput.value = String(p.shadowOffsetY || 10);
+    this.shownShadowX = this.shadowXInput.value;
+    this.shownShadowY = this.shadowYInput.value;
     this.ulPosSelect.value = p.underlineType || 'None';
     selectPreservingUnknown(this.ulShapeSelect, p.underlineShape ?? 0);
     this.ulColorInput.value = p.underlineColor || '#000000';
@@ -957,14 +1012,15 @@ export class CharShapeDialog {
   //  변경사항 수집
   // ════════════════════════════════════════════════════════
 
-  private collectMods(): Partial<CharProperties> {
-    const mods: Partial<CharProperties> = {};
+  private collectMods(): CharShapeDialogMods {
+    const mods: CharShapeDialogMods = {};
     const p = this.initialProps;
     if (!p) return mods;
 
-    // 기준 크기
+    // 기준 크기 — 0.1pt 표시값으로 되돌려 비교하면 10.25pt 같은 원본이 늘 바뀐 것으로 잡힌다.
     const newSize = Math.round(parseFloat(this.baseSizeInput.value) * 100);
-    if (newSize !== p.fontSize && newSize >= 100 && newSize <= 409600) {
+    if (this.baseSizeInput.value !== this.shownBaseSize
+      && newSize !== p.fontSize && newSize >= 100 && newSize <= 409600) {
       mods.fontSize = newSize;
     }
 
@@ -996,10 +1052,15 @@ export class CharShapeDialog {
     const shadowType = this.shadowRadios.findIndex(r => r.checked);
     if (shadowType >= 0 && shadowType !== (p.shadowType || 0)) mods.shadowType = shadowType;
     if (this.shadowColorInput.value !== (p.shadowColor || '#b2b2b2')) mods.shadowColor = this.shadowColorInput.value;
-    const sx = parseInt(this.shadowXInput.value) || 0;
-    if (sx !== (p.shadowOffsetX || 0)) mods.shadowOffsetX = sx;
-    const sy = parseInt(this.shadowYInput.value) || 0;
-    if (sy !== (p.shadowOffsetY || 0)) mods.shadowOffsetY = sy;
+    // 간격 칸은 0 을 기본값 10 으로 보여 준다. 고친 칸만 보내고, 그림자를 새로 켤 때는
+    // 보이는 간격이 실제 값이 되도록 함께 보낸다.
+    const enablingShadow = (p.shadowType || 0) === 0 && (mods.shadowType ?? 0) > 0;
+    const sx = clampShadowOffset(parseInt(this.shadowXInput.value) || 0);
+    const sxTouched = this.shadowXInput.value !== this.shownShadowX || enablingShadow;
+    if (sxTouched && sx !== (p.shadowOffsetX || 0)) mods.shadowOffsetX = sx;
+    const sy = clampShadowOffset(parseInt(this.shadowYInput.value) || 0);
+    const syTouched = this.shadowYInput.value !== this.shownShadowY || enablingShadow;
+    if (syTouched && sy !== (p.shadowOffsetY || 0)) mods.shadowOffsetY = sy;
 
     // 확장 탭 — 밑줄
     const ulPos = this.ulPosSelect.value;
@@ -1035,22 +1096,19 @@ export class CharShapeDialog {
     const kerning = this.kerningCheckbox.checked;
     if (kerning !== (p.kerning ?? false)) mods.kerning = kerning;
 
-    // 언어별 배열
+    // 언어별 배열 — 고친 칸만 바뀌어 있으므로 원본과 다른 배열만 보낸다.
     this.saveLangFields();
     for (const prop of ['ratios', 'spacings', 'relativeSizes', 'charOffsets'] as const) {
-      const orig = p[prop] || [];
-      const curr = this.props?.[prop] || [];
-      if (JSON.stringify(orig) !== JSON.stringify(curr)) {
-        (mods as Record<string, unknown>)[prop] = curr;
+      const curr = this.props?.[prop];
+      if (curr && !sameLangArray(p[prop], curr)) {
+        (mods as Record<string, unknown>)[prop] = [...curr];
       }
     }
 
-    // 글꼴 변경
-    const arrIdx = this.currentLang === 0 ? 0 : this.currentLang - 1;
-    const origFont = (p.fontFamilies || [])[arrIdx] || '';
-    if (this.fontSelect.value && this.fontSelect.value !== origFont) {
-      mods.fontName = this.fontSelect.value;
-    }
+    // 글꼴 변경 — 대표는 전 언어(fontName), 특정 언어는 그 칸만 바꾼 언어별 목록(fontNames).
+    const fontChange = resolveCharShapeFontChange(this.fontEdits, p.fontFamilies);
+    if (fontChange.kind === 'all') mods.fontName = fontChange.name;
+    else if (fontChange.kind === 'perLanguage') mods.fontNames = fontChange.names;
 
     // 테두리/배경 탭
     const bType = parseInt(this.borderTypeSelect.value);

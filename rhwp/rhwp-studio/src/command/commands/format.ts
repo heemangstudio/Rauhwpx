@@ -1,5 +1,5 @@
 import type { CommandDef } from '../types';
-import { CharShapeDialog } from '@/ui/char-shape-dialog';
+import { CharShapeDialog, resolveCharShapeFontMods } from '@/ui/char-shape-dialog';
 import { ParaShapeDialog } from '@/ui/para-shape-dialog';
 import { NumberingDialog } from '@/ui/numbering-dialog';
 import { StyleDialog } from '@/ui/style-dialog';
@@ -289,12 +289,8 @@ export const formatCommands: CommandDef[] = [
       if (!savedSel) return;
       const dialog = new CharShapeDialog(services.wasm, services.eventBus);
       dialog.onApply = (mods) => {
-        // fontName → fontId 변환 (WASM parse_char_shape_mods는 fontId만 인식)
-        if (mods.fontName) {
-          const fontId = services.wasm.findOrCreateFontId(mods.fontName);
-          if (fontId >= 0) mods.fontId = fontId;
-          delete mods.fontName;
-        }
+        // fontName/fontNames → fontId/fontIds 변환 (WASM parse_char_shape_mods는 ID만 인식)
+        resolveCharShapeFontMods(services.wasm, mods);
         ih.applyCharPropsToRange(savedSel.start, savedSel.end, mods);
       };
       dialog.onClose = () => ih.focus();
@@ -514,7 +510,11 @@ export const formatCommands: CommandDef[] = [
       if (ih.isInTableObjectSelection()) {
         const pos = ih.getCursorPosition();
         if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
-        const tableCtx = { sec: pos.sectionIndex, ppi: pos.parentParaIndex, ci: pos.controlIndex };
+        const selectedTable = ih.getSelectedTableRef();
+        const tableCtx = {
+          sec: pos.sectionIndex, ppi: pos.parentParaIndex, ci: pos.controlIndex,
+          cellPath: selectedTable ? selectedTable.cellPath : pos.cellPath,
+        };
         const dialog = new TableCellPropsDialog(services.wasm, services.eventBus, tableCtx, pos.cellIndex, 'table', services);
         dialog.show();
       }

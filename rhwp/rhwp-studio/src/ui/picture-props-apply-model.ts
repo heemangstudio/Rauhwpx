@@ -209,12 +209,92 @@ function addChangedOffset(
   patch[key] = mmToHwp(raw);
 }
 
+/**
+ * mm 칸(여백·선 굵기·자르기 등) — 오프셋과 같은 판정으로 건드린 칸만 싣는다.
+ * 0.01mm 는 약 2.83 HWPUNIT 이라 표시값을 되돌리면 대부분 ±1 HWPUNIT 어긋난다.
+ * 칸이 없으면(탭이 없는 개체) 아무것도 보내지 않는다.
+ */
+function addChangedMm(
+  patch: PicturePropsPatch,
+  key: string,
+  raw: string | undefined,
+  current: number,
+  min?: number,
+): void {
+  if (raw === undefined || untouchedMm(raw, current)) return;
+  const value = mmToHwp(raw);
+  patch[key] = min === undefined ? value : Math.max(min, value);
+}
+
+/** 크기 칸 — 비었거나 0 이하인 값은 개체를 없애므로 쓰지 않는다. */
+function addChangedSize(
+  patch: PicturePropsPatch,
+  key: string,
+  raw: string,
+  current: number,
+): void {
+  const mm = parseFloat(raw);
+  if (!Number.isFinite(mm) || mm <= 0) return;
+  addChangedMm(patch, key, raw, current);
+}
+
 function hexToColorRef(hex: string): number {
   const value = hex.replace('#', '');
   const red = parseInt(value.substring(0, 2), 16);
   const green = parseInt(value.substring(2, 4), 16);
   const blue = parseInt(value.substring(4, 6), 16);
   return (blue << 16) | (green << 8) | red;
+}
+
+/** HWP ColorRef (BGR u32) → #rrggbb — 다이얼로그가 색 칸을 채우는 서식 */
+export function colorRefToHex(color: number): string {
+  const blue = (color >> 16) & 0xFF;
+  const green = (color >> 8) & 0xFF;
+  const red = color & 0xFF;
+  return '#' + [red, green, blue].map(v => v.toString(16).padStart(2, '0')).join('');
+}
+
+/** 색 칸이 표시값 그대로인가 — ColorRef 상위 바이트(플래그)는 칸에 보이지 않으므로 hex 로 비교한다. */
+function sameColor(hex: string, current: number | undefined, fallbackHex: string): boolean {
+  const shown = current === undefined ? fallbackHex : colorRefToHex(current);
+  return hex.toLowerCase() === shown.toLowerCase();
+}
+
+/** 확대 비율 칸의 표시값 (%) */
+export function displayedScale(size: number, original: number): string {
+  return ((size / original) * 100).toFixed(2);
+}
+
+/**
+ * 채우기 무늬 선택지 → 엔진 무늬 코드. 모델은 OWPML hatchStyle 순서의 1~6 을 쓰고
+ * (1 가로줄, 2 세로줄, 3 역대각선, 4 대각선, 5 십자, 6 X자), 0 이하는 무늬 없음이다.
+ */
+const FILL_PATTERN_CODES: Record<string, number> = {
+  none: -1,
+  hline: 1,
+  vline: 2,
+  dline1: 3,
+  dline2: 4,
+  cross: 5,
+};
+
+/**
+ * 엔진 무늬 코드를 선택지 값으로 바꾼다. 선택지에 없는 코드(예: 6 X자)는 ''
+ * — 다이얼로그는 빈 선택으로 두고, 사용자가 고르지 않으면 원래 코드를 보존한다.
+ */
+export function fillPatternOption(code: number | undefined): string {
+  if (code === undefined || code <= 0) return 'none';
+  const entry = Object.entries(FILL_PATTERN_CODES).find(([, value]) => value === code);
+  return entry ? entry[0] : '';
+}
+
+/** 캡션 위치 → 3×3 격자 칸 (0:왼위 1:위 2:오위 3:왼 4:중앙 5:오 6:왼아 7:아래 8:오아) */
+export function captionGridIndex(direction: string, vertAlign: string): number {
+  const col = direction === 'Left' ? 0 : direction === 'Right' ? 2 : 1;
+  const row = (direction === 'Left' || direction === 'Right')
+    ? (vertAlign === 'Top' ? 0 : vertAlign === 'Bottom' ? 2 : 1)
+    : (direction === 'Top' ? 0 : 2);
+  return row * 3 + col;
 }
 
 function addChanged(
@@ -249,8 +329,8 @@ function appendCommonSize(
 ): void {
   addChanged(patch, 'sizeProtect', form.sizeProtect, props.sizeProtect ?? false);
   if (form.sizeProtect) return;
-  addChanged(patch, 'width', Math.max(0, mmToHwp(form.width)), props.width);
-  addChanged(patch, 'height', Math.max(0, mmToHwp(form.height)), props.height);
+  addChangedSize(patch, 'width', form.width, props.width);
+  addChangedSize(patch, 'height', form.height, props.height);
 }
 
 function appendCommonPosition(
@@ -296,27 +376,41 @@ function appendOuterMargin(
   props: PictureProperties,
   form: PicturePropsApplyForm['outerMargin'],
 ): void {
-  if (form.left !== undefined) addChanged(patch, 'outerMarginLeft', mmToHwp(form.left), props.outerMarginLeft ?? 0);
-  if (form.right !== undefined) addChanged(patch, 'outerMarginRight', mmToHwp(form.right), props.outerMarginRight ?? 0);
-  if (form.top !== undefined) addChanged(patch, 'outerMarginTop', mmToHwp(form.top), props.outerMarginTop ?? 0);
-  if (form.bottom !== undefined) addChanged(patch, 'outerMarginBottom', mmToHwp(form.bottom), props.outerMarginBottom ?? 0);
+  addChangedMm(patch, 'outerMarginLeft', form.left, props.outerMarginLeft ?? 0);
+  addChangedMm(patch, 'outerMarginRight', form.right, props.outerMarginRight ?? 0);
+  addChangedMm(patch, 'outerMarginTop', form.top, props.outerMarginTop ?? 0);
+  addChangedMm(patch, 'outerMarginBottom', form.bottom, props.outerMarginBottom ?? 0);
 }
 
 function appendCaption(
   patch: PicturePropsPatch,
+  props: Partial<PictureProperties>,
   form: PicturePropsApplyForm['caption'],
 ): void {
   if (!form.present) return;
   const hasCaption = form.activeIndex >= 0 && form.activeIndex !== 4;
-  addAlways(patch, 'hasCaption', hasCaption);
+  const hadCaption = Boolean(props.hasCaption);
+  addChanged(patch, 'hasCaption', hasCaption, hadCaption);
   if (!hasCaption) return;
 
+  // 새로 만드는 캡션은 보이는 값 전부, 기존 캡션은 고친 항목만 보낸다.
   const caption = captionFromGrid(form.activeIndex);
-  addAlways(patch, 'captionDirection', caption.direction);
-  addAlways(patch, 'captionVertAlign', caption.vertAlign);
-  addAlways(patch, 'captionWidth', mmToHwp(form.size));
-  addAlways(patch, 'captionSpacing', mmToHwp(form.gap));
-  addAlways(patch, 'captionIncludeMargin', form.includeMargin);
+  const positionTouched = !hadCaption || form.activeIndex !== captionGridIndex(
+    props.captionDirection ?? 'Bottom', props.captionVertAlign ?? 'Top',
+  );
+  if (positionTouched) {
+    addAlways(patch, 'captionDirection', caption.direction);
+    addAlways(patch, 'captionVertAlign', caption.vertAlign);
+  }
+  if (!hadCaption) {
+    addAlways(patch, 'captionWidth', mmToHwp(form.size));
+    addAlways(patch, 'captionSpacing', mmToHwp(form.gap));
+    addAlways(patch, 'captionIncludeMargin', form.includeMargin);
+    return;
+  }
+  addChangedMm(patch, 'captionWidth', form.size, props.captionWidth ?? 0);
+  addChangedMm(patch, 'captionSpacing', form.gap, props.captionSpacing ?? 0);
+  addChanged(patch, 'captionIncludeMargin', form.includeMargin, Boolean(props.captionIncludeMargin));
 }
 
 function appendBorder(
@@ -324,8 +418,10 @@ function appendBorder(
   props: Pick<PictureProperties, 'borderColor' | 'borderWidth'> | ShapeProperties,
   form: PicturePropsApplyForm['line'],
 ): void {
-  if (form.color !== undefined) addChanged(patch, 'borderColor', hexToColorRef(form.color), props.borderColor ?? 0);
-  if (form.width !== undefined) addChanged(patch, 'borderWidth', mmToHwp(form.width), props.borderWidth ?? 0);
+  if (form.color !== undefined && !sameColor(form.color, props.borderColor ?? 0, '#000000')) {
+    patch.borderColor = hexToColorRef(form.color);
+  }
+  addChangedMm(patch, 'borderWidth', form.width, props.borderWidth ?? 0);
 }
 
 function appendShapeLine(
@@ -349,11 +445,14 @@ function appendShapeTextBox(
   props: ShapeProperties,
   form: PicturePropsApplyForm['shapeTextBox'],
 ): void {
-  addChanged(patch, 'tbMarginLeft', mmToHwp(form.marginLeft), props.tbMarginLeft ?? 0);
-  addChanged(patch, 'tbMarginRight', mmToHwp(form.marginRight), props.tbMarginRight ?? 0);
-  addChanged(patch, 'tbMarginTop', mmToHwp(form.marginTop), props.tbMarginTop ?? 0);
-  addChanged(patch, 'tbMarginBottom', mmToHwp(form.marginBottom), props.tbMarginBottom ?? 0);
-  addChanged(patch, 'tbVerticalAlign', form.verticalAlign ?? 'Top', props.tbVerticalAlign ?? 'Top');
+  // 기본값(510/141)은 다이얼로그가 칸을 채울 때 쓰는 값과 같다.
+  addChangedMm(patch, 'tbMarginLeft', form.marginLeft, props.tbMarginLeft ?? 510);
+  addChangedMm(patch, 'tbMarginRight', form.marginRight, props.tbMarginRight ?? 510);
+  addChangedMm(patch, 'tbMarginTop', form.marginTop, props.tbMarginTop ?? 141);
+  addChangedMm(patch, 'tbMarginBottom', form.marginBottom, props.tbMarginBottom ?? 141);
+  if (form.verticalAlign !== undefined) {
+    addChanged(patch, 'tbVerticalAlign', form.verticalAlign, props.tbVerticalAlign ?? 'Top');
+  }
 }
 
 function appendShapeCorner(
@@ -378,27 +477,46 @@ function shapeFillType(form: PicturePropsApplyForm['shapeFill']): string {
   return 'none';
 }
 
+/**
+ * 단색 채우기 — 새로 단색으로 바꾸면 보이는 색·무늬를 모두 싣고, 이미 단색이면 고친
+ * 항목만 싣는다. 무늬 선택지에 없는 코드는 고르지 않는 한 보존한다.
+ */
 function appendSolidFill(
   patch: PicturePropsPatch,
+  props: ShapeProperties,
   form: PicturePropsApplyForm['shapeFill'],
+  switched: boolean,
 ): void {
   if (!form.solidColors) return;
-  addAlways(patch, 'fillBgColor', hexToColorRef(form.solidColors.face));
-  addAlways(patch, 'fillPatColor', hexToColorRef(form.solidColors.pattern));
-  if (form.patternType !== undefined) {
-    addAlways(patch, 'fillPatType', integerOr(form.patternType, -1));
+  if (switched || !sameColor(form.solidColors.face, props.fillBgColor, '#ffffff')) {
+    patch.fillBgColor = hexToColorRef(form.solidColors.face);
+  }
+  if (switched || !sameColor(form.solidColors.pattern, props.fillPatColor, '#000000')) {
+    patch.fillPatColor = hexToColorRef(form.solidColors.pattern);
+  }
+  if (form.patternType === undefined) return;
+  const code = FILL_PATTERN_CODES[form.patternType];
+  if (code === undefined) return;
+  if (switched || form.patternType !== fillPatternOption(props.fillPatType)) {
+    patch.fillPatType = code;
   }
 }
 
+/**
+ * 그러데이션 — 유형 선택지는 아직 엔진 코드와 대응하지 않으므로, 다른 채우기에서
+ * 그러데이션으로 바꿀 때만 기본 유형(1)을 보낸다. 기존 원형/원뿔형 유형은 보존한다.
+ */
 function appendGradientFill(
   patch: PicturePropsPatch,
+  props: ShapeProperties,
   form: PicturePropsApplyForm['shapeFill'],
+  switched: boolean,
 ): void {
-  if (form.gradientType !== undefined) addAlways(patch, 'gradientType', integerOr(form.gradientType, 1));
-  if (form.gradientAngle !== undefined) addAlways(patch, 'gradientAngle', integerOr(form.gradientAngle, 0));
-  if (form.gradientCenterX !== undefined) addAlways(patch, 'gradientCenterX', integerOr(form.gradientCenterX, 0));
-  if (form.gradientCenterY !== undefined) addAlways(patch, 'gradientCenterY', integerOr(form.gradientCenterY, 0));
-  if (form.gradientBlur !== undefined) addAlways(patch, 'gradientBlur', integerOr(form.gradientBlur, 0));
+  if (switched && form.gradientType !== undefined) addAlways(patch, 'gradientType', integerOr(form.gradientType, 1));
+  if (form.gradientAngle !== undefined) addChanged(patch, 'gradientAngle', integerOr(form.gradientAngle, 0), props.gradientAngle ?? 0);
+  if (form.gradientCenterX !== undefined) addChanged(patch, 'gradientCenterX', integerOr(form.gradientCenterX, 0), props.gradientCenterX ?? 0);
+  if (form.gradientCenterY !== undefined) addChanged(patch, 'gradientCenterY', integerOr(form.gradientCenterY, 0), props.gradientCenterY ?? 0);
+  if (form.gradientBlur !== undefined) addChanged(patch, 'gradientBlur', integerOr(form.gradientBlur, 0), props.gradientBlur ?? 0);
 }
 
 function appendShapeFill(
@@ -406,29 +524,54 @@ function appendShapeFill(
   props: ShapeProperties,
   form: PicturePropsApplyForm['shapeFill'],
 ): void {
+  // 채우기 탭이 없는 개체(직선 등)는 채우기를 건드리지 않는다.
+  if (form.solidChecked === undefined && form.gradientChecked === undefined) return;
   const fillType = shapeFillType(form);
-  addChanged(patch, 'fillType', fillType, props.fillType ?? 'none');
-  if (fillType === 'solid') appendSolidFill(patch, form);
-  if (fillType === 'gradient') appendGradientFill(patch, form);
+  const currentType = props.fillType ?? 'none';
+  addChanged(patch, 'fillType', fillType, currentType);
+  const switched = fillType !== currentType;
+  if (fillType === 'solid') appendSolidFill(patch, props, form, switched);
+  if (fillType === 'gradient') appendGradientFill(patch, props, form, switched);
   if (form.transparency !== undefined && (fillType === 'solid' || fillType === 'gradient')) {
-    addAlways(patch, 'fillAlpha', Math.round(integerOr(form.transparency, 0) * 255 / 100));
+    // 칸은 백분율이라 알파(0~255)를 되돌리면 어긋난다(100 → 39% → 99). 고친 경우만 보낸다.
+    const percent = Math.max(0, Math.min(100, integerOr(form.transparency, 0)));
+    const shownPercent = Math.round((props.fillAlpha ?? 0) * 100 / 255);
+    if (percent !== shownPercent) patch.fillAlpha = Math.round(percent * 255 / 100);
   }
 }
 
+interface ShapeShadowProps {
+  shadowType?: number;
+  shadowColor?: number;
+  shadowOffsetX?: number;
+  shadowOffsetY?: number;
+}
+
+/** 그림자 간격 칸은 mm 1자리로 표시된다. */
+function untouchedShadowOffset(raw: string, current: number): boolean {
+  return Number(numberOr(raw, 0).toFixed(1)) === Number((current / HWP_PER_MM).toFixed(1));
+}
+
+/** 그림자 — 새로 켜면 보이는 값 전부, 이미 켜져 있으면 고친 항목만, 끌 때는 종류만. */
 function appendShapeShadow(
   patch: PicturePropsPatch,
+  props: ShapeProperties & ShapeShadowProps,
   form: PicturePropsApplyForm['shapeShadow'],
 ): void {
   if (!form.present) return;
+  const currentType = props.shadowType ?? 0;
   const shadowType = form.activeIndex > 0 ? form.activeIndex : 0;
-  addAlways(patch, 'shadowType', shadowType);
-  if (shadowType > 0) {
-    addAlways(patch, 'shadowColor', hexToColorRef(form.color));
-    addAlways(patch, 'shadowOffsetX', mmToHwp(form.offsetX));
-    addAlways(patch, 'shadowOffsetY', mmToHwp(form.offsetY));
-  } else {
-    addAlways(patch, 'shadowOffsetX', 0);
-    addAlways(patch, 'shadowOffsetY', 0);
+  addChanged(patch, 'shadowType', shadowType, currentType);
+  if (shadowType === 0) return;
+  const enabling = currentType === 0;
+  if (enabling || !sameColor(form.color, props.shadowColor, '#b2b2b2')) {
+    patch.shadowColor = hexToColorRef(form.color);
+  }
+  if (enabling || !untouchedShadowOffset(form.offsetX, props.shadowOffsetX ?? 0)) {
+    patch.shadowOffsetX = mmToHwp(form.offsetX);
+  }
+  if (enabling || !untouchedShadowOffset(form.offsetY, props.shadowOffsetY ?? 0)) {
+    patch.shadowOffsetY = mmToHwp(form.offsetY);
   }
 }
 
@@ -439,7 +582,7 @@ function appendOlePatch(
   form: PicturePropsApplyForm,
 ): void {
   appendOuterMargin(patch, props, form.outerMargin);
-  appendCaption(patch, form.caption);
+  appendCaption(patch, props, form.caption);
   appendShapeLine(patch, shapeProps, form.line, false);
 }
 
@@ -453,21 +596,33 @@ function appendNonOleShapePatch(
   appendShapeLine(patch, shapeProps, form.line, true);
   appendShapeCorner(patch, shapeProps, form.shapeCorner);
   appendShapeFill(patch, shapeProps, form.shapeFill);
-  appendShapeShadow(patch, form.shapeShadow);
+  appendShapeShadow(patch, shapeProps, form.shapeShadow);
 }
 
+/** 확대 비율 칸이 표시값 그대로인가 */
+function untouchedScale(raw: string, size: number, original: number): boolean {
+  return Number(numberOr(raw, 0).toFixed(2)) === Number(displayedScale(size, original));
+}
+
+/**
+ * 확대 비율 — 고친 비율 칸만 크기로 환산한다. 기본 탭에서 입력한 폭/높이가 이미
+ * 패치에 있으면 비율 칸(그대로 남은 표시값)이 그것을 덮지 않는다.
+ */
 function appendImageScale(
   patch: PicturePropsPatch,
   props: PictureProperties,
   form: PicturePropsApplyForm,
 ): void {
-  if (form.common.sizeProtect || !form.image.scale || !(props.originalWidth > 0)) return;
-  const scaleX = Math.max(1, Math.min(1000, numberOr(form.image.scale.x, 100)));
-  const scaleY = Math.max(1, Math.min(1000, numberOr(form.image.scale.y, 100)));
-  const width = Math.round(props.originalWidth * scaleX / 100);
-  const height = Math.round(props.originalHeight * scaleY / 100);
-  addChanged(patch, 'width', width, props.width);
-  addChanged(patch, 'height', height, props.height);
+  if (form.common.sizeProtect || !form.image.scale) return;
+  const { x, y } = form.image.scale;
+  if (!('width' in patch) && props.originalWidth > 0 && !untouchedScale(x, props.width, props.originalWidth)) {
+    const scaleX = Math.max(1, Math.min(1000, numberOr(x, 100)));
+    addChanged(patch, 'width', Math.round(props.originalWidth * scaleX / 100), props.width);
+  }
+  if (!('height' in patch) && props.originalHeight > 0 && !untouchedScale(y, props.height, props.originalHeight)) {
+    const scaleY = Math.max(1, Math.min(1000, numberOr(y, 100)));
+    addChanged(patch, 'height', Math.round(props.originalHeight * scaleY / 100), props.height);
+  }
 }
 
 function appendImageBox(
@@ -477,10 +632,10 @@ function appendImageBox(
   current: readonly [number, number, number, number],
 ): void {
   if (!values) return;
-  addChanged(patch, keys[0], Math.max(0, mmToHwp(values.left)), current[0]);
-  addChanged(patch, keys[1], Math.max(0, mmToHwp(values.top)), current[1]);
-  addChanged(patch, keys[2], Math.max(0, mmToHwp(values.right)), current[2]);
-  addChanged(patch, keys[3], Math.max(0, mmToHwp(values.bottom)), current[3]);
+  addChangedMm(patch, keys[0], values.left, current[0], 0);
+  addChangedMm(patch, keys[1], values.top, current[1], 0);
+  addChangedMm(patch, keys[2], values.right, current[2], 0);
+  addChangedMm(patch, keys[3], values.bottom, current[3], 0);
 }
 
 function appendImageEffects(
@@ -513,7 +668,7 @@ function appendImagePatch(
 ): void {
   appendTransform(patch, props, form.transform);
   appendOuterMargin(patch, props, form.outerMargin);
-  appendCaption(patch, form.caption);
+  appendCaption(patch, props, form.caption);
   appendBorder(patch, props, form.line);
   appendImageScale(patch, props, form);
   appendImageBox(

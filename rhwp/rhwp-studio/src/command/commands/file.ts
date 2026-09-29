@@ -1037,7 +1037,9 @@ export const fileCommands: CommandDef[] = [
     shortcutLabel: 'F7',
     canExecute: (ctx) => ctx.hasDocument,
     execute(services) {
-      const dialog = new PageSetupDialog(services.wasm, services.eventBus, 0, services);
+      // 커서가 있는 구역의 용지를 연다 (page:setup 과 같은 기준).
+      const sectionIdx = services.getInputHandler()?.getCursorPosition().sectionIndex ?? 0;
+      const dialog = new PageSetupDialog(services.wasm, services.eventBus, sectionIdx, services);
       dialog.show();
     },
   },

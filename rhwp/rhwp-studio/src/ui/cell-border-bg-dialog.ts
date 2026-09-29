@@ -1,8 +1,14 @@
 import { ModalDialog } from './dialog';
 import type { WasmBridge } from '@/core/wasm-bridge';
-import type { CellBbox, CellProperties } from '@/core/types';
+import type { CellBbox, CellPathEntry, CellProperties } from '@/core/types';
 import type { EventBus } from '@/core/event-bus';
 import type { CommandServices } from '@/command/types';
+import {
+  buildCellBorderFillPatch,
+  hasCellBorderFillEdits,
+  type CellBorderFillEdits,
+} from './cell-border-bg-model';
+import { rejectNestedTableDialog } from './table-dialog-guard';
 
 const HWPUNIT_PER_MM = 7200 / 25.4;
 
@@ -80,7 +86,7 @@ type CellRange = { startRow: number; startCol: number; endRow: number; endCol: n
 export class CellBorderBgDialog extends ModalDialog {
   private wasm: WasmBridge;
   private eventBus: EventBus;
-  private tableCtx: { sec: number; ppi: number; ci: number };
+  private tableCtx: { sec: number; ppi: number; ci: number; cellPath?: CellPathEntry[] };
   private cellIdx: number;
   private applyMode: 'each' | 'asOne';
   private selectionRange: CellRange | null;
@@ -127,13 +133,18 @@ export class CellBorderBgDialog extends ModalDialog {
   private diagCenterLine = 'NONE';
   private activeTabId = 'border';
 
+  // 사용자가 건드린 묶음 — 건드리지 않은 테두리 변·배경·대각선은 대상 셀 값을 보존한다.
+  private borderTouched = [false, false, false, false];
+  private fillTouched = false;
+  private diagTouched = false;
+
   // 셀 속성 캐시
   private cellProps!: CellProperties;
 
   constructor(
     wasm: WasmBridge,
     eventBus: EventBus,
-    tableCtx: { sec: number; ppi: number; ci: number },
+    tableCtx: { sec: number; ppi: number; ci: number; cellPath?: CellPathEntry[] },
     cellIdx: number,
     applyMode: 'each' | 'asOne' = 'each',
     selectionRange: CellRange | null = null,
@@ -150,8 +161,13 @@ export class CellBorderBgDialog extends ModalDialog {
   }
 
   show(): void {
+    // 중첩 표는 by-path 설정 API가 없어 바깥 표에 쓰게 된다 — 열지 않는다.
+    if (rejectNestedTableDialog(this.tableCtx.cellPath)) return;
     super.show();
     this.dialog.classList.add('tcp-border-bg-dialog');
+    this.borderTouched = [false, false, false, false];
+    this.fillTouched = false;
+    this.diagTouched = false;
     const { sec, ppi, ci } = this.tableCtx;
     this.cellProps = this.applyMode === 'each'
       ? this.wasm.getCellOwnProperties(sec, ppi, ci, this.cellIdx)
@@ -366,8 +382,10 @@ export class CellBorderBgDialog extends ModalDialog {
     };
     if (dirIdx === 4) {
       this.borderEdits = [val, val, val, val];
+      this.borderTouched = [true, true, true, true];
     } else {
       this.borderEdits[dirIdx] = val;
+      this.borderTouched[dirIdx] = true;
     }
   }
 
@@ -500,6 +518,9 @@ export class CellBorderBgDialog extends ModalDialog {
     colorFields.appendChild(patTypeRow);
 
     fillSection.appendChild(colorFields);
+    const markFill = () => { this.fillTouched = true; };
+    fillSection.addEventListener('change', markFill);
+    fillSection.addEventListener('input', markFill);
 
     // 미리보기
     this.bgPreviewBox = document.createElement('div');
@@ -600,6 +621,13 @@ export class CellBorderBgDialog extends ModalDialog {
     csRow.appendChild(this.label('+ 중심선'));
     csRow.appendChild(this.createCenterLineButtonGroup());
     dirSection.appendChild(csRow);
+
+    const markDiagonal = () => { this.diagTouched = true; };
+    lineSection.addEventListener('change', markDiagonal);
+    lineSection.addEventListener('input', markDiagonal);
+    dirSection.addEventListener('click', (e) => {
+      if ((e.target as Element | null)?.closest('button')) markDiagonal();
+    });
 
     controls.appendChild(dirSection);
 
@@ -980,10 +1008,42 @@ export class CellBorderBgDialog extends ModalDialog {
     return [...indices];
   }
 
+  /** 사용자가 바꾼 묶음만 담는다 — 각 셀마다 적용할 때 셀별 속성의 바탕이 된다. */
+  private collectEdits(): CellBorderFillEdits {
+    return {
+      borders: this.borderEdits.map((border, i) => (this.borderTouched[i] ? { ...border } : null)),
+      fill: !this.fillTouched
+        ? null
+        : this.bgColorRadio.checked
+          ? {
+              fillType: 'solid',
+              fillColor: this.bgColorPicker.value,
+              patternColor: this.bgPatternColorPicker.value,
+              patternType: parseInt(this.bgPatternTypeSelect.value, 10),
+            }
+          : { fillType: 'none' },
+      diagonal: !this.diagTouched
+        ? null
+        : {
+            diagonalLine: parseInt(this.diagLineTypeSelect.value, 10),
+            diagonalSlash: this.diagSlashBits,
+            diagonalBackSlash: this.diagBackSlashBits,
+            diagonalWidth: parseInt(this.diagWidthSelect.value, 10),
+            diagonalColor: this.diagColorInput.value,
+            centerLine: this.diagCenterLine,
+          },
+    };
+  }
+
   protected onConfirm(): void {
     const { sec, ppi, ci } = this.tableCtx;
     this.normalizeDiagonalExclusive();
 
+    // 각 셀마다 적용에서 바꾼 것이 없으면 문서를 건드리지 않는다.
+    const edits = this.collectEdits();
+    if (this.applyMode === 'each' && !hasCellBorderFillEdits(edits)) return;
+
+    // 하나의 셀처럼 적용 — 선택 영역 전체가 한 테두리/배경을 공유한다.
     const newProps: Record<string, unknown> = {};
     newProps.borderFillId = this.cellProps.borderFillId ?? 0;
 
@@ -1036,19 +1096,24 @@ export class CellBorderBgDialog extends ModalDialog {
         } else {
           this.wasm.setCellProperties(sec, ppi, ci, this.cellIdx, newProps as Partial<CellProperties>);
         }
-      } else if (scope === 'all') {
+        return;
+      }
+      // 각 셀마다 적용 — 셀마다 자기 테두리/배경을 바탕으로 바꾼 묶음만 덮는다.
+      // 앞 셀을 적용하면 이웃 셀의 공유 변이 바뀌므로 셀 속성은 매번 새로 읽는다.
+      let targetIndices: number[];
+      if (scope === 'all') {
         const dims = this.wasm.getTableDimensions(sec, ppi, ci);
-        for (let i = 0; i < dims.cellCount; i++) {
-          this.wasm.setCellProperties(sec, ppi, ci, i, newProps as Partial<CellProperties>);
-        }
+        targetIndices = Array.from({ length: dims.cellCount }, (_, i) => i);
       } else if (this.selectionRange) {
         const cellIndices = this.selectedCellIndicesForRange(this.selectionRange);
-        const targetIndices = cellIndices.length > 0 ? cellIndices : [this.cellIdx];
-        for (const cellIdx of targetIndices) {
-          this.wasm.setCellProperties(sec, ppi, ci, cellIdx, newProps as Partial<CellProperties>);
-        }
+        targetIndices = cellIndices.length > 0 ? cellIndices : [this.cellIdx];
       } else {
-        this.wasm.setCellProperties(sec, ppi, ci, this.cellIdx, newProps as Partial<CellProperties>);
+        targetIndices = [this.cellIdx];
+      }
+      for (const cellIdx of targetIndices) {
+        const own = this.wasm.getCellOwnProperties(sec, ppi, ci, cellIdx);
+        const patch = buildCellBorderFillPatch(edits, own);
+        if (patch) this.wasm.setCellProperties(sec, ppi, ci, cellIdx, patch as Partial<CellProperties>);
       }
     };
     // 셀 테두리/배경 일괄 적용도 undo 대상이다 — 편집 라우터를 통과시켜

@@ -4,17 +4,14 @@ import type { WasmBridge } from '@/core/wasm-bridge';
 import type { PageDef } from '@/core/types';
 import type { EventBus } from '@/core/event-bus';
 import type { CommandServices } from '@/command/types';
+import {
+  PAGE_MARGIN_KEYS,
+  buildPageDefFromForm,
+  formatPageMm,
+  type PageSetupFields,
+} from './page-setup-model';
 
-const HWPUNIT_PER_MM = 7200 / 25.4; // ≈283.46
 const PAPER_PRESET_TOLERANCE_HU = 3;
-
-function hwpunitToMm(hu: number): number {
-  return Math.round(hu * 25.4 / 7200 * 10) / 10; // 소수 1자리
-}
-
-function mmToHwpunit(mm: number): number {
-  return Math.round(mm * HWPUNIT_PER_MM);
-}
 
 function samePaperSize(a: number, b: number): boolean {
   return Math.abs(a - b) <= PAPER_PRESET_TOLERANCE_HU;
@@ -68,6 +65,9 @@ export class PageSetupDialog extends ModalDialog {
   private bindingRadios!: HTMLInputElement[];
   private marginInputs!: Record<string, HTMLInputElement>;
   private scopeSelect!: HTMLSelectElement;
+  private errorMessage!: HTMLDivElement;
+  /** populateFields 가 채운 표시값 — 그대로인 칸은 원래 HWPUNIT 를 쓴다 */
+  private shownFields: PageSetupFields | null = null;
 
   constructor(wasm: WasmBridge, eventBus: EventBus, sectionIdx: number, private services?: CommandServices) {
     super('편집 용지', 440);
@@ -80,6 +80,9 @@ export class PageSetupDialog extends ModalDialog {
     super.show(); // build() → createBody() 호출
     this.pageDef = this.wasm.getPageDef(this.sectionIdx);
     this.populateFields();
+    // 구역이 여럿이면 현재 구역만 바꾸는 것이 기본이다.
+    this.scopeSelect.value = this.wasm.getSectionCount() > 1 ? 'current' : 'all';
+    this.errorMessage.hidden = true;
   }
 
   protected createBody(): HTMLElement {
@@ -191,7 +194,7 @@ export class PageSetupDialog extends ModalDialog {
     this.scopeSelect = document.createElement('select');
     this.scopeSelect.className = 'dialog-select';
     this.scopeSelect.style.width = '120px';
-    for (const [val, text] of [['all', '문서 전체'], ['new-section', '새 구역으로']] as const) {
+    for (const [val, text] of [['current', '현재 구역'], ['all', '문서 전체']] as const) {
       const opt = document.createElement('option');
       opt.value = val;
       opt.textContent = text;
@@ -201,35 +204,46 @@ export class PageSetupDialog extends ModalDialog {
     scopeRow.style.marginTop = '4px';
     body.appendChild(scopeRow);
 
+    this.errorMessage = document.createElement('div');
+    this.errorMessage.className = 'dialog-pdf-error';
+    this.errorMessage.setAttribute('role', 'alert');
+    this.errorMessage.hidden = true;
+    body.appendChild(this.errorMessage);
+
     return body;
   }
 
-  protected onConfirm(): void {
-    // mm → HWPUNIT 변환
-    const landscape = this.landscapeRadios[1].checked;
-    let w = mmToHwpunit(parseFloat(this.widthInput.value) || 0);
-    let h = mmToHwpunit(parseFloat(this.heightInput.value) || 0);
-
-    // landscape는 PageDef에서 원본(세로) 크기로 저장
-    if (landscape) { [w, h] = [h, w]; }
-
-    const newDef: PageDef = {
-      width: w,
-      height: h,
-      marginLeft: mmToHwpunit(parseFloat(this.marginInputs['marginLeft'].value) || 0),
-      marginRight: mmToHwpunit(parseFloat(this.marginInputs['marginRight'].value) || 0),
-      marginTop: mmToHwpunit(parseFloat(this.marginInputs['marginTop'].value) || 0),
-      marginBottom: mmToHwpunit(parseFloat(this.marginInputs['marginBottom'].value) || 0),
-      marginHeader: mmToHwpunit(parseFloat(this.marginInputs['marginHeader'].value) || 0),
-      marginFooter: mmToHwpunit(parseFloat(this.marginInputs['marginFooter'].value) || 0),
-      marginGutter: mmToHwpunit(parseFloat(this.marginInputs['marginGutter'].value) || 0),
-      landscape,
+  protected onConfirm(): boolean {
+    const margins = {} as PageSetupFields['margins'];
+    for (const key of PAGE_MARGIN_KEYS) margins[key] = this.marginInputs[key].value;
+    const result = buildPageDefFromForm(this.pageDef, this.shownFields ?? this.currentFields(), {
+      width: this.widthInput.value,
+      height: this.heightInput.value,
+      margins,
+      landscape: this.landscapeRadios[1].checked,
       binding: parseInt(this.bindingRadios.find(r => r.checked)?.value ?? '0'),
-    };
+    });
+    if (!result.ok) {
+      // 크기 0 이나 용지를 넘는 여백은 쪽을 없애므로 대화상자를 연 채로 알린다.
+      this.errorMessage.textContent = result.error;
+      this.errorMessage.hidden = false;
+      return false;
+    }
+    const newDef: PageDef = result.pageDef;
+    const sections = this.scopeSelect.value === 'all'
+      ? Array.from({ length: Math.max(1, this.wasm.getSectionCount()) }, (_, i) => i)
+      : [this.sectionIdx];
 
     // [편집 용지 이관] 쪽 정의 변경을 snapshot 으로 라우팅해 undo 가능(#2077 수식 속성 동형).
+    // 문서 전체는 한 스냅샷 안에서 모든 구역에 적용해 한 번의 되돌리기로 복구된다.
     // services 미주입 환경(구 호출부)에서만 직접 적용 fallback.
-    const apply = () => this.wasm.setPageDef(this.sectionIdx, newDef);
+    const apply = (): boolean => {
+      let ok = true;
+      for (const section of sections) {
+        ok = this.wasm.setPageDef(section, newDef).ok && ok;
+      }
+      return ok;
+    };
     const ih = this.services?.getInputHandler();
     if (ih) {
       ih.executeOperation({
@@ -237,9 +251,16 @@ export class PageSetupDialog extends ModalDialog {
         operationType: 'pageSetup',
         operation: () => { apply(); return ih.getCursorPosition(); },
       });
-    } else if (apply().ok) {
+    } else if (apply()) {
       this.eventBus.emit('document-changed');
     }
+    return true;
+  }
+
+  private currentFields(): PageSetupFields {
+    const margins = {} as PageSetupFields['margins'];
+    for (const key of PAGE_MARGIN_KEYS) margins[key] = this.marginInputs[key].value;
+    return { width: this.widthInput.value, height: this.heightInput.value, margins };
   }
 
   private populateFields(): void {
@@ -254,8 +275,8 @@ export class PageSetupDialog extends ModalDialog {
       matchesPaperPreset(pd.width, pd.height, pw, ph)
     );
     this.paperSelect.value = matched ? matched[0] : 'custom';
-    this.widthInput.value = hwpunitToMm(w).toFixed(1);
-    this.heightInput.value = hwpunitToMm(h).toFixed(1);
+    this.widthInput.value = formatPageMm(w);
+    this.heightInput.value = formatPageMm(h);
     this.widthInput.disabled = !!matched;
     this.heightInput.disabled = !!matched;
 
@@ -269,13 +290,8 @@ export class PageSetupDialog extends ModalDialog {
     this.updateIconRadioState('binding');
 
     // 여백
-    this.marginInputs['marginTop'].value = hwpunitToMm(pd.marginTop).toFixed(1);
-    this.marginInputs['marginBottom'].value = hwpunitToMm(pd.marginBottom).toFixed(1);
-    this.marginInputs['marginLeft'].value = hwpunitToMm(pd.marginLeft).toFixed(1);
-    this.marginInputs['marginRight'].value = hwpunitToMm(pd.marginRight).toFixed(1);
-    this.marginInputs['marginHeader'].value = hwpunitToMm(pd.marginHeader).toFixed(1);
-    this.marginInputs['marginFooter'].value = hwpunitToMm(pd.marginFooter).toFixed(1);
-    this.marginInputs['marginGutter'].value = hwpunitToMm(pd.marginGutter).toFixed(1);
+    for (const key of PAGE_MARGIN_KEYS) this.marginInputs[key].value = formatPageMm(pd[key]);
+    this.shownFields = this.currentFields();
   }
 
   private onPaperChange(): void {
@@ -284,8 +300,8 @@ export class PageSetupDialog extends ModalDialog {
     if (preset) {
       const landscape = this.landscapeRadios[1].checked;
       const [w, h] = landscape ? [preset[2], preset[1]] : [preset[1], preset[2]];
-      this.widthInput.value = hwpunitToMm(w).toFixed(1);
-      this.heightInput.value = hwpunitToMm(h).toFixed(1);
+      this.widthInput.value = formatPageMm(w);
+      this.heightInput.value = formatPageMm(h);
       this.widthInput.disabled = true;
       this.heightInput.disabled = true;
     } else {
