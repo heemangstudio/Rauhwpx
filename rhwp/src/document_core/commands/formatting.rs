@@ -9,9 +9,8 @@ use crate::error::HwpError;
 use crate::model::control::Control;
 use crate::model::event::DocumentEvent;
 use crate::model::paragraph::Paragraph;
-use crate::renderer::composer::reflow_line_segs;
 use crate::renderer::page_layout::PageLayoutInfo;
-use crate::renderer::style_resolver::{resolve_styles, ResolvedStyleSet};
+use crate::renderer::style_resolver::ResolvedStyleSet;
 
 pub(crate) fn char_shape_mods_affect_text_flow(mods: &crate::model::style::CharShapeMods) -> bool {
     mods.base_size.is_some()
@@ -1170,29 +1169,14 @@ impl DocumentCore {
             )));
         }
 
-        let styles = resolve_styles(&self.document.doc_info, self.dpi);
-        let available_width = {
-            let section = &self.document.sections[sec_idx];
-            let page_def = &section.section_def.page_def;
-            let column_def = DocumentCore::find_initial_column_def(&section.paragraphs);
-            let layout = PageLayoutInfo::from_page_def(page_def, &column_def, self.dpi);
-            let col_width = layout
-                .column_areas
-                .first()
-                .map(|a| a.width)
-                .unwrap_or(layout.body_area.width);
-            let para_shape_id = section.paragraphs[para_idx].para_shape_id;
-            let para_style = styles.para_styles.get(para_shape_id as usize);
-            let margin_left = para_style.map(|s| s.margin_left).unwrap_or(0.0);
-            let margin_right = para_style.map(|s| s.margin_right).unwrap_or(0.0);
-            (col_width - margin_left - margin_right).max(1.0)
-        };
-
-        {
-            let para = &mut self.document.sections[sec_idx].paragraphs[para_idx];
-            para.apply_char_shape_range(start_offset, end_offset, char_shape_id);
-            reflow_line_segs(para, available_width, &styles, self.dpi);
-        }
+        self.document.sections[sec_idx].paragraphs[para_idx].apply_char_shape_range(
+            start_offset,
+            end_offset,
+            char_shape_id,
+        );
+        // 정방향 글자 서식과 같은 리플로우 수명주기(소속 단 폭 + vpos 재계산)를 쓴다.
+        // 첫 단 폭으로 줄만 다시 나누면 뒤 문단 vpos 가 편집 뒤 위치에 남는다.
+        self.reflow_body_para_and_recalc_flow(sec_idx, para_idx);
 
         self.document.sections[sec_idx].raw_stream = None;
         self.rebuild_section(sec_idx);
@@ -1573,7 +1557,7 @@ impl DocumentCore {
         {
             return;
         }
-        self.styles = resolve_styles(&self.document.doc_info, self.dpi);
+        self.styles = self.resolve_document_styles();
         let stored_end_for_reset = crate::renderer::composer::paragraph_flow_end(
             &self.document.sections[sec_idx].paragraphs[para_idx],
         );
@@ -1934,6 +1918,8 @@ impl DocumentCore {
         self.reflow_cell_paragraph_by_path(sec_idx, parent_para_idx, path, inner_para_idx);
         self.mark_cell_control_dirty(sec_idx, parent_para_idx, path[0].0);
         self.document.sections[sec_idx].raw_stream = None;
+        // 이벤트를 쌓지 않으므로 표를 담은 본문 문단의 revision 을 올린다.
+        self.mark_table_host_paragraph_changed(sec_idx, parent_para_idx);
         self.rebuild_section(sec_idx);
         Ok("{\"ok\":true}".to_string())
     }
@@ -2332,6 +2318,8 @@ impl DocumentCore {
 
         self.document.sections[section_idx].paragraphs[para_idx].numbering_restart = restart;
         self.document.sections[section_idx].raw_stream = None;
+        // 이벤트를 쌓지 않으므로 스냅샷 복원이 바뀐 문단을 재사용하지 않게 표시한다.
+        self.event_log.mark_paragraph_changed(section_idx, para_idx);
 
         self.recompose_section(section_idx);
         self.paginate_if_needed();
@@ -2408,6 +2396,8 @@ impl DocumentCore {
         }
 
         self.document.sections[section_idx].raw_stream = None;
+        // 이벤트를 쌓지 않으므로 스냅샷 복원이 바뀐 문단을 재사용하지 않게 표시한다.
+        self.event_log.mark_paragraph_changed(section_idx, para_idx);
         self.recompose_section(section_idx);
         self.paginate_if_needed();
 

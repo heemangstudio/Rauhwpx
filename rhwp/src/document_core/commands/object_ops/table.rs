@@ -755,6 +755,9 @@ impl DocumentCore {
         // 새 BorderFill 추가 시 styles.border_styles 갱신이 필요하므로 rebuild_section 사용
         self.rebuild_section(section_idx);
 
+        // 표 host·이웃 빈 문단(·분할 우측)으로 문단 수가 늘었다. TableRowInserted 는
+        // 순서 변경 이벤트가 아니므로 순서 revision 을 따로 올린다.
+        self.event_log.mark_paragraph_sequence_changed(section_idx);
         self.event_log.push(DocumentEvent::TableRowInserted {
             section: section_idx,
             para: insert_para_idx,
@@ -1492,60 +1495,8 @@ impl DocumentCore {
                 )));
             }
 
-            let text_chars: Vec<char> = para.text.chars().collect();
-            let mut ci = 0usize;
-            let mut prev_end: u32 = 0;
-            let mut gap_start: Option<u32> = None;
-            'outer: for i in 0..text_chars.len() {
-                let offset = if i < para.char_offsets.len() {
-                    para.char_offsets[i]
-                } else {
-                    prev_end
-                };
-                while prev_end + 8 <= offset && ci < para.controls.len() {
-                    if ci == inner_control_idx {
-                        gap_start = Some(prev_end);
-                        break 'outer;
-                    }
-                    ci += 1;
-                    prev_end += 8;
-                }
-                let char_size: u32 = if text_chars[i] == '\t' {
-                    8
-                } else if text_chars[i].len_utf16() == 2 {
-                    2
-                } else {
-                    1
-                };
-                prev_end = offset + char_size;
-            }
-            if gap_start.is_none() {
-                while ci < para.controls.len() {
-                    if ci == inner_control_idx {
-                        gap_start = Some(prev_end);
-                        break;
-                    }
-                    ci += 1;
-                    prev_end += 8;
-                }
-            }
-
-            if let Some(gs) = gap_start {
-                let threshold = gs + 8;
-                for offset in para.char_offsets.iter_mut() {
-                    if *offset >= threshold {
-                        *offset -= 8;
-                    }
-                }
-            }
-
-            deleted_table = matches!(para.controls.remove(inner_control_idx), Control::Table(_));
-            if inner_control_idx < para.ctrl_data_records.len() {
-                para.ctrl_data_records.remove(inner_control_idx);
-            }
-            if para.char_count >= 8 {
-                para.char_count -= 8;
-            }
+            deleted_table = matches!(para.controls[inner_control_idx], Control::Table(_));
+            Self::remove_inline_control_with_metadata(para, inner_control_idx);
             Self::reflow_paragraph_line_segs_after_control_delete(para, &self.styles, self.dpi);
         }
 

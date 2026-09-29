@@ -105,9 +105,10 @@ impl DocumentCore {
 
     /// 인라인 컨트롤을 문단에서 제거하고 뒤쪽 char_offsets 를 당긴다.
     ///
-    /// delete_picture_control_native 와 move_picture_control_native 의 공통 삭제
-    /// 절반이다. 반환값은 제거된 갭의 시작 UTF-16 위치다.
-    pub(crate) fn remove_inline_control_and_shift(para: &mut Paragraph, control_idx: usize) -> u32 {
+    /// `remove_inline_control_with_metadata` 의 char_offsets 절반이다. 글자 모양·영역
+    /// 태그·필드 참조는 옮기지 않으므로 직접 부르지 말고 그 함수를 쓴다.
+    /// 반환값은 제거된 갭의 시작 UTF-16 위치다.
+    fn remove_inline_control_and_shift(para: &mut Paragraph, control_idx: usize) -> u32 {
         let gap_start = Self::find_inline_control_gap_start(para, control_idx);
 
         // char_offsets 조정
@@ -162,6 +163,24 @@ impl DocumentCore {
             }
         }
         gap
+    }
+
+    /// 컨트롤을 `idx` 에 끼우고 ctrl_data_records 에도 같은 자리에 빈 슬롯을 끼운다.
+    ///
+    /// HWPX 파서는 ctrl_data_records 를 채우지 않으므로 controls 보다 짧을 수 있다.
+    /// 그대로 insert 하면 범위 초과 panic(wasm 에서는 인스턴스 전체가 멈춘다)이므로
+    /// 먼저 controls 길이만큼 채워 인덱스를 맞춘다.
+    pub(crate) fn insert_control_with_data_slot(
+        para: &mut Paragraph,
+        idx: usize,
+        control: Control,
+    ) {
+        if para.ctrl_data_records.len() < para.controls.len() {
+            para.ctrl_data_records
+                .resize_with(para.controls.len(), || None);
+        }
+        para.controls.insert(idx, control);
+        para.ctrl_data_records.insert(idx, None);
     }
 
     /// 컨트롤 삭제 후 문단의 line_segs를 재계산한다.
@@ -447,6 +466,8 @@ impl DocumentCore {
         line.drawing.shape_attr.raw_rendering = Vec::new();
 
         section.raw_stream = None;
+        // 이벤트를 쌓지 않으므로 스냅샷 복원이 바뀐 문단을 재사용하지 않게 표시한다.
+        self.event_log.mark_paragraph_changed(section_idx, para_idx);
         self.recompose_section(section_idx);
         self.paginate_if_needed();
         self.update_connectors_in_section(section_idx);
@@ -506,15 +527,14 @@ impl crate::document_core::DocumentCore {
             idx
         };
 
-        paragraph
-            .controls
-            .insert(insert_idx, Control::NewNumber(new_number));
-        paragraph.ctrl_data_records.insert(insert_idx, None);
+        Self::insert_control_with_data_slot(paragraph, insert_idx, Control::NewNumber(new_number));
 
         paragraph.shift_for_inline_control_insert(char_offset);
         paragraph.char_count += 8;
         paragraph.control_mask |= 1u32 << 0x0012;
         paragraph.has_para_text = true;
+        // 이벤트를 쌓지 않으므로 스냅샷 복원이 바뀐 문단을 재사용하지 않게 표시한다.
+        self.event_log.mark_paragraph_changed(section_idx, para_idx);
 
         self.reflow_paragraph(section_idx, para_idx);
         self.recompose_section(section_idx);

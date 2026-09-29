@@ -227,6 +227,19 @@ impl DocumentEventLog {
         );
     }
 
+    /// 문단 수가 바뀌었는데 순서 변경 이벤트(ParagraphMerged 등)를 쌓지 않는 경로용.
+    /// 문단 revision 은 인덱스 기준이라 문단 수가 바뀌면 다른 문단을 가리키므로,
+    /// 순서 revision 을 올려 스냅샷이 인덱스로 문단을 공유·재사용하지 않게 한다.
+    fn mark_paragraph_sequence_changed(&mut self, section_idx: usize) {
+        let revision = self.next_revision();
+        Self::set_revision(&mut self.section_revisions, section_idx, revision);
+        Self::set_revision(
+            &mut self.paragraph_sequence_revisions,
+            section_idx,
+            revision,
+        );
+    }
+
     fn mark_all_sections_changed(&mut self, section_count: usize) {
         for section_idx in 0..section_count {
             let revision = self.next_revision();
@@ -593,15 +606,22 @@ impl DocumentCore {
         )
     }
 
+    /// 현재 문서의 스타일을 해소한다. 로드 때와 같은 HWP3 변형 보정을 쓴다.
+    ///
+    /// `resolve_styles` 는 변형 보정을 끄므로, 편집 뒤 재해소에 쓰면 HWP3 변환본의
+    /// 문단 여백·간격이 로드 때와 달라져 편집 한 번에 쪽 수가 바뀐다.
+    pub(crate) fn resolve_document_styles(&self) -> ResolvedStyleSet {
+        crate::renderer::style_resolver::resolve_styles_with_variant(
+            &self.document.doc_info,
+            self.dpi,
+            self.document.layout_profile().hwp3_layout(),
+        )
+    }
+
     /// DPI를 설정하고 스타일을 재해소한 후 재페이지네이션한다.
     pub fn set_dpi(&mut self, dpi: f64) {
-        use crate::renderer::style_resolver::resolve_styles_with_variant;
         self.dpi = dpi;
-        self.styles = resolve_styles_with_variant(
-            &self.document.doc_info,
-            dpi,
-            self.document.layout_profile().hwp3_layout(),
-        );
+        self.styles = self.resolve_document_styles();
         self.paginate();
     }
 

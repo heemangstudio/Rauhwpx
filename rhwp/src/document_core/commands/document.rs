@@ -2431,7 +2431,7 @@ impl DocumentCore {
         }
 
         // 스타일은 재해소해도 동일 결과이므로 재계산하여 borrow 충돌 회피.
-        let styles = resolve_styles(&self.document.doc_info, self.dpi);
+        let styles = self.resolve_document_styles();
         let dpi = self.dpi;
         let mut reflowed = 0usize;
         let doc_hwp3_layout = self.document.layout_profile().hwp3_layout();
@@ -2979,7 +2979,7 @@ impl DocumentCore {
     /// 문서 IR을 직접 설정한다 (테스트/네이티브 전용).
     pub fn set_document(&mut self, doc: Document) {
         self.document = doc;
-        self.styles = resolve_styles(&self.document.doc_info, self.dpi);
+        self.styles = self.resolve_document_styles();
         self.composed = self
             .document
             .sections
@@ -3230,7 +3230,7 @@ impl DocumentCore {
         // 폰트 등록 변화 후 새로고침이 캐시된 폭을 재사용하지 않도록 비운다.
         crate::renderer::layout::clear_measure_caches();
         self.render_normalization.sections.clear();
-        self.styles = resolve_styles(&self.document.doc_info, self.dpi);
+        self.styles = self.resolve_document_styles();
         self.composed = self
             .document
             .sections
@@ -3422,7 +3422,7 @@ impl DocumentCore {
         }
         self.document = restored;
         if same_section_count {
-            self.styles = resolve_styles(&self.document.doc_info, self.dpi);
+            self.styles = self.resolve_document_styles();
             for &section_idx in &changed_sections {
                 // Snapshot tables are usually clean, but the cached measurements
                 // belong to the document we just replaced. Recomposition alone
