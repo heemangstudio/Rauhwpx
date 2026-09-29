@@ -252,7 +252,7 @@ pub(crate) fn measure_legacy_run_native(
     bold: bool,
     modern: bool,
 ) -> Option<LegacyRunMetrics> {
-    use skia_safe::{Font, FontMgr, FontStyle, Typeface};
+    use skia_safe::{FontMgr, FontStyle, Typeface};
     use std::cell::RefCell;
     use std::collections::HashMap;
 
@@ -282,9 +282,10 @@ pub(crate) fn measure_legacy_run_native(
         // 등록돼 첫 측정(페이지네이션) 때는 아직 없을 수 있다.
         _ => {
             let resolved = SYSTEM_FONT_SOURCE.with(|(font_mgr, has_legacy_face)| {
+                let src = crate::renderer::font_paths::custom_face_source("HYhwpEQ");
                 // 본문 페인트와 같은 조달 순서 — custom(--font-path) 등록 face 를
                 // 시스템 설치와 동일하게 본다. 없으면 시스템으로 내려간다.
-                let face = crate::renderer::font_paths::custom_face_source("HYhwpEQ")
+                let face = src
                     .and_then(|(file, index)| {
                         std::fs::read(file)
                             .ok()
@@ -305,50 +306,59 @@ pub(crate) fn measure_legacy_run_native(
             resolved
         }
     };
-    // painter 와 같은 문자→PUA 매핑.
-    let glyphs: String = text
-        .chars()
-        .map(|c| super::font::legacy_equation_glyph(c, italic, modern).0)
-        .collect();
-    if !glyphs
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .all(|c| typeface.unichar_to_glyph(c as i32) != 0)
-    {
-        return None;
-    }
-    let font = Font::new(typeface, font_size as f32);
-    let mut advance = 0.0f64;
+    // painter(equation_conv::draw_text)와 같은 문자→PUA 매핑을 글자 단위로
+    // 적용한다. legacy face가 커버하지 못하는 문자(수식 안 한글)는 painter가
+    // CJK fallback 서체로 자연폭대로 칠하므로 여기서도 그 폭으로 잰다 —
+    // 섞인 run을 통째로 거절하면 한글 토큰이 1.0em 격자로 측정돼 식이 커진다.
+    //
+    // 한컴 수식기는 run 안 글립의 자형을 그대로 두고 진행 스텝만
+    // EQUATION_GLYPH_TRACKING(0.9)배로 포갠다 — painter도 같은 비율로 좁혀
+    // 칠한다(02-eq-01 실측: 한글 pitch 0.9em, 숫자 0.45em, '%' 0.75em).
+    let mut pen = 0.0f64;
     let mut ink_left = f64::NAN;
     let mut ink_right = 0.0f64;
-    for (character, gid) in text.chars().zip(font.str_to_glyphs_vec(&glyphs)) {
-        let raw_advance = tables.advance(gid) * font_size;
-        let adv = if modern {
-            super::font::modern_glyph_advance(
-                raw_advance,
-                font_size,
-                super::font::legacy_equation_glyph(character, italic, true).1,
-            )
+    for ch in text.chars() {
+        let mapped = super::font::legacy_equation_glyph(ch, italic, modern).0;
+        let gid = typeface.unichar_to_glyph(mapped as i32);
+        // 이 글자의 자연 진행폭·잉크 경계(em) — painter가 칠할 서체 기준.
+        let (adv, ink) = if gid > 0 {
+            let raw = tables.advance(gid as u16);
+            // 현대 HY 글립은 힌팅된 advance로 연결한다.
+            let adv = if modern {
+                super::font::modern_glyph_advance(
+                    raw * font_size,
+                    font_size,
+                    super::font::legacy_equation_glyph(ch, italic, true).1,
+                ) / font_size
+            } else {
+                raw
+            };
+            (adv, tables.ink(gid as u16))
+        } else if super::layout::is_cjk_char(ch) {
+            // 미커버 CJK는 serif fallback(한글 자연폭 ≈1.0em)으로 친다.
+            (1.0, Some((0.0, 0.0, 1.0, 0.0)))
         } else {
-            raw_advance
+            // 그 외 미커버 문자 — painter의 fallback 서체 자연폭 추정치.
+            let adv = super::layout::estimate_text_width(&ch.to_string(), 1.0, italic);
+            (adv, Some((0.0, 0.0, adv, 0.0)))
         };
-        if let Some((x_min, _y_min, x_max, _y_max)) = tables.ink(gid) {
-            let left = advance + x_min * font_size;
+        if let Some((x_min, _y_min, x_max, _y_max)) = ink {
             if ink_left.is_nan() {
-                ink_left = left;
+                ink_left = pen + x_min;
             }
-            ink_right = ink_right.max(advance + x_max * font_size);
+            ink_right = pen + x_max;
         }
-        advance += adv;
+        pen += adv * super::font::EQUATION_GLYPH_TRACKING;
     }
+    let advance = pen * font_size;
     if ink_left.is_nan() {
         ink_left = 0.0;
-        ink_right = advance;
+        ink_right = pen;
     }
     let metrics = LegacyRunMetrics {
         advance,
-        ink_right,
-        ink_left,
+        ink_right: ink_right * font_size,
+        ink_left: ink_left * font_size,
     };
     let metrics = (metrics.ink_right.is_finite()
         && metrics.ink_left.is_finite()

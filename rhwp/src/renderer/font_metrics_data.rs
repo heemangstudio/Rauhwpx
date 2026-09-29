@@ -229,6 +229,23 @@ pub fn find_metric(name: &str, bold: bool, italic: bool) -> Option<MetricMatch> 
     })
 }
 
+/// 요청 face 가 한컴(macOS) 번들 자체 서체인지 — 별칭 해석 전 원명 기준.
+///
+/// font-metric-gen 이 한컴 번들 파일(Shared/Fonts/*.HFT, PrivateFont_ko-KR.dat
+/// 매핑 TTF)에서 추출한 서체는 em 512 스케일로 기록된다 — 휴먼 계열·HCI Poppy·
+/// 안상수체 등 (휴먼명조→HMKMM.TTF, HCI Poppy→HMEPO*.HFT). 신명 디나루 같은
+/// 번들 HFT 는 별도 테이블(hft_metrics)에 실재한다. 번들 face 는 한컴이 자체
+/// 파일로 그리므로, 합성 Bold 여도 advance 에 획 두께를 더하지 않는다
+/// (31-port-call 실측: bold 휴먼명조/HCI Poppy 런이 Regular 폭 유지).
+/// 반면 미번들 face(한양중고딕 등)는 치환 조판 시 글자당 ~+0.025em 이 벌어진다.
+pub(crate) fn hancom_bundled_face(name: &str) -> bool {
+    let name = name.trim();
+    super::hft_metrics::find_metric(name, false, false).is_some()
+        || FONT_METRICS
+            .iter()
+            .any(|m| m.name == name && m.em_size == 512)
+}
+
 fn find_metric_uncached(name: &str, bold: bool, italic: bool) -> Option<MetricMatch> {
     if let Some(metric) = super::hft_metrics::find_metric(name, bold, italic) {
         return Some(metric);

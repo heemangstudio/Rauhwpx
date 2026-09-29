@@ -251,6 +251,7 @@ impl DocumentCore {
             cell_para_index: outer.cell_para_index,
             text_direction: outer.text_direction,
             line_wrap_squeeze: outer.line_wrap_squeeze,
+            row_span: 1,
         });
     }
 
@@ -1445,6 +1446,7 @@ impl DocumentCore {
                                 cell_para_index: 0,
                                 text_direction: 0,
                                 line_wrap_squeeze: false,
+                                row_span: 1,
                             });
                             Some(ctx)
                         } else {
@@ -1456,6 +1458,7 @@ impl DocumentCore {
                                     cell_para_index: 0,
                                     text_direction: 0,
                                     line_wrap_squeeze: false,
+                                    row_span: 1,
                                 }],
                             })
                         }
@@ -2981,6 +2984,7 @@ impl DocumentCore {
                                 cell_para_index: 0,
                                 text_direction: 0,
                                 line_wrap_squeeze: false,
+                                row_span: 1,
                             });
                             Some(ctx)
                         } else {
@@ -2992,6 +2996,7 @@ impl DocumentCore {
                                     cell_para_index: 0,
                                     text_direction: 0,
                                     line_wrap_squeeze: false,
+                                    row_span: 1,
                                 }],
                             })
                         }

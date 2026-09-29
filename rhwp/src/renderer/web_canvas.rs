@@ -2714,15 +2714,17 @@ impl Renderer for WebCanvasRenderer {
             };
             let ul_y = match style.underline {
                 UnderlineType::Top => y - font_size + 1.0,
-                _ => y + 2.0,
+                // macOS 한컴 실측: 밑줄 첫 선 = baseline + ~0.167em
+                _ => y + font_size * 0.167,
             };
-            self.draw_line_shape_canvas(
+            self.draw_line_shape_canvas_fs(
                 x,
                 ul_y,
                 x + text_width,
                 ul_y,
                 &ul_color,
                 style.underline_shape,
+                font_size,
             );
         }
 
@@ -2735,13 +2737,14 @@ impl Renderer for WebCanvasRenderer {
             } else {
                 color_to_css(style.color)
             };
-            self.draw_line_shape_canvas(
+            self.draw_line_shape_canvas_fs(
                 x,
                 strike_y,
                 x + text_width,
                 strike_y,
                 &st_color,
                 style.strike_shape,
+                font_size,
             );
         }
 
@@ -3567,27 +3570,85 @@ impl WebCanvasRenderer {
 
     /// 선 모양(shape)에 따라 Canvas 라인을 그린다.
     fn draw_line_shape_canvas(&self, x1: f64, y1: f64, x2: f64, y2: f64, color: &str, shape: u8) {
+        self.draw_line_shape_canvas_fs(x1, y1, x2, y2, color, shape, 0.0)
+    }
+
+    /// `fs`(글자 크기 px)>0 이면 이중선/삼중선 간격·두께를 em 상대로 그린다
+    /// (macOS 한컴 실측: 얇은 선 ≈0.043em, 굵은 선 ≈0.112em, 간격 ≈0.124em).
+    fn draw_line_shape_canvas_fs(
+        &self,
+        x1: f64,
+        y1: f64,
+        x2: f64,
+        y2: f64,
+        color: &str,
+        shape: u8,
+        fs: f64,
+    ) {
+        let thin_w = if fs > 0.0 { (fs * 0.043).max(0.4) } else { 0.5 };
+        let thick_w = if fs > 0.0 { fs * 0.112 } else { 1.2 };
+        let line_gap = if fs > 0.0 { fs * 0.124 } else { 2.0 };
         match shape {
             7 => {
                 // 이중선
-                self.draw_single_canvas_line(x1, y1 - 1.0, x2, y2 - 1.0, color, 0.7, &[]);
-                self.draw_single_canvas_line(x1, y1 + 1.0, x2, y2 + 1.0, color, 0.7, &[]);
+                self.draw_single_canvas_line(x1, y1, x2, y2, color, thin_w, &[]);
+                self.draw_single_canvas_line(
+                    x1,
+                    y1 + line_gap,
+                    x2,
+                    y2 + line_gap,
+                    color,
+                    thin_w,
+                    &[],
+                );
             }
             8 => {
                 // 가는+굵은 이중선
-                self.draw_single_canvas_line(x1, y1 - 1.2, x2, y2 - 1.2, color, 0.5, &[]);
-                self.draw_single_canvas_line(x1, y1 + 0.8, x2, y2 + 0.8, color, 1.2, &[]);
+                self.draw_single_canvas_line(x1, y1, x2, y2, color, thin_w, &[]);
+                self.draw_single_canvas_line(
+                    x1,
+                    y1 + line_gap,
+                    x2,
+                    y2 + line_gap,
+                    color,
+                    thick_w,
+                    &[],
+                );
             }
             9 => {
                 // 굵은+가는 이중선
-                self.draw_single_canvas_line(x1, y1 - 0.8, x2, y2 - 0.8, color, 1.2, &[]);
-                self.draw_single_canvas_line(x1, y1 + 1.2, x2, y2 + 1.2, color, 0.5, &[]);
+                self.draw_single_canvas_line(x1, y1, x2, y2, color, thick_w, &[]);
+                self.draw_single_canvas_line(
+                    x1,
+                    y1 + line_gap,
+                    x2,
+                    y2 + line_gap,
+                    color,
+                    thin_w,
+                    &[],
+                );
             }
             10 => {
                 // 삼중선
-                self.draw_single_canvas_line(x1, y1 - 1.5, x2, y2 - 1.5, color, 0.5, &[]);
-                self.draw_single_canvas_line(x1, y1, x2, y2, color, 0.5, &[]);
-                self.draw_single_canvas_line(x1, y1 + 1.5, x2, y2 + 1.5, color, 0.5, &[]);
+                self.draw_single_canvas_line(x1, y1, x2, y2, color, thin_w, &[]);
+                self.draw_single_canvas_line(
+                    x1,
+                    y1 + line_gap,
+                    x2,
+                    y2 + line_gap,
+                    color,
+                    thick_w,
+                    &[],
+                );
+                self.draw_single_canvas_line(
+                    x1,
+                    y1 + line_gap * 2.0,
+                    x2,
+                    y2 + line_gap * 2.0,
+                    color,
+                    thin_w,
+                    &[],
+                );
             }
             11 => {
                 // 물결선
@@ -3612,7 +3673,7 @@ impl WebCanvasRenderer {
                 if shape == 6 {
                     self.ctx.set_line_cap("round");
                 }
-                self.draw_single_canvas_line(x1, y1, x2, y2, color, 1.0, dash);
+                self.draw_single_canvas_line(x1, y1, x2, y2, color, thin_w.max(0.5), dash);
                 if shape == 6 {
                     self.ctx.set_line_cap("butt");
                 }

@@ -92,6 +92,22 @@ pub(crate) fn reflowed_rowbreak_fragment_repeats_outer_margin(table: &Table) -> 
         && table.cells.iter().any(cell_is_reflowed)
 }
 
+/// 저장 레이아웃 문서(HWPX 원본/hwp5 기원 HWPX)의 문단 기준 자리차지 RowBreak 표 —
+/// 한컴은 분할 조각마다 표의 바깥 여백 상자를 반복한다: 조각 상단에 outer_margin_top
+/// 을 다시 열고 쪽 하단 예산에서 outer_margin_bottom 을 뺀다 (10-inner-table-01:
+/// outMargin top/bottom=141HU — 양쪽 페이지에서 표 상단 = 본문 상단 +141HU, 첫 조각
+/// 하단도 같은 값만큼 얕다). 저장 LINE_SEG 기반 배치라 `cell_is_reflowed` 조건 없이
+/// 적용한다.
+pub(crate) fn stored_layout_rowbreak_repeats_outer_margin(
+    stored_layout: bool,
+    table: &Table,
+) -> bool {
+    stored_layout
+        && is_para_topbottom_float(&table.common)
+        && matches!(table.page_break, TablePageBreak::RowBreak)
+        && (table.outer_margin_top > 0 || table.outer_margin_bottom > 0)
+}
+
 pub(crate) fn is_para_topbottom_float(common: &CommonObjAttr) -> bool {
     !common.treat_as_char
         && matches!(common.text_wrap, TextWrap::TopAndBottom)

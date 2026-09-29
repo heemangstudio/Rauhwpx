@@ -235,10 +235,12 @@ fn test_svg_draw_text_superscript_adjusts_baseline_and_size() {
     );
 }
 
-/// 전각 `「` 는 반각 칸을 받지만 glyph 는 찌그러뜨리지 않고 칸 오른쪽 끝에 맞춘다
-/// (한컴 macOS PDF, `renderer::halfwidth_punct_glyph_offset`).
+/// `「` 는 한컴(macOS)에서 전각 칸으로 조판된다 — glyph 를 찌그러뜨리지 않고
+/// 칸 왼쪽(원점)에 그린다 (공식 PDF 실측 「 advance 0.82–1.00em:
+/// 35-voucher/38-cheongyang/36-apartment-form; `renderer::halfwidth_punct_glyph_offset`
+/// 의 반각 칸 보정은 HancomWindows 규약에서만 발동한다).
 #[test]
-fn test_svg_draw_text_corner_quote_keeps_full_glyph_in_halfwidth_slot() {
+fn test_svg_draw_text_corner_quote_keeps_full_glyph_in_fullwidth_slot() {
     let mut renderer = SvgRenderer::new();
     renderer.begin_page(800.0, 600.0);
     renderer.draw_text(
@@ -261,11 +263,12 @@ fn test_svg_draw_text_corner_quote_keeps_full_glyph_in_halfwidth_slot() {
         .find(|line| line.contains(">여</text>"))
         .expect("SVG must emit the following Hangul character");
 
+    // 칸은 전각 — textLength 가 있어도 전각 폭(HWPUNIT 양자화 ≈13.32px)이다.
     assert!(
-        !quote_line.contains("textLength="),
-        "`「` glyph 를 반각 칸에 찌그러뜨리면 안 됨: {quote_line}"
+        !quote_line.contains("textLength=\"6") && !quote_line.contains("textLength=\"5"),
+        "`「` 칸이 반각으로 찌그러지면 안 됨: {quote_line}"
     );
-    // 돋움체 `「` = 전각 13.333px, 칸 = 반각(HWPUNIT 양자화) → glyph 원점은 칸보다 반각만큼 왼쪽.
+    // 돋움체 `「` = 전각 칸 13.333px — glyph 원점은 칸 시작과 같다.
     let quote_x: f64 = quote_line
         .split("x=\"")
         .nth(1)
@@ -273,8 +276,8 @@ fn test_svg_draw_text_corner_quote_keeps_full_glyph_in_halfwidth_slot() {
         .and_then(|v| v.parse().ok())
         .expect("quote x");
     assert!(
-        (quote_x - (10.0 - 13.333 / 2.0)).abs() < 0.05,
-        "여는 낫표는 칸 오른쪽 끝에 맞춰야 함: {quote_line}"
+        (quote_x - 10.0).abs() < 0.05,
+        "여는 낫표는 전각 칸의 원점에 그려야 함: {quote_line}"
     );
     assert!(
         !hangul_line.contains("textLength="),
@@ -346,12 +349,14 @@ fn test_svg_text_decoration() {
         },
     );
     let output = renderer.output();
-    // 밑줄: <line> 요소로 출력
-    let underline_count = output.matches("y1=\"22\"").count(); // y + 2.0
+    // 밑줄: <line> 요소로 출력. macOS 한컴 실측 기하 — baseline + 0.167em
+    // (28-agritech-review 밑줄 측정): 16px 글꼴은 20 + 16*0.167 = 22.672.
+    let underline_count = output.matches("y1=\"22.672\"").count();
     assert!(underline_count > 0, "밑줄 <line> 요소가 있어야 함");
-    // 취소선: <line> 요소로 출력
+    // 취소선/밑줄 선 두께도 em 상대 — 얇은 선 0.043em (28-agritech-review
+    // SLIM_THICK 실측): 16*0.043 = 0.688.
     let strike_count = output
-        .matches("stroke=\"#000000\" stroke-width=\"1\"")
+        .matches("stroke=\"#000000\" stroke-width=\"0.688\"")
         .count();
     assert!(strike_count >= 2, "취소선과 밑줄 <line> 요소가 있어야 함");
 }

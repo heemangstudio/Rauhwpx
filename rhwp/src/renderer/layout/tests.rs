@@ -535,6 +535,7 @@ fn cell_picture_caption_attaches_to_matching_image_frame() {
             cell_para_index: 0,
             text_direction: 0,
             line_wrap_squeeze: false,
+            row_span: 1,
         }],
     };
     let caption = Caption {
@@ -1789,6 +1790,7 @@ fn test_layout_with_composed_styles() {
     let styles = ResolvedStyleSet {
         hwp3_variant: false,
         page_number_char_shape: None,
+        default_latin_font_family: "함초롬돋움".to_string(),
         char_styles: vec![
             ResolvedCharStyle {
                 font_family: "함초롬돋움".to_string(),
@@ -1922,6 +1924,7 @@ fn test_layout_multi_run_x_position() {
     let styles = ResolvedStyleSet {
         hwp3_variant: false,
         page_number_char_shape: None,
+        default_latin_font_family: "함초롬돋움".to_string(),
         char_styles: vec![
             ResolvedCharStyle {
                 font_size: 16.0,
@@ -2005,6 +2008,7 @@ fn test_resolved_to_text_style() {
     let styles = ResolvedStyleSet {
         hwp3_variant: false,
         page_number_char_shape: None,
+        default_latin_font_family: "함초롬돋움".to_string(),
         char_styles: vec![ResolvedCharStyle {
             font_family: "나눔고딕".to_string(),
             font_size: 14.0,
@@ -2039,6 +2043,7 @@ fn test_resolved_to_text_style_with_ratio() {
     let styles = ResolvedStyleSet {
         hwp3_variant: false,
         page_number_char_shape: None,
+        default_latin_font_family: "함초롬돋움".to_string(),
         char_styles: vec![ResolvedCharStyle {
             font_family: "함초롬돋움".to_string(),
             font_size: 16.0,

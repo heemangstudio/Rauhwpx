@@ -6,7 +6,7 @@ use super::font_lookup::{
     legacy_typeface_for_style, match_system_family_style, SystemFontFamilies,
 };
 use super::renderer::{typeface_for_style, TypefaceCatalog};
-use super::text_replay::draw_text_run;
+use super::text_replay::{draw_text_run, draw_text_run_tracked};
 
 use crate::renderer::equation::ast::MatrixStyle;
 use crate::renderer::equation::layout::{
@@ -218,13 +218,16 @@ fn render_box(
             );
             // HY 분수선은 e06d 막대를 상자 폭으로 늘려 칠한다. 현대 수식의
             // 세로 크기는 본문 em과 같고, 구형 HFT만 기존 1.256배를 사용한다.
+            // legacy 분수선의 잉크 중심은 기준선 아래 ~0.30em(수학 축)에 놓인다 —
+            // e06d 잉크 중심이 org 위 0.604em이므로 org = baseline + 0.46em
+            // (02-eq-01 실측: 막대 잉크 y = 본문 기준선−0.27~0.34em).
             let bar_painted = draw_legacy_pua_glyph(
                 canvas,
                 fonts,
                 font_families,
                 '\u{e06d}',
                 x + *bar_inset,
-                y + lb.baseline + fs * 0.3,
+                y + lb.baseline + fs * if fonts.modern { 0.3 } else { 0.46 },
                 fs * if fonts.modern { 1.0 } else { 1.256 },
                 Some(lb.width - *bar_inset * 2.0),
                 color,
@@ -656,12 +659,16 @@ fn render_box(
         } => {
             let paren_w = fs * 0.333;
             let use_glyph = lb.height <= fs * 1.2;
-            // legacy는 큰 괄호도 e044/e045 글립을 slot 폭으로 늘려 칠고 세로는
-            // 기준선 기준 -1.05em~+0.26em 범위를 덮는다 (eq-002 실측).
+            // legacy는 큰 괄호도 e044/e045 글립을 slot 폭으로 늘려 칠고, 세로는
+            // 본문 상자 높이의 ~0.94배를 덮는다 (02-eq-01 실측: 본문 29.3pt →
+            // 괄호 잉크 27.6pt, 위쪽 0.03h 여백).
             let left_stretch = !use_glyph && matches!(left.as_str(), "(" | ")");
+            let left_square = !use_glyph && left == "[";
             if !left.is_empty() {
-                let legacy_painted = left_stretch && {
+                let legacy_painted = (left_stretch && {
                     let (ink, g) = paren_glyph_ink(left);
+                    // 괄호 잉크는 ~0.45em 폭으로 slot(0.39em) 안에 가운데 놓인다
+                    // (02-eq-01 eq37/eq40 실측 잉크 폭 ~5.4pt@fs12-13).
                     draw_legacy_pua_glyph_scaled(
                         canvas,
                         fonts,
@@ -671,13 +678,29 @@ fn render_box(
                         if let Some((top, height)) = *modern_extent {
                             (x + ink.0 * fs, y + top, (ink.2 - ink.0) * fs, height)
                         } else {
-                            (x, y + lb.baseline - fs * 1.05, fs * 0.39, fs * 1.31)
+                            (
+                                x - fs * 0.03,
+                                y + lb.height * 0.03,
+                                fs * 0.45,
+                                lb.height * 0.94,
+                            )
                         },
                         color,
                     )
-                };
+                }) || (left_square
+                    && draw_legacy_square_bracket(
+                        canvas,
+                        fonts,
+                        font_families,
+                        true,
+                        x,
+                        y + lb.height * 0.03,
+                        lb.height * 0.94,
+                        fs,
+                        color,
+                    ));
                 if legacy_painted {
-                } else if use_glyph && (left == "(" || left == ")") {
+                } else if use_glyph && matches!(left.as_str(), "(" | ")" | "[" | "]") {
                     draw_text(
                         canvas,
                         fonts,
@@ -719,9 +742,10 @@ fn render_box(
                 bold,
             );
             let right_stretch = !use_glyph && matches!(right.as_str(), "(" | ")");
+            let right_square = !use_glyph && right == "]";
             if !right.is_empty() {
                 let right_x = x + lb.width - paren_w;
-                let legacy_painted = right_stretch && {
+                let legacy_painted = (right_stretch && {
                     let (ink, g) = paren_glyph_ink(right);
                     draw_legacy_pua_glyph_scaled(
                         canvas,
@@ -738,17 +762,28 @@ fn render_box(
                             )
                         } else {
                             (
-                                x + lb.width - fs * 0.39,
-                                y + lb.baseline - fs * 1.05,
-                                fs * 0.39,
-                                fs * 1.31,
+                                x + lb.width - fs * 0.42,
+                                y + lb.height * 0.03,
+                                fs * 0.45,
+                                lb.height * 0.94,
                             )
                         },
                         color,
                     )
-                };
+                }) || (right_square
+                    && draw_legacy_square_bracket(
+                        canvas,
+                        fonts,
+                        font_families,
+                        false,
+                        x + lb.width - fs * 0.494,
+                        y + lb.height * 0.03,
+                        lb.height * 0.94,
+                        fs,
+                        color,
+                    ));
                 if legacy_painted {
-                } else if use_glyph && (right == "(" || right == ")") {
+                } else if use_glyph && matches!(right.as_str(), "(" | ")" | "[" | "]") {
                     draw_text(
                         canvas,
                         fonts,
@@ -879,18 +914,22 @@ fn draw_text(
                 let mut paint = Paint::default();
                 paint.set_anti_alias(true);
                 paint.set_color(color);
-                let width = font.measure_str(&glyphs, Some(&paint)).0 as f64;
+                // 한컴 수식기는 run 안 글립의 진행폭을 자연폭×0.9로 포갠다 —
+                // layout(measure_legacy_run_native)과 같은 비율로 스텝을 좁힌다.
+                let tracking = crate::renderer::equation::font::EQUATION_GLYPH_TRACKING;
+                let width = font.measure_str(&glyphs, Some(&paint)).0 as f64 * tracking;
                 let mut pen = x - if centered { width / 2.0 } else { 0.0 };
                 for (run, skew, shift) in runs {
                     font.set_skew_x(if skew { -0.2 } else { 0.0 });
-                    draw_text_run(
+                    draw_text_run_tracked(
                         canvas,
                         &run,
                         (pen as f32, (baseline_y + shift * font_size) as f32),
                         &font,
                         &paint,
+                        tracking,
                     );
-                    pen += font.measure_str(&run, Some(&paint)).0 as f64;
+                    pen += font.measure_str(&run, Some(&paint)).0 as f64 * tracking;
                 }
                 return;
             }
@@ -917,18 +956,29 @@ fn draw_text(
     paint.set_style(paint::Style::Fill);
     paint.set_color(color);
 
+    // legacy 수식 서체는 커버 못 하는 문자(한글 등)도 fallback 서체로
+    // 칠하면서 진행폭을 0.9배로 포갠다 — 위 PUA 경로와 같은 추적값.
+    let tracking = if font_families
+        .first()
+        .is_some_and(|name| crate::renderer::equation::font::is_legacy_equation_font(name))
+    {
+        crate::renderer::equation::font::EQUATION_GLYPH_TRACKING
+    } else {
+        1.0
+    };
     let draw_x = if centered {
         let (width, _) = font.measure_str(text, Some(&paint));
-        x - f64::from(width) / 2.0
+        x - f64::from(width) * tracking / 2.0
     } else {
         x
     };
-    draw_text_run(
+    draw_text_run_tracked(
         canvas,
         text,
         (draw_x as f32, baseline_y as f32),
         &font,
         &paint,
+        tracking,
     );
 }
 
@@ -1038,19 +1088,117 @@ fn draw_legacy_pua_glyph_scaled(
     true
 }
 
+// legacy 큰 대괄호는 e100/e101/e103(좌)·e102/e105/e104(우) 세 파트를 각각
+// ~1em 크기로 쌓아 칠한다 (02-eq-01 실측). 위·아래 파트는 잉크 끝단에 붙이고
+// 가운데 연장 파트(e101/e105, 세로 막대)는 남은 구간에 균등 배치한다.
+// 글립 잉크 경계(em): 위/아래 파트 −0.208..0.733 / −0.152..0.792,
+// 가운데 파트 −0.208..0.792.
+fn draw_legacy_square_bracket(
+    canvas: &Canvas,
+    fonts: &EqFonts<'_>,
+    font_families: &[&str],
+    left: bool,
+    x: f64,
+    ty: f64,
+    th: f64,
+    fs: f64,
+    color: Color,
+) -> bool {
+    let (top_g, mid_g, bot_g) = if left {
+        ('\u{e100}', '\u{e101}', '\u{e103}')
+    } else {
+        ('\u{e102}', '\u{e105}', '\u{e104}')
+    };
+    if th <= 0.0 {
+        return false;
+    }
+    let s = fs;
+    let top_org = ty + 0.733 * s;
+    let bot_org = ty + th - 0.152 * s;
+    if !draw_legacy_pua_glyph(
+        canvas,
+        fonts,
+        font_families,
+        top_g,
+        x,
+        top_org,
+        s,
+        None,
+        color,
+    ) || !draw_legacy_pua_glyph(
+        canvas,
+        fonts,
+        font_families,
+        bot_g,
+        x,
+        bot_org,
+        s,
+        None,
+        color,
+    ) {
+        return false;
+    }
+    let top_ink_bottom = ty + 0.941 * s;
+    let bot_ink_top = ty + th - 0.944 * s;
+    let span = (bot_ink_top - top_ink_bottom).max(0.0);
+    let mid_h = s;
+    let n = ((span + mid_h * 0.2) / (mid_h * 0.7)).ceil().max(1.0) as i32;
+    for i in 0..n {
+        let center = top_ink_bottom + span * (i as f64 + 0.5) / f64::from(n);
+        let org = center + 0.292 * s;
+        if !draw_legacy_pua_glyph(canvas, fonts, font_families, mid_g, x, org, s, None, color) {
+            return false;
+        }
+    }
+    true
+}
+
 fn equation_typeface_for_text_in_families(
     families: &[&str],
     fonts: &EqFonts<'_>,
     font_style: FontStyle,
     text: &str,
 ) -> Option<Typeface> {
-    families
+    let resolved: Vec<Typeface> = families
         .iter()
         .copied()
         .filter(|family| !crate::renderer::equation::font::is_legacy_equation_font(family))
         .filter_map(|family| fonts.resolve(family, font_style))
+        .collect();
+    if let Some(typeface) = resolved
+        .iter()
         .find(|typeface| typeface_covers_text(typeface, text))
-        .or_else(|| legacy_typeface_for_style(fonts.mgr, font_style))
+    {
+        return Some(typeface.clone());
+    }
+    // 수식 서체 체인이 커버하지 못하는 문자(수식 안 한글 등): 본문 텍스트
+    // 경로(text_replay::typeface_for_character)와 동일하게 커버 서체를 찾는다.
+    // serif 계열 CJK fallback 후보 → 시스템 문자 fallback 순. 바로 legacy
+    // 서체로 떨어지면 한글이 .notdef(tofu)로 그려진다.
+    let uncovered = text.chars().find(|character| {
+        !character.is_whitespace()
+            && resolved
+                .iter()
+                .all(|typeface| typeface.unichar_to_glyph(*character as i32) == 0)
+    });
+    if uncovered.is_some() {
+        if let Some(typeface) = super::text_replay::SERIF_CJK_FALLBACK_FAMILIES
+            .iter()
+            .filter_map(|family| fonts.resolve(family, font_style))
+            .find(|typeface| typeface_covers_text(typeface, text))
+        {
+            return Some(typeface);
+        }
+        if let Some(typeface) = uncovered.and_then(|character| {
+            fonts
+                .mgr
+                .match_family_style_character("", font_style, &[], character as i32)
+                .filter(|typeface| typeface.unichar_to_glyph(character as i32) != 0)
+        }) {
+            return Some(typeface);
+        }
+    }
+    legacy_typeface_for_style(fonts.mgr, font_style)
 }
 
 fn typeface_covers_text(typeface: &Typeface, text: &str) -> bool {

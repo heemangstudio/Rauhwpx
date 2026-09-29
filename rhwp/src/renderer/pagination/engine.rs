@@ -1123,8 +1123,8 @@ impl Paginator {
             pages: st.pages,
             wrap_around_paras: all_wrap_around_paras,
             hidden_empty_paras,
-            pre_emitted_host_paras: std::collections::HashSet::new(),
-            pre_emitted_host_heights: std::collections::HashMap::new(),
+            pre_emitted_host_paras: st.pre_emitted_host_paras,
+            pre_emitted_host_heights: st.pre_emitted_host_heights,
             endnotes: Vec::new(),
             endnote_paragraphs: Vec::new(),
             endnote_para_sources: Vec::new(),
@@ -1176,7 +1176,31 @@ impl Paginator {
                         page_number_pos = Some(pnp.clone());
                     }
                     Control::NewNumber(nn) => {
-                        if nn.number_type == crate::model::control::AutoNumberType::Page {
+                        // 한컴 호환: 본문 텍스트가 없고 인라인 개체(표·그림)만 담은
+                        // 컨테이너 문단의 newNum 은 쪽 번호 재시작에 발화하지 않는다
+                        // (06-multi-table-001: [TAC 표][newNum] 만 담긴 문단이 2쪽
+                        // 맨 위에 오지만 한컴은 "- 2 -" 연속 번호를 출력).
+                        // 텍스트 있는 문단에 붙은 newNum 은 그 페이지에서 발화한다
+                        // (aift p7, 국립국어원 p3 정합 — Task #634/Issue #353).
+                        // 인라인 개체·필드 마커(0x02·0x03·0x04·0x12·FFFC 등)만으로
+                        // 채워진 문단은 텍스트가 없는 것으로 본다 — 파서가 표/제어
+                        // 컨트롤 자리에 0x0002 를 넣어 is_empty 가 깨지기 때문.
+                        let text_is_marker_only = para.text.chars().all(|c| {
+                            matches!(c, '\u{0000}'..='\u{0008}'
+                                | '\u{000B}' | '\u{000C}'
+                                | '\u{000E}'..='\u{001F}'
+                                | '\u{FFFC}')
+                        });
+                        let host_is_object_container = text_is_marker_only
+                            && para.controls.iter().any(|c| {
+                                matches!(
+                                    c,
+                                    Control::Table(_) | Control::Picture(_) | Control::Shape(_)
+                                )
+                            });
+                        if nn.number_type == crate::model::control::AutoNumberType::Page
+                            && !host_is_object_container
+                        {
                             new_page_numbers.push((pi, nn.number));
                         }
                     }
@@ -2567,6 +2591,53 @@ impl Paginator {
         };
         let remaining_on_page =
             table_available_height - st.current_height - host_text_height - v_offset_px;
+
+        // 쪽나눔=None 표는 한글이 행 분할하지 않는다 — fresh 쪽(본문+하단 슬랙)에
+        // 들어가면 잔여 부족 시 통째로 다음 쪽/단에 둔다 (typeset.rs 의 #2097
+        // 가드와 동일 규칙; hwp_table_test.hwpx 11x3 표). fresh 쪽+슬랙에도 못
+        // 들어가는 초대형 표만 기존 분할 폴백으로 넘긴다.
+        // 호스트 문단의 텍스트 줄은 이월 전 현재 쪽에 PartialParagraph 로 남긴다
+        // (한글 문서순: 텍스트 → 표 이월) — pre_emitted_host_paras 표시로 layout
+        // 의 표 항목 host 렌더가 이월된 쪽에서 같은 텍스트를 다시 그리지 않게 한다.
+        let below_body_slack =
+            (st.layout.page_height - (st.layout.body_area.y + st.layout.body_area.height)).max(0.0);
+        let table_fits_fresh = host_text_height + v_offset_px + mt.total_height
+            <= base_available_height + below_body_slack;
+        // vertOffset>0 으로 앵커가 고정되고 호스트 문단에 텍스트가 있는 None 표만
+        // 통째 이월 — 유동(voff=0) 또는 빈 호스트의 None 표는 한글이 행 분할한다
+        // (text_footnote_tail_overpagination pi=1371 voff=0 / pi=4342 voff=60·빈 호스트:
+        // 한컴이 쪽 경계에서 행 분할).
+        if matches!(table.page_break, crate::model::table::TablePageBreak::None)
+            && table_fits_fresh
+            && !para.text.is_empty()
+            && crate::renderer::float_placement::signed_hwpunit(table.common.vertical_offset) > 0
+        {
+            if host_text_height > 0.0 && !st.current_items.is_empty() {
+                if let Some(mp) = measured.get_measured_paragraph(para_idx) {
+                    let host_lines = mp.line_heights.len();
+                    if host_lines > 0 {
+                        st.current_items.push(PageItem::PartialParagraph {
+                            para_index: para_idx,
+                            start_line: 0,
+                            end_line: host_lines,
+                        });
+                        st.current_height += host_text_height;
+                        st.pre_emitted_host_paras.insert(para_idx);
+                        st.pre_emitted_host_heights
+                            .insert(para_idx, host_text_height);
+                    }
+                }
+            }
+            if !st.current_items.is_empty() {
+                st.advance_column_or_new_page();
+            }
+            st.current_items.push(PageItem::Table {
+                para_index: para_idx,
+                control_index: ctrl_idx,
+            });
+            st.current_height += mt.total_height + host_spacing;
+            return;
+        }
 
         // Task #398 v2: 보호 블록(2~3 rows)만 블록 단위 advance.
         // 큰 rowspan(>3)은 행 단위 분할 허용 (HanCom-compat).

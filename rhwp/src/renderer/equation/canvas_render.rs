@@ -423,68 +423,147 @@ fn render_box(
             modern_extent,
         } => {
             // 텍스트 높이 파렌(`(`, `)`)은 폰트 글리프로 렌더, 그 외는 path. (Task #283)
+            // legacy는 큰 괄호·대괄호도 HyhwpEQ PUA 글립으로 칠한다 — 괄호는
+            // 본문 상자 높이의 ~0.94배로 늘린 e044/e045, 대괄호는 e100..e105
+            // 파트 쌓기 (02-eq-01 실측).
             let use_glyph = lb.height <= fs * 1.2;
             let (paint_top, paint_height) = modern_extent.unwrap_or((0.0, lb.height));
-            let paren_w = if use_glyph { fs * 0.333 } else { fs * 0.27 };
+            let left_paren_stretch = !use_glyph && matches!(left.as_str(), "(" | ")");
+            let right_paren_stretch = !use_glyph && matches!(right.as_str(), "(" | ")");
+            let paren_w = if use_glyph {
+                fs * 0.333
+            } else if !use_glyph && matches!((left.as_str(), right.as_str()), ("[", "]")) {
+                fs * 0.494
+            } else {
+                fs * 0.27
+            };
             if !left.is_empty() {
-                if !use_glyph
-                    && draw_modern_round_paren(ctx, left, x, y, lb, body, fs, color, font_family)
-                {
-                } else if use_glyph && (left == "(" || left == ")") {
-                    ctx.set_fill_style_str(color);
-                    draw_text(ctx, left, x, y + lb.baseline, fs, false, false, font_family);
-                } else {
-                    draw_stretch_bracket(
+                let legacy_painted = (left_paren_stretch && {
+                    let (ink, g) = paren_glyph_ink(left);
+                    draw_legacy_pua_glyph_scaled(
                         ctx,
-                        left,
-                        x,
-                        y + paint_top,
-                        paren_w,
-                        paint_height,
+                        font_family,
+                        g,
+                        ink,
+                        (
+                            x - fs * 0.03,
+                            y + lb.height * 0.03,
+                            fs * 0.45,
+                            lb.height * 0.94,
+                        ),
                         color,
+                    )
+                }) || (!use_glyph
+                    && left == "["
+                    && draw_legacy_square_bracket(
+                        ctx,
+                        font_family,
+                        true,
+                        x,
+                        y + lb.height * 0.03,
+                        lb.height * 0.94,
                         fs,
-                    );
+                        color,
+                    ));
+                if !legacy_painted {
+                    if !use_glyph
+                        && draw_modern_round_paren(
+                            ctx,
+                            left,
+                            x,
+                            y,
+                            lb,
+                            body,
+                            fs,
+                            color,
+                            font_family,
+                        )
+                    {
+                    } else if use_glyph && matches!(left.as_str(), "(" | ")" | "[" | "]") {
+                        ctx.set_fill_style_str(color);
+                        draw_text(ctx, left, x, y + lb.baseline, fs, false, false, font_family);
+                    } else {
+                        draw_stretch_bracket(
+                            ctx,
+                            left,
+                            x,
+                            y + paint_top,
+                            paren_w,
+                            paint_height,
+                            color,
+                            fs,
+                        );
+                    }
                 }
             }
             render_box(ctx, body, x, y, color, fs, italic, bold, font_family);
             if !right.is_empty() {
                 let right_x = x + lb.width - paren_w;
-                if !use_glyph
-                    && draw_modern_round_paren(
+                let legacy_painted = (right_paren_stretch && {
+                    let (ink, g) = paren_glyph_ink(right);
+                    draw_legacy_pua_glyph_scaled(
                         ctx,
-                        right,
-                        x + lb.width - fs * 0.39,
-                        y,
-                        lb,
-                        body,
-                        fs,
-                        color,
                         font_family,
+                        g,
+                        ink,
+                        (
+                            x + lb.width - fs * 0.42,
+                            y + lb.height * 0.03,
+                            fs * 0.45,
+                            lb.height * 0.94,
+                        ),
+                        color,
                     )
-                {
-                } else if use_glyph && (right == "(" || right == ")") {
-                    ctx.set_fill_style_str(color);
-                    draw_text(
+                }) || (!use_glyph
+                    && right == "]"
+                    && draw_legacy_square_bracket(
                         ctx,
-                        right,
-                        right_x,
-                        y + lb.baseline,
-                        fs,
-                        false,
-                        false,
                         font_family,
-                    );
-                } else {
-                    draw_stretch_bracket(
-                        ctx,
-                        right,
-                        right_x,
-                        y + paint_top,
-                        paren_w,
-                        paint_height,
-                        color,
+                        false,
+                        x + lb.width - fs * 0.494,
+                        y + lb.height * 0.03,
+                        lb.height * 0.94,
                         fs,
-                    );
+                        color,
+                    ));
+                if !legacy_painted {
+                    if !use_glyph
+                        && draw_modern_round_paren(
+                            ctx,
+                            right,
+                            x + lb.width - fs * 0.39,
+                            y,
+                            lb,
+                            body,
+                            fs,
+                            color,
+                            font_family,
+                        )
+                    {
+                    } else if use_glyph && matches!(right.as_str(), "(" | ")" | "[" | "]") {
+                        ctx.set_fill_style_str(color);
+                        draw_text(
+                            ctx,
+                            right,
+                            right_x,
+                            y + lb.baseline,
+                            fs,
+                            false,
+                            false,
+                            font_family,
+                        );
+                    } else {
+                        draw_stretch_bracket(
+                            ctx,
+                            right,
+                            right_x,
+                            y + paint_top,
+                            paren_w,
+                            paint_height,
+                            color,
+                            fs,
+                        );
+                    }
                 }
             }
         }
@@ -518,6 +597,90 @@ fn render_box(
         }
         LayoutKind::Space(_) | LayoutKind::Newline | LayoutKind::Empty => {}
     }
+}
+
+// e044 '(' / e045 ')' 의 잉크 경계(em). HyhwpEQ 실측값.
+fn paren_glyph_ink(bracket: &str) -> ((f64, f64, f64, f64), char) {
+    if bracket == "(" {
+        ((0.0996, -0.2021, 0.3369, 0.8066), '\u{e044}')
+    } else {
+        ((0.0508, -0.2031, 0.2881, 0.8066), '\u{e045}')
+    }
+}
+
+/// legacy PUA 글립을 주어진 잉크 사각형에 맞춰 가로로 늘려 칠한다.
+/// ink_em = 글립 잉크 경계(em 단위, y1은 baseline 위 잉크 상단).
+fn draw_legacy_pua_glyph_scaled(
+    ctx: &CanvasRenderingContext2d,
+    font: &EquationFont,
+    glyph: char,
+    ink_em: (f64, f64, f64, f64),
+    target: (f64, f64, f64, f64),
+    color: &str,
+) -> bool {
+    if !super::font::is_legacy_equation_font(&font.source) {
+        return false;
+    }
+    let text = glyph.to_string();
+    let Ok(Some(family)) = resolve_equation_font_family(&font.source, &text) else {
+        return false;
+    };
+    let (x0, y0, x1, y1) = ink_em;
+    let (tx, ty, tw, th) = target;
+    let (ink_w, ink_h) = (x1 - x0, y1 - y0);
+    if ink_w <= 0.0 || ink_h <= 0.0 || tw <= 0.0 || th <= 0.0 {
+        return false;
+    }
+    let s = th / ink_h;
+    let xs = tw / (ink_w * s);
+    let family = format!("'{}'", family.replace('\\', "\\\\").replace('\'', "\\'"));
+    ctx.save();
+    ctx.set_fill_style_str(color);
+    set_font(ctx, s, false, false, &family);
+    let _ = ctx.translate(tx - xs * x0 * s, ty + y1 * s);
+    let _ = ctx.scale(xs, 1.0);
+    let _ = ctx.fill_text(&text, 0.0, 0.0);
+    ctx.restore();
+    true
+}
+
+/// legacy 큰 대괄호: e100/e101/e103(좌)·e102/e105/e104(우) 파트 쌓기
+/// (02-eq-01 실측). 잉크 끝단 파트 + 가운데 연장 파트 균등 배치.
+fn draw_legacy_square_bracket(
+    ctx: &CanvasRenderingContext2d,
+    font: &EquationFont,
+    left: bool,
+    x: f64,
+    ty: f64,
+    th: f64,
+    fs: f64,
+    color: &str,
+) -> bool {
+    let (top_g, mid_g, bot_g) = if left {
+        ('\u{e100}', '\u{e101}', '\u{e103}')
+    } else {
+        ('\u{e102}', '\u{e105}', '\u{e104}')
+    };
+    if th <= 0.0 {
+        return false;
+    }
+    let s = fs;
+    if !draw_legacy_pua_glyph(ctx, font, top_g, x, ty + 0.733 * s, s, None, color)
+        || !draw_legacy_pua_glyph(ctx, font, bot_g, x, ty + th - 0.152 * s, s, None, color)
+    {
+        return false;
+    }
+    let top_ink_bottom = ty + 0.941 * s;
+    let bot_ink_top = ty + th - 0.944 * s;
+    let span = (bot_ink_top - top_ink_bottom).max(0.0);
+    let n = ((span + s * 0.2) / (s * 0.7)).ceil().max(1.0) as i32;
+    for i in 0..n {
+        let center = top_ink_bottom + span * (i as f64 + 0.5) / f64::from(n);
+        if !draw_legacy_pua_glyph(ctx, font, mid_g, x, center + 0.292 * s, s, None, color) {
+            return false;
+        }
+    }
+    true
 }
 
 /// 검증된 구형 수식 글립 하나를 칠하고 필요한 경우 가로 폭만 늘린다.

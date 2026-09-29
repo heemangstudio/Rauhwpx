@@ -5960,6 +5960,8 @@ impl DocumentCore {
                 .hwpx_aux_entry("Preview/PrvImage.png")
                 .filter(|_| matches!(self.source_format, crate::parser::FileFormat::Hwpx)),
         );
+        self.layout_engine
+            .set_print_crop_marks(self.document.print_crop_marks());
         // 활성 필드 정보를 레이아웃 엔진에 전달 (안내문 숨김용)
         self.layout_engine
             .set_active_field(self.active_field.as_ref().map(|af| {
