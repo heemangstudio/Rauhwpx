@@ -51,6 +51,12 @@ test('child argv uses an internal session id and excludes nested/root interactio
   assert.match(argv[argv.indexOf('--exclude-tools') + 1], /subagent_spawn/);
   assert.match(argv[argv.indexOf('--exclude-tools') + 1], /ask_user/);
   assert.match(argv[argv.indexOf('--exclude-tools') + 1], /bash,edit,write/);
+  const base = {
+    model: 'model', sessionDir: '/pi/sessions', sessionId: 'id', role: 'general', planningRestricted: false,
+  };
+  // pi는 '-'로 시작하면 플래그, '@'로 시작하면 첨부 파일 경로로 해석한다.
+  assert.equal(buildChildArgv({ ...base, prompt: '--help me' }).at(-1), ' --help me');
+  assert.equal(buildChildArgv({ ...base, prompt: '@doc-editor fix it' }).at(-1), ' @doc-editor fix it');
 });
 
 test('a child extension does not register another fleet surface', () => {
@@ -240,6 +246,59 @@ test('failed diagnostics are redacted and live output remains bounded', async ()
   assert.doesNotMatch(snapshot, new RegExp(`root-secret|provider-secret|${childToken}`));
   assert.match(snapshot, /\[redacted\]/);
   assert.equal(capUtf8Tail('한글한글', 6), '한글');
+});
+
+function jsonlManager() {
+  const state = { child: null };
+  const manager = createSubagentManager({
+    piBin: '/pi/bin/pi',
+    model: 'model',
+    sessionDir: '/pi/sessions',
+    env: {},
+    async registerCapability(request) { return capability(request.childId, request.role); },
+    async revokeCapability() {},
+    spawnProcess() { state.child = new FakeChild(); return state.child; },
+  });
+  return { manager, state };
+}
+
+function textDelta(delta) {
+  return `${JSON.stringify({
+    type: 'message_update',
+    usage: { input: 1200, output: 40, cacheRead: 0, cacheWrite: 0, totalTokens: 1240 },
+    assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta },
+  })}\n`;
+}
+
+test('the child report survives an agent_end line larger than the live cap', async () => {
+  const { manager, state } = jsonlManager();
+  const record = await manager.spawn({ prompt: 'task', name: 'task', cwd: process.cwd() });
+  state.child.stdout.emit('data', textDelta('문단 3-5를 '));
+  state.child.stdout.emit('data', textDelta('고쳤습니다.'));
+  const huge = JSON.stringify({
+    type: 'agent_end',
+    messages: [{ role: 'toolResult', content: [{ type: 'image', data: 'x'.repeat(120 * 1024) }] }],
+  });
+  state.child.stdout.emit('data', `${huge}\n${JSON.stringify({ type: 'agent_settled' })}\n`);
+  assert.equal(manager.snapshot(record).endsWith('문단 3-5를 고쳤습니다.'), true);
+  state.child.close(0);
+  await record.done;
+
+  assert.equal(record.status, 'done');
+  assert.equal(record.output, '문단 3-5를 고쳤습니다.');
+  assert.match(manager.snapshot(record), /문단 3-5를 고쳤습니다\.$/);
+});
+
+test('a JSONL event split across stdout chunks is parsed once', async () => {
+  const { manager, state } = jsonlManager();
+  const record = await manager.spawn({ prompt: 'task', name: 'task', cwd: process.cwd() });
+  const line = textDelta('분할된 보고서');
+  const cut = line.indexOf('분할') + 1;
+  state.child.stdout.emit('data', line.slice(0, cut));
+  state.child.stdout.emit('data', line.slice(cut));
+  state.child.close(0);
+  await record.done;
+  assert.equal(record.output, '분할된 보고서');
 });
 
 test('natural exit reports capability cleanup uncertainty with redacted diagnostics', async () => {

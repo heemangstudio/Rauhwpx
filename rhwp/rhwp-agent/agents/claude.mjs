@@ -6,6 +6,7 @@ import {
   mkdirSync,
   rmSync,
 } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import {
   credentialMirrorHasPendingCopybackSync,
@@ -1064,6 +1065,11 @@ export function createClaudeSession(opts, {
       cwd: opts.rootDir,
       env: launched.env,
       stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    // 기동 중 종료한 자식에 쓰면 EPIPE 가 'error' 로 온다. 리스너가 없으면 허브 전체가
+    // 죽는다. 턴 정리는 exit/close 처리가 맡는다.
+    proc.stdin?.on('error', (err) => {
+      process.stderr.write(`[claude] stdin error: ${redactDiagnosticText(err?.message ?? err, [opts.token])}\n`);
     });
     child = proc;
     childAlive = true;

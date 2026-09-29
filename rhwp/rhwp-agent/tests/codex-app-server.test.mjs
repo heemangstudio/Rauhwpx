@@ -730,6 +730,21 @@ test('0.149 empty runtime enablement response restarts with the CLI flag and re-
   assert.equal(h.spawns[0].argv.includes('default_mode_request_user_input'), false);
   assert.equal(h.spawns[1].argv.includes('default_mode_request_user_input'), true);
   assert.ok(h.spawns[1].process.frames.some((frame) => frame.method === 'turn/start'));
+
+  // 플래그가 필요하다는 사실은 기억되므로 다음 턴은 한 번만 spawn한다.
+  h.spawns[1].process.send({
+    method: 'turn/completed',
+    params: { threadId: 'thread-native', turn: { id: 'turn-native', status: 'completed' } },
+  });
+  await settle(24);
+  h.session.sendUserMessage('Second turn');
+  await settle(24);
+  assert.equal(h.spawns.length, 3);
+  const second = h.spawns[2];
+  assert.equal(second.native, true);
+  assert.equal(second.argv.includes('default_mode_request_user_input'), true);
+  assert.equal(second.process.frames.some((frame) => frame.method === 'experimentalFeature/enablement/set'), false);
+  assert.ok(second.process.frames.some((frame) => frame.method === 'turn/start'));
   h.session.interrupt();
   await settle();
   await h.session.dispose();
@@ -771,6 +786,72 @@ test('interrupt uses turn/interrupt and settles the native turn once', async (t)
   });
   await settle();
   assert.equal(h.events.filter((event) => event.type === 'turn-end').length, 1);
+  await h.session.dispose();
+});
+
+test('Stop during startup negotiation never re-sends the stopped prompt through legacy exec', async (t) => {
+  const base = appServerResponder();
+  let firstProcess = null;
+  const h = harness(t, {
+    responder(frame, process) {
+      firstProcess ??= process;
+      if (frame.method === 'initialize' && process === firstProcess) return;
+      return base(frame, process);
+    },
+  });
+  h.session.sendUserMessage('STOPPED PROMPT');
+  await settle(3);
+  h.session.interrupt();
+  await settle(60);
+
+  assert.equal(h.spawns.some((entry) => entry.argv[0] === 'exec'), false);
+  assert.equal(h.events.some((event) => event.type === 'turn-start'), false);
+  assert.deepEqual(
+    h.events.filter((event) => event.type === 'turn-end').map((event) => event.stopReason),
+    ['interrupted'],
+  );
+
+  h.session.sendUserMessage('Next prompt');
+  await settle(24);
+  const next = h.spawns.at(-1);
+  assert.equal(next.native, true);
+  assert.ok(next.process.frames.some((frame) => (
+    frame.method === 'turn/start' && frame.params.input[0].text === 'Next prompt'
+  )));
+  assert.equal(h.events.filter((event) => event.type === 'turn-start').length, 1);
+  h.session.interrupt();
+  await settle();
+  await h.session.dispose();
+});
+
+test('Stop while the thread is resuming settles the turn exactly once', async (t) => {
+  const base = appServerResponder();
+  const h = harness(t, {
+    responder(frame, process) {
+      if (frame.method === 'thread/resume') return;
+      return base(frame, process);
+    },
+  });
+  h.session.sendUserMessage('turn A');
+  await settle();
+  h.spawns[0].process.send({
+    method: 'turn/completed',
+    params: { threadId: 'thread-native', turn: { id: 'turn-native', status: 'completed' } },
+  });
+  await settle();
+  const endsBefore = h.events.filter((event) => event.type === 'turn-end').length;
+
+  h.session.sendUserMessage('turn B');
+  await settle();
+  assert.ok(h.spawns.at(-1).process.frames.some((frame) => frame.method === 'thread/resume'));
+  h.session.interrupt();
+  await settle(60);
+
+  assert.deepEqual(
+    h.events.filter((event) => event.type === 'turn-end').slice(endsBefore).map((event) => event.stopReason),
+    ['interrupted'],
+  );
+  assert.equal(h.events.some((event) => event.type === 'error'), false);
   await h.session.dispose();
 });
 

@@ -29,9 +29,18 @@ const baseOpts = {
   onEvent() {},
 };
 
-class FakeStream extends EventEmitter {}
+class FakeStream extends EventEmitter {
+  chunks = [];
+  ended = false;
+
+  end(chunk) {
+    if (chunk !== undefined) this.chunks.push(String(chunk));
+    this.ended = true;
+  }
+}
 
 class FakeProcess extends EventEmitter {
+  stdin = new FakeStream();
   stdout = new FakeStream();
   stderr = new FakeStream();
   exitCode = null;
@@ -470,14 +479,16 @@ test('the selected vault key is passed only when the Pi session explicitly provi
   assert.equal(env.OPENROUTER_API_KEY, 'sk-or-v1-vault');
 });
 
-test('the prompt is the last argv entry and stdin stays closed', () => {
+test('the prompt goes through stdin, which is closed right after, never through argv', () => {
   const { session, spawns } = startSession();
   session.sendUserMessage('문서를 정리해 줘');
-  const { command, argv, options } = spawns[0];
+  const { command, argv, options, proc } = spawns[0];
 
   assert.equal(command, baseOpts.piBin);
-  assert.equal(argv.at(-1), '문서를 정리해 줘');
-  assert.deepEqual(options.stdio, ['ignore', 'pipe', 'pipe']);
+  assert.equal(argv.includes('문서를 정리해 줘'), false);
+  assert.deepEqual(proc.stdin.chunks, ['문서를 정리해 줘']);
+  assert.equal(proc.stdin.ended, true);
+  assert.deepEqual(options.stdio, ['pipe', 'pipe', 'pipe']);
   assert.equal(options.cwd, baseOpts.rootDir);
   assert.equal(options.detached, process.platform !== 'win32');
   assert.equal(options.windowsHide, true);
@@ -487,10 +498,25 @@ test('the prompt is the last argv entry and stdin stays closed', () => {
   session.dispose();
 });
 
-test('a prompt starting with a dash is not parsed as a flag', () => {
-  const { session, spawns } = startSession();
-  session.sendUserMessage('--help 문단을 지워 줘');
-  assert.equal(spawns[0].argv.at(-1), ' --help 문단을 지워 줘');
+test('prompts starting with a dash or @ reach Pi verbatim', () => {
+  for (const prompt of ['--help 문단을 지워 줘', '@notes.md 요약해 줘']) {
+    const { session, spawns } = startSession();
+    session.sendUserMessage(prompt);
+    assert.equal(spawns[0].argv.includes(prompt), false);
+    assert.deepEqual(spawns[0].proc.stdin.chunks, [prompt]);
+    session.dispose();
+  }
+});
+
+test('a stdin EPIPE from an early Pi exit settles the turn without throwing', () => {
+  const { session, events, spawns } = startSession();
+  session.sendUserMessage('x'.repeat(200_000));
+  const { proc } = spawns[0];
+  proc.stdin.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
+  proc.stderr.emit('data', 'No API key found for openrouter\n');
+  proc.exit(1);
+  const ends = events.filter((event) => event.type === 'turn-end');
+  assert.deepEqual(ends.map((event) => event.stopReason), ['exited']);
   session.dispose();
 });
 
@@ -577,7 +603,7 @@ test('a follow-up waits for prior tree cleanup before spawning', async () => {
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(spawns.length, 2);
-  assert.equal(spawns[1].argv.at(-1), 'follow-up');
+  assert.deepEqual(spawns[1].proc.stdin.chunks, ['follow-up']);
   assert.equal(events.filter((event) => event.type === 'turn-start').length, 2);
 
   spawns[1].proc.emitJson({ type: 'agent_settled' });
