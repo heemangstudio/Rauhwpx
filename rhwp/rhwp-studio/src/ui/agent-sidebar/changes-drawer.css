@@ -23,7 +23,8 @@
 /* The narrow sidebar reuses the same working diff and commit form. */
 .ag-compact-changes {
   display: flex;
-  flex: 0 1 auto;
+  /* 긴 대화에서 대화 영역과 나누어 줄어들면 40px 토글 줄이 상자 밖으로 넘쳐 입력기와 겹친다. */
+  flex: 0 0 auto;
   min-height: 0;
   flex-direction: column;
   border-top: 0;
