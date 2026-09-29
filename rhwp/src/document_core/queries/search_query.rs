@@ -404,8 +404,12 @@ impl DocumentCore {
         Ok(format!("{{\"ok\":true,\"count\":{}}}", count))
     }
 
-    /// 글로벌 쪽 번호에 해당하는 첫 번째 문단 위치를 반환
+    /// 글로벌 쪽 번호에 해당하는 첫 번째 문단 위치를 반환.
+    ///
+    /// `continued` 는 그 문단이 앞 쪽에서 시작해 이 쪽으로 넘어왔는지(문단 둘째 줄 이후나
+    /// 표의 이어지는 행으로 시작하는 쪽)를 알린다. charOffset 은 기존 계약대로 0 이다.
     pub fn get_position_of_page_native(&self, global_page: usize) -> Result<String, HwpError> {
+        use crate::renderer::pagination::PageItem;
         let mut page_offset = 0usize;
         for (sec_idx, pr) in self.pagination.iter().enumerate() {
             for page in &pr.pages {
@@ -413,39 +417,40 @@ impl DocumentCore {
                     // 이 페이지의 첫 번째 PageItem에서 para_index 추출
                     for col in &page.column_contents {
                         for item in &col.items {
-                            let pi = match item {
-                                crate::renderer::pagination::PageItem::FullParagraph {
+                            let first = match item {
+                                PageItem::FullParagraph { para_index } => {
+                                    Some((*para_index, false))
+                                }
+                                PageItem::PartialParagraph {
                                     para_index,
-                                } => Some(*para_index),
-                                crate::renderer::pagination::PageItem::PartialParagraph {
+                                    start_line,
+                                    ..
+                                } => Some((*para_index, *start_line > 0)),
+                                PageItem::Table { para_index, .. } => Some((*para_index, false)),
+                                PageItem::PartialTable {
                                     para_index,
+                                    start_row,
+                                    is_continuation,
+                                    start_cut,
                                     ..
-                                } => Some(*para_index),
-                                crate::renderer::pagination::PageItem::Table {
-                                    para_index, ..
-                                } => Some(*para_index),
-                                crate::renderer::pagination::PageItem::PartialTable {
-                                    para_index,
-                                    ..
-                                } => Some(*para_index),
-                                crate::renderer::pagination::PageItem::Shape {
-                                    para_index, ..
-                                } => Some(*para_index),
-                                crate::renderer::pagination::PageItem::EndnoteSeparator {
-                                    ..
-                                } => None,
+                                } => Some((
+                                    *para_index,
+                                    *start_row > 0 || *is_continuation || !start_cut.is_empty(),
+                                )),
+                                PageItem::Shape { para_index, .. } => Some((*para_index, false)),
+                                PageItem::EndnoteSeparator { .. } => None,
                             };
-                            if let Some(para_idx) = pi {
+                            if let Some((para_idx, continued)) = first {
                                 return Ok(format!(
-                                    "{{\"ok\":true,\"sec\":{},\"para\":{},\"charOffset\":0}}",
-                                    sec_idx, para_idx
+                                    "{{\"ok\":true,\"sec\":{},\"para\":{},\"charOffset\":0,\"continued\":{}}}",
+                                    sec_idx, para_idx, continued
                                 ));
                             }
                         }
                     }
                     // 빈 페이지 fallback
                     return Ok(format!(
-                        "{{\"ok\":true,\"sec\":{},\"para\":0,\"charOffset\":0}}",
+                        "{{\"ok\":true,\"sec\":{},\"para\":0,\"charOffset\":0,\"continued\":false}}",
                         sec_idx
                     ));
                 }

@@ -5747,7 +5747,7 @@ impl DocumentCore {
         order.push_back(page);
     }
 
-    fn cache_page_tree(&self, page: usize, tree: PageRenderTree) {
+    fn cache_page_tree(&self, page: usize, tree: std::sync::Arc<PageRenderTree>) {
         {
             let mut cache = self.page_tree_cache.borrow_mut();
             if cache.len() <= page {
@@ -5778,6 +5778,18 @@ impl DocumentCore {
 
     /// 캐시된 페이지 렌더 트리를 반환한다 (캐시 미스 시 빌드 후 캐시).
     pub(crate) fn build_page_tree_cached(&self, page_num: u32) -> Result<PageRenderTree, HwpError> {
+        let tree = self.build_page_tree_shared(page_num)?;
+        Ok(PageRenderTree::clone(&tree))
+    }
+
+    /// 캐시된 페이지 렌더 트리를 공유 참조로 반환한다 (캐시 미스 시 빌드 후 캐시).
+    ///
+    /// 히트는 `Arc` 참조 수만 올리고 트리를 복제하지 않는다. 캐시 `RefCell` 빌림은
+    /// 반환 전에 풀리므로 호출자는 트리를 쥔 채로 다른 캐시 조회를 해도 된다.
+    pub(crate) fn build_page_tree_shared(
+        &self,
+        page_num: u32,
+    ) -> Result<std::sync::Arc<PageRenderTree>, HwpError> {
         let idx = page_num as usize;
 
         // 히트 확인. 범위 밖 페이지가 캐시를 키우지 않도록 빌드 성공 후에만 슬롯을 만든다.
@@ -5788,8 +5800,8 @@ impl DocumentCore {
         }
 
         // 캐시 미스 → 빌드
-        let tree = self.build_page_tree(page_num)?;
-        self.cache_page_tree(idx, tree.clone());
+        let tree = std::sync::Arc::new(self.build_page_tree(page_num)?);
+        self.cache_page_tree(idx, std::sync::Arc::clone(&tree));
 
         Ok(tree)
     }
@@ -5814,25 +5826,10 @@ impl DocumentCore {
         page_num: u32,
         build: impl FnOnce(&PageRenderTree) -> Result<T, HwpError>,
     ) -> Result<T, HwpError> {
-        let idx = page_num as usize;
-        let cached = self
-            .page_tree_cache
-            .borrow()
-            .get(idx)
-            .is_some_and(Option::is_some);
-
-        if !cached {
-            let tree = self.build_page_tree(page_num)?;
-            self.cache_page_tree(idx, tree);
-        } else {
-            self.touch_page_render_cache(idx);
-        }
-
-        let cache = self.page_tree_cache.borrow();
-        let tree = cache[idx]
-            .as_ref()
-            .expect("페이지 tree cache는 채운 뒤에 참조해야 한다");
-        build(tree)
+        // 캐시 빌림을 쥔 채 build 를 부르지 않는다 — build 안에서 다른 페이지를 캐시에
+        // 넣어도(borrow_mut) 패닉하지 않도록 공유 참조만 들고 간다.
+        let tree = self.build_page_tree_shared(page_num)?;
+        build(&tree)
     }
 
     /// 머리말/꼬리말 정의가 속한 구역의 대표 편집 페이지를 반환한다.
@@ -7112,7 +7109,10 @@ mod tests {
         let core = DocumentCore::new_empty();
         let inserted = PAGE_RENDER_CACHE_CAPACITY + 3;
         for page in 0..inserted {
-            core.cache_page_tree(page, PageRenderTree::new(page as u32, 100.0, 100.0));
+            core.cache_page_tree(
+                page,
+                std::sync::Arc::new(PageRenderTree::new(page as u32, 100.0, 100.0)),
+            );
             let mut json_cache = core.layer_tree_json_cache.borrow_mut();
             if json_cache.len() <= page {
                 json_cache.resize_with(page + 1, Vec::new);
@@ -7128,7 +7128,10 @@ mod tests {
         }
 
         core.touch_page_render_cache(3);
-        core.cache_page_tree(inserted, PageRenderTree::new(inserted as u32, 100.0, 100.0));
+        core.cache_page_tree(
+            inserted,
+            std::sync::Arc::new(PageRenderTree::new(inserted as u32, 100.0, 100.0)),
+        );
         assert!(core.page_tree_cache.borrow()[3].is_some());
         assert!(core.page_tree_cache.borrow()[4].is_none());
         assert_eq!(
@@ -7162,7 +7165,10 @@ mod tests {
         assert!(page_count <= PAGE_RENDER_CACHE_CAPACITY);
 
         for page in 0..page_count {
-            core.cache_page_tree(page, PageRenderTree::new(page as u32, 100.0, 100.0));
+            core.cache_page_tree(
+                page,
+                std::sync::Arc::new(PageRenderTree::new(page as u32, 100.0, 100.0)),
+            );
             let mut json_cache = core.layer_tree_json_cache.borrow_mut();
             if json_cache.len() <= page {
                 json_cache.resize_with(page + 1, Vec::new);
@@ -7192,7 +7198,10 @@ mod tests {
         assert!(first_changed_page > 0);
         assert!(page_count <= PAGE_RENDER_CACHE_CAPACITY);
         for page in 0..page_count {
-            core.cache_page_tree(page, PageRenderTree::new(page as u32, 100.0, 100.0));
+            core.cache_page_tree(
+                page,
+                std::sync::Arc::new(PageRenderTree::new(page as u32, 100.0, 100.0)),
+            );
         }
         let paragraph = core.document.sections[changed_section]
             .paragraphs
@@ -7755,7 +7764,7 @@ mod tests {
         let mut partial_tree = core.build_page_tree_cached(0).unwrap();
         let expected_section = remove_image_control_index(&mut partial_tree.root)
             .expect("fixture has an image with source section");
-        core.page_tree_cache.borrow_mut()[0] = Some(partial_tree);
+        core.page_tree_cache.borrow_mut()[0] = Some(std::sync::Arc::new(partial_tree));
         let partial: serde_json::Value =
             serde_json::from_str(&core.get_page_control_layout_native(0).unwrap()).unwrap();
         assert!(
