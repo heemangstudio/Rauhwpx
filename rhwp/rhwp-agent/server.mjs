@@ -4112,6 +4112,8 @@ async function handleStudioMessage(record, sock, msg) {
         });
         void broadcastFreshAgentSetupStatuses();
       } catch (error) {
+        // 이미 끝난 실행을 겨냥한 취소(재연결 뒤 늦게 도착한 취소 등)는 목적을 이미 이룬 것이다.
+        if (authRuns.get(agent)?.runId !== msg.authRunId) return;
         sendAgentSetupError(record, sock, null, agent, error, 'AGENT_AUTH_FAILED');
       }
       return;

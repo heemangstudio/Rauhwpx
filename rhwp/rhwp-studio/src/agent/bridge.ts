@@ -1293,6 +1293,8 @@ export class AgentBridgeImpl implements AgentBridge {
   private pendingUserQuestionId: string | null = null;
   private pendingUserQuestion: UserQuestionInteraction | null = null;
   private pendingInterrupt = false;
+  /** 끊긴 사이 누른 로그인 취소. 재연결하면 보내서 허브의 로그인 실행을 끝낸다. */
+  private pendingSetupCancels = new Map<string, unknown>();
   private disposed = false;
 
   private listeners = new Set<(e: SidebarEvent) => void>();
@@ -1699,6 +1701,9 @@ export class AgentBridgeImpl implements AgentBridge {
         this.pendingInterrupt = false;
       }
       this.flushPendingQuestionAnswer();
+      for (const [key, frame] of this.pendingSetupCancels) {
+        if (this.sendJson(frame)) this.pendingSetupCancels.delete(key);
+      }
       if (this.browserbaseOverride !== null) {
         this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'browserbase-credentials-set', ...this.browserbaseOverride });
       }
@@ -3863,7 +3868,8 @@ export class AgentBridgeImpl implements AgentBridge {
   }
 
   cancelAgentSetup(agent: AgentName, authRunId: string): void {
-    this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'agent-setup-cancel', agent, authRunId });
+    const frame = { v: AGENT_PROTOCOL_VERSION, type: 'agent-setup-cancel', agent, authRunId };
+    if (!this.sendJson(frame)) this.pendingSetupCancels.set(`${agent}:${authRunId}`, frame);
   }
 
   disconnectAgent(agent: AgentName): Promise<AgentSetupStatusMap | null> {

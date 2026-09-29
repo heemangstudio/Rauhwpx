@@ -1010,6 +1010,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     cancel: () => setupLoginCancel.click(),
   });
   setupAuthPane.append(setupTerminal.root);
+  setupTerminal.setOnline(connectionState === 'connected');
   setupLoginCancel.addEventListener('click', () => {
     if (setupAgent && setupAuthRunId) {
       abandonedAuthRunIds.add(setupAuthRunId);
@@ -3677,6 +3678,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       switch (ev.type) {
         case 'connection':
           connectionState = ev.state;
+          setupTerminal.setOnline(ev.state === 'connected');
           renderConnection();
           renderProviders();
           renderPi();
@@ -3833,6 +3835,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         }
         case 'agent-setup-terminal':
           if (!supportsTerminalSetup(setupAgent) || ev.agent !== setupAgent || !setupBusy || !setupOauthPending) break;
+          if (abandonedAuthRunIds.has(ev.authRunId)) break;
           if (setupAuthRunId && ev.authRunId !== setupAuthRunId) break;
           setupAuthRunId = ev.authRunId;
           setupBusy = true;
@@ -3844,6 +3847,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         case 'agent-setup-progress':
           if (setupAgent === ev.agent) {
             if (ev.authRunId && setupAuthRunId && ev.authRunId !== setupAuthRunId) break;
+            // 끊긴 사이 취소한 실행은 재연결 때 재생돼도 다시 열지 않는다.
+            if (ev.authRunId && abandonedAuthRunIds.has(ev.authRunId)) break;
             if (ev.authRunId) setupAuthRunId = ev.authRunId;
             setupBusy = ev.state !== 'done';
             // API 키 검증 중에도 authorizing 이 온다 — 브라우저 로그인 근거가 있을 때만 상자를 연다.
