@@ -28,6 +28,7 @@ function current(partial: Partial<LibraryMoveCurrent> = {}): LibraryMoveCurrent 
     documentId: 'current-id',
     fileName: '현재.hwp',
     hasDocument: true,
+    isDirty: true,
     ...partial,
   };
 }
@@ -42,10 +43,13 @@ function makeDeps(overrides: Partial<MoveToLibraryDocumentDeps> = {}) {
   const recents = [
     recent({ id: 'r-target', documentId: 'target-id', fileName: '대상.hwp', handle: { name: '대상.hwp' } as FileSystemFileHandleLike }),
   ];
+  // 현재 문서는 편집된 상태로 시작하고, 저장하면 깨끗해진다.
+  let dirty = true;
   const deps: MoveToLibraryDocumentDeps = {
-    getCurrent: () => current(),
+    getCurrent: () => current({ isDirty: dirty }),
     saveCurrent: async () => {
       calls.saved += 1;
+      dirty = false;
       return 'saved';
     },
     listRecent: async () => recents,
@@ -118,6 +122,55 @@ test('이동은 현재 문서를 저장한 뒤 대상 문서를 연다', async (
   assert.equal(calls.saved, 1);
   assert.deepEqual(calls.opened, ['target-id']);
   assert.equal(calls.picker, 0);
+});
+
+test('바뀌지 않은 문서는 다시 쓰지 않고 대상만 연다', async () => {
+  const { deps, calls } = makeDeps({
+    getCurrent: () => current({ isDirty: false }),
+  });
+  const result = await moveToLibraryDocument(
+    { documentId: 'target-id', fileName: '대상.hwp' },
+    deps,
+  );
+  assert.equal(result, 'moved');
+  assert.equal(calls.saved, 0);
+  assert.deepEqual(calls.opened, ['target-id']);
+});
+
+test('저장하는 동안 들어온 편집이 있으면 한 번 더 저장한 뒤 이동한다', async () => {
+  let dirtyChecks = 0;
+  const { deps } = makeDeps({
+    // 첫 저장 뒤에도 dirty, 두 번째 저장 뒤 clean.
+    getCurrent: () => current({ isDirty: dirtyChecks < 2 }),
+    saveCurrent: async () => {
+      dirtyChecks += 1;
+      return 'saved';
+    },
+  });
+  const result = await moveToLibraryDocument(
+    { documentId: 'target-id', fileName: '대상.hwp' },
+    deps,
+  );
+  assert.equal(result, 'moved');
+  assert.equal(dirtyChecks, 2);
+});
+
+test('저장해도 계속 dirty 면 이동하지 않는다', async () => {
+  const saves: number[] = [];
+  const { deps, calls } = makeDeps({
+    getCurrent: () => current({ isDirty: true }),
+    saveCurrent: async () => {
+      saves.push(1);
+      return 'saved';
+    },
+  });
+  const result = await moveToLibraryDocument(
+    { documentId: 'target-id', fileName: '대상.hwp' },
+    deps,
+  );
+  assert.equal(result, 'failed');
+  assert.equal(saves.length, 3);
+  assert.equal(calls.opened.length, 0);
 });
 
 test('첫 저장을 취소하면 대상을 열지 않는다', async () => {

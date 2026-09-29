@@ -12,6 +12,8 @@ export interface LibraryMoveCurrent {
   documentId: string | null;
   fileName: string | null;
   hasDocument: boolean;
+  /** 마지막 저장 이후 바뀐 내용이 있는지. 바뀌지 않은 문서는 다시 쓰지 않는다. */
+  isDirty: boolean;
 }
 
 export type LibraryMoveResult = 'moved' | 'same' | 'cancelled' | 'failed';
@@ -50,6 +52,8 @@ export function canMoveToLibraryDocument(target: LibraryDocumentTarget): boolean
   return Boolean(target.documentId || target.fileName);
 }
 
+const MAX_SAVE_ATTEMPTS = 3;
+
 export async function moveToLibraryDocument(
   target: LibraryDocumentTarget,
   deps: MoveToLibraryDocumentDeps,
@@ -62,8 +66,11 @@ export async function moveToLibraryDocument(
   const current = deps.getCurrent();
   if (isSameLibraryDocument(current, target)) return 'same';
 
-  if (current.hasDocument) {
-    const saved = await deps.saveCurrent();
+  // 바뀐 내용이 있을 때만 저장한다. 깨끗한 문서를 저장하면 원본 파일이 엔진이 다시 만든
+  // 바이트로 덮어써져, 이동할 때마다 서식이 조금씩 무너진다.
+  // 저장하는 동안 들어온 편집도 대상 문서를 열면 사라지므로, 깨끗해질 때까지 다시 저장한다.
+  for (let attempt = 0; current.hasDocument && deps.getCurrent().isDirty; attempt += 1) {
+    const saved = attempt < MAX_SAVE_ATTEMPTS ? await deps.saveCurrent() : 'failed';
     if (saved === 'cancelled') return 'cancelled';
     if (saved !== 'saved') {
       deps.toast('현재 문서를 저장하지 못해 이동하지 않았습니다.');
