@@ -3123,7 +3123,7 @@ impl LayoutEngine {
                     // [#2279] 마스킹 저장분할 stale(실폭-과잉/줄수-과소) 본문 문단
                     // fresh 재래핑 — typeset(format_paragraph)과 동일.
                     let mut cloned = comp.clone();
-                    crate::renderer::composer::recompose_stored_lines_if_overflowing_body(
+                    crate::renderer::composer::recompose_stale_stored_lines_for_body(
                         &mut cloned,
                         para,
                         column_inner_width,

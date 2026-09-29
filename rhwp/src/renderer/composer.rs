@@ -691,6 +691,16 @@ fn compose_lines(para: &Paragraph) -> Vec<ComposedLine> {
     let mut lines = Vec::new();
     let line_seg_count = effective_line_seg_count(para);
 
+    // 줄과 무관한 문단 단위 값은 줄마다 다시 훑지 않고 한 번만 계산한다.
+    let para_chars: Vec<char> = para.text.chars().collect();
+    let text_len = para_chars.len();
+    // TAC 표 문단 감지
+    let has_tac = para
+        .controls
+        .iter()
+        .any(|c| matches!(c, crate::model::control::Control::Table(t) if t.common.treat_as_char));
+    let cs_visible_starts = char_shape_visible_starts(&para.char_offsets, &para.char_shapes);
+
     for line_idx in 0..line_seg_count {
         let line_seg = &para.line_segs[line_idx];
 
@@ -704,38 +714,32 @@ fn compose_lines(para: &Paragraph) -> Vec<ComposedLine> {
                 para.char_count
             } else {
                 // char_count 미설정 시 텍스트 길이 기반 추정
-                para.text.chars().count() as u32 + 1
+                text_len as u32 + 1
             }
         };
 
         // UTF-16 위치 → 텍스트 문자 인덱스로 변환
-        let (text_start, mut text_end) = utf16_range_to_text_range(
-            &para.char_offsets,
-            utf16_start,
-            utf16_end,
-            para.text.chars().count(),
-        );
+        let (text_start, mut text_end) =
+            utf16_range_to_text_range(&para.char_offsets, utf16_start, utf16_end, text_len);
         if text_end < text_start {
             text_end = text_start;
         }
 
-        // 이 줄의 텍스트 추출
-        let line_text: String = para
-            .text
-            .chars()
-            .skip(text_start)
-            .take(text_end - text_start)
-            .collect();
-
-        // TAC 표 문단 감지
-        let has_tac = para.controls.iter().any(
-            |c| matches!(c, crate::model::control::Control::Table(t) if t.common.treat_as_char),
-        );
+        // 이 줄의 텍스트 (문자 단위 슬라이스)
+        let slice_start = text_start.min(text_len);
+        let slice_end = text_end.min(text_len).max(slice_start);
+        let line_chars = &para_chars[slice_start..slice_end];
 
         // 강제 줄넘김(\n) + TAC 표 문단 처리 (Task #19/Task #20)
-        let newline_pos = line_text.find('\n');
-        if let (true, Some(nl_pos)) = (has_tac, newline_pos) {
-            let pre_text: String = line_text.chars().take(nl_pos).collect();
+        // nl_pos 는 문자 인덱스다 — 바이트 오프셋(str::find)을 쓰면 한글 앞 텍스트에서
+        // '\n' 이 앞 줄에 섞이고 표 줄 char_start 가 밀린다.
+        let newline_pos = if has_tac {
+            line_chars.iter().position(|&c| c == '\n')
+        } else {
+            None
+        };
+        if let Some(nl_pos) = newline_pos {
+            let pre_text: String = line_chars[..nl_pos].iter().collect();
             let pre_end = text_start + nl_pos;
 
             if !pre_text.is_empty() && !lines.is_empty() {
@@ -747,6 +751,7 @@ fn compose_lines(para: &Paragraph) -> Vec<ComposedLine> {
                     pre_end,
                     &para.char_offsets,
                     &para.char_shapes,
+                    &cs_visible_starts,
                 );
                 prev.runs.append(&mut extra_runs);
                 prev.has_line_break = true;
@@ -758,6 +763,7 @@ fn compose_lines(para: &Paragraph) -> Vec<ComposedLine> {
                     pre_end,
                     &para.char_offsets,
                     &para.char_shapes,
+                    &cs_visible_starts,
                 );
                 let pre_lh = if line_seg.text_height > 0
                     && line_seg.text_height < line_seg.line_height / 3
@@ -780,14 +786,15 @@ fn compose_lines(para: &Paragraph) -> Vec<ComposedLine> {
 
             // \n 이후: 표 줄 (빈 runs, 표는 layout에서 별도 처리)
             let post_start = text_start + nl_pos + 1;
-            let post_text: String = line_text.chars().skip(nl_pos + 1).collect();
-            let post_text_clean = post_text.trim_end_matches('\n').to_string();
+            let post_text: String = line_chars[nl_pos + 1..].iter().collect();
+            let post_text_clean = post_text.trim_end_matches('\n');
             let post_runs = split_by_char_shapes(
-                &post_text_clean,
+                post_text_clean,
                 post_start,
                 text_end,
                 &para.char_offsets,
                 &para.char_shapes,
+                &cs_visible_starts,
             );
             lines.push(ComposedLine {
                 runs: post_runs,
@@ -803,7 +810,6 @@ fn compose_lines(para: &Paragraph) -> Vec<ComposedLine> {
             // 일반 처리: LINE_SEG 범위 안에 강제 줄바꿈(\n)이 있으면 실제 줄로 분할한다.
             // Shift+Enter는 문단을 새로 만들지 않지만 렌더러/커서/들여쓰기 계산에서는
             // 다음 visual line 이 별도 ComposedLine 이어야 한다.
-            let line_chars: Vec<char> = line_text.chars().collect();
             let mut segment_start = 0usize;
 
             let corrected_lh = if has_tac
@@ -825,6 +831,7 @@ fn compose_lines(para: &Paragraph) -> Vec<ComposedLine> {
                     segment_abs_end,
                     &para.char_offsets,
                     &para.char_shapes,
+                    &cs_visible_starts,
                 );
                 lines.push(ComposedLine {
                     runs,
@@ -845,7 +852,7 @@ fn compose_lines(para: &Paragraph) -> Vec<ComposedLine> {
                 }
             }
 
-            if segment_start < line_chars.len() || !line_text.ends_with('\n') {
+            if segment_start < line_chars.len() || line_chars.last() != Some(&'\n') {
                 push_segment(segment_start, line_chars.len(), false);
             }
         }
@@ -912,13 +919,31 @@ pub(crate) fn utf16_range_to_text_range(
     (text_start, text_end)
 }
 
+/// CharShapeRef 별 적용 시작 가시문자 인덱스 — start_pos(stream offset) 이상인 첫
+/// char_offsets 항목, 없으면 `char_offsets.len()`. 줄과 무관하므로 문단당 한 번 계산해
+/// [`split_by_char_shapes`] 에 넘긴다.
+fn char_shape_visible_starts(char_offsets: &[u32], char_shapes: &[CharShapeRef]) -> Vec<usize> {
+    char_shapes
+        .iter()
+        .map(|cs| {
+            char_offsets
+                .iter()
+                .position(|&off| off >= cs.start_pos)
+                .unwrap_or(char_offsets.len())
+        })
+        .collect()
+}
+
 /// 줄 내 텍스트를 CharShapeRef 경계에 따라 다중 TextRun으로 분할한다.
+///
+/// `cs_visible_starts` 는 [`char_shape_visible_starts`] 결과 (char_shapes 와 같은 길이).
 fn split_by_char_shapes(
     line_text: &str,
     text_start: usize,
     text_end: usize,
     char_offsets: &[u32],
     char_shapes: &[CharShapeRef],
+    cs_visible_starts: &[usize],
 ) -> Vec<ComposedTextRun> {
     if line_text.is_empty() {
         return Vec::new();
@@ -949,7 +974,6 @@ fn split_by_char_shapes(
     // p2 "충남중부권지사" 가 1pt 로 렌더). 또한 paragraph_layout.rs /
     // line_breaking.rs 는 줄곧 해석 A 를 써 와서 #884 이후 composer 와 불일치
     // 상태였다 — 본 수정으로 전 경로가 해석 A 로 일관된다.
-    let total_chars = char_offsets.len();
     // [#915] 줄 시작 가시문자의 stream offset — fallback active-shape 조회용.
     let line_stream_start = char_offsets
         .get(text_start)
@@ -957,12 +981,9 @@ fn split_by_char_shapes(
         .unwrap_or(text_start as u32);
     let mut segments: Vec<(usize, u32)> = Vec::new();
 
-    for cs in char_shapes {
+    debug_assert_eq!(cs_visible_starts.len(), char_shapes.len());
+    for (cs, &cs_visible_idx) in char_shapes.iter().zip(cs_visible_starts) {
         // start_pos(stream offset) 이상인 첫 가시문자가 char_shape 적용 시작점.
-        let cs_visible_idx = char_offsets
-            .iter()
-            .position(|&off| off >= cs.start_pos)
-            .unwrap_or(total_chars);
         // cs 가 이 줄 범위 밖이면 skip
         if cs_visible_idx >= text_end {
             continue;
@@ -1632,6 +1653,7 @@ pub(crate) fn restyle_fallback_runs_by_char_shapes(
     if para.char_shapes.is_empty() || !para.line_segs.is_empty() {
         return;
     }
+    let cs_visible_starts = char_shape_visible_starts(&para.char_offsets, &para.char_shapes);
     for line in composed.lines.iter_mut() {
         let text: String = line.runs.iter().map(|r| r.text.as_str()).collect();
         if text.is_empty() {
@@ -1639,8 +1661,14 @@ pub(crate) fn restyle_fallback_runs_by_char_shapes(
         }
         let start = line.char_start;
         let end = start + text.chars().count();
-        let restyled =
-            split_by_char_shapes(&text, start, end, &para.char_offsets, &para.char_shapes);
+        let restyled = split_by_char_shapes(
+            &text,
+            start,
+            end,
+            &para.char_offsets,
+            &para.char_shapes,
+            &cs_visible_starts,
+        );
         if !restyled.is_empty() {
             line.runs = restyled;
         }
@@ -1826,17 +1854,20 @@ fn stored_line_segs_structurally_coherent(para: &Paragraph) -> bool {
         .unwrap_or(0);
     let stream_end = visible_end.max(para.char_count.saturating_sub(1));
 
-    let chars: Vec<char> = para.text.chars().collect();
-    let is_stream_boundary = |position: u32| {
-        para.char_offsets
-            .iter()
-            .copied()
-            .zip(chars.iter().copied())
-            .all(|(offset, ch)| {
-                let char_end = offset.saturating_add(ch.len_utf16() as u32);
-                position <= offset || position >= char_end
-            })
-    };
+    // 문자 내부(offset < p < offset+len_utf16)인 stream 위치는 서로게이트 쌍의 둘째
+    // 단위(offset+1)뿐이다. 줄마다 전체 문자를 다시 훑지 않도록 한 번만 모은다
+    // (BMP 문자만 있는 문단은 비어 있다).
+    let surrogate_interiors: Vec<u32> = para
+        .char_offsets
+        .iter()
+        .copied()
+        .zip(para.text.chars())
+        .filter(|&(offset, ch)| {
+            offset.saturating_add(ch.len_utf16() as u32) > offset.saturating_add(1)
+        })
+        .map(|(offset, _)| offset + 1)
+        .collect();
+    let is_stream_boundary = |position: u32| !surrogate_interiors.contains(&position);
 
     for (index, seg) in para.line_segs.iter().enumerate() {
         if seg.line_height <= 0
@@ -1848,9 +1879,10 @@ fn stored_line_segs_structurally_coherent(para: &Paragraph) -> bool {
         {
             return false;
         }
-        let visible_start =
-            utf16_range_to_text_range(&para.char_offsets, seg.text_start, u32::MAX, text_len).0;
-        if index == 0 && visible_start != 0 {
+        if index == 0
+            && utf16_range_to_text_range(&para.char_offsets, seg.text_start, u32::MAX, text_len).0
+                != 0
+        {
             return false;
         }
         if index > 0 {
@@ -2078,15 +2110,15 @@ pub fn stored_lines_stale_for_body(
 /// 마스킹 문단의 저장 줄수가 fresh 와 다르면(과소 포함) 저장을 불신하고 본문
 /// 경로(`recompose_for_body_width` — 글자모양 재분할 포함)로 fresh 재래핑한다.
 /// 셀 판(#2291, 1줄 한정)과 같은 원리의 다중줄 일반화 + 마스킹 한정.
-pub fn recompose_stored_lines_if_overflowing_body(
+///
+/// stale 판정은 하지 않는다 — 호출자가 [`stored_lines_stale_for_body`] 로 먼저
+/// 확인한다 (판정은 줄별 폭 추정·probe 재래핑을 포함해 비싸므로 두 번 돌리지 않는다).
+pub fn recompose_stale_stored_lines_for_body(
     composed: &mut ComposedParagraph,
     para: &Paragraph,
     column_inner_width_px: f64,
     styles: &ResolvedStyleSet,
 ) {
-    if !stored_lines_stale_for_body(composed, para, column_inner_width_px, styles) {
-        return;
-    }
     let mut para_no_ls = para.clone();
     para_no_ls.line_segs.clear();
     let first_line_reserve_px = if composed.tac_controls.len() == 1 {

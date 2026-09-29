@@ -814,6 +814,12 @@ struct TypesetState {
     /// 문서 전체에 실제 저장 LineSeg가 있는지 여부. HWP5-origin CFB라도 LineSeg가 전부
     /// 비어 있으면 저장 vpos 기반 흐름이 아니라 재조판 흐름으로 취급한다.
     has_stored_line_segs: bool,
+    /// #1672: 구역에 raw TABLE attr 상위 바이트가 빈 RowBreak 표가 있는가. 구역 문단은
+    /// typeset 중 불변이므로 구역 시작 시 한 번만 판정한다 (문단마다 전 구역 재스캔 방지).
+    zero_high_attr_rowbreak_section: bool,
+    /// 문단별 `saved_flow_reaches_internal_page_rewind` 결과 memo. 구역 문단은 typeset
+    /// 중 불변이므로 첫 조회 시 O(P) 역방향 점화식으로 한 번에 계산한다.
+    saved_flow_rewind: Option<Vec<bool>>,
     /// [Task #362] 한컴 빈 줄 감추기 옵션 (SectionDef bit 19). true 이면 페이지 시작에서
     /// overflow 유발하는 빈 paragraph 최대 2개까지 height=0 처리.
     hide_empty_line: bool,
@@ -2184,7 +2190,100 @@ fn saved_flow_marks_page_last(paragraphs: &[Paragraph], para_idx: usize) -> bool
     !skipped_increasing_empty
 }
 
-fn saved_flow_reaches_internal_page_rewind(paragraphs: &[Paragraph], para_idx: usize) -> bool {
+/// 구역 전 문단의 `saved_flow_reaches_internal_page_rewind` 결과를 O(P) 로 계산한다.
+///
+/// 원 판정은 문단마다 후속 문단을 구역 끝까지 훑을 수 있어(누적 vpos 문서는 리셋이
+/// 없음) 구역 typeset 이 O(P²) 이 된다. 판정은 "k 의 마지막 실줄 vpos 에서 k+1 부터
+/// 훑는 꼬리" `tail(k)` 에만 의존하므로 역방향으로 한 번에 구한다. k 이후 첫 유의
+/// 문단 j(쪽/구역나누기이거나 실줄 보유)에 대해:
+/// - j 없음 → false, brk(j) → true
+/// - first(j) < last(k) → false, 내부 쪽 되감기(rew(j)) → true, 그 외 → tail(j)
+fn saved_flow_internal_page_rewind_flags(paragraphs: &[Paragraph]) -> Vec<bool> {
+    enum NextSignificant {
+        None,
+        Break,
+        Saved {
+            first_vpos: i32,
+            rewinds: bool,
+            tail: bool,
+        },
+    }
+
+    let mut flags = vec![false; paragraphs.len()];
+    let mut next = NextSignificant::None;
+    for (idx, para) in paragraphs.iter().enumerate().rev() {
+        let mut first_vpos = None;
+        let mut last_vpos = 0;
+        let mut rewinds = false;
+        for seg in para
+            .line_segs
+            .iter()
+            .filter(|seg| !is_synthetic_line_seg(seg))
+        {
+            if first_vpos.is_none() {
+                first_vpos = Some(seg.vertical_pos);
+            } else if last_vpos > 5000 && seg.vertical_pos <= 1500 && seg.vertical_pos < last_vpos {
+                rewinds = true;
+            }
+            last_vpos = seg.vertical_pos;
+        }
+        let tail = match next {
+            NextSignificant::None => false,
+            NextSignificant::Break => true,
+            NextSignificant::Saved {
+                first_vpos: next_first,
+                rewinds: next_rewinds,
+                tail: next_tail,
+            } => {
+                if next_first < last_vpos {
+                    false
+                } else {
+                    next_rewinds || next_tail
+                }
+            }
+        };
+        if let Some(first_vpos) = first_vpos {
+            flags[idx] = tail;
+            next = if matches!(
+                para.column_type,
+                ColumnBreakType::Page | ColumnBreakType::Section
+            ) {
+                NextSignificant::Break
+            } else {
+                NextSignificant::Saved {
+                    first_vpos,
+                    rewinds,
+                    tail,
+                }
+            };
+        } else if matches!(
+            para.column_type,
+            ColumnBreakType::Page | ColumnBreakType::Section
+        ) {
+            next = NextSignificant::Break;
+        }
+    }
+    flags
+}
+
+impl TypesetState {
+    /// `saved_flow_reaches_internal_page_rewind` 의 구역 단위 memo 조회.
+    fn saved_flow_reaches_internal_page_rewind(
+        &mut self,
+        paragraphs: &[Paragraph],
+        para_idx: usize,
+    ) -> bool {
+        self.saved_flow_rewind
+            .get_or_insert_with(|| saved_flow_internal_page_rewind_flags(paragraphs))
+            .get(para_idx)
+            .copied()
+            .unwrap_or(false)
+    }
+}
+
+/// 원 판정 (참조 구현) — `saved_flow_internal_page_rewind_flags` 와의 동치 검증용.
+#[cfg(test)]
+fn saved_flow_reaches_internal_page_rewind_scan(paragraphs: &[Paragraph], para_idx: usize) -> bool {
     let Some(mut previous_vpos) = paragraphs
         .get(para_idx)
         .and_then(|para| {
@@ -2328,6 +2427,8 @@ impl TypesetState {
             strict_plain_text_fit_after_empty_host_float_once: false,
             profile: Default::default(),
             has_stored_line_segs: false,
+            zero_high_attr_rowbreak_section: false,
+            saved_flow_rewind: None,
             hide_empty_line: false,
             hidden_empty_lines: 0,
             hidden_empty_page_idx: usize::MAX,
@@ -4022,6 +4123,7 @@ impl TypesetEngine {
         st.has_stored_line_segs = paragraphs
             .iter()
             .any(|p| p.line_segs.iter().any(|ls| !is_synthetic_line_seg(ls)));
+        st.zero_high_attr_rowbreak_section = section_has_zero_high_attr_rowbreak_table(paragraphs);
         st.skip_spacing_before_prededuct = skip_spacing_before_prededuct;
         // [#2279 OMIT-eager] 기계생성 압축 ladder 문서군 사전 판별 — lazy 판별
         // (#2383, 빈 host 표 성장 시점)보다 앞서 페이지말 fit 규칙에 적용되도록
@@ -12171,7 +12273,7 @@ impl TypesetEngine {
                     // [#2279] 마스킹 저장분할 stale(실폭-과잉/줄수-과소) 본문 문단
                     // fresh 재래핑 — paragraph_layout(렌더)와 동일.
                     let mut cloned = c.clone();
-                    crate::renderer::composer::recompose_stored_lines_if_overflowing_body(
+                    crate::renderer::composer::recompose_stale_stored_lines_for_body(
                         &mut cloned,
                         para,
                         inner,
@@ -12634,7 +12736,7 @@ impl TypesetEngine {
         // [Task #643] VPOS_CORR 백워드 허용 (8px) 으로 layout drift 누적이 해소됨.
         const DEFAULT_LAYOUT_DRIFT_SAFETY_PX: f64 = 4.0;
         const ROWBREAK_LAYOUT_DRIFT_SAFETY_PX: f64 = 0.0;
-        let layout_drift_safety_px = if section_has_zero_high_attr_rowbreak_table(paragraphs) {
+        let layout_drift_safety_px = if st.zero_high_attr_rowbreak_section {
             ROWBREAK_LAYOUT_DRIFT_SAFETY_PX
         } else {
             DEFAULT_LAYOUT_DRIFT_SAFETY_PX
@@ -12911,7 +13013,7 @@ impl TypesetEngine {
             // 경계(vpos~vpos+lh)로 하며, 한글은 쪽 마지막 줄의 아래 간격을 쪽 하단에서
             // 소비하지 않으므로 sa 는 배제 사유가 아니다 (1192000 해양수산 17→16쪽).
             && (saved_flow_marks_page_last(paragraphs, para_idx)
-                || saved_flow_reaches_internal_page_rewind(paragraphs, para_idx))
+                || st.saved_flow_reaches_internal_page_rewind(paragraphs, para_idx))
             && current_page_vpos_base
                 .and_then(|base| single_line_visible_bounds_px(para, base, self.dpi))
                 .is_some_and(|bounds| {
@@ -12966,7 +13068,7 @@ impl TypesetEngine {
             && para.controls.is_empty()
             && !st.current_items.is_empty()
             && (saved_flow_marks_page_last(paragraphs, para_idx)
-                || saved_flow_reaches_internal_page_rewind(paragraphs, para_idx))
+                || st.saved_flow_reaches_internal_page_rewind(paragraphs, para_idx))
             && {
                 let body_height_hu =
                     crate::renderer::px_to_hwpunit(st.layout.available_body_height(), self.dpi);
@@ -20480,6 +20582,119 @@ mod tests {
         page_break_next.column_type = ColumnBreakType::Page;
         let cumulative_with_break = vec![para_at_vpos(137484), page_break_next];
         assert!(saved_flow_marks_page_last(&cumulative_with_break, 0));
+    }
+
+    /// 내부 쪽 되감기 memo(역방향 점화식)는 원 전방 스캔과 모든 문단에서 같아야 한다.
+    #[test]
+    fn saved_flow_rewind_memo_matches_forward_scan() {
+        fn seg(vpos: i32, synthetic: bool) -> LineSeg {
+            LineSeg {
+                vertical_pos: vpos,
+                line_height: 1300,
+                tag: if synthetic { 0x8000_0000 } else { 0 },
+                ..Default::default()
+            }
+        }
+        fn para(segs: Vec<LineSeg>, column_type: ColumnBreakType) -> Paragraph {
+            Paragraph {
+                line_segs: segs,
+                column_type,
+                ..Default::default()
+            }
+        }
+        fn assert_memo_matches(paragraphs: &[Paragraph]) -> usize {
+            let layout =
+                PageLayoutInfo::from_page_def(&a4_page_def(), &ColumnDef::default(), DEFAULT_DPI);
+            let mut st = TypesetState::new(layout, 1, 0, 0.0, 0.0, 0.0, Default::default());
+            let mut hits = 0;
+            // 범위 밖 인덱스까지 포함해 원 함수의 false 반환과 맞춘다.
+            for idx in 0..=paragraphs.len() {
+                let expected = saved_flow_reaches_internal_page_rewind_scan(paragraphs, idx);
+                assert_eq!(
+                    st.saved_flow_reaches_internal_page_rewind(paragraphs, idx),
+                    expected,
+                    "idx={idx} paragraphs={:?}",
+                    paragraphs
+                        .iter()
+                        .map(|p| (
+                            p.column_type,
+                            p.line_segs
+                                .iter()
+                                .map(|s| (s.vertical_pos, is_synthetic_line_seg(s)))
+                                .collect::<Vec<_>>()
+                        ))
+                        .collect::<Vec<_>>()
+                );
+                hits += usize::from(expected);
+            }
+            hits
+        }
+
+        use ColumnBreakType::{None as NoBreak, Page, Section};
+        // 쪽/구역나누기, vpos 감소, 내부 되감기, synthetic 전용, 빈 segs 문단을 모두 포함.
+        let fixtures = vec![
+            vec![para(vec![seg(1000, false)], NoBreak), para(vec![], Page)],
+            vec![
+                para(vec![seg(1000, false)], NoBreak),
+                para(vec![seg(2000, false)], Section),
+            ],
+            vec![
+                para(vec![seg(9000, false)], NoBreak),
+                para(vec![seg(500, false)], NoBreak),
+                para(vec![], Page),
+            ],
+            vec![
+                para(vec![seg(3000, false)], NoBreak),
+                para(vec![], NoBreak),
+                para(vec![seg(3000, true)], NoBreak),
+                para(vec![seg(6000, false), seg(700, false)], NoBreak),
+            ],
+            vec![
+                para(vec![seg(3000, true)], NoBreak),
+                para(
+                    vec![seg(6000, false), seg(9000, true), seg(1200, false)],
+                    NoBreak,
+                ),
+                para(vec![seg(1300, false)], NoBreak),
+            ],
+            vec![
+                para(vec![seg(1000, false)], Page),
+                para(vec![seg(2000, false)], Page),
+                para(vec![seg(3000, false)], NoBreak),
+            ],
+        ];
+        let mut hits = 0;
+        for paragraphs in &fixtures {
+            hits += assert_memo_matches(paragraphs);
+        }
+        assert!(hits > 0, "fixtures must exercise the true branch");
+
+        // 결정적 의사난수 sweep — 경계값(5000/1500) 주변 vpos 와 분기 조합.
+        let vpos_pool = [0, 700, 1500, 1501, 3000, 5000, 5001, 7000, 9000, 12000];
+        let mut rng: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut next = |bound: usize| {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            (rng % bound as u64) as usize
+        };
+        for _ in 0..400 {
+            let para_count = 1 + next(9);
+            let paragraphs: Vec<Paragraph> = (0..para_count)
+                .map(|_| {
+                    let column_type = match next(8) {
+                        0 => Page,
+                        1 => Section,
+                        _ => NoBreak,
+                    };
+                    let segs = (0..next(4))
+                        .map(|_| seg(vpos_pool[next(vpos_pool.len())], next(5) == 0))
+                        .collect();
+                    para(segs, column_type)
+                })
+                .collect();
+            assert_memo_matches(&paragraphs);
+        }
     }
 
     #[test]
