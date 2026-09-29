@@ -411,6 +411,19 @@ fn is_treat_as_char_equation_control(ctrl: Option<&Control>) -> bool {
     matches!(ctrl, Some(Control::Equation(eq)) if eq.common.treat_as_char)
 }
 
+/// 인라인 수식 노드의 bbox 폭 = 줄 전진 슬롯(`tac_w`, 양쪽 여백 포함)에서 여백을 뺀 값.
+/// #374 이후 줄 전진은 min(선언 폭, paint 폭+여백)이라 선언 폭보다 좁을 수 있는데,
+/// bbox 를 선언 폭 그대로 두면 이웃 수식 bbox 와 겹쳐 커서·hit-test 가 되감긴다.
+/// 렌더러는 bbox 의 x/y 만 쓰므로 그림에는 영향이 없다.
+fn inline_equation_box_width_px(eq: &crate::model::control::Equation, tac_w: f64, dpi: f64) -> f64 {
+    let declared = hwpunit_to_px(eq.common.width as i32, dpi);
+    let margins = hwpunit_to_px(
+        i32::from(eq.common.margin.left) + i32::from(eq.common.margin.right),
+        dpi,
+    );
+    (tac_w - margins).clamp(0.0, declared.max(0.0))
+}
+
 /// Maximum inline-equation ascent/descent for one composed text line.
 ///
 /// Natural ink extents and the authored EQEDIT object baseline jointly reserve
@@ -3531,7 +3544,7 @@ impl LayoutEngine {
                     // 쓰면 내용이 ~6pt 위로 치솟는다).
                     let eq_y = row_y + baseline - layout_box.baseline;
                     let eq_x = inline_x + hwpunit_to_px(eq.common.margin.left as i32, self.dpi);
-                    let eq_w = hwpunit_to_px(eq.common.width as i32, self.dpi);
+                    let eq_w = inline_equation_box_width_px(eq, tac_w, self.dpi);
                     let (eq_cell_idx, eq_cell_para_idx) = if let Some(ref ctx) = cell_ctx {
                         (
                             Some(ctx.path[0].cell_index),
@@ -6497,7 +6510,7 @@ impl LayoutEngine {
                             // 수식 본문의 자연 기준선을 줄 기준선에 맞춘다 (위와 동일).
                             let eq_y = y + baseline - layout_box.baseline;
                             let eq_x = x + hwpunit_to_px(eq.common.margin.left as i32, self.dpi);
-                            let eq_w = hwpunit_to_px(eq.common.width as i32, self.dpi);
+                            let eq_w = inline_equation_box_width_px(eq, tac_w, self.dpi);
                             let (eq_cell_idx, eq_cell_para_idx) = if let Some(ref ctx) = cell_ctx {
                                 (
                                     Some(ctx.path[0].cell_index),
