@@ -3749,7 +3749,7 @@ impl DocumentCore {
                 let from = if start_ci < 0 {
                     0usize
                 } else {
-                    (start_ci as usize) + 1
+                    (start_ci as usize).saturating_add(1)
                 };
                 for ci in from..controls.len() {
                     match &controls[ci] {
@@ -3765,10 +3765,11 @@ impl DocumentCore {
                     }
                 }
             } else {
+                // 범위 밖 컨트롤 번호는 문단 끝에서 출발한 것으로 본다.
                 let until = if start_ci < 0 {
                     controls.len()
                 } else {
-                    start_ci as usize
+                    (start_ci as usize).min(controls.len())
                 };
                 for ci in (0..until).rev() {
                     match &controls[ci] {
@@ -3815,10 +3816,11 @@ impl DocumentCore {
         // 2) 같은 섹션의 다른 문단 탐색
         if let Some(section) = sections.get(section_idx) {
             let para_count = section.paragraphs.len();
+            // 범위 밖 문단 번호가 들어와도 인덱싱 panic 이나 긴 헛돌기가 없게 자른다.
             let para_range: Box<dyn Iterator<Item = usize>> = if forward {
-                Box::new((para_idx + 1)..para_count)
+                Box::new(para_idx.saturating_add(1)..para_count)
             } else if para_idx > 0 {
-                Box::new((0..para_idx).rev())
+                Box::new((0..para_idx.min(para_count)).rev())
             } else {
                 Box::new(std::iter::empty())
             };
@@ -3826,7 +3828,7 @@ impl DocumentCore {
                 let search_start = if forward {
                     -1
                 } else {
-                    section.paragraphs[pi].controls.len() as i32
+                    section.paragraphs.get(pi).map_or(0, |p| p.controls.len()) as i32
                 };
                 if let Some((ci, ty)) =
                     find_in_para(sections, section_idx, pi, search_start, forward)
@@ -3848,9 +3850,9 @@ impl DocumentCore {
 
         // 3) 다른 섹션 탐색
         let sec_range: Box<dyn Iterator<Item = usize>> = if forward {
-            Box::new((section_idx + 1)..sections.len())
+            Box::new(section_idx.saturating_add(1)..sections.len())
         } else if section_idx > 0 {
-            Box::new((0..section_idx).rev())
+            Box::new((0..section_idx.min(sections.len())).rev())
         } else {
             Box::new(std::iter::empty())
         };
@@ -3865,7 +3867,7 @@ impl DocumentCore {
                     let search_start = if forward {
                         -1
                     } else {
-                        section.paragraphs[pi].controls.len() as i32
+                        section.paragraphs.get(pi).map_or(0, |p| p.controls.len()) as i32
                     };
                     if let Some((ci, ty)) = find_in_para(sections, si, pi, search_start, forward) {
                         return format!(
@@ -3960,8 +3962,9 @@ impl DocumentCore {
         }
 
         // 2) 이전 문단들 역순 탐색 (같은 섹션)
+        // 범위 밖 문단·구역 번호는 잘라서 인덱싱 panic 과 수십억 번 헛돌기를 막는다.
         if let Some(section) = sections.get(section_idx) {
-            for pi in (0..para_idx).rev() {
+            for pi in (0..para_idx.min(section.paragraphs.len())).rev() {
                 if let Some((ci, cp, ty)) = find_last_in_para(&section.paragraphs[pi]) {
                     return fmt_result(ty, section_idx, pi, ci, cp);
                 }
@@ -3969,7 +3972,7 @@ impl DocumentCore {
         }
 
         // 3) 이전 섹션 역순 탐색
-        for si in (0..section_idx).rev() {
+        for si in (0..section_idx.min(sections.len())).rev() {
             if let Some(section) = sections.get(si) {
                 for pi in (0..section.paragraphs.len()).rev() {
                     if let Some((ci, cp, ty)) = find_last_in_para(&section.paragraphs[pi]) {
@@ -4051,7 +4054,7 @@ impl DocumentCore {
 
         // 2) 이후 문단 정순 탐색 (같은 섹션)
         if let Some(section) = sections.get(section_idx) {
-            for pi in (para_idx + 1)..section.paragraphs.len() {
+            for pi in para_idx.saturating_add(1)..section.paragraphs.len() {
                 if let Some((ci, cp, ty)) = find_first_in_para(&section.paragraphs[pi]) {
                     return fmt_result(ty, section_idx, pi, ci, cp);
                 }
@@ -4059,7 +4062,7 @@ impl DocumentCore {
         }
 
         // 3) 이후 섹션 정순 탐색
-        for si in (section_idx + 1)..sections.len() {
+        for si in section_idx.saturating_add(1)..sections.len() {
             if let Some(section) = sections.get(si) {
                 for pi in 0..section.paragraphs.len() {
                     if let Some((ci, cp, ty)) = find_first_in_para(&section.paragraphs[pi]) {

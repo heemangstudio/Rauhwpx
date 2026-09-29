@@ -1693,7 +1693,11 @@ impl Paragraph {
         }
         let mut run_start = start_char_offset;
         let mut run_id = self.char_shape_id_at(start_char_offset).unwrap_or(0);
-        for i in (start_char_offset + 1)..end_char_offset {
+        // 문단 끝(char_offsets.len()) 이후 오프셋은 모두 같은 모양을 돌려주므로 거기까지만
+        // 훑는다. JS 의 -1(u32::MAX) 같은 끝값이 문단 길이와 무관한 수십억 번 순회가
+        // 되어 UI 스레드를 멈추지 않게 한다. 마지막 run 의 끝은 요청값 그대로다.
+        let scan_end = end_char_offset.min(self.char_offsets.len().saturating_add(1));
+        for i in (start_char_offset + 1)..scan_end {
             let id = self.char_shape_id_at(i).unwrap_or(0);
             if id != run_id {
                 runs.push((run_start, i, run_id));

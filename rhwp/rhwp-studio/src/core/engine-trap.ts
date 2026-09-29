@@ -4,6 +4,13 @@
  * wasm 은 trap(unreachable, memory access out of bounds 등) 뒤에 스택 포인터와 RefCell 대여를
  * 되돌리지 않는다. 그 인스턴스의 다음 호출은 "recursive use of an object" 로 거절되거나 또 trap
  * 하므로, 첫 trap 을 한 번 알리고 이후 화면 갱신·쓰기를 멈춰 마지막으로 그린 쪽을 지킨다.
+ * 엔진 메서드 밖으로 나온 스택 오버플로(V8 RangeError, Firefox InternalError)도 wasm 프레임을
+ * 정리 없이 버려 같은 상태를 남기므로 trap 으로 본다. 엔진 밖 순수 JS 재귀 오류는 아니다.
+ *
+ * 복구 계약: 읽기(`&self`) 호출이 trap 하면 새어 나간 것은 공유 대여뿐이라 `&self` 인
+ * exportHwp/exportHwpx 는 계속 들어갈 수 있고, 멈춘 직후의 복구본 저장이 이 둘을 쓴다.
+ * 쓰기(`&mut self`) 호출이 trap 하면 모델이 반쯤 바뀌었을 수 있어 내보내기도 거절되며,
+ * 이때는 마지막 주기 자동 저장본이 복구 원본이다.
  */
 
 export interface EngineTrapInfo {
@@ -11,6 +18,16 @@ export interface EngineTrapInfo {
 }
 
 const TRAP_MESSAGE = /memory access out of bounds|^unreachable$|recursive use of an object detected|already (mutably )?borrowed/;
+const STACK_OVERFLOW_MESSAGE = /Maximum call stack size exceeded|too much recursion/;
+
+/** 엔진 메서드 밖으로 나온 스택 오버플로 오류 객체. */
+const engineStackOverflows = new WeakSet<object>();
+
+function isStackOverflow(error: unknown): error is Error {
+  return error instanceof Error
+    && (error.name === 'RangeError' || error.name === 'InternalError')
+    && STACK_OVERFLOW_MESSAGE.test(error.message);
+}
 
 /** trap 뒤에 엔진 호출을 막을 때 던진다. */
 export class EngineTrappedError extends Error {
@@ -33,6 +50,7 @@ function errorMessage(error: unknown): string {
 export function isEngineTrap(error: unknown): boolean {
   if (error instanceof EngineTrappedError) return true;
   if (typeof WebAssembly !== 'undefined' && error instanceof WebAssembly.RuntimeError) return true;
+  if (typeof error === 'object' && error !== null && engineStackOverflows.has(error)) return true;
   return TRAP_MESSAGE.test(errorMessage(error));
 }
 
@@ -77,6 +95,7 @@ export function guardEngineCalls(proto: object): void {
       try {
         return original.apply(this, args);
       } catch (error) {
+        if (isStackOverflow(error)) engineStackOverflows.add(error);
         reportEngineTrap(error);
         throw error;
       }

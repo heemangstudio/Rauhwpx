@@ -253,6 +253,131 @@ fn collect_external_image_references(document: &Document) -> Vec<ExternalImageRe
     references.into_values().collect()
 }
 
+/// 문단 목록과 그 안쪽 문단 트리(표 셀·캡션·머리말/꼬리말·각주/미주·숨은 설명·메모·
+/// 글상자·묶음 개체)를 깊이 우선으로 돌며 `visit` 을 적용한다. 하나라도 바꿨으면 true.
+fn visit_paragraph_tree_mut(
+    paragraphs: &mut [Paragraph],
+    visit: &mut dyn FnMut(&mut Paragraph) -> bool,
+) -> bool {
+    fn visit_caption(
+        caption: &mut Option<crate::model::shape::Caption>,
+        visit: &mut dyn FnMut(&mut Paragraph) -> bool,
+    ) -> bool {
+        match caption {
+            Some(caption) => visit_paragraph_tree_mut(&mut caption.paragraphs, visit),
+            None => false,
+        }
+    }
+
+    fn visit_shape(shape: &mut ShapeObject, visit: &mut dyn FnMut(&mut Paragraph) -> bool) -> bool {
+        let mut changed = false;
+        if let Some(drawing) = shape.drawing_mut() {
+            if let Some(text_box) = &mut drawing.text_box {
+                changed |= visit_paragraph_tree_mut(&mut text_box.paragraphs, visit);
+            }
+            changed |= visit_caption(&mut drawing.caption, visit);
+        }
+        match shape {
+            ShapeObject::Group(group) => {
+                changed |= visit_caption(&mut group.caption, visit);
+                for child in &mut group.children {
+                    changed |= visit_shape(child, visit);
+                }
+            }
+            ShapeObject::Picture(picture) => changed |= visit_caption(&mut picture.caption, visit),
+            ShapeObject::Chart(chart) => changed |= visit_caption(&mut chart.caption, visit),
+            ShapeObject::Ole(ole) => changed |= visit_caption(&mut ole.caption, visit),
+            _ => {}
+        }
+        changed
+    }
+
+    let mut changed = false;
+    for para in paragraphs {
+        changed |= visit(para);
+        for control in &mut para.controls {
+            changed |= match control {
+                Control::Table(table) => {
+                    let mut in_table = false;
+                    for cell in &mut table.cells {
+                        in_table |= visit_paragraph_tree_mut(&mut cell.paragraphs, visit);
+                    }
+                    in_table | visit_caption(&mut table.caption, visit)
+                }
+                Control::Header(header) => visit_paragraph_tree_mut(&mut header.paragraphs, visit),
+                Control::Footer(footer) => visit_paragraph_tree_mut(&mut footer.paragraphs, visit),
+                Control::Footnote(note) => visit_paragraph_tree_mut(&mut note.paragraphs, visit),
+                Control::Endnote(note) => visit_paragraph_tree_mut(&mut note.paragraphs, visit),
+                Control::HiddenComment(comment) => {
+                    visit_paragraph_tree_mut(&mut comment.paragraphs, visit)
+                }
+                Control::Field(field) => {
+                    visit_paragraph_tree_mut(&mut field.memo_paragraphs, visit)
+                }
+                Control::Picture(picture) => visit_caption(&mut picture.caption, visit),
+                Control::Shape(shape) => visit_shape(shape, visit),
+                _ => false,
+            };
+        }
+    }
+    changed
+}
+
+/// 스타일 `deleted` 를 지운 뒤 한 스타일 참조의 새 ID. 지운 스타일을 가리키면 바탕글(0),
+/// 그 뒤 ID 는 한 칸 당긴다. 새 값은 원래 값 이하라 참조 타입(u8/u16)에 그대로 들어간다.
+fn style_ref_after_delete(id: u32, deleted: u32) -> u32 {
+    match id.cmp(&deleted) {
+        std::cmp::Ordering::Less => id,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => id - 1,
+    }
+}
+
+/// 스타일 `deleted` 삭제에 맞춰 문서 전체(바탕쪽 포함) 문단의 스타일 참조를 옮긴다.
+///
+/// 반환: 바뀐 본문 문단 `(구역, 문단)` 목록. 바탕쪽만 바뀐 구역은 `(구역, 0)` 으로 알린다 —
+/// revision 이 구역 셸(바탕쪽 포함)과 그 문단을 스냅샷에서 되살리게 하는 표식이다.
+fn remap_style_refs_after_delete(document: &mut Document, deleted: u32) -> Vec<(usize, usize)> {
+    let mut remap = |para: &mut Paragraph| {
+        let mut changed = false;
+        let style_id = style_ref_after_delete(u32::from(para.style_id), deleted) as u8;
+        if style_id != para.style_id {
+            para.style_id = style_id;
+            changed = true;
+        }
+        for control in &mut para.controls {
+            if let Control::Ruby(ruby) = control {
+                let style_ref =
+                    style_ref_after_delete(u32::from(ruby.style_id_ref), deleted) as u16;
+                if style_ref != ruby.style_id_ref {
+                    ruby.style_id_ref = style_ref;
+                    changed = true;
+                }
+            }
+        }
+        changed
+    };
+
+    let mut changed_paragraphs = Vec::new();
+    for (section_idx, section) in document.sections.iter_mut().enumerate() {
+        let mut master_changed = false;
+        for master_page in &mut section.section_def.master_pages {
+            master_changed |= visit_paragraph_tree_mut(&mut master_page.paragraphs, &mut remap);
+        }
+        let mut body_changed = false;
+        for (para_idx, para) in section.paragraphs.iter_mut().enumerate() {
+            if visit_paragraph_tree_mut(std::slice::from_mut(para), &mut remap) {
+                changed_paragraphs.push((section_idx, para_idx));
+                body_changed = true;
+            }
+        }
+        if master_changed && !body_changed {
+            changed_paragraphs.push((section_idx, 0));
+        }
+    }
+    changed_paragraphs
+}
+
 /// WASM에서 사용할 HWP 문서 래퍼
 ///
 /// 도메인 로직은 `DocumentCore`에 구현되어 있으며,
@@ -343,6 +468,37 @@ impl HwpDocument {
             .update_external_image_display_path(bin_data_id, &resolved);
 
         1
+    }
+
+    /// `(구역, 문단)` 이 실제 본문 문단을 가리키는지. 컨트롤 탐색 export 가 범위 밖
+    /// 좌표로 코어 루프에 들어가 panic(=wasm trap)하지 않게 경계에서 거른다.
+    fn is_body_paragraph(&self, section_idx: u32, para_idx: u32) -> bool {
+        self.document
+            .sections
+            .get(section_idx as usize)
+            .is_some_and(|section| (para_idx as usize) < section.paragraphs.len())
+    }
+}
+
+/// 컨트롤 탐색 export 의 "찾지 못함" 응답.
+const NO_CONTROL_JSON: &str = "{\"type\":\"none\"}";
+
+/// 쪽 좌표 인자가 유한한지 확인한다. NaN·무한대는 좌표 비교를 깨뜨리므로
+/// 코어에 넘기기 전에 입력 오류로 돌려준다.
+fn ensure_finite_coords(x: f64, y: f64) -> Result<(), JsValue> {
+    if x.is_finite() && y.is_finite() {
+        Ok(())
+    } else {
+        Err(JsValue::from_str("INVALID_ARGS: non-finite coordinate"))
+    }
+}
+
+/// 수직 이동의 preferredX. 유한하지 않으면 미지정(-1)으로 보고 현재 커서 x 를 다시 잰다.
+fn finite_preferred_x(preferred_x: f64) -> f64 {
+    if preferred_x.is_finite() {
+        preferred_x
+    } else {
+        -1.0
     }
 }
 
@@ -1093,10 +1249,13 @@ impl HwpDocument {
             .map_err(|e| e.into())
     }
 
-    /// DPI를 설정한다.
+    /// DPI를 설정한다. 양의 유한수가 아니면 무시한다 — 0·NaN DPI 는 모든 조판 좌표를
+    /// 무한대/NaN 으로 만들어 이후 렌더링과 히트테스트를 망가뜨린다.
     #[wasm_bindgen(js_name = setDpi)]
     pub fn set_dpi(&mut self, dpi: f64) {
-        self.core.set_dpi(dpi);
+        if dpi.is_finite() && dpi > 0.0 {
+            self.core.set_dpi(dpi);
+        }
     }
 
     /// Session-only font measurement. HCR declared metrics (the default) match
@@ -2882,6 +3041,9 @@ impl HwpDocument {
         ctrl_idx: i32,
         delta: i32,
     ) -> String {
+        if !self.is_body_paragraph(section_idx, para_idx) {
+            return NO_CONTROL_JSON.to_string();
+        }
         self.find_next_editable_control_native(
             section_idx as usize,
             para_idx as usize,
@@ -2891,6 +3053,8 @@ impl HwpDocument {
     }
 
     /// 커서에서 이전 방향으로 가장 가까운 선택 가능 컨트롤을 찾는다 (F11 키).
+    ///
+    /// 본문 좌표가 아니면(셀 안 문단 번호 등) `{"type":"none"}` 을 돌려준다.
     #[wasm_bindgen(js_name = findNearestControlBackward)]
     pub fn find_nearest_control_backward(
         &self,
@@ -2898,6 +3062,9 @@ impl HwpDocument {
         para_idx: u32,
         char_offset: u32,
     ) -> String {
+        if !self.is_body_paragraph(section_idx, para_idx) {
+            return NO_CONTROL_JSON.to_string();
+        }
         self.find_nearest_control_backward_native(
             section_idx as usize,
             para_idx as usize,
@@ -2913,6 +3080,9 @@ impl HwpDocument {
         para_idx: u32,
         char_offset: u32,
     ) -> String {
+        if !self.is_body_paragraph(section_idx, para_idx) {
+            return NO_CONTROL_JSON.to_string();
+        }
         self.find_nearest_control_forward_native(
             section_idx as usize,
             para_idx as usize,
@@ -3257,6 +3427,7 @@ impl HwpDocument {
     /// 반환: JSON `{"sectionIndex":N,"paragraphIndex":N,"charOffset":N}`
     #[wasm_bindgen(js_name = hitTest)]
     pub fn hit_test(&self, page_num: u32, x: f64, y: f64) -> Result<String, JsValue> {
+        ensure_finite_coords(x, y)?;
         self.hit_test_native(page_num, x, y).map_err(|e| e.into())
     }
 
@@ -3317,6 +3488,7 @@ impl HwpDocument {
     /// 반환: JSON `{"hit":true/false,"isHeader":bool,"sectionIndex":N,"applyTo":N}`
     #[wasm_bindgen(js_name = hitTestHeaderFooter)]
     pub fn hit_test_header_footer(&self, page_num: u32, x: f64, y: f64) -> Result<String, JsValue> {
+        ensure_finite_coords(x, y)?;
         self.hit_test_header_footer_native(page_num, x, y)
             .map_err(|e| e.into())
     }
@@ -3379,6 +3551,7 @@ impl HwpDocument {
         x: f64,
         y: f64,
     ) -> Result<String, JsValue> {
+        ensure_finite_coords(x, y)?;
         self.hit_test_in_header_footer_native(page_num, is_header, x, y)
             .map_err(|e| e.into())
     }
@@ -3394,6 +3567,7 @@ impl HwpDocument {
         x: f64,
         y: f64,
     ) -> Result<String, JsValue> {
+        ensure_finite_coords(x, y)?;
         self.hit_test_in_header_footer_target_native(
             page_num,
             section_idx as usize,
@@ -3596,7 +3770,12 @@ impl HwpDocument {
         is_header: bool,
         direction: i32,
     ) -> Result<String, JsValue> {
-        self.navigate_header_footer_by_page_native(current_page, is_header, direction)
+        // 방향은 부호만 쓴다. 0 이면 코어의 쪽 순회가 제자리에서 끝없이 돈다.
+        let step = direction.signum();
+        if step == 0 {
+            return Ok("{\"ok\":false}".to_string());
+        }
+        self.navigate_header_footer_by_page_native(current_page, is_header, step)
             .map_err(|e| e.into())
     }
 
@@ -5651,6 +5830,7 @@ impl HwpDocument {
     /// 각주 영역 히트테스트
     #[wasm_bindgen(js_name = hitTestFootnote)]
     pub fn hit_test_footnote(&self, page_num: u32, x: f64, y: f64) -> Result<String, JsValue> {
+        ensure_finite_coords(x, y)?;
         self.hit_test_footnote_native(page_num, x, y)
             .map_err(|e| e.into())
     }
@@ -5658,6 +5838,7 @@ impl HwpDocument {
     /// 각주 내부 텍스트 히트테스트
     #[wasm_bindgen(js_name = hitTestInFootnote)]
     pub fn hit_test_in_footnote(&self, page_num: u32, x: f64, y: f64) -> Result<String, JsValue> {
+        ensure_finite_coords(x, y)?;
         self.hit_test_in_footnote_native(page_num, x, y)
             .map_err(|e| e.into())
     }
@@ -5857,6 +6038,7 @@ impl HwpDocument {
         x: f64,
         y: f64,
     ) -> Result<String, JsValue> {
+        ensure_finite_coords(x, y)?;
         self.hit_test_body_footnote_marker_native(page_num, x, y)
             .map_err(|e| e.into())
     }
@@ -5896,7 +6078,7 @@ impl HwpDocument {
             para_idx as usize,
             char_offset as usize,
             delta,
-            preferred_x,
+            finite_preferred_x(preferred_x),
             cell_ctx,
         )
         .map_err(|e| e.into())
@@ -5927,7 +6109,7 @@ impl HwpDocument {
             json_u32(options_json, "paraIdx").unwrap_or(0) as usize,
             json_u32(options_json, "charOffset").unwrap_or(0) as usize,
             json_i32(options_json, "delta").unwrap_or(0),
-            json_f64(options_json, "preferredX").unwrap_or(0.0),
+            finite_preferred_x(json_f64(options_json, "preferredX").unwrap_or(0.0)),
             cell_ctx,
         )
         .map_err(|e| e.into())
@@ -6143,6 +6325,7 @@ impl HwpDocument {
     /// 반환: `{found, sec, para, ci, formType, name, value, caption, text, bbox}`
     #[wasm_bindgen(js_name = getFormObjectAt)]
     pub fn get_form_object_at(&self, page_num: u32, x: f64, y: f64) -> Result<String, JsValue> {
+        ensure_finite_coords(x, y)?;
         self.core
             .get_form_object_at_native(page_num, x, y)
             .map_err(|e| e.into())
@@ -6907,7 +7090,7 @@ impl HwpDocument {
             path_json,
             char_offset as usize,
             delta,
-            preferred_x,
+            finite_preferred_x(preferred_x),
         )
         .map_err(|e| e.into())
     }
@@ -7226,8 +7409,12 @@ impl HwpDocument {
     /// HWPX 출처 문서는 `export_hwp_with_adapter` 를 통해 HWPX→HWP IR 매핑 어댑터를
     /// 자동 적용하여 한컴 호환성과 자기 재로드 페이지 보존을 보장한다 (#178).
     /// HWP 출처는 어댑터가 no-op 이므로 기존 동작과 동일.
+    ///
+    /// `&self` 여야 한다. 읽기 경로(`&self`)가 trap 하면 wasm 은 공유 대여를 풀지 않아
+    /// 이후 `&mut self` 호출은 모두 "recursive use of an object" 로 거절된다. 엔진이
+    /// 멈춘 뒤의 마지막 복구본 저장(engine-trap autosave)이 이 경로를 쓴다.
     #[wasm_bindgen(js_name = exportHwp)]
-    pub fn export_hwp(&mut self) -> Result<Vec<u8>, JsValue> {
+    pub fn export_hwp(&self) -> Result<Vec<u8>, JsValue> {
         self.export_hwp_with_adapter().map_err(|e| e.into())
     }
 
@@ -7867,6 +8054,11 @@ impl HwpDocument {
         use crate::document_core::helpers::{json_i32, json_str};
         use crate::model::style::Style;
 
+        // 문단의 스타일 참조(style_id)는 u8 이다. 256 번째를 넘는 스타일은 어떤 문단도
+        // 가리킬 수 없고, 적용하면 ID 가 잘려 엉뚱한 스타일이 된다.
+        if self.core.document.doc_info.styles.len() > usize::from(u8::MAX) {
+            return -1;
+        }
         let name = json_str(json, "name").unwrap_or_default();
         let english_name = json_str(json, "englishName").unwrap_or_default();
         let style_type = json_i32(json, "type").unwrap_or(0) as u8;
@@ -7904,11 +8096,8 @@ impl HwpDocument {
         self.core.document.doc_info.styles.push(new_style);
         self.core.document.doc_info.raw_stream_dirty = true;
         let new_id = (self.core.document.doc_info.styles.len() - 1) as i32;
-        // 스타일 캐시 갱신
-        self.core.styles = crate::renderer::style_resolver::resolve_styles(
-            &self.core.document.doc_info,
-            self.core.dpi,
-        );
+        // 스타일 캐시 갱신 — 로드 때와 같은 HWP3 변형 보정을 유지한다.
+        self.core.styles = self.core.resolve_document_styles();
         new_id
     }
 
@@ -7925,38 +8114,23 @@ impl HwpDocument {
         if style_id as usize >= styles.len() {
             return false;
         }
-        let sid = style_id as u8;
-        // 해당 스타일을 사용 중인 문단을 바탕글(0)로 변경
-        for section in &mut self.core.document.sections {
-            for para in &mut section.paragraphs {
-                if para.style_id == sid {
-                    para.style_id = 0;
-                }
-            }
-        }
         // 스타일 삭제 (인덱스 기반이므로 뒤의 ID가 변경됨에 주의)
         self.core.document.doc_info.styles.remove(style_id as usize);
-        // 삭제된 ID보다 큰 style_id를 가진 문단들 보정
-        for section in &mut self.core.document.sections {
-            for para in &mut section.paragraphs {
-                if para.style_id > sid {
-                    para.style_id -= 1;
-                }
-            }
+        // 본문뿐 아니라 표 셀·머리말/꼬리말·각주·글상자·바탕쪽 문단까지 참조를 옮긴다.
+        // 본문만 옮기면 안쪽 문단이 삭제된 ID 뒤의 엉뚱한 스타일을 가리킨다.
+        let changed = remap_style_refs_after_delete(&mut self.core.document, style_id);
+        // 이 경로는 이벤트를 쌓지 않는다. revision 을 올리지 않으면 스냅샷 복원(undo)이
+        // 재배정된 현재 문단을 그대로 재사용해, 스타일 목록만 돌아오고 문단은 한 칸
+        // 당겨진 ID 로 남는다.
+        for (section_idx, para_idx) in changed {
+            self.core.mark_body_paragraph_changed(section_idx, para_idx);
         }
         // next_style_id 보정
         for s in &mut self.core.document.doc_info.styles {
-            if s.next_style_id == sid {
-                s.next_style_id = 0;
-            } else if s.next_style_id > sid {
-                s.next_style_id -= 1;
-            }
+            s.next_style_id = style_ref_after_delete(u32::from(s.next_style_id), style_id) as u8;
         }
-        // 스타일 캐시 갱신
-        self.core.styles = crate::renderer::style_resolver::resolve_styles(
-            &self.core.document.doc_info,
-            self.core.dpi,
-        );
+        // 스타일 캐시 갱신 — 로드 때와 같은 HWP3 변형 보정을 유지한다.
+        self.core.styles = self.core.resolve_document_styles();
         // DocInfo(styles 목록)와 문단 style_id 가 함께 바뀌었으므로 저장 스트림을 무효화한다.
         // raw_stream_dirty 미설정 시 DocInfo 가, 섹션 raw_stream 잔존 시 본문이 각각 원본
         // 바이트로 재방출돼 스타일 삭제·문단 재배정이 .hwp 저장에서 유실된다.
@@ -9575,3 +9749,6 @@ fn base64_encode(data: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod boundary_tests;

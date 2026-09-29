@@ -606,6 +606,15 @@ impl DocumentCore {
         )
     }
 
+    /// 이벤트를 쌓지 않는 경로가 본문 문단 `para_idx` 의 IR(문단 트리 안쪽 포함)을
+    /// 바꿨음을 revision 에 남긴다.
+    ///
+    /// 빠뜨리면 스냅샷이 직전 스냅샷의 문단을 공유하고, 복원이 현재 문단을 그대로
+    /// 재사용해 undo/redo 가 바뀐 IR 을 되돌리지 못한다.
+    pub(crate) fn mark_body_paragraph_changed(&mut self, section_idx: usize, para_idx: usize) {
+        self.event_log.mark_paragraph_changed(section_idx, para_idx);
+    }
+
     /// 현재 문서의 스타일을 해소한다. 로드 때와 같은 HWP3 변형 보정을 쓴다.
     ///
     /// `resolve_styles` 는 변형 보정을 끄므로, 편집 뒤 재해소에 쓰면 HWP3 변환본의
