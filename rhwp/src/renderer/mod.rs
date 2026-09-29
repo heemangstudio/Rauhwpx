@@ -393,11 +393,7 @@ pub(crate) fn halfwidth_punct_glyph_offset(
     let (Some(ch), None) = (chars.next(), chars.next()) else {
         return None;
     };
-    if !layout::is_halfwidth_forced_punct(ch)
-        || !natural.is_finite()
-        || glyph_advance <= 0.0
-        || natural <= glyph_advance * 1.2
-    {
+    if !layout::is_halfwidth_forced_punct(ch) || !natural.is_finite() || glyph_advance <= 0.0 {
         return None;
     }
     // 여는 쪽(Unicode Ps/Pi): 잉크가 전각 칸의 오른쪽 반에 있다.
@@ -405,9 +401,6 @@ pub(crate) fn halfwidth_punct_glyph_offset(
         ch,
         '\u{2018}' | '\u{201B}' | '\u{201C}' | '\u{201F}' | '\u{300C}'
     );
-    if !opening {
-        return Some(0.0);
-    }
     // 자간(%)은 glyph 진행폭에 비례하므로 전각 폭에도 같은 비율을 적용한다.
     let font_size = if style.font_size > 0.0 {
         style.font_size
@@ -415,7 +408,23 @@ pub(crate) fn halfwidth_punct_glyph_offset(
         12.0
     };
     let spacing_scale = (1.0 + style.letter_spacing / font_size).max(0.0);
-    Some(-(natural - glyph_advance) * spacing_scale)
+    // 축소 케이스: 조판이 advance 를 자연 폭보다 좁혔다. 여는 괄호는 칸 오른쪽에
+    // 붙여야 하므로 왼쪽으로 (natural - advance) 만큼, 닫는 괄호는 원위치.
+    if natural > glyph_advance * 1.2 {
+        return if opening {
+            Some((glyph_advance - natural) * spacing_scale)
+        } else {
+            Some(0.0)
+        };
+    }
+    // 확장 케이스: 조판 advance(폰트 기록 전각)가 paint 서체 자연 폭보다 넓다 —
+    // 「」가 HFT 조판폭(전각)에 함초롬 계열 치환 글리프(반각, 잉크가 칸 안쪽에
+    // 붙는 형태)로 그려지는 경우. 여는 「 는 잉크를 칸 오른쪽에 붙인다
+    // (36-apartment-form 지원제외대상 표 실측); 닫는 」는 잉크가 칸 왼쪽이라 0.
+    if opening && layout::is_halfwidth_cjk_quote(ch) && glyph_advance > natural * 1.2 {
+        return Some((glyph_advance - natural) * spacing_scale);
+    }
+    None
 }
 
 /// run 전체에 `halfwidth_punct_glyph_offset` 을 적용한 (글자 index, glyph x 오프셋) 목록.
@@ -1406,6 +1415,14 @@ pub(crate) fn hft_substitute_faces(font_family: &str) -> &'static [&'static str]
         "한양견명조" => &["HY견명조", "HYmjrE"],
         "한양견고딕" => &["HY견고딕", "HYgtrE"],
         "신명 디나루" => &["돋움", "한컴돋움", "Haansoft Dotum"],
+        // [macOS 정합] 한컴 FontMap.dat `mapFontClass=…,DOTUM` — 돋움 계열
+        // HFT 가 미설치면 한컴은 돋움 계열 번들(한컴돋움)로 그린다.
+        // 치환이 없으면 generic sans 체인이 --font-path 의 Malgun Gothic 을
+        // 먼저 잡아 한컴 출력보다 획이 굵게 렌더된다 (09-table-004 셀 본문).
+        "한양중고딕" | "한양중고딕V" | "HY중고딕" | "중고딕" | "중고딕V" | "중고딕 간자"
+        | "중고딕 약자" | "휴먼고딕" => {
+            &["한컴돋움", "Haansoft Dotum", "함초롬돋움", "HCR Dotum"]
+        }
         _ => &[],
     }
 }
@@ -1506,6 +1523,22 @@ pub fn generic_fallback(font_family: &str) -> &'static str {
     }
     if font_family.trim() == "한양견명조" {
         return "'HY견명조','HYmjrE','Batang','바탕','Nanum Myeongjo','AppleMyungjo','Noto Serif KR','Noto Serif CJK KR','HCR Batang Ext-B','함초롬바탕 확장B','HCR Batang Ext','함초롬바탕 확장','HCR Batang','함초롬바탕','Source Han Serif K Old Hangul',serif";
+    }
+    // 한컴 FontMap.dat `mapFontClass=…,DOTUM` — 돋움 계열 HFT (한양중고딕 등)
+    // 는 미설치 시 돋움 계열 번들로 치환된다 (hft_substitute_faces 와 같은 매핑).
+    if [
+        "한양중고딕",
+        "한양중고딕V",
+        "HY중고딕",
+        "중고딕",
+        "중고딕V",
+        "중고딕 간자",
+        "중고딕 약자",
+        "휴먼고딕",
+    ]
+    .contains(&font_family.trim())
+    {
+        return "'한컴돋움','Haansoft Dotum','함초롬돋움','HCR Dotum','Malgun Gothic','맑은 고딕','Apple SD Gothic Neo','Noto Sans KR ExtraLight','Noto Sans KR','Pretendard','HCR Batang Ext-B','함초롬바탕 확장B','HCR Batang Ext','함초롬바탕 확장','HCR Batang','함초롬바탕','Source Han Serif K Old Hangul',sans-serif";
     }
     // 세리프 키워드 (한글)
     if font_family.contains("바탕") || font_family.contains("명조") || font_family.contains("궁서")

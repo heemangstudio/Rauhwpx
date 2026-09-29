@@ -932,7 +932,7 @@ pub(crate) fn tac_object_box_height_px(object_h: f64, caption: &Option<Caption>,
 
 /// 그림의 저장 크기는 바깥 여백을 제외한 그리기 영역이다. 줄 정렬에는
 /// 캡션과 위/아래 여백까지 포함하고, 실제 비트맵은 그 상자 안쪽에 놓는다.
-fn tac_picture_box_height_px(picture: &crate::model::image::Picture, dpi: f64) -> f64 {
+pub(crate) fn tac_picture_box_height_px(picture: &crate::model::image::Picture, dpi: f64) -> f64 {
     let common = &picture.common;
     tac_object_box_height_px(
         hwpunit_to_px(common.height as i32, dpi),
@@ -2396,29 +2396,17 @@ impl LayoutEngine {
         // 선행 컨트롤이 있으면: empty_seg, table[0], text_seg, table[1], ...
 
         // 4. 각 요소의 폭 계산
-        // 4a. 표 폭 계산
+        // 4a. 표 폭 계산 — colSpan 으로만 덮인 열도 폭이 있으므로
+        // span 인식 해석기(resolve_column_widths)로 총 폭을 구한다.
+        // span-1 셀만 보면 그런 열이 0 이 되어 total_width 가 작아지고
+        // Right 정렬 표가 본문 오른쪽 여백 밖으로 넘친다 (39-excavation).
         let table_widths: Vec<f64> = inline_tables
             .iter()
             .map(|(_, t)| {
-                // col_widths로부터 table_width 계산
                 let col_count = t.col_count as usize;
                 let cell_spacing = hwpunit_to_px(t.cell_spacing as i32, self.dpi);
-                let mut col_widths = vec![0.0f64; col_count];
-                for cell in &t.cells {
-                    let c = cell.col as usize;
-                    let span = cell.col_span.max(1) as usize;
-                    if c + span <= col_count {
-                        let w = hwpunit_to_px(cell.width as i32, self.dpi);
-                        if span == 1 {
-                            if w > col_widths[c] {
-                                col_widths[c] = w;
-                            }
-                        }
-                    }
-                }
-                let total: f64 = col_widths.iter().sum::<f64>()
-                    + cell_spacing * (col_count.saturating_sub(1) as f64);
-                total
+                self.resolve_column_widths(t, col_count).iter().sum::<f64>()
+                    + cell_spacing * (col_count.saturating_sub(1) as f64)
             })
             .collect();
         // [Issue #3396] 한글은 TAC 표를 "outMargin 포함 폭의 문자"로 배치한다 —
@@ -2473,15 +2461,72 @@ impl LayoutEngine {
         let total_width: f64 = seg_widths.iter().sum::<f64>()
             + table_widths.iter().sum::<f64>()
             + table_om_px.iter().map(|(l, r)| l + r).sum::<f64>();
+        // 한컴은 가운데/오른쪽 정렬 폭에서 줄 끝 공백과 마지막 글자 뒤 자간을 뺀다
+        // (일반 텍스트 줄의 line_trailing_alignment_excess 와 동일 규칙).
+        // TAC 표 뒤의 후행 공백까지 넣으면 표가 정렬 기준점보다 왼쪽으로 밀린다
+        // (39-excavation 제목 표 문단의 `<hp:t> </hp:t>`).
+        // 단, 줄의 마지막 요소가 표이면 트림하지 않는다 — 세그먼트에는 텍스트만
+        // 들어가고 표는 세그먼트 사이에 끼어드므로, 표 앞 세그먼트의 끝 공백은
+        // "줄 끝 공백"이 아니라 표 앞 공백이다 (39-excavation 결재 표의
+        // 선행 `<hp:t> </hp:t>` 가 빠지면 표가 공백 폭만큼 오른쪽으로 밀림).
+        let ends_with_table = inline_tables.len() >= segments.len();
+        let align_width = if !ends_with_table
+            && matches!(
+                alignment,
+                Alignment::Center | Alignment::Right | Alignment::Distribute
+            ) {
+            let mut space_excess = 0.0;
+            let mut trailing_ls = 0.0;
+            'trailing: for &(s, e) in segments.iter().rev() {
+                let mut saw_visible = false;
+                for ch_idx in (s..e).rev() {
+                    let ch = text_chars[ch_idx];
+                    if ch == ' ' && !saw_visible {
+                        let utf16_pos = offsets[ch_idx];
+                        let cs_id = para
+                            .char_shapes
+                            .iter()
+                            .rev()
+                            .find(|cs| cs.start_pos <= utf16_pos)
+                            .map(|cs| cs.char_shape_id as u32)
+                            .unwrap_or(char_style_id);
+                        let lang = super::super::style_resolver::detect_lang_category(' ');
+                        let ts = resolved_to_text_style(styles, cs_id, lang);
+                        space_excess += estimate_text_width(" ", &ts);
+                    } else {
+                        if !saw_visible {
+                            let utf16_pos = offsets[ch_idx];
+                            let cs_id = para
+                                .char_shapes
+                                .iter()
+                                .rev()
+                                .find(|cs| cs.start_pos <= utf16_pos)
+                                .map(|cs| cs.char_shape_id as u32)
+                                .unwrap_or(char_style_id);
+                            let mapped = map_pua_bullet_char(ch);
+                            let lang = super::super::style_resolver::detect_lang_category(mapped);
+                            let mut ts = resolved_to_text_style(styles, cs_id, lang);
+                            let spaced = estimate_text_width(&mapped.to_string(), &ts);
+                            ts.letter_spacing = 0.0;
+                            trailing_ls = spaced - estimate_text_width(&mapped.to_string(), &ts);
+                            saw_visible = true;
+                        }
+                        break 'trailing;
+                    }
+                }
+            }
+            total_width - space_excess - trailing_ls
+        } else {
+            total_width
+        };
         let available_width = col_area.width - margin_left - margin_right;
         let start_x = match alignment {
             Alignment::Center | Alignment::Distribute => {
-                col_area.x + margin_left + (available_width - total_width).max(0.0) / 2.0
+                col_area.x + margin_left + (available_width - align_width).max(0.0) / 2.0
             }
-            Alignment::Right => col_area.x + margin_left + (available_width - total_width).max(0.0),
+            Alignment::Right => col_area.x + margin_left + (available_width - align_width).max(0.0),
             _ => col_area.x + margin_left,
         };
-
         // 6. 줄 높이 계산 (line_seg 기반)
         // line_seg[0]은 표를 포함한 줄 (표 높이 반영), line_seg[1]은 텍스트 줄
         let line_height = if let Some(ls) = para.line_segs.first() {
@@ -2908,7 +2953,19 @@ impl LayoutEngine {
                 }
                 let (om_left, om_right) = table_om_px[table_idx];
                 let om_bottom = hwpunit_to_px(tbl.outer_margin_bottom as i32, self.dpi);
-                let tbl_y = (current_y + baseline_dist + om_bottom - tbl_h).max(current_y);
+                let om_top = hwpunit_to_px(tbl.outer_margin_top as i32, self.dpi);
+                // [#7150] 와 같은 규칙(합성/본문 경로와 동일): 저장 줄 높이가
+                // 표+바깥여백을 덮으면 줄 상단 + om.top 에 앉힌다. pen 을 줄 상단에
+                // 붙이는 기존 max(current_y) 는 한컴보다 om.top 만큼 위로 간다
+                // (39-excavation 결재 표).
+                let stored_lh_covers_om = (om_top > 0.0 || om_bottom > 0.0)
+                    && (tbl_h + om_top + om_bottom - 0.2..=tbl_h + om_top + om_bottom + 0.2)
+                        .contains(&line_height);
+                let tbl_y = if stored_lh_covers_om {
+                    current_y + om_top
+                } else {
+                    (current_y + baseline_dist + om_bottom - tbl_h).max(current_y)
+                };
 
                 let table_bottom = self.layout_table(
                     tree,
@@ -2961,7 +3018,15 @@ impl LayoutEngine {
                 .map(|m| m.total_height)
                 .unwrap_or_else(|| hwpunit_to_px(tbl.common.height as i32, self.dpi));
             let om_bottom = hwpunit_to_px(tbl.outer_margin_bottom as i32, self.dpi);
-            let tbl_y = (current_y + baseline_dist + om_bottom - tbl_h).max(current_y);
+            let om_top = hwpunit_to_px(tbl.outer_margin_top as i32, self.dpi);
+            let stored_lh_covers_om = (om_top > 0.0 || om_bottom > 0.0)
+                && (tbl_h + om_top + om_bottom - 0.2..=tbl_h + om_top + om_bottom + 0.2)
+                    .contains(&line_height);
+            let tbl_y = if stored_lh_covers_om {
+                current_y + om_top
+            } else {
+                (current_y + baseline_dist + om_bottom - tbl_h).max(current_y)
+            };
 
             let table_bottom = self.layout_table(
                 tree,
@@ -3798,6 +3863,18 @@ impl LayoutEngine {
         // LINE_SEG.vertical_pos 로 상한 클램프해 적용한다. 페이지 break 후 이어진 column-top
         // (para_index>0)은 종전대로 0. (Task #853)
         let is_column_top = (y - col_area.y).abs() < 1.0;
+        // CENTER/BOTTOM 정렬 셀의 저장 문단: LINE_SEG extent 가 앞 간격을 이미
+        // 포함한 블록이라 valign 보정이 spacing_before 를 흡수한다 — 여기서 재가산하면
+        // 이중 적용으로 블록 전체가 아래로 밀린다 (06-multi-table-001 p2
+        // '통합고용정책국': spacing 500HU + 저장 vpos 500HU → +6.7px 오프셋).
+        let centered_cell_stored_para = std::env::var("RHWP_NO_CENTERED_SB_RESIDUAL").is_err()
+            && cell_ctx.is_some()
+            && cell_ctx
+                .as_ref()
+                .map(|c| c.innermost().row_span > 1 && c.innermost().cell_para_index == 0)
+                .unwrap_or(false)
+            && suppress_column_top_vpos_fallback
+            && para.is_some_and(|p| !p.line_segs.is_empty());
         // [Task #1728 v2] RowBreak 셀-내 continuation 조각의 첫 가시 문단은 셀-상단이지만
         // (is_column_top) 셀-상대 인덱스>0 이라 아래 para_index==0 클램프 분기에도 못 든다.
         // 한컴은 이 첫 문단의 앞 간격(spacing_before)을 유지하므로, 토글이 켜진 이 문단만
@@ -3813,7 +3890,20 @@ impl LayoutEngine {
                         && hwpunit_to_px(seg.vertical_pos, self.dpi) >= spacing_before
                 });
         if start_line == 0 && spacing_before > 0.0 && !stored_textbox_before_is_positioned {
-            if !is_column_top
+            if centered_cell_stored_para {
+                // 저장 첫 줄 vpos 가 앞 간격을 이미 포함한 만큼만 빼고 나머지를 적용한다.
+                let vpos0_px = para
+                    .and_then(|p| p.line_segs.first())
+                    .map(|ls| hwpunit_to_px(ls.vertical_pos.max(0), self.dpi))
+                    .unwrap_or(0.0);
+                if std::env::var("RHWP_DIAG_SB").is_ok() {
+                    eprintln!(
+                        "SBRESID p{para_index} sb={spacing_before:.2} vpos0={vpos0_px:.2} y={y:.2} text={:?}",
+                        para.map(|p| p.text.chars().take(20).collect::<String>())
+                    );
+                }
+                y += (spacing_before - vpos0_px).max(0.0);
+            } else if !is_column_top
                 || keep_continuation_spacing_before
                 || (cell_ctx.is_some() && self.preserve_first_cell_spacing_before())
             {
@@ -4102,6 +4192,10 @@ impl LayoutEngine {
         let mut endnote_line_vpos_y_end: Option<f64> = None;
         let mut endnote_auto_wrap_y_end: Option<f64> = None;
         let mut prev_line_reserved_tac_picture_height: Option<f64> = None;
+        // 마지막 렌더 줄의 후행 줄간격 — 문단 테두리/배경 박스는 다음 줄과의
+        // 간격까지 덮지 않고 마지막 줄의 텍스트 영역까지만 차지한다
+        // (19-hwp_table_test 제목 단락: spacing 1440HU 를 뺀 채우기 높이 정합).
+        let mut last_line_trailing_ls = 0.0f64;
         for line_idx in start_line..end {
             let comp_line = &composed.lines[line_idx];
             let mut current_line_reserved_tac_picture_height: Option<f64> = None;
@@ -5434,6 +5528,7 @@ impl LayoutEngine {
                     } else {
                         0.0
                     };
+                    last_line_trailing_ls = trailing;
                     y + render_line_flow_height + trailing + tac_picture_label_extra
                 };
                 let next_y = endnote_line_vpos_y_end
@@ -5445,10 +5540,13 @@ impl LayoutEngine {
                 }
                 y = next_y;
             } else if is_cell_last_line && cell_ctx.is_some() {
+                last_line_trailing_ls = 0.0;
                 y += line_flow_height;
             } else if skip_advance_empty_line {
+                last_line_trailing_ls = 0.0;
                 // no advance
             } else {
+                last_line_trailing_ls = render_line_spacing_px;
                 y += render_line_flow_height + render_line_spacing_px + tac_picture_label_extra;
             }
             prev_line_reserved_tac_picture_height = current_line_reserved_tac_picture_height;
@@ -5484,12 +5582,15 @@ impl LayoutEngine {
                 } else {
                     (col_area.x, col_area.width)
                 };
+                // 박스 하단은 마지막 줄의 후행 줄간격을 뺀다 — 한컴은 문단
+                // 채우기를 다음 줄과의 간격이 아닌 마지막 텍스트 영역까지만 칠한다.
+                let box_bottom = y - last_line_trailing_ls;
                 self.para_border_ranges.borrow_mut().push((
                     para_border_fill_id,
                     box_x,
                     bg_y_start,
                     box_w,
-                    y,
+                    box_bottom,
                     top_inset,
                     bottom_inset,
                     is_partial_start,
@@ -6635,6 +6736,7 @@ impl LayoutEngine {
                                         cell_para_index: 0,
                                         text_direction: 0,
                                         line_wrap_squeeze: false,
+                                        row_span: 1,
                                     });
                                     c
                                 });
@@ -8459,6 +8561,7 @@ mod saved_native_cell_vpos_tests {
                 cell_para_index: 0,
                 text_direction: 0,
                 line_wrap_squeeze: false,
+                row_span: 1,
             }],
         };
         let area = LayoutRect {
@@ -8800,7 +8903,12 @@ pub fn map_pua_bullet_char(ch: char) -> char {
         0x76 => '\u{2756}', // ❖ Black diamond minus white X
         0x77 => '\u{2B25}', // ⬥ Black medium diamond
         // 체크/별/점 (0x9E~0xAF)
-        0x9E => '\u{00B7}', // · Middle dot
+        // [macOS 정합] 0x9E 는 표준 문자로 치환하지 않는다 — 한컴(macOS)은
+        // 요청 face 에 없는 PUA 기호를 글리프를 가진 번들 face 로 그린다
+        // (29-civil-petition: U+F09E 를 Haansoft Batang 0.458em 으로 실측).
+        // 미리 '·' 로 치환하면 symbol face(굴림체 전각 ·) 폭으로 조판돼 과대.
+        // 글꼴 체인에 글리프가 없는 환경의 대체는 paint 단계
+        // `pua_missing_glyph_substitute` 에 위임한다.
         0x9F => '\u{2022}', // • Bullet
         // [Task #509] 0xA0 → · U+00B7 (Middle dot) — 한컴 PDF 정답지 시각 정합.
         // ▪ U+25AA (Black small square) 영역 아님 (synam-001 사용 영역).

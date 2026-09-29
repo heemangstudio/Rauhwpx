@@ -2202,45 +2202,65 @@ impl SvgRenderer {
     /// shape: 0=실선, 1=긴점선, 2=점선, 3=일점쇄선, 4=이점쇄선, 5=긴파선,
     ///        6=원형점, 7=이중선, 8=가는+굵은, 9=굵은+가는, 10=삼중선
     fn draw_line_shape(&mut self, x1: f64, y1: f64, x2: f64, y2: f64, color: &str, shape: u8) {
+        self.draw_line_shape_fs(x1, y1, x2, y2, color, shape, 0.0)
+    }
+
+    /// 선 모양 그리기. `fs`(글자 크기 px)가 0보다 크면 이중선/삼중선의
+    /// 간격·두께를 em 상대로 그린다 — macOS 한컴 실측 기하:
+    /// 얇은 선 ≈0.043em, 굵은 선 ≈0.112em, 선 간격 ≈0.124em
+    /// (28-agritech-review SLIM_THICK, 33-access-pass SOLID 정합).
+    fn draw_line_shape_fs(
+        &mut self,
+        x1: f64,
+        y1: f64,
+        x2: f64,
+        y2: f64,
+        color: &str,
+        shape: u8,
+        fs: f64,
+    ) {
+        let thin_w = if fs > 0.0 { (fs * 0.043).max(0.4) } else { 0.5 };
+        let thick_w = if fs > 0.0 { fs * 0.112 } else { 1.2 };
+        let line_gap = if fs > 0.0 { fs * 0.124 } else { 2.0 };
         match shape {
             7 => {
                 // 이중선
                 self.output.push_str(&format!(
-                    "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" stroke-width=\"0.7\"/>\n",
-                    x1, y1 - 1.0, x2, y2 - 1.0, color));
+                    "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" stroke-width=\"{}\"/>\n",
+                    x1, y1, x2, y2, color, thin_w));
                 self.output.push_str(&format!(
-                    "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" stroke-width=\"0.7\"/>\n",
-                    x1, y1 + 1.0, x2, y2 + 1.0, color));
+                    "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" stroke-width=\"{}\"/>\n",
+                    x1, y1 + line_gap, x2, y2 + line_gap, color, thin_w));
             }
             8 => {
                 // 가는+굵은 이중선
                 self.output.push_str(&format!(
-                    "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" stroke-width=\"0.5\"/>\n",
-                    x1, y1 - 1.2, x2, y2 - 1.2, color));
+                    "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" stroke-width=\"{}\"/>\n",
+                    x1, y1, x2, y2, color, thin_w));
                 self.output.push_str(&format!(
-                    "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" stroke-width=\"1.2\"/>\n",
-                    x1, y1 + 0.8, x2, y2 + 0.8, color));
+                    "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" stroke-width=\"{}\"/>\n",
+                    x1, y1 + line_gap, x2, y2 + line_gap, color, thick_w));
             }
             9 => {
                 // 굵은+가는 이중선
                 self.output.push_str(&format!(
-                    "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" stroke-width=\"1.2\"/>\n",
-                    x1, y1 - 0.8, x2, y2 - 0.8, color));
+                    "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" stroke-width=\"{}\"/>\n",
+                    x1, y1, x2, y2, color, thick_w));
                 self.output.push_str(&format!(
-                    "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" stroke-width=\"0.5\"/>\n",
-                    x1, y1 + 1.2, x2, y2 + 1.2, color));
+                    "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" stroke-width=\"{}\"/>\n",
+                    x1, y1 + line_gap, x2, y2 + line_gap, color, thin_w));
             }
             10 => {
                 // 삼중선
                 self.output.push_str(&format!(
-                    "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" stroke-width=\"0.5\"/>\n",
-                    x1, y1 - 1.5, x2, y2 - 1.5, color));
+                    "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" stroke-width=\"{}\"/>\n",
+                    x1, y1, x2, y2, color, thin_w));
                 self.output.push_str(&format!(
-                    "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" stroke-width=\"0.5\"/>\n",
-                    x1, y1, x2, y2, color));
+                    "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" stroke-width=\"{}\"/>\n",
+                    x1, y1 + line_gap, x2, y2 + line_gap, color, thick_w));
                 self.output.push_str(&format!(
-                    "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" stroke-width=\"0.5\"/>\n",
-                    x1, y1 + 1.5, x2, y2 + 1.5, color));
+                    "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" stroke-width=\"{}\"/>\n",
+                    x1, y1 + line_gap * 2.0, x2, y2 + line_gap * 2.0, color, thin_w));
             }
             11 => {
                 // 물결선
@@ -2308,8 +2328,8 @@ impl SvgRenderer {
                     _ => "", // 0=실선
                 };
                 self.output.push_str(&format!(
-                    "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" stroke-width=\"1\"{}/>\n",
-                    x1, y1, x2, y2, color, dasharray));
+                    "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" stroke-width=\"{}\"{}/>\n",
+                    x1, y1, x2, y2, color, thin_w.max(0.5), dasharray));
             }
         }
     }
@@ -2942,15 +2962,17 @@ impl Renderer for SvgRenderer {
             };
             let ul_y = match style.underline {
                 UnderlineType::Top => y - font_size + 1.0,
-                _ => y + 2.0,
+                // macOS 한컴 실측: 밑줄 첫 선 = baseline + ~0.167em
+                _ => y + font_size * 0.167,
             };
-            self.draw_line_shape(
+            self.draw_line_shape_fs(
                 x,
                 ul_y,
                 x + text_width,
                 ul_y,
                 &ul_color,
                 style.underline_shape,
+                font_size,
             );
         }
 
@@ -2963,13 +2985,14 @@ impl Renderer for SvgRenderer {
             } else {
                 color.to_string()
             };
-            self.draw_line_shape(
+            self.draw_line_shape_fs(
                 x,
                 strike_y,
                 x + text_width,
                 strike_y,
                 &st_color,
                 style.strike_shape,
+                font_size,
             );
         }
 

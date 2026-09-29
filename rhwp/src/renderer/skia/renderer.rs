@@ -1275,6 +1275,22 @@ impl SkiaLayerRenderer {
                             }
                         }
                         PaintOp::Equation { bbox, equation } => {
+                            // 한컴은 자연 폭이 저장 폭보다 짧을 때 수식 전체를 가로로
+                            // 늘려 상자를 채운다 (02-eq-01 eq37 실측: 내용 ~261pt를
+                            // 선언 270.9pt까지 x~1.036 배율로 늘림).
+                            let natural_w = equation.layout_box.width;
+                            let stretch = if natural_w > 0.0 && bbox.width > natural_w * 1.005 {
+                                bbox.width / natural_w
+                            } else {
+                                1.0
+                            };
+                            let scaled = stretch > 1.0001;
+                            if scaled {
+                                canvas.save();
+                                canvas.translate((bbox.x as f32, 0.0));
+                                canvas.scale((stretch as f32, 1.0));
+                                canvas.translate((-bbox.x as f32, 0.0));
+                            }
                             render_equation(
                                 canvas,
                                 &self.font_mgr,
@@ -1289,6 +1305,9 @@ impl SkiaLayerRenderer {
                                 &equation.font_name,
                                 &equation.version_info,
                             );
+                            if scaled {
+                                canvas.restore();
+                            }
                         }
                         PaintOp::FormObject { bbox, form } => {
                             self.draw_form_control(canvas, *bbox, form);

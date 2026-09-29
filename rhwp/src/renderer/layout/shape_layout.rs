@@ -411,7 +411,7 @@ fn ole_chart_fallback_label(message: impl AsRef<str>, bin_data_id: u32) -> Strin
 
 /// composed 문단에서 `char_pos` 가 속한 줄 인덱스를 찾는다.
 /// (줄 경계는 `ComposedLine::char_start` 기준 — para.text 의 절대 char 인덱스)
-fn composed_line_index_for_char(composed: &ComposedParagraph, char_pos: usize) -> usize {
+pub(super) fn composed_line_index_for_char(composed: &ComposedParagraph, char_pos: usize) -> usize {
     let mut idx = 0usize;
     for (i, line) in composed.lines.iter().enumerate() {
         if line.char_start <= char_pos {
@@ -426,7 +426,7 @@ fn composed_line_index_for_char(composed: &ComposedParagraph, char_pos: usize) -
 /// `line_index` 가 주어지면 해당 줄에 속한 런만 누적한다.
 /// 글상자 인라인 개체는 자신이 속한 줄 기준으로 x 를 잡아야 하며, 모든 줄의
 /// 텍스트 폭을 합산하면 개체가 글상자 오른쪽 밖으로 밀려나 클립된다.
-fn measure_composed_text_range_width(
+pub(super) fn measure_composed_text_range_width(
     composed: &ComposedParagraph,
     styles: &ResolvedStyleSet,
     start: usize,
@@ -2533,7 +2533,14 @@ impl LayoutEngine {
             // u32 로 보존한 값이면(예: curSz height 4294965455 = -1841) 확대율로
             // 사용하지 않는다. 이를 양수로 해석하면 sh_ratio 가 수백만 배가 되어
             // 내부 글꼴이 0px 에 가깝게 붕괴한다.
-            if min_ratio > 1.5 && !parent_treat_as_char {
+            //
+            // [39-excavation] 텍스트가 이미 현재 도형 폭으로 조판된 경우
+            // (drawText lastWidth ≈ curSz.width) 한컴은 글꼴을 축소하지 않고
+            // 원래 크기로 렌더한다 — 스케일 게이트는 다른 폭으로 작성된 글상자에만 적용.
+            let text_authored_at_current = sa.current_width > 0
+                && text_box.max_width > 0
+                && (text_box.max_width as i64 - sa.current_width as i64).abs() <= 4;
+            if min_ratio > 1.5 && !parent_treat_as_char && !text_authored_at_current {
                 let inv = (2.0 / max_ratio).min(1.0);
                 let mut local = styles.clone();
                 for cs in local.char_styles.iter_mut() {
@@ -2634,6 +2641,7 @@ impl LayoutEngine {
                                 cell_para_index: tb_para_idx,
                                 text_direction: 0,
                                 line_wrap_squeeze: false,
+                                row_span: 1,
                             });
                             p
                         },
@@ -2826,20 +2834,9 @@ impl LayoutEngine {
                     + textbox_vpos_px(first_ls.vertical_pos, textbox_vpos_origin_hu, self.dpi);
                 para_y = vpos_y.max(para_y);
             }
-            // 인라인(treat_as_char) 컨트롤의 총 폭 계산
-            let tb_inline_width: f64 = para
-                .controls
-                .iter()
-                .map(|ctrl| match ctrl {
-                    Control::Picture(pic) if pic.common.treat_as_char => {
-                        hwpunit_to_px(pic.common.width as i32, self.dpi)
-                    }
-                    Control::Shape(shape) if shape.common().treat_as_char => {
-                        hwpunit_to_px(shape.common().width as i32, self.dpi)
-                    }
-                    _ => 0.0,
-                })
-                .sum();
+            // 인라인(treat_as_char) 컨트롤의 자리 진행은 composed.tac_controls 의
+            // run_tacs 경로가 이미 반영한다 — 여기서 총 폭을 첫 줄 오프셋으로 더하면
+            // 같은 폭이 줄 선두에 이중 계상되어 본문이 개체 폭만큼 오른쪽으로 밀린다.
             let para_col_area = LayoutRect {
                 y: para_y,
                 ..inner_area
@@ -2854,6 +2851,7 @@ impl LayoutEngine {
                         cell_para_index: tb_para_idx,
                         text_direction: 0,
                         line_wrap_squeeze: false,
+                        row_span: 1,
                     });
                     p
                 },
@@ -2873,7 +2871,7 @@ impl LayoutEngine {
                 Some(cell_ctx),
                 true,
                 is_last_para,
-                tb_inline_width,
+                0.0,
                 None,
                 Some(para),
                 None,
@@ -2931,15 +2929,35 @@ impl LayoutEngine {
                     }
                     Control::Picture(pic) => {
                         if pic.common.treat_as_char {
-                            total_inline_width += hwpunit_to_px(pic.common.width as i32, self.dpi);
+                            // 인라인 개체의 점유 폭은 상자 + 양쪽 여백 (emit 분기의
+                            // advance 와 동일해야 정렬 기준이 맞는다)
+                            let pic_w = hwpunit_to_px(pic.common.width as i32, self.dpi);
+                            let pm_l = hwpunit_to_px(pic.common.margin.left as i32, self.dpi);
+                            let pm_r = hwpunit_to_px(pic.common.margin.right as i32, self.dpi);
+                            total_inline_width += pic_w.min(inner_area.width) + pm_l + pm_r;
                             max_inline_height = max_inline_height
                                 .max(hwpunit_to_px(pic.common.height as i32, self.dpi));
                         }
                     }
                     Control::Equation(eq) => {
-                        total_inline_width += hwpunit_to_px(eq.common.width as i32, self.dpi);
+                        total_inline_width += hwpunit_to_px(
+                            crate::renderer::equation::occupied_width_hwp(eq),
+                            self.dpi,
+                        );
                         max_inline_height =
                             max_inline_height.max(hwpunit_to_px(eq.common.height as i32, self.dpi));
+                    }
+                    Control::Table(t) => {
+                        if t.common.treat_as_char {
+                            // TAC 표 점유 폭 = 선언 폭 + 바깥여백 좌/우
+                            // (paragraph_layout 의 advance `tac_w + om.l + om.r` 와 동일)
+                            let tw = hwpunit_to_px(t.common.width as i32, self.dpi);
+                            let om_l = hwpunit_to_px(t.outer_margin_left as i32, self.dpi);
+                            let om_r = hwpunit_to_px(t.outer_margin_right as i32, self.dpi);
+                            total_inline_width += tw + om_l + om_r;
+                            max_inline_height = max_inline_height
+                                .max(hwpunit_to_px(t.common.height as i32, self.dpi));
+                        }
                     }
                     _ => {}
                 }
@@ -3114,6 +3132,7 @@ impl LayoutEngine {
                             cell_para_index: pi,
                             text_direction: 0,
                             line_wrap_squeeze: false,
+                            row_span: 1,
                         });
                         let empty_map = std::collections::HashMap::new();
                         self.layout_shape_object(
@@ -3150,6 +3169,7 @@ impl LayoutEngine {
                                     cell_para_index: pi,
                                     text_direction: 0,
                                     line_wrap_squeeze: false,
+                                    row_span: 1,
                                 });
                                 p
                             },
@@ -3166,16 +3186,32 @@ impl LayoutEngine {
                             } else {
                                 pic_h
                             };
+                            let pm_l = hwpunit_to_px(pic.common.margin.left as i32, self.dpi);
+                            let pm_r = hwpunit_to_px(pic.common.margin.right as i32, self.dpi);
                             let row_dy = place_inline_slot(
                                 &mut inline_x,
                                 &mut text_cursor,
                                 ctrl_text_pos,
-                                clamped_w,
+                                clamped_w + pm_l + pm_r,
                                 clamped_h,
                             );
+                            // TAC 개체 세로 정렬: 개체 baseline(상자 높이의 85%)이
+                            // 텍스트 baseline 에 온다 — bullet icon·제목 별표 실측.
+                            let pm_t = hwpunit_to_px(pic.common.margin.top as i32, self.dpi);
+                            let pic_box_h =
+                                super::paragraph_layout::tac_picture_box_height_px(pic, self.dpi);
+                            let pic_line = composed_para
+                                .map(|c| composed_line_index_for_char(c, ctrl_text_pos))
+                                .unwrap_or(0);
+                            let line_baseline = composed_para
+                                .and_then(|c| c.lines.get(pic_line))
+                                .map(|l| hwpunit_to_px(l.baseline_distance, self.dpi))
+                                .unwrap_or(0.0);
                             let pic_container = LayoutRect {
-                                x: inline_x,
-                                y: inline_y + row_dy,
+                                x: inline_x + pm_l,
+                                // 개체 높이 누적 커서(inline_y)가 아닌 문단의 실제
+                                // 줄 시작(para_start_y) 기준 — 도형/표 분기와 동일
+                                y: para_start_y + row_dy + line_baseline - pic_box_h * 0.85 + pm_t,
                                 width: clamped_w,
                                 height: clamped_h,
                             };
@@ -3193,7 +3229,7 @@ impl LayoutEngine {
                                 Some(ctrl_idx_in_para),
                                 Some(&pic_cell_ctx),
                             );
-                            inline_x += clamped_w;
+                            inline_x += clamped_w + pm_l + pm_r;
                         } else {
                             // 절대 위치 이미지
                             let pic_container = LayoutRect {
@@ -3245,6 +3281,7 @@ impl LayoutEngine {
                                     cell_para_index: pi,
                                     text_direction: 0,
                                     line_wrap_squeeze: false,
+                                    row_span: 1,
                                 });
                                 p
                             },
@@ -3327,6 +3364,7 @@ impl LayoutEngine {
                             cell_para_index: pi,
                             text_direction: 0,
                             line_wrap_squeeze: false,
+                            row_span: 1,
                         });
                         // 호스트 문단의 정렬 속성
                         let host_align = styles
@@ -3334,13 +3372,50 @@ impl LayoutEngine {
                             .get(para.para_shape_id as usize)
                             .map(|ps| ps.alignment)
                             .unwrap_or(Alignment::Left);
+                        // treat_as_char 표는 텍스트 흐름 내 슬롯 위치에 놓는다 —
+                        // 선행 텍스트 폭만큼 inline_x 를 전진시킨 뒤 그 자리를 표의
+                        // 왼쪽으로 쓴다 (정렬은 위 inline_x 초기값이 반영).
+                        let (table_area, table_y, table_align) = if table.common.treat_as_char {
+                            let tbl_w = hwpunit_to_px(table.common.width as i32, self.dpi);
+                            let tbl_h = hwpunit_to_px(table.common.height as i32, self.dpi);
+                            // TAC 표는 바깥여백(outMargin)이 흐름 폭에 포함된다 —
+                            // 박스 자체는 흐름 위치 + 왼쪽 여백에 그린다.
+                            let om_l = hwpunit_to_px(table.outer_margin_left as i32, self.dpi);
+                            let om_r = hwpunit_to_px(table.outer_margin_right as i32, self.dpi);
+                            // 한컴은 세로도 outMargin 만큼 표를 아래로 밀어 놓는다
+                            // (11-table-in-tbox 실측: top=140hu ≈ 1.4pt 시프트).
+                            // 행 점유 높이에도 상하 여백을 포함해야 다음 행이 겹치지 않는다.
+                            let om_t = hwpunit_to_px(table.outer_margin_top as i32, self.dpi);
+                            let om_b = hwpunit_to_px(table.outer_margin_bottom as i32, self.dpi);
+                            let row_dy = place_inline_slot(
+                                &mut inline_x,
+                                &mut text_cursor,
+                                ctrl_text_pos,
+                                tbl_w + om_l + om_r,
+                                tbl_h + om_t + om_b,
+                            );
+                            let slot_x = inline_x + om_l;
+                            inline_x += tbl_w + om_l + om_r;
+                            (
+                                LayoutRect {
+                                    x: slot_x,
+                                    width: (inner_area.x + inner_area.width - slot_x).max(0.0),
+                                    ..inner_area
+                                },
+                                para_start_y + row_dy + om_t,
+                                // 슬롯 x 가 정렬을 이미 반영 — 표 자체는 왼쪽 기준으로 놓는다
+                                Alignment::Left,
+                            )
+                        } else {
+                            (inner_area, para_start_y, host_align)
+                        };
                         inline_y = self.layout_embedded_table(
                             tree,
                             &mut textbox_node,
                             table,
                             styles,
-                            &inner_area,
-                            para_start_y,
+                            &table_area,
+                            table_y,
                             Some((
                                 section_index,
                                 para_index,
@@ -3348,7 +3423,7 @@ impl LayoutEngine {
                                 ctrl_idx_in_para,
                             )),
                             bin_data_content,
-                            host_align,
+                            table_align,
                         );
                     }
                     _ => {}
@@ -3618,6 +3693,7 @@ impl LayoutEngine {
                             cell_para_index: ci.cell_para_index,
                             text_direction,
                             line_wrap_squeeze: false,
+                            row_span: 1,
                         });
                         p
                     },

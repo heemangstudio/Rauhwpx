@@ -304,19 +304,15 @@ pub fn compose_paragraph(para: &Paragraph) -> ComposedParagraph {
                     Some((pos, s.common().width as i32, i))
                 }
                 Control::Equation(eq) if eq.common.treat_as_char => {
-                    // 인라인 수식의 줄 전진 = min(선언 폭, paint 폭+양쪽 여백).
-                    // 내용이 선언 폭보다 짧으면 선언 폭의 자리를 차지하고, 넘치면
-                    // paint 폭만큼만 간다 (eq-002 실측: `f(n)`은 선언 18.51pt→17.9pt
-                    // 전진인 반면 72.98pt 개체는 paint 68.8pt 까지만).
-                    let painted = super::equation::fitted_width_hwp(eq);
-                    Some((
-                        pos,
-                        (painted as i32)
-                            .saturating_add(i32::from(eq.common.margin.left))
-                            .saturating_add(i32::from(eq.common.margin.right))
-                            .min(eq.common.width as i32),
-                        i,
-                    ))
+                    // 인라인 수식의 줄 전진 = 선언(개체 상자) 폭 + 양쪽 outMargin.
+                    // 여백은 선언 폭 바깥에 더해진다 (eq-002 실측: `=8` 선언 12.01pt 개체는
+                    // 13.13pt 전진 = 선언+여백, tab 경계 7840/8000HWU 격자와 일치).
+                    // 한컴은 내용이 상자보다 작아도 상자 자리를 유지한다
+                    // (eq-002 `f(n)` 전진 1788HWU ≈ 선언 1677+여백 112).
+                    let w = (eq.common.width as i32)
+                        .saturating_add(i32::from(eq.common.margin.left))
+                        .saturating_add(i32::from(eq.common.margin.right));
+                    Some((pos, w, i))
                 }
                 Control::Form(f) => Some((pos, f.width as i32, i)),
                 Control::Table(t)
@@ -1317,6 +1313,44 @@ fn find_control_text_positions(para: &Paragraph) -> Vec<usize> {
     crate::document_core::find_control_text_positions(para)
 }
 
+/// 문단 안의 treat_as_char 표를 "배치 줄" 단위로 묶어 돌려준다.
+///
+/// 같은 줄에 나란히 조판되는 TAC 표는 세로 높이가 겹치므로, 중첩 표가 차지하는
+/// 세로 범위를 계산할 때 줄별 최댓값을 써야 한다. 단순 합산은 옆으로 놓인 표를
+/// 아래로 쌓은 것처럼 과대 측정한다 (40-fire-report 본문 첫 셀: 4×2 표 + 6×5 표가
+/// 한 줄에 나란히 → 합산 197.3pt 대신 줄 최댓값 117.9pt).
+///
+/// 반환: 같은 줄의 control 인덱스 그룹 목록 (문서 순서 보존).
+/// `comp.tac_controls` 에 없는 표(비인라인 TAC, 비-TAC)는 포함하지 않는다 —
+/// 호출측이 각각 별도 그룹으로 취급해 합산한다.
+pub fn tac_table_ctrls_by_line(para: &Paragraph, comp: &ComposedParagraph) -> Vec<Vec<usize>> {
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut last_line: Option<usize> = None;
+    for &(pos, _w, ci) in &comp.tac_controls {
+        let is_tac_table = matches!(
+            para.controls.get(ci),
+            Some(Control::Table(t)) if t.common.treat_as_char
+        );
+        if !is_tac_table {
+            continue;
+        }
+        // tac_offsets_for_line 과 동일 규칙: pos ∈ [char_start, 다음 줄 char_start)
+        // — rposition 은 char_start <= pos 인 마지막 줄을 고른다.
+        let line_idx = comp
+            .lines
+            .iter()
+            .rposition(|line| line.char_start <= pos)
+            .unwrap_or(0);
+        if last_line == Some(line_idx) {
+            groups.last_mut().unwrap().push(ci);
+        } else {
+            groups.push(vec![ci]);
+            last_line = Some(line_idx);
+        }
+    }
+    groups
+}
+
 fn is_render_inline_control(ctrl: &Control) -> bool {
     match ctrl {
         Control::Picture(pic) => pic.common.treat_as_char,
@@ -2059,7 +2093,12 @@ fn compact_tac_marker_stored_lines_stale(
         styles,
         marker_width_px,
     );
-    let stale = probe.lines.len() > composed.lines.len();
+    // 저장줄이 TAC 표식 폭까지 합산해도 컬럼의 +5% 관용 안에 들어가면 한컴도
+    // 그 줄을 그대로 유지한 것이다 — ±2~3%의 미세 초과로 재래핑하면
+    // Center/Right 정렬 줄의 x 가 통째로 이동한다 (issue_1486 hwpx_sample2
+    // p29 로고 문단: 620.0+115.7=735.7 ≤ 718.1×1.05).
+    let stale = probe.lines.len() > composed.lines.len()
+        && first_text_width + marker_width_px > inner_width_px * 1.05;
     if stale && std::env::var("RHWP_DIAG_REWRAP").is_ok() {
         eprintln!(
             "DIAG_REWRAP tac-host inner={:.0} first={:.1} marker={:.1} stored={} fresh={} text='{}'",
@@ -3040,7 +3079,7 @@ fn pua_enclosed_border_type(ch: char) -> Option<u8> {
     None
 }
 
-fn pua_plain_text_display(ch: char) -> Option<&'static str> {
+pub(crate) fn pua_plain_text_display(ch: char) -> Option<&'static str> {
     match ch as u32 {
         0xF012B => Some("(인)"),
         // 2025 행정업무운영 편람 p08 TOC bullet. Hancom PDF renders this
@@ -3065,6 +3104,17 @@ fn pua_plain_text_display(ch: char) -> Option<&'static str> {
 pub fn pua_missing_glyph_substitute(ch: char) -> Option<char> {
     match ch as u32 {
         0xF02FC => Some('\u{25BA}'), // ► BLACK RIGHT-POINTING POINTER
+        // 한컴 PUA 선문자 — 본문 표시 문자열은 원문을 유지하고(Task #826 폭 정정),
+        // 글꼴 체인에 글리프가 없을 때만 box-drawing 으로 대체한다.
+        0xF080F => Some('\u{2501}'), // ━ BOX DRAWINGS HEAVY HORIZONTAL
+        0xF0811 => Some('\u{250C}'), // ┌ BOX DRAWINGS LIGHT DOWN AND RIGHT
+        0xF0817 => Some('\u{2514}'), // └ BOX DRAWINGS LIGHT UP AND RIGHT
+        0xF081A => Some('\u{2500}'), // ─ BOX DRAWINGS LIGHT HORIZONTAL
+        0xF0827 => Some('\u{25A0}'), // ■ BLACK SQUARE
+        // 한컴(macOS)은 U+F09E 를 글리프 보유 face(Haansoft Batang)로 그린다.
+        // 글리프가 없는 환경에서는 · 를 원문 advance 에 맞춰 대체한다
+        // (29-civil-petition: symbol face 굴림체 의 전각 · 가 아닌 0.458em 측정).
+        0xF09E => Some('\u{00B7}'), // · MIDDLE DOT
         _ => None,
     }
 }
@@ -3108,6 +3158,16 @@ pub fn expand_pua_display_text(text: &str) -> String {
             out.push_str(replacement);
         } else if let Some(jamos) = map_pua_old_hangul(ch) {
             out.extend(jamos.iter().copied());
+        } else if matches!(
+            ch,
+            '\u{F080F}' | '\u{F0811}' | '\u{F0817}' | '\u{F081A}' | '\u{F0827}'
+        ) {
+            // [Task #826 폭 정정] 한컴은 이 선문자를 자체 PUA 글리프(반각 0.485em,
+            // 함초롬돋움)로 그린다. 표준 box-drawing 문자로 치환하면 요청 서체의
+            // 실측 advance(맑은 고딕 ━ = 1em)가 반영돼 줄이 셀 끝까지 벌어진다
+            // (28-agritech-review). 원문을 유지하고, 글리프 부재 환경의 대체는
+            // paint 단계 `pua_missing_glyph_substitute` 에 위임한다.
+            out.push(ch);
         } else {
             out.push(super::layout::map_pua_bullet_char(ch));
         }

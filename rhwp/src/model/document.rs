@@ -295,6 +295,33 @@ impl Document {
             .map(|(_, d)| d.as_slice())
     }
 
+    /// HWPX `settings.xml` 의 `PrintInfo/PrintCropMark` 여부.
+    ///
+    /// 한컴은 이 설정이 1인 문서를 출력/PDF보낼 때 종이 네 모서리에
+    /// 1cm 재단 표시(모서리 십자)를 그린다. 항목이 없으면 미적용으로 본다.
+    pub fn print_crop_marks(&self) -> bool {
+        let Some(bytes) = self.hwpx_aux_entry("settings.xml") else {
+            return false;
+        };
+        let Ok(xml) = std::str::from_utf8(bytes) else {
+            return false;
+        };
+        let Some(key) = xml.find("name=\"PrintCropMark\"") else {
+            return false;
+        };
+        let Some(open_end) = xml[key..].find('>').map(|i| key + i + 1) else {
+            return false;
+        };
+        let Some(close) = xml[open_end..].find('<').map(|i| open_end + i) else {
+            return false;
+        };
+        xml[open_end..close]
+            .trim()
+            .parse::<i64>()
+            .map(|v| v != 0)
+            .unwrap_or(false)
+    }
+
     /// [#2403 Stage 1] 레이아웃 호환 정책 질의 표면.
     ///
     /// 기존 분기의 1:1 파생 — `hwp3_layout` = `is_hwp3_variant`,

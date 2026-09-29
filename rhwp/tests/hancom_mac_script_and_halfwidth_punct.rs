@@ -63,13 +63,23 @@ fn superscript_advance_shrinks_with_its_glyph() {
 }
 
 #[test]
-fn halfwidth_opening_bracket_keeps_full_glyph_right_aligned() {
+fn halfwidth_opening_bracket_keeps_full_glyph_fullwidth_cell() {
     let svg = page_svg("samples/hwpx/el-school-001.hwpx", 0);
     let (bracket_x, next_x, attrs) = following(&text_elements(&svg), "「", "초");
-    assert!(
-        !attrs.contains("textLength"),
-        "전각 `「` glyph 를 반각 칸에 찌그러뜨리면 안 된다: {attrs}"
-    );
+    // 한컴 macOS 는 `「` 를 전각 칸으로 조판한다 (35-voucher·38-cheongyang·passport
+    // 실측 = 1em 슬롯). 찌그러뜨리지 않는다는 규칙은 유지하되, 전각 폭을 박는
+    // textLength(≈1em)는 허용하고 반각 폭(≈0.5em)만 금지한다.
+    if let Some(tl) = attrs
+        .split("textLength=\"")
+        .nth(1)
+        .and_then(|s| s.split('\"').next())
+    {
+        let tl: f64 = tl.parse().unwrap_or(0.0);
+        assert!(
+            tl > 21.3333 * 0.7,
+            "전각 `「` glyph 를 반각 칸에 찌그러뜨리면 안 된다: {attrs}"
+        );
+    }
     let gap = next_x - bracket_x;
     let hancom = (162.00 - 141.12) * PT_TO_PX;
     assert!(

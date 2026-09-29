@@ -285,6 +285,9 @@ struct RealFaceHmtx {
     line_height_ratio: f64,
     ascender_ratio: f64,
     line_gap_ratio: f64,
+    /// hhea descender (font units, 음수). 쪽 번호 baseline 같은 수직
+    /// 배치 보정이 실폰트 descent 를 필요로 할 때 쓴다.
+    descender: i16,
     /// codepoint → horizontal advance (font units). cmap 에 없는 문자는
     /// 키가 없다 — 호출자는 베이크드 메트릭 경로로 폴백한다.
     advance_by_char: std::collections::HashMap<u32, u16>,
@@ -422,6 +425,16 @@ pub fn custom_font_face_available(name: &str) -> bool {
     })
 }
 
+/// --font-path/RHWP_FONT_PATH/번들 face 가 하나라도 등록됐는가.
+/// 비어 있으면(--font-path 없는 단위 테스트 등) face 유무·Bold variant
+/// 판정이 불가하므로 호출자는 판정 의존 로직을 건너뛰어야 한다.
+pub fn custom_faces_loaded() -> bool {
+    CUSTOM_FACE_VARIANTS
+        .read()
+        .map(|sources| !sources.is_empty())
+        .unwrap_or(false)
+}
+
 /// `name` face 의 등록 파일 경로와 TTC face index — 측정·페인트 경로가
 /// Typeface 를 직접 만들 때 쓴다. face 미등록이면 None.
 pub fn custom_face_source(name: &str) -> Option<(PathBuf, u32)> {
@@ -465,12 +478,33 @@ fn real_face_hmtx(file: &Path, index: u32) -> Option<std::sync::Arc<RealFaceHmtx
             / face.units_per_em() as f64,
         ascender_ratio: face.ascender() as f64 / face.units_per_em() as f64,
         line_gap_ratio: face.line_gap() as f64 / face.units_per_em() as f64,
+        descender: face.descender(),
         advance_by_char,
     });
     if let Ok(mut cache) = REAL_FACE_HMTX.write() {
         cache.entry(key).or_insert_with(|| metrics.clone());
     }
     Some(metrics)
+}
+
+/// `name` face 가 custom source 에 등록돼 있으면 (bold, italic) 요청으로
+/// 선택되는 variant 가 실제 Bold(weight>=600)인지 반환. 미등록이면 None.
+/// 합성 진하게(stroke) 판정에 쓴다 — Bold face 가 실제로 그려지는 경우에만
+/// 한컴은 advance 를 벌리지 않는다.
+pub fn custom_face_resolves_bold(name: &str, bold: bool, italic: bool) -> Option<bool> {
+    let alias = normalize_face_alias(name)?;
+    let variant = CUSTOM_FACE_VARIANTS.read().ok().and_then(|sources| {
+        sources.get(&alias).and_then(|faces| {
+            faces
+                .iter()
+                .min_by_key(|face| {
+                    face.weight.abs_diff(if bold { 700 } else { 400 })
+                        + 1000 * u16::from(face.italic != italic)
+                })
+                .cloned()
+        })
+    })?;
+    Some(variant.weight >= 600)
 }
 
 /// 실재 face 파일의 문자 advance 를 em 비율로 반환한다 (hmtx/unitsPerEm).
@@ -546,6 +580,28 @@ pub fn custom_face_ascender_ratio(name: &str, bold: bool, italic: bool) -> Optio
     })?;
     let ratio = real_face_hmtx(&variant.file, variant.index)?.ascender_ratio;
     (ratio > 0.0).then_some(ratio)
+}
+
+/// 실재 face 파일의 hhea descender 를 em 비율(양수)로 반환한다.
+/// face 미등록 시 None — 호출자가 폴백 상수를 쓴다. 한컴이 실폰트
+/// descent 로 쪽 번호 baseline 을 붙이는 것과 정합한다
+/// (06-multi-table-001: 굴림 desc 0.1416em, 정답지 baseline +0.95pt).
+pub fn custom_face_descent_em(name: &str, bold: bool, italic: bool) -> Option<f64> {
+    let alias = normalize_face_alias(name)?;
+    let variant = CUSTOM_FACE_VARIANTS.read().ok().and_then(|sources| {
+        sources.get(&alias).and_then(|faces| {
+            faces
+                .iter()
+                .min_by_key(|face| {
+                    face.weight.abs_diff(if bold { 700 } else { 400 })
+                        + 1000 * u16::from(face.italic != italic)
+                })
+                .cloned()
+        })
+    })?;
+    let metrics = real_face_hmtx(&variant.file, variant.index)?;
+    (metrics.units_per_em > 0 && metrics.descender < 0)
+        .then(|| -metrics.descender as f64 / metrics.units_per_em as f64)
 }
 
 /// `fontdb` 에 조달 순서대로 폰트를 적재한다.

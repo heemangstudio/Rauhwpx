@@ -325,6 +325,10 @@ pub struct ResolvedStyleSet {
     pub hwp3_variant: bool,
     /// '쪽 번호'(Page Number) 스타일의 글자 모양 ID — 쪽 번호 매기기 글꼴/크기 기준.
     pub page_number_char_shape: Option<u32>,
+    /// 문서 기본 영문 글꼴(font_faces[LATIN][0]). '쪽 번호' 스타일이 없는
+    /// 문서에서 쪽 번호를 그릴 때 한컴은 이 기본 글꼴을 쓴다
+    /// (40-fire-report: 스타일 부재 → HCRDotum=함초롬돋움 출력 정합).
+    pub default_latin_font_family: String,
 }
 
 /// DocInfo 참조 테이블을 해소된 스타일 목록으로 변환한다.
@@ -354,6 +358,16 @@ pub fn resolve_styles_with_variant(
         bullets,
         hwp3_variant: is_hwp3_variant,
         page_number_char_shape: page_number_char_shape(doc_info),
+        default_latin_font_family: doc_info
+            .font_faces
+            .get(1)
+            .and_then(|fonts| fonts.first())
+            .map(|font| {
+                let name =
+                    resolve_font_substitution(&font.name, font.alt_type, 1).unwrap_or(&font.name);
+                name.to_string()
+            })
+            .unwrap_or_else(|| "함초롬돋움".to_string()),
     }
 }
 
@@ -456,11 +470,12 @@ pub fn detect_lang_category(ch: char) -> usize {
     }
     let cp = ch as u32;
     match cp {
-        // [#2070] ㆍ(아래아, U+318D)는 한컴이 USER 스크립트 폰트로 렌더한다.
-        // 80168 실문서(user=9='명조', 반각 오라클)와 사다리 v3(user=한양신명조,
-        // 전각 실측)를 동시에 만족하는 유일 분류. 호환 자모 블록이지만
-        // 한글(0)이 아니라 사용자(6)로 분류해 user 폰트를 태운다.
-        0x318D => 6,
+        // [macOS 정합] ㆍ(아래아, U+318D)는 macOS 한컴이 한글 슬롯 글꼴로 그린다
+        // (28-agritech-review: user='명조' charPr 안에서도 HY견고딕 출력 실측;
+        // 33/35/38 도 모두 주변 한글과 같은 글꼴). Windows 시절 #2070 의
+        // user(6) 분류는 Mac 실측과 충돌하므로 한글(0)로 되돌린다.
+        // 호환 자모 블록 전체가 이미 한글(0)이지만, 재수정 방지를 위해 명시한다.
+        0x318D => 0,
 
         // 한국어: Hangul Jamo, Compatibility Jamo, Syllables
         0x1100..=0x11FF | 0x3130..=0x318F | 0xAC00..=0xD7AF |
@@ -487,13 +502,28 @@ pub fn detect_lang_category(ch: char) -> usize {
 
         // 기호: 그리스 문자, 수학 기호, 화살표, 기술 기호, 도형, Dingbats 등
         0x0370..=0x03FF | 0x1F00..=0x1FFF |
+        // Letterlike Symbols(2100-214F, ℓ·℃ 등)도 기호 슬롯이다 —
+        // 한컴(macOS)은 한양신명조 런의 ℓ 를 기호 글꼴(한양견고딕 치환
+        // HCRBatang)로 굽는다 (27-vehicle-log `( ℓ)` 실측).
+        0x2100..=0x214F |
         0x2190..=0x21FF | 0x2200..=0x22FF | 0x2300..=0x23FF |
         0x2500..=0x257F | 0x2580..=0x259F | 0x25A0..=0x25FF |
         0x2600..=0x26FF | 0x2700..=0x27BF |
         // 원 숫자, 괄호 숫자 등
         0x2460..=0x24FF |
-        // CJK 기호/구두점 (한자 구두점이 아닌 기호 영역)
-        0x3000..=0x303F => 5,
+        // ※(U+203B): 한컴(macOS) PDF 실측 — 기호 슬롯 글꼴로 그린다
+        // (11-table-in-tbox: 기호 슬롯 한양신명조 HFT → 함초롬바탕 대체로
+        // 0.77em 어드밴스; 한글 슬롯 휴먼명조의 1.0em 이 아니다).
+        0x203B |
+        // CJK 기호/구두점 중 괄호·겹낫표 계열이 아닌 기호 영역
+        0x3000..=0x3007 | 0x3012..=0x3013 | 0x301C |
+        0x3020..=0x303F => 5,
+
+        // CJK 괄호/겹낫표(〈〉《》「」『』【】〔〕…): 한컴(macOS) PDF 실측
+        // (11-table-in-tbox) — 기호 슬롯 한양신명조→함초롬바탕 대체의 반각
+        // 0.5em 이 아니라 한자 슬롯 한양신명조(HFT) 원형 전각 1.0em으로
+        // 그려진다(추출 불가 글꼴 = HFT 경로).
+        0x3008..=0x3011 | 0x3014..=0x301B | 0x301D..=0x301F => 2,
 
         // 공백/제어문자 → 한국어(기본값)로 반환
         // 호출부에서 "이전 문자의 언어를 따르는" 로직으로 처리

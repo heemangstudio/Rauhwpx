@@ -10,7 +10,8 @@ use crate::renderer::composer::{
     decode_pua_overlap_number, expand_pua_render_text, pua_to_display_text, CharOverlapInfo,
 };
 use crate::renderer::layout::{
-    compute_char_positions, compute_glyph_positions, is_halfwidth_forced_punct, split_into_clusters,
+    compute_char_positions, compute_glyph_positions, is_halfwidth_forced_punct,
+    is_hancom_blank_pua_marker, split_into_clusters,
 };
 use crate::renderer::render_tree::BoundingBox;
 use crate::renderer::{clamp_tab_leader_end_x, TextStyle};
@@ -79,6 +80,73 @@ pub(super) fn draw_text_run(
     let mut positions = vec![Point::default(); glyphs.len()];
     font.get_pos(&glyphs, &mut positions, Some(origin));
     // draw_str 은 글리프 안티앨리어싱을 paint 가 아니라 font edging 으로 정한다.
+    let mut outline_paint = paint.clone();
+    outline_paint.set_anti_alias(font.edging() != font::Edging::Alias);
+    for (outline, position) in outlines.iter().zip(&positions) {
+        if let Some(path) = outline {
+            canvas.draw_path(&path.with_offset(*position), &outline_paint);
+        }
+    }
+}
+
+/// `draw_text_run` 과 같되 각 글립의 진행 스텝을 x_scale 배로 포갠다.
+/// 글립 자형은 그대로 두고 배치만 좁힌다 — 한컴 수식기(HYhwpEQ)는 run 안
+/// 글립을 자연 advance ×0.9 로 식자한다(02-eq-01 공식 PDF 실측:
+/// 한글 pitch 0.9em 고정, 숫자 0.45em, '%' 0.75em).
+/// 벡터 캔버스(PDF)에는 위치 지정 글리프 드로잉으로 보낸다.
+pub(super) fn draw_text_run_tracked(
+    canvas: &Canvas,
+    text: &str,
+    origin: impl Into<Point>,
+    font: &Font,
+    paint: &Paint,
+    x_scale: f64,
+) {
+    if (x_scale - 1.0).abs() < f64::EPSILON {
+        draw_text_run(canvas, text, origin, font, paint);
+        return;
+    }
+    let origin = origin.into();
+    let glyphs = font.str_to_glyphs_vec(text);
+    if glyphs.is_empty() {
+        return;
+    }
+    let mut positions = vec![Point::default(); glyphs.len()];
+    font.get_pos(&glyphs, &mut positions, Some(origin));
+    let sx = x_scale as f32;
+    for position in positions.iter_mut() {
+        position.x = origin.x + (position.x - origin.x) * sx;
+    }
+    if canvas.peek_pixels().is_none() {
+        canvas.draw_glyphs_at(
+            &glyphs[..],
+            &positions[..],
+            Point::new(0.0, 0.0),
+            font,
+            paint,
+        );
+        return;
+    }
+    let mut bounds = vec![Rect::default(); glyphs.len()];
+    font.get_bounds(&glyphs, &mut bounds, None);
+    let mut outlines = Vec::with_capacity(glyphs.len());
+    for (glyph, bounds) in glyphs.iter().zip(&bounds) {
+        match font.get_path(*glyph) {
+            Some(path) => outlines.push(Some(path)),
+            // 공백처럼 잉크가 없는 글리프는 윤곽선도 없다.
+            None if bounds.is_empty() => outlines.push(None),
+            None => {
+                canvas.draw_glyphs_at(
+                    &glyphs[..],
+                    &positions[..],
+                    Point::new(0.0, 0.0),
+                    font,
+                    paint,
+                );
+                return;
+            }
+        }
+    }
     let mut outline_paint = paint.clone();
     outline_paint.set_anti_alias(font.edging() != font::Edging::Alias);
     for (outline, position) in outlines.iter().zip(&positions) {
@@ -165,7 +233,7 @@ const SANS_CJK_FALLBACK_FAMILIES: &[&str] = &[
     "sans-serif",
 ];
 
-const SERIF_CJK_FALLBACK_FAMILIES: &[&str] = &[
+pub(super) const SERIF_CJK_FALLBACK_FAMILIES: &[&str] = &[
     "Noto Serif KR",
     "Noto Serif CJK KR",
     "Nanum Myeongjo",
@@ -807,40 +875,50 @@ impl SkiaTextReplay<'_> {
                     }
                     canvas.draw_line((x1, y), (x2, y), &line_paint);
                 };
+                // [macOS 실측] 밑줄 기하 — 첫(위쪽) 선은 baseline + ~0.167em,
+                // 얇은 선 두께 ≈0.043em(폰트 post ulThick), 굵은 선 ≈0.112em,
+                // 선 간격 ≈0.124em. 28-agritech-review(SLIM_THICK 14pt)와
+                // 33-access-pass(SOLID 17pt), 26/11 계열 SOLID 실측 정합.
+                // 종전 고정 px(+2.0, w1.0) 는 글자 크기에 따라 어긋났다.
+                let thin_w = (font_size * 0.043).max(0.4);
+                let thick_w = font_size * 0.112;
+                let line_gap = font_size * 0.124;
                 let draw_line_shape =
                     |x1: f32, y: f32, x2: f32, color: Color, shape: u8| match shape {
                         7 => {
-                            draw_styled_line(x1, y - 1.0, x2, color, 0.7, &[], false);
-                            draw_styled_line(x1, y + 1.0, x2, color, 0.7, &[], false);
+                            draw_styled_line(x1, y, x2, color, thin_w, &[], false);
+                            draw_styled_line(x1, y + line_gap, x2, color, thin_w, &[], false);
                         }
                         8 => {
-                            draw_styled_line(x1, y - 1.2, x2, color, 0.5, &[], false);
-                            draw_styled_line(x1, y + 0.8, x2, color, 1.2, &[], false);
+                            draw_styled_line(x1, y, x2, color, thin_w, &[], false);
+                            draw_styled_line(x1, y + line_gap, x2, color, thick_w, &[], false);
                         }
                         9 => {
-                            draw_styled_line(x1, y - 0.8, x2, color, 1.2, &[], false);
-                            draw_styled_line(x1, y + 1.2, x2, color, 0.5, &[], false);
+                            draw_styled_line(x1, y, x2, color, thick_w, &[], false);
+                            draw_styled_line(x1, y + line_gap, x2, color, thin_w, &[], false);
                         }
                         10 => {
-                            draw_styled_line(x1, y - 1.5, x2, color, 0.5, &[], false);
-                            draw_styled_line(x1, y, x2, color, 0.5, &[], false);
-                            draw_styled_line(x1, y + 1.5, x2, color, 0.5, &[], false);
+                            draw_styled_line(x1, y, x2, color, thin_w, &[], false);
+                            draw_styled_line(x1, y + line_gap, x2, color, thick_w, &[], false);
+                            draw_styled_line(x1, y + line_gap * 2.0, x2, color, thin_w, &[], false);
                         }
-                        1 => draw_styled_line(x1, y, x2, color, 1.0, &[3.0, 3.0], false),
-                        2 => draw_styled_line(x1, y, x2, color, 1.0, &[1.0, 2.0], false),
-                        3 => draw_styled_line(x1, y, x2, color, 1.0, &[6.0, 2.0, 1.0, 2.0], false),
+                        1 => draw_styled_line(x1, y, x2, color, thin_w, &[3.0, 3.0], false),
+                        2 => draw_styled_line(x1, y, x2, color, thin_w, &[1.0, 2.0], false),
+                        3 => {
+                            draw_styled_line(x1, y, x2, color, thin_w, &[6.0, 2.0, 1.0, 2.0], false)
+                        }
                         4 => draw_styled_line(
                             x1,
                             y,
                             x2,
                             color,
-                            1.0,
+                            thin_w,
                             &[6.0, 2.0, 1.0, 2.0, 1.0, 2.0],
                             false,
                         ),
-                        5 => draw_styled_line(x1, y, x2, color, 1.0, &[8.0, 4.0], false),
-                        6 => draw_styled_line(x1, y, x2, color, 1.0, &[0.1, 2.5], true),
-                        _ => draw_styled_line(x1, y, x2, color, 1.0, &[], false),
+                        5 => draw_styled_line(x1, y, x2, color, thin_w, &[8.0, 4.0], false),
+                        6 => draw_styled_line(x1, y, x2, color, thin_w, &[0.1, 2.5], true),
+                        _ => draw_styled_line(x1, y, x2, color, thin_w, &[], false),
                     };
 
                 let cluster_advance = |char_idx: usize, cluster: &str| -> f32 {
@@ -869,13 +947,13 @@ impl SkiaTextReplay<'_> {
                         return 0.0;
                     };
                     let (natural, _) = font.measure_str(cluster, None);
-                    crate::renderer::halfwidth_punct_glyph_offset(
+                    let off = crate::renderer::halfwidth_punct_glyph_offset(
                         cluster,
                         f64::from(natural) * f64::from(ratio),
                         end_x - start_x,
                         style,
-                    )
-                    .unwrap_or(0.0) as f32
+                    );
+                    off.unwrap_or(0.0) as f32
                 };
                 let is_middle_dot = |cluster: &str| cluster == "\u{00B7}";
                 // 합성 진하게: 해석된 서체에 Bold face 가 없으면 한컴처럼 fill+stroke 로
@@ -989,6 +1067,11 @@ impl SkiaTextReplay<'_> {
                                 canvas.draw_str(&substitute, (0.0, 0.0), &font, &text_paint);
                                 canvas.restore();
                             }
+                        } else if single_char(cluster).is_some_and(|ch| {
+                            !has_explicit_glyph(ch) && is_hancom_blank_pua_marker(ch)
+                        }) {
+                            // 한컴 PUA 빈 글리프 마커 (함초롬 폭표 = 0폭): tofu 대신
+                            // 잉크 없이 advance 만 소비한다 (U+F03FF 서식 마커 등).
                         } else if let Some(font) = font_for_text(cluster, font_size) {
                             let char_x = bbox.x as f32
                                 + char_positions.get(*char_idx).copied().unwrap_or(0.0) as f32
@@ -1057,7 +1140,9 @@ impl SkiaTextReplay<'_> {
                     };
                     let line_y = match style.underline {
                         UnderlineType::Top => y as f32 - font_size + 1.0,
-                        _ => y as f32 + 2.0,
+                        // macOS 한컴 실측: 밑줄 첫 선 = baseline + ~0.167em
+                        // (14pt SLIM_THICK +2.36pt, 17pt SOLID +2.88pt, 11pt +1.8pt).
+                        _ => y as f32 + font_size * 0.167,
                     };
                     draw_line_shape(
                         bbox.x as f32,

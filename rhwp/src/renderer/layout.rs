@@ -876,6 +876,9 @@ pub struct CellPathEntry {
     /// 셀 lineWrap=SQUEEZE — 텍스트가 좌우 여백 안쪽(1mm 인셋 존)까지 넘칠 때
     /// 자간 압축으로 맞추는 한컴 셀 모드
     pub line_wrap_squeeze: bool,
+    /// 셀 행 병합 수 (병합 셀은 저장 LINE_SEG 가 단편 셀 프레임 기준이라
+    /// 문단 앞 간격 정규화가 필요 — paragraph_layout spacing_before 참조)
+    pub row_span: u16,
 }
 
 /// 표 셀 내부 문단 편집용 컨텍스트 (중첩 표 경로 지원)
@@ -2317,6 +2320,9 @@ pub struct LayoutEngine {
     /// HWPX `Preview/PrvImage.png` 원본. HMapsi OLE처럼 일반 preview stream이 없는
     /// legacy 객체의 제한적 첫 페이지 fallback에 사용한다.
     hwpx_page_preview: std::cell::RefCell<Option<PagePreviewImage>>,
+    /// HWPX `settings.xml` 의 PrintCropMark 설정 — 켜지면 종이 네 모서리에
+    /// 1cm 재단 표시를 그린다 (19-hwp_table_test).
+    print_crop_marks: std::cell::Cell<bool>,
     /// [Task #1949] 셀 콘텐츠 유닛(cell_units) 메모이제이션. 거대 셀(수천 문단·중첩표)이
     /// RowBreak 로 여러 페이지에 걸칠 때, 각 페이지의 컷 판정이 같은 셀의 units 를
     /// 반복 재계산해 O(pages×cell) 로 폭증한다. cell_units 는 (cell,table,styles)의 순수
@@ -2365,9 +2371,9 @@ pub(crate) use text_measurement::{
     active_shaping_face_available, clear_measure_caches, compute_char_positions,
     compute_glyph_positions, enter_resolved_shaping_fonts, estimate_text_width,
     estimate_text_width_unrounded, extract_tab_leaders_with_extended, find_next_tab_stop,
-    is_cjk_char, is_halfwidth_cjk_quote, is_halfwidth_forced_punct, registered_glyph_advance,
-    resolved_to_text_style, split_into_clusters, with_resolved_shaping_fonts, ResolvedShapingFont,
-    ResolvedShapingFontScope,
+    is_cjk_char, is_halfwidth_cjk_quote, is_halfwidth_forced_punct, is_hancom_blank_pua_marker,
+    registered_glyph_advance, resolved_to_text_style, split_into_clusters,
+    with_resolved_shaping_fonts, ResolvedShapingFont, ResolvedShapingFontScope,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use text_measurement::{enter_measure_font_paths, MeasureFontPathsScope};
@@ -2424,6 +2430,7 @@ impl LayoutEngine {
             )),
             keep_continuation_column_top_spacing_before: std::cell::Cell::new(false),
             hwpx_page_preview: std::cell::RefCell::new(None),
+            print_crop_marks: std::cell::Cell::new(false),
             cell_units_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             table_nested_text_flag_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             resolved_shaping_fonts: std::cell::RefCell::new(Vec::new()),
@@ -2805,6 +2812,11 @@ impl LayoutEngine {
 
     pub fn set_hwp3_origin_flow_spacing_before(&self, enabled: bool) {
         self.use_hwp3_origin_flow_spacing_before.set(enabled);
+    }
+
+    /// HWPX `settings.xml` PrintCropMark 값 — 종이 모서리 재단 표시 여부.
+    pub fn set_print_crop_marks(&self, enabled: bool) {
+        self.print_crop_marks.set(enabled);
     }
 
     /// HWPX page preview 이미지를 렌더 fallback용으로 설정한다.
@@ -3888,6 +3900,7 @@ impl LayoutEngine {
         layout: &PageLayoutInfo,
         footer_area: &LayoutRect,
         font_size: f64,
+        style: &TextStyle,
     ) -> f64 {
         // 자동 쪽 번호 줄은 꼬리말 영역 *바닥* 에 붙고, 영역이 줄보다 낮으면 영역 위쪽에
         // 맞춘다. 기준선 = max(영역 위 + 1.176em, 영역 바닥 − 0.234em).
@@ -3900,12 +3913,31 @@ impl LayoutEngine {
         // 참고 문서 12건 모두 ±1pt 이내 (한컴 Windows 의 함초롬돋움 쪽 번호는 +0.8pt).
         const PAGE_NUMBER_TOP_BASELINE_EM: f64 = 1.176;
         const PAGE_NUMBER_BOTTOM_DESCENT_EM: f64 = 0.234;
+        // 영역 바닥 붙임은 baseline 이 바닥에서 실폰트 descent 만큼 위에 오게 한다
+        // (한컴 정합: 쪽 번호는 바닥에서 descender 폭만큼 띄운다). 종전 고정값
+        // 0.234em 은 함초롬계열(HAN*)의 실측치라 굴림·궁서 등 0.1416em 폰트를
+        // ~1pt 높게 놓았다 — 06-multi-table-001 p2 정답지 굴림 −2 - baseline
+        // 826.32pt vs 기존 825.37. face 미등록 시 종전 상수로 폴백.
+        #[cfg(not(target_arch = "wasm32"))]
+        let descent_em = if std::env::var("RHWP_NO_FACE_DESCENT").is_ok() {
+            PAGE_NUMBER_BOTTOM_DESCENT_EM
+        } else {
+            crate::renderer::font_paths::custom_face_descent_em(
+                &style.font_family,
+                style.bold,
+                style.italic,
+            )
+            .unwrap_or(PAGE_NUMBER_BOTTOM_DESCENT_EM)
+        };
+        // wasm 은 설치 폰트 레지스트리가 없어 실폰트 descent 해석 불가 — 종전 상수.
+        #[cfg(target_arch = "wasm32")]
+        let descent_em = PAGE_NUMBER_BOTTOM_DESCENT_EM;
         // 한컴 꼬리말 칸 = [footer_area.y, footer_area.y + margin_footer],
         // margin_footer = page_height - footer_area.bottom (용지 아래 − 아래 여백 위치).
         let margin_footer = (layout.page_height - (footer_area.y + footer_area.height)).max(0.0);
         let area_bottom = footer_area.y + margin_footer;
         let baseline = (footer_area.y + font_size * PAGE_NUMBER_TOP_BASELINE_EM)
-            .max(area_bottom - font_size * PAGE_NUMBER_BOTTOM_DESCENT_EM);
+            .max(area_bottom - font_size * descent_em);
         // 호출부는 줄 상단을 받아 run baseline(= font_size)을 더한다.
         baseline - font_size
     }
@@ -3915,6 +3947,7 @@ impl LayoutEngine {
         layout: &PageLayoutInfo,
         page_border_fill: Option<&PageBorderFill>,
         font_size: f64,
+        style: &TextStyle,
     ) -> Option<f64> {
         let pbf = page_border_fill.filter(|p| p.border_fill_id > 0)?;
         let paper_based = matches!(pbf.basis, PageBorderBasis::PaperBased);
@@ -3922,7 +3955,7 @@ impl LayoutEngine {
             return None;
         }
         // 꼬리말 영역 세로 중앙 baseline (기존 footer 중앙 공식과 동일).
-        Some(self.footer_page_number_y(layout, &layout.footer_area, font_size))
+        Some(self.footer_page_number_y(layout, &layout.footer_area, font_size, style))
     }
 
     fn build_page_borders(
@@ -4021,6 +4054,55 @@ impl LayoutEngine {
                     create_border_line_nodes(tree, &borders[1], bx + bw, by, bx + bw, by + bh);
                 for n in right_nodes {
                     tree.root.children.push(n);
+                }
+
+                // settings.xml 의 PrintCropMark=1 — 한컴은 종이 네 모서리에
+                // 1cm 십자(재단 표시)를 그린다 (19-hwp_table_test).
+                if self.print_crop_marks.get() {
+                    let tick = hwpunit_to_px(2835, self.dpi); // 1cm
+                    let tick_w = hwpunit_to_px(12, self.dpi).max(0.3); // 0.12pt (한컴 측정치)
+                                                                       // 오른쪽 모서리 표시는 래스터 너비(ceil) 자리에 둔다 — 한컴 PDF 는
+                                                                       // 종이 너비보다 작게 잘린 캔버스에 그려 우측 세로 팔이 거의 안 보인다
+                                                                       // (19-hwp_table_test 공식 1653px vs 우리 ceil 1654px).
+                    let right_x = layout.page_width.ceil();
+                    for (cx, cy) in [
+                        (0.0, 0.0),
+                        (right_x, 0.0),
+                        (0.0, layout.page_height),
+                        (right_x, layout.page_height),
+                    ] {
+                        for (x1, y1, x2, y2) in [
+                            (cx - tick, cy, cx + tick, cy),
+                            (cx, cy - tick, cx, cy + tick),
+                        ] {
+                            let id = tree.next_id();
+                            tree.root.children.push(RenderNode::new(
+                                id,
+                                RenderNodeType::Line(LineNode::new(
+                                    x1,
+                                    y1,
+                                    x2,
+                                    y2,
+                                    LineStyle {
+                                        // 재단 표시는 0.12pt 극세선 — 종이 가장자리에 걸린
+                                        // 팔은 래스터 시 반토막 이하로 옅어져야 한컴 PDF 와
+                                        // 정합하는데, 현 렌더러는 선 폭 AA 를 과대 적용하므로
+                                        // 중간 회색으로 유효 농도를 맞춘다.
+                                        color: 0x00808080,
+                                        width: tick_w,
+                                        dash: StrokeDash::Solid,
+                                        ..Default::default()
+                                    },
+                                )),
+                                BoundingBox::new(
+                                    x1.min(x2),
+                                    y1.min(y2),
+                                    (x2 - x1).abs().max(tick_w),
+                                    (y2 - y1).abs().max(tick_w),
+                                ),
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -4128,7 +4210,37 @@ impl LayoutEngine {
                 let mut mp_y_offset = paper_area.y;
                 for (pi, para) in mp.paragraphs.iter().enumerate() {
                     let has_controls = !para.controls.is_empty();
-                    if has_controls {
+                    // 컨트롤이 전부 AutoNumber(쪽번호 필드)인 문단은 도형 배치 대상이
+                    // 없다 — 텍스트 문단 경로로 조판해 현재 쪽번호를 그린다
+                    // (19-hwp_table_test 바탕쪽 autoNum(PAGE)).
+                    let all_autonum = has_controls
+                        && para
+                            .controls
+                            .iter()
+                            .all(|c| matches!(c, Control::AutoNumber(_)));
+                    // 저장 vpos 가 바탕쪽 본문 영역을 벗어난 쪽번호 문단은
+                    // 한컴이 쪽번호 기본 위치(본문 우측 상단)로 옮겨 그린다
+                    // (19-hwp_table_test: vpos=120000HU → '1' 우측 상단).
+                    let autonum_oob = all_autonum
+                        && para
+                            .line_segs
+                            .first()
+                            .map(|ls| {
+                                paper_area.y + hwpunit_to_px(ls.vertical_pos, self.dpi)
+                                    >= body_area.y + body_area.height
+                            })
+                            .unwrap_or(false);
+                    if all_autonum && autonum_oob {
+                        self.layout_master_page_autonum(
+                            tree,
+                            &mut mp_node,
+                            para,
+                            styles,
+                            layout,
+                            page_number,
+                            section_index,
+                        );
+                    } else if has_controls && !all_autonum {
                         for (ci, ctrl) in para.controls.iter().enumerate() {
                             let layer = self.render_layer_from_master_control(
                                 ctrl,
@@ -4271,10 +4383,10 @@ impl LayoutEngine {
                                 );
                             }
                         }
-                    } else if !para.text.is_empty() {
-                        // 컨트롤 없는 텍스트 문단: vpos 기반 y 위치 사용
-                        let mut comp = compose_paragraph(para);
-                        self.substitute_hf_field_markers(&mut comp, page_number);
+                    } else if !para.text.is_empty() || all_autonum {
+                        // 컨트롤 없는 텍스트 문단(또는 쪽번호 필드만 가진 문단):
+                        // vpos 기반 y 위치 사용
+                        let mut comp = self.compose_header_footer_paragraph(para, page_number);
                         // 바탕쪽 탭은 레이아웃 위치 지정용이므로 탭 리더를 그리지 않음
                         comp.tab_extended.clear();
                         // LINE_SEG vpos로 문단 시작 y 결정 (빈 문단 건너뜀 보상)
@@ -4317,6 +4429,84 @@ impl LayoutEngine {
                 self.current_page_number.set(previous_page_number);
             }
         }
+    }
+
+    /// 바탕쪽에 쪽번호 필드(AutoNumber)만 담긴 문단 — 한컴은 저장된 위치가
+    /// 본문 영역을 벗어나면 쪽번호 기본 위치(본문 영역 우측 상단)로 옮겨
+    /// 기본 글꼴(HCR 돋움 계열) 크기로 현재 쪽번호를 출력한다
+    /// (19-hwp_table_test: official 은 HCRDotum 9pt, 본문 우측 상단).
+    fn layout_master_page_autonum(
+        &self,
+        tree: &mut PageRenderTree,
+        mp_node: &mut RenderNode,
+        para: &Paragraph,
+        styles: &ResolvedStyleSet,
+        layout: &PageLayoutInfo,
+        page_number: u32,
+        section_index: usize,
+    ) {
+        let mut comp = self.compose_header_footer_paragraph(para, page_number);
+        comp.tab_extended.clear();
+        let display: String = comp
+            .lines
+            .iter()
+            .flat_map(|l| l.runs.iter())
+            .map(|r| r.display_text.clone().unwrap_or_else(|| r.text.clone()))
+            .collect::<String>()
+            .trim()
+            .to_string();
+        if display.is_empty() {
+            return;
+        }
+        let mut ts = comp
+            .lines
+            .iter()
+            .flat_map(|l| l.runs.iter())
+            .next()
+            .map(|r| resolved_to_text_style(styles, r.char_style_id, r.lang_index))
+            .unwrap_or_default();
+        ts.font_family = "함초롬돋움".to_string();
+        ts.font_size = hwpunit_to_px(900, self.dpi);
+        let text_w = estimate_text_width(&display, &ts);
+        let line_h = ts.font_size * 1.3;
+        let baseline = line_h * 0.85;
+        // 쪽번호 기본 위치: 문자 하단이 용지 상단 여백(header_area.y)에 닿고
+        // 오른쪽 끝은 본문 우단에 맞춘다 (19-hwp_table_test 정합).
+        let body_area = &layout.body_area;
+        let x = body_area.x + body_area.width - text_w;
+        let y = layout.header_area.y - line_h;
+        let run_id = tree.next_id();
+        let run_node = RenderNode::new(
+            run_id,
+            RenderNodeType::TextRun(TextRunNode {
+                text: display.clone(),
+                style: ts,
+                char_shape_id: None,
+                para_shape_id: Some(para.para_shape_id),
+                section_index: Some(section_index),
+                para_index: None,
+                char_start: None,
+                cell_context: None,
+                is_para_end: false,
+                is_line_break_end: false,
+                rotation: 0.0,
+                is_vertical: false,
+                char_overlap: None,
+                border_fill_id: 0,
+                baseline,
+                field_marker: FieldMarkerType::None,
+                display_text: None,
+            }),
+            BoundingBox::new(x, y, text_w, line_h),
+        );
+        let line_id = tree.next_id();
+        let mut line_node = RenderNode::new(
+            line_id,
+            RenderNodeType::TextLine(TextLineNode::new(line_h, baseline)),
+            BoundingBox::new(x, y, text_w, line_h),
+        );
+        line_node.children.push(run_node);
+        mp_node.children.push(line_node);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -4721,8 +4911,12 @@ impl LayoutEngine {
                     }
                     style
                 }
+                // '쪽 번호' 스타일이 없는 문서 — 한컴은 문서 기본 영문 글꼴
+                // (font_faces[LATIN][0])로 그린다 (40-fire-report: 스타일 부재 →
+                // HCRDotum=함초롬돋움 출력 정합. 종전 바탕 고정값은 폭이 넓게
+                // 측정되어 장식 대시가 양옆으로 벗어났다).
                 None => TextStyle {
-                    font_family: "바탕".to_string(),
+                    font_family: styles.default_latin_font_family.clone(),
                     font_size: PAGE_NUMBER_PT * self.dpi / 72.0,
                     color: 0x000000,
                     ..Default::default()
@@ -4768,7 +4962,7 @@ impl LayoutEngine {
                 .unwrap_or(false);
             let is_footer = !matches!(pnp.position, 1..=3 | 7 | 9);
             let footer_center = if is_footer {
-                self.footer_page_number_y(layout, target_area, font_size)
+                self.footer_page_number_y(layout, target_area, font_size, &style)
             } else {
                 target_area.y + target_area.height / 2.0 + font_size / 3.0
             };
@@ -4776,7 +4970,7 @@ impl LayoutEngine {
             // 보정 (target_area 가 footer_area 와 다를 수 있는 경우 정합).
             // 그 외(paper 기준/테두리 없음/hide_border)는 기존 footer_center.
             let y = if is_footer {
-                self.page_number_baseline_y(layout, page_border_fill, font_size)
+                self.page_number_baseline_y(layout, page_border_fill, font_size, &style)
                     .filter(|_| border_drawn)
                     .unwrap_or(footer_center)
             } else {
@@ -8028,8 +8222,14 @@ impl LayoutEngine {
                 // 작은 offset 은 흡수되어 둘이 겹친다. 제목이 그려지는 위치(선행 exclusion 아래로
                 // 밀린 para 흐름) + 제목 줄높이 아래로 표를 내려 겹침을 막는다. 큰 offset 으로 표가
                 // 이미 더 아래면 max 라 영향 없다.
+                // host 텍스트가 이전 쪽에 pre-emit 된 통째 이월 표(pageBreak=NONE)는
+                // 제목 줄이 이 쪽에 없으므로 제목-아래 push 를 건너뛴다
+                // (hwp_table_test pi=20 — 이월 표는 쪽 상단에 바로 배치).
+                let host_pre_emitted_on_prior_page =
+                    self.pre_emitted_host_paras.borrow().contains(&para_index);
                 let table_y_start = if is_current_visible_para_float
                     && signed_hwpunit(t.common.vertical_offset) > 0
+                    && !host_pre_emitted_on_prior_page
                 {
                     let host_line_px = para
                         .line_segs
@@ -8122,7 +8322,54 @@ impl LayoutEngine {
                     // top of the table. Hancom gives treat-as-character precedence, so retain
                     // the painted bottom as the minimum visual/flow end for every TAC table.
                     if is_tac {
-                        flow_end.max(table_y_start + table_visual_height)
+                        // HWPX 저장 레이아웃의 TAC 표 흐름 진행은 선 상단 + 저장
+                        // LineSeg 높이이다 (06-multi-table-001/39-excavation 의
+                        // vpos 누적 델타가 lh+ls 와 정확히 일치). mt.total_height
+                        // 는 행 fit 전 원측정값이라 절대-높이 선언 표에서 하단을
+                        // 과대 예약하므로, 호스트 LineSeg 높이가 있으면 그것을
+                        // 바닥으로 쓴다. 페인트 하단은 유지해 넘친 콘텐츠가 다음
+                        // 문단과 겹치지 않게 한다.
+                        let stored_line_bottom = if self.profile.get().hwpx_stored_layout() {
+                            // 호스트 줄 조회는 TACADV 와 동일 규칙: control_index
+                            // 로 직접 찾고, 앞쪽 컨트롤이 전부 비가시이면 마지막
+                            // line_seg 에 폴백한다 (tac-host-spacing 픽스처:
+                            // bookmark 등 앞에 있어 get(control_index) 가 실패).
+                            let only_invisible_before = para.controls
+                                [..control_index.min(para.controls.len())]
+                                .iter()
+                                .all(|c| {
+                                    !matches!(
+                                        c,
+                                        Control::Table(_) | Control::Picture(_) | Control::Shape(_)
+                                    )
+                                });
+                            let host_seg = para.line_segs.get(control_index).or_else(|| {
+                                if only_invisible_before {
+                                    para.line_segs.last()
+                                } else {
+                                    None
+                                }
+                            });
+                            host_seg
+                                .filter(|s| s.line_height > 0)
+                                .map(|s| para_y_for_table + hwpunit_to_px(s.line_height, self.dpi))
+                        } else {
+                            None
+                        };
+                        let flow_floor =
+                            stored_line_bottom.unwrap_or(table_y_start + table_visual_height);
+                        if std::env::var("RHWP_DIAG_TAC").is_ok() {
+                            eprintln!(
+                                "TACFLOW pi={} ci={} stored_bottom={:?} painted_floor={:.2} flow_floor={:.2} para_y_for_table={:.2}",
+                                para_index,
+                                control_index,
+                                stored_line_bottom,
+                                table_y_start + table_visual_height,
+                                flow_floor,
+                                para_y_for_table
+                            );
+                        }
+                        flow_end.max(flow_floor)
                     } else {
                         flow_end
                     }
@@ -8610,11 +8857,19 @@ impl LayoutEngine {
                     matches!(it, PageItem::PartialParagraph { para_index: pi, .. } if *pi == para_index)
                 })
             });
+            // [Task #1755] typeset 이 host 텍스트 줄을 이월 전 쪽에 PartialParagraph 로
+            // pre-emit 한 문단은 이 표 항목의 host 렌더를 억제한다 (분할 표 첫 부분의
+            // host_pre_emitted 억제와 동일 규칙 — 통째 Table 항목에도 적용).
+            let host_pre_emitted = self.pre_emitted_host_paras.borrow().contains(&para_index);
             // [편집 세션] host 텍스트가 typeset 에서 다음 쪽 PartialParagraph 로
             // 재배정되면 이 쪽 items 에는 없다 — 저장-형상용 fallback 이 그걸 "미배치"로
             // 오인해 이 쪽에 한 번 더 그리면 문구·로고가 두 쪽에 중복된다(셀 끝
             // Enter 재현). 편집 세션은 PP 아이템 배정이 진실이므로 끈다.
-            if !is_tac && !text_already_laid_out && !self.profile.get().session_edited() {
+            if !is_tac
+                && !text_already_laid_out
+                && !host_pre_emitted
+                && !self.profile.get().session_edited()
+            {
                 let host_is_not_square =
                     if let Some(Control::Table(ht)) = para.controls.get(control_index) {
                         !matches!(ht.common.text_wrap, crate::model::shape::TextWrap::Square)
@@ -8753,8 +9008,22 @@ impl LayoutEngine {
                         )
                     })
                     .unwrap_or(false);
-                let suppress_empty_anchor_spacing =
-                    is_current_empty_para_float && !next_is_empty_topbottom_table_anchor;
+                // 양수 vertOffset 의 후행 빈 앵커 표는 offset 자체가 표-표 간격을
+                // 인코딩 — 앞 앵커의 line_spacing 가산은 이중 계상 (typeset 동일 규칙,
+                // 29-civil-petition p2 작성요령 상자).
+                let next_anchor_offset_encodes_gap = paragraphs
+                    .get(para_index + 1)
+                    .map(|p| {
+                        !para_has_visible_text(p)
+                            && p.controls.iter().any(|c| {
+                                matches!(c, Control::Table(t)
+                                    if is_para_topbottom_float(&t.common)
+                                        && signed_hwpunit(t.common.vertical_offset) > 0)
+                            })
+                    })
+                    .unwrap_or(false);
+                let suppress_empty_anchor_spacing = is_current_empty_para_float
+                    && (!next_is_empty_topbottom_table_anchor || next_anchor_offset_encodes_gap);
                 if let Some(seg) = para.line_segs.last() {
                     let gap = if suppress_empty_anchor_spacing {
                         0
@@ -8889,6 +9158,27 @@ impl LayoutEngine {
                 if let Some(seg) = host_seg {
                     if seg.line_spacing > 0 {
                         y_offset += hwpunit_to_px(seg.line_spacing, self.dpi);
+                        // 저장 host lh 가 표 선언높이 + om 상하합을 이미 포함하면
+                        // 뒤의 om_bottom 후가산(#521)은 이중 적용이다 — 한컴의 TAC
+                        // 줄 진행은 line_top + lh + ls 에 끝난다 (06 조직도/예산,
+                        // 39 공사일보 표: 저장 vpos 델타 == lh+ls; lh 가 선언놓이보다
+                        // 크게 자란 경우에도 om 은 lh 안에 들어있다).
+                        // 단, 이 lh+ls 정합은 HWPX 저장 레이아웃에만 성립 — 네이티브
+                        // HWP5 문서는 저장 lh가 표 렌더 높이만 덮어 om 후가산이
+                        // 필요하다 (pic-in-table-01 p8: 하단 TAC 표 저장 vpos 정합).
+                        // ls<0 분기(아래)의 covers 검사와 동일 경계.
+                        if let Some(Control::Table(t)) = para
+                            .controls
+                            .get(control_index)
+                            .filter(|_| self.profile.get().hwpx_stored_layout())
+                        {
+                            let tbl_h = i64::from(t.common.height.min(0x7FFF_FFFF));
+                            let om_tb =
+                                i64::from(t.outer_margin_top) + i64::from(t.outer_margin_bottom);
+                            stored_lh_covers_om = om_tb > 0
+                                && t.common.height < 0x8000_0000
+                                && i64::from(seg.line_height) >= tbl_h + om_tb - 10;
+                        }
                     } else if seg.line_spacing < 0 {
                         // 음수 ls (Fixed 줄간격 TAC 표): y를 문단 advance로 리셋 (Task #9)
                         // 표 렌더 높이가 아닌, 일반 문단과 동일한 lh+ls advance 사용
@@ -8936,6 +9226,17 @@ impl LayoutEngine {
                 // 은 이미 반영됨 — #521 후가산은 그 외 경로에만 적용.
                 if outer_margin_bottom_px > 0.0 && !stored_lh_covers_om {
                     y_offset += outer_margin_bottom_px;
+                }
+                if std::env::var("RHWP_DIAG_TAC").is_ok() {
+                    eprintln!(
+                        "TACADV pi={} ci={} host_seg={:?} covers_om={} om_b={:.2} y_offset={:.2}",
+                        para_index,
+                        control_index,
+                        host_seg.map(|s| (s.line_height, s.line_spacing)),
+                        stored_lh_covers_om,
+                        outer_margin_bottom_px,
+                        y_offset
+                    );
                 }
                 return (y_offset, true);
             }
@@ -9981,6 +10282,7 @@ impl LayoutEngine {
                                     cell_para_index: 0,
                                     text_direction: 0,
                                     line_wrap_squeeze: false,
+                                    row_span: 1,
                                 }],
                             };
                             self.layout_caption(
@@ -11437,11 +11739,26 @@ fn compute_tac_leading_width(
 
     let mut char_pos = first_line.char_start;
     let mut width = 0.0;
+    let diag = std::env::var("RHWP_DIAG_LEADING").is_ok();
     for run in &first_line.runs {
         let run_len = run.text.chars().count();
         let style = resolved_to_text_style(styles, run.char_style_id, run.lang_index);
         // [Task #555] PUA 옛한글 변환 후 폰트 매트릭스는 자모 시퀀스 기준.
         let effective_full = effective_text_for_metrics(run);
+        if diag {
+            let codes: Vec<String> = effective_full
+                .chars()
+                .map(|c| format!("U+{:X}", c as u32))
+                .collect();
+            eprintln!(
+                "DIAG_LEADING ci={} run_len={} w={:.2} font={} chars={:?}",
+                target_control_index,
+                run_len,
+                estimate_text_width(&effective_full, &style),
+                style.font_family,
+                codes
+            );
+        }
         match tac_pos_opt {
             Some(tac_pos) if char_pos + run_len <= tac_pos => {
                 width += estimate_text_width(effective_full, &style);

@@ -1758,13 +1758,13 @@ fn inline_control_metrics_hwp(ctrl: &Control) -> Option<InlineControlMetricsHwp>
                     &eq.version_info,
                 );
             let margin = &eq.common.margin;
-            let painted_width = crate::renderer::equation::fitted_width_hwp(eq);
-            // 인라인 수식의 줄 전진 = min(선언 폭, paint 폭+양쪽 여백) — 짧은 수식은
-            // 선언 폭 자리를, 넘치는 수식은 paint 폭만큼만 전진한다 (eq-002 실측).
-            let width = (painted_width as i32)
+            // 인라인 수식의 줄 전진 = 선언(개체 상자) 폭 + 양쪽 outMargin — 개체 상자는
+            // 내용이 작아도 그대로 점유하고, 넘치는 잉크도 상자 밖으로 전진을 넓히지
+            // 않는다 (eq-002 실측: `=8` 전진 13.13pt = 선언 12.01+여백, `f(n)` 1788HWU =
+            // 선언 1677+112 — paint 1651 이 아니라 선언 폭을 쓴다).
+            let width = (eq.common.width as i32)
                 .saturating_add(i32::from(margin.left))
-                .saturating_add(i32::from(margin.right))
-                .min(eq.common.width as i32);
+                .saturating_add(i32::from(margin.right));
             let flow_height = crate::renderer::equation::control_line_flow_height(
                 eq,
                 natural_height as f64,
@@ -1887,15 +1887,12 @@ mod inline_equation_metric_tests {
             ..Default::default()
         };
         let metrics = inline_control_metrics_hwp(&para.controls[0]).unwrap();
-        // 줄 advance 는 저장 폭이 아니라 paint 폭(+여백)을 따른다 (한컴 동작).
-        let painted = crate::renderer::equation::fitted_width_hwp(match &para.controls[0] {
-            Control::Equation(e) => e,
-            _ => unreachable!(),
-        });
-        assert_eq!(metrics.width, painted as i32 + 300);
+        // 줄 advance 는 선언(개체 상자) 폭+여백을 따른다 — 내용이 상자보다 짧아도
+        // 상자 자리를 유지한다 (eq-002 실측: `=8` 선언 12.01pt 상자 → 13.13pt 전진).
+        assert_eq!(metrics.width, 2700);
         assert_eq!(metrics.height, 2200);
         assert_eq!(metrics.baseline, 1410);
-        // 인라인 배치 폭도 같은 규칙(저장 폭이 아닌 paint 폭+여백)을 따라야 한다.
+        // 인라인 배치 폭도 같은 규칙(선언 폭+여백)을 따라야 한다.
         let composed = crate::renderer::composer::compose_paragraph(&para);
         assert_eq!(composed.tac_controls[0].1, metrics.width);
     }
