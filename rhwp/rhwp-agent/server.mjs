@@ -1,6 +1,6 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
-import { existsSync, mkdirSync, promises as fs } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -220,23 +220,21 @@ const HOST_PROFILE_HOME = process.platform === 'win32' && process.env.USERPROFIL
   ? path.resolve(process.env.USERPROFILE)
   : os.homedir();
 const SOURCE_CLAUDE_CONFIG = path.join(HOST_PROFILE_HOME, '.claude.json');
-const sourceCodexHomes = [...new Set([
-  process.env.CODEX_HOME,
-  path.join(HOST_PROFILE_HOME, '.codex'),
-].filter(Boolean))];
-async function findSourceCodexAuthPath() {
-  for (const sourceCodexHome of sourceCodexHomes) {
-    const authPath = path.join(sourceCodexHome, 'auth.json');
-    try {
-      const authStat = await fs.lstat(authPath);
-      if (authStat.isFile() && !authStat.isSymbolicLink()) return authPath;
-    } catch (error) {
-      if (error?.code !== 'ENOENT') throw error;
-    }
+// 설정 상태·사용량과 같은 프로필만 본다. 선택한 CODEX_HOME 이 비어 있어도 다른 프로필로 넘어가지 않는다.
+const sourceCodexHome = process.env.CODEX_HOME?.trim()
+  ? path.resolve(process.env.CODEX_HOME)
+  : path.join(HOST_PROFILE_HOME, '.codex');
+function findSourceCodexAuthPath() {
+  const authPath = path.join(sourceCodexHome, 'auth.json');
+  try {
+    const authStat = lstatSync(authPath);
+    if (authStat.isFile() && !authStat.isSymbolicLink()) return authPath;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
   }
   return undefined;
 }
-let sourceCodexAuthPath = await findSourceCodexAuthPath();
+let sourceCodexAuthPath = findSourceCodexAuthPath();
 const writingStyleStore = await new WritingStyleStore().init();
 const agentInstructionsStore = await new AgentInstructionsStore().init();
 const skillRegistry = await new SkillRegistry({ bundledRoot: BUNDLED_SKILLS, writingStyleStore }).init();
@@ -387,6 +385,7 @@ const sessions = new HubSessionRegistry({
     const codexHome = path.join(isolatedHome, '.codex');
     mkdirSync(workDir, { recursive: true, mode: 0o700 });
     mkdirSync(hubStorageDir, { recursive: true, mode: 0o700 });
+    syncSourceCodexAuth();
     prepareCodexHome(codexHome, sourceCodexAuthPath);
     prepareClaudeHome(isolatedHome, sourceClaudeAuth);
     const downloadManager = new DownloadManager({ rootDir: hubStorageDir, writableRoot: workDir });
@@ -566,6 +565,23 @@ function consumeAuthorizedInstructionDraft(record, msg) {
   return draft;
 }
 
+/**
+ * 허브 밖에서 `codex login`/로그아웃한 결과를 반영한다. 원본 auth.json 이 생기거나
+ * 사라졌으면 이미 열린 세션의 격리 홈도 다시 연결한다.
+ */
+function syncSourceCodexAuth() {
+  let next;
+  try { next = findSourceCodexAuthPath(); } catch (error) {
+    log(`codex credential lookup failed: ${error?.message ?? error}`);
+    return;
+  }
+  if (next === sourceCodexAuthPath) return;
+  sourceCodexAuthPath = next;
+  try { refreshSessionCredentials('codex'); } catch (error) {
+    log(`codex session credential refresh failed: ${error?.message ?? error}`);
+  }
+}
+
 function refreshSessionCredentials(agent) {
   for (const record of sessions.values()) {
     if (agent === 'codex') prepareCodexHome(record.codexHome, sourceCodexAuthPath);
@@ -698,6 +714,7 @@ async function agentSetupStatuses(ownerSessionId = null, refresh = false) {
     cliSetup.status('codex'),
     providerHealth.check(refresh),
   ]);
+  syncSourceCodexAuth();
   const withDetectedHarness = (status, provider) => {
     const available = provider?.available === true;
     const connected = available && status.authenticated;
@@ -4010,7 +4027,7 @@ async function handleStudioMessage(record, sock, msg) {
           .then(async (status) => {
             await ensureBootWork();
             cliSetupStatus[agent] = status;
-            if (agent === 'codex') sourceCodexAuthPath = await findSourceCodexAuthPath();
+            if (agent === 'codex') sourceCodexAuthPath = findSourceCodexAuthPath();
             refreshSessionCredentials(agent);
             if (agent === 'claude' || agent === 'codex') {
               providerLimits.invalidate();
