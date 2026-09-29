@@ -1179,8 +1179,9 @@ export class PendingEditManager {
       if (beforeId !== null) wasm.discardSnapshot(beforeId);
       command?.discard(wasm);
       releaseExternal(heldExternal);
+      // set 은 드리프트 op 까지 그대로 검토 대기로 돌아간다 — 복원된 op 이 그 스냅샷·문단
+      // 보관본을 계속 가리키므로 여기서 해제하지 않는다 (해제하면 이후 거절·승인이 죽은 id 를 쓴다).
       this.restorePendingState(previewState);
-      this.discardOpSnapshots(dropped);
       set.status = 'awaiting-review';
       this.emitDocEvents('agent-pending-edit');
       this.syncOverlay();

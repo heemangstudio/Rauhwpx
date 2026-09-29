@@ -229,6 +229,38 @@ test('endTurn: 전체 접근 자동 커밋의 스냅샷 저장이 실패하면 �
   assert.deepEqual(h.body, ['첫 문단 추가', '앞 둘째 문단']);
 });
 
+test('approve 실패: 검토로 돌아간 set 의 드리프트 op 스냅샷을 해제하지 않는다', async () => {
+  let failSnapshots = false;
+  const discarded: number[] = [];
+  const h = makeEnv(['첫 문단 본문', '둘째 문단'], (wasm) => {
+    const save = wasm['saveSnapshot'] as () => number;
+    const discard = wasm['discardSnapshot'] as (id: number) => void;
+    wasm['saveSnapshot'] = () => {
+      if (failSnapshots) throw new Error('snapshot store exhausted');
+      return save();
+    };
+    wasm['discardSnapshot'] = (id: number) => { discarded.push(id); discard(id); };
+  });
+  h.pending.beginTurn('claude');
+  await h.call('replace_range', {
+    sectionIdx: 0, startParaIdx: 0, startCharOffset: 0, endParaIdx: 0, endCharOffset: 2, text: '머리',
+  });
+  await h.call('insert_text', { sectionIdx: 0, paraIdx: 1, charOffset: 0, text: '앞 ' });
+  h.pending.endTurn('review');
+  // 사용자가 교체된 글자를 고쳐 replace op 이 드리프트된다.
+  h.body[0] = '고친 문단 본문';
+  h.bus.emit('document-mutated', 'user-edit');
+  failSnapshots = true;
+  const [set] = h.pending.getChangeSets();
+  assert.equal(h.pending.approve(set.id), false);
+
+  const [kept] = h.pending.getChangeSets();
+  assert.equal(kept.status, 'awaiting-review');
+  const held = kept.ops.flatMap((op) => (op.kind === 'replace' && op.snapshotId != null ? [op.snapshotId] : []));
+  assert.equal(held.length, 1);
+  assert.deepEqual(discarded.filter((id) => held.includes(id)), [], '검토 대기 op 이 가리키는 스냅샷은 살아 있어야 한다');
+});
+
 // ─── 허브 재시작: welcome session:null ──────────────────────
 
 function welcomeFixture(opts: { turnRunning: boolean; activeAgent: 'claude' | null; threadId?: string }) {
