@@ -67,6 +67,50 @@ const { runTest } = await import('./helpers.mjs');
 let failed = false;
 const runs = [];
 
+/**
+ * 문서 결과 스냅샷 — 본문 문단 텍스트와 짧은 문단의 첫 글자 굵게 여부.
+ * 요청 수가 줄어도 일(오타 수정·제목 굵게)을 덜 한 것은 아닌지 실행마다 비교한다.
+ */
+async function documentOutcome(page) {
+  return page.evaluate(() => {
+    const wasm = window.__wasm;
+    const paragraphs = [];
+    const sections = wasm.getSectionCount();
+    for (let sec = 0; sec < sections; sec += 1) {
+      const count = wasm.getParagraphCount(sec);
+      for (let para = 0; para < count; para += 1) {
+        const length = wasm.getParagraphLength(sec, para);
+        const text = length > 0 ? wasm.getTextRange(sec, para, 0, length) : '';
+        let bold = false;
+        if (length > 0 && length <= 60) {
+          try { bold = wasm.getCharPropertiesAt(sec, para, 0).bold === true; } catch { /* 읽기 실패는 굵게 아님 */ }
+        }
+        paragraphs.push({ sec, para, text, bold });
+      }
+    }
+    return paragraphs;
+  });
+}
+
+function compareOutcome(before, after) {
+  const key = (p) => `${p.sec}:${p.para}`;
+  const afterByKey = new Map(after.map((p) => [key(p), p]));
+  const sameShape = before.length === after.length;
+  let textChanged = 0;
+  let boldAdded = 0;
+  const samples = [];
+  for (const b of before) {
+    const a = afterByKey.get(key(b));
+    if (!a) continue;
+    if (a.text !== b.text) {
+      textChanged += 1;
+      if (samples.length < 12) samples.push({ at: key(b), before: b.text.slice(0, 80), after: a.text.slice(0, 80) });
+    }
+    if (!b.bold && a.bold) boldAdded += 1;
+  }
+  return { paragraphsBefore: before.length, paragraphsAfter: after.length, sameShape, textChanged, boldAdded, samples };
+}
+
 async function sendThroughComposer(page, text) {
   // 사용자가 하는 것처럼 사이드바 입력창에 치고 Enter. 입력창이 안 보이면 브리지로 보낸다.
   const visible = await page.evaluate(() => {
@@ -114,6 +158,7 @@ try {
       await page.waitForFunction(() => window.__agentBridge?.getActiveAgent?.() === 'claude', { timeout: 60000 });
       await delay(500);
       await page.evaluate(() => { window.__liveEvents.length = 0; });
+      const outcomeBefore = await documentOutcome(page);
       const sentAt = await page.evaluate(() => performance.timeOrigin + performance.now());
       const via = await sendThroughComposer(page, PROMPT);
       // 턴 끝은 허브 추적 행으로 판정한다 — 페이지가 다시 연결되거나 새로고침돼도 놓치지 않는다.
@@ -127,6 +172,9 @@ try {
       const endedAt = turnEndRow.t;
       await delay(1500); // 추적 스트림·텔레메트리 기록 대기
       const events = await page.evaluate(() => window.__liveEvents?.slice() ?? []);
+      // 전체 접근 턴은 끝나면 자동 커밋된다 — 편집 잠금이 풀린 뒤 결과를 읽는다.
+      await page.waitForFunction(() => !window.__inputHandler?.isUserEditingLocked?.(), { timeout: 60000 }).catch(() => {});
+      const outcome = compareOutcome(outcomeBefore, await documentOutcome(page));
       const telemetry = (await readToolTelemetryRows(fixtureRoot)).at(-1) ?? null;
       const analysis = analyzeProviderTurn(readTraceRows(traceFile), { from: sentAt, to: endedAt + 1000 });
       const row = {
@@ -135,10 +183,12 @@ try {
         studioReconnects: events.filter((event) => event.type === 'connection').length,
         pageTurnWallMs: round(endedAt - sentAt),
         ...analysis,
+        outcome,
         telemetry: telemetry ? { toolCalls: telemetry.toolCalls, toolMs: telemetry.toolMs, errors: telemetry.errors, resultChars: telemetry.resultChars } : null,
         errors: events.filter((event) => event.type === 'error').map((event) => event.message),
       };
       runs.push(row);
+      console.log(`  [run ${run}] outcome: ${outcome.textChanged} paragraphs rewritten, ${outcome.boldAdded} short paragraphs bolded (paragraphs ${outcome.paragraphsBefore}→${outcome.paragraphsAfter})`);
       console.log(`  [run ${run}] via=${via} wall=${round(row.pageTurnWallMs / 1000, 1)}s  model requests=${row.modelRequests}  tool calls=${row.toolCalls} (rhwp ${row.rhwpToolCalls})  parallel batches=${row.parallelBatches} (${row.parallelCalls} calls, largest ${row.largestBatch})  tool union=${round(row.toolUnionMs / 1000, 2)}s  pipeline p50/p95=${row.latency.pipelineMs.p50}/${row.latency.pipelineMs.p95}ms  cli tool p50/p95=${row.latency.toolMs.p50}/${row.latency.toolMs.p95}ms`);
       for (const batch of row.batches) {
         console.log(`      batch ×${batch.size} [${batch.tools.join(', ')}] mcpOverlap=${batch.maxConcurrentMcp} cliOverlap=${batch.maxConcurrentCli} execOverlap=${batch.maxConcurrentStudioExec} makespan=${batch.makespanMs}ms sum=${batch.sumToolMs}ms`);
@@ -171,7 +221,10 @@ function printSummary() {
     sample: SAMPLE,
     runs: runs.length,
     turnWallMs: stats(runs.map((row) => row.pageTurnWallMs)),
+    modelRequestsPerTurn: stats(runs.map((row) => row.modelRequests)),
     toolCallsPerTurn: stats(runs.map((row) => row.toolCalls)),
+    paragraphsRewritten: stats(runs.map((row) => row.outcome.textChanged)),
+    paragraphsBolded: stats(runs.map((row) => row.outcome.boldAdded)),
     parallelBatchesPerTurn: stats(runs.map((row) => row.parallelBatches)),
     pipelineMs: stats(pick('pipelineMs')),
     cliToolMs: stats(pick('toolMs')),
