@@ -4,26 +4,37 @@ inputs:
   setup-rust:
     description: Install Rust on a cache miss; set to false when the job already did so.
     default: 'true'
+  artifact:
+    description: Use a WASM package already built in this run instead of building one.
+    default: ''
 runs:
   using: composite
   steps:
+    - name: Use shared WASM package
+      if: inputs.artifact != ''
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.artifact }}
+        path: rhwp/pkg
     - name: Fingerprint committed engine inputs
       id: source
+      if: inputs.artifact == ''
       shell: bash
       run: echo "digest=$(node scripts/wasm-source-fingerprint.mjs)" >> "$GITHUB_OUTPUT"
     - name: Restore complete WASM package
       id: pkg
+      if: inputs.artifact == ''
       uses: actions/cache/restore@v4
       with:
         path: rhwp/pkg
         key: wasm-pkg-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.source.outputs.digest }}-${{ hashFiles('.cargo/**', 'rust-toolchain*', '.github/actions/setup-rust/action.yml', '.github/actions/build-wasm/action.yml', 'scripts/wasm-source-fingerprint.mjs', 'package.json') }}
     - uses: ./.github/actions/setup-rust
-      if: inputs.setup-rust == 'true' && steps.pkg.outputs.cache-hit != 'true'
+      if: inputs.artifact == '' && inputs.setup-rust == 'true' && steps.pkg.outputs.cache-hit != 'true'
       with:
         wasm: 'true'
         cache: wasm
     - name: Build WASM engine
-      if: steps.pkg.outputs.cache-hit != 'true'
+      if: inputs.artifact == '' && steps.pkg.outputs.cache-hit != 'true'
       shell: bash
       run: npm run build:wasm
     - name: Verify WASM package
@@ -35,7 +46,7 @@ runs:
         test -s rhwp/pkg/rhwp_bg.wasm.d.ts
         test -s rhwp/pkg/package.json
     - name: Save complete WASM package
-      if: steps.pkg.outputs.cache-hit != 'true'
+      if: inputs.artifact == '' && steps.pkg.outputs.cache-hit != 'true'
       uses: actions/cache/save@v4
       with:
         path: rhwp/pkg

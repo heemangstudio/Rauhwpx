@@ -295,6 +295,7 @@ jobs:
         with:
           platform: macos
           artifact: macos-nightly
+          wasm-artifact: tested-wasm
           version: ${{ needs.prepare.outputs.version }}
           signed: 'true'
           certificate: ${{ secrets.MACOS_CERTIFICATE }}
@@ -317,6 +318,7 @@ jobs:
         with:
           platform: windows
           artifact: windows-nightly
+          wasm-artifact: tested-wasm
           version: ${{ needs.prepare.outputs.version }}
 
   publish:

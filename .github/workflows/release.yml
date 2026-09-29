@@ -90,10 +90,34 @@ jobs:
       - name: Check published documentation
         run: npm run check:docs
 
+  wasm:
+    name: Build WASM engine
+    # WASM is platform independent. Building it once keeps every installer on the
+    # same engine and avoids the Windows Binaryen crash in wasm-opt.
+    needs: preflight
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.18.0
+      - uses: ./.github/actions/build-wasm
+      - name: Share release WASM build
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-wasm
+          path: rhwp/pkg
+          if-no-files-found: error
+          retention-days: 7
+
   macos:
     name: Build macOS installers
     # Bundle the verified cloud runtimes while tagged-source verification runs.
-    needs: [preflight, cloud]
+    needs: [preflight, cloud, wasm]
     runs-on: blacksmith-6vcpu-macos-15
     timeout-minutes: 120
     environment: macos-release
@@ -112,6 +136,7 @@ jobs:
         with:
           platform: macos
           artifact: macos-dist
+          wasm-artifact: release-wasm
           signed: 'true'
           certificate: ${{ secrets.MACOS_CERTIFICATE }}
           certificate-password: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -121,7 +146,7 @@ jobs:
 
   windows:
     name: Build Windows installers
-    needs: [preflight, cloud]
+    needs: [preflight, cloud, wasm]
     runs-on: blacksmith-4vcpu-windows-2025
     timeout-minutes: 120
     steps:
@@ -139,10 +164,11 @@ jobs:
         with:
           platform: windows
           artifact: windows-dist
+          wasm-artifact: release-wasm
 
   linux:
     name: Build Linux installers (${{ matrix.arch }})
-    needs: [preflight, cloud]
+    needs: [preflight, cloud, wasm]
     strategy:
       fail-fast: false
       matrix:
@@ -195,6 +221,7 @@ jobs:
       - uses: ./.github/actions/build-wasm
         with:
           setup-rust: 'false'
+          artifact: release-wasm
 
       - name: Build Studio application
         run: npm run build:studio:app
