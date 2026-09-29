@@ -15,89 +15,34 @@
  * 실행: node e2e/agent-tool-bench.mjs --mode=headless [--tasks-only] [--task=<이름>]
  * 결과: 마지막에 JSON 한 줄 (BENCH_RESULT: {...}) — 전후 비교용.
  */
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { setTimeout as delay } from 'node:timers/promises';
-import { fileURLToPath } from 'node:url';
 import { PNG } from 'pngjs';
 
 import { registerHubSession } from '../../../desktop/agent-hub.mjs';
-import { writeFakeCliBin } from '../../rhwp-agent/tests/fake-cli-bin.mjs';
 import { prepareInsertImageArgs } from '../../rhwp-agent/insert-image-source.mjs';
 import { measureToolDefinitions, readToolTelemetryRows } from '../../rhwp-agent/tool-telemetry.mjs';
 import { RHWP_TOOL_RULES, filterToolDefinitions } from '../../rhwp-agent/tools.mjs';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const studioRoot = path.resolve(__dirname, '..');
-const repoRoot = path.resolve(studioRoot, '..');
-const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+import {
+  ensureChat,
+  ensureChromePath,
+  findAvailablePort,
+  openSample as openSampleInPage,
+  repoRoot,
+  startHub,
+  startVite,
+  stats,
+  stopServer,
+  writeFakePi,
+} from './agent-bench-harness.mjs';
 
 const LATENCY_SAMPLE = 'footnote-01.hwp';
 const HUB_TOKEN = 'bench';
 const TASKS_ONLY = process.argv.includes('--tasks-only');
 const TASK_FILTER = process.argv.find((arg) => arg.startsWith('--task='))?.slice('--task='.length) ?? null;
-
-async function findAvailablePort(startPort, attempts = 20) {
-  for (let port = startPort; port < startPort + attempts; port += 1) {
-    const available = await new Promise((resolve) => {
-      const server = net.createServer();
-      server.once('error', () => resolve(false));
-      server.listen(port, '127.0.0.1', () => {
-        server.close(() => resolve(true));
-      });
-    });
-    if (available) return port;
-  }
-  throw new Error(`failed to find an available port starting at ${startPort}`);
-}
-
-async function waitForHttp(url, label, child, timeoutMs = 45000) {
-  const deadline = Date.now() + timeoutMs;
-  let lastError = null;
-  while (Date.now() < deadline) {
-    if (child && (child.exitCode !== null || child.signalCode)) {
-      throw new Error(`${label} 프로세스가 준비 전 종료 (code=${child.exitCode ?? child.signalCode})`);
-    }
-    try {
-      const response = await fetch(url);
-      if (response.ok) return;
-      lastError = new Error(`status ${response.status}`);
-    } catch (error) {
-      lastError = error;
-    }
-    await delay(400);
-  }
-  throw new Error(`${label} 준비 대기 시간 초과: ${lastError?.message || 'unknown'}`);
-}
-
-function spawnLogged(cmd, args, cwd, extraEnv, logPath) {
-  fs.mkdirSync(path.dirname(logPath), { recursive: true });
-  const logFile = fs.openSync(logPath, 'w');
-  const child = spawn(cmd, args, {
-    cwd,
-    stdio: ['ignore', logFile, logFile],
-    env: { ...process.env, ...extraEnv },
-  });
-  child._logFile = logFile;
-  return child;
-}
-
-async function stopServer(child) {
-  if (!child || child.exitCode !== null || child.signalCode) return;
-  const exited = new Promise((resolve) => child.once('exit', resolve));
-  child.kill('SIGTERM');
-  await Promise.race([
-    exited,
-    delay(5000).then(() => {
-      if (child.exitCode === null && !child.signalCode) child.kill('SIGKILL');
-    }),
-  ]);
-  if (child._logFile !== undefined) fs.closeSync(child._logFile);
-}
 
 // ─── 가짜 MCP WS 클라이언트 (mcp-stdio.mjs 와 동일 프레임) ─────
 
@@ -152,19 +97,6 @@ function must(msg, label) {
     throw new Error(`${label} 실패 [${code}] ${msg?.error?.message ?? '(no message)'}`);
   }
   return msg.result;
-}
-
-function stats(samples) {
-  const sorted = [...samples].sort((a, b) => a - b);
-  const pick = (q) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))];
-  const mean = samples.reduce((a, b) => a + b, 0) / samples.length;
-  return {
-    n: samples.length,
-    mean: Math.round(mean * 100) / 100,
-    p50: Math.round(pick(0.5) * 100) / 100,
-    p95: Math.round(pick(0.95) * 100) / 100,
-    max: Math.round(sorted[sorted.length - 1] * 100) / 100,
-  };
 }
 
 /** 단색 PNG (base64) — insert_image 입력. */
@@ -547,10 +479,7 @@ const TASKS = [
 ];
 
 // helpers.mjs 는 모듈 로드 시점에 CHROME_PATH/VITE_URL 을 고정하므로 import 전에 세팅한다.
-if (!process.env.CHROME_PATH && !process.env.PUPPETEER_EXECUTABLE_PATH) {
-  const macChrome = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-  if (fs.existsSync(macChrome)) process.env.CHROME_PATH = macChrome;
-}
+ensureChromePath();
 
 const hubPort = await findAvailablePort(Number(process.env.RHWP_AGENT_PORT || '5741'));
 const vitePort = await findAvailablePort(Number(process.env.VITE_PORT || '7741'));
@@ -561,55 +490,10 @@ console.log(`  [setup] 허브 포트=${hubPort}, vite 포트=${vitePort}`);
 
 // 실제 프로바이더 턴을 열되 외부 계정/API 없이 도구만 구동한다 (agent-edit-loop 과 같은 가짜 pi).
 const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'rhwp-tool-bench-'));
-const piRoot = path.join(fixtureRoot, 'pi');
-const packageDir = path.join(piRoot, 'prefix/node_modules/@earendil-works/pi-coding-agent');
-fs.mkdirSync(packageDir, { recursive: true });
-fs.writeFileSync(path.join(packageDir, 'package.json'), JSON.stringify({ version: '0.0.0-test' }));
-fs.writeFileSync(path.join(piRoot, 'config.json'), JSON.stringify({
-  version: 1, installedVersion: '0.0.0-test', defaultModelId: 'mock-model',
-  models: [{ id: 'mock-model', name: 'Mock model', reasoning: false, supportsImages: true,
-    efforts: [], defaultEffort: null, contextLength: 8192, pricing: { prompt: 0, completion: 0 } }],
-}));
-fs.mkdirSync(path.join(piRoot, 'agent'), { recursive: true });
-fs.writeFileSync(path.join(piRoot, 'agent/models.json'), JSON.stringify({
-  providers: { openrouter: { apiKey: 'test-placeholder-key' } },
-}));
-const finishTurnPath = path.join(fixtureRoot, 'finish-turn');
-writeFakeCliBin(path.join(piRoot, 'prefix/node_modules/.bin'), 'pi', `
-  if (process.argv.includes('--version')) { console.log('0.0.0-test'); process.exit(0); }
-  const fs = require('node:fs');
-  const timer = setInterval(() => {
-    if (!fs.existsSync(${JSON.stringify(finishTurnPath)})) return;
-    clearInterval(timer);
-    console.log(JSON.stringify({ type: 'agent_settled' }));
-  }, 25);
-`);
+const { piRoot, finishTurnPath } = writeFakePi(fixtureRoot);
 
-const hub = spawnLogged(
-  process.execPath,
-  [path.join(repoRoot, 'rhwp-agent', 'server.mjs')],
-  path.join(repoRoot, 'rhwp-agent'),
-  { NODE_ENV: 'test', RHWP_AGENT_MODE: 'development', RHWP_SECRET_BROKER: '',
-    RHWP_AGENT_PORT: String(hubPort), RHWP_AGENT_TOKEN: HUB_TOKEN,
-    RHWP_PI_DIR: piRoot, RHWP_WORK_DIR: fixtureRoot,
-    RHWP_AGENT_INSTRUCTIONS_DIR: path.join(fixtureRoot, 'instructions'),
-    RHWP_TEMPLATES_DIR: path.join(fixtureRoot, 'templates') },
-  path.join(repoRoot, 'target', 'rhwp-agent-bench-hub.log'),
-);
-await waitForHttp(`http://127.0.0.1:${hubPort}/healthz?token=${encodeURIComponent(HUB_TOKEN)}`, 'rhwp-agent 허브', hub);
-
-const vite = spawnLogged(
-  npmCmd,
-  ['run', 'dev', '--', '--host', '127.0.0.1', '--port', String(vitePort), '--strictPort'],
-  studioRoot,
-  {
-    BROWSER: 'none',
-    VITE_RHWP_AGENT_URL: `ws://127.0.0.1:${hubPort}`,
-    RHWP_AGENT_TOKEN: HUB_TOKEN,
-  },
-  path.join(repoRoot, 'target', 'rhwp-studio-bench-vite.log'),
-);
-await waitForHttp(viteUrl, 'vite dev server', vite);
+const hub = await startHub({ hubPort, token: HUB_TOKEN, fixtureRoot, env: { RHWP_PI_DIR: piRoot } });
+const vite = await startVite({ vitePort, hubPort, token: HUB_TOKEN });
 
 process.env.VITE_URL = viteUrl;
 const helpers = await import('./helpers.mjs');
@@ -646,39 +530,9 @@ try {
       { timeout: 20000 },
     );
 
-    const openSample = async (name) => {
-      await page.evaluate(async (fileName) => {
-        const response = await fetch(`/samples/${encodeURIComponent(fileName)}`);
-        if (!response.ok) throw new Error(`Sample load failed: ${response.status}`);
-        const bytes = new Uint8Array(await response.arrayBuffer());
-        const requestId = `bench-${Date.now()}`;
-        await new Promise((resolve, reject) => {
-          const off = window.__eventBus.on('open-document-bytes:done', (payload) => {
-            if (payload?.requestId !== requestId) return;
-            off();
-            if (payload.ok) resolve(); else reject(new Error(payload.error || 'open failed'));
-          });
-          window.__eventBus.emit('open-document-bytes', {
-            bytes, fileName, requestId, suppressDialogs: true, skipUnsavedGuard: true,
-          });
-        });
-      }, name);
-      await page.waitForFunction(() => window.__wasm?.pageCount > 0
-        && document.querySelector('#scroll-content canvas')
-        && window.__versionController?.getState().enabled);
-    };
-
-    // 문서를 바꾸면 사이드바가 그 문서의 스레드로 옮겨 기본 프로바이더를 띄울 수 있다 —
-    // 매번 가짜 pi 채팅을 다시 확인한다. 성공 턴이 자동 커밋되도록 전체 접근으로 연다.
-    const ensurePiChat = async () => {
-      await delay(300);
-      const agent = await page.evaluate(() => window.__agentBridge.getActiveAgent());
-      if (agent === 'pi') return;
-      await page.evaluate(() => window.__agentBridge.startChat(
-        'pi', 'mock-model', null, false, 'unrestricted', 'direct',
-      ));
-      await page.waitForFunction(() => window.__agentBridge?.getActiveAgent?.() === 'pi', { timeout: 10000 });
-    };
+    const openSample = (name) => openSampleInPage(page, name);
+    // 성공 턴이 자동 커밋되도록 전체 접근 가짜 pi 채팅으로 연다.
+    const ensurePiChat = () => ensureChat(page);
     await openSample(TASKS_ONLY ? TASKS[0].sample : LATENCY_SAMPLE);
     await ensurePiChat();
 

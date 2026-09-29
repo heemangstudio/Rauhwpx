@@ -265,6 +265,16 @@ const BATCHABLE_READ_TOOLS: ReadonlySet<string> = new Set([
   'verify_changes',
 ]);
 
+/**
+ * 허브가 도구 추적을 켠 요청(RHWP_TOOL_TRACE=1 → tool-request.trace)에만 붙는 스튜디오 구간
+ * 타이밍. 값은 epoch ms 라 허브·mcp-stdio 행과 같은 시간축에 놓인다.
+ */
+export type ToolTraceTimings = Record<string, number>;
+
+export function toolTraceNow(): number {
+  return Math.round((performance.timeOrigin + performance.now()) * 1000) / 1000;
+}
+
 export interface ToolCapabilityContext {
   workflow: AgentWorkflow;
   /** Phase and epoch carried by this tool-request. Kept unknown so malformed frames fail closed. */
@@ -278,6 +288,8 @@ export interface ToolCapabilityContext {
   template?: DocumentTemplate;
   /** Exact hub turn/cancellation fence captured for this request. */
   requestIsActive?: () => boolean;
+  /** 추적 중인 요청만: 실행 구간(기준선·dispatch·after 보고) 타이밍을 채운다. */
+  trace?: ToolTraceTimings;
 }
 
 export function assertToolRequestActive(capability?: ToolCapabilityContext): void {
@@ -819,6 +831,8 @@ export class AgentToolExecutor {
     agent: AgentName = 'claude',
     capability?: ToolCapabilityContext,
   ): Promise<unknown> {
+    const trace = capability?.trace;
+    if (trace) trace.exec0 = toolTraceNow();
     try {
       const trap = engineTrap();
       if (trap) throw engineTrappedError(trap.message);
@@ -845,10 +859,14 @@ export class AgentToolExecutor {
         && !ENGINE_WRITE_TOOLS.has(tool);
       const render = staged ? optRenderMode(args) : undefined;
       const baseline = staged ? this.captureWriteBaseline() : null;
+      if (trace) trace.dispatch0 = toolTraceNow();
       // await 필수 — 비동기 툴(insert_chart)의 rejection 도 여기서 에러 코드로 매핑된다
       const result = await this.dispatch(tool, args, agent, capability);
+      if (trace) trace.dispatch1 = toolTraceNow();
       assertToolRequestActive(capability);
-      return baseline ? await this.attachWriteReport(result, baseline, render) : result;
+      const reported = baseline ? await this.attachWriteReport(result, baseline, render) : result;
+      if (trace) trace.report1 = toolTraceNow();
+      return reported;
     } catch (e) {
       if (e instanceof AgentToolError) throw e;
       const message = e instanceof Error ? e.message : String(e);

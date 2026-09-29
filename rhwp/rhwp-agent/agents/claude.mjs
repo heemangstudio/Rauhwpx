@@ -14,6 +14,7 @@ import {
   prepareCredentialMirrorSync,
 } from '../credential-mirror.mjs';
 import { applyManagedCliLaunch, resolveCommandOnPath, resolveNpmCliLaunch } from '../npm-cli-launch.mjs';
+import { TOOL_TRACE_ENABLED, traceNow, writeToolTrace } from '../tool-trace.mjs';
 import {
   createLineReader,
   isPlanningRestricted,
@@ -410,6 +411,50 @@ export function createClaudeSession(opts, {
   // usage 집계에 붙일 모델 — CLI 가 보고한 실제 모델을 우선한다.
   let currentModel = opts.model ?? null;
 
+  // 도구 추적(RHWP_TOOL_TRACE=1): 모델이 도구 호출을 만들기 시작/끝낸 시각과 CLI 가 결과를
+  // 돌려받은 시각. 같은 메시지 id 의 tool_use 는 모델이 한 번에(병렬로) 낸 호출이다.
+  const traceMessageIds = new Map();
+  function traceClaude(e) {
+    const parent = e?.parent_tool_use_id ? String(e.parent_tool_use_id) : null;
+    const row = (fields) => writeToolTrace({ kind: 'claude', t: traceNow(), ...(parent ? { parent } : {}), ...fields });
+    if (e?.type === 'stream_event') {
+      const ev = e.event;
+      if (ev?.type === 'message_start') {
+        traceMessageIds.set(parent, ev.message?.id ?? null);
+        row({ ev: 'message_start', messageId: ev.message?.id ?? null });
+      } else if (ev?.type === 'content_block_start' && ev.content_block?.type === 'tool_use') {
+        row({
+          ev: 'tool_use_start', messageId: traceMessageIds.get(parent) ?? null, index: ev.index,
+          toolUseId: ev.content_block.id, tool: String(ev.content_block.name ?? '').replace(/^mcp__rhwp__/, ''),
+        });
+      } else if (ev?.type === 'content_block_stop') {
+        row({ ev: 'block_stop', messageId: traceMessageIds.get(parent) ?? null, index: ev.index });
+      } else if (ev?.type === 'message_delta' && ev.delta?.stop_reason) {
+        row({ ev: 'message_delta', messageId: traceMessageIds.get(parent) ?? null, stopReason: ev.delta.stop_reason });
+      }
+      return;
+    }
+    if (e?.type === 'assistant' && Array.isArray(e.message?.content)) {
+      for (const block of e.message.content) {
+        if (block?.type !== 'tool_use') continue;
+        row({
+          ev: 'tool_use', messageId: e.message.id ?? null, toolUseId: block.id,
+          tool: String(block.name ?? '').replace(/^mcp__rhwp__/, ''),
+        });
+      }
+      return;
+    }
+    if (e?.type === 'user' && Array.isArray(e.message?.content)) {
+      for (const block of e.message.content) {
+        if (block?.type === 'tool_result') row({ ev: 'tool_result', toolUseId: block.tool_use_id, isError: block.is_error === true });
+      }
+      return;
+    }
+    if (e?.type === 'result') {
+      row({ ev: 'result', durationMs: e.duration_ms ?? null, apiMs: e.duration_api_ms ?? null, numTurns: e.num_turns ?? null });
+    }
+  }
+
   // ── 서브에이전트/워크플로 task 추적 ────────────────────────────
   // tool_use id → taskId (parentTaskId 번역용). 프로세스 수명 동안 유지 —
   // 늦게 흘러오는 child 이벤트가 다음 턴 초기에 도착해도 귀속이 맞아야 한다.
@@ -726,6 +771,7 @@ export function createClaudeSession(opts, {
     // 새 stdout 라인 = CLI 가 아직 할 일이 있다 — 예약된 턴 정착을 미룬다.
     // (result 분기가 처리 끝에 다시 예약한다.)
     clearSettleTimer();
+    if (TOOL_TRACE_ENABLED) traceClaude(e);
     if (e?.type === 'system') {
       handleSystemEvent(e);
       return;
