@@ -3893,13 +3893,21 @@ async function handleStudioMessage(record, sock, msg) {
           piStatus = status;
         })
         : cliSetup.install(agent, progress).then((status) => { cliSetupStatus[agent] = status; });
+      // 설치 중이라는 사실과 결과는 모든 Studio 에 알린다. 요청한 탭이 재접속해도 설치 상태를 잃지 않는다.
+      void agentSetupStatuses().then(broadcastAgentSetupStatuses).catch(() => {});
       void installing
-        .then(() => agentSetupStatuses(record.sessionId))
-        .then((statuses) => {
-          replyToStudio(record, sock, { v: 1, type: 'agent-setup-status', requestId, statuses });
-          void providerHealth.check(true).then((providers) => replyToStudio(record, sock, { v: 1, type: 'provider-status', providers }));
+        // 새 바이너리를 감지한 뒤 상태를 만들어야 완료 프레임의 available/connected 가 맞다.
+        .then(() => providerHealth.check(true))
+        .then(async (providers) => {
+          broadcastToStudios({ v: 1, type: 'provider-status', providers });
+          const statuses = await agentSetupStatuses();
+          replyToStudio(record, sock, { v: 1, type: 'agent-setup-status', requestId, statuses: withAuthRunStatus(statuses, record.sessionId) });
+          broadcastAgentSetupStatuses(statuses);
         })
-        .catch((e) => sendAgentSetupError(record, sock, requestId, agent, e, 'AGENT_INSTALL_FAILED'));
+        .catch((e) => {
+          sendAgentSetupError(record, sock, requestId, agent, e, 'AGENT_INSTALL_FAILED');
+          void agentSetupStatuses().then(broadcastAgentSetupStatuses).catch(() => {});
+        });
       return;
     }
     case 'agent-setup-auth': {
