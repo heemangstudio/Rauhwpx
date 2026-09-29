@@ -861,7 +861,8 @@ export class CanvasView {
     let frame: number | null = null;
     const flush = (): void => {
       frame = null;
-      if (this.disposed) return;
+      // trap 한 엔진은 다시 그릴 수 없다. 마지막으로 그린 쪽은 engine-trap 경로가 지킨다.
+      if (this.disposed || engineTrap()) return;
       const pages = Array.from(restoredPages);
       restoredPages.clear();
       for (const pageIdx of pages) {
