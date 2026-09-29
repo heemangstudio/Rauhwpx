@@ -28,11 +28,17 @@ impl crate::wmf::parser::META_ESCAPE {
             });
         }
 
+        // size 가 고정부(PointL + Size + Version)보다 작으면 u32 뺄셈이 넘친다.
         let data_length = size
-            - (u32::try_from(size_of::<crate::wmf::parser::PointL>())
-                .expect("should be convert u32")
-                + 4
-                + 4);
+            .checked_sub(
+                u32::try_from(size_of::<crate::wmf::parser::PointL>())
+                    .expect("should be convert u32")
+                    + 4
+                    + 4,
+            )
+            .ok_or_else(|| crate::wmf::parser::ParseError::UnexpectedPattern {
+                cause: format!("The size field `{size:#06X}` is smaller than the fixed fields"),
+            })?;
         let (data, c) = crate::wmf::parser::read_variable(buf, data_length as usize)?;
         record_size.consume(c);
 

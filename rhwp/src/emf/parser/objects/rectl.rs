@@ -21,13 +21,14 @@ impl RectL {
             bottom: c.i32()?,
         })
     }
+    /// 좌표는 파일이 정한 i32 라 뺄셈이 넘칠 수 있다(디버그 빌드 패닉). 포화한다.
     #[must_use]
     pub const fn width(&self) -> i32 {
-        self.right - self.left
+        self.right.saturating_sub(self.left)
     }
     #[must_use]
     pub const fn height(&self) -> i32 {
-        self.bottom - self.top
+        self.bottom.saturating_sub(self.top)
     }
 }
 

@@ -68,13 +68,15 @@ pub fn parse(payload: &[u8]) -> Result<ExtTextOut, Error> {
         let byte_len = n_chars
             .checked_mul(2)
             .ok_or(Error::UnexpectedEof { at: start, need: 0 })?;
-        if start + byte_len > payload.len() {
-            return Err(Error::UnexpectedEof {
+        // wasm32 에서 `start + byte_len` 이 넘치면 검사를 통과한 뒤 슬라이스에서
+        // 패닉한다. 끝 위치를 checked 로 구한다.
+        let slice = start
+            .checked_add(byte_len)
+            .and_then(|end| payload.get(start..end))
+            .ok_or(Error::UnexpectedEof {
                 at: start,
                 need: byte_len,
-            });
-        }
-        let slice = &payload[start..start + byte_len];
+            })?;
         let mut utf16 = Vec::with_capacity(n_chars);
         for i in 0..n_chars {
             utf16.push(u16::from_le_bytes([slice[i * 2], slice[i * 2 + 1]]));
@@ -107,4 +109,24 @@ fn read_rectl(b: &[u8]) -> Result<RectL, Error> {
         right: read_i32(&b[8..12]),
         bottom: read_i32(&b[12..16]),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// offString·nChars 가 u32 끝값이면 wasm32 에서 `start + byte_len` 이 넘친다.
+    /// 범위 검사가 넘침에 속지 않고 오류를 돌려줘야 한다.
+    #[test]
+    fn ext_text_out_with_hostile_string_offset_is_an_error() {
+        let mut payload = vec![0u8; 68];
+        payload[36..40].copy_from_slice(&0x7FFF_FFFFu32.to_le_bytes()); // nChars
+        payload[40..44].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // offString
+
+        assert!(parse(&payload).is_err());
+
+        payload[36..40].copy_from_slice(&1u32.to_le_bytes());
+        payload[40..44].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        assert!(parse(&payload).is_err());
+    }
 }

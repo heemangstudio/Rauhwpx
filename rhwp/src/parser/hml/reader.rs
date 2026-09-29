@@ -56,6 +56,15 @@ pub struct HmlLimits {
     /// char_shapes 에 대해서는 표현 한계가 아닌 정책 상한이며, 그래서 초과분은
     /// 하드 오류가 아니라 경고를 남기고 건너뛴다.
     pub max_resource_id: usize,
+    /// 원문 보존 캡슐(`PreservedFragment`) 최대 개수. 넘으면 `LimitExceeded`.
+    ///
+    /// 캡슐은 HEAD/BODY/TAIL 바로 아래 미지원 요소마다 하나씩 생긴다. 실제 문서는
+    /// 몇 개뿐이지만 `<a/>` 4바이트마다 하나가 생기므로 상한이 없으면 100 MB 입력이
+    /// 수천만 개의 문자열을 만든다. 캡슐을 버리면 저장 시 원문을 잃으므로 조용히
+    /// 자르지 않고 오류로 끝낸다.
+    pub max_preserved_fragments: usize,
+    /// 경고 최대 개수. 넘으면 요약 경고 하나만 남기고 나머지는 기록하지 않는다.
+    pub max_warnings: usize,
 }
 
 impl Default for HmlLimits {
@@ -66,6 +75,8 @@ impl Default for HmlLimits {
             max_attributes: 256,
             max_text_node_bytes: 8 * 1024 * 1024,
             max_resource_id: 65_535,
+            max_preserved_fragments: 10_000,
+            max_warnings: 10_000,
         }
     }
 }
@@ -207,10 +218,19 @@ struct ReadState<'a> {
     saw_body: bool,
     /// [#2743] `HmlLimits::max_resource_id` 사본 — 리소스 `Id` 상한.
     max_resource_id: usize,
+    /// `HmlLimits::max_preserved_fragments` 사본.
+    max_preserved_fragments: usize,
+    /// `HmlLimits::max_warnings` 사본.
+    max_warnings: usize,
+    /// 상한을 넘어 요약 경고를 이미 남겼는지.
+    warnings_truncated: bool,
+    /// 부모 요소별로 지금까지 보존한 캡슐 수 (`PreservedFragment::order`).
+    /// 예전에는 캡슐마다 앞선 캡슐 전부를 다시 세어 개수의 제곱에 비례했다.
+    preserved_fragment_counts: std::collections::HashMap<String, usize>,
 }
 
 impl<'a> ReadState<'a> {
-    fn new(xml: &'a str, max_resource_id: usize) -> Self {
+    fn new(xml: &'a str, limits: &HmlLimits) -> Self {
         Self {
             xml,
             stack: Vec::new(),
@@ -230,7 +250,23 @@ impl<'a> ReadState<'a> {
             body_modeled_children: 0,
             saw_head: false,
             saw_body: false,
-            max_resource_id,
+            max_resource_id: limits.max_resource_id,
+            max_preserved_fragments: limits.max_preserved_fragments,
+            max_warnings: limits.max_warnings,
+            warnings_truncated: false,
+            preserved_fragment_counts: std::collections::HashMap::new(),
+        }
+    }
+
+    /// 경고를 남긴다. 상한을 넘으면 요약 경고를 한 번만 남기고 나머지는 버린다.
+    fn push_warning(&mut self, warning: HmlWarning) {
+        if self.source.warnings.len() < self.max_warnings {
+            self.source.warnings.push(warning);
+        } else if !self.warnings_truncated {
+            self.warnings_truncated = true;
+            self.source
+                .warnings
+                .push(HmlWarning::warnings_truncated(self.max_warnings));
         }
     }
 
@@ -239,7 +275,7 @@ impl<'a> ReadState<'a> {
     /// 대체하고 계속 진행하는 이 리더의 확립된 방침과 같은 처리다.
     fn warn_resource_id_out_of_range(&mut self, element: &str, id: usize) {
         let max = self.max_resource_id;
-        self.source.warnings.push(HmlWarning::invalid_reference(
+        self.push_warning(HmlWarning::invalid_reference(
             format!("/{}", self.stack.join("/")),
             format!("{element} Id={id} (상한 {max} 초과, 건너뜀)"),
         ));
@@ -304,7 +340,7 @@ impl<'a> ReadState<'a> {
                 modeled_siblings_before,
                 start_pos,
                 end_pos,
-            );
+            )?;
         }
         self.capture_start(&name, element)?;
         self.finish_element(&name)?;
@@ -347,7 +383,7 @@ impl<'a> ReadState<'a> {
                 pending.modeled_siblings_before,
                 pending.start_offset,
                 end_pos,
-            );
+            )?;
         }
         self.finish_element(actual)?;
         self.stack.pop();
@@ -362,13 +398,18 @@ impl<'a> ReadState<'a> {
         modeled_siblings_before: usize,
         start_offset: u64,
         end_offset: u64,
-    ) {
-        let order = self
-            .source
-            .preserved_fragments
-            .iter()
-            .filter(|fragment| fragment.parent == parent)
-            .count();
+    ) -> Result<(), HmlError> {
+        if self.source.preserved_fragments.len() >= self.max_preserved_fragments {
+            return Err(HmlError::LimitExceeded(
+                "preserved fragment count".to_string(),
+            ));
+        }
+        let count = self
+            .preserved_fragment_counts
+            .entry(parent.clone())
+            .or_insert(0);
+        let order = *count;
+        *count += 1;
         let raw_xml = self.xml[start_offset as usize..end_offset as usize].to_string();
         self.source.preserved_fragments.push(PreservedFragment {
             parent,
@@ -377,6 +418,7 @@ impl<'a> ReadState<'a> {
             xml_path,
             raw_xml,
         });
+        Ok(())
     }
 
     fn modeled_siblings_before(&self) -> usize {
@@ -566,7 +608,7 @@ impl<'a> ReadState<'a> {
             Some("None") => BorderLineType::None,
             Some("Solid") | None => BorderLineType::Solid,
             Some(value) => {
-                self.source.warnings.push(HmlWarning::unsupported_attribute(
+                self.push_warning(HmlWarning::unsupported_attribute(
                     format!("/{}", self.stack.join("/")),
                     &format!("Type={value}"),
                 ));
@@ -799,12 +841,10 @@ impl<'a> ReadState<'a> {
                     .map_err(|_| HmlError::InvalidXml("non-UTF-8 attribute".to_string()))?;
                 let value = quick_xml::escape::unescape(raw)
                     .map_err(|error| HmlError::InvalidXml(error.to_string()))?;
-                self.source
-                    .warnings
-                    .push(HmlWarning::unsupported_equation_semantics(
-                        format!("{path}/@{name}"),
-                        &bounded_equation_semantics(name, &value),
-                    ));
+                self.push_warning(HmlWarning::unsupported_equation_semantics(
+                    format!("{path}/@{name}"),
+                    &bounded_equation_semantics(name, &value),
+                ));
             }
         }
         self.equations.push(HmlEquation {
@@ -827,20 +867,19 @@ impl<'a> ReadState<'a> {
             .last_mut()
             .ok_or_else(|| HmlError::InvalidXml("SCRIPT outside EQUATION".to_string()))?;
         equation.script_count += 1;
-        if equation.script_count == 1 {
+        let script_count = equation.script_count;
+        if script_count == 1 {
             self.accepted_script_depth = Some(self.stack.len());
         } else {
-            self.source
-                .warnings
-                .push(HmlWarning::unsupported_equation_semantics(
-                    format!("/{}[{}]", self.stack.join("/"), equation.script_count),
-                    "SCRIPT",
-                ));
+            self.push_warning(HmlWarning::unsupported_equation_semantics(
+                format!("/{}[{}]", self.stack.join("/"), script_count),
+                "SCRIPT",
+            ));
         }
-        let path = if equation.script_count == 1 {
+        let path = if script_count == 1 {
             format!("/{}", self.stack.join("/"))
         } else {
-            format!("/{}[{}]", self.stack.join("/"), equation.script_count)
+            format!("/{}[{}]", self.stack.join("/"), script_count)
         };
         for item in element.attributes() {
             let attr = item.map_err(|error| HmlError::InvalidXml(error.to_string()))?;
@@ -850,12 +889,10 @@ impl<'a> ReadState<'a> {
                 .map_err(|_| HmlError::InvalidXml("non-UTF-8 attribute".to_string()))?;
             let value = quick_xml::escape::unescape(raw)
                 .map_err(|error| HmlError::InvalidXml(error.to_string()))?;
-            self.source
-                .warnings
-                .push(HmlWarning::unsupported_equation_semantics(
-                    format!("{path}/@{name}"),
-                    &bounded_equation_semantics(name, &value),
-                ));
+            self.push_warning(HmlWarning::unsupported_equation_semantics(
+                format!("{path}/@{name}"),
+                &bounded_equation_semantics(name, &value),
+            ));
         }
         Ok(())
     }
@@ -1018,7 +1055,7 @@ impl<'a> ReadState<'a> {
         if style == "Solid" {
             attr |= 1;
         } else {
-            self.source.warnings.push(HmlWarning::unsupported_attribute(
+            self.push_warning(HmlWarning::unsupported_attribute(
                 format!("/{}", self.stack.join("/")),
                 &format!("Style={style}"),
             ));
@@ -1026,13 +1063,13 @@ impl<'a> ReadState<'a> {
         if end_cap == "Flat" {
             attr |= 1 << 6;
         } else {
-            self.source.warnings.push(HmlWarning::unsupported_attribute(
+            self.push_warning(HmlWarning::unsupported_attribute(
                 format!("/{}", self.stack.join("/")),
                 &format!("EndCap={end_cap}"),
             ));
         }
         if alpha != 0 {
-            self.source.warnings.push(HmlWarning::unsupported_attribute(
+            self.push_warning(HmlWarning::unsupported_attribute(
                 format!("/{}", self.stack.join("/")),
                 &format!("Alpha={alpha}"),
             ));
@@ -1061,7 +1098,7 @@ impl<'a> ReadState<'a> {
         let pattern_color = parse_attribute(element, b"HatchColor")?.unwrap_or(0);
         let alpha = parse_attribute(element, b"Alpha")?.unwrap_or(0);
         if let Some(hatch_style) = attribute(element, b"HatchStyle")? {
-            self.source.warnings.push(HmlWarning::unsupported_attribute(
+            self.push_warning(HmlWarning::unsupported_attribute(
                 format!("/{}", self.stack.join("/")),
                 &format!("HatchStyle={hatch_style}"),
             ));
@@ -1223,12 +1260,10 @@ impl<'a> ReadState<'a> {
             .message;
             return;
         }
-        self.source
-            .warnings
-            .push(HmlWarning::unsupported_equation_semantics(
-                path,
-                &bounded_equation_semantics("#text", text),
-            ));
+        self.push_warning(HmlWarning::unsupported_equation_semantics(
+            path,
+            &bounded_equation_semantics("#text", text),
+        ));
     }
 
     fn current_paragraph(&mut self) -> Result<&mut HmlParagraph, HmlError> {
@@ -1264,12 +1299,18 @@ impl<'a> ReadState<'a> {
             let path = format!("/{}/{}", self.stack.join("/"), name);
             let preserved = unknown_document_child
                 || (name == "SCRIPTCODE" && matches!(parent, Some("TAIL") | Some("HEAD")));
+            // 경고 기록(`push_warning`)이 self 를 빌리므로 부모 이름은 보존할 때만 복사한다.
+            let preserved_parent = preserved.then(|| {
+                parent
+                    .expect("preserved implies parent present")
+                    .to_string()
+            });
             let warning = if unsupported_equation_child {
                 HmlWarning::unsupported_equation_semantics(path.clone(), name)
             } else {
                 HmlWarning::unsupported_element(path.clone(), name, preserved)
             };
-            self.source.warnings.push(warning);
+            self.push_warning(warning);
             if unsupported_equation_child {
                 for item in element.attributes() {
                     let attr = item.map_err(|error| HmlError::InvalidXml(error.to_string()))?;
@@ -1280,21 +1321,14 @@ impl<'a> ReadState<'a> {
                         .map_err(|_| HmlError::InvalidXml("non-UTF-8 attribute".to_string()))?;
                     let value = quick_xml::escape::unescape(raw)
                         .map_err(|error| HmlError::InvalidXml(error.to_string()))?;
-                    self.source
-                        .warnings
-                        .push(HmlWarning::unsupported_equation_semantics(
-                            format!("{path}/@{attr_name}"),
-                            &bounded_equation_semantics(attr_name, &value),
-                        ));
+                    self.push_warning(HmlWarning::unsupported_equation_semantics(
+                        format!("{path}/@{attr_name}"),
+                        &bounded_equation_semantics(attr_name, &value),
+                    ));
                 }
             }
-            if preserved {
-                return Ok(Some((
-                    parent
-                        .expect("preserved implies parent present")
-                        .to_string(),
-                    path,
-                )));
+            if let Some(parent) = preserved_parent {
+                return Ok(Some((parent, path)));
             }
         }
         Ok(None)
@@ -1328,30 +1362,39 @@ impl<'a> ReadState<'a> {
         let char_count = self.source.char_shapes.len();
         let para_count = self.source.para_shapes.len();
         let style_count = self.source.styles.len();
-        for (section_index, section) in self.source.sections.iter().enumerate() {
+        // 상한을 넘는 몫까지 모아 둘 필요는 없다 (요약 경고 하나면 된다).
+        let budget = self.max_warnings.saturating_sub(self.source.warnings.len()) + 1;
+        let mut warnings = Vec::new();
+        'sections: for (section_index, section) in self.source.sections.iter().enumerate() {
             for (paragraph_index, paragraph) in section.paragraphs.iter().enumerate() {
+                if warnings.len() >= budget {
+                    break 'sections;
+                }
                 let path = format!("/HWPML/BODY/SECTION[{section_index}]/P[{paragraph_index}]");
                 if paragraph.para_shape_id as usize >= para_count && para_count != 0 {
-                    self.source.warnings.push(HmlWarning::invalid_reference(
+                    warnings.push(HmlWarning::invalid_reference(
                         path.clone(),
                         format!("ParaShape {}", paragraph.para_shape_id),
                     ));
                 }
                 if paragraph.style_id as usize >= style_count && style_count != 0 {
-                    self.source.warnings.push(HmlWarning::invalid_reference(
+                    warnings.push(HmlWarning::invalid_reference(
                         path.clone(),
                         format!("Style {}", paragraph.style_id),
                     ));
                 }
                 for reference in &paragraph.char_shapes {
                     if reference.char_shape_id as usize >= char_count && char_count != 0 {
-                        self.source.warnings.push(HmlWarning::invalid_reference(
+                        warnings.push(HmlWarning::invalid_reference(
                             path.clone(),
                             format!("CharShape {}", reference.char_shape_id),
                         ));
                     }
                 }
             }
+        }
+        for warning in warnings {
+            self.push_warning(warning);
         }
     }
 }
@@ -1377,7 +1420,7 @@ pub(crate) fn has_hwpml_root(xml: &str) -> bool {
 
 pub(crate) fn read_hml(xml: &str, limits: &HmlLimits) -> Result<HmlSource, HmlError> {
     let mut reader = Reader::from_str(xml);
-    let mut state = ReadState::new(xml, limits.max_resource_id);
+    let mut state = ReadState::new(xml, limits);
     // 이전 이벤트가 소비를 마친 지점 = 다음 시작 태그의 첫 바이트 오프셋.
     // 보존 캡슐이 원문을 바이트 그대로 잘라내는 데 사용한다.
     let mut prev_pos: u64 = 0;

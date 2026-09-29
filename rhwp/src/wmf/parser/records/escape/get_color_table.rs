@@ -12,8 +12,16 @@ impl crate::wmf::parser::META_ESCAPE {
         let (_, c) = crate::wmf::parser::read_variable(buf, start as usize)?;
         record_size.consume(c);
 
+        // start > byte_count 면 u16 뺄셈이 넘친다 (디버그 패닉/릴리스 wrap).
+        let color_table_len = byte_count.checked_sub(start).ok_or_else(|| {
+            crate::wmf::parser::ParseError::UnexpectedPattern {
+                cause: format!(
+                    "The start `{start}` field must not exceed byte_count `{byte_count}`"
+                ),
+            }
+        })?;
         let (color_table_buffer, c) =
-            crate::wmf::parser::read_variable(buf, (byte_count - start) as usize)?;
+            crate::wmf::parser::read_variable(buf, color_table_len as usize)?;
         record_size.consume(c);
 
         crate::wmf::parser::records::consume_remaining_bytes(buf, record_size)?;

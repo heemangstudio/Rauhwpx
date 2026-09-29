@@ -637,6 +637,8 @@ fn parse_shape_list(
     doc_tab_defs: &mut Vec<crate::model::style::TabDef>,
     pic_name_to_id: &mut HashMap<String, u16>,
 ) -> Result<Vec<ShapeObject>, Hwp3Error> {
+    // 묶음 개체의 자식 목록도 문단 목록과 같은 중첩 상한을 쓴다.
+    let _nesting = crate::parser::hwp3::Hwp3NestingGuard::enter()?;
     let mut list = Vec::new();
     loop {
         let raw_obj =

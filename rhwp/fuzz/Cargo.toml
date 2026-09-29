@@ -58,3 +58,17 @@ path = "fuzz_targets/parse_ooxml_chart.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "parse_emf"
+path = "fuzz_targets/parse_emf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_ole_chart"
+path = "fuzz_targets/parse_ole_chart.rs"
+test = false
+doc = false
+bench = false

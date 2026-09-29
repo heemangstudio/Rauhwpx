@@ -71,7 +71,20 @@ impl BitmapInfoHeader {
         }
     }
 
+    /// aData 바이트 수 (MS-WMF 2.2.2.9 BitmapBuffer).
+    ///
+    /// 폭·높이·평면 수는 신뢰할 수 없는 값이다. 예전의 u16(Core)/u32(Info) 산술은
+    /// 256×256 8bpp Core DIB 나 폭 i32::MAX 인 Info DIB 에서 넘쳐 디버그 빌드는
+    /// 패닉하고 릴리스 빌드는 0 이 돼 뒤의 줄 자르기가 패닉했다. u64 로 계산하고,
+    /// 넘치면 `usize::MAX` 로 포화한다 — 읽기 단계(`read_variable`)가 입력 부족으로
+    /// 깔끔히 실패한다.
     pub fn size(&self) -> usize {
+        fn packed_size(width: u64, planes: u64, bit_count: u64, height: u64) -> Option<u64> {
+            let row_bits = width.checked_mul(planes)?.checked_mul(bit_count)?;
+            let row_bytes = (row_bits.checked_add(31)? & !31) / 8;
+            row_bytes.checked_mul(height)
+        }
+
         let size = match self {
             Self::Core(BitmapInfoHeaderCore {
                 width,
@@ -79,7 +92,12 @@ impl BitmapInfoHeader {
                 planes,
                 bit_count,
                 ..
-            }) => u32::from((((width * planes * (*bit_count as u16) + 31) & !31) / 8) * height),
+            }) => packed_size(
+                u64::from(*width),
+                u64::from(*planes),
+                u64::from(*bit_count as u16),
+                u64::from(*height),
+            ),
             Self::Info(BitmapInfoHeaderInfo {
                 width,
                 height,
@@ -109,15 +127,18 @@ impl BitmapInfoHeader {
             }) => match compression {
                 crate::wmf::parser::Compression::BI_RGB
                 | crate::wmf::parser::Compression::BI_BITFIELDS
-                | crate::wmf::parser::Compression::BI_CMYK => {
-                    ((((*width as u32) * u32::from(*planes) * (*bit_count as u32) + 31) & !31) / 8)
-                        * height.unsigned_abs()
-                }
-                _ => *image_size,
+                | crate::wmf::parser::Compression::BI_CMYK => packed_size(
+                    u64::from(width.unsigned_abs()),
+                    u64::from(*planes),
+                    u64::from(*bit_count as u16),
+                    u64::from(height.unsigned_abs()),
+                ),
+                _ => Some(u64::from(*image_size)),
             },
         };
 
-        size as usize
+        size.and_then(|size| usize::try_from(size).ok())
+            .unwrap_or(usize::MAX)
     }
 
     pub fn color_used(&self) -> u32 {
@@ -171,7 +192,9 @@ impl BitmapInfoHeader {
             Self::Core(BitmapInfoHeaderCore { width, .. }) => usize::from(*width),
             Self::Info(BitmapInfoHeaderInfo { width, .. })
             | Self::V4(BitmapInfoHeaderV4 { width, .. })
-            | Self::V5(BitmapInfoHeaderV5 { width, .. }) => *width as usize,
+            // 파서는 양수 폭만 받지만 필드가 pub 이다. 음수가 들어와도 `as usize` 로
+            // 거대한 값이 되지 않도록 `height()`·`size()` 와 같이 크기만 쓴다.
+            | Self::V5(BitmapInfoHeaderV5 { width, .. }) => width.unsigned_abs() as usize,
         }
     }
 }
