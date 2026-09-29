@@ -2110,21 +2110,9 @@ pub fn stored_lines_stale_for_body(
 /// 마스킹 문단의 저장 줄수가 fresh 와 다르면(과소 포함) 저장을 불신하고 본문
 /// 경로(`recompose_for_body_width` — 글자모양 재분할 포함)로 fresh 재래핑한다.
 /// 셀 판(#2291, 1줄 한정)과 같은 원리의 다중줄 일반화 + 마스킹 한정.
-pub fn recompose_stored_lines_if_overflowing_body(
-    composed: &mut ComposedParagraph,
-    para: &Paragraph,
-    column_inner_width_px: f64,
-    styles: &ResolvedStyleSet,
-) {
-    if !stored_lines_stale_for_body(composed, para, column_inner_width_px, styles) {
-        return;
-    }
-    recompose_stale_stored_lines_for_body(composed, para, column_inner_width_px, styles);
-}
-
-/// [`recompose_stored_lines_if_overflowing_body`] 의 재래핑 본체 — stale 판정 없이
-/// 실행한다. 호출자가 방금 [`stored_lines_stale_for_body`] 로 확인한 경우 전용
-/// (판정은 줄별 폭 추정·probe 재래핑을 포함해 비싸므로 두 번 돌리지 않는다).
+///
+/// stale 판정은 하지 않는다 — 호출자가 [`stored_lines_stale_for_body`] 로 먼저
+/// 확인한다 (판정은 줄별 폭 추정·probe 재래핑을 포함해 비싸므로 두 번 돌리지 않는다).
 pub fn recompose_stale_stored_lines_for_body(
     composed: &mut ComposedParagraph,
     para: &Paragraph,
