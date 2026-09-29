@@ -66,19 +66,29 @@ test('PageRenderer guards embedded raster data before DOM image decode and prefe
     '  private createOrReuseFlowImageLayer',
     '  private createOrReuseFilteredCanvasLayer',
   );
-  assertBefore(flowImages, 'assertBase64EncodedImageDecodeDimensions(image.base64', 'new Image()');
+  // DOM 층은 모든 그림이 형식·크기 검사를 통과할 때만 `<img>` 디코드를 시작한다.
+  assertBefore(flowImages, 'images.every(isDomDisplayableFlowImage)', 'new Image()');
+  const displayable = between(
+    source('view/flow-image-clip.ts'),
+    'export function isDomDisplayableFlowImage',
+    'export function visibleFlowImageBbox',
+  );
+  assert.match(displayable, /assertBase64EncodedImageDecodeDimensions\(image\.base64/);
 
   const prefetch = between(
     renderer,
     '  private async prefetchLayerImages',
-    '  /** 특정 페이지의 지연 재렌더링을 취소한다 */',
+    '  cancelReRender(pageIdx: number): void {',
   );
-  const rasterEnqueue = between(prefetch, '    const enqueueRaster', '    // image 항목들의');
-  assertBefore(
-    rasterEnqueue,
-    'assertBase64EncodedImageDecodeDimensions(base64',
-    'enqueueValidated(',
-  );
-  assert.match(prefetch, /while \(\(m = re\.exec\(json\)\) !== null\) \{\s+enqueueRaster\(m\[2\], m\[3\]\)/);
-  assert.match(prefetch, /while \(\(d = dataUrlRe\.exec\(json\)\) !== null\) \{\s+enqueueRaster\(d\[1\], d\[2\]\)/);
+  assert.match(prefetch, /collectLayerImagePrefetch\(JSON\.parse\(this\.wasm\.getPageLayerTree\(pageIdx\)\)\)/);
+
+  // 미리 디코드할 raster 는 모두 헤더 검사를 먼저 통과한다.
+  const walk = source('view/raw-svg-prefetch.ts');
+  const guard = between(walk, 'function hasValidRasterDimensions', 'function findSvgAttrValue');
+  assert.match(guard, /assertBase64EncodedImageDecodeDimensions\(base64/);
+  const images = between(walk, '  const visitImage', '  const visitRawSvg');
+  assertBefore(images, 'hasValidRasterDimensions(base64)', 'enqueue(`data:${mime};base64,${base64}`)');
+  const rawSvg = between(walk, '  const visitRawSvg', '  // PageLayerTree 구조');
+  assertBefore(rawSvg, 'hasValidRasterDimensions(match[2])', 'enqueue(single)');
+  assertBefore(rawSvg, 'hasValidRasterDimensions(embedded[2])', 'enqueue(rawSvgFragmentToDataUrl(');
 });

@@ -28,7 +28,7 @@ import {
   type ActivePageSnapshot,
 } from './active-page.ts';
 import { SubsecondRevisionWatcher } from '@/core/subsecond-runtime';
-import { engineTrap, reportEngineTrap } from '@/core/engine-trap';
+import { engineTrap, onEngineTrap, reportEngineTrap } from '@/core/engine-trap';
 import {
   headerFooterApplyToLabel,
   parseHeaderFooterModeChanged,
@@ -87,6 +87,8 @@ export class CanvasView {
   );
   private documentLoadPrepared = false;
   private layoutViewportSize = { width: 0, height: 0 };
+  /** 전체 refresh 마다 증가 — 머리말/꼬리말 대표 preview 재사용 키에 들어간다. */
+  private documentRenderGeneration = 0;
   private disposed = false;
 
   constructor(
@@ -109,6 +111,14 @@ export class CanvasView {
     this.scrollContent = container.querySelector('#scroll-content')!;
     this.viewportManager.attachTo(container);
     this.unsubscribers.push(this.watchDevicePixelRatio(), this.watchCanvasContextRestore());
+    // trap 뒤에는 어떤 예약 작업도 엔진을 부를 수 없다. 대기 중인 이미지 재렌더·선렌더·검증
+    // 타이머가 마지막으로 그린 쪽을 지우지 않도록 모두 끊는다.
+    this.unsubscribers.push(onEngineTrap(() => {
+      this.pageRenderer.cancelAll();
+      this.cancelPendingPrefetch();
+      this.cancelTextEditStaticLayerVerification();
+      this.cancelAutoRendererReselection();
+    }));
 
     this.unsubscribers.push(
       eventBus.on('viewport-scroll', () => {
@@ -206,7 +216,8 @@ export class CanvasView {
       this.virtualScroll.getCenteredScrollLeft(this.layoutViewportSize.width),
     );
 
-    this.container.scrollTop = 0;
+    // 캐시 좌표도 함께 0 으로 맞춘다 — 직접 대입하면 첫 쪽 창이 이전 문서의 위치로 계산된다.
+    this.viewportManager.setScrollTop(0);
     this.updateVisiblePages();
     // 초기 replay가 예약한 document fallback을 load 완료 전에 확정한다.
     await Promise.resolve();
@@ -530,12 +541,14 @@ export class CanvasView {
       desiredPages.add(pageIdx);
 
       const zoom = this.viewportManager.getZoom();
+      // 문서 세대를 넣어 전체 갱신마다 대표 preview 를 한 번 다시 그린다 (스크롤은 재사용).
       const overlayKey = [
         state.mode,
         state.sectionIdx,
         state.applyTo,
         isPreview ? 'representative' : 'related',
         zoom,
+        this.documentRenderGeneration,
       ].join(':');
       const selector = `[data-rhwp-hf-edit-page="${pageIdx}"]`;
       const existing = this.scrollContent.querySelector<HTMLElement>(selector);
@@ -697,8 +710,19 @@ export class CanvasView {
       this.scrollContent.appendChild(canvas);
     }
     if (!this.renderCanvas(pageIdx, canvas)) {
-      this.canvasPool.release(pageIdx);
+      this.releaseFailedRender(pageIdx);
     }
+  }
+
+  /**
+   * 렌더에 실패한 쪽의 canvas 를 pool 에 돌려준다. 이전 렌더가 건 지연 재렌더/검증 타이머가
+   * 그 canvas 를 붙잡고 있으므로 먼저 끊는다 — 그대로 두면 다른 쪽이 재사용한 같은 canvas
+   * 에 이 쪽을 덧그린다.
+   */
+  private releaseFailedRender(pageIdx: number): void {
+    this.cancelTextEditStaticLayerVerification(pageIdx);
+    this.pageRenderer.cancelReRender(pageIdx);
+    this.canvasPool.release(pageIdx);
   }
 
   /** 기존 canvas를 유지한 채 페이지 내용을 다시 그린다. */
@@ -1147,6 +1171,7 @@ export class CanvasView {
     }
     if (!pages) return;
     this.pages = pages;
+    this.documentRenderGeneration += 1;
 
     // 용지 폭이 바뀌어 좌우 여백(pan 공간)이 생기거나 사라지면 전체 폭과 쪽 left 가 함께
     // 움직인다. 가운데 보던 화면은 새 폭에서도 가운데로 옮긴다 — 그대로 두면 뷰포트보다
@@ -1158,6 +1183,12 @@ export class CanvasView {
     ) <= 2;
 
     this.recalcLayout();
+    // 문서가 짧아졌으면 스크롤을 새 끝 안으로 먼저 당긴다. 그대로 두면 아래 쪽 창 계산이
+    // 끝 너머를 보고 모든 쪽을 해제해, scroll 이벤트가 올 때까지 화면이 빈다.
+    this.viewportManager.clampScrollToContent(
+      this.virtualScroll.getTotalWidth(),
+      this.virtualScroll.getTotalHeight(),
+    );
     if (wasHorizontallyCentered && this.virtualScroll.getTotalWidth() !== previousTotalWidth) {
       this.viewportManager.setScrollLeft(
         this.virtualScroll.getCenteredScrollLeft(this.layoutViewportSize.width),
@@ -1187,7 +1218,7 @@ export class CanvasView {
       if (visibleSet.has(pageIdx)) {
         const canvas = this.canvasPool.getCanvas(pageIdx)!;
         if (!this.renderCanvas(pageIdx, canvas)) {
-          this.canvasPool.release(pageIdx);
+          this.releaseFailedRender(pageIdx);
         }
       } else {
         // 화면 밖 선렌더 페이지는 지금 다시 그리지 않는다 — idle 프리페치가 다시 채운다.
@@ -1226,7 +1257,7 @@ export class CanvasView {
     }
 
     if (!this.renderCanvas(pageIndex, canvas, renderContext)) {
-      this.canvasPool.release(pageIndex);
+      this.releaseFailedRender(pageIndex);
       this.updateVisiblePages();
       return;
     }
@@ -1277,6 +1308,8 @@ export class CanvasView {
   }
 
   private releaseAllRenderedPages(): void {
+    // pool 로 돌아가는 canvas 를 붙잡은 지연 재렌더가 남지 않게 먼저 모두 끊는다.
+    this.pageRenderer.cancelAll();
     this.pageRenderer.resetImageRetryState();
     this.pageRenderer.removeAllPageLayers(this.scrollContent);
     this.removeHeaderFooterEditOverlays();

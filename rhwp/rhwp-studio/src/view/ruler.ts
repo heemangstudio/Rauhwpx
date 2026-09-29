@@ -3,6 +3,7 @@ import { WasmBridge } from '@/core/wasm-bridge';
 import type { ParaProperties } from '@/core/types';
 import { VirtualScroll } from './virtual-scroll';
 import { ViewportManager } from './viewport-manager';
+import { engineTrap } from '@/core/engine-trap';
 import {
   hasRulerEditingContext,
   resolveRulerPageIndex,
@@ -182,6 +183,8 @@ export class Ruler {
 
   /** 크기 변경과 두 축 paint 사이에 프레임을 넘기지 않는다 (#6187). */
   update(): void {
+    // 멈춘 엔진은 쪽 수·쪽 정보를 줄 수 없다. 마지막으로 그린 눈금자를 그대로 둔다.
+    if (engineTrap()) return;
     const dpr = window.devicePixelRatio || 1;
     this.syncCanvasSize(dpr);
     const force = this.forceRedraw;

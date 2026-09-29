@@ -766,6 +766,12 @@ export class InputHandler {
         }
       });
     });
+    // 히스토리 밖 변이(에이전트 스테이징·거절, 수식/필드 삽입 등)는 마지막 스냅샷과 문서를
+    // 어긋나게 한다. 그 스냅샷을 다음 명령의 before 로 공유하면 undo 가 거절한 내용을
+    // 되살리므로 공유 후보를 버린다. 히스토리를 거친 편집은 'input-handler-edit' 로 온다.
+    eventBus.on('document-mutated', (reason) => {
+      if (reason !== 'input-handler-edit') this.history.invalidateCurrentSnapshot();
+    });
     eventBus.on('agent-template-lock-changed', (locked) => {
       this.agentTemplateLocked = locked === true;
       if (this.agentTemplateLocked) this.textarea.blur();
@@ -2909,6 +2915,9 @@ export class InputHandler {
 
   /** Undo 처리 */
   private handleUndo(): void {
+    // 도구상자/메뉴 되돌리기는 textarea 포커스를 유지하므로 compositionend 가 오지 않는다.
+    // 살아 있는 조합 anchor 가 undo 로 밀린 문서의 글자를 덮어쓰지 않게 먼저 확정한다.
+    if (this.isComposing) this.finalizeCompositionBeforeCursorMove();
     this.flushDeferredPaginationIfNeeded('before-undo', false);
     let newPos: DocumentPosition | null;
     try { newPos = this.history.undo(this.wasm); }
@@ -2927,6 +2936,7 @@ export class InputHandler {
 
   /** Redo 처리 */
   private handleRedo(): void {
+    if (this.isComposing) this.finalizeCompositionBeforeCursorMove();
     this.flushDeferredPaginationIfNeeded('before-redo', false);
     let newPos: DocumentPosition | null;
     try { newPos = this.history.redo(this.wasm); }
