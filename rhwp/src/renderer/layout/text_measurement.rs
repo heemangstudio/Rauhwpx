@@ -2247,6 +2247,16 @@ fn synthetic_bold_tracking_px(
     // Bold variant 유무와 무관하게 실폰트 advance 를 그대로 쓴다 —
     // 29-civil-petition 의 bold 굴림 표제는 자간 보정 없이 렌더되고,
     // 09-table-004 의 bold 한양중고딕(미등록 → 한컴돋움 치환)은 보정된다.
+    // 런타임 레지스트리(사용자 설치 폰트)에 face 가 있으면 그 판정이 우선이다 —
+    // 실제 Bold 페이스가 있으면 획 합성도 없고 자간 보정도 없다. Regular 폴백만
+    // 있으면 한컴의 합성 진하게와 동일하게 자간을 더한다.
+    if let Some(fallback) = crate::renderer::runtime_font_metrics::bold_fallback(primary, italic) {
+        return if fallback {
+            font_size * crate::renderer::FAUX_BOLD_STROKE_EM
+        } else {
+            0.0
+        };
+    }
     #[cfg(not(target_arch = "wasm32"))]
     {
         // [macOS 정합] 치환 조판 대상이 아니라 한컴 번들 자체 face
