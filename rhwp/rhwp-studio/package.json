@@ -26,6 +26,7 @@
     "e2e:agent-live-parity": "node e2e/agent-live-parity.test.mjs --mode=headless",
     "e2e:agent-overlay-kinds": "node e2e/agent-overlay-kinds.test.mjs --mode=headless",
     "e2e:agent-settings-reconnect": "node e2e/agent-settings-reconnect.test.mjs --mode=headless",
+    "e2e:engine-document-visible": "node e2e/engine-document-visible.test.mjs --mode=headless",
     "e2e:agent-tool-bench": "node e2e/agent-tool-bench.mjs --mode=headless",
     "e2e:typing-latency-bench": "node e2e/typing-latency-bench.mjs --mode=headless",
     "e2e:typing-page-spanning": "node e2e/typing-page-spanning-paragraph.test.mjs --mode=headless",

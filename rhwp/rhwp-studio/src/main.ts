@@ -66,7 +66,8 @@ import {
   readFileFromHandle,
   type FileSystemFileHandleLike,
 } from '@/command/file-system-access';
-import { forgetConvertedHmlSaveHandle } from '@/command/save-target';
+import { fileNameForFormat, forgetConvertedHmlSaveHandle } from '@/command/save-target';
+import { onEngineTrap } from '@/core/engine-trap';
 import { ContextMenu } from '@/ui/context-menu';
 import { CommandPalette } from '@/ui/command-palette';
 import { showHmlImportWarning } from '@/ui/hml-import-warning';
@@ -271,6 +272,15 @@ void rendererSessionContextPromise.then((context) => {
   }
 });
 autosaveManager.connect(eventBus);
+onEngineTrap(() => {
+  // 멈춘 엔진이 아직 읽기는 받아 줄 때 지금 상태를 복구본으로 남긴다.
+  void autosaveManager.flushNow('engine-trap');
+  showToast({
+    message: '문서 엔진이 멈춰 편집을 중단했습니다.\n사본을 저장한 뒤 앱을 다시 여세요.',
+    durationMs: 0,
+    action: { label: '사본 저장', onClick: saveTrappedDocumentCopy },
+  });
+});
 window.addEventListener('pagehide', (event) => {
   if (!event.persisted) {
     disposeCloudEditDraftSaveHandling();
@@ -283,6 +293,23 @@ initThemeSync((effective, mode) => {
   eventBus.emit('command-state-changed');
 });
 initWindowActivity();
+
+/** 엔진 trap 뒤 저장 명령은 승인·조판 같은 쓰기를 거치므로, 읽기만으로 사본을 내려받는다. */
+function saveTrappedDocumentCopy(): void {
+  try {
+    const bytes = wasm.exportHwpx();
+    const base = fileNameForFormat(wasm.fileName, 'hwpx').replace(/\.hwpx$/i, '');
+    const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: 'application/hwp+zip' }));
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `${base} 복구본.hwpx`;
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (error) {
+    console.error('[engine] 멈춘 엔진에서 사본을 만들지 못했습니다:', error);
+    showToast({ message: '사본을 만들지 못했습니다. 앱을 다시 열어 자동 저장본으로 복구하세요.', durationMs: 0 });
+  }
+}
 
 /**
  * 호스트 저장 완료 통지 (#2660).

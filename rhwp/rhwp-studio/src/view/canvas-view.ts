@@ -28,6 +28,7 @@ import {
   type ActivePageSnapshot,
 } from './active-page.ts';
 import { SubsecondRevisionWatcher } from '@/core/subsecond-runtime';
+import { engineTrap, reportEngineTrap } from '@/core/engine-trap';
 import {
   headerFooterApplyToLabel,
   parseHeaderFooterModeChanged,
@@ -183,7 +184,7 @@ export class CanvasView {
     this.applyRendererSelection(selection);
 
     const pageCount = this.wasm.pageCount;
-    this.pages = this.collectPageInfo(pageCount);
+    this.pages = this.collectPageInfo(pageCount) ?? [];
 
     if (this.pages.length === 0) {
       console.error('[CanvasView] 로드된 페이지가 없습니다');
@@ -213,12 +214,14 @@ export class CanvasView {
     console.log(`[CanvasView] ${this.pages.length}/${pageCount}페이지 로드, 총 높이: ${this.virtualScroll.getTotalHeight()}px`);
   }
 
-  private collectPageInfo(pageCount: number): PageInfo[] {
+  /** 엔진이 trap 했으면 null — 호출자는 지금 배치를 그대로 둔다. */
+  private collectPageInfo(pageCount: number): PageInfo[] | null {
     try {
       const pages = this.wasm.getAllPageInfo();
       if (pages.length === pageCount) return pages;
       console.warn(`[CanvasView] 전체 페이지 정보 개수 불일치: ${pages.length}/${pageCount}`);
     } catch (error) {
+      if (reportEngineTrap(error)) return null;
       console.warn('[CanvasView] 전체 페이지 정보 조회 실패, 개별 조회로 대체:', error);
     }
 
@@ -227,6 +230,7 @@ export class CanvasView {
       try {
         pages.push(this.wasm.getPageInfo(page));
       } catch (error) {
+        if (reportEngineTrap(error)) return null;
         console.error(`[CanvasView] 페이지 ${page} 정보 조회 실패:`, error);
       }
     }
@@ -270,6 +274,7 @@ export class CanvasView {
     batch: MutationRefreshBatch,
     isCurrent: () => boolean,
   ): Promise<void> {
+    if (engineTrap()) return;
     const selected = await this.selectMutationRevision();
     if (!isCurrent() || !selected || !this.rendererSession.isCurrent(selected.selection)) return;
     const full = batch.full || selected.backendChanged
@@ -399,6 +404,8 @@ export class CanvasView {
 
   /** 스크롤/리사이즈 시 보이는 페이지를 갱신한다 */
   private updateVisiblePages(): void {
+    // 멈춘 엔진으로는 새 쪽을 그릴 수 없다. 이미 그린 쪽을 해제하지 않고 그대로 둔다.
+    if (engineTrap()) return;
     const scrollY = this.viewportManager.getScrollY();
     const scrollX = this.viewportManager.getScrollX();
     const { width: vpWidth, height: vpHeight } = this.viewportManager.getViewportSize();
@@ -772,6 +779,8 @@ export class CanvasView {
         return false;
       }
     } catch (e) {
+      // trap 이면 이 쪽을 마지막으로 그린 canvas 를 지운 채로 두지 않는다.
+      if (reportEngineTrap(e)) return canvas.dataset.rhwpPageIndex === String(pageIdx);
       console.error(`[CanvasView] 페이지 ${pageIdx} 렌더링 실패:`, e);
       this.pageRenderer.removePageLayers(this.scrollContent, pageIdx);
       this.removeGridOverlay(pageIdx);
@@ -1087,13 +1096,34 @@ export class CanvasView {
 
   /** 편집 후 보이는 페이지를 재렌더링한다 */
   refreshPages(): void {
-    if (this.pages.length === 0) return;
+    if (this.pages.length === 0 || engineTrap()) return;
 
     // 페이지 정보 재수집 (페이지 수/크기가 변경될 수 있음)
-    const pageCount = this.wasm.pageCount;
-    this.pages = this.collectPageInfo(pageCount);
+    let pages: PageInfo[] | null;
+    try {
+      pages = this.collectPageInfo(this.wasm.pageCount);
+    } catch (error) {
+      if (!reportEngineTrap(error)) throw error;
+      pages = null;
+    }
+    if (!pages) return;
+    this.pages = pages;
+
+    // 용지 폭이 바뀌어 좌우 여백(pan 공간)이 생기거나 사라지면 전체 폭과 쪽 left 가 함께
+    // 움직인다. 가운데 보던 화면은 새 폭에서도 가운데로 옮긴다 — 그대로 두면 뷰포트보다
+    // 넓어진 용지가 통째로 오른쪽 화면 밖으로 밀려 문서가 사라진 것처럼 보인다.
+    const previousTotalWidth = this.virtualScroll.getTotalWidth();
+    const wasHorizontallyCentered = Math.abs(
+      this.viewportManager.getScrollX()
+        - this.virtualScroll.getCenteredScrollLeft(this.layoutViewportSize.width),
+    ) <= 2;
 
     this.recalcLayout();
+    if (wasHorizontallyCentered && this.virtualScroll.getTotalWidth() !== previousTotalWidth) {
+      this.viewportManager.setScrollLeft(
+        this.virtualScroll.getCenteredScrollLeft(this.layoutViewportSize.width),
+      );
+    }
 
     this.cancelTextEditStaticLayerVerification();
     this.pageRenderer.cancelAll();
@@ -1136,9 +1166,15 @@ export class CanvasView {
   }
 
   private refreshInvalidatedPageNow(pageIndex: number, renderContext: PageRenderContext): void {
-    if (this.pages.length === 0) return;
+    if (this.pages.length === 0 || engineTrap()) return;
 
-    const pageCount = this.wasm.pageCount;
+    let pageCount: number;
+    try {
+      pageCount = this.wasm.pageCount;
+    } catch (error) {
+      if (reportEngineTrap(error)) return;
+      throw error;
+    }
     if (pageCount !== this.pages.length || pageIndex >= pageCount) {
       this.refreshPages();
       return;
