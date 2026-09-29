@@ -2941,6 +2941,16 @@ button.ag-skill-copy {
   outline-offset: var(--ag-focus-offset);
 }
 
+/* 오른쪽 위 복사 버튼(안쪽 22px)이 첫 줄 끝 글자를 덮지 않도록 첫 블록의 첫 줄만 그만큼 비운다.
+   버튼이 붙기 전에도 같은 자리를 잡아 답변이 끝날 때 줄바꿈이 움직이지 않는다. */
+.ag-msg-assistant > :is(.ag-md-p, .ag-md-h):first-child::before,
+.ag-msg-assistant > .ag-md-list:first-child > .ag-md-li:first-child::before {
+  content: '';
+  float: right;
+  width: 22px;
+  height: 1px;
+}
+
 /* 복사 버튼이 마지막 자식이어도 본문 마지막 블록의 아래 여백은 걷는다. */
 .ag-msg-assistant > :has(+ .ag-msg-copy:last-child) {
   margin-bottom: 0;
@@ -2985,11 +2995,6 @@ button.ag-skill-copy {
     opacity var(--ag-dur-fast) var(--ag-ease-out),
     transform var(--ag-dur-base) var(--ag-ease-out),
     display var(--ag-dur-fast) allow-discrete;
-}
-
-/* Cloud 문서 전환·병합 줄(8px 간격 + 36px)이 떠 있으면 그 위로 비켜 선다. */
-.ag-chat-page:has(.ag-cloud-document-controls > :not([hidden])) .ag-latest-pill {
-  bottom: calc(52px + var(--ag-fleet-dock-h, 0px));
 }
 
 .ag-latest-pill[hidden] {
@@ -5157,8 +5162,8 @@ button.ag-skill-copy {
 .ag-composer {
   position: relative;
   flex: 0 0 auto;
-  /* Cloud 문서 전환·검토 줄이 떠 있는 만큼 위를 비워, 그 위의 변경 막대·계획과 겹치지 않는다. */
-  margin: var(--ag-cloud-controls-h, 0px) 12px 12px;
+  /* Cloud 문서 전환·검토 줄과 편대 알약이 떠 있는 만큼 위를 비워, 그 위의 대화·변경 막대·계획과 겹치지 않는다. */
+  margin: calc(var(--ag-cloud-controls-h, 0px) + var(--ag-fleet-reserve, 0px)) 12px 12px;
   padding: 6px 8px 6px 12px;
   border: 1px solid var(--ag-border);
   border-radius: var(--ag-r-composer);
@@ -5221,7 +5226,7 @@ button.ag-skill-copy {
   position: absolute;
   z-index: 3;
   right: 2px;
-  bottom: calc(100% + 5px + var(--ag-fleet-dock-h, 0px) + var(--ag-cloud-controls-h, 0px));
+  bottom: calc(100% + 5px + var(--ag-attached-h, 0px) + var(--ag-fleet-dock-h, 0px) + var(--ag-cloud-controls-h, 0px) + var(--ag-stack-h, 0px));
   left: 2px;
   display: flex;
   min-width: 0;
@@ -5697,10 +5702,11 @@ button.ag-skill-copy {
 }
 }
 
+/* 같은 z-index 의 편대 알약(입력기 뒤에 붙는다)이 메뉴 마지막 줄을 덮지 않도록 알약 자리 위로 뜬다. */
 .ag-slash-menu {
   position: absolute;
   right: 0;
-  bottom: calc(100% + 8px);
+  bottom: calc(100% + 8px + var(--ag-attached-h, 0px) + var(--ag-fleet-reserve, 0px));
   left: 0;
   z-index: 6;
   max-height: 240px;
@@ -8010,7 +8016,7 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 .ag-fleet-dock {
   position: absolute;
   right: 10px;
-  bottom: calc(100% + 7px);
+  bottom: calc(100% + 7px + var(--ag-attached-h, 0px));
   left: 10px;
   z-index: 6;
   display: flex;
@@ -8022,6 +8028,12 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 
 .ag-fleet-dock[hidden] {
   display: none;
+}
+
+/* 알약 한 줄(32px + 아래 간격 7px)은 흐름에서 자리를 받는다. 팝업이 열려도 이 자리는
+   그대로라서 대화가 다시 밀리지 않는다. */
+.ag-chat-page:has(.ag-fleet-dock:not([hidden])) {
+  --ag-fleet-reserve: 39px;
 }
 
 .ag-fleet-dock-pill {
@@ -8328,6 +8340,15 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 .ag-user-question:not([data-inactive='true']):has(+ .ag-composer:focus-within) {
   border-color: var(--ag-border-strong);
   border-bottom: 0;
+}
+
+/* 질문이 입력기에 붙어 있으면 위 여백(Cloud 줄·편대 알약 자리)은 질문 위에 잡힌다. */
+.ag-user-question:not([data-inactive='true']) {
+  margin-top: calc(var(--ag-cloud-controls-h, 0px) + var(--ag-fleet-reserve, 0px));
+}
+
+.ag-user-question:not([data-inactive='true']) + .ag-composer {
+  margin-top: 0;
 }
 
 .ag-user-question[data-inactive='true'] {
@@ -8650,7 +8671,7 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 .ag-cloud-document-controls {
   position: absolute;
   right: 0;
-  bottom: calc(100% + 8px + var(--ag-fleet-dock-h, 0px));
+  bottom: calc(100% + 8px + var(--ag-attached-h, 0px) + var(--ag-fleet-dock-h, 0px));
   left: 0;
   z-index: 4;
   display: flex;

@@ -3751,11 +3751,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       }
     },
   });
-  // 도크가 차지하는 높이를 입력기에 알려 계획 복원 버튼(overlay)이 겹치지 않게 한다.
+  // 입력기 위에 떠 있는 요소(도크·Cloud 줄·계획 복원 버튼)가 서로 비켜 서도록 높이를 알린다.
+  // 변수는 chatPage 에 걸어 입력기와 그 위의 질문 카드가 함께 물려받는다.
+  // 도크가 차지하는 높이는 계획 복원 버튼(overlay)이 겹치지 않게 한다.
   const dockResizeObserver = typeof ResizeObserver === 'function'
     ? new ResizeObserver((entries) => {
       const height = entries[0]?.contentRect.height ?? 0;
-      composer.style.setProperty('--ag-fleet-dock-h', height > 0 ? `${Math.ceil(height) + 6}px` : '0px');
+      chatPage.style.setProperty('--ag-fleet-dock-h', height > 0 ? `${Math.ceil(height) + 6}px` : '0px');
     })
     : null;
   dockResizeObserver?.observe(fleetView.root);
@@ -3766,11 +3768,34 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       const height = entries[0]?.contentRect.height ?? 0;
       cancelAnimationFrame(cloudControlsFrame);
       cloudControlsFrame = requestAnimationFrame(() => {
-        composer.style.setProperty('--ag-cloud-controls-h', height > 0 ? `${Math.ceil(height) + 8}px` : '0px');
+        chatPage.style.setProperty('--ag-cloud-controls-h', height > 0 ? `${Math.ceil(height) + 8}px` : '0px');
       });
     })
     : null;
   cloudControlsResizeObserver?.observe(cloudDocumentControls);
+  // 입력기 위에 흐름으로 쌓인 것들의 높이. 떠 있는 요소는 이들을 덮지 않고 한 겹 위에 선다.
+  // attached 는 입력기와 한 면을 이루는 질문 카드, stack 은 그 위의 변경 막대와 칩이다.
+  // 위치만 바꾸고 크기는 건드리지 않아 관찰 고리가 생기지 않는다.
+  const composerStackNodes = [compactChanges, reconnectChip, calibrationChip];
+  let composerStackFrame = 0;
+  function syncComposerStack(): void {
+    const question = questionController.root;
+    const attached = question.dataset.inactive === 'true' ? 0 : question.offsetHeight;
+    let stack = 0;
+    for (const node of composerStackNodes) {
+      if (node.hidden) continue;
+      stack += node.offsetHeight + (parseFloat(getComputedStyle(node).marginBottom) || 0);
+    }
+    composer.style.setProperty('--ag-attached-h', `${Math.ceil(attached)}px`);
+    composer.style.setProperty('--ag-stack-h', `${Math.ceil(stack)}px`);
+  }
+  const composerStackResizeObserver = typeof ResizeObserver === 'function'
+    ? new ResizeObserver(() => {
+      cancelAnimationFrame(composerStackFrame);
+      composerStackFrame = requestAnimationFrame(syncComposerStack);
+    })
+    : null;
+  for (const node of [...composerStackNodes, questionController.root]) composerStackResizeObserver?.observe(node);
   // 사이드바에서는 변경 검토와 계획을 분리한다. 계획은 입력기 바로 위에
   // 머물러 접었을 때 작은 진행 표시로 이어지고, 변경 검토는 가려지지 않는다.
   // 질문 카드와 입력기는 인접 형제여야 하나의 입력 면으로 이어진다.
@@ -9604,6 +9629,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       if (messagesResizeFrame !== null) window.cancelAnimationFrame(messagesResizeFrame);
       dockResizeObserver?.disconnect();
       cloudControlsResizeObserver?.disconnect();
+      composerStackResizeObserver?.disconnect();
+      cancelAnimationFrame(composerStackFrame);
       rootResizeObserver?.disconnect();
       messages.removeEventListener('scroll', onMessagesScroll);
       messages.removeEventListener('wheel', onMessagesWheel);
