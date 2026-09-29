@@ -189,11 +189,15 @@ export async function terminateAndWaitForProcessTreeExit(child, options = {}) {
  * Terminate an owned process tree. POSIX children must have been spawned with
  * processTreeSpawnOptions(), which gives them a process group whose id is the
  * leader pid. Windows uses taskkill directly with an argv array and no shell.
+ * On POSIX the group is re-probed every `pollMs` during the grace period, so a
+ * tree that exits on SIGTERM resolves promptly instead of waiting out
+ * `graceMs`; `pollMs: 0` disables polling and leaves only the grace deadline.
  * @param {any} child
  * @param {{
  *   platform?: NodeJS.Platform,
  *   graceMs?: number,
  *   finalGraceMs?: number,
+ *   pollMs?: number,
  *   killProcess?: typeof process.kill,
  *   spawnProcess?: typeof spawn,
  *   setTimer?: typeof setTimeout,
@@ -207,6 +211,7 @@ export function terminateProcessTree(child, {
   platform = process.platform,
   graceMs = 3_000,
   finalGraceMs = 500,
+  pollMs = 50,
   killProcess = process.kill,
   spawnProcess = spawn,
   setTimer = setTimeout,
@@ -278,10 +283,14 @@ export function terminateProcessTree(child, {
     finished: false,
     timer: null,
   };
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let pollTimer = null;
+  let escalated = false;
   const finish = (cleaned) => {
     if (state.finished) return;
     state.finished = true;
     if (state.timer) clearTimer(state.timer);
+    if (pollTimer) clearTimer(pollTimer);
     activeTerminations.delete(child);
     completedTerminations.set(child, cleaned);
     resolveCompletion(cleaned);
@@ -361,6 +370,21 @@ export function terminateProcessTree(child, {
   }
 
   if (state.finished) return completion;
+  if (platform !== 'win32' && pid !== null && pollMs > 0) {
+    // ESRCH on the group is the only proof; probing it more often only lets a
+    // tree that already exited on SIGTERM resolve before the grace deadline.
+    // After SIGKILL the final observation stays on the finalGraceMs timer.
+    const poll = () => {
+      pollTimer = null;
+      if (state.finished || escalated) return;
+      if (!groupAlive()) {
+        finish(true);
+        return;
+      }
+      pollTimer = setTimer(poll, pollMs);
+    };
+    pollTimer = setTimer(poll, pollMs);
+  }
   state.timer = setTimer(() => {
     if (state.finished) return;
     if (pid === null) {
@@ -375,6 +399,7 @@ export function terminateProcessTree(child, {
         finish(true);
         return;
       }
+      escalated = true;
       signal('SIGKILL');
       state.timer = setTimer(() => {
         finish(!groupAlive());

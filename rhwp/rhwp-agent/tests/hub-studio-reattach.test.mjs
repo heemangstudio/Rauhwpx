@@ -1,6 +1,8 @@
 // 스튜디오 소켓이 잠깐 끊겼다 붙는 동안 인플라이트 도구 호출이 어떻게 되는지 고정한다.
 //  - 같은 instance 로 돌아오면 호출은 살아 있고, 재연결 후 도착한 응답으로 마무리된다.
+//  - 같은 instance 로 돌아왔는데 버퍼 응답도 없으면 짧은 유예 뒤 NO_STUDIO 로 실패한다.
 //  - 다른 instance(새로고침·다른 탭)가 붙으면 즉시 NO_STUDIO 로 실패한다.
+//  - 클라이언트가 알린 maxPayload 를 넘는 결과는 소켓을 끊지 않고 RESULT_TOO_LARGE 로 돌려준다.
 //  - 인자 스키마를 캐시해도 strict/passthrough 검증 결과는 그대로다.
 //  - 참조 이미지 잘라내기/삽입은 허브가 저장소 바이트를 채워 스튜디오로 넘긴다.
 import assert from 'node:assert/strict';
@@ -215,6 +217,101 @@ test('same-instance reattach keeps in-flight tool calls alive', { timeout: 40_00
   assert.deepEqual(answered.result, { owner: 'blip' });
 
   await closeSocket(mcp);
+});
+
+test('same-instance reattach fails calls the old socket dropped without waiting for the tool timeout', { timeout: 40_000 }, async (t) => {
+  const { port, stderr } = await startHub(t);
+  const sessionId = 'dropped';
+  const studio = await connectStudio(port, { sessionId, instance: 'page-1' });
+  const session = await startRunningChat(studio, { threadId: 'thread-dropped', documentId: 'doc-dropped' });
+  const mcp = await openSocket(`ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=${sessionId}&agent=pi`);
+  t.after(() => closeSocket(mcp));
+  const request = waitForMessage(studio, (msg) => msg.type === 'tool-request');
+  const result = waitForMessage(mcp, (msg) => msg.type === 'tool-result' && msg.id === 12, 20_000);
+  sendFrame(mcp, {
+    type: 'tool-call', id: 12, tool: 'get_structure', args: {},
+    workflow: 'direct', capabilityEpoch: session.capabilityEpoch,
+  });
+  await request;
+
+  // 브리지는 onclose 에서 진행 중 요청을 중단하므로 같은 페이지가 돌아와도 답하지 않는다.
+  await closeSocket(studio);
+  const reattached = await connectStudio(port, { sessionId, instance: 'page-1' });
+  t.after(() => closeSocket(reattached));
+  const reattachedAt = Date.now();
+  const failed = await result;
+  const elapsed = Date.now() - reattachedAt;
+  assert.equal(failed.ok, false, stderr());
+  assert.equal(failed.error.code, 'NO_STUDIO');
+  assert.equal(elapsed >= 1_500, true, `버퍼 응답을 기다리지 않았다 (${elapsed}ms)`);
+  assert.equal(elapsed < 10_000, true, `도구 타임아웃까지 끌었다 (${elapsed}ms)`);
+});
+
+test('a tool result over the client maxPayload fails that call and keeps the MCP socket', { timeout: 40_000 }, async (t) => {
+  const { port, stderr } = await startHub(t);
+  const sessionId = 'oversize';
+  const studio = await connectStudio(port, { sessionId, instance: 'page-1' });
+  t.after(() => closeSocket(studio));
+  const session = await startRunningChat(studio, { threadId: 'thread-oversize', documentId: 'doc-oversize' });
+  const mcp = await openSocket(`ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=${sessionId}&agent=pi&maxPayload=2048`);
+  t.after(() => closeSocket(mcp));
+  const call = async (id, result) => {
+    const request = waitForMessage(studio, (msg) => msg.type === 'tool-request');
+    const answer = waitForMessage(mcp, (msg) => msg.type === 'tool-result' && msg.id === id);
+    sendFrame(mcp, {
+      type: 'tool-call', id, tool: 'get_structure', args: {},
+      workflow: 'direct', capabilityEpoch: session.capabilityEpoch,
+    });
+    sendFrame(studio, { type: 'tool-response', id: (await request).id, ok: true, result });
+    return answer;
+  };
+
+  const tooLarge = await call(61, { blob: 'x'.repeat(4_096) });
+  assert.equal(tooLarge.ok, false, stderr());
+  assert.equal(tooLarge.error.code, 'RESULT_TOO_LARGE');
+  assert.equal(mcp.readyState, WebSocket.OPEN);
+
+  const small = await call(62, { owner: 'oversize' });
+  assert.equal(small.ok, true, stderr());
+  assert.deepEqual(small.result, { owner: 'oversize' });
+});
+
+test('tool-responses queued behind a slow frame still settle after the studio socket closes', { timeout: 40_000 }, async (t) => {
+  const { port, stderr } = await startHub(t);
+  const sessionId = 'queued';
+  const studio = await connectStudio(port, { sessionId, instance: 'page-1' });
+  const session = await startRunningChat(studio, { threadId: 'thread-queued', documentId: 'doc-queued' });
+  const mcp = await openSocket(`ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=${sessionId}&agent=pi`);
+  t.after(() => closeSocket(mcp));
+  const requests = new Map();
+  const bothForwarded = new Promise((resolve) => {
+    studio.on('message', (data) => {
+      const msg = JSON.parse(data.toString());
+      if (msg.type !== 'tool-request') return;
+      requests.set(msg.tool, msg.id);
+      if (requests.size === 2) resolve();
+    });
+  });
+  const sibling = waitForMessage(mcp, (msg) => msg.type === 'tool-result' && msg.id === 72, 20_000);
+  const call = (id, tool, args) => sendFrame(mcp, {
+    type: 'tool-call', id, tool, args, workflow: 'direct', capabilityEpoch: session.capabilityEpoch,
+  });
+  call(71, 'render_page', { pageIndex: 0, savePath: 'queued.png' });
+  call(72, 'get_structure', {});
+  await bothForwarded;
+
+  // savePath 쓰기가 큐를 붙잡는 동안 형제 응답이 뒤에 줄 서고, 곧바로 소켓이 닫힌다.
+  const png = Buffer.alloc(6 * 1024 * 1024, 7).toString('base64');
+  sendFrame(studio, {
+    type: 'tool-response', id: requests.get('render_page'), ok: true,
+    result: { image: { data: png, mimeType: 'image/png' } },
+  });
+  sendFrame(studio, { type: 'tool-response', id: requests.get('get_structure'), ok: true, result: { owner: 'queued' } });
+  studio.close();
+
+  const answered = await sibling;
+  assert.equal(answered.ok, true, stderr());
+  assert.deepEqual(answered.result, { owner: 'queued' });
 });
 
 test('a studio that never comes back fails in-flight calls after the grace window', { timeout: 40_000 }, async (t) => {

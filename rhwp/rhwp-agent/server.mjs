@@ -177,6 +177,9 @@ const MAX_STUDIO_QUEUED_MESSAGES = 64;
 // 스튜디오가 끊긴 뒤 다시 붙기를 기다려 주는 시간 — 브리지의 첫 재접속 백오프(250·500ms)보다
 // 넉넉하되, 탭이 아주 닫힌 경우 30초 타임아웃까지 끌지 않을 만큼 짧게 잡는다.
 const STUDIO_REATTACH_GRACE_MS = Number(process.env.RHWP_STUDIO_REATTACH_GRACE_MS ?? 5_000);
+// 같은 페이지가 재접속하면 브리지는 끊길 때 진행 중이던 요청을 이미 중단했다 — 버퍼에 남은
+// 응답이 도착할 짧은 시간만 기다린 뒤, 답이 없는 옛 호출은 타임아웃 전에 실패시킨다.
+const STUDIO_REATTACH_FLUSH_MS = Number(process.env.RHWP_STUDIO_REATTACH_FLUSH_MS ?? 2_000);
 // 프로바이더 이벤트와 별도 MCP 소켓의 도구 호출 순서가 뒤집힐 수 있어
 // 정확한 루트 범위 티켓이 도착할 짧은 여유를 둔다.
 const USER_QUESTION_SCOPE_WAIT_MS = 2_000;
@@ -455,6 +458,7 @@ const sessions = new HubSessionRegistry({
       studioSocket: null,
       studioInstanceId: null,
       studioReattachTimer: null,
+      studioReattachFlushTimer: null,
       mcpSockets: new Set(),
       piSubagents: new PiSubagentCapabilityRegistry(),
       studioMessageQueue: Promise.resolve(),
@@ -1180,9 +1184,16 @@ function resolveServiceTier(agent, requested) {
 }
 // 새 탭·새로고침이 스튜디오 자리를 넘겨받으면 이전 페이지의 실행기와 함께 인플라이트 호출도
 // 사라진다 — 30초 타임아웃까지 기다리지 말고 즉시 NO_STUDIO 로 실패시킨다.
-// 단순히 소켓만 잠깐 끊긴 경우(같은 인스턴스가 곧바로 재접속)에는 호출을 살려 둔다.
+// 단순히 소켓만 잠깐 끊긴 경우(같은 인스턴스가 곧바로 재접속)에는 호출을 살려 두고,
+// 버퍼 응답이 올 시간만 준 뒤 답이 없는 것을 접는다(armStudioReattachFlush).
 function failAllPendingCalls(record, message) {
+  failPendingCalls(record, message);
+}
+
+/** hubIds 를 주면 그 호출만, 없으면 모든 인플라이트 호출을 NO_STUDIO 로 실패시킨다. */
+function failPendingCalls(record, message, hubIds = null) {
   for (const [hubId, entry] of record.pendingCalls) {
+    if (hubIds && !hubIds.has(hubId)) continue;
     clearTimeout(entry.timer);
     record.pendingCalls.delete(hubId);
     cancelStudioToolRequest(record, hubId, entry, 'studio-call-failed');
@@ -1207,6 +1218,34 @@ function clearStudioReattachGrace(record) {
   record.studioReattachTimer = null;
 }
 
+function clearStudioReattachFlush(record) {
+  if (!record.studioReattachFlushTimer) return;
+  clearTimeout(record.studioReattachFlushTimer);
+  record.studioReattachFlushTimer = null;
+}
+
+// 같은 인스턴스가 재접속하면 지금 남은 호출은 모두 이전 소켓으로 나간 것이고, 브리지는
+// onclose 에서 이를 중단해 새로 답하지 않는다. 끊긴 사이 버퍼에 담긴 응답은 onopen 직후
+// 도착하므로 잠깐 기다린 뒤 스튜디오 메시지 큐 뒤에 줄 세워, 그때까지 답이 없는 것만 접는다.
+function armStudioReattachFlush(record) {
+  clearStudioReattachFlush(record);
+  if (record.pendingCalls.size === 0) return;
+  const droppedIds = new Set(record.pendingCalls.keys());
+  record.studioReattachFlushTimer = setTimeout(() => {
+    record.studioReattachFlushTimer = null;
+    record.studioMessageQueue = record.studioMessageQueue
+      .then(() => {
+        if (record.disposed) return;
+        failPendingCalls(
+          record,
+          'Studio reconnected but dropped this in-flight tool call; the edit may still have applied — re-read with get_structure/get_text_range before retrying',
+          droppedIds,
+        );
+      })
+      .catch((error) => log(`studio reattach flush failed (session=${record.sessionId}): ${error?.message ?? error}`));
+  }, STUDIO_REATTACH_FLUSH_MS);
+}
+
 // 탭이 아주 닫혔는지, 잠깐 끊겼는지는 소켓만 봐서는 알 수 없다 — 유예 시간을 주고
 // 그 안에 스튜디오가 돌아오지 않으면 남은 호출을 NO_STUDIO 로 접는다.
 // 유예 중 흘러 들어온 응답으로 이미 끝난 호출은 pendingCalls 에서 빠져 있어 두 번 답하지 않는다.
@@ -1228,6 +1267,18 @@ function sendJson(sock, obj) {
   if (!sock || sock.readyState !== sock.OPEN) return false;
   try {
     sock.send(JSON.stringify(obj?.v === 1 ? { ...obj, v: PROTOCOL_VERSION } : obj));
+    return true;
+  } catch (e) {
+    log(`send failed: ${e?.message ?? e}`);
+    return false;
+  }
+}
+
+/** 이미 직렬화한 프레임을 보낸다 — 크기를 먼저 재야 하는 도구 결과용. */
+function sendRaw(sock, frame) {
+  if (!sock || sock.readyState !== sock.OPEN) return false;
+  try {
+    sock.send(frame);
     return true;
   } catch (e) {
     log(`send failed: ${e?.message ?? e}`);
@@ -4573,9 +4624,26 @@ function handleMcpMessage(record, sock, msg) {
           || (sock.piSubagentId && !currentPiSubagentForSocket(record, sock)))) {
           return sendError(noActiveProviderTurnError());
         }
+        let frame;
+        try {
+          frame = JSON.stringify({ v: PROTOCOL_VERSION, type: 'tool-result', id: clientId, ok: true, result });
+        } catch (error) {
+          return sendError(error, 'RPC_ERROR');
+        }
+        // 클라이언트 maxPayload 를 넘는 프레임은 소켓을 1009 로 끊어 형제 호출까지 취소시킨다.
+        const frameLimit = sock.maxResultFrameBytes;
+        const frameBytes = frameLimit ? Buffer.byteLength(frame, 'utf8') : 0;
+        if (frameLimit && frameBytes > frameLimit) {
+          const mib = (bytes) => (bytes / (1024 * 1024)).toFixed(1);
+          sendError(workflowError(
+            'RESULT_TOO_LARGE',
+            `${tool} completed but its result is ${mib(frameBytes)} MB, over this client's ${mib(frameLimit)} MB limit; lower scale, crop with regionMm, or read a narrower range`,
+          ));
+          return false;
+        }
         callSettled = true;
         telemetryCall.finish(toolTelemetryForTurn(record, providerTurn), { result });
-        return sendJson(sock, { v: 1, type: 'tool-result', id: clientId, ok: true, result });
+        return sendRaw(sock, frame);
       };
       if (!workerJob) {
         const activeSession = record.agentSession;
@@ -5400,7 +5468,10 @@ function attachSocket(record, sock, role) {
         // 빠른 중지/시작/열기 조작이 옛 채팅을 되살리지 못하게 한다.
         record.studioMessageQueue = record.studioMessageQueue
           .then(() => {
-            if (record.studioSocket !== sock) return;
+            // 닫힌 소켓의 명령은 버리되 tool-response 는 처리한다 — hubId 로만 살아 있는
+            // pendingCalls 를 마무리하고, 교체된 인스턴스의 호출은 이미 실패 처리돼 있다.
+            // 느린 항목 뒤에 줄 서 있던 응답이 소켓 종료로 사라지면 30초 타임아웃까지 간다.
+            if (record.studioSocket !== sock && msg.type !== 'tool-response') return;
             return handleStudioMessage(record, sock, msg);
           })
           .catch((error) => {
@@ -6107,6 +6178,8 @@ httpServer.on('upgrade', (req, socket, head) => {
         failAllPendingCalls(record, replacing
           ? 'Studio connection was replaced by a new tab; the edit may still have applied — re-read with get_structure/get_text_range before retrying'
           : 'Studio reloaded while tool calls were in flight; the edit may still have applied — re-read with get_structure/get_text_range before retrying');
+      } else {
+        armStudioReattachFlush(record);
       }
       record.studioSocket = ws;
       attachSocket(record, ws, 'studio');
@@ -6172,7 +6245,9 @@ httpServer.on('upgrade', (req, socket, head) => {
           replayed: true,
         });
       }
-      void skillRegistry.catalog().then((catalog) => sendJson(ws, { v: 1, type: 'skills-catalog', catalog }));
+      void skillRegistry.catalog()
+        .then((catalog) => sendJson(ws, { v: 1, type: 'skills-catalog', catalog }))
+        .catch((e) => log(`skills catalog on connect failed: ${e?.message ?? e}`));
       void writingStyleStore.status()
         .then((status) => sendJson(ws, { v: 1, type: 'writing-style-status', status }))
         .catch((e) => sendJson(ws, {
@@ -6202,11 +6277,11 @@ httpServer.on('upgrade', (req, socket, head) => {
       if (cachedProviders) sendJson(ws, { v: 1, type: 'provider-status', providers: cachedProviders });
       void providerHealth.check().then((providers) => {
         if (providers !== cachedProviders) replyToStudio(record, ws, { v: 1, type: 'provider-status', providers });
-      });
+      }).catch((e) => log(`provider health on connect failed: ${e?.message ?? e}`));
       sendJson(ws, { v: 1, type: 'pi-status', status: piStatus });
       void agentSetupStatuses(record.sessionId).then((statuses) => {
         replyToStudio(record, ws, { v: 1, type: 'agent-setup-status', statuses });
-      });
+      }).catch((e) => log(`agent setup status on connect failed: ${e?.message ?? e}`));
       void accountStatusForOwner(record.sessionId).then((status) => {
         replyToStudio(record, ws, { v: 1, type: 'account-status', status });
       }).catch((error) => log(`account status on connect failed: ${error?.message ?? error}`));
@@ -6249,6 +6324,11 @@ httpServer.on('upgrade', (req, socket, head) => {
     ws.toolProfile = authenticatedPiSubagent?.profile ?? null;
     ws.workflow = url.searchParams.get('workflow');
     ws.capabilityEpoch = url.searchParams.get('capabilityEpoch');
+    // mcp-stdio 는 자신의 maxPayload 를 알린다. 알리지 않는 클라이언트(Pi 확장 등)는 제한 없음.
+    const advertisedMaxPayload = Number(url.searchParams.get('maxPayload'));
+    ws.maxResultFrameBytes = Number.isSafeInteger(advertisedMaxPayload) && advertisedMaxPayload > 0
+      ? advertisedMaxPayload
+      : null;
     record.mcpSockets.add(ws);
     attachSocket(record, ws, 'mcp');
     if (!authenticatedWorkerJob && ws.providerTurnRetired) {
@@ -6266,6 +6346,10 @@ httpServer.on('upgrade', (req, socket, head) => {
           clearTimeout(entry.timer);
           record.pendingCalls.delete(hubId);
           cancelStudioToolRequest(record, hubId, entry, 'provider-disconnected');
+          // 타임아웃 해제 경로도 함께 취소됐으니 스냅샷 점유를 여기서 풀어야 재시도가 막히지 않는다.
+          if (entry.tool === 'materialize_document_snapshot' && entry.copyLayoutJobId) {
+            releaseCopyLayoutSnapshot(record.templateJobs.get(entry.copyLayoutJobId));
+          }
         }
       }
       log(`mcp client disconnected (agent=${agentLabel}, session=${record.sessionId})`);
@@ -6313,6 +6397,7 @@ async function disposeRecord(record, reason) {
   }
   record.pendingInstructionDraft = null;
   clearStudioReattachGrace(record);
+  clearStudioReattachFlush(record);
   settleUserQuestion(record, { status: 'expired', reason: 'hub-restarted' });
   failAllPendingCalls(record, 'Hub session is shutting down');
   const backendExit = disposeSession(record);
