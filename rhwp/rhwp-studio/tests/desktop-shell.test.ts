@@ -312,7 +312,13 @@ test('desktop close and native-file IPC contracts stay sender-owned', () => {
     assert.match(desktopMain, new RegExp(`ipcMain\\.handle\\('${channel}'`));
     assert.match(preload, new RegExp(channel));
   }
-  assert.match(desktopMain, /window\.on\('close',[\s\S]*desktop:close-requested/);
+  // The close prompt goes only to this window's renderer, under a per-session
+  // request id that the answering sender must match.
+  assert.match(desktopMain, /const requestRendererClose = \(\) => \{[\s\S]*?session\.pendingCloseRequestId = randomUUID\(\);\s*window\.webContents\.send\('desktop:close-requested', \{\s*requestId: session\.pendingCloseRequestId,/);
+  assert.match(desktopMain, /window\.on\('close', \(event\) => \{[\s\S]*?event\.preventDefault\(\);[\s\S]*?requestRendererClose\(\);\s*\}\);/);
+  assert.match(desktopMain, /did-finish-load[\s\S]*?if \(session\.closeDeferred[\s\S]*?requestRendererClose\(\);/);
+  assert.match(desktopMain, /ipcMain\.handle\('desktop:close-response', async \(event, requestId, allowClose\) => \{\s*const session = sessionForEvent\(event\);\s*if \(session\.pendingCloseRequestId !== requestId\) return false;/);
+  assert.equal(desktopMain.match(/'desktop:close-requested'/g)?.length, 1);
   assert.match(desktopMain, /nativeFiles\.createSaveTarget\(session\.sessionId, filePath\)/);
   assert.doesNotMatch(preload, /\b(?:file)?path\s*:/i);
 });
