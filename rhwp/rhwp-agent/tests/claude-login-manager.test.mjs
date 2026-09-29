@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
 import { createCliSetupManager } from '../cli-setup-manager.mjs';
+import { prepareStagedOAuthCredential } from '../oauth-credential-transaction.mjs';
 
 const credential = JSON.stringify({
   claudeAiOauth: {
@@ -47,6 +48,49 @@ test('Claude OAuth publishes a usable login and reports it on macOS-shaped profi
   await manager.authenticate('claude', 'oauth');
   assert.equal((await manager.status('claude')).authMethod, 'oauth');
   assert.match(await readFile(path.join(rootDir, '.claude', '.credentials.json'), 'utf8'), /oauth-access-token/);
+});
+
+test('Claude re-login removes the superseded credential copy and survives a config write failure', async (t) => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), 'rhwp-claude-relogin-'));
+  t.after(() => rm(rootDir, { recursive: true, force: true }));
+  const claudeDir = path.join(rootDir, '.claude');
+  await mkdir(claudeDir, { recursive: true });
+  await writeFile(path.join(claudeDir, '.credentials.json'), JSON.stringify({
+    claudeAiOauth: { accessToken: 'old-access-token', refreshToken: 'old-refresh-token', expiresAt: Date.now() + 3_600_000 },
+  }));
+  const cliRoot = path.join(rootDir, 'cli');
+  const manager = createCliSetupManager({
+    rootDir: cliRoot,
+    homeDir: rootDir,
+    platform: 'darwin',
+    baseEnv: { PATH: '/usr/bin' },
+    prepareOAuthCredential: async (options) => {
+      const transaction = await prepareStagedOAuthCredential(options);
+      return {
+        ...transaction,
+        async publish() {
+          await transaction.publish();
+          // The public config.json cannot be replaced after the credential is already live.
+          await mkdir(path.join(cliRoot, 'config.json'), { recursive: true });
+        },
+      };
+    },
+    spawnProcess: (_command, _argv, options) => {
+      const proc = new FakeProcess();
+      queueMicrotask(async () => {
+        await writeFile(path.join(options.env.CLAUDE_CONFIG_DIR, '.credentials.json'), credential);
+        proc.emit('close', 0);
+      });
+      return proc;
+    },
+  });
+  await manager.init();
+  const status = await manager.authenticate('claude', 'oauth');
+
+  assert.equal(status.authenticated, true);
+  assert.equal(status.authMethod, 'oauth');
+  assert.match(await readFile(path.join(claudeDir, '.credentials.json'), 'utf8'), /oauth-access-token/);
+  assert.deepEqual((await readdir(claudeDir)).filter((name) => name.endsWith('.held')), []);
 });
 
 test('Claude OAuth redirects the Windows profile and secure storage locations', async (t) => {

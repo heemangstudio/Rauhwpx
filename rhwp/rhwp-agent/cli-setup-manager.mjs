@@ -80,6 +80,11 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
   const authTerminals = new Map();
   let nodeHostShimDir = null;
   let loaded = false;
+  let loadPromise = null;
+  let legacyLoaded = false;
+  let migrationPending = false;
+  /** 보안 저장소에서 아직 읽지 못한 에이전트. 읽기가 실패하면 다음 load() 가 다시 시도한다. */
+  const pendingSecretReads = new Set(Object.keys(CONFIG));
   async function writePrivateJson(file, value) {
     const temp = `${file}.new-${randomUUID()}`;
     try {
@@ -92,16 +97,40 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
   function assertAgent(agent) { if (!Object.hasOwn(CONFIG, agent)) throw setupError('AGENT_SETUP_INVALID', `지원하지 않는 에이전트예요: ${agent}`); return CONFIG[agent]; }
   function binPath(agent) { const item = assertAgent(agent); return path.join(binDir, platform === 'win32' ? `${item.bin}.cmd` : item.bin); }
   function envFor(agent) { const item = assertAgent(agent); const env = { ...baseEnv }; delete env.ANTHROPIC_API_KEY; delete env.OPENAI_API_KEY; if (apiKeys[agent]) env[item.keyEnv] = apiKeys[agent]; return env; }
-  async function load() {
-    if (loaded) return; loaded = true;
-    let needsMigration = false;
-    try { const raw = JSON.parse(await fs.readFile(configPath, 'utf8')); for (const agent of Object.keys(CONFIG)) { const key = raw?.[agent]?.key; if (typeof key === 'string' && textFitsByteLimit(key, API_KEY_MAX_BYTES)) { apiKeys[agent] = key.trim() || null; needsMigration = needsMigration || Boolean(apiKeys[agent]); } } } catch {}
+  /** authenticate() 가 정한 키는 늦게 끝난 저장소 읽기가 덮어쓰지 못하게 한다. */
+  function settleApiKey(agent, value) { apiKeys[agent] = value; pendingSecretReads.delete(agent); }
+  function load() {
+    if (loaded) return Promise.resolve();
+    loadPromise ??= loadPendingKeys().finally(() => { loadPromise = null; });
+    return loadPromise;
+  }
+  async function loadPendingKeys() {
+    if (!legacyLoaded) {
+      legacyLoaded = true;
+      try { const raw = JSON.parse(await fs.readFile(configPath, 'utf8')); for (const agent of Object.keys(CONFIG)) { const key = raw?.[agent]?.key; if (typeof key === 'string' && textFitsByteLimit(key, API_KEY_MAX_BYTES)) { apiKeys[agent] = key.trim() || null; migrationPending = migrationPending || Boolean(apiKeys[agent]); } } } catch {}
+    }
     if (secretStore?.available) {
-      for (const agent of Object.keys(CONFIG)) { try { const value = await secretStore.get(`rhwp.${agent}.api-key`); if (typeof value === 'string' && textFitsByteLimit(value, API_KEY_MAX_BYTES)) apiKeys[agent] = value.trim() || null; } catch {} }
+      // 일시적인 저장소 오류(시간 초과 등)로 키를 잃지 않도록, 실패한 에이전트는 남겨 두고 다음 호출에서 다시 읽는다.
+      await Promise.all([...pendingSecretReads].map(async (agent) => {
+        try {
+          const value = await secretStore.get(`rhwp.${agent}.api-key`);
+          if (!pendingSecretReads.has(agent)) return;
+          if (typeof value === 'string' && textFitsByteLimit(value, API_KEY_MAX_BYTES)) apiKeys[agent] = value.trim() || null;
+          pendingSecretReads.delete(agent);
+        } catch {}
+      }));
     } else {
       try { const raw = JSON.parse(await fs.readFile(secretsPath, 'utf8')); for (const agent of Object.keys(CONFIG)) { const value = raw?.[`rhwp.${agent}.api-key`]; if (typeof value === 'string' && textFitsByteLimit(value, API_KEY_MAX_BYTES)) apiKeys[agent] = value.trim() || null; } } catch {}
+      pendingSecretReads.clear();
     }
-    if (needsMigration) await persist();
+    loaded = pendingSecretReads.size === 0;
+    // 저장소 값을 모두 읽은 뒤에만 이전한다. 읽지 못한 새 값을 이전 설정 파일의 키로 덮어쓰지 않기 위해서다.
+    if (loaded && migrationPending) {
+      migrationPending = false;
+      // 이전 설정 파일의 키는 메모리와 원본 파일에 남아 있으므로, 이전이 실패해도 허브 시작을 막지 않는다.
+      // persist() 는 보안 저장소에 쓴 뒤에만 config.json 에서 키를 지우므로 다음 저장 때 이전이 마저 끝난다.
+      try { await persist(); } catch (error) { process.stderr.write(`[cli-setup] API 키 이전 실패: ${redactDiagnosticText(String(error?.message ?? error))}\n`); }
+    }
   }
   async function persist() {
     await fs.mkdir(rootDir, { recursive: true, mode: 0o700 });
@@ -115,9 +144,17 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
     await writePrivateJson(configPath, config);
   }
   async function run(command, args, options = {}) {
-    const child = spawnProcess(command, args, { ...options, stdio: ['ignore', 'pipe', 'pipe'], env: options.env ?? baseEnv }); let stdout = ''; let stderr = '';
+    let child;
+    // 실행 파일이 없거나(설치 중 교체) 실행 권한이 없거나 EMFILE 이면 spawn 이 던지거나 'error' 를 낸다.
+    // 처리하지 않은 'error' 이벤트는 허브 프로세스를 끝내므로 실패한 실행 결과로 바꾼다.
+    try { child = spawnProcess(command, args, { ...options, stdio: ['ignore', 'pipe', 'pipe'], env: options.env ?? baseEnv }); } catch (error) { return { code: null, stdout: '', stderr: String(error?.message ?? error) }; }
+    let stdout = ''; let stderr = '';
     child.stdout?.on('data', (chunk) => { stdout += String(chunk); }); child.stderr?.on('data', (chunk) => { stderr += String(chunk); });
-    return await new Promise((resolve) => { const timer = setTimeout(() => { child.kill?.(); resolve({ code: null, stdout, stderr: `${stderr}\ntimeout` }); }, options.timeoutMs ?? STATUS_TIMEOUT_MS); child.once('close', (code, signal) => { clearTimeout(timer); resolve({ code, signal, stdout, stderr }); }); });
+    return await new Promise((resolve) => {
+      const timer = setTimeout(() => { child.kill?.(); resolve({ code: null, stdout, stderr: `${stderr}\ntimeout` }); }, options.timeoutMs ?? STATUS_TIMEOUT_MS);
+      child.on('error', (error) => { clearTimeout(timer); resolve({ code: null, stdout, stderr: `${stderr}\n${error?.message ?? error}` }); });
+      child.once('close', (code, signal) => { clearTimeout(timer); resolve({ code, signal, stdout, stderr }); });
+    });
   }
   /** `codex login` 이 남긴 auth.json 을 확인한다. 허브도 같은 파일을 세션에 연결해 쓴다. */
   async function readCodexLogin() {
@@ -146,7 +183,10 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
       }).catch(() => null);
       const parsed = credential ? parseClaudeOAuthCredential(credential.text) : null;
       const expired = claudeCredentialExpiry(parsed) > 0 && claudeCredentialExpiry(parsed) <= Date.now();
-      authenticated = Boolean(parsed && !expired);
+      // 액세스 토큰은 금방 만료되고 CLI 가 refresh token 으로 갱신한다. 만료만으로 로그아웃으로 보지 않는다.
+      const refreshToken = parsed?.claudeAiOauth?.refreshToken;
+      const refreshable = typeof refreshToken === 'string' && refreshToken.length > 0;
+      authenticated = Boolean(parsed && (!expired || refreshable));
       authMethod = authenticated ? 'oauth' : null;
     }
     // 관리형 CLI 가 없으면 Claude 는 SDK 번들 런타임으로 실행되므로 그 버전을 기준으로 삼는다.
@@ -162,7 +202,7 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
   }
   async function authenticate(agent, method, key, onProgress, { signal, onCommitted, terminal = false } = {}) {
     assertAgent(agent); await load();
-    if (method === 'api-key') { if (typeof key !== 'string' || !textFitsByteLimit(key, API_KEY_MAX_BYTES) || !key.trim()) throw setupError('AGENT_KEY_INVALID', 'API 키를 입력해 주세요.'); apiKeys[agent] = key.trim(); if (secretStore?.available) await secretStore.set(`rhwp.${agent}.api-key`, apiKeys[agent]); await persist(); onCommitted?.(); onProgress?.({ state: 'done' }); return status(agent); }
+    if (method === 'api-key') { if (typeof key !== 'string' || !textFitsByteLimit(key, API_KEY_MAX_BYTES) || !key.trim()) throw setupError('AGENT_KEY_INVALID', 'API 키를 입력해 주세요.'); settleApiKey(agent, key.trim()); if (secretStore?.available) await secretStore.set(`rhwp.${agent}.api-key`, apiKeys[agent]); await persist(); onCommitted?.(); onProgress?.({ state: 'done' }); return status(agent); }
     if (!['oauth', 'login'].includes(method)) throw setupError('AGENT_AUTH_INVALID', '지원하지 않는 로그인 방식이에요.');
     if (agent !== 'claude') {
       const argv = agent === 'codex' ? ['login', '--device-auth'] : ['login'];
@@ -269,10 +309,16 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
       if (!await readClaudeCredentialFile(transaction.credentialFile)) throw setupError('AGENT_AUTH_FAILED', 'Claude 로그인이 완료됐지만 인증 정보를 저장하지 못했어요. 다시 시도해 주세요.');
       await transaction.publish();
       published = true;
-      apiKeys.claude = null;
+      settleApiKey('claude', null);
       if (secretStore?.available) await secretStore.delete?.('rhwp.claude.api-key').catch?.(() => {});
-      await persist();
-      try { onCommitted?.(); } finally { transaction.markCommitted(); }
+      // 게시가 끝나면 새 로그인은 이미 적용됐다. 공개 설정(config.json) 저장 실패로 로그인 실패를 보고하지 않는다.
+      try { await persist(); } catch (error) { process.stderr.write(`[cli-setup] Claude 로그인 후 설정 저장 실패: ${redactDiagnosticText(String(error?.message ?? error))}\n`); }
+      try { onCommitted?.(); } finally {
+        transaction.markCommitted();
+        // 옮겨 둔 이전 인증 정보(refresh token 포함 .held 파일)를 지운다. 그사이 CLI 가 토큰을 갱신했으면
+        // 충돌로 거절되고 파일은 남는다. 크래시 복구용 사본이므로 다른 .held 파일은 건드리지 않는다.
+        await transaction.finalizeCommit?.().catch((error) => { process.stderr.write(`[cli-setup] 이전 Claude 인증 정보 정리 실패: ${redactDiagnosticText(String(error?.message ?? error))}\n`); });
+      }
       await transaction.cleanup();
       onProgress?.({ state: 'done' });
       return status(agent);
