@@ -24,10 +24,15 @@ test('connection 이벤트는 시도 횟수와 다음 재시도 시각을 함께
   assert.match(bridge, /this\.reconnectTimer = setTimeout\([\s\S]*this\.emitConnection\(delay\);/);
 });
 
-test('실패한 시도만 세고 연결이 열리면 0으로 돌아간다', () => {
-  // onclose(비-replaced)와 소켓 생성 실패 두 곳에서만 증가한다.
-  assert.equal((bridge.match(/this\.reconnectAttempt\+\+;/g) ?? []).length, 2);
-  assert.match(bridge, /ws\.onopen = \(\) => \{[\s\S]*this\.reconnectAttempt = 0;/);
+test('실패한 시도만 세고 허브 welcome 을 받으면 0으로 돌아간다', () => {
+  // onclose(비-replaced), 소켓 생성 실패, 세션 구성 조회 실패 세 곳에서만 증가한다.
+  assert.equal((bridge.match(/this\.reconnectAttempt\+\+;/g) ?? []).length, 3);
+  // 세션 구성 조회가 실패해도 재시도를 멈추지 않는다 (최초 연결·수동 재연결·백오프 재시도).
+  assert.equal((bridge.match(/this\.retryAfterContextFailure\(seq\);/g) ?? []).length, 3);
+  // 열리자마자 닫히는 소켓(버전이 다른 허브)은 백오프를 접지 않는다 — 버전 검사를 통과한 welcome 에서만 접는다.
+  const onOpen = bridge.slice(bridge.indexOf('ws.onopen = () => {'), bridge.indexOf('ws.onmessage = (ev) => {'));
+  assert.doesNotMatch(onOpen, /this\.reconnectAttempt = 0;/);
+  assert.match(bridge, /case 'welcome': \{[^}]*this\.reconnectAttempt = 0;/);
   // 첫 실패(attempt 1)가 첫 지연(250ms)을 쓰도록 인덱스를 한 칸 당긴다.
   assert.match(bridge, /Math\.max\(0, this\.reconnectAttempt - 1\)/);
   assert.match(bridge, /const RECONNECT_DELAYS_MS = \[250, 500, 1000, 2000, 5000\]/);

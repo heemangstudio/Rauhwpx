@@ -56,6 +56,12 @@ export interface RebaseResult {
 /** 저널 보존 한도 — 초과분은 오래된 revision 부터 버린다 (그 너머는 gap 처리). */
 const MAX_ENTRIES = 512;
 
+/**
+ * 내용 불변 bump 의 표식 — 어떤 섹션과도 맞지 않아 rebase 는 건너뛰고, covers 는
+ * 기록된 bump 로 센다. diff 는 섹션 음수를 걸러 델타에 싣지 않는다.
+ */
+const NOOP_ENTRY: EditJournalEntry = Object.freeze({ sectionIdx: -1, paraStart: 0, paraEnd: -1, paraDelta: 0 });
+
 export class EditJournal {
   /**
    * key: bump 직후의 revision 값, value: 그 bump 에 귀속된 편집들 (기록 순서).
@@ -78,6 +84,15 @@ export class EditJournal {
       const keys = [...this.entries.keys()].sort((a, b) => a - b);
       for (let i = 0; i < excess; i++) this.entries.delete(keys[i]);
     }
+  }
+
+  /**
+   * (revBefore, revAfter] 구간의 bump 가 내용을 바꾸지 않았음을 기록한다 — 롤백된
+   * 원자 배치처럼 문서·pending 이 배치 이전과 같아진 경우. 기록이 없으면 그 bump 가
+   * gap 으로 보여 stale 쓰기가 전부 REVISION_MISMATCH 로 떨어진다.
+   */
+  coverNoop(revBefore: number, revAfter: number): void {
+    this.record(revBefore, revAfter, NOOP_ENTRY);
   }
 
   /**
@@ -151,6 +166,7 @@ export class EditJournal {
       for (const entry of list) {
         if (seen.has(entry)) continue;
         seen.add(entry);
+        if (entry.sectionIdx < 0) continue;
         const arr = perSection.get(entry.sectionIdx);
         if (arr) arr.push(entry);
         else perSection.set(entry.sectionIdx, [entry]);

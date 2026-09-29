@@ -49,5 +49,5 @@ test('오버레이/pending 편집도 버스트를 합친다', () => {
   // agent-pending-replace.test.ts 의 runAtomicBatch 동작 테스트가 지킨다.)
   assert.match(pendingSrc, /private beginBulk\(\): void/);
   assert.match(pendingSrc, /private endBulk\(\): void/);
-  assert.match(pendingSrc, /runAtomicBatch<T>\(fn: \(\) => T\): T/);
+  assert.match(pendingSrc, /runAtomicBatch<T>\(fn: \(\) => T[,)]/);
 });

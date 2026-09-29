@@ -1032,13 +1032,19 @@ function persistUpsert(thread: ChatThread) {
     if (!existing || !isStoredChatThread(existing) || existing.updatedAt <= thread.updatedAt) {
       store.put(cloneThread(thread));
     }
-    const rows = await requestResult(store.getAll() as IDBRequest<StoredChatThread[]>);
-    const removed = rows
-      .filter(isStoredChatThread)
-      .sort((a, b) => b.updatedAt - a.updatedAt)
-      .slice(MAX_THREADS)
-      .map((row) => row.id);
-    for (const id of removed) store.delete(id);
+    // 한도를 넘는 건 새 스레드가 한도에서 추가된 직후뿐이다 — 메시지마다 전체 스레드를
+    // 역직렬화하지 않도록 개수부터 본다.
+    const total = await requestResult(store.count());
+    let removed: string[] = [];
+    if (total > MAX_THREADS) {
+      const rows = await requestResult(store.getAll() as IDBRequest<StoredChatThread[]>);
+      removed = rows
+        .filter(isStoredChatThread)
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .slice(MAX_THREADS)
+        .map((row) => row.id);
+      for (const id of removed) store.delete(id);
+    }
     await transactionDone(tx);
     return removed;
   }), () => {

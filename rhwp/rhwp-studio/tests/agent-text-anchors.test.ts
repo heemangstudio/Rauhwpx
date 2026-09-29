@@ -119,6 +119,20 @@ test('anchor: 셀 매치가 유일하면 cell 좌표로 삽입된다', async () 
   assert.equal((r['anchor'] as Record<string, unknown>)['cell'] !== undefined, true);
 });
 
+test('큰 표 뒤의 표도 검색된다 — 표가 아닌 컨트롤 탐침은 중첩 표 예산을 쓰지 않는다', async () => {
+  const h = makeEnv(['본문', '', ''], (wasm) => {
+    wasm['getTableDimensionsByPath'] = () => { throw new Error('not a table'); };
+  });
+  // 셀 문단 1100개 — 문단마다 컨트롤 탐침 4번이 모두 실패한다
+  addTable(h, 1, Array.from({ length: 110 }, () => Array.from({ length: 10 }, () => '칸')));
+  const target = addTable(h, 2, [['목표 셀', '옆']]);
+  const found = await h.call('find_text', { query: '목표' });
+  assert.equal(found['truncated'], false);
+  assert.equal((found['matches'] as unknown[]).length, 1);
+  await h.call('insert_text', { anchor: { text: '목표' }, text: '!' });
+  assert.equal(target.cells[0][0], '목표! 셀');
+});
+
 test('apply_char_format + anchor: 매치 범위에 서식이 적용된다', async () => {
   const h = makeEnv(['강조할 부분']);
   const r = await h.call('apply_char_format', { anchor: { text: '부분' }, bold: true });

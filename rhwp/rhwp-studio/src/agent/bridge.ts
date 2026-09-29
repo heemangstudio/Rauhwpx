@@ -1266,7 +1266,7 @@ export class AgentBridgeImpl implements AgentBridge {
   private readonly options?: AgentBridgeOptions;
   private ws: WebSocket | null = null;
   private state: ConnectionState = 'disconnected';
-  /** 지금까지 실패한 연결 시도 수. 연결이 열리면 0 으로 돌아간다. */
+  /** 지금까지 실패한 연결 시도 수. 허브의 welcome 을 받으면 0 으로 돌아간다. */
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1430,9 +1430,25 @@ export class AgentBridgeImpl implements AgentBridge {
   }
 
   private async initializeConnection() {
+    const seq = this.reconnectSeq;
     await this.requestHubLaunch();
-    if (this.disposed || !(await this.refreshSessionContext())) return;
+    if (this.disposed) return;
+    if (!await this.refreshSessionContext()) {
+      this.retryAfterContextFailure(seq);
+      return;
+    }
     this.connect();
+  }
+
+  /**
+   * 세션 구성 조회가 실패해도 백오프 재시도를 이어 간다 — 허브 기동이 늦은 재연결이
+   * 바로 이 경우라, 여기서 멈추면 창 포커스·온라인 이벤트나 수동 재연결 전까지 끊긴 채 남는다.
+   * 폐기됐거나 더 새 시도(reconnectSeq)가 있으면 그쪽에 맡긴다.
+   */
+  private retryAfterContextFailure(seq: number): void {
+    if (this.disposed || seq !== this.reconnectSeq || this.state === 'connected') return;
+    this.reconnectAttempt++;
+    this.scheduleReconnect();
   }
 
   private async refreshSessionContext() {
@@ -1619,7 +1635,10 @@ export class AgentBridgeImpl implements AgentBridge {
     this.setState('connecting');
     await this.requestHubLaunch();
     if (this.disposed || seq !== this.reconnectSeq || this.getConnectionState() === 'connected') return;
-    if (!await this.refreshSessionContext()) return;
+    if (!await this.refreshSessionContext()) {
+      this.retryAfterContextFailure(seq);
+      return;
+    }
     this.forceReconnect();
   }
 
@@ -1655,7 +1674,6 @@ export class AgentBridgeImpl implements AgentBridge {
     ws.onopen = () => {
       if (this.disposed || this.ws !== ws) return;
       this.clearConnectTimer();
-      this.reconnectAttempt = 0;
       this.chatStartSent = false;
       this.setState('connected');
       // 끊긴 사이에 끝난 도구 결과를 먼저 흘려보낸다 — 허브의 인플라이트 호출이
@@ -1725,7 +1743,10 @@ export class AgentBridgeImpl implements AgentBridge {
   private async connectAfterHub(seq: number): Promise<void> {
     await this.requestHubLaunch();
     if (this.disposed || seq !== this.reconnectSeq || this.state === 'connected') return;
-    if (!await this.refreshSessionContext()) return;
+    if (!await this.refreshSessionContext()) {
+      this.retryAfterContextFailure(seq);
+      return;
+    }
     this.connect();
   }
 
@@ -2003,6 +2024,9 @@ export class AgentBridgeImpl implements AgentBridge {
   private handleMessage(msg: any): void {
     switch (msg.type) {
       case 'welcome': {
+        // 백오프는 프로토콜 버전 검사를 통과한 welcome 에서만 접는다 — 열리자마자 닫히는
+        // 소켓(다른 버전의 오래된 허브 등)이 250ms 재시도를 끝없이 반복하지 않게 한다.
+        this.reconnectAttempt = 0;
         // A reconnect snapshot predates the start command replayed on socket open.
         if (this.pendingChatStart) return;
         const session = msg.session;

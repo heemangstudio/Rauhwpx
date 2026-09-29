@@ -125,13 +125,6 @@ const ENTER_GAP_FACTOR = 0.18;
 /** 개행 표시의 크기(줄 높이 배수). */
 const ENTER_SIZE_FACTOR = 0.62;
 
-function comparePoint(
-  a: { paraIdx: number; charOffset: number },
-  b: { paraIdx: number; charOffset: number },
-): number {
-  return a.paraIdx - b.paraIdx || a.charOffset - b.charOffset;
-}
-
 function truncateScalars(text: string, max: number): string {
   const values = [...text];
   return values.length > max ? values.slice(0, max - 1).join('') + '…' : text;
@@ -867,17 +860,16 @@ export class PendingOverlayRenderer {
     } else if (position.parentParaIndex !== undefined) {
       return false;
     }
-    // 캐럿은 논리 좌표, 범위는 텍스트 좌표다. 범위 끝점을 캐럿 좌표로 바꿔 비교한다.
-    const point = { paraIdx, charOffset: position.charOffset };
-    const start = {
-      paraIdx: range.startParaIdx,
-      charOffset: this.caretOffset(range, range.startParaIdx, range.startCharOffset, 'after'),
-    };
-    const end = {
-      paraIdx: range.endParaIdx,
-      charOffset: this.caretOffset(range, range.endParaIdx, range.endCharOffset),
-    };
-    return comparePoint(point, start) >= 0 && comparePoint(point, end) <= 0;
+    // 문단 번호만으로 판정되면 끝점 변환(wasm 호출)을 생략한다 — 캐럿 이동마다
+    // 화면의 모든 hit 영역을 훑으므로 다른 문단 영역은 비교 없이 걸러야 싸다.
+    if (paraIdx < range.startParaIdx || paraIdx > range.endParaIdx) return false;
+    // 캐럿은 논리 좌표, 범위는 텍스트 좌표다. 캐럿과 같은 문단의 끝점만 캐럿 좌표로 바꿔 비교한다.
+    const charOffset = position.charOffset;
+    if (paraIdx === range.startParaIdx
+      && charOffset < this.caretOffset(range, range.startParaIdx, range.startCharOffset, 'after')) return false;
+    if (paraIdx === range.endParaIdx
+      && charOffset > this.caretOffset(range, range.endParaIdx, range.endCharOffset)) return false;
+    return true;
   }
 
   private inspectCaret(): void {
