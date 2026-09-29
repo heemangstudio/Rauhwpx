@@ -52,7 +52,7 @@ export class HwpDocument {
   /** 문서 정보를 JSON 문자열로 반환한다. */
   getDocumentInfo(): string;
 
-  /** DPI를 설정한다. */
+  /** DPI를 설정한다. 양의 유한수가 아니면 무시한다. */
   setDpi(dpi: number): void;
 
   /** 현재 DPI를 반환한다. */

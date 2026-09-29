@@ -2269,7 +2269,7 @@ impl DocumentCore {
                             .min_by(|a, b| {
                                 let da = (y - (a.bbox_y + a.bbox_h / 2.0)).abs();
                                 let db = (y - (b.bbox_y + b.bbox_h / 2.0)).abs();
-                                da.partial_cmp(&db).unwrap()
+                                da.total_cmp(&db)
                             })
                             .map(|r| r.bbox_y)
                     });
@@ -2280,7 +2280,7 @@ impl DocumentCore {
                         .copied()
                         .filter(|r| (r.bbox_y - ly).abs() < 1.0)
                         .collect();
-                    line_runs.sort_by(|a, b| a.bbox_x.partial_cmp(&b.bbox_x).unwrap());
+                    line_runs.sort_by(|a, b| a.bbox_x.total_cmp(&b.bbox_x));
                     let (idx, offset) = resolve_x_on_line(&line_runs, x);
                     return Ok(format_hit(line_runs[idx], offset, page_num));
                 }
@@ -2359,7 +2359,7 @@ impl DocumentCore {
             .collect();
 
         if !same_line_runs.is_empty() {
-            same_line_runs.sort_by(|a, b| a.bbox_x.partial_cmp(&b.bbox_x).unwrap());
+            same_line_runs.sort_by(|a, b| a.bbox_x.total_cmp(&b.bbox_x));
             // 줄 안에서 클릭 x 를 가장 가까운 문자 위치로 해석
             // (다중 run 줄의 run 경계 빈틈 포함 — 줄 끝으로 스냅하지 않음)
             let (idx, offset) = resolve_x_on_line(&same_line_runs, x);
@@ -2397,7 +2397,7 @@ impl DocumentCore {
             .min_by(|a, b| {
                 let dist_a = (y - (a.bbox_y + a.bbox_h / 2.0)).abs();
                 let dist_b = (y - (b.bbox_y + b.bbox_h / 2.0)).abs();
-                dist_a.partial_cmp(&dist_b).unwrap()
+                dist_a.total_cmp(&dist_b)
             })
             .unwrap();
 
@@ -2408,7 +2408,7 @@ impl DocumentCore {
             .filter(|r| (r.bbox_y - target_y).abs() < 1.0 && (r.bbox_h - target_h).abs() < 1.0)
             .copied()
             .collect();
-        line_runs.sort_by(|a, b| a.bbox_x.partial_cmp(&b.bbox_x).unwrap());
+        line_runs.sort_by(|a, b| a.bbox_x.total_cmp(&b.bbox_x));
 
         // 줄 안에서 클릭 x 를 가장 가까운 문자 위치로 해석
         // (run 경계 빈틈 포함 — 줄 끝으로만 스냅하지 않음)
@@ -4330,7 +4330,7 @@ impl DocumentCore {
             .iter()
             .filter(|r| (r.bbox_y - target_y).abs() < 1.0 && (r.bbox_h - target_h).abs() < 1.0)
             .collect();
-        line_runs.sort_by(|a, b| a.bbox_x.partial_cmp(&b.bbox_x).unwrap());
+        line_runs.sort_by(|a, b| a.bbox_x.total_cmp(&b.bbox_x));
 
         if x < line_runs[0].bbox_x {
             let run = line_runs[0];
@@ -4847,7 +4847,7 @@ impl DocumentCore {
             .iter()
             .filter(|r| (r.bbox_y - target_y).abs() < 1.0 && (r.bbox_h - target_h).abs() < 1.0)
             .collect();
-        line_runs.sort_by(|a, b| a.bbox_x.partial_cmp(&b.bbox_x).unwrap());
+        line_runs.sort_by(|a, b| a.bbox_x.total_cmp(&b.bbox_x));
 
         if x < line_runs[0].bbox_x {
             let run = line_runs[0];
