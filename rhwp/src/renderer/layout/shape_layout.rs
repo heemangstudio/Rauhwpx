@@ -782,6 +782,7 @@ impl LayoutEngine {
             let layout_box =
                 super::super::equation::layout::EqLayout::with_font(font_size_px, &eq.font_name)
                     .with_version(&eq.version_info)
+                    .with_base_pt(eq.font_size as f64 / 100.0)
                     .layout_in_control_width(&ast, hwpunit_to_px(eq.common.width as i32, self.dpi));
             let color_str = super::super::equation::svg_render::eq_color_to_svg(eq.color);
             let svg_content = super::super::equation::svg_render::render_equation_svg_with_font(
@@ -3316,6 +3317,7 @@ impl LayoutEngine {
                                 &eq.font_name,
                             )
                             .with_version(&eq.version_info)
+                            .with_base_pt(eq.font_size as f64 / 100.0)
                             .layout_in_control_width(
                                 &ast,
                                 hwpunit_to_px(eq.common.width as i32, self.dpi),

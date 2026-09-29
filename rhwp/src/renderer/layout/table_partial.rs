@@ -1479,6 +1479,7 @@ impl LayoutEngine {
                                         &eq.font_name,
                                     )
                                     .with_version(&eq.version_info)
+                                    .with_base_pt(eq.font_size as f64 / 100.0)
                                     .layout_in_control_width(
                                         &ast,
                                         hwpunit_to_px(eq.common.width as i32, self.dpi),
