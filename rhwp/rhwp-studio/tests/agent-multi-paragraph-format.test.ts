@@ -7,7 +7,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addTable, expectErr, makeEnv } from './agent-test-env.ts';
+import { addTable, charShapeModel, expectErr, makeEnv } from './agent-test-env.ts';
 
 const SIX = ['첫째 문단', '둘째 문단', '셋째 문단', '넷째 문단', '다섯째 문단', '여섯째 문단'];
 
@@ -218,7 +218,8 @@ test('paras: 중간 문단에서 실패하면 전부 되돌리고, 같은 revisi
 });
 
 test('paras: 문단마다 보통의 pending op 하나씩이라 거절하면 모든 문단이 복원된다', async () => {
-  const h = makeEnv(SIX);
+  const fmt = charShapeModel();
+  const h = makeEnv(SIX, fmt.extend);
   const r = await h.call('apply_para_format', { paras: [[1, 3]], alignment: 'justify' });
   const ops = h.pending.getChangeSets().flatMap((set) => set.ops);
   assert.equal(ops.length, 3);
@@ -227,12 +228,17 @@ test('paras: 문단마다 보통의 pending op 하나씩이라 거절하면 모�
   assert.deepEqual(shapes(h), [10, 11, 12, 13, 14, 15]);
   assert.equal(h.pending.hasPending(), false);
 
-  const chars = await h.call('apply_char_format', { paras: [0, 5], bold: true });
+  // 혼합 서식 문단 — 0번은 앞 두 글자만 굵고, 5번은 가운데 두 글자만 굵게 기울였다
+  fmt.format(0, 0, 2, { bold: true });
+  fmt.format(5, 1, 3, { italic: true, bold: true });
+  const marks = (p: number) => fmt.shapes(p).map((s) => (s.italic ? 'i' : s.bold ? 'B' : '.')).join('');
+  const boldCount = (p: number) => fmt.shapes(p).filter((s) => s.bold).length;
+  const chars = await h.call('apply_char_format', { paras: [0, 5], bold: false });
   assert.ok(h.pending.getChangeSets().flatMap((set) => set.ops).every((op) => op.kind === 'format'));
-  h.calls.length = 0;
+  assert.deepEqual([marks(0), marks(5), boldCount(5)], ['.....', '.ii...', 0]);
   h.pending.reject(String(chars['changeSetId']));
-  // 역서식이 문단마다 다시 걸린다
-  assert.deepEqual(charRanges(h).map((a) => a[1]).sort(), [0, 5]);
+  // 글자마다 원래 모양으로 돌아온다
+  assert.deepEqual([marks(0), marks(5), boldCount(5)], ['BB...', '.ii...', 2]);
 });
 
 test('apply_edits 안의 paras 항목: 한 배치로 적용되고, 뒤 항목이 실패하면 함께 되돌아간다', async () => {

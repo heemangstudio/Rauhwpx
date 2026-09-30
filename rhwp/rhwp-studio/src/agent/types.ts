@@ -1458,7 +1458,12 @@ export type PendingOp =
       agent: AgentName;
       range: DocRange;
       format: CharFormatProps;
+      /** 범위 시작 지점 단일 샘플 역서식 — 구간 복원을 쓸 수 없을 때의 폴백 */
       inverse: CharFormatProps;
+      /** 적용 전 글자 모양 구간 (범위 시작 기준 스칼라 오프셋) — 되돌림이 글자마다 원래 모양을 복원한다 */
+      charShapeRuns?: CharShapeRun[];
+      /** 적용 직후 구간 — 되돌릴 때 범위의 모양이 그대로인지(다른 편집이 바꾸지 않았는지) 확인한다 */
+      appliedCharShapeRuns?: CharShapeRun[];
       /** 되돌림 전 드리프트 프로브용 등록 시점 범위 텍스트 (캡처 실패 시 생략) */
       text?: string;
       /** 적용 시점 범위 — 나중 에이전트 교체가 범위를 덮어써도 역순 되돌림 끝에 정확히 되돌린다 */
