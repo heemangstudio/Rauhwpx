@@ -3,7 +3,12 @@ import { createRequire } from 'node:module';
 import { applyManagedCliLaunch } from './npm-cli-launch.mjs';
 import { terminateAndWaitForProcessTreeExit } from './process-tree.mjs';
 
-const require = createRequire(import.meta.url);
+// On macOS the hub runs from app.asar.unpacked. node-pty rewrites app.asar in its
+// helper path, so loading it from that physical directory doubles .unpacked.
+// Electron resolves the logical archive path to the same unpacked native files.
+const require = createRequire(process.platform === 'darwin' && process.versions.electron
+  ? import.meta.url.replace(/\/app\.asar\.unpacked\//, '/app.asar/')
+  : import.meta.url);
 const failure = (code, message) => Object.assign(new Error(message), { code });
 
 /** A fixed login command, never a shell. Input/output belongs to its owning auth run. */
