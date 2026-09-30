@@ -176,9 +176,18 @@ try {
       // 턴 끝은 허브 추적 행으로 판정한다 — 페이지가 다시 연결되거나 새로고침돼도 놓치지 않는다.
       const deadline = Date.now() + TURN_TIMEOUT_MS;
       let turnEndRow = null;
+      let questionRow = null;
       while (!turnEndRow && Date.now() < deadline) {
         await delay(500);
-        turnEndRow = readTraceRows(traceFile).find((row) => row.kind === 'provider' && row.ev === 'turn-end' && row.t > sentAt) ?? null;
+        const rows = readTraceRows(traceFile).filter((row) => row.kind === 'provider' && row.t > sentAt);
+        turnEndRow = rows.find((row) => row.ev === 'turn-end') ?? null;
+        // 모델이 사용자에게 되물으면 턴은 답을 기다리며 끝나지 않는다 — 물은 시각을 턴 끝으로 적고 중단한다.
+        questionRow ??= rows.find((row) => row.ev === 'tool-call' && /^(AskUserQuestion|ask_user_question)$/.test(row.tool ?? '')) ?? null;
+        if (!turnEndRow && questionRow) {
+          await page.evaluate(() => window.__agentBridge.interrupt());
+          await delay(2000);
+          turnEndRow = { t: questionRow.t };
+        }
       }
       if (!turnEndRow) throw new Error(`turn did not end within ${TURN_TIMEOUT_MS}ms`);
       const endedAt = turnEndRow.t;
@@ -193,6 +202,7 @@ try {
         run,
         phase,
         via,
+        askedUser: questionRow !== null,
         studioReconnects: events.filter((event) => event.type === 'connection').length,
         pageTurnWallMs: round(endedAt - sentAt),
         ...analysis,
@@ -202,6 +212,7 @@ try {
       };
       runs.push(row);
       const tag = `run ${run}${phase === 'followup' ? ' followup' : ''}`;
+      if (questionRow) console.log(`  [${tag}] 모델이 사용자에게 되물어 턴을 중단했다 (물은 시각까지를 턴 시간으로 적는다)`);
       console.log(`  [${tag}] outcome: ${outcome.textChanged} paragraphs rewritten, ${outcome.boldAdded} short paragraphs bolded, ${outcome.formatChanged} reformatted (paragraphs ${outcome.paragraphsBefore}→${outcome.paragraphsAfter})`);
       console.log(`  [${tag}] via=${via} wall=${round(row.pageTurnWallMs / 1000, 1)}s  model requests=${row.modelRequests}  tool calls=${row.toolCalls} (rhwp ${row.rhwpToolCalls}, failed ${row.failedToolCalls})  parallel batches=${row.parallelBatches} (${row.parallelCalls} calls, largest ${row.largestBatch})  tool union=${round(row.toolUnionMs / 1000, 2)}s  pipeline p50/p95=${row.latency.pipelineMs.p50}/${row.latency.pipelineMs.p95}ms  cli tool p50/p95=${row.latency.toolMs.p50}/${row.latency.toolMs.p95}ms`);
       console.log(`  [${tag}] startup: spawn +${row.startup.spawnMs}ms, init ${row.startup.initMs}ms, first request at ${row.startup.firstRequestMs}ms  model wait=${round(row.modelWaitMs / 1000, 1)}s gen=${round(row.modelGenMs / 1000, 1)}s (thinking ${round(row.thinkingMs / 1000, 1)}s, tool args ${round(row.toolArgsMs / 1000, 1)}s, text ${round(row.textMs / 1000, 1)}s) out=${row.outputTokens}tok`);
@@ -282,6 +293,7 @@ function summarize(rows) {
     toolCallsPerTurn: stats(rows.map((row) => row.toolCalls)),
     failedToolCallsPerTurn: stats(rows.map((row) => row.failedToolCalls)),
     turnsWithFailedCalls: rows.filter((row) => row.failedToolCalls > 0).length,
+    turnsAskingUser: rows.filter((row) => row.askedUser).length,
     paragraphsRewritten: stats(rows.map((row) => row.outcome.textChanged)),
     paragraphsBolded: stats(rows.map((row) => row.outcome.boldAdded)),
     paragraphsReformatted: stats(rows.map((row) => row.outcome.formatChanged)),
