@@ -10,7 +10,7 @@ import type { WasmBridge } from '../core/wasm-bridge.ts';
 import { engineTrap, reportEngineTrap } from '../core/engine-trap.ts';
 import type { InputHandler } from '../engine/input-handler.ts';
 import type { DocumentDirtyState } from '../core/document-dirty-state.ts';
-import type { CellPathEntry, ControlLayoutItem, DocumentPosition, LineLayoutItem, ParaProperties, SelectionRect } from '../core/types.ts';
+import type { CellPathEntry, CharProperties, CharShapeRun, ControlLayoutItem, DocumentPosition, LineLayoutItem, ParaProperties, SelectionRect } from '../core/types.ts';
 import type { RevisionTracker } from './revision.ts';
 import type { PendingEditManager } from './pending-edits.ts';
 import type { AgentName, AgentPhase, AgentWorkflow, CellAddr, CharFormatProps, DocRange, DocumentTemplate, ObjectOp, PendingOp, PermissionProfile } from './types.ts';
@@ -86,13 +86,18 @@ const MAX_SVG_BYTES = 800_000;
 // WebSocket text frames cap at 100 MiB. Base64 expands by 4/3, so 64 MiB
 // leaves room for the protocol envelope while still covering normal HWP/HWPX files.
 const MAX_DOCUMENT_SNAPSHOT_BYTES = 64 * 1024 * 1024;
+/** 서식 태그를 조사할 제목 후보 문단의 최대 길이 — 긴 본문 문단은 조회 없이 건너뛴다. */
+const STRUCTURE_TAG_MAX_CHARS = 60;
 /** get_structure compact 텍스트의 범례 — 결과 머리에 한 번만 싣는다. */
 const STRUCTURE_LEGEND = 'Lines: "s<sec> p<paraIdx> (<length>) <text>"; … = text cut, ⇥ = tab, "pA-pB empty" = empty paragraphs. '
-  + '"-- page N --" = the lines below are on 0-based page N ("pX continues" = page N starts inside pX). '
-  + 'Short paragraphs may carry tags after the length, e.g. "(12 h1 B 14pt)": h/#/• + level = outline heading / numbered / bulleted paragraph (its number or bullet is generated, not text); '
-  + 'B/I/U = bold/italic/underline throughout; Npt = size when not the body size; no tag = plain body text. '
+  + 'Text is verbatim, usable in anchors as is; "quoted" = exact text as a JSON string, used when it starts or ends with a space. '
+  + '"-- page N --" = lines below are on 0-based page N ("pX continues" = page N starts inside pX). '
+  + `Paragraphs up to ${STRUCTURE_TAG_MAX_CHARS} chars carry tags after the length, e.g. "(12 h1 B 14pt)": h/#/• + level`
+  + ' = outline heading / numbered / bulleted paragraph (its number or bullet is generated, not text); '
+  + 'B/I/U = bold/italic/underline throughout, B0-7,12-15 = only those charOffsets (end exclusive), B~ = scattered parts, no B = no bold at all; Npt = size when not the body size. '
   + 'Each table follows its anchor paragraph as "table s<sec> p<paraIdx> c<controlIdx> <rows>x<cols>" plus "r<row> [cellIdx] text | …" lines; '
-  + 'rsN/csN = span when not 1, ⏎ = next cell paragraph (cellParaIdx 0,1,…), ⊞ = cell paragraph holding a nested table (use find_text/get_selection). '
+  + 'after the cellIdx: rsN/csN = span when not 1, then its B/I/U/Npt tags ("[0 cs2 B 22pt]"; "[3 p0 B p2 I]" = per cell paragraph; table-line "cells Npt" = cell size unless tagged). '
+  + '⏎ = next cell paragraph (cellParaIdx 0,1,…), ⊞ = cell paragraph holding a nested table (use find_text/get_selection). '
   + 'cell = {paraIdx: table p, controlIdx: table c, cellIdx}. format:"json" gives JSON.';
 
 /**
@@ -100,15 +105,16 @@ const STRUCTURE_LEGEND = 'Lines: "s<sec> p<paraIdx> (<length>) <text>"; … = te
  * 안에 머물도록 한국어 1-1.5자/토큰으로 잡는다 — 넘치면 continue 안내로 이어 읽는다.
  */
 const STRUCTURE_FULL_TEXT_CHARS = 16_000;
-/** 서식 태그를 조사할 제목 후보 문단의 최대 길이 — 긴 본문 문단은 조회 없이 건너뛴다. */
-const STRUCTURE_TAG_MAX_CHARS = 60;
-/** 태그 판정에 비교할 글자 모양 수 — 이보다 많이 섞인 문단은 강조 태그를 달지 않는다. */
-const STRUCTURE_TAG_MAX_SHAPES = 4;
+/** 강조 태그에 적는 글자 구간 수 — 이보다 잘게 흩어진 강조는 "B~" 로만 적는다. */
+const STRUCTURE_TAG_MAX_RANGES = 3;
+/** 읽기 한 번에 서식 태그를 조사할 셀 문단 수 — 넘는 표는 표 줄에 태그가 끊긴 셀을 적는다. */
+const STRUCTURE_CELL_TAG_LIMIT = 200;
 /** 본문 기준 글자 크기를 정할 표본 문단 수. */
 const STRUCTURE_BODY_SIZE_SAMPLES = 64;
 
 interface StructureParagraph { paraIdx: number; length: number; text: string; tag?: string }
-interface StructureCellParagraph { cellParaIdx: number; length: number; text: string }
+/** emphasis 는 compact 줄이 표 기준 크기를 뽑는 데 쓰는 내부 값 — JSON 에는 tag 로 풀어 싣는다. */
+interface StructureCellParagraph { cellParaIdx: number; length: number; text: string; emphasis?: StructureEmphasis }
 interface StructureTable {
   paraIdx: number;
   controlIdx: number;
@@ -121,6 +127,24 @@ interface StructureTable {
   }>;
   /** 문단·글자 예산이 이 표의 셀 텍스트 수집 도중/이전에 소진됐다 (JSON 출력에는 싣지 않는다) */
   textCut: boolean;
+  /** 셀 태그 한도가 이 cellIdx 에서 다했다 — 이 셀부터는 태그가 없어도 서식이 없다는 뜻이 아니다. */
+  untaggedFromCellIdx?: number;
+}
+/** 문단 하나의 강조 태그 조각("B", "I0-3", …)과, 보이는 글자가 모두 한 크기일 때 그 크기(HWPUNIT). */
+interface StructureEmphasis { marks: string[]; size: number | null }
+/**
+ * 글자 모양 하나의 강조 값 — charShapeId 가 같으면 값도 같아 get_structure 메모에 모양별로 둔다.
+ * whole 은 문단 전체가 이 모양일 때의 태그다.
+ */
+interface StructureShapeEmphasis {
+  bold: boolean; italic: boolean; underline: boolean; size: number | null; whole: StructureEmphasis;
+}
+type StructureCharProps = Pick<CharProperties, 'bold' | 'italic' | 'underline' | 'fontSize'>;
+/** 서식 태그를 읽을 본문·셀 문단 하나의 엔진 읽기. runs 는 모양 구간을 못 읽는 엔진에서 던진다. */
+interface StructureTagSource {
+  runs: () => CharShapeRun[];
+  propsAt: (offset: number) => StructureCharProps;
+  text: () => string;
 }
 /** get_structure range 인자 — 파싱·검증 후 수집을 이 본문 문단 범위로 좁힌다. pages 도 구역별 범위로 풀린다. */
 interface StructureRange { sectionIdx: number; fromPara: number; toPara: number }
@@ -135,6 +159,8 @@ interface StructureBudget {
   count: number;
   previewChars: number;
   chars: number | null;
+  /** 이번 읽기에서 더 태그를 조사할 수 있는 셀 문단 수 */
+  cellTags: number;
 }
 interface StructureData {
   sectionCount: number;
@@ -166,13 +192,50 @@ interface StructureDeltaChange {
 function cleanStructureText(text: string): string {
   return text.replace(/\t/g, '⇥').replace(/\r?\n|\r/g, '⏎');
 }
-function previewStructureText(text: string, length: number): string {
-  return cleanStructureText(text) + (text.length < length ? '…' : '');
+/**
+ * 한 줄에 싣는 문단·셀 문단 글 — 양 끝 공백은 줄 형식에서 보이지 않으므로 그런 글은 JSON 문자열로
+ * 감싼다. 큰따옴표로 시작하는 글도 감싸서, 따옴표로 시작하는 글은 언제나 JSON 문자열로 읽힌다.
+ */
+function structureLineText(text: string): string {
+  const shown = cleanStructureText(text);
+  return /^[\s"]|\s$/.test(shown) ? JSON.stringify(shown) : shown;
+}
+/** 태그 글 — 강조 조각 뒤에, 크기가 기준(본문 크기 또는 표의 셀 기준 크기)과 다를 때만 "14pt". */
+function structureTagText(emphasis: StructureEmphasis | undefined, baseSize: number | null, lead: string[] = []): string {
+  if (!emphasis) return lead.join(' ');
+  const sized = emphasis.size !== null && baseSize !== null && emphasis.size !== baseSize;
+  return [...lead, ...emphasis.marks, ...(sized ? [structureSizeText(emphasis.size!)] : [])].join(' ');
+}
+function structureSizeText(size: number): string {
+  return `${Math.round(size) / 100}pt`;
+}
+function structureShapeEmphasis(props: StructureCharProps): StructureShapeEmphasis {
+  const bold = props.bold === true;
+  const italic = props.italic === true;
+  const underline = props.underline === true;
+  const size = typeof props.fontSize === 'number' ? props.fontSize : null;
+  const marks = [...(bold ? ['B'] : []), ...(italic ? ['I'] : []), ...(underline ? ['U'] : [])];
+  return { bold, italic, underline, size, whole: { marks, size } };
+}
+/**
+ * 셀 머리 "[cellIdx …]" 에 붙는 태그 — 글이 있는 문단이 모두 같은 태그면 " B 22pt" 하나로, 아니면 태그가
+ * 있는 문단마다 " p0 B p2 I". 오프셋 구간은 문단 안 좌표라 문단이 여럿인 셀에서는 언제나 문단을 밝힌다.
+ */
+function structureCellTags(paragraphs: StructureCellParagraph[], cellSize: number | null): string {
+  if (!paragraphs.some((p) => p.emphasis)) return '';
+  const tags = paragraphs.map((p) => structureTagText(p.emphasis, cellSize));
+  const inked = tags.filter((_, i) => paragraphs[i].length > 0);
+  const shared = inked[0] !== '' && inked.every((tag) => tag === inked[0])
+    && (paragraphs.length === 1 || !/\d-/.test(inked[0]));
+  return shared
+    ? ` ${inked[0]}`
+    : tags.map((tag, i) => (tag ? ` p${paragraphs[i].cellParaIdx} ${tag}` : '')).join('');
 }
 /** 본문 문단 한 줄 — "s0 p12 (40) text…", 서식 태그가 있으면 길이 뒤에 "(12 h1 B 14pt)". */
 function structureParagraphLine(sec: number, para: StructureParagraph): string {
   const head = `s${sec} p${para.paraIdx} (${para.length}${para.tag ? ` ${para.tag}` : ''})`;
-  return para.length > 0 ? `${head} ${previewStructureText(para.text, para.length)}` : head;
+  if (para.length === 0) return head;
+  return `${head} ${structureLineText(para.text)}${para.text.length < para.length ? '…' : ''}`;
 }
 
 /** anchor.within 의 검색 범위 — collectTextMatches 의 선택적 scope 인자와 같은 모양. */
@@ -886,10 +949,15 @@ export class AgentToolExecutor {
   /** get_structure 서식 태그의 본문 기준 글자 크기 (HWPUNIT) — structureMemoKey 마다 다시 표본을 뜬다. */
   private structureBodySizeMemo: { key: string; size: number | null } | null = null;
   /**
-   * 같은 문서·revision 의 문단 서식 태그 — 병렬 읽기(편대 에이전트가 같은 revision 에서 각자 구조를
-   * 읽는 경우)마다 서식 조회를 되풀이하지 않는다. 키는 structureMemoKey 다.
+   * 같은 문서·revision 의 본문·셀 문단 서식 태그와 글자 모양별 강조 값 — 병렬 읽기(편대 에이전트가
+   * 같은 revision 에서 각자 구조를 읽는 경우)마다 서식 조회를 되풀이하지 않는다. 키는 structureMemoKey 다.
    */
-  private structureTagMemo: { key: string; tags: Map<string, string | undefined> } | null = null;
+  private structureTagMemo: {
+    key: string;
+    tags: Map<string, string | undefined>;
+    cells: Map<string, StructureEmphasis>;
+    shapes: Map<number, StructureShapeEmphasis>;
+  } | null = null;
   // 병렬 서브에이전트 리베이스용 편집 저널 — 정밀 기록된 핵심 텍스트 쓰기만 담고,
   // 기록되지 않은 revision bump 는 자동으로 '불명'(리베이스 불가) 취급된다.
   private journal = new EditJournal();
@@ -1496,7 +1564,7 @@ export class AgentToolExecutor {
       const sectionsOut = data.sections.map((s) => {
         const tables = data.tablesBySection.get(s.sectionIdx);
         return tables && tables.length > 0
-          ? { ...s, tables: tables.map(({ textCut: _cut, ...table }) => table) }
+          ? { ...s, tables: tables.map((table) => this.structureTableJson(table)) }
           : s;
       });
       return {
@@ -1535,6 +1603,7 @@ export class AgentToolExecutor {
       count: 0,
       previewChars: Math.min(Math.max(optInt(args, 'maxPreviewChars', 120), 0), 500),
       chars: fullText ? STRUCTURE_FULL_TEXT_CHARS : null,
+      cellTags: STRUCTURE_CELL_TAG_LIMIT,
     };
   }
 
@@ -1706,9 +1775,11 @@ export class AgentToolExecutor {
   /**
    * 표 하나의 셀 주소와 셀 문단 텍스트. 예산이 다하면 셀 텍스트 수집만 멈추고 표/셀 좌표(주소
    * 지정에 필수)는 계속 내보낸다 — 표가 통째로 사라지면 셀 주소를 만들 수 없다. 접근 실패는 null.
+   * 짧은 셀 문단에는 강조·크기 태그를 단다 (셀 서식 읽기가 없는 엔진에서는 달지 않는다).
    */
   private collectStructureTable(t: StructureTableAddress, budget: StructureBudget): StructureTable | null {
     const { wasm } = this.deps;
+    const canTag = typeof wasm.getCellCharPropertiesAt === 'function';
     try {
       const dims = wasm.getTableDimensions(t.sectionIdx, t.paraIdx, t.controlIdx);
       const table: StructureTable = {
@@ -1732,7 +1803,16 @@ export class AgentToolExecutor {
             ? wasm.getTextInCell(t.sectionIdx, t.paraIdx, t.controlIdx, cellIdx, cp, 0, take)
             : '';
           if (budget.chars !== null) budget.chars -= take;
-          cellParas.push({ cellParaIdx: cp, length, text });
+          let emphasis: StructureEmphasis | undefined;
+          if (canTag && length > 0 && length <= STRUCTURE_TAG_MAX_CHARS) {
+            if (budget.cellTags > 0) {
+              budget.cellTags--;
+              emphasis = this.structureCellEmphasis(t, cellIdx, cp, length, text);
+            } else {
+              table.untaggedFromCellIdx ??= cellIdx;
+            }
+          }
+          cellParas.push(emphasis ? { cellParaIdx: cp, length, text, emphasis } : { cellParaIdx: cp, length, text });
           budget.count++;
         }
         table.cells.push({
@@ -1760,8 +1840,7 @@ export class AgentToolExecutor {
 
   /**
    * 짧은 문단(STRUCTURE_TAG_MAX_CHARS 이하)의 서식 태그 — "h1"/"#2"/"•1" 개요·번호·글머리 수준
-   * (번호는 생성 문자라 텍스트에 없다), 문단 전체가 같은 굵게/기울임/밑줄이면 B/I/U, 본문과 다른
-   * 크기면 "14pt". 글자 모양이 섞인 문단은 강조 태그를 달지 않는다. 기본 본문은 태그가 없다.
+   * (번호는 생성 문자라 텍스트에 없다)과 structureEmphasis 의 강조·크기. 기본 본문은 태그가 없다.
    */
   private structureTag(
     sectionIdx: number,
@@ -1771,11 +1850,7 @@ export class AgentToolExecutor {
     bodySize: number | null,
   ): string | undefined {
     if (length === 0 || length > STRUCTURE_TAG_MAX_CHARS) return undefined;
-    const memoKey = this.structureMemoKey();
-    if (this.structureTagMemo?.key !== memoKey) {
-      this.structureTagMemo = { key: memoKey, tags: new Map() };
-    }
-    const memo = this.structureTagMemo.tags;
+    const memo = this.structureMemo().tags;
     const key = `${sectionIdx}:${paraIdx}:${length}:${bodySize ?? ''}`;
     if (memo.has(key)) return memo.get(key);
     const tag = this.readStructureTag(sectionIdx, paraIdx, length, text, bodySize);
@@ -1798,63 +1873,111 @@ export class AgentToolExecutor {
       const mark = head === 'outline' ? 'h' : head === 'number' ? '#' : head === 'bullet' ? '•' : '';
       if (mark) parts.push(`${mark}${(para.paraLevel ?? 0) + 1}`);
     } catch { /* 문단 서식 읽기 실패 — 수준 태그 없이 */ }
-    const emphasis = this.uniformEmphasis(sectionIdx, paraIdx, length, text);
-    if (emphasis) {
-      if (emphasis.bold) parts.push('B');
-      if (emphasis.italic) parts.push('I');
-      if (emphasis.underline) parts.push('U');
-      if (emphasis.size !== null && bodySize !== null && emphasis.size !== bodySize) {
-        parts.push(`${Math.round(emphasis.size) / 100}pt`);
-      }
-    }
-    return parts.length > 0 ? parts.join(' ') : undefined;
+    const emphasis = this.structureEmphasis(length, {
+      runs: () => wasm.getCharShapeRuns(sectionIdx, paraIdx, 0, length),
+      propsAt: (offset) => wasm.getCharPropertiesAt(sectionIdx, paraIdx, offset),
+      text: () => (text.length >= length ? text : wasm.getTextRange(sectionIdx, paraIdx, 0, length)),
+    });
+    return structureTagText(emphasis, bodySize, parts) || undefined;
   }
 
-  /** 문단의 눈에 보이는 글자 모양이 모두 같은 굵게/기울임/밑줄/크기면 그 값, 섞였거나 읽을 수 없으면 null. */
-  private uniformEmphasis(
-    sectionIdx: number,
-    paraIdx: number,
+  /** 짧은 셀 문단의 강조·크기 — 본문 태그와 같은 메모를 쓴다 (개요·목록 수준은 읽지 않는다). */
+  private structureCellEmphasis(
+    t: StructureTableAddress,
+    cellIdx: number,
+    cellParaIdx: number,
     length: number,
     text: string,
-  ): { bold: boolean; italic: boolean; underline: boolean; size: number | null } | null {
+  ): StructureEmphasis {
     const { wasm } = this.deps;
+    const memo = this.structureMemo().cells;
+    const key = `${t.sectionIdx}:${t.paraIdx}:${t.controlIdx}:${cellIdx}:${cellParaIdx}:${length}`;
+    const known = memo.get(key);
+    if (known) return known;
+    const emphasis = this.structureEmphasis(length, {
+      runs: () => wasm.getCharShapeRunsInCellByPath(
+        t.sectionIdx, t.paraIdx,
+        JSON.stringify([{ controlIndex: t.controlIdx, cellIndex: cellIdx, cellParaIndex: cellParaIdx }]),
+        0, length,
+      ),
+      propsAt: (offset) => wasm.getCellCharPropertiesAt(t.sectionIdx, t.paraIdx, t.controlIdx, cellIdx, cellParaIdx, offset),
+      text: () => (text.length >= length
+        ? text
+        : wasm.getTextInCell(t.sectionIdx, t.paraIdx, t.controlIdx, cellIdx, cellParaIdx, 0, length)),
+    });
+    memo.set(key, emphasis);
+    return emphasis;
+  }
+
+  /**
+   * 본문·셀 문단의 강조 태그 조각과 크기. 굵게/기울임/밑줄은 눈에 보이는 글자 전체면 "B", 일부면 쓰기
+   * 도구와 같은 오프셋 구간(끝 제외) "B0-7,12-15", 구간이 STRUCTURE_TAG_MAX_RANGES 를 넘으면 "B~".
+   * 크기는 보이는 글자가 모두 한 크기일 때만 싣는다. 공백만 덮는 모양(제목 뒤 빈칸 등)은 판정에서 빼고,
+   * 같은 값으로 이어지는 구간은 합친다. 글자 모양 값은 모양별로 한 번만 읽는다. 읽을 수 없으면 비운다.
+   */
+  private structureEmphasis(length: number, source: StructureTagSource): StructureEmphasis {
     try {
-      let offsets = [0];
-      let runs: Array<{ startOffset: number; endOffset: number; charShapeId: number }> | null = null;
+      let runs: CharShapeRun[] | null = null;
       try {
-        runs = wasm.getCharShapeRuns(sectionIdx, paraIdx, 0, length);
+        runs = source.runs();
       } catch { /* 모양 구간을 못 읽는 엔진 — 첫 글자 모양만 본다 */ }
-      if (runs && runs.length > 1) {
-        const full = text.length >= length ? text : wasm.getTextRange(sectionIdx, paraIdx, 0, length);
-        const firstOffsetByShape = new Map<number, number>();
-        for (const run of runs) {
-          // 공백만 덮는 모양(제목 뒤 빈칸 등)은 판정에서 뺀다.
-          if (full.slice(run.startOffset, run.endOffset).trim() === '') continue;
-          if (!firstOffsetByShape.has(run.charShapeId)) firstOffsetByShape.set(run.charShapeId, run.startOffset);
-        }
-        if (firstOffsetByShape.size > STRUCTURE_TAG_MAX_SHAPES) return null;
-        if (firstOffsetByShape.size > 0) offsets = [...firstOffsetByShape.values()];
+      if (!runs || runs.length === 0) return structureShapeEmphasis(source.propsAt(0)).whole;
+      let shown = runs;
+      if (runs.length > 1) {
+        const full = source.text();
+        const inked = runs.filter((run) => full.slice(run.startOffset, run.endOffset).trim() !== '');
+        shown = inked.length > 0 ? inked : [runs[0]];
       }
-      let first: { bold: boolean; italic: boolean; underline: boolean; size: number | null } | null = null;
-      for (const offset of offsets) {
-        const props = wasm.getCharPropertiesAt(sectionIdx, paraIdx, offset);
-        const cur = {
-          bold: props.bold === true,
-          italic: props.italic === true,
-          underline: props.underline === true,
-          size: typeof props.fontSize === 'number' ? props.fontSize : null,
-        };
-        if (!first) {
-          first = cur;
-        } else if (cur.bold !== first.bold || cur.italic !== first.italic
-          || cur.underline !== first.underline || cur.size !== first.size) {
-          return null;
+      const visible = shown.map((run) => ({
+        start: run.startOffset,
+        end: run.endOffset,
+        shape: this.structureShape(run.charShapeId, () => source.propsAt(run.startOffset)),
+      }));
+      if (visible.length === 1) return visible[0].shape.whole;
+      const marks: string[] = [];
+      for (const [attr, letter] of [['bold', 'B'], ['italic', 'I'], ['underline', 'U']] as const) {
+        const on = visible.filter((v) => v.shape[attr]).length;
+        if (on === 0) continue;
+        if (on === visible.length) {
+          marks.push(letter);
+          continue;
         }
+        const ranges: Array<[number, number]> = [];
+        visible.forEach((v, i) => {
+          if (!v.shape[attr]) return;
+          // 바로 앞 보이는 구간도 같은 강조면 (사이의 공백 구간까지) 한 구간으로 잇는다.
+          if (i > 0 && visible[i - 1].shape[attr]) ranges[ranges.length - 1][1] = v.end;
+          else ranges.push([v.start, v.end]);
+        });
+        marks.push(ranges.length > STRUCTURE_TAG_MAX_RANGES
+          ? `${letter}~`
+          : letter + ranges.map(([start, end]) => `${start}-${end}`).join(','));
       }
-      return first;
+      const size = visible[0].shape.size;
+      return { marks, size: visible.every((v) => v.shape.size === size) ? size : null };
     } catch {
-      return null;
+      return { marks: [], size: null };
     }
+  }
+
+  /** 글자 모양 하나의 강조 값 — 같은 문서·revision 에서는 모양 번호마다 한 번만 읽는다. */
+  private structureShape(charShapeId: number, read: () => StructureCharProps): StructureShapeEmphasis {
+    const shapes = this.structureMemo().shapes;
+    let shape = shapes.get(charShapeId);
+    if (!shape) {
+      shape = structureShapeEmphasis(read());
+      shapes.set(charShapeId, shape);
+    }
+    return shape;
+  }
+
+  /** get_structure 서식 메모 — structureMemoKey 가 바뀌면 (쓰기·문서 교체) 비우고 새로 만든다. */
+  private structureMemo(): NonNullable<AgentToolExecutor['structureTagMemo']> {
+    const key = this.structureMemoKey();
+    if (this.structureTagMemo?.key !== key) {
+      this.structureTagMemo = { key, tags: new Map(), cells: new Map(), shapes: new Map() };
+    }
+    return this.structureTagMemo;
   }
 
   /**
@@ -1881,8 +2004,14 @@ export class AgentToolExecutor {
           const head = wasm.getTextRange(sec, para, 0, Math.min(length, 32));
           const offset = head.search(/\S/);
           if (offset < 0) continue;
-          const fontSize = wasm.getCharPropertiesAt(sec, para, offset).fontSize;
-          if (typeof fontSize !== 'number') continue;
+          // 표본마다 글자 속성을 다시 읽지 않도록 모양 번호를 알 수 있으면 모양 메모를 거친다.
+          const read = (): StructureCharProps => wasm.getCharPropertiesAt(sec, para, offset);
+          let shapeId: number | undefined;
+          try {
+            shapeId = wasm.getCharShapeRuns(sec, para, offset, offset + 1)[0]?.charShapeId;
+          } catch { /* 모양 구간을 못 읽는 엔진 */ }
+          const fontSize = shapeId === undefined ? structureShapeEmphasis(read()).size : this.structureShape(shapeId, read).size;
+          if (fontSize === null) continue;
           weights.set(fontSize, (weights.get(fontSize) ?? 0) + 1);
         }
       }
@@ -1908,7 +2037,10 @@ export class AgentToolExecutor {
     return `${this.revision}:${this.deps.wasm.documentGeneration ?? 0}`;
   }
 
-  /** get_structure range 인자 파싱 — sectionIdx/fromPara/toPara 경계를 지금 문서에서 검증한다. */
+  /**
+   * get_structure range 인자 파싱 — sectionIdx/fromPara 경계를 지금 문서에서 검증하고, 끝을 넘긴
+   * toPara 는 마지막 문단으로 당긴다. 머리 줄과 JSON 의 range 는 실제로 읽은 범위다.
+   */
   private parseStructureRange(args: Record<string, unknown>): StructureRange | undefined {
     const raw = args['range'];
     if (raw === undefined || raw === null) return undefined;
@@ -1922,18 +2054,21 @@ export class AgentToolExecutor {
       throw new AgentToolError('INVALID_ARGS', `range.sectionIdx ${sectionIdx} out of range (0..${sectionCount - 1})`);
     }
     const paraCount = wasm.getParagraphCount(sectionIdx);
-    if (fromPara < 0 || fromPara > toPara) {
-      throw new AgentToolError('INVALID_ARGS', `range.fromPara ${fromPara} must satisfy 0 <= fromPara <= toPara`);
+    if (fromPara < 0 || fromPara > toPara || fromPara >= paraCount) {
+      throw new AgentToolError(
+        'INVALID_ARGS',
+        `range.fromPara ${fromPara} must satisfy 0 <= fromPara <= toPara and fromPara <= ${paraCount - 1} `
+          + `(section ${sectionIdx} has paragraphs 0..${paraCount - 1})`,
+      );
     }
-    if (toPara >= paraCount) {
-      throw new AgentToolError('INVALID_ARGS', `range.toPara ${toPara} out of range for section ${sectionIdx} (0..${paraCount - 1})`);
-    }
-    return { sectionIdx, fromPara, toPara };
+    // 끝을 넘긴 toPara 는 마지막 문단으로 당긴다 — 모델은 "N paragraphs" 에서 끝을 셈한다.
+    return { sectionIdx, fromPara, toPara: Math.min(toPara, paraCount - 1) };
   }
 
   /**
    * get_structure pages [first, last] (0-based, 포함) — 쪽 시작 위치로 구역별 본문 범위를 만든다.
    * 끝은 last+1 쪽의 시작 문단 직전이고, 그 문단이 last 쪽에서 이미 시작했다면 그 문단까지다.
+   * 마지막 쪽을 넘긴 last 는 마지막 쪽으로 당긴다 (머리 줄에 실제로 읽은 쪽 범위가 실린다).
    */
   private parseStructurePages(args: Record<string, unknown>): {
     first: number; last: number; spans: StructureRange[]; marks: StructurePageMark[];
@@ -1943,12 +2078,17 @@ export class AgentToolExecutor {
     if (!Array.isArray(raw) || raw.length !== 2 || !raw.every((n) => typeof n === 'number' && Number.isSafeInteger(n))) {
       throw new AgentToolError('INVALID_ARGS', `pages must be [firstPage, lastPage] as 0-based integers (got ${JSON.stringify(raw)})`);
     }
-    const [first, last] = raw as [number, number];
+    const [first, requestedLast] = raw as [number, number];
     const { wasm } = this.deps;
     const pageCount = wasm.pageCount;
-    if (first < 0 || first > last || last >= pageCount) {
-      throw new AgentToolError('INVALID_ARGS', `pages [${first}, ${last}] must satisfy 0 <= first <= last <= ${pageCount - 1} (0-based; the document has ${pageCount} pages)`);
+    if (first < 0 || first > requestedLast || first >= pageCount) {
+      throw new AgentToolError(
+        'INVALID_ARGS',
+        `pages [${first}, ${requestedLast}] must satisfy 0 <= first <= last and first <= ${pageCount - 1} `
+          + `(0-based; the document has pages 0..${pageCount - 1})`,
+      );
     }
+    const last = Math.min(requestedLast, pageCount - 1);
     const scanned = this.structurePageMarks(first, Math.min(last + 1, pageCount - 1));
     if (!scanned) {
       throw new AgentToolError('INVALID_ARGS', 'Page positions are unavailable in this engine build — use range instead of pages');
@@ -2078,7 +2218,7 @@ export class AgentToolExecutor {
         truncated,
         changes: changes.map((c) => ({
           ...c,
-          tables: c.tables.map(({ textCut: _cut, ...table }) => table),
+          tables: c.tables.map((table) => this.structureTableJson(table)),
         })),
         indexShifts,
       };
@@ -2138,10 +2278,52 @@ export class AgentToolExecutor {
     return lines.join('\n');
   }
 
-  /** compact 구조 텍스트의 표 블록 — "  table s0 p5 c0 3x4" 머리 + 행마다 "[cellIdx] text | …". */
+  /** format:"json" 의 표 — 내부 필드를 떼고, 셀 문단 태그를 본문 문단과 같은 규칙(본문과 다른 크기만)으로 싣는다. */
+  private structureTableJson(table: StructureTable): unknown {
+    const { textCut: _cut, cells, ...rest } = table;
+    const bodySize = this.structureBodySize();
+    return {
+      ...rest,
+      cells: cells.map((cell) => ({
+        ...cell,
+        paragraphs: cell.paragraphs.map(({ emphasis, ...para }) => {
+          const tag = structureTagText(emphasis, bodySize);
+          return tag ? { ...para, tag } : para;
+        }),
+      })),
+    };
+  }
+
+  /**
+   * compact 구조 텍스트의 표 블록 — "  table s0 p5 c0 3x4" 머리 + 행마다 "[cellIdx] text | …".
+   * 셀 태그는 cellIdx·스팬 뒤에 적는다 (structureCellTags). 표 셀은 대개 본문보다 작은 한 크기라,
+   * 둘 이상의 셀 문단이 쓰는 가장 흔한 크기가 본문과 다르면 표 줄에 "cells 10pt" 로 한 번 적고
+   * 셀에는 그 기준과 다른 크기만 적는다.
+   */
   private emitStructureTable(lines: string[], sec: number, table: StructureTable): void {
+    const bodySize = this.structureBodySize();
+    let cellSize = bodySize;
+    if (bodySize !== null) {
+      const counts = new Map<number, number>();
+      let most = 1;
+      for (const cell of table.cells) {
+        for (const p of cell.paragraphs) {
+          const size = p.emphasis?.size ?? null;
+          if (size === null) continue;
+          const count = (counts.get(size) ?? 0) + 1;
+          counts.set(size, count);
+          if (count > most) {
+            most = count;
+            cellSize = size;
+          }
+        }
+      }
+    }
+    const untagged = table.untaggedFromCellIdx;
     lines.push(`  table s${sec} p${table.paraIdx} c${table.controlIdx} ${table.rowCount}x${table.colCount}`
-      + (table.textCut ? ' (cell text cut here; read the rest with get_text_range cell)' : ''));
+      + (cellSize !== null && cellSize !== bodySize ? ` cells ${structureSizeText(cellSize)}` : '')
+      + (table.textCut ? ' (cell text cut here; read the rest with get_text_range cell)' : '')
+      + (untagged === undefined ? '' : untagged === 0 ? ' (no cell tags)' : ` (no cell tags from [${untagged}])`));
     const rows = new Map<number, string[]>();
     for (const cell of table.cells) {
       const spans = `${cell.rowSpan !== 1 ? ` rs${cell.rowSpan}` : ''}${cell.colSpan !== 1 ? ` cs${cell.colSpan}` : ''}`;
@@ -2153,10 +2335,10 @@ export class AgentToolExecutor {
           return nested ? '⊞' : '';
         }
         const cut = p.text.length < p.length;
-        return cleanStructureText(p.text) + (cut ? `…(${p.length})` : '');
+        return structureLineText(p.text) + (cut ? `…(${p.length})` : '');
       }).join('⏎');
       const row = rows.get(cell.row) ?? [];
-      row.push(`[${cell.cellIdx}${spans}]${body ? ` ${body}` : ''}`);
+      row.push(`[${cell.cellIdx}${spans}${structureCellTags(cell.paragraphs, cellSize)}]${body ? ` ${body}` : ''}`);
       rows.set(cell.row, row);
     }
     for (const [row, cells] of [...rows.entries()].sort((a, b) => a[0] - b[0])) {
