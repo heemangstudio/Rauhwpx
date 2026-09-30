@@ -91,6 +91,8 @@ import {
   addActiveDocumentContext,
   assertMessageScope,
   attachActiveDocumentIdentity,
+  liveDocumentBlock,
+  normalizeDocumentSnapshot,
   referenceScopesForSession,
   resolveSessionIdentity,
 } from './reference-session.mjs';
@@ -2741,15 +2743,21 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
     generation: activeSession.generation,
     turnId: activeSession.turnId,
   });
+  // Studio 가 메시지에 실어 보낸 문서 읽기 — 사용자 요청 바로 앞에 둔다. 승인·수정·허브 생성 턴은 이 경로를 타지 않는다.
+  // 모양이 어긋난 스냅샷은 버리고 메시지는 그대로 보낸다.
+  const liveDocument = normalizeDocumentSnapshot(msg.documentSnapshot);
   void skillRegistry.promptContext(msg.text, typeof msg.skillName === 'string' ? msg.skillName : undefined, {
     phase: activeSession.planning.snapshot().phase,
     agent: activeSession.agent,
+    requestContext: liveDocumentBlock(liveDocument),
   })
     .then((prompt) => {
       // Skill context is loaded asynchronously. An interrupt can settle this
       // turn and a later message can start another turn on the same session
       // before the read completes, so session identity alone is insufficient.
       if (!providerTurnIsCurrent(record, providerTurn)) return;
+      // 스냅샷도 에이전트가 본 문서 상태다 — 읽기 도구 없이 세운 계획이 승인 때 stale 로 거절되지 않게 한다.
+      if (liveDocument) activeSession.lastObservedDocumentRevision = liveDocument.revision;
       if (activeSession.planning.phase === 'awaiting-approval') {
         prompt = `The current plan remains open for review. Answer questions and research normally. If this message requests concrete changes to the plan, revise it directly with present_implementation_plan; do not ask the user to request a draft again. Never treat discussion as approval to edit the document.\n\nCurrent plan:\n${JSON.stringify(activeSession.planning.latestPlan.plan)}\n\n${prompt}`;
       }

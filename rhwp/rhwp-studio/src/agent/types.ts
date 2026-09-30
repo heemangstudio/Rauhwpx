@@ -134,6 +134,15 @@ export interface ReferenceScopeContext {
   documentName?: string | null;
 }
 
+/**
+ * chat-user-message 의 선택 필드 documentSnapshot — 보내는 순간의 문서 읽기.
+ * text 는 get_structure 도구 결과 그대로이고, unchanged 는 에이전트가 이미 아는 상태라는 뜻이다.
+ * 이 필드를 모르는 허브는 무시한다.
+ */
+export type TurnDocumentSnapshot =
+  | { revision: number; text: string }
+  | { revision: number; unchanged: true };
+
 export interface DocumentTemplate {
   id: string;
   name: string;
