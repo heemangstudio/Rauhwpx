@@ -1194,6 +1194,11 @@ export class AgentToolExecutor {
     }
   }
 
+  /** 그 revision 이후 문서 내용이 그대로인가 — 그때 읽은 좌표와 텍스트를 다시 읽지 않고 써도 된다. */
+  documentUnchangedSince(revision: number): boolean {
+    return this.journal.contentUnchanged(revision, this.revision);
+  }
+
   /** cell 이 있으면 셀 내부 문단 좌표로, 없으면 본문 문단 좌표로 검증한다 */
   private validateAddress(sectionIdx: number, paraIdx: number, charOffset?: number, cell?: CellAddr): number {
     const { wasm } = this.deps;
