@@ -464,12 +464,12 @@
   background: var(--ui-surface);
 }
 
-/* 편집기 대화상자의 닫기·버튼은 에이전트 시트와 같은 알약이다.
+/* 편집기 대화상자의 닫기·버튼은 에이전트 시트와 같은 모서리를 쓴다.
    본문 서식 칸의 조밀한 배치는 그대로 둔다. */
 .modal-overlay > .dialog-wrap .dialog-close {
   width: 32px;
   height: 32px;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   color: var(--ui-text-secondary);
   font-size: 21px;
   transition: var(--ag-transition-color);
@@ -482,7 +482,7 @@
   height: 36px;
   padding: 0 16px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: var(--n-ink-fill-hover);
   color: var(--ui-text);
   font-size: var(--ag-fs-secondary);
@@ -553,7 +553,7 @@
   flex: 0 0 auto;
   width: 32px;
   height: 32px;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: transparent;
   color: var(--ui-text-secondary);
   font-size: 21px;
@@ -581,7 +581,7 @@
   height: 36px;
   padding: 0 16px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: var(--n-ink-fill-hover);
   color: var(--ui-text);
   font: var(--ag-fw-medium) var(--ag-fs-secondary) var(--font-family-ui);

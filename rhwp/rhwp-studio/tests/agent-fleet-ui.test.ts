@@ -596,7 +596,7 @@ test('단계 레일은 겹친 알약 대신 한 줄 연결 타임라인이다', 
 
 test('편대 도크는 입력기 위 알약과 팝업으로 그려진다', () => {
   assert.match(css, /\.ag-fleet-dock\s*\{[^}]*position:\s*absolute;/s);
-  assert.match(css, /\.ag-fleet-dock-pill\s*\{[^}]*border-radius:\s*var\(--ag-r-pill\);/s);
+  assert.match(css, /\.ag-fleet-dock-pill\s*\{[^}]*border-radius:\s*var\(--ag-r-row\);/s);
   assert.match(css, /\.ag-fleet-popup\s*\{[^}]*max-height:\s*min\(320px, 40vh\);/s);
   // 알약은 도는 동안 휠, 끝나면 상태 점을 같은 칸에 그린다.
   assert.match(css, /\.ag-fleet-dock-pill:not\(\.ag-live\) > \.ag-pixel-wheel \{\s*\n\s*display: none;/);

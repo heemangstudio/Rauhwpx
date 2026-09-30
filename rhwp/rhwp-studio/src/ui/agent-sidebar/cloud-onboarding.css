@@ -124,7 +124,7 @@
   flex: 0 0 auto;
   place-items: center;
   border: 0;
-  border-radius: var(--ag-r-chip);
+  border-radius: var(--ag-r-row);
   background: transparent;
   color: var(--ag-text-secondary);
   cursor: default;
@@ -568,7 +568,7 @@
   min-height: 36px;
   padding: 0 16px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: var(--n-ink-fill-hover);
   color: var(--ag-text);
   font: inherit;

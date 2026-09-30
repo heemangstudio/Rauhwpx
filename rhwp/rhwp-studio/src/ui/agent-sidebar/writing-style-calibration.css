@@ -75,7 +75,7 @@
   justify-content: center;
   padding: 0;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: transparent;
   color: var(--n-ink-secondary);
   cursor: default;
@@ -261,7 +261,7 @@
   min-height: 36px;
   padding: 0 16px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   font: inherit;
   font-size: var(--ag-fs-body);
   font-weight: var(--ag-fw-medium);
@@ -366,7 +366,7 @@
   gap: 6px;
   padding: 4px 10px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-chip);
   background: var(--n-ink-fill-hover);
   color: var(--n-ink-secondary);
   font-size: var(--ag-fs-secondary);
@@ -495,7 +495,7 @@
   gap: 6px;
   padding: 6px 12px;
   border: 1px solid transparent;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: var(--n-ink-fill-hover);
   color: var(--n-ink);
   font: inherit;

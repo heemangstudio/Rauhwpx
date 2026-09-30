@@ -143,7 +143,7 @@
   white-space: nowrap;
 }
 
-/* ── 탭: 밑줄 대신 알약 ─────────────────────────────── */
+/* ── 탭: 밑줄 대신 채움 ─────────────────────────────── */
 
 .ag-versions-tabs {
   display: flex;
@@ -158,7 +158,7 @@
   min-height: 30px;
   padding: 0 12px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   color: var(--ag-text-secondary);
   background: transparent;
   font: inherit;
@@ -220,7 +220,7 @@
   min-height: 28px;
   padding: 0 10px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: transparent;
   color: var(--ag-text);
   cursor: default;
@@ -252,7 +252,7 @@
   font-size: var(--ag-fs-meta);
 }
 
-/* ── 버튼: 보조 = 옅은 잉크 알약, 기본 = 잉크 알약, 위험 = 빨간 글자 ── */
+/* ── 버튼: 보조 = 옅은 잉크 채움, 기본 = 잉크 채움, 위험 = 빨간 글자 ── */
 
 .ag-versions-primary,
 .ag-versions-secondary,
@@ -262,7 +262,7 @@
   min-height: 30px;
   padding: 0 12px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   color: var(--ag-text);
   background: var(--n-ink-fill-hover);
   font: inherit;
@@ -549,14 +549,14 @@
   white-space: nowrap;
 }
 
-/* 참조: 가지 색은 글자에만, 바탕은 옅은 잉크 알약. */
+/* 참조: 가지 색은 글자에만, 바탕은 옅은 잉크 칩. */
 .ag-version-ref {
   min-width: 0;
   max-width: 96px;
   overflow: hidden;
   padding: 1px 8px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-chip);
   background: var(--n-ink-fill-hover);
   line-height: 16px;
   text-overflow: ellipsis;
@@ -591,7 +591,7 @@
   overflow: hidden;
   padding: 1px 8px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-chip);
   color: var(--ag-text-secondary);
   background: var(--n-ink-fill-hover);
   font-size: var(--ag-fs-meta);

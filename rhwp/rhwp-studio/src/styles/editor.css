@@ -92,7 +92,7 @@
   box-sizing: border-box;
   padding: 5px 9px;
   border: 1px solid color-mix(in srgb, var(--agent-edit-accent) 45%, var(--ui-border));
-  border-radius: 999px;
+  border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--ui-surface) 90%, transparent);
   box-shadow: var(--shadow-light), 0 0 0 2px var(--agent-edit-wash);
   backdrop-filter: blur(8px);

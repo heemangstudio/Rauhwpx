@@ -231,10 +231,10 @@
   --n-on-accent: #ffffff;
 
   /* 모서리: 칩 → 입력/버튼 → 패널. 에이전트 UI 만 쓰며 --ag-r-* 척도와 같다
-     (알약 / 행 10 / 카드 16). 편집기 크롬은 --radius-* 를 쓴다. */
-  --n-radius-chip: 999px;
-  --n-radius-field: 10px;
-  --n-radius-panel: 16px;
+     (칩 6 / 행 8 / 카드 12). 편집기 크롬은 --radius-* 를 쓴다. */
+  --n-radius-chip: 6px;
+  --n-radius-field: 8px;
+  --n-radius-panel: 12px;
 
   /* 높이: 오프셋 + 부드러운 블러 */
   --n-elev-1: 0 1px 2px rgba(0, 0, 0, 0.04), 0 1px 1px rgba(0, 0, 0, 0.03);

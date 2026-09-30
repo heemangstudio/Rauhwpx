@@ -103,7 +103,7 @@
   color: var(--n-ink-secondary);
   background: var(--n-ink-fill-hover);
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-chip);
   padding: 2px 8px;
   white-space: nowrap;
   flex-shrink: 0;

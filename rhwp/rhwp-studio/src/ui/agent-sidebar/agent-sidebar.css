@@ -77,19 +77,19 @@ body.ag-sidebar-resizing {
   --ag-mono: var(--font-family-mono, monospace);
   --ag-numeric: tabular-nums;
 
-  /* 모서리: 몇 값만. 칩·세그먼트·아이콘 버튼은 알약, 행·입력은 10,
-     카드 16, 말풍선 18, 입력창 22, 시트·대화상자·팝오버 18,
-     카드 안의 코드 블록 10. */
+  /* 모서리: 4 / 6 / 8 / 12 / 16. 인라인 코드 4, 칩·배지·세그먼트 6,
+     버튼·입력·행·코드 블록 8, 카드·말풍선·시트·대화상자·팝오버 12, 입력창 16.
+     알약은 둥근 모양이 곧 기능인 곳(점, 토글, 슬라이더, 진행 막대, 보내기)에만 쓴다. */
   --ag-r-pill: 999px;
-  --ag-r-row: 10px;
-  --ag-r-inner: 10px;
-  --ag-r-card: 16px;
-  --ag-r-bubble: 18px;
-  --ag-r-sheet: 18px;
-  --ag-r-composer: 22px;
-  --ag-r-code: 6px;
+  --ag-r-code: 4px;
+  --ag-r-chip: 6px;
+  --ag-r-row: 8px;
+  --ag-r-inner: 8px;
+  --ag-r-card: 12px;
+  --ag-r-bubble: 12px;
+  --ag-r-sheet: 12px;
+  --ag-r-composer: 16px;
   /* 예전 이름 — 새 척도로 모은다. */
-  --ag-r-chip: var(--ag-r-pill);
   --ag-r-field: var(--ag-r-row);
   --ag-r-panel: var(--ag-r-card);
 
@@ -511,7 +511,7 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   margin: 0;
   padding: 0;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: transparent;
   color: var(--ag-text-secondary);
   cursor: default;
@@ -610,7 +610,7 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   height: 28px;
   padding: 0 10px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: var(--ag-hover);
   color: var(--ag-text);
   font: inherit;
@@ -646,7 +646,7 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   height: 32px;
   padding: 0;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: transparent;
   cursor: default;
 }
@@ -762,7 +762,7 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   height: 28px;
   padding: 0;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: transparent;
   color: var(--ag-text-muted);
   cursor: default;
@@ -777,7 +777,7 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
 .ag-conn-retry {
   height: 32px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: var(--ag-primary-bg);
   color: var(--ag-primary-fg);
   font: inherit;
@@ -816,7 +816,7 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   font-size: var(--ag-fs-secondary);
   font-weight: var(--ag-fw-medium);
   cursor: default;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   transition: var(--ag-transition-color);
 }
 
@@ -847,7 +847,7 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   min-height: 28px;
   padding: 4px 10px;
   border: 0;
-  border-radius: var(--ag-r-chip);
+  border-radius: var(--ag-r-row);
   background: transparent;
   color: var(--ag-text-secondary);
   font: inherit;
@@ -1060,7 +1060,7 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   gap: 8px;
   padding: 8px 12px;
   border: 1px dashed var(--ag-border);
-  border-radius: 11px;
+  border-radius: var(--ag-r-row);
   background: color-mix(in srgb, var(--ag-accent) 7%, transparent);
   color: var(--ag-text-secondary);
   font: 600 12px/1.2 var(--font-family, sans-serif);
@@ -1097,7 +1097,7 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
 .ag-skill-icon-button {
   position: relative;
   z-index: 1;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   outline: none;
   cursor: default;
   transition: background-color var(--ag-dur-fast) var(--ag-skills-motion), color var(--ag-dur-fast) var(--ag-skills-motion), transform var(--ag-dur-fast) var(--ag-skills-motion);
@@ -1276,7 +1276,7 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   flex: none;
   min-height: 30px;
   padding: 5px 12px;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
 }
 
 .ag-skill-editor-footer .ag-skill-editor-save {
@@ -1300,7 +1300,7 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   align-items: stretch;
   gap: 12px 16px;
   padding: 18px;
-  border-radius: 16px;
+  border-radius: var(--ag-r-card);
 }
 
 .ag-fullscreen .ag-skill-new-editor .ag-skill-editor-heading { grid-area: heading; }
@@ -1333,7 +1333,7 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   flex: 0 0 auto;
   min-height: 30px;
   padding-inline: 9px;
-  border-radius: var(--ag-r-chip);
+  border-radius: var(--ag-r-row);
   transition:
     background-color var(--ag-dur-fast) var(--ag-skills-motion),
     color var(--ag-dur-fast) var(--ag-skills-motion),
@@ -1351,7 +1351,7 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   min-width: 0;
   padding: 7px 12px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--ag-r-row);
   background: var(--ag-input-bg);
   color: var(--ag-text);
   font: inherit;
@@ -1413,7 +1413,7 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   align-items: center;
   padding: 6px 8px;
   border: 1px solid transparent;
-  border-radius: var(--ag-r-chip);
+  border-radius: var(--ag-r-row);
   background: transparent;
   color: var(--ag-text);
   font: inherit;
@@ -1525,7 +1525,7 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   min-width: 0;
   padding: 0;
   border: 0;
-  border-radius: var(--ag-r-chip);
+  border-radius: var(--ag-r-row);
   background: transparent;
   color: inherit;
   text-align: left;
@@ -2186,7 +2186,7 @@ button.ag-skill-copy {
   max-width: 100%;
 }
 
-/* display:inline-flex 가 기본 [hidden] 을 덮어써서, 숨긴 알약은 따로 눌러
+/* display:inline-flex 가 기본 [hidden] 을 덮어써서, 숨긴 칩은 따로 눌러
    줍니다. 추론 강도가 없는 제공자(Cursor 등)에서 빈 껍데기가 남지 않습니다. */
 .ag-model[hidden] {
   display: none;
@@ -2201,7 +2201,7 @@ button.ag-skill-copy {
   margin: 0;
   padding: 2px 6px;
   border: none;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: transparent;
   color: var(--ag-text);
   font: inherit;
@@ -2701,7 +2701,7 @@ button.ag-skill-copy {
   gap: 6px;
   padding: 4px 10px;
   border: 0;
-  border-radius: var(--ag-r-chip);
+  border-radius: var(--ag-r-row);
   background: var(--ag-hover);
   color: var(--ag-text-secondary);
   cursor: default;
@@ -2801,7 +2801,7 @@ button.ag-skill-copy {
   height: 32px;
   place-items: center;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: var(--ag-hover);
   color: var(--ag-text-secondary);
 }
@@ -2911,7 +2911,7 @@ button.ag-skill-copy {
   justify-content: center;
   padding: 0;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: var(--ag-bg);
   color: var(--ag-text-secondary);
   cursor: default;
@@ -2982,7 +2982,7 @@ button.ag-skill-copy {
   gap: 6px;
   padding: 0 14px 0 12px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: var(--ag-raised);
   box-shadow: var(--ag-elev-popover);
   color: var(--ag-text-secondary);
@@ -4027,7 +4027,7 @@ button.ag-skill-copy {
   flex: 1;
   min-height: 32px;
   padding: 5px 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   font: inherit;
   font-size: var(--ag-fs-secondary);
   font-weight: var(--ag-fw-medium);
@@ -4212,7 +4212,7 @@ button.ag-skill-copy {
   padding: 0;
   place-items: center;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: transparent;
   color: var(--ag-text-secondary);
   opacity: 0;
@@ -4321,7 +4321,7 @@ button.ag-skill-copy {
   justify-content: center;
   padding: 0;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-chip);
   background: transparent;
   color: var(--ag-text-muted);
   margin-left: auto;
@@ -4510,7 +4510,7 @@ button.ag-skill-copy {
 .ag-plan-source-locator { color: var(--ag-text-secondary); font-family: var(--ag-mono); font-size: var(--ag-fs-mono); overflow-wrap: anywhere; }
 
 .ag-plan-draft-card { padding: 12px 2px; }
-.ag-plan-draft-action { padding: 8px 12px; border: 1px solid var(--ag-border); border-radius: var(--ag-r-pill); background: var(--ag-bg); color: var(--ag-text); font: inherit; cursor: default; }
+.ag-plan-draft-action { padding: 8px 12px; border: 1px solid var(--ag-border); border-radius: var(--ag-r-row); background: var(--ag-bg); color: var(--ag-text); font: inherit; cursor: default; }
 .ag-plan-draft-action:hover { background: var(--ag-hover); }
 .ag-plan-draft-action:focus-visible { outline: var(--ag-focus-ring); outline-offset: var(--ag-focus-offset); }
 .ag-plan-draft-action:disabled { opacity: 0.5; cursor: default; }
@@ -4647,7 +4647,7 @@ button.ag-skill-copy {
 .ag-md-link:hover { text-decoration-color: currentColor; }
 
 .ag-md-link:focus-visible {
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-code);
   outline: var(--ag-focus-ring);
   outline-offset: var(--ag-focus-offset);
 }
@@ -4826,7 +4826,7 @@ button.ag-skill-copy {
   margin-left: auto;
   padding: 0;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-chip);
   background: transparent;
   color: var(--ag-text-secondary);
   cursor: default;
@@ -4975,7 +4975,7 @@ button.ag-skill-copy {
 .ag-msg .ag-md-code {
   padding: 1px 5px;
   border: 0;
-  /* 알약 모양은 눌리는 칩과 헷갈리므로 인라인 코드는 작은 모서리를 쓴다. */
+  /* 눌리는 칩과 헷갈리지 않도록 인라인 코드는 칩보다 작은 모서리를 쓴다. */
   border-radius: var(--ag-r-code);
   background: var(--ag-selected);
   color: var(--ag-text);
@@ -4996,7 +4996,7 @@ button.ag-skill-copy {
   display: inline-block;
   margin-right: 5px;
   padding: 0 5px;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-code);
   background: var(--ag-hover);
   color: var(--ag-text-secondary);
   font-family: var(--ag-mono);
@@ -5066,7 +5066,7 @@ button.ag-skill-copy {
   margin: 0 12px 8px;
   padding: 2px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: var(--ag-raised);
   animation: ag-lift-in var(--ag-dur-slow) var(--ag-spring) both;
   box-shadow: var(--ag-elev-popover);
@@ -5089,7 +5089,7 @@ button.ag-skill-copy {
   height: 28px;
   padding: 0 10px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-chip);
   background: transparent;
   color: var(--ag-text-secondary);
   font: inherit;
@@ -5123,7 +5123,7 @@ button.ag-skill-copy {
   height: 28px;
   padding: 0;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-chip);
   background: transparent;
   color: var(--ag-text-secondary);
   cursor: default;
@@ -5352,7 +5352,7 @@ button.ag-skill-copy {
 
 
 /* ─── 쉬는 입력기 ─────────────────────────────────────────
-   대화를 위로 읽는 동안 입력기는 한 줄짜리 알약으로 접힌다. 높이와 안쪽 위치는
+   대화를 위로 읽는 동안 입력기는 한 줄짜리 막대로 접힌다. 높이와 안쪽 위치는
    composer-resting.ts 가 아래 가장자리를 고정한 채 옮기고, 여기서는 도착 모양과
    모서리·설정 줄의 전환만 정한다. */
 .ag-root .ag-chat-page .ag-composer {
@@ -5483,7 +5483,7 @@ button.ag-skill-copy {
   font-size: var(--ag-fs-secondary);
   font-weight: var(--ag-fw-regular);
   letter-spacing: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
 }
 
 .ag-composer-meta .ag-provider-icon {
@@ -5533,7 +5533,7 @@ button.ag-skill-copy {
   margin: 4px 0 2px;
   padding: 4px 4px 4px 10px;
   border: 0;
-  border-radius: var(--ag-r-chip);
+  border-radius: var(--ag-r-row);
   background: var(--ag-hover);
   color: var(--ag-text);
   font-size: var(--ag-fs-secondary);
@@ -5561,7 +5561,7 @@ button.ag-skill-copy {
   place-items: center;
   padding: 0;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-chip);
   background: transparent;
   color: var(--ag-text-secondary);
   cursor: default;
@@ -5596,7 +5596,7 @@ button.ag-skill-copy {
   align-items: center;
   gap: 6px;
   padding: 4px 10px;
-  border-radius: var(--ag-r-chip);
+  border-radius: var(--ag-r-row);
   background: color-mix(in srgb, var(--ag-skill-color) 13%, var(--ag-input-bg));
   color: color-mix(in srgb, var(--ag-skill-color) 88%, var(--ag-text));
   font-size: var(--ag-fs-secondary);
@@ -6432,7 +6432,7 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   align-items: center;
   justify-content: center;
   padding: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
 }
 
 .ag-workspace-icon-btn .ui-column-icon,
@@ -6726,7 +6726,7 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   gap: 2px;
   padding: 2px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: var(--ag-hover);
 }
 
@@ -6738,7 +6738,7 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   min-height: 28px;
   padding: 0 12px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-chip);
   background: transparent;
   color: var(--ag-text-secondary);
   font: inherit;
@@ -6774,7 +6774,7 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   gap: 6px;
   margin-left: 4px;
   padding: 0 12px;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   font-size: var(--ag-fs-secondary);
 }
 
@@ -8049,7 +8049,7 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   margin: 0;
   padding: 6px 12px 6px 12px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: var(--ag-raised);
   box-shadow: var(--ag-elev-popover);
   color: var(--ag-text-secondary);
@@ -8429,7 +8429,7 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   width: 20px;
   height: 20px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-chip);
   color: var(--ag-text-secondary);
   font-size: var(--ag-fs-mono);
   font-variant-numeric: var(--ag-numeric);
@@ -8508,7 +8508,7 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   min-height: 28px;
   padding: 4px 10px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: transparent;
   color: var(--ag-question-muted);
   font-size: var(--ag-fs-secondary);
@@ -8698,7 +8698,7 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   pointer-events: auto;
   background: var(--ag-raised);
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   box-shadow: var(--ag-elev-popover);
   animation: ag-cloud-control-in var(--ag-dur-base) var(--ag-ease-out) both;
 }
@@ -8761,7 +8761,7 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   gap: 2px;
   padding: 2px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: var(--ag-hover);
 }
 .ag-root .ag-execution-location .ag-execution-location-option {
@@ -8774,7 +8774,7 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   padding: 0 10px;
   font: inherit;
   font-size: var(--ag-fs-secondary);
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-chip);
 }
 .ag-execution-location .ag-execution-location-option[aria-pressed='true'] {
   color: var(--ag-text);
