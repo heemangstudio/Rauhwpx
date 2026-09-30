@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const READY_PREFIX = 'RHWP_HUB_READY ';
 const LOG_LIMIT = 16 * 1024;
@@ -77,6 +78,60 @@ async function ownerRequest(baseUrl, pathname, { token, launchId, method = 'GET'
       authorization: `Bearer ${token}`,
       'x-rhwp-launch-id': launchId,
     },
+  });
+}
+
+/** Exercise the same unpacked module and Electron host used by provider login. */
+export async function smokePackagedSetupTerminal({ executable, agentDir, timeoutMs = 10_000 }) {
+  const moduleUrl = pathToFileURL(path.join(agentDir, 'setup-terminal.mjs')).href;
+  const childCode = `
+    process.stdout.write('LOGIN_TTY:' + Boolean(process.stdin.isTTY && process.stdout.isTTY) + '\\n');
+    process.stdin.once('data', (data) => {
+      const received = String(data).trim() === 'package-smoke';
+      console.log(received ? 'LOGIN_INPUT_OK' : 'LOGIN_INPUT_FAILED');
+      process.exit(received ? 0 : 1);
+    });
+  `;
+  const probe = `
+    import assert from 'node:assert/strict';
+    import { createSetupTerminal } from ${JSON.stringify(moduleUrl)};
+    let output = '';
+    let sentInput = false;
+    const terminal = createSetupTerminal({
+      command: process.execPath,
+      argv: ['-e', ${JSON.stringify(childCode)}],
+      cwd: process.cwd(),
+      env: process.env,
+      timeoutMs: 5_000,
+      onOutput(data) {
+        output += data;
+        if (!sentInput && output.includes('LOGIN_TTY:true')) {
+          sentInput = true;
+          terminal.resize(100, 24);
+          terminal.write('package-smoke\\r');
+        }
+      },
+    });
+    assert.equal((await terminal.done).code, 0, output);
+    assert.match(output, /LOGIN_TTY:true/);
+    assert.match(output, /LOGIN_INPUT_OK/);
+    console.log('Packaged provider login terminal passed');
+  `;
+  const child = spawn(executable, ['--input-type=module', '--eval', probe], {
+    cwd: agentDir,
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: timeoutMs,
+  });
+  let output = '';
+  child.stdout.on('data', (chunk) => { output = appendLog(output, chunk); });
+  child.stderr.on('data', (chunk) => { output = appendLog(output, chunk); });
+  await new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', (code, signal) => {
+      if (code === 0 && output.includes('Packaged provider login terminal passed')) resolve();
+      else reject(new Error(`Packaged provider login terminal failed (${code ?? signal ?? 'unknown'}):\n${output}`));
+    });
   });
 }
 
