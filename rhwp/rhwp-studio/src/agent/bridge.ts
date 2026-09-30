@@ -1400,6 +1400,7 @@ export class AgentBridgeImpl implements AgentBridge {
       inputHandler: deps.inputHandler,
       canvasView: deps.canvasView,
       overlay: this.overlay,
+      contentNeutral: (run) => this.executor.coverContentNeutral(run),
     });
     this.editFollow = new AgentEditFollow({
       canvasView: deps.canvasView,

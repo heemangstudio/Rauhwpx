@@ -20,6 +20,8 @@ export interface PendingEditDeps {
   inputHandler: InputHandler;
   canvasView: CanvasView;
   overlay: PendingOverlayRenderer;
+  /** 문서 내용이 그대로인 작업을 감싼다 — 그 동안의 revision bump 를 내용 불변으로 기록하게 한다. */
+  contentNeutral?: <T>(run: () => T) => T;
 }
 
 /**
@@ -1088,7 +1090,9 @@ export class PendingEditManager {
     const userEditSeqNow = this.userEditSeq;
     this.selfMutating++;
     try {
-      return this.approveInner(set, changeSetId, userEditSeqNow);
+      // 승인은 미리보기를 그대로 채택한다 — 문서 내용은 승인 전후가 같다.
+      const run = (): boolean => this.approveInner(set, changeSetId, userEditSeqNow);
+      return this.deps.contentNeutral ? this.deps.contentNeutral(run) : run();
     } finally {
       this.selfMutating--;
     }

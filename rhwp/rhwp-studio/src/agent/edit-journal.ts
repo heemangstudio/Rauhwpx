@@ -96,6 +96,19 @@ export class EditJournal {
   }
 
   /**
+   * (expectedRevision, currentRevision] 구간의 bump 가 전부 내용 불변 기록뿐인지 본다 —
+   * 그렇다면 그 revision 에서 읽은 좌표·텍스트가 지금 문서와 같다 (리베이스할 것도 없다).
+   */
+  contentUnchanged(expectedRevision: number, currentRevision: number): boolean {
+    if (expectedRevision >= currentRevision) return expectedRevision === currentRevision;
+    for (let rev = expectedRevision + 1; rev <= currentRevision; rev++) {
+      const list = this.entries.get(rev);
+      if (!list || list.some((entry) => entry !== NOOP_ENTRY)) return false;
+    }
+    return true;
+  }
+
+  /**
    * expectedRevision 시점의 좌표 [paraStart, paraEnd] 를 currentRevision 좌표계로
    * 리베이스한다. 대상 범위는 각 저널 엔트리를 rev 순서로 통과하며 점진 이동한다
    * — 엔트리 좌표는 그 엔트리가 적용되던 시점의 좌표계이므로 이 순서가 맞다.

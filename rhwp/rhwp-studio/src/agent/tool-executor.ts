@@ -1102,7 +1102,8 @@ export class AgentToolExecutor {
       throw new AgentToolError('INVALID_ARGS', 'expectedRevision (integer) is required for write tools');
     }
     const current = this.revision;
-    if (expected !== current) {
+    // 그 사이 bump 가 전부 내용 불변(턴 끝 승인, 롤백된 배치)이면 읽은 그대로의 문서다.
+    if (expected !== current && !this.journal.contentUnchanged(expected, current)) {
       throw new AgentToolError(
         'REVISION_MISMATCH',
         `Document is now at revision ${current}; you expected ${expected}. ` +
@@ -1176,6 +1177,20 @@ export class AgentToolExecutor {
     } catch (err) {
       if (rolledBack && this.revision > revBefore) this.journal.coverNoop(revBefore, this.revision);
       throw err;
+    }
+  }
+
+  /**
+   * 문서 내용을 바꾸지 않는 작업(대기 편집 승인 — 미리보기를 그대로 채택)을 감싼다. 그 동기화
+   * 이벤트가 올린 revision 을 내용 불변으로 저널에 남겨, 에이전트가 직전 턴에 받은 revision 으로
+   * 보낸 다음 쓰기가 REVISION_MISMATCH 없이 통과하게 한다.
+   */
+  coverContentNeutral<T>(run: () => T): T {
+    const revBefore = this.revision;
+    try {
+      return run();
+    } finally {
+      if (this.revision > revBefore) this.journal.coverNoop(revBefore, this.revision);
     }
   }
 
