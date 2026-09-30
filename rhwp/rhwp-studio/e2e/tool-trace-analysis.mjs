@@ -275,22 +275,29 @@ export function analyzeProviderTurn(rows, { from, to, skew = 0 }) {
     firstRequestMs: requests[0] ? round(requests[0].at) : null,
   };
 
+  // claude 가 아닌 프로바이더는 스트림 행이 없다 — 허브가 받은 tool-call/tool-result 이벤트로 센다.
+  const providerCalls = provider.filter((row) => row.ev === 'tool-call' && !row.parentTaskId);
+  const providerResults = provider.filter((row) => row.ev === 'tool-result' && !row.parentTaskId);
+  const fromProvider = claude.length === 0;
+
   const toolIntervals = perCall.filter((e) => e.cliInterval).map((e) => e.cliInterval);
   const turnStart = provider.find((row) => row.ev === 'turn-start')?.t ?? from;
   const turnEnd = [...provider].reverse().find((row) => row.ev === 'turn-end')?.t ?? to;
   const results = claude.filter((row) => row.ev === 'result');
   const pick = (key) => perCall.map((e) => e[key]).filter((v) => Number.isFinite(v));
   const toolsUsed = {};
-  for (const e of perCall) toolsUsed[e.tool] = (toolsUsed[e.tool] ?? 0) + 1;
+  for (const e of fromProvider ? providerCalls : perCall) toolsUsed[e.tool] = (toolsUsed[e.tool] ?? 0) + 1;
   const parallel = batchRows.filter((b) => b.size > 1);
   return {
     turnWallMs: round(turnEnd - from),
     providerTurnMs: round(turnEnd - turnStart),
     modelRequests: claude.filter((row) => row.ev === 'message_start' && !row.parent).length,
     subagentModelRequests: claude.filter((row) => row.ev === 'message_start' && row.parent).length,
-    toolCalls: perCall.length,
+    toolCalls: fromProvider ? providerCalls.length : perCall.length,
     // CLI 가 오류로 돌려받은 호출 — 인자 검증 실패와 도구 오류 모두. 모델이 다시 보내야 하는 요청이다.
-    failedToolCalls: claude.filter((row) => row.ev === 'tool_result' && row.isError && !row.parent).length,
+    failedToolCalls: fromProvider
+      ? providerResults.filter((row) => row.ok === false).length
+      : claude.filter((row) => row.ev === 'tool_result' && row.isError && !row.parent).length,
     rhwpToolCalls: perCall.filter((e) => e.rhwp).length,
     hubToolCalls: calls.length,
     toolsUsed,

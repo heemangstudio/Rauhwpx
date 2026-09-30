@@ -7,7 +7,10 @@
  * 모델이 한 메시지에 낸 병렬 호출 묶음과 그 묶음이 실제로 겹쳐 실행됐는지를 뽑는다.
  * 모델 호출이 실제로 나가므로 계정 사용량이 든다.
  *
- * 실행: node e2e/agent-claude-live-bench.mjs --mode=headless [--runs=3] [--model=claude-sonnet-5]
+ * --agent=codex 는 같은 경로로 codex 를 돌린다. 모델 요청 단위 분해는 claude 스트림에만 있어서
+ * codex 는 턴 시간, 도구 호출 수, 실패한 호출만 나온다.
+ *
+ * 실행: node e2e/agent-claude-live-bench.mjs --mode=headless [--runs=3] [--agent=claude|codex] [--model=claude-sonnet-5]
  *        [--effort=<low|medium|high>] [--sample=biz_plan.hwp] [--prompt="..."] [--followup="..."] [--out=<json>]
  *        [--transcripts=<dir>]  claude 세션 기록(도구 인자·결과 포함)을 그 폴더에 남긴다 — 실패한 호출을 들여다볼 때.
  */
@@ -31,7 +34,8 @@ import { analyzeProviderTurn, readTraceRows, round } from './tool-trace-analysis
 const arg = (name) => process.argv.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? null;
 const HUB_TOKEN = `live-${process.pid}`;
 const RUNS = Number(arg('runs') ?? 3);
-const MODEL = arg('model') ?? 'claude-sonnet-5';
+const AGENT = arg('agent') ?? 'claude';
+const MODEL = arg('model') ?? (AGENT === 'claude' ? 'claude-sonnet-5' : undefined);
 const EFFORT = arg('effort');
 const SAMPLE = arg('sample') ?? 'biz_plan.hwp';
 const PROMPT = arg('prompt') ?? 'Read the first 3 pages, then fix every typo and make the section titles bold.';
@@ -44,7 +48,7 @@ ensureChromePath();
 const hubPort = await findAvailablePort(Number(process.env.RHWP_AGENT_PORT || '5781'));
 const vitePort = await findAvailablePort(Number(process.env.VITE_PORT || '7781'));
 console.log('=== LIVE: 실제 claude 도구 호출 지연·병렬 ===\n');
-console.log(`  [setup] 허브=${hubPort} vite=${vitePort} model=${MODEL} effort=${EFFORT ?? '(기본)'} runs=${RUNS} sample=${SAMPLE}`);
+console.log(`  [setup] 허브=${hubPort} vite=${vitePort} agent=${AGENT} model=${MODEL ?? '(기본)'} effort=${EFFORT ?? '(기본)'} runs=${RUNS} sample=${SAMPLE}`);
 console.log(`  [setup] prompt: ${PROMPT}`);
 
 const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'rhwp-claude-live-'));
@@ -85,10 +89,16 @@ async function documentOutcome(page) {
         const length = wasm.getParagraphLength(sec, para);
         const text = length > 0 ? wasm.getTextRange(sec, para, 0, length) : '';
         let bold = false;
-        if (length > 0 && length <= 60) {
-          try { bold = wasm.getCharPropertiesAt(sec, para, 0).bold === true; } catch { /* 읽기 실패는 굵게 아님 */ }
+        let format = '';
+        if (length > 0) {
+          try {
+            const props = wasm.getCharPropertiesAt(sec, para, text.search(/\S/) < 0 ? 0 : text.search(/\S/));
+            bold = length <= 60 && props.bold === true;
+            format = [props.bold, props.italic, props.underline, props.fontSize].join('/');
+          } catch { /* 읽기 실패는 서식 없음 */ }
+          try { format += `|${wasm.getParaPropertiesAt(sec, para).alignment ?? ''}`; } catch { /* 문단 서식 없음 */ }
         }
-        paragraphs.push({ sec, para, text, bold });
+        paragraphs.push({ sec, para, text, bold, format });
       }
     }
     return paragraphs;
@@ -101,6 +111,8 @@ function compareOutcome(before, after) {
   const sameShape = before.length === after.length;
   let textChanged = 0;
   let boldAdded = 0;
+  // 첫 글자 모양(굵게/기울임/밑줄/크기)이나 문단 정렬이 바뀐 문단 — 서식 작업의 결과량.
+  let formatChanged = 0;
   const samples = [];
   for (const b of before) {
     const a = afterByKey.get(key(b));
@@ -110,8 +122,9 @@ function compareOutcome(before, after) {
       if (samples.length < 12) samples.push({ at: key(b), before: b.text.slice(0, 80), after: a.text.slice(0, 80) });
     }
     if (!b.bold && a.bold) boldAdded += 1;
+    if (a.format !== b.format) formatChanged += 1;
   }
-  return { paragraphsBefore: before.length, paragraphsAfter: after.length, sameShape, textChanged, boldAdded, samples };
+  return { paragraphsBefore: before.length, paragraphsAfter: after.length, sameShape, textChanged, boldAdded, formatChanged, samples };
 }
 
 async function sendThroughComposer(page, text) {
@@ -189,7 +202,7 @@ try {
       };
       runs.push(row);
       const tag = `run ${run}${phase === 'followup' ? ' followup' : ''}`;
-      console.log(`  [${tag}] outcome: ${outcome.textChanged} paragraphs rewritten, ${outcome.boldAdded} short paragraphs bolded (paragraphs ${outcome.paragraphsBefore}→${outcome.paragraphsAfter})`);
+      console.log(`  [${tag}] outcome: ${outcome.textChanged} paragraphs rewritten, ${outcome.boldAdded} short paragraphs bolded, ${outcome.formatChanged} reformatted (paragraphs ${outcome.paragraphsBefore}→${outcome.paragraphsAfter})`);
       console.log(`  [${tag}] via=${via} wall=${round(row.pageTurnWallMs / 1000, 1)}s  model requests=${row.modelRequests}  tool calls=${row.toolCalls} (rhwp ${row.rhwpToolCalls}, failed ${row.failedToolCalls})  parallel batches=${row.parallelBatches} (${row.parallelCalls} calls, largest ${row.largestBatch})  tool union=${round(row.toolUnionMs / 1000, 2)}s  pipeline p50/p95=${row.latency.pipelineMs.p50}/${row.latency.pipelineMs.p95}ms  cli tool p50/p95=${row.latency.toolMs.p50}/${row.latency.toolMs.p95}ms`);
       console.log(`  [${tag}] startup: spawn +${row.startup.spawnMs}ms, init ${row.startup.initMs}ms, first request at ${row.startup.firstRequestMs}ms  model wait=${round(row.modelWaitMs / 1000, 1)}s gen=${round(row.modelGenMs / 1000, 1)}s (thinking ${round(row.thinkingMs / 1000, 1)}s, tool args ${round(row.toolArgsMs / 1000, 1)}s, text ${round(row.textMs / 1000, 1)}s) out=${row.outputTokens}tok`);
       for (const request of row.requests) {
@@ -204,12 +217,14 @@ try {
     for (let run = 1; run <= RUNS; run += 1) {
       await openSample(page, SAMPLE);
       await delay(300);
-      await page.evaluate((model, effort) => window.__agentBridge.startChat('claude', model, effort ?? undefined, true, 'unrestricted', 'direct'), MODEL, EFFORT);
-      await page.waitForFunction(() => window.__agentBridge?.getActiveAgent?.() === 'claude', { timeout: 60000 });
+      await page.evaluate((agent, model, effort) => window.__agentBridge.startChat(agent, model ?? undefined, effort ?? undefined, true, 'unrestricted', 'direct'), AGENT, MODEL ?? null, EFFORT);
+      await page.waitForFunction((agent) => window.__agentBridge?.getActiveAgent?.() === agent, { timeout: 60000 }, AGENT);
       await delay(500);
       await measureTurn(run, PROMPT, 'first');
       // 같은 채팅의 다음 턴 — 세션 재개 비용과 다시 읽기 여부를 본다.
       if (FOLLOWUP) await measureTurn(run, FOLLOWUP, 'followup');
+      // 다음 채팅이 시작되면 허브가 이 세션의 홈을 지운다 — 그 전에 옮긴다.
+      if (TRANSCRIPTS) keepTranscripts();
     }
     printSummary();
   });
@@ -224,7 +239,6 @@ try {
     const keep = path.join(os.tmpdir(), `rhwp-claude-live-trace-${Date.now()}.jsonl`);
     try { fs.copyFileSync(traceFile, keep); console.log(`  [trace] ${keep}`); } catch { /* 추적 없음 */ }
   }
-  if (TRANSCRIPTS) keepTranscripts();
   fs.rmSync(fixtureRoot, { recursive: true, force: true, maxRetries: 5 });
 }
 
@@ -248,7 +262,7 @@ function keepTranscripts() {
   } catch (error) {
     console.log(`  [transcripts] 복사 실패: ${error?.message ?? error}`);
   }
-  console.log(`  [transcripts] ${kept}개 → ${TRANSCRIPTS}`);
+  if (kept === 0) console.log('  [transcripts] 세션 기록을 찾지 못했습니다');
 }
 
 function summarize(rows) {
@@ -270,6 +284,7 @@ function summarize(rows) {
     turnsWithFailedCalls: rows.filter((row) => row.failedToolCalls > 0).length,
     paragraphsRewritten: stats(rows.map((row) => row.outcome.textChanged)),
     paragraphsBolded: stats(rows.map((row) => row.outcome.boldAdded)),
+    paragraphsReformatted: stats(rows.map((row) => row.outcome.formatChanged)),
     parallelBatchesPerTurn: stats(rows.map((row) => row.parallelBatches)),
     pipelineMs: stats(pick('pipelineMs')),
     cliToolMs: stats(pick('toolMs')),
@@ -285,7 +300,8 @@ function printSummary() {
   const first = runs.filter((row) => row.phase === 'first');
   const followups = runs.filter((row) => row.phase === 'followup');
   const summary = {
-    model: MODEL,
+    agent: AGENT,
+    model: MODEL ?? null,
     effort: EFFORT,
     prompt: PROMPT,
     sample: SAMPLE,
