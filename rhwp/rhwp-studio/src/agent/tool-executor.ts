@@ -16,6 +16,7 @@ import type { PendingEditManager } from './pending-edits.ts';
 import type { AgentName, AgentPhase, AgentWorkflow, CellAddr, CharFormatProps, DocRange, DocumentTemplate, ObjectOp, PendingOp, PermissionProfile } from './types.ts';
 import { AgentToolError } from './types.ts';
 import { EditJournal, type EditJournalEntry } from './edit-journal.ts';
+import { batchItemArgs } from './batch-item.ts';
 import { renderChartPng, validateChartSpec } from './chart-render.ts';
 import { cropImageOnCanvas, REFERENCE_READ_MAX_PIXELS, type ImageCropper, type PixelBox } from './image-crop.ts';
 import { describeObject, EDIT_OBJECT_ARG_KEYS, planInsertShape, planObjectEdit, type ObjectKind } from './object-edit-args.ts';
@@ -181,6 +182,10 @@ interface AnchorScope {
   paraRange?: [number, number];
   /** 이 최상위 셀(안의 중첩 표까지) 안의 매치만 본다. */
   cell?: { paraIdx: number; controlIdx: number; cellIdx: number };
+  /** anchor 옆의 cellPath — cell 안에서도 이 중첩 셀 안의 매치만 본다 (within 으로는 오지 않는다). */
+  cellPath?: CellPathEntry[];
+  /** anchor 옆의 문단 번호가 cell 과 함께 온 경우 — 그 셀의 이 문단 범위(포함)만 본다. */
+  cellParaRange?: [number, number];
 }
 
 /** collectTextMatches 매치 하나가 앵커로 확정된 모양 + 호출자가 준 position. */
@@ -191,15 +196,33 @@ interface ResolvedAnchor {
   length: number;
   cell?: CellAddr;
   position?: 'before' | 'after' | 'replace';
+  /** 검색 범위에 문단 번호나 셀이 있었다 — stale revision 안내가 달라진다. */
+  scoped: boolean;
+  /** 공백 차이를 눈감고 찾았을 때의 실제 문서 텍스트. */
+  matchedText?: string;
 }
 
-/** anchor 와 숫자 좌표를 섞어 보낼 때 걸러내는 좌표 인자 목록 (optAnchor 가 사용). */
-const ANCHOR_COORD_KEYS = [
-  'sectionIdx', 'paraIdx', 'charOffset',
-  'startParaIdx', 'startCharOffset', 'endParaIdx', 'endCharOffset',
-  'startOffset', 'endOffset',
-  'cell', 'cellPath',
-];
+const RANGE_COORD_KEYS = ['sectionIdx', 'startParaIdx', 'startCharOffset', 'endParaIdx', 'endCharOffset'] as const;
+/** 앵커 없이 부를 때 도구별로 필요한 좌표 — 누락 오류가 이 목록을 통째로 알려준다. */
+const WRITE_COORD_KEYS: Record<string, readonly string[]> = {
+  insert_text: ['sectionIdx', 'paraIdx', 'charOffset'],
+  delete_range: RANGE_COORD_KEYS,
+  replace_range: RANGE_COORD_KEYS,
+  apply_char_format: ['sectionIdx', 'paraIdx', 'startOffset', 'endOffset'],
+  apply_para_format: ['sectionIdx', 'paraIdx'],
+};
+const RANGE_COORD_ALIASES = [
+  ['startParaIdx', 'paraIdx'], ['startCharOffset', 'startOffset'], ['endCharOffset', 'endOffset'],
+] as const;
+/** [정식 키, 별칭] — 범위 도구와 apply_char_format 의 좌표 이름이 달라 모델이 서로 섞어 보낸다. */
+const WRITE_COORD_ALIASES: Record<string, ReadonlyArray<readonly [string, string]>> = {
+  delete_range: RANGE_COORD_ALIASES,
+  replace_range: RANGE_COORD_ALIASES,
+  apply_char_format: [['paraIdx', 'startParaIdx'], ['startOffset', 'startCharOffset'], ['endOffset', 'endCharOffset']],
+};
+
+/** apply_edits 실패 보고에 싣는 항목 수 — 넘치면 남은 개수만 알린다. */
+const BATCH_FAILURE_REPORT_LIMIT = 6;
 
 
 /** Every Studio tool that can create or stage a document mutation. */
@@ -637,6 +660,22 @@ function optInt(args: Record<string, unknown>, key: string, fallback: number): n
     throw new AgentToolError('INVALID_ARGS', `${key} must be an integer (got ${JSON.stringify(v)})`);
   }
   return v;
+}
+
+/** 선택적 정수 인자 — 없으면 undefined, 있는데 정수가 아니면 INVALID_ARGS. */
+function optIndex(args: Record<string, unknown>, key: string): number | undefined {
+  const v = args[key];
+  return v === undefined || v === null ? undefined : reqInt(args, key);
+}
+
+/**
+ * 앵커의 공백 런을 "공백 하나 이상"으로 푼 검색 패턴 (\s 는 U+00A0·U+3000 도 잡는다).
+ * 공백이 없는 앵커는 정확 일치와 같으므로 null.
+ */
+function looseWhitespacePattern(text: string): RegExp | null {
+  if (!/\s/u.test(text)) return null;
+  const source = text.split(/\s+/u).map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+');
+  return new RegExp(source, 'giu');
 }
 
 function reqString(args: Record<string, unknown>, key: string): string {
@@ -1135,7 +1174,7 @@ export class AgentToolExecutor {
     if (expected < current) {
       // apply_edits 안에서는 앞 항목이 문단 수를 바꿨을 수 있다 — 항목 좌표와 옛 읽기 좌표가
       // 그만큼 어긋나므로, 그 폭 안의 형제 편집은 앞/뒤 판정이 모호해 충돌로 본다.
-      const slack = this.journalBatch?.reduce((sum, entry) => sum + Math.abs(entry.paraDelta), 0) ?? 0;
+      const slack = this.batchParaSlack();
       const rebase = this.journal.rebase(expected, current, sectionIdx, paraStart - slack, paraEnd + slack);
       if (rebase.ok) return rebase.shift;
       if (rebase.reason === 'overlap') {
@@ -1152,6 +1191,53 @@ export class AgentToolExecutor {
         `Retry directly with expectedRevision=${current} ONLY if you know what changed the document AND it cannot have shifted this call's coordinates. ` +
         'Otherwise re-read with get_structure or get_text_range and retry with fresh coordinates.',
     );
+  }
+
+  /** apply_edits 의 앞 항목들이 옮긴 문단 수의 합 — 배치 밖에서는 0. */
+  private batchParaSlack(): number {
+    return this.journalBatch?.reduce((sum, entry) => sum + Math.abs(entry.paraDelta), 0) ?? 0;
+  }
+
+  /**
+   * 좌표 쓰기 인자 정규화 (앵커 없는 호출). 별칭을 정식 키로 옮기고 — 정식 키가 우선이고 값이
+   * 다르면 두 키를 짚어 거절한다 — 범위 도구의 endParaIdx 는 startParaIdx 로, 구역이 하나뿐인
+   * 문서의 sectionIdx 는 0 으로 채운다. 그래도 빠진 좌표는 필요한 목록 전체와 함께 알린다.
+   */
+  private coordArgs(tool: string, args: Record<string, unknown>): Record<string, unknown> {
+    const out = { ...args };
+    const given = (key: string): boolean => out[key] !== undefined && out[key] !== null;
+    for (const [canonical, alias] of WRITE_COORD_ALIASES[tool] ?? []) {
+      if (!given(alias)) continue;
+      if (!given(canonical)) out[canonical] = out[alias];
+      else if (out[canonical] !== out[alias]) {
+        throw new AgentToolError(
+          'INVALID_ARGS',
+          `${canonical} ${JSON.stringify(out[canonical])} and ${alias} ${JSON.stringify(out[alias])} disagree — send only ${canonical}`,
+        );
+      }
+    }
+    const keys = WRITE_COORD_KEYS[tool];
+    if (keys.includes('endParaIdx')) {
+      if (given('startParaIdx') && !given('endParaIdx')) out['endParaIdx'] = out['startParaIdx'];
+    } else if (tool === 'apply_char_format' && given('paraIdx') && given('endParaIdx') && out['endParaIdx'] !== out['paraIdx']) {
+      throw new AgentToolError(
+        'INVALID_ARGS',
+        `apply_char_format formats one paragraph: paraIdx ${JSON.stringify(out['paraIdx'])} and endParaIdx ${JSON.stringify(out['endParaIdx'])} disagree — send one item per paragraph`,
+      );
+    }
+    const sectionCount = this.deps.wasm.getSectionCount();
+    if (!given('sectionIdx') && sectionCount === 1) out['sectionIdx'] = 0;
+    const missing = keys.filter((key) => !given(key));
+    if (missing.length > 0) {
+      const why = missing.includes('sectionIdx') && sectionCount > 1
+        ? `; sectionIdx is required because the document has ${sectionCount} sections`
+        : '';
+      throw new AgentToolError(
+        'INVALID_ARGS',
+        `${tool} needs ${keys.join(', ')} — or an anchor (missing ${missing.join(', ')}${why})`,
+      );
+    }
+    return out;
   }
 
   /** 방금 수행한 쓰기를 편집 저널에 정밀 기록한다 — (revBefore, 현재 revision] 전체 귀속. apply_edits 안이면 버퍼에 쌓아 배치 끝 revision 에 일괄 귀속한다. */
@@ -2433,12 +2519,13 @@ export class AgentToolExecutor {
    * 본문+셀 전수 텍스트 검색 — find_text / replace_all / 텍스트 앵커 해석의 공용 스캐너.
    * scope(anchor.within)가 있으면 범위 밖 문단/표는 아예 건너뛴다 — 걸러 낸 뒤의
    * 매치 수가 정확해야 모호함 판별이 맞기 때문이다. 셀 매치의 범위 좌표는 표가 놓인
-   * 본문 문단(paraIdx) 기준이다.
+   * 본문 문단(paraIdx) 기준이다. query 가 정규식(앵커의 공백 허용 재검색)이면 그대로 쓰고
+   * 매치마다 실제 문서 텍스트(matchedText)를 싣는다.
    */
-  private collectTextMatches(query: string, caseSensitive: boolean, maxResults: number, scope?: AnchorScope): {
+  private collectTextMatches(query: string | RegExp, caseSensitive: boolean, maxResults: number, scope?: AnchorScope): {
     matches: Array<{
       sectionIdx: number; paraIdx: number; charOffset: number; length: number;
-      context: string; cell?: CellAddr; cellPath?: CellPathEntry[];
+      context: string; cell?: CellAddr; cellPath?: CellPathEntry[]; matchedText?: string;
     }>;
     truncated: boolean;
   } {
@@ -2446,7 +2533,10 @@ export class AgentToolExecutor {
     // 정규식 기반 검색 — toLowerCase 경로는 길이가 바뀔 수 있어(İ 등) 오프셋이 깨진다.
     // 'giu' 플래그로 원본 문자열에서 직접 찾고, charOffset/length 는 wasm 과 같은
     // Unicode scalar 단위로 환산한다 (JS 의 UTF-16 인덱스가 아니다).
-    const re = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), caseSensitive ? 'gu' : 'giu');
+    const loose = typeof query !== 'string';
+    const re = loose
+      ? query
+      : new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), caseSensitive ? 'gu' : 'giu');
     const matches: Array<{
       sectionIdx: number;
       paraIdx: number;
@@ -2455,9 +2545,27 @@ export class AgentToolExecutor {
       context: string;
       cell?: CellAddr;
       cellPath?: CellPathEntry[];
+      matchedText?: string;
     }> = [];
     let truncated = false;
+    // anchor 옆의 cellPath/문단 번호로 좁힌 셀 스코프 — 중첩 셀은 경로가 그 셀 안을 가리켜야 하고,
+    // 문단 범위는 같은 깊이의 셀 문단에만 건다.
+    const cellParaInScope = (cell: CellAddr, cellPara: number): boolean => {
+      const want = scope?.cellPath;
+      if (want) {
+        const path = cell.path;
+        if (!path || path.length < want.length) return false;
+        for (let i = 0; i < want.length; i++) {
+          if (path[i].controlIndex !== want[i].controlIndex || path[i].cellIndex !== want[i].cellIndex) return false;
+          if (i < want.length - 1 && path[i].cellParaIndex !== want[i].cellParaIndex) return false;
+        }
+      }
+      const range = scope?.cellParaRange;
+      if (!range) return true;
+      return (cell.path?.length ?? 1) === (want?.length ?? 1) && cellPara >= range[0] && cellPara <= range[1];
+    };
     const pushMatches = (sec: number, para: number, text: string, cell?: CellAddr): boolean => {
+      if (cell && !cellParaInScope(cell, para)) return true;
       re.lastIndex = 0;
       for (let hit = re.exec(text); hit !== null; hit = re.exec(text)) {
         if (matches.length >= maxResults) {
@@ -2475,6 +2583,7 @@ export class AgentToolExecutor {
           m.cell = cell;
           if (cell.path) m.cellPath = cell.path;
         }
+        if (loose) m.matchedText = hit[0];
         matches.push(m);
       }
       return true;
@@ -2708,19 +2817,16 @@ export class AgentToolExecutor {
    * 해석한다. 매치는 collectTextMatches 로 찾고 within 스코프는 스캔 자체에 건다.
    * 매치 0건·occurrence 없는 다매치·범위 밖 occurrence 는 후보 주소를 담아
    * INVALID_ARGS 로 실패한다. apply_edits 항목도 이 경로를 타므로 앞 항목이 바꾼
-   * 문서 기준으로 해석된다.
+   * 문서 기준으로 해석된다. 문자열 앵커는 {text} 의 줄임이고, 옆에 온 문단 좌표·cell 은
+   * 검색 범위가 된다 (siblingAnchorScope). 정확 일치가 없으면 공백 차이만 눈감고 한 번 더 찾는다.
    */
   private optAnchor(args: Record<string, unknown>): ResolvedAnchor | null {
     const raw = args['anchor'];
     if (raw === undefined || raw === null) return null;
-    const clash = ANCHOR_COORD_KEYS.filter((k) => args[k] !== undefined && args[k] !== null);
-    if (clash.length > 0) {
-      throw new AgentToolError(
-        'INVALID_ARGS',
-        `pass either anchor or numeric coordinates, not both (got ${clash.join('/')}) — anchor.within scopes the search instead`,
-      );
+    if (typeof raw !== 'string' && (typeof raw !== 'object' || Array.isArray(raw))) {
+      throw new AgentToolError('INVALID_ARGS', 'anchor must be {text, occurrence?, within?, position?} or the text itself as a string');
     }
-    const a = asRecord(raw);
+    const a = typeof raw === 'string' ? { text: raw } : raw as Record<string, unknown>;
     const unknown = Object.keys(a).filter((k) => !['text', 'occurrence', 'within', 'position'].includes(k));
     if (unknown.length > 0) {
       throw new AgentToolError('INVALID_ARGS', `unknown anchor key ${unknown.join('/')} — valid keys: text, occurrence, within, position`);
@@ -2743,10 +2849,16 @@ export class AgentToolExecutor {
     if (rawPos !== undefined && rawPos !== null && rawPos !== 'before' && rawPos !== 'after' && rawPos !== 'replace') {
       throw new AgentToolError('INVALID_ARGS', `anchor.position must be "before" | "after" | "replace" (got ${JSON.stringify(rawPos)})`);
     }
-    const scope = this.rebaseAnchorScope(args, this.anchorScope(a['within']));
+    const scope = this.rebaseAnchorScope(args, this.siblingAnchorScope(args, this.anchorScope(a['within'])));
     // occurrence 번째까지는 읽어야 하고, 없으면 단일/다매치 판별용 소수만 본다.
     const cap = Math.min(Math.max(occurrence ?? 0, 8), 64);
-    const { matches, truncated } = this.collectTextMatches(text, false, cap, scope);
+    let { matches, truncated } = this.collectTextMatches(text, false, cap, scope);
+    // 구조 읽기에서는 연속 공백·줄 끝 공백·전각 공백이 구분되지 않는다 — 정확 일치가 하나도 없을 때만
+    // 공백 런을 "공백 하나 이상"으로 풀어 다시 찾고, 유일성·occurrence 규칙은 그대로 건다.
+    if (matches.length === 0 && !truncated) {
+      const pattern = looseWhitespacePattern(text);
+      if (pattern) ({ matches, truncated } = this.collectTextMatches(pattern, false, cap, scope));
+    }
     if (matches.length === 0) {
       // 매치 0건의 truncated 는 중첩 표 예산 소진이다 — 뒤쪽 표를 보지 못했으므로 없다고 단정하지 않는다.
       if (truncated) {
@@ -2760,7 +2872,7 @@ export class AgentToolExecutor {
         if (outside.length > 0) {
           throw new AgentToolError(
             'INVALID_ARGS',
-            `anchor ${JSON.stringify(this.truncateForMessage(text))} matched nothing inside anchor.within — ${outside.length} hit(s) exist outside it: ${this.anchorCandidates(outside)}`,
+            `anchor ${JSON.stringify(this.truncateForMessage(text))} matched nothing inside its search scope (anchor.within, or the paragraph index / cell beside the anchor) — ${outside.length} hit(s) exist outside it: ${this.anchorCandidates(outside)}`,
           );
         }
       }
@@ -2799,7 +2911,41 @@ export class AgentToolExecutor {
       length: picked.length,
       ...(picked.cell ? { cell: picked.cell } : {}),
       position: rawPos as ResolvedAnchor['position'],
+      scoped: scope?.paraRange !== undefined || scope?.cell !== undefined,
+      ...(picked.matchedText !== undefined ? { matchedText: picked.matchedText } : {}),
     };
+  }
+
+  /**
+   * anchor 옆에 온 문단 좌표와 cell 은 검색 범위다 — within 이 이미 정한 항목은 그대로 둔다.
+   * cell 이 걸려 있으면 문단 번호는 그 셀 안의 문단이다. 글자 오프셋은 읽지 않는다 (위치는
+   * 앵커가 정한다). 배치 안에서는 앞 항목이 옮긴 문단 수만큼 본문 범위를 넓혀, 읽은 시점의
+   * 번호로 보낸 항목도 받아 준다.
+   */
+  private siblingAnchorScope(args: Record<string, unknown>, within: AnchorScope | undefined): AnchorScope | undefined {
+    const scope: AnchorScope = { ...within };
+    const sectionIdx = optIndex(args, 'sectionIdx');
+    if (sectionIdx !== undefined && scope.sectionIdx === undefined) scope.sectionIdx = sectionIdx;
+    if (!scope.cell) {
+      const cell = optCell(args);
+      if (cell) {
+        scope.cell = { paraIdx: cell.paraIdx, controlIdx: cell.controlIdx, cellIdx: cell.cellIdx };
+        if (cell.path && cell.path.length > 1) scope.cellPath = cell.path;
+      }
+    }
+    const para = optIndex(args, 'paraIdx');
+    const start = optIndex(args, 'startParaIdx') ?? para ?? optIndex(args, 'endParaIdx');
+    const end = optIndex(args, 'endParaIdx') ?? para ?? start;
+    if (start !== undefined && end !== undefined) {
+      const lo = Math.min(start, end);
+      const hi = Math.max(start, end);
+      if (scope.cell) scope.cellParaRange = [lo, hi];
+      else if (!scope.paraRange) {
+        const slack = this.batchParaSlack();
+        scope.paraRange = [Math.max(0, lo - slack), hi + slack];
+      }
+    }
+    return Object.keys(scope).length > 0 ? scope : undefined;
   }
 
   /** anchor.within {sectionIdx?, paraRange?, cell?} → AnchorScope (빈 객체/모르는 키는 INVALID_ARGS). */
@@ -2862,7 +3008,7 @@ export class AgentToolExecutor {
     const sections = scope.sectionIdx !== undefined
       ? [scope.sectionIdx]
       : Array.from({ length: this.deps.wasm.getSectionCount() }, (_, i) => i);
-    const slack = this.journalBatch?.reduce((sum, entry) => sum + Math.abs(entry.paraDelta), 0) ?? 0;
+    const slack = this.batchParaSlack();
     const shiftOf = (start: number, end: number): number => {
       let shift: number | null = null;
       for (const sec of sections) {
@@ -2918,6 +3064,8 @@ export class AgentToolExecutor {
       echo['cell'] = { paraIdx: m.cell.paraIdx, controlIdx: m.cell.controlIdx, cellIdx: m.cell.cellIdx };
       if (m.cell.path) echo['cellPath'] = m.cell.path;
     }
+    // 공백 허용으로 찾았으면 실제 문서 텍스트를 보여 준다 — 모델이 자기 앵커와의 차이를 본다.
+    if (m.matchedText !== undefined) echo['matchedText'] = m.matchedText;
     return echo;
   }
 
@@ -2953,7 +3101,7 @@ export class AgentToolExecutor {
    * 없다 — expected 와 current 사이의 bump 가 전부 저널에 있으면(정밀 쓰기뿐) 그대로
    * 통과시키고, 아니면 "같은 호출 재전송" 안내와 함께 REVISION_MISMATCH 로 떨어진다.
    */
-  private requireRevisionAnchored(args: Record<string, unknown>): void {
+  private requireRevisionAnchored(args: Record<string, unknown>, anchor: ResolvedAnchor): void {
     const expected = args['expectedRevision'];
     if (typeof expected !== 'number' || !Number.isSafeInteger(expected)) {
       throw new AgentToolError('INVALID_ARGS', 'expectedRevision (integer) is required for write tools');
@@ -2961,12 +3109,10 @@ export class AgentToolExecutor {
     const current = this.revision;
     if (expected === current) return;
     if (expected < current && this.journal.covers(expected, current)) return;
-    const within = asRecord(asRecord(args['anchor'])['within'] ?? {});
-    const scoped = within['paraRange'] !== undefined || within['cell'] !== undefined;
     throw new AgentToolError(
       'REVISION_MISMATCH',
-      scoped
-        ? `Document is now at revision ${current}; you expected ${expected}. anchor.within paragraph indexes may have moved — re-read with get_structure, then resend with expectedRevision=${current} and a fresh within range.`
+      anchor.scoped
+        ? `Document is now at revision ${current}; you expected ${expected}. The paragraph indexes scoping this anchor (anchor.within or beside it) may have moved — re-read with get_structure, then resend with expectedRevision=${current} and fresh indexes.`
         : `Document is now at revision ${current}; you expected ${expected}. The anchor re-resolves on retry — resend the same call with expectedRevision=${current}; no re-read needed.`,
     );
   }
@@ -4583,9 +4729,11 @@ export class AgentToolExecutor {
   /**
    * 배치 스테이징 편집 — expectedRevision 하나로 최대 32개 semantic write 를
    * 한 호출에 순차 적용한다. 항목별 좌표는 앞 항목이 적용된 뒤의 문서 기준이고,
-   * 중간 실패 시 배치 전체가 롤백된다 (runAtomicBatch). 항목 사이에는 문서
-   * 이벤트가 bulk 로 모이므로 revision 이 변하지 않는다 — 항목별 revision 재검사는
-   * 진입 시 한 번의 requireRevision 으로 대체한다.
+   * 하나라도 실패하면 배치 전체가 롤백된다 (runAtomicBatch). 실패한 항목에서 멈추지 않고
+   * 끝까지 돌려 실패를 모두 모은 뒤 한 번에 알린다 — 실패한 배치마다 모델 왕복이 하나씩
+   * 들기 때문이다. 엔진 trap 만은 즉시 중단한다. 항목 사이에는 문서 이벤트가 bulk 로
+   * 모이므로 revision 이 변하지 않는다 — 항목별 revision 재검사는 진입 시 한 번의
+   * requireRevision 으로 대체한다.
    */
   private applyEdits(args: Record<string, unknown>, agent: AgentName): unknown {
     this.requireDocLoaded();
@@ -4601,18 +4749,8 @@ export class AgentToolExecutor {
     if (!Array.isArray(rawEdits) || rawEdits.length < 1 || rawEdits.length > 32) {
       throw new AgentToolError('INVALID_ARGS', 'edits must be an array of 1..32 operations');
     }
-    const edits = rawEdits.map((raw, index) => {
-      const rec = asRecord(raw);
-      const tool = rec['tool'];
-      if (typeof tool !== 'string' || !BATCHABLE_EDIT_TOOLS.has(tool)) {
-        throw new AgentToolError(
-          'INVALID_ARGS',
-          `edits[${index}].tool must be one of ${[...BATCHABLE_EDIT_TOOLS].join('|')} (got ${JSON.stringify(tool)})`,
-        );
-      }
-      return { tool, args: rec['args'] === undefined ? {} : asRecord(rec['args']) };
-    });
     const results: unknown[] = [];
+    const failures: Array<{ index: number; tool: string | null; code: string; message: string }> = [];
     // runAtomicBatch 안에서는 revision 이 배치 시작 값에 멈춰 있어 개별 record 가
     // 빈 구간에 버려진다 — 항목별 저널 엔트리를 모았다가 성공 시 최종 revision 에 귀속한다.
     const revBeforeBatch = this.revision;
@@ -4623,28 +4761,31 @@ export class AgentToolExecutor {
     this.journalBatch = buffered;
     try {
       this.runAtomicCovered((opts) => this.deps.pending.runAtomicBatch(() => {
-        edits.forEach((edit, index) => {
-          let itemResult: unknown;
+        rawEdits.forEach((raw: unknown, index) => {
+          const named = raw !== null && typeof raw === 'object' ? (raw as Record<string, unknown>)['tool'] : null;
+          const tool = typeof named === 'string' ? named : null;
           const journaledBefore = buffered.length;
           try {
+            const edit = this.batchEdit(raw);
             // 배치 안에서는 revision 이 멈춰 있다 — 움직이더라도 앞 항목 몫만큼 따라간다.
             const expectedRevision = itemRevision + (this.revision - revBeforeBatch);
-            itemResult = this.dispatch(edit.tool, { ...edit.args, expectedRevision }, agent);
+            const itemResult = this.dispatch(edit.tool, { ...edit.args, expectedRevision }, agent);
+            // 항목별 revision 은 배치 중간 값이라 오해를 부른다 — 최상위 값만 유효하다.
+            // note 는 edit_header_footer 처럼 런타임 경고를 담을 때만 오므로 그대로 둔다.
+            const { revision: _r, ...rest } = asRecord(itemResult);
+            results.push({ tool: edit.tool, ...rest });
+            if (buffered.length === journaledBefore) unjournaled = true;
           } catch (e) {
             const message = e instanceof Error ? e.message : String(e);
             if (!(e instanceof AgentToolError) && reportEngineTrap(e)) throw engineTrappedError(message);
-            const code = e instanceof AgentToolError ? e.code : 'RPC_ERROR';
-            throw new AgentToolError(
-              code,
-              `edits[${index}] (${edit.tool}) failed — the whole batch was rolled back, nothing was applied: ${message}`,
-            );
+            // 엔진 호출을 감싼 오류로 바뀌어 올라온 trap 도 여기서 끊는다 — 멈춘 엔진에 남은 항목을 돌리지 않는다.
+            const trap = engineTrap();
+            if (trap) throw engineTrappedError(trap.message);
+            failures.push({ index, tool, code: e instanceof AgentToolError ? e.code : 'RPC_ERROR', message });
           }
-          // 항목별 revision 은 배치 중간 값이라 오해를 부른다 — 최상위 값만 유효하다.
-          // note 는 edit_header_footer 처럼 런타임 경고를 담을 때만 오므로 그대로 둔다.
-          const { revision: _r, ...rest } = asRecord(itemResult);
-          results.push({ tool: edit.tool, ...rest });
-          if (buffered.length === journaledBefore) unjournaled = true;
         });
+        // 던져야 runAtomicBatch 가 문서와 pending 을 배치 이전으로 되돌린다.
+        if (failures.length > 0) throw this.batchFailureError(failures, rawEdits.length);
       }, opts));
     } finally {
       this.journalBatch = null;
@@ -4660,7 +4801,7 @@ export class AgentToolExecutor {
     return {
       revision: this.revision,
       ...(typeof sharedChangeSetId === 'string' ? { changeSetId: sharedChangeSetId } : {}),
-      applied: edits.length,
+      applied: rawEdits.length,
       results: typeof sharedChangeSetId === 'string'
         ? results.map((item) => {
           const { changeSetId: _id, ...rest } = asRecord(item);
@@ -4668,6 +4809,48 @@ export class AgentToolExecutor {
         })
         : results,
     };
+  }
+
+  /**
+   * apply_edits 항목 하나를 {tool, args} 로 푼다 — 평평한 {tool, …인자}, 감싼 {tool, args},
+   * 둘을 섞은 꼴, JSON 문자열 args 를 모두 받는다 (batchItemArgs).
+   */
+  private batchEdit(raw: unknown): { tool: string; args: Record<string, unknown> } {
+    const rec = asRecord(raw);
+    const tool = rec['tool'];
+    if (typeof tool !== 'string' || !BATCHABLE_EDIT_TOOLS.has(tool)) {
+      throw new AgentToolError(
+        'INVALID_ARGS',
+        `tool must be one of ${[...BATCHABLE_EDIT_TOOLS].join('|')} (got ${JSON.stringify(tool)})`,
+      );
+    }
+    const args = batchItemArgs(rec);
+    if (!args) {
+      throw new AgentToolError(
+        'INVALID_ARGS',
+        `args must be an object of ${tool} arguments — or drop args and put the arguments beside tool: {tool, …arguments}`,
+      );
+    }
+    return { tool, args };
+  }
+
+  /** 실패한 항목을 전부 담은 배치 오류 — 코드는 첫 실패의 것이고, 메시지는 고칠 항목을 한 번에 짚는다. */
+  private batchFailureError(
+    failures: Array<{ index: number; tool: string | null; code: string; message: string }>,
+    total: number,
+  ): AgentToolError {
+    const listed = failures.slice(0, BATCH_FAILURE_REPORT_LIMIT).map((failure) =>
+      `edits[${failure.index}]${failure.tool ? ` (${failure.tool})` : ''}: ${failure.message.replace(/[.\s]+$/, '')}`);
+    const more = failures.length - listed.length;
+    const many = failures.length > 1;
+    return new AgentToolError(
+      failures[0].code,
+      `${failures.length} of ${total} edits failed — the whole batch was rolled back, nothing was applied. `
+        + `${listed.join('; ')}${more > 0 ? `; and ${more} more` : ''}. `
+        + (many
+          ? 'Fix these items and resend the whole batch (a later item may have failed only because an earlier one did).'
+          : 'Fix this item and resend the whole batch.'),
+    );
   }
 
   /**
@@ -4701,7 +4884,9 @@ export class AgentToolExecutor {
           `read item tool must be one of ${[...BATCHABLE_READ_TOOLS].join('|')} (got ${JSON.stringify(t)})`,
         );
       }
-      const itemArgs = rec['args'] === undefined ? {} : asRecord(rec['args']);
+      // apply_edits 와 같은 항목 꼴을 받는다 — 평평한 {tool, …인자} 도 통과한다.
+      const itemArgs = batchItemArgs(rec);
+      if (!itemArgs) throw new AgentToolError('INVALID_ARGS', `args must be an object of ${tool} arguments`);
       assertToolRequestActive(capability);
       assertToolCapability(tool, capability);
       const rawResult = await this.dispatch(tool, itemArgs, agent, capability);
@@ -4733,21 +4918,22 @@ export class AgentToolExecutor {
     if (anchor) {
       if ((anchor.position ?? 'after') === 'replace') {
         // 앵커 매치를 통째로 새 텍스트로 바꾼다 — replace_range 와 같은 원자 경로.
-        this.requireRevisionAnchored(args);
+        this.requireRevisionAnchored(args, anchor);
         const res = asRecord(this.replaceRangeChecked(this.anchorRangeArgs(args, anchor), agent, 0));
         res['anchor'] = this.anchorEcho(anchor);
         return res;
       }
-      this.requireRevisionAnchored(args);
+      this.requireRevisionAnchored(args, anchor);
       const cell = anchor.cell ? { ...anchor.cell } : undefined;
       const charOffset = anchor.position === 'before'
         ? anchor.charOffset
         : anchor.charOffset + anchor.length;
       return this.insertTextAt(args, agent, anchor.sectionIdx, anchor.paraIdx, charOffset, cell, 0, anchor);
     }
-    const sectionIdx = reqInt(args, 'sectionIdx');
-    let paraIdx = reqInt(args, 'paraIdx');
-    const charOffset = reqInt(args, 'charOffset');
+    const coords = this.coordArgs('insert_text', args);
+    const sectionIdx = reqInt(coords, 'sectionIdx');
+    let paraIdx = reqInt(coords, 'paraIdx');
+    const charOffset = reqInt(coords, 'charOffset');
     const cell = optCell(args);
     const shift = this.requireRevisionRebasable(args, sectionIdx, cell ? cell.paraIdx : paraIdx, cell ? cell.paraIdx : paraIdx);
     if (cell) cell.paraIdx += shift;
@@ -4883,13 +5069,14 @@ export class AgentToolExecutor {
     const anchor = this.optAnchor(args);
     if (anchor) {
       this.anchorPositionOrReplace(anchor, 'delete_range');
-      this.requireRevisionAnchored(args);
+      this.requireRevisionAnchored(args, anchor);
       const res = asRecord(this.deleteRangeChecked(this.anchorRangeArgs(args, anchor), agent, 0));
       res['anchor'] = this.anchorEcho(anchor);
       return res;
     }
-    const shift = this.requireRevisionRebasable(args, ...rangeRebaseAnchor(args));
-    return this.deleteRangeChecked(args, agent, shift);
+    const coords = this.coordArgs('delete_range', args);
+    const shift = this.requireRevisionRebasable(coords, ...rangeRebaseAnchor(coords));
+    return this.deleteRangeChecked(coords, agent, shift);
   }
 
   private deleteRangeChecked(args: Record<string, unknown>, agent: AgentName, shift: number): unknown {
@@ -4925,13 +5112,14 @@ export class AgentToolExecutor {
     const anchor = this.optAnchor(args);
     if (anchor) {
       this.anchorPositionOrReplace(anchor, 'replace_range');
-      this.requireRevisionAnchored(args);
+      this.requireRevisionAnchored(args, anchor);
       const res = asRecord(this.replaceRangeChecked(this.anchorRangeArgs(args, anchor), agent, 0));
       res['anchor'] = this.anchorEcho(anchor);
       return res;
     }
-    const shift = this.requireRevisionRebasable(args, ...rangeRebaseAnchor(args));
-    return this.replaceRangeChecked(args, agent, shift);
+    const coords = this.coordArgs('replace_range', args);
+    const shift = this.requireRevisionRebasable(coords, ...rangeRebaseAnchor(coords));
+    return this.replaceRangeChecked(coords, agent, shift);
   }
 
   private replaceRangeChecked(args: Record<string, unknown>, agent: AgentName, shift: number): unknown {
@@ -4980,17 +5168,18 @@ export class AgentToolExecutor {
     let shift = 0;
     if (anchor) {
       this.anchorPositionOrReplace(anchor, 'apply_char_format');
-      this.requireRevisionAnchored(args);
+      this.requireRevisionAnchored(args, anchor);
       sectionIdx = anchor.sectionIdx;
       paraIdx = anchor.paraIdx;
       startOffset = anchor.charOffset;
       endOffset = anchor.charOffset + anchor.length;
       cell = anchor.cell ? { ...anchor.cell } : undefined;
     } else {
-      sectionIdx = reqInt(args, 'sectionIdx');
-      paraIdx = reqInt(args, 'paraIdx');
-      startOffset = reqInt(args, 'startOffset');
-      endOffset = reqInt(args, 'endOffset');
+      const coords = this.coordArgs('apply_char_format', args);
+      sectionIdx = reqInt(coords, 'sectionIdx');
+      paraIdx = reqInt(coords, 'paraIdx');
+      startOffset = reqInt(coords, 'startOffset');
+      endOffset = reqInt(coords, 'endOffset');
       cell = optCell(args);
       shift = this.requireRevisionRebasable(args, sectionIdx, cell ? cell.paraIdx : paraIdx, cell ? cell.paraIdx : paraIdx);
       if (cell) cell.paraIdx += shift;
@@ -5725,7 +5914,7 @@ export class AgentToolExecutor {
     let cell: CellAddr | undefined;
     let paraShift = 0;
     if (anchor) {
-      this.requireRevisionAnchored(args);
+      this.requireRevisionAnchored(args, anchor);
       if (anchor.cell?.path) {
         // paraFormat 의 중첩 셀 ByPath 엔진 경로가 없다 — 숫자 인자 쪽과 같은 한계.
         throw new AgentToolError(
@@ -5746,8 +5935,9 @@ export class AgentToolExecutor {
         );
       }
     } else {
-      sectionIdx = reqInt(args, 'sectionIdx');
-      paraIdx = reqInt(args, 'paraIdx');
+      const coords = this.coordArgs('apply_para_format', args);
+      sectionIdx = reqInt(coords, 'sectionIdx');
+      paraIdx = reqInt(coords, 'paraIdx');
       cell = optCell(args);
       paraShift = this.requireRevisionRebasable(args, sectionIdx, cell ? cell.paraIdx : paraIdx, cell ? cell.paraIdx : paraIdx);
       if (cell) cell.paraIdx += paraShift;
@@ -5969,7 +6159,11 @@ export class AgentToolExecutor {
       revision: this.revision, changeSetId: r.changeSetId, applied: true,
       ...(paraShift !== 0 ? { rebasedParaShift: paraShift } : {}),
       // 앵커 쓰기는 해석된 대상 문단 주소를 돌려준다 (position 은 이미 반영됨).
-      ...(anchor ? { anchor: { sectionIdx, paraIdx, ...(cell ? { cell: { paraIdx: cell.paraIdx, controlIdx: cell.controlIdx, cellIdx: cell.cellIdx } } : {}) } } : {}),
+      ...(anchor ? { anchor: {
+        sectionIdx, paraIdx,
+        ...(cell ? { cell: { paraIdx: cell.paraIdx, controlIdx: cell.controlIdx, cellIdx: cell.cellIdx } } : {}),
+        ...(anchor.matchedText !== undefined ? { matchedText: anchor.matchedText } : {}),
+      } } : {}),
     };
   }
 

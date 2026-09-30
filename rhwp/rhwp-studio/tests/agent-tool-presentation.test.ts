@@ -57,6 +57,11 @@ test('apply_edits 와 read_batch 는 항목 수와 항목별 목록을 보인다
   assert.equal(edits.category, 'edit');
   assert.equal(edits.summary, '텍스트 바꾸기 2 · 글자 서식');
   assert.deepEqual(edits.items.map((item) => item.summary), ['“가” → “나”', '“다” → “라”', '“마” · 굵게']);
+  // 평평한 항목 {tool, …인자} 와 문자열 앵커도 같은 요약을 낸다
+  const flat = presentToolCall('apply_edits', JSON.stringify({
+    edits: [{ tool: 'replace_range', anchor: '가', text: '나' }, { tool: 'apply_char_format', anchor: { text: '마' }, bold: true }],
+  }));
+  assert.deepEqual(flat.items.map((item) => item.summary), ['“가” → “나”', '“마” · 굵게']);
 
   const reads = presentToolCall('read_batch', JSON.stringify({
     reads: [{ tool: 'get_structure' }, { tool: 'find_text', args: { query: '일정' } }],
@@ -87,6 +92,16 @@ test('결과 줄은 실행기 결과에서 숫자·쪽·경고·그림을 고른
   });
   assert.equal(failed.text, '인자 오류 · 2번째 항목');
   assert.deepEqual(failed.items, [{ ok: true, text: '되돌림' }, { ok: false, text: '인자 오류' }]);
+  // 실패한 항목을 모두 싣는 보고 — 짚인 항목마다 실패로 표시한다
+  const failedBoth = presentToolResult({
+    tool: 'apply_edits', argsJson, ok: false, preview: '',
+    error: {
+      code: 'INVALID_ARGS',
+      message: '2 of 2 edits failed — the whole batch was rolled back, nothing was applied. edits[0] (insert_text): a; edits[1] (delete_range): b. Fix these items and resend the whole batch.',
+    },
+  });
+  assert.equal(failedBoth.text, '인자 오류 · 2개 항목');
+  assert.deepEqual(failedBoth.items, [{ ok: false, text: '인자 오류' }, { ok: false, text: '인자 오류' }]);
 
   assert.equal(presentToolResult({
     tool: 'edit_object', argsJson: '{"xMm":10}', ok: true, preview: '', result: { object: { kind: 'picture' } },

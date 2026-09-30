@@ -5,6 +5,7 @@
  * 좌표는 도구 계약대로 0 기반으로 받아 사람에게는 1 기반(“3문단”, “2쪽”)으로 보인다.
  * 모르는 도구나 rhwp 밖의 도구는 원래 이름과 대표 인자 하나로 떨어진다.
  */
+import { batchItemArgs } from '../../agent/batch-item.ts';
 
 export type ToolCategory = 'edit' | 'read' | 'check' | 'other';
 
@@ -126,7 +127,8 @@ function paraRange(a: Args, startKey: string, endKey: string): string {
 
 /** 앵커 표시 — 대상 텍스트와 (삽입이면) 앞/뒤. */
 function anchorText(a: Args, withPosition: boolean): string {
-  const anchor = rec(a['anchor']);
+  // 문자열 앵커는 {text} 의 줄임이다
+  const anchor = typeof a['anchor'] === 'string' ? { text: a['anchor'] } : rec(a['anchor']);
   const text = str(anchor['text']);
   if (!text) return '';
   const occurrence = num(anchor['occurrence']);
@@ -608,7 +610,7 @@ function batchItems(args: Args, key: 'edits' | 'reads'): Array<{ name: string; a
   if (!Array.isArray(list)) return [];
   return list.map((item) => {
     const entry = rec(item);
-    return { name: baseToolName(str(entry['tool'])), args: rec(entry['args']) };
+    return { name: baseToolName(str(entry['tool'])), args: batchItemArgs(entry) ?? {} };
   });
 }
 
@@ -943,10 +945,9 @@ function itemOutcomes(name: string, args: Args, result: Args): ToolItemOutcome[]
   return out;
 }
 
-/** 실패한 apply_edits 의 “edits[3] (…) failed” 에서 몇 번째 항목이 막혔는지 읽는다. */
-function failedItemIndex(message: string): number | null {
-  const match = /edits\[(\d+)\]/.exec(message);
-  return match ? Number(match[1]) : null;
+/** 실패한 apply_edits 의 “edits[0] (…): …; edits[3] (…): …” 에서 막힌 항목 번호를 모두 읽는다. */
+function failedItemIndexes(message: string): number[] {
+  return [...new Set([...message.matchAll(/edits\[(\d+)\]/g)].map((match) => Number(match[1])))];
 }
 
 function refinedLabel(name: string, args: Args, result: Args | null): string | undefined {
@@ -986,17 +987,17 @@ export function presentToolResult(input: ToolResultInput): ToolOutcomeView {
     const code = error?.code ?? '';
     const message = error?.message ?? '';
     const items = name === 'apply_edits' ? batchItems(args, 'edits') : [];
-    const failedAt = failedItemIndex(message);
+    const failedAt = items.length ? failedItemIndexes(message) : [];
     return {
       ok: false,
       text: join([
         code ? errorText(code) : known ? '실행 오류' : clip(message.split('\n')[0] ?? '', 60) || '실패',
-        failedAt !== null && items.length ? `${failedAt + 1}번째 항목` : '',
+        failedAt.length === 1 ? `${failedAt[0] + 1}번째 항목` : failedAt.length > 1 ? `${failedAt.length}개 항목` : '',
       ]),
       ...(message ? { detail: clip(message, 400) } : {}),
       notices: [],
-      ...(failedAt !== null && items.length
-        ? { items: items.map((_, i) => ({ ok: i !== failedAt, text: i === failedAt ? errorText(code) : '되돌림' })) }
+      ...(failedAt.length
+        ? { items: items.map((_, i) => (failedAt.includes(i) ? { ok: false, text: errorText(code) } : { ok: true, text: '되돌림' })) }
         : {}),
     };
   }

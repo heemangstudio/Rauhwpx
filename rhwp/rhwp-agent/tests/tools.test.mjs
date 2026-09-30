@@ -20,6 +20,9 @@ import {
   toolAnnotations,
 } from '../tools.mjs';
 import { toolDefinitionChars } from '../tool-telemetry.mjs';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 const byName = new Map(TOOL_DEFINITIONS.map((d) => [d.name, d]));
 
@@ -66,8 +69,9 @@ test('nested table paths are accepted on staged cell text tools', () => {
 });
 
 // ─── 텍스트 앵커 (P2.2) ───────────────────────────────────
-// 다섯 쓰기 도구가 anchor 인자를 받고, 좌표/앵커 혼용·누락·잘못된 필드를 validate 훅이
-// INVALID_ARGS 로 거절하는지 본다. 해석 자체(매치/모호성)는 스튜디오 테스트가 본다.
+// 다섯 쓰기 도구가 anchor 인자를 받고, 좌표 누락·잘못된 앵커 필드를 validate 훅이
+// INVALID_ARGS 로 거절하는지 본다. 앵커 옆의 좌표는 스튜디오가 검색 범위로 쓰므로 통과시킨다.
+// 해석 자체(매치/모호성/범위)는 스튜디오 테스트가 본다.
 
 const ANCHORED_TOOLS = ['insert_text', 'delete_range', 'replace_range', 'apply_char_format', 'apply_para_format'];
 
@@ -79,26 +83,29 @@ test('앵커 도구는 anchor 인자를 받고 좌표를 선택 필드로 둔다
     assert.match(def.description, /anchor/i, `${name}: description should mention anchors`);
     assert.ok(def.validate, `${name}: needs the coord-or-anchor validator`);
   }
-  // 좌표 도구는 전부 숫자 필드 필수 → 앵커 없으면 누락 에러.
-  assert.throws(() => byName.get('insert_text').validate({ text: 'x' }), /missing sectionIdx\/paraIdx\/charOffset/);
-  assert.throws(() => byName.get('delete_range').validate({}), /missing sectionIdx/);
-  assert.throws(() => byName.get('apply_para_format').validate({ alignment: 'left' }), /missing sectionIdx\/paraIdx/);
+  // 앵커가 없으면 좌표가 필요하다 — 오류가 그 도구의 좌표 전체를 알려 준다.
+  assert.throws(
+    () => byName.get('insert_text').validate({ text: 'x' }),
+    /insert_text needs sectionIdx, paraIdx, charOffset — or an anchor \(missing paraIdx, charOffset\)/,
+  );
+  assert.throws(
+    () => byName.get('delete_range').validate({ startParaIdx: 1 }),
+    /delete_range needs sectionIdx, startParaIdx, startCharOffset, endParaIdx, endCharOffset — or an anchor \(missing startCharOffset, endCharOffset\)/,
+  );
+  assert.throws(() => byName.get('apply_para_format').validate({ alignment: 'left' }), /apply_para_format needs sectionIdx, paraIdx — or an anchor/);
+  // sectionIdx(구역 하나)와 범위 도구의 endParaIdx 는 스튜디오가 채운다 — 여기서 막지 않는다.
+  assert.doesNotThrow(() => byName.get('delete_range').validate({ startParaIdx: 1, startCharOffset: 0, endCharOffset: 2 }));
+  assert.doesNotThrow(() => byName.get('apply_char_format').validate({ paraIdx: 1, startOffset: 0, endOffset: 2, bold: true }));
 });
 
-test('anchor 와 숫자 좌표는 섞어 쓸 수 없다', () => {
+test('anchor 옆의 좌표·cell 은 검색 범위라 거절하지 않는다', () => {
   const anchor = { text: '결론' };
   for (const name of ANCHORED_TOOLS) {
     const def = byName.get(name);
-    assert.throws(
-      () => def.validate({ anchor, sectionIdx: 0 }),
-      /either anchor or coordinates, not both/,
-      `${name}: anchor + sectionIdx must clash`,
-    );
-    // cell/cellPath 도 앵커와 함께면 충돌 (스코프는 anchor.within.cell 로만)
-    assert.throws(
+    assert.doesNotThrow(() => def.validate({ anchor, sectionIdx: 0, paraIdx: 3 }), `${name}: anchor + paraIdx`);
+    assert.doesNotThrow(
       () => def.validate({ anchor, cell: { paraIdx: 1, controlIdx: 0, cellIdx: 0 } }),
-      /not both/,
-      `${name}: anchor + cell must clash`,
+      `${name}: anchor + cell`,
     );
   }
   // 앵커만 있으면 좌표 없이 통과한다.
@@ -115,7 +122,12 @@ test('anchor 내부 필드는 validate 훅이 모양을 고정한다', () => {
   const bad = (anchor, re) => assert.throws(() => def.validate({ anchor, text: 'x' }), re);
   ok({ text: 'a' });
   ok({ text: 'a', occurrence: 2, position: 'before', within: { sectionIdx: 0, paraRange: [1, 3], cell: { paraIdx: 4, controlIdx: 0, cellIdx: 2 } } });
-  bad('text', /must be an object/);
+  // 문자열 앵커는 {text} 의 줄임 — 스키마가 객체로 바꿔 넘기고, validate 훅도 그대로 받는다.
+  ok('text');
+  assert.deepEqual(def.shape.anchor.parse('결론'), { text: '결론' });
+  assert.deepEqual(def.shape.anchor.parse({ text: '결론', occurrence: 2 }), { text: '결론', occurrence: 2 });
+  bad('', /anchor\.text/);
+  bad(7, /anchor must be \{text/);
   bad({}, /anchor\.text/);
   bad({ text: '' }, /anchor\.text/);
   bad({ text: 'a', bogus: 1 }, /unknown anchor key bogus/);
@@ -313,6 +325,72 @@ test('reference tools are read-only and carry bounded schemas', () => {
 // 전체 재읽기를 줄인다. 항목 실행·오류 분리·저널 델타 조립은 스튜디오의
 // agent-cheap-reads.test.ts 가 본다 — 여기서는 스키마/프로필 계약만 잠근다.
 
+// ─── 배치 항목 꼴 ─────────────────────────────────────────
+// apply_edits 항목은 평평한 {tool, …인자} 가 기본이다. MCP SDK(mcp-stdio 의 registerTool)와 허브
+// (server.mjs toolArgSchema 의 최상위 strict)가 같은 shape 로 인자를 파싱하므로, 중첩 객체가
+// 기본 strip 이면 tool 옆의 인자가 스튜디오에 닿기 전에 사라진다.
+
+const hubParse = (name, args) => z.object(byName.get(name).shape).strict().parse(args);
+
+/** mcp-stdio 와 같은 등록으로 도구를 부르고, 핸들러가 받은 인자와 모델에게 보이는 입력 스키마를 돌려준다. */
+async function mcpCall(name, args) {
+  const def = byName.get(name);
+  const server = new McpServer({ name: 'rhwp', version: '0.1.0' });
+  let received;
+  server.registerTool(def.name, { description: def.description, inputSchema: def.shape }, async (parsed) => {
+    received = parsed;
+    return { content: [{ type: 'text', text: 'ok' }] };
+  });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'test', version: '0.0.0' });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    const result = await client.callTool({ name, arguments: args });
+    assert.ok(!result.isError, JSON.stringify(result.content));
+    const { tools } = await client.listTools();
+    return { received, inputSchema: tools[0].inputSchema };
+  } finally {
+    await client.close();
+    await server.close();
+  }
+}
+
+test('apply_edits 항목은 평평한 꼴·섞인 꼴·문자열 args 그대로 허브와 MCP 파싱을 통과한다', async () => {
+  const args = {
+    expectedRevision: 3,
+    edits: [
+      { tool: 'replace_range', anchor: { text: '가', within: { paraRange: [1, 2] } }, text: '나' },
+      { tool: 'delete_range', sectionIdx: 0, paraIdx: 58, startCharOffset: 52, endCharOffset: 54 },
+      { tool: 'replace_range', args: { anchor: { text: '다' } }, args2: {}, text: '라' },
+      { tool: 'insert_text', args: '{"anchor":"마","text":"바"}' },
+      { tool: 'apply_char_format', args: { anchor: { text: '사' }, bold: true } },
+    ],
+  };
+  assert.deepEqual(hubParse('apply_edits', args), args);
+  const mcp = await mcpCall('apply_edits', args);
+  assert.deepEqual(mcp.received, args);
+  assert.deepEqual(mcp.inputSchema.properties.edits.items.required, ['tool']);
+  // 항목의 tool 은 여전히 enum 이 거르고, 최상위의 모르는 키는 허브가 거절한다.
+  assert.throws(() => hubParse('apply_edits', { expectedRevision: 3, edits: [{ tool: 'insert_image', path: 'a.png' }] }));
+  assert.throws(() => hubParse('apply_edits', { ...args, bogus: 1 }));
+  const schema = zodToJsonSchema(z.object(byName.get('apply_edits').shape), { strictUnions: true, pipeStrategy: 'input' });
+  assert.deepEqual(schema.properties.edits.items.required, ['tool']);
+  assert.equal(schema.properties.edits.items.additionalProperties, true);
+  assert.match(byName.get('apply_edits').description, /Items are \{tool, …that tool's arguments\}/);
+  assert.match(byName.get('apply_edits').description, /lists every failing item/);
+});
+
+test('문자열 anchor 는 허브와 MCP 파싱에서 {text} 가 된다', async () => {
+  const args = { expectedRevision: 3, anchor: '결론', text: '맺음말' };
+  const parsed = { expectedRevision: 3, anchor: { text: '결론' }, text: '맺음말' };
+  assert.deepEqual(hubParse('replace_range', args), parsed);
+  const mcp = await mcpCall('replace_range', args);
+  assert.deepEqual(mcp.received, parsed);
+  // 모델에게 보이는 스키마는 그대로 객체 하나다 — 문자열 허용은 정의 크기를 늘리지 않는다.
+  assert.equal(mcp.inputSchema.properties.anchor.type, 'object');
+  assert.doesNotThrow(() => byName.get('replace_range').validate(parsed));
+});
+
 test('read_batch: 읽기 전용 도구 1-16개의 {tool, args} 배열', () => {
   const def = byName.get('read_batch');
   assert.ok(def, 'missing tool: read_batch');
@@ -321,6 +399,8 @@ test('read_batch: 읽기 전용 도구 1-16개의 {tool, args} 배열', () => {
   const reads = def.shape.reads;
   assert.ok(reads.safeParse([{ tool: 'get_structure' }]).success);
   assert.ok(reads.safeParse([{ tool: 'find_text', args: { query: 'x' } }]).success);
+  // 평평한 항목도 인자를 잃지 않고 통과한다 (apply_edits 와 같은 꼴).
+  assert.deepEqual(reads.parse([{ tool: 'find_text', query: 'x' }]), [{ tool: 'find_text', query: 'x' }]);
   assert.ok(!reads.safeParse([]).success, '빈 배치는 거절');
   assert.ok(!reads.safeParse(Array.from({ length: 17 }, () => ({ tool: 'get_fields' }))).success, '17개는 거절');
   // 쓰기 도구·배치 도구·바이너리 읽기는 스키마 enum 이 자체 거절한다.

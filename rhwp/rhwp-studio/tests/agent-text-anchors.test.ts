@@ -295,18 +295,106 @@ test('apply_para_format + anchor: 매치 문단이 대상, before/after 는 이�
   );
 });
 
-// ─── 혼용/누락 ────────────────────────────────────────────
+// ─── 느슨한 앵커: 문자열, 옆에 온 좌표, 공백 차이 ─────────────
 
-test('anchor + 숫자 좌표 혼용은 INVALID_ARGS', async () => {
-  const h = makeEnv(['본문']);
-  await expectErr(
-    h.call('insert_text', { anchor: { text: '본문' }, sectionIdx: 0, paraIdx: 0, charOffset: 0, text: 'x' }),
-    'INVALID_ARGS',
-  );
-  await expectErr(
-    h.call('insert_text', { anchor: { text: '본문' }, cell: { paraIdx: 0, controlIdx: 0, cellIdx: 0 }, text: 'x' }),
-    'INVALID_ARGS',
-  );
+test('문자열 anchor 는 {text} 와 같다', async () => {
+  const h = makeEnv(['안녕 세계']);
+  const r = await h.call('replace_range', { anchor: '세계', text: 'world' });
+  assert.equal(h.body[0], '안녕 world');
+  assert.deepEqual(r['anchor'], { sectionIdx: 0, paraIdx: 0, charOffset: 3, endCharOffset: 5 });
+  const e = await expectErr(h.call('replace_range', { anchor: 7, text: 'x' }), 'INVALID_ARGS');
+  assert.match(e.message, /anchor must be \{text/);
+});
+
+test('anchor 옆의 paraIdx 는 검색 범위다 — 다른 문단의 같은 텍스트는 모호함에서 빠지고 글자 오프셋은 버린다', async () => {
+  const h = makeEnv(['표시 상단', '무관', '표시 하단']);
+  // 범위 없이는 두 문단에 걸쳐 모호하다
+  await expectErr(h.call('insert_text', { anchor: { text: '표시' }, text: '*' }), 'INVALID_ARGS');
+  // charOffset 0 은 무시된다 — 위치는 앵커(매치 뒤)가 정한다
+  await h.call('insert_text', { anchor: { text: '표시' }, sectionIdx: 0, paraIdx: 2, charOffset: 0, text: '*' });
+  assert.deepEqual(h.body, ['표시 상단', '무관', '표시* 하단']);
+  // 범위 도구의 startParaIdx..endParaIdx 도 같은 범위가 된다
+  await h.call('replace_range', { anchor: '표시', startParaIdx: 0, endParaIdx: 1, startCharOffset: 9, text: '머리' });
+  assert.equal(h.body[0], '머리 상단');
+  // 그 문단에 없으면 밖의 후보를 알려 주고 아무것도 바꾸지 않는다
+  const e = await expectErr(h.call('delete_range', { anchor: '무관', paraIdx: 0 }), 'INVALID_ARGS');
+  assert.match(e.message, /matched nothing inside its search scope/);
+  assert.match(e.message, /s0 p1@0/);
+  assert.equal(h.body[1], '무관');
+});
+
+test('anchor.within 이 정한 범위는 옆에 온 paraIdx 보다 우선한다', async () => {
+  const h = makeEnv(['표시 상단', '무관', '표시 하단']);
+  await h.call('insert_text', { anchor: { text: '표시', within: { paraRange: [2, 2] } }, paraIdx: 0, text: '*' });
+  assert.deepEqual(h.body, ['표시 상단', '무관', '표시* 하단']);
+});
+
+test('anchor 옆의 cell 은 그 셀로 범위를 좁히고, 함께 온 paraIdx 는 셀 문단이다', async () => {
+  const h = makeEnv(['본문 항목', '', '말미']);
+  const t = addTable(h, 1, [['셀 항목', '다른 항목']]);
+  t.cells[0].push('둘째 줄 항목');
+  const cell = { paraIdx: t.paraIdx, controlIdx: t.controlIdx, cellIdx: 0 };
+  // 셀 안에서도 두 문단에 있어 모호하다 — paraIdx 1 이 둘째 셀 문단으로 좁힌다
+  await expectErr(h.call('replace_range', { anchor: '항목', cell, text: '교체' }), 'INVALID_ARGS');
+  const r = await h.call('replace_range', { anchor: '항목', cell, paraIdx: 1, text: '교체' });
+  assert.deepEqual(t.cells[0], ['셀 항목', '둘째 줄 교체']);
+  assert.equal(t.cells[1][0], '다른 항목');
+  assert.equal(h.body[0], '본문 항목', '본문 매치는 건드리지 않는다');
+  assert.deepEqual((r['anchor'] as Record<string, unknown>)['cell'], cell);
+});
+
+test('anchor 옆의 cellPath 는 그 중첩 셀 안의 매치만 남긴다', async () => {
+  const hosts = new Map<string, NestedSpec[]>();
+  hosts.set('1:[[0,0,0]]', [{ controlIndex: 0, cells: [['안쪽 바늘'], ['다른 칸 바늘']] }]);
+  const formatted: unknown[][] = [];
+  const h = makeEnv(['본문', '', ''], (wasm, _body, tables) => {
+    installNestedTables(wasm, hosts, true, tables);
+    wasm['getCellCharPropertiesAtByPath'] = () => ({ fontFamily: '바탕' });
+    wasm['applyCharFormatInCellByPath'] = (...a: unknown[]) => { formatted.push(a); return JSON.stringify({ ok: true }); };
+  });
+  addTable(h, 1, [['바늘 호스트']]);
+  const cell = { paraIdx: 1, controlIdx: 0, cellIdx: 0 };
+  // cell 만으로는 호스트 셀과 중첩 표의 두 칸에 걸쳐 모호하다
+  await expectErr(h.call('apply_char_format', { anchor: '바늘', cell, bold: true }), 'INVALID_ARGS');
+  const cellPath = [{ controlIndex: 0, cellIndex: 0, cellParaIndex: 0 }, { controlIndex: 0, cellIndex: 1, cellParaIndex: 0 }];
+  const r = await h.call('apply_char_format', { anchor: '바늘', cell, cellPath, bold: true });
+  const anchor = r['anchor'] as Record<string, unknown>;
+  assert.equal(anchor['charOffset'], 5);
+  assert.deepEqual(anchor['cellPath'], cellPath);
+  assert.equal(formatted.length, 1);
+});
+
+test('anchor: 정확 일치가 없으면 공백 차이만 눈감고 찾아 matchedText 로 실제 텍스트를 돌려준다', async () => {
+  // 연속 공백·NBSP·전각 공백 — 구조 읽기에서는 공백 하나와 구분되지 않는다
+  const h = makeEnv(['제1조  목적은\u00A0다음과\u3000같다', '둘째 문단']);
+  const r = await h.call('replace_range', { anchor: { text: '제1조 목적은 다음과 같다' }, text: '제1조 목적' });
+  assert.equal(h.body[0], '제1조 목적');
+  assert.deepEqual(r['anchor'], {
+    sectionIdx: 0, paraIdx: 0, charOffset: 0, endCharOffset: 15,
+    matchedText: '제1조  목적은\u00A0다음과\u3000같다',
+  });
+  // 공백이 아닌 차이는 여전히 매치 없음이다
+  const e = await expectErr(h.call('delete_range', { anchor: '둘째문단' }), 'INVALID_ARGS');
+  assert.match(e.message, /matched nothing/);
+});
+
+test('anchor: 정확 일치가 있으면 공백 허용 매치는 보지 않고, 공백 허용 매치끼리도 유일해야 한다', async () => {
+  const h = makeEnv(['가 나', '가  나']);
+  // 정확 일치 하나 — 공백이 다른 둘째 문단은 후보가 아니다
+  const r = await h.call('replace_range', { anchor: '가 나', text: '정확' });
+  assert.deepEqual(h.body, ['정확', '가  나']);
+  assert.equal((r['anchor'] as Record<string, unknown>)['matchedText'], undefined);
+
+  const two = makeEnv(['다  라', '다\u3000라']);
+  const e = await expectErr(two.call('replace_range', { anchor: '다 라', text: 'x' }), 'INVALID_ARGS');
+  assert.match(e.message, /ambiguous/);
+  await two.call('replace_range', { anchor: { text: '다 라', occurrence: 2 }, text: 'x' });
+  assert.deepEqual(two.body, ['다  라', 'x']);
+
+  // 정확 일치가 모호하면 공백 허용으로 넘어가지 않고 그대로 실패한다
+  const exact = makeEnv(['마 바', '마 바', '마  바']);
+  await expectErr(exact.call('replace_range', { anchor: '마 바', text: 'x' }), 'INVALID_ARGS');
+  assert.deepEqual(exact.body, ['마 바', '마 바', '마  바']);
 });
 
 // ─── apply_edits 배치 해석 ────────────────────────────────

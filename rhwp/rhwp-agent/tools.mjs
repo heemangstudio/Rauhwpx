@@ -135,17 +135,23 @@ function zoneCorner(description) {
  * (occurrence/within/position, 해석 시점, 오류 동작)은 RHWP_TOOL_RULES 에만 둔다.
  */
 function anchorParam() {
-  return z.record(z.string(), z.unknown()).optional()
-    .describe('{text,occurrence?,within?,position?} (rhwp tool rules)');
+  // 문자열 앵커는 {text} 의 줄임 — 스키마 글자 수를 늘리지 않게 파싱 단계에서 객체로 바꾼다.
+  return z.preprocess(
+    (value) => (typeof value === 'string' ? { text: value } : value),
+    z.record(z.string(), z.unknown()).optional(),
+  ).describe('{text,occurrence?,within?,position?} (rhwp tool rules)');
 }
 
 const ANCHOR_KEYS = ['text', 'occurrence', 'within', 'position'];
 const ANCHOR_WITHIN_KEYS = ['sectionIdx', 'paraRange', 'cell'];
+/** delete_range / replace_range 의 좌표 키 전체. */
+const RANGE_COORD_KEYS = ['sectionIdx', 'startParaIdx', 'startCharOffset', 'endParaIdx', 'endCharOffset'];
 
-/** anchor 내부 필드 검증 — 레코드 스키마가 풀어주는 만큼 여기서 모양을 고정한다. */
+/** anchor 내부 필드 검증 — 레코드 스키마가 풀어주는 만큼 여기서 모양을 고정한다. 문자열은 {text} 로 본다. */
 function validateAnchorShape(anchor) {
+  if (typeof anchor === 'string') anchor = { text: anchor };
   if (typeof anchor !== 'object' || Array.isArray(anchor)) {
-    throw invalidArgs('anchor must be an object {text, occurrence?, within?, position?}');
+    throw invalidArgs('anchor must be {text, occurrence?, within?, position?} or the text itself as a string');
   }
   const unknown = Object.keys(anchor).filter((k) => !ANCHOR_KEYS.includes(k));
   if (unknown.length > 0) {
@@ -177,24 +183,21 @@ function validateAnchorShape(anchor) {
 }
 
 /**
- * anchor 와 숫자 좌표는 둘 중 하나만 받는다 — 스튜디오 executor 도 같은 검사를
- * 다시 하므로 apply_edits 항목에서도 동일하게 실패한다.
- * @param {string[]} coordKeys 좌표 방식일 때 반드시 있어야 하는 키
- * @param {string[]} extraClashKeys anchor 와 함께면 안 되는 추가 키 (cell/cellPath)
+ * anchor 가 있으면 그 모양만 본다 — 옆에 온 문단 좌표·cell 은 스튜디오 executor 가 검색 범위로
+ * 쓰고 글자 오프셋은 버린다. anchor 가 없으면 좌표가 있어야 한다. sectionIdx(구역이 하나뿐인
+ * 문서)와 범위 도구의 endParaIdx 는 executor 가 채우므로 여기서는 요구하지 않는다.
+ * @param {string} tool 오류 메시지에 싣는 도구 이름
+ * @param {string[]} coordKeys 좌표 방식의 전체 키 — 누락 오류가 통째로 알려준다
  */
-function validateAnchorTool(args, coordKeys, extraClashKeys = []) {
+function validateAnchorTool(tool, args, coordKeys) {
   const present = (k) => args[k] !== undefined && args[k] !== null;
   if (present('anchor')) {
-    const clash = [...coordKeys, ...extraClashKeys].filter(present);
-    if (clash.length > 0) {
-      throw invalidArgs(`pass either anchor or coordinates, not both (got ${clash.join('/')}) — anchor.within scopes the search instead`);
-    }
     validateAnchorShape(args.anchor);
     return;
   }
-  const missing = coordKeys.filter((k) => !present(k));
+  const missing = coordKeys.filter((k) => k !== 'sectionIdx' && k !== 'endParaIdx' && !present(k));
   if (missing.length > 0) {
-    throw invalidArgs(`missing ${missing.join('/')} — pass coordinates or an anchor {text, occurrence?, within?, position?}`);
+    throw invalidArgs(`${tool} needs ${coordKeys.join(', ')} — or an anchor (missing ${missing.join(', ')})`);
   }
 }
 
@@ -789,14 +792,15 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'apply_edits',
-    description: `Apply 1-32 staged edits in ONE call under one expectedRevision: items are {tool, args} (args minus expectedRevision and render), run in order. Any failure rolls back the batch and names the index. ${WRITE_POINTER}`,
+    description: `Apply 1-32 staged edits in ONE call under one expectedRevision. Items are {tool, …that tool's arguments}, e.g. {tool:"replace_range",anchor:{text:"old"},text:"new"}, run in order. Any failure rolls back the whole batch and lists every failing item. ${WRITE_POINTER}`,
     shape: {
       expectedRevision: z.number().int(),
       render: renderParam(),
+      // 항목은 평평한 {tool, …인자} — 인자 키(와 옛 {tool, args} 의 args)는 그대로 통과시켜
+      // 스튜디오 executor 가 푼다. 기본 strip 이면 tool 옆의 인자가 여기서 사라진다.
       edits: z.array(z.object({
         tool: z.enum(BATCHABLE_EDIT_TOOL_NAMES),
-        args: z.record(z.string(), z.unknown()),
-      })).min(1).max(32),
+      }).passthrough()).min(1).max(32),
     },
   },
   {
@@ -806,7 +810,7 @@ const BASE_TOOL_DEFINITIONS = [
       reads: z.array(z.object({
         tool: z.enum(BATCHABLE_READ_TOOL_NAMES),
         args: z.record(z.string(), z.unknown()).optional(),
-      }).strict()).min(1).max(16),
+      }).passthrough()).min(1).max(16),
     },
   },
   {
@@ -823,7 +827,7 @@ const BASE_TOOL_DEFINITIONS = [
       cell: cellParam(),
       cellPath: cellPathParam(),
     },
-    validate: (args) => validateAnchorTool(args, ['sectionIdx', 'paraIdx', 'charOffset'], ['cell', 'cellPath']),
+    validate: (args) => validateAnchorTool('insert_text', args, ['sectionIdx', 'paraIdx', 'charOffset']),
   },
   {
     name: 'template_apply_section_layout',
@@ -887,7 +891,7 @@ const BASE_TOOL_DEFINITIONS = [
       cell: cellParam(),
       cellPath: cellPathParam(),
     },
-    validate: (args) => validateAnchorTool(args, ['sectionIdx', 'startParaIdx', 'startCharOffset', 'endParaIdx', 'endCharOffset'], ['cell', 'cellPath']),
+    validate: (args) => validateAnchorTool('delete_range', args, RANGE_COORD_KEYS),
   },
   {
     name: 'replace_range',
@@ -905,7 +909,7 @@ const BASE_TOOL_DEFINITIONS = [
       cell: cellParam(),
       cellPath: cellPathParam(),
     },
-    validate: (args) => validateAnchorTool(args, ['sectionIdx', 'startParaIdx', 'startCharOffset', 'endParaIdx', 'endCharOffset'], ['cell', 'cellPath']),
+    validate: (args) => validateAnchorTool('replace_range', args, RANGE_COORD_KEYS),
   },
   {
     name: 'apply_char_format',
@@ -932,7 +936,7 @@ const BASE_TOOL_DEFINITIONS = [
       letterSpacingPercent: z.union([z.number().min(-50).max(50), z.array(z.number().min(-50).max(50)).length(7)]).optional()
         .describe('Glyph tracking percent (자간)'),
     },
-    validate: (args) => validateAnchorTool(args, ['sectionIdx', 'paraIdx', 'startOffset', 'endOffset'], ['cell', 'cellPath']),
+    validate: (args) => validateAnchorTool('apply_char_format', args, ['sectionIdx', 'paraIdx', 'startOffset', 'endOffset']),
   },
   {
     name: 'create_table',
@@ -1083,7 +1087,7 @@ const BASE_TOOL_DEFINITIONS = [
       paraLevel: z.number().int().max(6).optional(),
       bulletChar: z.string().min(1).optional(),
     },
-    validate: (args) => validateAnchorTool(args, ['sectionIdx', 'paraIdx'], ['cell']),
+    validate: (args) => validateAnchorTool('apply_para_format', args, ['sectionIdx', 'paraIdx']),
   },
   {
     name: 'apply_list',
