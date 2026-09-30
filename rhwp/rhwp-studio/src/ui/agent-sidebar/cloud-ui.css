@@ -61,7 +61,7 @@
   height: 30px;
   padding: 0 9px;
   border: 0;
-  border-radius: var(--ag-r-chip);
+  border-radius: var(--ag-r-row);
   background: transparent;
   color: var(--ag-text-secondary);
   font: inherit;
@@ -118,7 +118,7 @@
   height: 28px;
   place-items: center;
   border: 0;
-  border-radius: var(--ag-r-chip);
+  border-radius: var(--ag-r-row);
   background: transparent;
   color: var(--ag-text-secondary);
   cursor: default;
@@ -174,7 +174,7 @@
   width: 28px;
   height: 28px;
   place-items: center;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: color-mix(in srgb, var(--ui-warning-border) 12%, transparent);
   color: var(--ui-warning-border);
 }
@@ -249,7 +249,7 @@
 .ag-cloud-recovery .ag-cloud-action {
   min-height: 32px;
   padding: 0 11px;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
 }
 
 .ag-cloud-session-picker {
@@ -372,7 +372,7 @@
   min-height: 32px;
   padding: 0 14px;
   border: 0;
-  border-radius: var(--ag-r-chip);
+  border-radius: var(--ag-r-row);
   background: var(--n-ink-fill-hover);
   color: var(--ag-text);
   font: inherit;
@@ -635,7 +635,7 @@
   }
 }
 
-.ag-cloud-merge-button { min-height: 32px; border: 0; border-radius: var(--ag-r-pill); padding: 0 14px; background: var(--ag-primary-bg); color: var(--ag-primary-fg); font: inherit; font-size: var(--ag-fs-secondary); font-weight: var(--ag-fw-medium); cursor: default; transition: var(--ag-transition-color); }
+.ag-cloud-merge-button { min-height: 32px; border: 0; border-radius: var(--ag-r-row); padding: 0 14px; background: var(--ag-primary-bg); color: var(--ag-primary-fg); font: inherit; font-size: var(--ag-fs-secondary); font-weight: var(--ag-fw-medium); cursor: default; transition: var(--ag-transition-color); }
 .ag-cloud-merge-button[hidden] { display: none; }
 .ag-cloud-merge-button:hover:not(:disabled) { background: var(--ag-primary-bg-hover); }
 .ag-cloud-merge-button:disabled { background: var(--ag-primary-bg-disabled); cursor: default; }

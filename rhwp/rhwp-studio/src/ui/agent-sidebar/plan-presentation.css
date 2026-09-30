@@ -25,7 +25,7 @@
 }
 .ag-plan-phase {
   padding: 2px 8px;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-chip);
   background: var(--plan-wash);
   color: var(--ag-text-secondary);
   font-size: var(--ag-fs-meta);
@@ -95,7 +95,7 @@
   height: 24px;
   min-height: 24px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-chip);
   background: var(--plan-wash);
   color: var(--ag-text-secondary);
   font-family: var(--ag-mono);
@@ -179,7 +179,7 @@
 .ag-plan-actions button {
   min-height: 36px;
   padding: 8px 16px;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   font-size: var(--ag-fs-secondary);
   font-weight: var(--ag-fw-medium);
   transition: var(--ag-transition-color);
@@ -188,7 +188,7 @@
   width: 32px;
   height: 32px;
   flex-basis: 32px;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
 }
 .ag-plan-minimize,
 .ag-plan-step-summary,
