@@ -85,7 +85,7 @@ test('apply_char_format 은 startCharOffset·endCharOffset·startParaIdx 를 받
   const e = await expectErr(h.call('apply_char_format', {
     sectionIdx: 0, startParaIdx: 0, endParaIdx: 1, startCharOffset: 0, endCharOffset: 2, bold: true,
   }), 'INVALID_ARGS');
-  assert.match(e.message, /formats one paragraph: paraIdx 0 and endParaIdx 1 disagree/);
+  assert.match(e.message, /offsets address one paragraph: paraIdx 0 and endParaIdx 1 disagree/);
 });
 
 test('정식 키와 별칭이 다른 값이면 두 키를 짚어 거절하고, 같은 값이면 받는다', async () => {
@@ -151,10 +151,10 @@ test('좌표가 빠지면 그 도구에 필요한 좌표 전체를 알려 준다
     range.message,
     'delete_range needs sectionIdx, startParaIdx, startCharOffset, endParaIdx, endCharOffset — or an anchor (missing startCharOffset, endCharOffset)',
   );
-  const format = await expectErr(h.call('apply_char_format', { bold: true }), 'INVALID_ARGS');
+  const format = await expectErr(h.call('apply_char_format', { startOffset: 0, bold: true }), 'INVALID_ARGS');
   assert.equal(
     format.message,
-    'apply_char_format needs sectionIdx, paraIdx, startOffset, endOffset — or an anchor (missing paraIdx, startOffset, endOffset)',
+    'apply_char_format needs sectionIdx, paraIdx, startOffset, endOffset — or an anchor or paras (missing paraIdx, endOffset)',
   );
 });
 

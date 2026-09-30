@@ -391,6 +391,62 @@ test('문자열 anchor 는 허브와 MCP 파싱에서 {text} 가 된다', async 
   assert.doesNotThrow(() => byName.get('replace_range').validate(parsed));
 });
 
+// ─── 여러 문단 서식 (paras) ───────────────────────────────
+// 서식 도구 셋이 paras 로 문단 여럿을 한 항목에 받는다. 범위·중복·한도와 실제 적용은 스튜디오의
+// agent-multi-paragraph-format.test.ts 가 본다 — 여기서는 스키마 통과와 validate 훅의 모양 검사만 잠근다.
+
+const PARAS_TOOLS = ['apply_para_format', 'apply_char_format', 'apply_style'];
+
+test('paras: 세 서식 도구가 허브와 MCP 파싱으로 그대로 받는다', async () => {
+  const paras = [48, [51, 53], [58, 66]];
+  const samples = {
+    apply_para_format: { expectedRevision: 3, paras, alignment: 'justify' },
+    apply_char_format: { expectedRevision: 3, paras, fontSizePt: 14, underline: true },
+    apply_style: { expectedRevision: 3, paras, styleId: 3 },
+  };
+  for (const name of PARAS_TOOLS) {
+    const def = byName.get(name);
+    assert.deepEqual(hubParse(name, samples[name]), samples[name], name);
+    assert.doesNotThrow(() => def.validate(samples[name]), name);
+    assert.match(def.description, /every paragraph in paras/, name);
+    const mcp = await mcpCall(name, samples[name]);
+    assert.deepEqual(mcp.received, samples[name], name);
+    assert.deepEqual(mcp.inputSchema.properties.paras, { type: 'array', items: {}, description: 'paraIdx or [first,last]' }, name);
+    assert.deepEqual(mcp.inputSchema.required.filter((key) => key !== 'expectedRevision' && key !== 'styleId'), [], name);
+  }
+  // apply_edits 항목으로도 그대로 통과한다
+  const batch = { expectedRevision: 3, edits: [{ tool: 'apply_para_format', paras, alignment: 'justify' }] };
+  assert.deepEqual(hubParse('apply_edits', batch), batch);
+});
+
+test('paras: validate 훅이 모양과 주소 충돌을 거른다', () => {
+  for (const name of PARAS_TOOLS) {
+    const def = byName.get(name);
+    const bad = (args, re) => assert.throws(() => def.validate(args), (e) => e.code === 'INVALID_ARGS' && re.test(e.message), name);
+    bad({ paras: [1], paraIdx: 2 }, /paras already names the target paragraphs — drop paraIdx/);
+    bad({ paras: [] }, /paras must list 1\.\.64 entries/);
+    bad({ paras: Array.from({ length: 65 }, () => 0) }, /paras must list 1\.\.64 entries/);
+    bad({ paras: [0, [3, 1]] }, /paras\[1\] \[3, 1\] is reversed — send \[1, 3\]/);
+    bad({ paras: [[1, 2, 3]] }, /paras\[0\] must be a paragraph index or an inclusive \[first, last\] range/);
+    bad({ paras: ['1'] }, /paras\[0\] must be a paragraph index/);
+    bad({ paras: [-1] }, /paras\[0\] must be a paragraph index/);
+  }
+  assert.throws(() => byName.get('apply_char_format').validate({ paras: [1], anchor: { text: 'x' } }), /drop anchor/);
+  assert.throws(() => byName.get('apply_char_format').validate({ paras: [1], startOffset: 0, endOffset: 2 }), /drop startOffset, endOffset/);
+  assert.throws(() => byName.get('apply_style').validate({ styleId: 3 }), /apply_style needs sectionIdx, paraIdx — or paras \(missing paraIdx\)/);
+  assert.doesNotThrow(() => byName.get('apply_style').validate({ paraIdx: 2, styleId: 3 }));
+});
+
+test('apply_char_format: 오프셋이 둘 다 없으면 문단 전체라 통과하고, 하나만 오면 거절한다', () => {
+  const { validate } = byName.get('apply_char_format');
+  assert.doesNotThrow(() => validate({ paraIdx: 3, bold: true }));
+  assert.throws(
+    () => validate({ paraIdx: 3, startOffset: 0, bold: true }),
+    /apply_char_format needs sectionIdx, paraIdx, startOffset, endOffset — or an anchor or paras \(missing endOffset\)/,
+  );
+  assert.throws(() => validate({ bold: true }), /apply_char_format needs sectionIdx, paraIdx — or an anchor or paras \(missing paraIdx\)/);
+});
+
 test('read_batch: 읽기 전용 도구 1-16개의 {tool, args} 배열', () => {
   const def = byName.get('read_batch');
   assert.ok(def, 'missing tool: read_batch');

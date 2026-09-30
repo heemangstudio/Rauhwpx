@@ -183,21 +183,61 @@ function validateAnchorShape(anchor) {
 }
 
 /**
- * anchor 가 있으면 그 모양만 본다 — 옆에 온 문단 좌표·cell 은 스튜디오 executor 가 검색 범위로
- * 쓰고 글자 오프셋은 버린다. anchor 가 없으면 좌표가 있어야 한다. sectionIdx(구역이 하나뿐인
- * 문서)와 범위 도구의 endParaIdx 는 executor 가 채우므로 여기서는 요구하지 않는다.
+ * 여러 문단 대상 (서식 도구 공용) — 항목은 문단 번호 또는 [첫, 끝] 구간이다. 스키마는 크기 한도
+ * 때문에 느슨한 배열로 두고 모양은 validateParas 가, 범위·중복·개수 한도는 스튜디오 executor 가 본다.
+ */
+function parasParam() {
+  return z.array(z.unknown()).optional().describe('paraIdx or [first,last]');
+}
+
+/** paras 와 함께 올 수 없는 주소 인자 — paras 가 대상 문단을 이미 정한다. */
+const PARAS_CLASH_KEYS = ['paraIdx', 'startOffset', 'endOffset', 'anchor'];
+
+function validateParas(args) {
+  const clash = PARAS_CLASH_KEYS.filter((k) => args[k] !== undefined && args[k] !== null);
+  if (clash.length > 0) {
+    throw invalidArgs(`paras already names the target paragraphs — drop ${clash.join(', ')}, or send that target as a separate item`);
+  }
+  const isIndex = (v) => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+  if (!Array.isArray(args.paras) || args.paras.length < 1 || args.paras.length > 64) {
+    throw invalidArgs('paras must list 1..64 entries, each a paragraph index or an inclusive [first, last] range, e.g. [48, [51, 53]]');
+  }
+  args.paras.forEach((entry, index) => {
+    const range = Array.isArray(entry) && entry.length === 2 && isIndex(entry[0]) && isIndex(entry[1]);
+    if (range && entry[1] < entry[0]) {
+      throw invalidArgs(`paras[${index}] [${entry[0]}, ${entry[1]}] is reversed — send [${entry[1]}, ${entry[0]}]`);
+    }
+    if (!range && !isIndex(entry)) {
+      throw invalidArgs(`paras[${index}] must be a paragraph index or an inclusive [first, last] range (got ${JSON.stringify(entry)})`);
+    }
+  });
+}
+
+/**
+ * 대상 주소 검증 — paras 가 있으면 그 모양만, anchor 가 있으면 그 모양만 본다 (anchor 옆에 온
+ * 문단 좌표·cell 은 스튜디오 executor 가 검색 범위로 쓰고 글자 오프셋은 버린다). 둘 다 없으면
+ * 좌표가 있어야 한다. sectionIdx(구역이 하나뿐인 문서)와 범위 도구의 endParaIdx 는 executor 가
+ * 채우므로 요구하지 않고, apply_char_format 은 오프셋이 둘 다 없으면 문단 전체라 오프셋도 요구하지 않는다.
  * @param {string} tool 오류 메시지에 싣는 도구 이름
  * @param {string[]} coordKeys 좌표 방식의 전체 키 — 누락 오류가 통째로 알려준다
+ * @param {{anchor?: boolean, paras?: boolean}} [accepts] 좌표 대신 받는 주소 방식
  */
-function validateAnchorTool(tool, args, coordKeys) {
+function validateAnchorTool(tool, args, coordKeys, { anchor = true, paras = false } = {}) {
   const present = (k) => args[k] !== undefined && args[k] !== null;
-  if (present('anchor')) {
+  if (paras && present('paras')) {
+    validateParas(args);
+    return;
+  }
+  if (anchor && present('anchor')) {
     validateAnchorShape(args.anchor);
     return;
   }
-  const missing = coordKeys.filter((k) => k !== 'sectionIdx' && k !== 'endParaIdx' && !present(k));
+  const wholePara = tool === 'apply_char_format' && !present('startOffset') && !present('endOffset');
+  const keys = wholePara ? coordKeys.filter((k) => k !== 'startOffset' && k !== 'endOffset') : coordKeys;
+  const missing = keys.filter((k) => k !== 'sectionIdx' && k !== 'endParaIdx' && !present(k));
   if (missing.length > 0) {
-    throw invalidArgs(`${tool} needs ${coordKeys.join(', ')} — or an anchor (missing ${missing.join(', ')})`);
+    const alternatives = [anchor ? 'an anchor' : '', paras ? 'paras' : ''].filter(Boolean).join(' or ');
+    throw invalidArgs(`${tool} needs ${keys.join(', ')} — or ${alternatives} (missing ${missing.join(', ')})`);
   }
 }
 
@@ -913,12 +953,13 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'apply_char_format',
-    description: `Apply character formatting to startOffset..endOffset of one paragraph, or to an anchor's match. Absolute values; no need to read the format first. widthPercent/letterSpacingPercent take a percent or a 7-slot array. ${WRITE_POINTER}`,
+    description: `Format characters: startOffset..endOffset of paraIdx, the whole paragraph without offsets, every paragraph in paras, or an anchor's match. Absolute values; no need to read the format first. ${WRITE_POINTER}`,
     shape: {
       expectedRevision: z.number().int(),
       render: renderParam(),
       sectionIdx: z.number().int().optional(),
       paraIdx: z.number().int().optional(),
+      paras: parasParam(),
       startOffset: z.number().int().optional(),
       endOffset: z.number().int().optional(),
       anchor: anchorParam(),
@@ -928,15 +969,16 @@ const BASE_TOOL_DEFINITIONS = [
       italic: z.boolean().optional(),
       underline: z.boolean().optional(),
       strikethrough: z.boolean().optional(),
-      fontSizePt: z.number().positive().optional(),
+      // 양수·빈 문자열·슬롯별 범위는 스튜디오 executor 가 검증한다 (정의 크기 한도 — paras 몫을 여기서 낸다).
+      fontSizePt: z.number().optional(),
       textColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
-      fontFamily: z.string().min(1).optional().describe('From get_document_info fontQuery'),
-      widthPercent: z.union([z.number().min(50).max(200), z.array(z.number().min(50).max(200)).length(7)]).optional()
+      fontFamily: z.string().optional().describe('From get_document_info fontQuery'),
+      widthPercent: z.union([z.number().min(50).max(200), z.array(z.number()).length(7)]).optional()
         .describe('Glyph width percent (장평)'),
-      letterSpacingPercent: z.union([z.number().min(-50).max(50), z.array(z.number().min(-50).max(50)).length(7)]).optional()
+      letterSpacingPercent: z.union([z.number().min(-50).max(50), z.array(z.number()).length(7)]).optional()
         .describe('Glyph tracking percent (자간)'),
     },
-    validate: (args) => validateAnchorTool('apply_char_format', args, ['sectionIdx', 'paraIdx', 'startOffset', 'endOffset']),
+    validate: (args) => validateAnchorTool('apply_char_format', args, ['sectionIdx', 'paraIdx', 'startOffset', 'endOffset'], { paras: true }),
   },
   {
     name: 'create_table',
@@ -1059,19 +1101,20 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'apply_para_format',
-    description: `Format one paragraph by address or anchor (its paragraph): alignment, spacing/indent/margins (pt), lineSpacingPercent or lineSpacingType + lineSpacingPt, pageBreakBefore, tabStops, borders + borderSpacingMm, koreanBreakUnit, list fields (headType "none" clears; new lists: apply_list). ${WRITE_POINTER}`,
+    description: `Format paragraph paraIdx, every paragraph in paras, or an anchor's paragraph. Line spacing is lineSpacingPercent or lineSpacingType + lineSpacingPt; headType "none" clears a list (new lists: apply_list). ${WRITE_POINTER}`,
     shape: {
       expectedRevision: z.number().int(),
       render: renderParam(),
       sectionIdx: z.number().int().optional(),
       paraIdx: z.number().int().optional(),
+      paras: parasParam(),
       anchor: anchorParam(),
       cell: cellParam(),
       cellPath: cellPathParam(),
       alignment: z.enum(['left', 'center', 'right', 'justify', 'distribute']).optional(),
       lineSpacingPercent: z.number().optional().describe('160 = Korean default'),
       lineSpacingType: z.enum(['percent', 'fixed', 'atLeast', 'spaceOnly']).optional(),
-      lineSpacingPt: z.number().positive().optional(),
+      lineSpacingPt: z.number().optional(),
       spaceBeforePt: z.number().optional(),
       spaceAfterPt: z.number().optional(),
       indentPt: z.number().optional().describe('Negative = hanging'),
@@ -1085,9 +1128,9 @@ const BASE_TOOL_DEFINITIONS = [
       headType: z.enum(['none', 'number', 'bullet', 'outline']).optional(),
       numberingId: z.number().int().optional(),
       paraLevel: z.number().int().max(6).optional(),
-      bulletChar: z.string().min(1).optional(),
+      bulletChar: z.string().optional(),
     },
-    validate: (args) => validateAnchorTool('apply_para_format', args, ['sectionIdx', 'paraIdx']),
+    validate: (args) => validateAnchorTool('apply_para_format', args, ['sectionIdx', 'paraIdx'], { paras: true }),
   },
   {
     name: 'apply_list',
@@ -1117,15 +1160,17 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'apply_style',
-    description: `Apply a named style (from list_styles) to one paragraph. ${WRITE_POINTER}`,
+    description: `Apply a list_styles style to paragraph paraIdx or every paragraph in paras. ${WRITE_POINTER}`,
     shape: {
       expectedRevision: z.number().int(),
       render: renderParam(),
-      sectionIdx: z.number().int(),
-      paraIdx: z.number().int(),
+      sectionIdx: z.number().int().optional(),
+      paraIdx: z.number().int().optional(),
+      paras: parasParam(),
       cell: cellParam(),
       styleId: z.number().int(),
     },
+    validate: (args) => validateAnchorTool('apply_style', args, ['sectionIdx', 'paraIdx'], { anchor: false, paras: true }),
   },
   {
     // insert_image 만 특별 — 파일은 mcp-stdio 프로세스가 읽어 base64 로 허브에 전달하므로

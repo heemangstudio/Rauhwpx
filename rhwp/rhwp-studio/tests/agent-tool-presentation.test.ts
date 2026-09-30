@@ -44,6 +44,17 @@ test('접두어를 떼고 인자에서 한 줄 요약을 만든다', () => {
   assert.equal(presentToolCall('edit_object', '{"paraIdx":3,"controlIdx":0,"xMm":20,"yMm":30}').label, '개체 이동');
 });
 
+test('paras 대상은 구간 하나면 문단 범위, 여럿이면 겹침을 합친 문단 수로 보인다', () => {
+  const summary = (tool: string, args: unknown) => presentToolCall(tool, JSON.stringify(args)).summary;
+  assert.equal(summary('apply_char_format', { paras: [[3, 5]], fontSizePt: 14, underline: true }), '4–6문단 · 밑줄 · 14pt');
+  assert.equal(summary('apply_para_format', { paras: [48, [51, 53], [52, 60]], alignment: 'justify' }), '문단 11개 · 양쪽 정렬');
+  assert.equal(summary('apply_style', { sectionIdx: 1, paras: [2, 7], styleId: 3 }), '2구역 문단 2개 · 스타일 3');
+  assert.equal(
+    summary('apply_para_format', { cell: { paraIdx: 4, controlIdx: 0, cellIdx: 1 }, paras: [0, 1], alignment: 'center' }),
+    '표 안 문단 2개 · 가운데 정렬',
+  );
+});
+
 test('apply_edits 와 read_batch 는 항목 수와 항목별 목록을 보인다', () => {
   const edits = presentToolCall('apply_edits', JSON.stringify({
     expectedRevision: 3,

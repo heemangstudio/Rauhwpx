@@ -273,6 +273,13 @@ const WRITE_COORD_KEYS: Record<string, readonly string[]> = {
   replace_range: RANGE_COORD_KEYS,
   apply_char_format: ['sectionIdx', 'paraIdx', 'startOffset', 'endOffset'],
   apply_para_format: ['sectionIdx', 'paraIdx'],
+  apply_style: ['sectionIdx', 'paraIdx'],
+};
+/** 좌표 대신 쓸 수 있는 주소 방식 — 누락 오류가 함께 알려준다. */
+const WRITE_COORD_ALTERNATIVES: Record<string, string> = {
+  apply_char_format: 'an anchor or paras',
+  apply_para_format: 'an anchor or paras',
+  apply_style: 'paras',
 };
 const RANGE_COORD_ALIASES = [
   ['startParaIdx', 'paraIdx'], ['startCharOffset', 'startOffset'], ['endCharOffset', 'endOffset'],
@@ -286,6 +293,26 @@ const WRITE_COORD_ALIASES: Record<string, ReadonlyArray<readonly [string, string
 
 /** apply_edits 실패 보고에 싣는 항목 수 — 넘치면 남은 개수만 알린다. */
 const BATCH_FAILURE_REPORT_LIMIT = 6;
+
+/** paras 와 함께 올 수 없는 주소 인자 — paras 가 대상 문단을 이미 정한다. */
+const PARAS_CLASH_KEYS = [
+  'paraIdx', 'startParaIdx', 'endParaIdx', 'startOffset', 'endOffset', 'startCharOffset', 'endCharOffset', 'anchor',
+] as const;
+const PARAS_MAX_ENTRIES = 64;
+const PARAS_MAX_PARAGRAPHS = 500;
+
+/** 여러 문단 서식의 대상 — 한 구역의 본문 문단들이거나 한 셀의 문단들. */
+interface ParaTargets {
+  sectionIdx: number;
+  /** 리베이스를 반영한 문단 번호 — 중복 없이 오름차순. */
+  paras: number[];
+  /** op 마다 따로 쓰는 셀 주소 사본 (pending 이 op 의 셀 주소를 제자리에서 옮긴다). */
+  cellAt: () => CellAddr | undefined;
+  /** 저널에 남길 본문 문단 구간 — 셀이면 표가 놓인 문단 하나. */
+  journal: Array<[number, number]>;
+  /** 결과에 싣는 리베이스 이동량 — 하나면 rebasedParaShift, 항목마다 다르면 rebasedParaShifts. */
+  shifted: Record<string, unknown>;
+}
 
 
 /** Every Studio tool that can create or stage a document mutation. */
@@ -1284,13 +1311,15 @@ export class AgentToolExecutor {
         );
       }
     }
-    const keys = WRITE_COORD_KEYS[tool];
+    // apply_char_format 은 오프셋이 둘 다 없으면 문단 전체라 오프셋을 요구하지 않는다 (하나만 오면 누락).
+    const wholePara = tool === 'apply_char_format' && !given('startOffset') && !given('endOffset');
+    const keys = wholePara ? WRITE_COORD_KEYS['apply_para_format'] : WRITE_COORD_KEYS[tool];
     if (keys.includes('endParaIdx')) {
       if (given('startParaIdx') && !given('endParaIdx')) out['endParaIdx'] = out['startParaIdx'];
-    } else if (tool === 'apply_char_format' && given('paraIdx') && given('endParaIdx') && out['endParaIdx'] !== out['paraIdx']) {
+    } else if (!wholePara && tool === 'apply_char_format' && given('paraIdx') && given('endParaIdx') && out['endParaIdx'] !== out['paraIdx']) {
       throw new AgentToolError(
         'INVALID_ARGS',
-        `apply_char_format formats one paragraph: paraIdx ${JSON.stringify(out['paraIdx'])} and endParaIdx ${JSON.stringify(out['endParaIdx'])} disagree — send one item per paragraph`,
+        `apply_char_format offsets address one paragraph: paraIdx ${JSON.stringify(out['paraIdx'])} and endParaIdx ${JSON.stringify(out['endParaIdx'])} disagree — to format several whole paragraphs send paras: [[first, last]]`,
       );
     }
     const sectionCount = this.deps.wasm.getSectionCount();
@@ -1302,10 +1331,134 @@ export class AgentToolExecutor {
         : '';
       throw new AgentToolError(
         'INVALID_ARGS',
-        `${tool} needs ${keys.join(', ')} — or an anchor (missing ${missing.join(', ')}${why})`,
+        `${tool} needs ${keys.join(', ')} — or ${WRITE_COORD_ALTERNATIVES[tool] ?? 'an anchor'} (missing ${missing.join(', ')}${why})`,
       );
     }
     return out;
+  }
+
+  /** paras 인자 — 없으면 null. paraIdx·오프셋·anchor 와 함께 오면 대상이 둘이 되므로 거절한다. */
+  private optParas(args: Record<string, unknown>): unknown[] | null {
+    const raw = args['paras'];
+    if (raw === undefined || raw === null) return null;
+    const clash = PARAS_CLASH_KEYS.filter((key) => args[key] !== undefined && args[key] !== null);
+    if (clash.length > 0) {
+      throw new AgentToolError(
+        'INVALID_ARGS',
+        `paras already names the target paragraphs — drop ${clash.join(', ')}, or send that target as a separate item`,
+      );
+    }
+    if (!Array.isArray(raw) || raw.length < 1 || raw.length > PARAS_MAX_ENTRIES) {
+      throw new AgentToolError(
+        'INVALID_ARGS',
+        `paras must list 1..${PARAS_MAX_ENTRIES} entries, each a paragraph index or an inclusive [first, last] range, e.g. [48, [51, 53]]`,
+      );
+    }
+    return raw;
+  }
+
+  /**
+   * paras 항목(문단 번호 또는 [첫, 끝] 구간)을 대상 문단 목록으로 푼다. 한 구역 안이고, cell 이
+   * 있으면 그 셀의 문단이다. 뒤처진 revision 은 항목마다 리베이스한다 — 대상 밖의 형제 편집은
+   * 좌표만 옮기고, 대상과 겹치면 REVISION_MISMATCH 다. name 은 오류에 싣는 항목 이름이다.
+   */
+  private paraTargets(
+    tool: string,
+    args: Record<string, unknown>,
+    entries: unknown[],
+    name: (index: number) => string = (index) => `paras[${index}]`,
+  ): ParaTargets {
+    const { wasm } = this.deps;
+    const given = optIndex(args, 'sectionIdx');
+    const sectionCount = wasm.getSectionCount();
+    if (given === undefined && sectionCount !== 1) {
+      throw new AgentToolError('INVALID_ARGS', `${tool} needs sectionIdx because the document has ${sectionCount} sections`);
+    }
+    const sectionIdx = given ?? 0;
+    const isIndex = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+    const spans = entries.map((entry, index): [number, number] => {
+      if (isIndex(entry)) return [entry, entry];
+      if (Array.isArray(entry) && entry.length === 2 && isIndex(entry[0]) && isIndex(entry[1])) {
+        if (entry[1] < entry[0]) {
+          throw new AgentToolError('INVALID_ARGS', `${name(index)} [${entry[0]}, ${entry[1]}] is reversed — send [${entry[1]}, ${entry[0]}]`);
+        }
+        return [entry[0], entry[1]];
+      }
+      throw new AgentToolError(
+        'INVALID_ARGS',
+        `${name(index)} must be a paragraph index or an inclusive [first, last] range (got ${JSON.stringify(entry)})`,
+      );
+    });
+    const cell = optCell(args);
+    const cellShift = cell ? this.requireRevisionRebasable(args, sectionIdx, cell.paraIdx, cell.paraIdx) : 0;
+    const shifts = spans.map(([first, last]) => (cell ? 0 : this.requireRevisionRebasable(args, sectionIdx, first, last)));
+    if (cell) cell.paraIdx += cellShift;
+    this.validateAddress(sectionIdx, 0, undefined, cell);
+    const count = cell
+      ? (cell.path
+        ? wasm.getCellParagraphCountByPath(sectionIdx, cell.paraIdx, cellPathAt(cell, 0))
+        : wasm.getCellParagraphCount(sectionIdx, cell.paraIdx, cell.controlIdx, cell.cellIdx))
+      : wasm.getParagraphCount(sectionIdx);
+    const picked = new Set<number>();
+    spans.forEach(([first, last], index) => {
+      const shift = shifts[index];
+      if (last + shift >= count) {
+        throw new AgentToolError(
+          'INVALID_ARGS',
+          `${name(index)} ${JSON.stringify(entries[index])} is out of range for ${cell ? `cell ${cell.cellIdx}` : `section ${sectionIdx}`} (0..${count - 1})`,
+        );
+      }
+      for (let para = first + shift; para <= last + shift; para++) picked.add(para);
+      if (picked.size > PARAS_MAX_PARAGRAPHS) {
+        throw new AgentToolError('INVALID_ARGS', `paras covers more than ${PARAS_MAX_PARAGRAPHS} paragraphs — split it into several items`);
+      }
+    });
+    const paras = [...picked].sort((a, b) => a - b);
+    const journal: Array<[number, number]> = [];
+    if (cell) journal.push([cell.paraIdx, cell.paraIdx]);
+    else {
+      for (const para of paras) {
+        const run = journal[journal.length - 1];
+        if (run && run[1] === para - 1) run[1] = para;
+        else journal.push([para, para]);
+      }
+    }
+    const distinct = [...new Set(cell ? [cellShift] : shifts)];
+    const shifted: Record<string, unknown> = distinct.length > 1
+      ? { rebasedParaShifts: spans.map(([first, last], index) => [first, last, shifts[index]]) }
+      : distinct[0] !== 0 ? { rebasedParaShift: distinct[0] } : {};
+    const cellAt = (): CellAddr | undefined => (cell
+      ? { ...cell, ...(cell.path ? { path: cell.path.map((entry) => ({ ...entry })) } : {}) }
+      : undefined);
+    return { sectionIdx, paras, cellAt, journal, shifted };
+  }
+
+  /**
+   * 문단마다 스테이징 op 하나씩을 한 원자 배치로 건다 (apply_list 와 같은 방식) — 조판과 revision
+   * bump 는 한 번이고 중간 실패는 전부 되돌린다. op 은 단일 호출과 같은 종류라 검토·거절·실행 취소가
+   * 문단별로 그대로다. 저널에는 나열된 문단 구간을 남긴다 (건너뛴 빈 문단을 품어도 보수적일 뿐이다).
+   */
+  private stageParagraphs(
+    targets: ParaTargets,
+    stage: Array<() => { changeSetId: string }>,
+    skippedEmpty = 0,
+  ): unknown {
+    let changeSetId: string | undefined;
+    const revBefore = this.revision;
+    if (stage.length > 0) {
+      this.runAtomicCovered((opts) => this.deps.pending.runAtomicBatch(() => {
+        for (const run of stage) changeSetId = run().changeSetId;
+      }, opts));
+    }
+    for (const [first, last] of targets.journal) this.recordJournal(revBefore, targets.sectionIdx, first, last, 0);
+    return {
+      revision: this.revision,
+      ...(changeSetId !== undefined ? { changeSetId } : {}),
+      applied: stage.length > 0,
+      paragraphs: stage.length,
+      ...(skippedEmpty > 0 ? { skippedEmpty } : {}),
+      ...targets.shifted,
+    };
   }
 
   /** 방금 수행한 쓰기를 편집 저널에 정밀 기록한다 — (revBefore, 현재 revision] 전체 귀속. apply_edits 안이면 버퍼에 쌓아 배치 끝 revision 에 일괄 귀속한다. */
@@ -5340,7 +5493,13 @@ export class AgentToolExecutor {
     };
   }
 
+  /**
+   * apply_char_format — 대상은 넷 중 하나다: anchor 매치, paraIdx + 오프셋 구간, 오프셋 없는
+   * paraIdx(문단 전체), paras(여러 문단 전체). 뒤의 둘은 같은 길(charFormatParagraphs)로 간다.
+   */
   private applyCharFormat(args: Record<string, unknown>, agent: AgentName): unknown {
+    const entries = this.optParas(args);
+    if (entries) return this.charFormatParagraphs(args, agent, this.paraTargets('apply_char_format', args, entries));
     const anchor = this.optAnchor(args);
     let sectionIdx: number;
     let paraIdx: number;
@@ -5358,6 +5517,13 @@ export class AgentToolExecutor {
       cell = anchor.cell ? { ...anchor.cell } : undefined;
     } else {
       const coords = this.coordArgs('apply_char_format', args);
+      if (coords['startOffset'] === undefined || coords['startOffset'] === null) {
+        // 오프셋 없이 endParaIdx 까지 오면 그 문단 구간 전체다 (범위 도구식 이름으로 보낸 경우).
+        const last = coords['endParaIdx'];
+        const entry = last === undefined || last === null ? coords['paraIdx'] : [coords['paraIdx'], last];
+        const whole = this.paraTargets('apply_char_format', coords, [entry], () => (Array.isArray(entry) ? 'paraIdx..endParaIdx' : 'paraIdx'));
+        return this.charFormatParagraphs(args, agent, whole);
+      }
       sectionIdx = reqInt(coords, 'sectionIdx');
       paraIdx = reqInt(coords, 'paraIdx');
       startOffset = reqInt(coords, 'startOffset');
@@ -5375,6 +5541,51 @@ export class AgentToolExecutor {
     if (endOffset === startOffset) {
       throw new AgentToolError('INVALID_ARGS', 'range is empty (startOffset === endOffset) — formatting needs at least one character');
     }
+    const format = this.charFormatProps(args);
+    const range: DocRange = {
+      sectionIdx,
+      startParaIdx: paraIdx,
+      startCharOffset: startOffset,
+      endParaIdx: paraIdx,
+      endCharOffset: endOffset,
+    };
+    if (cell) range.cell = cell;
+    const revBefore = this.revision;
+    const r = this.deps.pending.applyCharFormat(agent, range, format);
+    const anchorPara = cell ? cell.paraIdx : paraIdx;
+    this.recordJournal(revBefore, sectionIdx, anchorPara, anchorPara, 0);
+    return {
+      revision: this.revision, changeSetId: r.changeSetId, applied: true,
+      ...(shift !== 0 ? { rebasedParaShift: shift } : {}),
+      ...(anchor ? { anchor: this.anchorEcho(anchor) } : {}),
+    };
+  }
+
+  /** 대상 문단마다 문단 전체에 글자 서식을 건다 — 빈 문단은 서식을 걸 글자가 없어 건너뛴다. */
+  private charFormatParagraphs(args: Record<string, unknown>, agent: AgentName, targets: ParaTargets): unknown {
+    const format = this.charFormatProps(args);
+    const stage: Array<() => { changeSetId: string }> = [];
+    let skippedEmpty = 0;
+    for (const paraIdx of targets.paras) {
+      const cell = targets.cellAt();
+      const length = this.validateAddress(targets.sectionIdx, paraIdx, undefined, cell);
+      if (length === 0) {
+        skippedEmpty++;
+        continue;
+      }
+      const range: DocRange = {
+        sectionIdx: targets.sectionIdx,
+        startParaIdx: paraIdx, startCharOffset: 0,
+        endParaIdx: paraIdx, endCharOffset: length,
+      };
+      if (cell) range.cell = cell;
+      stage.push(() => this.deps.pending.applyCharFormat(agent, range, format));
+    }
+    return this.stageParagraphs(targets, stage, skippedEmpty);
+  }
+
+  /** apply_char_format 의 서식 인자 → 엔진 글자 속성. 서식 키가 하나도 없으면 INVALID_ARGS. */
+  private charFormatProps(args: Record<string, unknown>): CharFormatProps {
     // props_json 키 인코딩은 hwpctl/actions/format.ts charShapeSetToJson 및
     // core/types.ts CharProperties와 동일: fontSize = pt*100, textColor = '#RRGGBB'.
     const format: CharFormatProps = {};
@@ -5428,23 +5639,7 @@ export class AgentToolExecutor {
         'At least one format key is required (bold/italic/underline/strikethrough/fontSizePt/textColor/fontFamily/widthPercent/letterSpacingPercent)',
       );
     }
-    const range: DocRange = {
-      sectionIdx,
-      startParaIdx: paraIdx,
-      startCharOffset: startOffset,
-      endParaIdx: paraIdx,
-      endCharOffset: endOffset,
-    };
-    if (cell) range.cell = cell;
-    const revBefore = this.revision;
-    const r = this.deps.pending.applyCharFormat(agent, range, format);
-    const anchorPara = cell ? cell.paraIdx : paraIdx;
-    this.recordJournal(revBefore, sectionIdx, anchorPara, anchorPara, 0);
-    return {
-      revision: this.revision, changeSetId: r.changeSetId, applied: true,
-      ...(shift !== 0 ? { rebasedParaShift: shift } : {}),
-      ...(anchor ? { anchor: this.anchorEcho(anchor) } : {}),
-    };
+    return format;
   }
 
   private setFieldValue(args: Record<string, unknown>, agent: AgentName): unknown {
@@ -6090,6 +6285,13 @@ export class AgentToolExecutor {
   }
 
   private applyParaFormat(args: Record<string, unknown>, agent: AgentName): unknown {
+    const entries = this.optParas(args);
+    if (entries) {
+      const targets = this.paraTargets('apply_para_format', args, entries);
+      // 테두리는 문단마다 현재 값을 이어받으므로 op 은 문단별로 만든다 — 배치에 들어가기 전에 전부 검증된다.
+      const ops = targets.paras.map((paraIdx) => this.paraFormatOp(args, targets.sectionIdx, paraIdx, targets.cellAt()));
+      return this.stageParagraphs(targets, ops.map((obj) => () => this.deps.pending.addObjectOp(agent, obj)));
+    }
     const anchor = this.optAnchor(args);
     let sectionIdx: number;
     let paraIdx: number;
@@ -6126,7 +6328,27 @@ export class AgentToolExecutor {
       else paraIdx += paraShift;
     }
     this.validateAddress(sectionIdx, paraIdx, undefined, cell);
+    const obj = this.paraFormatOp(args, sectionIdx, paraIdx, cell);
+    const revBefore = this.revision;
+    const r = this.deps.pending.addObjectOp(agent, obj);
+    const anchorPara = cell ? cell.paraIdx : paraIdx;
+    this.recordJournal(revBefore, sectionIdx, anchorPara, anchorPara, 0);
+    return {
+      revision: this.revision, changeSetId: r.changeSetId, applied: true,
+      ...(paraShift !== 0 ? { rebasedParaShift: paraShift } : {}),
+      // 앵커 쓰기는 해석된 대상 문단 주소를 돌려준다 (position 은 이미 반영됨).
+      ...(anchor ? { anchor: {
+        sectionIdx, paraIdx,
+        ...(cell ? { cell: { paraIdx: cell.paraIdx, controlIdx: cell.controlIdx, cellIdx: cell.cellIdx } } : {}),
+        ...(anchor.matchedText !== undefined ? { matchedText: anchor.matchedText } : {}),
+      } } : {}),
+    };
+  }
 
+  /** apply_para_format 의 서식 인자 → 문단 하나에 거는 paraFormat op. 서식 키가 하나도 없으면 INVALID_ARGS. */
+  private paraFormatOp(
+    args: Record<string, unknown>, sectionIdx: number, paraIdx: number, cell: CellAddr | undefined,
+  ): ObjectOp {
     const props: Record<string, unknown> = {};
     const alignment = args['alignment'];
     if (alignment !== undefined && alignment !== null) {
@@ -6327,25 +6549,11 @@ export class AgentToolExecutor {
     if (Object.keys(props).length === 0) {
       throw new AgentToolError('INVALID_ARGS', 'At least one paragraph format key is required (alignment/lineSpacingPercent/lineSpacingType+lineSpacingPt/spaceBeforePt/spaceAfterPt/indentPt/marginLeftPt/marginRightPt/pageBreakBefore/tabStops/borders/borderSpacingMm/koreanBreakUnit/headType/numberingId/paraLevel/bulletChar)');
     }
-    const obj: ObjectOp = {
+    return {
       type: 'paraFormat', sectionIdx, paraIdx,
       ...(cell ? { cell } : {}),
       propsJson: JSON.stringify(props), prevParaShapeId: -1, charOffset: 0,
       textSample: this.paraTextSample(sectionIdx, paraIdx, cell),
-    };
-    const revBefore = this.revision;
-    const r = this.deps.pending.addObjectOp(agent, obj);
-    const anchorPara = cell ? cell.paraIdx : paraIdx;
-    this.recordJournal(revBefore, sectionIdx, anchorPara, anchorPara, 0);
-    return {
-      revision: this.revision, changeSetId: r.changeSetId, applied: true,
-      ...(paraShift !== 0 ? { rebasedParaShift: paraShift } : {}),
-      // 앵커 쓰기는 해석된 대상 문단 주소를 돌려준다 (position 은 이미 반영됨).
-      ...(anchor ? { anchor: {
-        sectionIdx, paraIdx,
-        ...(cell ? { cell: { paraIdx: cell.paraIdx, controlIdx: cell.controlIdx, cellIdx: cell.cellIdx } } : {}),
-        ...(anchor.matchedText !== undefined ? { matchedText: anchor.matchedText } : {}),
-      } } : {}),
     };
   }
 
@@ -7166,21 +7374,33 @@ export class AgentToolExecutor {
   }
 
   private applyStyle(args: Record<string, unknown>, agent: AgentName): unknown {
-    const sectionIdx = reqInt(args, 'sectionIdx');
-    let paraIdx = reqInt(args, 'paraIdx');
     const styleId = reqInt(args, 'styleId');
+    const styleOp = (sectionIdx: number, paraIdx: number, cell: CellAddr | undefined): ObjectOp => ({
+      type: 'applyStyle', sectionIdx, paraIdx, ...(cell ? { cell } : {}), styleId, charOffset: 0,
+      textSample: this.paraTextSample(sectionIdx, paraIdx, cell),
+    });
+    const requireStyle = (): void => {
+      if (!this.deps.wasm.getStyleList().some((s) => s.id === styleId)) {
+        throw new AgentToolError('INVALID_ARGS', `styleId ${styleId} not found — use list_styles`);
+      }
+    };
+    const entries = this.optParas(args);
+    if (entries) {
+      const targets = this.paraTargets('apply_style', args, entries);
+      requireStyle();
+      const ops = targets.paras.map((paraIdx) => styleOp(targets.sectionIdx, paraIdx, targets.cellAt()));
+      return this.stageParagraphs(targets, ops.map((obj) => () => this.deps.pending.addObjectOp(agent, obj)));
+    }
+    const coords = this.coordArgs('apply_style', args);
+    const sectionIdx = reqInt(coords, 'sectionIdx');
+    let paraIdx = reqInt(coords, 'paraIdx');
     const cell = optCell(args);
     const shift = this.requireRevisionRebasable(args, sectionIdx, cell ? cell.paraIdx : paraIdx, cell ? cell.paraIdx : paraIdx);
     if (cell) cell.paraIdx += shift;
     else paraIdx += shift;
     this.validateAddress(sectionIdx, paraIdx, undefined, cell);
-    if (!this.deps.wasm.getStyleList().some((s) => s.id === styleId)) {
-      throw new AgentToolError('INVALID_ARGS', `styleId ${styleId} not found — use list_styles`);
-    }
-    const obj: ObjectOp = {
-      type: 'applyStyle', sectionIdx, paraIdx, ...(cell ? { cell } : {}), styleId, charOffset: 0,
-      textSample: this.paraTextSample(sectionIdx, paraIdx, cell),
-    };
+    requireStyle();
+    const obj = styleOp(sectionIdx, paraIdx, cell);
     const revBefore = this.revision;
     const r = this.deps.pending.addObjectOp(agent, obj);
     const anchorPara = cell ? cell.paraIdx : paraIdx;

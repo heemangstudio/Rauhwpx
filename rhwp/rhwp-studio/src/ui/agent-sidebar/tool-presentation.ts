@@ -125,6 +125,34 @@ function paraRange(a: Args, startKey: string, endKey: string): string {
   ], ' ');
 }
 
+/** paras 대상 — 구간 하나면 “3–5문단”, 여럿이면 겹침을 합쳐 센 “문단 12개”. */
+function paras(a: Args): string {
+  const list = a['paras'];
+  if (!Array.isArray(list) || list.length === 0) return '';
+  const spans: Array<[number, number]> = [];
+  for (const entry of list) {
+    const first = num(Array.isArray(entry) ? entry[0] : entry);
+    const last = num(Array.isArray(entry) ? entry[1] : entry);
+    if (first === null || last === null || last < first) return '';
+    spans.push([first, last]);
+  }
+  if (spans.length === 1) return paraRange({ ...a, first: spans[0][0], last: spans[0][1] }, 'first', 'last');
+  spans.sort((x, y) => x[0] - y[0]);
+  let total = 0;
+  let covered = -1;
+  for (const [first, last] of spans) {
+    if (last <= covered) continue;
+    total += last - Math.max(first, covered + 1) + 1;
+    covered = last;
+  }
+  const section = num(a['sectionIdx']);
+  return join([
+    section !== null && section > 0 ? `${section + 1}구역` : '',
+    inCell(a) ? '표 안' : '',
+    `문단 ${total}개`,
+  ], ' ');
+}
+
 /** 앵커 표시 — 대상 텍스트와 (삽입이면) 앞/뒤. */
 function anchorText(a: Args, withPosition: boolean): string {
   // 문자열 앵커는 {text} 의 줄임이다
@@ -139,9 +167,9 @@ function anchorText(a: Args, withPosition: boolean): string {
   return `${quote(text)}${where}${occurrence !== null && occurrence > 1 ? ` (${occurrence}번째)` : ''}`;
 }
 
-/** 편집 위치 — 앵커가 있으면 앵커, 아니면 문단 번호. */
+/** 편집 위치 — 앵커가 있으면 앵커, 아니면 문단 번호(들). */
 function target(a: Args, withPosition = false): string {
-  return anchorText(a, withPosition) || para(a);
+  return anchorText(a, withPosition) || paras(a) || para(a);
 }
 
 function table(a: Args): string {
@@ -369,7 +397,7 @@ const SPECS: Record<string, ToolSpec> = {
   },
   apply_style: {
     category: 'edit', label: '스타일 적용',
-    summary: (a) => join([para(a), a['styleId'] !== undefined ? `스타일 ${String(a['styleId'])}` : '']),
+    summary: (a) => join([paras(a) || para(a), a['styleId'] !== undefined ? `스타일 ${String(a['styleId'])}` : '']),
   },
   apply_list: {
     category: 'edit',
