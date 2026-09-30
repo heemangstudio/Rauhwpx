@@ -24,7 +24,7 @@ import { PendingOverlayRenderer } from './pending-overlay.ts';
 import { readProviderQuota, readRemoteBalance } from './provider-quota-protocol.ts';
 import { PendingRequestRegistry } from './pending-requests.ts';
 import { AgentEditFollow } from './agent-edit-follow.ts';
-import { TurnSnapshots } from './turn-snapshot.ts';
+import { TurnSnapshots, type BuiltTurnSnapshot } from './turn-snapshot.ts';
 import { deriveAgentEditingLease, planModeAllowsUserEditing } from './editing-lease.ts';
 import {
   setModelCatalog,
@@ -92,7 +92,6 @@ import type {
   StagedReference,
   MessageReferenceStatus,
   StructuredPlan,
-  TurnDocumentSnapshot,
   PendingEditsChangeEvent,
   UsageModelBreakdown,
   UsageSource,
@@ -1373,9 +1372,6 @@ export class AgentBridgeImpl implements AgentBridge {
     stagedReferenceIds?: string[];
     resolve(messageId: string | null): void;
   }> = [];
-  /** 프레임을 만드는 중인 메시지 — 문서 스냅샷을 기다리는 동안에도 보낸 순서를 지킨다. */
-  private dispatchingMessages: typeof this.queuedMessages = [];
-  private dispatchDraining = false;
   /** 사용자 메시지에 싣는 문서 읽기와, 이 채팅의 에이전트가 마지막으로 본 문서 상태. */
   private turnSnapshots: TurnSnapshots;
   /** 캔버스가 알린 활성 쪽 (캐럿 쪽이 보이면 그 쪽, 아니면 뷰포트 쪽). */
@@ -1437,7 +1433,7 @@ export class AgentBridgeImpl implements AgentBridge {
       canPublishCloudDocument: deps.canPublishCloudDocument,
     });
     this.turnSnapshots = new TurnSnapshots({
-      execute: (tool, args, agent) => this.executor.execute(tool, args, agent),
+      read: (args) => this.executor.structureSnapshot(args),
       documentUnchangedSince: (revision) => this.executor.documentUnchangedSince(revision),
       revision: () => this.revision.revision,
       pageCount: () => deps.wasm.pageCount,
@@ -2771,7 +2767,8 @@ export class AgentBridgeImpl implements AgentBridge {
         if (typeof msg.requestId === 'string' && msg.requestId !== this.pendingChatStart?.requestId) break;
         if (this.pendingChatStart && msg.session && isAgentName(msg.session.agent)) {
           // Validation/busy rejection leaves the previous provider alive.
-          this.dropQueuedMessages();
+          for (const message of this.queuedMessages) message.resolve(null);
+          this.queuedMessages = [];
           this.pendingChatStart = null;
           this.chatStartSent = false;
           this.handleMessage({ ...msg.session, type: 'chat-started' });
@@ -2789,7 +2786,8 @@ export class AgentBridgeImpl implements AgentBridge {
         ) {
           this.revertWorkflowSwitch();
         }
-        this.dropQueuedMessages();
+        for (const message of this.queuedMessages) message.resolve(null);
+        this.queuedMessages = [];
         if (chatStartFailed) {
           this.chatStartSent = false;
           // 허브는 교체 프로바이더를 시작하기 전에 이전 세션을 폐기한다. 요청한 시작값은
@@ -2867,8 +2865,15 @@ export class AgentBridgeImpl implements AgentBridge {
   }
 
   private handleAgentEvent(event: AgentStreamEvent): void {
+    // 서브에이전트가 돈 턴에는 루트가 보지 못한 쓰기가 섞인다. Claude·Codex 서브에이전트의 도구 요청에는
+    // 표시가 없으므로 task 이벤트(와 parentTaskId 가 붙은 이벤트)로 알아챈다.
+    if (event.type === 'task-start' || event.type === 'task-progress' || event.type === 'task-end'
+      || ('parentTaskId' in event && event.parentTaskId)) {
+      this.turnSnapshots?.noteSubagentActivity();
+    }
     switch (event.type) {
       case 'turn-start':
+        this.turnSnapshots?.beginTurn();
         this.turnRunning = true;
         this.activeProviderTurnId = typeof event.turnId === 'string' ? event.turnId : null;
         this.editingAgent = event.agent;
@@ -2974,6 +2979,8 @@ export class AgentBridgeImpl implements AgentBridge {
     const parentTask = typeof msg.parentTaskId === 'string' && msg.parentTaskId ? { parentTaskId: msg.parentTaskId } : {};
     const agent: AgentName = isAgentName(msg.agent) ? msg.agent : (this.activeAgent ?? 'claude');
     this.editingAgent = agent;
+    // Pi 자식 요청은 표시가 붙어 온다 — 편대가 도는 턴이다.
+    if (parentTask.parentTaskId) this.turnSnapshots?.noteSubagentActivity();
     // 채팅 루트 에이전트가 실행 직전까지 최신 문서를 알고 있었을 때만, 이 결과의 revision 까지를 본 것으로 잇는다.
     const extendsShownDocument = turnBound && !parentTask.parentTaskId
       && this.turnSnapshots?.agentIsCurrent() === true;
@@ -3173,7 +3180,8 @@ export class AgentBridgeImpl implements AgentBridge {
 
   stopChat(): void {
     const waitForAuthoritativeTurnEnd = this.state === 'connected' && this.turnRunning;
-    this.dropQueuedMessages();
+    for (const message of this.queuedMessages) message.resolve(null);
+    this.queuedMessages = [];
     this.turnSnapshots?.reset();
     this.pendingChatStart = null;
     this.chatHistory = [];
@@ -3256,13 +3264,10 @@ export class AgentBridgeImpl implements AgentBridge {
       }
       let message: (typeof this.queuedMessages)[number];
       const cancel = (): void => {
-        for (const waiting of [this.queuedMessages, this.dispatchingMessages ?? []]) {
-          const index = waiting.indexOf(message);
-          if (index < 0) continue;
-          waiting.splice(index, 1);
-          settle(null);
-          return;
-        }
+        const index = this.queuedMessages.indexOf(message);
+        if (index < 0) return;
+        this.queuedMessages.splice(index, 1);
+        settle(null);
       };
       const settle = (result: string | null): void => {
         signal?.removeEventListener('abort', cancel);
@@ -3314,65 +3319,32 @@ export class AgentBridgeImpl implements AgentBridge {
   }
 
   private dispatchUserMessage(message: (typeof this.queuedMessages)[number]): void {
-    // 문서 스냅샷은 프레임이 나가는 순간의 문서로 만든다. 만드는 동안 뒤따르는 메시지는 줄을 선다.
-    (this.dispatchingMessages ??= []).push(message);
-    void this.drainDispatchingMessages();
-  }
-
-  private async drainDispatchingMessages(): Promise<void> {
-    if (this.dispatchDraining) return;
-    this.dispatchDraining = true;
-    try {
-      while (this.dispatchingMessages.length > 0) {
-        const message = this.dispatchingMessages[0];
-        const documentSnapshot = await this.buildTurnSnapshot();
-        // 기다리는 사이 취소(stopChat·시작 실패·abort)된 메시지는 보내지 않는다.
-        if (this.dispatchingMessages[0] !== message) continue;
-        this.dispatchingMessages.shift();
-        let sent = false;
-        try {
-          sent = this.sendJson({
-            v: AGENT_PROTOCOL_VERSION,
-            type: 'chat-user-message',
-            text: message.text,
-            documentRevision: this.revision.revision,
-            threadId: message.context.threadId,
-            documentId: message.context.documentId,
-            activeTemplateId: this.activeTemplateId,
-            ...(message.skillName ? { skillName: message.skillName } : {}),
-            ...(message.messageId ? { messageId: message.messageId, stagedReferenceIds: message.stagedReferenceIds } : {}),
-            ...(documentSnapshot ? { documentSnapshot } : {}),
-          });
-          // 계획 승인 대기 중의 메시지는 허브가 승인으로 처리하면 스냅샷이 프로바이더에 닿지 않는다 — 본 것으로 치지 않는다.
-          if (sent && documentSnapshot && this.phase !== 'awaiting-approval') {
-            this.turnSnapshots.markSent(documentSnapshot);
-          }
-        } catch (e) {
-          console.warn('[AgentBridge] 사용자 메시지 전송 실패:', e);
-        }
-        // 어떤 경우에도 호출자의 promise 는 닫는다 — 열린 채 남으면 컴포저가 잠긴다.
-        message.resolve(sent ? (message.messageId ?? null) : null);
-      }
-    } finally {
-      this.dispatchDraining = false;
-    }
+    // 문서 스냅샷은 프레임이 나가는 순간의 문서로, 동기로 만든다 — 프레임 순서가 스냅샷 없을 때와 같다.
+    const built = this.buildTurnSnapshot();
+    const sent = this.sendJson({
+      v: AGENT_PROTOCOL_VERSION,
+      type: 'chat-user-message',
+      text: message.text,
+      documentRevision: this.revision.revision,
+      threadId: message.context.threadId,
+      documentId: message.context.documentId,
+      activeTemplateId: this.activeTemplateId,
+      ...(message.skillName ? { skillName: message.skillName } : {}),
+      ...(message.messageId ? { messageId: message.messageId, stagedReferenceIds: message.stagedReferenceIds } : {}),
+      ...(built ? { documentSnapshot: built.snapshot } : {}),
+    });
+    // 계획 승인 대기 중의 메시지는 허브가 승인으로 처리하면 스냅샷이 프로바이더에 닿지 않는다 — 본 것으로 치지 않는다.
+    if (sent && built && this.phase !== 'awaiting-approval') this.turnSnapshots.markSent(built);
+    message.resolve(sent ? (message.messageId ?? null) : null);
   }
 
   /** 스냅샷은 덤이다 — 만들지 못해도 메시지는 그대로 나간다. */
-  private async buildTurnSnapshot(): Promise<TurnDocumentSnapshot | null> {
-    if (!this.turnSnapshots) return null;
+  private buildTurnSnapshot(): BuiltTurnSnapshot | null {
     try {
-      return await this.turnSnapshots.build(this.activeAgent ?? this.selectedAgent);
+      return this.turnSnapshots?.build() ?? null;
     } catch {
       return null;
     }
-  }
-
-  private dropQueuedMessages(): void {
-    const dropped = [...(this.dispatchingMessages ?? []), ...this.queuedMessages];
-    this.dispatchingMessages = [];
-    this.queuedMessages = [];
-    for (const message of dropped) message.resolve(null);
   }
 
   private flushQueuedMessages(): void {
