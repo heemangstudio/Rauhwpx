@@ -397,6 +397,156 @@ test('anchor: 정확 일치가 있으면 공백 허용 매치는 보지 않고, 
   assert.deepEqual(exact.body, ['마 바', '마 바', '마  바']);
 });
 
+// ─── find 단축 ────────────────────────────────────────────
+// find:"텍스트" 는 anchor:{text} 의 평평한 꼴이다. 세 겹 중첩(anchor → within → paraRange) 끝에서
+// 모델이 중괄호를 닫다가 넣을 text 를 빠뜨리던 실수를 없앤다.
+
+test('find: 문서에서 유일하면 그 매치가 대상이고 해석된 주소를 돌려준다', async () => {
+  const h = makeEnv(['짧은 보고서', '둘째 문단']);
+  const r = await h.call('replace_range', { find: '보고서', text: '요약' });
+  assert.equal(h.body[0], '짧은 요약');
+  assert.deepEqual(r['anchor'], { sectionIdx: 0, paraIdx: 0, charOffset: 3, endCharOffset: 6 });
+  await h.call('delete_range', { find: '둘째 ' });
+  assert.equal(h.body[1], '문단');
+  await h.call('apply_char_format', { find: '요약', bold: true });
+  assert.deepEqual(h.calls.find((c) => c.m === 'applyCharFormat')!.a.slice(0, 4), [0, 0, 3, 5]);
+});
+
+test('find + paraIdx: 같은 텍스트가 다른 문단에도 있으면 옆의 paraIdx 가 그 문단으로 좁힌다', async () => {
+  const h = makeEnv(['컨셉 상단', '무관', '컨셉 하단']);
+  const e = await expectErr(h.call('replace_range', { find: '컨셉', text: '콘셉트' }), 'INVALID_ARGS');
+  assert.match(e.message, /^find "컨셉" is ambiguous — 2 matches; pass occurrence \(1-based\) or a narrower paraIdx/);
+  await h.call('replace_range', { paraIdx: 2, find: '컨셉', text: '콘셉트' });
+  assert.deepEqual(h.body, ['컨셉 상단', '무관', '콘셉트 하단']);
+  const miss = await expectErr(h.call('delete_range', { paraIdx: 1, find: '컨셉' }), 'INVALID_ARGS');
+  assert.match(miss.message, /^find "컨셉" matched nothing inside its search scope/);
+});
+
+test('find + cell: 그 셀 안의 매치만 대상이다', async () => {
+  const h = makeEnv(['본문 항목', '', '말미']);
+  const t = addTable(h, 1, [['셀 항목', '다른']]);
+  const cell = { paraIdx: t.paraIdx, controlIdx: t.controlIdx, cellIdx: 0 };
+  const r = await h.call('replace_range', { cell, find: '항목', text: '교체' });
+  assert.equal(t.cells[0][0], '셀 교체');
+  assert.equal(h.body[0], '본문 항목');
+  assert.deepEqual((r['anchor'] as Record<string, unknown>)['cell'], cell);
+});
+
+test('find + occurrence: 최상위 occurrence 가 n번째 매치를 고른다', async () => {
+  const h = makeEnv(['반복 하나', '반복 둘']);
+  await h.call('replace_range', { find: '반복', occurrence: 2, text: '되풀이' });
+  assert.deepEqual(h.body, ['반복 하나', '되풀이 둘']);
+  const e = await expectErr(h.call('delete_range', { find: '반복', occurrence: 3 }), 'INVALID_ARGS');
+  assert.match(e.message, /^occurrence 3 but only 1 match/);
+  await expectErr(h.call('delete_range', { find: '반복', occurrence: 0 }), 'INVALID_ARGS');
+});
+
+test('find + position: insert_text 는 매치 앞/뒤/자리에 넣고, 범위 도구는 replace 만 받는다', async () => {
+  const h = makeEnv(['안녕 세계']);
+  await h.call('insert_text', { find: '세계', text: '!' });
+  assert.equal(h.body[0], '안녕 세계!');
+  await h.call('insert_text', { find: '세계', position: 'before', text: '아름다운 ' });
+  assert.equal(h.body[0], '안녕 아름다운 세계!');
+  await h.call('insert_text', { find: '안녕', position: 'replace', text: '반가운' });
+  assert.equal(h.body[0], '반가운 아름다운 세계!');
+  const range = await expectErr(h.call('replace_range', { find: '세계', position: 'after', text: 'x' }), 'INVALID_ARGS');
+  assert.match(range.message, /^position must be "replace" for replace_range/);
+  const bad = await expectErr(h.call('insert_text', { find: '세계', position: 'inside', text: 'x' }), 'INVALID_ARGS');
+  assert.match(bad.message, /^position must be "before" \| "after" \| "replace"/);
+  assert.equal(h.body[0], '반가운 아름다운 세계!');
+});
+
+test('find 와 anchor 는 함께 올 수 없고, find 없는 occurrence/position 은 거절한다', async () => {
+  const h = makeEnv(['대상 문단 0123']);
+  const both = await expectErr(h.call('delete_range', { find: '대상', anchor: { text: '대상' } }), 'INVALID_ARGS');
+  assert.match(both.message, /pass find or anchor, not both/);
+  const stray = await expectErr(
+    h.call('delete_range', { startParaIdx: 0, startCharOffset: 0, endCharOffset: 2, occurrence: 2 }),
+    'INVALID_ARGS',
+  );
+  assert.match(stray.message, /^occurrence refines a text match — add find:"text", or drop occurrence/);
+  const strayBoth = await expectErr(
+    h.call('insert_text', { paraIdx: 0, charOffset: 0, text: 'x', occurrence: 1, position: 'before' }),
+    'INVALID_ARGS',
+  );
+  assert.match(strayBoth.message, /^occurrence\/position refines a text match/);
+  const empty = await expectErr(h.call('delete_range', { find: '' }), 'INVALID_ARGS');
+  assert.match(empty.message, /find must be the exact text to locate/);
+  assert.equal(h.body[0], '대상 문단 0123');
+});
+
+test('anchor 객체 옆의 occurrence/position 은 객체가 정하지 않은 값을 채우고, 다른 값이면 거절한다', async () => {
+  const h = makeEnv(['반복 하나', '반복 둘']);
+  await h.call('insert_text', { anchor: { text: '반복' }, occurrence: 2, position: 'before', text: '*' });
+  assert.deepEqual(h.body, ['반복 하나', '*반복 둘']);
+  await h.call('insert_text', { anchor: { text: '반복', occurrence: 1 }, occurrence: 1, text: '!' });
+  assert.equal(h.body[0], '반복! 하나');
+  const e = await expectErr(
+    h.call('insert_text', { anchor: { text: '반복', occurrence: 1 }, occurrence: 2, text: '?' }),
+    'INVALID_ARGS',
+  );
+  assert.match(e.message, /occurrence 2 and anchor\.occurrence 1 disagree — send only one/);
+});
+
+test('find: 공백 차이만 다르면 찾아서 matchedText 로 실제 텍스트를 돌려준다', async () => {
+  const h = makeEnv(['제1조  목적은\u00A0다음과 같다']);
+  const r = await h.call('replace_range', { paraIdx: 0, find: '제1조 목적은 다음과', text: '제1조는' });
+  assert.equal(h.body[0], '제1조는 같다');
+  assert.deepEqual(r['anchor'], {
+    sectionIdx: 0, paraIdx: 0, charOffset: 0, endCharOffset: 12, matchedText: '제1조  목적은\u00A0다음과',
+  });
+});
+
+test('apply_para_format + find: 매치가 든 문단이 대상이고 position 은 이웃 문단이다', async () => {
+  const h = makeEnv(['제목 줄', '본문 줄', '다음 줄']);
+  const r = await h.call('apply_para_format', { find: '본문', alignment: 'center' });
+  assert.deepEqual(h.calls.find((c) => c.m === 'applyParaFormat')!.a[0], 1);
+  assert.deepEqual(r['anchor'], { sectionIdx: 0, paraIdx: 1 });
+  h.calls.length = 0;
+  await h.call('apply_para_format', { find: '본문', position: 'after', alignment: 'right' });
+  assert.deepEqual(h.calls.find((c) => c.m === 'applyParaFormat')!.a[0], 2);
+});
+
+test('find 는 paras 와 함께 올 수 없다', async () => {
+  const h = makeEnv(['제목 줄', '본문 줄']);
+  const e = await expectErr(h.call('apply_para_format', { paras: [0], find: '본문', alignment: 'center' }), 'INVALID_ARGS');
+  assert.match(e.message, /paras already names the target paragraphs — drop find/);
+});
+
+test('apply_edits: find 항목 여럿이 한 배치로 적용되고 뒤 항목은 앞 항목이 바꾼 문서에서 찾는다', async () => {
+  const h = makeEnv(['컨셉 회의', '운용중인 장비', '컨셉 정리']);
+  const r = await h.call('apply_edits', {
+    edits: [
+      { tool: 'replace_range', paraIdx: 0, find: '컨셉', text: '콘셉트' },
+      { tool: 'replace_range', paraIdx: 1, find: '운용중인', text: '운용 중인' },
+      { tool: 'insert_text', find: '운용 중인', position: 'before', text: '현재 ' },
+      { tool: 'apply_char_format', paraIdx: 2, find: '컨셉', bold: true },
+      { tool: 'delete_range', find: '정리' },
+    ],
+  });
+  assert.equal(r['applied'], 5);
+  assert.deepEqual(h.body, ['콘셉트 회의', '현재 운용 중인 장비', '컨셉 ']);
+  assert.deepEqual(h.calls.find((c) => c.m === 'applyCharFormat')!.a.slice(0, 4), [0, 2, 0, 2]);
+});
+
+test('text 가 빠지면 어느 키를 어디에 둘지 알려 준다', async () => {
+  const h = makeEnv(['컨셉 회의', '운용중인 장비']);
+  // 실제 실패 꼴: 앵커만 쓰고 중괄호를 닫아 바꿀 텍스트가 빠졌다
+  const e = await expectErr(h.call('apply_edits', {
+    edits: [
+      { tool: 'replace_range', anchor: { text: '컨셉', within: { paraRange: [0, 0] } } },
+      { tool: 'replace_range', paraIdx: 1, find: '운용중인' },
+      { tool: 'insert_text', find: '장비' },
+      { tool: 'replace_range', startParaIdx: 0, startCharOffset: 0, endCharOffset: 2 },
+    ],
+  }), 'INVALID_ARGS');
+  assert.match(e.message, /edits\[0\] \(replace_range\): replace_range needs text \(the replacement\) beside find\/anchor — find and anchor\.text only locate the target/);
+  assert.match(e.message, /edits\[1\] \(replace_range\): replace_range needs text \(the replacement\) beside find\/anchor/);
+  assert.match(e.message, /edits\[2\] \(insert_text\): insert_text needs text \(the text to insert\) beside find\/anchor/);
+  assert.match(e.message, /edits\[3\] \(replace_range\): replace_range needs text \(the replacement\) beside the coordinates/);
+  assert.deepEqual(h.body, ['컨셉 회의', '운용중인 장비']);
+});
+
 // ─── apply_edits 배치 해석 ────────────────────────────────
 
 test('apply_edits: 뒤 항목의 앵커는 앞 항목이 바꾼 문서 기준으로 해석된다', async () => {

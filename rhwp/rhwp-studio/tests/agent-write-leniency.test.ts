@@ -149,12 +149,12 @@ test('좌표가 빠지면 그 도구에 필요한 좌표 전체를 알려 준다
   const range = await expectErr(h.call('delete_range', { sectionIdx: 0, startParaIdx: 0 }), 'INVALID_ARGS');
   assert.equal(
     range.message,
-    'delete_range needs sectionIdx, startParaIdx, startCharOffset, endParaIdx, endCharOffset — or an anchor (missing startCharOffset, endCharOffset)',
+    'delete_range needs sectionIdx, startParaIdx, startCharOffset, endParaIdx, endCharOffset — or find (missing startCharOffset, endCharOffset)',
   );
   const format = await expectErr(h.call('apply_char_format', { startOffset: 0, bold: true }), 'INVALID_ARGS');
   assert.equal(
     format.message,
-    'apply_char_format needs sectionIdx, paraIdx, startOffset, endOffset — or an anchor or paras (missing paraIdx, endOffset)',
+    'apply_char_format needs sectionIdx, paraIdx, startOffset, endOffset — or find or paras (missing paraIdx, endOffset)',
   );
 });
 

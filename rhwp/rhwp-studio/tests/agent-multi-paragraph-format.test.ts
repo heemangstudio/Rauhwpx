@@ -114,7 +114,7 @@ test('apply_char_format: 오프셋 없는 paraIdx 는 문단 전체, 오프셋 �
   assert.deepEqual(charRanges(h), [[0, 1, 0, 5]]);
   assert.equal(r['paragraphs'], 1);
   const half = await expectErr(h.call('apply_char_format', { paraIdx: 1, startOffset: 2, bold: true }), 'INVALID_ARGS');
-  assert.match(half.message, /apply_char_format needs sectionIdx, paraIdx, startOffset, endOffset — or an anchor or paras \(missing endOffset\)/);
+  assert.match(half.message, /apply_char_format needs sectionIdx, paraIdx, startOffset, endOffset — or find or paras \(missing endOffset\)/);
   const range = await expectErr(h.call('apply_char_format', { paraIdx: 9, bold: true }), 'INVALID_ARGS');
   assert.match(range.message, /paraIdx 9 is out of range for section 0 \(0\.\.5\)/);
   // 범위 도구식 이름으로 온 문단 구간도 오프셋이 없으면 그 문단들 전체다

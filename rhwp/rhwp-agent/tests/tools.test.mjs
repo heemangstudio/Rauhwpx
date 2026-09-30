@@ -80,21 +80,24 @@ test('앵커 도구는 anchor 인자를 받고 좌표를 선택 필드로 둔다
     const def = byName.get(name);
     assert.ok(def.shape.anchor, `${name}: missing anchor param`);
     assert.ok(def.shape.anchor.safeParse(undefined).success, `${name}: anchor must be optional`);
-    assert.match(def.description, /anchor/i, `${name}: description should mention anchors`);
+    assert.match(def.description, /matched by find/, `${name}: description should teach find`);
+    assert.equal(def.shape.anchor._def.description, 'Long form of find', `${name}: anchor is the long form`);
     assert.ok(def.validate, `${name}: needs the coord-or-anchor validator`);
   }
   // 앵커가 없으면 좌표가 필요하다 — 오류가 그 도구의 좌표 전체를 알려 준다.
   assert.throws(
     () => byName.get('insert_text').validate({ text: 'x' }),
-    /insert_text needs sectionIdx, paraIdx, charOffset — or an anchor \(missing paraIdx, charOffset\)/,
+    /insert_text needs sectionIdx, paraIdx, charOffset — or find \(missing paraIdx, charOffset\)/,
   );
   assert.throws(
     () => byName.get('delete_range').validate({ startParaIdx: 1 }),
-    /delete_range needs sectionIdx, startParaIdx, startCharOffset, endParaIdx, endCharOffset — or an anchor \(missing startCharOffset, endCharOffset\)/,
+    /delete_range needs sectionIdx, startParaIdx, startCharOffset, endParaIdx, endCharOffset — or find \(missing startCharOffset, endCharOffset\)/,
   );
-  assert.throws(() => byName.get('apply_para_format').validate({ alignment: 'left' }), /apply_para_format needs sectionIdx, paraIdx — or an anchor/);
+  assert.throws(() => byName.get('apply_para_format').validate({ alignment: 'left' }), /apply_para_format needs sectionIdx, paraIdx — or find or paras/);
   // sectionIdx(구역 하나)와 범위 도구의 endParaIdx 는 스튜디오가 채운다 — 여기서 막지 않는다.
   assert.doesNotThrow(() => byName.get('delete_range').validate({ startParaIdx: 1, startCharOffset: 0, endCharOffset: 2 }));
+  // 범위 도구의 paraIdx 는 startParaIdx 의 별칭이다 — find 옆에서는 검색 범위, 좌표 옆에서는 시작 문단.
+  assert.doesNotThrow(() => byName.get('replace_range').validate({ paraIdx: 1, startCharOffset: 0, endCharOffset: 2, text: 'x' }));
   assert.doesNotThrow(() => byName.get('apply_char_format').validate({ paraIdx: 1, startOffset: 0, endOffset: 2, bold: true }));
 });
 
@@ -377,7 +380,9 @@ test('apply_edits 항목은 평평한 꼴·섞인 꼴·문자열 args 그대로 
   assert.deepEqual(schema.properties.edits.items.required, ['tool']);
   assert.equal(schema.properties.edits.items.additionalProperties, true);
   assert.match(byName.get('apply_edits').description, /Items are \{tool, …that tool's arguments\}/);
-  assert.match(byName.get('apply_edits').description, /lists every failing item/);
+  // 예시는 중첩 없는 find 꼴이다 — 실패 항목 보고는 공유 규칙에만 적는다.
+  assert.match(byName.get('apply_edits').description, /\{tool:"replace_range",paraIdx:64,find:"old",text:"new"\}/);
+  assert.match(RHWP_TOOL_RULES, /its error lists every failing item/);
 });
 
 test('문자열 anchor 는 허브와 MCP 파싱에서 {text} 가 된다', async () => {
@@ -389,6 +394,53 @@ test('문자열 anchor 는 허브와 MCP 파싱에서 {text} 가 된다', async 
   // 모델에게 보이는 스키마는 그대로 객체 하나다 — 문자열 허용은 정의 크기를 늘리지 않는다.
   assert.equal(mcp.inputSchema.properties.anchor.type, 'object');
   assert.doesNotThrow(() => byName.get('replace_range').validate(parsed));
+});
+
+// ─── find 단축 ────────────────────────────────────────────
+// find:"텍스트" 는 anchor:{text} 의 평평한 꼴이고 최상위 occurrence/position 이 앵커 안쪽 값을 대신한다.
+// 매치 해석은 스튜디오의 agent-text-anchors.test.ts 가 본다 — 여기서는 다섯 도구의 스키마 통과와
+// validate 훅(좌표 대신 find 를 받고, 잘못된 조합을 거르는지)만 잠근다.
+
+test('find: 다섯 도구가 find/occurrence/position 을 허브와 MCP 파싱으로 그대로 받는다', async () => {
+  const samples = {
+    insert_text: { expectedRevision: 3, paraIdx: 64, find: '세계', position: 'before', text: '!' },
+    delete_range: { expectedRevision: 3, paraIdx: 64, find: '컨셉', occurrence: 2 },
+    replace_range: { expectedRevision: 3, paraIdx: 64, find: '컨셉', text: '콘셉트' },
+    apply_char_format: { expectedRevision: 3, paraIdx: 64, find: '컨셉', bold: true },
+    apply_para_format: { expectedRevision: 3, find: '컨셉', position: 'after', alignment: 'center' },
+  };
+  for (const name of ANCHORED_TOOLS) {
+    const def = byName.get(name);
+    assert.deepEqual(hubParse(name, samples[name]), samples[name], name);
+    assert.doesNotThrow(() => def.validate(samples[name]), name);
+    const mcp = await mcpCall(name, samples[name]);
+    assert.deepEqual(mcp.received, samples[name], name);
+    assert.deepEqual(mcp.inputSchema.properties.find, { type: 'string' }, name);
+    assert.deepEqual(mcp.inputSchema.properties.occurrence, { type: 'integer' }, name);
+    assert.ok(mcp.inputSchema.properties.position, name);
+    assert.ok(mcp.inputSchema.properties.paraIdx, `${name}: paraIdx beside find must survive the parse`);
+  }
+  const batch = { expectedRevision: 3, edits: [{ tool: 'replace_range', paraIdx: 64, find: '컨셉', text: '콘셉트' }] };
+  assert.deepEqual(hubParse('apply_edits', batch), batch);
+});
+
+test('find: validate 훅이 find 를 앵커로 세고 잘못된 조합을 거른다', () => {
+  for (const name of ANCHORED_TOOLS) {
+    const { validate } = byName.get(name);
+    const bad = (args, re) => assert.throws(() => validate(args), (e) => e.code === 'INVALID_ARGS' && re.test(e.message), name);
+    assert.doesNotThrow(() => validate({ find: '결론' }), name);
+    assert.doesNotThrow(() => validate({ find: '결론', occurrence: 2, position: 'replace' }), name);
+    assert.doesNotThrow(() => validate({ anchor: { text: '결론' }, occurrence: 2 }), name);
+    assert.doesNotThrow(() => validate({ anchor: { text: '결론', occurrence: 2 }, occurrence: 2 }), name);
+    bad({ find: '결론', anchor: { text: '결론' } }, /pass find or anchor, not both/);
+    bad({ find: '' }, /find must be the exact text to locate/);
+    bad({ find: '결론', occurrence: 0 }, /occurrence/);
+    bad({ find: '결론', position: 'inside' }, /position must be "before" \| "after" \| "replace"/);
+    bad({ anchor: { text: '결론', occurrence: 1 }, occurrence: 2 }, /occurrence 2 and anchor\.occurrence 1 disagree/);
+    bad({ occurrence: 2, paraIdx: 1, charOffset: 0, startParaIdx: 1, startCharOffset: 0, endCharOffset: 1, startOffset: 0, endOffset: 1 },
+      /occurrence refines a text match — add find:"text", or drop occurrence/);
+  }
+  assert.throws(() => byName.get('apply_para_format').validate({ paras: [1], find: '결론' }), /drop find/);
 });
 
 // ─── 여러 문단 서식 (paras) ───────────────────────────────
@@ -442,9 +494,9 @@ test('apply_char_format: 오프셋이 둘 다 없으면 문단 전체라 통과�
   assert.doesNotThrow(() => validate({ paraIdx: 3, bold: true }));
   assert.throws(
     () => validate({ paraIdx: 3, startOffset: 0, bold: true }),
-    /apply_char_format needs sectionIdx, paraIdx, startOffset, endOffset — or an anchor or paras \(missing endOffset\)/,
+    /apply_char_format needs sectionIdx, paraIdx, startOffset, endOffset — or find or paras \(missing endOffset\)/,
   );
-  assert.throws(() => validate({ bold: true }), /apply_char_format needs sectionIdx, paraIdx — or an anchor or paras \(missing paraIdx\)/);
+  assert.throws(() => validate({ bold: true }), /apply_char_format needs sectionIdx, paraIdx — or find or paras \(missing paraIdx\)/);
 });
 
 test('read_batch: 읽기 전용 도구 1-16개의 {tool, args} 배열', () => {

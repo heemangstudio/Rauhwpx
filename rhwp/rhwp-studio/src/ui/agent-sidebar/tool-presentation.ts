@@ -155,12 +155,13 @@ function paras(a: Args): string {
 
 /** 앵커 표시 — 대상 텍스트와 (삽입이면) 앞/뒤. */
 function anchorText(a: Args, withPosition: boolean): string {
-  // 문자열 앵커는 {text} 의 줄임이다
-  const anchor = typeof a['anchor'] === 'string' ? { text: a['anchor'] } : rec(a['anchor']);
+  // find 와 문자열 앵커는 {text} 의 줄임이고, 옆의 occurrence/position 은 앵커 안쪽과 같은 뜻이다
+  const anchor = typeof a['find'] === 'string' ? { text: a['find'] }
+    : typeof a['anchor'] === 'string' ? { text: a['anchor'] } : rec(a['anchor']);
   const text = str(anchor['text']);
   if (!text) return '';
-  const occurrence = num(anchor['occurrence']);
-  const position = str(anchor['position']);
+  const occurrence = num(anchor['occurrence'] ?? a['occurrence']);
+  const position = str(anchor['position'] ?? a['position']);
   const where = withPosition
     ? position === 'before' ? ' 앞' : position === 'replace' ? ' 자리' : ' 뒤'
     : '';

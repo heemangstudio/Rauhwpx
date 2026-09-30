@@ -68,6 +68,14 @@ test('apply_edits 와 read_batch 는 항목 수와 항목별 목록을 보인다
   assert.equal(edits.category, 'edit');
   assert.equal(edits.summary, '텍스트 바꾸기 2 · 글자 서식');
   assert.deepEqual(edits.items.map((item) => item.summary), ['“가” → “나”', '“다” → “라”', '“마” · 굵게']);
+  // find 단축과 옆의 occurrence/position 도 앵커와 같은 요약을 낸다
+  const found = presentToolCall('apply_edits', JSON.stringify({
+    edits: [
+      { tool: 'replace_range', paraIdx: 64, find: '컨셉', text: '콘셉트' },
+      { tool: 'insert_text', find: '세계', occurrence: 2, position: 'before', text: '!' },
+    ],
+  }));
+  assert.deepEqual(found.items.map((item) => item.summary), ['“컨셉” → “콘셉트”', '“세계” 앞 (2번째) · “!”']);
   // 평평한 항목 {tool, …인자} 와 문자열 앵커도 같은 요약을 낸다
   const flat = presentToolCall('apply_edits', JSON.stringify({
     edits: [{ tool: 'replace_range', anchor: '가', text: '나' }, { tool: 'apply_char_format', anchor: { text: '마' }, bold: true }],

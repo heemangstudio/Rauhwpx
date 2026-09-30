@@ -268,6 +268,8 @@ interface ResolvedAnchor {
   position?: 'before' | 'after' | 'replace';
   /** 검색 범위에 문단 번호나 셀이 있었다 — stale revision 안내가 달라진다. */
   scoped: boolean;
+  /** 모델이 쓴 꼴 — 오류가 그 인자 이름으로 말한다 (find 단축 / anchor 객체). */
+  via: 'find' | 'anchor';
   /** 공백 차이를 눈감고 찾았을 때의 실제 문서 텍스트. */
   matchedText?: string;
 }
@@ -284,8 +286,8 @@ const WRITE_COORD_KEYS: Record<string, readonly string[]> = {
 };
 /** 좌표 대신 쓸 수 있는 주소 방식 — 누락 오류가 함께 알려준다. */
 const WRITE_COORD_ALTERNATIVES: Record<string, string> = {
-  apply_char_format: 'an anchor or paras',
-  apply_para_format: 'an anchor or paras',
+  apply_char_format: 'find or paras',
+  apply_para_format: 'find or paras',
   apply_style: 'paras',
 };
 const RANGE_COORD_ALIASES = [
@@ -303,7 +305,7 @@ const BATCH_FAILURE_REPORT_LIMIT = 6;
 
 /** paras 와 함께 올 수 없는 주소 인자 — paras 가 대상 문단을 이미 정한다. */
 const PARAS_CLASH_KEYS = [
-  'paraIdx', 'startParaIdx', 'endParaIdx', 'startOffset', 'endOffset', 'startCharOffset', 'endCharOffset', 'anchor',
+  'paraIdx', 'startParaIdx', 'endParaIdx', 'startOffset', 'endOffset', 'startCharOffset', 'endCharOffset', 'find', 'anchor',
 ] as const;
 const PARAS_MAX_ENTRIES = 64;
 const PARAS_MAX_PARAGRAPHS = 500;
@@ -1338,7 +1340,7 @@ export class AgentToolExecutor {
         : '';
       throw new AgentToolError(
         'INVALID_ARGS',
-        `${tool} needs ${keys.join(', ')} — or ${WRITE_COORD_ALTERNATIVES[tool] ?? 'an anchor'} (missing ${missing.join(', ')}${why})`,
+        `${tool} needs ${keys.join(', ')} — or ${WRITE_COORD_ALTERNATIVES[tool] ?? 'find'} (missing ${missing.join(', ')}${why})`,
       );
     }
     return out;
@@ -3181,35 +3183,74 @@ export class AgentToolExecutor {
    * INVALID_ARGS 로 실패한다. apply_edits 항목도 이 경로를 타므로 앞 항목이 바꾼
    * 문서 기준으로 해석된다. 문자열 앵커는 {text} 의 줄임이고, 옆에 온 문단 좌표·cell 은
    * 검색 범위가 된다 (siblingAnchorScope). 정확 일치가 없으면 공백 차이만 눈감고 한 번 더 찾는다.
+   *
+   * find:"텍스트" 는 anchor:{text} 의 평평한 꼴이다 — 세 겹 중첩(anchor → within → paraRange) 끝에서
+   * 모델이 중괄호를 닫다가 넣을 text 를 빠뜨리는 실수를 없앤다. 최상위 occurrence/position 은 앵커
+   * 안쪽과 같은 뜻이고, anchor 객체와 함께 오면 객체가 정하지 않은 값을 채운다.
    */
   private optAnchor(args: Record<string, unknown>): ResolvedAnchor | null {
+    const given = (v: unknown): boolean => v !== undefined && v !== null;
+    const find = args['find'];
     const raw = args['anchor'];
-    if (raw === undefined || raw === null) return null;
-    if (typeof raw !== 'string' && (typeof raw !== 'object' || Array.isArray(raw))) {
-      throw new AgentToolError('INVALID_ARGS', 'anchor must be {text, occurrence?, within?, position?} or the text itself as a string');
+    const refiners = (['occurrence', 'position'] as const).filter((key) => given(args[key]));
+    if (given(find) && given(raw)) {
+      throw new AgentToolError('INVALID_ARGS', 'pass find or anchor, not both — find:"text" is the short form of anchor:{text:"text"}');
     }
-    const a = typeof raw === 'string' ? { text: raw } : raw as Record<string, unknown>;
-    const unknown = Object.keys(a).filter((k) => !['text', 'occurrence', 'within', 'position'].includes(k));
-    if (unknown.length > 0) {
-      throw new AgentToolError('INVALID_ARGS', `unknown anchor key ${unknown.join('/')} — valid keys: text, occurrence, within, position`);
+    if (!given(find) && !given(raw)) {
+      if (refiners.length > 0) {
+        throw new AgentToolError(
+          'INVALID_ARGS',
+          `${refiners.join('/')} refines a text match — add find:"text", or drop ${refiners.join('/')}`,
+        );
+      }
+      return null;
+    }
+    const via = given(find) ? 'find' : 'anchor';
+    // 오류가 모델이 쓴 인자 이름으로 말하게 한다: find 꼴이면 find/occurrence/position, 객체면 anchor.*
+    const key = (name: string): string => (via === 'find' ? name : `anchor.${name}`);
+    let a: Record<string, unknown>;
+    if (via === 'find') {
+      if (typeof find !== 'string' || find.length < 1) {
+        throw new AgentToolError('INVALID_ARGS', 'find must be the exact text to locate (a non-empty string)');
+      }
+      a = { text: find };
+    } else {
+      if (typeof raw !== 'string' && (typeof raw !== 'object' || Array.isArray(raw))) {
+        throw new AgentToolError('INVALID_ARGS', 'anchor must be {text, occurrence?, within?, position?} or the text itself as a string');
+      }
+      a = typeof raw === 'string' ? { text: raw } : { ...(raw as Record<string, unknown>) };
+      const unknown = Object.keys(a).filter((k) => !['text', 'occurrence', 'within', 'position'].includes(k));
+      if (unknown.length > 0) {
+        throw new AgentToolError('INVALID_ARGS', `unknown anchor key ${unknown.join('/')} — valid keys: text, occurrence, within, position`);
+      }
+    }
+    for (const name of refiners) {
+      if (given(a[name]) && a[name] !== args[name]) {
+        throw new AgentToolError(
+          'INVALID_ARGS',
+          `${name} ${JSON.stringify(args[name])} and anchor.${name} ${JSON.stringify(a[name])} disagree — send only one`,
+        );
+      }
+      a[name] = args[name];
     }
     const text = reqString(a, 'text');
     if (text.length < 1) {
       throw new AgentToolError('INVALID_ARGS', 'anchor.text must be a non-empty string');
     }
     const rawOccurrence = a['occurrence'];
-    const occurrence = rawOccurrence === undefined || rawOccurrence === null
-      ? undefined
-      : reqInt(a, 'occurrence');
+    if (given(rawOccurrence) && (typeof rawOccurrence !== 'number' || !Number.isSafeInteger(rawOccurrence))) {
+      throw new AgentToolError('INVALID_ARGS', `${key('occurrence')} must be an integer (got ${JSON.stringify(rawOccurrence)})`);
+    }
+    const occurrence = given(rawOccurrence) ? rawOccurrence as number : undefined;
     if (occurrence !== undefined && occurrence < 1) {
-      throw new AgentToolError('INVALID_ARGS', 'anchor.occurrence is 1-based (must be >= 1)');
+      throw new AgentToolError('INVALID_ARGS', `${key('occurrence')} is 1-based (must be >= 1)`);
     }
     if (occurrence !== undefined && occurrence > 64) {
-      throw new AgentToolError('INVALID_ARGS', 'anchor.occurrence > 64 — narrow the search with anchor.within instead');
+      throw new AgentToolError('INVALID_ARGS', `${key('occurrence')} > 64 — narrow the search with paraIdx or cell instead`);
     }
     const rawPos = a['position'];
     if (rawPos !== undefined && rawPos !== null && rawPos !== 'before' && rawPos !== 'after' && rawPos !== 'replace') {
-      throw new AgentToolError('INVALID_ARGS', `anchor.position must be "before" | "after" | "replace" (got ${JSON.stringify(rawPos)})`);
+      throw new AgentToolError('INVALID_ARGS', `${key('position')} must be "before" | "after" | "replace" (got ${JSON.stringify(rawPos)})`);
     }
     const scope = this.rebaseAnchorScope(args, this.siblingAnchorScope(args, this.anchorScope(a['within'])));
     // occurrence 번째까지는 읽어야 하고, 없으면 단일/다매치 판별용 소수만 본다.
@@ -3226,7 +3267,7 @@ export class AgentToolExecutor {
       if (truncated) {
         throw new AgentToolError(
           'INVALID_ARGS',
-          `anchor ${JSON.stringify(this.truncateForMessage(text))} was not found before the search stopped at its nested-table budget — narrow it with anchor.within (sectionIdx, paraRange or cell)`,
+          `${via} ${JSON.stringify(this.truncateForMessage(text))} was not found before the search stopped at its nested-table budget — narrow it with paraIdx or cell beside it`,
         );
       }
       if (scope) {
@@ -3234,13 +3275,13 @@ export class AgentToolExecutor {
         if (outside.length > 0) {
           throw new AgentToolError(
             'INVALID_ARGS',
-            `anchor ${JSON.stringify(this.truncateForMessage(text))} matched nothing inside its search scope (anchor.within, or the paragraph index / cell beside the anchor) — ${outside.length} hit(s) exist outside it: ${this.anchorCandidates(outside)}`,
+            `${via} ${JSON.stringify(this.truncateForMessage(text))} matched nothing inside its search scope (the paragraph index / cell beside it, or anchor.within) — ${outside.length} hit(s) exist outside it: ${this.anchorCandidates(outside)}`,
           );
         }
       }
       throw new AgentToolError(
         'INVALID_ARGS',
-        `anchor ${JSON.stringify(this.truncateForMessage(text))} matched nothing in the document — check the exact wording with find_text`,
+        `${via} ${JSON.stringify(this.truncateForMessage(text))} matched nothing in the document — check the exact wording with find_text`,
       );
     }
     // 스캔이 cap 에 닿기 전에 멈췄다면(중첩 표 탐침 예산) 뒤쪽을 보지 못했다 — 매치가 하나뿐이어도
@@ -3248,7 +3289,7 @@ export class AgentToolExecutor {
     if (truncated && occurrence === undefined && matches.length < cap) {
       throw new AgentToolError(
         'INVALID_ARGS',
-        `anchor ${JSON.stringify(this.truncateForMessage(text))} matched ${matches.length} time(s) before the search stopped at its nested-table budget, so it may not be unique — narrow it with anchor.within (sectionIdx, paraRange or cell) or pass occurrence`,
+        `${via} ${JSON.stringify(this.truncateForMessage(text))} matched ${matches.length} time(s) before the search stopped at its nested-table budget, so it may not be unique — narrow it with paraIdx or cell beside it, or pass occurrence`,
       );
     }
     let picked = matches[0];
@@ -3256,14 +3297,14 @@ export class AgentToolExecutor {
       if (occurrence > matches.length) {
         throw new AgentToolError(
           'INVALID_ARGS',
-          `anchor occurrence ${occurrence} but only ${matches.length} match(es) for ${JSON.stringify(this.truncateForMessage(text))}: ${this.anchorCandidates(matches)}`,
+          `${key('occurrence')} ${occurrence} but only ${matches.length} match(es) for ${JSON.stringify(this.truncateForMessage(text))}: ${this.anchorCandidates(matches)}`,
         );
       }
       picked = matches[occurrence - 1];
     } else if (matches.length > 1) {
       throw new AgentToolError(
         'INVALID_ARGS',
-        `anchor ${JSON.stringify(this.truncateForMessage(text))} is ambiguous — ${matches.length} matches; pass occurrence (1-based). Candidates: ${this.anchorCandidates(matches)}`,
+        `${via} ${JSON.stringify(this.truncateForMessage(text))} is ambiguous — ${matches.length} matches; pass occurrence (1-based) or a narrower paraIdx. Candidates: ${this.anchorCandidates(matches)}`,
       );
     }
     return {
@@ -3274,6 +3315,7 @@ export class AgentToolExecutor {
       ...(picked.cell ? { cell: picked.cell } : {}),
       position: rawPos as ResolvedAnchor['position'],
       scoped: scope?.paraRange !== undefined || scope?.cell !== undefined,
+      via,
       ...(picked.matchedText !== undefined ? { matchedText: picked.matchedText } : {}),
     };
   }
@@ -3437,7 +3479,7 @@ export class AgentToolExecutor {
     if (position !== 'replace') {
       throw new AgentToolError(
         'INVALID_ARGS',
-        `anchor.position must be "replace" for ${tool} — the match itself is the range (got ${JSON.stringify(m.position)})`,
+        `${m.via === 'find' ? 'position' : 'anchor.position'} must be "replace" for ${tool} — the match itself is the range (got ${JSON.stringify(m.position)}); to add text beside the match use insert_text`,
       );
     }
   }
@@ -3474,8 +3516,8 @@ export class AgentToolExecutor {
     throw new AgentToolError(
       'REVISION_MISMATCH',
       anchor.scoped
-        ? `Document is now at revision ${current}; you expected ${expected}. The paragraph indexes scoping this anchor (anchor.within or beside it) may have moved — re-read with get_structure, then resend with expectedRevision=${current} and fresh indexes.`
-        : `Document is now at revision ${current}; you expected ${expected}. The anchor re-resolves on retry — resend the same call with expectedRevision=${current}; no re-read needed.`,
+        ? `Document is now at revision ${current}; you expected ${expected}. The paragraph indexes scoping this text match (beside find, or anchor.within) may have moved — re-read with get_structure, then resend with expectedRevision=${current} and fresh indexes.`
+        : `Document is now at revision ${current}; you expected ${expected}. The text match re-resolves on retry — resend the same call with expectedRevision=${current}; no re-read needed.`,
     );
   }
 
@@ -5275,7 +5317,25 @@ export class AgentToolExecutor {
     }
   }
 
+  /**
+   * insert_text / replace_range 의 text — 빠졌으면 어느 키를 어디에 둘지 알려준다. 찾을 텍스트
+   * (find, anchor.text)와 이름이 겹쳐, 모델이 대상만 쓰고 넣을 텍스트를 빠뜨리는 실수가 잦다.
+   */
+  private requireText(tool: 'insert_text' | 'replace_range', args: Record<string, unknown>): void {
+    const text = args['text'];
+    if (text !== undefined && text !== null) return;
+    const what = tool === 'insert_text' ? 'the text to insert' : 'the replacement';
+    const located = ['find', 'anchor'].some((key) => args[key] !== undefined && args[key] !== null);
+    throw new AgentToolError(
+      'INVALID_ARGS',
+      located
+        ? `${tool} needs text (${what}) beside find/anchor — find and anchor.text only locate the target`
+        : `${tool} needs text (${what}) beside the coordinates`,
+    );
+  }
+
   private insertText(args: Record<string, unknown>, agent: AgentName): unknown {
+    this.requireText('insert_text', args);
     const anchor = this.optAnchor(args);
     if (anchor) {
       if ((anchor.position ?? 'after') === 'replace') {
@@ -5471,6 +5531,7 @@ export class AgentToolExecutor {
   }
 
   private replaceRange(args: Record<string, unknown>, agent: AgentName): unknown {
+    this.requireText('replace_range', args);
     const anchor = this.optAnchor(args);
     if (anchor) {
       this.anchorPositionOrReplace(anchor, 'replace_range');
@@ -6330,7 +6391,7 @@ export class AgentToolExecutor {
         // paraFormat 의 중첩 셀 ByPath 엔진 경로가 없다 — 숫자 인자 쪽과 같은 한계.
         throw new AgentToolError(
           'INVALID_ARGS',
-          'anchor resolved inside a nested cell — apply_para_format reaches only top-level cells',
+          `${anchor.via} resolved inside a nested cell — apply_para_format reaches only top-level cells`,
         );
       }
       sectionIdx = anchor.sectionIdx;
@@ -6342,7 +6403,7 @@ export class AgentToolExecutor {
       if (paraIdx < 0) {
         throw new AgentToolError(
           'INVALID_ARGS',
-          'anchor.position "before" but the match sits in the first paragraph — nothing before it',
+          'position "before" but the match sits in the first paragraph — nothing before it',
         );
       }
     } else {
