@@ -287,14 +287,14 @@ test('get_structure range: 범위 앞에서 시작한 쪽을 머리에 한 번 �
   assert.match(text, /s0 p8 \(3\) 문단8\n-- page 3 \(pageIndex 2, p8 continues\) --\ns0 p9 \(3\) 문단9/);
 });
 
-test('get_structure pages: 마지막 쪽을 넘긴 last 는 마지막 쪽으로 당기고 실제로 읽은 쪽을 알린다', async () => {
+test('get_structure pages: 마지막 쪽을 넘긴 last 는 당겨 읽지 않고 0 기준 쪽 번호를 알려 거절한다', async () => {
   const h = makeEnv(TWELVE, withPages(THREE_PAGES));
-  const text = mcpText(await h.call('get_structure', { pages: [1, 3] }));
+  // 1 부터 센 "2-3쪽" 을 [2, 3] 으로 보낸 경우 — 당겨 읽으면 3쪽만 조용히 읽힌다.
+  const past = await expectErr(h.call('get_structure', { pages: [2, 3] }), 'INVALID_ARGS');
+  assert.match(past.message, /pageIndex is 0-based \(the user's page N is pageIndex N-1\) and this document has pageIndex 0\.\.2/);
+  await expectErr(h.call('get_structure', { pages: [0, 99], format: 'json' }), 'INVALID_ARGS');
+  const text = mcpText(await h.call('get_structure', { pages: [1, 2] }));
   assert.match(text.split('\n')[0], /· pageIndex 1-2$/);
-  assert.match(text, /-- page 2 \(pageIndex 1\) --\ns0 p4 \(3\) 문단4/);
-  assert.match(text, /s0 p11 \(4\) 문단11$/);
-  const json = await h.call('get_structure', { pages: [0, 99], format: 'json' });
-  assert.deepEqual(json['pages'], [0, 2]);
 });
 
 test('get_structure pages: range·sinceRevision 과 섞거나 첫 쪽이 범위를 벗어나면 INVALID_ARGS', async () => {
@@ -302,7 +302,7 @@ test('get_structure pages: range·sinceRevision 과 섞거나 첫 쪽이 범위�
   await expectErr(h.call('get_structure', { pages: [0, 1], range: { sectionIdx: 0, fromPara: 0, toPara: 1 } }), 'INVALID_ARGS');
   await expectErr(h.call('get_structure', { pages: [0, 1], sinceRevision: 0 }), 'INVALID_ARGS');
   const past = await expectErr(h.call('get_structure', { pages: [3, 5] }), 'INVALID_ARGS');
-  assert.match(past.message, /first <= 2 \(0-based; the document has pages 0\.\.2\)/);
+  assert.match(past.message, /0 <= first <= last <= 2/);
   await expectErr(h.call('get_structure', { pages: [2, 1] }), 'INVALID_ARGS');
   await expectErr(h.call('get_structure', { pages: [1] }), 'INVALID_ARGS');
   await expectErr(h.call('get_structure', { text: 'all' }), 'INVALID_ARGS');
@@ -501,7 +501,8 @@ test('get_structure 태그: 강조는 전체·구간·흩어짐으로 빠짐없�
     ['a1b2c3d4', [[1, B], [2, PLAIN], [3, B], [4, PLAIN], [5, B], [6, PLAIN], [7, B], [8, PLAIN]], 'B~'],
     ['기울임 밑줄', [[6, { italic: true, underline: true }]], 'I U'],
     ['큰 글자와 굵은 끝', [[6, { size: 1400 }], [10, { bold: true, size: 1400 }]], 'B6-10 14pt'],
-    ['크기가 섞인 줄', [[3, { size: 1400 }], [8, I]], 'I3-8'],
+    ['크기가 섞인 줄', [[3, { size: 1400 }], [8, I]], 'I3-8 ~pt'],                 // 크기가 섞이면 본문 크기로 읽히지 않게 적는다
+    ['😀 굵게', [[2, PLAIN], [4, B]], 'B2-4'],                                // 오프셋은 글자(scalar) 단위다
     ['모양만 다른 본문', [[3, PLAIN], [9, { size: 1000 }]], undefined],
     ['   ', [[1, B], [3, PLAIN]], 'B'],                                       // 공백뿐이면 첫 구간을 본다
   ];
@@ -607,7 +608,7 @@ test('get_structure 셀 태그: 표에서 가장 흔한 셀 글자 크기는 표
     '3:0': smallBold,
     '3:2': smallBold,
     '4:0': {},                                           // 본문 크기(10pt)는 표 기준과 달라 적는다
-    '5:0': { runs: [[2, small], [5, { size: 1400 }]] },  // 크기가 섞인 문단은 크기를 적지 않는다
+    '5:0': { runs: [[2, small], [5, { size: 1400 }]] },  // 크기가 섞인 문단은 ~pt 로 적는다
   });
   const h = makeEnv(['표 앞', ''], fake);
   const t = addTable(h, 1, [['구분', '내용', ''], ['', '본문 크기', '섞인 크기']]);
@@ -618,13 +619,13 @@ test('get_structure 셀 태그: 표에서 가장 흔한 셀 글자 크기는 표
     '  table s0 p1 c0 2x3 cells 9pt',
     // 오프셋 구간은 문단 안 좌표라 문단이 여럿이면 같은 태그라도 문단을 밝힌다.
     '  r0 [0 B] 구분 | [1 B] 내용 | [2 p0 B0-1 p1 B0-1] 비고⏎참고',
-    '  r1 [3 B] 첫 줄⏎⏎둘째 줄 | [4 10pt] 본문 크기 | [5] 섞인 크기',
+    '  r1 [3 B] 첫 줄⏎⏎둘째 줄 | [4 10pt] 본문 크기 | [5 ~pt] 섞인 크기',
   ]);
   // JSON 의 셀 태그는 본문 문단처럼 본문 크기 기준이다.
   const json = await h.call('get_structure', { format: 'json' });
   const cells = (json['sections'] as Array<{ tables: Array<{ cells: Array<{ paragraphs: Array<{ tag?: string }> }> }> }>)[0].tables[0].cells;
   assert.deepEqual(cells.map((c) => c.paragraphs.map((p) => p.tag)), [
-    ['B 9pt'], ['B 9pt'], ['B0-1 9pt', 'B0-1 9pt'], ['B 9pt', undefined, 'B 9pt'], [undefined], [undefined],
+    ['B 9pt'], ['B 9pt'], ['B0-1 9pt', 'B0-1 9pt'], ['B 9pt', undefined, 'B 9pt'], [undefined], ['~pt'],
   ]);
 });
 

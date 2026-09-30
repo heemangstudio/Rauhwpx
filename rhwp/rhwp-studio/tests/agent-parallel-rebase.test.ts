@@ -416,3 +416,15 @@ test('commit: 승인 직후의 저널 없는 쓰기도 통과하고, 사용자 �
   await assert.rejects(exec(h, 'insert_text', { expectedRevision: afterField, sectionIdx: 0, paraIdx: 1, charOffset: 0, text: '>' }),
     (e: unknown) => e instanceof AgentToolError && e.code === 'REVISION_MISMATCH');
 });
+
+test('commit: 실패한 승인의 bump 는 내용 불변으로 남기지 않는다', () => {
+  const h = makeHarness(['가나다']);
+  const before = h.revision();
+  const kept = h.executor.coverContentNeutral(() => {
+    h.eventBus.emit('document-changed');
+    return false;
+  });
+  assert.equal(kept, false);
+  assert.ok(h.revision() > before);
+  assert.equal(h.executor.documentUnchangedSince(before), false);
+});

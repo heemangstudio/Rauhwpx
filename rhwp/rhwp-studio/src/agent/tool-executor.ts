@@ -94,7 +94,7 @@ const STRUCTURE_LEGEND = 'Lines: "s<sec> p<paraIdx> (<length>) <text>"; … = te
   + '"-- page N (pageIndex N-1) --" = lines below are on the page the user calls page N; tools take the 0-based pageIndex ("pX continues" = it starts inside pX). '
   + `Paragraphs up to ${STRUCTURE_TAG_MAX_CHARS} chars carry tags after the length, e.g. "(12 h1 B 14pt)": h/#/• + level`
   + ' = outline heading / numbered / bulleted paragraph (its number or bullet is generated, not text); '
-  + 'B/I/U = bold/italic/underline throughout, B0-7,12-15 = only those charOffsets (end exclusive), B~ = scattered parts, no B = no bold at all; Npt = size when not the body size. '
+  + 'B/I/U = bold/italic/underline throughout, B0-7,12-15 = only those charOffsets (end exclusive), B~ = scattered parts, no B = no bold at all; Npt = size when not the body size, ~pt = mixed sizes. '
   + 'Each table follows its anchor paragraph as "table s<sec> p<paraIdx> c<controlIdx> <rows>x<cols>" plus "r<row> [cellIdx] text | …" lines; '
   + 'after the cellIdx: rsN/csN = span when not 1, then its B/I/U/Npt tags ("[0 cs2 B 22pt]"; "[3 p0 B p2 I]" = per cell paragraph; table-line "cells Npt" = cell size unless tagged). '
   + '⏎ = next cell paragraph (cellParaIdx 0,1,…), ⊞ = cell paragraph holding a nested table (use find_text/get_selection). '
@@ -131,7 +131,7 @@ interface StructureTable {
   untaggedFromCellIdx?: number;
 }
 /** 문단 하나의 강조 태그 조각("B", "I0-3", …)과, 보이는 글자가 모두 한 크기일 때 그 크기(HWPUNIT). */
-interface StructureEmphasis { marks: string[]; size: number | null }
+interface StructureEmphasis { marks: string[]; size: number | null; mixedSize?: boolean }
 /**
  * 글자 모양 하나의 강조 값 — charShapeId 가 같으면 값도 같아 get_structure 메모에 모양별로 둔다.
  * whole 은 문단 전체가 이 모양일 때의 태그다.
@@ -204,7 +204,14 @@ function structureLineText(text: string): string {
 function structureTagText(emphasis: StructureEmphasis | undefined, baseSize: number | null, lead: string[] = []): string {
   if (!emphasis) return lead.join(' ');
   const sized = emphasis.size !== null && baseSize !== null && emphasis.size !== baseSize;
-  return [...lead, ...emphasis.marks, ...(sized ? [structureSizeText(emphasis.size!)] : [])].join(' ');
+  const size = emphasis.mixedSize ? ['~pt'] : sized ? [structureSizeText(emphasis.size!)] : [];
+  return [...lead, ...emphasis.marks, ...size].join(' ');
+}
+/** 글자 수 — 엔진의 길이·오프셋은 Unicode scalar 단위라 UTF-16 길이와 다를 수 있다 (이모지 등). */
+function scalarLength(text: string): number {
+  let count = 0;
+  for (const _ch of text) count++;
+  return count;
 }
 function structureSizeText(size: number): string {
   return `${Math.round(size) / 100}pt`;
@@ -235,7 +242,7 @@ function structureCellTags(paragraphs: StructureCellParagraph[], cellSize: numbe
 function structureParagraphLine(sec: number, para: StructureParagraph): string {
   const head = `s${sec} p${para.paraIdx} (${para.length}${para.tag ? ` ${para.tag}` : ''})`;
   if (para.length === 0) return head;
-  return `${head} ${structureLineText(para.text)}${para.text.length < para.length ? '…' : ''}`;
+  return `${head} ${structureLineText(para.text)}${scalarLength(para.text) < para.length ? '…' : ''}`;
 }
 
 /** anchor.within 의 검색 범위 — collectTextMatches 의 선택적 scope 인자와 같은 모양. */
@@ -1492,12 +1499,29 @@ export class AgentToolExecutor {
    * 이벤트가 올린 revision 을 내용 불변으로 저널에 남겨, 에이전트가 직전 턴에 받은 revision 으로
    * 보낸 다음 쓰기가 REVISION_MISMATCH 없이 통과하게 한다.
    */
-  coverContentNeutral<T>(run: () => T): T {
+  coverContentNeutral(run: () => boolean): boolean {
     const revBefore = this.revision;
+    const kept = run();
+    // 실패한 승인은 복원까지 어긋났을 수 있다 — 성공했을 때만 내용 불변으로 남긴다.
+    if (kept && this.revision > revBefore) this.journal.coverNoop(revBefore, this.revision);
+    return kept;
+  }
+
+  /**
+   * 사용자 메시지에 싣는 문서 읽기 — get_structure 와 같은 글을 동기로 만든다. 에이전트의 도구 호출이
+   * 아니라서 템플릿 매핑 게이트(문서를 통째로 읽었다는 표시)는 열지 않는다. 읽을 수 없으면 null.
+   */
+  structureSnapshot(args: { text?: 'full'; pages?: [number, number] }): { revision: number; text: string; truncated: boolean } | null {
+    if (engineTrap()) return null;
     try {
-      return run();
-    } finally {
-      if (this.revision > revBefore) this.journal.coverNoop(revBefore, this.revision);
+      const result = asRecord(this.getStructure({ ...args }, undefined, false));
+      const block = Array.isArray(result['mcpContent']) ? asRecord(result['mcpContent'][0]) : null;
+      const text = block?.['text'];
+      if (typeof text !== 'string') return null;
+      return { revision: this.revision, text, truncated: result['truncated'] === true };
+    } catch (e) {
+      if (!(e instanceof AgentToolError)) reportEngineTrap(e);
+      return null;
     }
   }
 
@@ -1694,7 +1718,7 @@ export class AgentToolExecutor {
    * 예전 JSON 모양을 그대로 돌려준다. revisionLabel 은 머리 줄에 쓰인다 (템플릿은 템플릿 revision).
    * pages 는 쪽 범위를 구역별 본문 범위로 풀고, text:"full" 은 문단·셀 전문을 글자 예산 안에서 싣는다.
    */
-  private getStructure(args: Record<string, unknown>, revisionLabel?: string): unknown {
+  private getStructure(args: Record<string, unknown>, revisionLabel?: string, markInspected = true): unknown {
     this.requireDocLoaded();
     const format = args['format'] ?? 'text';
     if (format !== 'text' && format !== 'json') {
@@ -1712,7 +1736,7 @@ export class AgentToolExecutor {
     const data = this.collectStructure(args);
     // 템플릿 매핑 게이트의 "문서를 봤다" 표시는 전체 읽기만 세운다 — range/pages/sinceRevision
     // 부분 읽기나 text:"full" 예산에 끊긴 읽기로는 구조 전체를 검토했다고 볼 수 없다.
-    if (!data.range && !data.pages && !data.continueFrom) this.documentInspectionRevision = this.revision;
+    if (markInspected && !data.range && !data.pages && !data.continueFrom) this.documentInspectionRevision = this.revision;
     if (format === 'json') {
       const sectionsOut = data.sections.map((s) => {
         const tables = data.tablesBySection.get(s.sectionIdx);
@@ -2029,7 +2053,7 @@ export class AgentToolExecutor {
     const emphasis = this.structureEmphasis(length, {
       runs: () => wasm.getCharShapeRuns(sectionIdx, paraIdx, 0, length),
       propsAt: (offset) => wasm.getCharPropertiesAt(sectionIdx, paraIdx, offset),
-      text: () => (text.length >= length ? text : wasm.getTextRange(sectionIdx, paraIdx, 0, length)),
+      text: () => (scalarLength(text) >= length ? text : wasm.getTextRange(sectionIdx, paraIdx, 0, length)),
     });
     return structureTagText(emphasis, bodySize, parts) || undefined;
   }
@@ -2054,7 +2078,7 @@ export class AgentToolExecutor {
         0, length,
       ),
       propsAt: (offset) => wasm.getCellCharPropertiesAt(t.sectionIdx, t.paraIdx, t.controlIdx, cellIdx, cellParaIdx, offset),
-      text: () => (text.length >= length
+      text: () => (scalarLength(text) >= length
         ? text
         : wasm.getTextInCell(t.sectionIdx, t.paraIdx, t.controlIdx, cellIdx, cellParaIdx, 0, length)),
     });
@@ -2077,8 +2101,9 @@ export class AgentToolExecutor {
       if (!runs || runs.length === 0) return structureShapeEmphasis(source.propsAt(0)).whole;
       let shown = runs;
       if (runs.length > 1) {
-        const full = source.text();
-        const inked = runs.filter((run) => full.slice(run.startOffset, run.endOffset).trim() !== '');
+        // 구간 오프셋은 scalar 단위다 — UTF-16 으로 자르면 이모지 뒤 구간이 밀려 빈 구간으로 보인다.
+        const full = [...source.text()];
+        const inked = runs.filter((run) => full.slice(run.startOffset, run.endOffset).join('').trim() !== '');
         shown = inked.length > 0 ? inked : [runs[0]];
       }
       const visible = shown.map((run) => ({
@@ -2107,7 +2132,7 @@ export class AgentToolExecutor {
           : letter + ranges.map(([start, end]) => `${start}-${end}`).join(','));
       }
       const size = visible[0].shape.size;
-      return { marks, size: visible.every((v) => v.shape.size === size) ? size : null };
+      return visible.every((v) => v.shape.size === size) ? { marks, size } : { marks, size: null, mixedSize: true };
     } catch {
       return { marks: [], size: null };
     }
@@ -2234,14 +2259,15 @@ export class AgentToolExecutor {
     const [first, requestedLast] = raw as [number, number];
     const { wasm } = this.deps;
     const pageCount = wasm.pageCount;
-    if (first < 0 || first > requestedLast || first >= pageCount) {
+    // 끝을 넘긴 last 를 당겨 읽으면 1 부터 센 쪽 번호([4,5] = 4-5쪽)가 조용히 한 쪽만 읽힌다 — 알려서 고치게 한다.
+    if (first < 0 || first > requestedLast || requestedLast >= pageCount) {
       throw new AgentToolError(
         'INVALID_ARGS',
-        `pages [${first}, ${requestedLast}] must satisfy 0 <= first <= last and first <= ${pageCount - 1} `
-          + `(0-based; the document has pages 0..${pageCount - 1})`,
+        `pages [${first}, ${requestedLast}] must satisfy 0 <= first <= last <= ${pageCount - 1}: pageIndex is 0-based `
+          + `(the user's page N is pageIndex N-1) and this document has pageIndex 0..${pageCount - 1}`,
       );
     }
-    const last = Math.min(requestedLast, pageCount - 1);
+    const last = requestedLast;
     const scanned = this.structurePageMarks(first, Math.min(last + 1, pageCount - 1));
     if (!scanned) {
       throw new AgentToolError('INVALID_ARGS', 'Page positions are unavailable in this engine build — use range instead of pages');
@@ -2487,7 +2513,7 @@ export class AgentToolExecutor {
           );
           return nested ? '⊞' : '';
         }
-        const cut = p.text.length < p.length;
+        const cut = scalarLength(p.text) < p.length;
         return structureLineText(p.text) + (cut ? `…(${p.length})` : '');
       }).join('⏎');
       const row = rows.get(cell.row) ?? [];

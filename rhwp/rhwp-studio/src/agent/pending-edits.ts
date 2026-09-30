@@ -20,8 +20,8 @@ export interface PendingEditDeps {
   inputHandler: InputHandler;
   canvasView: CanvasView;
   overlay: PendingOverlayRenderer;
-  /** 문서 내용이 그대로인 작업을 감싼다 — 그 동안의 revision bump 를 내용 불변으로 기록하게 한다. */
-  contentNeutral?: <T>(run: () => T) => T;
+  /** 문서 내용이 그대로인 작업을 감싼다 — run 이 true 를 돌려주면 그 동안의 revision bump 를 내용 불변으로 기록한다. */
+  contentNeutral?: (run: () => boolean) => boolean;
 }
 
 /**
