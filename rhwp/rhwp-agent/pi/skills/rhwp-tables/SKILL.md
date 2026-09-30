@@ -8,7 +8,8 @@ description: Address table cells and change table structure in the live HWP/HWPX
 ## 셀 주소 조립
 
 - `get_structure` 의 표 줄 `table s0 p5 c0 3x4` 가 표 컨트롤의 `paraIdx`(5) 와 `controlIdx`(0) 를 준다.
-  그 아래 `r<행>` 줄의 `[cellIdx]` 가 셀 번호다. `rs2`/`cs2` 는 1 이 아닌 행·열 병합 폭이다.
+  그 아래 `r<행>` 줄의 `[cellIdx]` 가 셀 번호다. `rs2`/`cs2` 는 1 이 아닌 행·열 병합 폭이고,
+  그 뒤의 `B`/`22pt` 같은 표시는 셀 글의 서식 태그다 (`[0 cs2 B 22pt]` 의 셀 번호는 0).
 - 셀 주소는 `cell = { paraIdx, controlIdx, cellIdx }` 세 값이 모두 있어야 한다.
   `cellIdx` 는 행 우선 평면 인덱스이고 병합된 셀은 한 번만 센다.
 - 셀 안의 `⏎` 는 셀 문단 경계다 (앞에서부터 셀 문단 0, 1, …). `⊞` 는 중첩 표를 품은 셀 문단이다.

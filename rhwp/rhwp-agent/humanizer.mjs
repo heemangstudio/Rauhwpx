@@ -38,7 +38,7 @@ Follow the user's requested scope and style, required genre conventions, and the
 ${MEANING}
 
 ## Read, then write
-Take the surrounding passage and heading from the task's single read (get_structure text:"full" over that range) before editing. Understand its point, terminology, register, and relationship to the next passage. In a new document, use the audience and purpose the user supplied.
+Take the surrounding passage and heading from the live_document block or the task's single read (get_structure text:"full" over that range) before editing. Understand its point, terminology, register, and relationship to the next passage. In a new document, use the audience and purpose the user supplied.
 
 ${voice}
 

@@ -78,13 +78,17 @@ function makeHarness(initial: string[], tables: Record<number, number> = {}) {
   const inputHandler = {
     getCursorPosition: () => ({ sectionIndex: 0, paragraphIndex: 0, charOffset: 0 }),
     getSelection: () => null,
-    executeOperation: () => {},
+    // 실제 InputHandler 처럼 히스토리 기록(승인) 뒤 새로 고침 이벤트를 낸다.
+    executeOperation: (desc: { kind?: string }) => {
+      if (desc?.kind === 'record') eventBus.emit('document-changed');
+    },
     prepareSnapshotCapacity: () => {},
   };
   const overlay = { setOps: () => {}, clear: () => {} };
   const pending = new PendingEditManager({
     wasm: wasm as never, eventBus, inputHandler: inputHandler as never,
     canvasView: {} as never, overlay: overlay as never,
+    contentNeutral: (run) => executor.coverContentNeutral(run),
   });
   const revision = new RevisionTracker(eventBus);
   const executor = new AgentToolExecutor({
@@ -366,4 +370,61 @@ test('rebase: 실패해 롤백된 apply_edits 의 bump 는 저널에 남아 배�
   });
   assert.equal(retry['applied'], 1);
   assert.equal(h.text(0), '가!');
+});
+
+// ─── 승인(턴 끝 자동 커밋)은 내용 불변 ─────────────────────
+
+test('journal: 내용 불변 기록만 낀 구간은 읽은 그대로의 문서로 본다', () => {
+  const journal = new EditJournal();
+  journal.coverNoop(10, 12);
+  assert.equal(journal.contentUnchanged(10, 12), true);
+  assert.equal(journal.contentUnchanged(12, 12), true);
+  journal.record(12, 13, { sectionIdx: 0, paraStart: 0, paraEnd: 0, paraDelta: 0 });
+  assert.equal(journal.contentUnchanged(10, 13), false, '실제 편집이 끼면 아니다');
+  assert.equal(journal.contentUnchanged(9, 12), false, '기록 없는 bump 가 끼면 아니다');
+  assert.equal(journal.contentUnchanged(13, 12), false);
+});
+
+test('commit: 턴 끝 자동 승인 뒤에도 직전 턴의 revision 으로 다음 쓰기가 통과한다', async () => {
+  const h = makeHarness(['가나다', '라마바', '사아자']);
+  const first = await exec(h, 'insert_text', { expectedRevision: h.revision(), sectionIdx: 0, paraIdx: 0, charOffset: 3, text: '!' });
+  const known = first['revision'] as number;
+  h.pending.endTurn('commit');
+  assert.ok(h.revision() > known, '승인의 새로 고침 이벤트는 revision 을 올린다');
+  assert.equal(h.text(0), '가나다!', '승인은 문서 내용을 바꾸지 않는다');
+
+  // 다음 턴: 다시 읽지 않고 직전 결과의 revision 으로 쓴다 — 앵커, 좌표, 저널 없는 도구 모두.
+  await exec(h, 'apply_char_format', { expectedRevision: known, anchor: { text: '라마바' }, bold: true });
+  await exec(h, 'insert_text', { expectedRevision: known, sectionIdx: 0, paraIdx: 2, charOffset: 0, text: '>' });
+  assert.equal(h.text(2), '>사아자');
+});
+
+test('commit: 승인 직후의 저널 없는 쓰기도 통과하고, 사용자 편집이 끼면 거절된다', async () => {
+  const h = makeHarness(['가나다', '라마바']);
+  const first = await exec(h, 'insert_text', { expectedRevision: h.revision(), sectionIdx: 0, paraIdx: 0, charOffset: 0, text: '!' });
+  const known = first['revision'] as number;
+  h.pending.endTurn('commit');
+  const field = await exec(h, 'set_field_value', { expectedRevision: known, name: '이름', value: '홍길동' });
+  assert.equal(typeof field['revision'], 'number');
+
+  const afterField = field['revision'] as number;
+  h.pending.endTurn('commit');
+  await Promise.resolve(); // 같은 틱의 이벤트는 승인 bump 에 흡수된다 — 사용자 편집은 다음 틱이다
+  h.eventBus.emit('document-changed'); // 사용자 편집
+  await assert.rejects(exec(h, 'set_field_value', { expectedRevision: afterField, name: '이름', value: '김' }),
+    (e: unknown) => e instanceof AgentToolError && e.code === 'REVISION_MISMATCH');
+  await assert.rejects(exec(h, 'insert_text', { expectedRevision: afterField, sectionIdx: 0, paraIdx: 1, charOffset: 0, text: '>' }),
+    (e: unknown) => e instanceof AgentToolError && e.code === 'REVISION_MISMATCH');
+});
+
+test('commit: 실패한 승인의 bump 는 내용 불변으로 남기지 않는다', () => {
+  const h = makeHarness(['가나다']);
+  const before = h.revision();
+  const kept = h.executor.coverContentNeutral(() => {
+    h.eventBus.emit('document-changed');
+    return false;
+  });
+  assert.equal(kept, false);
+  assert.ok(h.revision() > before);
+  assert.equal(h.executor.documentUnchangedSince(before), false);
 });
