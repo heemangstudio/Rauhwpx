@@ -239,6 +239,9 @@ function parasParam() {
   return z.array(z.unknown()).optional().describe('paraIdx or [first,last]');
 }
 
+/** find/anchor 와 함께 올 수 없는 글자 오프셋 — 둘 다 위치를 정한다 (문단 좌표·cell 은 검색 범위라 괜찮다). */
+const CHAR_OFFSET_KEYS = ['charOffset', 'startCharOffset', 'endCharOffset', 'startOffset', 'endOffset'];
+
 /** paras 와 함께 올 수 없는 주소 인자 — paras 가 대상 문단을 이미 정한다. */
 const PARAS_CLASH_KEYS = ['paraIdx', 'startOffset', 'endOffset', 'find', 'anchor'];
 
@@ -263,8 +266,8 @@ function validateParas(args) {
 }
 
 /**
- * 대상 주소 검증 — paras 가 있으면 그 모양만, find/anchor 가 있으면 그 모양만 본다 (옆에 온
- * 문단 좌표·cell 은 스튜디오 executor 가 검색 범위로 쓰고 글자 오프셋은 버린다). 둘 다 없으면
+ * 대상 주소 검증 — paras 가 있으면 그 모양만, find/anchor 가 있으면 그 모양을 본다 (옆에 온
+ * 문단 좌표·cell 은 스튜디오 executor 가 검색 범위로 쓰고, 글자 오프셋은 위치를 둘로 만들어 거절한다). 둘 다 없으면
  * 좌표가 있어야 한다. sectionIdx(구역이 하나뿐인 문서)와 범위 도구의 endParaIdx 는 executor 가
  * 채우므로 요구하지 않고, apply_char_format 은 오프셋이 둘 다 없으면 문단 전체라 오프셋도 요구하지 않는다.
  * @param {string} tool 오류 메시지에 싣는 도구 이름
@@ -279,7 +282,12 @@ function validateAnchorTool(tool, args, coordKeys, { anchor = true, paras = fals
   }
   const textAnchor = anchor ? anchorFromArgs(args) : undefined;
   if (textAnchor !== undefined) {
-    validateAnchorShape(textAnchor, present('find') ? '' : 'anchor.');
+    const via = present('find') ? 'find' : 'anchor';
+    const offsets = CHAR_OFFSET_KEYS.filter(present);
+    if (offsets.length > 0) {
+      throw invalidArgs(`${offsets.join('/')} and ${via} both place the target — send ${via} (with position/occurrence if needed) or ${offsets.join('/')}, not both`);
+    }
+    validateAnchorShape(textAnchor, via === 'find' ? '' : 'anchor.');
     return;
   }
   const wholePara = tool === 'apply_char_format' && !present('startOffset') && !present('endOffset');

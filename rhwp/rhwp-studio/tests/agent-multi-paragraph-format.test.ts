@@ -170,6 +170,31 @@ test('paras + cell: 그 셀의 문단이 대상이다', async () => {
   assert.match(e.message, /paras\[0\] 4 is out of range for cell 0 \(0\.\.3\)/);
 });
 
+test('apply_style 은 중첩 셀(cellPath)을 거절한다 — 엔진이 바깥 셀의 문단에 스타일을 건다', async () => {
+  const styled: number[][] = [];
+  const h = makeEnv(['본문', '', '말미'], (wasm) => {
+    wasm['getStyleList'] = () => [{ id: 3, name: '개요 1' }];
+    wasm['applyCellStyle'] = (...a: number[]) => { styled.push(a); return { ok: true }; };
+    wasm['getCellParagraphCountByPath'] = () => 2;
+  });
+  const t = addTable(h, 1, [['바깥 셀']]);
+  const cell = { paraIdx: t.paraIdx, controlIdx: t.controlIdx, cellIdx: 0 };
+  const cellPath = [{ controlIndex: 0, cellIndex: 0, cellParaIndex: 0 }, { controlIndex: 0, cellIndex: 1, cellParaIndex: 0 }];
+  const e = await expectErr(h.call('apply_edits', {
+    edits: [
+      { tool: 'apply_style', cell, cellPath, paraIdx: 1, styleId: 3 },
+      { tool: 'apply_style', cell, cellPath, paras: [0, 1], styleId: 3 },
+    ],
+  }), 'INVALID_ARGS');
+  assert.match(e.message, /edits\[0\] \(apply_style\): apply_style reaches only top-level table cells, not a nested cell/);
+  assert.match(e.message, /edits\[1\] \(apply_style\): apply_style reaches only top-level table cells/);
+  assert.deepEqual(styled, []);
+  assert.equal(h.pending.hasPending(), false);
+  // 최상위 셀은 그대로 받는다
+  await h.call('apply_style', { cell, paraIdx: 0, styleId: 3 });
+  assert.deepEqual(styled, [[0, 1, 0, 0, 0, 3]]);
+});
+
 // ─── 원자성 · 검토 ────────────────────────────────────────
 
 test('paras: 중간 문단에서 실패하면 전부 되돌리고, 같은 revision 으로 다시 보내면 통과한다', async () => {

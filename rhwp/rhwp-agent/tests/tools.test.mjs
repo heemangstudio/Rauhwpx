@@ -441,6 +441,23 @@ test('find: validate 훅이 find 를 앵커로 세고 잘못된 조합을 거른
       /occurrence refines a text match — add find:"text", or drop occurrence/);
   }
   assert.throws(() => byName.get('apply_para_format').validate({ paras: [1], find: '결론' }), /drop find/);
+  // 글자 오프셋은 find/anchor 와 똑같이 위치를 정하므로 함께 오면 거절한다 (문단 좌표·cell 은 검색 범위라 괜찮다).
+  const offsets = {
+    insert_text: { charOffset: 0 },
+    delete_range: { startCharOffset: 0, endCharOffset: 2 },
+    replace_range: { startCharOffset: 0 },
+    apply_char_format: { startOffset: 0, endOffset: 2 },
+  };
+  for (const [name, extra] of Object.entries(offsets)) {
+    const { validate } = byName.get(name);
+    for (const target of [{ find: '결론' }, { anchor: { text: '결론' } }]) {
+      assert.throws(() => validate({ ...target, paraIdx: 0, ...extra, text: 'x' }), /both place the target — send (find|anchor)/, name);
+    }
+  }
+  assert.throws(
+    () => byName.get('insert_text').validate({ anchor: '제목', paraIdx: 0, charOffset: 0, text: '[X]' }),
+    /^Error: charOffset and anchor both place the target — send anchor \(with position\/occurrence if needed\) or charOffset, not both/,
+  );
 });
 
 // ─── 여러 문단 서식 (paras) ───────────────────────────────

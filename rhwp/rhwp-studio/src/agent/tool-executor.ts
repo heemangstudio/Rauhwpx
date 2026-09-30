@@ -767,14 +767,23 @@ function optIndex(args: Record<string, unknown>, key: string): number | undefine
   return v === undefined || v === null ? undefined : reqInt(args, key);
 }
 
+/** 앵커 재검색에서 서로 바꿔 읽는 가로 공백 — 스페이스, 탭, U+00A0, U+3000. 줄바꿈은 넣지 않는다. */
+const HORIZONTAL_SPACE = '[ \\t\\u00A0\\u3000]';
+/** 문단 텍스트에는 없는 줄바꿈 — 검색어에 있으면 문단 경계를 뜻한다. */
+const LINE_BREAK_RE = /[\n\r\u2028\u2029]/u;
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /**
- * 앵커의 공백 런을 "공백 하나 이상"으로 푼 검색 패턴 (\s 는 U+00A0·U+3000 도 잡는다).
- * 공백이 없는 앵커는 정확 일치와 같으므로 null.
+ * 앵커의 가로 공백 런을 "가로 공백 하나 이상"으로 푼 검색 패턴. 가로 공백이 없거나, 공백뿐이거나,
+ * 줄바꿈이 든 검색어는 null — 문단 경계를 뜻한 줄바꿈이 스페이스에 맞으면 엉뚱한 글자를 고친다.
  */
 function looseWhitespacePattern(text: string): RegExp | null {
-  if (!/\s/u.test(text)) return null;
-  const source = text.split(/\s+/u).map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+');
-  return new RegExp(source, 'giu');
+  const space = new RegExp(`${HORIZONTAL_SPACE}+`, 'u');
+  if (LINE_BREAK_RE.test(text) || !space.test(text) || new RegExp(`^${HORIZONTAL_SPACE}+$`, 'u').test(text)) return null;
+  return new RegExp(text.split(space).map(escapeRegExp).join(`${HORIZONTAL_SPACE}+`), 'giu');
 }
 
 function reqString(args: Record<string, unknown>, key: string): string {
@@ -3206,6 +3215,15 @@ export class AgentToolExecutor {
       return null;
     }
     const via = given(find) ? 'find' : 'anchor';
+    // 글자 오프셋은 find/anchor 와 똑같이 위치를 정한다 — 둘이 함께 오면 어느 쪽이 맞는지 모른다.
+    // (문단 좌표와 cell 은 검색 범위라 함께 와도 된다.)
+    const offsets = ['charOffset', 'startCharOffset', 'endCharOffset', 'startOffset', 'endOffset'].filter((k) => given(args[k]));
+    if (offsets.length > 0) {
+      throw new AgentToolError(
+        'INVALID_ARGS',
+        `${offsets.join('/')} and ${via} both place the target — send ${via} (with position/occurrence if needed) or ${offsets.join('/')}, not both`,
+      );
+    }
     // 오류가 모델이 쓴 인자 이름으로 말하게 한다: find 꼴이면 find/occurrence/position, 객체면 anchor.*
     const key = (name: string): string => (via === 'find' ? name : `anchor.${name}`);
     let a: Record<string, unknown>;
@@ -3256,11 +3274,32 @@ export class AgentToolExecutor {
     // occurrence 번째까지는 읽어야 하고, 없으면 단일/다매치 판별용 소수만 본다.
     const cap = Math.min(Math.max(occurrence ?? 0, 8), 64);
     let { matches, truncated } = this.collectTextMatches(text, false, cap, scope);
-    // 구조 읽기에서는 연속 공백·줄 끝 공백·전각 공백이 구분되지 않는다 — 정확 일치가 하나도 없을 때만
-    // 공백 런을 "공백 하나 이상"으로 풀어 다시 찾고, 유일성·occurrence 규칙은 그대로 건다.
+    // 정확 일치가 하나도 없을 때만 다시 찾는다 — 정확 일치가 늘 이기고, 유일성·occurrence 규칙은 그대로다.
     if (matches.length === 0 && !truncated) {
-      const pattern = looseWhitespacePattern(text);
-      if (pattern) ({ matches, truncated } = this.collectTextMatches(pattern, false, cap, scope));
+      const quoted = JSON.stringify(this.truncateForMessage(text));
+      if (LINE_BREAK_RE.test(text)) {
+        throw new AgentToolError(
+          'INVALID_ARGS',
+          `${via} ${quoted} contains a line break, but a match never spans paragraphs — search inside one paragraph; to join two paragraphs, delete_range from the end of one to offset 0 of the next`,
+        );
+      }
+      if (text.includes('⏎')) {
+        throw new AgentToolError(
+          'INVALID_ARGS',
+          `${via} ${quoted} contains ⏎, which get_structure prints between cell paragraphs — a match never spans paragraphs, so send one ${via} per paragraph`,
+        );
+      }
+      // get_structure 는 탭을 ⇥ 로 보여 준다 — 줄을 그대로 옮긴 검색어는 탭으로 읽고 다시 찾는다.
+      let search = text;
+      if (text.includes('⇥')) {
+        search = text.replaceAll('⇥', '\t');
+        ({ matches, truncated } = this.collectTextMatches(new RegExp(escapeRegExp(search), 'giu'), false, cap, scope));
+      }
+      // 구조 읽기에서는 연속 공백·줄 끝 공백·전각 공백이 구분되지 않는다 — 가로 공백 런을 푼다.
+      if (matches.length === 0 && !truncated) {
+        const pattern = looseWhitespacePattern(search);
+        if (pattern) ({ matches, truncated } = this.collectTextMatches(pattern, false, cap, scope));
+      }
     }
     if (matches.length === 0) {
       // 매치 0건의 truncated 는 중첩 표 예산 소진이다 — 뒤쪽 표를 보지 못했으므로 없다고 단정하지 않는다.
@@ -7472,6 +7511,14 @@ export class AgentToolExecutor {
         throw new AgentToolError('INVALID_ARGS', `styleId ${styleId} not found — use list_styles`);
       }
     };
+    // 엔진의 셀 스타일 호출은 최상위 셀만 받는다 — 중첩 셀 경로를 넘기면 바깥 셀의 문단에 걸린다.
+    const rawPath = args['cellPath'];
+    if (Array.isArray(rawPath) && rawPath.length > 1) {
+      throw new AgentToolError(
+        'INVALID_ARGS',
+        'apply_style reaches only top-level table cells, not a nested cell (cellPath) — use apply_para_format / apply_char_format for text inside a nested table',
+      );
+    }
     const entries = this.optParas(args);
     if (entries) {
       const targets = this.paraTargets('apply_style', args, entries);

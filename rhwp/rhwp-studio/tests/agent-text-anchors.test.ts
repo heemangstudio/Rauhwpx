@@ -306,15 +306,14 @@ test('문자열 anchor 는 {text} 와 같다', async () => {
   assert.match(e.message, /anchor must be \{text/);
 });
 
-test('anchor 옆의 paraIdx 는 검색 범위다 — 다른 문단의 같은 텍스트는 모호함에서 빠지고 글자 오프셋은 버린다', async () => {
+test('anchor 옆의 paraIdx 는 검색 범위다 — 다른 문단의 같은 텍스트는 모호함에서 빠진다', async () => {
   const h = makeEnv(['표시 상단', '무관', '표시 하단']);
   // 범위 없이는 두 문단에 걸쳐 모호하다
   await expectErr(h.call('insert_text', { anchor: { text: '표시' }, text: '*' }), 'INVALID_ARGS');
-  // charOffset 0 은 무시된다 — 위치는 앵커(매치 뒤)가 정한다
-  await h.call('insert_text', { anchor: { text: '표시' }, sectionIdx: 0, paraIdx: 2, charOffset: 0, text: '*' });
+  await h.call('insert_text', { anchor: { text: '표시' }, sectionIdx: 0, paraIdx: 2, text: '*' });
   assert.deepEqual(h.body, ['표시 상단', '무관', '표시* 하단']);
   // 범위 도구의 startParaIdx..endParaIdx 도 같은 범위가 된다
-  await h.call('replace_range', { anchor: '표시', startParaIdx: 0, endParaIdx: 1, startCharOffset: 9, text: '머리' });
+  await h.call('replace_range', { anchor: '표시', startParaIdx: 0, endParaIdx: 1, text: '머리' });
   assert.equal(h.body[0], '머리 상단');
   // 그 문단에 없으면 밖의 후보를 알려 주고 아무것도 바꾸지 않는다
   const e = await expectErr(h.call('delete_range', { anchor: '무관', paraIdx: 0 }), 'INVALID_ARGS');
@@ -545,6 +544,70 @@ test('text 가 빠지면 어느 키를 어디에 둘지 알려 준다', async ()
   assert.match(e.message, /edits\[2\] \(insert_text\): insert_text needs text \(the text to insert\) beside find\/anchor/);
   assert.match(e.message, /edits\[3\] \(replace_range\): replace_range needs text \(the replacement\) beside the coordinates/);
   assert.deepEqual(h.body, ['컨셉 회의', '운용중인 장비']);
+});
+
+// ─── 리뷰 수정: 오프셋 충돌 · 줄바꿈 · ⇥/⏎ ─────────────────
+
+test('find/anchor 옆의 글자 오프셋은 위치가 둘이 되므로 거절한다 (문단 좌표는 범위라 괜찮다)', async () => {
+  const h = makeEnv(['제목 하나']);
+  // 모델이 준 삽입 지점(charOffset 0)을 앵커의 기본값(after)이 덮던 경우
+  const e = await expectErr(
+    h.call('insert_text', { anchor: '제목', paraIdx: 0, charOffset: 0, text: '[X]' }),
+    'INVALID_ARGS',
+  );
+  assert.match(e.message, /^charOffset and anchor both place the target — send anchor \(with position\/occurrence if needed\) or charOffset, not both/);
+  const range = await expectErr(
+    h.call('replace_range', { find: '하나', startCharOffset: 3, endCharOffset: 5, text: '둘' }),
+    'INVALID_ARGS',
+  );
+  assert.match(range.message, /^startCharOffset\/endCharOffset and find both place the target/);
+  await expectErr(h.call('apply_char_format', { find: '하나', startOffset: 3, endOffset: 5, bold: true }), 'INVALID_ARGS');
+  assert.equal(h.body[0], '제목 하나');
+  await h.call('insert_text', { find: '제목', paraIdx: 0, position: 'before', text: '[X]' });
+  assert.equal(h.body[0], '[X]제목 하나');
+});
+
+test('줄바꿈이 든 검색어는 공백으로 풀어 찾지 않는다 — 문단 경계를 스페이스로 고치지 않는다', async () => {
+  const h = makeEnv(['사업 개요', '목적) 다음']);
+  const e = await expectErr(h.call('delete_range', { anchor: '\n', paraIdx: 0 }), 'INVALID_ARGS');
+  assert.match(e.message, /contains a line break, but a match never spans paragraphs/);
+  await expectErr(h.call('replace_range', { anchor: '목적)\n', text: '목적' }), 'INVALID_ARGS');
+  await expectErr(h.call('replace_range', { find: '사업\r\n개요', text: 'x' }), 'INVALID_ARGS');
+  assert.deepEqual(h.body, ['사업 개요', '목적) 다음']);
+});
+
+test('공백뿐인 검색어와 줄바꿈은 공백 허용 재검색을 하지 않고, 가로 공백만 서로 바꿔 읽는다', async () => {
+  const h = makeEnv(['가\u3000나', '다\t라']);
+  // 공백뿐이면 재검색 없음 — 스페이스가 전각 공백에 맞지 않는다
+  const e = await expectErr(h.call('delete_range', { find: ' ', paraIdx: 0 }), 'INVALID_ARGS');
+  assert.match(e.message, /matched nothing/);
+  // 가로 공백(탭·전각·NBSP·스페이스) 런은 서로 바꿔 읽는다
+  const r = await h.call('replace_range', { find: '다 라', text: '다라' });
+  assert.equal((r['anchor'] as Record<string, unknown>)['matchedText'], '다\t라');
+  assert.deepEqual(h.body, ['가\u3000나', '다라']);
+});
+
+test('find 의 ⇥ 는 정확 일치가 없을 때 탭으로 읽는다 — 문서에 ⇥ 가 정말 있으면 그쪽이 이긴다', async () => {
+  const h = makeEnv(['항목\t값', '기타']);
+  const r = await h.call('replace_range', { find: '항목⇥값', text: '항목: 값' });
+  assert.equal(h.body[0], '항목: 값');
+  assert.equal((r['anchor'] as Record<string, unknown>)['matchedText'], '항목\t값');
+  // 탭과 공백 차이가 겹쳐도 찾는다 (⇥ 치환 뒤 가로 공백 재검색)
+  const spaced = makeEnv(['번호  \t이름']);
+  await spaced.call('replace_range', { find: '번호 ⇥이름', text: '번호 이름' });
+  assert.equal(spaced.body[0], '번호 이름');
+  // 문서에 ⇥ 문자가 정말 있으면 정확 일치가 이기고 탭 문단은 후보가 아니다
+  const literal = makeEnv(['a⇥b', 'a\tb']);
+  const exact = await literal.call('replace_range', { find: 'a⇥b', text: 'x' });
+  assert.deepEqual(literal.body, ['x', 'a\tb']);
+  assert.equal((exact['anchor'] as Record<string, unknown>)['matchedText'], undefined);
+});
+
+test('find 의 ⏎ 는 셀 문단 경계라 문단마다 나눠 보내라고 알린다', async () => {
+  const h = makeEnv(['본문', '', '말미']);
+  addTable(h, 1, [['첫 줄', '옆']]);
+  const e = await expectErr(h.call('replace_range', { find: '첫 줄⏎둘째 줄', text: 'x' }), 'INVALID_ARGS');
+  assert.match(e.message, /^find "첫 줄⏎둘째 줄" contains ⏎, which get_structure prints between cell paragraphs — a match never spans paragraphs, so send one find per paragraph/);
 });
 
 // ─── apply_edits 배치 해석 ────────────────────────────────
