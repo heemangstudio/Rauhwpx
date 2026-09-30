@@ -8,7 +8,8 @@
  * 모델 호출이 실제로 나가므로 계정 사용량이 든다.
  *
  * 실행: node e2e/agent-claude-live-bench.mjs --mode=headless [--runs=3] [--model=claude-sonnet-5]
- *        [--effort=<low|medium|high>] [--sample=biz_plan.hwp] [--prompt="..."] [--out=<json>]
+ *        [--effort=<low|medium|high>] [--sample=biz_plan.hwp] [--prompt="..."] [--followup="..."] [--out=<json>]
+ *        [--transcripts=<dir>]  claude 세션 기록(도구 인자·결과 포함)을 그 폴더에 남긴다 — 실패한 호출을 들여다볼 때.
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -34,6 +35,8 @@ const MODEL = arg('model') ?? 'claude-sonnet-5';
 const EFFORT = arg('effort');
 const SAMPLE = arg('sample') ?? 'biz_plan.hwp';
 const PROMPT = arg('prompt') ?? 'Read the first 3 pages, then fix every typo and make the section titles bold.';
+const FOLLOWUP = arg('followup');
+const TRANSCRIPTS = arg('transcripts');
 const OUT = arg('out');
 const TURN_TIMEOUT_MS = Number(arg('timeout-ms') ?? 15 * 60_000);
 
@@ -151,16 +154,12 @@ try {
       });
     });
 
-    for (let run = 1; run <= RUNS; run += 1) {
-      await openSample(page, SAMPLE);
-      await delay(300);
-      await page.evaluate((model, effort) => window.__agentBridge.startChat('claude', model, effort ?? undefined, true, 'unrestricted', 'direct'), MODEL, EFFORT);
-      await page.waitForFunction(() => window.__agentBridge?.getActiveAgent?.() === 'claude', { timeout: 60000 });
-      await delay(500);
+    /** 프롬프트 하나를 보내고 턴이 끝날 때까지 잰다. */
+    const measureTurn = async (run, prompt, phase) => {
       await page.evaluate(() => { window.__liveEvents.length = 0; });
       const outcomeBefore = await documentOutcome(page);
       const sentAt = await page.evaluate(() => performance.timeOrigin + performance.now());
-      const via = await sendThroughComposer(page, PROMPT);
+      const via = await sendThroughComposer(page, prompt);
       // 턴 끝은 허브 추적 행으로 판정한다 — 페이지가 다시 연결되거나 새로고침돼도 놓치지 않는다.
       const deadline = Date.now() + TURN_TIMEOUT_MS;
       let turnEndRow = null;
@@ -179,6 +178,7 @@ try {
       const analysis = analyzeProviderTurn(readTraceRows(traceFile), { from: sentAt, to: endedAt + 1000 });
       const row = {
         run,
+        phase,
         via,
         studioReconnects: events.filter((event) => event.type === 'connection').length,
         pageTurnWallMs: round(endedAt - sentAt),
@@ -188,12 +188,28 @@ try {
         errors: events.filter((event) => event.type === 'error').map((event) => event.message),
       };
       runs.push(row);
-      console.log(`  [run ${run}] outcome: ${outcome.textChanged} paragraphs rewritten, ${outcome.boldAdded} short paragraphs bolded (paragraphs ${outcome.paragraphsBefore}→${outcome.paragraphsAfter})`);
-      console.log(`  [run ${run}] via=${via} wall=${round(row.pageTurnWallMs / 1000, 1)}s  model requests=${row.modelRequests}  tool calls=${row.toolCalls} (rhwp ${row.rhwpToolCalls})  parallel batches=${row.parallelBatches} (${row.parallelCalls} calls, largest ${row.largestBatch})  tool union=${round(row.toolUnionMs / 1000, 2)}s  pipeline p50/p95=${row.latency.pipelineMs.p50}/${row.latency.pipelineMs.p95}ms  cli tool p50/p95=${row.latency.toolMs.p50}/${row.latency.toolMs.p95}ms`);
+      const tag = `run ${run}${phase === 'followup' ? ' followup' : ''}`;
+      console.log(`  [${tag}] outcome: ${outcome.textChanged} paragraphs rewritten, ${outcome.boldAdded} short paragraphs bolded (paragraphs ${outcome.paragraphsBefore}→${outcome.paragraphsAfter})`);
+      console.log(`  [${tag}] via=${via} wall=${round(row.pageTurnWallMs / 1000, 1)}s  model requests=${row.modelRequests}  tool calls=${row.toolCalls} (rhwp ${row.rhwpToolCalls}, failed ${row.failedToolCalls})  parallel batches=${row.parallelBatches} (${row.parallelCalls} calls, largest ${row.largestBatch})  tool union=${round(row.toolUnionMs / 1000, 2)}s  pipeline p50/p95=${row.latency.pipelineMs.p50}/${row.latency.pipelineMs.p95}ms  cli tool p50/p95=${row.latency.toolMs.p50}/${row.latency.toolMs.p95}ms`);
+      console.log(`  [${tag}] startup: spawn +${row.startup.spawnMs}ms, init ${row.startup.initMs}ms, first request at ${row.startup.firstRequestMs}ms  model wait=${round(row.modelWaitMs / 1000, 1)}s gen=${round(row.modelGenMs / 1000, 1)}s (thinking ${round(row.thinkingMs / 1000, 1)}s, tool args ${round(row.toolArgsMs / 1000, 1)}s, text ${round(row.textMs / 1000, 1)}s) out=${row.outputTokens}tok`);
+      for (const request of row.requests) {
+        console.log(`      req @${round(request.at / 1000, 1)}s wait=${request.waitMs}ms gen=${request.genMs}ms in=${request.inTok}/${request.cacheRead}r/${request.cacheWrite}w out=${request.outTok} [${request.blocks.map((b) => `${b.type} ${b.ms}ms`).join(', ')}] ${request.stopReason ?? ''}`);
+      }
       for (const batch of row.batches) {
         console.log(`      batch ×${batch.size} [${batch.tools.join(', ')}] mcpOverlap=${batch.maxConcurrentMcp} cliOverlap=${batch.maxConcurrentCli} execOverlap=${batch.maxConcurrentStudioExec} makespan=${batch.makespanMs}ms sum=${batch.sumToolMs}ms`);
       }
       await page.waitForFunction(() => !window.__inputHandler?.isUserEditingLocked?.(), { timeout: 60000 }).catch(() => {});
+    };
+
+    for (let run = 1; run <= RUNS; run += 1) {
+      await openSample(page, SAMPLE);
+      await delay(300);
+      await page.evaluate((model, effort) => window.__agentBridge.startChat('claude', model, effort ?? undefined, true, 'unrestricted', 'direct'), MODEL, EFFORT);
+      await page.waitForFunction(() => window.__agentBridge?.getActiveAgent?.() === 'claude', { timeout: 60000 });
+      await delay(500);
+      await measureTurn(run, PROMPT, 'first');
+      // 같은 채팅의 다음 턴 — 세션 재개 비용과 다시 읽기 여부를 본다.
+      if (FOLLOWUP) await measureTurn(run, FOLLOWUP, 'followup');
     }
     printSummary();
   });
@@ -208,31 +224,73 @@ try {
     const keep = path.join(os.tmpdir(), `rhwp-claude-live-trace-${Date.now()}.jsonl`);
     try { fs.copyFileSync(traceFile, keep); console.log(`  [trace] ${keep}`); } catch { /* 추적 없음 */ }
   }
+  if (TRANSCRIPTS) keepTranscripts();
   fs.rmSync(fixtureRoot, { recursive: true, force: true, maxRetries: 5 });
 }
 
-function printSummary() {
-  const all = runs.flatMap((row) => row.perCall);
+/** 격리된 claude 홈의 세션 기록(.claude/projects/<cwd>/<세션>.jsonl)을 픽스처를 지우기 전에 옮긴다. */
+function keepTranscripts() {
+  const sessionsRoot = path.join(fixtureRoot, 'sessions');
+  let kept = 0;
+  try {
+    fs.mkdirSync(TRANSCRIPTS, { recursive: true });
+    for (const session of fs.readdirSync(sessionsRoot)) {
+      const projects = path.join(sessionsRoot, session, 'home', '.claude', 'projects');
+      if (!fs.existsSync(projects)) continue;
+      for (const project of fs.readdirSync(projects)) {
+        for (const file of fs.readdirSync(path.join(projects, project))) {
+          if (!file.endsWith('.jsonl')) continue;
+          fs.copyFileSync(path.join(projects, project, file), path.join(TRANSCRIPTS, file));
+          kept += 1;
+        }
+      }
+    }
+  } catch (error) {
+    console.log(`  [transcripts] 복사 실패: ${error?.message ?? error}`);
+  }
+  console.log(`  [transcripts] ${kept}개 → ${TRANSCRIPTS}`);
+}
+
+function summarize(rows) {
+  const all = rows.flatMap((row) => row.perCall);
   const pick = (key) => all.map((e) => e[key]).filter((v) => Number.isFinite(v));
-  const summary = {
-    model: MODEL,
-    effort: EFFORT,
-    prompt: PROMPT,
-    sample: SAMPLE,
-    runs: runs.length,
-    turnWallMs: stats(runs.map((row) => row.pageTurnWallMs)),
-    modelRequestsPerTurn: stats(runs.map((row) => row.modelRequests)),
-    toolCallsPerTurn: stats(runs.map((row) => row.toolCalls)),
-    paragraphsRewritten: stats(runs.map((row) => row.outcome.textChanged)),
-    paragraphsBolded: stats(runs.map((row) => row.outcome.boldAdded)),
-    parallelBatchesPerTurn: stats(runs.map((row) => row.parallelBatches)),
+  return {
+    runs: rows.length,
+    turnWallMs: stats(rows.map((row) => row.pageTurnWallMs)),
+    firstRequestMs: stats(rows.map((row) => row.startup.firstRequestMs).filter(Number.isFinite)),
+    modelWaitMs: stats(rows.map((row) => row.modelWaitMs)),
+    modelGenMs: stats(rows.map((row) => row.modelGenMs)),
+    thinkingMs: stats(rows.map((row) => row.thinkingMs)),
+    toolArgsMs: stats(rows.map((row) => row.toolArgsMs)),
+    textMs: stats(rows.map((row) => row.textMs)),
+    outputTokens: stats(rows.map((row) => row.outputTokens)),
+    modelRequestsPerTurn: stats(rows.map((row) => row.modelRequests)),
+    toolCallsPerTurn: stats(rows.map((row) => row.toolCalls)),
+    failedToolCallsPerTurn: stats(rows.map((row) => row.failedToolCalls)),
+    turnsWithFailedCalls: rows.filter((row) => row.failedToolCalls > 0).length,
+    paragraphsRewritten: stats(rows.map((row) => row.outcome.textChanged)),
+    paragraphsBolded: stats(rows.map((row) => row.outcome.boldAdded)),
+    parallelBatchesPerTurn: stats(rows.map((row) => row.parallelBatches)),
     pipelineMs: stats(pick('pipelineMs')),
     cliToolMs: stats(pick('toolMs')),
     cliDispatchMs: stats(pick('cliDispatchMs')),
     cliReturnMs: stats(pick('cliReturnMs')),
     studioExecMs: stats(pick('studioExecMs')),
     studioWaitMs: stats(pick('studioWaitMs')),
-    toolShareOfTurn: round(runs.reduce((s, r) => s + r.toolUnionMs, 0) / Math.max(1, runs.reduce((s, r) => s + r.turnWallMs, 0)), 3),
+    toolShareOfTurn: round(rows.reduce((s, r) => s + r.toolUnionMs, 0) / Math.max(1, rows.reduce((s, r) => s + r.turnWallMs, 0)), 3),
+  };
+}
+
+function printSummary() {
+  const first = runs.filter((row) => row.phase === 'first');
+  const followups = runs.filter((row) => row.phase === 'followup');
+  const summary = {
+    model: MODEL,
+    effort: EFFORT,
+    prompt: PROMPT,
+    sample: SAMPLE,
+    ...summarize(first),
+    ...(followups.length > 0 ? { followup: { prompt: FOLLOWUP, ...summarize(followups) } } : {}),
   };
   console.log('\n  [live] 요약:', JSON.stringify(summary));
   const payload = { summary, runs };

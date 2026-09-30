@@ -223,6 +223,58 @@ export function analyzeProviderTurn(rows, { from, to, skew = 0 }) {
     };
   });
 
+  // 모델 요청별 구간 — 루트 메시지만. 요청은 앞 경계(턴 시작 또는 직전 도구 결과)에서 시작한다.
+  const rootRows = claude.filter((row) => !row.parent).sort((a, b) => a.t - b.t);
+  const spawnRow = rootRows.find((row) => row.ev === 'spawn') ?? null;
+  const initRow = rootRows.find((row) => row.ev === 'init') ?? null;
+  const requests = [];
+  let boundary = from;
+  let current = null;
+  for (const row of rootRows) {
+    if (row.ev === 'message_start') {
+      current = {
+        messageId: row.messageId,
+        at: round(row.t - from),
+        waitMs: round(row.t - boundary),
+        inTok: row.inTok ?? null,
+        cacheRead: row.cacheRead ?? null,
+        cacheWrite: row.cacheWrite ?? null,
+        blocks: [],
+        open: new Map(),
+        startT: row.t,
+      };
+      requests.push(current);
+    } else if (current && (row.ev === 'block_start' || row.ev === 'tool_use_start')) {
+      current.open.set(row.index, { type: row.ev === 'tool_use_start' ? `tool_use:${row.tool}` : row.blockType, t: row.t });
+    } else if (current && row.ev === 'block_stop') {
+      const open = current.open.get(row.index);
+      if (open) {
+        current.blocks.push({ type: open.type, ms: round(row.t - open.t) });
+        current.open.delete(row.index);
+      }
+    } else if (current && row.ev === 'message_delta') {
+      current.genMs = round(row.t - current.startT);
+      current.outTok = row.outTok ?? null;
+      current.stopReason = row.stopReason;
+      boundary = row.t;
+    } else if (row.ev === 'tool_result') {
+      boundary = row.t;
+    }
+  }
+  for (const request of requests) {
+    delete request.open;
+    delete request.startT;
+    const sum = (prefix) => round(request.blocks.filter((b) => b.type.startsWith(prefix)).reduce((s, b) => s + b.ms, 0));
+    request.thinkingMs = sum('thinking');
+    request.textMs = sum('text');
+    request.toolArgsMs = sum('tool_use');
+  }
+  const startup = {
+    spawnMs: spawnRow ? round(spawnRow.t - from) : null,
+    initMs: spawnRow && initRow ? round(initRow.t - spawnRow.t) : null,
+    firstRequestMs: requests[0] ? round(requests[0].at) : null,
+  };
+
   const toolIntervals = perCall.filter((e) => e.cliInterval).map((e) => e.cliInterval);
   const turnStart = provider.find((row) => row.ev === 'turn-start')?.t ?? from;
   const turnEnd = [...provider].reverse().find((row) => row.ev === 'turn-end')?.t ?? to;
@@ -237,6 +289,8 @@ export function analyzeProviderTurn(rows, { from, to, skew = 0 }) {
     modelRequests: claude.filter((row) => row.ev === 'message_start' && !row.parent).length,
     subagentModelRequests: claude.filter((row) => row.ev === 'message_start' && row.parent).length,
     toolCalls: perCall.length,
+    // CLI 가 오류로 돌려받은 호출 — 인자 검증 실패와 도구 오류 모두. 모델이 다시 보내야 하는 요청이다.
+    failedToolCalls: claude.filter((row) => row.ev === 'tool_result' && row.isError && !row.parent).length,
     rhwpToolCalls: perCall.filter((e) => e.rhwp).length,
     hubToolCalls: calls.length,
     toolsUsed,
@@ -255,6 +309,14 @@ export function analyzeProviderTurn(rows, { from, to, skew = 0 }) {
       studioWaitMs: stats(pick('studioWaitMs')),
       argsStreamMs: stats(pick('argsStreamMs')),
     },
+    startup,
+    requests,
+    modelWaitMs: round(requests.reduce((sum, r) => sum + (r.waitMs ?? 0), 0)),
+    modelGenMs: round(requests.reduce((sum, r) => sum + (r.genMs ?? 0), 0)),
+    thinkingMs: round(requests.reduce((sum, r) => sum + r.thinkingMs, 0)),
+    toolArgsMs: round(requests.reduce((sum, r) => sum + r.toolArgsMs, 0)),
+    textMs: round(requests.reduce((sum, r) => sum + r.textMs, 0)),
+    outputTokens: requests.reduce((sum, r) => sum + (r.outTok ?? 0), 0),
     claudeResult: results.at(-1) ?? null,
     matchedByToolUseId: calls.filter((call) => call.mcp?.toolUseId).length,
     perCall: perCall.map(({ interval, execInterval, cliInterval, ...rest }) => ({
