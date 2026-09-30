@@ -91,7 +91,7 @@ const STRUCTURE_TAG_MAX_CHARS = 60;
 /** get_structure compact 텍스트의 범례 — 결과 머리에 한 번만 싣는다. */
 const STRUCTURE_LEGEND = 'Lines: "s<sec> p<paraIdx> (<length>) <text>"; … = text cut, ⇥ = tab, "pA-pB empty" = empty paragraphs. '
   + 'Text is verbatim, usable in anchors as is; "quoted" = exact text as a JSON string, used when it starts or ends with a space. '
-  + '"-- page N --" = lines below are on 0-based page N ("pX continues" = page N starts inside pX). '
+  + '"-- page N (pageIndex N-1) --" = lines below are on the page the user calls page N; tools take the 0-based pageIndex ("pX continues" = it starts inside pX). '
   + `Paragraphs up to ${STRUCTURE_TAG_MAX_CHARS} chars carry tags after the length, e.g. "(12 h1 B 14pt)": h/#/• + level`
   + ' = outline heading / numbered / bulleted paragraph (its number or bullet is generated, not text); '
   + 'B/I/U = bold/italic/underline throughout, B0-7,12-15 = only those charOffsets (end exclusive), B~ = scattered parts, no B = no bold at all; Npt = size when not the body size. '
@@ -2503,13 +2503,13 @@ export class AgentToolExecutor {
    * compact 구조 텍스트. 문단 한 줄 "s0 p12 (40) text…", 빈 문단 연속은 "s0 p13-p17 empty" 로 접고,
    * 표는 앵커 문단 바로 뒤에 "table s0 p5 c0 3x4" + 행마다 "[cellIdx] text | …" 로 적는다.
    * 스팬은 1 이 아닐 때만 rs/cs 로, 셀 문단 경계는 ⏎, 중첩 표를 품은 셀 문단은 ⊞ 로 표시한다.
-   * 쪽이 바뀌는 자리에는 "-- page N --" 을 넣는다 (문단 중간에서 넘어가면 그 문단 뒤에 "(pX continues)").
+   * 쪽이 바뀌는 자리에는 "-- page N (pageIndex N-1) --" 을 넣는다 (문단 중간에서 넘어가면 그 문단 뒤에 "pX continues").
    */
   private renderCompactStructure(data: StructureData, revisionLabel: string): string {
     const lines: string[] = [];
     const sectionWord = data.sectionCount === 1 ? 'section' : 'sections';
     const scope = data.pages
-      ? ` · pages ${data.pages.first}-${data.pages.last}`
+      ? ` · pageIndex ${data.pages.first}-${data.pages.last}`
       : data.range ? ` · range s${data.range.sectionIdx} p${data.range.fromPara}-p${data.range.toPara}` : '';
     const cont = data.continueFrom;
     const truncation = !data.truncated
@@ -2539,7 +2539,8 @@ export class AgentToolExecutor {
       };
       const pushMark = (m: StructurePageMark, showContinues: boolean): void => {
         flushEmpty();
-        lines.push(showContinues && m.continued ? `-- page ${m.page} (p${m.paraIdx} continues) --` : `-- page ${m.page} --`);
+        // 사용자는 쪽을 1 부터 세고 도구는 0 부터 센다 — 둘 다 적어 "3쪽" 을 pageIndex 3 으로 읽지 않게 한다.
+        lines.push(`-- page ${m.page + 1} (pageIndex ${m.page}${showContinues && m.continued ? `, p${m.paraIdx} continues` : ''}) --`);
       };
       if (firstPara !== undefined) {
         // 목록 첫 문단보다 앞에서 시작한 쪽은 "이 아래는 그 쪽" 이라는 뜻으로 마지막 하나만 적는다.

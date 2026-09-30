@@ -249,23 +249,23 @@ test('get_structure: 전체 읽기에 쪽 표시를 넣고 문단 중간에서 �
   const h = makeEnv(TWELVE, withPages(THREE_PAGES));
   const lines = mcpText(await h.call('get_structure')).split('\n');
   const at = (line: string) => lines.indexOf(line);
-  assert.ok(at('-- page 0 --') < at('s0 p0 (3) 문단0'));
-  assert.ok(at('s0 p3 (3) 문단3') < at('-- page 1 --') && at('-- page 1 --') < at('s0 p4 (3) 문단4'));
-  assert.ok(at('s0 p8 (3) 문단8') < at('-- page 2 (p8 continues) --')
-    && at('-- page 2 (p8 continues) --') < at('s0 p9 (3) 문단9'));
+  assert.ok(at('-- page 1 (pageIndex 0) --') < at('s0 p0 (3) 문단0'));
+  assert.ok(at('s0 p3 (3) 문단3') < at('-- page 2 (pageIndex 1) --') && at('-- page 2 (pageIndex 1) --') < at('s0 p4 (3) 문단4'));
+  assert.ok(at('s0 p8 (3) 문단8') < at('-- page 3 (pageIndex 2, p8 continues) --')
+    && at('-- page 3 (pageIndex 2, p8 continues) --') < at('s0 p9 (3) 문단9'));
 });
 
 test('get_structure pages: 쪽 범위를 본문 범위로 풀고 이어지는 문단은 끝 쪽에 포함한다', async () => {
   const h = makeEnv(TWELVE, withPages(THREE_PAGES));
   const middle = mcpText(await h.call('get_structure', { pages: [1, 1] }));
-  assert.match(middle.split('\n')[0], /pages 1-1/);
-  assert.match(middle, /-- page 1 --\ns0 p4 \(3\) 문단4/);
+  assert.match(middle.split('\n')[0], /pageIndex 1-1/);
+  assert.match(middle, /-- page 2 \(pageIndex 1\) --\ns0 p4 \(3\) 문단4/);
   assert.match(middle, /s0 p8 \(3\) 문단8/, '2쪽으로 넘어가는 p8 은 1쪽에서 시작하므로 싣는다');
   assert.ok(!middle.includes('s0 p3 ') && !middle.includes('s0 p9 '), '범위 밖 문단은 싣지 않는다');
-  assert.ok(!middle.includes('-- page 2'), '범위 밖 쪽 표시는 싣지 않는다');
+  assert.ok(!middle.includes('-- page 3'), '범위 밖 쪽 표시는 싣지 않는다');
 
   const last = mcpText(await h.call('get_structure', { pages: [2, 2] }));
-  assert.match(last, /-- page 2 \(p8 continues\) --\ns0 p8 \(3\) 문단8/);
+  assert.match(last, /-- page 3 \(pageIndex 2, p8 continues\) --\ns0 p8 \(3\) 문단8/);
   assert.match(last, /s0 p11 \(4\) 문단11/);
   assert.ok(!last.includes('s0 p7 '));
 
@@ -283,15 +283,15 @@ test('get_structure range: 범위 앞에서 시작한 쪽을 머리에 한 번 �
   const h = makeEnv(TWELVE, withPages(THREE_PAGES));
   const text = mcpText(await h.call('get_structure', { range: { sectionIdx: 0, fromPara: 5, toPara: 9 } }));
   const body = text.split('\n').slice(3);
-  assert.deepEqual(body.slice(0, 2), ['-- page 1 --', 's0 p5 (3) 문단5']);
-  assert.match(text, /s0 p8 \(3\) 문단8\n-- page 2 \(p8 continues\) --\ns0 p9 \(3\) 문단9/);
+  assert.deepEqual(body.slice(0, 2), ['-- page 2 (pageIndex 1) --', 's0 p5 (3) 문단5']);
+  assert.match(text, /s0 p8 \(3\) 문단8\n-- page 3 \(pageIndex 2, p8 continues\) --\ns0 p9 \(3\) 문단9/);
 });
 
 test('get_structure pages: 마지막 쪽을 넘긴 last 는 마지막 쪽으로 당기고 실제로 읽은 쪽을 알린다', async () => {
   const h = makeEnv(TWELVE, withPages(THREE_PAGES));
   const text = mcpText(await h.call('get_structure', { pages: [1, 3] }));
-  assert.match(text.split('\n')[0], /· pages 1-2$/);
-  assert.match(text, /-- page 1 --\ns0 p4 \(3\) 문단4/);
+  assert.match(text.split('\n')[0], /· pageIndex 1-2$/);
+  assert.match(text, /-- page 2 \(pageIndex 1\) --\ns0 p4 \(3\) 문단4/);
   assert.match(text, /s0 p11 \(4\) 문단11$/);
   const json = await h.call('get_structure', { pages: [0, 99], format: 'json' });
   assert.deepEqual(json['pages'], [0, 2]);
