@@ -116,6 +116,10 @@ test('production verification audits every lock and exercises actual providers o
   }
   assert.match(commands, /npm --prefix cloud ci/);
   assert.match(commands, /npm run audit:production/);
+  assert.match(commands, /node node_modules\/electron\/install\.js/);
+  const installIndex = job.steps.findIndex((step) => step.run?.includes('node node_modules/electron/install.js'));
+  const verifyIndex = job.steps.findIndex((step) => step.run?.includes('verify-production-dependencies.mjs --electron'));
+  assert.ok(installIndex >= 0 && installIndex < verifyIndex);
   assert.match(commands, /verify-production-dependencies\.mjs --electron/);
   assert.doesNotMatch(commands, /--force|--ignore-engines|engine-strict=false/);
 });

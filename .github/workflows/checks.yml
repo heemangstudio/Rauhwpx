@@ -134,6 +134,9 @@ jobs:
           if [[ "${{ matrix.node }}" == 24 ]]; then
             npm --prefix cloud ci --omit=dev --ignore-scripts --no-audit --no-fund
           fi
+      - name: Install the locked Electron Node host
+        if: needs.changes.outputs.app != 'false'
+        run: node node_modules/electron/install.js
       - name: Audit all six production dependency locks
         if: needs.changes.outputs.app != 'false'
         shell: bash
