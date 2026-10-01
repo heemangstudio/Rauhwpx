@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { existsSync, promises as fs } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import test from 'node:test';
 
@@ -155,13 +156,22 @@ test('all provider installers are allowlisted and version-pinned', async () => {
   assert.deepEqual(Object.keys(lock).sort(), ['claude', 'codex', 'pi']);
   for (const [provider, item] of Object.entries(lock)) {
     assert.ok(['npm', 'archive'].includes(item.kind), provider);
-    if (item.kind === 'npm') assert.match(item.version, /^\d+\.\d+\.\d+$/, provider);
+    if (item.kind === 'npm') assert.match(item.version, /^\d+\.\d+\.\d+(?:-rau\.\d+)?$/, provider);
   }
   const npmProviders = Object.values(lock).filter((item) => item.kind === 'npm');
-  assert.deepEqual(
-    Object.fromEntries(npmProviders.map((item) => [item.package, item.version])),
-    runtimePackage.dependencies,
-  );
+  for (const item of npmProviders) {
+    const spec = runtimePackage.dependencies[item.package];
+    if (spec.startsWith('file:vendor/')) {
+      const provenance = JSON.parse(await fs.readFile(path.join(root, 'install/provider-runtime/vendor/provenance.json'), 'utf8'));
+      assert.equal(spec, `file:vendor/${provenance.downstream.file}`);
+      assert.equal(item.version, provenance.downstream.version);
+      const artifact = await fs.readFile(path.join(root, 'install/provider-runtime', spec.slice(5)));
+      assert.equal(createHash('sha256').update(artifact).digest('hex'), provenance.downstream.sha256);
+    } else {
+      assert.equal(spec, item.version);
+    }
+  }
+  assert.equal(Object.keys(runtimePackage.dependencies).length, npmProviders.length);
   const providerCli = await fs.readFile(path.join(root, 'src/provider-cli.mjs'), 'utf8');
   assert.match(providerCli, /run\('npm', \[\s*'ci'/);
   assert.doesNotMatch(providerCli, /'ci'[^\]]*--ignore-scripts/s);

@@ -1,0 +1,41 @@
+{
+  "upstream": {
+    "package": "npm",
+    "version": "11.19.1",
+    "gitHead": "d63a975ce3c1219752519b7fb68bdc03faa767c0",
+    "registryTarball": "https://registry.npmjs.org/npm/-/npm-11.19.1.tgz",
+    "registryIntegrity": "sha512-ztsxKxt/kkIaAs+2i0GU6I+DRmUdrNasxTZKJe9TCdSjKxlhah/4r/hl5ygMD6XAg1qZ9c2TNomR4qgOydp10g==",
+    "commit": "d63a975ce3c1219752519b7fb68bdc03faa767c0",
+    "url": "https://codeload.github.com/npm/cli/tar.gz/d63a975ce3c1219752519b7fb68bdc03faa767c0",
+    "sha256": "f989a61dea2467dee559b46d278f8b5b7d8ca2e5b7c4ab82b6ece1e6c7967fa0"
+  },
+  "downstream": {
+    "file": "npm-11.19.2-rau.1.tgz",
+    "sha256": "6d6e1090c299050e9367b2e69ad1e101f8b61ab1ca0e3a6d062a365689df7242",
+    "sourcePackageJsonSha256": "90412acd2ab04e1fe57488fbbd5cd7637c3cca67d636289cf31e6b2960f0b541",
+    "sourceLockSha256": "211fba91a05fb316c62a961170c5466ed5e6b522ae49d3b8018685f02115b28f",
+    "sourceOverrides": {
+      "minimatch@^10.2.5": {
+        "brace-expansion": "5.0.12"
+      },
+      "node-gyp@^12.4.0": {
+        "undici": "6.28.1"
+      }
+    },
+    "toolchain": {
+      "node": "26.7.0",
+      "npm": "11.19.0",
+      "GOMAXPROCS": 2,
+      "nodeHeapMiB": 1024
+    },
+    "version": "11.19.2-rau.1"
+  },
+  "verification": {
+    "packedBraceExpansion": "5.0.12",
+    "packedUndici": "6.28.1",
+    "sourceResolutionChanges": [
+      "brace-expansion 5.0.9 -> 5.0.12",
+      "undici 6.28.0 -> 6.28.1"
+    ]
+  }
+}

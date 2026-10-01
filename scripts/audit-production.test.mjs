@@ -44,9 +44,9 @@ test('production audit ignores moderate advisories', () => {
   assert.equal(audit({ cloud: report(undici('node_modules/undici', advisory('GHSA-new', 'moderate'))) }).status, 0);
 });
 
-test('only the listed WebSocket advisories in npm\'s bundled undici are excepted', () => {
+test('production audit blocks advisories in bundled npm dependencies too', () => {
   const bundled = 'node_modules/npm/node_modules/undici';
-  assert.equal(audit({ 'rhwp/rhwp-agent': report(undici(bundled, advisory('GHSA-rfgv-xxqx-mfg5'))) }).status, 0);
+  assert.equal(audit({ 'rhwp/rhwp-agent': report(undici(bundled, advisory('GHSA-rfgv-xxqx-mfg5'))) }).status, 1);
   assert.equal(audit({ 'rhwp/rhwp-agent': report(undici(bundled, advisory('GHSA-new'))) }).status, 1);
   assert.equal(audit({ 'rhwp/rhwp-agent': report(undici('node_modules/undici', advisory('GHSA-rfgv-xxqx-mfg5'))) }).status, 1);
   assert.equal(audit({ cloud: report(undici(bundled, advisory('GHSA-rfgv-xxqx-mfg5'))) }).status, 1);

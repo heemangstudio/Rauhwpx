@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { chmodSync, lstatSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
-import { copyFile, mkdir, mkdtemp, readlink, rename, rm, symlink } from 'node:fs/promises';
+import { copyFile, cp, mkdir, mkdtemp, readlink, rename, rm, symlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -65,6 +65,7 @@ export class ProviderCliManager {
     try {
       await copyFile(path.join(source, 'package.json'), path.join(staging, 'package.json'));
       await copyFile(path.join(source, 'package-lock.json'), path.join(staging, 'package-lock.json'));
+      await cp(path.join(source, 'vendor'), path.join(staging, 'vendor'), { recursive: true });
       // npm 캐시가 제공자 홈(provider-auth)에 남으면 수백 MB가 스냅숏과 백업에 실린다.
       const npmCache = await mkdtemp(path.join(os.tmpdir(), 'rauhwpx-npm-'));
       try {

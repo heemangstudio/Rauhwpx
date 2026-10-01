@@ -1,0 +1,55 @@
+{
+  "upstream": {
+    "package": "pi",
+    "version": "0.87.1",
+    "gitHead": "f07218c4d4bbc12bef056a7058c3dd49dfe41abe",
+    "registryTarball": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.87.1.tgz",
+    "registryIntegrity": "sha512-m8ArJUtVcQMSe1lLE/Ei7vX/JV7O39sWmWBsXV2NOU70F0qCp8GubA24pT3LnwTmM6LL2xV80/h6sQg85n69ew==",
+    "commit": "f07218c4d4bbc12bef056a7058c3dd49dfe41abe",
+    "url": "https://codeload.github.com/earendil-works/pi/tar.gz/f07218c4d4bbc12bef056a7058c3dd49dfe41abe",
+    "sha256": "f6ba24ed7e1e6dbda1844ca55c61e20e3ef21e5cc66f9eb2e0611318f6c46c15"
+  },
+  "downstream": {
+    "file": "earendil-works-pi-coding-agent-0.87.2-rau.1.tgz",
+    "sha256": "fc98a74c1d38b38df44ff91bf0b24ba05616b50ceb4b508dc493146ba4aab865",
+    "sourcePackageJsonSha256": "d8d9ec21cf5fe16a748c6ef97ad8d053912ad5a049850dd236ac9003ef2959fa",
+    "sourceLockSha256": "ff0d62f99de50e67b7e5e98d8e6e0b8d203eebc1ba25a917aa94dd22febc4df8",
+    "sourceOverrides": {
+      "protobufjs": "7.6.6",
+      "minimatch@10.2.6": {
+        "brace-expansion": "5.0.12"
+      }
+    },
+    "toolchain": {
+      "node": "26.7.0",
+      "npm": "11.19.0",
+      "GOMAXPROCS": 2,
+      "nodeHeapMiB": 1024
+    },
+    "version": "0.87.2-rau.1"
+  },
+  "modelData": {
+    "package": "@earendil-works/pi-ai",
+    "version": "0.87.1",
+    "gitHead": "f07218c4d4bbc12bef056a7058c3dd49dfe41abe",
+    "tarball": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-0.87.1.tgz",
+    "integrity": "sha512-X/3PfQBnnoeVdO9Cv8zHghUMglzlgNZYGNzoPnbRoGnHl3Rw3TlA2UKSUB7BRHUOxMryHXYa8dnjWZlbRheDZA==",
+    "sha256": "35b4432f27cc2665f86beebb9af6a39b1251970883c3044bd8be4f4e8c731ca0",
+    "handling": "Copy package/dist/providers/data unchanged into packages/ai/src/providers/data. Offline source validation passed."
+  },
+  "baseline": {
+    "bundleFiles": 56,
+    "byteIdenticalToPublished": 56
+  },
+  "verification": {
+    "benignPatternsEquivalent": 8,
+    "advisoryPatternsBounded": 5,
+    "packedBraceExpansion": "5.0.12",
+    "consumerOverride": {
+      "minimatch@10.2.6": {
+        "brace-expansion": "5.0.12"
+      }
+    },
+    "fileTarballShrinkwrap": "npm file manifest strips registry _hasShrinkwrap. The consuming root lock and scoped override pin actual installed dependencies; the source rebuild fixes embedded code. No marker added."
+  }
+}
