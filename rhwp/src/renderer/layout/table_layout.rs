@@ -4682,6 +4682,13 @@ impl LayoutEngine {
                             // [Task #573] layout_composed_paragraph 의 run_tacs 가
                             // 인라인 TAC 표를 이미 렌더하고 set_inline_shape_position
                             // 등록했다면 중복 emit 방지 (Equation 의 L1800 가드와 동일 패턴).
+                            // [중첩 TAC] 빈 문단의 TAC 순번→줄 매핑(그림/도형 분기)을 표의 저장 줄
+                            // 다음으로 맞춘다. 빠뜨리면 다음 줄 표 뒤의 그림이 한 줄 앞에 놓이고,
+                            // 무조건 1 을 더하면 앞 그림과 같은 줄의 표가 뒤 그림을 한 줄 밀어낸다.
+                            if all_runs_empty && para.line_segs.len() > 1 {
+                                let host_line = nested_tac_host_line_index(para, ctrl_idx);
+                                tac_seq_index = tac_seq_index.max(host_line + 1);
+                            }
                             let already_rendered_inline = tree
                                 .get_inline_shape_position(
                                     section_index,
@@ -4698,6 +4705,44 @@ impl LayoutEngine {
                             let tac_om_r =
                                 hwpunit_to_px(nested_table.outer_margin_right as i32, self.dpi);
                             if already_rendered_inline {
+                                // [중첩 TAC] 인라인으로 이미 그린 표도 줄 추적기를 갱신한다.
+                                // 갱신하지 않으면 같은 저장 줄의 다음 그림/도형이 줄 변경으로
+                                // 보고 inline_x 를 줄 시작으로 되돌려 표 전진 폭을 지운다.
+                                let host_line_index = nested_tac_host_line_index(para, ctrl_idx);
+                                if host_line_index > current_tac_line {
+                                    let line_w = tac_line_widths
+                                        .get(host_line_index)
+                                        .copied()
+                                        .unwrap_or(total_inline_width);
+                                    let line_margin = effective_margin_left_line(
+                                        para_margin_left_px,
+                                        para_indent_px,
+                                        host_line_index,
+                                    );
+                                    inline_x = match para_alignment {
+                                        Alignment::Center | Alignment::Distribute => {
+                                            inner_area.x
+                                                + (inner_area.width - line_w).max(0.0) / 2.0
+                                        }
+                                        Alignment::Right => {
+                                            inner_area.x + (inner_area.width - line_w).max(0.0)
+                                        }
+                                        _ => inner_area.x + line_margin,
+                                    };
+                                    current_tac_line = host_line_index;
+                                    if let Some(seg) = para.line_segs.get(host_line_index) {
+                                        let first_vpos = para
+                                            .line_segs
+                                            .first()
+                                            .map(|f| f.vertical_pos)
+                                            .unwrap_or(0);
+                                        tac_img_y = para_y_before_compose
+                                            + hwpunit_to_px(
+                                                seg.vertical_pos - first_vpos,
+                                                self.dpi,
+                                            );
+                                    }
+                                }
                                 inline_x += tac_om_l + tac_w + tac_om_r;
                             } else {
                                 // [Task #1195] 표 앞에 텍스트(공백 등)가 선행하면, 한컴은
@@ -14064,5 +14109,337 @@ mod wrapper_left_margin_unwrap_tests {
             paper.x,
             COL_X + margin
         );
+    }
+}
+
+#[cfg(test)]
+mod nested_tac_mixed_control_line_tests {
+    use super::LayoutEngine;
+    use crate::model::bin_data::BinDataContent;
+    use crate::model::control::Control;
+    use crate::model::image::Picture;
+    use crate::model::paragraph::{LineSeg, Paragraph};
+    use crate::model::shape::{CommonObjAttr, HorzAlign, HorzRelTo, TextWrap, VertRelTo};
+    use crate::model::style::Alignment;
+    use crate::model::table::{Cell, Table};
+    use crate::renderer::page_layout::LayoutRect;
+    use crate::renderer::render_tree::{BoundingBox, PageRenderTree, RenderNode, RenderNodeType};
+    use crate::renderer::style_resolver::ResolvedStyleSet;
+    use crate::renderer::{hwpunit_to_px, DEFAULT_DPI};
+
+    const PIC_W: u32 = 2_000;
+    const TBL_W: u32 = 3_000;
+    const OBJ_H: u32 = 1_500;
+    const LINE_STEP: i32 = 1_800;
+    const EPS: f64 = 0.5;
+    const PIC_BIN_ID: u16 = 1;
+
+    #[derive(Clone, Copy)]
+    enum C {
+        Pic,
+        Tbl,
+    }
+
+    fn tac_common(width: u32) -> CommonObjAttr {
+        CommonObjAttr {
+            width,
+            height: OBJ_H,
+            treat_as_char: true,
+            ..Default::default()
+        }
+    }
+
+    fn control(c: C) -> Control {
+        match c {
+            C::Pic => {
+                let mut pic = Picture {
+                    common: tac_common(PIC_W),
+                    ..Default::default()
+                };
+                pic.shape_attr.current_width = PIC_W;
+                pic.shape_attr.current_height = OBJ_H;
+                pic.image_attr.bin_data_id = PIC_BIN_ID;
+                Control::Picture(Box::new(pic))
+            }
+            C::Tbl => Control::Table(Box::new(Table {
+                row_count: 1,
+                col_count: 1,
+                cells: vec![Cell {
+                    row: 0,
+                    col: 0,
+                    row_span: 1,
+                    col_span: 1,
+                    width: TBL_W,
+                    height: OBJ_H,
+                    paragraphs: vec![Paragraph::default()],
+                    ..Default::default()
+                }],
+                common: tac_common(TBL_W),
+                ..Default::default()
+            })),
+        }
+    }
+
+    /// 텍스트(ASCII) 뒤에 컨트롤을 8 UTF-16 단위씩 두고, `line_starts` 마다 저장 줄을 만든다.
+    fn para(text: &str, ctrls: &[C], line_starts: &[u32], step: i32) -> Paragraph {
+        let n = text.encode_utf16().count() as u32;
+        Paragraph {
+            text: text.to_string(),
+            char_offsets: (0..n).collect(),
+            char_count: n + 8 * ctrls.len() as u32 + 1,
+            controls: ctrls.iter().map(|&c| control(c)).collect(),
+            line_segs: line_starts
+                .iter()
+                .enumerate()
+                .map(|(i, &text_start)| LineSeg {
+                    text_start,
+                    vertical_pos: i as i32 * step,
+                    line_height: OBJ_H as i32,
+                    text_height: OBJ_H as i32,
+                    baseline_distance: OBJ_H as i32 * 85 / 100,
+                    line_spacing: LINE_STEP - OBJ_H as i32,
+                    segment_width: 10_000,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[derive(Debug)]
+    struct Laid {
+        tables: Vec<(f64, f64, f64, f64)>,
+        images: Vec<(f64, f64, f64, f64)>,
+    }
+
+    fn collect(node: &RenderNode, out: &mut Laid) {
+        let b: BoundingBox = node.bbox;
+        let r = (b.x, b.y, b.width, b.height);
+        match node.node_type {
+            RenderNodeType::Table(_) => out.tables.push(r),
+            RenderNodeType::Image(_) => out.images.push(r),
+            _ => {}
+        }
+        node.children.iter().for_each(|c| collect(c, out));
+    }
+
+    /// 합성 1x1 RGBA PNG. 외부 자산 없이 매번 같은 바이트를 만든다.
+    fn pixel_png() -> Vec<u8> {
+        use image::ImageEncoder;
+        let mut bytes = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut bytes)
+            .write_image(
+                &[0x40, 0x80, 0xC0, 0xFF],
+                1,
+                1,
+                image::ExtendedColorType::Rgba8,
+            )
+            .expect("1x1 PNG 인코딩");
+        let decoded = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+            .expect("1x1 PNG 디코딩");
+        assert_eq!((decoded.width(), decoded.height()), (1, 1), "PNG 크기");
+        bytes
+    }
+
+    /// 실제 layout_table 로 외곽 2x1 표(첫 셀 문단 하나)를 조판한다. tables[0] 은 외곽 표.
+    /// 1x1 이면 보이는 텍스트 없는 셀이 래퍼 unwrap 경로로 빠져 그림과 외곽 표가 사라진다.
+    fn layout(p: Paragraph) -> Laid {
+        let outer = Table {
+            row_count: 2,
+            col_count: 1,
+            cells: vec![
+                Cell {
+                    row: 0,
+                    col: 0,
+                    row_span: 1,
+                    col_span: 1,
+                    width: 10_000,
+                    height: 10_000,
+                    paragraphs: vec![p],
+                    ..Default::default()
+                },
+                Cell {
+                    row: 1,
+                    col: 0,
+                    row_span: 1,
+                    col_span: 1,
+                    width: 10_000,
+                    height: 10_000,
+                    paragraphs: vec![Paragraph::default()],
+                    ..Default::default()
+                },
+            ],
+            common: CommonObjAttr {
+                width: 10_000,
+                height: 20_000,
+                text_wrap: TextWrap::TopAndBottom,
+                vert_rel_to: VertRelTo::Para,
+                horz_rel_to: HorzRelTo::Column,
+                horz_align: HorzAlign::Left,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let png = pixel_png();
+        let bin = BinDataContent {
+            id: PIC_BIN_ID,
+            data: png.clone().into(),
+            extension: "png".to_string(),
+        };
+        let eng = LayoutEngine::new(DEFAULT_DPI);
+        let mut tree = PageRenderTree::new(0, 800.0, 1100.0);
+        let area = LayoutRect {
+            x: 100.0,
+            y: 120.0,
+            width: 500.0,
+            height: 800.0,
+        };
+        let mut col = RenderNode::new(
+            tree.next_id(),
+            RenderNodeType::Column(0),
+            BoundingBox::new(area.x, area.y, area.width, area.height),
+        );
+        let styles = ResolvedStyleSet::default();
+        eng.layout_table(
+            &mut tree,
+            &mut col,
+            &outer,
+            0,
+            &styles,
+            0,
+            &area,
+            area.y,
+            std::slice::from_ref(&bin),
+            None,
+            0,
+            Some((0, 0)),
+            Alignment::Left,
+            None,
+            0.0,
+            0.0,
+            None,
+            None,
+            Some(area.y),
+            false,
+            false,
+            false,
+        );
+        let mut laid = Laid {
+            tables: Vec::new(),
+            images: Vec::new(),
+        };
+        collect(&col, &mut laid);
+        laid
+    }
+
+    fn counts(l: &Laid, images: usize) {
+        assert_eq!(l.tables.len(), 2, "want outer+nested table nodes: {l:?}");
+        assert_eq!(l.images.len(), images, "want {images} image nodes: {l:?}");
+    }
+
+    fn near(got: f64, want: f64, what: &str, l: &Laid) {
+        assert!(
+            (got - want).abs() <= EPS,
+            "{what}: got {got:.2}, want {want:.2}; {l:?}"
+        );
+    }
+
+    fn px(hu: i32) -> f64 {
+        hwpunit_to_px(hu, DEFAULT_DPI)
+    }
+
+    #[test]
+    fn picture_then_table_on_one_stored_line_table_starts_at_picture_right_edge_same_top() {
+        let l = layout(para("", &[C::Pic, C::Tbl], &[0], LINE_STEP));
+        counts(&l, 1);
+        let (pic, tbl) = (l.images[0], l.tables[1]);
+        near(tbl.0, pic.0 + pic.2, "table x vs picture right", &l);
+        near(tbl.1, pic.1, "table top vs picture top", &l);
+    }
+
+    #[test]
+    fn text_table_picture_on_one_stored_line_picture_starts_at_table_right_edge_same_top() {
+        let l = layout(para("A", &[C::Tbl, C::Pic], &[0], LINE_STEP));
+        counts(&l, 1);
+        let (tbl, pic) = (l.tables[1], l.images[0]);
+        near(pic.0, tbl.0 + tbl.2, "picture x vs table right", &l);
+        near(pic.1, tbl.1, "picture top vs table top", &l);
+    }
+
+    #[test]
+    fn empty_para_picture_table_picture_on_lines_0_1_2_follow_each_line_vpos_and_start() {
+        let l = layout(para("", &[C::Pic, C::Tbl, C::Pic], &[0, 8, 16], LINE_STEP));
+        counts(&l, 2);
+        let (p0, tbl, p2) = (l.images[0], l.tables[1], l.images[1]);
+        near(
+            tbl.1 - p0.1,
+            px(LINE_STEP),
+            "table (line 1) top - picture (line 0) top",
+            &l,
+        );
+        near(
+            p2.1 - p0.1,
+            px(2 * LINE_STEP),
+            "picture (line 2) top - line 0 top",
+            &l,
+        );
+        near(tbl.0, p0.0, "table x resets to line start", &l);
+        near(p2.0, p0.0, "line-2 picture x resets to line start", &l);
+    }
+
+    #[test]
+    fn text_then_table_and_picture_on_next_stored_line_keep_table_advance_and_line_vpos() {
+        let one = layout(para("A", &[C::Tbl, C::Pic], &[0, 1], 0));
+        let two = layout(para("A", &[C::Tbl, C::Pic], &[0, 1], LINE_STEP));
+        counts(&one, 1);
+        counts(&two, 1);
+        let (tbl, pic) = (two.tables[1], two.images[0]);
+        near(
+            tbl.1 - one.tables[1].1,
+            px(LINE_STEP),
+            "table moves by line-1 vpos",
+            &two,
+        );
+        near(
+            tbl.0,
+            one.tables[1].0,
+            "table x is line start on either layout",
+            &two,
+        );
+        near(
+            pic.0,
+            tbl.0 + tbl.2,
+            "picture after table on shared line keeps advance",
+            &two,
+        );
+        near(pic.1, tbl.1, "picture top vs table top on line 1", &two);
+    }
+
+    #[test]
+    fn empty_para_picture_table_share_line_0_then_pictures_follow_lines_1_and_2() {
+        let l = layout(para(
+            "",
+            &[C::Pic, C::Tbl, C::Pic, C::Pic],
+            &[0, 16, 24],
+            LINE_STEP,
+        ));
+        counts(&l, 3);
+        let (p0, tbl, p2, p3) = (l.images[0], l.tables[1], l.images[1], l.images[2]);
+        near(tbl.0, p0.0 + p0.2, "table x vs line-0 picture right", &l);
+        near(tbl.1, p0.1, "table top vs line-0 picture top", &l);
+        near(
+            p2.1 - p0.1,
+            px(LINE_STEP),
+            "picture (line 1) top - line 0 top",
+            &l,
+        );
+        near(
+            p3.1 - p0.1,
+            px(2 * LINE_STEP),
+            "picture (line 2) top - line 0 top",
+            &l,
+        );
+        near(p2.0, p0.0, "line-1 picture x resets to line start", &l);
+        near(p3.0, p0.0, "line-2 picture x resets to line start", &l);
     }
 }
