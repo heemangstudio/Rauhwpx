@@ -44,6 +44,45 @@ pub(super) fn effective_margin_left_line(margin_left: f64, indent: f64, line_n: 
     margin_left + line_indent
 }
 
+/// [중첩 TAC] 문단의 control_index 번째 컨트롤이 놓인 LINE_SEG 인덱스.
+///
+/// 기본 규칙은 `inline_control_line_index` (layout.rs) 와 같다. 컨트롤 위치 이하인
+/// 마지막 LINE_SEG 를 고르고, 위치 정보가 없으면 첫 줄로 본다.
+/// char_offsets 가 없는 빈 텍스트 문단에서는 `control_text_positions` 가 서수
+/// (0,1,..)를 돌려주지만 LINE_SEG 의 text_start 는 컨트롤당 8 단위 원시 위치
+/// (0,8,..)라 단위가 어긋난다. 앞선 컨트롤이 모두 인라인(서수 = 인덱스)이고
+/// text_start 가 모두 8 의 배수면 원시 단위(control_index × 8)로 비교한다.
+/// 비인라인 컨트롤(secd/cold/필드 등)이 앞서면 원시 위치를 확정할 수 없어
+/// 서수 그대로 비교한다.
+fn nested_tac_host_line_index(para: &Paragraph, control_index: usize) -> usize {
+    if para.line_segs.len() <= 1 {
+        return 0;
+    }
+    let positions = para.control_text_positions();
+    let Some(&text_pos) = positions.get(control_index) else {
+        return 0;
+    };
+    let ctrl_pos = if para.char_offsets.is_empty()
+        && para.text.is_empty()
+        && positions[..=control_index]
+            .iter()
+            .enumerate()
+            .all(|(i, &p)| p == i)
+        && para.line_segs.iter().all(|ls| ls.text_start % 8 == 0)
+    {
+        control_index * 8
+    } else {
+        text_pos
+    };
+    para.line_segs
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, ls)| (ls.text_start as usize) <= ctrl_pos)
+        .map(|(i, _)| i)
+        .unwrap_or(0)
+}
+
 fn cell_para_line_anchor_y(
     base_y: f64,
     content_cell_y: f64,
@@ -4668,20 +4707,55 @@ impl LayoutEngine {
                                 // 이미지 TAC 분기(L2231)와 동일하게 para_y_before_compose 에
                                 // (표 line_seg.vpos − 첫 line_seg.vpos) 상대 오프셋을 더한다.
                                 // (para_y_before_compose 에 이미 ls[0].vpos 가 누적되어 있음.)
-                                let table_anchor_y = if has_preceding_text
-                                    && para.line_segs.len() > 1
-                                {
+                                // [중첩 TAC] 표가 놓인 호스트 줄은 control 위치로 고른다.
+                                // 선행 텍스트 표(#1195)는 그 줄이 곧 표 줄이고, 단일 줄이나
+                                // 첫 줄 표는 오프셋 0 이라 기존과 같다.
+                                let host_line_index = nested_tac_host_line_index(para, ctrl_idx);
+                                let host_seg = para.line_segs.get(host_line_index);
+                                // 표가 다음 저장 줄로 넘어가면 inline_x 를 그 줄의 시작으로
+                                // 되돌린다. 그림/도형과 같은 current_tac_line 을 써서 같은 줄의
+                                // 앞선 TAC 누적 폭을 지우지 않는다.
+                                if host_line_index > current_tac_line {
+                                    let line_w = tac_line_widths
+                                        .get(host_line_index)
+                                        .copied()
+                                        .unwrap_or(total_inline_width);
+                                    let line_margin = effective_margin_left_line(
+                                        para_margin_left_px,
+                                        para_indent_px,
+                                        host_line_index,
+                                    );
+                                    inline_x = match para_alignment {
+                                        Alignment::Center | Alignment::Distribute => {
+                                            inner_area.x
+                                                + (inner_area.width - line_w).max(0.0) / 2.0
+                                        }
+                                        Alignment::Right => {
+                                            inner_area.x + (inner_area.width - line_w).max(0.0)
+                                        }
+                                        _ => inner_area.x + line_margin,
+                                    };
+                                    current_tac_line = host_line_index;
+                                    if let Some(seg) = host_seg {
+                                        let first_vpos = para
+                                            .line_segs
+                                            .first()
+                                            .map(|f| f.vertical_pos)
+                                            .unwrap_or(0);
+                                        tac_img_y = para_y_before_compose
+                                            + hwpunit_to_px(
+                                                seg.vertical_pos - first_vpos,
+                                                self.dpi,
+                                            );
+                                    }
+                                }
+                                let table_anchor_y = {
                                     let first_vpos =
                                         para.line_segs.first().map(|f| f.vertical_pos).unwrap_or(0);
-                                    let tbl_vpos = para
-                                        .line_segs
-                                        .last()
-                                        .map(|s| s.vertical_pos)
-                                        .unwrap_or(first_vpos);
+                                    let host_vpos =
+                                        host_seg.map(|s| s.vertical_pos).unwrap_or(first_vpos);
                                     para_y_before_compose
-                                        + hwpunit_to_px(tbl_vpos - first_vpos, self.dpi)
-                                } else {
-                                    para_y_before_compose
+                                        + hwpunit_to_px(host_vpos - first_vpos, self.dpi)
                                 };
                                 // [#7150] 본문 경로와 같은 규칙: TAC 표가 차지하는 저장 줄의
                                 // lh 가 (표 높이 + outMargin 상/하)를 포함하면 한컴은 표를
@@ -4696,9 +4770,7 @@ impl LayoutEngine {
                                 );
                                 let tac_stored_lh_covers_om = (tac_om_top > 0.0
                                     || tac_om_bottom > 0.0)
-                                    && para
-                                        .line_segs
-                                        .last()
+                                    && host_seg
                                         .map(|s| {
                                             let lh = hwpunit_to_px(s.line_height, self.dpi);
                                             let expect = hwpunit_to_px(
@@ -4716,37 +4788,8 @@ impl LayoutEngine {
                                 } else {
                                     table_anchor_y
                                 };
-                                // [#7150 계약 확장] 위 분기의 `tac_stored_lh_covers_om` 이
-                                // `line_segs.last()` 만 보므로, 선행 텍스트가 없는데
-                                // segs 가 여러 줄인 호스트(첫 seg 가 표의 저장 줄)는
-                                // 잡지 못한다. 그 경우만 first seg 로 같은 근거를 검사한다.
-                                // 이미 om_top 을 더한 경우(tac_stored_lh_covers_om 또는
-                                // native_saved_text_frame_outer_box)에는 추가하지 않는다.
-                                let table_anchor_y = {
-                                    let host_seg = if has_preceding_text && para.line_segs.len() > 1
-                                    {
-                                        None
-                                    } else {
-                                        para.line_segs.first()
-                                    };
-                                    let seg_covers_om = host_seg.is_some_and(|seg| {
-                                        let seg_lh = hwpunit_to_px(seg.line_height, self.dpi);
-                                        let box_h = hwpunit_to_px(
-                                            nested_table.common.height as i32,
-                                            self.dpi,
-                                        ) + tac_om_top
-                                            + tac_om_bottom;
-                                        (box_h - 0.2..=box_h + 0.2).contains(&seg_lh)
-                                    });
-                                    if !native_saved_text_frame_outer_box
-                                        && !tac_stored_lh_covers_om
-                                        && seg_covers_om
-                                    {
-                                        table_anchor_y + tac_om_top
-                                    } else {
-                                        table_anchor_y
-                                    }
-                                };
+                                // [#7150] 여백 포함 검사는 위 host_seg 하나로 한다. 단일 줄,
+                                // 첫 줄 표, 선행 텍스트 표 모두 표가 놓인 저장 줄을 본다.
                                 let ctrl_area = LayoutRect {
                                     x: inline_x + tac_om_l,
                                     y: table_anchor_y,
