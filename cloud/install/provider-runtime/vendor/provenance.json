@@ -50,6 +50,11 @@
         "brace-expansion": "5.0.12"
       }
     },
-    "fileTarballShrinkwrap": "npm file manifest strips registry _hasShrinkwrap. The consuming root lock and scoped override pin actual installed dependencies; the source rebuild fixes embedded code. No marker added."
+    "fileTarballShrinkwrap": "npm file manifest strips registry _hasShrinkwrap. The consuming root lock and scoped override pin actual installed dependencies; the source rebuild fixes embedded code. No marker added.",
+    "bundle": {
+      "file": "dist/bundle/chunks/chunk-BV2FSYHH.js",
+      "sha256": "7edbdbe861d109d3f06f56d689aa7c0d3a804b140b159b6ac311c2ffcace7e89",
+      "braceRegionSha256": "6b55038eb49f5e06193751e2531baa7fc16a4f4b50f7feed49c71a9968c3250d"
+    }
   }
 }

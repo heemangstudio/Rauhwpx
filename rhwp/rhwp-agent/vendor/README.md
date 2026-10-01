@@ -1,4 +1,4 @@
-# Rebuilding the production provider dependencies
+# Rebuilding the production dependencies
 
 The local tarballs are source rebuilds of the official commits recorded in `provenance.json`. They repair embedded code that root dependency overrides cannot replace. The downstream versions identify these private builds; these packages have not been published to a registry.
 
@@ -21,3 +21,5 @@ Inspect the packed Pi shrinkwrap and actual esbuild chunk. Both must contain the
 Replace the local tarball, record its new SHA-256 and source input hashes, then regenerate the consuming lockfile using `npm install --package-lock-only --ignore-scripts`. For Pi, also retain the consuming root override `"minimatch@10.2.6":{"brace-expansion":"5.0.12"}` and use targeted `npm update brace-expansion --package-lock-only --ignore-scripts` to regenerate its installed dependency resolution. npm file-tarball manifests strip the registry shrinkwrap marker, so the consuming lock remains authoritative. For npm, regenerate in a physical scratch directory with the carrier lock entries removed, then run an actual `npm install --ignore-scripts` to record all real bundled nodes. Check that every unrelated resolution stays unchanged. Do not hand-edit nested dependency versions. Run fresh `npm ci`, `npm run audit:production` across all six directories, and the tooling/provider/runtime checks. The audit gate has no exceptions.
 
 The cloud staging installer copies the provider `vendor` directory, and both cloud Containerfiles copy the provider and agent artifacts before installation. The existing runtime-assets archive and Electron agent glob include the agent vendor directory. Retire these rebuilds when verified upstream artifacts fix both the installed dependency tree and embedded runtime code.
+
+The npm artifact retains the upstream Artistic License 2.0 and license files. Pi retains its upstream MIT license and license files.
