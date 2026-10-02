@@ -17,6 +17,98 @@
 - For sidebar behavior changes, run `npm run test:sidebar`; it uses a fresh headless browser and saves screenshots in `rhwp/rhwp-studio/sidebar-preview/artifacts/`. `npm run build:sidebar` checks the standalone build. Simply starting the preview does not require rerunning these checks.
 - See [the preview guide](rhwp/rhwp-studio/sidebar-preview/README.md) for URL scenarios, storage reset, browser prerequisites, and extension instructions.
 
+# Repository
+
+Rauhwpx is a viewer and editor for Korean HWP/HWPX documents: a Rust engine compiled to WebAssembly, a web editor (`rhwp-studio`) with an AI sidebar, a local agent hub (`rhwp-agent`), an Electron desktop app, and Raucloud. The sidebar supports Claude, Codex and Pi through local CLIs, plus Rau credits. The live MCP tool list is `rhwp/rhwp-agent/tools.mjs`; do not hardcode the tool count in prose. Code comments, commit messages and CLI output are largely Korean; follow the convention of the file you edit. Setup and focused checks are in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+| Path | What lives there |
+| --- | --- |
+| `rhwp/src/` | Rust engine. CLI entry is `rhwp/src/main.rs`; wasm surface is `rhwp/src/wasm_api.rs` |
+| `rhwp/rhwp-studio/` | Studio web editor (TypeScript, no UI framework) |
+| `rhwp/rhwp-agent/` | Local hub, provider adapters, MCP tools |
+| `desktop/` | Electron main process, including every `cloud-*.mjs` desktop client module |
+| `cloud/` | Raucloud worker and control plane: `src/`, `document-runtime/`, `worker/`, `install/` |
+| `rhwp/rau-credits/` | Rau credits and Raucloud broker (Railway service, flat layout, see `RAUCLOUD.md`) |
+| `tests/` | Root Node tests for desktop and Cloud (`desktop-*.test.mjs`, `*cloud*.test.mjs`) |
+| `scripts/`, `.github/workflows/` | Build and CI helpers; workflows are the source of truth for CI commands |
+| `website/` | Product site |
+
+There is no root `src/` and no `rhwp/.cargo/`. `rhwp/README.md` is the only README in `rhwp/`; the English product README is `README.en.md` at the root.
+
+# GitHub
+
+- PRs, CI, branch protection and releases live on `heemangstudio/Rauhwpx` (remote `heemangstudio`). `origin` is the `ghandhitechnology` mirror. Pass `-R heemangstudio/Rauhwpx` to `gh` unless `gh repo set-default` is configured.
+- `main` requires signed commits, linear history, an up-to-date branch and the `Session tests (macos-15)` and `Session tests (windows-latest)` checks. Rebase with `git rebase -S` when commits were created unsigned.
+
+# Setup in a new worktree
+
+Run from the repository root before Studio or agent work:
+
+```sh
+npm run setup        # root, rhwp-studio and rhwp-agent dependencies
+npm run build:wasm   # rhwp/pkg, needed by Studio dev, build, tsc and npm test
+```
+
+Studio `npm test` imports hub modules, so `rhwp/rhwp-agent/node_modules` must exist too. Install the whole package with `npm run setup` rather than adding single packages by hand. Do not share `CARGO_TARGET_DIR` across worktrees. Use `python3`; there is no `python`. macOS has no `timeout`.
+
+# Commands
+
+## Rust engine (from `rhwp/`)
+
+- Toolchain is pinned by `rust-toolchain.toml` and includes `wasm32-unknown-unknown`.
+- Build `cargo build`; tests `cargo test`; one file `cargo test --test <file_stem>`; one function `cargo test --test <file_stem> <fn>`. Integration tests in `tests/` are mostly named `issue_NNNN_*` / `pr_NNNN_*` and load fixtures from `samples/`.
+- Faster optimized build for render comparisons: `cargo build --profile release-test --features native-skia --bin rhwp` (release without LTO).
+- Lint and format: `cargo clippy`, `cargo fmt` (max_width 100). `Cargo.toml` deliberately allows many structural lints pending a phased refactor; do not fix or tighten them in unrelated changes.
+- WASM: `wasm-pack build --target web` (wasm-pack 0.15.0), or `npm run build:wasm` from the root.
+- CLI: `cargo run --bin rhwp -- <command>`. The dispatcher is at the top of `src/main.rs`; subcommands take no `--help`, so read the handler there. Common: `info`, `export-svg|png|pdf|text|markdown|tables|hwpx|hml`, `export-render-tree` (render tree as JSON, the easiest way to inspect layout), `export-structure`, `dump`, `dump-pages`, `diag`, `search`, `convert`, `edit`, `batch`, many `hwp5-*` probes. `capabilities --mcp` generates MCP tool definitions; a test enforces it covers every `--json` command.
+- PDF/PNG export is native-only. `native-skia` enables the Skia backend. `svg2pdf` is a vendored determinism fork in `[patch.crates-io]`; keep the patch.
+
+## Studio (from `rhwp/rhwp-studio/`)
+
+- `npm run dev` serves http://127.0.0.1:7700 and starts its own authenticated hub.
+- `npm test` runs fast Node tests and `../npm/editor/tests`; `npm run test:browser` runs browser integrations (see `tests/README.md`).
+- `npm run build` type-checks and builds.
+- E2E: `npm run e2e:<name>` (puppeteer-core, mostly `--mode=headless`). `npm run e2e:list` discovers scripts; `npm run e2e:check` validates references. See `e2e/README.md`.
+- To drive Studio and a real hub from a script, import `e2e/agent-bench-harness.mjs` (`findAvailablePort`, `startHub`, `startVite`, `ensureChromePath`, `stopServer`) instead of picking ports and env vars by hand.
+
+## Hub (from `rhwp/rhwp-agent/`)
+
+- `npm test`; `npm run typecheck:acp` checks only `agents/backend.mjs`, `agents/acp-session.mjs` and `agents/provider-user-input.mjs`.
+- From the root, `npm start` runs a background hub on 127.0.0.1:5175, `npm stop` stops it, `npm run start:fg` runs it in the foreground. Studio dev does not need it.
+- On Windows every child process needs `windowsHide: true`; use `processTreeSpawnOptions` from `process-tree.mjs`.
+
+## Desktop and Cloud (from the root)
+
+- `npm run test:cloud` runs the root desktop/Cloud tests and `npm --prefix cloud test`.
+- Broker: `npm --prefix rhwp/rau-credits test` (serial).
+- Testing a packaged app from an agent shell: unset `ELECTRON_RUN_AS_NODE` (`env -u ELECTRON_RUN_AS_NODE`). The first launch of a signed build asks for Keychain access, which a person must approve. Signing and release steps are in [docs/releasing.md](docs/releasing.md).
+
+# Architecture
+
+## Rust engine (`rhwp/src/`)
+
+Pipeline: parser → model → document_core → renderer → serializer, exposed to JS through `wasm_api.rs`.
+
+- `parser/`: HWP 5.0 (CFB, `body_text/`, `doc_info.rs`, `record.rs`), `hwpx/`, `hml/`, `hwp3/`, `ingest/`. All formats converge on one model.
+- `model/`: in-memory document model.
+- `document_core/`: editing layer (`commands/`, `queries/`, `builders/`, `converters/`, table calc, validation). `DocumentCore` is the entry.
+- `renderer/`: `typeset.rs`, `layout/` (`paragraph_layout.rs`, `text_measurement.rs`, `table_layout.rs`), `composer/`, `pagination/`, `render_tree.rs` (`RenderNode`), `skia/` (native), `static_svg.rs`, `pdf.rs`, `web_canvas.rs`. Font metrics are generated into `font_metrics_data.rs` by the `font-metric-gen` bin.
+- `paint/`: paint ops and layer tree, JSON in `paint/json.rs`.
+- `serializer/`: HWPX/HML writers. Roundtrip fidelity is a core concern; many tests are roundtrip contracts.
+- Supporting: `wmf/`, `emf/`, `ole_chart/`, `ooxml_chart/`, `diagnostics/`, `doclang/`.
+
+## Studio (`rhwp/rhwp-studio/src/`)
+
+`engine/` wraps wasm; `core/`, `view/`, `command/`, `history/` (undo), `ui/` (dialogs, command palette, `agent-sidebar/`), `hwpctl/`, `embed/`. `agent/` is the Studio side of the AI bridge: `bridge.ts` (WS client), `tool-executor.ts` (MCP tools against the engine, including `apply_edits`), `pending-edits.ts` and `pending-overlay.ts` (staging). In **안전** successful turns hold staged edits for review; in **전체 접근** they auto-commit as one undo step; any non-successful turn end holds edits for review in both.
+
+## Hub (`rhwp/rhwp-agent/`)
+
+`server.mjs` is the WS hub (`/studio`, `/mcp`, `/healthz`). Adapters: `agents/claude.mjs`, `agents/codex.mjs` (+ `codex-app-server.mjs`), `agents/pi.mjs`; shared briefs in `agents/backend.mjs`. Each CLI spawns `mcp-stdio.mjs`, which forwards tool calls to the hub and on to the Studio tab. Tools are `mcp__rhwp__<name>` in `tools.mjs`. Revision contract: every read returns `revision`, every write requires `expectedRevision`, mismatch returns `REVISION_MISMATCH`; saving does not bump the revision. Coordinates are 0-based body-text `sectionIdx`/`paraIdx`/`charOffset`.
+
+## Other deliverables
+
+`rhwp-chrome/`, `rhwp-firefox/`, `rhwp-safari/`, `rhwp-vscode/`, `npm/editor`, `rhwp-shared/`. `rhwp/pkg/` is generated; `samples/` holds fixtures; `saved/` and `output/` hold generated artifacts.
+
 # Pull Requests
 
 Pull requests should give reviewers enough context to understand the problem, evaluate the approach, and verify the result without reconstructing the work from the diff.
