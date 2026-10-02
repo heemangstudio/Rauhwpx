@@ -44,6 +44,45 @@ pub(super) fn effective_margin_left_line(margin_left: f64, indent: f64, line_n: 
     margin_left + line_indent
 }
 
+/// [중첩 TAC] 문단의 control_index 번째 컨트롤이 놓인 LINE_SEG 인덱스.
+///
+/// 기본 규칙은 `inline_control_line_index` (layout.rs) 와 같다. 컨트롤 위치 이하인
+/// 마지막 LINE_SEG 를 고르고, 위치 정보가 없으면 첫 줄로 본다.
+/// char_offsets 가 없는 빈 텍스트 문단에서는 `control_text_positions` 가 서수
+/// (0,1,..)를 돌려주지만 LINE_SEG 의 text_start 는 컨트롤당 8 단위 원시 위치
+/// (0,8,..)라 단위가 어긋난다. 앞선 컨트롤이 모두 인라인(서수 = 인덱스)이고
+/// text_start 가 모두 8 의 배수면 원시 단위(control_index × 8)로 비교한다.
+/// 비인라인 컨트롤(secd/cold/필드 등)이 앞서면 원시 위치를 확정할 수 없어
+/// 서수 그대로 비교한다.
+fn nested_tac_host_line_index(para: &Paragraph, control_index: usize) -> usize {
+    if para.line_segs.len() <= 1 {
+        return 0;
+    }
+    let positions = para.control_text_positions();
+    let Some(&text_pos) = positions.get(control_index) else {
+        return 0;
+    };
+    let ctrl_pos = if para.char_offsets.is_empty()
+        && para.text.is_empty()
+        && positions[..=control_index]
+            .iter()
+            .enumerate()
+            .all(|(i, &p)| p == i)
+        && para.line_segs.iter().all(|ls| ls.text_start % 8 == 0)
+    {
+        control_index * 8
+    } else {
+        text_pos
+    };
+    para.line_segs
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, ls)| (ls.text_start as usize) <= ctrl_pos)
+        .map(|(i, _)| i)
+        .unwrap_or(0)
+}
+
 fn cell_para_line_anchor_y(
     base_y: f64,
     content_cell_y: f64,
@@ -4643,6 +4682,13 @@ impl LayoutEngine {
                             // [Task #573] layout_composed_paragraph 의 run_tacs 가
                             // 인라인 TAC 표를 이미 렌더하고 set_inline_shape_position
                             // 등록했다면 중복 emit 방지 (Equation 의 L1800 가드와 동일 패턴).
+                            // [중첩 TAC] 빈 문단의 TAC 순번→줄 매핑(그림/도형 분기)을 표의 저장 줄
+                            // 다음으로 맞춘다. 빠뜨리면 다음 줄 표 뒤의 그림이 한 줄 앞에 놓이고,
+                            // 무조건 1 을 더하면 앞 그림과 같은 줄의 표가 뒤 그림을 한 줄 밀어낸다.
+                            if all_runs_empty && para.line_segs.len() > 1 {
+                                let host_line = nested_tac_host_line_index(para, ctrl_idx);
+                                tac_seq_index = tac_seq_index.max(host_line + 1);
+                            }
                             let already_rendered_inline = tree
                                 .get_inline_shape_position(
                                     section_index,
@@ -4659,6 +4705,44 @@ impl LayoutEngine {
                             let tac_om_r =
                                 hwpunit_to_px(nested_table.outer_margin_right as i32, self.dpi);
                             if already_rendered_inline {
+                                // [중첩 TAC] 인라인으로 이미 그린 표도 줄 추적기를 갱신한다.
+                                // 갱신하지 않으면 같은 저장 줄의 다음 그림/도형이 줄 변경으로
+                                // 보고 inline_x 를 줄 시작으로 되돌려 표 전진 폭을 지운다.
+                                let host_line_index = nested_tac_host_line_index(para, ctrl_idx);
+                                if host_line_index > current_tac_line {
+                                    let line_w = tac_line_widths
+                                        .get(host_line_index)
+                                        .copied()
+                                        .unwrap_or(total_inline_width);
+                                    let line_margin = effective_margin_left_line(
+                                        para_margin_left_px,
+                                        para_indent_px,
+                                        host_line_index,
+                                    );
+                                    inline_x = match para_alignment {
+                                        Alignment::Center | Alignment::Distribute => {
+                                            inner_area.x
+                                                + (inner_area.width - line_w).max(0.0) / 2.0
+                                        }
+                                        Alignment::Right => {
+                                            inner_area.x + (inner_area.width - line_w).max(0.0)
+                                        }
+                                        _ => inner_area.x + line_margin,
+                                    };
+                                    current_tac_line = host_line_index;
+                                    if let Some(seg) = para.line_segs.get(host_line_index) {
+                                        let first_vpos = para
+                                            .line_segs
+                                            .first()
+                                            .map(|f| f.vertical_pos)
+                                            .unwrap_or(0);
+                                        tac_img_y = para_y_before_compose
+                                            + hwpunit_to_px(
+                                                seg.vertical_pos - first_vpos,
+                                                self.dpi,
+                                            );
+                                    }
+                                }
                                 inline_x += tac_om_l + tac_w + tac_om_r;
                             } else {
                                 // [Task #1195] 표 앞에 텍스트(공백 등)가 선행하면, 한컴은
@@ -4668,20 +4752,55 @@ impl LayoutEngine {
                                 // 이미지 TAC 분기(L2231)와 동일하게 para_y_before_compose 에
                                 // (표 line_seg.vpos − 첫 line_seg.vpos) 상대 오프셋을 더한다.
                                 // (para_y_before_compose 에 이미 ls[0].vpos 가 누적되어 있음.)
-                                let table_anchor_y = if has_preceding_text
-                                    && para.line_segs.len() > 1
-                                {
+                                // [중첩 TAC] 표가 놓인 호스트 줄은 control 위치로 고른다.
+                                // 선행 텍스트 표(#1195)는 그 줄이 곧 표 줄이고, 단일 줄이나
+                                // 첫 줄 표는 오프셋 0 이라 기존과 같다.
+                                let host_line_index = nested_tac_host_line_index(para, ctrl_idx);
+                                let host_seg = para.line_segs.get(host_line_index);
+                                // 표가 다음 저장 줄로 넘어가면 inline_x 를 그 줄의 시작으로
+                                // 되돌린다. 그림/도형과 같은 current_tac_line 을 써서 같은 줄의
+                                // 앞선 TAC 누적 폭을 지우지 않는다.
+                                if host_line_index > current_tac_line {
+                                    let line_w = tac_line_widths
+                                        .get(host_line_index)
+                                        .copied()
+                                        .unwrap_or(total_inline_width);
+                                    let line_margin = effective_margin_left_line(
+                                        para_margin_left_px,
+                                        para_indent_px,
+                                        host_line_index,
+                                    );
+                                    inline_x = match para_alignment {
+                                        Alignment::Center | Alignment::Distribute => {
+                                            inner_area.x
+                                                + (inner_area.width - line_w).max(0.0) / 2.0
+                                        }
+                                        Alignment::Right => {
+                                            inner_area.x + (inner_area.width - line_w).max(0.0)
+                                        }
+                                        _ => inner_area.x + line_margin,
+                                    };
+                                    current_tac_line = host_line_index;
+                                    if let Some(seg) = host_seg {
+                                        let first_vpos = para
+                                            .line_segs
+                                            .first()
+                                            .map(|f| f.vertical_pos)
+                                            .unwrap_or(0);
+                                        tac_img_y = para_y_before_compose
+                                            + hwpunit_to_px(
+                                                seg.vertical_pos - first_vpos,
+                                                self.dpi,
+                                            );
+                                    }
+                                }
+                                let table_anchor_y = {
                                     let first_vpos =
                                         para.line_segs.first().map(|f| f.vertical_pos).unwrap_or(0);
-                                    let tbl_vpos = para
-                                        .line_segs
-                                        .last()
-                                        .map(|s| s.vertical_pos)
-                                        .unwrap_or(first_vpos);
+                                    let host_vpos =
+                                        host_seg.map(|s| s.vertical_pos).unwrap_or(first_vpos);
                                     para_y_before_compose
-                                        + hwpunit_to_px(tbl_vpos - first_vpos, self.dpi)
-                                } else {
-                                    para_y_before_compose
+                                        + hwpunit_to_px(host_vpos - first_vpos, self.dpi)
                                 };
                                 // [#7150] 본문 경로와 같은 규칙: TAC 표가 차지하는 저장 줄의
                                 // lh 가 (표 높이 + outMargin 상/하)를 포함하면 한컴은 표를
@@ -4696,9 +4815,7 @@ impl LayoutEngine {
                                 );
                                 let tac_stored_lh_covers_om = (tac_om_top > 0.0
                                     || tac_om_bottom > 0.0)
-                                    && para
-                                        .line_segs
-                                        .last()
+                                    && host_seg
                                         .map(|s| {
                                             let lh = hwpunit_to_px(s.line_height, self.dpi);
                                             let expect = hwpunit_to_px(
@@ -4716,37 +4833,8 @@ impl LayoutEngine {
                                 } else {
                                     table_anchor_y
                                 };
-                                // [#7150 계약 확장] 위 분기의 `tac_stored_lh_covers_om` 이
-                                // `line_segs.last()` 만 보므로, 선행 텍스트가 없는데
-                                // segs 가 여러 줄인 호스트(첫 seg 가 표의 저장 줄)는
-                                // 잡지 못한다. 그 경우만 first seg 로 같은 근거를 검사한다.
-                                // 이미 om_top 을 더한 경우(tac_stored_lh_covers_om 또는
-                                // native_saved_text_frame_outer_box)에는 추가하지 않는다.
-                                let table_anchor_y = {
-                                    let host_seg = if has_preceding_text && para.line_segs.len() > 1
-                                    {
-                                        None
-                                    } else {
-                                        para.line_segs.first()
-                                    };
-                                    let seg_covers_om = host_seg.is_some_and(|seg| {
-                                        let seg_lh = hwpunit_to_px(seg.line_height, self.dpi);
-                                        let box_h = hwpunit_to_px(
-                                            nested_table.common.height as i32,
-                                            self.dpi,
-                                        ) + tac_om_top
-                                            + tac_om_bottom;
-                                        (box_h - 0.2..=box_h + 0.2).contains(&seg_lh)
-                                    });
-                                    if !native_saved_text_frame_outer_box
-                                        && !tac_stored_lh_covers_om
-                                        && seg_covers_om
-                                    {
-                                        table_anchor_y + tac_om_top
-                                    } else {
-                                        table_anchor_y
-                                    }
-                                };
+                                // [#7150] 여백 포함 검사는 위 host_seg 하나로 한다. 단일 줄,
+                                // 첫 줄 표, 선행 텍스트 표 모두 표가 놓인 저장 줄을 본다.
                                 let ctrl_area = LayoutRect {
                                     x: inline_x + tac_om_l,
                                     y: table_anchor_y,
@@ -14021,5 +14109,337 @@ mod wrapper_left_margin_unwrap_tests {
             paper.x,
             COL_X + margin
         );
+    }
+}
+
+#[cfg(test)]
+mod nested_tac_mixed_control_line_tests {
+    use super::LayoutEngine;
+    use crate::model::bin_data::BinDataContent;
+    use crate::model::control::Control;
+    use crate::model::image::Picture;
+    use crate::model::paragraph::{LineSeg, Paragraph};
+    use crate::model::shape::{CommonObjAttr, HorzAlign, HorzRelTo, TextWrap, VertRelTo};
+    use crate::model::style::Alignment;
+    use crate::model::table::{Cell, Table};
+    use crate::renderer::page_layout::LayoutRect;
+    use crate::renderer::render_tree::{BoundingBox, PageRenderTree, RenderNode, RenderNodeType};
+    use crate::renderer::style_resolver::ResolvedStyleSet;
+    use crate::renderer::{hwpunit_to_px, DEFAULT_DPI};
+
+    const PIC_W: u32 = 2_000;
+    const TBL_W: u32 = 3_000;
+    const OBJ_H: u32 = 1_500;
+    const LINE_STEP: i32 = 1_800;
+    const EPS: f64 = 0.5;
+    const PIC_BIN_ID: u16 = 1;
+
+    #[derive(Clone, Copy)]
+    enum C {
+        Pic,
+        Tbl,
+    }
+
+    fn tac_common(width: u32) -> CommonObjAttr {
+        CommonObjAttr {
+            width,
+            height: OBJ_H,
+            treat_as_char: true,
+            ..Default::default()
+        }
+    }
+
+    fn control(c: C) -> Control {
+        match c {
+            C::Pic => {
+                let mut pic = Picture {
+                    common: tac_common(PIC_W),
+                    ..Default::default()
+                };
+                pic.shape_attr.current_width = PIC_W;
+                pic.shape_attr.current_height = OBJ_H;
+                pic.image_attr.bin_data_id = PIC_BIN_ID;
+                Control::Picture(Box::new(pic))
+            }
+            C::Tbl => Control::Table(Box::new(Table {
+                row_count: 1,
+                col_count: 1,
+                cells: vec![Cell {
+                    row: 0,
+                    col: 0,
+                    row_span: 1,
+                    col_span: 1,
+                    width: TBL_W,
+                    height: OBJ_H,
+                    paragraphs: vec![Paragraph::default()],
+                    ..Default::default()
+                }],
+                common: tac_common(TBL_W),
+                ..Default::default()
+            })),
+        }
+    }
+
+    /// 텍스트(ASCII) 뒤에 컨트롤을 8 UTF-16 단위씩 두고, `line_starts` 마다 저장 줄을 만든다.
+    fn para(text: &str, ctrls: &[C], line_starts: &[u32], step: i32) -> Paragraph {
+        let n = text.encode_utf16().count() as u32;
+        Paragraph {
+            text: text.to_string(),
+            char_offsets: (0..n).collect(),
+            char_count: n + 8 * ctrls.len() as u32 + 1,
+            controls: ctrls.iter().map(|&c| control(c)).collect(),
+            line_segs: line_starts
+                .iter()
+                .enumerate()
+                .map(|(i, &text_start)| LineSeg {
+                    text_start,
+                    vertical_pos: i as i32 * step,
+                    line_height: OBJ_H as i32,
+                    text_height: OBJ_H as i32,
+                    baseline_distance: OBJ_H as i32 * 85 / 100,
+                    line_spacing: LINE_STEP - OBJ_H as i32,
+                    segment_width: 10_000,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[derive(Debug)]
+    struct Laid {
+        tables: Vec<(f64, f64, f64, f64)>,
+        images: Vec<(f64, f64, f64, f64)>,
+    }
+
+    fn collect(node: &RenderNode, out: &mut Laid) {
+        let b: BoundingBox = node.bbox;
+        let r = (b.x, b.y, b.width, b.height);
+        match node.node_type {
+            RenderNodeType::Table(_) => out.tables.push(r),
+            RenderNodeType::Image(_) => out.images.push(r),
+            _ => {}
+        }
+        node.children.iter().for_each(|c| collect(c, out));
+    }
+
+    /// 합성 1x1 RGBA PNG. 외부 자산 없이 매번 같은 바이트를 만든다.
+    fn pixel_png() -> Vec<u8> {
+        use image::ImageEncoder;
+        let mut bytes = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut bytes)
+            .write_image(
+                &[0x40, 0x80, 0xC0, 0xFF],
+                1,
+                1,
+                image::ExtendedColorType::Rgba8,
+            )
+            .expect("1x1 PNG 인코딩");
+        let decoded = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+            .expect("1x1 PNG 디코딩");
+        assert_eq!((decoded.width(), decoded.height()), (1, 1), "PNG 크기");
+        bytes
+    }
+
+    /// 실제 layout_table 로 외곽 2x1 표(첫 셀 문단 하나)를 조판한다. tables[0] 은 외곽 표.
+    /// 1x1 이면 보이는 텍스트 없는 셀이 래퍼 unwrap 경로로 빠져 그림과 외곽 표가 사라진다.
+    fn layout(p: Paragraph) -> Laid {
+        let outer = Table {
+            row_count: 2,
+            col_count: 1,
+            cells: vec![
+                Cell {
+                    row: 0,
+                    col: 0,
+                    row_span: 1,
+                    col_span: 1,
+                    width: 10_000,
+                    height: 10_000,
+                    paragraphs: vec![p],
+                    ..Default::default()
+                },
+                Cell {
+                    row: 1,
+                    col: 0,
+                    row_span: 1,
+                    col_span: 1,
+                    width: 10_000,
+                    height: 10_000,
+                    paragraphs: vec![Paragraph::default()],
+                    ..Default::default()
+                },
+            ],
+            common: CommonObjAttr {
+                width: 10_000,
+                height: 20_000,
+                text_wrap: TextWrap::TopAndBottom,
+                vert_rel_to: VertRelTo::Para,
+                horz_rel_to: HorzRelTo::Column,
+                horz_align: HorzAlign::Left,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let png = pixel_png();
+        let bin = BinDataContent {
+            id: PIC_BIN_ID,
+            data: png.clone().into(),
+            extension: "png".to_string(),
+        };
+        let eng = LayoutEngine::new(DEFAULT_DPI);
+        let mut tree = PageRenderTree::new(0, 800.0, 1100.0);
+        let area = LayoutRect {
+            x: 100.0,
+            y: 120.0,
+            width: 500.0,
+            height: 800.0,
+        };
+        let mut col = RenderNode::new(
+            tree.next_id(),
+            RenderNodeType::Column(0),
+            BoundingBox::new(area.x, area.y, area.width, area.height),
+        );
+        let styles = ResolvedStyleSet::default();
+        eng.layout_table(
+            &mut tree,
+            &mut col,
+            &outer,
+            0,
+            &styles,
+            0,
+            &area,
+            area.y,
+            std::slice::from_ref(&bin),
+            None,
+            0,
+            Some((0, 0)),
+            Alignment::Left,
+            None,
+            0.0,
+            0.0,
+            None,
+            None,
+            Some(area.y),
+            false,
+            false,
+            false,
+        );
+        let mut laid = Laid {
+            tables: Vec::new(),
+            images: Vec::new(),
+        };
+        collect(&col, &mut laid);
+        laid
+    }
+
+    fn counts(l: &Laid, images: usize) {
+        assert_eq!(l.tables.len(), 2, "want outer+nested table nodes: {l:?}");
+        assert_eq!(l.images.len(), images, "want {images} image nodes: {l:?}");
+    }
+
+    fn near(got: f64, want: f64, what: &str, l: &Laid) {
+        assert!(
+            (got - want).abs() <= EPS,
+            "{what}: got {got:.2}, want {want:.2}; {l:?}"
+        );
+    }
+
+    fn px(hu: i32) -> f64 {
+        hwpunit_to_px(hu, DEFAULT_DPI)
+    }
+
+    #[test]
+    fn picture_then_table_on_one_stored_line_table_starts_at_picture_right_edge_same_top() {
+        let l = layout(para("", &[C::Pic, C::Tbl], &[0], LINE_STEP));
+        counts(&l, 1);
+        let (pic, tbl) = (l.images[0], l.tables[1]);
+        near(tbl.0, pic.0 + pic.2, "table x vs picture right", &l);
+        near(tbl.1, pic.1, "table top vs picture top", &l);
+    }
+
+    #[test]
+    fn text_table_picture_on_one_stored_line_picture_starts_at_table_right_edge_same_top() {
+        let l = layout(para("A", &[C::Tbl, C::Pic], &[0], LINE_STEP));
+        counts(&l, 1);
+        let (tbl, pic) = (l.tables[1], l.images[0]);
+        near(pic.0, tbl.0 + tbl.2, "picture x vs table right", &l);
+        near(pic.1, tbl.1, "picture top vs table top", &l);
+    }
+
+    #[test]
+    fn empty_para_picture_table_picture_on_lines_0_1_2_follow_each_line_vpos_and_start() {
+        let l = layout(para("", &[C::Pic, C::Tbl, C::Pic], &[0, 8, 16], LINE_STEP));
+        counts(&l, 2);
+        let (p0, tbl, p2) = (l.images[0], l.tables[1], l.images[1]);
+        near(
+            tbl.1 - p0.1,
+            px(LINE_STEP),
+            "table (line 1) top - picture (line 0) top",
+            &l,
+        );
+        near(
+            p2.1 - p0.1,
+            px(2 * LINE_STEP),
+            "picture (line 2) top - line 0 top",
+            &l,
+        );
+        near(tbl.0, p0.0, "table x resets to line start", &l);
+        near(p2.0, p0.0, "line-2 picture x resets to line start", &l);
+    }
+
+    #[test]
+    fn text_then_table_and_picture_on_next_stored_line_keep_table_advance_and_line_vpos() {
+        let one = layout(para("A", &[C::Tbl, C::Pic], &[0, 1], 0));
+        let two = layout(para("A", &[C::Tbl, C::Pic], &[0, 1], LINE_STEP));
+        counts(&one, 1);
+        counts(&two, 1);
+        let (tbl, pic) = (two.tables[1], two.images[0]);
+        near(
+            tbl.1 - one.tables[1].1,
+            px(LINE_STEP),
+            "table moves by line-1 vpos",
+            &two,
+        );
+        near(
+            tbl.0,
+            one.tables[1].0,
+            "table x is line start on either layout",
+            &two,
+        );
+        near(
+            pic.0,
+            tbl.0 + tbl.2,
+            "picture after table on shared line keeps advance",
+            &two,
+        );
+        near(pic.1, tbl.1, "picture top vs table top on line 1", &two);
+    }
+
+    #[test]
+    fn empty_para_picture_table_share_line_0_then_pictures_follow_lines_1_and_2() {
+        let l = layout(para(
+            "",
+            &[C::Pic, C::Tbl, C::Pic, C::Pic],
+            &[0, 16, 24],
+            LINE_STEP,
+        ));
+        counts(&l, 3);
+        let (p0, tbl, p2, p3) = (l.images[0], l.tables[1], l.images[1], l.images[2]);
+        near(tbl.0, p0.0 + p0.2, "table x vs line-0 picture right", &l);
+        near(tbl.1, p0.1, "table top vs line-0 picture top", &l);
+        near(
+            p2.1 - p0.1,
+            px(LINE_STEP),
+            "picture (line 1) top - line 0 top",
+            &l,
+        );
+        near(
+            p3.1 - p0.1,
+            px(2 * LINE_STEP),
+            "picture (line 2) top - line 0 top",
+            &l,
+        );
+        near(p2.0, p0.0, "line-1 picture x resets to line start", &l);
+        near(p3.0, p0.0, "line-2 picture x resets to line start", &l);
     }
 }
