@@ -14,7 +14,7 @@ jobs:
       - name: Check out PR head
         uses: actions/checkout@v5
         with:
-          ref: 33a4ca6ac35f7452c603c58985de9652890a475b
+          ref: e6bb49ce1fe7ad289367c1d0e1daa6178e75eb6f
           persist-credentials: false
 
       - name: Set up Node.js
