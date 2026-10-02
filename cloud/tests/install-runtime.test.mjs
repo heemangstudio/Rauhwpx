@@ -10,6 +10,7 @@ import {
   stat,
 } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -22,6 +23,10 @@ test(
   'Linux installer verifies before activation, preserves Serve routes and emits private pairing configuration',
   { skip: process.platform !== 'linux', timeout: 120000 },
   async (t) => {
+    const machine = spawnSync('uname', ['-m'], { encoding: 'utf8' }).stdout.trim();
+    const assetArch = { x86_64: 'amd64', aarch64: 'arm64', arm64: 'arm64' }[machine];
+    assert(assetArch, `Unsupported installer architecture: ${machine}`);
+    const assetName = `rauhwpx-cloud-linux-${assetArch}.tar.gz`;
     const root = await mkdtemp(path.join(tmpdir(), 'rau-install-runtime-'));
     t.after(() => rm(root, { recursive: true, force: true }));
     async function file(name, body, mode = 0o644) {
@@ -137,8 +142,8 @@ esac
       .digest('hex');
     const assets = (tag) => [
       {
-        name: 'rauhwpx-cloud-linux-amd64.tar.gz',
-        browser_download_url: `https://fixture.invalid/${tag}/rauhwpx-cloud-linux-amd64.tar.gz`,
+        name: assetName,
+        browser_download_url: `https://fixture.invalid/${tag}/${assetName}`,
       },
     ];
     await file(
@@ -162,9 +167,6 @@ esac
       '--ro-bind',
       '/lib',
       '/lib',
-      '--ro-bind',
-      '/lib64',
-      '/lib64',
       '--symlink',
       'usr/bin',
       '/bin',
@@ -179,6 +181,8 @@ esac
       process.execPath,
       '/opt/rauhwpx-node/bin/node',
     ];
+    // ARM64 runners resolve their loader through /lib; /lib64 is x86-specific.
+    if (existsSync('/lib64')) binds.push('--ro-bind', '/lib64', '/lib64');
     for (const name of ['apt-get', 'loginctl', 'systemctl', 'pkill'])
       await cp(
         path.join(root, `fixtures/${name}`),
@@ -197,7 +201,7 @@ esac
     ]) {
       await file(
         'fixtures/archive.sha256',
-        `${scenario.hashFail ? '0'.repeat(64) : digest}  rauhwpx-cloud-linux-amd64.tar.gz\n`,
+        `${scenario.hashFail ? '0'.repeat(64) : digest}  ${assetName}\n`,
       );
       await file('serve-routes', 'existing-service /already-in-use\n');
       const args = [
@@ -272,7 +276,7 @@ esac
         assert.match(
           await readFile(path.join(root, 'curl-calls'), 'utf8'),
           new RegExp(
-            `/${scenario.channel === 'prerelease' ? 'preview' : 'stable'}/rauhwpx-cloud-linux-amd64.tar.gz`,
+            `/${scenario.channel === 'prerelease' ? 'preview' : 'stable'}/${assetName}`,
           ),
         );
         assert.equal(
