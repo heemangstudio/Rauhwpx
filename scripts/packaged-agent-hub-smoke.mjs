@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { processTreeSpawnOptions, terminateAndWaitForProcessTreeExit } from '../rhwp/rhwp-agent/process-tree.mjs';
 
 const READY_PREFIX = 'RHWP_HUB_READY ';
 const LOG_LIMIT = 16 * 1024;
@@ -121,18 +122,39 @@ export async function smokePackagedSetupTerminal({ executable, agentDir, timeout
     cwd: agentDir,
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: timeoutMs,
+    ...processTreeSpawnOptions(),
   });
   let output = '';
   child.stdout.on('data', (chunk) => { output = appendLog(output, chunk); });
   child.stderr.on('data', (chunk) => { output = appendLog(output, chunk); });
-  await new Promise((resolve, reject) => {
+  const closed = new Promise((resolve, reject) => {
     child.once('error', reject);
     child.once('close', (code, signal) => {
       if (code === 0 && output.includes('Packaged provider login terminal passed')) resolve();
       else reject(new Error(`Packaged provider login terminal failed (${code ?? signal ?? 'unknown'}):\n${output}`));
     });
   });
+  let timer;
+  let cleanup;
+  const timedOut = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      cleanup = terminateAndWaitForProcessTreeExit(child);
+      reject(new Error(`Packaged provider login terminal timed out after ${timeoutMs}ms:\n${output}`));
+    }, timeoutMs);
+  });
+  try {
+    await Promise.race([closed, timedOut]);
+  } catch (error) {
+    if (!cleanup && child.pid && child.exitCode == null && child.signalCode == null) {
+      cleanup = terminateAndWaitForProcessTreeExit(child);
+    }
+    if (cleanup && !await cleanup) {
+      throw new Error(`Packaged provider login terminal cleanup could not be confirmed: ${error.message}`, { cause: error });
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function smokePackagedAgentHub({ executable, agentDir, timeoutMs = 30_000 }) {
