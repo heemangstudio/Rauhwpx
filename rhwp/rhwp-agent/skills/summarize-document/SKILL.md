@@ -4,7 +4,7 @@ description: Summarize an open HWP/HWPX document or selection into a faithful Ko
 icon: bot
 ---
 
-Read the text with one `get_structure` `text: "full"` (`pages` or `range` for part of the document) and follow its continue hint when the budget cuts it.
+Use the `live_document` block when it shows the text in full; otherwise read it with one `get_structure` `text: "full"` (`pages` or `range` for part of the document) and follow its continue hint when the budget cuts it.
 
 1. Distinguish source facts from inference and do not invent missing context.
 2. Preserve important names, dates, amounts, decisions, obligations, and exceptions.

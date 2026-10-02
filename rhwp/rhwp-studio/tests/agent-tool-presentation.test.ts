@@ -44,6 +44,17 @@ test('접두어를 떼고 인자에서 한 줄 요약을 만든다', () => {
   assert.equal(presentToolCall('edit_object', '{"paraIdx":3,"controlIdx":0,"xMm":20,"yMm":30}').label, '개체 이동');
 });
 
+test('paras 대상은 구간 하나면 문단 범위, 여럿이면 겹침을 합친 문단 수로 보인다', () => {
+  const summary = (tool: string, args: unknown) => presentToolCall(tool, JSON.stringify(args)).summary;
+  assert.equal(summary('apply_char_format', { paras: [[3, 5]], fontSizePt: 14, underline: true }), '4–6문단 · 밑줄 · 14pt');
+  assert.equal(summary('apply_para_format', { paras: [48, [51, 53], [52, 60]], alignment: 'justify' }), '문단 11개 · 양쪽 정렬');
+  assert.equal(summary('apply_style', { sectionIdx: 1, paras: [2, 7], styleId: 3 }), '2구역 문단 2개 · 스타일 3');
+  assert.equal(
+    summary('apply_para_format', { cell: { paraIdx: 4, controlIdx: 0, cellIdx: 1 }, paras: [0, 1], alignment: 'center' }),
+    '표 안 문단 2개 · 가운데 정렬',
+  );
+});
+
 test('apply_edits 와 read_batch 는 항목 수와 항목별 목록을 보인다', () => {
   const edits = presentToolCall('apply_edits', JSON.stringify({
     expectedRevision: 3,
@@ -57,6 +68,19 @@ test('apply_edits 와 read_batch 는 항목 수와 항목별 목록을 보인다
   assert.equal(edits.category, 'edit');
   assert.equal(edits.summary, '텍스트 바꾸기 2 · 글자 서식');
   assert.deepEqual(edits.items.map((item) => item.summary), ['“가” → “나”', '“다” → “라”', '“마” · 굵게']);
+  // find 단축과 옆의 occurrence/position 도 앵커와 같은 요약을 낸다
+  const found = presentToolCall('apply_edits', JSON.stringify({
+    edits: [
+      { tool: 'replace_range', paraIdx: 64, find: '컨셉', text: '콘셉트' },
+      { tool: 'insert_text', find: '세계', occurrence: 2, position: 'before', text: '!' },
+    ],
+  }));
+  assert.deepEqual(found.items.map((item) => item.summary), ['“컨셉” → “콘셉트”', '“세계” 앞 (2번째) · “!”']);
+  // 평평한 항목 {tool, …인자} 와 문자열 앵커도 같은 요약을 낸다
+  const flat = presentToolCall('apply_edits', JSON.stringify({
+    edits: [{ tool: 'replace_range', anchor: '가', text: '나' }, { tool: 'apply_char_format', anchor: { text: '마' }, bold: true }],
+  }));
+  assert.deepEqual(flat.items.map((item) => item.summary), ['“가” → “나”', '“마” · 굵게']);
 
   const reads = presentToolCall('read_batch', JSON.stringify({
     reads: [{ tool: 'get_structure' }, { tool: 'find_text', args: { query: '일정' } }],
@@ -87,6 +111,16 @@ test('결과 줄은 실행기 결과에서 숫자·쪽·경고·그림을 고른
   });
   assert.equal(failed.text, '인자 오류 · 2번째 항목');
   assert.deepEqual(failed.items, [{ ok: true, text: '되돌림' }, { ok: false, text: '인자 오류' }]);
+  // 실패한 항목을 모두 싣는 보고 — 짚인 항목마다 실패로 표시한다
+  const failedBoth = presentToolResult({
+    tool: 'apply_edits', argsJson, ok: false, preview: '',
+    error: {
+      code: 'INVALID_ARGS',
+      message: '2 of 2 edits failed — the whole batch was rolled back, nothing was applied. edits[0] (insert_text): a; edits[1] (delete_range): b. Fix these items and resend the whole batch.',
+    },
+  });
+  assert.equal(failedBoth.text, '인자 오류 · 2개 항목');
+  assert.deepEqual(failedBoth.items, [{ ok: false, text: '인자 오류' }, { ok: false, text: '인자 오류' }]);
 
   assert.equal(presentToolResult({
     tool: 'edit_object', argsJson: '{"xMm":10}', ok: true, preview: '', result: { object: { kind: 'picture' } },

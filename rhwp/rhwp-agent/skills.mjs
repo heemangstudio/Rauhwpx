@@ -566,7 +566,8 @@ export class SkillRegistry {
     });
   }
 
-  async promptContext(text, explicitName, { phase = 'direct', agent = null } = {}) {
+  // requestContext: 사용자 요청 바로 앞에 붙일 턴 맥락 블록 (live_document).
+  async promptContext(text, explicitName, { phase = 'direct', agent = null, requestContext = '' } = {}) {
     const catalog = await this.catalog();
     const enabled = catalog.rows.filter((row) => row.enabled && row.kind !== 'broken');
     const sealed = enabled.find((row) => row.kind === 'sealed') ?? null;
@@ -637,7 +638,7 @@ export class SkillRegistry {
       ? ' Skills shown in <product_skill> blocks are already loaded: when the request matches one, follow it directly without read_product_skill.'
       : '';
     const skills = `<rhwp_product_skills>\nOnly the skills in this catalog are product skills.${loadedNote} If the request clearly matches a skill listed by name only, call read_product_skill for its SKILL.md before acting, then read supporting resources progressively. Do not use provider-global skills.\n${metadata || '(no enabled skills)'}\n</rhwp_product_skills>${activated}`;
-    return `${writingStyle ? `${writingStyle}\n\n` : ''}${humanizer ? `${humanizer}\n\n` : ''}${skills}\n\n<user_request>\n${text}\n</user_request>`;
+    return `${writingStyle ? `${writingStyle}\n\n` : ''}${humanizer ? `${humanizer}\n\n` : ''}${skills}\n\n${requestContext ? `${requestContext}\n\n` : ''}<user_request>\n${text}\n</user_request>`;
   }
 
   async _commit(change) {

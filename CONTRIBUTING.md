@@ -4,7 +4,7 @@ Rauhwpx는 Rust 문서 엔진, Studio 웹 편집기, 로컬 에이전트 허브�
 
 ## 처음 설정하기
 
-- Node 22.18 이상과 npm이 필요합니다.
+- Node 22.19 이상과 npm이 필요합니다.
 - Rust는 rustup으로 설치하세요. `rhwp/rust-toolchain.toml`이 엔진 툴체인과 WASM 타깃을 지정합니다.
 - wasm-pack 0.15.0을 설치하세요. `cargo install wasm-pack --version 0.15.0 --locked`
 - 네이티브 데스크톱 빌드에는 플랫폼 컴파일러가 필요합니다. macOS는 Xcode Command Line Tools, Windows는 Visual Studio Build Tools의 C++ 도구를 사용합니다.

@@ -114,6 +114,15 @@ function solidPngBase64(width, height, [r, g, b]) {
 const bodyParagraphs = (structure) => structure.sections[0].paragraphs;
 
 /**
+ * 줄에 실린 문단·셀 문단 글 — 큰따옴표로 시작하면 양 끝 공백을 드러낸 JSON 문자열이라 풀어서 돌려준다.
+ * 잘림 표시(…, 셀은 …(길이))는 닫는 따옴표 뒤에 온다.
+ */
+function lineText(shown) {
+  const quoted = /^(".*")(…(?:\(\d+\))?)?$/s.exec(shown);
+  return quoted ? JSON.parse(quoted[1]) + (quoted[2] ?? '') : shown;
+}
+
+/**
  * get_structure 기본(compact 텍스트) 결과를 스크립트가 쓰는 모양으로 되읽는다 — 에이전트가 줄 형식을
  * 읽는 것과 같은 정보만 쓴다. 첫 섹션의 문단(빈 문단 연속은 펼친다)과 표 그리드를 돌려준다.
  */
@@ -127,7 +136,7 @@ function parseCompactStructure(result) {
     // 짧은 문단은 길이 뒤에 서식 태그가 붙는다 — "s0 p3 (12 h1 B 14pt) 제목".
     let m = /^s0 p(\d+) \((\d+)(?: [^)]*)?\)(?: (.*))?$/.exec(line);
     if (m) {
-      paragraphs.push({ paraIdx: Number(m[1]), length: Number(m[2]), text: (m[3] ?? '').replace(/…$/, '') });
+      paragraphs.push({ paraIdx: Number(m[1]), length: Number(m[2]), text: lineText(m[3] ?? '').replace(/…$/, '') });
       continue;
     }
     m = /^s0 p(\d+)(?:-p(\d+))? empty$/.exec(line);
@@ -143,8 +152,11 @@ function parseCompactStructure(result) {
     m = /^ {2}r(\d+) (.*)$/.exec(line);
     if (m && tables.length > 0) {
       for (const cell of m[2].split(' | ')) {
+        // cellIdx 뒤에는 스팬과 셀 서식 태그가 올 수 있다 — "[0 cs2 B 22pt]".
         const c = /^\[(\d+)[^\]]*\](?: (.*))?$/.exec(cell);
-        if (c) tables.at(-1).cells.push({ cellIdx: Number(c[1]), row: Number(m[1]), text: c[2] ?? '' });
+        if (!c) continue;
+        const text = (c[2] ?? '').split('⏎').map(lineText).join('⏎');
+        tables.at(-1).cells.push({ cellIdx: Number(c[1]), row: Number(m[1]), text });
       }
     }
   }

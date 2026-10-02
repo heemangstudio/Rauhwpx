@@ -6,29 +6,13 @@ export const PRODUCTION_DIRECTORIES = Object.freeze([
   'cloud', 'cloud/install/provider-runtime', 'rhwp/rau-credits',
 ]);
 
-// npm bundles node-gyp and its undici, so overrides cannot patch them. node-gyp only
-// downloads Node headers with fetch; these advisories need undici's WebSocket client.
-export const ADVISORY_EXCEPTIONS = Object.freeze([
-  Object.freeze({
-    directory: 'rhwp/rhwp-agent',
-    node: 'node_modules/npm/node_modules/undici',
-    advisories: Object.freeze(['GHSA-3wwx-pv8p-q78v', 'GHSA-rfgv-xxqx-mfg5']),
-  }),
-]);
-
 const BLOCKING = new Set(['high', 'critical']);
 
 function advisoryId(via) {
   return via.url?.split('/').pop() ?? String(via.source);
 }
 
-function excepted(directory, vulnerability, via) {
-  return ADVISORY_EXCEPTIONS.some((exception) => exception.directory === directory
-    && vulnerability.nodes.every((node) => node === exception.node)
-    && exception.advisories.includes(advisoryId(via)));
-}
-
-// Returns the high/critical advisories left after exceptions, following transitive
+// Returns all high/critical advisories, following transitive
 // entries (`via` strings) to the package that carries the advisory.
 export function blockingAdvisories(directory, report) {
   const vulnerabilities = report.vulnerabilities ?? {};
@@ -41,7 +25,7 @@ export function blockingAdvisories(directory, report) {
     for (const via of vulnerability?.via ?? []) {
       if (typeof via === 'string') {
         found.push(...visit(via));
-      } else if (BLOCKING.has(via.severity) && !excepted(directory, vulnerability, via)) {
+      } else if (BLOCKING.has(via.severity)) {
         found.push(`${via.name} ${advisoryId(via)} (${via.severity}): ${via.title}`);
       }
     }

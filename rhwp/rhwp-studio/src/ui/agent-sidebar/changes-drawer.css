@@ -223,7 +223,7 @@
   height: 28px;
   padding: 0;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   color: var(--ag-text-secondary);
   background: var(--ag-raised);
   opacity: 0;
@@ -295,7 +295,7 @@
   overflow: visible;
 }
 
-.ag-changes-word-change { border-radius: var(--ag-r-pill); }
+.ag-changes-word-change { border-radius: var(--ag-r-code); }
 .ag-changes-line-add .ag-changes-word-change { background: color-mix(in srgb, var(--ag-ok) 20%, transparent); }
 .ag-changes-line-del .ag-changes-word-change {
   background: color-mix(in srgb, var(--ag-err) 16%, transparent);
@@ -381,7 +381,7 @@
   box-sizing: border-box;
   padding: 0 4px 0 14px;
   border: 1px solid var(--ag-border);
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-card);
   background: var(--ag-input-bg);
   transition: border-color var(--chg-fast) var(--chg-ease), box-shadow var(--chg-fast) var(--chg-ease);
   box-shadow: var(--n-elev-1);
@@ -427,7 +427,7 @@
 .ag-changes-primary {
   height: 32px;
   padding: 0 14px;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   color: var(--ag-primary-fg);
   background: var(--ag-primary-bg);
 }
@@ -437,7 +437,7 @@
 .ag-changes-secondary {
   height: 32px;
   padding: 0 14px;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   color: var(--ag-text);
   background: var(--ag-hover);
 }
@@ -448,7 +448,7 @@
   width: 40px;
   height: 40px;
   padding: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-card);
   color: var(--ag-text-secondary);
   background: transparent;
   transition: var(--ag-transition-color);
@@ -470,7 +470,7 @@
   box-sizing: border-box;
   padding: 0 4px 0 14px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-card);
   background: color-mix(in oklab, var(--ag-err) 8%, transparent);
   font-size: var(--ag-fs-secondary);
   animation: ag-changes-enter var(--chg-base) var(--chg-ease);
@@ -482,7 +482,7 @@
 .ag-changes-danger-solid {
   height: 32px;
   padding: 0 14px;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   color: var(--ag-primary-fg);
   background: var(--ag-err);
 }

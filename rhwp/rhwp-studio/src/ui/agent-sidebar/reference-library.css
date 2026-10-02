@@ -62,7 +62,7 @@
   justify-content: center;
   padding: 0;
   border: 0;
-  border-radius: var(--ag-r-chip);
+  border-radius: var(--ag-r-row);
   background: transparent;
   color: var(--ag-text-secondary);
   cursor: default;
@@ -95,7 +95,7 @@
   min-height: 28px;
   padding: 4px 12px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: var(--n-ink-fill-hover);
   color: var(--ag-text);
   font: inherit;
@@ -144,7 +144,7 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
   padding: 3px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: var(--n-ink-fill-hover);
 }
 
@@ -204,7 +204,7 @@
   height: 32px;
   padding: 0 14px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: var(--n-ink-fill-hover);
   color: var(--ag-text);
   font: inherit;
@@ -448,7 +448,7 @@
 .ag-reference-upload-retry {
   min-height: 24px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-chip);
   padding: 1px 8px;
   background: var(--n-ink-fill-hover);
   color: var(--ag-text);
