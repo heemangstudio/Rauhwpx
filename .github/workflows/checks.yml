@@ -280,7 +280,7 @@ jobs:
         run: |
           npm --prefix cloud ci
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends x11-apps
+          sudo apt-get install -y --no-install-recommends x11-apps bubblewrap
       - name: Test desktop and sandbox cloud contracts
         run: npm run test:cloud
 

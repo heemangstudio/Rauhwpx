@@ -197,7 +197,7 @@ try {
 
     await page.type('.ag-reference-search', 'CHAT_ONLY_MARKER');
     await page.waitForFunction(() => document.querySelector('.ag-reference-search-snippet')?.textContent?.includes('CHAT_ONLY_MARKER'));
-    assert(true, 'chat-scoped file uploads and content search returns its indexed excerpt');
+    assert(await page.$eval('.ag-reference-search-snippet',el=>el.textContent.includes('CHAT_ONLY_MARKER')), 'chat-scoped file uploads and content search returns its indexed excerpt');
     await page.click('.ag-references-close');
 
     await uploadFile(page, {

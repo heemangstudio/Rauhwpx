@@ -232,7 +232,11 @@ export class Toolbar {
       input.focus();
       input.select();
 
+      let committed = false;
       const commit = () => {
+        // Removing the focused input can synchronously trigger blur after Enter.
+        if (committed) return;
+        committed = true;
         const num = parseInt(input.value, 10);
         // format:line-spacing-increase 커맨드(format.ts)와 동일하게 500%로 상한 clamp
         if (num > 0) {
@@ -247,7 +251,7 @@ export class Toolbar {
 
       input.addEventListener('keydown', (ke) => {
         if (ke.key === 'Enter') { ke.preventDefault(); commit(); }
-        else if (ke.key === 'Escape') { input.remove(); this.lsSelect.style.display = ''; }
+        else if (ke.key === 'Escape') { committed = true; input.remove(); this.lsSelect.style.display = ''; }
       });
       input.addEventListener('blur', commit);
     });

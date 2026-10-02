@@ -1,43 +1,57 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { registerHooks } from 'node:module';
 import test from 'node:test';
+registerHooks({ load(url, context, next) {
+  return url.endsWith('.css') ? { format: 'module', source: 'export default {};', shortCircuit: true } : next(url, context);
+} });
+const { AgentBridgeImpl, normalizeReferenceFile, normalizeReferenceSearchHit } = await import('../src/agent/bridge.ts');
 
-const source = readFileSync(new URL('../src/agent/bridge.ts', import.meta.url), 'utf8');
-
-test('reference metadata normalizer accepts defensive backend aliases', () => {
-  assert.match(source, /item\.id \?\? item\.referenceId/);
-  assert.match(source, /item\.name \?\? item\.fileName \?\? item\.filename/);
-  assert.match(source, /item\.size \?\? item\.byteLength/);
-  assert.match(source, /item\.mimeType \?\? item\.contentType/);
-  assert.match(source, /item\.status \?\? item\.state/);
-  assert.match(source, /item\.createdAt \?\? item\.uploadedAt/);
+test('reference aliases normalize values and reject incomplete metadata', () => {
+  const fallback = { scope: 'chat' as const, scopeId: 'chat-1' };
+  assert.deepEqual(normalizeReferenceFile({ referenceId: 'file-1', filename: 'notes.txt', byteLength: 12,
+    contentType: 'text/plain', state: 'ready', uploadedAt: '2026-01-01' }, fallback), {
+    id: 'file-1', name: 'notes.txt', size: 12, mimeType: 'text/plain', status: 'ready',
+    createdAt: '2026-01-01', kind: 'document', ...fallback,
+  });
+  for (const value of [null, [], 'file', {}, { id: 'f' }, { id: '', name: 'n' }]) {
+    assert.equal(normalizeReferenceFile(value, fallback), null);
+  }
+  for (const size of [-1, Infinity, 'invalid']) {
+    assert.equal(normalizeReferenceFile({ id: 'f', name: 'n', size }, fallback)?.size, 0);
+  }
 });
 
-test('search hit normalizer accepts results without injecting content into markup', () => {
-  assert.match(source, /item\.referenceId \?\? item\.fileId \?\? item\.id/);
-  assert.match(source, /item\.snippet \?\? item\.text/);
-  assert.match(source, /typeof item\.chunkId === 'string'/);
-  assert.match(source, /item\.page === null/);
+test('search aliases preserve hostile snippets as data and normalize optional values', () => {
+  const snippet = '<img src=x onerror="window.compromised=true">';
+  assert.deepEqual(normalizeReferenceSearchHit({ fileId: 'f', filename: 'n', text: snippet,
+    score: 'invalid', page: null, chunkIndex: -1 }, { scope: 'document', scopeId: 'd' }), {
+    referenceId: 'f', name: 'n', snippet, score: 0, page: null, scope: 'document', scopeId: 'd',
+  });
+  for (const value of [null, [], {}, { fileId: 1, filename: 'n' }]) {
+    assert.equal(normalizeReferenceSearchHit(value, { scope: 'chat', scopeId: 't' }), null);
+  }
 });
 
-test('bridge sends stable chat scope and uses authenticated streaming HTTP endpoints', () => {
-  assert.match(source, /this\.pendingChatStart = \{[\s\S]*threadId,[\s\S]*documentId,[\s\S]*documentName[\s\S]*history: this\.chatHistory/);
-  assert.match(source, /type: 'chat-start',[\s\S]*\.\.\.pending/);
-  assert.match(source, /type: 'chat-user-message',[\s\S]*threadId: message\.context\.threadId,[\s\S]*documentId: message\.context\.documentId/);
-  assert.match(source, /messageId: message\.messageId, stagedReferenceIds: message\.stagedReferenceIds/);
-  assert.match(source, /case 'chat-reference-status'/);
-  assert.match(source, /context: ReferenceScopeContext/);
-  assert.match(source, /threadId: message\.context\.threadId/);
-  assert.match(source, /documentId: message\.context\.documentId/);
-  assert.match(source, /Authorization: `Bearer \$\{capability\}`/);
-  assert.match(source, /requestUrl\.pathname === '\/templates' \|\| requestUrl\.pathname\.startsWith\('\/templates\/'\)[\s\S]*?this\.templateToken[\s\S]*?this\.referenceToken/);
-  assert.match(source, /this\.referenceUrl\('\/reference-files', \{ scope, scopeId \}\)/);
-  assert.match(source, /this\.referenceUrl\('\/reference-staging', \{ scopeId \}\)/);
-  assert.match(source, /'X-File-Name': encodeURIComponent\(file\.name\)/);
-  assert.match(source, /this\.referenceUrl\('\/reference-search'/);
-  assert.match(source, /q: query/);
-  assert.match(source, /maxResults: Math\.max/);
-  assert.match(source, /body\?\.error\?\.message/);
-  assert.match(source, /`\/reference-files\/\$\{encodeURIComponent\(file\.id\)\}`/);
-  assert.doesNotMatch(source, /type: 'references-(?:list|search)|type: 'reference-(?:upload|delete)/);
+test('reference requests send the selected scope and correct endpoint capability', async (t) => {
+  const requests: { url: URL; headers: Headers }[] = [];
+  t.mock.method(globalThis, 'fetch', async (url: string, init?: RequestInit) => {
+    requests.push({ url: new URL(url), headers: new Headers(init?.headers) });
+    return Response.json({ files: [{ referenceId: 'f', filename: 'notes.txt' }] });
+  });
+  // The network is the test boundary; URL construction, capability selection, parsing and normalization are production methods.
+  const bridge = Object.assign(Object.create(AgentBridgeImpl.prototype), {
+    httpBaseUrl: 'http://hub.test', sessionId: 'session-1',
+    referenceToken: 'references-capability', templateToken: 'templates-capability',
+  });
+  const files = await bridge.listReferences('chat', 'chat-1');
+  assert.equal(files[0].scopeId, 'chat-1');
+  assert.equal(requests[0].url.pathname, '/reference-files');
+  assert.equal(requests[0].url.searchParams.get('sessionId'), 'session-1');
+  assert.equal(requests[0].url.searchParams.get('scope'), 'chat');
+  assert.equal(requests[0].url.searchParams.get('scopeId'), 'chat-1');
+  assert.equal(requests[0].headers.get('Authorization'), 'Bearer references-capability');
+  await bridge.referenceFetch('http://hub.test/templates/template-1');
+  assert.equal(requests[1].headers.get('Authorization'), 'Bearer templates-capability');
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ error: { message: 'scope denied' } }, { status: 403 }));
+  await assert.rejects(bridge.listReferences('document', 'other-document'), /scope denied/);
 });
