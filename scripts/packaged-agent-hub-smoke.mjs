@@ -3,6 +3,8 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { processTreeSpawnOptions, terminateAndWaitForProcessTreeExit } from '../rhwp/rhwp-agent/process-tree.mjs';
 
 const READY_PREFIX = 'RHWP_HUB_READY ';
 const LOG_LIMIT = 16 * 1024;
@@ -78,6 +80,83 @@ async function ownerRequest(baseUrl, pathname, { token, launchId, method = 'GET'
       'x-rhwp-launch-id': launchId,
     },
   });
+}
+
+/** Exercise the same unpacked module and Electron host used by provider login. */
+export async function smokePackagedSetupTerminal({ executable, agentDir, timeoutMs = 10_000 }) {
+  const moduleUrl = pathToFileURL(path.join(agentDir, 'setup-terminal.mjs')).href;
+  const childCode = `
+    process.stdout.write('LOGIN_TTY:' + Boolean(process.stdin.isTTY && process.stdout.isTTY) + '\\n');
+    process.stdin.once('data', (data) => {
+      const received = String(data).trim() === 'package-smoke';
+      console.log(received ? 'LOGIN_INPUT_OK' : 'LOGIN_INPUT_FAILED');
+      process.exit(received ? 0 : 1);
+    });
+  `;
+  const probe = `
+    import assert from 'node:assert/strict';
+    import { createSetupTerminal } from ${JSON.stringify(moduleUrl)};
+    let output = '';
+    let sentInput = false;
+    const terminal = createSetupTerminal({
+      command: process.execPath,
+      argv: ['-e', ${JSON.stringify(childCode)}],
+      cwd: process.cwd(),
+      env: process.env,
+      timeoutMs: 5_000,
+      onOutput(data) {
+        output += data;
+        if (!sentInput && output.includes('LOGIN_TTY:true')) {
+          sentInput = true;
+          terminal.resize(100, 24);
+          terminal.write('package-smoke\\r');
+        }
+      },
+    });
+    assert.equal((await terminal.done).code, 0, output);
+    assert.match(output, /LOGIN_TTY:true/);
+    assert.match(output, /LOGIN_INPUT_OK/);
+    // ConPTY can retain handles after the login child exits. This probe has
+    // verified its result, so flush the marker and end the disposable host.
+    process.stdout.write('Packaged provider login terminal passed\\n', () => process.exit(0));
+  `;
+  const child = spawn(executable, ['--input-type=module', '--eval', probe], {
+    cwd: agentDir,
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    ...processTreeSpawnOptions(),
+  });
+  let output = '';
+  child.stdout.on('data', (chunk) => { output = appendLog(output, chunk); });
+  child.stderr.on('data', (chunk) => { output = appendLog(output, chunk); });
+  const closed = new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', (code, signal) => {
+      if (code === 0 && output.includes('Packaged provider login terminal passed')) resolve();
+      else reject(new Error(`Packaged provider login terminal failed (${code ?? signal ?? 'unknown'}):\n${output}`));
+    });
+  });
+  let timer;
+  let cleanup;
+  const timedOut = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      cleanup = terminateAndWaitForProcessTreeExit(child);
+      reject(new Error(`Packaged provider login terminal timed out after ${timeoutMs}ms:\n${output}`));
+    }, timeoutMs);
+  });
+  try {
+    await Promise.race([closed, timedOut]);
+  } catch (error) {
+    if (!cleanup && child.pid && child.exitCode == null && child.signalCode == null) {
+      cleanup = terminateAndWaitForProcessTreeExit(child);
+    }
+    if (cleanup && !await cleanup) {
+      throw new Error(`Packaged provider login terminal cleanup could not be confirmed: ${error.message}`, { cause: error });
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function smokePackagedAgentHub({ executable, agentDir, timeoutMs = 30_000 }) {
