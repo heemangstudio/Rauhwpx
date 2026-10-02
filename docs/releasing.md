@@ -1,6 +1,6 @@
 # Desktop and cloud releases
 
-Tagged releases publish signed and notarized macOS arm64 DMG/ZIP files, an unsigned Windows x64 NSIS installer, and Linux x64/arm64 AppImage and Debian packages. They also publish signed Linux amd64/arm64 cloud runtimes and cloud sandbox images. Nightly builds publish the macOS and Windows packages. Windows users can see SmartScreen warnings.
+Tagged releases publish signed and notarized macOS arm64 DMG/ZIP files, an unsigned Windows x64 NSIS installer, and Linux x64/arm64 AppImage and Debian packages. They also publish signed Linux amd64/arm64 cloud runtimes and cloud sandbox images. Windows users can see SmartScreen warnings.
 
 ## Tagged release
 
@@ -40,11 +40,9 @@ Do not push `v*` or `cloud-sandbox-v*` Git tags for candidate testing. Those tri
 
 For conversation continuity, deploy the compatible broker before changing the worker image or distributing the new desktop. Preserve `SESSION_SECRET`, `DATABASE_URL` and unrelated staged Railway settings. Confirm the new worker advertises `capabilities.conversationRestore` before sending a task. See [the broker continuity and rollback rules](../rhwp/rau-credits/RAUCLOUD.md#conversation-continuity).
 
-## Nightly
+## Nightly verification
 
-[Nightly verification](../.github/workflows/nightly.yml) starts daily at 03:00 Asia/Seoul, `0 18 * * *` UTC, and also supports manual dispatch. Verification, packaging and publishing share one workflow and commit SHA. Publishing waits for successful verification and both platform packages. A manual run publishes only from `main`.
-
-Each successful publication replaces the [nightly pre-release](https://github.com/heemangstudio/Rauhwpx/releases/tag/nightly) and moves its tag. The app version and artifact names use `<version>-nightly.<date>.<sha>`, where the date is UTC `YYYYMMDD` and the SHA is the first seven commit characters. The publication time depends on verification and build duration.
+[Nightly verification](../.github/workflows/nightly.yml) runs daily at 03:00 Asia/Seoul (`0 18 * * *` UTC) on Blacksmith and also supports manual verification runs. It runs the Rust workspace tests and audits, builds the WASM engine, and uses that exact build for application, browser, security and Cloud checks. Nightly installer builds and GitHub Release publication are disabled.
 
 ## Installing desktop updates
 
@@ -56,7 +54,7 @@ Users on 2.0.1 or earlier should download and install 2.0.2 manually once. The 2
 
 ## Signing and package checks
 
-Both channels use [.github/actions/package-desktop](../.github/actions/package-desktop/action.yml) for macOS and Windows setup, builds and verification. Tagged Linux releases build on native x64 and arm64 runners. macOS jobs use the `macos-release` environment and require these secrets:
+Tagged desktop releases use [.github/actions/package-desktop](../.github/actions/package-desktop/action.yml) for macOS and Windows setup, builds and verification. Tagged Linux releases build on native x64 and arm64 runners. macOS jobs use the `macos-release` environment and require these secrets:
 
 - `MACOS_CERTIFICATE`
 - `MACOS_CERTIFICATE_PASSWORD`
@@ -64,7 +62,7 @@ Both channels use [.github/actions/package-desktop](../.github/actions/package-d
 - `APPLE_TEAM_ID`
 - `APPLE_APP_SPECIFIC_PASSWORD`
 
-Missing secrets fail the macOS job. If the environment requires a reviewer, GitHub waits for that approval. Publishing requires both platforms, so a failed macOS job cannot produce a partial nightly.
+Missing secrets fail the macOS job. If the environment requires a reviewer, GitHub waits for that approval. Tagged publication requires every desktop and cloud build, so a failed macOS job blocks the release.
 
 Keep packaged runtime checks, artifact architecture checks, Developer ID verification and notarization validation when changing this workflow. npm production dependency audits block high and critical advisories. Nightly also reports lower-severity findings for maintenance review.
 

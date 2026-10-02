@@ -27,4 +27,9 @@ test('cost evidence fails closed on unknown runners, wrong heads, incomplete job
     assert.throws(() => modelRun(evidence(overrides)));
   }
   assert.throws(() => modelRun({ jobs: [] }));
+  const missing = evidence();
+  delete missing.head_sha;
+  delete missing.jobs[0].head_sha;
+  assert.throws(() => modelRun(missing), /Missing or invalid run source SHA/);
+  assert.throws(() => modelRun({ ...evidence(), head_sha: 'unknown' }), /Missing or invalid run source SHA/);
 });

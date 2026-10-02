@@ -4,8 +4,7 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Standard hosted compute is free while this repository is public. Keep the
-# existing check names, event selection, and platform architectures intact.
+# Keep every check on Blacksmith; prioritize runtime and cache correct downloads.
 permissions:
   contents: read
 
@@ -16,7 +15,7 @@ concurrency:
 jobs:
   docs:
     name: Docs and website
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
@@ -32,7 +31,7 @@ jobs:
 
   changes:
     name: Select affected checks
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 5
     outputs:
       sessions: ${{ steps.changes.outputs.sessions }}
@@ -58,12 +57,12 @@ jobs:
       matrix:
         include:
           - os: macos-15
-            runner: macos-15
+            runner: blacksmith-6vcpu-macos-15
             architecture: arm64
           - os: windows-latest
-            runner: windows-2025
+            runner: blacksmith-2vcpu-windows-2025
             architecture: x64
-    runs-on: ${{ needs.changes.outputs.sessions == 'false' && 'ubuntu-24.04' || matrix.runner }}
+    runs-on: ${{ needs.changes.outputs.sessions == 'false' && 'blacksmith-2vcpu-ubuntu-2404' || matrix.runner }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
@@ -105,18 +104,18 @@ jobs:
       matrix:
         include:
           - os: macos-15
-            runner: macos-15
+            runner: blacksmith-6vcpu-macos-15
             architecture: arm64
             node: 22.23.3
           - os: windows-latest
-            runner: windows-2025
+            runner: blacksmith-2vcpu-windows-2025
             architecture: x64
             node: 22.23.3
           - os: ubuntu-24.04
-            runner: ubuntu-24.04
+            runner: blacksmith-4vcpu-ubuntu-2404
             architecture: x64
             node: 24
-    runs-on: ${{ needs.changes.outputs.app == 'false' && 'ubuntu-24.04' || matrix.runner }}
+    runs-on: ${{ needs.changes.outputs.app == 'false' && 'blacksmith-2vcpu-ubuntu-2404' || matrix.runner }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
@@ -178,7 +177,7 @@ jobs:
     name: Production dependency container integration
     needs: changes
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-24.04
+    runs-on: ${{ needs.changes.outputs.app == 'false' && 'blacksmith-2vcpu-ubuntu-2404' || 'blacksmith-4vcpu-ubuntu-2404' }}
     timeout-minutes: 90
     env:
       CARGO_BUILD_JOBS: 2
@@ -253,7 +252,7 @@ jobs:
     name: Auth and resource boundary regressions
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.app == 'true') }}
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
@@ -307,7 +306,7 @@ jobs:
     name: Studio browser integration
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.browser == 'true') }}
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 45
     env:
       PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
@@ -334,7 +333,7 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.engine == 'true') }}
     name: Hostile document input boundaries
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 45
 
     steps:

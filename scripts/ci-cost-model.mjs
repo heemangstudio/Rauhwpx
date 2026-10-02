@@ -19,6 +19,9 @@ export const rates = Object.freeze({
 });
 
 export function modelRun(run) {
+  if (typeof run.head_sha !== 'string' || !/^[0-9a-f]{40,64}$/.test(run.head_sha)) {
+    throw new Error('Missing or invalid run source SHA');
+  }
   if (!Array.isArray(run.jobs) || !run.jobs.length) throw new Error('Missing job evidence');
   const jobs = run.jobs.map((job) => {
     if (job.head_sha !== run.head_sha) throw new Error(`Wrong head for job ${job.id}`);
