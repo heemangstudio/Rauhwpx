@@ -1,23 +1,20 @@
-name: PR 427 signed macOS validation
+name: PR 427 Windows ConPTY validation
 
 on:
   workflow_dispatch:
 
 permissions:
   contents: read
-  actions: read
 
 jobs:
-  signed-macos:
-    runs-on: blacksmith-6vcpu-macos-15
-    timeout-minutes: 60
-    environment: macos-release
+  setup-terminal:
+    runs-on: blacksmith-2vcpu-windows-2025
+    timeout-minutes: 10
     steps:
       - name: Check out PR head
         uses: actions/checkout@v5
         with:
-          ref: 7d110f8c97d42108ae1de77bf7cf3c5cf37f0e67
-          fetch-depth: 0
+          ref: 33a4ca6ac35f7452c603c58985de9652890a475b
           persist-credentials: false
 
       - name: Set up Node.js
@@ -25,99 +22,26 @@ jobs:
         with:
           node-version: 22.23.3
           cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            rhwp/rhwp-studio/package-lock.json
-            rhwp/rhwp-agent/package-lock.json
+          cache-dependency-path: rhwp/rhwp-agent/package-lock.json
 
-      - name: Verify reusable engine binaries match this source
+      - name: Install agent production dependencies
+        shell: bash
+        run: npm --prefix rhwp/rhwp-agent ci --omit=dev
+
+      - name: Exercise real Windows terminal and cancellation
+        shell: bash
+        run: node --test rhwp/rhwp-agent/tests/setup-terminal.test.mjs
+
+      - name: Exercise packaged-login probe with Node as host
+        shell: bash
         run: |
-          set -euo pipefail
-          test "$(node -p 'process.arch')" = arm64
-          git diff --quiet v2.0.9 HEAD -- rhwp/Cargo.toml rhwp/Cargo.lock rhwp/src rhwp/assets rhwp/bindings rhwp/build.rs
           node --input-type=module <<'NODE'
-          import assert from 'node:assert/strict';
-          import { execFileSync } from 'node:child_process';
-          const consumers = new Set(['rau-credits', 'rhwp-agent', 'rhwp-chrome', 'rhwp-firefox',
-            'rhwp-safari', 'rhwp-shared', 'rhwp-studio', 'rhwp-vscode']);
-          function engineEntries(ref) {
-            return execFileSync('git', ['ls-tree', '-z', `${ref}:rhwp`], { encoding: 'utf8' })
-              .split('\0').filter(Boolean).filter(entry => !consumers.has(entry.split('\t')[1]));
-          }
-          const current = engineEntries('HEAD');
-          assert.deepEqual(current, engineEntries('ae8cc31c4a3b6467dfb788045035b6e0ed3d25a4'),
-            'PR engine inputs differ from nightly tested-wasm');
-          assert.deepEqual(current, engineEntries('v2.0.9'),
-            'PR engine inputs differ from release native extractor');
+          import path from 'node:path';
+          import { smokePackagedSetupTerminal } from './scripts/packaged-agent-hub-smoke.mjs';
+          await smokePackagedSetupTerminal({
+            executable: process.execPath,
+            agentDir: path.resolve('rhwp/rhwp-agent'),
+            timeoutMs: 15_000,
+          });
+          console.log('Windows ConPTY login probe passed');
           NODE
-
-      - name: Install desktop dependencies
-        run: |
-          set -euo pipefail
-          npm ci
-          npm --prefix rhwp/rhwp-studio ci
-          npm --prefix rhwp/rhwp-agent ci --omit=dev
-
-      - name: Reuse tested WASM artifact
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh run download 36932761506 -R heemangstudio/Rauhwpx -n tested-wasm -D rhwp/pkg
-          for file in rhwp_bg.wasm rhwp.js rhwp.d.ts rhwp_bg.wasm.d.ts package.json; do
-            test -s "rhwp/pkg/${file}"
-          done
-
-      - name: Reuse release native extractor and cloud bootstraps
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          mkdir -p cloud/release rhwp/target/release
-          gh release download v2.0.9 -R heemangstudio/Rauhwpx -p 'Rauhwpx-2.0.9-arm64.zip' -D "${RUNNER_TEMP}"
-          for arch in amd64 arm64; do
-            gh release download v2.0.9 -R heemangstudio/Rauhwpx -p "rauhwpx-cloud-bootstrap-linux-${arch}.tar.gz" -D cloud/release
-            test -s "cloud/release/rauhwpx-cloud-bootstrap-linux-${arch}.tar.gz"
-          done
-          archive="${RUNNER_TEMP}/Rauhwpx-2.0.9-arm64.zip"
-          unzip -Z1 "${archive}" | grep -Fx 'Rauhwpx.app/Contents/Resources/bin/rhwp'
-          unzip -p "${archive}" 'Rauhwpx.app/Contents/Resources/bin/rhwp' > rhwp/target/release/rhwp
-          test -s rhwp/target/release/rhwp
-          chmod 755 rhwp/target/release/rhwp
-          node desktop/stage-native-rhwp.mjs
-
-      - name: Build Studio and sign app without notarization
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: 'true'
-          CSC_NAME: TAEWOOK HA (C8M34MMT8W)
-          CSC_LINK: ${{ secrets.MACOS_CERTIFICATE }}
-          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-        run: |
-          set -euo pipefail
-          test -n "${CSC_LINK}"
-          test -n "${CSC_KEY_PASSWORD}"
-          npm run build:studio:app
-          npm run package:mac -- --dir -c.mac.notarize=false
-
-      - name: Verify packaged login and Developer ID signature
-        run: |
-          set -euo pipefail
-          npm run verify:package
-          app=release/mac-arm64/Rauhwpx.app
-          test -d "${app}"
-          codesign --verify --deep --strict --verbose=2 "${app}"
-          signing_info="$(codesign -dv --verbose=4 "${app}" 2>&1)"
-          grep -Fx 'Authority=Developer ID Application: TAEWOOK HA (C8M34MMT8W)' <<< "${signing_info}"
-          if grep -Eq 'Signature=(adhoc|unofficial)|Authority=Apple Development' <<< "${signing_info}"; then
-            echo 'Development or ad-hoc signing is not acceptable.' >&2
-            exit 1
-          fi
-          ditto -c -k --keepParent "${app}" release/Rauhwpx-PR427-signed-arm64.zip
-
-      - name: Upload signed app for live validation
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-pr427-live
-          path: release/Rauhwpx-PR427-signed-arm64.zip
-          if-no-files-found: error
-          retention-days: 3
