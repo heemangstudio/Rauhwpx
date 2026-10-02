@@ -64,3 +64,12 @@ Keep PR descriptions detailed but relevant. Do not pad them with boilerplate, re
 
 - Do not run heavy smoke tests for simply booting an app or for trivial code changes.
 - Run appropriate smoke tests for new features and changes that could break existing behavior.
+
+# Live App Verification
+
+- For changes to user-visible behavior, exercise the affected flow in a running app before claiming it works. Pair focused regression tests with a fresh live check; a green Node suite or source-text assertion alone is insufficient.
+- Start Studio with `npm run dev:studio` and use the running editor at `http://127.0.0.1:7700`. Use the sidebar preview above for isolated sidebar interactions, but verify document-engine, hub, provider, cloud, and desktop changes in the corresponding real runtime. Clearly label fixture-backed checks.
+- Reproduce the original trigger, perform the user action through the UI, and check the resulting document, persisted state, emitted request, or visible behavior. Check the relevant failure or cancellation path. For save/export changes, reopen the saved output and verify its content.
+- Record the app URL or runtime, scenario, observed result, and relevant screenshot or log in the handoff/PR. If prerequisites or credentials block live verification, state what was blocked and what remains unverified; never substitute a passing mock test for a claim of live success.
+- Prefer bounded waits for observable readiness or state changes over fixed sleeps. Run the smallest relevant checks first; do not rerun broad suites without a new change, failure, or unresolved concern.
+- New regression tests should fail when the user behavior breaks. Avoid tests that only pin labels, CSS values, comments, source ordering, function names, call-site counts, or constant arithmetic. Replace security, edit-history, and data-loss source guards with behavioral coverage before removing them. Keep meaningful accessibility, format compatibility, boundary, and compile-time contracts.

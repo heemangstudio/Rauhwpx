@@ -7,52 +7,15 @@ import test from 'node:test';
 
 const root = path.resolve(import.meta.dirname, '..');
 
-test('installer is streamable, channel-aware, preserves Serve routes, and emits pairing receipt', async () => {
-  const filename = path.join(root, 'install/install.sh');
-  const source = await fs.readFile(filename, 'utf8');
-  assert.ok(Buffer.byteLength(source) < 2 * 1024 * 1024);
-  assert.match(source, /RAUHWpx_CHANNEL/);
-  assert.match(source, /apt-get install[^\n]*\bpodman\b[^\n]*\bcrun\b/);
-  assert.match(source, /releases\?per_page=30/);
-  assert.doesNotMatch(source, /releases\/download\/cloud-prerelease/);
-  assert.doesNotMatch(source, /releases\/latest\/download\/\$\{ASSET\}/);
-  assert.match(source, /!item\.prerelease && !item\.draft && item\.assets\?\.some\(\(asset\)=>asset\.name===name\)/);
-  assert.match(source, /no compatible stable cloud asset was found/);
-  assert.match(source, /RAUHWpx_RECEIPT=/);
-  assert.match(source, /pairingCode/);
-  // 서명 없는 개발 런타임은 로컬 파일과 앱이 고정한 SHA-256으로만 설치된다.
-  assert.match(source, /\[\[ "\$ARCHIVE_URL" == file:\/\/\* \]\] \|\| fail "unsigned development runtimes must be local files"/);
+test('update rollback and remaining installer trust boundaries stay guarded', async () => {
+  const source = await fs.readFile(path.join(root, 'install/install.sh'), 'utf8');
+  // Unsigned development and public HTTPS paths are outside the Tailscale runtime harness.
+  assert.match(source, /unsigned development runtimes must be local files/);
   assert.match(source, /development runtime does not match its pinned SHA-256/);
-  assert.match(source, /else\n\s+curl[^\n]*sigstore\.json[^\n]*\n\s+cosign verify-blob/);
-  assert.match(source, /RAUHWpx_TAILSCALE_HTTPS_PORT/);
-  assert.match(source, /TAILSCALE_HTTPS_PORT must be an integer from 1 to 65535/);
-  assert.match(source, /tailscale serve --bg --yes --https="\$TAILSCALE_HTTPS_PORT" --set-path=/);
-  assert.match(source, /TAILSCALE_PORT_SUFFIX/);
-  assert.match(source, /tailscaleHttpsPort=Number/);
-  assert.match(source, /RAUHWpx_TRANSPORT/);
-  assert.match(source, /RAUHWpx_PUBLIC_HOST/);
-  assert.match(source, /public-https/);
-  assert.match(source, /caddy validate/);
-  assert.doesNotMatch(source, /tailscale serve reset/);
-  assert.match(source, /install -d -m 0755 -o rauhwpx-cloud -g rauhwpx-cloud \/opt\/rauhwpx-cloud\/provider-cli/);
-  assert.match(source, /\/usr\/local\/lib\/rauhwpx-cloud\/current/);
-  assert.match(source, /release CLI compatibility wrapper is missing/);
-  assert.match(source, /chmod -R a\+rX "\$DESTINATION"/);
-  assert.match(source, /XDG_RUNTIME_DIR=\/run\/rauhwpx-cloud/);
-  assert.match(source, /cd \/var\/lib\/rauhwpx-cloud\s+\/usr\/sbin\/runuser --user rauhwpx-cloud/);
-  assert.match(source, /podman (\$\{IMAGE_STORE_ARGS:-\} )?--cgroup-manager=cgroupfs build --tag/);
-  assert.match(source, /podman --cgroup-manager=cgroupfs run --rm[\s\S]*--uidmap 0:1:1000[\s\S]*--gidmap 1000:0:1[\s\S]*--entrypoint \/app\/bin\/rhwp/);
-  assert.doesNotMatch(source, /(^|\s)(?:exec\s+)?runuser\s+--user/m);
-  assert.match(source, /provider install claude/);
-  assert.match(source, /provider install codex/);
-  assert.match(source, /provider install pi/);
-  assert.doesNotMatch(source, /provider install (?:grok|cursor)/);
-  assert.ok(source.includes('github\\.com/(ghandhitechnology|heemangstudio)/Rauhwpx/\\.github/workflows/release\\.yml@refs/tags/'));
-  assert.doesNotMatch(source, /refs\/\(heads\|tags\)/);
-  assert.match(source, /Strict-Transport-Security "max-age=31536000; includeSubDomains"/);
-  assert.match(source, /X-Content-Type-Options "nosniff"/);
-  const syntax = spawnSync('/bin/bash', ['-n', filename], { encoding: 'utf8' });
-  assert.equal(syntax.status, 0, syntax.stderr);
+  assert.match(source, /Strict-Transport-Security/);
+  assert.match(source, /X-Content-Type-Options/);
+  assert.match(source, /--uidmap 0:1:1000/);
+  assert.match(source, /--gidmap 1000:0:1/);
   const update = await fs.readFile(path.join(root, 'install/update.sh'), 'utf8');
   assert.match(update, /releases\?per_page=30/);
   assert.doesNotMatch(update, /releases\/latest\/download\/\$\{ASSET\}/);

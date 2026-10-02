@@ -875,6 +875,14 @@
     padding-inline: 8px;
   }
 
+  .ag-versions-toolbar > .ag-versions-create-branch,
+  .ag-versions-toolbar > .ag-versions-create-shelf {
+    min-width: 0;
+    flex-shrink: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
   .ag-version-lane-graph {
     width: min(var(--ag-version-graph-width), 45%);
     min-width: min(104px, 45%);

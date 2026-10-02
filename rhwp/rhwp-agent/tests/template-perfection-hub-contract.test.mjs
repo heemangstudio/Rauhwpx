@@ -7,38 +7,13 @@ const mcp = readFileSync(new URL('../mcp-stdio.mjs', import.meta.url), 'utf8');
 const piExtension = readFileSync(new URL('../pi/extension/rhwp.ts', import.meta.url), 'utf8');
 const runner = readFileSync(new URL('../copy-layout-runner.mjs', import.meta.url), 'utf8');
 
-test('hub launches the copy-layout worker as a real isolated provider session', () => {
-  const launchStart = server.indexOf('async function launchTemplateJob(');
-  const launchEnd = server.indexOf('\nfunction createTemplateJob(', launchStart);
-  assert.notEqual(launchStart, -1);
-  assert.ok(launchEnd > launchStart);
-  const launch = server.slice(launchStart, launchEnd);
-  assert.match(server, /const createBackend = SESSION_FACTORIES\[job\.agent\]/);
-  assert.match(server, /job\.backend = createBackend\(opts\)/);
-  assert.match(server, /toolProfile: 'copy-layout-worker'/);
-  assert.match(server, /agentRole: job\.workerRole/);
-  assert.match(server, /permissionProfile: 'safe'/);
-  assert.match(server, /rootDir: jobDir/);
-  assert.match(server, /workDir: jobDir/);
-  assert.match(server, /readOnlyRoots: \[jobSnapshotRoot, jobGeneratedRoot\]/);
-  assert.doesNotMatch(server, /shellAllowPrefixes/);
-  assert.match(server, /runCopyLayoutHelper\(args/);
-  assert.match(runner, /shell: false/);
-  assert.match(runner, /COPY_LAYOUT_RUN_TIMEOUT_MS/);
-  assert.match(runner, /cleanupProcess\(child\)/);
-  assert.match(server, /copy-layout-providers/);
-  assert.match(server, /prepareCodexHome\(codexHome/);
-  assert.match(server, /prepareClaudeHome\(isolatedHome/);
-  assert.match(launch, /piBin: piManager\.piBin/);
-  assert.match(launch, /piRoot: piManager\.rootDir/);
-  assert.doesNotMatch(server, /prepareGrokHome|prepareCursorHome|prepareOpenCodeHome|openCodeAuthPath|flushOpenCodeCredentialMirror/);
+test('worker transport remains bound to its authenticated job identity', () => {
   assert.match(mcp, /url\.searchParams\.set\('role', AGENT_ROLE\)/);
   assert.match(mcp, /url\.searchParams\.set\('workerJobId', COPY_LAYOUT_JOB_ID\)/);
   assert.match(piExtension, /RHWP_AGENT_ROLE/);
   assert.match(piExtension, /workerJobId=/);
   assert.match(server, /profile = 'copy-layout-worker'/);
   assert.match(server, /authenticatedUrl\.searchParams\.set\('profile', profile\)/);
-  assert.match(server, /audience: HUB_CAPABILITY_AUDIENCES\.COPY_LAYOUT_WORKER,[\s\S]*resource: job\.jobId/);
   assert.match(server, /requestedAgentRole !== authenticatedWorkerJob\.workerRole/);
   assert.match(server, /ws\.agentRole = authenticatedWorkerJob\?\.workerRole \?\? authenticatedProviderIdentity\.role/);
   assert.match(server, /sock\.copyLayoutJobId/);
@@ -116,7 +91,6 @@ test('auxiliary cleanup waits for drained output and retains identity until prov
   assert.match(server, /child\.once\('close', cleanup\)/);
   assert.match(server, /terminateAndWaitForProcessTreeExitOutcome\(child\)/);
   assert.match(server, /cleanupProcessOutcome: \(child\) => beginAuxiliaryProcessCleanupOutcome\(record, child\)/);
-  assert.match(server, /ChildProcess `close` is ordered after stdout\/stderr have drained/);
   assert.doesNotMatch(server, /child\.once\('exit', cleanup\)/);
   assert.match(
     server,

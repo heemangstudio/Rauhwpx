@@ -280,7 +280,7 @@ jobs:
         run: |
           npm --prefix cloud ci
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends x11-apps
+          sudo apt-get install -y --no-install-recommends x11-apps bubblewrap
       - name: Test desktop and sandbox cloud contracts
         run: npm run test:cloud
 
@@ -304,6 +304,8 @@ jobs:
       - uses: ./.github/actions/build-wasm
       - name: Install Studio dependencies
         run: npm --prefix rhwp/rhwp-studio ci
+      - name: Install hub dependencies for live editor verification
+        run: npm --prefix rhwp/rhwp-agent ci --no-audit --no-fund
       - name: Verify provisioned browser
         run: '"$PUPPETEER_EXECUTABLE_PATH" --version'
       - name: Build and typecheck Studio

@@ -83,13 +83,13 @@ runTest('전역 및 데스크톱 편집 단축키', async ({ page }) => {
   const beforeZoom = await page.evaluate(() => window.__inputHandler.viewportManager.getZoom());
   await press(page, 'Control', '-');
   await page.waitForFunction((zoom) => Math.abs(window.__inputHandler.viewportManager.getZoom() - (zoom - 0.1)) < 0.001, {}, beforeZoom);
-  assert(true, '단일 키 입력으로 줌 한 단계 변경');
+  assert(Math.abs(await page.evaluate(()=>window.__inputHandler.viewportManager.getZoom())-(beforeZoom-0.1))<0.001, '단일 키 입력으로 줌 한 단계 변경');
   for (const lock of ['setReadOnly', 'setUserEditingLocked']) {
     await page.evaluate((method) => window.__inputHandler[method](true), lock);
     const zoom = await page.evaluate(() => window.__inputHandler.viewportManager.getZoom());
     await press(page, 'Control', '-');
     await page.waitForFunction((before) => Math.abs(window.__inputHandler.viewportManager.getZoom() - (before - 0.1)) < 0.001, {}, zoom);
-    assert(true, `${lock} 문서에서도 줌 단축키 사용`);
+    assert(Math.abs(await page.evaluate(()=>window.__inputHandler.viewportManager.getZoom())-(zoom-0.1))<0.001, `${lock} 문서에서도 줌 단축키 사용`);
     await page.evaluate((method) => window.__inputHandler[method](false), lock);
   }
   await screenshot(page, 'global-03-shortcuts-restored');

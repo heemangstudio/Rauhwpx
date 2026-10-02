@@ -2817,7 +2817,7 @@ function restoreAutosaveDraftIntoEditor(draft: AutosaveDraftSummary): Promise<vo
 }
 
 
-async function createNewDocument(): Promise<void> {
+async function createNewDocument(): Promise<boolean> {
   const msg = sbMessage();
   const previousFileHandle = wasm.currentFileHandle;
   const identity = { documentId: createActiveDocumentId(), sourceDigest: null };
@@ -2838,6 +2838,7 @@ async function createNewDocument(): Promise<void> {
       { discardPreviousDraft: true },
     );
     await initializeDocument(docInfo);
+    return true;
   } catch (error) {
     await cancelDesktopDocument(reservationId).catch(() => {});
     activeDocumentId = null;
@@ -2848,6 +2849,7 @@ async function createNewDocument(): Promise<void> {
       .catch(() => {});
     msg.textContent = `새 문서 생성 실패: ${error}`;
     console.error('[main] 새 문서 생성 실패:', error);
+    return false;
   }
 }
 
@@ -2945,9 +2947,21 @@ async function openDocumentBytes(data: OpenDocumentBytesEvent) {
 // 커맨드에서 새 문서 생성 호출
 eventBus.on('create-new-document', (payload) => {
   void (async () => {
-    const options = payload as { skipUnsavedGuard?: boolean } | undefined;
-    if (!await canReplaceCurrentDocument(options?.skipUnsavedGuard)) return;
-    await createNewDocument();
+    const options = payload as { skipUnsavedGuard?: boolean; requestId?: string } | undefined;
+    const notify = (ok: boolean, error?: string) => {
+      if (options?.requestId) eventBus.emit('create-new-document:done', { requestId: options.requestId, ok, error });
+    };
+    try {
+      if (!await canReplaceCurrentDocument(options?.skipUnsavedGuard)) {
+        notify(false, '문서 생성이 취소되었습니다.');
+        return;
+      }
+      const ok = await createNewDocument();
+      notify(ok, ok ? undefined : sbMessage().textContent ?? '문서 생성 실패');
+    } catch (error) {
+      notify(false, error instanceof Error ? error.message : String(error));
+      console.error('[main] 새 문서 생성 요청 실패:', error);
+    }
   })();
 });
 eventBus.on('open-document-bytes', async (payload) => {

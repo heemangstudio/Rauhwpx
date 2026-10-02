@@ -1,119 +1,91 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { registerHooks } from 'node:module';
+import test from 'node:test';
+registerHooks({
+  load(url, context, next) {
+    return url.endsWith('.css')
+      ? { format: 'module', source: 'export default {};', shortCircuit: true }
+      : next(url, context);
+  },
+});
+const { AgentBridgeImpl } = await import('../src/agent/bridge.ts');
+const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+function fixture() {
+  let connections = 0;
+  const events: any[] = [];
+  const bridge = Object.assign(Object.create(AgentBridgeImpl.prototype), {
+    disposed: false,
+    state: 'disconnected',
+    reconnectTimer: null,
+    reconnectAttempt: 1,
+    reconnectSeq: 0,
+    threadId: 'thread-1',
+    documentId: 'document-1',
+    requestHubLaunch: async () => true,
+    refreshSessionContext: async () => true,
+    connect: () => {
+      connections++;
+    },
+    emit: (event: any) => events.push(event),
+  });
+  return { bridge, events, connections: () => connections };
+}
 
-/* bridge.ts 는 WebSocket·DOM(창 포커스, pending-overlay.css)에 묶여 있어
-   Node 테스트에서 인스턴스화할 수 없다. 기존 브리지 테스트와 같은 방식으로
-   계약을 소스 텍스트로 못박고, 짝 맞추기 동작은 pending-requests 테스트가
-   실제 모듈로 검증한다. */
-const readSource = (relativePath: string) => readFileSync(
-  new URL(relativePath, import.meta.url),
-  'utf8',
-).replace(/\r\n/g, '\n');
-const bridge = readSource('../src/agent/bridge.ts');
-const types = readSource('../src/agent/types.ts');
-const source = readSource('../src/ui/agent-sidebar/index.ts');
-const css = readSource('../src/ui/agent-sidebar/agent-sidebar.css');
-
-test('connection 이벤트는 시도 횟수와 다음 재시도 시각을 함께 싣는다', () => {
-  assert.match(types, /type: 'connection';[\s\S]*attempt\?: number;[\s\S]*retryInMs\?: number;/);
-  assert.match(bridge, /private emitConnection\(retryInMs\?: number\): void/);
-  assert.match(bridge, /attempt: this\.reconnectAttempt/);
-  assert.match(bridge, /\.\.\.\(retryInMs !== undefined \? \{ retryInMs \} : \{\}\)/);
-  // 백오프를 예약할 때 남은 시간을 알려야 사이드바가 카운트다운을 만들 수 있다.
-  assert.match(bridge, /this\.reconnectTimer = setTimeout\([\s\S]*this\.emitConnection\(delay\);/);
+test('retries back off, do not duplicate timers, and retain document/thread identity', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture();
+  let previousDelay = 0;
+  for (let attempt = 1; attempt <= 7; attempt++) {
+    f.bridge.reconnectAttempt = attempt;
+    f.bridge.scheduleReconnect();
+    const delay = f.events.at(-1).retryInMs;
+    assert(
+      delay > 0 && delay >= previousDelay,
+      'retry delays must be positive and non-decreasing',
+    );
+    previousDelay = delay;
+    f.bridge.scheduleReconnect(); // repeated failure signals must not add a second timer
+    t.mock.timers.tick(delay - 1);
+    await settle();
+    assert.equal(f.connections(), attempt - 1);
+    t.mock.timers.tick(1);
+    await settle();
+    assert.equal(f.connections(), attempt);
+  }
+  assert.equal(f.bridge.threadId, 'thread-1');
+  assert.equal(f.bridge.documentId, 'document-1');
 });
 
-test('실패한 시도만 세고 허브 welcome 을 받으면 0으로 돌아간다', () => {
-  // onclose(비-replaced), 소켓 생성 실패, 세션 구성 조회 실패 세 곳에서만 증가한다.
-  assert.equal((bridge.match(/this\.reconnectAttempt\+\+;/g) ?? []).length, 3);
-  // 세션 구성 조회가 실패해도 재시도를 멈추지 않는다 (최초 연결·수동 재연결·백오프 재시도).
-  assert.equal((bridge.match(/this\.retryAfterContextFailure\(seq\);/g) ?? []).length, 3);
-  // 열리자마자 닫히는 소켓(버전이 다른 허브)은 백오프를 접지 않는다 — 버전 검사를 통과한 welcome 에서만 접는다.
-  const onOpen = bridge.slice(bridge.indexOf('ws.onopen = () => {'), bridge.indexOf('ws.onmessage = (ev) => {'));
-  assert.doesNotMatch(onOpen, /this\.reconnectAttempt = 0;/);
-  assert.match(bridge, /case 'welcome': \{[^}]*this\.reconnectAttempt = 0;/);
-  // 첫 실패(attempt 1)가 첫 지연(250ms)을 쓰도록 인덱스를 한 칸 당긴다.
-  assert.match(bridge, /Math\.max\(0, this\.reconnectAttempt - 1\)/);
-  assert.match(bridge, /const RECONNECT_DELAYS_MS = \[250, 500, 1000, 2000, 5000\]/);
-  assert.match(bridge, /const CONNECT_TIMEOUT_MS = 4000/);
+test('disposed or superseded reconnects cannot open a socket', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  for (const stop of ['disposed', 'superseded', 'cancelled']) {
+    const f = fixture();
+    f.bridge.scheduleReconnect();
+    if (stop === 'disposed') f.bridge.disposed = true;
+    if (stop === 'superseded') f.bridge.reconnectSeq++;
+    if (stop === 'cancelled') f.bridge.clearReconnectTimer();
+    t.mock.timers.runAll();
+    await settle();
+    assert.equal(f.connections(), 0, stop);
+  }
 });
 
-test('reconnectNow 는 허브가 뜬 뒤에 붙는다', () => {
-  assert.match(bridge, /reconnectNow\(\): Promise<void>/);
-  assert.match(bridge, /if \(this\.disposed \|\| this\.state === 'connected'\) return;/);
-  assert.match(bridge, /private forceReconnect\(\): void/);
-  assert.match(bridge, /this\.abortSocket\(\)/);
-  assert.match(bridge, /takeOverConnection\(\): void \{\s*this\.forceReconnect\(\);/);
-  assert.match(
-    bridge,
-    /async reconnectNow\(\): Promise<void> \{[\s\S]*await this\.requestHubLaunch\(\);[\s\S]*this\.forceReconnect\(\);/,
-  );
-  assert.doesNotMatch(
-    bridge,
-    /private connectImmediately\(\): void \{\s*if \(this\.disposed \|\| this\.state === 'connected' \|\| this\.state === 'connecting'\) return;/,
-  );
-});
-
-test('허브 연결은 헤더의 점 하나로 보이고 연결되면 사라진다', () => {
-  assert.match(source, /const connDot = el\('button', 'ag-conn-dot'\)/);
-  assert.match(source, /headerActions\.append\(connDot, takeoverBtn, agentUndoBtn, versionsBtn, threadsBtn, settingsBtn\)/);
-  assert.match(source, /chatPage\.append\(header, messages, review, compactChanges, planSurface, reconnectChip, calibrationChip, questionController\.root, composer\)/);
-  assert.doesNotMatch(source, /ag-conn-banner/);
-  assert.doesNotMatch(source, /번째 시도/);
-  assert.match(source, /connDot\.hidden = visual === 'connected'/);
-  assert.match(css, /\.ag-conn-dot\[data-state='connecting'\]::before \{\s*animation: ag-conn-pulse/);
-  assert.match(css, /\.ag-conn-dot\[data-state='disconnected'\]::before \{\s*background: var\(--ag-err\)/);
-});
-
-test('재연결과 스레드 복원은 대기 질문의 기록 위치를 다시 예약한다', () => {
-  assert.match(source, /renderMessagesFromThread\(currentThread\);[\s\S]*questionController\.setVisible\(showingLiveQuestion\);[\s\S]*if \(showingLiveQuestion\) mountQuestionTimelineAnchor\(\)/);
-  assert.match(source, /questionController\.request\(liveQuestion, stored\);[\s\S]*mountQuestionTimelineAnchor\(\);/);
-});
-
-test('점을 누르면 한 줄 팝오버에서 다시 연결하고, 관리되지 않는 환경에서만 npm start 를 보인다', () => {
-  assert.match(source, /connRetry[\s\S]{0,160}bridge\.reconnectNow\(\)/);
-  assert.match(source, /el\('code', 'ag-conn-command-text', 'npm start'\)/);
-  assert.match(source, /navigator\.clipboard\?\.writeText\('npm start'\)/);
-  assert.match(source, /connCommand\.hidden = managedHub \|\| visual !== 'disconnected'/);
-  assert.doesNotMatch(source, /connCountdownTimer|setInterval\(paintConnCountdown/);
-  assert.match(source, /document\.removeEventListener\('pointerdown', onConnPopoverOutside\)/);
-});
-
-test('두 번 넘게 실패해야 빨간 점이 되고 다른 탭 사용 중에는 이어받기 버튼을 준다', () => {
-  assert.match(source, /const down = connState === 'disconnected' \|\| \(connState === 'connecting' && connAttempt >= 2\)/);
-  assert.match(source, /conn\.textContent = CONN_LABEL\[state\]/);
-  assert.match(source, /takeoverBtn\.hidden = state !== 'replaced'/);
-  assert.match(source, /bridge\.takeOverConnection\(\)/);
-  assert.match(source, /setConnection\(e\.state, \{ attempt: e\.attempt, retryInMs: e\.retryInMs \}\)/);
-});
-
-test('CLI 스폰 실패는 대화 안에서 다시 시도할 수 있다', () => {
-  assert.match(source, /if \(e\.code === 'AGENT_SPAWN_FAILED'\) appendSpawnRetryAction\(\)/);
-  assert.match(source, /function appendSpawnRetryAction\(\): void/);
-  assert.match(source, /el\('button', 'ag-hub-retry-btn', '다시 시도'\)/);
-  // 강제 재시작(force=true)이어야 죽은 세션 자리에 새 CLI 가 뜬다. 스레드/문서 식별자도 같이 간다.
-  assert.match(
-    source,
-    /function restartAgentSession\(\): void \{\s*startCurrentBridgeChat\(true\);/,
-  );
-});
-
-test('끊기면 허브 기동을 요청하고 포커스·온라인·가시성에서 다시 붙는다', () => {
-  assert.match(bridge, /import \{[\s\S]*ensureDesktopAgentHub,[\s\S]*\} from '\.\.\/desktop-integration\.ts'/);
-  assert.match(
-    bridge,
-    /private requestHubLaunch\(\): Promise<boolean> \{\s*if \(!this\.hubLaunch\) \{\s*this\.hubLaunch = ensureDesktopAgentHub\(\)/,
-  );
-  assert.match(
-    bridge,
-    /private scheduleReconnect\(\): void \{\s*if \(this\.disposed \|\| this\.reconnectTimer !== null\) return;\s*void this\.requestHubLaunch\(\);/,
-  );
-  assert.match(bridge, /private async connectAfterHub\(seq: number\): Promise<void>/);
-  assert.match(bridge, /window\.addEventListener\('focus', this\.onResume\)/);
-  assert.match(bridge, /window\.addEventListener\('online', this\.onResume\)/);
-  assert.match(bridge, /document\.addEventListener\('visibilitychange', this\.onVisibility\)/);
-  assert.match(bridge, /window\.removeEventListener\('focus', this\.onResume\)/);
-  assert.match(bridge, /window\.removeEventListener\('online', this\.onResume\)/);
-  assert.match(bridge, /document\.removeEventListener\('visibilitychange', this\.onVisibility\)/);
+test('manual reconnect awaits hub readiness and ignores a superseding request', async () => {
+  const f = fixture();
+  let release!: () => void;
+  f.bridge.requestHubLaunch = () =>
+    new Promise<void>((resolve) => {
+      release = resolve;
+    });
+  f.bridge.abortSocket = () => {};
+  f.bridge.forceReconnect = () => f.bridge.connect();
+  const pending = f.bridge.reconnectNow();
+  assert.equal(f.connections(), 0);
+  f.bridge.reconnectSeq++;
+  release();
+  await pending;
+  assert.equal(f.connections(), 0);
+  f.bridge.requestHubLaunch = async () => true;
+  await f.bridge.reconnectNow();
+  assert.equal(f.connections(), 1);
 });
