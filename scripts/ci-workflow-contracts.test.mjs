@@ -124,6 +124,38 @@ test('production verification audits every lock and exercises actual providers o
   assert.doesNotMatch(commands, /--force|--ignore-engines|engine-strict=false/);
 });
 
+test('public PR checks use standard hosted runners and preserve platform architectures', () => {
+  const checks = workflows['checks.yml'];
+  for (const job of Object.values(checks.jobs)) {
+    assert.doesNotMatch(job['runs-on'], /blacksmith|self-hosted|-large|xlarge/);
+    if (!job.strategy?.matrix?.include) assert.equal(job['runs-on'], 'ubuntu-24.04');
+  }
+  for (const id of ['session-tests', 'production-dependencies']) {
+    const job = checks.jobs[id];
+    for (const entry of job.strategy.matrix.include) {
+      assert.equal(entry.runner, { 'macos-15': 'macos-15', 'windows-latest': 'windows-2025', 'ubuntu-24.04': 'ubuntu-24.04' }[entry.os]);
+      assert.equal(entry.architecture, entry.os === 'macos-15' ? 'arm64' : 'x64');
+    }
+    const architecture = job.steps.find((step) => step.name === 'Assert runner architecture');
+    assert.equal(architecture.env.EXPECTED_NODE_ARCH, '${{ matrix.architecture }}');
+    assert.match(architecture.run, /process\.arch/);
+    assert.equal(job.if, '${{ !cancelled() }}');
+  }
+});
+
+test('production dependency download cache keys cover all locks without replacing real installs', () => {
+  const job = workflows['checks.yml'].jobs['production-dependencies'];
+  const setup = job.steps.find((step) => step.uses?.startsWith('actions/setup-node@'));
+  assert.equal(setup.with.cache, 'npm');
+  assert.deepEqual(setup.with['cache-dependency-path'].trim().split('\n'), [
+    'package-lock.json', 'rhwp/rhwp-agent/package-lock.json', 'rhwp/rhwp-studio/package-lock.json',
+    'rhwp/rau-credits/package-lock.json', 'cloud/package-lock.json', 'cloud/install/provider-runtime/package-lock.json',
+  ]);
+  const installs = job.steps.find((step) => step.name === 'Install actual packaged dependencies');
+  assert.equal(installs.if, "needs.changes.outputs.app != 'false'");
+  assert.match(installs.run, /ci --no-audit --no-fund/);
+});
+
 test('dependency container verification cannot publish and checks both runtime users offline', () => {
   const job = workflows['checks.yml'].jobs['dependency-containers'];
   const commands = job.steps.map((step) => step.run ?? '').join('\n');
