@@ -26,7 +26,7 @@ function validate(input, kind = 'turn') {
       throw fail('CLOUD_INVALID_REQUEST', `${name} is invalid`);
     }
   }
-  if (input.kind !== kind || typeof input.fileName !== 'string' || !input.fileName.trim()
+  if (!(input.kind === kind || kind === 'turn' && input.kind === 'operation') || typeof input.fileName !== 'string' || !input.fileName.trim()
     || input.fileName.length > 255 || /[\x00-\x1f/\\]/.test(input.fileName)
     || !/^[a-f0-9]{64}$/.test(input.sha256 ?? '') || input.size > MERGE_MAX_BYTES
     || input.chunkCount !== Math.ceil(input.size / MERGE_CHUNK_BYTES)
@@ -75,14 +75,15 @@ export function createMergeArtifacts({ store, sessionSecret, now = Date.now,
   return {
     async upload(accountId, runId, input, { withPublishFence = null } = {}) {
       const { metadata, bytes, index } = validate(input, kind);
-      const id = `merge_${hash(JSON.stringify([accountId, metadata.sessionId, metadata.operationId, ...(kind === 'turn' ? [] : [kind])]))}`;
+      const artifactKind = metadata.kind;
+      const id = `merge_${hash(JSON.stringify([accountId, metadata.sessionId, metadata.operationId, ...(artifactKind === 'turn' ? [] : [artifactKind])]))}`;
       return store.transaction(accountId, async (repo) => {
         await repo.expire(now());
-        if (kind === 'conversation') {
-          const latest = (await repo.list()).filter((item) => item.kind === kind && item.sessionId === metadata.sessionId && item.complete)
+        if (kind === 'conversation' || artifactKind === 'operation') {
+          const latest = (await repo.list()).filter((item) => item.kind === artifactKind && item.sessionId === metadata.sessionId && item.complete)
             .sort((a, b) => b.revision - a.revision)[0];
           if (latest && latest.id !== id && (latest.revision >= metadata.revision || latest.state === 'purged')) {
-            throw fail('CLOUD_CONVERSATION_STALE', 'A newer conversation snapshot is already stored');
+            throw fail(artifactKind === 'operation' ? 'CLOUD_CHECKPOINT_STALE' : 'CLOUD_CONVERSATION_STALE', 'A newer saved version is already stored');
           }
         }
         let record = await repo.get(id);
@@ -97,13 +98,13 @@ export function createMergeArtifacts({ store, sessionSecret, now = Date.now,
           // a purge tombstone. Keep the previous generation until this upload
           // is verified, but reserve against the resulting retained set.
           let replaceable = [];
-          if (kind === 'conversation') {
+          if (kind === 'conversation' || artifactKind === 'operation') {
             replaceable = records.filter((item) => item.sessionId === metadata.sessionId
-              && (item.kind === kind || metadata.state === 'purged' && item.kind === 'conversation-resource'));
+              && (item.kind === artifactKind || metadata.state === 'purged' && item.kind === 'conversation-resource'));
             for (const abandoned of replaceable.filter((item) => !item.complete)) await repo.remove(abandoned);
             records = await repo.list();
             replaceable = records.filter((item) => item.sessionId === metadata.sessionId
-              && item.complete && (item.kind === kind || metadata.state === 'purged' && item.kind === 'conversation-resource'));
+              && item.complete && (item.kind === artifactKind || metadata.state === 'purged' && item.kind === 'conversation-resource'));
           }
           const replacedIds = new Set(replaceable.map((item) => item.id));
           const retained = records.filter((item) => !replacedIds.has(item.id));
@@ -137,10 +138,10 @@ export function createMergeArtifacts({ store, sessionSecret, now = Date.now,
             const publish = async () => {
               record.complete = true;
               await repo.put(record);
-              if (kind === 'conversation') {
+              if (kind === 'conversation' || artifactKind === 'operation') {
                 for (const previous of await repo.list()) {
                   if (previous.sessionId === record.sessionId && previous.id !== record.id
-                    && (previous.kind === kind || record.state === 'purged' && previous.kind === 'conversation-resource')) {
+                    && (previous.kind === artifactKind || record.state === 'purged' && previous.kind === 'conversation-resource')) {
                     await repo.remove(previous);
                   }
                 }
@@ -160,14 +161,14 @@ export function createMergeArtifacts({ store, sessionSecret, now = Date.now,
     async list(accountId, sessionId) {
       if (sessionId != null && (typeof sessionId !== 'string' || !/^[A-Za-z0-9._:-]{1,160}$/.test(sessionId))) throw fail('CLOUD_INVALID_REQUEST', 'sessionId is invalid');
       return store.transaction(accountId, async (repo) => ({ mergeRequests: (await repo.list())
-        .filter((item) => item.kind === kind && item.complete && item.expiresAt > now() && (sessionId == null || item.sessionId === sessionId))
+        .filter((item) => (item.kind === kind || kind === 'turn' && item.kind === 'operation') && item.complete && item.expiresAt > now() && (sessionId == null || item.sessionId === sessionId))
         .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)).map(publicRecord) }));
     },
     async chunk(accountId, id, index) {
       if (!/^merge_[a-f0-9]{64}$/.test(id) || !Number.isSafeInteger(index) || index < 0) throw fail('CLOUD_INVALID_REQUEST', 'Invalid checkpoint chunk');
       return store.transaction(accountId, async (repo) => {
         const record = await repo.get(id);
-        if (!record?.complete || record.kind !== kind || record.expiresAt <= now() || index >= record.chunkCount) throw fail('CLOUD_MERGE_NOT_FOUND', 'Checkpoint not found');
+        if (!record?.complete || !(record.kind === kind || kind === 'turn' && record.kind === 'operation') || record.expiresAt <= now() || index >= record.chunkCount) throw fail('CLOUD_MERGE_NOT_FOUND', 'Checkpoint not found');
         const bytes = await repo.chunk(id, index);
         if (!bytes) throw fail('CLOUD_MERGE_NOT_FOUND', 'Checkpoint chunk not found');
         return { bytesBase64: decrypt(accountId, id, index, bytes).toString('base64') };

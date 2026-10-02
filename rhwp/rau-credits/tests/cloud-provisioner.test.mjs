@@ -10,6 +10,7 @@ function fixture(intercept = async () => undefined, options = {}) {
   let clock = 1_000_000;
   let exists = false;
   let serviceName;
+  let serviceDomain;
   const calls = [];
   const remotes = [];
   const signals = [];
@@ -34,11 +35,18 @@ function fixture(intercept = async () => undefined, options = {}) {
         exists = true;
         serviceName = body.variables.input.name;
       }
+      if (operation === 'RaucloudDomainCreate') {
+        serviceDomain = { id: 'domain-1', domain: 'worker.up.railway.app', targetPort: 7740 };
+      }
       const intercepted = await intercept({ operation, body, init, url, calls, advance: (ms) => { clock += ms; } });
       if (intercepted !== undefined) return intercepted;
       if (operation === 'RaucloudServiceCreate') return json({ data: { serviceCreate: { id: 'service-1', name: serviceName } } });
+      if (operation === 'RaucloudServiceInstanceUpdate') return json({ data: { serviceInstanceUpdate: true } });
+      if (operation === 'RaucloudServiceInstanceDeploy') return json({ data: { serviceInstanceDeployV2: 'deployment-1' } });
+      if (operation === 'RaucloudDeployment') return json({ data: { deployment: { id: 'deployment-1', status: 'SUCCESS' } } });
       if (operation === 'RaucloudDomainCreate') return json({ data: { serviceDomainCreate: { id: 'domain-1', domain: 'worker.up.railway.app' } } });
-      if (operation === 'RaucloudLatestDeployment') return json({ data: { deployments: { edges: [{ node: { status: 'SUCCESS' } }] } } });
+      if (operation === 'RaucloudServiceDomains') return json({ data: { domains: { serviceDomains: serviceDomain ? [serviceDomain] : [] } } });
+      if (operation === 'RaucloudLatestDeployment') return json({ data: { deployments: { edges: [{ node: { id: 'deployment-1', status: 'SUCCESS' } }] } } });
       if (operation === 'RaucloudServiceDelete') { exists = false; return json({ data: { serviceDelete: true } }); }
       if (operation === 'RaucloudProjectServices') return json({ data: { project: { services: { edges: exists ? [{ node: { id: 'service-1', name: serviceName } }] : [] } } } });
       if (operation === 'health') return json({ ok: true, serverPublicKey: PUBLIC_KEY });
@@ -56,7 +64,12 @@ function fixture(intercept = async () => undefined, options = {}) {
 }
 
 test('allocation persists remote ownership before deploying and returns a validated receipt', async () => {
-  const setup = fixture();
+  const setup = fixture(async ({ operation, body }) => {
+    if (operation === 'RaucloudServiceCreate') {
+      assert.equal(body.variables.input.variables.RAUHWpx_MAX_RUNNING, '1');
+      assert.equal(body.variables.input.variables.RAUHWpx_MAX_QUEUED, '20');
+    }
+  });
   const result = await setup.provision();
   assert.equal(result.receipt.serverPublicKey, PUBLIC_KEY);
   assert.equal(result.receipt.pairingCode, RECEIPT.code);
@@ -98,6 +111,98 @@ test('an ambiguous create response is reconciled by name and never replayed', as
   await setup.provision();
   assert.equal(setup.calls.filter((call) => call === 'RaucloudServiceCreate').length, 1);
   assert.equal(setup.calls.filter((call) => call === 'RaucloudProjectServices').length, 1);
+});
+
+test('a configured region is applied with the image before the first deployment', async () => {
+  const setup = fixture(async ({ operation, body }) => {
+    if (operation === 'RaucloudServiceCreate') assert.equal(body.variables.input.source, undefined);
+    if (operation === 'RaucloudServiceInstanceUpdate') {
+      assert.deepEqual(body.variables.input, {
+        source: { image: 'test-image' },
+        multiRegionConfig: { 'asia-southeast1-eqsg3a': { numReplicas: 1 } },
+        healthcheckPath: '/v1/health',
+        restartPolicyType: 'ON_FAILURE',
+        restartPolicyMaxRetries: 10,
+        sleepApplication: false,
+      });
+    }
+  }, { config: {
+    token: 'private-broker-token', projectId: 'project-1', environmentId: 'environment-1',
+    apiUrl: 'https://railway.example/graphql', image: 'test-image', region: 'asia-southeast1-eqsg3a',
+  } });
+  await setup.provision();
+  assert.deepEqual(setup.calls.slice(0, 5), [
+    'RaucloudServiceCreate', 'RaucloudServiceInstanceUpdate',
+    'RaucloudServiceInstanceDeploy', 'RaucloudDomainCreate', 'RaucloudDeployment',
+  ]);
+  assert.equal(setup.remotes[0].serviceId, 'service-1');
+});
+
+test('an ambiguous settings update repeats the same configuration before deploying', async () => {
+  let updates = 0;
+  const setup = fixture(async ({ operation }) => {
+    if (operation === 'RaucloudServiceInstanceUpdate' && updates++ === 0) throw new TypeError('lost update receipt');
+  }, { config: {
+    token: 'private-broker-token', projectId: 'project-1', environmentId: 'environment-1',
+    apiUrl: 'https://railway.example/graphql', image: 'test-image', region: 'asia-southeast1-eqsg3a',
+  } });
+  await setup.provision();
+  assert.equal(updates, 2);
+  assert.equal(setup.calls.filter((call) => call === 'RaucloudServiceInstanceDeploy').length, 1);
+});
+
+test('an ambiguous deploy recovers its id without starting a second deployment', async () => {
+  let reads = 0;
+  const setup = fixture(async ({ operation }) => {
+    if (operation === 'RaucloudServiceInstanceDeploy') throw new TypeError('lost deploy receipt');
+    if (operation === 'RaucloudLatestDeployment' && reads++ === 0) {
+      return json({ data: { deployments: { edges: [] } } });
+    }
+  }, { config: {
+    token: 'private-broker-token', projectId: 'project-1', environmentId: 'environment-1',
+    apiUrl: 'https://railway.example/graphql', image: 'test-image', region: 'asia-southeast1-eqsg3a',
+  } });
+  await setup.provision();
+  assert.equal(setup.calls.filter((call) => call === 'RaucloudServiceInstanceDeploy').length, 1);
+  assert.equal(reads, 2);
+  assert.equal(setup.calls.includes('RaucloudDeployment'), true);
+});
+
+test('an accepted domain creation is reconciled when its response is lost', async () => {
+  let reads = 0;
+  const setup = fixture(async ({ operation }) => {
+    if (operation === 'RaucloudDomainCreate') throw new TypeError('lost domain receipt');
+    if (operation === 'RaucloudServiceDomains' && reads++ === 0) {
+      return json({ data: { domains: { serviceDomains: [] } } });
+    }
+  });
+  await setup.provision();
+  assert.equal(setup.calls.filter((call) => call === 'RaucloudDomainCreate').length, 1);
+  assert.equal(reads, 2);
+  assert.equal(setup.remotes.at(-1).domain, 'worker.up.railway.app');
+});
+
+test('a sleeping deployment is not reported as ready before SUCCESS', async () => {
+  let checks = 0;
+  const setup = fixture(async ({ operation }) => {
+    if (operation === 'RaucloudLatestDeployment') {
+      checks += 1;
+      if (checks === 1) return json({ data: { deployments: { edges: [{ node: { status: 'SLEEPING' } }] } } });
+    }
+  });
+  await setup.provision();
+  assert.equal(checks, 2);
+});
+
+test('a skipped deployment fails immediately without attempting pairing', async () => {
+  const setup = fixture(async ({ operation }) => {
+    if (operation === 'RaucloudLatestDeployment') {
+      return json({ data: { deployments: { edges: [{ node: { status: 'SKIPPED' } }] } } });
+    }
+  });
+  await assert.rejects(setup.provision(), { code: 'SANDBOX_DEPLOY_FAILED' });
+  assert.equal(setup.calls.includes('bootstrap'), false);
+  assert.equal(setup.calls.includes('RaucloudServiceDelete'), true);
 });
 
 test('rejected credentials fail immediately without create reconciliation or retries', async () => {

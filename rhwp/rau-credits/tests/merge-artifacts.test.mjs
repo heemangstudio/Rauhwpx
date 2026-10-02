@@ -60,6 +60,29 @@ for (const backend of ['memory', 'file', ...(process.env.RAU_TEST_POSTGRES_URL ?
   });
 }
 
+test('hot saves retain the last verified operation while preserving completed review versions', async () => {
+  const store = createMemoryMergeStore();
+  const api = createMergeArtifacts({ store, sessionSecret: secret, accountCount: 2 });
+  const turn = await api.upload('account', 'run-1', input(Buffer.from('finished')));
+  const old = await api.upload('account', 'run-1', input(Buffer.from('saved draft'), 0,
+    { kind: 'operation', operationId: 'save-1', revision: 3 }));
+  const bytes = randomBytes(MERGE_CHUNK_BYTES + 1);
+  const metadata = { kind: 'operation', operationId: 'save-2', revision: 4 };
+  const partial = await api.upload('account', 'run-1', input(bytes, 0, metadata));
+  assert.equal(partial.complete, false);
+  assert.deepEqual(new Set((await api.list('account')).mergeRequests.map(item => item.id)),
+    new Set([turn.mergeRequest.id, old.mergeRequest.id]));
+  assert.equal(Buffer.from((await api.chunk('account', old.mergeRequest.id, 0)).bytesBase64, 'base64').toString(), 'saved draft');
+  const saved = await api.upload('account', 'run-1', input(bytes, 1, metadata));
+  assert.equal(saved.complete, true);
+  assert.deepEqual(new Set((await api.list('account')).mergeRequests.map(item => item.id)),
+    new Set([turn.mergeRequest.id, saved.mergeRequest.id]));
+  await assert.rejects(api.chunk('account', old.mergeRequest.id, 0), { code: 'CLOUD_MERGE_NOT_FOUND' });
+  await assert.rejects(api.upload('account', 'run-2', input(Buffer.from('stale'), 0,
+    { kind: 'operation', operationId: 'stale-save', revision: 3 })), { code: 'CLOUD_CHECKPOINT_STALE' });
+  await assert.rejects(api.chunk('another-account', saved.mergeRequest.id, 0), { code: 'CLOUD_MERGE_NOT_FOUND' });
+});
+
 test('conversation verification releases the global state lock and fences only durable publication', async () => {
   const token = 'worker-scoped-token';
   const state = createMemoryStore({ raucloud: { accounts: { account: { worker: {
@@ -253,6 +276,12 @@ test('HTTP account authentication retrieves a checkpoint after worker deletion a
   assert.equal(replay.complete, true);
   assert.equal(replay.mergeRequest.id, final.mergeRequest.id);
   assert.equal(replay.mergeRequest.runId, 'run-1');
+  const savedChat = Buffer.from('latest chat retained without a worker');
+  const resource = await (await request('/v1/internal/cloud/runs/run-2/conversations', workerToken,
+    input(savedChat, 0, { kind: 'conversation-resource', operationId: 'chat-resource' }))).json();
+  const conversation = await (await request('/v1/internal/cloud/runs/run-2/conversations', workerToken,
+    input(Buffer.from('sanitized conversation'), 0, { kind: 'conversation', state: 'running', pendingWork: true,
+      operationId: 'chat-snapshot', retentionUntil: Date.now() + MERGE_RETENTION_MS }))).json();
   await stateStore.mutate((state) => { delete state.raucloud.runs['run-1']; state.raucloud.accounts = {}; });
   await new Promise((resolve) => running.server.close(resolve));
   running = await start();
@@ -263,6 +292,14 @@ test('HTTP account authentication retrieves a checkpoint after worker deletion a
   assert.equal(listed.mergeRequests.length, 1);
   assert.equal((await (await request('/v1/cloud/merge-requests', accountToken)).json()).mergeRequests.length, 1);
   assert.equal((await request('/v1/cloud/merge-requests?sessionId=', accountToken)).status, 400);
+  for (const [group, receipt] of [['conversations', conversation], ['conversation-resources', resource]]) {
+    const savedRoute = `/v1/cloud/${group}/${receipt.mergeRequest.id}/chunks/0`;
+    assert.equal((await request(savedRoute, 'bad-account-token')).status, 401);
+    assert.equal((await request(savedRoute, otherToken)).status, 404);
+    assert.equal((await request(savedRoute, workerToken)).status, 401);
+    assert.equal((await request(savedRoute, accountToken)).status, 200);
+  }
+  assert.equal(Buffer.from((await (await request(`/v1/cloud/conversation-resources/${resource.mergeRequest.id}/chunks/0`, accountToken)).json()).bytesBase64, 'base64').toString(), savedChat.toString());
   const chunkRoute = `/v1/cloud/merge-requests/${final.mergeRequest.id}/chunks/0`;
   assert.equal((await request(chunkRoute, otherToken)).status, 404);
   assert.deepEqual(Buffer.from((await (await request(chunkRoute, accountToken)).json()).bytesBase64, 'base64'), bytes.subarray(0, MERGE_CHUNK_BYTES));

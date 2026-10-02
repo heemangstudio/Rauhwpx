@@ -400,6 +400,10 @@ export function createRaucloudBrokerClient({
     async listConversations({ sessionId, signal } = {}) {
       return request('/v1/cloud/conversations', { query: { sessionId }, signal });
     },
+    async downloadConversationChunk(id, index, { resource = false, signal } = {}) {
+      const group = resource ? 'conversation-resources' : 'conversations';
+      return request(`/v1/cloud/${group}/${encodeURIComponent(id)}/chunks/${index}`, { signal });
+    },
     async downloadMergeChunk(id, index, { signal } = {}) {
       return request(`/v1/cloud/merge-requests/${encodeURIComponent(id)}/chunks/${index}`, { signal });
     },
@@ -626,6 +630,7 @@ export function createRaucloudBrokerProvider(options = {}) {
     ...(options.getLocalCacheIdentity ? { getLocalCacheIdentity: options.getLocalCacheIdentity } : {}),
     listMergeRequests(options) { return client.listMergeRequests(options); },
     listConversations(options) { return client.listConversations(options); },
+    downloadConversationChunk(id, index, options) { return client.downloadConversationChunk(id, index, options); },
     downloadMergeChunk(id, index, options) { return client.downloadMergeChunk(id, index, options); },
     async accountStatus({ signal = null } = {}) {
       try {

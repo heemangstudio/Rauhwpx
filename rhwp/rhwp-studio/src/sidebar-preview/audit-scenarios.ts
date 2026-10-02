@@ -53,6 +53,8 @@ export const auditScenarios: readonly AuditScenario[] = [
   scene('versions-empty', 'Document history', 'History without a document', 'Inspect the empty history state and its guidance.', { page: 'versions', document: 'empty' }),
   scene('cloud-dashboard', 'Cloud tasks', 'Task inbox', 'Open a saved task from the flat document list.', dashboard),
   scene('cloud-dashboard-expanded', 'Cloud tasks', 'Full-screen task inbox', 'Inspect document rows and quiet settings controls.', { ...dashboard, fullscreen: '1' }),
+  scene('railway-recovery', 'Cloud tasks', 'Railway recovery', 'Inspect saved work, explicit Resume, queued tasks, and result fetching.',
+    { ...dashboard, 'railway-recovery': '1' }),
   scene('cloud-logged-out', 'Cloud account', 'Signed out', 'Inspect the account sign-in state.', { ...dashboard, 'cloud-state': 'logged-out' }),
   scene('cloud-exhausted', 'Cloud account', 'Quota exhausted', 'Inspect exhausted usage and available next actions.', { ...dashboard, 'cloud-state': 'exhausted' }),
   scene('cloud-self-hosted', 'Cloud account', 'Self-hosted service', 'Inspect service information and account controls.', { ...dashboard, 'cloud-state': 'self-hosted' }),

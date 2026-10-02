@@ -389,6 +389,76 @@ test('runSession performs provider turns, checkpoints edits, publishes a portabl
   assert.ok(readyClaim >= 0 && readyClaim < completedEvent, 'the atomic message gate must close before completion');
 });
 
+test('Railway saves unfinished chat and a manual document edit at safe boundaries', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rauhwpx-railway-hot-save-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const documentPath = path.join(root, 'document.hwp');
+  const timelinePath = path.join(root, 'input-timeline.json');
+  await fs.writeFile(documentPath, 'ORIGINAL', { mode: 0o600 });
+  await fs.writeFile(timelinePath, JSON.stringify(portableTimeline()), { mode: 0o600 });
+  const blobs = new Map();
+  const boundaries = [];
+  let content = 'ORIGINAL';
+  let documentRevision = 0;
+  const client = {
+    event: async () => {},
+    beginTurn: async (turn) => turn,
+    upload: async (filename) => {
+      const bytes = await fs.readFile(filename);
+      const id = createHash('sha256').update(bytes).digest('hex');
+      blobs.set(id, bytes);
+      return { id, size: bytes.length };
+    },
+    commitBoundary: async (boundary) => {
+      boundaries.push(boundary);
+      return boundaryReceipt(boundary);
+    },
+  };
+  await assert.rejects(runSession({
+    workspace: root, credentials: {}, client,
+    createHarness: async ({ onEvent }) => ({
+      start: async () => {}, close: async () => {},
+      documentRevision: async () => documentRevision,
+      exportDocument: async (_format, destination) => {
+        const bytes = Buffer.from(content);
+        await fs.writeFile(destination, bytes, { mode: 0o600 });
+        return { sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.length, documentRevision };
+      },
+      runTurn: async (_prompt, { onSafeBoundary, onIdleBoundary }) => {
+        await onEvent({ type: 'agent', event: { type: 'turn-start', agent: 'codex' } });
+        await onEvent({ type: 'agent', event: { type: 'text-delta', agent: 'codex', text: 'First paragraph ready.' } });
+        await onSafeBoundary({ tool: 'replace_range', ok: true });
+        await onEvent({ type: 'agent', event: { type: 'text-delta', agent: 'codex', text: ' Checking the rest.' } });
+        await onSafeBoundary({ tool: 'read_document', ok: true });
+        content = 'MANUALLY EDITED';
+        documentRevision += 1;
+        await onIdleBoundary();
+        throw new Error('worker disappeared');
+      },
+    }),
+    manifest: {
+      sessionId: 'railway-hot-save', provider: 'codex', persistent: true, railwayManaged: true,
+      goal: 'Edit the document', resources: [
+        { kind: 'document', name: 'document.hwp', filename: documentPath },
+        { kind: 'timeline', name: 'timeline.json', filename: timelinePath },
+      ], limits: { maxDurationSeconds: 900, maxTurns: 10, turnsUsed: 0 },
+    },
+  }), /worker disappeared/);
+  assert.deepEqual(boundaries.map(({ kind, turnNumber, revision }) => ({ kind, turnNumber, revision })), [
+    { kind: 'operation', turnNumber: 1, revision: 1 },
+    { kind: 'operation', turnNumber: 1, revision: 2 },
+    { kind: 'operation', turnNumber: 1, revision: 3 },
+  ]);
+  assert.equal(blobs.get(boundaries[0].checkpoint.blobId).toString(), 'ORIGINAL');
+  assert.equal(boundaries[1].checkpoint.blobId, boundaries[0].checkpoint.blobId);
+  assert.equal(blobs.get(boundaries[2].checkpoint.blobId).toString(), 'MANUALLY EDITED');
+  const saved = JSON.parse(blobs.get(boundaries[2].timeline.blobId).toString());
+  assert.deepEqual(saved.thread.messages.filter((message) => message.cloudDraft).map((message) => message.text),
+    ['First paragraph ready. Checking the rest.']);
+  const restored = new TimelineRecorder(readTimeline(saved, { provider: 'codex' }));
+  assert.equal(restored.history().some(({ text }) => text === 'First paragraph ready.'), false);
+});
+
 test('runSession does not publish readiness on Studio startup failure and cleans the harness', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rauhwpx-document-runtime-startup-failure-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -1336,6 +1406,219 @@ for (const action of ['end', 'idle-end', 'takeover', 'lease-stop', 'configure'])
     assert.equal(boundaries.at(-1).kind, 'operation');
     if (action.endsWith('end')) assert.equal(await fs.readFile(result.resultPath, 'utf8'), 'manual edit after turn plus queued input');
     else assert.equal(acknowledged, true);
+  });
+}
+
+test('Railway lease loss keeps the last hot-saved edit when interrupt rolls back Studio preview', async (t) => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'raucloud-interrupted-edit-'));
+  t.after(() => fs.rm(workspace, { recursive: true, force: true }));
+  const document = path.join(workspace, 'document.hwp');
+  const timeline = path.join(workspace, 'input-timeline.json');
+  await fs.writeFile(document, 'original');
+  await fs.writeFile(timeline, JSON.stringify(portableTimeline()));
+  const uploads = new Map();
+  const boundaries = [];
+  let content = 'original';
+  let documentRevision = 1;
+  let stop = false;
+  let exports = 0;
+  let suspended = false;
+  const result = await runSession({
+    workspace, credentials: {}, shouldStop: () => stop,
+    manifest: {
+      sessionId: 'interrupted-edit', provider: 'codex', persistent: true, railwayManaged: true, goal: 'Edit',
+      resources: [{ kind: 'document', name: 'document.hwp', filename: document }, { kind: 'timeline', name: 'timeline.json', filename: timeline }],
+      limits: { maxDurationSeconds: 900, maxTurns: 10 },
+    },
+    client: {
+      event: async () => {}, beginTurn: async () => {}, control: async () => ({}),
+      upload: async (filename) => {
+        const bytes = await fs.readFile(filename);
+        const id = createHash('sha256').update(bytes).digest('hex');
+        uploads.set(id, bytes);
+        return { id, size: bytes.length };
+      },
+      commitBoundary: async (boundary) => { boundaries.push(boundary); return boundaryReceipt(boundary); },
+      completeTurn: async () => assert.fail('Interrupted work must not be marked as a completed turn'),
+      suspend: async () => { suspended = true; },
+    },
+    createHarness: async ({ onEvent }) => ({
+      start: async () => {}, close: async () => {}, documentRevision: async () => documentRevision,
+      runTurn: async (_prompt, options) => {
+        await onEvent({ type: 'agent', event: { type: 'turn-start', agent: 'codex' } });
+        content = 'original RECOVERY_EDIT';
+        documentRevision += 1;
+        await onEvent({ type: 'agent', event: { type: 'text-delta', agent: 'codex', text: 'Inserted recovery edit.' } });
+        await options.onSafeBoundary({ tool: 'insert_text', ok: true });
+        stop = true;
+        content = 'original';
+        documentRevision += 1;
+        await options.onIdleBoundary();
+        await onEvent({ type: 'agent', event: { type: 'turn-end', agent: 'codex', stopReason: 'interrupted' } });
+        return { stopReason: 'interrupted', redirected: true };
+      },
+      exportDocument: async (_format, filename) => {
+        exports += 1;
+        const bytes = Buffer.from(content);
+        await fs.writeFile(filename, bytes);
+        return { sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.length, documentRevision };
+      },
+    }),
+  });
+  assert.equal(result.suspended, true);
+  assert.equal(suspended, true);
+  assert.equal(exports, 1, 'shutdown must reuse the verified hot save instead of exporting the rolled-back preview');
+  assert.deepEqual(boundaries.map(({ kind }) => kind), ['operation', 'operation']);
+  assert.equal(uploads.get(boundaries.at(-1).checkpoint.blobId).toString(), 'original RECOVERY_EDIT');
+  assert.match(uploads.get(boundaries.at(-1).timeline.blobId).toString(), /Inserted recovery edit/);
+});
+
+test('Railway pause keeps the pre-interrupt document when Studio rolls back the preview', async (t) => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'raucloud-paused-edit-'));
+  t.after(() => fs.rm(workspace, { recursive: true, force: true }));
+  const document = path.join(workspace, 'document.hwp');
+  const timeline = path.join(workspace, 'input-timeline.json');
+  await fs.writeFile(document, 'original');
+  await fs.writeFile(timeline, JSON.stringify(portableTimeline()));
+  const uploads = new Map();
+  const boundaries = [];
+  let content = 'original';
+  let documentRevision = 1;
+  let exports = 0;
+  let paused = false;
+  const result = await runSession({
+    workspace, credentials: {},
+    manifest: {
+      sessionId: 'paused-edit', provider: 'codex', persistent: true, railwayManaged: true, goal: 'Edit',
+      resources: [{ kind: 'document', name: 'document.hwp', filename: document }, { kind: 'timeline', name: 'timeline.json', filename: timeline }],
+      limits: { maxDurationSeconds: 900, maxTurns: 10 },
+    },
+    client: {
+      event: async () => {}, beginTurn: async () => {}, control: async () => ({ pauseRequested: true }),
+      upload: async (filename) => {
+        const bytes = await fs.readFile(filename);
+        const id = createHash('sha256').update(bytes).digest('hex');
+        uploads.set(id, bytes);
+        return { id, size: bytes.length };
+      },
+      commitBoundary: async (boundary) => { boundaries.push(boundary); return boundaryReceipt(boundary); },
+      completeTurn: async () => assert.fail('Paused work must remain unfinished'),
+      pauseAck: async () => { paused = true; },
+    },
+    createHarness: async ({ onEvent }) => ({
+      start: async () => {}, close: async () => {}, documentRevision: async () => documentRevision,
+      runTurn: async (_prompt, options) => {
+        await onEvent({ type: 'agent', event: { type: 'turn-start', agent: 'codex' } });
+        content = 'original PAUSED_EDIT';
+        documentRevision += 1;
+        await options.onIdleBoundary({ beforeInterrupt: true });
+        content = 'original';
+        documentRevision += 1;
+        await onEvent({ type: 'agent', event: { type: 'turn-end', agent: 'codex', stopReason: 'interrupted' } });
+        return { stopReason: 'interrupted', stopped: true };
+      },
+      exportDocument: async (_format, filename) => {
+        exports += 1;
+        const bytes = Buffer.from(content);
+        await fs.writeFile(filename, bytes);
+        return { sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.length, documentRevision };
+      },
+    }),
+  });
+  assert.equal(result.paused, true);
+  assert.equal(paused, true);
+  assert.equal(exports, 1, 'pause must not re-export the rolled-back Studio document');
+  assert.deepEqual(boundaries.map(({ kind }) => kind), ['operation', 'operation']);
+  assert.equal(uploads.get(boundaries.at(-1).checkpoint.blobId).toString(), 'original PAUSED_EDIT');
+});
+
+for (const control of ['redirect', 'end', 'takeover']) {
+  test(`Railway ${control} continues from the saved document after interrupted preview rollback`, async (t) => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'raucloud-interrupted-control-'));
+    t.after(() => fs.rm(workspace, { recursive: true, force: true }));
+    const document = path.join(workspace, 'document.hwp');
+    const timeline = path.join(workspace, 'input-timeline.json');
+    await fs.writeFile(document, 'original');
+    await fs.writeFile(timeline, JSON.stringify(portableTimeline()));
+    const uploads = new Map();
+    const boundaries = [];
+    let content = 'original';
+    let documentRevision = 1;
+    let exports = 0;
+    let reloads = 0;
+    let turns = 0;
+    let finishClaims = 0;
+    let takenOver = false;
+    const result = await runSession({
+      workspace, credentials: {},
+      manifest: {
+        sessionId: `interrupted-${control}`, provider: 'codex', persistent: true, railwayManaged: true, goal: 'Edit',
+        resources: [{ kind: 'document', name: 'document.hwp', filename: document }, { kind: 'timeline', name: 'timeline.json', filename: timeline }],
+        limits: { maxDurationSeconds: 900, maxTurns: 10 },
+      },
+      client: {
+        event: async () => {}, beginTurn: async () => {},
+        control: async () => control === 'takeover' ? { takeoverRequested: true } : {},
+        upload: async (filename) => {
+          const bytes = await fs.readFile(filename);
+          const id = createHash('sha256').update(bytes).digest('hex');
+          uploads.set(id, bytes);
+          return { id, size: bytes.length };
+        },
+        commitBoundary: async (boundary) => { boundaries.push(boundary); return boundaryReceipt(boundary); },
+        completeTurn: async () => ({ status: 'running' }),
+        takeoverAck: async () => { takenOver = true; },
+        finishClaim: async () => {
+          finishClaims += 1;
+          return control === 'redirect' && finishClaims === 1
+            ? { ready: false, messages: [{ id: 'follow-up', content: 'Continue' }] }
+            : { ready: true, messages: [] };
+        },
+      },
+      createHarness: async ({ onEvent }) => ({
+        start: async () => {}, close: async () => {}, documentRevision: async () => documentRevision,
+        reloadDocument: async (filename) => {
+          reloads += 1;
+          content = await fs.readFile(filename, 'utf8');
+          documentRevision += 1;
+        },
+        runTurn: async (_prompt, options) => {
+          turns += 1;
+          await onEvent({ type: 'agent', event: { type: 'turn-start', agent: 'codex' } });
+          if (turns === 1) {
+            content = 'original SAVED_EDIT';
+            documentRevision += 1;
+            await options.onSafeBoundary({ tool: 'insert_text', ok: true });
+            content = 'original';
+            documentRevision += 1;
+            await onEvent({ type: 'agent', event: { type: 'turn-end', agent: 'codex', stopReason: 'interrupted' } });
+            return { stopReason: 'interrupted', redirected: control === 'redirect', stopped: control !== 'redirect' };
+          }
+          assert.equal(content, 'original SAVED_EDIT', 'queued work must see the recovered document');
+          content += ' SECOND_EDIT';
+          documentRevision += 1;
+          await onEvent({ type: 'agent', event: { type: 'turn-end', agent: 'codex', stopReason: 'end_turn' } });
+          return { stopReason: 'end_turn' };
+        },
+        exportDocument: async (_format, filename) => {
+          exports += 1;
+          const bytes = Buffer.from(content);
+          await fs.writeFile(filename, bytes);
+          return { sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.length, documentRevision };
+        },
+      }),
+    });
+    assert.equal(reloads, 1);
+    assert.equal(turns, control === 'redirect' ? 2 : 1);
+    assert.equal(exports, control === 'redirect' ? 2 : 1);
+    const expected = control === 'redirect' ? 'original SAVED_EDIT SECOND_EDIT' : 'original SAVED_EDIT';
+    if (control === 'takeover') {
+      assert.equal(result.takenOver, true);
+      assert.equal(takenOver, true);
+    } else {
+      assert.equal(await fs.readFile(result.resultPath, 'utf8'), expected);
+    }
+    assert.equal(uploads.get(boundaries.at(-1).checkpoint.blobId).toString(), expected);
   });
 }
 

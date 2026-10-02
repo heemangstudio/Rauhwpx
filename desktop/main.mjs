@@ -703,7 +703,7 @@ async function openCloudNotification(payload) {
  * a single banner on the same cadence as the event broadcast coalescing.
  */
 function notifyCloudMergeReady(payload) {
-  if (payload?.type !== 'merge-prefetch-completed') return;
+  if (payload?.type !== 'merge-prefetch-completed' || payload.kind !== 'turn') return;
   pendingMergeNotifications.set(payload.operationId ?? pendingMergeNotifications.size, payload);
   if (mergeNotificationTimer) return;
   mergeNotificationTimer = setTimeout(() => {

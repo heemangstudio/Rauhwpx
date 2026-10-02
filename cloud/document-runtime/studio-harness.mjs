@@ -514,7 +514,7 @@ export async function launchChromium(puppeteer, options) {
 // event-ordering regressions can be exercised without launching a provider.
 export async function observeStudioTurn({
   page, bootstrap, execution, hub, hubError = () => '', onEvent,
-  onSafeBoundary = null, readControl = null, eventSequence = 0,
+  onSafeBoundary = null, onIdleBoundary = null, readControl = null, eventSequence = 0,
   onSequence = () => {}, sentAt = Date.now(), timeoutMs,
 }) {
   let sawStart = false;
@@ -527,6 +527,7 @@ export async function observeStudioTurn({
     if (interruptRequested || typeof readControl !== 'function' || activeRootTools.size > 0) return;
     const control = await readControl();
     if (!control?.redirectRequested && !control?.pauseRequested && !control?.takeoverRequested && !control?.endRequested) return;
+    if (typeof onIdleBoundary === 'function') await onIdleBoundary({ beforeInterrupt: true });
     const receipt = await withTimeout(
       page.evaluate(
         (secret, after) => window.rauhwpxCloudRuntime.interruptIfIdle(secret, after),
@@ -539,6 +540,7 @@ export async function observeStudioTurn({
     if (receipt?.interrupted === true) interruptRequested = control;
   };
   while (Date.now() - sentAt < timeoutMs) {
+    let completedTool = null;
     const entries = await withTimeout(
       page.evaluate(
         (secret, after) => window.rauhwpxCloudRuntime.drainEvents(secret, after),
@@ -572,7 +574,8 @@ export async function observeStudioTurn({
         const tool = activeRootTools.get(agentEvent.callId);
         activeRootTools.delete(agentEvent.callId);
         if (agentEvent.ok === true && typeof onSafeBoundary === 'function') {
-          await onSafeBoundary({ ...agentEvent, tool });
+          if (onIdleBoundary) completedTool = { ...agentEvent, tool };
+          else await onSafeBoundary({ ...agentEvent, tool });
         }
       }
       if (agentEvent?.type === 'turn-end' && sawStart) {
@@ -597,7 +600,9 @@ export async function observeStudioTurn({
         return agentEvent;
       }
     }
+    if (completedTool && activeRootTools.size === 0) await onSafeBoundary(completedTool);
     await interruptAtSafeBoundary();
+    if (!interruptRequested && activeRootTools.size === 0 && typeof onIdleBoundary === 'function') await onIdleBoundary();
     if (hub.exitCode !== null || hub.signalCode) {
       throw runtimeError('AGENT_HUB_FAILED', `Rauhwpx agent hub exited during the turn: ${hubError().trim().slice(-2_000)}`);
     }
@@ -830,6 +835,7 @@ export async function createStudioHarness({
         timeoutMs,
         resume = null,
         onSafeBoundary = null,
+        onIdleBoundary = null,
         readControl = null,
       }) {
         assertBrowserHealthy();
@@ -885,7 +891,7 @@ export async function createStudioHarness({
         }
         return observeStudioTurn({
           page, bootstrap, execution, hub, hubError: () => hubErrorTail,
-          onEvent, onSafeBoundary, readControl, eventSequence, sentAt, timeoutMs,
+          onEvent, onSafeBoundary, onIdleBoundary, readControl, eventSequence, sentAt, timeoutMs,
           onSequence: (sequence) => { eventSequence = sequence; },
         });
       },
@@ -916,6 +922,24 @@ export async function createStudioHarness({
             page, bootstrap, origin, references: additions, scopeId: thread.id, onEvent,
           });
         }
+      },
+      async reloadDocument(filename) {
+        assertBrowserHealthy();
+        if (!await isPlainFile(filename)) {
+          throw runtimeError('DOCUMENT_RELOAD_UNAVAILABLE', 'Interrupted document checkpoint is missing');
+        }
+        resourceFiles.set('checkpoint', filename);
+        await withTimeout(
+          page.evaluate(async (secret, input) => window.rauhwpxCloudRuntime.loadDocument(secret, input), bootstrap, {
+            url: resourceUrl(origin, bootstrap, 'checkpoint'),
+            name: document.name,
+            mimeType: document.mimeType,
+          }),
+          30_000,
+          'DOCUMENT_RELOAD_TIMEOUT',
+          'Cloud Studio document checkpoint reload timed out',
+        );
+        await verifyDocumentShell(page);
       },
       async documentRevision() {
         assertBrowserHealthy();

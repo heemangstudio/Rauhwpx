@@ -1,0 +1,169 @@
+{
+  "date": "2026-10-02",
+  "live": true,
+  "isolatedBroker": true,
+  "stages": [
+    {
+      "stage": "worker-ready",
+      "at": "2026-10-02T07:08:35.379Z",
+      "role": "worker-2",
+      "serviceId": "cbea5c32-faae-4bad-8cba-98e52172a66d",
+      "version": "2.0.9"
+    },
+    {
+      "stage": "laptop-fixture",
+      "at": "2026-10-02T07:08:35.943Z"
+    },
+    {
+      "stage": "different-document-queued",
+      "at": "2026-10-02T07:08:39.794Z",
+      "sessionId": "proof-94fbbae5-21b8-42b4-81ae-a440011250be"
+    },
+    {
+      "stage": "hot-save",
+      "at": "2026-10-02T07:09:22.786Z",
+      "revision": 6,
+      "bytes": 331090,
+      "status": "running"
+    },
+    {
+      "stage": "worker-deleted-mid-task",
+      "at": "2026-10-02T07:09:29.234Z",
+      "serviceId": "cbea5c32-faae-4bad-8cba-98e52172a66d"
+    },
+    {
+      "stage": "recovered-before-resume",
+      "at": "2026-10-02T07:09:30.220Z",
+      "allocationCount": 0,
+      "bytes": 331102,
+      "chatMessages": 5,
+      "lastSavedAt": "2026-10-02T07:09:25.426Z"
+    },
+    {
+      "stage": "replacement-upload",
+      "at": "2026-10-02T07:09:36.451Z",
+      "detail": {
+        "role": "worker-2",
+        "serviceId": "5e7e5976-2403-4f29-b96a-146321293b97",
+        "endpoint": "https://recovery-worker-2-1790924971691-production.up.railway.app/rauhwpx-cloud",
+        "deployment": {
+          "deploymentId": "213d23ca-189b-4756-8f3a-c1924a747d9e",
+          "logsUrl": "https://railway.com/project/6a9737b9-e113-49b6-9096-b485b5b3b0c7/service/5e7e5976-2403-4f29-b96a-146321293b97?id=213d23ca-189b-4756-8f3a-c1924a747d9e"
+        }
+      }
+    },
+    {
+      "stage": "worker-ready",
+      "at": "2026-10-02T07:12:18.797Z",
+      "role": "worker-2",
+      "serviceId": "5e7e5976-2403-4f29-b96a-146321293b97",
+      "version": "2.0.9"
+    },
+    {
+      "stage": "explicit-resume",
+      "at": "2026-10-02T07:12:20.870Z",
+      "allocationCount": 1,
+      "otherTaskStatus": "suspended"
+    },
+    {
+      "stage": "completed-fetched",
+      "at": "2026-10-02T07:13:28.694Z",
+      "bytes": 331151,
+      "sha256": "d0e37f5a1b4c0ede6e62ebca4c52f9d586e39443fd8ef02d92e776e19020ba75"
+    },
+    {
+      "stage": "second-session-resumed",
+      "at": "2026-10-02T07:14:07.352Z"
+    },
+    {
+      "stage": "offline-reopen",
+      "at": "2026-10-02T07:14:07.786Z",
+      "ok": true
+    }
+  ],
+  "firstId": "proof-78880804-4fe4-42b6-b681-1cba074cdbca",
+  "secondId": "proof-94fbbae5-21b8-42b4-81ae-a440011250be",
+  "workerDeletedDuring": "running",
+  "latestDraft": {
+    "revision": 7,
+    "sha256": "1a2be3471e3c88096936fbe7f31caad722c0d4a5ee90d2b6ee245fe6a10a7590",
+    "bytes": 331102
+  },
+  "restoredChatMessages": 5,
+  "automaticResume": false,
+  "replacementAllocations": 1,
+  "completed": {
+    "revision": 19,
+    "sha256": "d0e37f5a1b4c0ede6e62ebca4c52f9d586e39443fd8ef02d92e776e19020ba75",
+    "markerCount": 1,
+    "bytes": 331151
+  },
+  "offlineReopen": true,
+  "limitations": [
+    "Browser UI exercised separately with project-native fixtures; live journey uses production desktop coordinator over Railway HTTPS.",
+    "Production pinned worker image is unchanged."
+  ],
+  "secondCompleted": {
+    "revision": 8,
+    "sha256": "72ccb7731d8cddcf676652af83555a0c2a6a3ae8fe6f9ecd9876666a845eed0b",
+    "bytes": 331087,
+    "markerCount": 1,
+    "sameWarmWorker": true
+  },
+  "queueYield": {
+    "code": "QUEUE_YIELD"
+  },
+  "timings": {
+    "recoveryAfterDeletionConfirmedMs": 986,
+    "replacementSourceBuildAndRestoreMs": 170650,
+    "note": "Single live fixture run; replacement duration includes uploading and building a disposable source overlay."
+  },
+  "checks": {
+    "desktop": {
+      "passed": 394,
+      "failed": 0
+    },
+    "worker": {
+      "passed": 281,
+      "skipped": 4,
+      "failed": 0
+    },
+    "brokerFocused": {
+      "passed": 35,
+      "failed": 0
+    },
+    "sidebarInteraction": "passed",
+    "sidebarBuild": "passed",
+    "studioTypecheck": "passed",
+    "versionReviewBrowser": {
+      "passed": 13,
+      "failed": 0
+    },
+    "cloudSyntax": "passed",
+    "latestDesktopRecoveryFocused": {
+      "passed": 89,
+      "failed": 0
+    }
+  },
+  "cleanup": {
+    "allDisposableServicesDeleted": true,
+    "remainingProjectServices": [
+      {
+        "id": "9a8d1b96-b770-4f5e-bf80-495fdfb13ce1",
+        "name": "cloud-attachment-proof"
+      }
+    ]
+  },
+  "prVerification": {
+    "baseCommit": "c31cefd3",
+    "desktopPassed": 395,
+    "workerPassed": 281,
+    "workerSkipped": 4,
+    "brokerPassed": 139,
+    "studioTypecheck": "passed",
+    "sidebarBuild": "passed",
+    "cloudSyntax": "passed",
+    "savedChatInboxRegression": "All ten matching saves fetch in one pass despite a newer unmatched descriptor.",
+    "sidebarInteraction": "passed"
+  }
+}

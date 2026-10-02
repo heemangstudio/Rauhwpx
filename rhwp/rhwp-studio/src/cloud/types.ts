@@ -234,6 +234,8 @@ export interface CloudSessionBase {
   configurationEditable?: boolean;
   /** Set by the desktop only after the durable initial handoff acknowledgment. */
   handoffAcceptedAt?: string;
+  /** Time of the latest durable Railway document and conversation snapshot. */
+  lastSavedAt?: string;
   sessionId: string;
   version: number;
   threadId: string;
@@ -339,7 +341,7 @@ export interface CloudMergeRequest {
   operationId: string;
   revision: number;
   turn: number;
-  kind: 'turn';
+  kind: 'operation' | 'turn';
   fileName: string;
   sha256: string;
   size: number;

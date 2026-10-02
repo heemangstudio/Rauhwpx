@@ -699,8 +699,8 @@ test('worker API accepts only the session worker token', async (t) => {
 test('managed turn boundaries retain the frozen document before local commit and retry failed uploads', async (t) => {
   const archived = [];
   const mergeStore = createMemoryMergeStore();
-  const createArchive = () => createMergeArtifacts({ store: mergeStore, sessionSecret: 'test-archive-key' });
-  const archive = createArchive();
+  const createArchive = (kind) => createMergeArtifacts({ store: mergeStore, sessionSecret: 'test-archive-key', kind });
+  const archive = { turn: createArchive('turn'), operation: createArchive('operation') };
   let failUpload = true;
   let replaceWorker = false;
   let remembered = null;
@@ -714,7 +714,7 @@ test('managed turn boundaries retain the frozen document before local commit and
       for await (const part of stream) parts.push(part);
       archived.push({ metadata, bytes: Buffer.concat(parts) });
       if (failUpload) throw Object.assign(new Error('broker offline'), { code: 'RAUCLOUD_BROKER_UNREACHABLE', status: 503 });
-      const receipt = await archive.upload('account-1', 'run-1', { ...metadata,
+      const receipt = await archive[metadata.kind].upload('account-1', 'run-1', { ...metadata,
         chunkIndex: 0, chunkCount: 1, bytesBase64: Buffer.concat(parts).toString('base64') });
       if (replaceWorker) sessionStore.prepareWorker('archive-session', 'replacement-worker');
       return receipt;
@@ -747,16 +747,27 @@ test('managed turn boundaries retain the frozen document before local commit and
   sessionStore.prepareWorker(session.id, 'archive-worker');
   sessionStore.beginTurn(session.id, { turnNumber: 1 });
   let workerToken = 'archive-worker';
+  const managedManifest = await fetch(`${base}/v1/internal/worker/${session.id}/manifest`, {
+    headers: { Authorization: `Bearer ${workerToken}` },
+  });
+  assert.equal((await managedManifest.json()).railwayManaged, true);
   const send = (kind, operationId, overrides = {}) => fetch(`${base}/v1/internal/worker/${session.id}/boundary`, {
     method: 'POST', headers: { Authorization: `Bearer ${workerToken}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ operationId, turnNumber: 1, revision: kind === 'turn' ? 3 : 2, kind, checkpoint: document, timeline, ...overrides }),
+    body: JSON.stringify({ operationId, turnNumber: 1, revision: kind === 'turn' ? 4 : 2, kind, checkpoint: document, timeline, ...overrides }),
   });
+  assert.equal((await send('operation', 'operation-1')).status, 503);
+  assert.equal(sessionStore.workerManifest(session.id).latestCheckpoint, null);
+  failUpload = false;
   assert.equal((await send('operation', 'operation-1')).status, 201);
+  assert.equal((await send('operation', 'operation-2', { revision: 3 })).status, 201);
   assert.equal((await send('turn', 'wrong-turn', { turnNumber: 2 })).status, 409);
-  assert.equal((await send('turn', 'stale-revision', { revision: 2 })).status, 409);
-  assert.equal(archived.length, 0, 'operation saves stay local');
+  assert.equal((await send('turn', 'stale-revision', { revision: 3 })).status, 409);
+  assert.equal(archived.length, 2, 'a verified identical document skips the second operation upload');
+  assert.equal(archived[0].metadata.kind, 'operation');
+  assert.deepEqual(archived[0], archived[1]);
+  failUpload = true;
   assert.equal((await send('turn', 'turn-1')).status, 503);
-  assert.equal(remembered, 'operation-1');
+  assert.equal(remembered, 'operation-2');
   assert.equal(sessionStore.workerManifest(session.id).latestCheckpoint.kind, 'operation');
   failUpload = false;
   replaceWorker = true;
@@ -764,10 +775,12 @@ test('managed turn boundaries retain the frozen document before local commit and
   assert.equal(sessionStore.workerManifest(session.id).latestCheckpoint.kind, 'operation');
   assert.equal(sessionStore.listEvents(session.id).filter((event) =>
     event.type === 'boundary.committed' && event.payload.kind === 'turn').length, 0);
-  const reopenedArchive = createArchive();
-  const retained = (await reopenedArchive.list('account-1', session.id)).mergeRequests;
+  const reopenedArchive = createArchive('turn');
+  const retained = (await reopenedArchive.list('account-1', session.id)).mergeRequests.filter((item) => item.kind === 'turn');
   assert.equal(retained.length, 1, 'the broker recovery receipt survives rejection of the ephemeral local commit');
   assert.equal(retained[0].operationId, 'turn-1');
+  assert.equal((await createArchive('operation').list('account-1', session.id)).mergeRequests
+    .find((item) => item.kind === 'operation').operationId, 'operation-1');
   const retainedChunk = await reopenedArchive.chunk('account-1', retained[0].id, 0);
   const retainedBytes = Buffer.from(retainedChunk.bytesBase64, 'base64');
   assert.equal(retainedBytes.toString(), 'saved document');
@@ -777,14 +790,14 @@ test('managed turn boundaries retain the frozen document before local commit and
   assert.equal((await send('turn', 'turn-1')).status, 201);
   assert.equal(remembered, 'turn-1');
   assert.equal(sessionStore.workerManifest(session.id).latestCheckpoint.kind, 'turn');
-  assert.deepEqual(archived[0], archived[1]);
-  assert.deepEqual(archived[1], archived[2]);
-  assert.deepEqual(archived[1].metadata, {
+  assert.deepEqual(archived[2], archived[3]);
+  assert.deepEqual(archived[3], archived[4]);
+  assert.deepEqual(archived[2].metadata, {
     sessionId: session.id, documentId: 'document-1', threadId: 'thread-1', cloudStartId: 'frozen-start',
-    operationId: 'turn-1', revision: 3, turn: 1, kind: 'turn', fileName: 'source.hwpx',
+    operationId: 'turn-1', revision: 4, turn: 1, kind: 'turn', fileName: 'source.hwpx',
     sha256: document.blobId, size: document.size,
   });
-  assert.equal(archived[1].bytes.toString(), 'saved document');
+  assert.equal(archived[2].bytes.toString(), 'saved document');
 });
 
 test('an authenticated worker frame reaches paired devices with signed transient responses', async (t) => {

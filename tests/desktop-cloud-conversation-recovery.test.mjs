@@ -9,7 +9,7 @@ import {
   validateConversationSnapshot,
 } from '../desktop/cloud-conversation-recovery.mjs';
 import { CloudCoordinator } from '../desktop/cloud-coordinator.mjs';
-import { CloudHandoffStore } from '../desktop/cloud-handoff.mjs';
+import { CloudHandoffStore, sha256Hex } from '../desktop/cloud-handoff.mjs';
 import { normalizeCloudProfile } from '../desktop/cloud-profile.mjs';
 
 const SERVER_IDENTITY = generateKeyPairSync('ed25519');
@@ -95,6 +95,118 @@ test('broker conversation discovery is account fenced and bound to the local han
   await assert.rejects(pending, { name: 'AbortError' });
 });
 
+test('saved Railway chat is verified and shown from broker before the worker resumes', async (t) => {
+  const { directory, store, created } = await handoffFixture(t);
+  const timeline = { thread: { id: 'thread-1', cloudStartId: 'cloud-start-1' },
+    messages: [{ id: 'saved-message', text: 'Saved while the worker was running' }] };
+  const timelineBytes = Buffer.from(JSON.stringify(timeline));
+  const timelineDigest = sha256Hex(timelineBytes);
+  const resource = { id: 'resource-1', sha256: timelineDigest, size: timelineBytes.length };
+  const archived = Buffer.from(JSON.stringify({
+    version: 1,
+    session: { id: 'cloud-session', client_document_id: 'document-1', client_thread_id: 'thread-1' },
+    rows: { session_resources: [{ session_id: 'cloud-session', kind: 'timeline',
+      sha256: timelineDigest, size: timelineBytes.length }] },
+    blobs: [resource],
+  }));
+  const descriptor = snapshot({ sha256: sha256Hex(archived), size: archived.length });
+  let downloads = 0;
+  const provider = {
+    getLocalCacheIdentity: async () => 'account-credential-1',
+    listConversations: async () => ({ accountId: 'account-1', conversations: [descriptor] }),
+    downloadConversationChunk: async (_id, _index, { resource: isResource }) => {
+      downloads += 1;
+      return { bytesBase64: (isResource ? timelineBytes : archived).toString('base64') };
+    },
+  };
+  const recovery = new CloudConversationRecovery({ store, recoveryDir: path.join(directory, 'recovery'),
+    provider: () => provider });
+  await recovery.refresh();
+  assert.deepEqual(await recovery.prefetchTimelines(), { attempted: 1, downloaded: 1, failures: [] });
+  assert.deepEqual((await store.get(created.id)).timeline, timeline);
+  assert.equal(downloads, 2);
+  provider.downloadConversationChunk = async () => { throw new Error('worker and broker unavailable'); };
+  const reopened = new CloudConversationRecovery({ store: new CloudHandoffStore({ filePath: path.join(directory, 'handoffs.json') }),
+    recoveryDir: path.join(directory, 'recovery'), provider: () => provider });
+  await reopened.refresh();
+  assert.deepEqual(await reopened.prefetchTimelines(), { attempted: 0, downloaded: 0, failures: [] });
+});
+
+test('one prefetch drains older saved chats after newer unmatched and cached entries', async (t) => {
+  const { directory, store } = await handoffFixture(t);
+  const bytesById = new Map();
+  const descriptors = [];
+  for (let index = 0; index < 10; index += 1) {
+    const sessionId = index === 0 ? 'cloud-session' : `cloud-session-${index}`;
+    const documentId = index === 0 ? 'document-1' : `document-${index}`;
+    const threadId = index === 0 ? 'thread-1' : `thread-${index}`;
+    const cloudStartId = index === 0 ? 'cloud-start-1' : `cloud-start-${index}`;
+    if (index > 0) {
+      const record = await store.create({
+        sessionId: `local-session-${index}`, threadId, documentId,
+        documentName: `${documentId}.hwpx`, documentBytes: Buffer.from('document'),
+        timeline: { thread: { cloudStartId } }, provider: 'claude', limits: { maxTurns: 100 },
+      });
+      await store.transition(record.id, 'uploading');
+      await store.transition(record.id, 'committing');
+      await store.transition(record.id, 'running', { cloudSessionId: sessionId });
+    }
+    const timeline = Buffer.from(JSON.stringify({ thread: { cloudStartId }, messages: [{ id: `saved-${index}` }] }));
+    const digest = sha256Hex(timeline);
+    const resourceId = `resource-${index}`;
+    bytesById.set(resourceId, timeline);
+    const archived = Buffer.from(JSON.stringify({
+      version: 1,
+      session: { id: sessionId, client_document_id: documentId, client_thread_id: threadId },
+      rows: { session_resources: [{ session_id: sessionId, kind: 'timeline', sha256: digest, size: timeline.length }] },
+      blobs: [{ id: resourceId, sha256: digest, size: timeline.length }],
+    }));
+    const descriptorId = `snapshot-${index}`;
+    bytesById.set(descriptorId, archived);
+    descriptors.push(snapshot({ id: descriptorId, sessionId, documentId, threadId, cloudStartId,
+      createdAt: Date.parse(`2026-09-${String(index + 1).padStart(2, '0')}T01:00:00.000Z`),
+      sha256: sha256Hex(archived), size: archived.length }));
+  }
+  descriptors.push(snapshot({ id: 'snapshot-unmatched', sessionId: 'other-session',
+    documentId: 'other-document', createdAt: Date.parse('2026-09-20T01:00:00.000Z') }));
+  const downloaded = [];
+  const provider = {
+    getLocalCacheIdentity: async () => 'account-credential-1',
+    listConversations: async () => ({ accountId: 'account-1', conversations: descriptors }),
+    downloadConversationChunk: async (id, _index, { resource }) => {
+      if (!resource) downloaded.push(id);
+      return { bytesBase64: bytesById.get(id).toString('base64') };
+    },
+  };
+  const recovery = new CloudConversationRecovery({ store, recoveryDir: path.join(directory, 'recovery'),
+    provider: () => provider });
+  await recovery.refresh();
+  assert.deepEqual(await recovery.prefetchTimelines(), { attempted: 10, downloaded: 10, failures: [] });
+  assert.equal(downloaded.includes('snapshot-0'), true);
+  assert.equal(downloaded.includes('snapshot-unmatched'), false);
+  assert.deepEqual(await recovery.prefetchTimelines(), { attempted: 0, downloaded: 0, failures: [] });
+});
+
+test('an account change during chat download cannot replace the local timeline', async (t) => {
+  const { directory, store, created } = await handoffFixture(t);
+  let identity = 'account-credential-1';
+  const archived = Buffer.from(JSON.stringify({ version: 1 }));
+  const recovery = new CloudConversationRecovery({ store, recoveryDir: path.join(directory, 'recovery'),
+    provider: () => ({
+      getLocalCacheIdentity: async () => identity,
+      listConversations: async () => ({ accountId: 'account-1', conversations: [snapshot({
+        sha256: sha256Hex(archived), size: archived.length,
+      })] }),
+      downloadConversationChunk: async () => {
+        identity = 'account-credential-2';
+        return { bytesBase64: archived.toString('base64') };
+      },
+    }) });
+  await recovery.refresh();
+  await assert.rejects(recovery.prefetchTimelines(), { name: 'AbortError' });
+  assert.deepEqual((await store.get(created.id)).timeline, { thread: { cloudStartId: 'cloud-start-1' } });
+});
+
 test('refresh restores a missing known session after provider auth is seeded and keeps its event cursor', async (t) => {
   const { directory, store, created } = await handoffFixture(t);
   await store.patch(created.id, { lastEventSequence: 17 });
@@ -153,7 +265,7 @@ test('refresh restores a missing known session after provider auth is seeded and
   assert.equal(record.suspendedCode, 'WORKER_REPLACED_UNCERTAIN');
 });
 
-test('confirmed idle worker plus a matching live snapshot starts one replacement with the saved provider', async (t) => {
+test('confirmed idle Railway worker shows saved conversation and waits for explicit Resume', async (t) => {
   const { directory, store, created } = await handoffFixture(t, { state: 'queued' });
   const profile = normalizeCloudProfile({
     mode: 'app-hosted', endpoint: 'https://gone.example/rauhwpx-cloud', serverPublicKey: SERVER_KEY,
@@ -178,19 +290,127 @@ test('confirmed idle worker plus a matching live snapshot starts one replacement
     },
   });
   const coordinator = new CloudCoordinator({
-    client: { loadProfile: async () => profile, isPaired: async () => false }, store, recoveryDir: path.join(directory, 'recovery'),
+    client: {
+      loadProfile: async () => profile, isPaired: async () => false,
+      putProviderAuth: async (provider, auth) => {
+        calls.push({ provider, imported: Boolean(auth.secrets?.ANTHROPIC_API_KEY) });
+        return { imported: true };
+      },
+      command: async (_sessionId, type, body) => {
+        calls.push({ type, expectedVersion: body.expectedVersion });
+        return { session: { id: 'cloud-session', status: 'queued', stateVersion: 7 } };
+      },
+    }, store, recoveryDir: path.join(directory, 'recovery'),
     appServers: [provider],
+    collectImportedAuth: async () => ({ secrets: { ANTHROPIC_API_KEY: 'saved-login' }, files: {} }),
   });
   t.after(() => coordinator.stop());
   const calls = [];
-  coordinator.spawnAppServer = async (options) => { calls.push(options); return { restored: true }; };
+  coordinator.spawnAppServer = async (options) => {
+    calls.push(options);
+    await store.patch(created.id, { serverVersion: 9 });
+    return { restored: true };
+  };
   const [first, second] = await Promise.all([
     coordinator.reconcileContinuity({ reason: 'resume' }),
     coordinator.reconcileContinuity({ reason: 'online' }),
   ]);
-  assert.deepEqual(first, { restored: true });
-  assert.deepEqual(second, { restored: true });
-  assert.deepEqual(calls, [{ selectedProvider: 'claude' }]);
+  assert.equal(first.session.kind, 'suspended');
+  assert.equal(second.session.kind, 'suspended');
+  assert.equal(first.session.code, 'WORKER_REPLACED_UNCERTAIN');
+  assert.equal(first.session.lastSavedAt, '2026-09-08T01:00:00.000Z');
+  assert.deepEqual(calls, []);
+  await coordinator.command({ sessionId: 'cloud-session', command: 'resume', expectedVersion: first.session.version });
+  assert.deepEqual(calls, [
+    { selectedProvider: 'claude' },
+    { provider: 'claude', imported: true },
+    { type: 'session.resume', expectedVersion: 9 },
+  ]);
+});
+
+test('resuming a saved USER_PAUSED session seeds login when Railway starts a replacement worker', async (t) => {
+  const { directory, store, created } = await handoffFixture(t);
+  await store.transition(created.id, 'suspended', { suspendedCode: 'USER_PAUSED' });
+  const profile = normalizeCloudProfile({
+    mode: 'app-hosted', endpoint: 'https://gone.example/rauhwpx-cloud', serverPublicKey: SERVER_KEY,
+    sandbox: { providerId: 'raucloud', sandboxId: 'run-gone', host: 'gone.example' }, provider: 'claude',
+  });
+  await store.patch(created.id, {
+    serverVersion: 5,
+    destination: { endpoint: profile.endpoint, serverPublicKey: profile.serverPublicKey,
+      mode: 'app-hosted', sandboxId: profile.sandbox.sandboxId,
+      sandboxProvider: profile.sandbox.providerId, protocolVersion: 2, runtimeVersion: null },
+  });
+  const calls = [];
+  const coordinator = new CloudCoordinator({
+    client: {
+      loadProfile: async () => profile,
+      isPaired: async () => false,
+      putProviderAuth: async (provider, auth) => {
+        calls.push({ provider, imported: Boolean(auth.secrets?.ANTHROPIC_API_KEY) });
+        return { imported: true };
+      },
+      command: async (_sessionId, type, body) => {
+        calls.push({ type, expectedVersion: body.expectedVersion });
+        return { session: { id: 'cloud-session', status: 'queued', stateVersion: 12 } };
+      },
+    }, store, recoveryDir: path.join(directory, 'recovery'),
+    appServers: [{ id: 'raucloud', displayName: 'Raucloud', configuration: () => ({ configured: true }),
+      status: async () => ({ lifecycle: 'idle' }), spawn() {}, teardown() {},
+      accountStatus: async () => ({ signedIn: true }),
+      getLocalCacheIdentity: async () => 'account-credential-1',
+      listConversations: async () => ({ accountId: 'account-1',
+        conversations: [snapshot({ state: 'suspended' })] }) }],
+    collectImportedAuth: async () => ({ secrets: { ANTHROPIC_API_KEY: 'saved-login' }, files: {} }),
+  });
+  t.after(() => coordinator.stop());
+  coordinator.spawnAppServer = async () => {
+    calls.push({ restored: true });
+    await store.patch(created.id, { serverVersion: 12 });
+  };
+  const recovered = await coordinator.reconcileContinuity({ reason: 'online' });
+  assert.equal(recovered.session.kind, 'suspended');
+  assert.equal(recovered.session.code, 'WORKER_REPLACED_UNCERTAIN');
+  assert.equal(recovered.session.lastSavedAt, '2026-09-08T01:00:00.000Z');
+  assert.equal((await store.get(created.id)).serverVersion, 5);
+  assert.deepEqual(calls, []);
+  await coordinator.command({ sessionId: 'cloud-session', command: 'resume', expectedVersion: 2 });
+  assert.deepEqual(calls, [
+    { restored: true },
+    { provider: 'claude', imported: true },
+    { type: 'session.resume', expectedVersion: 12 },
+  ]);
+});
+
+test('Resume against an existing Railway worker keeps the caller version check', async (t) => {
+  const { directory, store, created } = await handoffFixture(t);
+  await store.transition(created.id, 'suspended');
+  const profile = normalizeCloudProfile({
+    mode: 'app-hosted', endpoint: 'https://worker.example/rauhwpx-cloud', serverPublicKey: SERVER_KEY,
+    sandbox: { providerId: 'raucloud', sandboxId: 'run-ready', host: 'worker.example' }, provider: 'claude',
+  });
+  await store.patch(created.id, {
+    suspendedCode: 'USER_PAUSED',
+    destination: { endpoint: profile.endpoint, serverPublicKey: profile.serverPublicKey,
+      mode: 'app-hosted', sandboxId: profile.sandbox.sandboxId,
+      sandboxProvider: profile.sandbox.providerId, protocolVersion: 2, runtimeVersion: null },
+  });
+  let receivedVersion;
+  const coordinator = new CloudCoordinator({
+    client: { loadProfile: async () => profile, isPaired: async () => true,
+      command: async (_sessionId, _type, body) => {
+        receivedVersion = body.expectedVersion;
+        throw Object.assign(new Error('stale version'), { code: 'VERSION_CONFLICT', status: 409 });
+      } },
+    store, recoveryDir: path.join(directory, 'recovery'),
+    appServers: [{ id: 'raucloud', displayName: 'Raucloud', configuration: () => ({ configured: true }),
+      spawn() {}, teardown() {}, status: async () => ({ lifecycle: 'ready' }),
+      accountStatus: async () => ({ signedIn: true }) }],
+  });
+  t.after(() => coordinator.stop());
+  await assert.rejects(coordinator.command({ sessionId: 'cloud-session', command: 'resume',
+    expectedVersion: 1 }), { code: 'VERSION_CONFLICT' });
+  assert.equal(receivedVersion, 1);
 });
 
 test('background continuity leaves idle and ended conversations cold', async (t) => {
@@ -225,7 +445,7 @@ test('background continuity leaves idle and ended conversations cold', async (t)
     t.after(() => coordinator.stop());
     coordinator.spawnAppServer = async () => assert.fail('idle history must not allocate a worker');
     const result = await coordinator.reconcileContinuity({ reason: 'wake' });
-    assert.equal(result.session.kind, 'running');
+    assert.equal(result.session.kind, descriptor.state === 'completed' ? 'running' : 'suspended');
   }
 });
 

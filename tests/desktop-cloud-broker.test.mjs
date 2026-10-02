@@ -85,6 +85,20 @@ test('Raucloud refuses requests without a signed-in Rau account', async () => {
   assert.equal(requested, true, 'the account-session boundary rejects before network authorization');
 });
 
+test('Raucloud reads saved conversation and timeline through account-authenticated chunk routes', async () => {
+  const { client, calls } = broker({
+    'GET /v1/cloud/conversations/snapshot-1/chunks/0': json({ bytesBase64: 'c25hcHNob3Q=' }),
+    'GET /v1/cloud/conversation-resources/timeline-1/chunks/2': json({ bytesBase64: 'dGltZWxpbmU=' }),
+  });
+  assert.equal((await client.downloadConversationChunk('snapshot-1', 0)).bytesBase64, 'c25hcHNob3Q=');
+  assert.equal((await client.downloadConversationChunk('timeline-1', 2, { resource: true })).bytesBase64,
+    'dGltZWxpbmU=');
+  assert.deepEqual(calls.map((call) => call.key), [
+    'GET /v1/cloud/conversations/snapshot-1/chunks/0',
+    'GET /v1/cloud/conversation-resources/timeline-1/chunks/2',
+  ]);
+});
+
 test('Raucloud creates one broker run without Railway credentials or provider secrets', async () => {
   const { client, calls } = broker({
     'POST /v1/cloud/runs': json({

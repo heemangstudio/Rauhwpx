@@ -295,6 +295,7 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
   let setupActive = false;
   const liveSequence = new Map<string, number>();
   type MergeOffer = Pick<CloudCheckpointPayload, 'sessionId' | 'documentId' | 'revision' | 'turn' | 'operationId'> & {
+    kind?: 'operation' | 'turn';
     startId?: string;
     durable?: boolean;
     localAvailable?: boolean;
@@ -923,7 +924,7 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
   }
 
   function mergeStartId(sessionId: string): string | undefined {
-    const durable = snapshot.mergeRequests?.find((request) => request.sessionId === sessionId)?.cloudStartId || undefined;
+    const durable = snapshot.mergeRequests?.find((request) => request.sessionId === sessionId && request.kind === 'turn')?.cloudStartId || undefined;
     const session = snapshot.sessions.find((item) => item.sessionId === sessionId);
     if (!session) return durable;
     return deps.getCloudStartId?.(session.threadId, sessionId)
@@ -959,13 +960,14 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
     const documentId = deps.getScope().documentId;
     if (snapshot.mergeRequests) {
       for (const [sessionId, offer] of mergeOffers) {
-        if (offer.durable && !snapshot.mergeRequests.some((request) => request.sessionId === sessionId
+        if (offer.durable && !snapshot.mergeRequests.some((request) => request.kind === 'turn' && request.sessionId === sessionId
           && request.operationId === offer.operationId && request.revision === offer.revision)) {
           mergeOffers.delete(sessionId);
         }
       }
     }
     for (const request of snapshot.mergeRequests ?? []) {
+      if (request.kind !== 'turn') continue;
       const previous = mergeOffers.get(request.sessionId);
       if (!previous || request.revision > previous.revision
         || (request.revision === previous.revision && (previous.durable || request.operationId === previous.operationId))) {
@@ -1002,6 +1004,15 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
 
   function sessionMergeOffer(sessionId: string | null): MergeOffer | undefined {
     return sessionId ? documentMergeOffers().find((offer) => offer.sessionId === sessionId) : undefined;
+  }
+
+  function savedOperationOffer(sessionId: string): MergeOffer | undefined {
+    if (snapshot.profile.kind !== 'configured' || snapshot.profile.mode !== 'app-hosted') return undefined;
+    const documentId = deps.getScope().documentId;
+    const request = snapshot.mergeRequests?.filter((request) => request.kind === 'operation'
+      && request.sessionId === sessionId && request.documentId === documentId)
+      .sort((a, b) => b.revision - a.revision)[0];
+    return request ? { ...request, startId: request.cloudStartId, durable: true } : undefined;
   }
 
   /** 선택한 작업의 변경을 먼저, 없으면 가장 최근에 도착한 변경을 보인다. */
@@ -1060,7 +1071,7 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
 
   function checkpointMatchesOffer(checkpoint: CloudCheckpointPayload, offer: MergeOffer, documentId: string | null): boolean {
     return checkpoint.sessionId === offer.sessionId && checkpoint.documentId === documentId
-      && checkpoint.kind === 'turn' && checkpoint.revision === offer.revision
+      && checkpoint.kind === (offer.kind ?? 'turn') && checkpoint.revision === offer.revision
       && checkpoint.operationId === offer.operationId
       && (!offer.durable || (checkpoint.sha256 === offer.sha256 && checkpoint.byteLength === offer.size));
   }
@@ -1085,11 +1096,13 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
         try {
           const checkpoint = attempt === 0 && prefetched
             ? prefetched
-            : await deps.controller.downloadCheckpoint(offer.sessionId, offer.operationId, 'turn', { explicit: true });
+            : await deps.controller.downloadCheckpoint(offer.sessionId, offer.operationId, offer.kind ?? 'turn', { explicit: true });
           if (!current()) return;
           if (!checkpointMatchesOffer(checkpoint, offer, documentId)) throw new CheckpointMismatch();
           applied = await deps.onMergeCheckpoint(startId, checkpoint, {
-            ...options, onStashed: (reapply) => { stash.reapply = reapply; },
+            ...options,
+            ...(offer.kind === 'operation' ? { reviewSavedOperation: true } : {}),
+            onStashed: (reapply) => { stash.reapply = reapply; },
           });
           break;
         } catch (error) {
@@ -1099,8 +1112,8 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
         }
       }
       if (!applied || !current()) return;
-      markMergeOfferReviewed(offer);
-      deps.onNotice?.('Cloud 변경을 반영했습니다.',
+      if (offer.kind !== 'operation') markMergeOfferReviewed(offer);
+      deps.onNotice?.(offer.kind === 'operation' ? 'Cloud 저장본을 반영했습니다.' : 'Cloud 변경을 반영했습니다.',
         stash.reapply ? { label: '내 편집 다시 적용', run: stash.reapply } : undefined);
     } catch (error) {
       if (current()) followUp = mergeFailure(error, offer);
@@ -1118,7 +1131,7 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
         return null;
       case 'CLOUD_CHECKPOINT_SUPERSEDED':
         // 이미 가져온 더 최신 턴이 이 변경을 담는다. 이 제안은 닫고 최신 변경을 다시 받는다.
-        markMergeOfferReviewed(offer);
+        if (offer.kind !== 'operation') markMergeOfferReviewed(offer);
         renderMergeButton();
         renderPanel();
         mirrorCheckpoint(offer.sessionId, 'reconnect');
@@ -1159,19 +1172,20 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
     const profileEpoch = snapshot.profileEpoch;
     const documentId = deps.getScope().documentId;
     void operation(async () => {
-      const checkpoint = await deps.controller.downloadCheckpoint(offer.sessionId, offer.operationId, 'turn', { explicit: true });
+      const checkpoint = await deps.controller.downloadCheckpoint(offer.sessionId, offer.operationId, offer.kind ?? 'turn', { explicit: true });
       if (snapshot.profileEpoch !== profileEpoch || deps.getScope().documentId !== documentId) return;
       const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', checkpoint.bytes.slice().buffer))]
         .map((byte) => byte.toString(16).padStart(2, '0')).join('');
       if (snapshot.profileEpoch !== profileEpoch || deps.getScope().documentId !== documentId) return;
       if (checkpoint.sessionId !== offer.sessionId || checkpoint.documentId !== documentId
-        || checkpoint.kind !== 'turn' || checkpoint.revision !== offer.revision
+        || checkpoint.kind !== (offer.kind ?? 'turn') || checkpoint.revision !== offer.revision
         || checkpoint.operationId !== offer.operationId || checkpoint.sha256 !== digest
         || checkpoint.byteLength !== checkpoint.bytes.length) throw new Error('Cloud 사본을 확인하지 못했습니다. 다시 시도하세요.');
       const link = document.createElement('a');
       const url = URL.createObjectURL(new Blob([checkpoint.bytes.slice().buffer], { type: 'application/octet-stream' }));
       link.href = url;
-      link.download = checkpoint.fileName.split(/[\\/]/).at(-1)!.replace(/(\.[^.]+)$/, `-cloud-${checkpoint.turn}$1`);
+      link.download = checkpoint.fileName.split(/[\\/]/).at(-1)!.replace(/(\.[^.]+)$/,
+        `${offer.kind === 'operation' ? '-cloud-saved' : `-cloud-${checkpoint.turn}`}$1`);
       link.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
     });
@@ -1416,19 +1430,28 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
       case 'suspended': {
         // 데스크톱은 이 Mac 의 로그인을 다시 보낸다. 브라우저는 보낼 로그인이 없어 서버에서 로그인할 명령을 알린다.
         const providerAuth = PROVIDER_AUTH_SUSPEND_CODES.has(session.code ?? '') && deps.controller.canReimportLogins();
+        const recoveredRailway = snapshot.profile.kind === 'configured'
+          && snapshot.profile.mode === 'app-hosted'
+          && (session.code === 'WORKER_REPLACED' || session.code === 'WORKER_REPLACED_UNCERTAIN');
         panelStatus.textContent = suspendedSessionTitle(session.code, session.provider, session.reason);
-        panelDetail.textContent = PROVIDER_AUTH_SUSPEND_CODES.has(session.code ?? '') && !providerAuth
-          ? providerLoginHint(session.provider)
-          : '';
+        panelDetail.textContent = recoveredRailway
+          ? '저장된 문서와 대화를 확인한 뒤 재개하세요.'
+          : PROVIDER_AUTH_SUSPEND_CODES.has(session.code ?? '') && !providerAuth
+            ? providerLoginHint(session.provider)
+            : '';
         if (!deps.onMergeCheckpoint) panelActions.append(action('원본에 반영', publishCheckpoint));
         else {
           const offer = sessionMergeOffer(session.sessionId);
           if (offer) panelActions.append(mergeAction(offer));
         }
+        if (recoveredRailway && deps.onMergeCheckpoint) {
+          const saved = savedOperationOffer(session.sessionId);
+          if (saved) panelActions.append(action('저장 문서 검토', () => { void mergeCheckpoint(saved); }));
+        }
         if (session.resumable) {
           const editing = deps.isEditingCloudDraft?.(session.sessionId) === true;
           // 로그인 문제로 멈춘 작업은 이어 가기 전에 데스크톱이 이 Mac 의 로그인을 다시 보낸다.
-          panelActions.append(action(providerAuth ? '로그인 다시 가져오기' : '계속하기', () => {
+          panelActions.append(action(providerAuth ? '로그인 다시 가져오기' : recoveredRailway ? '작업 재개' : '계속하기', () => {
             if (editing && deps.onContinueEditing) {
               void operation(() => deps.onContinueEditing!({ sessionId: session.sessionId,
                 threadId: session.threadId, documentId: session.documentId, expectedVersion: session.version }));

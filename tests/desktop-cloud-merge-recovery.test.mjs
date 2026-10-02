@@ -106,6 +106,29 @@ test('coordinator refresh discovers merge requests with no worker profile and se
   assert.deepEqual(Buffer.from((await coordinator.downloadCheckpoint({ sessionId: 'cloud-session', operationId: 'turn-1' })).bytes), f.bytes);
 });
 
+test('unfinished Railway operation checkpoint is fetched from broker after the worker disappears', async (t) => {
+  const f = await fixture(t);
+  const draft = { ...f.receipt, id: 'merge-operation-1', operationId: 'operation-1',
+    kind: 'operation', revision: 5, turn: 2 };
+  f.provider.listMergeRequests = async () => ({ accountId: 'account-1', mergeRequests: [draft] });
+  const provider = { ...f.provider, id: 'raucloud', displayName: 'Raucloud',
+    configuration: () => ({ configured: true }), spawn() {}, status() {}, teardown() {},
+    accountStatus: async () => ({ signedIn: true }) };
+  const coordinator = new CloudCoordinator({
+    client: { loadProfile: async () => null,
+      downloadCheckpoint: async () => { throw new Error('worker unavailable'); } },
+    store: f.store, recoveryDir: f.directory, appServers: [provider],
+  });
+  t.after(() => coordinator.stop());
+  const snapshot = await coordinator.refresh({ documentId: 'document-1' });
+  assert.equal(snapshot.mergeRequests[0].kind, 'operation');
+  const recovered = await coordinator.downloadCheckpoint({ sessionId: 'cloud-session', kind: 'operation' });
+  assert.equal(recovered.kind, 'operation');
+  assert.equal(recovered.operationId, 'operation-1');
+  assert.deepEqual(Buffer.from(recovered.bytes), f.bytes);
+  await coordinator.stop();
+});
+
 test('merge discovery returns before automatic prefetch and publishes offline readiness when verification finishes', async (t) => {
   const f = await fixture(t);
   const release = Promise.withResolvers();
@@ -211,7 +234,28 @@ test('one refresh drains more than eight merge results through bounded backgroun
   assert.ok(maxActive <= 2);
 });
 
-test('a failed prefetch batch stops without busy-retrying or advancing to another batch', async (t) => {
+test('automatic prefetch keeps the newest unfinished checkpoint per Railway session', async (t) => {
+  const f = await fixture(t);
+  const old = { ...f.receipt, id: 'operation-old', operationId: 'operation-old',
+    kind: 'operation', revision: 2 };
+  const latest = { ...f.receipt, id: 'operation-latest', operationId: 'operation-latest',
+    kind: 'operation', revision: 3 };
+  const finished = { ...f.receipt, id: 'turn-finished', operationId: 'turn-finished', revision: 4 };
+  f.provider.listMergeRequests = async () => ({ accountId: 'account-1', mergeRequests: [old, latest, finished] });
+  const fetched = [];
+  f.provider.downloadMergeChunk = async (receiptId, index) => {
+    fetched.push(receiptId);
+    return { bytesBase64: f.bytes.subarray(index * 512 * 1024, (index + 1) * 512 * 1024).toString('base64') };
+  };
+  await f.recovery.refresh();
+  const result = await f.recovery.prefetch();
+  assert.equal(result.downloaded, 2);
+  assert.equal(f.recovery.latest('cloud-session', 'operation').operationId, 'operation-latest');
+  assert.deepEqual(new Set(fetched), new Set(['operation-latest', 'turn-finished']));
+  assert.equal(f.recovery.requests.find((request) => request.id === 'operation-old').localAvailable, false);
+});
+
+test('one failed checkpoint does not block other finished downloads or busy-retry', async (t) => {
   const f = await fixture(t);
   const bytes = Buffer.from('merge-result');
   const receipts = Array.from({ length: 10 }, (_, index) => ({
@@ -235,11 +279,11 @@ test('a failed prefetch batch stops without busy-retrying or advancing to anothe
   };
   await f.recovery.refresh();
   const result = await f.recovery.prefetch();
-  assert.equal(result.attempted, 8);
-  assert.equal(result.downloaded, 7);
+  assert.equal(result.attempted, 10);
+  assert.equal(result.downloaded, 9);
   assert.equal(result.failures.length, 1);
   assert.equal(failedReads, 1);
-  assert.equal(f.recovery.requests.filter((request) => request.localAvailable).length, 7);
+  assert.equal(f.recovery.requests.filter((request) => request.localAvailable).length, 9);
 });
 
 test('expired broker metadata without a local download does not leave an unusable merge offer', async (t) => {
