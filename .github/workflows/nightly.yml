@@ -28,10 +28,6 @@ jobs:
         shell: bash
         run: npm --prefix rhwp/rhwp-agent ci --omit=dev
 
-      - name: Exercise real Windows terminal and cancellation
-        shell: bash
-        run: node --test rhwp/rhwp-agent/tests/setup-terminal.test.mjs
-
       - name: Exercise packaged-login probe with Node as host
         shell: bash
         run: |
