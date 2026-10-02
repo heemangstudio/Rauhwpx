@@ -6,7 +6,7 @@ import test from 'node:test';
 import { createServer } from 'vite';
 import puppeteer from 'puppeteer-core';
 import { browserExecutable, browserLaunchArgs } from './browser-support.ts';
-import { createNewDocument, waitForPaint } from '../e2e/helpers.mjs';
+import { createNewDocument, waitForPaint, waitForState } from '../e2e/helpers.mjs';
 
 // Full running editor and WASM. Only the operating-system print boundary is intercepted.
 test(
@@ -42,6 +42,9 @@ test(
     await page.waitForFunction(
       () => Boolean((window as any).__wasm && (window as any).__eventBus),
       { timeout: 30000 },
+    );
+    await waitForState(page, 'owned hub connected', () =>
+      (window as any).__agentBridge?.getConnectionState?.() === 'connected',
     );
     await page.click('#document-new-action');
     await page.waitForFunction(
