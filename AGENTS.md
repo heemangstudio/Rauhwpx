@@ -58,9 +58,12 @@ Studio `npm test` imports hub modules, so `rhwp/rhwp-agent/node_modules` must ex
 - Toolchain is pinned by `rust-toolchain.toml` and includes `wasm32-unknown-unknown`.
 - Build `cargo build`; tests `cargo test`; one file `cargo test --test <file_stem>`; one function `cargo test --test <file_stem> <fn>`. Integration tests in `tests/` are mostly named `issue_NNNN_*` / `pr_NNNN_*` and load fixtures from `samples/`.
 - Faster optimized build for render comparisons: `cargo build --profile release-test --features native-skia --bin rhwp` (release without LTO).
-- Lint and format: `cargo clippy`, `cargo fmt` (max_width 100). `Cargo.toml` deliberately allows many structural lints pending a phased refactor; do not fix or tighten them in unrelated changes.
+- Lint and format from `rhwp/`: `cargo clippy`, `cargo fmt` (max_width 100). `Cargo.toml` deliberately allows many structural lints pending a phased refactor; do not fix or tighten them in unrelated changes.
 - WASM: `wasm-pack build --target web` (wasm-pack 0.15.0), or `npm run build:wasm` from the root.
 - CLI: `cargo run --bin rhwp -- <command>`. The dispatcher is at the top of `src/main.rs`; subcommands take no `--help`, so read the handler there. Common: `info`, `export-svg|png|pdf|text|markdown|tables|hwpx|hml`, `export-render-tree` (render tree as JSON, the easiest way to inspect layout), `export-structure`, `dump`, `dump-pages`, `diag`, `search`, `convert`, `edit`, `batch`, many `hwp5-*` probes. `capabilities --mcp` generates MCP tool definitions; a test enforces it covers every `--json` command.
+- Export `-p`/`--page` takes a 0-based page index; output filenames are 1-based (`render_tree_001.json`).
+- Fonts: `--font-path` or `RHWP_FONT_PATH` (`:`-separated) accept files or directories; directories are read one level deep, not recursively. `ttfs/opensource` is the last fallback.
+- Hancom font tooling and Studio capture for parity work: `tools/hancom_font_atlas/` (see its README). Put throwaway Rust probes in `examples/` and run them with `cargo run --example`.
 - PDF/PNG export is native-only. `native-skia` enables the Skia backend. `svg2pdf` is a vendored determinism fork in `[patch.crates-io]`; keep the patch.
 
 ## Studio (from `rhwp/rhwp-studio/`)
