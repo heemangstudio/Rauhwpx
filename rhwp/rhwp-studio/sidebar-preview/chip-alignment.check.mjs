@@ -17,6 +17,7 @@ export async function checkChipAlignment(page, origin, screenshot) {
         // The preview's focus button is a placeholder. Mount the production
         // fullscreen layout directly, keeping the real provider status chip.
         preview.sidebar.root.classList.add('ag-fullscreen');
+        preview.sidebar.root.classList.toggle('ag-workspace-compact', window.innerWidth <= 960);
       });
       await page.waitForSelector('.ag-reconnect-chip', { visible: true });
       await new Promise((resolve) => setTimeout(resolve, 350));
