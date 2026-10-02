@@ -2,14 +2,47 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 
 export async function launchCopyLayoutWorker(record, job, dependencies) {
-  const { ensureBootWork, prepareCodexHome, sourceCodexAuthPath, prepareClaudeHome, sourceClaudeAuth, MCP_SCRIPT, hubPort, sessions, TOKEN, HUB_CAPABILITY_AUDIENCES, cliSetupStatus, cliSetup, claudeRuntimeEnv, CLI_SETUP_AGENTS, makeTemplateWorkerEventHandler, buildCopyLayoutWorkerPrompt, piManager, openRouterManager, OPENROUTER_AGENTS, piModelConfig, SESSION_FACTORIES, unknownAgentError } = dependencies;
+  const {
+    ensureBootWork,
+    prepareCodexHome,
+    sourceCodexAuthPath,
+    prepareClaudeHome,
+    sourceClaudeAuth,
+    MCP_SCRIPT,
+    hubPort,
+    sessions,
+    TOKEN,
+    HUB_CAPABILITY_AUDIENCES,
+    cliSetupStatus,
+    cliSetup,
+    claudeRuntimeEnv,
+    CLI_SETUP_AGENTS,
+    makeTemplateWorkerEventHandler,
+    buildCopyLayoutWorkerPrompt,
+    piManager,
+    openRouterManager,
+    OPENROUTER_AGENTS,
+    piModelConfig,
+    SESSION_FACTORIES,
+    unknownAgentError,
+  } = dependencies;
   // The owning chat provider can mutate record.workDir. Keep even the
   // worker's read-only cwd under a sibling hub-owned parent so it cannot be
   // swapped to a symlink/junction before the worker opens files.
-  const jobDir = path.join(record.recordRoot, 'copy-layout-workspaces', job.jobId);
+  const jobDir = path.join(
+    record.recordRoot,
+    'copy-layout-workspaces',
+    job.jobId,
+  );
   const jobGeneratedRoot = path.join(record.copyLayoutGeneratedRoot, job.jobId);
-  const jobSnapshotRoot = record.documentSnapshotManager.readOnlyRootForChat(job.jobId);
-  const providerRoot = path.join(record.recordRoot, 'copy-layout-providers', job.jobId);
+  const jobSnapshotRoot = record.documentSnapshotManager.readOnlyRootForChat(
+    job.jobId,
+  );
+  const providerRoot = path.join(
+    record.recordRoot,
+    'copy-layout-providers',
+    job.jobId,
+  );
   const isolatedHome = path.join(providerRoot, 'home');
   const codexHome = path.join(isolatedHome, '.codex');
   job.providerHomes = { isolatedHome, codexHome };
@@ -42,11 +75,18 @@ export async function launchCopyLayoutWorker(record, job, dependencies) {
     isolatedHome,
     codexHome,
     codexAuthPath: sourceCodexAuthPath,
-    codexBin: cliSetupStatus.codex?.installed ? cliSetup.binPath('codex') : 'codex',
-    claudeBin: cliSetupStatus.claude?.installed ? cliSetup.binPath('claude') : 'claude',
-    providerEnv: job.agent === 'claude'
-      ? claudeRuntimeEnv(isolatedHome)
-      : (CLI_SETUP_AGENTS.includes(job.agent) ? cliSetup.envFor(job.agent) : {}),
+    codexBin: cliSetupStatus.codex?.installed
+      ? cliSetup.binPath('codex')
+      : 'codex',
+    claudeBin: cliSetupStatus.claude?.installed
+      ? cliSetup.binPath('claude')
+      : 'claude',
+    providerEnv:
+      job.agent === 'claude'
+        ? claudeRuntimeEnv(isolatedHome)
+        : CLI_SETUP_AGENTS.includes(job.agent)
+          ? cliSetup.envFor(job.agent)
+          : {},
     onEvent: makeTemplateWorkerEventHandler(record, job),
     workflow: 'direct',
     phase: 'implementing',
@@ -69,6 +109,7 @@ export async function launchCopyLayoutWorker(record, job, dependencies) {
   const createBackend = SESSION_FACTORIES[job.agent];
   if (!createBackend) throw unknownAgentError(job.agent);
   job.backend = createBackend(opts);
-  job.backend.sendUserMessage('Begin the autonomous copy-layout workflow now. Follow the system workflow exactly and do not ask questions.');
+  job.backend.sendUserMessage(
+    'Begin the autonomous copy-layout workflow now. Follow the system workflow exactly and do not ask questions.',
+  );
 }
-

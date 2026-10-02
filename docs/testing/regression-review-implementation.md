@@ -33,7 +33,7 @@ Tracks all 33 reviewed recommendations from the private regression-review Site. 
 | R25 | Replace | Real CommandRegistry metadata in browser; conversion tests retained, source parsing removed. |
 | R26 | Replace | Removed duplicated turn-outcome source test; production outcome/failure tests retained. Save/history guards kept conservatively. |
 | R27 | Keep | Kept real zoom shortcut behavior; completion assertion now reports observed zoom. |
-| R28 | Keep | Kept indexed-reference search behavior; completion assertion now checks observed excerpt. |
+| R28 | Keep | Kept indexed-reference search and scope isolation; completion checks the observed excerpt. Fixed authenticated hub readiness and stale attachment-draft expectations. Clearing text preserves the draft; explicit cancellation removes it without indexing it. |
 | R29 | Keep | Kept compile-time DocumentCore Send contract unchanged. |
 | R30 | Keep | Kept save-target value and ownership contracts unchanged. |
 | R31 | Keep | Kept real production turn-outcome tests unchanged. |

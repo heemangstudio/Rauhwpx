@@ -1,19 +1,32 @@
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import test from 'node:test';
-registerHooks({ load(url, context, next) {
-  return url.endsWith('.css') ? { format: 'module', source: 'export default {};', shortCircuit: true } : next(url, context);
-} });
+registerHooks({
+  load(url, context, next) {
+    return url.endsWith('.css')
+      ? { format: 'module', source: 'export default {};', shortCircuit: true }
+      : next(url, context);
+  },
+});
 const { AgentBridgeImpl } = await import('../src/agent/bridge.ts');
-const settle = () => new Promise<void>(resolve => setImmediate(resolve));
+const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 function fixture() {
   let connections = 0;
   const events: any[] = [];
   const bridge = Object.assign(Object.create(AgentBridgeImpl.prototype), {
-    disposed: false, state: 'disconnected', reconnectTimer: null, reconnectAttempt: 1, reconnectSeq: 0,
-    threadId: 'thread-1', documentId: 'document-1',
-    requestHubLaunch: async () => true, refreshSessionContext: async () => true,
-    connect: () => { connections++; }, emit: (event: any) => events.push(event),
+    disposed: false,
+    state: 'disconnected',
+    reconnectTimer: null,
+    reconnectAttempt: 1,
+    reconnectSeq: 0,
+    threadId: 'thread-1',
+    documentId: 'document-1',
+    requestHubLaunch: async () => true,
+    refreshSessionContext: async () => true,
+    connect: () => {
+      connections++;
+    },
+    emit: (event: any) => events.push(event),
   });
   return { bridge, events, connections: () => connections };
 }
@@ -26,7 +39,10 @@ test('retries back off, do not duplicate timers, and retain document/thread iden
     f.bridge.reconnectAttempt = attempt;
     f.bridge.scheduleReconnect();
     const delay = f.events.at(-1).retryInMs;
-    assert(delay > 0 && delay >= previousDelay, 'retry delays must be positive and non-decreasing');
+    assert(
+      delay > 0 && delay >= previousDelay,
+      'retry delays must be positive and non-decreasing',
+    );
     previousDelay = delay;
     f.bridge.scheduleReconnect(); // repeated failure signals must not add a second timer
     t.mock.timers.tick(delay - 1);
@@ -57,13 +73,17 @@ test('disposed or superseded reconnects cannot open a socket', async (t) => {
 test('manual reconnect awaits hub readiness and ignores a superseding request', async () => {
   const f = fixture();
   let release!: () => void;
-  f.bridge.requestHubLaunch = () => new Promise<void>(resolve => { release = resolve; });
+  f.bridge.requestHubLaunch = () =>
+    new Promise<void>((resolve) => {
+      release = resolve;
+    });
   f.bridge.abortSocket = () => {};
   f.bridge.forceReconnect = () => f.bridge.connect();
   const pending = f.bridge.reconnectNow();
   assert.equal(f.connections(), 0);
   f.bridge.reconnectSeq++;
-  release(); await pending;
+  release();
+  await pending;
   assert.equal(f.connections(), 0);
   f.bridge.requestHubLaunch = async () => true;
   await f.bridge.reconnectNow();
