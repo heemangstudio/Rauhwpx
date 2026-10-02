@@ -116,7 +116,9 @@ export async function smokePackagedSetupTerminal({ executable, agentDir, timeout
     assert.equal((await terminal.done).code, 0, output);
     assert.match(output, /LOGIN_TTY:true/);
     assert.match(output, /LOGIN_INPUT_OK/);
-    console.log('Packaged provider login terminal passed');
+    // ConPTY can retain handles after the login child exits. This probe has
+    // verified its result, so flush the marker and end the disposable host.
+    process.stdout.write('Packaged provider login terminal passed\\n', () => process.exit(0));
   `;
   const child = spawn(executable, ['--input-type=module', '--eval', probe], {
     cwd: agentDir,
