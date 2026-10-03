@@ -338,6 +338,8 @@ export function versionErrorOf(error: unknown): { code: VersionErrorCode; detail
 export interface CloudMergeOptions {
   /** Cloud 브랜치를 보고 있을 때 이 브랜치로 돌아가 병합한다. */
   switchTo?: string;
+  /** Railway의 미완료 작업 저장본을 사용자가 직접 검토할 때만 허용한다. */
+  reviewSavedOperation?: boolean;
   /** 병합 전 보관한 내 편집이 있을 때 다시 적용하는 동작을 넘긴다. */
   onStashed?(reapply: () => Promise<void>): void;
 }

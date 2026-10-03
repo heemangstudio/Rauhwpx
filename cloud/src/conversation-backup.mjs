@@ -235,30 +235,30 @@ export class ConversationBackup {
       session.current_turn_id = null;
       session.current_wait_id = null;
     }
-    let admission = null;
-    if (['queued', 'running'].includes(session.status) && !session.current_turn_id) {
-      const provider = this.sessionStore.providerStatus(session.provider);
-      if (!provider.available || !provider.authenticated) admission = { code: 'AUTH_REQUIRED', message: 'Connect this conversation provider to resume Cloud.' };
-      else {
-        try { await this.lease.assertCommandAllowed('session.resume'); }
-        catch (error) { admission = { code: error.code ?? 'RAUCLOUD_INPUT_BLOCKED', message: 'Cloud will resume when its connection and allowance are available.' }; }
-      }
-    }
     let imported = false;
     transaction(this.database, () => {
       // A duplicate restore can race while downloading; only the first imports.
       if (this.database.prepare('SELECT 1 FROM sessions WHERE id = ?').get(sessionId)) return;
       this.database.exec('PRAGMA defer_foreign_keys = ON');
       const uncertain = session.status === 'running' && Boolean(session.current_turn_id);
+      const interrupted = uncertain || (record.pendingWork === true
+        && ['staged', 'queued', 'running'].includes(session.status));
       Object.assign(session, { origin_device_id: device.id, worker_token_hash: null, sandbox_id: null,
         worker_heartbeat_at: null, started_at: null, takeover_requested_by: null,
         pause_requested_at: null, sleep_requested_at: null, finishing_at: null,
         expires_at: Date.now() + RETENTION_MS });
-      if (uncertain || admission) {
+      if (interrupted) {
         session.status = 'suspended';
         session.suspended_reason = JSON.stringify(uncertain ? { code: 'WORKER_REPLACED_UNCERTAIN',
-          message: 'The worker stopped during a turn. Review its last saved state before resuming.' } : admission);
-      } else if (session.status === 'running') {
+          message: 'The worker stopped during a turn. Review its last saved state before resuming.' } : {
+          code: 'WORKER_REPLACED', message: 'The worker was replaced. Resume this saved task when ready.',
+        });
+      }
+      if (interrupted && !uncertain) {
+        session.execution_phase = 'idle';
+        session.current_turn_id = null;
+        session.current_wait_id = null;
+      } else if (session.status === 'running' && !uncertain) {
         session.status = 'queued';
         session.execution_phase = 'idle';
         session.current_turn_id = null;

@@ -76,6 +76,8 @@ export function createCloudRuntime(config, dependencies = {}) {
   const scheduler = dependencies.scheduler ?? new Scheduler(sessionStore, runner, {
     logger,
     maxRunningSessions: config.maxRunningSessions,
+    yieldIdleRoomsForQueue: dependencies.raucloudLease?.enabled === true
+      || Boolean(config.raucloudBrokerUrl && config.raucloudRunId && config.raucloudWorkerToken),
     controlEndpoint: config.workerControlMode === 'socket' ? { socketPath: config.workerControlSocket } : null,
     dataDirectory: config.dataDirectory,
     maintenance: async () => {

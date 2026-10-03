@@ -1067,7 +1067,7 @@ export function createBrowserCloudApi(options: BrowserCloudOptions = {}) {
     selectedProfile = profile,
     signal?: AbortSignal,
     assertCurrent?: () => void,
-    kind?: 'turn',
+    kind?: 'operation' | 'turn',
   ) => {
     if (!selectedProfile) throw new Error('Cloud 서버를 먼저 연결해 주세요.');
     const generation = profileGeneration;
@@ -1922,7 +1922,7 @@ export function createBrowserCloudApi(options: BrowserCloudOptions = {}) {
       if (updated) remoteSessions = [updated, ...remoteSessions.filter((session) => session.id !== input.sessionId)];
       return snapshot();
     }),
-    cloudDownloadCheckpoint: (payload: { sessionId: string; operationId?: string; kind?: 'turn' }) => readProfile(
+    cloudDownloadCheckpoint: (payload: { sessionId: string; operationId?: string; kind?: 'operation' | 'turn' }) => readProfile(
       () => downloadCheckpoint(payload.sessionId, payload.operationId, profile, undefined, undefined, payload.kind),
     ),
     cloudPublishCheckpoint: (payload: { sessionId: string; operationId?: string }) => readProfile(

@@ -23,13 +23,27 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text 
   return node;
 }
 /** Saved task state is independent of the viewing connection. */
-export function cloudTaskStatus(task: Task, merged = false): { label: string; state: string } {
+export function cloudTaskStatus(task: Task, merged = false, railway = false, resultAvailable?: boolean): { label: string; state: string } {
   if (task.kind === 'failed' || task.kind === 'running' && (task.wait || task.phase.startsWith('awaiting-')
     || task.phase === 'waiting' && task.turn > 0)) return { label: '확인 필요', state: 'attention' };
-  if (task.kind === 'completed') return merged ? { label: '반영됨', state: 'done' } : { label: '검토 준비됨', state: 'ready' };
-  if (task.kind === 'suspended') return { label: task.resumable ? '일시 중지' : '종료됨', state: 'paused' };
+  if (task.kind === 'completed') return merged ? { label: '반영됨', state: 'done' }
+    : railway && resultAvailable === false ? { label: '결과 받기', state: 'working' }
+      : { label: '검토 준비됨', state: 'ready' };
+  if (task.kind === 'suspended') return railway && (task.code === 'WORKER_REPLACED' || task.code === 'WORKER_REPLACED_UNCERTAIN')
+    ? { label: '재개 필요', state: 'attention' }
+    : { label: task.resumable ? '일시 중지' : '종료됨', state: 'paused' };
   if (task.kind === 'cancelled') return { label: '취소됨', state: 'paused' };
+  if (railway && task.kind === 'queued') return { label: '실행 대기', state: 'working' };
   return { label: '작업 중', state: 'working' };
+}
+
+function savedTime(value: string): string {
+  const date = new Date(value);
+  const today = new Date();
+  const sameDay = date.toDateString() === today.toDateString();
+  return new Intl.DateTimeFormat('ko-KR', sameDay
+    ? { hour: 'numeric', minute: '2-digit' }
+    : { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(date);
 }
 export function createCloudDashboard(deps: CloudDashboardDeps) {
   let snapshot: CloudSnapshot | null = null;
@@ -100,7 +114,8 @@ export function createCloudDashboard(deps: CloudDashboardDeps) {
       if (!disposed) snapshot = next;
     } catch {
       failed = true;
-      if (!disposed) error('연결 확인 필요 · 마지막 저장 기준');
+      if (!disposed) error(snapshot?.profile.kind === 'configured' && snapshot.profile.mode === 'app-hosted'
+        ? '작업을 새로고침하지 못했습니다. 다시 시도하세요.' : '연결 확인 필요 · 마지막 저장 기준');
     } finally {
       pending = false;
       if (kind === 'reconnect') reconnectProgress.settle(failed ? 'failed' : 'done');
@@ -112,8 +127,12 @@ export function createCloudDashboard(deps: CloudDashboardDeps) {
   function renderSessions() {
     if (!snapshot) return;
     const tasks = cloudDashboardSessions(snapshot);
-    const status = (task: Task) => cloudTaskStatus(task, deps.taskMerged?.(task) ?? false);
-    const signature = JSON.stringify(tasks.map(task => [task.sessionId, task.documentName, status(task)]));
+    const railway = snapshot.profile.kind === 'configured' && snapshot.profile.mode === 'app-hosted';
+    const status = (task: Task) => {
+      const result = snapshot?.mergeRequests?.find((request) => request.kind === 'turn' && request.sessionId === task.sessionId);
+      return cloudTaskStatus(task, deps.taskMerged?.(task) ?? false, railway, result?.localAvailable);
+    };
+    const signature = JSON.stringify(tasks.map(task => [task.sessionId, task.documentName, task.lastSavedAt, status(task)]));
     if (signature !== sessionsSignature) {
       sessionsSignature = signature;
       const focusedId = chatList.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.sessionId : undefined;
@@ -127,7 +146,7 @@ export function createCloudDashboard(deps: CloudDashboardDeps) {
         open.dataset.sessionId = task.sessionId;
         const taskStatus = status(task);
         const name = task.documentName || '이름 없는 문서';
-        open.setAttribute('aria-label', `${name}, ${taskStatus.label}`);
+        open.setAttribute('aria-label', `${name}, ${taskStatus.label}${railway && task.lastSavedAt ? `, 마지막 저장 ${savedTime(task.lastSavedAt)}` : ''}`);
         open.title = name;
         const mark = el('span', 'ag-cd-chat-mark');
         mark.setAttribute('aria-hidden', 'true');
@@ -136,6 +155,11 @@ export function createCloudDashboard(deps: CloudDashboardDeps) {
         const badge = el('span', 'ag-cd-task-status', taskStatus.label);
         badge.dataset.state = taskStatus.state;
         copy.append(el('strong', '', name), badge);
+        if (railway && task.lastSavedAt) {
+          const saved = el('time', 'ag-cd-saved', `마지막 저장 ${savedTime(task.lastSavedAt)}`);
+          saved.dateTime = task.lastSavedAt;
+          copy.append(saved);
+        }
         open.append(mark, copy);
         open.addEventListener('click', async () => {
           if (openingSession || deps.mutationLocked()) return;

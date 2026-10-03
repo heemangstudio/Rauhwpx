@@ -16,6 +16,7 @@ export class Scheduler {
     controlSocket,
     dataDirectory,
     maintenance,
+    yieldIdleRoomsForQueue = false,
   } = {}) {
     this.sessionStore = sessionStore;
     this.runner = runner;
@@ -29,6 +30,7 @@ export class Scheduler {
     this.controlEndpoint = controlEndpoint ?? (controlSocket ? { socketPath: controlSocket } : null);
     this.dataDirectory = dataDirectory;
     this.maintenance = maintenance;
+    this.yieldIdleRoomsForQueue = yieldIdleRoomsForQueue;
     this.lastMaintenanceAt = 0;
     this.timer = null;
     this.ticking = null;
@@ -93,6 +95,10 @@ export class Scheduler {
       this.logger?.error('retention.expire_failed', { code: error.code, message: error.message });
     }
     this.sessionStore.requestIdleSleeps?.();
+    if (this.yieldIdleRoomsForQueue) {
+      const running = this.sessionStore.database.prepare(`SELECT COUNT(*) AS count FROM sessions WHERE status = 'running'`).get().count;
+      if (running >= this.maxRunningSessions) this.sessionStore.yieldIdleRoomForQueue?.();
+    }
     const liveIds = new Set(
       sandboxes.filter((sandbox) => sandbox.running !== false).map((sandbox) => sandbox.sandboxId),
     );

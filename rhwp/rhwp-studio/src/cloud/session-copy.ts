@@ -20,6 +20,7 @@ export function suspendedSessionTitle(code: string | null | undefined, provider:
     case 'PROVIDER_UNAVAILABLE': return `서버에 ${label}가 설치되어 있지 않습니다.`;
     case 'WORKER_UNSTABLE': return '작업 실행기가 반복해서 멈췄습니다.';
     case 'WORKER_START_FAILED': return '작업 실행기를 시작하지 못했습니다.';
+    case 'WORKER_REPLACED': return '저장된 작업을 다시 열었습니다.';
     case 'WORKER_REPLACED_UNCERTAIN': return '작업 도중 실행기가 바뀌었습니다.';
     case 'PROVIDER_TURN_FAILED': return `${label}가 응답을 끝내지 못했습니다.`;
     case 'TURN_LIMIT': return '대화 횟수 한도에 도달했습니다.';

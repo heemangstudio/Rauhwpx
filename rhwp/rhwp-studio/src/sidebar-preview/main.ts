@@ -59,7 +59,10 @@ if (!localStorage.getItem('sidebar-preview-seeded')) {
 }
 applyTheme();
 if (params.get('editor') === '1') mountEditorShell(report, eventBus);
-const cloud = params.get('cloud') === '1' ? createMockCloud({ dashboard: params.get('dashboard') === '1' }) : null;
+const cloud = params.get('cloud') === '1' ? createMockCloud({
+  dashboard: params.get('dashboard') === '1',
+  railwayRecovery: params.get('railway-recovery') === '1',
+}) : null;
 mock.bridge.onEvent((event) => {
   if (event.type === 'account-status' && !event.status.authenticating)
     cloud?.setAccount(event.status.signedIn, event.status.account?.email ?? null);
@@ -79,7 +82,7 @@ const sidebar = initAgentSidebar({
     },
     mergeCloudCheckpoint: async (startId, checkpoint) => {
       cloud.calls.merges.push({ startId, checkpoint });
-      const branchName = `Cloud · ${checkpoint.fileName.replace(/\.[^.]+$/, '')} · ${checkpoint.turn}턴`;
+      const branchName = `Cloud · ${checkpoint.fileName.replace(/\.[^.]+$/, '')} · ${checkpoint.kind === 'operation' ? '작업 중 저장본' : `${checkpoint.turn}턴`}`;
       if (!versions.getState().branches.some((branch) => branch.name === branchName)) {
         await versions.createBranch(branchName);
       }

@@ -33,7 +33,7 @@ export interface BoatPreviewScenario {
 const BOAT_SANDBOX_ID = 'bx_7k2m9q4d';
 
 /** Local failure fixtures that exercise the production IPC adapter and sidebar. */
-export function createMockCloud(options: { dashboard?: boolean } = {}) {
+export function createMockCloud(options: { dashboard?: boolean; railwayRecovery?: boolean } = {}) {
   let listener: ((event: unknown) => void) | null = null;
   let displayListener: ((event: unknown) => void) | null = null;
   let scope: CloudSessionScope = { threadId: '', documentId: null };
@@ -120,6 +120,16 @@ export function createMockCloud(options: { dashboard?: boolean } = {}) {
         phase: index === 1 ? 'awaiting-question-answer' : 'working',
         wait: index === 1 ? { id: 'preview-question', kind: 'question', payload: { prompt: '어떤 독자를 위한 문서인가요?' } } : null };
     });
+    if (options.railwayRecovery) {
+      const savedAt = new Date(now.getTime() - 2 * 60_000).toISOString();
+      state.sessions = state.sessions.map((task, index): Exclude<CloudSessionState, { kind: 'idle' }> => {
+        const base = { ...task, lastSavedAt: savedAt };
+        if (index === 0) return { ...base, kind: 'suspended', reason: 'Worker replaced during a turn',
+          code: 'WORKER_REPLACED_UNCERTAIN', resumable: true };
+        if (index === 1) return { ...base, kind: 'queued', position: 1, message: '실행 자리를 기다리고 있습니다.' };
+        return base;
+      });
+    }
     state.sessions.forEach(task => {
       const thread = createEmptyThread({ agent: task.selection!.agent, model: task.selection!.model,
         effort: task.selection!.effort, docKey: task.documentName, documentId: task.documentId });
@@ -156,8 +166,22 @@ export function createMockCloud(options: { dashboard?: boolean } = {}) {
         fileName: checkpoint.fileName,
         sha256: checkpoint.sha256,
         size: checkpoint.byteLength,
-        localAvailable: true,
+        localAvailable: !options.railwayRecovery,
       }];
+      if (options.railwayRecovery) {
+        const recovered = state.sessions[0];
+        const savedBytes = new Uint8Array([1, 2, 3]);
+        const savedDigest = '039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81';
+        checkpoints.set(recovered.sessionId, { sessionId: recovered.sessionId, documentId: recovered.documentId,
+          fileName: recovered.documentName, kind: 'operation', revision: 1, turn: 0,
+          operationId: `dashboard-operation-${recovered.sessionId}`, bytes: savedBytes,
+          byteLength: savedBytes.byteLength, sha256: savedDigest });
+        state.mergeRequests.push({ sessionId: recovered.sessionId, documentId: recovered.documentId!,
+          threadId: recovered.threadId, cloudStartId: recovered.sessionId,
+          operationId: `dashboard-operation-${recovered.sessionId}`, revision: 1, turn: 0,
+          kind: 'operation', fileName: recovered.documentName, sha256: savedDigest, size: savedBytes.byteLength,
+          localAvailable: true });
+      }
     }
   }
   function snapshot(): CloudSnapshot {
@@ -392,6 +416,20 @@ export function createMockCloud(options: { dashboard?: boolean } = {}) {
     },
     async cloudCommand(request) {
       calls.commands.push(structuredClone(request));
+      if (options.railwayRecovery && request.command === 'resume') {
+        const task = state.sessions.find((item) => item.sessionId === request.sessionId);
+        if (!task || task.kind !== 'suspended' || task.version !== request.expectedVersion) {
+          throw new Error('저장된 작업을 재개하지 못했습니다.');
+        }
+        const resumed: Exclude<CloudSessionState, { kind: 'idle' }> = {
+          ...task, version: task.version + 1, kind: 'queued', position: 1,
+          message: '실행 자리를 기다리고 있습니다.',
+        };
+        state.sessions = state.sessions.map((item) => item.sessionId === task.sessionId ? resumed : item);
+        state.session = resumed;
+        publish();
+        return snapshot();
+      }
       if (request.command === 'queue-message' && queueReceiptBlocked) {
         await new Promise<void>((resolve) => { releaseQueueReceipt = resolve; });
         releaseQueueReceipt = null;
@@ -684,6 +722,12 @@ export function createMockCloud(options: { dashboard?: boolean } = {}) {
       if (!blocked) { releaseReconnect?.(); releaseReconnect = null; }
     },
     publish,
+    finishRailwayResultFetch() {
+      if (!options.railwayRecovery) return;
+      state.mergeRequests = state.mergeRequests?.map((request) => request.kind === 'turn'
+        ? { ...request, localAvailable: true } : request);
+      publish();
+    },
     setBoatSpeed(speed: number) { boatSpeed = Math.max(0.05, speed); },
     /** 깨우는 중 화면을 오래 보도록 VM 시작을 붙잡는다. */
     holdBoatWake(hold: boolean) {

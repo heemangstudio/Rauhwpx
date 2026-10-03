@@ -18,6 +18,24 @@ const SERVICE_DOMAIN_CREATE = `
 mutation RaucloudDomainCreate($input: ServiceDomainCreateInput!) {
   serviceDomainCreate(input: $input) { id domain }
 }`;
+const SERVICE_INSTANCE_UPDATE = `
+mutation RaucloudServiceInstanceUpdate($serviceId: String!, $environmentId: String!, $input: ServiceInstanceUpdateInput!) {
+  serviceInstanceUpdate(serviceId: $serviceId, environmentId: $environmentId, input: $input)
+}`;
+const SERVICE_INSTANCE_DEPLOY = `
+mutation RaucloudServiceInstanceDeploy($serviceId: String!, $environmentId: String!) {
+  serviceInstanceDeployV2(serviceId: $serviceId, environmentId: $environmentId)
+}`;
+const DEPLOYMENT_BY_ID = `
+query RaucloudDeployment($id: String!) {
+  deployment(id: $id) { id status }
+}`;
+const SERVICE_DOMAINS = `
+query RaucloudServiceDomains($projectId: String!, $environmentId: String!, $serviceId: String!) {
+  domains(projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId) {
+    serviceDomains { id domain targetPort }
+  }
+}`;
 const LATEST_DEPLOYMENT = `
 query RaucloudLatestDeployment($projectId: String!, $environmentId: String!, $serviceId: String!) {
   deployments(first: 1, input: { projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId }) {
@@ -206,24 +224,25 @@ export function createRailwayCloudProvisioner({
     }
   }
 
-  async function waitForDeployment(remote) {
+  async function waitForDeployment(remote, deploymentId = '') {
     const deadline = now() + deploymentTimeoutMs;
     while (now() < deadline) {
       let data;
       try {
-        data = await graphql(LATEST_DEPLOYMENT, {
-          projectId: remote.projectId,
-          environmentId: remote.environmentId,
-          serviceId: remote.serviceId,
-        }, { timeoutMs: Math.min(requestTimeoutMs, deadline - now()) });
+        data = await graphql(deploymentId ? DEPLOYMENT_BY_ID : LATEST_DEPLOYMENT,
+          deploymentId ? { id: deploymentId } : {
+            projectId: remote.projectId,
+            environmentId: remote.environmentId,
+            serviceId: remote.serviceId,
+          }, { timeoutMs: Math.min(requestTimeoutMs, deadline - now()) });
       } catch (error) {
         if (error.code !== 'PROVIDER_UNREACHABLE') throw error;
         await sleep(Math.min(2_000, Math.max(0, deadline - now())));
         continue;
       }
-      const status = clean(data.deployments?.edges?.[0]?.node?.status, 64).toUpperCase();
-      if (status === 'SUCCESS' || status === 'SLEEPING') return;
-      if (status === 'FAILED' || status === 'CRASHED') {
+      const status = clean(deploymentId ? data.deployment?.status : data.deployments?.edges?.[0]?.node?.status, 64).toUpperCase();
+      if (status === 'SUCCESS') return;
+      if (['FAILED', 'CRASHED', 'SKIPPED', 'REMOVED', 'REMOVING', 'NEEDS_APPROVAL'].includes(status)) {
         throw provisionerError('SANDBOX_DEPLOY_FAILED', `Railway deployment ended in ${status}`);
       }
       await sleep(Math.min(2_000, Math.max(0, deadline - now())));
@@ -305,7 +324,7 @@ export function createRailwayCloudProvisioner({
         projectId: config.projectId,
         environmentId: config.environmentId,
         name: serviceName,
-        source: { image: config.image },
+        ...(!config.region ? { source: { image: config.image } } : {}),
         variables: {
             RAUHWpx_HOST: '0.0.0.0',
             RAUHWpx_PORT: String(RAUCLOUD_PORT),
@@ -314,7 +333,7 @@ export function createRailwayCloudProvisioner({
             RAUHWpx_BOOTSTRAP_TOKEN: bootstrapToken,
             RAUHWpx_CHANNEL: 'stable',
             RAUHWpx_MAX_RUNNING: '1',
-            RAUHWpx_MAX_QUEUED: '1',
+            RAUHWpx_MAX_QUEUED: '20',
             RAUHWpx_RUNNER: 'local',
             RAUHWpx_WORKER_UID: '1001',
             RAUHWpx_WORKER_GID: '1001',
@@ -362,15 +381,87 @@ export function createRailwayCloudProvisioner({
       };
       try {
         await onRemoteCreated(remote);
-        const domainData = await graphql(SERVICE_DOMAIN_CREATE, {
-          input: { environmentId: config.environmentId, serviceId, targetPort: RAUCLOUD_PORT },
-        });
+        let deploymentId = '';
+        if (config.region) {
+          const updateVariables = {
+            serviceId,
+            environmentId: config.environmentId,
+            input: {
+              source: { image: config.image },
+              multiRegionConfig: { [config.region]: { numReplicas: 1 } },
+              healthcheckPath: '/v1/health',
+              restartPolicyType: 'ON_FAILURE',
+              restartPolicyMaxRetries: 10,
+              sleepApplication: false,
+            },
+          };
+          for (let attempt = 0; ; attempt += 1) {
+            try {
+              const updated = await graphql(SERVICE_INSTANCE_UPDATE, updateVariables);
+              if (updated.serviceInstanceUpdate !== true) {
+                throw provisionerError('PROVIDER_RESPONSE_INVALID', 'Railway did not confirm worker configuration');
+              }
+              break;
+            } catch (updateError) {
+              if (!['PROVIDER_UNREACHABLE', 'PROVIDER_RESPONSE_INVALID'].includes(updateError.code) || attempt >= 2) {
+                throw updateError;
+              }
+              await sleep(250 * (attempt + 1));
+            }
+          }
+          try {
+            const deployed = await graphql(SERVICE_INSTANCE_DEPLOY,
+              { serviceId, environmentId: config.environmentId },
+              { timeoutMs: Math.max(requestTimeoutMs, 90_000) });
+            deploymentId = clean(deployed.serviceInstanceDeployV2, 160);
+            if (!deploymentId) throw provisionerError('PROVIDER_RESPONSE_INVALID', 'Railway did not return a deployment id');
+          } catch (deployError) {
+            if (!['PROVIDER_UNREACHABLE', 'PROVIDER_RESPONSE_INVALID'].includes(deployError.code)) throw deployError;
+            // This is a new empty service. The first deployment belongs to this
+            // request, so recover its id rather than replaying an ambiguous write.
+            for (let attempt = 0; attempt < 5 && !deploymentId; attempt += 1) {
+              try {
+                const latest = await graphql(LATEST_DEPLOYMENT, {
+                  projectId: config.projectId, environmentId: config.environmentId, serviceId,
+                });
+                deploymentId = clean(latest.deployments?.edges?.[0]?.node?.id, 160);
+              } catch {}
+              if (!deploymentId && attempt < 4) await sleep(500 * (attempt + 1));
+            }
+            if (!deploymentId) throw deployError;
+          }
+        }
+        let domainData;
+        try {
+          domainData = await graphql(SERVICE_DOMAIN_CREATE, {
+            input: { environmentId: config.environmentId, serviceId, targetPort: RAUCLOUD_PORT },
+          });
+          if (!safeDomain(domainData.serviceDomainCreate?.domain)) {
+            throw provisionerError('PROVIDER_RESPONSE_INVALID', 'Railway did not return a usable domain');
+          }
+        } catch (domainError) {
+          if (!['PROVIDER_UNREACHABLE', 'PROVIDER_RESPONSE_INVALID'].includes(domainError.code)) throw domainError;
+          let existing;
+          for (let attempt = 0; attempt < 5 && !existing; attempt += 1) {
+            try {
+              const domains = await graphql(SERVICE_DOMAINS, {
+                projectId: config.projectId, environmentId: config.environmentId, serviceId,
+              });
+              existing = domains.domains?.serviceDomains?.find(
+                (item) => item.targetPort === RAUCLOUD_PORT && safeDomain(item.domain),
+              );
+            } catch {}
+            if (!existing && attempt < 4) await sleep(250 * (attempt + 1));
+          }
+          if (!existing) throw domainError;
+          domainData = { serviceDomainCreate: existing };
+        }
         const domain = safeDomain(domainData.serviceDomainCreate?.domain);
         if (!domain) throw provisionerError('PROVIDER_RESPONSE_INVALID', 'Railway did not return a usable domain');
         remote.domainId = clean(domainData.serviceDomainCreate?.id, 160);
         remote.domain = domain;
         await onRemoteCreated(remote);
-        await waitForDeployment(remote);
+        await waitForDeployment(remote, deploymentId);
         const endpoint = `https://${domain}${RAUCLOUD_BASE_PATH}`;
         const receipt = await waitForReceipt(endpoint, bootstrapToken, `Rauhwpx ${clean(deviceId, 60)}`);
         return { remote, receipt };

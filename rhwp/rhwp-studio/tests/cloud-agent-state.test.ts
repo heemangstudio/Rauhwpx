@@ -444,10 +444,22 @@ test('cloud snapshot restores validated durable merge metadata without a live se
     cloudStartId: 'start-1', operationId: 'op-4', revision: 4, turn: 4, kind: 'turn',
     fileName: 'result.hwpx', sha256: 'a'.repeat(64), size: 123, localAvailable: true };
   assert.deepEqual(parseCloudSnapshot({ ...state(20), mergeRequests: [request] })?.mergeRequests, [request]);
+  const saved = { ...request, kind: 'operation', turn: 0, operationId: 'op-save' };
+  assert.deepEqual(parseCloudSnapshot({ ...state(21), mergeRequests: [saved] })?.mergeRequests, [saved]);
   for (const patch of [{ cloudStartId: '' }, { documentId: null }, { operationId: ' ' },
     { revision: 0 }, { turn: -1 }, { size: 0 }, { size: 1.5 }, { sha256: 'bad' },
     { kind: 'manual' }, { localAvailable: 'yes' }]) {
     assert.equal(parseCloudSnapshot({ ...state(20), mergeRequests: [{ ...request, ...patch }] }), null);
   }
   assert.equal(parseCloudSnapshot({ ...state(20), mergeRequests: {} }), null);
+});
+
+test('worker recovery keeps the durable save time and explicit Resume state', () => {
+  const interrupted = { ...running(), kind: 'suspended', reason: 'Worker replaced',
+    code: 'WORKER_REPLACED_UNCERTAIN', resumable: true, lastSavedAt: now };
+  const parsed = parseCloudSnapshot(state(22, interrupted));
+  assert.equal(parsed?.session.kind, 'suspended');
+  if (parsed?.session.kind !== 'suspended') throw new Error('Recovered session was not suspended');
+  assert.equal(parsed.session.lastSavedAt, now);
+  assert.equal(parsed.session.resumable, true);
 });

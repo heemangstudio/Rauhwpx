@@ -126,7 +126,9 @@ async function openCloudDocument(page: import('puppeteer-core').Page, format: 'h
     const remoteBytes = snapshots.captureVersionSnapshot(remote).bytes;
     const sha = async (bytes: Uint8Array) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes.slice().buffer))].map((byte) => byte.toString(16).padStart(2, '0')).join('');
     const checkpoint = { bytes: remoteBytes, fileName, sha256: await sha(remoteBytes), byteLength: remoteBytes.length,
-      sessionId: `session-${scenario}-${format}`, documentId: id, kind: 'turn' as const, revision: 1, turn: 1, operationId: 'turn-1' };
+      sessionId: `session-${scenario}-${format}`, documentId: id,
+      kind: scenario === 'operation' ? 'operation' as const : 'turn' as const,
+      revision: 1, turn: scenario === 'operation' ? 0 : 1, operationId: scenario === 'operation' ? 'save-1' : 'turn-1' };
     wasm.insertText(0, 0, 0, 'LOCAL:');
     dirty.markDirty('test');
     eventBus.emit('document-mutated');
@@ -153,7 +155,8 @@ async function openCloudDocument(page: import('puppeteer-core').Page, format: 'h
       begin: () => {
         (window as any).__cloudOutcome = undefined;
         (window as any).__cloudError = null;
-        (window as any).__cloudMerge = controller.mergeCloudCheckpoint(startId, checkpoint).then(
+        (window as any).__cloudMerge = controller.mergeCloudCheckpoint(startId, checkpoint,
+          checkpoint.kind === 'operation' ? { reviewSavedOperation: true } : {}).then(
           (value) => { (window as any).__cloudOutcome = value; },
           (error) => { (window as any).__cloudError = String(error); },
         );
@@ -216,6 +219,32 @@ for (const format of ['hwp', 'hwpx'] as const) {
     } finally { await page.close(); }
   });
 }
+
+test('Railway operation save opens review and preserves newer local edits when cancelled', { timeout: 60_000 }, async () => {
+  const page = await browser!.newPage();
+  try {
+    await openCloudDocument(page, 'hwpx', 'operation');
+    await page.evaluate(() => (window as any).__cloud.begin());
+    await page.waitForSelector('.version-merge-preparation');
+    assert.equal(await page.evaluate(() => (window as any).__cloud.inspect().text.includes('LOCAL:')), true);
+    await page.click('.version-merge-preparation [data-choice="cancel"]');
+    await page.waitForFunction(() => (window as any).__cloudOutcome === false || (window as any).__cloudError);
+    assert.equal(await page.evaluate(() => (window as any).__cloudError), null);
+    const result = await page.evaluate(() => (window as any).__cloud.inspect());
+    assert.match(result.text, /LOCAL:/);
+    assert.doesNotMatch(result.text, /:CLOUD/);
+    await page.evaluate(() => (window as any).__cloud.begin());
+    await page.waitForSelector('.version-merge-preparation');
+    await page.click('.version-merge-preparation button[type="submit"]');
+    await page.waitForSelector('.merge-resolver-window');
+    await finishReview(page);
+    await page.waitForFunction(() => (window as any).__cloudOutcome === true || (window as any).__cloudError);
+    assert.equal(await page.evaluate(() => (window as any).__cloudError), null);
+    const applied = await page.evaluate(() => (window as any).__cloud.inspect());
+    assert.match(applied.text, /:CLOUD/);
+    assert.equal(applied.state.shelves.length, 1);
+  } finally { await page.close(); }
+});
 
 test('cloud merge cancellation preserves local edits, and a separate branch owns an explicit local commit', { timeout: 45_000 }, async () => {
   const page = await browser!.newPage();

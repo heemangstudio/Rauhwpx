@@ -1251,7 +1251,15 @@ export function createRaucloudBroker({
         throw cloudError('CLOUD_WORKER_UNAUTHORIZED', 'This worker no longer owns the Raucloud run');
       }
       if (!mergeArtifacts) throw cloudError('CLOUD_UNAVAILABLE', 'Checkpoint storage is unavailable');
-      return mergeArtifacts.upload(run.accountId, run.id, input);
+      return mergeArtifacts.upload(run.accountId, run.id, input, {
+        withPublishFence: (publish) => mutate(async (state) => {
+          const current = workerAccount(state, secret, run.id);
+          if (current.accountId !== run.accountId || current.run.id !== run.id) {
+            throw cloudError('CLOUD_WORKER_UNAUTHORIZED', 'This worker no longer owns the Raucloud run');
+          }
+          return publish();
+        }),
+      });
     },
 
     async listCloudMergeRequests(token, sessionId) {
@@ -1287,8 +1295,8 @@ export function createRaucloudBroker({
       return { accountId, conversations: mergeRequests };
     },
 
-    async downloadCloudConversationChunk(secret, id, index, resource = false) {
-      const { accountId } = await currentWorkerAccount(secret);
+    async downloadCloudConversationChunk(secret, id, index, resource = false, worker = true) {
+      const accountId = worker ? (await currentWorkerAccount(secret)).accountId : await identity(secret);
       const artifacts = resource ? conversationResources : conversationArtifacts;
       if (!artifacts) throw cloudError('CLOUD_UNAVAILABLE', 'Conversation storage is unavailable');
       return artifacts.chunk(accountId, id, index);

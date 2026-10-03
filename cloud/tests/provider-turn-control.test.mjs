@@ -6,7 +6,8 @@ import { observeStudioTurn } from '../document-runtime/studio-harness.mjs';
 
 const agent = (type, details = {}) => ({ type: 'agent', event: { type, agent: 'codex', ...details } });
 
-function observe({ batches, workflow = 'direct', control = {}, onSafeBoundary = async () => {}, interruptResults = [] }) {
+function observe({ batches, workflow = 'direct', control = {}, onSafeBoundary = async () => {},
+  onIdleBoundary = null, interruptResults = [] }) {
   let sequence = 0;
   let drains = 0;
   let interruptedAt = null;
@@ -28,11 +29,40 @@ function observe({ batches, workflow = 'direct', control = {}, onSafeBoundary = 
       args, window: { rauhwpxCloudRuntime: bridge },
     }) },
     bootstrap: 'test', execution: { workflow }, hub: { exitCode: null },
-    onEvent: async () => {}, onSafeBoundary, readControl: async () => control,
+    onEvent: async () => {}, onSafeBoundary, onIdleBoundary, readControl: async () => control,
     timeoutMs: 2_000,
   });
   return { result, interruptedAt: () => interruptedAt, interruptAttempts };
 }
+
+test('Railway waits for every tool in a drained batch before saving an unfinished turn', async () => {
+  const saves = [];
+  const run = observe({
+    batches: [
+      [agent('turn-start'), agent('tool-call', { callId: 'one', tool: 'insert_text' }),
+        agent('tool-result', { callId: 'one', ok: true }),
+        agent('tool-call', { callId: 'two', tool: 'replace_text' })],
+      [agent('tool-result', { callId: 'two', ok: true })],
+      [agent('turn-end', { stopReason: 'end_turn' })],
+    ],
+    onSafeBoundary: async ({ tool }) => saves.push(tool),
+    onIdleBoundary: async () => saves.push('idle'),
+  });
+  await run.result;
+  assert.deepEqual(saves, ['replace_text', 'idle']);
+});
+
+test('Railway saves the idle document before a pause interrupts the Studio preview', async () => {
+  const saves = [];
+  const run = observe({
+    control: { pauseRequested: true },
+    batches: [[agent('turn-start')], [agent('turn-end', { stopReason: 'interrupted' })]],
+    onIdleBoundary: async ({ beforeInterrupt = false } = {}) => saves.push(beforeInterrupt ? 'before' : 'after'),
+  });
+  const outcome = await run.result;
+  assert.equal(outcome.stopped, true);
+  assert.deepEqual(saves, ['before']);
+});
 
 for (const request of ['pauseRequested', 'takeoverRequested', 'endRequested', 'redirectRequested']) {
   test(`${request} interrupts after all already-dispatched tools finish`, async () => {

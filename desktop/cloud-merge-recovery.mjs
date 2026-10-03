@@ -11,7 +11,8 @@ const id = (value) => typeof value === 'string' && /^[A-Za-z0-9._:-]{1,160}$/.te
 
 export function validateMergeRequest(value) {
   if (!value || !['id', 'runId', 'sessionId', 'documentId', 'threadId', 'cloudStartId', 'operationId'].every((key) => id(value[key]))
-    || value.kind !== 'turn' || !Number.isSafeInteger(value.revision) || value.revision < 1
+    || !['operation', 'turn'].includes(value.kind)
+    || !Number.isSafeInteger(value.revision) || value.revision < 1
     || !Number.isSafeInteger(value.turn) || value.turn < 0
     || !Number.isSafeInteger(value.size) || value.size < 1 || value.size > MAX_BYTES
     || value.chunkCount !== Math.ceil(value.size / CHUNK_BYTES)
@@ -151,6 +152,7 @@ export class CloudMergeRecovery {
     const accountId = this.accountId;
     const controller = new AbortController();
     this.prefetchController = controller;
+    const failedReceipts = new Set();
     const check = () => {
       assertCurrent();
       if (generation !== this.generation || accountId !== this.accountId) {
@@ -158,7 +160,19 @@ export class CloudMergeRecovery {
       }
     };
     const selectBatch = () => {
-      const pending = this.requests.filter((request) => !request.localAvailable)
+      // A long turn can create many operation checkpoints. Keep the newest
+      // unfinished document ready without downloading every superseded draft.
+      const latestOperation = new Map();
+      for (const request of this.requests) {
+        if (request.kind !== 'operation') continue;
+        const previous = latestOperation.get(request.sessionId);
+        if (!previous || request.revision > previous.revision
+          || request.revision === previous.revision && request.turn > previous.turn) {
+          latestOperation.set(request.sessionId, request);
+        }
+      }
+      const pending = this.requests.filter((request) => !request.localAvailable && !failedReceipts.has(request.id)
+        && (request.kind === 'turn' || latestOperation.get(request.sessionId) === request))
         .sort((left, right) => right.revision - left.revision || right.turn - left.turn);
       const selected = [];
       let selectedBytes = 0;
@@ -180,8 +194,6 @@ export class CloudMergeRecovery {
         if (!selected.length) break;
         attempted += selected.length;
         let cursor = 0;
-        let batchDownloaded = 0;
-        const batchFailures = [];
         const worker = async () => {
           while (cursor < selected.length) {
             const request = selected[cursor++];
@@ -189,13 +201,12 @@ export class CloudMergeRecovery {
             try {
               await this.download(request.sessionId, request.operationId, check, { signal: controller.signal });
               downloaded += 1;
-              batchDownloaded += 1;
               onDownloaded(request);
             } catch (error) {
               check();
               const failure = { sessionId: request.sessionId, operationId: request.operationId, error };
               failures.push(failure);
-              batchFailures.push(failure);
+              failedReceipts.add(request.id);
               onFailure(request, error);
             }
           }
@@ -205,7 +216,6 @@ export class CloudMergeRecovery {
           worker,
         ));
         check();
-        if (batchFailures.length || batchDownloaded === 0) break;
       }
       return { attempted, downloaded, failures };
     })().finally(() => {
@@ -225,6 +235,11 @@ export class CloudMergeRecovery {
     });
     this.downloads.set(key, operation);
     return operation;
+  }
+
+  latest(sessionId, kind = 'operation') {
+    return this.requests.filter((request) => request.sessionId === sessionId && request.kind === kind)
+      .sort((left, right) => right.revision - left.revision || right.turn - left.turn)[0] ?? null;
   }
 
   async #download(sessionId, operationId, assertCurrent = () => {}, { signal } = {}) {
@@ -281,7 +296,7 @@ export class CloudMergeRecovery {
     return {
       sessionId, documentId: receipt.documentId, fileName: receipt.fileName,
       bytes: new Uint8Array(bytes), byteLength: receipt.size, sha256: receipt.sha256,
-      revision: receipt.revision, turn: receipt.turn, operationId: receipt.operationId, kind: 'turn',
+      revision: receipt.revision, turn: receipt.turn, operationId: receipt.operationId, kind: receipt.kind,
       originOnThisDevice: true,
       expectedOriginSha256: Object.hasOwn(record, 'originDigest') ? record.originDigest : record.documentDigest,
     };

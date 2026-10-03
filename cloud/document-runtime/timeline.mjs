@@ -87,7 +87,8 @@ export class TimelineRecorder {
 
   history({ excludeTrailingUserText = null } = {}) {
     const history = this.timeline.thread.messages.flatMap((message) => (
-      (message?.role === 'user' || message?.role === 'assistant') && typeof message.text === 'string' && message.text.trim()
+      (message?.role === 'user' || message?.role === 'assistant') && message.cloudDraft !== true
+        && typeof message.text === 'string' && message.text.trim()
         ? [{ role: message.role, text: message.text }]
         : []
     ));
@@ -270,10 +271,19 @@ export class TimelineRecorder {
     return { success, status, stopReason: event?.stopReason ?? null, error: error || null };
   }
 
-  export() {
+  export({ includeDraft = false } = {}) {
     this.timeline.exportedAt = new Date(this.now()).toISOString();
     this.#touch();
-    return structuredClone(this.timeline);
+    const snapshot = structuredClone(this.timeline);
+    // A boundary during a provider turn must retain text already shown in the
+    // app. Keep it out of the live recorder so later saves replace this draft
+    // and a completed turn writes its normal final response only once.
+    const draft = includeDraft ? boundedText(this.turn?.text, 512 * 1024).trim() : '';
+    if (draft) snapshot.thread.messages.push({
+      role: 'assistant', kind: 'progress', cloudDraft: true,
+      text: draft, agent: snapshot.thread.agent,
+    });
+    return snapshot;
   }
 
   #touch() {
