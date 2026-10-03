@@ -1,12 +1,15 @@
 /**
- * HFT 1.0 수식 서체의 cubic outline을 세션용 OpenType/CFF로 옮긴다.
+ * HFT 1.0 서체의 cubic outline을 세션용 OpenType/CFF로 옮긴다.
  * 좌표/advance는 원본 값을 유지하며, 브라우저가 지원하지 않는 HFT hint만 제외한다.
- * 지원하지 않는 문자 인코딩/outline 명령은 대체 도형을 만들지 않고 거절한다.
+ * 한컴 본문 서체는 문자군(한글·영문·한자·기호)마다 파일이 나뉘므로 한 이름의 파일들을
+ * 하나의 글꼴로 합칠 수 있다. 지원하지 않는 outline 명령은 대체 도형 없이 거절한다.
  */
 const MAGIC = 'Han Unified Font File 1.0\x1a';
+/** 합친 글꼴의 em. 파일마다 em(1000·1058·1200 …)이 달라 좌표를 이 값으로 맞춘다. */
+const MERGED_UNITS = 1000;
 type Point = [number, number];
 type Outline = Array<{ op: 'move' | 'line' | 'curve' | 'close'; points: Point[] }>;
-interface Glyph { code: number; advance: number; outline: Outline }
+interface Glyph { unicodes: number[]; advance: number; outline: Outline }
 interface HftFont { family: string; italic: boolean; units: number; baseline: number; copyright: string; glyphs: Glyph[] }
 
 class Reader {
@@ -21,66 +24,244 @@ class Reader {
   u32(at: number): number { this.check(at, 4); return this.view.getUint32(at, true); }
 }
 
+function isHft(bytes: Uint8Array): boolean {
+  return bytes.length >= MAGIC.length && [...MAGIC].every((c, i) => bytes[i] === c.charCodeAt(0));
+}
+
 /** HFT가 아니면 null. 손상되거나 지원하지 않는 HFT는 오류로 보고한다. */
 export function convertHftToOpenType(bytes: ArrayBuffer, filename: string): ArrayBuffer | null {
   const source = new Uint8Array(bytes);
-  if (source.length < MAGIC.length || ![...MAGIC].every((c, i) => source[i] === c.charCodeAt(0))) return null;
-  return encodeOpenType(readHft(source, filename)).buffer as ArrayBuffer;
+  if (!isHft(source)) return null;
+  const font = readHft(source, filename);
+  if (!font.glyphs.some(drawable)) throw new Error('지원하지 않는 HFT 문자표입니다.');
+  return encodeOpenType(font).buffer as ArrayBuffer;
+}
+
+/**
+ * 한 글꼴 이름에 딸린 문자군별 HFT 파일을 하나의 OpenType으로 합친다. 같은 문자가 여러
+ * 파일에 있으면 앞 파일이 이긴다. 쓸 수 있는 문자가 없는 파일은 건너뛰고, 전부 비면 오류다.
+ */
+export function convertHftFamilyToOpenType(
+  parts: ReadonlyArray<{ bytes: ArrayBuffer; fileName: string }>,
+  family: string,
+): ArrayBuffer {
+  const fonts: HftFont[] = [];
+  const errors: string[] = [];
+  for (const part of parts) {
+    const source = new Uint8Array(part.bytes);
+    if (!isHft(source)) { errors.push(`${part.fileName}: HFT가 아닙니다.`); continue; }
+    try {
+      const font = readHft(source, part.fileName);
+      if (font.glyphs.some(drawable)) fonts.push(font);
+    } catch (error) {
+      errors.push(`${part.fileName}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (!fonts.length) throw new Error(errors.join('; ') || '지원하지 않는 HFT 문자표입니다.');
+  const primary = fonts[0];
+  const baseline = Math.round(primary.baseline * MERGED_UNITS / primary.units);
+  const seen = new Set<number>();
+  const glyphs: Glyph[] = [];
+  for (const font of fonts) {
+    const scale = MERGED_UNITS / font.units;
+    const at = (n: number): number => Math.round(n * scale);
+    for (const glyph of font.glyphs) {
+      const unicodes = glyph.unicodes.filter(code => !seen.has(code));
+      if (!unicodes.length || (!drawable(glyph) && !unicodes.includes(0x20))) continue;
+      unicodes.forEach(code => seen.add(code));
+      glyphs.push({
+        unicodes,
+        advance: at(glyph.advance),
+        outline: glyph.outline.map(command => ({
+          op: command.op,
+          points: command.points.map(([x, y]): Point => [at(x), at(y)]),
+        })),
+      });
+    }
+  }
+  return encodeOpenType({
+    family, italic: primary.italic, units: MERGED_UNITS, baseline, copyright: primary.copyright, glyphs,
+  }).buffer as ArrayBuffer;
+}
+
+function drawable(glyph: Glyph): boolean {
+  return glyph.unicodes.length > 0
+    && glyph.outline.some(command => command.op === 'line' || command.op === 'curve');
 }
 
 function readHft(bytes: Uint8Array, filename: string): HftFont {
   const r = new Reader(bytes);
   r.check(0, 0x200);
   if (r.u32(0x1a) !== 0x01020304 || r.u32(0x24) !== bytes.length) throw new Error('지원하지 않는 HFT 헤더입니다.');
+  // 0x1A8이 0이 아닌 파일(한양신명조 등 일부 번들)은 glyph 기록이 보호되어 있다. 풀지 않고 fallback에 맡긴다.
+  if (r.u16(0x1a8) !== 0) throw new Error('보호된 HFT 서체는 변환하지 않습니다.');
   const widthAt = r.u32(0x1aa);
   const outlineAt = r.u32(0x1ae);
-  r.check(widthAt, 10);
+  r.check(widthAt, 12);
   r.check(outlineAt, 36);
-  const first = r.u16(widthAt + 4);
-  const last = r.u16(widthAt + 6);
-  const count = last - first + 1;
-  const knownEncoding = (first === 0x20 && last === 0x7f)
-    || (first === 0x2200 && last === 0x22ff) || (first === 0x500 && last === 0x56f);
-  if (!knownEncoding || r.u16(widthAt + 8) !== 1 || r.u16(outlineAt + 6) !== 1
-    || r.u16(outlineAt + 8) !== 1 || r.u16(outlineAt + 20) !== first
-    || r.u16(outlineAt + 22) !== last || r.u16(outlineAt + 24) !== count) {
-    throw new Error('지원하지 않는 HFT 문자표 또는 outline 형식입니다.');
-  }
-  if (r.u32(widthAt) !== 10 + count * 2 || widthAt + r.u32(widthAt) !== outlineAt
-    || outlineAt + r.u32(outlineAt) !== bytes.length) throw new Error('잘못된 HFT 테이블 길이입니다.');
+  const outlineEnd = outlineAt + r.u32(outlineAt);
+  if (outlineEnd > bytes.length || outlineEnd < outlineAt + 36) throw new Error('잘못된 HFT 테이블 길이입니다.');
+  // 폭 표: 문자마다 폭(flag 1) 또는 모든 문자가 같은 고정 폭(flag 0).
+  const widthFirst = r.u16(widthAt + 4);
+  const widthLast = r.u16(widthAt + 6);
+  const perCodeWidth = r.u16(widthAt + 8) === 1;
+  if (perCodeWidth) r.check(widthAt + 10, (widthLast - widthFirst + 1) * 2);
+  const advanceOf = (code: number): number => {
+    if (!perCodeWidth) return r.u16(widthAt + 10);
+    return code >= widthFirst && code <= widthLast ? r.u16(widthAt + 10 + (code - widthFirst) * 2) : 0;
+  };
   const units = r.u16(outlineAt + 4);
   const baseline = r.u16(0x194);
   if (units < 16 || units > 16384 || baseline > units) throw new Error('잘못된 HFT em 값입니다.');
-  const base = outlineAt + 34;
-  const offsets = base + 2;
-  r.check(offsets, count * 4);
-  const glyphs: Glyph[] = [];
-  for (let index = 0; index < count; index++) {
-    const start = base + r.u32(offsets + index * 4);
-    const end = index + 1 < count ? base + r.u32(offsets + (index + 1) * 4) : bytes.length;
-    if (start < offsets + count * 4 || end < start) throw new Error('잘못된 HFT glyph 순서입니다.');
-    r.check(start, end - start);
-    r.check(start, 11);
-    const advance = r.u16(widthAt + 10 + index * 2);
-    if (advance > 32767) throw new Error('HFT advance 범위를 벗어났습니다.');
-    // 빈 glyph는 11-byte 기록을 쓰며, 일부 오래된 space에는 미완성 moveto가 있다.
-    const empty = end - start <= 12 || r.u16(start + 6) === 0;
-    let outline: Outline = [];
-    if (!empty) {
-      const length = r.u16(start + 10);
-      if (length < 2 || start + 10 + length > end) throw new Error('잘못된 HFT glyph 길이입니다.');
-      outline = decodeOutline(bytes.subarray(start + 12, start + 10 + length), baseline);
-    }
-    glyphs.push({ code: first + index, advance, outline });
+  const blockCount = r.u16(outlineAt + 8);
+  if (r.u16(outlineAt + 6) !== 1 || blockCount < 1 || blockCount > 64) {
+    throw new Error('지원하지 않는 HFT 문자표 또는 outline 형식입니다.');
   }
   const italic = bytes[0x158] === 1;
   // 내부 Johab family `수식` + 문자표로 bank를 식별한다. 파일을 바꿔 이름 붙여도 동일하다.
   const equationFamily = [0xae, 0x81, 0xaf, 0xa2, 0].every((byte, i) => bytes[0x6c + i] === byte);
+  const glyphs: Glyph[] = [];
+  let firstCode = -1;
+  // 블록: u32 길이, u16 flag, u16 first/last/count, u16 em, bbox 4개. flag bit0 이면 코드 목록이
+  // 뒤따르며(0xffff = 표준 순서) 그다음이 glyph offset 표다. 다음 블록은 길이만큼 뒤에 있다.
+  let block = outlineAt + 14;
+  for (let blockIndex = 0; blockIndex < blockCount; blockIndex++) {
+    r.check(block, 22);
+    const length = r.u32(block);
+    const flag = r.u16(block + 4);
+    const first = r.u16(block + 6);
+    const last = r.u16(block + 8);
+    const count = r.u16(block + 10);
+    const blockEnd = blockIndex + 1 < blockCount ? block + length : outlineEnd;
+    if (blockEnd > outlineEnd || blockEnd <= block || last < first) throw new Error('잘못된 HFT 테이블 길이입니다.');
+    let offsets = block + 22;
+    let codes: number[] | null = null;
+    if (flag & 1) {
+      const listBytes = r.u16(block + 22);
+      const kind = r.u16(block + 24);
+      if (kind !== 0xffff) {
+        if (listBytes !== 4 + count * 2) throw new Error('잘못된 HFT 코드 목록입니다.');
+        codes = Array.from({ length: count }, (_, i) => r.u16(block + 26 + i * 2));
+      } else if (listBytes !== 4) throw new Error('잘못된 HFT 코드 목록입니다.');
+      offsets += listBytes;
+    } else if (last - first + 1 !== count) {
+      throw new Error('지원하지 않는 HFT 문자표 또는 outline 형식입니다.');
+    }
+    if (firstCode < 0) firstCode = first;
+    const base = offsets - 2;
+    r.check(offsets, count * 4);
+    let corrupt = 0;
+    for (let index = 0; index < count; index++) {
+      const start = base + r.u32(offsets + index * 4);
+      const end = index + 1 < count ? base + r.u32(offsets + (index + 1) * 4) : blockEnd;
+      // 빈틈 없이 붙은 파일은 첫 기록의 머리 2 byte가 마지막 offset의 상위 word(0)와 겹친다.
+      if (start < offsets + count * 4 - 2 || end < start || end > blockEnd) throw new Error('잘못된 HFT glyph 순서입니다.');
+      r.check(start, end - start);
+      r.check(start, 11);
+      const code = codes ? codes[index] : first + index;
+      const advance = advanceOf(code);
+      if (advance > 32767) throw new Error('HFT advance 범위를 벗어났습니다.');
+      // 기록 머리: 수식·영문(flag bit4 = 0)은 12 byte, 본문 한글·한자·기호는 u16 flag + u16 길이 4 byte.
+      // 빈 glyph는 짧은 기록을 쓰며, 일부 오래된 space에는 미완성 moveto가 있다.
+      const short = (flag & 0x10) !== 0;
+      const lengthAt = short ? start + 2 : start + 10;
+      const empty = short ? end - start <= 4 : end - start <= 12 || r.u16(start + 6) === 0;
+      let outline: Outline = [];
+      // 본문 영문 bank의 space도 미완성 moveto만 담는다. 그릴 것이 없으니 읽지 않는다.
+      if (!empty && !(first < 0x100 && code === 0x20)) {
+        const glyphLength = r.u16(lengthAt);
+        if (glyphLength < 2 || lengthAt + glyphLength > end) throw new Error('잘못된 HFT glyph 길이입니다.');
+        try {
+          outline = decodeOutline(bytes.subarray(lengthAt + 2, lengthAt + glyphLength), baseline);
+        } catch (error) {
+          // 수천 자짜리 본문 서체의 손상 glyph 몇 개는 fallback에 맡긴다. 1%를 넘으면 파일을 거절한다.
+          if (++corrupt > Math.floor(count / 100)) throw error;
+        }
+      }
+      const unicodes = equationFamily
+        ? equationUnicodes(code)
+        : hftUnicodes(first, code, codes ? -1 : index);
+      glyphs.push({ unicodes, advance, outline });
+    }
+    block += length;
+  }
   const family = equationFamily
-    ? first === 0x500 ? 'HSUSFL' : first === 0x2200 ? 'HSUSSP' : italic ? 'HSUSRI' : 'HSUSR'
+    ? firstCode === 0x500 ? 'HSUSFL' : firstCode === 0x2200 ? 'HSUSSP' : italic ? 'HSUSRI' : 'HSUSR'
     : filename.replace(/^.*[\\/]/, '').replace(/\.hft$/i, '').trim() || 'Imported HFT';
   const copyright = new TextDecoder('ascii').decode(bytes.subarray(0xcc, 0x10c)).replace(/\0.*$/s, '').trim();
   return { family, italic, units, baseline, copyright, glyphs };
+}
+
+/** 수식 서체: 기호 bank는 Unicode 그대로, Greek bank는 Unicode Greek + 0x190 이고 나머지는 PUA로 보존한다. */
+function equationUnicodes(code: number): number[] {
+  if (code < 0x500 || code >= 0x2200) return [code];
+  if (code > 0x5ff) return [];
+  const greek = (code >= 0x521 && code <= 0x559) || (code >= 0x560 && code <= 0x566);
+  return greek ? [code - 0x190, 0xe000 + code - 0x500] : [0xe000 + code - 0x500];
+}
+
+/**
+ * 본문 HFT의 문자 bank. 한글·한자는 KS X 1001 행(94자) 순서, 기호는 행마다 96칸
+ * (0xA0~0xFF, 양 끝 빈칸) 순서이고, 코드 목록이 있는 한글 블록은 Johab 코드다.
+ * 영문 bank는 ASCII만 확실하므로 그 밖의 한컴 전용 코드는 대응하지 않는다.
+ */
+function hftUnicodes(bankFirst: number, code: number, implicitIndex: number): number[] {
+  if (bankFirst < 0x100) return code >= 0x20 && code <= 0x7e ? [code] : [];
+  if (bankFirst >= 0x8000) {
+    if (implicitIndex < 0) return johabUnicodes(code);
+    return implicitIndex < 25 * 94 ? ksx1001(0xb0 + Math.floor(implicitIndex / 94), 0xa1 + implicitIndex % 94) : [];
+  }
+  if (bankFirst >= 0x4000 && bankFirst < 0x8000) {
+    const i = code - 0x4000;
+    return i >= 0 && i < 52 * 94 ? ksx1001(0xca + Math.floor(i / 94), 0xa1 + i % 94) : [];
+  }
+  if (bankFirst >= 0x3400 && bankFirst < 0x4000) {
+    const i = code - 0x3400;
+    const row = Math.floor(i / 96);
+    return i >= 0 && row < 12 ? ksx1001(0xa1 + row, 0xa0 + i % 96) : [];
+  }
+  return [];
+}
+
+let eucKr: TextDecoder | null | undefined;
+function ksx1001(lead: number, trail: number): number[] {
+  // 0xA0·0xFF 칸이나 확장 완성형 영역은 KS X 1001 문자가 아니다.
+  if (trail < 0xa1 || trail > 0xfe || lead < 0xa1 || lead > 0xfe) return [];
+  if (eucKr === undefined) {
+    try { eucKr = new TextDecoder('euc-kr'); } catch { eucKr = null; }
+  }
+  if (!eucKr) return [];
+  const text = eucKr.decode(Uint8Array.of(lead, trail));
+  const code = text.codePointAt(0);
+  if (code === undefined || code === 0xfffd || text.length !== 1) return [];
+  const normalized = text.normalize('NFC').codePointAt(0)!;
+  // 한자 호환 영역(U+F900~)은 문서가 통합 한자로 저장하는 경우도 함께 받는다.
+  return normalized !== code ? [code, normalized] : [code];
+}
+
+const JOHAB_CHO = [-1, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18];
+const JOHAB_JUNG = [-1, -1, -1, 0, 1, 2, 3, 4, -1, -1, 5, 6, 7, 8, 9, 10, -1, -1, 11, 12, 13, 14, 15, 16, -1, -1, 17, 18, 19, 20];
+const JOHAB_JONG = [-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, -1, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27];
+// 첫소리·받침 인덱스 → 호환 자모(U+3131~).
+const CHO_COMPAT = [0x3131, 0x3132, 0x3134, 0x3137, 0x3138, 0x3139, 0x3141, 0x3142, 0x3143, 0x3145, 0x3146,
+  0x3147, 0x3148, 0x3149, 0x314a, 0x314b, 0x314c, 0x314d, 0x314e];
+const JONG_COMPAT = [0, 0x3131, 0x3132, 0x3133, 0x3134, 0x3135, 0x3136, 0x3137, 0x3139, 0x313a, 0x313b, 0x313c,
+  0x313d, 0x313e, 0x313f, 0x3140, 0x3141, 0x3142, 0x3144, 0x3145, 0x3146, 0x3147, 0x3148, 0x314a, 0x314b,
+  0x314c, 0x314d, 0x314e];
+
+/** 상용 조합형(Johab) 코드 → 완성형 음절 또는 호환 자모. 채움 코드만 있으면 대응하지 않는다. */
+function johabUnicodes(code: number): number[] {
+  if (!(code & 0x8000)) return [];
+  const cho = JOHAB_CHO[(code >> 10) & 31] ?? -1;
+  const jung = JOHAB_JUNG[(code >> 5) & 31] ?? -1;
+  const jong = JOHAB_JONG[code & 31] ?? -1;
+  const choFill = ((code >> 10) & 31) === 1;
+  const jungFill = ((code >> 5) & 31) === 2;
+  if (cho >= 0 && jung >= 0 && jong >= 0) return [0xac00 + (cho * 21 + jung) * 28 + jong];
+  if (choFill && jung >= 0 && jong === 0) return [0x314f + jung];
+  if (cho >= 0 && jungFill && jong === 0) return [CHO_COMPAT[cho]];
+  if (choFill && jungFill && jong > 0) return [JONG_COMPAT[jong]];
+  return [];
 }
 
 function decodeOutline(bytes: Uint8Array, baseline: number): Outline {
@@ -98,7 +279,8 @@ function decodeOutline(bytes: Uint8Array, baseline: number): Outline {
     const value = read();
     if (value >= 0x7c && value <= 0x7f) return (value - 0x7c) * 256 + 124 + read();
     if (value >= 0x81 && value <= 0x84) return -((0x84 - value) * 256 + 124 + read());
-    if (value === 0x80) throw new Error('지원하지 않는 HFT 좌표 형식입니다.');
+    // 0x80: 1147을 넘는 좌표(주로 한자 hint)는 뒤 2 byte가 little-endian i16이다.
+    if (value === 0x80) { const low = read(); const word = read() * 256 + low; return word > 32767 ? word - 65536 : word; }
     return value < 128 ? value : value - 256;
   };
   const point = (dx: number, dy: number): Point => {
@@ -167,33 +349,49 @@ function cffReal(n: number): number[] {
   nibbles.push(15); if (nibbles.length % 2) nibbles.push(15);
   return [30, ...Array.from({ length: nibbles.length / 2 }, (_, i) => nibbles[i * 2] * 16 + nibbles[i * 2 + 1])];
 }
-function cffIndex(items: number[][]): number[] {
-  if (!items.length) return [0, 0];
-  const offsets = [1];
-  for (const item of items) offsets.push(offsets.at(-1)! + item.length);
-  const size = offsets.at(-1)! <= 0xffff ? 2 : 4;
-  return [...u16(items.length), size, ...offsets.flatMap(n => size === 2 ? u16(n) : u32(n)), ...items.flat()];
+/** 본문 서체는 glyph가 수천 개라 CFF 조각을 number[] 대신 typed array로 이어 붙인다. */
+function concat(parts: ReadonlyArray<ArrayLike<number>>): Uint8Array {
+  let length = 0;
+  for (const part of parts) length += part.length;
+  const out = new Uint8Array(length);
+  let at = 0;
+  for (const part of parts) { out.set(part, at); at += part.length; }
+  return out;
 }
-function charString(glyph: Glyph): number[] {
+function cffIndex(items: ReadonlyArray<ArrayLike<number>>): Uint8Array {
+  if (!items.length) return Uint8Array.of(0, 0);
+  let total = 1;
+  for (const item of items) total += item.length;
+  const size = total <= 0xffff ? 2 : 4;
+  const head = new Uint8Array(3 + (items.length + 1) * size);
+  set16(head, 0, items.length); head[2] = size;
+  let offset = 1;
+  const writeOffset = (i: number): void => { if (size === 2) set16(head, 3 + i * 2, offset); else set32(head, 3 + i * 4, offset); };
+  items.forEach((item, i) => { writeOffset(i); offset += item.length; });
+  writeOffset(items.length);
+  return concat([head, ...items]);
+}
+function charString(glyph: Glyph): Uint8Array {
   const out = cffInteger(glyph.advance);
   let x = 0; let y = 0;
   for (const command of glyph.outline) {
     if (command.op === 'close') continue; // Type 2 closes each contour at the next move/endchar.
     for (const [nx, ny] of command.points) {
       const dx = nx - x; const dy = ny - y;
-      if ([dx, dy].some(n => n < -32768 || n > 32767)) throw new Error('HFT 상대 좌표 범위를 벗어났습니다.');
+      if (dx < -32768 || dx > 32767 || dy < -32768 || dy > 32767) throw new Error('HFT 상대 좌표 범위를 벗어났습니다.');
       out.push(...cffInteger(dx), ...cffInteger(dy)); x = nx; y = ny;
     }
     out.push(command.op === 'move' ? 21 : command.op === 'line' ? 5 : 8);
   }
   out.push(14);
-  return out;
+  return Uint8Array.from(out);
 }
 function cffTable(font: HftFont, bbox: number[]): Uint8Array {
   const postscript = font.family.replace(/[^A-Za-z0-9_-]/g, '') || 'ImportedHFT';
   const names = cffIndex([ascii(postscript)]);
-  const strings = cffIndex(font.glyphs.map(g => ascii(`hft${g.code.toString(16)}`)));
-  const charset = [0, ...font.glyphs.flatMap((_, i) => u16(391 + i))];
+  const strings = cffIndex(font.glyphs.map((_, i) => ascii(`hft${i.toString(16)}`)));
+  const charset = new Uint8Array(1 + font.glyphs.length * 2);
+  font.glyphs.forEach((_, i) => set16(charset, 1 + i * 2, 391 + i));
   const chars = cffIndex([[14], ...font.glyphs.map(charString)]);
   // 고정 32-bit DICT offset으로 INDEX 크기가 offset 값에 의존하지 않는다.
   const dict = (charsetAt: number, charsAt: number, privateAt: number): number[] => [
@@ -204,28 +402,27 @@ function cffTable(font: HftFont, bbox: number[]): Uint8Array {
   ];
   const prefixSize = 4 + names.length + cffIndex([dict(0, 0, 0)]).length + strings.length + 2;
   const top = cffIndex([dict(prefixSize, prefixSize + charset.length, prefixSize + charset.length + chars.length)]);
-  return Uint8Array.from([1, 0, 4, 4, ...names, ...top, ...strings, 0, 0, ...charset, ...chars]);
+  return concat([[1, 0, 4, 4], names, top, strings, [0, 0], charset, chars]);
 }
 
 function unicodeEntries(glyphs: Glyph[]): Array<[number, number]> {
   const entries: Array<[number, number]> = [];
+  const seen = new Set<number>();
   glyphs.forEach((glyph, i) => {
-    const code = glyph.code;
-    const drawable = glyph.outline.some(command => command.op === 'line' || command.op === 'curve');
-    if (!drawable && !(code === 0x20 && glyph.advance > 0)) return;
-    if (code < 0x500 || code >= 0x2200) entries.push([code, i + 1]);
-    else {
-      // HFT Greek bank: Unicode Greek block + 0x190. 그 밖의 역사적 glyph는 PUA로 보존한다.
-      if ((code >= 0x521 && code <= 0x559) || (code >= 0x560 && code <= 0x566)) entries.push([code - 0x190, i + 1]);
-      entries.push([0xe000 + code - 0x500, i + 1]);
-    }
+    // 빈 glyph는 fallback 글꼴에 넘긴다. 폭이 있는 space만 예외다.
+    if (!drawable(glyph) && !(glyph.unicodes.includes(0x20) && glyph.advance > 0)) return;
+    // 한자 중복 음(호환 한자)의 통합 한자 별칭이 앞 glyph와 겹치면 앞 glyph가 이긴다.
+    for (const code of glyph.unicodes) if (!seen.has(code)) { seen.add(code); entries.push([code, i + 1]); }
   });
   return entries.sort((a, b) => a[0] - b[0]);
 }
 function cmapTable(glyphs: Glyph[]): Uint8Array {
-  const groups = unicodeEntries(glyphs).map(([code, gid]) => [...u32(code), ...u32(code), ...u32(gid)]).flat();
-  const subtable = [0, 12, 0, 0, ...u32(16 + groups.length), 0, 0, 0, 0, ...u32(groups.length / 12), ...groups];
-  return Uint8Array.from([0, 0, 0, 1, 0, 3, 0, 10, ...u32(12), ...subtable]);
+  const entries = unicodeEntries(glyphs);
+  const out = new Uint8Array(12 + 16 + entries.length * 12);
+  out.set([0, 0, 0, 1, 0, 3, 0, 10]); set32(out, 8, 12);
+  set16(out, 12, 12); set32(out, 16, 16 + entries.length * 12); set32(out, 24, entries.length);
+  entries.forEach(([code, gid], i) => { set32(out, 28 + i * 12, code); set32(out, 32 + i * 12, code); set32(out, 36 + i * 12, gid); });
+  return out;
 }
 function nameTable(font: HftFont): Uint8Array {
   const style = font.italic ? 'Italic' : 'Regular';
@@ -240,12 +437,19 @@ function nameTable(font: HftFont): Uint8Array {
   return Uint8Array.from([0, 0, ...u16(names.length), ...u16(6 + records.length), ...records, ...data]);
 }
 function encodeOpenType(font: HftFont): Uint8Array {
-  const points = font.glyphs.flatMap(g => g.outline.flatMap(c => c.points));
-  const bbox = points.length ? [Math.min(...points.map(p => p[0])), Math.min(...points.map(p => p[1])),
-    Math.max(...points.map(p => p[0])), Math.max(...points.map(p => p[1]))] : [0, 0, 0, 0];
+  // 합친 본문 서체는 좌표가 수십만 개라 spread 인자로 min/max를 구하지 않는다.
+  let bbox = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const glyph of font.glyphs) {
+    for (const command of glyph.outline) {
+      for (const [x, y] of command.points) {
+        bbox = [Math.min(bbox[0], x), Math.min(bbox[1], y), Math.max(bbox[2], x), Math.max(bbox[3], y)];
+      }
+    }
+  }
+  if (!Number.isFinite(bbox[0])) bbox = [0, 0, 0, 0];
   const ascent = font.units - font.baseline; const descent = -font.baseline;
   const count = font.glyphs.length + 1;
-  const maxAdvance = Math.max(...font.glyphs.map(g => g.advance));
+  const maxAdvance = font.glyphs.reduce((max, g) => Math.max(max, g.advance), 0);
   const head = new Uint8Array(54); set32(head, 0, 0x00010000); set32(head, 4, 0x00010000);
   set32(head, 12, 0x5f0f3cf5); set16(head, 16, 3); set16(head, 18, font.units);
   bbox.forEach((v, i) => set16(head, 36 + i * 2, v)); set16(head, 44, font.italic ? 2 : 0); set16(head, 46, 8);
@@ -253,13 +457,15 @@ function encodeOpenType(font: HftFont): Uint8Array {
   set16(hhea, 4, ascent); set16(hhea, 6, descent); set16(hhea, 10, maxAdvance);
   set16(hhea, 12, bbox[0]); set16(hhea, 14, Math.min(0, maxAdvance - bbox[2])); set16(hhea, 16, bbox[2]);
   set16(hhea, 18, 1); set16(hhea, 34, count);
-  const hmtx = Uint8Array.from([0, 0, 0, 0, ...font.glyphs.flatMap(g => {
-    const xs = g.outline.flatMap(c => c.points.map(p => p[0]));
-    return [...u16(g.advance), ...u16(xs.length ? Math.min(...xs) : 0)];
-  })]);
+  const hmtx = new Uint8Array(count * 4);
+  font.glyphs.forEach((g, i) => {
+    let lsb = Infinity;
+    for (const command of g.outline) for (const [x] of command.points) lsb = Math.min(lsb, x);
+    set16(hmtx, 4 + i * 4, g.advance); set16(hmtx, 6 + i * 4, Number.isFinite(lsb) ? lsb : 0);
+  });
   const os2 = new Uint8Array(96); set16(os2, 0, 4); set16(os2, 2, Math.round(maxAdvance / 2));
   set16(os2, 4, 400); set16(os2, 6, 5); os2.set(ascii('RHWP'), 58); set16(os2, 62, font.italic ? 1 : 64);
-  const codes = unicodeEntries(font.glyphs).map(e => e[0]); set16(os2, 64, codes.length ? Math.min(...codes) : 0); set16(os2, 66, codes.length ? Math.max(...codes) : 0);
+  const codes = unicodeEntries(font.glyphs).map(e => e[0]); set16(os2, 64, codes[0] ?? 0); set16(os2, 66, Math.min(codes.at(-1) ?? 0, 0xffff));
   set16(os2, 68, ascent); set16(os2, 70, descent); set16(os2, 74, Math.max(ascent, bbox[3]));
   set16(os2, 76, Math.max(-descent, -bbox[1])); set16(os2, 86, Math.round(font.units * .5));
   set16(os2, 88, Math.round(font.units * .7)); set16(os2, 92, 32); set16(os2, 94, 1);
