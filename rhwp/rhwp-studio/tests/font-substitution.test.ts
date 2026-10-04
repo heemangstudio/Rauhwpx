@@ -80,3 +80,14 @@ test('수식 글꼴의 변수와 숫자는 본문 고딕 fallback으로 치환�
   });
   assert.match(installed, /^"HYhwpEQ", "Times New Roman"/);
 });
+
+test('Hollyhock는 HFT 원본 이름과 Helvetica 쌍을 유지한다', () => {
+  for (const altType of [0, 1, 2]) {
+    assert.equal(resolveFont('HCI Hollyhock', altType, 1), 'HCI Hollyhock');
+    assert.match(fontFamilyChainForDisplay('HCI Hollyhock', altType, 1), /^"Helvetica", "Arial",/);
+  }
+  const chain = fontFamilyWithFallback('HCI Hollyhock');
+  assert.match(chain, /^"HCI Hollyhock", "Helvetica", "Arial",/);
+  assert.match(chain, /sans-serif$/);
+  assert.doesNotMatch(chain, /"HY중고딕"|"Noto Serif KR"/);
+});

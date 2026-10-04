@@ -200,6 +200,14 @@ export function resolveRegisteredFontFaceIdentity(
   };
 }
 
+/** 원본 이름으로 다른 실제 서체를 등록하는 CSS 별칭 목록. */
+export function getWebFontSubstituteFamilies(): readonly string[] {
+  return FONT_LIST.filter(entry => {
+    const loadedFamily = FONT_FILE_FACE_NAMES.get(entry.file) ?? entry.name;
+    return normalizeFontFamily(loadedFamily) !== normalizeFontFamily(entry.name);
+  }).map(entry => entry.name);
+}
+
 /** 초기 렌더링에 필수인 폰트 (대부분의 HWP 문서 기본 서체) */
 // 수식 글꼴은 DocInfo의 일반 font_faces 목록에 없으므로 첫 Canvas paint 전에
 // 기본 수식 fallback도 준비한다. 뒤늦은 CSS 로드는 이미 그린 canvas를 갱신하지 않는다.

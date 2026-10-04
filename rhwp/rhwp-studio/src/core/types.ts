@@ -1097,15 +1097,19 @@ export interface LayerPageBackgroundOp {
   bbox: LayerBounds;
   backgroundColor?: string;
   gradient?: LayerGradientFill;
+  image?: { fillMode: string; base64: string };
   borderColor?: string;
   borderWidth?: number;
 }
 
 export interface LayerTextStyle {
   fontFamily?: string;
+  fontSubst?: string;
   fontSize?: number;
   color?: string;
   bold?: boolean;
+  /** Regular 윤곽선을 한컴처럼 StrokeAndFill로 진하게 그릴 때의 획 너비. */
+  fauxBoldStrokeWidth?: number;
   italic?: boolean;
   ratio?: number;
   underline?: string;
@@ -1125,6 +1129,10 @@ export interface LayerTextStyle {
   strikeColor?: string;
   shadeColor?: string;
   emphasisDot?: number;
+  /** 원본 HFT 글꼴 이름. 등록된 HFT 윤곽선이 있으면 그 모양으로 그린다. */
+  hftFamily?: string;
+  /** 글자 위치 (글자 크기 비율, 양수 = 아래로). 글리프만 옮긴다. */
+  charOffset?: number;
 }
 
 export interface LayerTextLegacyVisuals {
@@ -1166,6 +1174,8 @@ export interface LayerTextRunOp {
   baseline?: number;
   rotation?: number;
   isVertical?: boolean;
+  /** 엔진이 계산한 세로쓰기 HFT 굵은 사본의 run-local 위치와 두께. */
+  hftVerticalBoldCopy?: { offsetY: number; emboldenX: number; offsetX?: number; rotation?: number };
   style?: LayerTextStyle;
   placement?: { runToPage?: LayerAffineTransform; baselineY?: number };
   positions?: number[];
@@ -1189,6 +1199,8 @@ export interface LayerFootnoteMarkerOp {
   text: string;
   fontFamily?: string;
   fontSize?: number;
+  baseline?: number;
+  bold?: boolean;
   color?: string;
 }
 
@@ -1292,6 +1304,14 @@ export interface LayerImageOp {
   brightness?: number;
   contrast?: number;
   opacity?: number;
+  shadow?: {
+    color: string;
+    alpha: number;
+    blurSigma: number;
+    nominalHeightPt?: number;
+    offsetX: number;
+    offsetY: number;
+  };
   bakedWatermark?: boolean;
   wrap?: 'behindText' | 'inFrontOfText' | string;
   transform?: LayerPathTransform;
@@ -1359,7 +1379,7 @@ export type LayerEquationLayoutKind =
   | { type: 'subscript'; base: LayerEquationLayoutBox; sub: LayerEquationLayoutBox }
   | { type: 'subSup'; base: LayerEquationLayoutBox; sub: LayerEquationLayoutBox; sup: LayerEquationLayoutBox }
   | { type: 'bigOp'; symbol: string; sub?: LayerEquationLayoutBox; sup?: LayerEquationLayoutBox }
-  | { type: 'limit'; isUpper: boolean; sub?: LayerEquationLayoutBox }
+  | { type: 'limit'; isUpper: boolean; sub?: LayerEquationLayoutBox; nameX?: number; nameY?: number }
   | { type: 'matrix'; style: LayerEquationMatrixStyle; cells: LayerEquationLayoutBox[][] }
   | { type: 'rel'; arrow: LayerEquationLayoutBox; over: LayerEquationLayoutBox; under?: LayerEquationLayoutBox }
   | { type: 'eqAlign'; rows: Array<{ left: LayerEquationLayoutBox; right: LayerEquationLayoutBox }> }

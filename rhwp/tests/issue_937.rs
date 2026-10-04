@@ -1,8 +1,5 @@
-//! Issue #937: 복학원서 서명란 `(인)` PUA 기호 렌더링 불일치.
-//!
-//! `samples/복학원서.hwp` 1페이지 서명란은 한컴/PDF 기준 `(인)` 으로 표시된다.
-//! 원본 HWP5 IR 에서는 이 기호가 한컴 PUA `U+F012B` 1글자로 저장되어 있으므로,
-//! 원문 문자는 보존하되 렌더링/측정 경로에서 표시 문자열 `(인)` 으로 치환해야 한다.
+//! 한컴 날인 기호는 원형 인 글리프 U+F012B 와 한 글자 폭을 유지한다.
+//! 원문 PUA 를 `(인)` 세 글자로 확장하면 모양과 뒤따르는 서명란 위치가 달라진다.
 
 use rhwp::model::control::Control;
 use rhwp::model::paragraph::Paragraph;
@@ -112,8 +109,8 @@ fn issue_937_f012b_display_text_should_be_signature_seal() {
     let display = pua_to_display_text('\u{F012B}');
     assert_eq!(
         display.as_deref(),
-        Some("(인)"),
-        "U+F012B 한컴 PUA 서명/날인 기호는 렌더링 시 `(인)` 으로 표시되어야 함",
+        None,
+        "U+F012B 날인 기호는 원문 글리프를 유지해야 함",
     );
 }
 
@@ -172,15 +169,13 @@ fn issue_937_svg_renders_f012b_as_signature_seal() {
     let text = svg_text_content(&svg);
 
     assert!(
-        text.contains("(인)(Signature)"),
-        "복학원서 1페이지 SVG는 서명란 기호를 `(인)` 으로 렌더링해야 함",
+        text.contains("\u{F012B}(Signature)"),
+        "복학원서 1페이지 SVG는 원문 날인 글리프와 서명란을 유지해야 함",
     );
     assert!(
-        !svg.contains('\u{F012B}'),
-        "복학원서 1페이지 SVG에 원본 PUA U+F012B가 그대로 출력되면 안 됨",
+        !text.contains("(인)"),
+        "날인 글리프를 세 글자 표시 문자열로 확장하면 안 됨",
     );
-    assert!(
-        !svg.contains('\u{F081C}'),
-        "복학원서 1페이지 SVG에 TAC filler U+F081C가 글리프로 출력되면 안 됨",
-    );
+    // 접수증 점선은 원문 F081C 글리프를 별도로 그린다. 일반 텍스트의 filler
+    // 제거는 위의 expand_pua_render_text 테스트가 검증한다.
 }

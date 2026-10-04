@@ -609,7 +609,7 @@ fn test_page_background_image_zoom_contains() {
     let output = renderer.output();
     assert!(
         output.contains(
-            "<image x=\"10\" y=\"20\" width=\"100\" height=\"50\" preserveAspectRatio=\"xMidYMid meet\""
+            "<svg x=\"10\" y=\"20\" width=\"100\" height=\"50\" viewBox=\"0 0 100 50\" overflow=\"hidden\"><image x=\"25\" y=\"0\" width=\"50\" height=\"50\" preserveAspectRatio=\"none\""
         ),
         "쪽 배경 Zoom은 contain이다: {output}"
     );
@@ -631,7 +631,7 @@ fn test_image_node_none_contains_in_bbox() {
     let output = render_image_node_fill_svg(ImageFillMode::None);
     assert!(
         output.contains(
-            "<image x=\"10\" y=\"20\" width=\"100\" height=\"50\" preserveAspectRatio=\"xMidYMid meet\""
+            "<svg x=\"10\" y=\"20\" width=\"100\" height=\"50\" viewBox=\"0 0 100 50\" overflow=\"hidden\"><image x=\"25\" y=\"0\" width=\"50\" height=\"50\" preserveAspectRatio=\"none\""
         ),
         "ImageNode None은 상자 contain이다: {output}"
     );
@@ -650,7 +650,7 @@ fn test_image_node_zoom_contains_in_bbox() {
     let output = render_image_node_fill_svg(ImageFillMode::Zoom);
     assert!(
         output.contains(
-            "<image x=\"10\" y=\"20\" width=\"100\" height=\"50\" preserveAspectRatio=\"xMidYMid meet\""
+            "<svg x=\"10\" y=\"20\" width=\"100\" height=\"50\" viewBox=\"0 0 100 50\" overflow=\"hidden\"><image x=\"25\" y=\"0\" width=\"50\" height=\"50\" preserveAspectRatio=\"none\""
         ),
         "ImageNode Zoom은 상자 contain이다: {output}"
     );
@@ -695,91 +695,49 @@ fn test_page_background_image_center_uses_original_image_size() {
     );
 }
 
+/// 한컴은 밝기·대비가 있는 그림을 보정한 픽셀로 그리고 반투명을 더하지 않는다
+/// (한컴 Mac PDF 실측). SVG 는 구운 PNG 만 내보내고 필터·opacity 를 겹치지 않는다.
 #[test]
-fn test_page_background_image_realpic_watermark_preserves_color_with_opacity() {
+fn test_page_background_image_watermark_is_baked_without_opacity() {
     let png = bmp_bytes_to_png_bytes(&make_minimal_bmp_2x2()).expect("BMP->PNG 변환 실패");
-    let image = PageBackgroundImage {
-        data: png.into(),
-        fill_mode: ImageFillMode::Center,
-        brightness: -50,
-        contrast: 70,
-        effect: crate::model::image::ImageEffect::RealPic,
-    };
-    let bbox = BoundingBox::new(10.0, 20.0, 100.0, 50.0);
-    let mut renderer = SvgRenderer::new();
-    renderer.begin_page(200.0, 100.0);
+    for effect in [
+        crate::model::image::ImageEffect::RealPic,
+        crate::model::image::ImageEffect::GrayScale,
+    ] {
+        let image = PageBackgroundImage {
+            data: png.clone().into(),
+            fill_mode: ImageFillMode::Center,
+            brightness: 70,
+            contrast: -50,
+            effect,
+        };
+        let bbox = BoundingBox::new(10.0, 20.0, 100.0, 50.0);
+        let mut renderer = SvgRenderer::new();
+        renderer.begin_page(200.0, 100.0);
 
-    renderer.render_page_background_image(&image, &bbox);
+        renderer.render_page_background_image(&image, &bbox);
 
-    let output = renderer.output();
-    assert!(
-        !output.contains("rhwp-img-bc-b-50c70"),
-        "RealPic PageBackground watermark should preserve source color without brightness/contrast filter: {output}"
-    );
-    assert!(
-        !output.contains("rhwp-realpic-watermark-tone"),
-        "RealPic PageBackground watermark should bake the shared tone transform into image pixels: {output}"
-    );
-    assert!(
-        output.contains("data:image/png;base64,"),
-        "RealPic PageBackground watermark should render as a tone-baked PNG: {output}"
-    );
-    assert!(
-        output.contains(&format!(
-            "<g opacity=\"{}\">",
-            REAL_PICTURE_WATERMARK_PAGE_OPACITY
-        )),
-        "PageBackground watermark preset should apply page watermark opacity: {output}"
-    );
-    assert!(
-        output.contains(
-            "<g clip-path=\"url(#fill-clip-1)\"><image x=\"59\" y=\"44\" width=\"2\" height=\"2\" preserveAspectRatio=\"none\""
-        ),
-        "PageBackground watermark should still preserve Center placement: {output}"
-    );
+        let output = renderer.output();
+        assert!(output.contains("data:image/png;base64,"), "{output}");
+        assert!(!output.contains("<g opacity="), "{output}");
+        assert!(!output.contains("rhwp-img-bc-"), "{output}");
+        assert!(!output.contains("rhwp-img-grayscale"), "{output}");
+        assert!(
+            output.contains(
+                "<g clip-path=\"url(#fill-clip-1)\"><image x=\"59\" y=\"44\" width=\"2\" height=\"2\" preserveAspectRatio=\"none\""
+            ),
+            "PageBackground watermark should still preserve Center placement: {output}"
+        );
+    }
 }
 
 #[test]
-fn test_page_background_image_non_realpic_watermark_uses_legacy_opacity() {
-    let png = bmp_bytes_to_png_bytes(&make_minimal_bmp_2x2()).expect("BMP->PNG 변환 실패");
-    let image = PageBackgroundImage {
-        data: png.into(),
-        fill_mode: ImageFillMode::FitToSize,
-        brightness: -50,
-        contrast: 70,
-        effect: crate::model::image::ImageEffect::GrayScale,
-    };
-    let bbox = BoundingBox::new(10.0, 20.0, 100.0, 50.0);
-    let mut renderer = SvgRenderer::new();
-    renderer.begin_page(200.0, 100.0);
-
-    renderer.render_page_background_image(&image, &bbox);
-
-    let output = renderer.output();
-    assert!(
-        output.contains(&format!(
-            "<g opacity=\"{}\">",
-            LEGACY_IMAGE_WATERMARK_OPACITY
-        )),
-        "non-RealPic PageBackground watermark should apply legacy watermark opacity: {output}"
-    );
-    assert!(
-        output.contains("rhwp-img-grayscale"),
-        "non-RealPic PageBackground watermark should keep the image effect filter: {output}"
-    );
-    assert!(
-        output.contains("rhwp-img-bc-b-50c70"),
-        "non-RealPic PageBackground watermark should keep the brightness/contrast filter: {output}"
-    );
-}
-
-#[test]
-fn test_background_image_realpic_watermark_fill_preserves_color_with_opacity() {
+fn test_image_node_watermark_is_baked_without_opacity() {
     let png = bmp_bytes_to_png_bytes(&make_minimal_bmp_2x2()).expect("BMP->PNG 변환 실패");
     let mut image = ImageNode::new(1, Some(png));
     image.fill_mode = Some(ImageFillMode::FitToSize);
-    image.brightness = -50;
-    image.contrast = 70;
+    image.brightness = 70;
+    image.contrast = -50;
     image.effect = crate::model::image::ImageEffect::RealPic;
     let bbox = BoundingBox::new(10.0, 20.0, 100.0, 50.0);
     let mut renderer = SvgRenderer::new();
@@ -788,21 +746,9 @@ fn test_background_image_realpic_watermark_fill_preserves_color_with_opacity() {
     renderer.render_image_node(&image, &bbox);
 
     let output = renderer.output();
-    assert!(
-        !output.contains("rhwp-img-bc-b-50c70"),
-        "RealPic background watermark fill should preserve source color without brightness/contrast filter: {output}"
-    );
-    assert!(
-        !output.contains("rhwp-realpic-watermark-tone"),
-        "RealPic background watermark fill should bake the shared tone transform into image pixels: {output}"
-    );
-    assert!(
-        output.contains(&format!(
-            "<g opacity=\"{}\">",
-            REAL_PICTURE_WATERMARK_FILL_OPACITY
-        )),
-        "RealPic background watermark fill should apply fill watermark opacity: {output}"
-    );
+    assert!(output.contains("data:image/png;base64,"), "{output}");
+    assert!(!output.contains("<g opacity="), "{output}");
+    assert!(!output.contains("rhwp-img-bc-"), "{output}");
 }
 
 #[test]
@@ -850,7 +796,7 @@ fn test_brightness_contrast_filter_pure_brightness() {
     );
 }
 
-/// 순수 대비 (b=0, c=50) → slope=1.5, intercept=-0.25
+/// 순수 대비 (b=0, c=50) → slope=1.5, 한컴 기준값 128/255 로 intercept=-0.2510
 #[test]
 fn test_brightness_contrast_filter_pure_contrast() {
     let mut renderer = SvgRenderer::new();
@@ -861,8 +807,8 @@ fn test_brightness_contrast_filter_pure_contrast() {
         "slope expected 1.5000: {def}"
     );
     assert!(
-        def.contains("intercept=\"-0.2500\""),
-        "intercept expected -0.2500: {def}"
+        def.contains("intercept=\"-0.2510\""),
+        "intercept expected -0.2510: {def}"
     );
 }
 

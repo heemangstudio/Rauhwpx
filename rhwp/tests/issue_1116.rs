@@ -31,7 +31,19 @@ fn extract_dotted_horizontal_lines(svg: &str) -> Vec<(f64, f64, f64)> {
             break;
         };
         let attrs = &svg[start..start + close_rel];
-        if !attrs.contains("stroke-dasharray=\"0.1 3\"") {
+        // 점선 간격은 글자 크기를 따르므로 고정된 dash 문자열에 묶지 않는다.
+        let Some(dash_start) = attrs.find("stroke-dasharray=\"") else {
+            continue;
+        };
+        let dash = &attrs[dash_start + "stroke-dasharray=\"".len()..];
+        let Some(dash_end) = dash.find('"') else {
+            continue;
+        };
+        let pattern: Vec<f64> = dash[..dash_end]
+            .split_whitespace()
+            .filter_map(|part| part.parse().ok())
+            .collect();
+        if pattern.len() != 2 || pattern[0] > 0.1 || pattern[1] <= 0.0 {
             continue;
         }
         let Some(x1) = attr_f64(attrs, "x1") else {

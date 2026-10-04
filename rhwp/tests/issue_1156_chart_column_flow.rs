@@ -138,12 +138,16 @@ fn chart_moves_to_second_column_and_text_does_not_overlap() {
 }
 
 #[test]
-fn page_background_watermark_has_opacity() {
+fn page_background_watermark_is_baked_opaque() {
     let svg = render_page_svg("samples/hwpx/143E433F503322BD33.hwpx", 0);
-    // 페이지 배경 워터마크는 반투명 합성 — <g opacity="..."> 그룹으로 감쌈.
-    // PR #1019(#975) RealPic 톤 프리셋 사각지대로 opacity 가 빠졌던 회귀 가드.
+    // 한컴 Mac PDF 실측: 밝기 70·대비 -50 배경 워터마크는 보정한 픽셀을 반투명 없이 그린다.
+    // 구운 PNG 만 내보내고 opacity 그룹·밝기/대비 필터를 겹치지 않아야 한다.
     assert!(
-        svg.contains("<g opacity=\""),
-        "페이지 배경 워터마크 opacity 그룹이 없음 (워터마크 효과 회귀)"
+        svg.contains("data:image/png;base64,"),
+        "페이지 배경 워터마크가 구운 PNG 로 나오지 않음"
+    );
+    assert!(
+        !svg.contains("<g opacity=\"0.") && !svg.contains("rhwp-img-bc-"),
+        "페이지 배경 워터마크에 opacity/필터가 겹쳐 적용됨"
     );
 }

@@ -265,7 +265,7 @@ impl Paginator {
 
         // 머리말/꼬리말/쪽 번호 위치/새 번호 지정 컨트롤 수집
         let (hf_entries, page_number_pos, page_hides, new_page_numbers) =
-            Self::collect_header_footer_controls(paragraphs, section_index);
+            Self::collect_header_footer_controls(paragraphs, section_index, opts.hwpx_container);
 
         let col_count = column_def.column_count.max(1);
         let default_footnote_shape = crate::model::footnote::FootnoteShape::default();
@@ -343,6 +343,9 @@ impl Paginator {
             );
             let mut para_height =
                 measured.get_paragraph_height(para_idx).unwrap_or(0.0) + leading_topbottom_flow_px;
+            if crate::renderer::layout::is_empty_topbottom_picture_guide(para, false) {
+                para_height = 0.0;
+            }
 
             // 빈 줄 감추기 (구역 설정 bit 19)
             // 한컴 도움말: "각 쪽의 시작 부분에 빈 줄이 나오면, 두 개의 빈 줄까지는
@@ -564,7 +567,7 @@ impl Paginator {
             }
 
             if (force_page_break || para_style_break || variant_vpos_reset_break)
-                && !st.current_items.is_empty()
+                && (!st.current_items.is_empty() || st.current_column > 0)
             {
                 self.process_page_break(&mut st);
             }
@@ -1138,6 +1141,7 @@ impl Paginator {
     fn collect_header_footer_controls(
         paragraphs: &[Paragraph],
         section_index: usize,
+        hwpx_container: bool,
     ) -> (
         Vec<(usize, HeaderFooterRef, bool, HeaderFooterApply)>,
         Option<crate::model::control::PageNumberPos>,
@@ -1148,7 +1152,8 @@ impl Paginator {
         let mut page_number_pos: Option<crate::model::control::PageNumberPos> = None;
         // (para_index, PageHide) — 각 PageHide가 속한 문단 인덱스
         let mut page_hides: Vec<(usize, crate::model::control::PageHide)> = Vec::new();
-        let mut new_page_numbers: Vec<(usize, u16)> = Vec::new();
+        let new_page_numbers =
+            crate::renderer::page_number::collect_page_number_resets(paragraphs, hwpx_container);
 
         for (pi, para) in paragraphs.iter().enumerate() {
             for (ci, ctrl) in para.controls.iter().enumerate() {
@@ -1158,6 +1163,7 @@ impl Paginator {
                             para_index: pi,
                             control_index: ci,
                             source_section_index: section_index,
+                            cell_path: Vec::new(),
                         };
                         hf_entries.push((pi, r, true, h.apply_to));
                     }
@@ -1166,6 +1172,7 @@ impl Paginator {
                             para_index: pi,
                             control_index: ci,
                             source_section_index: section_index,
+                            cell_path: Vec::new(),
                         };
                         hf_entries.push((pi, r, false, f.apply_to));
                     }
@@ -1175,37 +1182,17 @@ impl Paginator {
                     Control::PageNumberPos(pnp) => {
                         page_number_pos = Some(pnp.clone());
                     }
-                    Control::NewNumber(nn) => {
-                        // 한컴 호환: 본문 텍스트가 없고 인라인 개체(표·그림)만 담은
-                        // 컨테이너 문단의 newNum 은 쪽 번호 재시작에 발화하지 않는다
-                        // (06-multi-table-001: [TAC 표][newNum] 만 담긴 문단이 2쪽
-                        // 맨 위에 오지만 한컴은 "- 2 -" 연속 번호를 출력).
-                        // 텍스트 있는 문단에 붙은 newNum 은 그 페이지에서 발화한다
-                        // (aift p7, 국립국어원 p3 정합 — Task #634/Issue #353).
-                        // 인라인 개체·필드 마커(0x02·0x03·0x04·0x12·FFFC 등)만으로
-                        // 채워진 문단은 텍스트가 없는 것으로 본다 — 파서가 표/제어
-                        // 컨트롤 자리에 0x0002 를 넣어 is_empty 가 깨지기 때문.
-                        let text_is_marker_only = para.text.chars().all(|c| {
-                            matches!(c, '\u{0000}'..='\u{0008}'
-                                | '\u{000B}' | '\u{000C}'
-                                | '\u{000E}'..='\u{001F}'
-                                | '\u{FFFC}')
-                        });
-                        let host_is_object_container = text_is_marker_only
-                            && para.controls.iter().any(|c| {
-                                matches!(
-                                    c,
-                                    Control::Table(_) | Control::Picture(_) | Control::Shape(_)
-                                )
-                            });
-                        if nn.number_type == crate::model::control::AutoNumberType::Page
-                            && !host_is_object_container
-                        {
-                            new_page_numbers.push((pi, nn.number));
-                        }
-                    }
                     Control::Table(table) => {
                         Self::collect_pagehide_in_table(table, pi, &mut page_hides);
+                        super::collect_cell_header_footer(
+                            table,
+                            pi,
+                            ci,
+                            section_index,
+                            &mut Vec::new(),
+                            &mut hf_entries,
+                            &mut page_number_pos,
+                        );
                     }
                     _ => {}
                 }

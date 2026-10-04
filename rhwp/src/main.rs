@@ -65,6 +65,7 @@ fn main() {
         Some("dump-records") => exit_with(dump_raw_records(&args[2..])),
         Some("ir-diff") => exit_with(ir_diff(&args[2..])),
         Some("hwpx-roundtrip") => rhwp::diagnostics::hwpx_roundtrip_batch::run(&args[2..]),
+        Some("lineseg-oracle") => rhwp::diagnostics::lineseg_oracle::run(&args[2..]),
         Some("hwp5-roundtrip") => rhwp::diagnostics::hwp5_roundtrip_batch::run(&args[2..]),
         Some("render-diff") => rhwp::diagnostics::render_geom_diff::run(&args[2..]),
         Some("bench") => rhwp::diagnostics::bench::run(&args[2..]),
@@ -616,6 +617,11 @@ fn show_capabilities(args: &[String]) -> i32 {
             "왕복/두 파일 렌더 기하 차이 검증",
         ),
         cmd("hwpx-roundtrip", "diagnostic", "HWPX 왕복 무손실 게이트"),
+        cmd(
+            "lineseg-oracle",
+            "diagnostic",
+            "한컴 저장 LINE_SEG 대비 줄 계산 채점",
+        ),
         cmd("hwp5-roundtrip", "diagnostic", "HWP5 왕복 무손실 게이트"),
         cmd("bench", "diagnostic", "성능 벤치마크"),
         cmd("hwp5-inventory", "diagnostic", "HWP5 레코드 인벤토리"),
@@ -859,6 +865,10 @@ fn print_help() {
     println!("      HWPX → IR → HWPX roundtrip 검증 (Task #1315 baseline)");
     println!("      재조립 .hwpx와 inventory.tsv를 출력 폴더(기본 output/poc/task1315)에 생성");
     println!("      --lineseg-report: 문단별 lineseg diff를 lineseg_diff.tsv로 산출 (#1380 측정)");
+    println!("  lineseg-oracle <파일 | --batch 폴더> [-o <출력폴더>] [--font-path <경로>] [-j N] [--json]");
+    println!("      한컴 저장 LINE_SEG 를 정답으로 누락 경로 줄 계산(reflow_line_segs)을 채점");
+    println!("      summary.json, mismatches.tsv, docs/*.json 출력 (기본 output/lineseg-oracle)");
+    println!("      RHWP_IGNORE_STORED_LINESEGS=1: 모든 export 에서 저장 LINE_SEG 를 버리고 조판");
     println!("  hwp5-roundtrip <파일.hwp | --batch 폴더> [-o <출력폴더>]");
     println!("      HWP5 → IR → HWP5 roundtrip 무손실 검증 (Task #1552)");
     println!("      재조립 .rt.hwp와 inventory.tsv를 출력 폴더(기본 output/poc/task1552)에 생성");
@@ -5090,7 +5100,7 @@ fn dump_controls(args: &[String]) -> i32 {
                     "       keep: with_next={} keep_lines={} widow_orphan={} pbreak_before={} (attr1=0x{:08X} attr2=0x{:08X})",
                     (ps.attr1 >> 17) & 1 != 0 || (ps.attr2 >> 6) & 1 != 0,
                     (ps.attr1 >> 18) & 1 != 0 || (ps.attr2 >> 7) & 1 != 0,
-                    (ps.attr1 >> 16) & 1 != 0 || (ps.attr2 >> 5) & 1 != 0,
+                    (ps.attr1 >> 16) & 1 != 0,
                     (ps.attr1 >> 19) & 1 != 0 || (ps.attr2 >> 8) & 1 != 0,
                     ps.attr1, ps.attr2
                 );
@@ -7029,7 +7039,8 @@ fn diff_shape_textbox(
 ///
 /// HWPX 파서(`parse_tab_extension`)는 인라인 탭을 `ext[0]`=width,
 /// `ext[2]`=`type<<8 | leader`(leader 는 low byte), `ext[6]`=0x0009 마커로만 채우고
-/// `ext[1]`·`ext[3]`·`ext[4]`·`ext[5]`는 0 으로 둔다. HWPX 직렬화(`render_hp_t_content`)도
+/// `ext[1]`·`ext[3]`·`ext[4]`는 0 으로 둔다. `ext[5]`는 탭 간격/저장 거리의 내부
+/// 의미 마커로 쓰고 HWP5 직렬화 전에 지운다. HWPX 직렬화(`render_hp_t_content`)도
 /// width/leader/type 를 오직 `ext[0]`·`ext[2]`에서만 읽는다. 반면 HWP5 인라인 탭(8 WCHAR
 /// 블록)은 `ext[1]`을 leader/fill 슬롯으로, `ext[3]`·`ext[4]`·`ext[5]`를 WCHAR 4~6 원본
 /// 바이트(보통 0x20)로 채운다 — 이들은 HWPX `<hp:tab>`에 대응 속성이 없어 HWPX 쪽이 항상

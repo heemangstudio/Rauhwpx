@@ -1,10 +1,11 @@
 //! PR #1019: PageBackground fill mode + RealPic color watermark SVG path guards.
+//!
+//! 한컴 Mac PDF 실측: 밝기 70·대비 -50 워터마크는 채널마다 `floor(0.5·v + 197)` 로 구운
+//! 픽셀을 반투명 없이 그린다. 그래서 구운 PNG 의 불투명 픽셀은 모두 197 이상이다.
 
 use std::path::Path;
 
-use rhwp::renderer::render_tree::{
-    REAL_PICTURE_WATERMARK_FILL_OPACITY, REAL_PICTURE_WATERMARK_PAGE_OPACITY,
-};
+use base64::Engine;
 use rhwp::wasm_api::HwpDocument;
 
 fn load_doc(rel_path: &str) -> HwpDocument {
@@ -13,29 +14,42 @@ fn load_doc(rel_path: &str) -> HwpDocument {
     HwpDocument::from_bytes(&bytes).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
 }
 
+fn svg_png_images(svg: &str) -> Vec<image::RgbaImage> {
+    let mut images = Vec::new();
+    let mut rest = svg;
+    while let Some(found) = rest.find("data:image/png;base64,") {
+        let start = found + "data:image/png;base64,".len();
+        let end = rest[start..].find('"').map_or(rest.len(), |e| start + e);
+        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&rest[start..end]) {
+            if let Ok(img) = image::load_from_memory(&bytes) {
+                images.push(img.to_rgba8());
+            }
+        }
+        rest = &rest[end..];
+    }
+    images
+}
+
 fn assert_realpic_watermark_svg_path(svg: &str, label: &str) {
     assert!(
-        svg.contains("data:image/png;base64,"),
-        "{label}: RealPic watermark should be emitted as tone-baked PNG"
-    );
-    assert!(
-        !svg.contains("rhwp-img-bc-b-50c70"),
-        "{label}: RealPic preset must not use generic brightness/contrast SVG filter"
-    );
-    assert!(
-        !svg.contains("rhwp-realpic-watermark-tone"),
-        "{label}: decodeable RealPic preset should bake tone into PNG pixels"
+        !svg.contains("rhwp-img-bc-"),
+        "{label}: baked watermark must not add a brightness/contrast SVG filter"
     );
     assert!(
         !svg.contains("data:application/octet-stream"),
         "{label}: image resolver must not fall back to octet-stream"
     );
-
-    let page_opacity = format!("opacity=\"{}\"", REAL_PICTURE_WATERMARK_PAGE_OPACITY);
-    let fill_opacity = format!("opacity=\"{}\"", REAL_PICTURE_WATERMARK_FILL_OPACITY);
     assert!(
-        svg.contains(&page_opacity) || svg.contains(&fill_opacity),
-        "{label}: RealPic watermark opacity should be applied"
+        !svg.contains("<g opacity=\"0."),
+        "{label}: Hancom draws the baked watermark opaque"
+    );
+    let baked = svg_png_images(svg).into_iter().any(|img| {
+        let mut opaque = img.pixels().filter(|px| px.0[3] == 255).peekable();
+        opaque.peek().is_some() && opaque.all(|px| px.0[..3].iter().all(|&c| c >= 197))
+    });
+    assert!(
+        baked,
+        "{label}: RealPic 70/-50 watermark should be emitted as a Hancom-baked PNG"
     );
 }
 

@@ -7,7 +7,7 @@ use skia_safe::{
 use crate::model::style::UnderlineType;
 use crate::paint::LayerOutputOptions;
 use crate::renderer::composer::{
-    decode_pua_overlap_number, expand_pua_render_text, pua_to_display_text, CharOverlapInfo,
+    decode_pua_overlap_number, expand_pua_display_text, pua_to_display_text, CharOverlapInfo,
 };
 use crate::renderer::layout::{
     compute_char_positions, compute_glyph_positions, is_halfwidth_forced_punct,
@@ -177,6 +177,15 @@ fn hancom_boxed_number(chars: &[char]) -> Option<String> {
     }
 }
 
+fn hancom_boxed_pua_pair(chars: &[char]) -> bool {
+    matches!(
+        chars,
+        [left, right]
+            if (0xF02BA..=0xF02C2).contains(&(*left as u32))
+                && (0xF02C3..=0xF02CC).contains(&(*right as u32))
+    )
+}
+
 /// 문서/한컴 폰트에 전용 글리프가 없으면 숫자와 사각형으로 표시한다.
 /// 임의 시스템 PUA 폴백은 같은 코드의 Nerd Font 그림문자를 선택할 수 있다.
 fn draw_hancom_boxed_number(
@@ -337,6 +346,35 @@ enum CharacterTypefaceSource {
     SystemCharacterFallback,
 }
 
+/// HFT 윤곽선을 기준점 (x, y) 에 놓은 Skia path.
+fn hft_skia_path(
+    glyph: &crate::renderer::hft_glyphs::HftGlyph,
+    font_size: f64,
+    ratio: f64,
+    x: f32,
+    y: f32,
+) -> skia_safe::Path {
+    use crate::renderer::hft_glyphs::HftPathCmd;
+    let mut builder = skia_safe::PathBuilder::new();
+    for cmd in glyph.scaled(font_size, ratio) {
+        match cmd {
+            HftPathCmd::MoveTo(px, py) => {
+                builder.move_to((x + px, y + py));
+            }
+            HftPathCmd::LineTo(px, py) => {
+                builder.line_to((x + px, y + py));
+            }
+            HftPathCmd::CubicTo(x1, y1, x2, y2, px, py) => {
+                builder.cubic_to((x + x1, y + y1), (x + x2, y + y2), (x + px, y + py));
+            }
+            HftPathCmd::Close => {
+                builder.close();
+            }
+        }
+    }
+    builder.detach()
+}
+
 fn single_char(cluster: &str) -> Option<char> {
     let mut chars = cluster.chars();
     match (chars.next(), chars.next()) {
@@ -378,6 +416,9 @@ pub(super) struct SkiaTextReplay<'a> {
     pub(super) output_options: &'a LayerOutputOptions,
 }
 
+/// 한컴 합성 기울임 각도(12°)의 tan.
+const SYNTHETIC_ITALIC_SKEW: f32 = 0.212_556_56;
+
 impl SkiaTextReplay<'_> {
     pub(super) fn draw_text(
         &self,
@@ -391,6 +432,7 @@ impl SkiaTextReplay<'_> {
         is_marker: bool,
         is_para_end: bool,
         is_line_break_end: bool,
+        preserve_projection: bool,
     ) {
         let canvas = self.canvas;
         let output_options = self.output_options;
@@ -409,7 +451,7 @@ impl SkiaTextReplay<'_> {
                 } else {
                     12.0
                 };
-                let font_style = match (style.bold, style.italic) {
+                let font_style = match (style.paint_bold(), style.italic) {
                     (true, true) => FontStyle::bold_italic(),
                     (true, false) => FontStyle::bold(),
                     (false, true) => FontStyle::italic(),
@@ -419,7 +461,7 @@ impl SkiaTextReplay<'_> {
                 // Bold 메트릭이 없는 서체)은 Regular face 를 해석해 획으로 굵게를
                 // 만든다 — SVG/Canvas 와 같은 규칙. Bold face 파일이 해석돼도
                 // 한컴 출력과 모양·폭이 다르므로 내려준다.
-                let font_style = if style.bold
+                let font_style = if style.paint_bold()
                     && crate::renderer::faux_bold_stroke_width(style, f64::from(font_size))
                         .is_some()
                 {
@@ -444,8 +486,8 @@ impl SkiaTextReplay<'_> {
                 }
                 // 문서 선언 대체 글꼴(<hh:substFont>/HWP5 alt_name): 원본 face 가
                 // 없을 때 한컴이 쓰는 지정 대체 — generic CJK 폴백보다 먼저 시도.
-                if !style.font_subst.is_empty() {
-                    families.push(style.font_subst.as_str());
+                if !style.effective_font_subst().is_empty() {
+                    families.push(style.effective_font_subst());
                 }
                 // 한글 fallback (CJK glyph 미보유 폰트로 fallback 시 사각형 방지).
                 // 명조/바탕/궁서 계열을 sans로 바꾸면 글리프 폭·획·줄바꿈이 모두
@@ -487,14 +529,18 @@ impl SkiaTextReplay<'_> {
                     // Regular 가 시스템 Palatino(Bold 보유)를 앞질러 굵은 글자가 가늘어진다.
                     // 이 대체가 없으면 세리프 요청(바탕)이 generic 산세리프
                     // (맑은 고딕 등)에 떨어져 본문 전체가 굵은 고딕으로 렌더된다.
-                    let substitutes: Vec<&str> =
-                        crate::renderer::hft_substitute_faces(&style.font_family)
-                            .iter()
-                            .chain(crate::renderer::hancom_substitute_faces(&style.font_family))
-                            .copied()
-                            .collect();
+                    let substitutes = crate::renderer::font_fallback_families(
+                        &style.font_family,
+                        style.effective_font_subst(),
+                    );
                     if !substitutes.is_empty() && resolve_family(&style.font_family).is_none() {
-                        for family in substitutes {
+                        // 접미사를 뗀 실제 family를 먼저 찾고, 공유 치환 순서대로
+                        // HFT 고유 face → 문서 선언 face → 기본 face를 시도한다.
+                        for family in base_family
+                            .as_deref()
+                            .into_iter()
+                            .chain(substitutes.iter().map(String::as_str))
+                        {
                             if let Some(tf) = resolve_family(family) {
                                 push(&mut chain, &mut seen, tf);
                             }
@@ -582,14 +628,51 @@ impl SkiaTextReplay<'_> {
                     );
                 }
                 let primary_typeface = typeface_chain.first().cloned();
-                let has_explicit_glyph = |ch: char| {
-                    typeface_chain
-                        .iter()
-                        .any(|tf| tf.unichar_to_glyph(ch as i32) != 0)
+                // HFT run 의 한컴 PUA(옛한글·책괄호 등)는 함초롬바탕이 그린다 — 측정의
+                // `hft_missing_pua_em` 과 같은 face. run 서체가 글리프를 가지면 그대로 둔다.
+                let hft_pua_typeface: Option<Typeface> = text
+                    .chars()
+                    .any(|ch| crate::renderer::layout::is_hft_missing_pua(style, ch))
+                    .then(|| {
+                        crate::renderer::layout::HFT_MISSING_PUA_FAMILIES
+                            .iter()
+                            .find_map(|family| {
+                                typeface_for_style(self.custom_typefaces, family, font_style)
+                                    .or_else(|| {
+                                        match_system_family_style(
+                                            self.font_mgr,
+                                            self.system_families,
+                                            family,
+                                            font_style,
+                                        )
+                                    })
+                            })
+                    })
+                    .flatten();
+                let hft_pua_face_for = |ch: char| -> Option<Typeface> {
+                    let tf = hft_pua_typeface.as_ref()?;
+                    let codepoint = ch as i32;
+                    (crate::renderer::layout::is_hft_missing_pua(style, ch)
+                        && primary_typeface
+                            .as_ref()
+                            .is_none_or(|p| p.unichar_to_glyph(codepoint) == 0)
+                        && tf.unichar_to_glyph(codepoint) != 0)
+                        .then(|| tf.clone())
                 };
-                let font_for_text = |sample: &str, size: f32| -> Option<Font> {
+                let has_explicit_glyph = |ch: char| {
+                    hft_pua_face_for(ch).is_some()
+                        || typeface_chain
+                            .iter()
+                            .any(|tf| tf.unichar_to_glyph(ch as i32) != 0)
+                };
+                let font_for_text_upright = |sample: &str, size: f32| -> Option<Font> {
                     let visible_char = sample.chars().find(|ch| !ch.is_whitespace());
                     if let Some(ch) = visible_char {
+                        if let Some(tf) = hft_pua_face_for(ch) {
+                            let mut font = Font::new(tf, size);
+                            font.set_edging(font::Edging::AntiAlias);
+                            return Some(font);
+                        }
                         let codepoint = ch as i32;
                         // Keep the explicit chain compact for deterministic body-text
                         // metrics, but do not drop symbols which live outside that chain.
@@ -618,6 +701,19 @@ impl SkiaTextReplay<'_> {
                         font.set_edging(font::Edging::AntiAlias);
                         Some(font)
                     }
+                };
+                // 기울임 face 가 없는 서체는 한컴처럼 12° 합성 기울임으로 그린다 — 한컴
+                // macOS PDF 의 맑은 고딕 기울임 런은 Tm 기울기 17.6375/83 = tan 12°
+                // (kedi-application p2). SVG 는 font-style=italic 으로 같은 합성을 맡긴다.
+                let font_for_text = |sample: &str, size: f32| -> Option<Font> {
+                    let mut font = font_for_text_upright(sample, size)?;
+                    if style.italic
+                        && font.typeface().font_style().slant()
+                            == skia_safe::font_style::Slant::Upright
+                    {
+                        font.set_skew_x(-SYNTHETIC_ITALIC_SKEW);
+                    }
+                    Some(font)
                 };
                 let y = if baseline > 0.0 {
                     bbox.y + baseline
@@ -650,6 +746,35 @@ impl SkiaTextReplay<'_> {
                         return;
                     }
 
+                    // 한컴의 사각 숫자 두 글립은 같은 원점에 원래 글자 크기로
+                    // 겹친다. compose charSz 는 이 전용 PUA 글립에 적용되지 않는다.
+                    if overlap.border_type == 0 && hancom_boxed_pua_pair(&chars) {
+                        if let Some(face) = typeface_chain.iter().find(|face| {
+                            chars
+                                .iter()
+                                .all(|ch| face.unichar_to_glyph(*ch as i32) != 0)
+                        }) {
+                            let mut font = Font::new(face.clone(), font_size);
+                            font.set_edging(font::Edging::AntiAlias);
+                            let mut paint = Paint::default();
+                            paint.set_anti_alias(true);
+                            paint.set_color(colorref_to_skia(style.color, 1.0));
+                            for ch in &chars {
+                                draw_text_run(
+                                    canvas,
+                                    &ch.to_string(),
+                                    (bbox.x as f32, y as f32),
+                                    &font,
+                                    &paint,
+                                );
+                            }
+                            if effective_rotation != 0.0 {
+                                canvas.restore();
+                            }
+                            return;
+                        }
+                    }
+
                     if overlap.border_type == 0 && chars.iter().any(|&ch| !has_explicit_glyph(ch)) {
                         if let Some(number) = hancom_boxed_number(&chars) {
                             if let Some(font) = font_for_text(&number, font_size * 0.5) {
@@ -672,14 +797,12 @@ impl SkiaTextReplay<'_> {
                         }
                     }
 
-                    let size_ratio = if overlap.inner_char_size > 0 {
-                        overlap.inner_char_size as f32 / 100.0
-                    } else {
-                        1.0
-                    };
+                    let size_ratio =
+                        crate::renderer::char_overlap_inner_ratio(overlap.inner_char_size) as f32;
                     let inner_size = (font_size * size_ratio).max(1.0);
                     let box_size = font_size.max(1.0);
                     let is_combined = decode_pua_overlap_number(&chars);
+
                     let effective_border = if overlap.border_type == 0 && is_combined.is_some() {
                         1
                     } else {
@@ -721,8 +844,42 @@ impl SkiaTextReplay<'_> {
                             );
                         }
                     };
+                    // 한컴은 테두리 도형을 런 글꼴의 도형 글자(○●□■)로 기준선에 찍고, 안쪽
+                    // 글자는 em 상자 중심(기준선 위 0.35em)을 맞춘다 (k-water-rfp 실측:
+                    // 17pt ■ 기준선 345.24 → 13.56pt 숫자 기준선 344.04).
+                    let shape_glyph = is_combined
+                        .is_none()
+                        .then(|| crate::renderer::char_overlap_shape_glyph(effective_border))
+                        .flatten();
+                    let em_center_y = if shape_glyph.is_some() {
+                        y as f32 - box_size * 0.35
+                    } else {
+                        (bbox.y + bbox.height / 2.0) as f32
+                    };
+                    let mut glyph_paint = Paint::default();
+                    glyph_paint.set_anti_alias(true);
+                    glyph_paint.set_color(stroke_color);
+                    let draw_shape_glyph = |cx: f32| -> bool {
+                        let Some(glyph) = shape_glyph else {
+                            return false;
+                        };
+                        let glyph = glyph.to_string();
+                        let Some(font) = font_for_text(&glyph, box_size) else {
+                            return false;
+                        };
+                        let width = font.measure_str(&glyph, Some(&glyph_paint)).0;
+                        draw_text_run(
+                            canvas,
+                            &glyph,
+                            (cx - width / 2.0, y as f32),
+                            &font,
+                            &glyph_paint,
+                        );
+                        true
+                    };
                     let mut draw_overlap_box = |display: &str, cx: f32, cy: f32| {
-                        if is_circle {
+                        if draw_shape_glyph(cx) {
+                        } else if is_circle {
                             shape_paint.set_style(paint::Style::Fill);
                             shape_paint.set_color(fill_color);
                             if is_reversed {
@@ -754,8 +911,9 @@ impl SkiaTextReplay<'_> {
                         );
                     } else if chars.len() > 1 {
                         let cx = (bbox.x + bbox.width / 2.0) as f32;
-                        let cy = (bbox.y + bbox.height / 2.0) as f32;
-                        if is_circle {
+                        let cy = em_center_y;
+                        if draw_shape_glyph(cx) {
+                        } else if is_circle {
                             shape_paint.set_style(paint::Style::Fill);
                             shape_paint.set_color(fill_color);
                             if is_reversed {
@@ -805,7 +963,7 @@ impl SkiaTextReplay<'_> {
                             draw_overlap_box(
                                 &display,
                                 bbox.x as f32 + index as f32 * box_size + box_size / 2.0,
-                                (bbox.y + bbox.height / 2.0) as f32,
+                                em_center_y,
                             );
                         }
                     }
@@ -815,8 +973,13 @@ impl SkiaTextReplay<'_> {
                     return;
                 }
 
-                let text = expand_pua_render_text(text);
-                let text = text.as_str();
+                let expanded;
+                let text = if preserve_projection {
+                    text
+                } else {
+                    expanded = expand_pua_display_text(text);
+                    expanded.as_str()
+                };
                 // 위/아래 첨자: 줄어든 advance 는 측정 단계가 반영하므로 glyph 크기와
                 // 기준선만 조정한다 (svg/web_canvas draw_text 와 같은 규칙).
                 let (font_size, y) = {
@@ -842,9 +1005,9 @@ impl SkiaTextReplay<'_> {
                     canvas.draw_rect(
                         Rect::from_xywh(
                             bbox.x as f32,
-                            y as f32 - font_size,
+                            y as f32 - font_size * crate::renderer::SHADE_ASCENT_EM as f32,
                             text_width,
-                            font_size * 1.2,
+                            font_size,
                         ),
                         &shade,
                     );
@@ -955,7 +1118,9 @@ impl SkiaTextReplay<'_> {
                     );
                     off.unwrap_or(0.0) as f32
                 };
-                let is_middle_dot = |cluster: &str| cluster == "\u{00B7}";
+                let is_middle_dot = |cluster: &str| {
+                    cluster == "\u{00B7}" && !crate::renderer::hft_uses_paired_middle_dot(style)
+                };
                 // 합성 진하게: 해석된 서체에 Bold face 가 없으면 한컴처럼 fill+stroke 로
                 // 획을 더한다. 두께는 svg/web_canvas 의 faux_bold_stroke_width 와 같은 비율.
                 // 서체별 실측 비율(맑은 고딕 1/30 등)을 우선 쓰고 아니면 기본 1/40.
@@ -964,7 +1129,7 @@ impl SkiaTextReplay<'_> {
                         .map(|w| w as f32)
                         .or_else(|| {
                             style
-                                .bold
+                                .paint_bold()
                                 .then(|| font_size * crate::renderer::FAUX_BOLD_STROKE_EM as f32)
                         });
                 let draw_text_pass = |color: Color, stroke_width: f32, dx: f32, dy: f32| {
@@ -1024,7 +1189,13 @@ impl SkiaTextReplay<'_> {
                             continue;
                         }
                         if is_middle_dot(cluster) {
-                            let advance = cluster_advance(*char_idx, cluster);
+                            // 자간·정렬 여분을 뺀 글리프 advance 중앙 (svg 와 같은 규칙).
+                            let end = char_idx + cluster.chars().count();
+                            let advance =
+                                match (glyph_positions.get(*char_idx), glyph_positions.get(end)) {
+                                    (Some(a), Some(b)) => (b - a) as f32,
+                                    _ => cluster_advance(*char_idx, cluster),
+                                };
                             let cx = bbox.x as f32
                                 + char_positions.get(*char_idx).copied().unwrap_or(0.0) as f32
                                 + advance / 2.0
@@ -1072,6 +1243,56 @@ impl SkiaTextReplay<'_> {
                         }) {
                             // 한컴 PUA 빈 글리프 마커 (함초롬 폭표 = 0폭): tofu 대신
                             // 잉크 없이 advance 만 소비한다 (U+F03FF 서식 마커 등).
+                        } else if let Some(glyph) = single_char(cluster)
+                            .and_then(|ch| crate::renderer::hft_glyph_for_style(style, ch))
+                        {
+                            // 설치된 한컴 HFT 윤곽선: 한컴처럼 글자 모양을 HFT 로 그린다.
+                            // 굵게도 한컴 PDF 처럼 윤곽선 그대로 칠한다 (획 합성 없음).
+                            let char_x = bbox.x as f32
+                                + char_positions.get(*char_idx).copied().unwrap_or(0.0) as f32
+                                + dx;
+                            let path = hft_skia_path(
+                                &glyph,
+                                f64::from(font_size),
+                                f64::from(ratio),
+                                char_x,
+                                y as f32 + dy,
+                            );
+                            canvas.draw_path(&path, &text_paint);
+                            if let Some(copy) = crate::renderer::hft_vertical_bold_copy(
+                                style,
+                                text,
+                                is_vertical && rotation == 0.0 && char_overlap.is_none(),
+                            ) {
+                                for offset_x in copy.x_offsets() {
+                                    if copy.rotation == 0.0 {
+                                        let path = hft_skia_path(
+                                            &glyph,
+                                            f64::from(font_size),
+                                            f64::from(ratio),
+                                            char_x + offset_x as f32,
+                                            y as f32 + dy + copy.offset_y as f32,
+                                        );
+                                        canvas.draw_path(&path, &text_paint);
+                                    } else {
+                                        canvas.save();
+                                        canvas.translate((
+                                            char_x + copy.offset_x as f32,
+                                            y as f32 + dy + copy.offset_y as f32,
+                                        ));
+                                        canvas.rotate(copy.rotation as f32, None);
+                                        let path = hft_skia_path(
+                                            &glyph,
+                                            f64::from(font_size),
+                                            f64::from(ratio),
+                                            offset_x as f32,
+                                            0.0,
+                                        );
+                                        canvas.draw_path(&path, &text_paint);
+                                        canvas.restore();
+                                    }
+                                }
+                            }
                         } else if let Some(font) = font_for_text(cluster, font_size) {
                             let char_x = bbox.x as f32
                                 + char_positions.get(*char_idx).copied().unwrap_or(0.0) as f32
@@ -1093,6 +1314,31 @@ impl SkiaTextReplay<'_> {
                                     &font,
                                     glyph_paint,
                                 );
+                            }
+                            if let Some(copy) = crate::renderer::hft_vertical_bold_copy(
+                                style,
+                                text,
+                                is_vertical && rotation == 0.0 && char_overlap.is_none(),
+                            ) {
+                                for offset_x in copy.x_offsets() {
+                                    canvas.save();
+                                    if copy.rotation == 0.0 {
+                                        canvas.translate((
+                                            char_x + offset_x as f32,
+                                            char_y + copy.offset_y as f32,
+                                        ));
+                                    } else {
+                                        canvas.translate((
+                                            char_x + copy.offset_x as f32,
+                                            char_y + copy.offset_y as f32,
+                                        ));
+                                        canvas.rotate(copy.rotation as f32, None);
+                                        canvas.translate((offset_x as f32, 0.0));
+                                    }
+                                    canvas.scale((ratio, 1.0));
+                                    draw_text_run(canvas, cluster, (0.0, 0.0), &font, glyph_paint);
+                                    canvas.restore();
+                                }
                             }
                         }
                     }
@@ -1116,7 +1362,7 @@ impl SkiaTextReplay<'_> {
                 if style.outline_type > 0 && !style.emboss && !style.engrave {
                     // Canvas2D 효과와 동일하게 내부는 흰색, 외곽은 글자색으로 그린다.
                     // 이후 일반 fill을 덧그리면 외곽선 글자가 다시 검게 채워진다.
-                    let bold_width = if style.bold {
+                    let bold_width = if style.paint_bold() {
                         (font_size * 0.04).clamp(0.25, 1.4)
                     } else {
                         0.0
@@ -1133,16 +1379,15 @@ impl SkiaTextReplay<'_> {
                 }
 
                 if !matches!(style.underline, UnderlineType::None) && text_width > 0.0 {
-                    let color = if style.underline_color != 0 {
-                        colorref_to_skia(style.underline_color, 1.0)
-                    } else {
-                        colorref_to_skia(style.color, 1.0)
-                    };
+                    // 밑줄 색은 글자 색과 별개다 — 0(검정)도 지정값이다.
+                    let color = colorref_to_skia(style.underline_color, 1.0);
+                    // 글자 위치(%)는 글리프만 옮긴다.
+                    let deco_y = (y - crate::renderer::char_offset_dy(style)) as f32;
                     let line_y = match style.underline {
-                        UnderlineType::Top => y as f32 - font_size + 1.0,
+                        UnderlineType::Top => deco_y - font_size + 1.0,
                         // macOS 한컴 실측: 밑줄 첫 선 = baseline + ~0.167em
                         // (14pt SLIM_THICK +2.36pt, 17pt SOLID +2.88pt, 11pt +1.8pt).
-                        _ => y as f32 + font_size * 0.167,
+                        _ => deco_y + font_size * 0.167,
                     };
                     draw_line_shape(
                         bbox.x as f32,
@@ -1160,7 +1405,7 @@ impl SkiaTextReplay<'_> {
                     };
                     draw_line_shape(
                         bbox.x as f32,
-                        y as f32 - font_size * 0.3,
+                        (y - crate::renderer::char_offset_dy(style)) as f32 - font_size * 0.3,
                         bbox.x as f32 + text_width,
                         color,
                         style.strike_shape,
@@ -1208,7 +1453,25 @@ impl SkiaTextReplay<'_> {
                     match leader.fill_type {
                         1 => draw_styled_line(x1, line_y, x2, color, 0.5, &[], false),
                         2 => draw_styled_line(x1, line_y, x2, color, 0.5, &[3.0, 3.0], false),
-                        3 => draw_styled_line(x1, line_y, x2, color, 1.0, &[0.1, 3.0], true),
+                        3 => {
+                            if let Some((first, last, dot, pitch)) =
+                                crate::renderer::dot_tab_leader_layout(
+                                    leader.start_x,
+                                    leader_end_x,
+                                    font_size as f64,
+                                )
+                            {
+                                draw_styled_line(
+                                    bbox.x as f32 + first as f32,
+                                    line_y,
+                                    bbox.x as f32 + last as f32 + 0.01,
+                                    color,
+                                    dot as f32,
+                                    &[0.01, pitch as f32 - 0.01],
+                                    true,
+                                );
+                            }
+                        }
                         4 => draw_styled_line(
                             x1,
                             line_y,

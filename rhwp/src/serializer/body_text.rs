@@ -1359,9 +1359,9 @@ fn serialize_para_text_limited(para: &Paragraph, max_bytes: usize) -> Result<Vec
                 // TAB 확장 데이터 복원 (탭 너비, 종류 등)
                 if tab_idx < para.tab_extended.len() {
                     let mut ext = para.tab_extended[tab_idx];
-                    // HWPX 파서가 탭 정지 간격 의미 표시로 쓰는 예약 비트 — HWP5
+                    // HWPX 파서가 탭 정지 간격/저장 거리 의미로 쓰는 예약 비트 — HWP5
                     // 스트림에는 보내지 않는다 (ext[5] 는 HWP5 원본 바이트 슬롯).
-                    ext[5] &= !0x8000;
+                    ext[5] &= !0xc000;
                     for &cu in &ext {
                         push_code_unit(&mut bytes, cu);
                     }
@@ -2389,6 +2389,20 @@ mod tests {
         let bytes = test_serialize_para_text(&para);
 
         assert_eq!(&bytes[0..2], &0x2007_u16.to_le_bytes());
+    }
+
+    #[test]
+    fn hwp5_text_serialization_strips_hwpx_tab_markers() {
+        let para = Paragraph {
+            text: "A\tB".into(),
+            char_offsets: (0..3).collect(),
+            tab_extended: vec![[600, 0, 0x0200, 0, 0, 0xc123, 9]],
+            ..Default::default()
+        };
+        let bytes = test_serialize_para_text(&para);
+        assert_eq!(u16::from_le_bytes([bytes[2], bytes[3]]), 9);
+        assert_eq!(u16::from_le_bytes([bytes[14], bytes[15]]), 0x0123);
+        assert_eq!(para.tab_extended[0][5], 0xc123);
     }
 
     #[test]

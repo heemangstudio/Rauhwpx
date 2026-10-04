@@ -14,6 +14,56 @@ use wasm_bindgen::prelude::*;
 #[cfg(target_arch = "wasm32")]
 use web_sys::HtmlCanvasElement;
 
+/// 비합성 RGBA 원본을 정수 디바이스 크기로 축소한다. 잘못된 입력에는 빈 배열을 반환한다.
+#[wasm_bindgen(js_name = smoothHermiteDownsampleRgba)]
+pub fn smooth_hermite_downsample_rgba(
+    pixels: &[u8],
+    source_width: u32,
+    source_height: u32,
+    crop_left: f32,
+    crop_top: f32,
+    crop_right: f32,
+    crop_bottom: f32,
+    target_width: u32,
+    target_height: u32,
+) -> Vec<u8> {
+    crate::renderer::image_resample::smooth_hermite_downsample_rgba(
+        pixels,
+        source_width,
+        source_height,
+        (crop_left, crop_top, crop_right, crop_bottom),
+        target_width,
+        target_height,
+    )
+    .unwrap_or_default()
+}
+
+/// 비합성 RGBA 원본을 정수 디바이스 크기로 샘플링한다. 잘못된 입력에는 빈 배열을 반환한다.
+#[wasm_bindgen(js_name = gridfitAffineSampleRgba)]
+pub fn gridfit_affine_sample_rgba(
+    pixels: &[u8],
+    source_width: u32,
+    source_height: u32,
+    crop_left: f32,
+    crop_top: f32,
+    crop_right: f32,
+    crop_bottom: f32,
+    target_width: u32,
+    target_height: u32,
+    nearest: bool,
+) -> Vec<u8> {
+    crate::renderer::image_resample::gridfit_affine_sample_rgba(
+        pixels,
+        source_width,
+        source_height,
+        (crop_left, crop_top, crop_right, crop_bottom),
+        target_width,
+        target_height,
+        nearest,
+    )
+    .unwrap_or_default()
+}
+
 use crate::document_core::helpers::parse_removed_para_meta;
 use crate::document_core::{
     CaretParagraph, DeferredPaginationJobState, DeferredPaginationStepResult, DocumentCore,
@@ -8330,6 +8380,8 @@ impl HwpDocument {
         let b = Bullet {
             bullet_char: bullet_ch,
             text_distance: 50,
+            // 새 글머리표는 현재 문단의 글자 모양을 따른다.
+            char_shape_id: u32::MAX,
             ..Default::default()
         };
         self.core.document.doc_info.bullets.push(b);
@@ -9714,6 +9766,17 @@ pub fn extract_thumbnail(data: &[u8]) -> JsValue {
     }
 }
 
+/// 요청 글꼴이 없을 때 로드할 엔진의 그리기 대체 후보 (선호 순서의 JSON 배열).
+/// 현재 브라우저/호스트의 등록 상태와 무관하며 문서를 로드하지 않고 조회할 수 있다.
+#[wasm_bindgen(js_name = fontFallbackFamilies)]
+pub fn font_fallback_families(font_family: &str, font_subst: Option<String>) -> String {
+    serde_json::to_string(&crate::renderer::font_fallback_families(
+        font_family,
+        font_subst.as_deref().unwrap_or(""),
+    ))
+    .expect("font family strings serialize to JSON")
+}
+
 /// 사용자가 설치한 폰트 바이트에서 advance 폭을 추출해 레이아웃 메트릭으로 등록한다.
 ///
 /// `aliases_json`: 폰트명 별칭 JSON 배열. 같은 별칭 + bold + italic 은 교체한다.
@@ -9728,6 +9791,25 @@ pub fn register_runtime_font_metrics(
     italic: bool,
 ) -> String {
     crate::renderer::runtime_font_metrics::register_json(bytes, aliases_json, bold, italic)
+}
+
+/// 사용자 PC 의 한컴 HFT 파일 바이트를 그리기 전용 윤곽선 소스로 등록한다.
+///
+/// 레이아웃 폭은 바뀌지 않는다. HFT 글꼴을 쓰는 run 은 다음 렌더부터 이
+/// 윤곽선으로 그려진다. 지원하지 않는 flavor·문자 범위의 은행이면 false.
+#[wasm_bindgen(js_name = registerHftFont)]
+pub fn register_hft_font(bytes: &[u8]) -> bool {
+    crate::renderer::hft_glyphs::register_hft_bytes(bytes.to_vec())
+}
+
+/// 등록된 HFT 서체의 글리프 윤곽선 (SVG path, 1000 = 1em, y 아래쪽 양수, 원점 = 기준점).
+/// 윤곽선이 없으면 빈 문자열. CanvasKit 렌더러가 장평·글자 크기를 곱해 그린다.
+#[wasm_bindgen(js_name = hftGlyphPathEm)]
+pub fn hft_glyph_path_em(family: &str, code_point: u32) -> String {
+    char::from_u32(code_point)
+        .and_then(|ch| crate::renderer::hft_glyphs::hft_glyph(family, ch))
+        .map(|glyph| glyph.svg_path_data(1000.0, 1.0, 0.0, 0.0))
+        .unwrap_or_default()
 }
 
 /// 등록된 런타임 폰트 메트릭을 모두 제거한다.

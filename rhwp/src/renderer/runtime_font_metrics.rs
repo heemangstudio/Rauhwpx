@@ -431,6 +431,29 @@ fn select_face(
     Some((pick, bold && !faces[pick].bold))
 }
 
+/// 등록된 실제 face 가 있는지 확인한다. 글리프 커버리지와는 별개다.
+pub(crate) fn face_available(primary_name: &str) -> bool {
+    REGISTRY.with(|registry| !candidate_indices(&registry.borrow(), primary_name).is_empty())
+}
+
+/// 설치 폰트의 hmtx 폭을 문서별 보정 없이 em 비율로 반환한다.
+/// 라틴 공백도 실제 폭을 유지해 네이티브 파일 기반 측정과 같은 계약을 쓴다.
+pub(crate) fn char_em_advance(
+    primary_name: &str,
+    bold: bool,
+    italic: bool,
+    c: char,
+) -> Option<f64> {
+    REGISTRY.with(|registry| {
+        let registry = registry.borrow();
+        let (idx, _) = select_face(&registry, primary_name, bold, italic)?;
+        let face = &registry.faces[idx];
+        let units = face.advances.get(c as u32)?;
+        face.hits.set(face.hits.get() + 1);
+        Some(f64::from(units) / f64::from(face.units_per_em))
+    })
+}
+
 /// 런타임 페이스의 글리프 advance. 공백은 내장 메트릭과 같이 em/2 로 고정한다.
 /// 페이스가 없거나 글리프가 없으면 None.
 pub(crate) fn char_advance(

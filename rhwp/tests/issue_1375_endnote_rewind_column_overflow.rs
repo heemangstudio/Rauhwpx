@@ -91,3 +91,67 @@ fn issue_1375_sep2020_page22_rewind_tail_stays_inside_body_frame() {
         "pi=1175 page 22 tail should render inside the body frame, bottom={tail_bottom}"
     );
 }
+
+#[test]
+fn saved_endnote_rewinds_fit_rendered_content_and_split_at_line_boundaries() {
+    let bytes = std::fs::read("samples/3-11월_실전_통합_2022.hwpx").expect("nov2022 sample");
+    let doc = HwpDocument::from_bytes(&bytes).expect("parse nov2022 sample");
+
+    // macOS 한컴 PDF: 문12 적분식은 11쪽 왼쪽 끝, 다음 문장은 오른쪽 첫 줄이다.
+    let page11 = doc.dump_page_items(Some(10));
+    let (left, right) = page11.split_once("  단 1").expect("page 11 columns");
+    assert!(left.contains("FullParagraph[미주]  pi=534"));
+    assert!(right.contains("FullParagraph[미주]  pi=535"));
+
+    // 설치 서체에 따라 분할 줄 수는 달라도 문15의 (iii)는 양쪽 단에
+    // 빠짐없이 이어져야 한다. Hancom 서체를 로드한 시각 검증에서는 3+5줄이다.
+    let page12 = doc.dump_page_items(Some(11));
+    let (left, right) = page12.split_once("  단 1").expect("page 12 columns");
+    let split = left
+        .lines()
+        .find_map(|line| line.split_once("pi=572  lines=0.."))
+        .and_then(|(_, tail)| tail.split_whitespace().next())
+        .and_then(|value| value.parse::<usize>().ok())
+        .expect("left-column head of pi=572");
+    assert!((1..8).contains(&split));
+    assert!(right.contains(&format!("PartialParagraph[미주]  pi=572  lines={split}..8")));
+    let tree12 = doc.build_page_render_tree(11).expect("page 12 render tree");
+    let split_bottom = max_para_text_line_bottom(&tree12.root, 572).expect("split text lines");
+    assert!(
+        split_bottom <= 1092.3,
+        "split paragraph bottom={split_bottom}"
+    );
+
+    // 저장 높이는 작아도 실제로 들어가지 않는 문19 그림은 다음 쪽으로 넘긴다.
+    assert!(!page12.contains("FullParagraph[미주]  pi=593"));
+    assert!(doc
+        .dump_page_items(Some(12))
+        .contains("FullParagraph[미주]  pi=593"));
+
+    // 한 줄 텍스트의 저장 단 경계는 유지한다. 문30의 '가지'부터 16쪽이다.
+    assert!(!doc
+        .dump_page_items(Some(14))
+        .contains("FullParagraph[미주]  pi=725"));
+    assert!(doc
+        .dump_page_items(Some(15))
+        .contains("FullParagraph[미주]  pi=725"));
+
+    // 되감긴 적분식과 후속 두 문단은 실제로 배치된 쪽의 frame 안에 있어야 한다.
+    let pages = [doc.dump_page_items(Some(16)), doc.dump_page_items(Some(17))];
+    for para_index in [821, 822, 823] {
+        let marker = format!("FullParagraph[미주]  pi={para_index}");
+        let page_offset = pages
+            .iter()
+            .position(|page| page.contains(&marker))
+            .expect("equation tail on page 17 or 18");
+        let tree = doc
+            .build_page_render_tree(16 + page_offset as u32)
+            .expect("tail render tree");
+        let tail_bottom =
+            max_para_text_line_bottom(&tree.root, para_index).expect("tail text line");
+        assert!(
+            tail_bottom <= 1092.3,
+            "pi={para_index} measured tail bottom={tail_bottom}"
+        );
+    }
+}

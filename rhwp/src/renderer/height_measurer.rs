@@ -164,8 +164,7 @@ pub(crate) fn grow_rows_for_span_requirements(
 /// Whether a composed table-cell line contributes its stored trailing spacing.
 ///
 /// Full-cell and partial-cell paint both stop at the final visible line box.
-/// A non-inline CellBreak table keeps the last spacing as a structural advance;
-/// so does an HWPX RowBreak cell with a stored structural advance.
+/// CellBreak/RowBreak 마지막 간격은 저장된 구조적 진행값이 있을 때만 유지한다.
 #[inline]
 pub(crate) fn include_table_cell_line_spacing(
     table: &Table,
@@ -173,14 +172,14 @@ pub(crate) fn include_table_cell_line_spacing(
     cell_para_count: usize,
     hwpx_structural_tail: i32,
 ) -> bool {
+    let _ = cell_para_count;
     !is_cell_last_line
         || (!table.common.treat_as_char
-            && ((cell_para_count > 1 && matches!(table.page_break, TablePageBreak::CellBreak))
-                || (hwpx_structural_tail != 0
-                    && matches!(
-                        table.page_break,
-                        TablePageBreak::CellBreak | TablePageBreak::RowBreak
-                    ))))
+            && hwpx_structural_tail != 0
+            && matches!(
+                table.page_break,
+                TablePageBreak::CellBreak | TablePageBreak::RowBreak
+            ))
 }
 
 #[inline]
@@ -537,6 +536,7 @@ pub struct HeightMeasurer {
     native_hwpx_cell_margin: bool,
     is_hwp3_variant: bool,
     session_edited: bool,
+    own_line_layout: bool,
     use_hwp3_origin_flow_spacing_before: bool,
     render_normalization:
         std::sync::Arc<crate::renderer::render_normalization::RenderNormalizationOverlay>,
@@ -550,11 +550,18 @@ impl HeightMeasurer {
             native_hwpx_cell_margin: false,
             is_hwp3_variant: false,
             session_edited: false,
+            own_line_layout: false,
             use_hwp3_origin_flow_spacing_before: false,
             render_normalization: std::sync::Arc::new(
                 crate::renderer::render_normalization::RenderNormalizationOverlay::default(),
             ),
         }
+    }
+
+    /// 생성한 본문 줄은 저장 캐시의 마스킹/대체 글꼴 보정으로 다시 나누지 않는다.
+    pub fn with_own_line_layout(mut self, enabled: bool) -> Self {
+        self.own_line_layout = enabled;
+        self
     }
 
     pub fn with_hwp3_variant(mut self, enabled: bool) -> Self {
@@ -819,6 +826,7 @@ impl HeightMeasurer {
                     );
                     Some(cloned)
                 } else if inner > 0.0
+                    && !self.own_line_layout
                     && crate::renderer::composer::stored_lines_stale_for_body(
                         c, para, inner, styles,
                     )
@@ -919,7 +927,7 @@ impl HeightMeasurer {
                     } else {
                         (raw_lh, hwpunit_to_px(line.line_spacing, self.dpi))
                     };
-                    let extra_rows =
+                    let flow_lh =
                         crate::renderer::equation_tac_flow::compute_equation_only_tac_line_flow(
                             Some(para),
                             comp,
@@ -928,12 +936,17 @@ impl HeightMeasurer {
                             equation_line_available_width_px(0).unwrap_or(f64::INFINITY),
                             equation_line_available_width_px(1).unwrap_or(f64::INFINITY),
                         )
-                        .map(|flow| flow.extra_rows)
-                        .unwrap_or(0);
-                    (
-                        lh + extra_rows as f64 * (lh + line_spacing_px),
-                        line_spacing_px,
-                    )
+                        .map(|flow| {
+                            flow.flow_height_px(
+                                para,
+                                &tac_offsets_px,
+                                lh,
+                                line_spacing_px,
+                                self.dpi,
+                            )
+                        })
+                        .unwrap_or(lh);
+                    (flow_lh, line_spacing_px)
                 })
                 .collect();
             if pairs.is_empty() {
@@ -1397,6 +1410,15 @@ impl HeightMeasurer {
                 // [#2279 axis B 보류] 측정 shrink 폭은 80168 r7(한글 8줄) 회귀로 보류
                 // — table_layout::cell_units_uncached 의 [#2279 axis B 보류] 참조.
                 let cell_inner_width = (cell_w_px - pad_left - pad_right).max(0.0);
+                // [lso-load3] 줄 정보 없는 셀 문단 재분할 폭은 편집·로드 합성과 같은
+                // 한컴 셀 줄 폭 모델 (`LayoutEngine::hancom_cell_wrap_width_px`).
+                let wrap_width = crate::renderer::layout::LayoutEngine::hancom_cell_wrap_width_px(
+                    table,
+                    cell,
+                    self.dpi,
+                    width_scale,
+                )
+                .unwrap_or(cell_inner_width);
 
                 // 셀 내 문단들의 실제 높이 합산
                 let text_height: f64 = if cell.text_direction != 0 {
@@ -1430,7 +1452,7 @@ impl HeightMeasurer {
                             crate::renderer::composer::recompose_for_cell_width_for_source(
                                 &mut comp,
                                 p,
-                                cell_inner_width,
+                                wrap_width,
                                 styles,
                                 self.native_hwpx_cell_margin,
                             );
@@ -1522,6 +1544,18 @@ impl HeightMeasurer {
                                     hwpunit_to_px(400, self.dpi)
                                 };
                                 spacing_before + h + spacing_after
+                            } else if crate::renderer::para_has_no_stored_line_segs(p)
+                                && !p.controls.is_empty()
+                                && p.controls.iter().all(|c| matches!(c, Control::Table(_)))
+                                && !p.text.chars().any(|ch| {
+                                    !ch.is_whitespace() && ch > '\u{001F}' && ch != '\u{FFFC}'
+                                })
+                            {
+                                // [#2169] 합성 줄이 있어도 표만 든 anchor 빈 문단 몫 = 0.
+                                // 합성 줄 높이는 중첩 표 높이를 이미 담고 있어, 중첩 몫을
+                                // 따로 더하는 NO_LS 가산 경로에서 표가 두 번 계상된다
+                                // (1×1 래퍼 행이 내부 표 + 줄 = 2배로 부풀던 문제).
+                                spacing_before + spacing_after
                             } else {
                                 let cell_ls_val =
                                     para_style.map(|s| s.line_spacing).unwrap_or(160.0);
@@ -1789,11 +1823,7 @@ impl HeightMeasurer {
                         .iter()
                         .all(|p| !crate::renderer::para_has_no_stored_line_segs(p));
                 let required_height = if all_stored_ls && depth == 0 && cell_h_px > 0.0 {
-                    if (content_height - cell_h_px).abs() <= 0.5 {
-                        content_height
-                    } else {
-                        content_height + total_pad
-                    }
+                    content_height + total_pad
                 } else if cell_h_px > 0.0 && total_pad > cell_h_px && content_height <= cell_h_px {
                     cell_h_px
                 } else if relaxed_pad_mirror {
@@ -1829,7 +1859,7 @@ impl HeightMeasurer {
                             crate::renderer::composer::recompose_for_cell_width_for_source(
                                 &mut comp,
                                 p,
-                                cell_inner_width,
+                                wrap_width,
                                 styles,
                                 self.native_hwpx_cell_margin,
                             );
@@ -1996,6 +2026,15 @@ impl HeightMeasurer {
                     0.0
                 };
                 let cell_inner_width = (cell_w_px - pad_left - pad_right).max(0.0);
+                // [lso-load3] 줄 정보 없는 셀 문단 재분할 폭은 편집·로드 합성과 같은
+                // 한컴 셀 줄 폭 모델 (`LayoutEngine::hancom_cell_wrap_width_px`).
+                let wrap_width = crate::renderer::layout::LayoutEngine::hancom_cell_wrap_width_px(
+                    table,
+                    cell,
+                    self.dpi,
+                    width_scale,
+                )
+                .unwrap_or(cell_inner_width);
                 let text_height: f64 = if cell.text_direction != 0 {
                     // 세로쓰기: max(segment_width)
                     let mut max_h: f64 = 0.0;
@@ -2024,7 +2063,7 @@ impl HeightMeasurer {
                             crate::renderer::composer::recompose_for_cell_width_for_source(
                                 &mut comp,
                                 p,
-                                cell_inner_width,
+                                wrap_width,
                                 styles,
                                 self.native_hwpx_cell_margin,
                             );
@@ -3435,20 +3474,7 @@ impl HeightMeasurer {
         let mut footnote_content_height = 0.0;
         for (i, footnote) in footnotes.iter().enumerate() {
             // 각주 문단 높이 추정: LineSeg가 있으면 사용, 없으면 기본값
-            let mut fn_height = 0.0;
-            for para in &footnote.paragraphs {
-                if para.line_segs.is_empty() {
-                    fn_height += hwpunit_to_px(400, self.dpi); // 기본 약 14pt
-                } else {
-                    for seg in &para.line_segs {
-                        fn_height += hwpunit_to_px(seg.line_height, self.dpi);
-                    }
-                }
-            }
-            // 빈 각주도 최소 높이 보장
-            if fn_height <= 0.0 {
-                fn_height = hwpunit_to_px(400, self.dpi);
-            }
+            let fn_height = self.estimate_single_footnote_height(footnote);
             footnote_content_height += fn_height;
 
             // 각주 간 간격 (마지막 각주 제외)
@@ -3462,14 +3488,22 @@ impl HeightMeasurer {
     }
 
     /// 단일 각주의 높이를 추정한다.
+    /// 레이아웃(`layout_footnote_area`)과 같이 줄 사이 간격을 포함하고 각주의 마지막 줄
+    /// 뒤 간격만 제외한다.
     pub fn estimate_single_footnote_height(&self, footnote: &Footnote) -> f64 {
         let mut fn_height = 0.0;
-        for para in &footnote.paragraphs {
+        let para_count = footnote.paragraphs.len();
+        for (p_idx, para) in footnote.paragraphs.iter().enumerate() {
             if para.line_segs.is_empty() {
                 fn_height += hwpunit_to_px(400, self.dpi);
             } else {
-                for seg in &para.line_segs {
+                let last_para = p_idx + 1 == para_count;
+                let line_count = para.line_segs.len();
+                for (l_idx, seg) in para.line_segs.iter().enumerate() {
                     fn_height += hwpunit_to_px(seg.line_height, self.dpi);
+                    if !(last_para && l_idx + 1 == line_count) {
+                        fn_height += hwpunit_to_px(seg.line_spacing, self.dpi);
+                    }
                 }
             }
         }
@@ -3860,13 +3894,13 @@ mod tests {
     }
 
     #[test]
-    fn non_tac_cellbreak_keeps_structural_final_spacing() {
+    fn non_tac_cellbreak_excludes_final_spacing_without_structural_tail() {
         let measurer = HeightMeasurer::with_default_dpi();
         let styles = ResolvedStyleSet::default();
         let table = stored_two_paragraph_table(false, TablePageBreak::CellBreak);
         let measured = measurer.measure_table(&table, 0, 0, &styles);
-        // CellBreak exposes paragraph units to pagination, so both 960-HU advances remain.
-        let expected = hwpunit_to_px(5120, DEFAULT_DPI);
+        // 줄 사이 간격만 포함하고 마지막 줄 뒤 간격은 셀 높이에서 제외한다.
+        let expected = hwpunit_to_px(4160, DEFAULT_DPI);
 
         assert!(
             (measured.row_heights[0] - expected).abs() < 0.001,

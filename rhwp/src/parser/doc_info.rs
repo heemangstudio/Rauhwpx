@@ -462,8 +462,10 @@ pub(crate) fn parse_fill(r: &mut ByteReader) -> Fill {
                 15 => ImageFillMode::None,
                 _ => ImageFillMode::TileAll,
             },
-            brightness: r.read_i8().unwrap_or(0),
+            // 한컴 저장본은 명암(대비)을 밝기보다 먼저 쓴다 (스펙 표와 순서가 반대).
+            // 같은 문서의 HWPX(bright=70 contrast=-50)와 HWP5 바이트를 대조해 확인.
             contrast: r.read_i8().unwrap_or(0),
+            brightness: r.read_i8().unwrap_or(0),
             effect: r.read_u8().unwrap_or(0),
             bin_data_id: r.read_u16().unwrap_or(0),
         });

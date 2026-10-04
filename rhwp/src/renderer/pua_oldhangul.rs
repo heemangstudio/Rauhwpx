@@ -5724,6 +5724,19 @@ pub fn map_pua_old_hangul(ch: char) -> Option<&'static [char]> {
         .map(|idx| PUA_OLDHANGUL_MAP[idx].1)
 }
 
+/// 렌더링·측정용 옛한글 자모 시퀀스.
+///
+/// 한컴은 PUA 옛한글을 자모로 분해하지 않고 함초롬 계열 글꼴의 PUA 글리프로 그린다
+/// (exam-kor p17 `ᄆᆞᄉᆞᆷ` 등 — HCRBatang 0.97em 한 글자). 그 글꼴이 등록돼 있으면
+/// 원 코드를 유지하고(None), 없을 때만 KS X 1026-1 자모로 확장해 합자 렌더링한다.
+pub fn display_pua_old_hangul(ch: char) -> Option<&'static [char]> {
+    let jamos = map_pua_old_hangul(ch)?;
+    if crate::renderer::layout::hancom_pua_face_has_glyph(ch) {
+        return None;
+    }
+    Some(jamos)
+}
+
 /// 본 코드포인트가 PUA 옛한글인지 (변환 가능한지) 판별.
 pub fn is_pua_old_hangul(ch: char) -> bool {
     map_pua_old_hangul(ch).is_some()

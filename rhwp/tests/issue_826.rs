@@ -58,5 +58,10 @@ fn issue_826_other_pua_existing_unchanged() {
         '\u{F02B1}',
         "사각 안 ① (raw passthrough)"
     );
-    assert_eq!(map_pua_bullet_char('\u{F0854}'), '\u{300A}', "《");
+    // 책괄호는 한컴처럼 PUA 글리프(함초롬바탕 『)로 그리므로 원문 유지.
+    assert_eq!(
+        map_pua_bullet_char('\u{F0854}'),
+        '\u{F0854}',
+        "『 (raw passthrough)"
+    );
 }

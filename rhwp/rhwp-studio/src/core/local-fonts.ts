@@ -7,6 +7,7 @@
  */
 import { REGISTERED_FONTS } from './font-loader.ts';
 import { convertHftToOpenType } from './hft-font.ts';
+import { isHftBytes, registerHftOutlines } from './hft-glyphs.ts';
 import { normalizeMalformedCmapSentinels, repairUnderstatedCompositeBounds } from './sfnt-repair.ts';
 
 /** queryLocalFonts 반환 타입 (DOM 표준 미포함) */
@@ -557,11 +558,14 @@ export function importedFontSlant(style: string): 'normal' | 'italic' {
 export interface LocalFontImportResult {
   imported: LocalFontRecord[];
   rejected: string[];
+  /** 엔진이 윤곽선으로 그리는 HFT 파일 이름 */
+  hftOutlines?: string[];
 }
 
 export function localFontImportMessage(result: LocalFontImportResult): string {
-  const loaded = result.imported.length > 0
-    ? `글꼴 ${result.imported.length}개를 이번 세션에 불러왔습니다.`
+  const count = result.imported.length + (result.hftOutlines?.length ?? 0);
+  const loaded = count > 0
+    ? `글꼴 ${count}개를 이번 세션에 불러왔습니다.`
     : '글꼴을 불러오지 못했습니다.';
   return result.rejected.length > 0
     ? `${loaded} 실패한 파일: ${result.rejected.join(', ')}`
@@ -596,6 +600,8 @@ export interface RegisterLocalFontFaceOptions {
 }
 
 export type RegisterLocalFontFaceFailure =
+  /** 브라우저 face 는 아니지만 엔진이 HFT 윤곽선으로 그린다. */
+  | 'hft-outlines'
   | 'unsupported-hft'
   | 'invalid'
   | 'too-large'
@@ -627,8 +633,15 @@ function sessionFontUsage(source: LocalFontFaceSource): { bytes: number; faces: 
     bytes += entry.byteLength;
     faces += 1;
   }
+  if (source === 'imported') {
+    bytes += importedHftOutlineBytes;
+    faces += importedHftOutlineFaces;
+  }
   return { bytes, faces };
 }
+
+let importedHftOutlineBytes = 0;
+let importedHftOutlineFaces = 0;
 
 /** 세션 FontFace에 넘기는 바이트: HFT 변환과 SFNT cmap·합성 글리프 bbox 복구를 거친다. */
 export function prepareSessionFontBytes(
@@ -662,10 +675,24 @@ export async function registerLocalFontFace(
   const limits = sessionFontLimits(options.source);
   if (source.byteLength <= 0) return { ok: false, reason: 'invalid' };
   if (source.byteLength > limits.perFace) return { ok: false, reason: 'too-large' };
-
   const prepared = prepareSessionFontBytes(source, options.fileName);
-  if (!prepared.ok) return { ok: false, reason: prepared.reason, error: prepared.error };
+  if (!prepared.ok) {
+    // 브라우저 face 로 변환할 수 없는 HFT 은행도 윤곽선은 읽을 수 있다.
+    // 가져온 파일은 이 경로에서도 세션 용량·개수 한도를 지킨다.
+    if (options.source === 'imported' && isHftBytes(source)) {
+      const usage = sessionFontUsage(options.source);
+      if (usage.faces >= limits.faces) return { ok: false, reason: 'face-limit' };
+      if (source.byteLength > limits.aggregate - usage.bytes) return { ok: false, reason: 'aggregate-limit' };
+      if (registerHftOutlines(source)) {
+        importedHftOutlineBytes += source.byteLength;
+        importedHftOutlineFaces += 1;
+        return { ok: false, reason: 'hft-outlines' };
+      }
+    }
+    return { ok: false, reason: prepared.reason, error: prepared.error };
+  }
   const { bytes, convertedFromHft } = prepared;
+  const budgetBytes = convertedFromHft ? Math.max(source.byteLength, bytes.byteLength) : bytes.byteLength;
   if (bytes.byteLength > limits.perFace) return { ok: false, reason: 'too-large' };
 
   let record: LocalFontRecord | null;
@@ -713,7 +740,7 @@ export async function registerLocalFontFace(
     return { ok: false, reason: 'face-limit' };
   }
   const reserved = usage.bytes - (sameSourceExisting?.byteLength ?? 0);
-  if (bytes.byteLength > limits.aggregate - reserved) {
+  if (budgetBytes > limits.aggregate - reserved) {
     return { ok: false, reason: 'aggregate-limit' };
   }
 
@@ -746,13 +773,16 @@ export async function registerLocalFontFace(
     if (latest) document.fonts.delete(latest.face);
     importedFontFaces.set(faceKey, {
       record,
-      // FontFace가 자체 사본을 가지므로 데스크톱 face는 JS 사본을 버린다. HFT에서 옮긴 수식 글꼴은
-      // 작고 수식 글꼴 해석이 동기로 바이트를 확인하므로 남긴다.
-      bytes: options.source === 'desktop' && !convertedFromHft ? null : bytes,
-      byteLength: bytes.byteLength,
+      // 수식의 PUA와 literal 측정은 cmap/glyf를 동기로 읽는다. 이 서체들과
+      // HFT 변환본만 사본을 유지하고 일반 데스크톱 face는 FontFace에 맡긴다.
+      bytes: options.source === 'desktop' && !convertedFromHft
+        && !['hyhwpeq', 'hcr batang', 'batang', 'times new roman'].includes(normalizeFontAlias(record.family))
+        ? null : bytes,
+      byteLength: budgetBytes,
       face,
     });
     if (options.source === 'imported' || convertedFromHft) importedFontGeneration++;
+    if (convertedFromHft && options.source === 'imported') registerHftOutlines(source);
     desktopFontBytesInflight.delete(faceKey);
     refreshImportedFontLookup();
     return { ok: true, record, bytes, convertedFromHft };
@@ -864,6 +894,7 @@ export async function importLocalFontFiles(files: readonly File[]): Promise<Loca
 
   const imported: LocalFontRecord[] = [];
   const rejected: string[] = [];
+  const hftOutlines: string[] = [];
   const usage = sessionFontUsage('imported');
   const candidates: FontImportCandidate[] = [];
   for (const file of files) {
@@ -890,12 +921,14 @@ export async function importLocalFontFiles(files: readonly File[]): Promise<Loca
     const result = await registerLocalFontFace(source, { source: 'imported', fileName: file.name });
     if (result.ok) {
       imported.push(result.record);
+    } else if (result.reason === 'hft-outlines') {
+      hftOutlines.push(file.name);
     } else {
       rejected.push(file.name);
     }
   }
   refreshImportedFontLookup();
-  return { imported, rejected };
+  return { imported, rejected, ...(hftOutlines.length ? { hftOutlines } : {}) };
 }
 
 interface FontImportCandidate {
@@ -1495,7 +1528,7 @@ export function getImportedLocalFontBytes(
 /** 가져온 face가 실제로 등록됐는지 바이트 복사 없이 확인한다. */
 export function hasImportedLocalFontFace(fontName: string): boolean {
   const record = resolveLocalFont(fontName);
-  return !!record?.runtimeFamily && !!importedFontFaces.get(localFontFaceKey(record))?.bytes;
+  return !!record?.runtimeFamily && importedFontFaces.has(localFontFaceKey(record));
 }
 
 /** CSS family와 달리 style별 native Typeface cache를 구분하는 안정 키다. */
@@ -1712,6 +1745,8 @@ export function getLocalFontState(): LocalFontState {
 export function resetLocalFontsForTests(): void {
   cacheLocalFontSnapshot(null);
   importedFontFaces.clear();
+  importedHftOutlineBytes = 0;
+  importedHftOutlineFaces = 0;
   desktopFontBytesInflight.clear();
   desktopFontByteReader = null;
   importedFontGeneration++;

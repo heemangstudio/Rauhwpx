@@ -387,7 +387,10 @@ fn register_font_file_faces(file: &Path) {
 /// 등록한다. 렌더 함수는 레이아웃 진입 전에 호출해야 측정 경로가 실재를 본다.
 /// 파일별 파싱은 한 번만 수행한다.
 pub fn register_font_face_availability(extra: &[PathBuf]) {
-    for file in font_files(&custom_font_sources(extra)) {
+    let sources = custom_font_sources(extra);
+    // 같은 source 의 한컴 HFT 는 그리기 전용 윤곽선 소스로 등록한다 (측정 불변).
+    crate::renderer::hft_glyphs::register_hft_sources(&sources);
+    for file in font_files(&sources) {
         if SCANNED_FACE_FILES
             .read()
             .map(|scanned| scanned.contains(&file))
@@ -772,6 +775,7 @@ mod tests {
         assert_eq!(
             files,
             vec![
+                fixture_dir.join("HYhwpEQSourceFixture.ttf"),
                 fixture_dir.join("RHWPBitmapSvgGlyphSmoke.ttf"),
                 exact,
                 fixture_dir.join("RHWPShapingFixture.ttf"),

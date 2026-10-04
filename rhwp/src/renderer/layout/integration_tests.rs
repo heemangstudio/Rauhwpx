@@ -170,7 +170,6 @@ mod tests {
         let styles = ResolvedStyleSet {
             hwp3_variant: false,
             page_number_char_shape: None,
-            default_latin_font_family: "함초롬돋움".to_string(),
             char_styles: vec![ResolvedCharStyle::default()],
             para_styles: vec![ResolvedParaStyle {
                 border_fill_id: 1,
@@ -2656,7 +2655,6 @@ mod tests {
         let styles = ResolvedStyleSet {
             hwp3_variant: false,
             page_number_char_shape: None,
-            default_latin_font_family: "함초롬돋움".to_string(),
             char_styles: vec![ResolvedCharStyle::default()],
             para_styles: vec![ResolvedParaStyle::default()],
             border_styles: Vec::new(),
@@ -2812,7 +2810,6 @@ mod tests {
             border_styles: Vec::new(),
             numberings: Vec::new(),
             bullets: Vec::new(),
-            default_latin_font_family: "함초롬돋움".to_string(),
         };
         let page_content = PageContent {
             page_index: 0,

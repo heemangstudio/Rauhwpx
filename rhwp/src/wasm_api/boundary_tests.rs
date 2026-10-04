@@ -434,3 +434,53 @@ fn create_and_delete_style_keep_hwp3_style_variant() {
         "스타일 삭제만으로 쪽 수가 바뀌면 안 된다"
     );
 }
+
+#[test]
+fn font_fallback_families_preserve_renderer_order_even_with_baked_metrics() {
+    let read = |family: &str| -> Vec<String> {
+        serde_json::from_str(&super::font_fallback_families(family, None)).unwrap()
+    };
+    assert!(crate::renderer::font_metrics_data::find_metric("HY신명조", false, false).is_some());
+    assert_eq!(
+        read("HY신명조"),
+        vec!["함초롬바탕", "HCR Batang", "한컴바탕", "Haansoft Batang"]
+    );
+    assert_eq!(read(" 한양견고딕 "), vec!["HY견고딕", "HYgtrE"]);
+    assert_eq!(
+        read("HCI Poppy"),
+        vec!["Palatino", "Palatino Linotype", "Book Antiqua"]
+    );
+    assert!(read("Arial").is_empty());
+    assert!(read("함초롬돋움").is_empty());
+    assert_eq!(read("Absent Test Face"), vec!["함초롬돋움", "HCR Dotum"]);
+}
+
+#[test]
+fn document_font_substitute_precedes_generic_but_keeps_hft_mapping_first() {
+    let families = |family: &str, subst: &str| -> Vec<String> {
+        serde_json::from_str(&super::font_fallback_families(family, Some(subst.into()))).unwrap()
+    };
+    assert_eq!(
+        families("Uninstalled document font", "한컴바탕"),
+        vec!["한컴바탕", "함초롬돋움", "HCR Dotum"]
+    );
+    assert_eq!(families("KoPub돋움체 Light", "한컴바탕"), vec!["한컴바탕"]);
+    assert_eq!(
+        families("Uninstalled document font", "HCR Batang"),
+        vec!["함초롬돋움", "HCR Dotum"]
+    );
+    assert_eq!(
+        families("Uninstalled document font", "함초롬바탕"),
+        vec!["함초롬바탕", "함초롬돋움", "HCR Dotum"]
+    );
+    assert!(families("HCR Batang", "").is_empty());
+    assert_eq!(
+        families("HY신명조", "한컴바탕"),
+        vec!["한컴바탕", "함초롬바탕", "HCR Batang", "Haansoft Batang"]
+    );
+    let poppy = families("HCI Poppy", "한컴바탕");
+    let explicit = poppy.iter().position(|name| name == "한컴바탕").unwrap();
+    assert!(poppy[..explicit]
+        .iter()
+        .any(|name| name.contains("Palatino")));
+}

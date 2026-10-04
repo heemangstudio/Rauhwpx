@@ -1,12 +1,14 @@
 use resvg::{tiny_skia, usvg};
 use skia_safe::{
-    canvas::SrcRectConstraint, color_filters, image::RequiredProperties, Color, Data, FilterMode,
-    IRect, Image, Matrix, MipmapMode, Paint, Rect, SamplingOptions, TileMode,
+    canvas::SrcRectConstraint, color_filters, image::RequiredProperties, AlphaType, Color,
+    ColorType, Data, FilterMode, IRect, Image, ImageInfo, Matrix, MipmapMode, Paint, Rect,
+    SamplingOptions, TileMode,
 };
 use std::sync::{Arc, OnceLock};
 
 use crate::model::image::ImageEffect;
 use crate::model::style::ImageFillMode;
+use crate::renderer::image_resample::{gridfit_affine_sample, smooth_hermite_downsample};
 use crate::renderer::image_resolver::{detect_image_mime_type, grayscale_jpeg_bytes_to_png_bytes};
 
 const MAX_SVG_FRAGMENT_BYTES: usize = 4 * 1024 * 1024;
@@ -62,6 +64,8 @@ pub fn draw_svg_fragment(
         None,
         ImageEffect::RealPic,
         sampling,
+        false,
+        false,
     )
 }
 
@@ -78,6 +82,8 @@ pub fn draw_image_bytes(
     crop_reference_size: Option<(u32, u32)>,
     effect: ImageEffect,
     sampling: ImageSampling,
+    has_shadow: bool,
+    is_picture: bool,
 ) -> bool {
     let is_valid_destination_rect = |x: f32, y: f32, width: f32, height: f32| {
         x.is_finite()
@@ -161,7 +167,21 @@ pub fn draw_image_bytes(
     };
     let encoded_bytes = normalized_bytes.as_deref().unwrap_or(bytes);
 
-    let Some(image) = Image::from_encoded(Data::new_copy(encoded_bytes)) else {
+    // 한컴 PDF는 투명 PNG의 RGB와 마스크를 따로 보간한다. Unpremul 이미지로 그려야
+    // 투명한 검정 픽셀과 흰 영역 사이의 회색 경계가 보존된다. 완전 불투명한 그림은
+    // Unpremul 강제 시 그려지지 않으므로 기본 디코딩을 유지한다.
+    let has_transparency = detect_image_mime_type(encoded_bytes) == "image/png"
+        && image::load_from_memory(encoded_bytes)
+            .map(|decoded| decoded.to_rgba8().pixels().any(|pixel| pixel[3] != 255))
+            .unwrap_or(false);
+    let Some(image) = (if has_transparency {
+        Image::from_encoded_with_alpha_type(
+            Data::new_copy(encoded_bytes),
+            Some(AlphaType::Unpremul),
+        )
+    } else {
+        Image::from_encoded(Data::new_copy(encoded_bytes))
+    }) else {
         draw_missing_image_placeholder(x, y, width, height);
         return false;
     };
@@ -199,6 +219,163 @@ pub fn draw_image_bytes(
     });
 
     let draw_image_rect = |src: Option<Rect>, dst: Rect| {
+        let matrix = canvas.local_to_device_as_3x3();
+        // 한컴 PDF는 그림 배치값을 600dpi 정수로 반올림한 뒤, 0.12pt를
+        // 16.16 고정소수점(7864/65536)으로 변환한다. 레이아웃 bbox는 그대로 둔다.
+        let dst = if is_picture && !has_shadow && matrix.is_scale_translate() {
+            let quantize = |value: f32| {
+                (((value as f64) * 600.0 / 96.0).round() * 7864.0 / 65536.0 * 96.0 / 72.0) as f32
+            };
+            Rect::from_xywh(
+                quantize(dst.left),
+                quantize(dst.top),
+                quantize(dst.width()),
+                quantize(dst.height()),
+            )
+        } else {
+            dst
+        };
+        if is_picture
+            && matches!(
+                mode,
+                ImageFillMode::FitToSize | ImageFillMode::Total | ImageFillMode::None
+            )
+            && matrix.is_scale_translate()
+        {
+            let (device, _) = matrix.map_rect(dst);
+            let source = src.unwrap_or(Rect::from_xywh(0.0, 0.0, decoded_width, decoded_height));
+            if device.width() > 0.0
+                && device.height() > 0.0
+                && device.width() < source.width()
+                && device.height() < source.height()
+            {
+                let left = device.left.floor();
+                let top = device.top.floor();
+                let right = device.right.ceil();
+                let bottom = device.bottom.ceil();
+                if let Some(inverse) = matrix.invert() {
+                    if let Some(pixels) = smooth_hermite_downsample(
+                        encoded_bytes,
+                        (source.left, source.top, source.right, source.bottom),
+                        (right - left) as u32,
+                        (bottom - top) as u32,
+                    ) {
+                        let raster_width = (right - left) as i32;
+                        let raster_height = (bottom - top) as i32;
+                        let info = ImageInfo::new(
+                            (raster_width, raster_height),
+                            ColorType::RGBA8888,
+                            AlphaType::Unpremul,
+                            None,
+                        );
+                        if let Some(resampled) = skia_safe::images::raster_from_data(
+                            &info,
+                            Data::new_copy(&pixels),
+                            raster_width as usize * 4,
+                        ) {
+                            let snapped = inverse
+                                .map_rect(Rect::from_xywh(left, top, right - left, bottom - top))
+                                .0;
+                            canvas.draw_image_rect_with_sampling_options(
+                                &resampled,
+                                None,
+                                snapped,
+                                SamplingOptions::new(FilterMode::Nearest, MipmapMode::None),
+                                &paint,
+                            );
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        if is_picture
+            && !has_shadow
+            && matches!(
+                mode,
+                ImageFillMode::FitToSize | ImageFillMode::Total | ImageFillMode::None
+            )
+            && matrix.is_scale_translate()
+        {
+            let (device, _) = matrix.map_rect(dst);
+            let source = src.unwrap_or(Rect::from_xywh(0.0, 0.0, decoded_width, decoded_height));
+            if device.width() > source.width() || device.height() > source.height() {
+                let left = device.left.floor();
+                let top = device.top.floor();
+                let right = device.right.ceil();
+                let bottom = device.bottom.ceil();
+                // PDF /Interpolate가 없는 두 배 초과 확대는 최근접 픽셀을 사용한다.
+                let nearest = device.width() > source.width() * 2.0
+                    || device.height() > source.height() * 2.0;
+                if let Some(inverse) = matrix.invert() {
+                    if let Some(pixels) = gridfit_affine_sample(
+                        encoded_bytes,
+                        (source.left, source.top, source.right, source.bottom),
+                        (right - left) as u32,
+                        (bottom - top) as u32,
+                        nearest,
+                    ) {
+                        let raster_width = (right - left) as i32;
+                        let raster_height = (bottom - top) as i32;
+                        let info = ImageInfo::new(
+                            (raster_width, raster_height),
+                            ColorType::RGBA8888,
+                            AlphaType::Unpremul,
+                            None,
+                        );
+                        if let Some(resampled) = skia_safe::images::raster_from_data(
+                            &info,
+                            Data::new_copy(&pixels),
+                            raster_width as usize * 4,
+                        ) {
+                            let snapped = inverse
+                                .map_rect(Rect::from_xywh(left, top, right - left, bottom - top))
+                                .0;
+                            canvas.draw_image_rect_with_sampling_options(
+                                &resampled,
+                                None,
+                                snapped,
+                                SamplingOptions::new(FilterMode::Nearest, MipmapMode::None),
+                                &paint,
+                            );
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        // MuPDF는 확대 이미지를 정수 디바이스 픽셀 경계까지 래스터한다.
+        // 같은 범위를 사용해야 얇은 회색 선이 보간 중 사라지지 않는다.
+        let dst = if matches!(
+            mode,
+            ImageFillMode::FitToSize | ImageFillMode::Total | ImageFillMode::None
+        ) {
+            let matrix = canvas.local_to_device_as_3x3();
+            if matrix.is_scale_translate() {
+                let (device, _) = matrix.map_rect(dst);
+                let source_width = src.as_ref().map(Rect::width).unwrap_or(decoded_width);
+                let source_height = src.as_ref().map(Rect::height).unwrap_or(decoded_height);
+                if device.width() > source_width && device.height() > source_height {
+                    if let Some(inverse) = matrix.invert() {
+                        let snapped = Rect::from_xywh(
+                            device.left.floor(),
+                            device.top.floor(),
+                            device.right.ceil() - device.left.floor(),
+                            device.bottom.ceil() - device.top.floor(),
+                        );
+                        inverse.map_rect(snapped).0
+                    } else {
+                        dst
+                    }
+                } else {
+                    dst
+                }
+            } else {
+                dst
+            }
+        } else {
+            dst
+        };
         if let Some(src) = src.as_ref() {
             canvas.draw_image_rect_with_sampling_options(
                 &image,
@@ -229,16 +406,22 @@ pub fn draw_image_bytes(
     // 칸 채우기 None은 ImageNode 호출부가 Zoom으로 넘긴다. 쪽 배경 None은 위 늘려 채우기다.
     if mode == ImageFillMode::Zoom {
         if is_valid_image_size(decoded_width, decoded_height) {
-            let scale = (width / decoded_width).min(height / decoded_height);
+            // 한컴은 ZOOM 채우기의 맞춤 배율을 정수 퍼센트로 올림한다.
+            // 셀 경계를 넘는 부분은 원래 채우기 영역에서 잘린다.
+            let scale =
+                ((width / decoded_width).min(height / decoded_height) * 100.0).ceil() / 100.0;
             let fit_w = decoded_width * scale;
             let fit_h = decoded_height * scale;
             let fit = Rect::from_xywh(
-                x + (width - fit_w) / 2.0,
-                y + (height - fit_h) / 2.0,
+                x + (width - fit_w).max(0.0) / 2.0,
+                y + (height - fit_h).max(0.0) / 2.0,
                 fit_w,
                 fit_h,
             );
+            canvas.save();
+            canvas.clip_rect(dst, None, Some(true));
             draw_image_rect(crop_src, fit);
+            canvas.restore();
         } else {
             draw_image_rect(crop_src, dst);
         }
