@@ -79,7 +79,7 @@ test('HFT conversion preserves cubic coordinates, advance, Unicode coverage and 
 test('HFT conversion rejects unsupported commands, corrupt offsets and truncated coordinates', () => {
   assert.equal(convertHftToOpenType(new ArrayBuffer(64), 'Example.ttf'), null);
   assert.throws(() => convertHftToOpenType(syntheticHft([3, 0, 0, 255]), 'Example.hft'), /outline 명령/);
-  assert.throws(() => convertHftToOpenType(syntheticHft([3, 0, 0x7c]), 'Example.hft'), /잘렸/);
+  assert.throws(() => convertHftToOpenType(syntheticHft([3, 0x7c]), 'Example.hft'), /잘렸/);
   const invalid = syntheticHft(); new DataView(invalid).setUint32(0x1ae, 0xffffffff, true);
   assert.throws(() => convertHftToOpenType(invalid, 'Example.hft'), /범위/);
 });
@@ -107,7 +107,8 @@ test('renaming an equation HFT file preserves its internal bank and style identi
  * 표준 순서 블록의 i번째 glyph는 KS X 1001 한글 i번째 음절(가, 각, …)이다.
  */
 function syntheticHangulHft(): ArrayBuffer {
-  const square = [3, 50, 50, 5, 100, 6, 100, 5, 156, 4];
+  // 실제 파일처럼 끝 close(4)는 길이 밖, 다음 기록의 첫 byte로 넘어간다.
+  const square = [3, 50, 50, 5, 100, 6, 100, 5, 156];
   const record = Uint8Array.from([4, 0, square.length + 2, 0, ...square]);
   const block = (codes: number[] | null, count: number): Uint8Array => {
     const list = codes ? [...u16le(4 + codes.length * 2), 1, 0, ...codes.flatMap(u16le)] : [4, 0, 0xff, 0xff];
@@ -116,6 +117,7 @@ function syntheticHangulHft(): ArrayBuffer {
     const bytes = Uint8Array.from([
       ...u32le(0), ...u16le(0x11), ...u16le(0x8000), ...u16le(0xffff), ...u16le(count), ...u16le(1000),
       0, 0, 0, 0, 0, 0, 0, 0, ...list, ...offsets.flatMap(u32le), ...Array.from({ length: count }, () => [...record]).flat(),
+      4, 0, // 마지막 glyph의 끝 byte가 넘어오는 블록 꼬리
     ]);
     new DataView(bytes.buffer).setUint32(0, bytes.length, true);
     return bytes;

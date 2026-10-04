@@ -413,6 +413,11 @@ pub(crate) fn char_advance(
     })
 }
 
+/// 이 이름(별칭 포함)으로 등록된 런타임 페이스가 있는지. HFT 대체명 판단에 쓴다.
+pub(crate) fn has_face(name: &str) -> bool {
+    REGISTRY.with(|registry| select_face(&registry.borrow(), name, false, false).is_some())
+}
+
 /// Bold 요청 시 런타임 레지스트리가 Regular 페이스로 폴백하는지 여부.
 /// 등록된 페이스가 없으면 None.
 pub(crate) fn bold_fallback(primary_name: &str, italic: bool) -> Option<bool> {

@@ -1098,6 +1098,7 @@ function initializeDesktopFonts(): void {
   configureDesktopFonts({
     metrics: wasm.getRuntimeFontMetricsApi(),
     onLateRegistration: applyLateDesktopFontReport,
+    declaredFonts: () => (wasm.pageCount > 0 ? wasm.getFontList().map(font => font.name) : undefined),
   });
   if (isDesktopFontsSupported()) {
     // 첫 문서가 열리기 전에 색인을 미리 받아 둔다.

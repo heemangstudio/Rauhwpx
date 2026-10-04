@@ -40,7 +40,15 @@ import {
   type LocalFontFaceNames,
   type LocalFontRecord,
 } from './local-fonts.ts';
-import { convertHftFamilyToOpenType } from './hft-font.ts';
+import { HFT_SUCCESSOR_FONTS, hancomHftFallback } from './font-substitution.ts';
+import {
+  HFT_WORKER_FAILED,
+  convertHftFamily,
+  hftFamilyCacheKey,
+  loadCachedHftFamily,
+  saveCachedHftFamily,
+  type HftFamilyFile,
+} from './hft-family.ts';
 
 // ─── preload 계약 ─────────────────────────────────────────────
 
@@ -603,6 +611,11 @@ interface DesktopFontsConfig {
   metrics?: RuntimeFontMetricsApi | null;
   /** 백그라운드에서 새 face가 등록됐을 때 (지연 완료·reload·문서 편집 뒤) */
   onLateRegistration?: (report: DesktopFontReport) => void;
+  /**
+   * 문서가 선언한 원래 글꼴명. 엔진의 fontsUsed는 face가 없는 HFT를 HY 대체명으로 바꿔 알려
+   * 주므로(신명 태고딕 → HY중고딕), 한컴 HFT로 연결할 수 있는 원래 이름을 여기서 얻는다.
+   */
+  declaredFonts?: () => readonly string[] | undefined;
 }
 
 let config: DesktopFontsConfig = {};
@@ -984,20 +997,43 @@ interface FacePlanEntry extends DesktopFontSlotFace {
 
 class UnsupportedHftError extends Error {}
 
-/** 문자군별 HFT 파일을 읽어 OpenType 하나로 합친다. 일부 파일을 못 읽어도 나머지로 만든다. */
+/**
+ * 문자군별 HFT 파일을 OpenType 하나로 합친다. 변환 결과는 캐시에서 먼저 찾고(원본 읽기도 생략),
+ * 없으면 파일을 읽어 Worker에서 변환한다. 일부 파일을 못 읽어도 나머지로 만든다.
+ */
 async function readHftFamily(host: SystemFontHost, parts: readonly SystemFontFace[], family: string): Promise<ArrayBuffer> {
-  const reads = await Promise.allSettled(parts.map(face => readDesktopFace(host, face.id)));
-  const files = reads.flatMap((read, i) => (
-    read.status === 'fulfilled' ? [{ bytes: read.value, fileName: fileName(parts[i]!.path) }] : []
-  ));
-  if (!files.length) throw (reads.find(read => read.status === 'rejected') as PromiseRejectedResult).reason;
-  // 변환은 글꼴 하나에 수백 ms까지 걸린다. 앞선 입력·그리기가 먼저 돌도록 한 번 양보한다.
-  await new Promise(resolve => setTimeout(resolve, 0));
-  try {
-    return convertHftFamilyToOpenType(files, family);
-  } catch (error) {
+  const key = hftFamilyCacheKey(parts.map(face => face.id), family);
+  const cached = await loadCachedHftFamily(key);
+  if (cached && 'bytes' in cached) return cached.bytes;
+  if (cached) throw new UnsupportedHftError(cached.error);
+  const readParts = async (): Promise<HftFamilyFile[]> => {
+    const reads = await Promise.allSettled(parts.map(face => readDesktopFace(host, face.id)));
+    const files = reads.flatMap((read, i) => (
+      read.status === 'fulfilled' ? [{ bytes: read.value, fileName: fileName(parts[i]!.path) }] : []
+    ));
+    if (!files.length) throw (reads.find(read => read.status === 'rejected') as PromiseRejectedResult).reason;
+    return files;
+  };
+  const convert = (files: HftFamilyFile[]): Promise<ArrayBuffer> => convertHftFamily(files, family).catch((error: unknown) => {
+    if (errorText(error) === HFT_WORKER_FAILED) throw error;
     throw new UnsupportedHftError(errorText(error));
+  });
+  let converted: ArrayBuffer;
+  try {
+    try {
+      converted = await convert(await readParts());
+    } catch (error) {
+      // Worker가 죽으면 넘긴 원본도 사라지므로 다시 읽어 메인 스레드에서 변환한다.
+      if (errorText(error) !== HFT_WORKER_FAILED) throw error;
+      converted = await convert(await readParts());
+    }
+  } catch (error) {
+    // 파일 내용이 원인인 실패만 기억한다. 읽기 실패(stale 등)는 다음에 다시 시도한다.
+    if (error instanceof UnsupportedHftError) void saveCachedHftFamily(key, { error: error.message });
+    throw error;
   }
+  void saveCachedHftFamily(key, { bytes: converted.slice(0) });
+  return converted;
 }
 
 interface GroupPlan {
@@ -1123,6 +1159,27 @@ export async function prepareDesktopFontsForDocument(
   }
   const lookup = currentLookup ?? buildDesktopFontLookup(index);
   const indexedAt = now();
+  // 문서가 선언한 HFT 원래 이름과, 보호된 한양 HFT의 표시용 `#` 대체 가족을 함께 연결한다.
+  let declared: readonly string[] = [];
+  try {
+    declared = config.declaredFonts?.() ?? [];
+  } catch {
+    declared = [];
+  }
+  // HFT 한글은 2,350자뿐이라 한컴처럼 나머지 음절을 그릴 번들 TTF(한컴바탕/한컴돋움)도 연결한다.
+  const hftNames = [...names, ...declared].filter(name => (
+    HFT_SUCCESSOR_FONTS.has(name.trim()) || hftFamilyParts([name], lookup).length > 0
+  ));
+  for (const name of uniqueFontNames([
+    ...declared.filter(name => hftFamilyParts([name], lookup).length > 0),
+    ...[...names, ...declared].flatMap(name => HFT_SUCCESSOR_FONTS.get(name.trim()) ?? []),
+    ...hftNames.map(hancomHftFallback),
+  ])) {
+    const key = exactFontKey(name);
+    if (attemptedFonts.has(key) || names.includes(name)) continue;
+    attemptedFonts.add(key);
+    names.push(name);
+  }
 
   const items = new Map<string, DesktopFontReportItem>();
   const plans = new Map<string, GroupPlan>();
@@ -1154,7 +1211,15 @@ export async function prepareDesktopFontsForDocument(
     planByName.set(requested, plan);
   }
   for (const plan of plans.values()) {
-    plan.faces = plan.match.slots.map(({ slot, face }) => {
+    const regular = plan.match.slots.find(entry => entry.slot === 'regular');
+    const mergedHft = regular?.face.format === 'hft'
+      && hftFamilyParts([...plan.requested, plan.match.matchedName], lookup).length > 0;
+    // 한컴은 영문 HFT에만 굵게/기울임 파일을 둔다. 영문만 든 변형 face를 올리면 굵은 한글이
+    // 다른 글꼴로 빠지므로, 합친 보통 face에서 브라우저가 굵게/기울임을 합성하게 둔다.
+    const slots = mergedHft
+      ? plan.match.slots.filter(entry => entry.slot === 'regular' || entry.face.format !== 'hft')
+      : plan.match.slots;
+    plan.faces = slots.map(({ slot, face }) => {
       const names = faceNamesFor(plan, slot, face);
       const hftParts = slot === 'regular' && face.format === 'hft'
         ? hftFamilyParts([...plan.requested, plan.match.matchedName], lookup)
