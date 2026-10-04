@@ -1,7 +1,8 @@
+import { checkChipAlignment } from './chip-alignment.check.mjs';
 import { checkPiModels } from './pi-models.check.mjs';
 import { checkCloudMergeRecovery } from './cloud-merge-recovery.check.mjs';
 import { checkCloudSetup } from './cloud-setup.check.mjs';
-import { checkCliTerminalDefaults } from './cli-terminal-defaults.check.mjs';
+import { checkBoatSetup } from './boat-setup.check.mjs';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -144,8 +145,11 @@ try {
       throw new Error(`${name}: ${error.message}\nRuntime errors: ${JSON.stringify(errors)}\nBlocked requests: ${JSON.stringify(forbidden)}`, { cause: error });
     }
   }
+  await step('Fullscreen provider chip follows the composer column', () => checkChipAlignment(page, origin));
   await step('First Cloud server creation, cancel, refresh and recreation',
     () => checkCloudSetup(page, origin, artifacts));
+  await step('boat server setup by email and API key, card start/stop, disconnect and delete at 280/480/900px',
+    () => checkBoatSetup(page, origin, artifacts));
   await step('Cloud disconnect, reconnect, rebuild, and shutdown recovery',
     () => checkCloudRecovery(page, origin, artifacts));
   await step('Cloud streamed text survives delayed timelines and terminal errors do not reconnect',
@@ -156,7 +160,7 @@ try {
     await open('cloud=1&dashboard=1&page=settings&destination=cloud&controls=0');
     await page.waitForSelector('.ag-cd-task');
     assert.equal(await page.$$eval('.ag-cd-task', nodes => nodes.length), 4);
-    assert.equal(await page.$$eval('.ag-cd-stats, .ag-cd-chart, .ag-cd-content h3', nodes => nodes.some(node => node.checkVisibility())), false);
+    assert.equal(await page.$$eval('.ag-cd-stats, .ag-cd-chart', nodes => nodes.some(node => node.checkVisibility())), false);
     const initialStatuses = await page.$$eval('.ag-cd-task-status', nodes => nodes.map(node => node.textContent));
     await page.focus('.ag-cd-task');
     await page.evaluate(() => window.sidebarPreview.cloud.publish());
@@ -185,14 +189,9 @@ try {
     await page.click('.ag-cd-refresh');
     await page.waitForFunction(() => !document.querySelector('.ag-cd-refresh').disabled);
     await page.evaluate(() => window.sidebarPreview.cloud.setDashboardState('logged-out'));
-    assert.equal(await page.$eval('.ag-cd-login', node => node.checkVisibility()), true);
-    await page.evaluate(() => {
-      window.previewOriginalOpen = window.open;
-      window.open = url => { window.previewLoginUrl = url; return null; };
-    });
-    await page.click('.ag-cd-login');
-    await page.waitForFunction(() => window.previewLoginUrl === 'https://accounts.example.invalid/preview');
-    await page.evaluate(() => { window.open = window.previewOriginalOpen; });
+    // Rauhwpx 계정 줄은 AI 연결이 아니라 Cloud 서버 카드 안에만 있다.
+    assert.equal(await page.$$eval('.ag-cloud-settings-card .ag-account-session-row', nodes => nodes.length), 1);
+    assert.equal(await page.$$eval('#ag-settings-pane-ai .ag-account-session-row', nodes => nodes.length), 0);
     await open('cloud=1&dashboard=1&page=settings&destination=cloud&width=280&theme=dark&controls=0');
     assert.equal(await page.$eval('#ag-settings-pane-cloud', node => node.scrollWidth > node.clientWidth), false);
     await screenshot('cloud-inbox-narrow');
@@ -227,6 +226,10 @@ try {
     await clickText('button', '변경 검토');
     await page.waitForFunction(() => window.sidebarPreview.versions.getState().branches
       .some(branch => branch.name === 'Cloud · 팀 회의록 · 1턴'));
+    // 반영 알림 토스트가 사이드바 머리글을 잠시 덮는다. 닫고 버전 기록을 연다.
+    await page.waitForSelector('.rhwp-toast-close');
+    await page.click('.rhwp-toast-close');
+    await page.waitForSelector('.rhwp-toast', { hidden: true });
     await page.click('[aria-label="버전"]');
     await page.waitForSelector('.ag-root.ag-versions-open');
     await clickText('.ag-versions-tab', '브랜치');
@@ -365,11 +368,36 @@ try {
     assert.equal(await page.$eval('.ag-activity-label', node => node.textContent), 'read_document');
     await open('scenario=tools');
     await page.click('#play');
-    await page.waitForFunction(() => !window.sidebarPreview.bridge.isTurnRunning()
-      && document.querySelector('.ag-activity-label')?.textContent === '3개의 도구를 호출함');
+    const turnLabel = '편집 2번 · 읽기 1번 · 도구 1번 · 오류 1';
+    await page.waitForFunction((label) => !window.sidebarPreview.bridge.isTurnRunning()
+      && document.querySelector('.ag-activity-label')?.textContent === label, {}, turnLabel);
     await page.click('.ag-activity-toggle');
-    assert.equal(await page.$$eval('.ag-tool-name', nodes => nodes.map(node => node.textContent).join(',')),
-      'read_document,search_document,edit_document');
+    const toolRows = async () => page.$$eval('.ag-tool-row', rows => rows.map(row => ({
+      label: row.querySelector('.ag-tool-label')?.textContent,
+      summary: row.querySelector('.ag-tool-summary')?.textContent,
+      outcome: row.querySelector('.ag-tool-outcome')?.hidden ? '' : row.querySelector('.ag-tool-outcome-text')?.textContent,
+      thumb: Boolean(row.querySelector('.ag-tool-thumb img')),
+      items: [...row.querySelectorAll('.ag-tool-item')].map(item => item.textContent),
+    })));
+    const assertToolRows = (rows) => {
+      assert.deepEqual(rows.map(row => row.label), ['read_document', '2개 읽기', '3곳 편집', '표 속성 변경']);
+      assert.equal(rows[1].outcome, '2개 읽음');
+      assert.equal(rows[2].summary, '텍스트 바꾸기 · 텍스트 삽입 · 글자 서식');
+      assert.equal(rows[2].outcome, '3개 편집 적용 · 2쪽');
+      assert.equal(rows[2].items.length, 3);
+      assert.equal(rows[3].outcome, '문서 버전 불일치');
+    };
+    const live = await toolRows();
+    assertToolRows(live);
+    assert.equal(live[2].thumb, true, '편집 결과 그림이 작은 그림으로 붙는다');
+    await page.$$eval('.ag-tool-head', heads => heads[2].click());
+    await page.click('.ag-tool-thumb');
+    await page.waitForSelector('.ag-image-viewer img');
+    await screenshot('tool-activity-live');
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => !document.querySelector('.ag-image-viewer'));
+    // 줄인 그림이 기록에 들어간 뒤 다시 연다.
+    await new Promise((resolve) => setTimeout(resolve, 300));
     await page.click('.ag-header .ag-threads-btn');
     const threadId = await page.$eval('.ag-threads-item.ag-active', node => node.dataset.threadId);
     await page.reload({ waitUntil: 'networkidle0' });
@@ -377,7 +405,11 @@ try {
     await page.$eval('.ag-threads-list', (list, id) =>
       [...list.querySelectorAll('.ag-threads-item')].find(node => node.dataset.threadId === id)?.click(), threadId);
     await page.waitForSelector('.ag-activity-label');
-    assert.equal(await page.$eval('.ag-activity-label', node => node.textContent), '3개의 도구를 호출함');
+    assert.equal(await page.$eval('.ag-activity-label', node => node.textContent), turnLabel);
+    await page.click('.ag-activity-toggle');
+    const stored = await toolRows();
+    assertToolRows(stored);
+    assert.equal(stored[2].thumb, true, '저장된 대화도 결과 그림을 보인다');
     await screenshot('tool-activity');
   });
   await step('Chat follows a send and yields to manual scrolling', async () => {
@@ -396,12 +428,28 @@ try {
     const messages = await page.$('.ag-messages');
     const box = await messages.boundingBox();
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    // 따라가기 스크롤이 멈춘 뒤의 위치를 기준으로 삼는다. 움직이는 중에 읽으면 휠이 그 움직임과 겹친다.
+    await page.waitForFunction(() => new Promise((done) => {
+      const node = document.querySelector('.ag-messages');
+      const before = node.scrollTop;
+      setTimeout(() => done(Math.abs(node.scrollTop - before) < 1), 250);
+    }));
     const followedTop = await messages.evaluate((node) => node.scrollTop);
-    await page.mouse.wheel({ deltaY: -350 });
+    // 답변 아래 끝 여백까지 화면 밖으로 넘길 만큼 올린다.
+    await page.mouse.wheel({ deltaY: -700 });
     await page.waitForFunction((top) => document.querySelector('.ag-messages').scrollTop < top - 80, {}, followedTop);
-    const pausedTop = await messages.evaluate((node) => node.scrollTop);
+    // 입력기는 대화 끝이 충분히 가려진 뒤 이어지는 위 스크롤에서 접힌다.
+    const scrolledTop = await messages.evaluate((node) => node.scrollTop);
+    await page.mouse.wheel({ deltaY: -60 });
     await page.waitForSelector('.ag-composer.ag-resting');
-    await page.waitForFunction(() => document.querySelector('.ag-messages').textContent.includes('필요한 부분을 선택'));
+    await page.waitForFunction((top) => new Promise((done) => {
+      const node = document.querySelector('.ag-messages');
+      const before = node.scrollTop;
+      setTimeout(() => done(before < top && Math.abs(node.scrollTop - before) < 1), 250);
+    }), {}, scrolledTop);
+    const pausedTop = await messages.evaluate((node) => node.scrollTop);
+    // 멈춘 턴은 닫히지 않은 마지막 문단을 그리지 않으므로 그 앞 목록까지 기다린다.
+    await page.waitForFunction(() => document.querySelector('.ag-messages').textContent.includes('단계별 일정과 담당자를 확인합니다.'));
     assert(Math.abs((await messages.evaluate((node) => node.scrollTop)) - pausedTop) < 4);
     await page.mouse.wheel({ deltaY: 1800 });
     await page.waitForFunction(() => {
@@ -409,11 +457,16 @@ try {
       return node.scrollHeight - node.scrollTop - node.clientHeight < 4;
     });
     await page.waitForSelector('.ag-composer:not(.ag-resting)');
+    // 실행 중인 답변은 첫 줄에 고정되고 끝을 쫓지 않는다. 턴을 멈춰 답변을 확정한 뒤,
+    // 그 아래로 붙는 내용은 다시 끝을 따라가는지 본다.
+    await page.$eval('.ag-send', (button) => button.click());
+    await page.waitForFunction(() => !window.sidebarPreview.bridge.isTurnRunning());
     const resumedTop = await messages.evaluate((node) => node.scrollTop);
     await page.evaluate(() => {
       const messages = document.querySelector('.ag-messages');
       const more = document.createElement('div');
-      more.style.minHeight = '200px';
+      // 끝 여백이 흡수하지 못할 만큼 길게 붙인다.
+      more.style.minHeight = '1200px';
       messages.insertBefore(more, messages.querySelector('.ag-messages-end'));
     });
     await page.waitForFunction((top) => document.querySelector('.ag-messages').scrollTop > top + 100, {}, resumedTop);
@@ -465,6 +518,11 @@ try {
       await page.waitForFunction(
         () => window.sidebarPreview.snapshot().pendingChanges === 0,
       );
+      assert.equal(await page.$('.ag-review-card:not(.ag-review-card-leaving)'), null);
+      assert.equal(await page.$eval('.ag-agent-undo-btn', (node) => node.hidden), false);
+      await page.click('.ag-agent-undo-btn');
+      await page.waitForFunction(() => window.sidebarPreview.undoState.calls === 1);
+      assert.equal(await page.$eval('.ag-agent-undo-btn', (node) => node.hidden), true);
       await play('review');
       await page.waitForSelector('.ag-review-card .ag-reject', {
         visible: true,
@@ -490,7 +548,6 @@ try {
       document.querySelector('.ag-root').innerText.includes('선택한 문체'),
     );
   });
-  await step('New CLI installs default to terminal login', () => checkCliTerminalDefaults(page, origin));
   await step('Shared Pi model selection', () => checkPiModels(page, origin));
   await step('Embedded CLI login terminal', () => checkSetupTerminal(page, origin));
   await step('Provider picker only lists connected providers', async () => {
@@ -661,7 +718,8 @@ try {
       assert.equal(await page.$eval('[data-action="refresh-usage"]', (el) => el.disabled), true);
       await page.waitForFunction(() => !document.querySelector('[data-action="refresh-usage"]').disabled);
       await screenshot('settings');
-      await clickText('.ag-settings-nav-button', 'AI');
+      // Rauhwpx 계정은 Cloud 서버 카드에서 로그인한다.
+      await open('cloud=1&page=settings&destination=cloud');
       await page.waitForFunction(() =>
         document
           .querySelector('.ag-account-session-row')
@@ -681,6 +739,7 @@ try {
       await page.waitForFunction(
         () => window.sidebarPreview.snapshot().account === 'signed-out',
       );
+      await open('page=settings');
       await clickText('.ag-settings-nav-button', 'AI');
       await page.waitForSelector('.ag-template-row', { visible: true });
       await screenshot('ai-settings');

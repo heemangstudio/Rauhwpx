@@ -102,9 +102,9 @@ test('bundled present-plan stays sealed and a user directory of that name is qua
 test('promptContext keeps the writing discipline on implementing and omits it while planning', async (t) => {
   const { registry } = await tempRegistry(t);
   const implementing = await registry.promptContext('문장', undefined, { phase: 'implementing' });
-  assert.match(implementing, /<korean_writing_discipline>/);
+  assert.match(implementing, /<humanize_korean_trigger>/);
   const planning = await registry.promptContext('문장', undefined, { phase: 'planning' });
-  assert.doesNotMatch(planning, /<korean_writing_discipline>/);
+  assert.doesNotMatch(planning, /<humanize_korean_trigger>/);
 });
 
 test('Codex loads bundled document image guidance by default and respects disabling it', async (t) => {
@@ -600,4 +600,43 @@ test('changing a skill icon preserves its body and checks the current digest', a
     action: 'icon', name: 'icon-skill', icon: 'heart', base: created.digest,
   });
   assert.equal(stale.code, 'STALE');
+});
+
+test('promptContext inlines short resource-free skills so a matching turn needs no read_product_skill', async (t) => {
+  const { registry } = await tempRegistry(t, {
+    bundled: {
+      'short-one': { 'SKILL.md': MARKDOWN('short-one', 'Short one.') },
+      'with-script': { 'SKILL.md': MARKDOWN('with-script'), 'scripts/run.sh': 'echo hi\n' },
+      'too-long': { 'SKILL.md': `---\nname: too-long\ndescription: Too long.\n---\n\n${'x'.repeat(1300)}\n` },
+    },
+  });
+  const prompt = await registry.promptContext('교정', undefined, { agent: 'claude' });
+  assert.match(prompt, /<product_skill name="short-one">\nShort one\.\n\nFollow the requested workflow\.\n<\/product_skill>/);
+  assert.match(prompt, /already loaded: when the request matches one, follow it directly without read_product_skill/);
+  assert.doesNotMatch(prompt, /- short-one: /);
+  assert.match(prompt, /- with-script: /, '리소스가 있는 스킬은 설명 줄로 남는다');
+  assert.match(prompt, /- too-long: /, '긴 본문은 설명 줄로 남는다');
+
+  // 명시 호출한 스킬은 activated 블록 하나로만 싣는다.
+  const explicit = await registry.promptContext('교정', 'short-one', { agent: 'claude' });
+  assert.equal(explicit.match(/Follow the requested workflow\./g)?.length, 1);
+  assert.match(explicit, /<activated_product_skill name="short-one">/);
+  assert.doesNotMatch(explicit, /<product_skill name="short-one">/);
+
+  const disabled = await change(registry, { action: 'enable', name: 'short-one', enabled: false });
+  assert.equal(disabled.ok, true);
+  assert.doesNotMatch(await registry.promptContext('교정'), /short-one/);
+});
+
+test('promptContext caps inlined skill bodies, smallest first, and keeps the rest as catalog lines', async (t) => {
+  const bundled = {};
+  for (const [name, size] of [['a-skill', 1100], ['b-skill', 1000], ['c-skill', 900], ['d-skill', 800]]) {
+    bundled[name] = { 'SKILL.md': `---\nname: ${name}\ndescription: ${name} desc.\n---\n\n${'y'.repeat(size)}\n` };
+  }
+  const { registry } = await tempRegistry(t, { bundled });
+  const prompt = await registry.promptContext('x');
+  // 800 + 900 + 1000 = 2,700 바이트까지 싣고 1,100 바이트 스킬은 설명 줄로 남는다.
+  for (const name of ['b-skill', 'c-skill', 'd-skill']) assert.match(prompt, new RegExp(`<product_skill name="${name}">`));
+  assert.match(prompt, /- a-skill: a-skill desc\./);
+  assert.doesNotMatch(prompt, /<product_skill name="a-skill">/);
 });

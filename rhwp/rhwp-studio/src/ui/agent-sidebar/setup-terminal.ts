@@ -1,6 +1,8 @@
 import type { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 
+const HINT = '↑ ↓ 선택 · Enter 확인';
+
 /** 모델 연결 전용 터미널. 닫으면 출력과 입력 상태를 모두 지운다. */
 export function createSetupTerminal(options: {
   input: (data: string) => void;
@@ -22,7 +24,7 @@ export function createSetupTerminal(options: {
   header.append(title, cancel);
   const hint = document.createElement('p');
   hint.className = 'ag-setup-terminal-hint';
-  hint.textContent = '↑ ↓ 선택 · Enter 확인';
+  hint.textContent = HINT;
   const screen = document.createElement('div');
   screen.className = 'ag-setup-terminal-screen';
   screen.setAttribute('aria-label', 'Claude 로그인 터미널');
@@ -32,6 +34,7 @@ export function createSetupTerminal(options: {
   let generation = 0;
   let loading = false;
   let ready = false;
+  let online = true;
   let fit: (() => void) | null = null;
   let lastSize = '';
   const observer = new ResizeObserver(() => fit?.());
@@ -53,7 +56,7 @@ export function createSetupTerminal(options: {
       if (generation !== current) return;
       const addon = new FitAddon();
       terminal = new Terminal({ cursorBlink: true, fontSize: 12, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-        disableStdin: !ready, scrollback: 500, screenReaderMode: true, allowProposedApi: false, rows: 16, cols: 60 });
+        disableStdin: !ready || !online, scrollback: 500, screenReaderMode: true, allowProposedApi: false, rows: 16, cols: 60 });
       terminal.loadAddon(addon);
       terminal.loadAddon(new WebLinksAddon((_event, uri) => {
         try {
@@ -99,7 +102,13 @@ export function createSetupTerminal(options: {
   }
   return {
     root, open, close,
-    ready() { ready = true; if (terminal) terminal.options.disableStdin = false; lastSize = ''; fit?.(); },
+    ready() { ready = true; if (terminal) terminal.options.disableStdin = !online; lastSize = ''; fit?.(); },
+    /** 허브 연결이 끊기면 입력을 막는다. 입력이 사라지는 대신 끊김을 보여 준다. */
+    setOnline(next: boolean) {
+      online = next;
+      hint.textContent = online ? HINT : '연결 끊김 · 다시 연결하는 중';
+      if (terminal) terminal.options.disableStdin = !ready || !online;
+    },
     write(data: string, reset = false) {
       if (reset) { terminal?.reset(); pending = ''; }
       if (terminal) terminal.write(data, () => terminal?.scrollToBottom());

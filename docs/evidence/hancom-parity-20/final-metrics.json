@@ -1,0 +1,1518 @@
+{
+  "round": "codex-final-pr",
+  "metric": {
+    "name": "Maximum of all ten bands over every page",
+    "dpi": 200,
+    "position_tolerance_px": 4
+  },
+  "native_binary_sha256": "c0e63727770194b3c2ecdbf93edf55601c59798686666dfd3c145209ac2d47ce",
+  "source_freeze": {
+    "rust_files": 542,
+    "studio_files": 418,
+    "unchanged": true,
+    "manifest_sha256": "fb8b9f5b6df42e7e5084ccb0c029bead488f729d73fff4afe1f20c356d6dc9b1"
+  },
+  "font_inputs": {
+    "ttf_files": 187,
+    "hft_files": 387,
+    "metadata_files": 16,
+    "total_hashed_inputs": 590
+  },
+  "saved": {
+    "work": "/tmp/rhwp-parity-top20",
+    "base": "codex-eq22-origin57-integrated",
+    "head": "codex-final-pr",
+    "docs": {
+      "aift": {
+        "pages_before": 74,
+        "pages_after": 74,
+        "official_pages": 74,
+        "counts_match": true,
+        "worst_before": 0.57,
+        "worst_after": 0.57,
+        "mismatch_px_before": 409,
+        "mismatch_px_after": 409,
+        "delta_px": 0
+      },
+      "donation-report-form": {
+        "pages_before": 30,
+        "pages_after": 30,
+        "official_pages": 30,
+        "counts_match": true,
+        "worst_before": 0.2,
+        "worst_after": 0.2,
+        "mismatch_px_before": 11,
+        "mismatch_px_after": 11,
+        "delta_px": 0
+      },
+      "exam-kor": {
+        "pages_before": 20,
+        "pages_after": 20,
+        "official_pages": 20,
+        "counts_match": true,
+        "worst_before": 0.89,
+        "worst_after": 0.89,
+        "mismatch_px_before": 3958,
+        "mismatch_px_after": 3958,
+        "delta_px": 0
+      },
+      "exam-social": {
+        "pages_before": 4,
+        "pages_after": 4,
+        "official_pages": 4,
+        "counts_match": true,
+        "worst_before": 0.01,
+        "worst_after": 0.01,
+        "mismatch_px_before": 10,
+        "mismatch_px_after": 10,
+        "delta_px": 0
+      },
+      "fdi-press-2024": {
+        "pages_before": 9,
+        "pages_after": 9,
+        "official_pages": 9,
+        "counts_match": true,
+        "worst_before": 0.03,
+        "worst_after": 0.03,
+        "mismatch_px_before": 34,
+        "mismatch_px_after": 34,
+        "delta_px": 0
+      },
+      "fdi-press-2025q2": {
+        "pages_before": 9,
+        "pages_after": 9,
+        "official_pages": 9,
+        "counts_match": true,
+        "worst_before": 0.03,
+        "worst_after": 0.03,
+        "mismatch_px_before": 37,
+        "mismatch_px_after": 37,
+        "delta_px": 0
+      },
+      "gov-excavation-report": {
+        "pages_before": 2,
+        "pages_after": 2,
+        "official_pages": 2,
+        "counts_match": true,
+        "worst_before": 0.04,
+        "worst_after": 0.04,
+        "mismatch_px_before": 12,
+        "mismatch_px_after": 12,
+        "delta_px": 0
+      },
+      "gov-fire-report": {
+        "pages_before": 2,
+        "pages_after": 2,
+        "official_pages": 2,
+        "counts_match": true,
+        "worst_before": 0.0,
+        "worst_after": 0.0,
+        "mismatch_px_before": 0,
+        "mismatch_px_after": 0,
+        "delta_px": 0
+      },
+      "gov-lecturer-review": {
+        "pages_before": 8,
+        "pages_after": 8,
+        "official_pages": 8,
+        "counts_match": true,
+        "worst_before": 0.53,
+        "worst_after": 0.53,
+        "mismatch_px_before": 393,
+        "mismatch_px_after": 393,
+        "delta_px": 0
+      },
+      "gov-welfare-request": {
+        "pages_before": 9,
+        "pages_after": 9,
+        "official_pages": 9,
+        "counts_match": true,
+        "worst_before": 0.28,
+        "worst_after": 0.28,
+        "mismatch_px_before": 216,
+        "mismatch_px_after": 216,
+        "delta_px": 0
+      },
+      "hcar-001": {
+        "pages_before": 6,
+        "pages_after": 6,
+        "official_pages": 6,
+        "counts_match": true,
+        "worst_before": 0.0,
+        "worst_after": 0.0,
+        "mismatch_px_before": 0,
+        "mismatch_px_after": 0,
+        "delta_px": 0
+      },
+      "k-water-rfp": {
+        "pages_before": 27,
+        "pages_after": 27,
+        "official_pages": 27,
+        "counts_match": true,
+        "worst_before": 0.34,
+        "worst_after": 0.34,
+        "mismatch_px_before": 472,
+        "mismatch_px_after": 472,
+        "delta_px": 0
+      },
+      "kedi-application": {
+        "pages_before": 6,
+        "pages_after": 6,
+        "official_pages": 6,
+        "counts_match": true,
+        "worst_before": 0.0,
+        "worst_after": 0.0,
+        "mismatch_px_before": 0,
+        "mismatch_px_after": 0,
+        "delta_px": 0
+      },
+      "math-001": {
+        "pages_before": 1,
+        "pages_after": 1,
+        "official_pages": 1,
+        "counts_match": true,
+        "worst_before": 0.04,
+        "worst_after": 0.04,
+        "mismatch_px_before": 1,
+        "mismatch_px_after": 1,
+        "delta_px": 0
+      },
+      "mel-001": {
+        "pages_before": 20,
+        "pages_after": 20,
+        "official_pages": 20,
+        "counts_match": true,
+        "worst_before": 0.08,
+        "worst_after": 0.08,
+        "mismatch_px_before": 55,
+        "mismatch_px_after": 55,
+        "delta_px": 0
+      },
+      "mock-exam-nov-2022": {
+        "pages_before": 21,
+        "pages_after": 21,
+        "official_pages": 21,
+        "counts_match": true,
+        "worst_before": 0.76,
+        "worst_after": 0.76,
+        "mismatch_px_before": 2504,
+        "mismatch_px_after": 2504,
+        "delta_px": 0
+      },
+      "onsaemiro-textbook": {
+        "pages_before": 47,
+        "pages_after": 47,
+        "official_pages": 47,
+        "counts_match": true,
+        "worst_before": 0.07,
+        "worst_after": 0.07,
+        "mismatch_px_before": 48,
+        "mismatch_px_after": 48,
+        "delta_px": 0
+      },
+      "oss-result-2026": {
+        "pages_before": 6,
+        "pages_after": 6,
+        "official_pages": 6,
+        "counts_match": true,
+        "worst_before": 0.17,
+        "worst_after": 0.17,
+        "mismatch_px_before": 57,
+        "mismatch_px_after": 57,
+        "delta_px": 0
+      },
+      "readmission-form": {
+        "pages_before": 1,
+        "pages_after": 1,
+        "official_pages": 1,
+        "counts_match": true,
+        "worst_before": 38.47,
+        "worst_after": 38.47,
+        "mismatch_px_before": 6442,
+        "mismatch_px_after": 6442,
+        "delta_px": 0
+      },
+      "water-mark": {
+        "pages_before": 1,
+        "pages_after": 1,
+        "official_pages": 1,
+        "counts_match": true,
+        "worst_before": 0.78,
+        "worst_after": 0.78,
+        "mismatch_px_before": 231,
+        "mismatch_px_after": 231,
+        "delta_px": 0
+      }
+    },
+    "changed_bands": [],
+    "count_failures": [],
+    "below_target": 19
+  },
+  "own": {
+    "work": "/tmp/rhwp-parity-reflow",
+    "base": "codex-eq22-origin57-integrated",
+    "head": "codex-final-pr",
+    "docs": {
+      "water-mark": {
+        "pages_before": 1,
+        "pages_after": 1,
+        "official_pages": 1,
+        "counts_match": true,
+        "worst_before": 0.78,
+        "worst_after": 0.78,
+        "mismatch_px_before": 231,
+        "mismatch_px_after": 231,
+        "delta_px": 0
+      },
+      "readmission-form": {
+        "pages_before": 1,
+        "pages_after": 1,
+        "official_pages": 1,
+        "counts_match": true,
+        "worst_before": 38.47,
+        "worst_after": 38.47,
+        "mismatch_px_before": 6442,
+        "mismatch_px_after": 6442,
+        "delta_px": 0
+      },
+      "math-001": {
+        "pages_before": 1,
+        "pages_after": 1,
+        "official_pages": 1,
+        "counts_match": true,
+        "worst_before": 0.04,
+        "worst_after": 0.04,
+        "mismatch_px_before": 1,
+        "mismatch_px_after": 1,
+        "delta_px": 0
+      },
+      "gov-excavation-report": {
+        "pages_before": 2,
+        "pages_after": 2,
+        "official_pages": 2,
+        "counts_match": true,
+        "worst_before": 0.04,
+        "worst_after": 0.04,
+        "mismatch_px_before": 12,
+        "mismatch_px_after": 12,
+        "delta_px": 0
+      },
+      "gov-fire-report": {
+        "pages_before": 2,
+        "pages_after": 2,
+        "official_pages": 2,
+        "counts_match": true,
+        "worst_before": 0.0,
+        "worst_after": 0.0,
+        "mismatch_px_before": 0,
+        "mismatch_px_after": 0,
+        "delta_px": 0
+      },
+      "exam-social": {
+        "pages_before": 4,
+        "pages_after": 4,
+        "official_pages": 4,
+        "counts_match": true,
+        "worst_before": 23.63,
+        "worst_after": 23.63,
+        "mismatch_px_before": 80383,
+        "mismatch_px_after": 80383,
+        "delta_px": 0
+      },
+      "hcar-001": {
+        "pages_before": 6,
+        "pages_after": 6,
+        "official_pages": 6,
+        "counts_match": true,
+        "worst_before": 0.0,
+        "worst_after": 0.0,
+        "mismatch_px_before": 2,
+        "mismatch_px_after": 2,
+        "delta_px": 0
+      },
+      "kedi-application": {
+        "pages_before": 6,
+        "pages_after": 6,
+        "official_pages": 6,
+        "counts_match": true,
+        "worst_before": 0.0,
+        "worst_after": 0.0,
+        "mismatch_px_before": 0,
+        "mismatch_px_after": 0,
+        "delta_px": 0
+      },
+      "oss-result-2026": {
+        "pages_before": 6,
+        "pages_after": 6,
+        "official_pages": 6,
+        "counts_match": true,
+        "worst_before": 0.17,
+        "worst_after": 0.17,
+        "mismatch_px_before": 57,
+        "mismatch_px_after": 57,
+        "delta_px": 0
+      },
+      "gov-lecturer-review": {
+        "pages_before": 8,
+        "pages_after": 8,
+        "official_pages": 8,
+        "counts_match": true,
+        "worst_before": 0.53,
+        "worst_after": 0.53,
+        "mismatch_px_before": 393,
+        "mismatch_px_after": 393,
+        "delta_px": 0
+      },
+      "fdi-press-2024": {
+        "pages_before": 9,
+        "pages_after": 9,
+        "official_pages": 9,
+        "counts_match": true,
+        "worst_before": 0.03,
+        "worst_after": 0.03,
+        "mismatch_px_before": 35,
+        "mismatch_px_after": 35,
+        "delta_px": 0
+      },
+      "fdi-press-2025q2": {
+        "pages_before": 9,
+        "pages_after": 9,
+        "official_pages": 9,
+        "counts_match": true,
+        "worst_before": 0.03,
+        "worst_after": 0.03,
+        "mismatch_px_before": 38,
+        "mismatch_px_after": 38,
+        "delta_px": 0
+      },
+      "gov-welfare-request": {
+        "pages_before": 9,
+        "pages_after": 9,
+        "official_pages": 9,
+        "counts_match": true,
+        "worst_before": 0.02,
+        "worst_after": 0.02,
+        "mismatch_px_before": 27,
+        "mismatch_px_after": 27,
+        "delta_px": 0
+      },
+      "exam-kor": {
+        "pages_before": 20,
+        "pages_after": 20,
+        "official_pages": 20,
+        "counts_match": true,
+        "worst_before": 11.54,
+        "worst_after": 10.42,
+        "mismatch_px_before": 101720,
+        "mismatch_px_after": 86042,
+        "delta_px": -15678
+      },
+      "mel-001": {
+        "pages_before": 20,
+        "pages_after": 20,
+        "official_pages": 20,
+        "counts_match": true,
+        "worst_before": 13.08,
+        "worst_after": 13.08,
+        "mismatch_px_before": 10066,
+        "mismatch_px_after": 10066,
+        "delta_px": 0
+      },
+      "mock-exam-nov-2022": {
+        "pages_before": 21,
+        "pages_after": 21,
+        "official_pages": 21,
+        "counts_match": true,
+        "worst_before": 3.61,
+        "worst_after": 1.16,
+        "mismatch_px_before": 3884,
+        "mismatch_px_after": 2502,
+        "delta_px": -1382
+      },
+      "k-water-rfp": {
+        "pages_before": 27,
+        "pages_after": 27,
+        "official_pages": 27,
+        "counts_match": true,
+        "worst_before": 0.34,
+        "worst_after": 0.34,
+        "mismatch_px_before": 472,
+        "mismatch_px_after": 472,
+        "delta_px": 0
+      },
+      "donation-report-form": {
+        "pages_before": 30,
+        "pages_after": 30,
+        "official_pages": 30,
+        "counts_match": true,
+        "worst_before": 0.2,
+        "worst_after": 0.2,
+        "mismatch_px_before": 11,
+        "mismatch_px_after": 11,
+        "delta_px": 0
+      },
+      "onsaemiro-textbook": {
+        "pages_before": 49,
+        "pages_after": 49,
+        "official_pages": 49,
+        "counts_match": true,
+        "worst_before": 29.76,
+        "worst_after": 0.06,
+        "mismatch_px_before": 22989,
+        "mismatch_px_after": 36,
+        "delta_px": -22953
+      },
+      "aift": {
+        "pages_before": 74,
+        "pages_after": 74,
+        "official_pages": 74,
+        "counts_match": true,
+        "worst_before": 19.07,
+        "worst_after": 19.07,
+        "mismatch_px_before": 19158,
+        "mismatch_px_after": 19158,
+        "delta_px": 0
+      }
+    },
+    "changed_bands": [
+      {
+        "doc": "exam-kor",
+        "page": 3,
+        "band": 5,
+        "before_pct": 10.61,
+        "after_pct": 2.97,
+        "before_px": 6704,
+        "after_px": 1705
+      },
+      {
+        "doc": "exam-kor",
+        "page": 3,
+        "band": 6,
+        "before_pct": 11.54,
+        "after_pct": 0.0,
+        "before_px": 2329,
+        "after_px": 0
+      },
+      {
+        "doc": "exam-kor",
+        "page": 11,
+        "band": 1,
+        "before_pct": 3.87,
+        "after_pct": 0.0,
+        "before_px": 2303,
+        "after_px": 0
+      },
+      {
+        "doc": "exam-kor",
+        "page": 11,
+        "band": 2,
+        "before_pct": 1.47,
+        "after_pct": 0.0,
+        "before_px": 777,
+        "after_px": 0
+      },
+      {
+        "doc": "exam-kor",
+        "page": 15,
+        "band": 7,
+        "before_pct": 6.8,
+        "after_pct": 0.0,
+        "before_px": 4956,
+        "after_px": 0
+      },
+      {
+        "doc": "exam-kor",
+        "page": 15,
+        "band": 8,
+        "before_pct": 0.52,
+        "after_pct": 0.0,
+        "before_px": 314,
+        "after_px": 0
+      },
+      {
+        "doc": "mock-exam-nov-2022",
+        "page": 10,
+        "band": 7,
+        "before_pct": 0.06,
+        "after_pct": 0.07,
+        "before_px": 10,
+        "after_px": 11
+      },
+      {
+        "doc": "mock-exam-nov-2022",
+        "page": 18,
+        "band": 5,
+        "before_pct": 0.13,
+        "after_pct": 0.14,
+        "before_px": 34,
+        "after_px": 36
+      },
+      {
+        "doc": "mock-exam-nov-2022",
+        "page": 18,
+        "band": 6,
+        "before_pct": 0.03,
+        "after_pct": 0.2,
+        "before_px": 5,
+        "after_px": 31
+      },
+      {
+        "doc": "mock-exam-nov-2022",
+        "page": 18,
+        "band": 9,
+        "before_pct": 0.09,
+        "after_pct": 0.1,
+        "before_px": 25,
+        "after_px": 26
+      },
+      {
+        "doc": "mock-exam-nov-2022",
+        "page": 19,
+        "band": 7,
+        "before_pct": 2.27,
+        "after_pct": 0.07,
+        "before_px": 483,
+        "after_px": 14
+      },
+      {
+        "doc": "mock-exam-nov-2022",
+        "page": 19,
+        "band": 8,
+        "before_pct": 1.48,
+        "after_pct": 0.0,
+        "before_px": 363,
+        "after_px": 1
+      },
+      {
+        "doc": "mock-exam-nov-2022",
+        "page": 19,
+        "band": 9,
+        "before_pct": 3.61,
+        "after_pct": 0.12,
+        "before_px": 599,
+        "after_px": 18
+      },
+      {
+        "doc": "onsaemiro-textbook",
+        "page": 17,
+        "band": 4,
+        "before_pct": 11.52,
+        "after_pct": 0.0,
+        "before_px": 3825,
+        "after_px": 0
+      },
+      {
+        "doc": "onsaemiro-textbook",
+        "page": 19,
+        "band": 6,
+        "before_pct": 26.14,
+        "after_pct": 0.0,
+        "before_px": 6873,
+        "after_px": 0
+      },
+      {
+        "doc": "onsaemiro-textbook",
+        "page": 19,
+        "band": 7,
+        "before_pct": 14.74,
+        "after_pct": 0.0,
+        "before_px": 5403,
+        "after_px": 0
+      },
+      {
+        "doc": "onsaemiro-textbook",
+        "page": 19,
+        "band": 8,
+        "before_pct": 29.76,
+        "after_pct": 0.0,
+        "before_px": 6852,
+        "after_px": 0
+      }
+    ],
+    "count_failures": [],
+    "below_target": 14
+  },
+  "flow": {
+    "docs": 20,
+    "lines": 15995,
+    "same_page_pct": 98.77,
+    "same_break_pct": 96.4,
+    "exact_pct": 93.95,
+    "y_events_per_100": 2.06,
+    "flow_score_mean": 94.84,
+    "page_delta_docs": 0
+  },
+  "load": {
+    "files": 20,
+    "failed": [],
+    "excluded": [],
+    "totals": {
+      "fields_pct": {
+        "baseline_distance": {
+          "exact": 99.7,
+          "pm1": 99.7,
+          "pm10": 99.7
+        },
+        "column_start": {
+          "exact": 100.0,
+          "pm1": 100.0,
+          "pm10": 100.0
+        },
+        "flags": {
+          "exact": 99.9,
+          "pm1": 99.9,
+          "pm10": 99.9
+        },
+        "line_height": {
+          "exact": 99.7,
+          "pm1": 99.8,
+          "pm10": 99.8
+        },
+        "line_spacing": {
+          "exact": 99.8,
+          "pm1": 99.8,
+          "pm10": 99.8
+        },
+        "segment_width": {
+          "exact": 99.5,
+          "pm1": 99.6,
+          "pm10": 99.6
+        },
+        "text_height": {
+          "exact": 99.7,
+          "pm1": 99.8,
+          "pm10": 99.8
+        },
+        "vertical_pos": {
+          "exact": 99.6,
+          "pm1": 99.6,
+          "pm10": 99.6
+        }
+      },
+      "line_aligned_pct": 96.1,
+      "lines": 23150,
+      "para_break_pct": 98.5,
+      "para_exact_pct": 97.2,
+      "paras": 19810
+    }
+  },
+  "page_byte_comparison": {
+    "checked_at": "2026-10-04T08:51:20.930894+00:00",
+    "base": "codex-eq22-origin57-integrated",
+    "head": "codex-final-pr",
+    "pages_checked": {
+      "saved": 303,
+      "own": 305
+    },
+    "changed_pages": {
+      "saved": [],
+      "own": [
+        "exam-kor/ours/exam-kor_003.png",
+        "exam-kor/ours/exam-kor_015.png",
+        "exam-kor/ours/exam-kor_011.png",
+        "mock-exam-nov-2022/ours/mock-exam-nov-2022_019.png",
+        "mock-exam-nov-2022/ours/mock-exam-nov-2022_018.png",
+        "mock-exam-nov-2022/ours/mock-exam-nov-2022_010.png",
+        "onsaemiro-textbook/ours/onsaemiro-textbook_019.png",
+        "onsaemiro-textbook/ours/onsaemiro-textbook_017.png"
+      ]
+    }
+  },
+  "checks": {
+    "native_library": {
+      "passed": 3982,
+      "failed": 0,
+      "ignored": 8
+    },
+    "native_suite_all_414_targets": {
+      "status": "Passed",
+      "batches": 29,
+      "integration_targets": 414,
+      "passed": 5557,
+      "failed": 0,
+      "ignored": 68
+    },
+    "final_studio_40_documents_and_edit_roundtrip": "Passed:20 saved/303 pages,20 own/305 pages,actual input/undo/redo/save/reopen",
+    "studio_saved": "Completed,20 documents/303 pages",
+    "production_build": "Passed",
+    "formatting": "Passed",
+    "studio_unit_tests": {
+      "passed": 2654,
+      "failed": 0,
+      "skipped": 1,
+      "checkpoint": "Earlier run, same418 Studio-source hashes"
+    },
+    "github_ci": "Prodeps jobs failed on three platforms; triage in progress. Other checks pending."
+  },
+  "held_followup": "Kor23 companion floating-table/TAC picture placement, candidate excluded.",
+  "noise_increases": [
+    {
+      "doc": "mock-exam-nov-2022",
+      "page": 10,
+      "band": 7,
+      "before_pct": 0.06,
+      "after_pct": 0.07,
+      "before_px": 10,
+      "after_px": 11
+    },
+    {
+      "doc": "mock-exam-nov-2022",
+      "page": 18,
+      "band": 5,
+      "before_pct": 0.13,
+      "after_pct": 0.14,
+      "before_px": 34,
+      "after_px": 36
+    },
+    {
+      "doc": "mock-exam-nov-2022",
+      "page": 18,
+      "band": 6,
+      "before_pct": 0.03,
+      "after_pct": 0.2,
+      "before_px": 5,
+      "after_px": 31
+    },
+    {
+      "doc": "mock-exam-nov-2022",
+      "page": 18,
+      "band": 9,
+      "before_pct": 0.09,
+      "after_pct": 0.1,
+      "before_px": 25,
+      "after_px": 26
+    }
+  ],
+  "visual_proofs": [
+    {
+      "file": "04-final-ascii-bracket-p19.png",
+      "sha256": "6ccd9369b7c3329b2549fdbef2e445f53f38bd601c3057b214641f15b28cb3b6",
+      "title": "ASCII bracket wrapping",
+      "doc": "onsaemiro-textbook",
+      "page": 19,
+      "lane": "own",
+      "crop_pdf_points": [
+        68,
+        570,
+        452,
+        731
+      ],
+      "inputs": [
+        {
+          "path": "/tmp/rhwp-parity-reflow/official/png200/onsaemiro-textbook/official_019.png",
+          "sha256": "462042bc4192e6545cace3617d28c0d3595cac3794fd0df927c386b71f567dbe"
+        },
+        {
+          "path": "/tmp/rhwp-parity-top20/codex-ownflow-spacing/textbook29/native-p19-baseline29b/onsaemiro-textbook.png",
+          "sha256": "507a0221e4e78f75fbb872b9ef75cfb63953ecb07a2f6b565589638769782a44"
+        },
+        {
+          "path": "/tmp/rhwp-parity-reflow/rounds/codex-final-pr/onsaemiro-textbook/ours/onsaemiro-textbook_019.png",
+          "sha256": "c4cf216d32d7436195e2e3d9c58bf5e1d651bcc73aeec9c28d6b7aaa4bda4c15"
+        }
+      ]
+    },
+    {
+      "file": "05-final-strict-fit-p17.png",
+      "sha256": "b8a2d16e69c9252b40f08239027c6c5d2e13e5287a3a767c995384cc706f8224",
+      "title": "Strict integer line fit",
+      "doc": "onsaemiro-textbook",
+      "page": 17,
+      "lane": "own",
+      "crop_pdf_points": [
+        75,
+        331,
+        471,
+        372
+      ],
+      "inputs": [
+        {
+          "path": "/tmp/rhwp-parity-reflow/official/png200/onsaemiro-textbook/official_017.png",
+          "sha256": "17d6aa4d4cbf4a4554a5ec7b375410bbc7297044aef8c6b8d9825b7c3a9bcc29"
+        },
+        {
+          "path": "/tmp/rhwp-parity-top20/codex-ownflow-spacing/textbook29/native-p17-baseline30/onsaemiro-textbook.png",
+          "sha256": "7f141b58e1ba10408cb465d0d79f5975bb45908fe1e80b37cc680dcb3d4ce9d0"
+        },
+        {
+          "path": "/tmp/rhwp-parity-reflow/rounds/codex-final-pr/onsaemiro-textbook/ours/onsaemiro-textbook_017.png",
+          "sha256": "b3965d2ad39f4aa1cd1e3a117586ee5bc231888f8d782db7f505f3b94e750f8b"
+        }
+      ]
+    },
+    {
+      "file": "06-final-endnote-cursor-p19.png",
+      "sha256": "6b5f30e0b6f88e52f91158d82b13ae7685acc1efe318754967159bf7f99379bf",
+      "title": "Endnote cursor spacing",
+      "doc": "mock-exam-nov-2022",
+      "page": 19,
+      "lane": "own",
+      "crop_pdf_points": [
+        22,
+        603,
+        298,
+        791
+      ],
+      "inputs": [
+        {
+          "path": "/tmp/rhwp-parity-reflow/official/png200/mock-exam-nov-2022/official_019.png",
+          "sha256": "28a5f811a0b0f4c0f3bb8571703b8a5a6c61be6f66f37c19eab89d2d5b998ed5"
+        },
+        {
+          "path": "/tmp/rhwp-parity-reflow/rounds/codex-eq22-origin57-integrated/mock-exam-nov-2022/ours/mock-exam-nov-2022_019.png",
+          "sha256": "f98b2a21eefddeface5eba71d61942ac6b06484e8239894148dc7cbbc71bc4b5"
+        },
+        {
+          "path": "/tmp/rhwp-parity-reflow/rounds/codex-final-pr/mock-exam-nov-2022/ours/mock-exam-nov-2022_019.png",
+          "sha256": "3ee396d871f843753e84ce9adb01e494c914bfe1b4fc69a49cf313e267618752"
+        }
+      ]
+    },
+    {
+      "file": "07-final-equation-p21.png",
+      "sha256": "5357de9ffafb9f654e924a3cce3df9f65c0b9e2144a5ab05430d88321e047cfc",
+      "title": "HY pi and composite product",
+      "doc": "mock-exam-nov-2022",
+      "page": 21,
+      "lane": "saved",
+      "crop_pdf_points": [
+        22,
+        675,
+        298,
+        740
+      ],
+      "inputs": [
+        {
+          "path": "/tmp/rhwp-parity-top20/official/png200/mock-exam-nov-2022/official_021.png",
+          "sha256": "a1332f649fa3b74540a03a7fa1ab10f4c4a8c1f2fee86851b724d1d7c345480a"
+        },
+        {
+          "path": "/tmp/rhwp-parity-top20/rounds/codex-picture49-integrated/mock-exam-nov-2022/ours/mock-exam-nov-2022_021.png",
+          "sha256": "ab836fc3996f6a622db01977a65fd7251277f11b5313b6a2e10b72ad732898be"
+        },
+        {
+          "path": "/tmp/rhwp-parity-top20/rounds/codex-final-pr/mock-exam-nov-2022/ours/mock-exam-nov-2022_021.png",
+          "sha256": "fdcd98bc4cbea4f4d997fcd0e458a537764e2de067d105ffc31be23e20064ab5"
+        }
+      ]
+    },
+    {
+      "file": "08-final-aift-page-start-p51.png",
+      "sha256": "2f4ac84b803409f5cf6ec2aab9f8e64a2757de3ef65b38033049aa6ffacf82b0",
+      "title": "First paragraph page spacing",
+      "doc": "aift",
+      "page": 51,
+      "lane": "own",
+      "crop_pdf_points": [
+        35,
+        40,
+        565,
+        195
+      ],
+      "inputs": [
+        {
+          "path": "/tmp/rhwp-parity-reflow/official/png200/aift/official_051.png",
+          "sha256": "80c24c7ad899af012268cfb0628ad0de44f5b1992505899725293f79b80e7def"
+        },
+        {
+          "path": "/tmp/rhwp-parity-reflow/rounds/codex-marker28-whitespace56-integrated/aift/ours/aift_051.png",
+          "sha256": "ebbacb7b9fb0d46a13da89d5a403ce47cec87275dbc41f23908040f7f55aa1c1"
+        },
+        {
+          "path": "/tmp/rhwp-parity-reflow/rounds/codex-final-pr/aift/ours/aift_051.png",
+          "sha256": "bb0a5ef8e9cf88ed9917afd63c0be347dae0d0551130566e80a372732abf2829"
+        }
+      ]
+    }
+  ],
+  "documents": {
+    "aift": {
+      "saved_input_sha256": "5e27ee51825d10f0f51bd04935f0f9f8fc24f930a010367d822638964fefd491",
+      "saved_reference_pdf_sha256": "72186fbb9fe47e54627e5b9ac70e62339ffb49c9e8ebf85c341ac53c8c9df62a",
+      "own_input_sha256": "c6711f2fbe65602699dbc3dfe628f2dbdf30f7373a456d3887a0519a85752d4d",
+      "own_reference_pdf_sha256": "97110068d52b3504ba797de4e424807799ffdd12b36cf49e7c7c9ade86709984",
+      "saved_pages_before": 74,
+      "saved_pages_after": 74,
+      "official_pages": 74,
+      "saved_worst_band_before": 100.0,
+      "saved_worst_band_after": 0.57,
+      "own_worst_band_after": 19.07
+    },
+    "donation-report-form": {
+      "saved_input_sha256": "8a32197efb532ee3c137af319003803deb8fa72c63513e095fcd172732dced4c",
+      "saved_reference_pdf_sha256": "ee9d99f28761c4b1d60804ebdd74c68471d2943cc3985fe86e164504bc5ae0da",
+      "own_input_sha256": "6276aac46ee20c68fb9647fc5138bb7186209432b03b1c6fe2aba6a20cfa827b",
+      "own_reference_pdf_sha256": "ea278b4750758fe9dd98ea07070319aefae52b37eec35a3ac44c256240ad44ea",
+      "saved_pages_before": 30,
+      "saved_pages_after": 30,
+      "official_pages": 30,
+      "saved_worst_band_before": 100.0,
+      "saved_worst_band_after": 0.2,
+      "own_worst_band_after": 0.2
+    },
+    "exam-kor": {
+      "saved_input_sha256": "c71a8991d63d084c18db1c90d2e32865b2af69cae5762b20cb554ee53a539b7c",
+      "saved_reference_pdf_sha256": "4ce43ae8a063db16657a8cc6612f79c702f30e04ca3941835fb582dfa7008f72",
+      "own_input_sha256": "8ee35225a77a4ee478232894174383402ab4a3c33ed892fc67c3b405fe07fc07",
+      "own_reference_pdf_sha256": "92e1018b57a200a197cb476d66a1de95e71de34bf06a762ce9bc201dda2c6d21",
+      "saved_pages_before": 20,
+      "saved_pages_after": 20,
+      "official_pages": 20,
+      "saved_worst_band_before": 33.88,
+      "saved_worst_band_after": 0.89,
+      "own_worst_band_after": 10.42
+    },
+    "exam-social": {
+      "saved_input_sha256": "c11b117dfc55606bb3ea703f9ea5b0a14481f7e70e918bc09ce4e202a04c9fd0",
+      "saved_reference_pdf_sha256": "17eb602f2e5dc2dcf6c8d489a6a1bf5784c3eda60ee7542e88ef5150fcfc4f04",
+      "own_input_sha256": "8c3529cdb1e68b41e4c168b5aea143519a7dc59030c4e479903219b85aba43a1",
+      "own_reference_pdf_sha256": "a1d6ce900e59dbe5962700fd6c5fb337c6f93073dd2c1bfd57fc3a35d6476c37",
+      "saved_pages_before": 4,
+      "saved_pages_after": 4,
+      "official_pages": 4,
+      "saved_worst_band_before": 51.59,
+      "saved_worst_band_after": 0.01,
+      "own_worst_band_after": 23.63
+    },
+    "fdi-press-2024": {
+      "saved_input_sha256": "abae7aebecd5e71cd907b3417483f9842dfa648cd9fe05d98e34b6b8d856a3f5",
+      "saved_reference_pdf_sha256": "9ce8303ce247f6b887a7fce463d5e63da7797e8ae58bff6b74c7f007a9785a55",
+      "own_input_sha256": "229b5a78246d1b9ac8fd0961ead11c0e5d2db4777d3bfe4ad928f8a269f29351",
+      "own_reference_pdf_sha256": "5d990f0066cc8bf30275fea9f8f5cfc9867cda1f9d48e21bf929765483a0f1aa",
+      "saved_pages_before": 9,
+      "saved_pages_after": 9,
+      "official_pages": 9,
+      "saved_worst_band_before": 24.08,
+      "saved_worst_band_after": 0.03,
+      "own_worst_band_after": 0.03
+    },
+    "fdi-press-2025q2": {
+      "saved_input_sha256": "e49c69c090fa7abe9d33971f2983839f30c3efd77068d6d24b99db93a3c2872f",
+      "saved_reference_pdf_sha256": "f839ac28c66cd0fde70d716a9a166f5ccc7fd43af9b08e3546f27c293039c93b",
+      "own_input_sha256": "df32c00100c3f72bcb53f9f72942b518b45d02cfaf065e2b9cddf6f66c0e4fd1",
+      "own_reference_pdf_sha256": "daedd2b5adf56a5416391d480d473fdf55fe91e1e337e586cc252695ea3a21d0",
+      "saved_pages_before": 9,
+      "saved_pages_after": 9,
+      "official_pages": 9,
+      "saved_worst_band_before": 24.08,
+      "saved_worst_band_after": 0.03,
+      "own_worst_band_after": 0.03
+    },
+    "gov-excavation-report": {
+      "saved_input_sha256": "7fd5a81ab23da7e21ca24b277c497e3ad35d944ab83a71ac8089f33d180f2319",
+      "saved_reference_pdf_sha256": "eae9fb2669b57da90725cb38fe2eb103a4043a99d7954b6bf8b39f98d3f14794",
+      "own_input_sha256": "0e16f39729a4e8c14d3b063d6542bf0c3e5f6923331da3453c69cbd40ce0baa7",
+      "own_reference_pdf_sha256": "5607581ce1a2e0369e4ca58473b45c0e311b6231f11899be86d31845ccccdafc",
+      "saved_pages_before": 2,
+      "saved_pages_after": 2,
+      "official_pages": 2,
+      "saved_worst_band_before": 100.0,
+      "saved_worst_band_after": 0.04,
+      "own_worst_band_after": 0.04
+    },
+    "gov-fire-report": {
+      "saved_input_sha256": "5ac007ffc51958f776b655241ced079bfe311f481af84565c6284bc80b568a02",
+      "saved_reference_pdf_sha256": "a19acb2d9d63d7cc01545d6f094d7900bc492d6b296fa7229dd04258d24cbb3b",
+      "own_input_sha256": "d6558f611413b35b47ca31c87f22fcb874e1eb6de56c2b65cd0de475419ed20c",
+      "own_reference_pdf_sha256": "b0d526358062120a580b2caaef36d86ad3f99e02ef75b453ef44c4ac6a00a6eb",
+      "saved_pages_before": 1,
+      "saved_pages_after": 2,
+      "official_pages": 2,
+      "saved_worst_band_before": 98.1,
+      "saved_worst_band_after": 0.0,
+      "own_worst_band_after": 0.0
+    },
+    "gov-lecturer-review": {
+      "saved_input_sha256": "0f2ae84c476985c6966a1950b8339d339b5099dc3d3d7bc915e7a99823edc524",
+      "saved_reference_pdf_sha256": "8b662957d2ea302e5485fc9cb9535b0ea973ccc60bab7288f7a5e51b8f1fea5b",
+      "own_input_sha256": "811e1923c85d7211524ed156408acd2d438a5f4982175d9dbf47606f071709dd",
+      "own_reference_pdf_sha256": "c9a70bd3bf7d533d0c66e85d3edabeb0c5877cdc9e9854f00ae861d4948e0ea9",
+      "saved_pages_before": 8,
+      "saved_pages_after": 8,
+      "official_pages": 8,
+      "saved_worst_band_before": 100.0,
+      "saved_worst_band_after": 0.53,
+      "own_worst_band_after": 0.53
+    },
+    "gov-welfare-request": {
+      "saved_input_sha256": "8d1e7da9d5e4eda6179565509df7c707a887e175d21542347847f066936a65af",
+      "saved_reference_pdf_sha256": "bc3f7250682f7f40d50b87fc11698a54dbb3d85639f9404190e1a0e83a4856bf",
+      "own_input_sha256": "dd5407c711d0222ab1c7abc9d3bd9036e1cf02c650fa38b3759110b622066a48",
+      "own_reference_pdf_sha256": "3d8309f7f33bf43b02d17c6f720a661cb2cb2bacaf88a05904234ceaabe6625d",
+      "saved_pages_before": 9,
+      "saved_pages_after": 9,
+      "official_pages": 9,
+      "saved_worst_band_before": 60.58,
+      "saved_worst_band_after": 0.28,
+      "own_worst_band_after": 0.02
+    },
+    "hcar-001": {
+      "saved_input_sha256": "31c3c5a5758638bf7c653fc4c60e7df430395f6b78d6a04effcd53274a5948f0",
+      "saved_reference_pdf_sha256": "9adca1b713fa2efa84175e8ce37d8f39ea7f95eaedb3ea905b2da69fc7e18ac9",
+      "own_input_sha256": "edfccaa0c8b9586895df5e6bac9eb37b6593b0c791fd02560dc412cb162856a9",
+      "own_reference_pdf_sha256": "8103ebcbed0bddd75fc014bc93c0bc14f599187f3fa96d0daaf7afd572a5c77e",
+      "saved_pages_before": 6,
+      "saved_pages_after": 6,
+      "official_pages": 6,
+      "saved_worst_band_before": 62.15,
+      "saved_worst_band_after": 0.0,
+      "own_worst_band_after": 0.0
+    },
+    "k-water-rfp": {
+      "saved_input_sha256": "036ae73c4982696b9aad50c43a1c47f50871d1447aef3209e058f1b30fa2fc14",
+      "saved_reference_pdf_sha256": "67f082c015c48878d9d1295ee1cf19d165cdf8bb9e876ae1b6acb2b3aa1c2f79",
+      "own_input_sha256": "29379b04dda083563609c9d3f84aad6b3ddef0c95259567658b6924b5e4e6513",
+      "own_reference_pdf_sha256": "e3c0f15b779213e9a9e0e80c4f579ccaa894e4723228b710571522f38d8e02fa",
+      "saved_pages_before": 27,
+      "saved_pages_after": 27,
+      "official_pages": 27,
+      "saved_worst_band_before": 72.68,
+      "saved_worst_band_after": 0.34,
+      "own_worst_band_after": 0.34
+    },
+    "kedi-application": {
+      "saved_input_sha256": "11a628bf51f0c7f7ed0e37e1245e522988dc3ea04fa321ff09d79aa67006b8dd",
+      "saved_reference_pdf_sha256": "507591cb742744ee1338a49789c57e72320dade99d2ed60b13cd9d65ad743b25",
+      "own_input_sha256": "6a5bb8613cf7a2d9ab7dba9732ef491f574f913edb15a690b38b59ce6537ac2e",
+      "own_reference_pdf_sha256": "3129ac05586cff318a9f7ad28a6b6f4a8ee2379325b0bebd652592530d520faf",
+      "saved_pages_before": 6,
+      "saved_pages_after": 6,
+      "official_pages": 6,
+      "saved_worst_band_before": 100.0,
+      "saved_worst_band_after": 0.0,
+      "own_worst_band_after": 0.0
+    },
+    "math-001": {
+      "saved_input_sha256": "ddd5cf042a0672cc617ad8351f9b533fcf2b530f8843cba5bf6695882df0a59a",
+      "saved_reference_pdf_sha256": "25813e57611c8929139e5ca3f6fe3f2238e9f4a582ee60e74c36a85e444c82e9",
+      "own_input_sha256": "3a1128b104fb47a2b2e2fa4bf77fcbdca8c09025402bd140632c8c31b393f733",
+      "own_reference_pdf_sha256": "1f2b8fa6aab6deeeda9f75584a187c891e5b25b2557f1eed0ffd51b70eab5bf3",
+      "saved_pages_before": 1,
+      "saved_pages_after": 1,
+      "official_pages": 1,
+      "saved_worst_band_before": 62.34,
+      "saved_worst_band_after": 0.04,
+      "own_worst_band_after": 0.04
+    },
+    "mel-001": {
+      "saved_input_sha256": "ec75dc24ade52e055c54ea0529af100a623027c465571fda7edaa97f6e736d8b",
+      "saved_reference_pdf_sha256": "a8dd47e0f2006bca389c32c5090fc72105fe505210a9b3e678a7dc6965c82778",
+      "own_input_sha256": "b58003a1d63feb671573d7848beede56988cf2d1645f5a445ee92673b6e6e54f",
+      "own_reference_pdf_sha256": "34a4e86f7b0a0480809a21f4313f961495a353c1e394234107e713e74ce636b8",
+      "saved_pages_before": 20,
+      "saved_pages_after": 20,
+      "official_pages": 20,
+      "saved_worst_band_before": 36.39,
+      "saved_worst_band_after": 0.08,
+      "own_worst_band_after": 13.08
+    },
+    "mock-exam-nov-2022": {
+      "saved_input_sha256": "9efbf79140da8182e10380b140c714f54bcee5c57e05844ee7496febe9219fa4",
+      "saved_reference_pdf_sha256": "4a9308633d75e8b8f8f200732b517b74d9f538396b2b7ec9bdb25810cd11cb77",
+      "own_input_sha256": "2f98a77475cfb960a412545956209ead47f14d9eebd314ccc7a2a447aae7e94d",
+      "own_reference_pdf_sha256": "f787d4ba591a9e149ce00a2c789130eff0558bbb28e2b41c5c9f1135bc6fc045",
+      "saved_pages_before": 20,
+      "saved_pages_after": 21,
+      "official_pages": 21,
+      "saved_worst_band_before": 96.47,
+      "saved_worst_band_after": 0.76,
+      "own_worst_band_after": 1.16
+    },
+    "onsaemiro-textbook": {
+      "saved_input_sha256": "3d973ca03799d4ee48840b3a6f670aeb6d5b544212424be60c9fcd2d22ca8e5d",
+      "saved_reference_pdf_sha256": "05c951b24f5fe2f276624a25e97f9af25aa900184fa614437a8018d6506cc8ee",
+      "own_input_sha256": "e41b2c09e64b918a6825b8557a7265a9557e21d117c169bdf915baeddd756833",
+      "own_reference_pdf_sha256": "24511fc17d20c0b21723efafadb698ad3247cd21e370e9bf826c15f7c79e47fc",
+      "saved_pages_before": 46,
+      "saved_pages_after": 47,
+      "official_pages": 47,
+      "saved_worst_band_before": 100.0,
+      "saved_worst_band_after": 0.07,
+      "own_worst_band_after": 0.06
+    },
+    "oss-result-2026": {
+      "saved_input_sha256": "90858f0ecf9e95afe46b6dace6a61960b03552236a1204be530ce3d1866a8398",
+      "saved_reference_pdf_sha256": "057cc9a64f556807def8ffca185753ac8697c61ac4d4539baba334182a8c47ef",
+      "own_input_sha256": "543ab9a49ab55442732517e4f65df59c40f82728ce058de834f087dfe22df907",
+      "own_reference_pdf_sha256": "475cde7fadb8c2bd3c1a25210547e08b2d6ce686595f845497b94394fe893c58",
+      "saved_pages_before": 7,
+      "saved_pages_after": 6,
+      "official_pages": 6,
+      "saved_worst_band_before": 100.0,
+      "saved_worst_band_after": 0.17,
+      "own_worst_band_after": 0.17
+    },
+    "readmission-form": {
+      "saved_input_sha256": "3fbd1693b4c78fa3911e0de0b632d26e949af6a29fb38bfd6b298592da6d2634",
+      "saved_reference_pdf_sha256": "30749fe9cce0101bc07082e1787706fe52df20d8121a57bc2c6641b6a652f963",
+      "own_input_sha256": "8f33a632d0c7f4e56a4feb96d9fb6a84a0b5ac435a5dc04f5b3c8e42574e7d26",
+      "own_reference_pdf_sha256": "1dcc11a03df38fe5df581b665f8c31d52876ccb8d16ab5db01906b65fd4f68ab",
+      "saved_pages_before": 1,
+      "saved_pages_after": 1,
+      "official_pages": 1,
+      "saved_worst_band_before": 72.69,
+      "saved_worst_band_after": 38.47,
+      "own_worst_band_after": 38.47
+    },
+    "water-mark": {
+      "saved_input_sha256": "1750b8192caee3cf9ce4705ea5fac47812591c00b0470995e60eb94970524fc2",
+      "saved_reference_pdf_sha256": "a288718375f16946473570b832e697dd185c379a76941e36cfe4cf01238f5e95",
+      "own_input_sha256": "92b68f6cad6dc620c8db06fb00b3387bc5cce200c3182939d69bb6c41704f664",
+      "own_reference_pdf_sha256": "62a6b53f1a1b763cd6932696147b58362473bdd937c8724d17b7cd987123b37f",
+      "saved_pages_before": 1,
+      "saved_pages_after": 1,
+      "official_pages": 1,
+      "saved_worst_band_before": 6.21,
+      "saved_worst_band_after": 0.78,
+      "own_worst_band_after": 0.78
+    }
+  },
+  "studio_saved": {
+    "round": "codex-final-pr-studio",
+    "documents": 20,
+    "pages": 303,
+    "below_target": 19,
+    "browser_errors": 0,
+    "unsupported_operations": 0,
+    "mismatch_px": 15560,
+    "compared_with": "codex-caption25-spacing42-master21-studio",
+    "mismatch_px_reduction": 235,
+    "improved_bands": 3,
+    "worse_bands": 0,
+    "docs": {
+      "aift": {
+        "pages": 74,
+        "official_pages": 74,
+        "counts_match": true,
+        "worst_band_pct": 0.57,
+        "mismatch_px": 384
+      },
+      "donation-report-form": {
+        "pages": 30,
+        "official_pages": 30,
+        "counts_match": true,
+        "worst_band_pct": 0.0,
+        "mismatch_px": 0
+      },
+      "exam-kor": {
+        "pages": 20,
+        "official_pages": 20,
+        "counts_match": true,
+        "worst_band_pct": 0.9,
+        "mismatch_px": 4133
+      },
+      "exam-social": {
+        "pages": 4,
+        "official_pages": 4,
+        "counts_match": true,
+        "worst_band_pct": 0.01,
+        "mismatch_px": 13
+      },
+      "fdi-press-2024": {
+        "pages": 9,
+        "official_pages": 9,
+        "counts_match": true,
+        "worst_band_pct": 0.05,
+        "mismatch_px": 52
+      },
+      "fdi-press-2025q2": {
+        "pages": 9,
+        "official_pages": 9,
+        "counts_match": true,
+        "worst_band_pct": 0.05,
+        "mismatch_px": 53
+      },
+      "gov-excavation-report": {
+        "pages": 2,
+        "official_pages": 2,
+        "counts_match": true,
+        "worst_band_pct": 0.03,
+        "mismatch_px": 11
+      },
+      "gov-fire-report": {
+        "pages": 2,
+        "official_pages": 2,
+        "counts_match": true,
+        "worst_band_pct": 0.0,
+        "mismatch_px": 0
+      },
+      "gov-lecturer-review": {
+        "pages": 8,
+        "official_pages": 8,
+        "counts_match": true,
+        "worst_band_pct": 0.53,
+        "mismatch_px": 391
+      },
+      "gov-welfare-request": {
+        "pages": 9,
+        "official_pages": 9,
+        "counts_match": true,
+        "worst_band_pct": 0.7,
+        "mismatch_px": 116
+      },
+      "hcar-001": {
+        "pages": 6,
+        "official_pages": 6,
+        "counts_match": true,
+        "worst_band_pct": 0.0,
+        "mismatch_px": 0
+      },
+      "k-water-rfp": {
+        "pages": 27,
+        "official_pages": 27,
+        "counts_match": true,
+        "worst_band_pct": 0.32,
+        "mismatch_px": 577
+      },
+      "kedi-application": {
+        "pages": 6,
+        "official_pages": 6,
+        "counts_match": true,
+        "worst_band_pct": 0.0,
+        "mismatch_px": 0
+      },
+      "math-001": {
+        "pages": 1,
+        "official_pages": 1,
+        "counts_match": true,
+        "worst_band_pct": 0.0,
+        "mismatch_px": 0
+      },
+      "mel-001": {
+        "pages": 20,
+        "official_pages": 20,
+        "counts_match": true,
+        "worst_band_pct": 0.17,
+        "mismatch_px": 143
+      },
+      "mock-exam-nov-2022": {
+        "pages": 21,
+        "official_pages": 21,
+        "counts_match": true,
+        "worst_band_pct": 0.77,
+        "mismatch_px": 2962
+      },
+      "onsaemiro-textbook": {
+        "pages": 47,
+        "official_pages": 47,
+        "counts_match": true,
+        "worst_band_pct": 0.03,
+        "mismatch_px": 27
+      },
+      "oss-result-2026": {
+        "pages": 6,
+        "official_pages": 6,
+        "counts_match": true,
+        "worst_band_pct": 0.08,
+        "mismatch_px": 25
+      },
+      "readmission-form": {
+        "pages": 1,
+        "official_pages": 1,
+        "counts_match": true,
+        "worst_band_pct": 38.47,
+        "mismatch_px": 6442
+      },
+      "water-mark": {
+        "pages": 1,
+        "official_pages": 1,
+        "counts_match": true,
+        "worst_band_pct": 0.78,
+        "mismatch_px": 231
+      }
+    }
+  },
+  "studio_own": {
+    "round": "codex-final-pr-studio-own",
+    "documents": 20,
+    "pages": 305,
+    "below_target": 14,
+    "browser_errors": 0,
+    "unsupported_operations": 0,
+    "mismatch_px": 206316,
+    "compared_with": "codex-caption25-spacing42-master21-studio-own",
+    "mismatch_px_reduction": 997733,
+    "improved_bands": 92,
+    "increased_bands": [
+      {
+        "doc": "mock-exam-nov-2022",
+        "page": 10,
+        "band": 7,
+        "before_pct": 0.0,
+        "after_pct": 0.07,
+        "before_px": 0,
+        "after_px": 11
+      },
+      {
+        "doc": "mock-exam-nov-2022",
+        "page": 18,
+        "band": 9,
+        "before_pct": 0.12,
+        "after_pct": 0.12,
+        "before_px": 30,
+        "after_px": 31
+      }
+    ],
+    "docs": {
+      "water-mark": {
+        "pages": 1,
+        "official_pages": 1,
+        "counts_match": true,
+        "worst_band_pct": 0.78,
+        "mismatch_px": 231
+      },
+      "readmission-form": {
+        "pages": 1,
+        "official_pages": 1,
+        "counts_match": true,
+        "worst_band_pct": 38.47,
+        "mismatch_px": 6442
+      },
+      "math-001": {
+        "pages": 1,
+        "official_pages": 1,
+        "counts_match": true,
+        "worst_band_pct": 0.0,
+        "mismatch_px": 0
+      },
+      "gov-excavation-report": {
+        "pages": 2,
+        "official_pages": 2,
+        "counts_match": true,
+        "worst_band_pct": 0.03,
+        "mismatch_px": 11
+      },
+      "gov-fire-report": {
+        "pages": 2,
+        "official_pages": 2,
+        "counts_match": true,
+        "worst_band_pct": 0.0,
+        "mismatch_px": 0
+      },
+      "exam-social": {
+        "pages": 4,
+        "official_pages": 4,
+        "counts_match": true,
+        "worst_band_pct": 23.6,
+        "mismatch_px": 80452
+      },
+      "hcar-001": {
+        "pages": 6,
+        "official_pages": 6,
+        "counts_match": true,
+        "worst_band_pct": 0.0,
+        "mismatch_px": 0
+      },
+      "kedi-application": {
+        "pages": 6,
+        "official_pages": 6,
+        "counts_match": true,
+        "worst_band_pct": 0.0,
+        "mismatch_px": 0
+      },
+      "oss-result-2026": {
+        "pages": 6,
+        "official_pages": 6,
+        "counts_match": true,
+        "worst_band_pct": 0.08,
+        "mismatch_px": 25
+      },
+      "gov-lecturer-review": {
+        "pages": 8,
+        "official_pages": 8,
+        "counts_match": true,
+        "worst_band_pct": 0.53,
+        "mismatch_px": 391
+      },
+      "fdi-press-2024": {
+        "pages": 9,
+        "official_pages": 9,
+        "counts_match": true,
+        "worst_band_pct": 0.05,
+        "mismatch_px": 52
+      },
+      "fdi-press-2025q2": {
+        "pages": 9,
+        "official_pages": 9,
+        "counts_match": true,
+        "worst_band_pct": 0.05,
+        "mismatch_px": 53
+      },
+      "gov-welfare-request": {
+        "pages": 9,
+        "official_pages": 9,
+        "counts_match": true,
+        "worst_band_pct": 0.7,
+        "mismatch_px": 116
+      },
+      "exam-kor": {
+        "pages": 20,
+        "official_pages": 20,
+        "counts_match": true,
+        "worst_band_pct": 10.44,
+        "mismatch_px": 86167
+      },
+      "mel-001": {
+        "pages": 20,
+        "official_pages": 20,
+        "counts_match": true,
+        "worst_band_pct": 13.11,
+        "mismatch_px": 9914
+      },
+      "mock-exam-nov-2022": {
+        "pages": 21,
+        "official_pages": 21,
+        "counts_match": true,
+        "worst_band_pct": 1.13,
+        "mismatch_px": 3010
+      },
+      "k-water-rfp": {
+        "pages": 27,
+        "official_pages": 27,
+        "counts_match": true,
+        "worst_band_pct": 0.32,
+        "mismatch_px": 577
+      },
+      "donation-report-form": {
+        "pages": 30,
+        "official_pages": 30,
+        "counts_match": true,
+        "worst_band_pct": 0.0,
+        "mismatch_px": 0
+      },
+      "onsaemiro-textbook": {
+        "pages": 49,
+        "official_pages": 49,
+        "counts_match": true,
+        "worst_band_pct": 0.02,
+        "mismatch_px": 16
+      },
+      "aift": {
+        "pages": 74,
+        "official_pages": 74,
+        "counts_match": true,
+        "worst_band_pct": 19.37,
+        "mismatch_px": 18859
+      }
+    }
+  },
+  "studio_live": {
+    "before": 474,
+    "afterInsert": 480,
+    "afterUndo": 474,
+    "afterRedo": 480,
+    "afterReopen": {
+      "characters": 480,
+      "pages": 2
+    },
+    "savedBytes": 12558,
+    "undoRestored": true,
+    "redoRestored": true,
+    "reopenRestored": true,
+    "pageCountMatchesOfficial": true
+  },
+  "wasm_sha256": "247d7372b9a3c941e1a13bd2433b067336a73b9df2e34b8f3e956ab2308d1da1",
+  "complete_comparison_package_sha256": "3c9f42047f7c561483d7838fd4fad30fb7489ee267c8f5f5293d531233723d6e",
+  "studio_unit_test_log_sha256": "58e512745537c6e328aebc7f0c9186a785c1a7023c2a000533795c1a3f69c0a1",
+  "studio_final_report_sha256": "0755766895241f531994d274400dcfc0ce404f5c10d189ffbebce3744a68984f"
+}

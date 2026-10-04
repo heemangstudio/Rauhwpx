@@ -5,7 +5,7 @@ import { VirtualScroll } from './virtual-scroll';
 import { CanvasPool } from './canvas-pool';
 import { MutationRefreshQueue, type MutationRefreshBatch } from './mutation-refresh-queue';
 import { PageRenderer, type PageRenderContext, type PageRenderResult } from './page-renderer';
-import { ViewportManager } from './viewport-manager';
+import { MAX_ZOOM, MIN_ZOOM, ViewportManager } from './viewport-manager';
 import { CoordinateSystem } from './coordinate-system';
 import type { CanvasKitRenderDiagnostics } from './canvaskit-renderer';
 import { clampRenderScale, type RenderBackend } from './render-backend';
@@ -28,6 +28,7 @@ import {
   type ActivePageSnapshot,
 } from './active-page.ts';
 import { SubsecondRevisionWatcher } from '@/core/subsecond-runtime';
+import { engineTrap, onEngineTrap, reportEngineTrap } from '@/core/engine-trap';
 import {
   headerFooterApplyToLabel,
   parseHeaderFooterModeChanged,
@@ -65,6 +66,10 @@ export class CanvasView {
   private currentVisiblePages: number[] = [];
   private editingPageIndex: number | null = null;
   private activePageSnapshot: ActivePageSnapshot | null = null;
+  /** viewport-scroll 에서 호출된 updateVisiblePages 인가 (current-page-changed 중복 억제용) */
+  private scrollDrivenVisibleUpdate = false;
+  /** 마지막으로 발행한 current-page-changed 의 `쪽|전체 쪽 수` */
+  private lastCurrentPageKey = '';
   private headerFooterEditState: HeaderFooterModeState | null = null;
   private gridOverlaysByPage = new Map<number, HTMLElement[]>();
   private unsubscribers: (() => void)[] = [];
@@ -82,6 +87,8 @@ export class CanvasView {
   );
   private documentLoadPrepared = false;
   private layoutViewportSize = { width: 0, height: 0 };
+  /** 전체 refresh 마다 증가 — 머리말/꼬리말 대표 preview 재사용 키에 들어간다. */
+  private documentRenderGeneration = 0;
   private disposed = false;
 
   constructor(
@@ -103,10 +110,26 @@ export class CanvasView {
 
     this.scrollContent = container.querySelector('#scroll-content')!;
     this.viewportManager.attachTo(container);
+    this.unsubscribers.push(this.watchDevicePixelRatio(), this.watchCanvasContextRestore());
+    // trap 뒤에는 어떤 예약 작업도 엔진을 부를 수 없다. 대기 중인 이미지 재렌더·선렌더·검증
+    // 타이머가 마지막으로 그린 쪽을 지우지 않도록 모두 끊는다.
+    this.unsubscribers.push(onEngineTrap(() => {
+      this.pageRenderer.cancelAll();
+      this.cancelPendingPrefetch();
+      this.cancelTextEditStaticLayerVerification();
+      this.cancelAutoRendererReselection();
+    }));
 
     this.unsubscribers.push(
       eventBus.on('viewport-scroll', () => {
-        if (!this.viewportManager.isZoomAnimating()) this.updateVisiblePages();
+        if (this.viewportManager.isZoomAnimating()) return;
+        // 순수 스크롤 프레임에서는 쪽이 실제로 바뀔 때만 상태 표시줄을 갱신한다.
+        this.scrollDrivenVisibleUpdate = true;
+        try {
+          this.updateVisiblePages();
+        } finally {
+          this.scrollDrivenVisibleUpdate = false;
+        }
       }),
       eventBus.on('viewport-resize', () => this.onViewportResize()),
       eventBus.on('viewport-inset-changed', () => this.recenterHorizontally()),
@@ -171,7 +194,7 @@ export class CanvasView {
     this.applyRendererSelection(selection);
 
     const pageCount = this.wasm.pageCount;
-    this.pages = this.collectPageInfo(pageCount);
+    this.pages = this.collectPageInfo(pageCount) ?? [];
 
     if (this.pages.length === 0) {
       console.error('[CanvasView] 로드된 페이지가 없습니다');
@@ -184,7 +207,7 @@ export class CanvasView {
       const pageWidth = this.pages[0].width;
       if (pageWidth > 0 && containerWidth > 0) {
         const fitZoom = containerWidth / pageWidth;
-        this.viewportManager.setZoom(Math.max(0.1, Math.min(fitZoom, 4.0)));
+        this.viewportManager.setZoom(Math.max(MIN_ZOOM, Math.min(fitZoom, MAX_ZOOM)));
       }
     }
 
@@ -193,7 +216,8 @@ export class CanvasView {
       this.virtualScroll.getCenteredScrollLeft(this.layoutViewportSize.width),
     );
 
-    this.container.scrollTop = 0;
+    // 캐시 좌표도 함께 0 으로 맞춘다 — 직접 대입하면 첫 쪽 창이 이전 문서의 위치로 계산된다.
+    this.viewportManager.setScrollTop(0);
     this.updateVisiblePages();
     // 초기 replay가 예약한 document fallback을 load 완료 전에 확정한다.
     await Promise.resolve();
@@ -201,12 +225,14 @@ export class CanvasView {
     console.log(`[CanvasView] ${this.pages.length}/${pageCount}페이지 로드, 총 높이: ${this.virtualScroll.getTotalHeight()}px`);
   }
 
-  private collectPageInfo(pageCount: number): PageInfo[] {
+  /** 엔진이 trap 했으면 null — 호출자는 지금 배치를 그대로 둔다. */
+  private collectPageInfo(pageCount: number): PageInfo[] | null {
     try {
       const pages = this.wasm.getAllPageInfo();
       if (pages.length === pageCount) return pages;
       console.warn(`[CanvasView] 전체 페이지 정보 개수 불일치: ${pages.length}/${pageCount}`);
     } catch (error) {
+      if (reportEngineTrap(error)) return null;
       console.warn('[CanvasView] 전체 페이지 정보 조회 실패, 개별 조회로 대체:', error);
     }
 
@@ -215,6 +241,7 @@ export class CanvasView {
       try {
         pages.push(this.wasm.getPageInfo(page));
       } catch (error) {
+        if (reportEngineTrap(error)) return null;
         console.error(`[CanvasView] 페이지 ${page} 정보 조회 실패:`, error);
       }
     }
@@ -258,6 +285,7 @@ export class CanvasView {
     batch: MutationRefreshBatch,
     isCurrent: () => boolean,
   ): Promise<void> {
+    if (engineTrap()) return;
     const selected = await this.selectMutationRevision();
     if (!isCurrent() || !selected || !this.rendererSession.isCurrent(selected.selection)) return;
     const full = batch.full || selected.backendChanged
@@ -387,6 +415,8 @@ export class CanvasView {
 
   /** 스크롤/리사이즈 시 보이는 페이지를 갱신한다 */
   private updateVisiblePages(): void {
+    // 멈춘 엔진으로는 새 쪽을 그릴 수 없다. 이미 그린 쪽을 해제하지 않고 그대로 둔다.
+    if (engineTrap()) return;
     const scrollY = this.viewportManager.getScrollY();
     const scrollX = this.viewportManager.getScrollX();
     const { width: vpWidth, height: vpHeight } = this.viewportManager.getViewportSize();
@@ -456,14 +486,16 @@ export class CanvasView {
 
     this.activePageSnapshot = next;
     if (snapshotChanged) this.eventBus.emit('active-page-changed', next);
-    // 전체 쪽 수·구역 쪽번호가 pagination으로 바뀔 수 있으므로 snapshot이 같아도
-    // 기존 상태 표시줄 이벤트는 매 visible-page 갱신마다 유지한다.
+    // 전체 쪽 수·구역 쪽번호가 pagination으로 바뀔 수 있으므로 스크롤 외 갱신에서는
+    // snapshot이 같아도 상태 표시줄 이벤트를 유지한다. 순수 스크롤 프레임은 쪽·쪽 수가
+    // 그대로면 생략해 매 프레임 getPageInfo·DOM 쓰기를 피한다.
     if (next) {
-      this.eventBus.emit(
-        'current-page-changed',
-        next.pageIndex,
-        this.virtualScroll.pageCount,
-      );
+      const pageCount = this.virtualScroll.pageCount;
+      const key = `${next.pageIndex}|${pageCount}`;
+      if (!this.scrollDrivenVisibleUpdate || key !== this.lastCurrentPageKey) {
+        this.lastCurrentPageKey = key;
+        this.eventBus.emit('current-page-changed', next.pageIndex, pageCount);
+      }
     }
   }
 
@@ -509,12 +541,14 @@ export class CanvasView {
       desiredPages.add(pageIdx);
 
       const zoom = this.viewportManager.getZoom();
+      // 문서 세대를 넣어 전체 갱신마다 대표 preview 를 한 번 다시 그린다 (스크롤은 재사용).
       const overlayKey = [
         state.mode,
         state.sectionIdx,
         state.applyTo,
         isPreview ? 'representative' : 'related',
         zoom,
+        this.documentRenderGeneration,
       ].join(':');
       const selector = `[data-rhwp-hf-edit-page="${pageIdx}"]`;
       const existing = this.scrollContent.querySelector<HTMLElement>(selector);
@@ -676,8 +710,19 @@ export class CanvasView {
       this.scrollContent.appendChild(canvas);
     }
     if (!this.renderCanvas(pageIdx, canvas)) {
-      this.canvasPool.release(pageIdx);
+      this.releaseFailedRender(pageIdx);
     }
+  }
+
+  /**
+   * 렌더에 실패한 쪽의 canvas 를 pool 에 돌려준다. 이전 렌더가 건 지연 재렌더/검증 타이머가
+   * 그 canvas 를 붙잡고 있으므로 먼저 끊는다 — 그대로 두면 다른 쪽이 재사용한 같은 canvas
+   * 에 이 쪽을 덧그린다.
+   */
+  private releaseFailedRender(pageIdx: number): void {
+    this.cancelTextEditStaticLayerVerification(pageIdx);
+    this.pageRenderer.cancelReRender(pageIdx);
+    this.canvasPool.release(pageIdx);
   }
 
   /** 기존 canvas를 유지한 채 페이지 내용을 다시 그린다. */
@@ -758,6 +803,8 @@ export class CanvasView {
         return false;
       }
     } catch (e) {
+      // trap 이면 이 쪽을 마지막으로 그린 canvas 를 지운 채로 두지 않는다.
+      if (reportEngineTrap(e)) return canvas.dataset.rhwpPageIndex === String(pageIdx);
       console.error(`[CanvasView] 페이지 ${pageIdx} 렌더링 실패:`, e);
       this.pageRenderer.removePageLayers(this.scrollContent, pageIdx);
       this.removeGridOverlay(pageIdx);
@@ -803,6 +850,68 @@ export class CanvasView {
       this.pageRenderer.cancelAll();
       this.updateVisiblePages();
     });
+  }
+
+  /**
+   * 창이 다른 배율의 화면으로 옮겨 가면(크기 변화 없이) 쪽 배치를 새 장치 픽셀에 다시 맞춘다.
+   * resolution 미디어 쿼리는 현재 배율에서 벗어날 때 한 번 바뀌므로 매번 새 배율로 다시 건다.
+   */
+  private watchDevicePixelRatio(): () => void {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return () => {};
+    let query: MediaQueryList | null = null;
+    const onChange = (): void => {
+      arm();
+      if (!this.disposed) this.onViewportResize();
+    };
+    const arm = (): void => {
+      query?.removeEventListener('change', onChange);
+      query = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+      query.addEventListener('change', onChange);
+    };
+    arm();
+    return () => {
+      query?.removeEventListener('change', onChange);
+      query = null;
+    };
+  }
+
+  /**
+   * GPU 프로세스가 재시작하거나 GPU 메모리를 회수하면 Chromium 은 2D 컨텍스트를 잃었다가
+   * 빈 비트맵으로 되살린다. pool 에 남은 쪽은 다시 그려지지 않으므로 복원된 쪽을 한 프레임에
+   * 모아 다시 그린다. contextrestored 는 버블링하지 않아 캡처 단계에서 받는다.
+   */
+  private watchCanvasContextRestore(): () => void {
+    const restoredPages = new Set<number>();
+    let frame: number | null = null;
+    const flush = (): void => {
+      frame = null;
+      // trap 한 엔진은 다시 그릴 수 없다. 마지막으로 그린 쪽은 engine-trap 경로가 지킨다.
+      if (this.disposed || engineTrap()) return;
+      const pages = Array.from(restoredPages);
+      restoredPages.clear();
+      for (const pageIdx of pages) {
+        if (!this.canvasPool.has(pageIdx)) continue;
+        this.refreshInvalidatedPageNow(pageIdx, { reason: 'unknown', allowStaticOverlayReuse: false });
+      }
+      // 머리말/꼬리말 편집 미리보기 캔버스도 같은 순간에 비워진다.
+      this.renderHeaderFooterEditOverlays(true);
+    };
+    const onRestored = (event: Event): void => {
+      const canvas = event.target;
+      if (this.disposed || !(canvas instanceof HTMLCanvasElement)) return;
+      // 쪽 캔버스와 그 위 개체 레이어 캔버스는 쪽 단위로 함께 다시 그린다.
+      const owner = canvas.closest<HTMLElement>('[data-rhwp-page-index], [data-rhwp-overlay-page]');
+      const pageIdx = Number(owner?.dataset.rhwpPageIndex ?? owner?.dataset.rhwpOverlayPage);
+      if (Number.isInteger(pageIdx) && this.canvasPool.has(pageIdx)) restoredPages.add(pageIdx);
+      frame ??= requestAnimationFrame(flush);
+    };
+    this.scrollContent.addEventListener('contextrestored', onRestored, true);
+    return () => {
+      this.scrollContent.removeEventListener('contextrestored', onRestored, true);
+      if (frame !== null) cancelAnimationFrame(frame);
+      frame = null;
+      restoredPages.clear();
+    };
   }
 
   /** 뷰포트 리사이즈 처리 */
@@ -1050,13 +1159,41 @@ export class CanvasView {
 
   /** 편집 후 보이는 페이지를 재렌더링한다 */
   refreshPages(): void {
-    if (this.pages.length === 0) return;
+    if (this.pages.length === 0 || engineTrap()) return;
 
     // 페이지 정보 재수집 (페이지 수/크기가 변경될 수 있음)
-    const pageCount = this.wasm.pageCount;
-    this.pages = this.collectPageInfo(pageCount);
+    let pages: PageInfo[] | null;
+    try {
+      pages = this.collectPageInfo(this.wasm.pageCount);
+    } catch (error) {
+      if (!reportEngineTrap(error)) throw error;
+      pages = null;
+    }
+    if (!pages) return;
+    this.pages = pages;
+    this.documentRenderGeneration += 1;
+
+    // 용지 폭이 바뀌어 좌우 여백(pan 공간)이 생기거나 사라지면 전체 폭과 쪽 left 가 함께
+    // 움직인다. 가운데 보던 화면은 새 폭에서도 가운데로 옮긴다 — 그대로 두면 뷰포트보다
+    // 넓어진 용지가 통째로 오른쪽 화면 밖으로 밀려 문서가 사라진 것처럼 보인다.
+    const previousTotalWidth = this.virtualScroll.getTotalWidth();
+    const wasHorizontallyCentered = Math.abs(
+      this.viewportManager.getScrollX()
+        - this.virtualScroll.getCenteredScrollLeft(this.layoutViewportSize.width),
+    ) <= 2;
 
     this.recalcLayout();
+    // 문서가 짧아졌으면 스크롤을 새 끝 안으로 먼저 당긴다. 그대로 두면 아래 쪽 창 계산이
+    // 끝 너머를 보고 모든 쪽을 해제해, scroll 이벤트가 올 때까지 화면이 빈다.
+    this.viewportManager.clampScrollToContent(
+      this.virtualScroll.getTotalWidth(),
+      this.virtualScroll.getTotalHeight(),
+    );
+    if (wasHorizontallyCentered && this.virtualScroll.getTotalWidth() !== previousTotalWidth) {
+      this.viewportManager.setScrollLeft(
+        this.virtualScroll.getCenteredScrollLeft(this.layoutViewportSize.width),
+      );
+    }
 
     this.cancelTextEditStaticLayerVerification();
     this.pageRenderer.cancelAll();
@@ -1081,7 +1218,7 @@ export class CanvasView {
       if (visibleSet.has(pageIdx)) {
         const canvas = this.canvasPool.getCanvas(pageIdx)!;
         if (!this.renderCanvas(pageIdx, canvas)) {
-          this.canvasPool.release(pageIdx);
+          this.releaseFailedRender(pageIdx);
         }
       } else {
         // 화면 밖 선렌더 페이지는 지금 다시 그리지 않는다 — idle 프리페치가 다시 채운다.
@@ -1099,9 +1236,15 @@ export class CanvasView {
   }
 
   private refreshInvalidatedPageNow(pageIndex: number, renderContext: PageRenderContext): void {
-    if (this.pages.length === 0) return;
+    if (this.pages.length === 0 || engineTrap()) return;
 
-    const pageCount = this.wasm.pageCount;
+    let pageCount: number;
+    try {
+      pageCount = this.wasm.pageCount;
+    } catch (error) {
+      if (reportEngineTrap(error)) return;
+      throw error;
+    }
     if (pageCount !== this.pages.length || pageIndex >= pageCount) {
       this.refreshPages();
       return;
@@ -1114,7 +1257,7 @@ export class CanvasView {
     }
 
     if (!this.renderCanvas(pageIndex, canvas, renderContext)) {
-      this.canvasPool.release(pageIndex);
+      this.releaseFailedRender(pageIndex);
       this.updateVisiblePages();
       return;
     }
@@ -1165,6 +1308,8 @@ export class CanvasView {
   }
 
   private releaseAllRenderedPages(): void {
+    // pool 로 돌아가는 canvas 를 붙잡은 지연 재렌더가 남지 않게 먼저 모두 끊는다.
+    this.pageRenderer.cancelAll();
     this.pageRenderer.resetImageRetryState();
     this.pageRenderer.removeAllPageLayers(this.scrollContent);
     this.removeHeaderFooterEditOverlays();

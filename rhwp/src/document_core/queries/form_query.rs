@@ -119,6 +119,9 @@ impl DocumentCore {
                 if let Some(s) = self.document.sections.get_mut(sec) {
                     s.raw_stream = None;
                 }
+                // 이벤트를 쌓지 않는 편집이라 문단 revision 을 직접 올린다 — 올리지 않으면
+                // 스냅샷 복원(undo·에이전트 롤백)이 바뀐 문단을 그대로 재사용한다.
+                self.event_log.mark_paragraph_changed(sec, para);
                 self.recompose_section(sec);
                 Ok(r#"{"ok":true}"#.to_string())
             }
@@ -175,6 +178,8 @@ impl DocumentCore {
                 if let Some(s) = self.document.sections.get_mut(sec) {
                     s.raw_stream = None;
                 }
+                // 셀 문단은 표를 품은 최상위 문단 revision 으로 스냅샷에 묶인다.
+                self.event_log.mark_paragraph_changed(sec, table_para);
                 self.recompose_section(sec);
                 Ok(r#"{"ok":true}"#.to_string())
             }

@@ -206,6 +206,12 @@ export function createUsageStore({
   /** 파일 쓰기는 직렬화한다 — 같은 줄에 두 이벤트가 섞이지 않도록. */
   let writeChain = Promise.resolve();
   let lastPrunedAt = now();
+  /** 시작할 때 로그를 읽지 못했으면 정리(rewrite)가 읽지 못한 기록을 덮어쓰지 않도록 append 만 한다. */
+  let logUnread = false;
+
+  function warn(message, error) {
+    process.stderr.write(`[usage-store] ${message}: ${error?.message ?? error}\n`);
+  }
 
   async function writeAtomic(file, text) {
     const temp = `${file}.tmp-${process.pid}-${randomUUID()}`;
@@ -292,10 +298,14 @@ export function createUsageStore({
     eventsPath,
     plansPath,
 
+    // 사용량 통계는 부가 기능이다. 디스크 오류(ENOSPC, EACCES, Windows 잠금)가 있어도 허브 시작을 막지 않고
+    // 메모리 기록으로 계속한다. 이후 record()/setPlan() 이 자체적으로 쓰기 실패를 알린다.
     async init() {
-      await fs.mkdir(rootDir, { recursive: true });
-      await recoverInterruptedFileReplacement(plansPath, { platform });
-      await recoverInterruptedFileReplacement(eventsPath, { platform });
+      await fs.mkdir(rootDir, { recursive: true }).catch((error) => warn('사용량 폴더를 만들지 못했어요', error));
+      await recoverInterruptedFileReplacement(plansPath, { platform })
+        .catch((error) => warn('요금제 파일을 복구하지 못했어요', error));
+      await recoverInterruptedFileReplacement(eventsPath, { platform })
+        .catch((error) => warn('사용량 기록 파일을 복구하지 못했어요', error));
       try {
         const raw = JSON.parse(await readUtf8FileBounded(plansPath, {
           maxBytes: MAX_PLANS_BYTES,
@@ -307,8 +317,17 @@ export function createUsageStore({
       } catch {
         // 요금제 파일이 없거나 깨졌으면 기본값으로 시작한다.
       }
+      let loaded = null;
       try {
-        const loaded = await readEventTail(eventsPath, maxLogBytes);
+        loaded = await readEventTail(eventsPath, maxLogBytes);
+      } catch (error) {
+        if (error?.code !== 'ENOENT') {
+          logUnread = true;
+          warn('사용량 기록을 읽지 못해 빈 기록으로 시작해요', error);
+        }
+        events = [];
+      }
+      if (loaded) {
         const text = loaded.text;
         const parsed = [];
         let dropped = loaded.truncated ? 1 : 0;
@@ -329,10 +348,10 @@ export function createUsageStore({
           events = parsed;
         }
         lastPrunedAt = now();
-        if (dropped > 0) await rewriteEvents();
-      } catch (error) {
-        if (error?.code !== 'ENOENT') throw error;
-        events = [];
+        if (dropped > 0) {
+          // 정리본을 쓰지 못해도 메모리 기록은 이미 정리됐다. 다음 정리 때 다시 쓴다.
+          await rewriteEvents().catch((error) => warn('오래된 사용량 기록을 정리하지 못했어요', error));
+        }
       }
       return this;
     },
@@ -362,8 +381,8 @@ export function createUsageStore({
       events.push(event);
       const shouldPrune = events.length > maxEvents || event.ts - lastPrunedAt >= pruneIntervalMs;
       let persist;
-      if (shouldPrune) {
-        pruneEvents(event.ts);
+      if (shouldPrune) pruneEvents(event.ts);
+      if (shouldPrune && !logUnread) {
         const snapshot = [...events];
         persist = () => rewriteEvents(snapshot);
       } else {

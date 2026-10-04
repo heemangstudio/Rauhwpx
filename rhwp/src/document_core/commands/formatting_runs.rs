@@ -4,9 +4,6 @@ use crate::document_core::DocumentCore;
 use crate::error::HwpError;
 use crate::model::event::DocumentEvent;
 use crate::model::paragraph::{CharShapeRun, Paragraph};
-use crate::renderer::composer::reflow_line_segs;
-use crate::renderer::page_layout::PageLayoutInfo;
-use crate::renderer::style_resolver::resolve_styles;
 
 fn range_error(detail: impl std::fmt::Display) -> HwpError {
     HwpError::RenderError(format!("글자 모양 구간: {detail}"))
@@ -117,28 +114,10 @@ impl DocumentCore {
         if start == end {
             return Ok("{\"ok\":true}".into());
         }
-        let styles = resolve_styles(&self.document.doc_info, self.dpi);
-        let available_width = {
-            let section = &self.document.sections[sec];
-            let page_def = &section.section_def.page_def;
-            let column_def = DocumentCore::find_initial_column_def(&section.paragraphs);
-            let layout = PageLayoutInfo::from_page_def(page_def, &column_def, self.dpi);
-            let col_width = layout
-                .column_areas
-                .first()
-                .map(|a| a.width)
-                .unwrap_or(layout.body_area.width);
-            let para_shape_id = section.paragraphs[para].para_shape_id;
-            let para_style = styles.para_styles.get(para_shape_id as usize);
-            let margin_left = para_style.map(|s| s.margin_left).unwrap_or(0.0);
-            let margin_right = para_style.map(|s| s.margin_right).unwrap_or(0.0);
-            (col_width - margin_left - margin_right).max(1.0)
-        };
-        {
-            let paragraph = &mut self.document.sections[sec].paragraphs[para];
-            paragraph.restore_char_shape_runs(&runs);
-            reflow_line_segs(paragraph, available_width, &styles, self.dpi);
-        }
+        self.document.sections[sec].paragraphs[para].restore_char_shape_runs(&runs);
+        // 정방향 글자 서식과 같은 리플로우 수명주기(소속 단 폭 + vpos 재계산)를 쓴다.
+        // 첫 단 폭으로 줄만 다시 나누면 뒤 문단 vpos 가 편집 뒤 위치에 남는다.
+        self.reflow_body_para_and_recalc_flow(sec, para);
         self.document.sections[sec].raw_stream = None;
         self.rebuild_section(sec);
         self.event_log.push(DocumentEvent::CharFormatChanged {

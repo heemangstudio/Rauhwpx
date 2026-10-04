@@ -563,3 +563,107 @@ test('unix terminal payload rm fails closed on the first lock', async (t) => {
   assert.equal((await store.get(created.id)).state, 'preparing');
   assert.equal(await readFile(path.join(payloadDirectory, 'document.bin'), 'utf8'), 'document');
 });
+
+async function liveHandoff(store, state) {
+  const created = await store.create({
+    sessionId: 'desktop-session', documentId: 'document-1', documentName: 'source.hwpx',
+    documentBytes: Buffer.from('document'), provider: 'codex', limits: { maxTurns: 100 },
+  });
+  await store.transition(created.id, 'uploading');
+  await store.transition(created.id, 'committing');
+  await store.transition(created.id, state, { cloudSessionId: `cloud-${state}` });
+  return created;
+}
+
+test('server retention can expire queued and suspended handoffs', async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'rauhwpx-handoff-expire-'));
+  const store = new CloudHandoffStore({ filePath: path.join(directory, 'handoffs.json') });
+  t.after(async () => { await store.flush(); await rm(directory, { recursive: true, force: true }); });
+  const queued = await liveHandoff(store, 'queued');
+  const suspended = await liveHandoff(store, 'running');
+  await store.transition(suspended.id, 'suspended');
+
+  assert.equal((await store.transition(queued.id, 'expired')).state, 'expired');
+  assert.equal((await store.applyEvent(suspended.id, { sequence: 9, state: 'expired' })).state, 'expired');
+  await assert.rejects(store.transition(queued.id, 'running'), { code: 'HANDOFF_TRANSITION_INVALID' });
+});
+
+test('a transient read error is retried instead of quarantining the store', async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'rauhwpx-handoff-read-retry-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const filePath = path.join(directory, 'handoffs.json');
+  const created = await liveHandoff(new CloudHandoffStore({ filePath }), 'running');
+  let reads = 0;
+  const store = new CloudHandoffStore({
+    filePath,
+    sleep: async () => {},
+    readFile: async (...args) => {
+      reads += 1;
+      if (reads === 1) throw errorWithCode('EBUSY');
+      return readFile(...args);
+    },
+  });
+
+  assert.equal((await store.get(created.id))?.state, 'running');
+  assert.equal(reads, 2);
+  assert.equal(store.quarantinePath, null);
+  assert.deepEqual((await readdir(directory)).filter((name) => name.includes('.corrupt-')), []);
+});
+
+test('a store that stays unreadable is left in place and never overwritten with an empty list', async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'rauhwpx-handoff-unreadable-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const filePath = path.join(directory, 'handoffs.json');
+  const created = await liveHandoff(new CloudHandoffStore({ filePath }), 'running');
+  const saved = await readFile(filePath, 'utf8');
+  let failing = true;
+  const store = new CloudHandoffStore({
+    filePath,
+    sleep: async () => {},
+    readFile: async (...args) => {
+      if (failing) throw errorWithCode('EIO');
+      return readFile(...args);
+    },
+  });
+
+  await assert.rejects(store.load(), { code: 'HANDOFF_STORE_UNREADABLE', retryable: true });
+  await assert.rejects(store.list(), { code: 'HANDOFF_STORE_UNREADABLE' });
+  await store.flush();
+  assert.equal(await readFile(filePath, 'utf8'), saved, 'shutdown must not persist the empty unloaded store');
+  assert.deepEqual((await readdir(directory)).filter((name) => name.startsWith('handoffs.json')), ['handoffs.json']);
+
+  failing = false;
+  assert.equal((await store.get(created.id))?.state, 'running');
+});
+
+test('unparseable handoff stores are still quarantined and report where', async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'rauhwpx-handoff-quarantine-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const filePath = path.join(directory, 'handoffs.json');
+  await writeFile(filePath, '{"version":1,"records":');
+  const store = new CloudHandoffStore({ filePath });
+
+  assert.deepEqual(await store.load(), []);
+  assert.match(path.basename(store.quarantinePath), /^handoffs\.json\.corrupt-\d+$/);
+  assert.equal(await readFile(store.quarantinePath, 'utf8'), '{"version":1,"records":');
+});
+
+test('failed store and recovery writes leave no temp files behind', async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'rauhwpx-handoff-temp-cleanup-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const filePath = path.join(directory, 'handoffs.json');
+  const store = new CloudHandoffStore({ filePath });
+  await store.load();
+  // A directory in the target's place makes the final replace fail after the temp is written.
+  await mkdir(filePath);
+  await assert.rejects(store.create({
+    sessionId: 'desktop-session', documentId: 'document-1', documentName: 'source.hwpx',
+    documentBytes: Buffer.from('document'), provider: 'codex', limits: { maxTurns: 100 },
+  }));
+  const bytes = Buffer.from('recovered document');
+  const recoveryPath = path.join(directory, 'result.hwpx');
+  await mkdir(recoveryPath);
+  await assert.rejects(writeVerifiedRecoveryFile({ filePath: recoveryPath, bytes, expectedDigest: sha256Hex(bytes) }));
+
+  assert.deepEqual((await readdir(directory)).filter((name) => name.includes('.tmp-')), []);
+});

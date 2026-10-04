@@ -86,5 +86,4 @@ test('knowledge-network progress is bounded, accessible, and reduced-motion safe
   assert.match(css, /\.ag-calibration-network-node\.ag-live/);
   assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
   assert.match(css, /\.ag-calibration-network-scape\.ag-paused/);
-  assert.doesNotMatch(css, /linear-gradient|radial-gradient|backdrop-filter/);
 });

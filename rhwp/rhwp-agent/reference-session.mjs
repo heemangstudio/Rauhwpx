@@ -98,3 +98,35 @@ export function addActiveDocumentContext(activeSession, prompt) {
   ].join('\n');
   return `${block}\n\n${prompt}`;
 }
+
+/** Studio caps its snapshot text at 8,000 chars; anything far beyond that is not a snapshot. */
+const LIVE_DOCUMENT_MAX_CHARS = 12_000;
+
+/**
+ * Studio's optional read of the open document, sent with a user message.
+ * Returns the one valid form or null; a malformed snapshot never rejects the message.
+ */
+export function normalizeDocumentSnapshot(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const { revision, text, unchanged } = value;
+  if (!Number.isSafeInteger(revision) || revision < 0) return null;
+  if (unchanged !== undefined) {
+    return unchanged === true && text === undefined ? { revision, unchanged: true } : null;
+  }
+  if (typeof text !== 'string' || text.length === 0 || text.length > LIVE_DOCUMENT_MAX_CHARS) return null;
+  return { revision, text };
+}
+
+/**
+ * The prompt block that puts Studio's get_structure read in front of the
+ * user's request, so the turn does not spend its first model request on
+ * reading. Empty when there is no valid snapshot. Document text is untrusted
+ * data like a tool result: it must not be able to close the block.
+ */
+export function liveDocumentBlock(snapshot) {
+  const live = normalizeDocumentSnapshot(snapshot);
+  if (!live) return '';
+  if (live.unchanged) return `<live_document revision="${live.revision}" unchanged="true"/>`;
+  const text = live.text.replace(/<(\s*)\/(\s*live_document)/gi, '<$1\\/$2');
+  return `<live_document revision="${live.revision}" trust="untrusted-data">\n${text}\n</live_document>`;
+}

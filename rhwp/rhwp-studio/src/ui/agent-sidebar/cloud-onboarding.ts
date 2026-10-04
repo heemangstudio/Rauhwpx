@@ -2,17 +2,17 @@ import './cloud-onboarding.css';
 
 import type { CloudController } from '../../cloud/desktop-cloud.ts';
 import type {
+  BoatServerState,
   CloudProfileDraft,
   CloudProviderSelection,
-  CloudServerMode,
   CloudSnapshot,
 } from '../../cloud/types.ts';
 import { labelForEffort, labelForModel } from '../../agent/models.ts';
 import { inferCloudLink } from '../../cloud/link.ts';
 import { isCloudSupportedAgent } from '../../cloud/cloud-start.ts';
-import cloudPixelUrl from './cloud-pixel.svg';
 import {
   appServerProvider,
+  boatCardStatus,
   createCloudSetupState,
   defaultCloudProfileDraft,
   mapCloudSetupIssue,
@@ -21,9 +21,15 @@ import {
   reconcileCloudSetupState,
   raucloudSetupElapsed,
   snapshotProfile,
+  boatStateAfterAccount,
+  isBoatSetupState,
+  snapshotBoatProfile,
   snapshotSandbox,
   validateCloudProfileDraft,
+  type BoatHostPlatform,
   type CloudProfileField,
+  type CloudSetupChoice,
+  type CloudSetupEntry,
   type CloudSetupIntent,
   type CloudSetupIssue,
   type CloudSetupStage,
@@ -31,6 +37,10 @@ import {
 } from './cloud-onboarding-state.ts';
 import { createIcon } from './icons.ts';
 import { AGENT_LABEL, createProviderIcon } from './providers.ts';
+import { createBoatSetupView } from './cloud-boat-setup.ts';
+import { confirmSheet } from './sheet.ts';
+import { showContextMenu } from '../native-context-menu.ts';
+import { showToast } from '../toast.ts';
 
 export interface CloudOnboardingDeps {
   controller: CloudController;
@@ -50,7 +60,8 @@ export interface CloudTransferIntent {
 
 export interface CloudOnboarding {
   settingsElement: HTMLElement;
-  open(intent: CloudSetupIntent, trigger: HTMLElement): void;
+  /** entry 를 주면 그 화면에서 바로 시작한다. 복구 줄의 다시 페어링과 API 키 입력이 쓴다. */
+  open(intent: CloudSetupIntent, trigger: HTMLElement, entry?: CloudSetupEntry): void;
   sync(snapshot: CloudSnapshot): void;
   handleAccountEvent(event: { signedIn: boolean; error?: string }): void;
   setMutationLocked(locked: boolean): void;
@@ -68,17 +79,19 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
-type DraftlessKind = 'connected' | 'sandbox-ready' | 'sandbox-tearing-down';
+type DraftlessKind = 'connected' | 'sandbox-ready' | 'sandbox-tearing-down' | 'boat-ready';
 
 function hasDraft(state: CloudSetupState): state is Exclude<CloudSetupState, { kind: DraftlessKind }> {
-  return state.kind !== 'connected' && state.kind !== 'sandbox-ready' && state.kind !== 'sandbox-tearing-down';
+  return state.kind !== 'connected' && state.kind !== 'sandbox-ready' && state.kind !== 'sandbox-tearing-down'
+    && state.kind !== 'boat-ready';
 }
 
 function operationActive(state: CloudSetupState | null): boolean {
   return state?.kind === 'installing'
     || state?.kind === 'pairing'
     || state?.kind === 'sandbox-provisioning'
-    || state?.kind === 'sandbox-tearing-down';
+    || state?.kind === 'sandbox-tearing-down'
+    || state?.kind === 'boat-progress';
 }
 
 function raucloudLock(snapshot: CloudSnapshot): string | null {
@@ -106,6 +119,13 @@ function desktopPlatform(): string {
   return typeof navigator !== 'undefined' && /win/i.test(navigator.platform) ? 'win32' : '';
 }
 
+function boatHostPlatform(): BoatHostPlatform {
+  const platform = desktopPlatform();
+  if (platform === 'win32') return 'windows';
+  if (platform === 'darwin' || platform === '' || /mac/i.test(typeof navigator !== 'undefined' ? navigator.platform : '')) return 'mac';
+  return 'other';
+}
+
 export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboarding {
   let snapshot = deps.controller.getSnapshot();
   let state: CloudSetupState | null = null;
@@ -125,6 +145,10 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
   let justSignedIn = false;
   let transferContinuationRequested = false;
   let transferIntent: CloudTransferIntent | null = null;
+  let boatCardBusy = false;
+  /** 카드 동작이 실패한 한 줄. 그 뒤 boat 서버 상태가 새로 바뀌거나 카드가 boat 를 떠나면 지운다. */
+  let boatCardError: { text: string; server: string; state: BoatServerState | null } | null = null;
+  let boatRenderKey = '';
 
   const overlay = el('div', 'ag-cloud-setup-overlay');
   overlay.hidden = true;
@@ -157,27 +181,73 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
   const settingsElement = el('section', 'ag-settings-section ag-cloud-settings');
   const settingsTitle = el('h3', 'ag-settings-section-title', 'Cloud 서버');
   const settingsCard = el('div', 'ag-cloud-settings-card');
-  const settingsIcon = el('span', 'ag-cloud-settings-icon');
-  const pixelCloud = document.createElement('img');
-  pixelCloud.className = 'ag-cloud-settings-pixel';
-  pixelCloud.src = cloudPixelUrl;
-  pixelCloud.alt = '';
-  pixelCloud.setAttribute('aria-hidden', 'true');
-  settingsIcon.appendChild(pixelCloud);
+  const settingsRow = el('div', 'ag-cloud-settings-row');
+  const settingsDot = el('span', 'ag-settings-dot ag-cloud-settings-dot');
+  settingsDot.setAttribute('aria-hidden', 'true');
   const settingsCopy = el('div', 'ag-cloud-settings-copy');
   const settingsStatus = el('strong', 'ag-cloud-settings-status');
   const settingsDetail = el('span', 'ag-cloud-settings-detail');
-  settingsCopy.append(settingsStatus, settingsDetail);
+  const settingsError = el('span', 'ag-cloud-settings-error');
+  settingsError.hidden = true;
+  settingsError.setAttribute('role', 'status');
+  settingsCopy.append(settingsStatus, settingsDetail, settingsError);
+  const settingsActions = el('div', 'ag-cloud-settings-actions');
   const settingsAction = el('button', 'ag-settings-btn ag-cloud-settings-action') as HTMLButtonElement;
   settingsAction.type = 'button';
-  settingsAction.addEventListener('click', () => open('manage', settingsAction));
-  settingsCard.append(settingsIcon, settingsCopy, settingsAction);
-  settingsElement.append(settingsTitle, settingsCard);
+  // boat VM 은 카드에서 바로 시작·중지한다. 나머지는 설정 창을 연다.
+  let settingsActionKind: 'open' | 'wake' | 'stop' | 'account' = 'open';
+  settingsAction.addEventListener('click', () => {
+    if (settingsActionKind === 'open') open('manage', settingsAction);
+    else if (settingsActionKind === 'account') open('manage', settingsAction, 'boat-key');
+    else void runBoatCardAction(settingsActionKind);
+  });
+  const settingsMore = el('button', 'ag-cloud-settings-more') as HTMLButtonElement;
+  settingsMore.type = 'button';
+  settingsMore.title = 'boat 서버 관리';
+  settingsMore.setAttribute('aria-label', 'boat 서버 관리');
+  settingsMore.setAttribute('aria-haspopup', 'menu');
+  settingsMore.setAttribute('aria-expanded', 'false');
+  settingsMore.hidden = true;
+  settingsMore.append(createIcon('more'));
+  settingsMore.addEventListener('click', () => { void openBoatMenu(); });
+  settingsActions.append(settingsAction, settingsMore);
+  settingsRow.append(settingsDot, settingsCopy, settingsActions);
+  settingsCard.append(settingsRow);
+  const settingsHead = el('div', 'ag-settings-section-head');
+  settingsHead.append(settingsTitle);
+  settingsElement.append(settingsHead, settingsCard);
 
   function button(label: string, tone: 'primary' | 'quiet' | 'danger' = 'quiet'): HTMLButtonElement {
     const item = el('button', `ag-cloud-setup-button ag-${tone}`, label) as HTMLButtonElement;
     item.type = 'button';
     return item;
+  }
+
+  const boatView = createBoatSetupView({
+    controller: deps.controller,
+    platform: boatHostPlatform(),
+    snapshot: () => snapshot,
+    state: () => state,
+    visible: () => visible,
+    setState,
+    announce: (text) => { liveStatus.textContent = text; },
+    button,
+    description,
+    issueDetails,
+    transferContext,
+    continueTransfer,
+    chooseAgain: (intent, draft) => setState({ kind: 'choose', draft, intent, mode: 'boat' }),
+    close,
+    beginOperation,
+    operationIsCurrent,
+  });
+
+  /** boat 확인·완료 화면은 서버 사양을 스냅샷에서 읽는다. 그 사실이 바뀔 때만 다시 그린다. */
+  function boatDialogKey(): string {
+    if (state?.kind !== 'boat-confirm' && state?.kind !== 'boat-ready') return '';
+    const server = snapshot.boat?.server;
+    return JSON.stringify([state.kind, server?.sandboxId, server?.machineLabel, server?.idleStopMinutes,
+      server?.autoStop, server?.timerHours, snapshotBoatProfile(snapshot)?.machine]);
   }
 
   function setState(next: CloudSetupState, announcement = ''): void {
@@ -186,6 +256,8 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
     if (announcement) liveStatus.textContent = announcement;
     renderDialog();
     syncSetupProgressTimer();
+    boatView.sync();
+    renderSettings();
   }
 
   function setupProgressText(startedAt: number): string {
@@ -263,12 +335,13 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
       operationEpoch += 1;
       if (!preserveOnOpen) state = null;
     }
+    boatView.sync();
     if (restoreFocus && focusTarget?.isConnected) focusTarget.focus();
   }
 
-  function issueDetails(issue: CloudSetupIssue): HTMLElement {
+  function issueDetails(issue: CloudSetupIssue, label = '기술 정보'): HTMLElement {
     const details = el('details', 'ag-cloud-setup-technical');
-    const summary = el('summary', '', '기술 정보');
+    const summary = el('summary', '', label);
     const detail = el('pre', '', issue.detail);
     details.append(summary, detail);
     return details;
@@ -523,10 +596,12 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
     }
   }
 
-  async function selectMode(mode: CloudServerMode): Promise<void> {
+  async function selectMode(mode: CloudSetupChoice): Promise<void> {
     if (!state || state.kind !== 'choose') return;
     state = { ...state, mode };
     renderDialog();
+    // boat 는 내 서버의 한 종류라 데스크톱의 서버 방식에는 저장하지 않는다.
+    if (mode === 'boat') return;
     await deps.controller.selectServerMode(mode).catch(() => {
       liveStatus.textContent = '서버 방식 저장 실패 · 다시 시도';
     });
@@ -709,7 +784,7 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
   }
 
   function serverOption(
-    mode: CloudServerMode,
+    mode: CloudSetupChoice,
     heading: string,
     text: string,
     selected: boolean,
@@ -727,7 +802,15 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
     // 이름과 한 줄 사양만 보이고, 긴 설명은 ⓘ 뒤에 둔다.
     const copy = el('div', 'ag-cloud-setup-option-copy');
     copy.append(el('strong', '', heading));
-    if (note) copy.appendChild(el('span', 'ag-cloud-setup-option-note', note));
+    if (note) {
+      // 가운뎃점 뒤에서 줄을 바꿀 수 있게 해, 좁은 창에서도 낱말이 쪼개지지 않는다.
+      const noteNode = el('span', 'ag-cloud-setup-option-note');
+      note.split('·').forEach((part, index, parts) => {
+        noteNode.append(index < parts.length - 1 ? `${part}·` : part);
+        if (index < parts.length - 1) noteNode.append(document.createElement('wbr'));
+      });
+      copy.appendChild(noteNode);
+    }
     option.append(copy);
     option.addEventListener('click', () => {
       if (!disabled) void selectMode(mode);
@@ -749,7 +832,31 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
     return row;
   }
 
+  let renderedStep = '';
+
+  /**
+   * 단계가 바뀌면 창 높이를 이전 높이에서 새 높이로 이어 주고 본문을 살짝 떠오르게 한다.
+   * 같은 단계를 다시 그리는 경우(진행 시간·상태 갱신)는 움직이지 않는다.
+   */
   function renderDialog(): void {
+    if (!state) return;
+    const before = overlay.hidden ? 0 : dialog.getBoundingClientRect().height;
+    renderDialogContent();
+    const step = `${state?.kind ?? ''}:${title.textContent ?? ''}`;
+    const changed = step !== renderedStep;
+    renderedStep = step;
+    if (!changed || before <= 0 || typeof dialog.animate !== 'function'
+      || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+    const after = dialog.getBoundingClientRect().height;
+    if (Math.abs(after - before) > 1) {
+      dialog.animate([{ height: `${before}px` }, { height: `${after}px` }],
+        { duration: 240, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' });
+    }
+    body.animate([{ opacity: 0, transform: 'translateY(4px)' }, { opacity: 1, transform: 'none' }],
+      { duration: 200, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' });
+  }
+
+  function renderDialogContent(): void {
     if (!state) return;
     body.replaceChildren();
     footer.replaceChildren();
@@ -763,13 +870,18 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
     const cancel = button(busy ? '숨기기' : '취소');
     cancel.addEventListener('click', () => close());
     closeButton.onclick = () => close();
+    boatRenderKey = boatDialogKey();
 
-    if (state.kind === 'choose') {
-      const { draft, intent, mode } = state;
+    if (isBoatSetupState(state)) {
+      boatView.render(state, { title, body, footer });
+    } else if (state.kind === 'choose') {
+      const { draft, intent } = state;
+      const boatOffered = deps.controller.boatSupported();
+      // boat 를 모르는 데스크톱에서 boat 가 골라져 있으면 원래 기본값으로 돌린다.
+      const mode = state.mode === 'boat' && !boatOffered ? 'self-hosted' : state.mode;
       const provider = appServerProvider(snapshot);
       const appHostedLock = raucloudLock(snapshot);
       title.textContent = 'Cloud 서버 선택';
-      body.append(description('앱을 닫아도 에이전트가 계속 작업할 서버입니다.'));
       if (state.notice) body.append(callout('cloud', '남은 서버 확인', state.notice));
       const options = el('div', 'ag-cloud-setup-options');
       options.setAttribute('role', 'radiogroup');
@@ -782,22 +894,30 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
           mode === 'app-hosted',
           provider
             ? provider.configured
-              ? appHostedLock ?? `${provider.displayName} 사용 가능`
+              ? appHostedLock ?? 'Rauhwpx 관리형'
               : '이 빌드에서 사용 불가'
             : '이 빌드에 없음',
           Boolean(raucloudHardLock(snapshot)),
         ),
+      );
+      if (boatOffered) {
+        options.append(serverOption(
+          'boat',
+          'boat',
+          'boat.dev 계정에 전용 VM을 만듭니다. 쉬는 동안 자동으로 멈추고, 요금은 boat에서 청구합니다.',
+          mode === 'boat',
+        ));
+      }
+      options.append(
         serverOption(
           'self-hosted',
           '내 서버 사용',
-          '보유한 Ubuntu 또는 Debian VPS에 개인 Cloud 환경을 설치합니다. SSH와 비밀번호 없는 sudo가 필요합니다.',
+          '보유한 Mac mini, Ubuntu 또는 Debian 서버에 개인 Cloud 환경을 설치합니다. SSH와 비밀번호 없는 sudo가 필요합니다.',
           mode === 'self-hosted',
-          'Ubuntu·Debian VPS · SSH',
+          'Mac mini · Linux · SSH',
         ),
       );
       body.appendChild(options);
-      const context = transferContext(intent);
-      if (context) body.appendChild(context);
       const loginRequired = mode === 'app-hosted' && needsRaucloudLogin(snapshot);
       const hardLock = mode === 'app-hosted' ? raucloudHardLock(snapshot) : null;
       const primary = button(
@@ -816,6 +936,7 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
           return;
         }
         if (mode === 'app-hosted') openSandboxStep(draft, intent);
+        else if (mode === 'boat') setState(boatStateAfterAccount(snapshot, intent, draft));
         else setState({ kind: 'intro', draft, intent });
       });
       footer.append(cancel, primary);
@@ -1112,12 +1233,168 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
     });
   }
 
+  function boatCardServer(): string {
+    return JSON.stringify([snapshot.profileEpoch, snapshotBoatProfile(snapshot)?.sandboxId ?? null]);
+  }
+
+  function failBoatCard(error: unknown): void {
+    boatCardError = {
+      text: error instanceof Error ? error.message : String(error),
+      server: boatCardServer(),
+      state: snapshot.boat?.server?.state ?? null,
+    };
+  }
+
+  /** 실패 직후 시작·중지 중이던 상태가 가라앉는 것은 같은 실패다. 그 뒤의 변화만 오류를 지운다. */
+  function boatCardErrorCurrent(onBoatCard: boolean): boolean {
+    if (!boatCardError || !onBoatCard || boatCardError.server !== boatCardServer()) return false;
+    const now = snapshot.boat?.server?.state ?? null;
+    if (now === boatCardError.state) return true;
+    const settling = (state: BoatServerState | null) => state === 'waking' || state === 'stopping';
+    if (settling(boatCardError.state) && !settling(now)) {
+      boatCardError.state = now;
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * 카드 버튼은 동작 중에 비활성화되어 포커스를 잃는다. 사용자가 다른 곳으로 옮기지 않았다면
+   * 끝난 뒤의 카드에서 가장 알맞은 버튼으로 돌려놓는다.
+   */
+  function restoreCardFocus(prefer: 'action' | 'more'): void {
+    if (disposed || !settingsElement.isConnected) return;
+    const focused = document.activeElement;
+    if (focused && focused !== document.body && !settingsElement.contains(focused)) return;
+    const usable = (node: HTMLButtonElement) => !node.hidden && !node.disabled && node.checkVisibility();
+    const order = prefer === 'more' ? [settingsMore, settingsAction] : [settingsAction, settingsMore];
+    const target = order.find(usable);
+    if (target) target.focus();
+    else {
+      settingsCard.tabIndex = -1;
+      settingsCard.focus();
+    }
+  }
+
+  /** 시작·중지는 설정 창 없이 카드에서 끝난다. 실패는 카드 안의 한 줄로 남는다. */
+  async function runBoatCardAction(kind: 'wake' | 'stop'): Promise<void> {
+    if (boatCardBusy || mutationLocked) return;
+    boatCardBusy = true;
+    boatCardError = null;
+    renderSettings();
+    try {
+      snapshot = kind === 'wake' ? await deps.controller.boatWake() : await deps.controller.boatStop();
+    } catch (error) {
+      failBoatCard(error);
+    } finally {
+      boatCardBusy = false;
+      if (!disposed) {
+        renderSettings();
+        restoreCardFocus('action');
+      }
+    }
+  }
+
+  async function openBoatMenu(): Promise<void> {
+    if (boatCardBusy || mutationLocked || settingsMore.hidden) return;
+    const bounds = settingsMore.getBoundingClientRect();
+    settingsMore.setAttribute('aria-expanded', 'true');
+    const missing = snapshot.boat?.server?.state === 'missing';
+    const running = snapshot.boat?.server?.state === 'running';
+    const choice = await showContextMenu([
+      // 서버의 에이전트 로그인이 만료되면 이 기기의 로그인을 다시 보낸다. 더 새로운 서버 쪽 로그인은 서버가 지킨다.
+      { id: 'reimport', label: '로그인 다시 가져오기', enabled: running },
+      { type: 'separator' },
+      { id: 'disconnect', label: '연결 해제' },
+      { type: 'separator' },
+      { id: 'delete', label: '서버 삭제', danger: true, enabled: !missing },
+    ], { x: bounds.left, y: bounds.bottom + 4 });
+    settingsMore.setAttribute('aria-expanded', 'false');
+    if (disposed || !choice) return;
+    if (choice === 'reimport') {
+      boatCardBusy = true;
+      boatCardError = null;
+      renderSettings();
+      try {
+        snapshot = await deps.controller.reimportLogins();
+        liveStatus.textContent = '로그인을 다시 가져왔습니다.';
+        showToast({ message: '로그인을 다시 가져왔습니다.', durationMs: 2500 });
+      } catch (error) {
+        failBoatCard(error);
+      } finally {
+        boatCardBusy = false;
+        if (!disposed) {
+          renderSettings();
+          restoreCardFocus('more');
+        }
+      }
+      return;
+    }
+    if (choice === 'delete') {
+      const confirmed = await confirmSheet(
+        settingsElement,
+        'boat 서버를 삭제할까요?',
+        '서버의 문서 작업과 로그인 정보가 모두 지워집니다.',
+        { confirmLabel: '삭제', destructive: true },
+      );
+      if (!confirmed || disposed) return;
+    }
+    boatCardBusy = true;
+    boatCardError = null;
+    renderSettings();
+    let removed = false;
+    try {
+      snapshot = await deps.controller.boatDisconnect(choice === 'delete');
+      removed = true;
+      liveStatus.textContent = choice === 'delete' ? 'boat 서버를 삭제했습니다.' : 'boat 서버 연결을 해제했습니다.';
+    } catch (error) {
+      failBoatCard(error);
+    } finally {
+      boatCardBusy = false;
+      if (!disposed) {
+        renderSettings();
+        // 해제·삭제 뒤에는 관리 버튼이 사라지므로 카드의 주 동작으로 옮긴다.
+        restoreCardFocus(removed ? 'action' : 'more');
+      }
+    }
+  }
+
   function renderSettings(): void {
     settingsAction.disabled = !snapshot.available || mutationLocked;
+    settingsAction.hidden = false;
+    settingsActionKind = 'open';
+    settingsDetail.removeAttribute('title');
+    settingsDot.dataset.state = 'unknown';
+    delete settingsDot.dataset.pulse;
+    settingsMore.hidden = true;
+    settingsError.hidden = true;
+    settingsError.textContent = '';
     if (!snapshot.available) {
       settingsStatus.textContent = '이 빌드에서는 사용할 수 없습니다';
       settingsDetail.textContent = 'Cloud 지원 데스크톱 앱이 필요합니다.';
       settingsAction.textContent = '설정';
+      return;
+    }
+    const boat = boatCardStatus(snapshot, boatHostPlatform());
+    if (!boatCardErrorCurrent(Boolean(boat))) boatCardError = null;
+    if (boat) {
+      if (boatCardError) {
+        settingsError.hidden = false;
+        settingsError.textContent = boatCardError.text;
+      }
+      settingsStatus.textContent = boat.title;
+      settingsDetail.textContent = boat.detail;
+      settingsDetail.title = boat.detail;
+      settingsDot.dataset.state = boat.dot;
+      if (boat.pulse) settingsDot.dataset.pulse = 'true';
+      settingsAction.hidden = !boat.action;
+      if (boat.action) {
+        settingsActionKind = boat.action.kind;
+        settingsAction.textContent = boat.action.label;
+        settingsAction.disabled = boat.action.disabled || boatCardBusy || mutationLocked;
+      }
+      settingsMore.hidden = !boat.menu;
+      settingsMore.disabled = boatCardBusy || mutationLocked;
       return;
     }
     if (snapshot.profile.kind === 'unconfigured') {
@@ -1130,14 +1407,20 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
           ? `${raucloudSetupElapsed(state.startedAt)}째 Raucloud를 만들고 있습니다.`
           : 'Raucloud를 만들고 있습니다.';
         settingsAction.textContent = '진행 보기';
+        settingsDot.dataset.state = 'connecting';
         return;
       }
       settingsStatus.textContent = '설정되지 않음';
+      const boatOffered = deps.controller.boatSupported();
       settingsDetail.textContent = provider?.configured
         ? appHostedLock
           ? `${appHostedLock} 내 서버는 로그인 없이 연결할 수 있습니다.`
-          : 'Raucloud 또는 내 서버에서 에이전트를 계속 실행합니다.'
-        : '내 VPS에서 에이전트를 계속 실행합니다.';
+          : boatOffered
+            ? 'Raucloud, boat 또는 내 서버에서 에이전트를 계속 실행합니다.'
+            : 'Raucloud 또는 내 서버에서 에이전트를 계속 실행합니다.'
+        : boatOffered
+          ? 'boat 또는 내 서버에서 에이전트를 계속 실행합니다.'
+          : '내 VPS에서 에이전트를 계속 실행합니다.';
       return;
     }
     const labels = {
@@ -1168,16 +1451,30 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
       ? appHostedLock ?? `Raucloud · ${snapshot.profile.name}${snapshot.profile.sandbox.host ? `, ${snapshot.profile.sandbox.host}` : ''}`
       : `내 서버 · ${snapshot.profile.profile.name}, ${snapshot.profile.profile.host}`;
     settingsAction.textContent = '관리';
+    settingsDot.dataset.state = appHostedLock || link.kind === 'failed' || lifecycle === 'error'
+      || snapshot.profile.connection === 'error'
+      ? 'disconnected'
+      : link.kind === 'ready' && snapshot.profile.connection === 'ready' && !sandboxLabel
+        ? 'connected'
+        : 'connecting';
   }
 
-  function open(intent: CloudSetupIntent, nextTrigger: HTMLElement): void {
+  function open(intent: CloudSetupIntent, nextTrigger: HTMLElement, entry?: CloudSetupEntry): void {
     if (mutationLocked) return;
     if (!accountAuthPending) justSignedIn = false;
     trigger = nextTrigger;
     sidebarResizeObserver.disconnect();
     const sidebar = trigger.closest('.ag-root');
     if (sidebar) sidebarResizeObserver.observe(sidebar);
-    const preservedFailure = preserveOnOpen
+    // body에 붙은 창도 사이드바와 같은 강조색을 쓴다.
+    if (sidebar) {
+      const tokens = getComputedStyle(sidebar);
+      for (const name of ['--accent-primary', '--n-on-accent', '--focus-ring']) {
+        const value = tokens.getPropertyValue(name).trim();
+        if (value) dialog.style.setProperty(name, value);
+      }
+    }
+    const preservedFailure = !entry && preserveOnOpen
       && (state?.kind === 'install-failed' || state?.kind === 'sandbox-failed');
     if (!operationActive(state) && !preservedFailure) {
       transferContinuationRequested = false;
@@ -1185,7 +1482,7 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
         ? deps.captureTransferIntent?.()
           ?? (deps.getTransferSelection ? { selection: deps.getTransferSelection() } : null)
         : null;
-      state = createCloudSetupState(snapshot, intent);
+      state = createCloudSetupState(snapshot, intent, { boat: deps.controller.boatSupported(), entry });
       resetConditionalDrafts(hasDraft(state) ? state.draft : currentDraft());
     }
     deps.onSetupStateChange(operationActive(state));
@@ -1196,6 +1493,7 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
     liveStatus.textContent = '';
     renderDialog();
     syncSetupProgressTimer();
+    boatView.sync();
     positionPopup();
   }
 
@@ -1273,9 +1571,12 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
       renderSettings();
       const lockChanged = raucloudLock(snapshot) !== previousLock;
       const signedInChanged = wasSignedIn !== (snapshot.account?.signedIn === true);
-      if (visible && (state !== previous || lockChanged || signedInChanged)) renderDialog();
+      const boatChanged = boatDialogKey() !== boatRenderKey;
+      if (visible && (state !== previous || lockChanged || signedInChanged || boatChanged)) renderDialog();
+      else boatView.refresh();
+      if (state !== previous) boatView.sync();
       if (state && state !== previous
-        && (state.kind === 'connected' || state.kind === 'sandbox-ready')) {
+        && (state.kind === 'connected' || state.kind === 'sandbox-ready' || state.kind === 'boat-ready')) {
         continueTransfer(state.intent);
       }
     },
@@ -1286,6 +1587,7 @@ export function createCloudOnboarding(deps: CloudOnboardingDeps): CloudOnboardin
     },
     dispose() {
       disposed = true;
+      boatView.dispose();
       operationEpoch += 1;
       if (setupProgressTimer) clearInterval(setupProgressTimer);
       setupProgressTimer = null;

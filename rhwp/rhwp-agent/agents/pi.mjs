@@ -25,8 +25,6 @@ import {
 } from '../process-tree.mjs';
 
 const STDERR_TAIL_LIMIT = 16_000;
-/** macOS ARG_MAX(1MB) 여유분. 프롬프트는 positional 인자로 넘어간다. */
-const PROMPT_ARG_LIMIT = 700_000;
 /** 계획 단계에서 막는 pi 내장 도구. 확장 도구(rhwp)는 그대로 남는다. */
 const PLANNING_EXCLUDED_TOOLS = 'bash,edit,write';
 const SAFE_EXCLUDED_TOOLS = 'bash';
@@ -85,20 +83,7 @@ function toolProfileFor(opts) {
 }
 
 /**
- * 참고 자료 블록은 프롬프트 앞에 붙는다. 인자 한계를 넘으면 뒤(사용자 요청)를
- * 남기고 앞쪽 참고 블록을 잘라낸다 — 요청 자체를 자르지 않는다.
- *
- * @param {string} prompt
- */
-export function clampPromptArg(prompt) {
-  if (Buffer.byteLength(prompt) <= PROMPT_ARG_LIMIT) return prompt;
-  let kept = prompt.slice(-PROMPT_ARG_LIMIT);
-  while (Buffer.byteLength(kept) > PROMPT_ARG_LIMIT) kept = kept.slice(1024);
-  return `[참고 자료 일부 생략]\n\n${kept}`;
-}
-
-/**
- * pi CLI 인자를 만든다. 프롬프트는 호출자가 마지막 positional 인자로 덧붙인다.
+ * pi CLI 인자를 만든다. 프롬프트는 argv가 아니라 stdin으로 전달한다.
  *
  * @param {PiBackendOptions} opts
  * @param {string} sessionId
@@ -536,11 +521,10 @@ export function createPiSession(opts, {
       }
 
       // 시스템 브리핑은 --append-system-prompt 로 매 스폰마다 붙는다.
-      // 프롬프트만 마지막 positional 인자로 넘긴다. '-' 로 시작하면 플래그로
-      // 파싱되므로 앞에 공백 하나를 둔다.
-      const raw = clampPromptArg(text);
-      const prompt = raw.startsWith('-') ? ` ${raw}` : raw;
-      const argv = [...buildPiArgv(opts, sessionId), prompt];
+      // 프롬프트는 stdin 으로 넘긴다. argv 로 넘기면 Linux 의 인자당 128 KiB,
+      // Windows 의 명령줄 32,767자 한계에 걸리고 '-'/'@' 로 시작하는 메시지가
+      // 플래그나 첨부 파일로 파싱된다.
+      const argv = buildPiArgv(opts, sessionId);
       stderrTail = '';
 
       let proc;
@@ -553,8 +537,8 @@ export function createPiSession(opts, {
           ...processTreeSpawnOptions(),
           cwd: opts.rootDir,
           env: launched.env,
-          // stdin 은 반드시 닫아야 한다: json 모드는 열린 stdin 을 계속 기다린다.
-          stdio: ['ignore', 'pipe', 'pipe'],
+          // json 모드는 stdin 이 닫힐 때까지 읽는다. 프롬프트를 쓰고 바로 닫는다.
+          stdio: ['pipe', 'pipe', 'pipe'],
         });
       } catch (e) {
         onEvent({ type: 'error', agent, message: `failed to start pi: ${e?.message ?? e}` });
@@ -688,6 +672,11 @@ export function createPiSession(opts, {
       beginTerminalCleanup = () => platform === 'win32'
         ? beginCleanup(false)
         : Promise.resolve(true);
+      // 기동 중 종료하면 EPIPE 가 난다. 턴 정리는 exit/close 처리가 맡는다.
+      proc.stdin.on('error', (err) => {
+        process.stderr.write(`[pi] stdin write error: ${redactDiagnosticText(err?.message ?? err, [opts.token])}\n`);
+      });
+      proc.stdin.end(text);
       proc.stdout.on('data', (chunk) => {
         if (proc !== child || disposed || !acceptOutput) return;
         readStdout(chunk);

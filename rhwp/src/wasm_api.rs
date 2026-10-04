@@ -14,9 +14,60 @@ use wasm_bindgen::prelude::*;
 #[cfg(target_arch = "wasm32")]
 use web_sys::HtmlCanvasElement;
 
+/// 비합성 RGBA 원본을 정수 디바이스 크기로 축소한다. 잘못된 입력에는 빈 배열을 반환한다.
+#[wasm_bindgen(js_name = smoothHermiteDownsampleRgba)]
+pub fn smooth_hermite_downsample_rgba(
+    pixels: &[u8],
+    source_width: u32,
+    source_height: u32,
+    crop_left: f32,
+    crop_top: f32,
+    crop_right: f32,
+    crop_bottom: f32,
+    target_width: u32,
+    target_height: u32,
+) -> Vec<u8> {
+    crate::renderer::image_resample::smooth_hermite_downsample_rgba(
+        pixels,
+        source_width,
+        source_height,
+        (crop_left, crop_top, crop_right, crop_bottom),
+        target_width,
+        target_height,
+    )
+    .unwrap_or_default()
+}
+
+/// 비합성 RGBA 원본을 정수 디바이스 크기로 샘플링한다. 잘못된 입력에는 빈 배열을 반환한다.
+#[wasm_bindgen(js_name = gridfitAffineSampleRgba)]
+pub fn gridfit_affine_sample_rgba(
+    pixels: &[u8],
+    source_width: u32,
+    source_height: u32,
+    crop_left: f32,
+    crop_top: f32,
+    crop_right: f32,
+    crop_bottom: f32,
+    target_width: u32,
+    target_height: u32,
+    nearest: bool,
+) -> Vec<u8> {
+    crate::renderer::image_resample::gridfit_affine_sample_rgba(
+        pixels,
+        source_width,
+        source_height,
+        (crop_left, crop_top, crop_right, crop_bottom),
+        target_width,
+        target_height,
+        nearest,
+    )
+    .unwrap_or_default()
+}
+
 use crate::document_core::helpers::parse_removed_para_meta;
 use crate::document_core::{
-    DeferredPaginationJobState, DeferredPaginationStepResult, DocumentCore, DEFAULT_FALLBACK_FONT,
+    CaretParagraph, DeferredPaginationJobState, DeferredPaginationStepResult, DocumentCore,
+    DEFAULT_FALLBACK_FONT,
 };
 use crate::error::HwpError;
 use crate::model::control::Control;
@@ -252,6 +303,131 @@ fn collect_external_image_references(document: &Document) -> Vec<ExternalImageRe
     references.into_values().collect()
 }
 
+/// 문단 목록과 그 안쪽 문단 트리(표 셀·캡션·머리말/꼬리말·각주/미주·숨은 설명·메모·
+/// 글상자·묶음 개체)를 깊이 우선으로 돌며 `visit` 을 적용한다. 하나라도 바꿨으면 true.
+fn visit_paragraph_tree_mut(
+    paragraphs: &mut [Paragraph],
+    visit: &mut dyn FnMut(&mut Paragraph) -> bool,
+) -> bool {
+    fn visit_caption(
+        caption: &mut Option<crate::model::shape::Caption>,
+        visit: &mut dyn FnMut(&mut Paragraph) -> bool,
+    ) -> bool {
+        match caption {
+            Some(caption) => visit_paragraph_tree_mut(&mut caption.paragraphs, visit),
+            None => false,
+        }
+    }
+
+    fn visit_shape(shape: &mut ShapeObject, visit: &mut dyn FnMut(&mut Paragraph) -> bool) -> bool {
+        let mut changed = false;
+        if let Some(drawing) = shape.drawing_mut() {
+            if let Some(text_box) = &mut drawing.text_box {
+                changed |= visit_paragraph_tree_mut(&mut text_box.paragraphs, visit);
+            }
+            changed |= visit_caption(&mut drawing.caption, visit);
+        }
+        match shape {
+            ShapeObject::Group(group) => {
+                changed |= visit_caption(&mut group.caption, visit);
+                for child in &mut group.children {
+                    changed |= visit_shape(child, visit);
+                }
+            }
+            ShapeObject::Picture(picture) => changed |= visit_caption(&mut picture.caption, visit),
+            ShapeObject::Chart(chart) => changed |= visit_caption(&mut chart.caption, visit),
+            ShapeObject::Ole(ole) => changed |= visit_caption(&mut ole.caption, visit),
+            _ => {}
+        }
+        changed
+    }
+
+    let mut changed = false;
+    for para in paragraphs {
+        changed |= visit(para);
+        for control in &mut para.controls {
+            changed |= match control {
+                Control::Table(table) => {
+                    let mut in_table = false;
+                    for cell in &mut table.cells {
+                        in_table |= visit_paragraph_tree_mut(&mut cell.paragraphs, visit);
+                    }
+                    in_table | visit_caption(&mut table.caption, visit)
+                }
+                Control::Header(header) => visit_paragraph_tree_mut(&mut header.paragraphs, visit),
+                Control::Footer(footer) => visit_paragraph_tree_mut(&mut footer.paragraphs, visit),
+                Control::Footnote(note) => visit_paragraph_tree_mut(&mut note.paragraphs, visit),
+                Control::Endnote(note) => visit_paragraph_tree_mut(&mut note.paragraphs, visit),
+                Control::HiddenComment(comment) => {
+                    visit_paragraph_tree_mut(&mut comment.paragraphs, visit)
+                }
+                Control::Field(field) => {
+                    visit_paragraph_tree_mut(&mut field.memo_paragraphs, visit)
+                }
+                Control::Picture(picture) => visit_caption(&mut picture.caption, visit),
+                Control::Shape(shape) => visit_shape(shape, visit),
+                _ => false,
+            };
+        }
+    }
+    changed
+}
+
+/// 스타일 `deleted` 를 지운 뒤 한 스타일 참조의 새 ID. 지운 스타일을 가리키면 바탕글(0),
+/// 그 뒤 ID 는 한 칸 당긴다. 새 값은 원래 값 이하라 참조 타입(u8/u16)에 그대로 들어간다.
+fn style_ref_after_delete(id: u32, deleted: u32) -> u32 {
+    match id.cmp(&deleted) {
+        std::cmp::Ordering::Less => id,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => id - 1,
+    }
+}
+
+/// 스타일 `deleted` 삭제에 맞춰 문서 전체(바탕쪽 포함) 문단의 스타일 참조를 옮긴다.
+///
+/// 반환: 바뀐 본문 문단 `(구역, 문단)` 목록. 바탕쪽만 바뀐 구역은 `(구역, 0)` 으로 알린다 —
+/// revision 이 구역 셸(바탕쪽 포함)과 그 문단을 스냅샷에서 되살리게 하는 표식이다.
+fn remap_style_refs_after_delete(document: &mut Document, deleted: u32) -> Vec<(usize, usize)> {
+    let mut remap = |para: &mut Paragraph| {
+        let mut changed = false;
+        let style_id = style_ref_after_delete(u32::from(para.style_id), deleted) as u8;
+        if style_id != para.style_id {
+            para.style_id = style_id;
+            changed = true;
+        }
+        for control in &mut para.controls {
+            if let Control::Ruby(ruby) = control {
+                let style_ref =
+                    style_ref_after_delete(u32::from(ruby.style_id_ref), deleted) as u16;
+                if style_ref != ruby.style_id_ref {
+                    ruby.style_id_ref = style_ref;
+                    changed = true;
+                }
+            }
+        }
+        changed
+    };
+
+    let mut changed_paragraphs = Vec::new();
+    for (section_idx, section) in document.sections.iter_mut().enumerate() {
+        let mut master_changed = false;
+        for master_page in &mut section.section_def.master_pages {
+            master_changed |= visit_paragraph_tree_mut(&mut master_page.paragraphs, &mut remap);
+        }
+        let mut body_changed = false;
+        for (para_idx, para) in section.paragraphs.iter_mut().enumerate() {
+            if visit_paragraph_tree_mut(std::slice::from_mut(para), &mut remap) {
+                changed_paragraphs.push((section_idx, para_idx));
+                body_changed = true;
+            }
+        }
+        if master_changed && !body_changed {
+            changed_paragraphs.push((section_idx, 0));
+        }
+    }
+    changed_paragraphs
+}
+
 /// WASM에서 사용할 HWP 문서 래퍼
 ///
 /// 도메인 로직은 `DocumentCore`에 구현되어 있으며,
@@ -284,6 +460,14 @@ impl HwpDocument {
 
     pub fn from_local_file_bytes(data: &[u8]) -> Result<HwpDocument, HwpError> {
         DocumentCore::from_local_file_bytes(data).map(|core| HwpDocument { core })
+    }
+
+    pub fn from_local_file_bytes_with_font_metrics(
+        data: &[u8],
+        font_metrics: crate::model::provenance::FontMetricsPolicy,
+    ) -> Result<HwpDocument, HwpError> {
+        DocumentCore::from_local_file_bytes_with_font_metrics(data, font_metrics)
+            .map(|core| HwpDocument { core })
     }
 
     pub(crate) fn from_regenerated_bytes(data: &[u8]) -> Result<HwpDocument, HwpError> {
@@ -334,6 +518,37 @@ impl HwpDocument {
             .update_external_image_display_path(bin_data_id, &resolved);
 
         1
+    }
+
+    /// `(구역, 문단)` 이 실제 본문 문단을 가리키는지. 컨트롤 탐색 export 가 범위 밖
+    /// 좌표로 코어 루프에 들어가 panic(=wasm trap)하지 않게 경계에서 거른다.
+    fn is_body_paragraph(&self, section_idx: u32, para_idx: u32) -> bool {
+        self.document
+            .sections
+            .get(section_idx as usize)
+            .is_some_and(|section| (para_idx as usize) < section.paragraphs.len())
+    }
+}
+
+/// 컨트롤 탐색 export 의 "찾지 못함" 응답.
+const NO_CONTROL_JSON: &str = "{\"type\":\"none\"}";
+
+/// 쪽 좌표 인자가 유한한지 확인한다. NaN·무한대는 좌표 비교를 깨뜨리므로
+/// 코어에 넘기기 전에 입력 오류로 돌려준다.
+fn ensure_finite_coords(x: f64, y: f64) -> Result<(), JsValue> {
+    if x.is_finite() && y.is_finite() {
+        Ok(())
+    } else {
+        Err(JsValue::from_str("INVALID_ARGS: non-finite coordinate"))
+    }
+}
+
+/// 수직 이동의 preferredX. 유한하지 않으면 미지정(-1)으로 보고 현재 커서 x 를 다시 잰다.
+fn finite_preferred_x(preferred_x: f64) -> f64 {
+    if preferred_x.is_finite() {
+        preferred_x
+    } else {
+        -1.0
     }
 }
 
@@ -416,31 +631,17 @@ fn source_format_name(format: crate::parser::FileFormat) -> &'static str {
 fn parse_font_metrics_policy(
     policy: &str,
 ) -> Result<crate::model::provenance::FontMetricsPolicy, crate::error::HwpError> {
-    use crate::model::provenance::FontMetricsPolicy;
-    match policy {
-        "hancom-windows" => Ok(FontMetricsPolicy::HancomWindows),
-        "hcr-declared" => Ok(FontMetricsPolicy::HcrDeclared),
-        _ => Err(crate::error::HwpError::RenderError(
-            "Unknown font metrics policy".into(),
-        )),
-    }
+    crate::model::provenance::FontMetricsPolicy::parse(policy)
+        .ok_or_else(|| crate::error::HwpError::RenderError("Unknown font metrics policy".into()))
 }
 
-fn open_with_hwpx_font_metrics(
+fn open_with_font_metrics(
     data: &[u8],
     input_policy: crate::parser::limits::InputPolicy,
     font_policy: &str,
 ) -> Result<HwpDocument, crate::error::HwpError> {
-    let requested = parse_font_metrics_policy(font_policy)?;
-    let effective = if matches!(
-        crate::parser::detect_format(data),
-        crate::parser::FileFormat::Hwpx
-    ) {
-        requested
-    } else {
-        Default::default()
-    };
-    DocumentCore::from_bytes_with_policies(data, input_policy, effective)
+    let font_metrics = parse_font_metrics_policy(font_policy)?;
+    DocumentCore::from_bytes_with_policies(data, input_policy, font_metrics)
         .map(|core| HwpDocument { core })
 }
 
@@ -468,14 +669,13 @@ impl HwpDocument {
             .map_err(|e| e.into())
     }
 
-    /// Select HWPX font metrics before parsing constructs missing line data.
-    /// Other input formats retain their existing measurement policy.
+    /// Select font metrics before parsing constructs missing line data.
     #[wasm_bindgen(js_name = fromBytesWithFontMetrics)]
     pub fn from_bytes_with_font_metrics(
         data: &[u8],
         font_policy: &str,
     ) -> Result<HwpDocument, JsValue> {
-        open_with_hwpx_font_metrics(
+        open_with_font_metrics(
             data,
             crate::parser::limits::InputPolicy::Untrusted,
             font_policy,
@@ -498,7 +698,7 @@ impl HwpDocument {
         data: &[u8],
         font_policy: &str,
     ) -> Result<HwpDocument, JsValue> {
-        open_with_hwpx_font_metrics(
+        open_with_font_metrics(
             data,
             crate::parser::limits::InputPolicy::LocalFileOnce,
             font_policy,
@@ -992,6 +1192,82 @@ impl HwpDocument {
         self.core.get_document_info()
     }
 
+    /// User-visible grapheme count across all authored document text scopes.
+    #[wasm_bindgen(js_name = getDocumentCharacterCount)]
+    pub fn get_document_character_count(&self) -> u32 {
+        self.core
+            .get_document_character_count()
+            .min(u32::MAX as usize) as u32
+    }
+
+    #[wasm_bindgen(js_name = getBodyRangeCharacterCount)]
+    pub fn get_body_range_character_count(
+        &self,
+        start_section: u32,
+        start_paragraph: u32,
+        start_offset: u32,
+        end_section: u32,
+        end_paragraph: u32,
+        end_offset: u32,
+    ) -> Result<u32, JsValue> {
+        self.core
+            .get_body_range_character_count(
+                start_section as usize,
+                start_paragraph as usize,
+                start_offset as usize,
+                end_section as usize,
+                end_paragraph as usize,
+                end_offset as usize,
+            )
+            .map(|count| count.min(u32::MAX as usize) as u32)
+            .map_err(Into::into)
+    }
+
+    /// User-visible count for the entire innermost cell/text box at a cursor path.
+    #[wasm_bindgen(js_name = getContainerCharacterCountByPath)]
+    pub fn get_container_character_count_by_path(
+        &self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        path_json: &str,
+    ) -> Result<u32, JsValue> {
+        let path = DocumentCore::parse_cell_path(path_json)?;
+        self.core
+            .get_container_character_count_by_path(
+                section_idx as usize,
+                parent_para_idx as usize,
+                &path,
+            )
+            .map(|count| count.min(u32::MAX as usize) as u32)
+            .map_err(Into::into)
+    }
+
+    #[wasm_bindgen(js_name = getContainerRangeCharacterCountByPath)]
+    pub fn get_container_range_character_count_by_path(
+        &self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        path_json: &str,
+        start_para_idx: u32,
+        start_offset: u32,
+        end_para_idx: u32,
+        end_offset: u32,
+    ) -> Result<u32, JsValue> {
+        let path = DocumentCore::parse_cell_path(path_json)?;
+        self.core
+            .get_container_range_character_count_by_path(
+                section_idx as usize,
+                parent_para_idx as usize,
+                &path,
+                start_para_idx as usize,
+                start_offset as usize,
+                end_para_idx as usize,
+                end_offset as usize,
+            )
+            .map(|count| count.min(u32::MAX as usize) as u32)
+            .map_err(Into::into)
+    }
+
     /// 등록된 글꼴 목록을 조회한다.
     ///
     /// 반환: JSON `[{"lang":0,"id":0,"name":"..."}]` — 대체 해소 없는 등록 원본 이름.
@@ -1009,6 +1285,13 @@ impl HwpDocument {
             .map_err(|e| e.into())
     }
 
+    /// 쪽의 줄 상자·베이스라인·런 x 범위를 압축 JSON 으로 반환한다 (에이전트 측정용).
+    #[wasm_bindgen(js_name = getPageLineLayout)]
+    pub fn get_page_line_layout(&self, page_num: u32) -> Result<String, JsValue> {
+        self.get_page_line_layout_native(page_num)
+            .map_err(|e| e.into())
+    }
+
     /// 컨트롤(표, 이미지 등) 레이아웃 정보를 반환한다.
     #[wasm_bindgen(js_name = getPageControlLayout)]
     pub fn get_page_control_layout(&self, page_num: u32) -> Result<String, JsValue> {
@@ -1016,14 +1299,17 @@ impl HwpDocument {
             .map_err(|e| e.into())
     }
 
-    /// DPI를 설정한다.
+    /// DPI를 설정한다. 양의 유한수가 아니면 무시한다 — 0·NaN DPI 는 모든 조판 좌표를
+    /// 무한대/NaN 으로 만들어 이후 렌더링과 히트테스트를 망가뜨린다.
     #[wasm_bindgen(js_name = setDpi)]
     pub fn set_dpi(&mut self, dpi: f64) {
-        self.core.set_dpi(dpi);
+        if dpi.is_finite() && dpi > 0.0 {
+            self.core.set_dpi(dpi);
+        }
     }
 
-    /// Session-only font measurement. HCR declared metrics match the captured
-    /// Mac Hancom environment; the default retains Windows substitution rules.
+    /// Session-only font measurement. HCR declared metrics (the default) match
+    /// Mac Hancom; `hancom-windows` applies the Windows substitution rules.
     #[wasm_bindgen(js_name = setFontMetricsPolicy)]
     pub fn set_font_metrics_policy(&mut self, policy: &str) -> Result<(), JsValue> {
         let policy = parse_font_metrics_policy(policy).map_err(JsValue::from)?;
@@ -1033,11 +1319,12 @@ impl HwpDocument {
 
     #[wasm_bindgen(js_name = getFontMetricsPolicy)]
     pub fn get_font_metrics_policy(&self) -> String {
-        match self.core.document.doc_info.font_metrics_policy {
-            crate::model::provenance::FontMetricsPolicy::HancomWindows => "hancom-windows",
-            crate::model::provenance::FontMetricsPolicy::HcrDeclared => "hcr-declared",
-        }
-        .to_string()
+        self.core
+            .document
+            .doc_info
+            .font_metrics_policy
+            .as_str()
+            .to_string()
     }
 
     /// 파일 이름을 설정한다 (머리말/꼬리말 필드 치환용).
@@ -1071,6 +1358,7 @@ impl HwpDocument {
     ///
     /// 삽입 후 구역을 재구성하고 재페이지네이션한다.
     /// 반환값: JSON `{"ok":true,"charOffset":<new_offset>}`
+    /// `logical`: 오프셋이 편집 캐럿 좌표(글자처럼 취급 개체 = 1칸)이면 true.
     #[wasm_bindgen(js_name = insertText)]
     pub fn insert_text(
         &mut self,
@@ -1078,14 +1366,18 @@ impl HwpDocument {
         para_idx: u32,
         char_offset: u32,
         text: &str,
+        logical: Option<bool>,
     ) -> Result<String, JsValue> {
-        self.insert_text_native(
-            section_idx as usize,
-            para_idx as usize,
-            char_offset as usize,
-            text,
-        )
-        .map_err(|e| e.into())
+        let target = CaretParagraph::Body {
+            section: section_idx as usize,
+            para: para_idx as usize,
+        };
+        let range =
+            self.prepare_caret_insert(target, char_offset as usize, 0, logical == Some(true))?;
+        let result =
+            self.insert_text_native(section_idx as usize, para_idx as usize, range.start, text);
+        self.finish_caret_insert();
+        result.map_err(|e| e.into())
     }
 
     /// 논리적 오프셋으로 텍스트를 삽입한다.
@@ -1181,6 +1473,7 @@ impl HwpDocument {
     ///
     /// 삭제 후 구역을 재구성하고 재페이지네이션한다.
     /// 반환값: JSON `{"ok":true,"charOffset":<offset_after_delete>}`
+    /// `logical`: 오프셋이 편집 캐럿 좌표(글자처럼 취급 개체 = 1칸)이면 true.
     #[wasm_bindgen(js_name = deleteText)]
     pub fn delete_text(
         &mut self,
@@ -1188,16 +1481,28 @@ impl HwpDocument {
         para_idx: u32,
         char_offset: u32,
         count: u32,
+        logical: Option<bool>,
     ) -> Result<String, JsValue> {
+        let target = CaretParagraph::Body {
+            section: section_idx as usize,
+            para: para_idx as usize,
+        };
+        let range = self.caret_text_range_native(
+            target,
+            char_offset as usize,
+            count as usize,
+            logical == Some(true),
+        )?;
         self.delete_text_native(
             section_idx as usize,
             para_idx as usize,
-            char_offset as usize,
-            count as usize,
+            range.start,
+            range.end - range.start,
         )
         .map_err(|e| e.into())
     }
 
+    /// `logical`: 오프셋이 편집 캐럿 좌표(글자처럼 취급 개체 = 1칸)이면 true.
     #[wasm_bindgen(js_name = replaceBodyTextLocal)]
     pub fn replace_body_text_local(
         &mut self,
@@ -1206,20 +1511,33 @@ impl HwpDocument {
         char_offset: u32,
         delete_count: u32,
         text: &str,
+        logical: Option<bool>,
     ) -> Result<String, JsValue> {
-        self.replace_body_text_local_native(
-            section_idx as usize,
-            para_idx as usize,
+        let target = CaretParagraph::Body {
+            section: section_idx as usize,
+            para: para_idx as usize,
+        };
+        let range = self.prepare_caret_insert(
+            target,
             char_offset as usize,
             delete_count as usize,
+            logical == Some(true),
+        )?;
+        let result = self.replace_body_text_local_native(
+            section_idx as usize,
+            para_idx as usize,
+            range.start,
+            range.end - range.start,
             text,
-        )
-        .map_err(|e| e.into())
+        );
+        self.finish_caret_insert();
+        result.map_err(|e| e.into())
     }
 
     /// 표 셀 내부 문단에 텍스트를 삽입한다.
     ///
     /// 반환값: JSON `{"ok":true,"charOffset":<new_offset>}`
+    /// `logical`: 오프셋이 편집 캐럿 좌표(글자처럼 취급 개체 = 1칸)이면 true.
     #[wasm_bindgen(js_name = insertTextInCell)]
     pub fn insert_text_in_cell(
         &mut self,
@@ -1230,17 +1548,28 @@ impl HwpDocument {
         cell_para_idx: u32,
         char_offset: u32,
         text: &str,
+        logical: Option<bool>,
     ) -> Result<String, JsValue> {
-        self.insert_text_in_cell_native(
+        let target = CaretParagraph::Cell {
+            section: section_idx as usize,
+            parent_para: parent_para_idx as usize,
+            control: control_idx as usize,
+            cell: cell_idx as usize,
+            cell_para: cell_para_idx as usize,
+        };
+        let range =
+            self.prepare_caret_insert(target, char_offset as usize, 0, logical == Some(true))?;
+        let result = self.insert_text_in_cell_native(
             section_idx as usize,
             parent_para_idx as usize,
             control_idx as usize,
             cell_idx as usize,
             cell_para_idx as usize,
-            char_offset as usize,
+            range.start,
             text,
-        )
-        .map_err(|e| e.into())
+        );
+        self.finish_caret_insert();
+        result.map_err(|e| e.into())
     }
 
     /// 표 셀 내부 문단에 텍스트를 삽입하되 전체 페이지네이션은 호출자가 지연한다.
@@ -1248,6 +1577,7 @@ impl HwpDocument {
     /// Studio의 page-local 단일 입력처럼 현재 페이지를 먼저 갱신하고 idle 시점에
     /// 전체 페이지네이션을 한 번만 수행하는 경로에서 사용한다.
     /// 결과 JSON은 `charOffset`과 상대 cell-flow 변화 신호 `cellFlowChanged`를 포함한다.
+    /// `logical`: 오프셋이 편집 캐럿 좌표(글자처럼 취급 개체 = 1칸)이면 true.
     #[wasm_bindgen(js_name = insertTextInCellDeferredPagination)]
     pub fn insert_text_in_cell_deferred_pagination(
         &mut self,
@@ -1258,22 +1588,34 @@ impl HwpDocument {
         cell_para_idx: u32,
         char_offset: u32,
         text: &str,
+        logical: Option<bool>,
     ) -> Result<String, JsValue> {
-        self.insert_text_in_cell_native_deferred_pagination(
+        let target = CaretParagraph::Cell {
+            section: section_idx as usize,
+            parent_para: parent_para_idx as usize,
+            control: control_idx as usize,
+            cell: cell_idx as usize,
+            cell_para: cell_para_idx as usize,
+        };
+        let range =
+            self.prepare_caret_insert(target, char_offset as usize, 0, logical == Some(true))?;
+        let result = self.insert_text_in_cell_native_deferred_pagination(
             section_idx as usize,
             parent_para_idx as usize,
             control_idx as usize,
             cell_idx as usize,
             cell_para_idx as usize,
-            char_offset as usize,
+            range.start,
             text,
-        )
-        .map_err(|e| e.into())
+        );
+        self.finish_caret_insert();
+        result.map_err(|e| e.into())
     }
 
     /// 표 셀 내부 문단에서 텍스트를 삭제하되 전체 페이지네이션은 호출자가 지연한다.
     ///
     /// 결과 JSON은 `charOffset`과 상대 cell-flow 변화 신호 `cellFlowChanged`를 포함한다.
+    /// `logical`: 오프셋이 편집 캐럿 좌표(글자처럼 취급 개체 = 1칸)이면 true.
     #[wasm_bindgen(js_name = deleteTextInCellDeferredPagination)]
     pub fn delete_text_in_cell_deferred_pagination(
         &mut self,
@@ -1284,20 +1626,35 @@ impl HwpDocument {
         cell_para_idx: u32,
         char_offset: u32,
         count: u32,
+        logical: Option<bool>,
     ) -> Result<String, JsValue> {
+        let target = CaretParagraph::Cell {
+            section: section_idx as usize,
+            parent_para: parent_para_idx as usize,
+            control: control_idx as usize,
+            cell: cell_idx as usize,
+            cell_para: cell_para_idx as usize,
+        };
+        let range = self.caret_text_range_native(
+            target,
+            char_offset as usize,
+            count as usize,
+            logical == Some(true),
+        )?;
         self.delete_text_in_cell_native_deferred_pagination(
             section_idx as usize,
             parent_para_idx as usize,
             control_idx as usize,
             cell_idx as usize,
             cell_para_idx as usize,
-            char_offset as usize,
-            count as usize,
+            range.start,
+            range.end - range.start,
         )
         .map_err(|e| e.into())
     }
 
     /// 표 셀 내부의 짧은 IME 조합 문자열을 원자적으로 교체하고 전체 페이지네이션은 지연한다.
+    /// `logical`: 오프셋이 편집 캐럿 좌표(글자처럼 취급 개체 = 1칸)이면 true.
     #[wasm_bindgen(js_name = replaceTextInCellDeferredPagination)]
     pub fn replace_text_in_cell_deferred_pagination(
         &mut self,
@@ -1309,18 +1666,33 @@ impl HwpDocument {
         char_offset: u32,
         delete_count: u32,
         text: &str,
+        logical: Option<bool>,
     ) -> Result<String, JsValue> {
-        self.replace_text_in_cell_native_deferred_pagination(
+        let target = CaretParagraph::Cell {
+            section: section_idx as usize,
+            parent_para: parent_para_idx as usize,
+            control: control_idx as usize,
+            cell: cell_idx as usize,
+            cell_para: cell_para_idx as usize,
+        };
+        let range = self.prepare_caret_insert(
+            target,
+            char_offset as usize,
+            delete_count as usize,
+            logical == Some(true),
+        )?;
+        let result = self.replace_text_in_cell_native_deferred_pagination(
             section_idx as usize,
             parent_para_idx as usize,
             control_idx as usize,
             cell_idx as usize,
             cell_para_idx as usize,
-            char_offset as usize,
-            delete_count as usize,
+            range.start,
+            range.end - range.start,
             text,
-        )
-        .map_err(|e| e.into())
+        );
+        self.finish_caret_insert();
+        result.map_err(|e| e.into())
     }
 
     /// 대형 표 continuation shadow job을 시작한다. 공개 페이지는 완료 전까지 유지된다.
@@ -1376,6 +1748,7 @@ impl HwpDocument {
     /// 표 셀 내부 문단에서 텍스트를 삭제한다.
     ///
     /// 반환값: JSON `{"ok":true,"charOffset":<offset_after_delete>}`
+    /// `logical`: 오프셋이 편집 캐럿 좌표(글자처럼 취급 개체 = 1칸)이면 true.
     #[wasm_bindgen(js_name = deleteTextInCell)]
     pub fn delete_text_in_cell(
         &mut self,
@@ -1386,15 +1759,29 @@ impl HwpDocument {
         cell_para_idx: u32,
         char_offset: u32,
         count: u32,
+        logical: Option<bool>,
     ) -> Result<String, JsValue> {
+        let target = CaretParagraph::Cell {
+            section: section_idx as usize,
+            parent_para: parent_para_idx as usize,
+            control: control_idx as usize,
+            cell: cell_idx as usize,
+            cell_para: cell_para_idx as usize,
+        };
+        let range = self.caret_text_range_native(
+            target,
+            char_offset as usize,
+            count as usize,
+            logical == Some(true),
+        )?;
         self.delete_text_in_cell_native(
             section_idx as usize,
             parent_para_idx as usize,
             control_idx as usize,
             cell_idx as usize,
             cell_para_idx as usize,
-            char_offset as usize,
-            count as usize,
+            range.start,
+            range.end - range.start,
         )
         .map_err(|e| e.into())
     }
@@ -1495,6 +1882,7 @@ impl HwpDocument {
 
     // ─── 중첩 표 path 기반 편집 API ──────────────────────────
 
+    /// `logical`: 오프셋이 편집 캐럿 좌표(글자처럼 취급 개체 = 1칸)이면 true.
     #[wasm_bindgen(js_name = insertTextInCellByPath)]
     pub fn insert_text_in_cell_by_path_api(
         &mut self,
@@ -1503,18 +1891,28 @@ impl HwpDocument {
         path_json: &str,
         char_offset: u32,
         text: &str,
+        logical: Option<bool>,
     ) -> Result<String, JsValue> {
         let path = DocumentCore::parse_cell_path(path_json)?;
-        self.insert_text_in_cell_by_path(
+        let target = CaretParagraph::Path {
+            section: section_idx as usize,
+            parent_para: parent_para_idx as usize,
+            path: &path,
+        };
+        let range =
+            self.prepare_caret_insert(target, char_offset as usize, 0, logical == Some(true))?;
+        let result = self.insert_text_in_cell_by_path(
             section_idx as usize,
             parent_para_idx as usize,
             &path,
-            char_offset as usize,
+            range.start,
             text,
-        )
-        .map_err(|e| e.into())
+        );
+        self.finish_caret_insert();
+        result.map_err(|e| e.into())
     }
 
+    /// `logical`: 오프셋이 편집 캐럿 좌표(글자처럼 취급 개체 = 1칸)이면 true.
     #[wasm_bindgen(js_name = deleteTextInCellByPath)]
     pub fn delete_text_in_cell_by_path_api(
         &mut self,
@@ -1523,18 +1921,31 @@ impl HwpDocument {
         path_json: &str,
         char_offset: u32,
         count: u32,
+        logical: Option<bool>,
     ) -> Result<String, JsValue> {
         let path = DocumentCore::parse_cell_path(path_json)?;
+        let target = CaretParagraph::Path {
+            section: section_idx as usize,
+            parent_para: parent_para_idx as usize,
+            path: &path,
+        };
+        let range = self.caret_text_range_native(
+            target,
+            char_offset as usize,
+            count as usize,
+            logical == Some(true),
+        )?;
         self.delete_text_in_cell_by_path(
             section_idx as usize,
             parent_para_idx as usize,
             &path,
-            char_offset as usize,
-            count as usize,
+            range.start,
+            range.end - range.start,
         )
         .map_err(|e| e.into())
     }
 
+    /// `logical`: 오프셋이 편집 캐럿 좌표이면 true. 범위 안의 글자처럼 취급 개체도 함께 지운다.
     #[wasm_bindgen(js_name = deleteRangeInCellByPath)]
     #[allow(clippy::too_many_arguments)]
     pub fn delete_range_in_cell_by_path_api(
@@ -1546,18 +1957,22 @@ impl HwpDocument {
         start_offset: u32,
         end_para: u32,
         end_offset: u32,
+        logical: Option<bool>,
     ) -> Result<String, JsValue> {
         let path = DocumentCore::parse_cell_path(path_json)?;
-        self.delete_range_in_cell_by_path(
-            section_idx as usize,
-            parent_para_idx as usize,
-            &path,
+        let (sec, ppi) = (section_idx as usize, parent_para_idx as usize);
+        let (sp, so, ep, eo) = (
             start_para as usize,
             start_offset as usize,
             end_para as usize,
             end_offset as usize,
-        )
-        .map_err(|e| e.into())
+        );
+        let result = if logical == Some(true) {
+            self.delete_caret_range_native(sec, Some((ppi, &path)), sp, so, ep, eo)
+        } else {
+            self.delete_range_in_cell_by_path(sec, ppi, &path, sp, so, ep, eo)
+        };
+        result.map_err(|e| e.into())
     }
 
     #[wasm_bindgen(js_name = splitParagraphInCellByPath)]
@@ -1592,6 +2007,7 @@ impl HwpDocument {
             .map_err(|e| e.into())
     }
 
+    /// `logical`: 오프셋이 편집 캐럿 좌표(글자처럼 취급 개체 = 1칸)이면 true.
     #[wasm_bindgen(js_name = getTextInCellByPath)]
     pub fn get_text_in_cell_by_path_api(
         &self,
@@ -1600,14 +2016,26 @@ impl HwpDocument {
         path_json: &str,
         char_offset: u32,
         count: u32,
+        logical: Option<bool>,
     ) -> Result<String, JsValue> {
         let path = DocumentCore::parse_cell_path(path_json)?;
+        let target = CaretParagraph::Path {
+            section: section_idx as usize,
+            parent_para: parent_para_idx as usize,
+            path: &path,
+        };
+        let range = self.caret_text_range_native(
+            target,
+            char_offset as usize,
+            count as usize,
+            logical == Some(true),
+        )?;
         self.get_text_in_cell_by_path(
             section_idx as usize,
             parent_para_idx as usize,
             &path,
-            char_offset as usize,
-            count as usize,
+            range.start,
+            range.end - range.start,
         )
         .map_err(|e| e.into())
     }
@@ -1628,6 +2056,25 @@ impl HwpDocument {
             .map_err(|e| e.into())
     }
 
+    /// 셀(중첩 포함) 문단의 텍스트 오프셋 → 편집 캐럿 좌표(인라인 개체 = 1칸).
+    #[wasm_bindgen(js_name = textToLogicalOffsetInCellByPath)]
+    pub fn text_to_logical_offset_in_cell_by_path_api(
+        &self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        path_json: &str,
+        text_offset: u32,
+    ) -> Result<u32, JsValue> {
+        let path = DocumentCore::parse_cell_path(path_json)?;
+        let para = self
+            .resolve_paragraph_by_path(section_idx as usize, parent_para_idx as usize, &path)
+            .map_err(|e| -> JsValue { e.into() })?;
+        Ok(
+            crate::document_core::helpers::text_to_logical_offset(para, text_offset as usize)
+                as u32,
+        )
+    }
+
     #[wasm_bindgen(js_name = logicalToTextOffsetInCellByPath)]
     pub fn logical_to_text_offset_in_cell_by_path_api(
         &self,
@@ -1640,11 +2087,10 @@ impl HwpDocument {
         let para = self
             .resolve_paragraph_by_path(section_idx as usize, parent_para_idx as usize, &path)
             .map_err(|e| -> JsValue { e.into() })?;
-        Ok(crate::document_core::helpers::logical_to_text_offset(
-            para,
-            logical_offset as usize,
+        Ok(
+            crate::document_core::helpers::logical_to_text_offset(para, logical_offset as usize).0
+                as u32,
         )
-        .0 as u32)
     }
 
     /// 머리말/꼬리말 생성 (빈 문단 1개 포함)
@@ -2309,6 +2755,74 @@ impl HwpDocument {
         .map_err(|e| e.into())
     }
 
+    #[wasm_bindgen(js_name = copyTableCellRange)]
+    pub fn copy_table_cell_range(
+        &mut self,
+        section: u32,
+        parent: u32,
+        path_json: &str,
+        start_row: u32,
+        start_col: u32,
+        end_row: u32,
+        end_col: u32,
+    ) -> Result<String, JsValue> {
+        let path = DocumentCore::parse_cell_path(path_json)?;
+        self.copy_table_cell_range_native(
+            section as usize,
+            parent as usize,
+            &path,
+            start_row as u16,
+            start_col as u16,
+            end_row as u16,
+            end_col as u16,
+        )
+        .map_err(Into::into)
+    }
+
+    #[wasm_bindgen(js_name = clearTableCellRange)]
+    pub fn clear_table_cell_range(
+        &mut self,
+        section: u32,
+        parent: u32,
+        path_json: &str,
+        start_row: u32,
+        start_col: u32,
+        end_row: u32,
+        end_col: u32,
+    ) -> Result<String, JsValue> {
+        let path = DocumentCore::parse_cell_path(path_json)?;
+        self.clear_table_cell_range_native(
+            section as usize,
+            parent as usize,
+            &path,
+            start_row as u16,
+            start_col as u16,
+            end_row as u16,
+            end_col as u16,
+        )
+        .map_err(Into::into)
+    }
+
+    #[wasm_bindgen(js_name = pasteTableCellRange)]
+    pub fn paste_table_cell_range(
+        &mut self,
+        section: u32,
+        parent: u32,
+        path_json: &str,
+        start_row: u32,
+        start_col: u32,
+    ) -> Result<String, JsValue> {
+        let path = DocumentCore::parse_cell_path(path_json)?;
+        self.paste_table_cell_range_native(
+            section as usize,
+            parent as usize,
+            &path,
+            start_row as u16,
+            start_col as u16,
+        )
+        .map_err(Into::into)
+    }
+
     /// 선택된 표 셀 범위를 행/열 바꿈 복사용 내부 버퍼에 저장한다.
     ///
     /// 반환값: JSON `{"ok":true,"sourceRows":N,"sourceCols":N,"targetRows":N,"targetCols":N}`
@@ -2577,6 +3091,9 @@ impl HwpDocument {
         ctrl_idx: i32,
         delta: i32,
     ) -> String {
+        if !self.is_body_paragraph(section_idx, para_idx) {
+            return NO_CONTROL_JSON.to_string();
+        }
         self.find_next_editable_control_native(
             section_idx as usize,
             para_idx as usize,
@@ -2586,6 +3103,8 @@ impl HwpDocument {
     }
 
     /// 커서에서 이전 방향으로 가장 가까운 선택 가능 컨트롤을 찾는다 (F11 키).
+    ///
+    /// 본문 좌표가 아니면(셀 안 문단 번호 등) `{"type":"none"}` 을 돌려준다.
     #[wasm_bindgen(js_name = findNearestControlBackward)]
     pub fn find_nearest_control_backward(
         &self,
@@ -2593,6 +3112,9 @@ impl HwpDocument {
         para_idx: u32,
         char_offset: u32,
     ) -> String {
+        if !self.is_body_paragraph(section_idx, para_idx) {
+            return NO_CONTROL_JSON.to_string();
+        }
         self.find_nearest_control_backward_native(
             section_idx as usize,
             para_idx as usize,
@@ -2608,6 +3130,9 @@ impl HwpDocument {
         para_idx: u32,
         char_offset: u32,
     ) -> String {
+        if !self.is_body_paragraph(section_idx, para_idx) {
+            return NO_CONTROL_JSON.to_string();
+        }
         self.find_nearest_control_forward_native(
             section_idx as usize,
             para_idx as usize,
@@ -2683,6 +3208,7 @@ impl HwpDocument {
     }
 
     /// 문단에서 텍스트 부분 문자열을 반환한다 (Undo용 텍스트 보존).
+    /// `logical`: 오프셋이 편집 캐럿 좌표(글자처럼 취급 개체 = 1칸)이면 true.
     #[wasm_bindgen(js_name = getTextRange)]
     pub fn get_text_range(
         &self,
@@ -2690,12 +3216,23 @@ impl HwpDocument {
         para_idx: u32,
         char_offset: u32,
         count: u32,
+        logical: Option<bool>,
     ) -> Result<String, JsValue> {
+        let target = CaretParagraph::Body {
+            section: section_idx as usize,
+            para: para_idx as usize,
+        };
+        let range = self.caret_text_range_native(
+            target,
+            char_offset as usize,
+            count as usize,
+            logical == Some(true),
+        )?;
         self.get_text_range_native(
             section_idx as usize,
             para_idx as usize,
-            char_offset as usize,
-            count as usize,
+            range.start,
+            range.end - range.start,
         )
         .map_err(|e| e.into())
     }
@@ -2819,6 +3356,7 @@ impl HwpDocument {
     }
 
     /// 표 셀 내 문단에서 텍스트 부분 문자열을 반환한다.
+    /// `logical`: 오프셋이 편집 캐럿 좌표(글자처럼 취급 개체 = 1칸)이면 true.
     #[wasm_bindgen(js_name = getTextInCell)]
     pub fn get_text_in_cell(
         &self,
@@ -2829,15 +3367,29 @@ impl HwpDocument {
         cell_para_idx: u32,
         char_offset: u32,
         count: u32,
+        logical: Option<bool>,
     ) -> Result<String, JsValue> {
+        let target = CaretParagraph::Cell {
+            section: section_idx as usize,
+            parent_para: parent_para_idx as usize,
+            control: control_idx as usize,
+            cell: cell_idx as usize,
+            cell_para: cell_para_idx as usize,
+        };
+        let range = self.caret_text_range_native(
+            target,
+            char_offset as usize,
+            count as usize,
+            logical == Some(true),
+        )?;
         self.get_text_in_cell_native(
             section_idx as usize,
             parent_para_idx as usize,
             control_idx as usize,
             cell_idx as usize,
             cell_para_idx as usize,
-            char_offset as usize,
-            count as usize,
+            range.start,
+            range.end - range.start,
         )
         .map_err(|e| e.into())
     }
@@ -2925,6 +3477,7 @@ impl HwpDocument {
     /// 반환: JSON `{"sectionIndex":N,"paragraphIndex":N,"charOffset":N}`
     #[wasm_bindgen(js_name = hitTest)]
     pub fn hit_test(&self, page_num: u32, x: f64, y: f64) -> Result<String, JsValue> {
+        ensure_finite_coords(x, y)?;
         self.hit_test_native(page_num, x, y).map_err(|e| e.into())
     }
 
@@ -2985,6 +3538,7 @@ impl HwpDocument {
     /// 반환: JSON `{"hit":true/false,"isHeader":bool,"sectionIndex":N,"applyTo":N}`
     #[wasm_bindgen(js_name = hitTestHeaderFooter)]
     pub fn hit_test_header_footer(&self, page_num: u32, x: f64, y: f64) -> Result<String, JsValue> {
+        ensure_finite_coords(x, y)?;
         self.hit_test_header_footer_native(page_num, x, y)
             .map_err(|e| e.into())
     }
@@ -3008,11 +3562,10 @@ impl HwpDocument {
                 cell_para_idx as usize,
             )
             .ok_or_else(|| JsValue::from_str("셀 문단 접근 실패"))?;
-        Ok(crate::document_core::helpers::logical_to_text_offset(
-            para,
-            logical_offset as usize,
+        Ok(
+            crate::document_core::helpers::logical_to_text_offset(para, logical_offset as usize).0
+                as u32,
         )
-        .0 as u32)
     }
 
     /// 이 쪽에서 머리말/꼬리말을 편집할 때 대상이 되는 (구역, applyTo) 를 반환한다.
@@ -3048,6 +3601,7 @@ impl HwpDocument {
         x: f64,
         y: f64,
     ) -> Result<String, JsValue> {
+        ensure_finite_coords(x, y)?;
         self.hit_test_in_header_footer_native(page_num, is_header, x, y)
             .map_err(|e| e.into())
     }
@@ -3063,6 +3617,7 @@ impl HwpDocument {
         x: f64,
         y: f64,
     ) -> Result<String, JsValue> {
+        ensure_finite_coords(x, y)?;
         self.hit_test_in_header_footer_target_native(
             page_num,
             section_idx as usize,
@@ -3265,7 +3820,12 @@ impl HwpDocument {
         is_header: bool,
         direction: i32,
     ) -> Result<String, JsValue> {
-        self.navigate_header_footer_by_page_native(current_page, is_header, direction)
+        // 방향은 부호만 쓴다. 0 이면 코어의 쪽 순회가 제자리에서 끝없이 돈다.
+        let step = direction.signum();
+        if step == 0 {
+            return Ok("{\"ok\":false}".to_string());
+        }
+        self.navigate_header_footer_by_page_native(current_page, is_header, step)
             .map_err(|e| e.into())
     }
 
@@ -3304,6 +3864,20 @@ impl HwpDocument {
             char_offset as usize,
         )
         .map_err(|e| e.into())
+    }
+
+    /// 본문 문단이 걸친 전역 쪽 번호 목록 (오름차순).
+    ///
+    /// 레이아웃 없이 조판 결과만 읽는다. 지연 pagination 중이어도 줄 구성이 바뀌지 않은
+    /// 편집 뒤에는 그대로 유효하므로, 쪽을 넘나드는 문단의 입력 후 다시 그릴 쪽을 고를 때 쓴다.
+    #[wasm_bindgen(js_name = getParagraphPages)]
+    pub fn get_paragraph_pages(
+        &self,
+        section_idx: u32,
+        para_idx: u32,
+    ) -> Result<Vec<u32>, JsValue> {
+        self.find_pages_for_paragraph(section_idx as usize, para_idx as usize)
+            .map_err(|e| e.into())
     }
 
     // ─── Phase 3: 커서 이동 API ──────────────────────────────
@@ -5306,6 +5880,7 @@ impl HwpDocument {
     /// 각주 영역 히트테스트
     #[wasm_bindgen(js_name = hitTestFootnote)]
     pub fn hit_test_footnote(&self, page_num: u32, x: f64, y: f64) -> Result<String, JsValue> {
+        ensure_finite_coords(x, y)?;
         self.hit_test_footnote_native(page_num, x, y)
             .map_err(|e| e.into())
     }
@@ -5313,6 +5888,7 @@ impl HwpDocument {
     /// 각주 내부 텍스트 히트테스트
     #[wasm_bindgen(js_name = hitTestInFootnote)]
     pub fn hit_test_in_footnote(&self, page_num: u32, x: f64, y: f64) -> Result<String, JsValue> {
+        ensure_finite_coords(x, y)?;
         self.hit_test_in_footnote_native(page_num, x, y)
             .map_err(|e| e.into())
     }
@@ -5512,6 +6088,7 @@ impl HwpDocument {
         x: f64,
         y: f64,
     ) -> Result<String, JsValue> {
+        ensure_finite_coords(x, y)?;
         self.hit_test_body_footnote_marker_native(page_num, x, y)
             .map_err(|e| e.into())
     }
@@ -5551,7 +6128,7 @@ impl HwpDocument {
             para_idx as usize,
             char_offset as usize,
             delta,
-            preferred_x,
+            finite_preferred_x(preferred_x),
             cell_ctx,
         )
         .map_err(|e| e.into())
@@ -5582,7 +6159,7 @@ impl HwpDocument {
             json_u32(options_json, "paraIdx").unwrap_or(0) as usize,
             json_u32(options_json, "charOffset").unwrap_or(0) as usize,
             json_i32(options_json, "delta").unwrap_or(0),
-            json_f64(options_json, "preferredX").unwrap_or(0.0),
+            finite_preferred_x(json_f64(options_json, "preferredX").unwrap_or(0.0)),
             cell_ctx,
         )
         .map_err(|e| e.into())
@@ -5798,6 +6375,7 @@ impl HwpDocument {
     /// 반환: `{found, sec, para, ci, formType, name, value, caption, text, bbox}`
     #[wasm_bindgen(js_name = getFormObjectAt)]
     pub fn get_form_object_at(&self, page_num: u32, x: f64, y: f64) -> Result<String, JsValue> {
+        ensure_finite_coords(x, y)?;
         self.core
             .get_form_object_at_native(page_num, x, y)
             .map_err(|e| e.into())
@@ -6562,7 +7140,7 @@ impl HwpDocument {
             path_json,
             char_offset as usize,
             delta,
-            preferred_x,
+            finite_preferred_x(preferred_x),
         )
         .map_err(|e| e.into())
     }
@@ -6656,6 +7234,60 @@ impl HwpDocument {
         .map_err(|e| e.into())
     }
 
+    /// 표를 가로지르는 선택의 끝점을 표를 품은 컨테이너 좌표로 올린다.
+    ///
+    /// `containerPathJson` 은 본문이면 `"[]"`, 셀이면 그 셀까지의 경로다.
+    /// 반환: JSON `{"paraIdx":N,"charOffset":N}`
+    #[wasm_bindgen(js_name = getTableBoundaryPosition)]
+    pub fn get_table_boundary_position(
+        &self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        container_path_json: &str,
+        host_para_idx: u32,
+        control_idx: u32,
+        after: bool,
+    ) -> Result<String, JsValue> {
+        let path = parse_cell_path_arg(container_path_json)?;
+        let (para, offset) = self
+            .table_boundary_position_native(
+                section_idx as usize,
+                parent_para_idx as usize,
+                &path,
+                host_para_idx as usize,
+                control_idx as usize,
+                after,
+            )
+            .map_err(|e| -> JsValue { e.into() })?;
+        Ok(format!("{{\"paraIdx\":{para},\"charOffset\":{offset}}}"))
+    }
+
+    /// 본문 또는 셀 선택에 통째로 포함된 표 주소를 반환한다.
+    #[wasm_bindgen(js_name = getTableControlsInSelection)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn get_table_controls_in_selection(
+        &self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        container_path_json: &str,
+        start_para_idx: u32,
+        start_char_offset: u32,
+        end_para_idx: u32,
+        end_char_offset: u32,
+    ) -> Result<String, JsValue> {
+        let path = parse_cell_path_arg(container_path_json)?;
+        self.table_controls_in_selection_native(
+            section_idx as usize,
+            parent_para_idx as usize,
+            &path,
+            start_para_idx as usize,
+            start_char_offset as usize,
+            end_para_idx as usize,
+            end_char_offset as usize,
+        )
+        .map_err(|err| err.into())
+    }
+
     /// `getSelectionRectsInCell` 의 options object 변형 (#1413).
     ///
     /// options JSON 키: `{ sectionIdx, parentParaIdx, controlIdx, cellIdx, startCellParaIdx,
@@ -6705,6 +7337,7 @@ impl HwpDocument {
     /// 본문 선택 영역을 삭제한다.
     ///
     /// 반환: JSON `{"ok":true,"paraIdx":N,"charOffset":N}`
+    /// `logical`: 오프셋이 편집 캐럿 좌표이면 true. 범위 안의 글자처럼 취급 개체도 함께 지운다.
     #[wasm_bindgen(js_name = deleteRange)]
     pub fn delete_range(
         &mut self,
@@ -6713,19 +7346,26 @@ impl HwpDocument {
         start_char_offset: u32,
         end_para_idx: u32,
         end_char_offset: u32,
+        logical: Option<bool>,
     ) -> Result<String, JsValue> {
-        self.delete_range_native(
+        let (sec, sp, so, ep, eo) = (
             section_idx as usize,
             start_para_idx as usize,
             start_char_offset as usize,
             end_para_idx as usize,
             end_char_offset as usize,
-            None,
-        )
-        .map_err(|e| e.into())
+        );
+        if logical == Some(true) {
+            return self
+                .delete_caret_range_native(sec, None, sp, so, ep, eo)
+                .map_err(|e| e.into());
+        }
+        self.delete_range_native(sec, sp, so, ep, eo, None)
+            .map_err(|e| e.into())
     }
 
     /// 여러 구역에 걸친 본문 선택 영역을 삭제한다. 구역 구조는 유지된다.
+    /// `logical`: 오프셋이 편집 캐럿 좌표이면 true. 범위 안의 글자처럼 취급 개체도 함께 지운다.
     #[wasm_bindgen(js_name = deleteRangeAcrossSections)]
     pub fn delete_range_across_sections(
         &mut self,
@@ -6735,16 +7375,24 @@ impl HwpDocument {
         end_section_idx: u32,
         end_para_idx: u32,
         end_char_offset: u32,
+        logical: Option<bool>,
     ) -> Result<String, JsValue> {
-        self.delete_range_across_sections_native(
+        let args = (
             start_section_idx as usize,
             start_para_idx as usize,
             start_char_offset as usize,
             end_section_idx as usize,
             end_para_idx as usize,
             end_char_offset as usize,
-        )
-        .map_err(|e| e.into())
+        );
+        let result = if logical == Some(true) {
+            self.delete_caret_range_across_sections_native(
+                args.0, args.1, args.2, args.3, args.4, args.5,
+            )
+        } else {
+            self.delete_range_across_sections_native(args.0, args.1, args.2, args.3, args.4, args.5)
+        };
+        result.map_err(|e| e.into())
     }
 
     /// 셀 내 선택 영역을 삭제한다.
@@ -6811,8 +7459,12 @@ impl HwpDocument {
     /// HWPX 출처 문서는 `export_hwp_with_adapter` 를 통해 HWPX→HWP IR 매핑 어댑터를
     /// 자동 적용하여 한컴 호환성과 자기 재로드 페이지 보존을 보장한다 (#178).
     /// HWP 출처는 어댑터가 no-op 이므로 기존 동작과 동일.
+    ///
+    /// `&self` 여야 한다. 읽기 경로(`&self`)가 trap 하면 wasm 은 공유 대여를 풀지 않아
+    /// 이후 `&mut self` 호출은 모두 "recursive use of an object" 로 거절된다. 엔진이
+    /// 멈춘 뒤의 마지막 복구본 저장(engine-trap autosave)이 이 경로를 쓴다.
     #[wasm_bindgen(js_name = exportHwp)]
-    pub fn export_hwp(&mut self) -> Result<Vec<u8>, JsValue> {
+    pub fn export_hwp(&self) -> Result<Vec<u8>, JsValue> {
         self.export_hwp_with_adapter().map_err(|e| e.into())
     }
 
@@ -7051,6 +7703,41 @@ impl HwpDocument {
     #[wasm_bindgen(js_name = discardPictureTransform)]
     pub fn discard_picture_transform(&mut self, id: u32) {
         self.discard_picture_transform_native(id);
+    }
+
+    /// 에이전트 대기 편집 전에 본문 문단 하나를 통째로 보관한다 (문단 단위 역연산).
+    #[wasm_bindgen(js_name = captureParagraph)]
+    pub fn capture_paragraph(&mut self, section_idx: u32, para_idx: u32) -> Result<u32, JsValue> {
+        self.capture_paragraph_native(section_idx as usize, para_idx as usize)
+            .map_err(|e| e.into())
+    }
+
+    /// 보관한 문단으로 지정 위치의 본문 문단을 되돌린다. 보관본은 유지된다.
+    #[wasm_bindgen(js_name = restoreCapturedParagraph)]
+    pub fn restore_captured_paragraph(
+        &mut self,
+        id: u32,
+        section_idx: u32,
+        para_idx: u32,
+    ) -> Result<(), JsValue> {
+        self.restore_captured_paragraph_native(id, section_idx as usize, para_idx as usize)
+            .map_err(|e| e.into())
+    }
+
+    #[wasm_bindgen(js_name = discardParagraphCapture)]
+    pub fn discard_paragraph_capture(&mut self, id: u32) {
+        self.discard_paragraph_capture_native(id);
+    }
+
+    /// 레이아웃을 뺀 본문 문단 내용 지문 — 되돌리기 전 사용자 수정 여부 판별용.
+    #[wasm_bindgen(js_name = getParagraphContentDigest)]
+    pub fn get_paragraph_content_digest(
+        &self,
+        section_idx: u32,
+        para_idx: u32,
+    ) -> Result<String, JsValue> {
+        self.paragraph_content_digest_native(section_idx as usize, para_idx as usize)
+            .map_err(|e| e.into())
     }
 
     /// Document 스냅샷을 저장하고 ID를 반환한다.
@@ -7417,6 +8104,11 @@ impl HwpDocument {
         use crate::document_core::helpers::{json_i32, json_str};
         use crate::model::style::Style;
 
+        // 문단의 스타일 참조(style_id)는 u8 이다. 256 번째를 넘는 스타일은 어떤 문단도
+        // 가리킬 수 없고, 적용하면 ID 가 잘려 엉뚱한 스타일이 된다.
+        if self.core.document.doc_info.styles.len() > usize::from(u8::MAX) {
+            return -1;
+        }
         let name = json_str(json, "name").unwrap_or_default();
         let english_name = json_str(json, "englishName").unwrap_or_default();
         let style_type = json_i32(json, "type").unwrap_or(0) as u8;
@@ -7454,11 +8146,8 @@ impl HwpDocument {
         self.core.document.doc_info.styles.push(new_style);
         self.core.document.doc_info.raw_stream_dirty = true;
         let new_id = (self.core.document.doc_info.styles.len() - 1) as i32;
-        // 스타일 캐시 갱신
-        self.core.styles = crate::renderer::style_resolver::resolve_styles(
-            &self.core.document.doc_info,
-            self.core.dpi,
-        );
+        // 스타일 캐시 갱신 — 로드 때와 같은 HWP3 변형 보정을 유지한다.
+        self.core.styles = self.core.resolve_document_styles();
         new_id
     }
 
@@ -7475,38 +8164,23 @@ impl HwpDocument {
         if style_id as usize >= styles.len() {
             return false;
         }
-        let sid = style_id as u8;
-        // 해당 스타일을 사용 중인 문단을 바탕글(0)로 변경
-        for section in &mut self.core.document.sections {
-            for para in &mut section.paragraphs {
-                if para.style_id == sid {
-                    para.style_id = 0;
-                }
-            }
-        }
         // 스타일 삭제 (인덱스 기반이므로 뒤의 ID가 변경됨에 주의)
         self.core.document.doc_info.styles.remove(style_id as usize);
-        // 삭제된 ID보다 큰 style_id를 가진 문단들 보정
-        for section in &mut self.core.document.sections {
-            for para in &mut section.paragraphs {
-                if para.style_id > sid {
-                    para.style_id -= 1;
-                }
-            }
+        // 본문뿐 아니라 표 셀·머리말/꼬리말·각주·글상자·바탕쪽 문단까지 참조를 옮긴다.
+        // 본문만 옮기면 안쪽 문단이 삭제된 ID 뒤의 엉뚱한 스타일을 가리킨다.
+        let changed = remap_style_refs_after_delete(&mut self.core.document, style_id);
+        // 이 경로는 이벤트를 쌓지 않는다. revision 을 올리지 않으면 스냅샷 복원(undo)이
+        // 재배정된 현재 문단을 그대로 재사용해, 스타일 목록만 돌아오고 문단은 한 칸
+        // 당겨진 ID 로 남는다.
+        for (section_idx, para_idx) in changed {
+            self.core.mark_body_paragraph_changed(section_idx, para_idx);
         }
         // next_style_id 보정
         for s in &mut self.core.document.doc_info.styles {
-            if s.next_style_id == sid {
-                s.next_style_id = 0;
-            } else if s.next_style_id > sid {
-                s.next_style_id -= 1;
-            }
+            s.next_style_id = style_ref_after_delete(u32::from(s.next_style_id), style_id) as u8;
         }
-        // 스타일 캐시 갱신
-        self.core.styles = crate::renderer::style_resolver::resolve_styles(
-            &self.core.document.doc_info,
-            self.core.dpi,
-        );
+        // 스타일 캐시 갱신 — 로드 때와 같은 HWP3 변형 보정을 유지한다.
+        self.core.styles = self.core.resolve_document_styles();
         // DocInfo(styles 목록)와 문단 style_id 가 함께 바뀌었으므로 저장 스트림을 무효화한다.
         // raw_stream_dirty 미설정 시 DocInfo 가, 섹션 raw_stream 잔존 시 본문이 각각 원본
         // 바이트로 재방출돼 스타일 삭제·문단 재배정이 .hwp 저장에서 유실된다.
@@ -7706,6 +8380,8 @@ impl HwpDocument {
         let b = Bullet {
             bullet_char: bullet_ch,
             text_distance: 50,
+            // 새 글머리표는 현재 문단의 글자 모양을 따른다.
+            char_shape_id: u32::MAX,
             ..Default::default()
         };
         self.core.document.doc_info.bullets.push(b);
@@ -9090,6 +9766,64 @@ pub fn extract_thumbnail(data: &[u8]) -> JsValue {
     }
 }
 
+/// 요청 글꼴이 없을 때 로드할 엔진의 그리기 대체 후보 (선호 순서의 JSON 배열).
+/// 현재 브라우저/호스트의 등록 상태와 무관하며 문서를 로드하지 않고 조회할 수 있다.
+#[wasm_bindgen(js_name = fontFallbackFamilies)]
+pub fn font_fallback_families(font_family: &str, font_subst: Option<String>) -> String {
+    serde_json::to_string(&crate::renderer::font_fallback_families(
+        font_family,
+        font_subst.as_deref().unwrap_or(""),
+    ))
+    .expect("font family strings serialize to JSON")
+}
+
+/// 사용자가 설치한 폰트 바이트에서 advance 폭을 추출해 레이아웃 메트릭으로 등록한다.
+///
+/// `aliases_json`: 폰트명 별칭 JSON 배열. 같은 별칭 + bold + italic 은 교체한다.
+/// 반환: `{"registered":true,"key":..,"unitsPerEm":..,"mappedChars":..,
+/// "coversHangul":..,"coversLatin":..,"replaced":..}` 또는
+/// `{"registered":false,"reason":".."}`. 반영하려면 이후 `refreshLayout` 호출.
+#[wasm_bindgen(js_name = registerRuntimeFontMetrics)]
+pub fn register_runtime_font_metrics(
+    bytes: &[u8],
+    aliases_json: &str,
+    bold: bool,
+    italic: bool,
+) -> String {
+    crate::renderer::runtime_font_metrics::register_json(bytes, aliases_json, bold, italic)
+}
+
+/// 사용자 PC 의 한컴 HFT 파일 바이트를 그리기 전용 윤곽선 소스로 등록한다.
+///
+/// 레이아웃 폭은 바뀌지 않는다. HFT 글꼴을 쓰는 run 은 다음 렌더부터 이
+/// 윤곽선으로 그려진다. 지원하지 않는 flavor·문자 범위의 은행이면 false.
+#[wasm_bindgen(js_name = registerHftFont)]
+pub fn register_hft_font(bytes: &[u8]) -> bool {
+    crate::renderer::hft_glyphs::register_hft_bytes(bytes.to_vec())
+}
+
+/// 등록된 HFT 서체의 글리프 윤곽선 (SVG path, 1000 = 1em, y 아래쪽 양수, 원점 = 기준점).
+/// 윤곽선이 없으면 빈 문자열. CanvasKit 렌더러가 장평·글자 크기를 곱해 그린다.
+#[wasm_bindgen(js_name = hftGlyphPathEm)]
+pub fn hft_glyph_path_em(family: &str, code_point: u32) -> String {
+    char::from_u32(code_point)
+        .and_then(|ch| crate::renderer::hft_glyphs::hft_glyph(family, ch))
+        .map(|glyph| glyph.svg_path_data(1000.0, 1.0, 0.0, 0.0))
+        .unwrap_or_default()
+}
+
+/// 등록된 런타임 폰트 메트릭을 모두 제거한다.
+#[wasm_bindgen(js_name = clearRuntimeFontMetrics)]
+pub fn clear_runtime_font_metrics() {
+    crate::renderer::runtime_font_metrics::clear();
+}
+
+/// 등록된 런타임 폰트 메트릭 목록 JSON 배열 (진단용, 페이스별 폭 조회 횟수 포함).
+#[wasm_bindgen(js_name = getRuntimeFontMetricsReport)]
+pub fn get_runtime_font_metrics_report() -> String {
+    crate::renderer::runtime_font_metrics::report_json()
+}
+
 fn base64_encode(data: &[u8]) -> String {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.encode(data)
@@ -9097,3 +9831,6 @@ fn base64_encode(data: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod boundary_tests;

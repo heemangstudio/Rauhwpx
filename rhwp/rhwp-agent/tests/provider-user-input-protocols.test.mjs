@@ -471,6 +471,7 @@ test('Claude waits for async SDK startup cleanup before dispatching the legacy f
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
   child.stdin = {
+    on() {},
     write(value, callback) {
       stdin.push(String(value));
       callback?.();
@@ -567,7 +568,7 @@ test('Claude retries through the legacy MCP transport when SDK startup fails bef
   const child = new EventEmitter();
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
-  child.stdin = { write(value, callback) { stdin.push(String(value)); callback?.(); } };
+  child.stdin = { on() {}, write(value, callback) { stdin.push(String(value)); callback?.(); } };
   child.exitCode = null;
   child.signalCode = null;
   const session = createClaudeSession(baseOpts, {

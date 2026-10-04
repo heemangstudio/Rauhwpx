@@ -1,12 +1,14 @@
 import type { DirtyStateChange } from '@/core/document-dirty-state';
 import type { EventBus } from '@/core/event-bus';
 import {
+  autosaveInstanceLockName,
   createAutosaveDraftId,
   deleteAutosaveDraft,
   releaseAutosaveSession,
   saveAutosaveDraft,
   touchAutosaveSession,
   type AutosaveDraft,
+  type AutosaveLockManagerLike,
   type AutosaveOwner,
 } from './autosave-store.ts';
 
@@ -45,6 +47,15 @@ export interface AutosaveManagerOptions {
   store?: AutosaveStoreLike;
   owner?: AutosaveOwner;
   heartbeatIntervalMs?: number;
+  /**
+   * 페이지 수명 동안 instance lock 을 잡아 draft 소유 페이지가 살아 있음을 알린다.
+   * 없으면 heartbeat 만으로 판단한다.
+   */
+  locks?: AutosaveLockManagerLike | null;
+  instanceId?: string;
+  /** 저장 실패 뒤 다시 시도하기까지의 대기. 실패할 때마다 두 배로 늘린다. */
+  retryDelayMs?: number;
+  maxRetryDelayMs?: number;
   logger?: Pick<Console, 'debug' | 'warn'>;
   onStatus?: (status: AutosaveStatus) => void;
 }
@@ -58,6 +69,10 @@ interface CurrentDocument {
 const DEFAULT_IDLE_DELAY_MS = 10_000;
 const DEFAULT_RECOVERY_INTERVAL_MS = 10 * 60_000;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 5_000;
+const DEFAULT_RETRY_DELAY_MS = 5_000;
+const DEFAULT_MAX_RETRY_DELAY_MS = 5 * 60_000;
+/** lock 부여가 늦어도 첫 저장을 붙잡지 않는다. 부여 전 저장본은 heartbeat 규칙을 따른다. */
+const INSTANCE_LOCK_WAIT_MS = 1_000;
 
 function reasonText(reason: unknown, fallback: string): string {
   return typeof reason === 'string' && reason.length > 0 ? reason : fallback;
@@ -85,6 +100,15 @@ export class AutosaveManager {
   /** discard 세대 — 진행 중이던 saveDraft가 discard 이후 완료되며 draft를 부활시키는 경합 감지용 */
   private discardGeneration = 0;
   private scheduleSettings: AutosaveScheduleSettings;
+  private readonly instanceId: string;
+  private instanceLockHeld = false;
+  private instanceLockPending = false;
+  private readonly instanceLockReady: Promise<void>;
+  private releaseInstanceLock: (() => void) | null = null;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private retryAttempt = 0;
+  private readonly retryDelayMs: number;
+  private readonly maxRetryDelayMs: number;
 
   constructor(options: AutosaveManagerOptions) {
     this.exportBytes = options.exportBytes;
@@ -110,6 +134,13 @@ export class AutosaveManager {
     );
     this.logger = options.logger ?? console;
     this.onStatus = options.onStatus;
+    this.retryDelayMs = normalizeMs(options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS, DEFAULT_RETRY_DELAY_MS, 0);
+    this.maxRetryDelayMs = Math.max(
+      this.retryDelayMs,
+      normalizeMs(options.maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS, DEFAULT_MAX_RETRY_DELAY_MS, 0),
+    );
+    this.instanceId = options.instanceId ?? createAutosaveDraftId();
+    this.instanceLockReady = this.acquireInstanceLock(options.locks ?? null);
     if (options.owner) this.setOwner(options.owner);
   }
 
@@ -118,7 +149,7 @@ export class AutosaveManager {
     if (this.owner?.sessionId === owner.sessionId && this.owner.launchId === owner.launchId) return;
     const previousSessionId = this.owner?.sessionId;
     this.stopHeartbeat();
-    this.owner = { launchId: owner.launchId, sessionId: owner.sessionId };
+    this.owner = { launchId: owner.launchId, sessionId: owner.sessionId, instanceId: this.instanceId };
     if (previousSessionId) void this.releaseOwner(previousSessionId);
     void this.heartbeat();
     if (this.heartbeatIntervalMs > 0) {
@@ -157,6 +188,7 @@ export class AutosaveManager {
     this.cancelTimers();
     this.pendingReason = null;
     this.lastSavedAt = 0;
+    this.retryAttempt = 0;
     this.current = {
       draftId: meta.draftId ?? this.idFactory(),
       fileName: meta.fileName,
@@ -174,7 +206,9 @@ export class AutosaveManager {
   }
 
   updateSchedule(settings: Partial<AutosaveScheduleSettings>): void {
-    const hadScheduledSave = Boolean(this.idleTimer || this.recoveryTimer || this.pendingReason);
+    const hadScheduledSave = Boolean(
+      this.idleTimer || this.recoveryTimer || this.retryTimer || this.pendingReason,
+    );
     this.scheduleSettings = normalizeSchedule({
       ...this.scheduleSettings,
       ...settings,
@@ -221,10 +255,11 @@ export class AutosaveManager {
     this.saving = true;
     this.cancelTimers();
     this.onStatus?.({ state: 'saving', reason });
+    const generationAtStart = this.discardGeneration;
     try {
+      await this.waitForInstanceLock();
       const bytes = this.exportBytes();
       const savedAt = this.now();
-      const generationAtStart = this.discardGeneration;
       if (this.owner) await this.heartbeat(savedAt);
       await this.store.saveDraft({
         id: current.draftId,
@@ -238,6 +273,8 @@ export class AutosaveManager {
           ownerLaunchId: this.owner.launchId,
           ownerSessionId: this.owner.sessionId,
           ownerHeartbeatAt: this.ownerHeartbeatAt,
+          // lock 을 실제로 잡았을 때만 기록한다. 잡지 못한 페이지의 draft 는 heartbeat 규칙을 따른다.
+          ...(this.instanceLockHeld ? { ownerInstanceId: this.instanceId } : {}),
         } : {}),
       });
       if (this.discardGeneration !== generationAtStart) {
@@ -246,11 +283,16 @@ export class AutosaveManager {
         return;
       }
       this.lastSavedAt = savedAt;
+      this.retryAttempt = 0;
       this.logger.debug?.(`[autosave] draft saved: ${current.fileName} (${bytes.byteLength} bytes)`);
       this.onStatus?.({ state: 'saved', reason, byteLength: bytes.byteLength });
     } catch (error) {
       this.logger.warn('[autosave] draft save failed:', error);
       this.onStatus?.({ state: 'error', reason, error });
+      // 편집이 멈춘 문서는 다음 저장 계기가 없다. 복구본 없이 남지 않도록 다시 시도한다.
+      if (this.discardGeneration === generationAtStart && this.current === current) {
+        this.scheduleRetry(reason);
+      }
     } finally {
       this.saving = false;
       const pending = this.pendingReason;
@@ -266,6 +308,7 @@ export class AutosaveManager {
     this.cancelTimers();
     this.pendingReason = null;
     this.lastSavedAt = 0;
+    this.retryAttempt = 0;
     const draftId = this.current?.draftId;
     if (!draftId) return;
     await this.deleteDraft(draftId, reason);
@@ -276,6 +319,7 @@ export class AutosaveManager {
     this.cancelTimers();
     this.pendingReason = null;
     this.lastSavedAt = 0;
+    this.retryAttempt = 0;
     this.current = null;
   }
 
@@ -288,6 +332,70 @@ export class AutosaveManager {
     const sessionId = this.owner?.sessionId;
     this.owner = null;
     if (sessionId) void this.releaseOwner(sessionId);
+    this.releaseInstanceLock?.();
+    this.releaseInstanceLock = null;
+  }
+
+  private acquireInstanceLock(locks: AutosaveLockManagerLike | null): Promise<void> {
+    if (!locks) return Promise.resolve();
+    this.instanceLockPending = true;
+    return new Promise<void>((settle) => {
+      const resolve = () => {
+        this.instanceLockPending = false;
+        settle();
+      };
+      const onGranted = () => {
+        if (this.disposed) {
+          resolve();
+          return undefined;
+        }
+        this.instanceLockHeld = true;
+        resolve();
+        // 페이지가 사라질 때까지 풀지 않는다. 크래시·새로고침이면 브라우저가 대신 푼다.
+        return new Promise<void>((release) => {
+          this.releaseInstanceLock = () => {
+            this.instanceLockHeld = false;
+            release();
+          };
+        });
+      };
+      try {
+        locks.request(autosaveInstanceLockName(this.instanceId), onGranted).catch((error: unknown) => {
+          this.logger.warn('[autosave] owner lock unavailable:', error);
+          resolve();
+        });
+      } catch (error) {
+        this.logger.warn('[autosave] owner lock unavailable:', error);
+        resolve();
+      }
+    });
+  }
+
+  private async waitForInstanceLock(): Promise<void> {
+    if (!this.instanceLockPending) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      this.instanceLockReady,
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, INSTANCE_LOCK_WAIT_MS); }),
+    ]);
+    clearTimeout(timer);
+  }
+
+  private scheduleRetry(reason: string): void {
+    if (this.disposed || !this.current) return;
+    this.cancelRetryTimer();
+    const delay = Math.min(this.maxRetryDelayMs, this.retryDelayMs * 2 ** this.retryAttempt);
+    this.retryAttempt += 1;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      void this.flushNow(reason);
+    }, delay);
+  }
+
+  private cancelRetryTimer(): void {
+    if (!this.retryTimer) return;
+    clearTimeout(this.retryTimer);
+    this.retryTimer = null;
   }
 
   private async heartbeat(at = this.now()) {
@@ -330,6 +438,7 @@ export class AutosaveManager {
   private cancelTimers(): void {
     this.cancelIdleTimer();
     this.cancelRecoveryTimer();
+    this.cancelRetryTimer();
   }
 
   private async deleteDraft(id: string, reason: string): Promise<void> {

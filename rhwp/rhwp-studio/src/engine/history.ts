@@ -264,6 +264,16 @@ export class CommandHistory {
     this.redoStack = [];
   }
 
+  /**
+   * 히스토리 밖에서 문서가 바뀌었을 때(에이전트 스테이징·거절, 수식/필드 삽입 등) 부른다.
+   * currentSnapshotId 는 "지금 문서 = 이 스냅샷" 이라는 약속이라, 남아 있으면 다음
+   * 스냅샷 명령이 그것을 before 로 공유해 undo 가 밖에서 되돌린 내용을 되살린다.
+   * 비우면 다음 명령이 before 를 새로 저장할 뿐이므로 언제 불러도 안전하다.
+   */
+  invalidateCurrentSnapshot(): void {
+    this.currentSnapshotId = null;
+  }
+
   /** 이미 적용된 보상 교체 상태는 유지하면서 해당 이력을 폐기한다. */
   discardUndoTop(wasm: WasmBridge): void {
     this.currentSnapshotId = null;

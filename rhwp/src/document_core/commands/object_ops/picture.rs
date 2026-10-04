@@ -1221,7 +1221,7 @@ impl DocumentCore {
             ));
         }
 
-        Self::remove_inline_control_and_shift(para, control_idx);
+        Self::remove_inline_control_with_metadata(para, control_idx);
 
         // line_segs 재계산: 그림 높이가 반영된 line_segs를 텍스트 기반으로 리셋
         Self::reflow_paragraph_line_segs_after_control_delete(para, &self.styles, self.dpi);
@@ -1358,7 +1358,7 @@ impl DocumentCore {
         section.raw_stream = None;
         {
             let para = &mut section.paragraphs[from_para_idx];
-            Self::remove_inline_control_and_shift(para, from_control_idx);
+            Self::remove_inline_control_with_metadata(para, from_control_idx);
             Self::reflow_paragraph_line_segs_after_control_delete(para, &self.styles, self.dpi);
         }
 
@@ -1417,6 +1417,12 @@ impl DocumentCore {
         self.paginate_if_needed();
         self.invalidate_page_tree_cache();
 
+        // PictureMoved 는 대상 문단 revision 만 올린다. 그림이 빠진 원본 문단도 올려야
+        // 스냅샷 복원이 현재(그림 없는) 원본 문단을 재사용하지 않는다.
+        if !same_para {
+            self.event_log
+                .mark_paragraph_changed(section_idx, from_para_idx);
+        }
         self.event_log.push(DocumentEvent::PictureMoved {
             section: section_idx,
             para: to_para_idx,
@@ -1503,27 +1509,7 @@ impl DocumentCore {
 
         let section = &mut self.document.sections[section_idx];
         let source = Self::resolve_cell_paragraph_mut(section, from_para_idx, from_path)?;
-        let gap = Self::remove_inline_control_and_shift(source, from_control_idx);
-        // 글자 모양과 영역 태그도 삭제한 8 UTF-16 유닛만큼 이동한다.
-        let remove_gap = |pos: u32| {
-            if pos > gap {
-                pos.saturating_sub(8).max(gap)
-            } else {
-                pos
-            }
-        };
-        for shape in &mut source.char_shapes {
-            shape.start_pos = remove_gap(shape.start_pos);
-        }
-        for tag in &mut source.range_tags {
-            tag.start = remove_gap(tag.start);
-            tag.end = remove_gap(tag.end);
-        }
-        for field in &mut source.field_ranges {
-            if field.control_idx > from_control_idx {
-                field.control_idx -= 1;
-            }
-        }
+        Self::remove_inline_control_with_metadata(source, from_control_idx);
         let mut target_path = to_path.to_vec();
         if from_para_idx == to_para_idx
             && target_path.len() > from_path.len()
@@ -1640,6 +1626,11 @@ impl DocumentCore {
         self.recompose_section(section_idx);
         self.paginate_if_needed();
         self.invalidate_page_tree_cache();
+        // 원본 본문 문단(셀 경로의 host 포함)이 대상과 다르면 따로 revision 을 올린다.
+        if from_para_idx != to_para_idx {
+            self.event_log
+                .mark_paragraph_changed(section_idx, from_para_idx);
+        }
         self.event_log.push(DocumentEvent::PictureMoved {
             section: section_idx,
             para: to_para_idx,

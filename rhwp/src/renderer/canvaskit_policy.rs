@@ -1313,6 +1313,10 @@ impl CanvasKitReplayPlanBuilder {
             match op {
                 PaintOp::TextRun { run, .. } if text_run_selected => {
                     self.record_required_font_family(&run.style.font_family);
+                    // 문서 선언 대체 글꼴(substFont)도 프리플라이트에 포함.
+                    if !run.style.effective_font_subst().is_empty() {
+                        self.record_required_font_family(run.style.effective_font_subst());
+                    }
                     let display_text = expand_pua_display_text(&run.text);
                     if crate::renderer::contains_old_hangul_jamo(&display_text) {
                         self.record_required_font_family(OLD_HANGUL_FONT_FAMILY);
@@ -1819,6 +1823,27 @@ fn canvaskit_equation_layout_is_supported(layout: &LayoutBox) -> bool {
             return false;
         }
         *remaining_nodes -= 1;
+        if let Some(advances) = &layout.glyph_advances {
+            let text = match &layout.kind {
+                LayoutKind::Text(text)
+                | LayoutKind::Number(text)
+                | LayoutKind::Symbol(text)
+                | LayoutKind::MathSymbol(text)
+                | LayoutKind::Function(text) => text,
+                _ => return false,
+            };
+            if depth == MAX_DEPTH
+                || advances.len() > *remaining_nodes
+                || advances.len() != text.chars().count()
+                || advances
+                    .iter()
+                    .any(|value| !value.is_finite() || *value < 0.0)
+            {
+                return false;
+            }
+            // CanvasKit은 위치가 있는 잎을 글자별 자식으로 재생한다.
+            *remaining_nodes -= advances.len();
+        }
 
         let text_supported =
             |text: &str| !text.is_empty() && text.encode_utf16().count() <= max_text_utf16_units;
@@ -1881,7 +1906,9 @@ fn canvaskit_equation_layout_is_supported(layout: &LayoutBox) -> bool {
             LayoutKind::EqAlign { rows } => rows
                 .iter()
                 .all(|(left, right)| child(left, remaining_nodes) && child(right, remaining_nodes)),
-            LayoutKind::Paren { left, right, body } => {
+            LayoutKind::Paren {
+                left, right, body, ..
+            } => {
                 (left.is_empty() || text_supported(left))
                     && (right.is_empty() || text_supported(right))
                     && child(body, remaining_nodes)
@@ -2307,6 +2334,7 @@ mod tests {
         EquationNode {
             svg_content: "<text>x</text>".to_string(),
             layout_box: LayoutBox {
+                glyph_advances: None,
                 x: 0.0,
                 y: 0.0,
                 width: 8.0,
@@ -2730,11 +2758,30 @@ mod tests {
     }
 
     #[test]
+    fn positioned_equation_glyphs_share_the_replay_node_budget() {
+        let mut equation = equation_node();
+        equation.layout_box.kind = LayoutKind::Number("1".repeat(4096));
+        assert!(canvaskit_equation_layout_is_supported(&equation.layout_box));
+        equation.layout_box.glyph_advances = Some(vec![1.0; 4096]);
+        assert!(!canvaskit_equation_layout_is_supported(
+            &equation.layout_box
+        ));
+        equation.layout_box.kind = LayoutKind::Number("12".into());
+        equation.layout_box.glyph_advances = Some(vec![1.0, 1.0]);
+        assert!(canvaskit_equation_layout_is_supported(&equation.layout_box));
+        equation.layout_box.glyph_advances = Some(vec![1.0]);
+        assert!(!canvaskit_equation_layout_is_supported(
+            &equation.layout_box
+        ));
+    }
+
+    #[test]
     fn unsupported_equation_styles_are_not_reported_as_direct() {
         let mut equation = equation_node();
         equation.layout_box.kind = LayoutKind::FontStyle {
             style: FontStyleKind::Blackboard,
             body: Box::new(LayoutBox {
+                glyph_advances: None,
                 x: 0.0,
                 y: 0.0,
                 width: 8.0,
@@ -3020,7 +3067,9 @@ mod tests {
                 number: 1,
                 text: "1)".to_string(),
                 base_font_size: 12.0,
+                baseline: 12.0,
                 font_family: "Test".to_string(),
+                bold: false,
                 color: 0x0000_0000,
                 section_index: 0,
                 para_index: 0,

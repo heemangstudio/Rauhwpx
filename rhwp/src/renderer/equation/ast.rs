@@ -27,6 +27,9 @@ pub enum EqNode {
     /// 수평 나열 (여러 노드의 연속)
     Row(Vec<EqNode>),
 
+    /// 적분·극한의 명시적 피연산식 그룹. 뒤 연산자 앞 간격을 끊는다.
+    OperatorBody(Box<EqNode>),
+
     /// 일반 텍스트 (이탤릭체로 렌더링되는 변수 등)
     Text(String),
 
@@ -123,6 +126,12 @@ pub enum EqNode {
 
     /// 글꼴 스타일: rm, it, bold
     FontStyle {
+        style: FontStyleKind,
+        body: Box<EqNode>,
+    },
+
+    /// HWP rm/it 선언의 실제 토큰 경계. 글꼴 효과는 FontStyle과 같지만 수식 간격에 영향을 준다.
+    FontDeclaration {
         style: FontStyleKind,
         body: Box<EqNode>,
     },

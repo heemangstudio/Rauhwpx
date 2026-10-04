@@ -21,8 +21,8 @@ test('matching MCP tool counts in publish docs still fail', () => {
   assert.deepEqual(hardcodedMcpCountClaims('See rhwp/rhwp-agent/tools.mjs for the live list.'), []);
 });
 
-test('Korean landing page is in the publish-docs set', () => {
-  assert.ok(PUBLISH_DOCS.includes('README.ko.md'));
+test('English landing page is in the publish-docs set', () => {
+  assert.ok(PUBLISH_DOCS.includes('README.en.md'));
 });
 
 test('relative options.root still accepts in-repo links', () => {

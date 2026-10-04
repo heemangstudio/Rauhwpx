@@ -188,20 +188,79 @@ export function createPrintPreviewSurface(
   });
 }
 
-function waitForAnimationFrame(windowLike: Window): Promise<void> {
-  return new Promise((resolve) => {
-    windowLike.requestAnimationFrame(() => resolve());
-  });
+/** 사용자가 준비 중인 인쇄 미리보기 창을 닫았다. 오류가 아니라 취소로 다룬다. */
+export class PrintSurfaceClosedError extends Error {
+  constructor() {
+    super('인쇄 미리보기 창이 닫혔습니다.');
+    this.name = 'PrintSurfaceClosedError';
+  }
 }
 
-export async function waitForPrintSurfaceReady(surface: PrintDocumentSurface): Promise<void> {
+export interface PrintSurfaceReadyOptions {
+  /** document.fonts.ready 를 기다리는 최대 시간 */
+  fontTimeoutMs?: number;
+  /** requestAnimationFrame 한 번을 기다리는 최대 시간 */
+  frameTimeoutMs?: number;
+}
+
+const DEFAULT_FONT_READY_TIMEOUT_MS = 10_000;
+const DEFAULT_FRAME_TIMEOUT_MS = 1_000;
+const CLOSED_POLL_INTERVAL_MS = 100;
+
+export function assertPrintSurfaceOpen(windowLike: Pick<Window, 'closed'>): void {
+  if (windowLike.closed) throw new PrintSurfaceClosedError();
+}
+
+/**
+ * 창이 열려 있는 동안 step 을 기다린다. 닫힌 창의 문서는 fully active 가 아니어서
+ * rAF 콜백과 fonts.ready 가 오지 않을 수 있다. 창이 닫히면 PrintSurfaceClosedError,
+ * 제한 시간이 지나면 그대로 진행한다 (백그라운드 탭의 rAF 정지 대비).
+ */
+function waitWhileOpen(
+  windowLike: Window,
+  step: () => Promise<unknown>,
+  timeoutMs: number,
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearInterval(poll);
+      if (error) reject(error);
+      else resolve();
+    };
+    const timer = setTimeout(() => finish(), timeoutMs);
+    const poll = setInterval(() => {
+      if (windowLike.closed) finish(new PrintSurfaceClosedError());
+    }, CLOSED_POLL_INTERVAL_MS);
+    try {
+      step().then(() => finish(), () => finish());
+    } catch {
+      finish();
+    }
+  }).then(() => assertPrintSurfaceOpen(windowLike));
+}
+
+export async function waitForPrintSurfaceReady(
+  surface: PrintDocumentSurface,
+  options: PrintSurfaceReadyOptions = {},
+): Promise<void> {
+  const fontTimeoutMs = options.fontTimeoutMs ?? DEFAULT_FONT_READY_TIMEOUT_MS;
+  const frameTimeoutMs = options.frameTimeoutMs ?? DEFAULT_FRAME_TIMEOUT_MS;
+  const nextFrame = () => new Promise<void>((resolve) => {
+    surface.window.requestAnimationFrame(() => resolve());
+  });
+
+  assertPrintSurfaceOpen(surface.window);
   const fontSet = surface.document.fonts;
   if (fontSet) {
-    await fontSet.ready;
+    await waitWhileOpen(surface.window, () => fontSet.ready, fontTimeoutMs);
   }
 
-  await waitForAnimationFrame(surface.window);
-  await waitForAnimationFrame(surface.window);
+  await waitWhileOpen(surface.window, nextFrame, frameTimeoutMs);
+  await waitWhileOpen(surface.window, nextFrame, frameTimeoutMs);
 
   // 인쇄 호출 직전에 style/layout 계산을 완료시킨다.
   void surface.document.documentElement.getBoundingClientRect();

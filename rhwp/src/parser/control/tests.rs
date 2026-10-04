@@ -254,6 +254,18 @@ fn test_parse_hidden_comment() {
 }
 
 #[test]
+fn form_wstring_huge_length_does_not_panic() {
+    // `wstring:N` 의 N 이 usize::MAX 면 종전 `pos + n` 이 오버플로해
+    // 슬라이스 패닉으로 문서 열기가 중단됐다. 남은 문자까지만 읽어야 한다.
+    let mut form = FormObject::default();
+    parse_form_properties(
+        &format!("Name:wstring:{}:x Caption:wstring:1:y", usize::MAX),
+        &mut form,
+    );
+    assert_eq!(form.name, "x Caption:wstring:1:y");
+}
+
+#[test]
 fn test_parse_control_dispatch() {
     let ctrl = parse_control(0x12345678, &[], &[]);
     assert!(matches!(ctrl, Control::Unknown(u) if u.ctrl_id == 0x12345678));

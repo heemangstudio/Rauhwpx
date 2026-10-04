@@ -21,10 +21,10 @@ pub(crate) fn repair_metric_stale_cell_lines(
                     continue;
                 }
                 let pad = cell.effective_padding(&table.padding);
-                let inner_width = crate::renderer::hwpunit_to_px(
-                    cell.width as i32 - pad.left as i32 - pad.right as i32,
-                    dpi,
-                );
+                // 한컴은 셀 안쪽 폭을 4 HWPUNIT(1/1800인치) 격자로 내려 줄 폭으로 쓴다.
+                let inner_hu = cell.width as i32 - pad.left as i32 - pad.right as i32;
+                let inner_width =
+                    crate::renderer::hwpunit_to_px(inner_hu - inner_hu.rem_euclid(4), dpi);
                 for para in &mut cell.paragraphs {
                     let style = current_styles.para_styles.get(para.para_shape_id as usize);
                     let width = inner_width - style.map_or(0.0, |s| s.margin_left + s.margin_right);
@@ -165,7 +165,8 @@ mod tests {
             let pad = cell.effective_padding(&table.padding);
             let para = &cell.paragraphs[0];
             let style = &current.para_styles[para.para_shape_id as usize];
-            let width = hwpunit_to_px(cell.width as i32 - pad.left as i32 - pad.right as i32, 96.0)
+            let inner_hu = cell.width as i32 - pad.left as i32 - pad.right as i32;
+            let width = hwpunit_to_px(inner_hu - inner_hu.rem_euclid(4), 96.0)
                 - style.margin_left
                 - style.margin_right;
             let result =

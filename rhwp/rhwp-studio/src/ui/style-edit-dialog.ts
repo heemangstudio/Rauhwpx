@@ -25,8 +25,9 @@ import type { EventBus } from '@/core/event-bus';
 import type { CharProperties, ParaProperties } from '@/core/types';
 import type { CommandServices } from '@/command/types';
 import { ModalDialog } from './dialog';
-import { CharShapeDialog } from './char-shape-dialog';
+import { CharShapeDialog, resolveCharShapeFontMods } from './char-shape-dialog';
 import { ParaShapeDialog } from './para-shape-dialog';
+import { mergeShapeModsJson } from './style-shape-mods';
 
 // [Task #2866] 스타일 이름/영문 이름은 HWP5 DocInfo STYLE 레코드에서 u16 길이
 // 프리픽스로 직렬화된다(`src/serializer/doc_info.rs`의 `serialize_style` →
@@ -228,11 +229,13 @@ export class StyleEditDialog extends ModalDialog {
     }
   }
 
+  // 하위 대화상자는 매번 스타일의 원래 모양에서 열리고 이번에 바꾼 항목만 돌려준다.
+  // 대기 중인 변경분에 합쳐야 앞서 바꾼 항목이 남는다.
   private openParaDialog(): void {
     if (this.addMode && this.styleInfo.id < 0) {
       const dialog = new ParaShapeDialog(this.wasm, this.eventBus);
       dialog.onApply = (mods) => {
-        this.paraModsJson = JSON.stringify(mods);
+        this.paraModsJson = mergeShapeModsJson(this.paraModsJson, mods);
       };
       dialog.show(this.baseInfo.paraProps ?? {});
       return;
@@ -241,7 +244,7 @@ export class StyleEditDialog extends ModalDialog {
       const detail = this.wasm.getStyleDetail(this.styleInfo.id);
       const dialog = new ParaShapeDialog(this.wasm, this.eventBus);
       dialog.onApply = (mods) => {
-        this.paraModsJson = JSON.stringify(mods);
+        this.paraModsJson = mergeShapeModsJson(this.paraModsJson, mods);
       };
       dialog.show(detail.paraProps);
     } catch (err) {
@@ -253,12 +256,8 @@ export class StyleEditDialog extends ModalDialog {
     if (this.addMode && this.styleInfo.id < 0) {
       const dialog = new CharShapeDialog(this.wasm, this.eventBus);
       dialog.onApply = (mods) => {
-        if (mods.fontName) {
-          const fontId = this.wasm.findOrCreateFontId(mods.fontName);
-          if (fontId >= 0) mods.fontId = fontId;
-          delete mods.fontName;
-        }
-        this.charModsJson = JSON.stringify(mods);
+        resolveCharShapeFontMods(this.wasm, mods);
+        this.charModsJson = mergeShapeModsJson(this.charModsJson, mods);
       };
       dialog.show(this.baseInfo.charProps ?? {});
       return;
@@ -267,12 +266,8 @@ export class StyleEditDialog extends ModalDialog {
       const detail = this.wasm.getStyleDetail(this.styleInfo.id);
       const dialog = new CharShapeDialog(this.wasm, this.eventBus);
       dialog.onApply = (mods) => {
-        if (mods.fontName) {
-          const fontId = this.wasm.findOrCreateFontId(mods.fontName);
-          if (fontId >= 0) mods.fontId = fontId;
-          delete mods.fontName;
-        }
-        this.charModsJson = JSON.stringify(mods);
+        resolveCharShapeFontMods(this.wasm, mods);
+        this.charModsJson = mergeShapeModsJson(this.charModsJson, mods);
       };
       dialog.show(detail.charProps);
     } catch (err) {
@@ -280,19 +275,20 @@ export class StyleEditDialog extends ModalDialog {
     }
   }
 
-  protected onConfirm(): void {
+  protected onConfirm(): boolean {
     const name = this.nameInput.value.trim();
     const englishName = this.enNameInput.value.trim();
     const styleType = this.typePara?.checked ? 0 : (this.styleInfo.type ?? 0);
     const nextStyleId = this.nextStyleSelect ? (parseInt(this.nextStyleSelect.value) || 0) : this.styleInfo.nextStyleId;
 
+    // 입력 오류에서는 대화상자를 닫지 않아 입력한 이름과 모양을 잃지 않는다.
     if (!name) {
       alert('스타일 이름을 입력하세요.');
-      return;
+      return false;
     }
     if (name.length > MAX_STYLE_NAME_LEN || englishName.length > MAX_STYLE_NAME_LEN) {
       alert(`스타일 이름/영문 이름은 ${MAX_STYLE_NAME_LEN}자를 넘을 수 없습니다.`);
-      return;
+      return false;
     }
 
     // [Task #3387] 스타일 정의와 글자/문단 모양은 **두 번의 뮤테이션**이다. 따로 기록하면
@@ -322,22 +318,20 @@ export class StyleEditDialog extends ModalDialog {
       }
     };
 
-    try {
-      const ih = this.services?.getInputHandler();
-      if (ih) {
-        ih.executeOperation({
-          kind: 'snapshot',
-          operationType: this.addMode ? 'createStyle' : 'updateStyle',
-          operation: (wasm) => { apply(wasm); return ih.getPosition(); },
-        });
-      } else {
-        apply(this.wasm);
-        this.eventBus.emit('document-changed');
-      }
-      this.onSave?.();
-    } catch (err) {
-      console.warn('[StyleEditDialog] 저장 실패:', err);
+    // 저장이 실패하면 예외를 ModalDialog 로 넘겨 안내하고 대화상자를 연 채로 둔다.
+    const ih = this.services?.getInputHandler();
+    if (ih) {
+      ih.executeOperation({
+        kind: 'snapshot',
+        operationType: this.addMode ? 'createStyle' : 'updateStyle',
+        operation: (wasm) => { apply(wasm); return ih.getPosition(); },
+      });
+    } else {
+      apply(this.wasm);
+      this.eventBus.emit('document-changed');
     }
+    this.onSave?.();
+    return true;
   }
 
   override show(): void {

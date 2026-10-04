@@ -17,10 +17,20 @@ use crate::wmf::{
     parser::*,
 };
 
+/// META_SAVEDC 로 쌓을 수 있는 DC 최대 개수. 넘는 SAVEDC 는 무시한다.
+///
+/// 이 플레이어는 META_RESTOREDC(-1) 로 스택을 줄이지 않으므로, 상한이 없으면
+/// 6바이트 SAVEDC 레코드만 반복해도 스택이 입력 크기에 비례해 끝없이 자란다.
+const MAX_SAVED_DEVICE_CONTEXTS: usize = 1024;
+
 #[derive(Default)]
 pub struct SVGPlayer {
     context_stack: Vec<DeviceContext>,
     context_current: DeviceContext,
+    /// WMF 객체 테이블. MS-WMF 에서 객체 테이블은 DC 상태가 아니므로 SAVEDC 가
+    /// 복제하지 않도록 DeviceContext 밖에 둔다 (예전에는 SAVEDC 마다 최대 65,535
+    /// 슬롯 테이블을 통째로 복제해 수 KB 입력으로 수십 GB 를 요구했다).
+    object_table: crate::wmf::converter::GraphicsObjects,
     definitions: Vec<Node>,
     elements: Vec<Node>,
     object_selected: SelectedGraphicsObject,
@@ -580,9 +590,8 @@ impl crate::wmf::converter::Player for SVGPlayer {
             );
         }
 
-        self.context_current = self
-            .context_current
-            .create_object_table(header.number_of_objects);
+        self.object_table =
+            crate::wmf::converter::GraphicsObjects::new(usize::from(header.number_of_objects));
 
         Ok(self)
     }
@@ -619,18 +628,18 @@ impl crate::wmf::converter::Player for SVGPlayer {
             point
         };
         let (rx, ry) = (
-            (record.right_rect - record.left_rect) / 2,
-            (record.bottom_rect - record.top_rect) / 2,
+            record.right_rect.saturating_sub(record.left_rect) / 2,
+            record.bottom_rect.saturating_sub(record.top_rect) / 2,
         );
         let center = self.context_current.point_s_to_absolute_point(&PointS {
-            x: record.left_rect + rx,
-            y: record.top_rect + ry,
+            x: record.left_rect.saturating_add(rx),
+            y: record.top_rect.saturating_add(ry),
         });
         // Start and end vectors relative to the center of the ellipse
-        let start_dx = f32::from(start.x - center.x);
-        let start_dy = f32::from(start.y - center.y);
-        let end_dx = f32::from(end.x - center.x);
-        let end_dy = f32::from(end.y - center.y);
+        let start_dx = f32::from(start.x) - f32::from(center.x);
+        let start_dy = f32::from(start.y) - f32::from(center.y);
+        let end_dx = f32::from(end.x) - f32::from(center.x);
+        let end_dy = f32::from(end.y) - f32::from(center.y);
 
         // Calculate cross product to determine if the arc is larger than 180
         // degrees. Invert the sign because upper-left is origin.
@@ -662,15 +671,15 @@ impl crate::wmf::converter::Player for SVGPlayer {
     ))]
     fn chord(mut self, record_number: usize, record: META_CHORD) -> Result<Self, PlayError> {
         // Calculate ellipse center and radii from bounding rectangle
-        let rx = (record.right_rect - record.left_rect) / 2;
-        let ry = (record.bottom_rect - record.top_rect) / 2;
+        let rx = record.right_rect.saturating_sub(record.left_rect) / 2;
+        let ry = record.bottom_rect.saturating_sub(record.top_rect) / 2;
         if rx == 0 || ry == 0 {
             info!("META_CHORD is skipped because rx or ry is zero.");
             return Ok(self);
         }
         let center = self.context_current.point_s_to_absolute_point(&PointS {
-            x: record.left_rect + rx,
-            y: record.top_rect + ry,
+            x: record.left_rect.saturating_add(rx),
+            y: record.top_rect.saturating_add(ry),
         });
 
         // Convert radial endpoints from WMF coordinates to SVG absolute
@@ -728,8 +737,8 @@ impl crate::wmf::converter::Player for SVGPlayer {
     ))]
     fn ellipse(mut self, record_number: usize, record: META_ELLIPSE) -> Result<Self, PlayError> {
         let (rx, ry) = (
-            (record.right_rect - record.left_rect) / 2,
-            (record.bottom_rect - record.top_rect) / 2,
+            record.right_rect.saturating_sub(record.left_rect) / 2,
+            record.bottom_rect.saturating_sub(record.top_rect) / 2,
         );
 
         if rx == 0 || ry == 0 {
@@ -753,8 +762,8 @@ impl crate::wmf::converter::Player for SVGPlayer {
         let fill_rule = self.context_current.poly_fill_rule();
         let point = {
             let point = self.context_current.point_s_to_absolute_point(&PointS {
-                x: record.left_rect + rx,
-                y: record.top_rect + ry,
+                x: record.left_rect.saturating_add(rx),
+                y: record.top_rect.saturating_add(ry),
             });
 
             self.context_current = self.context_current.extend_window(&point);
@@ -820,7 +829,8 @@ impl crate::wmf::converter::Player for SVGPlayer {
                     self.context_current.drawing_position.y
                 } else {
                     record.y
-                } + match self.context_current.text_align_vertical {
+                }
+                .saturating_add(match self.context_current.text_align_vertical {
                     // [Task #965 / PR #918 Stage 33-A] WMF 의 ExtTextOut y 는
                     // text_align_vertical 에 따라 reference point 가 결정된다:
                     //   VTA_BASELINE (default): y 가 baseline — 그대로 사용
@@ -831,17 +841,17 @@ impl crate::wmf::converter::Player for SVGPlayer {
                     // -font.height 만큼 y 를 더했던 것은 잘못된 보정으로, 텍스트가 박스
                     // 하단으로 baseline shift 되는 원인).
                     VerticalTextAlignmentMode::VTA_TOP => {
-                        let em = font.height.abs();
+                        let em = font.height.unsigned_abs();
                         (em as f64 * 0.8) as i16
                     }
                     VerticalTextAlignmentMode::VTA_BOTTOM => {
-                        let em = font.height.abs();
+                        let em = font.height.unsigned_abs();
                         -((em as f64 * 0.2) as i16)
                     }
                     VerticalTextAlignmentMode::VTA_BASELINE => 0,
                     // VTA_CENTER / VTA_LEFT: 드물게 사용; baseline 과 동일 처리
                     _ => 0,
-                },
+                }),
             };
 
             let point = if self.context_current.text_align_update_cp {
@@ -950,8 +960,11 @@ impl crate::wmf::converter::Player for SVGPlayer {
                 let mut tspan = Node::new("tspan").add(Node::new_text(s));
 
                 if dx != 0 {
-                    let excess_dx = (font.height.abs() / 2) * i16::try_from(s.width()).unwrap_or(0);
-                    let dx = core::cmp::max(dx - excess_dx, 0);
+                    // 글꼴 높이·간격은 파일이 정한 i16 이라 포화 산술로 넘침을 막는다.
+                    let excess_dx = (font.height / 2)
+                        .saturating_abs()
+                        .saturating_mul(i16::try_from(s.width()).unwrap_or(0));
+                    let dx = core::cmp::max(dx.saturating_sub(excess_dx), 0);
 
                     tspan = tspan.set("dx", dx);
                 }
@@ -971,9 +984,11 @@ impl crate::wmf::converter::Player for SVGPlayer {
         }
 
         if self.context_current.text_align_update_cp {
-            let dx = (font.height.abs() / 2) * i16::try_from(text_content.width()).unwrap_or(0);
+            let dx = (font.height / 2)
+                .saturating_abs()
+                .saturating_mul(i16::try_from(text_content.width()).unwrap_or(0));
             let point = PointS {
-                x: point.x + dx,
+                x: point.x.saturating_add(dx),
                 y: point.y,
             };
             self.context_current = self.context_current.drawing_position(point);
@@ -1154,10 +1169,13 @@ impl crate::wmf::converter::Player for SVGPlayer {
         };
         let fill_rule = self.context_current.poly_fill_rule();
         let (rx, ry) = (
-            (record.right_rect - record.left_rect) / 2,
-            (record.bottom_rect - record.top_rect) / 2,
+            record.right_rect.saturating_sub(record.left_rect) / 2,
+            record.bottom_rect.saturating_sub(record.top_rect) / 2,
         );
-        let (center_x, center_y) = (record.left_rect + rx, record.top_rect + ry);
+        let (center_x, center_y) = (
+            record.left_rect.saturating_add(rx),
+            record.top_rect.saturating_add(ry),
+        );
 
         let ellipse = Node::new("ellipse")
             .set("fill", fill.as_str())
@@ -1433,8 +1451,8 @@ impl crate::wmf::converter::Player for SVGPlayer {
             .set("fill-rule", fill_rule.as_str())
             .set("x", tl.x)
             .set("y", tl.y)
-            .set("height", br.y - tl.y)
-            .set("width", br.x - tl.x);
+            .set("height", br.y.saturating_sub(tl.y))
+            .set("width", br.x.saturating_sub(tl.x));
         let rect = stroke.set_props(rect);
 
         self.push_element(record_number, rect);
@@ -1453,8 +1471,8 @@ impl crate::wmf::converter::Player for SVGPlayer {
         record: META_ROUNDRECT,
     ) -> Result<Self, PlayError> {
         let (width, height) = (
-            record.right_rect - record.left_rect,
-            record.bottom_rect - record.top_rect,
+            record.right_rect.saturating_sub(record.left_rect),
+            record.bottom_rect.saturating_sub(record.top_rect),
         );
 
         if width == 0 || height == 0 {
@@ -1528,21 +1546,22 @@ impl crate::wmf::converter::Player for SVGPlayer {
         let point = {
             let point = PointS {
                 x: record.x_start,
-                y: record.y_start
-                    + match self.context_current.text_align_vertical {
+                y: record
+                    .y_start
+                    .saturating_add(match self.context_current.text_align_vertical {
                         // [Task #965 / PR #918 Stage 33-A] META_TEXTOUT 의 y 도 동일.
                         // ext_text_out 의 baseline 보정과 일관성 유지.
                         VerticalTextAlignmentMode::VTA_TOP => {
-                            let em = font.height.abs();
+                            let em = font.height.unsigned_abs();
                             (em as f64 * 0.8) as i16
                         }
                         VerticalTextAlignmentMode::VTA_BOTTOM => {
-                            let em = font.height.abs();
+                            let em = font.height.unsigned_abs();
                             -((em as f64 * 0.2) as i16)
                         }
                         VerticalTextAlignmentMode::VTA_BASELINE => 0,
                         _ => 0,
-                    },
+                    }),
             };
 
             let point = if self.context_current.text_align_update_cp {
@@ -1583,8 +1602,7 @@ impl crate::wmf::converter::Player for SVGPlayer {
         record_number: usize,
         record: META_CREATEBRUSHINDIRECT,
     ) -> Result<Self, PlayError> {
-        self.context_current
-            .object_table
+        self.object_table
             .push(GraphicsObject::Brush(record.create_brush()));
 
         Ok(self)
@@ -1600,9 +1618,7 @@ impl crate::wmf::converter::Player for SVGPlayer {
         record_number: usize,
         record: META_CREATEFONTINDIRECT,
     ) -> Result<Self, PlayError> {
-        self.context_current
-            .object_table
-            .push(GraphicsObject::Font(record.font));
+        self.object_table.push(GraphicsObject::Font(record.font));
 
         Ok(self)
     }
@@ -1617,8 +1633,7 @@ impl crate::wmf::converter::Player for SVGPlayer {
         record_number: usize,
         record: META_CREATEPALETTE,
     ) -> Result<Self, PlayError> {
-        self.context_current
-            .object_table
+        self.object_table
             .push(GraphicsObject::Palette(record.palette));
 
         Ok(self)
@@ -1634,8 +1649,7 @@ impl crate::wmf::converter::Player for SVGPlayer {
         record_number: usize,
         record: META_CREATEPATTERNBRUSH,
     ) -> Result<Self, PlayError> {
-        self.context_current
-            .object_table
+        self.object_table
             .push(GraphicsObject::Brush(record.create_brush()));
 
         Ok(self)
@@ -1651,9 +1665,7 @@ impl crate::wmf::converter::Player for SVGPlayer {
         record_number: usize,
         record: META_CREATEPENINDIRECT,
     ) -> Result<Self, PlayError> {
-        self.context_current
-            .object_table
-            .push(GraphicsObject::Pen(record.pen));
+        self.object_table.push(GraphicsObject::Pen(record.pen));
 
         Ok(self)
     }
@@ -1668,8 +1680,7 @@ impl crate::wmf::converter::Player for SVGPlayer {
         record_number: usize,
         record: META_CREATEREGION,
     ) -> Result<Self, PlayError> {
-        self.context_current
-            .object_table
+        self.object_table
             .push(GraphicsObject::Region(record.region));
 
         Ok(self)
@@ -1685,9 +1696,7 @@ impl crate::wmf::converter::Player for SVGPlayer {
         record_number: usize,
         record: META_DELETEOBJECT,
     ) -> Result<Self, PlayError> {
-        self.context_current
-            .object_table
-            .delete(record.object_index as usize);
+        self.object_table.delete(record.object_index as usize);
 
         Ok(self)
     }
@@ -1702,8 +1711,7 @@ impl crate::wmf::converter::Player for SVGPlayer {
         record_number: usize,
         record: META_DIBCREATEPATTERNBRUSH,
     ) -> Result<Self, PlayError> {
-        self.context_current
-            .object_table
+        self.object_table
             .push(GraphicsObject::Brush(record.create_brush()));
 
         Ok(self)
@@ -1719,10 +1727,7 @@ impl crate::wmf::converter::Player for SVGPlayer {
         record_number: usize,
         record: META_SELECTCLIPREGION,
     ) -> Result<Self, PlayError> {
-        let object = self
-            .context_current
-            .object_table
-            .get(record.region as usize);
+        let object = self.object_table.get(record.region as usize);
 
         if let GraphicsObject::Region(region) = object {
             let rect = &region.bounding_rectangle;
@@ -1731,8 +1736,8 @@ impl crate::wmf::converter::Player for SVGPlayer {
             let rect_node = Node::new("rect")
                 .set("x", rect.left)
                 .set("y", rect.top)
-                .set("width", rect.right - rect.left)
-                .set("height", rect.bottom - rect.top);
+                .set("width", rect.right.saturating_sub(rect.left))
+                .set("height", rect.bottom.saturating_sub(rect.top));
             clip = clip.add(rect_node);
             self.definitions.push(clip);
             self.current_clip_id = Some(id);
@@ -1753,11 +1758,7 @@ impl crate::wmf::converter::Player for SVGPlayer {
         record_number: usize,
         record: META_SELECTOBJECT,
     ) -> Result<Self, PlayError> {
-        let object = self
-            .context_current
-            .object_table
-            .get(record.object_index as usize)
-            .clone();
+        let object = self.object_table.get(record.object_index as usize).clone();
         let selected = self.object_selected.clone();
 
         self.object_selected = match object {
@@ -1786,10 +1787,7 @@ impl crate::wmf::converter::Player for SVGPlayer {
         record_number: usize,
         record: META_SELECTPALETTE,
     ) -> Result<Self, PlayError> {
-        let object = self
-            .context_current
-            .object_table
-            .get(record.palette as usize);
+        let object = self.object_table.get(record.palette as usize);
 
         let GraphicsObject::Palette(palette) = object else {
             return Err(PlayError::UnexpectedGraphicsObject {
@@ -1986,7 +1984,9 @@ impl crate::wmf::converter::Player for SVGPlayer {
         record_number: usize,
         record: META_SAVEDC,
     ) -> Result<Self, PlayError> {
-        self.context_stack.push(self.context_current.clone());
+        if self.context_stack.len() < MAX_SAVED_DEVICE_CONTEXTS {
+            self.context_stack.push(self.context_current.clone());
+        }
 
         Ok(self)
     }

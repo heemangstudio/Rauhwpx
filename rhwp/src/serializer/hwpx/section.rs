@@ -912,25 +912,29 @@ fn write_section_inner(
     }
 
     // 추가 문단: `</hp:p></hs:sec>` 직전에 `<hp:p>` 요소를 삽입.
+    // 별도 버퍼 + format! + replacen 은 섹션 크기의 3배를 동시에 붙잡는다(wasm 선형
+    // 메모리는 줄지 않음). 템플릿 꼬리를 떼어 두고 out 에 직접 이어 쓴다.
     if section.paragraphs.len() > 1 {
-        let mut extra = BoundedXmlString::new(max_bytes);
-        for p in section.paragraphs.iter().skip(1) {
-            let remaining = max_bytes.saturating_sub(extra.len());
-            let (runs, linesegs, advance) =
-                render_paragraph_parts_limited(p, vert_cursor, ctx, remaining)?;
-            vert_cursor = advance;
-            let pid = ctx.next_para_id();
-            let sid = ctx.effective_style_id(p.style_id);
-            extra.push_str(&render_hp_p_open(p, pid, sid))?;
-            extra.push_str(&runs)?;
-            extra.push_str(&linesegs)?;
-            extra.push_str("</hp:p>")?;
+        if let Some(pos) = out.find(PARA_CLOSE) {
+            let tail = out.split_off(pos + PARA_CLOSE.len());
+            out.truncate(pos);
+            let mut body = BoundedXmlString::from_string(out, max_bytes)?;
+            body.push_str("</hp:p>")?;
+            for p in section.paragraphs.iter().skip(1) {
+                let (runs, linesegs, advance) =
+                    render_paragraph_parts_limited(p, vert_cursor, ctx, body.remaining())?;
+                vert_cursor = advance;
+                let pid = ctx.next_para_id();
+                let sid = ctx.effective_style_id(p.style_id);
+                body.push_str(&render_hp_p_open(p, pid, sid))?;
+                body.push_str(&runs)?;
+                body.push_str(&linesegs)?;
+                body.push_str("</hp:p>")?;
+            }
+            body.push_str("</hs:sec>")?;
+            body.push_str(&tail)?;
+            out = body.into_inner();
         }
-        out = out.replacen(
-            PARA_CLOSE,
-            &format!("</hp:p>{}</hs:sec>", extra.as_str()),
-            1,
-        );
     }
 
     if out.len() > max_bytes {
@@ -2135,8 +2139,7 @@ fn render_control_slot_inner(
                     let mut vert_cursor: u32 = 0;
                     for para in &f.memo_paragraphs {
                         ctx.para_shape_ids.reference(para.para_shape_id);
-                        let sid = ctx.effective_style_id(para.style_id);
-                        ctx.style_ids.reference(sid as u16);
+                        let sid = ctx.reference_style(para.style_id);
                         let (runs, linesegs, advance) =
                             render_paragraph_parts(para, vert_cursor, ctx)?;
                         vert_cursor = advance;

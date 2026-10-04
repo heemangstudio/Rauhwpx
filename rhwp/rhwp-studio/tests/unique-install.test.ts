@@ -486,7 +486,7 @@ test('the desktop shell pings only after a successful launch and never blocks st
   assert.match(desktopMain, /failedLaunches > 0 && sessions\.windows\(\)\.length === 0/);
   assert.match(
     desktopMain,
-    /resolveUniqueInstallSync\(\);\s*app\.quit\(\);\s*return;\s*\}\s*void finishUniqueInstallMetric\(\)/,
+    /resolveUniqueInstallSync\(\);\s*app\.quit\(\);\s*return;\s*\}[\s\S]{0,200}await Promise\.all\(\[hubStartup, cloudReady, staleCleanup\]\);\s*void finishUniqueInstallMetric\(\)/,
   );
   assert.match(desktopMain, /await uniqueInstallSync/);
   assert.match(desktopMain, /unique install ping failed/);

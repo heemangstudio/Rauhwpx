@@ -376,6 +376,7 @@ fn parse_hwp_with_cfb(
             format: crate::model::provenance::SourceFormat::Hwp5,
             hwp3_lineage: false,
             hwpx_lineage: is_hwpx_variant,
+            own_line_layout: false,
         },
     };
 
@@ -732,6 +733,7 @@ fn parse_hwp_with_lenient(lenient: cfb_reader::LenientCfbReader) -> Result<Docum
             format: crate::model::provenance::SourceFormat::Hwp5,
             hwp3_lineage: false,
             hwpx_lineage: false,
+            own_line_layout: false,
         },
     };
 

@@ -203,17 +203,6 @@ function familyLegend(family: ManualEditorFamily): string {
   }
 }
 
-function familyHint(family: ManualEditorFamily): string {
-  switch (family) {
-    case 'rich-text': return '주변 문단 구조를 유지하면서 글과 서식을 편집합니다.';
-    case 'table': return '셀, 수식, 크기, 병합 범위 또는 표 구조 작업을 편집합니다.';
-    case 'shape-chart': return '크기, 위치, 모양, 축, 계열 또는 개체 속성을 편집합니다.';
-    case 'image': return '이미지 속성과 배치를 편집하거나 한쪽 이미지를 선택하거나 새 이미지를 올립니다.';
-    case 'document-properties': return '구역, 스타일, 번호, 필드, 양식, 책갈피 또는 리소스 속성을 편집합니다.';
-    default: return '원래 자료형을 유지하면서 값을 편집합니다.';
-  }
-}
-
 function excludedLeaf(family: ManualEditorFamily, leaf: EditableLeaf): boolean {
   const key = keyAt(leaf.path);
   if (family === 'image' && /bytesbase64|bytes|data/.test(key)) return true;
@@ -248,10 +237,6 @@ export function buildManualConflictEditor(options: ManualConflictEditorOptions):
   const family = manualEditorFamily(conflict.kind);
   const section = node('section', `merge-manual-editor merge-manual-family-${family}`);
   section.dataset.editorFamily = family;
-  section.append(
-    node('h3', '', familyLegend(family)),
-    node('p', 'merge-manual-hint', familyHint(family)),
-  );
 
   const error = node('p', 'merge-manual-error');
   error.setAttribute('role', 'alert');
@@ -322,6 +307,7 @@ export function buildManualConflictEditor(options: ManualConflictEditorOptions):
 
   const fieldset = node('fieldset', 'merge-structured-fields');
   const legend = document.createElement('legend');
+  legend.className = 'merge-visually-hidden';
   legend.textContent = familyLegend(family);
   fieldset.appendChild(legend);
   const tableLeaves = family === 'table'
@@ -371,7 +357,7 @@ export function buildManualConflictEditor(options: ManualConflictEditorOptions):
     fieldset.appendChild(label);
   }
   if (leaves.length === 0) {
-    fieldset.appendChild(node('p', 'merge-manual-hint', '직접 편집할 수 있는 속성이 없습니다. 현재 변경이나 가져올 변경을 선택하세요.'));
+    fieldset.appendChild(node('p', 'merge-manual-hint', '편집할 속성이 없습니다.'));
   }
   if (collected.truncated) {
     fieldset.appendChild(node('p', 'merge-manual-hint', '속성이 많아 200개 이후 속성은 숨겼습니다.'));

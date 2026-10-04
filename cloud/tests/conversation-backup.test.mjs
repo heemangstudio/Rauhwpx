@@ -155,6 +155,22 @@ test('failed acknowledgments retain pending backup work and immutable resources 
   assert.equal(broker.uploads.filter((kind) => kind === 'conversation-resource').length, 2);
 });
 
+test('a session that cannot be backed up does not starve the pending sessions after it', async (t) => {
+  const broker = durableBroker();
+  const first = await fixture(t, broker.lease);
+  const created = await first.create();
+  const document = await first.upload(Buffer.from('document without a Cloud start identity'), 'document');
+  first.sessionStore.createSession(first.device, parseSessionCreate({ sessionId: 'session-0', provider: 'codex',
+    goal: 'No identity', originDocument: { ...document, name: 'document.hwpx' } }));
+  first.command('session.activate', { expectedVersion: created.stateVersion });
+  const pending = () => first.database.prepare('SELECT session_id FROM conversation_backup_pending ORDER BY session_id')
+    .all().map((row) => row.session_id);
+  assert.deepEqual(pending(), ['session-0', 'session-1']);
+  await assert.rejects(first.backup.flush(), { code: 'CLOUD_START_IDENTITY_REQUIRED' });
+  assert.deepEqual(pending(), ['session-0']);
+  assert.equal((await broker.lease.downloadConversation('session-1')).record.state, 'queued');
+});
+
 test('purging a saved conversation publishes a tombstone that blocks replacement restore', async (t) => {
   const broker = durableBroker();
   const first = await fixture(t, broker.lease);

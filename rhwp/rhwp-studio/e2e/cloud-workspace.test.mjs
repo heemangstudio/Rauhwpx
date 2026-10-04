@@ -549,13 +549,16 @@ try {
   assert.equal(await page.$eval('.ag-cloud-merge-button', (button) => button.disabled), false,
     'the merge button unlocks when Cloud session binding finishes');
   await page.click('.ag-cloud-merge-button');
-  await page.waitForFunction(() => document.body.textContent.includes('Cloud 시작 대화를 불러온 뒤')).catch(async (error) => {
+  // Without a local start record the review offers a copy instead of merging.
+  await page.waitForFunction(() => document.querySelector('.ag-sheet-title')?.textContent === '사본으로 저장할까요?').catch(async (error) => {
     console.error('Cloud merge guard state:', await page.evaluate(() => ({
       messages: document.querySelector('.ag-messages')?.textContent,
       merge: [...document.querySelectorAll('.ag-cloud-merge-button')].map((button) => ({ hidden: button.hidden, disabled: button.disabled, visible: button.checkVisibility(), text: button.textContent })),
     })));
     throw error;
   });
+  await page.$eval('.ag-sheet-cancel', (button) => button.click());
+  await page.waitForSelector('.ag-sheet', { hidden: true });
   assert.equal(await page.evaluate(() => window.__cloudWorkspaceHarness.calls
     .filter((call) => call.method === 'cloudPublishCheckpoint').length), 0);
   assert.equal(await page.evaluate(() => window.__inputHandler.isReadOnly()), false);
@@ -610,7 +613,7 @@ try {
     && !document.querySelector('[aria-label="프로바이더 선택"]').disabled);
   await page.click('[aria-label="모델 선택"]');
   await page.$eval('.ag-llm-item[data-model="haiku"]', (node) => node.click());
-  await page.waitForFunction(() => document.querySelector('.ag-llm-name').textContent === 'Haiku'
+  await page.waitForFunction(() => document.querySelector('.ag-llm-name').textContent === 'Haiku 4.5'
     && !document.querySelector('[aria-label="모델 선택"]').disabled);
   await page.click('[aria-label="추론 강도 선택"]');
   await page.focus('.ag-eslider');
@@ -632,9 +635,11 @@ try {
   await page.evaluate(() => window.__cloudWorkspaceHarness.failNextConfiguration());
   await page.click('[aria-label="프로바이더 선택"]');
   await page.$eval('.ag-provider-item[data-agent="pi"]', (node) => node.click());
-  await page.waitForFunction(() => document.querySelector('.ag-messages').textContent.includes('Provider is not connected on Cloud'));
+  // 영어 진단 원문은 화면에 그대로 보이지 않고 한국어 문장으로 바뀐다(cloudErrorText).
+  await page.waitForFunction(() => document.querySelector('.ag-messages').textContent.includes('모델 설정을 바꾸지 못했습니다'));
+  assert.equal(await page.$eval('.ag-messages', (node) => node.textContent.includes('Provider is not connected on Cloud')), false);
   assert.equal(await page.$eval('.ag-root', (node) => node.dataset.agent), 'claude');
-  assert.equal(await page.$eval('.ag-llm-name', (node) => node.textContent), 'Haiku');
+  assert.equal(await page.$eval('.ag-llm-name', (node) => node.textContent), 'Haiku 4.5');
   assert.equal(await page.$eval('.ag-effort-name', (node) => node.textContent), 'Low');
   assert.equal(await page.$eval('[aria-label="프로바이더 선택"]', (node) => node.disabled), false);
   assert.equal(await page.$eval('.ag-input', (node) => node.value), 'Keep this unsent draft while changing providers.');
@@ -709,7 +714,7 @@ try {
     scrollLeft: scrollBeforeReturn,
     scrollTop: 91,
     draft: 'Keep cloud draft while editing locally.',
-    placeholder: '다음 Cloud 턴에 전달할 메시지',
+    placeholder: 'Cloud에 보낼 메시지',
     targetMessage: '',
     targetMessageHidden: true,
     commandCount: 5,
@@ -1072,7 +1077,7 @@ try {
     bridge.workflow = 'direct';
     bridge.phase = 'direct';
     bridge.handleAgentEvent({ type: 'turn-start', agent: 'codex', turnId: 'alongside-test' });
-    const structure = await bridge.executor.execute('get_structure', {}, 'codex');
+    const structure = await bridge.executor.execute('get_structure', { format: 'json' }, 'codex');
     return { revision: structure.revision, lease: bridge.getEditingLease(),
       inputLocked: window.__inputHandler.isUserEditingLocked() };
   });
@@ -1095,7 +1100,7 @@ try {
     const readText = () => Array.from({ length: wasm.getSectionCount() }, (_, sectionIdx) =>
       Array.from({ length: wasm.getParagraphCount(sectionIdx) }, (_, paraIdx) =>
         wasm.getTextRange(sectionIdx, paraIdx, 0, 100000)).join('\n')).join('\n');
-    const afterUser = await bridge.executor.execute('get_structure', {}, 'codex');
+    const afterUser = await bridge.executor.execute('get_structure', { format: 'json' }, 'codex');
     let staleCode = null;
     try {
       await bridge.executor.execute('insert_text', { expectedRevision: revision,
@@ -1140,8 +1145,8 @@ try {
   }
   assert.ok(alongsideResult.exportSize > 0);
   assert.equal(alongsideResult.lease.active, false);
-  // Failed and interrupted turns roll back only their own staged insertion.
-  // Cover native edits both before and after that insertion.
+  // 실패·중단된 턴의 편집은 바로 버리지 않고 중단 표시와 함께 검토로 남긴다(#373).
+  // 검토에서 거절하면 그 턴의 삽입만 되돌아가고, 앞뒤의 사용자 편집은 남는다.
   for (const [userFirst, stopReason] of [[true, 'error'], [false, 'cancelled']]) {
     const suffix = userFirst ? 'BEFORE' : 'AFTER';
     const userMarker = `사용자 유지 PR188_ROLLBACK_USER_${suffix}`;
@@ -1164,7 +1169,7 @@ try {
     if (userFirst) await userInput();
     await workerPage.evaluate(async (marker) => {
       const executor = window.__agentBridge.executor;
-      const structure = await executor.execute('get_structure', {}, 'codex');
+      const structure = await executor.execute('get_structure', { format: 'json' }, 'codex');
       const section = structure.sections.at(-1);
       const paraIdx = section.paragraphCount - 1;
       await executor.execute('insert_text', { expectedRevision: structure.revision,
@@ -1172,17 +1177,24 @@ try {
         charOffset: section.paragraphs[paraIdx]?.length ?? 0, text: `\n${marker}` }, 'codex');
     }, agentMarker);
     if (!userFirst) await userInput();
-    const rolledBack = await workerPage.evaluate(({ turnId, stopReason }) => {
-      window.__agentBridge.handleAgentEvent({ type: 'turn-end', agent: 'codex', turnId, stopReason });
+    const { held, rolledBack } = await workerPage.evaluate(({ turnId, stopReason }) => {
+      const bridge = window.__agentBridge;
       const wasm = window.__wasm;
-      return Array.from({ length: wasm.getSectionCount() }, (_, sectionIdx) =>
+      const readText = () => Array.from({ length: wasm.getSectionCount() }, (_, sectionIdx) =>
         Array.from({ length: wasm.getParagraphCount(sectionIdx) }, (_, paraIdx) =>
           wasm.getTextRange(sectionIdx, paraIdx, 0, 100000)).join('\n')).join('\n');
+      bridge.handleAgentEvent({ type: 'turn-end', agent: 'codex', turnId, stopReason });
+      const stopped = bridge.pendingEdits.getChangeSets().filter((set) => set.turnStopped && set.ops.length > 0);
+      const held = { text: readText(), stoppedSets: stopped.length };
+      for (const set of stopped) bridge.pendingEdits.reject(set.id);
+      return { held, rolledBack: readText() };
     }, { turnId: `rollback-${suffix}`, stopReason });
+    assert.equal(held.stoppedSets, 1, 'failed/interrupted turn is held for review as stopped');
+    assert.equal(held.text.split(agentMarker).length - 1, 1, 'held agent insertion stays until review');
     for (const marker of ['함께 편집 PR188_ALONGSIDE_USER', 'PR188_ALONGSIDE_AGENT', userMarker]) {
       assert.equal(rolledBack.split(marker).length - 1, 1, `rollback preserves ${marker}`);
     }
-    assert.equal(rolledBack.includes(agentMarker), false, 'failed/interrupted agent insertion is removed');
+    assert.equal(rolledBack.includes(agentMarker), false, 'rejected failed/interrupted agent insertion is removed');
   }
   assert.equal(await page.evaluate(() => Array.from(window.__wasm.exportHwp()).join(',')), localBeforeWorker,
     'concurrent edits stay in the worker document and leave the original local document unchanged');

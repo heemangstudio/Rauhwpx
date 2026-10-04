@@ -9,6 +9,7 @@ import { runSession } from '../document-runtime/run.mjs';
 import { createSessionDisplayMode } from '../document-runtime/session-display.mjs';
 import {
   chromiumLaunchOptions,
+  isProviderAuthFailure,
   launchChromium,
   safeHubBaseEnvironment,
   uploadRequiredReferences,
@@ -20,6 +21,31 @@ import {
   TIMELINE_VERSION,
   TimelineRecorder,
 } from '../document-runtime/timeline.mjs';
+
+test('provider auth failures are recognized from real CLI texts without matching generic 401s', () => {
+  for (const text of [
+    'Invalid API key · Please run /login',
+    'API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"OAuth token has expired."}}',
+    'OAuth token revoked · Please run /login',
+    'Not logged in · Please run /login',
+    'unexpected status 401 Unauthorized: Your access token could not be refreshed. Please log in again.',
+    'Your refresh token has expired. Please log out and sign in again.',
+    '{"error":{"code":"refresh_token_expired"}}',
+    'invalid_grant',
+    'No API key found for openrouter.',
+    '401 No auth credentials found',
+    'Unauthorized',
+  ]) assert.equal(isProviderAuthFailure(text), true, text);
+  for (const text of [
+    'Revenue grew 401 percent in the second quarter',
+    'Section 401(k) plans were summarized',
+    'Unauthorized copies of this document are prohibited',
+    'invalid hub token',
+    'Provider stopped with max_tokens',
+    '',
+    undefined,
+  ]) assert.equal(isProviderAuthFailure(text), false, String(text));
+});
 
 function portableTimeline(provider = 'codex') {
   return {

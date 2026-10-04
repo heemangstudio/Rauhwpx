@@ -197,6 +197,13 @@ pub struct DocInfo {
     /// splice 해 무손실을 보장한다(content.hpf metadata 보존과 동일 전략).
     /// 원본 HWPX가 없으면(HWP5 경로 등) None → serializer가 하드코딩 폴백.
     pub hwpx_head_tail: Option<String>,
+    /// HWPX `<hh:compatibleDocument targetProgram>` parsed from the source.
+    /// The raw head tail above remains authoritative for lossless roundtrips.
+    pub hwpx_target_program: Option<String>,
+    /// HWPX 호환성: 줄 끝 금칙 문자의 폭을 가운데/오른쪽 정렬에서 제외한다.
+    pub do_not_align_last_forbidden: bool,
+    /// HWPX 호환성: 고정 줄 간격의 80% 지점에 기준선을 배치한다.
+    pub adjust_baseline_in_fixed_line_spacing: bool,
     /// HWPX `<hh:head version="X.Y">` 의 HWPML 스키마 버전. 문서별로 다르므로
     /// (1.2~1.5 등) 원본 값을 보존해 직렬화 때 그대로 재방출한다.
     /// 원본 HWPX가 없으면 None → serializer가 "1.2" 폴백.
@@ -288,6 +295,33 @@ impl Document {
             .map(|(_, d)| d.as_slice())
     }
 
+    /// HWPX `settings.xml` 의 `PrintInfo/PrintCropMark` 여부.
+    ///
+    /// 한컴은 이 설정이 1인 문서를 출력/PDF보낼 때 종이 네 모서리에
+    /// 1cm 재단 표시(모서리 십자)를 그린다. 항목이 없으면 미적용으로 본다.
+    pub fn print_crop_marks(&self) -> bool {
+        let Some(bytes) = self.hwpx_aux_entry("settings.xml") else {
+            return false;
+        };
+        let Ok(xml) = std::str::from_utf8(bytes) else {
+            return false;
+        };
+        let Some(key) = xml.find("name=\"PrintCropMark\"") else {
+            return false;
+        };
+        let Some(open_end) = xml[key..].find('>').map(|i| key + i + 1) else {
+            return false;
+        };
+        let Some(close) = xml[open_end..].find('<').map(|i| open_end + i) else {
+            return false;
+        };
+        xml[open_end..close]
+            .trim()
+            .parse::<i64>()
+            .map(|v| v != 0)
+            .unwrap_or(false)
+    }
+
     /// [#2403 Stage 1] 레이아웃 호환 정책 질의 표면.
     ///
     /// 기존 분기의 1:1 파생 — `hwp3_layout` = `is_hwp3_variant`,
@@ -307,6 +341,24 @@ impl Document {
             self.provenance.format == SourceFormat::Hwp5
                 && !self.provenance.hwp3_lineage
                 && !self.provenance.hwpx_lineage,
+        )
+        .with_do_not_align_last_forbidden(self.doc_info.do_not_align_last_forbidden)
+        .with_hwpx_container(self.provenance.format == SourceFormat::Hwpx)
+        .with_own_line_layout(self.provenance.own_line_layout)
+        .with_adjust_baseline_in_fixed_line_spacing(
+            self.doc_info.adjust_baseline_in_fixed_line_spacing,
+        )
+        .with_ms_word_compatible_layout(
+            self.provenance.format == SourceFormat::Hwpx
+                && !hwp5_origin_hwpx
+                && self
+                    .doc_info
+                    .hwpx_target_program
+                    .as_deref()
+                    .is_some_and(|program| program.eq_ignore_ascii_case("MS_WORD")),
+        )
+        .with_native_hwpx_cell_margin(
+            self.provenance.format == SourceFormat::Hwpx && !hwp5_origin_hwpx,
         )
         // native HWP5 는 로드 시 raw_stream 을 보유한 섹션을 raw_provenance 로
         // 봉인한다. 편집 명령은 raw_stream 만 None 으로 지우고 봉인은 남기므로,

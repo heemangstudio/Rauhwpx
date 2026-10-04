@@ -119,7 +119,7 @@ pub(crate) fn write_header_limited(
                 .map_err(|e| SerializeError::XmlError(format!("head tail splice: {e}")))?;
         }
         None => {
-            write_compatible_document(&mut w)?;
+            write_compatible_document(&mut w, &doc.doc_info)?;
             write_doc_option(&mut w)?;
             write_track_change_config(&mut w)?;
         }
@@ -1111,7 +1111,7 @@ fn write_para_pr<W: Write>(
     // keepWithNext, keepLines, pageBreakBefore} 를 상수로 하드코딩해, 파서가
     // attr1/attr2 비트로 보존한 값을 직렬화에서 모두 잃었다(예: vertical=CENTER →
     // BASELINE, breakNonLatinWord=BREAK_WORD → KEEP_WORD). 이제 보존 비트에서
-    // 역매핑한다. (breakLatinWord/lineWrap 은 파서가 아직 미수집 → 상수 유지.)
+    // 역매핑한다. breakLatinWord 는 원문 문자열을 보존한다.
     let vertical = vertical_alignment_str((ps.attr1 >> 20) & 0x03);
     // attr1 bit7: KEEP_WORD=1, BREAK_WORD=0 (parse_para_shape_child 와 정합).
     let break_non_latin = if (ps.attr1 >> 7) & 1 == 1 {
@@ -1119,9 +1119,22 @@ fn write_para_pr<W: Write>(
     } else {
         "BREAK_WORD"
     };
-    // [#1986] breakLatinWord 는 IR 원문 보존값(없으면 KEEP_WORD 기본).
-    let break_latin = ps.break_latin_word.as_deref().unwrap_or("KEEP_WORD");
-    let widow_orphan = ((ps.attr2 >> 5) & 1).to_string();
+    // HWPX 원문을 보존하고, HWP5 등 원문이 없는 입력은 영어 단위 비트로 복원한다.
+    let break_latin = ps
+        .break_latin_word
+        .as_deref()
+        .unwrap_or(match (ps.attr1 >> 5) & 0x03 {
+            1 => "HYPHENATION",
+            2 => "BREAK_WORD",
+            _ => "KEEP_WORD",
+        });
+    let line_wrap = match ps.attr2 & 0x03 {
+        1 => "SQUEEZE",
+        2 => "KEEP",
+        _ => "BREAK",
+    };
+    // widowOrphan 은 HWP5 와 같은 attr1 bit 16 (attr2 bit 5 는 autoSpacing eAsianNum).
+    let widow_orphan = ((ps.attr1 >> 16) & 1).to_string();
     let keep_with_next = ((ps.attr2 >> 6) & 1).to_string();
     let keep_lines = ((ps.attr2 >> 7) & 1).to_string();
     let page_break_before = ((ps.attr2 >> 8) & 1).to_string();
@@ -1152,14 +1165,23 @@ fn write_para_pr<W: Write>(
             ("keepWithNext", &keep_with_next),
             ("keepLines", &keep_lines),
             ("pageBreakBefore", &page_break_before),
-            ("lineWrap", "BREAK"),
+            ("lineWrap", line_wrap),
         ],
     )?;
 
     empty_tag(
         w,
         "hh:autoSpacing",
-        &[("eAsianEng", "0"), ("eAsianNum", "0")],
+        &[
+            (
+                "eAsianEng",
+                if (ps.attr2 >> 4) & 1 != 0 { "1" } else { "0" },
+            ),
+            (
+                "eAsianNum",
+                if (ps.attr2 >> 5) & 1 != 0 { "1" } else { "0" },
+            ),
+        ],
     )?;
 
     // margin + lineSpacing 은 한컴 원본과 동일하게 <hp:switch>(case/default)로 감싼다.
@@ -1380,14 +1402,30 @@ fn write_style<W: Write>(w: &mut Writer<W>, id: u16, st: &Style) -> Result<(), S
 // =====================================================================
 // <hh:compatibleDocument>, <hh:docOption>, <hh:trackchageConfig>
 // =====================================================================
-fn write_compatible_document<W: Write>(w: &mut Writer<W>) -> Result<(), SerializeError> {
-    start_tag_attrs(w, "hh:compatibleDocument", &[("targetProgram", "HWP201X")])?;
+fn write_compatible_document<W: Write>(
+    w: &mut Writer<W>,
+    doc_info: &DocInfo,
+) -> Result<(), SerializeError> {
+    start_tag_attrs(
+        w,
+        "hh:compatibleDocument",
+        &[(
+            "targetProgram",
+            doc_info.hwpx_target_program.as_deref().unwrap_or("HWP201X"),
+        )],
+    )?;
     super::utils::start_tag(w, "hh:layoutCompatibility")?;
     empty_tag(w, "hh:char", &[])?;
     empty_tag(w, "hh:paragraph", &[])?;
     empty_tag(w, "hh:section", &[])?;
     empty_tag(w, "hh:object", &[])?;
     empty_tag(w, "hh:field", &[])?;
+    if doc_info.adjust_baseline_in_fixed_line_spacing {
+        empty_tag(w, "hh:adjustBaselineInFixedLinespacing", &[])?;
+    }
+    if doc_info.do_not_align_last_forbidden {
+        empty_tag(w, "hh:doNotAlignLastForbidden", &[])?;
+    }
     end_tag(w, "hh:layoutCompatibility")?;
     end_tag(w, "hh:compatibleDocument")?;
     Ok(())
@@ -1605,6 +1643,26 @@ mod tests {
             "원본 부재 시 하드코딩 폴백: {xml}"
         );
         assert!(xml.contains(r#"<hh:trackchageConfig flags="0"/>"#));
+    }
+
+    #[test]
+    fn fallback_header_preserves_layout_compatibility_flags() {
+        let bytes = include_bytes!("../../../samples/hwpx/ref/ref_empty.hwpx");
+        let mut doc = parse_hwpx(bytes).expect("parse");
+        doc.doc_info.hwpx_head_tail = None;
+        doc.doc_info.adjust_baseline_in_fixed_line_spacing = true;
+        doc.doc_info.do_not_align_last_forbidden = true;
+        doc.doc_info.hwpx_target_program = Some("MS_WORD".to_string());
+
+        let generated = super::super::serialize_hwpx(&doc).expect("serialize");
+        let reparsed = parse_hwpx(&generated).expect("reparse");
+        assert!(reparsed.doc_info.adjust_baseline_in_fixed_line_spacing);
+        assert!(reparsed.doc_info.do_not_align_last_forbidden);
+        assert_eq!(
+            reparsed.doc_info.hwpx_target_program.as_deref(),
+            Some("MS_WORD")
+        );
+        assert!(reparsed.layout_profile().ms_word_compatible_layout());
     }
 
     #[test]
@@ -2041,8 +2099,8 @@ mod tests {
         ps.break_latin_word = Some("HYPHENATION".to_string());
         ps.attr1 = (2 << 20) // vertical = CENTER
             & !(1 << 7); // breakNonLatinWord = BREAK_WORD (bit7=0)
-        ps.attr2 = (1 << 5) // widowOrphan = 1
-            | (1 << 8); // pageBreakBefore = 1
+        ps.attr1 |= 1 << 16; // widowOrphan = 1
+        ps.attr2 = 1 << 8; // pageBreakBefore = 1
 
         let mut writer = Writer::new(Vec::new());
         write_para_pr(&mut writer, 1, &ps).expect("write paraPr");
@@ -2064,6 +2122,26 @@ mod tests {
             xml.contains(r#"widowOrphan="1" keepWithNext="0" keepLines="0" pageBreakBefore="1""#),
             "widowOrphan/pageBreakBefore 보존 비트 역매핑: {xml}"
         );
+    }
+
+    #[test]
+    fn para_pr_line_wrap_roundtrips_all_modes() {
+        for (bits, name) in [(0, "BREAK"), (1, "SQUEEZE"), (2, "KEEP")] {
+            let ps = ParaShape {
+                attr2: (1 << 5) | bits,
+                ..ParaShape::default()
+            };
+            let mut writer = Writer::new(Vec::new());
+            write_para_pr(&mut writer, 0, &ps).unwrap();
+            let para_xml = String::from_utf8(writer.into_inner()).unwrap();
+            assert!(para_xml.contains(&format!("lineWrap=\"{name}\"")));
+            let xml = format!(
+                r#"<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head"><hh:refList><hh:paraProperties itemCnt="1">{para_xml}</hh:paraProperties></hh:refList></hh:head>"#
+            );
+            let (doc_info, _) = crate::parser::hwpx::header::parse_hwpx_header(&xml).unwrap();
+            assert_eq!(doc_info.para_shapes[0].attr2 & 0x03, bits);
+            assert_ne!(doc_info.para_shapes[0].attr2 & (1 << 5), 0);
+        }
     }
 
     #[test]

@@ -9,10 +9,16 @@ import type { DocumentFontStatusItem, DocumentFontStatusReport } from '@/core/do
 import { enableDialogDrag } from './dialog-drag';
 
 export type LocalFontsChoice = 'detect' | 'web-substitute' | 'cancel'
-  | { type: 'import'; files: File[] };
+  | { type: 'import'; files: File[] }
+  | { type: 'folder'; result: Promise<unknown> };
 
 export interface LocalFontsModalOptions {
   disableExternalWebFonts?: boolean;
+  /**
+   * 글꼴 폴더 연결. 폴더 선택 창은 클릭 처리 안에서 바로 열어야 하므로 모달이 직접 부른다.
+   * reconnect면 저장된 폴더의 권한만 다시 받고 이 버튼을 기본 버튼으로 둔다.
+   */
+  folder?: { reconnect: boolean; connect: () => Promise<unknown> } | null;
 }
 
 const STATUS_LABEL: Record<DocumentFontStatusItem['status'], string> = {
@@ -52,7 +58,9 @@ export class LocalFontsModal {
 
     const dialog = document.createElement('div');
     dialog.className = 'dialog-wrap';
-    dialog.style.width = '520px';
+    // 폴더 연결 버튼이 더해지면 버튼 네 개가 한 줄에 들어가도록 넓힌다.
+    dialog.style.width = this.options.folder ? '640px' : '520px';
+    dialog.style.maxWidth = 'calc(100vw - 32px)';
 
     const title = document.createElement('div');
     title.className = 'dialog-title';
@@ -128,7 +136,7 @@ export class LocalFontsModal {
     details.style.marginTop = '8px';
     const summaryEl = document.createElement('summary');
     summaryEl.textContent = '문서 글꼴 상태 보기';
-    summaryEl.style.cursor = 'pointer';
+    summaryEl.style.cursor = 'default';
     summaryEl.style.fontSize = '13px';
     summaryEl.style.color = 'var(--ui-link)';
     details.appendChild(summaryEl);
@@ -170,10 +178,23 @@ export class LocalFontsModal {
     const footer = document.createElement('div');
     footer.className = 'dialog-footer';
 
+    const folder = this.options.folder ?? null;
     const detectBtn = document.createElement('button');
-    detectBtn.className = 'dialog-btn dialog-btn-primary';
-    detectBtn.textContent = '로컬 글꼴 감지 (권장)';
+    detectBtn.className = folder?.reconnect ? 'dialog-btn' : 'dialog-btn dialog-btn-primary';
+    detectBtn.textContent = folder?.reconnect ? '로컬 글꼴 감지' : '로컬 글꼴 감지 (권장)';
     detectBtn.addEventListener('click', () => this.resolve('detect'));
+
+    let folderBtn: HTMLButtonElement | null = null;
+    if (folder) {
+      folderBtn = document.createElement('button');
+      folderBtn.className = folder.reconnect ? 'dialog-btn dialog-btn-primary' : 'dialog-btn';
+      folderBtn.textContent = folder.reconnect ? '글꼴 폴더 다시 연결' : '글꼴 폴더 연결';
+      folderBtn.title = '한컴 오피스 Shared 폴더나 글꼴 폴더';
+      folderBtn.addEventListener('click', () => {
+        const result = folder.connect();
+        this.resolve({ type: 'folder', result });
+      });
+    }
 
     const webBtn = document.createElement('button');
     webBtn.className = 'dialog-btn';
@@ -195,7 +216,9 @@ export class LocalFontsModal {
     importBtn.textContent = '글꼴 파일 가져오기 (이번 세션)';
     importBtn.addEventListener('click', () => importInput.click());
 
+    if (folderBtn && folder?.reconnect) footer.appendChild(folderBtn);
     footer.appendChild(detectBtn);
+    if (folderBtn && !folder?.reconnect) footer.appendChild(folderBtn);
     footer.appendChild(importBtn);
     footer.appendChild(webBtn);
     footer.appendChild(importInput);
@@ -215,7 +238,8 @@ export class LocalFontsModal {
       if (e.key === 'Enter') {
         e.stopPropagation();
         e.preventDefault();
-        this.resolve('detect');
+        // 기본 버튼을 누른 것과 같게 한다 (폴더 다시 연결은 클릭 처리 안에서 권한을 묻는다).
+        (this.overlay?.querySelector('.dialog-btn-primary') as HTMLButtonElement | null)?.click();
         return;
       }
       e.stopPropagation();

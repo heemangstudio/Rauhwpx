@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createSessionDisplayMode } from './session-display.mjs';
-import { createStudioHarness } from './studio-harness.mjs';
+import { createStudioHarness, isProviderAuthFailure, PROVIDER_AUTH_EXPIRED_MESSAGE } from './studio-harness.mjs';
 import { composeTurnPrompt, readTimeline, TimelineRecorder } from './timeline.mjs';
 
 const MAX_TIMELINE_BYTES = 100 * 1024 * 1024;
@@ -644,6 +644,9 @@ export async function runSession({
         const redirected = outcome?.redirected === true;
         if (outcome?.errorMessage
           || (!stopped && !redirected && !['end_turn', 'completed', 'success'].includes(outcome?.stopReason))) {
+          if (isProviderAuthFailure(outcome?.errorMessage)) {
+            throw runtimeError('PROVIDER_AUTH_EXPIRED', PROVIDER_AUTH_EXPIRED_MESSAGE);
+          }
           throw runtimeError('PROVIDER_TURN_FAILED', outcome?.errorMessage || `Provider stopped with ${outcome?.stopReason ?? 'unknown reason'}`);
         }
         if (stopped && typeof client.control === 'function') {

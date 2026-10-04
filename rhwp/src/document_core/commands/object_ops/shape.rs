@@ -483,12 +483,7 @@ impl DocumentCore {
 
             // 채우기 (단색)
             if let Some(v) = json_str(props_json, "fillType") {
-                d.fill.fill_type = match v.as_str() {
-                    "solid" => crate::model::style::FillType::Solid,
-                    "gradient" => crate::model::style::FillType::Gradient,
-                    "image" => crate::model::style::FillType::Image,
-                    _ => crate::model::style::FillType::None,
-                };
+                Self::apply_shape_fill_type(&mut d.fill, &v);
             }
             if let Some(v) = json_i32(props_json, "fillBgColor") {
                 let solid = d.fill.solid.get_or_insert_with(|| {
@@ -755,6 +750,22 @@ impl DocumentCore {
             common_json, tb_json, extra_json, round_json, connector_json, caption_json
         ))
     }
+    /// 도형 fillType 적용. "none" 은 남은 단색·그러데이션 값까지 지운다 — 렌더러는 solid 가
+    /// 있으면 fill_type 과 무관하게 배경을 칠하고, HWPX 저장도 그 solid 를 winBrush 로
+    /// 내보내므로 종류만 바꾸면 채우기 없음이 흰 면으로 남는다.
+    fn apply_shape_fill_type(fill: &mut crate::model::style::Fill, value: &str) {
+        use crate::model::style::FillType;
+        fill.fill_type = match value {
+            "solid" => FillType::Solid,
+            "gradient" => FillType::Gradient,
+            "image" => FillType::Image,
+            _ => FillType::None,
+        };
+        if fill.fill_type == FillType::None {
+            fill.solid = None;
+            fill.gradient = None;
+        }
+    }
     /// [Task #1138] Shape 속성 JSON 적용 (mutation only). 후처리 (recompose /
     /// paginate / cache invalidate / event log) 는 호출자 책임.
     /// set_shape_properties_native + set_cell_shape_properties_by_path_native 공유.
@@ -837,12 +848,7 @@ impl DocumentCore {
                 d.border_line.attr = attr;
             }
             if let Some(v) = json_str(props_json, "fillType") {
-                d.fill.fill_type = match v.as_str() {
-                    "solid" => crate::model::style::FillType::Solid,
-                    "gradient" => crate::model::style::FillType::Gradient,
-                    "image" => crate::model::style::FillType::Image,
-                    _ => crate::model::style::FillType::None,
-                };
+                Self::apply_shape_fill_type(&mut d.fill, &v);
             }
             if let Some(v) = json_i32(props_json, "fillBgColor") {
                 let solid = d
@@ -1002,60 +1008,8 @@ impl DocumentCore {
             ));
         }
 
-        // char_offsets 조정 (delete_picture_control_native와 동일)
-        let text_chars: Vec<char> = para.text.chars().collect();
-        let mut ci = 0usize;
-        let mut prev_end: u32 = 0;
-        let mut gap_start: Option<u32> = None;
-        'outer: for i in 0..text_chars.len() {
-            let offset = if i < para.char_offsets.len() {
-                para.char_offsets[i]
-            } else {
-                prev_end
-            };
-            while prev_end + 8 <= offset && ci < para.controls.len() {
-                if ci == control_idx {
-                    gap_start = Some(prev_end);
-                    break 'outer;
-                }
-                ci += 1;
-                prev_end += 8;
-            }
-            let char_size: u32 = if text_chars[i] == '\t' {
-                8
-            } else if text_chars[i].len_utf16() == 2 {
-                2
-            } else {
-                1
-            };
-            prev_end = offset + char_size;
-        }
-        if gap_start.is_none() {
-            while ci < para.controls.len() {
-                if ci == control_idx {
-                    gap_start = Some(prev_end);
-                    break;
-                }
-                ci += 1;
-                prev_end += 8;
-            }
-        }
-        if let Some(gs) = gap_start {
-            let threshold = gs + 8;
-            for offset in para.char_offsets.iter_mut() {
-                if *offset >= threshold {
-                    *offset -= 8;
-                }
-            }
-        }
-
-        para.controls.remove(control_idx);
-        if control_idx < para.ctrl_data_records.len() {
-            para.ctrl_data_records.remove(control_idx);
-        }
-        if para.char_count >= 8 {
-            para.char_count -= 8;
-        }
+        // 그림 삭제와 같은 갭 제거 — char_offsets·글자 모양·영역 태그·필드 참조를 함께 당긴다.
+        Self::remove_inline_control_with_metadata(para, control_idx);
 
         // line_segs 재계산: 도형 높이가 반영된 line_segs를 텍스트 기반으로 리셋
         Self::reflow_paragraph_line_segs_after_control_delete(para, &self.styles, self.dpi);
@@ -1494,10 +1448,11 @@ impl DocumentCore {
             };
 
             // 컨트롤 추가
-            paragraph
-                .controls
-                .insert(insert_idx, Control::Shape(Box::new(shape_obj)));
-            paragraph.ctrl_data_records.insert(insert_idx, None);
+            Self::insert_control_with_data_slot(
+                paragraph,
+                insert_idx,
+                Control::Shape(Box::new(shape_obj)),
+            );
 
             // char_offsets: 컨트롤은 텍스트축 배열에 원소로 들어가지 않고 "8 code unit 갭"으로
             // 표현된다. insert_idx 는 controls 축 인덱스이므로, 이를 char_offsets(텍스트축,
@@ -2121,10 +2076,11 @@ impl DocumentCore {
             let text_len = para.text.chars().count();
             let safe_offset = text_positions.get(ctrl_insert).copied().unwrap_or(text_len);
 
-            para.controls
-                .insert(ctrl_insert, Control::Shape(Box::new(group_obj)));
-            let cdr_insert = ctrl_insert.min(para.ctrl_data_records.len());
-            para.ctrl_data_records.insert(cdr_insert, None);
+            Self::insert_control_with_data_slot(
+                para,
+                ctrl_insert,
+                Control::Shape(Box::new(group_obj)),
+            );
 
             // char_offsets: 텍스트 문자 매핑이므로 컨트롤 인덱스와 무관 — 삽입 지점(safe_offset)
             // 이후 char_offsets 만 +8 시프트한다.
@@ -2310,9 +2266,7 @@ impl DocumentCore {
             }
 
             // 문단에 삽입
-            para.controls
-                .insert(insert_idx, Control::Shape(Box::new(child)));
-            para.ctrl_data_records.insert(insert_idx, None);
+            Self::insert_control_with_data_slot(para, insert_idx, Control::Shape(Box::new(child)));
             para.char_count += 8;
             para.control_mask |= 0x00000800;
             para.has_para_text = true;
@@ -2428,13 +2382,16 @@ impl DocumentCore {
             }
         }
     }
+    /// 문단들(표 셀·글상자 안 포함)의 미주 번호와 모양을 차례로 다시 매긴다.
+    /// 반환값은 고친 미주 수다.
     pub(crate) fn renumber_paragraph_endnotes_with_shape(
         paragraphs: &mut [crate::model::paragraph::Paragraph],
         next_number: &mut u16,
         number_format_code: u8,
         prefix_char: char,
         suffix_char: char,
-    ) {
+    ) -> usize {
+        let mut renumbered = 0;
         for para in paragraphs {
             for ctrl in &mut para.controls {
                 match ctrl {
@@ -2447,10 +2404,11 @@ impl DocumentCore {
                             suffix_char,
                         );
                         *next_number = next_number.saturating_add(1);
+                        renumbered += 1;
                     }
                     Control::Table(table) => {
                         for cell in &mut table.cells {
-                            Self::renumber_paragraph_endnotes_with_shape(
+                            renumbered += Self::renumber_paragraph_endnotes_with_shape(
                                 &mut cell.paragraphs,
                                 next_number,
                                 number_format_code,
@@ -2463,7 +2421,7 @@ impl DocumentCore {
                         if let Some(text_box) =
                             shape.drawing_mut().and_then(|d| d.text_box.as_mut())
                         {
-                            Self::renumber_paragraph_endnotes_with_shape(
+                            renumbered += Self::renumber_paragraph_endnotes_with_shape(
                                 &mut text_box.paragraphs,
                                 next_number,
                                 number_format_code,
@@ -2476,6 +2434,35 @@ impl DocumentCore {
                 }
             }
         }
+        renumbered
+    }
+
+    /// 구역의 미주를 처음부터 다시 매기고, 미주를 품은 최상위 문단 인덱스를 돌려준다.
+    ///
+    /// 미주 번호는 다른 문단에 있어도 바뀐다. 호출자는 돌려받은 문단의 revision 을 올려야
+    /// 스냅샷 복원(undo·에이전트 롤백)이 옛 번호로 되돌린다.
+    pub(crate) fn renumber_section_endnotes_with_shape(
+        paragraphs: &mut [crate::model::paragraph::Paragraph],
+        start_number: u16,
+        number_format_code: u8,
+        prefix_char: char,
+        suffix_char: char,
+    ) -> Vec<usize> {
+        let mut next_number = start_number;
+        let mut touched = Vec::new();
+        for (pi, para) in paragraphs.iter_mut().enumerate() {
+            let renumbered = Self::renumber_paragraph_endnotes_with_shape(
+                std::slice::from_mut(para),
+                &mut next_number,
+                number_format_code,
+                prefix_char,
+                suffix_char,
+            );
+            if renumbered > 0 {
+                touched.push(pi);
+            }
+        }
+        touched
     }
     /// 현재 구역의 미주 모양을 조회한다.
     pub fn get_endnote_shape_native(&self, section_idx: usize) -> Result<String, HwpError> {
@@ -2617,15 +2604,31 @@ impl DocumentCore {
         let number_format_code = Self::footnote_shape_number_format_code(shape.number_format);
         let prefix_char = shape.prefix_char;
         let suffix_char = shape.suffix_char;
-        let mut next_number = start_number;
-        Self::renumber_paragraph_endnotes_with_shape(
+        let renumbered_paras = Self::renumber_section_endnotes_with_shape(
             &mut section.paragraphs,
-            &mut next_number,
+            start_number,
             number_format_code,
             prefix_char,
             suffix_char,
         );
+        // HWP5 저장은 구역 첫 문단의 SectionDef 컨트롤에서 미주 모양 레코드를 쓴다. 쪽
+        // 설정 같은 다른 구역 설정처럼 그 컨트롤에도 반영해야 화면에만 보이고 저장에서
+        // 사라지는 일이 없다.
+        let updated_shape = section.section_def.endnote_shape.clone();
+        if let Some(para) = section.paragraphs.get_mut(0) {
+            for ctrl in &mut para.controls {
+                if let Control::SectionDef(ref mut sd) = ctrl {
+                    sd.endnote_shape = updated_shape.clone();
+                }
+            }
+        }
         section.raw_stream = None;
+        // 이벤트를 쌓지 않는 편집이라 SectionDef 문단과 번호가 바뀐 문단의 revision 을
+        // 직접 올린다.
+        self.event_log.mark_paragraph_changed(section_idx, 0);
+        for pi in renumbered_paras {
+            self.event_log.mark_paragraph_changed(section_idx, pi);
+        }
 
         self.recompose_section(section_idx);
         self.paginate_if_needed();

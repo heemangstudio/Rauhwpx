@@ -184,15 +184,11 @@ export class FormulaDialog extends ModalDialog {
     }
 
     try {
-      let colCount = 1;
-      try {
-        const props = this.wasm.getTableProperties(this.ctx.sec, this.ctx.ppi, this.ctx.ci);
-        colCount = props.colCount || props.cols || 1;
-      } catch {
-        colCount = Math.max(1, this.ctx.cellIndex + 1);
-      }
-      const row = Math.floor(this.ctx.cellIndex / colCount);
-      const col = this.ctx.cellIndex % colCount;
+      // 셀 목록은 병합 기준 셀만 담으므로 cellIndex 를 열 수로 나누면 병합 표에서 다른 칸이 된다.
+      // 엔진이 알려 주는 실제 행/열을 쓴다.
+      const cellInfo = this.wasm.getCellInfo(this.ctx.sec, this.ctx.ppi, this.ctx.ci, this.ctx.cellIndex);
+      const row = cellInfo.row;
+      const col = cellInfo.col;
 
       // 먼저 검증 (write_result=false)
       const validateResult = this.wasm.evaluateTableFormula(

@@ -399,6 +399,40 @@ test('the request deadline remains active while a real HTTP body is stalled', as
   assert.ok(Date.now() - started < 500, 'the short injected deadline should terminate the stalled body promptly');
 });
 
+test('a slow but steady result body outlives the header deadline and still verifies', async (t) => {
+  const bytes = Buffer.alloc(10 * 1024, 0x61);
+  const baseUrl = await startFaultServer(t, (_request, response) => {
+    response.writeHead(200, {
+      'content-length': bytes.length,
+      'content-type': 'application/octet-stream',
+      'x-content-sha256': sha256(bytes),
+      'x-document-name': 'large.hwpx',
+    });
+    response.flushHeaders();
+    let offset = 0;
+    const timer = setInterval(() => {
+      response.write(bytes.subarray(offset, offset + 1024));
+      offset += 1024;
+      if (offset >= bytes.length) {
+        clearInterval(timer);
+        response.end();
+      }
+    }, 20);
+    response.on('close', () => clearInterval(timer));
+  });
+  const client = new CloudClient({
+    vault: memoryVault(),
+    transport: localTransport(baseUrl),
+  });
+
+  const started = Date.now();
+  // Ten chunks 20 ms apart take about 200 ms, well past the 80 ms deadline, but no gap reaches it.
+  const result = await client.downloadResult('session-1234', { retryAttempts: 1, timeoutMs: 80 });
+  assert.ok(Date.now() - started >= 150, 'the body really arrived slower than the deadline');
+  assert.equal(result.sha256, sha256(bytes));
+  assert.equal(result.size, bytes.length);
+});
+
 test('a wrong-content-type event stream has a bounded body deadline', async (t) => {
   const baseUrl = await startFaultServer(t, (_request, response) => {
     response.writeHead(200, {
@@ -536,6 +570,27 @@ test('refresh rotation retries a lost response with the same refresh token', asy
   assert.equal((await client.profile()).ok, true);
   assert.equal(refreshBodies.length, 2);
   assert.deepEqual(refreshBodies[1], refreshBodies[0]);
+});
+
+test('a revoked refresh token is dropped and reported as an unpaired device', async () => {
+  const vault = memoryVault();
+  let refreshes = 0;
+  const client = new CloudClient({
+    vault,
+    fetchImpl: async (url) => {
+      if (url.endsWith('/v1/token/refresh')) {
+        refreshes += 1;
+        return jsonResponse({ error: { code: 'REFRESH_TOKEN_REUSED', message: 'revoked' } }, 401);
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    },
+  });
+
+  await assert.rejects(client.profile(), (error) => error.code === 'PAIRING_REQUIRED'
+    && error.details?.cause === 'REFRESH_TOKEN_REUSED' && error.retryable === false);
+  assert.equal(await client.isPaired(), false, 'the dead token no longer counts as paired');
+  await assert.rejects(client.profile(), (error) => error.code === 'PAIRING_REQUIRED');
+  assert.equal(refreshes, 1, 'the revoked token is never sent again');
 });
 
 test('a transport failure does not blindly replay session creation', async () => {

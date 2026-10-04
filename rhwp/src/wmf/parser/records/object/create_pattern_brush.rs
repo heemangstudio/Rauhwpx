@@ -68,7 +68,7 @@ impl META_CREATEPATTERNBRUSH {
         record_size.consume(bitmap16_bytes + ignored_bytes + reserved_bytes);
 
         let (pattern, pattern_bytes) =
-            crate::wmf::parser::read_variable(buf, bitmap16.calc_length())?;
+            crate::wmf::parser::read_variable(buf, bitmap16.calc_length()?)?;
         record_size.consume(pattern_bytes);
 
         crate::wmf::parser::records::consume_remaining_bytes(buf, record_size)?;

@@ -8,16 +8,26 @@ import {
 import { confirmSheet } from './sheet.ts';
 import {
   clearStoredLocalFonts,
-  detectLocalFonts,
   getImportedLocalFontCount,
   getLocalFonts,
   getLocalFontState,
   importLocalFontFiles,
-  isLocalFontAccessSupported,
   localFontImportMessage,
   loadStoredLocalFonts,
   type LocalFontState,
 } from '../../core/local-fonts.ts';
+import { isDesktopFontsSupported } from '../../core/desktop-fonts.ts';
+import { takeHftOutlineChange } from '../../core/hft-glyphs.ts';
+import { canDetectFonts, detectAllFonts, fontDetectionMessage } from '../../core/font-detection.ts';
+import {
+  chooseFontFolder,
+  disconnectFontFolder,
+  getFontFolderState,
+  isFontFolderSupported,
+  onFontFolderStateChange,
+  reconnectFontFolder,
+  type FontFolderState,
+} from '../../core/font-folder.ts';
 import type { EventBus } from '../../core/event-bus.ts';
 import { FontSetEditDialog } from '../font-set-edit-dialog.ts';
 import { createChevron } from '../chevron.ts';
@@ -106,11 +116,21 @@ function localFontStatus(state: LocalFontState): string {
   const session = imported > 0 ? ` · 이번 세션에 ${imported}개 가져옴` : '';
   if (state.lastError) return `저장소 접근 실패 · ${state.lastError}`;
   if (!state.stored) {
-    if (!state.supported) return `이 브라우저는 로컬 글꼴 감지 미지원${session}`;
+    if (!canDetectFonts()) return `이 브라우저는 로컬 글꼴 감지 미지원${session}`;
     return `저장된 감지 결과가 없습니다.${session}`;
   }
   const date = state.detectedAt ? new Date(state.detectedAt).toLocaleDateString('ko-KR') : '';
   return `${state.count.toLocaleString()}개 감지${date ? ` · ${date}` : ''}${session}`;
+}
+
+function fontFolderStatus(state: FontFolderState): string {
+  switch (state.status) {
+    case 'connecting': return `${state.name ?? ''} · 색인 중…`;
+    case 'connected': return `${state.name} · ${state.faces.toLocaleString()}개${state.persistent ? '' : ' · 이번 세션'}`;
+    case 'needs-permission': return `${state.name} · 다시 연결 필요`;
+    case 'error': return state.error ?? '연결하지 못했습니다.';
+    default: return '연결된 폴더 없음';
+  }
 }
 
 export interface EditingSettingsController {
@@ -246,7 +266,40 @@ export function createEditingSettings(options: {
   importInput.hidden = true;
   localActions.append(detectFonts, importFonts, clearFonts, importInput);
   localHeader.append(localCopy, localActions);
-  fonts.body.append(recentFonts.root, recentCount.root, fontSets, localHeader);
+
+  // 데스크톱 앱은 설치 글꼴 전체를 이미 색인하므로 폴더 연결을 보이지 않는다.
+  const folderHeader = el('div', 'ag-settings-resource-header');
+  folderHeader.hidden = isDesktopFontsSupported() || !isFontFolderSupported();
+  const folderCopy = el('div', 'ag-settings-control-copy');
+  const folderStatus = el('span', 'ag-settings-control-description');
+  folderCopy.append(el('span', 'ag-settings-control-label', '글꼴 폴더'), folderStatus);
+  const folderActions = el('div', 'ag-settings-actions');
+  const connectFolder = el('button', 'ag-settings-btn', '글꼴 폴더 연결');
+  connectFolder.type = 'button';
+  connectFolder.title = '한컴 오피스 Shared 폴더나 글꼴 폴더';
+  const disconnectFolder = el('button', 'ag-settings-btn', '연결 해제');
+  disconnectFolder.type = 'button';
+  folderActions.append(connectFolder, disconnectFolder);
+  folderHeader.append(folderCopy, folderActions);
+  fonts.body.append(recentFonts.root, recentCount.root, fontSets, localHeader, folderHeader);
+
+  const renderFontFolder = (message?: string): void => {
+    const state = getFontFolderState();
+    folderStatus.textContent = message ?? fontFolderStatus(state);
+    connectFolder.textContent = state.status === 'needs-permission' ? '다시 연결' : state.status === 'none' ? '글꼴 폴더 연결' : '다른 폴더';
+    connectFolder.disabled = state.status === 'connecting';
+    disconnectFolder.hidden = state.status === 'none';
+  };
+  const unsubscribeFolder = onFontFolderStateChange(() => renderFontFolder());
+  connectFolder.addEventListener('click', () => {
+    // 폴더 선택 창과 권한 요청은 클릭 처리 안에서 바로 열어야 한다.
+    const pending = getFontFolderState().status === 'needs-permission' ? reconnectFontFolder() : chooseFontFolder();
+    pending.catch((error: unknown) => renderFontFolder(error instanceof Error ? error.message : String(error)));
+  });
+  disconnectFolder.addEventListener('click', async () => {
+    if (!await confirmSheet(disconnectFolder, '글꼴 폴더 연결 해제', undefined, { confirmLabel: '해제', destructive: true })) return;
+    await disconnectFontFolder();
+  });
 
   const setFontSetsOpen = (open: boolean): void => {
     fontSetList.hidden = !open;
@@ -333,23 +386,23 @@ export function createEditingSettings(options: {
     const state = getLocalFontState();
     localStatus.textContent = message ?? localFontStatus(state);
     clearFonts.disabled = !state.stored;
-    detectFonts.disabled = !isLocalFontAccessSupported();
+    detectFonts.disabled = !canDetectFonts();
     detectFonts.textContent = state.stored ? '로컬 글꼴 재감지' : '로컬 글꼴 감지';
   };
   detectFonts.addEventListener('click', async () => {
+    // 설치 글꼴·데스크톱·허브·글꼴 폴더를 한 번에 돌린다. 권한 창 때문에 클릭 안에서 바로 시작한다.
+    const running = detectAllFonts();
     detectFonts.disabled = true;
     clearFonts.disabled = true;
     renderLocalFonts('감지 중…');
     detectFonts.disabled = true;
     clearFonts.disabled = true;
     try {
-      const detected = await detectLocalFonts({ force: true });
-      renderLocalFonts(`${detected.length.toLocaleString()}개 로컬 글꼴을 감지했습니다.`);
-      eventBus?.emit('local-fonts-changed', { fonts: detected, source: 'settings' });
+      renderLocalFonts(fontDetectionMessage(await running));
     } catch (error) {
       renderLocalFonts(error instanceof Error ? error.message : String(error));
     }
-    detectFonts.disabled = !isLocalFontAccessSupported();
+    detectFonts.disabled = !canDetectFonts();
   });
   importFonts.addEventListener('click', () => importInput.click());
   importInput.addEventListener('change', async () => {
@@ -361,11 +414,12 @@ export function createEditingSettings(options: {
     try {
       const result = await importLocalFontFiles(selected);
       renderLocalFonts(localFontImportMessage(result));
-      if (result.imported.length > 0) {
+      if (result.imported.length > 0 || (result.hftOutlines?.length ?? 0) > 0) {
         eventBus?.emit('local-fonts-changed', {
           fonts: getLocalFonts({ includeRegistered: true }), source: 'settings-import',
         });
         eventBus?.emit('font-files-imported');
+        if (eventBus) takeHftOutlineChange();
       }
     } catch (error) {
       renderLocalFonts(error instanceof Error ? error.message : String(error));
@@ -385,7 +439,7 @@ export function createEditingSettings(options: {
     } catch (error) {
       renderLocalFonts(error instanceof Error ? error.message : String(error));
     }
-    detectFonts.disabled = !isLocalFontAccessSupported();
+    detectFonts.disabled = !canDetectFonts();
   });
 
   const files = group('저장과 파일');
@@ -533,6 +587,7 @@ export function createEditingSettings(options: {
   });
 
   renderFontSets();
+  renderFontFolder();
   render();
   void loadStoredLocalFonts().then(
     () => renderLocalFonts(),
@@ -548,6 +603,7 @@ export function createEditingSettings(options: {
       }
       renderFontSets();
       renderLocalFonts();
+      renderFontFolder();
       render();
     },
     isDirty,
@@ -555,6 +611,7 @@ export function createEditingSettings(options: {
     cancel: cancelDraft,
     dispose(): void {
       unsubscribe();
+      unsubscribeFolder();
     },
   };
 }

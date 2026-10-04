@@ -1,4 +1,4 @@
-import type { AutosaveDraft } from './autosave-store.ts';
+import type { AutosaveDraftSummary } from './autosave-store.ts';
 
 function baseNameWithoutKnownExtension(fileName: string): string {
   const trimmed = fileName.trim() || '문서.hwp';
@@ -31,7 +31,7 @@ export function formatDraftSize(byteLength: number): string {
   return `${(kb / 1024).toFixed(1)} MB`;
 }
 
-export function describeDraft(draft: AutosaveDraft): string {
+export function describeDraft(draft: AutosaveDraftSummary): string {
   const format = draft.sourceFormat.toUpperCase();
   const suffix = ['hwpx', 'hml'].includes(draft.sourceFormat.toLowerCase()) ? ' → HWP 복구본' : '';
   return `${formatDraftSavedAt(draft.savedAt)} · ${formatDraftSize(draft.byteLength)} · ${format}${suffix}`;

@@ -1,16 +1,19 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 
 import { AuthService } from '../src/auth.mjs';
+import { parseConfig } from '../src/config.mjs';
 import { BlobStore } from '../src/blob-store.mjs';
 import { databasePragmas, openDatabase } from '../src/database.mjs';
 import { DisplayFrameStore } from '../src/display-frame-store.mjs';
 import { parseCommand, parseSessionCreate, parseUploadInit } from '../src/protocol.mjs';
+import { createCloudRuntime } from '../src/runtime.mjs';
 import { SessionStore } from '../src/session-store.mjs';
 import { runSession } from '../document-runtime/run.mjs';
 
@@ -48,7 +51,7 @@ test('database migrates with WAL, FULL sync, and foreign keys', async (t) => {
     journalMode: 'wal',
     synchronous: 2,
     foreignKeys: 1,
-    migrationVersion: 15,
+    migrationVersion: 17,
   });
 });
 
@@ -94,7 +97,7 @@ test('existing version-one state upgrades without losing resources or event sequ
 
   const upgraded = openDatabase(filename);
   t.after(() => upgraded.close());
-  assert.equal(databasePragmas(upgraded).migrationVersion, 15);
+  assert.equal(databasePragmas(upgraded).migrationVersion, 17);
   assert.equal(upgraded.prepare(`SELECT next_event_seq FROM sessions WHERE id = 'session'`).get().next_event_seq, 8);
   assert.equal(upgraded.prepare(`SELECT name FROM session_resources WHERE session_id = 'session'`).get().name, 'doc.hwp');
   assert.deepEqual(upgraded.prepare(`
@@ -112,6 +115,42 @@ test('existing version-one state upgrades without losing resources or event sequ
   assert.equal(upgraded.prepare(`SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'session_human_edits'`).get().count, 1);
   assert.equal(upgraded.prepare(`SELECT blob_sha256 FROM session_checkpoints WHERE operation_id = 'migration-handoff:session'`).get().blob_sha256, 'a'.repeat(64));
   assert.equal(upgraded.prepare(`SELECT ref_count FROM blobs WHERE sha256 = ?`).get('a'.repeat(64)).ref_count, 2);
+});
+
+test('runtime stop closes in-flight connections instead of waiting on them forever', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rauhwpx-cloud-stop-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const config = {
+    ...parseConfig({
+      RAUHWpx_DATA_DIR: root,
+      RAUHWpx_WORKER_CONTROL_MODE: 'http',
+      RAUHWpx_SANDBOX_PROVIDER: 'codex',
+      RAUHWpx_PROVIDER_CLI_DIR: path.join(root, 'provider-cli'),
+    }),
+    port: 0,
+  };
+  const runtime = createCloudRuntime(config, {
+    runner: { list: async () => [], stop: async () => {}, stopAll: async () => {} },
+    providerManager: { probeAll: async () => {}, authExpired: () => false },
+  });
+  await runtime.start();
+  // A request whose body never finishes stays active, like an open event stream.
+  const socket = net.connect(runtime.publicServer.address().port, '127.0.0.1');
+  t.after(() => socket.destroy());
+  await new Promise((resolve) => socket.once('connect', resolve));
+  socket.write([
+    'POST /rauhwpx-cloud/v1/pairing/bootstrap HTTP/1.1',
+    'Host: localhost',
+    `X-Rauhwpx-Request-Nonce: ${randomBytes(24).toString('base64url')}`,
+    'Content-Length: 1024',
+    '',
+    '{',
+  ].join('\r\n'));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const started = performance.now();
+  await runtime.stop();
+  assert.ok(performance.now() - started < 2_000, 'stop must not wait for the open request');
+  assert.equal(runtime.database.isOpen, false);
 });
 
 test('pairing is one-time and refresh reuse revokes the token family', async (t) => {
@@ -1067,6 +1106,65 @@ test('an idle persistent room sleeps thirty minutes after the last presence and 
   assert.ok(sessions.listEvents(input.sessionId, 0).some(({ type }) => type === 'conversation.waking'));
 });
 
+async function idleRoomFixture(t, sessionId) {
+  const clock = { now: 1_800_000_000_000 };
+  const state = await fixture(t, { now: () => clock.now });
+  const { blobs, auth, sessions } = state;
+  const origin = await pairedDevice(auth);
+  sessions.setProviderStatus('codex', { available: true, version: '1' });
+  const document = await upload(blobs, origin.device.id, Buffer.from(`${sessionId} document`));
+  const created = sessions.createSession(origin.device, parseSessionCreate({
+    sessionId, provider: 'codex', goal: 'Wait persistently', persistent: true,
+    clientContext: { threadId: `${sessionId}-thread`, documentId: `${sessionId}-document` },
+    originDocument: { blobId: document.id, name: 'idle.hwpx', size: document.size },
+  }));
+  sessions.executeCommand(origin.device, sessionId, parseCommand({
+    commandId: `activate_${sessionId}`, type: 'session.activate', payload: { expectedVersion: created.stateVersion },
+  }));
+  sessions.claimNextSession();
+  sessions.completeTurn(sessionId);
+  sessions.claimFinish(sessionId);
+  return { ...state, clock, origin };
+}
+
+test('presence from a connection that died without closing expires so the room can still sleep', async (t) => {
+  const sessionId = 'session_stale_presence';
+  const { sessions, database, clock, origin } = await idleRoomFixture(t, sessionId);
+  sessions.openPresence(sessionId, origin.device.id, 'live-connection');
+  sessions.openPresence(sessionId, origin.device.id, 'dead-connection');
+  for (let elapsed = 0; elapsed < 3 * 60_000; elapsed += 15_000) {
+    clock.now += 15_000;
+    sessions.touchPresence(sessionId, origin.device.id, 'live-connection');
+    assert.deepEqual(sessions.requestIdleSleeps(), []);
+  }
+  const connections = () => database.prepare('SELECT connection_id FROM session_presence WHERE session_id = ?')
+    .all(sessionId).map((row) => row.connection_id);
+  assert.deepEqual(connections(), ['live-connection'], 'keepalives hold a live stream; the dead one expires');
+  clock.now += 5 * 60_000;
+  sessions.requestIdleSleeps();
+  sessions.touchPresence(sessionId, origin.device.id, 'live-connection');
+  assert.deepEqual(connections(), ['live-connection'], 'a keepalive after a clock jump restores its row');
+  sessions.closePresence(sessionId, origin.device.id, 'live-connection');
+  clock.now += 31 * 60_000;
+  assert.deepEqual(sessions.requestIdleSleeps(), [sessionId]);
+  assert.deepEqual(connections(), []);
+});
+
+test('a reclaimed room does not inherit the sleep request of its interrupted worker', async (t) => {
+  const sessionId = 'session_requeued_sleep';
+  const { sessions, clock, origin } = await idleRoomFixture(t, sessionId);
+  clock.now += 31 * 60_000;
+  assert.deepEqual(sessions.requestIdleSleeps(), [sessionId]);
+  assert.equal(sessions.requeueInterruptedSession(sessionId, 'heartbeat_expired').status, 'queued');
+  sessions.openPresence(sessionId, origin.device.id, 'connection-after-requeue');
+  sessions.claimNextSession();
+  assert.equal(sessions.getSession(sessionId).sleepRequested, false);
+  assert.notEqual(sessions.claimFinish(sessionId).sleepRequested, true);
+  sessions.closePresence(sessionId, origin.device.id, 'connection-after-requeue');
+  clock.now += 31 * 60_000;
+  assert.deepEqual(sessions.requestIdleSleeps(), [sessionId]);
+});
+
 test('session runtime invalidation clears transient display state across worker exits', async (t) => {
   const { blobs, auth, sessions } = await fixture(t);
   const frames = new DisplayFrameStore({ maxSessions: 1 });
@@ -1453,6 +1551,47 @@ test('edited resume atomically imports one paused draft revision and preserves i
     changeSummary: 'Updated the table heading and corrected two dates.',
     createdAt: manifest.resumeContext.humanEdit.createdAt,
   });
+});
+
+test('a cancelled room with an edited resume purges its human edit records at expiry', async (t) => {
+  let clock = 1_800_000_000_000;
+  const { sessions, blobs, origin, session, database } = await persistentRoomFixture(t, { now: () => clock });
+  sessions.beginTurn(session.id, { turnNumber: 1 });
+  const checkpoint = await upload(blobs, origin.device.id, Buffer.from('cloud draft before purge'));
+  const timeline = await upload(blobs, origin.device.id, Buffer.from('{"history":"before purge"}'), {
+    name: 'timeline.json', kind: 'timeline',
+  });
+  await sessions.commitBoundary(session.id, {
+    operationId: 'before_purged_edit', turnNumber: 1, revision: 2, kind: 'operation',
+    checkpoint: { blobId: checkpoint.id, size: checkpoint.size },
+    timeline: { blobId: timeline.id, size: timeline.size },
+  });
+  sessions.executeCommand(origin.device, session.id, parseCommand({
+    commandId: 'pause_before_purged_edit', type: 'session.pause',
+    payload: { expectedVersion: sessions.getSession(session.id).stateVersion },
+  }));
+  sessions.acknowledgePause(session.id);
+  const paused = sessions.getSession(session.id);
+  const edited = await upload(blobs, origin.device.id, Buffer.from('edited draft before purge'));
+  sessions.executeCommand(origin.device, session.id, parseCommand({
+    commandId: 'resume_edited_before_purge', type: 'session.resume_edited', payload: {
+      expectedVersion: paused.stateVersion,
+      expectedWriterGeneration: paused.writerGeneration,
+      editSessionId: 'purged_edit',
+      expectedBoundary: { operationId: 'before_purged_edit', revision: 2 },
+      editedDocument: { blobId: edited.id, size: edited.size },
+    },
+  }));
+  sessions.executeCommand(origin.device, session.id, parseCommand({
+    commandId: 'cancel_edited_room', type: 'session.cancel',
+    payload: { expectedVersion: sessions.getSession(session.id).stateVersion },
+  }));
+  clock += 1;
+  assert.equal(await sessions.expireRetainedSessions(), 1);
+  assert.equal(sessions.getSession(session.id).status, 'purged');
+  assert.equal(database.prepare('SELECT COUNT(*) AS count FROM session_human_edits WHERE session_id = ?').get(session.id).count, 0);
+  assert.equal(database.prepare('SELECT COUNT(*) AS count FROM commands WHERE session_id = ?').get(session.id).count, 0);
+  assert.equal(sessions.getSessionRow(session.id).latest_human_edit_id, null);
 });
 
 test('edited resume rejects stale writer and checkpoint fences before importing a revision', async (t) => {

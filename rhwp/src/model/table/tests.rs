@@ -1,5 +1,23 @@
 use super::*;
 
+#[test]
+fn native_hwpx_cell_margin_switch_respects_explicit_zero_table_margin() {
+    let table_margin = Padding::default();
+    let mut cell = Cell::default();
+    cell.padding = Padding {
+        left: 200,
+        right: 300,
+        top: 141,
+        bottom: 141,
+    };
+
+    assert_eq!(cell.effective_hwpx_padding(&table_margin).top, 0);
+    assert_eq!(cell.effective_hwpx_padding(&table_margin).left, 0);
+    cell.apply_inner_margin = true;
+    assert_eq!(cell.effective_hwpx_padding(&table_margin).top, 141);
+    assert_eq!(cell.effective_hwpx_padding(&table_margin).left, 200);
+}
+
 /// 테스트용 N×M 표 생성 헬퍼
 fn make_table(rows: u16, cols: u16) -> Table {
     let cell_width: HwpUnit = 3600; // 약 12.7mm
@@ -741,6 +759,32 @@ fn test_rebuild_grid_merged() {
     assert_eq!(anchor.col, 0);
     assert_eq!(anchor.col_span, 2);
     assert_eq!(anchor.row_span, 2);
+}
+
+#[test]
+fn rebuild_grid_clamps_hostile_spans_to_table_and_grid() {
+    // 병합 범위 0xFFFF 셀 하나가 65535×65535 회 순회(셀당 1초 이상)를 일으키면 안 된다.
+    let hostile_cell = Cell {
+        row_span: u16::MAX,
+        col_span: u16::MAX,
+        ..Default::default()
+    };
+    let mut table = Table {
+        row_count: 1,
+        col_count: 1,
+        cells: vec![hostile_cell.clone()],
+        ..Default::default()
+    };
+    table.rebuild_grid();
+    assert_eq!(table.cell_grid, vec![Some(0)]);
+
+    // 행/열 수까지 손상되어 그리드가 상한으로 잘린 경우에도 그리드 안쪽 행만 돈다.
+    table.row_count = u16::MAX;
+    table.col_count = u16::MAX;
+    table.cells = vec![hostile_cell];
+    table.rebuild_grid();
+    assert_eq!(table.cell_grid.len(), MAX_TABLE_GRID_CELLS);
+    assert!(table.cell_grid.iter().all(|slot| *slot == Some(0)));
 }
 
 #[test]

@@ -113,3 +113,53 @@ test('decode guard preserves bounded SVG images without treating viewBox units a
     { width: 300, height: 150 },
   );
 });
+
+/** APPn 메타데이터 segment 들 뒤에 SOF0 가 오는 JPEG. */
+function jpegWithMetadata(metadataBytes: number, width: number, height: number): Uint8Array {
+  const bytes: number[] = [0xff, 0xd8];
+  let remaining = metadataBytes;
+  while (remaining > 0) {
+    const payload = Math.min(remaining, 0xfff0);
+    const length = payload + 2;
+    bytes.push(0xff, 0xe1, length >> 8, length & 0xff);
+    for (let i = 0; i < payload; i += 1) bytes.push(0x41);
+    remaining -= payload;
+  }
+  bytes.push(0xff, 0xc0, 0x00, 0x0b, 0x08, height >> 8, height & 0xff, width >> 8, width & 0xff, 0x01, 0x01);
+  bytes.push(0xff, 0xd9);
+  return Uint8Array.from(bytes);
+}
+
+test('decode guard reads JPEG sizes behind long metadata past the first header slice', () => {
+  // 크기 marker 가 첫 조각(96KB) 밖에 있어도 4MB 한도 안이면 끝까지 따라가 읽는다.
+  const jpeg = jpegWithMetadata(300 * 1024, 640, 480);
+  assert.deepEqual(
+    assertBase64EncodedImageDecodeDimensions(Buffer.from(jpeg).toString('base64')),
+    { width: 640, height: 480 },
+  );
+  const oversized = jpegWithMetadata(200 * 1024, 16_000, 16_000);
+  assert.throws(
+    () => assertBase64EncodedImageDecodeDimensions(Buffer.from(oversized).toString('base64')),
+    /안전 한도/,
+  );
+});
+
+test('decode guard reads a large image from its first header slice only', () => {
+  // 큰 그림마다 수 MB prefix 를 풀면 쪽 렌더·prefetch 판정마다 그림 수만큼 비용이 붙는다.
+  const png = new Uint8Array(3 * 1024 * 1024);
+  png.set(pngHeader(4000, 3000), 0);
+  const base64 = Buffer.from(png).toString('base64');
+  const realAtob = globalThis.atob;
+  const decodedChars: number[] = [];
+  globalThis.atob = (data: string) => {
+    decodedChars.push(data.length);
+    return realAtob(data);
+  };
+  try {
+    assert.deepEqual(assertBase64EncodedImageDecodeDimensions(base64), { width: 4000, height: 3000 });
+  } finally {
+    globalThis.atob = realAtob;
+  }
+  assert.equal(decodedChars.length, 1);
+  assert.ok(decodedChars[0] <= 128 * 1024 + 4, `first slice decoded ${decodedChars[0]} chars`);
+});

@@ -13,6 +13,7 @@ import {
 } from './exact-text-diff.ts';
 import { measureInkRange } from './selection-ink.ts';
 import { indexExactTextRects, subtractExactTextRects } from './overlay-geometry.ts';
+import { resolveHeaderFooterBandBox } from '../view/header-footer-edit-overlay.ts';
 
 /** 객체 op 의 overlay 좌표 해석 참조 — 렌더 시점에 wasm 프로브로 rect 를 구한다 */
 export type ObjectOverlayRef =
@@ -28,13 +29,33 @@ export type ObjectOverlayRef =
       cellIdx?: number; cellParaIdx?: number; innerControlIdx?: number;
       cellPath?: CellAddr['path'];
     }
-  | { sort: 'para'; sectionIdx: number; paraIdx: number; cell?: CellAddr };
+  | {
+      /** 에이전트가 고치거나 넣은 그림/도형 — 개체 상자를 op 종류(수정/삽입)로 칠한다 */
+      sort: 'object'; kind: 'image' | 'shape';
+      sectionIdx: number; paraIdx: number; controlIdx: number;
+      cellIdx?: number; cellParaIdx?: number; innerControlIdx?: number;
+      cellPath?: CellAddr['path'];
+    }
+  | {
+      /** 지워진 내용의 위치 — 대상은 이미 없으므로 앵커 마커만 그린다 */
+      sort: 'removed'; what: 'table' | 'row' | 'col' | 'object';
+      sectionIdx: number; paraIdx: number; controlIdx: number;
+      /** 표 삭제 시 컨트롤이 있던 문단 내 텍스트 오프셋 */
+      offset?: number;
+      /** 행/열 삭제 시 지워진 인덱스 — 그 자리에 들어온 셀의 모서리에 놓는다 */
+      rowIdx?: number; colIdx?: number;
+    }
+  | { sort: 'hf'; sectionIdx: number; isHeader: boolean; applyTo: number }
+  | { sort: 'page'; sectionIdx: number }
+  | { sort: 'para'; sectionIdx: number; paraIdx: number; cell?: CellAddr; /** 본문 문단 구간 끝 (포함) */ endParaIdx?: number };
 
 interface LegacyOverlayOp {
-  kind: 'insert' | 'delete' | 'format';
+  kind: 'insert' | 'modify' | 'remove' | 'format';
   agent: AgentName;
   range?: DocRange;
   objRef?: ObjectOverlayRef;
+  /** remove op: 삭제된 내용 — 앵커의 호버 팝오버에 표시한다 */
+  removedText?: string;
 }
 
 interface ReplaceOverlayOp {
@@ -67,7 +88,8 @@ interface ExactVisual {
 interface HitRegion {
   key: string;
   oldText: string;
-  range: DocRange;
+  /** 텍스트 범위가 있을 때만 캐럿 진입으로 핀된다 (remove 앵커는 호버 전용). */
+  range?: DocRange;
   left: number;
   top: number;
   width: number;
@@ -102,13 +124,6 @@ const POPOVER_MAX_SCALARS = 320;
 const ENTER_GAP_FACTOR = 0.18;
 /** 개행 표시의 크기(줄 높이 배수). */
 const ENTER_SIZE_FACTOR = 0.62;
-
-function comparePoint(
-  a: { paraIdx: number; charOffset: number },
-  b: { paraIdx: number; charOffset: number },
-): number {
-  return a.paraIdx - b.paraIdx || a.charOffset - b.charOffset;
-}
 
 function truncateScalars(text: string, max: number): string {
   const values = [...text];
@@ -151,6 +166,12 @@ function cellPathAt(cell: CellAddr, paraIdx: number): string {
   return JSON.stringify(path.map((entry, index) => index === path.length - 1
     ? { ...entry, cellParaIndex: paraIdx }
     : entry));
+}
+
+/** flat 셀 주소도 경로 API 로 조회할 수 있게 1-depth 경로를 만든다. */
+function cellAxisPathAt(cell: CellAddr, paraIdx: number): string {
+  if (cell.path?.length) return cellPathAt(cell, paraIdx);
+  return JSON.stringify([{ controlIndex: cell.controlIdx, cellIndex: cell.cellIdx, cellParaIndex: paraIdx }]);
 }
 
 /**
@@ -255,6 +276,18 @@ export class PendingOverlayRenderer {
     this.pinnedKey = null;
     this.geometryDirty = true;
     this.render();
+  }
+
+  /**
+   * 오버레이와 같은 규칙으로 한 op 의 쪽 rect 를 구한다 (쪽 px) — 쓰기 결과 보고의
+   * 변경 영역 자르기용. 해석 실패는 빈 배열이다.
+   */
+  pageRectsFor(target: { range?: DocRange; objRef?: ObjectOverlayRef }): SelectionRect[] {
+    try {
+      if (target.objRef) return this.resolveObjectRects(target.objRef);
+      if (target.range) return this.rangeRects(target.range);
+    } catch { /* 표·문단이 이미 바뀌었을 수 있다 */ }
+    return [];
   }
 
   /**
@@ -371,24 +404,55 @@ export class PendingOverlayRenderer {
     return result;
   }
 
+  /**
+   * 에이전트 범위(텍스트 오프셋)를 rect 조회용 캐럿 좌표(인라인 개체 = 1칸)로 바꾼다.
+   *
+   * 텍스트 오프셋 t 앞에 개체가 있으면 캐럿 좌표가 두 개다. 범위 시작(`after`)은 글자 t 에
+   * 붙도록 개체 뒤, 범위 끝·삽입 지점(`before`)은 개체 앞이다. 변환 API 가 없는 대역에서는
+   * 원값을 쓴다.
+   */
+  private caretOffset(
+    range: DocRange,
+    paraIdx: number,
+    textOffset: number,
+    side: 'before' | 'after' = 'before',
+  ): number {
+    const cell = range.cell;
+    const toLogical = (offset: number): number => cell
+      ? this.deps.wasm.textToLogicalOffsetInCellByPath(
+        range.sectionIdx, cell.paraIdx, cellAxisPathAt(cell, paraIdx), offset,
+      )
+      : this.deps.wasm.textToLogicalOffset(range.sectionIdx, paraIdx, offset);
+    try {
+      if (side === 'after' && textOffset < this.paragraphLength(range, paraIdx)) {
+        return toLogical(textOffset + 1) - 1;
+      }
+      return toLogical(textOffset);
+    } catch {
+      return textOffset;
+    }
+  }
+
   private rangeRects(range: DocRange): SelectionRect[] {
     const cell = range.cell;
+    const start = this.caretOffset(range, range.startParaIdx, range.startCharOffset, 'after');
+    const end = this.caretOffset(range, range.endParaIdx, range.endCharOffset);
     return cell?.path
       ? this.deps.wasm.getSelectionRectsByPath(
         range.sectionIdx, cell.paraIdx, cell.path,
-        range.startParaIdx, range.startCharOffset,
-        range.endParaIdx, range.endCharOffset,
+        range.startParaIdx, start,
+        range.endParaIdx, end,
       )
       : cell
       ? this.deps.wasm.getSelectionRectsInCell(
         range.sectionIdx, cell.paraIdx, cell.controlIdx, cell.cellIdx,
-        range.startParaIdx, range.startCharOffset,
-        range.endParaIdx, range.endCharOffset,
+        range.startParaIdx, start,
+        range.endParaIdx, end,
       )
       : this.deps.wasm.getSelectionRects(
         range.sectionIdx,
-        range.startParaIdx, range.startCharOffset,
-        range.endParaIdx, range.endCharOffset,
+        range.startParaIdx, start,
+        range.endParaIdx, end,
       );
   }
 
@@ -403,8 +467,9 @@ export class PendingOverlayRenderer {
       : this.deps.wasm.getParagraphLength(range.sectionIdx, paraIdx);
   }
 
-  private caretRectAt(range: DocRange, paraIdx: number, charOffset: number): SelectionRect {
+  private caretRectAt(range: DocRange, paraIdx: number, textOffset: number): SelectionRect {
     const cell = range.cell;
+    const charOffset = this.caretOffset(range, paraIdx, textOffset);
     const rect = cell?.path
       ? this.deps.wasm.getCursorRectByPath(range.sectionIdx, cell.paraIdx, cellPathAt(cell, paraIdx), charOffset)
       : cell
@@ -455,16 +520,17 @@ export class PendingOverlayRenderer {
   private cursorRect(op: ReplaceOverlayOp, scalarOffset: number): SelectionRect {
     const point = pointAtNewScalarOffset(op.range, op.newText, scalarOffset);
     const cell = op.range.cell;
+    const charOffset = this.caretOffset(op.range, point.paraIdx, point.charOffset);
     const rect = cell?.path
       ? this.deps.wasm.getCursorRectByPath(
-        op.range.sectionIdx, cell.paraIdx, cellPathAt(cell, point.paraIdx), point.charOffset,
+        op.range.sectionIdx, cell.paraIdx, cellPathAt(cell, point.paraIdx), charOffset,
       )
       : cell
       ? this.deps.wasm.getCursorRectInCell(
         op.range.sectionIdx, cell.paraIdx, cell.controlIdx, cell.cellIdx,
-        point.paraIdx, point.charOffset,
+        point.paraIdx, charOffset,
       )
-      : this.deps.wasm.getCursorRect(op.range.sectionIdx, point.paraIdx, point.charOffset);
+      : this.deps.wasm.getCursorRect(op.range.sectionIdx, point.paraIdx, charOffset);
     return { pageIndex: rect.pageIndex, x: rect.x, y: rect.y, width: 0, height: rect.height };
   }
 
@@ -513,7 +579,7 @@ export class PendingOverlayRenderer {
           const measured = this.measureRange(op.range, op.agent);
           rects = measured.rects;
           // 삭제 마크는 원문을 그대로 두므로 개행 표시를 붙이지 않는다.
-          if (op.kind !== 'delete') enters.push(...measured.enters);
+          if (op.kind !== 'remove') enters.push(...measured.enters);
         } else continue;
       } catch {
         continue;
@@ -616,6 +682,30 @@ export class PendingOverlayRenderer {
     const desired = new Set<string>();
 
     for (const { op, rects } of this.cachedLegacy!) {
+      // remove — 지워진 자리에는 대상이 없으므로 범위 대신 빨간 앵커를 놓는다.
+      if (op.kind === 'remove') {
+        const rect = rects[0];
+        if (!rect || !renderablePages.has(rect.pageIndex)) continue;
+        const pos = this.pagePosition(rect, contentWidth, zoom);
+        if (!pos) continue;
+        const key = this.legacyNodeKey(op, 0);
+        desired.add(key);
+        const node = this.ensureNode(
+          key,
+          'ag-exact-anchor ag-exact-anchor-delete',
+          (marker) => {
+            marker.classList.add('ag-liquid-anchor-in');
+            marker.addEventListener('animationend', () => marker.classList.remove('ag-liquid-anchor-in'), { once: true });
+          },
+        );
+        const markerPos = { left: pos.left - 5, top: pos.top, width: 10, height: Math.max(pos.height, 12) };
+        if (node.marker) {
+          this.positionRect(node.marker, markerPos);
+          node.marker.dataset.diffHunk = key;
+        }
+        this.hitRegions.push({ ...markerPos, key, oldText: this.removedText(op) });
+        continue;
+      }
       rects.forEach((rect, rectIdx) => {
         if (!renderablePages.has(rect.pageIndex)) return;
         const pos = this.pagePosition(rect, contentWidth, zoom);
@@ -624,13 +714,15 @@ export class PendingOverlayRenderer {
         desired.add(key);
         const objectKind = op.objRef?.sort === 'agentObject' ? op.objRef.kind : null;
         const structureBox = op.objRef?.sort === 'table' || op.objRef?.sort === 'cells';
+        const region = op.objRef?.sort === 'hf' ? ' ag-pending-band'
+          : op.objRef?.sort === 'page' ? ' ag-pending-page' : '';
         const node = this.ensureNode(
           key,
           objectKind
             ? `ag-pending-rect ag-pending-marker ag-pending-object ag-pending-object-${objectKind} ag-${op.agent}`
             : structureBox
             ? `ag-pending-rect ag-pending-marker ag-pending-structure ag-${op.agent} ag-${op.kind}`
-            : `ag-pending-rect ag-pending-marker ag-${op.agent} ag-${op.kind}`,
+            : `ag-pending-rect ag-pending-marker ag-${op.agent} ag-${op.kind}${region}`,
         );
         if (node.marker) {
           this.positionRect(node.marker, pos);
@@ -768,15 +860,23 @@ export class PendingOverlayRenderer {
     } else if (position.parentParaIndex !== undefined) {
       return false;
     }
-    const point = { paraIdx, charOffset: position.charOffset };
-    const start = { paraIdx: range.startParaIdx, charOffset: range.startCharOffset };
-    const end = { paraIdx: range.endParaIdx, charOffset: range.endCharOffset };
-    return comparePoint(point, start) >= 0 && comparePoint(point, end) <= 0;
+    // 문단 번호만으로 판정되면 끝점 변환(wasm 호출)을 생략한다 — 캐럿 이동마다
+    // 화면의 모든 hit 영역을 훑으므로 다른 문단 영역은 비교 없이 걸러야 싸다.
+    if (paraIdx < range.startParaIdx || paraIdx > range.endParaIdx) return false;
+    // 캐럿은 논리 좌표, 범위는 텍스트 좌표다. 캐럿과 같은 문단의 끝점만 캐럿 좌표로 바꿔 비교한다.
+    const charOffset = position.charOffset;
+    if (paraIdx === range.startParaIdx
+      && charOffset < this.caretOffset(range, range.startParaIdx, range.startCharOffset, 'after')) return false;
+    if (paraIdx === range.endParaIdx
+      && charOffset > this.caretOffset(range, range.endParaIdx, range.endCharOffset)) return false;
+    return true;
   }
 
   private inspectCaret(): void {
     const position = this.deps.getCaretPosition();
-    const hit = position ? this.hitRegions.find((region) => this.caretInRange(position, region.range)) : undefined;
+    const hit = position
+      ? this.hitRegions.find((region) => region.range !== undefined && this.caretInRange(position, region.range))
+      : undefined;
     this.pinnedKey = hit?.key ?? null;
     if (hit) this.showPopover(hit, true);
     else if (this.hoverKey) {
@@ -819,12 +919,83 @@ export class PendingOverlayRenderer {
     }
   }
 
+  /**
+   * remove 앵커 팝오버의 본문 — 삭제 전에 보관한 텍스트를 쓰고, 비어 있으면
+   * 지워진 것의 종류를 말한다.
+   */
+  private removedText(op: LegacyOverlayOp): string {
+    if (op.removedText?.trim()) return op.removedText;
+    const what = op.objRef?.sort === 'removed' ? op.objRef.what : 'table';
+    return what === 'row' ? '빈 행' : what === 'col' ? '빈 열' : what === 'object' ? '개체' : '빈 표';
+  }
+
+  /** 삭제된 컨트롤의 텍스트 오프셋 → 캐럿 좌표 (없으면 문단 앞). */
+  private removedCaretOffset(ref: Extract<ObjectOverlayRef, { sort: 'removed' }>): number {
+    const offset = ref.offset ?? 0;
+    try {
+      const wasm = this.deps.wasm;
+      return typeof wasm.textToLogicalOffset === 'function'
+        ? wasm.textToLogicalOffset(ref.sectionIdx, ref.paraIdx, offset)
+        : offset;
+    } catch {
+      return offset;
+    }
+  }
+
   /** 객체 참조 → 페이지 rect 목록. 실패 시 throw (호출부가 op 을 건너뛴다). */
   private resolveObjectRects(ref: ObjectOverlayRef): SelectionRect[] {
     const wasm = this.deps.wasm;
     switch (ref.sort) {
+      case 'removed': {
+        if (ref.what === 'row' || ref.what === 'col') {
+          // 지워진 인덱스 자리에 들어온 셀의 모서리 — 마지막 행/열이면 표 끝에 놓는다.
+          try {
+            const boxes = wasm.getTableCellBboxes(ref.sectionIdx, ref.paraIdx, ref.controlIdx);
+            const at = (ref.what === 'row' ? ref.rowIdx : ref.colIdx) ?? 0;
+            const cell = boxes.find((c) => (ref.what === 'row' ? c.row : c.col) >= at);
+            if (cell) {
+              return [{ pageIndex: cell.pageIndex, x: cell.x, y: cell.y, width: 0, height: cell.h }];
+            }
+            const b = wasm.getTableBBox(ref.sectionIdx, ref.paraIdx, ref.controlIdx);
+            return [{ pageIndex: b.pageIndex, x: b.x, y: Math.max(b.y, b.y + b.height - 4), width: 0, height: 12 }];
+          } catch { /* 표가 다시 바뀌었을 수 있다 — 문단 앵커로 떨어진다 */ }
+        }
+        const rect = wasm.getCursorRect(ref.sectionIdx, ref.paraIdx, this.removedCaretOffset(ref));
+        return [{ pageIndex: rect.pageIndex, x: rect.x, y: rect.y, width: 0, height: rect.height }];
+      }
+      case 'hf': {
+        const rects: SelectionRect[] = [];
+        for (const page of wasm.getAllPageInfo()) {
+          if (page.sectionIndex !== ref.sectionIdx) continue;
+          // applyTo 0 = 양쪽, 1 = 짝수, 2 = 홀수 전용 머리말/꼬리말 (엔진 HeaderFooterApply)
+          const parity = page.pageNumber ?? page.pageIndex + 1;
+          if (ref.applyTo === 1 && parity % 2 === 1) continue;
+          if (ref.applyTo === 2 && parity % 2 === 0) continue;
+          const band = resolveHeaderFooterBandBox(page, ref.isHeader);
+          if (band.width > 0 && band.height > 0) {
+            rects.push({ pageIndex: page.pageIndex, x: band.x, y: band.y, width: band.width, height: band.height });
+          }
+        }
+        return rects;
+      }
+      case 'page': {
+        return wasm.getAllPageInfo()
+          .filter((page) => page.sectionIndex === ref.sectionIdx)
+          .map((page) => ({ pageIndex: page.pageIndex, x: 0, y: 0, width: page.width, height: page.height }));
+      }
       case 'table': {
         const b = wasm.getTableBBox(ref.sectionIdx, ref.paraIdx, ref.controlIdx);
+        return [{ pageIndex: b.pageIndex, x: b.x, y: b.y, width: b.width, height: b.height }];
+      }
+      case 'object': {
+        // 도형 상자 API 는 본문 도형만 잰다 — 셀 안 도형은 표시를 건너뛴다 (호출부가 throw 를 삼킨다)
+        const b = ref.kind === 'shape'
+          ? (ref.cellIdx === undefined ? wasm.getShapeBBox(ref.sectionIdx, ref.paraIdx, ref.controlIdx) : null)
+          : wasm.getObjectBBox(
+            'image', ref.sectionIdx, ref.paraIdx, ref.controlIdx,
+            ref.cellIdx, ref.cellParaIdx, ref.innerControlIdx, ref.cellPath,
+          );
+        if (!b) throw new Error('shape in a cell has no bbox API');
         return [{ pageIndex: b.pageIndex, x: b.x, y: b.y, width: b.width, height: b.height }];
       }
       case 'agentObject': {
@@ -852,7 +1023,7 @@ export class PendingOverlayRenderer {
       case 'para': {
         if (ref.cell) {
           if (ref.cell.path) {
-            const len = wasm.getCellParagraphLengthByPath(
+            const len = wasm.getCellLogicalLengthByPath(
               ref.sectionIdx, ref.cell.paraIdx, cellPathAt(ref.cell, ref.paraIdx),
             );
             return wasm.getSelectionRectsByPath(
@@ -860,14 +1031,17 @@ export class PendingOverlayRenderer {
               ref.paraIdx, 0, ref.paraIdx, len,
             );
           }
-          const len = wasm.getCellParagraphLength(ref.sectionIdx, ref.cell.paraIdx, ref.cell.controlIdx, ref.cell.cellIdx, ref.paraIdx);
+          const len = wasm.getCellLogicalLengthByPath(
+            ref.sectionIdx, ref.cell.paraIdx, cellAxisPathAt(ref.cell, ref.paraIdx),
+          );
           return wasm.getSelectionRectsInCell(
             ref.sectionIdx, ref.cell.paraIdx, ref.cell.controlIdx, ref.cell.cellIdx,
             ref.paraIdx, 0, ref.paraIdx, len,
           );
         }
-        const len = wasm.getParagraphLength(ref.sectionIdx, ref.paraIdx);
-        return wasm.getSelectionRects(ref.sectionIdx, ref.paraIdx, 0, ref.paraIdx, len);
+        const end = Math.max(ref.paraIdx, ref.endParaIdx ?? ref.paraIdx);
+        const len = wasm.getLogicalLength(ref.sectionIdx, end);
+        return wasm.getSelectionRects(ref.sectionIdx, ref.paraIdx, 0, end, len);
       }
     }
   }

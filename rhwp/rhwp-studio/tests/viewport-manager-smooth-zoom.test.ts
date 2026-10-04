@@ -168,7 +168,7 @@ test('a fine trackpad wheel delta produces a fine animated zoom change', async (
 test('vertical-dominant wheel input locks horizontal pan in every delta mode', async () => {
   const { ViewportManager } = await loadViewportManager();
   const viewport = new ViewportManager(new FakeEventBus() as never);
-  const container = { scrollTop: 100 };
+  const container = { scrollTop: 100, scrollWidth: 1600, clientWidth: 800 };
   (
     viewport as unknown as {
       container: typeof container;
@@ -214,7 +214,7 @@ test('vertical-dominant wheel input locks horizontal pan in every delta mode', a
 test('horizontal-dominant gesture pans horizontally without vertical wiggle', async () => {
   const { ViewportManager } = await loadViewportManager();
   const viewport = new ViewportManager(new FakeEventBus() as never);
-  const container = { scrollTop: 100, scrollLeft: 50 };
+  const container = { scrollTop: 100, scrollLeft: 50, scrollWidth: 1600, clientWidth: 800 };
   (viewport as unknown as { container: typeof container }).container = container;
   let prevented = false;
   (
@@ -246,10 +246,39 @@ test('horizontal-dominant gesture pans horizontally without vertical wiggle', as
   assert.equal(container.scrollTop, 100, 'vertical wiggle is dropped');
 });
 
+test('plain wheel stays native when the document has no horizontal scroll', async () => {
+  const { ViewportManager } = await loadViewportManager();
+  const viewport = new ViewportManager(new FakeEventBus() as never);
+  const container = { scrollTop: 100, scrollLeft: 0, scrollWidth: 800, clientWidth: 800 };
+  (viewport as unknown as { container: typeof container }).container = container;
+  let prevented = false;
+  (
+    viewport as unknown as {
+      onWheel: (event: {
+        ctrlKey: boolean;
+        metaKey: boolean;
+        deltaX: number;
+        deltaY: number;
+        deltaMode: number;
+        timeStamp: number;
+        preventDefault: () => void;
+      }) => void;
+    }
+  ).onWheel({
+    ctrlKey: false, metaKey: false, deltaX: 2, deltaY: 30, deltaMode: 0, timeStamp: 1000,
+    preventDefault: () => {
+      prevented = true;
+    },
+  });
+
+  assert.equal(prevented, false, 'native compositor scrolling handles the wheel');
+  assert.equal(container.scrollTop, 100, 'no manual scroll write on the native path');
+});
+
 test('wheel gesture keeps its locked axis until a pause resets it', async () => {
   const { ViewportManager } = await loadViewportManager();
   const viewport = new ViewportManager(new FakeEventBus() as never);
-  const container = { scrollTop: 100, scrollLeft: 50 };
+  const container = { scrollTop: 100, scrollLeft: 50, scrollWidth: 1600, clientWidth: 800 };
   (viewport as unknown as { container: typeof container }).container = container;
   const onWheel = (
     viewport as unknown as {
@@ -434,7 +463,7 @@ test('CanvasView scales existing pages during zoom and rerenders only after sett
 
   assert.match(
     source,
-    /eventBus\.on\('viewport-scroll', \(\) => \{[\s\S]*?if \(!this\.viewportManager\.isZoomAnimating\(\)\) this\.updateVisiblePages\(\);[\s\S]*?\}\)/,
+    /eventBus\.on\('viewport-scroll', \(\) => \{[\s\S]*?if \(this\.viewportManager\.isZoomAnimating\(\)\) return;[\s\S]*?this\.updateVisiblePages\(\);[\s\S]*?\}\)/,
   );
   assert.match(
     source,

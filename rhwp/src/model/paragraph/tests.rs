@@ -26,7 +26,10 @@ fn non_bmp_picture_paragraph() -> Paragraph {
         char_count: 16, // Seven UTF-16 text units, picture slot, paragraph end.
         char_offsets: vec![8, 9, 11, 13, 14],
         controls: vec![make_picture_control()],
-        char_shapes: vec![CharShapeRef { start_pos: 0, char_shape_id: 0 }],
+        char_shapes: vec![CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 0,
+        }],
         ..Paragraph::new_empty()
     }
 }
@@ -34,9 +37,16 @@ fn non_bmp_picture_paragraph() -> Paragraph {
 #[test]
 fn non_bmp_insert_delete_preserves_utf16_count_and_picture_slot() {
     let mut para = non_bmp_picture_paragraph();
-    assert_eq!(para.delete_text_at(1, 2), 2, "deletion count stays in Unicode characters");
+    assert_eq!(
+        para.delete_text_at(1, 2),
+        2,
+        "deletion count stays in Unicode characters"
+    );
     assert_eq!(para.text, "AB.");
-    assert_eq!(para.char_count, 12, "remove four UTF-16 units, retain picture and end");
+    assert_eq!(
+        para.char_count, 12,
+        "remove four UTF-16 units, retain picture and end"
+    );
     assert_eq!(para.char_offsets, vec![8, 9, 10]);
     para.insert_text_at(1, "😀𠀀");
     assert_eq!(para.text, "A😀𠀀B.");
@@ -51,14 +61,25 @@ fn non_bmp_split_merge_counts_utf16_units_on_both_sides_of_picture() {
         let mut para = non_bmp_picture_paragraph();
         let tail = para.split_at(split);
         for part in [&para, &tail] {
-            assert_eq!(part.char_count, part.text.encode_utf16().count() as u32
-                + part.controls.len() as u32 * 8 + 1, "split {split}: UTF-16 count");
+            assert_eq!(
+                part.char_count,
+                part.text.encode_utf16().count() as u32 + part.controls.len() as u32 * 8 + 1,
+                "split {split}: UTF-16 count"
+            );
         }
-        assert_eq!(para.char_count + tail.char_count, 17, "one additional paragraph end");
+        assert_eq!(
+            para.char_count + tail.char_count,
+            17,
+            "one additional paragraph end"
+        );
         para.merge_from(&tail);
         assert_eq!(para.text, "A😀𠀀B.", "split {split}: text");
         assert_eq!(para.char_count, 16, "split {split}: merged UTF-16 count");
-        assert_eq!(para.char_offsets, vec![8, 9, 11, 13, 14], "split {split}: restored offsets");
+        assert_eq!(
+            para.char_offsets,
+            vec![8, 9, 11, 13, 14],
+            "split {split}: restored offsets"
+        );
         assert_eq!(para.control_text_positions(), vec![0]);
     }
 }
@@ -71,15 +92,26 @@ fn split_merge_between_consecutive_pictures_preserves_each_control_slot() {
             char_count: 22,
             char_offsets: vec![0, 1, 19, 20],
             controls: vec![make_picture_control(), make_picture_control()],
-            char_shapes: vec![CharShapeRef { start_pos: 0, char_shape_id: 0 }],
+            char_shapes: vec![CharShapeRef {
+                start_pos: 0,
+                char_shape_id: 0,
+            }],
             ..Paragraph::new_empty()
         };
         let tail = para.split_at(split);
-        assert_eq!(para.char_count + tail.char_count, 23, "split {split}: one extra end marker");
+        assert_eq!(
+            para.char_count + tail.char_count,
+            23,
+            "split {split}: one extra end marker"
+        );
         para.merge_from(&tail);
         assert_eq!(para.char_count, 22, "split {split}: UTF-16 count");
         assert_eq!(para.text, "A😀B.");
-        assert_eq!(para.char_offsets, vec![0, 1, 19, 20], "split {split}: both picture slots");
+        assert_eq!(
+            para.char_offsets,
+            vec![0, 1, 19, 20],
+            "split {split}: both picture slots"
+        );
         assert_eq!(para.control_text_positions(), vec![2, 2]);
     }
 }
@@ -1526,6 +1558,54 @@ fn test_char_shape_runs_in_range() {
         ..Default::default()
     };
     assert_eq!(bare.char_shape_runs_in_range(0, 2), vec![(0, 2, 0)]);
+}
+
+/// JS 가 끝 오프셋으로 -1(u32::MAX)을 넘겨도 순회는 문단 길이에서 멈춘다.
+/// 종전엔 끝값까지 매 칸 O(n) 조회를 돌아 서식 적용 한 번에 UI 가 멈췄다.
+#[test]
+fn char_shape_runs_in_range_stops_scanning_at_paragraph_end() {
+    let para = Paragraph {
+        text: "AAAABBBB".to_string(),
+        char_offsets: (0..8).collect(),
+        char_shapes: vec![
+            CharShapeRef {
+                start_pos: 0,
+                char_shape_id: 10,
+            },
+            CharShapeRef {
+                start_pos: 4,
+                char_shape_id: 20,
+            },
+            // 문단 끝 위치의 모양 — 끝을 넘는 오프셋이 모두 이 값을 본다.
+            CharShapeRef {
+                start_pos: 8,
+                char_shape_id: 30,
+            },
+        ],
+        ..Default::default()
+    };
+    let started = std::time::Instant::now();
+    let huge = para.char_shape_runs_in_range(0, u32::MAX as usize);
+    let unbounded = para.char_shape_runs_in_range(0, usize::MAX);
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(50),
+        "끝을 넘는 범위도 문단 길이만큼만 훑어야 한다: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(
+        huge,
+        vec![(0, 4, 10), (4, 8, 20), (8, u32::MAX as usize, 30)]
+    );
+    assert_eq!(unbounded.last(), Some(&(8, usize::MAX, 30)));
+    assert_eq!(
+        para.char_shape_runs_in_range(0, 13),
+        vec![(0, 4, 10), (4, 8, 20), (8, 13, 30)]
+    );
+    // 시작도 문단 끝을 넘으면 끝 모양 단일 run
+    assert_eq!(
+        para.char_shape_runs_in_range(20, usize::MAX),
+        vec![(20, usize::MAX, 30)]
+    );
 }
 
 #[test]

@@ -4,10 +4,16 @@
  * 책갈피 추가/이동/삭제/이름 바꾸기를 수행한다.
  */
 import type { CommandServices } from '@/command/types';
-import type { BookmarkInfo } from '@/core/types';
+import type { BookmarkInfo, DocumentPosition } from '@/core/types';
 import { enableDialogDrag } from './dialog-drag';
+import { isTopModal, popModal, pushModal } from './modal-stack';
 
 type SortMode = 'name' | 'position';
+
+/** 책갈피를 넣을 수 있는 본문 위치인가 (표 셀·글상자 안은 엔진이 본문 문단으로 오인한다) */
+export function isBodyBookmarkPosition(pos: DocumentPosition): boolean {
+  return pos.parentParaIndex === undefined && !pos.isTextBox && (pos.cellPath?.length ?? 0) === 0;
+}
 
 // [Task #2862] 책갈피 이름은 HWP5 CTRL_DATA 레코드에서 u16 길이 프리픽스로 직렬화된다
 // (`src/serializer/control.rs`의 `serialize_bookmark_ctrl_data`, `utf16.len() as u16`).
@@ -39,8 +45,11 @@ export class BookmarkDialog {
     this._open = true;
     this.build();
     document.body.appendChild(this.overlay);
+    pushModal(this);
 
     this.captureHandler = (e: KeyboardEvent) => {
+      // 위에 다른 대화상자가 열려 있으면 그 대화상자가 키를 처리한다.
+      if (!isTopModal(this)) return;
       if (e.key === 'Escape') {
         e.stopPropagation(); e.preventDefault();
         this.hide(); return;
@@ -66,6 +75,7 @@ export class BookmarkDialog {
       this.captureHandler = null;
     }
     this._open = false;
+    popModal(this);
     this.overlay?.remove();
     this.services.getInputHandler()?.focus();
   }
@@ -78,6 +88,8 @@ export class BookmarkDialog {
 
     this.dialog = document.createElement('div');
     this.dialog.className = 'dialog-wrap bm-dialog';
+    this.dialog.setAttribute('role', 'dialog');
+    this.dialog.setAttribute('aria-modal', 'true');
 
     // 타이틀
     const titleBar = document.createElement('div');
@@ -296,19 +308,32 @@ export class BookmarkDialog {
     if (!ih) return;
     const pos = ih.getCursorPosition();
 
+    // 엔진 addBookmark 는 본문 문단 좌표만 받는다. 표 셀·글상자 안의 문단 번호를 그대로
+    // 넘기면 관계없는 본문 문단에 책갈피가 들어가고 그 문단의 컨트롤이 밀린다.
+    if (!isBodyBookmarkPosition(pos)) {
+      this.statusLabel.style.color = '#c00';
+      this.statusLabel.textContent = '책갈피는 본문에만 넣을 수 있습니다.';
+      return;
+    }
+
     // [책갈피 이관] 추가를 snapshot 으로 라우팅해 undo 가능(기존 emit-only → 되돌릴 수 없었음).
     let ok = false;
     let errMsg: string | undefined;
-    ih.executeOperation({
-      kind: 'snapshot',
-      operationType: 'addBookmark',
-      operation: (wasm) => {
-        const r = wasm.addBookmark(pos.sectionIndex, pos.paragraphIndex, pos.charOffset, name);
-        ok = r.ok;
-        errMsg = r.error;
-        return pos;
-      },
-    });
+    try {
+      ih.executeOperation({
+        kind: 'snapshot',
+        operationType: 'addBookmark',
+        operation: (wasm) => {
+          const r = wasm.addBookmark(pos.sectionIndex, pos.paragraphIndex, pos.charOffset, name);
+          ok = r.ok;
+          errMsg = r.error;
+          return pos;
+        },
+      });
+    } catch (error) {
+      ok = false;
+      errMsg = error instanceof Error ? error.message : String(error);
+    }
 
     if (ok) {
       this.hide();

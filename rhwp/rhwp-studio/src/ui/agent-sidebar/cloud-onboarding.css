@@ -8,8 +8,7 @@
   justify-items: center;
   overflow-y: auto;
   padding: max(72px, calc(env(safe-area-inset-top) + 52px)) 18px 28px;
-  background: color-mix(in srgb, #101318 56%, transparent);
-  backdrop-filter: blur(5px);
+  background: var(--overlay-bg);
 }
 
 .ag-cloud-setup-overlay[hidden] {
@@ -22,10 +21,10 @@
   top: var(--cloud-sidebar-top);
   width: var(--cloud-sidebar-width);
   height: var(--cloud-sidebar-height);
-  align-items: center;
+  /* 단계마다 높이가 달라도 창 윗변은 제자리에 있고 아래로만 자란다. */
+  align-items: start;
   background: transparent;
-  backdrop-filter: blur(5px);
-  padding: 16px;
+  padding: clamp(16px, 14vh, 128px) 16px 16px;
 }
 
 .ag-cloud-setup-anchored .ag-cloud-setup-dialog {
@@ -33,13 +32,29 @@
   max-height: 100%;
 }
 
-.ag-cloud-setup-anchored .ag-cloud-setup-header,
+/* 제목과 본문 사이는 본문 요소 사이 간격과 같은 리듬으로 둔다. 닫기 단추는 제목 줄 높이를 늘리지 않는다. */
+.ag-cloud-setup-anchored .ag-cloud-setup-header {
+  align-items: center;
+  padding: 16px 12px 4px 20px;
+}
+
 .ag-cloud-setup-anchored .ag-cloud-setup-body {
-  padding: 14px;
+  padding: 12px 20px 20px;
+}
+
+.ag-cloud-setup-anchored .ag-cloud-setup-close {
+  width: 28px;
+  height: 28px;
+  margin: -2px 0;
+}
+
+/* 사이드바에 붙은 창은 본문과 같은 좌우 여백으로 버튼 끝을 맞춘다. */
+.ag-cloud-setup-anchored .ag-cloud-setup-footer {
+  padding: 12px 20px 16px;
 }
 
 .ag-cloud-setup-anchored .ag-cloud-setup-title {
-  font-size: 16px;
+  font-size: var(--ag-fs-title);
 }
 
 .ag-cloud-setup-dialog {
@@ -63,14 +78,20 @@
   max-height: min(720px, calc(100vh - 100px));
   overflow: hidden;
   flex-direction: column;
-  border: 0.5px solid var(--ag-border-strong);
-  border-radius: 14px;
-  background: var(--ag-bg);
+  border: 1px solid var(--n-ink-hairline);
+  border-radius: var(--ag-r-sheet);
+  background: var(--n-surface-raised);
   color: var(--ag-text);
-  font: var(--font-weight-regular, 400) var(--font-size-md, 13px)/1.55 var(--font-family-ui, sans-serif);
-  box-shadow: var(--n-elev-3);
+  font: var(--ag-fw-regular) var(--ag-fs-body)/var(--ag-lh-secondary) var(--ag-font);
+  /* 한국어는 어절 단위로 줄을 바꾼다. 긴 영문 토큰만 필요할 때 끊는다. */
+  word-break: keep-all;
+  overflow-wrap: break-word;
+  box-shadow: var(--ag-elev-sheet);
   animation: ag-cloud-setup-enter var(--ag-dur-slow) var(--ag-spring) both;
+  container: cloud-setup / inline-size;
 }
+
+.ag-cloud-setup-dialog:focus { outline: none; }
 
 .ag-cloud-setup-header {
   display: flex;
@@ -78,7 +99,7 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  padding: 18px 18px 12px;
+  padding: 20px 20px 12px 24px;
   border-bottom: 0;
 }
 
@@ -90,9 +111,10 @@
 .ag-cloud-setup-title {
   margin: 0;
   color: var(--ag-text);
-  font-size: 17px;
-  font-weight: 600;
-  line-height: 1.3;
+  font-size: var(--ag-fs-title);
+  font-weight: var(--ag-fw-strong);
+  line-height: var(--ag-lh-tight);
+  letter-spacing: var(--ag-track-tight);
 }
 
 .ag-cloud-setup-close {
@@ -102,15 +124,21 @@
   flex: 0 0 auto;
   place-items: center;
   border: 0;
-  border-radius: var(--ag-r-chip);
+  border-radius: var(--ag-r-row);
   background: transparent;
-  color: var(--ag-text-muted);
-  cursor: pointer;
+  color: var(--ag-text-secondary);
+  cursor: default;
+  transition: var(--ag-transition-color);
 }
 
 .ag-cloud-setup-close:hover {
-  background: var(--ag-hover);
+  background: var(--n-ink-fill-hover);
   color: var(--ag-text);
+}
+
+.ag-cloud-setup-close:active {
+  background: var(--n-ink-fill-pressed);
+  transition: none;
 }
 
 .ag-cloud-setup-live {
@@ -129,15 +157,15 @@
   min-height: 0;
   overflow-y: auto;
   gap: 16px;
-  padding: 22px;
+  padding: 12px 24px 24px;
 }
 
 .ag-cloud-setup-description,
 .ag-cloud-setup-wait {
   margin: 0;
   color: var(--ag-text-secondary);
-  font-size: var(--font-size-md, 13px);
-  line-height: 1.6;
+  font-size: var(--ag-fs-body);
+  line-height: var(--ag-lh-body);
 }
 
 .ag-cloud-setup-transfer-context {
@@ -165,7 +193,7 @@
 .ag-cloud-setup-transfer-label,
 .ag-cloud-setup-transfer-detail {
   color: var(--ag-text-muted);
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-secondary);
   white-space: nowrap;
 }
 
@@ -173,7 +201,7 @@
   min-width: 0;
   overflow: hidden;
   color: var(--ag-text);
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-secondary);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -185,7 +213,7 @@
 
 .ag-cloud-setup-wait {
   color: var(--ag-text-muted);
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-secondary);
   text-align: center;
 }
 
@@ -193,10 +221,10 @@
   display: flex;
   align-items: flex-start;
   gap: 11px;
-  padding: 13px;
-  border: 1px solid color-mix(in srgb, var(--accent-primary) 28%, var(--ag-border));
+  padding: 14px 16px;
+  border: 0;
   border-radius: var(--ag-r-card);
-  background: color-mix(in srgb, var(--accent-primary) 7%, var(--ag-bg-2));
+  background: var(--n-ink-fill-hover);
 }
 
 .ag-cloud-setup-callout-icon {
@@ -206,8 +234,8 @@
   flex: 0 0 auto;
   place-items: center;
   border-radius: 50%;
-  background: color-mix(in srgb, var(--accent-primary) 14%, transparent);
-  color: var(--accent-primary);
+  background: var(--n-ink-fill-selected);
+  color: var(--n-ink);
 }
 
 .ag-cloud-setup-callout > div:last-child {
@@ -217,22 +245,23 @@
 }
 
 .ag-cloud-setup-callout strong {
-  font-size: var(--font-size-md, 13px);
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-medium);
 }
 
 .ag-cloud-setup-callout p {
   margin: 0;
   color: var(--ag-text-secondary);
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-secondary);
   line-height: 1.5;
 }
 
 .ag-cloud-setup-options {
   display: grid;
   overflow: hidden;
-  border: 0.5px solid var(--ag-border-strong);
-  border-radius: 12px;
-  background: var(--ag-bg-2);
+  border: 0;
+  border-radius: var(--ag-r-card);
+  background: var(--n-ink-fill-soft);
 }
 
 /* 옵션 한 줄 = 선택 버튼 + ⓘ. 자세한 설명은 ⓘ 로 펼친다. */
@@ -244,7 +273,7 @@
 }
 
 .ag-cloud-setup-option-row + .ag-cloud-setup-option-row {
-  border-top: 0.5px solid var(--ag-border);
+  border-top: 1px solid var(--n-ink-hairline);
 }
 
 .ag-cloud-setup-option {
@@ -259,8 +288,8 @@
   color: inherit;
   font: inherit;
   text-align: left;
-  cursor: pointer;
-  transition: background-color var(--ag-dur-fast) var(--ag-ease-out);
+  cursor: default;
+  transition: var(--ag-transition-color);
 }
 
 /* 라디오 표시 — 채워진 점 하나. */
@@ -272,7 +301,7 @@
   width: 14px;
   height: 14px;
   box-sizing: border-box;
-  border: 1.5px solid var(--ag-border-strong);
+  border: 1.5px solid var(--n-ink-quaternary);
   border-radius: 50%;
   transform: translateY(-50%);
   transition:
@@ -281,16 +310,21 @@
 }
 
 .ag-cloud-setup-option.ag-selected::before {
-  border: 4.5px solid var(--accent-primary);
+  border: 4.5px solid var(--n-ink);
 }
 
 .ag-cloud-setup-option:hover {
-  background: var(--ag-hover);
+  background: var(--n-ink-fill-soft);
+}
+
+.ag-cloud-setup-option:active {
+  background: var(--n-ink-fill-hover);
+  transition: none;
 }
 
 .ag-cloud-setup-option:focus-visible,
 .ag-cloud-setup-option-info:focus-visible {
-  outline: 2px solid var(--focus-ring, var(--accent-primary));
+  outline: var(--ag-focus-ring);
   outline-offset: -2px;
 }
 
@@ -306,13 +340,14 @@
 }
 
 .ag-cloud-setup-option-copy strong {
-  font-size: var(--font-size-md, 13px);
-  font-weight: 600;
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-regular);
+  letter-spacing: var(--ag-track-tight);
 }
 
 .ag-cloud-setup-option-note {
   color: var(--ag-text-muted);
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-secondary);
 }
 
 .ag-cloud-setup-option-info {
@@ -322,12 +357,12 @@
   height: 20px;
   margin: 0 12px;
   padding: 0;
-  border: 1px solid var(--ag-border-strong);
+  border: 1px solid var(--n-ink-quaternary);
   border-radius: 50%;
   background: transparent;
   color: var(--ag-text-muted);
-  font: italic 600 11px/1 Georgia, 'Times New Roman', serif;
-  cursor: pointer;
+  font: italic var(--ag-fw-strong) var(--ag-fs-mono)/1 Georgia, 'Times New Roman', serif;
+  cursor: default;
   transition:
     border-color var(--ag-dur-fast) var(--ag-ease-out),
     color var(--ag-dur-fast) var(--ag-ease-out),
@@ -335,7 +370,7 @@
 }
 
 .ag-cloud-setup-option-info:hover {
-  background: var(--ag-hover);
+  background: var(--n-ink-fill-hover);
 }
 
 .ag-cloud-setup-option-info[aria-expanded='true'] {
@@ -348,7 +383,7 @@
   margin: 0;
   padding: 0 14px 12px 36px;
   color: var(--ag-text-secondary);
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-secondary);
   line-height: 1.5;
   animation: ag-cloud-detail-in var(--ag-dur-base) var(--ag-ease-out) both;
 }
@@ -367,12 +402,13 @@
   gap: 8px;
   padding: 2px 1px;
   color: var(--ag-text-secondary);
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-secondary);
 }
 
 .ag-cloud-setup-requirements strong {
   color: var(--ag-text);
-  font-size: var(--font-size-md, 13px);
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-medium);
 }
 
 .ag-cloud-setup-requirements ul {
@@ -405,30 +441,31 @@
 
 .ag-cloud-setup-label {
   color: var(--ag-text-secondary);
-  font-size: var(--font-size-sm, 11px);
-  font-weight: 650;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
 }
 
 .ag-cloud-setup-input {
   width: 100%;
   min-width: 0;
   height: 36px;
-  padding: 0 10px;
-  border: 1px solid var(--ag-border-strong);
-  border-radius: var(--ag-r-field);
+  padding: 0 12px;
+  border: 1px solid var(--n-ink-hairline-strong);
+  border-radius: var(--ag-r-row);
   outline: 0;
-  background: var(--ag-input-bg);
+  background: transparent;
   color: var(--ag-text);
   font: inherit;
+  transition: var(--ag-transition-color);
 }
 
 .ag-cloud-setup-input:hover {
-  border-color: color-mix(in srgb, var(--ag-text-muted) 60%, var(--ag-border));
+  border-color: var(--n-ink-quaternary);
 }
 
-.ag-cloud-setup-input:focus {
-  border-color: var(--accent-primary);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-primary) 22%, transparent);
+.ag-cloud-setup-input:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: 0;
 }
 
 .ag-cloud-setup-input[aria-invalid='true'] {
@@ -437,7 +474,7 @@
 
 .ag-cloud-setup-field-error {
   color: var(--ag-err);
-  font-size: var(--font-size-xs, 10px);
+  font-size: var(--ag-fs-meta);
   line-height: 1.35;
 }
 
@@ -450,8 +487,8 @@
 .ag-cloud-setup-technical > summary {
   width: max-content;
   color: var(--ag-text-muted);
-  font-size: var(--font-size-sm, 11px);
-  cursor: pointer;
+  font-size: var(--ag-fs-secondary);
+  cursor: default;
 }
 
 .ag-cloud-setup-advanced-grid {
@@ -460,15 +497,15 @@
 
 .ag-cloud-setup-technical {
   padding: 10px 12px;
-  border-radius: var(--ag-r-field);
-  background: var(--ag-surface-subtle);
+  border-radius: var(--ag-r-row);
+  background: var(--n-ink-fill-hover);
 }
 
 .ag-cloud-setup-technical pre {
   overflow: auto;
   margin: 10px 0 0;
   color: var(--ag-text-secondary);
-  font: 11px/1.5 var(--font-mono, monospace);
+  font: var(--ag-fs-mono)/1.5 var(--ag-mono);
   white-space: pre-wrap;
 }
 
@@ -478,9 +515,9 @@
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
-  border: 1px solid var(--ag-border);
-  border-radius: var(--ag-r-field);
-  background: var(--ag-surface-subtle);
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: var(--n-ink-fill-hover);
 }
 
 .ag-cloud-setup-command code {
@@ -488,7 +525,7 @@
   flex: 1 1 auto;
   overflow-wrap: anywhere;
   color: var(--ag-text-secondary);
-  font: 11px/1.5 var(--font-mono, monospace);
+  font: var(--ag-fs-meta)/1.5 var(--ag-mono);
 }
 
 .ag-cloud-setup-command .ag-cloud-setup-button {
@@ -497,10 +534,10 @@
 
 .ag-cloud-setup-indeterminate {
   position: relative;
-  height: 3px;
+  height: 4px;
   overflow: hidden;
-  border-radius: 999px;
-  background: var(--ag-surface-subtle);
+  border-radius: var(--ag-r-pill);
+  background: var(--n-ink-fill-selected);
 }
 
 .ag-cloud-setup-indeterminate::after {
@@ -509,7 +546,7 @@
   height: 100%;
   border-radius: inherit;
   animation: ag-cloud-setup-progress 1.25s ease-in-out infinite;
-  background: var(--accent-primary);
+  background: var(--n-ink);
   content: '';
 }
 
@@ -518,40 +555,73 @@
   bottom: 0;
   display: flex;
   flex: 0 0 auto;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
-  padding: 14px 22px;
-  border-top: 1px solid var(--ag-border);
-  background: var(--ag-bg);
+  padding: 12px 24px 20px;
+  border-top: 0;
+  background: var(--n-surface-raised);
 }
 
 .ag-cloud-setup-button {
-  min-height: 34px;
-  padding: 0 12px;
-  border: 1px solid var(--ag-border-strong);
-  border-radius: var(--ag-r-field);
-  background: var(--ag-bg-2);
-  color: var(--ag-text-secondary);
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: var(--n-ink-fill-hover);
+  color: var(--ag-text);
   font: inherit;
-  font-size: var(--font-size-sm, 11px);
-  font-weight: 650;
-  cursor: pointer;
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-medium);
+  letter-spacing: var(--ag-track-tight);
+  transition: var(--ag-transition-color);
+  /* 버튼 글자는 줄바꿈하지 않는다. 자리가 모자라면 버튼 묶음이 다음 줄로 간다. */
+  white-space: nowrap;
+  cursor: default;
+}
+
+/* 좁은 창에서는 줄마다 버튼이 폭을 나눠 가져, 넘친 버튼도 한 벌로 보인다. */
+@container cloud-setup (max-width: 360px) {
+  .ag-cloud-setup-footer .ag-cloud-setup-button {
+    flex: 1 0 auto;
+  }
 }
 
 .ag-cloud-setup-button:hover:not(:disabled) {
-  background: var(--ag-hover);
+  background: var(--n-ink-fill-pressed);
   color: var(--ag-text);
 }
 
+.ag-cloud-setup-button:active:not(:disabled) {
+  background: var(--n-ink-hairline-strong);
+  transition: none;
+}
+
 .ag-cloud-setup-button:disabled {
-  opacity: 0.52;
+  background: var(--n-ink-fill-soft);
+  color: var(--n-ink-quaternary);
   cursor: not-allowed;
 }
 
 .ag-cloud-setup-button.ag-primary {
-  border-color: var(--accent-primary);
-  background: var(--accent-primary);
-  color: var(--n-on-accent);
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
+}
+
+/* 채운 기본 버튼은 호버에도 잉크를 유지하고 반전 쪽으로 조금만 물러난다. */
+.ag-cloud-setup-button.ag-primary:hover:not(:disabled) {
+  background: var(--ag-primary-bg-hover);
+  color: var(--ag-primary-fg);
+}
+
+.ag-cloud-setup-button.ag-primary:active:not(:disabled) {
+  background: var(--ag-primary-bg-pressed);
+}
+
+.ag-cloud-setup-button.ag-primary:disabled {
+  background: var(--ag-primary-bg-disabled);
+  color: var(--ag-primary-fg);
 }
 
 .ag-cloud-setup-button:focus-visible,
@@ -559,8 +629,8 @@
 .ag-cloud-setup-advanced > summary:focus-visible,
 .ag-cloud-setup-technical > summary:focus-visible,
 .ag-cloud-settings-action:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
 }
 
 /* 서버 선택 단계만 여백을 줄이고, 선택 행의 클릭 영역은 유지한다. */
@@ -568,13 +638,13 @@
   width: min(500px, 100%);
 }
 
-.ag-cloud-setup-dialog:has(.ag-cloud-setup-options) .ag-cloud-setup-header {
-  padding: 14px 20px 0;
+.ag-cloud-setup-overlay:not(.ag-cloud-setup-anchored) .ag-cloud-setup-dialog:has(.ag-cloud-setup-options) .ag-cloud-setup-header {
+  padding: 20px 20px 0 24px;
 }
 
-.ag-cloud-setup-dialog:has(.ag-cloud-setup-options) .ag-cloud-setup-body {
+.ag-cloud-setup-overlay:not(.ag-cloud-setup-anchored) .ag-cloud-setup-dialog:has(.ag-cloud-setup-options) .ag-cloud-setup-body {
   gap: 12px;
-  padding: 8px 20px 18px;
+  padding: 12px 24px 20px;
 }
 
 .ag-cloud-setup-dialog:has(.ag-cloud-setup-options) .ag-cloud-setup-option {
@@ -583,42 +653,38 @@
 }
 
 .ag-cloud-setup-dialog:has(.ag-cloud-setup-options) .ag-cloud-setup-option-info {
-  width: 28px;
-  height: 28px;
-  margin-inline: 8px;
+  width: 22px;
+  height: 22px;
+  margin-inline: 10px;
 }
 
-.ag-cloud-setup-dialog:has(.ag-cloud-setup-options) .ag-cloud-setup-footer {
-  padding: 10px 20px;
+.ag-cloud-setup-overlay:not(.ag-cloud-setup-anchored) .ag-cloud-setup-dialog:has(.ag-cloud-setup-options) .ag-cloud-setup-footer {
+  padding: 12px 24px 20px;
 }
 
+/* 설정의 Cloud 서버 카드 — 상태 점 · 상태 문구 · 동작이 한 줄에 선다. */
 .ag-cloud-settings-card {
-  display: grid;
-  grid-template-columns: 112px minmax(0, 1fr) auto;
-  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  border-radius: var(--ag-set-radius, var(--ag-r-card));
+  background: var(--ag-set-card, var(--n-ink-fill-soft));
+}
+
+.ag-cloud-settings-card > :not([hidden]) ~ :not([hidden]) {
+  background-image: linear-gradient(var(--ag-set-sep, var(--n-ink-hairline)), var(--ag-set-sep, var(--n-ink-hairline)));
+  background-position: var(--ag-set-inset, 16px) 0;
+  background-size: calc(100% - var(--ag-set-inset, 16px)) 1px;
+  background-repeat: no-repeat;
+}
+
+.ag-cloud-settings-row {
+  display: flex;
   align-items: center;
-  gap: 8px 16px;
-  padding: 12px 18px 14px;
-  image-rendering: pixelated;
-  border: 1px solid var(--ag-border);
-  border-radius: 2px;
-  background: var(--ag-bg-2);
-}
-
-.ag-cloud-settings-icon {
-  display: grid;
-  width: 88px;
-  height: 88px;
-  flex: 0 0 auto;
-  place-items: center;
-  background: transparent;
-  color: var(--accent-primary);
-}
-
-.ag-cloud-settings-pixel {
-  width: 74px;
-  height: auto;
-  image-rendering: pixelated;
+  gap: 12px;
+  min-height: 56px;
+  padding: 12px var(--ag-set-inset, 16px);
 }
 
 .ag-cloud-settings-copy {
@@ -629,25 +695,27 @@
 }
 
 .ag-cloud-settings-status {
-  color: var(--ag-text);
-  font-size: 18px;
-  line-height: 1.2;
-  letter-spacing: -.02em;
+  color: var(--n-ink);
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-regular);
+  letter-spacing: var(--ag-track-tight);
+  line-height: var(--ag-lh-tight);
 }
 
 .ag-cloud-settings-detail {
   overflow: hidden;
-  color: var(--ag-text-muted);
-  font-size: 13px;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.ag-cloud-settings-action {
-  min-height: 38px;
-  padding-inline: 14px;
-  border-radius: 3px;
-  font-size: 13px;
+.ag-cloud-settings-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
 }
 
 @keyframes ag-cloud-setup-enter {
@@ -694,7 +762,7 @@
   }
 
   .ag-cloud-setup-button {
-    flex: 1 1 auto;
+    flex: 1 0 auto;
   }
 }
 

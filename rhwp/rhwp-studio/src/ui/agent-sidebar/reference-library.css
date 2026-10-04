@@ -42,16 +42,16 @@
 .ag-references-header {
   display: flex;
   align-items: center;
-  min-height: 32px;
-  border-bottom: 1px solid var(--ag-border);
+  min-height: 36px;
 }
 
 .ag-references-title {
   flex: 1 1 auto;
   margin: 0;
   color: var(--ag-text);
-  font-size: var(--font-size-md, 13px);
-  font-weight: 700;
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-strong);
+  letter-spacing: var(--ag-track-tight);
 }
 
 .ag-references-close,
@@ -62,63 +62,90 @@
   justify-content: center;
   padding: 0;
   border: 0;
-  border-radius: var(--ag-r-chip);
+  border-radius: var(--ag-r-row);
   background: transparent;
-  color: var(--ag-text-muted);
-  cursor: pointer;
+  color: var(--ag-text-secondary);
+  cursor: default;
+  transition: var(--ag-transition-color);
 }
 
 .ag-references-close { width: 28px; height: 28px; }
-.ag-reference-quick-add { flex: 0 0 auto; width: 26px; height: 26px; }
-.ag-reference-remove { width: 26px; height: 26px; }
+.ag-reference-quick-add { flex: 0 0 auto; width: 28px; height: 28px; }
+.ag-reference-remove { width: 28px; height: 28px; }
 
 .ag-references-close:hover,
 .ag-reference-quick-add:hover:not(:disabled),
 .ag-reference-remove:hover:not(:disabled) {
-  background: var(--ag-hover);
+  background: var(--n-ink-fill-hover);
   color: var(--ag-text);
+}
+
+.ag-references-close:active,
+.ag-reference-quick-add:active:not(:disabled),
+.ag-reference-remove:active:not(:disabled) {
+  background: var(--n-ink-fill-pressed);
+  transition: none;
 }
 
 .ag-references-btn,
 .ag-reference-add {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  min-height: 26px;
-  padding: 4px 7px;
-  border: 1px solid var(--ag-border);
-  border-radius: var(--ag-r-field);
-  background: transparent;
-  color: var(--ag-text-muted);
+  gap: 6px;
+  min-height: 28px;
+  padding: 4px 12px;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: var(--n-ink-fill-hover);
+  color: var(--ag-text);
   font: inherit;
-  font-size: var(--font-size-sm, 11px);
-  cursor: pointer;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
+  cursor: default;
+  transition: var(--ag-transition-color);
 }
 
 .ag-references-btn:hover,
 .ag-reference-add:hover:not(:disabled),
 .ag-references-btn[aria-expanded='true'] {
+  background: var(--n-ink-fill-pressed);
+  color: var(--ag-text);
+}
+
+/* 입력기 줄의 참고자료 버튼은 옆의 권한 버튼과 같다: 쉬는 동안 투명, 올리면 옅은 채움. */
+.ag-references-btn {
+  background: transparent;
+  color: var(--ag-text-secondary);
+  font-weight: var(--ag-fw-regular);
+}
+
+.ag-references-btn:hover,
+.ag-references-btn[aria-expanded='true'] {
   background: var(--ag-hover);
   color: var(--ag-text);
 }
 
+.ag-references-btn:active {
+  background: var(--ag-pressed);
+  transition: none;
+}
+
 .ag-references-count {
-  min-width: 15px;
-  padding-inline: 3px;
-  border-radius: 8px;
-  background: var(--ag-bg-2);
-  font-family: var(--ag-mono);
-  font-size: var(--ag-micro);
-  text-align: center;
+  min-width: 0;
+  padding: 0;
+  background: none;
+  color: inherit;
+  font: var(--ag-fw-regular) var(--ag-fs-secondary) / 1 var(--ag-font);
+  font-variant-numeric: tabular-nums;
 }
 
 .ag-reference-tabs {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  padding: 2px;
-  border: 1px solid var(--ag-border);
-  border-radius: var(--ag-r-field);
-  background: var(--ag-bg-2);
+  padding: 3px;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: var(--n-ink-fill-hover);
 }
 
 .ag-reference-tabpanel {
@@ -132,22 +159,28 @@
 .ag-reference-tabpanel[hidden] { display: none; }
 
 .ag-reference-tab {
-  min-height: 28px;
-  padding: 4px 6px;
+  min-height: 30px;
+  padding: 4px 8px;
   border: 0;
   border-radius: var(--ag-r-chip);
   background: transparent;
-  color: var(--ag-text-muted);
+  color: var(--ag-text-secondary);
   font: inherit;
-  font-size: var(--font-size-sm, 11px);
-  cursor: pointer;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-reference-tab:hover:not(.ag-active):not(:disabled) {
+  color: var(--ag-text);
 }
 
 .ag-reference-tab.ag-active {
-  background: var(--ag-bg);
+  background: var(--ag-raised);
   color: var(--ag-text);
   box-shadow: var(--n-elev-1);
-  font-weight: 650;
+  font-weight: var(--ag-fw-medium);
 }
 
 .ag-reference-tab:disabled,
@@ -168,18 +201,22 @@
 .ag-reference-search {
   flex: 1 1 auto;
   min-width: 0;
-  padding: 6px 8px;
-  border: 1px solid var(--ag-border-strong);
-  border-radius: var(--ag-r-field);
-  background: var(--ag-input-bg);
+  height: 32px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: var(--n-ink-fill-hover);
   color: var(--ag-text);
   font: inherit;
-  font-size: var(--font-size-base, 12px);
+  font-size: var(--ag-fs-body);
 }
 
-.ag-reference-search:focus {
-  border-color: var(--ag-accent);
-  outline: 2px solid color-mix(in srgb, var(--ag-accent) 20%, transparent);
+.ag-reference-search::placeholder {
+  color: var(--ag-text-secondary);
+}
+
+.ag-reference-search:focus-visible {
+  outline: var(--ag-focus-ring);
   outline-offset: 0;
 }
 
@@ -188,7 +225,7 @@
 .ag-reference-empty {
   margin: 0;
   color: var(--ag-text-muted);
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-meta);
   line-height: 1.45;
 }
 
@@ -196,7 +233,7 @@
 .ag-reference-error {
   min-height: 17px;
   color: var(--ag-text-muted);
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-secondary);
 }
 
 .ag-reference-error { color: var(--ag-err); }
@@ -221,8 +258,8 @@
   grid-template-columns: 16px minmax(0, 1fr) 28px;
   align-items: center;
   gap: 7px;
-  min-height: 46px;
-  border-bottom: 1px solid var(--ag-border);
+  min-height: 48px;
+  border-bottom: 1px solid var(--n-ink-hairline);
 }
 
 .ag-reference-file-copy,
@@ -232,7 +269,8 @@
 .ag-reference-file-name {
   overflow: hidden;
   color: var(--ag-text);
-  font-size: var(--font-size-base, 12px);
+  font-size: var(--ag-fs-body);
+  letter-spacing: var(--ag-track-tight);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -240,15 +278,15 @@
 .ag-reference-file-meta {
   margin-top: 2px;
   color: var(--ag-text-muted);
-  font-family: var(--ag-mono);
-  font-size: var(--ag-micro);
+  font-size: var(--ag-fs-meta);
+  font-variant-numeric: var(--ag-numeric);
 }
 
 .ag-reference-status-error { color: var(--ag-err); }
 
 .ag-reference-search-hit {
-  padding: 9px 2px;
-  border-bottom: 1px solid var(--ag-border);
+  padding: 10px 2px;
+  border-bottom: 1px solid var(--n-ink-hairline);
 }
 
 .ag-reference-search-hit-head {
@@ -261,7 +299,7 @@
   flex: 1 1 auto;
   overflow: hidden;
   color: var(--ag-text);
-  font-size: var(--font-size-base, 12px);
+  font-size: var(--ag-fs-secondary);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -269,7 +307,7 @@
 .ag-reference-search-hit-scope {
   flex: 0 0 auto;
   color: var(--ag-text-muted);
-  font-size: var(--ag-micro);
+  font-size: var(--ag-fs-meta);
 }
 
 .ag-reference-search-snippet {
@@ -277,7 +315,7 @@
   margin: 4px 0 0;
   overflow: hidden;
   color: var(--ag-text-secondary);
-  font-size: var(--font-size-sm, 11px);
+  font-size: var(--ag-fs-secondary);
   line-height: 1.5;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
@@ -303,12 +341,12 @@
   align-items: center;
   gap: 4px;
   max-width: 100%;
-  padding: 3px 6px;
-  border: 1px solid var(--ag-border);
+  padding: 3px 8px;
+  border: 1px solid transparent;
   border-radius: var(--ag-r-chip);
-  background: var(--ag-bg-2);
+  background: var(--n-ink-fill-hover);
   color: var(--ag-text-secondary);
-  font-size: var(--ag-micro);
+  font-size: var(--ag-fs-meta);
 }
 
 .ag-reference-quick-uploads > .ag-reference-upload-chip {
@@ -331,7 +369,7 @@
   width: 28px;
   height: 28px;
   flex: 0 0 auto;
-  border-radius: 5px;
+  border-radius: var(--ag-r-inner);
   object-fit: cover;
   background: var(--ag-bg);
 }
@@ -372,8 +410,9 @@
   width: 24px;
   height: 24px;
   padding: 5px;
-  background: color-mix(in srgb, #000 72%, transparent);
-  color: #fff;
+  /* 사진 위에 얹히므로 두 테마 모두 어두운 막을 쓴다. */
+  background: color-mix(in srgb, #000 72%, transparent); /* token-ok */
+  color: #fff; /* token-ok */
   opacity: 0;
   transition: opacity 120ms var(--ag-motion-out), transform 90ms var(--ag-motion-out);
 }
@@ -390,10 +429,8 @@
 
 .ag-reference-upload-chip.ag-image .ag-reference-upload-remove:hover,
 .ag-reference-upload-chip.ag-image .ag-reference-upload-remove:active {
-  background: color-mix(in srgb, #000 88%, transparent);
+  background: color-mix(in srgb, #000 88%, transparent); /* token-ok */
 }
-
-.ag-reference-upload-chip.ag-image .ag-reference-upload-remove:active { transform: scale(0.94); }
 
 .ag-reference-upload-chip.ag-image .ag-reference-upload-retry {
   position: absolute;
@@ -405,23 +442,23 @@
   padding: 3px;
   border: 0;
   border-radius: 50%;
-  background: color-mix(in srgb, #000 70%, transparent);
-  color: #fff;
+  background: color-mix(in srgb, #000 70%, transparent); /* token-ok */
+  color: #fff; /* token-ok */
 }
 
 .ag-reference-file-focused {
-  outline: 2px solid var(--ag-focus);
-  outline-offset: 2px;
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
 }
 
 .ag-reference-upload-retry {
   min-height: 24px;
-  border: 1px solid var(--ag-border);
-  border-radius: var(--ag-radius-sm);
-  padding: 1px 6px;
-  background: var(--ag-surface);
+  border: 0;
+  border-radius: var(--ag-r-chip);
+  padding: 1px 8px;
+  background: var(--n-ink-fill-hover);
   color: var(--ag-text);
-  cursor: pointer;
+  cursor: default;
   font: inherit;
 }
 
@@ -436,18 +473,18 @@
   border-radius: var(--ag-r-chip);
   background: transparent;
   color: var(--ag-text-muted);
-  cursor: pointer;
+  cursor: default;
 }
 
 .ag-reference-upload-retry[hidden],
 .ag-reference-upload-remove[hidden] { display: none; }
 
 .ag-reference-upload-retry:hover,
-.ag-reference-upload-remove:hover { background: var(--ag-hover); }
+.ag-reference-upload-remove:hover { background: var(--n-ink-fill-pressed); }
 .ag-reference-upload-retry:focus-visible,
 .ag-reference-upload-remove:focus-visible {
-  outline: 2px solid var(--ag-focus);
-  outline-offset: 1px;
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
 }
 
 .ag-references-page.ag-dragging::after {
@@ -457,11 +494,11 @@
   z-index: 6;
   display: grid;
   place-items: center;
-  border: 1px dashed var(--ag-accent);
-  border-radius: var(--ag-r-panel);
-  background: color-mix(in srgb, var(--ag-bg) 90%, transparent);
+  border: 1.5px dashed var(--n-ink-tertiary);
+  border-radius: var(--ag-r-card);
+  background: color-mix(in srgb, var(--ag-bg) 92%, transparent);
   color: var(--ag-text);
-  font-size: var(--font-size-md, 13px);
+  font-size: var(--ag-fs-body);
   pointer-events: none;
 }
 
@@ -472,12 +509,12 @@
   z-index: 100;
   display: grid;
   place-items: center;
-  border: 1px dashed var(--ag-accent);
-  border-radius: var(--ag-r-panel);
+  border: 1.5px dashed var(--n-ink-tertiary);
+  border-radius: var(--ag-r-card);
   background: color-mix(in srgb, var(--ag-bg) 92%, transparent);
   color: var(--ag-text);
-  font-size: var(--font-size-md, 13px);
-  font-weight: 650;
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-medium);
   pointer-events: none;
   opacity: 0;
   transform: scale(0.995);
@@ -495,8 +532,8 @@
 .ag-reference-remove:focus-visible,
 .ag-references-btn:focus-visible,
 .ag-references-close:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 1px;
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
 }
 
 .ag-fullscreen .ag-references-page {

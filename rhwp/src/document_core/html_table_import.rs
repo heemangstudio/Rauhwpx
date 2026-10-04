@@ -6,7 +6,9 @@ use crate::error::HwpError;
 use crate::model::control::Control;
 use crate::model::paragraph::Paragraph;
 use crate::model::shape::common_obj_offsets;
-use crate::renderer::style_resolver::resolve_styles;
+
+/// 붙여넣은 HTML 셀의 colspan 상한 (브라우저와 같은 값).
+const MAX_HTML_COL_SPAN: u16 = 1000;
 
 impl DocumentCore {
     pub(crate) fn parse_table_html(&mut self, paragraphs: &mut Vec<Paragraph>, table_html: &str) {
@@ -14,7 +16,7 @@ impl DocumentCore {
         use crate::model::table::{Cell, Table, TablePageBreak};
 
         // --- 1. HTML 파싱: 행/셀 구조 추출 ---
-        let table_lower = table_html.to_lowercase();
+        let table_lower = table_html.to_ascii_lowercase();
 
         struct ParsedCell {
             col_span: u16,
@@ -38,7 +40,7 @@ impl DocumentCore {
             let tr_abs = pos + tr_start;
             let tr_end = find_closing_tag(table_html, tr_abs, "tr");
             let tr_inner = &table_html[tr_abs..tr_end.min(table_html.len())];
-            let tr_inner_lower = tr_inner.to_lowercase();
+            let tr_inner_lower = tr_inner.to_ascii_lowercase();
 
             let mut row_cells: Vec<ParsedCell> = Vec::new();
 
@@ -68,8 +70,11 @@ impl DocumentCore {
                 if let Some(gt) = tr_inner[cell_abs..].find('>') {
                     let tag_str = &tr_inner[cell_abs..cell_abs + gt + 1];
 
-                    // colspan / rowspan 파싱
-                    let col_span = parse_html_attr_u16(tag_str, "colspan").unwrap_or(1).max(1);
+                    // colspan / rowspan 파싱. colspan 은 브라우저와 같은 1000 으로 자르고,
+                    // rowspan 은 행을 다 읽은 뒤 남은 행 수로 자른다 (그리드 정규화 단계).
+                    let col_span = parse_html_attr_u16(tag_str, "colspan")
+                        .unwrap_or(1)
+                        .clamp(1, MAX_HTML_COL_SPAN);
                     let row_span = parse_html_attr_u16(tag_str, "rowspan").unwrap_or(1).max(1);
 
                     // 인라인 style 파싱
@@ -125,12 +130,20 @@ impl DocumentCore {
                     // 셀 내용 HTML 추출
                     let content_start = cell_abs + gt + 1;
                     let close_tag = format!("</{}>", tag_name);
-                    let content_end =
-                        if let Some(close) = tr_inner_lower[content_start..].find(&close_tag) {
-                            content_start + close
-                        } else {
-                            tr_inner.len()
-                        };
+                    // 닫는 태그를 생략한 셀(`<td>a<td>b`)은 다음 셀이나 행 끝에서 끝난다.
+                    // 없는 닫는 태그 길이만큼 건너뛰면 다음 탐색이 행 문자열 밖을 자른다.
+                    let rest = &tr_inner_lower[content_start..];
+                    let (content_end, next_pos) = if let Some(close) = rest.find(&close_tag) {
+                        let end = content_start + close;
+                        (end, end + close_tag.len())
+                    } else {
+                        let end = ["<td", "<th", "</tr"]
+                            .iter()
+                            .filter_map(|needle| rest.find(needle))
+                            .min()
+                            .map_or(tr_inner.len(), |offset| content_start + offset);
+                        (end, end)
+                    };
                     let content_html = tr_inner[content_start..content_end].to_string();
 
                     row_cells.push(ParsedCell {
@@ -148,7 +161,7 @@ impl DocumentCore {
                         vertical_align,
                     });
 
-                    td_pos = content_end + close_tag.len();
+                    td_pos = next_pos;
                 } else {
                     break;
                 }
@@ -165,20 +178,22 @@ impl DocumentCore {
         }
 
         // --- 2. 그리드 정규화: 실제 col 인덱스 계산 ---
+        // 표 행·열 수는 u16 이다. 넘치는 행·열은 버린다 — 인덱스가 u16 에서 돌아 감기면
+        // 행 높이·열 폭 배열 밖을 읽어 panic 한다.
+        parsed_rows.truncate(u16::MAX as usize);
         let row_count = parsed_rows.len() as u16;
-        // colspan 합산으로 최대 열 수 추정
-        let mut max_cols: usize = 0;
-        for row in &parsed_rows {
-            let sum: usize = row.iter().map(|c| c.col_span as usize).sum();
-            if sum > max_cols {
-                max_cols = sum;
+        // rowspan 은 남은 행 수로 자른다 (브라우저도 표 끝에서 병합을 멈춘다).
+        for (ri, row) in parsed_rows.iter_mut().enumerate() {
+            let remaining = (row_count as usize - ri) as u16;
+            for cell in row.iter_mut() {
+                cell.row_span = cell.row_span.min(remaining);
             }
         }
-        max_cols = max_cols.max(1);
-        // rowspan 처리를 위한 점유 그리드
-        let grid_rows = row_count as usize + 16;
-        let grid_cols = max_cols + 16;
-        let mut occupied = vec![vec![false; grid_cols]; grid_rows];
+        // rowspan 처리를 위한 점유 그리드. 행마다 실제로 표시한 열까지만 늘린다 —
+        // 조밀한 행×열 배열은 colspan 이 큰 표에서 메모리를 크게 잡는다.
+        let grid_rows = row_count as usize;
+        let max_grid_cols = u16::MAX as usize;
+        let mut occupied: Vec<Vec<bool>> = vec![Vec::new(); grid_rows];
 
         struct CellPos {
             row: u16,
@@ -196,36 +211,34 @@ impl DocumentCore {
             let mut col_cursor: usize = 0;
             for (ci, cell) in row.iter().enumerate() {
                 // 이미 점유된 위치 건너뛰기
-                while col_cursor < grid_cols && occupied[ri][col_cursor] {
+                while occupied[ri].get(col_cursor).copied().unwrap_or(false) {
                     col_cursor += 1;
                 }
-                let col = col_cursor as u16;
+                if col_cursor >= max_grid_cols {
+                    break;
+                }
+                let col_span = cell.col_span.min((max_grid_cols - col_cursor) as u16);
+                let end_col = col_cursor + col_span as usize;
 
-                // 점유 표시
-                for dr in 0..cell.row_span as usize {
-                    for dc in 0..cell.col_span as usize {
-                        let r = ri + dr;
-                        let c = col_cursor + dc;
-                        if r < grid_rows && c < grid_cols {
-                            occupied[r][c] = true;
-                        }
+                // 점유 표시 (행·열 모두 그리드 안으로 한정)
+                for occupied_row in &mut occupied[ri..ri + cell.row_span as usize] {
+                    if occupied_row.len() < end_col {
+                        occupied_row.resize(end_col, false);
                     }
+                    occupied_row[col_cursor..end_col].fill(true);
                 }
 
                 cell_positions.push(CellPos {
                     row: ri as u16,
-                    col,
-                    col_span: cell.col_span,
+                    col: col_cursor as u16,
+                    col_span,
                     row_span: cell.row_span,
                     parsed_row: ri,
                     parsed_col: ci,
                 });
 
-                let end_col = col + cell.col_span;
-                if end_col > actual_col_count {
-                    actual_col_count = end_col;
-                }
-                col_cursor += cell.col_span as usize;
+                actual_col_count = actual_col_count.max(end_col as u16);
+                col_cursor = end_col;
             }
         }
 
@@ -289,7 +302,7 @@ impl DocumentCore {
                         .copied()
                         .unwrap_or(default_col_width)
                 })
-                .sum();
+                .fold(0u32, u32::saturating_add);
             let cell_height: u32 = (cp.row..cp.row + cp.row_span)
                 .map(|r| {
                     row_heights
@@ -297,7 +310,7 @@ impl DocumentCore {
                         .copied()
                         .unwrap_or(default_row_height)
                 })
-                .sum();
+                .fold(0u32, u32::saturating_add);
 
             // BorderFill 생성/재사용
             let border_fill_id = self.create_border_fill_from_css(
@@ -494,8 +507,8 @@ impl DocumentCore {
         cells.sort_by(|a, b| a.row.cmp(&b.row).then(a.col.cmp(&b.col)));
 
         // --- 5. Table 구조체 조립 ---
-        let total_width: u32 = col_widths.iter().sum();
-        let total_height: u32 = row_heights.iter().sum();
+        let total_width: u32 = col_widths.iter().fold(0u32, |a, &b| a.saturating_add(b));
+        let total_height: u32 = row_heights.iter().fold(0u32, |a, &b| a.saturating_add(b));
 
         // table.attr: 기존 문서의 표와 동일한 패턴 사용
         // 0x082A2311 = treat_as_char | vert_rel_to=Para | horz_rel_to=Column |
@@ -555,9 +568,10 @@ impl DocumentCore {
         };
 
         // HTML <table> CSS에서 표 패딩 파싱
-        let table_style =
-            parse_inline_style(&table_html[..table_html.find('>').unwrap_or(table_html.len()) + 1])
-                .to_lowercase();
+        let table_style = parse_inline_style(
+            &table_html[..table_html.find('>').map_or(table_html.len(), |i| i + 1)],
+        )
+        .to_lowercase();
         let table_padding_pt = parse_css_padding_pt(&table_style);
         // 기본값: L:510 R:510 T:141 B:141 (정상 HWP 파일 패턴)
         let table_padding = crate::model::Padding {
@@ -773,7 +787,7 @@ impl DocumentCore {
         // 새로 추가
         self.document.doc_info.border_fills.push(bf);
         self.document.doc_info.raw_stream_dirty = true;
-        self.styles = resolve_styles(&self.document.doc_info, self.dpi);
+        self.styles = self.resolve_document_styles();
         self.document.doc_info.border_fills.len() as u16
     }
 
@@ -909,7 +923,7 @@ impl DocumentCore {
         // 새로 추가
         self.document.doc_info.border_fills.push(bf);
         self.document.doc_info.raw_stream_dirty = true;
-        self.styles = resolve_styles(&self.document.doc_info, self.dpi);
+        self.styles = self.resolve_document_styles();
         self.document.doc_info.border_fills.len() as u16
     }
 
@@ -1067,7 +1081,7 @@ impl DocumentCore {
 
 /// 태그에서 속성 문자열을 그대로 뽑는다(따옴표 양쪽 지원).
 pub(crate) fn extract_html_attr(tag: &str, attr: &str) -> Option<String> {
-    let lower = tag.to_lowercase();
+    let lower = tag.to_ascii_lowercase();
     for quote in ['"', '\''] {
         let needle = format!("{}={}", attr, quote);
         if let Some(start) = lower.find(&needle) {
@@ -1116,4 +1130,114 @@ pub(crate) fn image_pixel_size(data: &[u8]) -> Option<(u32, u32)> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    //! 클립보드 HTML 은 신뢰할 수 없는 입력이다. 표 파서가 panic 하거나 멈추면 wasm
+    //! 문서 인스턴스 전체가 멈춘다.
+
+    use crate::document_core::DocumentCore;
+    use crate::model::control::Control;
+    use crate::model::table::Table;
+
+    fn blank() -> DocumentCore {
+        let mut core = DocumentCore::new_empty();
+        core.create_blank_document_native().unwrap();
+        core
+    }
+
+    fn pasted_table(core: &DocumentCore) -> &Table {
+        core.document.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|p| p.controls.iter())
+            .find_map(|c| match c {
+                Control::Table(table) => Some(table.as_ref()),
+                _ => None,
+            })
+            .expect("붙여넣은 표 없음")
+    }
+
+    fn cell_texts(table: &Table) -> Vec<String> {
+        table
+            .cells
+            .iter()
+            .map(|cell| cell.paragraphs.iter().map(|p| p.text.as_str()).collect())
+            .collect()
+    }
+
+    /// Ω·K·Å·İ 는 소문자로 바꾸면 UTF-8 길이가 달라진다. 소문자 사본에서 찾은 위치로
+    /// 원문을 자르면 글자 중간을 잘라 panic 하거나 엉뚱한 속성을 읽는다.
+    #[test]
+    fn table_paste_survives_case_folding_that_changes_byte_length() {
+        for text in [
+            "10\u{2126} 저항",
+            "\u{212A}elvin",
+            "\u{212B}ngstrom",
+            "\u{0130}stanbul",
+        ] {
+            let mut core = blank();
+            let html = format!("<table><tr><td>{text}</td><td>2</td></tr></table>");
+            core.paste_html_native(0, 0, 0, &html).unwrap();
+            assert_eq!(cell_texts(pasted_table(&core)), [text, "2"], "{text}");
+        }
+
+        // 속성 값 안의 İ 뒤에 오는 style 도 제자리에서 읽는다.
+        let mut core = blank();
+        core.paste_html_native(
+            0,
+            0,
+            0,
+            "<table><tr><td title=\"\u{0130}\u{0130}\" style=\"width:50pt\">x</td></tr></table>",
+        )
+        .unwrap();
+        let table = pasted_table(&core);
+        assert_eq!(cell_texts(table), ["x"]);
+        assert_eq!(table.cells[0].width, 5000);
+    }
+
+    /// 닫는 태그를 생략한 셀(`<td>a<td>b`)도 HTML 에서는 올바르다.
+    #[test]
+    fn table_paste_accepts_omitted_cell_end_tags() {
+        let mut core = blank();
+        core.paste_html_native(
+            0,
+            0,
+            0,
+            "<table><tr><td>a<td>b</tr><tr><td>c</td></tr></table>",
+        )
+        .unwrap();
+        assert_eq!(cell_texts(pasted_table(&core)), ["a", "b", "c"]);
+    }
+
+    /// colspan·rowspan 이 u16 끝까지 오면 점유 표시가 수십억 번 돌고 열 인덱스가 넘친다.
+    #[test]
+    fn table_paste_clamps_huge_spans() {
+        let mut core = blank();
+        let started = std::time::Instant::now();
+        let paragraphs = core.parse_html_to_paragraphs(
+            "<table><tr><td rowspan=\"99999\" colspan=\"99999\">x</td><td>y</td></tr>\
+             <tr><td>z</td></tr></table>",
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        let table = paragraphs
+            .iter()
+            .flat_map(|p| p.controls.iter())
+            .find_map(|c| match c {
+                Control::Table(table) => Some(table),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            (table.cells[0].row_span, table.cells[0].col_span),
+            (2, 1000)
+        );
+        assert_eq!(table.col_count, 1001);
+        assert_eq!(table.row_count, 2);
+    }
 }

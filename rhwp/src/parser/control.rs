@@ -201,10 +201,9 @@ fn parse_table_control(ctrl_data: &[u8], child_records: &[Record]) -> Control {
 
         if let Some(start) = caption_start {
             // 캡션 레코드 범위 수집 (TABLE 레코드 이전까지)
-            let caption_records: Vec<Record> =
-                child_records[start..table_idx].iter().cloned().collect();
+            let caption_records = &child_records[start..table_idx];
             if !caption_records.is_empty() {
-                table.caption = Some(parse_caption(&caption_records));
+                table.caption = Some(parse_caption(caption_records));
             }
         }
     }
@@ -356,6 +355,12 @@ fn parse_cell(records: &[Record]) -> Cell {
     // bit 19~20: 줄바꿈 방식
     // bit 21~22: 세로 정렬 (0=top, 1=center, 2=bottom)
     cell.text_direction = ((list_attr >> 16) & 0x07) as u8;
+    // 줄바꿈 방식 1 = 자간 조절로 한 줄 유지(HWPX lineWrap="SQUEEZE", table-vpos-01 짝 대조).
+    cell.line_wrap = if (list_attr >> 19) & 0x03 == 1 {
+        crate::model::table::CellLineWrap::Squeeze
+    } else {
+        crate::model::table::CellLineWrap::Break
+    };
     let v_align = ((list_attr >> 21) & 0x03) as u8;
     cell.vertical_align = match v_align {
         1 => VerticalAlign::Center,
@@ -1060,7 +1065,7 @@ fn parse_form_properties(prop_str: &str, form: &mut FormObject) {
                     pos += 1;
                 } // ':' 건너뛰기
                   // 정확히 N문자 읽기
-                let end = (pos + n).min(len);
+                let end = pos.saturating_add(n).min(len);
                 let value: String = chars[pos..end].iter().collect();
                 pos = end;
                 apply_form_property(&key, &value, form);

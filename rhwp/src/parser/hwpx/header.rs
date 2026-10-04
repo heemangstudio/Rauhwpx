@@ -175,6 +175,17 @@ pub(super) fn parse_hwpx_header_with_margin_units(
                 let name = e.name();
                 let local = local_name(name.as_ref());
                 match local {
+                    b"compatibleDocument" => {
+                        doc_info.hwpx_target_program = e
+                            .attributes()
+                            .flatten()
+                            .find(|attr| attr.key.as_ref() == b"targetProgram")
+                            .map(|attr| attr_str(&attr));
+                    }
+                    b"doNotAlignLastForbidden" => doc_info.do_not_align_last_forbidden = true,
+                    b"adjustBaselineInFixedLinespacing" => {
+                        doc_info.adjust_baseline_in_fixed_line_spacing = true
+                    }
                     b"fontface" => {
                         // <hh:fontface lang="HANGUL"> → 언어 그룹 설정
                         for attr in e.attributes().flatten() {
@@ -238,6 +249,17 @@ pub(super) fn parse_hwpx_header_with_margin_units(
                 let name = e.name();
                 let local = local_name(name.as_ref());
                 match local {
+                    b"compatibleDocument" => {
+                        doc_info.hwpx_target_program = e
+                            .attributes()
+                            .flatten()
+                            .find(|attr| attr.key.as_ref() == b"targetProgram")
+                            .map(|attr| attr_str(&attr));
+                    }
+                    b"doNotAlignLastForbidden" => doc_info.do_not_align_last_forbidden = true,
+                    b"adjustBaselineInFixedLinespacing" => {
+                        doc_info.adjust_baseline_in_fixed_line_spacing = true
+                    }
                     b"beginNum" => parse_begin_num(e, &mut doc_props),
                     b"font" => {
                         parse_font(e, &mut reader, &mut doc_info, current_font_group, false)?;
@@ -649,6 +671,11 @@ fn hwp5_default_font_name(name: &str) -> Option<&'static str> {
 
 // ─── CharShape ───
 
+/// charPr/paraPr `id` 로 배열 위치를 정할 때 허용하는 최대값.
+/// 모델의 문단모양 ID 는 u16 이고 실문서는 수천 개 이하다. 이보다 큰 id 로
+/// `resize_with` 하면 수십억 개 할당(64bit OOM)이나 `idx + 1` 오버플로(wasm32)가 난다.
+const MAX_HEADER_SHAPE_ID: usize = u16::MAX as usize;
+
 fn parse_char_shape(
     e: &quick_xml::events::BytesStart,
     reader: &mut Reader<&[u8]>,
@@ -914,8 +941,9 @@ fn parse_char_shape(
     // 그대로 push 하면 id 가 등장 순서와 다르거나(재정렬) 중간이 비어 있을 때
     // (스타일 삭제 등) charPrIDRef 참조가 엉뚱한 CharShape 로 해석된다.
     // id 가 없는(비정상) 항목만 등장 순서 fallback 으로 push.
+    // 비정상적으로 큰 id 는 빈 칸 채우기 할당이 폭주하므로 id 없음과 같이 취급한다.
     match id {
-        Some(idx) => {
+        Some(idx) if idx <= MAX_HEADER_SHAPE_ID => {
             if doc_info.char_shapes.len() <= idx {
                 doc_info
                     .char_shapes
@@ -923,7 +951,7 @@ fn parse_char_shape(
             }
             doc_info.char_shapes[idx] = cs;
         }
-        None => doc_info.char_shapes.push(cs),
+        _ => doc_info.char_shapes.push(cs),
     }
     Ok(())
 }
@@ -1019,9 +1047,9 @@ fn parse_para_shape(
     }
 
     // `id` 속성은 paraPrIDRef 가 참조하는 실제 배열 인덱스다. charPr 과 동일한
-    // 이유로 등장 순서 push 대신 id 로 배치한다.
+    // 이유로 등장 순서 push 대신 id 로 배치한다(상한 초과 id 는 등장 순서 push).
     match id {
-        Some(idx) => {
+        Some(idx) if idx <= MAX_HEADER_SHAPE_ID => {
             if doc_info.para_shapes.len() <= idx {
                 doc_info
                     .para_shapes
@@ -1029,7 +1057,7 @@ fn parse_para_shape(
             }
             doc_info.para_shapes[idx] = ps;
         }
-        None => doc_info.para_shapes.push(ps),
+        _ => doc_info.para_shapes.push(ps),
     }
     Ok(())
 }
@@ -1142,7 +1170,18 @@ fn parse_para_shape_child(
                         // [#1986] 값 3종(BREAK_WORD/KEEP_WORD/HYPHENATION) — 원문 보존.
                         // 미보존 시 직렬화가 KEEP_WORD 로 고정해 꼬리말·표셀 재계산
                         // 줄나눔이 바뀌고 레이아웃(페이지 수)이 갈린다.
-                        ps.break_latin_word = Some(attr_str(&attr));
+                        let value = attr_str(&attr);
+                        // HWP5 ParaShape attr1 bit 5-6 (줄 나눔 기준 영어 단위)와 같은 값으로
+                        // 둔다: KEEP_WORD=0(단어), HYPHENATION=1(하이픈), BREAK_WORD=2(글자).
+                        // 한컴 HWP/HWPX 짝 문서 대조로 같은 매핑을 확인했다. 비트가 비어
+                        // 있으면 줄 나눔이 항상 단어 단위로 떨어진다.
+                        let unit = match value.as_str() {
+                            "HYPHENATION" => 1,
+                            "BREAK_WORD" => 2,
+                            _ => 0,
+                        };
+                        ps.attr1 = (ps.attr1 & !(0x03 << 5)) | (unit << 5);
+                        ps.break_latin_word = Some(value);
                     }
                     b"breakNonLatinWord" => {
                         // HWP5 ParaShape attr1 bit 7: non-Latin line-break unit.
@@ -1159,9 +1198,19 @@ fn parse_para_shape_child(
                             ps.attr1 &= !(1 << 7);
                         }
                     }
+                    b"lineWrap" => {
+                        let value = match attr.value.as_ref() {
+                            b"SQUEEZE" => 1,
+                            b"KEEP" => 2,
+                            _ => 0,
+                        };
+                        ps.attr2 = (ps.attr2 & !0x03) | value;
+                    }
                     b"widowOrphan" => {
+                        // HWP5 ParaShape attr1 bit 16 (외톨이줄 보호). attr2 bit 5 는 HWP5
+                        // 명세상 '한글과 숫자 간격 자동 조절'이라 autoSpacing 이 쓴다.
                         if parse_bool(&attr) {
-                            ps.attr2 |= 1 << 5;
+                            ps.attr1 |= 1 << 16;
                         }
                     }
                     b"keepWithNext" => {
@@ -1185,9 +1234,20 @@ fn parse_para_shape_child(
             ParaShapeChildKind::Other
         }
         b"autoSpacing" => {
-            // HWPX autoSpacing은 HWP ParaShape.attr1 bits 20..21이 아니다.
-            // 해당 비트는 문단 세로 정렬이며, <align vertical="...">에서 채운다.
-            // autoSpacing의 HWP 저장 위치는 별도 검증 전까지 attr1에 반영하지 않는다.
+            // HWP5 ParaShape attr2 bit 4(한글-영어 간격 자동 조절)/bit 5(한글-숫자).
+            // attr1 bits 20..21 은 문단 세로 정렬(<align vertical>)이라 쓰지 않는다.
+            for attr in ce.attributes().flatten() {
+                let bit = match attr.key.as_ref() {
+                    b"eAsianEng" => 4,
+                    b"eAsianNum" => 5,
+                    _ => continue,
+                };
+                if parse_bool(&attr) {
+                    ps.attr2 |= 1 << bit;
+                } else {
+                    ps.attr2 &= !(1 << bit);
+                }
+            }
             ParaShapeChildKind::Other
         }
         b"switch" => ParaShapeChildKind::Switch,
@@ -2029,6 +2089,25 @@ fn apply_bullet_para_head_attrs(bullet: &mut Bullet, e: &quick_xml::events::Byte
             b"charPrIDRef" => bullet.char_shape_id = parse_u32(&attr),
             b"widthAdjust" => bullet.width_adjust = parse_i16(&attr),
             b"textOffset" => bullet.text_distance = parse_i16(&attr),
+            // 문단 머리 속성 비트는 번호 문단 머리(parse_numbering_para_head_attrs)와 같다.
+            b"align" => {
+                let align = match attr_str(&attr).as_str() {
+                    "CENTER" => 1,
+                    "RIGHT" => 2,
+                    _ => 0,
+                };
+                bullet.attr = (bullet.attr & !3) | align;
+            }
+            b"useInstWidth" => {
+                bullet.attr = (bullet.attr & !(1 << 2)) | (u32::from(parse_bool(&attr)) << 2)
+            }
+            b"autoIndent" => {
+                bullet.attr = (bullet.attr & !(1 << 3)) | (u32::from(parse_bool(&attr)) << 3)
+            }
+            b"textOffsetType" => {
+                bullet.attr =
+                    (bullet.attr & !(1 << 4)) | (u32::from(attr_str(&attr) == "HWPUNIT") << 4);
+            }
             _ => {}
         }
     }
@@ -2121,6 +2200,24 @@ fn parse_numbering_para_head_attrs(
             b"numFormat" => {
                 head.number_format = parse_numbering_format_code(&attr_str(&attr));
                 head.attr = (head.attr & !(0x0f << 5)) | ((head.number_format as u32) << 5);
+            }
+            b"align" => {
+                let align = match attr_str(&attr).as_str() {
+                    "CENTER" => 1,
+                    "RIGHT" => 2,
+                    _ => 0,
+                };
+                head.attr = (head.attr & !3) | align;
+            }
+            b"useInstWidth" => {
+                head.attr = (head.attr & !(1 << 2)) | (u32::from(parse_bool(&attr)) << 2)
+            }
+            b"autoIndent" => {
+                head.attr = (head.attr & !(1 << 3)) | (u32::from(parse_bool(&attr)) << 3)
+            }
+            b"textOffsetType" => {
+                head.attr =
+                    (head.attr & !(1 << 4)) | (u32::from(attr_str(&attr) == "HWPUNIT") << 4);
             }
             b"charPrIDRef" => head.char_shape_id = parse_u32(&attr),
             b"widthAdjust" => head.width_adjust = parse_i16(&attr),
@@ -2355,6 +2452,58 @@ fn parse_border_width(attr: &quick_xml::events::attributes::Attribute) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oversized_shape_ids_do_not_drive_allocation() {
+        let xml = r#"<hh:head><hh:refList><hh:charProperties itemCnt="2"><hh:charPr id="0" height="1000"></hh:charPr><hh:charPr id="4294967295" height="2000"></hh:charPr></hh:charProperties><hh:paraProperties itemCnt="2"><hh:paraPr id="0"></hh:paraPr><hh:paraPr id="4294967295"></hh:paraPr></hh:paraProperties></hh:refList></hh:head>"#;
+        let (info, _) = parse_hwpx_header(xml).unwrap();
+        assert_eq!(info.char_shapes.len(), 2);
+        assert_eq!(info.char_shapes[0].base_size, 1000);
+        assert_eq!(info.char_shapes[1].base_size, 2000);
+        assert_eq!(info.para_shapes.len(), 2);
+    }
+
+    #[test]
+    fn compatible_target_program_is_parsed_from_both_element_forms() {
+        for element in [
+            r#"<hh:compatibleDocument targetProgram="MS_WORD"/>"#,
+            r#"<hh:compatibleDocument targetProgram="MS_WORD"></hh:compatibleDocument>"#,
+        ] {
+            let xml = format!("<hh:head><hh:refList/>{element}</hh:head>");
+            let (info, _) = parse_hwpx_header(&xml).unwrap();
+            assert_eq!(info.hwpx_target_program.as_deref(), Some("MS_WORD"));
+        }
+        let (info, _) = parse_hwpx_header("<hh:head><hh:refList/></hh:head>").unwrap();
+        assert_eq!(info.hwpx_target_program, None);
+    }
+
+    #[test]
+    fn fixed_baseline_compatibility_is_explicit() {
+        for element in [
+            "<hh:adjustBaselineInFixedLinespacing/>",
+            "<hh:adjustBaselineInFixedLinespacing></hh:adjustBaselineInFixedLinespacing>",
+        ] {
+            let xml = format!("<hh:head><hh:refList/><hh:compatibleDocument><hh:layoutCompatibility>{element}</hh:layoutCompatibility></hh:compatibleDocument></hh:head>");
+            let (info, _) = parse_hwpx_header(&xml).unwrap();
+            assert!(info.adjust_baseline_in_fixed_line_spacing);
+        }
+        let (info, _) = parse_hwpx_header("<hh:head><hh:refList/></hh:head>").unwrap();
+        assert!(!info.adjust_baseline_in_fixed_line_spacing);
+    }
+
+    #[test]
+    fn last_forbidden_alignment_compatibility_is_explicit() {
+        for element in [
+            "<hh:doNotAlignLastForbidden/>",
+            "<hh:doNotAlignLastForbidden></hh:doNotAlignLastForbidden>",
+        ] {
+            let xml = format!("<hh:head><hh:refList/><hh:compatibleDocument><hh:layoutCompatibility>{element}</hh:layoutCompatibility></hh:compatibleDocument></hh:head>");
+            let (info, _) = parse_hwpx_header(&xml).unwrap();
+            assert!(info.do_not_align_last_forbidden);
+        }
+        let (info, _) = parse_hwpx_header("<hh:head><hh:refList/></hh:head>").unwrap();
+        assert!(!info.do_not_align_last_forbidden);
+    }
 
     #[test]
     fn package_version_selects_margin_units_without_using_header_version() {
@@ -2593,7 +2742,8 @@ mod tests {
     <hh:numberings itemCnt="1">
       <hh:numbering id="1" start="0">
         <hh:paraHead start="1" level="1" numFormat="DIGIT"
-          widthAdjust="800" textOffset="50" charPrIDRef="7">^1.</hh:paraHead>
+          widthAdjust="800" textOffset="50" textOffsetType="HWPUNIT"
+          align="RIGHT" useInstWidth="1" autoIndent="1" charPrIDRef="7">^1.</hh:paraHead>
         <hh:paraHead start="3" level="2" numFormat="HANGUL_SYLLABLE">(^2)</hh:paraHead>
       </hh:numbering>
     </hh:numberings>
@@ -2610,6 +2760,7 @@ mod tests {
         assert_eq!(numbering.level_start_numbers[1], 3);
         assert_eq!(numbering.heads[0].number_format, 0);
         assert_eq!(numbering.heads[1].number_format, 8);
+        assert_eq!(numbering.heads[0].attr & 0x1f, 0b11110);
         assert_eq!(numbering.heads[0].width_adjust, 800);
         assert_eq!(numbering.heads[0].text_distance, 50);
         assert_eq!(numbering.heads[0].char_shape_id, 7);
@@ -2774,7 +2925,8 @@ mod tests {
     <hh:paraProperties itemCnt="2">
       <hh:paraPr id="1" tabPrIDRef="0" condense="0" fontLineHeight="0">
         <hh:align horizontal="JUSTIFY" vertical="BASELINE"/>
-        <hh:breakSetting breakLatinWord="KEEP_WORD" breakNonLatinWord="KEEP_WORD" widowOrphan="0" keepWithNext="0" keepLines="0" pageBreakBefore="0" lineWrap="BREAK"/>
+        <hh:breakSetting breakLatinWord="KEEP_WORD" breakNonLatinWord="KEEP_WORD" widowOrphan="1" keepWithNext="0" keepLines="0" pageBreakBefore="0" lineWrap="BREAK"/>
+        <hh:autoSpacing eAsianEng="0" eAsianNum="1"/>
       </hh:paraPr>
       <hh:paraPr id="2" tabPrIDRef="0" condense="0" fontLineHeight="0">
         <hh:align horizontal="JUSTIFY" vertical="BASELINE"/>
@@ -2797,6 +2949,13 @@ mod tests {
             doc_info.para_shapes[2].break_latin_word.as_deref(),
             Some("HYPHENATION")
         );
+        // attr1 bit 5-6 (영어 단위): KEEP_WORD=0, HYPHENATION=1 — HWP5 와 같은 값.
+        assert_eq!((doc_info.para_shapes[1].attr1 >> 5) & 0x03, 0);
+        assert_eq!((doc_info.para_shapes[2].attr1 >> 5) & 0x03, 1);
+        // widowOrphan = attr1 bit 16, autoSpacing = attr2 bit 4(영어)/5(숫자) — HWP5 와 같은 자리.
+        assert_ne!(doc_info.para_shapes[1].attr1 & (1 << 16), 0);
+        assert_eq!(doc_info.para_shapes[1].attr2 & (0x03 << 4), 1 << 5);
+        assert_eq!(doc_info.para_shapes[2].attr1 & (1 << 16), 0);
     }
 
     #[test]

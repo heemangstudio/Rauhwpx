@@ -9,7 +9,9 @@ import {
   getLocalFontState,
   getLocalFonts,
   importLocalFontFiles,
+  getImportedFontGeneration,
   getImportedLocalFontBytes,
+  hasImportedLocalFontFace,
   localFontImportMessage,
   LOCAL_FONT_BYTE_READ_CONCURRENCY,
   LOCAL_FONT_MAX_BYTES_PER_FACE,
@@ -18,12 +20,14 @@ import {
   loadLocalFontBytes,
   loadLocalFontBytesFor,
   loadStoredLocalFonts,
+  registerLocalFontFace,
   resetLocalFontsForTests,
   resolveLocalFont,
   type LocalFontSnapshot,
 } from '../src/core/local-fonts.ts';
 import { analyzeDocumentFonts } from '../src/core/document-font-status.ts';
 import { fontFamilyChainForDisplay } from '../src/core/font-substitution.ts';
+import { setHftWasmApi, takeHftOutlineChange } from '../src/core/hft-glyphs.ts';
 
 const STORAGE_KEY = 'rhwp-local-fonts';
 
@@ -217,6 +221,8 @@ test('세션 글꼴 파일은 웹 대체 face보다 먼저 선택되고 CanvasKi
     },
   };
   try {
+    // 가져오기 전에 만든 체인은 캐시되므로, 가져온 뒤 새 face 로 바뀌어야 한다.
+    const chainBeforeImport = fontFamilyChainForDisplay('맑은 고딕');
     const file = new File([bytes], 'Malgun.ttf');
     const result = await importLocalFontFiles([file, new File([new Uint8Array([0])], 'unusable.ttf')]);
     const { imported } = result;
@@ -230,11 +236,45 @@ test('세션 글꼴 파일은 웹 대체 face보다 먼저 선택되고 CanvasKi
     assert.deepEqual(new Uint8Array(directBytes!), bytes);
     new Uint8Array(directBytes!)[0] = 0;
     assert.deepEqual(new Uint8Array(getImportedLocalFontBytes('맑은 고딕')!), bytes);
+    assert.notEqual(firstQuotedFontFamily(chainBeforeImport), imported[0]?.runtimeFamily);
     assert.equal(firstQuotedFontFamily(fontFamilyChainForDisplay('맑은 고딕')), imported[0]?.runtimeFamily);
     const loaded = await loadLocalFontBytesFor(['맑은 고딕']);
     assert.deepEqual(new Uint8Array(loaded.get(localFontFaceKey(imported[0]!))!), bytes);
     assert.equal(getLocalFontState().stored, false);
   } finally {
+    resetLocalFontsForTests();
+    g.document = originalDocument;
+    g.FontFace = originalFontFace;
+  }
+});
+
+test('HFT outline-only imports count toward the session face limit', async () => {
+  const g = globalThis as TestGlobals & { FontFace?: unknown };
+  const originalDocument = g.document;
+  const originalFontFace = g.FontFace;
+  const bytes = new TextEncoder().encode('Han Unified Font File 1.0\x1a').buffer as ArrayBuffer;
+  let registrations = 0;
+  g.FontFace = class {};
+  g.document = { fonts: { add() {}, delete() { return true; } } };
+  resetLocalFontsForTests();
+  takeHftOutlineChange();
+  setHftWasmApi({
+    register: () => { registrations += 1; return true; },
+    glyphPath: () => '',
+  });
+  try {
+    for (let index = 0; index < LOCAL_FONT_MAX_FACES_PER_DOCUMENT; index += 1) {
+      const result = await registerLocalFontFace(bytes, { source: 'imported', fileName: `bank-${index}.hft` });
+      assert.equal(result.ok, false);
+      if (!result.ok) assert.equal(result.reason, 'hft-outlines');
+    }
+    const overflow = await registerLocalFontFace(bytes, { source: 'imported', fileName: 'overflow.hft' });
+    assert.equal(overflow.ok, false);
+    if (!overflow.ok) assert.equal(overflow.reason, 'face-limit');
+    assert.equal(registrations, LOCAL_FONT_MAX_FACES_PER_DOCUMENT);
+  } finally {
+    setHftWasmApi(null);
+    takeHftOutlineChange();
     resetLocalFontsForTests();
     g.document = originalDocument;
     g.FontFace = originalFontFace;
@@ -261,11 +301,12 @@ test('글꼴 파일 일부가 실패해도 정상 face와 굵기를 보존하고
       return this;
     }
   }
-  const font = (style: string, postscriptName: string, fileName: string) => new File([
+  const font = (style: string, postscriptName: string, fileName: string, fullName = `Malgun Gothic ${style}`) => new File([
     createSfntWithNameRecords([
       { nameId: 1, value: 'Malgun Gothic' },
+      { nameId: 1, value: '맑은 고딕' },
       { nameId: 2, value: style },
-      { nameId: 4, value: `Malgun Gothic ${style}` },
+      { nameId: 4, value: fullName },
       { nameId: 6, value: postscriptName },
     ]),
   ], fileName);
@@ -278,6 +319,7 @@ test('글꼴 파일 일부가 실패해도 정상 face와 굵기를 보존하고
     },
   };
   try {
+    const generationBefore = getImportedFontGeneration();
     const result = await importLocalFontFiles([
       font('Regular', 'Malgun-Regular', 'Regular.ttf'),
       font('Bold', 'Malgun-Bold', 'Bold.ttf'),
@@ -290,6 +332,66 @@ test('글꼴 파일 일부가 실패해도 정상 face와 굵기를 보존하고
     assert.equal(added[0]?.family, added[1]?.family);
     assert.deepEqual(added.map(face => face.weight), ['400', '700']);
     assert.equal(resolveLocalFont('Malgun Gothic')?.style, 'Regular');
+    assert.equal(hasImportedLocalFontFace('Malgun Gothic'), true);
+    assert.equal(getImportedFontGeneration(), generationBefore + 2);
+    assert.notDeepEqual(
+      new Uint8Array(getImportedLocalFontBytes('Malgun Gothic', false, false)!),
+      new Uint8Array(getImportedLocalFontBytes('Malgun Gothic', true, false)!),
+    );
+    assert.deepEqual(
+      new Uint8Array(getImportedLocalFontBytes('Malgun Gothic', true, false)!),
+      new Uint8Array(await font('Bold', 'Malgun-Bold', 'Bold.ttf').arrayBuffer()),
+    );
+    assert.deepEqual(
+      new Uint8Array(getImportedLocalFontBytes('맑은 고딕', true, false)!),
+      new Uint8Array(await font('Bold', 'Malgun-Bold', 'Bold.ttf').arrayBuffer()),
+    );
+    assert.deepEqual(
+      new Uint8Array(getImportedLocalFontBytes('Malgun-Regular', true, false)!),
+      new Uint8Array(await font('Regular', 'Malgun-Regular', 'Regular.ttf').arrayBuffer()),
+    );
+
+    const replacement = font('Regular', 'Malgun-Regular', 'Regular-v2.ttf', 'Malgun Gothic Regular v2');
+    const replaced = await importLocalFontFiles([replacement]);
+    assert.equal(replaced.imported.length, 1);
+    assert.equal(getImportedFontGeneration(), generationBefore + 3);
+    assert.deepEqual(
+      new Uint8Array(getImportedLocalFontBytes('Malgun Gothic', false, false)!),
+      new Uint8Array(await replacement.arrayBuffer()),
+    );
+    assert.deepEqual(
+      new Uint8Array(getImportedLocalFontBytes('Malgun Gothic', true, false)!),
+      new Uint8Array(await font('Bold', 'Malgun-Bold', 'Bold.ttf').arrayBuffer()),
+    );
+  } finally {
+    resetLocalFontsForTests();
+    g.document = originalDocument;
+    g.FontFace = originalFontFace;
+  }
+});
+
+test('데스크톱 수식 서체는 동기 측정용 바이트를 보존하고 일반 서체는 사본을 버린다', async () => {
+  const g = globalThis as TestGlobals & { FontFace?: unknown };
+  const originalDocument = g.document;
+  const originalFontFace = g.FontFace;
+  resetLocalFontsForTests();
+  g.FontFace = class { async load() { return this; } };
+  g.document = { fonts: { add() {}, delete() { return true; } } };
+  try {
+    for (const family of ['HyhwpEQ', 'HCR Batang', 'Batang', 'Times New Roman', 'Noto Sans KR']) {
+      const bytes = createSfntWithNameRecords([
+        { nameId: 1, value: family }, { nameId: 2, value: 'Regular' },
+        { nameId: 4, value: family }, { nameId: 6, value: family.replaceAll(' ', '') },
+      ]);
+      const result = await registerLocalFontFace(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), {
+        source: 'desktop', fileName: `${family}.ttf`,
+      });
+      assert.ok(result.ok);
+      assert.equal(hasImportedLocalFontFace(family), true, 'loaded FontFace availability survives disposal of its JS byte copy');
+      const retained = getImportedLocalFontBytes(family);
+      if (family === 'Noto Sans KR') assert.equal(retained, null);
+      else assert.deepEqual(new Uint8Array(retained!), bytes);
+    }
   } finally {
     resetLocalFontsForTests();
     g.document = originalDocument;

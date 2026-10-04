@@ -38,31 +38,40 @@
   --agent-edit-wash: rgba(127, 124, 164, 0.16);
 }
 
-@property --agent-editing-angle {
-  syntax: '<angle>';
-  inherits: false;
-  initial-value: 0deg;
-}
-
+/* 테두리 빛줄기: 고정된 conic-gradient 판을 transform 으로 돌리고 테두리 모양 mask 로
+   잘라 낸다. 각도 속성을 매 프레임 바꾸면 메인 스레드가 전체를 다시 칠하지만,
+   rotate 는 컴포지터가 이미 래스터된 판을 돌리기만 한다. */
 #agent-editing-frame {
-  --agent-editing-angle: 0deg;
   position: absolute;
   inset: 0;
   z-index: 30;
   box-sizing: border-box;
   padding: 2px;
+  overflow: hidden;
   pointer-events: none;
-  background: conic-gradient(
-    from var(--agent-editing-angle),
-    color-mix(in srgb, var(--agent-edit-accent) 18%, transparent) 0 54%,
-    color-mix(in srgb, var(--agent-edit-accent) 92%, white) 70%,
-    color-mix(in srgb, var(--agent-edit-accent) 32%, transparent) 84% 100%
-  );
+  container-type: size;
   mask:
     linear-gradient(#000 0 0) content-box,
     linear-gradient(#000 0 0);
   mask-composite: exclude;
   filter: drop-shadow(0 0 5px var(--agent-edit-wash));
+}
+
+/* 판은 프레임 중심에 놓고 대각선보다 크게 잡아(√2 ≈ 1.42) 어느 각도에서도 모서리를 덮는다. */
+#agent-editing-frame::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 142cqmax;
+  height: 142cqmax;
+  margin: -71cqmax 0 0 -71cqmax;
+  background: conic-gradient(
+    color-mix(in srgb, var(--agent-edit-accent) 18%, transparent) 0 54%,
+    color-mix(in srgb, var(--agent-edit-accent) 92%, white) 70%,
+    color-mix(in srgb, var(--agent-edit-accent) 32%, transparent) 84% 100%
+  );
+  will-change: transform;
   animation: agent-editing-sweep 3.2s linear infinite;
 }
 
@@ -83,7 +92,7 @@
   box-sizing: border-box;
   padding: 5px 9px;
   border: 1px solid color-mix(in srgb, var(--agent-edit-accent) 45%, var(--ui-border));
-  border-radius: 999px;
+  border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--ui-surface) 90%, transparent);
   box-shadow: var(--shadow-light), 0 0 0 2px var(--agent-edit-wash);
   backdrop-filter: blur(8px);
@@ -106,7 +115,8 @@
 }
 
 @keyframes agent-editing-sweep {
-  to { --agent-editing-angle: 360deg; }
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 @keyframes agent-editing-dot {
@@ -118,6 +128,10 @@
 
 /* 눈금자 교차 코너 (좌상단) */
 #ruler-corner {
+  /* 사이드바 inset 전이 중 가로 눈금자가 transform 으로 왼쪽에 밀려 들어와도
+     코너가 위에 그려진다. */
+  position: relative;
+  z-index: 1;
   background: var(--ruler-bg);
   border-right: 1px solid var(--ui-border);
   border-bottom: 1px solid var(--ui-border);
@@ -146,6 +160,9 @@
   /* 사이드바 inset 등 폭 변경 시 브라우저 scroll anchoring 이
      setScrollLeft 가운데 정렬을 되돌려 용지가 한쪽으로 남는 것을 막는다. */
   overflow-anchor: none;
+  /* 문서 끝에서 휠이 바깥으로 이어지거나 가로 오버스크롤이 뒤로 가기 제스처로
+     새지 않게 한다. */
+  overscroll-behavior: contain;
   background: var(--doc-workspace);
   /* 작업 영역은 크롬보다 한 단 아래로 파여 있다. inset 그림자는
      스크롤과 무관하게 테두리에 붙어 있어 경계에서만 읽힌다. */
@@ -204,7 +221,7 @@
   font: inherit;
   font-size: var(--font-size-base);
   font-weight: 600;
-  cursor: pointer;
+  cursor: default;
   box-shadow: var(--shadow-light);
 }
 
@@ -225,7 +242,7 @@
   color: var(--ui-text-secondary);
   font: inherit;
   font-size: var(--font-size-sm);
-  cursor: pointer;
+  cursor: default;
 }
 
 #document-new-action:hover {
@@ -356,6 +373,10 @@
 @media (prefers-reduced-motion: reduce) {
   #agent-editing-frame {
     background: color-mix(in srgb, var(--agent-edit-accent) 58%, transparent);
+  }
+
+  #agent-editing-frame::before {
+    display: none;
     animation: none;
   }
 

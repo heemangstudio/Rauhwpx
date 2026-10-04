@@ -66,6 +66,11 @@ fn issue_1100_hwpx_header_negative_para_offset_clamped_to_header_origin() {
     assert_eq!(doc.page_count(), 4, "exam_social.hwpx page count");
 
     let svg = doc.render_page_svg_native(1).expect("render page 2");
+    // Hancom exam_social-2022.pdf p2의 머리말 외곽은 x=56.458pt,
+    // 폭=709.744pt다. 레이아웃 폭 888.2px로 정규화하면 번호 원점은
+    // (70.744, 120.576)px로, hasMargin=0인 셀의 510/141hu 여백을
+    // 더하지 않은 (70.667, 120.547)px와 일치한다. 종전 좌표는 저장된
+    // 비활성 cellMargin을 적용해 오른쪽 6.8px, 아래 1.88px로 밀렸다.
     let target_y = svg
         .split("<rect ")
         .skip(1)
@@ -75,7 +80,7 @@ fn issue_1100_hwpx_header_negative_para_offset_clamped_to_header_origin() {
             let x = attr_f64(tag, "x")?;
             let width = attr_f64(tag, "width")?;
             let height = attr_f64(tag, "height")?;
-            if (x - 77.46666666666667).abs() < 0.01
+            if (x - 70.66666666666667).abs() < 0.01
                 && (width - 212.54666666666665).abs() < 0.01
                 && (height - 49.13333333333333).abs() < 0.01
             {
@@ -100,19 +105,18 @@ fn issue_1100_hwpx_even_header_page_auto_number_replaces_one_placeholder_only() 
     let svg = doc.render_page_svg_native(1).expect("render page 2");
 
     assert!(
-        has_text_node_at(&svg, 77.46666666666667, 122.42666666666668, "2"),
+        has_text_node_at(&svg, 70.66666666666667, 120.54666666666668, "2"),
         "page auto number must render once at the first placeholder"
     );
-    // [#1382] fwSpace 의 x 앵커 100.47 → 103.83: autoNum 폭 축 일관화로 char_shapes
-    // 경계가 offsets 축(9)으로 정정되어, fwSpace 가 한컴 원본 run 구조대로 자동번호와
-    // 같은 run(charPrIDRef 63)의 스타일로 귀속된다 (종전엔 1유닛 축 경계 탓에 후속
-    // run 74 스타일로 잘못 귀속). 본 테스트의 의도(번호 1회 치환 + fwSpace 보존)는 불변.
+    // fwSpace는 번호 원점 + 26.3467px다 (HFT 장평 90%: 문서 장평 그대로 배치 단위로 내림). 비활성 셀 패딩을 제거해도
+    // [#1382]의 offsets 축(9) 경계와 charPrIDRef 63 스타일은 유지한다.
+    // 번호는 한 번만 치환하고 뒤 fwSpace는 그대로 남아야 한다.
     assert!(
-        has_text_node_at(&svg, 103.83066666666667, 122.42666666666668, "\u{2007}"),
+        has_text_node_at(&svg, 97.01333333333334, 120.54666666666668, "\u{2007}"),
         "the full-width space after the page auto number must remain a space"
     );
     assert!(
-        !has_text_node_at(&svg, 103.83066666666667, 122.42666666666668, "2"),
+        !has_text_node_at(&svg, 97.01333333333334, 120.54666666666668, "2"),
         "the full-width space after the page auto number must not be replaced by a second page number"
     );
 }

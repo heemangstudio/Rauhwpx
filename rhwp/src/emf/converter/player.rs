@@ -59,8 +59,8 @@ impl Player {
         // Bounds → render_rect 매핑. Bounds가 비어 있으면 identity.
         let (rx, ry, rw, rh) = self.render_rect;
         let m = if let Some(h) = &self.header {
-            let w = (h.bounds.right - h.bounds.left) as f32;
-            let hh = (h.bounds.bottom - h.bounds.top) as f32;
+            let w = h.bounds.width() as f32;
+            let hh = h.bounds.height() as f32;
             if w > 0.0 && hh > 0.0 {
                 let sx = rw / w;
                 let sy = rh / hh;
@@ -294,10 +294,17 @@ impl Player {
     fn emit_ellipse(&mut self, r: &RectL) {
         let stroke = self.stroke_spec();
         let fill = self.fill_spec().unwrap_or_else(|| "none".into());
-        let cx = (r.left + r.right) / 2;
-        let cy = (r.top + r.bottom) / 2;
-        let rx = (r.right - r.left).abs() / 2;
-        let ry = (r.bottom - r.top).abs() / 2;
+        // 좌표는 파일이 정한 i32 라 합·차가 넘칠 수 있다(디버그 빌드 패닉). i64 로 셈한다.
+        let (left, top, right, bottom) = (
+            i64::from(r.left),
+            i64::from(r.top),
+            i64::from(r.right),
+            i64::from(r.bottom),
+        );
+        let cx = (left + right) / 2;
+        let cy = (top + bottom) / 2;
+        let rx = (right - left).abs() / 2;
+        let ry = (bottom - top).abs() / 2;
         let stroke_color = stroke.color.as_deref().unwrap_or("none");
         let node = format!(
             "<ellipse cx=\"{cx}\" cy=\"{cy}\" rx=\"{rx}\" ry=\"{ry}\" fill=\"{fill}\" stroke=\"{stroke_color}\" stroke-width=\"{:.2}\"/>",
@@ -309,10 +316,16 @@ impl Player {
     fn emit_arc_like(&mut self, r: &RectL, start: &PointL, end: &PointL, kind: ArcKind) {
         // 근사: arc은 시작점→끝점 단순 선, chord는 같음, pie는 중심까지 삼각형 폐곡선.
         // 단계 12는 SVG arc path로 표현.
-        let cx = (r.left + r.right) as f32 / 2.0;
-        let cy = (r.top + r.bottom) as f32 / 2.0;
-        let rx = (r.right - r.left).abs() as f32 / 2.0;
-        let ry = (r.bottom - r.top).abs() as f32 / 2.0;
+        let (left, top, right, bottom) = (
+            i64::from(r.left),
+            i64::from(r.top),
+            i64::from(r.right),
+            i64::from(r.bottom),
+        );
+        let cx = (left + right) as f32 / 2.0;
+        let cy = (top + bottom) as f32 / 2.0;
+        let rx = (right - left).abs() as f32 / 2.0;
+        let ry = (bottom - top).abs() as f32 / 2.0;
         let (s, e) = (start, end);
         let stroke = self.stroke_spec();
         let fill = match kind {
@@ -365,8 +378,10 @@ impl Player {
         }
         let mut d = format!("M{} {}", points[0].0, points[0].1);
         // EMF PolyBezier: 첫 점은 시작점, 이후 3점씩 제어1 제어2 끝점(C 커맨드).
+        // 끝의 3점이 모자란 조각은 버린다. 예전 조건(`i + 2 <= len`)은 점이 1+3k+2 개일 때
+        // `points[len]` 을 읽어 릴리스 빌드에서도 패닉했다.
         let mut i = 1;
-        while i + 2 < points.len() + 1 && i + 2 <= points.len() {
+        while i + 2 < points.len() {
             let (c1x, c1y) = points[i];
             let (c2x, c2y) = points[i + 1];
             let (ex, ey) = points[i + 2];

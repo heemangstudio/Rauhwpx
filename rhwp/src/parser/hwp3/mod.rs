@@ -34,6 +34,8 @@ pub enum Hwp3Error {
     ParseError { message: String },
     #[snafu(display("{} exceeds the {} byte resource limit", context, limit))]
     ResourceLimitExceeded { context: &'static str, limit: usize },
+    #[snafu(display("문단 목록·개체 중첩이 {}단을 넘습니다.", limit))]
+    NestingTooDeep { limit: u32 },
     #[snafu(display("특수 문자 파싱 오류가 발생했습니다: {:?}", source))]
     SpecialCharError {
         source: special_char::Hwp3SpecialCharError,
@@ -105,6 +107,49 @@ pub(crate) fn check_record_items(count: usize, bytes_per_item: usize) -> Result<
         .checked_mul(bytes_per_item)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "HWP3 record size overflow"))?;
     check_record_count(bytes)
+}
+
+/// HWP3 문단 목록·그리기 개체 중첩 최대 깊이.
+///
+/// 표 셀·캡션·숨은 설명·머리말/꼬리말·각주·글상자는 parse_paragraph_list →
+/// parse_object_control_char → parse_hwp3_object_dispatch → parse_paragraph_list 로,
+/// 묶음 그리기 개체는 parse_shape_list 로 재귀한다. 본문은 최대 256 MB 로 풀리는
+/// deflate 스트림이라 수 KB 파일이 수천 단 중첩을 만들 수 있고, 200단 중첩 표만으로
+/// wasm 스택이 넘쳤다(스택 오버플로는 잡을 수 없다). HWP 3.0 은 순차 스트림이라
+/// 상한을 넘은 목록을 건너뛸 수 없으므로 오류로 끝낸다. HWP5 의
+/// `MAX_HWP5_NESTING_DEPTH` 와 같은 방식이다.
+///
+/// 한 단의 스택 사용량 실측(aarch64): 최적화 빌드 약 13~16 KB, 비최적화 빌드 약
+/// 26~50 KB. 16단이면 최적화 빌드는 wasm 기본 스택(1 MiB)의 4분의 1 정도만 쓰고,
+/// 비최적화 빌드도 1 MiB 안에 든다. 실제 한글 97 문서는 몇 단을 넘지 않는다.
+pub(crate) const MAX_HWP3_NESTING_DEPTH: u32 = 16;
+
+thread_local! {
+    static HWP3_NESTING_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// 재귀 진입 시 깊이를 올리고 Drop 에서 내리는 가드.
+pub(crate) struct Hwp3NestingGuard(());
+
+impl Hwp3NestingGuard {
+    pub(crate) fn enter() -> Result<Self, Hwp3Error> {
+        HWP3_NESTING_DEPTH.with(|depth| {
+            let current = depth.get();
+            if current >= MAX_HWP3_NESTING_DEPTH {
+                return Err(Hwp3Error::NestingTooDeep {
+                    limit: MAX_HWP3_NESTING_DEPTH,
+                });
+            }
+            depth.set(current + 1);
+            Ok(Hwp3NestingGuard(()))
+        })
+    }
+}
+
+impl Drop for Hwp3NestingGuard {
+    fn drop(&mut self) {
+        HWP3_NESTING_DEPTH.with(|depth| depth.set(depth.get() - 1));
+    }
 }
 
 fn hwp3_i16_to_hu16(quarter_hu: i16) -> crate::model::HwpUnit16 {
@@ -2185,6 +2230,8 @@ pub(crate) fn parse_paragraph_list(
     use byteorder::{LittleEndian, ReadBytesExt};
     use std::io::Read;
 
+    let _nesting = Hwp3NestingGuard::enter()?;
+
     let mut paragraphs = Vec::new();
     let mut current_para_shape_id = 0u16;
     let mut prev_para_had_flags_break: bool = false;
@@ -2494,19 +2541,18 @@ pub(crate) fn parse_paragraph_list(
         // [Task #604 Stage D-2] HWP5 IR 정합: percent 줄간격도 lh=th, ls=th*(ratio-100)/100
         // 분리 인코딩. 시각 줄 높이 (item h) 는 lh 값 → HWP5 변환본과 동등 (lh=900/ls=540
         // 가 lh=1440/ls=0 보다 60% 작은 시각 높이 → 페이지 회귀 해소).
-        let (mut fallback_line_height, fallback_line_spacing) =
-            if let Some(fixed) = fixed_line_spacing {
-                // fixed: lh=fixed, ls=fixed-th (추가 간격)
-                (fixed, fixed - fallback_text_height)
-            } else {
-                // percent: lh=th, ls=th*(ratio-100)/100
-                (
-                    fallback_text_height,
-                    fallback_text_height
-                        .saturating_mul(line_spacing_ratio.saturating_sub(100))
-                        / 100,
-                )
-            };
+        let (mut fallback_line_height, fallback_line_spacing) = if let Some(fixed) =
+            fixed_line_spacing
+        {
+            // fixed: lh=fixed, ls=fixed-th (추가 간격)
+            (fixed, fixed - fallback_text_height)
+        } else {
+            // percent: lh=th, ls=th*(ratio-100)/100
+            (
+                fallback_text_height,
+                fallback_text_height.saturating_mul(line_spacing_ratio.saturating_sub(100)) / 100,
+            )
+        };
         fallback_line_height = fallback_line_height.max(100); // 0 방지
         let fallback_baseline_distance = (fallback_text_height as f32 * 0.85) as i32;
 
@@ -5275,5 +5321,137 @@ mod tests {
             vec!['A', 'B'],
             "겹칠 글자(스펙 표 58 오프셋 2..8)가 IR 로 추출되지 않음"
         );
+    }
+
+    /// 중첩 테스트가 도는 스레드 스택. wasm 기본 스택(1 MiB)과 같다 — 상한이 없던
+    /// 예전 파서는 이 스택에서 중첩 수백 단이면 스택 오버플로로 프로세스째 죽었다.
+    const NESTING_TEST_STACK_BYTES: usize = 1 << 20;
+
+    /// 문단 목록 종료자 (char_count=0 인 빈 문단, 43바이트).
+    fn hwp3_list_terminator() -> Vec<u8> {
+        let mut bytes = vec![0u8];
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&[0u8; 40]);
+        bytes
+    }
+
+    /// 숨은 설명(ch=15) 하나만 담은 문단이 `depth` 단 중첩된 문단 목록.
+    /// 최상위 목록을 포함하면 parse_paragraph_list 가 `depth + 1` 단 재귀한다.
+    fn hwp3_nested_hidden_comment_list(depth: usize) -> Vec<u8> {
+        let mut body = Vec::new();
+        for _ in 0..depth {
+            body.push(1u8); // follow_prev_para_shape
+            body.extend_from_slice(&4u16.to_le_bytes()); // char_count: 컨트롤 1개 = 4 hchar
+            body.extend_from_slice(&0u16.to_le_bytes()); // line_count
+            body.push(0u8); // include_char_shape
+            body.push(0u8); // flags
+            body.extend_from_slice(&0u32.to_le_bytes()); // special_char_flags
+            body.push(0u8); // style_index
+            body.extend_from_slice(&[0u8; 31]); // rep_char_shape
+            body.extend_from_slice(&15u16.to_le_bytes()); // 여는 특수 문자 코드
+            body.extend_from_slice(&0u32.to_le_bytes()); // header_val1
+            body.extend_from_slice(&15u16.to_le_bytes()); // 닫는 특수 문자 코드
+            body.extend_from_slice(&[0u8; 8]); // 숨은 설명 정보
+        }
+        for _ in 0..=depth {
+            body.extend_from_slice(&hwp3_list_terminator());
+        }
+        body
+    }
+
+    fn parse_list_on_wasm_sized_stack(body: Vec<u8>) -> Result<usize, String> {
+        std::thread::Builder::new()
+            .stack_size(NESTING_TEST_STACK_BYTES)
+            .spawn(move || {
+                let mut cursor = Cursor::new(body.as_slice());
+                parse_paragraph_list(
+                    &mut cursor,
+                    &mut Vec::new(),
+                    &mut Vec::new(),
+                    &mut Vec::new(),
+                    &mut Vec::new(),
+                    &mut std::collections::HashMap::new(),
+                    0,
+                    1000,
+                    1000,
+                )
+                .map(|paragraphs| paragraphs.len())
+                .map_err(|err| err.to_string())
+            })
+            .expect("spawn parser thread")
+            .join()
+            .expect("parser thread must not panic")
+    }
+
+    #[test]
+    fn hwp3_nested_hidden_comments_parse_up_to_the_nesting_cap() {
+        let max_nested = MAX_HWP3_NESTING_DEPTH as usize - 1;
+        assert_eq!(
+            parse_list_on_wasm_sized_stack(hwp3_nested_hidden_comment_list(max_nested)),
+            Ok(1)
+        );
+    }
+
+    #[test]
+    fn hwp3_nesting_beyond_the_cap_is_an_error_not_a_stack_overflow() {
+        let too_deep = MAX_HWP3_NESTING_DEPTH as usize;
+        for depth in [too_deep, 1000] {
+            let err = parse_list_on_wasm_sized_stack(hwp3_nested_hidden_comment_list(depth))
+                .expect_err("nesting beyond the cap must fail");
+            assert!(err.contains(&MAX_HWP3_NESTING_DEPTH.to_string()), "{err}");
+        }
+
+        // 오류로 끝난 뒤에도 깊이 카운터가 원래대로 돌아와야 다음 문서를 읽는다.
+        assert_eq!(
+            parse_list_on_wasm_sized_stack(hwp3_nested_hidden_comment_list(3)),
+            Ok(1)
+        );
+    }
+
+    /// 묶음 그리기 개체(has_child)가 `depth` 단 이어진 개체 트리.
+    fn hwp3_nested_drawing_group_tree(depth: usize) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&24u32.to_le_bytes()); // header_length (하이퍼텍스트 없음)
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // z_order
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // object_count
+        bytes.extend_from_slice(&[0u8; 16]); // bounds
+        for level in 0..=depth {
+            let connection_info: u16 = if level < depth { 0x02 } else { 0x00 };
+            bytes.extend_from_slice(&92u32.to_le_bytes()); // header_length
+            bytes.extend_from_slice(&0u16.to_le_bytes()); // object_type: 컨테이너
+            bytes.extend_from_slice(&connection_info.to_le_bytes());
+            bytes.extend_from_slice(&[0u8; 40]); // 위치·크기·경계
+            bytes.extend_from_slice(&[0u8; 44]); // 기본 속성 (options=0)
+        }
+        bytes
+    }
+
+    #[test]
+    fn hwp3_drawing_group_nesting_is_capped() {
+        let parse = |depth: usize| {
+            std::thread::Builder::new()
+                .stack_size(NESTING_TEST_STACK_BYTES)
+                .spawn(move || {
+                    let bytes = hwp3_nested_drawing_group_tree(depth);
+                    let mut cursor = Cursor::new(bytes.as_slice());
+                    crate::parser::hwp3::drawing::parse_drawing_object_tree(
+                        &mut cursor,
+                        &mut Vec::new(),
+                        &mut Vec::new(),
+                        &mut Vec::new(),
+                        &mut Vec::new(),
+                        &mut std::collections::HashMap::new(),
+                    )
+                    .map(|_| ())
+                    .map_err(|err| err.to_string())
+                })
+                .expect("spawn parser thread")
+                .join()
+                .expect("parser thread must not panic")
+        };
+
+        assert_eq!(parse(MAX_HWP3_NESTING_DEPTH as usize - 1), Ok(()));
+        assert!(parse(MAX_HWP3_NESTING_DEPTH as usize).is_err());
+        assert!(parse(5000).is_err());
     }
 }

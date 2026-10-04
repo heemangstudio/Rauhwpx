@@ -141,9 +141,10 @@ export async function checkCloudMergeRecovery(page, origin, artifacts) {
   assert.equal(mergeEvidence.localAvailable, 'true');
   assert.match(mergeEvidence.title, /이 기기에 저장된/);
   assert.deepEqual(result.errors, []);
+  // 미러의 자동 조회는 explicit 을 넘기지 않고, 사용자가 누른 병합만 넘긴다.
   assert.deepEqual(result.downloads, [
-    ['old-worker-session', 'turn-op-4', null], ['old-worker-session', 'turn-op-4', 'turn'],
-    ['old-worker-session', 'turn-op-4-retry', null], ['old-worker-session', 'turn-op-4-retry', 'turn'],
+    ['old-worker-session', 'turn-op-4', null], ['old-worker-session', 'turn-op-4', 'turn', { explicit: true }],
+    ['old-worker-session', 'turn-op-4-retry', null], ['old-worker-session', 'turn-op-4-retry', 'turn', { explicit: true }],
   ]);
   assert.deepEqual(result.applies, ['durable-start', 'durable-start']);
   if (artifacts) await page.screenshot({ path: resolve(artifacts, 'cloud-durable-merge-recovery.png') });

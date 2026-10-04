@@ -250,6 +250,8 @@ impl DocumentCore {
             cell_index: outer.cell_index,
             cell_para_index: outer.cell_para_index,
             text_direction: outer.text_direction,
+            line_wrap_squeeze: outer.line_wrap_squeeze,
+            row_span: 1,
         });
     }
 
@@ -998,12 +1000,10 @@ impl DocumentCore {
         }
 
         impl ParaLineHit {
-            fn cursor_x(self, is_list_para: bool, char_offset: usize) -> f64 {
-                if is_list_para && char_offset == 0 {
-                    self.marker_end_x
-                        .or(self.first_body_x)
-                        .unwrap_or(self.line_x)
-                } else if is_list_para {
+            fn cursor_x(self, is_list_para: bool) -> f64 {
+                if is_list_para {
+                    // 빈 줄 anchor도 마커와 본문 간격을 반영한 실제 배치다.
+                    // 글립 폭만 재측정한 marker_end보다 우선해야 hit-test와 일치한다.
                     self.first_body_x
                         .or(self.marker_end_x)
                         .unwrap_or(self.line_x)
@@ -1258,7 +1258,7 @@ impl DocumentCore {
             list_marker_char_shape_id,
             &self.styles,
         ) {
-            let x = line_hit.cursor_x(is_list_para, char_offset);
+            let x = line_hit.cursor_x(is_list_para);
             let y = line_hit.y;
             let h = line_hit.height;
             // 인라인 도형 컨트롤이 있는 경우: char_offset에 따라 x 위치 조정
@@ -1445,6 +1445,8 @@ impl DocumentCore {
                                 cell_index: 0,
                                 cell_para_index: 0,
                                 text_direction: 0,
+                                line_wrap_squeeze: false,
+                                row_span: 1,
                             });
                             Some(ctx)
                         } else {
@@ -1455,6 +1457,8 @@ impl DocumentCore {
                                     cell_index: 0,
                                     cell_para_index: 0,
                                     text_direction: 0,
+                                    line_wrap_squeeze: false,
+                                    row_span: 1,
                                 }],
                             })
                         }
@@ -2268,7 +2272,7 @@ impl DocumentCore {
                             .min_by(|a, b| {
                                 let da = (y - (a.bbox_y + a.bbox_h / 2.0)).abs();
                                 let db = (y - (b.bbox_y + b.bbox_h / 2.0)).abs();
-                                da.partial_cmp(&db).unwrap()
+                                da.total_cmp(&db)
                             })
                             .map(|r| r.bbox_y)
                     });
@@ -2279,7 +2283,7 @@ impl DocumentCore {
                         .copied()
                         .filter(|r| (r.bbox_y - ly).abs() < 1.0)
                         .collect();
-                    line_runs.sort_by(|a, b| a.bbox_x.partial_cmp(&b.bbox_x).unwrap());
+                    line_runs.sort_by(|a, b| a.bbox_x.total_cmp(&b.bbox_x));
                     let (idx, offset) = resolve_x_on_line(&line_runs, x);
                     return Ok(format_hit(line_runs[idx], offset, page_num));
                 }
@@ -2358,7 +2362,7 @@ impl DocumentCore {
             .collect();
 
         if !same_line_runs.is_empty() {
-            same_line_runs.sort_by(|a, b| a.bbox_x.partial_cmp(&b.bbox_x).unwrap());
+            same_line_runs.sort_by(|a, b| a.bbox_x.total_cmp(&b.bbox_x));
             // 줄 안에서 클릭 x 를 가장 가까운 문자 위치로 해석
             // (다중 run 줄의 run 경계 빈틈 포함 — 줄 끝으로 스냅하지 않음)
             let (idx, offset) = resolve_x_on_line(&same_line_runs, x);
@@ -2396,7 +2400,7 @@ impl DocumentCore {
             .min_by(|a, b| {
                 let dist_a = (y - (a.bbox_y + a.bbox_h / 2.0)).abs();
                 let dist_b = (y - (b.bbox_y + b.bbox_h / 2.0)).abs();
-                dist_a.partial_cmp(&dist_b).unwrap()
+                dist_a.total_cmp(&dist_b)
             })
             .unwrap();
 
@@ -2407,7 +2411,7 @@ impl DocumentCore {
             .filter(|r| (r.bbox_y - target_y).abs() < 1.0 && (r.bbox_h - target_h).abs() < 1.0)
             .copied()
             .collect();
-        line_runs.sort_by(|a, b| a.bbox_x.partial_cmp(&b.bbox_x).unwrap());
+        line_runs.sort_by(|a, b| a.bbox_x.total_cmp(&b.bbox_x));
 
         // 줄 안에서 클릭 x 를 가장 가까운 문자 위치로 해석
         // (run 경계 빈틈 포함 — 줄 끝으로만 스냅하지 않음)
@@ -2979,6 +2983,8 @@ impl DocumentCore {
                                 cell_index: 0,
                                 cell_para_index: 0,
                                 text_direction: 0,
+                                line_wrap_squeeze: false,
+                                row_span: 1,
                             });
                             Some(ctx)
                         } else {
@@ -2989,6 +2995,8 @@ impl DocumentCore {
                                     cell_index: 0,
                                     cell_para_index: 0,
                                     text_direction: 0,
+                                    line_wrap_squeeze: false,
+                                    row_span: 1,
                                 }],
                             })
                         }
@@ -4035,8 +4043,8 @@ impl DocumentCore {
                 if let Some(ref r) = hf_ref {
                     let source_sec = r.source_section_index;
                     if let Some(section) = self.document.sections.get(source_sec) {
-                        if let Some(para) = section.paragraphs.get(r.para_index) {
-                            if let Some(ctrl) = para.controls.get(r.control_index) {
+                        {
+                            if let Some(ctrl) = r.resolve(&section.paragraphs) {
                                 let apply_to = match ctrl {
                                     Control::Header(h) => match h.apply_to {
                                         HeaderFooterApply::Both => 0,
@@ -4327,7 +4335,7 @@ impl DocumentCore {
             .iter()
             .filter(|r| (r.bbox_y - target_y).abs() < 1.0 && (r.bbox_h - target_h).abs() < 1.0)
             .collect();
-        line_runs.sort_by(|a, b| a.bbox_x.partial_cmp(&b.bbox_x).unwrap());
+        line_runs.sort_by(|a, b| a.bbox_x.total_cmp(&b.bbox_x));
 
         if x < line_runs[0].bbox_x {
             let run = line_runs[0];
@@ -4844,7 +4852,7 @@ impl DocumentCore {
             .iter()
             .filter(|r| (r.bbox_y - target_y).abs() < 1.0 && (r.bbox_h - target_h).abs() < 1.0)
             .collect();
-        line_runs.sort_by(|a, b| a.bbox_x.partial_cmp(&b.bbox_x).unwrap());
+        line_runs.sort_by(|a, b| a.bbox_x.total_cmp(&b.bbox_x));
 
         if x < line_runs[0].bbox_x {
             let run = line_runs[0];

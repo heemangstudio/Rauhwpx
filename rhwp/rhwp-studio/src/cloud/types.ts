@@ -19,7 +19,84 @@ export interface CloudProfileDraft {
   auth: CloudSshAuthDraft;
   transport: CloudTransportDraft;
   serverPublicKey?: string;
+  /** boat.dev 계정의 VM. 데스크톱이 SSH 주소를 재개할 때마다 바꾼다. */
+  boat?: { sandboxId: string; machine: BoatMachine };
 }
+
+export type BoatMachine = 'default' | 'small';
+export type BoatServerState = 'stopped' | 'waking' | 'running' | 'stopping' | 'missing' | 'error';
+/**
+ * idle: VM 이 `idleStopMinutes` 동안 쉬면 스스로 멈춘다.
+ * timer: 계정이 VM 의 자기 중지를 허용하지 않아, 시작할 때마다 `timerHours` 뒤에 작업 중이어도 멈춘다.
+ */
+export type BoatAutoStop = 'idle' | 'timer';
+export type BoatSetupStage =
+  | 'creating' | 'starting' | 'installing' | 'pairing' | 'credentials' | 'done';
+
+export interface BoatAccountSnapshot {
+  connected: boolean;
+  method: 'email' | 'api-key' | null;
+  email: string | null;
+  /** From GET /limits. null when unknown. */
+  canStart: boolean | null;
+  trial: boolean | null;
+}
+
+/** 깨우는 중의 단계. starting = VM 켜는 중, service = Cloud 서비스 준비 중, connecting = 터널 연결 중. */
+export type BoatWakeStage = 'starting' | 'service' | 'connecting';
+
+export interface BoatServerSnapshot {
+  sandboxId: string;
+  state: BoatServerState;
+  /** state 가 waking 일 때만 있다. 예전 데스크톱은 보내지 않는다. */
+  wakeStage?: BoatWakeStage | null;
+  machine: BoatMachine;
+  /** Human label, e.g. "4 vCPU · 8 GB". */
+  machineLabel: string;
+  region: 'EU';
+  /** Billable hours since the first day of the current calendar month (usage API), 1 decimal. */
+  monthHours: number | null;
+  idleStopMinutes: number;
+  /** 필드가 없는 데스크톱은 idle 로 읽는다. */
+  autoStop: BoatAutoStop;
+  /** timer 일 때 시작 후 멈추기까지의 시간. idle 이면 null. */
+  timerHours: number | null;
+  message: string | null;
+}
+
+export interface BoatSetupProgress {
+  stage: BoatSetupStage;
+  startedAt: string;
+  /** Latest human-readable line (installer output is summarized, never raw secrets). */
+  detail: string | null;
+  error: { title: string; guidance: string; detail: string } | null;
+  /** Providers whose login was copied to the server during setup. */
+  importedProviders: Array<'claude' | 'codex' | 'pi'>;
+}
+
+export interface BoatSnapshot {
+  account: BoatAccountSnapshot;
+  server: BoatServerSnapshot | null;
+  setup: BoatSetupProgress | null;
+}
+
+export interface BoatSignInChallenge {
+  /** Opaque id held by the desktop; the claim token never leaves main. */
+  claimId: string;
+  /** https://boat.dev/... */
+  verificationUri: string;
+  /** 6 digits. */
+  userCode: string;
+  expiresAt: string;
+  intervalSeconds: number;
+}
+
+export type BoatSignInPoll =
+  | { status: 'pending' }
+  | { status: 'expired' }
+  | { status: 'connected'; snapshot: CloudSnapshot };
+
+export type BoatLinkKind = 'verification' | 'checkout' | 'api-keys' | 'dashboard';
 
 export type CloudServerMode = 'self-hosted' | 'app-hosted';
 export type CloudConnectionState = 'unknown' | 'testing' | 'ready' | 'error';
@@ -27,11 +104,30 @@ export type CloudConnectionState = 'unknown' | 'testing' | 'ready' | 'error';
 /** Live transport to the Cloud server. Missing on older snapshots; infer from profile.connection. */
 export type CloudLinkKind = 'ready' | 'reconnecting' | 'recreating' | 'failed';
 
+/**
+ * 끊긴 링크의 이유. network 만 데스크톱이 스스로 다시 시도한다. 나머지는 사용자가 할 일이 있다.
+ * pairing = 기기 페어링이 풀림, boat-auth = boat 계정·키 문제, host-key = 서버 SSH 키가 바뀜,
+ * server = 서비스가 답하지 않거나 작업 실행기가 멈춤, session-missing = 서버에 이전 작업이 없음.
+ */
+export type CloudLinkReason = 'network' | 'pairing' | 'boat-auth' | 'host-key' | 'server' | 'session-missing';
+
 export interface CloudLinkState {
   kind: CloudLinkKind;
+  /** 진단용 원문. 화면에는 message 를 쓴다. */
   error: string | null;
   attempt: number;
   canRecreate: boolean;
+  /** kind 가 failed 일 때만 있다. 예전 데스크톱은 보내지 않는다. */
+  reason?: CloudLinkReason | null;
+  /** reason 에 맞춘 짧은 한국어 문장. */
+  message?: string | null;
+}
+
+/** 내 서버가 지금 내미는 SSH 호스트 키. 사용자가 지문을 확인한 뒤에만 저장한다. */
+export interface CloudHostKeyInspection {
+  host: string;
+  port: number;
+  fingerprint: string;
 }
 
 /** Raucloud usage shared by every device on an account. Durations use milliseconds. */
@@ -187,7 +283,11 @@ export type CloudSessionState =
     })
   | (CloudSessionBase & {
       kind: 'suspended';
+      /** 서버가 보낸 원문. 화면에는 code 로 고른 문장을 쓴다. */
       reason: string;
+      /** 서버의 suspendedReason.code. 예: PROVIDER_AUTH_EXPIRED, WORKER_UNSTABLE. */
+      code?: string | null;
+      provider?: AgentName | null;
       resumable: boolean;
     })
   | (CloudSessionBase & {
@@ -264,6 +364,8 @@ export interface CloudSnapshot {
   account?: AccountSnapshot | null;
   takeover?: CloudTakeoverPayload;
   link?: CloudLinkState;
+  /** boat.dev 계정·VM 상태. boat 를 모르는 데스크톱에서는 없다. */
+  boat?: BoatSnapshot | null;
 }
 
 export interface CloudTakeoverPayload {

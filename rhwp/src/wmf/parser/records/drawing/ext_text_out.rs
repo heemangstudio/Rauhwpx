@@ -83,6 +83,14 @@ impl META_EXTTEXTOUT {
         );
         record_size.consume(y_bytes + x_bytes + string_length_bytes);
 
+        // StringLength 는 부호 있는 i16 이다. 음수를 `as usize` 로 넘기면 거의
+        // usize::MAX 가 문자열/dx 할당 길이가 된다.
+        if string_length < 0 {
+            return Err(crate::wmf::parser::ParseError::UnexpectedPattern {
+                cause: format!("The string_length `{string_length}` field must not be negative"),
+            });
+        }
+
         let fw_opts = {
             let (value, c) = crate::wmf::parser::read_u16_from_le_bytes(buf)?;
             record_size.consume(c);
@@ -130,7 +138,8 @@ impl META_EXTTEXTOUT {
         let mut dx = vec![];
 
         if record_size.remaining() {
-            dx.reserve_exact(string_length as usize);
+            // dx 는 i16(2바이트) 배열이라 레코드에 남은 바이트 이상은 담을 수 없다.
+            dx.reserve_exact((string_length as usize).min(record_size.remaining_bytes() / 2));
 
             for _ in 0..string_length {
                 let (v, c) = crate::wmf::parser::read_i16_from_le_bytes(buf)?;

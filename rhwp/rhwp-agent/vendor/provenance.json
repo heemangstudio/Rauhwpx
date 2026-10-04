@@ -1,0 +1,55 @@
+{
+  "upstream": {
+    "package": "npm",
+    "version": "11.19.1",
+    "gitHead": "d63a975ce3c1219752519b7fb68bdc03faa767c0",
+    "registryTarball": "https://registry.npmjs.org/npm/-/npm-11.19.1.tgz",
+    "registryIntegrity": "sha512-ztsxKxt/kkIaAs+2i0GU6I+DRmUdrNasxTZKJe9TCdSjKxlhah/4r/hl5ygMD6XAg1qZ9c2TNomR4qgOydp10g==",
+    "commit": "d63a975ce3c1219752519b7fb68bdc03faa767c0",
+    "url": "https://codeload.github.com/npm/cli/tar.gz/d63a975ce3c1219752519b7fb68bdc03faa767c0",
+    "sha256": "f989a61dea2467dee559b46d278f8b5b7d8ca2e5b7c4ab82b6ece1e6c7967fa0"
+  },
+  "downstream": {
+    "file": "npm-11.19.2-rau.2.tgz",
+    "sha256": "a54e58e6ce33d4cd79d937d167df9d529c4939c25a458fcde138ef9d1d4e21d1",
+    "sourcePackageJsonSha256": "5ef2a5b1864ec42bcba4e56e6cb1dd836b1e245009bd12256677938519a0b827",
+    "sourceLockSha256": "af8408aa88dcda43f2a4dce2a74ac408a0d26f91f7c8bae5a095c23ef2779d47",
+    "sourceOverrides": {
+      "minimatch@^10.2.5": {
+        "brace-expansion": "5.0.12"
+      },
+      "node-gyp@^12.4.0": {
+        "undici": "6.28.1"
+      },
+      "http-cache-semantics": "4.3.0",
+      "ip-address": "10.7.3"
+    },
+    "toolchain": {
+      "node": "26.7.0",
+      "npm": "11.19.0",
+      "GOMAXPROCS": 2,
+      "nodeHeapMiB": 1024
+    },
+    "version": "11.19.2-rau.2"
+  },
+  "verification": {
+    "packedBraceExpansion": "5.0.12",
+    "packedUndici": "6.28.1",
+    "sourceResolutionChanges": [
+      "brace-expansion 5.0.9 -> 5.0.12",
+      "undici 6.28.0 -> 6.28.1",
+      "http-cache-semantics 4.2.0 -> 4.3.0",
+      "ip-address 10.5.0 -> 10.7.3"
+    ],
+    "packedHttpCacheSemantics": "4.3.0",
+    "packedIpAddress": "10.7.3",
+    "httpCacheSemantics": {
+      "advisory": "https://github.com/advisories/GHSA-ch52-4w7c-c8xp",
+      "upstreamDispute": "https://github.com/github/advisory-database/issues/10139",
+      "releaseCommit": "b1d4bd682fbab0252985de45219f4e7497c0067c",
+      "handling": "Use upstream stable 4.3.0, which is outside the advisory affected range. The upstream maintainer disputes the max-stale claim; this release changes Vary matching and status reporting, not max-stale behavior. No downstream cache policy patch or audit exception.",
+      "npmCachePolicy": "make-fetch-happen/lib/cache/policy.js constructs CacheSemantics with shared: false.",
+      "compatibility": "4.2.0 and 4.3.0 agree for eight shared/private cache policies using ordinary and max-stale requests."
+    }
+  }
+}

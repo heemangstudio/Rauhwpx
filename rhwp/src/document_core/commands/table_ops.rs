@@ -1477,6 +1477,7 @@ impl DocumentCore {
         // 셀 높이 지정으로 본문보다 커진 쪽나눔=None 표는 자동으로 "나눔"으로 승격한다.
         self.auto_enable_table_page_split(section_idx, parent_para_idx, control_idx);
         self.document.sections[section_idx].raw_stream = None;
+        self.mark_table_host_paragraph_changed(section_idx, parent_para_idx);
         self.recompose_section(section_idx);
         self.paginate_if_needed();
 
@@ -1715,6 +1716,7 @@ impl DocumentCore {
         table.dirty = true;
 
         self.document.sections[section_idx].raw_stream = None;
+        self.mark_table_host_paragraph_changed(section_idx, parent_para_idx);
         self.recompose_section(section_idx);
         self.paginate_if_needed();
 
@@ -1863,8 +1865,79 @@ impl DocumentCore {
         }
 
         // 스타일 재계산
-        self.styles =
-            crate::renderer::style_resolver::resolve_styles(&self.document.doc_info, self.dpi);
+        self.styles = self.resolve_document_styles();
+    }
+
+    /// 표를 담은 본문 문단의 IR 이 바뀌었음을 revision 에 남긴다.
+    ///
+    /// 이벤트를 쌓지 않는 표 편집(크기·속성·캡션·위치)이 이것을 빠뜨리면 스냅샷이
+    /// 직전 스냅샷의 문단을 그대로 공유해, redo 가 편집 전 상태를 복원한다.
+    pub(crate) fn mark_table_host_paragraph_changed(
+        &mut self,
+        section_idx: usize,
+        para_idx: usize,
+    ) {
+        self.event_log.mark_paragraph_changed(section_idx, para_idx);
+    }
+
+    /// 폭이 바뀐 셀의 문단을 새 폭으로 다시 줄나눔하고 셀 안 문단 vpos 를 다시 잇는다.
+    ///
+    /// `cells` 는 `(셀 번호, 문단 수)`. `path` 의 마지막 항목이 대상 표이고, 깊이 1이면
+    /// 평면 경로를 쓴다. 줄나눔만 하고 vpos 를 잇지 않으면 늘어난 줄이 다음 문단의
+    /// 저장된 첫 줄 위치와 겹쳐 그려진다 (표 폭 축소 시 문단이 겹치는 원인).
+    fn reflow_table_cells_by_cell_path(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        path: &[(usize, usize, usize)],
+        cells: &[(usize, usize)],
+    ) {
+        let Some(&(control_idx, _, _)) = path.last() else {
+            return;
+        };
+        if path.len() == 1 {
+            for &(cell_idx, para_count) in cells {
+                for cell_para_idx in 0..para_count {
+                    self.reflow_cell_paragraph(
+                        section_idx,
+                        parent_para_idx,
+                        control_idx,
+                        cell_idx,
+                        cell_para_idx,
+                    );
+                }
+                self.recalculate_cell_paragraph_vpos_native(
+                    section_idx,
+                    parent_para_idx,
+                    control_idx,
+                    cell_idx,
+                    0,
+                    None,
+                );
+            }
+            return;
+        }
+        let depth = path.len() - 1;
+        let mut inner_path: Vec<(usize, usize, usize)> = path.to_vec();
+        for &(cell_idx, para_count) in cells {
+            for cell_para_idx in 0..para_count {
+                inner_path[depth] = (control_idx, cell_idx, cell_para_idx);
+                self.reflow_cell_paragraph_by_path(
+                    section_idx,
+                    parent_para_idx,
+                    &inner_path,
+                    cell_para_idx,
+                );
+            }
+            inner_path[depth] = (control_idx, cell_idx, 0);
+            self.recalculate_cell_paragraph_vpos_by_path(
+                section_idx,
+                parent_para_idx,
+                &inner_path,
+                0,
+                None,
+            );
+        }
     }
 
     /// 셀 크기 갱신을 표에 반영하고, 폭이 바뀐 셀의 `(셀 번호, 문단 수)` 를 돌려준다.
@@ -2151,22 +2224,10 @@ impl DocumentCore {
         let table = self.resolve_table_mut_by_cell_path(section_idx, parent_para_idx, path)?;
         let reflow_cells = Self::apply_cell_resize_updates(table, &updates, force_local_resize);
 
-        let depth = path.len() - 1;
-        let mut inner_path: Vec<(usize, usize, usize)> = path[..depth].to_vec();
-        inner_path.push((control_idx, 0, 0));
-        for (cell_idx, para_count) in reflow_cells {
-            for cell_para_idx in 0..para_count {
-                inner_path[depth] = (control_idx, cell_idx, cell_para_idx);
-                self.reflow_cell_paragraph_by_path(
-                    section_idx,
-                    parent_para_idx,
-                    &inner_path,
-                    cell_para_idx,
-                );
-            }
-        }
+        self.reflow_table_cells_by_cell_path(section_idx, parent_para_idx, path, &reflow_cells);
 
         self.document.sections[section_idx].raw_stream = None;
+        self.mark_table_host_paragraph_changed(section_idx, parent_para_idx);
         self.recompose_section(section_idx);
         self.paginate_if_needed();
 
@@ -2190,22 +2251,17 @@ impl DocumentCore {
 
         let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
         let reflow_cells = Self::apply_cell_resize_updates(table, &updates, force_local_resize);
-
-        for (cell_idx, para_count) in reflow_cells {
-            for cell_para_idx in 0..para_count {
-                self.reflow_cell_paragraph(
-                    section_idx,
-                    parent_para_idx,
-                    control_idx,
-                    cell_idx,
-                    cell_para_idx,
-                );
-            }
-        }
+        self.reflow_table_cells_by_cell_path(
+            section_idx,
+            parent_para_idx,
+            &[(control_idx, 0, 0)],
+            &reflow_cells,
+        );
 
         // 리사이즈로 본문보다 커진 쪽나눔=None 표는 자동으로 "나눔"으로 승격한다.
         self.auto_enable_table_page_split(section_idx, parent_para_idx, control_idx);
         self.document.sections[section_idx].raw_stream = None;
+        self.mark_table_host_paragraph_changed(section_idx, parent_para_idx);
         self.recompose_section(section_idx);
         self.paginate_if_needed();
 
@@ -2245,19 +2301,15 @@ impl DocumentCore {
                 Vec::new()
             }
         };
-        for (cell_idx, para_count) in reflow {
-            for cell_para_idx in 0..para_count {
-                self.reflow_cell_paragraph(
-                    section_idx,
-                    parent_para_idx,
-                    control_idx,
-                    cell_idx,
-                    cell_para_idx,
-                );
-            }
-        }
+        self.reflow_table_cells_by_cell_path(
+            section_idx,
+            parent_para_idx,
+            &[(control_idx, 0, 0)],
+            &reflow,
+        );
 
         self.document.sections[section_idx].raw_stream = None;
+        self.mark_table_host_paragraph_changed(section_idx, parent_para_idx);
         self.recompose_section(section_idx);
         self.paginate_if_needed();
 
@@ -2437,6 +2489,10 @@ impl DocumentCore {
             }
         }
 
+        // 문단 교환까지 포함해 바뀐 문단 전부를 표시한다.
+        for para_idx in parent_para_idx.min(result_ppi)..=parent_para_idx.max(result_ppi) {
+            self.mark_table_host_paragraph_changed(section_idx, para_idx);
+        }
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
         self.paginate_if_needed();
@@ -2991,6 +3047,7 @@ impl DocumentCore {
         }
 
         self.document.sections[section_idx].raw_stream = None;
+        self.mark_table_host_paragraph_changed(section_idx, parent_para_idx);
         self.recompose_section(section_idx);
         self.paginate_if_needed();
 
@@ -3179,6 +3236,7 @@ impl DocumentCore {
         if let Some(sec) = self.document.sections.get_mut(section_idx) {
             sec.raw_stream = None;
         }
+        self.mark_table_host_paragraph_changed(section_idx, parent_para_idx);
         self.recompose_section(section_idx);
         self.paginate_if_needed();
 
@@ -3690,13 +3748,41 @@ impl DocumentCore {
 
         let row_count = table.row_count as usize;
         let col_count = table.col_count as usize;
+        if target_row >= row_count || target_col >= col_count {
+            return Err(HwpError::RenderError(format!(
+                "계산식 셀 ({},{})가 표 크기 {}×{} 밖입니다",
+                target_row, target_col, row_count, col_count
+            )));
+        }
+
+        // table.cells 는 병합의 기준(anchor) 셀만 담는다. row*col_count+col 로 찾으면 앞쪽에
+        // 병합 셀이 하나만 있어도 뒤 셀이 전부 밀려 다른 셀을 읽고 쓴다. 좌표→셀을 anchor 로 찾는다.
+        // 병합으로 가려진 칸은 값이 없어 병합 셀을 한 번만 센다.
+        let anchors: std::collections::HashMap<(usize, usize), usize> = table
+            .cells
+            .iter()
+            .enumerate()
+            .map(|(idx, cell)| ((cell.row as usize, cell.col as usize), idx))
+            .collect();
+        // 기록 대상도 anchor 칸이어야 한다. 병합으로 가려진 칸에 쓰라는 요청은 셀을 건드리지
+        // 않고 거절한다 (Studio 는 getCellInfo 의 anchor 좌표를 넘긴다).
+        let target_cell_idx = anchors.get(&(target_row, target_col)).copied();
+        if write_result && target_cell_idx.is_none() {
+            return Err(HwpError::RenderError(format!(
+                "계산식 대상 셀 ({},{})을 찾을 수 없습니다",
+                target_row, target_col
+            )));
+        }
 
         // 셀 값 조회 함수: 셀의 첫 문단 텍스트를 숫자로 파싱
         let cells = &table.cells;
         let get_cell = |col: usize, row: usize| -> Option<f64> {
-            let idx = row * col_count + col;
-            cells
-                .get(idx)
+            if row >= row_count || col >= col_count {
+                return None;
+            }
+            anchors
+                .get(&(row, col))
+                .and_then(|&idx| cells.get(idx))
                 .and_then(|cell| cell.paragraphs.first())
                 .and_then(|p| parse_cell_number(&p.text))
         };
@@ -3713,25 +3799,42 @@ impl DocumentCore {
 
         let display = format_table_calc_result(result, format_json);
 
-        // 결과를 셀에 기록
-        if write_result {
-            let cell_idx = target_row * col_count + target_col;
-            let section_mut = self.document.sections.get_mut(section_idx).unwrap();
-            let para_mut = section_mut.paragraphs.get_mut(parent_para_idx).unwrap();
-            if let Some(Control::Table(ref mut t)) = para_mut.controls.get_mut(control_idx) {
-                if let Some(cell) = t.cells.get_mut(cell_idx) {
-                    if let Some(cell_para) = cell.paragraphs.first_mut() {
-                        cell_para.text = display.clone();
-                        let new_len = cell_para.text.chars().count();
-                        cell_para.char_offsets = (0..new_len).map(|i| i as u32).collect();
-                    }
-                }
-            }
-            // raw_stream 무효화
+        // 결과를 셀에 기록 — 일반 셀 편집 경로로 첫 문단 텍스트를 교체한다. 글자 위치·
+        // 글자 모양·줄 정보가 텍스트와 맞게 옮겨지고, 리플로우·표 dirty·문단 revision
+        // 갱신(스냅샷 undo)·쪽 나눔까지 같이 처리된다. 대상 anchor 셀은 위에서 확인했다.
+        if let Some(target_cell_idx) = target_cell_idx.filter(|_| write_result) {
+            let old_len = self
+                .get_cell_paragraph_ref(
+                    section_idx,
+                    parent_para_idx,
+                    control_idx,
+                    target_cell_idx,
+                    0,
+                )
+                .ok_or_else(|| HwpError::RenderError("계산식 셀에 문단이 없습니다".into()))?
+                .text
+                .chars()
+                .count();
+            // 캐럿의 "컨트롤 뒤 입력" 표시는 사용자 입력용이다 — 계산 결과 기록이
+            // 소비하지 않게 잠시 비웠다가 되돌린다.
+            let pending_caret = self.caret_insert_after_control.take();
+            let written = self.replace_text_in_cell_native_impl(
+                section_idx,
+                parent_para_idx,
+                control_idx,
+                target_cell_idx,
+                0,
+                0,
+                old_len,
+                &display,
+                true,
+            );
+            self.caret_insert_after_control = pending_caret;
+            written?;
+            // 셀 편집 경로도 비우지만, 이 뮤테이터의 무효화 계약을 본문에 드러내 둔다.
             if let Some(sec) = self.document.sections.get_mut(section_idx) {
                 sec.raw_stream = None;
             }
-            self.recompose_section(section_idx);
         }
 
         Ok(format!(
@@ -4187,5 +4290,121 @@ mod neighbor_border_raw_data_tests {
             "DocInfo 패스스루가 무효화되지 않으면 push 한 BORDER_FILL 이 저장되지 않아 \
              본문의 border_fill_id 가 dangling 이 된다"
         );
+    }
+}
+
+#[cfg(test)]
+mod table_formula_merged_cell_tests {
+    //! 병합 셀이 있는 표의 블록 계산·계산식 좌표 회귀 테스트.
+    //!
+    //! table.cells 는 병합 기준 셀만 담는데 계산식이 row*col_count+col 로 셀을 찾아,
+    //! 머리글 행 하나만 병합돼도 엉뚱한 셀을 더하고 다른 셀에 결과를 덮어쓰거나
+    //! 아무것도 쓰지 않고 성공을 반환했다.
+
+    use crate::document_core::DocumentCore;
+    use crate::model::control::Control;
+    use crate::model::table::Table;
+
+    /// 첫 행을 3칸 병합한 3x3 표. 1~2행에 숫자를 채운다.
+    fn merged_header_table() -> (DocumentCore, usize, usize) {
+        let mut core = DocumentCore::new_empty();
+        core.create_blank_document_native().unwrap();
+        core.create_table_native(0, 0, 0, 3, 3).unwrap();
+        let (pi, ci) = core.document.sections[0]
+            .paragraphs
+            .iter()
+            .enumerate()
+            .find_map(|(pi, para)| {
+                para.controls
+                    .iter()
+                    .position(|ctrl| matches!(ctrl, Control::Table(_)))
+                    .map(|ci| (pi, ci))
+            })
+            .expect("표 컨트롤");
+        core.merge_table_cells_native(0, pi, ci, 0, 0, 0, 2)
+            .unwrap();
+        for (row, col, text) in [
+            (1, 0, "1"),
+            (1, 1, "2"),
+            (1, 2, "30"),
+            (2, 0, "4"),
+            (2, 1, "5"),
+        ] {
+            let idx = anchor_index(table(&core, pi, ci), row, col);
+            core.insert_text_in_cell_native(0, pi, ci, idx, 0, 0, text)
+                .unwrap();
+        }
+        (core, pi, ci)
+    }
+
+    fn table(core: &DocumentCore, pi: usize, ci: usize) -> &Table {
+        match &core.document.sections[0].paragraphs[pi].controls[ci] {
+            Control::Table(t) => t,
+            _ => unreachable!(),
+        }
+    }
+
+    fn anchor_index(table: &Table, row: u16, col: u16) -> usize {
+        table
+            .cells
+            .iter()
+            .position(|cell| cell.row == row && cell.col == col)
+            .unwrap_or_else(|| panic!("({row},{col}) 기준 셀"))
+    }
+
+    fn texts(core: &DocumentCore, pi: usize, ci: usize) -> Vec<(u16, u16, String)> {
+        table(core, pi, ci)
+            .cells
+            .iter()
+            .map(|cell| (cell.row, cell.col, cell.paragraphs[0].text.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn block_sum_reads_and_writes_grid_cells_below_a_merged_header() {
+        let (mut core, pi, ci) = merged_header_table();
+        assert_eq!(
+            table(&core, pi, ci).cells.len(),
+            7,
+            "병합으로 가려진 칸은 셀 목록에 없다"
+        );
+
+        let left = core
+            .evaluate_table_formula(0, pi, ci, 2, 2, "=SUM(left)", false)
+            .unwrap();
+        assert!(left.contains("\"result\":9"), "{left}");
+
+        let before = texts(&core, pi, ci);
+        let out = core
+            .evaluate_table_formula(0, pi, ci, 2, 2, "=SUM(above)", true)
+            .unwrap();
+        assert!(
+            out.contains("\"result\":30"),
+            "병합 머리글은 세지 않고 (1,2)만 더한다: {out}"
+        );
+
+        let after = texts(&core, pi, ci);
+        for (cell_before, cell_after) in before.iter().zip(&after) {
+            let expected = if (cell_before.0, cell_before.1) == (2, 2) {
+                "30".to_string()
+            } else {
+                cell_before.2.clone()
+            };
+            assert_eq!(
+                cell_after.2, expected,
+                "({},{}) 셀 내용",
+                cell_after.0, cell_after.1
+            );
+        }
+    }
+
+    #[test]
+    fn formula_write_to_a_covered_slot_fails_without_touching_cells() {
+        let (mut core, pi, ci) = merged_header_table();
+        let before = texts(&core, pi, ci);
+        assert!(core
+            .evaluate_table_formula(0, pi, ci, 0, 1, "=1+1", true)
+            .is_err());
+        assert_eq!(texts(&core, pi, ci), before);
     }
 }

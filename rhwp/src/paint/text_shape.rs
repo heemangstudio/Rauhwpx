@@ -20,7 +20,7 @@ impl From<&TextRunNode> for FontRequest {
     fn from(run: &TextRunNode) -> Self {
         Self {
             family: run.style.font_family.clone(),
-            bold: run.style.bold,
+            bold: run.style.paint_bold(),
             italic: run.style.italic,
         }
     }
@@ -210,7 +210,7 @@ impl FontResolver for EmbeddedFontResolver<'_> {
                     )),
                     size_px: run.style.font_size,
                     variations: Vec::new(),
-                    synthetic_bold: run.style.bold,
+                    synthetic_bold: run.style.paint_bold(),
                     synthetic_italic: run.style.italic,
                 },
                 direction: crate::paint::TextDirection::Ltr,

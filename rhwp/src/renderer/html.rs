@@ -3,6 +3,7 @@
 //! 렌더 트리를 HTML 문자열로 변환한다.
 //! CSS로 스타일링하여 접근성과 텍스트 선택을 지원한다.
 
+use super::image_header::canvaskit_encoded_image_header;
 use super::image_resolver::{
     bmp_bytes_to_png_bytes, detect_image_mime_type, pcx_bytes_to_png_bytes, tiff_bytes_to_png_bytes,
 };
@@ -10,6 +11,7 @@ use super::layout::compute_char_positions;
 use super::render_tree::{PageRenderTree, RenderNode, RenderNodeType};
 use super::svg::convert_wmf_to_svg;
 use super::{LineStyle, PathCommand, Renderer, ShapeStyle, TextStyle};
+use crate::model::style::ImageFillMode;
 use crate::model::style::UnderlineType;
 use base64::Engine;
 
@@ -126,7 +128,13 @@ impl HtmlRenderer {
                 return;
             }
             RenderNodeType::TextRun(run) => {
-                self.draw_text(run.display_or_text(), node.bbox.x, node.bbox.y, &run.style);
+                self.draw_projected_text(
+                    run.display_or_text(),
+                    node.bbox.x,
+                    node.bbox.y,
+                    &run.style,
+                    run.display_text.is_some(),
+                );
                 if self.show_paragraph_marks || self.show_control_codes {
                     let font_size = if run.style.font_size > 0.0 {
                         run.style.font_size
@@ -212,13 +220,20 @@ impl HtmlRenderer {
             }
             RenderNodeType::Image(img) => {
                 if let Some(ref data) = img.data {
-                    self.draw_image(
-                        data,
-                        node.bbox.x,
-                        node.bbox.y,
-                        node.bbox.width,
-                        node.bbox.height,
-                    );
+                    if matches!(
+                        img.fill_mode,
+                        Some(ImageFillMode::Zoom | ImageFillMode::None)
+                    ) {
+                        self.draw_zoom_image(data, &node.bbox);
+                    } else {
+                        self.draw_image(
+                            data,
+                            node.bbox.x,
+                            node.bbox.y,
+                            node.bbox.width,
+                            node.bbox.height,
+                        );
+                    }
                 } else {
                     self.output.push_str(&format!(
                         "<div class=\"hwp-image\" style=\"position:absolute;left:{}px;top:{}px;width:{}px;height:{}px;background:#eee;\"></div>\n",
@@ -260,27 +275,47 @@ impl HtmlRenderer {
             self.end_page();
         }
     }
-}
 
-impl Renderer for HtmlRenderer {
-    fn begin_page(&mut self, width: f64, height: f64) {
-        self.width = width;
-        self.height = height;
-        self.output.clear();
+    fn draw_zoom_image(&mut self, data: &[u8], bbox: &super::render_tree::BoundingBox) {
+        let Some(header) = canvaskit_encoded_image_header(data) else {
+            self.draw_image(data, bbox.x, bbox.y, bbox.width, bbox.height);
+            return;
+        };
+        let scale = ((bbox.width / header.width as f64).min(bbox.height / header.height as f64)
+            * 100.0)
+            .ceil()
+            / 100.0;
+        let fit_width = header.width as f64 * scale;
+        let fit_height = header.height as f64 * scale;
+        let fit_x = (bbox.width - fit_width).max(0.0) / 2.0;
+        let fit_y = (bbox.height - fit_height).max(0.0) / 2.0;
         self.output.push_str(&format!(
-            "<div class=\"hwp-page\" style=\"position:relative;width:{}px;height:{}px;overflow:hidden;\">\n",
-            width, height,
+            "<div class=\"hwp-image-zoom\" style=\"position:absolute;left:{}px;top:{}px;width:{}px;height:{}px;overflow:hidden;\">\n",
+            bbox.x, bbox.y, bbox.width, bbox.height,
         ));
-    }
-
-    fn end_page(&mut self) {
+        self.draw_image(data, fit_x, fit_y, fit_width, fit_height);
         self.output.push_str("</div>\n");
     }
+}
 
-    fn draw_text(&mut self, text: &str, x: f64, y: f64, style: &TextStyle) {
+impl HtmlRenderer {
+    fn draw_projected_text(
+        &mut self,
+        text: &str,
+        x: f64,
+        y: f64,
+        style: &TextStyle,
+        preserve_projection: bool,
+    ) {
         // [Task #509] 한컴은 폰트 지정과 상관없이 PUA 를 자체 처리. 지정 폰트에 글리프
         // 부재 시 한컴 내부 매핑이 발행. rhwp 도 동일 동작 모방 (PR #251 정합).
-        let text = &crate::renderer::composer::expand_pua_render_text(text);
+        let expanded;
+        let text = if preserve_projection {
+            text
+        } else {
+            expanded = crate::renderer::composer::expand_pua_render_text(text);
+            &expanded
+        };
 
         let font_size = if style.font_size > 0.0 {
             style.font_size
@@ -292,26 +327,33 @@ impl Renderer for HtmlRenderer {
             "sans-serif".to_string()
         } else {
             let fallback = super::generic_fallback(&style.font_family);
+            // 문서 선언 대체 글꼴(substFont)은 generic 폴백보다 먼저 시도.
+            let subst = if style.effective_font_subst().is_empty() {
+                String::new()
+            } else {
+                format!(" '{}',", escape_html(style.effective_font_subst()))
+            };
             // [#3314] 접미사 face 미설치 시 base family 가 generic 보다 먼저 구제.
             match super::base_family_without_weight_suffix(&style.font_family) {
                 Some(base) => format!(
-                    "'{}', '{}', {}",
+                    "'{}', '{}',{} {}",
                     escape_html(&style.font_family),
                     escape_html(&base),
+                    subst,
                     fallback
                 ),
-                None => format!("'{}', {}", escape_html(&style.font_family), fallback),
+                None => format!(
+                    "'{}',{} {}",
+                    escape_html(&style.font_family),
+                    subst,
+                    fallback
+                ),
             }
         };
 
         // 위첨자/아래첨자: y좌표·font_size 직접 조정 (absolute 위치이므로 vertical-align 불가)
-        let (draw_y, draw_size) = if style.superscript {
-            (y - font_size * 0.3, font_size * 0.7)
-        } else if style.subscript {
-            (y + font_size * 0.15, font_size * 0.7)
-        } else {
-            (y, font_size)
-        };
+        let (draw_size, script_dy) = super::script_glyph_size_and_shift(style, font_size);
+        let draw_y = y + script_dy;
 
         let mut css = format!(
             "position:absolute;left:{}px;top:{}px;font-family:{};font-size:{}px;color:{};",
@@ -395,6 +437,26 @@ impl Renderer for HtmlRenderer {
             css,
             escape_html(text),
         ));
+    }
+}
+
+impl Renderer for HtmlRenderer {
+    fn begin_page(&mut self, width: f64, height: f64) {
+        self.width = width;
+        self.height = height;
+        self.output.clear();
+        self.output.push_str(&format!(
+            "<div class=\"hwp-page\" style=\"position:relative;width:{}px;height:{}px;overflow:hidden;\">\n",
+            width, height,
+        ));
+    }
+
+    fn end_page(&mut self) {
+        self.output.push_str("</div>\n");
+    }
+
+    fn draw_text(&mut self, text: &str, x: f64, y: f64, style: &TextStyle) {
+        self.draw_projected_text(text, x, y, style, false);
     }
 
     fn draw_rect(
@@ -595,6 +657,62 @@ mod tests {
         let output = renderer.output();
         assert!(output.contains("font-weight:bold"));
         assert!(output.contains("font-style:italic"));
+    }
+
+    #[test]
+    fn string_renderers_preserve_explicit_pua_display_projection() {
+        use crate::renderer::render_tree::{BoundingBox, FieldMarkerType, TextRunNode};
+        use crate::renderer::svg::SvgRenderer;
+
+        let text = "\u{F081C}\u{F012B}\u{F03C5}";
+        for preserve_projection in [false, true] {
+            let run = TextRunNode {
+                text: text.to_string(),
+                style: TextStyle {
+                    font_family: "HCR Batang".to_string(),
+                    font_size: 16.0,
+                    ..Default::default()
+                },
+                char_shape_id: None,
+                para_shape_id: None,
+                section_index: None,
+                para_index: None,
+                char_start: None,
+                cell_context: None,
+                is_para_end: false,
+                is_line_break_end: false,
+                rotation: 0.0,
+                is_vertical: false,
+                char_overlap: None,
+                border_fill_id: 0,
+                baseline: 13.0,
+                field_marker: FieldMarkerType::None,
+                display_text: preserve_projection.then(|| text.to_string()),
+            };
+            let mut tree = PageRenderTree::new(0, 100.0, 100.0);
+            let id = tree.next_id();
+            tree.root.children.push(RenderNode::new(
+                id,
+                RenderNodeType::TextRun(run),
+                BoundingBox::new(10.0, 20.0, 24.0, 18.0),
+            ));
+            let mut html = HtmlRenderer::new();
+            html.render_tree(&tree);
+            let mut svg = SvgRenderer::new();
+            svg.render_tree(&tree);
+            for output in [html.output(), svg.output()] {
+                for glyph in ['\u{F081C}', '\u{F03C5}'] {
+                    assert_eq!(
+                        output.matches(glyph).count(),
+                        usize::from(preserve_projection)
+                    );
+                }
+                assert_eq!(output.matches('\u{F012B}').count(), 1);
+                if !preserve_projection {
+                    assert!(output.contains('□'));
+                }
+            }
+        }
     }
 
     #[test]

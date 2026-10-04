@@ -749,6 +749,16 @@ fn parse_paragraph(
     let mut field_end_idx: usize = 0;
 
     for part in &text_parts {
+        // bookmark/hiddenComment 는 text_parts 마커 없이 controls 에만 쌓이는 폭 0 컨트롤이다.
+        // 마커를 소비하는 컨트롤보다 앞에 오면 control_idx 가 밀려 Field 를 놓치므로 건너뛴다.
+        if matches!(part.as_str(), "\u{0002}" | "\u{0003}" | "\u{0012}") {
+            while matches!(
+                para.controls.get(control_idx),
+                Some(Control::Bookmark(_) | Control::HiddenComment(_))
+            ) {
+                control_idx += 1;
+            }
+        }
         match part.as_str() {
             "\u{0003}" => {
                 if matches!(para.controls.get(control_idx), Some(Control::Field(_))) {
@@ -903,6 +913,23 @@ fn parse_paragraph(
             .all(|s| s.line_height == 0 && s.text_height == 0)
     {
         para.line_segs.clear();
+    }
+
+    // 저장된 텍스트 줄의 인라인 탭 너비는 한컴이 이미 계산한 이동량이다.
+    // 이를 다시 너비의 배수에 맞추면 가운데 정렬과 run 분할에 따라 탭이 줄어든다.
+    // 개체가 있는 줄과 재조판 줄은 측정 폭이 달라질 수 있어 기존 탭 재계산을 유지한다.
+    if para.controls.is_empty()
+        && !para.line_segs.is_empty()
+        && para
+            .line_segs
+            .iter()
+            .all(|seg| seg.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY == 0 && seg.line_height > 0)
+    {
+        for tab in &mut para.tab_extended {
+            // 저장된 텍스트 줄의 탭 이동량을 보존한다. 편집 후 재조판할 때
+            // 이 마커를 지우고 탭 위치를 다시 계산한다.
+            tab[5] = (tab[5] & !0x8000) | 0x4000;
+        }
     }
 
     // [Task #1058 후속] HWPX `<hp:p id>` → HWP PARA_HEADER instance_id 매핑.
@@ -1784,6 +1811,11 @@ fn parse_tab_extension(e: &quick_xml::events::BytesStart) -> [u16; 7] {
         }
     }
     ext[2] = (tab_type << 8) | leader;
+    // HWPX `width` 는 '이동 거리'가 아닌 탭 정지 간격이다(한컴은 줄 시작 기준
+    // width 배수 위치로 이동). HWP5 인라인 탭은 ext[0] 에 해석된 결과 거리를
+    // 저장하므로 구분이 필요 — 예약 슬롯 ext[5] 상위 비트로 간격 의미를 표시한다.
+    // HWP5 직렬화 시 serializer/body_text.rs 에서 이 비트를 지운다.
+    ext[5] |= 0x8000;
 
     ext
 }
@@ -2060,9 +2092,14 @@ fn parse_table(
     // row_sizes 설정 (행별 셀 수, HWP 스펙 UINT16[NRows] 계약과 동일 — 높이가 아니다).
     // model::table::Table::rebuild_row_sizes, parser::control(HWP5), html_table_import,
     // document_core::commands::object_ops::table 이 모두 이 필드를 "행별 셀 개수"로 채운다.
-    table.row_sizes = (0..table.row_count)
-        .map(|r| table.cells.iter().filter(|c| c.row == r).count() as i16)
-        .collect();
+    // 셀을 한 번만 훑어 센다(행 범위 밖 셀은 무시).
+    let mut row_cell_counts = vec![0usize; table.row_count as usize];
+    for cell in &table.cells {
+        if let Some(count) = row_cell_counts.get_mut(cell.row as usize) {
+            *count += 1;
+        }
+    }
+    table.row_sizes = row_cell_counts.into_iter().map(|n| n as i16).collect();
 
     materialize_hwpx_table_attrs(&mut table, table_record_flags);
     table.rebuild_grid();
@@ -2494,6 +2531,7 @@ fn parse_picture(
     common.hwp5_gen_shape_attr_bit26 = true;
     let mut shape_attr = ShapeComponentAttr::default();
     let mut crop = CropInfo::default();
+    let mut border_line: Option<ShapeBorderLine> = None;
     let mut padding = crate::model::Padding::default();
     let mut border_x = [0i32; 4];
     let mut border_y = [0i32; 4];
@@ -2768,6 +2806,8 @@ fn parse_picture(
                             }
                         }
                     }
+                    // 그림 테두리 선 (HWP5 SHAPE_PICTURE 의 테두리 색·두께·속성과 같은 정보)
+                    b"lineShape" => border_line = Some(parse_line_shape_attr(ce)),
                     b"imgClip" => {
                         for attr in ce.attributes().flatten() {
                             match attr.key.as_ref() {
@@ -2873,6 +2913,11 @@ fn parse_picture(
     pic.shape_attr = shape_attr;
     pic.href = href;
     pic.crop = crop;
+    if let Some(bl) = border_line {
+        pic.border_color = bl.color;
+        pic.border_width = bl.width;
+        pic.border_attr = bl;
+    }
     pic.padding = padding;
     pic.border_x = border_x;
     pic.border_y = border_y;
@@ -4049,6 +4094,17 @@ fn parse_shape_object(
                     b"drawText" => {
                         let mut tb = TextBox::default();
                         tb.max_width = common.width;
+                        // drawText lastWidth = 텍스트가 조판된 폭. curSz 와 같으면
+                        // 도형 확대 후에도 한컴이 내부 글꼴을 축소하지 않는다
+                        // (shape_layout 의 폰트 스케일 게이트가 사용).
+                        for attr in ce.attributes().flatten() {
+                            if attr.key.as_ref() == b"lastWidth" {
+                                let v = parse_i32(&attr);
+                                if v > 0 {
+                                    tb.max_width = v as u32;
+                                }
+                            }
+                        }
                         parse_draw_text(reader, &mut tb)?;
                         text_box = Some(tb);
                     }
@@ -4992,8 +5048,16 @@ fn parse_ctrl_endnote(
     Ok(Control::Endnote(Box::new(note)))
 }
 
+// 양수 좌표 사이의 0은 저장된 단/쪽 경계다. 모든 후속 좌표가 0인
+// 누락 캐시만 복원하고, 실제 경계가 있는 좌표열은 그대로 보존한다.
 fn normalize_hwpx_note_line_vpos(paragraph: &mut Paragraph) {
-    if paragraph.line_segs.len() <= 1 {
+    if paragraph.line_segs.len() <= 1
+        || paragraph
+            .line_segs
+            .iter()
+            .skip(1)
+            .any(|line| line.vertical_pos != 0)
+    {
         return;
     }
 
@@ -6582,6 +6646,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn note_vpos_normalization_preserves_saved_column_resets() {
+        let make = |positions: &[i32]| Paragraph {
+            line_segs: positions
+                .iter()
+                .map(|&vertical_pos| LineSeg {
+                    vertical_pos,
+                    line_height: 900,
+                    line_spacing: 452,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let mut missing = make(&[0, 0, 0]);
+        normalize_hwpx_note_line_vpos(&mut missing);
+        assert_eq!(
+            missing
+                .line_segs
+                .iter()
+                .map(|s| s.vertical_pos)
+                .collect::<Vec<_>>(),
+            vec![0, 1352, 2704]
+        );
+
+        let mut saved = make(&[6000, 7352, 0, 1352]);
+        normalize_hwpx_note_line_vpos(&mut saved);
+        assert_eq!(
+            saved
+                .line_segs
+                .iter()
+                .map(|s| s.vertical_pos)
+                .collect::<Vec<_>>(),
+            vec![6000, 7352, 0, 1352]
+        );
+    }
+
+    #[test]
     fn hwpx_xml_depth_preflight_accepts_limit_and_rejects_next_level() {
         fn nested_xml(depth: usize) -> String {
             let mut xml = String::with_capacity(depth.saturating_mul(7));
@@ -7291,7 +7392,28 @@ mod tests {
         let section = parse_hwpx_section(xml).unwrap();
         let para = &section.paragraphs[0];
         assert_eq!(para.text, "A\t(페이지 표기)");
-        assert_eq!(para.tab_extended, vec![[17283, 0, 0x0203, 0, 0, 0, 9]]);
+        // ext[5] 상위 비트 = HWPX 탭(간격 의미) 마커
+        assert_eq!(para.tab_extended, vec![[17283, 0, 0x0203, 0, 0, 0x8000, 9]]);
+    }
+
+    #[test]
+    fn stored_text_line_preserves_resolved_inline_tab_distance() {
+        for (flags, expected_marker) in [(393216, 0x4000), (2147876864u32, 0x8000)] {
+            let xml = format!(
+                r#"<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+                xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+                <hp:p paraPrIDRef="0"><hp:run charPrIDRef="0">
+                <hp:t>가<hp:tab width="700" leader="0" type="1"/>12</hp:t>
+                </hp:run><hp:linesegarray><hp:lineseg textpos="0" vertpos="0"
+                vertsize="1000" textheight="1000" baseline="750" spacing="0"
+                horzpos="0" horzsize="20000" flags="{flags}"/></hp:linesegarray>
+                </hp:p></hs:sec>"#
+            );
+            let section = parse_hwpx_section(&xml).unwrap();
+            let tab = section.paragraphs[0].tab_extended[0];
+            assert_eq!(tab[0], 700);
+            assert_eq!(tab[5], expected_marker);
+        }
     }
 
     #[test]
@@ -7873,6 +7995,26 @@ mod tests {
         let p = &section.paragraphs[0];
         assert_eq!(p.field_ranges.len(), 1, "동일 문단 필드는 field_range");
         assert!(p.orphan_field_ends.is_empty(), "고아 기록 없음");
+    }
+
+    #[test]
+    fn bookmark_before_field_begin_keeps_field_range() {
+        // bookmark/hiddenComment 는 마커 없는 폭 0 컨트롤 — 뒤따르는 fieldBegin 의
+        // control_idx 가 밀려 필드 범위가 소실되면 안 된다.
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+        xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="0"><hp:t>앞</hp:t><hp:ctrl><hp:bookmark name="bm"/></hp:ctrl><hp:ctrl><hp:fieldBegin id="7" type="CLICK_HERE" name="f" fieldid="7"/></hp:ctrl><hp:t>값</hp:t><hp:ctrl><hp:fieldEnd beginIDRef="7" fieldid="7"/></hp:ctrl></hp:run>
+  </hp:p>
+</hs:sec>"#;
+        let section = parse_hwpx_section(xml).unwrap();
+        let p = &section.paragraphs[0];
+        assert_eq!(p.field_ranges.len(), 1);
+        assert!(p.orphan_field_ends.is_empty());
+        let range = &p.field_ranges[0];
+        assert!(matches!(p.controls[range.control_idx], Control::Field(_)));
+        assert_eq!((range.start_char_idx, range.end_char_idx), (1, 2));
     }
 
     /// #1512: 비-Memo 필드도 고유 OWPML `id` 를 field_id 로 써야 한다. 같은 종류 필드가

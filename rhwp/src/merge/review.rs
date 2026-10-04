@@ -35,6 +35,17 @@ enum Target {
     Document,
     Paragraph(usize, usize),
     Conflict,
+    Group {
+        edits: Vec<ParagraphEdit>,
+        resources: bool,
+    },
+}
+
+#[derive(Clone)]
+struct ParagraphEdit {
+    section: usize,
+    current: std::ops::Range<usize>,
+    proposed: std::ops::Range<usize>,
 }
 
 fn paragraph_value(p: &Paragraph) -> Value {
@@ -88,6 +99,7 @@ fn review_choice(
         .or_else(|| {
             unit.position
                 .as_ref()
+                .filter(|_| unit.value.path.get(1).map(String::as_str) != Some("group"))
                 .and_then(|position| choices.get(&review_position_key(position)))
         })
         .cloned()
@@ -102,7 +114,7 @@ fn unit(
     dependencies: Vec<String>,
     manual: bool,
 ) -> ReviewUnit {
-    let both = texts_support_both(&b, &c, &i);
+    let both = manual && texts_support_both(&b, &c, &i);
     let mut value = conflict(
         &path,
         MergeConflictReason::SameFieldChanged,
@@ -111,6 +123,13 @@ fn unit(
         &i,
         both,
     );
+    let mut dependencies = dependencies;
+    dependencies.sort();
+    dependencies.dedup();
+    value.fingerprint =
+        blake3::hash(&serde_json::to_vec(&json!([3, value.fingerprint, dependencies])).unwrap())
+            .to_hex()
+            .to_string();
     value.id = format!("review:{}", value.fingerprint);
     value.supports_manual = manual;
     value.kind = if manual {
@@ -133,7 +152,448 @@ fn plain_text(p: &Paragraph) -> bool {
         && p.range_tags.is_empty()
         && p.tab_extended.is_empty()
         && p.char_shapes.len() <= 1
+        && p.char_shapes
+            .first()
+            .is_none_or(|shape| shape.start_pos == 0)
+        && p.ctrl_data_records.iter().all(Option::is_none)
         && p.orphan_field_ends.is_empty()
+        && p.markpen_marks.is_empty()
+}
+
+fn paragraph_identity(p: &Paragraph) -> Option<u32> {
+    p.raw_header_extra
+        .get(6..10)
+        .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
+        .filter(|id| *id != 0)
+}
+
+// Unique identities take precedence over content anchors. An ambiguous region
+// stays one atomic range; we never guess which repeated paragraph was deleted.
+fn paragraph_edits(
+    section: usize,
+    current: &[Paragraph],
+    proposed: &[Paragraph],
+) -> Option<Vec<ParagraphEdit>> {
+    let mut old = BTreeMap::<String, Vec<usize>>::new();
+    let mut new = BTreeMap::<String, Vec<usize>>::new();
+    for (paragraphs, keys) in [(current, &mut old), (proposed, &mut new)] {
+        for (index, paragraph) in paragraphs.iter().enumerate() {
+            let key = paragraph_identity(paragraph)
+                .map(|id| format!("id:{id}"))
+                .unwrap_or_else(|| format!("hash:{}", paragraph_hash(paragraph)));
+            keys.entry(key).or_default().push(index);
+        }
+    }
+    let mut anchors = old
+        .iter()
+        .filter_map(|(key, indices)| {
+            let others = new.get(key)?;
+            (indices.len() == 1 && others.len() == 1).then_some((indices[0], others[0]))
+        })
+        .collect::<Vec<_>>();
+    anchors.sort_unstable();
+    // Reordering needs an explicit move operation; overlapping replacement
+    // ranges cannot safely express independent choices.
+    if anchors.windows(2).any(|pair| pair[0].1 >= pair[1].1) {
+        return None;
+    }
+    let mut edits = vec![];
+    let (mut a, mut b) = (0, 0);
+    for (x, y) in anchors
+        .into_iter()
+        .chain(std::iter::once((current.len(), proposed.len())))
+    {
+        if (a != x || b != y)
+            && (x - a != y - b
+                || current[a..x]
+                    .iter()
+                    .zip(&proposed[b..y])
+                    .any(|(old, new)| paragraph_hash(old) != paragraph_hash(new)))
+        {
+            edits.push(ParagraphEdit {
+                section,
+                current: a..x,
+                proposed: b..y,
+            });
+        }
+        if x < current.len()
+            && y < proposed.len()
+            && paragraph_hash(&current[x]) != paragraph_hash(&proposed[y])
+        {
+            edits.push(ParagraphEdit {
+                section,
+                current: x..x + 1,
+                proposed: y..y + 1,
+            });
+        }
+        a = x + 1;
+        b = y + 1;
+    }
+    Some(edits)
+}
+
+fn same_resource_content(left: &[BinDataContent], right: &[BinDataContent]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(left, right)| resources_equal(Some(left), Some(right)))
+}
+
+fn document_value(document: &Document) -> Result<Value, String> {
+    // Keep every document field in the fingerprint while replacing mutable
+    // lazy-resolver state with the exact payload identity.
+    let Document {
+        header,
+        doc_properties,
+        doc_info,
+        sections,
+        preview,
+        bin_data_content,
+        extra_streams,
+        hwpx_aux_entries,
+        is_hwp3_variant,
+        is_hwpx_variant,
+        provenance,
+    } = document;
+    let resources = bin_data_content
+        .iter()
+        .map(|content| {
+            let identity = if let Some(identity) = content.data.payload_identity() {
+                identity.token()
+            } else {
+                let bytes = content
+                    .data
+                    .load_limited_shared(crate::parser::limits::MAX_BINARY_BYTES)
+                    .ok_or_else(|| {
+                        format!(
+                            "cannot fingerprint review resource {} within binary limits",
+                            content.id
+                        )
+                    })?;
+                crate::model::bin_data::BinDataPayloadIdentity::new(
+                    "decoded",
+                    bytes.len() as u64,
+                    *blake3::hash(&bytes).as_bytes(),
+                )
+                .token()
+            };
+            Ok((content.id, &content.extension, identity))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let hash = dh(&(
+        header,
+        doc_properties,
+        doc_info,
+        sections,
+        preview,
+        resources,
+        extra_streams,
+        hwpx_aux_entries,
+        is_hwp3_variant,
+        is_hwpx_variant,
+        provenance,
+    ));
+    Ok(json!({"kind": "document", "hash": format!("blake3:{}", hash.to_hex())}))
+}
+
+fn independent_groups(
+    c: &Document,
+    candidate: &Document,
+    conflicts: &[MergeConflict],
+) -> Option<(Vec<ReviewUnit>, Vec<Target>)> {
+    if c.sections.len() != candidate.sections.len()
+        || dh(&c.header) != dh(&candidate.header)
+        || dh(&c.doc_properties) != dh(&candidate.doc_properties)
+        || dh(&c.extra_streams) != dh(&candidate.extra_streams)
+    {
+        return None;
+    }
+    let resources = !same_resource_content(&c.bin_data_content, &candidate.bin_data_content)
+        || dh(&c.doc_info.bin_data_list) != dh(&candidate.doc_info.bin_data_list);
+    let normalize = |d: &Document| {
+        let mut info = d.doc_info.clone();
+        info.bin_data_list.clear();
+        info.raw_stream = None;
+        info.raw_stream_dirty = false;
+        // Structural merging regenerates the encoded records even when all
+        // style properties are unchanged. Compare their modeled values.
+        for font in info.font_faces.iter_mut().flatten() {
+            font.raw_data = None;
+        }
+        macro_rules! clear_encoded_records {
+            ($($field:ident),+) => { $(for value in &mut info.$field { value.raw_data = None; })+ };
+        }
+        clear_encoded_records!(
+            border_fills,
+            char_shapes,
+            tab_defs,
+            numberings,
+            bullets,
+            para_shapes,
+            styles
+        );
+        info
+    };
+    if dh(&normalize(c)) != dh(&normalize(candidate)) {
+        return None;
+    }
+    // Existing declaration slots and payloads must retain their meaning so
+    // rejected paragraphs can safely keep referring to the current resources.
+    let payloads = candidate
+        .bin_data_content
+        .iter()
+        .map(|value| (value.id, value))
+        .collect::<BTreeMap<_, _>>();
+    if candidate.doc_info.bin_data_list.len() < c.doc_info.bin_data_list.len()
+        || c.doc_info
+            .bin_data_list
+            .iter()
+            .zip(&candidate.doc_info.bin_data_list)
+            .any(|(old, new)| dh(old) != dh(new))
+        || c.bin_data_content
+            .iter()
+            .any(|old| !resources_equal(Some(old), payloads.get(&old.id).copied()))
+    {
+        return None;
+    }
+    let mut independent = vec![];
+    let mut dependent = vec![];
+    let mut probe = resources.then(|| {
+        let mut probe = c.clone();
+        probe.sections.clear();
+        probe.doc_properties.section_count = 1;
+        probe
+    });
+    for (section, (old, new)) in c.sections.iter().zip(&candidate.sections).enumerate() {
+        if dh(&old.section_def) != dh(&new.section_def) {
+            return None;
+        }
+        for edit in paragraph_edits(section, &old.paragraphs, &new.paragraphs)? {
+            let paragraphs = &new.paragraphs[edit.proposed.clone()];
+            let unchanged_controls = edit.current.len() == 1
+                && edit.proposed.len() == 1
+                && dh(&old.paragraphs[edit.current.start].controls) == dh(&paragraphs[0].controls)
+                && dh(&old.paragraphs[edit.current.start].ctrl_data_records)
+                    == dh(&paragraphs[0].ctrl_data_records);
+            if resources
+                && !unchanged_controls
+                && paragraphs.iter().any(|p| {
+                    p.ctrl_data_records
+                    .iter()
+                    .skip(p.controls.len())
+                    .any(Option::is_some)
+                    || p.controls.iter().enumerate().any(|(index, control)| {
+                        let raw = p.ctrl_data_records.get(index).cloned().flatten();
+                        if matches!(control, Control::Picture(picture) if picture.caption.is_none())
+                            && raw.is_none()
+                        {
+                            return false;
+                        }
+                        // A newly added image may share its paragraph with
+                        // existing section/table/opaque controls. Their
+                        // unchanged bytes still refer to current resources.
+                        !(edit.current.len() == 1
+                            && edit.proposed.len() == 1
+                            && old.paragraphs[edit.current.start]
+                                .controls
+                                .iter()
+                                .enumerate()
+                                .any(|(old_index, existing)| {
+                                    dh(existing) == dh(control)
+                                        && old.paragraphs[edit.current.start]
+                                            .ctrl_data_records
+                                            .get(old_index)
+                                            .cloned()
+                                            .flatten()
+                                            == raw
+                                }))
+                    })
+                })
+            {
+                // Opaque controls may contain references we cannot inspect.
+                return None;
+            }
+            let needs_resources = if let Some(probe) = &mut probe {
+                probe.sections = vec![Section {
+                    section_def: new.section_def.clone(),
+                    paragraphs: paragraphs.to_vec(),
+                    ..Section::default()
+                }];
+                let required = validate_resource_dependencies(probe).is_err();
+                required
+            } else {
+                false
+            };
+            if needs_resources {
+                dependent.push(edit);
+            } else {
+                independent.push(vec![edit]);
+            }
+        }
+    }
+    if resources {
+        independent.push(dependent);
+    }
+    let resource_hash = if resources {
+        // Lazy resolver caches change after export or preview. A saved choice
+        // must identify the resource payload, never its cache state.
+        let identities = candidate
+            .bin_data_content
+            .iter()
+            .map(|content| {
+                let observation = ResourceObservation::new(content);
+                observation.payload.external_identity()?;
+                Some(observation.value())
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(
+            dh(&(&candidate.doc_info.bin_data_list, identities))
+                .to_hex()
+                .to_string(),
+        )
+    } else {
+        None
+    };
+    let count = independent.len();
+    let mut units = vec![];
+    let mut targets = vec![];
+    let mut assigned = BTreeMap::<String, usize>::new();
+    for (index, edits) in independent.into_iter().enumerate() {
+        let has_resources = resources && index + 1 == count;
+        let values = |d: &Document, incoming: bool| -> Value {
+            let paragraphs = edits.iter().map(|edit| {
+                let range = if incoming { edit.proposed.clone() } else { edit.current.clone() };
+                json!({"section": edit.section, "start": range.start,
+                    "paragraphs": d.sections[edit.section].paragraphs[range].iter().map(paragraph_value).collect::<Vec<_>>()})
+            }).collect::<Vec<_>>();
+            let text = edits
+                .iter()
+                .flat_map(|edit| {
+                    let range = if incoming {
+                        edit.proposed.clone()
+                    } else {
+                        edit.current.clone()
+                    };
+                    d.sections[edit.section].paragraphs[range]
+                        .iter()
+                        .map(|paragraph| paragraph.text.as_str())
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            json!({"text": text, "groups": paragraphs})
+        };
+        let mut dependencies = conflicts
+            .iter()
+            .filter(|conflict| {
+                edits.iter().any(|edit| {
+                    let path = &conflict.path;
+                    if path.len() < 4
+                        || path[0] != "sections"
+                        || path[1] != edit.section.to_string()
+                        || path[2] != "paragraphs"
+                    {
+                        return false;
+                    }
+                    if let Some(identity) = path[3]
+                        .strip_prefix('@')
+                        .and_then(|value| value.parse::<u32>().ok())
+                    {
+                        return c.sections[edit.section].paragraphs[edit.current.clone()]
+                            .iter()
+                            .chain(
+                                candidate.sections[edit.section].paragraphs[edit.proposed.clone()]
+                                    .iter(),
+                            )
+                            .any(|paragraph| paragraph_identity(paragraph) == Some(identity));
+                    }
+                    // Numeric conflict paths are only unambiguous when this range
+                    // retained its positions through the structural merge.
+                    edit.current == edit.proposed
+                        && path[3]
+                            .parse::<usize>()
+                            .ok()
+                            .is_some_and(|position| edit.current.contains(&position))
+                })
+            })
+            .map(|conflict| {
+                *assigned.entry(conflict.id.clone()).or_default() += 1;
+                conflict.id.clone()
+            })
+            .collect::<Vec<_>>();
+        let automatic = dependencies.is_empty();
+        if has_resources {
+            dependencies.push(format!("resources:{}", resource_hash.as_ref().unwrap()));
+        }
+        let current_value = values(c, false);
+        let mut review = unit(
+            vec!["sections".into(), "group".into(), index.to_string()],
+            current_value.clone(),
+            current_value,
+            values(candidate, true),
+            dependencies,
+            false,
+        );
+        // These dependencies are automatic resource additions, not conflicts.
+        review.automatic = automatic;
+        review.value.supports_both = false;
+        if let Some(edit) = edits.first() {
+            review.position = Some(ReviewPosition {
+                section: edit.section,
+                paragraph: edit.current.start,
+            });
+        }
+        units.push(review);
+        targets.push(Target::Group {
+            edits,
+            resources: has_resources,
+        });
+    }
+    conflicts
+        .iter()
+        .all(|conflict| assigned.get(&conflict.id) == Some(&1))
+        .then_some((units, targets))
+}
+
+fn apply_groups(
+    c: &Document,
+    candidate: &Document,
+    analysis: &ReviewAnalysis,
+    targets: &[Target],
+    choices: &BTreeMap<String, MergeResolution>,
+) -> Result<Document, String> {
+    let mut output = c.clone();
+    let mut selected = vec![];
+    for (unit, target) in analysis.conflicts.iter().zip(targets) {
+        let Target::Group { edits, resources } = target else {
+            unreachable!()
+        };
+        match review_choice(choices, unit) {
+            MergeResolution::Current => continue,
+            MergeResolution::Incoming => {}
+            _ => return Err(format!("{} requires an atomic selection", unit.value.id)),
+        }
+        if *resources {
+            output.doc_info = candidate.doc_info.clone();
+            output.bin_data_content = candidate.bin_data_content.clone();
+        }
+        selected.extend(edits.iter());
+    }
+    selected.sort_by_key(|edit| {
+        std::cmp::Reverse((edit.section, edit.current.start, edit.current.end))
+    });
+    for edit in selected {
+        let section = &mut output.sections[edit.section];
+        section.paragraphs.splice(
+            edit.current.clone(),
+            candidate.sections[edit.section].paragraphs[edit.proposed.clone()]
+                .iter()
+                .cloned(),
+        );
+        section.raw_stream = None;
+    }
+    validate_resource_dependencies(&output)?;
+    Ok(output)
 }
 
 fn review_documents(
@@ -163,12 +623,11 @@ fn review_documents(
     };
     let mut units = vec![];
     let mut targets = vec![];
-    // Any non-paragraph dependency makes this a single coherent choice. This
-    // includes inserted images and their declarations, positional style IDs,
-    // section moves, and table/paragraph insertion sequences.
+    // Paragraph topology and global changes use dependency groups when their
+    // references are understood; unsupported dependencies stay document-wide.
     let global_changed = dh(&b.header) != dh(&i.header)
         || dh(&b.doc_info) != dh(&i.doc_info)
-        || dh(&b.bin_data_content) != dh(&i.bin_data_content)
+        || !same_resource_content(&b.bin_data_content, &i.bin_data_content)
         || dh(&b.extra_streams) != dh(&i.extra_streams)
         || [
             b.doc_properties.page_start_num,
@@ -200,13 +659,23 @@ fn review_documents(
                         .zip(&n.paragraphs)
                         .all(|(c, n)| c.raw_header_extra.get(6..) == n.raw_header_extra.get(6..))
             });
-    if !same_layout || global_changed {
-        if dh(&candidate) != dh(c) || !initial.conflicts.is_empty() {
+    let grouped = if !same_layout || global_changed {
+        independent_groups(c, &candidate, &initial.conflicts)
+    } else {
+        None
+    };
+    if let Some((grouped_units, grouped_targets)) = grouped {
+        units = grouped_units;
+        targets = grouped_targets;
+    } else if !same_layout || global_changed {
+        let current_value = document_value(c)?;
+        let candidate_value = document_value(&candidate)?;
+        if candidate_value != current_value || !initial.conflicts.is_empty() {
             units.push(unit(
                 vec![],
-                dv("document", b),
-                dv("document", c),
-                dv("document", &candidate),
+                document_value(b)?,
+                current_value,
+                candidate_value,
                 initial.conflicts.iter().map(|v| v.id.clone()).collect(),
                 false,
             ));
@@ -292,9 +761,9 @@ fn review_documents(
         {
             units = vec![unit(
                 vec![],
-                dv("document", b),
-                dv("document", c),
-                dv("document", &candidate),
+                document_value(b)?,
+                document_value(c)?,
+                document_value(&candidate)?,
                 initial.conflicts.iter().map(|v| v.id.clone()).collect(),
                 false,
             )];
@@ -306,7 +775,7 @@ fn review_documents(
     Ok((
         candidate,
         ReviewAnalysis {
-            analysis_version: 2,
+            analysis_version: 3,
             result,
             conflicts: units,
             automatic_operation_count,
@@ -329,6 +798,12 @@ fn apply_review(
     {
         validate_resource_dependencies(c)?;
         return Ok(c.clone());
+    }
+    if targets
+        .iter()
+        .any(|target| matches!(target, Target::Group { .. }))
+    {
+        return apply_groups(c, &output, &analysis, &targets, choices);
     }
     if targets
         .iter()
@@ -361,9 +836,9 @@ fn apply_review(
                 Target::Paragraph(s, p) => {
                     output.sections[s].paragraphs[p] = c.sections[s].paragraphs[p].clone()
                 }
-                Target::Conflict => unreachable!(),
+                Target::Conflict | Target::Group { .. } => unreachable!(),
             },
-            MergeResolution::Both { order } => {
+            MergeResolution::Both { order } if unit.value.supports_both => {
                 let Target::Paragraph(s, p) = target else {
                     return Err(format!("{} does not support this selection", unit.value.id));
                 };
@@ -562,6 +1037,352 @@ mod tests {
             dh(&apply_review(&base, &base, &incoming, &choices).unwrap()),
             dh(&base)
         );
+    }
+
+    fn identified_fixture() -> Document {
+        let mut document = fixture();
+        for (index, paragraph) in document.sections[0].paragraphs.iter_mut().enumerate() {
+            paragraph.raw_header_extra = vec![0; 10];
+            paragraph.raw_header_extra[6..10].copy_from_slice(&(index as u32 + 1).to_le_bytes());
+            paragraph.text = format!("paragraph {index}");
+        }
+        document
+    }
+
+    #[test]
+    fn review_insert_delete_and_text_are_independently_selectable() {
+        let base = identified_fixture();
+        let mut current = base.clone();
+        current.sections[0].paragraphs[0].text = "local".into();
+        let mut incoming = base.clone();
+        let mut inserted = incoming.sections[0].paragraphs[0].clone();
+        inserted.raw_header_extra[6..10].copy_from_slice(&4_u32.to_le_bytes());
+        inserted.text = "inserted".into();
+        incoming.sections[0].paragraphs.insert(1, inserted);
+        incoming.sections[0].paragraphs[2].text = "incoming".into();
+        incoming.sections[0].paragraphs.pop();
+        let (_, analysis, _) = review_documents(&base, &current, &incoming).unwrap();
+        assert_eq!(analysis.analysis_version, 3);
+        assert_eq!(analysis.conflicts.len(), 3);
+        for mask in 0..8 {
+            let choices = analysis
+                .conflicts
+                .iter()
+                .enumerate()
+                .map(|(index, unit)| {
+                    (
+                        unit.value.id.clone(),
+                        if mask & (1 << index) != 0 {
+                            MergeResolution::Incoming
+                        } else {
+                            MergeResolution::Current
+                        },
+                    )
+                })
+                .collect();
+            let output = apply_review(&base, &current, &incoming, &choices).unwrap();
+            let mut expected = vec!["local"];
+            if mask & 1 != 0 {
+                expected.push("inserted");
+            }
+            expected.push(if mask & 2 != 0 {
+                "incoming"
+            } else {
+                "paragraph 1"
+            });
+            if mask & 4 == 0 {
+                expected.push("paragraph 2");
+            }
+            for bytes in [
+                serialize_hwp(&output).unwrap(),
+                serialize_hwpx(&output).unwrap(),
+            ] {
+                let loaded = parse_regenerated_document(&bytes).unwrap();
+                validate_resource_dependencies(&loaded).unwrap();
+                assert_eq!(paragraph_texts(&loaded), expected, "selection {mask}");
+            }
+        }
+    }
+
+    #[test]
+    fn review_image_dependencies_do_not_capture_unrelated_text() {
+        use crate::model::bin_data::{BinData, BinDataType};
+        let mut base = identified_fixture();
+        let original = parse_document(include_bytes!("../../saved/blank2010.hwp")).unwrap();
+        base.sections[0].paragraphs[0].controls =
+            original.sections[0].paragraphs[0].controls.clone();
+        base.sections[0].paragraphs[0].ctrl_data_records =
+            original.sections[0].paragraphs[0].ctrl_data_records.clone();
+        let mut current = base.clone();
+        current.sections[0].paragraphs[0].text = "local".into();
+        current.sections[0].paragraphs[2].text = "local choice".into();
+        let mut incoming = base.clone();
+        incoming.sections[0].paragraphs[2].text = "incoming".into();
+        incoming.doc_info.bin_data_list.push(BinData {
+            attr: 1,
+            data_type: BinDataType::Embedding,
+            storage_id: 1,
+            extension: Some("png".into()),
+            ..Default::default()
+        });
+        incoming.doc_info.raw_stream = None;
+        incoming.bin_data_content.push(BinDataContent {
+            id: 1,
+            data: BinDataBytes::from(
+                include_bytes!("../../rhwp-chrome/icons/icon-16.png").to_vec(),
+            ),
+            extension: "png".into(),
+        });
+        let mut inserted = incoming.sections[0].paragraphs[0].clone();
+        inserted.raw_header_extra[6..10].copy_from_slice(&4_u32.to_le_bytes());
+        inserted.text.clear();
+        inserted.controls.clear();
+        inserted.ctrl_data_records.clear();
+        let mut picture = Picture::default();
+        picture.image_attr.bin_data_id = 1;
+        picture.common.width = 1000;
+        picture.common.height = 1000;
+        inserted
+            .controls
+            .push(Control::Picture(Box::new(picture.clone())));
+        inserted.ctrl_data_records.push(None);
+        incoming.sections[0].paragraphs.insert(1, inserted);
+        // Both sides allocated slot 1. Selected incoming paragraphs must use
+        // the merger's rewritten slot while the local image stays unchanged.
+        current.doc_info.bin_data_list = incoming.doc_info.bin_data_list.clone();
+        current.doc_info.raw_stream = None;
+        current.bin_data_content.push(BinDataContent {
+            id: 1,
+            data: BinDataBytes::from(
+                include_bytes!("../../rhwp-chrome/icons/icon-32.png").to_vec(),
+            ),
+            extension: "png".into(),
+        });
+        current.sections[0].paragraphs[0]
+            .controls
+            .push(Control::Picture(Box::new(picture)));
+        current.sections[0].paragraphs[0]
+            .ctrl_data_records
+            .push(None);
+        let (_, analysis, _) = review_documents(&base, &current, &incoming).unwrap();
+        assert_eq!(
+            analysis.conflicts.len(),
+            2,
+            "{:?}",
+            analysis
+                .conflicts
+                .iter()
+                .map(|unit| &unit.value.path)
+                .collect::<Vec<_>>()
+        );
+        assert!(analysis.conflicts[1]
+            .dependency_ids
+            .iter()
+            .any(|id| id.starts_with("resources:")));
+        assert!(!analysis.conflicts[0].automatic);
+        assert!(analysis.conflicts[1].automatic);
+        for mask in 0..4 {
+            let choices = analysis
+                .conflicts
+                .iter()
+                .enumerate()
+                .map(|(index, unit)| {
+                    (
+                        unit.value.id.clone(),
+                        if mask & (1 << index) != 0 {
+                            MergeResolution::Incoming
+                        } else {
+                            MergeResolution::Current
+                        },
+                    )
+                })
+                .collect();
+            let output = apply_review(&base, &current, &incoming, &choices).unwrap();
+            for bytes in [
+                serialize_hwp(&output).unwrap(),
+                serialize_hwpx(&output).unwrap(),
+            ] {
+                let loaded = parse_regenerated_document(&bytes).unwrap();
+                validate_resource_dependencies(&loaded).unwrap();
+                assert_eq!(counts(&loaded), counts(&output));
+                assert_eq!(loaded.sections[0].paragraphs[0].text, "local");
+                assert_eq!(
+                    loaded.sections[0].paragraphs.last().unwrap().text,
+                    if mask & 1 != 0 {
+                        "incoming"
+                    } else {
+                        "local choice"
+                    }
+                );
+                assert_eq!(
+                    loaded.bin_data_content.len(),
+                    1 + usize::from(mask & 2 != 0)
+                );
+                assert_eq!(
+                    loaded.sections[0].paragraphs.len(),
+                    if mask & 2 != 0 { 4 } else { 3 }
+                );
+            }
+        }
+        let mut shared = incoming.clone();
+        let image_paragraph = shared.sections[0].paragraphs.remove(1);
+        shared.sections[0].paragraphs[0]
+            .controls
+            .extend(image_paragraph.controls);
+        shared.sections[0].paragraphs[0]
+            .ctrl_data_records
+            .extend(image_paragraph.ctrl_data_records);
+        let (_, shared_analysis, _) = review_documents(&base, &current, &shared).unwrap();
+        assert_eq!(
+            shared_analysis.conflicts.len(),
+            2,
+            "an image can share unchanged section controls"
+        );
+        let image_choice = BTreeMap::from([(
+            shared_analysis.conflicts[1].value.id.clone(),
+            MergeResolution::Incoming,
+        )]);
+        let shared_output = apply_review(&base, &current, &shared, &image_choice).unwrap();
+        assert_eq!(shared_output.sections[0].paragraphs[0].text, "local");
+        assert_eq!(shared_output.sections[0].paragraphs[2].text, "local choice");
+        assert_eq!(shared_output.bin_data_content.len(), 2);
+
+        let before = &analysis.conflicts[1].value.fingerprint;
+        incoming.bin_data_content[0].data = BinDataBytes::from(vec![1, 2, 3]);
+        let (_, changed, _) = review_documents(&base, &current, &incoming).unwrap();
+        assert_ne!(before, &changed.conflicts[1].value.fingerprint);
+        incoming.sections[0].paragraphs[1].ctrl_data_records[0] = Some(vec![1, 2, 3]);
+        let (_, opaque, targets) = review_documents(&base, &current, &incoming).unwrap();
+        assert_eq!(opaque.conflicts.len(), 1);
+        assert!(matches!(targets.as_slice(), [Target::Document]));
+    }
+
+    #[test]
+    fn review_fresh_manifest_identities_preserve_image_and_text_choices() {
+        use crate::model::bin_data::{BinData, BinDataType};
+        let mut base = parse_document(include_bytes!("../../saved/blank2010.hwp")).unwrap();
+        let mut paragraph = base.sections[0].paragraphs[0].clone();
+        paragraph.raw_header_extra.resize(12, 0);
+        paragraph.raw_header_extra[6..10].fill(0);
+        paragraph.text = "IMAGE ANCHOR".into();
+        base.sections[0].paragraphs = vec![paragraph.clone(), paragraph];
+        base.sections[0].paragraphs[1].text = "BASE TEXT".into();
+        base.sections[0].raw_stream = None;
+        let mut current = base.clone();
+        current.sections[0].paragraphs[1].text = "LOCAL BASE TEXT".into();
+        let mut incoming = base.clone();
+        incoming.sections[0].paragraphs[1].text = "REMOTE BASE TEXT".into();
+        incoming.doc_info.bin_data_list.push(BinData {
+            attr: 1,
+            data_type: BinDataType::Embedding,
+            storage_id: 1,
+            extension: Some("png".into()),
+            ..Default::default()
+        });
+        incoming.doc_info.raw_stream = None;
+        incoming.bin_data_content.push(BinDataContent {
+            id: 1,
+            data: BinDataBytes::from(
+                include_bytes!("../../rhwp-chrome/icons/icon-16.png").to_vec(),
+            ),
+            extension: "png".into(),
+        });
+        let mut picture = Picture::default();
+        picture.image_attr.bin_data_id = 1;
+        picture.common.width = 1000;
+        picture.common.height = 1000;
+        incoming.sections[0].paragraphs[0]
+            .controls
+            .push(Control::Picture(Box::new(picture)));
+        incoming.sections[0].paragraphs[0]
+            .ctrl_data_records
+            .push(None);
+        let manifest = |commit: &str| -> ManifestHints {
+            serde_json::from_value(json!({
+                "entries": (0..2).map(|index| json!({
+                    "identity": format!("node:{commit}:paragraph:sections/0/paragraphs/{index}"),
+                    "kind": "paragraph",
+                    "path": ["sections", "0", "paragraphs", &index.to_string()]
+                })).collect::<Vec<_>>()
+            }))
+            .unwrap()
+        };
+        for format in [FileFormat::Hwp, FileFormat::Hwpx] {
+            let serialize = |document: &Document| match format {
+                FileFormat::Hwp => serialize_hwp(document).unwrap(),
+                _ => serialize_hwpx(document).unwrap(),
+            };
+            let (b, c, i, restore) = manifest_documents(
+                &serialize(&base),
+                &serialize(&current),
+                &serialize(&incoming),
+                &manifest("base"),
+                &manifest("base"),
+                &manifest("incoming"),
+            )
+            .unwrap();
+            let (_, analysis, _) = review_documents(&b, &c, &i).unwrap();
+            assert_eq!(analysis.conflicts.len(), 2, "{format:?}");
+            assert!(analysis.conflicts.iter().any(|unit| !unit.automatic));
+            // A section change forces the whole-document path. Exporting its
+            // lazy image must preserve both atomic and paragraph-group IDs.
+            let mut atomic_incoming = i.clone();
+            atomic_incoming.sections[0].section_def.page_num += 1;
+            let (_, atomic, targets) = review_documents(&b, &c, &atomic_incoming).unwrap();
+            assert!(matches!(targets.as_slice(), [Target::Document]));
+            let atomic_choices = BTreeMap::from([(
+                atomic.conflicts[0].value.id.clone(),
+                MergeResolution::Incoming,
+            )]);
+            let atomic_output = apply_review(&b, &c, &atomic_incoming, &atomic_choices).unwrap();
+            let _ = serialize(&atomic_output);
+            let (_, reloaded, _) = review_documents(&b, &c, &atomic_incoming).unwrap();
+            assert_eq!(atomic.conflicts[0].value.id, reloaded.conflicts[0].value.id);
+            assert_eq!(
+                apply_review(&b, &c, &atomic_incoming, &atomic_choices)
+                    .unwrap()
+                    .bin_data_content
+                    .len(),
+                1
+            );
+            for mask in 0..4 {
+                let choices = analysis
+                    .conflicts
+                    .iter()
+                    .map(|unit| {
+                        let position = unit.position.as_ref().unwrap().paragraph;
+                        (
+                            unit.value.id.clone(),
+                            if mask & (1 << position) != 0 {
+                                MergeResolution::Incoming
+                            } else {
+                                MergeResolution::Current
+                            },
+                        )
+                    })
+                    .collect();
+                let mut output = apply_review(&b, &c, &i, &choices).unwrap();
+                restore_manifest_ids(&mut output, &restore);
+                let loaded = parse_regenerated_document(&serialize(&output)).unwrap();
+                validate_resource_dependencies(&loaded).unwrap();
+                assert_eq!(loaded.sections[0].paragraphs.len(), 2);
+                assert_eq!(loaded.sections[0].paragraphs[0].text, "IMAGE ANCHOR");
+                assert_eq!(
+                    loaded.sections[0].paragraphs[1].text,
+                    if mask & 2 != 0 {
+                        "REMOTE BASE TEXT"
+                    } else {
+                        "LOCAL BASE TEXT"
+                    }
+                );
+                assert_eq!(
+                    loaded.bin_data_content.len(),
+                    usize::from(mask & 1 != 0),
+                    "{format:?}, selection {mask}"
+                );
+                assert_eq!(counts(&loaded), counts(&output));
+            }
+        }
     }
 
     #[test]
@@ -780,29 +1601,34 @@ mod tests {
         );
         assert!(
             merged.contains("CLOUD_FINISHED"),
-            "missing cloud text: {merged}"
+            "missing cloud text: {merged}; {}",
+            serde_json::to_string(&analysis).unwrap()
         );
         assert!(
             merged.contains("UNSAVED_CLOUD_HANDOFF"),
             "missing handoff text: {merged}"
         );
+        let cloud_unit = analysis
+            .conflicts
+            .iter()
+            .find(|unit| {
+                value_text(&unit.value.incoming).is_some_and(|text| text.contains("CLOUD_FINISHED"))
+            })
+            .expect("Cloud paragraph review unit");
+        assert!(current.sections[0].paragraphs[0]
+            .controls
+            .iter()
+            .any(|control| matches!(control, Control::Table(_))));
         assert!(
-            analysis.conflicts.iter().any(|unit| {
-                unit.value.supports_both
-                    && value_text(&unit.value.incoming)
-                        .is_some_and(|text| text.contains("CLOUD_FINISHED"))
-            }),
-            "Cloud paragraph should support both"
+            !cloud_unit.value.supports_both && !cloud_unit.value.supports_manual,
+            "table-bearing paragraphs require an atomic current/incoming choice"
         );
-        assert!(
-            analysis
-                .conflicts
-                .iter()
-                .filter(|unit| unit.value.supports_both)
-                .all(|unit| value_text(&unit.value.incoming)
-                    .is_some_and(|text| text.contains("CLOUD_FINISHED"))),
-            "empty table paragraphs must not offer both"
-        );
+        for selected in [&current, &output] {
+            let loaded = parse_regenerated_document(&serialize_hwpx(selected).unwrap()).unwrap();
+            validate_resource_dependencies(&loaded).unwrap();
+            assert_eq!(counts(&loaded), counts(selected));
+            assert_eq!(paragraph_texts(&loaded), paragraph_texts(selected));
+        }
         let all_both = analysis
             .conflicts
             .iter()

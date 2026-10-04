@@ -119,8 +119,10 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                     let row = if rest == "?" {
                         Some(WILDCARD_ROW)
                     } else {
+                        // u32::MAX 는 WILDCARD_ROW 와 같은 값이라 받으면 "A4294967295" 가
+                        // 현재 행으로 조용히 바뀐다. 0행과 같이 셀 참조로 보지 않는다.
                         match rest.parse::<u32>() {
-                            Ok(0) => None,
+                            Ok(0) | Ok(WILDCARD_ROW) => None,
                             Ok(n) => Some(n),
                             Err(_) => None,
                         }

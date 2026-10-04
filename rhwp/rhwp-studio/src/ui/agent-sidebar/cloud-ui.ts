@@ -3,7 +3,7 @@ import { canChangeCloudProviderSettings } from '../../cloud/provider-settings.ts
 
 import type { PortableCloudTimelineV1 } from '../../cloud/timeline.ts';
 import type { AgentStreamEvent, AgentWorkflow } from '../../agent/types.ts';
-import type { CloudController } from '../../cloud/desktop-cloud.ts';
+import { isBoatServerStopped, isTerminalCheckpointError, type CloudController } from '../../cloud/desktop-cloud.ts';
 import { browserCloudSupported } from '../../cloud/browser-cloud.ts';
 import type {
   CloudDownloadResult,
@@ -18,7 +18,21 @@ import type {
   CloudTakeoverPayload,
   CloudTransferReference,
 } from '../../cloud/types.ts';
-import { cloudLinkNeedsAttention, inferCloudLink } from '../../cloud/link.ts';
+import {
+  cloudLinkNeedsAttention,
+  cloudLinkRecovery,
+  inferCloudLink,
+  type CloudLinkAction,
+} from '../../cloud/link.ts';
+import {
+  PROVIDER_AUTH_SUSPEND_CODES,
+  providerLoginHint,
+  WORKER_SUSPEND_CODES,
+  failedSessionTitle,
+  sessionProgressText,
+  suspendedSessionTitle,
+} from '../../cloud/session-copy.ts';
+import { confirmSheet } from './sheet.ts';
 import { cloudLeaseBlocksLocal } from '../../cloud/editor-scope.ts';
 import {
   shouldOfferAccountForceQuit,
@@ -45,9 +59,18 @@ import {
 import { createCheckpointMirror } from '../../cloud/checkpoint-mirror.ts';
 import { createCheckpointPublisher } from '../../cloud/checkpoint-publisher.ts';
 import { createCloudOnboarding, type CloudTransferIntent } from './cloud-onboarding.ts';
+import {
+  BOAT_CARD_TITLE,
+  boatCardStatus,
+  boatServerResting,
+  boatServerWaking,
+  snapshotBoatProfile,
+} from './cloud-onboarding-state.ts';
 import { createCloudDashboard } from './cloud-dashboard.ts';
-import { createLinkProgress } from './cloud-link-progress.ts';
+import { boatWakeStageLabel, createLinkProgress } from './cloud-link-progress.ts';
 import { createCloudSyncIcon, createIcon } from './icons.ts';
+import { cloudBranchNameCandidates } from '../../versioning/cloud-branch-name.ts';
+import { versionErrorOf, type CloudMergeOptions } from '../../versioning/types.ts';
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -84,9 +107,26 @@ function cloudOwnsConversation(snapshot: CloudSnapshot): boolean {
 }
 
 function serverLabel(snapshot: CloudSnapshot): string {
+  if (snapshotBoatProfile(snapshot)) return 'boat 서버';
   return snapshot.profile.kind === 'configured' && snapshot.profile.mode === 'app-hosted'
     ? 'Raucloud'
     : '내 서버';
+}
+
+/**
+ * 화면에 보일 연결 상태. 쉬고 있는 boat VM 은 끊긴 연결이 아니고(보내거나 여는 순간 데스크톱이
+ * 깨운다), 깨어나는 VM 은 다시 연결하는 중과 같은 자리에 보인다. 실패한 연결은 VM 이 쉬고 있어도
+ * 그대로 보여 준다. 복구 줄의 다시 연결이 VM 을 깨운다.
+ */
+function visibleLink(snapshot: CloudSnapshot): ReturnType<typeof inferCloudLink> {
+  const link = inferCloudLink(snapshot);
+  if (link.kind === 'recreating' || link.kind === 'failed') return link;
+  if (boatServerWaking(snapshot)) return { ...link, kind: 'reconnecting', error: null };
+  return boatServerResting(snapshot) ? { ...link, kind: 'ready', error: null } : link;
+}
+
+function linkAttention(snapshot: CloudSnapshot): boolean {
+  return cloudLinkNeedsAttention(visibleLink(snapshot));
 }
 
 function serverIdentity(snapshot: CloudSnapshot): string {
@@ -159,7 +199,12 @@ export interface CloudAgentUiDeps {
   onCheckpointPublished(checkpoint: CloudCheckpointPayload): void | Promise<void>;
   getCloudStartId?(threadId: string, sessionId: string): string | undefined;
   isCloudCheckpointMerged?(checkpoint: Pick<CloudCheckpointPayload, 'documentId' | 'sessionId' | 'revision' | 'operationId' | 'sha256'>): Promise<boolean>;
-  onMergeCheckpoint?(startId: string, checkpoint: CloudCheckpointPayload): Promise<boolean>;
+  /** Cloud 시작 기록이 담긴 로컬 브랜치 이름. 사용자가 바꾼 이름도 찾는다. */
+  getCloudBranchName?(startId: string): Promise<string | null>;
+  /** 버전 기록의 브랜치가 바뀔 때마다 서명을 넘긴다. 병합 여부를 다시 확인하는 데 쓴다. */
+  subscribeVersions?(listener: (signature: string) => void): () => void;
+  onMergeCheckpoint?(startId: string, checkpoint: CloudCheckpointPayload, options?: CloudMergeOptions): Promise<boolean>;
+  onNotice?(message: string, action?: { label: string; run(): Promise<void> }): void;
   onResultResolved(result: CloudDownloadResult, resolution: CloudResultResolution): void | Promise<void>;
   onBeforeTakeover(): Promise<boolean>;
   onTakeover(takeover: CloudTakeoverPayload): Promise<{ documentId: string; fileName: string } | null>;
@@ -172,6 +217,8 @@ export interface CloudAgentUiDeps {
 }
 
 export type CloudCommandTarget = CloudWorkspaceBinding & { expectedVersion: number };
+/** 받은 Cloud 변경이 제안과 다르다. 한 번 더 받아 본다. */
+class CheckpointMismatch extends Error {}
 type TakeoverBinding = { documentId: string; fileName: string };
 
 export interface CloudAgentUi {
@@ -217,6 +264,11 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
   let panelOpen = false;
   let localTurnPending = false;
   let busy = false;
+  /** 변경 검토만 잠근다. 검토 창이 열려 있어도 다른 Cloud 동작은 쓸 수 있다. */
+  let mergeBusy = false;
+  /** startId → 버전 기록의 Cloud 브랜치 이름. null 은 찾는 중이거나 없음. */
+  const cloudBranchLabels = new Map<string, string | null>();
+  let versionSignature: string | null = null;
   let recoveryBusy: 'reconnecting' | 'recreating' | 'stopping' | null = null;
   let recoveryRenderKey = '';
   let panelRenderKey = '';
@@ -271,8 +323,22 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
   mergeButton.type = 'button';
   mergeButton.hidden = true;
   mergeButton.addEventListener('click', () => { void mergeCheckpoint(); });
+  /** 쉬는 boat VM 이 조용히 거절한 체크포인트 조회. VM 이 다시 실행될 때 한 번 더 묻는다. */
+  const restingCheckpoints = new Set<string>();
+  /** 거절 뒤 VM 이 멈춘 상태를 한 번은 보여야 실행 중을 새 실행으로 믿는다. 낡은 running 에 다시 묻지 않는다. */
+  let restingSawStop = false;
+  /**
+   * 서버가 체크포인트가 없다고 답한 작업과 그때의 상태. 같은 상태에는 다시 묻지 않고, 작업이 다음 턴으로
+   * 가거나 상태가 바뀌면 다시 묻는다.
+   */
+  const missingCheckpoints = new Map<string, string>();
+  const checkpointStateKey = (session: CloudSnapshot['sessions'][number]) => JSON.stringify([
+    session.kind, session.version, session.kind === 'running' ? session.turn : null,
+  ]);
   const checkpointMirror = createCheckpointMirror({
     allowSameRevisionOperations: Boolean(deps.onMergeCheckpoint),
+    retryable: (error) => !isBoatServerStopped(error) && !isTerminalCheckpointError(error),
+    // 자동 조회다. explicit 을 넘기지 않아 쉬는 boat VM 을 깨우지 않는다.
     download: (sessionId, operationId) => deps.controller.downloadCheckpoint(sessionId, operationId, !operationId && deps.onMergeCheckpoint ? 'turn' : undefined),
     apply: (checkpoint) => {
       if (checkpoint.kind !== 'turn') return;
@@ -281,8 +347,10 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
       if (!previous || revision > previous.revision
         || (revision === previous.revision && operationId !== previous.operationId)) {
         mergeOffers.set(sessionId, { sessionId, documentId, revision, turn, operationId,
+          sha256: checkpoint.sha256, size: checkpoint.byteLength,
           startId: mergeOffers.get(sessionId)?.startId ?? mergeStartId(sessionId) });
       }
+      restoreMergeOffers();
       renderMergeButton();
     },
   });
@@ -294,16 +362,16 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
 
   const sidebarButton = el('button', 'ag-header-icon-btn ag-cloud-btn') as HTMLButtonElement;
   sidebarButton.type = 'button';
-  sidebarButton.setAttribute('aria-label', '클라우드 상태');
+  sidebarButton.setAttribute('aria-label', 'Cloud 상태');
   sidebarButton.setAttribute('aria-controls', 'ag-cloud-panel');
   sidebarButton.setAttribute('aria-expanded', 'false');
-  sidebarButton.title = '클라우드 상태';
+  sidebarButton.title = 'Cloud 상태';
   const sidebarButtonLabel = el('span', 'ag-cloud-btn-label', 'Cloud');
   sidebarButton.append(createIcon('cloud'), sidebarButtonLabel);
 
   const workspaceButton = el('button', 'ag-workspace-cloud-btn') as HTMLButtonElement;
   workspaceButton.type = 'button';
-  workspaceButton.setAttribute('aria-label', '클라우드 상태');
+  workspaceButton.setAttribute('aria-label', 'Cloud 상태');
   workspaceButton.setAttribute('aria-controls', 'ag-cloud-panel');
   workspaceButton.setAttribute('aria-expanded', 'false');
   const workspaceButtonLabel = el('span', 'ag-workspace-cloud-label', 'Cloud');
@@ -320,7 +388,7 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
   panelTitle.id = 'ag-cloud-panel-title';
   const panelClose = el('button', 'ag-cloud-panel-close') as HTMLButtonElement;
   panelClose.type = 'button';
-  panelClose.setAttribute('aria-label', '클라우드 상태 닫기');
+  panelClose.setAttribute('aria-label', 'Cloud 상태 닫기');
   panelClose.appendChild(createIcon('close'));
   const panelHeadActions = el('div', 'ag-cloud-panel-head-actions');
   const panelSettings = el('button', 'ag-cloud-panel-settings') as HTMLButtonElement;
@@ -338,7 +406,7 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
   panelHead.append(panelTitle, panelHeadActions);
   const panelBody = el('div', 'ag-cloud-panel-body');
   const sessionPicker = el('label', 'ag-cloud-session-picker');
-  const sessionPickerLabel = el('span', 'ag-cloud-session-picker-label', '클라우드 작업');
+  const sessionPickerLabel = el('span', 'ag-cloud-session-picker-label', 'Cloud 작업');
   const sessionSelect = el('select', 'ag-cloud-session-select') as HTMLSelectElement;
   sessionPicker.append(sessionPickerLabel, sessionSelect);
   const recovery = el('div', 'ag-cloud-recovery');
@@ -411,11 +479,10 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
     },
   });
   const dashboard = createCloudDashboard({
-    loginAccount: deps.loginAccount,
     configuration: onboarding.settingsElement,
+    taskMerged: (task) => sessionMerged(task.sessionId),
     refresh: () => deps.controller.refresh(selectedScope()),
-    reconnect: () => deps.controller.reconnectLink(),
-    configure: (trigger) => onboarding.open('manage', trigger),
+    reconnect: () => deps.controller.reconnectLink({ explicit: true }),
     mutationLocked: () => busy || authorityTransitionActive() || workspaceLocked,
     openTask: async (task) => {
       if (!await deps.onOpenTask(task)) return;
@@ -427,6 +494,15 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
   });
   const settingsElement = dashboard.element;
   const unsubscribeDashboard = deps.controller.subscribe((next) => dashboard.sync(next));
+  // 버전 패널에서 병합하거나 브랜치 이름을 바꾸면 제안과 브랜치 이름을 다시 확인한다.
+  const unsubscribeVersions = deps.subscribeVersions?.((signature) => {
+    if (signature === versionSignature) return;
+    versionSignature = signature;
+    cloudBranchLabels.clear();
+    checkedMergeRequests.clear();
+    restoreMergeOffers();
+    renderMergeButton();
+  }) ?? (() => {});
 
   function setBusy(next: boolean): void {
     busy = next;
@@ -710,9 +786,10 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
     });
   }
 
-  function reconnectLink(): void {
+  /** explicit 은 사용자가 누른 다시 연결이다. 그때만 데스크톱이 쉬던 boat VM 을 깨운다. */
+  function reconnectLink(explicit: boolean): void {
     void recoveryOperation('reconnecting', async () => {
-      snapshot = await deps.controller.reconnectLink();
+      snapshot = await deps.controller.reconnectLink(explicit ? { explicit: true } : {});
       if (inferCloudLink(snapshot).kind === 'ready' && deps.isCloudMode()
         && (!bindingMatchesScope(snapshotBinding()) || !mountSnapshotTimeline())) {
         snapshot = await deps.controller.refresh(selectedScope());
@@ -846,12 +923,14 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
   }
 
   function mergeStartId(sessionId: string): string | undefined {
+    const durable = snapshot.mergeRequests?.find((request) => request.sessionId === sessionId)?.cloudStartId || undefined;
     const session = snapshot.sessions.find((item) => item.sessionId === sessionId);
-    if (!session) return undefined;
+    if (!session) return durable;
     return deps.getCloudStartId?.(session.threadId, sessionId)
       ?? (snapshot.session.kind !== 'idle' && snapshot.session.sessionId === sessionId
         && snapshot.timeline?.thread.id === session.threadId
-        ? snapshot.timeline.thread.cloudStartId : undefined);
+        ? snapshot.timeline.thread.cloudStartId : undefined)
+      ?? durable;
   }
 
   function isMergeOfferReviewed(offer: MergeOffer): boolean {
@@ -867,6 +946,13 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
     } else if (offer.revision === reviewed.revision) {
       reviewed.operations.add(offer.operationId);
     }
+    dashboard.sync(snapshot);
+  }
+
+  /** 반영한 변경이 있고 남은 제안이 없는 세션. 대시보드가 반영됨으로 표시한다. */
+  function sessionMerged(sessionId: string): boolean {
+    return reviewedRevisions.has(sessionId)
+      && ![...mergeOffers.values()].some((offer) => offer.sessionId === sessionId && !isMergeOfferReviewed(offer));
   }
 
   function restoreMergeOffers(): void {
@@ -886,8 +972,9 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
         mergeOffers.set(request.sessionId, { ...request, startId: request.cloudStartId, durable: true });
       }
     }
+    // 버전 기록에서 이미 병합한 제안은 감춘다. 버전 기록이 바뀌면 다시 묻는다.
     for (const request of mergeOffers.values()) {
-      if (!request.durable || request.documentId !== documentId || !deps.isCloudCheckpointMerged
+      if (request.documentId !== documentId || !deps.isCloudCheckpointMerged
         || !request.sha256 || isMergeOfferReviewed(request)) continue;
       const profileKey = mergeProfileKey(snapshot);
       const key = JSON.stringify([profileKey, documentId, request.sessionId, request.operationId, request.revision]);
@@ -907,55 +994,172 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
     }
   }
 
-  function currentMergeOffer(): MergeOffer | undefined {
+  function documentMergeOffers(): MergeOffer[] {
     const scope = deps.getScope();
-    const matching = [...mergeOffers.values()].filter((offer) => offer.documentId === scope.documentId
+    return [...mergeOffers.values()].filter((offer) => offer.documentId === scope.documentId
       && !isMergeOfferReviewed(offer));
-    return matching.find((offer) => snapshot.session.kind !== 'idle' && offer.sessionId === snapshot.session.sessionId)
-      ?? matching.at(-1);
+  }
+
+  function sessionMergeOffer(sessionId: string | null): MergeOffer | undefined {
+    return sessionId ? documentMergeOffers().find((offer) => offer.sessionId === sessionId) : undefined;
+  }
+
+  /** 선택한 작업의 변경을 먼저, 없으면 가장 최근에 도착한 변경을 보인다. */
+  function currentMergeOffer(): MergeOffer | undefined {
+    return sessionMergeOffer(snapshot.session.kind === 'idle' ? null : snapshot.session.sessionId)
+      ?? documentMergeOffers().at(-1);
+  }
+
+  /** 검토를 열 수 없는 이유. 버튼 title 로 보인다. */
+  function mergeBlockedReason(offer: MergeOffer): string | null {
+    if (mergeBusy) return '변경 검토가 열려 있습니다.';
+    if (workspaceLocked || authorityTransitionActive()) return '전환이 끝나면 검토할 수 있습니다.';
+    const session = snapshot.sessions.find((item) => item.sessionId === offer.sessionId)
+      ?? (snapshot.session.kind !== 'idle' && snapshot.session.sessionId === offer.sessionId ? snapshot.session : null);
+    if (session && ((session.kind === 'running' && (session.phase === 'working' || session.phase === 'redirecting'))
+      || session.kind === 'pausing')) {
+      return '에이전트 작업이 끝나면 검토할 수 있습니다.';
+    }
+    if (!offer.durable && visibleLink(snapshot).kind !== 'ready') return 'Cloud에 다시 연결되면 검토할 수 있습니다.';
+    return null;
+  }
+
+  /** 버튼에 붙는 Cloud 브랜치 이름. 사용자가 바꾼 이름은 버전 기록에서 찾는다. */
+  function cloudBranchLabel(startId: string | undefined): string {
+    if (!startId) return '';
+    if (!cloudBranchLabels.has(startId) && deps.getCloudBranchName) {
+      cloudBranchLabels.set(startId, null);
+      void deps.getCloudBranchName(startId).then((name) => {
+        if (!name || cloudBranchLabels.get(startId) !== null) return;
+        cloudBranchLabels.set(startId, name);
+        renderMergeButton();
+      }, () => {});
+    }
+    return (cloudBranchLabels.get(startId) ?? cloudBranchNameCandidates(startId)[0]).replace(/^Cloud /, '');
   }
 
   function renderMergeButton(): void {
     const offer = currentMergeOffer();
+    const blocked = offer ? mergeBlockedReason(offer) : null;
+    const branch = offer ? cloudBranchLabel(offer.startId ?? mergeStartId(offer.sessionId)) : '';
     mergeButton.hidden = !deps.onMergeCheckpoint || !offer;
-    mergeButton.disabled = busy || workspaceLocked || (!offer?.durable && inferCloudLink(snapshot).kind !== 'ready');
-    mergeButton.textContent = busy ? 'Cloud 변경 여는 중…' : `Cloud 변경 검토${offer ? ` · ${offer.turn}턴` : ''}`;
-    mergeButton.title = offer?.localAvailable
+    mergeButton.disabled = !offer || blocked !== null;
+    mergeButton.textContent = mergeBusy ? '변경 검토 중…' : branch ? `변경 검토 · ${branch}` : '변경 검토';
+    mergeButton.title = blocked ?? (offer?.localAvailable
       ? '이 기기에 저장된 Cloud 변경을 검토합니다.'
-      : '완료된 Cloud 변경을 가져와 검토합니다.';
+      : 'Cloud 변경을 가져와 검토합니다.');
     mergeButton.dataset.localAvailable = String(offer?.localAvailable === true);
     mergeButton.dataset.revision = offer ? String(offer.revision) : '';
   }
 
-  async function mergeCheckpoint(): Promise<void> {
-    const offer = currentMergeOffer();
-    if (!offer || !deps.onMergeCheckpoint || busy) return;
-    const profileEpoch = snapshot.profileEpoch;
-    const profileKey = mergeProfileKey(snapshot);
-    const documentId = deps.getScope().documentId;
-    const startId = offer.startId ?? mergeStartId(offer.sessionId);
-    if (!startId) return deps.onError('Cloud 시작 대화를 불러온 뒤 병합합니다.');
-    await operation(async () => {
-      const checkpoint = await deps.controller.downloadCheckpoint(offer.sessionId, offer.operationId, 'turn');
-      if (snapshot.profileEpoch !== profileEpoch || mergeProfileKey(snapshot) !== profileKey || deps.getScope().documentId !== documentId) return;
-      if (checkpoint.sessionId !== offer.sessionId || checkpoint.documentId !== documentId
-        || checkpoint.kind !== 'turn' || checkpoint.revision !== offer.revision
-        || checkpoint.operationId !== offer.operationId
-        || (offer.durable && (checkpoint.sha256 !== offer.sha256 || checkpoint.byteLength !== offer.size))) throw new Error('요청한 Cloud 변경과 다운로드한 문서가 다릅니다.');
-      const applied = await deps.onMergeCheckpoint!(startId, checkpoint);
-      if (applied && snapshot.profileEpoch === profileEpoch && mergeProfileKey(snapshot) === profileKey) {
-        markMergeOfferReviewed(offer);
-      }
-    });
+  function setMergeBusy(next: boolean): void {
+    mergeBusy = next;
+    renderMergeButton();
+    renderPanel();
   }
 
-  function downloadCheckpointCopy(): void {
-    const offer = currentMergeOffer();
+  function checkpointMatchesOffer(checkpoint: CloudCheckpointPayload, offer: MergeOffer, documentId: string | null): boolean {
+    return checkpoint.sessionId === offer.sessionId && checkpoint.documentId === documentId
+      && checkpoint.kind === 'turn' && checkpoint.revision === offer.revision
+      && checkpoint.operationId === offer.operationId
+      && (!offer.durable || (checkpoint.sha256 === offer.sha256 && checkpoint.byteLength === offer.size));
+  }
+
+  async function mergeCheckpoint(
+    offer = currentMergeOffer(),
+    options: Pick<CloudMergeOptions, 'switchTo'> = {},
+    prefetched?: CloudCheckpointPayload,
+  ): Promise<void> {
+    if (!offer || !deps.onMergeCheckpoint || mergeBusy || workspaceLocked || authorityTransitionActive()) return;
+    const profileKey = mergeProfileKey(snapshot);
+    const documentId = deps.getScope().documentId;
+    const current = () => mergeProfileKey(snapshot) === profileKey && deps.getScope().documentId === documentId;
+    const startId = offer.startId ?? mergeStartId(offer.sessionId);
+    if (!startId) return offerCheckpointCopy(offer);
+    let followUp: (() => Promise<void>) | null = null;
+    setMergeBusy(true);
+    try {
+      const stash: { reapply?: () => Promise<void> } = {};
+      let applied = false;
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          const checkpoint = attempt === 0 && prefetched
+            ? prefetched
+            : await deps.controller.downloadCheckpoint(offer.sessionId, offer.operationId, 'turn', { explicit: true });
+          if (!current()) return;
+          if (!checkpointMatchesOffer(checkpoint, offer, documentId)) throw new CheckpointMismatch();
+          applied = await deps.onMergeCheckpoint(startId, checkpoint, {
+            ...options, onStashed: (reapply) => { stash.reapply = reapply; },
+          });
+          break;
+        } catch (error) {
+          // 전송 중 손상은 한 번 더 받아 본다.
+          if (attempt === 0 && (error instanceof CheckpointMismatch || versionErrorOf(error)?.code === 'CORRUPT_BLOB')) continue;
+          throw error;
+        }
+      }
+      if (!applied || !current()) return;
+      markMergeOfferReviewed(offer);
+      deps.onNotice?.('Cloud 변경을 반영했습니다.',
+        stash.reapply ? { label: '내 편집 다시 적용', run: stash.reapply } : undefined);
+    } catch (error) {
+      if (current()) followUp = mergeFailure(error, offer);
+    } finally {
+      setMergeBusy(false);
+    }
+    await followUp?.();
+  }
+
+  /** 막힌 병합을 다음 동작으로 잇는다. 사용자가 취소한 것은 오류가 아니다. */
+  function mergeFailure(error: unknown, offer: MergeOffer): (() => Promise<void>) | null {
+    const failure = versionErrorOf(error);
+    switch (failure?.code) {
+      case 'CANCELLED':
+        return null;
+      case 'CLOUD_CHECKPOINT_SUPERSEDED':
+        // 이미 가져온 더 최신 턴이 이 변경을 담는다. 이 제안은 닫고 최신 변경을 다시 받는다.
+        markMergeOfferReviewed(offer);
+        renderMergeButton();
+        renderPanel();
+        mirrorCheckpoint(offer.sessionId, 'reconnect');
+        return null;
+      case 'CLOUD_START_MISSING':
+        return () => offerCheckpointCopy(offer);
+      case 'CLOUD_BRANCH_ACTIVE': {
+        const target = failure.detail;
+        if (!target) break;
+        return async () => {
+          if (await confirmSheet(mergeButton, `${target} 브랜치로 돌아갈까요?`,
+            'Cloud 변경은 로컬 브랜치에서 검토합니다.', { confirmLabel: '돌아가서 검토' })) {
+            await mergeCheckpoint(offer, { switchTo: target });
+          }
+        };
+      }
+      case 'CORRUPT_BLOB':
+        deps.onError('Cloud 변경을 받지 못했습니다. 잠시 후 다시 시도하세요.');
+        return null;
+    }
+    if (error instanceof CheckpointMismatch) {
+      deps.onError('Cloud 변경을 받지 못했습니다. 잠시 후 다시 시도하세요.');
+      return null;
+    }
+    deps.onError(error instanceof Error ? error.message : String(error));
+    return null;
+  }
+
+  async function offerCheckpointCopy(offer: MergeOffer): Promise<void> {
+    if (await confirmSheet(mergeButton, '사본으로 저장할까요?',
+      '이 기기에는 Cloud 시작 기록이 없어 변경을 검토할 수 없습니다.', { confirmLabel: '사본으로 저장' })) {
+      downloadCheckpointCopy(offer);
+    }
+  }
+
+  function downloadCheckpointCopy(offer = currentMergeOffer()): void {
     if (!offer || busy) return;
     const profileEpoch = snapshot.profileEpoch;
     const documentId = deps.getScope().documentId;
     void operation(async () => {
-      const checkpoint = await deps.controller.downloadCheckpoint(offer.sessionId, offer.operationId, 'turn');
+      const checkpoint = await deps.controller.downloadCheckpoint(offer.sessionId, offer.operationId, 'turn', { explicit: true });
       if (snapshot.profileEpoch !== profileEpoch || deps.getScope().documentId !== documentId) return;
       const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', checkpoint.bytes.slice().buffer))]
         .map((byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -963,7 +1167,7 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
       if (checkpoint.sessionId !== offer.sessionId || checkpoint.documentId !== documentId
         || checkpoint.kind !== 'turn' || checkpoint.revision !== offer.revision
         || checkpoint.operationId !== offer.operationId || checkpoint.sha256 !== digest
-        || checkpoint.byteLength !== checkpoint.bytes.length) throw new Error('Cloud 사본 검증 실패 · 다시 다운로드');
+        || checkpoint.byteLength !== checkpoint.bytes.length) throw new Error('Cloud 사본을 확인하지 못했습니다. 다시 시도하세요.');
       const link = document.createElement('a');
       const url = URL.createObjectURL(new Blob([checkpoint.bytes.slice().buffer], { type: 'application/octet-stream' }));
       link.href = url;
@@ -974,26 +1178,40 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
   }
 
   function publishCheckpoint(): void {
-    if (deps.onMergeCheckpoint) { void mergeCheckpoint(); return; }
     const session = snapshot.session;
     if (session.kind === 'idle') return;
     void operation(() => checkpointPublisher.publish(session.sessionId));
   }
 
+  function mergeAction(offer: MergeOffer, tone = ''): HTMLButtonElement {
+    const item = action('변경 검토', () => { void mergeCheckpoint(offer); }, tone);
+    const blocked = mergeBlockedReason(offer);
+    item.disabled = recoveryBusy !== null || blocked !== null;
+    if (blocked) item.title = blocked;
+    return item;
+  }
+
+  function confirmTakeover(): void {
+    void confirmSheet(statusPanel, '이 기기에서 이어받을까요?', '열린 문서가 Cloud 문서로 바뀝니다.', { confirmLabel: '이어받기' })
+      .then((confirmed) => { if (confirmed) command('takeover'); });
+  }
+
   function renderPanel(): void {
-    const link = inferCloudLink(snapshot);
+    const link = visibleLink(snapshot);
+    const attention = linkAttention(snapshot);
     const activeSessionId = snapshot.session.kind === 'idle' ? null : snapshot.session.sessionId;
     // Keep focused/pressed buttons mounted across status and timeline updates.
     const renderKey = JSON.stringify([link.kind === 'ready' ? snapshot.session : null,
       link.kind === 'ready' ? snapshot.sessions : null, snapshot.profile, snapshot.server,
-      snapshot.account, link.kind, busy, recoveryBusy, Boolean(pendingTakeover), Boolean(pendingResultReplace),
+      snapshot.account, snapshot.boat, link.kind, attention, busy, mergeBusy, recoveryBusy,
+      Boolean(pendingTakeover), Boolean(pendingResultReplace),
       Boolean(downloadedResult), localTurnPending, currentMergeOffer(),
       snapshot.queuedMessages.map(({ id, delivery }) => [id, delivery]),
       [...pendingOutboundDeliveries.values()].filter(({ sessionId }) => sessionId === activeSessionId).length]);
     if (renderKey === panelRenderKey) return;
     panelRenderKey = renderKey;
     if (!selectedSessionId && activeSessionId) selectedSessionId = activeSessionId;
-    sessionPicker.hidden = snapshot.sessions.length <= 1 || cloudLinkNeedsAttention(link);
+    sessionPicker.hidden = snapshot.sessions.length <= 1 || attention;
     sessionSelect.replaceChildren(...snapshot.sessions.map((session) => {
       const option = document.createElement('option');
       option.value = session.sessionId;
@@ -1008,7 +1226,7 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
     panelConflict.hidden = true;
     panelHandoff.hidden = true;
     const session = snapshot.session;
-    if (cloudLinkNeedsAttention(link)) {
+    if (attention) {
       panelStatus.textContent = '';
       panelDetail.textContent = '';
       if (session.kind === 'idle') {
@@ -1036,7 +1254,7 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
       return;
     }
     if (localTurnPending) {
-      panelStatus.textContent = '현재 응답이 끝나면 클라우드로 옮깁니다.';
+      panelStatus.textContent = '현재 응답이 끝나면 Cloud로 옮깁니다.';
       panelDetail.textContent = '앱을 닫으면 전송 확인이 끝날 때까지 기다립니다.';
       panelActions.append(action('전송 예약 취소', deps.onCancelPendingTransfer));
       appendForceQuit();
@@ -1065,21 +1283,28 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
           }));
           break;
         }
-        panelStatus.textContent = profileReady
-          ? appHosted ? 'Raucloud가 준비되어 있습니다.' : '내 서버가 준비되어 있습니다.'
-          : snapshot.profile.kind === 'configured'
-            ? appHosted ? 'Raucloud 상태를 확인해야 합니다.' : 'VPS 연결을 확인해야 합니다.'
-            : 'Cloud 서버를 선택해야 합니다.';
+        // boat 는 설정 카드와 같은 한 줄로 서버 상태를 보여 준다.
+        const boatCard = snapshotBoatProfile(snapshot) ? boatCardStatus(snapshot) : null;
+        panelStatus.textContent = boatCard
+          ? BOAT_CARD_TITLE
+          : profileReady
+            ? appHosted ? 'Raucloud가 준비되어 있습니다.' : '내 서버가 준비되어 있습니다.'
+            : snapshot.profile.kind === 'configured'
+              ? appHosted ? 'Raucloud 상태를 확인해야 합니다.' : 'VPS 연결을 확인해야 합니다.'
+              : 'Cloud 서버를 선택해야 합니다.';
         panelDetail.textContent = snapshot.profile.kind !== 'configured'
           ? 'Raucloud 또는 내 서버'
-          : snapshot.profile.mode === 'app-hosted'
-            ? `${snapshot.profile.name} · ${snapshot.profile.sandbox.host || snapshot.profile.sandbox.sandboxId}`
-            : `${snapshot.profile.profile.name} · ${snapshot.profile.profile.host}`;
+          : boatCard
+            ? boatCard.detail
+            : snapshot.profile.mode === 'app-hosted'
+              ? `${snapshot.profile.name} · ${snapshot.profile.sandbox.host || snapshot.profile.sandbox.sandboxId}`
+              : `${snapshot.profile.profile.name} · ${snapshot.profile.profile.host}`;
+        const settingsNeeded = boatCard ? boatCard.dot === 'disconnected' : !profileReady;
         panelActions.append(action('Cloud 설정', () => {
           const focusTrigger = panelTrigger ?? sidebarButton;
           closePanel();
           onboarding.open('manage', focusTrigger);
-        }, profileReady ? undefined : 'ag-primary'));
+        }, settingsNeeded ? 'ag-primary' : undefined));
         break;
       case 'waiting-local-turn':
         panelStatus.textContent = session.message;
@@ -1090,7 +1315,7 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
         const percent = session.totalBytes > 0
           ? Math.min(100, Math.round(session.completedBytes / session.totalBytes * 100))
           : 0;
-        panelStatus.textContent = session.message || '문서와 대화를 전송하는 중입니다.';
+        panelStatus.textContent = sessionProgressText(session.message, '문서와 대화를 전송하는 중입니다.');
         panelDetail.textContent = `${formatBytes(session.completedBytes)} / ${formatBytes(session.totalBytes)}`;
         progress.hidden = false;
         progress.setAttribute('aria-valuenow', String(percent));
@@ -1101,7 +1326,7 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
       case 'queued':
         panelStatus.textContent = session.handoffAcceptedAt
           ? 'Cloud가 작업을 맡았습니다.'
-          : session.message || '실행 자리를 기다리고 있습니다.';
+          : sessionProgressText(session.message, '실행 자리를 기다리고 있습니다.');
         panelDetail.textContent = `대기 순서 ${session.position}`;
         panelActions.append(action('취소', () => command('cancel')));
         break;
@@ -1154,10 +1379,12 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
           ? '다음 메시지를 기다리고 있습니다.'
           : session.phase === 'redirecting'
             ? '안전한 경계에서 방향을 바꾸는 중입니다.'
-            : session.currentActivity || `${serverLabel(snapshot)}에서 작업 중입니다.`;
+            : sessionProgressText(session.currentActivity, `${serverLabel(snapshot)}에서 작업 중입니다.`);
         panelDetail.textContent = '';
-        if (session.phase === 'waiting' && session.turn > 0 && (!deps.onMergeCheckpoint || currentMergeOffer())) {
-          panelActions.append(action(deps.onMergeCheckpoint ? 'Cloud 변경 병합' : '원본에 반영', publishCheckpoint, 'ag-primary'));
+        if (session.phase === 'waiting' && session.turn > 0) {
+          const offer = sessionMergeOffer(session.sessionId);
+          if (!deps.onMergeCheckpoint) panelActions.append(action('원본에 반영', publishCheckpoint, 'ag-primary'));
+          else if (offer) panelActions.append(mergeAction(offer, 'ag-primary'));
         }
         if (session.phase === 'working') {
           const redirect = el('textarea', 'ag-cloud-wait-feedback') as HTMLTextAreaElement;
@@ -1176,27 +1403,32 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
           deps.onPauseAndEdit ? pauseAndEdit : () => command('pause')));
         if (deps.onMonitor) panelActions.prepend(action('작업 보기', () => { deps.onMonitor!(); closePanel(); }));
         moreActions().append(
-          action('이 기기에서 이어받기', () => command('takeover')),
+          action('이 기기에서 이어받기', confirmTakeover),
           action('대화 끝내기', () => command('end'), 'ag-danger'),
         );
         break;
       case 'pausing':
-        panelStatus.textContent = session.message;
-        panelDetail.textContent = '도구 호출이 끝나는 안전한 경계에서 멈춥니다.';
+        panelStatus.textContent = sessionProgressText(session.message, '안전한 경계에서 멈추는 중입니다.');
+        panelDetail.textContent = '';
+        // 경계에 닿지 못하는 작업도 끝낼 수 있어야 한다.
+        moreActions().append(action('대화 끝내기', () => command('end'), 'ag-danger'));
         break;
-      case 'suspended':
-        panelStatus.textContent = session.resumable
-          ? 'Cloud 작업이 일시 중지되었습니다.'
-          : 'Cloud 작업이 종료되었습니다.';
-        panelDetail.textContent = session.resumable
-          ? `${session.reason} 다시 시작하면 저장된 대화와 문서에서 이어집니다.`
-          : session.reason;
-        if (!deps.onMergeCheckpoint || currentMergeOffer()) {
-          panelActions.append(action(deps.onMergeCheckpoint ? 'Cloud 변경 병합' : '원본에 반영', publishCheckpoint));
+      case 'suspended': {
+        // 데스크톱은 이 Mac 의 로그인을 다시 보낸다. 브라우저는 보낼 로그인이 없어 서버에서 로그인할 명령을 알린다.
+        const providerAuth = PROVIDER_AUTH_SUSPEND_CODES.has(session.code ?? '') && deps.controller.canReimportLogins();
+        panelStatus.textContent = suspendedSessionTitle(session.code, session.provider, session.reason);
+        panelDetail.textContent = PROVIDER_AUTH_SUSPEND_CODES.has(session.code ?? '') && !providerAuth
+          ? providerLoginHint(session.provider)
+          : '';
+        if (!deps.onMergeCheckpoint) panelActions.append(action('원본에 반영', publishCheckpoint));
+        else {
+          const offer = sessionMergeOffer(session.sessionId);
+          if (offer) panelActions.append(mergeAction(offer));
         }
         if (session.resumable) {
           const editing = deps.isEditingCloudDraft?.(session.sessionId) === true;
-          panelActions.append(action('계속하기', () => {
+          // 로그인 문제로 멈춘 작업은 이어 가기 전에 데스크톱이 이 Mac 의 로그인을 다시 보낸다.
+          panelActions.append(action(providerAuth ? '로그인 다시 가져오기' : '계속하기', () => {
             if (editing && deps.onContinueEditing) {
               void operation(() => deps.onContinueEditing!({ sessionId: session.sessionId,
                 threadId: session.threadId, documentId: session.documentId, expectedVersion: session.version }));
@@ -1204,27 +1436,31 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
           }, 'ag-primary'));
           if (deps.onPauseAndEdit && !editing) panelActions.append(action('편집하기', pauseAndEdit));
         }
-        moreActions().append(action('이 기기에서 이어받기', () => command('takeover')));
+        if (WORKER_SUSPEND_CODES.has(session.code ?? '') && deps.controller.canRestartService()
+          && snapshot.profile.kind === 'configured' && snapshot.profile.mode === 'self-hosted') {
+          moreActions().append(action('서버 재시작', () => runLinkAction('restart', panelActions)));
+        }
+        moreActions().append(action('이 기기에서 이어받기', confirmTakeover));
         moreActions().append(action('대화 끝내기', () => command('end'), 'ag-danger'));
         break;
+      }
       case 'taking-over':
-        panelStatus.textContent = session.message;
+        panelStatus.textContent = sessionProgressText(session.message, '이 기기에서 열 준비를 하고 있습니다.');
         panelDetail.textContent = '최신 안정 체크포인트를 다운로드한 뒤 편집 잠금이 풀립니다.';
         panelActions.append(action('안전한 경계에서 이어받기', () => command('takeover'), 'ag-primary'));
         break;
       case 'completed':
         if (deps.onMergeCheckpoint) {
-          const offer = currentMergeOffer();
-          panelStatus.textContent = offer?.localAvailable
-            ? 'Cloud 결과가 이 기기에 준비되었습니다.'
-            : 'Cloud 작업이 끝났습니다.';
-          panelDetail.textContent = offer?.localAvailable
-            ? '현재 편집을 유지한 채 검토합니다.'
-            : '완료된 변경을 가져와 검토할 수 있습니다.';
-          if (offer) panelActions.append(action('변경 검토', publishCheckpoint, 'ag-primary'));
+          const offer = sessionMergeOffer(session.sessionId);
+          const merged = !offer && sessionMerged(session.sessionId);
+          panelStatus.textContent = merged
+            ? 'Cloud 변경을 반영했습니다.'
+            : offer?.localAvailable ? 'Cloud 결과가 이 기기에 준비되었습니다.' : 'Cloud 작업이 끝났습니다.';
+          panelDetail.textContent = offer ? '현재 편집을 유지한 채 검토합니다.' : '';
+          if (offer) panelActions.append(mergeAction(offer, 'ag-primary'));
           break;
         }
-        panelStatus.textContent = downloadedResult ? '결과 미리보기가 준비되었습니다.' : '클라우드 작업이 끝났습니다.';
+        panelStatus.textContent = downloadedResult ? '결과 미리보기가 준비되었습니다.' : 'Cloud 작업이 끝났습니다.';
         panelDetail.textContent = `${session.result.fileName} · ${formatBytes(session.result.byteLength)}`;
         if (!downloadedResult) {
           if (!session.result.availableOnThisDevice) {
@@ -1236,7 +1472,7 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
         }
         if (downloadedResult.conflict === 'external-change') {
           panelConflict.hidden = false;
-          panelConflict.textContent = `원본 파일이 바뀌었습니다. 원본과 ${downloadedResult.preservedCopyName ?? '클라우드 결과 사본'}을 모두 보관합니다.`;
+          panelConflict.textContent = `원본 파일이 바뀌었습니다. 원본과 ${downloadedResult.preservedCopyName ?? 'Cloud 결과 사본'}을 모두 보관합니다.`;
           panelActions.append(action('두 파일 보관', () => resolveResult('keep-both'), 'ag-primary'));
         } else {
           panelActions.append(
@@ -1247,34 +1483,42 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
         panelActions.append(action('결과 버리기', () => resolveResult('discard'), 'ag-danger'));
         break;
       case 'failed':
-        panelStatus.textContent = session.message;
-        panelDetail.textContent = session.code;
+        panelStatus.textContent = failedSessionTitle(session.code, session.message);
+        panelDetail.textContent = '';
         if (session.retryable && !raucloudLock(snapshot)) panelActions.append(action('다시 시도', () => command('retry'), 'ag-primary'));
         panelActions.append(action('기록 지우기', dismissSession));
         break;
       case 'cancelled':
-        panelStatus.textContent = '클라우드 작업을 취소했습니다.';
+        panelStatus.textContent = 'Cloud 작업을 취소했습니다.';
         panelDetail.textContent = '문서 편집 권한이 이 기기로 돌아왔습니다.';
         panelActions.append(action('기록 지우기', dismissSession));
         break;
     }
-    if (deps.onMergeCheckpoint && currentMergeOffer()) {
-      moreActions().append(action('완료 문서 사본 저장', downloadCheckpointCopy, 'ag-cloud-checkpoint-copy'));
+    const copyOffer = sessionMergeOffer(activeSessionId) ?? currentMergeOffer();
+    if (deps.onMergeCheckpoint && copyOffer) {
+      moreActions().append(action('사본으로 저장', () => downloadCheckpointCopy(copyOffer), 'ag-cloud-checkpoint-copy'));
     }
     appendForceQuit();
   }
 
   function renderRecovery(): void {
-    const link = inferCloudLink(snapshot);
-    const needsAttention = cloudLinkNeedsAttention(link);
+    const link = visibleLink(snapshot);
+    const waking = boatServerWaking(snapshot);
+    const needsAttention = linkAttention(snapshot);
     const busyKind = recoveryBusy === 'reconnecting' || recoveryBusy === 'recreating' ? recoveryBusy : null;
-    const activeKind = busyKind ?? (link.kind === 'reconnecting' || link.kind === 'recreating' ? link.kind : null);
+    // 멈춰 있던 boat VM 을 깨우는 동안은 연결 복구가 아니라 서버 시작으로 알린다.
+    const activeKind = waking
+      ? 'waking'
+      : busyKind ?? (link.kind === 'reconnecting' || link.kind === 'recreating' ? link.kind : null);
+    const wakeStage = waking ? boatWakeStageLabel(snapshot.boat?.server?.wakeStage) : null;
     for (const progress of [recoveryProgress, recoveryStripProgress]) {
       if (activeKind) progress.start(activeKind);
       else progress.settle(link.kind === 'ready' ? 'done' : 'failed');
+      progress.setStage(wakeStage);
     }
     recoveryStrip.hidden = !needsAttention || !deps.isCloudMode();
-    const renderKey = JSON.stringify([link.kind, link.canRecreate, busy, recoveryBusy, authorityTransitionActive()]);
+    const renderKey = JSON.stringify([link.kind, link.canRecreate, link.reason, link.message, waking, busy,
+      recoveryBusy, authorityTransitionActive(), deps.controller.canRestartService()]);
     if (renderKey === recoveryRenderKey) return;
     recoveryRenderKey = renderKey;
     statusPanel.dataset.link = link.kind;
@@ -1283,26 +1527,28 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
     recoveryActions.replaceChildren();
     recoveryStrip.replaceChildren();
     recoveryStrip.dataset.kind = activeKind ?? link.kind;
+    recoveryDetail.hidden = false;
     if (!needsAttention) {
       recoveryTitle.textContent = '';
       recoveryDetail.textContent = '';
       return;
     }
-    if (activeKind === 'reconnecting') {
+    if (activeKind === 'waking') {
+      recoveryTitle.textContent = 'boat 서버를 시작하는 중';
+      recoveryDetail.textContent = '';
+      recoveryDetail.hidden = true;
+    } else if (activeKind === 'reconnecting') {
       recoveryTitle.textContent = 'Cloud에 다시 연결하는 중';
       recoveryDetail.textContent = '저장된 작업과 완료된 결과를 확인하고 있습니다.';
     } else if (activeKind === 'recreating') {
       recoveryTitle.textContent = '새 Cloud 서버를 준비하는 중';
       recoveryDetail.textContent = '현재 대화와 저장된 문서를 새 서버로 옮깁니다.';
     } else {
-      recoveryTitle.textContent = 'Cloud 연결이 끊겼습니다';
-      recoveryDetail.textContent = link.canRecreate
-        ? '대화 기록 보존됨 · 다시 연결하거나 새 서버에서 이어가기'
-        : '대화 기록 보존됨 · 서버 확인 후 다시 연결';
-      recoveryActions.append(action('다시 연결', reconnectLink, 'ag-primary'));
-      if (link.canRecreate) {
-        recoveryActions.append(action('서버 다시 만들기', recreateLink));
-      }
+      const plan = linkRecoveryPlan();
+      recoveryTitle.textContent = plan.title;
+      recoveryDetail.textContent = '';
+      recoveryDetail.hidden = true;
+      recoveryActions.append(...linkActionButtons(plan.actions));
     }
     const stripTitle = el('button', 'ag-cloud-recovery-strip-title', recoveryTitle.textContent) as HTMLButtonElement;
     stripTitle.type = 'button';
@@ -1313,15 +1559,66 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
     stripIndicator.setAttribute('aria-hidden', 'true');
     const stripActions = el('div', 'ag-cloud-recovery-strip-actions');
     recoveryStrip.append(stripIndicator, stripTitle, recoveryStripProgress.element, stripActions);
-    if (link.kind === 'failed') {
-      stripActions.append(action('다시 연결', reconnectLink, 'ag-primary'));
-      if (link.canRecreate) stripActions.append(action('서버 다시 만들기', recreateLink));
-    }
+    if (link.kind === 'failed') stripActions.append(...linkActionButtons(linkRecoveryPlan().actions));
     for (const container of [recoveryActions, recoveryStrip]) {
       for (const button of container.querySelectorAll<HTMLButtonElement>('button')) {
+        // 서버 다시 만들기는 도는 재연결을 끊고 들어갈 수 있다. 나머지는 복구가 끝날 때까지 기다린다.
         button.disabled = authorityTransitionActive() || recoveryBusy === 'stopping' || recoveryBusy === 'recreating'
-          || button.textContent === '다시 연결' && recoveryBusy === 'reconnecting';
+          || Boolean(button.dataset.linkAction) && button.dataset.linkAction !== 'recreate'
+            && recoveryBusy === 'reconnecting';
       }
+    }
+  }
+
+  function linkRecoveryPlan() {
+    const profile = snapshot.profile;
+    return cloudLinkRecovery(visibleLink(snapshot), {
+      boat: Boolean(snapshotBoatProfile(snapshot)),
+      selfHosted: profile.kind === 'configured' && profile.mode === 'self-hosted',
+      canRestart: deps.controller.canRestartService(),
+    });
+  }
+
+  function linkActionButtons(actions: ReturnType<typeof cloudLinkRecovery>['actions']): HTMLButtonElement[] {
+    return actions.map(({ action: kind, label }, index) => {
+      const button = action(label, (event) => runLinkAction(kind, event.currentTarget as HTMLElement),
+        index === 0 ? 'ag-primary' : '');
+      button.dataset.linkAction = kind;
+      return button;
+    });
+  }
+
+  function runLinkAction(kind: CloudLinkAction, trigger: HTMLElement): void {
+    switch (kind) {
+      case 'reconnect': reconnectLink(true); return;
+      case 'recreate': recreateLink(); return;
+      case 'pair':
+      case 'boat-key': {
+        const focusTrigger = panelTrigger ?? sidebarButton;
+        closePanel();
+        onboarding.open('manage', trigger.isConnected ? trigger : focusTrigger, kind);
+        return;
+      }
+      case 'restart':
+        void recoveryOperation('reconnecting', async () => {
+          snapshot = await deps.controller.restartService();
+        });
+        return;
+      case 'discard':
+        void recoveryOperation('reconnecting', async () => {
+          snapshot = await deps.controller.discardMissingSessions();
+          selectedSessionId = snapshot.session.kind === 'idle' ? null : snapshot.session.sessionId;
+          if (snapshot.session.kind === 'idle') clearCloudBinding();
+        });
+        return;
+      case 'trust-host-key':
+        void recoveryOperation('reconnecting', async () => {
+          const key = await deps.controller.inspectHostKey();
+          const trusted = await confirmSheet(trigger, '새 SSH 키를 저장할까요?',
+            `${key.host} · ${key.fingerprint}`, { confirmLabel: '저장' });
+          if (trusted) snapshot = await deps.controller.trustHostKey(key.fingerprint);
+        });
+        return;
     }
   }
 
@@ -1355,7 +1652,8 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
     sidebarButton.classList.toggle('ag-active', active || setupActive);
     workspaceButton.classList.toggle('ag-active', active || setupActive);
     const running = snapshot.session.kind === 'running';
-    const link = inferCloudLink(snapshot);
+    const link = visibleLink(snapshot);
+    const waking = boatServerWaking(snapshot);
     const buttonState = setupActive
       ? 'setup'
       : link.kind !== 'ready'
@@ -1368,7 +1666,7 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
     sidebarButtonLabel.textContent = setupActive
       ? '준비 중'
       : link.kind === 'reconnecting'
-        ? '다시 연결 중'
+        ? waking ? '서버 시작 중' : '다시 연결 중'
         : link.kind === 'recreating'
           ? '서버 생성 중'
           : link.kind === 'failed'
@@ -1379,18 +1677,18 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
     const label = setupActive
       ? 'Cloud 환경 설정 중'
       : link.kind === 'reconnecting'
-        ? '연결을 다시 맺는 중입니다'
+        ? waking ? 'boat 서버를 시작하는 중입니다' : '연결을 다시 맺는 중입니다'
         : link.kind === 'recreating'
           ? '서버를 다시 만드는 중입니다'
           : link.kind === 'failed'
             ? '연결이 끊겼습니다'
       : running
-        ? '클라우드에서 작업 중'
+        ? 'Cloud에서 작업 중'
         : active
-          ? '클라우드 상태'
+          ? 'Cloud 상태'
           : lock
             ? 'Raucloud 사용 제한'
-            : '클라우드 상태';
+            : 'Cloud 상태';
     sidebarButton.setAttribute('aria-label', label);
     sidebarButton.title = label;
     workspaceButton.setAttribute('aria-label', label);
@@ -1422,9 +1720,15 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
         deps.onCloudBinding(binding);
       }
     }
-    if (inferCloudLink(snapshot).kind === 'ready') {
+    // 쉬거나 깨어나는 boat VM 에는 묻지 않는다. 실행 중으로 바뀌면 다시 묻는다.
+    if (inferCloudLink(snapshot).kind === 'ready' && !boatServerResting(snapshot) && !boatServerWaking(snapshot)) {
       for (const session of snapshot.sessions) {
-        if (session.documentId !== deps.getScope().documentId) continue;
+        if (session.documentId !== deps.getScope().documentId || restingCheckpoints.has(session.sessionId)) continue;
+        const missingAt = missingCheckpoints.get(session.sessionId);
+        if (missingAt !== undefined) {
+          if (missingAt === checkpointStateKey(session)) continue;
+          missingCheckpoints.delete(session.sessionId);
+        }
         if ((session.kind === 'running' && session.turn > 0) || session.kind === 'completed' || session.kind === 'suspended') {
           if (!checkpointMirror.hasPending(session.sessionId) && !checkpointMirror.hasRevision(session.sessionId)) {
             mirrorCheckpoint(session.sessionId, 'reconnect');
@@ -1437,6 +1741,17 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
   function mirrorCheckpoint(sessionId: string, operationId: string): void {
     void checkpointMirror.mirror(sessionId, operationId).catch((error) => {
       if (error instanceof DOMException && error.name === 'AbortError') return;
+      if (isBoatServerStopped(error)) {
+        if (!restingCheckpoints.size) restingSawStop = snapshot.boat?.server?.state !== 'running';
+        restingCheckpoints.add(sessionId);
+        return;
+      }
+      if (isTerminalCheckpointError(error)) {
+        const session = snapshot.sessions.find((entry) => entry.sessionId === sessionId);
+        if (session) missingCheckpoints.set(sessionId, checkpointStateKey(session));
+        // 사용자가 누른 가져오기가 아니라 자동 조회라서 알리지 않는다.
+        if (operationId === 'reconnect') return;
+      }
       deps.onError(error instanceof Error ? error.message : String(error));
     });
   }
@@ -1462,7 +1777,8 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
 
   function activateFrom(trigger: HTMLButtonElement): void {
     const setupRequested = cloudSetupScopes.has(cloudSetupScopeKey());
-    const profileReady = snapshot.profile.kind === 'configured' && snapshot.profile.connection === 'ready';
+    const profileReady = (snapshot.profile.kind === 'configured' && snapshot.profile.connection === 'ready')
+      || boatServerResting(snapshot) || boatServerWaking(snapshot);
     cloudSetupScopes.add(cloudSetupScopeKey());
     renderButtons();
     if (setupActive || (snapshot.session.kind === 'idle' && (!setupRequested || !profileReady))) {
@@ -1506,6 +1822,8 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
     const profileChanged = next.profileEpoch !== checkpointProfileEpoch || mergeProfileKey(next) !== mergeProfileKey(snapshot);
     if (profileChanged) {
       checkpointProfileEpoch = next.profileEpoch;
+      restingCheckpoints.clear();
+      missingCheckpoints.clear();
       mergeOffers.clear();
       reviewedRevisions.clear();
       checkedMergeRequests.clear();
@@ -1529,12 +1847,22 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
     onboarding.sync(next);
     syncAuthorityMutationLock();
     render();
+    if (restingCheckpoints.size) {
+      if (next.boat?.server?.state !== 'running') restingSawStop = true;
+      else if (restingSawStop && inferCloudLink(next).kind === 'ready') {
+        const parked = [...restingCheckpoints];
+        restingCheckpoints.clear();
+        restingSawStop = false;
+        for (const sessionId of parked) mirrorCheckpoint(sessionId, 'reconnect');
+      }
+    }
   });
   const unsubscribeEvents = deps.controller.subscribeEvents((raw) => {
     if (raw && typeof raw === 'object' && 'type' in raw && raw.type === 'notification-open'
       && 'sessionId' in raw && typeof raw.sessionId === 'string') {
       const sessionId = raw.sessionId;
       const operationId = 'operationId' in raw && typeof raw.operationId === 'string' ? raw.operationId : undefined;
+      const review: { offer?: MergeOffer; checkpoint?: CloudCheckpointPayload } = {};
       void operation(async () => {
         const previousScope = selectedScope();
         const next = await deps.controller.refresh({ ...deps.getScope(), selectedSessionId: sessionId });
@@ -1551,15 +1879,20 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
           const startId = mergeStartId(sessionId);
           if (operationId && startId && deps.onMergeCheckpoint) {
             const profileKey = mergeProfileKey(snapshot);
-            const checkpoint = await deps.controller.downloadCheckpoint(sessionId, operationId, 'turn');
+            // 알림을 누른 것은 사용자의 의도다. 쉬던 boat VM 을 깨워 변경을 가져온다.
+            const checkpoint = await deps.controller.downloadCheckpoint(sessionId, operationId, 'turn', { explicit: true });
             if (profileKey !== mergeProfileKey(snapshot) || task.documentId !== deps.getScope().documentId) return;
             if (checkpoint.sessionId !== sessionId || checkpoint.operationId !== operationId
               || checkpoint.documentId !== task.documentId || checkpoint.kind !== 'turn') {
               throw new Error('알림에 표시된 Cloud 변경을 확인하지 못했습니다.');
             }
-            await deps.onMergeCheckpoint(startId, checkpoint);
+            review.checkpoint = checkpoint;
+            review.offer = { sessionId, documentId: checkpoint.documentId, revision: checkpoint.revision,
+              turn: checkpoint.turn, operationId, startId, sha256: checkpoint.sha256, size: checkpoint.byteLength };
           } else openPanel(sidebarButton);
         }
+      }).then(() => {
+        if (review.offer && review.checkpoint) return mergeCheckpoint(review.offer, {}, review.checkpoint);
       });
       return;
     }
@@ -1584,11 +1917,11 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
       : null;
     if (host?.type === 'session-stream-error' || host?.type === 'remote-session-stream-error') {
       if (host.retryable === false) {
-        deps.onError(typeof host.error === 'string' ? host.error : '클라우드 연결 확인 필요');
+        deps.onError(typeof host.error === 'string' ? host.error : 'Cloud 연결 확인 필요');
         return;
       }
       const link = inferCloudLink(snapshot);
-      if (link.kind === 'ready') reconnectLink();
+      if (link.kind === 'ready') reconnectLink(false);
       return;
     }
     const sessionId = typeof host?.sessionId === 'string' ? host.sessionId : '';
@@ -1693,7 +2026,7 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
     async setWorkflow(workflow, target) {
       const session = snapshot.session;
       if (!matchesTarget(target)) {
-        throw new Error('클라우드 에이전트가 실행 중이 아닙니다.');
+        throw new Error('Cloud 에이전트가 실행 중이 아닙니다.');
       }
       snapshot = await deps.controller.command({
         sessionId: target.sessionId,
@@ -1704,7 +2037,7 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
       render();
       if (snapshot.session.kind !== 'running' || snapshot.session.sessionId !== target.sessionId
         || snapshot.session.threadId !== target.threadId || snapshot.session.documentId !== target.documentId) {
-        throw new Error('클라우드 에이전트가 실행 중이 아닙니다.');
+        throw new Error('Cloud 에이전트가 실행 중이 아닙니다.');
       }
       return { ...target, expectedVersion: snapshot.session.version };
     },
@@ -1754,6 +2087,7 @@ export function createCloudAgentUi(deps: CloudAgentUiDeps): CloudAgentUi {
       checkpointPublisher.dispose();
       unsubscribe();
       unsubscribeDashboard();
+      unsubscribeVersions();
       unsubscribeEvents();
       dashboard.dispose();
       onboarding.dispose();

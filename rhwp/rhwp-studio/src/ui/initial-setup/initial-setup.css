@@ -9,18 +9,12 @@
   overflow: auto;
   padding: 24px;
   scrollbar-width: none;
-  background: rgba(0, 0, 0, 0.24);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
-  color: var(--n-text, #1d1d1f);
-  font-family: var(--font-family-ui, -apple-system, BlinkMacSystemFont, sans-serif);
+  background: var(--overlay-bg);
+  color: var(--n-ink);
+  font-family: var(--ag-font);
   opacity: 0;
   pointer-events: none;
   transition: opacity var(--ag-dur-slow) var(--ag-ease-out);
-}
-
-:root[data-theme-effective='dark'] .rhwp-setup-overlay {
-  background: rgba(0, 0, 0, 0.5);
 }
 
 .rhwp-setup-overlay::-webkit-scrollbar {
@@ -39,16 +33,16 @@
   display: flex;
   flex-direction: column;
   gap: 16px;
-  padding: 22px 20px 20px;
+  padding: 24px;
   overflow-y: auto;
   overscroll-behavior-y: contain;
   overflow-anchor: none;
   scroll-behavior: smooth;
   scrollbar-width: none;
-  border: 0.5px solid var(--n-hairline-strong, rgba(0, 0, 0, 0.14));
-  border-radius: 14px;
-  background: var(--n-surface, #fff);
-  box-shadow: var(--n-elev-3, 0 12px 32px rgba(0, 0, 0, 0.14));
+  border: 1px solid var(--n-ink-hairline);
+  border-radius: var(--ag-r-sheet);
+  background: var(--n-surface);
+  box-shadow: var(--ag-elev-sheet);
   outline: none;
   opacity: 0;
   transform: translateY(12px) scale(0.98);
@@ -68,17 +62,17 @@
 
 .rhwp-setup-title {
   margin: 0;
-  font-size: 17px;
-  font-weight: 600;
-  line-height: 1.3;
-  letter-spacing: -0.01em;
+  font-size: var(--ag-fs-title);
+  font-weight: var(--ag-fw-strong);
+  line-height: var(--ag-lh-tight);
+  letter-spacing: var(--ag-track-tight);
 }
 
 .rhwp-setup-recovery {
   margin: -8px 0 0;
-  font-size: 13px;
-  line-height: 1.45;
-  color: var(--n-text-secondary, #545458);
+  font-size: var(--ag-fs-body);
+  line-height: var(--ag-lh-secondary);
+  color: var(--n-ink-secondary);
 }
 
 .rhwp-setup-recovery[hidden] {
@@ -131,34 +125,32 @@
   gap: 2px;
   width: 100%;
   padding: 16px 8px 12px;
-  border: 1px solid var(--n-hairline, rgba(0, 0, 0, 0.08));
-  border-radius: 12px;
-  background: var(--n-surface-raised, #f7f7f8);
+  border: 1px solid transparent;
+  border-radius: var(--ag-r-card);
+  background: var(--n-ink-fill-soft);
   color: inherit;
   font: inherit;
-  cursor: pointer;
-  transition:
-    background-color var(--ag-dur-fast) var(--ag-ease-out),
-    border-color var(--ag-dur-fast) var(--ag-ease-out),
-    transform var(--ag-dur-fast) var(--ag-ease-out);
+  cursor: default;
+  transition: var(--ag-transition-color);
 }
 
 .rhwp-setup-card-action:hover {
-  background: var(--n-surface-sunken, #f1f1f4);
+  background: var(--n-ink-fill-hover);
 }
 
 .rhwp-setup-card-action:active {
-  transform: scale(0.98);
+  background: var(--n-ink-fill-pressed);
+  transition: none;
 }
 
 .rhwp-setup-card-action:focus-visible {
-  outline: 2px solid var(--accent-primary, #6182d6);
-  outline-offset: 2px;
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
 }
 
 .rhwp-setup-card[data-configured='true'] .rhwp-setup-card-action {
-  border-color: color-mix(in srgb, var(--accent-primary, #6182d6) 45%, transparent);
-  background: var(--n-fill-selected-soft, rgba(97, 130, 214, 0.07));
+  border-color: var(--n-ink);
+  background: var(--n-surface);
 }
 
 .rhwp-setup-card-logo {
@@ -167,7 +159,7 @@
   width: 32px;
   height: 32px;
   margin-bottom: 8px;
-  color: var(--n-text, #1d1d1f);
+  color: var(--n-ink);
 }
 
 .rhwp-setup-card-logo .ag-provider-icon {
@@ -189,11 +181,11 @@
 }
 
 .rhwp-setup-card-logo .ag-provider-icon-mask[data-agent='codex'] {
-  color: #5b8fd4;
+  color: #5b8fd4; /* token-ok */
 }
 
 .rhwp-setup-card-logo .ag-provider-icon-mask[data-agent='pi'] {
-  color: #4a9a86;
+  color: #4a9a86; /* token-ok */
   -webkit-mask-image: url('/icons/provider-pi.svg');
   mask-image: url('/icons/provider-pi.svg');
 }
@@ -214,15 +206,16 @@
 }
 
 .rhwp-setup-card-name {
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1.3;
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-medium);
+  letter-spacing: var(--ag-track-tight);
+  line-height: var(--ag-lh-tight);
 }
 
 .rhwp-setup-card-vendor {
-  font-size: 11px;
-  line-height: 1.3;
-  color: var(--n-text-muted, #6e6e73);
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-tight);
+  color: var(--n-ink-secondary);
 }
 
 .rhwp-setup-card-check {
@@ -234,8 +227,8 @@
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  background: var(--accent-primary, #6182d6);
-  color: var(--n-on-accent, #fff);
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
   opacity: 0;
   transform: scale(0.5);
   transition:
@@ -271,41 +264,44 @@
 
 .rhwp-setup-primary {
   flex: 1 1 auto;
-  height: 38px;
+  height: 40px;
   border: 0;
-  border-radius: 10px;
-  background: var(--n-fill-hover, rgba(0, 0, 0, 0.055));
-  color: var(--n-text, #1d1d1f);
+  border-radius: var(--ag-r-row);
+  background: var(--n-ink-fill-hover);
+  color: var(--n-ink);
   font: inherit;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  transition:
-    background-color var(--ag-dur-base) var(--ag-ease-out),
-    color var(--ag-dur-base) var(--ag-ease-out),
-    transform var(--ag-dur-fast) var(--ag-ease-out);
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-medium);
+  letter-spacing: var(--ag-track-tight);
+  cursor: default;
+  transition: var(--ag-transition-color);
 }
 
 .rhwp-setup-primary:hover {
-  background: var(--n-fill-active, rgba(0, 0, 0, 0.1));
+  background: var(--n-ink-fill-pressed);
 }
 
 .rhwp-setup-primary:active {
-  transform: scale(0.99);
+  background: var(--n-ink-hairline-strong);
+  transition: none;
 }
 
 .rhwp-setup-primary:focus-visible {
-  outline: 2px solid var(--accent-primary, #6182d6);
-  outline-offset: 2px;
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
 }
 
 .rhwp-setup-dialog[data-ready='true'] .rhwp-setup-primary {
-  background: var(--n-text, #1d1d1f);
-  color: var(--n-surface, #fff);
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
 }
 
 .rhwp-setup-dialog[data-ready='true'] .rhwp-setup-primary:hover {
-  background: color-mix(in srgb, var(--n-text, #1d1d1f) 86%, var(--n-surface, #fff));
+  background: var(--ag-primary-bg-hover);
+}
+
+.rhwp-setup-dialog[data-ready='true'] .rhwp-setup-primary:active {
+  background: var(--ag-primary-bg-pressed);
 }
 
 @media (prefers-reduced-motion: reduce) {

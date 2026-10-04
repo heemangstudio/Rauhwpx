@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import {
   chmod,
@@ -18,7 +19,7 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
-import { DocumentLeaseManager } from '../../../desktop/document-leases.mjs';
+import { DocumentLeaseManager, releaseRendererDocuments } from '../../../desktop/document-leases.mjs';
 import {
   bindNativeFileHandleIdentity,
   createNativeFileHandle,
@@ -36,7 +37,7 @@ import {
   NativeFileHandleRegistry,
   nativePathOwnershipKey,
   readPortableHistoryBytes,
-  rewriteIcaclsSavedAcl,
+  readIcaclsSavedDacl,
   runNativeMetadataCommand,
   validateNativeDocumentBytes,
   validateNativeDocumentPath,
@@ -873,16 +874,64 @@ test('a destination recreated after compare preserves both it and the recovery o
   });
 });
 
-test('unsupported hard links fail before an existing destination is moved', async () => {
+const noHardLinks = (code: string) => async () => {
+  throw Object.assign(new Error('hard links unavailable'), { code });
+};
+
+test('volumes without hard links save in place by rename and keep saving', async () => {
+  // exFAT/FAT USB drives return ENOTSUP (macOS) or EPERM (Linux vfat) for link().
+  for (const code of ['ENOTSUP', 'EPERM']) {
+    await withTemporaryDirectory(async (directory) => {
+      const target = join(directory, '보고서 초안.hwp');
+      await writeFs(target, minimalCfbBytes(1));
+      const registry = new NativeFileHandleRegistry({
+        writeFileImpl: (path: string, bytes: Uint8Array, options: object) => writeNativeFileAtomically(
+          path, bytes, { ...options, platform: 'linux', linkImpl: noHardLinks(code) },
+        ),
+      });
+      const opened = await registry.create('session-a', target);
+      assert.equal(opened.ok, true);
+      if (!opened.ok) return;
+      const active = identity('document-a', 'blake3:a');
+      const leases = new DocumentLeaseManager({ createId: () => 'open' });
+      const reservation = leases.reserve(
+        'session-a', active, registry.pathForSender('session-a', opened.descriptor.handleId),
+      );
+      assert.equal(reservation.ok, true);
+      if (!reservation.ok) return;
+      leases.commit('session-a', reservation.reservationId);
+
+      await registry.write('session-a', opened.descriptor.handleId, minimalCfbBytes(2), active, leases);
+      await registry.write('session-a', opened.descriptor.handleId, minimalCfbBytes(3), active, leases);
+      assert.deepEqual(new Uint8Array(await readFs(target)), minimalCfbBytes(3), code);
+      assert.deepEqual(await readdir(directory), ['보고서 초안.hwp'], code);
+    });
+  }
+});
+
+test('volumes without hard links publish a new Save As destination by rename', async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const target = join(directory, 'new-report.hwp');
+    const saved = await writeNativeFileAtomically(target, new Uint8Array([1, 2, 3]), {
+      platform: 'linux',
+      linkImpl: noHardLinks('EOPNOTSUPP'),
+    });
+    assert.equal(saved.state, 'file');
+    assert.equal(saved.digest, (await fingerprintNativeFile(target)).digest);
+    assert.deepEqual(new Uint8Array(await readFs(target)), new Uint8Array([1, 2, 3]));
+    assert.deepEqual(await readdir(directory), ['new-report.hwp']);
+  });
+});
+
+test('a link probe I/O failure still fails before an existing destination is moved', async () => {
   await withTemporaryDirectory(async (directory) => {
     const target = join(directory, 'report.hwp');
     await writeFs(target, 'previous');
     let renamed = false;
-    const unsupported = Object.assign(new Error('hard links unavailable'), { code: 'ENOTSUP' });
     await assert.rejects(
       writeNativeFileAtomically(target, new Uint8Array([1, 2, 3]), {
         platform: 'linux',
-        linkImpl: async () => { throw unsupported; },
+        linkImpl: noHardLinks('EIO'),
         renameImpl: async () => { renamed = true; },
       }),
       { code: NATIVE_FILE_ATOMIC_UNSUPPORTED_CODE },
@@ -893,18 +942,143 @@ test('unsupported hard links fail before an existing destination is moved', asyn
   });
 });
 
-test('unsupported hard links leave a missing Save As destination missing', async () => {
+test('rename publishing never replaces a destination recreated after the compare', async () => {
   await withTemporaryDirectory(async (directory) => {
-    const target = join(directory, 'new-report.hwp');
-    const unsupported = Object.assign(new Error('hard links unavailable'), { code: 'EOPNOTSUPP' });
+    const target = join(directory, 'report.hwp');
+    const original = minimalCfbBytes(1);
+    const external = minimalCfbBytes(7);
+    await writeFs(target, original);
+    const expectedFingerprint = await fingerprintNativeFile(target);
+    let recoveryFile = '';
+
+    await assert.rejects(
+      writeNativeFileAtomically(target, minimalCfbBytes(9), {
+        platform: 'linux',
+        expectedFingerprint,
+        linkImpl: noHardLinks('ENOTSUP'),
+        renameImpl: async (from: string, to: string) => {
+          await renameFs(from, to);
+          // A sync client recreates the document right after the rename-aside.
+          if (from === target) await writeFs(target, external);
+        },
+      }),
+      (error: any) => {
+        assert.equal(error?.code, NATIVE_FILE_RECOVERY_REQUIRED_CODE);
+        assert.equal(error?.cause?.code, NATIVE_FILE_CONFLICT_CODE);
+        recoveryFile = error.recoveryFile;
+        return true;
+      },
+    );
+    assert.deepEqual(new Uint8Array(await readFs(target)), external);
+    assert.deepEqual(new Uint8Array(await readFs(recoveryFile)), original);
+    assert.deepEqual((await readdir(directory)).sort(), [basename(recoveryFile), 'report.hwp'].sort());
+  });
+});
+
+test('a failed rename publish restores the original without hard links', async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const target = join(directory, 'report.hwp');
+    await writeFs(target, 'previous');
     await assert.rejects(
       writeNativeFileAtomically(target, new Uint8Array([1, 2, 3]), {
         platform: 'linux',
-        linkImpl: async () => { throw unsupported; },
+        linkImpl: noHardLinks('ENOTSUP'),
+        renameImpl: async (from: string, to: string) => {
+          if (from.endsWith('.tmp')) throw errorWithCode('EIO');
+          await renameFs(from, to);
+        },
       }),
-      { code: NATIVE_FILE_ATOMIC_UNSUPPORTED_CODE },
+      { code: 'EIO' },
     );
-    assert.deepEqual(await readdir(directory), []);
+    assert.equal(await readFs(target, 'utf8'), 'previous');
+    assert.deepEqual(await readdir(directory), ['report.hwp']);
+  });
+});
+
+test('a directory fsync failure after publish does not wedge later saves', async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const target = join(directory, 'report.hwp');
+    await writeFs(target, minimalCfbBytes(1));
+    let syncFailures = 1;
+    const registry = new NativeFileHandleRegistry({
+      writeFileImpl: (path: string, bytes: Uint8Array, options: object) => writeNativeFileAtomically(
+        path, bytes, {
+          ...options,
+          platform: 'linux',
+          syncParentImpl: async () => {
+            if (syncFailures > 0) {
+              syncFailures -= 1;
+              throw errorWithCode('EIO');
+            }
+          },
+        },
+      ),
+    });
+    const opened = await registry.create('session-a', target);
+    assert.equal(opened.ok, true);
+    if (!opened.ok) return;
+    const active = identity('document-a', 'blake3:a');
+    const leases = new DocumentLeaseManager({ createId: () => 'open' });
+    const reservation = leases.reserve(
+      'session-a', active, registry.pathForSender('session-a', opened.descriptor.handleId),
+    );
+    assert.equal(reservation.ok, true);
+    if (!reservation.ok) return;
+    leases.commit('session-a', reservation.reservationId);
+
+    await assert.rejects(
+      registry.write('session-a', opened.descriptor.handleId, minimalCfbBytes(2), active, leases),
+      (error: any) => error?.code === 'EIO' && error?.published === true,
+    );
+    assert.deepEqual(new Uint8Array(await readFs(target)), minimalCfbBytes(2));
+    const afterFailure = await readdir(directory);
+    assert.equal(afterFailure.length, 2, 'the previous version stays as a recovery copy');
+    assert.ok(afterFailure.some((name) => /report\.rauhwpx-recovery-.*\.hwp$/.test(name)));
+
+    await registry.write('session-a', opened.descriptor.handleId, minimalCfbBytes(3), active, leases);
+    await registry.write('session-a', opened.descriptor.handleId, minimalCfbBytes(4), active, leases);
+    assert.deepEqual(new Uint8Array(await readFs(target)), minimalCfbBytes(4));
+  });
+});
+
+test('a locked Windows temp link after publish still returns the save', async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const target = join(directory, 'report.hwp');
+    await writeFs(target, minimalCfbBytes(1));
+    const warnings: unknown[] = [];
+    const registry = new NativeFileHandleRegistry({
+      writeFileImpl: (path: string, bytes: Uint8Array, options: object) => writeNativeFileAtomically(
+        path, bytes, {
+          ...options,
+          platform: 'win32',
+          windowsSystemRoot: 'C:\\Windows',
+          runCommandImpl: async () => {},
+          sleep: async () => {},
+          logger: { warn: (...args: unknown[]) => warnings.push(args) },
+          // An antivirus scanner holds the fresh temp file past the retry window.
+          rmImpl: async (filePath: string, options?: { force?: boolean }) => {
+            if (String(filePath).endsWith('.tmp')) throw errorWithCode('EBUSY');
+            await rmFs(filePath, options);
+          },
+        },
+      ),
+    });
+    const opened = await registry.create('session-a', target);
+    assert.equal(opened.ok, true);
+    if (!opened.ok) return;
+    const active = identity('document-a', 'blake3:a');
+    const leases = new DocumentLeaseManager({ createId: () => 'open' });
+    const reservation = leases.reserve(
+      'session-a', active, registry.pathForSender('session-a', opened.descriptor.handleId),
+    );
+    assert.equal(reservation.ok, true);
+    if (!reservation.ok) return;
+    leases.commit('session-a', reservation.reservationId);
+
+    await registry.write('session-a', opened.descriptor.handleId, minimalCfbBytes(2), active, leases);
+    await registry.write('session-a', opened.descriptor.handleId, minimalCfbBytes(3), active, leases);
+    assert.deepEqual(new Uint8Array(await readFs(target)), minimalCfbBytes(3));
+    assert.equal(warnings.length, 2);
   });
 });
 
@@ -1044,6 +1218,148 @@ test('successful native saves advance the disk fingerprint for the next save', a
   });
 });
 
+function sha256Digest(bytes: Uint8Array): string {
+  return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+}
+
+test('reopening an externally changed file in the same window lets the next save through', async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const target = join(directory, 'report.hwp');
+    const external = minimalCfbBytes(2);
+    await writeFs(target, minimalCfbBytes(1));
+    const registry = new NativeFileHandleRegistry();
+    const opened = await registry.create('session-a', target);
+    assert.equal(opened.ok, true);
+    if (!opened.ok) return;
+    const handleId = opened.descriptor.handleId;
+    const active = identity('document-a', 'blake3:a');
+    const leases = new DocumentLeaseManager({ createId: () => 'open' });
+    const reservation = leases.reserve('session-a', active, registry.pathForSender('session-a', handleId));
+    assert.equal(reservation.ok, true);
+    if (!reservation.ok) return;
+    leases.commit('session-a', reservation.reservationId);
+
+    await writeFs(target, external);
+    await assert.rejects(
+      registry.write('session-a', handleId, minimalCfbBytes(3), active, leases),
+      { code: NATIVE_FILE_CONFLICT_CODE },
+    );
+
+    // "Reopen it before saving": the same window reuses its handle for the path.
+    const reopened = await registry.create('session-a', target);
+    assert.equal(reopened.ok && reopened.created, false);
+    assert.equal(reopened.ok && reopened.descriptor.handleId, handleId);
+    // A load that was cancelled, or that read another version, must not move the baseline.
+    assert.equal(await registry.adoptLoadedContent('session-a', handleId, sha256Digest(minimalCfbBytes(9))), false);
+    await assert.rejects(
+      registry.write('session-a', handleId, minimalCfbBytes(3), active, leases),
+      { code: NATIVE_FILE_CONFLICT_CODE },
+    );
+    assert.deepEqual(new Uint8Array(await readFs(target)), external);
+
+    const loaded = (await registry.read('session-a', handleId)).bytes;
+    assert.equal(await registry.adoptLoadedContent('session-a', handleId, sha256Digest(loaded)), true);
+    await registry.write('session-a', handleId, minimalCfbBytes(4), active, leases);
+    assert.deepEqual(new Uint8Array(await readFs(target)), minimalCfbBytes(4));
+  });
+});
+
+test('reopening a file rewritten with identical bytes clears the save conflict', async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const target = join(directory, 'report.hwp');
+    const original = minimalCfbBytes(1);
+    await writeFs(target, original);
+    const registry = new NativeFileHandleRegistry();
+    const opened = await registry.create('session-a', target);
+    assert.equal(opened.ok, true);
+    if (!opened.ok) return;
+    const handleId = opened.descriptor.handleId;
+    const active = identity('document-a', 'blake3:a');
+    const leases = new DocumentLeaseManager({ createId: () => 'open' });
+    const reservation = leases.reserve('session-a', active, registry.pathForSender('session-a', handleId));
+    assert.equal(reservation.ok, true);
+    if (!reservation.ok) return;
+    leases.commit('session-a', reservation.reservationId);
+
+    // A sync client replaces the file with the same bytes: new inode, same digest.
+    const replacement = join(directory, 'sync.tmp');
+    await writeFs(replacement, original);
+    await renameFs(replacement, target);
+    await assert.rejects(
+      registry.write('session-a', handleId, minimalCfbBytes(3), active, leases),
+      { code: NATIVE_FILE_CONFLICT_CODE },
+    );
+
+    const loaded = (await registry.read('session-a', handleId)).bytes;
+    assert.equal(await registry.adoptLoadedContent('session-a', handleId, sha256Digest(loaded)), true);
+    await registry.write('session-a', handleId, minimalCfbBytes(4), active, leases);
+    assert.deepEqual(new Uint8Array(await readFs(target)), minimalCfbBytes(4));
+  });
+});
+
+test('adopting loaded content never overrides a save that finished meanwhile', async () => {
+  let finishFingerprint: ((value: unknown) => void) | undefined;
+  let holdFingerprint = false;
+  const loadedDigest = `sha256:${'2'.repeat(64)}`;
+  const registry = new NativeFileHandleRegistry({
+    canonicalize: async () => '/canonical/report.hwp',
+    createId: () => 'writer',
+    fingerprintImpl: async () => {
+      if (!holdFingerprint) return TEST_NATIVE_FINGERPRINT;
+      return new Promise((resolve) => { finishFingerprint = resolve; });
+    },
+    writeFileImpl: async () => ({ ...TEST_NATIVE_FINGERPRINT, digest: `sha256:${'3'.repeat(64)}` }),
+  });
+  const opened = await registry.create('session-a', '/report.hwp');
+  assert.equal(opened.ok, true);
+  if (!opened.ok) return;
+  const leases = new DocumentLeaseManager({ createId: () => 'open' });
+  const active = identity('document-a', 'blake3:a');
+  const reservation = leases.reserve('session-a', active, registry.pathForSender('session-a', 'writer'));
+  assert.equal(reservation.ok, true);
+  if (!reservation.ok) return;
+  leases.commit('session-a', reservation.reservationId);
+
+  holdFingerprint = true;
+  const adopting = registry.adoptLoadedContent('session-a', 'writer', loadedDigest);
+  await new Promise((resolve) => setImmediate(resolve));
+  await registry.write('session-a', 'writer', minimalCfbBytes(5), active, leases);
+  finishFingerprint?.({ ...TEST_NATIVE_FINGERPRINT, digest: loadedDigest });
+  assert.equal(await adopting, false);
+  assert.equal(
+    registry.originDigestForSessionPath('session-a', '/canonical/report.hwp'),
+    '3'.repeat(64),
+    'the fingerprint of the finished save stays the baseline',
+  );
+});
+
+test('a crashed renderer releases its document path and lease for other windows', async () => {
+  const ids = ['handle-a', 'lease-a', 'handle-b', 'lease-b'];
+  const registry = new NativeFileHandleRegistry({
+    canonicalize: async () => '/canonical/report.hwp',
+    createId: () => ids.shift()!,
+    fingerprintImpl: fakeNativeFingerprint,
+  });
+  const leases = new DocumentLeaseManager({ createId: () => ids.shift()! });
+  const opened = await registry.create('session-a', '/report.hwp');
+  assert.equal(opened.ok, true);
+  if (!opened.ok) return;
+  const active = identity('document-a', 'blake3:a');
+  const reservation = leases.reserve('session-a', active, registry.pathForSender('session-a', 'handle-a'));
+  assert.equal(reservation.ok, true);
+  if (!reservation.ok) return;
+  leases.commit('session-a', reservation.reservationId);
+  assert.equal(await registry.ownerForPath('/report.hwp'), 'session-a');
+
+  releaseRendererDocuments('session-a', { documentLeases: leases, nativeFiles: registry });
+
+  assert.equal(await registry.ownerForPath('/report.hwp'), null);
+  assert.equal(leases.leaseForSession('session-a'), null);
+  const reopened = await registry.create('session-b', '/report.hwp');
+  assert.equal(reopened.ok, true);
+  assert.equal(leases.reserve('session-b', active, '/canonical/report.hwp').ok, true);
+});
+
 test('POSIX atomic replacement preserves the destination mode bits', {
   skip: process.platform === 'win32',
 }, async () => {
@@ -1125,93 +1441,83 @@ test('macOS metadata-copy failure leaves the destination and removes the temp fi
   });
 });
 
-test('icacls save files are rewritten to the temp destination name', () => {
-  const saved = Buffer.concat([
-    Buffer.from([0xff, 0xfe]),
-    Buffer.from('report.hwp\r\nD:P(A;;FA;;;BA)\r\n', 'utf16le'),
-  ]);
-  const rewritten = rewriteIcaclsSavedAcl(saved, 'report.hwp.rauhwpx-1.tmp');
-  assert.equal(rewritten[0], 0xff);
-  assert.equal(rewritten[1], 0xfe);
-  assert.equal(
-    rewritten.subarray(2).toString('utf16le'),
-    'report.hwp.rauhwpx-1.tmp\r\nD:P(A;;FA;;;BA)\r\n',
-  );
+function icaclsSaveFile(name: string, dacl: string) {
+  return Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(`${name}\r\n${dacl}\r\n`, 'utf16le')]);
+}
+
+test('icacls save files yield the DACL line', () => {
+  assert.equal(readIcaclsSavedDacl(icaclsSaveFile('report.hwp', 'D:P(A;;FA;;;BA)')), 'D:P(A;;FA;;;BA)');
   assert.throws(
-    () => rewriteIcaclsSavedAcl(saved, 'evil\r\nD:P(A;;FA;;;WD)'),
+    () => readIcaclsSavedDacl(Buffer.from('report.hwp\r\n', 'utf16le')),
     { code: 'NATIVE_FILE_METADATA_COPY_FAILED' },
   );
 });
 
-test('Windows replacement copies only the source DACL before compare and rename', async () => {
+async function writeWithFakeIcacls(target: string, daclFor: (path: string) => string) {
+  const events: string[] = [];
+  const commandCalls: Array<{ command: string; args: string[]; options: { env: Record<string, string> } }> = [];
+  await writeNativeFileAtomically(target, new Uint8Array([7, 8]), {
+    platform: 'win32',
+    windowsSystemRoot: 'C:\\Windows',
+    windowsProcessEnv: {
+      GITHUB_TOKEN: 'must-not-leak',
+      RHWP_AGENT_TOKEN: 'must-not-leak',
+      PATH: 'C:\\evil',
+      TEMP: 'C:\\Users\\runner\\AppData\\Local\\Temp',
+      USERPROFILE: 'C:\\Users\\runner',
+      ComSpec: 'C:\\Windows\\System32\\cmd.exe',
+      PATHEXT: '.COM;.EXE;.BAT;.CMD',
+    },
+    expectedFingerprint: TEST_NATIVE_FINGERPRINT,
+    fingerprintImpl: async () => {
+      events.push('fingerprint');
+      return TEST_NATIVE_FINGERPRINT;
+    },
+    runCommandImpl: async (command: string, args: string[], options: { env: Record<string, string> }) => {
+      commandCalls.push({ command, args, options });
+      if (args[1] === '/save') {
+        const probe = await openFs(args[0], 'r+');
+        await probe.close();
+        events.push('dacl');
+        await writeFs(args[2], icaclsSaveFile(basename(args[0]), daclFor(args[0])));
+      } else {
+        events.push('apply');
+      }
+    },
+    renameImpl: async (from: string, to: string) => {
+      events.push('rename-aside');
+      const { rename } = await import('node:fs/promises');
+      await rename(from, to);
+    },
+    linkImpl: async (from: string, to: string) => {
+      if (to === target) events.push('publish');
+      const { link } = await import('node:fs/promises');
+      await link(from, to);
+    },
+  });
+  return { events, commandCalls };
+}
+
+test('Windows replacement skips the DACL write when the temp file already matches', async () => {
   await withTemporaryDirectory(async (directory) => {
     const target = join(directory, 'report.hwp');
     await writeFs(target, 'previous');
-    const events: string[] = [];
-    const commandCalls: Array<{ command: string; args: string[]; options: { env: Record<string, string> } }> = [];
-    await writeNativeFileAtomically(target, new Uint8Array([7, 8]), {
-      platform: 'win32',
-      windowsSystemRoot: 'C:\\Windows',
-      windowsProcessEnv: {
-        GITHUB_TOKEN: 'must-not-leak',
-        RHWP_AGENT_TOKEN: 'must-not-leak',
-        PATH: 'C:\\evil',
-        TEMP: 'C:\\Users\\runner\\AppData\\Local\\Temp',
-        USERPROFILE: 'C:\\Users\\runner',
-        ComSpec: 'C:\\Windows\\System32\\cmd.exe',
-        PATHEXT: '.COM;.EXE;.BAT;.CMD',
-      },
-      expectedFingerprint: TEST_NATIVE_FINGERPRINT,
-      fingerprintImpl: async () => {
-        events.push('fingerprint');
-        return TEST_NATIVE_FINGERPRINT;
-      },
-      runCommandImpl: async (command: string, args: string[], options: { env: Record<string, string> }) => {
-        commandCalls.push({ command, args, options });
-        if (args.includes('/save')) {
-          const aclFile = args[2];
-          const tempPath = aclFile.replace(/\.rauhwpx-dacl$/, '');
-          const probe = await openFs(tempPath, 'r+');
-          await probe.close();
-          events.push('dacl');
-          await writeFs(aclFile, Buffer.concat([
-            Buffer.from([0xff, 0xfe]),
-            Buffer.from(`${basename(target)}\r\nD:P(A;;FA;;;BA)\r\n`, 'utf16le'),
-          ]));
-        }
-      },
-      renameImpl: async (from: string, to: string) => {
-        events.push('rename-aside');
-        const { rename } = await import('node:fs/promises');
-        await rename(from, to);
-      },
-      linkImpl: async (from: string, to: string) => {
-        if (to === target) events.push('publish');
-        const { link } = await import('node:fs/promises');
-        await link(from, to);
-      },
-    });
-    assert.deepEqual(events, ['dacl', 'rename-aside', 'fingerprint', 'publish']);
+    const { events, commandCalls } = await writeWithFakeIcacls(target, () => 'D:AI(A;ID;FA;;;BA)');
+    assert.deepEqual(events, ['dacl', 'dacl', 'rename-aside', 'fingerprint', 'publish']);
     assert.equal(commandCalls.length, 2);
-    assert.equal(commandCalls[0].command, 'C:\\Windows\\System32\\icacls.exe');
-    assert.equal(commandCalls[1].command, 'C:\\Windows\\System32\\icacls.exe');
+    for (const call of commandCalls) {
+      assert.equal(call.command, 'C:\\Windows\\System32\\icacls.exe');
+      assert.equal(call.args[1], '/save');
+      assert.match(call.args[2], /\.rauhwpx-.*\.tmp(\.target)?\.rauhwpx-dacl$/);
+      assert.equal(call.args[3], '/q');
+    }
     assert.equal(commandCalls[0].args[0], target);
-    assert.equal(commandCalls[0].args[1], '/save');
-    assert.match(commandCalls[0].args[2], /\.rauhwpx-.*\.tmp\.rauhwpx-dacl$/);
-    assert.equal(commandCalls[0].args[3], '/q');
-    assert.equal(commandCalls[1].args[1], '/restore');
-    assert.equal(commandCalls[1].args[2], commandCalls[0].args[2]);
-    assert.equal(commandCalls[1].args[3], '/q');
-    assert.doesNotMatch(commandCalls.map((call) => call.args.join(' ')).join(' '), /setowner|\/S\b|powershell/i);
+    assert.match(commandCalls[1].args[0], /\.rauhwpx-.*\.tmp$/);
     const env = commandCalls[0].options.env;
     assert.equal(env.SystemRoot, 'C:\\Windows');
     assert.equal(env.WINDIR, 'C:\\Windows');
     assert.equal(env.SystemDrive, 'C:');
     assert.equal(env.PATH, 'C:\\Windows\\System32');
-    assert.equal(env.GITHUB_TOKEN, undefined);
-    assert.equal(env.RHWP_AGENT_TOKEN, undefined);
-    assert.equal(env.TEMP, undefined);
-    assert.equal(env.USERPROFILE, undefined);
     assert.deepEqual(Object.keys(env).sort(), [
       'ComSpec',
       'PATH',
@@ -1220,6 +1526,30 @@ test('Windows replacement copies only the source DACL before compare and rename'
       'SystemRoot',
       'WINDIR',
     ]);
+    assert.deepEqual(await readdir(directory), ['report.hwp']);
+  });
+});
+
+test('Windows replacement applies a differing source DACL without icacls /restore', async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const target = join(directory, 'report.hwp');
+    await writeFs(target, 'previous');
+    const { events, commandCalls } = await writeWithFakeIcacls(
+      target,
+      (path) => (path === target ? 'D:PAI(A;;FA;;;BA)' : 'D:AI(A;ID;FA;;;WD)'),
+    );
+    assert.deepEqual(events, ['dacl', 'dacl', 'apply', 'rename-aside', 'fingerprint', 'publish']);
+    assert.equal(commandCalls.length, 3);
+    assert.doesNotMatch(commandCalls.map((call) => call.args.join(' ')).join(' '), /\/restore|setowner/i);
+    const apply = commandCalls[2];
+    assert.equal(apply.command, 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+    const script = Buffer.from(apply.args.at(-1)!, 'base64').toString('utf16le');
+    assert.match(script, /SetSecurityDescriptorSddlForm\(\$env:RAUHWPX_DACL_SDDL, 'Access'\)/);
+    assert.equal(apply.options.env.RAUHWPX_DACL_SDDL, 'D:PAI(A;;FA;;;BA)');
+    assert.match(apply.options.env.RAUHWPX_DACL_TARGET, /\.rauhwpx-.*\.tmp$/);
+    assert.equal(apply.options.env.GITHUB_TOKEN, undefined);
+    assert.equal(await readFs(target, 'utf8'), '\x07\x08');
+    assert.deepEqual(await readdir(directory), ['report.hwp']);
   });
 });
 

@@ -36,6 +36,7 @@ import {
 
 const MAX_JSON_BYTES = 1024 * 1024;
 const MAX_EVENT_PAYLOAD_BYTES = 64 * 1024;
+const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const LEGACY_DISPLAY_VIEWER_ID = '$legacy';
 const responseProof = Symbol('rauhwpxResponseProof');
 
@@ -182,6 +183,8 @@ export function createCloudHttpHandler({
   seedProvider,
   raucloudLease = null,
   conversationBackup = null,
+  activity = null,
+  scheduler = null,
 }, { workerOnly = false } = {}) {
   const authenticate = (request) => auth.authenticate(bearer(request));
   const authenticateWorker = (request, sessionId, options) => (
@@ -189,7 +192,17 @@ export function createCloudHttpHandler({
   );
 
   return async function cloudHttpHandler(request, response) {
-    const requestUrl = new URL(request.url ?? '/', `http://${request.headers.host || '127.0.0.1'}`);
+    // Only the path and query are read, so the Host header never takes part
+    // in parsing. An unparseable target must not reject this async listener,
+    // which would take the whole process down.
+    let requestUrl;
+    try {
+      requestUrl = new URL(request.url ?? '/', 'http://localhost');
+    } catch {
+      response.writeHead(400, { 'Content-Length': '0', 'Cache-Control': 'no-store', Connection: 'close' });
+      response.end();
+      return;
+    }
     const pathname = normalizePath(requestUrl.pathname, config.basePath);
     const browserCors = !workerOnly && pathname.startsWith('/v1')
       ? applyBrowserCors(request, response, config.browserOrigins)
@@ -215,6 +228,7 @@ export function createCloudHttpHandler({
         }
       }
       if (request.method === 'GET' && pathname === '/v1/health') {
+        const degraded = scheduler?.health?.() ?? null;
         json(response, 200, {
           ok: true,
           version: SERVICE_VERSION,
@@ -225,6 +239,7 @@ export function createCloudHttpHandler({
           supportedWorkflows: EXECUTION_WORKFLOWS,
           serverPublicKey: identity.serverPublicKey,
           serverId: identity.serverId,
+          ...(degraded ? { degraded } : {}),
         });
         return;
       }
@@ -554,6 +569,11 @@ export function createCloudHttpHandler({
       if (workerOnly) throw new CloudError('NOT_FOUND', 'Worker endpoint was not found', 404);
 
       const device = authenticate(request);
+      // Only an authenticated device's writes count as use. Reads, SSE streams,
+      // token refresh, health checks and live-view interest renewals also come
+      // from open windows and background reconnects.
+      if (pathname.startsWith('/v1/') && MUTATING_METHODS.has(request.method)
+        && !pathname.endsWith('/display/interest')) activity?.touch();
       if (request.method === 'GET' && pathname === '/v1/profile') {
         json(response, 200, {
           server: { id: identity.serverId, publicKey: identity.serverPublicKey, protocolVersion: PROTOCOL_VERSION },
@@ -950,12 +970,18 @@ export function createCloudHttpHandler({
         : { level: 'info', event: 'http.request_rejected' };
       const log = logger?.[entry.level];
       if (typeof log === 'function') {
-        log.call(logger, entry.event, {
-          method: request.method,
-          pathname,
-          code: error.code,
-          message: error.message,
-        });
+        // Shutdown cuts in-flight requests and then closes SQLite, so their
+        // failures can arrive after the log table is gone.
+        try {
+          log.call(logger, entry.event, {
+            method: request.method,
+            pathname,
+            code: error.code,
+            message: error.message,
+          });
+        } catch (logError) {
+          if (logError?.code !== 'ERR_INVALID_STATE') throw logError;
+        }
       }
       if (!response.headersSent) json(response, error.status ?? 500, errorBody(error));
       else response.destroy();

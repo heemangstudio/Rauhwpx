@@ -57,7 +57,7 @@ impl Bitmap16 {
         buf: &mut R,
     ) -> Result<(Self, usize), crate::wmf::parser::ParseError> {
         let (mut bitmap, mut consumed_bytes) = Self::parse_without_bits(buf)?;
-        let (bits, bits_bytes) = crate::wmf::parser::read_variable(buf, bitmap.calc_length())?;
+        let (bits, bits_bytes) = crate::wmf::parser::read_variable(buf, bitmap.calc_length()?)?;
 
         bitmap.bits = bits;
         consumed_bytes += bits_bytes;
@@ -122,8 +122,22 @@ impl Bitmap16 {
         ))
     }
 
-    pub fn calc_length(&self) -> usize {
-        ((((self.width * self.bits_pixel as i16 + 15) >> 4) << 1) * self.height) as usize
+    /// `(((Width * BitsPixel + 15) >> 4) << 1) * Height` 바이트 수.
+    ///
+    /// 필드가 모두 부호 있는 i16 이라 예전 i16 산술은 1000×32bpp 같은 정상 크기에서도
+    /// 넘쳤고(디버그 패닉/릴리스 wrap), 음수 높이는 거의 usize::MAX 할당 길이가 됐다.
+    /// 넓은 정수로 계산하고, 음수 결과는 손상된 입력으로 거부한다.
+    pub fn calc_length(&self) -> Result<usize, crate::wmf::parser::ParseError> {
+        let row_bytes =
+            ((i64::from(self.width) * i64::from(self.bits_pixel as u16) + 15) >> 4) << 1;
+        let length = row_bytes * i64::from(self.height);
+
+        usize::try_from(length).map_err(|_| crate::wmf::parser::ParseError::UnexpectedPattern {
+            cause: format!(
+                "Bitmap16 size is negative (width `{}`, height `{}`, bits_pixel `{}`)",
+                self.width, self.height, self.bits_pixel as u16
+            ),
+        })
     }
 }
 

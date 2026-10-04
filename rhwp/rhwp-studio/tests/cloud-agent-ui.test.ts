@@ -11,6 +11,7 @@ const onboardingCss = readFileSync(new URL('../src/ui/agent-sidebar/cloud-onboar
 const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
 const desktop = readFileSync(new URL('../src/desktop-integration.ts', import.meta.url), 'utf8');
 const cloudStart = readFileSync(new URL('../src/cloud/cloud-start.ts', import.meta.url), 'utf8');
+const sessionCopy = readFileSync(new URL('../src/cloud/session-copy.ts', import.meta.url), 'utf8');
 
 test('header supports Local/Cloud selection and starts Cloud on first Send', () => {
   assert.match(sidebar, /createExecutionLocation\(executionLocationOptions\)/);
@@ -18,12 +19,12 @@ test('header supports Local/Cloud selection and starts Cloud on first Send', () 
   assert.match(sidebar, /cloudSend/);
   assert.match(sidebar, /function startCloudFromFirstMessage/);
   assert.match(sidebar, /CLOUD_UNSAVED_MESSAGE/);
-  assert.match(cloudStart, /클라우드 사용 전 문서를 저장해주세요/);
+  assert.match(cloudStart, /Cloud를 쓰려면 먼저 문서를 저장하세요\./);
   assert.match(sidebar, /execution\.kind === 'cloud-start'/);
   assert.match(sidebar, /if \(currentDocumentId && !input\.value && !referenceLibrary\.hasDrafts\(\)\) void deleteCloudComposerDraft/);
   assert.match(sidebarCss, /\.ag-send-cloud/);
   assert.match(sidebarCss, /\.ag-cloud-start-placeholder/);
-  assert.doesNotMatch(sidebar, /클라우드로 계속/);
+  assert.doesNotMatch(sidebar, /Cloud로 계속/);
 });
 
 test('safe-close and offline review copy require production-backed acknowledgments', () => {
@@ -33,7 +34,7 @@ test('safe-close and offline review copy require production-backed acknowledgmen
   assert.match(cloudUi, /offer\?\.localAvailable/);
   assert.match(cloudUi, /Cloud 결과가 이 기기에 준비되었습니다/);
   assert.match(cloudUi, /현재 편집을 유지한 채 검토합니다/);
-  assert.match(cloudUi, /Cloud 작업이 일시 중지되었습니다/);
+  assert.match(sessionCopy, /Cloud 작업이 일시 중지되었습니다/);
   assert.doesNotMatch(cloudUi, /작업이 안전한 지점에서 멈췄습니다/);
   assert.match(sidebar, /function cloudTransferIntentKey\(\)[\s\S]*documentId: currentDocumentId,[\s\S]*threadId: currentThread\.id,[\s\S]*text: input\.value,[\s\S]*drafts,[\s\S]*selection:/);
   assert.match(sidebar, /intent\?\.requestKey && intent\.requestKey !== cloudTransferIntentKey\(\)/);

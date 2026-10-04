@@ -1,7 +1,7 @@
 {
   "name": "rauhwpx",
   "productName": "Rauhwpx",
-  "version": "2.0.3",
+  "version": "2.0.9",
   "description": "HWP/HWPX editor with a local AI agent sidebar.",
   "author": "Hataewook",
   "license": "MIT",
@@ -9,7 +9,7 @@
   "desktopName": "rauhwpx.desktop",
   "private": true,
   "engines": {
-    "node": ">=22.18.0"
+    "node": ">=22.19.0"
   },
   "main": "desktop/main.mjs",
   "scripts": {
@@ -24,7 +24,8 @@
     "build:native": "cd rhwp && cargo build --locked --release --bin rhwp && node ../desktop/stage-native-rhwp.mjs",
     "build:studio:app": "npm --prefix rhwp/rhwp-studio run build",
     "build:studio": "npm run build:wasm && npm run build:studio:app",
-    "build:desktop": "npm run build:native && npm run build:studio",
+    "check:deps": "npm ls --depth=0 && npm ls --prefix rhwp/rhwp-studio --depth=0 && npm ls --prefix rhwp/rhwp-agent --depth=0",
+    "build:desktop": "npm run check:deps && npm run build:native && npm run build:studio",
     "desktop": "electron .",
     "dist:mac": "npm run build:desktop && npm run package:mac --",
     "dist:win": "npm run build:desktop && npm run package:win --",
@@ -70,6 +71,7 @@
     "asar": true,
     "files": [
       "desktop/**/*",
+      "rhwp/rhwp-shared/fonts/*.mjs",
       "cloud/install/install.sh",
       "cloud/install/install-macos.sh",
       "cloud/release/rauhwpx-cloud-bootstrap-linux-*.tar.gz",

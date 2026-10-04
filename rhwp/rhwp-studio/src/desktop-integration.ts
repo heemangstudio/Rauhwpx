@@ -6,6 +6,7 @@
  * 패키지된 PWA/브라우저는 Node 를 띄울 수 없어 no-op 이다.
  */
 
+import type { SystemFontIndex } from './core/desktop-fonts.ts';
 import type {
   FileSystemFileHandleLike,
   FileSystemWritableFileStreamLike,
@@ -110,6 +111,7 @@ export interface RhwpDesktopApi {
     identity: DocumentOwnershipIdentity,
   ) => Promise<{ name: string; byteLength: number }>;
   isSameNativeFile?: (firstHandleId: string, secondHandleId: string) => Promise<boolean>;
+  adoptNativeFileContent?: (handleId: string, digest: string) => Promise<boolean>;
   rememberNativeDocument?: (
     documentId: string,
     handleId: string,
@@ -164,7 +166,7 @@ export interface RhwpDesktopApi {
   cloudSandboxStatus?: () => Promise<unknown>;
   cloudTeardownSandbox?: (payload: { force?: boolean }) => Promise<unknown>;
   cloudForceQuitAccount?: () => Promise<unknown>;
-  cloudReconnectLink?: () => Promise<unknown>;
+  cloudReconnectLink?: (payload?: { explicit?: boolean }) => Promise<unknown>;
   cloudRecreateLink?: () => Promise<unknown>;
   /** Checkpoints the prior controller and explicitly transfers the account-global worker lease. */
   cloudTakeoverSandbox?: () => Promise<unknown>;
@@ -177,7 +179,7 @@ export interface RhwpDesktopApi {
   cloudDismissSession?: (payload: { sessionId: string }) => Promise<unknown>;
   cloudCompleteTakeover?: (payload: { sessionId: string; operationId: string }) => Promise<unknown>;
   cloudDownloadResult?: (payload: { sessionId: string }) => Promise<unknown>;
-  cloudDownloadCheckpoint?: (payload: { sessionId: string; operationId?: string; kind?: 'turn' }) => Promise<unknown>;
+  cloudDownloadCheckpoint?: (payload: { sessionId: string; operationId?: string; kind?: 'turn'; explicit?: boolean }) => Promise<unknown>;
   cloudPrepareRestartDocument?: (payload: { sessionId: string }) => Promise<unknown>;
   cloudOpenDisplay?: (payload: { sessionId: string }) => Promise<unknown>;
   cloudCloseDisplay?: (payload: { connectionId: string }) => Promise<unknown>;
@@ -198,7 +200,22 @@ export interface RhwpDesktopApi {
   }) => void) => (() => void) | void;
   onEditCommand?: (callback: (command: string) => void) => void;
   onPastePlainText?: (callback: (text: string) => void) => void;
+  /** 시스템·사용자·한컴 오피스 글꼴 색인. 권한 요청 없이 이미 설치된 글꼴만 다룬다. */
+  listSystemFonts?: (options?: { refresh?: boolean }) => Promise<SystemFontIndex>;
+  /** TTC face는 단독 SFNT로 추출해 돌려준다. 파일이 바뀌었으면 'stale' 오류를 던진다. */
+  readSystemFont?: (id: string) => Promise<Uint8Array>;
+  /** macOS 프록시 아이콘과 미저장 점. 경로는 메인이 핸들로 찾는다. */
+  setDocumentState?: (state: { edited: boolean }) => void;
+  notifyAgentTurnFinished?: (payload: { title: string; body: string }) => void;
+  setPendingReviewCount?: (count: number) => void;
+  showContextMenu?: (items: NativeContextMenuItem[]) => Promise<string | null>;
+  /** 저장 확인을 창에 붙은 네이티브 시트로 묻는다. */
+  showUnsavedChangesSheet?: (payload: { fileName: string }) => Promise<'save' | 'discard' | 'cancel'>;
 }
+
+export type NativeContextMenuItem =
+  | { id: string; label: string; enabled?: boolean; checked?: boolean; danger?: boolean }
+  | { type: 'separator' };
 
 export interface CloudEditDraftIdentity {
   sessionId: string;
@@ -781,6 +798,24 @@ export async function pickDesktopPortableHistorySaveFile(
   return createNativeFileHandle(result, api, { saveTarget: result.saveTargetCreated !== false });
 }
 
+/**
+ * 네이티브 핸들로 읽은 바이트를 문서로 연 뒤 호출한다. 이 창이 이미 가진 경로를 다시 열면
+ * 데스크톱은 기존 핸들을 재사용하므로, 디스크 기준이 처음 연 버전에 머물러 외부에서 바뀐 파일을
+ * 다시 연 뒤에도 저장마다 충돌이 난다. 디스크가 방금 연 바이트와 같을 때만 기준을 옮긴다.
+ */
+export async function adoptLoadedNativeFileContent(
+  handle: FileSystemFileHandleLike | null | undefined,
+  bytes: Uint8Array,
+): Promise<boolean> {
+  const metadata = handle ? nativeHandleMetadata.get(handle) : null;
+  if (!metadata?.api.adoptNativeFileContent) return false;
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', copy.buffer));
+  const hex = [...digest].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  return await metadata.api.adoptNativeFileContent(metadata.handleId, `sha256:${hex}`) === true;
+}
+
 export async function rememberNativeDocument(
   documentId: string | null | undefined,
   handle: FileSystemFileHandleLike | null | undefined,
@@ -1061,6 +1096,93 @@ export function installDesktopWindowChrome(win?: DesktopHost): void {
   void api?.isFullScreen?.().then(setFullscreen).catch(() => {
     /* IPC 미지원 셸에서는 기본(비전체화면) 상태 유지 */
   });
+}
+
+/**
+ * macOS 닫기 버튼의 미저장 점을 문서 상태에 맞춘다.
+ * 이벤트가 몰려도 마이크로태스크 하나로 합치고, 같은 값은 다시 보내지 않는다.
+ */
+export function installDesktopDocumentState(
+  source: {
+    subscribe: (update: () => void) => void;
+    hasDocument: () => boolean;
+    isDirty: () => boolean;
+  },
+  win?: DesktopHost,
+): void {
+  const api = desktopHost(win)?.rhwpDesktop;
+  if (api?.platform !== 'darwin' || !api.setDocumentState) return;
+  const setDocumentState = api.setDocumentState;
+  let lastSent: boolean | null = null;
+  let queued = false;
+
+  const flush = () => {
+    queued = false;
+    const edited = source.hasDocument() && source.isDirty();
+    if (edited === lastSent) return;
+    lastSent = edited;
+    setDocumentState({ edited });
+  };
+
+  source.subscribe(() => {
+    if (queued) return;
+    queued = true;
+    queueMicrotask(flush);
+  });
+  flush();
+}
+
+/**
+ * macOS 에이전트 턴 완료 알림과 Dock 배지.
+ * 창이 포커스 중인지는 메인 프로세스가 판단하고, 여기서는 성공한 턴만 알린다.
+ */
+export function installDesktopAgentAttention(
+  source: {
+    onEvent: (cb: (event: { type: string; event?: unknown }) => void) => () => void;
+    onPendingChange: (cb: () => void) => () => void;
+    pendingReviewCount: () => number;
+    documentTitle: () => string;
+  },
+  win?: DesktopHost,
+): () => void {
+  const api = desktopHost(win)?.rhwpDesktop;
+  if (api?.platform !== 'darwin') return () => {};
+  if (!api.notifyAgentTurnFinished && !api.setPendingReviewCount) return () => {};
+  let turnFailed = false;
+  let lastCount = -1;
+  const syncCount = () => {
+    const count = Math.max(0, Math.floor(source.pendingReviewCount()));
+    if (count === lastCount) return;
+    lastCount = count;
+    api.setPendingReviewCount?.(count);
+  };
+  const offEvent = source.onEvent((sidebarEvent) => {
+    if (sidebarEvent.type !== 'agent') return;
+    const event = sidebarEvent.event as { type?: string; stopReason?: string; errorMessage?: string };
+    if (event?.type === 'turn-start') turnFailed = false;
+    else if (event?.type === 'error') turnFailed = true;
+    else if (event?.type === 'turn-end') {
+      const succeeded = !turnFailed && !event.errorMessage
+        && (event.stopReason === 'end_turn'
+          || event.stopReason === 'completed'
+          || event.stopReason === 'success');
+      turnFailed = false;
+      syncCount();
+      if (succeeded) {
+        api.notifyAgentTurnFinished?.({
+          title: source.documentTitle() || 'Rauhwpx',
+          body: lastCount > 0 ? '검토할 변경이 있습니다' : '작업 완료',
+        });
+      }
+    }
+  });
+  const offPending = source.onPendingChange(syncCount);
+  syncCount();
+  return () => {
+    offEvent();
+    offPending();
+    if (lastCount > 0) api.setPendingReviewCount?.(0);
+  };
 }
 
 type ServiceWorkerLike = NonNullable<NonNullable<DesktopHost['navigator']>['serviceWorker']>;

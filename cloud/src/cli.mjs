@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { idleReport } from './activity.mjs';
 import { AuthService } from './auth.mjs';
 import { parseConfig } from './config.mjs';
 import { databasePragmas, openDatabase } from './database.mjs';
@@ -42,6 +43,8 @@ try {
       sessions: Object.fromEntries(sessions.map((row) => [row.status, row.count])),
       serverPublicKey: identity.serverPublicKey,
     }));
+  } else if (command === 'idle' && (action === undefined || action === '--json')) {
+    console.log(JSON.stringify(idleReport(database, { dataDirectory: config.dataDirectory })));
   } else if (command === 'provider-secret' && action === 'set') {
     const [provider, name] = rest;
     let value = '';
@@ -71,7 +74,7 @@ try {
     console.log(JSON.stringify(result, null, 2));
     if (!result.ok) process.exitCode = 1;
   } else {
-    console.error('Usage: cli.mjs pairing create [device-name] | status | doctor | provider install|login|status <provider> [--api-key-stdin] | provider seed-session | provider-secret set|delete <provider> <name>');
+    console.error('Usage: cli.mjs pairing create [device-name] | status | idle [--json] | doctor | provider install|login|status <provider> [--api-key-stdin] | provider seed-session | provider-secret set|delete <provider> <name>');
     process.exitCode = 2;
   }
 } finally {

@@ -6,6 +6,11 @@
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
+/// 원문자 식 번호(①–⑳)는 변수의 이탤릭 자형을 쓰지 않는다.
+pub(crate) fn is_circled_number(c: char) -> bool {
+    matches!(c, '\u{2460}'..='\u{2473}')
+}
+
 /// 그리스 문자 (소문자, 대소문자 구분)
 static GREEK_LOWER: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
     HashMap::from([
@@ -102,7 +107,7 @@ static SPECIAL_SYMBOLS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock
         ("THICKSPACE", "\u{2004}"),
         ("NEGSPACE", ""),
         ("ENSPACE", "\u{2002}"),
-        ("TRIANGLE", "△"),
+        ("TRIANGLE", "∆"),
         ("TRIANGLED", "▽"),
         ("ANGLE", "∠"),
         ("MSANGLE", "∡"),
@@ -137,9 +142,9 @@ static OPERATORS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(
         ("PM", "±"),
         ("MINUSPLUS", "∓"),
         ("MP", "∓"),
-        ("CDOT", "·"),
+        ("CDOT", "⋅"),
         ("CIRC", "∘"),
-        ("BULLET", "•"),
+        ("BULLET", "∙"),
         ("AST", "∗"),
         ("STAR", "★"),
         ("DSUM", "⊞"),
@@ -249,7 +254,7 @@ static OPERATORS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(
         ("aleph", "ℵ"),
         ("therefore", "∴"),
         ("because", "∵"),
-        ("cdot", "·"),
+        ("cdot", "⋅"),
         ("times", "×"),
         ("div", "÷"),
         ("pm", "±"),
@@ -443,6 +448,8 @@ static FUNCTIONS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(
         ("max", "max"),
         ("min", "min"),
         ("mod", "mod"),
+        ("or", "or"),
+        ("and", "and"),
         // LaTeX additional functions
         ("sup", "sup"),
         ("inf", "inf"),
@@ -676,8 +683,16 @@ mod tests {
     }
 
     #[test]
+    fn triangle_command_differs_from_source_covered_base_glyph() {
+        assert_eq!(lookup_symbol("triangle"), Some("∆"));
+        assert_eq!(lookup_symbol("BASE"), Some("△"));
+    }
+
+    #[test]
     fn test_operators() {
         assert_eq!(lookup_symbol("TIMES"), Some("×"));
+        assert_eq!(lookup_symbol("CDOT"), Some("⋅"));
+        assert_eq!(lookup_symbol("cdot"), Some("⋅"));
         assert_eq!(lookup_symbol("PLUSMINUS"), Some("±"));
         assert_eq!(lookup_symbol("INF"), Some("∞"));
     }

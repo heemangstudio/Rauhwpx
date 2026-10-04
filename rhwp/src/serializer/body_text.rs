@@ -1047,7 +1047,7 @@ fn compute_control_mask(para: &Paragraph) -> u32 {
     if para.text.contains('\u{00A0}') {
         mask |= 1u32 << 0x001E;
     }
-    if para.text.contains('\u{00AD}') {
+    if should_serialize_soft_hyphen_as_hwp_hyphen(para) {
         mask |= 1u32 << tags::CHAR_HYPHEN;
     }
     // FIXED_WIDTH_SPACE (0x001F): HWPX에서 들어온 일부 문맥은 U+2007을
@@ -1358,7 +1358,11 @@ fn serialize_para_text_limited(para: &Paragraph, max_bytes: usize) -> Result<Vec
                 push_code_unit(&mut bytes, 0x0009);
                 // TAB 확장 데이터 복원 (탭 너비, 종류 등)
                 if tab_idx < para.tab_extended.len() {
-                    for &cu in &para.tab_extended[tab_idx] {
+                    let mut ext = para.tab_extended[tab_idx];
+                    // HWPX 파서가 탭 정지 간격/저장 거리 의미로 쓰는 예약 비트 — HWP5
+                    // 스트림에는 보내지 않는다 (ext[5] 는 HWP5 원본 바이트 슬롯).
+                    ext[5] &= !0xc000;
+                    for &cu in &ext {
                         push_code_unit(&mut bytes, cu);
                     }
                 } else {
@@ -1387,7 +1391,12 @@ fn serialize_para_text_limited(para: &Paragraph, max_bytes: usize) -> Result<Vec
             }
             '\u{00AD}' => {
                 // HWP hyphen control (code 24), distinct from a literal '-'.
-                push_code_unit(&mut bytes, tags::CHAR_HYPHEN);
+                // 원본이 리터럴 U+00AD 코드 유닛이었던 문단은 그대로 되돌린다.
+                if should_serialize_soft_hyphen_as_hwp_hyphen(para) {
+                    push_code_unit(&mut bytes, tags::CHAR_HYPHEN);
+                } else {
+                    push_code_unit(&mut bytes, 0x00AD);
+                }
                 prev_end = offset
                     .checked_add(1)
                     .ok_or_else(|| "HWP paragraph character offset overflow".to_string())?;
@@ -1615,6 +1624,15 @@ fn try_payload_buffer(size: usize, max_bytes: usize, label: &str) -> Result<Vec<
         .try_reserve_exact(size)
         .map_err(|error| format!("HWP {label} allocation failed: {error}"))?;
     Ok(bytes)
+}
+
+/// U+00AD 를 HWP 하이픈 컨트롤(코드 24)로 되돌릴지 판단한다.
+///
+/// 파서는 코드 24 와 리터럴 U+00AD 코드 유닛을 모두 U+00AD 로 싣는다. 한컴 원본에는
+/// 리터럴 U+00AD 만 든 문단(control_mask 비트 24 없음)도 있으므로, 문단의 control_mask
+/// 비트 24 를 출처 표지로 삼아 원래 코드 유닛과 마스크를 보존한다.
+fn should_serialize_soft_hyphen_as_hwp_hyphen(para: &Paragraph) -> bool {
+    para.control_mask & (1u32 << tags::CHAR_HYPHEN) != 0 && para.text.contains('\u{00AD}')
 }
 
 fn should_serialize_figure_space_as_hwp_fixed_blank(para: &Paragraph) -> bool {
@@ -2374,6 +2392,20 @@ mod tests {
     }
 
     #[test]
+    fn hwp5_text_serialization_strips_hwpx_tab_markers() {
+        let para = Paragraph {
+            text: "A\tB".into(),
+            char_offsets: (0..3).collect(),
+            tab_extended: vec![[600, 0, 0x0200, 0, 0, 0xc123, 9]],
+            ..Default::default()
+        };
+        let bytes = test_serialize_para_text(&para);
+        assert_eq!(u16::from_le_bytes([bytes[2], bytes[3]]), 9);
+        assert_eq!(u16::from_le_bytes([bytes[14], bytes[15]]), 0x0123);
+        assert_eq!(para.tab_extended[0][5], 0xc123);
+    }
+
+    #[test]
     fn test_autonum_range_tagged_fixed_width_space_serializes_as_hwp_control_code() {
         let para = Paragraph {
             char_count: 17,
@@ -2431,6 +2463,7 @@ mod tests {
             char_count: 4,
             text: "\u{00AD}-_".to_string(),
             char_offsets: vec![0, 1, 2],
+            control_mask: 1u32 << 0x0018,
             ..Default::default()
         };
         let bytes = test_serialize_para_text(&para);
@@ -2442,6 +2475,20 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert_ne!(compute_control_mask(&para) & (1u32 << 0x0018), 0);
+    }
+
+    /// 한컴 원본의 리터럴 U+00AD(control_mask 비트 24 없음)는 코드 24 로 바뀌지 않는다.
+    #[test]
+    fn literal_soft_hyphen_without_hyphen_mask_stays_literal() {
+        let para = Paragraph {
+            char_count: 3,
+            text: "A\u{00AD}".to_string(),
+            char_offsets: vec![0, 1],
+            ..Default::default()
+        };
+        let bytes = test_serialize_para_text(&para);
+        assert_eq!(&bytes[2..4], &0x00ADu16.to_le_bytes());
+        assert_eq!(compute_control_mask(&para) & (1u32 << 0x0018), 0);
     }
 
     /// [NBSP mask] U+00A0 은 PARA_TEXT 에 코드 0x1E 로 방출되므로 PARA_HEADER control_mask

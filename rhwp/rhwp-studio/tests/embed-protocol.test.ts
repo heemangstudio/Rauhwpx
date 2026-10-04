@@ -25,11 +25,12 @@ test('renderer diagnostics v1 keeps auto intent in the additive selection field'
 
 test('main.ts는 호스트 저장 완료 API completeHostSave를 window.rhwpStudio로 노출한다 (#2660)', () => {
   const source = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
-  // 코어: markClean('host-save') 후 draft 삭제 "완료"까지 await — 팝업 close 안전 계약
-  assert.match(
-    source,
-    /async function completeHostSave\(fileName\?: string\)[\s\S]*?markClean\('host-save'\)[\s\S]*?await autosaveManager\.discardCurrentDraft\('host-save'\)[\s\S]*?wasDirty/,
-  );
+  // 코어 동작(clean 전환·draft 삭제 대기)은 host-save.test.ts 가 HostSaveTracker 로 검증한다.
+  assert.match(source, /async function completeHostSave\(fileName\?: string\)[\s\S]*?hostSave\.complete\(fileName\)/);
+  // RPC export 는 호스트가 받아 간 편집 세대를 기록한다.
+  for (const method of ['exportHwp', 'exportHwpx', 'exportHml']) {
+    assert.match(source, new RegExp(`async ${method}\\(\\) \\{[\\s\\S]*?hostSave\\.recordExport\\(\\);[\\s\\S]*?return wasm\\.${method}\\(\\)`));
+  }
   // window 공개 API: DEV 전용이 아닌 무조건 노출
   assert.match(source, /\.rhwpStudio = \{\s*\n?\s*notifySaved:/);
   // embed RPC 핸들러도 동일 코어를 사용한다

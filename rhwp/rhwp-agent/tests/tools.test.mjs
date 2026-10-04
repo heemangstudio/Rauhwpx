@@ -4,21 +4,30 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { z } from 'zod/v3';
+import { zodToJsonSchema } from 'zod-to-json-schema';
 import {
+  BATCHABLE_EDIT_TOOL_NAMES,
   TOOL_CATEGORIES,
   TOOL_CLASSIFICATIONS,
   TOOL_DEFINITIONS,
   IMPLEMENTATION_PLAN_SHAPE,
-  OFFSET_CAVEAT,
+  RHWP_TOOL_RULES,
+  TABLE_PROPS_KEYS,
+  CELL_PROPS_KEYS,
   filterToolDefinitions,
   toToolContent,
   toolAnnotations,
 } from '../tools.mjs';
+import { toolDefinitionChars } from '../tool-telemetry.mjs';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 const byName = new Map(TOOL_DEFINITIONS.map((d) => [d.name, d]));
 
-test('도구는 정확히 82개, 이름 중복 없음', () => {
-  assert.equal(TOOL_DEFINITIONS.length, 82);
+test('도구는 정확히 89개, 이름 중복 없음', () => {
+  assert.equal(TOOL_DEFINITIONS.length, 89);
   assert.equal(byName.size, TOOL_DEFINITIONS.length, 'duplicate tool names');
 });
 
@@ -59,9 +68,82 @@ test('nested table paths are accepted on staged cell text tools', () => {
   }
 });
 
+// ─── 텍스트 앵커 (P2.2) ───────────────────────────────────
+// 다섯 쓰기 도구가 anchor 인자를 받고, 좌표 누락·잘못된 앵커 필드를 validate 훅이
+// INVALID_ARGS 로 거절하는지 본다. 앵커 옆의 좌표는 스튜디오가 검색 범위로 쓰므로 통과시킨다.
+// 해석 자체(매치/모호성/범위)는 스튜디오 테스트가 본다.
+
+const ANCHORED_TOOLS = ['insert_text', 'delete_range', 'replace_range', 'apply_char_format', 'apply_para_format'];
+
+test('앵커 도구는 anchor 인자를 받고 좌표를 선택 필드로 둔다', () => {
+  for (const name of ANCHORED_TOOLS) {
+    const def = byName.get(name);
+    assert.ok(def.shape.anchor, `${name}: missing anchor param`);
+    assert.ok(def.shape.anchor.safeParse(undefined).success, `${name}: anchor must be optional`);
+    assert.match(def.description, /matched by find/, `${name}: description should teach find`);
+    assert.equal(def.shape.anchor._def.description, 'Long form of find', `${name}: anchor is the long form`);
+    assert.ok(def.validate, `${name}: needs the coord-or-anchor validator`);
+  }
+  // 앵커가 없으면 좌표가 필요하다 — 오류가 그 도구의 좌표 전체를 알려 준다.
+  assert.throws(
+    () => byName.get('insert_text').validate({ text: 'x' }),
+    /insert_text needs sectionIdx, paraIdx, charOffset — or find \(missing paraIdx, charOffset\)/,
+  );
+  assert.throws(
+    () => byName.get('delete_range').validate({ startParaIdx: 1 }),
+    /delete_range needs sectionIdx, startParaIdx, startCharOffset, endParaIdx, endCharOffset — or find \(missing startCharOffset, endCharOffset\)/,
+  );
+  assert.throws(() => byName.get('apply_para_format').validate({ alignment: 'left' }), /apply_para_format needs sectionIdx, paraIdx — or find or paras/);
+  // sectionIdx(구역 하나)와 범위 도구의 endParaIdx 는 스튜디오가 채운다 — 여기서 막지 않는다.
+  assert.doesNotThrow(() => byName.get('delete_range').validate({ startParaIdx: 1, startCharOffset: 0, endCharOffset: 2 }));
+  // 범위 도구의 paraIdx 는 startParaIdx 의 별칭이다 — find 옆에서는 검색 범위, 좌표 옆에서는 시작 문단.
+  assert.doesNotThrow(() => byName.get('replace_range').validate({ paraIdx: 1, startCharOffset: 0, endCharOffset: 2, text: 'x' }));
+  assert.doesNotThrow(() => byName.get('apply_char_format').validate({ paraIdx: 1, startOffset: 0, endOffset: 2, bold: true }));
+});
+
+test('anchor 옆의 좌표·cell 은 검색 범위라 거절하지 않는다', () => {
+  const anchor = { text: '결론' };
+  for (const name of ANCHORED_TOOLS) {
+    const def = byName.get(name);
+    assert.doesNotThrow(() => def.validate({ anchor, sectionIdx: 0, paraIdx: 3 }), `${name}: anchor + paraIdx`);
+    assert.doesNotThrow(
+      () => def.validate({ anchor, cell: { paraIdx: 1, controlIdx: 0, cellIdx: 0 } }),
+      `${name}: anchor + cell`,
+    );
+  }
+  // 앵커만 있으면 좌표 없이 통과한다.
+  assert.doesNotThrow(() => byName.get('insert_text').validate({ anchor, text: 'x' }));
+  assert.doesNotThrow(() => byName.get('delete_range').validate({ anchor }));
+  assert.doesNotThrow(() => byName.get('replace_range').validate({ anchor, text: 'y' }));
+  assert.doesNotThrow(() => byName.get('apply_char_format').validate({ anchor, bold: true }));
+  assert.doesNotThrow(() => byName.get('apply_para_format').validate({ anchor, alignment: 'center' }));
+});
+
+test('anchor 내부 필드는 validate 훅이 모양을 고정한다', () => {
+  const def = byName.get('insert_text');
+  const ok = (anchor) => def.validate({ anchor, text: 'x' });
+  const bad = (anchor, re) => assert.throws(() => def.validate({ anchor, text: 'x' }), re);
+  ok({ text: 'a' });
+  ok({ text: 'a', occurrence: 2, position: 'before', within: { sectionIdx: 0, paraRange: [1, 3], cell: { paraIdx: 4, controlIdx: 0, cellIdx: 2 } } });
+  // 문자열 앵커는 {text} 의 줄임 — 스키마가 객체로 바꿔 넘기고, validate 훅도 그대로 받는다.
+  ok('text');
+  assert.deepEqual(def.shape.anchor.parse('결론'), { text: '결론' });
+  assert.deepEqual(def.shape.anchor.parse({ text: '결론', occurrence: 2 }), { text: '결론', occurrence: 2 });
+  bad('', /anchor\.text/);
+  bad(7, /anchor must be \{text/);
+  bad({}, /anchor\.text/);
+  bad({ text: '' }, /anchor\.text/);
+  bad({ text: 'a', bogus: 1 }, /unknown anchor key bogus/);
+  bad({ text: 'a', occurrence: 0 }, /occurrence/);
+  bad({ text: 'a', occurrence: 1.5 }, /occurrence/);
+  bad({ text: 'a', position: 'inside' }, /position/);
+  bad({ text: 'a', within: 's0' }, /within must be an object/);
+  bad({ text: 'a', within: { paraIddx: 0 } }, /unknown anchor\.within key/);
+});
+
 test('도구 프로필은 direct 호환성과 planning/implementing 가시성을 지킨다', () => {
   const direct = new Set(filterToolDefinitions('direct').map((definition) => definition.name));
-  assert.equal(direct.size, 70);
+  assert.equal(direct.size, 77);
   assert.equal(byName.get('commit_product_skill')?.category, 'instruction-write');
   assert.equal(byName.get('list_harness_skills')?.category, 'instruction-read');
   assert.ok(direct.has('commit_product_skill'));
@@ -226,7 +308,7 @@ test('full engine edit tools expose a bounded autonomous batch contract', () => 
   assert.ok(apply.shape.operations.safeParse([{ method: 'setPageDef', args: [0, {}] }]).success);
   assert.ok(!apply.shape.operations.safeParse([]).success);
   assert.ok(!apply.shape.operations.safeParse(Array.from({ length: 33 }, () => ({ method: 'x', args: [] }))).success);
-  assert.match(apply.description, /one atomic/i);
+  assert.match(apply.description, /one atomic staged edit/i);
   assert.match(apply.description, /every other method returned by get_engine_edit_capabilities/i);
   assert.match(prepare.description, /capability kind is "session"/i);
 });
@@ -239,6 +321,238 @@ test('reference tools are read-only and carry bounded schemas', () => {
   assert.ok(!byName.get('search_reference_files').shape.maxResults.safeParse(21).success);
   assert.ok(byName.get('read_reference_chunk').shape.maxChars.safeParse(20_000).success);
   assert.ok(!byName.get('read_reference_chunk').shape.chunkId.safeParse('../secret').success);
+});
+
+// ─── 읽기 배치·증분 읽기 (P2.3) ───────────────────────────
+// read_batch 는 한 왕복에 읽기를 묶고, get_structure 는 sinceRevision/range 로
+// 전체 재읽기를 줄인다. 항목 실행·오류 분리·저널 델타 조립은 스튜디오의
+// agent-cheap-reads.test.ts 가 본다 — 여기서는 스키마/프로필 계약만 잠근다.
+
+// ─── 배치 항목 꼴 ─────────────────────────────────────────
+// apply_edits 항목은 평평한 {tool, …인자} 가 기본이다. MCP SDK(mcp-stdio 의 registerTool)와 허브
+// (server.mjs toolArgSchema 의 최상위 strict)가 같은 shape 로 인자를 파싱하므로, 중첩 객체가
+// 기본 strip 이면 tool 옆의 인자가 스튜디오에 닿기 전에 사라진다.
+
+const hubParse = (name, args) => z.object(byName.get(name).shape).strict().parse(args);
+
+/** mcp-stdio 와 같은 등록으로 도구를 부르고, 핸들러가 받은 인자와 모델에게 보이는 입력 스키마를 돌려준다. */
+async function mcpCall(name, args) {
+  const def = byName.get(name);
+  const server = new McpServer({ name: 'rhwp', version: '0.1.0' });
+  let received;
+  server.registerTool(def.name, { description: def.description, inputSchema: def.shape }, async (parsed) => {
+    received = parsed;
+    return { content: [{ type: 'text', text: 'ok' }] };
+  });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'test', version: '0.0.0' });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    const result = await client.callTool({ name, arguments: args });
+    assert.ok(!result.isError, JSON.stringify(result.content));
+    const { tools } = await client.listTools();
+    return { received, inputSchema: tools[0].inputSchema };
+  } finally {
+    await client.close();
+    await server.close();
+  }
+}
+
+test('apply_edits 항목은 평평한 꼴·섞인 꼴·문자열 args 그대로 허브와 MCP 파싱을 통과한다', async () => {
+  const args = {
+    expectedRevision: 3,
+    edits: [
+      { tool: 'replace_range', anchor: { text: '가', within: { paraRange: [1, 2] } }, text: '나' },
+      { tool: 'delete_range', sectionIdx: 0, paraIdx: 58, startCharOffset: 52, endCharOffset: 54 },
+      { tool: 'replace_range', args: { anchor: { text: '다' } }, args2: {}, text: '라' },
+      { tool: 'insert_text', args: '{"anchor":"마","text":"바"}' },
+      { tool: 'apply_char_format', args: { anchor: { text: '사' }, bold: true } },
+    ],
+  };
+  assert.deepEqual(hubParse('apply_edits', args), args);
+  const mcp = await mcpCall('apply_edits', args);
+  assert.deepEqual(mcp.received, args);
+  assert.deepEqual(mcp.inputSchema.properties.edits.items.required, ['tool']);
+  // 항목의 tool 은 여전히 enum 이 거르고, 최상위의 모르는 키는 허브가 거절한다.
+  assert.throws(() => hubParse('apply_edits', { expectedRevision: 3, edits: [{ tool: 'insert_image', path: 'a.png' }] }));
+  assert.throws(() => hubParse('apply_edits', { ...args, bogus: 1 }));
+  const schema = zodToJsonSchema(z.object(byName.get('apply_edits').shape), { strictUnions: true, pipeStrategy: 'input' });
+  assert.deepEqual(schema.properties.edits.items.required, ['tool']);
+  assert.equal(schema.properties.edits.items.additionalProperties, true);
+  assert.match(byName.get('apply_edits').description, /Items are \{tool, …that tool's arguments\}/);
+  // 예시는 중첩 없는 find 꼴이다 — 실패 항목 보고는 공유 규칙에만 적는다.
+  assert.match(byName.get('apply_edits').description, /\{tool:"replace_range",paraIdx:64,find:"old",text:"new"\}/);
+  assert.match(RHWP_TOOL_RULES, /its error lists every failing item/);
+});
+
+test('문자열 anchor 는 허브와 MCP 파싱에서 {text} 가 된다', async () => {
+  const args = { expectedRevision: 3, anchor: '결론', text: '맺음말' };
+  const parsed = { expectedRevision: 3, anchor: { text: '결론' }, text: '맺음말' };
+  assert.deepEqual(hubParse('replace_range', args), parsed);
+  const mcp = await mcpCall('replace_range', args);
+  assert.deepEqual(mcp.received, parsed);
+  // 모델에게 보이는 스키마는 그대로 객체 하나다 — 문자열 허용은 정의 크기를 늘리지 않는다.
+  assert.equal(mcp.inputSchema.properties.anchor.type, 'object');
+  assert.doesNotThrow(() => byName.get('replace_range').validate(parsed));
+});
+
+// ─── find 단축 ────────────────────────────────────────────
+// find:"텍스트" 는 anchor:{text} 의 평평한 꼴이고 최상위 occurrence/position 이 앵커 안쪽 값을 대신한다.
+// 매치 해석은 스튜디오의 agent-text-anchors.test.ts 가 본다 — 여기서는 다섯 도구의 스키마 통과와
+// validate 훅(좌표 대신 find 를 받고, 잘못된 조합을 거르는지)만 잠근다.
+
+test('find: 다섯 도구가 find/occurrence/position 을 허브와 MCP 파싱으로 그대로 받는다', async () => {
+  const samples = {
+    insert_text: { expectedRevision: 3, paraIdx: 64, find: '세계', position: 'before', text: '!' },
+    delete_range: { expectedRevision: 3, paraIdx: 64, find: '컨셉', occurrence: 2 },
+    replace_range: { expectedRevision: 3, paraIdx: 64, find: '컨셉', text: '콘셉트' },
+    apply_char_format: { expectedRevision: 3, paraIdx: 64, find: '컨셉', bold: true },
+    apply_para_format: { expectedRevision: 3, find: '컨셉', position: 'after', alignment: 'center' },
+  };
+  for (const name of ANCHORED_TOOLS) {
+    const def = byName.get(name);
+    assert.deepEqual(hubParse(name, samples[name]), samples[name], name);
+    assert.doesNotThrow(() => def.validate(samples[name]), name);
+    const mcp = await mcpCall(name, samples[name]);
+    assert.deepEqual(mcp.received, samples[name], name);
+    assert.deepEqual(mcp.inputSchema.properties.find, { type: 'string' }, name);
+    assert.deepEqual(mcp.inputSchema.properties.occurrence, { type: 'integer' }, name);
+    assert.ok(mcp.inputSchema.properties.position, name);
+    assert.ok(mcp.inputSchema.properties.paraIdx, `${name}: paraIdx beside find must survive the parse`);
+  }
+  const batch = { expectedRevision: 3, edits: [{ tool: 'replace_range', paraIdx: 64, find: '컨셉', text: '콘셉트' }] };
+  assert.deepEqual(hubParse('apply_edits', batch), batch);
+});
+
+test('find: validate 훅이 find 를 앵커로 세고 잘못된 조합을 거른다', () => {
+  for (const name of ANCHORED_TOOLS) {
+    const { validate } = byName.get(name);
+    const bad = (args, re) => assert.throws(() => validate(args), (e) => e.code === 'INVALID_ARGS' && re.test(e.message), name);
+    assert.doesNotThrow(() => validate({ find: '결론' }), name);
+    assert.doesNotThrow(() => validate({ find: '결론', occurrence: 2, position: 'replace' }), name);
+    assert.doesNotThrow(() => validate({ anchor: { text: '결론' }, occurrence: 2 }), name);
+    assert.doesNotThrow(() => validate({ anchor: { text: '결론', occurrence: 2 }, occurrence: 2 }), name);
+    bad({ find: '결론', anchor: { text: '결론' } }, /pass find or anchor, not both/);
+    bad({ find: '' }, /find must be the exact text to locate/);
+    bad({ find: '결론', occurrence: 0 }, /occurrence/);
+    bad({ find: '결론', position: 'inside' }, /position must be "before" \| "after" \| "replace"/);
+    bad({ anchor: { text: '결론', occurrence: 1 }, occurrence: 2 }, /occurrence 2 and anchor\.occurrence 1 disagree/);
+    bad({ occurrence: 2, paraIdx: 1, charOffset: 0, startParaIdx: 1, startCharOffset: 0, endCharOffset: 1, startOffset: 0, endOffset: 1 },
+      /occurrence refines a text match — add find:"text", or drop occurrence/);
+  }
+  assert.throws(() => byName.get('apply_para_format').validate({ paras: [1], find: '결론' }), /drop find/);
+  // 글자 오프셋은 find/anchor 와 똑같이 위치를 정하므로 함께 오면 거절한다 (문단 좌표·cell 은 검색 범위라 괜찮다).
+  const offsets = {
+    insert_text: { charOffset: 0 },
+    delete_range: { startCharOffset: 0, endCharOffset: 2 },
+    replace_range: { startCharOffset: 0 },
+    apply_char_format: { startOffset: 0, endOffset: 2 },
+  };
+  for (const [name, extra] of Object.entries(offsets)) {
+    const { validate } = byName.get(name);
+    for (const target of [{ find: '결론' }, { anchor: { text: '결론' } }]) {
+      assert.throws(() => validate({ ...target, paraIdx: 0, ...extra, text: 'x' }), /both place the target — send (find|anchor)/, name);
+    }
+  }
+  assert.throws(
+    () => byName.get('insert_text').validate({ anchor: '제목', paraIdx: 0, charOffset: 0, text: '[X]' }),
+    /^Error: charOffset and anchor both place the target — send anchor \(with position\/occurrence if needed\) or charOffset, not both/,
+  );
+});
+
+// ─── 여러 문단 서식 (paras) ───────────────────────────────
+// 서식 도구 셋이 paras 로 문단 여럿을 한 항목에 받는다. 범위·중복·한도와 실제 적용은 스튜디오의
+// agent-multi-paragraph-format.test.ts 가 본다 — 여기서는 스키마 통과와 validate 훅의 모양 검사만 잠근다.
+
+const PARAS_TOOLS = ['apply_para_format', 'apply_char_format', 'apply_style'];
+
+test('paras: 세 서식 도구가 허브와 MCP 파싱으로 그대로 받는다', async () => {
+  const paras = [48, [51, 53], [58, 66]];
+  const samples = {
+    apply_para_format: { expectedRevision: 3, paras, alignment: 'justify' },
+    apply_char_format: { expectedRevision: 3, paras, fontSizePt: 14, underline: true },
+    apply_style: { expectedRevision: 3, paras, styleId: 3 },
+  };
+  for (const name of PARAS_TOOLS) {
+    const def = byName.get(name);
+    assert.deepEqual(hubParse(name, samples[name]), samples[name], name);
+    assert.doesNotThrow(() => def.validate(samples[name]), name);
+    assert.match(def.description, /every paragraph in paras/, name);
+    const mcp = await mcpCall(name, samples[name]);
+    assert.deepEqual(mcp.received, samples[name], name);
+    assert.deepEqual(mcp.inputSchema.properties.paras, { type: 'array', items: {}, description: 'paraIdx or [first,last]' }, name);
+    assert.deepEqual(mcp.inputSchema.required.filter((key) => key !== 'expectedRevision' && key !== 'styleId'), [], name);
+  }
+  // apply_edits 항목으로도 그대로 통과한다
+  const batch = { expectedRevision: 3, edits: [{ tool: 'apply_para_format', paras, alignment: 'justify' }] };
+  assert.deepEqual(hubParse('apply_edits', batch), batch);
+});
+
+test('paras: validate 훅이 모양과 주소 충돌을 거른다', () => {
+  for (const name of PARAS_TOOLS) {
+    const def = byName.get(name);
+    const bad = (args, re) => assert.throws(() => def.validate(args), (e) => e.code === 'INVALID_ARGS' && re.test(e.message), name);
+    bad({ paras: [1], paraIdx: 2 }, /paras already names the target paragraphs — drop paraIdx/);
+    bad({ paras: [] }, /paras must list 1\.\.64 entries/);
+    bad({ paras: Array.from({ length: 65 }, () => 0) }, /paras must list 1\.\.64 entries/);
+    bad({ paras: [0, [3, 1]] }, /paras\[1\] \[3, 1\] is reversed — send \[1, 3\]/);
+    bad({ paras: [[1, 2, 3]] }, /paras\[0\] must be a paragraph index or an inclusive \[first, last\] range/);
+    bad({ paras: ['1'] }, /paras\[0\] must be a paragraph index/);
+    bad({ paras: [-1] }, /paras\[0\] must be a paragraph index/);
+  }
+  assert.throws(() => byName.get('apply_char_format').validate({ paras: [1], anchor: { text: 'x' } }), /drop anchor/);
+  assert.throws(() => byName.get('apply_char_format').validate({ paras: [1], startOffset: 0, endOffset: 2 }), /drop startOffset, endOffset/);
+  assert.throws(() => byName.get('apply_style').validate({ styleId: 3 }), /apply_style needs sectionIdx, paraIdx — or paras \(missing paraIdx\)/);
+  assert.doesNotThrow(() => byName.get('apply_style').validate({ paraIdx: 2, styleId: 3 }));
+});
+
+test('apply_char_format: 오프셋이 둘 다 없으면 문단 전체라 통과하고, 하나만 오면 거절한다', () => {
+  const { validate } = byName.get('apply_char_format');
+  assert.doesNotThrow(() => validate({ paraIdx: 3, bold: true }));
+  assert.throws(
+    () => validate({ paraIdx: 3, startOffset: 0, bold: true }),
+    /apply_char_format needs sectionIdx, paraIdx, startOffset, endOffset — or find or paras \(missing endOffset\)/,
+  );
+  assert.throws(() => validate({ bold: true }), /apply_char_format needs sectionIdx, paraIdx — or find or paras \(missing paraIdx\)/);
+});
+
+test('read_batch: 읽기 전용 도구 1-16개의 {tool, args} 배열', () => {
+  const def = byName.get('read_batch');
+  assert.ok(def, 'missing tool: read_batch');
+  assert.equal(def.category, 'document-read');
+  assert.ok(!def.shape.expectedRevision, 'read_batch 는 쓰기가 아니라 expectedRevision 이 없다');
+  const reads = def.shape.reads;
+  assert.ok(reads.safeParse([{ tool: 'get_structure' }]).success);
+  assert.ok(reads.safeParse([{ tool: 'find_text', args: { query: 'x' } }]).success);
+  // 평평한 항목도 인자를 잃지 않고 통과한다 (apply_edits 와 같은 꼴).
+  assert.deepEqual(reads.parse([{ tool: 'find_text', query: 'x' }]), [{ tool: 'find_text', query: 'x' }]);
+  assert.ok(!reads.safeParse([]).success, '빈 배치는 거절');
+  assert.ok(!reads.safeParse(Array.from({ length: 17 }, () => ({ tool: 'get_fields' }))).success, '17개는 거절');
+  // 쓰기 도구·배치 도구·바이너리 읽기는 스키마 enum 이 자체 거절한다.
+  for (const tool of ['insert_text', 'apply_edits', 'read_batch', 'render_page',
+    'materialize_document_snapshot', 'template_get_structure', 'bogus']) {
+    assert.ok(!reads.safeParse([{ tool }]).success, `${tool} must be rejected by the enum`);
+  }
+  for (const profile of ['direct', 'planning', 'question', 'implementing']) {
+    assert.ok(filterToolDefinitions(profile).some((d) => d.name === 'read_batch'), `${profile} profile needs read_batch`);
+  }
+});
+
+test('get_structure: sinceRevision·range·compact 기본값 계약', () => {
+  const { shape } = byName.get('get_structure');
+  assert.equal(shape.format._def.innerType._def.defaultValue(), 'text', 'compact text 가 기본');
+  assert.ok(shape.sinceRevision.safeParse(3).success);
+  assert.ok(!shape.sinceRevision.safeParse(-1).success);
+  assert.ok(!shape.sinceRevision.safeParse(1.5).success);
+  assert.ok(shape.range.safeParse({ sectionIdx: 0, fromPara: 2, toPara: 5 }).success);
+  assert.ok(!shape.range.safeParse({ sectionIdx: 0, fromPara: 2 }).success, 'range 는 세 필드가 모두 필수');
+  assert.ok(!shape.range.safeParse({ sectionIdx: 0, fromPara: 2, toPara: 5, extra: 1 }).success, 'strict — 모르는 키 거절');
+  assert.ok(shape.pages.safeParse([0, 2]).success);
+  assert.ok(!shape.pages.safeParse([0]).success, 'pages 는 [first, last] 두 칸');
+  assert.ok(shape.text.safeParse('full').success);
+  assert.ok(!shape.text.safeParse('all').success);
+  assert.match(RHWP_TOOL_RULES, /pages:\[first,last\] \(0-based\) when the user names pages/);
+  assert.match(RHWP_TOOL_RULES, /get_page_geometry is for placement only/);
 });
 
 test('document snapshots are a read-only, argument-free current-document export', () => {
@@ -328,40 +642,82 @@ test('copy-layout runner schema exposes actions and data, never commands or path
   assert.equal('helperPath' in definition.shape, false);
 });
 
-test('cell 파라미터를 받는 모든 도구에 조립 방법 안내가 있다', () => {
+test('공유 규칙은 한 번만: 셀 주소·오프셋·리비전·스테이징·단위가 RHWP_TOOL_RULES 에 있다', () => {
+  // get_structure 의 셀 항목에는 paraIdx/controlIdx 가 없으므로 표 항목 것과 조립해야 한다는 안내
+  assert.match(RHWP_TOOL_RULES, /paraIdx\/controlIdx come from the get_structure table line/);
+  assert.match(RHWP_TOOL_RULES, /cellIdx is the row-major index/);
+  assert.match(RHWP_TOOL_RULES, /find_text match carries a complete cell/);
+  assert.match(RHWP_TOOL_RULES, /cellPath/);
+  assert.match(RHWP_TOOL_RULES, /charOffset counts text characters only/);
+  assert.match(RHWP_TOOL_RULES, /lands before the object/);
+  assert.match(RHWP_TOOL_RULES, /expectedRevision/);
+  assert.match(RHWP_TOOL_RULES, /recovery guidance in the error message/);
+  assert.match(RHWP_TOOL_RULES, /ONE apply_edits call \(up to 32 items\)/);
+  // 앵커 규칙 — 다섯 도구명, occurrence 1-based, 최대 5개 후보, bottom-first 규칙 부재.
+  assert.match(RHWP_TOOL_RULES, /anchor \{text, occurrence\?/);
+  assert.match(RHWP_TOOL_RULES, /occurrence \(1-based\)/);
+  assert.match(RHWP_TOOL_RULES, /up to 5 candidates/);
+  assert.doesNotMatch(RHWP_TOOL_RULES, /bottom-of-document first/);
+  assert.doesNotMatch(byName.get('apply_edits').description, /bottom|맨 뒤|뒤에서/);
+  assert.match(RHWP_TOOL_RULES, /전체 접근/);
+  assert.match(RHWP_TOOL_RULES, /안전/);
+  assert.match(RHWP_TOOL_RULES, /lengths in mm, font sizes in pt/);
+
+  const ruleLines = RHWP_TOOL_RULES.split('\n').slice(1).map((line) => line.replace(/^- [A-Za-z ]+: /, ''));
+  for (const definition of TOOL_DEFINITIONS) {
+    for (const line of ruleLines) {
+      assert.ok(!definition.description.includes(line.slice(0, 60)), `${definition.name} repeats a shared rule`);
+    }
+  }
+});
+
+test('cell 을 받는 도구와 모든 문서 쓰기 도구는 공유 규칙을 한 줄로 가리킨다', () => {
   const cellTools = TOOL_DEFINITIONS.filter((d) => d.shape && 'cell' in d.shape);
   assert.ok(cellTools.length >= 10, `expected >= 10 cell-taking tools, got ${cellTools.length}`);
   for (const d of cellTools) {
-    const desc = d.shape.cell?._def?.description ?? '';
-    assert.ok(desc.length > 0, `${d.name}: cell param has no description`);
-    // get_structure 의 셀 항목에는 paraIdx/controlIdx 가 없으므로 테이블 항목 것과 조립해야 한다는 안내
-    assert.match(desc, /paraIdx\/controlIdx/, `${d.name}: cell desc missing paraIdx/controlIdx assembly note`);
-    assert.match(desc, /cellIdx/, `${d.name}: cell desc missing cellIdx`);
-    assert.match(desc, /find_text/, `${d.name}: cell desc missing find_text verbatim note`);
+    assert.match(d.shape.cell?._def?.description ?? '', /rhwp tool rules/, `${d.name}: cell param lacks the rules pointer`);
+    if (d.shape.cellPath) assert.match(d.shape.cellPath._def.description ?? '', /rhwp tool rules/, d.name);
+  }
+  const writeTools = TOOL_DEFINITIONS.filter((d) => d.category === 'document-write' && d.shape.expectedRevision);
+  assert.ok(writeTools.length >= 20);
+  for (const d of writeTools) {
+    assert.match(d.description, /rhwp tool rules/, `${d.name}: missing the rules pointer`);
   }
 });
 
-test('charOffset 계열 도구 전부에 OFFSET_CAVEAT 가 붙어 있다', () => {
-  const expected = [
-    'insert_text', 'delete_range', 'replace_range', 'apply_char_format',
-    'create_table', 'insert_image', 'insert_equation', 'insert_chart',
-  ];
-  for (const name of expected) {
-    const def = byName.get(name);
-    assert.ok(def, `missing tool: ${name}`);
-    assert.ok(def.description.includes(OFFSET_CAVEAT), `${name}: missing OFFSET_CAVEAT`);
-  }
+test('MCP 서버 instructions 가 공유 규칙을 싣는다', () => {
+  const mcpStdio = readFileSync(fileURLToPath(new URL('../mcp-stdio.mjs', import.meta.url)), 'utf8');
+  assert.match(mcpStdio, /new McpServer\(\{ name: 'rhwp', version: '[^']+' \}, \{ instructions: RHWP_TOOL_RULES \}\)/);
 });
 
-test('verify_changes 설명에 셀프체크 지시와 라이브 미리보기 안내가 있다', () => {
+test('수식 문법 안내는 preview_equation 에만 있다', () => {
+  assert.match(byName.get('preview_equation').description, /NOT LaTeX/);
+  assert.doesNotMatch(byName.get('insert_equation').description, /NOT LaTeX/);
+  assert.match(byName.get('insert_equation').description, /preview_equation/);
+});
+
+test('verify_changes 는 선택적 검토 요약이고 쓰기 결과는 after 로 온다', () => {
   const desc = byName.get('verify_changes').description;
-  assert.match(desc, /self-check/i);
-  // 삭제/교체는 라이브 미리보기에 즉시 반영 — 재삽입 금지 안내
-  assert.match(desc, /live preview/);
+  assert.match(desc, /Optional review summary/);
+  assert.match(desc, /after report/);
+  // 삭제는 라이브로 이미 사라졌다 — 재삽입 금지 안내
   assert.match(desc, /do NOT re-insert/);
   assert.match(desc, /includeImage/);
-  // 응답의 실제 모양(describeChangeSet)은 per-op kind + applied 불리언이다
-  assert.match(desc, /applied flag/);
+  assert.match(RHWP_TOOL_RULES, /returns after \{paragraphs/);
+  assert.match(RHWP_TOOL_RULES, /verify_changes is an optional review summary/);
+});
+
+test('스테이징 쓰기와 apply_edits 는 render crop|page 를 받고 raw 엔진 도구는 받지 않는다', () => {
+  const staged = TOOL_DEFINITIONS.filter((d) => d.category === 'document-write' && 'expectedRevision' in d.shape
+    && !['apply_engine_edits', 'prepare_engine_edit_session'].includes(d.name));
+  assert.ok(staged.length > 20);
+  for (const def of staged) {
+    assert.ok(def.shape.render, `${def.name} missing render`);
+    assert.ok(def.shape.render.safeParse('crop').success && def.shape.render.safeParse('page').success);
+    assert.ok(!def.shape.render.safeParse('full').success);
+  }
+  assert.ok(!byName.get('apply_engine_edits').shape.render);
+  assert.ok(!byName.get('prepare_engine_edit_session').shape.render);
 });
 
 test('apply_list 설명에 진짜 목록/리터럴 금지/가나다 기본값/bulletChar 안내가 있다', () => {
@@ -397,17 +753,29 @@ test('get_char_format 설명에 서식 상속 규칙이 있다', () => {
   assert.match(desc, /replace_range/);
 });
 
-test('render_page 에 format/scale 이 추가됐다', () => {
+test('render_page 는 png 1.25 기본값과 regionMm/savePath 를 받는다', () => {
   const { shape } = byName.get('render_page');
-  assert.ok('format' in shape && 'scale' in shape, 'render_page missing format/scale');
   // .default(x).optional() 형태라 undefined 는 그대로 통과하고, 기본값은 스키마 메타에 든다
   assert.equal(shape.format.parse(undefined), undefined);
-  assert.equal(shape.format._def.innerType._def.defaultValue(), 'svg');
-  assert.equal(shape.scale._def.innerType._def.defaultValue(), 2);
-  assert.ok(shape.format.safeParse('png').success);
+  assert.equal(shape.format._def.innerType._def.defaultValue(), 'png');
+  assert.equal(shape.scale._def.innerType._def.defaultValue(), 1.25);
+  assert.ok(shape.format.safeParse('svg').success);
   assert.ok(!shape.format.safeParse('pdf').success);
   assert.ok(shape.scale.safeParse(0.5).success && shape.scale.safeParse(3).success);
   assert.ok(!shape.scale.safeParse(0.4).success && !shape.scale.safeParse(3.1).success);
+  assert.ok(shape.regionMm.safeParse({ x: 10, y: 20, width: 50, height: 30 }).success);
+  assert.ok(!shape.regionMm.safeParse({ x: 10, y: 20, width: 0, height: 30 }).success);
+  assert.ok(!shape.regionMm.safeParse({ x: 10, y: 20, w: 5, h: 5 }).success);
+  assert.ok(shape.savePath.safeParse('renders/p1.png').success);
+});
+
+test('get_page_geometry: 쪽 측정 읽기 도구', () => {
+  const geometry = byName.get('get_page_geometry');
+  assert.ok(geometry, 'missing tool: get_page_geometry');
+  assert.equal(geometry.category, 'document-read');
+  assert.ok(geometry.shape.include.safeParse(['lines', 'runs']).success);
+  assert.ok(!geometry.shape.include.safeParse(['cells']).success);
+  assert.ok(geometry.shape.regionMm.safeParse({ x: 0, y: 0, width: 10, height: 10 }).success);
 });
 
 test('apply_para_format 에 목록 속성(headType/numberingId/paraLevel/bulletChar)이 추가됐다', () => {
@@ -415,6 +783,70 @@ test('apply_para_format 에 목록 속성(headType/numberingId/paraLevel/bulletC
   for (const key of ['headType', 'numberingId', 'paraLevel', 'bulletChar']) {
     assert.ok(key in shape, `apply_para_format missing ${key}`);
   }
+});
+
+test('apply_char_format: 장평/자간은 스칼라 또는 7슬롯 배열', () => {
+  const { shape } = byName.get('apply_char_format');
+  for (const key of ['widthPercent', 'letterSpacingPercent']) {
+    assert.ok(key in shape, `apply_char_format missing ${key}`);
+  }
+  assert.ok(shape.widthPercent.safeParse(120).success);
+  assert.ok(shape.widthPercent.safeParse([100, 100, 100, 100, 100, 100, 90]).success);
+  assert.ok(!shape.widthPercent.safeParse(49).success);
+  assert.ok(!shape.widthPercent.safeParse(201).success);
+  assert.ok(!shape.widthPercent.safeParse([100, 100]).success); // 7슬롯 아님
+  assert.ok(shape.letterSpacingPercent.safeParse(-10).success);
+  assert.ok(shape.letterSpacingPercent.safeParse(0).success);
+  assert.ok(!shape.letterSpacingPercent.safeParse(-51).success);
+  assert.ok(!shape.letterSpacingPercent.safeParse(51).success);
+});
+
+test('apply_para_format: 줄간격 유형/탭/테두리/한글 줄나눔 + cellPath 필드', () => {
+  const { shape } = byName.get('apply_para_format');
+  for (const key of [
+    'cellPath', 'lineSpacingType', 'lineSpacingPt', 'tabStops',
+    'borders', 'borderSpacingMm', 'koreanBreakUnit',
+  ]) {
+    assert.ok(key in shape, `apply_para_format missing ${key}`);
+  }
+  assert.ok(shape.lineSpacingType.safeParse('atLeast').success);
+  assert.ok(shape.lineSpacingType.safeParse('spaceOnly').success);
+  assert.ok(!shape.lineSpacingType.safeParse('exact').success);
+  assert.ok(shape.koreanBreakUnit.safeParse('word').success);
+  assert.ok(shape.koreanBreakUnit.safeParse('char').success);
+  assert.ok(!shape.koreanBreakUnit.safeParse('syllable').success);
+  // 탭 정지: 위치 mm 필수, type/fill 생략 가능
+  assert.ok(shape.tabStops.safeParse([{ positionMm: 20 }]).success);
+  assert.ok(shape.tabStops.safeParse([{ positionMm: 20, type: 'decimal', fill: 1 }]).success);
+  assert.ok(!shape.tabStops.safeParse([{ positionMm: 0 }]).success);
+  assert.ok(!shape.tabStops.safeParse([{ positionMm: 10, type: 'middle' }]).success);
+  // 테두리: side 키 left|right|top|bottom, widthMm/color 생략 가능 (범위 검증은 executor 몫)
+  assert.ok(shape.borders.safeParse({ top: { type: 1, widthMm: 0.5, color: '#FF0000' } }).success);
+  assert.ok(shape.borders.safeParse({ left: { type: 0 }, bottom: { type: 3 } }).success);
+  assert.ok(!shape.borders.safeParse({ middle: { type: 1 } }).success);
+  assert.ok(!shape.borders.safeParse({ top: { type: 1.5 } }).success);
+  assert.ok(shape.borderSpacingMm.safeParse({ left: 2, right: 2 }).success);
+  // cellPath: 1..8개의 {controlIndex, cellIndex, cellParaIndex}
+  assert.ok(shape.cellPath.safeParse([{ controlIndex: 0, cellIndex: 0, cellParaIndex: 0 }]).success);
+  assert.ok(!shape.cellPath.safeParse([]).success);
+});
+
+test('edit_header_footer: applyTo/lines/pageNumber/startPageNumber 스키마', () => {
+  const { shape, description } = byName.get('edit_header_footer');
+  assert.match(description, /outside/);
+  assert.match(description, /\{n\}/);
+  assert.match(description, /startPageNumber/);
+  for (const key of ['applyTo', 'lines', 'pageNumber', 'startPageNumber']) {
+    assert.ok(key in shape, `edit_header_footer missing ${key}`);
+  }
+  assert.ok(!('text' in shape), 'legacy text field must be gone');
+  assert.ok(shape.applyTo.safeParse('odd').success);
+  assert.ok(shape.applyTo.safeParse('even').success);
+  assert.ok(!shape.applyTo.safeParse('first').success);
+  assert.ok(shape.lines.safeParse(['a', '', 'c']).success);
+  assert.ok(shape.pageNumber.safeParse({ template: '- {n} -', align: 'outside' }).success);
+  assert.ok(!shape.pageNumber.safeParse({ align: 'middle' }).success);
+  assert.ok(shape.startPageNumber.safeParse(0).success);
 });
 
 test('toToolContent: image 필드가 있으면 image 블록 + 나머지 JSON', () => {
@@ -436,6 +868,10 @@ test('toToolContent: image 가 없거나 모양이 이상하면 text 만', () =>
 test('toToolContent: proxied MCP content blocks stay intact', () => {
   const content = [{ type: 'text', text: '{"success":true}' }];
   assert.equal(toToolContent({ mcpContent: content }), content);
+  const report = [{ opId: 'op-1', cause: 'text-changed' }];
+  assert.deepEqual(toToolContent({ mcpContent: content, editReport: report }), [
+    ...content, { type: 'text', text: JSON.stringify({ editReport: report }) },
+  ], 'editReport 가 mcpContent 결과에서도 살아남는다');
 });
 
 test('create_table: rows+cols 나 cells 둘 중 하나는 필수', () => {
@@ -451,14 +887,16 @@ test('delete_table: 스키마는 주소 네 값이 필수이고 document-write �
   const def = byName.get('delete_table');
   assert.ok(def, 'missing tool: delete_table');
   assert.equal(def.category, 'document-write');
-  assert.match(def.description, /get_structure tables\[\]/);
-  assert.match(def.description, /PENDING_DESTRUCTIVE_OP/);
-  assert.match(def.description, /mark-only/i);
+  assert.match(def.description, /get_structure table line/);
+  // 표는 즉시 사라지고 거절/롤백이 되살린다 — 커밋 전까지 표가 잠기는 규칙은 없다
+  assert.match(def.description, /removed immediately/);
+  assert.doesNotMatch(def.description, /PENDING_DESTRUCTIVE_OP|mark-only/);
   for (const key of ['expectedRevision', 'sectionIdx', 'paraIdx', 'controlIdx']) {
     assert.ok(key in def.shape, `delete_table missing ${key}`);
   }
+  // 음수 주소는 스튜디오 dispatch 입구가 거절한다 (스키마 크기 한도 — agent-write-report 테스트)
   assert.ok(def.shape.sectionIdx.safeParse(0).success);
-  assert.ok(!def.shape.sectionIdx.safeParse(-1).success);
+  assert.ok(!def.shape.sectionIdx.safeParse(0.5).success);
   assert.ok(!def.shape.controlIdx.safeParse(undefined).success);
 });
 
@@ -471,7 +909,6 @@ test('edit_table: op 별 필수 파라미터를 이름 붙여 즉시 실패', ()
     () => validate({ op: 'merge_cells', startRow: 0, startCol: 0 }),
     (e) => e.code === 'INVALID_ARGS' && /endRow/.test(e.message) && /endCol/.test(e.message)
   );
-  assert.throws(() => validate({ op: 'set_cell_props', cellIdx: 0 }), (e) => e.code === 'INVALID_ARGS' && /props/.test(e.message));
   validate({ op: 'insert_row', rowIdx: 0 }); // 통과
   assert.throws(
     () => validate({ op: 'split_cell', rowIdx: 0, colIdx: 0, splitRows: 2 }),
@@ -479,14 +916,9 @@ test('edit_table: op 별 필수 파라미터를 이름 붙여 즉시 실패', ()
   );
   validate({ op: 'merge_cells', startRow: 0, startCol: 0, endRow: 1, endCol: 1 }); // 통과
   validate({ op: 'split_cell', rowIdx: 0, colIdx: 0, splitRows: 1, splitCols: 2 }); // 통과
-  validate({ op: 'set_table_props', props: { horizontalAlign: 'center' } }); // 통과
   assert.throws(
     () => validate({ op: 'set_column_widths' }),
     (e) => e.code === 'INVALID_ARGS' && /columnWidthsMm/.test(e.message),
-  );
-  assert.throws(
-    () => validate({ op: 'set_zone_borders', startCell: { row: 0, col: 0 } }),
-    (e) => e.code === 'INVALID_ARGS' && /endCell/.test(e.message),
   );
   assert.throws(
     () => validate({ op: 'apply_formula', row: 3, col: 1 }),
@@ -495,7 +927,6 @@ test('edit_table: op 별 필수 파라미터를 이름 붙여 즉시 실패', ()
   assert.throws(() => validate({ op: 'set_caption' }), (e) => e.code === 'INVALID_ARGS' && /text/.test(e.message));
   validate({ op: 'set_column_widths', columnWidthsMm: [30, 40] }); // 통과
   validate({ op: 'fit_to_page' }); // 통과 (추가 인자 없음)
-  validate({ op: 'set_zone_borders', startCell: { row: 0, col: 0 }, endCell: { row: 2, col: 3 } }); // 통과
   validate({ op: 'apply_formula', row: 3, col: 1, formula: '=SUM(A1:A3)' }); // 통과
   validate({ op: 'set_caption', text: '분기별 매출' }); // 통과
 });
@@ -514,7 +945,7 @@ test('get_table_layout: 표의 쪽별 배치와 넘침 여부를 읽는 읽기 �
 
   const edit = byName.get('edit_table');
   const values = edit.shape.op._def.values;
-  for (const op of ['set_column_widths', 'fit_to_page', 'set_zone_borders', 'apply_formula', 'set_caption']) {
+  for (const op of ['set_column_widths', 'fit_to_page', 'apply_formula', 'set_caption']) {
     assert.ok(values.includes(op), `edit_table op enum missing ${op}`);
     assert.match(edit.description, new RegExp(op));
   }
@@ -530,9 +961,89 @@ test('get_table_properties reads optional cell state and edit_table documents ob
   assert.match(read.description, /object placement/i);
 
   const edit = byName.get('edit_table');
-  assert.match(edit.description, /EASY CENTERING/);
-  assert.match(edit.description, /horizontalAlign/);
   assert.match(edit.description, /split_cell/);
   const values = edit.shape.op._def.values;
   assert.ok(values.includes('split_cell'));
+  const tableProps = byName.get('set_table_props');
+  assert.match(tableProps.description, /EASY CENTERING/);
+  assert.match(tableProps.description, /horizontalAlign/);
+});
+
+test('표·셀 속성은 타입이 있는 객체이고 모르는 키는 올바른 키 목록과 함께 거절된다', () => {
+  const table = byName.get('set_table_props');
+  const cell = byName.get('set_cell_props');
+  const zone = byName.get('set_zone_borders');
+  for (const d of [table, cell, zone]) assert.equal(d.category, 'document-write');
+  assert.ok(table.shape.tableProps.safeParse({ horizontalAlign: 'center', pageBreak: 'row' }).success);
+  assert.ok(!table.shape.tableProps.safeParse({ pageBreak: 'rows' }).success, 'enum 값은 스키마가 거른다');
+  const unknownTable = table.shape.tableProps.safeParse({ align: 'center' });
+  assert.ok(!unknownTable.success);
+  assert.match(unknownTable.error.issues[0].message, /Valid keys: .*horizontalAlign/);
+  const unknownCell = cell.shape.cellProps.safeParse({ color: '#FFFFFF' });
+  assert.ok(!unknownCell.success);
+  assert.match(unknownCell.error.issues[0].message, /Valid keys: .*fillColor/);
+  assert.throws(() => table.validate({ tableProps: {} }), (e) => e.code === 'INVALID_ARGS' && /repeatHeader/.test(e.message));
+  assert.throws(() => cell.validate({ cellProps: {} }), (e) => e.code === 'INVALID_ARGS' && /fillColor/.test(e.message));
+  assert.ok(zone.shape.startCell.safeParse({ row: 0, col: 0 }).success);
+  assert.ok(!zone.shape.startCell.safeParse(undefined).success);
+
+  // 스튜디오 파서가 받는 키와 스키마 키가 어긋나면 한쪽이 조용히 버려진다.
+  const executor = readFileSync(fileURLToPath(new URL('../../rhwp-studio/src/agent/tool-executor.ts', import.meta.url)), 'utf8');
+  const allowedIn = (fn) => {
+    const body = executor.slice(executor.indexOf(`private ${fn}(`));
+    const list = /const allowed = new Set\(\[([^\]]*)\]\)/.exec(body)?.[1] ?? '';
+    return [...list.matchAll(/'([A-Za-z]+)'/g)].map((m) => m[1]).sort();
+  };
+  assert.deepEqual(allowedIn('parseTableProps'), [...TABLE_PROPS_KEYS].sort());
+  assert.deepEqual(allowedIn('parseCellProps'), [...CELL_PROPS_KEYS].sort());
+});
+
+// ─── 도구 정의 크기 한도 ─────────────────────────────────────
+// 모델은 매 요청마다 direct 프로필의 설명 + JSON 스키마 전체를 읽는다. SDK 와 같은 변환
+// (zod-to-json-schema, strictUnions, input)으로 글자 수를 재서 한도를 넘지 못하게 한다.
+// 공유 규칙은 RHWP_TOOL_RULES 에 한 번만 두고, 새 도구도 이 한도 안에 들어와야 한다.
+// P0 기준선: 70개 106,936자 (edit_table 10,174자).
+const DIRECT_DEFINITION_TOTAL_LIMIT = 60_000;
+const TOOL_DEFINITION_LIMIT = 3_000;
+
+test('direct 프로필 도구 정의 크기가 한도를 넘지 않는다', () => {
+  let total = 0;
+  const over = [];
+  for (const definition of filterToolDefinitions('direct')) {
+    const chars = toolDefinitionChars(definition);
+    total += chars;
+    if (chars > TOOL_DEFINITION_LIMIT) over.push(`${definition.name} ${chars} > ${TOOL_DEFINITION_LIMIT}`);
+  }
+  assert.deepEqual(over, [], 'tool definitions over their size limit');
+  assert.ok(total <= DIRECT_DEFINITION_TOTAL_LIMIT, `direct tool definitions total ${total} > ${DIRECT_DEFINITION_TOTAL_LIMIT}`);
+});
+
+test('도구 스키마는 $ref 없이 펼쳐진다 (Codex/Pi 가 $ref 를 못 읽는다)', () => {
+  for (const definition of TOOL_DEFINITIONS) {
+    const schema = JSON.stringify(zodToJsonSchema(z.object(definition.shape), { strictUnions: true, pipeStrategy: 'input' }));
+    assert.doesNotMatch(schema, /"\$ref"/, `${definition.name} has a $ref`);
+  }
+});
+
+test('edit_object 편집 인자는 스튜디오 계획 함수가 읽는 키와 같다', () => {
+  // 허브 스키마에만 있는 키는 스튜디오가 조용히 무시한다 — 두 목록을 함께 고친다.
+  const src = readFileSync(fileURLToPath(new URL('../../rhwp-studio/src/agent/object-edit-args.ts', import.meta.url)), 'utf8');
+  const list = /export const EDIT_OBJECT_ARG_KEYS = \[([^\]]*)\]/.exec(src)?.[1] ?? '';
+  const studio = [...list.matchAll(/'([A-Za-z]+)'/g)].map((m) => m[1]).sort();
+  const address = ['expectedRevision', 'render', 'sectionIdx', 'paraIdx', 'controlIdx', 'cell', 'cellPath', 'delete'];
+  const hub = Object.keys(byName.get('edit_object').shape).filter((key) => !address.includes(key)).sort();
+  assert.deepEqual(hub, studio);
+  assert.deepEqual(byName.get('insert_shape').shape.shape._def.values, ['line', 'rectangle', 'ellipse', 'textBox']);
+  assert.ok(BATCHABLE_EDIT_TOOL_NAMES.includes('edit_object') && BATCHABLE_EDIT_TOOL_NAMES.includes('insert_shape'));
+});
+
+test('insert_image takes one source and floating fields only with positionMode floating', () => {
+  const def = byName.get('insert_image');
+  assert.ok(def.shape.cell && def.shape.cellPath && def.shape.cropPx && def.shape.referenceFileId);
+  assert.throws(() => def.validate({ imagePath: '/a.png', referenceFileId: 'ref-1' }), /only one/);
+  assert.throws(() => def.validate({ referenceFileId: 'ref-1', xMm: 10 }), /positionMode/);
+  def.validate({ referenceFileId: 'ref-1', positionMode: 'floating', xMm: 10, wrap: 'behindText' });
+  assert.ok(!def.shape.cropPx.safeParse({ x: 0, y: 0, width: 0, height: 5 }).success);
+  assert.ok(byName.get('read_reference_image').shape.zoom.safeParse(4).success);
+  assert.ok(!byName.get('read_reference_image').shape.zoom.safeParse(5).success);
 });

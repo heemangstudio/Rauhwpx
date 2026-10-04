@@ -57,6 +57,9 @@ impl Default for DeviceContext {
     }
 }
 
+/// SaveDC 로 쌓을 수 있는 DC 최대 개수.
+pub const MAX_DC_STACK_DEPTH: usize = 1024;
+
 /// SaveDC/RestoreDC 스택.
 #[derive(Debug, Default)]
 pub struct DcStack {
@@ -70,8 +73,12 @@ impl DcStack {
         Self::default()
     }
 
+    /// 상한(`MAX_DC_STACK_DEPTH`)을 넘는 SaveDC 는 무시한다. 8바이트 EMR_SAVEDC 만
+    /// 반복한 입력이 DC(글꼴 이름 포함)를 끝없이 복제하지 못하게 한다.
     pub fn save(&mut self) {
-        self.stack.push(self.current.clone());
+        if self.stack.len() < MAX_DC_STACK_DEPTH {
+            self.stack.push(self.current.clone());
+        }
     }
 
     /// EMR_RESTOREDC `iRelative` 규약:
@@ -84,7 +91,8 @@ impl DcStack {
             return false;
         }
         let n = if relative < 0 {
-            (-relative) as usize
+            // `-i32::MIN` 은 넘친다 (디버그 패닉). 크기만 쓴다.
+            relative.unsigned_abs() as usize
         } else {
             return false;
         };

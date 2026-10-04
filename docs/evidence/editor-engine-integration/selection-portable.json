@@ -1,0 +1,68 @@
+{
+  "seed": 20260927,
+  "method": "Python random.Random(seed).sample over sorted sample documents with same-stem PDF of 1–4 pages, excluding the original eight baseline document stems. Existing PDFs select bounded-size candidates only; selected references were exported fresh through Hancom for macOS.",
+  "population": [
+    {
+      "source": "rhwp/samples/21868765_별표2_보건소_분장사무.hwp",
+      "existing_pdf_pages": 4
+    },
+    {
+      "source": "rhwp/samples/equation-lim.hwp",
+      "existing_pdf_pages": 1
+    },
+    {
+      "source": "rhwp/samples/exam_math_8.hwp",
+      "existing_pdf_pages": 1
+    },
+    {
+      "source": "rhwp/samples/hwpx/issue_241.hwpx",
+      "existing_pdf_pages": 1
+    },
+    {
+      "source": "rhwp/samples/pua-test.hwp",
+      "existing_pdf_pages": 1
+    },
+    {
+      "source": "rhwp/samples/text-align-2.hwp",
+      "existing_pdf_pages": 1
+    },
+    {
+      "source": "rhwp/samples/unicode/각 항목에 명시되어 있는_유니코드.hwp",
+      "existing_pdf_pages": 1
+    },
+    {
+      "source": "rhwp/samples/복학원서.hwp",
+      "existing_pdf_pages": 1
+    },
+    {
+      "source": "rhwp/samples/복학원서.hwpx",
+      "existing_pdf_pages": 1
+    }
+  ],
+  "selected": [
+    {
+      "source": "rhwp/samples/hwpx/issue_241.hwpx",
+      "existing_pdf_pages": 1
+    },
+    {
+      "source": "rhwp/samples/복학원서.hwp",
+      "existing_pdf_pages": 1
+    },
+    {
+      "source": "rhwp/samples/exam_math_8.hwp",
+      "existing_pdf_pages": 1
+    },
+    {
+      "source": "rhwp/samples/21868765_별표2_보건소_분장사무.hwp",
+      "existing_pdf_pages": 4
+    },
+    {
+      "source": "rhwp/samples/text-align-2.hwp",
+      "existing_pdf_pages": 1
+    },
+    {
+      "source": "rhwp/samples/pua-test.hwp",
+      "existing_pdf_pages": 1
+    }
+  ]
+}

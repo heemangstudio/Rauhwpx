@@ -11,7 +11,7 @@
  */
 
 import { REGISTERED_FONTS } from './font-loader.ts';
-import { resolveLocalFont } from './local-fonts.ts';
+import { getLocalFontLookupGeneration, repairedLocalFontFamily, resolveLocalFont } from './local-fonts.ts';
 import { equationFontFamilies } from './equation-font.ts';
 
 // 치환 엔트리: [원본폰트, 원본타입, 대체폰트, 대체타입]
@@ -220,6 +220,11 @@ function pushUniqueFontFamily(families: string[], fontName: string): void {
   families.push(name);
 }
 
+const HFT_SUBSTITUTE_FACES = new Map<string, readonly string[]>([
+  ['HCI Poppy', ['Palatino', 'Palatino Linotype', 'Book Antiqua']],
+  ['HCI Hollyhock', ['Helvetica', 'Arial']],
+]);
+
 function systemFallbackFamilies(fontName: string): string[] {
   if (GENERIC_FONTS.has(fontName)) return [fontName];
   // 수식 글꼴을 일반 미등록 서체로 처리하면 Canvas font 치환이 엔진의
@@ -235,6 +240,15 @@ function systemFallbackFamilies(fontName: string): string[] {
   // 고정폭 '고딕' (굴림체/코딩 서체)
   if (/굴림체|gulimche|coding|courier/i.test(fontName)) {
     return ['GulimChe', 'D2Coding', 'Noto Sans Mono', 'monospace'];
+  }
+  // 한컴 HFT 영문 글꼴: 엔진 `hft_substitute_faces` 와 같은 설치 서체를 먼저 찾는다.
+  // HCI Poppy 는 Palatino 복제라 macOS Palatino → Windows Palatino Linotype 순이다.
+  const hftFaces = HFT_SUBSTITUTE_FACES.get(fontName.trim());
+  if (hftFaces) {
+    if (fontName.trim() === 'HCI Poppy') {
+      return [...hftFaces, 'Batang', 'AppleMyungjo', 'Noto Serif KR', 'serif'];
+    }
+    return [...hftFaces, 'sans-serif'];
   }
   // Serif 판별 — 문자 클래스가 아니라 실제 서체명 토큰으로 검사한다.
   // (기존 `[바탕명조궁서]` 는 '서울남산체'·'고딕서체' 처럼 해당 글자가 스치기만 해도
@@ -315,6 +329,10 @@ export function fontFamilyWithFallback(fontName: string): string {
   return formatCssFontFamilies([fontName, ...systemFallbackFamilies(fontName)]);
 }
 
+/** 기본 옵션 체인 캐시. Canvas font setter 가 텍스트 run 마다 부르므로 로컬 글꼴 조회 세대 단위로 재사용한다. */
+const _displayChainCache = new Map<string, string>();
+let _displayChainGeneration = -1;
+
 /**
  * 문서 원본 글꼴명을 보존하면서 표시/측정용 CSS font-family chain을 만든다.
  *
@@ -332,6 +350,29 @@ export function fontFamilyChainForDisplay(
 ): string {
   if (!fontName || GENERIC_FONTS.has(fontName)) return fontName;
 
+  const cacheable = options.confirmedLocalFonts === undefined
+    && options.includeUnconfirmedOriginal === undefined;
+  if (!cacheable) return buildFontFamilyChainForDisplay(fontName, altType, langId, options);
+  const generation = getLocalFontLookupGeneration();
+  if (generation !== _displayChainGeneration) {
+    _displayChainCache.clear();
+    _displayChainGeneration = generation;
+  }
+  const cacheKey = langId + '\0' + fontName + '\0' + altType;
+  let chain = _displayChainCache.get(cacheKey);
+  if (chain === undefined) {
+    chain = buildFontFamilyChainForDisplay(fontName, altType, langId, options);
+    _displayChainCache.set(cacheKey, chain);
+  }
+  return chain;
+}
+
+function buildFontFamilyChainForDisplay(
+  fontName: string,
+  altType: number,
+  langId: number,
+  options: FontFamilyChainOptions,
+): string {
   const families: string[] = [];
   const confirmedLocalFonts = options.confirmedLocalFonts ?? [];
   const confirmedLocalFontSet = new Set(
@@ -346,7 +387,10 @@ export function fontFamilyChainForDisplay(
     confirmedLocalFontSet.has(fontName.toLocaleLowerCase('en-US'));
 
   if (localRecord) {
-    pushUniqueFontFamily(families, localRecord.runtimeFamily ?? localRecord.family);
+    pushUniqueFontFamily(
+      families,
+      localRecord.runtimeFamily ?? repairedLocalFontFamily(localRecord) ?? localRecord.family,
+    );
   } else if (originalAllowed) {
     pushUniqueFontFamily(families, fontName);
   }

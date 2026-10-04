@@ -7,6 +7,14 @@ use crate::model::provenance::FontMetricsPolicy;
 use crate::model::style::UnderlineType;
 use unicode_segmentation::UnicodeSegmentation;
 
+/// 고정폭 빈칸(HWP5 코드 31, HWPX `<hp:fwSpace/>`, 내부 표현 U+2007)의 폭 (em).
+///
+/// 한컴 PDF 실측: Windows `-<fwSpace><fwSpace>상`(바탕 12pt) 두 칸 = 6.0pt(칸당 0.25em),
+/// macOS 맑은 고딕 22pt 줄끝 칸 ≈ 5.6pt, 함초롬바탕 15pt 글머리 앞 칸 ≈ 3.5pt
+/// (장평 97%·자간 -3% 적용). 글꼴과 무관하게 글자 크기의 1/4 이다.
+const FIXED_WIDTH_SPACE_EM: f64 = 0.25;
+// 고정폭 빈칸에는 지정 자간을 적용하지만, 줄 넘침을 줄이는 자동 압축은 적용하지 않는다.
+
 #[derive(Clone)]
 pub(crate) struct ResolvedShapingFont {
     pub family: String,
@@ -45,9 +53,138 @@ pub(crate) fn with_resolved_shaping_fonts<T>(
     action()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+thread_local! {
+    /// 네이티브 렌더 진입(`--font-path` 인자)이 노출한 추가 폰트 경로.
+    /// substFont 대체 판정의 탐색 범위다.
+    static MEASURE_FONT_PATHS: std::cell::RefCell<Vec<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// 패밀리명 → 설치 여부 캐시 (경로 스코프 진입/해제 시 비운다).
+    static MEASURE_FONT_AVAIL: std::cell::RefCell<std::collections::HashMap<String, bool>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    /// 선언 face 존재 여부는 브라우저에 질의하되 문서 재조판 전까지 재사용한다.
+    static BROWSER_FONT_AVAIL: std::cell::RefCell<std::collections::HashMap<String, bool>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct MeasureFontPathsScope(Vec<std::path::PathBuf>);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for MeasureFontPathsScope {
+    fn drop(&mut self) {
+        MEASURE_FONT_PATHS.with(|paths| {
+            paths.replace(std::mem::take(&mut self.0));
+        });
+        MEASURE_FONT_AVAIL.with(|cache| cache.borrow_mut().clear());
+    }
+}
+
+/// 렌더 진입점이 `--font-path` 목록을 측정 판정에도 노출한다.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn enter_measure_font_paths(paths: Vec<std::path::PathBuf>) -> MeasureFontPathsScope {
+    let previous = MEASURE_FONT_PATHS.with(|slot| slot.replace(paths));
+    MEASURE_FONT_AVAIL.with(|cache| cache.borrow_mut().clear());
+    MeasureFontPathsScope(previous)
+}
+
+/// 문서 선언 글꼴이 현재 렌더 환경에 실재하는지 — substFont 대체 규칙의 근거.
+///
+/// 임베디드(BinData) face 는 shaping scope 에 등록돼 있으면 설치와 동일하게 본다.
+/// wasm 은 Studio 가 Canvas 원본 setter 로 측정한 브라우저 face 존재 여부를 사용한다.
+/// 다른 WASM 호스트가 그 훅을 제공하지 않으면 기존의 설치 가정으로 폴백한다.
+fn declared_family_available(font_family: &str) -> bool {
+    let primary = super::super::style_resolver::primary_font_name(font_family);
+    if primary.is_empty() {
+        return true;
+    }
+    if ACTIVE_SHAPING_FONTS.with(|active| {
+        active
+            .borrow()
+            .iter()
+            .any(|font| font.family.eq_ignore_ascii_case(primary))
+    }) {
+        return true;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let key = primary.to_string();
+        if let Some(hit) = MEASURE_FONT_AVAIL.with(|cache| cache.borrow().get(&key).copied()) {
+            return hit;
+        }
+        let hit = MEASURE_FONT_PATHS.with(|paths| {
+            crate::renderer::font_paths::font_family_available(primary, &paths.borrow())
+        });
+        MEASURE_FONT_AVAIL.with(|cache| cache.borrow_mut().insert(key, hit));
+        hit
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        use wasm_bindgen::{JsCast, JsValue};
+
+        if let Some(hit) = BROWSER_FONT_AVAIL.with(|cache| cache.borrow().get(primary).copied()) {
+            return hit;
+        }
+        let global = js_sys::global();
+        let available =
+            js_sys::Reflect::get(&global, &JsValue::from_str("isDeclaredFontFamilyAvailable"))
+                .ok()
+                .and_then(|value| value.dyn_into::<js_sys::Function>().ok())
+                .and_then(|probe| probe.call1(&global, &JsValue::from_str(primary)).ok())
+                .and_then(|value| value.as_bool());
+        if let Some(available) = available {
+            BROWSER_FONT_AVAIL.with(|cache| {
+                cache.borrow_mut().insert(primary.to_string(), available);
+            });
+            available
+        } else {
+            true
+        }
+    }
+}
+
+/// 문서 선언 대체와 HFT 별칭 대체 글꼴의 측정 규칙.
+///
+/// 원본 글꼴이 렌더 환경에 없으면 한컴은 대체 글꼴로 조판한다 — 폭 산출도 같은
+/// face 기준이어야 그려지는 위치와 일치한다. 반환은 측정 전용 복사본이라 노드에
+/// 저장된 `font_family`/`font_subst`(emit 체인)는 바뀌지 않는다.
+fn measure_style(style: &TextStyle) -> std::borrow::Cow<'_, TextStyle> {
+    // 원본이 HFT 인 run 은 한컴처럼 HFT 폭 테이블로 잰다 (신명 신그래픽 `(` 0.5em —
+    // 굴림 대체 폭이 아니다). 테이블에 없는 글자는 체인 뒤의 대체 서체 폭으로 넘어간다.
+    // 대체 서체가 같은 디자인의 한양 TTF(HY견명조 등)면 한컴도 그 폭으로 조판하므로
+    // 그대로 둔다 — exam-social 쪽번호의 신명 견명조 숫자는 HFT 0.68em 이 아니라
+    // HY견명조 0.666em 간격으로 놓인다.
+    if hft_width_swap(style) {
+        let mut patched = style.clone();
+        patched.font_family = format!("{},{}", style.hft_family.trim(), style.font_family);
+        return std::borrow::Cow::Owned(patched);
+    }
+    let font_subst = crate::renderer::hancom_document_substitute(style.effective_font_subst());
+    if font_subst.is_empty() || declared_family_available(&style.font_family) {
+        return std::borrow::Cow::Borrowed(style);
+    }
+    let mut patched = style.clone();
+    patched.font_family = font_subst.to_string();
+    std::borrow::Cow::Owned(patched)
+}
+
+/// `measure_style` 이 HFT 폭 테이블을 체인 앞에 두는 run 인가.
+fn hft_width_swap(style: &TextStyle) -> bool {
+    let hft = style.hft_family.trim();
+    let primary = style.font_family.split(',').next().unwrap_or("").trim();
+    !hft.is_empty()
+        && primary != hft
+        && !primary.starts_with("HY")
+        && crate::renderer::hft_metrics::find_metric(hft, false, false).is_some()
+}
+
 fn shaped_char_positions(text: &str, style: &TextStyle) -> Option<Vec<f64>> {
+    // 문서 내장 글꼴의 실제 advance 는 플랫폼 정책과 무관하게 같다.
     if text.is_empty()
-        || style.font_metrics_policy == FontMetricsPolicy::HcrDeclared
         || font_family_has_metrics(&style.font_family, style.bold, style.italic)
         || text.contains('\t')
         || text
@@ -110,8 +247,12 @@ fn shaped_char_positions(text: &str, style: &TextStyle) -> Option<Vec<f64>> {
             }
             let cluster_text = &text[byte_start..byte_end];
             let mut advance = cluster_advances[&byte_start];
-            advance += glyph_letter_spacing(style.letter_spacing, advance, style.font_size)
-                + style.extra_char_spacing;
+            advance += glyph_letter_spacing(
+                style.letter_spacing,
+                advance,
+                style.font_size,
+                style.font_metrics_policy,
+            ) + style.extra_char_spacing;
             if cluster_text == " " {
                 advance += style.extra_word_spacing;
             }
@@ -179,11 +320,136 @@ fn build_cluster_len(chars: &[char]) -> Vec<usize> {
 /// 반각/좁은 글자에서만 압축·확장이 글자폭에 비례해 정확해진다.
 /// style.letter_spacing 은 fs×% 로 저장되어 있으므로 (base/fs) 로 환산한다.
 #[inline]
-fn glyph_letter_spacing(letter_spacing_px: f64, glyph_base_px: f64, font_size: f64) -> f64 {
+fn glyph_letter_spacing(
+    letter_spacing_px: f64,
+    glyph_base_px: f64,
+    font_size: f64,
+    policy: FontMetricsPolicy,
+) -> f64 {
     if font_size <= 0.0 {
         return letter_spacing_px;
     }
-    letter_spacing_px * (glyph_base_px / font_size)
+    let contribution = letter_spacing_px * (glyph_base_px / font_size);
+    if letter_spacing_px == 0.0 || policy != FontMetricsPolicy::HcrDeclared {
+        return contribution;
+    }
+    // macOS 한컴은 자간 적용 전후의 글리프 진행폭을 배치 단위(0.04pt) 격자로 양자화한다.
+    let base = round_half_up(glyph_base_px / MAC_LAYOUT_UNIT_PX);
+    let spaced =
+        mac_letter_spaced_units(base, letter_spacing_percent(letter_spacing_px, font_size));
+    spaced * MAC_LAYOUT_UNIT_PX - glyph_base_px
+}
+
+/// macOS 한컴의 배치 단위: 1/1800 inch (= 4 HWPUNIT = 0.04pt) 의 px 크기.
+///
+/// 합성(lineseg 없는) 스윕 1,513 문단의 PDF 단어 시작 위치가 이 격자의 정수 advance 로
+/// PDF 양자화 잡음(rms 0.046–0.052pt, 편향 0)까지 맞는다.
+const MAC_LAYOUT_UNIT_PX: f64 = 4.0 / 75.0;
+
+/// 0.5 올림 반올림. 부동소수 오차로 정확한 .5 가 아래로 떨어지지 않게 여유를 둔다.
+#[inline]
+fn round_half_up(x: f64) -> f64 {
+    (x + 0.5 + 1e-6).floor()
+}
+
+/// 글자 크기의 배치 단위 수 = floor(크기 HWPUNIT / 4) (10pt → 250, 9.5pt → 237).
+#[inline]
+fn mac_size_units(font_size_px: f64) -> f64 {
+    (font_size_px * 75.0 / 4.0 + 1e-6).floor()
+}
+
+/// 저장 자간(px = 글자 크기 × %)을 정수 % 로 되돌린다. HWP 자간은 정수 % 다.
+#[inline]
+fn letter_spacing_percent(letter_spacing_px: f64, font_size: f64) -> f64 {
+    if font_size <= 0.0 {
+        return 0.0;
+    }
+    (letter_spacing_px / font_size * 100.0).round()
+}
+
+/// 자간 적용: advance + 반올림(advance × 자간%) — 증감분의 0.5 는 0 에서 먼 쪽으로.
+/// 스윕(함초롬바탕 10pt 243단위): +50% → 365, −50% → 121, 휴먼명조 14pt 175단위 −2% → 171.
+#[inline]
+fn mac_letter_spaced_units(units: f64, spacing_percent: f64) -> f64 {
+    if spacing_percent == 0.0 {
+        return units;
+    }
+    let delta = units * spacing_percent / 100.0;
+    units + delta.signum() * round_half_up(delta.abs())
+}
+
+/// macOS 한컴의 글자 advance (px): 배치 단위 정수로 장평·자간을 적용한다.
+///
+/// - 크기 단위 u = floor(크기HU / 4), 글리프 = round_half_up(hmtx/upm × u)
+/// - 빈칸(em/2) = floor(u / 2) — 글꼴과 무관
+/// - 문서 장평 r ≠ 100%: 글리프 = floor(hmtx/upm × u × r), 빈칸 = round_half_up(floor(u/2) × r)
+///   (스윕 D_ratio 50–200% 전 구간: 0.97em 글자 121/145/169/194/218/230/254/266/291/363/485,
+///   빈칸 63/75/88/100/113/119/131/138/150/188/250 단위 — 단어 위치 rms 0.044pt, 편향 0)
+/// - 문서 장평은 글꼴·자간에 관계없이 유지한다. 글꼴 크기를 먼저 내리면
+///   같은 크기의 글자도 hmtx/upm 에 따라 다른 방향으로 배치 단위가 어긋난다.
+/// - 자간은 장평 적용 뒤의 정수 advance 에 `mac_letter_spaced_units` 로 더한다.
+///
+/// `base_px` 는 장평·자간 전 글리프 폭이며 em × 글자 크기를 양자화하지 않은 값이어야 한다
+/// (`measure_glyph_base_px`).
+fn mac_glyph_advance_px(
+    base_px: f64,
+    c: char,
+    style: &TextStyle,
+    font_size: f64,
+    ratio: f64,
+) -> f64 {
+    if font_size <= 0.0 {
+        return base_px * ratio;
+    }
+    let units = mac_size_units(font_size);
+    let percent = ratio * 100.0;
+    let document_ratio = (percent - percent.round()).abs() < 1e-6;
+    // 첨자 run 의 빈칸은 원래 글자 크기의 em/2 다 (`latin_space_width`).
+    let space_size = [font_size, style.script_base_size]
+        .into_iter()
+        .find(|size| *size > 0.0 && (base_px - size / 2.0).abs() < 0.5 / 75.0)
+        .filter(|_| matches!(c, ' ' | '\u{00A0}'));
+    let glyph = if !document_ratio {
+        round_half_up(base_px * 75.0 / 4.0 * ratio)
+    } else if let Some(space_size) = space_size {
+        let space = (mac_size_units(space_size) / 2.0).floor();
+        if (ratio - 1.0).abs() > 1e-9 {
+            round_half_up(space * ratio)
+        } else {
+            space
+        }
+    } else {
+        let scaled = base_px / font_size * units;
+        if (ratio - 1.0).abs() > 1e-9 {
+            (scaled * ratio + 1e-6).floor()
+        } else {
+            round_half_up(scaled)
+        }
+    };
+    let spacing = letter_spacing_percent(style.letter_spacing, font_size);
+    mac_letter_spaced_units(glyph, spacing) * MAC_LAYOUT_UNIT_PX
+}
+
+/// 장평·자간 전 글리프 폭에 장평과 자간을 적용한 advance (px, 정렬용 여분 제외).
+/// 줄바꿈·배치·렌더러가 모두 이 함수로 글자 advance 를 만든다 (native·WASM 공통).
+#[inline]
+fn scaled_glyph_advance(
+    base_px: f64,
+    c: char,
+    style: &TextStyle,
+    font_size: f64,
+    ratio: f64,
+) -> f64 {
+    if style.font_metrics_policy == FontMetricsPolicy::HcrDeclared {
+        return mac_glyph_advance_px(base_px, c, style, font_size, ratio);
+    }
+    base_px * ratio
+        + glyph_letter_spacing(
+            style.letter_spacing,
+            base_px * ratio,
+            font_size,
+            style.font_metrics_policy,
+        )
 }
 
 /// 스타일에서 공통 파라미터 추출 (font_size, ratio, tab_w)
@@ -213,6 +479,80 @@ fn style_params(style: &TextStyle) -> (f64, f64, f64) {
 #[inline]
 pub(super) fn inline_tab_type(ext: &[u16; 7]) -> u8 {
     ((ext[2] >> 8) & 0xFF) as u8
+}
+
+/// HWPX 오른쪽 인라인 탭을 문단 탭 정의로 다시 해석해야 하는지.
+///
+/// HWPX `<hp:tab type>` 은 한컴이 저장 당시 해석한 결과다. 한컴은 열 때 문단 탭
+/// 정의(TabDef)로 다시 조판한다: 현재 위치 뒤의 첫 탭 정지의 종류·위치를 따른다.
+/// 저장된 RIGHT 탭이 줄바꿈으로 다음 줄 앞에 오면 그 줄의 첫 정지(LEFT)로 간다
+/// (복지 협의요청서 `(기관명:\t)` 실측: 오른쪽 정지 30500 → 둘째 줄은 왼쪽 정지 13214).
+/// HWP5 인라인 탭(ext[5] 표시 없음)과 가운데 탭(run 을 넘는 정렬 단위는 저장 폭
+/// 경로가 맞춘다 — exam-social 머리말 `\t사회|탐구 영역`)은 종전 해석을 유지한다.
+#[inline]
+pub(crate) fn inline_tab_defers_to_tab_def(ext: &[u16; 7], style: &TextStyle) -> bool {
+    ext[5] & 0x8000 != 0 && inline_tab_type(ext) == 2 && !style.tab_stops.is_empty()
+}
+
+/// 인라인 탭 ext[0] 의 width 는 '이동 거리'가 아니라 탭 정지 간격이다.
+/// 한컴은 줄 시작 기준으로 width 의 정수배 중 현재 위치보다 큰 첫 위치로 이동한다
+/// (그리드 정렬). 같은 간격의 탭이 연속으로 나오면 두 번째 탭은 다음 배수까지 간다.
+///
+/// `abs_x`: 줄 시작 기준 절대 위치 (line_x_offset + run 내 x). 반환도 동일 기준.
+/// 한컴 eq-002.hwpx 실측: margin 85pt + tab(width=40pt) → 내용은 125.6pt 시작,
+/// width=35.86pt/40pt 연속 탭 → 다음 내용은 205.7pt 에 정렬.
+#[inline]
+pub(super) fn inline_tab_next_stop(abs_x: f64, tab_width_px: f64) -> f64 {
+    if tab_width_px <= 0.0 || !abs_x.is_finite() {
+        return abs_x;
+    }
+    (abs_x / tab_width_px).floor() * tab_width_px + tab_width_px
+}
+
+/// 왼쪽/기본 인라인 탭의 다음 x (run 상대 좌표).
+///
+/// HWPX 파서 탭(ext[5] 상위 비트 마커)의 `width` 는 한컴이 저장 당시 계산해 둔
+/// 이동량일 뿐이고, 실제 위치는 문단 탭 정의가 정한다. 현재 위치 뒤의 첫 왼쪽
+/// 탭 정지로 가고, 정의된 탭을 모두 지나면 기본 탭 간격 그리드로 간다
+/// (math-001 선택지 줄 실측: 탭 정의 72.56/133.79pt… 에 정렬, 저장 width 무관).
+/// HWP5 인라인 탭은 ext[0] 에 해석된 이동 거리가 이미 들어 있어(Issue #630 Stage 4)
+/// 종전 누적(`x + width`)을 유지한다.
+#[inline]
+/// HWPX 인라인 탭이 문단 탭 정의의 오른쪽 탭에 걸리면 그 탭 위치(쪽 오른쪽 끝이 아니다)에
+/// 뒤 글자 끝을 맞춘다 — aift 목차: 오른쪽 탭 47831HU 에 "(페이지 표기)" 끝이 놓이고
+/// 본문 오른쪽 끝(48188HU)보다 357HU 안쪽이다. 반환은 줄 기준 상대 탭 위치.
+fn hwpx_inline_right_stop_rel(ext: &[u16; 7], x: f64, style: &TextStyle) -> Option<f64> {
+    if ext[5] & 0x8000 == 0 || style.tab_stops.is_empty() {
+        return None;
+    }
+    let abs_x = style.line_x_offset + x;
+    let (pos, tab_type, _) =
+        find_next_tab_stop(abs_x, &style.tab_stops, 0.0, false, style.available_width);
+    (tab_type == 1 && pos > abs_x).then(|| pos - style.line_x_offset)
+}
+
+fn inline_tab_left_x(ext: &[u16; 7], x: f64, style: &TextStyle, tab_width_px: f64) -> f64 {
+    if ext[5] & 0x8000 == 0 {
+        return x + tab_width_px;
+    }
+    let abs_x = style.line_x_offset + x;
+    let default_tab_width = if style.default_tab_width > 0.0 {
+        style.default_tab_width
+    } else {
+        tab_width_px
+    };
+    let (pos, tab_type, _) = find_next_tab_stop(
+        abs_x,
+        &style.tab_stops,
+        default_tab_width,
+        false,
+        style.available_width,
+    );
+    if tab_type == 0 {
+        (pos - style.line_x_offset).max(x)
+    } else {
+        (inline_tab_next_stop(abs_x, tab_width_px) - style.line_x_offset).max(x)
+    }
 }
 
 /// 현재 절대 위치에서 다음 탭 정지를 찾는다.
@@ -336,6 +676,8 @@ pub fn extract_tab_leaders_with_extended(
     style: &TextStyle,
     tab_extended: &[[u16; 7]],
 ) -> Vec<TabLeaderInfo> {
+    let patched = measure_style(style);
+    let style = patched.as_ref();
     let chars: Vec<char> = text.chars().collect();
     let tab_w = if style.default_tab_width > 0.0 {
         style.default_tab_width
@@ -452,31 +794,44 @@ fn compute_char_positions_walk(
     let char_width = |i: usize| -> f64 {
         let c = chars[i];
         if c == '\u{2007}' {
-            return font_size * 0.5 * ratio
-                + glyph_letter_spacing(style.letter_spacing, font_size * 0.5 * ratio, font_size)
-                + style.extra_char_spacing;
+            return scaled_glyph_advance(
+                font_size * FIXED_WIDTH_SPACE_EM,
+                '\u{2007}',
+                style,
+                font_size,
+                ratio,
+            ) + style.extra_char_spacing.max(0.0);
         }
         // 인라인 객체 placeholder 는 실제 control node 가 따로 그리므로 텍스트 폭은 0.
-        if matches!(c, '\u{FFFC}' | '\u{00AD}') {
+        if c == '\u{FFFC}' {
             return 0.0;
         }
+        // 하이픈(U+00AD, HWP 코드 24)은 한컴(macOS)이 글꼴의 '-' 글리프와 폭으로
+        // 그린다 (hcar-001 p3 `- 법령…` 줄: 맑은 고딕 0.41em 전진).
+        let c = if c == '\u{00AD}' { '-' } else { c };
         // [Issue #677] HWP PUA 채움 문자 (U+F081C) — 시각 폭 0 (한컴 PDF 정합).
-        if c == '\u{F081C}' {
+        // 폭 없는 공백(U+200B)도 0 — 옛한글 PUA 뒤에 붙어 온다 (exam-kor p17 `‘말\u{EBD4}\u{200B}…’`).
+        if c == '\u{F081C}' && style.font_metrics_policy == FontMetricsPolicy::HcrDeclared {
+            return scaled_glyph_advance(
+                hancom_cut_line_em() * font_size,
+                c,
+                style,
+                font_size,
+                ratio,
+            ) + style.extra_char_spacing;
+        }
+        if c == '\u{F081C}' || c == '\u{200B}' {
             return 0.0;
         }
         let char_px = char_px_raw(i, c, &chars, &cluster_len);
-        let mut w = char_px * ratio
-            + glyph_letter_spacing(style.letter_spacing, char_px * ratio, font_size)
-            + style.extra_char_spacing;
+        let mut w =
+            scaled_glyph_advance(char_px, c, style, font_size, ratio) + style.extra_char_spacing;
         if c == ' ' {
             w += style.extra_word_spacing;
         }
-        // 음수 자간(letter_spacing + extra_char_spacing < 0) 시
-        // per-char 최소 advance 클램프로 narrow glyph 역진 방지.
-        if style.letter_spacing + style.extra_char_spacing < 0.0 {
-            let min_w = char_px * ratio * 0.5;
-            w = w.max(min_w);
-        }
+        // 압축 자간은 글자마다 그대로 뺀다. 한컴은 좁은 글자(쉼표·마침표)의 advance 가
+        // 음수가 되어도 클램프하지 않는다 (fdi-press 압축 셀 `(△433.6)`: `.` 뒤 `6` 이
+        // 0.13pt 앞에 놓임). 글자 폭 비례 자간은 −100% 전에는 음수가 되지 않는다.
         w
     };
 
@@ -495,7 +850,9 @@ fn compute_char_positions_walk(
             continue;
         }
         if c == '\t' {
-            if tab_char_idx < style.inline_tabs.len() {
+            if tab_char_idx < style.inline_tabs.len()
+                && !inline_tab_defers_to_tab_def(&style.inline_tabs[tab_char_idx], style)
+            {
                 let ext = &style.inline_tabs[tab_char_idx];
                 x = inline_tab_x(i, x, ext, &chars, &cluster_len, &char_width);
                 tab_char_idx += 1;
@@ -519,16 +876,14 @@ fn compute_char_positions_walk(
                     style.available_width,
                 );
                 let rel_tab = tab_pos - style.line_x_offset;
-                // [Task #874] auto_tab_right / leader RIGHT 탭은 col-relative 우측 끝
+                // [Task #874] auto_tab_right 탭만 col-relative 우측 끝 (리더 탭은 탭 위치)
                 // (= text_start_offset + available_width) 까지 정렬.
-                let effective_rel_tab = if tab_type == 1
-                    && style.available_width > 0.0
-                    && (fill_type != 0 || style.auto_tab_right)
-                {
-                    style.text_start_offset + style.available_width - style.line_x_offset
-                } else {
-                    rel_tab
-                };
+                let effective_rel_tab =
+                    if tab_type == 1 && style.available_width > 0.0 && style.auto_tab_right {
+                        style.text_start_offset + style.available_width - style.line_x_offset
+                    } else {
+                        rel_tab
+                    };
                 match tab_type {
                     1 => {
                         // 오른쪽
@@ -594,32 +949,62 @@ impl TextMeasurer for EmbeddedTextMeasurer {
         let char_width = |i: usize| -> f64 {
             let c = chars[i];
             if c == '\u{2007}' {
-                return font_size * 0.5 * ratio
-                    + glyph_letter_spacing(
-                        style.letter_spacing,
-                        font_size * 0.5 * ratio,
-                        font_size,
-                    )
-                    + style.extra_char_spacing;
+                return scaled_glyph_advance(
+                    font_size * FIXED_WIDTH_SPACE_EM,
+                    '\u{2007}',
+                    style,
+                    font_size,
+                    ratio,
+                ) + style.extra_char_spacing.max(0.0);
             }
             // 인라인 객체 placeholder 는 실제 control node 가 따로 그리므로 텍스트 폭은 0.
-            if matches!(c, '\u{FFFC}' | '\u{00AD}') {
+            if c == '\u{FFFC}' {
                 return 0.0;
             }
+            // 하이픈(U+00AD, HWP 코드 24)은 한컴(macOS)이 글꼴의 '-' 글리프와 폭으로
+            // 그린다 (hcar-001 p3 `- 법령…` 줄: 맑은 고딕 0.41em 전진).
+            let c = if c == '\u{00AD}' { '-' } else { c };
             // [Issue #677] HWP PUA 채움 문자 (U+F081C) — 시각 폭 0
             // 한컴이 인라인 TAC 표/도형 앞에 삽입하는 placeholder 채움 문자.
             // 한컴 PDF 정합 — 폭 0 으로 라인 inline x 에 영향 없음. fillers 가
             // 표 너비만큼 (≈97 chars × 1 char width = table width) 채워져
             // 표가 fillers 영역 위에 시각적으로 겹쳐 column-left 출력 패턴.
-            if c == '\u{F081C}' {
+            if c == '\u{F081C}' && style.font_metrics_policy == FontMetricsPolicy::HcrDeclared {
+                return scaled_glyph_advance(
+                    hancom_cut_line_em() * font_size,
+                    c,
+                    style,
+                    font_size,
+                    ratio,
+                ) + style.extra_char_spacing;
+            }
+            if c == '\u{F081C}' || c == '\u{200B}' {
                 return 0.0;
             }
-            let base_w_raw = if let Some(w) = (c == '\u{318D}')
-                .then(|| area_dot_fallback_width(&style.font_family, font_size))
+            let base_w_raw = if c == '\u{00B7}'
+                && crate::renderer::hft_uses_paired_middle_dot(style)
+            {
+                font_size
+            } else if let Some(w) = latin_space_width(style, c, font_size) {
+                w
+            } else if let Some(w) = missing_hft_bold_char_width(style, c, font_size) {
+                w
+            } else if let Some(w) = (c == '\u{318D}')
+                .then(|| {
+                    area_dot_fallback_width(
+                        &style.font_family,
+                        font_size,
+                        style.font_metrics_policy,
+                    )
+                })
                 .flatten()
             {
                 w
-            } else if let Some(w) = measure_char_width_with_policy(
+            } else if let Some(em) =
+                hft_missing_pua_em(style, c).or_else(|| hft_ks_punct_em(style, c))
+            {
+                em * font_size
+            } else if let Some(w) = measure_glyph_base_px(
                 &style.font_family,
                 style.bold,
                 style.italic,
@@ -639,20 +1024,14 @@ impl TextMeasurer for EmbeddedTextMeasurer {
                 font_size * 0.5
             };
             let base_w = base_w_raw;
-            let mut w = base_w * ratio
-                + glyph_letter_spacing(style.letter_spacing, base_w * ratio, font_size)
-                + style.extra_char_spacing;
+            let mut w =
+                scaled_glyph_advance(base_w, c, style, font_size, ratio) + style.extra_char_spacing;
             if c == ' ' {
                 w += style.extra_word_spacing;
             }
-            // 음수 자간(letter_spacing + extra_char_spacing < 0) 시
-            // per-char 최소 advance = base*ratio*0.5 로 클램프하여 narrow
-            // glyph(콤마/마침표 등) 이 뒷 글자와 역진 겹침되는 것을 방지한다.
-            // 문서 CharShape 의 음수 자간 및 paragraph_layout 의 압축 모두 포함.
-            if style.letter_spacing + style.extra_char_spacing < 0.0 {
-                let min_w = base_w * ratio * 0.5;
-                w = w.max(min_w);
-            }
+            // 압축 자간은 글자마다 그대로 뺀다. 한컴은 좁은 글자(쉼표·마침표)의 advance 가
+            // 음수가 되어도 클램프하지 않는다 (fdi-press 압축 셀 `(△433.6)`: `.` 뒤 `6` 이
+            // 0.13pt 앞에 놓임). 글자 폭 비례 자간은 −100% 전에는 음수가 되지 않는다.
             w
         };
 
@@ -672,7 +1051,9 @@ impl TextMeasurer for EmbeddedTextMeasurer {
                 // (= 우측 끝 - 한컴_seg_w) 로 저장되어 있어 LEFT fallback 이 인코딩 의도와
                 // 정합. RIGHT 정확 매치 시 seg_w 이중 차감 → ≈seg_w (≈112px) 좌측 이탈
                 // (aift p4 1-1 등 23/24 라인 모두 영향). 본 LEFT fallback 동작 유지.
-                if tab_char_idx < style.inline_tabs.len() {
+                if tab_char_idx < style.inline_tabs.len()
+                    && !inline_tab_defers_to_tab_def(&style.inline_tabs[tab_char_idx], style)
+                {
                     let ext = &style.inline_tabs[tab_char_idx];
                     let tab_width_px = ext[0] as f64 * 96.0 / 7200.0;
                     let tab_type = ext[2];
@@ -689,6 +1070,7 @@ impl TextMeasurer for EmbeddedTextMeasurer {
                     let inline_type_hi = ((tab_type >> 8) & 0xFF) as u8;
                     let inline_is_explicit_left = inline_type_hi == 1 || inline_type_hi == 4;
                     let override_to_right = style.auto_tab_right
+                        && ext[5] & 0x4000 == 0
                         && !has_more_tabs_after
                         && style.available_width > 0.0
                         && !inline_is_explicit_left;
@@ -712,7 +1094,7 @@ impl TextMeasurer for EmbeddedTextMeasurer {
                                 measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
                             total = (target_rel - seg_w).max(total);
                         } else {
-                            total = tab_target.max(total);
+                            total = inline_tab_left_x(ext, total, style, tab_width_px);
                         }
                     } else {
                         match tab_type {
@@ -727,7 +1109,17 @@ impl TextMeasurer for EmbeddedTextMeasurer {
                                 total = (tab_target - seg_w / 2.0).max(total);
                             }
                             _ => {
-                                total = tab_target.max(total);
+                                if let Some(stop) = hwpx_inline_right_stop_rel(ext, total, style) {
+                                    let seg_w = measure_segment_from(
+                                        &chars,
+                                        &cluster_len,
+                                        i + 1,
+                                        &char_width,
+                                    );
+                                    total = (stop - seg_w).max(total);
+                                } else {
+                                    total = inline_tab_left_x(ext, total, style, tab_width_px);
+                                }
                             }
                         }
                     }
@@ -755,14 +1147,12 @@ impl TextMeasurer for EmbeddedTextMeasurer {
                     // [Task #874] auto_tab_right 의 tab_pos = available_width 는 텍스트
                     // 영역 시작 기준 상대값. col-relative 우측 끝 = text_start_offset +
                     // available_width. line_x_offset 도 col-relative 이므로 변환.
-                    let effective_rel_tab = if tab_type == 1
-                        && style.available_width > 0.0
-                        && (fill_type != 0 || style.auto_tab_right)
-                    {
-                        style.text_start_offset + style.available_width - style.line_x_offset
-                    } else {
-                        rel_tab
-                    };
+                    let effective_rel_tab =
+                        if tab_type == 1 && style.available_width > 0.0 && style.auto_tab_right {
+                            style.text_start_offset + style.available_width - style.line_x_offset
+                        } else {
+                            rel_tab
+                        };
                     match tab_type {
                         1 => {
                             // 오른쪽
@@ -812,12 +1202,28 @@ impl TextMeasurer for EmbeddedTextMeasurer {
         // [#2132] 폭 산출원 훅 — embedded 메트릭 lookup + 폴백 사다리 (Task #257 포함).
         let char_px_raw = |_i: usize, c: char, _chars: &[char], cluster_len: &[usize]| -> f64 {
             let i = _i;
-            if let Some(w) = (c == '\u{318D}')
-                .then(|| area_dot_fallback_width(&style.font_family, font_size))
+            if c == '\u{00B7}' && crate::renderer::hft_uses_paired_middle_dot(style) {
+                font_size
+            } else if let Some(w) = latin_space_width(style, c, font_size) {
+                w
+            } else if let Some(w) = missing_hft_bold_char_width(style, c, font_size) {
+                w
+            } else if let Some(w) = (c == '\u{318D}')
+                .then(|| {
+                    area_dot_fallback_width(
+                        &style.font_family,
+                        font_size,
+                        style.font_metrics_policy,
+                    )
+                })
                 .flatten()
             {
                 w
-            } else if let Some(w) = measure_char_width_with_policy(
+            } else if let Some(em) =
+                hft_missing_pua_em(style, c).or_else(|| hft_ks_punct_em(style, c))
+            {
+                em * font_size
+            } else if let Some(w) = measure_glyph_base_px(
                 &style.font_family,
                 style.bold,
                 style.italic,
@@ -858,6 +1264,7 @@ impl TextMeasurer for EmbeddedTextMeasurer {
             let inline_type_hi = ((tab_type_raw >> 8) & 0xFF) as u8;
             let inline_is_explicit_left = inline_type_hi == 1 || inline_type_hi == 4;
             let override_to_right = style.auto_tab_right
+                && ext[5] & 0x4000 == 0
                 && !has_more_tabs_after
                 && style.available_width > 0.0
                 && !inline_is_explicit_left;
@@ -898,7 +1305,7 @@ impl TextMeasurer for EmbeddedTextMeasurer {
                     let seg_w = measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
                     x = (target_rel - seg_w).max(x);
                 } else {
-                    x = tab_target.max(x);
+                    x = inline_tab_left_x(ext, x, style, tab_width_px);
                 }
             } else {
                 let high_byte = (tab_type_raw >> 8) & 0xFF;
@@ -921,6 +1328,13 @@ impl TextMeasurer for EmbeddedTextMeasurer {
                         // 기존 raw 2 — 호환 유지
                         let seg_w = measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
                         x = (tab_target - seg_w / 2.0).max(x);
+                    }
+                    (2, _) if hwpx_inline_right_stop_rel(ext, x, style).is_some() => {
+                        // HWPX 인라인 오른쪽 탭: 문단 탭 정의의 오른쪽 탭 위치에 뒤 글자 끝을
+                        // 맞춘다 (본문 오른쪽 끝이 아니다 — aift 목차 357HU 안쪽).
+                        let stop = hwpx_inline_right_stop_rel(ext, x, style).unwrap_or(x);
+                        let seg_w = measure_segment_from(chars, cluster_len, i + 1, char_width);
+                        x = (stop - seg_w).max(x);
                     }
                     (2, _) if fill_low != 0 => {
                         // [Task #874 후속] 단일-run RIGHT + leader (목차 페이지번호) —
@@ -977,7 +1391,7 @@ impl TextMeasurer for EmbeddedTextMeasurer {
                         x = (body_right_legacy - seg_w).max(x);
                     }
                     _ => {
-                        x = tab_target.max(x);
+                        x = inline_tab_left_x(ext, x, style, tab_width_px);
                     }
                 }
             }
@@ -994,7 +1408,6 @@ impl TextMeasurer for EmbeddedTextMeasurer {
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_internals {
-    use crate::renderer::TextStyle;
     use std::cell::RefCell;
     use wasm_bindgen::prelude::*;
 
@@ -1054,6 +1467,11 @@ mod wasm_internals {
         static JS_MEASURE_CACHE: RefCell<MeasureCache> = RefCell::new(MeasureCache::new(256));
     }
 
+    /// 폰트 등록 변화·레이아웃 새로고침 시 JS 실측 캐시를 비운다.
+    pub(super) fn clear_js_measure_cache() {
+        JS_MEASURE_CACHE.with(|cache| cache.borrow_mut().entries.clear());
+    }
+
     /// 캐시 키 생성: hash(measure_font + char)
     fn measure_cache_key(measure_font: &str, c: char) -> u64 {
         use std::collections::hash_map::DefaultHasher;
@@ -1080,27 +1498,10 @@ mod wasm_internals {
         })
     }
 
-    /// 1000pt 측정용 CSS font 문자열 생성
-    pub(super) fn build_1000pt_font_string(style: &TextStyle) -> String {
-        let font_weight = style
-            .css_font_weight()
-            .map(|weight| format!("{} ", weight))
-            .unwrap_or_default();
-        let font_style = if style.italic { "italic " } else { "" };
-        let font_family = if style.font_family.is_empty() {
-            "sans-serif".to_string()
-        } else {
-            let fallback = crate::renderer::generic_fallback(&style.font_family);
-            format!("\"{}\", {}", style.font_family, fallback)
-        };
-        format!("{}{}1000px {}", font_style, font_weight, font_family)
-    }
-
     /// 한컴 webhwp 방식 문자 폭 측정 (HWP 단위 양자화)
     ///
     /// 파이프라인: 내장 메트릭 → JS 1000px 측정 → font_size/1000 스케일링 → HWP 단위(×75) → 정수 반올림 → px
     pub(super) fn measure_char_width_hwp(
-        measure_font: &str,
         font_family: &str,
         bold: bool,
         italic: bool,
@@ -1111,7 +1512,7 @@ mod wasm_internals {
     ) -> f64 {
         // 1차: 내장 메트릭 (JS 브릿지 호출 불필요)
         if let Some(w) =
-            super::measure_char_width_with_policy(font_family, bold, italic, c, font_size, policy)
+            super::measure_glyph_base_px(font_family, bold, italic, c, font_size, policy)
         {
             return w;
         }
@@ -1152,7 +1553,6 @@ mod wasm_internals {
     /// 누적, 목차 페이지번호의 디지트 x 좌표가 행별로 어긋났다.
     /// 미등록 한글 폰트(나눔바른고딕 등)에서도 native 와 일관된 폭으로 폴백한다.
     pub(super) fn measure_hangul_width_hwp(
-        _measure_font: &str,
         font_family: &str,
         bold: bool,
         italic: bool,
@@ -1168,6 +1568,19 @@ mod wasm_internals {
     }
 }
 
+/// 폰트명 기준 폭 캐시(JS 실측 LRU, 수식 canvas 실측)를 모두 비운다.
+///
+/// 런타임 폰트 메트릭 등록/해제와 `refresh_layout_native` 에서 호출해
+/// 이후 레이아웃이 새 폭으로 다시 측정되게 한다.
+pub(crate) fn clear_measure_caches() {
+    #[cfg(target_arch = "wasm32")]
+    {
+        wasm_internals::clear_js_measure_cache();
+        BROWSER_FONT_AVAIL.with(|cache| cache.borrow_mut().clear());
+    }
+    crate::renderer::equation::measure::clear_css_run_cache();
+}
+
 // ── WasmTextMeasurer ────────────────────────────────────────────────
 
 /// JS Canvas 브릿지 기반 텍스트 측정기 (WASM 전용)
@@ -1181,9 +1594,7 @@ pub struct WasmTextMeasurer;
 impl TextMeasurer for WasmTextMeasurer {
     fn estimate_text_width(&self, text: &str, style: &TextStyle) -> f64 {
         let (font_size, ratio, tab_w) = style_params(style);
-        let measure_font = wasm_internals::build_1000pt_font_string(style);
         let hangul_hwp = wasm_internals::measure_hangul_width_hwp(
-            &measure_font,
             &style.font_family,
             style.bold,
             style.italic,
@@ -1198,53 +1609,71 @@ impl TextMeasurer for WasmTextMeasurer {
         let char_width = |i: usize| -> f64 {
             let c = chars[i];
             if c == '\u{2007}' {
-                return font_size * 0.5 * ratio
-                    + glyph_letter_spacing(
-                        style.letter_spacing,
-                        font_size * 0.5 * ratio,
-                        font_size,
-                    )
-                    + style.extra_char_spacing;
+                return scaled_glyph_advance(
+                    font_size * FIXED_WIDTH_SPACE_EM,
+                    '\u{2007}',
+                    style,
+                    font_size,
+                    ratio,
+                ) + style.extra_char_spacing.max(0.0);
             }
             // 인라인 객체 placeholder 는 실제 control node 가 따로 그리므로 텍스트 폭은 0.
-            if matches!(c, '\u{FFFC}' | '\u{00AD}') {
+            if c == '\u{FFFC}' {
                 return 0.0;
             }
+            // 하이픈(U+00AD, HWP 코드 24)은 한컴(macOS)이 글꼴의 '-' 글리프와 폭으로
+            // 그린다 (hcar-001 p3 `- 법령…` 줄: 맑은 고딕 0.41em 전진).
+            let c = if c == '\u{00AD}' { '-' } else { c };
             // [Issue #677] HWP PUA 채움 문자 (U+F081C) — 시각 폭 0
             // 한컴이 인라인 TAC 표/도형 앞에 삽입하는 placeholder 채움 문자.
             // 한컴 PDF 정합 — 폭 0 으로 라인 inline x 에 영향 없음. fillers 가
             // 표 너비만큼 (≈97 chars × 1 char width = table width) 채워져
             // 표가 fillers 영역 위에 시각적으로 겹쳐 column-left 출력 패턴.
-            if c == '\u{F081C}' {
+            if c == '\u{F081C}' && style.font_metrics_policy == FontMetricsPolicy::HcrDeclared {
+                return scaled_glyph_advance(
+                    hancom_cut_line_em() * font_size,
+                    c,
+                    style,
+                    font_size,
+                    ratio,
+                ) + style.extra_char_spacing;
+            }
+            if c == '\u{F081C}' || c == '\u{200B}' {
                 return 0.0;
             }
-            let char_px_raw = if cluster_len[i] > 1 {
-                hangul_hwp as f64 / 75.0
-            } else {
-                wasm_internals::measure_char_width_hwp(
-                    &measure_font,
-                    &style.font_family,
-                    style.bold,
-                    style.italic,
-                    c,
-                    hangul_hwp,
-                    font_size,
-                    style.font_metrics_policy,
-                )
-            };
+            let char_px_raw =
+                if c == '\u{00B7}' && crate::renderer::hft_uses_paired_middle_dot(style) {
+                    font_size
+                } else if let Some(w) = latin_space_width(style, c, font_size) {
+                    w
+                } else if let Some(w) = missing_hft_bold_char_width(style, c, font_size) {
+                    w
+                } else if cluster_len[i] > 1 {
+                    hangul_hwp as f64 / 75.0
+                } else if let Some(em) =
+                    hft_missing_pua_em(style, c).or_else(|| hft_ks_punct_em(style, c))
+                {
+                    em * font_size
+                } else {
+                    wasm_internals::measure_char_width_hwp(
+                        &style.font_family,
+                        style.bold,
+                        style.italic,
+                        c,
+                        hangul_hwp,
+                        font_size,
+                        style.font_metrics_policy,
+                    )
+                };
             let char_px = char_px_raw;
-            let mut w = char_px * ratio
-                + glyph_letter_spacing(style.letter_spacing, char_px * ratio, font_size)
+            let mut w = scaled_glyph_advance(char_px, c, style, font_size, ratio)
                 + style.extra_char_spacing;
             if c == ' ' {
                 w += style.extra_word_spacing;
             }
-            // 음수 자간(letter_spacing + extra_char_spacing < 0) 시
-            // per-char 최소 advance 클램프로 narrow glyph 역진 방지.
-            if style.letter_spacing + style.extra_char_spacing < 0.0 {
-                let min_w = char_px * ratio * 0.5;
-                w = w.max(min_w);
-            }
+            // 압축 자간은 글자마다 그대로 뺀다. 한컴은 좁은 글자(쉼표·마침표)의 advance 가
+            // 음수가 되어도 클램프하지 않는다 (fdi-press 압축 셀 `(△433.6)`: `.` 뒤 `6` 이
+            // 0.13pt 앞에 놓임). 글자 폭 비례 자간은 −100% 전에는 음수가 되지 않는다.
             w
         };
 
@@ -1258,11 +1687,12 @@ impl TextMeasurer for WasmTextMeasurer {
             if c == '\t' {
                 // [Task #296] 인라인 탭 (HWP tab_extended / HWPX 인라인 탭) 을
                 // WASM Canvas 경로에서도 존중. 네이티브 EmbeddedTextMeasurer 와 동일 구조.
-                if tab_char_idx < style.inline_tabs.len() {
+                if tab_char_idx < style.inline_tabs.len()
+                    && !inline_tab_defers_to_tab_def(&style.inline_tabs[tab_char_idx], style)
+                {
                     let ext = &style.inline_tabs[tab_char_idx];
                     let tab_width_px = ext[0] as f64 * 96.0 / 7200.0;
                     let tab_type = inline_tab_type(ext);
-                    let tab_target = total + tab_width_px;
                     // [Task #874] auto_tab_right paragraph + 단일 tab: native 와 동일.
                     let has_more_tabs_after = chars[i + 1..].iter().any(|c| *c == '\t');
                     // [Issue #900] Task #874 #10 와 동일 — ext[2] high-byte 가 명시적
@@ -1272,6 +1702,7 @@ impl TextMeasurer for WasmTextMeasurer {
                     // 회귀 차단. EmbeddedTextMeasurer (native) 는 이미 가드 적용.
                     let inline_is_explicit_left = tab_type == 1 || tab_type == 4;
                     let override_to_right = style.auto_tab_right
+                        && ext[5] & 0x4000 == 0
                         && !has_more_tabs_after
                         && style.available_width > 0.0
                         && !inline_is_explicit_left;
@@ -1292,25 +1723,32 @@ impl TextMeasurer for WasmTextMeasurer {
                                 measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
                             total = (target_rel - seg_w).max(total);
                         } else {
-                            total = tab_target.max(total);
+                            total = inline_tab_left_x(ext, total, style, tab_width_px);
                         }
                     } else {
                         match tab_type {
                             2 => {
-                                // RIGHT
-                                let seg_w =
-                                    measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
-                                total = (tab_target - seg_w).max(total);
+                                // 저장된 RIGHT 탭 폭은 뒤 블록 폭을 뺀 이동량이다.
+                                // native처럼 다시 빼지 않는다 (복지 서식의 오른쪽 괄호).
+                                total = inline_tab_left_x(ext, total, style, tab_width_px);
                             }
                             3 => {
-                                // CENTER
-                                let seg_w =
-                                    measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
-                                total = (tab_target - seg_w / 2.0).max(total);
+                                // 저장된 CENTER 탭 폭은 뒤 블록을 가운데 맞춘 뒤의 이동량이다.
+                                total = inline_tab_left_x(ext, total, style, tab_width_px);
                             }
                             _ => {
-                                // LEFT(0/1), DECIMAL(4), 기타
-                                total = tab_target.max(total);
+                                // LEFT(0/1), DECIMAL(4), 기타 — HWPX 간격 탭은 그리드 정지
+                                if let Some(stop) = hwpx_inline_right_stop_rel(ext, total, style) {
+                                    let seg_w = measure_segment_from(
+                                        &chars,
+                                        &cluster_len,
+                                        i + 1,
+                                        &char_width,
+                                    );
+                                    total = (stop - seg_w).max(total);
+                                } else {
+                                    total = inline_tab_left_x(ext, total, style, tab_width_px);
+                                }
                             }
                         }
                     }
@@ -1335,16 +1773,14 @@ impl TextMeasurer for WasmTextMeasurer {
                         style.available_width,
                     );
                     let rel_tab = tab_pos - style.line_x_offset;
-                    // [Task #874] auto_tab_right / leader RIGHT 탭은 col-relative 우측 끝
+                    // [Task #874] auto_tab_right 탭만 col-relative 우측 끝 (리더 탭은 탭 위치)
                     // (= text_start_offset + available_width) 까지 정렬.
-                    let effective_rel_tab = if tab_type == 1
-                        && style.available_width > 0.0
-                        && (fill_type != 0 || style.auto_tab_right)
-                    {
-                        style.text_start_offset + style.available_width - style.line_x_offset
-                    } else {
-                        rel_tab
-                    };
+                    let effective_rel_tab =
+                        if tab_type == 1 && style.available_width > 0.0 && style.auto_tab_right {
+                            style.text_start_offset + style.available_width - style.line_x_offset
+                        } else {
+                            rel_tab
+                        };
                     match tab_type {
                         1 => {
                             let seg_w =
@@ -1377,9 +1813,7 @@ impl TextMeasurer for WasmTextMeasurer {
 
     fn compute_char_positions(&self, text: &str, style: &TextStyle) -> Vec<f64> {
         let (font_size, _ratio, _tab_w) = style_params(style);
-        let measure_font = wasm_internals::build_1000pt_font_string(style);
         let hangul_hwp = wasm_internals::measure_hangul_width_hwp(
-            &measure_font,
             &style.font_family,
             style.bold,
             style.italic,
@@ -1387,11 +1821,20 @@ impl TextMeasurer for WasmTextMeasurer {
         );
         // [#2132] 폭 산출원 훅 — wasm canvas 측정.
         let char_px_raw = |i: usize, c: char, _chars: &[char], cluster_len: &[usize]| -> f64 {
-            if cluster_len[i] > 1 {
+            if c == '\u{00B7}' && crate::renderer::hft_uses_paired_middle_dot(style) {
+                font_size
+            } else if let Some(w) = latin_space_width(style, c, font_size) {
+                w
+            } else if let Some(w) = missing_hft_bold_char_width(style, c, font_size) {
+                w
+            } else if cluster_len[i] > 1 {
                 hangul_hwp as f64 / 75.0
+            } else if let Some(em) =
+                hft_missing_pua_em(style, c).or_else(|| hft_ks_punct_em(style, c))
+            {
+                em * font_size
             } else {
                 wasm_internals::measure_char_width_hwp(
-                    &measure_font,
                     &style.font_family,
                     style.bold,
                     style.italic,
@@ -1414,7 +1857,6 @@ impl TextMeasurer for WasmTextMeasurer {
             let tab_width_px = ext[0] as f64 * 96.0 / 7200.0;
             let tab_type = inline_tab_type(ext);
             let fill_low = (ext[2] & 0xFF) as u8;
-            let tab_target = x + tab_width_px;
             // [Task #874] auto_tab_right paragraph + 단일 tab: native 와 동일.
             let has_more_tabs_after = chars[i + 1..].iter().any(|c| *c == '\t');
             // [Issue #900] Task #874 #10 와 동일 가드 — 인라인 LEFT(1)/DECIMAL(4)
@@ -1423,6 +1865,7 @@ impl TextMeasurer for WasmTextMeasurer {
             // 밀리는 회귀 차단).
             let inline_is_explicit_left = tab_type == 1 || tab_type == 4;
             let override_to_right = style.auto_tab_right
+                && ext[5] & 0x4000 == 0
                 && !has_more_tabs_after
                 && style.available_width > 0.0
                 && !inline_is_explicit_left;
@@ -1461,10 +1904,17 @@ impl TextMeasurer for WasmTextMeasurer {
                     let seg_w = measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
                     x = (target_rel - seg_w).max(x);
                 } else {
-                    x = tab_target.max(x);
+                    x = inline_tab_left_x(ext, x, style, tab_width_px);
                 }
             } else {
                 match tab_type {
+                    2 if hwpx_inline_right_stop_rel(ext, x, style).is_some() => {
+                        // HWPX 인라인 오른쪽 탭: 문단 탭 정의의 오른쪽 탭 위치에 뒤 글자 끝을
+                        // 맞춘다 (본문 오른쪽 끝이 아니다 — aift 목차 357HU 안쪽).
+                        let stop = hwpx_inline_right_stop_rel(ext, x, style).unwrap_or(x);
+                        let seg_w = measure_segment_from(chars, cluster_len, i + 1, char_width);
+                        x = (stop - seg_w).max(x);
+                    }
                     2 if fill_low != 0 => {
                         // [Task #874 후속] 단일-run RIGHT + leader (목차 페이지번호).
                         // EmbeddedTextMeasurer 영역 정합 (text_measurement.rs 위쪽 동일
@@ -1498,26 +1948,16 @@ impl TextMeasurer for WasmTextMeasurer {
                         }
                     }
                     2 => {
-                        // RIGHT (no leader)
-                        let seg_start = {
-                            let mut s = i + 1;
-                            while s < chars.len() && chars[s] == ' ' && cluster_len[s] != 0 {
-                                s += 1;
-                            }
-                            s
-                        };
-                        let seg_w =
-                            measure_segment_from(&chars, &cluster_len, seg_start, &char_width);
-                        x = (tab_target - seg_w).max(x);
+                        // RIGHT 이동량에는 뒤 블록의 우측 정렬이 이미 반영되어 있다.
+                        x = inline_tab_left_x(ext, x, style, tab_width_px);
                     }
                     3 => {
-                        // CENTER
-                        let seg_w = measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
-                        x = (tab_target - seg_w / 2.0).max(x);
+                        // native와 같이 저장된 CENTER 탭 이동량을 그대로 사용한다.
+                        x = inline_tab_left_x(ext, x, style, tab_width_px);
                     }
                     _ => {
-                        // LEFT(0/1), DECIMAL(4), 기타
-                        x = tab_target.max(x);
+                        // LEFT(0/1), DECIMAL(4), 기타 — HWPX 간격 탭은 그리드 정지
+                        x = inline_tab_left_x(ext, x, style, tab_width_px);
                     }
                 }
             }
@@ -1547,10 +1987,15 @@ pub(crate) fn resolved_to_text_style(
     lang_index: usize,
 ) -> TextStyle {
     if let Some(cs) = styles.char_styles.get(char_style_id as usize) {
-        TextStyle {
+        let mut style = TextStyle {
             font_metrics_policy: cs.font_metrics_policy,
+            latin_space: (cs.latin_font_space && lang_index == 1) || cs.use_font_space,
+            script_base_size: 0.0,
             font_family: cs.font_family_for_lang(lang_index).to_string(),
-            font_size: cs.font_size,
+            font_subst: cs.font_subst_for_lang(lang_index).to_string(),
+            hft_family: cs.hft_family_for_lang(lang_index).to_string(),
+            char_offset: cs.char_offset_for_lang(lang_index),
+            font_size: cs.font_size_for_lang(lang_index),
             color: cs.text_color,
             bold: cs.bold,
             italic: cs.italic,
@@ -1586,16 +2031,84 @@ pub(crate) fn resolved_to_text_style(
             underline_color: cs.underline_color,
             strike_color: cs.strike_color,
             shade_color: cs.shade_color,
-        }
+        };
+        style.letter_spacing += hft_substitute_bold_tracking_px(&style);
+        style
     } else {
         TextStyle::default()
     }
+}
+
+/// 한컴(macOS)이 HFT 서체 굵게를 합성할 때 빈칸이 아닌 글자마다 더하는 advance
+/// (장평 적용 전 글자 크기 비율). 한컴 PDF 실측: 신명 신그래픽 20pt 장평 100% 에서
+/// 글자당 1.00pt, exam-social 표제(40pt, 장평 90%) 1.79pt = 0.05 × 40 × 0.9.
+/// 빈칸은 벌어지지 않는다.
+pub(crate) const HFT_BOLD_ADVANCE_EM: f64 = 0.05;
+
+/// 원본이 HFT 인데 측정은 대체 서체 이름으로 하는 굵은 run 의 자간 보정(px).
+///
+/// 한컴은 언제나 자기 HFT 로 그리므로 굵게 합성 advance 를 더한다. 대체 서체
+/// (신명 신그래픽 → 굴림 등)가 번들 face 라 `synthetic_bold_tracking_px` 가 보정을
+/// 생략하던 경우를 HFT 기준 값으로 채운다. 이미 더해지는 만큼은 빼서 중복을 막는다.
+fn hft_substitute_bold_tracking_px(style: &TextStyle) -> f64 {
+    let hft = style.hft_family.trim();
+    // HFT 폭 테이블로 재는 run 은 글자별 측정(`hft_bold_tracking_px`)이 맡는다.
+    if !style.bold
+        || hft.is_empty()
+        || hft_width_swap(style)
+        || style.font_metrics_policy == FontMetricsPolicy::HancomWindows
+    {
+        return 0.0;
+    }
+    let primary = style.font_family.split(',').next().unwrap_or("").trim();
+    if primary.is_empty() || primary == hft {
+        return 0.0;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if !crate::renderer::font_paths::custom_faces_loaded() {
+        return 0.0;
+    }
+    let ratio = if style.ratio > 0.0 { style.ratio } else { 1.0 };
+    let target = style.font_size
+        * ratio
+        * crate::renderer::hft_synthetic_bold_advance_em(hft).unwrap_or(HFT_BOLD_ADVANCE_EM);
+    let existing = synthetic_bold_tracking_px(
+        &style.font_family,
+        true,
+        style.italic,
+        style.font_size,
+        style.font_metrics_policy,
+    );
+    (target - existing).max(0.0)
 }
 
 /// Use Hancom's sans fallback only when the selected face cannot draw any
 /// visible glyph in this run and the fallback covers all of them. Keeping the
 /// decision at run granularity lets layout and painting use the same face.
 pub(crate) fn apply_covered_hancom_fallback(style: &mut TextStyle, text: &str) {
+    if style.font_metrics_policy == FontMetricsPolicy::HcrDeclared {
+        // HFT 윤곽선과 문서 대체 서체는 자체 경로에서 해석한다. 여기서는
+        // 원본 서체에 없는 글자로만 이루어진 일반 run의 실제 fallback을 고정한다.
+        if !style.hft_family.is_empty() {
+            return;
+        }
+        let primary = super::super::style_resolver::primary_font_name(&style.font_family);
+        let mut visible = false;
+        for ch in text
+            .chars()
+            .filter(|ch| !ch.is_whitespace() && !ch.is_control())
+        {
+            visible = true;
+            if hancom_missing_glyph_em(primary, style.bold, style.italic, ch).is_none() {
+                return;
+            }
+        }
+        if visible {
+            style.font_family = "함초롬돋움".into();
+            style.font_subst.clear();
+        }
+        return;
+    }
     if style.font_metrics_policy != FontMetricsPolicy::HancomWindows {
         return;
     }
@@ -1628,7 +2141,41 @@ pub(crate) fn apply_covered_hancom_fallback(style: &mut TextStyle, text: &str) {
     }
     if visible {
         style.font_family = FALLBACK.to_string();
+        // 선언 대체 글꼴은 원본 face 소유 — font_family 교체 시 함께 지운다.
+        style.font_subst.clear();
+        style.hft_family.clear();
     }
+}
+
+/// 원본 서체에 없는 글자를 그릴 함초롬돋움의 실제 진행폭. 내장 폭 표가 생략한
+/// Unicode 범위도 설치/등록된 cmap으로 확인한다 (맑은 고딕 ➎ → HCRDotum 0.97em).
+fn hancom_missing_glyph_em(primary: &str, bold: bool, italic: bool, ch: char) -> Option<f64> {
+    let requested = font_metrics_data::find_metric(primary, bold, italic);
+    if requested.is_none()
+        && !custom_font_face_available(primary)
+        && !crate::renderer::runtime_font_metrics::face_available(primary)
+    {
+        return None;
+    }
+    if requested
+        .as_ref()
+        .is_some_and(|m| m.metric.get_width(ch).is_some())
+        || custom_face_char_em_advance(primary, bold, italic, ch).is_some()
+        || crate::renderer::runtime_font_metrics::char_em_advance(primary, bold, italic, ch)
+            .is_some()
+        || crate::renderer::composer::pua_plain_text_display(ch).is_some()
+    {
+        return None;
+    }
+    const FALLBACK: &str = "함초롬돋움";
+    custom_face_char_em_advance(FALLBACK, bold, italic, ch)
+        .or_else(|| {
+            crate::renderer::runtime_font_metrics::char_em_advance(FALLBACK, bold, italic, ch)
+        })
+        .or_else(|| {
+            let metric = font_metrics_data::find_metric(FALLBACK, bold, italic)?.metric;
+            Some(f64::from(metric.get_width(ch)?) / f64::from(metric.em_size))
+        })
 }
 
 fn metric_has_source_range(metric: &font_metrics_data::FontMetric, ch: char) -> bool {
@@ -1686,6 +2233,7 @@ fn is_monospace_metric(metric: &font_metrics_data::FontMetric) -> bool {
 pub(crate) fn font_family_has_metrics(font_family: &str, bold: bool, italic: bool) -> bool {
     let primary_name = font_family.split(',').next().unwrap_or(font_family).trim();
     font_metrics_data::find_metric(primary_name, bold, italic).is_some()
+        || crate::renderer::hancom_unresolved_face(primary_name)
 }
 
 /// 내장 폰트 메트릭으로 문자 폭 측정 (em 단위 → px 변환)
@@ -1697,28 +2245,57 @@ fn quantize_hwp_px(px: f64) -> f64 {
     hwp as f64 / 75.0
 }
 
+/// `raw` 측정(macOS 배치 단위 모델의 입력)은 em × 크기를 그대로 둔다.
+/// 그 밖의 소비자는 기존 HWPUNIT 절삭 폭을 받는다.
+#[inline]
+fn quantize_unless_raw(px: f64, raw: bool) -> f64 {
+    if raw {
+        px
+    } else {
+        quantize_hwp_px(px)
+    }
+}
+
+/// KoPub 서체 판정 (돋움, 바탕). 글자마다 불리므로 서체명별로 캐시한다.
+fn kopub_face_kind(primary_name: &str) -> (bool, bool) {
+    thread_local! {
+        static KOPUB_KIND_CACHE: std::cell::RefCell<std::collections::HashMap<String, (bool, bool)>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
+    }
+    KOPUB_KIND_CACHE.with(|cache| {
+        if let Some(kind) = cache.borrow().get(primary_name) {
+            return *kind;
+        }
+        let lower = primary_name.to_lowercase();
+        let kind = (
+            primary_name.contains("KoPub돋움체") || lower.contains("kopub dotum"),
+            primary_name.contains("KoPub바탕체") || lower.contains("kopub batang"),
+        );
+        cache.borrow_mut().insert(primary_name.to_string(), kind);
+        kind
+    })
+}
+
 fn kopub_char_width(primary_name: &str, c: char, font_size: f64) -> Option<f64> {
-    let lower = primary_name.to_lowercase();
-    let is_dotum = primary_name.contains("KoPub돋움체") || lower.contains("kopub dotum");
-    let is_batang = primary_name.contains("KoPub바탕체") || lower.contains("kopub batang");
+    let (is_dotum, is_batang) = kopub_face_kind(primary_name);
     if !is_dotum && !is_batang {
         return None;
     }
 
     if c == ' ' {
-        return Some(quantize_hwp_px(font_size * 0.5));
+        return Some(font_size * 0.5);
     }
     if is_narrow_punctuation(c) {
-        return Some(quantize_hwp_px(font_size * 0.3));
+        return Some(font_size * 0.3);
     }
     // [#2239] 괄호 — KoPub 경로는 86712 한컴 PDF 글리프 직독 실측(13px 문서
     // 괄호 4px ≈ 0.3em, #2195 stage23)으로 narrow 유지. is_narrow_punctuation
     // 의 괄호가 폰트 한정(is_narrow_paren_for_font)으로 빠지면서 여기서 보존.
     if matches!(c, '(' | ')') {
-        return Some(quantize_hwp_px(font_size * 0.3));
+        return Some(font_size * 0.3);
     }
     if c.is_ascii() {
-        return Some(quantize_hwp_px(font_size * 0.5));
+        return Some(font_size * 0.5);
     }
     if is_cjk_char(c) || is_fullwidth_symbol(c) {
         // [#2195 stage57] KoPub 미설치 환경에서 한글은 바탕으로 치환해 **전각
@@ -1726,7 +2303,7 @@ fn kopub_char_width(primary_name: &str, c: char, font_size: f64) -> Option<f64> 
         // 16px) 실측. 종전 0.84 는 r27 근거설명 25문단을 -11줄 과소(래핑 조기
         // 종료)시키던 성분.
         let factor = if is_dotum { 1.0 } else { 0.94 };
-        return Some(quantize_hwp_px(font_size * factor));
+        return Some(font_size * factor);
     }
 
     None
@@ -1737,6 +2314,8 @@ fn kopub_char_width(primary_name: &str, c: char, font_size: f64) -> Option<f64> 
 /// HCR hmtx 가 아닌 이 메트릭으로 렌더한다 — 문자폭 사다리 통제 프로브로
 /// 전 판별 클래스 확정 (괄호 0.32→0.50em 등).
 /// 공백(0x20)은 useFontSpace=0 고정 0.5em 경로(기존 em/2) 유지를 위해 제외.
+/// Windows 한글 전용 치환이다. 기준 플랫폼인 macOS 한글은 HCR Batang 자체
+/// hmtx 로 조판하므로 `FontMetricsPolicy::HancomWindows` 에서만 적용한다.
 const HAANSOFT_BATANG_ASCII: [f64; 95] = [
     0.3330, 0.4160, 0.4160, 0.8330, 0.6250, 0.9160, 0.8330, 0.2500, // ` !"#$%&'`
     0.5000, 0.5000, 0.5000, 0.8330, 0.2910, 0.8330, 0.2910, 0.3330, // `()*+,-./`
@@ -1769,26 +2348,33 @@ fn haansoft_latin_override(primary_name: &str, c: char) -> Option<f64> {
     None
 }
 
-/// [#2070] ㆍ(U+318D) 폭은 SYMBOL 폰트별: 한양신명조 = 전각(사다리 v3 실측),
-/// 명조(HY견명조 치환) 등 여타 = 반각 (80168 개정안{{7}} p9/p13 '시ㆍ도조례'
-/// 1줄 오라클, 개정안{{1}} P21 마크와 반각 양립 검증). embedded 메트릭
-/// (HY견명조 수록분)이 전각이라 룩업보다 앞서 판정하되, 함초롬(HCR) 계열은
-/// embedded 메트릭을 신뢰한다 (None 반환). [#2279] 한컴바탕/한컴돋움
-/// (Haansoft 실메트릭, ㆍ=1.0em)도 동일하게 embedded 메트릭을 신뢰한다.
-pub(crate) fn area_dot_fallback_width(font_family: &str, font_size: f64) -> Option<f64> {
+/// [#2070] ㆍ(U+318D) 폭. 한컴은 이 글자를 해당 글꼴 자체의 advance 로 그린다.
+/// - 한양신명조 = 전각 (사다리 v3 실측).
+/// - HY 계열 반각 강제는 **HancomWindows 정책 한정** 이다: Windows 한컴은 HFT
+///   원본(명조 등)의 반각 글리프로 그렸다 (80168 개정안 '시ㆍ도조례' 오라클).
+///   macOS 한컴은 대체 TTF 자체(HYmjrE·HYgtrE 모두 ㆍ=1.0em)로 그린다 —
+///   28-agritech-review 제목 실측. HcrDeclared(mac)에서는 HY 에도 embedded
+///   메트릭(전각)을 신뢰한다.
+/// - 그 밖에 메트릭 DB 가 이 글자를 수록한 글꼴(함초롬·한컴 번들, 맑은 고딕 등 시스템
+///   TTF)은 embedded 메트릭을 신뢰한다 (None 반환). 86712 법령 인용 셀의 맑은 고딕
+///   ㆍ = 1.0em (한컴 PDF 실측) — 종전 반각 폭으로 줄이 덜 접혀 쪽 경계가 한 줄씩 밀렸다.
+/// - 메트릭이 없는 글꼴은 종전대로 반각.
+pub(crate) fn area_dot_fallback_width(
+    font_family: &str,
+    font_size: f64,
+    policy: FontMetricsPolicy,
+) -> Option<f64> {
     let fam = font_family.split(',').next().unwrap_or("").trim();
-    if fam.contains("함초롬")
-        || fam.contains("HCR")
-        || fam.contains("한컴")
-        || fam.contains("Haansoft")
-    {
+    if fam.contains("한양신명조") {
+        return Some(font_size);
+    }
+    if policy == FontMetricsPolicy::HancomWindows && fam.starts_with("HY") {
+        return Some(font_size * 0.5);
+    }
+    if measure_char_width_embedded(fam, false, false, '\u{318D}', font_size).is_some() {
         return None;
     }
-    Some(if fam.contains("한양신명조") {
-        font_size
-    } else {
-        font_size * 0.5
-    })
+    Some(font_size * 0.5)
 }
 
 fn measure_char_width_embedded(
@@ -1804,19 +2390,26 @@ fn measure_char_width_embedded(
         italic,
         c,
         font_size,
-        FontMetricsPolicy::HancomWindows,
+        FontMetricsPolicy::default(),
     )
 }
 
 pub(super) fn measure_known_font_run_width(
     font_family: &str,
+    bold: bool,
     italic: bool,
     text: &str,
     font_size: f64,
 ) -> Option<f64> {
+    // 수식은 자체 서체 체인을 순서대로 탐색한다. 없는 수식 face 를 본문
+    // 기본 서체로 치환하면 이후 Times/Math 후보의 폭을 가로채게 된다.
+    if crate::renderer::hancom_unresolved_face(font_family) {
+        return None;
+    }
     let shaped_style = TextStyle {
         font_family: font_family.to_string(),
         font_size,
+        bold,
         italic,
         kerning: true,
         ..Default::default()
@@ -1825,11 +2418,372 @@ pub(super) fn measure_known_font_run_width(
         return positions.last().copied();
     }
     text.chars().try_fold(0.0, |width, ch| {
-        measure_char_width_embedded(font_family, false, italic, ch, font_size)
+        measure_char_width_embedded(font_family, bold, italic, ch, font_size)
             .map(|advance| width + advance)
     })
 }
 
+/// [macOS 정합] 한컴 PUA 점선 문자(U+F081C)의 진행 폭 (em). 한컴(macOS)은 이 글자를
+/// 함초롬바탕 글리프(485/1000em, 함초롬돋움도 같다)로 그리고 그 폭으로 줄을 나눈다 —
+/// readmission(복학원서) 접수증 점선: 줄 정보 없는 한컴 조판에서 99개가 한 줄을 채우고
+/// 뒤 인라인 표는 다음 줄로 넘어간다 (0폭이면 점선과 표가 한 줄에 겹친다).
+#[inline]
+fn hancom_cut_line_em() -> f64 {
+    0.485
+}
+
+/// 한컴 반각/전각 보정을 적용한 글리프 폭 (폰트 단위).
+///
+/// 내장 메트릭과 런타임 폰트 메트릭이 같은 보정을 거쳐야 하위 경로(양자화,
+/// 줄바꿈)에서 동일하게 동작한다. `is_monospace` 는 따옴표/가운뎃점에서만
+/// 평가된다.
+/// 함초롬 PUA 폭 테이블이 폭 0 으로 선언한 문자 — 한컴이 잉크 없는 빈 글리프
+/// 마커로 취급한다 (예: U+F03FF — 공식 PDF 에서 advance 만 차지하고 흔적 없음).
+/// 렌더러는 tofu 대신 이 판별로 잉크를 생략한다.
+pub(crate) fn is_hancom_blank_pua_marker(c: char) -> bool {
+    let cp = c as u32;
+    if !(0xF0000..=0xF08FF).contains(&cp) {
+        return false;
+    }
+    font_metrics_data::find_metric("함초롬돋움", false, false)
+        .is_some_and(|m| metric_has_source_range(m.metric, c) && m.metric.get_width(c).is_none())
+}
+
+/// 한컴(macOS)이 HFT 서체 run 의 한컴 PUA 문자(옛한글·책괄호 등)를 그리는 서체.
+///
+/// HFT 은행에는 PUA 글리프가 없다. 한컴은 이 글자를 run 의 대체 TTF(HY신명조 등)나
+/// 함초롬돋움이 아니라 함초롬바탕 글리프·advance 로 그린다 (exam-kor p17: 신명 중명조
+/// run 의 U+F0854 `『` 0.485em, 옛한글 U+E38A 0.97em 이 모두 HCRBatang 으로 임베드되고,
+/// 기호 슬롯 글꼴을 바꿔도 그대로다). 그 밖의 run 은 일반 누락 글리프 규칙대로
+/// 함초롬돋움이 받는다 (skia `HANCOM_MISSING_GLYPH_FAMILIES`).
+pub(crate) const HFT_MISSING_PUA_FAMILIES: &[&str] = &["HCR Batang", "함초롬바탕"];
+const MISSING_PUA_FAMILIES: &[&str] = &["HCR Dotum", "함초롬돋움", "HCR Batang", "함초롬바탕"];
+
+/// 표시 문자열로 확장하지 않고 한컴 PUA 글리프로 그릴 문자인지 판별한다. 표시 문자열로
+/// 확장되는 의미 마커·TAC 채움 문자·빈 마커는 기존 규칙을 따른다.
+fn is_hancom_glyph_pua(c: char) -> bool {
+    matches!(c as u32, 0xE000..=0xF8FF | 0xF0000..=0xFFFFD)
+        && c != '\u{F081C}'
+        && crate::renderer::composer::pua_plain_text_display(c).is_none()
+        && !is_hancom_blank_pua_marker(c)
+}
+
+/// 함초롬 계열 실폰트가 PUA 옛한글 글리프를 갖고 있는지. 있으면 한컴처럼 PUA 코드를
+/// 그대로 그리고(자모 분해 없음), 없으면 KS X 1026 자모 시퀀스로 확장한다.
+pub(crate) fn hancom_pua_face_has_glyph(c: char) -> bool {
+    MISSING_PUA_FAMILIES
+        .iter()
+        .any(|family| custom_face_char_em_advance(family, false, false, c).is_some())
+}
+
+/// HFT run 에서 함초롬바탕이 그릴 한컴 PUA 문자인지 (paint 경로 공용).
+pub(crate) fn is_hft_missing_pua(style: &TextStyle, c: char) -> bool {
+    !style.hft_family.trim().is_empty()
+        && style.font_metrics_policy == FontMetricsPolicy::HcrDeclared
+        && is_hancom_glyph_pua(c)
+}
+
+/// 요청 서체에 없는 한컴 PUA 문자 폭 (em). HFT run 은 함초롬바탕, 그 밖은 함초롬돋움
+/// 실폰트 → 내장 메트릭 순으로 찾는다. 요청 서체가 글리프를 가지면 None (기존 경로).
+pub(crate) fn hft_missing_pua_em(style: &TextStyle, c: char) -> Option<f64> {
+    if style.font_metrics_policy != FontMetricsPolicy::HcrDeclared || !is_hancom_glyph_pua(c) {
+        return None;
+    }
+    let (bold, italic) = (style.bold, style.italic);
+    let families = if style.hft_family.trim().is_empty() {
+        let primary = style.font_family.split(',').next().unwrap_or("").trim();
+        let primary_covers = custom_face_char_em_advance(primary, bold, italic, c).is_some()
+            || font_metrics_data::find_metric(primary, bold, italic)
+                .is_some_and(|m| m.metric.get_width(c).is_some());
+        // 내장 메트릭 PUA 범위(F0000~)는 기존 측정 경로가 이미 함초롬 폭을 쓴다.
+        if primary_covers || !(0xE000..=0xF8FF).contains(&(c as u32)) {
+            return None;
+        }
+        MISSING_PUA_FAMILIES
+    } else {
+        HFT_MISSING_PUA_FAMILIES
+    };
+    families
+        .iter()
+        .find_map(|family| custom_face_char_em_advance(family, bold, italic, c))
+        .or_else(|| {
+            let name = if families == HFT_MISSING_PUA_FAMILIES {
+                "HCR Batang"
+            } else {
+                "HCR Dotum"
+            };
+            let m = font_metrics_data::find_metric(name, bold, italic)?;
+            Some(f64::from(m.metric.get_width(c)?) / f64::from(m.metric.em_size))
+        })
+}
+
+/// HFT run 의 KS X 1001 일반 구두점(… ‥ · ― 등)은 HFT 기호 은행의 전각 글리프로
+/// 그려진다 — advance 1em (exam-kor p5 `생성․변경`: 신명 중명조 U+2024 가 글자 칸 가운데
+/// 점, p8 `당신……,`: 말줄임표 하나가 한글 한 칸). 대체 TTF(HY신명조)의 좁은 폭이 아니다.
+/// 따옴표(‘ ’ “ ”)·`·` 는 영문 슬롯 글꼴 폭을 따르므로 제외한다. U+2024 는 한자 슬롯
+/// (`detect_lang_category` = 2, k-water-rfp 실측)으로 가지만 한자 슬롯 HFT 도 같은 전각
+/// 글리프를 그리므로 한글·한자 슬롯 모두 받는다.
+fn hft_ks_punct_em(style: &TextStyle, c: char) -> Option<f64> {
+    if style.hft_family.trim().is_empty()
+        || style.font_metrics_policy != FontMetricsPolicy::HcrDeclared
+        || !matches!(c as u32, 0x2010..=0x2017 | 0x2020..=0x206F)
+        || !matches!(
+            crate::renderer::style_resolver::detect_lang_category(c),
+            0 | 2
+        )
+    {
+        return None;
+    }
+    // 한컴은 U+2024(한 점 지시자)를 KS 가운뎃점(0xA1A4) 글리프로 그린다.
+    let ks = if c == '\u{2024}' { '\u{00B7}' } else { c };
+    let mut buf = [0u8; 4];
+    let (bytes, _, had_errors) = encoding_rs::EUC_KR.encode(ks.encode_utf8(&mut buf));
+    (!had_errors && bytes.len() == 2 && bytes[0] == 0xA1).then_some(1.0)
+}
+
+/// [macOS 정합] 말줄임표(U+2026)는 글꼴 hmtx 가 전각이면 전각으로 조판한다 —
+/// 합성 스윕 G_fonts 의 굴림·HY견명조·궁서 '…' 10pt = 10.0pt (반각 강제 시 5pt 짧음).
+/// 함초롬 계열처럼 hmtx 가 전각 미만인 글꼴은 원래 hmtx 그대로라 영향이 없다.
+#[inline]
+fn mac_keeps_fullwidth_punct(c: char, policy: FontMetricsPolicy) -> bool {
+    c == '\u{2026}' && policy == FontMetricsPolicy::HcrDeclared
+}
+
+fn hancom_glyph_units(
+    c: char,
+    glyph_w: u16,
+    em_size: u16,
+    policy: FontMetricsPolicy,
+    is_monospace: impl Fn() -> bool,
+) -> u16 {
+    // 한컴은 스마트 따옴표 등을 반각으로 처리.
+    // 폰트 메트릭에서 전각(em_size)으로 기록되어 있어도 em/2로 강제.
+    // [Issue #630] U+00B7 (가운뎃점) 은 본 분기에서 제외 — 한컴 저장본의
+    // tab_extended 가 전각 측정 기반으로 산출되므로 반각 강제 시 right-tab
+    // 정렬이 8.67px 좌측 이탈. 폰트 메트릭 그대로 사용 (전각).
+    // [macOS 정합] 「」(U+300C/300D): 한컴(macOS)은 선언 face 의 기록
+    // 전각 폭 그대로 조판한다 — 공식 PDF 실측 「→다음 글자 0.82–1.00em
+    // (35-voucher '「곡성군' 10.6pt@11.04pt, 38-cheongyang '「전자정부법」'
+    // 「=」=9.0pt@9.0pt, 36-apartment-form 「 셀, issue_2020 passport 기대
+    // 렌더의 「/」 등폭 칸). 반각 강제는 HancomWindows 규약으로만 남긴다.
+    let is_halfwidth_punct = (matches!(
+        c,
+        '\u{2018}'..='\u{2027}' // ''‚‛""„‟†‡•‣․‥…‧ 구두점/기호
+    ) && !mac_keeps_fullwidth_punct(c, policy))
+        || (is_halfwidth_cjk_quote(c) && policy == FontMetricsPolicy::HancomWindows);
+    // 휴먼명조/HY중고딕/HY신명조/HY견명조 등 일부 폰트 DB 가 U+2018/U+2019/
+    // U+2027 을 fullwidth (1.0 em) 로 잘못 기록한 케이스 정정. em/2 (0.5 em)
+    // 강제 시 한컴 대비 약 4px (font-size 20px 기준, 0.5→0.3 em 차) 과대.
+    // glyph_w 가 비정상 fullwidth (>= em_size) 일 때만 0.3 em 강제 — 함초롬
+    // 바탕 (0.32) / Pretendard (0.22) 등 정상 DB 값은 조건 미충족으로 영향 없음.
+    let quote_width_is_authentic = matches!(c, '\u{2018}' | '\u{2019}') && is_monospace();
+    let is_narrow_unicode_punct =
+        matches!(c, '\u{2018}' | '\u{2019}' | '\u{2027}') && !quote_width_is_authentic;
+    // [U+00B7 .notdef 위장값 정정] 비례폰트(휴먼명조 등)가 `·` (가운뎃점)
+    // 글리프를 갖지 않으면 cmap 이 .notdef(glyph 0) 로 매핑돼 advance 가
+    // em_size(전각) 로 기록된다. 한컴은 이 경우 점 글리프를 가진 대체
+    // 폰트(바탕 ≈0.33em 등)로 `·` 를 렌더하므로 전각 advance 는 PDF 대비
+    // 과대 (시·군 점 좌우 공백 큼). 비례폰트에서 U+00B7 이 전각이면 위장값
+    // 으로 보고 0.3em 으로 정정한다. 고정폭(monospace) 폰트(돋움체 등)는
+    // 모든 글리프가 em_size 이므로 제외 — 해당 `·` 는 진짜 전각이다
+    // (Issue #630, aift 목차 right-tab 정합 보존).
+    let is_b7_notdef_artifact = c == '\u{00B7}' && glyph_w >= em_size && !is_monospace();
+    if (is_narrow_unicode_punct && glyph_w >= em_size) || is_b7_notdef_artifact {
+        (em_size as f64 * 0.3) as u16
+    } else if is_halfwidth_punct && !quote_width_is_authentic && glyph_w >= em_size {
+        // 「」도 위 판정에서 반각으로 좁힐 때만 여기 도달한다 (HancomWindows
+        // 규약). macOS(HcrDeclared)는 전각 기록 폭 그대로다.
+        em_size / 2
+    } else {
+        glyph_w
+    }
+}
+
+/// 런타임 폰트 메트릭(사용자 설치 폰트)으로 문자 폭 측정.
+/// 내장 메트릭과 같은 반각 보정 + HWPUNIT 절삭을 적용한다.
+fn measure_char_width_runtime(
+    primary_name: &str,
+    bold: bool,
+    italic: bool,
+    c: char,
+    font_size: f64,
+    policy: FontMetricsPolicy,
+    raw: bool,
+) -> Option<f64> {
+    let advance =
+        crate::renderer::runtime_font_metrics::char_advance(primary_name, bold, italic, c)?;
+    let w = if c == ' ' {
+        advance.units
+    } else {
+        hancom_glyph_units(c, advance.units, advance.em_size, policy, || {
+            advance.monospace
+        })
+    };
+    Some(quantize_unless_raw(
+        w as f64 * font_size / advance.em_size as f64,
+        raw,
+    ))
+}
+
+pub(crate) fn active_shaping_face_available(name: &str) -> bool {
+    ACTIVE_SHAPING_FONTS.with(|active| {
+        active
+            .borrow()
+            .iter()
+            .any(|font| font.family.eq_ignore_ascii_case(name))
+    })
+}
+
+fn embedded_face_char_em_advance(name: &str, bold: bool, italic: bool, c: char) -> Option<f64> {
+    ACTIVE_SHAPING_FONTS.with(|active| {
+        let active = active.borrow();
+        let font = active
+            .iter()
+            .filter(|font| font.family.eq_ignore_ascii_case(name))
+            .min_by_key(|font| {
+                let Ok(face) = ttf_parser::Face::parse(&font.bytes, font.face_index) else {
+                    return u16::MAX;
+                };
+                face.weight()
+                    .to_number()
+                    .abs_diff(if bold { 700 } else { 400 })
+                    + 1000 * u16::from(face.is_italic() != italic)
+            })?;
+        let face = ttf_parser::Face::parse(&font.bytes, font.face_index).ok()?;
+        let glyph = face.glyph_index(c)?;
+        let advance = face.glyph_hor_advance(glyph)?;
+        (face.units_per_em() > 0).then(|| f64::from(advance) / f64::from(face.units_per_em()))
+    })
+}
+
+fn custom_font_face_available(name: &str) -> bool {
+    if active_shaping_face_available(name)
+        || crate::renderer::runtime_font_metrics::face_available(name)
+    {
+        return true;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        crate::renderer::font_paths::custom_font_face_available(name)
+    }
+    #[cfg(target_arch = "wasm32")]
+    false
+}
+
+fn custom_face_char_em_advance(name: &str, bold: bool, italic: bool, c: char) -> Option<f64> {
+    embedded_face_char_em_advance(name, bold, italic, c)
+        .or_else(|| crate::renderer::runtime_font_metrics::char_em_advance(name, bold, italic, c))
+        .or_else(|| {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                crate::renderer::font_paths::custom_face_char_em_advance(name, bold, italic, c)
+            }
+            #[cfg(target_arch = "wasm32")]
+            None
+        })
+}
+
+/// macOS 한컴은 라틴 문맥에서 폰트의 공백 advance를 사용한다.
+/// 한글 문맥과 묶음 빈칸은 기존 반각 계약을 유지한다.
+fn latin_space_width(style: &TextStyle, c: char, font_size: f64) -> Option<f64> {
+    // [macOS 정합] 첨자 run 의 빈칸은 글리프와 달리 줄이지 않는다 — mel-001 p17
+    // `[피할권리]<첨자 빈칸>노동자`(15pt, 첨자 9.6pt): 빈칸 7.44pt = 15pt 의 em/2.
+    if c == ' '
+        && style.script_base_size > 0.0
+        && style.font_metrics_policy == FontMetricsPolicy::HcrDeclared
+    {
+        return Some(style.script_base_size / 2.0);
+    }
+    // 기호 슬롯 글꼴이 HFT(한양 계열)이면 한컴은 CJK 괄호를 HFT 원형 전각 글리프로
+    // 그린다 — 대체 TTF 의 반각 괄호 폭이 아니다 (k-water-rfp 4쪽 한양신명조 `「…」`:
+    // 1.0em, 11-table-in-tbox 같은 실측). 대체 서체 이름으로는 구분되지 않아
+    // 원본 HFT 이름(`hft_family`)으로 판정한다.
+    if matches!(c, '\u{3008}'..='\u{3011}' | '\u{3014}'..='\u{301B}')
+        && !style.hft_family.trim().is_empty()
+    {
+        let mac = style.font_metrics_policy == FontMetricsPolicy::HcrDeclared;
+        return Some(quantize_unless_raw(font_size, mac));
+    }
+    if c != ' ' || !style.latin_space || style.font_metrics_policy != FontMetricsPolicy::HcrDeclared
+    {
+        return None;
+    }
+    let family = style.font_family.split(',').next()?.trim();
+    // 한컴이 기본 글꼴로 대체하는 face 는 그 글꼴의 빈칸 폭을 쓴다.
+    let family = if crate::renderer::hancom_unresolved_face(family) {
+        crate::renderer::HANCOM_DEFAULT_FACES[0]
+    } else {
+        family
+    };
+    let em = custom_face_char_em_advance(family, style.bold, style.italic, ' ').or_else(|| {
+        let metric = font_metrics_data::find_metric(family, style.bold, style.italic)?.metric;
+        Some(f64::from(metric.get_width(' ')?) / f64::from(metric.em_size))
+    })?;
+    // macOS 전용 경로 — 배치 단위 모델(`mac_glyph_advance_px`)이 양자화한다.
+    Some(em * font_size)
+}
+
+/// Haansoft Batang 의 Wingdings PUA(U+F020..=U+F0FF) advance (1/1024em, hmtx 실측).
+/// 글꼴 파일이 없는 환경(wasm 등)에서도 한컴 조판 폭을 재현하기 위한 표.
+const HAANSOFT_BATANG_WINGDINGS_ADVANCE: [u16; 224] = [
+    512, 1055, 1172, 1332, 1376, 916, 1246, 469, 1110, 913, 1159, 1159, 1199, 1199, 1475, 1478,
+    1122, 1376, 716, 716, 913, 567, 616, 1097, 971, 1104, 962, 912, 913, 913, 912, 932, 932, 601,
+    812, 690, 690, 964, 964, 562, 562, 913, 864, 864, 864, 1137, 676, 870, 1115, 910, 901, 666,
+    833, 765, 765, 741, 710, 813, 906, 913, 917, 912, 1184, 1079, 987, 1116, 963, 956, 969, 1050,
+    951, 1122, 1091, 799, 1075, 1301, 765, 976, 765, 912, 912, 912, 912, 469, 765, 1009, 912, 592,
+    1085, 1085, 912, 913, 913, 543, 543, 512, 913, 913, 913, 913, 913, 913, 913, 913, 913, 913,
+    913, 913, 913, 913, 913, 913, 913, 913, 913, 913, 913, 1024, 1024, 1024, 1024, 1024, 1024,
+    1024, 1024, 321, 469, 321, 912, 912, 912, 912, 912, 976, 469, 912, 912, 912, 912, 912, 912,
+    912, 912, 912, 912, 912, 912, 912, 912, 912, 912, 912, 912, 912, 912, 912, 912, 912, 912, 912,
+    912, 912, 912, 912, 912, 912, 1073, 1073, 1073, 1073, 1024, 1024, 1024, 1024, 1024, 1024, 1024,
+    1024, 1024, 1024, 1283, 1283, 813, 813, 912, 912, 912, 912, 912, 912, 1003, 1003, 912, 912,
+    794, 794, 794, 794, 1092, 1092, 912, 912, 894, 894, 894, 894, 912, 912, 830, 830, 1085, 830,
+    800, 800, 800, 800, 493, 394, 650, 805, 913, 913, 1060, 1055,
+];
+
+fn haansoft_batang_wingdings_em(c: char) -> f64 {
+    let idx = (c as u32).saturating_sub(0xF020) as usize;
+    HAANSOFT_BATANG_WINGDINGS_ADVANCE
+        .get(idx)
+        .map_or(1.0, |&w| f64::from(w) / 1024.0)
+}
+
+/// HFT 원본의 폭 테이블이 없어 대체 서체로 재더라도 굵게 advance 는
+/// 원본 메트릭 규칙을 따른다. 공백에는 합성 굵게의 추가 폭을 붙이지 않는다.
+fn missing_hft_bold_char_width(style: &TextStyle, c: char, font_size: f64) -> Option<f64> {
+    let original = style.hft_family.trim();
+    let primary = style.font_family.split(',').next()?.trim();
+    if !style.bold
+        || style.font_metrics_policy == FontMetricsPolicy::HancomWindows
+        || original.is_empty()
+        || primary != original
+        || font_metrics_data::hancom_bundled_face(original)
+        // 이 서체의 기존 보정은 HFT 실측에 따라 공백 advance도 포함한다.
+        || crate::renderer::hft_synthetic_bold_advance_em(original).is_some()
+    {
+        return None;
+    }
+    // macOS 전용 경로 — 배치 단위 모델이 양자화하므로 em 폭 그대로 잰다.
+    let width = measure_char_width_inner(
+        &style.font_family,
+        false,
+        style.italic,
+        c,
+        font_size,
+        style.font_metrics_policy,
+        true,
+    )?;
+    let tracking = if c == ' ' {
+        0.0
+    } else {
+        font_size
+            * crate::renderer::hft_synthetic_bold_advance_em(original)
+                .unwrap_or(HFT_BOLD_ADVANCE_EM)
+    };
+    Some(width + tracking)
+}
+
+/// HWPUNIT 절삭 글자 폭 (장평·자간 전). 수식 등 글자 advance 모델 밖의 소비자용.
 fn measure_char_width_with_policy(
     font_family: &str,
     bold: bool,
@@ -1838,21 +2792,277 @@ fn measure_char_width_with_policy(
     font_size: f64,
     policy: FontMetricsPolicy,
 ) -> Option<f64> {
-    if c == '\u{00AD}' {
+    measure_char_width_tracked(font_family, bold, italic, c, font_size, policy, false)
+}
+
+/// 본문 글자 advance 의 입력 폭 (장평·자간 전, `scaled_glyph_advance` 로 넘긴다).
+/// macOS 는 em × 크기를 양자화하지 않고 넘겨 배치 단위 반올림이 실제 hmtx 비율을
+/// 보게 한다. Windows 는 기존 HWPUNIT 절삭 폭이다.
+fn measure_glyph_base_px(
+    font_family: &str,
+    bold: bool,
+    italic: bool,
+    c: char,
+    font_size: f64,
+    policy: FontMetricsPolicy,
+) -> Option<f64> {
+    let raw = policy == FontMetricsPolicy::HcrDeclared;
+    measure_char_width_tracked(font_family, bold, italic, c, font_size, policy, raw)
+}
+
+fn measure_char_width_tracked(
+    font_family: &str,
+    bold: bool,
+    italic: bool,
+    c: char,
+    font_size: f64,
+    policy: FontMetricsPolicy,
+    raw: bool,
+) -> Option<f64> {
+    let width = measure_char_width_inner(font_family, bold, italic, c, font_size, policy, raw)?;
+    // 합성 진하게 자간 보정은 최상위 호출에서 한 번만 적용한다 — 내부의 폴백
+    // 재귀는 `_inner` 를 직접 불러 face 결정과 무관하게 폭만 낸다.
+    if let Some(tracking) = hft_bold_tracking_px(font_family, bold, c, font_size, policy) {
+        return Some(width + tracking);
+    }
+    Some(width + synthetic_bold_tracking_px(font_family, bold, italic, font_size, policy))
+}
+
+/// HFT 폭 테이블로 재는 서체(신명 계열)의 합성 굵게 advance — 빈칸은 0.
+/// 해당 서체가 아니면 None (기존 합성 굵게 규칙을 따른다).
+fn hft_bold_tracking_px(
+    font_family: &str,
+    bold: bool,
+    c: char,
+    font_size: f64,
+    policy: FontMetricsPolicy,
+) -> Option<f64> {
+    let primary = font_family.split(',').next().unwrap_or(font_family).trim();
+    let metric = crate::renderer::hft_metrics::find_metric(primary, bold, false)?;
+    if !bold || !metric.bold_fallback || policy == FontMetricsPolicy::HancomWindows || c == ' ' {
         return Some(0.0);
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    if !crate::renderer::font_paths::custom_faces_loaded() {
+        return Some(0.0);
+    }
+    Some(
+        font_size
+            * crate::renderer::hft_synthetic_bold_advance_em(primary)
+                .unwrap_or(HFT_BOLD_ADVANCE_EM),
+    )
+}
+
+/// [macOS 정합] 한컴(macOS)은 Bold face 가 없는 서체를 합성 진하게
+/// (fill+stroke, `2 Tr`)로 그릴 때 글자 advance 에도 획 두께를 더해 자간을
+/// 벌린다 — 09-table-004 의 bold 한양중고딕 셀이 문자당 ~+0.025em 벌어져
+/// 렌더된다 (행 단위 우측 정렬선까지 드리프트). 실제 Bold face 가 그려질 때
+/// (함초롬돋움 → HCR Dotum Bold 등) 또는 시스템/generic 폴백 경로에서는
+/// 판정 불가로 보정하지 않는다.
+fn synthetic_bold_tracking_px(
+    font_family: &str,
+    bold: bool,
+    italic: bool,
+    font_size: f64,
+    policy: FontMetricsPolicy,
+) -> f64 {
+    if !bold || policy == FontMetricsPolicy::HancomWindows {
+        return 0.0;
+    }
+    let primary = font_family.split(',').next().unwrap_or(font_family).trim();
+    // 실측된 HFT 합성 advance 는 호스트의 설치 폰트와 무관하다.
+    // Native 에서만 더하면 WASM 의 가운데 정렬 영문 줄 폭이 좁아진다.
+    if let Some(em) = crate::renderer::hft_synthetic_bold_advance_em(primary) {
+        return font_size * em;
+    }
+    // 네이티브에서 custom face 가 하나도 등록되지 않았으면(--font-path 없는
+    // 단위 테스트 등) face 판정 자체가 불가하다 — 미등록으로 보정하면
+    // 모든 굵은 글자에 자간이 붙어 기존 폭과 엇갈린다. wasm 은 registry 가
+    // 없으므로 이 판정을 건너뛴다.
+    #[cfg(not(target_arch = "wasm32"))]
+    if !crate::renderer::font_paths::custom_faces_loaded() {
+        return 0.0;
+    }
+    // 맑은 고딕처럼 한컴 번들에 Regular 만 있는 서체의 합성 굵게는 획만 덧칠하고
+    // advance 는 Regular 그대로다 (hcar-001·kedi-application·mel-001 PDF 의
+    // `2 Tr` 맑은 고딕 런: 숫자/한글 진행비 = Regular hmtx, 자간 0).
+    // 아래 번들 face 판정이 이 경우를 보정 없음으로 처리한다.
+    // 표준 Windows 글꼴(바탕·돋움·굴림·궁서 → 한컴바탕/한컴돋움 번들 치환)도
+    // 치환 face 의 advance 그대로 조판한다 (fdi-press 굵은 바탕 본문: 굵은 런과
+    // 보통 런의 글자 간격이 같다).
+    if !crate::renderer::hancom_substitute_faces(primary).is_empty() {
+        return 0.0;
+    }
+    // [macOS 정합] 한컴은 번들에 없는 face(HFT 한양중고딕 등)를 치환 조판할
+    // 때만 획 두께를 advance 에 더한다. 번들에 실재하는 face(굴림 등)는
+    // Bold variant 유무와 무관하게 실폰트 advance 를 그대로 쓴다 —
+    // 29-civil-petition 의 bold 굴림 표제는 자간 보정 없이 렌더되고,
+    // 09-table-004 의 bold 한양중고딕(미등록 → 한컴돋움 치환)은 보정된다.
+    // 런타임 레지스트리(사용자 설치 폰트)에 등록된 face 는 실폰트 hmtx 가
+    // 쓰이므로 합성 자간 보정을 붙이지 않는다 — Regular 폴백 Bold 도 실폰트
+    // advance 그대로다.
+    if crate::renderer::runtime_font_metrics::bold_fallback(primary, italic).is_some() {
+        return 0.0;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // [macOS 정합] 치환 조판 대상이 아니라 한컴 번들 자체 face
+        // (휴먼명조→HMKMM.TTF, HCI Poppy→HMEPO*.HFT 등 PrivateFont_ko-KR.dat /
+        // Shared/Fonts 에 실재)로 그려지는 Bold 런은 실폰트 advance 를 유지한다 —
+        // 31-port-call: bold 휴먼명조(방도·입파도)·HCI Poppy(' WAJ-01(') 가
+        // 한컴 PDF 와 동일 폭으로 렌더 (보정 시 글자당 ~+0.32pt 드리프트).
+        if crate::renderer::font_paths::custom_face_resolves_bold(primary, bold, italic).is_none()
+            && !font_metrics_data::hancom_bundled_face(primary)
+        {
+            let em = crate::renderer::hft_synthetic_bold_advance_em(primary)
+                .unwrap_or(crate::renderer::FAUX_BOLD_STROKE_EM);
+            return font_size * em;
+        }
+    }
+    // 번들에 해석되는 face 는 보정하지 않는다. wasm 은 custom 폰트 registry 가
+    // 없어 판정 불가 — 보정하지 않는다.
+    #[cfg(target_arch = "wasm32")]
+    let _ = italic;
+    0.0
+}
+
+fn measure_char_width_inner(
+    font_family: &str,
+    bold: bool,
+    italic: bool,
+    c: char,
+    font_size: f64,
+    policy: FontMetricsPolicy,
+    raw: bool,
+) -> Option<f64> {
+    // 하이픈(U+00AD)은 '-' 폭으로 조판한다 (위 측정기 경로와 같은 규칙).
+    let c = if c == '\u{00AD}' { '-' } else { c };
+    // 묶음 빈칸(U+00A0)은 한컴 조판상 일반 빈칸과 같은 em/2 폭이다. 실폰트 hmtx 의
+    // NBSP 폭(함초롬바탕 0.3em 등)을 쓰면 `①<묶음 빈칸>` 선택지 뒤 본문이
+    // 한컴(macOS) PDF 보다 ~0.18em 왼쪽으로 당겨진다.
+    let c = if c == '\u{00A0}' { ' ' } else { c };
     // CSS font-family 체인에서 첫 번째 폰트명으로 메트릭 조회
     let primary_name = font_family.split(',').next().unwrap_or(font_family).trim();
+    if crate::renderer::hft_hangul_fullwidth_char(primary_name, c) {
+        return Some(quantize_unless_raw(font_size, raw));
+    }
+    // [macOS 정합] 한양 계열 HFT 영문은 HFT 폭 블록 그대로 조판한다 (Windows 래더 표와
+    // 0.04pt 단위로 다르다 — `font_metrics_data::hanyang_hft_ascii`).
+    // 한양신명조 영문 칸의 가운뎃점(U+00B7)은 HFT 영문 은행 밖이라 한컴(macOS)이 별도
+    // 기호 글리프로 그린다 — 진행 0.384em (탐침: 10.5pt 101·95단위, 11.5pt 110·104단위,
+    // 장평 100/95%; 한글 face 와 무관).
+    if policy == FontMetricsPolicy::HcrDeclared && c == '\u{00B7}' && primary_name == "한양신명조"
+    {
+        return Some(quantize_unless_raw(0.384 * font_size, raw));
+    }
+    if policy == FontMetricsPolicy::HcrDeclared && ('\u{21}'..='\u{7E}').contains(&c) {
+        if let Some((table, em)) = font_metrics_data::hanyang_hft_ascii(primary_name) {
+            let w = table[(c as u32 - 0x20) as usize];
+            if w > 0 {
+                return Some(quantize_unless_raw(
+                    f64::from(w) / f64::from(em) * font_size,
+                    raw,
+                ));
+            }
+        }
+    }
+    // 명시적 CSS 대체 체인은 미해석 face 의 기본 글꼴보다 먼저 해석한다.
+    // 첫 이름만 보고 함초롬돋움으로 치환하면 `Missing, HCR Batang` 의
+    // 선언된 바탕 서체까지 무시하게 된다.
+    if policy == FontMetricsPolicy::HcrDeclared
+        && crate::renderer::hancom_unresolved_face(primary_name)
+    {
+        if let Some((_, fallback_chain)) = font_family.split_once(',') {
+            return measure_char_width_inner(
+                fallback_chain,
+                bold,
+                italic,
+                c,
+                font_size,
+                policy,
+                raw,
+            );
+        }
+    }
+    // 고정폭 한글 서체(돋움체 등)의 수학 연산 기호는 한컴이 전각 글자로 조판한다 —
+    // 실폰트가 U+2212 를 반각 하이픈 글리프에 매핑해도 진행 폭은 1em 이다 (aift 글머리표
+    // '−' 12pt: 본문까지 18pt = 기호 12pt + 본문 거리 50%). 판정은 요청 face 의 내장
+    // 메트릭(설치 여부·치환과 무관하게 같은 결과).
+    if ('\u{2200}'..='\u{22FF}').contains(&c)
+        && font_metrics_data::find_metric(primary_name, bold, italic)
+            .is_some_and(|m| is_monospace_metric(m.metric))
+    {
+        return Some(quantize_unless_raw(font_size, raw));
+    }
+    // HcrDeclared(macOS): 표준 Windows 폰트(바탕·궁서·돋움·굴림 계열)는 macOS
+    // 한컴에 없으면 번들 서체(한컴바탕=Haansoft Batang / 한컴돋움=Haansoft
+    // Dotum)로 치환해 그린다 — 조판 폭도 치환 서체의 hmtx 를 쓴다 (괄호 0.50em,
+    // 숫자 0.583em 등 PDF 실측과 일치; Windows Batang 은 괄호 0.377em).
+    // 단 치환은 한컴 FontMap 규칙과 동일하게 "요청 face가 없을 때만" 발동한다 —
+    // --font-path 로 실제 TTF(예: 돋움체)가 주어지면 페인트 경로는 실폰트를 쓰고
+    // (text_replay) 측정도 실폰트 메트릭(돋움체=고정폭)이어야 양쪽이 일치한다.
+    let face_available = custom_font_face_available(primary_name);
+    // 치환 메트릭은 치환 서체가 실제로 설치돼 있을 때만(그 서체로 그려질 때) 쓴다.
+    // 치환 서체도 없으면 페인트는 제네릭 폴백으로 내려가므로 요청 face의 베이크드
+    // 정본 폭(돋움체 전각 구두점 등)이 더 가깝다.
+    let metric_name = if policy == FontMetricsPolicy::HcrDeclared && !face_available {
+        let substitutes = crate::renderer::hancom_substitute_faces(primary_name);
+        substitutes
+            .iter()
+            .copied()
+            .find(|s| custom_font_face_available(s))
+            // 한컴이 해석하지 못하는 face 는 기본 글꼴(함초롬돋움) 폭이 정본이다 —
+            // 치환 서체 파일이 없어도(wasm 등) 그 내장 메트릭으로 잰다.
+            .or_else(|| {
+                (substitutes == crate::renderer::HANCOM_DEFAULT_FACES)
+                    .then_some(crate::renderer::HANCOM_DEFAULT_FACES[0])
+            })
+            .unwrap_or(primary_name)
+    } else {
+        primary_name
+    };
+    // face 파일이 주어지면 한컴도 실제 hmtx 로 조판한다 — 베이크드 테이블은
+    // 구버전 TTF 기준이라 실폰트와 엇갈린다 (HY헤드라인M '.' 0.208→0.242em 등).
+    // 공백은 HWP em/2 문서 규약이 우선이고, cmap 에 없는 글자는 베이크드
+    // 경로로 폴백한다.
+    if policy == FontMetricsPolicy::HcrDeclared && face_available && c != ' ' {
+        if let Some(mut em_advance) = custom_face_char_em_advance(primary_name, bold, italic, c) {
+            // 한컴 반각 강제는 문서 규약이라 실폰트에도 동일하게 적용한다 —
+            // 실 hmtx 가 전각이면 구두점/인용부호를 em/2 로 줄인다. 「」는
+            // macOS 한컴이 선언 폭 그대로 조판하므로 여기서는 실 hmtx 를
+            // 그대로 쓴다 (실 hmtx 가 반각 폭이면 그 자체가 정본이다 —
+            // 공식 PDF 실측 「 0.82–1.00em: 35/38-cheongyang, 36-apartment-form).
+            if matches!(c, '\u{2018}'..='\u{2027}')
+                && !mac_keeps_fullwidth_punct(c, policy)
+                && em_advance >= 1.0
+            {
+                em_advance = 0.5;
+            }
+            return Some(quantize_unless_raw(em_advance * font_size, raw));
+        }
+    }
+    // [macOS 정합] Wingdings PUA(U+F020..=U+F0FF)는 run 서체에 글리프가 없으면
+    // 한컴이 Haansoft Batang 의 PUA 글리프·advance 로 조판한다
+    // (composer::is_wingdings_pua — mel-001 휴먼명조 run ❖ 0.8906em).
+    if policy == FontMetricsPolicy::HcrDeclared && super::super::composer::is_wingdings_pua(c) {
+        let em_advance = custom_face_char_em_advance("Haansoft Batang", bold, italic, c)
+            .unwrap_or_else(|| haansoft_batang_wingdings_em(c));
+        return Some(quantize_unless_raw(em_advance * font_size, raw));
+    }
     // [#2156] 함초롬바탕 비한글 문자 — Haansoft Batang 메트릭 대체 (한글 동작).
     if policy == FontMetricsPolicy::HancomWindows {
         if let Some(r) = haansoft_latin_override(primary_name, c) {
-            return Some(quantize_hwp_px(r * font_size));
+            return Some(quantize_unless_raw(r * font_size, raw));
         }
     }
     if let Some(w) = kopub_char_width(primary_name, c, font_size) {
-        return Some(w);
+        return Some(quantize_unless_raw(w, raw));
     }
-    let requested = font_metrics_data::find_metric(primary_name, bold, italic);
+    // macOS 한컴이 Bold face 를 제공하지 않는 서체(맑은 고딕 등)는 참조 환경에서
+    // 굵게를 Regular face + 합성 획으로 그리므로 Regular 메트릭으로 조판한다.
+    let metric_bold =
+        bold && crate::renderer::macos_synthetic_bold_em(metric_name, policy).is_none();
+    let requested = font_metrics_data::find_metric(metric_name, metric_bold, italic);
     let requested_covers = requested
         .as_ref()
         .is_some_and(|metric| c == ' ' || metric.metric.get_width(c).is_some());
@@ -1871,62 +3081,119 @@ fn measure_char_width_with_policy(
             fallback
         } else {
             let (_, fallback_chain) = font_family.split_once(',')?;
-            return measure_char_width_with_policy(
+            return measure_char_width_inner(
                 fallback_chain,
                 bold,
                 italic,
                 c,
                 font_size,
                 policy,
+                raw,
             );
         }
+    } else if let Some((_, substitute_chain)) = font_family.split_once(',').filter(|_| {
+        requested.is_some()
+            && crate::renderer::hft_metrics::find_metric(primary_name, false, false).is_some()
+            && crate::renderer::hft_metric_fallback(primary_name).is_none()
+    }) {
+        // `measure_style` 가 앞에 둔 HFT 폭 테이블 밖의 글자는 원래 대체 서체로 잰다.
+        return measure_char_width_inner(substitute_chain, bold, italic, c, font_size, policy, raw);
+    } else if let Some(fallback) = requested
+        .is_some()
+        .then(|| crate::renderer::hft_metric_fallback(primary_name))
+        .flatten()
+    {
+        // HFT 폭 테이블 밖의 글자는 한컴이 대체 TTF 로 그린다.
+        return measure_char_width_inner(fallback, bold, italic, c, font_size, policy, raw);
+    } else if let Some(em) = (policy == FontMetricsPolicy::HcrDeclared)
+        .then(|| hancom_missing_glyph_em(primary_name, metric_bold, italic, c))
+        .flatten()
+    {
+        return Some(quantize_unless_raw(em * font_size, raw));
     } else {
+        // 내장 메트릭이 없거나 추출 범위 밖의 문자 → 사용자 설치 폰트의 실제 폭.
+        // 내장 메트릭이 해당 범위를 수록했는데 글리프가 없으면 실제 폰트에도
+        // 없으므로 기존 폴백 체인을 유지한다.
+        if requested
+            .as_ref()
+            .is_none_or(|metric| !metric_has_source_range(metric.metric, c))
+        {
+            if let Some(w) =
+                measure_char_width_runtime(primary_name, bold, italic, c, font_size, policy, raw)
+            {
+                return Some(w);
+            }
+            // 체인이 더 이어지지 않는 단일 face 명의인데 선언 face 가 글리프를
+            // 갖지 못하는 문자 — 페인트는 fontdb 가 generic 폴백 체인을 따라
+            // 글리프 보유 face 로 굽는다. 측정도 같은 순서로 첫 실재 face 의
+            // 실 hmtx 를 쓴다. 공백 제외 — 한컴은 빈칸을 항상 em/2 로 잰다.
+            // PUA 전 구간 제외 — 문서 의미 마커(사각문자·도장형 등)는 한컴이
+            // 문서 고유 폭으로 그리므로 실폰트 hmtx 를 대입하면 안 된다
+            // (25-leave-request 의 U+F03FF 글머리 등).
+            if c != ' '
+                && font_family.split_once(',').is_none()
+                && !matches!(c as u32, 0xE000..=0xF8FF | 0xF0000..=0xFFFFD | 0x100000..=0x10FFFD)
+            {
+                for name in crate::renderer::generic_fallback(font_family).split(',') {
+                    let name = name.trim().trim_matches(|q| q == '\'' || q == '"');
+                    if name.is_empty() || name.eq_ignore_ascii_case(primary_name) {
+                        continue;
+                    }
+                    if let Some(em) = custom_face_char_em_advance(name, bold, italic, c) {
+                        return Some(quantize_unless_raw(em * font_size, raw));
+                    }
+                }
+            }
+        }
+        // [macOS 정합] paint 단계가 함초롬돋움 계열 글리프로 치환하는 한컴
+        // PUA 문자(pua_missing_glyph_substitute 수록분)는 조판 폭도 그 face 의
+        // 값으로 맞춘다 — text_replay 의 HANCOM_MISSING_GLYPH_FAMILIES 와 같은
+        // 규칙 (28-agritech-review 선문자 가 0.5em 폴백 대신 함초롬돋움 실측
+        // 0.485em; 29-civil-petition U+F09E 는 함초롬돋움 미수록이라 Haansoft
+        // Batang 0.458em). 앞선 HFT 누락 PUA 경로와 여기의 치환 대상에 속하지
+        // 않는 글자는 기존 폴백 체인/휴리스틱을 유지한다.
+        if policy == FontMetricsPolicy::HcrDeclared
+            && super::super::composer::pua_missing_glyph_substitute(c).is_some()
+        {
+            if primary_name != "함초롬돋움" {
+                let hcr_covers = font_metrics_data::find_metric("함초롬돋움", bold, italic)
+                    .is_some_and(|m| m.metric.get_width(c).is_some());
+                if hcr_covers {
+                    return measure_char_width_inner(
+                        "함초롬돋움",
+                        bold,
+                        italic,
+                        c,
+                        font_size,
+                        policy,
+                        raw,
+                    );
+                }
+            }
+            for cand in [
+                "Haansoft Batang",
+                "함초롬바탕",
+                "Haansoft Dotum",
+                "함초롬돋움",
+                "HCR Batang",
+                "HCR Dotum",
+            ] {
+                if let Some(em_advance) = custom_face_char_em_advance(cand, bold, italic, c) {
+                    return Some(quantize_unless_raw(em_advance * font_size, raw));
+                }
+            }
+        }
         let (_, fallback_chain) = font_family.split_once(',')?;
-        return measure_char_width_with_policy(fallback_chain, bold, italic, c, font_size, policy);
+        return measure_char_width_inner(fallback_chain, bold, italic, c, font_size, policy, raw);
     };
     // HWP 반각 처리: space 및 한컴이 반각으로 처리하는 구두점/기호
     let w = if c == ' ' {
         mm.metric.em_size / 2
     } else {
         let glyph_w = mm.metric.get_width(c)?;
-        // 한컴은 스마트 따옴표 등을 반각으로 처리.
-        // 폰트 메트릭에서 전각(em_size)으로 기록되어 있어도 em/2로 강제.
-        // [Issue #630] U+00B7 (가운뎃점) 은 본 분기에서 제외 — 한컴 저장본의
-        // tab_extended 가 전각 측정 기반으로 산출되므로 반각 강제 시 right-tab
-        // 정렬이 8.67px 좌측 이탈. 폰트 메트릭 그대로 사용 (전각).
-        let is_halfwidth_punct = matches!(
-            c,
-            '\u{2018}'..='\u{2027}' // ''‚‛""„‟†‡•‣․‥…‧ 구두점/기호
-        );
-        // 휴먼명조/HY중고딕/HY신명조/HY견명조 등 일부 폰트 DB 가 U+2018/U+2019/
-        // U+2027 을 fullwidth (1.0 em) 로 잘못 기록한 케이스 정정. em/2 (0.5 em)
-        // 강제 시 한컴 대비 약 4px (font-size 20px 기준, 0.5→0.3 em 차) 과대.
-        // glyph_w 가 비정상 fullwidth (>= em_size) 일 때만 0.3 em 강제 — 함초롬
-        // 바탕 (0.32) / Pretendard (0.22) 등 정상 DB 값은 조건 미충족으로 영향 없음.
-        let quote_width_is_authentic =
-            matches!(c, '\u{2018}' | '\u{2019}') && is_monospace_metric(mm.metric);
-        let is_narrow_unicode_punct =
-            matches!(c, '\u{2018}' | '\u{2019}' | '\u{2027}') && !quote_width_is_authentic;
-        // [U+00B7 .notdef 위장값 정정] 비례폰트(휴먼명조 등)가 `·` (가운뎃점)
-        // 글리프를 갖지 않으면 cmap 이 .notdef(glyph 0) 로 매핑돼 advance 가
-        // em_size(전각) 로 기록된다. 한컴은 이 경우 점 글리프를 가진 대체
-        // 폰트(바탕 ≈0.33em 등)로 `·` 를 렌더하므로 전각 advance 는 PDF 대비
-        // 과대 (시·군 점 좌우 공백 큼). 비례폰트에서 U+00B7 이 전각이면 위장값
-        // 으로 보고 0.3em 으로 정정한다. 고정폭(monospace) 폰트(돋움체 등)는
-        // 모든 글리프가 em_size 이므로 제외 — 해당 `·` 는 진짜 전각이다
-        // (Issue #630, aift 목차 right-tab 정합 보존).
-        let is_b7_notdef_artifact =
-            c == '\u{00B7}' && glyph_w >= mm.metric.em_size && !is_monospace_metric(mm.metric);
-        if (is_narrow_unicode_punct && glyph_w >= mm.metric.em_size) || is_b7_notdef_artifact {
-            (mm.metric.em_size as f64 * 0.3) as u16
-        } else if (is_halfwidth_punct || is_halfwidth_cjk_quote(c))
-            && !quote_width_is_authentic
-            && glyph_w >= mm.metric.em_size
-        {
-            mm.metric.em_size / 2
-        } else {
-            glyph_w
-        }
+        hancom_glyph_units(c, glyph_w, mm.metric.em_size, policy, || {
+            is_monospace_metric(mm.metric)
+        })
     };
     // em 단위 → px: w / em_size * font_size, 그 후 HWP 양자화
     let em = mm.metric.em_size as f64;
@@ -1939,7 +3206,8 @@ fn measure_char_width_with_policy(
     // HWPUNIT truncation alone accumulates visible drift within long words.
     // Keep this scoped to the observed font/script and Mac policy. Latin
     // shaping, spaces, other fonts and Windows measurements are unchanged.
-    if policy == FontMetricsPolicy::HcrDeclared
+    if !raw
+        && policy == FontMetricsPolicy::HcrDeclared
         && mm.metric.name == "HCR Batang"
         && ('\u{AC00}'..='\u{D7A3}').contains(&c)
     {
@@ -1955,7 +3223,137 @@ fn measure_char_width_with_policy(
 
     // 한컴과 동일한 HWPUNIT 정수 변환: w * base_size / em (내림)
     // round가 아닌 truncate (as i32)로 처리하여 한컴 정수 나눗셈과 일치
-    Some(quantize_hwp_px(actual_px))
+    Some(quantize_unless_raw(actual_px, raw))
+}
+
+#[cfg(test)]
+#[test]
+fn measured_hft_bold_tracking_is_independent_of_installed_faces() {
+    assert_eq!(
+        synthetic_bold_tracking_px(
+            "한양신명조",
+            true,
+            false,
+            24.0,
+            FontMetricsPolicy::HcrDeclared
+        ),
+        1.0,
+    );
+    for (family, bold, policy) in [
+        ("한양신명조", false, FontMetricsPolicy::HcrDeclared),
+        ("한양신명조", true, FontMetricsPolicy::HancomWindows),
+        ("바탕", true, FontMetricsPolicy::HcrDeclared),
+    ] {
+        assert_eq!(
+            synthetic_bold_tracking_px(family, bold, false, 24.0, policy),
+            0.0
+        );
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn hollyhock_real_bold_keeps_source_advances_without_synthetic_tracking() {
+    assert_eq!(
+        hft_bold_tracking_px(
+            "HCI Hollyhock",
+            true,
+            'A',
+            20.0,
+            FontMetricsPolicy::HcrDeclared
+        ),
+        Some(0.0),
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn hci_poppy_uses_hft_widths_and_palatino_linotype_for_missing_chars() {
+    let width = |c: char, bold: bool| {
+        measure_char_width_with_policy(
+            "HCI Poppy",
+            bold,
+            false,
+            c,
+            20.0,
+            FontMetricsPolicy::default(),
+        )
+        .unwrap()
+    };
+    // HMEPO.HFT: `<` = 310/512em (Palatino Linotype 은 0.5em).
+    assert_eq!(width('<', false), quantize_hwp_px(20.0 * 310.0 / 512.0));
+    assert!(font_metrics_data::find_metric("HCI Poppy", true, false)
+        .is_some_and(|metric| !metric.bold_fallback));
+    // HFT 에 없는 `·` 는 한컴 FontMap 대체 글꼴(Palatino Linotype) 폭으로 잰다.
+    assert_eq!(
+        width('\u{00B7}', false),
+        measure_char_width_embedded("Palatino Linotype", false, false, '\u{00B7}', 20.0).unwrap()
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn mac_missing_glyph_uses_registered_fallback_outside_baked_ranges() {
+    const CHILD: &str = "RHWP_MISSING_GLYPH_SOURCE_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("renderer::layout::text_measurement::mac_missing_glyph_uses_registered_fallback_outside_baked_ranges")
+            .arg("--exact")
+            .arg("--nocapture")
+            .env(CHILD, "1")
+            .output()
+            .expect("run isolated glyph fallback test");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    use crate::renderer::runtime_font_metrics;
+    const SOURCE: &str = "RHWP Missing Glyph Source";
+    const COVERED: &str = "RHWP Covered Glyph Source";
+    const CH: char = '\u{E100}';
+    let source = include_bytes!("../../../tests/fixtures/fonts/RHWPShapingFixture.ttf");
+    let fallback = include_bytes!("../../../tests/fixtures/fonts/RHWPBitmapSvgGlyphSmoke.ttf");
+    runtime_font_metrics::register(source, &[SOURCE.into()], false, false).unwrap();
+    runtime_font_metrics::register(
+        fallback,
+        &["함초롬돋움".into(), COVERED.into()],
+        false,
+        false,
+    )
+    .unwrap();
+    assert!(font_metrics_data::find_metric("함초롬돋움", false, false)
+        .unwrap()
+        .metric
+        .get_width(CH)
+        .is_none());
+    let expected = runtime_font_metrics::char_em_advance("함초롬돋움", false, false, CH).unwrap();
+    let mut style = TextStyle {
+        font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+        font_family: SOURCE.into(),
+        font_size: 20.0,
+        ..Default::default()
+    };
+    assert_eq!(
+        measure_char_width_with_policy(SOURCE, false, false, CH, 20.0, style.font_metrics_policy),
+        Some(quantize_hwp_px(expected * 20.0))
+    );
+    apply_covered_hancom_fallback(&mut style, &format!(" {CH} "));
+    assert_eq!(style.font_family, "함초롬돋움");
+    for (family, text, policy) in [
+        (SOURCE, format!("A{CH}"), FontMetricsPolicy::HcrDeclared),
+        (COVERED, CH.to_string(), FontMetricsPolicy::HcrDeclared),
+        (SOURCE, "🂠".into(), FontMetricsPolicy::HcrDeclared),
+        (SOURCE, CH.to_string(), FontMetricsPolicy::HancomWindows),
+    ] {
+        style.font_family = family.into();
+        style.font_metrics_policy = policy;
+        apply_covered_hancom_fallback(&mut style, &text);
+        assert_eq!(style.font_family, family, "{text:?} {policy:?}");
+    }
 }
 
 #[cfg(test)]
@@ -2030,12 +3428,40 @@ fn covering_hancom_fallback_changes_only_fully_missing_sans_runs() {
 
 // ── 호환 래퍼 (기존 호출부 변경 없음) ──────────────────────────────
 
+/// 위/아래 첨자 run 의 측정 스타일.
+///
+/// 한컴(macOS)은 첨자 glyph 만 줄이지 않고 진행폭과 자간도 같은 비율로 줄인다.
+/// PDF 실측(el-school-001 '장소*를', 함초롬바탕 15pt·장평 97%·자간 -3%):
+/// '*' 진행폭 4.92pt = 0.55em × 9.6pt × 0.97 × 0.97 (원래 크기 기준이면 7.7pt).
+/// 측정 진입점이 모두 이 스타일을 쓰므로 줄바꿈·배치·렌더러·캐럿 좌표가 같은
+/// advance 를 공유한다. 기준선 이동은 렌더러(`script_glyph_size_and_shift`)가 맡는다.
+fn script_measure_style(style: &TextStyle) -> Option<TextStyle> {
+    if !(style.superscript || style.subscript) {
+        return None;
+    }
+    let scale = crate::renderer::SCRIPT_GLYPH_SCALE;
+    let (font_size, _, _) = style_params(style);
+    let mut script = style.clone();
+    script.superscript = false;
+    script.subscript = false;
+    script.font_size = font_size * scale;
+    script.script_base_size = font_size;
+    // 자간은 글자 크기 × % 로 저장되어 있으므로 글자 크기와 함께 줄인다.
+    script.letter_spacing = style.letter_spacing * scale;
+    Some(script)
+}
+
 /// 텍스트 폭 추정
 ///
 /// 플랫폼별 기본 TextMeasurer를 자동 선택하여 위임한다.
 /// WASM: WasmTextMeasurer (JS Canvas + HWP 양자화)
 /// 네이티브: EmbeddedTextMeasurer (내장 메트릭 + 휴리스틱)
 pub(crate) fn estimate_text_width(text: &str, style: &TextStyle) -> f64 {
+    let patched = measure_style(style);
+    let style = patched.as_ref();
+    if let Some(script) = script_measure_style(style) {
+        return estimate_text_width(text, &script);
+    }
     if let Some(positions) = shaped_char_positions(text, style) {
         return positions.last().copied().unwrap_or(0.0).round();
     }
@@ -2048,6 +3474,11 @@ pub(crate) fn estimate_text_width(text: &str, style: &TextStyle) -> f64 {
 /// 한컴은 HWPUNIT 정수로 폭을 누적하므로, round 없이 px를 합산한 뒤
 /// 줄바꿈 비교 시점에서 available_width와 비교하는 것이 더 정확하다.
 pub(crate) fn estimate_text_width_unrounded(text: &str, style: &TextStyle) -> f64 {
+    let patched = measure_style(style);
+    let style = patched.as_ref();
+    if let Some(script) = script_measure_style(style) {
+        return estimate_text_width_unrounded(text, &script);
+    }
     if let Some(positions) = shaped_char_positions(text, style) {
         return positions.last().copied().unwrap_or(0.0);
     }
@@ -2059,24 +3490,48 @@ pub(crate) fn estimate_text_width_unrounded(text: &str, style: &TextStyle) -> f6
     let char_width = |i: usize| -> f64 {
         let c = chars[i];
         if c == '\u{2007}' {
-            return font_size * 0.5 * ratio
-                + glyph_letter_spacing(style.letter_spacing, font_size * 0.5 * ratio, font_size)
-                + style.extra_char_spacing;
+            return scaled_glyph_advance(
+                font_size * FIXED_WIDTH_SPACE_EM,
+                '\u{2007}',
+                style,
+                font_size,
+                ratio,
+            ) + style.extra_char_spacing.max(0.0);
         }
         // 인라인 객체 placeholder 는 실제 control node 가 따로 그리므로 텍스트 폭은 0.
-        if matches!(c, '\u{FFFC}' | '\u{00AD}') {
+        if c == '\u{FFFC}' {
             return 0.0;
         }
+        // 하이픈(U+00AD, HWP 코드 24)은 한컴(macOS)이 글꼴의 '-' 글리프와 폭으로
+        // 그린다 (hcar-001 p3 `- 법령…` 줄: 맑은 고딕 0.41em 전진).
+        let c = if c == '\u{00AD}' { '-' } else { c };
         // [Issue #677] HWP PUA 채움 문자 (U+F081C) — 시각 폭 0
-        if c == '\u{F081C}' {
+        if c == '\u{F081C}' && style.font_metrics_policy == FontMetricsPolicy::HcrDeclared {
+            return scaled_glyph_advance(
+                hancom_cut_line_em() * font_size,
+                c,
+                style,
+                font_size,
+                ratio,
+            ) + style.extra_char_spacing;
+        }
+        if c == '\u{F081C}' || c == '\u{200B}' {
             return 0.0;
         }
-        let base_w_raw = if let Some(w) = (c == '\u{318D}')
-            .then(|| area_dot_fallback_width(&style.font_family, font_size))
+        let base_w_raw = if c == '\u{00B7}' && crate::renderer::hft_uses_paired_middle_dot(style) {
+            font_size
+        } else if let Some(w) = latin_space_width(style, c, font_size) {
+            w
+        } else if let Some(w) = missing_hft_bold_char_width(style, c, font_size) {
+            w
+        } else if let Some(w) = (c == '\u{318D}')
+            .then(|| {
+                area_dot_fallback_width(&style.font_family, font_size, style.font_metrics_policy)
+            })
             .flatten()
         {
             w
-        } else if let Some(w) = measure_char_width_with_policy(
+        } else if let Some(w) = measure_glyph_base_px(
             &style.font_family,
             style.bold,
             style.italic,
@@ -2094,18 +3549,14 @@ pub(crate) fn estimate_text_width_unrounded(text: &str, style: &TextStyle) -> f6
             font_size * 0.5
         };
         let base_w = base_w_raw;
-        let mut w = base_w * ratio
-            + glyph_letter_spacing(style.letter_spacing, base_w * ratio, font_size)
-            + style.extra_char_spacing;
+        let mut w =
+            scaled_glyph_advance(base_w, c, style, font_size, ratio) + style.extra_char_spacing;
         if c == ' ' {
             w += style.extra_word_spacing;
         }
-        // 음수 자간(letter_spacing + extra_char_spacing < 0) 시
-        // per-char 최소 advance 클램프로 narrow glyph 역진 방지.
-        if style.letter_spacing + style.extra_char_spacing < 0.0 {
-            let min_w = base_w * ratio * 0.5;
-            w = w.max(min_w);
-        }
+        // 압축 자간은 글자마다 그대로 뺀다. 한컴은 좁은 글자(쉼표·마침표)의 advance 가
+        // 음수가 되어도 클램프하지 않는다 (fdi-press 압축 셀 `(△433.6)`: `.` 뒤 `6` 이
+        // 0.13pt 앞에 놓임). 글자 폭 비례 자간은 −100% 전에는 음수가 되지 않는다.
         w
     };
 
@@ -2131,6 +3582,11 @@ pub(crate) fn estimate_text_width_unrounded(text: &str, style: &TextStyle) -> f6
 /// N글자 → N+1개 경계값을 반환한다 (0번째는 0.0, N번째는 전체 폭).
 /// run 내부 상대 좌표이며, 절대 좌표는 run.bbox.x + charX[i]로 계산한다.
 pub(crate) fn compute_char_positions(text: &str, style: &TextStyle) -> Vec<f64> {
+    let patched = measure_style(style);
+    let style = patched.as_ref();
+    if let Some(script) = script_measure_style(style) {
+        return compute_char_positions(text, &script);
+    }
     if let Some(positions) = shaped_char_positions(text, style) {
         return positions;
     }
@@ -2142,6 +3598,8 @@ pub(crate) fn compute_char_positions(text: &str, style: &TextStyle) -> Vec<f64> 
 /// Tracking and justification move the next glyph; they must not widen the
 /// current glyph when Canvas/SVG fit browser text to the calibrated advance.
 pub(crate) fn compute_glyph_positions(text: &str, style: &TextStyle) -> Vec<f64> {
+    let patched = measure_style(style);
+    let style = patched.as_ref();
     let mut glyph_style = style.clone();
     glyph_style.letter_spacing = 0.0;
     glyph_style.extra_char_spacing = 0.0;
@@ -2180,6 +3638,11 @@ fn is_narrow_punctuation(c: char) -> bool {
         '\u{00B7}' |  // · MIDDLE DOT
         '\u{2018}' |  // ' LEFT SINGLE QUOTATION MARK
         '\u{2019}' |  // ' RIGHT SINGLE QUOTATION MARK
+        // ․ ONE DOT LEADER — 휴먼명조 등 폰트 미보유 글리프. 한컴은 좁은 점
+        // 대체 폰트로 ~0.29em 으로 렌더하므로 0.5em 기본 폴백은 과대
+        // (footnote-01 p3 '불법․무단제조': +3.1pt 누적 오차가 양쪽정렬
+        // space 신축폭을 좁힘).
+        '\u{2024}' |  // ․ ONE DOT LEADER
         '\u{2027}' |  // ‧ HYPHENATION POINT
         // [Task #1735] 한글 방점. 렌더 경로에서 좁은 가운데 점(·)으로 치환되므로
         // 측정 폭도 narrow 로 맞춰 측정-렌더 폭 정합 유지(0.5em 기본 폴백 방지).
@@ -2204,12 +3667,41 @@ fn is_narrow_paren_for_font(font_family: &str, c: char) -> bool {
     primary.contains("휴먼명조") || primary.contains("한양중고딕") || primary.contains("HY중고딕")
 }
 
-/// 한컴이 수평 조판에서 반각 advance 로 처리하는 CJK 낫표.
+/// 「」 낫표 판별.
 ///
-/// 일부 등록 폰트는 `「」` glyph advance 를 전각으로 제공하지만, 한컴 PDF 기준
-/// 본문 조판에서는 법령명 낫표 뒤에 전각 공백처럼 보이는 간격이 생기지 않는다.
+/// 주의: 폭 강제에 쓰지 않는다 — 베이크드 메트릭이 이미 폰트별 한컴 조판 폭을
+/// 기록한다 (함초롬 계열 0.5em, HFT 계열 전각). 과거에는 전각 기록값을 em/2 로
+/// 강제했으나 한컴 macOS 는 HFT 폰트의 `」` 를 전각으로 조판한다
+/// (36-apartment-form 지원제외대상 표 실측: `」` 뒤 반쪽 여백).
 pub(crate) fn is_halfwidth_cjk_quote(c: char) -> bool {
     matches!(c, '\u{300C}' | '\u{300D}')
+}
+
+/// glyph 배치 시 특수 오프셋이 필요한 구두점.
+/// 측정이 줄인 전각 구두점(' ' ‥ 등)과 「」 낫표를 포함한다 — 「」는 폰트가
+/// 전각을 기록해도 paint 서체가 반각 글리프를 제공할 수 있어(HY신명조 조판은
+/// 전각, 그리기는 함초롬 계열 치환) 셀 안 정렬 보정이 필요하다.
+pub(crate) fn is_halfwidth_forced_punct(c: char) -> bool {
+    matches!(c, '\u{2018}'..='\u{2027}') || is_halfwidth_cjk_quote(c)
+}
+
+/// 등록 글꼴 메트릭에 기록된 원래 glyph advance (px, 장평 전). 첨자 run 은 첨자 크기 기준.
+///
+/// 레이아웃이 반각으로 줄인 전각 구두점을 렌더러가 찌그러뜨리지 않고 배치할 때 쓴다
+/// (`renderer::halfwidth_punct_glyph_offset`). 글꼴이 DB 에 없으면 `None`.
+pub(crate) fn registered_glyph_advance(c: char, style: &TextStyle) -> Option<f64> {
+    let patched = measure_style(style);
+    let style = patched.as_ref();
+    if let Some(script) = script_measure_style(style) {
+        return registered_glyph_advance(c, &script);
+    }
+    let (font_size, _, _) = style_params(style);
+    let primary = super::super::style_resolver::primary_font_name(&style.font_family);
+    let bold = style.bold
+        && crate::renderer::macos_synthetic_bold_em(primary, style.font_metrics_policy).is_none();
+    let metric = font_metrics_data::find_metric(primary, bold, style.italic)?.metric;
+    let width = metric.get_width(c)?;
+    Some(f64::from(width) * font_size / f64::from(metric.em_size))
 }
 
 /// 한컴이 전각으로 처리하는 기호 (메트릭 폴백 시 font_size 사용)
@@ -2310,6 +3802,28 @@ pub(crate) fn is_vertical_rotate_char(c: char) -> bool {
 /// CJK Compatibility Forms (U+FE30-FE4F) 및 Vertical Forms 활용.
 /// 대체 가능한 문자가 있으면 Some(세로형태)를 반환하고,
 /// 없으면 None을 반환한다 (호출측에서 회전 처리).
+/// macOS HFT 굵은 세로쓰기의 글자 전진. 한글은 전각, 회전 괄호는 원본 라틴 폭이다.
+/// 합성 굵게의 폭은 라틴 전진에만 붙고, 열 기준선은 글자 상자의 위쪽에 놓인다.
+pub(crate) fn hft_vertical_advance(style: &TextStyle, ch: char) -> Option<f64> {
+    if style.font_metrics_policy != FontMetricsPolicy::HcrDeclared
+        || !style.bold
+        || style.italic
+        || style.hft_family.is_empty()
+    {
+        return None;
+    }
+    if is_cjk_char(ch) {
+        return Some(style.font_size);
+    }
+    if !matches!(ch, '(' | ')') {
+        return None;
+    }
+    let advance = crate::renderer::hft_glyphs::hft_advance_em(&style.hft_family, ch)?;
+    let bold = crate::renderer::hft_synthetic_bold_advance_em(&style.hft_family)
+        .unwrap_or(HFT_BOLD_ADVANCE_EM);
+    Some(style.font_size * (advance + bold))
+}
+
 pub(crate) fn vertical_substitute_char(c: char) -> Option<char> {
     match c {
         // 괄호류
@@ -2348,7 +3862,195 @@ pub(crate) fn vertical_substitute_char(c: char) -> Option<char> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hft_vertical_advance_reads_source_width_and_preserves_other_profiles() {
+        let mut bytes = vec![0u8; 526];
+        let magic = b"Han Unified Font File 1.0\x1a";
+        bytes[..magic.len()].copy_from_slice(magic);
+        let family = "VerticalFixture";
+        bytes[0x6c..0x6c + family.len()].copy_from_slice(family.as_bytes());
+        bytes[0x1aa..0x1ae].copy_from_slice(&512u32.to_le_bytes());
+        bytes[512..516].copy_from_slice(&14u32.to_le_bytes());
+        bytes[516..518].copy_from_slice(&40u16.to_le_bytes());
+        bytes[518..520].copy_from_slice(&41u16.to_le_bytes());
+        bytes[520..522].copy_from_slice(&1u16.to_le_bytes());
+        bytes[522..524].copy_from_slice(&300u16.to_le_bytes());
+        bytes[524..526].copy_from_slice(&320u16.to_le_bytes());
+        assert!(crate::renderer::hft_glyphs::register_hft_bytes(bytes));
+        let mut style = TextStyle {
+            font_size: 20.0,
+            hft_family: family.to_string(),
+            bold: true,
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            ..TextStyle::default()
+        };
+        assert_eq!(hft_vertical_advance(&style, '한'), Some(20.0));
+        assert_eq!(hft_vertical_advance(&style, '('), Some(7.0));
+        assert_eq!(hft_vertical_advance(&style, ')'), Some(7.4));
+        assert_eq!(hft_vertical_advance(&style, 'A'), None);
+        style.bold = false;
+        assert_eq!(hft_vertical_advance(&style, '('), None);
+        style.bold = true;
+        style.italic = true;
+        assert_eq!(hft_vertical_advance(&style, '한'), None);
+        style.italic = false;
+        style.font_metrics_policy = FontMetricsPolicy::HancomWindows;
+        assert_eq!(hft_vertical_advance(&style, '('), None);
+        style.font_metrics_policy = FontMetricsPolicy::HcrDeclared;
+        style.hft_family.clear();
+        assert_eq!(hft_vertical_advance(&style, '한'), None);
+    }
+
+    #[test]
+    fn hft_fallback_is_measured_without_becoming_an_authored_substitute() {
+        let mut style = TextStyle {
+            font_family: "HY신명조".into(),
+            hft_family: "신명 중명조".into(),
+            ..Default::default()
+        };
+        assert_eq!(style.effective_font_subst(), "한컴바탕");
+        assert_eq!(measure_style(&style).font_family, "한컴바탕");
+        assert!(style.font_subst.is_empty());
+
+        // 실제 문서 선언 대체는 미설치 원본의 측정 서체도 바꾼다.
+        style.font_family = "HY Unavailable authored HFT alias".into();
+        style.font_subst = "함초롬바탕".into();
+        assert_eq!(measure_style(&style).font_family, "함초롬바탕");
+    }
+
     use super::*;
+
+    /// 합성 스윕(한컴 macOS 12.30, lineseg 없는 문서)에서 확정한 배치 단위 advance.
+    #[test]
+    fn mac_glyph_advances_follow_hancom_layout_units() {
+        let px = |pt: f64| pt * 96.0 / 72.0;
+        let units = |text: &str, style: &TextStyle| {
+            let positions = EmbeddedTextMeasurer.compute_char_positions(text, style);
+            positions
+                .windows(2)
+                .map(|w| ((w[1] - w[0]) / MAC_LAYOUT_UNIT_PX).round() as i32)
+                .collect::<Vec<_>>()
+        };
+        let style = |size_pt: f64, ratio: f64, spacing: f64| TextStyle {
+            font_family: "함초롬바탕".into(),
+            font_size: px(size_pt),
+            ratio,
+            letter_spacing: px(size_pt) * spacing / 100.0,
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            ..Default::default()
+        };
+        // 크기: 한글 0.97em = round_half_up(0.97 × floor(크기HU/4)), 빈칸 = floor(u/2).
+        for (size, hangul, space) in [(10.0, 243, 125), (9.5, 230, 118), (7.0, 170, 87)] {
+            assert_eq!(
+                units("가 ", &style(size, 1.0, 0.0)),
+                [hangul, space],
+                "{size}pt"
+            );
+        }
+        // 장평: 글리프 floor(em × u × r), 빈칸 round_half_up(floor(u/2) × r).
+        for (ratio, hangul, space) in [
+            (0.5, 121, 63),
+            (0.6, 145, 75),
+            (0.7, 169, 88),
+            (1.5, 363, 188),
+        ] {
+            assert_eq!(
+                units("가 ", &style(10.0, ratio, 0.0)),
+                [hangul, space],
+                "{ratio}"
+            );
+        }
+        // 자간: 증감분 반올림의 0.5 는 0 에서 먼 쪽 (+50% → 365, −50% → 121).
+        assert_eq!(units("가", &style(10.0, 1.0, 50.0)), [365]);
+        assert_eq!(units("가", &style(10.0, 1.0, -50.0)), [121]);
+        assert_eq!(units("가", &style(10.0, 1.0, 20.0)), [292]);
+    }
+
+    /// 한컴 합성 탐침의 실폰트 hmtx/upm: 맑은 고딕, 함초롬바탕.
+    #[test]
+    fn tracked_glyphs_apply_document_ratio_before_advance_quantization() {
+        for (size, ratio, glyph, em, negative, positive) in [
+            (9.0, 0.95, ')', 624.0 / 2048.0, 60, 70),
+            (11.0, 0.90, '1', 550.0 / 1000.0, 126, 146),
+            (11.0, 0.95, 'A', 1348.0 / 2048.0, 159, 183),
+            (9.0, 0.95, '가', 970.0 / 1000.0, 193, 221),
+            (9.0, 0.95, ' ', 0.5, 99, 113),
+            (11.0, 0.95, ' ', 0.5, 121, 139),
+            (12.0, 0.95, ' ', 0.5, 133, 153),
+        ] {
+            for (spacing, expected) in [(-7.0, negative), (7.0, positive)] {
+                let font_size = size * 96.0 / 72.0;
+                let style = TextStyle {
+                    font_size,
+                    ratio,
+                    letter_spacing: font_size * spacing / 100.0,
+                    font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+                    ..Default::default()
+                };
+                let advance = mac_glyph_advance_px(font_size * em, glyph, &style, font_size, ratio);
+                assert_eq!(
+                    (advance / MAC_LAYOUT_UNIT_PX).round() as i32,
+                    expected,
+                    "{glyph} {size}pt ratio={ratio} spacing={spacing}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mac_ellipsis_keeps_a_fullwidth_hmtx_advance() {
+        let style = |policy| TextStyle {
+            font_family: "굴림".into(),
+            font_size: 40.0 / 3.0,
+            font_metrics_policy: policy,
+            ..Default::default()
+        };
+        let mac = EmbeddedTextMeasurer
+            .compute_char_positions("…", &style(FontMetricsPolicy::HcrDeclared));
+        assert!((mac[1] - 40.0 / 3.0).abs() < 1e-9, "{mac:?}");
+        let win = EmbeddedTextMeasurer
+            .compute_char_positions("…", &style(FontMetricsPolicy::HancomWindows));
+        assert!((win[1] - 20.0 / 3.0).abs() < 0.02, "{win:?}");
+    }
+
+    #[test]
+    fn mac_character_spacing_quantizes_before_and_after_scaling() {
+        // 한컴 PDF 무신축 마지막 줄 실측: 휴먼명조 14pt 및 한컴돋움 13pt.
+        // 6.86pt 중간값과 7.57pt 원폭은 각각 후단/전단 양자화를 검증한다.
+        for (base_pt, size_pt, spacing_percent, expected_pt) in [
+            (7.0, 14.0, -1.0, 6.92),
+            (7.0, 14.0, -2.0, 6.84),
+            (7.0, 14.0, -3.0, 6.80),
+            (7.0, 14.0, -5.0, 6.64),
+            (7.0, 14.0, -7.0, 6.52),
+            (7.57, 13.0, -4.0, 7.24),
+        ] {
+            let px_per_pt = 96.0 / 72.0;
+            let base = base_pt * px_per_pt;
+            let size = size_pt * px_per_pt;
+            let spacing = size * spacing_percent / 100.0;
+            let advance =
+                base + glyph_letter_spacing(spacing, base, size, FontMetricsPolicy::HcrDeclared);
+            assert!(
+                (advance / px_per_pt - expected_pt).abs() < 1e-9,
+                "base={base_pt}, spacing={spacing_percent}: {advance}"
+            );
+        }
+    }
+
+    #[test]
+    fn spacing_grid_preserves_zero_spacing_and_windows_metrics() {
+        let base = 7.57 * 96.0 / 72.0;
+        let size = 13.0 * 96.0 / 72.0;
+        assert_eq!(
+            glyph_letter_spacing(0.0, base, size, FontMetricsPolicy::HcrDeclared),
+            0.0
+        );
+        let spacing = size * -0.04;
+        let contribution =
+            glyph_letter_spacing(spacing, base, size, FontMetricsPolicy::HancomWindows);
+        assert!((contribution - spacing * (base / size)).abs() < 1e-12);
+    }
 
     /// 테스트용 고정 폭 텍스트 측정기
     ///
@@ -2419,9 +4121,10 @@ mod tests {
         };
         // HCRBatang in the captured Mac PDF uses P=0.603em, a=0.569em,
         // period=0.320em. The Windows substitute has different advances.
+        // 10pt = 250 배치 단위: 151 + 142 + 80.
         let expected: f64 = [603.0, 569.0, 320.0]
             .into_iter()
-            .map(|w| quantize_hwp_px(w * style.font_size / 1000.0))
+            .map(|w| round_half_up(w * 250.0 / 1000.0) * MAC_LAYOUT_UNIT_PX)
             .sum();
         let positions = EmbeddedTextMeasurer.compute_char_positions("Pa.", &style);
         assert!(
@@ -2475,11 +4178,97 @@ mod tests {
                 font_metrics_policy: FontMetricsPolicy::HancomWindows,
                 ..style.clone()
             };
-            assert_eq!(
-                EmbeddedTextMeasurer.compute_char_positions("이어집니다", &style),
-                EmbeddedTextMeasurer.compute_char_positions("이어집니다", &windows),
+            // 다른 글꼴도 같은 배치 단위 격자를 쓴다 — Windows 폭과 반 단위 안에서 다르다.
+            let mac = EmbeddedTextMeasurer.compute_char_positions("이어집니다", &style);
+            let win = EmbeddedTextMeasurer.compute_char_positions("이어집니다", &windows);
+            for (m, w) in mac.windows(2).zip(win.windows(2)) {
+                let advance = m[1] - m[0];
+                let units = advance / MAC_LAYOUT_UNIT_PX;
+                assert!((units - units.round()).abs() < 1e-6, "{family}: {mac:?}");
+                assert!((advance - (w[1] - w[0])).abs() <= MAC_LAYOUT_UNIT_PX / 2.0 + 1.0 / 75.0);
+            }
+        }
+    }
+
+    #[test]
+    fn hft_seal_keeps_single_hcr_glyph_advance() {
+        let style = TextStyle {
+            font_family: "한양신명조".into(),
+            hft_family: "한양신명조".into(),
+            font_size: 20.0,
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            ..Default::default()
+        };
+        let text = "\u{F012B}";
+        assert_eq!(
+            crate::renderer::composer::expand_pua_display_text(text),
+            text
+        );
+        assert!(is_hft_missing_pua(&style, '\u{F012B}'));
+        let positions = EmbeddedTextMeasurer.compute_char_positions(text, &style);
+        assert_eq!(positions.len(), 2);
+        // 15pt = 375 배치 단위, 함초롬바탕 0.97em → 364 단위.
+        let expected = 364.0 * MAC_LAYOUT_UNIT_PX;
+        assert!((positions[1] - expected).abs() < 0.001, "{positions:?}");
+        assert!((estimate_text_width_unrounded(text, &style) - expected).abs() < 0.001);
+    }
+
+    #[test]
+    fn paired_hft_middle_dot_keeps_the_source_full_em_advance() {
+        let style = TextStyle {
+            font_family: "한양견고딕".into(),
+            hft_family: "한양견고딕".into(),
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            font_size: 20.0,
+            ratio: 0.8,
+            letter_spacing: -2.0,
+            ..TextStyle::default()
+        };
+        let positions = EmbeddedTextMeasurer.compute_char_positions("가·나", &style);
+        assert!((positions[2] - positions[1] - 14.4).abs() < 0.001);
+        assert!((EmbeddedTextMeasurer.estimate_text_width("·", &style) - 14.4).abs() < 0.001);
+    }
+
+    #[test]
+    fn missing_hft_bold_metrics_preserve_space_and_shared_character_positions() {
+        let regular = TextStyle {
+            font_family: "한양중고딕".into(),
+            hft_family: "한양중고딕".into(),
+            font_size: 20.0,
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            ..Default::default()
+        };
+        let bold = TextStyle {
+            bold: true,
+            ..regular.clone()
+        };
+        let text = "가 나";
+        let regular_positions = EmbeddedTextMeasurer.compute_char_positions(text, &regular);
+        let bold_positions = EmbeddedTextMeasurer.compute_char_positions(text, &bold);
+        // 획 두께 advance 는 글리프 폭과 함께 배치 단위로 반올림된다.
+        for (i, extra) in [0.0, 1.0, 1.0, 2.0].into_iter().enumerate() {
+            assert!(
+                (bold_positions[i] - regular_positions[i] - extra).abs()
+                    <= MAC_LAYOUT_UNIT_PX * extra.ceil() + 1e-9
             );
         }
+        assert!(
+            (EmbeddedTextMeasurer.estimate_text_width(text, &bold)
+                - bold_positions.last().unwrap())
+            .abs()
+                < 0.001
+        );
+        let bundled = TextStyle {
+            font_family: "HCI Poppy".into(),
+            hft_family: "HCI Poppy".into(),
+            ..bold.clone()
+        };
+        assert!(missing_hft_bold_char_width(&bundled, '1', 20.0).is_none());
+        let windows = TextStyle {
+            font_metrics_policy: FontMetricsPolicy::HancomWindows,
+            ..bold
+        };
+        assert!(missing_hft_bold_char_width(&windows, '가', 20.0).is_none());
     }
 
     #[test]
@@ -2514,22 +4303,31 @@ mod tests {
         assert!((full_width.round() - trailing_width.round() - visible_width).abs() > 0.5);
     }
 
-    /// 한글은 함초롬바탕(HCR Batang) 문서의 비한글 문자(라틴·숫자·구두점·U+00B7)를
-    /// Haansoft Batang(한컴바탕) 메트릭으로 렌더한다 — 문자폭 사다리 통제
-    /// 프로브로 전 판별 클래스 확정.
-    /// 회귀 시 괄호가 HCR hmtx(0.32em)로 되돌아가 자격증 목록류 셀의 래핑
-    /// 줄수가 한글 대비 과소해진다 (21761835 r74 3줄 vs 한글 4줄).
+    /// Windows 한글은 함초롬바탕(HCR Batang) 문서의 비한글 문자(라틴·숫자·구두점·
+    /// U+00B7)를 Haansoft Batang(한컴바탕) 메트릭으로 렌더한다 — 문자폭 사다리
+    /// 통제 프로브로 전 판별 클래스 확정. 이 치환은 `HancomWindows` 정책
+    /// 전용이며, 기본(macOS) 정책은 HCR Batang 자체 hmtx 를 쓴다.
     #[test]
-    fn issue_2156_hcr_batang_latin_uses_haansoft_metrics() {
+    fn issue_2156_hcr_batang_latin_uses_haansoft_metrics_only_for_windows_policy() {
         let fs = 40.0 / 3.0; // 10pt = 13.333px
-        let w = |c: char| {
-            measure_char_width_embedded("함초롬바탕", false, false, c, fs)
-                .unwrap_or_else(|| panic!("측정 실패: {c:?}"))
+        let windows = |family: &str, c: char| {
+            measure_char_width_with_policy(
+                family,
+                false,
+                false,
+                c,
+                fs,
+                FontMetricsPolicy::HancomWindows,
+            )
+            .unwrap_or_else(|| panic!("{family} 측정 실패: {c:?}"))
         };
-        let hcr_batang = |c: char| {
-            measure_char_width_embedded("HCR Batang", false, false, c, fs)
-                .unwrap_or_else(|| panic!("HCR Batang 측정 실패: {c:?}"))
-        };
+        let w = |c: char| windows("함초롬바탕", c);
+        let hcr_batang = |c: char| windows("HCR Batang", c);
+        // macOS 한글 PDF 실측: '(' 0.32em, '-' 0.55em, 숫자 0.55em (HANBatang.ttf hmtx).
+        for (c, em) in [('(', 0.320), ('-', 0.550), ('0', 0.550), ('.', 0.320)] {
+            let mac = measure_char_width_embedded("함초롬바탕", false, false, c, fs).unwrap();
+            assert!((mac - fs * em).abs() < 0.05, "mac {c:?} {mac} ≠ {em}em");
+        }
         assert!(
             (w('(') - fs * 0.5000).abs() < 0.05,
             "'(' {} ≠ 0.500em",
@@ -2619,8 +4417,8 @@ mod tests {
             w("함초롬돋움", '가')
         );
         // ㆍ(U+318D): 한컴 계열은 area_dot 폴백 대신 embedded 메트릭(1.0em) 신뢰
-        assert!(area_dot_fallback_width("한컴돋움", fs).is_none());
-        assert!(area_dot_fallback_width("한컴바탕", fs).is_none());
+        assert!(area_dot_fallback_width("한컴돋움", fs, FontMetricsPolicy::HcrDeclared).is_none());
+        assert!(area_dot_fallback_width("한컴바탕", fs, FontMetricsPolicy::HcrDeclared).is_none());
     }
 
     // ── #2430 한양·휴먼 HFT 실측 메트릭의 native/WASM 정합 보장 ──
@@ -2875,8 +4673,9 @@ mod tests {
         // [#2195 stage57] KoPub 미설치 환경에서 한글이 바탕으로 치환되어 전각
         // 1.0em 렌더 (86712 한컴 PDF 글리프 실측: 12pt 한글 16px). 종전 0.84
         // 핀은 r27 근거설명 25문단 -11줄 과소의 성분이었다.
+        // 14px = 10.5pt → floor(1050/4) = 262 배치 단위.
         let w = m.estimate_text_width("가나", &style);
-        assert_eq!(w, 28.0);
+        assert!((w - 2.0 * 262.0 * MAC_LAYOUT_UNIT_PX).abs() < 1e-9, "{w}");
     }
 
     #[test]
@@ -2948,49 +4747,70 @@ mod tests {
     }
 
     #[test]
-    fn discretionary_hyphen_has_no_advance_between_visible_characters() {
+    fn hwp_hyphen_advances_like_a_hyphen_minus() {
+        // 한컴(macOS)은 U+00AD(HWP 코드 24)를 글꼴의 '-' 글리프·폭으로 그린다.
         let style = TextStyle {
             font_family: "맑은 고딕".to_string(),
             font_size: 13.3,
             ..Default::default()
         };
-        let positions = compute_char_positions("A\u{00AD}- B", &style);
-        assert_eq!(positions[1], positions[2]);
-        assert!(
-            positions[3] > positions[2],
-            "literal hyphen remains visible"
-        );
         assert_eq!(
             estimate_text_width("A\u{00AD}B", &style),
-            estimate_text_width("AB", &style)
+            estimate_text_width("A-B", &style)
         );
     }
 
     // ── 오버플로우 압축 회귀 테스트 (Task #229) ──
 
-    /// 음수 extra_char_spacing (오버플로우 압축)에서 narrow glyph(콤마)가
-    /// 뒷 글자에 역진 겹침되지 않아야 한다. compute_char_positions 결과는
-    /// 단조 비감소여야 한다.
+    /// 오버플로우 압축(음수 extra_char_spacing)은 좁은 글자에도 그대로 빠진다.
+    /// 한컴(macOS)은 `.` advance 가 음수가 되어도 클램프하지 않는다
+    /// (fdi-press 압축 셀 `(△433.6)` 의 `.` 뒤 `6` 이 앞쪽에 놓임).
     #[test]
-    fn test_overflow_compression_positions_monotonic_comma() {
+    fn test_overflow_compression_is_uniform_per_char() {
         let m = EmbeddedTextMeasurer;
-        // 실제 재현 케이스: "65,063,026,600" 을 12pt 맑은 고딕으로,
-        // extra_char_spacing = -2.88 (셀 오버플로우 압축 시나리오).
-        let style = TextStyle {
+        let natural = TextStyle {
             font_family: "맑은 고딕".to_string(),
             font_size: 12.0,
             ratio: 1.0,
-            extra_char_spacing: -2.88,
             ..Default::default()
         };
-        let positions = m.compute_char_positions("65,063,026,600", &style);
-        for win in positions.windows(2) {
-            assert!(
-                win[1] >= win[0] - 1e-6,
-                "positions must be non-decreasing: {:?}",
-                positions
-            );
+        let squeezed = TextStyle {
+            extra_char_spacing: -2.88,
+            ..natural.clone()
+        };
+        let a = m.compute_char_positions("526.278", &natural);
+        let b = m.compute_char_positions("526.278", &squeezed);
+        for i in 1..a.len() {
+            let shrink = (a[i] - a[i - 1]) - (b[i] - b[i - 1]);
+            assert!((shrink - 2.88).abs() < 1e-6, "{i}: {a:?} vs {b:?}");
         }
+    }
+
+    #[test]
+    fn fixed_width_spaces_keep_authored_tracking_under_overflow_compression() {
+        let measurer = EmbeddedTextMeasurer;
+        let natural = TextStyle {
+            font_family: "맑은 고딕".into(),
+            font_size: 16.0,
+            ratio: 0.95,
+            letter_spacing: -0.64,
+            ..Default::default()
+        };
+        let compressed = TextStyle {
+            extra_char_spacing: -2.0,
+            ..natural.clone()
+        };
+        let text = "가\u{2007}나";
+        let a = measurer.compute_char_positions(text, &natural);
+        let b = measurer.compute_char_positions(text, &compressed);
+        assert!(((a[1] - a[0]) - (b[1] - b[0]) - 2.0).abs() < 1e-6);
+        assert!(((a[2] - a[1]) - (b[2] - b[1])).abs() < 1e-6);
+        assert!(
+            (measurer.estimate_text_width("\u{2007}", &compressed) - (a[2] - a[1])).abs() < 1e-6
+        );
+        assert!(
+            (estimate_text_width_unrounded("\u{2007}", &compressed) - (a[2] - a[1])).abs() < 1e-6
+        );
     }
 
     /// 실제 문서 재현 케이스: 압축은 CharShape 의 `letter_spacing` 을 통해 오며
@@ -3007,27 +4827,6 @@ mod tests {
             ..Default::default()
         };
         let positions = m.compute_char_positions("65,063,026,600", &style);
-        for win in positions.windows(2) {
-            assert!(
-                win[1] >= win[0] - 1e-6,
-                "positions must be non-decreasing: {:?}",
-                positions
-            );
-        }
-    }
-
-    /// 동일 시나리오에서 ASCII 마침표도 역진되지 않아야 한다.
-    #[test]
-    fn test_overflow_compression_positions_monotonic_period() {
-        let m = EmbeddedTextMeasurer;
-        let style = TextStyle {
-            font_family: "맑은 고딕".to_string(),
-            font_size: 12.0,
-            ratio: 1.0,
-            extra_char_spacing: -2.88,
-            ..Default::default()
-        };
-        let positions = m.compute_char_positions("526.278", &style);
         for win in positions.windows(2) {
             assert!(
                 win[1] >= win[0] - 1e-6,
@@ -3154,9 +4953,9 @@ mod tests {
 
         assert_eq!(kerned_width, plain_width);
         assert!((kerned_width - kerned_positions[2]).abs() < 1e-9);
-        assert_eq!(
-            kerned_width.round(),
-            EmbeddedTextMeasurer.estimate_text_width("AV", &kerned)
+        // 기본(macOS) 정책은 run 폭을 반올림하지 않는다.
+        assert!(
+            (kerned_width - EmbeddedTextMeasurer.estimate_text_width("AV", &kerned)).abs() < 1e-9
         );
     }
 
@@ -3170,14 +4969,16 @@ mod tests {
         let expected: f64 = "Noto"
             .chars()
             .map(|c| {
-                measure_char_width_embedded(
+                let base = measure_glyph_base_px(
                     &style.font_family,
                     style.bold,
                     style.italic,
                     c,
                     style.font_size,
+                    style.font_metrics_policy,
                 )
-                .expect("Noto Sans KR ASCII must be calibrated")
+                .expect("Noto Sans KR ASCII must be calibrated");
+                scaled_glyph_advance(base, c, &style, style.font_size, 1.0)
             })
             .sum();
 
@@ -3265,6 +5066,7 @@ mod tests {
     fn extended_grapheme_positions_are_atomic_without_native_fonts() {
         let style = TextStyle {
             font_family: UNREGISTERED_FONT.to_string(),
+            font_metrics_policy: FontMetricsPolicy::HancomWindows,
             font_size: 20.0,
             ..Default::default()
         };
@@ -3294,6 +5096,7 @@ mod tests {
         let m = EmbeddedTextMeasurer;
         let style = TextStyle {
             font_family: UNREGISTERED_FONT.to_string(),
+            font_metrics_policy: FontMetricsPolicy::HancomWindows,
             font_size: 13.333,
             ratio: 1.0,
             ..Default::default()
@@ -3314,6 +5117,7 @@ mod tests {
         let m = EmbeddedTextMeasurer;
         let style = TextStyle {
             font_family: UNREGISTERED_FONT.to_string(),
+            font_metrics_policy: FontMetricsPolicy::HancomWindows,
             font_size: 16.667,
             ratio: 1.0,
             ..Default::default()
@@ -3337,6 +5141,7 @@ mod tests {
         // 미등록·미실측 폰트: 괄호는 0.5em 폴백.
         let style = TextStyle {
             font_family: UNREGISTERED_FONT.to_string(),
+            font_metrics_policy: FontMetricsPolicy::HancomWindows,
             font_size: 13.333,
             ratio: 1.0,
             ..Default::default()
@@ -3371,6 +5176,7 @@ mod tests {
         let m = EmbeddedTextMeasurer;
         let style = TextStyle {
             font_family: UNREGISTERED_FONT.to_string(),
+            font_metrics_policy: FontMetricsPolicy::HancomWindows,
             font_size: 16.667,
             ratio: 1.0,
             ..Default::default()
@@ -3392,6 +5198,7 @@ mod tests {
         let m = EmbeddedTextMeasurer;
         let style = TextStyle {
             font_family: UNREGISTERED_FONT.to_string(),
+            font_metrics_policy: FontMetricsPolicy::HancomWindows,
             font_size: 13.333,
             ratio: 1.0,
             ..Default::default()
@@ -3415,6 +5222,7 @@ mod tests {
         let m = EmbeddedTextMeasurer;
         let style = TextStyle {
             font_family: UNREGISTERED_FONT.to_string(),
+            font_metrics_policy: FontMetricsPolicy::HancomWindows,
             font_size: 13.333,
             ratio: 1.0,
             ..Default::default()
@@ -3468,8 +5276,12 @@ mod tests {
         );
     }
 
+    /// [macOS 정합] 한컴(macOS)은 「 를 선언 face 의 기록 전각 폭으로 조판한다 —
+    /// 공식 PDF 실측 「→다음 글자 0.82–1.00em (35-voucher '「곡성군'
+    /// 10.6pt@11.04pt, 38-cheongyang '「전자정부법」' 「=」=9.0pt@9.0pt,
+    /// 모두 돋움체 계열 선언). 반각 강제는 HancomWindows 규약에만 적용된다.
     #[test]
-    fn test_2020_corner_quote_halfwidth_in_registered_font() {
+    fn test_2020_corner_quote_fullwidth_in_registered_font() {
         let m = EmbeddedTextMeasurer;
         let style = TextStyle {
             font_family: "돋움체".to_string(),
@@ -3483,8 +5295,8 @@ mod tests {
         let hangul_advance = positions[2] - positions[1];
 
         assert!(
-            quote_advance <= style.font_size * 0.6,
-            "`「` 는 등록 폰트에서도 반각 advance 로 측정되어야 함. got {:.2}",
+            quote_advance >= style.font_size * 0.9,
+            "`「` 는 등록 폰트에서도 전각 advance 로 측정되어야 함. got {:.2}",
             quote_advance
         );
         assert!(
@@ -3564,8 +5376,253 @@ mod tests {
         );
     }
 
+    // ── 런타임 폰트 메트릭 (사용자 설치 폰트) ──
+
+    #[test]
+    fn registered_faces_use_real_advances_for_hcr_layout_and_latin_spaces() {
+        use crate::renderer::runtime_font_metrics as runtime;
+        let bytes = include_bytes!("../../../ttfs/opensource/NotoSansKR-Regular.ttf");
+        let face = ttf_parser::Face::parse(bytes, 0).unwrap();
+        let em = |c| {
+            f64::from(
+                face.glyph_hor_advance(face.glyph_index(c).unwrap())
+                    .unwrap(),
+            ) / f64::from(face.units_per_em())
+        };
+        let family = "__runtime_face_contract__";
+        runtime::register(bytes, &[family.into()], false, false).unwrap();
+        assert!(custom_font_face_available(family));
+        assert_eq!(
+            custom_face_char_em_advance(family, false, false, 'W'),
+            Some(em('W'))
+        );
+        assert_eq!(
+            custom_face_char_em_advance(family, false, false, ' '),
+            Some(em(' '))
+        );
+        assert_ne!(em(' '), 0.5);
+        let style = TextStyle {
+            font_family: family.into(),
+            font_size: 20.0,
+            latin_space: true,
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            ..Default::default()
+        };
+        assert_eq!(
+            latin_space_width(&style, ' ', 20.0),
+            Some(quantize_hwp_px(em(' ') * 20.0))
+        );
+        assert_eq!(latin_space_width(&style, '\u{00A0}', 20.0), None);
+        // 문서 반각 공백 API 는 기존 계약을 유지한다.
+        let space = runtime::char_advance(family, false, false, ' ').unwrap();
+        assert_eq!(space.units, space.em_size / 2);
+
+        // 내장 메트릭이 있는 설치 face 도 HcrDeclared 에서는 실제 hmtx 를 쓴다.
+        let baked = measure_char_width_inner(
+            "굴림",
+            false,
+            false,
+            'W',
+            20.0,
+            FontMetricsPolicy::HancomWindows,
+            false,
+        );
+        runtime::register(bytes, &["굴림".into()], false, false).unwrap();
+        assert_eq!(
+            measure_char_width_inner(
+                "굴림",
+                false,
+                false,
+                'W',
+                20.0,
+                FontMetricsPolicy::HcrDeclared,
+                false,
+            ),
+            Some(quantize_hwp_px(em('W') * 20.0))
+        );
+        assert_eq!(
+            measure_char_width_inner(
+                "굴림",
+                false,
+                false,
+                'W',
+                20.0,
+                FontMetricsPolicy::HancomWindows,
+                false,
+            ),
+            baked
+        );
+        runtime::clear();
+        assert!(!custom_font_face_available(family));
+        assert_eq!(custom_face_char_em_advance(family, false, false, 'W'), None);
+    }
+
+    #[test]
+    fn runtime_font_metrics_replace_heuristic_widths_until_cleared() {
+        use crate::renderer::runtime_font_metrics as runtime;
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/ttfs/opensource/");
+        let regular = std::fs::read(format!("{dir}NotoSansKR-Regular.ttf")).unwrap();
+        let light = std::fs::read(format!("{dir}NotoSansKR-ExtraLight.ttf")).unwrap();
+        let advance_px = |bytes: &[u8], c: char, fs: f64| {
+            let face = ttf_parser::Face::parse(bytes, 0).unwrap();
+            let gid = face.glyph_index(c).unwrap();
+            let adv = face.glyph_hor_advance(gid).unwrap() as f64;
+            quantize_hwp_px(adv * fs / face.units_per_em() as f64)
+        };
+        let fs = 20.0;
+        let w = |fam: &str, bold: bool, c: char| {
+            measure_char_width_with_policy(
+                fam,
+                bold,
+                false,
+                c,
+                fs,
+                FontMetricsPolicy::HancomWindows,
+            )
+        };
+
+        // 내장 메트릭 없는 별칭은 휴리스틱 경로(None)로 간다.
+        assert_eq!(w("테스트글꼴", false, '가'), None);
+        assert_eq!(w("테스트글꼴", false, 'i'), None);
+
+        let aliases = vec!["테스트글꼴".to_string(), "Test Font".to_string()];
+        let first = runtime::register(&regular, &aliases, false, false).unwrap();
+        assert!(first.covers_hangul && first.covers_latin && !first.replaced);
+        assert!(
+            runtime::register(&regular, &aliases, false, false)
+                .unwrap()
+                .replaced
+        );
+
+        let hangul = advance_px(&regular, '가', fs);
+        let latin_i = advance_px(&regular, 'i', fs);
+        assert_eq!(w("테스트글꼴", false, '가'), Some(hangul));
+        assert_eq!(w("테스트글꼴", false, 'i'), Some(latin_i));
+        assert!(
+            (latin_i - fs * 0.5).abs() > 1.0,
+            "'i' 는 0.5em 휴리스틱과 달라야 한다"
+        );
+        // 이름 정규화(공백·대소문자·따옴표) 와 CSS 체인의 첫 폰트명 조회.
+        assert_eq!(w("\"test   FONT\", sans-serif", false, 'i'), Some(latin_i));
+        // 공백은 내장 메트릭과 같이 em/2.
+        assert_eq!(w("테스트글꼴", false, ' '), Some(quantize_hwp_px(fs * 0.5)));
+        // 레이아웃 경로 전체에서 사용된다.
+        let style = TextStyle {
+            font_family: "테스트글꼴".into(),
+            font_size: fs,
+            ..Default::default()
+        };
+        assert!((estimate_text_width_unrounded("가i", &style) - (hangul + latin_i)).abs() < 1e-9);
+
+        // Bold 페이스가 없으면 Regular 폭 그대로 + 합성 Bold 획.
+        let bold_style = TextStyle {
+            bold: true,
+            ..style.clone()
+        };
+        assert_eq!(w("테스트글꼴", true, 'i'), Some(latin_i));
+        assert!(crate::renderer::faux_bold_stroke_width(&bold_style, fs).is_some());
+        // Bold 페이스를 등록하면 그 폭을 쓰고 합성 획은 없다.
+        runtime::register(&light, &aliases, true, false).unwrap();
+        assert_eq!(
+            w("테스트글꼴", true, 'W'),
+            Some(advance_px(&light, 'W', fs))
+        );
+        assert_ne!(advance_px(&light, 'W', fs), advance_px(&regular, 'W', fs));
+        assert_eq!(
+            w("테스트글꼴", false, 'W'),
+            Some(advance_px(&regular, 'W', fs))
+        );
+        assert!(crate::renderer::faux_bold_stroke_width(&bold_style, fs).is_none());
+
+        // 내장 메트릭이 있는 이름은 기존 동작 그대로.
+        let baked = w("함초롬돋움", false, 'i');
+        runtime::register(&light, &["함초롬돋움".to_string()], false, false).unwrap();
+        assert_eq!(w("함초롬돋움", false, 'i'), baked);
+
+        assert!(runtime::report_json().contains("\"hits\":"));
+        assert!(runtime::register(b"not a font", &aliases, false, false).is_err());
+
+        runtime::clear();
+        assert_eq!(w("테스트글꼴", false, '가'), None);
+        assert!(crate::renderer::faux_bold_stroke_width(&bold_style, fs).is_none());
+    }
+
     // Stage 4 검증으로 native tab_type 정정 (정정 2) 은 회귀 발견되어 철회.
     // HWP5 의 `tab_extended[0]` 가 이미 right-tab 결과 위치 (= 우측 끝 - 한컴_seg_w)
     // 로 저장되어 있어 LEFT fallback 이 인코딩 의도와 정합. 본 테스트는 합성 데이터
     // 기반의 잘못된 가정 (RIGHT 정확 매치) 을 검증하던 것이라 삭제.
+    #[test]
+    fn latin_space_uses_font_advance_without_changing_korean_or_nbsp() {
+        let mut style = TextStyle {
+            font_family: "HCR Batang".to_string(),
+            font_size: 20.0,
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            ..Default::default()
+        };
+        // 15pt = 375 배치 단위: 빈칸 floor(375/2) = 187, 글꼴 빈칸 0.3em → 113.
+        let plain = 187.0 * MAC_LAYOUT_UNIT_PX;
+        for (latin_space, expected) in [(false, plain), (true, 113.0 * MAC_LAYOUT_UNIT_PX)] {
+            style.latin_space = latin_space;
+            assert!((estimate_text_width(" ", &style) - expected).abs() < 1e-9);
+            assert!((estimate_text_width_unrounded(" ", &style) - expected).abs() < 1e-9);
+            assert!((compute_char_positions(" ", &style)[1] - expected).abs() < 1e-9);
+            assert!((compute_char_positions("\u{00A0}", &style)[1] - plain).abs() < 1e-9);
+        }
+    }
+
+    /// 한컴(macOS)이 해석하지 못하는 face 는 함초롬돋움 폭으로 잰다 — 이름의
+    /// `바탕체`(고정폭 분류)·Light 와 무관하다. 글꼴 빈칸(useFontSpace)도 그 글꼴의
+    /// 빈칸 폭(0.3em)이다.
+    #[test]
+    fn unresolved_face_measures_with_hancom_default_face() {
+        let style = |family: &str, latin_space: bool| TextStyle {
+            font_family: family.to_string(),
+            font_size: 20.0,
+            latin_space,
+            font_metrics_policy: FontMetricsPolicy::HcrDeclared,
+            ..Default::default()
+        };
+        let unknown = style("가상서체바탕체 Light", false);
+        let hcr = style("함초롬돋움", false);
+        for text in ["가나다라", "SF 영화", "(A)"] {
+            assert!(
+                (estimate_text_width(text, &unknown) - estimate_text_width(text, &hcr)).abs()
+                    < 0.01,
+                "{text}"
+            );
+        }
+        assert!(
+            (estimate_text_width(" ", &style("가상서체바탕체 Light", true))
+                - 113.0 * MAC_LAYOUT_UNIT_PX)
+                .abs()
+                < 1e-9
+        );
+    }
+
+    /// HFT 원본 run 은 대체 서체(굴림)가 아니라 HFT 폭 테이블로 잰다.
+    /// 같은 디자인의 한양 TTF 대체(HY견명조)는 기존 폭을 유지한다.
+    #[test]
+    fn hft_runs_measure_with_hft_widths_unless_substitute_is_hanyang_twin() {
+        let style = TextStyle {
+            font_family: "굴림".to_string(),
+            hft_family: "신명 신그래픽".to_string(),
+            font_size: 20.0,
+            ..Default::default()
+        };
+        // TESGREN.HFT `(` = 500/1000em
+        assert!((estimate_text_width("(", &style) - 10.0).abs() < 0.05);
+        let twin = TextStyle {
+            font_family: "HY견명조".to_string(),
+            hft_family: "신명 견명조".to_string(),
+            ..style.clone()
+        };
+        let plain = TextStyle {
+            hft_family: String::new(),
+            ..twin.clone()
+        };
+        assert_eq!(
+            estimate_text_width("32", &twin),
+            estimate_text_width("32", &plain)
+        );
+    }
 }

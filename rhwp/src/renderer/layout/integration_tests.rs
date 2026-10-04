@@ -169,6 +169,7 @@ mod tests {
 
         let styles = ResolvedStyleSet {
             hwp3_variant: false,
+            page_number_char_shape: None,
             char_styles: vec![ResolvedCharStyle::default()],
             para_styles: vec![ResolvedParaStyle {
                 border_fill_id: 1,
@@ -2243,7 +2244,7 @@ mod tests {
             return;
         };
         let svg = core.render_page_svg_native(0).unwrap_or_default();
-        let count = count_text_at_y(&svg, 1083.6);
+        let count = count_text_at_y(&svg, 1081.6);
         assert_eq!(
             count, 3,
             "aift.hwp 페이지 1 (cover disclaimer, PageNumberPos 등록 페이지) 은 \
@@ -2259,7 +2260,7 @@ mod tests {
             return;
         };
         let svg = core.render_page_svg_native(5).unwrap_or_default();
-        let count = count_text_at_y(&svg, 1083.6);
+        let count = count_text_at_y(&svg, 1081.6);
         assert_eq!(
             count, 3,
             "aift.hwp 페이지 6 (본문 시작) 은 한컴이 \"- N -\" 표시. \
@@ -2274,7 +2275,7 @@ mod tests {
             return;
         };
         let svg = core.render_page_svg_native(6).unwrap_or_default();
-        let count = count_text_at_y(&svg, 1083.6);
+        let count = count_text_at_y(&svg, 1081.6);
         assert_eq!(
             count, 3,
             "aift.hwp 페이지 7 (NewNumber 발화) 은 \"- 1 -\" 3글자 표시되어야 함."
@@ -2289,7 +2290,7 @@ mod tests {
             return;
         };
         let svg = core.render_page_svg_native(3).unwrap_or_default();
-        let count = count_text_at_y(&svg, 1083.6);
+        let count = count_text_at_y(&svg, 1081.6);
         assert_eq!(
             count, 0,
             "aift.hwp 페이지 4 는 PageHide page_num=true (paragraph 2.34) 로 미표시."
@@ -2303,7 +2304,7 @@ mod tests {
             return;
         };
         let svg = core.render_page_svg_native(4).unwrap_or_default();
-        let count = count_text_at_y(&svg, 1083.6);
+        let count = count_text_at_y(&svg, 1081.6);
         assert_eq!(
             count, 0,
             "aift.hwp 페이지 5 는 PageHide page_num=true (paragraph 2.54) 로 미표시."
@@ -2317,7 +2318,7 @@ mod tests {
             return;
         };
         let svg = core.render_page_svg_native(0).unwrap_or_default();
-        let count = count_text_at_y(&svg, 1069.7066666666665);
+        let count = count_text_at_y(&svg, 1062.69);
         assert_eq!(
             count, 0,
             "국립국어원 페이지 1 은 PageHide (paragraph 0.19) 로 미표시."
@@ -2338,7 +2339,7 @@ mod tests {
             return;
         };
         let svg = core.render_page_svg_native(2).unwrap_or_default();
-        let count = count_text_at_y(&svg, 1069.7066666666665);
+        let count = count_text_at_y(&svg, 1062.69);
         assert_eq!(
             count, 0,
             "국립국어원 페이지 3 은 셀 안 PageHide 영역의 hide_page_num 영역 적용 영역으로 \
@@ -2355,7 +2356,8 @@ mod tests {
         let svg = core.render_page_svg_native(0).unwrap_or_default();
         // Issue #951: margin_bottom 원본값 보존 후 쪽번호 위치 보정 (1061.4→1050.8)
         // [#3048] 쪽 번호를 10pt 로 교정하면서 줄 baseline 이 +4.44px 이동 (1050.8→1055.24).
-        let count = count_text_at_y(&svg, 1055.24);
+        // 쪽 번호 줄을 꼬리말 칸 바닥 기준으로 옮김 (1055.24→1062.69, 한컴 PDF 1063.36).
+        let count = count_text_at_y(&svg, 1062.69);
         assert_eq!(
             count, 3,
             "hwp3-sample.hwp 페이지 1 (NewNumber 0개) 은 쪽번호 표시되어야 함 (회귀 방지)."
@@ -2652,6 +2654,7 @@ mod tests {
         let composed: Vec<_> = paragraphs.iter().map(compose_paragraph).collect();
         let styles = ResolvedStyleSet {
             hwp3_variant: false,
+            page_number_char_shape: None,
             char_styles: vec![ResolvedCharStyle::default()],
             para_styles: vec![ResolvedParaStyle::default()],
             border_styles: Vec::new(),
@@ -2741,6 +2744,137 @@ mod tests {
         assert!(
             next_y - host_y < 30.0,
             "shape flow was consumed twice: HOST y={host_y}, NEXT y={next_y}"
+        );
+    }
+
+    #[test]
+    fn floating_shape_after_inline_shape_keeps_paragraph_anchor() {
+        let engine = LayoutEngine::with_default_dpi();
+        let page_def = PageDef {
+            width: 59500,
+            height: 84100,
+            margin_left: 5100,
+            margin_right: 5000,
+            margin_header: 6700,
+            ..Default::default()
+        };
+        let layout = PageLayoutInfo::from_page_def_default(&page_def, &ColumnDef::default());
+        let make_shape = |width, offset, tac, wrap| {
+            let mut shape = RectangleShape {
+                common: CommonObjAttr {
+                    width,
+                    height: 2700,
+                    horizontal_offset: offset,
+                    treat_as_char: tac,
+                    flow_with_text: true,
+                    allow_overlap: true,
+                    vert_rel_to: VertRelTo::Para,
+                    vert_align: VertAlign::Top,
+                    horz_rel_to: HorzRelTo::Column,
+                    horz_align: HorzAlign::Left,
+                    text_wrap: wrap,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            shape.drawing.shape_attr.original_width = width;
+            shape.drawing.shape_attr.current_width = width;
+            shape.drawing.shape_attr.original_height = 2700;
+            shape.drawing.shape_attr.current_height = 2700;
+            Control::Shape(Box::new(ShapeObject::Rectangle(shape)))
+        };
+        let para = Paragraph {
+            text: " ".to_string(),
+            char_count: 18,
+            char_offsets: vec![16],
+            controls: vec![
+                make_shape(6800, 0, true, TextWrap::TopAndBottom),
+                make_shape(40000, 9000, false, TextWrap::InFrontOfText),
+            ],
+            line_segs: vec![LineSeg {
+                line_height: 2940,
+                text_height: 2940,
+                baseline_distance: 2700,
+                segment_width: 48340,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let paragraphs = vec![para];
+        let composed = paragraphs.iter().map(compose_paragraph).collect::<Vec<_>>();
+        let styles = ResolvedStyleSet {
+            hwp3_variant: false,
+            page_number_char_shape: None,
+            char_styles: vec![ResolvedCharStyle::default()],
+            para_styles: vec![ResolvedParaStyle::default()],
+            border_styles: Vec::new(),
+            numberings: Vec::new(),
+            bullets: Vec::new(),
+        };
+        let page_content = PageContent {
+            page_index: 0,
+            page_number: 0,
+            section_index: 0,
+            layout,
+            column_contents: vec![ColumnContent {
+                column_index: 0,
+                start_height: 0.0,
+                endnote_flow: false,
+                items: vec![
+                    PageItem::FullParagraph { para_index: 0 },
+                    PageItem::Shape {
+                        para_index: 0,
+                        control_index: 0,
+                    },
+                    PageItem::Shape {
+                        para_index: 0,
+                        control_index: 1,
+                    },
+                ],
+                zone_layout: None,
+                zone_y_offset: 0.0,
+                wrap_around_paras: Vec::new(),
+                used_height: 0.0,
+                wrap_anchors: std::collections::HashMap::new(),
+            }],
+            active_header: None,
+            active_footer: None,
+            page_number_pos: None,
+            page_hide: None,
+            footnotes: Vec::new(),
+            active_master_page: None,
+            extra_master_pages: Vec::new(),
+        };
+        let tree = engine.build_render_tree(
+            &page_content,
+            &paragraphs,
+            &paragraphs,
+            &paragraphs,
+            &composed,
+            &styles,
+            &Default::default(),
+            &[],
+            None,
+            &[],
+            None,
+            0,
+            &[],
+        );
+        let mut nodes = Vec::new();
+        collect_render_nodes(&tree.root, &mut nodes);
+        let shape_y = |width: i32| {
+            nodes.iter().find_map(|node| {
+                (matches!(node.node_type, RenderNodeType::Rectangle(_))
+                    && (node.bbox.width - crate::renderer::hwpunit_to_px(width, engine.dpi)).abs()
+                        < 0.1)
+                    .then_some(node.bbox.y)
+            })
+        };
+        let inline_y = shape_y(6800).expect("inline label shape");
+        let floating_y = shape_y(40000).expect("floating title shape");
+        assert!(
+            (floating_y - inline_y).abs() < 0.1,
+            "both shapes share a paragraph anchor: inline={inline_y}, floating={floating_y}"
         );
     }
 
