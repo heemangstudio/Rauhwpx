@@ -171,6 +171,14 @@ rhwp 프로젝트가 사용하는 서드파티 라이브러리 및 리소스의 
 
 ---
 
+## 번들 에이전트 스킬
+
+| 프로젝트 | 라이선스 | 포함 범위 | rhwp 위치 |
+|---------|---------|----------|-----------|
+| [epoko77-ai/im-not-ai](https://github.com/epoko77-ai/im-not-ai) v2.3.2 | MIT © 2026 epoko77-ai | 한글 AI 티 분류 체계·처방집·진단 인덱스 원본, quick-rules 를 옮긴 룰북 | `rhwp-agent/skills/humanize-korean/`, `rhwp-agent/humanizer.mjs` |
+
+---
+
 ## 참조한 오픈소스 프로젝트 (스펙·설계 참조)
 
 rhwp는 아래 프로젝트들의 **코드를 직접 복사하지 않으며**, 공개된 스펙 정보(enum 값·속성 기본값·태그 이름·검증 규칙 등)만 참조한다.

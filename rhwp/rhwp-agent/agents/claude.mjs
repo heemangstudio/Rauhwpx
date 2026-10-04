@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import { query as queryClaude } from '@anthropic-ai/claude-agent-sdk';
 import {
   mkdirSync,
+  writeFileSync,
   rmSync,
 } from 'node:fs';
 import os from 'node:os';
@@ -186,7 +187,27 @@ function claudeProcessEnv(opts, sourceEnv) {
   return env;
 }
 
-export function buildClaudeArgv(opts, sessionId, resume) {
+/**
+ * @param {{ agentsPath?: string | null }} [launch] agentsPath 가 있으면 --agents 에 JSON 대신 그 파일 경로를 넘긴다.
+ *   Windows 명령줄 상한(32,767자)을 서브에이전트 정의가 다 먹지 않게 한다.
+ */
+/**
+ * 서브에이전트 정의를 격리 홈에 파일로 쓴다. 홈이 없거나 쓰기에 실패하면 null — 호출자는 인라인 JSON 으로 돌아간다.
+ * @param {string | null | undefined} isolatedHome
+ */
+export function writeClaudeAgentsFile(isolatedHome) {
+  if (!isolatedHome) return null;
+  const file = path.join(String(isolatedHome), 'rhwp-agents.json');
+  try {
+    mkdirSync(String(isolatedHome), { recursive: true, mode: 0o700 });
+    writeFileSync(file, JSON.stringify(RHWP_SUBAGENTS), { mode: 0o600 });
+    return file;
+  } catch {
+    return null;
+  }
+}
+
+export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null } = {}) {
   const unrestricted = opts.permissionProfile === 'unrestricted';
   const planningRestricted = isPlanningRestricted(opts);
   const interactionMode = providerInteractionMode(opts);
@@ -242,7 +263,7 @@ export function buildClaudeArgv(opts, sessionId, resume) {
     // 서브에이전트 텍스트는 항상 전달받는다 — 사이드바 fleet 카드의 활동 줄이 이걸 쓴다.
     // (도구 호출/결과 전달은 플래그와 무관하게 항상 온다 — CLI 2.1.235 확인.)
     '--forward-subagent-text',
-    '--agents', JSON.stringify(RHWP_SUBAGENTS),
+    '--agents', agentsPath ?? JSON.stringify(RHWP_SUBAGENTS),
     ...(resume ? ['--resume', sessionId] : ['--session-id', sessionId]),
     '--mcp-config', JSON.stringify(mcpConfig),
     '--strict-mcp-config',
@@ -498,7 +519,7 @@ export function createClaudeSession(opts, {
   const workflowFingerprints = new Map();
 
   function buildArgv(resume) {
-    return buildClaudeArgv(opts, sessionId, resume);
+    return buildClaudeArgv(opts, sessionId, resume, { agentsPath: writeClaudeAgentsFile(opts.isolatedHome) });
   }
 
   function claudeCliLaunch() {

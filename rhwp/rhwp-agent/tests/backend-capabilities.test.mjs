@@ -593,7 +593,7 @@ test('every workflow brief and rhwp subagent carries the shared tool rules once'
     const brief = systemBriefFor(opts);
     assert.equal(brief.split(RHWP_TOOL_RULES).length - 1, 1, JSON.stringify(opts));
   }
-  for (const agent of Object.values(RHWP_SUBAGENTS)) assert.ok(agent.prompt.endsWith(RHWP_TOOL_RULES));
+  for (const agent of Object.values(RHWP_SUBAGENTS)) assert.equal(agent.prompt.split(RHWP_TOOL_RULES).length - 1, 1);
 });
 
 test('chat briefs start from the live_document block instead of a first get_structure', () => {
