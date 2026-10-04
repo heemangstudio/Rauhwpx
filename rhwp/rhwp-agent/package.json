@@ -27,7 +27,7 @@
     "jszip": "^3.10.1",
     "mammoth": "^1.12.1",
     "node-pty": "1.1.0",
-    "npm": "file:vendor/npm-11.19.2-rau.1.tgz",
+    "npm": "file:vendor/npm-11.19.2-rau.2.tgz",
     "pdfjs-dist": "^4.10.38",
     "ws": "^8.21.2",
     "yaml": "^2.9.1",
@@ -36,7 +36,7 @@
   },
   "overrides": {
     "@xmldom/xmldom": "0.8.15",
-    "fast-uri": "3.1.7",
+    "fast-uri": "3.1.8",
     "qs": "6.16.0"
   },
   "devDependencies": {

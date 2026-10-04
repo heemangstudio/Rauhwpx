@@ -190,7 +190,7 @@ jobs:
           sha256sum rhwp/rhwp-agent/vendor/*.tgz > /tmp/agent-vendor.sha256
           bash cloud/install/build-runtime-assets.sh
           sha256sum --check /tmp/agent-vendor.sha256
-          cmp rhwp/rhwp-agent/vendor/npm-11.19.2-rau.1.tgz cloud/runtime-assets/rhwp-agent/vendor/npm-11.19.2-rau.1.tgz
+          cmp rhwp/rhwp-agent/vendor/npm-11.19.2-rau.2.tgz cloud/runtime-assets/rhwp-agent/vendor/npm-11.19.2-rau.2.tgz
       - name: Build and verify worker and sandbox without publishing
         if: needs.changes.outputs.app != 'false'
         run: |
