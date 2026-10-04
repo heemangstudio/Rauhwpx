@@ -631,8 +631,9 @@ fn serialize_fill(w: &mut ByteWriter, fill: &crate::model::style::Fill) {
         FillType::Image => {
             if let Some(ref img) = fill.image {
                 w.write_u8(image_fill_mode_to_u8(img.fill_mode)).unwrap();
-                w.write_i8(img.brightness).unwrap();
+                // 명암(대비)이 밝기보다 먼저다 (parser/doc_info.rs 참고).
                 w.write_i8(img.contrast).unwrap();
+                w.write_i8(img.brightness).unwrap();
                 w.write_u8(img.effect).unwrap();
                 w.write_u16(img.bin_data_id).unwrap();
             }

@@ -35,7 +35,7 @@ fn collect_text_runs<'a>(value: &'a Value, out: &mut Vec<&'a Map<String, Value>>
 }
 
 #[test]
-fn issue_948_layer_tree_text_run_exposes_signature_display_text() {
+fn issue_948_layer_tree_preserves_signature_seal_glyph_and_positions() {
     let bytes = read_bokhakwonseo();
     let doc = HwpDocument::from_bytes(&bytes).expect("parse samples/복학원서.hwp");
     let json = doc
@@ -71,7 +71,7 @@ fn issue_948_layer_tree_text_run_exposes_signature_display_text() {
     let display_text = signature_run
         .get("displayText")
         .and_then(Value::as_str)
-        .expect("signature textRun should expose displayText");
+        .unwrap_or(source_text);
     let source_positions = signature_run
         .get("positions")
         .and_then(Value::as_array)
@@ -79,18 +79,16 @@ fn issue_948_layer_tree_text_run_exposes_signature_display_text() {
     let display_positions = signature_run
         .get("displayPositions")
         .and_then(Value::as_array)
-        .expect("signature textRun should have display positions");
+        .unwrap_or(source_positions);
 
     assert!(source_text.contains('\u{F012B}'));
-    assert!(
-        display_text.contains("(인)"),
-        "displayText should expose the core-rendered signature seal text. got: {:?}",
-        display_text,
+    assert_eq!(
+        display_text, source_text,
+        "the seal must keep its HCR glyph"
     );
-    assert!(
-        !display_text.contains('\u{F012B}') && !display_text.contains('\u{F081C}'),
-        "displayText should not leak source PUA/filler characters. got: {:?}",
-        display_text,
+    assert_eq!(
+        display_positions, source_positions,
+        "the seal must keep one source advance"
     );
     assert_eq!(
         source_positions.len(),

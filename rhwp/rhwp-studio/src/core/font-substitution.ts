@@ -222,6 +222,7 @@ function pushUniqueFontFamily(families: string[], fontName: string): void {
 
 const HFT_SUBSTITUTE_FACES = new Map<string, readonly string[]>([
   ['HCI Poppy', ['Palatino', 'Palatino Linotype', 'Book Antiqua']],
+  ['HCI Hollyhock', ['Helvetica', 'Arial']],
 ]);
 
 function systemFallbackFamilies(fontName: string): string[] {
@@ -244,7 +245,10 @@ function systemFallbackFamilies(fontName: string): string[] {
   // HCI Poppy 는 Palatino 복제라 macOS Palatino → Windows Palatino Linotype 순이다.
   const hftFaces = HFT_SUBSTITUTE_FACES.get(fontName.trim());
   if (hftFaces) {
-    return [...hftFaces, 'Batang', 'AppleMyungjo', 'Noto Serif KR', 'serif'];
+    if (fontName.trim() === 'HCI Poppy') {
+      return [...hftFaces, 'Batang', 'AppleMyungjo', 'Noto Serif KR', 'serif'];
+    }
+    return [...hftFaces, 'sans-serif'];
   }
   // Serif 판별 — 문자 클래스가 아니라 실제 서체명 토큰으로 검사한다.
   // (기존 `[바탕명조궁서]` 는 '서울남산체'·'고딕서체' 처럼 해당 글자가 스치기만 해도

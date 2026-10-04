@@ -255,9 +255,7 @@ test(
       ['12', 1200],
     ] as const) {
       await page.focus('#font-size');
-      await page.keyboard.down('Control');
-      await page.keyboard.press('a');
-      await page.keyboard.up('Control');
+      await page.$eval('#font-size', (el: HTMLInputElement) => el.select());
       await page.keyboard.type(value);
       await page.keyboard.press('Enter');
       await page.waitForFunction(

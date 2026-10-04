@@ -343,6 +343,8 @@ impl Document {
                 && !self.provenance.hwpx_lineage,
         )
         .with_do_not_align_last_forbidden(self.doc_info.do_not_align_last_forbidden)
+        .with_hwpx_container(self.provenance.format == SourceFormat::Hwpx)
+        .with_own_line_layout(self.provenance.own_line_layout)
         .with_adjust_baseline_in_fixed_line_spacing(
             self.doc_info.adjust_baseline_in_fixed_line_spacing,
         )

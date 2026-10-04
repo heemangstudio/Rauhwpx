@@ -7,13 +7,7 @@ use crate::paint::{ResolvedImageKind, ResolvedImagePayload};
 use crate::renderer::image_header::{
     canvaskit_encoded_image_header, CANVASKIT_MAX_IMAGE_DIMENSION, CANVASKIT_MAX_IMAGE_PIXELS,
 };
-use crate::renderer::render_tree::{
-    ImageNode, REAL_PICTURE_WATERMARK_BRIGHTNESS, REAL_PICTURE_WATERMARK_CHROMA_GAIN,
-    REAL_PICTURE_WATERMARK_CONTRAST, REAL_PICTURE_WATERMARK_CORRECTION_BIAS,
-    REAL_PICTURE_WATERMARK_CORRECTION_MATRIX, REAL_PICTURE_WATERMARK_FILL_CHROMA_GAIN,
-    REAL_PICTURE_WATERMARK_FILL_WHITE_BLEND, REAL_PICTURE_WATERMARK_SATURATION,
-    REAL_PICTURE_WATERMARK_WHITE_BLEND,
-};
+use crate::renderer::render_tree::ImageNode;
 
 // ── 변환 결과 메모 ──
 //
@@ -37,15 +31,18 @@ const MAX_MEMO_BYTES: usize = 16 * 1024 * 1024;
 const MAX_MEMO_ENTRIES: usize = 64;
 
 /// 변환 종류. 같은 바이트라도 어떤 변환을 거쳤느냐에 따라 결과가 다르다.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Hash)]
 enum Conversion {
     Bmp,
     Pcx,
     Tiff,
     GrayscaleJpeg,
-    WatermarkJpeg,
-    RealPictureTone,
-    RealPictureFillTone,
+    /// 한컴 밝기·대비·효과 굽기. 같은 바이트라도 값마다 결과가 다르다.
+    HancomAdjust {
+        effect: u8,
+        brightness: i8,
+        contrast: i8,
+    },
 }
 
 #[derive(Default)]
@@ -122,7 +119,7 @@ fn conversion_key(conversion: Conversion, data: &[u8]) -> u64 {
     use std::hash::{Hash, Hasher};
 
     let mut hasher = DefaultHasher::new();
-    (conversion as u8).hash(&mut hasher);
+    conversion.hash(&mut hasher);
     data.hash(&mut hasher);
     hasher.finish()
 }
@@ -130,6 +127,20 @@ fn conversion_key(conversion: Conversion, data: &[u8]) -> u64 {
 pub(crate) fn resolve_image_payload(image: &ImageNode) -> Option<ResolvedImagePayload> {
     let data = image.data.as_deref()?;
     let mime = detect_image_mime_type(data);
+
+    if let Some(data) = hancom_adjusted_picture_png_bytes_shared(
+        data,
+        image.effect,
+        image.brightness,
+        image.contrast,
+    ) {
+        return Some(ResolvedImagePayload {
+            data,
+            mime: "image/png",
+            kind: ResolvedImageKind::BakedWatermark,
+            suppress_effects: true,
+        });
+    }
 
     match mime {
         "image/bmp" => bmp_bytes_to_png_bytes_shared(data).map(|data| ResolvedImagePayload {
@@ -150,16 +161,6 @@ pub(crate) fn resolve_image_payload(image: &ImageNode) -> Option<ResolvedImagePa
             kind: ResolvedImageKind::FormatConverted,
             suppress_effects: false,
         }),
-        "image/jpeg" if is_watermark_image(image) => {
-            watermark_jpeg_bytes_to_hancom_baked_png_bytes_shared(data).map(|data| {
-                ResolvedImagePayload {
-                    data,
-                    mime: "image/png",
-                    kind: ResolvedImageKind::BakedWatermark,
-                    suppress_effects: true,
-                }
-            })
-        }
         "image/jpeg" => {
             grayscale_jpeg_bytes_to_png_bytes_shared(data).map(|data| ResolvedImagePayload {
                 data,
@@ -186,10 +187,6 @@ pub(crate) fn image_node_with_resolved_payload(
         }
     }
     image
-}
-
-fn is_watermark_image(image: &ImageNode) -> bool {
-    !matches!(image.effect, ImageEffect::RealPic) && (image.brightness != 0 || image.contrast != 0)
 }
 
 /// BMP 바이트를 PNG 바이트로 재인코딩한다. 실패 시 None 반환.
@@ -375,205 +372,101 @@ fn pcx_bytes_to_png_bytes_uncached(data: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn apply_real_picture_watermark_tone_rgb(r: u8, g: u8, b: u8) -> [u8; 3] {
-    let mut rgb = [r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0];
-
-    let saturation = REAL_PICTURE_WATERMARK_SATURATION;
-    rgb = [
-        (0.213 + 0.787 * saturation) * rgb[0]
-            + (0.715 - 0.715 * saturation) * rgb[1]
-            + (0.072 - 0.072 * saturation) * rgb[2],
-        (0.213 - 0.213 * saturation) * rgb[0]
-            + (0.715 + 0.285 * saturation) * rgb[1]
-            + (0.072 - 0.072 * saturation) * rgb[2],
-        (0.213 - 0.213 * saturation) * rgb[0]
-            + (0.715 - 0.715 * saturation) * rgb[1]
-            + (0.072 + 0.928 * saturation) * rgb[2],
-    ];
-
-    let contrast = REAL_PICTURE_WATERMARK_CONTRAST;
-    let contrast_intercept = 0.5 - 0.5 * contrast;
-    let brightness = REAL_PICTURE_WATERMARK_BRIGHTNESS;
-    for channel in &mut rgb {
-        *channel = (*channel * contrast + contrast_intercept) * brightness;
-    }
-
-    let corrected = [
-        REAL_PICTURE_WATERMARK_CORRECTION_MATRIX[0][0] * rgb[0]
-            + REAL_PICTURE_WATERMARK_CORRECTION_MATRIX[0][1] * rgb[1]
-            + REAL_PICTURE_WATERMARK_CORRECTION_MATRIX[0][2] * rgb[2]
-            + REAL_PICTURE_WATERMARK_CORRECTION_BIAS[0],
-        REAL_PICTURE_WATERMARK_CORRECTION_MATRIX[1][0] * rgb[0]
-            + REAL_PICTURE_WATERMARK_CORRECTION_MATRIX[1][1] * rgb[1]
-            + REAL_PICTURE_WATERMARK_CORRECTION_MATRIX[1][2] * rgb[2]
-            + REAL_PICTURE_WATERMARK_CORRECTION_BIAS[1],
-        REAL_PICTURE_WATERMARK_CORRECTION_MATRIX[2][0] * rgb[0]
-            + REAL_PICTURE_WATERMARK_CORRECTION_MATRIX[2][1] * rgb[1]
-            + REAL_PICTURE_WATERMARK_CORRECTION_MATRIX[2][2] * rgb[2]
-            + REAL_PICTURE_WATERMARK_CORRECTION_BIAS[2],
-    ];
-
-    let luma = 0.2126 * corrected[0] + 0.7152 * corrected[1] + 0.0722 * corrected[2];
-    let chroma_corrected =
-        corrected.map(|channel| luma + (channel - luma) * REAL_PICTURE_WATERMARK_CHROMA_GAIN);
-
-    chroma_corrected.map(|channel| {
-        let channel = channel.clamp(0.0, 1.0);
-        let channel = channel + (1.0 - channel) * REAL_PICTURE_WATERMARK_WHITE_BLEND;
-        (channel.clamp(0.0, 1.0) * 255.0).round() as u8
-    })
+/// 그림 밝기·대비·효과를 한컴 방식으로 픽셀에 굽어야 하는가.
+///
+/// 한컴은 밝기·대비가 하나라도 0 이 아니면 효과와 상관없이 보정한 픽셀을 그린다.
+/// 그림 개체·쪽 배경·채우기 모두 같고, 워터마크라고 반투명을 더하지 않는다
+/// (한컴 Mac PDF 실측: 그림 RealPic/회색조, 테두리 채우기 RealPic 70/-50).
+pub(crate) fn needs_hancom_picture_adjustment(brightness: i8, contrast: i8) -> bool {
+    brightness != 0 || contrast != 0
 }
 
-fn apply_real_picture_watermark_fill_tone_rgb(r: u8, g: u8, b: u8) -> [u8; 3] {
-    let [r, g, b] = apply_real_picture_watermark_tone_rgb(r, g, b);
-    let rgb = [r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0];
-    let luma = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
-    let adjusted =
-        rgb.map(|channel| luma + (channel - luma) * REAL_PICTURE_WATERMARK_FILL_CHROMA_GAIN);
-
-    adjusted.map(|channel| {
-        let channel = 0.78 + (channel - 0.78) * 1.89;
-        let highlight = ((luma - 0.68) / 0.32).clamp(0.0, 1.0);
-        let highlight_desat = highlight.powf(1.2) * 0.38;
-        let channel = channel + (luma - channel) * highlight_desat;
-        let white_blend = REAL_PICTURE_WATERMARK_FILL_WHITE_BLEND
-            * (luma.powf(1.25) * 2.45 + highlight.powf(1.25) * 0.75);
-        let channel = channel + (1.0 - channel) * white_blend;
-        (channel.clamp(0.0, 1.0) * 255.0).round() as u8
-    })
-}
-
-/// RealPic 색상 워터마크 preset을 한컴 뷰어에 가까운 색상 PNG로 변환한다.
-pub(crate) fn real_picture_watermark_bytes_to_hancom_tone_png_bytes(
+/// 밝기·대비·효과를 한컴 방식으로 적용한 PNG 를 만든다. 대상이 아니거나 디코드할 수
+/// 없는 형식이면 None.
+pub(crate) fn hancom_adjusted_picture_png_bytes(
     data: &[u8],
+    effect: ImageEffect,
+    brightness: i8,
+    contrast: i8,
 ) -> Option<Vec<u8>> {
-    real_picture_watermark_bytes_to_hancom_tone_png_bytes_shared(data)
+    hancom_adjusted_picture_png_bytes_shared(data, effect, brightness, contrast)
         .map(|payload| payload.as_ref().to_vec())
 }
 
-fn real_picture_watermark_bytes_to_hancom_tone_png_bytes_shared(data: &[u8]) -> Option<Arc<[u8]>> {
-    memoized_shared(Conversion::RealPictureTone, data, || {
-        real_picture_watermark_bytes_to_tone_png_bytes(data, apply_real_picture_watermark_tone_rgb)
+fn hancom_adjusted_picture_png_bytes_shared(
+    data: &[u8],
+    effect: ImageEffect,
+    brightness: i8,
+    contrast: i8,
+) -> Option<Arc<[u8]>> {
+    if !needs_hancom_picture_adjustment(brightness, contrast) {
+        return None;
+    }
+    let conversion = Conversion::HancomAdjust {
+        effect: effect as u8,
+        brightness,
+        contrast,
+    };
+    memoized_shared(conversion, data, || {
+        hancom_adjusted_picture_png_bytes_uncached(data, effect, brightness, contrast)
     })
 }
 
-pub(crate) fn real_picture_watermark_fill_bytes_to_hancom_tone_png_bytes(
-    data: &[u8],
-) -> Option<Vec<u8>> {
-    memoized_shared(Conversion::RealPictureFillTone, data, || {
-        real_picture_watermark_bytes_to_tone_png_bytes(
-            data,
-            apply_real_picture_watermark_fill_tone_rgb,
-        )
-    })
-    .map(|payload| payload.as_ref().to_vec())
+/// 한 채널에 한컴 밝기·대비를 적용한다.
+///
+/// 한컴 Mac PDF 가 굽는 그림 픽셀에서 실측한 식 (램프 그림 13조합, 오차 ±1):
+/// `k = 1 + 대비/100`, `B = 밝기 × 255/100` 일 때 `floor(k·v + 128·(1−k) + s·B)`.
+/// 대비가 음수면 밝기 몫이 `s = (1+k)/2` 로 줄고, 0 이상이면 `s = 1` 이다.
+fn hancom_adjust_channel(value: u8, brightness: i8, contrast: i8) -> u8 {
+    let brightness = f64::from(brightness.clamp(-100, 100));
+    let contrast = f64::from(contrast.clamp(-100, 100));
+    let k = (100.0 + contrast) / 100.0;
+    let brightness_offset = brightness * 255.0 / 100.0;
+    let brightness_share = if contrast < 0.0 { (1.0 + k) / 2.0 } else { 1.0 };
+    let adjusted = k * f64::from(value) + 128.0 * (1.0 - k) + brightness_share * brightness_offset;
+    (adjusted + 1e-6).floor().clamp(0.0, 255.0) as u8
 }
 
-fn real_picture_watermark_bytes_to_tone_png_bytes(
+fn hancom_adjusted_picture_png_bytes_uncached(
     data: &[u8],
-    tone: fn(u8, u8, u8) -> [u8; 3],
+    effect: ImageEffect,
+    brightness: i8,
+    contrast: i8,
 ) -> Option<Vec<u8>> {
     use image::ImageFormat;
 
-    let format = image::guess_format(data).ok()?;
+    let format = match detect_image_mime_type(data) {
+        "image/jpeg" => ImageFormat::Jpeg,
+        "image/png" => ImageFormat::Png,
+        "image/bmp" => ImageFormat::Bmp,
+        "image/gif" => ImageFormat::Gif,
+        "image/tiff" => ImageFormat::Tiff,
+        "image/webp" => ImageFormat::WebP,
+        _ => return None,
+    };
     let mut img = decode_image_with_format_limited(data, format)?.to_rgba8();
+    if img.width() == 0 || img.height() == 0 {
+        return None;
+    }
+
+    let table: [u8; 256] =
+        std::array::from_fn(|value| hancom_adjust_channel(value as u8, brightness, contrast));
     for px in img.pixels_mut() {
-        let [r, g, b] = tone(px.0[0], px.0[1], px.0[2]);
-        px.0 = [r, g, b, px.0[3]];
-    }
-
-    let mut out = Vec::new();
-    img.write_to(&mut Cursor::new(&mut out), ImageFormat::Png)
-        .ok()?;
-    Some(out)
-}
-
-/// 워터마크 JPEG 를 한컴 PDF 정답지에 가까운 회색 톤 PNG 로 변환한다.
-pub(crate) fn watermark_jpeg_bytes_to_hancom_baked_png_bytes(data: &[u8]) -> Option<Vec<u8>> {
-    watermark_jpeg_bytes_to_hancom_baked_png_bytes_shared(data)
-        .map(|payload| payload.as_ref().to_vec())
-}
-
-fn watermark_jpeg_bytes_to_hancom_baked_png_bytes_shared(data: &[u8]) -> Option<Arc<[u8]>> {
-    memoized_shared(Conversion::WatermarkJpeg, data, || {
-        watermark_jpeg_bytes_to_hancom_baked_png_bytes_uncached(data)
-    })
-}
-
-fn watermark_jpeg_bytes_to_hancom_baked_png_bytes_uncached(data: &[u8]) -> Option<Vec<u8>> {
-    use image::ImageFormat;
-
-    let mut img = decode_image_with_format_limited(data, ImageFormat::Jpeg)?.to_rgba8();
-    let width = img.width();
-    let height = img.height();
-    if width == 0 || height == 0 {
-        return None;
-    }
-
-    fn is_near_white(px: [u8; 4]) -> bool {
-        px[0] >= 245 && px[1] >= 245 && px[2] >= 245
-    }
-
-    let mut border_total = 0u64;
-    let mut border_near_white = 0u64;
-    for x in 0..width {
-        for y in [0, height - 1] {
-            border_total += 1;
-            if is_near_white(img.get_pixel(x, y).0) {
-                border_near_white += 1;
+        let [r, g, b, a] = px.0;
+        let [r, g, b] = [table[r as usize], table[g as usize], table[b as usize]];
+        // 효과는 보정 뒤 채널에 적용한다. 회색조는 BT.601 가중치, 흑백은 회색 129 이상이 흰색.
+        let gray = 0.299 * f64::from(r) + 0.587 * f64::from(g) + 0.114 * f64::from(b);
+        px.0 = match effect {
+            ImageEffect::RealPic => [r, g, b, a],
+            ImageEffect::GrayScale | ImageEffect::Pattern8x8 => {
+                let gray = (gray + 1e-6).floor() as u8;
+                [gray, gray, gray, a]
             }
-        }
-    }
-    if height > 2 {
-        for y in 1..height - 1 {
-            for x in [0, width - 1] {
-                border_total += 1;
-                if is_near_white(img.get_pixel(x, y).0) {
-                    border_near_white += 1;
-                }
+            ImageEffect::BlackWhite => {
+                let bw = if gray >= 129.0 { 255 } else { 0 };
+                [bw, bw, bw, a]
             }
-        }
-    }
-
-    let mut all_near_white = 0u64;
-    for px in img.pixels() {
-        if is_near_white(px.0) {
-            all_near_white += 1;
-        }
-    }
-
-    let pixel_total = (width as u64) * (height as u64);
-    if (border_near_white as f64 / border_total as f64) < 0.85
-        || (all_near_white as f64 / pixel_total as f64) < 0.20
-    {
-        return None;
-    }
-
-    fn map_watermark_gray(gray: f64) -> u8 {
-        let value = if gray < 50.0 {
-            198.0 + 0.46 * gray
-        } else if gray < 80.0 {
-            221.0 + 0.47 * (gray - 50.0)
-        } else if gray < 100.0 {
-            235.1 + 0.14 * (gray - 80.0)
-        } else if gray < 120.0 {
-            237.9 + 0.385 * (gray - 100.0)
-        } else if gray < 160.0 {
-            245.6 + 0.1625 * (gray - 120.0)
-        } else {
-            252.1 + 0.032 * (gray - 160.0)
         };
-        value.clamp(0.0, 255.0).round() as u8
-    }
-
-    for px in img.pixels_mut() {
-        if is_near_white(px.0) {
-            px.0 = [255, 255, 255, 255];
-        } else {
-            let gray = 0.299 * px.0[0] as f64 + 0.587 * px.0[1] as f64 + 0.114 * px.0[2] as f64;
-            let mapped = map_watermark_gray(gray);
-            px.0 = [mapped, mapped, mapped, 255];
-        }
     }
 
     let mut out = Vec::new();
@@ -655,10 +548,11 @@ fn decode_image_with_format_limited(
 #[cfg(test)]
 mod tests {
     use super::{
-        bmp_bytes_to_png_bytes, grayscale_jpeg_bytes_to_png_bytes, resolve_image_payload,
-        watermark_jpeg_bytes_to_hancom_baked_png_bytes, ConversionMemo, CONVERSIONS_RUN,
+        bmp_bytes_to_png_bytes, grayscale_jpeg_bytes_to_png_bytes,
+        hancom_adjusted_picture_png_bytes, resolve_image_payload, ConversionMemo, CONVERSIONS_RUN,
         MAX_MEMO_BYTES, MAX_MEMO_ENTRIES,
     };
+    use crate::model::image::ImageEffect;
     use crate::paint::ResolvedImageKind;
     use crate::renderer::render_tree::ImageNode;
     use image::{DynamicImage, ImageFormat, Rgb, RgbImage};
@@ -801,7 +695,7 @@ mod tests {
 
         let before = conversions_run();
         let _ = grayscale_jpeg_bytes_to_png_bytes(&jpeg);
-        let _ = watermark_jpeg_bytes_to_hancom_baked_png_bytes(&jpeg);
+        let _ = hancom_adjusted_picture_png_bytes(&jpeg, ImageEffect::GrayScale, 70, -50);
         assert_eq!(
             conversions_run() - before,
             2,

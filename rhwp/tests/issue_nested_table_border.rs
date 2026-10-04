@@ -1,15 +1,10 @@
-//! Nested table 외부 1x1 wrapper 표 외곽 테두리 누락 정정 (exam_social.hwp p1 4번).
+//! Nested table 외부 1x1 표 외곽 테두리 (exam_social.hwp p1 4번).
 //!
-//! `src/renderer/layout/table_layout.rs::layout_table` 의 1x1 wrapper 분기는
-//! 외부 표를 무시하고 내부 표만 직접 layout 한다. 외부 표가 padding 과
-//! border line 을 가진 자료 박스 외곽 테두리 역할인 경우 외곽선이 누락되었다.
-//!
-//! 정정: wrapper 분기 진입 시 외부 셀의 padding != 0 + border_fill 의 borders
-//! 중 하나라도 None 아닌 경우, 외부 표의 size + border_fill 정보로 외곽 4개
-//! 라인을 col_node 에 추가한다.
+//! 외부 1x1 표는 내부 표만 그리는 래퍼로 풀지 않고 선언 크기 그대로 그린다 —
+//! padding 850 안쪽에 내부 6x3 대화체 표가 놓인다. 한컴 macOS PDF 의 4번 자료 박스는
+//! x 145.46–254.55mm, 높이 98.0mm 로 외부 표 선언 크기(30894×27774 HU)와 같다.
 //!
 //! 권위 자료: pi=15 4번 자료 박스 (외부 1x1 padding=850 + 내부 6x3 대화체).
-//! 한컴2022 PDF (`pdf/exam_social-2022.pdf`) p1 우측 4번 영역 외곽 박스 시각 정합.
 
 use std::fs;
 use std::path::Path;
@@ -28,12 +23,12 @@ fn nested_table_border_exam_social_p1_q4_outline_present() {
     let svg = doc.render_page_svg(0).expect("render_page_svg");
 
     // 4번 자료 박스 외곽 4개 라인이 SVG 에 존재해야 한다.
-    // 박스 width: nested 6x3 표 측정 결과 — 390.65 (nested.common.width).
-    // x 좌표: 549.88 (좌) ~ 940.53 (우) — body left margin + nested 표 위치.
+    // 박스 width: 외부 표 선언 폭 30894 HU = 411.92px.
+    // x 좌표: 549.88 (좌) ~ 961.80 (우) — 한컴 PDF 145.46–254.55mm 와 일치.
     // y 좌표: 다른 PR 영역의 페이지네이션 변경에 따라 시프트 가능 영역으로 영역
     // 배치에 따라 바뀌는 절대 좌표 대신 x 좌표 관계와 선 속성을 검증한다.
     let lx = "549.8800000000001";
-    let rx = "940.5333333333334";
+    let rx = "961.8000000000002";
 
     // 좌측선: x1==x2==lx (수직선)
     let has_left_line = svg.contains(&format!("<line x1=\"{lx}\" y1="))
@@ -91,14 +86,13 @@ fn parse_lines(svg: &str) -> Vec<(f64, f64, f64, f64, bool)> {
 ///
 /// `samples/k-water-rfp.hwp` 안에는 외곽 1×1 wrapper 표 안에 내부 표가 든 자료 박스
 /// 구조가 있다. 내부 표의 외곽 격자는 점선(`stroke-dasharray`)으로, wrapper 외곽
-/// 테두리는 그 위에 겹치는 실선으로 그려진다. off-by-one lookup 버그에서는 wrapper
-/// 외곽 borderFill 을 한 칸 어긋나게 읽어(NONE) 실선 외곽선이 통째로 누락되고 내부 표
-/// 점선만 남았다. 정정 후에는 점선 외곽과 같은 y 에 실선 외곽선이 존재해야 한다.
+/// 테두리는 실선으로 그려진다. off-by-one lookup 버그에서는 wrapper 외곽 borderFill 을
+/// 한 칸 어긋나게 읽어(NONE) 실선 외곽선이 통째로 누락되고 내부 표 점선만 남았다.
 ///
-/// 가드: 전폭(>500px) 수평선 중 **점선과 y 가 일치하는 실선**이 ≥1 존재하는지 확인한다.
-/// 좌표를 hardcode 하지 않고 "외곽 박스 = 내부 표 외곽" 관계로 판정하므로, 무관한
-/// 다른 표의 실선(겹치는 점선 없음)이나 페이지네이션 시프트에 영향받지 않는다.
-/// (버그: 일치 0건 → 실패 / 정정: 상·하 2건 일치 → 통과)
+/// wrapper 는 선언 크기 그대로 그려지므로 실선 외곽은 셀 안여백만큼 점선 외곽을
+/// 바깥에서 감싼다 (한컴 macOS PDF k-water-rfp p17: 실선 박스 안쪽에 점선 표).
+/// 가드: 전폭(>500px) 점선 수평선이 있는 쪽에서, 그 위(≤ 최상단 점선)와 아래
+/// (≥ 최하단 점선)에 점선 구간을 덮는 전폭 실선이 각각 존재하는지 확인한다.
 #[test]
 fn nested_table_border_kwater_rfp_outer_outline_present() {
     let repo_root = env!("CARGO_MANIFEST_DIR");
@@ -112,27 +106,35 @@ fn nested_table_border_kwater_rfp_outer_outline_present() {
             .render_page_svg(page_idx)
             .unwrap_or_else(|e| panic!("render_page_svg page {}: {e:?}", page_idx + 1));
         let lines = parse_lines(&svg);
-        // 전폭(>500px) 수평선만 추려 점선/실선 y 집합으로 분리한다.
         let is_wide_horiz =
             |x1: f64, y1: f64, x2: f64, y2: f64| (y1 - y2).abs() < 0.01 && (x2 - x1).abs() > 500.0;
-        let dashed_ys: Vec<f64> = lines
+        let dashed: Vec<(f64, f64, f64)> = lines
             .iter()
-            .filter(|(x1, y1, x2, y2, dashed)| *dashed && is_wide_horiz(*x1, *y1, *x2, *y2))
-            .map(|(_, y1, ..)| *y1)
+            .filter(|(x1, y1, x2, y2, d)| *d && is_wide_horiz(*x1, *y1, *x2, *y2))
+            .map(|(x1, y1, x2, ..)| (x1.min(*x2), x1.max(*x2), *y1))
             .collect();
-        // 점선(내부 표 외곽 격자)과 y 가 일치(±1px)하는 실선(wrapper 외곽 테두리) 개수.
-        let outer_solid_on_inner = lines
-            .iter()
-            .filter(|(x1, y1, x2, y2, dashed)| !*dashed && is_wide_horiz(*x1, *y1, *x2, *y2))
-            .filter(|(_, y1, ..)| dashed_ys.iter().any(|dy| (dy - *y1).abs() < 1.0))
-            .count();
-        if outer_solid_on_inner >= 1 {
-            matched_pages.push((page_idx + 1, outer_solid_on_inner));
+        if dashed.is_empty() {
+            continue;
+        }
+        let top = dashed.iter().map(|d| d.2).fold(f64::MAX, f64::min);
+        let bottom = dashed.iter().map(|d| d.2).fold(f64::MIN, f64::max);
+        let left = dashed.iter().map(|d| d.0).fold(f64::MAX, f64::min);
+        let right = dashed.iter().map(|d| d.1).fold(f64::MIN, f64::max);
+        let solid_covers = |pick: &dyn Fn(f64) -> bool| {
+            lines.iter().any(|(x1, y1, x2, y2, d)| {
+                !*d && is_wide_horiz(*x1, *y1, *x2, *y2)
+                    && pick(*y1)
+                    && x1.min(*x2) <= left + 1.0
+                    && x1.max(*x2) >= right - 1.0
+            })
+        };
+        if solid_covers(&|y| y <= top + 1.0) && solid_covers(&|y| y >= bottom - 1.0) {
+            matched_pages.push(page_idx + 1);
         }
     }
 
     assert!(
         !matched_pages.is_empty(),
-        "wrapper 외곽 실선 테두리 누락 (내부 표 점선 외곽과 겹치는 전폭 실선 0건)"
+        "wrapper 외곽 실선 테두리 누락 (내부 표 점선 외곽을 감싸는 전폭 실선 없음)"
     );
 }

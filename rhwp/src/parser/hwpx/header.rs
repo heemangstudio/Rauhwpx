@@ -1170,7 +1170,18 @@ fn parse_para_shape_child(
                         // [#1986] 값 3종(BREAK_WORD/KEEP_WORD/HYPHENATION) — 원문 보존.
                         // 미보존 시 직렬화가 KEEP_WORD 로 고정해 꼬리말·표셀 재계산
                         // 줄나눔이 바뀌고 레이아웃(페이지 수)이 갈린다.
-                        ps.break_latin_word = Some(attr_str(&attr));
+                        let value = attr_str(&attr);
+                        // HWP5 ParaShape attr1 bit 5-6 (줄 나눔 기준 영어 단위)와 같은 값으로
+                        // 둔다: KEEP_WORD=0(단어), HYPHENATION=1(하이픈), BREAK_WORD=2(글자).
+                        // 한컴 HWP/HWPX 짝 문서 대조로 같은 매핑을 확인했다. 비트가 비어
+                        // 있으면 줄 나눔이 항상 단어 단위로 떨어진다.
+                        let unit = match value.as_str() {
+                            "HYPHENATION" => 1,
+                            "BREAK_WORD" => 2,
+                            _ => 0,
+                        };
+                        ps.attr1 = (ps.attr1 & !(0x03 << 5)) | (unit << 5);
+                        ps.break_latin_word = Some(value);
                     }
                     b"breakNonLatinWord" => {
                         // HWP5 ParaShape attr1 bit 7: non-Latin line-break unit.
@@ -1187,9 +1198,19 @@ fn parse_para_shape_child(
                             ps.attr1 &= !(1 << 7);
                         }
                     }
+                    b"lineWrap" => {
+                        let value = match attr.value.as_ref() {
+                            b"SQUEEZE" => 1,
+                            b"KEEP" => 2,
+                            _ => 0,
+                        };
+                        ps.attr2 = (ps.attr2 & !0x03) | value;
+                    }
                     b"widowOrphan" => {
+                        // HWP5 ParaShape attr1 bit 16 (외톨이줄 보호). attr2 bit 5 는 HWP5
+                        // 명세상 '한글과 숫자 간격 자동 조절'이라 autoSpacing 이 쓴다.
                         if parse_bool(&attr) {
-                            ps.attr2 |= 1 << 5;
+                            ps.attr1 |= 1 << 16;
                         }
                     }
                     b"keepWithNext" => {
@@ -1213,9 +1234,20 @@ fn parse_para_shape_child(
             ParaShapeChildKind::Other
         }
         b"autoSpacing" => {
-            // HWPX autoSpacing은 HWP ParaShape.attr1 bits 20..21이 아니다.
-            // 해당 비트는 문단 세로 정렬이며, <align vertical="...">에서 채운다.
-            // autoSpacing의 HWP 저장 위치는 별도 검증 전까지 attr1에 반영하지 않는다.
+            // HWP5 ParaShape attr2 bit 4(한글-영어 간격 자동 조절)/bit 5(한글-숫자).
+            // attr1 bits 20..21 은 문단 세로 정렬(<align vertical>)이라 쓰지 않는다.
+            for attr in ce.attributes().flatten() {
+                let bit = match attr.key.as_ref() {
+                    b"eAsianEng" => 4,
+                    b"eAsianNum" => 5,
+                    _ => continue,
+                };
+                if parse_bool(&attr) {
+                    ps.attr2 |= 1 << bit;
+                } else {
+                    ps.attr2 &= !(1 << bit);
+                }
+            }
             ParaShapeChildKind::Other
         }
         b"switch" => ParaShapeChildKind::Switch,
@@ -2057,6 +2089,25 @@ fn apply_bullet_para_head_attrs(bullet: &mut Bullet, e: &quick_xml::events::Byte
             b"charPrIDRef" => bullet.char_shape_id = parse_u32(&attr),
             b"widthAdjust" => bullet.width_adjust = parse_i16(&attr),
             b"textOffset" => bullet.text_distance = parse_i16(&attr),
+            // 문단 머리 속성 비트는 번호 문단 머리(parse_numbering_para_head_attrs)와 같다.
+            b"align" => {
+                let align = match attr_str(&attr).as_str() {
+                    "CENTER" => 1,
+                    "RIGHT" => 2,
+                    _ => 0,
+                };
+                bullet.attr = (bullet.attr & !3) | align;
+            }
+            b"useInstWidth" => {
+                bullet.attr = (bullet.attr & !(1 << 2)) | (u32::from(parse_bool(&attr)) << 2)
+            }
+            b"autoIndent" => {
+                bullet.attr = (bullet.attr & !(1 << 3)) | (u32::from(parse_bool(&attr)) << 3)
+            }
+            b"textOffsetType" => {
+                bullet.attr =
+                    (bullet.attr & !(1 << 4)) | (u32::from(attr_str(&attr) == "HWPUNIT") << 4);
+            }
             _ => {}
         }
     }
@@ -2874,7 +2925,8 @@ mod tests {
     <hh:paraProperties itemCnt="2">
       <hh:paraPr id="1" tabPrIDRef="0" condense="0" fontLineHeight="0">
         <hh:align horizontal="JUSTIFY" vertical="BASELINE"/>
-        <hh:breakSetting breakLatinWord="KEEP_WORD" breakNonLatinWord="KEEP_WORD" widowOrphan="0" keepWithNext="0" keepLines="0" pageBreakBefore="0" lineWrap="BREAK"/>
+        <hh:breakSetting breakLatinWord="KEEP_WORD" breakNonLatinWord="KEEP_WORD" widowOrphan="1" keepWithNext="0" keepLines="0" pageBreakBefore="0" lineWrap="BREAK"/>
+        <hh:autoSpacing eAsianEng="0" eAsianNum="1"/>
       </hh:paraPr>
       <hh:paraPr id="2" tabPrIDRef="0" condense="0" fontLineHeight="0">
         <hh:align horizontal="JUSTIFY" vertical="BASELINE"/>
@@ -2897,6 +2949,13 @@ mod tests {
             doc_info.para_shapes[2].break_latin_word.as_deref(),
             Some("HYPHENATION")
         );
+        // attr1 bit 5-6 (영어 단위): KEEP_WORD=0, HYPHENATION=1 — HWP5 와 같은 값.
+        assert_eq!((doc_info.para_shapes[1].attr1 >> 5) & 0x03, 0);
+        assert_eq!((doc_info.para_shapes[2].attr1 >> 5) & 0x03, 1);
+        // widowOrphan = attr1 bit 16, autoSpacing = attr2 bit 4(영어)/5(숫자) — HWP5 와 같은 자리.
+        assert_ne!(doc_info.para_shapes[1].attr1 & (1 << 16), 0);
+        assert_eq!(doc_info.para_shapes[1].attr2 & (0x03 << 4), 1 << 5);
+        assert_eq!(doc_info.para_shapes[2].attr1 & (1 << 16), 0);
     }
 
     #[test]

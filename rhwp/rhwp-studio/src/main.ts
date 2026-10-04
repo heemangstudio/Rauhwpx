@@ -1,4 +1,4 @@
-import { WasmBridge, type PreparedWasmDocument } from '@/core/wasm-bridge';
+import { WasmBridge, installDeclaredFontAvailabilityProbe, type PreparedWasmDocument } from '@/core/wasm-bridge';
 import { installDocumentTitle } from '@/ui/document-title';
 import { FALLBACK_DOCUMENT_FILE_NAME } from '@/core/document-names';
 import type { DocumentInfo } from '@/core/types';
@@ -108,6 +108,7 @@ import {
   unattemptedDesktopFonts,
   type DesktopFontReport,
 } from '@/core/desktop-fonts';
+import { takeHftOutlineChange } from '@/core/hft-glyphs';
 import {
   chooseFontFolder,
   getFontFolderState,
@@ -1230,7 +1231,9 @@ function applyLateDesktopFontReport(report: DesktopFontReport): void {
 }
 
 function applyLateFontReports(reports: readonly DesktopFontReport[]): void {
-  if (fontReportsChangedLayout(reports)) eventBus.emit('font-files-imported');
+  // HFT 윤곽선은 폭을 바꾸지 않지만 같은 경로로 다시 그린다.
+  const hftChanged = takeHftOutlineChange();
+  if (fontReportsChangedLayout(reports) || hftChanged) eventBus.emit('font-files-imported');
   for (const report of reports) finalizeDesktopFontReport(report);
 }
 
@@ -1379,6 +1382,8 @@ async function initialize(): Promise<void> {
     msg.textContent = extensionViewerSettings.disableExternalWebFonts
       ? '로컬 폰트 준비 중...'
       : '웹폰트 로딩 중...';
+    // 대체 CSS 별칭이 원본 설치 여부를 가리지 않도록 등록 전에 측정한다.
+    installDeclaredFontAvailabilityProbe();
     // CSS @font-face 등록 + CRITICAL 폰트만 로드
     await loadWebFonts([], undefined, { ...extensionViewerSettings, onLateLoad: repaintAfterLateWebFonts });
     msg.textContent = 'WASM 로딩 중...';
@@ -2324,7 +2329,8 @@ async function initializeDocument(
       const settled = await settleWithin(desktopFonts, budget);
       if (settled) {
         const reports = settled.value;
-        if (fontReportsChangedLayout(reports)) wasm.refreshLayout();
+        const hftChanged = takeHftOutlineChange();
+        if (fontReportsChangedLayout(reports) || hftChanged) wasm.refreshLayout();
         for (const report of reports) finalizeDesktopFontReport(report);
       } else {
         console.info(`[DesktopFonts] ${DESKTOP_FONT_LOAD_BUDGET_MS}ms 안에 끝나지 않아 백그라운드에서 계속 연결합니다.`);
@@ -2432,7 +2438,8 @@ async function promptLocalFontsIfNeeded(docInfo: DocumentInfo): Promise<void> {
     if (typeof choice === 'object' && choice.type === 'import') {
       try {
         const result = await importLocalFontFiles(choice.files);
-        if (result.imported.length > 0) {
+        const hftChanged = takeHftOutlineChange();
+        if (result.imported.length > 0 || hftChanged) {
           const fonts = getLocalFonts({ includeRegistered: true });
           eventBus.emit('local-fonts-changed', { fonts, report: analyzeDocumentFonts(docInfo.fontsUsed) });
           eventBus.emit('font-files-imported');

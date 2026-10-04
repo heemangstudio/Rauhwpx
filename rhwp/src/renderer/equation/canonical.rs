@@ -119,6 +119,7 @@ fn write_node(
                 output.push_str(&text);
             }
         }
+        EqNode::OperatorBody(body) => output.push_str(&group(body, state, active)?),
         EqNode::Text(text) => write_text(text, output),
         EqNode::Number(text) | EqNode::Symbol(text) | EqNode::Function(text) => {
             output.push_str(text)
@@ -451,7 +452,8 @@ fn math_symbol_name(symbol: &str) -> &str {
         "…" => "ldots",
         "⋮" => "vdots",
         "⋱" => "ddots",
-        "△" => "triangle",
+        "△" => "BASE",
+        "∆" => "triangle",
         "∠" => "angle",
         "⊥" => "bot",
         "°" => "deg",
@@ -528,6 +530,7 @@ mod tests {
             r"x_i^2",
             r"\sum_{i=1}^{n} i",
             r"\int_0^1 x dx",
+            r"\int_0^2 {g(x)dx}=2",
             r"\left( x \right)^2",
             r"\begin{matrix} a & b \\ c & d \end{matrix}",
         ] {

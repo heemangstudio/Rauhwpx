@@ -108,15 +108,15 @@ fn issue_1100_hwpx_even_header_page_auto_number_replaces_one_placeholder_only() 
         has_text_node_at(&svg, 70.66666666666667, 120.54666666666668, "2"),
         "page auto number must render once at the first placeholder"
     );
-    // fwSpace는 번호 원점 + 26.364px다. 비활성 셀 패딩을 제거해도
+    // fwSpace는 번호 원점 + 26.3467px다 (HFT 장평 90%: 문서 장평 그대로 배치 단위로 내림). 비활성 셀 패딩을 제거해도
     // [#1382]의 offsets 축(9) 경계와 charPrIDRef 63 스타일은 유지한다.
     // 번호는 한 번만 치환하고 뒤 fwSpace는 그대로 남아야 한다.
     assert!(
-        has_text_node_at(&svg, 97.03066666666668, 120.54666666666668, "\u{2007}"),
+        has_text_node_at(&svg, 97.01333333333334, 120.54666666666668, "\u{2007}"),
         "the full-width space after the page auto number must remain a space"
     );
     assert!(
-        !has_text_node_at(&svg, 97.03066666666668, 120.54666666666668, "2"),
+        !has_text_node_at(&svg, 97.01333333333334, 120.54666666666668, "2"),
         "the full-width space after the page auto number must not be replaced by a second page number"
     );
 }

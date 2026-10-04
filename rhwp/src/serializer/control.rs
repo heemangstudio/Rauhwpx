@@ -603,7 +603,13 @@ fn serialize_cell(cell: &Cell, level: u16, records: &mut Vec<Record>) {
         VerticalAlign::Center => 1,
         VerticalAlign::Bottom => 2,
     };
-    let list_attr: u32 = ((cell.text_direction as u32) << 16) | (v_align_code << 21);
+    // bit 19~20 줄바꿈 방식: 1 = 자간 조절로 한 줄 유지 (HWPX lineWrap="SQUEEZE", 파서와 짝).
+    let line_wrap_code: u32 = match cell.line_wrap {
+        crate::model::table::CellLineWrap::Squeeze => 1,
+        crate::model::table::CellLineWrap::Break => 0,
+    };
+    let list_attr: u32 =
+        ((cell.text_direction as u32) << 16) | (line_wrap_code << 19) | (v_align_code << 21);
     w.write_u32(list_attr).unwrap();
     let list_header_width_ref = if cell.list_header_width_ref == 0 {
         0x0400
@@ -1104,9 +1110,9 @@ fn serialize_picture_data(pic: &Picture) -> Vec<u8> {
     w.write_i16(pic.padding.top).unwrap();
     w.write_i16(pic.padding.bottom).unwrap();
 
-    // 이미지 속성
-    w.write_i8(pic.image_attr.brightness).unwrap();
+    // 이미지 속성. 명암(대비)이 밝기보다 먼저다 (parser/control/shape.rs 참고).
     w.write_i8(pic.image_attr.contrast).unwrap();
+    w.write_i8(pic.image_attr.brightness).unwrap();
     let effect_val: u8 = match pic.image_attr.effect {
         ImageEffect::RealPic => 0,
         ImageEffect::GrayScale => 1,
@@ -2354,8 +2360,9 @@ fn serialize_shape_fill(w: &mut ByteWriter, fill: &Fill) {
                 ImageFillMode::None => 15,
             };
             w.write_u8(mode_val).unwrap();
-            w.write_i8(img.brightness).unwrap();
+            // 명암(대비)이 밝기보다 먼저다 (parser/doc_info.rs 참고).
             w.write_i8(img.contrast).unwrap();
+            w.write_i8(img.brightness).unwrap();
             w.write_u8(img.effect).unwrap();
             w.write_u16(img.bin_data_id).unwrap();
         }

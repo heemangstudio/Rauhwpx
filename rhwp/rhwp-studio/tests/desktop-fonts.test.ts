@@ -29,6 +29,7 @@ import {
   resolveLocalFont,
 } from '../src/core/local-fonts.ts';
 import { analyzeDocumentFonts } from '../src/core/document-font-status.ts';
+import { setHftWasmApi, takeHftOutlineChange } from '../src/core/hft-glyphs.ts';
 
 function face(id: string, overrides: Partial<SystemFontFace>): SystemFontFace {
   return {
@@ -190,6 +191,104 @@ test('rhwpDesktop이 없으면 데스크톱 글꼴 경로는 아무것도 바꾸
   assert.equal(resolveLocalFont('맑은 고딕'), null);
 });
 
+test('desktop HY equations prepare installed auxiliary faces without replacing the source font', async () => {
+  const g = globalThis as typeof globalThis & { FontFace?: unknown; document?: unknown };
+  const originalDocument = g.document;
+  const originalFontFace = g.FontFace;
+  g.FontFace = class { async load() { return this; } };
+  g.document = { fonts: { add() {}, delete() { return true; } } };
+  const equation = face('equation', {
+    families: ['HYhwpEQ'], fullNames: ['HYhwpEQ'], postscriptNames: ['HYhwpEQ'],
+  });
+  const integral = face('integral', {
+    families: ['STIXGeneral'], fullNames: ['STIXGeneral'], postscriptNames: ['STIXGeneral'],
+  });
+  const symbols = face('symbols', {
+    families: ['Haansoft Batang'], fullNames: ['Haansoft Batang'], postscriptNames: ['HaansoftBatang'],
+  });
+  const body = face('body', {
+    families: ['Body'], fullNames: ['Body'], postscriptNames: ['Body'],
+  });
+  try {
+    for (const [hasIntegral, hasSymbols] of [[true, true], [true, false], [false, true], [false, false]]) {
+      resetDesktopFontsForTests();
+      resetLocalFontsForTests();
+      const reads: string[] = [];
+      configureDesktopFonts({
+        host: {
+          listSystemFonts: async () => makeIndex([equation, body, ...(hasIntegral ? [integral] : []), ...(hasSymbols ? [symbols] : [])]),
+          readSystemFont: async id => { reads.push(id); return new Uint8Array([1, 2, 3]); },
+        },
+        metrics: { register: () => JSON.stringify({ registered: true }) },
+      });
+      await prepareDesktopFontsForDocument(['Body']);
+      assert.deepEqual(reads, ['body'], 'ordinary documents do not load equation auxiliaries');
+      const report = await prepareDesktopFontsForDocument(['HYhwpEQ']);
+      assert.deepEqual(reads, ['body', 'equation', ...(hasIntegral ? ['integral'] : []), ...(hasSymbols ? ['symbols'] : [])]);
+      assert.equal(resolveLocalFont('HYhwpEQ')?.family, 'HYhwpEQ');
+      assert.equal(resolveLocalFont('STIXGeneral')?.family ?? null, hasIntegral ? 'STIXGeneral' : null);
+      assert.equal(resolveLocalFont('Haansoft Batang')?.family ?? null, hasSymbols ? 'Haansoft Batang' : null);
+      assert.ok(report.items.every(item => item.status === 'loaded'),
+        'an unavailable auxiliary does not become a missing document font');
+    }
+  } finally {
+    resetDesktopFontsForTests();
+    resetLocalFontsForTests();
+    g.document = originalDocument;
+    g.FontFace = originalFontFace;
+  }
+});
+
+test('desktop HFT outline reads retry after registration fails', async () => {
+  const g = globalThis as typeof globalThis & { FontFace?: unknown; document?: unknown };
+  const originalDocument = g.document;
+  const originalFontFace = g.FontFace;
+  const bytes = new TextEncoder().encode('Han Unified Font File 1.0\x1a');
+  let attempts = 0;
+  g.FontFace = class {};
+  g.document = { fonts: { add() {}, delete() { return true; } } };
+  resetDesktopFontsForTests();
+  resetLocalFontsForTests();
+  takeHftOutlineChange();
+  setHftWasmApi({
+    register: () => ++attempts > 1,
+    glyphPath: () => '',
+  });
+  configureDesktopFonts({
+    host: {
+      listSystemFonts: async () => makeIndex([face('hft-bank', {
+        path: '/fonts/bank.hft', format: 'hft', source: 'hancom',
+        families: ['신명 신그래픽'], koreanNames: ['신명 신그래픽'],
+      })]),
+      readSystemFont: async () => bytes,
+    },
+  });
+  try {
+    await prepareDesktopFontsForDocument(['신명 신그래픽']);
+    assert.equal(attempts, 1);
+    assert.equal(takeHftOutlineChange(), false);
+    await prepareDesktopFontsForDocument(['신명 신그래픽']);
+    assert.equal(attempts, 2);
+    assert.equal(takeHftOutlineChange(), true);
+    await prepareDesktopFontsForDocument(['신명 신그래픽']);
+    assert.equal(attempts, 2);
+    setHftWasmApi({
+      register: () => { attempts += 1; return true; },
+      glyphPath: () => '',
+    });
+    await prepareDesktopFontsForDocument(['신명 신그래픽']);
+    assert.equal(attempts, 3, 'a new WASM instance needs its own outline registration');
+    assert.equal(takeHftOutlineChange(), true);
+  } finally {
+    setHftWasmApi(null);
+    takeHftOutlineChange();
+    resetDesktopFontsForTests();
+    resetLocalFontsForTests();
+    g.document = originalDocument;
+    g.FontFace = originalFontFace;
+  }
+});
+
 test('데스크톱 글꼴은 스타일별 FontFace와 런타임 메트릭으로 등록되고 권한 요청을 막는다', async () => {
   const g = globalThis as typeof globalThis & { FontFace?: unknown; document?: unknown };
   const originalDocument = g.document;
@@ -253,6 +352,21 @@ test('데스크톱 글꼴은 스타일별 FontFace와 런타임 메트릭으로 
     assert.equal(again.items[0]?.status, 'already-available');
     assert.equal(again.totals.facesRegistered, 0);
     assert.equal(reads.length, 2);
+
+    configureDesktopFonts({ metrics: {
+      register: (_bytes, aliasesJson, bold, italic) => {
+        metricCalls.push({ aliases: JSON.parse(aliasesJson), bold, italic });
+        return JSON.stringify({ registered: true });
+      },
+      fallbackFamilies: name => name === 'HY신명조' ? ['설치되지 않은 후보', 'Malgun Gothic', '다음 후보'] : [],
+    } });
+    const substitute = await prepareDesktopFontsForDocument(['HY신명조']);
+    assert.deepEqual(substitute.items.map(item => [item.requested, item.status]), [
+      ['HY신명조', 'missing'], ['Malgun Gothic', 'already-available'],
+    ], 'the first installed engine candidate is prepared while the missing original remains visible');
+    assert.equal(resolveLocalFont('HY신명조'), null, 'substitutes do not replace the original HFT metric identity');
+    assert.ok(metricCalls.every(call => !call.aliases.includes('HY신명조')));
+    assert.equal(reads.length, 2, 'already prepared substitutes reuse their registered faces');
 
     // 데스크톱 face는 등록 뒤 JS 사본을 남기지 않고, CanvasKit 요청 때 파일을 다시 읽는다.
     const boldKey = localFontFaceKey(resolveLocalFont('Malgun Gothic Bold')!);

@@ -151,12 +151,17 @@ export function canvasKitImageContainRect(
   if (!usable) {
     return { x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height };
   }
-  const scale = Math.min(bbox.width / imageWidth, bbox.height / imageHeight);
-  const width = imageWidth * scale;
-  const height = imageHeight * scale;
+  // 한컴의 ZOOM 배율은 정수 퍼센트로 올림하며 넘치는 영역은 호출부에서 자른다.
+  const f32 = Math.fround;
+  const scale = f32(Math.ceil(f32(Math.min(
+    f32(f32(bbox.width) / f32(imageWidth)),
+    f32(f32(bbox.height) / f32(imageHeight)),
+  ) * 100)) / 100);
+  const width = f32(f32(imageWidth) * scale);
+  const height = f32(f32(imageHeight) * scale);
   return {
-    x: bbox.x + (bbox.width - width) / 2,
-    y: bbox.y + (bbox.height - height) / 2,
+    x: f32(f32(bbox.x) + f32(Math.max(0, f32(f32(bbox.width) - width)) / 2)),
+    y: f32(f32(bbox.y) + f32(Math.max(0, f32(f32(bbox.height) - height)) / 2)),
     width,
     height,
   };

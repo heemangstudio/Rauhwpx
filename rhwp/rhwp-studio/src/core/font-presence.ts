@@ -79,13 +79,21 @@ export function createDeclaredFontAvailabilityProbe(
   context: ProbeContext,
   originalFont: { get: () => string; set: (value: string) => void },
   importedFaceAvailable: (family: string) => boolean,
+  substitutedWebFamilies: readonly string[] = [],
 ): (family: string) => boolean {
   const rawContext: ProbeContext = {
     get font() { return originalFont.get.call(context); },
     set font(value: string) { originalFont.set.call(context, value); },
     measureText(text: string) { return context.measureText(text); },
   };
-  return family => importedFaceAvailable(family) || isFontFamilyAvailable(family, rawContext);
+  // 대체 웹폰트가 같은 CSS 이름으로 로드되기 전 원본 face의 존재를 보존한다.
+  // 이후 실제 설치 서체를 가져오면 등록부의 결과가 이 초기값보다 우선한다.
+  const key = (family: string) => family.trim().normalize('NFC').toLowerCase();
+  const originalAvailability = new Map(substitutedWebFamilies.map(family => [
+    key(family), isFontFamilyAvailable(family, rawContext),
+  ]));
+  return family => importedFaceAvailable(family)
+    || (originalAvailability.get(key(family)) ?? isFontFamilyAvailable(family, rawContext));
 }
 
 /** 여러 서체를 한 컨텍스트로 일괄 판정한다. */

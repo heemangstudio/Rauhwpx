@@ -13,6 +13,7 @@ struct EquationFont {
     source: String,
     family: String,
     hft: bool,
+    modern_hy: bool,
 }
 
 #[wasm_bindgen]
@@ -38,6 +39,7 @@ pub fn render_equation_canvas(
         source: font_family.to_string(),
         family: super::font::equation_css_font_family(Some(font_family)),
         hft: version_info.is_empty() && super::font::is_legacy_equation_font(font_family),
+        modern_hy: !version_info.is_empty() && super::font::is_legacy_equation_font(font_family),
     };
     // 진입점 default: italic=true (hwpeq 변수 기본 스타일).
     // FontStyle::Roman(`rm`) 적용 영역에서는 자식 렌더링 시 italic=false 로 전환된다.
@@ -101,7 +103,10 @@ fn render_box(
                 x,
                 y + lb.baseline,
                 fi,
-                !has_cjk && italic,
+                !has_cjk
+                    && !(font_family.modern_hy
+                        && super::font::modern_hancom_fallback_run_advance_em(text).is_some())
+                    && italic,
                 bold,
                 font_family,
             );
@@ -132,7 +137,7 @@ fn render_box(
             // Task #1317: 적분 기호(∫)는 폰트 text 가 아닌 stroke path 로 렌더(geom SSOT,
             // svg_render.rs 와 동일). 그 외 MathSymbol 은 측정된 잎 크기로 렌더.
             if super::layout::is_integral_symbol(text) {
-                draw_integral(ctx, x, y, fs, color);
+                draw_integral(ctx, x, y, fs, color, font_family.modern_hy);
             } else {
                 ctx.set_fill_style_str(color);
                 draw_text(
@@ -182,14 +187,15 @@ fn render_box(
                     resolve_equation_font_family(&font_family.source, "\u{e05c}\u{e06d}"),
                     Ok(Some(_))
                 );
+            let geom = sqrt_pua_geometry(body, lb.baseline, lb.width, fs, !font_family.hft);
             let sign_painted = pair_available
                 && draw_legacy_pua_glyph(
                     ctx,
                     font_family,
                     '\u{e05c}',
                     x + body.x - fs,
-                    y + lb.baseline,
-                    fs * 0.682 + body.height * 0.37,
+                    y + geom.sign_baseline,
+                    geom.sign_size,
                     Some(fs),
                     color,
                 );
@@ -199,9 +205,9 @@ fn render_box(
                     font_family,
                     '\u{e06d}',
                     x + body.x - fs * 0.03,
-                    y + body.y + body.height * 0.694,
-                    body.height * 1.11,
-                    Some(body.width + fs * 0.17),
+                    y + geom.bar_baseline,
+                    geom.bar_size,
+                    Some(geom.bar_advance),
                     color,
                 );
                 if !bar_painted {
@@ -304,27 +310,47 @@ fn render_box(
             // 적분 (∫, ∮ 등): 기호 좌측, 첨자 우상단/우하단 (nolimits)
             // 그 외 (∑, ∏ 등): 기호 중앙, 첨자 위/아래 (limits)
             let is_integral = super::layout::is_integral_symbol(symbol);
+            let modern_hy_sum = symbol == "∑"
+                && !font_family.hft
+                && super::font::is_legacy_equation_font(&font_family.source);
             // Task #1313: 적분은 전용 스케일(INTEGRAL_SCALE), ∑/∏ 등은 BIG_OP_SCALE.
             let op_fs = fs
                 * if is_integral {
                     INTEGRAL_SCALE
+                } else if modern_hy_sum {
+                    super::layout::MODERN_HY_SUM_SCALE
                 } else {
                     BIG_OP_SCALE
                 };
             ctx.set_fill_style_str(color);
             if is_integral {
-                // Task #1317: 적분 기호는 stroke path 로 렌더(geom SSOT).
-                draw_integral(ctx, x, y, fs, color);
+                draw_integral(ctx, x, y, fs, color, font_family.modern_hy);
             } else {
                 let sup_h = sup.as_ref().map(|b| b.height + fs * 0.05).unwrap_or(0.0);
                 // Task #1233: 연산자는 max_w(= lb.width - trailing pad)에 중앙정렬 →
                 // pad 전체가 순수 trailing 간격이 되고 첨자(max_w 중앙정렬)와 정렬된다.
                 // #1304: 연산자 폭은 layout 의 estimate_text_width 와 동일 기준을 써야 첨자와
                 // 가로 중심이 맞는다 (기존 estimate_op_width 의 0.6 과소추정 → ∑ 우측 치우침).
-                let center_w = lb.width - fs * super::layout::BIG_OP_TRAIL_PAD;
-                let op_x =
-                    x + (center_w - super::layout::estimate_text_width(symbol, op_fs, false)) / 2.0;
-                let op_y = y + sup_h + op_fs * 0.8;
+                let pad = if modern_hy_sum {
+                    super::layout::MODERN_HY_SUM_TRAIL_PAD
+                } else {
+                    super::layout::BIG_OP_TRAIL_PAD
+                };
+                let center_w = lb.width - fs * pad;
+                let op_width = if modern_hy_sum {
+                    op_fs * super::layout::MODERN_HY_SUM_ADVANCE_EM
+                } else {
+                    super::layout::estimate_text_width(symbol, op_fs, false)
+                };
+                let op_x = x + (center_w - op_width) / 2.0;
+                let op_y = y
+                    + sup_h
+                    + op_fs
+                        * if modern_hy_sum {
+                            super::layout::MODERN_HY_SUM_BASELINE
+                        } else {
+                            0.8
+                        };
                 draw_text(ctx, symbol, op_x, op_y, op_fs, false, false, font_family);
             }
             // 위/아래 첨자 — LayoutBox 자식 좌표 사용 (적분/일반 공통)
@@ -336,7 +362,7 @@ fn render_box(
                     y,
                     color,
                     fs * SCRIPT_SCALE,
-                    false,
+                    modern_hy_sum && italic,
                     false,
                     font_family,
                 );
@@ -349,20 +375,35 @@ fn render_box(
                     y,
                     color,
                     fs * SCRIPT_SCALE,
-                    false,
+                    modern_hy_sum && italic,
                     false,
                     font_family,
                 );
             }
         }
-        LayoutKind::Limit { is_upper, sub } => {
+        LayoutKind::Limit {
+            is_upper,
+            sub,
+            name_x,
+            name_y,
+        } => {
             // [Task PR #396 후속] SVG 경로 (svg_render.rs::Limit) 와 동일하게 base font_size 사용.
             // font_size_from_box(lb, fs) 는 lb.height 를 사용하는데, Limit 의 lb 는 "lim + 첨자"
             // 전체 높이라 base 의 1.5~2 배가 되어 lim 글자가 비정상으로 커지는 정황.
             let name = if *is_upper { "Lim" } else { "lim" };
-            let fi = fs;
+            // 이름 크기는 상자 기준선(0.8×이름 크기)에서 얻는다 (현대 HY 1.2배).
+            let fi = lb.baseline / 0.8;
             ctx.set_fill_style_str(color);
-            draw_text(ctx, name, x, y + fi * 0.8, fi, false, false, font_family);
+            draw_text(
+                ctx,
+                name,
+                x + name_x,
+                y + lb.baseline + name_y,
+                fi,
+                false,
+                false,
+                font_family,
+            );
             if let Some(sub_box) = sub {
                 render_box(
                     ctx,
@@ -371,7 +412,7 @@ fn render_box(
                     y,
                     color,
                     fs * SCRIPT_SCALE,
-                    false,
+                    italic,
                     false,
                     font_family,
                 );
@@ -437,6 +478,7 @@ fn render_box(
             } else {
                 fs * 0.27
             };
+            let paren_w = super::layout::paren_bar_slot(lb, body, left, right, fs, paren_w);
             if !left.is_empty() {
                 let legacy_painted = (left_paren_stretch && {
                     let (ink, g) = paren_glyph_ink(left);
@@ -481,7 +523,19 @@ fn render_box(
                     {
                     } else if use_glyph && matches!(left.as_str(), "(" | ")" | "[" | "]") {
                         ctx.set_fill_style_str(color);
-                        draw_text(ctx, left, x, y + lb.baseline, fs, false, false, font_family);
+                        let left_x = x + super::layout::paren_left_square_ink_offset(
+                            lb, body, left, right, fs,
+                        );
+                        draw_text(
+                            ctx,
+                            left,
+                            left_x,
+                            y + lb.baseline,
+                            fs,
+                            false,
+                            false,
+                            font_family,
+                        );
                     } else {
                         draw_stretch_bracket(
                             ctx,
@@ -498,7 +552,8 @@ fn render_box(
             }
             render_box(ctx, body, x, y, color, fs, italic, bold, font_family);
             if !right.is_empty() {
-                let right_x = x + lb.width - paren_w;
+                let right_x = x + lb.width
+                    - super::layout::paren_right_slot(lb, body, left, right, fs, paren_w);
                 let legacy_painted = (right_paren_stretch && {
                     let (ink, g) = paren_glyph_ink(right);
                     draw_legacy_pua_glyph_scaled(
@@ -827,7 +882,14 @@ fn draw_text(
             return;
         }
     }
-    set_font(ctx, size, italic, bold, &font.family);
+    if !font.hft
+        && super::font::is_legacy_equation_font(&font.source)
+        && super::font::modern_hancom_fallback_run_advance_em(text).is_some()
+    {
+        set_font(ctx, size, false, bold, "'Haansoft Batang'");
+    } else {
+        set_font(ctx, size, italic, bold, &font.family);
+    }
     let _ = ctx.fill_text(text, x, y);
 }
 
@@ -935,22 +997,44 @@ fn set_font(
     ctx.set_font(&super::measure::css_font(size, italic, bold, font_family));
 }
 
-/// 적분 기호(∫)를 stroke path 로 렌더 (Task #1317).
+/// 현대 HY 적분은 굽은 글리프를 칠하고, 다른 적분은 기존 stroke path 를 사용한다.
 ///
-/// svg_render.rs 의 `integral_path` 와 동일한 `integral_geom` 기하·곡선을 사용해
-/// SVG/Canvas 가 픽셀 단위로 정합한다. 폰트에 의존하지 않으므로 글리프 bbox 가
-/// 결정적이며 상·하한 attach point(동일 geom)와 어긋나지 않는다.
-fn draw_integral(ctx: &CanvasRenderingContext2d, x: f64, y: f64, fs: f64, color: &str) {
+/// 대체 path 는 SVG 와 같은 가로 기하 및 세로 잉크 범위를 사용한다.
+fn draw_integral(
+    ctx: &CanvasRenderingContext2d,
+    x: f64,
+    y: f64,
+    fs: f64,
+    color: &str,
+    modern_hy: bool,
+) {
+    if modern_hy
+        && resolve_equation_font_family("STIXGeneral", "∫")
+            .ok()
+            .flatten()
+            .is_some()
+    {
+        let previous_font = ctx.font();
+        let previous_align = ctx.text_align();
+        ctx.set_fill_style_str(color);
+        ctx.set_text_align("start");
+        set_font(ctx, fs * 1.748, false, false, "'STIXGeneral'");
+        let _ = ctx.fill_text("∫", x + fs * 0.042, y + fs * 1.94);
+        ctx.set_font(&previous_font);
+        ctx.set_text_align(&previous_align);
+        return;
+    }
     let g = integral_geom(fs);
-    let h = g.bottom_y - g.top_y;
+    let top_y = integral_fallback_top_y(g, fs, modern_hy);
+    let h = g.bottom_y - top_y;
     let p0x = x + g.bottom_hook_x;
     let p0y = y + g.bottom_y;
     let p3x = x + g.top_hook_x;
-    let p3y = y + g.top_y;
+    let p3y = y + top_y;
     let c1x = x + g.width * 1.02;
     let c1y = y + g.bottom_y - h * 0.30;
     let c2x = x - g.width * 0.10;
-    let c2y = y + g.top_y + h * 0.30;
+    let c2y = y + top_y + h * 0.30;
     ctx.set_stroke_style_str(color);
     ctx.set_line_width(g.stroke_w);
     ctx.set_line_cap("round");
@@ -1172,6 +1256,12 @@ fn draw_decoration(
             ctx.begin_path();
             ctx.move_to(mid_x - half_w, uy);
             ctx.line_to(mid_x + half_w, uy);
+            ctx.stroke();
+        }
+        DecoKind::StrikeThrough => {
+            ctx.begin_path();
+            ctx.move_to(mid_x - half_w, y + fs * 1.14);
+            ctx.line_to(mid_x + half_w, y + fs * 0.14);
             ctx.stroke();
         }
         _ => {

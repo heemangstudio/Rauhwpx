@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import CanvasKitInit from 'canvaskit-wasm';
 import { createTestModuleServer } from './support/module-server.ts';
 
-test('CanvasKit renders thin axis-aligned rules and square borders as one solid device pixel', async () => {
+test('CanvasKit fast previews snap thin rules while print preserves vector coverage', async () => {
   const root = fileURLToPath(new URL('../', import.meta.url));
   const vite = await createTestModuleServer(root);
   try {
@@ -23,6 +23,7 @@ test('CanvasKit renders thin axis-aligned rules and square borders as one solid 
         canvas.scale(scale, scale);
         const renderer = new CanvasKitLayerRenderer(kit, 'default', {}, null);
         renderer.currentRenderScale = scale;
+        renderer.currentRenderProfile = 'fastPreview';
         renderer.renderLine(canvas, {
           type: 'line', bbox: { x: 12.34, y: 4, width: 0.5, height: 22 },
           x1: 12.34, y1: 4, x2: 12.34, y2: 26,

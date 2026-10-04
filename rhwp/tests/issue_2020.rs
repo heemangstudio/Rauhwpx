@@ -65,6 +65,20 @@ fn find_text_bbox(root: &RenderNode, needle: &str) -> Option<BoundingBox> {
     None
 }
 
+fn find_receipt_seal_line_bbox(root: &RenderNode) -> Option<BoundingBox> {
+    if matches!(root.node_type, RenderNodeType::TextLine(_)) {
+        let has = |needle| {
+            root.children.iter().any(|child| {
+            matches!(&child.node_type, RenderNodeType::TextRun(run) if run.text.contains(needle))
+        })
+        };
+        if has('\u{F081C}') && has('\u{F012B}') {
+            return Some(root.bbox);
+        }
+    }
+    root.children.iter().find_map(find_receipt_seal_line_bbox)
+}
+
 fn find_first_ellipse_bbox(root: &RenderNode) -> Option<BoundingBox> {
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
@@ -78,24 +92,27 @@ fn find_first_ellipse_bbox(root: &RenderNode) -> Option<BoundingBox> {
     None
 }
 
-fn find_line_bbox_near(
+fn find_filler_glyphs_near(
     root: &RenderNode,
     x_range: (f64, f64),
-    y_range: (f64, f64),
-) -> Option<BoundingBox> {
+    baseline_range: (f64, f64),
+) -> Vec<BoundingBox> {
     let mut stack = vec![root];
+    let mut glyphs = Vec::new();
     while let Some(node) = stack.pop() {
-        if matches!(node.node_type, RenderNodeType::Line(_))
-            && (x_range.0..=x_range.1).contains(&node.bbox.x)
-            && (y_range.0..=y_range.1).contains(&node.bbox.y)
-        {
-            return Some(node.bbox);
+        if let RenderNodeType::TextRun(run) = &node.node_type {
+            if run.text == "\u{F081C}"
+                && run.display_text.as_deref() == Some("\u{F081C}")
+                && (x_range.0..=x_range.1).contains(&node.bbox.x)
+                && (baseline_range.0..=baseline_range.1).contains(&(node.bbox.y + run.baseline))
+            {
+                glyphs.push(node.bbox);
+            }
         }
-        for child in &node.children {
-            stack.push(child);
-        }
+        stack.extend(&node.children);
     }
-    None
+    glyphs.sort_by(|a, b| a.x.total_cmp(&b.x));
+    glyphs
 }
 
 fn parse_svg_attr(attrs: &str, key: &str) -> Option<f64> {
@@ -238,15 +255,11 @@ fn issue_2020_bokhak_receipt_seal_line_and_stamp_align() {
         .expect("render bokhak receipt SVG");
 
     assert!(
-        svg_line_with_text(&svg, "(인)").is_some(),
-        "복학원서 접수증 위 날인선에는 `(인)` 표시가 렌더링되어야 함"
-    );
-    assert!(
-        !svg.contains('\u{F081C}'),
-        "TAC filler 원문 U+F081C가 SVG에 그대로 출력되면 안 됨"
+        svg_line_with_text(&svg, "\u{F012B}").is_some(),
+        "날인선은 함초롬바탕의 원형 인 글리프를 유지해야 함"
     );
 
-    let seal_line = find_text_bbox(&tree.root, "(인)").expect("합성 날인선 TextRun");
+    let seal_line = find_receipt_seal_line_bbox(&tree.root).expect("원문 PUA 날인선 TextLine");
     let receipt_table = find_table_bbox(&tree.root, 16, 0).expect("pi=16 receipt table");
     assert!(
         seal_line.y < receipt_table.y && seal_line.width > 600.0,
@@ -280,10 +293,12 @@ fn issue_2020_bokhak_receipt_seal_line_and_stamp_align() {
         "날짜 옆 `㊞`은 빨간 도장 원 중심이 아니라 한컴처럼 원 내부 왼쪽에 놓여야 함: text=({text_cx:.1},{text_cy:.1}) circle=({circle_cx:.1},{circle_cy:.1})"
     );
 
-    let marker = find_line_bbox_near(&tree.root, (695.0, 713.0), (1028.0, 1035.0))
-        .expect("표 뒤 U+F081C 선문자 marker");
+    let markers = find_filler_glyphs_near(&tree.root, (695.0, 717.0), (1028.0, 1038.0));
+    assert_eq!(markers.len(), 2, "표 뒤 두 PUA 점선 글리프가 남아야 함");
+    let marker_width = markers[1].x + markers[1].width - markers[0].x;
     assert!(
-        (8.0..=16.0).contains(&marker.width) && marker.height <= 1.2,
-        "도장 오른쪽 아래 U+F081C 선문자는 짧은 검은 가로선으로 렌더되어야 함: marker={marker:?}"
+        (8.0..=16.0).contains(&marker_width)
+            && (markers[0].x + markers[0].width - markers[1].x).abs() < 0.01,
+        "도장 오른쪽 아래 PUA 점선은 실제 글리프 진행폭으로 이어져야 함: {markers:?}"
     );
 }

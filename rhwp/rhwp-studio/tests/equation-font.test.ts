@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { equationFontFamilies, equationLocalFontFace } from '../src/core/equation-font.ts';
+import { readFileSync } from 'node:fs';
+import { equationFontFamilies, equationLocalFontFace, createEquationTextMeasurer } from '../src/core/equation-font.ts';
 import type { LocalFontRecord } from '../src/core/local-fonts.ts';
 
 test('legacy equations retain their source face and prefer real Times italic fallback', () => {
@@ -28,12 +29,16 @@ test('equation variables and numbers choose distinct real italic and upright fac
 });
 
 test('legacy math cmap keeps intrinsic italic, roman, digits and Greek distinct', async () => {
-  const { legacyEquationRuns } = await import('../src/core/equation-font.ts');
+  const { legacyEquationGlyph, legacyEquationRuns } = await import('../src/core/equation-font.ts');
+  assert.deepEqual(legacyEquationGlyph('°', false, true), ['\ue0c8', false]);
+  assert.deepEqual(legacyEquationGlyph('°', false, false), ['°', false]);
+  assert.deepEqual(legacyEquationRuns('°', false, false), [{ text: '°', italic: false }]);
   assert.deepEqual(legacyEquationRuns('pif1+αΩL', true), [
     { text: '\ue0f4\ue0ed\ue0ea\ue034\ue048\ue09d\ue09c', italic: false },
     { text: '\ue00b', italic: true },
   ]);
   assert.deepEqual(legacyEquationRuns('PMexp1+α', false), [{ text: 'PMexp\ue034\ue048α', italic: false }]);
+  assert.deepEqual(legacyEquationRuns('∑', false, true), [{ text: '\ue067', italic: false, baselineEm: 0 }]);
   assert.deepEqual(legacyEquationRuns('x1.2=rm', true, true), [
     { text: '\ue0fc', italic: false, baselineEm: 0.06 },
     { text: '\ue034', italic: false, baselineEm: 0.06 },
@@ -47,6 +52,11 @@ test('legacy math cmap keeps intrinsic italic, roman, digits and Greek distinct'
     { text: 'A', italic: false, baselineEm: 0 },
     { text: '\ue034', italic: false, baselineEm: 0.06 },
   ]);
+  assert.deepEqual(legacyEquationRuns('→∞', false, true), [
+    { text: '→', italic: false, baselineEm: 0.06 },
+    { text: '∞', italic: false, baselineEm: 0.06 },
+  ]);
+  assert.deepEqual(legacyEquationRuns('→∞', false), [{ text: '→∞', italic: false }]);
 });
 
 /** 최소 SFNT: format4 cmap의 한 문자만 가진다. 누락 글립 경계도 검증한다. */
@@ -78,6 +88,9 @@ test('legacy PUA is allowed only for a loaded exact face whose cmap covers the t
   assert.equal(resolver('HYhwpEQ', '\ue0f4'), '__imported_hy');
   assert.equal(resolver('HYhwpEQ', '\ue0f4\ue0ed'), null, 'subset missing i must use original Unicode fallback');
   assert.equal(resolver('Times New Roman', '\ue0f4'), null);
+  const degreeResolver = createEquationFontResolver(() => record, () => fontWithGlyph(0xe0c8));
+  assert.equal(degreeResolver('HYhwpEQ', '\ue0c8'), '__imported_hy');
+  assert.equal(resolver('HYhwpEQ', '\ue0c8'), null, 'missing degree PUA uses Unicode fallback');
 });
 
 test('cmap validation rejects malformed data and out-of-range glyph IDs', async () => {
@@ -132,6 +145,10 @@ test('수식 측정은 실제 글립의 잉크와 굵기 및 run 커닝을 보�
     assert.equal(calls[0].font, '16.000px "__hy"', 'intrinsic italic glyph must not be slanted twice');
     assert.equal(measure('HYhwpEQ', 'i', 16, true, false, true), null);
     assert.equal(measure('HYhwpEQ', 'p', 16, true, true, true), null, 'missing HFT keeps offline layout fallback');
+    const bank: LocalFontRecord = { ...record, family: 'HSUSR', fullName: 'HSUSR', postscriptName: 'HSUSR', runtimeFamily: '__hft' };
+    const legacyMeasure = createEquationTextMeasurer(name => name === 'HSUSR' ? bank : null, () => fontWithGlyph(0x00b0));
+    assert.deepEqual(legacyMeasure('HYhwpEQ', '°', 16, false, true, false), { advance: 8, inkLeft: 0, inkRight: 10 });
+    assert.equal(calls.at(-1)?.text, '°', 'empty-version HFT path keeps the Unicode degree glyph');
   } finally {
     if (original) Object.defineProperty(globalThis, 'document', original);
     else Reflect.deleteProperty(globalThis, 'document');
@@ -154,4 +171,52 @@ test('modern advance shrink follows synthetic glyph style rather than the italic
     const synthetic = legacyEquationRuns(character, italic)[0].italic;
     assert.equal(modernEquationAdvance(10, 20, synthetic), 10 * shrink);
   }
+});
+
+const modernHyFixture = readFileSync(new URL('../../tests/fixtures/fonts/RHWPShapingFixture.ttf', import.meta.url));
+const modernHyBytes = modernHyFixture.buffer.slice(modernHyFixture.byteOffset, modernHyFixture.byteOffset + modernHyFixture.byteLength);
+const modernHyRecord = { family: 'HYhwpEQ', fullName: 'HYhwpEQ', postscriptName: 'HYhwpEQ', style: 'Regular', displayName: 'HYhwpEQ', aliases: [], runtimeFamily: '__hy' };
+
+test('short modern square paint follows the loaded face and excludes other fences', async () => {
+  const { modernShortSquarePaintMetrics } = await import('../src/core/equation-font.ts');
+  const { sfntTrueTypeRunMetrics } = await import('../src/core/sfnt-cmap.ts');
+  const fixture = readFileSync(new URL('../../tests/fixtures/fonts/HYhwpEQSourceFixture.ttf', import.meta.url));
+  const bytes = fixture.buffer.slice(fixture.byteOffset, fixture.byteOffset + fixture.byteLength);
+  for (const size of [6, 9, 12]) {
+    const open = sfntTrueTypeRunMetrics(bytes, '\ue049', size)!;
+    const close = sfntTrueTypeRunMetrics(bytes, '\ue04a', size)!;
+    const body = { x: open.advance + size * 0.225, width: size * 0.5 };
+    const layout = { left: '[', right: ']', height: size, body,
+      width: body.x + body.width + close.advance + size * 0.225 };
+    assert.deepEqual(modernShortSquarePaintMetrics(bytes, size, layout, true), {
+      openInkLeft: open.inkLeft, rightSlot: close.advance + size * 0.10,
+    });
+    assert.equal(modernShortSquarePaintMetrics(bytes, size, layout, false), null);
+    assert.equal(modernShortSquarePaintMetrics(null, size, layout, true), null);
+    assert.equal(modernShortSquarePaintMetrics(fontWithGlyph(0xe049), size, layout, true), null);
+    assert.equal(modernShortSquarePaintMetrics(bytes, size,
+      { ...layout, left: '(' }, true), null);
+    assert.equal(modernShortSquarePaintMetrics(bytes, size,
+      { ...layout, height: size * 2 }, true), null);
+  }
+});
+
+test('mixed modern HY runs keep covered glyph metrics and native CJK pitch', () => {
+  const measure = createEquationTextMeasurer(() => modernHyRecord, () => modernHyBytes);
+  const mixed = measure('HYhwpEQ', 'A배V', 10, false, false, true)!;
+  assert.ok(Math.abs(mixed.advance - 19.8) < 1e-9);
+  assert.ok(Math.abs(mixed.inkLeft - .5) < 1e-9);
+  assert.ok(Math.abs(mixed.inkRight - 19.4) < 1e-9);
+  assert.deepEqual(measure('HYhwpEQ', '배수', 10, true, false, true), { advance: 18, inkLeft: 0, inkRight: 19 });
+  const covered = measure('HYhwpEQ', 'AV', 10, false, false, true)!;
+  assert.ok(Math.abs(covered.advance - 10.8) < 1e-9);
+  assert.ok(Math.abs(covered.inkRight - 10.4) < 1e-9);
+  assert.equal(measure('HYhwpEQ', 'Ω', 10, false, false, true), null);
+  assert.equal(measure('HYhwpEQ', '한', 10, false, true, true), null);
+});
+
+test('CJK pitch requires a loaded exact source with valid font data', () => {
+  assert.equal(createEquationTextMeasurer(() => ({ ...modernHyRecord, runtimeFamily: undefined }), () => modernHyBytes)('HYhwpEQ', '한', 10, false, false, true), null);
+  assert.equal(createEquationTextMeasurer(() => ({ ...modernHyRecord, family: 'Other' }), () => modernHyBytes)('HYhwpEQ', '한', 10, false, false, true), null);
+  assert.equal(createEquationTextMeasurer(() => modernHyRecord, () => new ArrayBuffer(2))('HYhwpEQ', '한', 10, false, false, true), null);
 });

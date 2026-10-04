@@ -1,0 +1,166 @@
+{
+  "analysis_sources": [
+    {
+      "path_in_local_analysis": "docs/16-hft-format.md",
+      "sha256": "1d4984681c45afaa7c57d89d85ac2f325b1b278b4e06b93e60d41eaf46fbc2fc"
+    },
+    {
+      "path_in_local_analysis": "docs/15-tables-breakthroughs.md",
+      "sha256": "9babaea8efe4dce7283379b1890db2247f7aa2c812a4f650cc87087c399b5a06"
+    },
+    {
+      "path_in_local_analysis": "data/decomp_basedraw/fn_0002e3c8__FUN_0002e3c8.c",
+      "sha256": "742e7a613b6be3c691a7e6dcc6cf6065a29c91d71cb63695227cfddc0f5b28d4"
+    },
+    {
+      "path_in_local_analysis": "data/decomp_basedraw/fn_0003861c__FUN_0003861c.c",
+      "sha256": "e00fdfdae5c48ab3d80c0f4955948dee07fd7bda29e24c3f52065dea36d0adf0"
+    },
+    {
+      "path_in_local_analysis": "data/hft/af_0002eb40___HncGetKSTblPtr.c",
+      "sha256": "795adaff6a9f820b5da8610fbe3b076537476251a4c590a67949d68d95bd5939"
+    },
+    {
+      "path_in_local_analysis": "docs/14-numeric-values.md",
+      "sha256": "5dabde854c1c76108f976195d378c4f3f59d537104f00e9b884e69b805c4dda1"
+    }
+  ],
+  "hanyang_hft": {
+    "runtime_file": "rhwp/src/renderer/hft_glyphs.rs",
+    "supported_files": 20,
+    "surveyed_hanyang_files": 28,
+    "total_installed_files": 387,
+    "mapped_glyphs_before": 72985,
+    "mapped_glyphs_after": 97981,
+    "independently_matching_outlines": 24992,
+    "preserved_hyphen_overrides_excluded": 12,
+    "unchanged_non_hanyang_files": 359,
+    "supported_banks": [
+      "ASCII",
+      "KS2350 Hangul",
+      "KS4888 Hanja"
+    ],
+    "unsupported_files": [
+      "FLSMJ",
+      "JPJGT",
+      "JPJGTV",
+      "JPSMJ",
+      "JPSMJV",
+      "SPJGT",
+      "SPMJ",
+      "SPSMJ"
+    ],
+    "hancom_probe": {
+      "rows": 24,
+      "font_sizes_pt": [
+        6,
+        9,
+        12
+      ],
+      "glyph_extent_checks": 450,
+      "maximum_path_extent_error_pt": 0.015,
+      "maximum_vertical_edge_error_pt": 0.098
+    },
+    "reflow_origin_check": {
+      "documents": 20,
+      "non_whitespace_characters": 199718,
+      "maximum_same_page_origin_change_pt": 0.000122,
+      "missing_characters": 0,
+      "extra_characters": 0
+    }
+  },
+  "note_separator": {
+    "runtime_file": "rhwp/src/renderer/layout.rs",
+    "scope": "HWP5-origin HWPX and normal HWPX double note separators with nonzero authored widths",
+    "device_dpi": 600,
+    "nominal_width_px": 17,
+    "thick_stroke_px": 9,
+    "thin_stroke_px": 4,
+    "evidence": "Independent drawing routine and Hancom exports at multiple widths and reversed stroke order. Form transforms applied before measuring PDF stroke width.",
+    "hancom_probe": {
+      "normal_hwpx_variants": 6,
+      "line_types": [
+        9,
+        10
+      ],
+      "widths_mm": [
+        0.4,
+        0.7,
+        2.0
+      ],
+      "stroke_y_and_width_exact": true,
+      "maximum_endpoint_error_pt": 0.05,
+      "solid_and_triple_controls_byte_identical": true
+    },
+    "mock_exam_page10_band3": {
+      "before_mismatch_px": 446,
+      "after_mismatch_px": 53,
+      "before_pct": 2.86,
+      "after_pct": 0.34
+    }
+  },
+  "font_ratio_and_footnote_measurement": {
+    "runtime_files": [
+      "rhwp/src/renderer/style_resolver.rs",
+      "rhwp/src/renderer/layout/text_measurement.rs",
+      "rhwp/src/renderer/composer/line_breaking.rs",
+      "rhwp/src/renderer/layout/picture_footnote.rs"
+    ],
+    "analysis_basis": "Per-face EM units, CoreText advances, and the macOS 96/72 size conversion. Ratio and glyph-grid behavior is established separately by fresh Hancom controls.",
+    "hancom_probe": {
+      "ttf_controls_passed": 504,
+      "body_and_note_groups_passed": 84,
+      "hcar_wrap_checks_passed": 14,
+      "coverage": "Proportional and monospace fonts, fractional sizes, positive and negative letter spacing, font-space settings, formatted note markers, and numbering across 9/10/11."
+    }
+  },
+  "font_assets_in_repository": "Only a generated MIT-licensed synthetic rectangle fixture; no Hancom font bytes or proprietary decoded outlines.",
+  "textbox_baseline": {
+    "runtime_file": "rhwp/src/renderer/layout/shape_layout.rs",
+    "analysis_rule": "Baseline is 85% of the line height, supported by binary literals and stored-line oracle. Missing-line textboxes must measure the same synthesized lines they paint.",
+    "scope": "Plain HWPX textboxes with missing line caches; stored anchors, HWP5-origin, placeholders and object-bearing paths preserved",
+    "hancom_probe": {
+      "cases": 36,
+      "font_sizes_pt": [
+        9,
+        10,
+        12
+      ],
+      "text_origins_checked": 18,
+      "maximum_origin_error_pt": 0.091,
+      "object_and_empty_controls_pixel_identical": true
+    },
+    "textbook_footer": {
+      "hancom_baseline_pt": 792.24,
+      "before_baseline_pt": 796.73,
+      "after_baseline_pt": 792.23
+    }
+  },
+  "strict_line_fit": {
+    "stage": "Integrated; final all20 native saved and recomputed checks passed",
+    "analysis_source": "docs/15-tables-breakthroughs.md, section 6",
+    "analysis_rule": "Unsigned run-width sum with strict limit < accumulated overflow predicate.",
+    "runtime_file": "rhwp/src/renderer/composer/line_breaking.rs",
+    "source_derived_case": "Textbook recomputed page17",
+    "candidate_glyph_sum_hwp_units": 37140,
+    "hancom_capacity_ladder": {
+      "wraps": [
+        37135,
+        37136,
+        37137,
+        37138,
+        37139
+      ],
+      "fits": [
+        37140,
+        37141
+      ]
+    },
+    "existing_tolerance_hwp_units": 2,
+    "font_width_discrepancy_found": false,
+    "additional_controls": "Two 120-case fresh Hancom ladders across Dotum/Batang/KoPub fallback TTF and ShinMyeongjo HFT, ratios 95/100 and Hangul/mixed/space strings. Baseline 150/240, strict candidate 240/240. Additional 86 bracket and Textbook boundary controls pass.",
+    "removed_tolerance_hwp_units": 2,
+    "textbook_page17_final_worst_band_pct": 0.0,
+    "verification_round": "codex-final-pr"
+  }
+}
