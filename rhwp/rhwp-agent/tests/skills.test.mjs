@@ -102,9 +102,9 @@ test('bundled present-plan stays sealed and a user directory of that name is qua
 test('promptContext keeps the writing discipline on implementing and omits it while planning', async (t) => {
   const { registry } = await tempRegistry(t);
   const implementing = await registry.promptContext('문장', undefined, { phase: 'implementing' });
-  assert.match(implementing, /<korean_writing_discipline>/);
+  assert.match(implementing, /<humanize_korean_trigger>/);
   const planning = await registry.promptContext('문장', undefined, { phase: 'planning' });
-  assert.doesNotMatch(planning, /<korean_writing_discipline>/);
+  assert.doesNotMatch(planning, /<humanize_korean_trigger>/);
 });
 
 test('Codex loads bundled document image guidance by default and respects disabling it', async (t) => {
