@@ -43,18 +43,23 @@ The final native checkpoint is `codex-final-pr`, with binary SHA256 `c0e63727770
 | Recomputed flow | 94.84 mean score; 98.77% correct-page lines, 96.40% matching breaks, 93.95% exact text/positions |
 | Installed-font load oracle | 20 documents, 19,810 paragraphs, 23,150 lines; no failures or exclusions; 97.2% exact paragraphs, 98.5% matching breaks, 96.1% aligned lines |
 | Native library tests | 3,982 passed, 0 failed, 8 ignored |
-| Complete native suite | Pending, including all 414 integration targets |
+| Complete native suite | 5,557 passed, 0 failed, 68 ignored; all 414 integration targets, library, binaries and doctests across 29 batches |
 | Final Studio saved layout | 20 documents, 303/303 pages; 19 documents below 1%; zero browser errors/unsupported operations |
-| Final Studio recomputed layout and editing | Pending, 20 recomputed documents plus input/undo/redo/save/reopen |
+| Final Studio recomputed layout | 20 documents, 305/305 pages; 14 documents below 1%; zero browser errors/unsupported operations |
+| Final Studio editing | Actual input, undo, redo, save and reopen pass, preserving two pages |
 | Production build and formatting | Passed |
 
-Final saved Studio uses the same frozen source. It removes 235 mismatch pixels across three improved bands against the earlier caption/spacing/late-font capture, with no worse band. Mock improves from 1.63% to 0.77% document worst-band error; Readmission artwork remains 38.47%. Earlier Studio unit tests pass 2,654 with zero failures and one skip, and all 418 Studio source hashes are unchanged. Recomputed Studio and editing verification remain pending.
+Final saved Studio uses the same frozen source. It removes 235 mismatch pixels across three improved bands against the earlier caption/spacing/late-font capture, with no worse band. Mock improves from 1.63% to 0.77% document worst-band error; Readmission artwork remains 38.47%. Earlier Studio unit tests pass 2,654 with zero failures and one skip, and all 418 Studio source hashes are unchanged. Recomputed Studio also matches every page count and reaches the target for 14 documents. Actual input changes 474 characters to 480, undo restores 474, redo restores 480, and saving/reopening the 12,558-byte HWPX preserves 480 characters and two pages.
+
+Final recomputed Studio removes 997,733 mismatch pixels across 92 improved bands against the earlier caption/spacing/late-font capture. Two low-error Mock bands add 12 edge pixels in total, separately from the four native bands discussed below. Mock reaches 1.13% and Textbook 0.02% document worst-band error in Studio.
 
 The final ASCII-bracket, strict integer-fit and endnote-cursor batch removes 40,013 mismatch pixels across 13 improved bands against the preceding equation/page-start checkpoint. All 303 saved PNGs and 297 recomputed PNGs are byte identical; only eight recomputed pages change. Four low-error Mock bands add 30 edge pixels in total, with final errors between 0.07% and 0.20%. The measured secondary baseline step is 0.12 points. The cumulative subscript drift found during review was removed before this batch was accepted.
 
 ASCII-bracket handling clears Textbook page 19, and strict integer fitting clears page 17. Textbook's final document maximum is 0.06%. Strict fitting also clears the affected Korean exam page 11 and 15 bands; the Korean exam still has a 10.42% document maximum on page 3. The endnote cursor correction reduces Mock's document maximum to 1.16%. Aift's first-paragraph page-start correction clears page 51, while the document maximum remains 19.07% on page 69. HY source pi selection and composite-product spacing reduce Mock page 21 band 8 from 0.82% to 0.15% in both native lanes.
 
 The 1% target remains unmet for Readmission artwork, Korean exam, Social exam, Mel, Mock, and Aift in recomputed layout. The Kor23 floating-table/TAC picture candidate is held and excluded because its final control and corpus gates were incomplete. Full parity is not claimed. The separately reviewed Readmission artwork is the saved-layout exception.
+
+The complete local suite passes, and the [test provenance](final-test-provenance.json) records every native batch command and log hash. GitHub production dependency audits fail on macOS, Windows and Linux for the main-inherited `http-cache-semantics` advisory [GHSA-ch52-4w7c-c8xp](https://github.com/advisories/GHSA-ch52-4w7c-c8xp). Agent dependency manifests match main exactly. The new 4.3.0 package retains the reported behavior, and [the upstream dispute](https://github.com/github/advisory-database/issues/10139) remains open. The audit remains enforced. Session checks on macOS and Windows, hostile input, and auth/resource boundaries pass; browser and dependency-container checks are still running.
 
 The final load oracle hashes 187 installed TTF files, 387 HFT files and 16 font metadata files, 590 inputs in total. Font bytes remain outside the repository. The [per-document matrix](final-results-table.md), [final metrics and hashes](final-metrics.json), and [analysis findings](analysis-findings.json) identify measurements and their scope.
 

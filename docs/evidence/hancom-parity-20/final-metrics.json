@@ -724,8 +724,15 @@
       "failed": 0,
       "ignored": 8
     },
-    "native_suite_all_414_targets": "Pending",
-    "final_studio_40_documents_and_edit_roundtrip": "Saved20 complete; recomputed20 and editing roundtrip pending",
+    "native_suite_all_414_targets": {
+      "status": "Passed",
+      "batches": 29,
+      "integration_targets": 414,
+      "passed": 5557,
+      "failed": 0,
+      "ignored": 68
+    },
+    "final_studio_40_documents_and_edit_roundtrip": "Passed:20 saved/303 pages,20 own/305 pages,actual input/undo/redo/save/reopen",
     "studio_saved": "Completed,20 documents/303 pages",
     "production_build": "Passed",
     "formatting": "Passed",
@@ -734,7 +741,8 @@
       "failed": 0,
       "skipped": 1,
       "checkpoint": "Earlier run, same418 Studio-source hashes"
-    }
+    },
+    "github_ci": "Prodeps jobs failed on three platforms; triage in progress. Other checks pending."
   },
   "held_followup": "Kor23 companion floating-table/TAC picture placement, candidate excluded.",
   "noise_increases": [
@@ -1313,5 +1321,198 @@
         "mismatch_px": 231
       }
     }
-  }
+  },
+  "studio_own": {
+    "round": "codex-final-pr-studio-own",
+    "documents": 20,
+    "pages": 305,
+    "below_target": 14,
+    "browser_errors": 0,
+    "unsupported_operations": 0,
+    "mismatch_px": 206316,
+    "compared_with": "codex-caption25-spacing42-master21-studio-own",
+    "mismatch_px_reduction": 997733,
+    "improved_bands": 92,
+    "increased_bands": [
+      {
+        "doc": "mock-exam-nov-2022",
+        "page": 10,
+        "band": 7,
+        "before_pct": 0.0,
+        "after_pct": 0.07,
+        "before_px": 0,
+        "after_px": 11
+      },
+      {
+        "doc": "mock-exam-nov-2022",
+        "page": 18,
+        "band": 9,
+        "before_pct": 0.12,
+        "after_pct": 0.12,
+        "before_px": 30,
+        "after_px": 31
+      }
+    ],
+    "docs": {
+      "water-mark": {
+        "pages": 1,
+        "official_pages": 1,
+        "counts_match": true,
+        "worst_band_pct": 0.78,
+        "mismatch_px": 231
+      },
+      "readmission-form": {
+        "pages": 1,
+        "official_pages": 1,
+        "counts_match": true,
+        "worst_band_pct": 38.47,
+        "mismatch_px": 6442
+      },
+      "math-001": {
+        "pages": 1,
+        "official_pages": 1,
+        "counts_match": true,
+        "worst_band_pct": 0.0,
+        "mismatch_px": 0
+      },
+      "gov-excavation-report": {
+        "pages": 2,
+        "official_pages": 2,
+        "counts_match": true,
+        "worst_band_pct": 0.03,
+        "mismatch_px": 11
+      },
+      "gov-fire-report": {
+        "pages": 2,
+        "official_pages": 2,
+        "counts_match": true,
+        "worst_band_pct": 0.0,
+        "mismatch_px": 0
+      },
+      "exam-social": {
+        "pages": 4,
+        "official_pages": 4,
+        "counts_match": true,
+        "worst_band_pct": 23.6,
+        "mismatch_px": 80452
+      },
+      "hcar-001": {
+        "pages": 6,
+        "official_pages": 6,
+        "counts_match": true,
+        "worst_band_pct": 0.0,
+        "mismatch_px": 0
+      },
+      "kedi-application": {
+        "pages": 6,
+        "official_pages": 6,
+        "counts_match": true,
+        "worst_band_pct": 0.0,
+        "mismatch_px": 0
+      },
+      "oss-result-2026": {
+        "pages": 6,
+        "official_pages": 6,
+        "counts_match": true,
+        "worst_band_pct": 0.08,
+        "mismatch_px": 25
+      },
+      "gov-lecturer-review": {
+        "pages": 8,
+        "official_pages": 8,
+        "counts_match": true,
+        "worst_band_pct": 0.53,
+        "mismatch_px": 391
+      },
+      "fdi-press-2024": {
+        "pages": 9,
+        "official_pages": 9,
+        "counts_match": true,
+        "worst_band_pct": 0.05,
+        "mismatch_px": 52
+      },
+      "fdi-press-2025q2": {
+        "pages": 9,
+        "official_pages": 9,
+        "counts_match": true,
+        "worst_band_pct": 0.05,
+        "mismatch_px": 53
+      },
+      "gov-welfare-request": {
+        "pages": 9,
+        "official_pages": 9,
+        "counts_match": true,
+        "worst_band_pct": 0.7,
+        "mismatch_px": 116
+      },
+      "exam-kor": {
+        "pages": 20,
+        "official_pages": 20,
+        "counts_match": true,
+        "worst_band_pct": 10.44,
+        "mismatch_px": 86167
+      },
+      "mel-001": {
+        "pages": 20,
+        "official_pages": 20,
+        "counts_match": true,
+        "worst_band_pct": 13.11,
+        "mismatch_px": 9914
+      },
+      "mock-exam-nov-2022": {
+        "pages": 21,
+        "official_pages": 21,
+        "counts_match": true,
+        "worst_band_pct": 1.13,
+        "mismatch_px": 3010
+      },
+      "k-water-rfp": {
+        "pages": 27,
+        "official_pages": 27,
+        "counts_match": true,
+        "worst_band_pct": 0.32,
+        "mismatch_px": 577
+      },
+      "donation-report-form": {
+        "pages": 30,
+        "official_pages": 30,
+        "counts_match": true,
+        "worst_band_pct": 0.0,
+        "mismatch_px": 0
+      },
+      "onsaemiro-textbook": {
+        "pages": 49,
+        "official_pages": 49,
+        "counts_match": true,
+        "worst_band_pct": 0.02,
+        "mismatch_px": 16
+      },
+      "aift": {
+        "pages": 74,
+        "official_pages": 74,
+        "counts_match": true,
+        "worst_band_pct": 19.37,
+        "mismatch_px": 18859
+      }
+    }
+  },
+  "studio_live": {
+    "before": 474,
+    "afterInsert": 480,
+    "afterUndo": 474,
+    "afterRedo": 480,
+    "afterReopen": {
+      "characters": 480,
+      "pages": 2
+    },
+    "savedBytes": 12558,
+    "undoRestored": true,
+    "redoRestored": true,
+    "reopenRestored": true,
+    "pageCountMatchesOfficial": true
+  },
+  "wasm_sha256": "247d7372b9a3c941e1a13bd2433b067336a73b9df2e34b8f3e956ab2308d1da1",
+  "complete_comparison_package_sha256": "3c9f42047f7c561483d7838fd4fad30fb7489ee267c8f5f5293d531233723d6e",
+  "studio_unit_test_log_sha256": "58e512745537c6e328aebc7f0c9186a785c1a7023c2a000533795c1a3f69c0a1",
+  "studio_final_report_sha256": "0755766895241f531994d274400dcfc0ce404f5c10d189ffbebce3744a68984f"
 }
