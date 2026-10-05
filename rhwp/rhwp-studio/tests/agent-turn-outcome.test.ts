@@ -72,6 +72,8 @@ function bridgeFixture(permissionProfile: 'safe' | 'unrestricted') {
     listeners: new Set(),
     pendingEdits: {
       beginTurn: () => {},
+      setDirectApply: () => {},
+      commitOpen: () => true,
       endTurn: (outcome: string, opts?: { turnStopped?: boolean }) => {
         endTurnCalls.push({ outcome, opts });
       },
@@ -98,7 +100,10 @@ test('turn-end 매핑: 성공은 safe→review, unrestricted→commit', () => {
   assert.deepEqual(free.endTurnCalls, [{ outcome: 'commit', opts: { turnStopped: false } }]);
 });
 
-test('turn-end 매핑: 중단·오류·실패는 어느 모드에서도 review + 중단 표시', () => {
+// 전체 모드(direct + unrestricted)에는 검토 단계가 없다 — 어떤 종료든 확정한다.
+const stoppedOutcome = (profile: 'safe' | 'unrestricted') => (profile === 'safe' ? 'review' : 'commit');
+
+test('turn-end 매핑: 중단·오류·실패는 에이전트에서 review + 중단 표시, 전체에서는 확정', () => {
   for (const permissionProfile of ['safe', 'unrestricted'] as const) {
     for (const event of [
       { type: 'turn-end', agent: 'claude', turnId: 'turn-1', stopReason: 'interrupted' },
@@ -108,7 +113,7 @@ test('turn-end 매핑: 중단·오류·실패는 어느 모드에서도 review +
       const { bridge, endTurnCalls } = bridgeFixture(permissionProfile);
       runTurn(bridge, [event]);
       assert.deepEqual(endTurnCalls,
-        [{ outcome: 'review', opts: { turnStopped: true } }],
+        [{ outcome: stoppedOutcome(permissionProfile), opts: { turnStopped: true } }],
         `${permissionProfile} ${event.stopReason}`);
     }
     // 턴 중 프로바이더 error 이벤트는 종료 이유가 completed 여도 비성공이다.
@@ -118,7 +123,7 @@ test('turn-end 매핑: 중단·오류·실패는 어느 모드에서도 review +
       { type: 'turn-end', agent: 'claude', turnId: 'turn-1', stopReason: 'completed' },
     ]);
     assert.deepEqual(endTurnCalls,
-      [{ outcome: 'review', opts: { turnStopped: true } }],
+      [{ outcome: stoppedOutcome(permissionProfile), opts: { turnStopped: true } }],
       `${permissionProfile} mid-turn error`);
     // 도구 수준 실패(ok:false tool-result)는 턴을 더럽히지 않는다 — 에이전트가 이미 봤다.
     const tool = bridgeFixture(permissionProfile);
@@ -134,13 +139,13 @@ test('turn-end 매핑: 중단·오류·실패는 어느 모드에서도 review +
   }
 });
 
-test('결과 불명 종료(재연결·시작 실패)의 기본값도 review + 중단 표시다', () => {
+test('결과 불명 종료(재연결·시작 실패)의 기본값도 에이전트는 review + 중단 표시, 전체는 확정이다', () => {
   for (const permissionProfile of ['safe', 'unrestricted'] as const) {
     const { bridge, endTurnCalls } = bridgeFixture(permissionProfile);
     bridge.handleAgentEvent({ type: 'turn-start', agent: 'claude', turnId: 'turn-1' });
     bridge.endPendingTurn();
     assert.deepEqual(endTurnCalls,
-      [{ outcome: 'review', opts: { turnStopped: true } }], permissionProfile);
+      [{ outcome: stoppedOutcome(permissionProfile), opts: { turnStopped: true } }], permissionProfile);
     assert.equal(bridge.pendingTurnOpen, false);
   }
 });
@@ -183,6 +188,36 @@ test('endTurn: 성공 commit 은 승인하고 중단 표시를 남기지 않는�
   assert.deepEqual(calls.approved, ['cs-1']);
   assert.deepEqual(calls.rejected, []);
   assert.equal(set.turnStopped, undefined);
+});
+
+test('commitOpen(전체 모드): 열린 set 을 검토 없이 바로 확정하고 set-finalized 를 내지 않는다', () => {
+  const { pending, calls } = pendingFixture();
+  const directFlags: unknown[] = [];
+  pending.approve = (id: string, opts?: { direct?: boolean }) => {
+    calls.approved.push(id);
+    directFlags.push(opts?.direct);
+    pending.open = null;
+    pending.sets = [];
+    return true;
+  };
+  const events: string[] = [];
+  pending.onChange((e: { type: string }) => events.push(e.type));
+  assert.equal(pending.commitOpen(), true);
+  assert.deepEqual(calls.approved, ['cs-1']);
+  assert.deepEqual(directFlags, [true]);
+  assert.deepEqual(events, [], '검토 목록·변경 기록에 남지 않는다');
+});
+
+test('commitOpen(전체 모드): 확정이 실패하면 편집을 버리지 않고 검토 대기로 남긴다', () => {
+  const { pending, set, calls } = pendingFixture();
+  pending.approve = () => { pending.open = null; return false; };
+  const events: string[] = [];
+  pending.onChange((e: { type: string }) => events.push(e.type));
+  assert.equal(pending.commitOpen(), false);
+  assert.equal(set.status, 'awaiting-review');
+  assert.equal(pending.open, null);
+  assert.deepEqual(calls.rejected, []);
+  assert.deepEqual(events, ['set-finalized']);
 });
 
 test('endTurn: commit 승인이 실패해도 되돌리지 않고 검토 대기로 다시 알린다', () => {

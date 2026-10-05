@@ -147,18 +147,18 @@ test('AI 기본 설정은 Apply 전까지 초안이고 성공 후 사이드바�
   // 줄의 display:flex 가 기본 [hidden] 을 덮으므로 따로 눌러 준다 — 없으면
   // Cursor 처럼 추론 강도가 없는 프로바이더에서 빈 줄이 남는다.
   assert.match(settingsCss, /\.ag-settings-field\[hidden\]\s*\{[^}]*display:\s*none;/s);
-  assert.match(settings, /createSelect\('권한', PERMISSION_OPTIONS\.map\(option => \(\{/);
+  assert.match(settings, /createSelect\('모드', MODE_OPTIONS\.map\(/);
   assert.match(settings, /const select = el\('select', 'ag-settings-select'\)/);
   assert.match(settings, /prefsDraft = normalizeAgentPrefs\(\{ \.\.\.prefsDraft, \.\.\.partial \}\)/);
   assert.match(settings, /const result = trySaveAgentPrefs\(nextPrefs\)/);
   assert.match(settings, /applyDefaults\(result\.value\)/);
   assert.match(settings, /aiStatus\.textContent = 'AI 설정을 적용했습니다\.'/);
-  assert.match(settings, /nextPrefs\.defaultPermissionProfile === 'unrestricted'[\s\S]*confirmSheet\(aiStatus, '기본값을 전체 접근으로', UNRESTRICTED_DEFAULT_WARNING/);
+  assert.match(settings, /nextPrefs\.defaultMode === 'full'[\s\S]*confirmSheet\(aiStatus, '기본 모드를 전체로', UNRESTRICTED_DEFAULT_WARNING/);
   assert.match(settings, /saveAgentInstructions\(\)[\s\S]*persistPrefs\(nextPrefs\)/);
   assert.match(settings, /agentField\.select\.disabled = aiPrefsSaving/);
   assert.match(settings, /modelField\.select\.disabled = aiPrefsSaving/);
   assert.match(settings, /effortField\.select\.disabled = aiPrefsSaving/);
-  assert.match(settings, /permissionField\.select\.disabled = aiPrefsSaving/);
+  assert.match(settings, /modeField\.select\.disabled = aiPrefsSaving/);
   assert.match(
     settings,
     /aiPrefsSaving = true;[\s\S]*try \{[\s\S]*await saveAgentInstructions\(\)[\s\S]*finally \{[\s\S]*aiPrefsSaving = false;/,

@@ -156,9 +156,14 @@ body:not(.ag-sidebar-open) .ag-inline-box {
   cursor: default;
 }
 
-.ag-inline-permission:hover {
+.ag-inline-permission:hover:not(:disabled) {
   background: var(--ui-hover);
   color: var(--ui-text);
+}
+
+/* 채팅·플랜 모드는 표시만 한다 — 바꾸는 곳은 사이드바 모드 칩이다. */
+.ag-inline-permission:disabled {
+  opacity: 0.72;
 }
 
 .ag-inline-permission.ag-inline-unrestricted {

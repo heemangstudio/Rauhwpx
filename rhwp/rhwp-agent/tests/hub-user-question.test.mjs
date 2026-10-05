@@ -355,8 +355,8 @@ test('plan discussion retains review, revisions check freshness, and execution r
   const turn = await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
   const executor = await openClient(`ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=${sessionId}&agent=pi&role=chat`);
   t.after(() => closeClient(executor));
-  sendFrame(executor, { type: 'tool-call', id: 34, tool: 'update_plan_progress', args: {
-    planId: revised.planId, stepId: 'step-1', status: 'in-progress', note: 'Checking the target paragraph.',
+  sendFrame(executor, { type: 'tool-call', id: 34, tool: 'update_todos', args: {
+    planId: revised.planId, todos: [{ id: 'step-1', content: 'Check the target paragraph', status: 'in-progress', note: 'Checking the target paragraph.' }],
   }, workflow: 'plan', capabilityEpoch: implementing.capabilityEpoch });
   const progress = await studio.next((frame) => frame.type === 'plan-progress' && frame.latestPlan?.execution?.steps[0]?.status === 'in-progress');
   assert.equal(progress.latestPlan.execution.status, 'running');
@@ -386,14 +386,23 @@ test('reconnect restores plan progress and prior review rejection survives a que
   await planner.next((frame) => frame.type === 'tool-result' && frame.id === 1);
   sendFrame(studio, { type: 'chat-interrupt' });
   await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
-  sendFrame(studio, { type: 'plan-approve', planId: ready.planId });
-  const implementing = await studio.next((frame) => frame.type === 'implementation-started');
+  // 승인 시 고른 실행 권한: 잘못된 값은 승인 자체를 거절하고, 올바른 값은 구현 전환 전에 적용된다.
+  sendFrame(studio, { type: 'plan-approve', planId: ready.planId, permissionProfile: 'everything' });
+  await studio.next((frame) => frame.type === 'chat-error' && frame.code === 'INVALID_PERMISSION_PROFILE');
+  sendFrame(studio, { type: 'chat-plan-approve', planId: ready.planId, permissionProfile: 'unrestricted' });
+  const approvalFrames = [];
+  do {
+    approvalFrames.push(await studio.next((frame) => ['plan-approved', 'chat-permission-changed', 'implementation-started'].includes(frame.type)));
+  } while (approvalFrames.at(-1).type !== 'implementation-started');
+  assert.deepEqual(approvalFrames.map((frame) => frame.type), ['plan-approved', 'chat-permission-changed', 'implementation-started']);
+  assert.equal(approvalFrames[1].permissionProfile, 'unrestricted');
+  const implementing = approvalFrames[2];
   await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
   const executor = await openClient(mcpUrl);
   t.after(() => closeClient(executor));
   await closeClient(studio);
-  sendFrame(executor, { type: 'tool-call', id: 2, tool: 'update_plan_progress',
-    args: { planId: ready.planId, stepId: 'step-1', status: 'completed' },
+  sendFrame(executor, { type: 'tool-call', id: 2, tool: 'update_todos',
+    args: { planId: ready.planId, todos: [{ id: 'step-1', content: 'Replace the paragraph', status: 'completed' }] },
     workflow: 'plan', capabilityEpoch: implementing.capabilityEpoch });
   assert.equal((await executor.next((frame) => frame.type === 'tool-result' && frame.id === 2)).ok, true);
   const settled = once(executor.socket, 'close');

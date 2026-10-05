@@ -327,6 +327,7 @@ interface ParaTargets {
 /** Every Studio tool that can create or stage a document mutation. */
 export const DOCUMENT_WRITE_TOOLS: ReadonlySet<string> = new Set([
   'publish_cloud_document',
+  'commit_version',
   'apply_edits',
   'insert_text',
   'delete_range',
@@ -470,7 +471,7 @@ export function assertToolCapability(tool: string, capability?: ToolCapabilityCo
   if (capability?.workflow === 'question') {
     throw new AgentToolError(
       'QUESTION_MODE_READ_ONLY',
-      'Document-write tools are disabled in question mode. Switch to /plan to brainstorm or /build to edit.',
+      'Document-write tools are unavailable in chat mode; the document is read-only here.',
     );
   }
   if (capability?.workflow !== 'plan') return;

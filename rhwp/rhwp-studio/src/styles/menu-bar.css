@@ -339,3 +339,7 @@ html.desktop-mac #menu-bar .menu-title {
     min-height: 36px;
   }
 }
+
+/* 어두운 테마의 채움은 회색조다 — 열린 메뉴도 회색 바탕에 본문 글자. */
+:root[data-theme-effective='dark'] .menu-title:hover { border-color: transparent; }
+:root[data-theme-effective='dark'] .menu-item.open > .menu-title { color: var(--ui-text); }

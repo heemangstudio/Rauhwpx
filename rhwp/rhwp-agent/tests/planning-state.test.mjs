@@ -146,33 +146,33 @@ test('execution requires agent progress, successful settlement and document revi
   assert.equal(workflow.snapshot().latestPlan.execution.steps[0].status, 'pending');
   workflow.settleExecution('awaiting-review');
   assert.equal(workflow.execution.status, 'blocked', 'a successful provider turn alone does not complete work');
-  assert.throws(() => workflow.updateProgress({ planId: ready.planId, stepId: 'made-up', status: 'completed' }), { code: 'INVALID_PLAN_STEP' });
-  workflow.updateProgress({ planId: ready.planId, stepId: 'step-1', status: 'in-progress' });
-  workflow.updateProgress({ planId: ready.planId, stepId: 'step-1', status: 'completed', note: 'Verified the replacement text.' });
+  assert.throws(() => workflow.updateTodos({ planId: ready.planId, todos: [] }), { code: 'INVALID_PLAN_PROGRESS' });
+  workflow.updateTodos({ planId: ready.planId, todos: [{ id: 'step-1', content: 'Replace the paragraph', status: 'in-progress' }] });
+  workflow.updateTodos({ planId: ready.planId, todos: [{ id: 'step-1', content: 'Replace the paragraph', status: 'completed', note: 'Verified the replacement text.' }] });
   assert.equal(workflow.execution.status, 'running', 'checklist completion is not document acceptance');
   workflow.settleExecution('awaiting-review');
   workflow.acknowledgeExecution('blocked');
   assert.equal(workflow.execution.steps[0].status, 'pending', 'rejected or rolled-back edits require rechecking');
+  assert.match(workflow.execution.steps[0].note, /Verified the replacement text/);
+  assert.match(workflow.execution.steps[0].note, /Recheck this step/);
   assert.throws(() => workflow.acknowledgeExecution('completed'), { code: 'PLAN_EXECUTION_FAILED' });
-  workflow.updateProgress({ planId: ready.planId, stepId: 'step-1', status: 'in-progress' });
-  workflow.updateProgress({ planId: ready.planId, stepId: 'step-1', status: 'completed' });
+  workflow.updateTodos({ planId: ready.planId, todos: [{ id: 'step-1', content: 'Replace the paragraph', status: 'in-progress' }] });
+  workflow.updateTodos({ planId: ready.planId, todos: [{ id: 'step-1', content: 'Replace the paragraph', status: 'completed' }] });
   workflow.settleExecution('awaiting-review');
   workflow.acknowledgeExecution('completed');
   workflow.acknowledgeExecution('completed');
   assert.equal(workflow.snapshot().latestPlan.execution.status, 'completed');
   assert.equal(approved.plan.execution, undefined, 'approval stays immutable');
-  assert.match(workflow.execution.steps[0].note, /Verified the replacement text/);
-  assert.match(workflow.execution.steps[0].note, /Recheck this step/);
 });
 
 test('plan progress is restricted to approved plan workflows', () => {
   for (const phase of ['planning', 'awaiting-approval']) {
-    assert.throws(() => authorizeToolCall({ category: 'plan-progress', tool: 'update_plan_progress', workflow: 'plan', phase,
+    assert.throws(() => authorizeToolCall({ category: 'plan-progress', tool: 'update_todos', workflow: 'plan', phase,
       expectedEpoch: 7, receivedEpoch: 7 }), { code: 'INVALID_PLAN_PHASE' });
   }
-  assert.equal(authorizeToolCall({ category: 'plan-progress', tool: 'update_plan_progress', workflow: 'plan', phase: 'implementing',
+  assert.equal(authorizeToolCall({ category: 'plan-progress', tool: 'update_todos', workflow: 'plan', phase: 'implementing',
     expectedEpoch: 7, receivedEpoch: 7 }), true);
-  assert.throws(() => authorizeToolCall({ category: 'plan-progress', tool: 'update_plan_progress', workflow: 'direct', phase: null,
+  assert.throws(() => authorizeToolCall({ category: 'plan-progress', tool: 'update_todos', workflow: 'direct', phase: null,
     expectedEpoch: 7 }), { code: 'PLAN_WORKFLOW_REQUIRED' });
 });
 
@@ -400,4 +400,19 @@ test('document-saved follow-up asks the planner to re-read live state', () => {
   assert.match(serverSource, /reason: 'document-saved'/);
   assert.match(serverSource, /promptOverride: prompt/);
   assert.match(serverSource, /sessionStatusOverride: 'idle'/);
+});
+
+test('update_todos replaces the whole list, keeping known ids and numbering new items', () => {
+  const workflow = state();
+  const ready = workflow.present(plan());
+  workflow.beginApproval({ planId: ready.planId, sessionStatus: 'idle' });
+  workflow.completeSwitch(ready.planId);
+  assert.equal(workflow.execution.steps[0].title, ready.plan.steps[0].title, 'todos start as the plan steps');
+  workflow.updateTodos({ planId: ready.planId, todos: [
+    { id: 'step-1', content: 'Rewrite the intro', status: 'completed' },
+    { content: 'Verify the page count via get_structure', status: 'in-progress' },
+  ] });
+  assert.deepEqual(workflow.execution.steps.map((step) => [step.stepId, step.status]),
+    [['step-1', 'completed'], ['todo-1', 'in-progress']]);
+  assert.equal(workflow.execution.steps[1].title, 'Verify the page count via get_structure');
 });

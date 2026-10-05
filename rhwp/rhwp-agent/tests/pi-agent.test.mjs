@@ -418,7 +418,7 @@ test('planning phases exclude the built-in write and shell tools', () => {
   for (const phase of ['planning', 'awaiting-approval', 'switching']) {
     const argv = buildPiArgv({ ...baseOpts, workflow: 'plan', phase }, 'sess-1');
     assert.equal(argv[argv.indexOf('--exclude-tools') + 1], 'bash,edit,write', phase);
-    assert.match(argv[argv.indexOf('--append-system-prompt') + 1], /planning mode|implementation mode/);
+    assert.match(argv[argv.indexOf('--append-system-prompt') + 1], /플랜 \(plan\) mode|implementation mode/);
   }
   const implementing = buildPiArgv({ ...baseOpts, workflow: 'plan', phase: 'implementing' }, 'x');
   assert.equal(implementing[implementing.indexOf('--exclude-tools') + 1], 'bash');

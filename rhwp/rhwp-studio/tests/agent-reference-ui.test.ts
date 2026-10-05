@@ -18,7 +18,7 @@ const sidebar = readFileSync(
 test('composer exposes chat-scoped quick add and a separate reference library page', () => {
   assert.match(sidebar, /createReferenceLibrary\(\{/);
   assert.match(sidebar, /composerField\.insertBefore\(referenceLibrary\.quickAddButton, sendHint\)/);
-  assert.match(sidebar, /composerUtilityActions\.insertBefore\(referenceLibrary\.trigger, permissionBtn\)/);
+  assert.match(sidebar, /composerUtilityActions\.insertBefore\(referenceLibrary\.trigger, modeMenu\.root\)/);
   assert.match(sidebar, /referenceLibrary\.page/);
   assert.match(library, /메시지에 참고자료 첨부/);
   assert.match(library, /trigger\.title = '참고자료'/);

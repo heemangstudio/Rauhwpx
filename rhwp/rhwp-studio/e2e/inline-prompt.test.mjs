@@ -101,8 +101,8 @@ runTest('인라인 프롬프트 선택 칩/입력 상자 테스트', async ({ pa
   assert(boxState.visible, '입력 상자가 열려야 함');
   assert(boxState.focused, '입력 상자의 텍스트 영역에 포커스가 있어야 함');
   assert(boxState.hasSelection, '입력 상자가 열려도 문서 선택이 유지되어야 함');
-  assert(boxState.permission === '안전' || boxState.permission === '전체',
-    `권한 표시가 있어야 함 (현재: ${boxState.permission})`);
+  assert(['채팅', '플랜', '에이전트', '전체'].includes(boxState.permission),
+    `모드 표시가 있어야 함 (현재: ${boxState.permission})`);
   await screenshot(page, 'inline-prompt-box');
 
   setTestCase('전송 실패 이유가 상자에 표시된다');

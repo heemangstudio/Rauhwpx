@@ -39,6 +39,64 @@ export type WritingStyleProgressState =
 export type AgentWorkflow = 'direct' | 'plan' | 'question';
 export type AgentPhase = 'direct' | 'planning' | 'questioning' | 'awaiting-approval' | 'switching' | 'implementing';
 
+/**
+ * 사용자에게 보이는 단 하나의 에이전트 모드. 와이어는 그대로 (workflow, permissionProfile)
+ * 두 필드를 쓰고, 이 타입이 둘을 한 개념으로 묶는다.
+ * - chat: question (읽기 전용)
+ * - plan: plan (계획 단계는 읽기 전용, 실행은 승인 때 고른 프로필)
+ * - agent: direct + safe (편집은 미리보기로 쌓이고 턴 끝에 검토)
+ * - full: direct + unrestricted (편집이 바로 문서에 반영)
+ */
+export type AgentMode = 'chat' | 'plan' | 'agent' | 'full';
+
+export const AGENT_MODES: readonly AgentMode[] = ['chat', 'plan', 'agent', 'full'];
+
+export const AGENT_MODE_LABEL: Readonly<Record<AgentMode, string>> = {
+  chat: '채팅',
+  plan: '플랜',
+  agent: '에이전트',
+  full: '전체',
+};
+
+export function isAgentMode(value: unknown): value is AgentMode {
+  return value === 'chat' || value === 'plan' || value === 'agent' || value === 'full';
+}
+
+/** 모드가 요구하는 workflow 와 프로필. */
+export function agentModeTarget(mode: AgentMode): { workflow: AgentWorkflow; permissionProfile: PermissionProfile } {
+  switch (mode) {
+    // 채팅·플랜은 문서를 바꾸지 않으므로 안전 프로필로 둔다. 그래서 unrestricted 는
+    // 언제나 전체 모드(또는 전체 접근으로 실행한 계획)를 뜻하고, 전체로 들어갈 때마다 확인한다.
+    case 'chat': return { workflow: 'question', permissionProfile: 'safe' };
+    case 'plan': return { workflow: 'plan', permissionProfile: 'safe' };
+    case 'agent': return { workflow: 'direct', permissionProfile: 'safe' };
+    case 'full': return { workflow: 'direct', permissionProfile: 'unrestricted' };
+  }
+}
+
+/**
+ * 현재 (workflow, phase, profile) 이 사용자에게 어떤 모드로 보이는가.
+ * 승인된 계획을 실행하는 동안에는 실행 프로필에 따라 에이전트/전체로 보인다.
+ */
+export function agentModeFor(
+  workflow: AgentWorkflow,
+  phase: AgentPhase,
+  permissionProfile: PermissionProfile,
+): AgentMode {
+  if (workflow === 'question') return 'chat';
+  if (workflow === 'plan' && phase !== 'implementing') return 'plan';
+  return permissionProfile === 'unrestricted' ? 'full' : 'agent';
+}
+
+/** 쓰기가 검토 없이 바로 문서에 반영되는가 (전체 모드, 전체 접근으로 실행한 계획). */
+export function writesApplyDirectly(
+  workflow: AgentWorkflow,
+  phase: AgentPhase,
+  permissionProfile: PermissionProfile,
+): boolean {
+  return permissionProfile === 'unrestricted' && (workflow === 'direct' || phase === 'implementing');
+}
+
 export type UserQuestionMode = 'single' | 'multiple';
 
 export interface UserQuestionOption {
@@ -188,7 +246,7 @@ export interface AgentInstructionsDraft {
 export interface StructuredPlanStep {
   id?: string;
   title: string;
-  details: string;
+  details?: string;
   target?: string;
   preview?: string;
   files?: string[];
@@ -204,11 +262,21 @@ export interface PlanSource {
 
 export interface PlanExecution {
   status: 'running' | 'awaiting-review' | 'completed' | 'blocked' | 'interrupted';
+  /** 에이전트가 update_todos 로 통째로 바꾸는 todo 목록. 계획 단계에서 출발한다. */
   steps: Array<{
     stepId: string;
+    /** 한 줄 todo. 예전 기록에는 없으므로 계획 단계 제목으로 대신한다. */
+    title?: string;
     status: 'pending' | 'in-progress' | 'completed' | 'blocked';
     note?: string;
   }>;
+}
+
+/** 실행 todo 의 표시 문구 — 없으면 같은 id 의 계획 단계 제목. */
+export function planTodoTitle(plan: StructuredPlan, todo: PlanExecution['steps'][number]): string {
+  if (todo.title?.trim()) return todo.title.trim();
+  const index = plan.steps.findIndex((step, i) => (step.id ?? `step-${i + 1}`) === todo.stepId);
+  return index >= 0 ? plan.steps[index]!.title : todo.stepId;
 }
 
 /** Server-authored plan. Its epoch is descriptive; capabilityEpoch is the write authority. */
@@ -273,8 +341,7 @@ export function isStructuredPlan(value: unknown): value is StructuredPlan {
       if (!step || typeof step !== 'object' || Array.isArray(step)) return false;
       const item = step as Record<string, unknown>;
       return typeof item['title'] === 'string'
-        && typeof item['details'] === 'string'
-        && ['id', 'target', 'preview'].every((key) => item[key] === undefined || typeof item[key] === 'string')
+        && ['id', 'details', 'target', 'preview'].every((key) => item[key] === undefined || typeof item[key] === 'string')
         && (item['files'] === undefined || isStringArray(item['files']));
     })
     && isStringArray(plan['files'])
@@ -294,20 +361,23 @@ export function isStructuredPlan(value: unknown): value is StructuredPlan {
       return typeof item['title'] === 'string'
         && ['url', 'fileId', 'chunkId', 'note'].every((key) => item[key] === undefined || typeof item[key] === 'string');
     })))
-    && (plan['execution'] === undefined || isPlanExecution(plan['execution'], plan['steps'] as StructuredPlanStep[]));
+    && (plan['execution'] === undefined || isPlanExecution(plan['execution']));
 }
 
-function isPlanExecution(value: unknown, steps: StructuredPlanStep[]): value is PlanExecution {
+function isPlanExecution(value: unknown): value is PlanExecution {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const execution = value as Record<string, unknown>;
-  const ids = new Set(steps.map((step, index) => step.id ?? `step-${index + 1}`));
   if (typeof execution['status'] !== 'string'
     || !['running', 'awaiting-review', 'completed', 'blocked', 'interrupted'].includes(execution['status'])
-    || !Array.isArray(execution['steps']) || execution['steps'].length !== steps.length) return false;
+    || !Array.isArray(execution['steps']) || execution['steps'].length === 0) return false;
+  // todo 목록은 에이전트가 늘리고 쪼갤 수 있다 — 계획 단계와 개수·id 가 같을 필요는 없다. id 만 겹치지 않는다.
+  const ids = new Set<string>();
   return execution['steps'].every((step: unknown) => {
     if (!step || typeof step !== 'object' || Array.isArray(step)) return false;
     const item = step as Record<string, unknown>;
-    if (typeof item['stepId'] !== 'string' || !ids.delete(item['stepId'])) return false;
+    if (typeof item['stepId'] !== 'string' || ids.has(item['stepId'])) return false;
+    ids.add(item['stepId']);
+    if (item['title'] !== undefined && typeof item['title'] !== 'string') return false;
     return typeof item['status'] === 'string'
       && ['pending', 'in-progress', 'completed', 'blocked'].includes(item['status'])
       && (item['note'] === undefined || typeof item['note'] === 'string');
@@ -974,6 +1044,8 @@ export interface AgentBridgeDeps {
   documentState: DocumentDirtyState;
   isReadOnly?: () => boolean;
   canPublishCloudDocument?: () => boolean;
+  /** 전체 모드 에이전트의 버전 커밋 — 사이드바 커밋 버튼과 같은 기록에 남긴다. */
+  commitVersion?: (message: string) => Promise<void>;
 }
 
 export interface AgentBridgeOptions {
@@ -1496,7 +1568,7 @@ export interface PendingChangeSet {
 export type PendingEditsChangeEvent =
   | { type: 'ops-changed' }
   | { type: 'set-finalized'; changeSetId: string }
-  | { type: 'approved'; changeSetId: string }
+  | { type: 'approved'; changeSetId: string; /** 전체 모드의 쓰기별 즉시 확정 (검토를 거치지 않음) */ direct?: true }
   | { type: 'rejected'; changeSetId: string }
   | {
       type: 'invalidated'; reason: string; changeSetId?: string;

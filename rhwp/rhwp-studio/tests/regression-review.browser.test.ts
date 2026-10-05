@@ -217,52 +217,36 @@ test('plan approval is locked during transition and produces one implementation 
   );
 });
 
-test('permission changes are blocked during an active turn and require confirmation afterward', async (t) => {
+test('mode changes are blocked during an active turn and entering 전체 requires confirmation', async (t) => {
   const page = await open(t, 'scenario=chat');
-  const before = await page.$eval(
-    '.ag-permission-btn',
-    (b: HTMLButtonElement) => b.textContent,
-  );
+  const chip = '.ag-mode-btn';
+  const before = await page.$eval(chip, (b: HTMLButtonElement) => b.textContent);
+  assert.equal(before, '에이전트');
   await page.click('#play');
   await page.waitForFunction(() =>
     (window as any).sidebarPreview.bridge.isTurnRunning(),
   );
+  assert.equal(await page.$eval(chip, (b: HTMLButtonElement) => b.disabled), true);
+  await page.$eval(chip, (b: HTMLButtonElement) => b.click());
   assert.equal(
-    await page.$eval(
-      '.ag-permission-btn',
-      (b: HTMLButtonElement) => b.disabled,
-    ),
-    true,
-  );
-  await page.$eval('.ag-permission-btn', (b: HTMLButtonElement) => b.click());
-  assert.equal(
-    await page.$eval(
-      '.ag-permission-btn',
-      (b: HTMLButtonElement) => b.textContent,
-    ),
-    before,
+    await page.$eval('.ag-mode', (el: HTMLElement) => el.classList.contains('ag-model-open')),
+    false,
   );
   await page.waitForFunction(
     () => !(window as any).sidebarPreview.bridge.isTurnRunning(),
   );
   await page.waitForFunction(
-    () =>
-      !(document.querySelector('.ag-permission-btn') as HTMLButtonElement)
-        .disabled,
+    () => !(document.querySelector('.ag-mode-btn') as HTMLButtonElement).disabled,
   );
-  await page.click('.ag-permission-btn');
+  await page.click(chip);
+  await page.waitForSelector('.ag-mode-item[data-mode="full"]', { visible: true });
+  await page.click('.ag-mode-item[data-mode="full"]');
   await page.waitForSelector(
     '.ag-sheet-layer.ag-sheet-open .ag-sheet-confirm',
     { visible: true },
   );
   await page.keyboard.press('Escape');
-  assert.equal(
-    await page.$eval(
-      '.ag-permission-btn',
-      (b: HTMLButtonElement) => b.textContent,
-    ),
-    before,
-  );
+  assert.equal(await page.$eval(chip, (b: HTMLButtonElement) => b.textContent), before);
 });
 
 test('toolbar boundary inputs emit bounded formats and keyboard increments do not duplicate them', async (t) => {

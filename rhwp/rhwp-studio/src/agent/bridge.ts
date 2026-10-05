@@ -18,7 +18,7 @@ import {
   type RendererSessionContext,
 } from '../desktop-integration.ts';
 import { RevisionTracker, timeSeededRevision } from './revision.ts';
-import { AgentToolExecutor, toolTraceNow, type ToolTraceTimings } from './tool-executor.ts';
+import { AgentToolExecutor, isDocumentWriteTool, toolTraceNow, type ToolTraceTimings } from './tool-executor.ts';
 import { PendingEditManager, editReportNote } from './pending-edits.ts';
 import { PendingOverlayRenderer } from './pending-overlay.ts';
 import { readProviderQuota, readRemoteBalance } from './provider-quota-protocol.ts';
@@ -38,6 +38,7 @@ import {
   isAgentPhase,
   isAgentWorkflow,
   isStructuredPlan,
+  writesApplyDirectly,
 } from './types.ts';
 import {
   ERROR_RESPONSE_MAX_BYTES,
@@ -217,8 +218,8 @@ export function providerTurnEndMatches(
 /**
  * turn-end 한 건의 스테이징 처리를 가른다.
  * 성공은 명시적 종료 이유에만 인정하고, 그 외 모든 종료(오류·중단·max_tokens·
- * 재연결·알 수 없는 이유)는 어떤 권한 모드에서도 편집을 버리지 않고 검토로
- * 보낸다. 자동 커밋은 성공한 unrestricted 턴뿐이다.
+ * 재연결·알 수 없는 이유)는 편집을 버리지 않고 검토로 보낸다. 전체 모드(직접 반영)는
+ * endPendingTurn 이 이 결과와 상관없이 확정한다 — 쓰기마다 이미 확정돼 남는 것이 거의 없다.
  */
 export function turnEndDisposition(
   event: { stopReason?: unknown; errorMessage?: unknown },
@@ -351,7 +352,8 @@ export interface AgentBridge {
   searchReferences(query: string, scope: ReferenceScope, scopeId: string, limit?: number): Promise<ReferenceSearchHit[]>;
   deleteReference(file: Pick<ReferenceFile, 'id' | 'scope' | 'scopeId'>): Promise<void>;
   setWorkflow(workflow: AgentWorkflow): void;
-  approvePlan(planId: string): boolean;
+  /** permissionProfile 이 있으면 허브가 실행 전환 전에 그 프로필로 바꾼다 (에이전트=safe, 전체=unrestricted). */
+  approvePlan(planId: string, permissionProfile?: PermissionProfile): boolean;
   requestPlanChanges(planId: string, feedback?: string): boolean;
   setPermissionProfile(profile: PermissionProfile): void;
   setServiceTier(tier: ServiceTier): void;
@@ -1271,6 +1273,7 @@ export class AgentBridgeImpl implements AgentBridge {
   private sessionId = '';
   private httpBaseUrl = '';
   private readonly options?: AgentBridgeOptions;
+  private readonly versionCommit?: (message: string) => Promise<void>;
   private ws: WebSocket | null = null;
   private state: ConnectionState = 'disconnected';
   /** 지금까지 실패한 연결 시도 수. 허브의 welcome 을 받으면 0 으로 돌아간다. */
@@ -1387,6 +1390,7 @@ export class AgentBridgeImpl implements AgentBridge {
   private activeTemplateId: string | null = null;
 
   constructor(deps: AgentBridgeDeps, opts?: AgentBridgeOptions) {
+    this.versionCommit = deps.commitVersion;
     // revision 은 문서 인스턴스에 묶고, 페이지 로드마다 다른 값에서 시작한다 — 다른 문서나
     // 새로고침 이전 페이지에서 든 expectedRevision 이 우연히 맞아 엉뚱한 문서에 쓰이지 않게 한다.
     this.revision = new RevisionTracker(deps.eventBus, {
@@ -1414,7 +1418,9 @@ export class AgentBridgeImpl implements AgentBridge {
     });
     // 검토 대기/승인/거절/무효화 뒤에는 대기 중인 편집 위치 이동을 버린다.
     this.pendingChangeUnsub = this.pendingEdits.onChange((e) => {
-      if (e.type === 'set-finalized' || e.type === 'approved' || e.type === 'rejected' || e.type === 'invalidated') {
+      // 전체 모드의 쓰기별 즉시 확정은 편집 위치 따라가기를 끊지 않는다.
+      const directCommit = e.type === 'approved' && e.direct === true;
+      if (!directCommit && (e.type === 'set-finalized' || e.type === 'approved' || e.type === 'rejected' || e.type === 'invalidated')) {
         this.editFollow.cancel();
       }
       const note = editReportNote(e);
@@ -1874,7 +1880,44 @@ export class AgentBridgeImpl implements AgentBridge {
     return this.workflow === 'direct' || this.phase === 'implementing';
   }
 
+  /** 전체 모드: 쓰기가 검토 없이 바로 문서에 반영된다 (쓰기 도구 하나 = undo 한 단계). */
+  private writesApplyDirectly(): boolean {
+    return writesApplyDirectly(this.workflow, this.phase, this.permissionProfile);
+  }
+
+  /** 전체 모드 에이전트의 버전 커밋. 검토 단계가 있는 모드에서는 받지 않는다. */
+  private async commitVersion(args: unknown): Promise<{ committed: true; message: string }> {
+    if (!this.writesApplyDirectly()) {
+      throw new AgentToolError('COMMIT_REQUIRES_FULL_ACCESS', 'commit_version is available in 전체 mode only.');
+    }
+    const raw = (args as { message?: unknown } | null)?.message;
+    const message = typeof raw === 'string' ? raw.trim().split('\n')[0]!.slice(0, 200) : '';
+    if (!message) throw new AgentToolError('INVALID_ARGS', 'commit_version needs a one-line message.');
+    if (!this.versionCommit) {
+      throw new AgentToolError('VERSIONING_UNAVAILABLE', 'Version history is not available for this document.');
+    }
+    // 열린 직접 반영 set 이 있으면 먼저 확정해 커밋에 빠짐없이 담는다.
+    this.pendingEdits.commitOpen();
+    try {
+      await this.versionCommit(message);
+    } catch (e) {
+      throw new AgentToolError('COMMIT_FAILED', e instanceof Error ? e.message : String(e));
+    }
+    return { committed: true, message };
+  }
+
+  /** 전체 모드에서 쓰기 도구가 끝나면(성공·실패 모두) 그 도구가 남긴 편집을 곧바로 확정한다. */
+  private commitDirectWrite(tool: string): void {
+    if (!isDocumentWriteTool(tool) || !this.writesApplyDirectly()) return;
+    try {
+      this.pendingEdits.commitOpen();
+    } catch (e) {
+      console.warn('[AgentBridge] 직접 반영 확정 실패:', e);
+    }
+  }
+
   private beginPendingTurn(agent: AgentName) {
+    this.pendingEdits.setDirectApply(this.writesApplyDirectly());
     if (this.pendingTurnOpen || !this.canStagePendingEdits()) return;
     this.executor.beginTurn();
     this.pendingEdits.beginTurn(agent);
@@ -1986,8 +2029,10 @@ export class AgentBridgeImpl implements AgentBridge {
     turnStopped = true,
   ) {
     if (!this.pendingTurnOpen) return;
+    // 전체 모드에는 검토 단계가 없다 — 어떤 종료든 쓰기와 경합해 열린 set 에 남은 편집도 확정한다.
+    const resolved = this.writesApplyDirectly() ? 'commit' : outcome;
     try {
-      this.pendingEdits.endTurn(outcome, { turnStopped });
+      this.pendingEdits.endTurn(resolved, { turnStopped });
     } finally {
       this.executor.endTurn();
       this.pendingTurnOpen = false;
@@ -3000,7 +3045,9 @@ export class AgentBridgeImpl implements AgentBridge {
       : null;
     this.activeToolRequests += 1;
     this.syncEditingLease();
-    void this.executor
+    // 턴 시작을 놓친 쓰기도 전체 모드에서는 미리보기 표시 없이 바로 확정된다.
+    if (isDocumentWriteTool(tool) && this.writesApplyDirectly()) this.pendingEdits.setDirectApply(true);
+    const run = tool === 'commit_version' ? this.commitVersion(args) : this.executor
       .execute(tool, args, agent, {
         workflow: this.workflow,
         phase: msg.phase,
@@ -3011,7 +3058,12 @@ export class AgentBridgeImpl implements AgentBridge {
         template: readDocumentTemplate(msg.template) ?? undefined,
         requestIsActive,
         ...(trace ? { trace } : {}),
-      })
+      });
+    void run
+      .then(
+        (result) => { this.commitDirectWrite(tool); return result; },
+        (e: unknown) => { this.commitDirectWrite(tool); throw e; },
+      )
       .then((result) => {
         if (!requestIsActive()) return;
         const reported = this.withEditReport(result);
@@ -3658,10 +3710,11 @@ export class AgentBridgeImpl implements AgentBridge {
     this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'chat-workflow-set', workflow });
   }
 
-  approvePlan(planId: string): boolean {
+  approvePlan(planId: string, permissionProfile?: PermissionProfile): boolean {
     return this.sendJson({
       v: AGENT_PROTOCOL_VERSION, type: 'chat-plan-approve', planId,
       documentRevision: this.revision.revision,
+      ...(permissionProfile ? { permissionProfile } : {}),
     });
   }
 

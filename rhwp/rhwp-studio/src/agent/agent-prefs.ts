@@ -1,6 +1,6 @@
 /**
  * 개인 기본값 — 설정 탭에서 고르는 "다음 대화부터 쓸" 프로바이더·모델·
- * 추론 강도·권한 프로필. localStorage 한 칸에 JSON 으로 산다.
+ * 추론 강도·에이전트 모드. localStorage 한 칸에 JSON 으로 산다.
  *
  * 대화 중 입력기 셀렉터로 바꾸는 값은 그 대화만의 덮어쓰기이므로 여기에
  * 저장되지 않는다(설정 탭만 저장한다).
@@ -18,7 +18,7 @@ import {
   setSelectedModels,
   type SelectedModels,
 } from './models.ts';
-import type { AgentName, PermissionProfile } from './types.ts';
+import { isAgentMode, type AgentMode, type AgentName } from './types.ts';
 
 const STORAGE_KEY = 'rhwp-agent-prefs';
 
@@ -26,7 +26,8 @@ export interface AgentPrefs {
   defaultAgent: AgentName;
   defaultModel: string;
   defaultEffort: string;
-  defaultPermissionProfile: PermissionProfile;
+  /** 새 대화의 모드. 이전 저장값(defaultPermissionProfile)은 읽을 때 옮긴다. */
+  defaultMode: AgentMode;
   selectedModels: SelectedModels;
 }
 
@@ -47,8 +48,10 @@ function isAgentName(value: unknown): value is AgentName {
 /** 첫 실행·빈 프로필의 기본 프로바이더. 저장된 Codex/BYOK 선택은 건드리지 않는다. */
 export const DEFAULT_CHAT_AGENT: AgentName = 'claude';
 
-function isPermissionProfile(value: unknown): value is PermissionProfile {
-  return value === 'safe' || value === 'unrestricted';
+/** 저장된 모드. 모드 도입 전 프로필은 안전 → 에이전트, 전체 접근 → 전체로 옮긴다. */
+function storedDefaultMode(src: Record<string, unknown>): AgentMode {
+  if (isAgentMode(src['defaultMode'])) return src['defaultMode'];
+  return src['defaultPermissionProfile'] === 'unrestricted' ? 'full' : 'agent';
 }
 
 function resolveStorage(storage?: AgentPrefsStorage | null): AgentPrefsStorage | null {
@@ -69,7 +72,7 @@ export function defaultAgentPrefs(): AgentPrefs {
     defaultAgent: agent,
     defaultModel: model,
     defaultEffort: resolveEffortForAgent(agent, null, model),
-    defaultPermissionProfile: 'safe',
+    defaultMode: 'agent',
     selectedModels,
   };
 }
@@ -105,9 +108,7 @@ export function normalizeAgentPrefs(raw: unknown): AgentPrefs {
     defaultAgent: agent,
     defaultModel: model,
     defaultEffort: effort,
-    defaultPermissionProfile: isPermissionProfile(src['defaultPermissionProfile'])
-      ? src['defaultPermissionProfile']
-      : 'safe',
+    defaultMode: storedDefaultMode(src),
     selectedModels,
   };
 }

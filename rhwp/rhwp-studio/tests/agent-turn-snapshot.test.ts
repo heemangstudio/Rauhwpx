@@ -294,6 +294,8 @@ function bridgeFixture(doc = fakeDocument(), overrides: Record<string, unknown> 
     clearPendingQuestionCancellation() {},
     abortProviderToolRequests() {}, abortActiveToolRequests() {},
     workflowState: () => ({ workflow: 'direct', phase: 'direct', capabilityEpoch: 1, latestPlan: null }),
+    // 전체 모드: 쓰기 도구마다 열린 set 을 바로 확정한다.
+    pendingEdits: { setDirectApply() {}, commitOpen: () => true },
     ...overrides,
   });
   const userMessages = () => frames.filter((frame) => frame.type === 'chat-user-message');

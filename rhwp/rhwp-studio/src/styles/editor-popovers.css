@@ -22,14 +22,14 @@
 }
 
 :root[data-theme-effective='dark'] :is(.bullet-popup, .table-create-popup) {
-  --popover-surface: #2f2f2f;
-  --popover-control: #262626;
-  --popover-text: #ededed;
-  --popover-muted: #a1a1a1;
-  --popover-border: #555555;
-  --popover-hover: #3a3a3a;
-  --popover-selected: #444444;
-  --popover-focus: #cfcfcf;
+  --popover-surface: #181818;
+  --popover-control: #0f0f0f;
+  --popover-text: #e6e6e6;
+  --popover-muted: #8f8f8f;
+  --popover-border: #363636;
+  --popover-hover: #202020;
+  --popover-selected: #2e2e2e;
+  --popover-focus: #ef6a62;
   box-shadow: 0 16px 36px #0008;
   color-scheme: dark;
 }

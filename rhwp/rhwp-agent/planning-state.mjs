@@ -194,24 +194,46 @@ export class PlanningState {
     this.phase = 'implementing';
     this.execution = {
       status: 'running',
-      steps: this.latestPlan.plan.steps.map((step) => ({ stepId: step.id, status: 'pending' })),
+      // 실행 todo 는 계획 단계에서 출발하고, 에이전트가 update_todos 로 통째로 바꿔 간다.
+      steps: [
+        ...this.latestPlan.plan.steps.map((step) => ({ stepId: step.id, title: step.title, status: 'pending' })),
+        // 별도 검증 항목도 할 일로 연다.
+        ...(this.latestPlan.plan.validation ?? []).map((entry, index) => ({ stepId: `verify-${index + 1}`, title: entry, status: 'pending' })),
+      ],
     };
     return this.snapshot();
   }
 
-  updateProgress({ planId, stepId, status, note }) {
+  /**
+   * 코딩 하네스의 todo 도구처럼 목록 전체를 바꾼다. 기존 id 는 유지하고, 새 항목은 todo-N 을 받는다.
+   * @param {{planId: string, todos: Array<{id?: string, content: string, status: string, note?: string}>}} input
+   */
+  updateTodos({ planId, todos }) {
     this.assertLatest(planId);
     if (this.phase !== 'implementing' || !this.execution || this.execution.status === 'completed') {
-      throw workflowError('INVALID_PLAN_PHASE', 'Checklist updates require an active approved plan');
+      throw workflowError('INVALID_PLAN_PHASE', 'Todo updates require an active approved plan');
     }
-    const step = this.execution.steps.find((item) => item.stepId === stepId);
-    if (!step) throw workflowError('INVALID_PLAN_STEP', 'The step does not belong to the approved plan');
-    if (!['pending', 'in-progress', 'completed', 'blocked'].includes(status)) {
-      throw workflowError('INVALID_PLAN_PROGRESS', 'Unknown checklist status');
+    if (!Array.isArray(todos) || todos.length === 0) {
+      throw workflowError('INVALID_PLAN_PROGRESS', 'The todo list cannot be empty');
     }
-    step.status = status;
-    if (note !== undefined) step.note = note;
-    this.execution.status = status === 'blocked' ? 'blocked' : 'running';
+    const used = new Set();
+    let next = 1;
+    const freshId = () => {
+      while (used.has(`todo-${next}`) || this.execution.steps.some((step) => step.stepId === `todo-${next}`)) next++;
+      return `todo-${next}`;
+    };
+    const steps = todos.map((todo) => {
+      if (!['pending', 'in-progress', 'completed', 'blocked'].includes(todo.status)) {
+        throw workflowError('INVALID_PLAN_PROGRESS', 'Unknown todo status');
+      }
+      const content = String(todo.content ?? '').trim();
+      if (!content) throw workflowError('INVALID_PLAN_PROGRESS', 'A todo needs content');
+      const id = todo.id && !used.has(todo.id) ? String(todo.id) : freshId();
+      used.add(id);
+      return { stepId: id, title: content, status: todo.status, ...(todo.note ? { note: String(todo.note) } : {}) };
+    });
+    this.execution.steps = steps;
+    this.execution.status = steps.some((step) => step.status === 'blocked') ? 'blocked' : 'running';
     return this.snapshot();
   }
 
@@ -308,7 +330,7 @@ export function buildApprovedPlanPrompt(approved) {
     'The user approved the following hub-authoritative implementation plan.',
     `Plan ID: ${approved.planId}`,
     'Implement this canonical plan now. Do not re-plan, omit steps, or substitute a different plan. First re-read the relevant current state, then execute every canonical step thoroughly and run every listed validation. Respect the current permission profile. In the final report, distinguish completed, blocked, and deferred items and validation results; never claim partial work is complete.',
-    'For each canonical step, call update_plan_progress with its step ID and in-progress before working, then completed only after its work and relevant validation succeed. Report blocked steps with a concrete note. Do not mark pending or unverified work completed. Check the after report of each document write and fix its warnings. The app separately tracks pending user review and the final application of edits.',
+    'The plan steps are your starting todo list (ids step-1…). update_todos replaces the whole list and is what the user watches as a live timeline: one-line items, typically one in-progress at a time, split or added as the work reveals them. completed means the work and its check succeeded; blocked carries a note. The after report of each document write lists warnings to fix. The app tracks user review of staged edits (in the safe profile) and the application of edits separately.',
     // 승인 메시지는 promptContext 를 거치지 않는다 — 구현 단계 첫 턴이 규율 없이 시작하지 않도록 여기서 얹는다.
     humanizerPromptBlock('implementing'),
     JSON.stringify(approved.plan, null, 2),

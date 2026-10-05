@@ -25,7 +25,9 @@ test('planning and user-input protocol uses v5 and validates the complete struct
   };
   assert.equal(isStructuredPlan(plan), true);
   assert.equal(isStructuredPlan({ ...plan, risks: undefined }), false);
-  assert.equal(isStructuredPlan({ ...plan, steps: [{ title: '검토' }] }), false);
+  // 단계는 한 줄 todo 다 — details 없이도 유효하다.
+  assert.equal(isStructuredPlan({ ...plan, steps: [{ title: '문서 구조 검토' }] }), true);
+  assert.equal(isStructuredPlan({ ...plan, steps: [{ details: '제목 없음' }] }), false);
   const executing = {
     ...plan,
     revision: 2,
@@ -39,10 +41,14 @@ test('planning and user-input protocol uses v5 and validates the complete struct
   assert.equal(isStructuredPlan(executing), true);
   for (const execution of [
     { status: 'running', steps: [] },
-    { status: 'completed', steps: [{ stepId: 'missing', status: 'completed' }] },
+    { status: 'completed', steps: [{ stepId: 'todo-1', title: 7, status: 'completed' }] },
     { status: 'running', steps: [{ stepId: 'step-1', status: 'unknown' }] },
     { status: ['running'], steps: [{ stepId: 'step-1', status: 'pending' }] },
   ]) assert.equal(isStructuredPlan({ ...executing, execution }), false);
+  // update_todos 는 계획에 없던 할 일을 더할 수 있다.
+  assert.equal(isStructuredPlan({ ...executing, execution: { status: 'running', steps: [
+    { stepId: 'step-1', status: 'completed' }, { stepId: 'todo-1', title: '맞춤법 다시 확인', status: 'in-progress' },
+  ] } }), true);
   assert.equal(isStructuredPlan({ ...executing, revision: -1 }), false);
   assert.equal(isStructuredPlan({ ...executing, sources: [{ title: '자료', url: {} }] }), false);
   assert.equal(isStructuredPlan({ ...executing,

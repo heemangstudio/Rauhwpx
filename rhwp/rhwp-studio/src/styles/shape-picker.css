@@ -22,13 +22,13 @@
 }
 
 :root[data-theme-effective='dark'] .shape-picker {
-  --shape-surface: #2f2f2f;
-  --shape-border: #555;
-  --shape-text: #ededed;
-  --shape-muted: #a1a1a1;
-  --shape-hover: #3a3a3a;
-  --shape-pressed: #444;
-  --shape-focus: #cfcfcf;
+  --shape-surface: #181818;
+  --shape-border: #363636;
+  --shape-text: #e6e6e6;
+  --shape-muted: #8f8f8f;
+  --shape-hover: #202020;
+  --shape-pressed: #2e2e2e;
+  --shape-focus: #ef6a62;
   box-shadow: 0 16px 40px #0008;
 }
 

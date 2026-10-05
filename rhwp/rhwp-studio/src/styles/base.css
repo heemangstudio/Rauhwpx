@@ -324,25 +324,26 @@
   --ui-warning-bg: #3d3617;
   --ui-warning-border: #7b6b23;
   --ui-warning-text: #f0dfa0;
-  --ui-link: #8bb8ff;
+  --ui-link: #f4877f;
   --ui-danger: #ff6b60;
   --ui-danger-strong: #ff6b60;
   --ui-danger-soft: rgba(255, 107, 96, 0.22);
-  --ui-focus-soft: rgba(139, 184, 255, 0.24);
+  --ui-focus-soft: rgba(239, 106, 98, 0.22);
 
-  --doc-workspace: #0f0f11;
+  /* 책상은 크롬보다 한 단 밝은 먹색 — 흰 용지와의 대비를 누그러뜨린다. */
+  --doc-workspace: #191919;
   --doc-paper: #ffffff;
   --doc-shadow: rgba(0, 0, 0, 0.55);
   --doc-paper-shadow: var(--n-elev-paper);
 
-  --focus-ring: #8bb8ff;
-  --selection-fill: #315f91;
+  --focus-ring: #ef6a62;
+  --selection-fill: #6a2a27;
   --caret-color: #111111;
-  --resize-handle: #8bb8ff;
+  --resize-handle: #ef6a62;
   --ui-align-icon-filter: invert(1) brightness(1.6);
   --ui-icon-sprite-url: url(/images/icon_small_ko_dark.svg);
-  --table-selection-fill: rgba(139, 184, 255, 0.28);
-  --table-selection-stroke: #8bb8ff;
+  --table-selection-fill: rgba(239, 106, 98, 0.26);
+  --table-selection-stroke: #ef6a62;
 
   --ruler-bg: var(--n-surface-raised);
   --ruler-body: var(--n-surface);
@@ -350,11 +351,12 @@
   --ruler-text: var(--n-text);
   --ruler-marker: var(--accent-light);
 
-  --accent-primary: #7fa8ff;
-  --accent-strong: #a9c3ff;
-  --accent-light: #8bb8ff;
-  --accent-hover: #5f78a8;
-  --accent-subtle: #6f8ed6;
+  /* 먹색 위의 부드러운 빨강 한 가지만 강조색으로 쓴다. */
+  --accent-primary: #ef6a62;
+  --accent-strong: #ff9a92;
+  --accent-light: #f4877f;
+  --accent-hover: #d4544d;
+  --accent-subtle: #a8443e;
 
   --shadow-dropdown: var(--n-elev-2);
   --shadow-dialog: var(--n-elev-3);
@@ -365,33 +367,34 @@
 
   /* ─── 모던 셸 토큰: 어두운 테마 ─────────────────────
      어두운 쪽에서는 면이 위로 올라올수록 밝아진다. */
-  --n-surface: #1e1e20;
-  --n-surface-raised: #26262a;
-  --n-surface-sunken: #171719;
-  --n-canvas: #141416;
+  --n-surface: #0f0f0f;
+  --n-surface-raised: #181818;
+  --n-surface-sunken: #080808;
+  --n-canvas: #0f0f0f;
 
-  --n-hairline: rgba(255, 255, 255, 0.10);
-  --n-hairline-strong: rgba(255, 255, 255, 0.17);
+  --n-hairline: rgba(255, 255, 255, 0.08);
+  --n-hairline-strong: rgba(255, 255, 255, 0.14);
 
-  --n-text: #f5f5f7;
-  --n-text-secondary: #c7c7cc;
-  --n-text-muted: #a2a2a8;
-  --n-text-placeholder: #8f8f95;
-  --n-text-disabled: #6b6b71;
-  --n-fill-selected-soft: rgba(127, 168, 255, 0.09);
+  /* 글자는 순백이 아닌 따뜻한 회색 — 검정 위에서 눈부시지 않다. */
+  --n-text: #e6e6e6;
+  --n-text-secondary: #b4b4b4;
+  --n-text-muted: #8f8f8f;
+  --n-text-placeholder: #787878;
+  --n-text-disabled: #5a5a5a;
+  --n-fill-selected-soft: rgba(255, 255, 255, 0.05);
 
   /* 어두운 테마의 액센트는 밝은 파랑이다. 그 위에 흰 글자를
      올리면 2:1 대로 무너지므로, 채워진 버튼은 어두운 잉크를 쓴다. */
-  --n-on-accent: #10203c;
+  --n-on-accent: #2a0e0c;
 
-  --n-fill-hover: rgba(255, 255, 255, 0.06);
-  --n-fill-active: rgba(255, 255, 255, 0.10);
-  --n-fill-selected: rgba(127, 168, 255, 0.18);
+  --n-fill-hover: rgba(255, 255, 255, 0.05);
+  --n-fill-active: rgba(255, 255, 255, 0.09);
+  --n-fill-selected: rgba(255, 255, 255, 0.10);
   --n-fill-pressed: rgba(0, 0, 0, 0.2);
   --n-fill-hover-quiet: rgba(255, 255, 255, 0.045);
-  --n-inactive-fill: #4a4a4e;
-  --n-inactive-ink: #e5e5ea;
-  --n-inactive-selection: #464649;
+  --n-inactive-fill: #2c2c2c;
+  --n-inactive-ink: #e6e6e6;
+  --n-inactive-selection: #363636;
 
   --n-elev-1: 0 1px 2px rgba(0, 0, 0, 0.35), 0 1px 1px rgba(0, 0, 0, 0.25);
   --n-elev-2: 0 4px 12px rgba(0, 0, 0, 0.45), 0 1px 3px rgba(0, 0, 0, 0.3);

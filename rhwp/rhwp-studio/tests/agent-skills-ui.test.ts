@@ -7,10 +7,19 @@ const shelf = readFileSync(new URL('../src/ui/agent-sidebar/skills-shelf.ts', im
 const bridge = readFileSync(new URL('../src/agent/bridge.ts', import.meta.url), 'utf8');
 const css = readFileSync(new URL('../src/ui/agent-sidebar/agent-sidebar.css', import.meta.url), 'utf8');
 
-test('sidebar exposes safe/full permissions without allowing changes during a turn', () => {
-  assert.match(source, /permissionProfile === 'safe'/);
-  assert.match(source, /await confirmSheet\(permissionBtn, '전체 접근', '승인 없이 편집하고 파일에 접근합니다\.'/);
-  assert.match(source, /permissionBtn\.disabled = controlsLocked \|\| connState !== 'connected'/);
+test('sidebar exposes one agent mode chip without allowing changes during a turn', () => {
+  assert.match(source, /createModeMenu\(\(mode\) => \{ void requestMode\(mode\); \}\)/);
+  assert.doesNotMatch(source, /permissionBtn|updatePermissionButton/);
+  // 전체로 들어갈 때만 확인 시트를 띄운다.
+  assert.match(source, /if \(modeNeedsConfirmation\(next\)\) \{\s*const confirmed = await confirmSheet\(modeMenu\.trigger, '전체 접근', '승인 없이 편집하고 파일에 접근합니다\.'/);
+  assert.match(source, /agentModeTarget\(next\)\.permissionProfile === 'unrestricted'\s*&& permissionProfile !== 'unrestricted'/);
+  // 계획 카드: 에이전트로 실행(safe)과 빨간 전체 접근으로 실행(unrestricted) 두 승인.
+  assert.match(source, /approveActivePlan\(plan\.planId, 'safe'\)/);
+  assert.match(source, /'ag-approve ag-plan-approve-full', '전체 접근으로 실행'/);
+  assert.match(source, /approveActivePlan\(plan\.planId, 'unrestricted', approveFull\)/);
+  assert.match(source, /bridge\.approvePlan\(planId, profile\)/);
+  assert.match(source, /disabled: locked/);
+  assert.match(source, /const locked = local \? isControlLocked\(\) \|\| connState !== 'connected'/);
   assert.match(bridge, /chat-permission-set/);
   assert.match(bridge, /this\.permissionProfile = 'safe'/);
 });

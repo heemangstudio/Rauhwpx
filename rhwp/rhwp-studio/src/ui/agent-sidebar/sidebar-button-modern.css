@@ -36,7 +36,7 @@
 }
 
 .ag-root :is(
-  .ag-permission-btn,
+  .ag-mode-btn,
   .ag-skills-btn,
   .ag-takeover-btn,
   .ag-hub-retry-btn,

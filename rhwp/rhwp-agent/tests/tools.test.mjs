@@ -26,8 +26,8 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 const byName = new Map(TOOL_DEFINITIONS.map((d) => [d.name, d]));
 
-test('도구는 정확히 89개, 이름 중복 없음', () => {
-  assert.equal(TOOL_DEFINITIONS.length, 89);
+test('도구는 정확히 90개, 이름 중복 없음', () => {
+  assert.equal(TOOL_DEFINITIONS.length, 90);
   assert.equal(byName.size, TOOL_DEFINITIONS.length, 'duplicate tool names');
 });
 
@@ -143,7 +143,7 @@ test('anchor 내부 필드는 validate 훅이 모양을 고정한다', () => {
 
 test('도구 프로필은 direct 호환성과 planning/implementing 가시성을 지킨다', () => {
   const direct = new Set(filterToolDefinitions('direct').map((definition) => definition.name));
-  assert.equal(direct.size, 77);
+  assert.equal(direct.size, 78);
   assert.equal(byName.get('commit_product_skill')?.category, 'instruction-write');
   assert.equal(byName.get('list_harness_skills')?.category, 'instruction-read');
   assert.ok(direct.has('commit_product_skill'));
@@ -209,9 +209,9 @@ test('도구 프로필은 direct 호환성과 planning/implementing 가시성을
 
   assert.ok(filterToolDefinitions('awaiting-approval').some((definition) => definition.name === 'ask_user_question'));
   assert.ok(filterToolDefinitions('awaiting-approval').some((definition) => definition.name === 'present_implementation_plan'));
-  assert.ok(implementing.has('update_plan_progress'));
-  assert.ok(!planning.has('update_plan_progress'));
-  assert.ok(!direct.has('update_plan_progress'));
+  assert.ok(implementing.has('update_todos'));
+  assert.ok(!planning.has('update_todos'));
+  assert.ok(!direct.has('update_todos'));
   assert.ok(!filterToolDefinitions('awaiting-approval').some((definition) => definition.name === 'commit_product_skill'));
 
   const worker = filterToolDefinitions('copy-layout-worker').map((definition) => definition.name);
@@ -308,7 +308,7 @@ test('full engine edit tools expose a bounded autonomous batch contract', () => 
   assert.ok(apply.shape.operations.safeParse([{ method: 'setPageDef', args: [0, {}] }]).success);
   assert.ok(!apply.shape.operations.safeParse([]).success);
   assert.ok(!apply.shape.operations.safeParse(Array.from({ length: 33 }, () => ({ method: 'x', args: [] }))).success);
-  assert.match(apply.description, /one atomic staged edit/i);
+  assert.match(apply.description, /one atomic edit/i);
   assert.match(apply.description, /every other method returned by get_engine_edit_capabilities/i);
   assert.match(prepare.description, /capability kind is "session"/i);
 });
@@ -659,8 +659,10 @@ test('공유 규칙은 한 번만: 셀 주소·오프셋·리비전·스테이�
   assert.match(RHWP_TOOL_RULES, /up to 5 candidates/);
   assert.doesNotMatch(RHWP_TOOL_RULES, /bottom-of-document first/);
   assert.doesNotMatch(byName.get('apply_edits').description, /bottom|맨 뒤|뒤에서/);
-  assert.match(RHWP_TOOL_RULES, /전체 접근/);
-  assert.match(RHWP_TOOL_RULES, /안전/);
+  // 모드별 쓰기 수명주기: 에이전트는 검토 대기, 전체는 직접 적용(실행 취소 단위).
+  assert.match(RHWP_TOOL_RULES, /에이전트 mode[^\n]*held for the user's review/);
+  assert.match(RHWP_TOOL_RULES, /전체 mode[^\n]*apply directly as ordinary undoable edits/);
+  assert.doesNotMatch(RHWP_TOOL_RULES, /auto-commit|전체 접근|\(안전\)/);
   assert.match(RHWP_TOOL_RULES, /lengths in mm, font sizes in pt/);
 
   const ruleLines = RHWP_TOOL_RULES.split('\n').slice(1).map((line) => line.replace(/^- [A-Za-z ]+: /, ''));
@@ -1003,7 +1005,8 @@ test('표·셀 속성은 타입이 있는 객체이고 모르는 키는 올바�
 // (zod-to-json-schema, strictUnions, input)으로 글자 수를 재서 한도를 넘지 못하게 한다.
 // 공유 규칙은 RHWP_TOOL_RULES 에 한 번만 두고, 새 도구도 이 한도 안에 들어와야 한다.
 // P0 기준선: 70개 106,936자 (edit_table 10,174자).
-const DIRECT_DEFINITION_TOTAL_LIMIT = 60_000;
+// commit_version(전체 모드 버전 커밋) 추가분만큼 올렸다.
+const DIRECT_DEFINITION_TOTAL_LIMIT = 60_300;
 const TOOL_DEFINITION_LIMIT = 3_000;
 
 test('direct 프로필 도구 정의 크기가 한도를 넘지 않는다', () => {
