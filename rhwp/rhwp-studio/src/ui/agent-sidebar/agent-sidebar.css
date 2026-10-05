@@ -887,7 +887,8 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
    macOS 팝업 버튼: 모드 아이콘 + 이름 + 위아래 갈매기. 채팅 파랑 · 플랜 차콜 ·
    에이전트 잉크 · 전체 빨강. 누름은 즉시 줄어들고, 메뉴는 칩에서 자라난다. */
 .ag-mode {
-  --ag-mode-chat: var(--ag-link);
+  /* 채팅은 강조색(빨강)과 상관없이 늘 파랑이다. */
+  --ag-mode-chat: color-mix(in oklab, #4f8fea 82%, var(--ag-text));
   --ag-mode-plan: color-mix(in oklab, var(--ag-text) 78%, var(--ag-bg));
   --ag-mode-agent: var(--ag-ok);
   --ag-mode-full: var(--ag-err);
