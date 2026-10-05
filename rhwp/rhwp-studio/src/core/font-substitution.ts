@@ -220,6 +220,12 @@ function pushUniqueFontFamily(families: string[], fontName: string): void {
   families.push(name);
 }
 
+// 최종 웹폰트 fallback — 브라우저는 font-family 목록 안에서만 글리프 대체를 찾으므로
+// OS 에 일본어·키릴 폰트가 없는 환경(Windows Server 등)에서도 번들된 나눔 서체가
+// 가나·키릴·그리스·한자를 커버한다. generic 앞에만 둔다.
+const LAST_RESORT_SANS = '나눔고딕';
+const LAST_RESORT_SERIF = '나눔명조';
+
 const HFT_SUBSTITUTE_FACES = new Map<string, readonly string[]>([
   ['HCI Poppy', ['Palatino', 'Palatino Linotype', 'Book Antiqua']],
   ['HCI Hollyhock', ['Helvetica', 'Arial']],
@@ -235,33 +241,33 @@ function systemFallbackFamilies(fontName: string): string[] {
   // 고정폭 '명조' (바탕체) — 고정폭보다 명조 계열 보존이 우선이다.
   // 고딕 고정폭(D2Coding)으로 떨어뜨리면 serif→sans 로 계열이 뒤집힌다.
   if (/바탕체|batangche/i.test(fontName)) {
-    return ['BatangChe', 'Batang', 'AppleMyungjo', 'Noto Serif KR', 'serif'];
+    return ['BatangChe', 'Batang', 'AppleMyungjo', 'Noto Serif KR', LAST_RESORT_SERIF, 'serif'];
   }
   // 고정폭 '고딕' (굴림체/코딩 서체)
   if (/굴림체|gulimche|coding|courier/i.test(fontName)) {
-    return ['GulimChe', 'D2Coding', 'Noto Sans Mono', 'monospace'];
+    return ['GulimChe', 'D2Coding', 'Noto Sans Mono', '나눔고딕코딩', 'monospace'];
   }
   // 한컴 HFT 영문 글꼴: 엔진 `hft_substitute_faces` 와 같은 설치 서체를 먼저 찾는다.
   // HCI Poppy 는 Palatino 복제라 macOS Palatino → Windows Palatino Linotype 순이다.
   const hftFaces = HFT_SUBSTITUTE_FACES.get(fontName.trim());
   if (hftFaces) {
     if (fontName.trim() === 'HCI Poppy') {
-      return [...hftFaces, 'Batang', 'AppleMyungjo', 'Noto Serif KR', 'serif'];
+      return [...hftFaces, 'Batang', 'AppleMyungjo', 'Noto Serif KR', LAST_RESORT_SERIF, 'serif'];
     }
-    return [...hftFaces, 'sans-serif'];
+    return [...hftFaces, LAST_RESORT_SANS, 'sans-serif'];
   }
   // Serif 판별 — 문자 클래스가 아니라 실제 서체명 토큰으로 검사한다.
   // (기존 `[바탕명조궁서]` 는 '서울남산체'·'고딕서체' 처럼 해당 글자가 스치기만 해도
   //  명조로 오분류했다.)
   if (/바탕|명조|궁서|hymjre|times|palatino|georgia|batang|gungsuh|myungjo|myeongjo|serif/i.test(fontName)) {
-    return ['Batang', 'AppleMyungjo', 'Noto Serif KR', 'serif'];
+    return ['Batang', 'AppleMyungjo', 'Noto Serif KR', LAST_RESORT_SERIF, 'serif'];
   }
   // Sans-serif (기본)
   // Hancom uses HCR Dotum when a requested sans face lacks a glyph (for
   // example, Malgun's geometric symbols or MDotum's Latin subset). Imported
   // HCR faces share a runtime CSS family across regular and bold weights.
   const hcr = resolveLocalFont('HCR Dotum');
-  return [hcr?.runtimeFamily ?? '함초롬돋움', 'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans KR', 'Pretendard', 'sans-serif'];
+  return [hcr?.runtimeFamily ?? '함초롬돋움', 'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans KR', 'Pretendard', LAST_RESORT_SANS, 'sans-serif'];
 }
 
 /**

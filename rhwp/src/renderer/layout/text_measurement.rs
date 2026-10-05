@@ -26,6 +26,38 @@ thread_local! {
     static ACTIVE_SHAPING_FONTS: std::cell::RefCell<Vec<ResolvedShapingFont>> = const {
         std::cell::RefCell::new(Vec::new())
     };
+    /// `measure_char_width_tracked` 의 (font_family, flags, char, size_bits) → 폭 캐시.
+    /// 글자 한 번의 폭 결정이 이름 정규화·메트릭 테이블·대체 체인 수십 단계를 걸으므로
+    /// 같은 입력의 반복 계산을 생략한다. 폰트 환경이 바뀌는 지점(런타임 폰트 등록/
+    /// 해제, shaping·font-path scope 전환, HFT·커스텀 face 등록)에서 비운다.
+    static MEASURE_WIDTH_CACHE: std::cell::RefCell<
+        std::collections::HashMap<(String, u8, char, u64), Option<f64>>,
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+    /// enter/drop 으로 드러나는 shaping fonts 집합의 identity 스택 — 활성 집합이
+    /// 바뀌면 측정 캐시를 비운다.
+    static SHAPING_FONT_ID_STACK: std::cell::RefCell<Vec<u64>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// 캐시 상한 — 넘으면 통째로 비운다 (문서의 (font,char,size) 조합 수준에 한정됨).
+const MEASURE_WIDTH_CACHE_MAX: usize = 65_536;
+
+/// shaping fonts 집합의 identity — bytes 는 Arc 포인터로 비교해 같은 face 집합을
+/// 충돌 없이 판별한다 (재진입 시 같은 Vec 이면 캐시를 유지한다).
+fn shaping_fonts_fingerprint(fonts: &[ResolvedShapingFont]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for font in fonts {
+        font.family.hash(&mut hasher);
+        font.face_index.hash(&mut hasher);
+        std::sync::Arc::as_ptr(&font.bytes).hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// 글자 폭 측정 결과 캐시를 비운다 — 측정 결과에 영향을 주는 폰트 환경 변경점에서 호출.
+pub(crate) fn clear_measure_width_cache() {
+    MEASURE_WIDTH_CACHE.with(|cache| cache.borrow_mut().clear());
 }
 
 pub(crate) struct ResolvedShapingFontScope(Vec<ResolvedShapingFont>);
@@ -35,12 +67,28 @@ impl Drop for ResolvedShapingFontScope {
         ACTIVE_SHAPING_FONTS.with(|active| {
             active.replace(std::mem::take(&mut self.0));
         });
+        SHAPING_FONT_ID_STACK.with(|stack| {
+            let mut stack = stack.borrow_mut();
+            let exited = stack.pop().unwrap_or(0);
+            // 빠져나간 scope 와 새로 드러난 scope 가 다르면 측정 환경이 바뀐 것.
+            if stack.last().copied().unwrap_or(0) != exited {
+                clear_measure_width_cache();
+            }
+        });
     }
 }
 
 pub(crate) fn enter_resolved_shaping_fonts(
     fonts: Vec<ResolvedShapingFont>,
 ) -> ResolvedShapingFontScope {
+    let fingerprint = shaping_fonts_fingerprint(&fonts);
+    SHAPING_FONT_ID_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        if stack.last().copied().unwrap_or(0) != fingerprint {
+            clear_measure_width_cache();
+        }
+        stack.push(fingerprint);
+    });
     let previous = ACTIVE_SHAPING_FONTS.with(|active| active.replace(fonts));
     ResolvedShapingFontScope(previous)
 }
@@ -72,6 +120,21 @@ thread_local! {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+thread_local! {
+    /// font-paths scope 의 identity 스택 — 활성 경로 집합이 바뀌면 측정 캐시를 비운다.
+    static MEASURE_PATH_ID_STACK: std::cell::RefCell<Vec<u64>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn measure_paths_fingerprint(paths: &[std::path::PathBuf]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    paths.hash(&mut hasher);
+    hasher.finish()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct MeasureFontPathsScope(Vec<std::path::PathBuf>);
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -81,12 +144,27 @@ impl Drop for MeasureFontPathsScope {
             paths.replace(std::mem::take(&mut self.0));
         });
         MEASURE_FONT_AVAIL.with(|cache| cache.borrow_mut().clear());
+        MEASURE_PATH_ID_STACK.with(|stack| {
+            let mut stack = stack.borrow_mut();
+            let exited = stack.pop().unwrap_or(0);
+            if stack.last().copied().unwrap_or(0) != exited {
+                clear_measure_width_cache();
+            }
+        });
     }
 }
 
 /// 렌더 진입점이 `--font-path` 목록을 측정 판정에도 노출한다.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn enter_measure_font_paths(paths: Vec<std::path::PathBuf>) -> MeasureFontPathsScope {
+    let fingerprint = measure_paths_fingerprint(&paths);
+    MEASURE_PATH_ID_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        if stack.last().copied().unwrap_or(0) != fingerprint {
+            clear_measure_width_cache();
+        }
+        stack.push(fingerprint);
+    });
     let previous = MEASURE_FONT_PATHS.with(|slot| slot.replace(paths));
     MEASURE_FONT_AVAIL.with(|cache| cache.borrow_mut().clear());
     MeasureFontPathsScope(previous)
@@ -1573,6 +1651,7 @@ mod wasm_internals {
 /// 런타임 폰트 메트릭 등록/해제와 `refresh_layout_native` 에서 호출해
 /// 이후 레이아웃이 새 폭으로 다시 측정되게 한다.
 pub(crate) fn clear_measure_caches() {
+    clear_measure_width_cache();
     #[cfg(target_arch = "wasm32")]
     {
         wasm_internals::clear_js_measure_cache();
@@ -2810,7 +2889,43 @@ fn measure_glyph_base_px(
     measure_char_width_tracked(font_family, bold, italic, c, font_size, policy, raw)
 }
 
+/// 측정 캐시 키용 플래그 패킹 — bold/italic/raw + policy (2 variants).
+#[inline]
+fn measure_width_flags(bold: bool, italic: bool, policy: FontMetricsPolicy, raw: bool) -> u8 {
+    u8::from(bold) | (u8::from(italic) << 1) | ((policy as u8) << 2) | (u8::from(raw) << 4)
+}
+
 fn measure_char_width_tracked(
+    font_family: &str,
+    bold: bool,
+    italic: bool,
+    c: char,
+    font_size: f64,
+    policy: FontMetricsPolicy,
+    raw: bool,
+) -> Option<f64> {
+    let key = (
+        font_family.to_string(),
+        measure_width_flags(bold, italic, policy, raw),
+        c,
+        font_size.to_bits(),
+    );
+    if let Some(hit) = MEASURE_WIDTH_CACHE.with(|cache| cache.borrow().get(&key).copied()) {
+        return hit;
+    }
+    let computed =
+        measure_char_width_tracked_uncached(font_family, bold, italic, c, font_size, policy, raw);
+    MEASURE_WIDTH_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= MEASURE_WIDTH_CACHE_MAX {
+            cache.clear();
+        }
+        cache.insert(key, computed);
+    });
+    computed
+}
+
+fn measure_char_width_tracked_uncached(
     font_family: &str,
     bold: bool,
     italic: bool,

@@ -200,11 +200,29 @@ class AgentHubOwner {
   #restartAttempt = 0;
   #restartTimer = null;
   #stoppingChild = null;
-  #restartRequired = false;
+  // Windows-only: the hub leader exited without the shutdown handshake, so its
+  // descendants may be orphaned. The owner stays usable — the next start runs
+  // on a fresh per-epoch workspace the orphans cannot reach.
+  #quarantined = false;
+  #epoch = 0;
+  #ownedRuntimeDirs = new Set();
+  #ownedWorkDirs = new Set();
 
   constructor({ runtimeDir, workDir }) {
     this.runtimeDir = runtimeDir;
     this.workDir = workDir;
+    this.runtimeRoot = dirname(runtimeDir);
+    this.workRoot = dirname(workDir);
+    this.#ownedRuntimeDirs.add(runtimeDir);
+    this.#ownedWorkDirs.add(workDir);
+  }
+
+  activeRuntimeDir() {
+    return this.#epoch === 0 ? this.runtimeDir : join(this.runtimeRoot, `${launchId}-r${this.#epoch}`);
+  }
+
+  activeWorkDir() {
+    return this.#epoch === 0 ? this.workDir : join(this.workRoot, `${launchId}-r${this.#epoch}`);
   }
 
   context() {
@@ -217,7 +235,7 @@ class AgentHubOwner {
   }
 
   scheduleRestart() {
-    if (this.#disposed || quitting || this.#restartTimer || this.#restartRequired) return;
+    if (this.#disposed || quitting || this.#restartTimer || this.#quarantined) return;
     if (this.#restartAttempt >= MAX_HUB_AUTO_RESTARTS) {
       // Warn once; a successful start resets #restartAttempt to 0.
       if (this.#restartAttempt++ === MAX_HUB_AUTO_RESTARTS) {
@@ -236,26 +254,19 @@ class AgentHubOwner {
     }, delay);
   }
 
-  restartRequiredError() {
-    const error = new Error(
-      'The agent hub exited before its Windows process tree could be confirmed stopped. Restart Rauhwpx before using the agent hub again.',
-    );
-    error.code = 'AGENT_HUB_RESTART_REQUIRED';
-    return error;
-  }
-
   quarantineUnexpectedWindowsExit() {
-    if (this.#restartRequired) return;
-    this.#restartRequired = true;
+    if (this.#quarantined) return;
+    this.#quarantined = true;
     this.clearRestart();
     try {
-      retainLaunchRootForProcessCleanupSync(this.workDir, { launchId });
+      retainLaunchRootForProcessCleanupSync(this.activeWorkDir(), { launchId });
     } catch (error) {
       console.warn('[rauhwpx] process cleanup retention marker failed:', error);
     }
     console.warn(
-      '[rauhwpx] owned agent hub exited unexpectedly on Windows; retaining launch work and requiring an app restart:',
-      this.workDir,
+      '[rauhwpx] owned agent hub exited unexpectedly on Windows; descendants may be orphaned.',
+      'Retaining launch work and moving the next hub start to a fresh workspace:',
+      this.activeWorkDir(),
     );
   }
 
@@ -266,8 +277,12 @@ class AgentHubOwner {
     this.#stoppingChild = child;
     let cleanupPrepared = false;
     try {
-      if (this.#restartRequired && (child?.exitCode != null || child?.signalCode != null)) {
-        throw this.restartRequiredError();
+      if (child != null && (child.exitCode != null || child.signalCode != null)) {
+        // The leader is already dead. A quarantined tree stays abandoned, not
+        // killed: numeric-PID kills can retarget reused PIDs on Windows, so the
+        // next start() instead moves to a fresh workspace they cannot reach.
+        if (this.#child === child) this.#child = null;
+        return;
       }
       if (context) {
         try {
@@ -290,11 +305,14 @@ class AgentHubOwner {
         // Preserve the exited leader's PID/tree identity and make every outer
         // cleanup layer retain the launch root until a reboot proves safety.
         try {
-          retainLaunchRootForProcessCleanupSync(this.workDir, { launchId });
+          retainLaunchRootForProcessCleanupSync(this.activeWorkDir(), { launchId });
         } catch (error) {
           console.warn('[rauhwpx] process cleanup retention marker failed:', error);
         }
         if (!this.#child || this.#child === child) this.#child = child;
+        // The tree could not be proven stopped — the next start must not share
+        // its workspace.
+        this.#quarantined = true;
         throw new Error(`Agent hub process tree ${child?.pid ?? 'unknown'} survived shutdown`);
       }
       if (this.#child === child) this.#child = null;
@@ -305,7 +323,14 @@ class AgentHubOwner {
 
   async start() {
     if (this.#disposed) throw new Error('Agent hub owner has been disposed');
-    if (this.#restartRequired) throw this.restartRequiredError();
+    if (this.#quarantined) {
+      // An unprovable tree was quarantined. It keeps its old workspace (marked
+      // for reboot-level cleanup) while the next hub starts on a fresh epoch
+      // directory that no orphan can lock or corrupt.
+      this.#quarantined = false;
+      this.#epoch += 1;
+      console.warn(`[rauhwpx] restarting agent hub on an isolated workspace (epoch ${this.#epoch})`);
+    }
     if (this.#startPromise) return this.#startPromise;
     this.#startPromise = this.startOwnedChild();
     try {
@@ -316,8 +341,12 @@ class AgentHubOwner {
   }
 
   async startOwnedChild() {
-    mkdirSync(this.runtimeDir, { recursive: true, mode: 0o700 });
-    mkdirSync(this.workDir, { recursive: true, mode: 0o700 });
+    const runtimeDir = this.activeRuntimeDir();
+    const workDir = this.activeWorkDir();
+    mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
+    mkdirSync(workDir, { recursive: true, mode: 0o700 });
+    this.#ownedRuntimeDirs.add(runtimeDir);
+    this.#ownedWorkDirs.add(workDir);
     if (this.#child && this.#context) {
       const child = this.#child;
       const context = this.#context;
@@ -361,8 +390,8 @@ class AgentHubOwner {
         RHWP_LAUNCH_ID: launchId,
         RHWP_OWNER_PID: String(process.pid),
         RHWP_OWNER_IPC: '1',
-        RHWP_RUNTIME_DIR: this.runtimeDir,
-        RHWP_WORK_DIR: this.workDir,
+        RHWP_RUNTIME_DIR: runtimeDir,
+        RHWP_WORK_DIR: workDir,
         RHWP_AGENT_INSTRUCTIONS_DIR: join(app.getPath('userData'), 'agent-instructions'),
         RHWP_OWN_RUNTIME_DIR: '1',
         RHWP_OWN_WORK_DIR: '1',
@@ -371,7 +400,7 @@ class AgentHubOwner {
       },
     });
     if (!launch) throw new Error(`Agent hub launch command not found: ${server}`);
-    launch.cwd = this.workDir;
+    launch.cwd = workDir;
 
     console.log(`[rauhwpx] starting owned agent hub via ${launch.via}`);
     const child = spawnHubProcess(launch, {
@@ -458,11 +487,15 @@ class AgentHubOwner {
     this.#stopPromise = (async () => {
       await this.#startPromise?.catch(() => {});
       await this.stopCurrent();
-      await rm(this.runtimeDir, { recursive: true, force: true });
-      if (hasPendingLaunchCleanupSync(this.workDir)) {
-        console.warn('[rauhwpx] retaining launch work for pending cleanup:', this.workDir);
-      } else {
-        await rm(this.workDir, { recursive: true, force: true });
+      for (const dir of this.#ownedRuntimeDirs) {
+        await rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
+      for (const dir of this.#ownedWorkDirs) {
+        if (hasPendingLaunchCleanupSync(dir)) {
+          console.warn('[rauhwpx] retaining launch work for pending cleanup:', dir);
+        } else {
+          await rm(dir, { recursive: true, force: true }).catch(() => {});
+        }
       }
     })();
     return this.#stopPromise;
@@ -1129,6 +1162,28 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
   });
   window.webContents.once('destroyed', closeDisplayConnection);
   window.webContents.setWindowOpenHandler(({ url }) => {
+    // 인쇄 미리보기 같은 앱 내부 surface는 외부 브라우저가 아니라 네이티브
+    // 자식 창으로 연다 — renderer 의 window.open 이 반환하는 창에 문서를 쓰고
+    // print() 로 시스템 인쇄 대화상자를 연다.
+    if (isTrustedRendererUrl(url)) {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          width: 1120,
+          height: 820,
+          minWidth: 480,
+          minHeight: 360,
+          autoHideMenuBar: true,
+          title: 'Rauhwpx',
+          webPreferences: {
+            preload: PRELOAD_PATH,
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: true,
+          },
+        },
+      };
+    }
     if (/^https?:/i.test(url)) void shell.openExternal(url);
     return { action: 'deny' };
   });
@@ -1224,6 +1279,13 @@ ipcMain.handle('desktop:get-launch-files', (event) => {
 ipcMain.handle('desktop:get-launch-generated-document', (event) => {
   const session = sessionForEvent(event);
   return session.generatedDocument;
+});
+ipcMain.handle('desktop:print', (event) => {
+  // 인쇄 미리보기 자식 창처럼 세션에 등록되지 않은 창도 허용하되, 신뢰 origin
+  // 에서 온 요청만 본다. 시스템 인쇄 대화상자를 호출한 창의 내용에 연다.
+  const senderUrl = event.senderFrame?.url || event.sender.getURL();
+  if (!isTrustedRendererUrl(senderUrl)) throw new Error('Untrusted renderer IPC sender');
+  event.sender.print();
 });
 ipcMain.handle('desktop:open-generated-document-window', async (event, payload = {}) => {
   const session = sessionForEvent(event);

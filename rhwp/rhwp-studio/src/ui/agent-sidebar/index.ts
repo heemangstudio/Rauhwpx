@@ -77,6 +77,7 @@ import {
   getThread,
   explorerGroupIsCurrent,
   forgetDocumentThreads,
+  listThreads,
   listThreadsByDocument,
   recordDocumentOpened,
   removeThread,
@@ -221,6 +222,7 @@ export interface AgentSidebarDeps {
     isDirty?: boolean;
     isNewDocument?: boolean;
     sourceFormat?: string | null;
+    pageCount?: number;
   };
   /** 라이브러리 문서 그룹에서 "이동"을 골랐을 때. */
   moveToLibraryDocument?: (target: {
@@ -4084,7 +4086,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
 
   function scheduleChangesRefresh(): void {
     clearTimeout(changesRefreshTimer);
-    changesRefreshTimer = setTimeout(() => { void changesDrawer.refresh(); }, 300);
+    // '커밋 전' diff 는 문서 전체 스냅샷+비교를 메인 스레드에서 한다. 대형 문서에서
+    // 편집마다 디바운스가 짧으면 연속 입력 사이사이 무거운 비교가 계속 끼어들어
+    // 입력이 장시간 멈춘다 — 문서가 클수록 디바운스를 늘려 휴지 뒤 한 번만 계산한다.
+    const pageCount = getDocumentContext?.().pageCount ?? 0;
+    const delay = pageCount > 60 ? 3000 : pageCount > 20 ? 1200 : 300;
+    changesRefreshTimer = setTimeout(() => { void changesDrawer.refresh(); }, delay);
   }
 
   function navigateToChange(position: DocumentPosition, anchor?: DiffItem['rightAnchor']): void {
@@ -9481,7 +9488,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
           updateAgentUndoButtons();
         }),
         eventBus.on('history-jumped', () => { turnChanges.clear(); rebuildReview(); scheduleChangesRefresh(); }),
-        eventBus.on('document-swapped', () => { turnChanges.clear(); rebuildReview(); scheduleChangesRefresh(); }),
+        eventBus.on('document-swapped', () => { turnChanges.clear(); rebuildReview(); scheduleChangesRefresh(); updateDocumentContext(); }),
         eventBus.on('document-context-changed', updateDocumentContext),
         eventBus.on('cursor-format-changed', updateDocumentContext),
         eventBus.on('picture-object-selection-changed', updateDocumentContext),
@@ -9527,6 +9534,15 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   updateDocumentContext();
   recoverCloudStartIfNeeded();
   void restoreComposerDraft();
+  // 재시작 뒤 현재 문서의 마지막 채팅을 복원한다. 이전 세션 대화가 기록에 남아 있으면
+  // 비어 보이는 새 채팅 대신 그 스레드를 연다 — openThread 가 스냅샷/세션 재시작을 처리한다.
+  void waitForThreadsPersistence().then(() => {
+    if (root.dataset.disposed === 'true' || restoringLiveQuestion) return;
+    if (currentThread.messages.length > 0) return;
+    const restored = listThreads()
+      .find((thread) => threadMatchesDocument(thread, currentDocumentId, currentDocKey));
+    if (restored && restored.id !== currentThread.id) openThread(restored.id);
+  });
   rebuildReview();
 
   /**

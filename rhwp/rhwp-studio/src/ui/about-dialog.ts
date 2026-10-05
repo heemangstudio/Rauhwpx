@@ -60,10 +60,10 @@ export class AboutDialog extends ModalDialog {
     titleKo.textContent = '한국어 문서 편집기';
     body.appendChild(titleKo);
 
-    // 버전
+    // 버전 + 빌드 커밋
     const version = document.createElement('div');
     version.className = 'about-version';
-    version.textContent = `Version ${__APP_VERSION__}`;
+    version.textContent = `Version ${__APP_VERSION__} (${__APP_COMMIT__})`;
     body.appendChild(version);
 
     const uniqueInstalls = document.createElement('div');

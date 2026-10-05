@@ -728,7 +728,18 @@ function appendPrintPreviewBar(
   printButton.type = 'button';
   printButton.className = 'print-preview-primary';
   printButton.textContent = '인쇄';
-  printButton.addEventListener('click', () => printWindow.print());
+  printButton.addEventListener('click', () => {
+    // Electron 데스크톱은 네이티브 인쇄 대화상자를 연다 — 미리보기 창의
+    // webContents 를 main 이 print() 한다. 브라우저 빌드는 그대로 window.print.
+    const printCurrentWindow = (printWindow as unknown as {
+      rhwpDesktop?: { printCurrentWindow?: () => Promise<void> };
+    }).rhwpDesktop?.printCurrentWindow;
+    if (typeof printCurrentWindow === 'function') {
+      void printCurrentWindow();
+    } else {
+      printWindow.print();
+    }
+  });
 
   const closeButton = doc.createElement('button');
   closeButton.id = 'close-btn';

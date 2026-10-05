@@ -105,8 +105,10 @@ struct RuntimeFace {
 #[derive(Default)]
 struct Registry {
     faces: Vec<RuntimeFace>,
-    /// 최근 조회한 원문 폰트명 → 후보 페이스 인덱스 (문자 단위 조회의 정규화 비용 회피)
-    last_lookup: RefCell<Option<(String, Vec<usize>)>>,
+    /// 조회한 원문 폰트명 → 후보 페이스 인덱스 (문자 단위 조회의 정규화 비용 회피).
+    /// 한글/라틴처럼 서로 다른 face 가 번갈아 쓰일 때 단일 슬롯은 매번 미스가 나므로
+    /// 이름별로 기억한다 — 레지스트리가 바뀌면 통째로 비운다.
+    lookup_cache: RefCell<std::collections::HashMap<String, Vec<usize>>>,
 }
 
 thread_local! {
@@ -332,7 +334,7 @@ pub(crate) fn register(
         let replaced = registry.faces.iter().any(|existing| same_slot(existing));
         registry.faces.retain(|existing| !same_slot(existing));
         registry.faces.push(face);
-        registry.last_lookup.replace(None);
+        registry.lookup_cache.borrow_mut().clear();
         replaced
     });
     super::layout::clear_measure_caches();
@@ -373,16 +375,14 @@ pub(crate) fn clear() {
     REGISTRY.with(|registry| {
         let mut registry = registry.borrow_mut();
         registry.faces.clear();
-        registry.last_lookup.replace(None);
+        registry.lookup_cache.borrow_mut().clear();
     });
     super::layout::clear_measure_caches();
 }
 
 fn candidate_indices(registry: &Registry, primary_name: &str) -> Vec<usize> {
-    if let Some((name, indices)) = registry.last_lookup.borrow().as_ref() {
-        if name == primary_name {
-            return indices.clone();
-        }
+    if let Some(indices) = registry.lookup_cache.borrow().get(primary_name) {
+        return indices.clone();
     }
     let keys = name_keys(primary_name);
     let indices = registry
@@ -393,8 +393,9 @@ fn candidate_indices(registry: &Registry, primary_name: &str) -> Vec<usize> {
         .map(|(idx, _)| idx)
         .collect::<Vec<_>>();
     registry
-        .last_lookup
-        .replace(Some((primary_name.to_string(), indices.clone())));
+        .lookup_cache
+        .borrow_mut()
+        .insert(primary_name.to_string(), indices.clone());
     indices
 }
 

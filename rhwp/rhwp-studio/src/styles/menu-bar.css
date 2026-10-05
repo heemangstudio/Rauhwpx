@@ -321,8 +321,16 @@ html.desktop-mac #menu-bar .menu-title {
 }
 
 .md-sub:not(.disabled):hover > .md-sub-panel,
-.md-sub:not(.disabled):focus-within > .md-sub-panel {
+.md-sub:not(.disabled):focus-within > .md-sub-panel,
+.menu-dropdown.md-aim-lock .md-sub.md-aim-hold > .md-sub-panel {
   display: block;
+}
+
+/* 포인터 조준(safe-triangle) 회랑이 활성인 동안 현재 패널만 유지하고
+   나머지 서브 패널은 숨긴다 — 대각선 이동이 형제 행 위를 지나도
+   목표 패널이 닫히지 않게 한다. 키보드 탐색(focus-within)은 예외. */
+.menu-dropdown.md-aim-lock .md-sub:not(.md-aim-hold):not(:focus-within) > .md-sub-panel {
+  display: none;
 }
 
 @media (pointer: coarse) {
