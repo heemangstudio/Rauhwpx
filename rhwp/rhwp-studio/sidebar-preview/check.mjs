@@ -112,8 +112,15 @@ try {
     );
     assert(clicked, `Visible ${selector} with text ${text}`);
   }
+  async function openLocal(query = '') {
+    await open(query);
+    await page.click('.ag-header .ag-threads-btn');
+    await page.waitForSelector('.ag-threads-new', { visible: true });
+    await page.click('.ag-threads-new');
+    await page.click('.ag-header [data-workspace-mode="local"]');
+  }
   async function play(scenario) {
-    await open(`scenario=${scenario}`);
+    await openLocal(`scenario=${scenario}`);
     await page.click('#play');
     await page.waitForFunction(() =>
       window.sidebarPreview.bridge.isTurnRunning(),
@@ -357,8 +364,7 @@ try {
   await step('Tool activity labels stay compact during and after a turn', async () => {
     await play('chat');
     assert.equal(await page.$eval('.ag-activity-label', node => node.textContent), 'read_document');
-    await open('scenario=tools');
-    await page.click('#play');
+    await play('tools');
     const turnLabel = '편집 2번 · 읽기 1번 · 도구 1번 · 오류 1';
     await page.waitForFunction((label) => !window.sidebarPreview.bridge.isTurnRunning()
       && document.querySelector('.ag-activity-label')?.textContent === label, {}, turnLabel);
@@ -404,7 +410,7 @@ try {
     await screenshot('tool-activity');
   });
   await step('Chat follows a send and yields to manual scrolling', async () => {
-    await open('scenario=chat&hold=1');
+    await openLocal('scenario=chat&hold=1');
     await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'no-preference' }]);
     await page.evaluate(() => {
       const messages = document.querySelector('.ag-messages');

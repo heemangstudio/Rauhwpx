@@ -86,12 +86,13 @@ const RE_FENCE = /^ {0,3}(```|~~~)[ \t]*([A-Za-z0-9_+-]{0,20})[ \t]*$/;
 const RE_ITEM = /^(\s*)(?:([-*+])|(\d{1,9})[.)])[ \t]+(.*)$/;
 const RE_DISPLAY_MATH_OPEN = /^ {0,3}(\$\$|\\\[|₩\[|￦\[)(.*)$/;
 
-function normalize(src: string): string[] {
-  let clipped = src.length > MD_LIMITS.maxChars ? src.slice(0, MD_LIMITS.maxChars) : src;
+function normalize(src: string, fromChar = 0, fromLine = 0): string[] {
+  let clipped = src.slice(fromChar, MD_LIMITS.maxChars);
   const finalCodeUnit = clipped.charCodeAt(clipped.length - 1);
   if (finalCodeUnit >= 0xD800 && finalCodeUnit <= 0xDBFF) clipped = clipped.slice(0, -1);
   const lines = clipped.replace(/\r\n?/g, '\n').replace(/\t/g, '  ').split('\n');
-  return lines.length > MD_LIMITS.maxLines ? lines.slice(0, MD_LIMITS.maxLines) : lines;
+  const remainingLines = MD_LIMITS.maxLines - fromLine;
+  return lines.length > remainingLines ? lines.slice(0, remainingLines) : lines;
 }
 
 function joinParagraphLines(lines: readonly string[]): string {
@@ -184,29 +185,46 @@ function readDisplayMath(lines: readonly string[], start: number) {
 
 /** Markdown 부분집합을 블록 목록으로 바꾼다. 순수 함수. */
 export function tokenizeMarkdown(src: string, quoteDepth = 0): Block[] {
-  const lines = normalize(src);
+  return tokenizeLines(normalize(src), quoteDepth);
+}
+
+function tokenizeLines(
+  lines: readonly string[],
+  quoteDepth: number,
+  maxBlocks: number = MD_LIMITS.maxBlocks,
+  onBlock?: (line: number) => void,
+  onPendingMath?: (line: number) => void,
+): Block[] {
   const blocks: Block[] = [];
   let paragraph: string[] = [];
+  let paragraphStart = 0;
+
+  const pushBlock = (block: Block, line: number): void => {
+    blocks.push(block);
+    onBlock?.(line);
+  };
 
   const flushParagraph = (): void => {
     if (paragraph.length === 0) return;
-    if (blocks.length < MD_LIMITS.maxBlocks) {
-      blocks.push({ kind: 'paragraph', text: joinParagraphLines(paragraph) });
+    if (blocks.length < maxBlocks) {
+      pushBlock({ kind: 'paragraph', text: joinParagraphLines(paragraph) }, paragraphStart);
     }
     paragraph = [];
   };
 
   let i = 0;
-  while (i < lines.length && blocks.length < MD_LIMITS.maxBlocks) {
+  while (i < lines.length && blocks.length < maxBlocks) {
     const line = lines[i] ?? '';
+    const blockStart = i;
 
     const displayMath = readDisplayMath(lines, i);
     if (displayMath) {
       flushParagraph();
-      blocks.push({ kind: 'math', source: displayMath.source, raw: displayMath.raw });
+      pushBlock({ kind: 'math', source: displayMath.source, raw: displayMath.raw }, blockStart);
       i = displayMath.next;
       continue;
     }
+    if (RE_DISPLAY_MATH_OPEN.test(line)) onPendingMath?.(i);
 
     const tableAlign = parseTableAlign(lines[i + 1] ?? '');
     if (line.includes('|') && tableAlign) {
@@ -221,12 +239,12 @@ export function tokenizeMarkdown(src: string, quoteDepth = 0): Block[] {
         rows.push(splitTableRow(row).slice(0, columns));
         i += 1;
       }
-      blocks.push({
+      pushBlock({
         kind: 'table',
         header: header.slice(0, columns),
         align: tableAlign.slice(0, columns),
         rows,
-      });
+      }, blockStart);
       continue;
     }
 
@@ -245,7 +263,7 @@ export function tokenizeMarkdown(src: string, quoteDepth = 0): Block[] {
         body.push(current);
         i += 1;
       }
-      blocks.push({ kind: 'code', lang: fence[2] ?? '', code: body.join('\n') });
+      pushBlock({ kind: 'code', lang: fence[2] ?? '', code: body.join('\n') }, blockStart);
       continue;
     }
 
@@ -257,7 +275,7 @@ export function tokenizeMarkdown(src: string, quoteDepth = 0): Block[] {
 
     if (RE_HR.test(line)) {
       flushParagraph();
-      blocks.push({ kind: 'hr' });
+      pushBlock({ kind: 'hr' }, blockStart);
       i += 1;
       continue;
     }
@@ -266,7 +284,7 @@ export function tokenizeMarkdown(src: string, quoteDepth = 0): Block[] {
     if (heading) {
       flushParagraph();
       const text = (heading[2] ?? '').replace(/[ \t]+#+[ \t]*$/, '').trim();
-      blocks.push({ kind: 'heading', level: (heading[1] ?? '#').length, text });
+      pushBlock({ kind: 'heading', level: (heading[1] ?? '#').length, text }, blockStart);
       i += 1;
       continue;
     }
@@ -281,7 +299,7 @@ export function tokenizeMarkdown(src: string, quoteDepth = 0): Block[] {
       const inner = quoteDepth >= MD_LIMITS.maxQuoteDepth
         ? [{ kind: 'paragraph' as const, text: body.join(' ').trim() }]
         : tokenizeMarkdown(body.join('\n'), quoteDepth + 1);
-      blocks.push({ kind: 'quote', blocks: inner });
+      pushBlock({ kind: 'quote', blocks: inner }, blockStart);
       continue;
     }
 
@@ -309,15 +327,59 @@ export function tokenizeMarkdown(src: string, quoteDepth = 0): Block[] {
         }
         if ((lines[i] ?? '').trim() === '' && RE_ITEM.test(lines[i + 1] ?? '')) i += 1;
       }
-      blocks.push({ kind: 'list', ordered, start, items });
+      pushBlock({ kind: 'list', ordered, start, items }, blockStart);
       continue;
     }
 
+    if (paragraph.length === 0) paragraphStart = i;
     paragraph.push(line.trimStart());
     i += 1;
   }
   flushParagraph();
   return blocks;
+}
+
+/** 완성된 앞부분은 재사용하고, 이어 쓰기로 달라질 수 있는 끝부분만 다시 읽는다. */
+export class MarkdownTokenCache {
+  private source = '';
+  private prefix: Block[] = [];
+  private tailLine = 0;
+  private tailChar = 0;
+
+  tokenize(source: string): Block[] {
+    if (!source.startsWith(this.source)) {
+      this.prefix = [];
+      this.tailLine = 0;
+      this.tailChar = 0;
+    }
+    this.source = source;
+    const starts: number[] = [];
+    let pendingMath = Infinity;
+    const tail = tokenizeLines(
+      normalize(source, this.tailChar, this.tailLine),
+      0,
+      MD_LIMITS.maxBlocks - this.prefix.length,
+      (line) => starts.push(line),
+      (line) => { pendingMath = Math.min(pendingMath, line); },
+    );
+    const blocks = [...this.prefix, ...tail];
+    // 마지막 줄이 목록 항목·표 구분자로 완성되면 직전 블록과 합쳐질 수 있다.
+    let retained = Math.max(0, tail.length - 2);
+    // 닫는 구분자가 늦게 오면 앞의 일반 문단들도 하나의 수식으로 바뀔 수 있다.
+    while (retained > 0 && starts[retained]! > pendingMath) retained -= 1;
+    if (retained > 0) {
+      this.prefix.push(...tail.slice(0, retained));
+      const retainedLines = starts[retained]!;
+      const breaks = /\r\n?|\n/gu;
+      breaks.lastIndex = this.tailChar;
+      for (let line = 0; line < retainedLines; line += 1) {
+        const match = breaks.exec(source)!;
+        this.tailChar = match.index + match[0].length;
+      }
+      this.tailLine += retainedLines;
+    }
+    return blocks;
+  }
 }
 
 function readItem(raw: string): { text: string; task: ListItem['task'] } {

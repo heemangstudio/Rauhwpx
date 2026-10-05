@@ -236,6 +236,9 @@ document.addEventListener(
 );
 if (params.get('controls') === '0')
   document.querySelector('#preview-controls')!.setAttribute('hidden', '');
+// Open the requested view after the sidebar restores its saved conversation.
+if (params.get('page') === 'settings' || params.get('page') === 'versions')
+  await waitForThreadsPersistence();
 if (params.get('page') === 'settings')
   eventBus.emit('settings:open', { destination: normalizeSettingsDestination(params.get('destination')) ?? 'editing' });
 if (params.get('fullscreen') === '1')
