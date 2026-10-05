@@ -22,6 +22,7 @@ import {
   createUniqueInstallsService,
   emptyUniqueInstallsState,
 } from './unique-installs.mjs';
+import { createWaitlistService, emptyWaitlistState } from './waitlist.mjs';
 
 const SESSION_TTL_MS = 10 * 60 * 1000;
 const AUTHORIZATION_TTL_MS = 2 * 60 * 1000;
@@ -1734,7 +1735,8 @@ function htmlErrorStatus(error) {
     || error?.code === 'CLOUD_COLD_START_RATE_LIMITED'
     || error?.code === 'CLOUD_TIMEZONE_CHANGE_RATE_LIMITED') return 429;
   if (error?.code === 'BODY_TOO_LARGE') return 413;
-  if (error?.code === 'UNIQUE_INSTALLS_CAPACITY_EXCEEDED') return 503;
+  if (error?.code === 'UNIQUE_INSTALLS_CAPACITY_EXCEEDED' || error?.code === 'WAITLIST_CAPACITY_EXCEEDED') return 503;
+  if (error?.code === 'WAITLIST_FORBIDDEN') return 403;
   if (error?.code === 'ERR_INVALID_URL' || error?.code === 'REQUEST_TARGET_INVALID') return 400;
   if (error?.code === 'TRIAL_KEY_UNREADABLE') return 409;
   if (error?.code === 'CLOUD_UNAVAILABLE' || error?.code === 'CLOUD_PROVISION_FAILED') return 503;
@@ -1766,6 +1768,7 @@ export function creditsRequestListener(service, {
   uniqueInstalls = createUniqueInstallsService({
     store: createMemoryStore(emptyUniqueInstallsState()),
   }),
+  waitlist = createWaitlistService({ store: createMemoryStore(emptyWaitlistState()) }),
 } = {}) {
   const limiter = createRateLimiter();
   const MINUTE = 60 * 1000;
@@ -1844,6 +1847,29 @@ export function creditsRequestListener(service, {
           return;
         }
         send(200, await uniqueInstalls.record(await readJson(req)));
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/v1/waitlist') {
+        // 웹사이트는 text/plain 으로 보내 preflight 없이 다른 origin 에서 호출한다.
+        const cors = { 'Access-Control-Allow-Origin': '*' };
+        if (!limiter.check(`waitlist-write:${ip}`, 10, TEN_MINUTES)) {
+          req.resume?.();
+          send(429, { error: 'RATE_LIMITED', message: '요청이 너무 많아요. 잠시 후 다시 시도해 주세요' }, cors);
+          return;
+        }
+        try {
+          send(200, await waitlist.join(await readJson(req)), cors);
+        } catch (error) {
+          send(htmlErrorStatus(error), { error: error?.code ?? 'RAU_CREDITS_FAILED', message: error?.message ?? String(error) }, cors);
+        }
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/v1/waitlist') {
+        if (!limiter.check(`waitlist-read:${ip}`, 30, TEN_MINUTES)) {
+          send(429, { error: 'RATE_LIMITED', message: '요청이 너무 많아요. 잠시 후 다시 시도해 주세요' });
+          return;
+        }
+        send(200, await waitlist.list(bearerToken(req)));
         return;
       }
       if (req.method === 'GET' && url.pathname === '/v1/account') {
