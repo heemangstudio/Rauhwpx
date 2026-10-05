@@ -207,6 +207,8 @@ import type {
   InlinePromptSubmission,
 } from '../../agent/inline-prompt-context.ts';
 import { createUserQuestionController } from './user-question-controller.ts';
+import { createModeMenu, parseModeCommand } from './mode-menu.ts';
+import { agentModeFor, agentModeTarget, type AgentMode } from '../../agent/types.ts';
 import './sidebar-button-modern.css';
 
 export interface AgentSidebarDeps {
@@ -615,7 +617,7 @@ const BROWSERBASE_FULL_CONTROL_WARNING =
   '에이전트가 묻지 않고 페이지를 열고, 양식을 제출하고, 로그인된 계정의 설정을 바꿀 수 있습니다. '
   + '다운로드는 이 채팅 전용 다운로드 폴더에만 저장됩니다.';
 
-const BROWSERBASE_ENABLED_NOTICE = '계획 모드 켜짐 · 원격 브라우저 전체 제어';
+const BROWSERBASE_ENABLED_NOTICE = '플랜 모드 켜짐 · 원격 브라우저 전체 제어';
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -836,10 +838,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   let pendingReviewOpCount = 0;
   let railWidth = readStoredRailWidth();
   let reviewWidth = readStoredReviewWidth();
-  // 살아 있는 세션의 권한이 우선이고, 새로 시작하는 경우에만 기본값을 쓴다.
+  // 살아 있는 세션의 권한이 우선이고, 새로 시작하는 경우에만 기본 모드의 프로필을 쓴다.
   let permissionProfile: PermissionProfile = bridge.getActiveAgent() !== null
     ? bridge.getPermissionProfile()
-    : agentPrefs.defaultPermissionProfile;
+    : agentModeTarget(agentPrefs.defaultMode).permissionProfile;
   let skillCatalog: SkillCatalog = { rows: [] };
   let activeComposerSkill: CatalogRow | null = null;
   let templateCatalog: TemplateCatalog = { revision: 0, templates: [] };
@@ -1630,9 +1632,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   threadsBtn.title = '채팅 목록';
   threadsBtn.appendChild(createColumnIcon());
 
-  const permissionBtn = el('button', 'ag-permission-btn');
-  permissionBtn.type = 'button';
-  permissionBtn.setAttribute('aria-label', '에이전트 권한 설정');
+  /* 에이전트 모드 칩 — 채팅·플랜·에이전트·전체 중 하나. 전환 절차는 requestMode 가 맡는다. */
+  const modeMenu = createModeMenu((mode) => { void requestMode(mode); });
 
   const skillsBtn = el('button', 'ag-skills-btn', '스킬');
   skillsBtn.type = 'button';
@@ -3011,11 +3012,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     let text = existing?.text ?? input.value.trim();
     const hasDrafts = !preserveDraft && referenceLibrary.hasDrafts();
     if (!preserveDraft && referenceLibrary.hasBlockingDrafts()) return;
-    const workflowInvocation = text.match(/^\/(plan|question|build)(?:\s+([\s\S]*))?$/i);
-    const cloudWorkflow = workflowInvocation?.[1]?.toLowerCase() === 'plan' ? 'plan'
-      : workflowInvocation?.[1]?.toLowerCase() === 'question' ? 'question'
-      : workflowInvocation ? 'direct' : null;
-    if (workflowInvocation) text = (workflowInvocation[2] ?? '').trim();
+    const modeCommand = parseModeCommand(text);
+    const cloudWorkflow = modeCommand ? agentModeTarget(modeCommand.mode).workflow : null;
+    if (modeCommand) text = modeCommand.rest;
     if (!text && !hasDrafts && !existing) return;
     if (!text) {
       text = referenceLibrary.allDraftsAreImages()
@@ -3593,7 +3592,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   phaseBadge.hidden = true;
 
   const composerUtilityActions = el('div', 'ag-composer-utility-actions');
-  composerUtilityActions.append(phaseBadge, permissionBtn);
+  composerUtilityActions.append(phaseBadge, modeMenu.root);
   composerUtilities.append(composerUtilityActions);
   const composer = el('form', 'ag-composer');
   let composerBottomDistance: number | null = null;
@@ -3975,7 +3974,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     },
   });
   referenceLibrary.setDraftMode(workspace.mode());
-  composerUtilityActions.insertBefore(referenceLibrary.trigger, permissionBtn);
+  composerUtilityActions.insertBefore(referenceLibrary.trigger, modeMenu.root);
   composerField.insertBefore(referenceLibrary.quickAddButton, sendHint);
   composer.insertBefore(referenceLibrary.quickUploads, composerField);
 
@@ -4770,52 +4769,87 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     });
   }
 
-  function updatePermissionButton(): void {
-    const unrestricted = permissionProfile === 'unrestricted';
-    const planReadOnly = chatWorkflow === 'question'
-      || (chatWorkflow === 'plan' && planningPhase !== 'implementing');
-    permissionBtn.textContent = unrestricted ? '전체' : '안전';
-    permissionBtn.setAttribute(
-      'aria-label',
-      unrestricted && planReadOnly
-        ? (chatWorkflow === 'question'
-          ? '실행 단계 권한: 전체 접근, 질문 단계는 읽기 전용'
-          : '실행 단계 권한: 전체 접근, 계획 단계는 읽기 전용')
-        : unrestricted ? '에이전트 권한: 전체 접근' : '에이전트 권한: 안전',
-    );
-    permissionBtn.setAttribute('aria-pressed', unrestricted ? 'true' : 'false');
-    permissionBtn.classList.toggle('ag-permission-unrestricted', unrestricted);
-    permissionBtn.title = unrestricted && planReadOnly
-      ? (chatWorkflow === 'question'
-        ? '전체 접근 · 질문 단계는 읽기 전용'
-        : '전체 접근 · 계획 단계는 읽기 전용')
-      : unrestricted
-      ? '전체 접근'
-      : '안전 · 편집은 승인 후 반영';
+  /** 사용자에게 보이는 현재 모드. Cloud 실행은 언제나 전체 접근이다. */
+  function currentMode(): AgentMode {
+    const local = composerExecution(workspace.composerTarget()).kind === 'local';
+    return agentModeFor(chatWorkflow, planningPhase, local ? permissionProfile : 'unrestricted');
+  }
+
+  function updateModeChip(): void {
+    const execution = composerExecution(workspace.composerTarget());
+    const local = execution.kind === 'local';
+    const locked = local ? isControlLocked() || connState !== 'connected' : isSelectionLocked();
+    const planRun = chatWorkflow === 'plan' && planningPhase === 'implementing';
+    modeMenu.update({
+      mode: currentMode(),
+      disabled: locked,
+      unavailable: local ? undefined : new Map([['agent', 'Cloud 미지원']]),
+      hint: planRun ? '승인한 계획을 실행 중' : '',
+    });
     refreshSidebarWidthMin();
   }
 
-  permissionBtn.addEventListener('click', async () => {
-    if (isControlLocked()) return;
-    let nextProfile: PermissionProfile;
-    if (permissionProfile === 'safe') {
-      const confirmed = await confirmSheet(permissionBtn, '전체 접근', '승인 없이 편집하고 파일에 접근합니다.', { confirmLabel: '켜기' });
-      if (!confirmed || isControlLocked() || permissionProfile !== 'safe') return;
-      nextProfile = 'unrestricted';
-    } else {
-      nextProfile = 'safe';
+  /**
+   * 모드 전환. 모드는 (workflow, 권한 프로필) 한 쌍이고, 허브에는 두 전환을 차례로 보낸다
+   * (허브가 같은 전환 큐에서 순서대로 처리한다). 전체로 들어갈 때만 확인 시트를 띄운다.
+   */
+  async function requestMode(next: AgentMode): Promise<boolean> {
+    if (modeNeedsConfirmation(next)) {
+      const confirmed = await confirmSheet(modeMenu.trigger, '전체 접근', '승인 없이 편집하고 파일에 접근합니다.', { confirmLabel: '켜기' });
+      if (!confirmed) return false;
+    }
+    return switchMode(next);
+  }
+
+  /** 로컬 실행에서 전체 접근으로 넘어가는 전환만 확인을 받는다. */
+  function modeNeedsConfirmation(next: AgentMode): boolean {
+    return composerExecution(workspace.composerTarget()).kind === 'local'
+      && agentModeTarget(next).permissionProfile === 'unrestricted'
+      && permissionProfile !== 'unrestricted';
+  }
+
+  /** 확인이 끝난 모드 전환. 전환을 시작했거나 이미 그 모드면 true. */
+  function switchMode(next: AgentMode): boolean {
+    const target = agentModeTarget(next);
+    if (composerExecution(workspace.composerTarget()).kind !== 'local') {
+      // Cloud 는 언제나 전체 접근이다 — 에이전트 모드는 메뉴에서 막혀 있다.
+      return requestWorkflow(target.workflow);
+    }
+    if (next === currentMode()) {
+      input.focus();
+      return true;
+    }
+    if (isControlLocked() || connState !== 'connected') {
+      systemMessage(turnRunning ? '실행 중에는 모드를 바꿀 수 없습니다.' : '전환 중에는 모드를 바꿀 수 없습니다.');
+      return false;
+    }
+    const restartCompletedPlan = target.workflow === 'plan' && chatWorkflow === 'plan' && planningPhase === 'implementing';
+    if (target.workflow !== chatWorkflow || restartCompletedPlan) {
+      return requestWorkflow(target.workflow, target.permissionProfile);
+    }
+    if (target.permissionProfile !== permissionProfile) sendPermissionProfile(target.permissionProfile);
+    input.focus();
+    return true;
+  }
+
+  function sendPermissionProfile(profile: PermissionProfile): void {
+    if (bridge.getActiveAgent() === null) {
+      // 세션 전에는 허브가 받을 곳이 없다 — 다음 startChat 이 이 프로필로 연다.
+      permissionProfile = profile;
+      updateModeChip();
+      return;
     }
     workflowTransitionPending = true;
     updateComposer();
     try {
-      bridge.setPermissionProfile(nextProfile);
+      bridge.setPermissionProfile(profile);
     } catch (err) {
       workflowTransitionPending = false;
       updateComposer();
-      systemMessage(`권한 전환 실패: ${err instanceof Error ? err.message : String(err)}`);
+      systemMessage(`모드 전환 실패: ${err instanceof Error ? err.message : String(err)}`);
     }
-  });
-  updatePermissionButton();
+  }
+  updateModeChip();
 
   /** 스킬·설정·목록 세 페이지는 서로를 닫는다 — 무대에는 하나만 선다. */
   function closeSettingsPage(): void {
@@ -5030,7 +5064,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     label: string;
     detail: string;
     local?: 'skills' | 'calibration' | 'settings' | 'templates' | 'fast';
-    workflow?: AgentWorkflow;
+    mode?: AgentMode;
     templateId?: string;
     skillName?: string;
     skillIcon?: ProductSkillIcon | null;
@@ -5170,9 +5204,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     if (!match || input.value.trimStart().startsWith('//')) { setSlashMenuOpen(false); return; }
     const query = match[1].toLowerCase();
     const base: SlashOption[] = [
-      { value: '/plan', label: '/plan', detail: '구상·조사 모드로 전환', workflow: 'plan' },
-      { value: '/question', label: '/question', detail: '질문·조사 모드로 전환', workflow: 'question' },
-      { value: '/build', label: '/build', detail: '바로 실행 모드로 전환', workflow: 'direct' },
+      { value: '/chat', label: '/chat', detail: '채팅 모드', mode: 'chat' },
+      { value: '/plan', label: '/plan', detail: '플랜 모드', mode: 'plan' },
+      { value: '/agent', label: '/agent', detail: '에이전트 모드', mode: 'agent' },
+      { value: '/full', label: '/full', detail: '전체 모드', mode: 'full' },
       ...(agentSupportsFast(selectedAgent)
         ? [{
             value: '/fast',
@@ -5243,9 +5278,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       input.focus();
       return;
     }
-    if (option.workflow) {
+    if (option.mode) {
       input.value = '';
-      requestWorkflow(option.workflow);
+      void requestMode(option.mode);
       return;
     }
     if (option.local === 'calibration') { input.value = ''; writingStyleCalibration.open(); return; }
@@ -5380,17 +5415,15 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       let cloudText = input.value.trim();
       const hasDrafts = referenceLibrary.hasDrafts();
       if (!cloudText && !hasDrafts) return;
-      const workflowInvocation = cloudText.match(/^\/(plan|question|build)(?:\s+([\s\S]*))?$/i);
-      const cloudWorkflow = workflowInvocation?.[1]?.toLowerCase() === 'plan' ? 'plan'
-        : workflowInvocation?.[1]?.toLowerCase() === 'question' ? 'question'
-        : workflowInvocation ? 'direct' : null;
-      if (workflowInvocation) cloudText = (workflowInvocation[2] ?? '').trim();
+      const modeCommand = parseModeCommand(cloudText);
+      const cloudWorkflow = modeCommand ? agentModeTarget(modeCommand.mode).workflow : null;
+      if (modeCommand) cloudText = modeCommand.rest;
       if (!cloudText) {
         if (!hasDrafts && cloudWorkflow) {
           const workflowLock = workspace.lock('cloud-message');
           input.value = '';
           void cloudUi.setWorkflow(cloudWorkflow, execution).catch((error) => {
-            input.value = workflowInvocation?.[0] ?? '';
+            input.value = submittedDraft;
             resizeComposerInput();
             systemMessage(`Cloud 모드를 바꾸지 못했습니다: ${error instanceof Error ? error.message : String(error)}`);
           }).finally(() => {
@@ -5586,14 +5619,18 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       }
     }
     if (!activeComposerSkill) {
-      const workflowInvocation = text.match(/^\/(plan|build|question)(?:\s+([\s\S]*))?$/i);
-      if (workflowInvocation) {
-        const rest = (workflowInvocation[2] ?? '').trim();
-        const command = workflowInvocation[1].toLowerCase();
-        const next = command === 'plan' ? 'plan' : command === 'question' ? 'question' : 'direct';
+      const modeCommand = parseModeCommand(text);
+      if (modeCommand) {
+        const { mode, rest } = modeCommand;
         input.value = '';
         setSlashMenuOpen(false);
-        if (!requestWorkflow(next)) {
+        if (modeNeedsConfirmation(mode)) {
+          // 확인 시트는 비동기다 — 본문은 입력칸에 돌려 두고 확인 뒤에 다시 보낸다.
+          if (rest) input.value = rest;
+          void requestMode(mode);
+          return;
+        }
+        if (!switchMode(mode)) {
           if (rest) input.value = rest;
           return;
         }
@@ -6845,8 +6882,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     setSelectedAgent(nextAgent);
     rebuildLlmMenu();
     rebuildEffortMenu();
-    permissionProfile = agentPrefs.defaultPermissionProfile;
-    updatePermissionButton();
+    permissionProfile = agentModeTarget(agentPrefs.defaultMode).permissionProfile;
+    updateModeChip();
   }
 
   /** 다른 문서의 채팅을 열람만 한다 — 입력 잠금은 updateComposer 가 관리한다. */
@@ -6944,7 +6981,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       docKey: currentDocKey,
       documentId: currentDocumentId,
     });
-    // 새 채팅은 언제나 '바로 실행'에서 시작하고, 원격 브라우저 경고도 다시 받는다.
+    // 새 채팅은 기본 모드의 작업 방식으로 시작하고, 원격 브라우저 경고도 다시 받는다.
+    threadWorkflows.set(nextThread.id, agentModeTarget(agentPrefs.defaultMode).workflow);
     restorePlanningForThread(nextThread.id, nextThread);
     if (previousThreadWasEmpty) {
       planArchives.delete(previousThreadId);
@@ -7305,7 +7343,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     providerTrigger.title = selectionHint;
     llmTrigger.title = selectionHint;
     effortTrigger.title = selectionHint;
-    permissionBtn.disabled = controlsLocked || connState !== 'connected';
+    updateModeChip();
     // 턴 실행·첨부·모드 전환 중에는 설정 패널을 접는다. 모델/추론 강도를 바꾸는
     // 순간 채팅을 다시 여는 잠금(chatStartPending)은 패널을 유지한다 — 바깥을
     // 누르기 전까지는 그대로 두고 이어서 고를 수 있게.
@@ -8400,7 +8438,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
         }
         if (e.permissionProfile) {
           permissionProfile = e.permissionProfile;
-          updatePermissionButton();
+          updateModeChip();
         }
         // 로컬에서 이미 맞춰 둔 선택(추론 강도 등)을 서버가 그대로 메아리치면
         // 메뉴를 다시 그리지 않는다 — 열린 설정 패널이 깜빡이지 않게.
@@ -8440,15 +8478,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
         break;
       }
       case 'permission-changed':
+        // 모드 칩이 곧 상태 표시다 — 따로 시스템 메시지를 남기지 않는다.
         workflowTransitionPending = false;
         permissionProfile = e.permissionProfile;
-        updatePermissionButton();
+        updateModeChip();
         updateComposer();
-        systemMessage(permissionProfile === 'unrestricted'
-          ? chatWorkflow === 'plan' && planningPhase !== 'implementing'
-            ? '전체 접근 켜짐 · 실행 단계부터 적용'
-            : '전체 접근 켜짐'
-          : '안전 모드');
         break;
       case 'service-tier-changed':
         selectedServiceTier = resolveServiceTier(selectedAgent, e.serviceTier);
@@ -8689,13 +8723,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   }
 
   function updateWorkflowControl(): void {
-    const planActive = chatWorkflow === 'plan' || chatWorkflow === 'question';
-    phaseBadge.hidden = !planActive || planningPhase === 'direct';
+    // 모드 칩이 채팅·플랜을 이미 말하므로, 배지는 계획의 진행 단계(승인 대기·전환·실행)만 보인다.
+    const planStage = chatWorkflow === 'plan'
+      && (planningPhase === 'awaiting-approval' || planningPhase === 'switching' || planningPhase === 'implementing');
+    phaseBadge.hidden = !planStage;
     phaseBadge.textContent = PLANNING_PHASE_LABEL[planningPhase];
     phaseBadge.dataset.phase = planningPhase;
     root.dataset.workflow = chatWorkflow;
     root.dataset.planningPhase = planningPhase;
-    updatePermissionButton();
+    updateModeChip();
+    root.dataset.agentMode = currentMode();
     refreshSidebarWidthMin();
   }
 
@@ -8727,10 +8764,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   }
 
   /**
-   * 모드 전환 요청. 계획 모드로 들어갈 때만 원격 브라우저 전체 제어를
-   * 한 번 경고하고, 검토 대기 중인 문서 편집이 있으면 막는다.
+   * 작업 방식 전환 요청. 계획·채팅 모드로 들어갈 때만 원격 브라우저 전체 제어를
+   * 한 번 경고하고, 검토 대기 중인 문서 편집이 있으면 계획 모드를 막는다.
+   * profile 이 있고 지금과 다르면 같은 전환 큐 뒤에 프로필 전환을 잇는다.
    */
-  function requestWorkflow(next: AgentWorkflow): boolean {
+  function requestWorkflow(next: AgentWorkflow, profile?: PermissionProfile): boolean {
     const execution = composerExecution(workspace.composerTarget());
     if (execution.kind === 'cloud-start') {
       applyWorkflow(next);
@@ -8757,6 +8795,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       && chatWorkflow === 'plan'
       && planningPhase === 'implementing';
     if (next === chatWorkflow && !restartCompletedPlan) {
+      if (profile && profile !== permissionProfile && !isControlLocked() && connState === 'connected') {
+        sendPermissionProfile(profile);
+      }
       input.focus();
       return true;
     }
@@ -8788,13 +8829,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
             }
             browserbaseAcknowledged = true;
             browserbaseNoticePending = true;
-            requestWorkflow(next);
+            requestWorkflow(next, profile);
           });
         return false;
       }
     }
     workflowTransitionPending = true;
     bridge.setWorkflow(next);
+    if (profile && profile !== permissionProfile) sendPermissionProfile(profile);
     input.focus();
     return true;
   }
@@ -9029,15 +9071,20 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
         && !turnRunning;
       const footer = el('footer', 'ag-plan-footer');
       const actions = el('div', 'ag-review-actions ag-plan-actions');
-      const approve = el('button', 'ag-approve ag-plan-approve', '문서에 적용');
+      // 승인은 실행 모드를 고른다: 에이전트(검토 후 반영) 또는 전체(바로 반영).
+      const approve = el('button', 'ag-approve ag-plan-approve', '에이전트로 실행');
       approve.type = 'button';
       approve.disabled = !approvableNow;
-      approve.addEventListener('click', () => approveActivePlan(plan.planId));
+      approve.addEventListener('click', () => { void approveActivePlan(plan.planId, 'safe'); });
+      const approveFull = el('button', 'ag-approve ag-plan-approve-full', '전체 접근으로 실행');
+      approveFull.type = 'button';
+      approveFull.disabled = !approvableNow;
+      approveFull.addEventListener('click', () => { void approveActivePlan(plan.planId, 'unrestricted', approveFull); });
       const revise = el('button', 'ag-reject ag-plan-revise', revisionPlanId === plan.planId ? '수정 내용 입력 중' : '수정 요청');
       revise.type = 'button';
       revise.disabled = !planApprovable || planActionPending || planningPhase === 'switching' || turnRunning;
       revise.addEventListener('click', () => preparePlanRevision(plan.planId));
-      actions.append(approve, revise);
+      actions.append(approve, approveFull, revise);
       if (planningPhase === 'awaiting-approval') footer.appendChild(actions);
 
       let noteText = '';
@@ -9072,13 +9119,23 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     return card;
   }
 
-  function approveActivePlan(planId: string): void {
-    if (!planApprovable || planActionPending || planningPhase !== 'awaiting-approval' || turnRunning) return;
+  /**
+   * 계획 승인. profile 은 실행 모드다 — safe 는 에이전트(편집 검토 대기), unrestricted 는
+   * 전체(편집 바로 반영). 전체로 실행할 때는 모드 칩과 같은 확인 시트를 거친다.
+   */
+  async function approveActivePlan(planId: string, profile: PermissionProfile, anchor?: HTMLElement): Promise<void> {
+    const canApprove = (): boolean => planApprovable && !planActionPending
+      && planningPhase === 'awaiting-approval' && !turnRunning && activePlan?.planId === planId;
+    if (!canApprove()) return;
+    if (profile === 'unrestricted' && permissionProfile !== 'unrestricted') {
+      const confirmed = await confirmSheet(anchor ?? root, '전체 접근', '승인 없이 편집하고 파일에 접근합니다.', { confirmLabel: '실행' });
+      if (!confirmed || !canApprove()) return;
+    }
     // 정확히 이 계획 id 로만 승인한다 — 오래된 카드가 다른 계획을 통과시키지 않는다.
     planActionPending = true;
     rebuildReview();
     try {
-      if (!bridge.approvePlan(planId)) {
+      if (!bridge.approvePlan(planId, profile)) {
         throw new Error('허브 연결이 끊겨 승인 요청을 보내지 못했습니다.');
       }
     } catch (err) {

@@ -102,7 +102,7 @@ Pipeline: parser → model → document_core → renderer → serializer, expose
 
 ## Studio (`rhwp/rhwp-studio/src/`)
 
-`engine/` wraps wasm; `core/`, `view/`, `command/`, `history/` (undo), `ui/` (dialogs, command palette, `agent-sidebar/`), `hwpctl/`, `embed/`. `agent/` is the Studio side of the AI bridge: `bridge.ts` (WS client), `tool-executor.ts` (MCP tools against the engine, including `apply_edits`), `pending-edits.ts` and `pending-overlay.ts` (staging). In **안전** successful turns hold staged edits for review; in **전체 접근** they auto-commit as one undo step; any non-successful turn end holds edits for review in both.
+`engine/` wraps wasm; `core/`, `view/`, `command/`, `history/` (undo), `ui/` (dialogs, command palette, `agent-sidebar/`), `hwpctl/`, `embed/`. `agent/` is the Studio side of the AI bridge: `bridge.ts` (WS client), `tool-executor.ts` (MCP tools against the engine, including `apply_edits`), `pending-edits.ts` and `pending-overlay.ts` (staging). One agent mode selector maps onto the wire's `workflow` + `permissionProfile` (`AgentMode` in `agent/types.ts`): **채팅** = question (read-only), **플랜** = plan (read-only until the user approves; approval picks the run profile), **에이전트** = direct + safe (writes stage as a live preview and are held for review at turn end), **전체** = direct + unrestricted (no review: each write tool call commits as its own undo step).
 
 ## Hub (`rhwp/rhwp-agent/`)
 

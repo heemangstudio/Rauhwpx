@@ -2566,6 +2566,12 @@ function resolvePermissionProfile(value) {
   return value === 'unrestricted' ? 'unrestricted' : 'safe';
 }
 
+/** 플랜 승인에 실린 권한은 엄격히 검사한다 — 오타가 조용히 safe 로 떨어지지 않게. */
+function approvalPermissionProfile(value) {
+  if (value === 'safe' || value === 'unrestricted') return value;
+  throw workflowError('INVALID_PERMISSION_PROFILE', `Unknown permission profile: ${String(value)}`);
+}
+
 function resolveWorkflow(value) {
   if (value === undefined || value === null) return 'direct';
   if (value === 'direct' || value === 'plan' || value === 'question') return value;
@@ -3090,6 +3096,11 @@ async function approveImplementationPlan(record, sock, msg) {
   const activeSession = record.agentSession;
   if (!activeSession) throw workflowError('AGENT_NOT_STARTED', 'Start a chat before approving a plan');
   requireWorkflowSwitchBackend(activeSession);
+  // 승인 시 고른 실행 권한(에이전트=safe, 전체=unrestricted). 생략하면 현재 프로필을 유지한다.
+  const requestedProfile = msg.permissionProfile === undefined || msg.permissionProfile === null
+    ? null
+    : approvalPermissionProfile(msg.permissionProfile);
+  // 승인 검증이 먼저다 — 거절된 승인은 권한을 바꾸지 않는다.
   const transition = activeSession.planning.beginApproval({
     planId: String(msg.planId ?? ''),
     sessionStatus: activeSession.status,
@@ -3097,6 +3108,14 @@ async function approveImplementationPlan(record, sock, msg) {
   });
   sendJson(sock, { v: 1, type: 'plan-approved', ...activeSession.planning.snapshot() });
   try {
+    if (requestedProfile && requestedProfile !== activeSession.permissionProfile) {
+      // 실행 모드 전환 전에 권한을 바꿔야 구현 턴이 고른 권한으로 시작한다.
+      // 실패하면 아래 catch 가 failSwitch 로 승인 대기로 되돌린다.
+      await Promise.resolve(activeSession.backend.setPermissionProfile(requestedProfile));
+      if (record.agentSession !== activeSession || activeSession.planning.phase !== 'switching') return;
+      activeSession.permissionProfile = requestedProfile;
+      sendJson(sock, { v: 1, type: 'chat-permission-changed', permissionProfile: requestedProfile });
+    }
     await activeSession.backend.setExecutionMode(providerModeRequest(activeSession, 'implementing'));
     if (record.agentSession !== activeSession || activeSession.planning.phase !== 'switching') return;
     activeSession.planning.completeSwitch(transition.approvedPlan.planId);

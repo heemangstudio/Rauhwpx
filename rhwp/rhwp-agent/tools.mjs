@@ -7,7 +7,7 @@ import { MCP_USER_QUESTION_SHAPE } from './user-question.mjs';
 export { RHWP_TOOL_RULES } from './tool-rules.mjs';
 
 // 쓰기 도구 설명 끝에 붙는 한 줄 포인터. 규칙 본문은 RHWP_TOOL_RULES 에만 둔다.
-const WRITE_POINTER = 'Staged (rhwp tool rules).';
+const WRITE_POINTER = 'Write (rhwp tool rules).';
 
 /**
  * apply_edits 배치에 넣을 수 있는 semantic write — 스튜디오 executor 의
@@ -872,7 +872,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'apply_engine_edits',
-    description: `Apply 1-32 engine mutations in order as one atomic staged edit (rhwp tool rules): the escape hatch for every other method returned by get_engine_edit_capabilities. op = {method, args} (positional; Uint8Array as {$base64}). Any failure restores the pre-batch state; mixes with semantic writes. Needs expectedRevision.`,
+    description: `Apply 1-32 engine mutations in order as one atomic edit (rhwp tool rules): the escape hatch for every other method returned by get_engine_edit_capabilities. op = {method, args} (positional; Uint8Array as {$base64}). Any failure restores the pre-batch state; mixes with semantic writes. Needs expectedRevision.`,
     shape: {
       expectedRevision: z.number().int(),
       operations: z.array(z.object({
@@ -892,7 +892,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'apply_edits',
-    description: `Apply 1-32 staged edits in ONE call. Items are {tool, …that tool's arguments}, e.g. {tool:"replace_range",paraIdx:64,find:"old",text:"new"}, run in order. Any failure rolls back the whole batch. ${WRITE_POINTER}`,
+    description: `Apply 1-32 edits in ONE call. Items are {tool, …that tool's arguments}, e.g. {tool:"replace_range",paraIdx:64,find:"old",text:"new"}, run in order. Any failure rolls back the whole batch. ${WRITE_POINTER}`,
     shape: {
       expectedRevision: z.number().int(),
       render: renderParam(),
@@ -1277,7 +1277,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'insert_equation',
-    description: `Insert an inline equation at charOffset. ALWAYS preview_equation the same script first and fix until warnings is empty (syntax guide there). Take fontSizePt from surrounding get_char_format. ${WRITE_POINTER}`,
+    description: `Insert an inline equation at charOffset. preview_equation on the same script reports warnings first (syntax guide there). Take fontSizePt from surrounding get_char_format. ${WRITE_POINTER}`,
     shape: {
       expectedRevision: z.number().int(),
       render: renderParam(),
@@ -1509,7 +1509,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'verify_changes',
-    description: `Optional review summary (writes already return an after report) of ops staged since your last call this turn (full:true = whole set): kind/summary, text, pages, warnings; includeImage:true adds a PNG of the first page. Deleted text is gone; do NOT re-insert it.`,
+    description: `Optional review summary (writes already return an after report) of ops applied since your last call this turn (full:true = whole set): kind/summary, text, pages, warnings; includeImage:true adds a PNG of the first page. Deleted text is gone; do NOT re-insert it.`,
     shape: {
       changeSetId: z.string().min(1).optional(),
       includeImage: z.boolean().default(false).optional(),

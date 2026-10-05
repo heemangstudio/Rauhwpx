@@ -984,7 +984,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       };
       emit({ type: 'workflow-changed', ...workflow });
     },
-    approvePlan: (planId) => {
+    approvePlan: (planId, profile) => {
       if (connection !== 'connected' || workflow.latestPlan?.planId !== planId)
         return false;
       const planGeneration = ++generation;
@@ -992,6 +992,11 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
         if (generation !== planGeneration) return;
         workflow.phase = 'switching';
         emit({ type: 'plan-approved', planId, ...workflow });
+        // 승인 때 고른 실행 권한은 실행 전환 전에 적용된다 (허브와 같은 순서).
+        if (profile && profile !== permission) {
+          permission = profile;
+          emit({ type: 'permission-changed', permissionProfile: profile });
+        }
         later(() => {
           if (generation !== planGeneration) return;
           workflow.phase = 'implementing';
@@ -1023,8 +1028,10 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
               agent,
               text: '계획에 따라 개요와 추진 일정을 정리했습니다.',
             });
-            updatePlanExecution({ status: 'awaiting-review', steps: workflow.latestPlan!.steps.map((step) => ({ stepId: step.id!, status: 'completed' })) });
-            addReview();
+            // 전체로 실행한 계획은 검토 단계 없이 끝난다.
+            const direct = permission === 'unrestricted';
+            updatePlanExecution({ status: direct ? 'completed' : 'awaiting-review', steps: workflow.latestPlan!.steps.map((step) => ({ stepId: step.id!, status: 'completed' })) });
+            if (!direct) addReview();
             finish();
           }, 1700);
         }, 200);
@@ -1332,6 +1339,14 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       { kind: 'insert', id: crypto.randomUUID(), agent, range: range(0),
         text: '이번 사업은 업무 효율을 높이는 것을 목표로 합니다.' },
     ];
+    if (permission === 'unrestricted' && reviewMode !== 'stopped') {
+      // 전체 모드: 편집은 검토 없이 바로 반영된다 — 검토 카드·변경 기록을 만들지 않는다.
+      const id = crypto.randomUUID();
+      onApproved?.();
+      changeEvents.push('approved');
+      pendingListeners.forEach((listener) => listener({ type: 'approved', changeSetId: id, direct: true }));
+      return;
+    }
     changes = [
       {
         id: crypto.randomUUID(),
@@ -1346,7 +1361,6 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
     pendingListeners.forEach((listener) =>
       listener({ type: 'set-finalized', changeSetId: changes[0].id }),
     );
-    if (permission === 'unrestricted' && reviewMode !== 'stopped') bridge.pendingEdits.approve(changes[0].id);
   }
   function setServices(configured: boolean) {
     for (const provider of agents) {

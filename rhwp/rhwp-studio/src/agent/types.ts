@@ -39,6 +39,64 @@ export type WritingStyleProgressState =
 export type AgentWorkflow = 'direct' | 'plan' | 'question';
 export type AgentPhase = 'direct' | 'planning' | 'questioning' | 'awaiting-approval' | 'switching' | 'implementing';
 
+/**
+ * 사용자에게 보이는 단 하나의 에이전트 모드. 와이어는 그대로 (workflow, permissionProfile)
+ * 두 필드를 쓰고, 이 타입이 둘을 한 개념으로 묶는다.
+ * - chat: question (읽기 전용)
+ * - plan: plan (계획 단계는 읽기 전용, 실행은 승인 때 고른 프로필)
+ * - agent: direct + safe (편집은 미리보기로 쌓이고 턴 끝에 검토)
+ * - full: direct + unrestricted (편집이 바로 문서에 반영)
+ */
+export type AgentMode = 'chat' | 'plan' | 'agent' | 'full';
+
+export const AGENT_MODES: readonly AgentMode[] = ['chat', 'plan', 'agent', 'full'];
+
+export const AGENT_MODE_LABEL: Readonly<Record<AgentMode, string>> = {
+  chat: '채팅',
+  plan: '플랜',
+  agent: '에이전트',
+  full: '전체',
+};
+
+export function isAgentMode(value: unknown): value is AgentMode {
+  return value === 'chat' || value === 'plan' || value === 'agent' || value === 'full';
+}
+
+/** 모드가 요구하는 workflow 와 프로필. */
+export function agentModeTarget(mode: AgentMode): { workflow: AgentWorkflow; permissionProfile: PermissionProfile } {
+  switch (mode) {
+    // 채팅·플랜은 문서를 바꾸지 않으므로 안전 프로필로 둔다. 그래서 unrestricted 는
+    // 언제나 전체 모드(또는 전체 접근으로 실행한 계획)를 뜻하고, 전체로 들어갈 때마다 확인한다.
+    case 'chat': return { workflow: 'question', permissionProfile: 'safe' };
+    case 'plan': return { workflow: 'plan', permissionProfile: 'safe' };
+    case 'agent': return { workflow: 'direct', permissionProfile: 'safe' };
+    case 'full': return { workflow: 'direct', permissionProfile: 'unrestricted' };
+  }
+}
+
+/**
+ * 현재 (workflow, phase, profile) 이 사용자에게 어떤 모드로 보이는가.
+ * 승인된 계획을 실행하는 동안에는 실행 프로필에 따라 에이전트/전체로 보인다.
+ */
+export function agentModeFor(
+  workflow: AgentWorkflow,
+  phase: AgentPhase,
+  permissionProfile: PermissionProfile,
+): AgentMode {
+  if (workflow === 'question') return 'chat';
+  if (workflow === 'plan' && phase !== 'implementing') return 'plan';
+  return permissionProfile === 'unrestricted' ? 'full' : 'agent';
+}
+
+/** 쓰기가 검토 없이 바로 문서에 반영되는가 (전체 모드, 전체 접근으로 실행한 계획). */
+export function writesApplyDirectly(
+  workflow: AgentWorkflow,
+  phase: AgentPhase,
+  permissionProfile: PermissionProfile,
+): boolean {
+  return permissionProfile === 'unrestricted' && (workflow === 'direct' || phase === 'implementing');
+}
+
 export type UserQuestionMode = 'single' | 'multiple';
 
 export interface UserQuestionOption {
@@ -1496,7 +1554,7 @@ export interface PendingChangeSet {
 export type PendingEditsChangeEvent =
   | { type: 'ops-changed' }
   | { type: 'set-finalized'; changeSetId: string }
-  | { type: 'approved'; changeSetId: string }
+  | { type: 'approved'; changeSetId: string; /** 전체 모드의 쓰기별 즉시 확정 (검토를 거치지 않음) */ direct?: true }
   | { type: 'rejected'; changeSetId: string }
   | {
       type: 'invalidated'; reason: string; changeSetId?: string;

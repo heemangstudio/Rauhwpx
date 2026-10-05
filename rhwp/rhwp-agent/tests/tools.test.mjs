@@ -308,7 +308,7 @@ test('full engine edit tools expose a bounded autonomous batch contract', () => 
   assert.ok(apply.shape.operations.safeParse([{ method: 'setPageDef', args: [0, {}] }]).success);
   assert.ok(!apply.shape.operations.safeParse([]).success);
   assert.ok(!apply.shape.operations.safeParse(Array.from({ length: 33 }, () => ({ method: 'x', args: [] }))).success);
-  assert.match(apply.description, /one atomic staged edit/i);
+  assert.match(apply.description, /one atomic edit/i);
   assert.match(apply.description, /every other method returned by get_engine_edit_capabilities/i);
   assert.match(prepare.description, /capability kind is "session"/i);
 });
@@ -659,8 +659,10 @@ test('공유 규칙은 한 번만: 셀 주소·오프셋·리비전·스테이�
   assert.match(RHWP_TOOL_RULES, /up to 5 candidates/);
   assert.doesNotMatch(RHWP_TOOL_RULES, /bottom-of-document first/);
   assert.doesNotMatch(byName.get('apply_edits').description, /bottom|맨 뒤|뒤에서/);
-  assert.match(RHWP_TOOL_RULES, /전체 접근/);
-  assert.match(RHWP_TOOL_RULES, /안전/);
+  // 모드별 쓰기 수명주기: 에이전트는 검토 대기, 전체는 직접 적용(실행 취소 단위).
+  assert.match(RHWP_TOOL_RULES, /에이전트 mode[^\n]*held for the user's review/);
+  assert.match(RHWP_TOOL_RULES, /전체 mode[^\n]*apply directly as ordinary undoable edits/);
+  assert.doesNotMatch(RHWP_TOOL_RULES, /auto-commit|전체 접근|\(안전\)/);
   assert.match(RHWP_TOOL_RULES, /lengths in mm, font sizes in pt/);
 
   const ruleLines = RHWP_TOOL_RULES.split('\n').slice(1).map((line) => line.replace(/^- [A-Za-z ]+: /, ''));

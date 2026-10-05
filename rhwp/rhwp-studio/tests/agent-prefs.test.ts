@@ -32,13 +32,13 @@ function makeStorage(seed?: unknown) {
   };
 }
 
-test('빈 저장소는 Claude/Sonnet/High/안전 기본값을 준다', () => {
+test('빈 저장소는 Claude/Sonnet/High/에이전트 기본값을 준다', () => {
   const prefs = loadAgentPrefs(makeStorage());
   assert.deepEqual(prefs, {
     defaultAgent: 'claude',
     defaultModel: 'sonnet',
     defaultEffort: 'high',
-    defaultPermissionProfile: 'safe',
+    defaultMode: 'agent',
     selectedModels: {
       claude: ['fable', 'opus', 'sonnet', 'haiku'],
       codex: ['astra', 'sol', 'luna', 'terra'],
@@ -75,15 +75,22 @@ test('지원되는 조합은 그대로 살아남는다', () => {
   assert.equal(prefs.defaultEffort, 'xhigh');
 });
 
-test('모르는 프로바이더는 claude, 모르는 권한 프로필은 safe', () => {
-  const prefs = normalizeAgentPrefs({ defaultAgent: 'gemini', defaultPermissionProfile: 'root' });
+test('모르는 프로바이더는 claude, 모르는 모드는 에이전트', () => {
+  const prefs = normalizeAgentPrefs({ defaultAgent: 'gemini', defaultMode: 'root' });
   assert.equal(prefs.defaultAgent, 'claude');
-  assert.equal(prefs.defaultPermissionProfile, 'safe');
+  assert.equal(prefs.defaultMode, 'agent');
 });
 
-test('전체 접근은 유효한 권한 프로필이므로 보존된다', () => {
-  const prefs = normalizeAgentPrefs({ defaultPermissionProfile: 'unrestricted' });
-  assert.equal(prefs.defaultPermissionProfile, 'unrestricted');
+test('네 모드는 그대로 보존된다', () => {
+  for (const mode of ['chat', 'plan', 'agent', 'full'] as const) {
+    assert.equal(normalizeAgentPrefs({ defaultMode: mode }).defaultMode, mode);
+  }
+});
+
+test('모드 도입 전 권한 프로필은 에이전트/전체로 옮겨진다', () => {
+  assert.equal(normalizeAgentPrefs({ defaultPermissionProfile: 'unrestricted' }).defaultMode, 'full');
+  assert.equal(normalizeAgentPrefs({ defaultPermissionProfile: 'safe' }).defaultMode, 'agent');
+  assert.equal(normalizeAgentPrefs({ defaultPermissionProfile: 'root' }).defaultMode, 'agent');
 });
 
 test('깨진 JSON 이나 배열이 들어 있어도 기본값으로 복구한다', () => {

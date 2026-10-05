@@ -841,7 +841,7 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   margin-left: 0;
 }
 
-.ag-permission-btn,
+.ag-mode-btn,
 .ag-skills-btn {
   flex: 0 0 auto;
   min-height: 28px;
@@ -856,7 +856,7 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   transition: var(--ag-transition-color);
 }
 
-.ag-permission-btn:hover:not(:disabled),
+.ag-mode-btn:hover:not(:disabled),
 .ag-skills-btn:hover {
   background: var(--ag-hover);
   border-color: transparent;
@@ -864,28 +864,97 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ag-permission-btn,
+  .ag-mode-btn,
   .ag-skills-btn,
   .ag-send {
     transition: none;
   }
 }
 
-.ag-permission-btn:focus-visible,
+.ag-mode-btn:focus-visible,
 .ag-skills-btn:focus-visible {
   outline: var(--ag-focus-ring);
   outline-offset: var(--ag-focus-offset);
 }
 
-.ag-permission-btn:disabled {
+/* ─── 에이전트 모드 칩 ──────────────────────────────────
+   채팅 파랑 · 플랜 차콜 · 에이전트 잉크 · 전체 빨강. 칩 글자와 메뉴 점이 같은 색을 쓴다. */
+.ag-mode {
+  --ag-mode-chat: var(--ag-link);
+  --ag-mode-plan: color-mix(in oklab, var(--ag-text) 72%, var(--ag-bg));
+  --ag-mode-agent: var(--ag-text);
+  --ag-mode-full: var(--ag-err);
+  --ag-mode-color: var(--ag-mode-agent);
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.ag-mode[data-mode='chat'] { --ag-mode-color: var(--ag-mode-chat); }
+.ag-mode[data-mode='plan'] { --ag-mode-color: var(--ag-mode-plan); }
+.ag-mode[data-mode='full'] { --ag-mode-color: var(--ag-mode-full); }
+
+.ag-mode-btn {
+  color: var(--ag-mode-color);
+  font-weight: var(--ag-fw-medium);
+}
+
+.ag-mode-btn:hover:not(:disabled) {
+  color: var(--ag-mode-color);
+}
+
+.ag-mode:not([data-mode='agent']) .ag-mode-btn {
+  background: color-mix(in oklab, var(--ag-mode-color) 10%, transparent);
+}
+
+.ag-mode:not([data-mode='agent']) .ag-mode-btn:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--ag-mode-color) 16%, transparent);
+}
+
+.ag-mode-btn:disabled {
   opacity: 0.72;
   cursor: default;
 }
 
-.ag-permission-btn.ag-permission-unrestricted {
-  background: color-mix(in oklab, var(--ag-err) 10%, transparent);
-  color: var(--ag-err);
-  font-weight: var(--ag-fw-medium);
+/* 입력기 아래 줄에 있으므로 메뉴는 칩 위로, 오른쪽 끝에 맞춰 열린다. */
+.ag-mode .ag-mode-menu {
+  top: auto;
+  right: 0;
+  bottom: calc(100% + 4px);
+  left: auto;
+  min-width: 128px;
+  transform-origin: bottom right;
+  transform: translateY(6px) scaleY(0.96);
+}
+
+.ag-mode.ag-model-open .ag-mode-menu {
+  transform: translateY(0) scaleY(1);
+}
+
+.ag-mode-item[data-mode='chat'] { --ag-mode-color: var(--ag-mode-chat); }
+.ag-mode-item[data-mode='plan'] { --ag-mode-color: var(--ag-mode-plan); }
+.ag-mode-item[data-mode='agent'] { --ag-mode-color: var(--ag-mode-agent); }
+.ag-mode-item[data-mode='full'] { --ag-mode-color: var(--ag-mode-full); }
+
+.ag-mode-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: var(--ag-r-pill);
+  background: var(--ag-mode-color);
+}
+
+.ag-mode-item:disabled {
+  color: var(--ag-text-disabled);
+}
+
+.ag-mode-item:disabled .ag-mode-dot {
+  opacity: 0.4;
+}
+
+.ag-mode-item:disabled:hover {
+  background: transparent;
 }
 
 .ag-threads-btn:hover {
@@ -4122,11 +4191,7 @@ button.ag-skill-copy {
   min-width: 0;
 }
 
-.ag-composer-utility-actions .ag-permission-btn {
-  margin-left: auto;
-}
-
-/* 계획 모드일 때만 보이는 읽기 전용 상태다. 모드 전환은 /plan, /build로 한다. */
+/* 플랜의 진행 단계(승인 대기·전환·실행)만 보이는 읽기 전용 상태다. 모드는 옆 칩이 말한다. */
 .ag-phase-badge {
   flex: 0 0 auto;
   padding: 2px 8px;
@@ -4525,10 +4590,27 @@ button.ag-skill-copy {
 
 .ag-plan-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 0;
   border: 0;
   background: transparent;
+}
+
+.ag-plan-actions > button {
+  flex: 1 1 auto;
+  padding-inline: 12px;
+  white-space: nowrap;
+}
+
+/* 전체 접근 실행은 전체 모드 칩과 같은 빨강이다. */
+.ag-plan-actions .ag-plan-approve-full {
+  background: var(--ag-err);
+  color: #fff;
+}
+
+.ag-plan-actions .ag-plan-approve-full:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--ag-err) 86%, var(--ag-text));
 }
 
 .ag-plan-note {

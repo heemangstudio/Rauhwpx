@@ -470,7 +470,7 @@ export function assertToolCapability(tool: string, capability?: ToolCapabilityCo
   if (capability?.workflow === 'question') {
     throw new AgentToolError(
       'QUESTION_MODE_READ_ONLY',
-      'Document-write tools are disabled in question mode. Switch to /plan to brainstorm or /build to edit.',
+      'Document-write tools are unavailable in chat mode; the document is read-only here.',
     );
   }
   if (capability?.workflow !== 'plan') return;

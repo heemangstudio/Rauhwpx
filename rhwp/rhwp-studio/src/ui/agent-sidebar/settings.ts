@@ -43,6 +43,7 @@ import {
   formatUsageAge,
 } from './usage-format.ts';
 import type { SidebarBridge } from '../../agent/bridge.ts';
+import { AGENT_MODES, AGENT_MODE_LABEL, isAgentMode, type AgentMode } from '../../agent/types.ts';
 import type { EventBus } from '../../core/event-bus.ts';
 import type {
   AgentName,
@@ -92,10 +93,17 @@ const CONN_LABEL: Record<ConnectionState, string> = {
   replaced: '다른 탭에서 사용 중',
 };
 
-const PERMISSION_OPTIONS: ReadonlyArray<{ id: PermissionProfile; label: string }> = [
-  { id: 'safe', label: '안전 — 편집은 검토 후 승인, 파일은 프로젝트 안에서만' },
-  { id: 'unrestricted', label: '전체 접근 — 자유 편집, 노트북 전체' },
-];
+/** 새 대화의 기본 모드. 옵션 title 에만 짧은 설명을 둔다. */
+const MODE_OPTIONS: ReadonlyArray<{ id: AgentMode; label: string; title: string }> = AGENT_MODES.map((id) => ({
+  id,
+  label: AGENT_MODE_LABEL[id],
+  title: {
+    chat: '읽기 전용',
+    plan: '계획을 세우고 승인 후 실행',
+    agent: '편집은 검토 후 반영',
+    full: '편집 즉시 반영, 노트북 전체 접근',
+  }[id],
+}));
 
 
 
@@ -1120,17 +1128,15 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   agentField.field.insertBefore(providerMark, agentField.select);
   const modelField = createSelect('모델', []);
   const effortField = createSelect('추론 강도', []);
-  const permissionField = createSelect('권한', PERMISSION_OPTIONS.map(option => ({
-    ...option, label: option.id === 'safe' ? '안전 · 검토 후 승인' : '전체 접근',
-  })));
-  for (const option of permissionField.select.options) {
-    option.title = PERMISSION_OPTIONS.find(item => item.id === option.value)?.label ?? '';
+  const modeField = createSelect('모드', MODE_OPTIONS.map(({ id, label }) => ({ id, label })));
+  for (const option of modeField.select.options) {
+    option.title = MODE_OPTIONS.find(item => item.id === option.value)?.title ?? '';
   }
   defaults.body.append(
     agentField.field,
     modelField.field,
     effortField.field,
-    permissionField.field,
+    modeField.field,
   );
 
   agentField.select.addEventListener('change', () => {
@@ -1144,10 +1150,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   effortField.select.addEventListener('change', () => {
     stagePrefs({ defaultEffort: effortField.select.value });
   });
-  permissionField.select.addEventListener('change', () => {
-    const next: PermissionProfile =
-      permissionField.select.value === 'unrestricted' ? 'unrestricted' : 'safe';
-    stagePrefs({ defaultPermissionProfile: next });
+  modeField.select.addEventListener('change', () => {
+    const value = modeField.select.value;
+    stagePrefs({ defaultMode: isAgentMode(value) ? value : 'agent' });
   });
 
   const modelCatalogSection = createSection('사용할 모델');
@@ -1546,7 +1551,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     return left.defaultAgent === right.defaultAgent
       && left.defaultModel === right.defaultModel
       && left.defaultEffort === right.defaultEffort
-      && left.defaultPermissionProfile === right.defaultPermissionProfile
+      && left.defaultMode === right.defaultMode
       && PLAN_AGENTS.every((agent) => left.selectedModels[agent].join('\u0000') === right.selectedModels[agent].join('\u0000'));
   }
 
@@ -1599,7 +1604,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     agentField.select.disabled = aiPrefsSaving;
     modelField.select.disabled = aiPrefsSaving;
     effortField.select.disabled = aiPrefsSaving;
-    permissionField.select.disabled = aiPrefsSaving;
+    modeField.select.disabled = aiPrefsSaving;
     modelCatalogList.inert = aiPrefsSaving;
     modelCatalogRefresh.disabled = aiPrefsSaving || connectionState !== 'connected'
       || (modelCatalogAgent === 'pi'
@@ -1660,9 +1665,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         return false;
       }
     }
-    if (nextPrefs.defaultPermissionProfile === 'unrestricted'
-      && prefsBaseline.defaultPermissionProfile !== 'unrestricted'
-      && !await confirmSheet(aiStatus, '기본값을 전체 접근으로', UNRESTRICTED_DEFAULT_WARNING, { confirmLabel: '적용' })) {
+    if (nextPrefs.defaultMode === 'full'
+      && prefsBaseline.defaultMode !== 'full'
+      && !await confirmSheet(aiStatus, '기본 모드를 전체로', UNRESTRICTED_DEFAULT_WARNING, { confirmLabel: '적용' })) {
       aiStatus.textContent = '적용 취소';
       aiStatus.hidden = false;
       return false;
@@ -2062,7 +2067,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       prefsDraft.defaultEffort,
       prefsDraft.defaultModel,
     );
-    permissionField.select.value = prefsDraft.defaultPermissionProfile;
+    modeField.select.value = prefsDraft.defaultMode;
   }
 
   function applyAccountLoginStart(started: AccountLoginStart): void {

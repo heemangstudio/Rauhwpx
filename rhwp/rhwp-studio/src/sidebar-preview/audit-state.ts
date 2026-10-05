@@ -120,9 +120,27 @@ async function applyBoatState(preview: SidebarPreview, params: URLSearchParams):
   cloud.setBoatSpeed(1);
 }
 
+/** 입력기의 모드 칩으로 모드를 고른다. 확인 시트(전체 접근·원격 브라우저)는 승인한다. */
+async function chooseMode(mode: 'chat' | 'plan' | 'agent' | 'full'): Promise<void> {
+  const chip = () => document.querySelector<HTMLElement>('.ag-mode');
+  await until(() => chip()?.dataset.mode && !document.querySelector<HTMLButtonElement>('.ag-mode-btn')?.disabled, 'mode chip');
+  if (chip()!.dataset.mode === mode) return;
+  await click('.ag-mode-btn');
+  await click(`.ag-mode-item[data-mode="${mode}"]`);
+  const deadline = performance.now() + 10_000;
+  while (chip()?.dataset.mode !== mode && performance.now() < deadline) {
+    const confirm = document.querySelector<HTMLButtonElement>('.ag-sheet-open .ag-sheet-confirm');
+    if (confirm?.checkVisibility()) confirm.click();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  }
+  if (chip()?.dataset.mode !== mode) throw new Error(`Could not open preview: mode ${mode}`);
+}
+
 /** Prepare fixtures through the same controls used in the shipping sidebar. */
 export async function applyAuditState(preview: SidebarPreview, params: URLSearchParams): Promise<void> {
   if (params.get('permission') === 'unrestricted') preview.bridge.setPermissionProfile('unrestricted');
+  const mode = params.get('mode');
+  if (mode === 'chat' || mode === 'plan' || mode === 'agent' || mode === 'full') await chooseMode(mode);
   const browserbase = params.get('browserbase');
   if (browserbase === 'ready' || browserbase === 'setup' || browserbase === 'error')
     preview.setBrowserbaseState(browserbase === 'ready' ? 'connected' : browserbase);
@@ -164,7 +182,7 @@ export async function applyAuditState(preview: SidebarPreview, params: URLSearch
   const surfaces: Record<string, string> = {
     skills: '.ag-settings-nav-button[data-destination="skills"]', references: '.ag-references-btn', threads: '.ag-header .ag-threads-btn',
     'provider-picker': '[aria-label="프로바이더 선택"]', 'model-picker': '[aria-label="모델 선택"]',
-    'effort-picker': '[aria-label="추론 강도 선택"]', permissions: '.ag-permission-btn',
+    'effort-picker': '[aria-label="추론 강도 선택"]', 'mode-menu': '.ag-mode-btn',
     'provider-setup': `.ag-settings-provider-row[data-agent="${['claude', 'codex', 'pi'].includes(params.get('provider') ?? '') ? params.get('provider') : 'codex'}"] button`,
     'cloud-options': '.ag-header [data-workspace-mode="cloud"]', 'cloud-setup': '.ag-header [data-workspace-mode="cloud"]',
   };
@@ -178,7 +196,13 @@ export async function applyAuditState(preview: SidebarPreview, params: URLSearch
     if (!row.open) await click(`${rowSelector} summary`);
   }
   if (surface && surfaces[surface]) await click(surfaces[surface]);
+  if (surface === 'plan-actions') {
+    const actions = await until(() => document.querySelector<HTMLElement>('.ag-plan-actions'), 'plan approval actions');
+    actions.scrollIntoView({ block: 'end' });
+  }
   if (surface === 'changes') {
+    // 에이전트 모드의 검토 대기 편집을 승인해 적용된 변경으로 만든다.
+    for (const set of [...preview.bridge.pendingEdits.getChangeSets()]) preview.bridge.pendingEdits.approve(set.id);
     document.querySelector('.ag-settings-page')!.dispatchEvent(
       new CustomEvent('ag-settings-expand-request', { bubbles: true }),
     );
