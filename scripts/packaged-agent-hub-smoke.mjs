@@ -93,14 +93,23 @@ export async function smokePackagedSetupTerminal({ executable, agentDir, timeout
       process.exit(received ? 0 : 1);
     });
   `;
+  // Electron is a Windows GUI executable, so the PTY child must be a
+  // console executable even when the owning hub runs as Electron-as-Node.
+  const command = process.platform === 'win32'
+    ? path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+    : executable;
+  const argv = process.platform === 'win32'
+    ? ['-NoLogo', '-NoProfile', '-Command',
+      '[Console]::WriteLine("LOGIN_TTY:" + (![Console]::IsInputRedirected -and ![Console]::IsOutputRedirected).ToString().ToLower()); $received=[Console]::ReadLine() -eq "package-smoke"; [Console]::WriteLine($(if($received){"LOGIN_INPUT_OK"}else{"LOGIN_INPUT_FAILED"})); if(!$received){exit 1}']
+    : ['-e', childCode];
   const probe = `
     import assert from 'node:assert/strict';
     import { createSetupTerminal } from ${JSON.stringify(moduleUrl)};
     let output = '';
     let sentInput = false;
     const terminal = createSetupTerminal({
-      command: process.execPath,
-      argv: ['-e', ${JSON.stringify(childCode)}],
+      command: ${JSON.stringify(command)},
+      argv: ${JSON.stringify(argv)},
       cwd: process.cwd(),
       env: process.env,
       timeoutMs: 5_000,
