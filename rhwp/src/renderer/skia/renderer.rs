@@ -20,7 +20,7 @@ use crate::renderer::layer_renderer::{
     LayerRasterRenderer, LayerRenderResult, RasterOutputFormat, RasterRenderOptions,
     RasterRenderOutput,
 };
-use crate::renderer::render_tree::RenderLayerInfo;
+use crate::renderer::render_tree::{BoundingBox, RenderLayerInfo};
 use crate::renderer::{
     svg_arc_to_beziers, GradientFillInfo, LineStyle, PathCommand, ShapeStyle, StrokeDash,
 };
@@ -31,7 +31,38 @@ use super::font_lookup::{
     SystemFontFamilies,
 };
 use super::image_conv::{draw_image_bytes, draw_svg_fragment, ImageSampling};
-use super::text_replay::SkiaTextReplay;
+use super::text_replay::{draw_text_run, SkiaTextReplay};
+
+fn shadow_foreground_bbox(
+    bbox: BoundingBox,
+    nominal_height_pt: Option<f64>,
+    transformed: bool,
+) -> BoundingBox {
+    let Some(nominal_height_pt) = nominal_height_pt else {
+        return bbox;
+    };
+    let css_per_pt = 96.0 / 72.0;
+    let width_pt = bbox.width / css_per_pt;
+    let height_pt = bbox.height / css_per_pt;
+    if transformed
+        || !width_pt.is_finite()
+        || !height_pt.is_finite()
+        || !nominal_height_pt.is_finite()
+        || width_pt < 1.0
+        || height_pt < 1.0
+        || nominal_height_pt <= 0.0
+    {
+        return bbox;
+    }
+    // The effect preraster has whole-point dimensions. Its vertical raster origin
+    // moves when scaled height crosses a point boundary; hp:sz remains the anchor.
+    BoundingBox::new(
+        bbox.x,
+        bbox.y + (height_pt.floor() - nominal_height_pt.ceil()) * css_per_pt,
+        width_pt.floor() * css_per_pt,
+        height_pt.floor() * css_per_pt,
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum NativeGlyphRunReplayProofReason {
@@ -607,11 +638,20 @@ impl SkiaLayerRenderer {
         let clip_enabled = output_options.clip_enabled;
         let apply_dash = |paint: &mut Paint, dash: StrokeDash| {
             let base_width = paint.stroke_width().max(1.0);
+            // 점선은 선 굵기 비례 간격(한컴 규칙)이라 이미 실제 선폭이 곱해져 나온다.
+            let interval_scale = if matches!(dash, StrokeDash::Dot) {
+                1.0
+            } else {
+                base_width
+            };
             let intervals: Option<[f32; 6]> = match dash {
                 StrokeDash::Solid => None,
                 StrokeDash::Dash => Some([6.0, 3.0, 0.0, 0.0, 0.0, 0.0]),
                 StrokeDash::LongDash => Some([10.0, 3.0, 0.0, 0.0, 0.0, 0.0]),
-                StrokeDash::Dot => Some([2.0, 2.0, 0.0, 0.0, 0.0, 0.0]),
+                StrokeDash::Dot => {
+                    let (on, off) = crate::renderer::dot_dash_segments(paint.stroke_width() as f64);
+                    Some([on as f32, off as f32, 0.0, 0.0, 0.0, 0.0])
+                }
                 StrokeDash::Circle => {
                     paint.set_stroke_cap(paint::Cap::Round);
                     Some([0.1, 3.0, 0.0, 0.0, 0.0, 0.0])
@@ -623,7 +663,7 @@ impl SkiaLayerRenderer {
                 let intervals = intervals
                     .into_iter()
                     .filter(|value| *value > 0.0)
-                    .map(|value| value * base_width)
+                    .map(|value| value * interval_scale)
                     .collect::<Vec<_>>();
                 if let Some(effect) = PathEffect::dash(&intervals, 0.0) {
                     paint.set_path_effect(effect);
@@ -698,7 +738,8 @@ impl SkiaLayerRenderer {
             let mut text = Paint::default();
             text.set_anti_alias(true);
             text.set_color(Color::from_argb(220, 64, 64, 64));
-            canvas.draw_str(
+            draw_text_run(
+                canvas,
                 label,
                 (bbox.x as f32 + 4.0, (bbox.y + bbox.height / 2.0) as f32),
                 &font,
@@ -711,7 +752,9 @@ impl SkiaLayerRenderer {
                           original_size,
                           crop,
                           crop_reference_size,
-                          effect| {
+                          effect,
+                          has_shadow,
+                          is_picture| {
             draw_image_bytes(
                 canvas,
                 data,
@@ -725,6 +768,8 @@ impl SkiaLayerRenderer {
                 crop_reference_size,
                 effect,
                 ImageSampling::linear(),
+                has_shadow,
+                is_picture,
             )
         };
         let text_replay = SkiaTextReplay {
@@ -749,8 +794,12 @@ impl SkiaLayerRenderer {
                     canvas.translate((0.0, cy * 2.0));
                     canvas.scale((1.0, -1.0));
                 }
+                // [Task #1067] svg/web_canvas 와 동일 — 한쪽만 대칭이면 회전 부호 반전.
                 if transform.rotation != 0.0 {
-                    canvas.rotate(transform.rotation as f32, Some((cx, cy).into()));
+                    canvas.rotate(
+                        transform.rotation_after_flip() as f32,
+                        Some((cx, cy).into()),
+                    );
                 }
             };
 
@@ -905,38 +954,29 @@ impl SkiaLayerRenderer {
                                 canvas.draw_rect(rect, &paint);
                             }
                             if let Some(image) = &background.image {
-                                // [Issue #1156] 워터마크(밝기·대비가 둘 다 0 이 아님)
-                                // 인 배경 이미지만 반투명 합성한다. 밝기·대비가 0/0 인
-                                // 일반 배경 이미지는 불투명 그대로 (effect 그레이스케일
-                                // 등은 draw_image 가 컬러 필터로 처리).
-                                // svg.rs/web_canvas.rs render_page_background_image 정합.
-                                let is_watermark = image.is_watermark();
-                                if is_watermark {
-                                    use crate::renderer::render_tree::{
-                                        LEGACY_IMAGE_WATERMARK_OPACITY,
-                                        REAL_PICTURE_WATERMARK_PAGE_OPACITY,
-                                    };
-                                    let wm_opacity =
-                                        if image.is_real_picture_watermark_tone_preset() {
-                                            REAL_PICTURE_WATERMARK_PAGE_OPACITY
-                                        } else {
-                                            LEGACY_IMAGE_WATERMARK_OPACITY
-                                        };
-                                    let alpha = (255.0 * wm_opacity).round() as u32;
-                                    canvas.save_layer_alpha(Some(rect), alpha);
-                                }
-                                let rendered = draw_image(
+                                // 밝기·대비는 한컴 방식으로 픽셀에 굽는다 (반투명 합성 없음,
+                                // 한컴 Mac PDF 실측). 구운 픽셀에는 효과가 이미 들어 있다.
+                                let baked = crate::renderer::image_resolver::hancom_adjusted_picture_png_bytes(
                                     &image.data,
+                                    image.effect,
+                                    image.brightness,
+                                    image.contrast,
+                                );
+                                let (data, effect) = match baked.as_deref() {
+                                    Some(png) => (png, ImageEffect::RealPic),
+                                    None => (image.data.as_ref(), image.effect),
+                                };
+                                let rendered = draw_image(
+                                    data,
                                     *bbox,
                                     Some(image.fill_mode),
                                     None,
                                     None,
                                     None,
-                                    image.effect,
+                                    effect,
+                                    false,
+                                    true,
                                 );
-                                if is_watermark {
-                                    canvas.restore();
-                                }
                                 if !rendered && strict_resource_failures {
                                     return Err(HwpError::RenderError(
                                         "Skia page background image decode failed".to_string(),
@@ -972,6 +1012,7 @@ impl SkiaLayerRenderer {
                                 is_marker,
                                 run.is_para_end,
                                 run.is_line_break_end,
+                                run.display_text.is_some(),
                             );
                         }
                         PaintOp::GlyphRun { run, .. } => {
@@ -985,18 +1026,23 @@ impl SkiaLayerRenderer {
                         PaintOp::FootnoteMarker { bbox, marker } => {
                             let style = crate::renderer::TextStyle {
                                 font_family: marker.font_family.clone(),
-                                font_size: (marker.base_font_size * 0.55).max(7.0),
+                                // 각주 번호 위첨자: 본문 글꼴의 0.75 배율 (한컴 PDF 정합)
+                                font_size: (marker.base_font_size * 0.75).max(7.0),
                                 color: marker.color,
+                                bold: marker.bold,
                                 ..Default::default()
                             };
+                            let sup_size = style.font_size;
                             text_replay.draw_text(
                                 &marker.text,
                                 *bbox,
                                 &style,
-                                bbox.height * 0.4,
+                                // 본문 baseline 에서 (본문-위첨자) 크기 차만큼만 올려 top 정렬
+                                marker.baseline - (marker.base_font_size - sup_size) * 0.85,
                                 0.0,
                                 false,
                                 None,
+                                false,
                                 false,
                                 false,
                                 false,
@@ -1027,17 +1073,28 @@ impl SkiaLayerRenderer {
                             );
                             if let Some(fill) = rect
                                 .gradient
-                                .as_ref()
-                                .and_then(|gradient| gradient.colors.first().copied())
-                                .map(|color| {
-                                    let mut paint = Paint::default();
-                                    paint.set_anti_alias(true);
-                                    paint.set_style(paint::Style::Fill);
-                                    paint.set_color(colorref_to_skia(
-                                        color,
+                                .as_deref()
+                                .and_then(|gradient| {
+                                    make_gradient_fill_paint(
+                                        gradient,
+                                        bbox,
                                         rect.style.opacity as f32,
-                                    ));
-                                    paint
+                                    )
+                                })
+                                .or_else(|| {
+                                    rect.gradient
+                                        .as_ref()
+                                        .and_then(|gradient| gradient.colors.first().copied())
+                                        .map(|color| {
+                                            let mut paint = Paint::default();
+                                            paint.set_anti_alias(true);
+                                            paint.set_style(paint::Style::Fill);
+                                            paint.set_color(colorref_to_skia(
+                                                color,
+                                                rect.style.opacity as f32,
+                                            ));
+                                            paint
+                                        })
                                 })
                                 .or_else(|| make_fill_paint(&rect.style))
                             {
@@ -1080,17 +1137,29 @@ impl SkiaLayerRenderer {
                             );
                             if let Some(fill) = ellipse
                                 .gradient
-                                .as_ref()
-                                .and_then(|gradient| gradient.colors.first().copied())
-                                .map(|color| {
-                                    let mut paint = Paint::default();
-                                    paint.set_anti_alias(true);
-                                    paint.set_style(paint::Style::Fill);
-                                    paint.set_color(colorref_to_skia(
-                                        color,
+                                .as_deref()
+                                .and_then(|gradient| {
+                                    make_gradient_fill_paint(
+                                        gradient,
+                                        bbox,
                                         ellipse.style.opacity as f32,
-                                    ));
-                                    paint
+                                    )
+                                })
+                                .or_else(|| {
+                                    ellipse
+                                        .gradient
+                                        .as_ref()
+                                        .and_then(|gradient| gradient.colors.first().copied())
+                                        .map(|color| {
+                                            let mut paint = Paint::default();
+                                            paint.set_anti_alias(true);
+                                            paint.set_style(paint::Style::Fill);
+                                            paint.set_color(colorref_to_skia(
+                                                color,
+                                                ellipse.style.opacity as f32,
+                                            ));
+                                            paint
+                                        })
                                 })
                                 .or_else(|| make_fill_paint(&ellipse.style))
                             {
@@ -1185,6 +1254,20 @@ impl SkiaLayerRenderer {
                             resolved,
                         } => {
                             let effective_bbox = image.transform.effective_image_bbox(bbox);
+                            let effective_bbox = if let Some(shadow) = image.shadow.as_ref() {
+                                let matrix = canvas.local_to_device_as_3x3();
+                                let unsuitable_transform = image.transform.has_transform()
+                                    || !matrix.is_scale_translate()
+                                    || matrix.scale_x() <= 0.0
+                                    || matrix.scale_y() <= 0.0;
+                                shadow_foreground_bbox(
+                                    effective_bbox,
+                                    shadow.nominal_height_pt,
+                                    unsuitable_transform,
+                                )
+                            } else {
+                                effective_bbox
+                            };
                             if image.transform.has_transform() {
                                 open_shape_transform(image.transform, &effective_bbox);
                             }
@@ -1203,15 +1286,32 @@ impl SkiaLayerRenderer {
                                 };
                                 let opacity = image.opacity.clamp(0.0, 1.0);
                                 if opacity < 1.0 {
-                                    let rect = Rect::from_xywh(
-                                        effective_bbox.x as f32,
-                                        effective_bbox.y as f32,
-                                        effective_bbox.width as f32,
-                                        effective_bbox.height as f32,
-                                    );
                                     let alpha = (255.0 * opacity).round() as u32;
-                                    canvas.save_layer_alpha(Some(rect), alpha);
+                                    canvas.save_layer_alpha(None, alpha);
                                 }
+                                // 잘린 그림의 알파를 같은 변환 아래에서 그림자로 합성한다.
+                                let shadow_layer = image.shadow.as_ref().map(|shadow| {
+                                    let rgb =
+                                        u32::from_str_radix(&shadow.color[1..], 16).unwrap_or(0);
+                                    let color = Color4f::new(
+                                        ((rgb >> 16) & 255) as f32 / 255.0,
+                                        ((rgb >> 8) & 255) as f32 / 255.0,
+                                        (rgb & 255) as f32 / 255.0,
+                                        shadow.alpha as f32,
+                                    );
+                                    let mut paint = Paint::default();
+                                    paint.set_image_filter(skia_safe::image_filters::drop_shadow(
+                                        (shadow.offset_x as f32, shadow.offset_y as f32),
+                                        (shadow.blur_sigma as f32, shadow.blur_sigma as f32),
+                                        color,
+                                        None,
+                                        None,
+                                        None,
+                                    ));
+                                    canvas.save_layer(
+                                        &skia_safe::canvas::SaveLayerRec::default().paint(&paint),
+                                    );
+                                });
                                 let rendered = draw_image(
                                     data,
                                     effective_bbox,
@@ -1228,7 +1328,12 @@ impl SkiaLayerRenderer {
                                     image.crop,
                                     image.original_size_hu,
                                     effect,
+                                    image.shadow.is_some(),
+                                    true,
                                 );
+                                if shadow_layer.is_some() {
+                                    canvas.restore();
+                                }
                                 if opacity < 1.0 {
                                     canvas.restore();
                                 }
@@ -1258,38 +1363,23 @@ impl SkiaLayerRenderer {
                             }
                         }
                         PaintOp::Equation { bbox, equation } => {
-                            canvas.save();
-                            let scale_x = if equation.layout_box.width > 0.0 && bbox.width > 0.0 {
-                                bbox.width / equation.layout_box.width
-                            } else {
-                                1.0
-                            };
-                            if (scale_x - 1.0).abs() > 0.01 {
-                                canvas.translate((bbox.x as f32, bbox.y as f32));
-                                canvas.scale((scale_x as f32, 1.0));
-                                render_equation(
-                                    canvas,
-                                    &self.font_mgr,
-                                    &self.system_families,
-                                    &equation.layout_box,
-                                    0.0,
-                                    0.0,
-                                    equation.color,
-                                    equation.font_size,
-                                );
-                            } else {
-                                render_equation(
-                                    canvas,
-                                    &self.font_mgr,
-                                    &self.system_families,
-                                    &equation.layout_box,
-                                    bbox.x,
-                                    bbox.y,
-                                    equation.color,
-                                    equation.font_size,
-                                );
-                            }
-                            canvas.restore();
+                            // 한컴은 저장 폭보다 좁은 수식을 늘리지 않고 상자 왼쪽에 둔다
+                            // (math-001 실측: 525HU 상자의 `1`, 1050HU 상자의 `10` 모두
+                            // 자연 pitch 4.725pt 그대로).
+                            render_equation(
+                                canvas,
+                                &self.font_mgr,
+                                &self.custom_typefaces,
+                                &self.bundled_typefaces,
+                                &self.system_families,
+                                &equation.layout_box,
+                                bbox.x,
+                                bbox.y,
+                                equation.color,
+                                equation.font_size,
+                                &equation.font_name,
+                                &equation.version_info,
+                            );
                         }
                         PaintOp::FormObject { bbox, form } => {
                             self.draw_form_control(canvas, *bbox, form);
@@ -1421,7 +1511,7 @@ impl SkiaLayerRenderer {
                     let text_w = font.measure_str(label.as_ref(), Some(&tp)).0;
                     let tx = x + (w - text_w) / 2.0;
                     let ty = y + h / 2.0 + font.size() * 0.35;
-                    canvas.draw_str(label.as_ref(), (tx, ty), &font, &tp);
+                    draw_text_run(canvas, label.as_ref(), (tx, ty), &font, &tp);
                 }
             }
             FormType::CheckBox => {
@@ -1472,7 +1562,7 @@ impl SkiaLayerRenderer {
                     tp.set_color(fg_color);
                     let tx = bx + box_size + 4.0;
                     let ty = y + h / 2.0 + font.size() * 0.35;
-                    canvas.draw_str(caption.as_ref(), (tx, ty), &font, &tp);
+                    draw_text_run(canvas, caption.as_ref(), (tx, ty), &font, &tp);
                 }
             }
             FormType::RadioButton => {
@@ -1509,7 +1599,7 @@ impl SkiaLayerRenderer {
                     tp.set_color(fg_color);
                     let tx = cx + r + 4.0;
                     let ty = y + h / 2.0 + font.size() * 0.35;
-                    canvas.draw_str(caption.as_ref(), (tx, ty), &font, &tp);
+                    draw_text_run(canvas, caption.as_ref(), (tx, ty), &font, &tp);
                 }
             }
             FormType::ComboBox => {
@@ -1560,7 +1650,7 @@ impl SkiaLayerRenderer {
                     tp.set_color(fg_color);
                     let tx = x + 4.0;
                     let ty = y + h / 2.0 + font.size() * 0.35;
-                    canvas.draw_str(&form.text, (tx, ty), &font, &tp);
+                    draw_text_run(canvas, &form.text, (tx, ty), &font, &tp);
                 }
             }
             FormType::Edit => {
@@ -1584,7 +1674,7 @@ impl SkiaLayerRenderer {
                     tp.set_color(fg_color);
                     let tx = x + 4.0;
                     let ty = y + h / 2.0 + font.size() * 0.35;
-                    canvas.draw_str(&form.text, (tx, ty), &font, &tp);
+                    draw_text_run(canvas, &form.text, (tx, ty), &font, &tp);
                 }
             }
         }
@@ -1611,17 +1701,18 @@ fn gradient_fill_paint(
         return None;
     }
 
-    let colors = gradient
+    let mut colors = gradient
         .colors
         .iter()
         .map(|&color| Color4f::from(colorref_to_skia(color, opacity)))
         .collect::<Vec<_>>();
-    let positions = if gradient.positions.len() == colors.len()
+    let mut positions = if gradient.positions.len() == colors.len()
         && gradient
             .positions
             .iter()
             .all(|position| position.is_finite() && (0.0..=1.0).contains(position))
-        && gradient.positions.windows(2).all(|pair| pair[0] < pair[1])
+        && gradient.positions.windows(2).all(|pair| pair[0] <= pair[1])
+        && gradient.positions.first() < gradient.positions.last()
     {
         Some(
             gradient
@@ -1633,10 +1724,43 @@ fn gradient_fill_paint(
     } else {
         None
     };
-    let colors = gradient::Colors::new(&colors, positions.as_deref(), TileMode::Clamp, None);
-    let gradient_spec = gradient::Gradient::new(colors, gradient::Interpolation::default());
 
-    let shader = if gradient.gradient_type == 2 {
+    // 한컴 선형 채우기의 첫 색은 지정 중심에 있고, 끝 색은 양쪽 가장자리에 놓인다.
+    // 중심이 가장자리면 기존 단방향 채우기와 같다.
+    if gradient.gradient_type == 1
+        && colors.len() == 2
+        && gradient.positions.as_slice() == [0.0, 1.0]
+    {
+        let radians = (gradient.angle as f64).to_radians();
+        let dx = radians.sin() * bbox.width;
+        let dy = radians.cos() * bbox.height;
+        let distance_squared = dx * dx + dy * dy;
+        if distance_squared > 0.0 {
+            let center_dx = (gradient.center_x as f64 / 100.0 - 0.5) * bbox.width;
+            let center_dy = (gradient.center_y as f64 / 100.0 - 0.5) * bbox.height;
+            let center =
+                (0.5 + (center_dx * dx + center_dy * dy) / distance_squared).clamp(0.0, 1.0) as f32;
+            if center > 0.0 && center < 1.0 {
+                colors = vec![colors[1], colors[0], colors[1]];
+                positions = Some(vec![0.0, center, 1.0]);
+            } else if center >= 1.0 {
+                colors.swap(0, 1);
+            }
+        }
+    }
+    let gradient_colors =
+        gradient::Colors::new(&colors, positions.as_deref(), TileMode::Clamp, None);
+    let gradient_spec =
+        gradient::Gradient::new(gradient_colors, gradient::Interpolation::default());
+
+    let shader = if gradient.gradient_type == 3 {
+        let center = (
+            (bbox.x + bbox.width * gradient.center_x as f64 / 100.0) as f32,
+            (bbox.y + bbox.height * gradient.center_y as f64 / 100.0) as f32,
+        );
+        let angle = gradient.angle as f32;
+        gradient::shaders::sweep_gradient(center, (-angle, 180.0 - angle), &gradient_spec, None)
+    } else if gradient.gradient_type == 2 {
         let center = (
             (bbox.x + bbox.width * gradient.center_x as f64 / 100.0) as f32,
             (bbox.y + bbox.height * gradient.center_y as f64 / 100.0) as f32,
@@ -1709,6 +1833,34 @@ mod tests {
         image::load_from_memory(bytes)
             .expect("decode png")
             .to_rgba8()
+    }
+
+    #[test]
+    fn shadow_foreground_uses_nominal_height_at_raster_point_boundaries() {
+        let css_per_pt = 96.0 / 72.0;
+        let make =
+            |height_pt| BoundingBox::new(40.0, 80.0, 120.355 * css_per_pt, height_pt * css_per_pt);
+        let original = shadow_foreground_bbox(make(149.634), Some(149.6), false);
+        let enlarged = shadow_foreground_bbox(make(150.114), Some(149.6), false);
+        assert!((original.y - (80.0 - css_per_pt)).abs() < 1e-9);
+        assert!((original.height - 149.0 * css_per_pt).abs() < 1e-9);
+        assert!((enlarged.y - 80.0).abs() < 1e-9);
+        assert!((enlarged.height - 150.0 * css_per_pt).abs() < 1e-9);
+        assert!((original.width - 120.0 * css_per_pt).abs() < 1e-9);
+
+        let rotated_or_flipped = make(149.634);
+        let bypassed = shadow_foreground_bbox(rotated_or_flipped, Some(149.6), true);
+        assert_eq!(bypassed.y, rotated_or_flipped.y);
+        assert_eq!(bypassed.height, rotated_or_flipped.height);
+        let tiny = BoundingBox::new(40.0, 80.0, 0.5 * css_per_pt, 0.5 * css_per_pt);
+        assert_eq!(
+            shadow_foreground_bbox(tiny, Some(0.5), false).width,
+            tiny.width
+        );
+        assert_eq!(
+            shadow_foreground_bbox(tiny, None, false).height,
+            tiny.height
+        );
     }
 
     #[test]
@@ -2628,13 +2780,21 @@ mod tests {
             .render_raster_with_options(&tree, RasterRenderOptions::default())
             .expect("render shapes");
         let image = decode_rgba(&output.bytes);
-        let gradient_pixel = *image.get_pixel(4, 4);
+        // angle=0의 8px 세로 그라데이션. 픽셀 중심은 위 끝에서 0.5/8, 6.5/8이다.
+        let gradient_top = *image.get_pixel(4, 2);
+        let gradient_middle = *image.get_pixel(4, 5);
+        let gradient_bottom = *image.get_pixel(4, 8);
         let pattern_pixel = *image.get_pixel(18, 4);
         let ellipse_pixel = *image.get_pixel(7, 17);
         let path_pixel = *image.get_pixel(7, 29);
         let line_pixel = *image.get_pixel(24, 30);
 
-        assert_channel(gradient_pixel, 2, 180, 255);
+        assert_channel(gradient_top, 2, 235, 245);
+        assert_channel(gradient_top, 0, 10, 20);
+        assert_channel(gradient_bottom, 2, 43, 53);
+        assert_channel(gradient_bottom, 0, 202, 212);
+        assert!(gradient_top[2] > gradient_middle[2] && gradient_middle[2] > gradient_bottom[2]);
+        assert!(gradient_top[0] < gradient_middle[0] && gradient_middle[0] < gradient_bottom[0]);
         assert_channel(pattern_pixel, 1, 180, 255);
         assert_channel(ellipse_pixel, 0, 180, 255);
         assert_channel(path_pixel, 2, 180, 255);
@@ -2682,6 +2842,49 @@ mod tests {
             bottom[0] > top[0] + 50 && bottom[1] > top[1] + 30,
             "gradient must vary across the path instead of flattening to its first color: top={top:?}, bottom={bottom:?}"
         );
+    }
+
+    #[test]
+    fn flipped_rotated_path_flips_before_rotating_like_svg() {
+        // 좌상단 삼각형 + 좌우 대칭 + 90° 회전: 한컴/SVG 는 대칭(→우상단) 후 시계 방향
+        // 회전(→우하단)으로 그린다. 회전 부호를 반전하지 않으면 좌상단에 남는다.
+        let mut path = PathNode::new(
+            vec![
+                PathCommand::MoveTo(0.0, 0.0),
+                PathCommand::LineTo(10.0, 0.0),
+                PathCommand::LineTo(0.0, 10.0),
+                PathCommand::ClosePath,
+            ],
+            ShapeStyle {
+                fill_color: Some(0x00000000),
+                ..Default::default()
+            },
+            None,
+        );
+        path.transform = crate::renderer::render_tree::ShapeTransform {
+            rotation: 90.0,
+            horz_flip: true,
+            vert_flip: false,
+        };
+        let tree = PageLayerTree::new(
+            20.0,
+            20.0,
+            LayerNode::leaf(
+                BoundingBox::new(0.0, 0.0, 20.0, 20.0),
+                None,
+                vec![PaintOp::path(BoundingBox::new(0.0, 0.0, 20.0, 20.0), path)],
+            ),
+        );
+        let output = SkiaLayerRenderer::new()
+            .render_raster_with_options(&tree, RasterRenderOptions::default())
+            .expect("render flipped rotated path");
+        let image = decode_rgba(&output.bytes);
+
+        assert!(
+            image.get_pixel(17, 17)[3] > 200,
+            "대칭 후 회전하면 우하단에 그려져야 함"
+        );
+        assert_eq!(image.get_pixel(2, 2)[3], 0);
     }
 
     #[test]
@@ -3018,6 +3221,126 @@ mod tests {
     }
 
     #[test]
+    fn transparent_png_keeps_mac_pdf_edge_while_opaque_png_remains_visible() {
+        let transparent_edge = split_png(2, 2, [0, 0, 0, 0], [255, 255, 255, 255], false);
+        let tree = PageLayerTree::new(
+            4.0,
+            4.0,
+            LayerNode::leaf(
+                BoundingBox::new(0.0, 0.0, 4.0, 4.0),
+                None,
+                vec![PaintOp::image(
+                    BoundingBox::new(0.0, 0.0, 4.0, 4.0),
+                    ImageNode::new(1, Some(transparent_edge)),
+                    None,
+                )],
+            ),
+        );
+        let rendered = SkiaLayerRenderer::new()
+            .render_raster_with_options(
+                &tree,
+                RasterRenderOptions {
+                    transparent: false,
+                    ..Default::default()
+                },
+            )
+            .expect("render transparent png");
+        let edge = *decode_rgba(&rendered.bytes).get_pixel(1, 1);
+        assert!(edge[0] < 245 && edge[0] > 150, "edge={edge:?}");
+
+        let opaque = ImageNode::new(2, Some(solid_png([220, 20, 10, 255])));
+        let tree = PageLayerTree::new(
+            4.0,
+            4.0,
+            LayerNode::leaf(
+                BoundingBox::new(0.0, 0.0, 4.0, 4.0),
+                None,
+                vec![PaintOp::image(
+                    BoundingBox::new(0.0, 0.0, 4.0, 4.0),
+                    opaque,
+                    None,
+                )],
+            ),
+        );
+        let rendered = SkiaLayerRenderer::new()
+            .render_raster_with_options(&tree, RasterRenderOptions::default())
+            .expect("render opaque png");
+        let pixel = *decode_rgba(&rendered.bytes).get_pixel(2, 2);
+        assert!(
+            pixel[0] > 200 && pixel[1] < 40 && pixel[2] < 30,
+            "pixel={pixel:?}"
+        );
+    }
+
+    #[test]
+    fn enlarged_image_preserves_thin_gray_line_on_device_pixel_edges() {
+        let mut source = RgbaImage::from_pixel(8, 8, Rgba([255, 255, 255, 255]));
+        for x in 0..8 {
+            source.put_pixel(x, 3, Rgba([194, 194, 194, 255]));
+        }
+        let mut png = Cursor::new(Vec::new());
+        source.write_to(&mut png, ImageFormat::Png).unwrap();
+        let png = png.into_inner();
+        let render = |bbox: BoundingBox| {
+            let tree = PageLayerTree::new(
+                16.0,
+                16.0,
+                LayerNode::leaf(
+                    BoundingBox::new(0.0, 0.0, 16.0, 16.0),
+                    None,
+                    vec![PaintOp::image(
+                        bbox,
+                        ImageNode::new(1, Some(png.clone())),
+                        None,
+                    )],
+                ),
+            );
+            let output = SkiaLayerRenderer::new()
+                .render_raster_with_options(&tree, RasterRenderOptions::default())
+                .unwrap();
+            decode_rgba(&output.bytes)
+        };
+
+        let enlarged = render(BoundingBox::new(1.1, 1.1, 9.2, 9.2));
+        // 두 배치값은 600dpi 양자화 후 같은 10×10 디바이스 영역에 맞춰진다.
+        let same_device_extent = render(BoundingBox::new(1.2, 1.2, 9.6, 9.6));
+        assert_eq!(enlarged, same_device_extent);
+
+        let mut unsnapped_surface = surfaces::raster_n32_premul((16, 16)).unwrap();
+        let canvas = unsnapped_surface.canvas();
+        canvas.clear(Color::TRANSPARENT);
+        let source_image = skia_safe::Image::from_encoded(skia_safe::Data::new_copy(&png)).unwrap();
+        canvas.draw_image_rect_with_sampling_options(
+            &source_image,
+            None,
+            Rect::from_xywh(1.1, 1.1, 9.2, 9.2),
+            skia_safe::SamplingOptions::new(
+                skia_safe::FilterMode::Linear,
+                skia_safe::MipmapMode::None,
+            ),
+            &Paint::default(),
+        );
+        let unsnapped_data = png_encoder::encode_image(
+            None::<&mut skia_safe::gpu::DirectContext>,
+            &unsnapped_surface.image_snapshot(),
+            &png_encoder::Options::default(),
+        )
+        .unwrap();
+        let unsnapped = decode_rgba(unsnapped_data.as_bytes());
+        let preserved_line = enlarged.get_pixel(5, 5)[0];
+        let faded_line = unsnapped.get_pixel(5, 5)[0];
+        assert!(
+            preserved_line < faded_line,
+            "snapped={preserved_line}, unsnapped={faded_line}"
+        );
+        assert!(preserved_line < 210, "snapped={preserved_line}");
+
+        let minified = render(BoundingBox::new(1.17, 1.17, 3.35, 3.35));
+        let minified_aligned = render(BoundingBox::new(1.0, 1.0, 4.0, 4.0));
+        assert_ne!(minified, minified_aligned);
+    }
+
+    #[test]
     fn ignores_invalid_image_rects() {
         let tree = PageLayerTree::new(
             8.0,
@@ -3209,7 +3532,9 @@ mod tests {
             number: 1,
             text: "1)".to_string(),
             base_font_size: 18.0,
+            baseline: 20.0,
             font_family: String::new(),
+            bold: false,
             color: 0x00000000,
             section_index: 0,
             para_index: 0,
@@ -3581,12 +3906,14 @@ mod tests {
             color: 0x000000ff,
             font_size,
             font_name: "serif".to_string(),
+            version_info: "Equation Version 60".to_string(),
             section_index: Some(0),
             para_index: Some(0),
             control_index: Some(0),
             inner_control_index: None,
             cell_index: None,
             cell_para_index: None,
+            cell_context: None,
             note_ref: None,
         };
         let tree = PageLayerTree::new(
@@ -3630,12 +3957,14 @@ mod tests {
             color: 0x0000aa00,
             font_size,
             font_name: "serif".to_string(),
+            version_info: "Equation Version 60".to_string(),
             section_index: Some(0),
             para_index: Some(0),
             control_index: Some(0),
             inner_control_index: None,
             cell_index: None,
             cell_para_index: None,
+            cell_context: None,
             note_ref: None,
         };
         let tree = PageLayerTree::new(

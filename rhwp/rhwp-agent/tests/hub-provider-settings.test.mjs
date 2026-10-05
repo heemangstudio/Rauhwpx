@@ -51,7 +51,8 @@ async function fixture(t, { holdStartupDelayMs = 0 } = {}) {
   writeFakeCliBin(path.join(piRoot, 'prefix/node_modules/.bin'), 'pi', `
     if (process.argv.includes('--version')) { console.log('0.0.0-test'); process.exit(0); }
     const args = process.argv;
-    const prompt = args.at(-1);
+    // 실제 pi 처럼 프롬프트는 stdin 에서 읽는다.
+    const prompt = require('node:fs').readFileSync(0, 'utf8').trim();
     const userPrompt = prompt.split('<user_request>').at(-1).split('</user_request>')[0].trim();
     if (userPrompt === 'HOLD') {
       const emit = (text) => console.log(JSON.stringify({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: text } }));
@@ -131,6 +132,8 @@ test('live hub applies model/effort/provider changes after a turn and preserves 
   const codex = await start({ agent: 'codex', model: 'gpt-5.6-luna', effort: 'low', history });
   assert.equal(codex.agent, 'codex');
   assert.equal(codex.threadId, first.threadId);
+  const claude = await start({ agent: 'claude', model: 'claude-opus-5-6', effort: 'high', history });
+  assert.equal(claude.model, 'claude-opus-5-6');
   const back = await start({ history });
   assert.equal(back.agent, 'pi');
   assert.match((await turn('Continue again.')).prompt, /orchard/);

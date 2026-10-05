@@ -1,5 +1,6 @@
 import type { CloudController } from './desktop-cloud.ts';
 import { inferCloudLink } from './link.ts';
+import { suspendedSessionTitle } from './session-copy.ts';
 import { cloudLeaseBlocksLocal, type CloudEditorScope } from './editor-scope.ts';
 import type {
   CloudDisplayFrame,
@@ -70,7 +71,7 @@ export type ComposerTarget =
   | { kind: 'cloud-ready'; sessionId: string; threadId: string; documentId: string | null; expectedVersion: number }
   | {
       kind: 'cloud-blocked';
-      reason: 'not-accepting-messages' | 'timeline-unavailable';
+      reason: 'not-accepting-messages' | 'timeline-unavailable' | 'session-suspended';
       message: string;
     }
   | { kind: 'workspace-blocked'; reason: WorkspaceExecutionLock; message: string };
@@ -230,11 +231,7 @@ export function deriveComposerTarget(
     if (snapshot.session.kind === 'idle') {
       return { kind: 'cloud-start-ready' };
     }
-    return {
-      kind: 'cloud-blocked',
-      reason: 'not-accepting-messages',
-      message: '현재 Cloud 작업은 새 메시지를 받을 수 없습니다.',
-    };
+    return notAcceptingMessages(snapshot.session);
   }
   if (snapshot.session.kind === 'idle') {
     return { kind: 'cloud-start-ready' };
@@ -258,6 +255,18 @@ export function deriveComposerTarget(
       };
     }
     return { kind: 'cloud-ready', ...live };
+  }
+  return notAcceptingMessages(snapshot.session);
+}
+
+/** 멈춘 작업은 이유를 말한다. 입력칸 안내를 누르면 고칠 동작이 있는 Cloud 작업 창이 열린다. */
+function notAcceptingMessages(session: CloudSnapshot['session']): ComposerTarget {
+  if (session.kind === 'suspended') {
+    return {
+      kind: 'cloud-blocked',
+      reason: 'session-suspended',
+      message: suspendedSessionTitle(session.code, session.provider, session.reason),
+    };
   }
   return {
     kind: 'cloud-blocked',

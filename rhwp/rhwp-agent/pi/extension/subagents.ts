@@ -25,6 +25,10 @@ export const LIVE_STDOUT_CAP = OUTPUT_CAP * 4;
 const WAIT_CAP = 48 * 1024;
 const WAIT_EACH = 16 * 1024;
 const STDERR_TAIL = 4_000;
+const RAW_STDOUT_TAIL = 4 * 1024;
+// agent_end/turn_end 줄은 실행 전체의 메시지(이미지 base64 포함)를 싣는다. 이런 줄은
+// 보고서 텍스트가 없으므로 버퍼에 쌓지 않고 다음 줄바꿈까지 건너뛴다.
+const STDOUT_LINE_MAX_BYTES = 1024 * 1024;
 const CAPABILITY_RESPONSE_MAX_BYTES = 64 * 1024;
 const CAPABILITY_TIMEOUT_MS = 8_000;
 const PROMPT_MAX_BYTES = 32 * 1024;
@@ -66,7 +70,7 @@ interface ChildCapabilityRequest {
 const ROLE_PROMPTS: Record<SubagentRole, string> = {
   'doc-editor':
     'You edit ONE assigned region of the live rhwp document through the rhwp tools. '
-    + 'First re-read your region yourself (get_structure, then get_text_range); never trust '
+    + 'First re-read your region yourself with one get_structure range text:"full"; never trust '
     + 'coordinates quoted in your spawn prompt. Stay strictly inside your assigned paragraph '
     + 'range and never change document-wide settings. Batch independent edits with apply_edits, '
     + 'chain expectedRevision on sequential writes, and verify the assigned region before finishing.',
@@ -116,7 +120,8 @@ export function buildChildArgv(opts: {
   const modelId = String(opts.model ?? '').replace(/^openrouter\//, '');
   const argv = ['--mode', 'json', '--model', `openrouter/${modelId}`];
   if (opts.reasoning && opts.effort) argv.push('--thinking', String(opts.effort));
-  const prompt = opts.prompt.startsWith('-') ? ` ${opts.prompt}` : opts.prompt;
+  // pi는 '-'로 시작하는 위치 인자를 플래그로, '@'로 시작하면 첨부 파일 경로로 해석한다.
+  const prompt = /^[-@]/.test(opts.prompt) ? ` ${opts.prompt}` : opts.prompt;
   argv.push(
     '--session-dir', opts.sessionDir,
     '--session-id', opts.sessionId,
@@ -134,20 +139,6 @@ export function spawnIdFromResult(result: unknown): string | null {
   if (typeof direct === 'string' && /^sa-\d+$/.test(direct)) return direct;
   const text = typeof result === 'string' ? result : JSON.stringify(rec?.content ?? result ?? '');
   return text.match(/sa-\d+/)?.[0] ?? null;
-}
-
-export function assistantTextFromJsonl(stdout: string): string {
-  let text = '';
-  for (const line of stdout.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    let event: any;
-    try { event = JSON.parse(line); } catch { continue; }
-    const update = event?.assistantMessageEvent;
-    if (event?.type === 'message_update' && update?.type === 'text_delta' && update.delta) {
-      text += String(update.delta);
-    }
-  }
-  return text;
 }
 
 function truncateOutput(text: string, maxBytes: number): string {
@@ -595,20 +586,66 @@ export function createSubagentManager(opts: {
     let stderrTail = '';
     let processError = '';
     let settled = false;
-    let controlLineTail = '';
+    // stdout JSONL을 줄 단위로 바로 해석한다. record.output에는 assistant text_delta만
+    // 쌓고, JSON이 아닌 줄은 진단용으로 짧은 rawTail에만 남긴다.
+    let lineChunks: string[] = [];
+    let lineBytes = 0;
+    let skippingLine = false;
+    let outputBytes = 0;
+    let rawTail = '';
+    const handleStdoutLine = (line: string) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      let event: any;
+      try {
+        event = JSON.parse(trimmed);
+      } catch {
+        rawTail = capUtf8Tail(rawTail ? `${rawTail}\n${trimmed}` : trimmed, RAW_STDOUT_TAIL);
+        return;
+      }
+      const update = event?.assistantMessageEvent;
+      if (event?.type === 'message_update' && update?.type === 'text_delta' && update.delta) {
+        const delta = String(update.delta);
+        record.output += delta;
+        outputBytes += Buffer.byteLength(delta);
+        // 델타마다 96 KB를 다시 인코딩하지 않도록 두 배를 넘을 때만 자른다.
+        if (outputBytes > LIVE_STDOUT_CAP * 2) {
+          record.output = capUtf8Tail(record.output, LIVE_STDOUT_CAP);
+          outputBytes = Buffer.byteLength(record.output);
+        }
+      } else if (event?.type === 'agent_settled' && platform === 'win32') {
+        void beginOwnedCleanup();
+      }
+    };
+    const flushStdoutLine = () => {
+      if (!skippingLine && lineChunks.length > 0) handleStdoutLine(lineChunks.join(''));
+      lineChunks = [];
+      lineBytes = 0;
+      skippingLine = false;
+    };
     process.stdout?.setEncoding?.('utf8');
     process.stderr?.setEncoding?.('utf8');
     process.stdout?.on('data', (chunk: string) => {
       const text = String(chunk);
-      record.output = capUtf8Tail(record.output + text, LIVE_STDOUT_CAP);
-      if (platform === 'win32') {
-        const lines = `${controlLineTail}${text}`.split(/\r?\n/);
-        controlLineTail = capUtf8Tail(lines.pop() ?? '', 8 * 1024);
-        for (const line of lines) {
-          try {
-            if (JSON.parse(line)?.type === 'agent_settled') void beginOwnedCleanup();
-          } catch {}
+      let start = 0;
+      while (start < text.length) {
+        const newline = text.indexOf('\n', start);
+        const end = newline === -1 ? text.length : newline;
+        if (!skippingLine && end > start) {
+          const segment = text.slice(start, end);
+          const bytes = Buffer.byteLength(segment);
+          if (lineBytes + bytes > STDOUT_LINE_MAX_BYTES) {
+            lineChunks = [];
+            lineBytes = 0;
+            skippingLine = true;
+          } else {
+            lineChunks.push(segment);
+            lineBytes += bytes;
+          }
         }
+        if (newline === -1) break;
+        flushStdoutLine();
+        start = newline + 1;
       }
     });
     process.stderr?.on('data', (chunk: string) => {
@@ -621,6 +658,7 @@ export function createSubagentManager(opts: {
     process.once('close', (code, signal) => {
       if (settled) return;
       settled = true;
+      flushStdoutLine();
       void (async () => {
         let cleanupUnconfirmed = false;
         const cleanup = await beginOwnedCleanup();
@@ -652,7 +690,7 @@ export function createSubagentManager(opts: {
         }
         const secrets = diagnosticSecrets.get(id) ?? secretValues(env, capability);
         record.output = redactDiagnosticText(
-          assistantTextFromJsonl(record.output) || record.output,
+          capUtf8Tail(record.output, LIVE_STDOUT_CAP) || rawTail,
           secrets,
         );
         if (stderrTail && record.status === 'error' && record.errorText === 'cancelled') {
@@ -768,10 +806,7 @@ export function createSubagentManager(opts: {
     const secrets = diagnosticSecrets.get(record.id) ?? secretValues(env, record.capability);
     let text = `${record.id} "${record.title}" ${verb}`;
     if (record.errorText) text += `\nError: ${redactDiagnosticText(record.errorText, secrets)}`;
-    const rawBody = record.status === 'running'
-      ? assistantTextFromJsonl(record.output) || record.output
-      : record.output;
-    const body = redactDiagnosticText(rawBody, secrets);
+    const body = redactDiagnosticText(record.output, secrets);
     if (body) text += `\n\n${truncateOutput(body, maxBytes)}`;
     return text;
   }

@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { CloudError, PROVIDERS } from './protocol.mjs';
+import { storedCredentialIsNewer } from './provider-credentials.mjs';
 
 export const PROVIDER_AUTH = Object.freeze({
   claude: Object.freeze({
@@ -80,7 +81,7 @@ export function parseProviderAuth(provider, value) {
   return { provider: name, secrets, files };
 }
 
-export async function applyProviderAuth(provider, bundle, { vault, authDirectory }) {
+export async function applyProviderAuth(provider, bundle, { vault, authDirectory, keepNewer = true }) {
   const parsed = bundle.provider ? bundle : parseProviderAuth(provider, bundle);
   const name = assertProvider(parsed.provider);
   if (name !== provider) throw new CloudError('INVALID_PROVIDER', 'Provider path does not match the auth body');
@@ -89,14 +90,22 @@ export async function applyProviderAuth(provider, bundle, { vault, authDirectory
   for (const [secretName, secretValue] of Object.entries(parsed.secrets)) {
     vault.set(name, secretName, secretValue);
   }
+  const importedFiles = [];
+  const keptFiles = [];
   for (const [relative, content] of Object.entries(parsed.files)) {
     const target = resolveAuthFile(root, relative);
+    if (keepNewer && storedCredentialIsNewer(target, relative, content)) {
+      keptFiles.push(relative);
+      continue;
+    }
     await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
     await writeFile(target, content, { encoding: 'utf8', mode: 0o600 });
+    importedFiles.push(relative);
   }
   return {
     provider: name,
     importedSecrets: Object.keys(parsed.secrets),
-    importedFiles: Object.keys(parsed.files),
+    importedFiles,
+    ...(keptFiles.length ? { keptFiles } : {}),
   };
 }

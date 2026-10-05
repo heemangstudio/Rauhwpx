@@ -462,8 +462,10 @@ pub(crate) fn parse_fill(r: &mut ByteReader) -> Fill {
                 15 => ImageFillMode::None,
                 _ => ImageFillMode::TileAll,
             },
-            brightness: r.read_i8().unwrap_or(0),
+            // 한컴 저장본은 명암(대비)을 밝기보다 먼저 쓴다 (스펙 표와 순서가 반대).
+            // 같은 문서의 HWPX(bright=70 contrast=-50)와 HWP5 바이트를 대조해 확인.
             contrast: r.read_i8().unwrap_or(0),
+            brightness: r.read_i8().unwrap_or(0),
             effect: r.read_u8().unwrap_or(0),
             bin_data_id: r.read_u16().unwrap_or(0),
         });
@@ -808,8 +810,9 @@ fn parse_numbering(data: &[u8]) -> Result<Numbering, DocInfoError> {
             number_format,
         };
 
-        // 번호 형식 문자열 (가변 길이)
-        let format_len = r.read_u16().unwrap_or(0) as usize;
+        // 번호 형식 문자열 (가변 길이). 길이는 남은 WCHAR 수로 제한한다
+        // (과대 길이는 레코드마다 최대 65,535회의 실패한 읽기를 반복했다).
+        let format_len = (r.read_u16().unwrap_or(0) as usize).min(r.remaining() / 2);
         if format_len > 0 {
             let mut format_str = String::new();
             for _ in 0..format_len {

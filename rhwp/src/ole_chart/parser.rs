@@ -153,7 +153,11 @@ fn parse_legacy_hwp_chart_contents(
     }
 
     let series_count = series_names.len();
-    let expected_values = series_count * categories.len();
+    // wasm32 에서 곱이 넘쳐 0 으로 감기면 빈 값 배열이 "일치" 해 아래 색인이 범위를
+    // 벗어난다. 넘침은 인식할 수 없는 격자로 본다.
+    let expected_values = series_count.checked_mul(categories.len()).ok_or_else(|| {
+        unsupported_legacy_layout(probe, "legacy HWP chart data grid shape not recognized")
+    })?;
     let values = extract_grid_values(bytes, grid_start, grid_end, expected_values);
     if values.len() != expected_values {
         return Err(unsupported_legacy_layout(
@@ -252,15 +256,15 @@ struct LabelCandidate {
 
 fn extract_string_labels(bytes: &[u8], start: usize, end: usize) -> Vec<LabelCandidate> {
     let mut labels = Vec::new();
+    // 첫 등장 순서를 지키며 중복을 거른다. 예전의 `labels.iter().any` 는 라벨 수의
+    // 제곱에 비례해 큰 Contents 에서 레이아웃마다 멈췄다.
+    let mut seen = std::collections::HashSet::new();
     let mut offset = start;
     while offset + 4 <= end {
         let len = read_u16(bytes, offset) as usize;
         if (2..=128).contains(&len) && offset + 2 + len <= end {
             if let Some(text) = decode_legacy_text_payload(&bytes[offset + 2..offset + 2 + len]) {
-                if !labels
-                    .iter()
-                    .any(|label: &LabelCandidate| label.text == text)
-                {
+                if seen.insert(text.clone()) {
                     labels.push(LabelCandidate {
                         text,
                         end: offset + 2 + len,
@@ -321,44 +325,49 @@ fn is_plausible_chart_label(text: &str) -> bool {
     has_data_char
 }
 
+/// `start..end` 에서 그럴듯한 f64 가 8바이트 간격으로 정확히 `expected_count` 개
+/// 이어지는 첫 위치의 값들을 돌려준다. 없으면 흩어진 후보로 내려간다.
+///
+/// 위치 `o` 에서 시작하는 연속 구간은 `o - 8k` 에서 시작하는 구간의 접미사이고,
+/// 더 긴 구간에는 길이가 정확히 `expected_count` 인 접미사가 있다. 따라서 "오름차순
+/// 첫 위치 중 구간 길이가 정확히 `expected_count` 인 곳" 이 곧 답이다. 예전 구현은
+/// 위치마다 구간을 끝까지 다시 훑어 O(N²) 였고(1 MB 구간이면 약 80억 번 읽기),
+/// 레이아웃마다 다시 불려 편집기가 멈췄다. 8바이트 위상(offset % 8)마다 현재 구간의
+/// 끝을 한 번만 구해 두면 구간 길이를 O(1) 에 알 수 있어 전체가 O(N) 이다.
 fn extract_grid_values(bytes: &[u8], start: usize, end: usize, expected_count: usize) -> Vec<f64> {
     if expected_count == 0 || start >= end || end > bytes.len() {
         return Vec::new();
     }
 
-    let mut best = Vec::new();
-    let scan_end = end.saturating_sub(8);
+    // 위상별로 마지막에 구한 연속 구간의 끝(배타적). 이 값보다 앞선 같은 위상의
+    // 위치는 모두 그 구간 안에 있다.
+    let mut run_end = [0usize; 8];
+    let Some(scan_end) = end.checked_sub(8) else {
+        return extract_sparse_grid_values(bytes, start, end, expected_count);
+    };
     for offset in start..=scan_end {
-        let value = read_f64(bytes, offset);
-        if !is_plausible_grid_value(value) {
+        if !is_plausible_grid_value(read_f64(bytes, offset)) {
             continue;
         }
 
-        let mut run = Vec::new();
-        let mut cursor = offset;
-        while cursor + 8 <= end {
-            let value = read_f64(bytes, cursor);
-            if !is_plausible_grid_value(value) {
-                break;
+        let phase = offset % 8;
+        if offset >= run_end[phase] {
+            let mut cursor = offset + 8;
+            while cursor + 8 <= end && is_plausible_grid_value(read_f64(bytes, cursor)) {
+                cursor += 8;
             }
-            run.push(value);
-            cursor += 8;
+            run_end[phase] = cursor;
         }
 
-        if run.len() == expected_count {
-            return run;
-        }
-        if run.len() > best.len() {
-            best = run;
+        let run_len = (run_end[phase] - offset) / 8;
+        if run_len == expected_count {
+            return (0..expected_count)
+                .map(|i| read_f64(bytes, offset + i * 8))
+                .collect();
         }
     }
 
-    if best.len() >= expected_count {
-        best.truncate(expected_count);
-        best
-    } else {
-        extract_sparse_grid_values(bytes, start, end, expected_count)
-    }
+    extract_sparse_grid_values(bytes, start, end, expected_count)
 }
 
 fn extract_sparse_grid_values(
@@ -568,5 +577,137 @@ mod tests {
 
         let values = extract_grid_values(&bytes, 0, bytes.len(), 2);
         assert!(values.is_empty());
+    }
+
+    /// 선형화 이전의 O(N²) 구현. 새 구현이 모든 입력에서 같은 값을 내는지 비교한다.
+    fn extract_grid_values_quadratic(
+        bytes: &[u8],
+        start: usize,
+        end: usize,
+        expected_count: usize,
+    ) -> Vec<f64> {
+        if expected_count == 0 || start >= end || end > bytes.len() || end < 8 {
+            return Vec::new();
+        }
+
+        let mut best = Vec::new();
+        let scan_end = end.saturating_sub(8);
+        for offset in start..=scan_end {
+            let value = read_f64(bytes, offset);
+            if !is_plausible_grid_value(value) {
+                continue;
+            }
+
+            let mut run = Vec::new();
+            let mut cursor = offset;
+            while cursor + 8 <= end {
+                let value = read_f64(bytes, cursor);
+                if !is_plausible_grid_value(value) {
+                    break;
+                }
+                run.push(value);
+                cursor += 8;
+            }
+
+            if run.len() == expected_count {
+                return run;
+            }
+            if run.len() > best.len() {
+                best = run;
+            }
+        }
+
+        if best.len() >= expected_count {
+            best.truncate(expected_count);
+            best
+        } else {
+            extract_sparse_grid_values(bytes, start, end, expected_count)
+        }
+    }
+
+    #[test]
+    fn linear_grid_scan_matches_the_quadratic_scan() {
+        // 고정 시드 xorshift — 외부 난수 크레이트 없이 재현 가능한 입력을 만든다.
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+
+        for _ in 0..3000 {
+            let len = (next() % 160) as usize;
+            let mut bytes: Vec<u8> = (0..len).map(|_| next() as u8).collect();
+            // 그럴듯한 f64(작은 정수)를 곳곳에, 때로는 8바이트 간격으로 이어 박는다.
+            let plants = next() % 12;
+            let mut at = (next() % 16) as usize;
+            for _ in 0..plants {
+                if at + 8 > bytes.len() {
+                    break;
+                }
+                let value = (1 + next() % 4) as f64;
+                bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+                at += if next() % 3 == 0 {
+                    (next() % 13) as usize + 1
+                } else {
+                    8
+                };
+            }
+
+            let start = (next() % (len as u64 + 1)) as usize;
+            let end = start + (next() % ((len - start) as u64 + 1)) as usize;
+            let expected_count = (next() % 6) as usize;
+            assert_eq!(
+                extract_grid_values(&bytes, start, end, expected_count),
+                extract_grid_values_quadratic(&bytes, start, end, expected_count),
+                "len={len} start={start} end={end} expected={expected_count}"
+            );
+        }
+    }
+
+    /// 확인용 legacy 차트 Contents: 프로브 헤더 + VtChart + VtDataGrid(계열 라벨 1,
+    /// 항목 라벨 1, 그 뒤 1.0 이 `doubles` 개 이어짐) + 경계 표식.
+    fn legacy_chart_contents_with_long_value_run(doubles: usize) -> Vec<u8> {
+        let mut bytes = vec![0u8; 0x60];
+        bytes[0..4].copy_from_slice(&0x0001_0000u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&0x0000_0020u32.to_le_bytes());
+        bytes[8..12].copy_from_slice(&0x0000_0020u32.to_le_bytes());
+        bytes[12..16].copy_from_slice(&0x0000_0060u32.to_le_bytes());
+        bytes.extend_from_slice(b"VtChart\0");
+        bytes.extend_from_slice(b"VtDataGrid\0");
+        bytes.extend_from_slice(&[0u8; 4]); // StoredVersion
+
+        // 계열 라벨 "가나" (EUC-KR) + NUL 쌍
+        bytes.extend_from_slice(&6u16.to_le_bytes());
+        bytes.extend_from_slice(&[0xB0, 0xA1, 0xB3, 0xAA, 0, 0]);
+        // 항목 라벨 "10" + NUL 쌍
+        bytes.extend_from_slice(&4u16.to_le_bytes());
+        bytes.extend_from_slice(&[b'1', b'0', 0, 0]);
+        for _ in 0..doubles {
+            bytes.extend_from_slice(&1.0f64.to_le_bytes());
+        }
+        bytes.extend_from_slice(b"VtLegend\0");
+        bytes
+    }
+
+    /// 1.0 이 이어진 긴 값 구간. 예전 스캔은 위치마다 구간을 끝까지 다시 읽어
+    /// 1 MB 에 약 86억 번을 읽었다(레이아웃마다 수십 초 멈춤).
+    #[test]
+    fn long_value_runs_parse_in_linear_time() {
+        let bytes = legacy_chart_contents_with_long_value_run(128 * 1024);
+        assert!(bytes.len() > 1024 * 1024);
+
+        let started = std::time::Instant::now();
+        let chart = parse_ole_chart_contents(&bytes).expect("parse legacy chart");
+        let elapsed = started.elapsed();
+
+        assert_eq!(chart.categories, ["10"]);
+        assert_eq!(chart.series.len(), 1);
+        assert_eq!(chart.series[0].values, [1.0]);
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "1 MB legacy chart took {elapsed:?}"
+        );
     }
 }

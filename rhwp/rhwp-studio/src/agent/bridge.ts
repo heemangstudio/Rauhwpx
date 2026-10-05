@@ -17,16 +17,20 @@ import {
   websocketHubUrl,
   type RendererSessionContext,
 } from '../desktop-integration.ts';
-import { RevisionTracker } from './revision.ts';
-import { AgentToolExecutor } from './tool-executor.ts';
-import { PendingEditManager } from './pending-edits.ts';
+import { RevisionTracker, timeSeededRevision } from './revision.ts';
+import { AgentToolExecutor, toolTraceNow, type ToolTraceTimings } from './tool-executor.ts';
+import { PendingEditManager, editReportNote } from './pending-edits.ts';
 import { PendingOverlayRenderer } from './pending-overlay.ts';
 import { readProviderQuota, readRemoteBalance } from './provider-quota-protocol.ts';
 import { PendingRequestRegistry } from './pending-requests.ts';
-import { AgentTypewriterReveal } from './typewriter-reveal.ts';
+import { AgentEditFollow } from './agent-edit-follow.ts';
+import { TurnSnapshots, type BuiltTurnSnapshot } from './turn-snapshot.ts';
 import { deriveAgentEditingLease, planModeAllowsUserEditing } from './editing-lease.ts';
 import {
+  setModelCatalog,
   setPiModels as setPiModelRegistry,
+  type CatalogAgent,
+  type ModelCatalogEntry,
 } from './models.ts';
 import {
   AGENT_PROTOCOL_VERSION,
@@ -88,6 +92,7 @@ import type {
   StagedReference,
   MessageReferenceStatus,
   StructuredPlan,
+  PendingEditsChangeEvent,
   UsageModelBreakdown,
   UsageSource,
   UsageSummary,
@@ -209,6 +214,28 @@ export function providerTurnEndMatches(
   return activeTurnId === null || eventTurnId === activeTurnId;
 }
 
+/**
+ * turn-end 한 건의 스테이징 처리를 가른다.
+ * 성공은 명시적 종료 이유에만 인정하고, 그 외 모든 종료(오류·중단·max_tokens·
+ * 재연결·알 수 없는 이유)는 어떤 권한 모드에서도 편집을 버리지 않고 검토로
+ * 보낸다. 자동 커밋은 성공한 unrestricted 턴뿐이다.
+ */
+export function turnEndDisposition(
+  event: { stopReason?: unknown; errorMessage?: unknown },
+  permissionProfile: PermissionProfile,
+  turnHadError: boolean,
+): { succeeded: boolean; outcome: 'review' | 'commit' } {
+  const succeeded = !turnHadError
+    && !event.errorMessage
+    && (event.stopReason === 'end_turn'
+      || event.stopReason === 'completed'
+      || event.stopReason === 'success');
+  return {
+    succeeded,
+    outcome: succeeded && permissionProfile === 'unrestricted' ? 'commit' : 'review',
+  };
+}
+
 export interface ChatHistoryEntry {
   role: 'user' | 'assistant';
   text: string;
@@ -219,10 +246,18 @@ export type SidebarBridge = Omit<AgentBridge, 'pendingEdits'> & {
   readonly pendingEdits: Pick<PendingEditManager, 'getChangeSets' | 'onChange' | 'approve' | 'reject'>;
 };
 
+export interface HubFontAccess {
+  baseUrl: string;
+  sessionId: string;
+  token: string;
+}
+
 export interface AgentBridge {
   readonly pendingEdits: PendingEditManager;
   getDocumentSelectionIdentity(): { documentId: string | null; revision: number };
   getConnectionState(): 'connecting' | 'connected' | 'disconnected' | 'replaced';
+  /** 허브 PC의 설치 글꼴을 읽는 데 쓰는 HTTP 주소와 세션 capability. 세션 구성 전에는 null. */
+  getHubFontAccess(): HubFontAccess | null;
   getActiveAgent(): AgentName | null;
   isTurnRunning(): boolean;
   getPendingUserQuestion(): UserQuestionInteraction | null;
@@ -237,6 +272,8 @@ export interface AgentBridge {
   reconnectNow(): Promise<void>;
   /** 로컬 CLI 설치 상태. refresh=true 면 허브가 새로 프로브한다. */
   requestProviderStatus(refresh?: boolean): Promise<ProviderStatusMap | null>;
+  /** Available concrete models from the local provider. */
+  requestModelCatalog(agent: CatalogAgent, refresh?: boolean): Promise<ModelCatalogEntry[] | null>;
   requestAgentSetupStatus(refresh?: boolean): Promise<AgentSetupStatusMap | null>;
   requestAccountStatus(): Promise<AccountSessionStatus | null>;
   loginAccount(): Promise<AccountLoginStart | null>;
@@ -852,6 +889,12 @@ function readAgentSetupStatus(value: unknown, agent: AgentName): AgentSetupStatu
     version: typeof src['version'] === 'string' ? src['version'] : null,
     authenticated: src['authenticated'] === true,
     authMethod,
+    authSource: src['authSource'] === 'app' || src['authSource'] === 'api-key' || src['authSource'] === 'local'
+      ? src['authSource']
+      : null,
+    authVerifiedAt: typeof src['authVerifiedAt'] === 'number' && Number.isFinite(src['authVerifiedAt'])
+      ? src['authVerifiedAt']
+      : null,
     keyTail: typeof src['keyTail'] === 'string' ? src['keyTail'] : null,
     account: typeof src['account'] === 'string' ? src['account'] : null,
     authenticating: src['authenticating'] === true,
@@ -1165,6 +1208,27 @@ function readPiCatalog(value: unknown): PiCatalogModel[] {
   return out;
 }
 
+function readModelCatalog(value: unknown): ModelCatalogEntry[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const models: ModelCatalogEntry[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const model = raw as Record<string, unknown>;
+    if (typeof model.id !== 'string' || !model.id.trim() || seen.has(model.id)) continue;
+    seen.add(model.id);
+    models.push({
+      id: model.id,
+      label: typeof model.label === 'string' && model.label.trim() ? model.label : model.id,
+      ...(typeof model.description === 'string' ? { description: model.description } : {}),
+      ...(Array.isArray(model.supportedEfforts)
+        ? { supportedEfforts: model.supportedEfforts.filter((effort): effort is string => typeof effort === 'string') }
+        : {}),
+    });
+  }
+  return models;
+}
+
 function readCheckpointTitleResult(value: unknown): CheckpointTitleResult | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const src = value as Record<string, unknown>;
@@ -1196,8 +1260,8 @@ export class AgentBridgeImpl implements AgentBridge {
 
   private revision: RevisionTracker;
   private overlay: PendingOverlayRenderer;
-  private reveal: AgentTypewriterReveal;
-  private revealUnsub: (() => void) | null = null;
+  private editFollow: AgentEditFollow;
+  private pendingChangeUnsub: (() => void) | null = null;
   private executor: AgentToolExecutor;
 
   private url = '';
@@ -1209,7 +1273,7 @@ export class AgentBridgeImpl implements AgentBridge {
   private readonly options?: AgentBridgeOptions;
   private ws: WebSocket | null = null;
   private state: ConnectionState = 'disconnected';
-  /** 지금까지 실패한 연결 시도 수. 연결이 열리면 0 으로 돌아간다. */
+  /** 지금까지 실패한 연결 시도 수. 허브의 welcome 을 받으면 0 으로 돌아간다. */
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1230,6 +1294,8 @@ export class AgentBridgeImpl implements AgentBridge {
   private pendingUserQuestionId: string | null = null;
   private pendingUserQuestion: UserQuestionInteraction | null = null;
   private pendingInterrupt = false;
+  /** 끊긴 사이 누른 로그인 취소. 재연결하면 보내서 허브의 로그인 실행을 끝낸다. */
+  private pendingSetupCancels = new Map<string, unknown>();
   private disposed = false;
 
   private listeners = new Set<(e: SidebarEvent) => void>();
@@ -1242,6 +1308,20 @@ export class AgentBridgeImpl implements AgentBridge {
   private phase: AgentPhase = 'direct';
   private capabilityEpoch: number | null = null;
   private latestPlan: StructuredPlan | null = null;
+  private planExecutionTurn: {
+    planId: string;
+    turnId: string;
+    existingSetIds: Set<string>;
+    invalidated: boolean;
+  } | null = null;
+  private planReview: { planId: string; turnId: string; setIds: Set<string>; rejected: boolean } | null = null;
+  private pendingPlanExecutionResult: {
+    v: number;
+    type: 'chat-plan-execution-result';
+    planId: string;
+    turnId: string;
+    status: 'awaiting-review' | 'completed' | 'blocked' | 'interrupted';
+  } | null = null;
   private activeAgent: AgentName | null = null;
   private turnRunning = false;
   /** Hub-issued identity for the one root provider turn allowed to mutate. */
@@ -1249,6 +1329,8 @@ export class AgentBridgeImpl implements AgentBridge {
   private interruptedProviderTurnId: string | null = null;
   private editingAgent: AgentName = 'codex';
   private activeToolRequests = 0;
+  /** 마지막 허브 프레임을 받은 시각 (epoch ms) — 추적 중인 tool-request 의 수신 시각으로 쓴다. */
+  private frameReceivedAt = 0;
   private activeToolRequestControllers = new Map<number, {
     controller: AbortController;
     turnBound: boolean;
@@ -1264,6 +1346,8 @@ export class AgentBridgeImpl implements AgentBridge {
   private workflowSwitchPending = false;
   private workflowBeforeSwitch: { workflow: AgentWorkflow; phase: AgentPhase } | null = null;
   private turnHadError = false;
+  /** 에이전트에게 알릴 대기 편집 보고 — 턴 중이면 다음 도구 결과에, 아니면 다음 턴 맥락으로 보낸다 */
+  private editReport: string[] = [];
   private pendingTurnOpen = false;
   private chatStartSent = false;
   private pendingChatStart: {
@@ -1288,6 +1372,10 @@ export class AgentBridgeImpl implements AgentBridge {
     stagedReferenceIds?: string[];
     resolve(messageId: string | null): void;
   }> = [];
+  /** 사용자 메시지에 싣는 문서 읽기와, 이 채팅의 에이전트가 마지막으로 본 문서 상태. */
+  private turnSnapshots: TurnSnapshots;
+  /** 캔버스가 알린 활성 쪽 (캐럿 쪽이 보이면 그 쪽, 아니면 뷰포트 쪽). */
+  private activePageIndex: number | null = null;
   private threadId = '';
   private documentId: string | null = null;
   private documentName: string | null = null;
@@ -1299,7 +1387,12 @@ export class AgentBridgeImpl implements AgentBridge {
   private activeTemplateId: string | null = null;
 
   constructor(deps: AgentBridgeDeps, opts?: AgentBridgeOptions) {
-    this.revision = new RevisionTracker(deps.eventBus);
+    // revision 은 문서 인스턴스에 묶고, 페이지 로드마다 다른 값에서 시작한다 — 다른 문서나
+    // 새로고침 이전 페이지에서 든 expectedRevision 이 우연히 맞아 엉뚱한 문서에 쓰이지 않게 한다.
+    this.revision = new RevisionTracker(deps.eventBus, {
+      documentInstance: () => deps.wasm.documentInstance,
+      initialRevision: timeSeededRevision(),
+    });
     this.overlay = new PendingOverlayRenderer({
       getCaretPosition: () => deps.inputHandler.getCursorPosition(),
       canvasView: deps.canvasView,
@@ -1312,17 +1405,21 @@ export class AgentBridgeImpl implements AgentBridge {
       inputHandler: deps.inputHandler,
       canvasView: deps.canvasView,
       overlay: this.overlay,
+      contentNeutral: (run) => this.executor.coverContentNeutral(run),
     });
-    this.reveal = new AgentTypewriterReveal({
+    this.editFollow = new AgentEditFollow({
       canvasView: deps.canvasView,
       wasm: deps.wasm,
       eventBus: deps.eventBus,
     });
-    // 검토 대기/승인/거절/무효화 시 타자기 커버를 걷어 최종 텍스트를 보여 준다.
-    this.revealUnsub = this.pendingEdits.onChange((e) => {
+    // 검토 대기/승인/거절/무효화 뒤에는 대기 중인 편집 위치 이동을 버린다.
+    this.pendingChangeUnsub = this.pendingEdits.onChange((e) => {
       if (e.type === 'set-finalized' || e.type === 'approved' || e.type === 'rejected' || e.type === 'invalidated') {
-        this.reveal.finishAll();
+        this.editFollow.cancel();
       }
+      const note = editReportNote(e);
+      if (note) this.queueEditReport(note);
+      this.handlePlanEditChange(e);
     });
     this.executor = new AgentToolExecutor({
       wasm: deps.wasm,
@@ -1335,9 +1432,23 @@ export class AgentBridgeImpl implements AgentBridge {
       isReadOnly: deps.isReadOnly,
       canPublishCloudDocument: deps.canPublishCloudDocument,
     });
+    this.turnSnapshots = new TurnSnapshots({
+      read: (args) => this.executor.structureSnapshot(args),
+      documentUnchangedSince: (revision) => this.executor.documentUnchangedSince(revision),
+      revision: () => this.revision.revision,
+      pageCount: () => deps.wasm.pageCount,
+      activePage: () => this.activePageIndex,
+      documentInstance: () => deps.wasm.documentInstance,
+    });
 
     this.options = opts;
     this.documentNotifyUnsubs.push(
+      deps.eventBus.on('active-page-changed', (active) => {
+        const pageIndex = (active as { pageIndex?: unknown } | null)?.pageIndex;
+        this.activePageIndex = typeof pageIndex === 'number' && Number.isInteger(pageIndex) && pageIndex >= 0
+          ? pageIndex
+          : null;
+      }),
       deps.eventBus.on('document-changed', () => this.markUserDocumentEdit()),
       deps.eventBus.on('document-mutated', () => this.markUserDocumentEdit()),
       deps.eventBus.on('document-saved', () => this.notifyPlanningDocumentSaved()),
@@ -1354,9 +1465,25 @@ export class AgentBridgeImpl implements AgentBridge {
   }
 
   private async initializeConnection() {
+    const seq = this.reconnectSeq;
     await this.requestHubLaunch();
-    if (this.disposed || !(await this.refreshSessionContext())) return;
+    if (this.disposed) return;
+    if (!await this.refreshSessionContext()) {
+      this.retryAfterContextFailure(seq);
+      return;
+    }
     this.connect();
+  }
+
+  /**
+   * 세션 구성 조회가 실패해도 백오프 재시도를 이어 간다 — 허브 기동이 늦은 재연결이
+   * 바로 이 경우라, 여기서 멈추면 창 포커스·온라인 이벤트나 수동 재연결 전까지 끊긴 채 남는다.
+   * 폐기됐거나 더 새 시도(reconnectSeq)가 있으면 그쪽에 맡긴다.
+   */
+  private retryAfterContextFailure(seq: number): void {
+    if (this.disposed || seq !== this.reconnectSeq || this.state === 'connected') return;
+    this.reconnectAttempt++;
+    this.scheduleReconnect();
   }
 
   private async refreshSessionContext() {
@@ -1381,6 +1508,12 @@ export class AgentBridgeImpl implements AgentBridge {
       this.setState('disconnected');
       return false;
     }
+  }
+
+  getHubFontAccess(): HubFontAccess | null {
+    // 허브는 /studio 연결로 등록된 세션의 capability만 받는다.
+    if (this.disposed || this.state !== 'connected' || !this.httpBaseUrl || !this.sessionId || !this.referenceToken) return null;
+    return { baseUrl: this.httpBaseUrl, sessionId: this.sessionId, token: this.referenceToken };
   }
 
   private applySessionContext(context: RendererSessionContext) {
@@ -1537,7 +1670,10 @@ export class AgentBridgeImpl implements AgentBridge {
     this.setState('connecting');
     await this.requestHubLaunch();
     if (this.disposed || seq !== this.reconnectSeq || this.getConnectionState() === 'connected') return;
-    if (!await this.refreshSessionContext()) return;
+    if (!await this.refreshSessionContext()) {
+      this.retryAfterContextFailure(seq);
+      return;
+    }
     this.forceReconnect();
   }
 
@@ -1573,7 +1709,6 @@ export class AgentBridgeImpl implements AgentBridge {
     ws.onopen = () => {
       if (this.disposed || this.ws !== ws) return;
       this.clearConnectTimer();
-      this.reconnectAttempt = 0;
       this.chatStartSent = false;
       this.setState('connected');
       // 끊긴 사이에 끝난 도구 결과를 먼저 흘려보낸다 — 허브의 인플라이트 호출이
@@ -1586,6 +1721,9 @@ export class AgentBridgeImpl implements AgentBridge {
         this.pendingInterrupt = false;
       }
       this.flushPendingQuestionAnswer();
+      for (const [key, frame] of this.pendingSetupCancels) {
+        if (this.sendJson(frame)) this.pendingSetupCancels.delete(key);
+      }
       if (this.browserbaseOverride !== null) {
         this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'browserbase-credentials-set', ...this.browserbaseOverride });
       }
@@ -1595,6 +1733,7 @@ export class AgentBridgeImpl implements AgentBridge {
     };
     ws.onmessage = (ev) => {
       if (this.disposed || this.ws !== ws) return;
+      this.frameReceivedAt = performance.timeOrigin + performance.now();
       this.handleFrame(ev.data);
     };
     ws.onclose = (ev) => {
@@ -1602,6 +1741,8 @@ export class AgentBridgeImpl implements AgentBridge {
       this.ws = null;
       this.clearConnectTimer();
       this.abortActiveToolRequests();
+      // 끊긴 사이 허브 세션이 바뀌었거나 보낸 결과가 닿지 않았을 수 있다 — 다음 메시지는 문서를 새로 싣는다.
+      this.turnSnapshots?.reset();
       if (this.disposed) return;
       // 응답을 기다리던 요청은 연결과 함께 사라진다 — null 로 닫아 UI 가 멈추지 않게.
       this.requests.cancelAll();
@@ -1643,8 +1784,19 @@ export class AgentBridgeImpl implements AgentBridge {
   private async connectAfterHub(seq: number): Promise<void> {
     await this.requestHubLaunch();
     if (this.disposed || seq !== this.reconnectSeq || this.state === 'connected') return;
-    if (!await this.refreshSessionContext()) return;
+    if (!await this.refreshSessionContext()) {
+      this.retryAfterContextFailure(seq);
+      return;
+    }
     this.connect();
+  }
+
+  /** 허브 세션이 있어야만 성립하는 채팅 상태(턴·열린 편집 턴·시작된 에이전트·질문)가 남아 있는가. */
+  private chatLiveLocally(): boolean {
+    return this.turnRunning
+      || this.pendingTurnOpen
+      || Boolean(this.activeAgent)
+      || Boolean(this.pendingUserQuestion);
   }
 
   /** 재시도 계기(시도 횟수·남은 시간)를 실은 connection 이벤트. */
@@ -1826,28 +1978,67 @@ export class AgentBridgeImpl implements AgentBridge {
   }
 
   /**
-   * 성공한 턴의 편집 처리는 권한 프로필이 가른다:
-   * 안전(safe) → 'review' (사용자 승인 대기), 전체(unrestricted) → 'commit' (자동 반영).
-   */
-  private successfulTurnOutcome(): 'review' | 'commit' {
-    return this.permissionProfile === 'safe' ? 'review' : 'commit';
-  }
-
-  /**
-   * 결과를 모르는 턴 종료(재연결 등)의 기본값: 안전 모드는 편집을 검토 대기로
-   * 남겨 사용자가 결정하고, 전체 모드는 기존대로 롤백한다.
+   * 결과를 모르는 턴 종료(재연결·시작 실패 등)의 기본값. 어떤 비성공 종료도
+   * 편집을 되돌리지 않는다 — 기본값은 어느 모드에서나 'review' + 중단 표시다.
    */
   private endPendingTurn(
-    outcome: 'commit' | 'reject' | 'review' =
-      this.permissionProfile === 'safe' ? 'review' : 'reject',
+    outcome: 'commit' | 'review' = 'review',
+    turnStopped = true,
   ) {
     if (!this.pendingTurnOpen) return;
     try {
-      this.pendingEdits.endTurn(outcome);
+      this.pendingEdits.endTurn(outcome, { turnStopped });
     } finally {
       this.executor.endTurn();
       this.pendingTurnOpen = false;
     }
+  }
+
+  private beginPlanExecutionTurn(): void {
+    if (this.phase !== 'implementing' || !this.latestPlan?.execution
+      || this.latestPlan.execution.status === 'completed' || !this.activeProviderTurnId) {
+      this.planExecutionTurn = null;
+      return;
+    }
+    if (this.planExecutionTurn?.turnId === this.activeProviderTurnId
+      && this.planExecutionTurn.planId === this.latestPlan.planId) return;
+    this.planExecutionTurn = {
+      planId: this.latestPlan.planId,
+      turnId: this.activeProviderTurnId,
+      existingSetIds: new Set(this.pendingEdits.getChangeSets().map((set) => set.id)),
+      invalidated: false,
+    };
+  }
+
+  private handlePlanEditChange(e: PendingEditsChangeEvent): void {
+    if (e.type === 'invalidated' && this.planExecutionTurn) this.planExecutionTurn.invalidated = true;
+    const review = this.planReview;
+    if (!review || this.latestPlan?.planId !== review.planId) return;
+    if (e.type === 'invalidated' && (!e.changeSetId || review.setIds.has(e.changeSetId))) {
+      review.rejected = true;
+      this.reportPlanExecution(review, 'blocked');
+      if (!this.pendingEdits.getChangeSets().some((set) => review.setIds.has(set.id))) this.planReview = null;
+    }
+    if ((e.type === 'approved' || e.type === 'rejected') && review.setIds.delete(e.changeSetId)) {
+      review.rejected ||= e.type === 'rejected';
+      if (review.setIds.size === 0) {
+        const complete = !review.rejected && this.latestPlan.execution?.steps.every((step) => step.status === 'completed');
+        this.reportPlanExecution(review, complete ? 'completed' : 'blocked');
+        this.planReview = null;
+      }
+    }
+  }
+
+  private reportPlanExecution(
+    turn: { planId: string; turnId: string },
+    status: 'awaiting-review' | 'completed' | 'blocked' | 'interrupted',
+  ): void {
+    if (this.latestPlan?.planId !== turn.planId) return;
+    this.pendingPlanExecutionResult = {
+      v: AGENT_PROTOCOL_VERSION, type: 'chat-plan-execution-result',
+      planId: turn.planId, turnId: turn.turnId, status,
+    };
+    this.sendJson(this.pendingPlanExecutionResult);
   }
 
   // ─── incoming frames ──────────────────────────────────────
@@ -1882,16 +2073,25 @@ export class AgentBridgeImpl implements AgentBridge {
   private handleMessage(msg: any): void {
     switch (msg.type) {
       case 'welcome': {
+        // 백오프는 프로토콜 버전 검사를 통과한 welcome 에서만 접는다 — 열리자마자 닫히는
+        // 소켓(다른 버전의 오래된 허브 등)이 250ms 재시도를 끝없이 반복하지 않게 한다.
+        this.reconnectAttempt = 0;
         // A reconnect snapshot predates the start command replayed on socket open.
         if (this.pendingChatStart) return;
         const session = msg.session;
         const sessionThreadId = typeof session?.threadId === 'string' ? session.threadId : '';
-        if (this.threadId && sessionThreadId !== this.threadId) {
+        if (this.threadId && session && sessionThreadId !== this.threadId) {
           // pendingChatStart 는 자기 응답이 올 때까지 살아 있으므로,
           // 재연결 소켓은 이미 마지막으로 선택한 스레드를 다시 보낸 상태다.
           return;
         }
+        // session:null 은 허브에 에이전트 세션이 없다는 권위 있는 답이다 (허브 재시작 등).
+        // 스레드만 복원된 유휴 상태는 그대로 두고, 살아 있다고 믿던 채팅만 아래에서 정리한다 —
+        // 그러지 않으면 turnRunning·편집 잠금이 새 허브가 보내지 않을 turn-end 를 영영 기다린다.
+        if (!session && this.threadId && !this.chatLiveLocally()) return;
         const wasRunning = this.turnRunning;
+        const lostAgent = this.activeAgent ?? this.editingAgent;
+        let hubLostTurn = false;
         if (session && isAgentName(session.agent)) {
           this.selectedAgent = session.agent;
           this.activeAgent = session.agent;
@@ -1957,6 +2157,7 @@ export class AgentBridgeImpl implements AgentBridge {
             this.emit({ type: 'user-question-requested', interaction: pendingQuestion, replayed: true });
           }
           if (this.turnRunning) {
+            this.beginPlanExecutionTurn();
             try {
               this.beginPendingTurn(session.agent);
             } catch (e) {
@@ -1970,7 +2171,9 @@ export class AgentBridgeImpl implements AgentBridge {
             }
           }
         } else {
+          hubLostTurn = wasRunning;
           this.activeAgent = null;
+          this.planExecutionTurn = null;
           const droppedQuestion = this.pendingUserQuestion;
           this.pendingUserQuestion = null;
           this.pendingUserQuestionId = null;
@@ -2004,6 +2207,12 @@ export class AgentBridgeImpl implements AgentBridge {
         }
         this.syncEditingLease();
         this.emit({ type: 'workflow-changed', ...this.workflowState() });
+        if (this.pendingPlanExecutionResult && this.pendingPlanExecutionResult.planId === this.latestPlan?.planId) {
+          this.sendJson(this.pendingPlanExecutionResult);
+        } else {
+          this.pendingPlanExecutionResult = null;
+        }
+        if (this.planReview?.planId !== this.latestPlan?.planId) this.planReview = null;
         this.flushQueuedMessages();
         if (wasRunning && !this.turnRunning) {
           // 연결이 끊긴 사이에 끝난 턴 — 잃어버린 turn-end 를 합성해 UI 를 되돌린다.
@@ -2017,6 +2226,19 @@ export class AgentBridgeImpl implements AgentBridge {
           // setState 는 상태가 같으면 무시하므로 직접 emit 해 사이드바가
           // isTurnRunning() 으로 재동기화하도록 한다.
           this.emitConnection();
+        }
+        if (hubLostTurn) {
+          // 허브가 턴과 함께 사라졌다 — 새 허브는 turn-end 를 보내지 않으므로 사이드바의
+          // 진행 표시·스트림·도구 행을 같은 경로로 마무리한다. 편집은 검토 대기로 남아 있다.
+          this.emit({
+            type: 'agent',
+            event: {
+              type: 'turn-end',
+              agent: lostAgent,
+              stopReason: 'exited',
+              errorMessage: '에이전트 허브가 다시 시작되어 작업이 중단됐습니다.',
+            },
+          });
         }
         break;
       }
@@ -2079,6 +2301,8 @@ export class AgentBridgeImpl implements AgentBridge {
         const replacedSession = this.pendingChatStart !== null;
         this.pendingChatStart = null;
         this.chatStartSent = false;
+        // 허브가 프로바이더를 새로 띄웠을 수 있다 — 이전 세션이 본 문서 상태는 이 세션의 것이 아니다.
+        this.turnSnapshots?.reset();
         if (replacedSession) this.clearPendingQuestionCancellation();
         if (isAgentName(msg.agent)) {
           this.selectedAgent = msg.agent;
@@ -2182,6 +2406,17 @@ export class AgentBridgeImpl implements AgentBridge {
         this.syncWorkflowState(msg, 'plan', 'implementing', true);
         const planId = typeof msg.planId === 'string' ? msg.planId : (this.latestPlan?.planId ?? '');
         this.emit({ type: 'implementation-started', planId, ...this.workflowState() });
+        break;
+      }
+      case 'plan-progress': {
+        if (!isStructuredPlan(msg.latestPlan) || !msg.latestPlan.execution
+          || msg.planId !== msg.latestPlan.planId || msg.planId !== this.latestPlan?.planId) break;
+        this.syncWorkflowState(msg, 'plan', 'implementing', true);
+        if (this.pendingPlanExecutionResult && this.pendingPlanExecutionResult.planId === msg.planId
+          && this.pendingPlanExecutionResult.status === msg.latestPlan.execution.status) {
+          this.pendingPlanExecutionResult = null;
+        }
+        this.emit({ type: 'plan-progress', planId: msg.planId, ...this.workflowState() });
         break;
       }
       case 'skills-catalog': {
@@ -2309,6 +2544,25 @@ export class AgentBridgeImpl implements AgentBridge {
         this.emit({ type: 'provider-status', providers });
         break;
       }
+      case 'model-catalog': {
+        if (msg.agent !== 'claude' && msg.agent !== 'codex') break;
+        const models = readModelCatalog(msg.models);
+        setModelCatalog(msg.agent, models);
+        if (typeof msg.requestId === 'string') this.requests.settle(msg.requestId, models);
+        this.emit({ type: 'model-catalog', agent: msg.agent,
+          requestId: typeof msg.requestId === 'string' ? msg.requestId : '', models });
+        break;
+      }
+      case 'model-catalog-error': {
+        if (typeof msg.requestId === 'string') this.requests.settle(msg.requestId, null);
+        if (msg.agent === 'claude' || msg.agent === 'codex') {
+          this.emit({ type: 'model-catalog-error', agent: msg.agent,
+            requestId: typeof msg.requestId === 'string' ? msg.requestId : '',
+            code: typeof msg.code === 'string' ? msg.code : 'CATALOG_FAILED',
+            message: typeof msg.message === 'string' ? msg.message : 'Could not load models' });
+        }
+        break;
+      }
       case 'agent-setup-status': {
         const statuses = readAgentSetupStatuses(msg.statuses);
         if (typeof msg.requestId === 'string') this.requests.settle(msg.requestId, statuses);
@@ -2371,6 +2625,7 @@ export class AgentBridgeImpl implements AgentBridge {
           ...(typeof msg.authRunId === 'string' ? { authRunId: msg.authRunId } : {}),
           code: typeof msg.code === 'string' ? msg.code : 'AGENT_SETUP_FAILED',
           message: typeof msg.message === 'string' ? msg.message : 'Agent setup failed',
+          ...(typeof msg.detail === 'string' && msg.detail ? { detail: msg.detail } : {}),
         });
         break;
       }
@@ -2508,6 +2763,8 @@ export class AgentBridgeImpl implements AgentBridge {
         break;
       }
       case 'chat-error': {
+        // 거절된 메시지의 문서 스냅샷은 프로바이더에 닿지 않았다.
+        this.turnSnapshots?.reset();
         if (typeof msg.requestId === 'string' && msg.requestId !== this.pendingChatStart?.requestId) break;
         if (this.pendingChatStart && msg.session && isAgentName(msg.session.agent)) {
           // Validation/busy rejection leaves the previous provider alive.
@@ -2609,15 +2866,24 @@ export class AgentBridgeImpl implements AgentBridge {
   }
 
   private handleAgentEvent(event: AgentStreamEvent): void {
+    // 서브에이전트가 돈 턴에는 루트가 보지 못한 쓰기가 섞인다. Claude·Codex 서브에이전트의 도구 요청에는
+    // 표시가 없으므로 task 이벤트(와 parentTaskId 가 붙은 이벤트)로 알아챈다.
+    if (event.type === 'task-start' || event.type === 'task-progress' || event.type === 'task-end'
+      || ('parentTaskId' in event && event.parentTaskId)) {
+      this.turnSnapshots?.noteSubagentActivity();
+    }
     switch (event.type) {
       case 'turn-start':
+        this.turnSnapshots?.beginTurn();
         this.turnRunning = true;
         this.activeProviderTurnId = typeof event.turnId === 'string' ? event.turnId : null;
         this.editingAgent = event.agent;
         this.turnHadError = false;
+        this.beginPlanExecutionTurn();
         try {
           this.beginPendingTurn(event.agent);
         } catch (e) {
+          this.turnHadError = true;
           console.warn('[AgentBridge] beginTurn 실패:', e);
         }
         break;
@@ -2627,18 +2893,34 @@ export class AgentBridgeImpl implements AgentBridge {
         this.turnRunning = false;
         this.activeProviderTurnId = null;
         this.abortProviderToolRequests(eventTurnId ?? undefined);
-        const succeeded = !this.turnHadError
-          && !event.errorMessage
-          && (event.stopReason === 'end_turn'
-            || event.stopReason === 'completed'
-            || event.stopReason === 'success');
+        const disposition = turnEndDisposition(event, this.permissionProfile, this.turnHadError);
+        let succeeded = disposition.succeeded;
         this.turnHadError = false;
+        // 끝까지 가지 못한 턴은 프로바이더가 맥락을 이어 가지 않을 수 있다 (첫 턴 중단 뒤 새 세션).
+        if (!succeeded) this.turnSnapshots?.reset();
         if (this.pendingTurnOpen) {
           try {
-            this.endPendingTurn(succeeded ? this.successfulTurnOutcome() : 'reject');
+            this.endPendingTurn(disposition.outcome, !succeeded);
           } catch (e) {
+            succeeded = false;
             console.warn('[AgentBridge] endTurn 실패:', e);
           }
+        }
+        this.flushEditReport();
+        const planTurn = this.planExecutionTurn;
+        this.planExecutionTurn = null;
+        if (planTurn?.turnId === eventTurnId && this.latestPlan?.planId === planTurn.planId) {
+          const priorReview = this.planReview?.planId === planTurn.planId ? this.planReview : null;
+          const setIds = new Set(this.pendingEdits.getChangeSets()
+            .filter((set) => !planTurn.existingSetIds.has(set.id) || priorReview?.setIds.has(set.id))
+            .filter((set) => set.ops.length > 0).map((set) => set.id));
+          this.planReview = setIds.size > 0
+            ? { planId: planTurn.planId, turnId: planTurn.turnId, setIds, rejected: planTurn.invalidated || priorReview?.rejected === true }
+            : null;
+          const complete = this.latestPlan.execution?.steps.every((step) => step.status === 'completed') === true;
+          this.reportPlanExecution(planTurn, !succeeded ? 'interrupted'
+            : planTurn.invalidated || priorReview?.rejected || !complete ? 'blocked'
+              : setIds.size > 0 ? 'awaiting-review' : 'completed');
         }
         break;
       }
@@ -2695,8 +2977,14 @@ export class AgentBridgeImpl implements AgentBridge {
     const requestIsActive = () => !controller.signal.aborted && belongsToActiveTurn();
     const tool = typeof msg.tool === 'string' ? msg.tool : '';
     const args = msg.args;
+    const parentTask = typeof msg.parentTaskId === 'string' && msg.parentTaskId ? { parentTaskId: msg.parentTaskId } : {};
     const agent: AgentName = isAgentName(msg.agent) ? msg.agent : (this.activeAgent ?? 'claude');
     this.editingAgent = agent;
+    // Pi 자식 요청은 표시가 붙어 온다 — 편대가 도는 턴이다.
+    if (parentTask.parentTaskId) this.turnSnapshots?.noteSubagentActivity();
+    // 채팅 루트 에이전트가 실행 직전까지 최신 문서를 알고 있었을 때만, 이 결과의 revision 까지를 본 것으로 잇는다.
+    const extendsShownDocument = turnBound && !parentTask.parentTaskId
+      && this.turnSnapshots?.agentIsCurrent() === true;
     // 허브가 이미 구상 중이면 로컬 전환이 늦어도 도구 호출로 문서를 잠그지 않는다.
     if (
       isAgentWorkflow(msg.workflow)
@@ -2706,6 +2994,10 @@ export class AgentBridgeImpl implements AgentBridge {
       this.workflow = msg.workflow;
       this.phase = msg.phase;
     }
+    // 허브가 추적 중이면(RHWP_TOOL_TRACE) 스튜디오 구간 타이밍을 응답에 싣는다.
+    const trace: ToolTraceTimings | null = msg.trace
+      ? { stIn: Math.round(this.frameReceivedAt * 1000) / 1000, stStart: toolTraceNow() }
+      : null;
     this.activeToolRequests += 1;
     this.syncEditingLease();
     void this.executor
@@ -2718,10 +3010,18 @@ export class AgentBridgeImpl implements AgentBridge {
         permissionProfile: this.permissionProfile,
         template: readDocumentTemplate(msg.template) ?? undefined,
         requestIsActive,
+        ...(trace ? { trace } : {}),
       })
       .then((result) => {
         if (!requestIsActive()) return;
-        this.sendToolResponse({ v: AGENT_PROTOCOL_VERSION, type: 'tool-response', id, ok: true, result });
+        const reported = this.withEditReport(result);
+        if (trace) trace.stSend = toolTraceNow();
+        this.sendToolResponse({
+          v: AGENT_PROTOCOL_VERSION, type: 'tool-response', id, ok: true, result: reported,
+          ...(trace ? { trace } : {}),
+        });
+        if (extendsShownDocument) this.turnSnapshots.noteToolResult(reported);
+        this.notifyToolExecuted({ type: 'tool-executed', tool, args, ok: true, result: reported, ...parentTask });
       })
       .catch((e: unknown) => {
         if (!requestIsActive()) return;
@@ -2729,7 +3029,12 @@ export class AgentBridgeImpl implements AgentBridge {
           e instanceof AgentToolError
             ? { code: e.code, message: e.message }
             : { code: 'RPC_ERROR', message: e instanceof Error ? e.message : String(e) };
-        this.sendToolResponse({ v: AGENT_PROTOCOL_VERSION, type: 'tool-response', id, ok: false, error });
+        if (trace) trace.stSend = toolTraceNow();
+        this.sendToolResponse({
+          v: AGENT_PROTOCOL_VERSION, type: 'tool-response', id, ok: false, error,
+          ...(trace ? { trace } : {}),
+        });
+        this.notifyToolExecuted({ type: 'tool-executed', tool, args, ok: false, error, ...parentTask });
       })
       .finally(() => {
         if (this.activeToolRequestControllers.get(id) === request) {
@@ -2737,6 +3042,37 @@ export class AgentBridgeImpl implements AgentBridge {
         }
         releaseEditingLease();
       });
+  }
+
+  /**
+   * 버려지거나 되돌리지 못한 대기 편집을 에이전트에게 알린다. 턴 중에는 다음 도구 결과에
+   * 싣고, 턴 밖(승인/거절/턴 종료)에서는 허브가 다음 사용자 메시지 맥락에 붙이도록 보낸다.
+   */
+  private queueEditReport(note: string): void {
+    (this.editReport ??= []).push(note);
+    if (!this.turnRunning) this.flushEditReport();
+  }
+
+  private flushEditReport(): void {
+    if (!this.editReport?.length) return;
+    const notes = this.editReport.splice(0);
+    if (!this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'chat-edit-report', notes })) {
+      this.editReport.unshift(...notes.slice(-8));
+    }
+  }
+
+  /** 사이드바 도구 행용 알림 — 표시가 실패해도 이미 보낸 도구 응답에는 영향이 없어야 한다. */
+  private notifyToolExecuted(e: Extract<SidebarEvent, { type: 'tool-executed' }>): void {
+    try {
+      this.emit(e);
+    } catch (err) {
+      console.warn('[AgentBridge] 도구 실행 알림 실패:', err);
+    }
+  }
+
+  private withEditReport(result: unknown): unknown {
+    if (!this.editReport?.length || result === null || typeof result !== 'object' || Array.isArray(result)) return result;
+    return { ...(result as Record<string, unknown>), editReport: this.editReport.splice(0) };
   }
 
   /** 소켓이 닫혀 있으면 결과를 버리지 않고 재연결 때까지 붙잡아 둔다. */
@@ -2822,6 +3158,7 @@ export class AgentBridgeImpl implements AgentBridge {
     this.documentId = documentId;
     this.documentName = documentName;
     this.chatHistory = history.map((entry) => ({ ...entry }));
+    this.turnSnapshots?.reset();
     // 워크플로와 권한은 서버 상태가 기준이다. 요청값은 chat-started가 확인할 때까지
     // 시작 대기에만 두어, 프로바이더 시작 실패 뒤 가상의 모드가 남지 않게 한다.
     this.pendingChatStart = {
@@ -2846,6 +3183,7 @@ export class AgentBridgeImpl implements AgentBridge {
     const waitForAuthoritativeTurnEnd = this.state === 'connected' && this.turnRunning;
     for (const message of this.queuedMessages) message.resolve(null);
     this.queuedMessages = [];
+    this.turnSnapshots?.reset();
     this.pendingChatStart = null;
     this.chatHistory = [];
     this.activeAgent = null;
@@ -2938,7 +3276,10 @@ export class AgentBridgeImpl implements AgentBridge {
       };
       message = { text, skillName, context, messageId, stagedReferenceIds: [...stagedReferenceIds], resolve: settle };
       signal?.addEventListener('abort', cancel, { once: true });
-      if (this.pendingChatStart || this.workflowSwitchPending || this.activeAgent === null || this.queuedMessages.length > 0) {
+      // 끊긴 소켓에 곧바로 보내면 sendJson 실패로 메시지가 조용히 사라진다 — 재연결이
+      // 살릴 큐에 넣고, flushQueuedMessages 가 연결 뒤에 다시 보낸다.
+      if (this.pendingChatStart || this.workflowSwitchPending || this.activeAgent === null
+        || this.queuedMessages.length > 0 || this.state !== 'connected') {
         this.queuedMessages.push(message);
         if (this.activeAgent === null) {
           // 연결 중에도 시작 대기를 남겨 재접속이 첫 메시지를 다시 보낼 수 있게 한다.
@@ -2982,17 +3323,32 @@ export class AgentBridgeImpl implements AgentBridge {
   }
 
   private dispatchUserMessage(message: (typeof this.queuedMessages)[number]): void {
+    // 문서 스냅샷은 프레임이 나가는 순간의 문서로, 동기로 만든다 — 프레임 순서가 스냅샷 없을 때와 같다.
+    const built = this.buildTurnSnapshot();
     const sent = this.sendJson({
       v: AGENT_PROTOCOL_VERSION,
       type: 'chat-user-message',
       text: message.text,
+      documentRevision: this.revision.revision,
       threadId: message.context.threadId,
       documentId: message.context.documentId,
       activeTemplateId: this.activeTemplateId,
       ...(message.skillName ? { skillName: message.skillName } : {}),
       ...(message.messageId ? { messageId: message.messageId, stagedReferenceIds: message.stagedReferenceIds } : {}),
+      ...(built ? { documentSnapshot: built.snapshot } : {}),
     });
+    // 계획 승인 대기 중의 메시지는 허브가 승인으로 처리하면 스냅샷이 프로바이더에 닿지 않는다 — 본 것으로 치지 않는다.
+    if (sent && built && this.phase !== 'awaiting-approval') this.turnSnapshots.markSent(built);
     message.resolve(sent ? (message.messageId ?? null) : null);
+  }
+
+  /** 스냅샷은 덤이다 — 만들지 못해도 메시지는 그대로 나간다. */
+  private buildTurnSnapshot(): BuiltTurnSnapshot | null {
+    try {
+      return this.turnSnapshots?.build() ?? null;
+    } catch {
+      return null;
+    }
   }
 
   private flushQueuedMessages(): void {
@@ -3303,7 +3659,10 @@ export class AgentBridgeImpl implements AgentBridge {
   }
 
   approvePlan(planId: string): boolean {
-    return this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'chat-plan-approve', planId });
+    return this.sendJson({
+      v: AGENT_PROTOCOL_VERSION, type: 'chat-plan-approve', planId,
+      documentRevision: this.revision.revision,
+    });
   }
 
   requestPlanChanges(planId: string, feedback?: string): boolean {
@@ -3496,6 +3855,14 @@ export class AgentBridgeImpl implements AgentBridge {
     );
   }
 
+  requestModelCatalog(agent: CatalogAgent, refresh = false): Promise<ModelCatalogEntry[] | null> {
+    return this.request<ModelCatalogEntry[]>(
+      { type: 'model-catalog-request', agent, ...(refresh ? { refresh: true } : {}) },
+      'model-catalog',
+      30_000,
+    );
+  }
+
   requestAgentSetupStatus(refresh = false): Promise<AgentSetupStatusMap | null> {
     return this.request<AgentSetupStatusMap>(
       { type: 'agent-setup-status-request', ...(refresh ? { refresh: true } : {}) },
@@ -3539,7 +3906,7 @@ export class AgentBridgeImpl implements AgentBridge {
 
   authenticateAgent(agent: AgentName, method: AgentAuthMethod, key?: string): Promise<AgentSetupAuthStart | null> {
     return this.request<AgentSetupAuthStart>(
-      { type: 'agent-setup-auth', agent, method, terminal: method === 'oauth' && agent === 'claude', ...(key ? { key } : {}) },
+      { type: 'agent-setup-auth', agent, method, terminal: method === 'oauth' && (agent === 'claude' || agent === 'codex'), ...(key ? { key } : {}) },
       'agent-setup-auth',
       30_000,
     );
@@ -3562,7 +3929,8 @@ export class AgentBridgeImpl implements AgentBridge {
   }
 
   cancelAgentSetup(agent: AgentName, authRunId: string): void {
-    this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'agent-setup-cancel', agent, authRunId });
+    const frame = { v: AGENT_PROTOCOL_VERSION, type: 'agent-setup-cancel', agent, authRunId };
+    if (!this.sendJson(frame)) this.pendingSetupCancels.set(`${agent}:${authRunId}`, frame);
   }
 
   disconnectAgent(agent: AgentName): Promise<AgentSetupStatusMap | null> {
@@ -3703,11 +4071,11 @@ export class AgentBridgeImpl implements AgentBridge {
     this.pendingInterrupt = false;
     this.abortSocket();
     this.listeners.clear();
-    this.revealUnsub?.();
-    this.revealUnsub = null;
+    this.pendingChangeUnsub?.();
+    this.pendingChangeUnsub = null;
     for (const off of this.documentNotifyUnsubs) off();
     this.documentNotifyUnsubs = [];
-    this.reveal.dispose();
+    this.editFollow.dispose();
     this.pendingEdits.dispose();
     this.overlay.dispose();
     this.revision.dispose();

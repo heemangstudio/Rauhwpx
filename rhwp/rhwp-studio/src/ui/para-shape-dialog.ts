@@ -33,6 +33,14 @@ import {
   type TabState, type TabSettingsResult, type BorderTabResult,
 } from './para-shape-tab-builders';
 import { enableDialogDrag } from './dialog-drag';
+import { popModal, pushModal } from './modal-stack';
+import {
+  changedRawValue,
+  formatPtFromPx,
+  ptToRaw,
+  ptToRaw2x,
+  sameDisplayedNumber,
+} from './para-shape-model';
 
 /** 정렬 아이콘 (SVG 아이콘 — 서식바와 동일) */
 const ALIGN_OPTIONS: { value: string; label: string; cssClass: string }[] = [
@@ -53,40 +61,14 @@ const LINE_SPACING_TYPES: { value: string; label: string }[] = [
 
 // ─── 단위 변환 ─────────────────────────────────
 // WASM API (build_para_properties_json) 출력값은 ResolvedParaStyle 기반 px (96dpi).
-// 대화상자 표시: px → pt
-// 적용(Rust apply): pt → HWPUNIT (raw)
-
-const HWPUNIT_PER_PT = 100;  // 1pt = 100 HWPUNIT
-
-/** px (96dpi, zoom=1) → pt 표시값 */
-function pxToPt(px: number): number {
-  return px * 72 / 96;
-}
-
-/** pt → raw HWPUNIT (2x 저장값) — 여백/들여쓰기 적용용 */
-function ptToRaw2x(pt: number): number {
-  return Math.round(pt * HWPUNIT_PER_PT * 2);
-}
-
-/** pt → raw HWPUNIT (1x) — spacing/lineSpacing 적용용 */
-function ptToRaw(pt: number): number {
-  return Math.round(pt * HWPUNIT_PER_PT);
-}
+// 대화상자 표시: px → pt, 적용(Rust apply): pt → HWPUNIT (raw). 변환은 para-shape-model.ts.
 
 /** 줄 간격 입력값을 lineSpacingInput의 min/max(0~9999)로 클램프 */
 function clampLineSpacing(value: number): number {
   return Math.max(0, Math.min(9999, value));
 }
 
-/** px → raw HWPUNIT (2x) — 비교용 */
-function pxToRaw2x(px: number): number {
-  return Math.round(px * 150);  // px * 72/96 * 100 * 2
-}
-
-/** px → raw HWPUNIT (1x) — 비교용 */
-function pxToRaw(px: number): number {
-  return Math.round(px * 75);   // px * 72/96 * 100
-}
+const HWPUNIT_PER_MM = 7200 / 25.4; // ≈ 283.46
 
 export class ParaShapeDialog {
   private overlay!: HTMLDivElement;
@@ -142,6 +124,8 @@ export class ParaShapeDialog {
   // 상태
   private props: ParaProperties | null = null;
   private initialProps: ParaProperties | null = null;
+  /** populateFromProps 가 채운 숫자 칸의 표시값 — 고친 칸만 보내는 기준 */
+  private shown: Record<string, string> = {};
 
   /** 적용 콜백 */
   onApply: ((mods: Partial<ParaProperties>) => void) | null = null;
@@ -160,9 +144,11 @@ export class ParaShapeDialog {
     this.populateFromProps();
     this.switchTab(0);
     document.body.appendChild(this.overlay);
+    pushModal(this);
   }
 
   hide(): void {
+    popModal(this);
     this.overlay?.remove();
     if (this.onClose) this.onClose();
   }
@@ -182,6 +168,9 @@ export class ParaShapeDialog {
     // ── 다이얼로그 컨테이너
     this.dialog = document.createElement('div');
     this.dialog.className = 'dialog-wrap ps-dialog';
+    // 대화상자 안의 키가 문서 단축키로 새지 않도록 모달 대화상자로 표시한다.
+    this.dialog.setAttribute('role', 'dialog');
+    this.dialog.setAttribute('aria-modal', 'true');
 
     // 타이틀 바
     const titleBar = document.createElement('div');
@@ -616,18 +605,18 @@ export class ParaShapeDialog {
     if (this.alignBtns[align]) this.alignBtns[align].classList.add('active');
 
     // 여백 (px → pt)
-    this.marginLeftInput.value = pxToPt(p.marginLeft ?? 0).toFixed(1);
-    this.marginRightInput.value = pxToPt(p.marginRight ?? 0).toFixed(1);
+    this.marginLeftInput.value = formatPtFromPx(p.marginLeft ?? 0);
+    this.marginRightInput.value = formatPtFromPx(p.marginRight ?? 0);
 
     // 첫 줄 (indent)
     const indent = p.indent ?? 0;
     if (indent > 0) {
       this.firstLineRadios[1].checked = true; // 들여쓰기
-      this.indentInput.value = pxToPt(indent).toFixed(1);
+      this.indentInput.value = formatPtFromPx(indent);
       this.indentInput.disabled = false;
     } else if (indent < 0) {
       this.firstLineRadios[2].checked = true; // 내어쓰기
-      this.indentInput.value = pxToPt(Math.abs(indent)).toFixed(1);
+      this.indentInput.value = formatPtFromPx(Math.abs(indent));
       this.indentInput.disabled = false;
     } else {
       this.firstLineRadios[0].checked = true; // 보통
@@ -643,14 +632,14 @@ export class ParaShapeDialog {
       this.lineSpacingUnitLabel.textContent = '%';
       this.lineSpacingInput.step = '1';
     } else {
-      this.lineSpacingInput.value = pxToPt(p.lineSpacing ?? 0).toFixed(1);
+      this.lineSpacingInput.value = formatPtFromPx(p.lineSpacing ?? 0);
       this.lineSpacingUnitLabel.textContent = 'pt';
       this.lineSpacingInput.step = '0.1';
     }
 
     // 문단 간격 (px → pt)
-    this.spacingBeforeInput.value = pxToPt(p.spacingBefore ?? 0).toFixed(1);
-    this.spacingAfterInput.value = pxToPt(p.spacingAfter ?? 0).toFixed(1);
+    this.spacingBeforeInput.value = formatPtFromPx(p.spacingBefore ?? 0);
+    this.spacingAfterInput.value = formatPtFromPx(p.spacingAfter ?? 0);
 
     // ── 확장 탭
     const ht = p.headType || 'None';
@@ -681,7 +670,6 @@ export class ParaShapeDialog {
     this.tabResult.renderDeletedTabList();
 
     // ── 테두리/배경 탭
-    const HWPUNIT_PER_MM = 7200 / 25.4; // ≈ 283.46
     const defBorder = { type: 0, width: 0, color: '#000000' };
     for (const side of ['left', 'right', 'top', 'bottom'] as const) {
       const key = `border${side.charAt(0).toUpperCase() + side.slice(1)}` as keyof ParaProperties;
@@ -715,6 +703,23 @@ export class ParaShapeDialog {
     this.borderResult.bdWidthSelect.value = String(rep.width);
     this.borderResult.bdColorInput.value = rep.color;
     this.borderResult.updateBdPreview();
+
+    // 고친 칸 판정 기준 — 표시값 그대로 돌아온 칸은 원본을 보존한다.
+    const bsi = this.borderResult.bdSpacingInputs;
+    this.shown = {
+      marginLeft: this.marginLeftInput.value,
+      marginRight: this.marginRightInput.value,
+      indentType: this.firstLineRadios.find(r => r.checked)?.value ?? 'normal',
+      indent: this.indentInput.value,
+      lineSpacingType: this.lineSpacingTypeSelect.value,
+      lineSpacing: this.lineSpacingInput.value,
+      spacingBefore: this.spacingBeforeInput.value,
+      spacingAfter: this.spacingAfterInput.value,
+      bdSpacing0: bsi[0].value,
+      bdSpacing1: bsi[1].value,
+      bdSpacing2: bsi[2].value,
+      bdSpacing3: bsi[3].value,
+    };
 
     this.updatePreview();
   }
@@ -771,22 +776,29 @@ export class ParaShapeDialog {
       mods.alignment = newAlign;
     }
 
-    // 여백 (비교: 원본 px → HWPUNIT 2x 변환 후 비교)
-    const newML = ptToRaw2x(parseFloat(this.marginLeftInput.value) || 0);
-    if (newML !== pxToRaw2x(p.marginLeft ?? 0)) mods.marginLeft = newML;
+    // 여백 — 엔진 px(0.1 반올림)를 pt 로 보여 준 값이라 raw 로 되돌리면 원본과 어긋난다.
+    // 고친 칸만 보내야 여러 문단 선택에서 각 문단의 여백이 보존된다.
+    const shown = this.shown;
+    const newML = changedRawValue(shown.marginLeft, this.marginLeftInput.value, ptToRaw2x);
+    if (newML !== undefined) mods.marginLeft = newML;
 
-    const newMR = ptToRaw2x(parseFloat(this.marginRightInput.value) || 0);
-    if (newMR !== pxToRaw2x(p.marginRight ?? 0)) mods.marginRight = newMR;
+    const newMR = changedRawValue(shown.marginRight, this.marginRightInput.value, ptToRaw2x);
+    if (newMR !== undefined) mods.marginRight = newMR;
 
-    // 첫 줄 (indent)
-    let newIndent = 0;
+    // 첫 줄 (indent) — 종류를 바꾸거나 값을 고쳤을 때만
     const checkedRadio = this.firstLineRadios.find(r => r.checked);
-    if (checkedRadio?.value === 'indent') {
-      newIndent = ptToRaw2x(parseFloat(this.indentInput.value) || 0);
-    } else if (checkedRadio?.value === 'hanging') {
-      newIndent = -ptToRaw2x(parseFloat(this.indentInput.value) || 0);
+    const indentType = checkedRadio?.value ?? 'normal';
+    const indentTouched = indentType !== shown.indentType
+      || (indentType !== 'normal' && !sameDisplayedNumber(shown.indent ?? '', this.indentInput.value));
+    if (indentTouched) {
+      let newIndent = 0;
+      if (indentType === 'indent') {
+        newIndent = ptToRaw2x(parseFloat(this.indentInput.value) || 0);
+      } else if (indentType === 'hanging') {
+        newIndent = -ptToRaw2x(parseFloat(this.indentInput.value) || 0);
+      }
+      mods.indent = newIndent;
     }
-    if (newIndent !== pxToRaw2x(p.indent ?? 0)) mods.indent = newIndent;
 
     // 줄 간격
     const newLSType = this.lineSpacingTypeSelect.value;
@@ -800,18 +812,18 @@ export class ParaShapeDialog {
     } else {
       newLS = ptToRaw(clampLineSpacing(parseFloat(this.lineSpacingInput.value) || 0));
     }
-    // Percent는 raw 비교, 그 외는 px → HWPUNIT 변환 후 비교
-    const origLS = (p.lineSpacingType || 'Percent') === 'Percent'
-      ? (p.lineSpacing ?? 160)
-      : pxToRaw(p.lineSpacing ?? 0);
-    if (newLS !== origLS) mods.lineSpacing = newLS;
+    // 종류를 바꾸면 값의 의미가 달라지므로 함께 보낸다.
+    if (mods.lineSpacingType !== undefined
+      || !sameDisplayedNumber(shown.lineSpacing ?? '', this.lineSpacingInput.value)) {
+      mods.lineSpacing = newLS;
+    }
 
-    // 문단 간격 (비교: 원본 px → HWPUNIT 1x 변환 후 비교)
-    const newSB = ptToRaw(parseFloat(this.spacingBeforeInput.value) || 0);
-    if (newSB !== pxToRaw(p.spacingBefore ?? 0)) mods.spacingBefore = newSB;
+    // 문단 간격
+    const newSB = changedRawValue(shown.spacingBefore, this.spacingBeforeInput.value, ptToRaw);
+    if (newSB !== undefined) mods.spacingBefore = newSB;
 
-    const newSA = ptToRaw(parseFloat(this.spacingAfterInput.value) || 0);
-    if (newSA !== pxToRaw(p.spacingAfter ?? 0)) mods.spacingAfter = newSA;
+    const newSA = changedRawValue(shown.spacingAfter, this.spacingAfterInput.value, ptToRaw);
+    if (newSA !== undefined) mods.spacingAfter = newSA;
 
     // ── 확장 탭
     const newHT = this.headTypeRadios.find(r => r.checked)?.value || 'None';
@@ -861,7 +873,6 @@ export class ParaShapeDialog {
     }
 
     // ── 테두리/배경 탭
-    const HWPUNIT_PER_MM = 7200 / 25.4;
     const defBd = { type: 0, width: 0, color: '#000000' };
     const sideKeys = ['left', 'right', 'top', 'bottom'] as const;
     const propKeys = ['borderLeft', 'borderRight', 'borderTop', 'borderBottom'] as const;
@@ -899,16 +910,14 @@ export class ParaShapeDialog {
       if (!mods.fillType) mods.fillType = newFillType;
     }
 
-    // 간격 (mm → HWPUNIT)
+    // 간격 (mm → HWPUNIT) — 고친 칸만 환산하고 나머지는 원본 HWPUNIT 그대로 둔다.
     const origSp = p.borderSpacing ?? [0, 0, 0, 0];
     const bsi = this.borderResult.bdSpacingInputs;
-    // bdSpacingInputs: [0]=left, [1]=top, [2]=right, [3]=bottom
-    const newSp = [
-      Math.round((parseFloat(bsi[0].value) || 0) * HWPUNIT_PER_MM),
-      Math.round((parseFloat(bsi[2].value) || 0) * HWPUNIT_PER_MM),
-      Math.round((parseFloat(bsi[1].value) || 0) * HWPUNIT_PER_MM),
-      Math.round((parseFloat(bsi[3].value) || 0) * HWPUNIT_PER_MM),
-    ];
+    const mmToHwp = (mm: number) => Math.round(mm * HWPUNIT_PER_MM);
+    const spacing = (inputIdx: number, origIdx: number) =>
+      changedRawValue(shown[`bdSpacing${inputIdx}`], bsi[inputIdx].value, mmToHwp, 2) ?? origSp[origIdx];
+    // bdSpacingInputs: [0]=left, [1]=top, [2]=right, [3]=bottom / borderSpacing: [left, right, top, bottom]
+    const newSp = [spacing(0, 0), spacing(2, 1), spacing(1, 2), spacing(3, 3)];
     if (newSp[0] !== origSp[0] || newSp[1] !== origSp[1] || newSp[2] !== origSp[2] || newSp[3] !== origSp[3]) {
       mods.borderSpacing = newSp;
     }

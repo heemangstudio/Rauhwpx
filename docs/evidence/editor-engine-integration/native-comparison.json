@@ -1,0 +1,114 @@
+[
+  {
+    "doc": "el-school-001",
+    "baseline_pages": 1,
+    "combined_pages": 1,
+    "changed_pages": [],
+    "baseline_hancom_worst_pct": 0.85,
+    "combined_hancom_worst_pct": 0.85
+  },
+  {
+    "doc": "hy-001",
+    "baseline_pages": 2,
+    "combined_pages": 2,
+    "changed_pages": [],
+    "baseline_hancom_worst_pct": 0.03,
+    "combined_hancom_worst_pct": 0.03
+  },
+  {
+    "doc": "tb-org-02",
+    "baseline_pages": 1,
+    "combined_pages": 1,
+    "changed_pages": [],
+    "baseline_hancom_worst_pct": 0.02,
+    "combined_hancom_worst_pct": 0.02
+  },
+  {
+    "doc": "eq-002",
+    "baseline_pages": 1,
+    "combined_pages": 1,
+    "changed_pages": [],
+    "baseline_hancom_worst_pct": 0.6,
+    "combined_hancom_worst_pct": 0.6
+  },
+  {
+    "doc": "exam-kor-1p",
+    "baseline_pages": 1,
+    "combined_pages": 1,
+    "changed_pages": [],
+    "baseline_hancom_worst_pct": 1.19,
+    "combined_hancom_worst_pct": 1.19
+  },
+  {
+    "doc": "footnote-01",
+    "baseline_pages": 6,
+    "combined_pages": 6,
+    "changed_pages": [],
+    "baseline_hancom_worst_pct": 0.77,
+    "combined_hancom_worst_pct": 0.77
+  },
+  {
+    "doc": "hwpx-h-01",
+    "baseline_pages": 9,
+    "combined_pages": 9,
+    "changed_pages": [],
+    "baseline_hancom_worst_pct": 0.02,
+    "combined_hancom_worst_pct": 0.02
+  },
+  {
+    "doc": "landscape-001",
+    "baseline_pages": 1,
+    "combined_pages": 1,
+    "changed_pages": [],
+    "baseline_hancom_worst_pct": 0.0,
+    "combined_hancom_worst_pct": 0.0
+  },
+  {
+    "doc": "random-01-issue_241",
+    "baseline_pages": 1,
+    "combined_pages": 1,
+    "changed_pages": [],
+    "baseline_hancom_worst_pct": 11.95,
+    "combined_hancom_worst_pct": 11.95
+  },
+  {
+    "doc": "random-02",
+    "baseline_pages": 1,
+    "combined_pages": 1,
+    "changed_pages": [],
+    "baseline_hancom_worst_pct": 60.32,
+    "combined_hancom_worst_pct": 60.32
+  },
+  {
+    "doc": "random-03-exam_math_8",
+    "baseline_pages": 1,
+    "combined_pages": 1,
+    "changed_pages": [],
+    "baseline_hancom_worst_pct": 46.07,
+    "combined_hancom_worst_pct": 46.07
+  },
+  {
+    "doc": "random-04",
+    "baseline_pages": 4,
+    "combined_pages": 4,
+    "changed_pages": [],
+    "baseline_hancom_worst_pct": 32.69,
+    "combined_hancom_worst_pct": 32.69
+  },
+  {
+    "doc": "random-05-text-align-2",
+    "baseline_pages": 1,
+    "combined_pages": 1,
+    "changed_pages": [],
+    "baseline_hancom_worst_pct": 5.27,
+    "combined_hancom_worst_pct": 5.27
+  },
+  {
+    "doc": "random-06-pua-test",
+    "baseline_pages": 1,
+    "combined_pages": 1,
+    "changed_pages": [],
+    "baseline_hancom_worst_pct": 4.49,
+    "combined_hancom_worst_pct": 4.49
+  }
+]

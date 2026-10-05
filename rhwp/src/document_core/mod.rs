@@ -8,6 +8,12 @@ pub(crate) use helpers::*;
 
 pub mod builders;
 mod commands;
+
+/// 설정 시(`=1`) 로드 단계에서 저장 LINE_SEG 를 모두 버리고 누락 경로로 조판한다
+/// (`rhwp lineseg-oracle` 강제 재조판 계측용).
+pub const IGNORE_STORED_LINESEGS_ENV: &str = "RHWP_IGNORE_STORED_LINESEGS";
+mod equation_fonts;
+pub(crate) use commands::caret_edit::CaretParagraph;
 pub mod converters;
 pub(crate) mod html_table_import;
 /// 한글 클립보드 문서모델(hwpjson) → HWPX 변환
@@ -226,6 +232,19 @@ impl DocumentEventLog {
         );
     }
 
+    /// 문단 수가 바뀌었는데 순서 변경 이벤트(ParagraphMerged 등)를 쌓지 않는 경로용.
+    /// 문단 revision 은 인덱스 기준이라 문단 수가 바뀌면 다른 문단을 가리키므로,
+    /// 순서 revision 을 올려 스냅샷이 인덱스로 문단을 공유·재사용하지 않게 한다.
+    fn mark_paragraph_sequence_changed(&mut self, section_idx: usize) {
+        let revision = self.next_revision();
+        Self::set_revision(&mut self.section_revisions, section_idx, revision);
+        Self::set_revision(
+            &mut self.paragraph_sequence_revisions,
+            section_idx,
+            revision,
+        );
+    }
+
     fn mark_all_sections_changed(&mut self, section_count: usize) {
         for section_idx in 0..section_count {
             let revision = self.next_revision();
@@ -388,7 +407,7 @@ pub struct DocumentCore {
     /// [#2424] 공개 pagination과 분리된 shadow continuation job.
     pub(crate) pending_pagination_job: Option<PendingPaginationJob>,
     /// 페이지별 렌더 트리 캐시 (지연 구축, 부분 무효화)
-    pub(crate) page_tree_cache: RefCell<Vec<Option<PageRenderTree>>>,
+    pub(crate) page_tree_cache: RefCell<Vec<Option<std::sync::Arc<PageRenderTree>>>>,
     /// 페이지 렌더 캐시 LRU 순서. 앞이 가장 오래된 페이지다.
     pub(crate) page_tree_cache_order: RefCell<VecDeque<usize>>,
     /// 머리말/꼬리말 대표 편집 트리 캐시 (마지막 target 한 건만 재사용).
@@ -416,6 +435,10 @@ pub struct DocumentCore {
         commands::picture_transform_journal::PictureTransformCapture,
     )>,
     pub(crate) next_picture_transform_id: u32,
+    /// 에이전트 대기 편집의 문단 보관본 (ID → 적용 직전 본문 문단). 자동 축출 없음 —
+    /// TS PendingEditManager 가 discard 로 수명을 끝낸다.
+    pub(crate) paragraph_capture_store: Vec<(u32, crate::model::paragraph::Paragraph)>,
+    pub(crate) next_paragraph_capture_id: u32,
     /// 머리말/꼬리말 감추기: (global_page_index, is_header) 조합
     pub(crate) hidden_header_footer: std::collections::HashSet<(u32, bool)>,
     /// 파일 이름 (머리말/꼬리말 필드 치환용)
@@ -423,6 +446,11 @@ pub struct DocumentCore {
     /// 현재 활성 필드 위치 (커서가 진입한 누름틀 — 안내문 렌더링 스킵용)
     /// (section_idx, para_idx, field_control_idx)
     pub(crate) active_field: Option<ActiveFieldInfo>,
+    /// 다음 캐럿 텍스트 삽입 한 번을 이 인라인 개체 **뒤**에 둔다.
+    ///
+    /// 논리 오프셋 wasm 래퍼만 설정하고 삽입 네이티브가 `take()` 한다. 텍스트 오프셋으로는
+    /// 같은 위치의 개체 앞/뒤를 구분할 수 없어 공개 네이티브 시그니처 대신 여기로 전달한다.
+    pub(crate) caret_insert_after_control: Option<usize>,
     /// 구역별 문단 인덱스 오프셋 (삽입=+N, 삭제=-N, 페이지네이션 수렴 감지용)
     /// paginate() 후 리셋.
     pub(crate) para_offset: Vec<i32>,
@@ -507,8 +535,18 @@ impl DocumentCore {
                 let resolved = resolve_font_substitution(&font.name, font.alt_type, lang_idx)
                     .unwrap_or(&font.name);
                 fonts.insert(resolved.to_string());
+                if let Some(substitute) = font
+                    .subst_font
+                    .as_ref()
+                    .map(|subst| subst.face.as_str())
+                    .filter(|name| !name.is_empty())
+                    .or_else(|| font.alt_name.as_deref().filter(|name| !name.is_empty()))
+                {
+                    fonts.insert(substitute.to_string());
+                }
             }
         }
+        equation_fonts::collect(&self.document, &mut fonts);
         let fonts_json: Vec<String> = fonts
             .iter()
             .map(|f| {
@@ -583,15 +621,31 @@ impl DocumentCore {
         )
     }
 
+    /// 이벤트를 쌓지 않는 경로가 본문 문단 `para_idx` 의 IR(문단 트리 안쪽 포함)을
+    /// 바꿨음을 revision 에 남긴다.
+    ///
+    /// 빠뜨리면 스냅샷이 직전 스냅샷의 문단을 공유하고, 복원이 현재 문단을 그대로
+    /// 재사용해 undo/redo 가 바뀐 IR 을 되돌리지 못한다.
+    pub(crate) fn mark_body_paragraph_changed(&mut self, section_idx: usize, para_idx: usize) {
+        self.event_log.mark_paragraph_changed(section_idx, para_idx);
+    }
+
+    /// 현재 문서의 스타일을 해소한다. 로드 때와 같은 HWP3 변형 보정을 쓴다.
+    ///
+    /// `resolve_styles` 는 변형 보정을 끄므로, 편집 뒤 재해소에 쓰면 HWP3 변환본의
+    /// 문단 여백·간격이 로드 때와 달라져 편집 한 번에 쪽 수가 바뀐다.
+    pub(crate) fn resolve_document_styles(&self) -> ResolvedStyleSet {
+        crate::renderer::style_resolver::resolve_styles_with_variant(
+            &self.document.doc_info,
+            self.dpi,
+            self.document.layout_profile().hwp3_layout(),
+        )
+    }
+
     /// DPI를 설정하고 스타일을 재해소한 후 재페이지네이션한다.
     pub fn set_dpi(&mut self, dpi: f64) {
-        use crate::renderer::style_resolver::resolve_styles_with_variant;
         self.dpi = dpi;
-        self.styles = resolve_styles_with_variant(
-            &self.document.doc_info,
-            dpi,
-            self.document.layout_profile().hwp3_layout(),
-        );
+        self.styles = self.resolve_document_styles();
         self.paginate();
     }
 
@@ -634,9 +688,12 @@ impl DocumentCore {
             next_snapshot_id: 0,
             picture_transform_store: Vec::new(),
             next_picture_transform_id: 0,
+            paragraph_capture_store: Vec::new(),
+            next_paragraph_capture_id: 0,
             hidden_header_footer: std::collections::HashSet::new(),
             file_name: String::new(),
             active_field: None,
+            caret_insert_after_control: None,
             para_offset: Vec::new(),
             source_format: crate::parser::FileFormat::Hwp,
             hml_metadata: None,
@@ -662,6 +719,31 @@ impl DocumentCore {
 #[cfg(test)]
 mod event_log_tests {
     use super::*;
+
+    #[test]
+    fn document_info_discovers_declared_substitute_faces() {
+        use crate::model::style::{Font, SubstFont};
+        let mut core = DocumentCore::new_empty();
+        core.document.doc_info.font_faces = vec![vec![
+            Font {
+                name: "Missing source face".into(),
+                subst_font: Some(SubstFont {
+                    face: "한컴바탕".into(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            Font {
+                name: "Missing legacy face".into(),
+                alt_name: Some("함초롬바탕".into()),
+                ..Default::default()
+            },
+        ]];
+        let info: serde_json::Value = serde_json::from_str(&core.get_document_info()).unwrap();
+        let fonts = info["fontsUsed"].as_array().unwrap();
+        assert!(fonts.iter().any(|name| name == "한컴바탕"));
+        assert!(fonts.iter().any(|name| name == "함초롬바탕"));
+    }
 
     fn event(offset: usize) -> DocumentEvent {
         DocumentEvent::TextInserted {

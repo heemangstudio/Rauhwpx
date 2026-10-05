@@ -1,4 +1,8 @@
 import { enableDialogDrag } from './dialog-drag';
+import { isTopModal, popModal, pushModal } from './modal-stack';
+import { showToast } from './toast';
+
+let sheetTitleSeq = 0;
 
 /**
  * 모달 다이얼로그 베이스 클래스 (WebGian dialog_wrap 패턴)
@@ -10,6 +14,11 @@ export abstract class ModalDialog {
 
   protected overlay!: HTMLDivElement;
   protected dialog!: HTMLDivElement;
+  /**
+   * 확인·경고류 대화상자는 시트로 띄운다: 타이틀바 바로 아래에 고정되고,
+   * 닫기(×)와 드래그 없이 오른쪽 아래 버튼과 Return/Esc 로만 닫힌다.
+   */
+  protected sheet = false;
   private title: string;
   private width: number;
   private closeOnOverlayClick: boolean;
@@ -27,22 +36,31 @@ export abstract class ModalDialog {
     this.built = true;
 
     this.overlay = document.createElement('div');
-    this.overlay.className = 'modal-overlay';
+    this.overlay.className = this.sheet ? 'modal-overlay modal-overlay--sheet' : 'modal-overlay';
 
     this.dialog = document.createElement('div');
-    this.dialog.className = 'dialog-wrap';
+    this.dialog.className = this.sheet ? 'dialog-wrap dialog-sheet' : 'dialog-wrap';
     this.dialog.style.width = `${this.width}px`;
+    if (this.sheet) {
+      this.dialog.setAttribute('role', 'alertdialog');
+      this.dialog.setAttribute('aria-modal', 'true');
+    }
 
     // 타이틀 바
     const titleBar = document.createElement('div');
     titleBar.className = 'dialog-title';
     titleBar.textContent = this.title;
 
-    const closeBtn = document.createElement('button');
-    closeBtn.className = 'dialog-close';
-    closeBtn.textContent = '\u00D7'; // ×
-    closeBtn.addEventListener('click', () => this.hide());
-    titleBar.appendChild(closeBtn);
+    if (!this.sheet) {
+      const closeBtn = document.createElement('button');
+      closeBtn.className = 'dialog-close';
+      closeBtn.textContent = '\u00D7'; // ×
+      closeBtn.addEventListener('click', () => this.hide());
+      titleBar.appendChild(closeBtn);
+    } else {
+      titleBar.id = `dialog-sheet-title-${++sheetTitleSeq}`;
+      this.dialog.setAttribute('aria-labelledby', titleBar.id);
+    }
 
     this.dialog.appendChild(titleBar);
 
@@ -59,7 +77,16 @@ export abstract class ModalDialog {
     confirmBtn.className = 'dialog-btn dialog-btn-primary';
     confirmBtn.textContent = '확인';
     confirmBtn.addEventListener('click', () => {
-      const shouldClose = this.onConfirm();
+      let shouldClose: void | boolean;
+      try {
+        shouldClose = this.onConfirm();
+      } catch (error) {
+        // 적용이 실패하면 대화상자를 그대로 두고 이유를 알린다. 예외가 클릭 핸들러
+        // 밖으로 새면 아무 안내 없이 대화상자만 남는다.
+        console.warn(`[${this.title}] 적용 실패:`, error);
+        showToast({ message: `${this.title}: ${error instanceof Error ? error.message : String(error)}` });
+        return;
+      }
       if (shouldClose !== false) this.hide();
     });
 
@@ -68,8 +95,14 @@ export abstract class ModalDialog {
     cancelBtn.textContent = '취소';
     cancelBtn.addEventListener('click', () => this.hide());
 
-    footer.appendChild(confirmBtn);
-    footer.appendChild(cancelBtn);
+    // 시트는 macOS 순서대로 기본 동작을 맨 오른쪽에 둔다.
+    if (this.sheet) {
+      footer.appendChild(cancelBtn);
+      footer.appendChild(confirmBtn);
+    } else {
+      footer.appendChild(confirmBtn);
+      footer.appendChild(cancelBtn);
+    }
     this.dialog.appendChild(footer);
 
     this.overlay.appendChild(this.dialog);
@@ -79,16 +112,21 @@ export abstract class ModalDialog {
       if (e.target === this.overlay && this.closeOnOverlayClick) this.hide();
     });
 
-    enableDialogDrag(this.dialog, titleBar);
+    if (!this.sheet) enableDialogDrag(this.dialog, titleBar);
   }
 
   show(): void {
     this.build();
     document.body.appendChild(this.overlay);
+    pushModal(this);
 
+    // 다시 열 때 이전 리스너를 떼지 않으면 키마다 두 번 처리된다.
+    if (this.captureHandler) document.removeEventListener('keydown', this.captureHandler, true);
     // document capture 단계에서 키 이벤트를 가로채 편집 영역 도달 차단
     // input/textarea/select 내부 조작과 Tab 포커스 이동은 허용한다.
+    // 위에 다른 대화상자가 열려 있으면 그 대화상자가 키를 처리한다.
     this.captureHandler = (e: KeyboardEvent) => {
+      if (!isTopModal(this)) return;
       const target = e.target as HTMLElement | null;
       const isEditable = target instanceof HTMLInputElement
         || target instanceof HTMLTextAreaElement
@@ -106,6 +144,11 @@ export abstract class ModalDialog {
         e.preventDefault();
         const btn = this.dialog.querySelector('.dialog-btn-primary') as HTMLButtonElement | null;
         btn?.click();
+        return;
+      }
+      // 시트에서는 Space 로 포커스된 버튼을 누를 수 있어야 한다.
+      if (this.sheet && e.key === ' ' && target instanceof HTMLButtonElement) {
+        e.stopPropagation();
         return;
       }
       // 편집 가능한 요소 내부 → 키 입력 허용, 외부 전파만 차단
@@ -126,6 +169,7 @@ export abstract class ModalDialog {
       document.removeEventListener('keydown', this.captureHandler, true);
       this.captureHandler = null;
     }
+    popModal(this);
     this.overlay?.remove();
     this.afterClose?.();
   }

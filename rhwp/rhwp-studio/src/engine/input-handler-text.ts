@@ -8,6 +8,7 @@ import {
   MergeNextParagraphCommand,
   MergeParagraphInCellCommand,
   MergeNextParagraphInCellCommand,
+  DeleteSelectionCommand,
   InsertTextInHeaderFooterCommand,
   DeleteTextInHeaderFooterCommand,
   MergeParagraphInHeaderFooterCommand,
@@ -19,6 +20,8 @@ import {
   replaceCellTextWithMutationEffects,
   canUseLocalBodyTextReplace,
   cellParaIndexOf,
+  caretParagraphLength,
+  isInlineObjectSlot,
   IMMEDIATE_TEXT_MUTATION_EFFECTS,
   NO_TEXT_MUTATION_EFFECTS,
   TextMutationEffectAccumulator,
@@ -213,6 +216,25 @@ function tryDeleteBodyFootnoteAtCursor(
   }
 }
 
+/**
+ * 캐럿 한 칸 `[slot, slot+1)` 을 지운다. 그 칸이 수식·그림 같은 글자처럼 취급 개체면
+ * 텍스트 삭제로는 지울 수 없으므로 개체까지 지우는 범위 삭제(스냅샷 undo)로 보낸다.
+ */
+function deleteCaretSlot(
+  this: any,
+  slot: DocumentPosition,
+  direction: 'backward' | 'forward',
+): void {
+  if (isInlineObjectSlot(this.wasm, slot)) {
+    const end = { ...slot, charOffset: slot.charOffset + 1 };
+    // undo 뒤 캐럿은 삭제 전 자리 — Backspace 는 개체 뒤, Delete 는 개체 앞.
+    const undoCursor = direction === 'forward' ? slot : end;
+    this.executeOperation({ kind: 'command', command: new DeleteSelectionCommand(slot, end, undoCursor) });
+    return;
+  }
+  this.executeOperation({ kind: 'command', command: new DeleteTextCommand(slot, 1, direction) });
+}
+
 export function handleBackspace(this: any, pos: DocumentPosition, inCell: boolean): void {
   if (this.isFormMode?.() && !this.canEditCurrentFormField?.()) return;
   // 머리말/꼬리말 편집 모드
@@ -274,8 +296,7 @@ export function handleBackspace(this: any, pos: DocumentPosition, inCell: boolea
 
   if (inCell) {
     if (charOffset > 0) {
-      const deletePos = { ...pos, charOffset: charOffset - 1 };
-      this.executeOperation({ kind: 'command', command: new DeleteTextCommand(deletePos, 1, 'backward') });
+      deleteCaretSlot.call(this, { ...pos, charOffset: charOffset - 1 }, 'backward');
     } else if (cellParaIndexOf(pos) > 0) {
       // 셀 문단 시작에서 Backspace → 이전 셀 문단과 병합.
       // [#2717] 중첩 셀에서 flat `pos.cellParaIndex` 는 hit-test 가 cellPath[0](최외곽)로 채운
@@ -288,8 +309,7 @@ export function handleBackspace(this: any, pos: DocumentPosition, inCell: boolea
     const { sectionIndex: sec, paragraphIndex: para } = pos;
     if (tryDeleteBodyFootnoteAtCursor.call(this, pos, 'backward')) return;
     if (charOffset > 0) {
-      const deletePos = { ...pos, charOffset: charOffset - 1 };
-      this.executeOperation({ kind: 'command', command: new DeleteTextCommand(deletePos, 1, 'backward') });
+      deleteCaretSlot.call(this, { ...pos, charOffset: charOffset - 1 }, 'backward');
     } else if (para > 0) {
       // 문단 시작에서 Backspace → 이전 문단과 병합
       this.executeOperation({ kind: 'command', command: new MergeParagraphCommand({ sectionIndex: sec, paragraphIndex: para, charOffset: 0 }) });
@@ -347,11 +367,9 @@ export function handleDelete(this: any, pos: DocumentPosition, inCell: boolean):
     const useCellPath = (pos.cellPath?.length ?? 0) > 0;
     const cpi = useCellPath ? pos.cellPath![pos.cellPath!.length - 1].cellParaIndex : pos.cellParaIndex!;
     const pathJson = useCellPath ? JSON.stringify(pos.cellPath) : '';
-    const paraLen = useCellPath
-      ? this.wasm.getCellParagraphLengthByPath(sec, ppi, pathJson)
-      : this.wasm.getCellParagraphLength(sec, ppi, ci, cei, cpi);
+    const paraLen = caretParagraphLength(this.wasm, pos);
     if (charOffset < paraLen) {
-      this.executeOperation({ kind: 'command', command: new DeleteTextCommand(pos, 1, 'forward') });
+      deleteCaretSlot.call(this, pos, 'forward');
     } else {
       // 셀 문단 끝에서 Delete → 다음 셀 문단과 병합
       const paraCount = useCellPath
@@ -364,9 +382,9 @@ export function handleDelete(this: any, pos: DocumentPosition, inCell: boolean):
   } else {
     const { sectionIndex: sec, paragraphIndex: para } = pos;
     if (tryDeleteBodyFootnoteAtCursor.call(this, pos, 'forward')) return;
-    const paraLen = this.wasm.getParagraphLength(sec, para);
+    const paraLen = caretParagraphLength(this.wasm, pos);
     if (charOffset < paraLen) {
-      this.executeOperation({ kind: 'command', command: new DeleteTextCommand(pos, 1, 'forward') });
+      deleteCaretSlot.call(this, pos, 'forward');
     } else {
       // 문단 끝에서 Delete → 다음 문단과 병합
       const paraCount = this.wasm.getParagraphCount(sec);
@@ -442,7 +460,14 @@ function syncCompositionDocument(this: any, preedit: string): void {
 }
 
 export function onCompositionStart(this: any): void {
-  if (this.isComposing) onCompositionEnd.call(this);
+  // 브라우저가 한 조합 세션 안에서 start를 중복 전달하는 경우(IME 재동기화)가 있다.
+  // 그때 진행 중인 세션을 중간 커밋하면 자모 단위로 잘린 글자(ㅂ, ㅌ 등)가 확정돼
+  // 'ㅂ비고' 같은 손상이 생긴다. anchor가 살아 있으면 세션을 그대로 이어간다 —
+  // 이후 update가 온전한 preedit을 다시 실어주므로 내용은 스스로 수렴한다.
+  if (this.isComposing) {
+    if (this.compositionAnchor) return;
+    onCompositionEnd.call(this);
+  }
   this.resetRawTextMutationEffects();
   this.headerFooterSelectionComposition = false;
   // 선택 영역이 있으면 삭제 후 조합 시작
@@ -492,13 +517,21 @@ export function onCompositionUpdate(this: any, event: CompositionEvent): void {
 }
 
 export function onCompositionEnd(this: any, event?: CompositionEvent): void {
+  try {
   const anchor = this.compositionAnchor;
   const previousPreedit = this.imeSession.preedit;
   const previousLength = this.compositionLength;
   const headerFooterSelectionComposition = this.headerFooterSelectionComposition === true;
   const textareaText = this.unconsumedTextareaValue().replace(/[\r\n]+/g, '');
   const commit = this.imeSession.finish(event?.data, textareaText);
-  if (!commit) return;
+  if (!commit) {
+    // 세션은 닫혔는데 anchor/preedit이 남아 있으면, 되돌리지 않은 미커밋 글자가
+    // 문서에 그대로 박히고 다음 세션의 기준점도 오염시킨다. 예고분을 되돌린다.
+    if (this.compositionAnchor || this.compositionLength > 0) {
+      revertCompositionPreview.call(this);
+    }
+    return;
+  }
 
   const composed = commit.text;
   // value 를 비우지 않는다 — 다음 음절의 조합이 이미 textarea 에서 진행 중일 수
@@ -582,6 +615,13 @@ export function onCompositionEnd(this: any, event?: CompositionEvent): void {
     this._pendingNavAfterIME = null;
     processPendingNav.call(this, nav);
   }
+  } finally {
+    // 어떤 경로(조기 반환·예외)로 끝나도 조합 추적 상태는 비운다. 남은 anchor가
+    // 다음 세션의 기준점을 오염시켜 글자가 엉뚱한 위치에 박히는 것을 막는다.
+    this.compositionAnchor = null;
+    this.clearCompositionAnchorRect();
+    this.compositionLength = 0;
+  }
 }
 
 export function onInput(this: any, e?: InputEvent): void {
@@ -605,11 +645,24 @@ export function onInput(this: any, e?: InputEvent): void {
   // \r\n 을 그대로 삽입하면 문단 안에 리터럴 개행 문자가 박힌다.
   const text = (this.unconsumedTextareaValue() || e?.data || '').replace(/[\r\n]+/g, '');
 
+  // 브라우저는 조합 중(isComposing)인데 세션 추적이 비어 있으면 compositionstart를
+  // 놓친 상태다. 자모가 일반 텍스트로 새어 박히지 않도록 세션을 다시 맞춰
+  // preedit 경로로 보낸다.
+  if (e?.isComposing === true && !(this.isComposing && this.compositionAnchor)) {
+    onCompositionStart.call(this);
+  }
+
   // 조합 중에는 히스토리에 넣지 않고 문서의 네이티브 preedit만 치환한다.
   if (this.isComposing && this.compositionAnchor) {
     const previous = this.imeSession.preedit;
     const preedit = this.imeSession.update(text);
     if (preedit !== previous) syncCompositionDocument.call(this, preedit);
+    return;
+  }
+
+  // 세션 복구가 거부된 조합 입력(양식 모드 밖·잠금)은 자모를 버리고 value만 소비한다.
+  if (e?.isComposing === true) {
+    this.consumeTextareaValue();
     return;
   }
 

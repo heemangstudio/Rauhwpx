@@ -48,6 +48,40 @@ impl std::fmt::Display for BodyTextError {
 
 impl std::error::Error for BodyTextError {}
 
+/// HWP5 중첩(표 셀·글상자·캡션·머리말 등 문단 목록, 묶음 개체) 최대 깊이.
+///
+/// 중첩 내용은 parse_paragraph_list → parse_paragraph → parse_control → … →
+/// parse_paragraph_list 로, 묶음은 parse_container_children 으로 재귀한다.
+/// 레코드 level(10비트) 외에 상한이 없어 23KB 짜리 160단 중첩 표만으로 wasm 기본
+/// 1MiB 스택이 넘쳤다(스택 오버플로는 잡을 수 없다). 실제 문서는 10단 미만이다.
+pub(crate) const MAX_HWP5_NESTING_DEPTH: u32 = 64;
+
+thread_local! {
+    static NESTING_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// 재귀 진입 시 깊이를 올리고 Drop 에서 내리는 가드. 상한을 넘으면 None.
+pub(crate) struct NestingGuard(());
+
+impl NestingGuard {
+    pub(crate) fn enter() -> Option<Self> {
+        NESTING_DEPTH.with(|depth| {
+            let current = depth.get();
+            if current >= MAX_HWP5_NESTING_DEPTH {
+                return None;
+            }
+            depth.set(current + 1);
+            Some(NestingGuard(()))
+        })
+    }
+}
+
+impl Drop for NestingGuard {
+    fn drop(&mut self) {
+        NESTING_DEPTH.with(|depth| depth.set(depth.get() - 1));
+    }
+}
+
 /// 섹션 레코드 데이터를 파싱하여 Section으로 변환
 ///
 /// data: 압축 해제된(배포용은 복호화+해제된) 레코드 바이트 스트림
@@ -89,7 +123,8 @@ pub fn parse_body_text_section(data: &[u8]) -> Result<Section, BodyTextError> {
     // level=1로 태그되어 마지막 문단의 자식으로 오인됨.
     // 전체 레코드를 재스캔하여 마지막 PARA_HEADER(level=0) 이후의 LIST_HEADER(level=1)를 추출.
     {
-        let all_records = Record::read_all(data).unwrap_or_default();
+        // 위에서 읽은 레코드를 그대로 쓴다 (종전엔 read_all 을 한 번 더 돌려 전체 복사)
+        let all_records = &records;
         let last_para0_idx = all_records
             .iter()
             .rposition(|r| r.tag_id == tags::HWPTAG_PARA_HEADER && r.level == 0);
@@ -365,9 +400,12 @@ fn parse_para_text(
         } else if ch < 0x0020 {
             // 문자 컨트롤 (1 code unit = 2바이트)
             match ch {
-                0x0018 => {
+                tags::CHAR_HYPHEN => {
                     char_offsets.push(code_unit_pos);
-                    text.push('-'); // 하이픈 (HWP 5.0 표 7: 코드 24)
+                    // HWP's hyphen control is discretionary. It occupies one
+                    // character position but has no ink or advance unless a line
+                    // breaks here. Keep it distinct from a literal U+002D hyphen.
+                    text.push('\u{00AD}');
                     char_count += 1;
                 }
                 0x0019 => {
@@ -445,12 +483,18 @@ fn link_orphan_field_ends_with(paragraphs: &mut [Paragraph], open_fields: &mut V
             }
         }
 
+        // 이 문단 안에서 닫힌 컨트롤 표시. 필드마다 field_ranges 를 훑던 O(F²) 를 없앤다.
+        let mut closed_here = vec![false; para.controls.len()];
+        for fr in &para.field_ranges {
+            if let Some(closed) = closed_here.get_mut(fr.control_idx) {
+                *closed = true;
+            }
+        }
         for (i, ctrl) in para.controls.iter().enumerate() {
             let Control::Field(field) = ctrl else {
                 continue;
             };
-            let closed_here = para.field_ranges.iter().any(|fr| fr.control_idx == i);
-            if !closed_here && field.field_id != 0 {
+            if !closed_here[i] && field.field_id != 0 {
                 open_fields.push((field.field_id, field.ctrl_id));
             }
         }
@@ -570,6 +614,10 @@ fn parse_para_range_tag(data: &[u8]) -> Vec<RangeTag> {
 ///
 /// TABLE 셀, 머리말/꼬리말, 각주/미주 등에서 문단 목록을 파싱할 때 사용.
 pub fn parse_paragraph_list(records: &[Record]) -> Vec<Paragraph> {
+    // 중첩 상한을 넘은 목록은 비운다 (MAX_HWP5_NESTING_DEPTH)
+    let Some(_nesting) = NestingGuard::enter() else {
+        return Vec::new();
+    };
     let mut paragraphs = Vec::new();
     let mut idx = 0;
 

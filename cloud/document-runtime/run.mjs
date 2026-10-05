@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createSessionDisplayMode } from './session-display.mjs';
-import { createStudioHarness } from './studio-harness.mjs';
+import { createStudioHarness, isProviderAuthFailure, PROVIDER_AUTH_EXPIRED_MESSAGE } from './studio-harness.mjs';
 import { composeTurnPrompt, readTimeline, TimelineRecorder } from './timeline.mjs';
 
 const MAX_TIMELINE_BYTES = 100 * 1024 * 1024;
@@ -36,7 +36,11 @@ function referenceMimeType(name) {
 }
 
 function safeAttachmentFilename(name, fallback) {
-  const base = path.basename(String(name ?? '')).replace(/[^\p{L}\p{N}._ -]/gu, '_').slice(0, 180);
+  const cleaned = path.basename(String(name ?? '')).replace(/[^\p{L}\p{N}._ -]/gu, '_');
+  const extension = path.extname(cleaned);
+  const base = cleaned.length > 180 && extension.length <= 16
+    ? `${cleaned.slice(0, 180 - extension.length)}${extension}`
+    : cleaned.slice(0, 180);
   return base && base !== '.' && base !== '..' ? base : fallback;
 }
 
@@ -504,7 +508,13 @@ export async function runSession({
           version: attachment.version,
         });
       }
-      await harness.addReferences(additions);
+      const indexed = await harness.addReferences(additions);
+      if (Array.isArray(indexed) && indexed.length === additions.length) {
+        indexed.forEach((reference, index) => {
+          if (typeof reference?.fileId === 'string') additions[index].fileId = reference.fileId;
+          if (reference?.kind === 'image' || reference?.kind === 'document') additions[index].kind = reference.kind;
+        });
+      }
       references.push(...additions);
       return additions;
     };
@@ -634,6 +644,9 @@ export async function runSession({
         const redirected = outcome?.redirected === true;
         if (outcome?.errorMessage
           || (!stopped && !redirected && !['end_turn', 'completed', 'success'].includes(outcome?.stopReason))) {
+          if (isProviderAuthFailure(outcome?.errorMessage)) {
+            throw runtimeError('PROVIDER_AUTH_EXPIRED', PROVIDER_AUTH_EXPIRED_MESSAGE);
+          }
           throw runtimeError('PROVIDER_TURN_FAILED', outcome?.errorMessage || `Provider stopped with ${outcome?.stopReason ?? 'unknown reason'}`);
         }
         if (stopped && typeof client.control === 'function') {

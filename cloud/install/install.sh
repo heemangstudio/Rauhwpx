@@ -7,6 +7,8 @@ TAILSCALE_HTTPS_PORT=${RAUHWpx_TAILSCALE_HTTPS_PORT:-443}
 NODE_VERSION=${RAUHWpx_NODE_VERSION:-24.19.0}
 COSIGN_VERSION=3.1.2
 BASE_PATH=/rauhwpx-cloud
+HOST_KIND=${RAUHWpx_HOST_KIND:-}
+INSTALL_MARKER=/run/rauhwpx-cloud-install.pid
 
 fail() {
   echo "Rauhwpx cloud install failed: $*" >&2
@@ -24,6 +26,26 @@ if [[ "$TRANSPORT" == tailscale ]]; then
   (( TAILSCALE_HTTPS_PORT >= 1 && TAILSCALE_HTTPS_PORT <= 65535 )) \
     || fail "RAUHWpx_TAILSCALE_HTTPS_PORT must be an integer from 1 to 65535"
 fi
+[[ -z "$HOST_KIND" || "$HOST_KIND" == boat ]] || fail "RAUHWpx_HOST_KIND must be empty or boat"
+if [[ "$HOST_KIND" == boat ]]; then
+  BOAT_SANDBOX_ID=${RAUHWpx_BOAT_SANDBOX_ID:-}
+  BOAT_IDLE_MINUTES=${RAUHWpx_BOAT_IDLE_MINUTES:-30}
+  BOAT_USER=${RAUHWpx_BOAT_USER:-user}
+  [[ "$TRANSPORT" == ssh-tunnel ]] || fail "boat hosts require RAUHWpx_TRANSPORT=ssh-tunnel"
+  [[ "$BOAT_SANDBOX_ID" =~ ^bx_[a-z0-9]{8}$ ]] \
+    || fail "RAUHWpx_BOAT_SANDBOX_ID must be bx_ followed by 8 lowercase letters or digits"
+  [[ "$BOAT_IDLE_MINUTES" =~ ^[0-9]{1,3}$ ]] || fail "RAUHWpx_BOAT_IDLE_MINUTES must be an integer from 5 to 240"
+  BOAT_IDLE_MINUTES=$((10#$BOAT_IDLE_MINUTES))
+  (( BOAT_IDLE_MINUTES >= 5 && BOAT_IDLE_MINUTES <= 240 )) \
+    || fail "RAUHWpx_BOAT_IDLE_MINUTES must be an integer from 5 to 240"
+  [[ "$BOAT_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ && "$BOAT_USER" != root && "$BOAT_USER" != rauhwpx-cloud ]] \
+    || fail "RAUHWpx_BOAT_USER must name the sandbox login user"
+  id -u "$BOAT_USER" >/dev/null 2>&1 || fail "RAUHWpx_BOAT_USER $BOAT_USER does not exist"
+fi
+
+# boat 유휴 타이머는 이 표식의 설치 프로세스가 살아 있는 동안 VM을 멈추지 않는다.
+echo "$$" >"$INSTALL_MARKER"
+trap 'rm -f "$INSTALL_MARKER"' EXIT
 
 source /etc/os-release
 case "${ID:-}" in
@@ -39,10 +61,10 @@ esac
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y --no-install-recommends ca-certificates curl xz-utils podman crun uidmap slirp4netns fuse-overlayfs dbus-user-session
+apt-get install -y --no-install-recommends acl ca-certificates curl xz-utils podman crun uidmap slirp4netns fuse-overlayfs dbus-user-session
 
 TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+trap 'rm -rf "$TMP" "$INSTALL_MARKER"' EXIT
 
 install_node() {
   local filename="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz"
@@ -83,28 +105,32 @@ loginctl enable-linger rauhwpx-cloud >/dev/null 2>&1 || true
 install -d -m 0700 -o rauhwpx-cloud -g rauhwpx-cloud /var/lib/rauhwpx-cloud /var/lib/rauhwpx-cloud/provider-auth
 install -d -m 0700 -o rauhwpx-cloud -g rauhwpx-cloud /run/rauhwpx-cloud
 install -d -m 0755 /opt/rauhwpx-cloud/releases
-install -d -m 0755 -o rauhwpx-cloud -g rauhwpx-cloud /opt/rauhwpx-cloud/provider-cli
+if [[ "$HOST_KIND" != boat ]]; then
+  # 이전 boat 설치의 링크가 복원되지 않은 홈을 가리킬 수 있다.
+  [[ ! -L /opt/rauhwpx-cloud/provider-cli ]] || rm /opt/rauhwpx-cloud/provider-cli
+  install -d -m 0755 -o rauhwpx-cloud -g rauhwpx-cloud /opt/rauhwpx-cloud/provider-cli
+fi
 
 if [[ -n ${RAUHWpx_RELEASE_URL:-} ]]; then
   ARCHIVE_URL=$RAUHWpx_RELEASE_URL
 else
   ASSET="rauhwpx-cloud-linux-${ASSET_ARCH}.tar.gz"
   RELEASES_JSON=$(curl --fail --location --silent --show-error \
-    'https://api.github.com/repos/ghandhitechnology/Rauhwpx/releases?per_page=30')
+    'https://api.github.com/repos/heemangstudio/Rauhwpx/releases?per_page=30')
   if [[ "$CHANNEL" == prerelease ]]; then
-    ARCHIVE_URL=$(/opt/rauhwpx-node/bin/node -e '
-      const releases=JSON.parse(process.argv[1]); const name=process.argv[2];
+    ARCHIVE_URL=$(printf '%s' "$RELEASES_JSON" | /opt/rauhwpx-node/bin/node -e '
+      const releases=JSON.parse(require("node:fs").readFileSync(0,"utf8")); const name=process.argv[1];
       const release=releases.find((item)=>item.prerelease && !item.draft && item.assets?.some((asset)=>asset.name===name));
       const url=release?.assets.find((asset)=>asset.name===name)?.browser_download_url;
       if (!url) process.exit(1); process.stdout.write(url);
-    ' "$RELEASES_JSON" "$ASSET") || fail "no compatible prerelease cloud asset was found"
+    ' "$ASSET") || fail "no compatible prerelease cloud asset was found"
   else
-    ARCHIVE_URL=$(/opt/rauhwpx-node/bin/node -e '
-      const releases=JSON.parse(process.argv[1]); const name=process.argv[2];
+    ARCHIVE_URL=$(printf '%s' "$RELEASES_JSON" | /opt/rauhwpx-node/bin/node -e '
+      const releases=JSON.parse(require("node:fs").readFileSync(0,"utf8")); const name=process.argv[1];
       const release=releases.find((item)=>!item.prerelease && !item.draft && item.assets?.some((asset)=>asset.name===name));
       const url=release?.assets.find((asset)=>asset.name===name)?.browser_download_url;
       if (!url) process.exit(1); process.stdout.write(url);
-    ' "$RELEASES_JSON" "$ASSET") || fail "no compatible stable cloud asset was found"
+    ' "$ASSET") || fail "no compatible stable cloud asset was found"
   fi
 fi
 
@@ -112,15 +138,29 @@ ARCHIVE="$TMP/$(basename "$ARCHIVE_URL")"
 curl --fail --location --silent --show-error "$ARCHIVE_URL" --output "$ARCHIVE"
 curl --fail --location --silent --show-error "${RAUHWpx_RELEASE_SHA256_URL:-${ARCHIVE_URL}.sha256}" --output "$ARCHIVE.sha256"
 (cd "$TMP" && sha256sum --check "$(basename "$ARCHIVE").sha256")
-curl --fail --location --silent --show-error "${RAUHWpx_RELEASE_BUNDLE_URL:-${ARCHIVE_URL}.sigstore.json}" --output "$ARCHIVE.sigstore.json"
-cosign verify-blob "$ARCHIVE" \
-  --bundle "$ARCHIVE.sigstore.json" \
-  --certificate-identity-regexp '^https://github\.com/ghandhitechnology/Rauhwpx/\.github/workflows/release\.yml@refs/tags/' \
-  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' >/dev/null
+DEV_UNSIGNED_SHA256=${RAUHWpx_DEV_UNSIGNED_SHA256:-}
+if [[ -n "$DEV_UNSIGNED_SHA256" ]]; then
+  # 패키징하지 않은 개발 앱만 로컬에서 만든 런타임을 설치한다. 서명 대신 앱이 계산한
+  # 정확한 SHA-256으로 아카이브를 고정하고, 원격 URL로는 이 경로를 쓸 수 없다.
+  [[ "$DEV_UNSIGNED_SHA256" =~ ^[a-f0-9]{64}$ ]] || fail "RAUHWpx_DEV_UNSIGNED_SHA256 must be a lowercase SHA-256"
+  [[ "$ARCHIVE_URL" == file://* ]] || fail "unsigned development runtimes must be local files"
+  [[ "$(sha256sum "$ARCHIVE" | cut -d' ' -f1)" == "$DEV_UNSIGNED_SHA256" ]] \
+    || fail "development runtime does not match its pinned SHA-256"
+  echo "Installing an unsigned development Cloud runtime"
+else
+  curl --fail --location --silent --show-error "${RAUHWpx_RELEASE_BUNDLE_URL:-${ARCHIVE_URL}.sigstore.json}" --output "$ARCHIVE.sigstore.json"
+  cosign verify-blob "$ARCHIVE" \
+    --bundle "$ARCHIVE.sigstore.json" \
+    --certificate-identity-regexp '^https://github\.com/(ghandhitechnology|heemangstudio)/Rauhwpx/\.github/workflows/release\.yml@refs/tags/' \
+    --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' >/dev/null
+fi
 
 mkdir "$TMP/unpacked"
 tar -xzf "$ARCHIVE" -C "$TMP/unpacked" --strip-components=1
 [[ -f "$TMP/unpacked/package.json" && -f "$TMP/unpacked/src/main.mjs" ]] || fail "release archive is incomplete"
+if [[ "$HOST_KIND" == boat && ! -f "$TMP/unpacked/install/rauhwpx-boat-idle.timer" ]]; then
+  fail "this Cloud release does not support boat hosts"
+fi
 VERSION=$(/opt/rauhwpx-node/bin/node -p "require('$TMP/unpacked/package.json').version")
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] || fail "release version is invalid"
 DESTINATION="/opt/rauhwpx-cloud/releases/$VERSION"
@@ -139,6 +179,51 @@ install -m 0644 "$DESTINATION/install/rauhwpx-cloud.service" /etc/systemd/system
 install -m 0644 "$DESTINATION/install/rauhwpx-cloud-update.service" /etc/systemd/system/rauhwpx-cloud-update.service
 install -m 0644 "$DESTINATION/install/rauhwpx-cloud-update.timer" /etc/systemd/system/rauhwpx-cloud-update.timer
 install -m 0755 "$DESTINATION/install/rauhwpx-cloud" /usr/local/bin/rauhwpx-cloud
+if [[ "$HOST_KIND" == boat ]]; then
+  BOAT_ENV=$(mktemp)
+  printf 'RAUHWpx_BOAT_SANDBOX_ID=%s\nRAUHWpx_BOAT_IDLE_MINUTES=%s\nRAUHWpx_BOAT_USER=%s\n' \
+    "$BOAT_SANDBOX_ID" "$BOAT_IDLE_MINUTES" "$BOAT_USER" >"$BOAT_ENV"
+  install -m 0600 -o root -g root "$BOAT_ENV" /etc/rauhwpx-boat.env
+  rm -f "$BOAT_ENV"
+  install -m 0644 "$DESTINATION/install/rauhwpx-boat-idle.service" /etc/systemd/system/rauhwpx-boat-idle.service
+  install -m 0644 "$DESTINATION/install/rauhwpx-boat-idle.timer" /etc/systemd/system/rauhwpx-boat-idle.timer
+  # boat 는 깨울 때 샌드박스 사용자 홈 밖의 파일을 모두 복원한 뒤에야 서비스를 시작하고, 그 홈은
+  # 필요할 때 읽어 온다. 스냅숏에 담기는 것도 그 홈뿐이다. 수 GB인 작업 환경 이미지를 그 안에
+  # 두어 서비스가 복원을 기다리지 않게 한다.
+  BOAT_HOME=$(getent passwd "$BOAT_USER" | cut -d: -f6)
+  [[ "$BOAT_HOME" == /home/* && -d "$BOAT_HOME" ]] || fail "boat user home was not found"
+  BOAT_STORAGE="$BOAT_HOME/.rauhwpx-cloud"
+  install -d -m 0700 -o rauhwpx-cloud -g rauhwpx-cloud \
+    "$BOAT_STORAGE" "$BOAT_STORAGE/containers" "$BOAT_STORAGE/containers/storage"
+  # 서비스 사용자는 홈 목록을 볼 수 없고 자기 저장소로 지나갈 수만 있다.
+  setfacl -m "u:rauhwpx-cloud:--x" "$BOAT_HOME"
+  # 제공자 CLI(수백 MB)도 같은 이유로 홈 저장소에 두고 /opt 에는 링크만 남긴다. 아래 제공자
+  # 설치가 새 위치를 다시 채운다.
+  install -d -m 0755 -o rauhwpx-cloud -g rauhwpx-cloud "$BOAT_STORAGE/provider-cli"
+  if [[ ! -L /opt/rauhwpx-cloud/provider-cli ]]; then
+    rm -rf /opt/rauhwpx-cloud/provider-cli
+  fi
+  ln -sfn "$BOAT_STORAGE/provider-cli" /opt/rauhwpx-cloud/provider-cli
+  install -d -m 0700 -o rauhwpx-cloud -g rauhwpx-cloud \
+    /var/lib/rauhwpx-cloud/.config /var/lib/rauhwpx-cloud/.config/containers
+  # 이미지는 홈의 저장소에 빌드하고, 실행은 그 저장소를 읽기 전용 추가 저장소로 쓴다. 쓰기 계층은
+  # /var/lib 에 남아 사용자 네임스페이스의 마운트 제약을 피한다. 읽기 전용 이미지는 uid 매핑 사본을
+  # 기록하지 못해 작업마다 이미지 전체를 다시 복사하고, 그 복사는 서비스의 RestrictSUIDSGID 에 막힌다.
+  # fuse-overlayfs 는 마운트할 때 uid 를 옮기므로 복사 없이 바로 시작한다.
+  STORAGE_CONF=$(mktemp)
+  printf '[storage]\ndriver = "overlay"\n[storage.options]\nadditionalimagestores = ["%s/containers/storage"]\n[storage.options.overlay]\nmount_program = "/usr/bin/fuse-overlayfs"\n' \
+    "$BOAT_STORAGE" >"$STORAGE_CONF"
+  install -m 0600 -o rauhwpx-cloud -g rauhwpx-cloud "$STORAGE_CONF" /var/lib/rauhwpx-cloud/.config/containers/storage.conf
+  # 빌드는 --root 로 이 저장소에 직접 쓴다(rootless podman 은 CONTAINERS_STORAGE_CONF 보다 사용자 설정을 따른다).
+  printf '%s/containers/storage\n' "$BOAT_STORAGE" >"$STORAGE_CONF"
+  install -m 0600 -o rauhwpx-cloud -g rauhwpx-cloud "$STORAGE_CONF" /var/lib/rauhwpx-cloud/.config/containers/image-store
+  rm -f "$STORAGE_CONF"
+  # 예전 위치의 이미지는 다음 빌드가 새 위치에 다시 만들므로 지운다.
+  rm -rf /var/lib/rauhwpx-cloud/.local/share/containers /home/rauhwpx-cloud
+  install -d -m 0755 /etc/systemd/system/rauhwpx-cloud.service.d
+  printf '[Service]\n# 다른 홈은 계속 가리고 작업 환경 저장소 하나만 서비스에 연다.\nProtectHome=tmpfs\nBindPaths=%s\n' \
+    "$BOAT_STORAGE" >/etc/systemd/system/rauhwpx-cloud.service.d/boat-storage.conf
+fi
 
 touch /etc/rauhwpx-cloud.env
 chmod 0600 /etc/rauhwpx-cloud.env
@@ -159,6 +244,11 @@ if [[ "$TRANSPORT" == tailscale ]]; then
   upsert_env RAUHWpx_TAILSCALE_HTTPS_PORT "$TAILSCALE_HTTPS_PORT"
 fi
 upsert_env RAUHWpx_PROVIDER_CLI_DIR /opt/rauhwpx-cloud/provider-cli
+if [[ "$HOST_KIND" == boat ]]; then
+  # boat 는 깨울 때 서비스 시작과 겹쳐 /var/lib 를 복원하며 그 사이에 만든 소켓을 지울 수 있다.
+  # 실행 중에만 필요한 작업자 제어 소켓은 복원 대상이 아닌 /run 에 둔다.
+  upsert_env RAUHWpx_WORKER_CONTROL_DIR /run/rauhwpx-cloud/worker-control
+fi
 upsert_env RAUHWpx_WORKER_IMAGE "ghcr.io/ghandhitechnology/rauhwpx-cloud-worker:${CHANNEL}"
 upsert_env PATH "/opt/rauhwpx-cloud/provider-cli/current/node_modules/.bin:/opt/rauhwpx-node/bin:/usr/local/bin:/usr/bin:/bin"
 
@@ -166,15 +256,39 @@ systemctl daemon-reload
 /usr/local/bin/rauhwpx-cloud provider install claude
 /usr/local/bin/rauhwpx-cloud provider install codex
 /usr/local/bin/rauhwpx-cloud provider install pi
+# 예전 설치가 제공자 홈에 남긴 npm 캐시는 스냅숏·백업만 키운다.
+rm -rf /var/lib/rauhwpx-cloud/provider-auth/*/.npm
+
+# 다시 설치할 때 돌던 서비스가 띄운 rootless podman 일시정지 프로세스는 그 서비스의 마운트
+# 네임스페이스를 붙들고 있어 새 저장소 경로를 보지 못한다. 서비스와 남은 프로세스를 멈추고
+# 설치가 끝나면 다시 시작한다.
+systemctl stop rauhwpx-cloud.service 2>/dev/null || true
+IMAGE_STORE_ARGS=
+if [[ -f /var/lib/rauhwpx-cloud/.config/containers/image-store ]]; then
+  IMAGE_STORE=$(head -1 /var/lib/rauhwpx-cloud/.config/containers/image-store)
+  IMAGE_STORE_ARGS="--root $IMAGE_STORE --runroot /run/rauhwpx-cloud/image-store"
+  # 이미지 저장소는 컨테이너를 갖지 않으므로 이전 설정으로 만든 libpod DB 를 지워 실행 경로 불일치를 막는다.
+  rm -rf "$IMAGE_STORE/libpod" "$IMAGE_STORE/db.sql"
+fi
+pkill -KILL -u rauhwpx-cloud 2>/dev/null || true
+# 서비스를 멈추면 systemd 가 RuntimeDirectory(/run/rauhwpx-cloud)를 지우므로 podman 용으로 다시 만든다.
+install -d -m 0700 -o rauhwpx-cloud -g rauhwpx-cloud /run/rauhwpx-cloud
+# 강제 종료된 일시정지 프로세스의 PID가 남으면 migrate가 죽은 네임스페이스에 다시 붙으려 한다.
+rm -f /run/rauhwpx-cloud/libpod/tmp/pause.pid
 
 (
+  # 이전 실행이 subuid 없이 만든 일시정지 프로세스가 남아 있으면 단일 UID 매핑이 유지된다.
+  # migrate 가 그 프로세스를 다시 띄워 /etc/subuid 범위를 반영한다.
   cd /var/lib/rauhwpx-cloud
   /usr/sbin/runuser --user rauhwpx-cloud --preserve-environment -- \
-    env HOME=/var/lib/rauhwpx-cloud XDG_RUNTIME_DIR=/run/rauhwpx-cloud \
-    podman --cgroup-manager=cgroupfs build --tag "ghcr.io/ghandhitechnology/rauhwpx-cloud-worker:${CHANNEL}" \
+    env HOME=/var/lib/rauhwpx-cloud USER=rauhwpx-cloud LOGNAME=rauhwpx-cloud XDG_RUNTIME_DIR=/run/rauhwpx-cloud \
+    podman --cgroup-manager=cgroupfs system migrate
+  /usr/sbin/runuser --user rauhwpx-cloud --preserve-environment -- \
+    env HOME=/var/lib/rauhwpx-cloud USER=rauhwpx-cloud LOGNAME=rauhwpx-cloud XDG_RUNTIME_DIR=/run/rauhwpx-cloud \
+    podman ${IMAGE_STORE_ARGS:-} --cgroup-manager=cgroupfs build --tag "ghcr.io/ghandhitechnology/rauhwpx-cloud-worker:${CHANNEL}" \
     --file "$DESTINATION/install/Containerfile.worker" "$DESTINATION"
   /usr/sbin/runuser --user rauhwpx-cloud --preserve-environment -- \
-    env HOME=/var/lib/rauhwpx-cloud XDG_RUNTIME_DIR=/run/rauhwpx-cloud \
+    env HOME=/var/lib/rauhwpx-cloud USER=rauhwpx-cloud LOGNAME=rauhwpx-cloud XDG_RUNTIME_DIR=/run/rauhwpx-cloud \
     podman --cgroup-manager=cgroupfs run --rm \
     --uidmap 0:1:1000 --uidmap 1000:0:1 --uidmap 1001:1001:64535 \
     --gidmap 0:1:1000 --gidmap 1000:0:1 --gidmap 1001:1001:64535 \
@@ -182,12 +296,21 @@ systemctl daemon-reload
     --entrypoint /app/bin/rhwp "ghcr.io/ghandhitechnology/rauhwpx-cloud-worker:${CHANNEL}" --version >/dev/null
 )
 
-systemctl enable --now rauhwpx-cloud.service rauhwpx-cloud-update.timer
+# 다시 설치할 때 이미 돌던 서비스가 새 릴리스와 유닛 설정을 쓰도록 enable 뒤에 다시 시작한다.
+systemctl enable rauhwpx-cloud.service rauhwpx-cloud-update.timer
+systemctl restart rauhwpx-cloud.service
+systemctl start rauhwpx-cloud-update.timer
 for _ in $(seq 1 60); do
   if curl --fail --silent http://127.0.0.1:7740/v1/health >/dev/null; then break; fi
   sleep 1
 done
 curl --fail --silent http://127.0.0.1:7740/v1/health >/dev/null || fail "service health check failed"
+if [[ "$HOST_KIND" == boat ]]; then
+  # 설치도 사용이다. 활동 시각을 새로 남겨 데스크톱이 페어링하기 전에 VM이 멈추지 않게 한다.
+  touch /var/lib/rauhwpx-cloud/activity.stamp
+  chown rauhwpx-cloud:rauhwpx-cloud /var/lib/rauhwpx-cloud/activity.stamp
+  systemctl enable --now rauhwpx-boat-idle.timer
+fi
 
 TAILSCALE_RECEIPT_PORT=
 if [[ "$TRANSPORT" == tailscale ]]; then

@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  MAX_CANVAS_DIMENSION,
+  MAX_RENDER_PIXELS,
+  clampRenderScale,
   resolveCanvasKitRenderMode,
   resolveCanvasKitRenderModeRequest,
   resolveCanvasKitSurfaceRequest,
@@ -27,7 +30,7 @@ import {
 import { isExpectedCanvasKitUnsupportedOp } from '../src/view/canvaskit/diagnostics.ts';
 import type { LayerInfo, LayerPaintOp } from '../src/core/types.ts';
 import { glyphOutlinePayloadResourceKey, glyphOutlinePayloadStatus } from '../src/view/glyph-outline-payload-status.ts';
-import { collectVectorRawSvgDataUrls } from '../src/view/raw-svg-prefetch.ts';
+import type { PageInfo } from '../src/core/types.ts';
 
 test('render backend resolver keeps Canvas2D as the compatibility default and accepts explicit aliases', () => {
   assert.equal(resolveRenderBackend(''), 'canvas2d');
@@ -223,55 +226,54 @@ test('CanvasKit replay plane caps master-page layers at behindText (#2318)', () 
   assert.equal(renderLayerReplayPlane(bodyFront), 'inFrontOfText');
 });
 
-test('순수 RawSvg 프리페치는 PageLayerTree bbox 계약으로 SVG URL을 만든다', () => {
-  const urls: string[] = [];
-  collectVectorRawSvgDataUrls({
-    root: {
-      kind: 'leaf',
-      ops: [{
-        type: 'rawSvg',
-        bbox: { x: 12.5, y: 34.25, width: 56.75, height: 78.5 },
-        svg: '<g class="hwp-ooxml-chart"><path d="M0 0"/></g>',
-      }],
-    },
-  }, urls);
+/** src/wasm_api.rs normalize_canvas_scale 포팅 — 엔진이 canvas 를 만들 때 쓰는 최종 배율. */
+function engineNormalizeCanvasScale(width: number, height: number, requested: number): number {
+  const scale = requested <= 0 || !Number.isFinite(requested)
+    ? 1
+    : Math.min(12, Math.max(0.25, requested));
+  const scaledWidth = width * scale;
+  const scaledHeight = height * scale;
+  if (!Number.isFinite(scaledWidth) || !Number.isFinite(scaledHeight)
+    || scaledWidth > 16_384 || scaledHeight > 16_384) {
+    return Math.min(16_384 / width, 16_384 / height, scale);
+  }
+  return scale;
+}
 
-  assert.equal(urls.length, 1);
-  assert.match(urls[0], /^data:image\/svg\+xml;base64,/);
-  const encoded = urls[0].slice(urls[0].indexOf(',') + 1);
-  const svg = Buffer.from(encoded, 'base64').toString('utf8');
-  assert.equal(
-    svg,
-    '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" '
-      + 'width="56.750" height="78.500" viewBox="12.500 34.250 56.750 78.500">\n'
-      + '<g class="hwp-ooxml-chart"><path d="M0 0"/></g>\n</svg>',
-  );
+function page(width: number, height: number): PageInfo {
+  return { width, height } as PageInfo;
+}
 
-  collectVectorRawSvgDataUrls({
-    type: 'rawSvg',
-    bbox: { x: 0, y: 0, width: 1, height: 1 },
-    svg: '<image href="data:image/png;base64,AA=="/>',
-  }, urls);
-  assert.equal(urls.length, 1, '내부 raster data URL이 있는 rawSvg는 별도 프리페치하지 않는다');
+test('clampRenderScale 은 엔진 canvas 배율 한도를 먼저 적용한다', () => {
+  const a4 = page(794, 1123);
+  // Ctrl+휠 10% (DPR 1): 엔진은 0.25 로 그린다. JS 가 0.1 을 dpr 로 쓰면 쪽이 2.5배로 부푼다.
+  assert.equal(clampRenderScale(a4, 0.1), 0.25);
+  assert.equal(clampRenderScale(page(100, 100), 20), 12);
+  assert.equal(clampRenderScale(page(20_000, 100), 1), MAX_CANVAS_DIMENSION / 20_000);
+  assert.equal(clampRenderScale(a4, Number.NaN), 1);
+  assert.equal(clampRenderScale(a4, -3), 1);
+
+  const capped = clampRenderScale(a4, 15);
+  assert.ok(Math.abs(capped - Math.sqrt(MAX_RENDER_PIXELS / (794 * 1123))) < 1e-9, '면적 한도');
+  assert.ok(794 * capped <= MAX_CANVAS_DIMENSION && 1123 * capped <= MAX_CANVAS_DIMENSION);
 });
 
-test('순수 RawSvg 프리페치는 큰 페이지의 임시 data URL 보유량을 제한한다', () => {
-  const urls: string[] = [];
-  const ops = Array.from({ length: 100 }, (_, index) => ({
-    type: 'rawSvg',
-    bbox: { x: index, y: 0, width: 10, height: 10 },
-    svg: `<path d="M${index} 0 L10 10"/>`,
-  }));
-  collectVectorRawSvgDataUrls({ root: { kind: 'leaf', ops } }, urls);
-  assert.equal(urls.length, 64);
-
-  const hugeUrls: string[] = [];
-  collectVectorRawSvgDataUrls({
-    type: 'rawSvg',
-    bbox: { x: 0, y: 0, width: 1, height: 1 },
-    svg: 'x'.repeat(1_048_577),
-  }, hugeUrls);
-  assert.equal(hugeUrls.length, 0);
+test('clampRenderScale 결과는 엔진 정규화를 다시 거쳐도 바뀌지 않는다', () => {
+  // CanvasView 는 dpr = 배율 / zoom 으로 CSS 크기·여백선·DOM 그림·hit-test 를 맞춘다.
+  // 엔진이 배율을 다시 바꾸면 그 모두가 실제 비트맵과 어긋난다.
+  const pages = [page(794, 1123), page(1123, 794), page(100, 100), page(20_000, 100),
+    page(100, 70_000), page(9_000, 9_000), page(3, 5)];
+  const requests = [0.01, 0.1, 0.2, 0.25, 0.5, 1, 1.5, 2, 3.7, 5, 8, 10, 12, 15, 40];
+  for (const info of pages) {
+    for (const requested of requests) {
+      const scale = clampRenderScale(info, requested);
+      assert.equal(
+        engineNormalizeCanvasScale(info.width, info.height, scale),
+        scale,
+        `${info.width}x${info.height} @ ${requested}`,
+      );
+    }
+  }
 });
 
 test('CanvasKit image replay cache key includes payload fingerprint with repeated image refs', () => {
@@ -347,11 +349,11 @@ test('CanvasKit contain rect matches the Hancom cell-fill geometry', () => {
     height: 57.10666666666667,
   };
   const fit = canvasKitImageContainRect(cell, 1628, 563);
-  assert.ok(Math.abs(fit.width - 165.16) < 0.05, `width=${fit.width}`);
-  assert.ok(Math.abs(fit.height - cell.height) < 1e-9, `height=${fit.height}`);
-  assert.ok(Math.abs(fit.x - 510.72) < 0.05, `x=${fit.x}`);
-  assert.ok(Math.abs(fit.x + fit.width - 675.88) < 0.05, `right=${fit.x + fit.width}`);
-  assert.ok(Math.abs(fit.y - cell.y) < 1e-9, `y=${fit.y}`);
+  assert.ok(Math.abs(fit.width - 179.08) < 0.001, `width=${fit.width}`);
+  assert.ok(Math.abs(fit.height - 61.93) < 0.001, `height=${fit.height}`);
+  assert.ok(Math.abs(fit.x - 503.76) < 0.001, `x=${fit.x}`);
+  assert.ok(fit.height > cell.height);
+  assert.ok(Math.abs(fit.y - cell.y) < 0.001, `y=${fit.y}`);
   assert.notEqual(Math.round(fit.width), 1628);
   assert.notEqual(Math.round(fit.x), Math.round(cell.x));
   assert.deepEqual(canvasKitImageContainRect(cell, 0, 0), {

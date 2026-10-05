@@ -39,7 +39,7 @@ test('reasoning and model tweaks do not lock or rebuild the composer', () => {
 
 test('writing-style calibration opens from a local slash command', () => {
   assert.match(source, /value: '\/calibration'[^\n]*local: 'calibration'/);
-  assert.match(source, /detail: '말투를 맞출까요\? 열기'/);
+  assert.match(source, /detail: '말투 맞추기'/);
   assert.doesNotMatch(source, /말투 모방/);
   assert.match(source, /option\.local === 'calibration'[^\n]*writingStyleCalibration\.open\(\)/);
   assert.match(source, /text === '\/calibration'[^\n]*writingStyleCalibration\.open\(\)/);
@@ -84,7 +84,10 @@ test('rapid past-chat switches cannot activate a stale provider session', () => 
   assert.match(source, /input\.disabled = connState !== 'connected' \|\| attachmentsSending \|\| chatStarting/);
   assert.match(bridgeSource, /msg\.threadId !== this\.threadId\) break/);
   assert.match(serverSource, /studioMessageQueue: Promise\.resolve\(\)/);
-  assert.match(serverSource, /record\.studioMessageQueue = record\.studioMessageQueue[\s\S]*if \(record\.studioSocket !== sock\) return;[\s\S]*handleStudioMessage\(record, sock, msg\)/);
+  // A replaced socket's commands are dropped. Only its tool-responses still run,
+  // and those settle a known pending call inside a live provider turn.
+  assert.match(serverSource, /record\.studioMessageQueue = record\.studioMessageQueue[\s\S]*?if \(record\.studioSocket !== sock && msg\.type !== 'tool-response'\) return;\s*return handleStudioMessage\(record, sock, msg\)/);
+  assert.match(serverSource, /case 'tool-response': \{\s*const entry = record\.pendingCalls\.get\(msg\.id\);\s*if \(!entry\) \{[\s\S]*?return;\s*\}[\s\S]*?assertProviderTurn\(\);/);
 });
 
 test('changing files ends the open chat and starts a fresh chat for the next file', () => {

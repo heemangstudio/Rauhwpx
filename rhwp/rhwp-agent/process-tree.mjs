@@ -1,9 +1,6 @@
 import spawn from 'cross-spawn';
 import { win32 } from 'node:path';
 
-/** taskkill's exit code when the targeted PID no longer exists. */
-const WINDOWS_TASKKILL_NOT_FOUND = 128;
-
 const activeTerminations = new WeakMap();
 const completedTerminations = new WeakMap();
 
@@ -192,11 +189,15 @@ export async function terminateAndWaitForProcessTreeExit(child, options = {}) {
  * Terminate an owned process tree. POSIX children must have been spawned with
  * processTreeSpawnOptions(), which gives them a process group whose id is the
  * leader pid. Windows uses taskkill directly with an argv array and no shell.
+ * On POSIX the group is re-probed every `pollMs` during the grace period, so a
+ * tree that exits on SIGTERM resolves promptly instead of waiting out
+ * `graceMs`; `pollMs: 0` disables polling and leaves only the grace deadline.
  * @param {any} child
  * @param {{
  *   platform?: NodeJS.Platform,
  *   graceMs?: number,
  *   finalGraceMs?: number,
+ *   pollMs?: number,
  *   killProcess?: typeof process.kill,
  *   spawnProcess?: typeof spawn,
  *   setTimer?: typeof setTimeout,
@@ -210,6 +211,7 @@ export function terminateProcessTree(child, {
   platform = process.platform,
   graceMs = 3_000,
   finalGraceMs = 500,
+  pollMs = 50,
   killProcess = process.kill,
   spawnProcess = spawn,
   setTimer = setTimeout,
@@ -281,10 +283,14 @@ export function terminateProcessTree(child, {
     finished: false,
     timer: null,
   };
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let pollTimer = null;
+  let escalated = false;
   const finish = (cleaned) => {
     if (state.finished) return;
     state.finished = true;
     if (state.timer) clearTimer(state.timer);
+    if (pollTimer) clearTimer(pollTimer);
     activeTerminations.delete(child);
     completedTerminations.set(child, cleaned);
     resolveCompletion(cleaned);
@@ -301,9 +307,7 @@ export function terminateProcessTree(child, {
 
   let initialTaskkillSettled = false;
   let initialTaskkillSucceeded = false;
-  let initialTaskkillNotFound = false;
   let leaderExited = child.exitCode != null || child.signalCode != null;
-  let leaderClosed = false;
   const groupAlive = () => {
     try {
       return (processGroupAlive
@@ -319,19 +323,9 @@ export function terminateProcessTree(child, {
       finish(true);
       return;
     }
-    if (!initialTaskkillSettled) return;
-    // A CLI that finishes its turn and exits on its own races the taskkill
-    // issued while it was live; taskkill then reports "not found" (128). That
-    // alone is not proof, but once the leader's `close` event fires every
-    // stdio pipe it handed to descendants has been released, so no owned
-    // descendant that inherited them can still be running.
-    if (initialTaskkillNotFound) {
-      if (leaderClosed) finish(true);
-      return;
-    }
     // Once the leader exits, its numeric PID can be recycled. Wait only for
     // the single taskkill command started while the leader was known live.
-    finish(null);
+    if (initialTaskkillSettled) finish(null);
   };
   const noteLeaderExit = () => {
     leaderExited = true;
@@ -345,33 +339,29 @@ export function terminateProcessTree(child, {
   };
   if (pid !== null) {
     child.once?.('exit', noteLeaderExit);
-    child.once?.('close', () => {
-      leaderClosed = true;
-      noteLeaderExit();
-    });
+    child.once?.('close', noteLeaderExit);
   }
   const watchTaskkill = (proc, onResult) => {
     if (!proc?.once) {
-      onResult(false, null);
+      onResult(false);
       return;
     }
     let commandSettled = false;
-    const commandFinished = (code) => {
+    const commandFinished = (succeeded) => {
       if (commandSettled) return;
       commandSettled = true;
-      onResult(code === 0, code);
+      onResult(succeeded);
     };
-    proc.once('error', () => commandFinished(null));
-    proc.once('exit', (code) => commandFinished(code));
-    proc.once('close', (code) => commandFinished(code));
+    proc.once('error', () => commandFinished(false));
+    proc.once('exit', (code) => commandFinished(code === 0));
+    proc.once('close', (code) => commandFinished(code === 0));
   };
 
   const initialSignal = signal('SIGTERM');
   if (platform === 'win32') {
-    watchTaskkill(initialSignal, (succeeded, code) => {
+    watchTaskkill(initialSignal, (succeeded) => {
       initialTaskkillSettled = true;
       initialTaskkillSucceeded ||= succeeded;
-      initialTaskkillNotFound = code === WINDOWS_TASKKILL_NOT_FOUND;
       settleExitedWindowsLeader();
     });
   } else if (pid !== null && leaderExited && !groupAlive()) {
@@ -380,6 +370,21 @@ export function terminateProcessTree(child, {
   }
 
   if (state.finished) return completion;
+  if (platform !== 'win32' && pid !== null && pollMs > 0) {
+    // ESRCH on the group is the only proof; probing it more often only lets a
+    // tree that already exited on SIGTERM resolve before the grace deadline.
+    // After SIGKILL the final observation stays on the finalGraceMs timer.
+    const poll = () => {
+      pollTimer = null;
+      if (state.finished || escalated) return;
+      if (!groupAlive()) {
+        finish(true);
+        return;
+      }
+      pollTimer = setTimer(poll, pollMs);
+    };
+    pollTimer = setTimer(poll, pollMs);
+  }
   state.timer = setTimer(() => {
     if (state.finished) return;
     if (pid === null) {
@@ -394,6 +399,7 @@ export function terminateProcessTree(child, {
         finish(true);
         return;
       }
+      escalated = true;
       signal('SIGKILL');
       state.timer = setTimer(() => {
         finish(!groupAlive());

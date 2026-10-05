@@ -178,7 +178,7 @@ const INV_S_BOX: [u8; 256] = [
 const RCON: [u8; 10] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36];
 
 /// GF(2^8) xtime 연산
-fn xtime(a: u8) -> u8 {
+const fn xtime(a: u8) -> u8 {
     if a & 0x80 != 0 {
         ((a as u16) << 1 ^ 0x1b) as u8
     } else {
@@ -186,15 +186,17 @@ fn xtime(a: u8) -> u8 {
     }
 }
 
-/// GF(2^8) 곱셈
-fn gf_multiply(mut a: u8, mut b: u8) -> u8 {
+/// GF(2^8) 곱셈 (const: InvMixColumns 곱셈표를 컴파일 타임에 만든다)
+const fn gf_multiply(mut a: u8, mut b: u8) -> u8 {
     let mut result = 0u8;
-    for _ in 0..8 {
+    let mut i = 0;
+    while i < 8 {
         if b & 1 != 0 {
             result ^= a;
         }
         a = xtime(a);
         b >>= 1;
+        i += 1;
     }
     result
 }
@@ -242,27 +244,38 @@ fn inv_shift_rows(state: &mut [u8; 16]) {
     ];
 }
 
+const fn gf_mul_table(k: u8) -> [u8; 256] {
+    let mut t = [0u8; 256];
+    let mut i = 0;
+    while i < 256 {
+        t[i] = gf_multiply(k, i as u8);
+        i += 1;
+    }
+    t
+}
+
+// InvMixColumns 계수별 곱셈표. 블록마다 16회씩 돌던 비트 단위 곱셈을 표 조회로 바꿔
+// 배포용 문서 ViewText 복호화 시간을 절반 이하로 줄인다.
+static MUL_09: [u8; 256] = gf_mul_table(0x09);
+static MUL_0B: [u8; 256] = gf_mul_table(0x0b);
+static MUL_0D: [u8; 256] = gf_mul_table(0x0d);
+static MUL_0E: [u8; 256] = gf_mul_table(0x0e);
+
 /// AES Inverse MixColumns
 fn inv_mix_columns(state: &mut [u8; 16]) {
     let s = *state;
     for c in 0..4 {
         let i = c * 4;
-        state[i] = gf_multiply(0x0e, s[i])
-            ^ gf_multiply(0x0b, s[i + 1])
-            ^ gf_multiply(0x0d, s[i + 2])
-            ^ gf_multiply(0x09, s[i + 3]);
-        state[i + 1] = gf_multiply(0x09, s[i])
-            ^ gf_multiply(0x0e, s[i + 1])
-            ^ gf_multiply(0x0b, s[i + 2])
-            ^ gf_multiply(0x0d, s[i + 3]);
-        state[i + 2] = gf_multiply(0x0d, s[i])
-            ^ gf_multiply(0x09, s[i + 1])
-            ^ gf_multiply(0x0e, s[i + 2])
-            ^ gf_multiply(0x0b, s[i + 3]);
-        state[i + 3] = gf_multiply(0x0b, s[i])
-            ^ gf_multiply(0x0d, s[i + 1])
-            ^ gf_multiply(0x09, s[i + 2])
-            ^ gf_multiply(0x0e, s[i + 3]);
+        let (a0, a1, a2, a3) = (
+            s[i] as usize,
+            s[i + 1] as usize,
+            s[i + 2] as usize,
+            s[i + 3] as usize,
+        );
+        state[i] = MUL_0E[a0] ^ MUL_0B[a1] ^ MUL_0D[a2] ^ MUL_09[a3];
+        state[i + 1] = MUL_09[a0] ^ MUL_0E[a1] ^ MUL_0B[a2] ^ MUL_0D[a3];
+        state[i + 2] = MUL_0D[a0] ^ MUL_09[a1] ^ MUL_0E[a2] ^ MUL_0B[a3];
+        state[i + 3] = MUL_0B[a0] ^ MUL_0D[a1] ^ MUL_09[a2] ^ MUL_0E[a3];
     }
 }
 

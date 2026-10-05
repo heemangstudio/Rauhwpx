@@ -1313,6 +1313,10 @@ impl CanvasKitReplayPlanBuilder {
             match op {
                 PaintOp::TextRun { run, .. } if text_run_selected => {
                     self.record_required_font_family(&run.style.font_family);
+                    // 문서 선언 대체 글꼴(substFont)도 프리플라이트에 포함.
+                    if !run.style.effective_font_subst().is_empty() {
+                        self.record_required_font_family(run.style.effective_font_subst());
+                    }
                     let display_text = expand_pua_display_text(&run.text);
                     if crate::renderer::contains_old_hangul_jamo(&display_text) {
                         self.record_required_font_family(OLD_HANGUL_FONT_FAMILY);
@@ -1451,6 +1455,10 @@ impl CanvasKitReplayPlanBuilder {
                     Some("verticalText")
                 } else if run.rotation.abs() > f64::EPSILON {
                     Some("rotatedText")
+                } else if run.style.shadow_type != 0 {
+                    Some("shadowTextEffect")
+                } else if run.style.ratio != 1.0 {
+                    Some("ratioTextEffect")
                 } else if run
                     .char_overlap
                     .as_ref()
@@ -1815,6 +1823,27 @@ fn canvaskit_equation_layout_is_supported(layout: &LayoutBox) -> bool {
             return false;
         }
         *remaining_nodes -= 1;
+        if let Some(advances) = &layout.glyph_advances {
+            let text = match &layout.kind {
+                LayoutKind::Text(text)
+                | LayoutKind::Number(text)
+                | LayoutKind::Symbol(text)
+                | LayoutKind::MathSymbol(text)
+                | LayoutKind::Function(text) => text,
+                _ => return false,
+            };
+            if depth == MAX_DEPTH
+                || advances.len() > *remaining_nodes
+                || advances.len() != text.chars().count()
+                || advances
+                    .iter()
+                    .any(|value| !value.is_finite() || *value < 0.0)
+            {
+                return false;
+            }
+            // CanvasKit은 위치가 있는 잎을 글자별 자식으로 재생한다.
+            *remaining_nodes -= advances.len();
+        }
 
         let text_supported =
             |text: &str| !text.is_empty() && text.encode_utf16().count() <= max_text_utf16_units;
@@ -1828,7 +1857,7 @@ fn canvaskit_equation_layout_is_supported(layout: &LayoutBox) -> bool {
             | LayoutKind::Symbol(text)
             | LayoutKind::MathSymbol(text)
             | LayoutKind::Function(text) => text_supported(text),
-            LayoutKind::Fraction { numer, denom } => {
+            LayoutKind::Fraction { numer, denom, .. } => {
                 child(numer, remaining_nodes) && child(denom, remaining_nodes)
             }
             LayoutKind::Atop { top, bottom } => {
@@ -1877,7 +1906,9 @@ fn canvaskit_equation_layout_is_supported(layout: &LayoutBox) -> bool {
             LayoutKind::EqAlign { rows } => rows
                 .iter()
                 .all(|(left, right)| child(left, remaining_nodes) && child(right, remaining_nodes)),
-            LayoutKind::Paren { left, right, body } => {
+            LayoutKind::Paren {
+                left, right, body, ..
+            } => {
                 (left.is_empty() || text_supported(left))
                     && (right.is_empty() || text_supported(right))
                     && child(body, remaining_nodes)
@@ -2041,7 +2072,7 @@ fn text_run_transition_detail(run: &TextRunNode) -> Option<&'static str> {
     if run.style.outline_type != 0 {
         return Some("outlineTextEffect");
     }
-    if run.style.shadow_type != 0 {
+    if run.style.shadow_type != 0 && (run.style.shadow_type != 1 || run.char_overlap.is_some()) {
         return Some("shadowTextEffect");
     }
     if run.style.emboss {
@@ -2053,7 +2084,10 @@ fn text_run_transition_detail(run: &TextRunNode) -> Option<&'static str> {
     if run.style.shade_color & 0x00FF_FFFF != 0x00FF_FFFF {
         return Some("shadeTextEffect");
     }
-    if (run.style.ratio - 1.0).abs() > f64::EPSILON {
+    if !run.style.ratio.is_finite()
+        || run.style.ratio <= 0.0
+        || (run.char_overlap.is_some() && run.style.ratio != 1.0)
+    {
         return Some("ratioTextEffect");
     }
     if run.style.superscript || run.style.subscript {
@@ -2300,6 +2334,7 @@ mod tests {
         EquationNode {
             svg_content: "<text>x</text>".to_string(),
             layout_box: LayoutBox {
+                glyph_advances: None,
                 x: 0.0,
                 y: 0.0,
                 width: 8.0,
@@ -2311,12 +2346,14 @@ mod tests {
             color: 0x00000000,
             font_size: 12.0,
             font_name: "serif".to_string(),
+            version_info: "Equation Version 60".to_string(),
             section_index: None,
             para_index: None,
             control_index: None,
             inner_control_index: None,
             cell_index: None,
             cell_para_index: None,
+            cell_context: None,
             note_ref: None,
         }
     }
@@ -2721,11 +2758,30 @@ mod tests {
     }
 
     #[test]
+    fn positioned_equation_glyphs_share_the_replay_node_budget() {
+        let mut equation = equation_node();
+        equation.layout_box.kind = LayoutKind::Number("1".repeat(4096));
+        assert!(canvaskit_equation_layout_is_supported(&equation.layout_box));
+        equation.layout_box.glyph_advances = Some(vec![1.0; 4096]);
+        assert!(!canvaskit_equation_layout_is_supported(
+            &equation.layout_box
+        ));
+        equation.layout_box.kind = LayoutKind::Number("12".into());
+        equation.layout_box.glyph_advances = Some(vec![1.0, 1.0]);
+        assert!(canvaskit_equation_layout_is_supported(&equation.layout_box));
+        equation.layout_box.glyph_advances = Some(vec![1.0]);
+        assert!(!canvaskit_equation_layout_is_supported(
+            &equation.layout_box
+        ));
+    }
+
+    #[test]
     fn unsupported_equation_styles_are_not_reported_as_direct() {
         let mut equation = equation_node();
         equation.layout_box.kind = LayoutKind::FontStyle {
             style: FontStyleKind::Blackboard,
             body: Box::new(LayoutBox {
+                glyph_advances: None,
                 x: 0.0,
                 y: 0.0,
                 width: 8.0,
@@ -2803,6 +2859,32 @@ mod tests {
         assert_eq!(mark_plan.items[0].op_type, "textControlMark");
         assert_eq!(mark_plan.items[0].status, CanvasKitReplayStatus::Direct);
         assert_eq!(mark_plan.summary.hidden_overlay_violations, 0);
+    }
+
+    #[test]
+    fn ordinary_text_ratio_and_offset_shadow_are_direct_but_overlap_effects_are_not() {
+        let mut run = text_run("AB");
+        run.style.ratio = 0.8;
+        run.style.shadow_type = 1;
+        let plan = analyze_canvaskit_replay_plan(
+            &tree_with_ops(vec![PaintOp::text_run(bbox(), run.clone())]),
+            CanvasKitReplayMode::Default,
+        );
+        assert_eq!(plan.items[0].status, CanvasKitReplayStatus::Direct);
+
+        run.char_overlap = Some(CharOverlapInfo {
+            border_type: 1,
+            inner_char_size: 100,
+        });
+        for (shadow, detail) in [(1, "shadowTextEffect"), (0, "ratioTextEffect")] {
+            run.style.shadow_type = shadow;
+            let plan = analyze_canvaskit_replay_plan(
+                &tree_with_ops(vec![PaintOp::char_overlap(bbox(), run.clone())]),
+                CanvasKitReplayMode::Default,
+            );
+            assert_ne!(plan.items[0].status, CanvasKitReplayStatus::Direct);
+            assert_eq!(plan.items[0].detail.as_deref(), Some(detail));
+        }
     }
 
     #[test]
@@ -2985,7 +3067,9 @@ mod tests {
                 number: 1,
                 text: "1)".to_string(),
                 base_font_size: 12.0,
+                baseline: 12.0,
                 font_family: "Test".to_string(),
+                bold: false,
                 color: 0x0000_0000,
                 section_index: 0,
                 para_index: 0,

@@ -12,7 +12,7 @@ import { parseChatThread, type ChatThread } from '../src/agent/threads.ts';
 function thread(): ChatThread {
   return {
     id: 'thread-cloud',
-    title: '클라우드 작업',
+    title: 'Cloud 작업',
     titleRequested: true,
     createdAt: 10,
     updatedAt: 20,

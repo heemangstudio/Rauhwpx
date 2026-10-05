@@ -202,6 +202,9 @@ test('ordinary SSH profiles use a managed loopback tunnel without Tailscale', ()
   assert.ok(args.includes('StrictHostKeyChecking=accept-new'));
   assert.ok(args.includes('127.0.0.1:43123:127.0.0.1:7740'));
   assert.ok(args.includes('ServerAliveInterval=15'));
+  assert.ok(args.includes('ExitOnForwardFailure=yes'));
+  // OpenSSH 10 의 ClearAllForwardings 는 명령줄 -L 까지 지워 터널이 열리지 않는다.
+  assert.equal(args.some((arg) => /ClearAllForwardings/i.test(arg)), false);
   assert.equal(args.includes('tailscale'), false);
   const receipt = provisionerTest.parseProvisionReceipt(`RAUHWpx_RECEIPT=${JSON.stringify({
     endpoint: 'http://127.0.0.1:7740/rauhwpx-cloud', transport: 'ssh-tunnel',
@@ -360,7 +363,29 @@ test('provisioner selects and installs an architecture-matched bundled runtime',
   assert.match(command, /rauhwpx-cloud-linux-arm64\.tar\.gz/);
   assert.match(command, /RAUHWpx_RELEASE_URL=file:\/\/\$TMP\/rauhwpx-cloud-linux-arm64\.tar\.gz/);
   assert.match(command, /RAUHWpx_TAILSCALE_HTTPS_PORT=8443/);
+  assert.match(command, /sigstore\.json/);
+  assert.doesNotMatch(command, /RAUHWpx_DEV_UNSIGNED_SHA256/);
   assert.doesNotMatch(command, /github\.com/);
+
+  const sha = 'a'.repeat(64);
+  const development = provisionerTest.bundledInstallRemoteCommand({
+    channel: 'stable',
+    transport: 'ssh-tunnel',
+    publicHost: '',
+    tailscaleHttpsPort: 443,
+    assetArchitecture: 'amd64',
+    devUnsignedSha256: sha,
+  });
+  assert.match(development, new RegExp(`RAUHWpx_DEV_UNSIGNED_SHA256=${sha}`));
+  assert.doesNotMatch(development, /sigstore\.json/);
+  assert.throws(() => provisionerTest.bundledInstallRemoteCommand({
+    channel: 'stable',
+    transport: 'ssh-tunnel',
+    publicHost: '',
+    tailscaleHttpsPort: 443,
+    assetArchitecture: 'amd64',
+    devUnsignedSha256: 'x; rm -rf /',
+  }), /SHA-256 is invalid/);
 });
 
 test('provisioner reuses a compatible installation without downloading a release', () => {

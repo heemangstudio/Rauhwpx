@@ -28,6 +28,19 @@ fn load_doc() -> rhwp::wasm_api::HwpDocument {
     load_sample(HWPX_SAMPLE)
 }
 
+/// 쪽 `page` 에서 `needle` 을 담은 첫 TextRun 의 y(px).
+fn text_run_y(doc: &rhwp::wasm_api::HwpDocument, page: u32, needle: &str) -> Option<f64> {
+    let json = doc.get_page_text_layout(page).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&json).ok()?;
+    let runs = value.get("runs")?.as_array()?;
+    runs.iter().find_map(|run| {
+        let text = run.get("text")?.as_str()?;
+        text.contains(needle)
+            .then(|| run.get("y")?.as_f64())
+            .flatten()
+    })
+}
+
 #[test]
 fn issue_1749_v2_pi26_stays_on_page_2() {
     let doc = load_doc();
@@ -56,19 +69,19 @@ fn issue_1811_hwpx_pi52_rowbreak_cut_matches_hwp_reference() {
 
     let page4 = doc.dump_page_items(Some(3));
     let page4_lines: Vec<_> = page4.lines().collect();
-    let host_idx = page4_lines
-        .iter()
-        .position(|line| line.contains("PartialParagraph") && line.contains("pi=52"))
-        .unwrap_or_else(|| {
-            panic!("4쪽에서 pi=52 host 텍스트를 찾지 못함\n--- page 4 ---\n{page4}")
-        });
     let table_idx = page4_lines
         .iter()
         .position(|line| line.contains("PartialTable") && line.contains("pi=52"))
         .unwrap_or_else(|| panic!("4쪽에서 pi=52 분할 표를 찾지 못함\n--- page 4 ---\n{page4}"));
+    // host 텍스트는 표 조각보다 먼저(위에) 그려져야 한다 — 한컴 PDF: host 4줄(575pt) 뒤
+    // 표 제목(687pt). 저장 쪽-상대 사다리를 신뢰하는 HWPX 는 HWP 와 같은 경로(첫 조각
+    // 렌더가 host 줄을 그림)를 타므로 항목 순서가 아니라 그려진 위치로 확인한다.
+    let host_y = text_run_y(&doc, 3, "사회기여활동을").expect("4쪽 pi=52 host 텍스트");
+    let title_y = text_run_y(&doc, 3, "아이디어").expect("4쪽 pi=52 표 제목");
     assert!(
-        host_idx < table_idx,
-        "HWPX RowBreak mixed 문단은 PDF 기준처럼 host 텍스트를 표 fragment 보다 먼저 소비해야 한다\n--- page 4 ---\n{page4}"
+        host_y + 100.0 < title_y,
+        "HWPX RowBreak mixed 문단은 PDF 기준처럼 host 텍스트를 표 fragment 보다 먼저 배치해야 한다 \
+         (host y={host_y:.1}, 표 제목 y={title_y:.1})"
     );
     let pi52_line = page4_lines[table_idx];
 

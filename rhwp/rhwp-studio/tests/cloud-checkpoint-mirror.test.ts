@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createCheckpointMirror } from '../src/cloud/checkpoint-mirror.ts';
+import { isTerminalCheckpointError } from '../src/cloud/desktop-cloud.ts';
 import type { CloudCheckpointPayload } from '../src/cloud/types.ts';
 
 const checkpoint: CloudCheckpointPayload = {
@@ -145,4 +146,49 @@ test('merge recovery mirrors distinct operations at one revision but suppresses 
   await mirror.mirror('session-a', 'older');
   assert.deepEqual(applied, ['operation-a', 'operation-b']);
   mirror.dispose();
+});
+
+test('a non-retryable download failure settles once and leaves the next fetch to the caller', async () => {
+  let downloads = 0;
+  const resting = Object.assign(new Error('boat 서버가 정지되어 있습니다.'), { code: 'BOAT_SERVER_STOPPED' });
+  const mirror = createCheckpointMirror({
+    download: async () => {
+      downloads += 1;
+      if (downloads === 1) throw resting;
+      return checkpoint;
+    },
+    apply: () => {},
+    retryable: (error) => (error as { code?: string }).code !== 'BOAT_SERVER_STOPPED',
+    retryBaseMs: 1,
+    retryMaxMs: 2,
+  });
+
+  await assert.rejects(mirror.mirror('session-a', 'reconnect'), resting);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(downloads, 1);
+  assert.equal(mirror.hasPending('session-a'), false);
+  await mirror.mirror('session-a', 'reconnect');
+  assert.equal(downloads, 2);
+  assert.equal(mirror.hasRevision('session-a'), true);
+});
+
+test('a missing checkpoint stops the mirror, while a resting VM or a dropped connection keeps it asking', async () => {
+  let downloads = 0;
+  const missing = { name: 'BoatError', message: 'Cloud 체크포인트를 찾지 못했습니다.', code: 'CHECKPOINT_NOT_FOUND', retryable: false };
+  const mirror = createCheckpointMirror({
+    download: async () => {
+      downloads += 1;
+      throw missing;
+    },
+    apply: () => {},
+    retryable: (error) => !isTerminalCheckpointError(error),
+    retryBaseMs: 1,
+    retryMaxMs: 2,
+  });
+
+  await assert.rejects(mirror.mirror('session-a', 'reconnect'), (error) => error === missing);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(downloads, 1);
+  assert.equal(isTerminalCheckpointError({ code: 'BOAT_SERVER_STOPPED', retryable: false }), false);
+  assert.equal(isTerminalCheckpointError(new TypeError('fetch failed')), false);
 });

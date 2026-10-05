@@ -43,6 +43,7 @@ test('POSIX termination targets the child process group with TERM then KILL', ()
 
   const termination = terminateProcessTree(child, {
     platform: 'linux',
+    pollMs: 0,
     graceMs: 250,
     killProcess(pid, signal) { signals.push([pid, signal]); },
     setTimer: timers.setTimer,
@@ -63,6 +64,7 @@ test('POSIX leader exit does not cancel descendant group escalation', () => {
 
   terminateProcessTree(child, {
     platform: 'linux',
+    pollMs: 0,
     killProcess(pid, signal) { signals.push([pid, signal]); },
     setTimer: timers.setTimer,
     processGroupAlive: () => true,
@@ -82,6 +84,7 @@ test('process-tree exit wait holds a leader-only exit through descendant escalat
   const exited = waitForProcessTreeExit(child, { timeoutMs: 100 });
   terminateProcessTree(child, {
     platform: 'linux',
+    pollMs: 0,
     killProcess(pid, signal) { signals.push([pid, signal]); },
     setTimer: timers.setTimer,
     processGroupAlive: () => groupProbe++ < 2,
@@ -111,6 +114,7 @@ test('already-exited POSIX leader still cleans a live descendant group', async (
     terminateProcess(proc) {
       return terminateProcessTree(proc, {
         platform: 'linux',
+        pollMs: 0,
         killProcess(pid, signal) { signals.push([pid, signal]); },
         setTimer: timers.setTimer,
         processGroupAlive: () => probes.shift() ?? false,
@@ -127,6 +131,83 @@ test('already-exited POSIX leader still cleans a live descendant group', async (
   assert.deepEqual(signals, [[-778, 'SIGTERM'], [-778, 'SIGKILL']]);
   timers.fire();
   assert.equal(await exited, true);
+});
+
+function virtualClockTimers() {
+  const pending = new Map();
+  let nextId = 0;
+  let now = 0;
+  return {
+    setTimer(callback, delay) {
+      const id = ++nextId;
+      pending.set(id, { callback, due: now + delay });
+      return id;
+    },
+    clearTimer(id) { pending.delete(id); },
+    // Advance virtual time to the earliest due timer and run it.
+    fireNext() {
+      const [id, entry] = [...pending].sort((a, b) => a[1].due - b[1].due || a[0] - b[0])[0];
+      pending.delete(id);
+      now = entry.due;
+      entry.callback();
+      return now;
+    },
+    get size() { return pending.size; },
+    get now() { return now; },
+  };
+}
+
+test('POSIX group that exits on SIGTERM resolves at the next poll, not the grace deadline', async () => {
+  const child = Object.assign(new EventEmitter(), { pid: 5150, exitCode: null, signalCode: null });
+  const signals = [];
+  const timers = virtualClockTimers();
+  const probes = [true, false];
+  const termination = terminateProcessTree(child, {
+    platform: 'linux',
+    graceMs: 3_000,
+    pollMs: 50,
+    killProcess(pid, signal) { signals.push([pid, signal]); },
+    setTimer: timers.setTimer,
+    clearTimer: timers.clearTimer,
+    processGroupAlive: () => probes.shift() ?? false,
+  });
+  // Leader exits first while a descendant is still shutting down.
+  child.exitCode = 0;
+  child.emit('exit', 0, null);
+
+  assert.equal(timers.fireNext(), 50);
+  assert.equal(await termination, true);
+  assert.deepEqual(signals, [[-5150, 'SIGTERM']]);
+  assert.equal(timers.size, 0, 'finish clears both the poll and grace timers');
+});
+
+test('POSIX polling still escalates a group that ignores SIGTERM', async () => {
+  const child = Object.assign(new EventEmitter(), { pid: 5151, exitCode: null, signalCode: null });
+  const signals = [];
+  const timers = virtualClockTimers();
+  let killed = false;
+  const termination = terminateProcessTree(child, {
+    platform: 'linux',
+    graceMs: 200,
+    finalGraceMs: 500,
+    pollMs: 50,
+    killProcess(pid, signal) {
+      signals.push([pid, signal]);
+      if (signal === 'SIGKILL') killed = true;
+    },
+    setTimer: timers.setTimer,
+    clearTimer: timers.clearTimer,
+    processGroupAlive: () => true,
+  });
+
+  // Polls reschedule while the group is alive; the grace deadline still wins.
+  while (!killed) timers.fireNext();
+  assert.equal(timers.now, 200);
+  assert.deepEqual(signals, [[-5151, 'SIGTERM'], [-5151, 'SIGKILL']]);
+  // Polling stops after escalation; only the final observation remains.
+  while (timers.size > 0) timers.fireNext();
+  assert.equal(timers.now, 700);
+  assert.equal(await termination, false);
 });
 
 test('Windows termination invokes one trusted taskkill command with argv only', () => {
@@ -182,57 +263,6 @@ test('Windows leader exit after taskkill starts blocks PID-based escalation', as
   assert.deepEqual(calls, [
     [WINDOWS_TASKKILL, ['/PID', '9877', '/T', '/F']],
   ]);
-  assert.equal(await cleanup, null);
-});
-
-test('Windows leader that finishes on its own is proven once taskkill misses and stdio closes', async () => {
-  const child = Object.assign(new EventEmitter(), { pid: 9882, exitCode: null, signalCode: null });
-  const taskkills = [];
-  const timers = timerHarness();
-
-  const cleanup = terminateProcessTree(child, {
-    platform: 'win32',
-    env: WINDOWS_ENV,
-    spawnProcess() {
-      const taskkill = new EventEmitter();
-      taskkills.push(taskkill);
-      return taskkill;
-    },
-    setTimer: timers.setTimer,
-  });
-  child.exitCode = 0;
-  child.emit('exit', 0, null);
-  taskkills[0].emit('close', 128, null);
-  let settled = false;
-  void cleanup.then(() => { settled = true; });
-  await Promise.resolve();
-  assert.equal(settled, false, 'a missed taskkill alone is not proof while pipes may be inherited');
-  child.emit('close', 0, null);
-
-  assert.equal(await cleanup, true);
-});
-
-test('Windows leader exit with a missed taskkill but unclosed stdio stays unavailable', async () => {
-  const child = Object.assign(new EventEmitter(), { pid: 9883, exitCode: null, signalCode: null });
-  const taskkills = [];
-  const timers = timerHarness();
-
-  const cleanup = terminateProcessTree(child, {
-    platform: 'win32',
-    env: WINDOWS_ENV,
-    spawnProcess() {
-      const taskkill = new EventEmitter();
-      taskkills.push(taskkill);
-      return taskkill;
-    },
-    setTimer: timers.setTimer,
-  });
-  child.exitCode = 0;
-  child.emit('exit', 0, null);
-  taskkills[0].emit('close', 128, null);
-  timers.fire();
-  timers.fire();
-
   assert.equal(await cleanup, null);
 });
 

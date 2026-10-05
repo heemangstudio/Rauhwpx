@@ -41,6 +41,17 @@ fn test_parse_para_text_simple() {
 }
 
 #[test]
+fn hwp_hyphen_control_remains_distinct_from_literal_hyphen() {
+    let data = [0x0018u16, 0x002D, 0x0020, 0x005Fu16, 0x000D]
+        .into_iter()
+        .flat_map(u16::to_le_bytes)
+        .collect::<Vec<_>>();
+    let (text, offsets, _, _, _) = parse_para_text(&data);
+    assert_eq!(text, "\u{00AD}- _");
+    assert_eq!(offsets, vec![0, 1, 2, 3]);
+}
+
+#[test]
 fn test_parse_para_text_korean() {
     let (text, offsets, _, _, _) = parse_para_text(&make_para_text_data("한글 테스트입니다."));
     assert_eq!(text, "한글 테스트입니다.");
@@ -362,6 +373,76 @@ fn test_parse_table_control_delegation() {
         .iter()
         .any(|c| matches!(c, Control::Table(_)));
     assert!(has_table);
+}
+
+/// 1×1 표를 depth 단 중첩한 섹션 레코드 (셀 안에 다음 표)
+fn nested_table_section(depth: usize) -> Vec<u8> {
+    let mut ctrl_data = tags::CTRL_TABLE.to_le_bytes().to_vec();
+    ctrl_data.extend_from_slice(&[0u8; 44]);
+    let mut table_data = vec![0u8; 4]; // attr
+    table_data.extend_from_slice(&1u16.to_le_bytes()); // row_count
+    table_data.extend_from_slice(&1u16.to_le_bytes()); // col_count
+    table_data.extend_from_slice(&[0u8; 12]); // spacing + padding
+    table_data.extend_from_slice(&1u16.to_le_bytes()); // 행별 셀 수
+    let mut cell_data = vec![0u8; 8];
+    for v in [0u16, 0, 1, 1] {
+        cell_data.extend_from_slice(&v.to_le_bytes()); // col, row, col_span, row_span
+    }
+    cell_data.extend_from_slice(&[0u8; 18]);
+
+    let mut bytes = Vec::new();
+    for i in 0..depth {
+        let level = (i * 2) as u16;
+        let ph = make_para_header_data(0, 0, 0);
+        bytes.extend(make_record_bytes(tags::HWPTAG_PARA_HEADER, level, &ph));
+        bytes.extend(make_record_bytes(
+            tags::HWPTAG_CTRL_HEADER,
+            level + 1,
+            &ctrl_data,
+        ));
+        bytes.extend(make_record_bytes(
+            tags::HWPTAG_TABLE,
+            level + 2,
+            &table_data,
+        ));
+        bytes.extend(make_record_bytes(
+            tags::HWPTAG_LIST_HEADER,
+            level + 2,
+            &cell_data,
+        ));
+    }
+    let ph = make_para_header_data(0, 0, 0);
+    bytes.extend(make_record_bytes(
+        tags::HWPTAG_PARA_HEADER,
+        (depth * 2) as u16,
+        &ph,
+    ));
+    bytes
+}
+
+/// 과도한 중첩은 wasm 기본 스택(1MiB)을 넘기지 않고 깊이 상한에서 잘려야 한다.
+/// 스택 오버플로는 잡을 수 없어 종전엔 23KB 짜리 중첩 표로 엔진이 죽었다.
+#[test]
+fn deeply_nested_tables_stop_at_nesting_cap_within_wasm_stack() {
+    let data = nested_table_section(250);
+    let depth = std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(move || {
+            let section = parse_body_text_section(&data).expect("중첩 표도 파싱되어야 함");
+            let mut paragraphs = &section.paragraphs;
+            let mut depth = 0;
+            while let Some(Control::Table(table)) =
+                paragraphs.first().and_then(|p| p.controls.first())
+            {
+                depth += 1;
+                paragraphs = &table.cells[0].paragraphs;
+            }
+            depth
+        })
+        .unwrap()
+        .join()
+        .expect("1MiB 스택에서 오버플로 없이 끝나야 함");
+    assert_eq!(depth, MAX_HWP5_NESTING_DEPTH as usize + 1);
 }
 
 #[test]

@@ -2,7 +2,7 @@
  * E2E 테스트: 인라인 프롬프트 — 텍스트 선택 → 칩 → 입력 상자 → 사이드바 전송 게이트
  */
 import {
-  runTest, createNewDocument, screenshot, assert, typeText, clickEditArea, setTestCase,
+  runTest, createNewDocument, screenshot, assert, typeText, clickEditArea, setTestCase, waitForState, waitForPaint,
 } from './helpers.mjs';
 
 runTest('인라인 프롬프트 선택 칩/입력 상자 테스트', async ({ page }) => {
@@ -12,7 +12,7 @@ runTest('인라인 프롬프트 선택 칩/입력 상자 테스트', async ({ pa
   await typeText(page, '인라인 프롬프트 선택 검증 문장입니다');
 
   setTestCase('선택 없이 칩이 나타나지 않는다');
-  await page.evaluate(() => new Promise(r => setTimeout(r, 400)));
+  await waitForPaint(page);
   let chipVisible = await page.evaluate(() => {
     const chip = document.querySelector('.ag-inline-chip');
     return !!chip && !chip.hidden;
@@ -41,7 +41,7 @@ runTest('인라인 프롬프트 선택 칩/입력 상자 테스트', async ({ pa
   await page.mouse.down();
   await page.mouse.move(drag.to.x, drag.to.y, { steps: 8 });
   await page.mouse.up();
-  await page.evaluate(() => new Promise(r => setTimeout(r, 600)));
+  await waitForState(page, 'selection chip', () => { const c=document.querySelector('.ag-inline-chip'); return c && !c.hidden && c.checkVisibility(); });
 
   chipVisible = await page.evaluate(() => {
     const chip = document.querySelector('.ag-inline-chip');
@@ -53,7 +53,7 @@ runTest('인라인 프롬프트 선택 칩/입력 상자 테스트', async ({ pa
   setTestCase('사이드바를 숨기면 칩이 다시 나타나지 않는다');
   console.log('\n[2b] 상단 토글로 사이드바 숨긴 뒤 다시 선택...');
   await page.click('.ag-collapse-tab');
-  await page.evaluate(() => new Promise(r => setTimeout(r, 500)));
+  await waitForState(page, 'collapsed sidebar', () => !document.body.classList.contains('ag-sidebar-open') && !document.body.classList.contains('ag-sidebar-animating'));
   const sidebarGone = await page.evaluate(() => ({
     collapsed: document.getElementById('agent-sidebar')?.classList.contains('ag-collapsed') === true,
     open: document.body.classList.contains('ag-sidebar-open'),
@@ -63,7 +63,7 @@ runTest('인라인 프롬프트 선택 칩/입력 상자 테스트', async ({ pa
   await page.mouse.down();
   await page.mouse.move(drag.to.x, drag.to.y, { steps: 8 });
   await page.mouse.up();
-  await page.evaluate(() => new Promise(r => setTimeout(r, 600)));
+  await waitForPaint(page);
   chipVisible = await page.evaluate(() => {
     const chip = document.querySelector('.ag-inline-chip');
     const style = chip ? getComputedStyle(chip) : null;
@@ -73,12 +73,12 @@ runTest('인라인 프롬프트 선택 칩/입력 상자 테스트', async ({ pa
   await screenshot(page, 'inline-prompt-chip-sidebar-collapsed');
 
   await page.click('.ag-collapse-tab');
-  await page.evaluate(() => new Promise(r => setTimeout(r, 500)));
+  await waitForState(page, 'reopened sidebar', () => document.body.classList.contains('ag-sidebar-open') && !document.body.classList.contains('ag-sidebar-animating'));
   await page.mouse.move(drag.from.x + 1, drag.from.y);
   await page.mouse.down();
   await page.mouse.move(drag.to.x, drag.to.y, { steps: 8 });
   await page.mouse.up();
-  await page.evaluate(() => new Promise(r => setTimeout(r, 600)));
+  await waitForState(page, 'reselected chip', () => { const c=document.querySelector('.ag-inline-chip'); return c && !c.hidden && c.checkVisibility(); });
   chipVisible = await page.evaluate(() => {
     const chip = document.querySelector('.ag-inline-chip');
     return !!chip && !chip.hidden;
@@ -88,7 +88,7 @@ runTest('인라인 프롬프트 선택 칩/입력 상자 테스트', async ({ pa
   setTestCase('칩 클릭으로 입력 상자가 열리고 선택이 유지된다');
   console.log('\n[3] 칩 클릭 → 입력 상자...');
   await page.click('.ag-inline-chip');
-  await page.evaluate(() => new Promise(r => setTimeout(r, 200)));
+  await waitForState(page, 'focused prompt', () => !document.querySelector('.ag-inline-box')?.hidden && document.activeElement?.classList.contains('ag-inline-input'));
   const boxState = await page.evaluate(() => {
     const box = document.querySelector('.ag-inline-box');
     return {
@@ -114,7 +114,7 @@ runTest('인라인 프롬프트 선택 칩/입력 상자 테스트', async ({ pa
   });
   await page.keyboard.type('이 문장을 더 간결하게 고쳐줘', { delay: 10 });
   await page.keyboard.press('Enter');
-  await page.evaluate(() => new Promise(r => setTimeout(r, 200)));
+  await waitForState(page, 'blocked submission', () => document.querySelector('.ag-inline-error')?.textContent === '게이트 차단 테스트');
   const afterBlocked = await page.evaluate(() => ({
     boxVisible: !document.querySelector('.ag-inline-box')?.hidden,
     error: document.querySelector('.ag-inline-error')?.textContent ?? '',
@@ -132,7 +132,7 @@ runTest('인라인 프롬프트 선택 칩/입력 상자 테스트', async ({ pa
     window.__inlinePrompt.deps.submit = () => Promise.reject(new Error('전송 거부 테스트'));
   });
   await page.keyboard.press('Enter');
-  await page.evaluate(() => new Promise(r => setTimeout(r, 100)));
+  await waitForState(page, 'rejected submission', () => document.querySelector('.ag-inline-error')?.textContent === '전송 거부 테스트');
   const afterRejected = await page.evaluate(() => ({
     boxVisible: !document.querySelector('.ag-inline-box')?.hidden,
     error: document.querySelector('.ag-inline-error')?.textContent ?? '',
@@ -149,7 +149,7 @@ runTest('인라인 프롬프트 선택 칩/입력 상자 테스트', async ({ pa
   // 돌지 않도록 bridge.sendUserMessage 를 기록 스텁으로 바꾼다.
   const sendRouteReady = await page.evaluate(() =>
     window.__agentBridge?.getConnectionState?.() === 'connected'
-      && !document.querySelector('.ag-input')?.placeholder?.includes('연결을 먼저 완료'),
+      && !document.querySelector('.ag-input')?.placeholder?.includes('연결 필요'),
   );
   if (sendRouteReady) {
     setTestCase('전송 성공 시 사이드바에 선택 인용과 지시가 기록된다');
@@ -164,7 +164,7 @@ runTest('인라인 프롬프트 선택 칩/입력 상자 테스트', async ({ pa
       };
     });
     await page.keyboard.press('Enter');
-    await page.evaluate(() => new Promise(r => setTimeout(r, 300)));
+    await waitForState(page, 'sent prompt', () => document.querySelector('.ag-inline-box')?.hidden && window.__sentWire?.length === 1);
     const afterSend = await page.evaluate(() => ({
       boxHidden: document.querySelector('.ag-inline-box')?.hidden ?? true,
       wire: window.__sentWire,
@@ -184,7 +184,7 @@ runTest('인라인 프롬프트 선택 칩/입력 상자 테스트', async ({ pa
   }
 
   setTestCase('상자가 닫힌 상태로 마무리된다');
-  await page.evaluate(() => new Promise(r => setTimeout(r, 200)));
+  await waitForState(page, 'closed prompt', () => !document.querySelector('.ag-inline-box') || document.querySelector('.ag-inline-box').hidden);
   const closed = await page.evaluate(() => {
     const box = document.querySelector('.ag-inline-box');
     return !box || box.hidden;
@@ -204,14 +204,14 @@ runTest('인라인 프롬프트 선택 칩/입력 상자 테스트', async ({ pa
     window.__inputHandler.selectPictureObject(0, result.paraIdx, result.controlIdx, 'image');
     return result;
   });
-  await page.evaluate(() => new Promise(r => setTimeout(r, 700)));
+  await waitForState(page, 'image chip', () => { const c=document.querySelector('.ag-inline-chip'); return c && !c.hidden && c.checkVisibility(); });
   chipVisible = await page.evaluate(() => {
     const chip = document.querySelector('.ag-inline-chip');
     return !!chip && !chip.hidden;
   });
   assert(chipVisible, '이미지를 선택하면 인라인 프롬프트 칩이 보여야 함');
   await page.click('.ag-inline-chip');
-  await page.evaluate(() => new Promise(r => setTimeout(r, 400)));
+  await waitForState(page, 'PNG capture', () => window.__inlinePrompt?.captured?.attachments?.[0]?.size > 0);
   const imageCapture = await page.evaluate(() => {
     const captured = window.__inlinePrompt?.captured;
     const item = captured?.items?.[0];
@@ -248,9 +248,9 @@ runTest('인라인 프롬프트 선택 칩/입력 상자 테스트', async ({ pa
     controller.renderObjectCrop = async () => null;
     window.__inputHandler.selectPictureObject(0, paraIdx, controlIdx, 'image');
   }, insertedImage);
-  await page.evaluate(() => new Promise(r => setTimeout(r, 700)));
+  await waitForState(page, 'image reselect chip', () => { const c=document.querySelector('.ag-inline-chip'); return c && !c.hidden && c.checkVisibility(); });
   await page.click('.ag-inline-chip');
-  await page.evaluate(() => new Promise(r => setTimeout(r, 200)));
+  await waitForState(page, 'capture failure', () => document.querySelector('.ag-inline-error')?.textContent?.includes('미리보기'));
   const failedImageCapture = await page.evaluate(() => ({
     boxVisible: !document.querySelector('.ag-inline-box')?.hidden,
     error: document.querySelector('.ag-inline-error')?.textContent ?? '',
@@ -275,9 +275,9 @@ runTest('인라인 프롬프트 선택 칩/입력 상자 테스트', async ({ pa
     window.__eventBus.emit('picture-object-selection-changed', true);
     return result;
   });
-  await page.evaluate(() => new Promise(r => setTimeout(r, 700)));
+  await waitForState(page, 'equation chip', () => { const c=document.querySelector('.ag-inline-chip'); return c && !c.hidden && c.checkVisibility(); });
   await page.click('.ag-inline-chip');
-  await page.evaluate(() => new Promise(r => setTimeout(r, 400)));
+  await waitForState(page, 'equation capture', () => window.__inlinePrompt?.captured?.items?.[0]?.kind === 'equation');
   const equationCapture = await page.evaluate(() => {
     const item = window.__inlinePrompt?.captured?.items?.[0];
     return {
@@ -306,14 +306,14 @@ runTest('인라인 프롬프트 선택 칩/입력 상자 테스트', async ({ pa
     window.__eventBus.emit('table-object-selection-changed', true);
     return result;
   });
-  await page.evaluate(() => new Promise(r => setTimeout(r, 700)));
+  await waitForState(page, 'table chip', () => { const c=document.querySelector('.ag-inline-chip'); return c && !c.hidden && c.checkVisibility(); });
   chipVisible = await page.evaluate(() => {
     const chip = document.querySelector('.ag-inline-chip');
     return !!chip && !chip.hidden;
   });
   assert(chipVisible, '표를 선택하면 인라인 프롬프트 칩이 보여야 함');
   await page.click('.ag-inline-chip');
-  await page.evaluate(() => new Promise(r => setTimeout(r, 200)));
+  await waitForState(page, 'table capture', () => window.__inlinePrompt?.captured?.items?.[0]?.kind === 'table');
   const tableCapture = await page.evaluate(() => {
     const item = window.__inlinePrompt?.captured?.items?.[0];
     return {
@@ -348,11 +348,11 @@ runTest('인라인 프롬프트 선택 칩/입력 상자 테스트', async ({ pa
   }, insertedTable);
   assert(selectedCells.startRow === 1 && selectedCells.endRow === 1
     && selectedCells.startCol === 0 && selectedCells.endCol === 1, '테스트 셀 범위를 준비해야 함');
-  await page.evaluate(() => new Promise(r => setTimeout(r, 700)));
+  await waitForState(page, 'cell range chip', () => { const c=document.querySelector('.ag-inline-chip'); return c && !c.hidden && c.checkVisibility(); });
   chipVisible = await page.evaluate(() => !document.querySelector('.ag-inline-chip')?.hidden);
   assert(chipVisible, '셀 범위를 선택하면 인라인 프롬프트 칩이 보여야 함');
   await page.click('.ag-inline-chip');
-  await page.evaluate(() => new Promise(r => setTimeout(r, 200)));
+  await waitForState(page, 'cell range capture', () => !!window.__inlinePrompt?.captured?.items?.[0]?.selectedRange);
   const cellRangeCapture = await page.evaluate(() => {
     const item = window.__inlinePrompt?.captured?.items?.[0];
     return {
@@ -375,7 +375,7 @@ runTest('인라인 프롬프트 선택 칩/입력 상자 테스트', async ({ pa
     window.__eventBus.emit('document-mutated', 'inline-prompt-stale-test');
   });
   await page.keyboard.press('Enter');
-  await page.evaluate(() => new Promise(r => setTimeout(r, 100)));
+  await waitForState(page, 'stale revision notice', () => document.querySelector('.ag-inline-error')?.textContent?.includes('다시 선택'));
   const staleState = await page.evaluate(() => ({
     calls: window.__staleSubmitCalls,
     draft: document.querySelector('.ag-inline-input')?.value ?? '',

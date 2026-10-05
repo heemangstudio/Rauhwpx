@@ -21,21 +21,21 @@ if [[ -n ${RAUHWpx_RELEASE_URL:-} ]]; then
 else
   ASSET="rauhwpx-cloud-linux-${ASSET_ARCH}.tar.gz"
   RELEASES_JSON=$(curl --fail --location --silent --show-error \
-    'https://api.github.com/repos/ghandhitechnology/Rauhwpx/releases?per_page=30')
+    'https://api.github.com/repos/heemangstudio/Rauhwpx/releases?per_page=30')
   if [[ "$CHANNEL" == prerelease ]]; then
-    ARCHIVE_URL=$(/opt/rauhwpx-node/bin/node -e '
-      const releases=JSON.parse(process.argv[1]); const name=process.argv[2];
+    ARCHIVE_URL=$(printf '%s' "$RELEASES_JSON" | /opt/rauhwpx-node/bin/node -e '
+      const releases=JSON.parse(require("node:fs").readFileSync(0,"utf8")); const name=process.argv[1];
       const release=releases.find((item)=>item.prerelease && !item.draft && item.assets?.some((asset)=>asset.name===name));
       const url=release?.assets.find((asset)=>asset.name===name)?.browser_download_url;
       if (!url) process.exit(1); process.stdout.write(url);
-    ' "$RELEASES_JSON" "$ASSET") || { echo "no compatible prerelease cloud asset was found" >&2; exit 1; }
+    ' "$ASSET") || { echo "no compatible prerelease cloud asset was found" >&2; exit 1; }
   else
-    ARCHIVE_URL=$(/opt/rauhwpx-node/bin/node -e '
-      const releases=JSON.parse(process.argv[1]); const name=process.argv[2];
+    ARCHIVE_URL=$(printf '%s' "$RELEASES_JSON" | /opt/rauhwpx-node/bin/node -e '
+      const releases=JSON.parse(require("node:fs").readFileSync(0,"utf8")); const name=process.argv[1];
       const release=releases.find((item)=>!item.prerelease && !item.draft && item.assets?.some((asset)=>asset.name===name));
       const url=release?.assets.find((asset)=>asset.name===name)?.browser_download_url;
       if (!url) process.exit(1); process.stdout.write(url);
-    ' "$RELEASES_JSON" "$ASSET") || { echo "no compatible stable cloud asset was found" >&2; exit 1; }
+    ' "$ASSET") || { echo "no compatible stable cloud asset was found" >&2; exit 1; }
   fi
 fi
 
@@ -48,7 +48,7 @@ curl --fail --location --silent --show-error "${RAUHWpx_RELEASE_SHA256_URL:-${AR
 curl --fail --location --silent --show-error "${RAUHWpx_RELEASE_BUNDLE_URL:-${ARCHIVE_URL}.sigstore.json}" --output "$ARCHIVE.sigstore.json"
 cosign verify-blob "$ARCHIVE" \
   --bundle "$ARCHIVE.sigstore.json" \
-  --certificate-identity-regexp '^https://github\.com/ghandhitechnology/Rauhwpx/\.github/workflows/release\.yml@refs/tags/' \
+  --certificate-identity-regexp '^https://github\.com/(ghandhitechnology|heemangstudio)/Rauhwpx/\.github/workflows/release\.yml@refs/tags/' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' >/dev/null
 
 mkdir "$TMP/unpacked"
@@ -84,14 +84,24 @@ chown -R root:root "$DESTINATION"
 chmod -R a+rX "$DESTINATION"
 chmod +x "$DESTINATION/bin/rauhwpx-cloud" "$DESTINATION/install/"*.sh "$DESTINATION/install/rauhwpx-cloud"
 WORKER_IMAGE="ghcr.io/ghandhitechnology/rauhwpx-cloud-worker:release-$VERSION"
+# boat 호스트는 이미지를 홈의 추가 저장소에 빌드한다(install.sh 참고).
+IMAGE_STORE_ARGS=
+if [[ -f /var/lib/rauhwpx-cloud/.config/containers/image-store ]]; then
+  IMAGE_STORE_ARGS="--root $(head -1 /var/lib/rauhwpx-cloud/.config/containers/image-store) --runroot /run/rauhwpx-cloud/image-store"
+fi
 install -d -m 0700 -o rauhwpx-cloud -g rauhwpx-cloud /run/rauhwpx-cloud
 (
+  # 이전 실행이 subuid 없이 만든 일시정지 프로세스가 남아 있으면 단일 UID 매핑이 유지된다.
+  # migrate 가 그 프로세스를 다시 띄워 /etc/subuid 범위를 반영한다.
   cd /var/lib/rauhwpx-cloud
   /usr/sbin/runuser --user rauhwpx-cloud --preserve-environment -- \
-    env HOME=/var/lib/rauhwpx-cloud XDG_RUNTIME_DIR=/run/rauhwpx-cloud \
-    podman --cgroup-manager=cgroupfs build --tag "$WORKER_IMAGE" --file "$DESTINATION/install/Containerfile.worker" "$DESTINATION"
+    env HOME=/var/lib/rauhwpx-cloud USER=rauhwpx-cloud LOGNAME=rauhwpx-cloud XDG_RUNTIME_DIR=/run/rauhwpx-cloud \
+    podman --cgroup-manager=cgroupfs system migrate
   /usr/sbin/runuser --user rauhwpx-cloud --preserve-environment -- \
-    env HOME=/var/lib/rauhwpx-cloud XDG_RUNTIME_DIR=/run/rauhwpx-cloud \
+    env HOME=/var/lib/rauhwpx-cloud USER=rauhwpx-cloud LOGNAME=rauhwpx-cloud XDG_RUNTIME_DIR=/run/rauhwpx-cloud \
+    podman ${IMAGE_STORE_ARGS:-} --cgroup-manager=cgroupfs build --tag "$WORKER_IMAGE" --file "$DESTINATION/install/Containerfile.worker" "$DESTINATION"
+  /usr/sbin/runuser --user rauhwpx-cloud --preserve-environment -- \
+    env HOME=/var/lib/rauhwpx-cloud USER=rauhwpx-cloud LOGNAME=rauhwpx-cloud XDG_RUNTIME_DIR=/run/rauhwpx-cloud \
     podman --cgroup-manager=cgroupfs run --rm \
     --uidmap 0:1:1000 --uidmap 1000:0:1 --uidmap 1001:1001:64535 \
     --gidmap 0:1:1000 --gidmap 1000:0:1 --gidmap 1001:1001:64535 \
@@ -101,6 +111,11 @@ install -d -m 0700 -o rauhwpx-cloud -g rauhwpx-cloud /run/rauhwpx-cloud
 PREVIOUS=$(readlink -f /opt/rauhwpx-cloud/current)
 cp /etc/rauhwpx-cloud.env "$TMP/environment.previous"
 SWITCHED=0
+install_boat_units() {
+  [[ -f /etc/rauhwpx-boat.env && -f "$1/install/rauhwpx-boat-idle.timer" ]] || return 0
+  install -m 0644 "$1/install/rauhwpx-boat-idle.service" /etc/systemd/system/rauhwpx-boat-idle.service
+  install -m 0644 "$1/install/rauhwpx-boat-idle.timer" /etc/systemd/system/rauhwpx-boat-idle.timer
+}
 rollback() {
   local status=${1:-$?}
   trap - ERR
@@ -111,6 +126,7 @@ rollback() {
     install -m 0644 "$PREVIOUS/install/rauhwpx-cloud.service" /etc/systemd/system/rauhwpx-cloud.service
     install -m 0644 "$PREVIOUS/install/rauhwpx-cloud-update.service" /etc/systemd/system/rauhwpx-cloud-update.service
     install -m 0644 "$PREVIOUS/install/rauhwpx-cloud-update.timer" /etc/systemd/system/rauhwpx-cloud-update.timer
+    install_boat_units "$PREVIOUS"
     systemctl daemon-reload
     systemctl restart rauhwpx-cloud.service
   fi
@@ -132,6 +148,7 @@ rm -f "$temporary"
 install -m 0644 "$DESTINATION/install/rauhwpx-cloud.service" /etc/systemd/system/rauhwpx-cloud.service
 install -m 0644 "$DESTINATION/install/rauhwpx-cloud-update.service" /etc/systemd/system/rauhwpx-cloud-update.service
 install -m 0644 "$DESTINATION/install/rauhwpx-cloud-update.timer" /etc/systemd/system/rauhwpx-cloud-update.timer
+install_boat_units "$DESTINATION"
 systemctl daemon-reload
 systemctl restart rauhwpx-cloud.service
 for _ in $(seq 1 30); do

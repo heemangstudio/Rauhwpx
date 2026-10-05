@@ -2,9 +2,6 @@ use crate::wmf::converter::{svg::util::css_color_from_color_ref, *};
 
 #[derive(Clone, Debug)]
 pub struct DeviceContext {
-    // graphics object
-    pub object_table: GraphicsObjects,
-
     // structures
     pub drawing_position: PointS,
     pub text_bk_color: ColorRef,
@@ -26,7 +23,6 @@ pub struct DeviceContext {
 impl Default for DeviceContext {
     fn default() -> Self {
         Self {
-            object_table: GraphicsObjects::new(0),
             bk_mode: MixMode::TRANSPARENT,
             clipping_region: None,
             drawing_position: PointS { x: 0, y: 0 },
@@ -47,11 +43,6 @@ impl Default for DeviceContext {
 impl DeviceContext {
     pub fn bk_mode(mut self, bk_mode: MixMode) -> Self {
         self.bk_mode = bk_mode;
-        self
-    }
-
-    pub fn create_object_table(mut self, length: u16) -> Self {
-        self.object_table = GraphicsObjects::new(length as usize);
         self
     }
 
@@ -174,17 +165,17 @@ impl DeviceContext {
     }
 
     pub fn point_s_to_absolute_point(&self, point: &PointS) -> PointS {
-        let x = (f32::from((point.x - self.window.origin_x).abs()) / self.window.scale_x) as i16;
-        let y = (f32::from((point.y - self.window.origin_y).abs()) / self.window.scale_y) as i16;
+        let x = window_distance(point.x, self.window.origin_x, self.window.scale_x);
+        let y = window_distance(point.y, self.window.origin_y, self.window.scale_y);
 
         PointS { x, y }
     }
 
     pub fn point_s_to_relative_point(&self, point: &PointS) -> PointS {
-        let x = (f32::from((point.x - self.window.origin_x).abs()) / self.window.scale_x) as i16
-            + self.drawing_position.x;
-        let y = (f32::from((point.y - self.window.origin_y).abs()) / self.window.scale_y) as i16
-            + self.drawing_position.y;
+        let x = window_distance(point.x, self.window.origin_x, self.window.scale_x)
+            .saturating_add(self.drawing_position.x);
+        let y = window_distance(point.y, self.window.origin_y, self.window.scale_y)
+            .saturating_add(self.drawing_position.y);
 
         PointS { x, y }
     }
@@ -200,6 +191,15 @@ impl DeviceContext {
     pub fn text_color_as_css_color(&self) -> String {
         css_color_from_color_ref(&self.text_color)
     }
+}
+
+/// 논리 좌표 한 축의 창 원점까지 거리를 창 배율로 나눈 값.
+///
+/// 좌표는 파일이 정한 i16 이다. i16 으로 빼고 `abs()` 하면 `-32768` 이나
+/// `32767 - (-1)` 에서 넘친다(디버그 빌드 패닉). i32 로 셈하면 넘치지 않는 입력은
+/// 예전과 같은 값이고, 넘치던 입력은 `as i16` 포화로 끝난다.
+fn window_distance(value: i16, origin: i16, scale: f32) -> i16 {
+    ((i32::from(value) - i32::from(origin)).abs() as f32 / scale) as i16
 }
 
 #[derive(Clone, Debug)]
@@ -238,8 +238,8 @@ impl Window {
     }
 
     pub fn ext(mut self, x: i16, y: i16) -> Self {
-        self.x = x.abs();
-        self.y = y.abs();
+        self.x = x.saturating_abs();
+        self.y = y.saturating_abs();
         self.ext_explicitly_set = true;
         // [Task #860 Stage D] y < 0 = Cartesian 좌표계 (bottom-up) — 일부 application
         // 이 WMF 에 SetWindowExt(width, -height) 로 bottom-up 설정. SVG 변환 시
@@ -268,6 +268,6 @@ impl Window {
         // 변환 (Task #864). viewBox 도 이 device 공간 (0, 0, ext_x, ext_y) 으로 정합.
         // (Task #860 Stage D 의 (origin_x, origin_y, ...) 변경 revert — image 와 text
         // 의 좌표 공간이 mismatch 였던 본질을 정정.)
-        (0, 0, self.x.abs(), self.y.abs())
+        (0, 0, self.x.saturating_abs(), self.y.saturating_abs())
     }
 }

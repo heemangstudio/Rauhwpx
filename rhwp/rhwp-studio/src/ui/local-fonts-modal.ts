@@ -8,10 +8,17 @@
 import type { DocumentFontStatusItem, DocumentFontStatusReport } from '@/core/document-font-status';
 import { enableDialogDrag } from './dialog-drag';
 
-export type LocalFontsChoice = 'detect' | 'web-substitute' | 'cancel';
+export type LocalFontsChoice = 'detect' | 'web-substitute' | 'cancel'
+  | { type: 'import'; files: File[] }
+  | { type: 'folder'; result: Promise<unknown> };
 
 export interface LocalFontsModalOptions {
   disableExternalWebFonts?: boolean;
+  /**
+   * 글꼴 폴더 연결. 폴더 선택 창은 클릭 처리 안에서 바로 열어야 하므로 모달이 직접 부른다.
+   * reconnect면 저장된 폴더의 권한만 다시 받고 이 버튼을 기본 버튼으로 둔다.
+   */
+  folder?: { reconnect: boolean; connect: () => Promise<unknown> } | null;
 }
 
 const STATUS_LABEL: Record<DocumentFontStatusItem['status'], string> = {
@@ -51,7 +58,9 @@ export class LocalFontsModal {
 
     const dialog = document.createElement('div');
     dialog.className = 'dialog-wrap';
-    dialog.style.width = '520px';
+    // 폴더 연결 버튼이 더해지면 버튼 네 개가 한 줄에 들어가도록 넓힌다.
+    dialog.style.width = this.options.folder ? '640px' : '520px';
+    dialog.style.maxWidth = 'calc(100vw - 32px)';
 
     const title = document.createElement('div');
     title.className = 'dialog-title';
@@ -84,6 +93,13 @@ export class LocalFontsModal {
       ? '이 브라우저에서는 설치된 모든 글꼴 목록을 가져오지 않고, 현재 문서에 필요한 글꼴만 확인합니다. 확인 결과는 이 브라우저/확장 로컬 저장소에만 보관되며 서버로 전송하지 않습니다. 감지를 건너뛰면 대체 글꼴로 계속 표시합니다.'
       : '감지 결과는 이 브라우저/확장 로컬 저장소에만 보관되며 서버로 전송하지 않습니다. 감지를 건너뛰면 대체 글꼴로 계속 표시합니다.';
     body.appendChild(privacy);
+
+    const importHint = document.createElement('p');
+    importHint.style.margin = '0 0 12px 0';
+    importHint.style.fontSize = '13px';
+    importHint.style.color = 'var(--color-text-secondary)';
+    importHint.textContent = 'TTF/OTF 파일과 HFT 수식 글꼴을 이번 세션에서 사용할 수 있습니다. 파일은 서버로 전송하지 않습니다.';
+    body.appendChild(importHint);
 
     if (this.options.disableExternalWebFonts) {
       const offlineNotice = document.createElement('div');
@@ -120,7 +136,7 @@ export class LocalFontsModal {
     details.style.marginTop = '8px';
     const summaryEl = document.createElement('summary');
     summaryEl.textContent = '문서 글꼴 상태 보기';
-    summaryEl.style.cursor = 'pointer';
+    summaryEl.style.cursor = 'default';
     summaryEl.style.fontSize = '13px';
     summaryEl.style.color = 'var(--ui-link)';
     details.appendChild(summaryEl);
@@ -162,18 +178,50 @@ export class LocalFontsModal {
     const footer = document.createElement('div');
     footer.className = 'dialog-footer';
 
+    const folder = this.options.folder ?? null;
     const detectBtn = document.createElement('button');
-    detectBtn.className = 'dialog-btn dialog-btn-primary';
-    detectBtn.textContent = '로컬 글꼴 감지 (권장)';
+    detectBtn.className = folder?.reconnect ? 'dialog-btn' : 'dialog-btn dialog-btn-primary';
+    detectBtn.textContent = folder?.reconnect ? '로컬 글꼴 감지' : '로컬 글꼴 감지 (권장)';
     detectBtn.addEventListener('click', () => this.resolve('detect'));
+
+    let folderBtn: HTMLButtonElement | null = null;
+    if (folder) {
+      folderBtn = document.createElement('button');
+      folderBtn.className = folder.reconnect ? 'dialog-btn dialog-btn-primary' : 'dialog-btn';
+      folderBtn.textContent = folder.reconnect ? '글꼴 폴더 다시 연결' : '글꼴 폴더 연결';
+      folderBtn.title = '한컴 오피스 Shared 폴더나 글꼴 폴더';
+      folderBtn.addEventListener('click', () => {
+        const result = folder.connect();
+        this.resolve({ type: 'folder', result });
+      });
+    }
 
     const webBtn = document.createElement('button');
     webBtn.className = 'dialog-btn';
     webBtn.textContent = '대체 글꼴로 보기';
     webBtn.addEventListener('click', () => this.resolve('web-substitute'));
 
+    const importInput = document.createElement('input');
+    importInput.type = 'file';
+    importInput.accept = '.ttf,.otf,.hft,font/ttf,font/otf';
+    importInput.multiple = true;
+    importInput.hidden = true;
+    importInput.addEventListener('change', () => {
+      const files = Array.from(importInput.files ?? []);
+      if (files.length > 0) this.resolve({ type: 'import', files });
+    });
+
+    const importBtn = document.createElement('button');
+    importBtn.className = 'dialog-btn';
+    importBtn.textContent = '글꼴 파일 가져오기 (이번 세션)';
+    importBtn.addEventListener('click', () => importInput.click());
+
+    if (folderBtn && folder?.reconnect) footer.appendChild(folderBtn);
     footer.appendChild(detectBtn);
+    if (folderBtn && !folder?.reconnect) footer.appendChild(folderBtn);
+    footer.appendChild(importBtn);
     footer.appendChild(webBtn);
+    footer.appendChild(importInput);
     dialog.appendChild(footer);
 
     this.overlay.appendChild(dialog);
@@ -190,7 +238,8 @@ export class LocalFontsModal {
       if (e.key === 'Enter') {
         e.stopPropagation();
         e.preventDefault();
-        this.resolve('detect');
+        // 기본 버튼을 누른 것과 같게 한다 (폴더 다시 연결은 클릭 처리 안에서 권한을 묻는다).
+        (this.overlay?.querySelector('.dialog-btn-primary') as HTMLButtonElement | null)?.click();
         return;
       }
       e.stopPropagation();

@@ -3,6 +3,8 @@
 //! content.hpf는 OPF(Open Packaging Format) 형식의 XML로,
 //! `<opf:manifest>` 내의 `<opf:item>` 요소에서 섹션/이미지 파일을 식별한다.
 
+use std::collections::{HashMap, HashSet};
+
 use quick_xml::events::Event;
 use quick_xml::Reader;
 
@@ -97,10 +99,21 @@ pub fn parse_content_hpf(xml: &str) -> Result<PackageInfo, HwpxError> {
         buf.clear();
     }
 
-    // spine 순서대로 섹션 파일 추출
+    // spine 순서대로 섹션 파일 추출. 같은 섹션을 가리키는 중복 itemref 는 첫 위치만
+    // 쓴다 — 중복을 그대로 두면 같은 section XML 을 itemref 수만큼 다시 풀고 파싱해
+    // 압축 해제 예산(재읽기는 미과금)을 우회한다.
+    let mut item_by_id: HashMap<&str, usize> = HashMap::with_capacity(all_items.len());
+    for (idx, (id, _, _, _)) in all_items.iter().enumerate() {
+        item_by_id.entry(id.as_str()).or_insert(idx);
+    }
+    let mut seen_sections: HashSet<&str> = HashSet::new();
     for idref in &spine_order {
-        if let Some((_, href, media_type, _)) = all_items.iter().find(|(id, _, _, _)| id == idref) {
-            if media_type == "application/xml" && href.contains("section") {
+        if let Some(&idx) = item_by_id.get(idref.as_str()) {
+            let (_, href, media_type, _) = &all_items[idx];
+            if media_type == "application/xml"
+                && href.contains("section")
+                && seen_sections.insert(href.as_str())
+            {
                 info.section_files.push(href.clone());
             }
         }
@@ -113,6 +126,7 @@ pub fn parse_content_hpf(xml: &str) -> Result<PackageInfo, HwpxError> {
             .filter(|(_, href, mt, _)| mt == "application/xml" && href.contains("section"))
             .collect();
         section_items.sort_by(|a, b| a.1.cmp(&b.1));
+        section_items.dedup_by(|a, b| a.1 == b.1);
         info.section_files = section_items
             .into_iter()
             .map(|(_, href, _, _)| href.clone())
@@ -230,6 +244,29 @@ fn local_tag_name(name: &[u8]) -> &[u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duplicate_spine_itemrefs_parse_each_section_once() {
+        let xml = r#"<opf:package xmlns:opf="http://www.idpf.org/2007/opf/">
+  <opf:manifest>
+    <opf:item id="section0" href="Contents/section0.xml" media-type="application/xml"/>
+    <opf:item id="section1" href="Contents/section1.xml" media-type="application/xml"/>
+  </opf:manifest>
+  <opf:spine>
+    <opf:itemref idref="section1"/>
+    <opf:itemref idref="section0"/>
+    <opf:itemref idref="section1"/>
+    <opf:itemref idref="section0"/>
+  </opf:spine>
+</opf:package>"#;
+
+        let info = parse_content_hpf(xml).unwrap();
+        assert_eq!(
+            info.section_files,
+            vec!["Contents/section1.xml", "Contents/section0.xml"]
+        );
+        assert_eq!(info.section_master_page_files.len(), 2);
+    }
 
     #[test]
     fn test_parse_content_hpf() {

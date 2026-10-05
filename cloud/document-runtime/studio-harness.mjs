@@ -37,6 +37,38 @@ function runtimeError(code, message, cause) {
   return Object.assign(new Error(message, cause ? { cause } : undefined), { code });
 }
 
+// Claude Code, Codex and Pi report expired or revoked logins in these forms.
+// A bare "401" or "Unauthorized" only counts in an HTTP status position.
+const PROVIDER_AUTH_FAILURE_PATTERNS = [
+  /\bplease run \/login\b/i,
+  /\bfailed to authenticate\b/i,
+  /\bunauthorized \(401\)/i,
+  /\binvalid api key\b/i,
+  /\boauth token\b[^\n]{0,40}\b(?:expired|revoked)\b/i,
+  /\bauthentication_error\b/,
+  /\bnot logged in\b/i,
+  /\binvalid_grant\b/,
+  /\brefresh_token_(?:expired|reused|invalidated)\b/,
+  /\brefresh token\b[^\n]{0,40}\b(?:expired|revoked|invalid(?:ated)?)\b/i,
+  /\baccess token could not be refreshed\b/i,
+  /\bplease log ?in again\b/i,
+  /\btoken_expired\b/,
+  /\bno api key found\b/i,
+  /\bno auth credentials found\b/i,
+  /\b401 unauthorized\b/i,
+  /\b(?:api error|http(?:\/[\d.]+)?|status(?: code)?)\s*:?\s*401\b/i,
+  /"(?:code|status)"\s*:\s*401\b/,
+  /^\s*(?:error:\s*)?401\b/i,
+  /^\s*(?:error:\s*)?unauthorized\.?\s*$/i,
+];
+
+export const PROVIDER_AUTH_EXPIRED_MESSAGE = 'Provider login expired or was revoked';
+
+export function isProviderAuthFailure(text) {
+  if (typeof text !== 'string' || !text) return false;
+  return PROVIDER_AUTH_FAILURE_PATTERNS.some((pattern) => pattern.test(text));
+}
+
 async function withTimeout(operation, timeoutMs, code, message) {
   let timer;
   const timeout = new Promise((_, reject) => {
@@ -336,10 +368,11 @@ export async function uploadRequiredReferences({
   onEvent,
   timeoutMs = 60_000,
 }) {
+  const indexed = [];
   for (let index = 0; index < references.length; index += 1) {
     const reference = references[index];
     try {
-      await withTimeout(
+      const file = await withTimeout(
         page.evaluate(async (secret, input) => window.rauhwpxCloudRuntime.uploadReference(secret, input), bootstrap, {
           url: resourceUrl(origin, bootstrap, reference.resourceId ?? `reference-${index}`),
           name: reference.name,
@@ -350,12 +383,19 @@ export async function uploadRequiredReferences({
         'REFERENCE_INDEX_TIMEOUT',
         `Required cloud reference indexing timed out: ${reference.name}`,
       );
+      if (file?.status !== 'ready' || typeof file.id !== 'string' || !file.id) {
+        throw runtimeError('REFERENCE_INDEX_INVALID', `Cloud reference indexing returned no ready file: ${reference.name}`);
+      }
+      const resolved = { ...reference, fileId: file.id, kind: file.kind };
+      references[index] = resolved;
+      indexed.push(resolved);
     } catch (error) {
       const message = String(error?.message ?? error).slice(0, 1_000);
       await onEvent({ type: 'reference.index-failed', name: reference.name, message });
       throw runtimeError('REFERENCE_INDEX_FAILED', `Required cloud reference could not be indexed: ${reference.name}`, error);
     }
   }
+  return indexed;
 }
 
 const CHROMIUM_ARGS = Object.freeze([
@@ -527,7 +567,9 @@ export async function observeStudioTurn({
       }
       if (entry.event?.type === 'implementation-started') implementationStarted = true;
       if (entry.event?.type === 'hub-error') {
-        throw runtimeError(String(entry.event.code || 'AGENT_HUB_ERROR'), String(entry.event.message || 'Agent hub failed'));
+        const message = String(entry.event.message || 'Agent hub failed');
+        if (isProviderAuthFailure(message)) throw runtimeError('PROVIDER_AUTH_EXPIRED', PROVIDER_AUTH_EXPIRED_MESSAGE);
+        throw runtimeError(String(entry.event.code || 'AGENT_HUB_ERROR'), message);
       }
       const agentEvent = entry.event?.type === 'agent' ? entry.event.event : null;
       if (agentEvent?.type === 'turn-start') sawStart = true;
@@ -621,6 +663,7 @@ export async function createStudioHarness({
       HOME: path.join(workspace, 'home'),
       USERPROFILE: path.join(workspace, 'home'),
       RHWP_AGENT_MODE: 'production',
+      RAUHWpx_CLOUD_RUNTIME: '1',
       RHWP_AGENT_PORT: String(hubPort),
       RHWP_AGENT_TOKEN: hubToken,
       RHWP_LAUNCH_ID: launchId,
@@ -878,10 +921,11 @@ export async function createStudioHarness({
           additions.push({ ...reference, resourceId });
         }
         if (additions.length) {
-          await uploadRequiredReferences({
+          return uploadRequiredReferences({
             page, bootstrap, origin, references: additions, scopeId: thread.id, onEvent,
           });
         }
+        return [];
       },
       async documentRevision() {
         assertBrowserHealthy();

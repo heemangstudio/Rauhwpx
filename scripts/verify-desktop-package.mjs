@@ -4,7 +4,7 @@ import { listPackage } from '@electron/asar';
 
 import { packagedStagedNativeExtractorPath } from '../desktop/native-rhwp-path.mjs';
 import { normalizeArchivePath } from './desktop-package-paths.mjs';
-import { smokePackagedAgentHub } from './packaged-agent-hub-smoke.mjs';
+import { smokePackagedAgentHub, smokePackagedSetupTerminal } from './packaged-agent-hub-smoke.mjs';
 
 const releaseDir = resolve(process.argv[2] ?? 'release');
 const resourcesDir = process.platform === 'darwin'
@@ -57,6 +57,8 @@ const archivedFiles = listPackage(archive).map(normalizeArchivePath);
 const requiredArchiveFiles = [
   '/desktop/main.mjs',
   '/desktop/unique-install.mjs',
+  '/desktop/system-fonts.mjs',
+  '/rhwp/rhwp-shared/fonts/font-index-core.mjs',
   '/rhwp/rhwp-studio/dist/index.html',
 ];
 for (const path of requiredArchiveFiles) {
@@ -87,9 +89,11 @@ if (process.platform !== 'win32' && (statSync(extractor).mode & 0o111) === 0) {
   throw new Error(`Packaged document extractor is not executable: ${extractor}`);
 }
 
+await smokePackagedSetupTerminal({ executable: desktopExecutable, agentDir: unpackedAgent });
+
 const hub = await smokePackagedAgentHub({
   executable: desktopExecutable,
   agentDir: unpackedAgent,
 });
 
-console.log(`Verified desktop package resources and Agent Hub session ${hub.sessionId} at ${resourcesDir}`);
+console.log(`Verified desktop package resources, provider login terminal, and Agent Hub session ${hub.sessionId} at ${resourcesDir}`);

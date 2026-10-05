@@ -1,0 +1,209 @@
+/* 계획서 표현만 덮어쓴다. 접기·스크롤·실행 상태는 기존 컴포넌트가 담당한다.
+   위계는 크기로 만들고, 구분은 선보다 톤과 간격으로 한다. */
+.ag-plan-card {
+  --plan-line: var(--ag-border);
+  --plan-wash: var(--ag-hover);
+  padding: 20px;
+  border: 0;
+  border-radius: var(--ag-r-card);
+  background: var(--ag-raised);
+  box-shadow: var(--n-elev-1);
+}
+
+.ag-plan-head {
+  padding: 0 0 20px;
+  border-color: var(--plan-line);
+}
+
+.ag-plan-kicker-row { gap: 8px; }
+.ag-plan-kicker {
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-meta);
+  font-weight: var(--ag-fw-medium);
+  letter-spacing: 0;
+  text-transform: none;
+}
+.ag-plan-phase {
+  padding: 2px 8px;
+  border-radius: var(--ag-r-chip);
+  background: var(--plan-wash);
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-meta);
+  line-height: var(--ag-lh-secondary);
+}
+
+.ag-plan-title {
+  margin-top: 12px;
+  font-size: var(--ag-fs-display);
+  font-weight: var(--ag-fw-strong);
+  line-height: var(--ag-lh-tight);
+  letter-spacing: var(--ag-track-tight);
+  text-wrap: balance;
+}
+
+.ag-plan-goal {
+  margin-top: 10px;
+  font-size: var(--ag-fs-body);
+  line-height: var(--ag-lh-body);
+  letter-spacing: var(--ag-track-tight);
+}
+.ag-plan-revision {
+  margin-top: 14px;
+  padding-left: 10px;
+  border-left: 2px solid var(--ag-border-strong);
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary);
+}
+
+.ag-plan-body {
+  padding: 20px 0 24px;
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-body);
+}
+.ag-plan-summary {
+  margin-bottom: 24px;
+  font-size: var(--ag-fs-body);
+  line-height: var(--ag-lh-body);
+  letter-spacing: var(--ag-track-tight);
+}
+.ag-plan-section-heading { margin-bottom: 8px; }
+.ag-plan-section-heading h4,
+.ag-plan-sources h4,
+.ag-plan-validation h4 {
+  font-size: var(--ag-fs-title);
+  font-weight: var(--ag-fw-strong);
+  letter-spacing: var(--ag-track-tight);
+}
+.ag-plan-step-count {
+  color: var(--ag-text-secondary);
+  font-family: var(--ag-mono);
+  font-size: var(--ag-fs-mono);
+  font-variant-numeric: var(--ag-numeric);
+}
+
+.ag-plan-step { border: 0; border-radius: var(--ag-r-row); }
+.ag-plan-step + .ag-plan-step { margin-top: 2px; }
+.ag-plan-step:last-child { border-bottom: 0; }
+.ag-plan-step-summary {
+  gap: 12px;
+  padding: 10px 8px;
+  border-radius: var(--ag-r-row);
+}
+.ag-plan-step-number {
+  flex-basis: 24px;
+  height: 24px;
+  min-height: 24px;
+  border: 0;
+  border-radius: var(--ag-r-chip);
+  background: var(--plan-wash);
+  color: var(--ag-text-secondary);
+  font-family: var(--ag-mono);
+  font-size: var(--ag-fs-mono);
+  font-variant-numeric: var(--ag-numeric);
+}
+
+.ag-plan-step-main { gap: 4px; padding-top: 2px; }
+.ag-plan-step-title {
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-medium);
+  line-height: var(--ag-lh-secondary);
+  letter-spacing: var(--ag-track-tight);
+}
+.ag-plan-step-preview,
+.ag-plan-step-note {
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary);
+}
+.ag-plan-step-status {
+  padding-top: 4px;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-meta);
+}
+.ag-plan-step-content {
+  margin-left: 20px;
+  padding: 0 8px 12px 24px;
+  border-left: 1px solid var(--plan-line);
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-body);
+}
+
+.ag-plan-step[data-status='in-progress'] {
+  background: var(--plan-wash);
+}
+.ag-plan-step[data-status='in-progress'] .ag-plan-step-number {
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
+}
+.ag-plan-step[data-status='completed'] .ag-plan-step-number {
+  background: transparent;
+  color: var(--ag-text);
+}
+.ag-plan-step[data-status='blocked'] .ag-plan-step-number {
+  box-shadow: inset 0 0 0 1px var(--ag-border-strong);
+}
+
+.ag-plan-validation {
+  margin-top: 24px;
+  padding: 14px 16px;
+  border-radius: var(--ag-r-row);
+  background: var(--plan-wash);
+}
+.ag-plan-validation-list {
+  margin-top: 8px;
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-body);
+}
+.ag-plan-validation-list li:last-child { margin-bottom: 0; }
+.ag-plan-secondary { margin-top: 12px; border-color: var(--plan-line); }
+.ag-plan-secondary summary {
+  padding: 10px 8px;
+  border-radius: var(--ag-r-row);
+  font-size: var(--ag-fs-secondary);
+}
+.ag-plan-secondary ul { font-size: var(--ag-fs-secondary); line-height: var(--ag-lh-body); }
+.ag-plan-sources { margin-top: 24px; }
+.ag-plan-source { padding: 10px 0; gap: 4px; border-color: var(--plan-line); }
+.ag-plan-source a {
+  color: var(--ag-link);
+  text-decoration-color: color-mix(in oklab, currentColor 40%, transparent);
+  text-underline-offset: 3px;
+}
+.ag-plan-source-note {
+  font-size: var(--ag-fs-meta);
+  line-height: var(--ag-lh-secondary);
+}
+.ag-plan-source-locator { font-size: var(--ag-fs-mono); }
+.ag-plan-footer { padding: 16px 0 0; border-color: var(--plan-line); }
+.ag-plan-actions { flex-wrap: wrap; }
+.ag-plan-actions button {
+  min-height: 36px;
+  padding: 8px 16px;
+  border-radius: var(--ag-r-row);
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
+  transition: var(--ag-transition-color);
+}
+.ag-plan-minimize {
+  width: 32px;
+  height: 32px;
+  flex-basis: 32px;
+  border-radius: var(--ag-r-row);
+}
+.ag-plan-minimize,
+.ag-plan-step-summary,
+.ag-plan-secondary summary { transition: var(--ag-transition-color); }
+@media (hover: hover) {
+  .ag-plan-step-details:not(.ag-plan-step-plain) > .ag-plan-step-summary:hover,
+  .ag-plan-secondary summary:hover { background: var(--ag-hover); }
+  .ag-plan-source a:hover { text-decoration-color: currentColor; }
+}
+@media (pointer: coarse) {
+  .ag-plan-actions button,
+  .ag-plan-minimize,
+  .ag-plan-secondary summary { min-height: 44px; }
+  .ag-plan-minimize { min-width: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ag-plan-card *, .ag-plan-card *::before, .ag-plan-card *::after { transition: none; }
+}

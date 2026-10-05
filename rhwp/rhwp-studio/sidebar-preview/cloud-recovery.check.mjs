@@ -170,8 +170,8 @@ export async function checkCloudRecovery(page, origin, artifacts) {
     && !document.querySelector('[aria-label="프로바이더 선택"]').disabled);
   assert.equal(await page.evaluate(() => window.sidebarPreview.cloud.controller.getSnapshot().session.kind), 'suspended');
   await page.click('[aria-label="모델 선택"]');
-  await page.$eval('.ag-llm-item[data-model="gpt-6-astra"]', (button) => button.click());
-  await page.waitForFunction(() => window.sidebarPreview.cloud.controller.getSnapshot().session.selection.model === 'gpt-6-astra'
+  await page.$eval('.ag-llm-item[data-model="astra"]', (button) => button.click());
+  await page.waitForFunction(() => window.sidebarPreview.cloud.controller.getSnapshot().session.selection.model === 'astra'
     && !document.querySelector('[aria-label="모델 선택"]').disabled);
   assert.equal(await page.evaluate(() => window.sidebarPreview.cloud.calls.transfers.length), 1);
   await page.evaluate(() => window.sidebarPreview.cloud.setConversationPhase('waiting'));
@@ -495,7 +495,9 @@ export async function checkCloudRecovery(page, origin, artifacts) {
   await page.evaluate(() => document.querySelector('.ag-cloud-recovery-strip-title').click());
   await page.evaluate(() => [...document.querySelectorAll('.ag-cloud-recovery-actions button')]
     .find((node) => node.textContent === '서버 다시 만들기').click());
-  await page.waitForFunction(() => document.querySelector('.ag-messages').innerText.includes('Preview restart transfer interrupted.'));
+  // 영어 원문은 사용자에게 보이지 않고 한국어 문장으로 바뀐다.
+  await page.waitForFunction(() => document.querySelector('.ag-messages').innerText.includes('Cloud 요청을 처리하지 못했습니다.'));
+  assert.equal(await page.$eval('.ag-messages', (node) => node.innerText.includes('Preview restart transfer interrupted.')), false);
   const pendingRestart = await page.evaluate(async () => {
     const { listThreads, waitForThreadsPersistence } = window.sidebarPreview.threadStore;
     await waitForThreadsPersistence();

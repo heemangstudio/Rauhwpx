@@ -14,7 +14,6 @@ import test from 'node:test';
 const canvasViewSrc = readFileSync(new URL('../src/view/canvas-view.ts', import.meta.url), 'utf8');
 const overlaySrc = readFileSync(new URL('../src/agent/pending-overlay.ts', import.meta.url), 'utf8');
 const pendingSrc = readFileSync(new URL('../src/agent/pending-edits.ts', import.meta.url), 'utf8');
-const revealSrc = readFileSync(new URL('../src/agent/typewriter-reveal.ts', import.meta.url), 'utf8');
 
 test('document-changed 는 프레임당 한 번의 변이 재렌더로 합쳐진다', () => {
   assert.match(canvasViewSrc, /eventBus\.on\('document-changed', \(\) => this\.scheduleMutationRefresh\(\)\)/);
@@ -50,8 +49,5 @@ test('오버레이/pending 편집도 버스트를 합친다', () => {
   // agent-pending-replace.test.ts 의 runAtomicBatch 동작 테스트가 지킨다.)
   assert.match(pendingSrc, /private beginBulk\(\): void/);
   assert.match(pendingSrc, /private endBulk\(\): void/);
-  assert.match(pendingSrc, /runAtomicBatch<T>\(fn: \(\) => T\): T/);
-  // 타자기 공개는 페이지 좌표 rect 를 캐시하고 문서 변이에서만 무효화한다.
-  assert.match(revealSrc, /cachedRects: SelectionRect\[\] \| null/);
-  assert.match(revealSrc, /item\.cachedRects = null/);
+  assert.match(pendingSrc, /runAtomicBatch<T>\(fn: \(\) => T[,)]/);
 });

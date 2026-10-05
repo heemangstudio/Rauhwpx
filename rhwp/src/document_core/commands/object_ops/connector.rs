@@ -45,6 +45,11 @@ impl DocumentCore {
                 section.raw_stream = None;
             }
         }
+        // 이벤트를 쌓지 않는 편집이라 연결선 문단 revision 을 직접 올린다 — 올리지
+        // 않으면 스냅샷 복원이 바뀐 연결선 문단을 그대로 재사용한다.
+        if mutated {
+            self.event_log.mark_paragraph_changed(section_idx, para_idx);
+        }
     }
     /// 연결선 제어점을 연결점 방향에 따라 재계산한다.
     /// start_idx/end_idx: 0=상, 1=우, 2=하, 3=좌
@@ -98,6 +103,7 @@ impl DocumentCore {
             // [#2698] 이 조기 반환 경로도 제어점 목록을 비우는 실제 IR 변경이므로
             // 아래 공통 무효화를 타지 못하는 만큼 여기서 직접 무효화한다.
             section.raw_stream = None;
+            self.event_log.mark_paragraph_changed(section_idx, para_idx);
             return;
         }
 
@@ -227,6 +233,7 @@ impl DocumentCore {
         // [#2698] 제어점을 실제로 재구성한 경우에만 구역 패스스루를 무효화한다.
         if routed {
             section.raw_stream = None;
+            self.event_log.mark_paragraph_changed(section_idx, para_idx);
         }
     }
     /// 구역 내 모든 연결선을 스캔하여 연결된 도형의 현재 위치에 맞게 갱신한다.
@@ -275,14 +282,16 @@ impl DocumentCore {
             }
         }
 
-        // 2) 커넥터 찾기 및 좌표 갱신
-        let mut geometry_updated = false;
+        // 2) 커넥터 찾기 및 좌표 갱신 — 연결된 도형이 실제로 움직여 기하가 바뀐 연결선만
+        // 고친다. 그대로인 연결선까지 다시 쓰면 원본 패스스루를 괜히 버리고, 원본의
+        // 제어점을 이 엔진의 라우팅으로 덮는다.
+        let mut moved: Vec<(usize, usize, u32, u32, bool)> = Vec::new();
         let section = match self.document.sections.get_mut(section_idx) {
             Some(s) => s,
             None => return,
         };
-        for para in &mut section.paragraphs {
-            for ctrl in &mut para.controls {
+        for (pi, para) in section.paragraphs.iter_mut().enumerate() {
+            for (ci, ctrl) in para.controls.iter_mut().enumerate() {
                 let line = match ctrl {
                     Control::Shape(ref mut s) => match s.as_mut() {
                         ShapeObject::Line(ref mut l) if l.connector.is_some() => l,
@@ -296,14 +305,15 @@ impl DocumentCore {
                 let end_pts = conn_points.get(&conn.end_subject_id);
 
                 // 연결된 도형을 찾지 못하면 건너뜀 (연결 끊어진 상태)
-                if start_pts.is_none() || end_pts.is_none() {
+                let (Some(start_pts), Some(end_pts)) = (start_pts, end_pts) else {
                     continue;
-                }
+                };
 
-                let si = conn.start_subject_index as usize;
-                let ei = conn.end_subject_index as usize;
-                let (gsx, gsy) = start_pts.unwrap()[si.min(3)];
-                let (gex, gey) = end_pts.unwrap()[ei.min(3)];
+                let si = conn.start_subject_index;
+                let ei = conn.end_subject_index;
+                let routes = conn.link_type.is_stroke() || conn.link_type.is_arc();
+                let (gsx, gsy) = start_pts[(si as usize).min(3)];
+                let (gex, gey) = end_pts[(ei as usize).min(3)];
 
                 // 커넥터 bbox 재계산
                 let min_x = gsx.min(gex);
@@ -312,6 +322,18 @@ impl DocumentCore {
                 let max_y = gsy.max(gey);
                 let new_w = (max_x - min_x).max(1) as u32;
                 let new_h = (max_y - min_y).max(1) as u32;
+
+                let unchanged = line.common.horizontal_offset == min_x as u32
+                    && line.common.vertical_offset == min_y as u32
+                    && line.common.width == new_w
+                    && line.common.height == new_h
+                    && line.start.x == gsx - min_x
+                    && line.start.y == gsy - min_y
+                    && line.end.x == gex - min_x
+                    && line.end.y == gey - min_y;
+                if unchanged {
+                    continue;
+                }
 
                 line.common.horizontal_offset = min_x as u32;
                 line.common.vertical_offset = min_y as u32;
@@ -332,45 +354,30 @@ impl DocumentCore {
                 line.drawing.shape_attr.rotation_center.x = new_w as i32 / 2;
                 line.drawing.shape_attr.rotation_center.y = new_h as i32 / 2;
                 line.drawing.shape_attr.raw_rendering = Vec::new();
-                geometry_updated = true;
+                moved.push((pi, ci, si, ei, routes));
             }
+        }
+        if moved.is_empty() {
+            return;
         }
         // [#2698] bbox/로컬좌표를 실제로 갱신한 경우에만 구역 패스스루를 무효화한다.
-        // (3) 단계의 제어점 재계산은 recalculate_connector_routing 이 자체적으로
-        // 무효화하므로, 여기서는 좌표만 바뀌고 라우팅 대상이 없는 경우를 덮는다.
-        if geometry_updated {
-            section.raw_stream = None;
+        // 움직인 연결선은 다른 문단에 있을 수 있다 — 호출자는 옮긴 도형의 문단만
+        // 표시하므로, 연결선 문단 revision 을 여기서 올려야 스냅샷 복원(undo·에이전트
+        // 롤백)이 연결선을 도형과 함께 되돌린다.
+        section.raw_stream = None;
+        let mut moved_paras: Vec<usize> = moved.iter().map(|&(pi, ..)| pi).collect();
+        moved_paras.dedup();
+        for pi in moved_paras {
+            self.event_log.mark_paragraph_changed(section_idx, pi);
         }
 
-        // 3) 제어점 재계산 (인덱스 수집 후 별도 루프 — borrow checker 대응)
-        let mut routing_targets: Vec<(usize, usize, u32, u32)> = Vec::new();
-        {
-            let section = match self.document.sections.get(section_idx) {
-                Some(s) => s,
-                None => return,
-            };
-            for (pi, para) in section.paragraphs.iter().enumerate() {
-                for (ci, ctrl) in para.controls.iter().enumerate() {
-                    if let Control::Shape(ref s) = ctrl {
-                        if let ShapeObject::Line(ref l) = s.as_ref() {
-                            if let Some(ref c) = l.connector {
-                                if c.link_type.is_stroke() || c.link_type.is_arc() {
-                                    routing_targets.push((
-                                        pi,
-                                        ci,
-                                        c.start_subject_index,
-                                        c.end_subject_index,
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                }
+        // 3) 움직인 꺾인·곡선 연결선의 제어점 재계산
+        for (pi, ci, si, ei, routes) in moved {
+            if routes {
+                self.recalculate_connector_routing(section_idx, pi, ci, si, ei);
             }
         }
-        for (pi, ci, si, ei) in routing_targets {
-            self.recalculate_connector_routing(section_idx, pi, ci, si, ei);
-        }
+        self.invalidate_page_tree_cache_from_section(section_idx);
     }
 }
 
@@ -464,6 +471,134 @@ mod connector_passthrough_invalidation_tests {
                 "[#2698] {link_type:?} 갈래에서 구역 패스스루가 무효화되지 않았다"
             );
         }
+    }
+
+    type ConnectorGeometry = (u32, u32, u32, u32, (i32, i32), (i32, i32), Vec<(i32, i32)>);
+
+    fn connector_geometry(core: &DocumentCore) -> ConnectorGeometry {
+        core.document.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|p| p.controls.iter())
+            .find_map(|c| match c {
+                Control::Shape(shape) => match shape.as_ref() {
+                    ShapeObject::Line(line) if line.connector.is_some() => Some((
+                        line.common.horizontal_offset,
+                        line.common.vertical_offset,
+                        line.common.width,
+                        line.common.height,
+                        (line.start.x, line.start.y),
+                        (line.end.x, line.end.y),
+                        line.connector
+                            .as_ref()
+                            .unwrap()
+                            .control_points
+                            .iter()
+                            .map(|p| (p.x, p.y))
+                            .collect(),
+                    )),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    /// 사각형 둘을 0번 문단에, 둘을 잇는 꺾인 연결선을 1번 문단에 둔다.
+    /// 반환값은 두 번째 사각형의 컨트롤 인덱스다.
+    fn core_with_connected_rectangles() -> (DocumentCore, usize) {
+        let mut core = DocumentCore::new_empty();
+        core.create_blank_document_native().unwrap();
+        core.insert_text_native(0, 0, 0, "AB").unwrap();
+        core.split_paragraph_native(0, 0, 2, None).unwrap();
+        for x in [1000, 20000] {
+            core.create_shape_control_native(
+                0,
+                0,
+                0,
+                4000,
+                3000,
+                x,
+                1000,
+                false,
+                "Square",
+                "rectangle",
+                false,
+                false,
+                &[],
+            )
+            .unwrap();
+        }
+        let rects: Vec<(usize, u32)> = core.document.sections[0].paragraphs[0]
+            .controls
+            .iter()
+            .enumerate()
+            .filter_map(|(ci, c)| match c {
+                Control::Shape(shape) if !matches!(shape.as_ref(), ShapeObject::Line(_)) => {
+                    Some((ci, shape.common().instance_id))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rects.len(), 2);
+        assert!(rects.iter().all(|&(_, id)| id != 0));
+
+        let line = LineShape {
+            connector: Some(ConnectorData {
+                link_type: LinkLineType::StrokeBoth,
+                start_subject_id: rects[0].1,
+                start_subject_index: 1,
+                end_subject_id: rects[1].1,
+                end_subject_index: 3,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let para = &mut core.document.sections[0].paragraphs[1];
+        para.controls
+            .push(Control::Shape(Box::new(ShapeObject::Line(line))));
+        para.ctrl_data_records.resize(para.controls.len(), None);
+        core.update_connectors_in_section(0);
+        (core, rects[1].0)
+    }
+
+    /// 도형을 옮기면 다른 문단의 연결선도 따라 바뀐다. 그 문단 revision 을 올리지 않으면
+    /// 스냅샷 복원(undo·에이전트 롤백)이 옮긴 뒤의 연결선을 그대로 남겨 도형과 떨어진다.
+    #[test]
+    fn connector_follows_shape_through_snapshot_restore() {
+        let (mut core, moved_rect) = core_with_connected_rectangles();
+        let before = connector_geometry(&core);
+        let s_before = core.save_snapshot_native();
+
+        // 도형 이동 경로: 옮긴 도형의 문단은 이동 명령이 직접 표시한다.
+        match &mut core.document.sections[0].paragraphs[0].controls[moved_rect] {
+            Control::Shape(shape) => shape.common_mut().vertical_offset += 6000,
+            _ => unreachable!(),
+        }
+        core.event_log.mark_paragraph_changed(0, 0);
+        core.update_connectors_in_section(0);
+        let after = connector_geometry(&core);
+        assert_ne!(after, before);
+        let s_after = core.save_snapshot_native();
+
+        core.restore_snapshot_native(s_before).unwrap();
+        assert_eq!(connector_geometry(&core), before);
+        core.restore_snapshot_native(s_after).unwrap();
+        assert_eq!(connector_geometry(&core), after);
+    }
+
+    /// 움직이지 않은 연결선은 다시 쓰지 않는다 — 패스스루와 revision 을 그대로 둔다.
+    #[test]
+    fn unchanged_connectors_keep_passthrough_and_revisions() {
+        let (mut core, _) = core_with_connected_rectangles();
+        core.document.sections[0].raw_stream = Some(vec![0xAB; 16]);
+        let para_count = core.document.sections[0].paragraphs.len();
+        let revisions = core.event_log.paragraph_revisions(0, para_count);
+
+        core.update_connectors_in_section(0);
+
+        assert!(core.document.sections[0].raw_stream.is_some());
+        assert_eq!(core.event_log.paragraph_revisions(0, para_count), revisions);
     }
 
     /// 무효화를 무조건 하지 않고 조건부로 둔 설계를 고정한다. 인덱스가 빗나가

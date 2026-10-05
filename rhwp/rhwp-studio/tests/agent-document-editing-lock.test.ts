@@ -156,7 +156,8 @@ test('planning saves after a user edit notify the hub mid-plan', () => {
 test('entering plan mode unlocks the lease immediately and holds messages until the hub finishes', () => {
   assert.match(bridge, /this\.beginWorkflowSwitch\(workflow\);[\s\S]*type: 'chat-workflow-set'/);
   assert.match(bridge, /this\.workflowSwitchPending = true;[\s\S]*this\.resetWorkflowState\(workflow\)/);
-  assert.match(bridge, /if \(this\.pendingChatStart \|\| this\.workflowSwitchPending \|\| this\.activeAgent === null \|\| this\.queuedMessages\.length > 0\)/);
+  // 연결이 끊긴 동안 보낸 메시지도 큐에 담아 재연결 뒤에 다시 보낸다.
+  assert.match(bridge, /if \(this\.pendingChatStart \|\| this\.workflowSwitchPending \|\| this\.activeAgent === null[\s\S]*this\.state !== 'connected'\)/);
   assert.match(bridge, /if \(this\.workflowSwitchPending \|\| this\.pendingChatStart\) return;/);
   assert.match(bridge, /case 'workflow-changed':[\s\S]*this\.finishWorkflowSwitch\(\);[\s\S]*this\.flushQueuedMessages\(\)/);
   assert.match(bridge, /BACKEND_SWITCH_FAILED[\s\S]*INVALID_WORKFLOW[\s\S]*WORKFLOW_ERROR[\s\S]*this\.revertWorkflowSwitch\(\)/);
@@ -185,7 +186,7 @@ test('document replacement and active pointer gestures respect the lease boundar
   assert.match(main, /addEventListener\('drop'[\s\S]*if \(agentEditingLease\.active\)[\s\S]*에이전트가 편집을 마친 뒤 파일을 놓을 수 있습니다/);
   assert.match(sidebar, /approve\.disabled = editingLeaseActive;[\s\S]*if \(bridge\.getEditingLease\(\)\.active\) return;[\s\S]*pendingEdits\.approve/);
   assert.match(sidebar, /reject\.disabled = editingLeaseActive;[\s\S]*if \(bridge\.getEditingLease\(\)\.active\) return;[\s\S]*pendingEdits\.reject/);
-  assert.match(sidebar, /onEditingLeaseChange\(\(\) => rebuildReview\(\)\)/);
+  assert.match(sidebar, /onEditingLeaseChange\(\(\) => \{\s*rebuildReview\(\);\s*changesDrawer\.refreshEditingState\(\);/);
 });
 
 test('editing frame reflects the active agent and has responsive reduced-motion treatment', () => {

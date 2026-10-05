@@ -18,6 +18,8 @@ const DB_VER = 1;
 const META = 'historyMeta';
 const BLOBS = 'historyBlobs';
 const MAX_SNAPSHOTS = 24;
+/** IR 스냅샷 JSON 은 수 MB 가 될 수 있어 일반 IndexedDB 작업보다 넉넉히 기다린다. */
+const SNAPSHOT_WRITE_TIMEOUT_MS = 15_000;
 
 type MetaRow = DocHistoryEntryMeta;
 
@@ -40,8 +42,12 @@ function openDb(): Promise<IDBDatabase | null> {
   });
 }
 
-function withDb<T>(fn: (db: IDBDatabase) => Promise<T>, fallback: () => Promise<T>) {
-  return withDatabase(openDb, DB_NAME, fn, fallback);
+function withDb<T>(
+  fn: (db: IDBDatabase) => Promise<T>,
+  fallback: (error?: unknown) => Promise<T>,
+  options?: { timeoutMs?: number },
+) {
+  return withDatabase(openDb, DB_NAME, fn, fallback, options);
 }
 
 function getAllMeta(db: IDBDatabase): Promise<MetaRow[]> {
@@ -63,7 +69,14 @@ async function listMetaMemory(): Promise<MetaRow[]> {
 
 export async function listHistoryMeta(): Promise<MetaRow[]> {
   return withDb(
-    async (db) => (await getAllMeta(db)).sort((a, b) => b.createdAt - a.createdAt),
+    async (db) => {
+      // 이번 세션에서 IndexedDB 를 열지 못해 메모리에만 저장한 스냅샷도 함께 보인다.
+      const rows = new Map((await getAllMeta(db)).map((row) => [row.id, row]));
+      for (const entry of memory.values()) {
+        if (!rows.has(entry.meta.id)) rows.set(entry.meta.id, entry.meta);
+      }
+      return [...rows.values()].sort((a, b) => b.createdAt - a.createdAt);
+    },
     listMetaMemory,
   );
 }
@@ -97,13 +110,40 @@ export async function getHistoryPayload(id: string): Promise<HistoryPayload | nu
   );
 }
 
-async function deleteOldestIfOverLimit(db: IDBDatabase): Promise<void> {
-  const meta = await getAllMeta(db);
-  if (meta.length < MAX_SNAPSHOTS) return;
-  meta.sort((a, b) => a.createdAt - b.createdAt);
-  for (const m of meta.slice(0, meta.length - MAX_SNAPSHOTS + 1)) {
-    await deleteEntry(db, m.id);
+/**
+ * 새 스냅샷 기록과 한도 초과분 정리를 한 트랜잭션으로 묶는다.
+ * 따로 커밋하면 put 이 할당량 초과 등으로 실패해도 가장 오래된 스냅샷은 이미 지워진다.
+ * 한 트랜잭션이면 put 실패가 트랜잭션을 중단시켜 삭제도 함께 되돌아간다.
+ */
+async function putSnapshotAndPrune(db: IDBDatabase, meta: MetaRow, blob: BlobRow): Promise<void> {
+  const tx = db.transaction([META, BLOBS], 'readwrite');
+  const done = transactionDone(tx);
+  try {
+    const metaStore = tx.objectStore(META);
+    const blobStore = tx.objectStore(BLOBS);
+    metaStore.put(meta);
+    blobStore.put(blob);
+    const all = metaStore.getAll() as IDBRequest<MetaRow[]>;
+    all.onsuccess = () => {
+      const older = all.result
+        .filter((row) => row.id !== meta.id)
+        .sort((a, b) => a.createdAt - b.createdAt);
+      for (const row of older.slice(0, Math.max(0, older.length + 1 - MAX_SNAPSHOTS))) {
+        metaStore.delete(row.id);
+        blobStore.delete(row.id);
+      }
+    };
+  } catch (error) {
+    // 요청을 만드는 도중 동기 예외가 나면 앞서 올린 put 만 커밋되지 않도록 되돌린다.
+    try {
+      tx.abort();
+    } catch {
+      /* 이미 끝난 트랜잭션 */
+    }
+    done.catch(() => {});
+    throw error;
   }
+  await done;
 }
 
 function utf8ByteLength(value: string): number {
@@ -150,14 +190,13 @@ export async function saveHistoryIrSnapshot(
 
   return withDb(
     async (db) => {
-      await deleteOldestIfOverLimit(db);
-      const tx = db.transaction([META, BLOBS], 'readwrite');
-      tx.objectStore(META).put(meta);
-      tx.objectStore(BLOBS).put({ id, snapshotJson: json });
-      await transactionDone(tx);
+      await putSnapshotAndPrune(db, meta, { id, snapshotJson: json });
       return meta;
     },
-    async () => {
+    async (error) => {
+      // IndexedDB 는 열렸는데 기록이 실패·지연됐다. 메모리에만 두고 성공으로 알리면
+      // 목록에도 없고 새로고침하면 사라지므로 실패를 그대로 알린다.
+      if (error !== undefined) throw error;
       while (memory.size >= MAX_SNAPSHOTS) {
         const oldest = [...memory.entries()].sort((a, b) => a[1].meta.createdAt - b[1].meta.createdAt)[0];
         if (oldest) memory.delete(oldest[0]);
@@ -168,6 +207,7 @@ export async function saveHistoryIrSnapshot(
       });
       return meta;
     },
+    { timeoutMs: SNAPSHOT_WRITE_TIMEOUT_MS },
   );
 }
 

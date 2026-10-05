@@ -94,18 +94,25 @@ fn the_head_table_does_not_reach_into_the_title() {
     );
 }
 
+/// 보이는 host 제목이 있어도 머리 표는 선언 offset 에 남고, 제목이 표 아래로 온다.
+/// #374(9a7b639a) 검증의 한컴 macOS 내보내기 기준(docs/evidence/pr374-parity):
+/// 표 A 상단 138.6px, 제목은 co-anchored 표들 아래.
 #[test]
-fn visible_host_title_still_pushes_its_float_table_down() {
+fn visible_host_title_follows_its_float_table() {
     let root = page0("samples/issue1549_multipositive_float_tables.hwpx");
     let mut title = None;
     title_top_of(&root, "MULTI POSITIVE TITLE", &mut title);
     let title = title.expect("host 제목을 못 찾았습니다");
     let mut table = None;
     head_table(&root, &mut table);
-    let (top, _) = table.expect("자리차지 표를 못 찾았습니다");
+    let (top, bottom) = table.expect("자리차지 표를 못 찾았습니다");
     assert!(
-        top > title,
-        "보이는 host 제목이 있으면 표가 그 아래여야 합니다 — 제목 {title:.1} · 표 {top:.1}"
+        (top - 138.6).abs() <= 1.0,
+        "머리 표 상단이 한컴 macOS 와 다릅니다 — 정본 138.6 · 현재 {top:.1}"
+    );
+    assert!(
+        title + 0.5 >= bottom,
+        "보이는 host 제목은 머리 표 아래여야 합니다 — 표 {top:.1}..{bottom:.1} · 제목 {title:.1}"
     );
 }
 

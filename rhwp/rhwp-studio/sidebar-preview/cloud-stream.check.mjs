@@ -4,11 +4,12 @@ import { resolve } from 'node:path';
 export async function checkCloudStream(page, origin, artifacts) {
   await page.goto(`${origin}/?cloud=1&cloud-turn=1&cloud-phase=working&reset=1`, { waitUntil: 'networkidle0' });
   await page.waitForFunction(() => document.body.dataset.auditReady === 'true');
+  // 스트리밍 중에는 닫힌 블록만 그리므로 조각마다 빈 줄로 블록을 닫는다.
   await page.evaluate(() => {
     const cloud = window.sidebarPreview.cloud;
     window.streamAuditTimeline = structuredClone(cloud.controller.getSnapshot().timeline);
     cloud.emitAgentEvent({ type: 'turn-start', agent: 'codex' });
-    cloud.emitAgentEvent({ type: 'text-delta', agent: 'codex', text: 'First streaming fragment. ' });
+    cloud.emitAgentEvent({ type: 'text-delta', agent: 'codex', text: 'First streaming fragment.\n\n' });
   });
   await page.waitForFunction(() => document.querySelector('.ag-messages').textContent.includes('First streaming fragment.'));
   await page.evaluate(() => {
@@ -17,7 +18,7 @@ export async function checkCloudStream(page, origin, artifacts) {
     operation.exportedAt = new Date(Date.now() + 1000).toISOString();
     operation.thread.updatedAt += 1000;
     cloud.publishTimeline(operation);
-    cloud.emitAgentEvent({ type: 'text-delta', agent: 'codex', text: 'Second streaming fragment.' });
+    cloud.emitAgentEvent({ type: 'text-delta', agent: 'codex', text: 'Second streaming fragment.\n\n' });
   });
   await page.waitForFunction(() => document.querySelector('.ag-messages').textContent.includes('Second streaming fragment.'));
   assert.match(await page.$eval('.ag-messages', (node) => node.textContent), /First streaming fragment\.\s*Second streaming fragment\./);
@@ -52,8 +53,8 @@ export async function checkCloudStream(page, origin, artifacts) {
   await page.waitForFunction(() => window.sidebarPreview.workspace.mode() === 'cloud'
     && document.querySelector('.ag-messages').textContent.includes('Cloud completed while Local was open.'));
   const reconnects = await page.evaluate(() => window.sidebarPreview.cloud.calls.reconnect);
-  await page.evaluate(() => window.sidebarPreview.cloud.emitStreamError(false, 'Pair this device again'));
-  await page.waitForFunction(() => document.body.textContent.includes('Pair this device again'));
+  await page.evaluate(() => window.sidebarPreview.cloud.emitStreamError(false, '이 기기를 다시 연결해 주세요.'));
+  await page.waitForFunction(() => document.body.textContent.includes('이 기기를 다시 연결해 주세요.'));
   assert.equal(await page.evaluate(() => window.sidebarPreview.cloud.calls.reconnect), reconnects);
   assert.equal(await page.$eval('.ag-send', (button) => button.disabled), true);
   assert.equal(await page.$eval('.ag-cloud-recovery', (node) => node.hidden), false);

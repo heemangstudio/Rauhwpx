@@ -115,6 +115,21 @@ export type TagRef = VersionRefBase & {
 
 export type VersionRef = BranchRef | TagRef;
 
+/** Local recovery marker. Portable history intentionally does not include these entries. */
+export interface VersionRecoveryEntry {
+  id: string;
+  repositoryId: RepositoryId;
+  operation: 'branch-created' | 'branch-deleted' | 'branch-renamed' | 'head-moved'
+    | 'tag-created' | 'tag-deleted' | 'tag-moved';
+  name: string;
+  previousName?: string;
+  previousHead: CommitId | null;
+  newHead: CommitId | null;
+  generation?: BranchGeneration;
+  createdAt: number;
+  expiresAt: number;
+}
+
 export interface VersionBlob {
   id: BlobId;
   byteLength: number;
@@ -291,16 +306,40 @@ export type VersionErrorCode =
   | 'STORAGE_QUOTA'
   | 'CORRUPT_BLOB'
   | 'RESTORE_PARSE_FAILED'
-  | 'VERSION_STORE_FAILED';
+  | 'VERSION_STORE_FAILED'
+  | 'CANCELLED'
+  | 'CLOUD_START_MISSING'
+  | 'CLOUD_BRANCH_ACTIVE'
+  | 'CLOUD_CHECKPOINT_SUPERSEDED';
 
 export class VersionError extends Error {
   readonly code: VersionErrorCode;
+  /** 호출한 쪽이 다음 동작을 제안할 때 쓰는 값. CLOUD_BRANCH_ACTIVE 에서는 돌아갈 브랜치 이름이다. */
+  readonly detail?: string;
 
-  constructor(code: VersionErrorCode, message: string, options?: ErrorOptions) {
+  constructor(code: VersionErrorCode, message: string, options?: ErrorOptions & { detail?: string }) {
     super(message, options);
     this.name = 'VersionError';
     this.code = code;
+    if (options?.detail !== undefined) this.detail = options.detail;
   }
+}
+
+/** 컨트롤러가 감싼 오류에서도 버전 오류 코드를 꺼낸다. */
+export function versionErrorOf(error: unknown): { code: VersionErrorCode; detail?: string } | null {
+  for (let current = error, depth = 0; current && depth < 4; depth += 1) {
+    if (current instanceof VersionError) return { code: current.code, detail: current.detail };
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return null;
+}
+
+/** Cloud 체크포인트 병합 옵션. */
+export interface CloudMergeOptions {
+  /** Cloud 브랜치를 보고 있을 때 이 브랜치로 돌아가 병합한다. */
+  switchTo?: string;
+  /** 병합 전 보관한 내 편집이 있을 때 다시 적용하는 동작을 넘긴다. */
+  onStashed?(reapply: () => Promise<void>): void;
 }
 
 function nonEmpty(value: string, label: string): string {

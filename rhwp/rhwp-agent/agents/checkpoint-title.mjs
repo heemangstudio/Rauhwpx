@@ -23,7 +23,10 @@ export const CHECKPOINT_TITLE_OVERALL_TIMEOUT_MS = 40_000;
 
 const MAX_CLI_OUTPUT_BYTES = 64 * 1024;
 const CHANGE_KINDS = ['added', 'removed', 'modified'];
-const PROVIDER_ORDER = ['pi', 'codex', 'claude'];
+const PROVIDER_ORDER = ['codex', 'pi', 'claude'];
+const CODEX_MIN_REMAINING_PERCENT = 5;
+export const CHECKPOINT_TITLE_OPENROUTER_MODEL = 'deepseek/deepseek-v4.1-flash';
+export const CHECKPOINT_TITLE_CLAUDE_MODEL = 'claude-haiku-4-5';
 
 /** Use an authenticated CLI whether it came from the app installer or the user's PATH. */
 export function resolveCheckpointTitleCliRoute(provider, health, setup, managedCommand) {
@@ -129,25 +132,26 @@ export function normalizeCheckpointTitleRequest(raw) {
   };
 }
 
-function normalizedModelKey(value) {
-  return String(value ?? '')
-    .trim()
-    .toLowerCase()
-    .replace(/[():]/g, ' ')
-    .replace(/\s+/g, ' ');
+/** Pick DeepSeek V4.1 Flash from the OpenRouter catalog; an unreachable catalog keeps the known ID. */
+export async function resolveOpenRouterTitleModel(loadCatalog) {
+  let models;
+  try { models = await loadCatalog(); }
+  catch { return CHECKPOINT_TITLE_OPENROUTER_MODEL; }
+  if (!Array.isArray(models)) return CHECKPOINT_TITLE_OPENROUTER_MODEL;
+  return models.some((model) => model?.id === CHECKPOINT_TITLE_OPENROUTER_MODEL)
+    ? CHECKPOINT_TITLE_OPENROUTER_MODEL
+    : null;
 }
 
-/** Select only a configured catalog entry whose identity is exactly DeepSeek V4 Flash. */
-export function findDeepSeekV4FlashModel(models) {
-  if (!Array.isArray(models)) return null;
-  for (const model of models) {
-    const id = String(model?.id ?? '').trim();
-    const name = normalizedModelKey(model?.name);
-    const idMatch = /^(?:[^/]+\/)?deepseek-v4-flash(?:-free)?$/i.test(id);
-    const nameMatch = /^(?:deepseek )?v4 flash(?: free)?$/.test(name);
-    if (id && (idMatch || nameMatch)) return { ...model, id };
-  }
-  return null;
+/** Codex keeps the title job while every known, unexpired quota window has more than 5% left. */
+export function codexQuotaAllowsTitle(quota, now = Date.now()) {
+  if (quota?.status !== 'ok') return true;
+  return ['session', 'week'].every((key) => {
+    const window = quota[key];
+    if (!Number.isFinite(window?.percent)) return true;
+    if (Number.isFinite(window.resetsAt) && window.resetsAt <= now) return true;
+    return 100 - window.percent > CODEX_MIN_REMAINING_PERCENT;
+  });
 }
 
 export function cleanCheckpointTitle(raw) {
@@ -176,6 +180,7 @@ export function buildCheckpointTitlePrompt(input) {
 
 export function buildCheckpointTitleCliSpec(provider, {
   command,
+  model,
   promptFilePath,
   sessionId = crypto.randomUUID(),
 } = {}) {
@@ -191,7 +196,7 @@ export function buildCheckpointTitleCliSpec(provider, {
         '--disable', 'skill_search', '--disable', 'shell_tool', '--disable', 'unified_exec',
         '--disable', 'code_mode_host', '--disable', 'standalone_web_search',
         '--disable', 'view_image', '--disable', 'shell_snapshot', '--sandbox', 'read-only',
-        '-m', 'gpt-5.6-luna', '-c', 'model_reasoning_effort="low"', '-',
+        '-m', model ?? 'gpt-6-luna', '-c', 'model_reasoning_effort="low"', '-',
       ],
       stdin: true,
     };
@@ -203,7 +208,7 @@ export function buildCheckpointTitleCliSpec(provider, {
       argv: [
         '-p', '--output-format', 'json', '--setting-sources', '',
         '--disable-slash-commands', '--tools', '', '--permission-mode', 'dontAsk',
-        '--model', 'haiku', '--effort', 'low',
+        '--model', CHECKPOINT_TITLE_CLAUDE_MODEL, '--effort', 'max',
       ],
       stdin: true,
     };
@@ -412,10 +417,15 @@ async function prepareCliWorkspace(provider, prompt, deps) {
       tempRoot,
       spec: buildCheckpointTitleCliSpec(provider, {
         command: deps.commands?.[provider],
+        model: deps.cliModel ?? deps.readiness?.[provider]?.model,
         promptFilePath,
       }),
+      // Claude's env owns HOME: macOS keeps the real one so the CLI can reach its Keychain login.
       env: isolatedProcessEnv(
-        { isolatedHome: deps.isolatedHome, sessionId: deps.sessionId },
+        {
+          isolatedHome: provider === 'claude' ? undefined : deps.isolatedHome,
+          sessionId: deps.sessionId,
+        },
         deps.providerEnvs?.[provider],
       ),
     };
@@ -604,6 +614,15 @@ export async function generateCheckpointTitle(raw, deps = {}) {
     if (deps.signal?.aborted) break;
     const route = deps.readiness?.[provider];
     if (route?.ready !== true || typeof route.model !== 'string' || !route.model) continue;
+    if (overallDeadline - Date.now() <= 0) break;
+    let model = route.model;
+    const resolveModel = provider === 'codex' ? deps.resolveCodexTitleModel
+      : provider === 'pi' ? deps.resolvePiTitleModel : null;
+    if (resolveModel) {
+      try { model = await resolveModel(); }
+      catch { continue; }
+      if (!model || deps.signal?.aborted) continue;
+    }
     const remaining = overallDeadline - Date.now();
     if (remaining <= 0) break;
     const timeoutMs = Math.max(1, Math.min(providerTimeoutMs, remaining));
@@ -611,11 +630,11 @@ export async function generateCheckpointTitle(raw, deps = {}) {
     try {
       output = await runTimedProvider(
         provider,
-        route.model,
+        model,
         prompt,
         timeoutMs,
         overallDeadline,
-        deps,
+        { ...deps, cliModel: model },
       );
     } catch (error) {
       if (error?.processCleanupUncertain === true) return null;
@@ -628,7 +647,7 @@ export async function generateCheckpointTitle(raw, deps = {}) {
       titleRevision: input.titleRevision,
       title,
       provider,
-      model: route.model,
+      model,
     };
   }
   return null;

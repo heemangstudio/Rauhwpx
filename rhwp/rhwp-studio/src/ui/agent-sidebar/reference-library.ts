@@ -1,5 +1,6 @@
 import './reference-library.css';
 
+import { confirmSheet } from './sheet.ts';
 import type { SidebarBridge } from '../../agent/bridge.ts';
 import type {
   ReferenceFile,
@@ -17,6 +18,9 @@ const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp', '.gif'] as const;
 const ACCEPTED_FILES = ACCEPTED_EXTENSIONS.join(',');
 const MAX_FILES_PER_PICK = 10;
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
+const MAX_CLOUD_DOCUMENT_BYTES = 25 * 1024 * 1024;
+const MAX_CLOUD_DRAFT_BYTES = 100 * 1024 * 1024;
+const MAX_CLOUD_DRAFT_FILES = 20;
 const SEARCH_DEBOUNCE_MS = 240;
 
 const SCOPE_LABEL: Record<ReferenceScope, string> = {
@@ -76,6 +80,7 @@ export interface ReferenceLibraryUi {
   isOpen(): boolean;
   setOpen(open: boolean, scope?: ReferenceScope): void;
   setConnectionState(state: ReturnType<SidebarBridge['getConnectionState']>): void;
+  setDraftMode(mode: 'local' | 'cloud'): void;
   contextChanged(): void;
   snapshotDraftFiles(): File[];
   hasDrafts(): boolean;
@@ -140,6 +145,7 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
   let open = false;
   let activeScope: ReferenceScope = 'chat';
   let connectionState = bridge.getConnectionState();
+  let draftMode: 'local' | 'cloud' = 'local';
   let disposed = false;
   let contextRevision = 0;
   let requestRevision = 0;
@@ -172,6 +178,13 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
   quickUploads.setAttribute('role', 'status');
   quickUploads.setAttribute('aria-live', 'polite');
   quickUploads.setAttribute('aria-label', '참고자료 업로드 상태');
+  const quickError = el('span', 'ag-reference-quick-error');
+
+  function showDraftError(message = ''): void {
+    quickError.textContent = message;
+    if (message) quickUploads.prepend(quickError);
+    else quickError.remove();
+  }
 
   const fileInput = el('input', 'ag-reference-file-input') as HTMLInputElement;
   fileInput.type = 'file';
@@ -256,13 +269,13 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
     const documentTab = tabButtons.get('document')!;
     documentTab.disabled = !context.documentId;
     documentTab.title = context.documentId ? '' : '문서를 열면 문서별 참고자료를 추가할 수 있습니다.';
-    quickAddButton.disabled = !connected || !context.threadId;
+    quickAddButton.disabled = (!connected && draftMode !== 'cloud') || !context.threadId;
     add.disabled = !connected || targetFor(activeScope, context) === null;
     if (!connected) add.title = '에이전트 서버가 연결되면 파일을 추가할 수 있습니다.';
     else add.removeAttribute('title');
     scopeHint.hidden = activeScope === 'chat';
     if (activeScope === 'document' && !context.documentId) {
-      scopeHint.textContent = '문서를 열면 해당 문서의 모든 채팅에서 쓸 참고자료를 추가할 수 있습니다.';
+      scopeHint.textContent = '문서를 열면 추가할 수 있습니다.';
     } else if (activeScope === 'document') {
       scopeHint.textContent = `${context.documentName ?? '현재 문서'}의 모든 채팅에서 사용합니다.`;
     } else if (activeScope === 'global') {
@@ -328,7 +341,7 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
       remove.appendChild(createIcon('close'));
       remove.disabled = file.status === 'uploading' || file.status === 'extracting' || file.status === 'indexing';
       remove.addEventListener('click', async () => {
-        if (!window.confirm(`"${file.name}" 참고자료를 제거할까요? 원본 파일은 삭제되지 않습니다.`)) return;
+        if (!await confirmSheet(remove, `“${file.name}” 제거`, '원본 파일은 그대로 둡니다.', { confirmLabel: '제거', destructive: true })) return;
         remove.disabled = true;
         status.textContent = `${file.name} 제거 중…`;
         showError();
@@ -392,7 +405,7 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
     // its owning thread. Never probe the transient thread's chat references:
     // the hub correctly scopes them to the still-running provider thread.
     if (!isAuthorizedSessionTarget(target)) {
-      status.textContent = '답변을 기다리는 채팅의 참고자료만 사용할 수 있습니다.';
+      status.textContent = '답변 대기 중인 채팅의 참고자료만 사용합니다.';
       renderFiles([]);
       return;
     }
@@ -464,22 +477,28 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
     }
   }
 
-  function validateFiles(files: File[]): File[] {
+  function validateFiles(files: File[], cloudDraft = false): File[] {
     showError();
     if (files.length > MAX_FILES_PER_PICK) {
       showError(`한 번에 최대 ${MAX_FILES_PER_PICK}개까지 추가할 수 있습니다.`);
     }
     const accepted: File[] = [];
+    let draftBytes = cloudDraft ? draftUploads.reduce((sum, chip) => sum + chip.file.size, 0) : 0;
     for (const file of files.slice(0, MAX_FILES_PER_PICK)) {
       const extension = extensionOf(file.name);
       if (!(ACCEPTED_EXTENSIONS as readonly string[]).includes(extension)) {
         showError(`${file.name}: 지원하지 않는 파일 형식입니다.`);
       } else if (file.size === 0) {
         showError(`${file.name}: 빈 파일은 추가할 수 없습니다.`);
-      } else if (file.size > MAX_FILE_BYTES) {
-        showError(`${file.name}: 파일 하나는 20 MB 이하여야 합니다.`);
+      } else if (file.size > (cloudDraft && !isImageFile(file) ? MAX_CLOUD_DOCUMENT_BYTES : MAX_FILE_BYTES)) {
+        showError(`${file.name}: 파일 하나는 ${cloudDraft && !isImageFile(file) ? 25 : 20} MB 이하여야 합니다.`);
+      } else if (cloudDraft && draftUploads.length + accepted.length >= MAX_CLOUD_DRAFT_FILES) {
+        showError(`Cloud 메시지에는 파일을 최대 ${MAX_CLOUD_DRAFT_FILES}개까지 첨부할 수 있습니다.`);
+      } else if (cloudDraft && draftBytes + file.size > MAX_CLOUD_DRAFT_BYTES) {
+        showError('Cloud 메시지의 첨부 파일은 합계 100 MB 이하여야 합니다.');
       } else {
         accepted.push(file);
+        draftBytes += file.size;
       }
     }
     return accepted;
@@ -493,6 +512,8 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
     remove: HTMLButtonElement;
     target: ScopeTarget | null;
     staged: StagedReference | null;
+    stagedOnHub: boolean;
+    revision: number;
     uploadState: 'uploading' | 'ready' | 'error';
     cancelled: boolean;
     previewUrl: string | null;
@@ -519,6 +540,11 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
     remove.title = '첨부 취소';
     remove.appendChild(createIcon('close'));
     const previewUrl = isImageFile(file) ? URL.createObjectURL(file) : null;
+    if (previewUrl) {
+      root.classList.add('ag-image');
+      retry.replaceChildren(createIcon('refresh'));
+      retry.title = '다시 시도';
+    }
     const visual = previewUrl
       ? el('img', 'ag-reference-upload-preview') as HTMLImageElement
       : createIcon('document');
@@ -527,14 +553,16 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
       visual.alt = '';
     }
     const chip: UploadChip = {
-      file, root, state, retry, remove, target: null, staged: null, uploadState: 'uploading', cancelled: false, previewUrl,
+      file, root, state, retry, remove, target: null, staged: null, stagedOnHub: false,
+      revision: 0, uploadState: 'uploading', cancelled: false, previewUrl,
     };
     remove.addEventListener('click', () => {
       chip.cancelled = true;
       const index = draftUploads.indexOf(chip);
       if (index >= 0) draftUploads.splice(index, 1);
+      if (draftUploads.length === 0) showDraftError();
       releaseChip(chip);
-      if (chip.staged && chip.target) {
+      if (chip.stagedOnHub && chip.staged && chip.target) {
         void bridge.discardStagedReference(chip.target.scopeId, chip.staged.id).catch(() => undefined);
       }
       options.onDraftStateChange?.('content');
@@ -543,12 +571,15 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
       if (!chip.target) return;
       retry.disabled = true;
       showError();
+      showDraftError();
       status.textContent = `${file.name} 다시 업로드 중…`;
       try {
         await stageOne(chip);
         status.textContent = `${file.name} 첨부 준비가 끝났습니다.`;
       } catch (caught) {
-        showError(`${file.name} 파일을 추가하지 못했습니다. 다시 시도하거나 파일을 다시 추가해 주세요. ${errorMessage(caught)}`);
+        const message = `${file.name} 추가 실패 · 다시 시도 ${errorMessage(caught)}`;
+        showError(message);
+        showDraftError(message);
         status.textContent = `${file.name} 업로드 실패`;
       }
     });
@@ -567,27 +598,42 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
 
   async function stageOne(chip: UploadChip): Promise<void> {
     if (!chip.target) throw new Error('현재 채팅에 파일을 첨부할 수 없습니다.');
+    const revision = ++chip.revision;
+    if (chip.stagedOnHub && chip.staged) {
+      void bridge.discardStagedReference(chip.target.scopeId, chip.staged.id).catch(() => undefined);
+    }
     chip.uploadState = 'uploading';
     chip.cancelled = false;
     chip.staged = null;
+    chip.stagedOnHub = false;
     chip.root.classList.remove('ag-ready', 'ag-error');
     chip.root.removeAttribute('title');
     chip.state.textContent = '업로드 중';
     chip.retry.hidden = true;
-    chip.remove.hidden = true;
+    chip.remove.hidden = !chip.previewUrl;
     options.onDraftStateChange?.('status');
     try {
-      const staged = await bridge.stageReference(chip.target.scopeId, chip.file);
-      if (chip.cancelled) {
-        await bridge.discardStagedReference(chip.target.scopeId, staged.id).catch(() => undefined);
+      const onHub = draftMode === 'local';
+      const staged: StagedReference = onHub
+        ? await bridge.stageReference(chip.target.scopeId, chip.file)
+        : {
+            id: globalThis.crypto?.randomUUID?.() ?? `cloud-stage-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            scope: 'chat', scopeId: chip.target.scopeId,
+            name: chip.file.name, mimeType: chip.file.type || 'application/octet-stream',
+            size: chip.file.size, status: 'ready', createdAt: new Date().toISOString(), expiresAt: '',
+          };
+      if (chip.cancelled || chip.revision !== revision) {
+        if (onHub) await bridge.discardStagedReference(chip.target.scopeId, staged.id).catch(() => undefined);
         return;
       }
       chip.staged = staged;
+      chip.stagedOnHub = onHub;
       chip.uploadState = 'ready';
       chip.root.classList.add('ag-ready');
       chip.state.textContent = '준비됨';
       chip.remove.hidden = false;
     } catch (caught) {
+      if (chip.revision !== revision) return;
       chip.uploadState = 'error';
       chip.root.classList.add('ag-error');
       chip.state.textContent = '실패';
@@ -597,7 +643,7 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
       chip.remove.hidden = false;
       throw caught;
     } finally {
-      options.onDraftStateChange?.('status');
+      if (chip.revision === revision) options.onDraftStateChange?.('status');
     }
   }
 
@@ -633,12 +679,16 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
 
   function stageFiles(files: File[]): void {
     const target = targetFor('chat', options.getContext());
-    if (!target || connectionState !== 'connected') return;
-    for (const file of validateFiles(files)) {
+    if (!target || (draftMode === 'local' && connectionState !== 'connected')) return;
+    const accepted = validateFiles(files, draftMode === 'cloud');
+    showDraftError(error.textContent ?? '');
+    for (const file of accepted) {
       const chip = pendingChip(file);
       chip.target = target;
       void stageOne(chip).catch((caught) => {
-        showError(`${file.name} 파일을 업로드하지 못했습니다. ${errorMessage(caught)}`);
+        const message = `${file.name} 파일을 업로드하지 못했습니다. ${errorMessage(caught)}`;
+        showError(message);
+        showDraftError(message);
         status.textContent = `${file.name} 업로드 실패`;
       });
     }
@@ -668,7 +718,7 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
     const failed = settled.filter((entry) => entry.status === 'rejected');
     if (failed.length > 0) {
       const first = failed[0] as PromiseRejectedResult;
-      showError(`${failed.length}개 파일을 추가하지 못했습니다. 다시 시도하거나 파일을 다시 추가해 주세요. ${errorMessage(first.reason)}`);
+      showError(`${failed.length}개 파일 추가 실패 · 다시 시도 ${errorMessage(first.reason)}`);
       status.textContent = `${settled.length - failed.length}개 추가, ${failed.length}개 실패`;
     } else {
       status.textContent = `${settled.length}개 참고자료를 추가했습니다.`;
@@ -677,17 +727,18 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
   }
 
   function openPicker(target: ScopeTarget | null, draft = false): void {
-    if (!target || connectionState !== 'connected') return;
+    if (!target || (connectionState !== 'connected' && (!draft || draftMode !== 'cloud'))) return;
     pickerTarget = target;
     pickerDraft = draft;
     fileInput.click();
   }
 
   function discardDrafts(change: 'content' | 'context' = 'content'): void {
+    showDraftError();
     for (const chip of draftUploads.splice(0)) {
       chip.cancelled = true;
       releaseChip(chip);
-      if (chip.staged && chip.target) {
+      if (chip.stagedOnHub && chip.staged && chip.target) {
         void bridge.discardStagedReference(chip.target.scopeId, chip.staged.id).catch(() => undefined);
       }
     }
@@ -706,10 +757,14 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
     if (draftUploads.some((chip) => chip.uploadState !== 'ready' || !chip.staged)) return [];
     const batch = [...draftUploads];
     const bytes = await Promise.all(batch.map(async (chip) => new Uint8Array(await chip.file.arrayBuffer())));
+    if (draftUploads.length !== batch.length || batch.some((chip, index) =>
+      draftUploads[index] !== chip || chip.uploadState !== 'ready' || !chip.staged)) {
+      throw new Error('첨부 파일이 변경되었습니다. 다시 보내 주세요.');
+    }
     draftUploads.splice(0, batch.length);
     for (const chip of batch) {
       releaseChip(chip);
-      if (chip.staged && chip.target) {
+      if (chip.stagedOnHub && chip.staged && chip.target) {
         void bridge.discardStagedReference(chip.target.scopeId, chip.staged.id).catch(() => undefined);
       }
     }
@@ -831,6 +886,14 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
       updateAvailability();
       if (state === 'connected') void refreshCounts();
       else if (open) status.textContent = '에이전트 서버 연결을 기다리는 중입니다.';
+    },
+    setDraftMode(mode): void {
+      if (draftMode === mode) return;
+      draftMode = mode;
+      updateAvailability();
+      for (const chip of draftUploads) {
+        if (chip.target) void stageOne(chip).catch(() => undefined);
+      }
     },
     contextChanged(): void {
       contextRevision++;

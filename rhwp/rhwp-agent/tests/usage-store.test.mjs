@@ -361,6 +361,43 @@ test('load prunes events older than eight days and rewrites the log', async () =
   await fs.rm(rootDir, { recursive: true, force: true });
 });
 
+test('disk errors at startup leave usage in memory instead of blocking the hub', async (t) => {
+  if (process.platform === 'win32' || process.getuid?.() === 0) {
+    t.skip('POSIX permissions are not enforced for this user');
+    return;
+  }
+  const rootDir = await tmpRoot();
+  const eventsPath = path.join(rootDir, 'events.jsonl');
+  t.after(async () => {
+    await fs.chmod(rootDir, 0o700).catch(() => {});
+    await fs.chmod(eventsPath, 0o600).catch(() => {});
+    await fs.rm(rootDir, { recursive: true, force: true });
+  });
+  const time = clock();
+  const line = (ts, inputTokens) => `${JSON.stringify({ ts, agent: 'claude', model: 'opus', inputTokens })}\n`;
+  const original = line(time.now() - 30 * DAY, 5) + line(time.now() - HOUR, 7);
+  await fs.writeFile(eventsPath, original, { mode: 0o600 });
+
+  // The stale event forces a pruning rewrite, which a read-only directory rejects.
+  await fs.chmod(rootDir, 0o500);
+  const readOnly = await createUsageStore({ rootDir, now: time.now }).init();
+  assert.equal(readOnly.summary().providers.claude.week.turns, 1);
+  assert.equal(readOnly.summary().providers.claude.week.inputTokens, 7);
+  assert.notEqual(readOnly.record({ agent: 'claude', model: 'opus', inputTokens: 1 }), null);
+  await readOnly.flush();
+  await fs.chmod(rootDir, 0o700);
+
+  // An unreadable log starts empty, and compaction must not overwrite the history it never read.
+  const before = await fs.readFile(eventsPath, 'utf8');
+  await fs.chmod(eventsPath, 0o000);
+  const unreadable = await createUsageStore({ rootDir, now: time.now, pruneIntervalMs: 0 }).init();
+  assert.equal(unreadable.summary().providers.claude.week.turns, 0);
+  unreadable.record({ agent: 'claude', model: 'opus', inputTokens: 2 });
+  await unreadable.flush();
+  await fs.chmod(eventsPath, 0o600);
+  assert.equal(await fs.readFile(eventsPath, 'utf8'), before);
+});
+
 test('pi records OpenRouter cost alongside tokens and replays it', async () => {
   const rootDir = await tmpRoot();
   const time = clock();

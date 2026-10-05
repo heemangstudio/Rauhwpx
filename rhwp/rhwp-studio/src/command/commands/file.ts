@@ -14,6 +14,7 @@ import {
 } from '@/command/save-target';
 import { SAVE_FORMAT_DETAILS } from '@/command/save-format';
 import { exportDocumentForFormat } from '@/command/save-document-format';
+import { SaveSession, type SaveOutcome } from '@/command/save-session';
 import {
   readHmlSaveContext,
   resolveHmlSaveCapability,
@@ -32,6 +33,7 @@ import {
   createPrintPreviewSurface,
   createPrintSurface,
   PrintPreviewBlockedError,
+  PrintSurfaceClosedError,
   waitForPrintSurfaceReady,
   type PrintPreviewSurface,
   type PrintSurface,
@@ -292,12 +294,14 @@ function completeHandleSave(
   savedFormat: SaveFormat,
   result: SaveDocumentResult,
   reason: 'save' | 'save-as',
+  revision: number,
 ): void {
   if (sourceFormat === 'hml') markConvertedHmlSaveHandle(result.handle);
   const previousFileHandle = services.wasm.currentFileHandle;
   services.wasm.currentFileHandle = result.handle;
   services.wasm.fileName = result.fileName;
-  services.documentState.markClean(reason);
+  // 쓰는 동안 들어온 편집은 파일에 없다. 그 편집이 있으면 dirty 를 유지한다.
+  services.documentState.markCleanIfUnchanged(revision, reason);
   services.eventBus.emit('document-context-changed');
   services.eventBus.emit('document-saved', {
     reason,
@@ -355,12 +359,13 @@ async function resolvePendingAgentEditsBeforeSave(services: CommandServices): Pr
   return true;
 }
 
-async function saveAsFormat(services: CommandServices, format: SaveFormat): Promise<void> {
+async function saveAsFormat(services: CommandServices, format: SaveFormat): Promise<SaveOutcome> {
   try {
-    if (!await resolvePendingAgentEditsBeforeSave(services)) return;
+    if (!await resolvePendingAgentEditsBeforeSave(services)) return 'cancelled';
     flushDeferredPaginationBeforeExplicitOutput(services, 'save-as');
     const sourceFormat = services.wasm.getSourceFormat();
     const saveName = fileNameForFormat(services.wasm.fileName, format);
+    const revision = services.documentState.captureRevision();
     const blob = createSaveBlob(services, format);
     const originalHandle = sourceFormat === 'hml' ? services.wasm.currentFileHandle : null;
     const result = await tryFileSystemSave(
@@ -371,24 +376,26 @@ async function saveAsFormat(services: CommandServices, format: SaveFormat): Prom
       true,
       originalHandle,
     );
-    if (result === 'cancelled') return;
+    if (result === 'cancelled') return 'cancelled';
     if (result.method !== 'fallback') {
-      completeHandleSave(services, sourceFormat, format, result, 'save-as');
-      return;
+      completeHandleSave(services, sourceFormat, format, result, 'save-as', revision);
+      return 'saved';
     }
     const downloadName = await promptFallbackName(saveName, format);
-    if (!downloadName) return;
+    if (!downloadName) return 'cancelled';
     services.wasm.fileName = downloadName;
     downloadBlob(blob, downloadName);
-    services.documentState.markClean('save-as');
+    services.documentState.markCleanIfUnchanged(revision, 'save-as');
     services.eventBus.emit('document-context-changed');
     services.eventBus.emit('document-saved', {
       reason: 'save-as',
       fileName: downloadName,
       sourceFormat: format,
     });
+    return 'saved';
   } catch (error) {
     reportSaveError('file:save-as', error);
+    return 'failed';
   }
 }
 
@@ -400,6 +407,7 @@ async function saveWithHistory(services: CommandServices): Promise<SaveCurrentDo
       throw new Error('버전 기록 서비스를 사용할 수 없습니다.');
     }
 
+    const revision = services.documentState.captureRevision();
     const archive = await services.createPortableHistoryBundle();
     const currentHandle = services.wasm.currentFileHandle;
     const historyBlob = new Blob([archive.bytes as unknown as BlobPart], {
@@ -410,7 +418,7 @@ async function saveWithHistory(services: CommandServices): Promise<SaveCurrentDo
       && isPortableHistoryFileName(currentHandle.name)
     ) {
       await writeBlobToHandle(currentHandle, historyBlob, services.validateSaveHandle);
-      completePortableHistorySave(services, currentHandle, currentHandle.name);
+      completePortableHistorySave(services, currentHandle, currentHandle.name, revision);
       return 'saved';
     }
 
@@ -439,7 +447,7 @@ async function saveWithHistory(services: CommandServices): Promise<SaveCurrentDo
         throw new Error('.rhwpx 확장자를 가진 기록 파일을 선택해야 합니다.');
       }
       await writeBlobToHandle(targetHandle, historyBlob, services.validateSaveHandle);
-      completePortableHistorySave(services, targetHandle, targetHandle.name);
+      completePortableHistorySave(services, targetHandle, targetHandle.name, revision);
       return 'saved';
     }
 
@@ -456,11 +464,12 @@ function completePortableHistorySave(
   services: CommandServices,
   handle: FileSystemFileHandleLike,
   fileName: string,
+  revision: number,
 ): void {
   const previousFileHandle = services.wasm.currentFileHandle;
   services.wasm.currentFileHandle = handle;
   services.wasm.fileName = fileName;
-  services.documentState.markClean('save-with-history');
+  services.documentState.markCleanIfUnchanged(revision, 'save-with-history');
   services.eventBus.emit('document-context-changed');
   services.eventBus.emit('document-saved', {
     reason: 'save-with-history',
@@ -482,9 +491,29 @@ function reportSaveError(scope: string, error: unknown): void {
   alert(`파일 저장에 실패했습니다:\n${message}`);
 }
 
-export type SaveCurrentDocumentResult = 'saved' | 'cancelled' | 'failed' | 'unsupported';
+export type SaveCurrentDocumentResult = SaveOutcome;
 
-export async function saveCurrentDocument(services: CommandServices): Promise<SaveCurrentDocumentResult> {
+/** 저장은 한 번에 하나만 실행한다 (겹친 쓰기가 오래된 바이트로 최신 저장을 덮지 않도록). */
+const saveSession = new SaveSession();
+
+/**
+ * 현재 문서를 저장한다. 진행 중인 저장이 있으면 그 결과를 기다리고, 그사이 편집이
+ * 들어와 여전히 dirty 일 때만 한 번 더 저장한다.
+ */
+export function saveCurrentDocument(services: CommandServices): Promise<SaveCurrentDocumentResult> {
+  return saveSession.save(
+    () => runSaveCurrentDocument(services),
+    () => services.documentState.isDirty(),
+  );
+}
+
+/** 대화상자가 필요한 저장은 다른 저장이 진행 중이면 실행하지 않는다. */
+async function runExclusiveSave(run: () => Promise<SaveOutcome>): Promise<void> {
+  const outcome = await saveSession.exclusive(run);
+  if (outcome === 'busy') showToast({ message: '저장 중입니다.', durationMs: 2000 });
+}
+
+async function runSaveCurrentDocument(services: CommandServices): Promise<SaveCurrentDocumentResult> {
   try {
     if (
       isPortableHistoryFileName(services.wasm.fileName)
@@ -511,6 +540,7 @@ export async function saveCurrentDocument(services: CommandServices): Promise<Sa
         suggestedName: fileNameForFormat(services.wasm.fileName, format),
       };
     }
+    const revision = services.documentState.captureRevision();
     const blob = createSaveBlob(services, target.format);
     const result = await tryFileSystemSave(
       services,
@@ -522,13 +552,13 @@ export async function saveCurrentDocument(services: CommandServices): Promise<Sa
     );
     if (result === 'cancelled') return 'cancelled';
     if (result.method !== 'fallback') {
-      completeHandleSave(services, sourceFormat, target.format, result, 'save');
+      completeHandleSave(services, sourceFormat, target.format, result, 'save', revision);
       return 'saved';
     }
     const downloadName = await fallbackNameForCurrentSave(services, target);
     if (!downloadName) return 'cancelled';
     downloadBlob(blob, downloadName);
-    services.documentState.markClean('save');
+    services.documentState.markCleanIfUnchanged(revision, 'save');
     services.eventBus.emit('document-context-changed');
     services.eventBus.emit('document-saved', {
       reason: 'save',
@@ -557,19 +587,22 @@ async function fallbackNameForCurrentSave(
 export async function confirmSaveBeforeReplacingDocument(
   services: CommandServices,
 ): Promise<boolean> {
-  const ctx = services.getContext();
-  if (!ctx.hasDocument || !ctx.isDirty) return true;
+  // 저장하는 동안 들어온 편집이 있으면 문서가 dirty 로 남는다. 그 편집을 버리지 않도록 다시 묻는다.
+  for (;;) {
+    const ctx = services.getContext();
+    if (!ctx.hasDocument || !ctx.isDirty) return true;
 
-  const choice = await showUnsavedChangesDialog({
-    fileName: services.wasm.fileName,
-    canSave: true, // HWPX 직접 저장 활성화로 모든 출처 저장 가능
-  });
+    const choice = await showUnsavedChangesDialog({
+      fileName: services.wasm.fileName,
+      canSave: true, // HWPX 직접 저장 활성화로 모든 출처 저장 가능
+    });
 
-  if (choice === 'cancel') return false;
-  if (choice === 'discard') return true;
+    if (choice === 'cancel') return false;
+    if (choice === 'discard') return true;
 
-  const result = await saveCurrentDocument(services);
-  return result === 'saved';
+    const result = await saveCurrentDocument(services);
+    if (result !== 'saved') return false;
+  }
 }
 
 function projectFileDeps(
@@ -635,6 +668,9 @@ export async function runLibraryMove(
       documentId: getActiveDocumentId(),
       fileName: services.getContext().hasDocument ? services.wasm.fileName : null,
       hasDocument: services.getContext().hasDocument,
+      // 검토 대기 편집은 저장 경로에서 수락/거절을 물어야 하므로 바뀐 내용으로 친다.
+      isDirty: services.documentState.isDirty()
+        || (services.getPendingAgentEdits?.()?.opCount ?? 0) > 0,
     }),
     saveCurrent: () => saveCurrentDocument(services),
     listRecent: listRecentDocs,
@@ -692,7 +728,18 @@ function appendPrintPreviewBar(
   printButton.type = 'button';
   printButton.className = 'print-preview-primary';
   printButton.textContent = '인쇄';
-  printButton.addEventListener('click', () => printWindow.print());
+  printButton.addEventListener('click', () => {
+    // Electron 데스크톱은 네이티브 인쇄 대화상자를 연다 — 미리보기 창의
+    // webContents 를 main 이 print() 한다. 브라우저 빌드는 그대로 window.print.
+    const printCurrentWindow = (printWindow as unknown as {
+      rhwpDesktop?: { printCurrentWindow?: () => Promise<void> };
+    }).rhwpDesktop?.printCurrentWindow;
+    if (typeof printCurrentWindow === 'function') {
+      void printCurrentWindow();
+    } else {
+      printWindow.print();
+    }
+  });
 
   const closeButton = doc.createElement('button');
   closeButton.id = 'close-btn';
@@ -731,11 +778,14 @@ async function preparePrintPages(
   services: CommandServices,
   intent: PrintIntent,
   onProgress: (currentPage: number, pageCount: number) => void,
+  isCancelled: () => boolean = () => false,
 ): Promise<PrintPage[]> {
   const wasm = services.wasm;
   const pageCount = wasm.pageCount;
   const printPages: PrintPage[] = [];
   for (let i = 0; i < pageCount; i++) {
+    // 미리보기 창을 닫으면 남은 쪽을 그리지 않고 멈춘다.
+    if (isCancelled()) throw new PrintSurfaceClosedError();
     onProgress(i + 1, pageCount);
     const svg = wasm.renderPageSvgWithProfile(i, 'print');
     const pageInfo = wasm.getPageInfo(i);
@@ -858,11 +908,12 @@ async function runPrintPreview(services: CommandServices): Promise<void> {
     if (!surface) return;
     setPrintPreviewLoading(surface, initialProgress);
 
+    const previewWindow = surface.window;
     const printPages = await preparePrintPages(services, 'print', (current, total) => {
       const progressText = printProgressText('print', current, total);
       if (statusEl) statusEl.textContent = progressText;
       if (surface) setPrintPreviewLoading(surface, progressText);
-    });
+    }, () => previewWindow.closed);
 
     setupPrintDocument(surface.document, wasm.fileName, printPages, surface.window);
     await waitForPrintSurfaceReady(surface);
@@ -874,6 +925,11 @@ async function runPrintPreview(services: CommandServices): Promise<void> {
       + `(surface=window, pages=${pageCount}, profile=print)`,
     );
   } catch (err) {
+    if (err instanceof PrintSurfaceClosedError) {
+      // 사용자가 준비 중인 미리보기 창을 닫았다. 취소로 보고 상태 문구만 되돌린다.
+      console.info('[file:print] 인쇄 미리보기 창이 닫혀 준비를 멈춥니다.');
+      return;
+    }
     restoreStatus = false;
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[file:print]', msg);
@@ -956,8 +1012,10 @@ export const fileCommands: CommandDef[] = [
     shortcutLabel: 'Ctrl+Shift+S',
     canExecute: (ctx) => ctx.hasDocument,
     async execute(services) {
-      const format = await chooseSaveAsFormat(services);
-      if (format !== null) await saveAsFormat(services, format);
+      await runExclusiveSave(async () => {
+        const format = await chooseSaveAsFormat(services);
+        return format === null ? 'cancelled' : saveAsFormat(services, format);
+      });
     },
   },
   {
@@ -965,7 +1023,7 @@ export const fileCommands: CommandDef[] = [
     label: '기록을 포함해 저장',
     canExecute: (ctx) => ctx.hasDocument,
     async execute(services) {
-      await saveWithHistory(services);
+      await runExclusiveSave(() => saveWithHistory(services));
     },
   },
   {
@@ -974,7 +1032,7 @@ export const fileCommands: CommandDef[] = [
     label: 'HWP 5.0으로 저장',
     canExecute: (ctx) => ctx.hasDocument,
     async execute(services) {
-      await saveAsFormat(services, 'hwp');
+      await runExclusiveSave(() => saveAsFormat(services, 'hwp'));
     },
   },
   {
@@ -983,7 +1041,7 @@ export const fileCommands: CommandDef[] = [
     label: 'HWPX로 저장',
     canExecute: (ctx) => ctx.hasDocument,
     async execute(services) {
-      await saveAsFormat(services, 'hwpx');
+      await runExclusiveSave(() => saveAsFormat(services, 'hwpx'));
     },
   },
   {
@@ -993,7 +1051,9 @@ export const fileCommands: CommandDef[] = [
     shortcutLabel: 'F7',
     canExecute: (ctx) => ctx.hasDocument,
     execute(services) {
-      const dialog = new PageSetupDialog(services.wasm, services.eventBus, 0, services);
+      // 커서가 있는 구역의 용지를 연다 (page:setup 과 같은 기준).
+      const sectionIdx = services.getInputHandler()?.getCursorPosition().sectionIndex ?? 0;
+      const dialog = new PageSetupDialog(services.wasm, services.eventBus, sectionIdx, services);
       dialog.show();
     },
   },

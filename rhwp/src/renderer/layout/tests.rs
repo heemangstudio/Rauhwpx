@@ -30,6 +30,827 @@ fn a4_page_def() -> PageDef {
     }
 }
 
+#[test]
+fn following_table_moves_after_pending_cell_equation_grows_previous_table() {
+    use crate::document_core::DocumentCore;
+
+    fn table_box(node: &RenderNode, para: usize, control: usize) -> Option<BoundingBox> {
+        if let RenderNodeType::Table(table) = &node.node_type {
+            if table.para_index == Some(para) && table.control_index == Some(control) {
+                return Some(node.bbox);
+            }
+        }
+        node.children
+            .iter()
+            .find_map(|child| table_box(child, para, control))
+    }
+    fn layered_box(node: &RenderNode, control: u32) -> Option<BoundingBox> {
+        if node
+            .layer
+            .is_some_and(|layer| layer.stable_index == control)
+        {
+            return Some(node.bbox);
+        }
+        node.children
+            .iter()
+            .find_map(|child| layered_box(child, control))
+    }
+
+    let mut core = DocumentCore::from_bytes(include_bytes!("../../../samples/table-ipc.hwp"))
+        .expect("load adjacent tables");
+    let baseline = core.build_page_tree_cached(0).expect("baseline page");
+    let first = table_box(&baseline.root, 0, 3).expect("first table");
+    let following = table_box(&baseline.root, 0, 4).expect("following table");
+    let footer = layered_box(&baseline.root, 5).expect("original page number");
+    assert!((first.y + first.height - following.y).abs() < 0.2);
+
+    core.insert_equation_in_cell_native(0, 0, 3, 0, 0, 0, "x over y", 1200, 0)
+        .expect("insert pending equation");
+    let pending = core.build_page_tree_cached(0).expect("pending page");
+    let grown = table_box(&pending.root, 0, 3).expect("grown first table");
+    let next = table_box(&pending.root, 0, 4).expect("following table after edit");
+    assert!(
+        grown.height > first.height + 10.0,
+        "the fixture must grow the first table"
+    );
+    assert!(
+        next.y + 0.2 >= grown.y + grown.height,
+        "the following table overlaps the grown table: first={grown:?}, next={next:?}"
+    );
+    let saved = core.export_hwpx_native().expect("save the edited document");
+    let reopened = DocumentCore::from_bytes(&saved).expect("reopen the edited document");
+    let reopened_page = reopened.build_page_tree_cached(0).expect("reopened page");
+    let saved_first = table_box(&reopened_page.root, 0, 3).expect("reopened first table");
+    let saved_next = table_box(&reopened_page.root, 0, 4).expect("reopened following table");
+    assert!(saved_next.y + 0.2 >= saved_first.y + saved_first.height,
+        "the reopened document loses the table displacement: first={saved_first:?}, next={saved_next:?}");
+
+    let mut text_core = DocumentCore::from_bytes(include_bytes!("../../../samples/table-ipc.hwp"))
+        .expect("load adjacent tables for text edit");
+    text_core
+        .insert_text_in_cell_native(0, 0, 3, 0, 0, 0, &"가나다라마바사아자차카타파하 ".repeat(8))
+        .expect("insert long cell text");
+    let text_page = text_core.build_page_tree_cached(0).expect("text edit page");
+    let text_first = table_box(&text_page.root, 0, 3).expect("grown text table");
+    let text_next = table_box(&text_page.root, 0, 4).expect("following table after text edit");
+    let text_footer = layered_box(&text_page.root, 5).expect("page number remains on first page");
+    assert!(text_first.height > first.height + 10.0);
+    assert!(
+        text_next.y + 0.2 >= text_first.y + text_first.height,
+        "the following table overlaps after text growth: first={text_first:?}, next={text_next:?}"
+    );
+    assert!(
+        (text_next.y - text_first.y - text_first.height).abs() < 0.2,
+        "the first fragment lost its adjacent anchor: first={text_first:?}, next={text_next:?}"
+    );
+    let text_para = &text_core.document.sections[0].paragraphs[0];
+    let clear_bottom = paper_overlay_table_clearance_bottom(
+        text_para,
+        4,
+        text_page.root.bbox.width,
+        DEFAULT_DPI,
+        text_page.root.bbox.height,
+    );
+    assert!(text_next.y + text_next.height <= clear_bottom + 0.2,
+        "the table fragment reaches the page-number shape: next={text_next:?}, clear={clear_bottom}");
+    assert!((text_footer.y - footer.y).abs() < 0.2);
+    assert!(
+        table_box(
+            &text_core
+                .build_page_tree_cached(1)
+                .expect("continuation page")
+                .root,
+            0,
+            4
+        )
+        .is_some(),
+        "the remaining rows must continue on the next page"
+    );
+    assert!(
+        layered_box(
+            &text_core
+                .build_page_tree_cached(1)
+                .expect("continuation page")
+                .root,
+            5
+        )
+        .is_none(),
+        "the authored page number must not move or duplicate"
+    );
+    let text_saved = text_core
+        .export_hwpx_native()
+        .expect("save the grown table");
+    let text_reopened = DocumentCore::from_bytes(&text_saved).expect("reopen the grown table");
+    let reopened_first_page = text_reopened
+        .build_page_tree_cached(0)
+        .expect("reopened first page");
+    let reopened_first = table_box(&reopened_first_page.root, 0, 3).expect("reopened first table");
+    let reopened_next =
+        table_box(&reopened_first_page.root, 0, 4).expect("reopened next table fragment");
+    assert!(reopened_next.y + 0.2 >= reopened_first.y + reopened_first.height);
+    assert!(table_box(
+        &text_reopened
+            .build_page_tree_cached(1)
+            .expect("reopened continuation page")
+            .root,
+        0,
+        4
+    )
+    .is_some());
+}
+
+#[test]
+fn grown_paper_overlay_table_splits_before_page_number() {
+    use crate::document_core::DocumentCore;
+
+    fn table_box(node: &RenderNode, para: usize, control: usize) -> Option<BoundingBox> {
+        if let RenderNodeType::Table(table) = &node.node_type {
+            if table.para_index == Some(para) && table.control_index == Some(control) {
+                return Some(node.bbox);
+            }
+        }
+        node.children
+            .iter()
+            .find_map(|child| table_box(child, para, control))
+    }
+    fn layered_box(node: &RenderNode, control: u32) -> Option<BoundingBox> {
+        if node
+            .layer
+            .is_some_and(|layer| layer.stable_index == control)
+        {
+            return Some(node.bbox);
+        }
+        node.children
+            .iter()
+            .find_map(|child| layered_box(child, control))
+    }
+
+    let mut core = DocumentCore::from_bytes(include_bytes!("../../../samples/table-complex.hwp"))
+        .expect("load paper overlay table");
+    let baseline = core.build_page_tree_cached(0).expect("baseline page");
+    let original = table_box(&baseline.root, 0, 5).expect("overlay table");
+    let original_footer = layered_box(&baseline.root, 6).expect("page-number shape");
+    core.insert_text_in_cell_native(
+        0,
+        0,
+        5,
+        0,
+        0,
+        0,
+        &"가나다라마바사아자차카타파하 ".repeat(10),
+    )
+    .expect("grow first cell");
+    let edited = core.build_page_tree_cached(0).expect("edited page");
+    let first_fragment = table_box(&edited.root, 0, 5).expect("first table fragment");
+    let edited_footer = layered_box(&edited.root, 6).expect("page number remains on first page");
+    let clearance = paper_overlay_table_clearance_bottom(
+        &core.document.sections[0].paragraphs[0],
+        5,
+        edited.root.bbox.width,
+        DEFAULT_DPI,
+        edited.root.bbox.height,
+    );
+    assert!(
+        first_fragment.height > original.height + 10.0,
+        "the fixture must grow the table"
+    );
+    assert!((first_fragment.y - original.y).abs() < 0.2);
+    assert!((edited_footer.y - original_footer.y).abs() < 0.2);
+    assert!(first_fragment.y + first_fragment.height <= clearance + 0.2,
+        "the first fragment reaches the page number: fragment={first_fragment:?}, clear={clearance}");
+    assert!(table_box(
+        &core
+            .build_page_tree_cached(1)
+            .expect("continuation page")
+            .root,
+        0,
+        5
+    )
+    .is_some());
+    assert!(layered_box(
+        &core
+            .build_page_tree_cached(1)
+            .expect("continuation page")
+            .root,
+        6
+    )
+    .is_none());
+}
+
+#[test]
+fn anchored_table_growth_keeps_authored_overlaps_and_unrelated_floats() {
+    let first = AnchoredTablePlacement {
+        para_index: 0,
+        vert_rel_to: VertRelTo::Paper,
+        text_wrap: TextWrap::InFrontOfText,
+        original: BoundingBox::new(10.0, 100.0, 100.0, 20.0),
+        painted: BoundingBox::new(10.0, 100.0, 100.0, 40.0),
+    };
+    let shift = |para, anchor, wrap, x, y| {
+        adjacent_anchored_table_shift(
+            &[first],
+            para,
+            anchor,
+            wrap,
+            BoundingBox::new(x, y, 100.0, 20.0),
+        )
+    };
+    assert_eq!(
+        shift(0, VertRelTo::Paper, TextWrap::InFrontOfText, 10.0, 120.0),
+        20.0
+    );
+    assert_eq!(
+        shift(0, VertRelTo::Paper, TextWrap::InFrontOfText, 10.0, 115.0),
+        0.0
+    );
+    assert_eq!(
+        shift(0, VertRelTo::Paper, TextWrap::InFrontOfText, 10.0, 125.0),
+        0.0
+    );
+    assert_eq!(
+        shift(0, VertRelTo::Paper, TextWrap::InFrontOfText, 120.0, 120.0),
+        0.0
+    );
+    assert_eq!(
+        shift(1, VertRelTo::Paper, TextWrap::InFrontOfText, 10.0, 120.0),
+        0.0
+    );
+    assert_eq!(
+        shift(0, VertRelTo::Page, TextWrap::InFrontOfText, 10.0, 120.0),
+        0.0
+    );
+    assert_eq!(
+        shift(0, VertRelTo::Paper, TextWrap::BehindText, 10.0, 120.0),
+        0.0
+    );
+}
+
+#[test]
+fn long_cell_edit_keeps_table_fragments_inside_pages() {
+    use crate::document_core::DocumentCore;
+
+    fn top_level_tables(node: &RenderNode, inside_table: bool, out: &mut Vec<BoundingBox>) {
+        let is_table = matches!(node.node_type, RenderNodeType::Table(_));
+        if is_table && !inside_table {
+            out.push(node.bbox);
+        }
+        for child in &node.children {
+            top_level_tables(child, inside_table || is_table, out);
+        }
+    }
+
+    let mut violations = Vec::new();
+    for (name, bytes, para, control, cell, cell_para) in [
+        (
+            "exemption",
+            include_bytes!("../../../samples/task2146/21761835_jeonjik_exemption_table.hwp")
+                .as_slice(),
+            4,
+            0,
+            0,
+            1,
+        ),
+        (
+            "jinan",
+            include_bytes!("../../../samples/task2319/20544835_jinan_apt_form.hwp").as_slice(),
+            0,
+            2,
+            0,
+            0,
+        ),
+    ] {
+        let mut core = DocumentCore::from_bytes(bytes).expect("load pagination fixture");
+        let baseline_tree = core.build_page_tree_cached(0).expect("baseline first page");
+        let mut baseline_tables = Vec::new();
+        top_level_tables(&baseline_tree.root, false, &mut baseline_tables);
+        let baseline_first = baseline_tables[0];
+        if name == "exemption" {
+            let baseline_page_two = core.build_page_tree_cached(2).expect("baseline third page");
+            let mut page_two_tables = Vec::new();
+            top_level_tables(&baseline_page_two.root, false, &mut page_two_tables);
+            // 재조판 셀의 빈 문단도 줄로 계상해 p3 조각이 '보건 방역' 행에서 끝난다
+            // (종전 947.7 = '식품위생' 행 일부까지). 한컴 PDF 는 '보건' 행에서 끝난다.
+            assert!(
+                (page_two_tables[0].height - 928.0).abs() < 0.2,
+                "an unedited table changed its saved row split"
+            );
+            let mut equal_length =
+                DocumentCore::from_bytes(bytes).expect("load same-length fixture");
+            equal_length
+                .delete_text_in_cell_native(0, para, control, cell, cell_para, 0, 2)
+                .expect("remove original label");
+            equal_length
+                .insert_text_in_cell_native(0, para, control, cell, cell_para, 0, "직가")
+                .expect("insert equal-length label");
+            let equal_page_two = equal_length
+                .build_page_tree_cached(2)
+                .expect("same-length third page");
+            let mut equal_tables = Vec::new();
+            top_level_tables(&equal_page_two.root, false, &mut equal_tables);
+            assert!(
+                (equal_tables[0].height - page_two_tables[0].height).abs() < 0.2,
+                "an equal-length edit changed the saved row split"
+            );
+        }
+        let original = match &core.document.sections[0].paragraphs[para].controls[control] {
+            Control::Table(table) => table.cells[cell].paragraphs[cell_para].text.clone(),
+            _ => panic!("target is not a table"),
+        };
+        if para == 0 {
+            core.insert_text_in_cell_native(
+                0,
+                para,
+                control,
+                cell,
+                cell_para,
+                original.chars().count(),
+                &format!(" {}", "추가 내용 ".repeat(12)),
+            )
+            .expect("append longer title text");
+        } else {
+            core.delete_text_in_cell_native(
+                0,
+                para,
+                control,
+                cell,
+                cell_para,
+                0,
+                original.chars().count(),
+            )
+            .expect("delete original text");
+            core.insert_text_in_cell_native(
+                0,
+                para,
+                control,
+                cell,
+                cell_para,
+                0,
+                &format!("{original} {}", "추가 내용 ".repeat(12)),
+            )
+            .expect("insert longer text");
+        }
+        for page in 0..core.page_count() {
+            let tree = core.build_page_tree_cached(page).expect("render page");
+            let mut boxes = Vec::new();
+            top_level_tables(&tree.root, false, &mut boxes);
+            let info: serde_json::Value =
+                serde_json::from_str(&core.get_page_info_native(page).expect("page info")).unwrap();
+            let content_bottom = info["footerArea"]["y"].as_f64().expect("body bottom");
+            if name == "jinan" && page == 0 {
+                let first = boxes[0];
+                assert!((first.x - baseline_first.x).abs() < 0.2);
+                assert!((first.y - baseline_first.y).abs() < 0.2);
+            }
+            for bbox in boxes {
+                if bbox.y + bbox.height > content_bottom + 0.5 {
+                    violations.push(format!(
+                        "{name} page={page} bottom={:.1} content_bottom={content_bottom:.1}",
+                        bbox.y + bbox.height
+                    ));
+                }
+            }
+        }
+        let saved = core.export_hwpx_native().expect("save the grown table");
+        let reopened = DocumentCore::from_bytes(&saved).expect("reopen the grown table");
+        for page in 0..reopened.page_count() {
+            let tree = reopened
+                .build_page_tree_cached(page)
+                .expect("render reopened page");
+            let mut boxes = Vec::new();
+            top_level_tables(&tree.root, false, &mut boxes);
+            let info: serde_json::Value = serde_json::from_str(
+                &reopened
+                    .get_page_info_native(page)
+                    .expect("reopened page info"),
+            )
+            .unwrap();
+            let content_bottom = info["footerArea"]["y"].as_f64().expect("body bottom");
+            for bbox in boxes {
+                if bbox.y + bbox.height > content_bottom + 0.5 {
+                    violations.push(format!(
+                        "reopened {name} page={page} bottom={:.1} content_bottom={content_bottom:.1}",
+                        bbox.y + bbox.height
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "table fragments exceed page content: {violations:?}"
+    );
+}
+
+#[test]
+fn embedded_table_inline_picture_reserves_outer_margins_around_ink() {
+    use crate::model::image::Picture;
+    use crate::model::Padding;
+
+    let engine = LayoutEngine::with_default_dpi();
+    let pic = Picture {
+        common: CommonObjAttr {
+            width: 3600,
+            height: 1800,
+            margin: Padding {
+                left: 900,
+                right: 450,
+                top: 450,
+                ..Default::default()
+            },
+            treat_as_char: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let table = Table {
+        row_count: 1,
+        col_count: 1,
+        cells: vec![Cell {
+            col_span: 1,
+            row_span: 1,
+            width: 7200,
+            height: 3600,
+            paragraphs: vec![Paragraph {
+                controls: vec![Control::Picture(Box::new(pic))],
+                line_segs: vec![LineSeg {
+                    line_height: 1800,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        common: CommonObjAttr {
+            width: 7200,
+            height: 3600,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut tree = PageRenderTree::new(0, 600.0, 800.0);
+    let mut parent = RenderNode::new(
+        tree.next_id(),
+        RenderNodeType::TextBox,
+        BoundingBox::new(100.0, 200.0, 200.0, 100.0),
+    );
+    engine.layout_embedded_table(
+        &mut tree,
+        &mut parent,
+        &table,
+        &ResolvedStyleSet::default(),
+        &LayoutRect {
+            x: 100.0,
+            y: 200.0,
+            width: 200.0,
+            height: 100.0,
+        },
+        200.0,
+        None,
+        &[],
+        Alignment::Left,
+    );
+    let image = parent.children[0].children[0]
+        .children
+        .iter()
+        .find(|node| matches!(&node.node_type, RenderNodeType::Image(_)))
+        .expect("embedded table picture");
+    assert!((image.bbox.x - 112.0).abs() < 0.01);
+    assert!((image.bbox.width - 48.0).abs() < 0.01);
+    assert!((image.bbox.y - 206.0).abs() < 0.01);
+}
+
+#[test]
+fn cell_picture_caption_attaches_to_matching_image_frame() {
+    use crate::model::image::Picture;
+    use crate::model::shape::{Caption, CaptionDirection};
+    use crate::renderer::render_tree::{CaptionControlKind, ImageNode};
+    use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle};
+
+    let engine = LayoutEngine::with_default_dpi();
+    let context = CellContext {
+        parent_para_index: 4,
+        path: vec![CellPathEntry {
+            control_index: 2,
+            cell_index: 1,
+            cell_para_index: 0,
+            text_direction: 0,
+            line_wrap_squeeze: false,
+            row_span: 1,
+        }],
+    };
+    let caption = Caption {
+        direction: CaptionDirection::Bottom,
+        spacing: 720,
+        paragraphs: vec![Paragraph {
+            text: "Figure A".into(),
+            line_segs: vec![LineSeg {
+                line_height: 1200,
+                text_height: 1100,
+                baseline_distance: 850,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let para = Paragraph {
+        controls: vec![Control::Picture(Box::new(Picture {
+            caption: Some(caption),
+            ..Default::default()
+        }))],
+        ..Default::default()
+    };
+    let mut tree = PageRenderTree::new(0, 600.0, 800.0);
+    let mut cell_node = RenderNode::new(
+        tree.next_id(),
+        RenderNodeType::TextBox,
+        BoundingBox::new(80.0, 150.0, 400.0, 300.0),
+    );
+    let mut unrelated = ImageNode::new(1, None);
+    unrelated.control_index = Some(0);
+    unrelated.cell_context = Some(CellContext {
+        parent_para_index: 4,
+        path: vec![CellPathEntry {
+            cell_index: 0,
+            ..context.path[0]
+        }],
+    });
+    cell_node.children.push(RenderNode::new(
+        tree.next_id(),
+        RenderNodeType::Image(unrelated),
+        BoundingBox::new(90.0, 175.0, 100.0, 50.0),
+    ));
+    let mut image = ImageNode::new(1, None);
+    image.control_index = Some(0);
+    image.cell_context = Some(context.clone());
+    cell_node.children.push(RenderNode::new(
+        tree.next_id(),
+        RenderNodeType::Image(image),
+        BoundingBox::new(120.0, 220.0, 100.0, 50.0),
+    ));
+    let styles = ResolvedStyleSet {
+        char_styles: vec![ResolvedCharStyle::default()],
+        para_styles: vec![ResolvedParaStyle::default()],
+        ..Default::default()
+    };
+    engine.layout_cell_picture_captions(
+        &mut tree,
+        &mut cell_node,
+        &para,
+        &styles,
+        &LayoutRect {
+            x: 80.0,
+            y: 150.0,
+            width: 400.0,
+            height: 300.0,
+        },
+        &[],
+        0,
+        &context,
+    );
+
+    let captions: Vec<_> = cell_node
+        .children
+        .iter()
+        .filter_map(|node| {
+            if let RenderNodeType::TextLine(line) = &node.node_type {
+                line.caption_owner.map(|owner| (node, owner))
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(captions.len(), 1);
+    let (line, owner) = captions[0];
+    assert_eq!(owner.control_kind, CaptionControlKind::Image);
+    assert!((line.bbox.x - 120.0).abs() < 0.5);
+    assert!(line.bbox.y >= 270.0 + 720.0 * 96.0 / 7200.0 - 0.5);
+    assert!(line.children.iter().any(
+        |child| matches!(&child.node_type, RenderNodeType::TextRun(run) if run.text == "Figure A")
+    ));
+}
+
+#[test]
+fn mixed_footer_picture_and_line_keeps_both_controls_at_paragraph_anchor() {
+    use crate::model::image::Picture;
+    use crate::model::shape::{DrawingObjAttr, LineShape, ShapeComponentAttr, ShapeObject};
+    use crate::model::Point;
+
+    let engine = LayoutEngine::with_default_dpi();
+    let footer = Paragraph {
+        controls: vec![
+            Control::Picture(Box::new(Picture {
+                common: CommonObjAttr {
+                    width: 720,
+                    height: 720,
+                    ..Default::default()
+                },
+                ..Default::default()
+            })),
+            Control::Shape(Box::new(ShapeObject::Line(LineShape {
+                common: CommonObjAttr {
+                    width: 7200,
+                    height: 18,
+                    vertical_offset: (-1798_i32) as u32,
+                    vert_rel_to: VertRelTo::Para,
+                    ..Default::default()
+                },
+                start: Point { x: 0, y: 0 },
+                end: Point { x: 100, y: 100 },
+                drawing: DrawingObjAttr {
+                    shape_attr: ShapeComponentAttr {
+                        original_width: 100,
+                        original_height: 100,
+                        current_width: 7200,
+                        current_height: (-18_i32) as u32,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            }))),
+        ],
+        line_segs: vec![LineSeg {
+            line_height: 2373,
+            line_spacing: 112,
+            text_height: 2373,
+            baseline_distance: 2017,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut tree = PageRenderTree::new(0, 600.0, 800.0);
+    let mut footer_node = RenderNode::new(
+        tree.next_id(),
+        RenderNodeType::Footer,
+        BoundingBox::new(80.0, 700.0, 440.0, 80.0),
+    );
+    let area = LayoutRect {
+        x: 80.0,
+        y: 700.0,
+        width: 440.0,
+        height: 80.0,
+    };
+    let paper = LayoutRect {
+        x: 0.0,
+        y: 0.0,
+        width: 600.0,
+        height: 800.0,
+    };
+    engine.layout_header_footer_paragraphs(
+        &mut tree,
+        &mut footer_node,
+        &[footer],
+        &[],
+        &ResolvedStyleSet::default(),
+        &area,
+        &area,
+        &paper,
+        None,
+        0,
+        1,
+        &[],
+        None,
+        None,
+        false,
+        0,
+        0,
+    );
+    let picture = footer_node
+        .children
+        .iter()
+        .find(|node| matches!(node.node_type, RenderNodeType::Placeholder(_)))
+        .expect("mixed footer picture must render");
+    let line = footer_node
+        .children
+        .iter()
+        .find(|node| matches!(node.node_type, RenderNodeType::Line(_)))
+        .expect("mixed footer line must render");
+    let expected_y = area.y + (2373.0 - 112.0 - 1798.0) * 96.0 / 7200.0;
+    assert!(
+        (line.bbox.y - expected_y).abs() < 1.0,
+        "Para-relative line must use the saved content bottom without trailing spacing"
+    );
+    let RenderNodeType::Line(stroke) = &line.node_type else {
+        unreachable!()
+    };
+    assert!(
+        stroke.y1 > stroke.y2,
+        "signed line height must preserve endpoint order"
+    );
+    assert!(picture.bbox.width > 0.0);
+}
+
+#[test]
+fn footer_floating_para_shape_ignores_band_alignment_with_or_without_picture() {
+    use crate::model::image::Picture;
+    use crate::model::shape::{LineShape, ShapeObject};
+    use crate::model::Point;
+
+    let render_line_y = |has_picture: bool, bottom_aligned: bool| {
+        let engine = LayoutEngine::with_default_dpi();
+        let mut controls = Vec::new();
+        if has_picture {
+            controls.push(Control::Picture(Box::new(Picture {
+                common: CommonObjAttr {
+                    width: 720,
+                    height: 720,
+                    treat_as_char: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            })));
+        }
+        controls.push(Control::Shape(Box::new(ShapeObject::Line(LineShape {
+            common: CommonObjAttr {
+                width: 7200,
+                height: 18,
+                vert_rel_to: VertRelTo::Para,
+                ..Default::default()
+            },
+            start: Point { x: 0, y: 0 },
+            end: Point { x: 7200, y: 0 },
+            ..Default::default()
+        }))));
+        let footer = Paragraph {
+            text: "Footer".into(),
+            char_count: 7,
+            controls,
+            line_segs: vec![LineSeg {
+                line_height: 1000,
+                text_height: 1000,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut tree = PageRenderTree::new(0, 600.0, 800.0);
+        let area = LayoutRect {
+            x: 80.0,
+            y: 700.0,
+            width: 440.0,
+            height: 80.0,
+        };
+        let paper = LayoutRect {
+            x: 0.0,
+            y: 0.0,
+            width: 600.0,
+            height: 800.0,
+        };
+        let mut footer_node = RenderNode::new(
+            tree.next_id(),
+            RenderNodeType::Footer,
+            BoundingBox::new(area.x, area.y, area.width, area.height),
+        );
+        engine.layout_header_footer_paragraphs(
+            &mut tree,
+            &mut footer_node,
+            &[footer],
+            &[],
+            &ResolvedStyleSet::default(),
+            &area,
+            &area,
+            &paper,
+            None,
+            0,
+            1,
+            &[],
+            None,
+            None,
+            false,
+            if bottom_aligned { 2 << 21 } else { 0 },
+            6000,
+        );
+        let shape_y = footer_node
+            .children
+            .iter()
+            .find(|node| matches!(node.node_type, RenderNodeType::Line(_)))
+            .expect("footer line must render")
+            .bbox
+            .y;
+        let text_y = footer_node
+            .children
+            .iter()
+            .find(|node| matches!(node.node_type, RenderNodeType::TextLine(_)))
+            .expect("footer text must render")
+            .bbox
+            .y;
+        (shape_y, text_y)
+    };
+
+    for has_picture in [false, true] {
+        let (top_y, top_text_y) = render_line_y(has_picture, false);
+        let (bottom_y, bottom_text_y) = render_line_y(has_picture, true);
+        assert!(
+            (bottom_y - top_y).abs() < 0.01,
+            "floating shape anchor shifted with footer band alignment (picture={has_picture})"
+        );
+        assert!(
+            bottom_text_y > top_text_y + 20.0,
+            "footer text must move within the declared band (picture={has_picture})"
+        );
+    }
+}
+
 fn native_whitespace_coanchored_table_pair() -> Paragraph {
     let table = |treat_as_char: bool, horz_rel_to: HorzRelTo| Table {
         row_count: 2,
@@ -728,6 +1549,45 @@ fn native_single_cell_outer_top_floor_rejects_visible_host() {
 }
 
 #[test]
+fn overlapping_merged_cells_resolve_column_boundaries_before_filling_gaps() {
+    let constraints = [
+        (0, 1, 100),
+        (1, 3, 500),
+        (2, 4, 700),
+        (0, 4, 1000),
+        (3, 5, 900),
+    ];
+    let table = Table {
+        row_count: constraints.len() as u16,
+        col_count: 5,
+        cells: constraints
+            .iter()
+            .enumerate()
+            .map(|(row, &(start, end, width))| Cell {
+                row: row as u16,
+                col: start,
+                col_span: end - start,
+                row_span: 1,
+                width,
+                ..Default::default()
+            })
+            .collect(),
+        common: CommonObjAttr {
+            width: 1500,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let widths = LayoutEngine::with_default_dpi().resolve_column_widths(&table, 5);
+    for (actual, expected) in widths.iter().zip([100, 200, 300, 400, 500]) {
+        assert!(
+            (actual - hwpunit_to_px(expected, DEFAULT_DPI)).abs() < 0.01,
+            "overlapping span constraints changed the column boundaries: {widths:?}"
+        );
+    }
+}
+
+#[test]
 fn oversized_row_width_outlier_does_not_expand_base_columns() {
     let mut cells = Vec::new();
     for row in 0..3 {
@@ -791,6 +1651,70 @@ fn compact_endnote_tail_log_tolerance_allows_line_box_bleed_only() {
         col_bottom + 1.0,
         col_bottom
     ));
+}
+
+#[test]
+fn hwp5_endnote_compound_lines_use_hancom_600dpi_pen_geometry() {
+    let mut tree = PageRenderTree::new(0, 600.0, 800.0);
+    let mut parent = RenderNode::new(
+        tree.next_id(),
+        RenderNodeType::TextBox,
+        BoundingBox::new(0.0, 0.0, 600.0, 800.0),
+    );
+
+    LayoutEngine::append_note_double_line_600dpi(
+        &mut tree,
+        &mut parent,
+        25.0,
+        100.0,
+        167.0,
+        9,
+        10,
+        0x59B859,
+        96.0,
+    );
+
+    assert_eq!(parent.children.len(), 2);
+    let lines: Vec<_> = parent
+        .children
+        .iter()
+        .map(|node| match &node.node_type {
+            RenderNodeType::Line(line) => line,
+            other => panic!("expected line node, got {other:?}"),
+        })
+        .collect();
+    assert!((lines[0].y1 - 99.36).abs() < 1e-9);
+    assert!((lines[0].style.width - 1.44).abs() < 1e-9);
+    assert!((lines[1].y1 - 101.12).abs() < 1e-9);
+    assert!((lines[1].style.width - 0.64).abs() < 1e-9);
+
+    parent.children.clear();
+    LayoutEngine::append_note_double_line_600dpi(
+        &mut tree,
+        &mut parent,
+        25.0,
+        100.0,
+        167.0,
+        9,
+        9,
+        0x59B859,
+        96.0,
+    );
+    let lines: Vec<_> = parent
+        .children
+        .iter()
+        .map(|node| match &node.node_type {
+            RenderNodeType::Line(line) => line,
+            other => panic!("expected line node, got {other:?}"),
+        })
+        .collect();
+    assert!((lines[0].y1 - 99.04).abs() < 1e-9);
+    assert!((lines[0].style.width - 0.64).abs() < 1e-9);
+    assert!((lines[1].y1 - 100.64).abs() < 1e-9);
+    assert!((lines[1].style.width - 1.44).abs() < 1e-9);
+
+    assert_eq!(LayoutEngine::note_line_width_600dpi(9), 17);
+    assert_eq!(LayoutEngine::note_line_width_600dpi(0), 2);
 }
 
 #[test]
@@ -863,6 +1787,332 @@ fn test_build_page_with_paragraph() {
     let body = body.unwrap();
     // Column 노드가 있어야 함
     assert!(!body.children.is_empty());
+}
+
+#[test]
+fn uncached_hwpx_page_head_spacing_moves_text_tables_and_following_content() {
+    use crate::model::provenance::LayoutCompatibilityProfile;
+    use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle};
+
+    fn positions(
+        table: bool,
+        cache: u8,
+        hwpx: bool,
+        index: usize,
+        before: f64,
+        control_line: i32,
+    ) -> [f64; 3] {
+        let text_para = |text: &str| Paragraph {
+            text: text.into(),
+            char_count: text.len() as u32 + 1,
+            char_offsets: (0..text.len() as u32).collect(),
+            para_shape_id: 1,
+            ..Default::default()
+        };
+        let mut target = if table {
+            Paragraph {
+                controls: vec![Control::Table(Box::new(Table {
+                    common: CommonObjAttr {
+                        treat_as_char: true,
+                        width: 10000,
+                        height: 2631,
+                        ..Default::default()
+                    },
+                    row_count: 1,
+                    col_count: 1,
+                    row_sizes: vec![1],
+                    cells: vec![Cell {
+                        row_span: 1,
+                        col_span: 1,
+                        width: 10000,
+                        height: 2631,
+                        paragraphs: vec![text_para("Target")],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }))],
+                ..Default::default()
+            }
+        } else {
+            text_para("Target")
+        };
+        target.para_shape_id = 0;
+        let height = if table { 2631 } else { 1200 };
+        if control_line > 0 {
+            target
+                .controls
+                .insert(0, Control::PageNumberPos(Default::default()));
+            target.line_segs.push(LineSeg {
+                line_height: control_line,
+                text_height: control_line,
+                ..Default::default()
+            });
+        }
+        if cache != 0 {
+            target.line_segs.push(LineSeg {
+                vertical_pos: control_line,
+                line_height: height,
+                text_height: height,
+                baseline_distance: height * 85 / 100,
+                ..Default::default()
+            });
+        }
+        let mut after = text_para("After");
+        let mut tail = text_para("Tail");
+        if cache == 1 {
+            for (para, vpos) in [
+                (&mut after, height + control_line),
+                (&mut tail, height + control_line + 1200),
+            ] {
+                para.line_segs.push(LineSeg {
+                    vertical_pos: vpos,
+                    line_height: 1200,
+                    text_height: 1200,
+                    baseline_distance: 1020,
+                    ..Default::default()
+                });
+            }
+        }
+        let mut paragraphs = vec![Paragraph::default(); index];
+        paragraphs.extend([target, after, tail]);
+        let composed: Vec<_> = paragraphs.iter().map(compose_paragraph).collect();
+        let styles = ResolvedStyleSet {
+            char_styles: vec![ResolvedCharStyle {
+                font_size: 16.0,
+                ..Default::default()
+            }],
+            para_styles: vec![
+                ResolvedParaStyle {
+                    spacing_before: before,
+                    ..Default::default()
+                },
+                ResolvedParaStyle::default(),
+            ],
+            ..Default::default()
+        };
+        let page = PageContent {
+            page_index: 0,
+            page_number: 0,
+            section_index: 0,
+            layout: PageLayoutInfo::from_page_def_default(&a4_page_def(), &ColumnDef::default()),
+            column_contents: vec![ColumnContent {
+                column_index: 0,
+                start_height: 0.0,
+                endnote_flow: false,
+                items: vec![
+                    if table {
+                        PageItem::Table {
+                            para_index: index,
+                            control_index: usize::from(control_line > 0),
+                        }
+                    } else {
+                        PageItem::FullParagraph { para_index: index }
+                    },
+                    PageItem::FullParagraph {
+                        para_index: index + 1,
+                    },
+                    PageItem::FullParagraph {
+                        para_index: index + 2,
+                    },
+                ],
+                zone_layout: None,
+                zone_y_offset: 0.0,
+                wrap_around_paras: Vec::new(),
+                used_height: 0.0,
+                wrap_anchors: std::collections::HashMap::new(),
+            }],
+            active_header: None,
+            active_footer: None,
+            page_number_pos: None,
+            page_hide: None,
+            footnotes: Vec::new(),
+            active_master_page: None,
+            extra_master_pages: Vec::new(),
+        };
+        let engine = LayoutEngine::with_default_dpi();
+        engine.profile.set(
+            LayoutCompatibilityProfile::new(false, false, hwpx, false, !hwpx)
+                .with_own_line_layout(cache == 1 && hwpx),
+        );
+        let tree = engine.build_render_tree(
+            &page,
+            &paragraphs,
+            &[],
+            &[],
+            &composed,
+            &styles,
+            &FootnoteShape::default(),
+            &[],
+            None,
+            &[],
+            None,
+            0,
+            &[],
+        );
+        fn find(node: &RenderNode, text: &str) -> Option<f64> {
+            if let RenderNodeType::TextRun(run) = &node.node_type {
+                if run.text == text {
+                    return Some(node.bbox.y);
+                }
+            }
+            node.children.iter().find_map(|child| find(child, text))
+        }
+        [
+            find(&tree.root, "Target").unwrap(),
+            find(&tree.root, "After").unwrap(),
+            find(&tree.root, "Tail").unwrap(),
+        ]
+    }
+
+    // 빈 캐시/로드 시 조판한 줄은 앞 간격을 유지하고 저장 vpos=0과 HWP5 규칙은 보존한다.
+    for table in [false, true] {
+        for cache in 0..=2 {
+            for hwpx in [false, true] {
+                for index in [0, 2] {
+                    let zero = positions(table, cache, hwpx, index, 0.0, 0);
+                    let spaced = positions(table, cache, hwpx, index, 6.0, 0);
+                    let expected = if cache != 2 && hwpx { 6.0 } else { 0.0 };
+                    for (a, b) in zero.into_iter().zip(spaced) {
+                        assert!((b - a - expected).abs() < 0.01,
+                            "table={table} cache={cache} hwpx={hwpx} index={index}: {a} -> {b}, expected +{expected}");
+                    }
+                }
+            }
+        }
+    }
+
+    // 선행 조판 부호가 별도 줄을 차지하면 앞 간격과 함께 그 줄 진행도 보존한다.
+    for before in [0.0, 6.0] {
+        for advance in [144, 1728] {
+            let plain = positions(true, 1, true, 0, before, 0);
+            let prefixed = positions(true, 1, true, 0, before, advance);
+            let expected = hwpunit_to_px(advance, 96.0);
+            for (a, b) in plain.into_iter().zip(prefixed) {
+                assert!(
+                    (b - a - expected).abs() < 0.01,
+                    "before={before} advance={advance}: {a} -> {b}, expected +{expected}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn character_border_height_tracks_its_run_font_in_a_mixed_line() {
+    use crate::model::style::BorderLine;
+    use crate::renderer::style_resolver::{ResolvedBorderStyle, ResolvedCharStyle};
+
+    fn border_span(border_font: f64, neighbor_font: f64, line_height: i32) -> f64 {
+        let para = Paragraph {
+            text: "AB".to_string(),
+            char_offsets: vec![0, 1],
+            char_count: 3,
+            char_shapes: vec![
+                CharShapeRef {
+                    start_pos: 0,
+                    char_shape_id: 0,
+                },
+                CharShapeRef {
+                    start_pos: 1,
+                    char_shape_id: 1,
+                },
+            ],
+            line_segs: vec![LineSeg {
+                line_height,
+                baseline_distance: line_height * 85 / 100,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let composed = compose_paragraph(&para);
+        let styles = ResolvedStyleSet {
+            char_styles: vec![
+                ResolvedCharStyle {
+                    font_size: border_font,
+                    border_fill_id: 1,
+                    ..Default::default()
+                },
+                ResolvedCharStyle {
+                    font_size: neighbor_font,
+                    ..Default::default()
+                },
+            ],
+            border_styles: vec![ResolvedBorderStyle {
+                borders: [BorderLine {
+                    width: 8,
+                    ..Default::default()
+                }; 4],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let page_content = PageContent {
+            page_index: 0,
+            page_number: 0,
+            section_index: 0,
+            layout: PageLayoutInfo::from_page_def_default(&a4_page_def(), &ColumnDef::default()),
+            column_contents: vec![ColumnContent {
+                column_index: 0,
+                start_height: 0.0,
+                endnote_flow: false,
+                items: vec![PageItem::FullParagraph { para_index: 0 }],
+                zone_layout: None,
+                zone_y_offset: 0.0,
+                wrap_around_paras: Vec::new(),
+                used_height: 0.0,
+                wrap_anchors: std::collections::HashMap::new(),
+            }],
+            active_header: None,
+            active_footer: None,
+            page_number_pos: None,
+            page_hide: None,
+            footnotes: Vec::new(),
+            active_master_page: None,
+            extra_master_pages: Vec::new(),
+        };
+        let paras = vec![para];
+        let lines = vec![composed];
+        let tree = LayoutEngine::with_default_dpi().build_render_tree(
+            &page_content,
+            &paras,
+            &paras,
+            &paras,
+            &lines,
+            &styles,
+            &FootnoteShape::default(),
+            &[],
+            None,
+            &[],
+            None,
+            0,
+            &[],
+        );
+        fn horizontal_lines(node: &RenderNode, out: &mut Vec<f64>) {
+            if matches!(node.node_type, RenderNodeType::Line(_))
+                && node.bbox.width > node.bbox.height * 3.0
+            {
+                out.push(node.bbox.y);
+            }
+            for child in &node.children {
+                horizontal_lines(child, out);
+            }
+        }
+        let mut ys = Vec::new();
+        horizontal_lines(&tree.root, &mut ys);
+        ys.sort_by(f64::total_cmp);
+        assert_eq!(
+            ys.len(),
+            2,
+            "expected the character border's top and bottom"
+        );
+        ys[1] - ys[0]
+    }
+
+    let ordinary = border_span(16.0, 16.0, 2000);
+    let tall_neighbor = border_span(16.0, 30.0, 3000);
+    let larger_border_font = border_span(24.0, 30.0, 3000);
+    assert!((ordinary - tall_neighbor).abs() < 0.01);
+    assert!((larger_border_font - tall_neighbor - 8.0).abs() < 0.01);
 }
 
 /// [Issue #1945] PartialParagraph 의 start_line 이 조판 라인 수를 넘어도
@@ -968,6 +2218,7 @@ fn test_layout_with_composed_styles() {
 
     let styles = ResolvedStyleSet {
         hwp3_variant: false,
+        page_number_char_shape: None,
         char_styles: vec![
             ResolvedCharStyle {
                 font_family: "함초롬돋움".to_string(),
@@ -1100,6 +2351,7 @@ fn test_layout_multi_run_x_position() {
     let composed: Vec<_> = paragraphs.iter().map(|p| compose_paragraph(p)).collect();
     let styles = ResolvedStyleSet {
         hwp3_variant: false,
+        page_number_char_shape: None,
         char_styles: vec![
             ResolvedCharStyle {
                 font_size: 16.0,
@@ -1182,6 +2434,7 @@ fn test_resolved_to_text_style() {
 
     let styles = ResolvedStyleSet {
         hwp3_variant: false,
+        page_number_char_shape: None,
         char_styles: vec![ResolvedCharStyle {
             font_family: "나눔고딕".to_string(),
             font_size: 14.0,
@@ -1215,6 +2468,7 @@ fn test_resolved_to_text_style_with_ratio() {
 
     let styles = ResolvedStyleSet {
         hwp3_variant: false,
+        page_number_char_shape: None,
         char_styles: vec![ResolvedCharStyle {
             font_family: "함초롬돋움".to_string(),
             font_size: 16.0,
@@ -1262,10 +2516,11 @@ fn test_estimate_text_width() {
 
 #[test]
 fn test_estimate_text_width_with_ratio() {
-    // 장평 80%: 기본 폭의 80%
+    // 장평 80%: 기본 폭의 80% (Windows 정책의 정수 반올림)
     let style = TextStyle {
         font_size: 16.0,
         ratio: 0.8,
+        font_metrics_policy: crate::model::provenance::FontMetricsPolicy::HancomWindows,
         ..Default::default()
     };
     let w = estimate_text_width("가나", &style);
@@ -2326,36 +3581,31 @@ fn test_geometric_shapes_treated_as_fullwidth() {
 
 #[test]
 fn test_square_bullet_with_space_preserves_layout() {
-    // Task #146 회귀 방지: "□ 가" 제목 패턴에서 □ 가 반각으로 측정되면
-    // 후속 글자 x 좌표가 em 단위만큼 좌측으로 붕괴한다.
-    // 자간 -8% 는 text-align.hwp 제목 CharShape 와 동일.
-    let style = TextStyle {
-        font_size: 20.0,
-        letter_spacing: -1.6, // -8% of 20
-        ..Default::default()
-    };
-    let positions = compute_char_positions("□ 가", &style);
-    assert_eq!(positions.len(), 4);
-    // [#2279] 자간은 글자폭 비례 (통제 사다리 실측): 전각은 fs-비례와 동일,
-    // 반각(공백)은 절반만 압축된다.
-    // □: 전각(20) + 자간(20×-8%) = advance 18.4
-    assert!(
-        (positions[1] - 18.4).abs() < 0.01,
-        "positions[1] expected 18.4, got {}",
-        positions[1]
-    );
-    // 공백: 반각(10) + 자간(10×-8% = -0.8) = advance 9.2 (min_clamp 5.0 미작동)
-    assert!(
-        (positions[2] - 27.6).abs() < 0.01,
-        "positions[2] expected 27.6, got {}",
-        positions[2]
-    );
-    // 가: 전각(20) + 자간(-1.6) = advance 18.4
-    assert!(
-        (positions[3] - 46.0).abs() < 0.01,
-        "positions[3] expected 46.0, got {}",
-        positions[3]
-    );
+    use crate::model::provenance::FontMetricsPolicy;
+
+    // Task #146 회귀 방지: "□ 가" 제목의 □ 는 전각으로 유지한다.
+    // 자간 -8% 는 text-align.hwp 제목 CharShape 와 동일하다.
+    // macOS 공백은 자간 전후 0.04pt 양자화로 6.88pt, Windows 는 9.2px 진행한다.
+    for (policy, space_advance) in [
+        (FontMetricsPolicy::HcrDeclared, 6.88 * 96.0 / 72.0),
+        (FontMetricsPolicy::HancomWindows, 9.2),
+    ] {
+        let style = TextStyle {
+            font_size: 20.0,
+            letter_spacing: -1.6,
+            font_metrics_policy: policy,
+            ..Default::default()
+        };
+        let positions = compute_char_positions("□ 가", &style);
+        let expected = [0.0, 18.4, 18.4 + space_advance, 36.8 + space_advance];
+        assert_eq!(positions.len(), expected.len());
+        for (index, (actual, expected)) in positions.iter().zip(expected).enumerate() {
+            assert!(
+                (actual - expected).abs() < 1e-9,
+                "{policy:?}: positions[{index}] expected {expected}, got {actual}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -2386,6 +3636,7 @@ fn test_tac_leading_width_block_table_full_line() {
         para_style_id: 0,
         inline_controls: Vec::new(),
         numbering_text: None,
+        numbering_head: None,
         tac_controls: Vec::new(), // block 취급이라 비어있음
         footnote_positions: Vec::new(),
         tab_extended: Vec::new(),
@@ -2399,7 +3650,7 @@ fn test_tac_leading_width_block_table_full_line() {
         }],
         ..Default::default()
     };
-    let width = super::compute_tac_leading_width(&composed, 0, &styles);
+    let width = super::compute_tac_leading_width(&composed, 0, None, &styles);
     // [#2279] 자간 글자폭 비례: 4 spaces × (10 base + 10×-8% = 9.2) = 36.8
     // (min_clamp 5.0 미작동)
     assert!((width - 36.8).abs() < 0.5, "expected ~36.8, got {}", width);
@@ -2481,6 +3732,7 @@ fn test_tac_leading_width_inline_table_partial() {
         para_style_id: 0,
         inline_controls: Vec::new(),
         numbering_text: None,
+        numbering_head: None,
         tac_controls: vec![(2, 1000, 0)], // pos=2 (ab 뒤), control_index=0
         footnote_positions: Vec::new(),
         tab_extended: Vec::new(),
@@ -2493,7 +3745,7 @@ fn test_tac_leading_width_inline_table_partial() {
         }],
         ..Default::default()
     };
-    let width = super::compute_tac_leading_width(&composed, 0, &styles);
+    let width = super::compute_tac_leading_width(&composed, 0, None, &styles);
     // "ab" 2 chars, 반각 × font_size/2 = 20*0.5*2 = 20
     assert!((width - 20.0).abs() < 0.5, "expected ~20.0, got {}", width);
 }
@@ -2551,6 +3803,62 @@ fn task290_inline_right_uses_tabdef() {
         Some((300.0, 1, 3)),
         "RIGHT inline → TabDef 기반 위치, fill=dot"
     );
+}
+
+#[test]
+fn stored_hwpx_right_tab_keeps_saved_distance_until_reflow() {
+    let mut saved = mk_ext(600, 2, 0);
+    saved[5] = 0x4000;
+    let mut style = mk_text_style();
+    style.inline_tabs = vec![saved];
+    style.auto_tab_right = true;
+    style.available_width = 420.0;
+    let prefix = super::text_measurement::estimate_text_width("A", &style);
+    let with_tab = super::text_measurement::estimate_text_width("A\t", &style);
+    assert!((with_tab - prefix - 8.0).abs() <= 1.0);
+
+    let tab_stops = vec![TabStop {
+        position: 300.0,
+        tab_type: 1,
+        fill_type: 0,
+    }];
+    assert_eq!(
+        super::paragraph_layout::resolve_last_tab_pending(
+            "A\t",
+            0,
+            &[saved],
+            &style,
+            &tab_stops,
+            48.0,
+            true,
+            420.0,
+        ),
+        None
+    );
+    assert!(super::paragraph_layout::resolve_last_tab_pending(
+        "A\t",
+        0,
+        &[saved],
+        &style,
+        &tab_stops,
+        48.0,
+        false,
+        420.0,
+    )
+    .is_some());
+    let mut recalculated = saved;
+    recalculated[5] = 0;
+    assert!(super::paragraph_layout::resolve_last_tab_pending(
+        "A\t",
+        0,
+        &[recalculated],
+        &style,
+        &tab_stops,
+        48.0,
+        true,
+        420.0,
+    )
+    .is_some());
 }
 
 #[test]
@@ -2940,8 +4248,8 @@ where
     find(header, predicate).expect("matching header child should be rendered")
 }
 
-fn render_tree_with_header_control_with_profile(
-    control: Control,
+fn render_tree_with_header_paragraph_with_profile(
+    header_paragraph: Paragraph,
     profile: crate::model::provenance::LayoutCompatibilityProfile,
 ) -> PageRenderTree {
     use crate::model::header_footer::Header;
@@ -2952,10 +4260,7 @@ fn render_tree_with_header_control_with_profile(
     let layout = PageLayoutInfo::from_page_def_default(&a4_page_def(), &ColumnDef::default());
     let paragraphs = vec![Paragraph {
         controls: vec![Control::Header(Box::new(Header {
-            paragraphs: vec![Paragraph {
-                controls: vec![control],
-                ..Default::default()
-            }],
+            paragraphs: vec![header_paragraph],
             ..Default::default()
         }))],
         ..Default::default()
@@ -2970,6 +4275,7 @@ fn render_tree_with_header_control_with_profile(
             para_index: 0,
             control_index: 0,
             source_section_index: 0,
+            cell_path: Vec::new(),
         }),
         active_footer: None,
         page_number_pos: None,
@@ -2995,8 +4301,109 @@ fn render_tree_with_header_control_with_profile(
     )
 }
 
+fn render_tree_with_header_control_with_profile(
+    control: Control,
+    profile: crate::model::provenance::LayoutCompatibilityProfile,
+) -> PageRenderTree {
+    render_tree_with_header_paragraph_with_profile(
+        Paragraph {
+            controls: vec![control],
+            ..Default::default()
+        },
+        profile,
+    )
+}
+
 fn render_tree_with_header_control(control: Control) -> PageRenderTree {
     render_tree_with_header_control_with_profile(control, Default::default())
+}
+
+#[test]
+fn header_tac_group_is_rendered_with_its_text_line() {
+    let label = ShapeObject::Rectangle(RectangleShape {
+        drawing: crate::model::shape::DrawingObjAttr {
+            shape_attr: crate::model::shape::ShapeComponentAttr {
+                original_width: 8_052,
+                original_height: 1_816,
+                render_sx: 2.0,
+                render_sy: 1.2,
+                render_b: 0.09,
+                render_c: 0.04,
+                ..Default::default()
+            },
+            text_box: Some(crate::model::shape::TextBox {
+                paragraphs: vec![Paragraph {
+                    text: "Performance Assessment".into(),
+                    char_count: 23,
+                    line_segs: vec![LineSeg {
+                        line_height: 1_000,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let group = crate::model::shape::GroupShape {
+        common: CommonObjAttr {
+            treat_as_char: true,
+            width: 18_011,
+            height: 2_582,
+            text_wrap: TextWrap::TopAndBottom,
+            horz_rel_to: HorzRelTo::Para,
+            vert_rel_to: VertRelTo::Para,
+            ..Default::default()
+        },
+        children: vec![label],
+        ..Default::default()
+    };
+    let tree = render_tree_with_header_paragraph_with_profile(
+        Paragraph {
+            text: "A\u{FFFC}B".into(),
+            char_count: 4,
+            controls: vec![Control::Shape(Box::new(ShapeObject::Group(group)))],
+            line_segs: vec![LineSeg {
+                line_height: 2_582,
+                text_height: 2_582,
+                baseline_distance: 2_195,
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        Default::default(),
+    );
+
+    let group_box = first_header_child_bbox(&tree, |kind| matches!(kind, RenderNodeType::Group(_)));
+    assert!(group_box.width > 200.0, "group bbox={group_box:?}");
+    let header = tree
+        .root
+        .children
+        .iter()
+        .find(|node| matches!(node.node_type, RenderNodeType::Header))
+        .unwrap();
+    let line = header
+        .children
+        .iter()
+        .find_map(|node| match &node.node_type {
+            RenderNodeType::TextLine(line) => Some(line),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        (line.baseline - hwpunit_to_px(2_195, 96.0)).abs() < 0.01,
+        "text alongside a header logo must retain the authored baseline"
+    );
+    fn has_label(node: &RenderNode) -> bool {
+        matches!(&node.node_type, RenderNodeType::TextRun(run) if run.text.contains("Performance Assessment"))
+            || node.children.iter().any(has_label)
+    }
+    assert!(
+        has_label(&tree.root),
+        "affine group child text must be rendered"
+    );
 }
 
 #[test]
@@ -3270,4 +4677,495 @@ fn tac_picture_effective_margin_left_matches_paragraph_layout_single_margin_rule
             < 1e-9,
         "indent>0 이면 margin_left + indent 만 반영해야 함 (inner_pad 이중 가산 없이)"
     );
+}
+
+#[test]
+fn behind_text_picture_host_keeps_only_authoritative_text_line_advance() {
+    let mut para = Paragraph::default();
+    let mut picture = crate::model::image::Picture::default();
+    picture.common.text_wrap = TextWrap::BehindText;
+    picture.common.vert_rel_to = VertRelTo::Paper;
+    picture.common.treat_as_char = false;
+    picture.common.height = 60000;
+    para.controls.push(Control::Picture(Box::new(picture)));
+    para.line_segs.push(LineSeg {
+        line_height: 1000,
+        text_height: 1000,
+        baseline_distance: 750,
+        line_spacing: 300,
+        ..Default::default()
+    });
+    assert_eq!(
+        stored_behind_text_host_line_advance_hu(&para, true),
+        Some(1300)
+    );
+    assert_eq!(stored_behind_text_host_line_advance_hu(&para, false), None);
+
+    // 배경 개체의 높이가 들어간 줄은 텍스트 줄의 진행량이 아니다.
+    para.line_segs[0].line_height = 60000;
+    assert_eq!(stored_behind_text_host_line_advance_hu(&para, true), None);
+    para.line_segs[0].line_height = 1000;
+    para.line_segs[0].tag = LineSeg::TAG_IMPLEMENTATION_PROPERTY;
+    assert_eq!(stored_behind_text_host_line_advance_hu(&para, true), None);
+    para.line_segs.clear();
+    assert_eq!(stored_behind_text_host_line_advance_hu(&para, true), None);
+}
+
+#[test]
+fn picture_following_table_keeps_its_own_line_spacing() {
+    use crate::document_core::DocumentCore;
+
+    fn find_box(node: &RenderNode, para_index: usize, image: bool) -> Option<BoundingBox> {
+        let matches = match &node.node_type {
+            RenderNodeType::Image(n) if image => n.para_index == Some(para_index),
+            RenderNodeType::Table(n) if !image => n.para_index == Some(para_index),
+            _ => false,
+        };
+        if matches {
+            Some(node.bbox)
+        } else {
+            node.children
+                .iter()
+                .find_map(|c| find_box(c, para_index, image))
+        }
+    }
+
+    let core = DocumentCore::from_bytes(include_bytes!(
+        "../../../samples/2025년 기부·답례품 실적 지자체 보고서_양식.hwpx"
+    ))
+    .expect("load picture/table flow fixture");
+    for (page, picture_para, table_para, picture_line) in
+        [(12, 111, 113, Some(1)), (20, 172, 174, None)]
+    {
+        let tree = core
+            .build_page_tree_cached(page)
+            .expect("render image and following table");
+        let image = find_box(&tree.root, picture_para, true).expect("picture");
+        let table = find_box(&tree.root, table_para, false).expect("following table");
+        let paragraphs = &core.document.sections[0].paragraphs;
+        let blank = &paragraphs[table_para - 1].line_segs[0];
+        let Control::Table(source_table) = &paragraphs[table_para].controls[0] else {
+            panic!("table");
+        };
+        let picture_spacing = picture_line
+            .map(|line| paragraphs[picture_para].line_segs[line].line_spacing)
+            .unwrap_or(0);
+        let expected_gap = hwpunit_to_px(
+            picture_spacing
+                + blank.line_height
+                + blank.line_spacing
+                + i32::from(source_table.outer_margin_top),
+            DEFAULT_DPI,
+        );
+        assert!(
+            (table.y - image.y - image.height - expected_gap).abs() < 0.3,
+            "page {page}: picture={image:?}, table={table:?}, expected gap={expected_gap}"
+        );
+    }
+}
+
+#[test]
+fn textless_wrap_host_keeps_enclosing_paragraph_borders() {
+    use crate::document_core::DocumentCore;
+
+    fn image_box(node: &RenderNode) -> Option<BoundingBox> {
+        if matches!(&node.node_type, RenderNodeType::Image(image) if image.para_index == Some(60)) {
+            return Some(node.bbox);
+        }
+        node.children.iter().find_map(image_box)
+    }
+    fn has_side(node: &RenderNode, x: f64, y: f64) -> bool {
+        if let RenderNodeType::Line(line) = &node.node_type {
+            if (line.x1 - x).abs() < 0.3
+                && (line.x2 - x).abs() < 0.3
+                && line.y1.min(line.y2) < y
+                && line.y1.max(line.y2) > y
+            {
+                return true;
+            }
+        }
+        node.children.iter().any(|child| has_side(child, x, y))
+    }
+
+    let core = DocumentCore::from_bytes(include_bytes!("../../../samples/hwpx/exam_kor.hwpx"))
+        .expect("load connected paragraph border fixture");
+    let tree = core
+        .build_page_tree_cached(18)
+        .expect("render continued passage");
+    let body = tree
+        .root
+        .children
+        .iter()
+        .find(|node| matches!(node.node_type, RenderNodeType::Body { .. }))
+        .expect("body");
+    let column = body
+        .children
+        .iter()
+        .find(|node| image_box(node).is_some())
+        .expect("image column");
+    let image = image_box(column).expect("textless host picture");
+    let middle = image.y + image.height / 2.0;
+    assert!(
+        has_side(column, column.bbox.x, middle),
+        "left passage border missing beside picture"
+    );
+    assert!(
+        has_side(column, column.bbox.x + column.bbox.width, middle),
+        "right passage border missing beside picture"
+    );
+}
+
+#[test]
+fn floating_picture_guide_does_not_hide_an_authored_empty_line() {
+    let mut picture = crate::model::image::Picture::default();
+    picture.common.text_wrap = TextWrap::TopAndBottom;
+    picture.common.vert_rel_to = VertRelTo::Para;
+    picture.common.flow_with_text = true;
+    let mut para = Paragraph {
+        controls: vec![Control::Picture(Box::new(picture))],
+        line_segs: vec![LineSeg {
+            line_height: 1000,
+            line_spacing: 600,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    assert!(is_empty_topbottom_picture_guide(&para, false));
+    assert!(!is_empty_topbottom_picture_guide(&para, true));
+    para.line_segs[0].segment_width = 30000;
+    assert!(!is_empty_topbottom_picture_guide(&para, false));
+    para.line_segs[0].segment_width = 0;
+    para.text = "caption".into();
+    assert!(!is_empty_topbottom_picture_guide(&para, false));
+}
+
+#[test]
+fn picture_guide_trailing_line_follows_the_stored_next_paragraph_gap() {
+    let mut picture = crate::model::image::Picture::default();
+    picture.common.text_wrap = TextWrap::TopAndBottom;
+    picture.common.vert_rel_to = VertRelTo::Para;
+    picture.common.flow_with_text = true;
+    picture.common.height = 5000;
+    picture.common.vertical_offset = 100;
+    let mut para = Paragraph {
+        controls: vec![Control::Picture(Box::new(picture.clone()))],
+        line_segs: vec![LineSeg {
+            vertical_pos: 2000,
+            line_height: 900,
+            line_spacing: 450,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut next = Paragraph {
+        text: "following text".into(),
+        line_segs: vec![LineSeg {
+            vertical_pos: 7100,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    assert!(picture_guide_has_no_trailing_line(
+        &para,
+        Some(&next),
+        &picture
+    ));
+    next.line_segs[0].vertical_pos += 1350;
+    assert!(!picture_guide_has_no_trailing_line(
+        &para,
+        Some(&next),
+        &picture
+    ));
+    next.line_segs[0].vertical_pos = 0;
+    assert!(!picture_guide_has_no_trailing_line(
+        &para,
+        Some(&next),
+        &picture
+    ));
+    assert!(!picture_guide_has_no_trailing_line(&para, None, &picture));
+    next.line_segs[0].vertical_pos = 7100;
+    para.line_segs[0].segment_width = 20000;
+    assert!(!picture_guide_has_no_trailing_line(
+        &para,
+        Some(&next),
+        &picture
+    ));
+}
+
+#[test]
+fn centered_rowspan_cells_include_their_leading_space_once() {
+    use crate::document_core::DocumentCore;
+
+    fn source_extent(paras: &[Paragraph], text: &str) -> Option<(i32, i32)> {
+        for para in paras {
+            for ctrl in &para.controls {
+                if let Control::Table(table) = ctrl {
+                    for cell in &table.cells {
+                        if let Some(p) = cell.paragraphs.iter().find(|p| p.text.starts_with(text)) {
+                            assert!(cell.row_span > 1);
+                            assert!(matches!(cell.vertical_align, VerticalAlign::Center));
+                            let first = p.line_segs.first()?;
+                            let last = p.line_segs.last()?;
+                            return Some((
+                                first.vertical_pos,
+                                last.vertical_pos + last.line_height,
+                            ));
+                        }
+                        if let Some(found) = source_extent(&cell.paragraphs, text) {
+                            return Some(found);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+    fn rendered_boxes(
+        node: &RenderNode,
+        text: &str,
+        cell: Option<BoundingBox>,
+    ) -> Option<(BoundingBox, BoundingBox)> {
+        let cell = if matches!(node.node_type, RenderNodeType::TableCell(_)) {
+            Some(node.bbox)
+        } else {
+            cell
+        };
+        if matches!(&node.node_type, RenderNodeType::TextRun(run) if run.text == text) {
+            return Some((cell?, node.bbox));
+        }
+        node.children
+            .iter()
+            .find_map(|child| rendered_boxes(child, text, cell))
+    }
+
+    let core = DocumentCore::from_bytes(include_bytes!("../../../samples/hwpx/mel-001.hwpx"))
+        .expect("load centered row-span fixture");
+    let tree = core
+        .build_page_tree_cached(1)
+        .expect("render organization table");
+    for text in ["통합", "직업"] {
+        let (lead, extent) = source_extent(&core.document.sections[0].paragraphs, text)
+            .expect("source centered label");
+        let (cell, first_line) =
+            rendered_boxes(&tree.root, text, None).expect("centered label and enclosing cell");
+        let expected = cell.y
+            + (cell.height - hwpunit_to_px(extent, DEFAULT_DPI)) / 2.0
+            + hwpunit_to_px(lead, DEFAULT_DPI);
+        assert!(
+            (first_line.y - expected).abs() < 0.05,
+            "{text}: first line {}, centered block + lead {expected}",
+            first_line.y
+        );
+    }
+}
+
+#[test]
+fn right_wrap_table_uses_source_offset_without_a_saved_wrap_line() {
+    let mut para = Paragraph {
+        text: "Margin annotation host".into(),
+        line_segs: vec![
+            LineSeg {
+                vertical_pos: 1000,
+                segment_width: 10000,
+                ..Default::default()
+            },
+            LineSeg {
+                vertical_pos: 2200,
+                segment_width: 10000,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let mut table = Table::default();
+    table.common.text_wrap = TextWrap::Square;
+    table.common.vert_rel_to = VertRelTo::Para;
+    table.common.vert_align = VertAlign::Top;
+    table.common.horz_rel_to = HorzRelTo::Column;
+    table.common.horz_align = HorzAlign::Right;
+    table.common.width = 800;
+    for offset in [-396_i32, 0, 396] {
+        table.common.vertical_offset = offset as u32;
+        assert_eq!(
+            square_wrap_table_line_anchor_y(&para, &table, 100.0, DEFAULT_DPI),
+            Some(100.0 + hwpunit_to_px(offset, DEFAULT_DPI)),
+        );
+    }
+    // 저장된 줄 폭이 줄어들면 그 줄의 위치가 감싸기 시작점을 결정한다.
+    para.line_segs[1].segment_width = 8000;
+    assert_eq!(
+        square_wrap_table_line_anchor_y(&para, &table, 100.0, DEFAULT_DPI),
+        Some(100.0 + hwpunit_to_px(1200, DEFAULT_DPI)),
+    );
+    table.common.treat_as_char = true;
+    assert!(square_wrap_table_line_anchor_y(&para, &table, 100.0, DEFAULT_DPI).is_none());
+}
+
+#[test]
+fn tac_post_filler_preserves_glyphs_and_table_outer_margins() {
+    for (left, right, top) in [(0, 0, 0), (140, 280, 210)] {
+        let table = Table {
+            col_count: 1,
+            row_count: 1,
+            cells: vec![Cell {
+                width: 7200,
+                col_span: 1,
+                row_span: 1,
+                ..Default::default()
+            }],
+            outer_margin_left: left,
+            outer_margin_right: right,
+            outer_margin_top: top,
+            ..Default::default()
+        };
+        let mut tree = PageRenderTree::new(0, 600.0, 800.0);
+        let mut parent = RenderNode::new(
+            tree.next_id(),
+            RenderNodeType::Column(0),
+            BoundingBox::new(0.0, 0.0, 600.0, 800.0),
+        );
+        let area = LayoutRect {
+            x: 40.0,
+            y: 50.0,
+            width: 500.0,
+            height: 700.0,
+        };
+        push_tac_post_f081c_line(
+            &mut tree,
+            &mut parent,
+            0,
+            3,
+            &table,
+            200.0,
+            &area,
+            &ResolvedStyleSet::default(),
+            TacPostF081cLine {
+                count: 2,
+                baseline_px: 80.0,
+                char_style_id: 0,
+                lang_index: 0,
+            },
+            96.0,
+        );
+        assert_eq!(parent.children.len(), 2);
+        let expected_x = 40.0 + hwpunit_to_px(7200 + i32::from(left) + i32::from(right), 96.0);
+        let expected_baseline = 280.0 - hwpunit_to_px(i32::from(top), 96.0);
+        let mut x = expected_x;
+        for child in &parent.children {
+            let RenderNodeType::TextRun(run) = &child.node_type else {
+                panic!("PUA marker must remain text");
+            };
+            assert_eq!(run.text, "\u{F081C}");
+            assert_eq!(run.display_text.as_deref(), Some("\u{F081C}"));
+            assert_eq!(run.style.font_family, HFT_MISSING_PUA_FAMILIES[0]);
+            assert!((child.bbox.x - x).abs() < 1e-6);
+            assert!((child.bbox.y + run.baseline - expected_baseline).abs() < 1e-6);
+            assert!(child.bbox.width > 0.0);
+            x += child.bbox.width;
+        }
+    }
+}
+
+#[test]
+fn footnote_justifies_wrapped_body_and_keeps_generated_marker_untracked() {
+    use crate::renderer::composer::{ComposedLine, ComposedParagraph, ComposedTextRun};
+    use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle};
+
+    let make_line = |text: &str, char_start| ComposedLine {
+        runs: vec![ComposedTextRun {
+            text: text.into(),
+            char_style_id: 0,
+            lang_index: 0,
+            char_overlap: None,
+            footnote_marker: None,
+            display_text: None,
+        }],
+        line_height: 1000,
+        baseline_distance: 800,
+        segment_width: 7500,
+        column_start: 0,
+        line_spacing: 200,
+        has_line_break: false,
+        char_start,
+    };
+    let composed = ComposedParagraph {
+        lines: vec![make_line("\u{0015} alpha beta ", 0), make_line("gamma", 13)],
+        para_style_id: 0,
+        inline_controls: vec![],
+        numbering_text: None,
+        numbering_head: None,
+        tac_controls: vec![],
+        footnote_positions: vec![],
+        tab_extended: vec![],
+    };
+    let styles = ResolvedStyleSet {
+        char_styles: vec![ResolvedCharStyle {
+            font_size: 10.0,
+            letter_spacing: -0.5,
+            letter_spacings: vec![-0.5; 7],
+            ..Default::default()
+        }],
+        para_styles: vec![ResolvedParaStyle {
+            alignment: Alignment::Justify,
+            margin_left: 2.0,
+            margin_right: 3.0,
+            indent: -12.0,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let engine = LayoutEngine::with_default_dpi();
+    let mut tree = PageRenderTree::new(0, 600.0, 800.0);
+    let mut parent = RenderNode::new(
+        tree.next_id(),
+        RenderNodeType::TextBox,
+        BoundingBox::new(20.0, 40.0, 100.0, 80.0),
+    );
+    let area = LayoutRect {
+        x: 20.0,
+        y: 40.0,
+        width: 100.0,
+        height: 80.0,
+    };
+    engine.layout_footnote_paragraph_with_number(
+        &mut tree,
+        &mut parent,
+        &composed,
+        &styles,
+        &area,
+        40.0,
+        "1) ",
+        0,
+        0,
+        0,
+        true,
+        true,
+    );
+    let marker = &parent.children[0].children[0];
+    let body = &parent.children[0].children[1];
+    let last = &parent.children[1].children[0];
+    let RenderNodeType::TextRun(marker_run) = &marker.node_type else {
+        panic!("marker")
+    };
+    let RenderNodeType::TextRun(body_run) = &body.node_type else {
+        panic!("body")
+    };
+    let RenderNodeType::TextRun(last_run) = &last.node_type else {
+        panic!("last")
+    };
+    assert_eq!(marker_run.text, "1)");
+    assert_eq!(marker_run.style.letter_spacing, 0.0);
+    assert_eq!(body_run.text, " alpha beta ");
+    assert_eq!(body_run.style.letter_spacing, -0.5);
+    assert!(body_run.style.extra_word_spacing > 0.0);
+    let mut untracked = body_run.style.clone();
+    untracked.letter_spacing = 0.0;
+    let last_tracking =
+        estimate_text_width("a", &body_run.style) - estimate_text_width("a", &untracked);
+    let visible_end = body.bbox.x + estimate_text_width(body_run.text.trim_end(), &body_run.style)
+        - last_tracking;
+    assert!((visible_end - (area.x + area.width - 3.0)).abs() < 0.01);
+    assert_eq!(last_run.style.extra_word_spacing, 0.0);
+    assert_eq!(last_run.style.extra_char_spacing, 0.0);
+    assert_eq!(last.bbox.x, area.x + 2.0 + 12.0);
 }

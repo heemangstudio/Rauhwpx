@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { copyFile, link, open, opendir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, link, lstat, open, opendir, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
 import { basename, dirname, extname, isAbsolute, join, normalize, win32 } from 'node:path';
 
 import { retryWindows } from './fs-replace.mjs';
@@ -18,7 +18,9 @@ const NEARBY_DIRECTORY_CAP = 12;
 const NEARBY_FILE_CAP = 8;
 const NEARBY_DIR_ENTRY_CAP = 256;
 const CFB_SIGNATURE = new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
-const UNSUPPORTED_DIRECTORY_SYNC_CODES = new Set(['EINVAL', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP']);
+// Windows refuses fsync on a directory handle with EPERM — same "not
+// implemented" class as EINVAL/ENOSYS, not a storage failure.
+const UNSUPPORTED_DIRECTORY_SYNC_CODES = new Set(['EINVAL', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP', 'EPERM']);
 export const NATIVE_FILE_CONFLICT_CODE = 'NATIVE_FILE_CONFLICT';
 export const NATIVE_FILE_CONFLICT_MESSAGE = 'This document changed on disk after it was opened. Reopen it before saving.';
 export const NATIVE_FILE_ATOMIC_UNSUPPORTED_CODE = 'NATIVE_FILE_ATOMIC_UNSUPPORTED';
@@ -289,31 +291,55 @@ function windowsMetadataCommandEnv(systemRoot, sourceEnv = process.env) {
   return env;
 }
 
-export function rewriteIcaclsSavedAcl(buffer, destinationBaseName) {
-  if (
-    typeof destinationBaseName !== 'string'
-    || destinationBaseName.length === 0
-    || /[\r\n]/.test(destinationBaseName)
-  ) {
-    const error = new Error('Invalid icacls restore destination');
-    error.code = 'NATIVE_FILE_METADATA_COPY_FAILED';
-    throw error;
-  }
+export function readIcaclsSavedDacl(buffer) {
   const payload = buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe
     ? buffer.subarray(2)
     : buffer;
-  const text = payload.toString('utf16le');
-  const nl = text.includes('\r\n') ? '\r\n' : '\n';
-  const idx = text.indexOf(nl);
-  if (idx <= 0) {
+  const dacl = payload.toString('utf16le').split(/\r?\n/)[1]?.trim();
+  if (!dacl?.startsWith('D:')) {
     const error = new Error('icacls save file did not contain a DACL entry');
     error.code = 'NATIVE_FILE_METADATA_COPY_FAILED';
     throw error;
   }
-  return Buffer.concat([
-    Buffer.from([0xff, 0xfe]),
-    Buffer.from(`${destinationBaseName}${text.slice(idx)}`, 'utf16le'),
-  ]);
+  return dacl;
+}
+
+// FileSecurity persists only the sections it changed, so applying the DACL
+// needs WRITE_DAC on the temp file and no SeRestorePrivilege. Plain .NET calls
+// skip cmdlet module autoloading, which takes 20+ s with the pinned env.
+const WINDOWS_SET_DACL_SCRIPT = [
+  "$ErrorActionPreference = 'Stop'",
+  '$security = [System.Security.AccessControl.FileSecurity]::new()',
+  "$security.SetSecurityDescriptorSddlForm($env:RAUHWPX_DACL_SDDL, 'Access')",
+  '[System.IO.File]::SetAccessControl($env:RAUHWPX_DACL_TARGET, $security)',
+].join('; ');
+// CLR startup stalls without these, even with -NoProfile. PATH and
+// PSModulePath stay pinned so a user-writable entry cannot load a module.
+const WINDOWS_POWERSHELL_ENV_KEYS = Object.freeze([
+  'TEMP',
+  'TMP',
+  'USERNAME',
+  'USERDOMAIN',
+  'USERPROFILE',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  'APPDATA',
+  'LOCALAPPDATA',
+  'PROCESSOR_ARCHITECTURE',
+  'NUMBER_OF_PROCESSORS',
+  'ProgramData',
+  'ProgramFiles',
+]);
+
+async function readSavedDacl(aclFile) {
+  try {
+    return readIcaclsSavedDacl(await readFile(aclFile));
+  } catch (error) {
+    // Test doubles that succeed without writing a save file still allow the
+    // replace to proceed. A real icacls /save that exits 0 creates this file.
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
 }
 
 async function copyWindowsDacl(
@@ -329,26 +355,47 @@ async function copyWindowsDacl(
     throw error;
   }
   const icacls = win32.join(systemRoot, 'System32', 'icacls.exe');
-  const options = {
-    platform: 'win32',
-    env: windowsMetadataCommandEnv(systemRoot, sourceEnv),
-  };
-  const aclFile = `${temporaryPath}${WINDOWS_ICACLS_DACL_SUFFIX}`;
+  const env = windowsMetadataCommandEnv(systemRoot, sourceEnv);
+  const options = { platform: 'win32', env };
+  const sourceAclFile = `${temporaryPath}${WINDOWS_ICACLS_DACL_SUFFIX}`;
+  const temporaryAclFile = `${temporaryPath}.target${WINDOWS_ICACLS_DACL_SUFFIX}`;
   try {
-    await runCommandImpl(icacls, [sourcePath, '/save', aclFile, '/q'], options);
-    let saved;
-    try {
-      saved = await readFile(aclFile);
-    } catch (error) {
-      // Test doubles that succeed without writing a save file still allow the
-      // replace to proceed. A real icacls /save that exits 0 creates this file.
-      if (error?.code === 'ENOENT') return;
-      throw error;
+    await runCommandImpl(icacls, [sourcePath, '/save', sourceAclFile, '/q'], options);
+    const sourceDacl = await readSavedDacl(sourceAclFile);
+    if (sourceDacl === null) return;
+    await runCommandImpl(icacls, [temporaryPath, '/save', temporaryAclFile, '/q'], options);
+    // Most documents carry only entries inherited from their folder, and the
+    // temp file beside them already inherits the same ones.
+    if (sourceDacl === await readSavedDacl(temporaryAclFile)) return;
+    // icacls /restore demands SeRestorePrivilege, which standard and
+    // non-elevated users lack (exit 1300), so apply the DACL directly.
+    const powershellHome = win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0');
+    const powershellEnv = {
+      ...env,
+      PSModulePath: win32.join(powershellHome, 'Modules'),
+      RAUHWPX_DACL_SDDL: sourceDacl,
+      RAUHWPX_DACL_TARGET: temporaryPath,
+    };
+    for (const key of WINDOWS_POWERSHELL_ENV_KEYS) {
+      const value = sourceEnv?.[key];
+      if (typeof value === 'string' && value) powershellEnv[key] = value;
     }
-    await writeFile(aclFile, rewriteIcaclsSavedAcl(saved, win32.basename(temporaryPath)));
-    await runCommandImpl(icacls, [win32.dirname(temporaryPath), '/restore', aclFile, '/q'], options);
+    await runCommandImpl(
+      win32.join(powershellHome, 'powershell.exe'),
+      [
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-EncodedCommand',
+        Buffer.from(WINDOWS_SET_DACL_SCRIPT, 'utf16le').toString('base64'),
+      ],
+      { ...options, env: powershellEnv },
+    );
   } finally {
-    await rm(aclFile, { force: true }).catch(() => {});
+    await rm(sourceAclFile, { force: true }).catch(() => {});
+    await rm(temporaryAclFile, { force: true }).catch(() => {});
   }
 }
 
@@ -584,6 +631,33 @@ export function nativePathOwnershipKey(filePath, { platform = process.platform }
     : normalized;
 }
 
+// Codes a link probe returns on volumes without hard links: exFAT/FAT USB
+// drives (ENOTSUP on macOS, EPERM on Linux vfat) and SMB/NFS shares that
+// refuse links (EOPNOTSUPP, ENOSYS, EINVAL). libuv maps Windows
+// ERROR_INVALID_FUNCTION, which CreateHardLink returns on FAT, to EISDIR.
+const HARD_LINK_UNSUPPORTED_CODES = new Set(['ENOTSUP', 'EOPNOTSUPP', 'EPERM', 'ENOSYS', 'EINVAL']);
+
+function hardLinksUnsupported(error, platform) {
+  return HARD_LINK_UNSUPPORTED_CODES.has(error?.code)
+    || (platform === 'win32' && error?.code === 'EISDIR');
+}
+
+/**
+ * The new bytes are already at filePath, but the save cannot be reported as
+ * complete. The registry adopts publishedFingerprint so the next save is
+ * compared against the bytes that really are on disk.
+ */
+function publishedWriteError(error, publishedFingerprint) {
+  let failure = error;
+  if (!(failure instanceof Error) || !Object.isExtensible(failure)) {
+    failure = new Error(error?.message ?? String(error), { cause: error });
+    if (error?.code) failure.code = error.code;
+  }
+  failure.published = true;
+  failure.publishedFingerprint = publishedFingerprint;
+  return failure;
+}
+
 export async function writeNativeFileAtomically(
   filePath,
   bytes,
@@ -592,6 +666,7 @@ export async function writeNativeFileAtomically(
     openImpl = open,
     copyFileImpl = copyFile,
     linkImpl = link,
+    lstatImpl = lstat,
     renameImpl = rename,
     rmImpl = rm,
     statImpl = stat,
@@ -602,6 +677,7 @@ export async function writeNativeFileAtomically(
     windowsProcessEnv = process.env,
     expectedFingerprint,
     sleep,
+    logger = console,
   } = {},
 ) {
   const temporaryPath = `${filePath}.rauhwpx-${process.pid}-${randomUUID()}.tmp`;
@@ -611,8 +687,8 @@ export async function writeNativeFileAtomically(
   const linkProbePath = `${filePath}.rauhwpx-${process.pid}-${randomUUID()}.link-probe`;
   let temporaryFile;
   let backupMoved = false;
-  let published = false;
   let linkProbeCreated = false;
+  let publishByRename = false;
   try {
     let sourceInfo = null;
     try {
@@ -654,9 +730,8 @@ export async function writeNativeFileAtomically(
     temporaryFile = undefined;
 
     if (sourceInfo && platform === 'win32') {
-      // Copy only the DACL after the temp handle is closed. icacls /save
-      // stores DACL entries, not owner or SACL, and PowerShell Get-Acl hangs
-      // on GitHub Actions Windows when the destination is still open.
+      // Copy only the DACL, after the temp handle is closed. icacls /save
+      // reads DACL entries, not owner or SACL.
       try {
         await copyWindowsDacl(
           filePath,
@@ -680,10 +755,19 @@ export async function writeNativeFileAtomically(
     try {
       await linkImpl(temporaryPath, linkProbePath);
       linkProbeCreated = true;
-      await rmImpl(linkProbePath, { force: true });
-      linkProbeCreated = false;
     } catch (error) {
-      throw nativeFileAtomicUnsupportedError(error);
+      // Volumes without hard links still support an atomic rename. Other probe
+      // failures (EIO, EACCES) mean the folder cannot be written safely.
+      if (!hardLinksUnsupported(error, platform)) throw nativeFileAtomicUnsupportedError(error);
+      publishByRename = true;
+    }
+    if (linkProbeCreated) {
+      try {
+        await rmImpl(linkProbePath, { force: true });
+        linkProbeCreated = false;
+      } catch (error) {
+        throw nativeFileAtomicUnsupportedError(error);
+      }
     }
 
     if (effectiveExpectedFingerprint.state === 'file') {
@@ -701,34 +785,36 @@ export async function writeNativeFileAtomically(
         throw nativeFileConflictError();
       }
     }
-    try {
-      // A hard link publishes the prepared inode only while the destination
-      // is absent. If an editor or sync client creates a new path after the
-      // rename-aside compare, EEXIST turns the save into a conflict.
-      await linkImpl(temporaryPath, filePath);
-    } catch (error) {
-      if (error?.code === 'EEXIST') throw nativeFileConflictError();
-      throw nativeFileAtomicUnsupportedError(error);
+    if (publishByRename) {
+      // rename() replaces an existing destination, so first check that
+      // nothing took the path after the rename-aside compare.
+      let destinationTaken = true;
+      try {
+        await lstatImpl(filePath);
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+        destinationTaken = false;
+      }
+      if (destinationTaken) throw nativeFileConflictError();
+      await retryWindows(() => renameImpl(temporaryPath, filePath), platform, sleep);
+    } else {
+      try {
+        // A hard link publishes the prepared inode only while the destination
+        // is absent. If an editor or sync client creates a new path after the
+        // rename-aside compare, EEXIST turns the save into a conflict.
+        await linkImpl(temporaryPath, filePath);
+      } catch (error) {
+        if (error?.code === 'EEXIST') throw nativeFileConflictError();
+        throw nativeFileAtomicUnsupportedError(error);
+      }
     }
-    published = true;
-    await retryWindows(() => rmImpl(temporaryPath, { force: true }), platform, sleep);
-
-    await syncParentImpl(filePath, platform);
-    if (backupMoved) {
-      await retryWindows(() => rmImpl(backupPath, { force: true }), platform, sleep);
-      backupMoved = false;
-      await syncParentImpl(filePath, platform);
-    }
-    const savedInfo = await statImpl(filePath, { bigint: true });
-    if (!savedInfo.isFile()) throw nativeFileConflictError();
-    return nativeFileFingerprint(savedInfo, contentDigest(bytes));
   } catch (error) {
     const restoreErrors = [];
     await temporaryFile?.close().catch(() => {});
     if (linkProbeCreated) {
       await rmImpl(linkProbePath, { force: true }).catch(() => {});
     }
-    if (backupMoved && !published) {
+    if (backupMoved) {
       try {
         await linkImpl(backupPath, filePath);
         await rmImpl(backupPath, { force: true });
@@ -736,9 +822,9 @@ export async function writeNativeFileAtomically(
       } catch (restoreError) {
         try {
           // COPYFILE_EXCL is the non-overwriting rollback for filesystems
-          // whose hard-link support changed after the probe. It is also worth
-          // retrying after EEXIST because a sync client may remove its
-          // conflicting path between these two exclusive operations.
+          // without hard links, or whose support changed after the probe. It
+          // is also worth retrying after EEXIST because a sync client may
+          // remove its conflicting path between these two exclusive operations.
           await copyFileImpl(backupPath, filePath, constants.COPYFILE_EXCL);
           await rmImpl(backupPath, { force: true });
           backupMoved = false;
@@ -755,11 +841,51 @@ export async function writeNativeFileAtomically(
     if (!error?.processCleanupUncertain) {
       await rmImpl(temporaryPath, { force: true }).catch(() => {});
     }
-    if (backupMoved && !published) {
+    if (backupMoved) {
       throw nativeFileRecoveryRequiredError(error, backupPath, restoreErrors);
     }
     throw error;
   }
+
+  // Published: filePath now holds the new bytes. A cleanup failure must not
+  // turn this into a failed save, or the registry keeps the old fingerprint
+  // and every later save to this document reports a conflict.
+  if (!publishByRename) {
+    await retryWindows(() => rmImpl(temporaryPath, { force: true }), platform, sleep)
+      .catch((error) => logger?.warn?.('[native-save] temporary link cleanup failed:', error));
+  }
+  let durabilityError = null;
+  try {
+    await syncParentImpl(filePath, platform);
+  } catch (error) {
+    // The new bytes are visible, but the rename may not survive a power loss.
+    // Report it and keep the recovery copy of the previous document.
+    durabilityError = error;
+  }
+  if (!durabilityError && backupMoved) {
+    try {
+      await retryWindows(() => rmImpl(backupPath, { force: true }), platform, sleep);
+      await syncParentImpl(filePath, platform);
+    } catch (error) {
+      logger?.warn?.('[native-save] recovery copy cleanup failed:', error);
+    }
+  }
+  let publishedFingerprint = null;
+  let fingerprintError = null;
+  try {
+    // Stat after cleanup so nlink counts a temp link that could not be removed.
+    const savedInfo = await statImpl(filePath, { bigint: true });
+    if (savedInfo.isFile()) {
+      publishedFingerprint = nativeFileFingerprint(savedInfo, contentDigest(bytes));
+    } else {
+      fingerprintError = nativeFileConflictError();
+    }
+  } catch (error) {
+    fingerprintError = error;
+  }
+  if (durabilityError) throw publishedWriteError(durabilityError, publishedFingerprint);
+  if (!publishedFingerprint) throw publishedWriteError(fingerprintError, null);
+  return publishedFingerprint;
 }
 
 function isPortableHistoryBundleName(filePath) {
@@ -992,6 +1118,9 @@ export class NativeFileHandleRegistry {
       releaseRequested: false,
       legacyPortableHistoryFolder,
       diskFingerprint,
+      // Bumped by every write so a slower adoptLoadedContent read never
+      // replaces a fingerprint that a save produced in the meantime.
+      fingerprintEpoch: 0,
     };
     this.#byId.set(entry.handleId, entry);
     this.#byPath.set(ownershipPath, entry);
@@ -1000,6 +1129,44 @@ export class NativeFileHandleRegistry {
 
   async createSaveTarget(sessionId, filePath) {
     return this.create(sessionId, filePath, { allowMissing: true });
+  }
+
+  /**
+   * The renderer finished loading bytes whose SHA-256 is `digest` through this
+   * handle. Opening a path this window already owns reuses its entry, whose
+   * fingerprint still describes the version first opened. After an external
+   * change every save would then conflict until the window closed. Adopt the
+   * disk state only when it holds exactly the loaded bytes, so a load that was
+   * cancelled or read a different version can never enable a silent overwrite.
+   */
+  async adoptLoadedContent(senderSessionId, handleId, digest) {
+    const entry = this.#entryForSender(senderSessionId, handleId);
+    if (entry.legacyPortableHistoryFolder) return false;
+    if (typeof digest !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(digest)) return false;
+    if (entry.diskFingerprint?.state === 'file' && entry.diskFingerprint.digest === digest) {
+      // Same bytes as the baseline. A sync client rewriting identical bytes, or
+      // deleting a leftover temp link, still changes the file generation and
+      // every save would conflict. Skip the rehash only if a stat agrees.
+      const info = await this.#stat(entry.canonicalPath, { bigint: true }).catch(() => null);
+      if (info?.isFile?.() && nativeFileGeneration(info) === entry.diskFingerprint.generation) {
+        return true;
+      }
+    }
+    if (entry.activeWrites > 0) return false;
+    const epoch = entry.fingerprintEpoch;
+    const fingerprint = await this.#fingerprint(entry.canonicalPath);
+    if (
+      entry.activeWrites > 0
+      || entry.fingerprintEpoch !== epoch
+      || this.#byId.get(handleId) !== entry
+      || !isNativeFileFingerprint(fingerprint)
+      || fingerprint.state !== 'file'
+      || fingerprint.digest !== digest
+    ) {
+      return false;
+    }
+    entry.diskFingerprint = fingerprint;
+    return true;
   }
 
   // The last accepted load/save fingerprint, never a fresh read of an external edit.
@@ -1059,9 +1226,23 @@ export class NativeFileHandleRegistry {
         // Revalidate after earlier queued writes. A stale window/document must
         // never reach the filesystem merely because it entered the queue first.
         this.validateSave(senderSessionId, handleId, identity, leases);
-        const savedFingerprint = await this.#writeFile(entry.canonicalPath, bytes, {
-          expectedFingerprint: entry.diskFingerprint,
-        });
+        entry.fingerprintEpoch += 1;
+        let savedFingerprint;
+        try {
+          savedFingerprint = await this.#writeFile(entry.canonicalPath, bytes, {
+            expectedFingerprint: entry.diskFingerprint,
+          });
+        } catch (error) {
+          // The bytes reached disk before a durability or cleanup step failed.
+          // Keeping the old fingerprint would turn every later save into a
+          // conflict, and reopening to clear it would discard the edits.
+          const published = error?.published === true ? error.publishedFingerprint : null;
+          if (isNativeFileFingerprint(published) && published.state === 'file') {
+            entry.diskFingerprint = published;
+            this.#refreshBookmarkDigest(identity, entry, bytes);
+          }
+          throw error;
+        }
         entry.diskFingerprint = isNativeFileFingerprint(savedFingerprint)
           ? savedFingerprint
           : await this.#fingerprint(entry.canonicalPath);
@@ -1082,8 +1263,19 @@ export class NativeFileHandleRegistry {
   }
 
   async isSameEntry(senderSessionId, firstHandleId, secondHandleId) {
-    const first = this.#entryForSender(senderSessionId, firstHandleId);
-    const second = this.#entryForSender(senderSessionId, secondHandleId);
+    // 창 경계를 넘어 같은 파일인지 판정한다 — 다른 창에 이미 열린 문서를
+    // 다시 열 때 중복 열기 방지가 이 비교에 의존한다. 한쪽 핸들이 다른 창의
+    // 것이어도 경로 일치 여부만 반환하므로 크래시 대신 판정 결과를 준다.
+    // 임의 핸들 탐색을 막기 위해 둘 다 이 창의 핸들이 아니면 기존처럼 거절한다.
+    const first = this.#byId.get(firstHandleId);
+    const second = this.#byId.get(secondHandleId);
+    if (
+      !first
+      || !second
+      || (first.sessionId !== senderSessionId && second.sessionId !== senderSessionId)
+    ) {
+      throw new Error('Native file handle does not belong to this window');
+    }
     return first.ownershipPath === second.ownershipPath;
   }
 

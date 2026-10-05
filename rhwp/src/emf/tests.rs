@@ -354,6 +354,31 @@ fn dc_stack_save_restore_round_trip() {
 }
 
 #[test]
+fn dc_stack_rejects_most_negative_relative_restore() {
+    use super::converter::DcStack;
+
+    // `-i32::MIN` 은 넘친다. 디버그·퍼징 빌드에서 패닉하지 않고 실패만 돌려줘야 한다.
+    let mut dc = DcStack::new();
+    dc.save();
+    assert!(!dc.restore(i32::MIN));
+    assert_eq!(dc.depth(), 1);
+}
+
+#[test]
+fn dc_stack_ignores_saves_beyond_the_depth_cap() {
+    use super::converter::device_context::MAX_DC_STACK_DEPTH;
+    use super::converter::DcStack;
+
+    let mut dc = DcStack::new();
+    for _ in 0..MAX_DC_STACK_DEPTH + 10 {
+        dc.save();
+    }
+    assert_eq!(dc.depth(), MAX_DC_STACK_DEPTH);
+    assert!(dc.restore(-1));
+    assert_eq!(dc.depth(), MAX_DC_STACK_DEPTH - 1);
+}
+
+#[test]
 fn object_table_insert_get_remove() {
     use super::converter::{GraphicsObject, ObjectTable};
     use super::parser::objects::LogPen;

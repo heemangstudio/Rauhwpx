@@ -26,6 +26,10 @@ const desktopMain = readFileSync(
   new URL('../../../desktop/main.mjs', import.meta.url),
   'utf8',
 );
+const buildWasmScript = readFileSync(
+  new URL('../../../scripts/build-wasm.mjs', import.meta.url),
+  'utf8',
+);
 
 function fakeSafeStorage(backend) {
   return {
@@ -83,13 +87,14 @@ test('Linux packages register every supported document extension', () => {
 test('Repository browser checks build WASM with the shared pinned toolchain', () => {
   assert.match(rustSetup, /toolchain:\s*1\.93\.1/);
   assert.match(rustSetup, /wasm-pack --version 0\.15\.0/);
-  assert.match(desktopChecks, /name: Build WASM engine\s+run: npm run build:wasm/);
-  assert.match(rootPackage.scripts['build:wasm'], /wasm-pack build --target web/);
+  assert.match(desktopChecks, /uses: \.\/\.github\/actions\/build-wasm/);
+  assert.match(rootPackage.scripts['build:wasm'], /node scripts\/build-wasm\.mjs/);
+  assert.match(buildWasmScript, /wasm-pack',\s*\['build', '--target', 'web'/);
 });
 
-test('Linux releases run on native Ubuntu x64 and arm64 runners', () => {
-  assert.match(releaseWorkflow, /ubuntu-24\.04(?!-arm)\b/);
-  assert.match(releaseWorkflow, /ubuntu-24\.04-arm\b/);
+test('Linux releases run on native Blacksmith Ubuntu x64 and arm64 runners', () => {
+  assert.match(releaseWorkflow, /blacksmith-4vcpu-ubuntu-2404(?!-arm)\b/);
+  assert.match(releaseWorkflow, /blacksmith-4vcpu-ubuntu-2404-arm\b/);
   assert.match(releaseWorkflow, /release\/\*\.AppImage/);
   assert.match(releaseWorkflow, /release\/\*\.deb/);
   assert.match(releaseWorkflow, /latest-linux\*\.yml/);

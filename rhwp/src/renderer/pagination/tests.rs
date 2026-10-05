@@ -9,6 +9,53 @@ use crate::model::shape::{
 };
 use crate::renderer::page_layout::PageLayoutInfo;
 
+/// 표 셀 문단에 든 머리말·꼬리말도 구역의 머리말로 수집되고, 셀 경로로 되찾아진다.
+#[test]
+fn header_footer_inside_table_cell_is_collected_and_resolved() {
+    use crate::model::header_footer::{Footer, Header};
+    use crate::model::table::{Cell, Table};
+
+    let cell_para = Paragraph {
+        controls: vec![
+            Control::PageNumberPos(Default::default()),
+            Control::Header(Box::new(Header::default())),
+            Control::Footer(Box::new(Footer::default())),
+        ],
+        ..Default::default()
+    };
+    let table = Table {
+        cells: vec![Cell {
+            paragraphs: vec![cell_para],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let paragraphs = vec![
+        Paragraph::default(),
+        Paragraph {
+            controls: vec![
+                Control::ColumnDef(ColumnDef::default()),
+                Control::Table(Box::new(table)),
+            ],
+            ..Default::default()
+        },
+    ];
+
+    let entries = header_footer_entries(&paragraphs, 0);
+    assert_eq!(entries.len(), 2);
+    let (pi, header_ref, is_header, _) = &entries[0];
+    assert_eq!((*pi, *is_header), (1, true));
+    assert_eq!(header_ref.cell_path, vec![(0, 0, 1)]);
+    assert!(matches!(
+        header_ref.resolve(&paragraphs),
+        Some(Control::Header(_))
+    ));
+    assert!(matches!(
+        entries[1].1.resolve(&paragraphs),
+        Some(Control::Footer(_))
+    ));
+}
+
 fn a4_page_def() -> PageDef {
     PageDef {
         width: 59528,

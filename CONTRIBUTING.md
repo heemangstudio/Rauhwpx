@@ -4,7 +4,7 @@ Rauhwpx는 Rust 문서 엔진, Studio 웹 편집기, 로컬 에이전트 허브�
 
 ## 처음 설정하기
 
-- Node 22.18 이상과 npm이 필요합니다.
+- Node 22.19 이상과 npm이 필요합니다.
 - Rust는 rustup으로 설치하세요. `rhwp/rust-toolchain.toml`이 엔진 툴체인과 WASM 타깃을 지정합니다.
 - wasm-pack 0.15.0을 설치하세요. `cargo install wasm-pack --version 0.15.0 --locked`
 - 네이티브 데스크톱 빌드에는 플랫폼 컴파일러가 필요합니다. macOS는 Xcode Command Line Tools, Windows는 Visual Studio Build Tools의 C++ 도구를 사용합니다.
@@ -62,7 +62,7 @@ npm --prefix rhwp/rhwp-agent run typecheck:acp
 
 Studio의 기본 테스트는 브라우저를 실행하지 않습니다. 브라우저 통합 테스트는 WASM과 Chrome을 준비한 뒤 `npm --prefix rhwp/rhwp-studio run test:browser`로 실행하세요. 브라우저 경로는 `PUPPETEER_EXECUTABLE_PATH`로 지정할 수 있습니다. [테스트 안내](rhwp/rhwp-studio/tests/README.md)에 세부 조건이 있습니다.
 
-에이전트의 타입 검사는 공유 backend 계약과 Grok/Cursor/OpenCode ACP 모듈 및 그 의존성을 대상으로 합니다. Claude/Codex/Pi 제공자와 HTTP/WebSocket 허브는 검사 범위에 포함되지 않습니다.
+에이전트의 타입 검사는 공유 backend 계약, ACP 세션 모듈과 그 의존성을 대상으로 합니다. Claude/Codex/Pi 제공자와 HTTP/WebSocket 허브는 검사 범위에 포함되지 않습니다.
 
 E2E 목록과 참조 검사는 Python 3가 필요합니다. 문서 조작 E2E와 수동 진단은 [E2E 안내](rhwp/rhwp-studio/e2e/README.md)를 참고하세요. `e2e:list`는 스크립트를 찾고 `e2e:check`는 실행 참조를 확인합니다. Browserbase 라이브 검사는 해당 통합을 바꿀 때 수동 실행하며 외부 서비스 계정이 필요합니다.
 
@@ -72,7 +72,7 @@ CI는 변경 경로에 따라 작업을 선택합니다. 실제 명령과 조건
 
 작업 브랜치는 `fix/`, `hotfix/`, `feat/`, `release/` 중 하나의 접두사를 사용하고 `main`을 대상으로 PR을 여세요. [AGENTS.md](AGENTS.md)의 PR 설명 형식에 따라 문제, 해결 방법, 검사 결과와 위험을 적습니다. UI가 바뀌면 가능한 경우 화면 증거를 첨부하세요.
 
-파일의 기존 스타일과 제품 언어를 따르세요. Studio는 TypeScript를 사용하며 UI 프레임워크가 없습니다. 디자인 지침은 [DESIGN.md](DESIGN.md), 제품 방향은 [PRODUCT.md](PRODUCT.md)에 있습니다. 코딩 에이전트용 구조 안내는 [CLAUDE.md](CLAUDE.md)를 참고하세요.
+파일의 기존 스타일과 제품 언어를 따르세요. Studio는 TypeScript를 사용하며 UI 프레임워크가 없습니다. 디자인 지침은 [DESIGN.md](DESIGN.md), 제품 방향은 [PRODUCT.md](PRODUCT.md)에 있습니다. 코딩 에이전트용 명령과 구조 안내는 [AGENTS.md](AGENTS.md)에 있고, [CLAUDE.md](CLAUDE.md)는 이 파일을 불러옵니다.
 
 ## 문서
 
@@ -80,12 +80,13 @@ CI는 변경 경로에 따라 작업을 선택합니다. 실제 명령과 조건
 
 | 파일 | 역할 |
 | --- | --- |
-| [README.md](README.md) | 제품 소개, 설치, 릴리스 (영어) |
-| [README.ko.md](README.ko.md) | 제품 소개, 설치, 릴리스 (한국어) |
+| [README.md](README.md) | 제품 소개, 설치, 릴리스 (한국어) |
+| [README.en.md](README.en.md) | 제품 소개, 설치, 릴리스 (영어) |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 로컬 설정, 검사, PR |
 | [PRODUCT.md](PRODUCT.md) | 제품 기록 |
 | [DESIGN.md](DESIGN.md) | 스튜디오 시각 시스템 |
-| [CLAUDE.md](CLAUDE.md) | 에이전트용 명령과 아키텍처 |
+| [AGENTS.md](AGENTS.md) | 에이전트용 명령, 저장소 지도, 아키텍처, PR 형식 |
+| [CLAUDE.md](CLAUDE.md) | AGENTS.md 불러오기 |
 | [rhwp/README.md](rhwp/README.md) | 엔진 트리 |
 | [rhwp/rhwp-agent/README.md](rhwp/rhwp-agent/README.md) | 허브 실행과 환경 변수 |
 

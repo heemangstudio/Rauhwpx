@@ -30,7 +30,12 @@ pub fn evaluate_formula(
     get_cell: CellValueFn,
 ) -> Result<f64, String> {
     let ast = parse_formula(formula).ok_or_else(|| "수식 파싱 실패".to_string())?;
-    eval_node(&ast, ctx, get_cell)
+    let result = eval_node(&ast, ctx, get_cell)?;
+    // SQRT(-1)·LOG(0)·오버플로의 NaN/inf 는 셀에 "NaN" 으로 쓰이고 JSON 결과도 깨뜨린다.
+    if !result.is_finite() {
+        return Err("계산식 결과가 숫자가 아님".into());
+    }
+    Ok(result)
 }
 
 fn eval_node(node: &FormulaNode, ctx: &TableContext, get_cell: CellValueFn) -> Result<f64, String> {
@@ -100,8 +105,16 @@ fn collect_cells(arg: &FormulaNode, ctx: &TableContext) -> Result<Vec<(usize, us
                 let (sc, sr) = resolve_cell_ref(*c1, *r1, ctx)?;
                 let (ec, er) = resolve_cell_ref(*c2, *r2, ctx)?;
                 let mut cells = Vec::new();
-                let (min_r, max_r) = (sr.min(er), sr.max(er));
-                let (min_c, max_c) = (sc.min(ec), sc.max(ec));
+                // 범위를 표 안으로 자른다. 표 밖 셀은 어차피 값이 없는데, 자르지 않으면
+                // "A1:Z4000000000" 이 좌표 1e11 개를 만들며 메모리를 다 쓴다.
+                if ctx.row_count == 0 || ctx.col_count == 0 {
+                    return Ok(cells);
+                }
+                let (min_r, max_r) = (sr.min(er), sr.max(er).min(ctx.row_count - 1));
+                let (min_c, max_c) = (sc.min(ec), sc.max(ec).min(ctx.col_count - 1));
+                if min_r > max_r || min_c > max_c {
+                    return Ok(cells);
+                }
                 for r in min_r..=max_r {
                     for c in min_c..=max_c {
                         cells.push((c, r));
@@ -200,13 +213,14 @@ fn eval_function(
             let vals = collect_values(args, ctx, get_cell)?;
             Ok(vals.iter().product())
         }
+        // 값이 하나도 없으면 AVERAGE 와 같이 0 이다 (±inf 로 접으면 셀에 "inf" 가 쓰인다).
         "MIN" => {
             let vals = collect_values(args, ctx, get_cell)?;
-            Ok(vals.iter().cloned().fold(f64::INFINITY, f64::min))
+            Ok(vals.iter().cloned().reduce(f64::min).unwrap_or(0.0))
         }
         "MAX" => {
             let vals = collect_values(args, ctx, get_cell)?;
-            Ok(vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max))
+            Ok(vals.iter().cloned().reduce(f64::max).unwrap_or(0.0))
         }
         "COUNT" => {
             let vals = collect_values(args, ctx, get_cell)?;
@@ -411,6 +425,59 @@ mod tests {
         let ctx = make_ctx();
         let r = evaluate_formula("=1/0", &ctx, &sample_cell);
         assert!(r.is_err());
+    }
+
+    /// 표보다 큰 범위는 표 안으로 잘라 좌표 1e11 개를 만들지 않는다.
+    #[test]
+    fn huge_range_is_clamped_to_table() {
+        let ctx = make_ctx();
+        let started = std::time::Instant::now();
+        let r = evaluate_formula("=SUM(A1:Z4000000000)", &ctx, &sample_cell).unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        // 5x5 표 전체 합: 행 합 (r+1)*10*5 + (1+2+3+4+5) = 50(r+1) + 15
+        let expected: f64 = (0..5).map(|r| 50.0 * (r as f64 + 1.0) + 15.0).sum();
+        assert_eq!(r, expected);
+        assert_eq!(
+            evaluate_formula("=SUM(A9:B9)", &ctx, &sample_cell).unwrap(),
+            0.0
+        );
+    }
+
+    /// u32::MAX 행은 와일드카드 센티널과 같은 값이라 현재 행으로 바뀌면 안 된다.
+    #[test]
+    fn max_row_number_is_not_wildcard() {
+        let ctx = make_ctx(); // current_row = 4 → A5 = 51
+        let r = evaluate_formula("=A4294967295", &ctx, &sample_cell);
+        assert_ne!(r, Ok(51.0));
+    }
+
+    /// NaN·inf 결과는 셀에 "NaN" 으로 쓰이고 JSON 결과를 깨뜨린다.
+    #[test]
+    fn non_finite_results_are_errors() {
+        let ctx = make_ctx();
+        assert!(evaluate_formula("=SQRT(-1)", &ctx, &sample_cell).is_err());
+        assert!(evaluate_formula("=LOG(0)", &ctx, &sample_cell).is_err());
+        let empty = |_: usize, _: usize| -> Option<f64> { None };
+        assert_eq!(evaluate_formula("=MIN(A1:A1)", &ctx, &empty), Ok(0.0));
+        assert_eq!(evaluate_formula("=MAX(A1:B2)", &ctx, &empty), Ok(0.0));
+    }
+
+    /// 깊은 괄호·단항 '-' 중첩은 재귀 하강 파서의 스택을 넘기지 않고 거절한다.
+    #[test]
+    fn deep_nesting_is_rejected_without_stack_overflow() {
+        let ctx = make_ctx();
+        let parens = format!("={}1{}", "(".repeat(100_000), ")".repeat(100_000));
+        assert!(evaluate_formula(&parens, &ctx, &sample_cell).is_err());
+        let depth = 2000;
+        let nested = format!("={}1{}", "(".repeat(depth), ")".repeat(depth));
+        assert!(evaluate_formula(&nested, &ctx, &sample_cell).is_err());
+        let negations = format!("={}1", "-".repeat(3000));
+        assert!(evaluate_formula(&negations, &ctx, &sample_cell).is_err());
+        // 상한 안의 중첩과 긴 평면 식은 그대로 계산한다.
+        let shallow = format!("={}1{}", "(".repeat(20), ")".repeat(20));
+        assert_eq!(evaluate_formula(&shallow, &ctx, &sample_cell), Ok(1.0));
+        let flat = format!("={}1", "1+".repeat(2000));
+        assert_eq!(evaluate_formula(&flat, &ctx, &sample_cell), Ok(2001.0));
     }
 
     #[test]

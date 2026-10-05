@@ -545,6 +545,28 @@ export interface TableProperties {
   patternType?: number;
 }
 
+/** WASM getPageLineLayout() 반환 요소 — 쪽 기준 px, 문자 범위는 텍스트 오프셋 */
+export interface LineLayoutItem {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** 그려지는 베이스라인의 쪽 기준 y */
+  bl: number;
+  sec?: number;
+  para?: number;
+  cs?: number;
+  ce?: number;
+  /** 잉크 x 범위 (빈 줄이면 없음) */
+  tx0?: number;
+  tx1?: number;
+  area?: 'header' | 'footer' | 'note' | 'master';
+  /** 셀 안 줄: pp=최외곽 표 문단, path=[controlIndex, cellIndex, cellParaIndex][] */
+  cell?: { pp: number; path: Array<[number, number, number]> };
+  /** [x, w, charStart, charEnd] */
+  runs: Array<[number, number, number, number]>;
+}
+
 /** WASM getPageControlLayout() 반환 요소 */
 export interface NoteControlRef {
   kind: 'footnote' | 'endnote';
@@ -1074,15 +1096,20 @@ export interface LayerPageBackgroundOp {
   type: 'pageBackground';
   bbox: LayerBounds;
   backgroundColor?: string;
+  gradient?: LayerGradientFill;
+  image?: { fillMode: string; base64: string };
   borderColor?: string;
   borderWidth?: number;
 }
 
 export interface LayerTextStyle {
   fontFamily?: string;
+  fontSubst?: string;
   fontSize?: number;
   color?: string;
   bold?: boolean;
+  /** Regular 윤곽선을 한컴처럼 StrokeAndFill로 진하게 그릴 때의 획 너비. */
+  fauxBoldStrokeWidth?: number;
   italic?: boolean;
   ratio?: number;
   underline?: string;
@@ -1102,6 +1129,10 @@ export interface LayerTextStyle {
   strikeColor?: string;
   shadeColor?: string;
   emphasisDot?: number;
+  /** 원본 HFT 글꼴 이름. 등록된 HFT 윤곽선이 있으면 그 모양으로 그린다. */
+  hftFamily?: string;
+  /** 글자 위치 (글자 크기 비율, 양수 = 아래로). 글리프만 옮긴다. */
+  charOffset?: number;
 }
 
 export interface LayerTextLegacyVisuals {
@@ -1143,10 +1174,14 @@ export interface LayerTextRunOp {
   baseline?: number;
   rotation?: number;
   isVertical?: boolean;
+  /** 엔진이 계산한 세로쓰기 HFT 굵은 사본의 run-local 위치와 두께. */
+  hftVerticalBoldCopy?: { offsetY: number; emboldenX: number; offsetX?: number; rotation?: number };
   style?: LayerTextStyle;
   placement?: { runToPage?: LayerAffineTransform; baselineY?: number };
   positions?: number[];
   displayPositions?: number[];
+  /** 반각 칸에 전각 glyph 를 그리는 구두점의 `[replay 글자 index, glyph x 오프셋]` (엔진 halt 규칙). */
+  glyphOffsets?: Array<[number, number]>;
   legacyVisuals?: LayerTextLegacyVisuals;
   controlMarks?: LayerTextControlMark[];
   controlMarksComplete?: boolean;
@@ -1164,6 +1199,8 @@ export interface LayerFootnoteMarkerOp {
   text: string;
   fontFamily?: string;
   fontSize?: number;
+  baseline?: number;
+  bold?: boolean;
   color?: string;
 }
 
@@ -1184,6 +1221,15 @@ export interface LayerShapeStyle {
   opacity?: number;
 }
 
+export interface LayerGradientFill {
+  gradientType: number;
+  angle: number;
+  centerX: number;
+  centerY: number;
+  colors: string[];
+  positions: number[];
+}
+
 export interface LayerLineOp {
   type: 'line';
   bbox: LayerBounds;
@@ -1192,6 +1238,7 @@ export interface LayerLineOp {
   x2: number;
   y2: number;
   style?: LayerLineStyle;
+  transform?: LayerPathTransform;
 }
 
 export interface LayerRectangleOp {
@@ -1199,12 +1246,16 @@ export interface LayerRectangleOp {
   bbox: LayerBounds;
   cornerRadius?: number;
   style?: LayerShapeStyle;
+  gradient?: LayerGradientFill;
+  transform?: LayerPathTransform;
 }
 
 export interface LayerEllipseOp {
   type: 'ellipse';
   bbox: LayerBounds;
   style?: LayerShapeStyle;
+  gradient?: LayerGradientFill;
+  transform?: LayerPathTransform;
 }
 
 export type LayerPathCommand =
@@ -1234,6 +1285,7 @@ export interface LayerPathOp {
   bbox: LayerBounds;
   commands?: LayerPathCommand[];
   style?: LayerShapeStyle;
+  gradient?: LayerGradientFill;
   lineStyle?: LayerLineStyle;
   transform?: LayerPathTransform;
 }
@@ -1252,6 +1304,14 @@ export interface LayerImageOp {
   brightness?: number;
   contrast?: number;
   opacity?: number;
+  shadow?: {
+    color: string;
+    alpha: number;
+    blurSigma: number;
+    nominalHeightPt?: number;
+    offsetX: number;
+    offsetY: number;
+  };
   bakedWatermark?: boolean;
   wrap?: 'behindText' | 'inFrontOfText' | string;
   transform?: LayerPathTransform;
@@ -1264,6 +1324,7 @@ export interface LayerEquationOp {
   color?: string;
   fontSize?: number;
   fontName?: string;
+  versionInfo?: string;
   layoutBox?: LayerEquationLayoutBox;
 }
 
@@ -1295,6 +1356,7 @@ export type LayerEquationFontStyle =
   | 'monospace';
 
 export interface LayerEquationLayoutBox {
+  glyphAdvances?: number[];
   x: number;
   y: number;
   width: number;
@@ -1310,18 +1372,18 @@ export type LayerEquationLayoutKind =
   | { type: 'symbol'; text: string }
   | { type: 'mathSymbol'; text: string }
   | { type: 'function'; name: string }
-  | { type: 'fraction'; numer: LayerEquationLayoutBox; denom: LayerEquationLayoutBox }
+  | { type: 'fraction'; numer: LayerEquationLayoutBox; denom: LayerEquationLayoutBox; barInset?: number }
   | { type: 'atop'; top: LayerEquationLayoutBox; bottom: LayerEquationLayoutBox }
   | { type: 'sqrt'; body: LayerEquationLayoutBox; index?: LayerEquationLayoutBox }
   | { type: 'superscript'; base: LayerEquationLayoutBox; sup: LayerEquationLayoutBox }
   | { type: 'subscript'; base: LayerEquationLayoutBox; sub: LayerEquationLayoutBox }
   | { type: 'subSup'; base: LayerEquationLayoutBox; sub: LayerEquationLayoutBox; sup: LayerEquationLayoutBox }
   | { type: 'bigOp'; symbol: string; sub?: LayerEquationLayoutBox; sup?: LayerEquationLayoutBox }
-  | { type: 'limit'; isUpper: boolean; sub?: LayerEquationLayoutBox }
+  | { type: 'limit'; isUpper: boolean; sub?: LayerEquationLayoutBox; nameX?: number; nameY?: number }
   | { type: 'matrix'; style: LayerEquationMatrixStyle; cells: LayerEquationLayoutBox[][] }
   | { type: 'rel'; arrow: LayerEquationLayoutBox; over: LayerEquationLayoutBox; under?: LayerEquationLayoutBox }
   | { type: 'eqAlign'; rows: Array<{ left: LayerEquationLayoutBox; right: LayerEquationLayoutBox }> }
-  | { type: 'paren'; left: string; right: string; body: LayerEquationLayoutBox }
+  | { type: 'paren'; left: string; right: string; body: LayerEquationLayoutBox; modernExtent?: [number, number] }
   | { type: 'decoration'; decoration: LayerEquationDecoration; body: LayerEquationLayoutBox }
   | { type: 'fontStyle'; fontStyle: LayerEquationFontStyle; body: LayerEquationLayoutBox }
   | { type: 'space'; width: number }

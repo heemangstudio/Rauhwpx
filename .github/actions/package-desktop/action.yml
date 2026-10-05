@@ -13,6 +13,9 @@ inputs:
   artifact:
     description: Optional artifact upload name.
     default: ''
+  wasm-artifact:
+    description: Optional WASM package artifact built earlier in the run.
+    default: ''
   certificate:
     description: Developer ID certificate.
     required: false
@@ -33,7 +36,7 @@ runs:
   steps:
     - uses: actions/setup-node@v5
       with:
-        node-version: 22.18.0
+        node-version: 22.23.3
         cache: npm
         cache-dependency-path: |
           package-lock.json
@@ -54,15 +57,22 @@ runs:
         npm ci
         npm --prefix rhwp/rhwp-studio ci
         npm --prefix rhwp/rhwp-agent ci --omit=dev
+    - name: Build native reference extractor
+      shell: bash
+      run: npm run build:native
+    - uses: ./.github/actions/build-wasm
+      with:
+        setup-rust: 'false'
+        artifact: ${{ inputs.wasm-artifact }}
     - name: Set nightly package version
       if: inputs.version != ''
       shell: bash
       env:
         PACKAGE_VERSION: ${{ inputs.version }}
       run: npm version --no-git-tag-version "$PACKAGE_VERSION"
-    - name: Build desktop application
+    - name: Build Studio application
       shell: bash
-      run: npm run build:desktop
+      run: npm run build:studio:app
     - name: Verify native Windows atomic replacement
       if: inputs.platform == 'windows'
       shell: bash

@@ -24,6 +24,16 @@ async function retryWindows(operation, platform) {
   }
 }
 
+/**
+ * System I/O failures (EMFILE, EIO, antivirus/indexer locks) carry an errno code
+ * or syscall. Content failures (bad JSON, invalid format, size limit, a file that
+ * changed mid-read) do not, and only those mean the vault itself is unreadable.
+ */
+function isTransientIoError(error) {
+  return typeof error?.syscall === 'string'
+    || (typeof error?.code === 'string' && /^E[A-Z0-9]+$/.test(error.code));
+}
+
 async function lstatOrMissing(lstatImpl, filePath) {
   try {
     return await lstatImpl(filePath);
@@ -137,7 +147,7 @@ export function createSecretVault({
     let handle;
     let bytes;
     try {
-      handle = await fs.open(vaultPath, 'r');
+      handle = await retryWindows(() => fs.open(vaultPath, 'r'), platform);
       const info = await handle.stat();
       if (!info.isFile() || !Number.isSafeInteger(info.size) || info.size < 1
         || info.size > MAX_VAULT_BYTES) {
@@ -218,6 +228,16 @@ export function createSecretVault({
           if (error?.code === 'ENOENT') {
             entries = {};
             return;
+          }
+          if (isTransientIoError(error)) {
+            // A transient read failure must not be cached as permanent corruption:
+            // the next request reads the file again.
+            entries = {};
+            loadPromise = null;
+            throw Object.assign(
+              new Error('Secure secret storage could not be read right now. Try again.'),
+              { code: 'SECRET_VAULT_UNAVAILABLE', cause: error },
+            );
           }
           corruptError = Object.assign(
             new Error('Secure secret storage is unreadable. Reset it before saving new credentials.'),
@@ -323,9 +343,15 @@ export function createSecretVault({
           });
         }
         if (decrypted.shouldReEncrypt) {
-          const replacement = (await safeStorage.encryptStringAsync(decrypted.result)).toString('base64');
-          const next = { ...entries, [id]: replacement };
-          await persist(next);
+          // Re-encryption is an optional upgrade. A failed rewrite (disk full, a
+          // file lock) must not fail a read whose plaintext is already decrypted.
+          try {
+            const replacement = (await safeStorage.encryptStringAsync(decrypted.result)).toString('base64');
+            await persist({ ...entries, [id]: replacement });
+          } catch (error) {
+            if (error?.vaultStateUncertain || error?.code === 'SECRET_VAULT_COMMIT_UNCERTAIN') throw error;
+            console.warn(`[secret-vault] re-encryption skipped: ${error?.code ?? error?.message ?? error}`);
+          }
         }
         return decrypted.result;
       });

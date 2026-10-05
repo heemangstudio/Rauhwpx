@@ -96,15 +96,44 @@ test('releases depend on verification within the same workflow run', () => {
   assert.ok(ancestors(workflows['release.yml'], 'publish').has('verification'));
 });
 
-test('consolidated checks retain Cloud contracts and browser handoff', () => {
-  const checks = workflows['checks.yml'];
-  const cloudSteps = checks.jobs['cloud-contracts'].steps;
-  assert.equal(cloudSteps.find((step) => step.uses?.startsWith('actions/setup-node@')).with['node-version'], 24);
-  assert.ok(cloudSteps.some((step) => step.run?.includes('npm run test:cloud')));
-  const browserCommands = checks.jobs.browser.steps.map((step) => step.run ?? '').join('\n');
-  assert.match(browserCommands, /e2e:cloud-onboarding/);
-  assert.match(browserCommands, /e2e:cloud-workspace/);
-  assert.match(browserCommands, /e2e:cloud-display/);
+test('PR checks retain Cloud contracts and nightly keeps the browser handoff', () => {
+  const appSteps = workflows['checks.yml'].jobs.app.steps;
+  assert.equal(appSteps.find((step) => step.uses?.startsWith('actions/setup-node@')).with['node-version'], 24);
+  assert.ok(appSteps.some((step) => step.run?.includes('npm run test:cloud')));
+  const nightlyCommands = workflows['nightly.yml'].jobs.app.steps.map((step) => step.run ?? '').join('\n');
+  assert.match(nightlyCommands, /e2e:cloud-onboarding/);
+  assert.match(nightlyCommands, /e2e:cloud-workspace/);
+  assert.match(nightlyCommands, /e2e:cloud-display/);
+  assert.match(nightlyCommands, /npm run test:sidebar/);
+});
+
+test('production verification audits every lock and exercises actual providers on supported hosts', () => {
+  const job = workflows['checks.yml'].jobs['production-dependencies'];
+  assert.deepEqual(job.strategy.matrix.include.map((entry) => entry.node), ['22.23.3', '22.23.3', 24]);
+  const commands = job.steps.map((step) => step.run ?? '').join('\n');
+  for (const directory of ['rhwp/rhwp-agent', 'rhwp/rhwp-studio', 'rhwp/rau-credits', 'cloud/install/provider-runtime']) {
+    assert.ok(commands.includes(directory), directory);
+  }
+  assert.match(commands, /npm --prefix cloud ci/);
+  assert.match(commands, /npm run audit:production/);
+  assert.match(commands, /node node_modules\/electron\/install\.js/);
+  const installIndex = job.steps.findIndex((step) => step.run?.includes('node node_modules/electron/install.js'));
+  const verifyIndex = job.steps.findIndex((step) => step.run?.includes('verify-production-dependencies.mjs --electron'));
+  assert.ok(installIndex >= 0 && installIndex < verifyIndex);
+  assert.match(commands, /verify-production-dependencies\.mjs --electron/);
+  assert.doesNotMatch(commands, /--force|--ignore-engines|engine-strict=false/);
+});
+
+test('dependency container verification cannot publish and checks both runtime users offline', () => {
+  const job = workflows['checks.yml'].jobs['dependency-containers'];
+  const commands = job.steps.map((step) => step.run ?? '').join('\n');
+  assert.match(commands, /for target in worker sandbox/);
+  assert.match(commands, /uid=1000/);
+  assert.match(commands, /uid=1001/);
+  assert.match(commands, /--network=none --user "\$uid:\$uid" --entrypoint node/);
+  assert.match(commands, /audit --omit=dev --audit-level=high/);
+  assert.match(commands, /sha256sum --check/);
+  assert.doesNotMatch(commands, /podman (?:push|login)|docker (?:push|login)|secrets\.|gh release|deploy/);
 });
 
 test('only release, image publishing, and GitHub Pages receive write permissions', () => {

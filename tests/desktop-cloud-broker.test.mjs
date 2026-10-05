@@ -165,6 +165,59 @@ test('Raucloud allows the full 30-minute setup window when allocation needs many
   assert.equal(result.receipt.pairingCode, RECEIPT.pairingCode);
 });
 
+function allocatingClient(statusResults) {
+  const stops = [];
+  let statusCalls = 0;
+  const client = {
+    baseUrl: 'https://broker.example.test',
+    sleep: async () => {},
+    createRun: async () => ({ run: { id: 'run-flaky', status: 'allocating' } }),
+    status: async () => {
+      const next = statusResults[Math.min(statusCalls, statusResults.length - 1)];
+      statusCalls += 1;
+      if (next instanceof Error) throw next;
+      return next;
+    },
+    stopRun: async (id, options) => { stops.push({ id, ...options }); return {}; },
+  };
+  return { client, stops, statusCalls: () => statusCalls };
+}
+
+const brokerBlip = () => new AppServerError('Raucloud is unavailable', { code: 'RAUCLOUD_UNAVAILABLE', retryable: true });
+
+test('allocation keeps polling through transient broker failures instead of stopping the run', async () => {
+  const lines = [];
+  const { client, stops, statusCalls } = allocatingClient([
+    brokerBlip(),
+    brokerBlip(),
+    { run: { id: 'run-flaky', status: 'ready', receipt: RECEIPT } },
+  ]);
+  const result = await createRaucloudBrokerProvider({ client }).spawn({ onLine: (line) => lines.push(line) });
+
+  assert.equal(result.receipt.pairingCode, RECEIPT.pairingCode);
+  assert.equal(statusCalls(), 3);
+  assert.deepEqual(stops, [], 'the worker being prepared is kept');
+  assert.ok(lines.includes('Waiting for Raucloud to respond'));
+});
+
+test('allocation stops the run on a permanent failure or a sustained outage', async () => {
+  const permanent = allocatingClient([
+    new AppServerError('Sign in to Rauhwpx to use Raucloud', { code: 'RAUCLOUD_AUTH_REQUIRED', retryable: false }),
+  ]);
+  await assert.rejects(createRaucloudBrokerProvider({ client: permanent.client }).spawn(), {
+    code: 'RAUCLOUD_AUTH_REQUIRED',
+  });
+  assert.equal(permanent.statusCalls(), 1);
+  assert.deepEqual(permanent.stops.map((stop) => stop.reason), ['allocation-failed']);
+
+  const outage = allocatingClient([brokerBlip()]);
+  await assert.rejects(createRaucloudBrokerProvider({ client: outage.client }).spawn(), {
+    code: 'RAUCLOUD_UNAVAILABLE',
+  });
+  assert.equal(outage.statusCalls(), 6, 'five consecutive blips are tolerated, the sixth stops the run');
+  assert.deepEqual(outage.stops.map((stop) => stop.reason), ['allocation-failed']);
+});
+
 function hangingFetch(routes, overrides = {}) {
   const authorizeOwnedBackend = (request, { signal } = {}) => {
     const parsed = new URL(request.pathname, 'https://broker.example.test');

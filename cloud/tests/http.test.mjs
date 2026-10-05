@@ -8,6 +8,7 @@ import {
 } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -18,6 +19,7 @@ import { openDatabase } from '../src/database.mjs';
 import { DisplayFrameStore, MAX_DISPLAY_FRAME_BYTES } from '../src/display-frame-store.mjs';
 import { createCloudHttpHandler } from '../src/http-server.mjs';
 import { applyProviderAuth, parseProviderAuth } from '../src/provider-auth.mjs';
+import { Scheduler } from '../src/scheduler.mjs';
 import { SessionStore } from '../src/session-store.mjs';
 import { SecretVault } from '../src/secret-vault.mjs';
 import { WorkerClient } from '../worker/client.mjs';
@@ -92,6 +94,7 @@ async function fixture(t, {
   seedProvider,
   browserOrigins = [],
   raucloudLease = null,
+  scheduler = null,
 } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rauhwpx-cloud-http-'));
   const database = openDatabase(path.join(root, 'cloud.sqlite3'));
@@ -127,6 +130,7 @@ async function fixture(t, {
     applyProviderAuth: apply,
     seedProvider,
     raucloudLease,
+    scheduler,
   };
   const server = http.createServer(createCloudHttpHandler(services, { workerOnly }));
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -235,6 +239,37 @@ test('public API pins every response, supports the Tailscale path, and rejects w
   });
   assert.equal(worker.status, 404);
   assert.equal(worker.headers.get('x-rauhwpx-server-key'), identity.serverPublicKey);
+});
+
+function rawStatus(base, head) {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(Number(new URL(base).port), '127.0.0.1');
+    let received = '';
+    socket.setEncoding('latin1');
+    socket.on('data', (chunk) => { received += chunk; });
+    socket.on('error', reject);
+    socket.on('close', () => resolve(Number(received.split(' ')[1])));
+    socket.end(`${head}\r\nConnection: close\r\n\r\n`);
+  });
+}
+
+test('malformed Host headers and request targets never take the process down', async (t) => {
+  const { base } = await fixture(t);
+  assert.equal(await rawStatus(base, 'GET /rauhwpx-cloud/v1/health HTTP/1.1\r\nHost: a b'), 200);
+  assert.equal(await rawStatus(base, 'GET //[/ HTTP/1.1\r\nHost: localhost'), 400);
+  assert.equal((await fetch(`${base}/rauhwpx-cloud/v1/health`)).status, 200);
+});
+
+test('health reports degraded scheduling only after three consecutive tick failures', async (t) => {
+  const scheduler = new Scheduler({}, {
+    list: async () => { throw Object.assign(new Error('Podman inventory unavailable'), { code: 'PODMAN_FAILED' }); },
+  }, { now: () => 1_700_000_000_000 });
+  const { base } = await fixture(t, { scheduler });
+  const health = async () => (await fetch(`${base}/rauhwpx-cloud/v1/health`)).json();
+  for (let failure = 0; failure < 2; failure += 1) await assert.rejects(scheduler.tick(), { code: 'PODMAN_FAILED' });
+  assert.equal('degraded' in await health(), false);
+  await assert.rejects(scheduler.tick(), { code: 'PODMAN_FAILED' });
+  assert.deepEqual((await health()).degraded, { reason: 'scheduler', since: 1_700_000_000_000, failures: 3 });
 });
 
 test('Ed25519 JSON proofs bind the configured external path behind a path-stripping proxy', async (t) => {

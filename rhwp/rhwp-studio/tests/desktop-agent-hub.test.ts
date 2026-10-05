@@ -328,7 +328,7 @@ test('desktop shell owns one ephemeral authenticated hub and exposes session IPC
   assert.match(desktopMain, /if \(!app\.isPackaged\)[\s\S]*app\.setPath\('userData', developmentUserData\)/);
   assert.match(desktopMain, /\.run', 'desktop-user-data'/);
   assert.match(desktopMain, /app\.on\('second-instance'/);
-  assert.match(desktopMain, /await hubOwner\.ensure\(\);[\s\S]*await createWindow\(request\)/);
+  assert.match(desktopMain, /const hubStartup = hubOwner\.ensure\(\);[\s\S]*await openLaunch\(request\)[\s\S]*await Promise\.all\(\[hubStartup, cloudReady, staleCleanup\]\)/);
   assert.match(desktopMain, /ipcMain\.handle\('desktop:get-session-context'/);
   assert.match(desktopMain, /sessions\.sessionForSender\(event\.sender\)/);
   assert.match(desktopMain, /RHWP_AGENT_PORT: '0'/);
@@ -336,8 +336,8 @@ test('desktop shell owns one ephemeral authenticated hub and exposes session IPC
   assert.match(desktopMain, /RHWP_LAUNCH_ID: launchId/);
   assert.match(desktopMain, /RHWP_OWNER_PID: String\(process\.pid\)/);
   assert.match(desktopMain, /RHWP_OWNER_IPC: '1'/);
-  assert.match(desktopMain, /RHWP_RUNTIME_DIR: this\.runtimeDir/);
-  assert.match(desktopMain, /RHWP_WORK_DIR: this\.workDir/);
+  assert.match(desktopMain, /RHWP_RUNTIME_DIR: runtimeDir/);
+  assert.match(desktopMain, /RHWP_WORK_DIR: workDir/);
   assert.match(desktopMain, /expectedPid: child\.pid/);
   assert.match(desktopMain, /expectedLaunchId: launchId/);
   assert.match(desktopMain, /waitForHubReadyLine\(child, \{ launchId \}\)/);
@@ -350,19 +350,21 @@ test('desktop shell owns one ephemeral authenticated hub and exposes session IPC
     desktopMain,
     /cleanupPrepared = response\?\.status === 'prepared'[\s\S]{0,100}response\?\.launchId === launchId/,
   );
-  assert.match(desktopMain, /hasPendingLaunchCleanupSync\(this\.workDir\)/);
-  assert.match(desktopMain, /retainLaunchRootForProcessCleanupSync\(this\.workDir, \{ launchId \}\)/);
-  assert.match(desktopMain, /#restartRequired = false/);
-  assert.match(desktopMain, /this\.#restartTimer \|\| this\.#restartRequired/);
-  assert.match(desktopMain, /if \(this\.#restartRequired\) throw this\.restartRequiredError\(\)/);
-  assert.match(desktopMain, /error\.code = 'AGENT_HUB_RESTART_REQUIRED'/);
+  assert.match(desktopMain, /hasPendingLaunchCleanupSync\(dir\)/);
+  assert.match(desktopMain, /retainLaunchRootForProcessCleanupSync\(this\.activeWorkDir\(\), \{ launchId \}\)/);
+  // 격리된 허브는 앱 재시작 대신 새 epoch 작업공간에서 세션 안에서 다시 뜬다.
+  assert.match(desktopMain, /#quarantined = false/);
+  assert.match(desktopMain, /#epoch = 0/);
+  assert.match(desktopMain, /this\.#restartTimer \|\| this\.#quarantined/);
+  assert.match(desktopMain, /this\.#quarantined = false;[\s\S]*this\.#epoch \+= 1/);
+  assert.match(desktopMain, /restarting agent hub on an isolated workspace/);
   assert.match(
     desktopMain,
     /if \(process\.platform === 'win32'\) \{\s*this\.quarantineUnexpectedWindowsExit\(\);\s*return;/,
   );
   assert.match(
     desktopMain,
-    /quarantineUnexpectedWindowsExit\(\)[\s\S]*this\.#restartRequired = true;[\s\S]*retainLaunchRootForProcessCleanupSync\(this\.workDir, \{ launchId \}\)[\s\S]*requiring an app restart/,
+    /quarantineUnexpectedWindowsExit\(\)[\s\S]*this\.#quarantined = true;[\s\S]*retainLaunchRootForProcessCleanupSync\(this\.activeWorkDir\(\), \{ launchId \}\)[\s\S]*fresh workspace/,
   );
   assert.match(
     desktopMain,

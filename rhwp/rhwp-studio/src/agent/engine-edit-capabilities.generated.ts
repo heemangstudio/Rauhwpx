@@ -248,6 +248,20 @@ export const ENGINE_EDIT_CAPABILITIES = [
     "signature": "changeObjectZOrder(sec: number, para: number, ci: number, operation: string)"
   },
   {
+    "method": "clearTableCellRange",
+    "kind": "document",
+    "parameters": [
+      "sec",
+      "parent",
+      "pathJson",
+      "startRow",
+      "startCol",
+      "endRow",
+      "endCol"
+    ],
+    "signature": "clearTableCellRange(sec: number, parent: number, pathJson: string, startRow: number, startCol: number, endRow: number, endCol: number)"
+  },
+  {
     "method": "copyControl",
     "kind": "session",
     "parameters": [
@@ -297,6 +311,34 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "endOffset"
     ],
     "signature": "copySelectionInCell(sec: number, parentPara: number, controlIdx: number, cellIdx: number, startCellPara: number, startOffset: number, endCellPara: number, endOffset: number)"
+  },
+  {
+    "method": "copySelectionInCellByPath",
+    "kind": "session",
+    "parameters": [
+      "sec",
+      "parentPara",
+      "pathJson",
+      "startCellPara",
+      "startOffset",
+      "endCellPara",
+      "endOffset"
+    ],
+    "signature": "copySelectionInCellByPath(sec: number, parentPara: number, pathJson: string, startCellPara: number, startOffset: number, endCellPara: number, endOffset: number)"
+  },
+  {
+    "method": "copyTableCellRange",
+    "kind": "session",
+    "parameters": [
+      "sec",
+      "parent",
+      "pathJson",
+      "startRow",
+      "startCol",
+      "endRow",
+      "endCol"
+    ],
+    "signature": "copyTableCellRange(sec: number, parent: number, pathJson: string, startRow: number, startCol: number, endRow: number, endCol: number)"
   },
   {
     "method": "copyTableCellsTransposed",
@@ -388,6 +430,17 @@ export const ENGINE_EDIT_CAPABILITIES = [
     "signature": "deleteCellPictureControlByPath(sec: number, parentPara: number, cellPath: CellPathLike, innerControlIdx: number,)"
   },
   {
+    "method": "deleteCellTableControlByPath",
+    "kind": "document",
+    "parameters": [
+      "sec",
+      "parentPara",
+      "pathJson",
+      "controlIdx"
+    ],
+    "signature": "deleteCellTableControlByPath(sec: number, parentPara: number, pathJson: string, controlIdx: number)"
+  },
+  {
     "method": "deleteEquationControl",
     "kind": "document",
     "parameters": [
@@ -468,9 +521,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "startPara",
       "startOffset",
       "endPara",
-      "endOffset"
+      "endOffset",
+      "logical"
     ],
-    "signature": "deleteRange(sec: number, startPara: number, startOffset: number, endPara: number, endOffset: number)"
+    "signature": "deleteRange(sec: number, startPara: number, startOffset: number, endPara: number, endOffset: number, logical = false)"
   },
   {
     "method": "deleteRangeAcrossSections",
@@ -481,9 +535,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "startOffset",
       "endSec",
       "endPara",
-      "endOffset"
+      "endOffset",
+      "logical"
     ],
-    "signature": "deleteRangeAcrossSections(startSec: number, startPara: number, startOffset: number, endSec: number, endPara: number, endOffset: number)"
+    "signature": "deleteRangeAcrossSections(startSec: number, startPara: number, startOffset: number, endSec: number, endPara: number, endOffset: number, logical = false)"
   },
   {
     "method": "deleteRangeInCell",
@@ -510,9 +565,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "startPara",
       "startOffset",
       "endPara",
-      "endOffset"
+      "endOffset",
+      "logical"
     ],
-    "signature": "deleteRangeInCellByPath(sec: number, parentPara: number, pathJson: string, startPara: number, startOffset: number, endPara: number, endOffset: number)"
+    "signature": "deleteRangeInCellByPath(sec: number, parentPara: number, pathJson: string, startPara: number, startOffset: number, endPara: number, endOffset: number, logical = false)"
   },
   {
     "method": "deleteShapeControl",
@@ -593,9 +649,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "sec",
       "para",
       "charOffset",
-      "count"
+      "count",
+      "logical"
     ],
-    "signature": "deleteText(sec: number, para: number, charOffset: number, count: number)"
+    "signature": "deleteText(sec: number, para: number, charOffset: number, count: number, logical = false)"
   },
   {
     "method": "deleteTextInCell",
@@ -607,9 +664,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "cellIdx",
       "cellParaIdx",
       "charOffset",
-      "count"
+      "count",
+      "logical"
     ],
-    "signature": "deleteTextInCell(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, count: number)"
+    "signature": "deleteTextInCell(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, count: number, logical = false)"
   },
   {
     "method": "deleteTextInCellByPath",
@@ -619,9 +677,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "parentPara",
       "pathJson",
       "charOffset",
-      "count"
+      "count",
+      "logical"
     ],
-    "signature": "deleteTextInCellByPath(sec: number, parentPara: number, pathJson: string, charOffset: number, count: number)"
+    "signature": "deleteTextInCellByPath(sec: number, parentPara: number, pathJson: string, charOffset: number, count: number, logical = false)"
   },
   {
     "method": "deleteTextInCellDeferredPagination",
@@ -633,9 +692,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "cellIdx",
       "cellParaIdx",
       "charOffset",
-      "count"
+      "count",
+      "logical"
     ],
-    "signature": "deleteTextInCellDeferredPagination(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, count: number)"
+    "signature": "deleteTextInCellDeferredPagination(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, count: number, logical = false)"
   },
   {
     "method": "deleteTextInFootnote",
@@ -950,9 +1010,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "sec",
       "para",
       "charOffset",
-      "text"
+      "text",
+      "logical"
     ],
-    "signature": "insertText(sec: number, para: number, charOffset: number, text: string)"
+    "signature": "insertText(sec: number, para: number, charOffset: number, text: string, logical = false)"
   },
   {
     "method": "insertTextInCell",
@@ -964,9 +1025,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "cellIdx",
       "cellParaIdx",
       "charOffset",
-      "text"
+      "text",
+      "logical"
     ],
-    "signature": "insertTextInCell(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, text: string)"
+    "signature": "insertTextInCell(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, text: string, logical = false)"
   },
   {
     "method": "insertTextInCellByPath",
@@ -976,9 +1038,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "parentPara",
       "pathJson",
       "charOffset",
-      "text"
+      "text",
+      "logical"
     ],
-    "signature": "insertTextInCellByPath(sec: number, parentPara: number, pathJson: string, charOffset: number, text: string)"
+    "signature": "insertTextInCellByPath(sec: number, parentPara: number, pathJson: string, charOffset: number, text: string, logical = false)"
   },
   {
     "method": "insertTextInCellDeferredPagination",
@@ -990,9 +1053,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "cellIdx",
       "cellParaIdx",
       "charOffset",
-      "text"
+      "text",
+      "logical"
     ],
-    "signature": "insertTextInCellDeferredPagination(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, text: string)"
+    "signature": "insertTextInCellDeferredPagination(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, text: string, logical = false)"
   },
   {
     "method": "insertTextInFootnote",
@@ -1139,6 +1203,20 @@ export const ENGINE_EDIT_CAPABILITIES = [
     "signature": "movePictureControl(sec: number, fromPara: number, fromCi: number, toPara: number, toCharOffset: number,)"
   },
   {
+    "method": "movePictureControlByPath",
+    "kind": "document",
+    "parameters": [
+      "sec",
+      "fromParentPara",
+      "fromPath",
+      "fromControl",
+      "toParentPara",
+      "toPath",
+      "toCharOffset"
+    ],
+    "signature": "movePictureControlByPath(sec: number, fromParentPara: number, fromPath: CellPathLike, fromControl: number, toParentPara: number, toPath: CellPathLike, toCharOffset: number,)"
+  },
+  {
     "method": "moveTableOffset",
     "kind": "document",
     "parameters": [
@@ -1257,6 +1335,18 @@ export const ENGINE_EDIT_CAPABILITIES = [
     "signature": "pasteInternalInCellByPath(sec: number, parentPara: number, pathJson: string, charOffset: number)"
   },
   {
+    "method": "pasteTableCellRange",
+    "kind": "document",
+    "parameters": [
+      "sec",
+      "parent",
+      "pathJson",
+      "startRow",
+      "startCol"
+    ],
+    "signature": "pasteTableCellRange(sec: number, parent: number, pathJson: string, startRow: number, startCol: number)"
+  },
+  {
     "method": "pasteTableCellsTransposed",
     "kind": "document",
     "parameters": [
@@ -1341,9 +1431,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "para",
       "charOffset",
       "deleteCount",
-      "text"
+      "text",
+      "logical"
     ],
-    "signature": "replaceBodyTextLocal(sec: number, para: number, charOffset: number, deleteCount: number, text: string,)"
+    "signature": "replaceBodyTextLocal(sec: number, para: number, charOffset: number, deleteCount: number, text: string, logical = false,)"
   },
   {
     "method": "replaceHyperlinkText",
@@ -1403,9 +1494,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "cellParaIdx",
       "charOffset",
       "deleteCount",
-      "text"
+      "text",
+      "logical"
     ],
-    "signature": "replaceTextInCellDeferredPagination(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, deleteCount: number, text: string,)"
+    "signature": "replaceTextInCellDeferredPagination(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, deleteCount: number, text: string, logical = false,)"
   },
   {
     "method": "resizeTableCells",

@@ -17,6 +17,8 @@ runTest('전역 및 데스크톱 편집 단축키', async ({ page }) => {
   assert(await page.evaluate(() => window.__wasm.pageCount) === 0, '초기 상태 문서 없음');
   await press(page, 'Alt', 'n');
   await page.waitForFunction(() => window.__wasm.pageCount > 0);
+  // 문서 초기화는 글꼴 연결(허브가 없으면 최대 4초)을 기다린 뒤 끝난다. 끝나기 전 입력은 버려진다.
+  await page.waitForFunction(() => document.getElementById('document-empty-state')?.hidden !== false, { timeout: 15000 });
   await screenshot(page, 'global-02-new-doc');
   await page.evaluate(() => window.__inputHandler.focus());
   await typeText(page, 'shortcut text');
@@ -81,13 +83,13 @@ runTest('전역 및 데스크톱 편집 단축키', async ({ page }) => {
   const beforeZoom = await page.evaluate(() => window.__inputHandler.viewportManager.getZoom());
   await press(page, 'Control', '-');
   await page.waitForFunction((zoom) => Math.abs(window.__inputHandler.viewportManager.getZoom() - (zoom - 0.1)) < 0.001, {}, beforeZoom);
-  assert(true, '단일 키 입력으로 줌 한 단계 변경');
+  assert(Math.abs(await page.evaluate(()=>window.__inputHandler.viewportManager.getZoom())-(beforeZoom-0.1))<0.001, '단일 키 입력으로 줌 한 단계 변경');
   for (const lock of ['setReadOnly', 'setUserEditingLocked']) {
     await page.evaluate((method) => window.__inputHandler[method](true), lock);
     const zoom = await page.evaluate(() => window.__inputHandler.viewportManager.getZoom());
     await press(page, 'Control', '-');
     await page.waitForFunction((before) => Math.abs(window.__inputHandler.viewportManager.getZoom() - (before - 0.1)) < 0.001, {}, zoom);
-    assert(true, `${lock} 문서에서도 줌 단축키 사용`);
+    assert(Math.abs(await page.evaluate(()=>window.__inputHandler.viewportManager.getZoom())-(zoom-0.1))<0.001, `${lock} 문서에서도 줌 단축키 사용`);
     await page.evaluate((method) => window.__inputHandler[method](false), lock);
   }
   await screenshot(page, 'global-03-shortcuts-restored');

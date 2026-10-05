@@ -25,6 +25,60 @@ test('cancel and timeout terminate the login process', async () => {
   }
 });
 
+function windowsPtyFixture(agent) {
+  let onExit;
+  const terminal = { pid: 12345, _agent: agent,
+    onData: () => ({ dispose() {} }),
+    onExit: callback => { onExit = callback; return { dispose() {} }; },
+    kill() { assert.fail('an exited Windows PID must never be killed again'); },
+  };
+  const login = child('', { platform: 'win32', spawnPty: () => terminal });
+  return { login, exit: () => onExit({ exitCode: 0 }) };
+}
+
+test('Windows PTY exit releases pinned node-pty handles without killing the exited PID', async (t) => {
+  const released = [];
+  const warning = t.mock.method(console, 'warn', () => {});
+  const { login, exit } = windowsPtyFixture({
+    _inSocket: { destroy() { released.push('input'); } },
+    _outSocket: { destroy() { released.push('output'); } },
+    _conoutSocketWorker: { dispose() { released.push('worker'); } },
+  });
+  exit();
+  assert.equal((await login.done).code, 0);
+  assert.deepEqual(released, ['input', 'output', 'worker']);
+  assert.equal(warning.mock.callCount(), 0);
+});
+
+test('Windows PTY shape changes warn and still release handles that are available', async (t) => {
+  let released = false;
+  const warning = t.mock.method(console, 'warn', () => {});
+  const { login, exit } = windowsPtyFixture({
+    _inSocket: { destroy() { released = true; } },
+    _outSocket: { destroy: true },
+  });
+  exit();
+  assert.equal((await login.done).code, 0);
+  assert.equal(released, true);
+  assert.equal(warning.mock.callCount(), 1);
+  assert.match(warning.mock.calls[0].arguments[0], /unexpected node-pty handle shape.*1\.1\.0/);
+});
+
+test('Windows PTY disposal failure warns and does not skip the remaining handles', async (t) => {
+  const released = [];
+  const warning = t.mock.method(console, 'warn', () => {});
+  const { login, exit } = windowsPtyFixture({
+    _inSocket: { destroy() { throw new Error('closed'); } },
+    _outSocket: { destroy() { released.push('output'); } },
+    _conoutSocketWorker: { dispose() { released.push('worker'); } },
+  });
+  exit();
+  assert.equal((await login.done).code, 0);
+  assert.deepEqual(released, ['output', 'worker']);
+  assert.equal(warning.mock.callCount(), 1);
+  assert.match(warning.mock.calls[0].arguments[0], /handle destroy failed/);
+});
+
 test('terminal frames require the exact owning auth run and enforce input limits', async () => {
   const source = await readFile(new URL('../server.mjs', import.meta.url), 'utf8');
   const start = source.indexOf("    case 'agent-setup-terminal-resume':");

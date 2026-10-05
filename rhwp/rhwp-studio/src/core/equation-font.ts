@@ -1,0 +1,217 @@
+import type { LocalFontRecord } from './local-fonts';
+import { sfntCoversText, sfntEmToCellRatio, sfntTrueTypeRunMetrics } from './sfnt-cmap.ts';
+
+const DEFAULT_FAMILIES = ['Latin Modern Math', 'STIX Two Text', 'STIX Two Math', 'Times New Roman', 'Times', 'serif'];
+const LEGACY_FAMILIES = ['Times New Roman', 'Times', 'STIX Two Text', 'Latin Modern Math', 'STIX Two Math', 'serif'];
+
+/** renderer/equation/font.rs와 같은 수식 표시 fallback. 원본 서체는 변경하지 않는다. */
+export function equationFontFamilies(fontName?: string): string[] {
+  const requested = fontName?.trim();
+  const fallbacks = requested?.toLowerCase() === 'hyhwpeq' ? LEGACY_FAMILIES : DEFAULT_FAMILIES;
+  return [...new Set([...(requested ? [requested] : []), ...fallbacks])];
+}
+
+/** 합성 기울임/굵기보다 감지된 해당 style의 실제 face를 우선한다. */
+export function equationLocalFontFace(
+  records: readonly LocalFontRecord[],
+  family: string,
+  italic: boolean,
+  bold: boolean,
+): LocalFontRecord | undefined {
+  return records.find(record => (
+    record.family.toLowerCase() === family.toLowerCase()
+    && /italic|oblique/i.test(record.style) === italic
+    && /bold|black|heavy/i.test(record.style) === bold
+  ));
+}
+
+export function isLegacyEquationFont(name?: string): boolean {
+  return name?.trim().toLowerCase() === 'hyhwpeq';
+}
+
+/** renderer/equation/font.rs의 HYhwpEQ cmap. 로드된 해당 서체에만 사용한다. */
+export function legacyEquationGlyph(character: string, italic: boolean, modern: boolean): [string, boolean] {
+  if (modern && character === '°') return ['\ue0c8', false];
+  if (!italic && /^[A-Za-z]$/.test(character)) return [character, false];
+  const code = character.codePointAt(0)!;
+  if (character >= 'A' && character <= 'Z') return [String.fromCodePoint(0xe000 + code - 65), italic];
+  if (character >= 'a' && character <= 'z') return [String.fromCodePoint((italic ? 0xe0e5 : 0xe01a) + code - 97), false];
+  if (character >= '1' && character <= '9') return [String.fromCodePoint(0xe034 + code - 49), false];
+  if (character === '0') return ['\ue03d', false];
+  const greek = [...'ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩαβγδεζηθικλμνξοπρστυφχψω'].indexOf(character);
+  if (italic && greek >= 0) return [String.fromCodePoint(0xe085 + greek), false];
+  const symbols: Record<string, number> = {
+    '!': 0xe03e, '@': 0xe03f, '#': 0xe040, '$': 0xe041, '%': 0xe042, '*': 0xe043,
+    '(': 0xe044, ')': 0xe045, '-': 0xe046, '−': 0xe046, '=': 0xe047, '+': 0xe048,
+    '[': 0xe049, ']': 0xe04a, '{': 0xe04b, '}': 0xe04c, '|': 0xe04d, ';': 0xe04e,
+    ':': 0xe04f, ',': 0xe052, '.': 0xe053, '/': 0xe054, '<': 0xe055, '>': 0xe056, '?': 0xe057,
+    '∑': 0xe067,
+  };
+  return symbols[character] ? [String.fromCodePoint(symbols[character]), false] : [character, italic];
+}
+
+/** 현대 HY 조판의 정수 글립 advance. 글립 자체는 원본 크기로 그린다. */
+export function modernEquationAdvance(rawAdvance: number, fontSize: number, syntheticItalic = false): number {
+  const gridSize = Math.max(1, Math.round(fontSize / 2)) * 2;
+  return Math.round(rawAdvance / fontSize * gridSize) * (syntheticItalic ? 1 : 0.9);
+}
+
+/** Short modern square fences use the loaded HY glyph cells and ink bearing. */
+export function modernShortSquarePaintMetrics(
+  bytes: ArrayBuffer | null,
+  size: number,
+  layout: { left: string; right: string; width: number; height: number; body: { x: number; width: number } },
+  modern: boolean,
+): { openInkLeft: number; rightSlot: number } | null {
+  if (!modern || !bytes || layout.left !== '[' || layout.right !== ']'
+    || layout.height > size * 1.2) return null;
+  const open = sfntTrueTypeRunMetrics(bytes, '\ue049', size);
+  const close = sfntTrueTypeRunMetrics(bytes, '\ue04a', size);
+  if (!open || !close) return null;
+  const pad = size * 0.125;
+  const allowance = size * 0.10;
+  const after = layout.width - layout.body.x - layout.body.width;
+  if (Math.abs(layout.body.x - open.advance - allowance - pad) > 1e-6
+    || Math.abs(after - close.advance - allowance - pad) > 1e-6) return null;
+  return { openInkLeft: Math.max(0, open.inkLeft), rightSlot: after - pad };
+}
+
+export function legacyEquationRuns(text: string, italic: boolean, modernOrigins = false): Array<{ text: string; italic: boolean; baselineEm?: number }> {
+  const runs: Array<{ text: string; italic: boolean; baselineEm?: number }> = [];
+  for (const character of text) {
+    const [glyph, skew] = legacyEquationGlyph(character, italic, modernOrigins);
+    const baselineEm = modernOrigins
+      ? (/[0-9⋅×→∞]/u.test(character) || (italic && /[A-Za-z\u0391-\u03c9]/u.test(character)) ? 0.06 : 0)
+      : undefined;
+    const last = runs.at(-1);
+    if (!modernOrigins && last?.italic === skew && last.baselineEm === baselineEm) last.text += glyph;
+    else runs.push({ text: glyph, italic: skew, ...(baselineEm === undefined ? {} : { baselineEm }) });
+  }
+  return runs;
+}
+
+/** 세션 FontFace.load 완료와 cmap coverage가 모두 확인되어야 PUA를 허용한다. */
+export function createEquationFontResolver(
+  resolveFont: (name: string) => LocalFontRecord | null,
+  readBytes: (name: string) => ArrayBuffer | null,
+): (source: string, glyphs: string) => string | null {
+  const bytesByRecord = new WeakMap<LocalFontRecord, ArrayBuffer | null>();
+  return (source, glyphs) => {
+    const hft = /^(HSUSR|HSUSRI|HSUSFL|HSUSSP)$/i.test(source);
+    if (!isLegacyEquationFont(source) && !hft) return null;
+    const record = resolveFont(source);
+    if (!record?.runtimeFamily || record.family.toLowerCase() !== source.toLowerCase()) return null;
+    if (!bytesByRecord.has(record)) bytesByRecord.set(record, readBytes(source));
+    const bytes = bytesByRecord.get(record);
+    return bytes && sfntCoversText(bytes, glyphs) ? record.runtimeFamily : null;
+  };
+}
+
+/** HSUSFL은 italic Greek bank이므로 roman wrapper에서는 Unicode fallback을 쓴다. */
+export function equationHftBanks(italic: boolean): readonly string[] {
+  return italic ? ['HSUSRI', 'HSUSFL', 'HSUSSP'] : ['HSUSR', 'HSUSSP'];
+}
+
+export interface EquationLiteralFont { family: string; emScale: number }
+
+/** 구형 EQEDIT의 Unicode literal은 수식 bank가 아닌 일반 serif cell-height 글꼴이다. */
+export function createEquationLiteralFontResolver(
+  resolveFont: (name: string) => LocalFontRecord | null,
+  readBytes: (name: string) => ArrayBuffer | null,
+): (text: string) => EquationLiteralFont | null {
+  const cache = new WeakMap<LocalFontRecord, { bytes: ArrayBuffer; scale: number } | null>();
+  return text => {
+    for (const source of ['HCR Batang', 'Batang', 'Times New Roman']) {
+      const record = resolveFont(source);
+      if (!record?.runtimeFamily) continue;
+      if (!cache.has(record)) {
+        const bytes = readBytes(source);
+        const scale = bytes && sfntEmToCellRatio(bytes);
+        cache.set(record, bytes && scale ? { bytes, scale } : null);
+      }
+      const metrics = cache.get(record);
+      if (metrics && sfntCoversText(metrics.bytes, text)) return { family: record.runtimeFamily, emScale: metrics.scale };
+    }
+    return null;
+  };
+}
+
+/** 수식 배치와 paint가 같은 run의 advance와 잉크 경계를 사용한다. */
+export function createEquationTextMeasurer(
+  resolveFont: (name: string) => LocalFontRecord | null,
+  readBytes: (name: string) => ArrayBuffer | null,
+): (source: string, text: string, size: number, italic: boolean, hft: boolean, literal: boolean, bold?: boolean) => { advance: number; inkLeft: number; inkRight: number } | null {
+  const exact = createEquationFontResolver(resolveFont, readBytes);
+  const unicode = createEquationLiteralFontResolver(resolveFont, readBytes);
+  let context: CanvasRenderingContext2D | null = null;
+  return (source, text, size, italic, hft, literal, bold = false) => {
+    if (!Number.isFinite(size) || size <= 0 || !text) return null;
+    if (isLegacyEquationFont(source) && !hft) {
+      const mapped = [...text].map(character => ({ character, mapped: legacyEquationGlyph(character, italic, true) }));
+      if (exact(source, '')) {
+        const bytes = readBytes(source);
+        if (bytes) {
+          let advance = 0; let inkLeft = Number.NaN; let inkRight = 0; let complete = true;
+          for (const { character, mapped: [glyph, syntheticItalic] } of mapped) {
+            const metrics = sfntTrueTypeRunMetrics(bytes, glyph, size);
+            if (!metrics) {
+              // HY가 지원하지 않는 한글도 native와 같은 현대식 진행폭에 둔다.
+              if (!/[\u3000-\u9fff\uf900-\ufaff\uac00-\ud7af]/u.test(character)
+                || sfntCoversText(bytes, glyph)) { complete = false; break; }
+              if (Number.isNaN(inkLeft)) inkLeft = advance;
+              inkRight = Math.max(inkRight, advance + size);
+              advance += modernEquationAdvance(size, size);
+              continue;
+            }
+            if (Number.isNaN(inkLeft)) inkLeft = metrics.inkLeft;
+            inkRight = Math.max(inkRight, advance + metrics.inkRight);
+            advance += modernEquationAdvance(metrics.advance, size, syntheticItalic);
+          }
+          if (complete) return { advance, inkLeft, inkRight };
+        }
+      }
+    }
+    if (!context) context = globalThis.document?.createElement('canvas').getContext('2d') ?? null;
+    if (!context) return null;
+    const runs: Array<{ text: string; font: string }> = [];
+    // HFT literal은 painter가 한 글자씩 그린다. 다른 경로는 같은 서체 run을 합쳐 커닝한다.
+    const splitLiteral = hft && literal && /[^\x00-\x7f]/u.test(text);
+    for (const character of text) {
+      let family: string | null = null; let glyph = character; let skew = italic; let em = size;
+      if (hft && isLegacyEquationFont(source)) {
+        if (literal && /[^\x00-\x7f]/u.test(character)) {
+          const resolved = unicode(character);
+          if (!resolved) return null;
+          family = resolved.family; em *= resolved.emScale; skew = false;
+        } else {
+          const banks = equationHftBanks(italic);
+          family = banks.map(bank => exact(bank, character)).find(Boolean) ?? null; skew = false;
+        }
+      } else if (isLegacyEquationFont(source)) {
+        [glyph, skew] = legacyEquationGlyph(character, italic, true);
+        family = exact(source, glyph);
+      } else {
+        family = resolveFont(source)?.runtimeFamily ?? null;
+      }
+      if (!family) return null;
+      const font = `${skew ? 'italic ' : ''}${bold ? 'bold ' : ''}${em.toFixed(3)}px ${JSON.stringify(family)}`;
+      const last = runs.at(-1);
+      if (!splitLiteral && last?.font === font) last.text += glyph;
+      else runs.push({ text: glyph, font });
+    }
+    let advance = 0;
+    let inkLeft = Number.NaN;
+    let inkRight = 0;
+    for (const run of runs) {
+      context.font = run.font;
+      const metrics = context.measureText(run.text);
+      if (!Number.isFinite(metrics.width) || !Number.isFinite(metrics.actualBoundingBoxLeft)
+          || !Number.isFinite(metrics.actualBoundingBoxRight)) return null;
+      const left = advance - metrics.actualBoundingBoxLeft;
+      if (Number.isNaN(inkLeft)) inkLeft = left;
+      inkRight = Math.max(inkRight, advance + metrics.actualBoundingBoxRight);
+      advance += metrics.width;
+    }
+    return { advance, inkLeft: Number.isNaN(inkLeft) ? 0 : inkLeft, inkRight };
+  };
+}

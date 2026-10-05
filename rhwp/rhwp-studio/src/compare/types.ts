@@ -32,6 +32,12 @@ export interface CompareOptions {
   anchorTuning?: CompareAnchorTuning;
   /** 브라우저 프리징 방지용 계산 가드레일 */
   performanceTuning?: ComparePerformanceTuning;
+  /**
+   * 스냅샷 직전 강제 전체 재조판(`wasm.refreshLayout`) 여부 — 기본 true.
+   * 편집 중 실시간 '커밋 전' diff 처럼 입력을 막는 비용이 정확도보다 큰 경로만
+   * false 를 넘긴다 (페이지 라벨이 다소 늦게 따라갈 수 있음).
+   */
+  refreshLayout?: boolean;
 }
 
 export interface CompareDocMeta {
@@ -55,6 +61,8 @@ export interface CompareParaSnapshot {
   controlCount: number;
   /** 정규화 텍스트·컨트롤 개수·(WASM 가능 시)문단 모양 `ParaProperties` 요약을 묶은 digest — 앵커·유일 시그니처 매칭용 */
   signature: string;
+  /** 문단 모양과 글자 모양 run의 digest. 이전에 저장된 비교 스냅샷에는 없을 수 있다. */
+  formatSignature?: string;
   isAnchorCandidate: boolean;
   anchor?: DiffAnchor;
 }
@@ -67,12 +75,16 @@ export interface CompareControlSnapshot {
   summary: string;
   kind: DiffKind;
   anchor: DiffAnchor;
+  /** 표 셀의 전체 텍스트. 이전 비교 스냅샷에는 없을 수 있다. */
+  tableCellTexts?: string[];
 }
 
 export interface CompareDocumentSnapshot {
   meta: CompareDocMeta;
   paragraphs: CompareParaSnapshot[];
   controls: CompareControlSnapshot[];
+  /** 구역별 용지, 여백 등 페이지 설정의 digest. 이전 비교 스냅샷에는 없을 수 있다. */
+  layoutSignature?: string;
 }
 
 export interface ComparePath {

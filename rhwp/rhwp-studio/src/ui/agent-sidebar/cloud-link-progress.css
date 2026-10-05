@@ -12,28 +12,28 @@
 }
 
 .ag-cloud-link-progress-track {
-  height: 5px;
+  height: 6px;
   overflow: hidden;
-  border-radius: 999px;
-  background: var(--ag-surface-subtle);
+  border-radius: var(--ag-r-pill);
+  background: var(--n-ink-fill-selected);
 }
 
 .ag-cloud-link-progress-fill {
   width: 0;
   height: 100%;
   border-radius: inherit;
-  background: var(--accent-primary);
+  background: var(--n-ink);
   animation: ag-cloud-connecting 1.8s ease-in-out infinite alternate;
 }
 
 .ag-cloud-link-progress[data-state='done'] .ag-cloud-link-progress-fill {
   animation: none;
-  transition: width 320ms ease-out;
+  transition: width var(--ag-dur-slow) var(--ag-ease-out);
 }
 
 .ag-cloud-link-progress-eta {
   color: var(--ag-text-muted);
-  font-size: var(--font-size-xs, 10px);
+  font-size: var(--ag-fs-meta);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }

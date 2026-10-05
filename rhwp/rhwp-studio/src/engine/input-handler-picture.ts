@@ -1052,8 +1052,190 @@ export function cleanupPictureResizeDrag(this: any): void {
   this.pictureObjectRenderer?.clearDragPreview();
 }
 
+type DropCaret = { pageIndex: number; x: number; y: number; height: number };
+
+/** 인라인 그림을 놓을 자리. insertParagraphAt 이 있으면 그 자리에 빈 본문 문단을 먼저 만든다. */
+interface InlinePictureDropTarget {
+  parentPara: number;
+  path: { controlIndex: number; cellIndex: number; cellParaIndex: number }[];
+  charOffset: number;
+  insertParagraphAt?: number;
+  caret: DropCaret | null;
+}
+
+/** 본문 최상위 표의 해당 쪽 조각. 표가 그 쪽에 없으면 null. */
+function topLevelTableFragment(
+  this: any, pageIndex: number, paraIdx: number, controlIdx: number,
+): { x: number; y: number; w: number; h: number } | null {
+  if (pageIndex < 0 || pageIndex >= this.wasm.pageCount) return null;
+  const controls = this.wasm.getPageControlLayout(pageIndex).controls as import('@/core/types').ControlLayoutItem[];
+  return controls.find((item) => item.type === 'table' && !item.headerFooter
+    && item.paraIdx === paraIdx && item.controlIdx === controlIdx) ?? null;
+}
+
+function bodyCaret(this: any, sec: number, para: number, charOffset: number): DropCaret | null {
+  try { return this.wasm.getCursorRect(sec, para, charOffset); } catch { return null; }
+}
+
+/**
+ * 표 셀로 판정된 드롭 지점이 표의 첫 조각 위나 마지막 조각 아래라면 표 밖 본문 자리를 돌려준다.
+ * 표 옆 여백은 가장 가까운 셀 자리를 그대로 쓴다.
+ */
+function resolveTableEscapeDrop(
+  this: any, sec: number, pageIndex: number, y: number, tablePara: number, tableControl: number,
+  fragment: { x: number; y: number; w: number; h: number },
+): InlinePictureDropTarget | null {
+  if (y > fragment.y + fragment.h
+    && !topLevelTableFragment.call(this, pageIndex + 1, tablePara, tableControl)) {
+    const next = tablePara + 1;
+    if (next < this.wasm.getParagraphCount(sec)) {
+      return { parentPara: next, path: [], charOffset: 0, caret: bodyCaret.call(this, sec, next, 0) };
+    }
+    // 표가 구역 마지막 문단에 있으면 표 바로 뒤에 빈 문단을 만들어 받는다.
+    return {
+      parentPara: next, path: [], charOffset: 0, insertParagraphAt: next,
+      caret: { pageIndex, x: fragment.x, y: fragment.y + fragment.h + 4, height: 16 },
+    };
+  }
+  if (y < fragment.y && tablePara > 0
+    && !topLevelTableFragment.call(this, pageIndex - 1, tablePara, tableControl)) {
+    const prev = tablePara - 1;
+    const end = this.wasm.getLogicalLength(sec, prev);
+    return { parentPara: prev, path: [], charOffset: end, caret: bodyCaret.call(this, sec, prev, end) };
+  }
+  return null;
+}
+
+/** 드롭 좌표를 인라인 그림 삽입 자리로 바꾼다. 같은 구역의 본문 또는 표 셀만 받는다. */
+function resolveInlinePictureDrop(
+  this: any, sec: number, pageIndex: number, x: number, y: number,
+): InlinePictureDropTarget | null {
+  let hit: import('@/core/types').HitTestResult & { cursorRect?: DropCaret };
+  try {
+    hit = this.wasm.hitTest(pageIndex, x, y);
+  } catch {
+    return null;
+  }
+  // 글상자·머리글·바닥글은 제외한다.
+  const valid = hit
+    && hit.sectionIndex === sec
+    && typeof hit.paragraphIndex === 'number'
+    && hit.paragraphIndex >= 0
+    && hit.paragraphIndex < 0xFFFFFF00
+    && !hit.isTextBox
+    && Number.isFinite(hit.charOffset);
+  if (!valid) return null;
+  const path = hit.cellPath?.length ? hit.cellPath
+    : hit.parentParaIndex !== undefined && hit.controlIndex !== undefined && hit.cellIndex !== undefined
+      ? [{ controlIndex: hit.controlIndex, cellIndex: hit.cellIndex, cellParaIndex: hit.paragraphIndex }]
+      : [];
+  if (path.length) {
+    // 셀 자리는 이 쪽에 보이는 본문 표 안이어야 한다 (머리말 글상자 등이 셀 경로로 섞여 오는 경우 제외).
+    const tablePara = hit.parentParaIndex;
+    if (tablePara === undefined) return null;
+    let fragment: { x: number; y: number; w: number; h: number } | null = null;
+    try {
+      fragment = topLevelTableFragment.call(this, pageIndex, tablePara, path[0].controlIndex);
+    } catch { /* 조회 실패는 무효 드롭으로 본다 */ }
+    if (!fragment) return null;
+    let escaped: InlinePictureDropTarget | null = null;
+    try {
+      escaped = resolveTableEscapeDrop.call(
+        this, sec, pageIndex, y, tablePara, path[0].controlIndex, fragment,
+      );
+    } catch { /* 본문 자리 조회 실패 시 셀 자리를 쓴다 */ }
+    if (escaped) return escaped;
+  }
+  return {
+    parentPara: path.length ? hit.parentParaIndex ?? hit.paragraphIndex : hit.paragraphIndex,
+    path,
+    charOffset: hit.charOffset,
+    caret: hit.cursorRect ?? null,
+  };
+}
+
+/** 인라인 그림 드래그가 편집 영역 위·아래 가장자리에 닿으면 스크롤한다. */
+function updatePictureMoveAutoScroll(this: any): void {
+  const state = this.pictureMoveState;
+  if (!state?.inlineTac || state.lastClientY === undefined) return;
+  // 가장자리 판정은 텍스트 선택 드래그와 같은 규칙을 쓴다.
+  this.dragLastClientY = state.lastClientY;
+  if (this.getTextSelectionDragScrollDeltaY() === 0) {
+    stopPictureMoveAutoScroll.call(this);
+    return;
+  }
+  if (!this.pictureMoveAutoScrollRafId) {
+    this.pictureMoveAutoScrollRafId = requestAnimationFrame(() => runPictureMoveAutoScroll.call(this));
+  }
+}
+
+function runPictureMoveAutoScroll(this: any): void {
+  this.pictureMoveAutoScrollRafId = 0;
+  const state = this.pictureMoveState;
+  if (!this.isPictureMoveDragging || !state) return;
+  this.dragLastClientY = state.lastClientY;
+  const deltaY = this.getTextSelectionDragScrollDeltaY();
+  if (deltaY === 0) return;
+  const before = this.container.scrollTop;
+  // 드래그 예비 테두리가 문서 끝 너머로 스크롤 영역을 늘리므로 쪽 배치 높이로 제한한다.
+  const contentHeight = Math.min(this.container.scrollHeight, this.virtualScroll.getTotalHeight());
+  const maxScrollTop = Math.max(0, contentHeight - this.container.clientHeight);
+  this.container.scrollTop = Math.max(0, Math.min(maxScrollTop, before + deltaY));
+  if (this.container.scrollTop === before) return;
+  // 포인터는 그대로지만 아래 문서가 움직였으므로 드롭 자리를 다시 계산한다.
+  updatePictureMoveDrag.call(this, { clientX: state.lastClientX, clientY: state.lastClientY } as MouseEvent);
+}
+
+function stopPictureMoveAutoScroll(this: any): void {
+  if (this.pictureMoveAutoScrollRafId) {
+    cancelAnimationFrame(this.pictureMoveAutoScrollRafId);
+    this.pictureMoveAutoScrollRafId = 0;
+  }
+}
+
+/** 같은 pointer press에서 개체 선택과 이동을 시작한다. */
+export function startPictureMoveDrag(
+  this: any, e: MouseEvent, ref: PictureObjectRef,
+  bbox: { x: number; y: number; w: number; h: number },
+  pageIndex: number, pageX: number, pageY: number,
+): boolean {
+  if (e.button !== 0 || e.shiftKey) return false;
+  try {
+    const props = this.getObjectProperties(ref);
+    const inlineTac = !!props.treatAsChar && ref.type === 'image' && !ref.headerFooter;
+    if (props.treatAsChar && !inlineTac) return false;
+    let originCharOffset: number | undefined;
+    if (inlineTac && !hasCellPath(ref)) {
+      const hit = this.wasm.hitTest(pageIndex, bbox.x + Math.min(2, bbox.w * 0.25), bbox.y + bbox.h / 2);
+      if (hit.sectionIndex !== ref.sec || hit.paragraphIndex !== ref.ppi
+        || !Number.isFinite(hit.charOffset)) return false;
+      originCharOffset = hit.charOffset;
+    }
+    e.preventDefault();
+    this.isPictureMoveDragging = true;
+    this.pictureMoveState = {
+      ref: { ...ref }, origHorzOffset: props.horzOffset, origVertOffset: props.vertOffset,
+      inlineTac: inlineTac || undefined, originCharOffset,
+      startPageX: pageX, startPageY: pageY, lastPageX: pageX, lastPageY: pageY,
+      startClientX: e.clientX, startClientY: e.clientY, passedDragThreshold: false,
+      totalDeltaH: 0, totalDeltaV: 0, pageIndex, lastPageIndex: pageIndex,
+      bbox: { ...bbox }, rotationAngle: props.rotationAngle ?? 0,
+    };
+    this.container.style.cursor = 'move';
+    document.addEventListener('mousemove', this.onMouseMoveBound);
+    document.addEventListener('mouseup', this.onMouseUpBound, { once: true });
+    this.textarea.focus();
+    return true;
+  } catch { return false; }
+}
+
 export function updatePictureMoveDrag(this: any, e: MouseEvent): void {
   if (!this.pictureMoveState) return;
+  const initial = this.pictureMoveState;
+  if (initial.startClientX !== undefined && !initial.passedDragThreshold) {
+    if (Math.hypot(e.clientX - initial.startClientX, e.clientY - initial.startClientY) < 3) return;
+    initial.passedDragThreshold = true;
+  }
   const zoom = this.viewportManager.getZoom();
   const sc = this.container.querySelector('#scroll-content');
   if (!sc) return;
@@ -1067,21 +1249,30 @@ export function updatePictureMoveDrag(this: any, e: MouseEvent): void {
   const px = (cx - pl) / zoom;
   const py = (cy - po) / zoom;
 
+  initial.lastClientX = e.clientX;
+  initial.lastClientY = e.clientY;
+  updatePictureMoveAutoScroll.call(this);
+
   const deltaXpx = px - this.pictureMoveState.lastPageX;
   const deltaYpx = py - this.pictureMoveState.lastPageY;
   const deltaH = Math.round(deltaXpx * 75); // 1 page px = 75 HWPUNIT
   const deltaV = Math.round(deltaYpx * 75);
 
-  if (deltaH === 0 && deltaV === 0) return;
+  if (deltaH === 0 && deltaV === 0 && pi === this.pictureMoveState.lastPageIndex) return;
 
   const state = this.pictureMoveState;
   state.lastPageX = px;
   state.lastPageY = py;
+  state.lastPageIndex = pi;
   state.totalDeltaH += deltaH;
   state.totalDeltaV += deltaV;
+  if (state.inlineTac) {
+    const target = resolveInlinePictureDrop.call(this, state.ref.sec, pi, px, py);
+    this.pictureObjectRenderer?.renderDropCaret(target?.caret ?? null, zoom);
+  }
   this.pictureObjectRenderer?.renderDragPreview(
     {
-      pageIndex: state.pageIndex,
+      pageIndex: state.inlineTac ? pi : state.pageIndex,
       x: state.bbox.x + state.totalDeltaH / PX_TO_HWP,
       y: state.bbox.y + state.totalDeltaV / PX_TO_HWP,
       width: state.bbox.w,
@@ -1093,6 +1284,7 @@ export function updatePictureMoveDrag(this: any, e: MouseEvent): void {
 }
 
 export function cleanupPictureMoveDrag(this: any): void {
+  stopPictureMoveAutoScroll.call(this);
   this.isPictureMoveDragging = false;
   this.pictureMoveState = null;
   this.container.style.cursor = '';
@@ -1122,35 +1314,54 @@ export function finishPictureMoveDrag(this: any, e: MouseEvent): void {
 function finishInlinePictureMoveDrag(this: any, state: NonNullable<any>): void {
   const { totalDeltaH, totalDeltaV } = state;
   // 드래그 정이동 없으면 기록하지 않는다 (커서만 복구).
-  if (totalDeltaH === 0 && totalDeltaV === 0) return;
+  if (totalDeltaH === 0 && totalDeltaV === 0 && state.lastPageIndex === state.pageIndex) return;
 
-  let hit: import('@/core/types').HitTestResult;
-  try {
-    hit = this.wasm.hitTest(state.pageIndex, state.lastPageX, state.lastPageY);
-  } catch (err) {
-    console.warn('[InputHandler] 인라인 그림 드롭 지점 판정 실패:', err);
+  const target = resolveInlinePictureDrop.call(
+    this, state.ref.sec, state.lastPageIndex ?? state.pageIndex, state.lastPageX, state.lastPageY,
+  );
+  if (!target) {
+    console.warn('[InputHandler] 인라인 그림 드롭 지점이 유효하지 않아 이동하지 않았습니다');
     return;
   }
-  // 드롭 대상 가드: 같은 구역 본문 문단의 유효 캐럿 위치만 받는다 (셀/글상자·머리글·바닥글 제외).
-  const valid = hit
-    && hit.sectionIndex === state.ref.sec
-    && typeof hit.paragraphIndex === 'number'
-    && hit.paragraphIndex >= 0
-    && hit.paragraphIndex < 0xFFFFFF00
-    && hit.parentParaIndex === undefined
-    && !hit.cellPath
-    && !hit.isTextBox
-    && Number.isFinite(hit.charOffset);
-  if (!valid) {
-    console.warn('[InputHandler] 인라인 그림 드롭 지점이 본문이 아니어서 이동하지 않았습니다');
+  if (hasCellPath(state.ref) || target.path.length || target.insertParagraphAt !== undefined) {
+    let moved: ReturnType<import('@/core/wasm-bridge').WasmBridge['movePictureControlByPath']> | undefined;
+    try {
+      // 표 밖 빈 문단 생성과 이동을 한 스냅샷으로 묶어 되돌리기 한 번에 복원한다.
+      this.executeOperation({
+        kind: 'snapshot', operationType: 'moveInlinePicture',
+        operation: (wasm: import('@/core/wasm-bridge').WasmBridge) => {
+          if (target.insertParagraphAt !== undefined) {
+            wasm.insertParagraph(state.ref.sec, target.insertParagraphAt);
+          }
+          moved = wasm.movePictureControlByPath(
+            state.ref.sec, state.ref.ppi, state.ref.cellPath ?? [], state.ref.ci,
+            target.parentPara, target.path, target.charOffset,
+          );
+          if (!moved.ok) throw new Error('표 셀 그림 이동 실패');
+          const path = moved.cellPath;
+          return path.length ? {
+            sectionIndex: state.ref.sec, parentParaIndex: moved.paraIdx,
+            paragraphIndex: path.at(-1)!.cellParaIndex, charOffset: moved.charOffset,
+            controlIndex: path[0].controlIndex, cellIndex: path[0].cellIndex, cellPath: path,
+          } : { sectionIndex: state.ref.sec, paragraphIndex: moved.paraIdx, charOffset: moved.charOffset };
+        },
+        meta: { domain: 'object', refresh: 'full', dirtyScope: 'object' },
+      });
+      if (moved) this.cursor.enterPictureObjectSelectionRef({
+        sec: state.ref.sec, ppi: moved.paraIdx, ci: moved.controlIdx, type: 'image',
+        ...(moved.cellPath.length ? { cellPath: moved.cellPath } : {}),
+      });
+    } catch (error) {
+      console.warn('[InputHandler] 표 셀 그림 이동 확정 실패:', error);
+    }
     return;
   }
   // 같은 문단 + 같은 논리 위치로의 드롭은 이동이 아니다 (wasm moved:false 와 동일 의미).
-  if (hit.paragraphIndex === state.ref.ppi && hit.charOffset === state.originCharOffset) return;
+  if (target.parentPara === state.ref.ppi && target.charOffset === state.originCharOffset) return;
 
   const command = new MoveInlinePictureCommand(
     state.ref.sec, state.ref.ppi, state.ref.ci,
-    hit.paragraphIndex, hit.charOffset, state.originCharOffset ?? 0,
+    target.parentPara, target.charOffset, state.originCharOffset ?? 0,
   );
   try {
     this.executeOperation({
@@ -1166,7 +1377,7 @@ function finishInlinePictureMoveDrag(this: any, state: NonNullable<any>): void {
   const movedCi = command.appliedControlIndex ?? state.ref.ci;
   this.cursor.enterPictureObjectSelectionRef({
     sec: state.ref.sec,
-    ppi: command.appliedParaIndex ?? hit.paragraphIndex,
+    ppi: command.appliedParaIndex ?? target.parentPara,
     ci: movedCi,
     type: 'image',
   });

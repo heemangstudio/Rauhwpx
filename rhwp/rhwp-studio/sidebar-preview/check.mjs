@@ -1,6 +1,8 @@
+import { checkChipAlignment } from './chip-alignment.check.mjs';
+import { checkPiModels } from './pi-models.check.mjs';
 import { checkCloudMergeRecovery } from './cloud-merge-recovery.check.mjs';
 import { checkCloudSetup } from './cloud-setup.check.mjs';
-import { checkCliTerminalDefaults } from './cli-terminal-defaults.check.mjs';
+import { checkBoatSetup } from './boat-setup.check.mjs';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -11,6 +13,8 @@ import { checkSetupTerminal } from './setup-terminal.check.mjs';
 import { checkFleetPreview } from './fleet.check.mjs';
 import { checkCloudRecovery } from './cloud-recovery.check.mjs';
 import { checkCloudStream } from './cloud-stream.check.mjs';
+import { checkChangesPreview } from './changes.check.mjs';
+import { checkPlanPreview } from './plan.check.mjs';
 import { browserLaunchArgs, findBrowserExecutable } from '../tests/browser-support.ts';
 
 const studio = resolve(import.meta.dirname, '..');
@@ -132,8 +136,11 @@ try {
       throw new Error(`${name}: ${error.message}\nRuntime errors: ${JSON.stringify(errors)}\nBlocked requests: ${JSON.stringify(forbidden)}`, { cause: error });
     }
   }
+  await step('Fullscreen provider chip follows the composer column', () => checkChipAlignment(page, origin));
   await step('First Cloud server creation, cancel, refresh and recreation',
     () => checkCloudSetup(page, origin, artifacts));
+  await step('boat server setup by email and API key, card start/stop, disconnect and delete at 280/480/900px',
+    () => checkBoatSetup(page, origin, artifacts));
   await step('Cloud disconnect, reconnect, rebuild, and shutdown recovery',
     () => checkCloudRecovery(page, origin, artifacts));
   await step('Cloud streamed text survives delayed timelines and terminal errors do not reconnect',
@@ -144,7 +151,7 @@ try {
     await open('cloud=1&dashboard=1&page=settings&destination=cloud&controls=0');
     await page.waitForSelector('.ag-cd-task');
     assert.equal(await page.$$eval('.ag-cd-task', nodes => nodes.length), 4);
-    assert.equal(await page.$$eval('.ag-cd-stats, .ag-cd-chart, .ag-cd-content h3', nodes => nodes.some(node => node.checkVisibility())), false);
+    assert.equal(await page.$$eval('.ag-cd-stats, .ag-cd-chart', nodes => nodes.some(node => node.checkVisibility())), false);
     const initialStatuses = await page.$$eval('.ag-cd-task-status', nodes => nodes.map(node => node.textContent));
     await page.focus('.ag-cd-task');
     await page.evaluate(() => window.sidebarPreview.cloud.publish());
@@ -173,14 +180,9 @@ try {
     await page.click('.ag-cd-refresh');
     await page.waitForFunction(() => !document.querySelector('.ag-cd-refresh').disabled);
     await page.evaluate(() => window.sidebarPreview.cloud.setDashboardState('logged-out'));
-    assert.equal(await page.$eval('.ag-cd-login', node => node.checkVisibility()), true);
-    await page.evaluate(() => {
-      window.previewOriginalOpen = window.open;
-      window.open = url => { window.previewLoginUrl = url; return null; };
-    });
-    await page.click('.ag-cd-login');
-    await page.waitForFunction(() => window.previewLoginUrl === 'https://accounts.example.invalid/preview');
-    await page.evaluate(() => { window.open = window.previewOriginalOpen; });
+    // Rauhwpx 계정 줄은 AI 연결이 아니라 Cloud 서버 카드 안에만 있다.
+    assert.equal(await page.$$eval('.ag-cloud-settings-card .ag-account-session-row', nodes => nodes.length), 1);
+    assert.equal(await page.$$eval('#ag-settings-pane-ai .ag-account-session-row', nodes => nodes.length), 0);
     await open('cloud=1&dashboard=1&page=settings&destination=cloud&width=280&theme=dark&controls=0');
     assert.equal(await page.$eval('#ag-settings-pane-cloud', node => node.scrollWidth > node.clientWidth), false);
     await screenshot('cloud-inbox-narrow');
@@ -215,6 +217,10 @@ try {
     await clickText('button', '변경 검토');
     await page.waitForFunction(() => window.sidebarPreview.versions.getState().branches
       .some(branch => branch.name === 'Cloud · 팀 회의록 · 1턴'));
+    // 반영 알림 토스트가 사이드바 머리글을 잠시 덮는다. 닫고 버전 기록을 연다.
+    await page.waitForSelector('.rhwp-toast-close');
+    await page.click('.rhwp-toast-close');
+    await page.waitForSelector('.rhwp-toast', { hidden: true });
     await page.click('[aria-label="버전"]');
     await page.waitForSelector('.ag-root.ag-versions-open');
     await clickText('.ag-versions-tab', '브랜치');
@@ -348,14 +354,128 @@ try {
       );
     },
   );
+  await step('Tool activity labels stay compact during and after a turn', async () => {
+    await play('chat');
+    assert.equal(await page.$eval('.ag-activity-label', node => node.textContent), 'read_document');
+    await open('scenario=tools');
+    await page.click('#play');
+    const turnLabel = '편집 2번 · 읽기 1번 · 도구 1번 · 오류 1';
+    await page.waitForFunction((label) => !window.sidebarPreview.bridge.isTurnRunning()
+      && document.querySelector('.ag-activity-label')?.textContent === label, {}, turnLabel);
+    await page.click('.ag-activity-toggle');
+    const toolRows = async () => page.$$eval('.ag-tool-row', rows => rows.map(row => ({
+      label: row.querySelector('.ag-tool-label')?.textContent,
+      summary: row.querySelector('.ag-tool-summary')?.textContent,
+      outcome: row.querySelector('.ag-tool-outcome')?.hidden ? '' : row.querySelector('.ag-tool-outcome-text')?.textContent,
+      thumb: Boolean(row.querySelector('.ag-tool-thumb img')),
+      items: [...row.querySelectorAll('.ag-tool-item')].map(item => item.textContent),
+    })));
+    const assertToolRows = (rows) => {
+      assert.deepEqual(rows.map(row => row.label), ['read_document', '2개 읽기', '3곳 편집', '표 속성 변경']);
+      assert.equal(rows[1].outcome, '2개 읽음');
+      assert.equal(rows[2].summary, '텍스트 바꾸기 · 텍스트 삽입 · 글자 서식');
+      assert.equal(rows[2].outcome, '3개 편집 적용 · 2쪽');
+      assert.equal(rows[2].items.length, 3);
+      assert.equal(rows[3].outcome, '문서 버전 불일치');
+    };
+    const live = await toolRows();
+    assertToolRows(live);
+    assert.equal(live[2].thumb, true, '편집 결과 그림이 작은 그림으로 붙는다');
+    await page.$$eval('.ag-tool-head', heads => heads[2].click());
+    await page.click('.ag-tool-thumb');
+    await page.waitForSelector('.ag-image-viewer img');
+    await screenshot('tool-activity-live');
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => !document.querySelector('.ag-image-viewer'));
+    // 줄인 그림이 기록에 들어간 뒤 다시 연다.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await page.click('.ag-header .ag-threads-btn');
+    const threadId = await page.$eval('.ag-threads-item.ag-active', node => node.dataset.threadId);
+    await page.reload({ waitUntil: 'networkidle0' });
+    await page.click('.ag-header .ag-threads-btn');
+    await page.$eval('.ag-threads-list', (list, id) =>
+      [...list.querySelectorAll('.ag-threads-item')].find(node => node.dataset.threadId === id)?.click(), threadId);
+    await page.waitForSelector('.ag-activity-label');
+    assert.equal(await page.$eval('.ag-activity-label', node => node.textContent), turnLabel);
+    await page.click('.ag-activity-toggle');
+    const stored = await toolRows();
+    assertToolRows(stored);
+    assert.equal(stored[2].thumb, true, '저장된 대화도 결과 그림을 보인다');
+    await screenshot('tool-activity');
+  });
+  await step('Chat follows a send and yields to manual scrolling', async () => {
+    await open('scenario=chat&hold=1');
+    await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'no-preference' }]);
+    await page.evaluate(() => {
+      const messages = document.querySelector('.ag-messages');
+      const history = document.createElement('div');
+      history.style.minHeight = '1200px';
+      messages.insertBefore(history, messages.querySelector('.ag-messages-end'));
+    });
+    await page.waitForFunction(() => document.querySelector('.ag-messages').scrollTop > 200);
+    await page.$eval('.ag-messages', (messages) => { messages.scrollTop = 0; });
+    await page.click('#play');
+    await page.waitForFunction(() => document.querySelector('.ag-messages').scrollTop > 400);
+    const messages = await page.$('.ag-messages');
+    const box = await messages.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    // 따라가기 스크롤이 멈춘 뒤의 위치를 기준으로 삼는다. 움직이는 중에 읽으면 휠이 그 움직임과 겹친다.
+    await page.waitForFunction(() => new Promise((done) => {
+      const node = document.querySelector('.ag-messages');
+      const before = node.scrollTop;
+      setTimeout(() => done(Math.abs(node.scrollTop - before) < 1), 250);
+    }));
+    const followedTop = await messages.evaluate((node) => node.scrollTop);
+    // 답변 아래 끝 여백까지 화면 밖으로 넘길 만큼 올린다.
+    await page.mouse.wheel({ deltaY: -700 });
+    await page.waitForFunction((top) => document.querySelector('.ag-messages').scrollTop < top - 80, {}, followedTop);
+    // 입력기는 대화 끝이 충분히 가려진 뒤 이어지는 위 스크롤에서 접힌다.
+    const scrolledTop = await messages.evaluate((node) => node.scrollTop);
+    await page.mouse.wheel({ deltaY: -60 });
+    await page.waitForSelector('.ag-composer.ag-resting');
+    await page.waitForFunction((top) => new Promise((done) => {
+      const node = document.querySelector('.ag-messages');
+      const before = node.scrollTop;
+      setTimeout(() => done(before < top && Math.abs(node.scrollTop - before) < 1), 250);
+    }), {}, scrolledTop);
+    const pausedTop = await messages.evaluate((node) => node.scrollTop);
+    // 멈춘 턴은 닫히지 않은 마지막 문단을 그리지 않으므로 그 앞 목록까지 기다린다.
+    await page.waitForFunction(() => document.querySelector('.ag-messages').textContent.includes('단계별 일정과 담당자를 확인합니다.'));
+    assert(Math.abs((await messages.evaluate((node) => node.scrollTop)) - pausedTop) < 4);
+    await page.mouse.wheel({ deltaY: 1800 });
+    await page.waitForFunction(() => {
+      const node = document.querySelector('.ag-messages');
+      return node.scrollHeight - node.scrollTop - node.clientHeight < 4;
+    });
+    await page.waitForSelector('.ag-composer:not(.ag-resting)');
+    // 실행 중인 답변은 첫 줄에 고정되고 끝을 쫓지 않는다. 턴을 멈춰 답변을 확정한 뒤,
+    // 그 아래로 붙는 내용은 다시 끝을 따라가는지 본다.
+    await page.$eval('.ag-send', (button) => button.click());
+    await page.waitForFunction(() => !window.sidebarPreview.bridge.isTurnRunning());
+    const resumedTop = await messages.evaluate((node) => node.scrollTop);
+    await page.evaluate(() => {
+      const messages = document.querySelector('.ag-messages');
+      const more = document.createElement('div');
+      // 끝 여백이 흡수하지 못할 만큼 길게 붙인다.
+      more.style.minHeight = '1200px';
+      messages.insertBefore(more, messages.querySelector('.ag-messages-end'));
+    });
+    await page.waitForFunction((top) => document.querySelector('.ag-messages').scrollTop > top + 100, {}, resumedTop);
+    // 접힌 입력기는 누르는 순간 설정 줄과 함께 다시 펼쳐진다.
+    await page.mouse.wheel({ deltaY: -120 });
+    await page.waitForSelector('.ag-composer.ag-resting');
+    await page.click('.ag-input');
+    await page.waitForSelector('.ag-composer:not(.ag-resting) .ag-composer-meta', { visible: true });
+    await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'reduce' }]);
+  });
   await step('Provider, model and effort changes after the first reply', async () => {
     await play('chat');
     const messageCount = await page.$$eval('.ag-msg-user', (nodes) => nodes.length);
     await page.click('[aria-label="프로바이더 선택"]');
     await page.waitForSelector('.ag-config-panel.ag-open');
     await page.click('.ag-provider-item[data-agent="codex"]');
-    await page.click('.ag-llm-item[data-model="gpt-5.6-luna"]');
-    await page.click('.ag-llm-item[data-model="gpt-6-astra"]');
+    await page.click('.ag-llm-item[data-model="luna"]');
+    await page.click('.ag-llm-item[data-model="astra"]');
     await page.focus('.ag-eslider');
     await page.keyboard.press('End');
     await page.waitForFunction(() => document.querySelector('.ag-effort-name').textContent === 'Max');
@@ -389,6 +509,11 @@ try {
       await page.waitForFunction(
         () => window.sidebarPreview.snapshot().pendingChanges === 0,
       );
+      assert.equal(await page.$('.ag-review-card:not(.ag-review-card-leaving)'), null);
+      assert.equal(await page.$eval('.ag-agent-undo-btn', (node) => node.hidden), false);
+      await page.click('.ag-agent-undo-btn');
+      await page.waitForFunction(() => window.sidebarPreview.undoState.calls === 1);
+      assert.equal(await page.$eval('.ag-agent-undo-btn', (node) => node.hidden), true);
       await play('review');
       await page.waitForSelector('.ag-review-card .ag-reject', {
         visible: true,
@@ -400,6 +525,8 @@ try {
       );
     },
   );
+  await step('Plan research, revision, execution progress, and review',
+    () => checkPlanPreview(page, origin, artifacts));
   await step('Question submission and resolution', async () => {
     await play('question');
     await screenshot('question');
@@ -412,7 +539,7 @@ try {
       document.querySelector('.ag-root').innerText.includes('선택한 문체'),
     );
   });
-  await step('New CLI installs default to terminal login', () => checkCliTerminalDefaults(page, origin));
+  await step('Shared Pi model selection', () => checkPiModels(page, origin));
   await step('Embedded CLI login terminal', () => checkSetupTerminal(page, origin));
   await step('Provider picker only lists connected providers', async () => {
     await open();
@@ -422,6 +549,8 @@ try {
     assert.deepEqual(await visible(), []);
   });
   await step('Compact live subagent previews', () => checkFleetPreview(page, origin));
+  await step('Full-screen changes, history, commit, discard, and review',
+    () => checkChangesPreview(page, origin, artifacts));
   await step('Subagent fleet, failure, and offline recovery', async () => {
     await play('fleet');
     await page.waitForSelector('.ag-fleet-slot:not([hidden]) .ag-fleet-toggle');
@@ -434,7 +563,7 @@ try {
     );
     assert(
       !(await page.$eval('.ag-root', (element) =>
-        element.innerText.includes('작업을 마쳤습니다.'),
+        element.innerText.includes('작업 완료 · 문서 확인'),
       )),
     );
     await page.select('#connection', 'disconnected');
@@ -500,6 +629,9 @@ try {
       visible: true,
     });
     await page.click('[aria-label="sample.txt 참고자료 제거"]');
+    // 제거 확인은 사이드바 안의 확인 시트로 뜬다.
+    await page.waitForSelector('.ag-sheet-layer.ag-sheet-open .ag-sheet-confirm', { visible: true });
+    await page.click('.ag-sheet-confirm');
     await page.waitForSelector('[aria-label="sample.txt 참고자료 제거"]', {
       hidden: true,
     });
@@ -527,6 +659,22 @@ try {
         throw new Error('Delete failed');
     });
   });
+  await step('Dragging an image without a filename extension stages it as an attachment', async () => {
+    await open();
+    const drop = await page.evaluate(() => {
+      const data = new DataTransfer();
+      data.items.add(new File(['image bytes'], 'image-from-browser', { type: 'image/png' }));
+      const input = document.querySelector('.ag-input');
+      input.dispatchEvent(new DragEvent('dragenter', { bubbles: true, cancelable: true, dataTransfer: data }));
+      input.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: data }));
+      const event = new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: data });
+      input.dispatchEvent(event);
+      return { prevented: event.defaultPrevented, types: [...data.types] };
+    });
+    assert.deepEqual(drop, { prevented: true, types: ['Files'] });
+    await page.waitForSelector('.ag-reference-upload-chip', { visible: true });
+    assert.match(await page.$eval('.ag-reference-upload-chip-name', (node) => node.textContent), /^드롭한 이미지 .+\.png$/);
+  });
   await step(
     'Settings, fake account login/logout, templates, and writing style',
     async () => {
@@ -552,7 +700,7 @@ try {
       await page.click('[data-action="confirm-reset"]');
       assert.equal(await page.$eval('[data-action="confirm-reset"]', (el) => el.disabled), true);
       assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('rhwp-codex-pending-reset')).account), 'preview-codex');
-      await page.waitForFunction(() => document.querySelector('.ag-provider-quotas').textContent.includes('한도를 리셋했어요.'));
+      await page.waitForFunction(() => document.querySelector('.ag-provider-quotas').textContent.includes('한도 리셋 완료'));
       assert.match(await page.$eval('.ag-provider-quotas', (el) => el.textContent), /보관한 리셋 1개/);
       assert.equal(await page.evaluate(() => localStorage.getItem('rhwp-codex-pending-reset')), null);
       assert.equal(await page.$eval('.ag-settings-quota-card[data-provider="codex"] [role="meter"]', (el) => el.getAttribute('aria-valuenow')), '100');
@@ -561,7 +709,8 @@ try {
       assert.equal(await page.$eval('[data-action="refresh-usage"]', (el) => el.disabled), true);
       await page.waitForFunction(() => !document.querySelector('[data-action="refresh-usage"]').disabled);
       await screenshot('settings');
-      await clickText('.ag-settings-nav-button', 'AI');
+      // Rauhwpx 계정은 Cloud 서버 카드에서 로그인한다.
+      await open('cloud=1&page=settings&destination=cloud');
       await page.waitForFunction(() =>
         document
           .querySelector('.ag-account-session-row')
@@ -581,6 +730,7 @@ try {
       await page.waitForFunction(
         () => window.sidebarPreview.snapshot().account === 'signed-out',
       );
+      await open('page=settings');
       await clickText('.ag-settings-nav-button', 'AI');
       await page.waitForSelector('.ag-template-row', { visible: true });
       await screenshot('ai-settings');
@@ -667,7 +817,7 @@ try {
     assert.equal(await page.$eval('[data-action="confirm-reset"]', (el) => el.disabled), false,
       'An interrupted reset can be checked again after reload even with zero credits');
     await page.click('[data-action="confirm-reset"]');
-    await page.waitForFunction(() => document.querySelector('.ag-provider-quotas').textContent.includes('사용할 리셋 크레딧이 없어요.'));
+    await page.waitForFunction(() => document.querySelector('.ag-provider-quotas').textContent.includes('리셋 크레딧 없음'));
     assert.equal(await page.evaluate(() => localStorage.getItem('rhwp-codex-pending-reset')), null);
   });
   await step(
@@ -782,6 +932,23 @@ try {
     await screenshot('versions-light-narrow');
     assert(await page.$eval('.ag-versions-page', (el) => el.scrollWidth <= el.clientWidth), 'Narrow panel overflows');
     await open('width=480');
+  });
+  await step('AI model choices stage, cancel, save, and filter the composer', async () => {
+    await open('page=settings&destination=ai&reset=1&width=360');
+    await page.waitForSelector('.ag-settings-model-row[data-model-id="claude-haiku-4-5"]');
+    await page.type('.ag-settings-model-search-input', 'haiku');
+    assert.equal(await page.$$eval('.ag-settings-model-row', (rows) => rows.length), 1);
+    await page.click('.ag-settings-model-row');
+    assert.equal(await page.$eval('.ag-settings-ai-footer .ag-settings-primary', (button) => button.disabled), false);
+    await clickText('.ag-settings-ai-footer button', '취소');
+    assert.equal(await page.$eval('.ag-settings-model-row', (row) => row.getAttribute('aria-pressed')), 'true');
+    await page.click('.ag-settings-model-row');
+    await clickText('.ag-settings-ai-footer button', '적용');
+    assert.equal(await page.$eval('.ag-settings-ai-footer .ag-settings-primary', (button) => button.disabled), true);
+    await page.click('.ag-settings-close');
+    await page.click('.ag-llm-trigger');
+    assert.deepEqual(await page.$$eval('.ag-llm-item', (rows) => rows.map((row) => row.dataset.model)),
+      ['claude-opus-4-6', 'claude-sonnet-4-6']);
   });
   await step(
     'Document context, reset, clean canvas, and backend isolation',

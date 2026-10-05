@@ -641,7 +641,7 @@ test('resolver desktop controls click, report failures, retry, and fit macOS chr
         const hitTargets = controls.map((button) => {
           const rect = button.getBoundingClientRect();
           return {
-            label: button.textContent,
+            label: button.getAttribute('aria-label') ?? button.textContent,
             hittable: document.elementFromPoint(
               rect.left + rect.width / 2,
               rect.top + rect.height / 2,
@@ -662,8 +662,8 @@ test('resolver desktop controls click, report failures, retry, and fit macOS chr
       assert.equal(geometry.headingClearsTrafficLights, true, `${viewport.width}px traffic-light overlap`);
       assert.equal(geometry.controlsInside, true, `${viewport.width}px control outside viewport`);
       assert.deepEqual(geometry.hitTargets, [
-        { label: '모두 적용', hittable: true },
-        { label: '저장하고 닫기', hittable: true },
+        { label: '모두 수락', hittable: true },
+        { label: '병합 초안을 저장하고 닫기', hittable: true },
         { label: '선택한 변경 적용', hittable: true },
       ]);
       await page.click('.merge-resolver-header-actions button[aria-label="병합 초안을 저장하고 닫기"]');

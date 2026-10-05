@@ -18,7 +18,8 @@ export async function checkFleetPreview(page, origin) {
     await page.click('.ag-fleet-dock-pill');
     assert.equal(await page.$$eval('.ag-fleet-task', rows => rows.length), 3);
     assert.equal(await page.$$eval('.ag-fleet-task.ag-open', rows => rows.length), 0);
-    assert(await page.$eval('.ag-fleet-head', el => el.getBoundingClientRect().height < 50));
+    // 잉크 토큰으로 글자가 커져 두 줄 행은 52px이다. 세 줄로 넘치지 않는지만 본다.
+    assert(await page.$eval('.ag-fleet-head', el => el.getBoundingClientRect().height < 56));
     assert.equal(await page.$eval('.ag-fleet-activity', el => getComputedStyle(el).gridRowStart), width === 840 ? '1' : '2');
     await page.click('.ag-fleet-task .ag-fleet-head');
     await page.waitForFunction(() => document.querySelector('.ag-fleet-task.ag-open .ag-fleet-preview').textContent.includes('문서의 문장'));

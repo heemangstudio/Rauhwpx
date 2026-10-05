@@ -327,3 +327,38 @@ test('interrupt closes a fleet turn and clears the settle timer', async (t) => {
 
   await session.dispose();
 });
+
+test('a legacy child that exits before reading stdin cannot crash the hub with EPIPE', async () => {
+  const events = [];
+  let child;
+  const session = createClaudeSession(
+    { ...baseOpts, onEvent: (event) => events.push(event) },
+    {
+      spawnProcess() {
+        child = new FakeProcess();
+        child.stdin.write = (_chunk, callback) => {
+          const error = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+          queueMicrotask(() => {
+            callback?.(error);
+            child.stdin.emit('error', error);
+          });
+          return false;
+        };
+        return child;
+      },
+      terminateProcess(proc) { proc.kill('SIGTERM'); },
+    },
+  );
+  session.sendUserMessage('x'.repeat(300_000));
+  await new Promise((resolve) => setImmediate(resolve));
+  child.exitCode = 1;
+  child.emit('exit', 1, null);
+  child.emit('close', 1, null);
+  await waitUntil(() => events.some((event) => event.type === 'turn-end'));
+
+  assert.deepEqual(
+    events.filter((event) => event.type === 'turn-end').map((event) => event.stopReason),
+    ['exited'],
+  );
+  await session.dispose();
+});

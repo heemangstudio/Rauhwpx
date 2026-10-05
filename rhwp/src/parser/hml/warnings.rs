@@ -47,6 +47,16 @@ impl HmlWarning {
         }
     }
 
+    /// 경고 상한(`HmlLimits::max_warnings`)을 넘었음을 알리는 요약 경고.
+    pub(crate) fn warnings_truncated(max_warnings: usize) -> Self {
+        Self {
+            code: HmlWarningCode::LossyConversion,
+            xml_path: "/HWPML".to_string(),
+            message: format!("HML 경고가 {max_warnings}개를 넘어 이후 경고는 기록하지 않았습니다"),
+            preserved: false,
+        }
+    }
+
     pub(crate) fn invalid_reference(xml_path: String, reference: String) -> Self {
         Self {
             code: HmlWarningCode::InvalidReference,

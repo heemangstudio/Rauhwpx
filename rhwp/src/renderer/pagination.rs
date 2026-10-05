@@ -165,7 +165,7 @@ pub struct MasterPageRef {
 }
 
 /// 머리말/꼬리말 참조
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct HeaderFooterRef {
     /// Header/Footer 컨트롤이 있는 문단 인덱스
     pub para_index: usize,
@@ -173,6 +173,110 @@ pub struct HeaderFooterRef {
     pub control_index: usize,
     /// Header/Footer 컨트롤이 속한 구역 인덱스 (구역 간 상속 시 원본 구역 추적용)
     pub source_section_index: usize,
+    /// 표 셀 안에 놓인 컨트롤이면 (셀, 셀 문단, 컨트롤) 경로. 비어 있으면 최상위 컨트롤이다.
+    /// 이때 `para_index`/`control_index` 는 바깥 표를 가리킨다.
+    pub cell_path: Vec<(usize, usize, usize)>,
+}
+
+impl HeaderFooterRef {
+    /// 가리키는 Header/Footer 컨트롤을 찾는다 (표 셀 경로 포함).
+    pub fn resolve<'a>(&self, paragraphs: &'a [Paragraph]) -> Option<&'a Control> {
+        let mut ctrl = paragraphs
+            .get(self.para_index)?
+            .controls
+            .get(self.control_index)?;
+        for &(cell, cell_para, ci) in &self.cell_path {
+            let Control::Table(table) = ctrl else {
+                return None;
+            };
+            ctrl = table
+                .cells
+                .get(cell)?
+                .paragraphs
+                .get(cell_para)?
+                .controls
+                .get(ci)?;
+        }
+        Some(ctrl)
+    }
+}
+
+/// 구역 문단의 머리말/꼬리말 컨트롤을 문서 순서대로 모은다 (표 셀 안 포함).
+pub fn header_footer_entries(
+    paragraphs: &[Paragraph],
+    section_index: usize,
+) -> Vec<(usize, HeaderFooterRef, bool, HeaderFooterApply)> {
+    let mut entries = Vec::new();
+    let mut page_number_pos = None;
+    for (pi, para) in paragraphs.iter().enumerate() {
+        for (ci, ctrl) in para.controls.iter().enumerate() {
+            let make_ref = || HeaderFooterRef {
+                para_index: pi,
+                control_index: ci,
+                source_section_index: section_index,
+                cell_path: Vec::new(),
+            };
+            match ctrl {
+                Control::Header(h) => entries.push((pi, make_ref(), true, h.apply_to)),
+                Control::Footer(f) => entries.push((pi, make_ref(), false, f.apply_to)),
+                Control::Table(table) => collect_cell_header_footer(
+                    table,
+                    pi,
+                    ci,
+                    section_index,
+                    &mut Vec::new(),
+                    &mut entries,
+                    &mut page_number_pos,
+                ),
+                _ => {}
+            }
+        }
+    }
+    entries
+}
+
+/// 표 셀 안에 놓인 머리말/꼬리말/쪽 번호 위치 컨트롤을 재귀로 수집한다.
+///
+/// 한컴은 본문 표 셀 문단에 들어 있는 머리말·꼬리말·쪽 번호 위치도 구역의 것으로
+/// 적용한다 (표가 놓인 문단에서 발화). `table` 은 문단 `pi` 의 `ci` 번째 컨트롤이다.
+pub fn collect_cell_header_footer(
+    table: &crate::model::table::Table,
+    pi: usize,
+    ci: usize,
+    section_index: usize,
+    path: &mut Vec<(usize, usize, usize)>,
+    hf_entries: &mut Vec<(usize, HeaderFooterRef, bool, HeaderFooterApply)>,
+    page_number_pos: &mut Option<crate::model::control::PageNumberPos>,
+) {
+    for (cell_idx, cell) in table.cells.iter().enumerate() {
+        for (cpi, cp) in cell.paragraphs.iter().enumerate() {
+            for (cci, ctrl) in cp.controls.iter().enumerate() {
+                path.push((cell_idx, cpi, cci));
+                let make_ref = |path: &Vec<(usize, usize, usize)>| HeaderFooterRef {
+                    para_index: pi,
+                    control_index: ci,
+                    source_section_index: section_index,
+                    cell_path: path.clone(),
+                };
+                match ctrl {
+                    Control::Header(h) => hf_entries.push((pi, make_ref(path), true, h.apply_to)),
+                    Control::Footer(f) => hf_entries.push((pi, make_ref(path), false, f.apply_to)),
+                    Control::PageNumberPos(pnp) => *page_number_pos = Some(pnp.clone()),
+                    Control::Table(inner) => collect_cell_header_footer(
+                        inner,
+                        pi,
+                        ci,
+                        section_index,
+                        path,
+                        hf_entries,
+                        page_number_pos,
+                    ),
+                    _ => {}
+                }
+                path.pop();
+            }
+        }
+    }
 }
 
 /// 쪽별 활성 머리말/꼬리말 선택기.
@@ -439,8 +543,7 @@ pub fn find_inline_control_target_page(
     ctrl_idx: usize,
     para: &Paragraph,
 ) -> Option<(usize, usize)> {
-    let target_line = tac_object_owning_line_seg_index(para, ctrl_idx)
-        .or_else(|| projected_inline_control_line_seg_index(para, ctrl_idx))?;
+    let target_line = inline_control_line_seg_index(para, ctrl_idx)?;
 
     // 1) 현재(마지막) 페이지의 current_items 검사 — 박스 line 이 여기 있으면 None (= 현재)
     let in_current = current_items.iter().any(|item| match item {
@@ -478,18 +581,57 @@ pub fn find_inline_control_target_page(
     None
 }
 
+/// 페이지 배정과 그림 뒤 커서 진행은 같은 개체 소유 줄을 사용한다.
+pub(super) fn inline_control_line_seg_index(para: &Paragraph, ctrl_idx: usize) -> Option<usize> {
+    tac_object_owning_line_seg_index(para, ctrl_idx)
+        .or_else(|| projected_inline_control_line_seg_index(para, ctrl_idx))
+}
+
 fn projected_inline_control_line_seg_index(para: &Paragraph, ctrl_idx: usize) -> Option<usize> {
-    let positions = para.control_text_positions();
-    let ctrl_text_pos = *positions.get(ctrl_idx)?;
+    let ctrl_u16 = control_utf16_position(para, ctrl_idx)?;
     Some(
         para.line_segs
             .iter()
             .enumerate()
             .rev()
-            .find(|(_, ls)| (ls.text_start as usize) <= ctrl_text_pos)
+            .find(|(_, ls)| ls.text_start <= ctrl_u16)
             .map(|(i, _)| i)
             .unwrap_or(0),
     )
+}
+
+/// 컨트롤이 문단 UTF-16 흐름에서 차지하는 시작 위치 — 줄 `text_start` 와 같은 축.
+/// 한컴은 모든 조판 부호(구역·단 정의 포함)를 8 code unit 으로 센다. 글자 없는 문단은
+/// 컨트롤 ci 가 [8ci, 8ci+8) 이고, 글자 사이 컨트롤은 다음 글자 UTF-16 위치 바로 앞에
+/// 8 단위씩 쌓인다 (끝 컨트롤은 마지막 글자 뒤부터).
+pub(super) fn control_utf16_position(para: &Paragraph, ctrl_idx: usize) -> Option<u32> {
+    if ctrl_idx >= para.controls.len() {
+        return None;
+    }
+    if para.text.is_empty() {
+        // 줄 시작이 8 의 배수가 아니면 압축 위치(인라인 개체 순번)로 합성된 줄이다.
+        if para.line_segs.iter().any(|ls| ls.text_start % 8 != 0) {
+            return u32::try_from(*para.control_text_positions().get(ctrl_idx)?).ok();
+        }
+        return u32::try_from(ctrl_idx).ok().map(|ci| ci * 8);
+    }
+    let positions = para.control_text_positions();
+    let char_pos = *positions.get(ctrl_idx)?;
+    let same_gap: Vec<usize> = positions
+        .iter()
+        .enumerate()
+        .filter(|&(_, &p)| p == char_pos)
+        .map(|(i, _)| i)
+        .collect();
+    let rank = same_gap.iter().position(|&i| i == ctrl_idx)? as u32;
+    let n = same_gap.len() as u32;
+    if let Some(&next_char_u16) = para.char_offsets.get(char_pos) {
+        // 다음 글자 앞 간격에 n 개가 쌓여 있다.
+        Some(next_char_u16.saturating_sub(8 * (n - rank)))
+    } else {
+        let after = para.utf16_pos_after_last_char().unwrap_or(0);
+        Some(after + 8 * rank)
+    }
 }
 
 fn tac_object_owning_line_seg_index(para: &Paragraph, ctrl_idx: usize) -> Option<usize> {
@@ -847,6 +989,8 @@ pub struct PaginationOpts {
     pub is_hwp3_variant: bool,
     /// 현재 구역의 각주 모양. 각주 예약 영역을 렌더 영역과 같은 metric으로 계산한다.
     pub footnote_shape: Option<FootnoteShape>,
+    /// 원본 컨테이너가 HWPX 인지 (LayoutCompatibilityProfile::hwpx_container).
+    pub hwpx_container: bool,
 }
 
 /// 페이지 분할 엔진

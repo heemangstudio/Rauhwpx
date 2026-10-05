@@ -3,8 +3,10 @@ import type * as T from '../agent/types.ts';
 import { deriveAgentEditingLease } from '../agent/editing-lease.ts';
 import {
   defaultModelForAgent,
+  setModelCatalog,
   setPiModels,
 } from '../agent/models.ts';
+import type { CatalogAgent, ModelCatalogEntry } from '../agent/models.ts';
 import { loadAgentPrefs } from '../agent/agent-prefs.ts';
 import { createFixtures, samplePlan, timestamp, agents } from './fixtures.ts';
 import { requestLiveUsage, consumeLiveCodexReset } from './live-usage.ts';
@@ -12,6 +14,7 @@ import { createBrowserbaseFixture, type BrowserbaseFixtureState } from './fixtur
 
 export const scenarios = [
   'chat',
+  'tools',
   'rich',
   'plan',
   'question',
@@ -21,8 +24,89 @@ export const scenarios = [
 ] as const;
 export type Scenario = (typeof scenarios)[number];
 
+const sampleModelCatalogs: Record<CatalogAgent, ModelCatalogEntry[]> = {
+  claude: [
+    { id: 'claude-opus-4-6', label: 'Claude Opus 4.6', description: 'Complex reasoning and long-form work', supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+    { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', description: 'Balanced speed and depth', supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+    { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5', description: 'Fast everyday assistance', supportedEfforts: ['low', 'medium', 'high'] },
+  ],
+  codex: [
+    { id: 'gpt-6-astra', label: 'GPT-6 Astra', description: 'Deep reasoning for demanding work', supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+    { id: 'gpt-6-sol', label: 'GPT-6 Sol', description: 'Coding and everyday work', supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+    { id: 'gpt-6-luna', label: 'GPT-6 Luna', description: 'Quick answers and simple tasks', supportedEfforts: ['low', 'medium', 'high', 'xhigh'] },
+    { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra', description: 'Balanced general reasoning', supportedEfforts: ['low', 'medium', 'high', 'xhigh'] },
+    { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex', description: 'Coding model', supportedEfforts: ['low', 'medium', 'high', 'xhigh'] },
+  ],
+};
+
+/** 편집 결과 그림 흉내 — 문단 두 줄과 강조 띠를 그린 작은 PNG. */
+function sampleCropPng(): string {
+  const canvas = document.createElement('canvas');
+  canvas.width = 520;
+  canvas.height = 150;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return '';
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = 'rgba(47, 125, 79, 0.14)';
+  ctx.fillRect(16, 56, 330, 34);
+  ctx.fillStyle = '#171b22';
+  ctx.font = '600 22px sans-serif';
+  ctx.fillText('2. 추진 일정', 16, 38);
+  ctx.font = '18px sans-serif';
+  ctx.fillText('2026년 10월 착수, 12월 중간 점검', 22, 80);
+  ctx.fillText('사업 기간은 총 6개월입니다.', 22, 124);
+  return canvas.toDataURL('image/png').split(',')[1] ?? '';
+}
+
+interface ToolScenarioCall {
+  id: string;
+  tool: string;
+  args: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  error?: { code: string; message: string };
+}
+
+/** tools 시나리오 — 실제 rhwp 도구 이름·인자·결과 모양으로 사이드바 표시를 확인한다. */
+function toolScenarioCalls(): ToolScenarioCall[] {
+  return [
+    {
+      id: 'batch',
+      tool: 'mcp__rhwp__read_batch',
+      args: { reads: [{ tool: 'get_structure', args: { range: { sectionIdx: 0, fromPara: 0, toPara: 24 } } }, { tool: 'find_text', args: { query: '추진 일정' } }] },
+      result: { revision: 12, results: [{ tool: 'get_structure', pageCount: 3, truncated: false }, { tool: 'find_text', matches: [{ sectionIdx: 0, paraIdx: 8 }, { sectionIdx: 0, paraIdx: 19 }] }] },
+    },
+    {
+      id: 'edit',
+      tool: 'mcp__rhwp__apply_edits',
+      args: {
+        expectedRevision: 12,
+        render: 'crop',
+        edits: [
+          { tool: 'replace_range', args: { anchor: { text: '2026년 11월 착수' }, text: '2026년 10월 착수' } },
+          { tool: 'insert_text', args: { anchor: { text: '중간 점검', position: 'after' }, text: '\n사업 기간은 총 6개월입니다.' } },
+          { tool: 'apply_char_format', args: { anchor: { text: '추진 일정' }, bold: true, fontSizePt: 13 } },
+        ],
+      },
+      result: {
+        revision: 13,
+        applied: 3,
+        results: [{ tool: 'replace_range' }, { tool: 'insert_text' }, { tool: 'apply_char_format' }],
+        after: { pages: [1], pageCount: { before: 3, after: 3 }, warnings: [] },
+        image: { data: sampleCropPng(), mimeType: 'image/png' },
+      },
+    },
+    {
+      id: 'table',
+      tool: 'mcp__rhwp__set_table_props',
+      args: { expectedRevision: 13, sectionIdx: 0, paraIdx: 21, controlIdx: 0, tableProps: { repeatHeader: true, textWrap: 'topAndBottom' } },
+      error: { code: 'REVISION_MISMATCH', message: 'expectedRevision 13 does not match current revision 14 — re-read with get_structure({sinceRevision:13})' },
+    },
+  ];
+}
+
 /** Implements the actual UI contract: new bridge methods produce a type error here. */
-export function createMockBridge(report: (message: string) => void) {
+export function createMockBridge(report: (message: string) => void, onApproved?: () => void) {
   const data = createFixtures();
   const liveUsage = new URLSearchParams(location.search).get('usage') === 'live';
   if (liveUsage) {
@@ -66,6 +150,9 @@ export function createMockBridge(report: (message: string) => void) {
   let question: T.UserQuestionInteraction | null = null;
   let activeTemplate: T.DocumentTemplate | null = null;
   let changes: T.PendingChangeSet[] = [];
+  const changeEvents: T.PendingEditsChangeEvent['type'][] = [];
+  const reviewMode = new URLSearchParams(location.search).get('review');
+  const fullReview = reviewMode === 'full';
   const references: T.ReferenceFile[] = [
     {
       id: 'reference-sample',
@@ -103,6 +190,12 @@ export function createMockBridge(report: (message: string) => void) {
   const finish = (stopReason = 'completed') => {
     setRunning(false);
     stream({ type: 'turn-end', agent, stopReason });
+  };
+  const updatePlanExecution = (execution: NonNullable<T.StructuredPlan['execution']>) => {
+    if (!workflow.latestPlan) return;
+    const latestPlan = { ...workflow.latestPlan, execution };
+    workflow = { ...workflow, latestPlan };
+    emit({ type: 'plan-progress', planId: latestPlan.planId, ...workflow });
   };
   const setupChanged = () =>
     emit({ type: 'agent-setup-status', statuses: data.setups });
@@ -182,6 +275,11 @@ export function createMockBridge(report: (message: string) => void) {
       },
       approve: (id) => {
         changes = changes.filter((change) => change.id !== id);
+        if (workflow.latestPlan?.execution?.status === 'awaiting-review') {
+          updatePlanExecution({ ...workflow.latestPlan.execution, status: 'completed' });
+        }
+        onApproved?.();
+        changeEvents.push('approved');
         pendingListeners.forEach((listener) =>
           listener({ type: 'approved', changeSetId: id }),
         );
@@ -190,6 +288,7 @@ export function createMockBridge(report: (message: string) => void) {
       },
       reject: (id) => {
         changes = changes.filter((change) => change.id !== id);
+        changeEvents.push('rejected');
         pendingListeners.forEach((listener) =>
           listener({ type: 'rejected', changeSetId: id }),
         );
@@ -198,6 +297,7 @@ export function createMockBridge(report: (message: string) => void) {
     },
     getDocumentSelectionIdentity: () => ({ documentId: 'sidebar-preview', revision: 0 }),
     getConnectionState: () => connection,
+    getHubFontAccess: () => null,
     getActiveAgent: () => agent,
     isTurnRunning: () => running,
     getPendingUserQuestion: () => question,
@@ -219,6 +319,12 @@ export function createMockBridge(report: (message: string) => void) {
     takeOverConnection: () => setConnection('connected'),
     reconnectNow: async () => setConnection('connected'),
     requestProviderStatus: async () => data.providers,
+    requestModelCatalog: async (modelAgent) => {
+      const models = sampleModelCatalogs[modelAgent];
+      setModelCatalog(modelAgent, models);
+      emit({ type: 'model-catalog', agent: modelAgent, requestId: crypto.randomUUID(), models });
+      return models;
+    },
     requestAgentSetupStatus: async () => data.setups,
     requestAccountStatus: async () => data.account,
     requestBrowserbaseStatus: async () => {
@@ -457,18 +563,19 @@ export function createMockBridge(report: (message: string) => void) {
       data.pi.keyTail = 'demo';
       return data.pi;
     },
-    requestPiCatalog: async () =>
-      data.writingCatalog.providers.flatMap((provider) =>
-        provider.models.map((model) => ({
-          id: model.id,
-          name: model.name,
-          provider: provider.id,
-          contextLength: 200000,
-          pricing: { prompt: 0.000003, completion: 0.000015 },
-          reasoning: true,
-          supportsImages: true,
-        })),
-      ),
+    requestPiCatalog: async () => [
+      { id: 'anthropic/claude-sonnet-4.6', name: 'Claude Sonnet 4.6', provider: 'anthropic' },
+      { id: 'anthropic/claude-opus-4.6', name: 'Claude Opus 4.6', provider: 'anthropic' },
+      { id: 'openai/gpt-5.2', name: 'GPT-5.2', provider: 'openai' },
+      { id: 'google/gemini-3-pro-preview', name: 'Gemini 3 Pro', provider: 'google' },
+      { id: 'deepseek/deepseek-v3.2', name: 'DeepSeek V3.2', provider: 'deepseek' },
+    ].map((model) => ({
+      ...model,
+      contextLength: 200000,
+      pricing: { prompt: 0.000003, completion: 0.000015 },
+      reasoning: true,
+      supportsImages: true,
+    })),
     setPiModels: async (models) => {
       data.pi.models = models.map((model) => ({
         ...model,
@@ -616,6 +723,11 @@ export function createMockBridge(report: (message: string) => void) {
           tool: 'read_document',
           argsJson: '{"section":0}',
         });
+        if (reply === 'tools') {
+          for (const call of toolScenarioCalls()) {
+            stream({ type: 'tool-call', agent, callId: `${call.id}-${turnGeneration}`, tool: call.tool, argsJson: JSON.stringify(call.args) });
+          }
+        }
         if (reply === 'fleet') {
           stream({
             type: 'task-start',
@@ -651,6 +763,24 @@ export function createMockBridge(report: (message: string) => void) {
             resultPreview:
               '사업 개요, 추진 일정, 기대 효과 — 3개 절을 확인했습니다.',
           });
+          if (reply === 'tools') {
+            // 스튜디오 실행기가 먼저 끝나고, 프로바이더의 잘린 미리보기가 뒤따른다.
+            for (const call of toolScenarioCalls()) {
+              if (call.result !== undefined) emit({ type: 'tool-executed', tool: call.tool.replace(/^mcp__rhwp__/, ''), args: call.args, ok: true, result: call.result });
+              if (call.error) emit({ type: 'tool-executed', tool: call.tool.replace(/^mcp__rhwp__/, ''), args: call.args, ok: false, error: call.error });
+            }
+            for (const call of toolScenarioCalls()) {
+              stream({
+                type: 'tool-result',
+                agent,
+                callId: `${call.id}-${turnGeneration}`,
+                ok: !call.error,
+                resultPreview: call.error
+                  ? `${call.error.code}: ${call.error.message}`
+                  : JSON.stringify([{ type: 'text', text: JSON.stringify(call.result ?? {}) }]).slice(0, 2000),
+              });
+            }
+          }
           if (reply === 'error') {
             stream({
               type: 'error',
@@ -661,6 +791,11 @@ export function createMockBridge(report: (message: string) => void) {
             return;
           }
           if (reply === 'plan') {
+            if (workflow.latestPlan) {
+              stream({ type: 'text-delta', agent, text: '현재 계획은 개요와 일정을 확인한 뒤 문서를 수정합니다. 바꾸고 싶은 점을 알려주시면 새 계획을 만들겠습니다.' });
+              finish();
+              return;
+            }
             const plan = samplePlan();
             workflow = {
               workflow: 'plan',
@@ -860,9 +995,27 @@ export function createMockBridge(report: (message: string) => void) {
         later(() => {
           if (generation !== planGeneration) return;
           workflow.phase = 'implementing';
+          updatePlanExecution({
+            status: 'running',
+            steps: workflow.latestPlan!.steps.map((step) => ({ stepId: step.id!, status: 'pending' })),
+          });
           emit({ type: 'implementation-started', planId, ...workflow });
           setRunning(true);
           stream({ type: 'turn-start', agent });
+          later(() => {
+            if (generation !== planGeneration) return;
+            updatePlanExecution({ status: 'running', steps: [
+              { stepId: workflow.latestPlan!.steps[0].id!, status: 'in-progress' },
+              ...workflow.latestPlan!.steps.slice(1).map((step) => ({ stepId: step.id!, status: 'pending' as const })),
+            ] });
+            later(() => {
+              if (generation !== planGeneration) return;
+              updatePlanExecution({ status: 'running', steps: [
+                { stepId: workflow.latestPlan!.steps[0].id!, status: 'completed' },
+                ...workflow.latestPlan!.steps.slice(1).map((step) => ({ stepId: step.id!, status: 'in-progress' as const })),
+              ] });
+            }, 350);
+          }, 350);
           later(() => {
             if (generation !== planGeneration) return;
             stream({
@@ -870,19 +1023,33 @@ export function createMockBridge(report: (message: string) => void) {
               agent,
               text: '계획에 따라 개요와 추진 일정을 정리했습니다.',
             });
+            updatePlanExecution({ status: 'awaiting-review', steps: workflow.latestPlan!.steps.map((step) => ({ stepId: step.id!, status: 'completed' })) });
             addReview();
             finish();
-          }, 500);
+          }, 1700);
         }, 200);
       });
       return true;
     },
-    requestPlanChanges: (planId) => {
+    requestPlanChanges: (planId, feedback) => {
       if (connection !== 'connected' || workflow.latestPlan?.planId !== planId)
         return false;
+      const previous = workflow.latestPlan;
+      const planGeneration = ++generation;
       later(() => {
+        if (generation !== planGeneration) return;
         workflow.phase = 'planning';
         emit({ type: 'workflow-changed', ...workflow });
+        setRunning(true);
+        stream({ type: 'turn-start', agent, turnId: `revision-${planGeneration}` });
+        stream({ type: 'text-delta', agent, text: `피드백을 확인했습니다: ${feedback?.trim() || '계획을 다시 검토합니다.'}` });
+        later(() => {
+          if (generation !== planGeneration) return;
+          const plan = samplePlan((previous.revision ?? 1) + 1, previous.planId);
+          workflow = { ...workflow, phase: 'awaiting-approval', latestPlan: plan, capabilityEpoch: workflow.capabilityEpoch! + 1 };
+          emit({ type: 'plan-ready', plan, ...workflow });
+          finish();
+        }, 300);
       });
       return true;
     },
@@ -1145,36 +1312,41 @@ export function createMockBridge(report: (message: string) => void) {
     });
   }
   function addReview() {
-    if (permission === 'unrestricted') {
-      report('Sample document changes applied with full access');
-      return;
-    }
+    const range = (paragraph: number): T.DocRange => ({
+      sectionIdx: 0, startParaIdx: paragraph, startCharOffset: 0,
+      endParaIdx: paragraph, endCharOffset: 23,
+    });
+    const ops: T.PendingOp[] = fullReview ? [
+      {
+        kind: 'replace', id: crypto.randomUUID(), agent, range: range(0),
+        deletedText: '이번 사업은 업무 효율을 높이는 것을 목표로 합니다.',
+        text: '이번 사업은 지역 소상공인의 주문과 예약 업무를 줄이는 것을 목표로 합니다.',
+        charShapeId: null, paraShapeIds: [], snapshotId: null,
+      },
+      { kind: 'insert', id: crypto.randomUUID(), agent, range: range(2),
+        text: '현장 인터뷰 결과를 실행 계획에 반영합니다.' },
+      { kind: 'replace', id: crypto.randomUUID(), agent, range: range(4),
+        deletedText: '시범 운영은 3월 첫째 주에 시작합니다.', text: '',
+        charShapeId: null, paraShapeIds: [], snapshotId: null },
+    ] : [
+      { kind: 'insert', id: crypto.randomUUID(), agent, range: range(0),
+        text: '이번 사업은 업무 효율을 높이는 것을 목표로 합니다.' },
+    ];
     changes = [
       {
         id: crypto.randomUUID(),
         agent,
         status: 'awaiting-review',
         createdAt: Date.now(),
-        ops: [
-          {
-            kind: 'insert',
-            id: crypto.randomUUID(),
-            agent,
-            range: {
-              sectionIdx: 0,
-              startParaIdx: 0,
-              startCharOffset: 0,
-              endParaIdx: 0,
-              endCharOffset: 23,
-            },
-            text: '이번 사업은 업무 효율을 높이는 것을 목표로 합니다.',
-          },
-        ],
+        ops,
+        ...(reviewMode === 'stopped' ? { turnStopped: true } : {}),
       },
     ];
+    changeEvents.push('set-finalized');
     pendingListeners.forEach((listener) =>
       listener({ type: 'set-finalized', changeSetId: changes[0].id }),
     );
+    if (permission === 'unrestricted' && reviewMode !== 'stopped') bridge.pendingEdits.approve(changes[0].id);
   }
   function setServices(configured: boolean) {
     for (const provider of agents) {
@@ -1226,6 +1398,7 @@ export function createMockBridge(report: (message: string) => void) {
       running,
       workflow,
       pendingChanges: changes.length,
+      changeEvents: [...changeEvents],
       references: references.length,
       account: data.account.state,
       browserbase: browserbaseState,

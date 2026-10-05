@@ -31,6 +31,7 @@ import { resolveStudioAsset, STUDIO_URL } from '../../../desktop/studio-protocol
 import { LAUNCH_CLEANUP_RETENTION_FILE } from '../../rhwp-agent/credential-mirror.mjs';
 
 const desktopMain = readFileSync(new URL('../../../desktop/main.mjs', import.meta.url), 'utf8');
+const desktopAppMenu = readFileSync(new URL('../../../desktop/app-menu.mjs', import.meta.url), 'utf8');
 const rootPackage = JSON.parse(readFileSync(new URL('../../../package.json', import.meta.url), 'utf8'));
 
 function fakeWindow(id: number) {
@@ -206,8 +207,8 @@ test('launch routing accepts only supported document paths', () => {
   });
   assert.match(desktopMain, /app\.on\('open-file'/);
   assert.match(desktopMain, /source: 'second-instance'/);
-  assert.match(desktopMain, /label: 'New Window'/);
-  assert.match(desktopMain, /CmdOrCtrl\+Shift\+N/);
+  assert.match(desktopAppMenu, /label: 'New Window'/);
+  assert.match(desktopAppMenu, /CmdOrCtrl\+Shift\+N/);
   assert.match(desktopMain, /x: bounds\.x \+ 28, y: bounds\.y \+ 28/);
 });
 
@@ -225,10 +226,10 @@ test('desktop owns Cmd/Ctrl+Shift+V in its native Edit menu', () => {
   assert.equal(deliverPlainTextPaste(window, () => ''), false);
   assert.equal(deliverPlainTextPaste(null, () => 'ignored'), false);
 
-  assert.match(desktopMain, /id: 'edit-paste-without-formatting'/);
-  assert.match(desktopMain, /accelerator: 'CmdOrCtrl\+Shift\+V'/);
-  assert.match(desktopMain, /deliverPlainTextPaste\(/);
-  assert.match(desktopMain, /clipboard\.readText\(\)/);
+  assert.match(desktopAppMenu, /id: 'edit-paste-without-formatting'/);
+  assert.match(desktopAppMenu, /accelerator: 'CmdOrCtrl\+Shift\+V'/);
+  assert.match(desktopAppMenu, /deliverPlainTextPaste\(/);
+  assert.match(desktopAppMenu, /clipboard\.readText\(\)/);
 });
 
 test('desktop packages register as an HWPX editor with the operating system', () => {
@@ -299,6 +300,7 @@ test('desktop close and native-file IPC contracts stay sender-owned', () => {
     'desktop:native-file-validate-save',
     'desktop:native-file-write',
     'desktop:native-file-is-same',
+    'desktop:native-file-adopt-loaded',
     'desktop:remember-native-document',
     'desktop:reopen-native-document',
     'desktop:document-reserve',
@@ -311,7 +313,13 @@ test('desktop close and native-file IPC contracts stay sender-owned', () => {
     assert.match(desktopMain, new RegExp(`ipcMain\\.handle\\('${channel}'`));
     assert.match(preload, new RegExp(channel));
   }
-  assert.match(desktopMain, /window\.on\('close',[\s\S]*desktop:close-requested/);
+  // The close prompt goes only to this window's renderer, under a per-session
+  // request id that the answering sender must match.
+  assert.match(desktopMain, /const requestRendererClose = \(\) => \{[\s\S]*?session\.pendingCloseRequestId = randomUUID\(\);\s*window\.webContents\.send\('desktop:close-requested', \{\s*requestId: session\.pendingCloseRequestId,/);
+  assert.match(desktopMain, /window\.on\('close', \(event\) => \{[\s\S]*?event\.preventDefault\(\);[\s\S]*?requestRendererClose\(\);\s*\}\);/);
+  assert.match(desktopMain, /did-finish-load[\s\S]*?if \(session\.closeDeferred[\s\S]*?requestRendererClose\(\);/);
+  assert.match(desktopMain, /ipcMain\.handle\('desktop:close-response', async \(event, requestId, allowClose\) => \{\s*const session = sessionForEvent\(event\);\s*if \(session\.pendingCloseRequestId !== requestId\) return false;/);
+  assert.equal(desktopMain.match(/'desktop:close-requested'/g)?.length, 1);
   assert.match(desktopMain, /nativeFiles\.createSaveTarget\(session\.sessionId, filePath\)/);
   assert.doesNotMatch(preload, /\b(?:file)?path\s*:/i);
 });
@@ -447,6 +455,12 @@ test('window close never deadlocks on a dead renderer', () => {
     /window\.on\('close',[\s\S]*?isDestroyed\(\) \|\| window\.webContents\.isCrashed\(\)\) return;[\s\S]*?event\.preventDefault\(\)/,
   );
   assert.match(desktopMain, /render-process-gone[\s\S]*?pendingCloseRequestId = null/);
+  // A dead renderer frees its document so reopening the file does not focus the blank window.
+  // desktop-document-ownership.test.ts covers releaseRendererDocuments itself.
+  assert.match(
+    desktopMain,
+    /render-process-gone[\s\S]*?releaseRendererDocuments\(session\.sessionId, \{ documentLeases, nativeFiles \}\);\s*launchFiles\.length = 0;/,
+  );
 });
 
 test('one failed startup launch does not abort the remaining launches', () => {
@@ -1003,6 +1017,17 @@ test('desktop package registers supported document associations without bundling
   assert.match(desktopMain, /RauHWPX history archive/);
   assert.ok(rootPackage.build.asarUnpack.includes('rhwp/rhwp-agent/**'));
   assert.ok(rootPackage.build.files.every((entry: string) => !/runtime|launch-work/.test(entry)));
+});
+
+
+test('save picker strips document extensions so the managed one is applied once', () => {
+  // The suggested name enters the NSSavePanel field without a managed tail, and
+  // every document extension a user could type is stripped before `.ext` is
+  // appended — so `name.hwpx` never becomes `name.hwpx.hwpx`.
+  assert.match(desktopMain, /const suggestedStem = \['\.hwp', '\.hwpx', '\.hml', '\.rhwpx'\]\.includes\(extname\(suggestedName\)\.toLowerCase\(\)\)/);
+  assert.match(desktopMain, /defaultPath: suggestedStem/);
+  assert.match(desktopMain, /while \(\['\.hwp', '\.hwpx', '\.hml', '\.rhwpx'\]\.includes\(extname\(saveStem\)\.toLowerCase\(\)\)\)/);
+  assert.match(desktopMain, /const filePath = join\(saveDir, `\$\{saveStem \|\| 'document'\}\.\$\{extension\}`\)/);
 });
 
 

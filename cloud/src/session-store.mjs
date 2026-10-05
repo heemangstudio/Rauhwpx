@@ -3,14 +3,27 @@ import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { transaction } from './database.mjs';
-import { CloudError, DEFAULT_LIMITS, ROOM_PROTOCOL_VERSION, TRANSFER_LIMITS, publicSession, parseProviderSelection, providerConfigurationEditable } from './protocol.mjs';
+import { CloudError, DEFAULT_LIMITS, ROOM_PROTOCOL_VERSION, TRANSFER_LIMITS, publicSession, parseProviderSelection, providerConfigurationEditable, validateCloudReference, validateCloudReferenceBudget } from './protocol.mjs';
 
 const COMPLETED_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const SUSPENDED_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const TAKEOVER_RETENTION_MS = 24 * 60 * 60 * 1000;
 const STAGED_RETENTION_MS = 24 * 60 * 60 * 1000;
 const WORKER_RESULT_RETRY_MS = 5 * 60 * 1000;
+// A session whose worker keeps dying is suspended instead of requeued forever.
+const WORKER_REQUEUE_LIMIT = 3;
+const WORKER_REQUEUE_WINDOW_MS = 15 * 60 * 1000;
+// Live event streams touch presence every 15 s. A row this old belongs to a
+// connection that died without closing (crash, SIGKILL, shutdown after SQLite
+// closed) and must stop holding its room awake.
+const PRESENCE_STALE_MS = 2 * 60 * 1000;
 const MUTABLE_STATES = new Set(['staged', 'queued', 'running', 'suspended']);
+// Idle housekeeping transitions happen because nobody is around. Counting them
+// as activity would restart the host's idle clock when a warm conversation
+// sleeps or retention purges a session.
+const IDLE_HOUSEKEEPING_EVENTS = new Set([
+  'runtime.sleep_requested', 'runtime.sleeping', 'runtime.sleep_cancelled', 'session.purged',
+]);
 
 function parseEvent(row) {
   const payload = JSON.parse(row.payload_json);
@@ -25,10 +38,13 @@ function parseEvent(row) {
 }
 
 export class SessionStore {
+  #workerRequeues = new Map();
+
   constructor(database, blobStore, {
     now = Date.now,
     maxQueuedSessions = DEFAULT_LIMITS.maxQueuedSessions,
     onRuntimeInvalidated = null,
+    onActivity = null,
   } = {}) {
     this.database = database;
     this.blobStore = blobStore;
@@ -37,10 +53,15 @@ export class SessionStore {
     this.events = new EventEmitter();
     this.events.setMaxListeners(0);
     this.onRuntimeInvalidated = onRuntimeInvalidated;
+    this.onActivity = onActivity;
   }
 
   setRuntimeInvalidationHandler(listener) {
     this.onRuntimeInvalidated = typeof listener === 'function' ? listener : null;
+  }
+
+  setActivityHandler(listener) {
+    this.onActivity = typeof listener === 'function' ? listener : null;
   }
 
   setProviderStatus(provider, status) {
@@ -72,15 +93,18 @@ export class SessionStore {
 
   providerStatus(provider) {
     const row = this.database.prepare('SELECT * FROM provider_status WHERE provider = ?').get(provider);
+    // A login that failed mid-turn stays unusable until its credentials are written again.
+    const expired = Boolean(row?.auth_expired_at);
+    const authenticated = Boolean(row?.authenticated) && !expired;
     return row ? {
       provider: row.provider,
       available: Boolean(row.available),
-      authenticated: Boolean(row.authenticated),
-      authRequired: Boolean(row.available && !row.authenticated),
+      authenticated,
+      authRequired: Boolean(row.available) && !authenticated,
       version: row.version,
-      errorCode: row.error_code,
-      errorMessage: row.error_message,
-      setupAction: row.setup_action,
+      errorCode: expired ? 'PROVIDER_AUTH_EXPIRED' : row.error_code,
+      errorMessage: expired ? 'Provider login expired or was revoked' : row.error_message,
+      setupAction: expired ? `sudo rauhwpx-cloud provider login ${provider}` : row.setup_action,
       checkedAt: row.checked_at,
     } : {
       provider,
@@ -93,6 +117,18 @@ export class SessionStore {
       setupAction: `sudo rauhwpx-cloud provider install ${provider}`,
       checkedAt: null,
     };
+  }
+
+  providerAuthExpired(provider) {
+    return Boolean(this.database.prepare('SELECT auth_expired_at FROM provider_status WHERE provider = ?').get(provider)?.auth_expired_at);
+  }
+
+  markProviderAuthExpired(provider) {
+    this.database.prepare('UPDATE provider_status SET auth_expired_at = ? WHERE provider = ?').run(this.now(), provider);
+  }
+
+  clearProviderAuthExpired(provider) {
+    this.database.prepare('UPDATE provider_status SET auth_expired_at = NULL WHERE provider = ?').run(provider);
   }
 
   listProviderStatus() {
@@ -112,6 +148,13 @@ export class SessionStore {
     if (!Array.isArray(attachments) || attachments.length > 10) {
       throw new CloudError('INVALID_REQUEST', 'payload.attachments is invalid');
     }
+    const referenceBudget = this.database.prepare(`
+      SELECT sha256 AS blobId, size FROM session_resources
+      WHERE session_id = ? AND kind = 'reference'
+      UNION ALL
+      SELECT blob_sha256 AS blobId, size FROM session_attachment_versions
+      WHERE session_id = ?
+    `).all(sessionId, sessionId);
     const created = [];
     for (let ordinal = 0; ordinal < attachments.length; ordinal += 1) {
       const attachment = attachments[ordinal];
@@ -123,6 +166,9 @@ export class SessionStore {
         || typeof attachment.mimeType !== 'string' || attachment.mimeType.length < 1 || attachment.mimeType.length > 255) {
         throw new CloudError('INVALID_REQUEST', `payload.attachments[${ordinal}] is invalid`);
       }
+      validateCloudReference(attachment.name, attachment.size);
+      referenceBudget.push(attachment);
+      validateCloudReferenceBudget(referenceBudget);
       this.#requireBlob({ blobId: attachment.blobId, size: attachment.size }, `Attachment ${attachment.name}`);
       const previous = this.database.prepare(`
         SELECT id, version_number FROM session_attachment_versions
@@ -384,8 +430,13 @@ export class SessionStore {
     return () => this.events.off(key, listener);
   }
 
-  #notify(event) {
+  #notify(event, { runStateChange = true } = {}) {
     this.onStateChanged?.(event.sessionId);
+    // Store transitions mark host activity; worker-authored progress does not,
+    // because a working session already keeps the host busy.
+    if (runStateChange && !IDLE_HOUSEKEEPING_EVENTS.has(event.type)) {
+      try { this.onActivity?.(event.sessionId); } catch { /* Activity stamps must not fail session work. */ }
+    }
     queueMicrotask(() => this.events.emit(`session:${event.sessionId}`, event));
   }
 
@@ -411,7 +462,7 @@ export class SessionStore {
   appendEvent(sessionId, type, payload) {
     let event;
     transaction(this.database, () => { event = this.#appendEventInTransaction(sessionId, type, payload); });
-    this.#notify(event);
+    this.#notify(event, { runStateChange: false });
     return event;
   }
 
@@ -420,7 +471,7 @@ export class SessionStore {
     transaction(this.database, () => {
       events = entries.map(({ type, payload }) => this.#appendEventInTransaction(sessionId, type, payload ?? {}));
     });
-    for (const event of events) this.#notify(event);
+    for (const event of events) this.#notify(event, { runStateChange: false });
     return events;
   }
 
@@ -618,6 +669,7 @@ export class SessionStore {
       this.database.prepare(`
         UPDATE sessions SET pause_requested_at = NULL, paused_writer_generation = NULL, started_at = NULL WHERE id = ?
       `).run(session.id);
+      this.#workerRequeues.delete(session.id);
       return updateStatus('queued', 'session.queued', { resumed: true }, now + STAGED_RETENTION_MS);
     }
     if (command.type === 'session.resume_edited') {
@@ -892,9 +944,11 @@ export class SessionStore {
       `).get();
       if (!row) return null;
       const now = this.now();
+      // A sleep request from an earlier worker must not put the new one to
+      // sleep; the next idle tick asks again if nobody is present.
       const updated = this.database.prepare(`
         UPDATE sessions SET status = 'running', configuration_restart_requested_at = NULL, configuration_restart_after_revision = NULL,
-          paused_writer_generation = NULL, state_version = state_version + 1,
+          paused_writer_generation = NULL, sleep_requested_at = NULL, state_version = state_version + 1,
           execution_phase = CASE WHEN protocol_version = 2 THEN 'working' ELSE execution_phase END,
           started_at = COALESCE(started_at, ?), worker_heartbeat_at = ?, updated_at = ?
         WHERE id = ? AND status = 'queued'
@@ -1015,10 +1069,14 @@ export class SessionStore {
 
   touchPresence(sessionId, deviceId, connectionId) {
     const now = this.now();
+    // The stale sweep in requestIdleSleeps can remove a live stream's row
+    // when the wall clock jumps (host suspend) before its next keepalive, so
+    // a keepalive restores the row instead of only refreshing it.
     const changed = this.database.prepare(`
-      UPDATE session_presence SET last_seen_at = ?
-      WHERE session_id = ? AND device_id = ? AND connection_id = ?
-    `).run(now, sessionId, deviceId, connectionId);
+      INSERT INTO session_presence(session_id, device_id, connection_id, last_seen_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(session_id, device_id, connection_id) DO UPDATE SET last_seen_at = excluded.last_seen_at
+    `).run(sessionId, deviceId, connectionId, now);
     if (changed.changes) {
       this.database.prepare('UPDATE sessions SET last_presence_at = ? WHERE id = ?').run(now, sessionId);
     }
@@ -1041,6 +1099,7 @@ export class SessionStore {
     const events = [];
     const requested = transaction(this.database, () => {
       const now = this.now();
+      this.database.prepare('DELETE FROM session_presence WHERE last_seen_at <= ?').run(now - PRESENCE_STALE_MS);
       const rows = this.database.prepare(`
         SELECT s.id FROM sessions s
         WHERE s.protocol_version = ? AND s.room_status = 'active' AND s.status = 'running'
@@ -1929,6 +1988,7 @@ export class SessionStore {
       });
       return this.getSession(sessionId);
     });
+    if (outcome === 'completed') this.#workerRequeues.delete(sessionId);
     if (event) this.#notify(event);
     if (result.status !== 'running') this.#invalidateRuntime(sessionId);
     return result;
@@ -2013,6 +2073,7 @@ export class SessionStore {
         UPDATE session_messages SET status = 'queued', delivered_at = NULL
         WHERE session_id = ? AND status = 'delivered'
       `).run(sessionId);
+      if (reason?.code === 'PROVIDER_AUTH_EXPIRED') this.markProviderAuthExpired(row.provider);
       event = this.#appendEventInTransaction(sessionId, 'session.suspended', {
         status: 'suspended', reason, turnRecovery,
       });
@@ -2081,6 +2142,8 @@ export class SessionStore {
 
   requeueInterruptedSession(sessionId, reason = 'worker_lost') {
     let event = null;
+    let requeues = null;
+    let unstable = false;
     const session = transaction(this.database, () => {
       const row = this.getSessionRow(sessionId);
       if (row.status !== 'running') return this.getSession(sessionId);
@@ -2095,28 +2158,48 @@ export class SessionStore {
         return this.getSession(sessionId);
       }
       const paused = Boolean(row.pause_requested_at);
-      const status = paused ? 'suspended' : 'queued';
       const now = this.now();
+      requeues = (this.#workerRequeues.get(sessionId) ?? []).filter((at) => now - at < WORKER_REQUEUE_WINDOW_MS);
+      unstable = !paused && requeues.length >= WORKER_REQUEUE_LIMIT;
+      if (!paused && !unstable) requeues.push(now);
+      const suspendReason = paused
+        ? { code: 'USER_PAUSED', message: 'Pause recovered after worker exit' }
+        : unstable ? { code: 'WORKER_UNSTABLE', message: 'The Cloud worker stopped repeatedly' } : null;
+      const status = suspendReason ? 'suspended' : 'queued';
       const turnRecovery = this.#recoverInterruptedTurnInTransaction(row, now);
       this.database.prepare(`
         UPDATE sessions SET status = ?, state_version = state_version + 1, pause_requested_at = NULL, finishing_at = NULL, sandbox_id = NULL,
           worker_token_hash = NULL, worker_heartbeat_at = NULL, started_at = NULL,
           current_turn_id = NULL, current_wait_id = NULL,
           execution_phase = CASE WHEN protocol_version = 2 THEN 'waiting' ELSE execution_phase END,
+          suspended_reason = COALESCE(?, suspended_reason),
           expires_at = ?, updated_at = ? WHERE id = ?
-      `).run(status, now + (paused ? SUSPENDED_RETENTION_MS : STAGED_RETENTION_MS), now, sessionId);
+      `).run(
+        status,
+        unstable ? JSON.stringify(suspendReason) : null,
+        now + (suspendReason ? SUSPENDED_RETENTION_MS : STAGED_RETENTION_MS),
+        now,
+        sessionId,
+      );
       this.database.prepare(`
         UPDATE session_messages SET status = 'queued', delivered_at = NULL
         WHERE session_id = ? AND status = 'delivered'
       `).run(sessionId);
-      event = this.#appendEventInTransaction(sessionId, paused ? 'session.suspended' : 'session.recovered', {
+      event = this.#appendEventInTransaction(sessionId, suspendReason ? 'session.suspended' : 'session.recovered', {
         status,
-        action: paused ? 'pause_recovered' : 'requeued',
-        reason: paused ? { code: 'USER_PAUSED', message: 'Pause recovered after worker exit' } : reason,
+        action: paused ? 'pause_recovered' : unstable ? 'worker_unstable' : 'requeued',
+        reason: suspendReason ?? reason,
         turnRecovery,
       });
       return this.getSession(sessionId);
     });
+    if (requeues) {
+      for (const [id, times] of this.#workerRequeues) {
+        if (!times.some((at) => this.now() - at < WORKER_REQUEUE_WINDOW_MS)) this.#workerRequeues.delete(id);
+      }
+      if (unstable || requeues.length === 0) this.#workerRequeues.delete(sessionId);
+      else this.#workerRequeues.set(sessionId, requeues);
+    }
     if (event) this.#notify(event);
     if (session.status !== 'running') this.#invalidateRuntime(sessionId);
     return session;
@@ -2128,13 +2211,24 @@ export class SessionStore {
       SELECT id FROM sessions
       WHERE status IN ('staged', 'suspended', 'completed', 'cancelled', 'failed') AND expires_at <= ?
     `).all(this.now());
-    for (const row of rows) await this.purgeExpiredSession(row.id);
+    // One session that cannot be purged must not keep every later expired
+    // session retained; the first failure is rethrown after the sweep.
+    let failure = null;
+    const purge = async (sessionId) => {
+      try {
+        await this.purgeExpiredSession(sessionId);
+      } catch (error) {
+        failure ??= error;
+      }
+    };
+    for (const row of rows) await purge(row.id);
     const legacyPurgedUploads = this.database.prepare(`
       SELECT DISTINCT u.session_id AS id FROM uploads u
       JOIN sessions s ON s.id = u.session_id
       WHERE s.status = 'purged'
     `).all();
-    for (const row of legacyPurgedUploads) await this.purgeExpiredSession(row.id);
+    for (const row of legacyPurgedUploads) await purge(row.id);
+    if (failure) throw failure;
     return rows.length;
   }
 
@@ -2236,6 +2330,9 @@ export class SessionStore {
       this.database.prepare('DELETE FROM session_presence WHERE session_id = ?').run(sessionId);
       this.database.prepare('DELETE FROM session_runtime_leases WHERE session_id = ?').run(sessionId);
       this.database.prepare('DELETE FROM session_messages WHERE session_id = ?').run(sessionId);
+      // session_human_edits.command_id references commands without ON DELETE,
+      // so the edit records must go first or the commands delete fails.
+      this.database.prepare('DELETE FROM session_human_edits WHERE session_id = ?').run(sessionId);
       this.database.prepare('DELETE FROM commands WHERE session_id = ?').run(sessionId);
       this.database.prepare('DELETE FROM session_events WHERE session_id = ?').run(sessionId);
       this.database.prepare(`
@@ -2244,7 +2341,7 @@ export class SessionStore {
           pause_requested_at = NULL, takeover_requested_at = NULL, takeover_requested_by = NULL,
           frozen_checkpoint_operation_id = NULL, room_status = CASE WHEN protocol_version = 2 THEN 'purged' ELSE room_status END,
           execution_phase = CASE WHEN protocol_version = 2 THEN 'idle' ELSE execution_phase END,
-          current_turn_id = NULL, current_wait_id = NULL,
+          current_turn_id = NULL, current_wait_id = NULL, latest_human_edit_id = NULL,
           sandbox_id = NULL, worker_token_hash = NULL, worker_heartbeat_at = NULL, suspended_reason = NULL, updated_at = ? WHERE id = ?
       `).run(now, sessionId);
       this.#appendEventInTransaction(sessionId, 'session.purged', { status: 'purged', reason });

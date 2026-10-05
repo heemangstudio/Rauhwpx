@@ -1,53 +1,21 @@
 import assert from 'node:assert/strict';
 import { existsSync, promises as fs } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import test from 'node:test';
 
 const root = path.resolve(import.meta.dirname, '..');
 
-test('installer is streamable, channel-aware, preserves Serve routes, and emits pairing receipt', async () => {
-  const filename = path.join(root, 'install/install.sh');
-  const source = await fs.readFile(filename, 'utf8');
-  assert.ok(Buffer.byteLength(source) < 2 * 1024 * 1024);
-  assert.match(source, /RAUHWpx_CHANNEL/);
-  assert.match(source, /apt-get install[^\n]*\bpodman\b[^\n]*\bcrun\b/);
-  assert.match(source, /releases\?per_page=30/);
-  assert.doesNotMatch(source, /releases\/download\/cloud-prerelease/);
-  assert.doesNotMatch(source, /releases\/latest\/download\/\$\{ASSET\}/);
-  assert.match(source, /!item\.prerelease && !item\.draft && item\.assets\?\.some\(\(asset\)=>asset\.name===name\)/);
-  assert.match(source, /no compatible stable cloud asset was found/);
-  assert.match(source, /RAUHWpx_RECEIPT=/);
-  assert.match(source, /pairingCode/);
-  assert.match(source, /RAUHWpx_TAILSCALE_HTTPS_PORT/);
-  assert.match(source, /TAILSCALE_HTTPS_PORT must be an integer from 1 to 65535/);
-  assert.match(source, /tailscale serve --bg --yes --https="\$TAILSCALE_HTTPS_PORT" --set-path=/);
-  assert.match(source, /TAILSCALE_PORT_SUFFIX/);
-  assert.match(source, /tailscaleHttpsPort=Number/);
-  assert.match(source, /RAUHWpx_TRANSPORT/);
-  assert.match(source, /RAUHWpx_PUBLIC_HOST/);
-  assert.match(source, /public-https/);
-  assert.match(source, /caddy validate/);
-  assert.doesNotMatch(source, /tailscale serve reset/);
-  assert.match(source, /install -d -m 0755 -o rauhwpx-cloud -g rauhwpx-cloud \/opt\/rauhwpx-cloud\/provider-cli/);
-  assert.match(source, /\/usr\/local\/lib\/rauhwpx-cloud\/current/);
-  assert.match(source, /release CLI compatibility wrapper is missing/);
-  assert.match(source, /chmod -R a\+rX "\$DESTINATION"/);
-  assert.match(source, /XDG_RUNTIME_DIR=\/run\/rauhwpx-cloud/);
-  assert.match(source, /cd \/var\/lib\/rauhwpx-cloud\s+\/usr\/sbin\/runuser --user rauhwpx-cloud/);
-  assert.match(source, /podman --cgroup-manager=cgroupfs build --tag/);
-  assert.match(source, /podman --cgroup-manager=cgroupfs run --rm[\s\S]*--uidmap 0:1:1000[\s\S]*--gidmap 1000:0:1[\s\S]*--entrypoint \/app\/bin\/rhwp/);
-  assert.doesNotMatch(source, /(^|\s)(?:exec\s+)?runuser\s+--user/m);
-  assert.match(source, /provider install claude/);
-  assert.match(source, /provider install codex/);
-  assert.match(source, /provider install pi/);
-  assert.doesNotMatch(source, /provider install (?:grok|cursor)/);
-  assert.ok(source.includes('github\\.com/ghandhitechnology/Rauhwpx/\\.github/workflows/release\\.yml@refs/tags/'));
-  assert.doesNotMatch(source, /refs\/\(heads\|tags\)/);
-  assert.match(source, /Strict-Transport-Security "max-age=31536000; includeSubDomains"/);
-  assert.match(source, /X-Content-Type-Options "nosniff"/);
-  const syntax = spawnSync('/bin/bash', ['-n', filename], { encoding: 'utf8' });
-  assert.equal(syntax.status, 0, syntax.stderr);
+test('update rollback and remaining installer trust boundaries stay guarded', async () => {
+  const source = await fs.readFile(path.join(root, 'install/install.sh'), 'utf8');
+  // Unsigned development and public HTTPS paths are outside the Tailscale runtime harness.
+  assert.match(source, /unsigned development runtimes must be local files/);
+  assert.match(source, /development runtime does not match its pinned SHA-256/);
+  assert.match(source, /Strict-Transport-Security/);
+  assert.match(source, /X-Content-Type-Options/);
+  assert.match(source, /--uidmap 0:1:1000/);
+  assert.match(source, /--gidmap 1000:0:1/);
   const update = await fs.readFile(path.join(root, 'install/update.sh'), 'utf8');
   assert.match(update, /releases\?per_page=30/);
   assert.doesNotMatch(update, /releases\/latest\/download\/\$\{ASSET\}/);
@@ -57,11 +25,11 @@ test('installer is streamable, channel-aware, preserves Serve routes, and emits 
   assert.match(update, /environment\.previous/);
   assert.match(update, /No newer Rauhwpx cloud release was found/);
   assert.match(update, /cd \/var\/lib\/rauhwpx-cloud\s+\/usr\/sbin\/runuser --user rauhwpx-cloud/);
-  assert.match(update, /podman --cgroup-manager=cgroupfs build --tag/);
+  assert.match(update, /podman (\$\{IMAGE_STORE_ARGS:-\} )?--cgroup-manager=cgroupfs build --tag/);
   assert.match(update, /podman --cgroup-manager=cgroupfs run --rm[\s\S]*--uidmap 0:1:1000[\s\S]*--gidmap 1000:0:1[\s\S]*--entrypoint \/app\/bin\/rhwp/);
   assert.match(update, /chmod -R a\+rX "\$DESTINATION"/);
   assert.doesNotMatch(update, /(^|\s)(?:exec\s+)?runuser\s+--user/m);
-  assert.ok(update.includes('github\\.com/ghandhitechnology/Rauhwpx/\\.github/workflows/release\\.yml@refs/tags/'));
+  assert.ok(update.includes('github\\.com/(ghandhitechnology|heemangstudio)/Rauhwpx/\\.github/workflows/release\\.yml@refs/tags/'));
   assert.doesNotMatch(update, /refs\/\(heads\|tags\)/);
   const wrapper = await fs.readFile(path.join(root, 'install/rauhwpx-cloud'), 'utf8');
   assert.match(wrapper, /cd \/var\/lib\/rauhwpx-cloud\s+exec \/usr\/sbin\/runuser --user rauhwpx-cloud/);
@@ -151,13 +119,22 @@ test('all provider installers are allowlisted and version-pinned', async () => {
   assert.deepEqual(Object.keys(lock).sort(), ['claude', 'codex', 'pi']);
   for (const [provider, item] of Object.entries(lock)) {
     assert.ok(['npm', 'archive'].includes(item.kind), provider);
-    if (item.kind === 'npm') assert.match(item.version, /^\d+\.\d+\.\d+$/, provider);
+    if (item.kind === 'npm') assert.match(item.version, /^\d+\.\d+\.\d+(?:-rau\.\d+)?$/, provider);
   }
   const npmProviders = Object.values(lock).filter((item) => item.kind === 'npm');
-  assert.deepEqual(
-    Object.fromEntries(npmProviders.map((item) => [item.package, item.version])),
-    runtimePackage.dependencies,
-  );
+  for (const item of npmProviders) {
+    const spec = runtimePackage.dependencies[item.package];
+    if (spec.startsWith('file:vendor/')) {
+      const provenance = JSON.parse(await fs.readFile(path.join(root, 'install/provider-runtime/vendor/provenance.json'), 'utf8'));
+      assert.equal(spec, `file:vendor/${provenance.downstream.file}`);
+      assert.equal(item.version, provenance.downstream.version);
+      const artifact = await fs.readFile(path.join(root, 'install/provider-runtime', spec.slice(5)));
+      assert.equal(createHash('sha256').update(artifact).digest('hex'), provenance.downstream.sha256);
+    } else {
+      assert.equal(spec, item.version);
+    }
+  }
+  assert.equal(Object.keys(runtimePackage.dependencies).length, npmProviders.length);
   const providerCli = await fs.readFile(path.join(root, 'src/provider-cli.mjs'), 'utf8');
   assert.match(providerCli, /run\('npm', \[\s*'ci'/);
   assert.doesNotMatch(providerCli, /'ci'[^\]]*--ignore-scripts/s);
@@ -216,4 +193,54 @@ test('worker runtime images pin ffmpeg, probe x11grab, and expose no display por
   assert.equal(new Set(ffmpegVersions).size, 1, 'worker runtime images must pin the same ffmpeg build');
   const publisher = await fs.readFile(path.join(root, 'document-runtime/session-frame-publisher.mjs'), 'utf8');
   assert.doesNotMatch(publisher, /\.\.\/src\//, 'dedicated worker image does not package control-plane src');
+});
+
+test('boat hosts add an idle stop timer that ships in the release archive', async () => {
+  const install = await fs.readFile(path.join(root, 'install/install.sh'), 'utf8');
+  const update = await fs.readFile(path.join(root, 'install/update.sh'), 'utf8');
+  const release = await fs.readFile(path.join(root, 'install/package-release.sh'), 'utf8');
+  const script = await fs.readFile(path.join(root, 'install/boat-idle.sh'), 'utf8');
+  const service = await fs.readFile(path.join(root, 'install/rauhwpx-boat-idle.service'), 'utf8');
+  const timer = await fs.readFile(path.join(root, 'install/rauhwpx-boat-idle.timer'), 'utf8');
+  assert.match(install, /RAUHWpx_HOST_KIND must be empty or boat/);
+  assert.match(install, /boat hosts require RAUHWpx_TRANSPORT=ssh-tunnel/);
+  // 깨울 때 서비스가 기다리지 않도록 작업 환경 이미지는 필요할 때 읽어 오는 /home 에 둔다.
+  assert.match(install, /additionalimagestores = \["%s\/containers\/storage"\]/);
+  assert.match(install, /mount_program = "\/usr\/bin\/fuse-overlayfs"/);
+  assert.match(install, /IMAGE_STORE_ARGS="--root /);
+  assert.match(install, /upsert_env RAUHWpx_WORKER_CONTROL_DIR \/run\/rauhwpx-cloud\/worker-control/);
+  assert.match(install, /ProtectHome=tmpfs\\nBindPaths=%s/);
+  assert.match(install, /systemctl restart rauhwpx-cloud\.service/);
+  assert.ok(install.includes('[[ "$BOAT_SANDBOX_ID" =~ ^bx_[a-z0-9]{8}$ ]]'));
+  assert.match(install, /BOAT_IDLE_MINUTES >= 5 && BOAT_IDLE_MINUTES <= 240/);
+  assert.match(install, /BOAT_USER=\$\{RAUHWpx_BOAT_USER:-user\}/);
+  assert.match(install, /install -m 0600 -o root -g root "\$BOAT_ENV" \/etc\/rauhwpx-boat\.env/);
+  assert.match(install, /systemctl enable --now rauhwpx-boat-idle\.timer/);
+  // The reuse probe reads /etc/rauhwpx-cloud.env; boat settings live in their own file.
+  assert.doesNotMatch(install, /upsert_env RAUHWpx_(?:HOST_KIND|BOAT)/);
+  assert.match(update, /install_boat_units "\$DESTINATION"/);
+  assert.match(update, /install_boat_units "\$PREVIOUS"/);
+  assert.match(service, /^ExecStart=\/opt\/rauhwpx-cloud\/current\/install\/boat-idle\.sh$/m);
+  assert.match(service, /^ConditionPathExists=\/etc\/rauhwpx-boat\.env$/m);
+  assert.match(timer, /^OnBootSec=10min$/m);
+  assert.match(timer, /^OnUnitActiveSec=1min$/m);
+  assert.match(script, /flock -n 9/);
+  assert.match(script, /BOOT_GRACE_SECONDS=600/);
+  assert.match(script, /idle --json/);
+  assert.match(script, /runuser -u "\$BOAT_USER"/);
+  assert.match(script, /type -P boat/);
+  assert.match(script, /\.local\/bin\/boat/);
+  assert.match(script, /ASCII_TOKEN/);
+  // The token reaches curl through a stdin config, never the process argument list.
+  assert.match(script, /--config -/);
+  assert.doesNotMatch(script, /--header ["']Authorization/);
+  const syntax = spawnSync('/bin/bash', ['-n', path.join(root, 'install/boat-idle.sh')], { encoding: 'utf8' });
+  assert.equal(syntax.status, 0, syntax.stderr);
+  // install.sh and update.sh install files from the unpacked release; package-release.sh copies install/ whole.
+  assert.match(release, /"\$ROOT\/install" /);
+  for (const source of [install, update]) {
+    for (const [, filename] of source.matchAll(/\$(?:DESTINATION|PREVIOUS|1)\/install\/([A-Za-z0-9._-]+)/g)) {
+      assert.ok(existsSync(path.join(root, 'install', filename)), filename);
+    }
+  }
 });

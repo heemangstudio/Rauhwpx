@@ -22,13 +22,14 @@ const TERMINAL_STATES = new Set(['downloaded', 'cancelled', 'expired', 'failed']
 
 /** Debounce window for watermark-only stream writes. */
 const CLOUD_HANDOFF_PERSIST_DEBOUNCE_MS = 250;
+// Server retention decides when live work expires; a purge can reach any live state.
 const TRANSITIONS = Object.freeze({
   preparing: new Set(['uploading', 'completed', 'expired', 'failed', 'cancelled']),
   uploading: new Set(['committing', 'completed', 'expired', 'failed', 'cancelled']),
   committing: new Set(['queued', 'running', 'completed', 'expired', 'failed', 'cancelled']),
-  queued: new Set(['running', 'suspended', 'cancelled', 'failed']),
-  running: new Set(['queued', 'suspended', 'completed', 'cancelled', 'failed']),
-  suspended: new Set(['queued', 'running', 'completed', 'cancelled', 'failed']),
+  queued: new Set(['running', 'suspended', 'expired', 'cancelled', 'failed']),
+  running: new Set(['queued', 'suspended', 'completed', 'expired', 'cancelled', 'failed']),
+  suspended: new Set(['queued', 'running', 'completed', 'expired', 'cancelled', 'failed']),
   completed: new Set(['downloading', 'expired', 'failed']),
   downloading: new Set(['completed', 'downloaded', 'failed']),
   downloaded: new Set(),
@@ -106,11 +107,44 @@ function validateTakeoverReceipt(receipt) {
   };
 }
 
+/** Transient read failures (antivirus locks, descriptor pressure, flaky disks) that clear on retry. */
+const TRANSIENT_READ_CODES = new Set(['EMFILE', 'ENFILE', 'EBUSY', 'EPERM', 'EACCES', 'EAGAIN', 'EIO']);
+const STORE_READ_RETRY_DELAYS_MS = Object.freeze([100, 300, 900]);
+
+function invalidTransition(from, to) {
+  return Object.assign(new Error(`Invalid cloud handoff transition: ${from} -> ${to}`), {
+    code: 'HANDOFF_TRANSITION_INVALID',
+  });
+}
+
+function storeUnreadable(cause) {
+  return Object.assign(new Error(`Cloud handoff store could not be read: ${cause?.message ?? cause}`, { cause }), {
+    code: 'HANDOFF_STORE_UNREADABLE',
+    retryable: true,
+  });
+}
+
+/** Flushes the bytes before the rename so a power loss cannot publish a truncated store. */
+async function writeDurableFile(filePath, data) {
+  const handle = await fs.open(filePath, 'w', 0o600);
+  try {
+    await handle.writeFile(data);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
 async function atomicJsonWrite(filePath, value, platform) {
   await fs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
   const temp = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
-  await fs.writeFile(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-  await replaceFile(temp, filePath, platform);
+  try {
+    await writeDurableFile(temp, `${JSON.stringify(value, null, 2)}\n`);
+    await replaceFile(temp, filePath, platform);
+  } catch (error) {
+    await fs.rm(temp, { force: true }).catch(() => {});
+    throw error;
+  }
 }
 
 export class CloudHandoffStore {
@@ -120,11 +154,13 @@ export class CloudHandoffStore {
   #atomicWrite;
   #rename;
   #rm;
+  #readFile;
   #sleep;
   #records = new Map();
   #takeoverReceipts = new Map();
   #loaded = false;
   #loadPromise = null;
+  #quarantinePath = null;
   #writeChain = Promise.resolve();
   #persistTimer = null;
 
@@ -134,6 +170,7 @@ export class CloudHandoffStore {
     atomicWrite = atomicJsonWrite,
     rename = fs.rename,
     rm = fs.rm,
+    readFile = fs.readFile,
     sleep,
   }) {
     if (!filePath) throw new Error('Cloud handoff store requires a file path');
@@ -144,7 +181,25 @@ export class CloudHandoffStore {
     this.#atomicWrite = atomicWrite;
     this.#rename = rename;
     this.#rm = rm;
+    this.#readFile = readFile;
     this.#sleep = sleep;
+  }
+
+  /** Where an unparseable store was moved aside during load, or null. */
+  get quarantinePath() {
+    return this.#quarantinePath;
+  }
+
+  async #readStoreText() {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await this.#readFile(this.#filePath, 'utf8');
+      } catch (error) {
+        if (!TRANSIENT_READ_CODES.has(error?.code) || attempt >= STORE_READ_RETRY_DELAYS_MS.length) throw error;
+        const waitMs = STORE_READ_RETRY_DELAYS_MS[attempt];
+        await (this.#sleep ? this.#sleep(waitMs) : new Promise((resolve) => setTimeout(resolve, waitMs)));
+      }
+    }
   }
 
   async #removePayloadDirectory(directory) {
@@ -167,71 +222,85 @@ export class CloudHandoffStore {
 
   async #load() {
     await recoverReplacedFile(this.#filePath, this.#platform);
+    let text;
     try {
-      const parsed = JSON.parse(await fs.readFile(this.#filePath, 'utf8'));
+      text = await this.#readStoreText();
+    } catch (error) {
+      if (error?.code === 'ENOENT') {
+        this.#loaded = true;
+        return this.#listedRecords();
+      }
+      // A read that keeps failing says nothing about the file's contents. Leave it
+      // in place and stay unloaded, so no empty store is written over live work and
+      // the next call reads again.
+      throw storeUnreadable(error);
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
       if (parsed?.version !== 1 || !Array.isArray(parsed.records)) throw new Error('Unsupported handoff store');
       if (parsed.takeoverReceipts != null && !Array.isArray(parsed.takeoverReceipts)) {
         throw new Error('Unsupported handoff takeover receipts');
       }
-      let migrated = false;
-      for (const record of parsed.records) {
-        try {
-          const validated = validateRecord(record);
-          const terminal = TERMINAL_STATES.has(validated.state);
-          const normalized = {
-            ...validated,
-            errorCode: typeof validated.errorCode === 'string' ? validated.errorCode : null,
-            retryable: typeof validated.retryable === 'boolean' ? validated.retryable : null,
-            failurePhase: typeof validated.failurePhase === 'string' ? validated.failurePhase : null,
-            destination: validated.destination && typeof validated.destination === 'object'
-              ? { ...validated.destination }
-              : null,
-            ...(terminal ? {
-              documentStagingPath: null,
-              resources: (validated.resources ?? []).map(({ stagingPath: _stagingPath, ...resource }) => resource),
-            } : {}),
-          };
-          if (terminal && validated.documentStagingPath) {
-            await this.#removePayloadDirectory(path.join(this.#payloadRoot, validated.id)).catch(() => {});
-            migrated = true;
-          }
-          this.#records.set(normalized.id, Object.freeze(normalized));
-        } catch {}
-      }
-      for (const receipt of parsed.takeoverReceipts ?? []) {
-        if (!receipt?.destination) {
-          migrated = true;
-          continue;
-        }
-        try {
-          const validated = validateTakeoverReceipt(receipt);
-          this.#takeoverReceipts.set(
-            takeoverReceiptKey(validated.destination, validated.sessionId, validated.operationId),
-            Object.freeze({ ...validated }),
-          );
-        } catch {
+    } catch {
+      const corrupt = `${this.#filePath}.corrupt-${Date.now()}`;
+      this.#quarantinePath = await retryWindows(
+        () => this.#rename(this.#filePath, corrupt),
+        this.#platform,
+        this.#sleep,
+      ).then(() => corrupt, () => null);
+      this.#loaded = true;
+      return this.#listedRecords();
+    }
+    let migrated = false;
+    for (const record of parsed.records) {
+      try {
+        const validated = validateRecord(record);
+        const terminal = TERMINAL_STATES.has(validated.state);
+        const normalized = {
+          ...validated,
+          errorCode: typeof validated.errorCode === 'string' ? validated.errorCode : null,
+          retryable: typeof validated.retryable === 'boolean' ? validated.retryable : null,
+          failurePhase: typeof validated.failurePhase === 'string' ? validated.failurePhase : null,
+          destination: validated.destination && typeof validated.destination === 'object'
+            ? { ...validated.destination }
+            : null,
+          ...(terminal ? {
+            documentStagingPath: null,
+            resources: (validated.resources ?? []).map(({ stagingPath: _stagingPath, ...resource }) => resource),
+          } : {}),
+        };
+        if (terminal && validated.documentStagingPath) {
+          await this.#removePayloadDirectory(path.join(this.#payloadRoot, validated.id)).catch(() => {});
           migrated = true;
         }
+        this.#records.set(normalized.id, Object.freeze(normalized));
+      } catch {}
+    }
+    for (const receipt of parsed.takeoverReceipts ?? []) {
+      if (!receipt?.destination) {
+        migrated = true;
+        continue;
       }
-      if (migrated) await this.#persist().catch(() => {});
-      const activePayloadIds = new Set(
-        [...this.#records.values()]
-          .filter((record) => !TERMINAL_STATES.has(record.state) && record.documentStagingPath)
-          .map((record) => record.id),
-      );
-      for (const entry of await fs.readdir(this.#payloadRoot, { withFileTypes: true }).catch(() => [])) {
-        if (entry.isDirectory() && !activePayloadIds.has(entry.name)) {
-          await this.#removePayloadDirectory(path.join(this.#payloadRoot, entry.name)).catch(() => {});
-        }
+      try {
+        const validated = validateTakeoverReceipt(receipt);
+        this.#takeoverReceipts.set(
+          takeoverReceiptKey(validated.destination, validated.sessionId, validated.operationId),
+          Object.freeze({ ...validated }),
+        );
+      } catch {
+        migrated = true;
       }
-    } catch (error) {
-      if (error?.code !== 'ENOENT') {
-        const corrupt = `${this.#filePath}.corrupt-${Date.now()}`;
-        await retryWindows(
-          () => this.#rename(this.#filePath, corrupt),
-          this.#platform,
-          this.#sleep,
-        ).catch(() => {});
+    }
+    if (migrated) await this.#persist().catch(() => {});
+    const activePayloadIds = new Set(
+      [...this.#records.values()]
+        .filter((record) => !TERMINAL_STATES.has(record.state) && record.documentStagingPath)
+        .map((record) => record.id),
+    );
+    for (const entry of await fs.readdir(this.#payloadRoot, { withFileTypes: true }).catch(() => [])) {
+      if (entry.isDirectory() && !activePayloadIds.has(entry.name)) {
+        await this.#removePayloadDirectory(path.join(this.#payloadRoot, entry.name)).catch(() => {});
       }
     }
     this.#loaded = true;
@@ -349,7 +418,7 @@ export class CloudHandoffStore {
     if (sequence !== null && sequence <= current.lastEventSequence) return current;
     if (current.state === nextState && sequence === null) return current;
     if (current.state !== nextState && !TRANSITIONS[current.state]?.has(nextState)) {
-      throw new Error(`Invalid cloud handoff transition: ${current.state} -> ${nextState}`);
+      throw invalidTransition(current.state, nextState);
     }
     if (terminal) {
       await this.#removePayloadDirectory(path.join(this.#payloadRoot, id));
@@ -357,7 +426,7 @@ export class CloudHandoffStore {
       if (!current) throw new Error('Cloud handoff does not exist');
       if (sequence !== null && sequence <= current.lastEventSequence) return current;
       if (current.state !== nextState && !TRANSITIONS[current.state]?.has(nextState)) {
-        throw new Error(`Invalid cloud handoff transition: ${current.state} -> ${nextState}`);
+        throw invalidTransition(current.state, nextState);
       }
     }
     const next = Object.freeze({
@@ -577,6 +646,9 @@ export class CloudHandoffStore {
       clearTimeout(this.#persistTimer);
       this.#persistTimer = null;
     }
+    // A store that never loaded holds nothing newer than its file. Writing it
+    // would replace every saved handoff with an empty list.
+    if (!this.#loaded) return Promise.resolve();
     return this.#persist().catch(() => {});
   }
 }
@@ -594,12 +666,17 @@ export async function writeVerifiedRecoveryFile({ filePath, bytes, expectedDiges
   if (actualDigest !== expectedDigest) throw new Error('Cloud result digest does not match');
   await fs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
   const temp = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
-  await fs.writeFile(temp, payload, { mode: 0o600 });
-  const verified = await fs.readFile(temp);
-  if (verified.length !== payload.length || sha256Hex(verified) !== expectedDigest) {
-    await fs.rm(temp, { force: true });
-    throw new Error('Cloud result could not be verified after writing');
+  try {
+    await writeDurableFile(temp, payload);
+    const verified = await fs.readFile(temp);
+    if (verified.length !== payload.length || sha256Hex(verified) !== expectedDigest) {
+      throw new Error('Cloud result could not be verified after writing');
+    }
+    await replaceFile(temp, filePath, platform);
+  } catch (error) {
+    // A full disk or a locked target must not leave result-sized temp files behind.
+    await fs.rm(temp, { force: true }).catch(() => {});
+    throw error;
   }
-  await replaceFile(temp, filePath, platform);
   return { filePath, byteLength: payload.length, digest: actualDigest };
 }

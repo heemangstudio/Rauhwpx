@@ -1,7 +1,5 @@
-//! 칸 배경 그림 채우기 `None`(이진 유형 15)은 칸에 맞춰 축소·가운데 놓는다 (#7235).
-//!
-//! 종전 `render_image_node`는 None을 배치 모드로 그려 1628×563 로고가
-//! 253×57 칸 왼쪽 위에 놓이고 clip되어 사라졌다.
+//! 칸 배경 그림 채우기 `None`(이진 유형 15)은 정수 퍼센트 Zoom으로 가운데 놓는다 (#7235).
+//! Mac 한글 PDF의 1628×563 로고는 11% 배율로 배치한 뒤 칸에 잘린다.
 
 #![cfg(not(target_arch = "wasm32"))]
 
@@ -52,23 +50,55 @@ fn image_tags(svg: &str) -> Vec<(f64, f64, f64, f64, String)> {
     out
 }
 
-fn cell_fill_image(svg: &str) -> (f64, f64, f64, f64, String) {
-    let found: Vec<_> = image_tags(svg)
-        .into_iter()
-        .filter(|(x, y, _, _, _)| (x - CELL_X).abs() < 1.0 && (y - CELL_Y).abs() < 1.0)
-        .collect();
-    assert_eq!(
-        found.len(),
-        1,
-        "칸 원점({CELL_X}, {CELL_Y})에서 시작하는 <image>가 1개여야 한다: {found:?}"
-    );
-    found.into_iter().next().unwrap()
+fn cell_fill_image(svg: &str) -> ((f64, f64, f64, f64), (f64, f64, f64, f64), String) {
+    let attr = |tag: &str, name: &str| -> Option<f64> {
+        let key = format!("{name}=\"");
+        let rest = tag.split(&key).nth(1)?;
+        rest[..rest.find('"')?].parse().ok()
+    };
+    for fragment in svg.split("<svg ").skip(1) {
+        let Some((viewport, body)) = fragment.split_once('>') else {
+            continue;
+        };
+        let outer = (
+            attr(viewport, "x"),
+            attr(viewport, "y"),
+            attr(viewport, "width"),
+            attr(viewport, "height"),
+        );
+        let (Some(x), Some(y), Some(w), Some(h)) = outer else {
+            continue;
+        };
+        if (x - CELL_X).abs() >= 1.0 || (y - CELL_Y).abs() >= 1.0 {
+            continue;
+        }
+        let image = body
+            .split("</svg>")
+            .next()
+            .and_then(|inner| inner.split("<image ").nth(1))
+            .expect("칸 viewport 안에 그림이 있어야 한다");
+        let head = image.split('>').next().unwrap_or(image);
+        let painted = (
+            x + attr(head, "x").unwrap(),
+            y + attr(head, "y").unwrap(),
+            attr(head, "width").unwrap(),
+            attr(head, "height").unwrap(),
+        );
+        let par = head
+            .split("preserveAspectRatio=\"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .unwrap_or_default()
+            .to_string();
+        return ((x, y, w, h), painted, par);
+    }
+    panic!("칸 원점({CELL_X}, {CELL_Y})의 그림 viewport가 없다");
 }
 
 #[test]
 fn issue_7235_cell_image_fill_none_is_not_drawn_at_original_size() {
     let svg = page_svg();
-    let (_, _, w, h, _) = cell_fill_image(&svg);
+    let (_, (_, _, w, h), _) = cell_fill_image(&svg);
     assert!(
         (w - IMG_W).abs() > 1.0 && (h - IMG_H).abs() > 1.0,
         "칸 채우기 그림이 원본 픽셀 크기로 그려졌다: {w} x {h}"
@@ -80,34 +110,34 @@ fn issue_7235_cell_image_fill_none_is_not_drawn_at_original_size() {
 }
 
 #[test]
-fn issue_7235_cell_image_fill_none_contains_and_centers() {
+fn issue_7235_cell_image_fill_none_uses_percent_zoom_and_cell_viewport() {
     let svg = page_svg();
-    let (x, y, w, h, par) = cell_fill_image(&svg);
-    assert_eq!(
-        par, "xMidYMid meet",
-        "칸 채우기는 종횡비를 지키며 영역에 맞춰야 한다"
-    );
+    let ((x, y, w, h), (paint_x, paint_y, paint_w, paint_h), par) = cell_fill_image(&svg);
+    assert_eq!(par, "none");
     assert!((x - CELL_X).abs() < 0.01, "x={x}");
     assert!((y - CELL_Y).abs() < 0.01, "y={y}");
     assert!((w - CELL_W).abs() < 0.01, "width={w}");
     assert!((h - CELL_H).abs() < 0.01, "height={h}");
+    let scale = ((w / IMG_W).min(h / IMG_H) * 100.0).ceil() / 100.0;
+    assert!((scale - 0.11).abs() < 1e-9);
+    assert!((paint_w - IMG_W * scale).abs() < 0.01);
+    assert!((paint_h - IMG_H * scale).abs() < 0.01);
+    assert!((paint_x - (x + (w - paint_w) / 2.0)).abs() < 0.01);
+    assert!((paint_y - y).abs() < 0.01);
 }
 
 #[test]
 fn issue_7235_drawn_logo_matches_hancom_geometry() {
     let svg = page_svg();
-    let (x, _y, w, h, par) = cell_fill_image(&svg);
-    assert_eq!(par, "xMidYMid meet");
-    let scale = (w / IMG_W).min(h / IMG_H);
-    let drawn_w = IMG_W * scale;
-    let drawn_h = IMG_H * scale;
-    let left = x + (w - drawn_w) / 2.0;
-    let right = left + drawn_w;
-    assert!((drawn_w - 165.16).abs() < 0.05, "그려지는 폭={drawn_w}");
-    assert!((left - 510.72).abs() < 0.05, "왼쪽={left}");
-    assert!((right - 675.88).abs() < 0.05, "오른쪽={right}");
-    assert!((drawn_h - CELL_H).abs() < 0.01, "그려지는 높이={drawn_h}");
-    assert!(left > 510.0 && right < 677.0, "{left}..{right}");
+    let (_, (x, y, w, h), _) = cell_fill_image(&svg);
+    // Fresh Mac Hancom PDF: xref 18 is at (377.76, 75.12)–(512.16, 121.68) pt.
+    // SVG uses 96 dpi CSS coordinates, so the four edges below are ×4/3.
+    for (actual, expected) in [(x, 503.68), (y, 100.16), (x + w, 682.88), (y + h, 162.24)] {
+        assert!(
+            (actual - expected).abs() < 0.2,
+            "{actual} vs Mac {expected}"
+        );
+    }
 }
 
 #[test]
@@ -115,12 +145,9 @@ fn issue_7235_other_images_on_the_page_are_untouched() {
     let svg = page_svg();
     let others: Vec<_> = image_tags(&svg)
         .into_iter()
-        .filter(|(x, y, _, _, _)| (x - CELL_X).abs() >= 1.0 || (y - CELL_Y).abs() >= 1.0)
+        .filter(|(x, y, _, _, _)| (x - 77.467).abs() < 1.0 && (y - 105.46).abs() < 1.0)
         .collect();
-    assert!(
-        !others.is_empty(),
-        "대조군 그림이 사라졌다 — 이 수정은 칸 채우기만 바꾼다"
-    );
+    assert_eq!(others.len(), 1, "대조군 그림이 사라졌다");
     for (x, y, w, h, par) in others {
         assert_eq!(
             par, "none",

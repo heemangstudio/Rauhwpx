@@ -1,7 +1,50 @@
 import type { CommandServices } from '@/command/types';
-import type { SearchResult, ReplaceResult, ReplaceAllResult } from '@/core/types';
+import type {
+  DocumentPosition,
+  SearchHit,
+  SearchResult,
+  ReplaceResult,
+  ReplaceAllResult,
+} from '@/core/types';
 
 export type FindMode = 'find' | 'replace';
+
+type FindSelection = { start: DocumentPosition; end: DocumentPosition };
+
+function isBodyPosition(pos: DocumentPosition): boolean {
+  return pos.parentParaIndex === undefined && !pos.isTextBox && (pos.cellPath?.length ?? 0) === 0;
+}
+
+/**
+ * 바꾸기 직전에 기억한 검색 결과가 아직 유효한가.
+ *
+ * 대화상자는 모덜리스라 검색 뒤에도 문서를 고칠 수 있다. 앞쪽에 글자를 넣거나 다른
+ * 문서를 열면 기억한 위치(sec/para/charOffset)에는 다른 글자가 있고, 엔진의 replaceText
+ * 는 그 위치를 확인 없이 지우고 쓴다. 지금 찾을 내용으로 다시 찾은 본문 결과에 같은
+ * 위치·길이가 있고, 문서 선택이 여전히 그 범위일 때만 유효하다.
+ */
+export function isLiveFindHit(
+  hits: readonly SearchHit[],
+  hit: SearchResult,
+  selection: FindSelection | null,
+): boolean {
+  if (!hit.found || hit.sec === undefined || hit.para === undefined
+    || hit.charOffset === undefined || hit.length === undefined) {
+    return false;
+  }
+  const stillMatches = hits.some(h => !h.cellContext
+    && h.sec === hit.sec
+    && h.para === hit.para
+    && h.charOffset === hit.charOffset
+    && h.length === hit.length);
+  if (!stillMatches || !selection) return false;
+  const { start, end } = selection;
+  return isBodyPosition(start) && isBodyPosition(end)
+    && start.sectionIndex === hit.sec && start.paragraphIndex === hit.para
+    && start.charOffset === hit.charOffset
+    && end.sectionIndex === hit.sec && end.paragraphIndex === hit.para
+    && end.charOffset === hit.charOffset + hit.length;
+}
 
 /**
  * 찾기/찾아바꾸기 모달리스 대화상자
@@ -189,7 +232,8 @@ export class FindDialog {
     this.keyCaptureHandler = (e: KeyboardEvent) => {
       if (!this._open) return;
       const target = e.target as Node | null;
-      const isInDialog = Boolean(target && this.wrap.contains(target));
+      // 모덜리스 대화상자다 — 문서·사이드바·다른 대화상자의 Enter/Escape 는 그쪽 몫이다.
+      if (!target || !this.wrap.contains(target)) return;
 
       if (e.key === 'Escape') {
         e.preventDefault();
@@ -207,7 +251,7 @@ export class FindDialog {
         return;
       }
 
-      if (isInDialog) e.stopPropagation();
+      e.stopPropagation();
     };
     document.addEventListener('keydown', this.keyCaptureHandler, true);
   }
@@ -317,6 +361,17 @@ export class FindDialog {
 
     const newText = this.replaceInput.value;
     const hit = this.currentHit;
+
+    // 검색 뒤 문서가 바뀌었거나 선택이 옮겨졌으면 기억한 위치에 쓰지 않고 다시 찾는다.
+    const liveHits = this.services.wasm.searchAllText(
+      this.queryInput.value, this.caseSensitiveCheck.checked, false,
+    );
+    const selection = this.services.getInputHandler()?.getSelection() ?? null;
+    if (!isLiveFindHit(liveHits, hit, selection)) {
+      this.currentHit = null;
+      this.doSearch(true);
+      return;
+    }
 
     // 텍스트 치환도 undo 대상 — 편집 라우터의 snapshot 명령으로 기록한다
     // (#1320 계약, pasteImage/objectProps 와 동일 패턴). services 미주입

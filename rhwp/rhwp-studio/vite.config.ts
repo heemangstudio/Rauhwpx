@@ -1,8 +1,12 @@
 import { defineConfig } from 'vite';
 import { resolve, extname, join } from 'path';
 import { readFileSync, readFile } from 'fs';
+import { execSync } from 'node:child_process';
 import { VitePWA } from 'vite-plugin-pwa';
 import { rhwpAgentHubPlugin } from './vite-plugin-agent-hub.mjs';
+import { rhwpPinnedDocumentPlugin } from './vite-plugin-pinned-document.mjs';
+import { rhwpDevFontPackPlugin } from './vite-plugin-dev-font-pack.mjs';
+import { rhwpLocalFontsPlugin } from './vite-plugin-local-fonts.mjs';
 
 const appPackage = JSON.parse(
   readFileSync(resolve(__dirname, '..', '..', 'package.json'), 'utf-8'),
@@ -19,11 +23,52 @@ const useSubsecondWasm = process.env.RHWP_SUBSECOND === '1';
 // 동작한다. 바인딩은 그대로 127.0.0.1 — Host 허용과 HMR 되돌이 연결만 공개 주소로 맞춘다.
 // clientPort 가 없으면 HMR 웹소켓이 로컬 포트로 붙으려다 조용히 실패한다.
 const publicHost = process.env.RHWP_PUBLIC_HOST;
+
+// wasm 섹션 머리만 훑어 디버그 흔적(name/.debug_* 커스텀 섹션)을 찾는다.
+// `wasm-pack build --dev` 결과가 ../pkg 에 남아 있으면 dist 에 3배 크기의 엔진이 실린다.
+function wasmDebugSections(file: string): string[] {
+  const bytes = readFileSync(file);
+  const found: string[] = [];
+  let offset = 8;
+  const leb = () => {
+    let result = 0;
+    let shift = 0;
+    let byte = 0;
+    do {
+      byte = bytes[offset++];
+      result += (byte & 0x7f) * 2 ** shift;
+      shift += 7;
+    } while (byte & 0x80);
+    return result;
+  };
+  while (offset < bytes.length) {
+    const id = bytes[offset++];
+    const size = leb();
+    const end = offset + size;
+    if (id === 0) {
+      const nameLength = leb();
+      const name = bytes.subarray(offset, offset + nameLength).toString();
+      if (name === 'name' || name.startsWith('.debug')) found.push(name);
+    }
+    offset = end;
+  }
+  return found;
+}
 const publicHttpsPort = Number(process.env.RHWP_PUBLIC_HTTPS_PORT ?? 443);
+
+// 제품 정보 다이얼로그가 표시할 빌드 커밋 — git 이 없는 패키징 환경에서는 unknown.
+const appCommit = (() => {
+  try {
+    return execSync('git rev-parse --short=8 HEAD', { cwd: __dirname, encoding: 'utf8' }).trim() || 'unknown';
+  } catch {
+    return 'unknown';
+  }
+})();
 
 export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(appPackage.version),
+    __APP_COMMIT__: JSON.stringify(appCommit),
   },
   resolve: {
     alias: {
@@ -67,7 +112,27 @@ export default defineConfig({
     },
   },
   plugins: [
+    {
+      name: 'warn-debug-wasm',
+      apply: 'build',
+      buildStart() {
+        if (useSubsecondWasm) return;
+        const wasm = resolve(__dirname, '..', 'pkg', 'rhwp_bg.wasm');
+        let sections: string[] = [];
+        try {
+          sections = wasmDebugSections(wasm);
+        } catch {
+          return;
+        }
+        if (sections.length > 0) {
+          this.warn(`../pkg/rhwp_bg.wasm is a debug build (${sections.join(', ')}). Run \`npm run build:wasm\` at the repo root for the release engine.`);
+        }
+      },
+    },
     rhwpAgentHubPlugin(__dirname),
+    rhwpPinnedDocumentPlugin(__dirname),
+    rhwpDevFontPackPlugin(),
+    rhwpLocalFontsPlugin(__dirname),
     {
       name: 'ignore-subsecond-patch-artifacts',
       handleHotUpdate(context) {

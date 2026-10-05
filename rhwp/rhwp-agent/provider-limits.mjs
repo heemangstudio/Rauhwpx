@@ -180,31 +180,40 @@ export function createProviderLimitsClient({
     const method = await getAuthMethod(provider);
     if (method === 'api-key') return null;
     if (provider === 'codex') {
-      const homes = [...new Set([providerEnv.CODEX_HOME, path.join(homeDir, '.codex')].filter(Boolean).map((home) => path.resolve(home)))];
-      for (const home of homes) {
-        const raw = await readCredentials(path.join(home, 'auth.json'));
-        if (!raw) continue;
-        const token = raw.tokens?.access_token;
-        if (raw.auth_mode === 'apikey' || typeof token !== 'string' || !token) return null;
-        const accountId = typeof raw.tokens.account_id === 'string' ? raw.tokens.account_id : null;
-        return { token, accountId, home, env: providerEnv, accountKey: hash(`codex:${accountId ?? ''}:${tokenIdentity(token) ?? (accountId ? '' : token)}`) };
-      }
-      return null;
+      // 설정 상태와 같은 프로필만 읽는다. 선택한 CODEX_HOME 이 비어 있으면 다른 계정으로 넘어가지 않는다.
+      const home = path.resolve(providerEnv.CODEX_HOME?.trim() ? providerEnv.CODEX_HOME : path.join(homeDir, '.codex'));
+      const raw = await readCredentials(path.join(home, 'auth.json'));
+      if (!raw) return null;
+      const token = raw.tokens?.access_token;
+      if (raw.auth_mode === 'apikey' || typeof token !== 'string' || !token) return null;
+      const accountId = typeof raw.tokens.account_id === 'string' ? raw.tokens.account_id : null;
+      return { token, accountId, home, env: providerEnv, accountKey: hash(`codex:${accountId ?? ''}:${tokenIdentity(token) ?? (accountId ? '' : token)}`) };
     }
     const configDir = providerEnv.CLAUDE_CONFIG_DIR || path.join(homeDir, '.claude');
-    let raw = null;
-    if (providerEnv.CLAUDE_CODE_OAUTH_TOKEN) raw = { claudeAiOauth: { accessToken: providerEnv.CLAUDE_CODE_OAUTH_TOKEN } };
+    // A terminal login carries the profile scope the usage endpoint needs. The
+    // app's setup-token is inference-only, so it is the fallback.
+    const live = (candidate) => {
+      const expiresAt = Number(candidate?.claudeAiOauth?.expiresAt);
+      return candidate?.claudeAiOauth?.accessToken && !(Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt <= now())
+        ? candidate : null;
+    };
+    // 세션이 쓰는 터미널 로그인(readClaudeOAuthCredential)과 같은 순서로 파일을 먼저 본다.
+    let raw = live(await readCredentials(path.join(configDir, '.credentials.json')));
     if (!raw && platform === 'darwin') {
-      raw = await keychainRead(claudeKeychainService({
+      raw = live(await keychainRead(claudeKeychainService({
         configDir,
         hasConfigDir: Boolean(providerEnv.CLAUDE_CONFIG_DIR),
-      }));
+      })));
     }
-    raw ??= await readCredentials(path.join(configDir, '.credentials.json'));
+    let inferenceOnly = false;
+    if (!raw && providerEnv.CLAUDE_CODE_OAUTH_TOKEN) {
+      raw = { claudeAiOauth: { accessToken: providerEnv.CLAUDE_CODE_OAUTH_TOKEN } };
+      inferenceOnly = true;
+    }
     const oauth = raw?.claudeAiOauth;
     const token = oauth?.accessToken;
     if (typeof token !== 'string' || !token) return null;
-    return { token, accountKey: hash(`claude:${oauth.accountUuid ?? tokenIdentity(token) ?? token}`), planType: oauth.subscriptionType ?? null };
+    return { token, inferenceOnly, accountKey: hash(`claude:${oauth.accountUuid ?? tokenIdentity(token) ?? token}`), planType: oauth.subscriptionType ?? null };
   }
 
   async function request(url, auth, init = {}) {
@@ -240,6 +249,9 @@ export function createProviderLimitsClient({
         let body;
         try { body = await readUsage(); } catch (error) {
           if (error.code !== 'PROVIDER_AUTH_REQUIRED') throw error;
+          // Usage needs a profile scope a setup-token does not have. That is
+          // not a sign-in problem, so the meter simply stays empty.
+          if (auth.inferenceOnly) return blankQuota();
           // An active Claude CLI can rotate its token between the keychain read
           // and the request. Re-read once without rotating its refresh token.
           const renewed = await credentials('claude');

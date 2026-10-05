@@ -21,6 +21,8 @@ const migrations = [
   { version: 13, sql: readFileSync(path.join(migrationsDirectory, '013_question_workflow.sql'), 'utf8') },
   { version: 14, sql: readFileSync(path.join(migrationsDirectory, '014_conversation_configuration.sql'), 'utf8') },
   { version: 15, sql: readFileSync(path.join(migrationsDirectory, '015_human_edit_resume.sql'), 'utf8') },
+  { version: 16, sql: readFileSync(path.join(migrationsDirectory, '016_provider_auth_expiry.sql'), 'utf8') },
+  { version: 17, sql: readFileSync(path.join(migrationsDirectory, '017_query_indexes.sql'), 'utf8') },
 ];
 
 export function transaction(database, callback) {

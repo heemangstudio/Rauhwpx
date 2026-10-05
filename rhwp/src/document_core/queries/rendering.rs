@@ -25,7 +25,6 @@ use crate::renderer::pagination::{
     HeaderFooterRef, MasterPageRef, PageContent, PaginationResult, Paginator,
 };
 use crate::renderer::render_tree::PageRenderTree;
-use crate::renderer::style_resolver::resolve_styles;
 use crate::renderer::svg::SvgRenderer;
 use crate::renderer::svg_layer::SvgLayerRenderer;
 use crate::renderer::typeset::TypesetEngine;
@@ -897,7 +896,10 @@ impl DocumentCore {
         page_nums: &[u32],
         options: &crate::renderer::pdf::PdfExportOptions,
     ) -> Result<Vec<u8>, HwpError> {
+        crate::renderer::font_paths::register_font_face_availability(&options.font_paths);
         let _font_scope = self.resolved_shaping_font_scope();
+        let _measure_font_scope =
+            crate::renderer::layout::enter_measure_font_paths(options.font_paths.clone());
         if page_nums.is_empty() {
             return Err(HwpError::RenderError(
                 "PDF export requires at least one page".to_string(),
@@ -927,6 +929,9 @@ impl DocumentCore {
         profile: RenderProfile,
         options: &crate::renderer::pdf::PdfExportOptions,
     ) -> Result<Vec<u8>, HwpError> {
+        crate::renderer::font_paths::register_font_face_availability(&options.font_paths);
+        let _measure_font_scope =
+            crate::renderer::layout::enter_measure_font_paths(options.font_paths.clone());
         if page_nums.is_empty() {
             return Err(HwpError::RenderError(
                 "PDF export requires at least one page".to_string(),
@@ -1006,7 +1011,10 @@ impl DocumentCore {
         profile: RenderProfile,
         options: &crate::renderer::pdf::DirectPdfExportOptions,
     ) -> Result<Vec<u8>, HwpError> {
+        crate::renderer::font_paths::register_font_face_availability(&options.font_paths);
         let _font_scope = self.resolved_shaping_font_scope();
+        let _measure_font_scope =
+            crate::renderer::layout::enter_measure_font_paths(options.font_paths.clone());
         if page_nums.is_empty() {
             return Err(HwpError::RenderError(
                 "PDF export requires at least one page".to_string(),
@@ -1164,6 +1172,12 @@ impl DocumentCore {
     pub(crate) fn resolved_shaping_font_scope(
         &self,
     ) -> crate::renderer::layout::ResolvedShapingFontScope {
+        // 레이아웃 진입 전에 `RHWP_FONT_PATH` 의 face 이름을 등록한다 —
+        // HcrDeclared 폭 측정의 한컴 FontMap 치환은 "요청 face 가 없을 때만"
+        // 발동하므로 측정 경로가 custom font 실재 여부를 알아야 한다.
+        // (파일별 파싱은 최초 1회, 미설정이면 no-op)
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::renderer::font_paths::register_font_face_availability(&[]);
         crate::renderer::layout::enter_resolved_shaping_fonts(
             self.layout_engine.resolved_shaping_fonts(),
         )
@@ -1177,7 +1191,11 @@ impl DocumentCore {
         font_embed_mode: crate::renderer::svg::FontEmbedMode,
         font_paths: &[std::path::PathBuf],
     ) -> Result<String, HwpError> {
+        crate::renderer::font_paths::register_font_face_availability(font_paths);
         let _font_scope = self.resolved_shaping_font_scope();
+        // substFont 측정 판정이 --font-path 목록까지 보게 경로를 노출한다.
+        let _measure_font_scope =
+            crate::renderer::layout::enter_measure_font_paths(font_paths.to_vec());
         let tree = self.build_page_tree(page_num)?;
         let _overflows = self.layout_engine.take_overflows();
         let mut renderer = SvgRenderer::new();
@@ -1333,7 +1351,10 @@ impl DocumentCore {
         use crate::renderer::layer_renderer::LayerRasterRenderer;
         use crate::renderer::skia::SkiaLayerRenderer;
 
+        crate::renderer::font_paths::register_font_face_availability(font_paths);
         let _font_scope = self.resolved_shaping_font_scope();
+        let _measure_font_scope =
+            crate::renderer::layout::enter_measure_font_paths(font_paths.to_vec());
         let layer_tree = self.build_page_layer_tree(page_num)?;
         SkiaLayerRenderer::new()
             .with_font_paths(font_paths)
@@ -1365,7 +1386,10 @@ impl DocumentCore {
         use crate::renderer::layer_renderer::{LayerRasterRenderer, RasterRenderOptions};
         use crate::renderer::skia::SkiaLayerRenderer;
 
+        crate::renderer::font_paths::register_font_face_availability(&options.font_paths);
         let _font_scope = self.resolved_shaping_font_scope();
+        let _measure_font_scope =
+            crate::renderer::layout::enter_measure_font_paths(options.font_paths.clone());
         let layer_tree = self.build_page_layer_tree_with_profile(page_num, profile)?;
 
         // 페이지 크기에서 effective scale + max_dimension 결정
@@ -1885,14 +1909,19 @@ impl DocumentCore {
             None,
         );
 
+        // 본문 그림을 별도 정적 layer 로 깔아도 그리기 순서가 유지되는지 (Studio 분리 합성 조건).
+        let flow_static_split_safe = flow_image_count + flow_raw_svg_count == 0
+            || crate::paint::flow_static_split_preserves_order(&tree.root);
+
         Ok(format!(
-            "{{\"behind\":[{}],\"front\":[{}],\"imageCount\":{},\"rawSvgCount\":{},\"flowImageCount\":{},\"flowRawSvgCount\":{},\"hasBehind\":{},\"hasFront\":{}}}",
+            "{{\"behind\":[{}],\"front\":[{}],\"imageCount\":{},\"rawSvgCount\":{},\"flowImageCount\":{},\"flowRawSvgCount\":{},\"flowStaticSplitSafe\":{},\"hasBehind\":{},\"hasFront\":{}}}",
             behind,
             front,
             image_count,
             raw_svg_count,
             flow_image_count,
             flow_raw_svg_count,
+            flow_static_split_safe,
             has_behind,
             has_front
         ))
@@ -2708,6 +2737,137 @@ impl DocumentCore {
         Ok(format!("{{\"runs\":[{}]}}", runs.join(",")))
     }
 
+    /// 쪽의 줄 배치 요약 (네이티브 에러 타입) — 에이전트 `get_page_geometry` 용.
+    ///
+    /// `TextLine` 노드마다 줄 상자(x,y,w,h), 실제로 그려지는 베이스라인(`bl`),
+    /// 잉크 x 범위(`tx0`/`tx1`), 문서 좌표와 그 줄 TextRun 의 `[x, w, cs, ce]` 를 모은다.
+    /// `getPageTextLayout` 은 글자별 X 배열·서식까지 싣고 줄 경계·베이스라인이 없어
+    /// 측정용으로는 무겁고 부족하다. 좌표는 쪽 기준 px, 문자 범위는 텍스트 오프셋이다.
+    pub fn get_page_line_layout_native(&self, page_num: u32) -> Result<String, HwpError> {
+        use crate::renderer::render_tree::{RenderNode, RenderNodeType, TextRunNode};
+
+        let tree = self.build_page_tree_cached(page_num)?;
+
+        // 줄 안의 TextRun — 안쪽 줄·표·글상자는 그쪽 TextLine 이 따로 수집한다.
+        fn collect_runs<'a>(
+            node: &'a RenderNode,
+            out: &mut Vec<(&'a RenderNode, &'a TextRunNode)>,
+        ) {
+            for child in &node.children {
+                match &child.node_type {
+                    RenderNodeType::TextRun(run) => out.push((child, run)),
+                    RenderNodeType::TextLine(_)
+                    | RenderNodeType::Table(_)
+                    | RenderNodeType::TextBox => {}
+                    _ => collect_runs(child, out),
+                }
+            }
+        }
+
+        fn walk(node: &RenderNode, area: &'static str, lines: &mut Vec<String>) {
+            let area = match node.node_type {
+                RenderNodeType::Header => "header",
+                RenderNodeType::Footer => "footer",
+                RenderNodeType::FootnoteArea => "note",
+                RenderNodeType::MasterPage => "master",
+                _ => area,
+            };
+            if let RenderNodeType::TextLine(line) = &node.node_type {
+                let mut runs = Vec::new();
+                collect_runs(node, &mut runs);
+                let mut sec = line.section_index;
+                let mut para = line.para_index;
+                let mut cell = String::new();
+                let mut baseline: Option<f64> = None;
+                let (mut cs, mut ce): (Option<usize>, usize) = (None, 0);
+                let (mut tx0, mut tx1) = (f64::INFINITY, f64::NEG_INFINITY);
+                let mut run_items = Vec::new();
+                for (run_node, run) in &runs {
+                    let len = run.text.chars().count();
+                    if len > 0 {
+                        tx0 = tx0.min(run_node.bbox.x);
+                        tx1 = tx1.max(run_node.bbox.x + run_node.bbox.width);
+                        if baseline.is_none() {
+                            baseline = Some(run_node.bbox.y + run.baseline);
+                        }
+                    }
+                    let Some(start) = run.char_start else {
+                        continue;
+                    };
+                    if cs.is_none() {
+                        sec = run.section_index.or(sec);
+                        para = run.para_index.or(para);
+                        if let Some(ctx) = &run.cell_context {
+                            let path: Vec<String> = ctx
+                                .path
+                                .iter()
+                                .map(|e| {
+                                    format!(
+                                        "[{},{},{}]",
+                                        e.control_index, e.cell_index, e.cell_para_index
+                                    )
+                                })
+                                .collect();
+                            cell = format!(
+                                ",\"cell\":{{\"pp\":{},\"path\":[{}]}}",
+                                ctx.parent_para_index,
+                                path.join(",")
+                            );
+                        }
+                    }
+                    cs = Some(cs.map_or(start, |v| v.min(start)));
+                    ce = ce.max(start + len);
+                    if len > 0 {
+                        run_items.push(format!(
+                            "[{:.1},{:.1},{},{}]",
+                            run_node.bbox.x,
+                            run_node.bbox.width,
+                            start,
+                            start + len
+                        ));
+                    }
+                }
+                let b = &node.bbox;
+                let doc = match (sec, para) {
+                    (Some(s), Some(p)) => format!(",\"sec\":{},\"para\":{}", s, p),
+                    _ => String::new(),
+                };
+                let range = cs.map_or_else(String::new, |s| format!(",\"cs\":{},\"ce\":{}", s, ce));
+                let ink = if tx0.is_finite() {
+                    format!(",\"tx0\":{:.1},\"tx1\":{:.1}", tx0, tx1)
+                } else {
+                    String::new()
+                };
+                let area_str = if area.is_empty() {
+                    String::new()
+                } else {
+                    format!(",\"area\":\"{}\"", area)
+                };
+                lines.push(format!(
+                    "{{\"x\":{:.1},\"y\":{:.1},\"w\":{:.1},\"h\":{:.1},\"bl\":{:.1}{}{}{}{}{},\"runs\":[{}]}}",
+                    b.x,
+                    b.y,
+                    b.width,
+                    b.height,
+                    baseline.unwrap_or(b.y + line.baseline),
+                    doc,
+                    range,
+                    ink,
+                    area_str,
+                    cell,
+                    run_items.join(",")
+                ));
+            }
+            for child in &node.children {
+                walk(child, area, lines);
+            }
+        }
+
+        let mut lines = Vec::new();
+        walk(&tree.root, "", &mut lines);
+        Ok(format!("{{\"lines\":[{}]}}", lines.join(",")))
+    }
+
     /// 도형 노드는 `CellContext` 가 없고 #1138 스칼라만 든다. 그 셋이 곧 1단계
     /// `cellPath` 이며, 전부 있거나 전부 없다.
     fn shape_cell_context_json(
@@ -3483,8 +3643,10 @@ impl DocumentCore {
         let profile = self.document.layout_profile();
         let hwp3_origin_flow_spacing_before = uses_hwp3_origin_flow_spacing_before(&self.document);
         let measurer = HeightMeasurer::new(self.dpi)
+            .with_own_line_layout(profile.own_line_layout())
             .with_hwp3_variant(profile.hwp3_layout())
             .with_hwpx_cell_spacing(profile.hwpx_stored_layout() || profile.hwp5_origin_hwpx())
+            .with_native_hwpx_cell_margin(profile.native_hwpx_cell_margin())
             .with_hwp3_origin_flow_spacing_before(hwp3_origin_flow_spacing_before)
             .with_session_edited(profile.session_edited())
             .with_render_normalization(std::sync::Arc::clone(&self.render_normalization.overlay));
@@ -3716,6 +3878,7 @@ impl DocumentCore {
         for offset in &mut self.para_offset {
             *offset = 0;
         }
+        self.invalidate_layout_caches_for_dirty_tables(section_index);
         for paragraph in &mut self.document.sections[section_index].paragraphs {
             for control in &mut paragraph.controls {
                 if let Control::Table(table) = control {
@@ -3780,8 +3943,28 @@ impl DocumentCore {
     /// section_index/is_first_in_column 계측은 측정 통일 작업의 진단·후속용으로 유지한다.
     pub(crate) fn paginate(&mut self) {
         let fonts = self.collect_resolved_shaping_fonts();
+        let has_embedded_hft = self
+            .document
+            .doc_info
+            .font_faces
+            .iter()
+            .flatten()
+            .any(|declared| {
+                declared.alt_type == 2
+                    && fonts
+                        .iter()
+                        .any(|face| face.family.eq_ignore_ascii_case(&declared.name))
+            });
         self.layout_engine.set_resolved_shaping_fonts(fonts.clone());
         crate::renderer::layout::with_resolved_shaping_fonts(fonts, || {
+            // 바이트 검증을 마친 내장 HFT만 원래 face 이름으로 다시 해소한다.
+            if has_embedded_hft {
+                self.styles = crate::renderer::style_resolver::resolve_styles_with_variant(
+                    &self.document.doc_info,
+                    self.dpi,
+                    self.document.layout_profile().hwp3_layout(),
+                );
+            }
             self.paginate_with_resolved_shaping_fonts()
         });
     }
@@ -3828,6 +4011,11 @@ impl DocumentCore {
         // [#2308] #2004 revision cache와 #2195 sparse overlay를 source IR에서 갱신한다.
         let issue2424_normalize_started = issue2424_profile_enabled.then(std::time::Instant::now);
         self.compute_render_normalized();
+        for section_idx in 0..self.dirty_sections.len() {
+            if self.dirty_sections[section_idx] {
+                self.invalidate_layout_caches_for_dirty_tables(section_idx);
+            }
+        }
         let issue2424_normalize_elapsed = issue2424_normalize_started
             .map(|started| started.elapsed())
             .unwrap_or_default();
@@ -3838,8 +4026,10 @@ impl DocumentCore {
         // 판단은 Document::layout_profile 이 단일 소유 (Issue #1770 규칙 승계).
         let profile = self.document.layout_profile();
         let measurer = HeightMeasurer::new(self.dpi)
+            .with_own_line_layout(profile.own_line_layout())
             .with_hwp3_variant(profile.hwp3_layout())
             .with_hwpx_cell_spacing(profile.hwpx_stored_layout() || profile.hwp5_origin_hwpx())
+            .with_native_hwpx_cell_margin(profile.native_hwpx_cell_margin())
             .with_hwp3_origin_flow_spacing_before(hwp3_origin_flow_spacing_before)
             .with_session_edited(profile.session_edited())
             .with_render_normalization(std::sync::Arc::clone(&self.render_normalization.overlay));
@@ -4058,6 +4248,7 @@ impl DocumentCore {
                         respect_vpos_reset: self.respect_vpos_reset,
                         is_hwp3_variant: self.document.layout_profile().hwp3_layout(),
                         footnote_shape: Some(section.section_def.footnote_shape.clone()),
+                        hwpx_container: self.document.layout_profile().hwpx_container(),
                     },
                 )
             } else {
@@ -4233,49 +4424,21 @@ impl DocumentCore {
             // (짝수 페이지가 없어도 Even 머리말이 다음 구역에 상속되어야 함)
             {
                 use crate::model::header_footer::HeaderFooterApply as HFA;
-                for (pi, para) in section.paragraphs.iter().enumerate() {
-                    for (ci, ctrl) in para.controls.iter().enumerate() {
-                        match ctrl {
-                            Control::Header(h) => {
-                                let r = HeaderFooterRef {
-                                    para_index: pi,
-                                    control_index: ci,
-                                    source_section_index: idx,
-                                };
-                                match h.apply_to {
-                                    HFA::Both => {
-                                        carry_header_odd = Some(r.clone());
-                                        carry_header_even = Some(r);
-                                    }
-                                    HFA::Odd => {
-                                        carry_header_odd = Some(r);
-                                    }
-                                    HFA::Even => {
-                                        carry_header_even = Some(r);
-                                    }
-                                }
-                            }
-                            Control::Footer(f) => {
-                                let r = HeaderFooterRef {
-                                    para_index: pi,
-                                    control_index: ci,
-                                    source_section_index: idx,
-                                };
-                                match f.apply_to {
-                                    HFA::Both => {
-                                        carry_footer_odd = Some(r.clone());
-                                        carry_footer_even = Some(r);
-                                    }
-                                    HFA::Odd => {
-                                        carry_footer_odd = Some(r);
-                                    }
-                                    HFA::Even => {
-                                        carry_footer_even = Some(r);
-                                    }
-                                }
-                            }
-                            _ => {}
+                let entries =
+                    crate::renderer::pagination::header_footer_entries(&section.paragraphs, idx);
+                for (_, r, is_header, apply_to) in entries {
+                    let (odd, even) = if is_header {
+                        (&mut carry_header_odd, &mut carry_header_even)
+                    } else {
+                        (&mut carry_footer_odd, &mut carry_footer_even)
+                    };
+                    match apply_to {
+                        HFA::Both => {
+                            *odd = Some(r.clone());
+                            *even = Some(r);
                         }
+                        HFA::Odd => *odd = Some(r),
+                        HFA::Even => *even = Some(r),
                     }
                 }
             }
@@ -4290,16 +4453,28 @@ impl DocumentCore {
                 }
             }
 
-            // 구역 간 쪽번호 연속: NewNumber(Page) 컨트롤이 없으면 이전 구역에서 이어짐
-            if idx > 0 && carry_last_page_number > 0 {
-                use crate::model::control::{AutoNumberType, Control};
-                let has_new_number = section.paragraphs.iter().any(|p|
-                    p.controls.iter().any(|c| matches!(c, Control::NewNumber(nn) if nn.number_type == AutoNumberType::Page))
-                );
-                if !has_new_number {
-                    for page in &mut result.pages {
-                        page.page_number += carry_last_page_number;
+            // 구역 시작 번호를 이어받은 뒤, 재시작 컨트롤이 실제 등장한 쪽부터 적용한다.
+            // 뒤쪽에 newNum 이 있어도 그 앞의 쪽들은 이전 구역 번호를 이어간다.
+            {
+                let start = if section.section_def.page_num > 0 {
+                    let n = u32::from(section.section_def.page_num);
+                    match section.section_def.page_num_type {
+                        1 | 2 => {
+                            n + u32::from(n % 2 != section.section_def.page_num_type as u32 % 2)
+                        }
+                        _ => n,
                     }
+                } else {
+                    carry_last_page_number.saturating_add(1)
+                };
+                let resets = crate::renderer::page_number::collect_page_number_resets(
+                    &section.paragraphs,
+                    self.document.layout_profile().hwpx_container(),
+                );
+                let mut assigner =
+                    crate::renderer::page_number::PageNumberAssigner::new(&resets, start);
+                for page in &mut result.pages {
+                    page.page_number = assigner.assign(page);
                 }
             }
 
@@ -4383,26 +4558,8 @@ impl DocumentCore {
                 use crate::model::header_footer::HeaderFooterApply as HFA;
                 use crate::renderer::pagination::{ActiveHeaderFooter, PageItem};
 
-                let mut entries: Vec<(usize, HeaderFooterRef, bool, HFA)> = Vec::new();
-                for (pi, para) in section.paragraphs.iter().enumerate() {
-                    for (ci, ctrl) in para.controls.iter().enumerate() {
-                        let (is_header, apply_to) = match ctrl {
-                            Control::Header(h) => (true, h.apply_to),
-                            Control::Footer(f) => (false, f.apply_to),
-                            _ => continue,
-                        };
-                        entries.push((
-                            pi,
-                            HeaderFooterRef {
-                                para_index: pi,
-                                control_index: ci,
-                                source_section_index: idx,
-                            },
-                            is_header,
-                            apply_to,
-                        ));
-                    }
-                }
+                let entries =
+                    crate::renderer::pagination::header_footer_entries(&section.paragraphs, idx);
                 let has_header = entries.iter().any(|(_, _, is_header, _)| *is_header);
                 let has_footer = entries.iter().any(|(_, _, is_header, _)| !*is_header);
 
@@ -4609,6 +4766,8 @@ impl DocumentCore {
         let can_project_body_spacing =
             matches!(self.source_format, crate::parser::FileFormat::Hwpx)
                 && self.document.layout_profile().hwp5_origin_hwpx();
+        let can_project_synthetic_spacing =
+            self.document.layout_profile().ms_word_compatible_layout();
         let sec_count = self.document.sections.len();
         self.render_normalization
             .section_revisions
@@ -4661,6 +4820,7 @@ impl DocumentCore {
                 )
                 .then_some(paragraphs)
             });
+            let metric_projected = metric_projection.is_some();
             let body_projection = can_project_body_spacing
                 .then(|| {
                     crate::renderer::composer::doubled_body_spacing_projection(
@@ -4671,10 +4831,74 @@ impl DocumentCore {
                 })
                 .flatten();
             let body_spacing_projected = body_projection.is_some();
+            // 대체 서체로 다시 조판되는 어울림 문단 (`reflow_substituted_wrap_hosts`).
+            let (column_width_px, single_column_body_height_hu) = {
+                let column_def = Self::find_initial_column_def(&section.paragraphs);
+                let layout = crate::renderer::page_layout::PageLayoutInfo::from_page_def(
+                    pd,
+                    &column_def,
+                    self.dpi,
+                );
+                (
+                    layout
+                        .column_areas
+                        .first()
+                        .map(|a| a.width)
+                        .unwrap_or(layout.body_area.width),
+                    (layout.column_areas.len() == 1).then_some(body_h_hu),
+                )
+            };
+            let can_contract_equation_cache = self.document.layout_profile().hwpx_stored_layout()
+                && section.paragraphs.iter().any(|para| {
+                    (para.line_segs.len() > 1
+                        && para
+                            .controls
+                            .iter()
+                            .any(|ctrl| matches!(ctrl, Control::Equation(_))))
+                        || para.controls.iter().any(|ctrl| {
+                            matches!(ctrl, Control::Table(table)
+                            if table.cells.iter().any(|cell| cell.paragraphs.iter().any(|p|
+                                p.controls.iter().any(|c| matches!(c, Control::Equation(_))))))
+                        })
+                });
+            let can_project_live_inline_textbox =
+                self.document.layout_profile().hwpx_stored_layout()
+                    && section.paragraphs.iter().any(|para| {
+                        para.line_segs.len() == 1
+                            && para.controls.iter().any(|ctrl| {
+                                matches!(ctrl, Control::Shape(shape)
+                                    if matches!(shape.as_ref(), crate::model::shape::ShapeObject::Rectangle(rect)
+                                        if rect.common.treat_as_char
+                                            && rect.drawing.text_box.is_some()
+                                            && i32::try_from(rect.drawing.shape_attr.current_height)
+                                                .ok()
+                                                .zip(i32::try_from(rect.common.height).ok())
+                                                .is_some_and(|(current, minimum)| current > minimum)))
+                            })
+                    });
+            let mut wrap_projection = Vec::new();
+            let wrap_reflowed = if crate::renderer::composer::has_substituted_wrap_host_candidate(
+                &section.paragraphs,
+            ) {
+                wrap_projection = section.paragraphs.clone();
+                crate::renderer::composer::reflow_substituted_wrap_hosts(
+                    &mut wrap_projection,
+                    &self.styles,
+                    column_width_px,
+                    single_column_body_height_hu,
+                    self.dpi,
+                )
+            } else {
+                Vec::new()
+            };
             if matches.is_empty()
                 && !has_cell_stack
-                && metric_projection.is_none()
+                && !metric_projected
                 && !body_spacing_projected
+                && !can_project_synthetic_spacing
+                && !can_contract_equation_cache
+                && !can_project_live_inline_textbox
+                && wrap_reflowed.is_empty()
             {
                 out.push(None);
                 continue;
@@ -4684,6 +4908,53 @@ impl DocumentCore {
             let mut np = body_projection
                 .or(metric_projection)
                 .unwrap_or_else(|| section.paragraphs.clone());
+            if !wrap_reflowed.is_empty() {
+                // 다시 만든 줄과 그 뒤로 밀린 세로 위치를 옮긴다.
+                let first = wrap_reflowed[0];
+                for (i, (dst, src)) in np.iter_mut().zip(wrap_projection.iter()).enumerate() {
+                    if i >= first {
+                        dst.line_segs = src.line_segs.clone();
+                    }
+                }
+            }
+            let equation_projection = can_contract_equation_cache
+                .then(|| {
+                    TypesetEngine::new(self.dpi).contract_cached_equation_paragraphs(
+                        &np,
+                        column_width_px,
+                        &self.styles,
+                        true,
+                    )
+                })
+                .flatten();
+            let equation_cache_contracted = equation_projection.is_some();
+            if let Some(projected) = equation_projection {
+                np = projected;
+            }
+            let shape_projection = can_project_live_inline_textbox
+                .then(|| {
+                    TypesetEngine::new(self.dpi)
+                        .project_live_inline_textbox_following_vpos(&np, &self.styles)
+                })
+                .flatten();
+            let shape_height_projected = shape_projection.is_some();
+            if let Some(projected) = shape_projection {
+                np = projected;
+            }
+            let synthetic_spacing_projected = can_project_synthetic_spacing
+                && Self::project_synthetic_percent_line_spacing(&mut np, &self.styles, self.dpi);
+            if matches.is_empty()
+                && !has_cell_stack
+                && !synthetic_spacing_projected
+                && !body_spacing_projected
+                && !metric_projected
+                && !equation_cache_contracted
+                && !shape_height_projected
+                && wrap_reflowed.is_empty()
+            {
+                out.push(None);
+                continue;
+            }
             if has_cell_stack {
                 for p in np.iter_mut() {
                     reclassify_cell_floating_stacks(p, min_height_hu);
@@ -4697,7 +4968,22 @@ impl DocumentCore {
                 .iter()
                 .enumerate()
                 .map(|(i, p)| {
-                    if matches.binary_search(&i).is_ok() {
+                    if equation_cache_contracted
+                        && (p.line_segs.len() != section.paragraphs[i].line_segs.len()
+                            || p.line_segs
+                                .iter()
+                                .zip(&section.paragraphs[i].line_segs)
+                                .any(|(fresh, saved)| fresh.text_start != saved.text_start))
+                    {
+                        let mut c = compose_paragraph(p);
+                        if let Some(saved) = base.and_then(|paras| paras.get(i)) {
+                            c.numbering_text = saved.numbering_text.clone();
+                            c.numbering_head = saved.numbering_head.clone();
+                        }
+                        c
+                    } else if wrap_reflowed.binary_search(&i).is_ok() {
+                        compose_paragraph(p)
+                    } else if matches.binary_search(&i).is_ok() || synthetic_spacing_projected {
                         let mut c = compose_paragraph(p);
                         // [#2004] composer 가 line_seg 부족(HWP5 빈-문단)으로 1줄로 붕괴하면
                         // 그림 수만큼 줄을 합성(모두 char_start 동일)해 Stage2 stacked 게이트
@@ -4734,7 +5020,9 @@ impl DocumentCore {
                 .collect();
             out.push(Some(super::super::RenderNormalizedSection {
                 source_revision,
-                body_spacing_projected,
+                body_spacing_projected: body_spacing_projected
+                    || equation_cache_contracted
+                    || shape_height_projected,
                 paragraphs: std::sync::Arc::new(np),
                 composed: std::sync::Arc::new(nc),
             }));
@@ -4775,7 +5063,21 @@ impl DocumentCore {
                 self.dpi,
             );
         }
-        let source_composed = self.composed[section_idx][para_idx].clone();
+        let synthetic_spacing_projected =
+            if self.document.layout_profile().ms_word_compatible_layout() {
+                Self::project_synthetic_percent_line_spacing(
+                    std::slice::from_mut(&mut source_para),
+                    &self.styles,
+                    self.dpi,
+                )
+            } else {
+                false
+            };
+        let source_composed = if synthetic_spacing_projected {
+            compose_paragraph(&source_para)
+        } else {
+            self.composed[section_idx][para_idx].clone()
+        };
         let Some(Some(section)) = self.render_normalization.sections.get_mut(section_idx) else {
             return;
         };
@@ -5437,6 +5739,33 @@ impl DocumentCore {
         self.invalidate_page_tree_cache_from(first_page as u32);
     }
 
+    /// dirty 표(편집으로 내용이 바뀐 표)의 셀 단위 레이아웃 캐시를 제거한다.
+    ///
+    /// 측정 캐시는 `table.dirty` 로 재측정 여부를 정하므로, 같은 신호로 렌더 쪽 cell_units
+    /// 캐시도 맞춘다. 그러지 않으면 새 pagination 컷을 옛 units 에 적용해 분할 표가 옛
+    /// 지점에서 끊기고 쪽 아래가 비어 보인다. 표 dirty 플래그를 소비하기 전에 호출한다.
+    fn invalidate_layout_caches_for_dirty_tables(&self, section_idx: usize) {
+        let evict = |paragraphs: &[Paragraph]| {
+            for para in paragraphs {
+                for ctrl in &para.controls {
+                    if let Control::Table(table) = ctrl {
+                        if table.dirty {
+                            self.layout_engine.invalidate_table_layout_caches(table);
+                        }
+                    }
+                }
+            }
+        };
+        let Some(section) = self.document.sections.get(section_idx) else {
+            return;
+        };
+        evict(&section.paragraphs);
+        let render_paragraphs = self.section_render_paragraphs(section_idx);
+        if !std::ptr::eq(render_paragraphs, &section.paragraphs[..]) {
+            evict(render_paragraphs);
+        }
+    }
+
     pub(crate) fn invalidate_page_tree_cache_page(&self, page_num: u32) {
         let page = page_num as usize;
         if let Some(slot) = self.page_tree_cache.borrow_mut().get_mut(page) {
@@ -5487,7 +5816,7 @@ impl DocumentCore {
         order.push_back(page);
     }
 
-    fn cache_page_tree(&self, page: usize, tree: PageRenderTree) {
+    fn cache_page_tree(&self, page: usize, tree: std::sync::Arc<PageRenderTree>) {
         {
             let mut cache = self.page_tree_cache.borrow_mut();
             if cache.len() <= page {
@@ -5518,24 +5847,30 @@ impl DocumentCore {
 
     /// 캐시된 페이지 렌더 트리를 반환한다 (캐시 미스 시 빌드 후 캐시).
     pub(crate) fn build_page_tree_cached(&self, page_num: u32) -> Result<PageRenderTree, HwpError> {
+        let tree = self.build_page_tree_shared(page_num)?;
+        Ok(PageRenderTree::clone(&tree))
+    }
+
+    /// 캐시된 페이지 렌더 트리를 공유 참조로 반환한다 (캐시 미스 시 빌드 후 캐시).
+    ///
+    /// 히트는 `Arc` 참조 수만 올리고 트리를 복제하지 않는다. 캐시 `RefCell` 빌림은
+    /// 반환 전에 풀리므로 호출자는 트리를 쥔 채로 다른 캐시 조회를 해도 된다.
+    pub(crate) fn build_page_tree_shared(
+        &self,
+        page_num: u32,
+    ) -> Result<std::sync::Arc<PageRenderTree>, HwpError> {
         let idx = page_num as usize;
 
-        // 캐시 크기 확보 + 히트 확인
-        let cached = {
-            let mut cache = self.page_tree_cache.borrow_mut();
-            if cache.len() <= idx {
-                cache.resize_with(idx + 1, || None);
-            }
-            cache[idx].clone()
-        };
+        // 히트 확인. 범위 밖 페이지가 캐시를 키우지 않도록 빌드 성공 후에만 슬롯을 만든다.
+        let cached = self.page_tree_cache.borrow().get(idx).cloned().flatten();
         if let Some(tree) = cached {
             self.touch_page_render_cache(idx);
             return Ok(tree);
         }
 
         // 캐시 미스 → 빌드
-        let tree = self.build_page_tree(page_num)?;
-        self.cache_page_tree(idx, tree.clone());
+        let tree = std::sync::Arc::new(self.build_page_tree(page_num)?);
+        self.cache_page_tree(idx, std::sync::Arc::clone(&tree));
 
         Ok(tree)
     }
@@ -5560,25 +5895,10 @@ impl DocumentCore {
         page_num: u32,
         build: impl FnOnce(&PageRenderTree) -> Result<T, HwpError>,
     ) -> Result<T, HwpError> {
-        let idx = page_num as usize;
-        let cached = self
-            .page_tree_cache
-            .borrow()
-            .get(idx)
-            .is_some_and(Option::is_some);
-
-        if !cached {
-            let tree = self.build_page_tree(page_num)?;
-            self.cache_page_tree(idx, tree);
-        } else {
-            self.touch_page_render_cache(idx);
-        }
-
-        let cache = self.page_tree_cache.borrow();
-        let tree = cache[idx]
-            .as_ref()
-            .expect("페이지 tree cache는 채운 뒤에 참조해야 한다");
-        build(tree)
+        // 캐시 빌림을 쥔 채 build 를 부르지 않는다 — build 안에서 다른 페이지를 캐시에
+        // 넣어도(borrow_mut) 패닉하지 않도록 공유 참조만 들고 간다.
+        let tree = self.build_page_tree_shared(page_num)?;
+        build(&tree)
     }
 
     /// 머리말/꼬리말 정의가 속한 구역의 대표 편집 페이지를 반환한다.
@@ -5628,6 +5948,7 @@ impl DocumentCore {
             para_index,
             control_index,
             source_section_index: section_idx,
+            cell_path: Vec::new(),
         })
     }
 
@@ -5709,6 +6030,8 @@ impl DocumentCore {
                 .hwpx_aux_entry("Preview/PrvImage.png")
                 .filter(|_| matches!(self.source_format, crate::parser::FileFormat::Hwpx)),
         );
+        self.layout_engine
+            .set_print_crop_marks(self.document.print_crop_marks());
         // 활성 필드 정보를 레이아웃 엔진에 전달 (안내문 숨김용)
         self.layout_engine
             .set_active_field(self.active_field.as_ref().map(|af| {
@@ -5999,7 +6322,7 @@ impl DocumentCore {
     }
 
     pub(crate) fn rebuild_section(&mut self, section_idx: usize) {
-        self.styles = resolve_styles(&self.document.doc_info, self.dpi);
+        self.styles = self.resolve_document_styles();
         self.recompose_section(section_idx);
         self.paginate();
     }
@@ -6858,7 +7181,10 @@ mod tests {
         let core = DocumentCore::new_empty();
         let inserted = PAGE_RENDER_CACHE_CAPACITY + 3;
         for page in 0..inserted {
-            core.cache_page_tree(page, PageRenderTree::new(page as u32, 100.0, 100.0));
+            core.cache_page_tree(
+                page,
+                std::sync::Arc::new(PageRenderTree::new(page as u32, 100.0, 100.0)),
+            );
             let mut json_cache = core.layer_tree_json_cache.borrow_mut();
             if json_cache.len() <= page {
                 json_cache.resize_with(page + 1, Vec::new);
@@ -6874,13 +7200,29 @@ mod tests {
         }
 
         core.touch_page_render_cache(3);
-        core.cache_page_tree(inserted, PageRenderTree::new(inserted as u32, 100.0, 100.0));
+        core.cache_page_tree(
+            inserted,
+            std::sync::Arc::new(PageRenderTree::new(inserted as u32, 100.0, 100.0)),
+        );
         assert!(core.page_tree_cache.borrow()[3].is_some());
         assert!(core.page_tree_cache.borrow()[4].is_none());
         assert_eq!(
             core.page_tree_cache_order.borrow().len(),
             PAGE_RENDER_CACHE_CAPACITY
         );
+    }
+
+    #[test]
+    fn out_of_range_page_does_not_grow_render_cache() {
+        let bytes = include_bytes!("../../../samples/hwp-multi-001.hwp");
+        let core = DocumentCore::from_bytes(bytes).expect("fixture parses");
+        let invalid_page = core.page_count() + 4096;
+
+        assert!(core.build_page_tree_cached(invalid_page).is_err());
+        assert!(core
+            .with_page_tree_cached(invalid_page, |_| Ok(()))
+            .is_err());
+        assert!(core.page_tree_cache.borrow().len() <= core.page_count() as usize);
     }
 
     #[test]
@@ -6895,7 +7237,10 @@ mod tests {
         assert!(page_count <= PAGE_RENDER_CACHE_CAPACITY);
 
         for page in 0..page_count {
-            core.cache_page_tree(page, PageRenderTree::new(page as u32, 100.0, 100.0));
+            core.cache_page_tree(
+                page,
+                std::sync::Arc::new(PageRenderTree::new(page as u32, 100.0, 100.0)),
+            );
             let mut json_cache = core.layer_tree_json_cache.borrow_mut();
             if json_cache.len() <= page {
                 json_cache.resize_with(page + 1, Vec::new);
@@ -6925,7 +7270,10 @@ mod tests {
         assert!(first_changed_page > 0);
         assert!(page_count <= PAGE_RENDER_CACHE_CAPACITY);
         for page in 0..page_count {
-            core.cache_page_tree(page, PageRenderTree::new(page as u32, 100.0, 100.0));
+            core.cache_page_tree(
+                page,
+                std::sync::Arc::new(PageRenderTree::new(page as u32, 100.0, 100.0)),
+            );
         }
         let paragraph = core.document.sections[changed_section]
             .paragraphs
@@ -7488,7 +7836,7 @@ mod tests {
         let mut partial_tree = core.build_page_tree_cached(0).unwrap();
         let expected_section = remove_image_control_index(&mut partial_tree.root)
             .expect("fixture has an image with source section");
-        core.page_tree_cache.borrow_mut()[0] = Some(partial_tree);
+        core.page_tree_cache.borrow_mut()[0] = Some(std::sync::Arc::new(partial_tree));
         let partial: serde_json::Value =
             serde_json::from_str(&core.get_page_control_layout_native(0).unwrap()).unwrap();
         assert!(
@@ -7654,6 +8002,76 @@ mod tests {
         assert_eq!(
             active.master_page_index, 1,
             "final page_number=2 must select the Even master page, not the section-local Odd page"
+        );
+    }
+
+    /// 구역 설정의 시작 쪽 번호(secPr page_num)는 NewNumber 컨트롤이 없을 때 carry 를 대신한다.
+    #[test]
+    fn section_def_page_num_restarts_page_numbering() {
+        use crate::model::document::{Document, Section, SectionDef};
+        use crate::model::page::PageDef;
+        use crate::model::paragraph::Paragraph;
+
+        let page_def = PageDef {
+            width: 59528,
+            height: 84188,
+            margin_left: 8504,
+            margin_right: 8504,
+            margin_top: 5668,
+            margin_bottom: 4252,
+            margin_header: 4252,
+            margin_footer: 4252,
+            ..Default::default()
+        };
+        let section = |page_num: u16, page_num_type: u8| Section {
+            section_def: SectionDef {
+                page_def: page_def.clone(),
+                page_num,
+                page_num_type,
+                ..Default::default()
+            },
+            paragraphs: vec![Paragraph::default()],
+            raw_stream: None,
+            raw_provenance: None,
+        };
+        let first_page_number = |core: &DocumentCore, sec: usize| {
+            core.pagination
+                .get(sec)
+                .and_then(|result| result.pages.first())
+                .map(|page| page.page_number)
+        };
+
+        // 구역 0이 한 쪽, 구역 1에 시작 번호 5 → 구역 1 첫 쪽은 5, carry 는 5에서 이어진다
+        let mut document = Document::default();
+        document.sections.push(section(0, 0));
+        document.sections.push(section(5, 0));
+        document.sections.push(section(0, 0));
+        let mut core = DocumentCore::new_empty();
+        core.set_document(document);
+        core.paginate();
+        assert_eq!(first_page_number(&core, 0), Some(1));
+        assert_eq!(
+            first_page_number(&core, 1),
+            Some(5),
+            "section_def.page_num must restart numbering"
+        );
+        assert_eq!(
+            first_page_number(&core, 2),
+            Some(6),
+            "the next section continues from the restarted number"
+        );
+
+        // page_num_type 홀수 시작: page_num=4 + odd → 5로 올린다
+        let mut document = Document::default();
+        document.sections.push(section(0, 0));
+        document.sections.push(section(4, 1));
+        let mut core = DocumentCore::new_empty();
+        core.set_document(document);
+        core.paginate();
+        assert_eq!(
+            first_page_number(&core, 1),
+            Some(5),
+            "page_num_type=Odd lifts an even start number to the next odd number"
         );
     }
 

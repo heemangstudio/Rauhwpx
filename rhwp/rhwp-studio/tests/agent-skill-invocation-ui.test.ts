@@ -21,7 +21,8 @@ test('a skill token keeps empty history text while sending a valid wire request'
   assert.match(sidebar, /!text && !activeComposerSkill && !referenceLibrary\.hasDrafts\(\)/);
   assert.match(sidebar, /text = invocation\[2\]\?\.trim\(\) \?\? ''/);
   assert.doesNotMatch(sidebar, /이 스킬을 현재 문서에 적용해 주세요/);
-  assert.match(sidebar, /const requestText = requestTextForSkillInvocation\(text, skillNameForMessage\)/);
+  assert.match(sidebar, /const skillRequestText = requestTextForSkillInvocation\(text, skillNameForMessage\)/);
+  assert.match(sidebar, /const requestText = revisionPlanId && referenceLibrary\.hasDrafts\(\) && !skillNameForMessage[\s\S]*: skillRequestText;/);
   assert.match(sidebar, /recordUserMessage\(messageText,[\s\S]*skillNameForMessage,[\s\S]*skillIconForMessage/);
   assert.match(sidebar, /bridge\.sendUserMessage\(requestText, skillNameForMessage/);
 
@@ -44,10 +45,8 @@ test('skill invocation structure persists and renders independently from its sen
   assert.match(css, /\.ag-msg-user\.ag-has-skill\s*\{[^}]*background:\s*transparent/s);
 });
 
-test('skill tokens follow provider colors and use the hand-drawn outline', () => {
+test('skill tokens follow provider colors', () => {
   for (const provider of ['codex', 'pi']) {
     assert.match(css, new RegExp(`\\.ag-skill-token\\[data-agent='${provider}'\\]`));
   }
-  assert.match(css, /\.ag-skill-token::before\s*\{[^}]*filter:\s*var\(--ag-sketch-line\)/s);
-  assert.match(css, /\.ag-skill-token\s*\{[^}]*border-radius:\s*[^;]*\/[^;]*;/s);
 });

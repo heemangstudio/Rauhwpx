@@ -15,8 +15,25 @@ import {
   DESKTOP_PROVIDER_AUTH,
   isPermanentTransferError,
   PERMANENT_TRANSFER_CODES,
+  providerLoginUsable,
 } from './cloud-provider-auth.mjs';
-import { normalizeCloudProfile, normalizeTailscaleHttpsPort } from './cloud-profile.mjs';
+import {
+  BOAT_IDLE_STOP_MINUTES,
+  BOAT_MACHINES,
+  BOAT_REGION,
+  BOAT_SETUP_TTL_SECONDS,
+  BOAT_TIMER_TTL_SECONDS,
+  BOAT_TRIAL_TTL_SECONDS,
+  BoatError,
+  boatHostEnv,
+  boatMessage,
+  boatServerState,
+  isUsableSandboxState,
+  normalizeBoatMachine,
+  resolveSshTarget,
+  sandboxMachineKey,
+} from './cloud-boat.mjs';
+import { CLOUD_PROVIDERS, normalizeCloudProfile, normalizeTailscaleHttpsPort } from './cloud-profile.mjs';
 import { sha256Hex, writeVerifiedRecoveryFile } from './cloud-handoff.mjs';
 import { applyCloudRecovery } from './cloud-result.mjs';
 import { hasProviderAuth } from './provider-auth.mjs';
@@ -135,6 +152,39 @@ function canConfirmDurableHandoff(record) {
     || record.destination.durableConversationRestore === true;
 }
 
+const TERMINAL_HANDOFF_STATES = new Set(['downloaded', 'cancelled', 'expired', 'failed']);
+/** Deterministic stream failures: replaying the same event fails the same way. */
+const REJECTED_EVENT_CODES = new Set(['HANDOFF_TRANSITION_INVALID', 'CLOUD_EVENT_INVALID']);
+
+function invalidCloudEvent(message) {
+  return Object.assign(new Error(message), { code: 'CLOUD_EVENT_INVALID', retryable: false });
+}
+
+/**
+ * A verified result whose download confirmation is still owed to the server. It
+ * stays owed after the user resolves the result and the local copy is cleaned up.
+ */
+function resultConfirmationPending(record) {
+  return record?.state === 'downloading' && Boolean(record.resultDigest)
+    && Boolean(record.recoveryPath || record.resolvedAt);
+}
+
+/** The server will never accept this confirmation, so retrying it only repeats the failure. */
+function resultConfirmationRejected(error) {
+  const code = String(error?.code ?? '').toUpperCase();
+  if (code === 'SESSION_NOT_FOUND' || code === 'RESULT_NOT_FOUND') return true;
+  const status = Number(error?.status);
+  return Number.isInteger(status) && status >= 400 && status < 500 && ![401, 408, 429].includes(status);
+}
+
+/** The server no longer holds the checkpoint, timeline or session an artifact sync asked for. */
+function missingCloudArtifact(error) {
+  const code = String(error?.code ?? '').toUpperCase();
+  return error?.status === 404 || code === 'CHECKPOINT_NOT_FOUND' || code === 'SESSION_NOT_FOUND';
+}
+
+const ARTIFACT_SYNC_RETRY_MAX_MS = 5 * 60_000;
+
 function sameDestination(left, right) {
   if (!left || !right) return false;
   return ['endpoint', 'serverPublicKey', 'mode', 'sandboxId', 'sandboxProvider', 'protocolVersion']
@@ -219,7 +269,12 @@ function uiProfileToStored(input, current = null) {
     && current?.ssh?.host === host
     && current?.ssh?.user === sshUser
     && current?.ssh?.port === sshPort;
+  // A draft keeps its boat VM only when it names the VM this profile already owns.
+  const boat = source.boat?.sandboxId && current?.boat?.sandboxId === source.boat.sandboxId
+    ? current.boat
+    : null;
   return normalizeCloudProfile({
+    ...(boat ? { boat } : {}),
     name: source.name ?? current?.name,
     endpoint,
     api,
@@ -281,6 +336,135 @@ function goalFromTransfer(payload) {
   throw transferError('Cloud start requires an initial message', 'INITIAL_MESSAGE_REQUIRED');
 }
 
+const BOAT_SETUP_TITLE = 'boat 서버를 준비하지 못했습니다';
+const BOAT_SETUP_GUIDANCE = Object.freeze({
+  BOAT_BILLING_REQUIRED: 'boat 요금제가 필요합니다.',
+  BOAT_RATE_LIMITED: '잠시 후 다시 시도할 수 있습니다.',
+  BOAT_AUTH_INVALID: 'boat 계정을 다시 연결해야 합니다.',
+  BOAT_NOT_CONNECTED: 'boat 계정을 다시 연결해야 합니다.',
+  BOAT_UNAVAILABLE: '네트워크 연결을 확인한 뒤 다시 시도할 수 있습니다.',
+  BOAT_SERVER_MISSING: '다시 시도하면 새 서버를 만듭니다.',
+});
+const BOAT_PASS_THROUGH_CODES = new Set([
+  'BOAT_BILLING_REQUIRED',
+  'BOAT_RATE_LIMITED',
+  'BOAT_AUTH_INVALID',
+  'BOAT_NOT_CONNECTED',
+  'BOAT_TRIAL_BLOCKED',
+  'BOAT_BUSY',
+]);
+
+/**
+ * 끊긴 링크를 사용자가 할 수 있는 일로 나눈다. network 만 조용히 다시 시도하고, 나머지는
+ * 다시 시도해도 같은 실패라 사용자 동작을 기다린다. message 는 복구 줄에 그대로 보인다.
+ */
+const LINK_REASON_MESSAGES = Object.freeze({
+  network: 'Cloud 서버에 연결할 수 없습니다.',
+  pairing: '이 기기의 Cloud 페어링이 풀렸습니다.',
+  'boat-auth': 'boat 계정 연결이 끊겼습니다.',
+  'host-key': '서버의 SSH 키가 바뀌었습니다.',
+  server: 'Cloud 서비스가 응답하지 않습니다.',
+  'session-missing': '서버에서 이전 작업을 찾지 못했습니다.',
+});
+const PAIRING_FAILURE_CODES = new Set([
+  'PAIRING_REQUIRED', 'REFRESH_TOKEN_INVALID', 'REFRESH_TOKEN_REUSED', 'UNAUTHORIZED',
+  'SERVER_IDENTITY_MISMATCH', 'SERVER_IDENTITY_INVALID',
+]);
+const BOAT_AUTH_CODES = new Set(['BOAT_AUTH_INVALID', 'BOAT_NOT_CONNECTED', 'BOAT_FORBIDDEN']);
+const HOST_KEY_CODES = new Set(['SSH_HOST_KEY_CHANGED', 'BOAT_HOST_KEY_UNVERIFIED']);
+const SERVER_FAILURE_CODES = new Set(['CLOUD_SERVER_DEGRADED', 'CLOUD_SERVICE_DOWN', 'CLOUD_PROTOCOL_INCOMPATIBLE']);
+/** 서버가 제공자 로그인 문제로 멈춘 작업. 이어 가기 전에 이 Mac 의 로그인을 다시 보낸다. */
+const PROVIDER_AUTH_CODES = new Set(['PROVIDER_AUTH_EXPIRED', 'AUTH_REQUIRED']);
+const PROVIDER_LABELS = Object.freeze({ claude: 'Claude', codex: 'Codex', pi: 'Pi' });
+
+export function classifyLinkFailure(error) {
+  const code = String(error?.code ?? '').toUpperCase();
+  let reason = 'network';
+  if (BOAT_AUTH_CODES.has(code)) reason = 'boat-auth';
+  else if (HOST_KEY_CODES.has(code)) reason = 'host-key';
+  else if (code.startsWith('BOAT_')) reason = 'network';
+  else if (PAIRING_FAILURE_CODES.has(code) || error?.status === 401) reason = 'pairing';
+  else if (SERVER_FAILURE_CODES.has(code)) reason = 'server';
+  else if (code === 'SESSION_NOT_FOUND' || error?.status === 404) reason = 'session-missing';
+  const message = code === 'BOAT_FORBIDDEN' ? 'boat API 키에 필요한 권한이 없습니다.'
+    : code.startsWith('SERVER_IDENTITY_') ? '서버가 다시 설치되어 다시 페어링해야 합니다.'
+      : code === 'CLOUD_PROTOCOL_INCOMPATIBLE' ? 'Cloud 서비스 버전이 이 앱과 맞지 않습니다.'
+        : code === 'CLOUD_SERVER_DEGRADED' ? 'Cloud 서버가 작업을 실행하지 못하고 있습니다.'
+          : LINK_REASON_MESSAGES[reason];
+  return { reason, message };
+}
+
+function userFacingError(message, code, cause) {
+  return Object.assign(new Error(message, cause ? { cause } : undefined), { code, retryable: false });
+}
+
+function providerLoginRequired(provider) {
+  return userFacingError(`이 Mac에서 ${PROVIDER_LABELS[provider] ?? provider}에 다시 로그인해야 합니다.`,
+    'PROVIDER_LOGIN_REQUIRED');
+}
+
+/** 설치 로그 한 줄을 화면용으로 줄인다. 영수증·페어링 코드·토큰처럼 보이는 줄은 버린다. */
+function summarizeInstallLine(line) {
+  const text = String(line ?? '')
+    .replace(/\u001b\[[0-9;]*[A-Za-z]/g, '')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text || /RAUHWpx_RECEIPT|pairing|token|secret|password|authorization|api[_-]?key/i.test(text)) return null;
+  // 설치 스크립트의 원문 대신 사용자가 읽을 단계 이름만 보인다. 모르는 줄은 앞 단계를 유지한다.
+  const step = /^STEP (\d+)\/(\d+):/.exec(text);
+  if (step) return `작업 환경 준비 · ${step[1]}/${step[2]}`;
+  for (const [pattern, label] of INSTALL_PHASES) if (pattern.test(text)) return label;
+  return null;
+}
+
+const INSTALL_PHASES = Object.freeze([
+  [/^(?:preflight=|os=|arch=)/, '서버 확인'],
+  [/compatible Cloud service already installed/i, '설치된 Cloud 확인'],
+  [/Using the (?:local development|verified) Cloud runtime/i, 'Cloud 전송'],
+  [/apt-get|Reading package lists|Building dependency tree|newest version|Setting up|Unpacking/i, '시스템 패키지 설치'],
+  [/tar\.gz: OK|Installing an unsigned development|cosign|verify/i, 'Cloud 확인'],
+  [/added \d+ packages|"provider":"(?:claude|codex|pi)"/, '에이전트 설치'],
+  [/system migrate|Trying to pull|Getting image source|Copying blob/i, '작업 환경 준비'],
+  [/Created symlink|systemctl|health/i, '서비스 시작'],
+]);
+
+function boatDetail(error) {
+  const text = String(error?.detail ?? error?.message ?? error ?? '')
+    .replace(/\b(?:boat|sandbox|clm)_[A-Za-z0-9_-]{6,}/g, '<redacted>')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+    .trim();
+  return text.slice(-600) || 'Unknown error';
+}
+
+const BOAT_STATE_UNKNOWN = '상태를 확인하지 못했습니다.';
+
+/**
+ * 켤 때마다 boat가 거는 고정 자동 중지(시간). 설정 중에는 설정용 한도, 자기 중지 수단이 없으면
+ * 타이머 한도, 체험 계정은 언제나 2시간이다. 유휴 중지만 있으면 null이다.
+ */
+function boatTimerHours(autoStop, { trial = false, setup = false } = {}) {
+  let seconds = setup ? BOAT_SETUP_TTL_SECONDS : autoStop === 'idle' ? null : BOAT_TIMER_TTL_SECONDS;
+  if (trial) seconds = Math.min(seconds ?? Infinity, BOAT_TRIAL_TTL_SECONDS);
+  return seconds == null ? null : Math.round(seconds / 360) / 10;
+}
+
+/** 사용자 동작이 실패하면 짧은 한국어 문장과 BOAT_ 코드를 돌려준다. */
+function boatUserError(error) {
+  if (error instanceof BoatError) return error;
+  if (error?.code === 'PROFILE_CHANGED' || error?.name === 'AbortError') return error;
+  return new BoatError('BOAT_UNAVAILABLE', {
+    message: 'boat 서버에 연결하지 못했습니다.',
+    detail: boatDetail(error),
+    cause: error,
+  });
+}
+
+function boatSetupError(error) {
+  if (error instanceof BoatError && BOAT_PASS_THROUGH_CODES.has(error.code)) return error;
+  return new BoatError('BOAT_SETUP_FAILED', { detail: boatDetail(error), cause: error });
+}
+
 const CLIENT_TO_SERVER_COMMAND = Object.freeze({
   pause: 'session.pause',
   resume: 'session.resume',
@@ -306,6 +490,8 @@ export class CloudCoordinator extends EventEmitter {
   #resultRecoveryTimers = new Map();
   #transferControllers = new Map();
   #transferPromises = new Map();
+  /** handoff id -> the one transfer or recovery that may upload it right now. */
+  #transferOwners = new Map();
   #transferOperations = new Set();
   #transferRemoteSessions = new Map();
   #transferCancelPromises = new Map();
@@ -323,6 +509,8 @@ export class CloudCoordinator extends EventEmitter {
   #remoteWatchSequence = new Map();
   #timelinePending = new Map();
   #artifactSyncs = new Map();
+  /** artifact sync key -> consecutive failed passes, for retry backoff. */
+  #artifactSyncFailures = new Map();
   #publicationChains = new Map();
   #transferAdmissionChain = Promise.resolve();
   #snapshotChain = Promise.resolve();
@@ -354,13 +542,41 @@ export class CloudCoordinator extends EventEmitter {
   #provisionPromise = null;
   #preferredMode = null;
   #stopped = false;
+  /** Aborted by stop() so long waits (pause polling, boat wake) end with the app. */
+  #stopController = new AbortController();
+  #stopTimeoutMs;
   #link = { kind: 'ready', error: null, attempt: 0, canRecreate: false };
   #linkNeedsAction = false;
   #linkHealPromise = null;
   #linkWatchdog = null;
   #linkProbeBusy = false;
+  /** 서버 목록에 없던 로컬 작업. 복구 줄의 기록 지우기가 정리한다. */
+  #missingSessionIds = new Set();
+  #serviceActionPromise = null;
+  /** 배경 상태 읽기에서 boat 가 권한 없음(403)으로 거절했다. 새 키를 넣을 때까지 계정이 끊긴 것으로 보인다. */
+  #boatForbidden = false;
   #collectProviderAuth;
   #collectImportedAuth;
+  #boat = null;
+  /** Sandbox id of the active profile's boat VM, kept in sync with every profile change. */
+  #boatActiveSandboxId = null;
+  /** { sandboxId, state: BoatServerState|null, monthHours, message, checkedAt, machineKey } */
+  #boatStatus = null;
+  #boatStatusPromise = null;
+  #boatStatusRefreshedAt = 0;
+  #boatConnected = null;
+  #boatSetup = null;
+  #boatSetupPromise = null;
+  #boatSetupSandboxId = null;
+  #boatSetupMachine = null;
+  #boatSetupLineAt = 0;
+  #boatWakePromise = null;
+  #boatWakeResumes = false;
+  #boatActions = new Map();
+  #boatFollowers = new Map();
+  #boatTransition = null;
+  #boatPinned = new Map();
+  #boatEmitted = '';
 
   constructor({
     client,
@@ -370,8 +586,12 @@ export class CloudCoordinator extends EventEmitter {
     appServers = [],
     collectProviderAuth = null,
     collectImportedAuth = null,
+    boat = null,
+    stopTimeoutMs = 8_000,
   } = {}) {
     super();
+    this.#stopTimeoutMs = Number.isFinite(stopTimeoutMs) ? Math.max(0, stopTimeoutMs) : 8_000;
+    this.#boat = boat ?? null;
     this.#client = client;
     this.#store = store;
     this.#provisioner = provisioner;
@@ -452,6 +672,7 @@ export class CloudCoordinator extends EventEmitter {
 
   async start() {
     this.#stopped = false;
+    if (this.#stopController.signal.aborted) this.#stopController = new AbortController();
     await this.#refreshAccountStatus({ force: true });
     void this.prewarmAppServer({ reason: 'startup' });
     await this.#refreshMergeRequests({ force: true });
@@ -472,16 +693,28 @@ export class CloudCoordinator extends EventEmitter {
             this.#link = { kind: 'ready', error: null, attempt: 0, canRecreate: true };
           } catch (error) {
             this.#setSandboxLifecycle('error', `The saved app sandbox is not reachable: ${error.message}`);
-            this.#link = { kind: 'failed', error: error.message, attempt: 1, canRecreate: true };
+            this.#failLink(error, { canRecreate: true });
           }
         }
       }
     }
-    const records = (await this.#store.load()).filter((record) => destinationMatchesProfile(record.destination, profile));
+    if (this.#boat) await this.#restoreBoatSetup();
+    let stored = [];
+    try {
+      stored = await this.#store.load();
+    } catch (error) {
+      // The file stays untouched and the store stays unloaded, so the next read retries it.
+      if (error?.code !== 'HANDOFF_STORE_UNREADABLE') throw error;
+      this.#emit({ type: 'handoff-store-unreadable', error: error.message });
+    }
+    if (this.#store.quarantinePath) {
+      this.#emit({ type: 'handoff-store-quarantined', path: this.#store.quarantinePath });
+    }
+    const records = stored.filter((record) => destinationMatchesProfile(record.destination, profile));
     for (const record of records) {
       if (record.resolvedAt && record.recoveryCleanupPath) {
         await this.#cleanupResolvedRecovery(record);
-        continue;
+        if (!resultConfirmationPending(record)) continue;
       }
       if (['preparing', 'uploading', 'committing'].includes(record.state) && record.documentStagingPath) {
         this.#scheduleTransferRecovery(record.id, 0);
@@ -492,11 +725,13 @@ export class CloudCoordinator extends EventEmitter {
           this.#emit({ type: 'payload-cleanup-failed', handoffId: record.id, error: error.message });
         });
       }
-      if (record.state === 'downloading' && record.recoveryPath && record.resultDigest) {
+      if (resultConfirmationPending(record)) {
         this.#scheduleResultRecovery(record.id, 0);
         continue;
       }
-      if (record.cloudSessionId && (
+      // A boat VM may be stopped. Its streams start after a status read instead
+      // of dialing a machine that is not there.
+      if (!profile?.boat && record.cloudSessionId && (
         ['queued', 'running', 'suspended', 'completed'].includes(record.state)
         || record.pendingTurnBoundary
       )) {
@@ -506,11 +741,19 @@ export class CloudCoordinator extends EventEmitter {
         }
       }
     }
+    this.#boatActiveSandboxId = profile?.boat?.sandboxId ?? null;
+    if (this.#boat && profile?.boat) {
+      this.#setBoatStatus(profile.boat.sandboxId, {});
+      void this.#boatStartupReconcile().catch((error) => {
+        this.#emit({ type: 'boat-status-deferred', reason: 'startup', error: boatDetail(error) });
+      });
+    }
     return this.snapshot();
   }
 
   async stop() {
     this.#stopped = true;
+    this.#stopController.abort(transferError('Cloud coordinator is stopped', 'COORDINATOR_STOPPED'));
     const mergePrefetch = this.#mergeRecovery.prefetchInflight;
     this.#mergeRecovery.reset();
     this.#conversationRecovery.reset();
@@ -533,9 +776,15 @@ export class CloudCoordinator extends EventEmitter {
       this.#accountStatusPromise,
       mergePrefetch,
       this.#continuityPromise,
+      this.#boatSetupPromise,
+      this.#boatWakePromise,
+      this.#boatStatusPromise,
+      ...this.#boatActions.values(),
       ...this.#conversationRestores.values(),
       ...this.#queuedMessageRetries.values(),
     ].filter(Boolean);
+    for (const controller of this.#boatFollowers.values()) controller.abort();
+    this.#boatFollowers.clear();
     for (const controller of this.#watchers.values()) controller.abort();
     this.#watchers.clear();
     this.#clearWatchRestartTimers();
@@ -552,7 +801,19 @@ export class CloudCoordinator extends EventEmitter {
     // aborting lets its cleanup path run instead of orphaning the service.
     this.#spawnController?.abort(new Error('Cloud coordinator stopped'));
     this.#spawnController = null;
-    await Promise.allSettled(pending);
+    // Boat setup, provisioning and pause polling can run for many minutes. Quit
+    // waits a bounded time for them; their journals resume on the next start.
+    let settled = 0;
+    const deadline = new AbortController();
+    const timedOut = await Promise.race([
+      Promise.allSettled(pending.map((operation) => Promise.resolve(operation).finally(() => { settled += 1; })))
+        .then(() => false),
+      delay(this.#stopTimeoutMs, true, { ref: false, signal: deadline.signal }).catch(() => false),
+    ]);
+    deadline.abort();
+    if (timedOut) {
+      this.#emit({ type: 'coordinator-stop-timeout', pending: pending.length - settled });
+    }
     await this.#store.flush?.();
   }
 
@@ -689,13 +950,17 @@ export class CloudCoordinator extends EventEmitter {
       throw new Error('Cloud profile changes require writer ownership');
     }
     await this.#closeProfileStreams();
+    // The next profile may not be a boat VM at all. Callers that activate one set its state.
+    this.#boatStatus = null;
     try {
       const result = await operation();
+      this.#boatActiveSandboxId = (await this.#client.loadProfile().catch(() => null))?.boat?.sandboxId ?? null;
       this.#profileEpoch += 1;
       context.profileEpoch = this.#profileEpoch;
       this.#remoteSessions.clear();
       this.#remoteWatchSequence.clear();
       this.#timelinePending.clear();
+      this.#artifactSyncFailures.clear();
       this.#linkNeedsAction = false;
       return result;
     } finally {
@@ -815,7 +1080,12 @@ export class CloudCoordinator extends EventEmitter {
     void this.#refreshMergeRequests();
     const profile = await this.#client.loadProfile().catch(() => null);
     const paired = profile ? await this.#client.isPaired().catch(() => false) : false;
-    const records = await this.#store.list();
+    // An unreadable store stays unloaded and untouched, and every later read tries
+    // it again. Snapshots show no handoffs meanwhile instead of failing Cloud IPC.
+    const records = await this.#store.list().catch((error) => {
+      if (error?.code !== 'HANDOFF_STORE_UNREADABLE') throw error;
+      return [];
+    });
     this.#assertProfileEpoch(profileEpoch);
     const visibleRecords = records.filter((record) => (
       !record.resolvedAt && destinationMatchesProfile(record.destination, profile)
@@ -914,11 +1184,15 @@ export class CloudCoordinator extends EventEmitter {
                   ? { kind: 'ssh-tunnel' }
                   : { kind: 'https', endpoint: profile.endpoint },
               serverPublicKey: profile.serverPublicKey || undefined,
+              ...(profile.boat
+                ? { boat: { sandboxId: profile.boat.sandboxId, machine: profile.boat.machine } }
+                : {}),
             },
             connection,
             serviceVersion: null,
             message: profileMessage,
           };
+    const boat = this.#boat ? await this.#boatSnapshot(profile) : undefined;
     return {
       revision: ++this.#revision,
       profileEpoch,
@@ -961,17 +1235,39 @@ export class CloudCoordinator extends EventEmitter {
       timeline: selected?.timeline ?? remote?.timeline ?? null,
       updatedAt: now,
       ...(this.#accountSnapshot ? { account: this.#accountSnapshot } : {}),
+      ...(boat ? { boat } : {}),
       ...extra,
       link: this.#publicLink(profile),
     };
   }
 
   #publicLink(profile) {
+    const failed = this.#link.kind === 'failed';
     return {
       kind: this.#link.kind,
       error: this.#link.error,
       attempt: this.#link.attempt,
       canRecreate: this.#canRecreateProfile(profile),
+      reason: failed ? this.#link.reason ?? 'network' : null,
+      message: failed ? this.#link.message ?? LINK_REASON_MESSAGES.network : null,
+    };
+  }
+
+  /**
+   * 실패한 링크를 이유와 함께 기록한다. network 가 아닌 실패와 다시 시도할 수 없는 실패는
+   * 사용자 동작을 기다리므로 watchdog 이 같은 실패를 되풀이하지 않는다.
+   */
+  #failLink(error, { canRecreate = this.#link.canRecreate, needsAction = null, message = null } = {}) {
+    const classified = classifyLinkFailure(error);
+    this.#linkNeedsAction = needsAction
+      ?? (classified.reason !== 'network' || !this.#streamShouldRestart(error));
+    this.#link = {
+      kind: 'failed',
+      error: error?.message ?? String(error ?? ''),
+      attempt: this.#link.attempt,
+      canRecreate,
+      reason: classified.reason,
+      message: message ?? classified.message,
     };
   }
 
@@ -980,12 +1276,213 @@ export class CloudCoordinator extends EventEmitter {
   }
 
   reconnectCloud(options = {}) {
+    if (options.userIntent) {
+      // An explicit reconnect is the user asking for Cloud, so a stopped boat VM is started first.
+      const { userIntent: _intent, ...rest } = options;
+      return this.#reconnectForUser(rest);
+    }
     if (options.background && this.#linkNeedsAction) return this.snapshot();
     if (!options.background) this.#linkNeedsAction = false;
     if (this.#reconnectPromise) return this.#reconnectPromise;
     const operation = this.#withProfileOperation((profileEpoch) => this.#reconnectCloud(profileEpoch, options));
     this.#reconnectPromise = operation.finally(() => { this.#reconnectPromise = null; });
     return this.#reconnectPromise;
+  }
+
+  /**
+   * 사용자가 누른 다시 연결. 앱이 다룰 수 있는 boat VM 이면 바뀐 호스트 키를 다시 핀하고 풀린
+   * 페어링을 다시 맺은 뒤 한 번 더 연결한다. 사용자는 버튼 하나만 누른다.
+   */
+  async #reconnectForUser(options) {
+    try {
+      await this.#wakeBoatForUser('reconnect');
+    } catch (error) {
+      if (!BOAT_AUTH_CODES.has(error?.code)) throw error;
+      this.#failLink(error, { canRecreate: false, needsAction: true });
+      const snapshot = await this.snapshot();
+      this.#emit({ type: 'cloud-link-failed', snapshot, error: error.message });
+      return snapshot;
+    }
+    const snapshot = await this.reconnectCloud(options);
+    if (this.#link.kind !== 'failed' || !await this.#healBoatLink()) return snapshot;
+    return this.reconnectCloud(options);
+  }
+
+  /** 앱이 고칠 수 있는 boat 링크 실패를 고친다. 다시 연결해 볼 가치가 있으면 true 다. */
+  async #healBoatLink() {
+    const profile = await this.#client.loadProfile().catch(() => null);
+    if (!this.#boat || !profile?.boat || this.#stopped) return false;
+    const sandboxId = profile.boat.sandboxId;
+    try {
+      if (this.#link.reason === 'host-key') {
+        // 핀 기록을 비우면 다음 동기화가 boat 명령 API 로 호스트 키를 다시 읽어 핀한다.
+        this.#boatPinned.delete(sandboxId);
+        await this.#boatSync({ allowResume: true, reason: 'repin' });
+        return true;
+      }
+      if (this.#link.reason === 'pairing') {
+        await this.#repairBoatPairing(profile);
+        return true;
+      }
+      if (this.#link.reason === 'network' && this.#boatStatus?.state === 'running'
+        && !await this.#boat.waitForServiceHealth(sandboxId, { timeoutMs: 4_000 })) {
+        // VM 은 켜져 있는데 안의 서비스가 답하지 않는다. 다시 연결로는 풀리지 않는다.
+        this.#failLink(transferError('Cloud service is not answering inside the boat VM', 'CLOUD_SERVICE_DOWN'));
+      }
+    } catch (error) {
+      if (error?.code === 'PROFILE_CHANGED' || error?.name === 'AbortError') return false;
+      this.#failLink(error, { needsAction: true });
+      this.#emit({ type: 'cloud-link-heal-failed', error: error.message });
+    }
+    return false;
+  }
+
+  /** boat VM 안에서 새 페어링 코드를 받아 이 기기를 다시 페어링한다. 서버 신원도 VM 이 알려 준 값으로 맞춘다. */
+  async #repairBoatPairing(profile) {
+    const sandboxId = profile.boat.sandboxId;
+    const pairing = await this.#boat.createPairingCode(sandboxId);
+    const candidate = normalizeCloudProfile({ ...profile, serverPublicKey: pairing.serverPublicKey });
+    await this.#waitForProfileHealth(candidate, { attempts: 3, timeoutMs: 10_000 });
+    const redeemed = await this.#client.redeemPairingCode(pairing.code, hostname(), {
+      profile: candidate,
+      persist: false,
+    });
+    await this.#withProfileWriter(async () => {
+      const latest = await this.#client.loadProfile().catch(() => null);
+      if (latest?.boat?.sandboxId !== sandboxId) {
+        throw Object.assign(new Error('Cloud profile changed during re-pairing'), { code: 'PROFILE_CHANGED' });
+      }
+      await this.#changeProfile(() => this.#client.activateProfile(
+        normalizeCloudProfile({ ...latest, serverPublicKey: pairing.serverPublicKey }),
+        { tokens: redeemed.credentials, device: redeemed.credentials.device },
+      ));
+    });
+    this.#emit({ type: 'boat-repaired' });
+  }
+
+  /**
+   * 서비스는 설치되어 있는데 답하지 않거나 작업 실행기가 멈춘 서버를 다시 시작한다. boat 는 boat 명령
+   * API 로, 내 서버는 설치할 때 쓴 SSH 로 부른다. 앱이 만든 Raucloud 는 서버 다시 만들기가 맡는다.
+   */
+  restartCloudService() {
+    if (this.#serviceActionPromise) return this.#serviceActionPromise;
+    const operation = this.#restartCloudService().finally(() => {
+      if (this.#serviceActionPromise === operation) this.#serviceActionPromise = null;
+    });
+    this.#serviceActionPromise = operation;
+    return operation;
+  }
+
+  async #restartCloudService() {
+    const profile = await this.#client.loadProfile().catch(() => null);
+    if (profile?.mode !== 'self-hosted') {
+      throw userFacingError('이 서버는 앱에서 다시 시작할 수 없습니다.', 'CLOUD_RESTART_UNSUPPORTED');
+    }
+    if (profile.boat) await this.#wakeBoatForUser('restart');
+    this.#abortSessionWatchers();
+    this.#link = { kind: 'reconnecting', error: null, attempt: this.#link.attempt + 1, canRecreate: false };
+    this.#emit({ type: 'cloud-link-reconnecting' });
+    try {
+      if (profile.boat) await this.#boat.restartService(profile.boat.sandboxId);
+      else await this.#provisioner.restartService(profile.ssh);
+    } catch (error) {
+      this.#failLink(transferError(error?.message ?? 'Cloud service restart failed', 'CLOUD_SERVICE_DOWN'), {
+        canRecreate: false, needsAction: true,
+      });
+      const snapshot = await this.snapshot();
+      this.#emit({ type: 'cloud-link-failed', snapshot, error: error?.message ?? String(error) });
+      throw userFacingError('Cloud 서비스를 다시 시작하지 못했습니다.', 'CLOUD_RESTART_FAILED', error);
+    }
+    this.#emit({ type: 'cloud-service-restarted' });
+    return this.reconnectCloud();
+  }
+
+  /** 내 서버가 지금 내미는 SSH 호스트 키의 지문. 사용자가 확인한 뒤에만 trustHostKey 로 저장한다. */
+  async inspectHostKey() {
+    const profile = await this.#client.loadProfile().catch(() => null);
+    if (profile?.mode !== 'self-hosted' || profile.boat || typeof this.#provisioner?.scanHostKey !== 'function') {
+      throw userFacingError('이 서버의 SSH 키는 앱에서 확인할 수 없습니다.', 'HOST_KEY_UNSUPPORTED');
+    }
+    try {
+      const scanned = await this.#provisioner.scanHostKey(profile.ssh);
+      return { host: scanned.host, port: scanned.port, fingerprint: scanned.fingerprint };
+    } catch (error) {
+      throw userFacingError('서버의 SSH 키를 읽지 못했습니다.', 'HOST_KEY_UNAVAILABLE', error);
+    }
+  }
+
+  async trustHostKey({ fingerprint } = {}) {
+    if (typeof fingerprint !== 'string' || !/^SHA256:[A-Za-z0-9+/]{43}$/.test(fingerprint)) {
+      throw userFacingError('SSH 키 지문이 올바르지 않습니다.', 'HOST_KEY_INVALID');
+    }
+    const profile = await this.#client.loadProfile().catch(() => null);
+    if (profile?.mode !== 'self-hosted' || profile.boat) {
+      throw userFacingError('이 서버의 SSH 키는 앱에서 확인할 수 없습니다.', 'HOST_KEY_UNSUPPORTED');
+    }
+    try {
+      await this.#provisioner.trustHostKey(profile.ssh, fingerprint);
+    } catch (error) {
+      throw userFacingError(error?.code === 'SSH_HOST_KEY_MISMATCH'
+        ? '확인하는 동안 SSH 키가 다시 바뀌었습니다.'
+        : 'SSH 키를 저장하지 못했습니다.', error?.code ?? 'HOST_KEY_UNAVAILABLE', error);
+    }
+    this.#emit({ type: 'host-key-trusted' });
+    return this.reconnectCloud();
+  }
+
+  /**
+   * 이 Mac 의 제공자 로그인을 서버로 다시 보낸다. provider 를 주면 그 로그인만 보내고, 이 Mac 에서도
+   * 쓸 수 없는 로그인이면 다시 로그인하라고 알린다.
+   */
+  async reimportProviderLogins({ provider = null } = {}) {
+    if (provider !== null && !CLOUD_PROVIDERS.includes(provider)) {
+      throw userFacingError('알 수 없는 에이전트입니다.', 'INVALID_PROVIDER');
+    }
+    await this.#wakeBoatForUser('credentials');
+    await this.#importProviderLoginsOrThrow(provider ? [provider] : CLOUD_PROVIDERS);
+    return this.snapshot();
+  }
+
+  async #importProviderLoginsOrThrow(providers) {
+    const { imported, missing } = await this.#importAllProviderLogins(providers);
+    if (providers.length === 1 && missing.includes(providers[0])) throw providerLoginRequired(providers[0]);
+    if (!imported.length) {
+      throw userFacingError('로그인을 Cloud 서버로 옮기지 못했습니다.', 'PROVIDER_IMPORT_FAILED');
+    }
+    this.#emit({ type: 'provider-logins-imported', providers: imported });
+    return imported;
+  }
+
+  /** 서버 목록에 없는 로컬 작업 기록을 지운다. 되살릴 서버 쪽 작업이 없어서 기다려도 돌아오지 않는다. */
+  async discardMissingSessions() {
+    const sessionIds = [...this.#missingSessionIds];
+    this.#missingSessionIds.clear();
+    await this.#discardLocalSessions(sessionIds);
+    return this.reconnectCloud();
+  }
+
+  #discardLocalSessions(sessionIds) {
+    return this.#withProfileOperation(async (profileEpoch) => {
+      for (const sessionId of sessionIds) {
+        for (const [key, controller] of this.#watchers) {
+          if (key.endsWith(`:${sessionId}`)) {
+            controller.abort();
+            this.#watchers.delete(key);
+          }
+        }
+        this.#remoteSessions.delete(sessionId);
+        const handoff = await this.#handoffForSession(sessionId, profileEpoch);
+        if (!handoff) continue;
+        for (const timers of [this.#recoveryTimers, this.#resultRecoveryTimers]) {
+          clearTimeout(timers.get(handoff.id));
+          timers.delete(handoff.id);
+        }
+        await this.#store.dismiss(handoff.id);
+        this.#assertProfileEpoch(profileEpoch);
+        this.#emit({ type: 'session-dismissed', sessionId });
+      }
+      return this.snapshot();
+    });
   }
 
   recreateCloud() {
@@ -996,6 +1493,32 @@ export class CloudCoordinator extends EventEmitter {
   }
 
   #noteBrokenLink(message) {
+    if (this.#stopped) return;
+    if (this.#link.kind !== 'ready' || this.#pendingProfileChanges) return;
+    this.#unlessBoatStopped(() => this.#markBrokenLink(message));
+  }
+
+  /**
+   * 링크 실패를 기록하기 전에, 활성 boat VM이 스스로 멈췄는지 재개 없이 한 번 읽는다.
+   * 멈춘 VM은 끊긴 링크가 아니라 `stopped`다. 링크는 조용히 두고, 깨우기가 스트림을 다시 연다.
+   */
+  #unlessBoatStopped(record) {
+    if (!this.#boat || !this.#boatActiveSandboxId) {
+      record();
+      return;
+    }
+    if (this.#boatBlocksBackground()) {
+      void this.#quietBoatLink();
+      return;
+    }
+    void this.refreshBoatStatus({ force: true, reason: 'link-check' }).then(() => {
+      if (this.#stopped) return;
+      if (this.#boatBlocksBackground()) void this.#quietBoatLink();
+      else record();
+    });
+  }
+
+  #markBrokenLink(message) {
     if (this.#stopped) return;
     if (this.#link.kind !== 'ready' || this.#pendingProfileChanges) return;
     this.#link = {
@@ -1024,6 +1547,8 @@ export class CloudCoordinator extends EventEmitter {
     this.#linkWatchdog = setInterval(() => {
       if (this.#stopped || this.#link.kind === 'recreating' || this.#linkProbeBusy || this.#linkHealPromise) return;
       if (this.#pendingProfileChanges) return;
+      // Background checks never wake a stopped boat VM; only the user does.
+      if (this.#boatBlocksBackground()) return;
       if (this.#link.kind === 'failed') {
         if (this.#linkNeedsAction) return;
         // Retry quietly after longer outages. Keep the recovery controls stable
@@ -1051,12 +1576,14 @@ export class CloudCoordinator extends EventEmitter {
   }
 
   async #probeLiveLink() {
-    if (this.#stopped || this.#link.kind !== 'ready' || this.#linkProbeBusy) return;
+    if (this.#stopped || this.#link.kind !== 'ready' || this.#linkProbeBusy || this.#boatBlocksBackground()) return;
     this.#linkProbeBusy = true;
     try {
       const profile = await this.#client.loadProfile().catch(() => null);
       if (!profile) return;
-      await this.#waitForProfileHealth(profile, { attempts: 1 });
+      const health = await this.#waitForProfileHealth(profile, { attempts: 1 });
+      // 서비스는 답하지만 작업 실행기가 멈춘 서버는 초록 링크 뒤에 작업을 가둔다.
+      if (health?.degraded) this.#noteBrokenLink('Cloud scheduler is degraded');
     } catch (error) {
       this.#noteBrokenLink(error.message);
     } finally {
@@ -1085,19 +1612,21 @@ export class CloudCoordinator extends EventEmitter {
       this.#link = { ...this.#link, canRecreate };
     }
     if (!profile) {
-      this.#link = {
-        kind: 'failed',
-        error: 'Cloud 서버가 설정되어 있지 않습니다.',
-        attempt: this.#link.attempt,
-        canRecreate: false,
-      };
+      this.#failLink(transferError('Cloud 서버가 설정되어 있지 않습니다.', 'CLOUD_NOT_CONFIGURED'), {
+        canRecreate: false, message: 'Cloud 서버가 설정되어 있지 않습니다.',
+      });
       return this.snapshot({ profileConnection: 'error', profileMessage: this.#link.error });
     }
+    if (profile.boat && this.#boatBlocksBackground()) return this.#quietBoatLink();
     const controller = new AbortController();
     this.#reconnectController = controller;
     try {
       const health = await this.#waitForProfileHealth(profile, { attempts: 2, timeoutMs: 2_000, signal: controller.signal });
       this.#assertProfileEpoch(profileEpoch);
+      if (profile.boat) this.#noteBoatReachable(profile.boat.sandboxId);
+      if (health?.degraded) {
+        throw transferError(`Cloud ${health.degraded.reason ?? 'scheduler'} is failing`, 'CLOUD_SERVER_DEGRADED');
+      }
       this.#abortSessionWatchers();
       // Reconcile the remote session list as well as health. A successful
       // health probe alone does not restore the conversation after a restart.
@@ -1111,17 +1640,28 @@ export class CloudCoordinator extends EventEmitter {
         let sessions = await this.#client.sessions({ timeoutMs: 2_000, retryAttempts: 1, signal: controller.signal });
         controller.signal.throwIfAborted();
         let present = new Set(sessions.map((session) => session.id ?? session.sessionId));
+        const restoreFailures = [];
         const restored = await this.#restoreKnownConversations(profile, health, {
           presentSessionIds: present,
           signal: controller.signal,
+          failures: restoreFailures,
         });
         if (restored > 0) {
           sessions = await this.#client.sessions({ timeoutMs: 2_000, retryAttempts: 1, signal: controller.signal });
           controller.signal.throwIfAborted();
           present = new Set(sessions.map((session) => session.id ?? session.sessionId));
         }
-        if (knownSessions.some((id) => !present.has(id))) {
-          throw transferError('Cloud 서버에서 이전 작업을 찾지 못했습니다. 서버를 다시 만들어 이 대화에서 이어가세요.', 'SESSION_NOT_FOUND');
+        const missing = knownSessions.filter((id) => !present.has(id));
+        this.#missingSessionIds = new Set(missing);
+        if (missing.length) {
+          // A restore that failed on a passing broker or network error is still
+          // recoverable, so the link retries it instead of asking the user to
+          // discard the conversation.
+          const transient = restoreFailures.find(({ sessionId, error }) => (
+            missing.includes(sessionId) && !nonRetryableTransferError(error)
+          ));
+          if (transient) throw transient.error;
+          throw transferError('Cloud 서버에서 이전 작업을 찾지 못했습니다.', 'SESSION_NOT_FOUND');
         }
         const previous = this.#remoteSessions;
         this.#remoteSessions = new Map(sessions.map((session) => {
@@ -1139,15 +1679,12 @@ export class CloudCoordinator extends EventEmitter {
     } catch (error) {
       if (controller.signal.aborted || this.#stopped || profileEpoch !== this.#profileEpoch) throw error;
       this.#abortSessionWatchers();
-      if (!this.#streamShouldRestart(error) && error?.status !== 404 && error?.code !== 'SESSION_NOT_FOUND') {
-        this.#linkNeedsAction = true;
+      if (profile.boat) {
+        // One boat status read tells a stopped VM apart from a broken link. It never resumes.
+        await this.refreshBoatStatus({ force: true, reason: 'link-check' });
+        if (this.#boatBlocksBackground()) return this.#quietBoatLink();
       }
-      this.#link = {
-        kind: 'failed',
-        error: error.message,
-        attempt: this.#link.attempt,
-        canRecreate,
-      };
+      this.#failLink(error, { canRecreate });
       const snapshot = await this.snapshot({
         profileConnection: 'error',
         profileMessage: error.message,
@@ -1182,12 +1719,7 @@ export class CloudCoordinator extends EventEmitter {
       this.#emit({ type: 'cloud-link-ready', snapshot });
       return snapshot;
     } catch (error) {
-      this.#link = {
-        kind: 'failed',
-        error: error.message,
-        attempt: this.#link.attempt,
-        canRecreate: true,
-      };
+      this.#failLink(error, { canRecreate: true, needsAction: false });
       const snapshot = await this.snapshot({
         profileConnection: 'error',
         profileMessage: error.message,
@@ -1301,9 +1833,31 @@ export class CloudCoordinator extends EventEmitter {
     return operation;
   }
 
+  /**
+   * Restore after activating a worker is best effort. The worker stays up either
+   * way; continuity and the next reconnect retry whatever is left behind.
+   */
+  async #restoreConversationsAfterActivation(profile, health, options = {}) {
+    try {
+      await this.#restoreKnownConversations(profile, health, options);
+    } catch (error) {
+      if (error?.code === 'PROFILE_CHANGED') throw error;
+      this.#emit({ type: 'conversation-restore-deferred', error: error.message, code: error?.code ?? null });
+    }
+    await this.#resumeRecoveriesForCurrentProfile().catch((error) => {
+      this.#emit({ type: 'profile-recovery-resume-failed', error: error.message });
+    });
+  }
+
+  /**
+   * Restores every known conversation the replacement worker lacks. One record
+   * that fails does not stop the others; its error lands on the record, and
+   * `failures` (when given) collects it for the caller.
+   */
   async #restoreKnownConversations(profile, health, {
     presentSessionIds = null,
     signal = null,
+    failures = null,
   } = {}) {
     if (profile?.mode !== 'app-hosted' || !conversationRestoreSupported(health)
       || typeof this.#client.restoreSession !== 'function') return 0;
@@ -1357,6 +1911,8 @@ export class CloudCoordinator extends EventEmitter {
           serverVersion: session.stateVersion ?? session.version ?? latest.serverVersion,
           statusMessage: session.suspendedReason?.message ?? session.statusMessage ?? null,
           suspendedCode: session.suspendedReason?.code ?? null,
+          error: null,
+          errorCode: null,
           provider: session.provider ?? latest.provider,
           executionConfig: session.executionConfig ?? latest.executionConfig,
           executionPhase: session.executionPhase ?? latest.executionPhase ?? null,
@@ -1370,18 +1926,41 @@ export class CloudCoordinator extends EventEmitter {
         return session;
       })();
       if (!previous) this.#conversationRestores.set(record.cloudSessionId, operation);
+      let session;
       try {
-        const session = await operation;
-        present.add(record.cloudSessionId);
-        this.#remoteSessions.set(record.cloudSessionId, session);
-        restored += 1;
-        await this.#retryQueuedMessages(await this.#store.get(record.id), profileEpoch);
-        this.#emit({ type: 'cloud-conversation-restored', sessionId: record.cloudSessionId });
+        session = await operation;
+      } catch (error) {
+        if (error?.code === 'PROFILE_CHANGED' || error?.name === 'AbortError' || signal?.aborted) throw error;
+        failures?.push({ sessionId: record.cloudSessionId, error });
+        await this.#store.patch(record.id, {
+          error: error.message,
+          errorCode: String(error?.code ?? '') || null,
+          statusMessage: '대화를 새 Cloud 서버로 옮기지 못했습니다.',
+        }).catch(() => {});
+        this.#emit({
+          type: 'cloud-conversation-restore-failed',
+          sessionId: record.cloudSessionId,
+          error: error.message,
+          code: error?.code ?? null,
+        });
+        continue;
       } finally {
         if (!previous && this.#conversationRestores.get(record.cloudSessionId) === operation) {
           this.#conversationRestores.delete(record.cloudSessionId);
         }
       }
+      present.add(record.cloudSessionId);
+      this.#remoteSessions.set(record.cloudSessionId, session);
+      restored += 1;
+      // A failed follow-up replay stays pending on the record for the next
+      // attempt; it must not undo the restore that just succeeded.
+      const latest = await this.#store.get(record.id);
+      if (latest) {
+        await this.#retryQueuedMessages(latest, profileEpoch).catch((error) => {
+          if (error?.code === 'PROFILE_CHANGED') throw error;
+        });
+      }
+      this.#emit({ type: 'cloud-conversation-restored', sessionId: record.cloudSessionId });
     }
     return restored;
   }
@@ -1400,6 +1979,11 @@ export class CloudCoordinator extends EventEmitter {
     await this.#refreshMergeRequests({ force: true });
     const profile = await this.#client.loadProfile().catch(() => null);
     if (!profile) return this.snapshot();
+    if (profile.boat) {
+      // Startup, unlock, online and the 60 s cadence only read state; they never resume the VM.
+      if (this.#boatStatus?.state == null) await this.refreshBoatStatus({ force: true, reason });
+      if (this.#boatBlocksBackground()) return this.snapshot();
+    }
     if (profile.mode === 'app-hosted') {
       const provider = this.#sandboxProvider(profile.sandbox);
       if (provider) {
@@ -1450,6 +2034,7 @@ export class CloudCoordinator extends EventEmitter {
     const profile = await this.#client.loadProfile().catch(() => null);
     this.#assertProfileEpoch(profileEpoch);
     if (this.#link.kind !== 'ready') return this.snapshot(options);
+    if (profile?.boat && this.#boatBlocksBackground()) return this.snapshot(options);
     if (profile && await this.#client.isPaired().catch(() => false)) {
       try {
         const health = typeof this.#client.restoreSession === 'function'
@@ -1591,6 +2176,7 @@ export class CloudCoordinator extends EventEmitter {
     }
     const preflight = await this.#provisioner.preflight(profile.ssh, {
       onLine: (line) => this.#emit({ type: 'provision-log', line }),
+      strictHostKey: Boolean(profile.boat),
     });
     let health = null;
     if (current && profile.endpoint === current.endpoint) {
@@ -1629,6 +2215,9 @@ export class CloudCoordinator extends EventEmitter {
       transport: profile.transport,
       tailscaleHttpsPort: profile.tailscaleHttpsPort,
       publicHost: profile.transport === 'public-https' ? new URL(profile.endpoint).hostname : '',
+      ...(profile.boat
+        ? { hostEnv: boatHostEnv({ sandboxId: profile.boat.sandboxId, user: profile.ssh.user }) }
+        : {}),
       onLine: (line) => this.#emit({ type: 'provision-log', line }),
     });
     const updated = normalizeCloudProfile({
@@ -1927,8 +2516,7 @@ export class CloudCoordinator extends EventEmitter {
           this.#emit({ type: 'server-mode-persist-failed', mode: 'app-hosted', error: error.message });
           return 'app-hosted';
         });
-        await this.#restoreKnownConversations(current, health);
-        await this.#resumeRecoveriesForCurrentProfile();
+        await this.#restoreConversationsAfterActivation(current, health);
         return this.snapshot({ extra: { sandbox: { ok: true, reused: true } } });
       }
       // lifecycle 'idle': the deployment was deleted out-of-band, so a fresh
@@ -1940,6 +2528,9 @@ export class CloudCoordinator extends EventEmitter {
     this.#setSandboxLifecycle('provisioning', 'Starting an app-provided sandbox.');
     this.#emit({ type: 'sandbox-provision-started', providerId: provider.id });
     let spawned = null;
+    // Once the saved profile points at the new worker, it is the user's server.
+    // A later failure must not tear it down underneath that profile.
+    let activated = false;
     const controller = new AbortController();
     this.#spawnController = controller;
     try {
@@ -1995,8 +2586,8 @@ export class CloudCoordinator extends EventEmitter {
         tokens: pairing.credentials,
         device: pairing.credentials.device,
       }));
-      await this.#restoreKnownConversations(profile, health, { presentSessionIds: new Set() });
-      await this.#resumeRecoveriesForCurrentProfile();
+      activated = true;
+      await this.#restoreConversationsAfterActivation(profile, health, { presentSessionIds: new Set() });
       await this.#client.clearPendingAppSandbox?.().catch((error) => {
         this.#emit({ type: 'sandbox-journal-clear-failed', error: error.message });
       });
@@ -2012,7 +2603,12 @@ export class CloudCoordinator extends EventEmitter {
       if (error?.cleanupFailed) {
         this.#emit({ type: 'sandbox-cleanup-failed', providerId: provider.id, error: error.cleanupFailed });
       }
-      if (spawned?.sandbox) {
+      if (activated) {
+        // The profile owns the worker now, so the creation journal is complete.
+        await this.#client.clearPendingAppSandbox?.().catch((journalError) => {
+          this.#emit({ type: 'sandbox-journal-clear-failed', error: journalError.message });
+        });
+      } else if (spawned?.sandbox) {
         try {
           await provider.teardown(spawned.sandbox);
           await this.#client.clearPendingAppSandbox?.();
@@ -2269,12 +2865,12 @@ export class CloudCoordinator extends EventEmitter {
     this.#watchRestartTimers.clear();
   }
 
-  #scheduleWatchRestart(start) {
+  #scheduleWatchRestart(start, delayMs = 1_000) {
     if (this.#stopped) return;
     const timer = setTimeout(() => {
       this.#watchRestartTimers.delete(timer);
       if (!this.#stopped) void Promise.resolve(start()).catch(() => {});
-    }, 1_000);
+    }, delayMs);
     this.#watchRestartTimers.add(timer);
   }
 
@@ -2285,8 +2881,11 @@ export class CloudCoordinator extends EventEmitter {
   }
 
   #noteTerminalStreamFailure(error) {
-    this.#linkNeedsAction = true;
-    this.#link = { ...this.#link, kind: 'failed', error: error.message };
+    this.#unlessBoatStopped(() => this.#markTerminalStreamFailure(error));
+  }
+
+  #markTerminalStreamFailure(error) {
+    this.#failLink(error, { needsAction: true });
     this.#abortSessionWatchers();
     this.#emit({ type: 'cloud-link-failed', error: error.message });
   }
@@ -2408,6 +3007,10 @@ export class CloudCoordinator extends EventEmitter {
     }));
     if (profile.mode === 'self-hosted') await this.#adoptSelfHostedMode();
     else this.#setSandboxLifecycle('ready');
+    // 다시 페어링은 끊긴 링크를 고치는 길이기도 하다. 확인한 서버로 링크를 바로 되살린다.
+    if (this.#link.kind === 'failed') {
+      this.#link = { kind: 'ready', error: null, attempt: 0, canRecreate: this.#canRecreateProfile(profile) };
+    }
     const snapshot = await this.snapshot();
     this.#emit({ type: 'paired', snapshot });
     return snapshot;
@@ -2456,9 +3059,10 @@ export class CloudCoordinator extends EventEmitter {
     if (this.#stopped) {
       return Promise.reject(transferError('Cloud coordinator is stopped', 'COORDINATOR_STOPPED'));
     }
-    const operation = this.#withProfileOperation((profileEpoch) => (
+    // Sending to Cloud is user intent: a stopped boat VM is resumed before admission.
+    const operation = this.#wakeBoatForUser('transfer').then(() => this.#withProfileOperation((profileEpoch) => (
       this.#transfer(payload, options, profileEpoch)
-    ));
+    )));
     this.#transferOperations.add(operation);
     return operation.finally(() => this.#transferOperations.delete(operation));
   }
@@ -2517,6 +3121,26 @@ export class CloudCoordinator extends EventEmitter {
       },
       resources: payload?.references,
     });
+    // One upload per handoff. Claim it before the next await so a recovery that a
+    // reconnect schedules meanwhile sees the claim instead of starting a second
+    // upload of the same session, and a repeated send joins the one in flight.
+    const owner = this.#transferOwners.get(record.id);
+    if (owner) {
+      // Share the outcome of the upload already in flight, including its failure.
+      await owner;
+      const latest = await this.#store.get(record.id);
+      return this.snapshot({ selectedSessionId: latest?.cloudSessionId ?? record.id });
+    }
+    const operation = this.#runTransfer(record, { payload, bytes, goal, restartHandoff, profileEpoch });
+    this.#transferOwners.set(record.id, operation);
+    try {
+      return await operation;
+    } finally {
+      if (this.#transferOwners.get(record.id) === operation) this.#transferOwners.delete(record.id);
+    }
+  }
+
+  async #runTransfer(record, { payload, bytes, goal, restartHandoff, profileEpoch }) {
     if (restartHandoff && (record.documentDigest !== sha256Hex(bytes)
       || record.originDocumentId !== payload.documentId || record.threadId !== payload.threadId)) {
       throw transferError('복구 시작 ID가 다른 전송에 사용됐습니다.', 'RESTART_DOCUMENT_INVALID');
@@ -2526,19 +3150,19 @@ export class CloudCoordinator extends EventEmitter {
         restartRecovery: { ...restartHandoff.restartRecovery, startId: record.id },
       });
     }
-    if (restartHandoff && record.cloudSessionId
-      && ['queued', 'running', 'suspended', 'completed', 'downloading', 'downloaded'].includes(record.state)) {
-      return this.snapshot({ selectedSessionId: record.cloudSessionId });
+    const latest = await this.#store.get(record.id) ?? record;
+    // The same start already reached the server (an earlier send or a recovery
+    // finished it), so a repeated send is answered from that session.
+    if (latest.cloudSessionId
+      && ['queued', 'running', 'suspended', 'completed', 'downloading', 'downloaded'].includes(latest.state)) {
+      return this.snapshot({ selectedSessionId: latest.cloudSessionId });
     }
-    const inflight = this.#transferPromises.get(record.id);
-    if (inflight) {
-      await inflight;
-      return this.snapshot({ selectedSessionId: record.id });
-    }
-    await this.#store.transition(record.id, 'uploading');
-    let committed = false;
+    // A committing transfer resumes its upload in place; only earlier states move to uploading.
+    if (latest.state !== 'committing') await this.#store.transition(record.id, 'uploading');
+    let committed = latest.state === 'committing';
     const controller = new AbortController();
     this.#transferControllers.set(record.id, controller);
+    let transferPromise = null;
     try {
       this.#emit({
         type: 'session-transfer',
@@ -2548,7 +3172,7 @@ export class CloudCoordinator extends EventEmitter {
       });
       if (this.#stopped) throw transferError('Cloud coordinator is stopped', 'COORDINATOR_STOPPED');
       await this.#seedRemoteProvider(record.provider);
-      const transferPromise = this.#client.transfer({
+      transferPromise = this.#client.transfer({
         sessionId: record.id,
         threadId: record.threadId,
         documentId: record.originDocumentId,
@@ -2664,19 +3288,51 @@ export class CloudCoordinator extends EventEmitter {
       this.#emit({ type: 'session-transfer-failed', handoffId: record.id, error: error.message });
       throw error;
     } finally {
-      this.#transferPromises.delete(record.id);
-      this.#transferControllers.delete(record.id);
+      this.#releaseTransferHandles(record.id, transferPromise, controller);
     }
+  }
+
+  /** Drops only this call's handles, so a later cancel still reaches whichever upload owns the handoff. */
+  #releaseTransferHandles(handoffId, transferPromise, controller) {
+    if (transferPromise && this.#transferPromises.get(handoffId) === transferPromise) {
+      this.#transferPromises.delete(handoffId);
+    }
+    if (this.#transferControllers.get(handoffId) === controller) this.#transferControllers.delete(handoffId);
   }
 
   async command(input) {
+    await this.#wakeBoatForUser('command');
+    if (input?.command === 'resume' || input?.command === 'retry') {
+      await this.#reseedBeforeResume(input.sessionId);
+    }
     if (input?.command === 'queue-message' || input?.command === 'redirect') {
       await this.#ensureConversationWorker(input.sessionId);
     }
-    return this.#withProfileOperation((profileEpoch) => this.#command(input, profileEpoch));
+    try {
+      return await this.#withProfileOperation((profileEpoch) => this.#command(input, profileEpoch));
+    } catch (error) {
+      // 서버에 없는 작업을 끝내려는 요청이다. 남은 로컬 기록만 지우면 대화가 끝난다.
+      if ((input?.command === 'end' || input?.command === 'cancel')
+        && (error?.code === 'SESSION_NOT_FOUND' || error?.status === 404)) {
+        return this.#discardLocalSessions([input.sessionId]);
+      }
+      throw error;
+    }
   }
 
-  prepareEditDraft(input) {
+  /** 제공자 로그인 문제로 멈춘 작업은 이어 가기 전에 이 Mac 의 로그인을 다시 보낸다. */
+  async #reseedBeforeResume(sessionId) {
+    const records = await this.#store.list().catch(() => []);
+    const record = records.find((entry) => entry.cloudSessionId === sessionId || entry.id === sessionId);
+    const remote = this.#remoteSessions.get(sessionId);
+    const code = record?.suspendedCode ?? remote?.suspendedReason?.code ?? null;
+    const provider = record?.provider ?? remote?.provider ?? null;
+    if (!PROVIDER_AUTH_CODES.has(code) || !CLOUD_PROVIDERS.includes(provider)) return;
+    await this.#importProviderLoginsOrThrow([provider]);
+  }
+
+  async prepareEditDraft(input) {
+    await this.#wakeBoatForUser('edit');
     return this.#withProfileOperation((profileEpoch) => this.#prepareEditDraft(input, profileEpoch));
   }
 
@@ -2693,10 +3349,17 @@ export class CloudCoordinator extends EventEmitter {
       remote = paused.session ?? remote;
     }
     const deadline = Date.now() + 5 * 60_000;
+    const stopSignal = this.#stopController.signal;
     let attempt = 0;
     while (remote.status !== 'suspended' && Date.now() < deadline) {
-      await delay(Math.min(2_000, 250 * (2 ** Math.min(attempt, 3))));
-      remote = await this.#client.session(sessionId);
+      // Quit must not wait out a five-minute pause poll.
+      if (this.#stopped) throw transferError('Cloud coordinator is stopped', 'COORDINATOR_STOPPED');
+      await delay(Math.min(2_000, 250 * (2 ** Math.min(attempt, 3))), undefined, { signal: stopSignal })
+        .catch((error) => {
+          if (stopSignal.aborted) throw transferError('Cloud coordinator is stopped', 'COORDINATOR_STOPPED');
+          throw error;
+        });
+      remote = await this.#client.session(sessionId, { signal: stopSignal });
       this.#assertProfileEpoch(profileEpoch);
       attempt += 1;
     }
@@ -2743,6 +3406,7 @@ export class CloudCoordinator extends EventEmitter {
   }
 
   async resumeEditedDocument(input) {
+    await this.#wakeBoatForUser('edit');
     await this.#ensureConversationWorker(input?.sessionId);
     return this.#withProfileOperation((profileEpoch) => this.#resumeEditedDocument(input, profileEpoch));
   }
@@ -3061,7 +3725,10 @@ export class CloudCoordinator extends EventEmitter {
     return snapshot;
   }
 
-  downloadResult(input) {
+  async downloadResult(input) {
+    // A verified local copy needs no server, so it must not wake a stopped boat VM.
+    const handoff = await this.handoffForSession(input?.sessionId).catch(() => null);
+    if (!(handoff?.recoveryPath && handoff.resultDigest)) await this.#wakeBoatForUser('download');
     return this.#withProfileOperation((profileEpoch) => this.#downloadResult(input, profileEpoch));
   }
 
@@ -3102,6 +3769,8 @@ export class CloudCoordinator extends EventEmitter {
       });
       await this.#store.patch(handoff.id, {
         recoveryPath,
+        // Confirmation recovery must name the same result after the local copy is gone.
+        resultId,
         resultDigest: result.sha256,
         resultSize: result.size,
         resultName: fileName,
@@ -3120,15 +3789,27 @@ export class CloudCoordinator extends EventEmitter {
         });
         await this.#store.transition(handoff.id, 'downloaded', { downloadedAt });
       } catch (error) {
-        const current = await this.#store.get(handoff.id);
-        const attempt = Number(current?.confirmationAttempt ?? 0) + 1;
-        await this.#store.patch(handoff.id, {
-          downloadedAt,
-          error: error.message,
-          confirmationAttempt: attempt,
-        });
-        this.#scheduleResultRecovery(handoff.id, attempt);
-        this.#emit({ type: 'result-confirmation-deferred', sessionId, error: error.message });
+        if (resultConfirmationRejected(error)) {
+          // The verified bytes are already on disk and the server will never take
+          // this confirmation, so the download is finished here.
+          await this.#store.transition(handoff.id, 'downloaded', {
+            downloadedAt,
+            confirmationError: error.message,
+          });
+          this.#emit({
+            type: 'result-confirmation-abandoned', sessionId, error: error.message, code: error?.code ?? null,
+          });
+        } else {
+          const current = await this.#store.get(handoff.id);
+          const attempt = Number(current?.confirmationAttempt ?? 0) + 1;
+          await this.#store.patch(handoff.id, {
+            downloadedAt,
+            error: error.message,
+            confirmationAttempt: attempt,
+          });
+          this.#scheduleResultRecovery(handoff.id, attempt);
+          this.#emit({ type: 'result-confirmation-deferred', sessionId, error: error.message });
+        }
       }
       const snapshot = await this.snapshot({ selectedSessionId: sessionId });
       this.#emit({ type: 'result-downloaded', snapshot, sessionId });
@@ -3215,7 +3896,11 @@ export class CloudCoordinator extends EventEmitter {
     });
   }
 
-  downloadCheckpoint(input) {
+  async downloadCheckpoint(input) {
+    // 체크포인트 미러는 문서를 열 때와 실패 후 재시도로 스스로 부른다. 사용자가 누른 요청만
+    // 멈춘 VM 을 깨우고, 나머지는 쉬는 서버를 조용히 알린다.
+    if (input?.explicit === true) await this.#wakeBoatForUser('checkpoint');
+    else await this.#requireRunningBoat('checkpoint');
     return this.#withProfileOperation((profileEpoch) => this.#downloadCheckpoint(input, profileEpoch));
   }
 
@@ -3248,7 +3933,8 @@ export class CloudCoordinator extends EventEmitter {
     };
   }
 
-  publishCheckpoint(input) {
+  async publishCheckpoint(input) {
+    await this.#wakeBoatForUser('checkpoint');
     return this.#withProfileOperation((profileEpoch) => {
       const key = `${profileEpoch}:${input.sessionId}`;
       const previous = this.#publicationChains.get(key) ?? Promise.resolve();
@@ -3464,7 +4150,7 @@ export class CloudCoordinator extends EventEmitter {
         if (timer) clearTimeout(timer);
         this.#recoveryTimers.delete(record.id);
         this.#scheduleTransferRecovery(record.id, Number(record.recoveryAttempt ?? 0));
-      } else if (record.state === 'downloading' && record.recoveryPath && record.resultDigest) {
+      } else if (resultConfirmationPending(record)) {
         const timer = this.#resultRecoveryTimers.get(record.id);
         if (timer) clearTimeout(timer);
         this.#resultRecoveryTimers.delete(record.id);
@@ -3494,6 +4180,8 @@ export class CloudCoordinator extends EventEmitter {
   #watch(handoffId, sessionId, after, profileEpoch = this.#profileEpoch) {
     const watcherKey = `${profileEpoch}:${sessionId}`;
     if (this.#stopped || !sessionId || profileEpoch !== this.#profileEpoch || this.#watchers.has(watcherKey)) return;
+    // Streams to a stopped boat VM would only retry SSH. A wake restarts them.
+    if (this.#boatBlocksBackground()) return;
     const controller = new AbortController();
     this.#watchers.set(watcherKey, controller);
     this.#armLinkWatchdog();
@@ -3501,116 +4189,24 @@ export class CloudCoordinator extends EventEmitter {
     const onEvent = (event) => this.#profileOperationContext.exit(() => this.#withProfileOperation(async () => {
       if (controller.signal.aborted || this.#watchers.get(watcherKey) !== controller) return;
       this.#assertProfileEpoch(profileEpoch);
-      const source = event.session ?? event.payload?.session ?? event.payload ?? event;
-      let current = await this.#store.get(handoffId);
-      this.#assertProfileEpoch(profileEpoch);
-      if (!current) return;
-      const serverState = String(source.state ?? source.status ?? '').toLowerCase();
-      const state = serverState === 'purged'
-        ? (['downloading', 'downloaded'].includes(current.state) ? current.state : 'expired')
-        : cloudState(serverState, current.state);
-      const pauseRequested = event.type === 'session.pause_requested'
-        ? true
-        : state !== 'running'
-          ? false
-          : source.pauseRequested ?? current.pauseRequested ?? false;
-      const takeoverRequested = event.type === 'session.takeover_requested'
-        ? true
-        : event.type === 'session.takeover_ready'
-          ? false
-          : source.takeoverRequested ?? current.takeoverRequested ?? false;
-      const takeoverReady = event.type === 'session.takeover_ready'
-        ? true
-        : current.takeoverReady ?? false;
-      const currentWait = event.type === 'wait.created'
-        ? {
-            id: source.waitId,
-            kind: source.kind,
-            payload: source.payload ?? {},
-          }
-        : event.type === 'wait.resolved' || event.type === 'conversation.ending'
-          ? null
-          : source.currentWait ?? current.currentWait ?? null;
-      let pendingTurnBoundary = current.pendingTurnBoundary ?? null;
-      if (event.type === 'boundary.committed' && ['turn', 'operation'].includes(source.kind)) {
-        if (typeof source.operationId !== 'string' || !source.operationId
-          || !Number.isSafeInteger(source.turnNumber) || source.turnNumber < 0
-          || !Number.isSafeInteger(source.revision) || source.revision < 1) {
-          throw new Error('Cloud turn boundary is invalid');
-        }
-        pendingTurnBoundary = {
-          operationId: source.operationId,
-          turnNumber: source.turnNumber,
-          revision: source.revision,
-        };
-        if (Number.isSafeInteger(event.sequence) && event.sequence > current.lastEventSequence) {
-          current = await this.#store.patch(handoffId, { pendingTurnBoundary });
-        }
+      try {
+        await this.#applySessionEvent(event, { handoffId, sessionId, controller, profileEpoch });
+      } catch (error) {
+        if (!REJECTED_EVENT_CODES.has(error?.code)) throw error;
+        // Replaying this event fails the same way on every reconnect, which would
+        // stall the stream and loop the link. Step the cursor past it without
+        // changing state; I/O and profile errors still propagate and retry.
+        await this.#store.applyEvent(handoffId, { sequence: event.sequence, patch: {} });
+        this.#assertProfileEpoch(profileEpoch);
+        this.#emit({
+          type: 'session-event-rejected',
+          sessionId,
+          sequence: event.sequence,
+          eventType: event.type ?? null,
+          error: error.message,
+          code: error.code,
+        });
       }
-      let pendingOriginPublications = current.pendingOriginPublications ?? [];
-      if (event.type === 'document.publish_requested') {
-        if (typeof source.operationId !== 'string' || !/^[A-Za-z0-9._:-]{1,160}$/.test(source.operationId)) {
-          throw new Error('Cloud publication operation is invalid');
-        }
-        if (!pendingOriginPublications.includes(source.operationId)) {
-          pendingOriginPublications = [...pendingOriginPublications, source.operationId];
-          // Persist the explicit request before advancing the event cursor.
-          current = await this.#store.patch(handoffId, (latest) => ({
-            pendingOriginPublications: (latest.pendingOriginPublications ?? []).includes(source.operationId)
-              ? latest.pendingOriginPublications : [...(latest.pendingOriginPublications ?? []), source.operationId],
-          }));
-        }
-      }
-      const updated = await this.#store.applyEvent(handoffId, {
-        sequence: event.sequence,
-        state,
-        patch: (latest) => ({
-          serverVersion: source.stateVersion ?? source.version ?? current.serverVersion,
-          statusMessage: source.statusMessage ?? source.message ?? source.reason?.message ?? null,
-          suspendedCode: source.suspendedReason?.code ?? source.reason?.code ?? current.suspendedCode,
-          resultId: source.result?.id ?? source.resultId ?? current.resultId,
-          resultDigest: source.result?.sha256 ?? current.resultDigest,
-          resultSize: source.result?.size ?? current.resultSize,
-          resultExpiresAt: source.result?.expiresAt ?? current.resultExpiresAt,
-          startedAt: source.startedAt ?? current.startedAt,
-          completedAt: source.completedAt ?? current.completedAt,
-          turnsUsed: source.turnsUsed ?? current.turnsUsed,
-          pauseRequested,
-          takeoverRequested,
-          takeoverReady,
-          takeoverBoundary: source.boundary ?? current.takeoverBoundary,
-          provider: source.provider ?? current.provider,
-          executionConfig: source.executionConfig ?? current.executionConfig,
-          configurationSupported: source.configurationSupported ?? current.configurationSupported,
-          configurationPending: source.configurationPending ?? current.configurationPending,
-          configurationEditable: source.configurationEditable ?? current.configurationEditable,
-          executionPhase: source.executionPhase ?? current.executionPhase ?? null,
-          currentWait,
-          ...(['message.queued', 'message.accepted'].includes(event.type) ? {
-            queuedMessages: (latest.queuedMessages ?? []).map((message) => (
-              message.id === source.messageId ? {
-                ...message,
-                state: event.type === 'message.accepted' ? 'accepted' : message.state,
-              } : message
-            )),
-          } : {}),
-          pendingTurnBoundary: latest.pendingTurnBoundary ?? null,
-          pendingOriginPublications: latest.pendingOriginPublications ?? [],
-        }),
-      });
-      this.#assertProfileEpoch(profileEpoch);
-      this.#emit({
-        type: 'session-event',
-        sessionId,
-        event,
-        handoff: updated,
-      });
-      if (event.type === 'timeline.updated' || state === 'completed') this.#timelinePending.set(sessionId, true);
-      if (updated?.pendingTurnBoundary || updated?.pendingOriginPublications?.length
-        || this.#timelinePending.get(sessionId) || state === 'completed') {
-        this.#scheduleArtifactSync(sessionId, handoffId, profileEpoch);
-      }
-      if (['downloaded', 'cancelled', 'expired', 'failed'].includes(updated?.state)) controller.abort();
     }, { expectedEpoch: profileEpoch }));
     let restartWatch = false;
     this.#profileOperationContext.exit(() => {
@@ -3638,6 +4234,129 @@ export class CloudCoordinator extends EventEmitter {
           }
         });
     });
+  }
+
+  async #applySessionEvent(event, { handoffId, sessionId, controller, profileEpoch }) {
+    const source = event.session ?? event.payload?.session ?? event.payload ?? event;
+    let current = await this.#store.get(handoffId);
+    this.#assertProfileEpoch(profileEpoch);
+    if (!current) return;
+    const serverState = String(source.state ?? source.status ?? '').toLowerCase();
+    // A purge ends live work; it never reopens finished records or a result still being confirmed.
+    const state = serverState === 'purged'
+      ? (['downloading', ...TERMINAL_HANDOFF_STATES].includes(current.state) ? current.state : 'expired')
+      : cloudState(serverState, current.state);
+    const pauseRequested = event.type === 'session.pause_requested'
+      ? true
+      : state !== 'running'
+        ? false
+        : source.pauseRequested ?? current.pauseRequested ?? false;
+    const takeoverRequested = event.type === 'session.takeover_requested'
+      ? true
+      : event.type === 'session.takeover_ready'
+        ? false
+        : source.takeoverRequested ?? current.takeoverRequested ?? false;
+    const takeoverReady = event.type === 'session.takeover_ready'
+      ? true
+      : current.takeoverReady ?? false;
+    const currentWait = event.type === 'wait.created'
+      ? {
+          id: source.waitId,
+          kind: source.kind,
+          payload: source.payload ?? {},
+        }
+      : event.type === 'wait.resolved' || event.type === 'conversation.ending'
+        ? null
+        : source.currentWait ?? current.currentWait ?? null;
+    if (event.type === 'boundary.committed' && ['turn', 'operation'].includes(source.kind)) {
+      if (typeof source.operationId !== 'string' || !source.operationId
+        || !Number.isSafeInteger(source.turnNumber) || source.turnNumber < 0
+        || !Number.isSafeInteger(source.revision) || source.revision < 1) {
+        throw invalidCloudEvent('Cloud turn boundary is invalid');
+      }
+      // A command response can move the event cursor past boundaries still queued
+      // in this stream. Capture by identity and revision instead of by sequence,
+      // so such a boundary is still archived and replays stay no-ops.
+      if (source.operationId !== current.lastSyncedBoundaryOperation
+        && source.operationId !== current.pendingTurnBoundary?.operationId
+        && source.revision > (current.lastSyncedRevision ?? 0)
+        && source.revision >= (current.pendingTurnBoundary?.revision ?? 0)) {
+        current = await this.#store.patch(handoffId, {
+          pendingTurnBoundary: {
+            operationId: source.operationId,
+            turnNumber: source.turnNumber,
+            revision: source.revision,
+          },
+        });
+      }
+    }
+    if (event.type === 'document.publish_requested') {
+      if (typeof source.operationId !== 'string' || !/^[A-Za-z0-9._:-]{1,160}$/.test(source.operationId)) {
+        throw invalidCloudEvent('Cloud publication operation is invalid');
+      }
+      if (!(current.pendingOriginPublications ?? []).includes(source.operationId)) {
+        // Persist the explicit request before advancing the event cursor.
+        current = await this.#store.patch(handoffId, (latest) => ({
+          pendingOriginPublications: (latest.pendingOriginPublications ?? []).includes(source.operationId)
+            ? latest.pendingOriginPublications : [...(latest.pendingOriginPublications ?? []), source.operationId],
+        }));
+      }
+    }
+    if (event.type === 'message.accepted' && typeof source.messageId === 'string'
+      && (current.queuedMessages ?? []).some((message) => (
+        message.id === source.messageId && message.state !== 'accepted'
+      ))) {
+      // Acceptance only moves a message forward (queued -> accepted), so it applies
+      // even when a command response already moved the cursor past this event.
+      // Delivery stays pending until the command's own durable receipt arrives.
+      current = await this.#store.patch(handoffId, (latest) => ({
+        queuedMessages: (latest.queuedMessages ?? []).map((message) => (
+          message.id === source.messageId ? { ...message, state: 'accepted' } : message
+        )),
+      }));
+    }
+    const updated = await this.#store.applyEvent(handoffId, {
+      sequence: event.sequence,
+      state,
+      patch: (latest) => ({
+        serverVersion: source.stateVersion ?? source.version ?? current.serverVersion,
+        statusMessage: source.statusMessage ?? source.message ?? source.reason?.message ?? null,
+        suspendedCode: source.suspendedReason?.code ?? source.reason?.code ?? current.suspendedCode,
+        resultId: source.result?.id ?? source.resultId ?? current.resultId,
+        resultDigest: source.result?.sha256 ?? current.resultDigest,
+        resultSize: source.result?.size ?? current.resultSize,
+        resultExpiresAt: source.result?.expiresAt ?? current.resultExpiresAt,
+        startedAt: source.startedAt ?? current.startedAt,
+        completedAt: source.completedAt ?? current.completedAt,
+        turnsUsed: source.turnsUsed ?? current.turnsUsed,
+        pauseRequested,
+        takeoverRequested,
+        takeoverReady,
+        takeoverBoundary: source.boundary ?? current.takeoverBoundary,
+        provider: source.provider ?? current.provider,
+        executionConfig: source.executionConfig ?? current.executionConfig,
+        configurationSupported: source.configurationSupported ?? current.configurationSupported,
+        configurationPending: source.configurationPending ?? current.configurationPending,
+        configurationEditable: source.configurationEditable ?? current.configurationEditable,
+        executionPhase: source.executionPhase ?? current.executionPhase ?? null,
+        currentWait,
+        pendingTurnBoundary: latest.pendingTurnBoundary ?? null,
+        pendingOriginPublications: latest.pendingOriginPublications ?? [],
+      }),
+    });
+    this.#assertProfileEpoch(profileEpoch);
+    this.#emit({
+      type: 'session-event',
+      sessionId,
+      event,
+      handoff: updated,
+    });
+    if (event.type === 'timeline.updated' || state === 'completed') this.#timelinePending.set(sessionId, true);
+    if (updated?.pendingTurnBoundary || updated?.pendingOriginPublications?.length
+      || this.#timelinePending.get(sessionId) || state === 'completed') {
+      this.#scheduleArtifactSync(sessionId, handoffId, profileEpoch);
+    }
+    if (TERMINAL_HANDOFF_STATES.has(updated?.state)) controller.abort();
   }
 
   async #finalizeTransferCancellation(record) {
@@ -3719,6 +4438,8 @@ export class CloudCoordinator extends EventEmitter {
   }
 
   async #recoverIncompleteTransfer(record) {
+    let controller = null;
+    let transferPromise = null;
     try {
       const latest = await this.#store.get(record.id);
       if (!latest || !['preparing', 'uploading', 'committing'].includes(latest.state)) return;
@@ -3751,9 +4472,9 @@ export class CloudCoordinator extends EventEmitter {
       if (record.state === 'preparing') record = await this.#store.transition(record.id, 'uploading');
       await this.#seedRemoteProvider(record.provider);
       let committed = false;
-      const controller = new AbortController();
+      controller = new AbortController();
       this.#transferControllers.set(record.id, controller);
-      const transferPromise = this.#client.transfer({
+      transferPromise = this.#client.transfer({
         sessionId: record.id,
         threadId: record.threadId,
         documentId: record.originDocumentId,
@@ -3880,20 +4601,34 @@ export class CloudCoordinator extends EventEmitter {
         this.#scheduleTransferRecovery(record.id, attempt);
       }
     } finally {
-      this.#transferPromises.delete(record.id);
-      this.#transferControllers.delete(record.id);
+      this.#releaseTransferHandles(record.id, transferPromise, controller);
     }
   }
 
   async #runTransferRecovery(handoffId, attempt) {
     const outcome = await this.#withProfileOperation(async () => {
-      const record = await this.#store.get(handoffId);
-      if (!record || !['preparing', 'uploading', 'committing'].includes(record.state)
-        || !record.documentStagingPath) return 'done';
-      const profile = await this.#client.loadProfile().catch(() => null);
-      if (!destinationMatchesProfile(record.destination, profile)) return 'parked';
-      await this.#recoverIncompleteTransfer(record);
-      return 'ran';
+      const owner = this.#transferOwners.get(handoffId);
+      if (owner) {
+        // A send or another recovery already uploads this handoff. Look again once
+        // it settles, in case it stopped short without scheduling its own retry.
+        void owner.catch(() => {}).then(() => this.#scheduleTransferRecovery(handoffId, attempt));
+        return 'owned';
+      }
+      const recovery = (async () => {
+        const record = await this.#store.get(handoffId);
+        if (!record || !['preparing', 'uploading', 'committing'].includes(record.state)
+          || !record.documentStagingPath) return 'done';
+        const profile = await this.#client.loadProfile().catch(() => null);
+        if (!destinationMatchesProfile(record.destination, profile)) return 'parked';
+        await this.#recoverIncompleteTransfer(record);
+        return 'ran';
+      })();
+      this.#transferOwners.set(handoffId, recovery);
+      try {
+        return await recovery;
+      } finally {
+        if (this.#transferOwners.get(handoffId) === recovery) this.#transferOwners.delete(handoffId);
+      }
     });
     if (outcome === 'parked') this.#scheduleTransferRecovery(handoffId, attempt, true);
   }
@@ -3917,18 +4652,49 @@ export class CloudCoordinator extends EventEmitter {
     this.#recoveryTimers.set(handoffId, timer);
   }
 
+  async #verifyLocalResult(record) {
+    const bytes = await readFile(record.recoveryPath);
+    if (bytes.length !== record.resultSize || sha256Hex(bytes) !== record.resultDigest) {
+      throw Object.assign(new Error('Verified cloud result recovery no longer matches its receipt'), {
+        code: 'RESULT_RECOVERY_MISMATCH',
+      });
+    }
+    if (record.timelineRecoveryPath && record.timelineDigest) {
+      const timelineBytes = await readFile(record.timelineRecoveryPath);
+      if (timelineBytes.length !== record.timelineSize || sha256Hex(timelineBytes) !== record.timelineDigest) {
+        throw Object.assign(new Error('Verified cloud timeline recovery no longer matches its receipt'), {
+          code: 'RESULT_RECOVERY_MISMATCH',
+        });
+      }
+    }
+  }
+
   async #recoverDownloadedResult(record) {
+    // A resolved result has already been applied and its local copy cleaned up.
+    // Only its receipt remains, and that is all the confirmation needs.
+    if (record.recoveryPath) {
+      try {
+        await this.#verifyLocalResult(record);
+      } catch (error) {
+        if (error?.code !== 'ENOENT' && error?.code !== 'RESULT_RECOVERY_MISMATCH') throw error;
+        // The verified copy is gone or damaged. Reopen the normal download path,
+        // which fetches the result again while the server still holds it.
+        const reset = await this.#store.transition(record.id, 'completed', {
+          recoveryPath: null,
+          timelineRecoveryPath: null,
+          confirmationAttempt: 0,
+          error: error.message,
+        });
+        this.#emit({
+          type: 'result-recovery-reset',
+          sessionId: record.cloudSessionId,
+          handoff: reset,
+          error: error.message,
+        });
+        return;
+      }
+    }
     try {
-      const bytes = await readFile(record.recoveryPath);
-      if (bytes.length !== record.resultSize || sha256Hex(bytes) !== record.resultDigest) {
-        throw new Error('Verified cloud result recovery no longer matches its receipt');
-      }
-      if (record.timelineRecoveryPath && record.timelineDigest) {
-        const timelineBytes = await readFile(record.timelineRecoveryPath);
-        if (timelineBytes.length !== record.timelineSize || sha256Hex(timelineBytes) !== record.timelineDigest) {
-          throw new Error('Verified cloud timeline recovery no longer matches its receipt');
-        }
-      }
       await this.#client.confirmResultDownloaded(record.resultId ?? record.cloudSessionId, {
         sha256: record.resultDigest,
         size: record.resultSize,
@@ -3936,17 +4702,41 @@ export class CloudCoordinator extends EventEmitter {
         retryAttempts: 1,
         timeoutMs: 10_000,
       });
+    } catch (error) {
+      if (!resultConfirmationRejected(error)) throw error;
+      // The bytes were verified when they were written, and the server will never
+      // accept this confirmation. Finish locally instead of retrying forever.
       const updated = await this.#store.transition(record.id, 'downloaded', {
-        downloadedAt: new Date().toISOString(),
+        downloadedAt: record.downloadedAt ?? new Date().toISOString(),
         confirmationAttempt: 0,
+        confirmationError: error.message,
         error: null,
       });
       this.#emit({
-        type: 'result-confirmation-recovered',
+        type: 'result-confirmation-abandoned',
         sessionId: record.cloudSessionId,
         handoff: updated,
-        snapshot: await this.snapshot({ selectedSessionId: record.cloudSessionId }),
+        error: error.message,
+        code: error?.code ?? null,
       });
+      return;
+    }
+    const updated = await this.#store.transition(record.id, 'downloaded', {
+      downloadedAt: record.downloadedAt ?? new Date().toISOString(),
+      confirmationAttempt: 0,
+      error: null,
+    });
+    this.#emit({
+      type: 'result-confirmation-recovered',
+      sessionId: record.cloudSessionId,
+      handoff: updated,
+      snapshot: await this.snapshot({ selectedSessionId: record.cloudSessionId }),
+    });
+  }
+
+  async #retryDownloadedResult(record) {
+    try {
+      await this.#recoverDownloadedResult(record);
     } catch (error) {
       const latest = await this.#store.get(record.id).catch(() => null);
       const attempt = Number(latest?.confirmationAttempt ?? 0) + 1;
@@ -3959,10 +4749,10 @@ export class CloudCoordinator extends EventEmitter {
   async #runResultRecovery(handoffId, attempt) {
     const outcome = await this.#withProfileOperation(async () => {
       const record = await this.#store.get(handoffId);
-      if (record?.state !== 'downloading' || !record.recoveryPath || !record.resultDigest) return 'done';
+      if (!resultConfirmationPending(record)) return 'done';
       const profile = await this.#client.loadProfile().catch(() => null);
       if (!destinationMatchesProfile(record.destination, profile)) return 'parked';
-      await this.#recoverDownloadedResult(record);
+      await this.#retryDownloadedResult(record);
       return 'ran';
     });
     if (outcome === 'parked') this.#scheduleResultRecovery(handoffId, attempt, true);
@@ -4182,23 +4972,39 @@ export class CloudCoordinator extends EventEmitter {
       void this.#withProfileOperation(async () => {
         while (state.again && !this.#stopped) {
           state.again = false;
-          if (handoffId) await this.#retryPendingTurnBoundary(sessionId, handoffId);
+          if (handoffId) {
+            const boundary = (await this.#store.get(handoffId))?.pendingTurnBoundary ?? null;
+            await this.#unlessArtifactGone(handoffId, () => this.#retryPendingTurnBoundary(sessionId, handoffId), {
+              kind: 'turn-boundary',
+              drop: (latest) => ({
+                pendingTurnBoundary: latest.pendingTurnBoundary?.operationId === boundary?.operationId
+                  ? null : latest.pendingTurnBoundary ?? null,
+              }),
+            });
+          }
           if (handoffId) {
             const pending = (await this.#store.get(handoffId))?.pendingOriginPublications ?? [];
             for (const operationId of pending) {
-              // A worker can announce completed work, but local edits now live on
-              // an independent branch. Archive it for user-initiated merge only.
-              const checkpoint = await this.#downloadCheckpoint({ sessionId, operationId }, profileEpoch);
-              const archivePath = path.join(this.#recoveryDir, 'merge',
-                String(handoffId).replace(/[^A-Za-z0-9_-]/g, '_'),
-                `revision-${checkpoint.revision}${path.extname(checkpoint.fileName) || '.hwpx'}`);
-              await writeVerifiedRecoveryFile({
-                filePath: archivePath, bytes: checkpoint.bytes, expectedDigest: checkpoint.sha256,
+              await this.#unlessArtifactGone(handoffId, async () => {
+                // A worker can announce completed work, but local edits now live on
+                // an independent branch. Archive it for user-initiated merge only.
+                const checkpoint = await this.#downloadCheckpoint({ sessionId, operationId }, profileEpoch);
+                const archivePath = path.join(this.#recoveryDir, 'merge',
+                  String(handoffId).replace(/[^A-Za-z0-9_-]/g, '_'),
+                  `revision-${checkpoint.revision}${path.extname(checkpoint.fileName) || '.hwpx'}`);
+                await writeVerifiedRecoveryFile({
+                  filePath: archivePath, bytes: checkpoint.bytes, expectedDigest: checkpoint.sha256,
+                });
+                this.#assertProfileEpoch(profileEpoch);
+                await this.#store.patch(handoffId, (latest) => ({
+                  pendingOriginPublications: (latest.pendingOriginPublications ?? []).filter((id) => id !== operationId),
+                }));
+              }, {
+                kind: 'publication',
+                drop: (latest) => ({
+                  pendingOriginPublications: (latest.pendingOriginPublications ?? []).filter((id) => id !== operationId),
+                }),
               });
-              this.#assertProfileEpoch(profileEpoch);
-              await this.#store.patch(handoffId, (latest) => ({
-                pendingOriginPublications: (latest.pendingOriginPublications ?? []).filter((id) => id !== operationId),
-              }));
             }
           }
           if (this.#timelinePending.get(sessionId)) {
@@ -4217,16 +5023,65 @@ export class CloudCoordinator extends EventEmitter {
             }
           }
         }
-      }, { expectedEpoch: profileEpoch }).catch((error) => {
+      }, { expectedEpoch: profileEpoch }).then(() => {
+        this.#artifactSyncFailures.delete(key);
+      }, async (error) => {
         state.failed = true;
         if (error?.code === 'PROFILE_CHANGED' || this.#stopped) return;
         this.#emit({ type: 'turn-autosync-error', sessionId, error: error.message });
-        this.#scheduleWatchRestart(() => this.#scheduleArtifactSync(sessionId, handoffId, profileEpoch));
+        if (handoffId && missingCloudArtifact(error)) {
+          // A finished handoff whose server copy is gone can never sync again.
+          const current = await this.#store.get(handoffId).catch(() => null);
+          if (TERMINAL_HANDOFF_STATES.has(current?.state)) {
+            this.#timelinePending.delete(sessionId);
+            this.#artifactSyncFailures.delete(key);
+            return;
+          }
+        }
+        // Each pass can download a full checkpoint and timeline, so repeated
+        // failures back off instead of retrying every second for the app's lifetime.
+        const failures = (this.#artifactSyncFailures.get(key) ?? 0) + 1;
+        this.#artifactSyncFailures.set(key, failures);
+        this.#scheduleWatchRestart(
+          () => this.#scheduleArtifactSync(sessionId, handoffId, profileEpoch),
+          Math.min(ARTIFACT_SYNC_RETRY_MAX_MS, 1_000 * (2 ** (failures - 1))),
+        );
       }).finally(() => {
         this.#artifactSyncs.delete(key);
         if (state.again && !state.failed) this.#scheduleArtifactSync(sessionId, handoffId, profileEpoch);
       });
     });
+  }
+
+  /**
+   * Runs one artifact sync step. When the server no longer holds the artifact and
+   * the handoff has already finished, nothing can ever fetch it again, so the
+   * step is dropped instead of retried. Live handoffs keep it pending: the
+   * restart guard relies on a pending boundary until it is archived.
+   */
+  async #unlessArtifactGone(handoffId, step, { kind, drop }) {
+    try {
+      return await step();
+    } catch (error) {
+      if (!missingCloudArtifact(error)) throw error;
+      const current = await this.#store.get(handoffId);
+      if (!TERMINAL_HANDOFF_STATES.has(current?.state)) throw error;
+      const updated = await this.#store.patch(handoffId, drop);
+      this.#emit({
+        type: 'artifact-sync-abandoned',
+        sessionId: current.cloudSessionId,
+        kind,
+        error: error.message,
+        handoff: updated,
+      });
+      if (!updated.pendingTurnBoundary && !updated.pendingOriginPublications?.length && !updated.takeoverReady) {
+        // Nothing is left to fetch for this finished handoff, so its stream can close.
+        const watcherKey = `${this.#profileEpoch}:${current.cloudSessionId}`;
+        this.#watchers.get(watcherKey)?.abort();
+        this.#watchers.delete(watcherKey);
+      }
+      return null;
+    }
   }
 
   async #syncLocalTimeline(sessionId, handoffId) {
@@ -4344,6 +5199,871 @@ export class CloudCoordinator extends EventEmitter {
     return downloaded.timeline;
   }
 
+  // ── boat.dev ─────────────────────────────────────────────────────────
+  //
+  // Wake rule: only user intent resumes a stopped boat VM (setup, 시작, a transfer,
+  // a message or command in a Cloud session, a pressed 다시 연결, edits, downloads
+  // and merges). Every background path — the 20 s link watchdog, stream failures,
+  // automatic reconnects, continuity triggers, the 60 s reconcile, prewarm, status
+  // polling and the checkpoint mirror's fetch without an operation id — reads state
+  // and reports `stopped` (BOAT_SERVER_STOPPED for the mirror) instead. The only
+  // resume call site is #runBoatSync with allowResume, reached from
+  // #wakeBoatForUser, 시작 and setup.
+
+  #requireBoat() {
+    if (!this.#boat) throw new BoatError('BOAT_UNAVAILABLE', { detail: 'boat is not available in this build' });
+    if (this.#stopped) throw transferError('Cloud coordinator is stopped', 'COORDINATOR_STOPPED');
+    return this.#boat;
+  }
+
+  #boatBlocksBackground() {
+    const status = this.#boatStatus;
+    return Boolean(this.#boatActiveSandboxId) && status?.sandboxId === this.#boatActiveSandboxId
+      && status.state != null && status.state !== 'running';
+  }
+
+  #setBoatStatus(sandboxId, patch) {
+    const previous = this.#boatStatus?.sandboxId === sandboxId ? this.#boatStatus : null;
+    this.#boatStatus = {
+      sandboxId,
+      state: null,
+      monthHours: null,
+      message: null,
+      checkedAt: 0,
+      machineKey: null,
+      wakeStage: null,
+      ...previous,
+      ...patch,
+    };
+    if (this.#boatStatus.state !== 'waking') this.#boatStatus.wakeStage = null;
+    return this.#boatStatus;
+  }
+
+  /** 깨우기의 현재 단계(starting → service → connecting)를 알린다. 화면이 경과 시간 옆에 보인다. */
+  #setBoatWakeStage(sandboxId, wakeStage) {
+    this.#setBoatStatus(sandboxId, { state: 'waking', wakeStage });
+    this.#emitBoatChange('waking', { force: true });
+  }
+
+  #noteBoatSandbox(sandboxId, sandbox, { waking = false, holdWake = false } = {}) {
+    let state = sandbox ? boatServerState(sandbox.state) : 'missing';
+    // A wake owns the transition, so an early `archived` read does not flash `stopped`;
+    // a stop owns it the same way until boat reports the archive.
+    if (waking && ['stopped', 'stopping'].includes(state)) state = 'waking';
+    // 사용자 깨우기는 서비스와 터널까지 확인한 뒤에 끝난다. 그 전의 running 읽기는 아직 깨우는 중이다.
+    if (holdWake && state === 'running') state = 'waking';
+    if (this.#boatTransition === 'stopping' && state === 'running') state = 'stopping';
+    return this.#setBoatStatus(sandboxId, {
+      state,
+      message: state === 'error' ? boatMessage('BOAT_SERVER_FAILED') : null,
+      checkedAt: Date.now(),
+      machineKey: sandbox ? sandboxMachineKey(sandbox) : null,
+    });
+  }
+
+  #noteBoatReachable(sandboxId) {
+    if (this.#boatStatus?.sandboxId !== sandboxId || this.#boatStatus.state === 'running') return;
+    if (this.#boatTransition === 'stopping') return;
+    this.#setBoatStatus(sandboxId, { state: 'running', message: null, checkedAt: Date.now() });
+    this.#emitBoatChange('reachable');
+  }
+
+  /** A stopped boat VM is not a broken link. The chat stays usable and sending wakes it. */
+  #quietBoatLink() {
+    // A user wake owns the link while it runs; its progress must not be reset here.
+    if (this.#boatWakePromise && this.#boatWakeResumes) return this.snapshot();
+    this.#abortSessionWatchers();
+    if (this.#link.kind !== 'recreating') {
+      this.#link = { kind: 'ready', error: null, attempt: 0, canRecreate: false };
+    }
+    this.#linkNeedsAction = false;
+    return this.snapshot();
+  }
+
+  #emitBoatChange(reason, { force = false } = {}) {
+    const status = this.#boatStatus;
+    const signature = JSON.stringify([
+      status?.sandboxId, status?.state, status?.wakeStage, status?.monthHours, status?.message, this.#boatForbidden,
+      this.#boatSetup, this.#boatConnected, this.#boat?.limits?.canStart, this.#boat?.limits?.trial,
+    ]);
+    if (!force && signature === this.#boatEmitted) return;
+    this.#boatEmitted = signature;
+    this.#emit({ type: 'boat-changed', reason, state: status?.state ?? null });
+  }
+
+  async #boatSnapshot(profile) {
+    const stored = await this.#boat.accountSnapshot().catch(() => ({
+      connected: false, method: null, email: null, canStart: null, trial: null,
+    }));
+    // 권한이 모자란 키도 새 키가 필요하다는 점에서 끊긴 계정과 같다.
+    const account = this.#boatForbidden ? { ...stored, connected: false } : stored;
+    const sandboxId = profile?.boat?.sandboxId ?? this.#boatSetupSandboxId ?? null;
+    const status = sandboxId && this.#boatStatus?.sandboxId === sandboxId ? this.#boatStatus : null;
+    const machine = normalizeBoatMachine(profile?.boat?.machine ?? this.#boatSetupMachine);
+    const owned = Boolean(sandboxId) && profile?.boat?.sandboxId === sandboxId;
+    // A VM whose state was never read is not reported as stopped.
+    const unknown = status?.state == null && !this.#boatSetupPromise;
+    const autoStop = owned && profile.boat.autoStop === 'idle' ? 'idle' : 'timer';
+    return {
+      account,
+      server: sandboxId ? {
+        sandboxId,
+        state: status?.state ?? (this.#boatSetupPromise ? 'waking' : 'error'),
+        machine,
+        machineLabel: BOAT_MACHINES[machine].label,
+        region: BOAT_REGION,
+        monthHours: status?.monthHours ?? null,
+        idleStopMinutes: BOAT_IDLE_STOP_MINUTES,
+        autoStop,
+        timerHours: boatTimerHours(autoStop, { trial: account.trial === true, setup: !owned }),
+        message: unknown ? BOAT_STATE_UNKNOWN : status?.message ?? null,
+        wakeStage: status?.state === 'waking' ? status.wakeStage ?? null : null,
+      } : null,
+      setup: this.#boatSetup ? {
+        stage: this.#boatSetup.stage,
+        startedAt: this.#boatSetup.startedAt,
+        detail: this.#boatSetup.detail ?? null,
+        error: this.#boatSetup.error ?? null,
+        importedProviders: [...(this.#boatSetup.importedProviders ?? [])],
+      } : null,
+    };
+  }
+
+  /** 창이 보이거나 설정이 진행 중일 때 main의 주기 갱신이 부른다. VM을 깨우지 않는다. */
+  refreshBoatStatus(options = {}) {
+    if (!this.#boat || this.#stopped) return Promise.resolve(null);
+    if (this.#boatStatusPromise) return this.#boatStatusPromise;
+    if (!options.force && Date.now() - this.#boatStatusRefreshedAt < 15_000) return Promise.resolve(null);
+    const operation = this.#refreshBoatStatus(options).catch((error) => {
+      this.#emit({ type: 'boat-status-deferred', reason: options.reason ?? 'cadence', error: boatDetail(error) });
+      return null;
+    }).finally(() => {
+      if (this.#boatStatusPromise === operation) this.#boatStatusPromise = null;
+    });
+    this.#boatStatusPromise = operation;
+    return operation;
+  }
+
+  boatSetupActive() {
+    return Boolean(this.#boatSetupPromise);
+  }
+
+  async #refreshBoatStatus({ reason = 'cadence' } = {}) {
+    this.#boatStatusRefreshedAt = Date.now();
+    this.#boatConnected = await this.#boat.isConnected();
+    if (!this.#boatConnected) {
+      this.#emitBoatChange(reason);
+      return null;
+    }
+    await this.#boat.refreshLimits().catch((error) => {
+      if (error?.code === 'BOAT_AUTH_INVALID') this.#boatConnected = false;
+    });
+    const profile = await this.#client.loadProfile().catch(() => null);
+    const sandboxId = profile?.boat?.sandboxId ?? this.#boatSetupSandboxId;
+    if (!sandboxId) {
+      this.#emitBoatChange(reason);
+      return null;
+    }
+    const previous = this.#boatStatus?.sandboxId === sandboxId ? this.#boatStatus.state : null;
+    let sandbox;
+    try {
+      sandbox = await this.#boat.getSandbox(sandboxId);
+    } catch (error) {
+      if (error?.code === 'BOAT_AUTH_INVALID') this.#boatConnected = false;
+      if (error?.code === 'BOAT_FORBIDDEN') this.#boatForbidden = true;
+      this.#emitBoatChange(reason);
+      throw error;
+    }
+    this.#boatForbidden = false;
+    const userWake = Boolean(this.#boatWakePromise && this.#boatWakeResumes);
+    const waking = userWake || Boolean(this.#boatSetupPromise);
+    const status = this.#noteBoatSandbox(sandboxId, sandbox, { waking, holdWake: userWake });
+    if (sandbox) {
+      const usage = await this.#boat.usage(sandboxId).catch(() => null);
+      if (usage) this.#setBoatStatus(sandboxId, { monthHours: usage.monthHours });
+    }
+    if (profile?.boat?.sandboxId === sandboxId) this.#afterBoatStatus(previous, status.state);
+    this.#emitBoatChange(reason);
+    return this.#boatStatus;
+  }
+
+  #afterBoatStatus(previous, next) {
+    if (this.#boatWakePromise || this.#boatSetupPromise) return;
+    if (next !== 'running') {
+      // The VM stopped on its own (idle stop, dashboard, another Mac). Go quiet.
+      if (previous === 'running' || previous == null) {
+        this.#abortSessionWatchers();
+        if (this.#link.kind !== 'recreating') {
+          this.#link = { kind: 'ready', error: null, attempt: 0, canRecreate: false };
+        }
+        this.#linkNeedsAction = false;
+      }
+      return;
+    }
+    if (previous == null || previous === 'running') return;
+    // Someone else started it. Follow the new address without resuming anything.
+    this.#profileOperationContext.exit(() => {
+      setTimeout(() => {
+        if (this.#stopped) return;
+        void this.#boatSync({ allowResume: false, reason: 'followed' })
+          .then(() => this.#resumeRecoveriesForCurrentProfile())
+          // The VM is up again, so a link that failed while it was down can heal.
+          .then(() => (this.#link.kind === 'failed' ? this.reconnectCloud() : null))
+          .catch(() => {});
+      }, 0).unref?.();
+    });
+  }
+
+  async #boatStartupReconcile() {
+    await this.refreshBoatStatus({ force: true, reason: 'startup' });
+    if (this.#boatBlocksBackground()) return;
+    if (this.#boatStatus?.state === 'running') {
+      await this.#boatSync({ allowResume: false, reason: 'startup', trustSavedPins: true }).catch(() => {});
+    }
+    await this.#resumeRecoveriesForCurrentProfile();
+  }
+
+  /** main이 사용자 동작(보내기, 다운로드 등) 직전에 부른다. 프로필 읽기 잠금 밖이어야 한다. */
+  async wakeBoatForUser({ reason = 'user', sessionId = null } = {}) {
+    if (reason === 'download' && sessionId) {
+      const handoff = await this.handoffForSession(sessionId).catch(() => null);
+      if (handoff?.recoveryPath && handoff.resultDigest) return;
+    }
+    await this.#wakeBoatForUser(reason);
+  }
+
+  async #wakeBoatForUser(reason) {
+    if (!this.#boat || this.#stopped) return;
+    // Inside a profile reader the caller already woke the VM; a writer cannot start here.
+    if (this.#profileOperationContext.getStore()?.active) return;
+    if (this.#boatSetupPromise) await this.#boatSetupPromise.catch(() => {});
+    const profile = await this.#client.loadProfile().catch(() => null);
+    if (!profile?.boat) return;
+    const status = this.#boatStatus;
+    // A fresh running read of the machine we already pinned needs no boat round trip.
+    if (status?.sandboxId === profile.boat.sandboxId && status.state === 'running'
+      && Date.now() - status.checkedAt < 30_000
+      && status.machineKey && this.#boatPinned.get(status.sandboxId) === status.machineKey) return;
+    await this.#boatSync({ allowResume: true, reason });
+  }
+
+  /**
+   * 사용자 의도가 없는 서버 호출. 멈춘 VM은 깨우지 않고 BOAT_SERVER_STOPPED로 바로 끝낸다.
+   * 상태가 멈춤으로 알려져 있으면 boat API도 부르지 않으므로 반복 호출이 싸다.
+   * 상태를 모르거나 오래되었으면 재개 없이 한 번 읽고, 옮겨 간 VM이면 다시 핀한다.
+   */
+  async #requireRunningBoat(reason) {
+    if (!this.#boat || this.#stopped) return;
+    if (this.#profileOperationContext.getStore()?.active) return;
+    const profile = await this.#client.loadProfile().catch(() => null);
+    if (!profile?.boat) return;
+    const status = this.#boatStatus?.sandboxId === profile.boat.sandboxId ? this.#boatStatus : null;
+    const fresh = status?.state === 'running' && Date.now() - status.checkedAt < 30_000
+      && status.machineKey && this.#boatPinned.get(status.sandboxId) === status.machineKey;
+    if (this.#boatWakePromise && this.#boatWakeResumes) {
+      // A user wake in flight decides; this call waits for it instead of failing early.
+      await this.#boatWakePromise.catch(() => {});
+    } else if (!fresh && !this.#boatBlocksBackground()) {
+      await this.#boatSync({ allowResume: false, reason }).catch(() => {});
+    }
+    if (this.#boatBlocksBackground()) {
+      throw new BoatError('BOAT_SERVER_STOPPED', {
+        detail: `boat sandbox is ${this.#boatStatus?.state ?? 'unknown'}; ${reason} does not wake it`,
+      });
+    }
+  }
+
+  #boatSync(options) {
+    const resumes = options.allowResume === true;
+    if (this.#boatWakePromise && (this.#boatWakeResumes || !resumes)) return this.#boatWakePromise;
+    const previous = this.#boatWakePromise;
+    const operation = (async () => {
+      if (previous) await previous.catch(() => {});
+      return this.#runBoatSync(options);
+    })().finally(() => {
+      if (this.#boatWakePromise === operation) {
+        this.#boatWakePromise = null;
+        this.#boatWakeResumes = false;
+      }
+    });
+    this.#boatWakePromise = operation;
+    this.#boatWakeResumes = resumes;
+    return operation;
+  }
+
+  async #runBoatSync({ allowResume = false, reason = 'user', trustSavedPins = false } = {}) {
+    let profile = await this.#client.loadProfile().catch(() => null);
+    if (!profile?.boat) return profile;
+    const sandboxId = profile.boat.sandboxId;
+    const wasRunning = this.#boatStatus?.sandboxId === sandboxId && this.#boatStatus.state === 'running';
+    let announced = false;
+    const announce = () => {
+      if (announced) return;
+      announced = true;
+      this.#setBoatStatus(sandboxId, { state: 'waking', message: null, wakeStage: 'starting' });
+      if (this.#link.kind !== 'recreating') {
+        this.#link = { kind: 'reconnecting', error: null, attempt: this.#link.attempt + 1, canRecreate: false };
+      }
+      this.#emitBoatChange('waking', { force: true });
+    };
+    try {
+      let sandbox = await this.#boat.getSandbox(sandboxId);
+      if (!sandbox) throw new BoatError('BOAT_SERVER_MISSING');
+      let resumed = false;
+      if (!isUsableSandboxState(sandbox.state)) {
+        if (!allowResume) {
+          this.#noteBoatSandbox(sandboxId, sandbox);
+          this.#emitBoatChange(reason);
+          return profile;
+        }
+        announce();
+        ({ sandbox, resumed } = await this.#boat.ensureRunning(sandboxId, {
+          allowResume: true,
+          // Without verified self-stop tooling every start keeps a finite boat auto-stop.
+          resumeTtlSeconds: profile.boat.autoStop === 'idle' ? null : BOAT_TIMER_TTL_SECONDS,
+          // A resume takes seconds; a user waiting on a send should not wait out a create budget.
+          timeoutMs: 3 * 60_000,
+          onState: (current) => {
+            this.#noteBoatSandbox(sandboxId, current, { waking: true, holdWake: true });
+            this.#emitBoatChange('waking');
+          },
+        }));
+      }
+      this.#boatForbidden = false;
+      const machineKey = sandboxMachineKey(sandbox);
+      let savedTargetMatches = false;
+      try {
+        const target = resolveSshTarget(sandbox);
+        savedTargetMatches = target.host === profile.ssh.host && target.port === profile.ssh.port;
+      } catch {
+        savedTargetMatches = false;
+      }
+      // The IP changes on every resume and host keys are machine identity, so a
+      // moved VM is re-registered and re-pinned before any tunnel dials it. The
+      // tunnel checks host keys strictly, so a saved address is trusted only while
+      // its pin is still on disk.
+      const savedPinUsable = trustSavedPins && savedTargetMatches
+        && await this.#boat.hasPin(sandboxId, profile.ssh).catch(() => false);
+      const needsPin = resumed || (this.#boatPinned.get(sandboxId) !== machineKey && !savedPinUsable);
+      if (needsPin) {
+        const ssh = await this.#boat.prepareSsh(sandboxId, { sandbox });
+        profile = await this.#applyBoatSshTarget(profile, ssh);
+        // The old address stays pinned until the profile no longer points at it.
+        await this.#boat.prunePins(sandboxId, profile.ssh).catch(() => {});
+        this.#boatPinned.set(sandboxId, machineKey);
+      }
+      if (announced) {
+        // boat 는 홈 밖의 파일을 모두 복원한 뒤 서비스를 시작한다. VM 안의 health 로 그 순간을
+        // 기다린 뒤 터널을 한 번만 연다. 확인하지 못하면 터널 쪽 재시도가 그대로 남는다.
+        this.#setBoatWakeStage(sandboxId, 'service');
+        const ready = await this.#boat.waitForServiceHealth(sandboxId);
+        this.#setBoatWakeStage(sandboxId, 'connecting');
+        await this.#waitForProfileHealth(profile, ready
+          ? { attempts: 4, timeoutMs: 15_000 }
+          : { attempts: 10, timeoutMs: 15_000 });
+      }
+      this.#setBoatStatus(sandboxId, { state: 'running', message: null, checkedAt: Date.now(), machineKey });
+      if (announced) {
+        if (this.#link.kind === 'reconnecting') {
+          this.#link = { kind: 'ready', error: null, attempt: 0, canRecreate: false };
+        }
+        this.#linkNeedsAction = false;
+      }
+      this.#emitBoatChange(reason, { force: announced });
+      if (!wasRunning && allowResume) void this.#resumeRecoveriesForCurrentProfile().catch(() => {});
+      if (resumed) void this.refreshBoatStatus({ force: true, reason: 'woke' });
+      return profile;
+    } catch (rawError) {
+      const error = boatUserError(rawError);
+      if (error.code === 'BOAT_FORBIDDEN') this.#boatForbidden = true;
+      if (!allowResume) throw error;
+      if (error.code === 'BOAT_SERVER_MISSING') {
+        this.#setBoatStatus(sandboxId, { state: 'missing', message: null, checkedAt: Date.now() });
+      } else {
+        // Record where the VM really is (for example still `archived` after a 402).
+        const sandbox = await this.#boat.getSandbox(sandboxId).catch(() => undefined);
+        if (sandbox !== undefined) {
+          this.#noteBoatSandbox(sandboxId, sandbox);
+        } else if (announced || this.#boatStatus?.sandboxId !== sandboxId
+          || this.#boatStatus.state == null || this.#boatStatus.state === 'waking') {
+          // Offline, nobody knows how far the wake got. Do not stay `waking`.
+          this.#setBoatStatus(sandboxId, { state: 'error', checkedAt: Date.now(), machineKey: null });
+        }
+        if (this.#boatStatus?.sandboxId === sandboxId && this.#boatStatus.state !== 'running') {
+          this.#setBoatStatus(sandboxId, { message: error.message });
+        }
+      }
+      if (this.#boatStatus?.state === 'running' || error.code === 'BOAT_UNAVAILABLE'
+        || BOAT_AUTH_CODES.has(error.code)) {
+        this.#failLink(rawError?.code ? rawError : error, { canRecreate: false, needsAction: true });
+      } else if (this.#link.kind === 'reconnecting') {
+        this.#link = { kind: 'ready', error: null, attempt: 0, canRecreate: false };
+      }
+      this.#emitBoatChange('wake-failed', { force: true });
+      throw error;
+    }
+  }
+
+  /** 재개 후 바뀐 ssh 주소만 저장한다. 서버 키가 같아 페어링과 기기 자격 증명은 그대로다. */
+  async #applyBoatSshTarget(profile, ssh) {
+    if (profile.ssh.host === ssh.host && profile.ssh.port === ssh.port
+      && profile.ssh.user === ssh.user && profile.ssh.keyPath === ssh.keyPath) return profile;
+    const save = async () => {
+      const latest = await this.#client.loadProfile().catch(() => null);
+      if (latest?.boat?.sandboxId !== profile.boat.sandboxId || latest.serverPublicKey !== profile.serverPublicKey) {
+        throw Object.assign(new Error('Cloud profile changed during the boat wake'), { code: 'PROFILE_CHANGED' });
+      }
+      const updated = normalizeCloudProfile({
+        ...latest,
+        ssh: { ...latest.ssh, host: ssh.host, port: ssh.port, user: ssh.user, keyPath: ssh.keyPath },
+      });
+      await this.#client.saveProfile(updated);
+      return updated;
+    };
+    return this.#profileOperationContext.getStore()?.ownership === 'writer'
+      ? save()
+      : this.#withProfileWriter(save);
+  }
+
+  #followBoat(key, step, { intervalMs, timeoutMs, onEnd = () => {} }) {
+    this.#boatFollowers.get(key)?.abort();
+    const controller = new AbortController();
+    this.#boatFollowers.set(key, controller);
+    const deadline = Date.now() + timeoutMs;
+    void (async () => {
+      while (!controller.signal.aborted && !this.#stopped && Date.now() < deadline) {
+        try {
+          await delay(intervalMs, undefined, { signal: controller.signal, ref: false });
+        } catch {
+          break;
+        }
+        let done = false;
+        try { done = await step(); } catch { done = false; }
+        if (done) break;
+      }
+    })().finally(() => {
+      if (this.#boatFollowers.get(key) === controller) {
+        this.#boatFollowers.delete(key);
+        onEnd();
+      }
+    });
+  }
+
+  #boatAction(kind, operation) {
+    const existing = this.#boatActions.get(kind);
+    if (existing) return existing;
+    if (this.#boatActions.size) return Promise.reject(new BoatError('BOAT_BUSY', { message: '다른 boat 작업을 처리하는 중입니다.' }));
+    const run = Promise.resolve().then(operation).finally(() => {
+      if (this.#boatActions.get(kind) === run) this.#boatActions.delete(kind);
+    });
+    this.#boatActions.set(kind, run);
+    return run;
+  }
+
+  async boatStartEmailSignIn({ email } = {}) {
+    return this.#requireBoat().startEmailSignIn(email);
+  }
+
+  async boatPollSignIn({ claimId } = {}) {
+    const result = await this.#requireBoat().pollSignIn(claimId);
+    if (result.status !== 'connected') return result;
+    this.#afterBoatAccountConnected();
+    return { status: 'connected', snapshot: await this.snapshot() };
+  }
+
+  async boatConnectApiKey({ apiKey } = {}) {
+    await this.#requireBoat().connectApiKey(apiKey);
+    this.#afterBoatAccountConnected();
+    return this.snapshot();
+  }
+
+  #afterBoatAccountConnected() {
+    this.#boatConnected = true;
+    this.#boatForbidden = false;
+    void this.refreshBoatStatus({ force: true, reason: 'connected' });
+    this.#emitBoatChange('connected', { force: true });
+    // 계정 때문에 끊긴 링크는 새 계정으로 바로 다시 잇는다. 사용자가 방금 연결을 요청했다.
+    if (this.#link.kind === 'failed' && this.#link.reason === 'boat-auth') {
+      this.#linkNeedsAction = false;
+      this.#profileOperationContext.exit(() => {
+        void this.reconnectCloud({ userIntent: true }).catch(() => {});
+      });
+    }
+  }
+
+  async boatOpenLink({ kind, claimId = null } = {}) {
+    const boat = this.#requireBoat();
+    const result = await boat.openLink({ kind, claimId });
+    if (kind === 'checkout') {
+      // The waiting screen advances by itself once the plan lets the account start VMs.
+      this.#followBoat('billing', async () => {
+        const limits = await boat.refreshLimits();
+        this.#emitBoatChange('billing');
+        return limits.canStart === true;
+      }, { intervalMs: 5_000, timeoutMs: 30 * 60_000 });
+    }
+    return result;
+  }
+
+  async boatRefresh() {
+    this.#requireBoat();
+    await this.refreshBoatStatus({ force: true, reason: 'manual' });
+    return this.snapshot();
+  }
+
+  async boatWake() {
+    this.#requireBoat();
+    if (this.#boatSetupPromise) throw new BoatError('BOAT_BUSY');
+    const profile = await this.#client.loadProfile().catch(() => null);
+    if (!profile?.boat) throw new BoatError('BOAT_SERVER_MISSING');
+    await this.#boatSync({ allowResume: true, reason: 'explicit' });
+    return this.reconnectCloud();
+  }
+
+  boatStop() {
+    return this.#boatAction('stop', async () => {
+      const boat = this.#requireBoat();
+      const profile = await this.#client.loadProfile().catch(() => null);
+      if (!profile?.boat) throw new BoatError('BOAT_SERVER_MISSING');
+      if (this.#boatSetupPromise) throw new BoatError('BOAT_BUSY');
+      if (this.#boatWakePromise) await this.#boatWakePromise.catch(() => {});
+      const sandboxId = profile.boat.sandboxId;
+      this.#boatTransition = 'stopping';
+      this.#abortSessionWatchers();
+      this.#setBoatStatus(sandboxId, { state: 'stopping', message: null, checkedAt: Date.now() });
+      this.#emitBoatChange('stopping', { force: true });
+      try {
+        const sandbox = await boat.stopSandbox(sandboxId);
+        if (sandbox?.state === 'archived') this.#setBoatStatus(sandboxId, { state: 'stopped' });
+      } catch (error) {
+        this.#boatTransition = null;
+        await this.#refreshBoatStatus({ reason: 'stop-failed' }).catch(() => {});
+        this.#emitBoatChange('stop-failed', { force: true });
+        throw boatUserError(error);
+      }
+      await this.#quietBoatLink();
+      this.#followBoat('stop', async () => {
+        await this.#refreshBoatStatus({ reason: 'stopping' });
+        return this.#boatStatus?.state !== 'stopping';
+      }, {
+        intervalMs: 3_000,
+        timeoutMs: 3 * 60_000,
+        onEnd: () => {
+          this.#boatTransition = null;
+          void this.refreshBoatStatus({ force: true, reason: 'stopped' });
+        },
+      });
+      return this.snapshot();
+    });
+  }
+
+  boatDisconnect({ deleteServer = false } = {}) {
+    return this.#boatAction('disconnect', async () => {
+      const boat = this.#requireBoat();
+      if (this.#boatSetupPromise) throw new BoatError('BOAT_BUSY');
+      if (this.#boatWakePromise) await this.#boatWakePromise.catch(() => {});
+      const profile = await this.#client.loadProfile().catch(() => null);
+      const journal = await boat.loadSetupJournal().catch(() => null);
+      const sandboxId = profile?.boat?.sandboxId ?? journal?.sandboxId ?? this.#boatSetupSandboxId ?? null;
+      if (deleteServer === true && sandboxId) {
+        if (!await boat.isConnected()) throw new BoatError('BOAT_NOT_CONNECTED');
+        this.#abortSessionWatchers();
+        try {
+          await boat.deleteSandbox(sandboxId);
+        } catch (error) {
+          throw boatUserError(error);
+        }
+        if (profile?.boat) await this.#abandonLiveHandoffs();
+      }
+      for (const controller of this.#boatFollowers.values()) controller.abort();
+      this.#boatFollowers.clear();
+      if (profile?.boat) {
+        await this.#withProfileWriter(() => this.#changeProfile(() => this.#client.forgetProfile()));
+        this.#link = { kind: 'ready', error: null, attempt: 0, canRecreate: false };
+      }
+      if (sandboxId) {
+        this.#boatPinned.delete(sandboxId);
+        await boat.removePins(sandboxId).catch(() => {});
+      }
+      await boat.clearSetupJournal().catch(() => {});
+      await boat.disconnect();
+      this.#boatStatus = null;
+      this.#boatSetup = null;
+      this.#boatSetupSandboxId = null;
+      this.#boatSetupMachine = null;
+      this.#boatTransition = null;
+      this.#boatConnected = false;
+      this.#emitBoatChange('disconnected', { force: true });
+      return this.snapshot();
+    });
+  }
+
+  async #restoreBoatSetup() {
+    const journal = await this.#boat.loadSetupJournal().catch(() => null);
+    if (!journal) return;
+    // The app closed mid-setup. Show where it stopped; 다시 시도 continues from the journal.
+    this.#boatSetupSandboxId = journal.sandboxId;
+    this.#boatSetupMachine = journal.machine;
+    this.#boatSetup = {
+      stage: journal.stage,
+      startedAt: journal.startedAt,
+      detail: null,
+      error: {
+        title: BOAT_SETUP_TITLE,
+        guidance: '다시 시도하면 이어서 진행합니다.',
+        detail: 'Setup stopped when the app closed.',
+      },
+      importedProviders: [],
+    };
+  }
+
+  #setBoatSetup(patch) {
+    this.#boatSetup = { ...this.#boatSetup, ...patch };
+    this.#emit({ type: 'boat-setup-progress', stage: this.#boatSetup.stage });
+    this.#emitBoatChange('setup');
+  }
+
+  #boatSetupLine(line) {
+    const detail = summarizeInstallLine(line);
+    if (!detail || !this.#boatSetup) return;
+    this.#boatSetup = { ...this.#boatSetup, detail };
+    const now = Date.now();
+    if (now - this.#boatSetupLineAt < 750) return;
+    this.#boatSetupLineAt = now;
+    this.#emitBoatChange('setup-detail');
+  }
+
+  boatSetup({ machine = 'default' } = {}) {
+    try {
+      this.#requireBoat();
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    if (this.#boatSetupPromise) return this.#boatSetupPromise;
+    if (this.#boatActions.size) return Promise.reject(new BoatError('BOAT_BUSY'));
+    const operation = this.#runBoatSetup(normalizeBoatMachine(machine)).finally(() => {
+      if (this.#boatSetupPromise === operation) this.#boatSetupPromise = null;
+    });
+    this.#boatSetupPromise = operation;
+    return operation;
+  }
+
+  async #runBoatSetup(machine) {
+    const boat = this.#boat;
+    const current = await this.#client.loadProfile().catch(() => null);
+    if (current?.mode === 'app-hosted') {
+      throw new BoatError('BOAT_BUSY', { message: 'Raucloud 서버를 먼저 종료해야 합니다.' });
+    }
+    if (!await boat.isConnected()) throw new BoatError('BOAT_NOT_CONNECTED');
+    let journal = await boat.loadSetupJournal().catch(() => null);
+    if (journal && !journal.sandboxId && journal.machine !== machine) journal = null;
+    const limits = await boat.refreshLimits();
+    const hasServer = Boolean(journal?.sandboxId || current?.boat);
+    if (limits.canStart === false && !hasServer) {
+      this.#boatSetup = null;
+      this.#emitBoatChange('billing', { force: true });
+      throw new BoatError('BOAT_BILLING_REQUIRED');
+    }
+    const resumeFrom = journal?.stage ?? null;
+    journal ??= {
+      version: 1,
+      machine,
+      startedAt: new Date().toISOString(),
+      idempotencyKey: randomUUID(),
+      sandboxId: null,
+      stage: 'creating',
+    };
+    const saveStage = async (stage, patch = {}) => {
+      journal = await boat.saveSetupJournal({ ...journal, ...patch, stage });
+    };
+    this.#boatSetupMachine = journal.machine;
+    this.#setBoatSetup({
+      stage: 'creating',
+      // Each attempt has its own elapsed time; the journal keeps the first start for itself.
+      startedAt: new Date().toISOString(),
+      detail: null,
+      error: null,
+      importedProviders: [],
+    });
+    let stage = 'creating';
+    try {
+      const paired = await this.#client.isPaired().catch(() => false);
+      let sandboxId = journal.sandboxId ?? current?.boat?.sandboxId ?? null;
+      if (sandboxId && !await boat.getSandbox(sandboxId)) {
+        // The journal's VM is gone; a fresh key keeps the next create from replaying it.
+        sandboxId = null;
+        await saveStage('creating', { sandboxId: null, idempotencyKey: randomUUID() });
+      }
+      // A setup that stopped while copying logins only repeats that stage on the paired VM.
+      const resumeCredentials = Boolean(sandboxId) && resumeFrom === 'credentials'
+        && current?.boat?.sandboxId === sandboxId && paired;
+      if (!resumeCredentials) await saveStage('creating');
+      if (!sandboxId) {
+        const existing = await boat.findRauhwpxSandbox();
+        const sandbox = existing ?? await boat.createSandbox({
+          machine: journal.machine,
+          idempotencyKey: journal.idempotencyKey,
+        });
+        sandboxId = sandbox.id;
+        if (existing) this.#boatSetupMachine = normalizeBoatMachine(existing.type ?? journal.machine);
+        await saveStage('creating', { sandboxId });
+      }
+      this.#boatSetupSandboxId = sandboxId;
+      // 이어 한 설정과 이전 판이 만든 VM 도 다른 Mac 이 이름으로 찾을 수 있게 맞춘다.
+      await boat.nameSandbox(sandboxId);
+      this.#emitBoatChange('setup');
+
+      let autoStop = current?.boat?.autoStop === 'idle' ? 'idle' : 'timer';
+      if (resumeCredentials) {
+        stage = 'starting';
+        this.#setBoatSetup({ stage, detail: null });
+        // The VM may have stopped since the failed attempt. Wake it before copying logins.
+        await this.#boatSync({ allowResume: true, reason: 'setup' });
+      } else {
+        stage = 'starting';
+        await saveStage('starting');
+        this.#setBoatSetup({ stage, detail: null });
+        const { sandbox } = await boat.ensureRunning(sandboxId, {
+          allowResume: true,
+          // Until the idle timer exists, a finite auto-stop bounds an abandoned setup.
+          resumeTtlSeconds: BOAT_SETUP_TTL_SECONDS,
+          signal: this.#stopController.signal,
+          onState: (currentSandbox) => {
+            this.#noteBoatSandbox(sandboxId, currentSandbox, { waking: true });
+            this.#emitBoatChange('setup');
+          },
+        });
+        this.#noteBoatSandbox(sandboxId, sandbox);
+        const ssh = await boat.prepareSsh(sandboxId, { sandbox });
+        this.#boatPinned.set(sandboxId, ssh.machineKey);
+        const bootMachine = normalizeBoatMachine(sandbox.type ?? this.#boatSetupMachine);
+        this.#boatSetupMachine = bootMachine;
+
+        stage = 'installing';
+        await saveStage('installing');
+        this.#setBoatSetup({ stage, detail: null });
+        const receipt = await this.#provisioner.provision(ssh, {
+          channel: 'stable',
+          transport: 'ssh-tunnel',
+          hostEnv: boatHostEnv({ sandboxId, idleMinutes: BOAT_IDLE_STOP_MINUTES, user: ssh.user }),
+          onLine: (line) => this.#boatSetupLine(line),
+        });
+        // The installed idle script reports whether this VM can stop itself.
+        autoStop = await boat.probeSelfStop(sandboxId);
+
+        stage = 'pairing';
+        await saveStage('pairing');
+        this.#setBoatSetup({ stage, detail: null });
+        const candidate = normalizeCloudProfile({
+          mode: 'self-hosted',
+          name: 'boat',
+          ssh: { host: ssh.host, port: ssh.port, user: ssh.user, keyPath: ssh.keyPath, useTailscaleSsh: false },
+          api: { kind: 'ssh-tunnel', remoteHost: '127.0.0.1', remotePort: 7740, basePath: '/rauhwpx-cloud' },
+          transport: 'ssh-tunnel',
+          provider: current?.provider ?? 'codex',
+          limits: current?.limits,
+          serverPublicKey: receipt.serverPublicKey,
+          boat: {
+            sandboxId,
+            machine: bootMachine,
+            createdAt: sandbox.createdAt ?? new Date().toISOString(),
+            autoStop,
+          },
+        });
+        await this.#waitForProfileHealth(candidate, { attempts: 12, timeoutMs: 15_000 });
+        let credentials = null;
+        if (receipt.pairingCode) {
+          const pairing = await this.#client.redeemPairingCode(receipt.pairingCode, hostname(), {
+            profile: candidate,
+            persist: false,
+          });
+          credentials = pairing.credentials;
+        } else if (!(current?.serverPublicKey === candidate.serverPublicKey && paired)) {
+          throw new Error('The boat installer did not return a pairing code');
+        }
+        await this.#withProfileWriter(async () => {
+          const latest = await this.#client.loadProfile().catch(() => null);
+          this.#assertNotReplacingSandbox(latest, candidate);
+          await this.#changeProfile(() => this.#client.activateProfile(candidate, credentials ? {
+            tokens: credentials,
+            device: credentials.device,
+          } : { preserveCredentials: true }));
+          await this.#adoptSelfHostedMode();
+        });
+        // The saved profile now points at the new address, so older pins can go.
+        await boat.prunePins(sandboxId, candidate.ssh).catch(() => {});
+        this.#setBoatStatus(sandboxId, {
+          state: 'running',
+          message: null,
+          checkedAt: Date.now(),
+          machineKey: ssh.machineKey,
+        });
+        if (this.#link.kind !== 'recreating') this.#link = { kind: 'ready', error: null, attempt: 0, canRecreate: false };
+      }
+
+      stage = 'credentials';
+      await saveStage('credentials');
+      this.#setBoatSetup({ stage, detail: null });
+      const { imported: importedProviders, failures } = await this.#importAllProviderLogins();
+      if (failures.length && !importedProviders.length) {
+        throw new Error(`No provider login reached the boat server: ${failures.join('; ')}`);
+      }
+      // With self-stop tooling the idle timer stops the VM and boat's own auto-stop would
+      // cut work off mid-turn. Without it, a finite auto-stop keeps the VM from billing forever.
+      await boat.setAutoStop(sandboxId, autoStop === 'idle' ? null : BOAT_TIMER_TTL_SECONDS).catch((error) => {
+        this.#emit({ type: 'boat-auto-stop-deferred', error: boatDetail(error) });
+      });
+      await boat.clearSetupJournal().catch(() => {});
+      this.#boatSetupSandboxId = null;
+      this.#setBoatSetup({ stage: 'done', detail: null, error: null, importedProviders });
+      void this.refreshBoatStatus({ force: true, reason: 'setup' });
+      const snapshot = await this.snapshot();
+      this.#emit({ type: 'boat-setup-completed', snapshot });
+      return snapshot;
+    } catch (error) {
+      const failure = boatSetupError(error);
+      const guidance = BOAT_SETUP_GUIDANCE[error?.code] ?? (stage === 'installing'
+        ? '다시 시도하면 설치를 이어서 진행합니다.'
+        : '다시 시도하면 이어서 진행합니다.');
+      this.#setBoatSetup({
+        stage,
+        detail: null,
+        error: { title: BOAT_SETUP_TITLE, guidance, detail: boatDetail(error) },
+      });
+      throw failure;
+    }
+  }
+
+  /**
+   * 이 Mac에 로그인된 제공자 자격 증명을 한 번에 서버로 옮긴다. 옮기지 못한 것은 failures에,
+   * 이 Mac 에도 쓸 수 있는 로그인이 없는 것은 missing 에 남는다.
+   */
+  async #importAllProviderLogins(providers = CLOUD_PROVIDERS) {
+    const imported = [];
+    const failures = [];
+    const missing = [];
+    for (const provider of providers) {
+      const auth = await this.#providerAuthFor(provider).catch(() => null);
+      if (!providerLoginUsable(provider, auth)) {
+        missing.push(provider);
+        continue;
+      }
+      try {
+        const result = await this.#client.putProviderAuth(provider, auth);
+        if (result === null) {
+          const seed = await this.#providerAuth(provider);
+          if (!hasProviderAuth(seed) || typeof this.#client.seedProviderCredentials !== 'function') continue;
+          await this.#client.seedProviderCredentials(seed);
+        }
+        imported.push(provider);
+      } catch (error) {
+        failures.push(`${provider}: ${boatDetail(error)}`);
+        this.#emit({ type: 'boat-credential-import-failed', provider, error: boatDetail(error) });
+      }
+    }
+    return { imported, failures, missing };
+  }
+
   #emit(event) {
     this.#profileOperationContext.exit(() => {
       this.emit('event', {
@@ -4393,6 +6113,7 @@ export class CloudCoordinator extends EventEmitter {
   #watchRemote(sessionId, profileEpoch = this.#profileEpoch) {
     const watcherKey = `${profileEpoch}:${sessionId}`;
     if (this.#stopped || !sessionId || profileEpoch !== this.#profileEpoch || this.#watchers.has(watcherKey)) return;
+    if (this.#boatBlocksBackground()) return;
     const controller = new AbortController();
     this.#watchers.set(watcherKey, controller);
     this.#armLinkWatchdog();
@@ -4506,18 +6227,18 @@ export class CloudCoordinator extends EventEmitter {
     if (session.takeoverReady) return {
       ...base,
       kind: 'taking-over',
-      message: 'The frozen cloud boundary is ready to open on this device.',
+      message: '이 기기에서 열 준비가 되었습니다.',
     };
     if (session.takeoverRequested) return {
       ...base,
       kind: 'taking-over',
-      message: 'Waiting for the next frozen cloud boundary…',
+      message: '다음 안전한 경계를 기다리는 중입니다.',
     };
-    if (state === 'queued') return { ...base, kind: 'queued', position: 1, message: 'Waiting for a cloud worker.' };
+    if (state === 'queued') return { ...base, kind: 'queued', position: 1, message: '실행 자리를 기다리고 있습니다.' };
     if (state === 'running' && session.pauseRequested) return {
       ...base,
       kind: 'pausing',
-      message: 'Pausing at the next stable tool boundary…',
+      message: '안전한 경계에서 멈추는 중입니다.',
     };
     if (state === 'running') return {
       ...base,
@@ -4527,14 +6248,16 @@ export class CloudCoordinator extends EventEmitter {
       turnLimit: session.limits?.maxTurns ?? 100,
       elapsedMs: Math.max(0, Date.now() - Date.parse(asIso(session.startedAt, new Date().toISOString()))),
       timeLimitMs: (session.limits?.maxDurationSeconds ?? 28_800) * 1000,
-      currentActivity: 'Cloud agent is working.',
+      currentActivity: '',
       phase: this.#publicExecutionPhase(session.executionPhase),
       wait: session.currentWait ?? null,
     };
     if (state === 'suspended') return {
       ...base,
       kind: 'suspended',
-      reason: session.suspendedReason?.message ?? 'Cloud agent needs attention.',
+      reason: session.suspendedReason?.message ?? '',
+      code: session.suspendedReason?.code ?? null,
+      provider: session.provider ?? null,
       resumable: !['TURN_LIMIT', 'DURATION_LIMIT'].includes(session.suspendedReason?.code),
     };
     if (state === 'completed') return {
@@ -4557,7 +6280,7 @@ export class CloudCoordinator extends EventEmitter {
       ...base,
       kind: 'failed',
       code: session.status === 'purged' ? 'RESULT_PURGED' : 'CLOUD_ERROR',
-      message: session.status === 'purged' ? 'Sensitive cloud data has been purged.' : 'Cloud session failed.',
+      message: session.status === 'purged' ? '결과가 서버에서 지워졌습니다.' : 'Cloud 작업이 실패했습니다.',
       retryable: false,
     };
   }
@@ -4580,12 +6303,12 @@ export class CloudCoordinator extends EventEmitter {
     if (record.takeoverReady) return {
       ...base,
       kind: 'taking-over',
-      message: 'The frozen cloud boundary is ready to open on this device.',
+      message: '이 기기에서 열 준비가 되었습니다.',
     };
     if (record.takeoverRequested) return {
       ...base,
       kind: 'taking-over',
-      message: 'Waiting for the next frozen cloud boundary…',
+      message: '다음 안전한 경계를 기다리는 중입니다.',
     };
     if (['preparing', 'uploading', 'committing'].includes(record.state)) {
       return {
@@ -4594,14 +6317,14 @@ export class CloudCoordinator extends EventEmitter {
         stage: record.state,
         completedBytes: record.completedBytes ?? 0,
         totalBytes: record.documentSize ?? 0,
-        message: record.statusMessage ?? 'Transferring this session to the VPS…',
+        message: record.statusMessage ?? '문서와 대화를 전송하는 중입니다.',
       };
     }
-    if (record.state === 'queued') return { ...base, kind: 'queued', position: 1, message: record.statusMessage ?? 'Waiting for a cloud worker.' };
+    if (record.state === 'queued') return { ...base, kind: 'queued', position: 1, message: record.statusMessage ?? '실행 자리를 기다리고 있습니다.' };
     if (record.state === 'running' && record.pauseRequested) return {
       ...base,
       kind: 'pausing',
-      message: record.statusMessage ?? 'Pausing at the next stable tool boundary…',
+      message: record.statusMessage ?? '안전한 경계에서 멈추는 중입니다.',
     };
     if (record.state === 'running') return {
       ...base,
@@ -4611,14 +6334,16 @@ export class CloudCoordinator extends EventEmitter {
       turnLimit: record.limits?.maxTurns ?? 100,
       elapsedMs: Math.max(0, Date.now() - Date.parse(asIso(record.startedAt, record.updatedAt))),
       timeLimitMs: (record.limits?.maxDurationMinutes ?? 480) * 60_000,
-      currentActivity: record.statusMessage ?? 'Cloud agent is working.',
+      currentActivity: record.statusMessage ?? '',
       phase: this.#publicExecutionPhase(record.executionPhase),
       wait: record.currentWait ?? null,
     };
     if (record.state === 'suspended') return {
       ...base,
       kind: 'suspended',
-      reason: record.statusMessage ?? record.error ?? 'Cloud agent needs attention.',
+      reason: record.statusMessage ?? record.error ?? '',
+      code: record.suspendedCode ?? null,
+      provider: record.provider ?? null,
       resumable: !['TURN_LIMIT', 'DURATION_LIMIT'].includes(record.suspendedCode),
     };
     if (['completed', 'downloading', 'downloaded'].includes(record.state)) return {
@@ -4641,7 +6366,7 @@ export class CloudCoordinator extends EventEmitter {
       ...base,
       kind: 'failed',
       code: record.state === 'expired' ? 'RESULT_EXPIRED' : record.errorCode || 'CLOUD_ERROR',
-      message: record.error ?? record.statusMessage ?? 'Cloud session failed.',
+      message: record.error ?? record.statusMessage ?? 'Cloud 작업이 실패했습니다.',
       retryable: typeof record.retryable === 'boolean' ? record.retryable : record.state !== 'expired',
     };
   }
@@ -4655,4 +6380,6 @@ export const __test = {
   destinationFromReadiness,
   sameDestination,
   nonRetryableTransferError,
+  summarizeInstallLine,
+  classifyLinkFailure,
 };

@@ -1,7 +1,7 @@
 import { ModalDialog } from './dialog';
 import { appendSvgMarkup } from './dom-utils';
 import type { WasmBridge } from '@/core/wasm-bridge';
-import type { CellProperties, TableProperties } from '@/core/types';
+import type { CellPathEntry, CellProperties, TableProperties } from '@/core/types';
 import type { EventBus } from '@/core/event-bus';
 import type { CommandServices } from '@/command/types';
 import {
@@ -10,6 +10,7 @@ import {
   readHwp16Input,
   readHwpunitInput,
 } from './table-property-units';
+import { rejectNestedTableDialog } from './table-dialog-guard';
 
 const DOC_PAPER_COLOR = 'var(--doc-paper)';
 const PREVIEW_GUIDE_STROKE = 'var(--ui-border-light)';
@@ -28,7 +29,7 @@ interface TabDef {
 export class TableCellPropsDialog extends ModalDialog {
   private wasm: WasmBridge;
   private eventBus: EventBus;
-  private tableCtx: { sec: number; ppi: number; ci: number };
+  private tableCtx: { sec: number; ppi: number; ci: number; cellPath?: CellPathEntry[] };
   private cellIdx: number;
   /** 'table' = 표 선택 (6탭), 'cell' = 셀 선택 (4탭: 테두리·배경 제외) */
   private mode: 'table' | 'cell';
@@ -120,7 +121,7 @@ export class TableCellPropsDialog extends ModalDialog {
   constructor(
     wasm: WasmBridge,
     eventBus: EventBus,
-    tableCtx: { sec: number; ppi: number; ci: number },
+    tableCtx: { sec: number; ppi: number; ci: number; cellPath?: CellPathEntry[] },
     cellIdx: number,
     mode: 'table' | 'cell' = 'cell',
     services?: CommandServices,
@@ -135,6 +136,8 @@ export class TableCellPropsDialog extends ModalDialog {
   }
 
   show(): void {
+    // 중첩 표는 by-path 설정 API가 없어 바깥 표에 쓰게 된다 — 열지 않는다.
+    if (rejectNestedTableDialog(this.tableCtx.cellPath)) return;
     super.show();
     this.dialog.classList.add('tcp-dialog');
     // 속성 조회

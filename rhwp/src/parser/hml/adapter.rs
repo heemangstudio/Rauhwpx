@@ -23,6 +23,7 @@ pub(crate) fn into_document(mut source: HmlSource) -> Result<Document, HmlError>
             format: crate::model::provenance::SourceFormat::Hml,
             hwp3_lineage: false,
             hwpx_lineage: false,
+            own_line_layout: false,
         },
         ..Default::default()
     };

@@ -1,6 +1,11 @@
 import './versions.css';
 
+import { confirmSheet } from './sheet.ts';
+import type { DiffItem } from '../../compare/types.ts';
 import { createIcon } from './icons.ts';
+import { versionErrorOf } from '../../versioning/types.ts';
+import { showContextMenu } from '../native-context-menu.ts';
+import { createChevron } from '../chevron.ts';
 
 export type VersionTab = 'history' | 'branches' | 'shelves';
 
@@ -86,11 +91,16 @@ export interface VersionManagerController {
   restore(commitId: string): Promise<void>;
   adopt(commitId: string): Promise<void>;
   compare(commitId: string): Promise<void>;
+  diffWorkingTree(): Promise<DiffItem[]>;
+  diffCommit(commitId: string): Promise<DiffItem[]>;
+  discardUncommitted(): Promise<void>;
   amendTitle(commitId: string, title: string): Promise<void>;
   createBranch(name: string, fromCommitId?: string): Promise<void>;
   switchBranch(name: string): Promise<void>;
   renameBranch(name: string, nextName: string): Promise<void>;
   deleteBranch(name: string): Promise<void>;
+  listRecoveryEntries(): Promise<VersionRecoveryView[]>;
+  recoverBranch(entryId: string, name: string): Promise<void>;
   startMerge(sourceBranch: string): Promise<void>;
   resumeMerge(draftId: string): Promise<void>;
   discardMergeDraft(draftId: string): Promise<void>;
@@ -101,6 +111,15 @@ export interface VersionManagerController {
   compareLegacy(id: string): Promise<void>;
   setAiTitlesEnabled(enabled: boolean): void;
   dispose?(): void;
+}
+
+export interface VersionRecoveryView {
+  id: string;
+  name: string;
+  operation: string;
+  headId: string;
+  createdAt: number;
+  expiresAt: number;
 }
 
 export interface VersionManagerPage {
@@ -184,7 +203,7 @@ function requestVersionText(options: VersionTextPromptOptions): VersionTextPromp
     const submit = (): void => {
       const value = input.value.trim();
       const validation = !value && !options.optional
-        ? '값을 입력하세요.'
+        ? '값 입력 필요'
         : options.validate?.(value) ?? null;
       if (validation) {
         error.textContent = validation;
@@ -404,16 +423,27 @@ export function createVersionManagerPage(controller: VersionManagerController): 
 
   const head = el('header', 'ag-versions-head');
   const titleWrap = el('div', 'ag-versions-title-wrap');
+  const backButton = el('button', 'ag-header-icon-btn ag-versions-back');
+  backButton.type = 'button';
+  backButton.setAttribute('aria-label', '버전으로 돌아가기');
+  backButton.appendChild(createChevron());
+  backButton.hidden = true;
   const title = el('h2', 'ag-versions-title', '버전');
   title.id = 'ag-versions-title';
   const subtitle = el('span', 'ag-versions-subtitle');
-  titleWrap.append(title, subtitle);
+  titleWrap.append(backButton, title, subtitle);
   const closeButton = el('button', 'ag-header-icon-btn ag-versions-close');
   closeButton.type = 'button';
   closeButton.setAttribute('aria-label', '버전 닫기');
   closeButton.title = '버전 닫기';
   closeButton.appendChild(createIcon('close'));
   head.append(titleWrap, closeButton);
+  const moreButton = el('button', 'ag-header-icon-btn');
+  moreButton.type = 'button';
+  moreButton.setAttribute('aria-label', '버전 더 보기');
+  moreButton.setAttribute('aria-haspopup', 'menu');
+  moreButton.appendChild(createIcon('more'));
+  closeButton.before(moreButton);
 
   const notice = el('div', 'ag-versions-notice');
   notice.setAttribute('role', 'status');
@@ -534,6 +564,9 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     panel.setAttribute('aria-labelledby', `ag-versions-${id}-tab`);
   }
   body.append(historyPanel, branchesPanel, shelvesPanel);
+  const recoveryPanel = el('div', 'ag-versions-panel ag-versions-recovery');
+  recoveryPanel.hidden = true;
+  body.append(recoveryPanel);
 
   const footer = el('footer', 'ag-versions-footer');
   const storage = el('span', 'ag-versions-storage');
@@ -550,6 +583,8 @@ export function createVersionManagerPage(controller: VersionManagerController): 
   let active = false;
   let actionPending = false;
   let activeTextPrompt: VersionTextPrompt | null = null;
+  let recovering = false;
+  let recoveryEntries: VersionRecoveryView[] = [];
   const comparedCommits = new Set<string>();
 
   async function promptVersionText(options: VersionTextPromptOptions): Promise<string | null> {
@@ -575,6 +610,8 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     try {
       await action();
     } catch (error) {
+      // 사용자가 확인 창에서 취소한 것은 오류로 알리지 않는다.
+      if (versionErrorOf(error)?.code === 'CANCELLED') return;
       const message = error instanceof Error ? error.message : String(error);
       notice.textContent = message;
       notice.hidden = false;
@@ -603,7 +640,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
       maxLength: 63,
       validate: (value) => validRefName(value)
         ? null
-        : '글자나 숫자로 시작하는 63자 이하 이름을 입력하세요.',
+        : '글자나 숫자로 시작하는 63자 이하 이름',
     });
   }
 
@@ -613,9 +650,9 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     const blockedReason = actionPending
       ? '작업을 처리하고 있습니다.'
       : !savedDocument
-        ? '먼저 문서를 저장하세요.'
+        ? '문서 저장 필요'
         : !current.enabled
-          ? '이 문서에서 버전 기록을 먼저 켜세요.'
+          ? '버전 기록 꺼짐'
           : current.mutationBlockedReason;
     const blocked = blockedReason !== null;
 
@@ -637,7 +674,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
       const enableBlockedReason = actionPending
         ? '작업을 처리하고 있습니다.'
         : !savedDocument
-          ? '먼저 문서를 저장하세요.'
+          ? '문서 저장 필요'
           : current.mutationBlockedReason;
       button.disabled = enableBlockedReason !== null;
       button.title = enableBlockedReason ?? '';
@@ -646,6 +683,14 @@ export function createVersionManagerPage(controller: VersionManagerController): 
 
   function renderTabs(): void {
     hideDateTooltip();
+    tabs.hidden = recovering;
+    toolbar.hidden = recovering;
+    recoveryPanel.hidden = !recovering;
+    backButton.hidden = !recovering;
+    titleWrap.classList.toggle('ag-recovering', recovering);
+    moreButton.hidden = recovering;
+    title.textContent = recovering ? '복구' : '버전';
+    subtitle.hidden = recovering;
     branchStrip.hidden = tab !== 'history';
     createBranchButton.hidden = tab !== 'branches';
     shelf.hidden = tab !== 'shelves';
@@ -656,10 +701,70 @@ export function createVersionManagerPage(controller: VersionManagerController): 
       button.tabIndex = selected ? 0 : -1;
     }
     for (const [id, panel] of tabPanels) {
-      panel.hidden = id !== tab;
-      panel.inert = id !== tab;
+      panel.hidden = recovering || id !== tab;
+      panel.inert = recovering || id !== tab;
     }
   }
+
+  function renderRecovery(): void {
+    recoveryPanel.replaceChildren();
+    if (!recoveryEntries.length) recoveryPanel.append(el('p', 'ag-versions-placeholder', '복구할 기록이 없습니다.'));
+    const labels: Record<string, string> = {
+      'branch-created': '브랜치 생성', 'branch-deleted': '브랜치 삭제',
+      'branch-renamed': '이름 변경', 'head-moved': '커밋 변경',
+      'tag-created': '태그 생성', 'tag-deleted': '태그 삭제', 'tag-moved': '태그 변경',
+    };
+    for (const entry of recoveryEntries) {
+      const row = el('div', 'ag-version-recovery-row');
+      const details = el('div', 'ag-version-recovery-details');
+      details.append(el('strong', '', entry.name), el('span', '', `${labels[entry.operation] ?? entry.operation} · ${formatTime(entry.createdAt)}`));
+      details.title = entry.headId.slice(0, 8);
+      const recover = el('button', 'ag-versions-quiet', '복구');
+      recover.type = 'button';
+      recover.dataset.versionMutation = 'true';
+      recover.setAttribute('aria-label', `${entry.name} 브랜치 복구`);
+      recover.addEventListener('click', () => void (async () => {
+        const occupied = current.branches.some((branch) => branch.name.normalize('NFC').toLowerCase() === entry.name.normalize('NFC').toLowerCase());
+        const name = await askName('복구할 브랜치 이름', occupied ? `${entry.name.slice(0, 55)}-복구` : entry.name);
+        if (!name) return;
+        await perform(async () => {
+          await controller.recoverBranch(entry.id, name);
+          recovering = false;
+          tab = 'branches';
+          render(controller.getState());
+          tabButtons.get('branches')?.focus();
+        });
+      })());
+      row.append(details, recover);
+      recoveryPanel.append(row);
+    }
+    renderMutationState();
+  }
+
+  function leaveRecovery(): void {
+    recovering = false;
+    renderTabs();
+    moreButton.focus();
+  }
+  backButton.addEventListener('click', leaveRecovery);
+
+  moreButton.addEventListener('click', () => void (async () => {
+    const rect = moreButton.getBoundingClientRect();
+    const choice = await showContextMenu([
+      { id: 'recovery', label: '기록 복구', enabled: current.enabled },
+    ], { x: rect.left, y: rect.bottom });
+    if (choice !== 'recovery' || !active) return;
+    await perform(async () => {
+      const documentId = current.documentId;
+      const entries = await controller.listRecoveryEntries();
+      if (!active || current.documentId !== documentId) return;
+      recoveryEntries = entries;
+      recovering = true;
+      renderTabs();
+      renderRecovery();
+      (recoveryPanel.querySelector('button') ?? backButton).focus();
+    });
+  })());
 
   function commitBadges(commit: VersionCommitView): HTMLElement {
     const badges = el('span', 'ag-version-badges');
@@ -695,7 +800,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     inspector.replaceChildren();
     const selected = current.commits.find((commit) => commit.id === selectedCommitId) ?? null;
     if (!selected) {
-      inspector.appendChild(el('p', 'ag-versions-placeholder', '커밋을 선택하면 세부 정보와 복원 작업을 볼 수 있습니다.'));
+      inspector.appendChild(el('p', 'ag-versions-placeholder', '커밋을 선택하면 세부 정보가 보입니다.'));
       return;
     }
     inspector.style.setProperty('--ag-version-lane-color', laneColor(selected.lane));
@@ -717,11 +822,11 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     restore.type = 'button';
     restore.dataset.versionMutation = 'true';
     restore.dataset.versionPrerequisiteDisabled = String(!comparedCommits.has(selected.id));
-    restore.dataset.versionPrerequisiteTitle = '먼저 현재 문서와 비교하세요.';
+    restore.dataset.versionPrerequisiteTitle = '현재 문서와 먼저 비교합니다.';
     restore.disabled = !comparedCommits.has(selected.id);
-    restore.title = restore.disabled ? '먼저 현재 문서와 비교하세요.' : '';
-    restore.addEventListener('click', () => {
-      if (!window.confirm('현재 작업을 커밋하고 이 버전의 내용으로 복원할까요? 파일은 저장할 때까지 바뀌지 않습니다.')) return;
+    restore.title = restore.disabled ? '현재 문서와 먼저 비교합니다.' : '';
+    restore.addEventListener('click', async () => {
+      if (!await confirmSheet(restore, '이 버전으로 복원', '현재 작업을 커밋한 뒤 복원합니다. 저장 전까지 파일은 그대로입니다.', { confirmLabel: '복원' })) return;
       void perform(() => controller.restore(selected.id));
     });
     const tag = el('button', 'ag-versions-secondary', '태그');
@@ -737,11 +842,11 @@ export function createVersionManagerPage(controller: VersionManagerController): 
       adopt.type = 'button';
       adopt.dataset.versionMutation = 'true';
       adopt.dataset.versionPrerequisiteDisabled = String(!comparedCommits.has(selected.id));
-      adopt.dataset.versionPrerequisiteTitle = '먼저 현재 문서와 비교하세요.';
+      adopt.dataset.versionPrerequisiteTitle = '현재 문서와 먼저 비교합니다.';
       adopt.disabled = !comparedCommits.has(selected.id);
-      adopt.title = adopt.disabled ? '먼저 현재 문서와 비교하세요.' : '';
-      adopt.addEventListener('click', () => {
-        if (!window.confirm('선택한 버전을 현재 브랜치에 두 부모를 둔 병합 커밋으로 남길까요?')) return;
+      adopt.title = adopt.disabled ? '현재 문서와 먼저 비교합니다.' : '';
+      adopt.addEventListener('click', async () => {
+        if (!await confirmSheet(adopt, '병합 커밋으로 남기기', '선택한 버전을 현재 브랜치에 병합합니다.', { confirmLabel: '병합' })) return;
         void perform(() => controller.adopt(selected.id));
       });
       actions.appendChild(adopt);
@@ -884,8 +989,8 @@ export function createVersionManagerPage(controller: VersionManagerController): 
         switchButton.dataset.versionAction = 'switch';
         switchButton.setAttribute('aria-label', `${branch.name} 브랜치로 전환`);
         switchButton.dataset.versionMutation = 'true';
-        switchButton.addEventListener('click', () => {
-          if (current.dirty && !window.confirm('현재 작업을 커밋하고 브랜치를 전환할까요?')) return;
+        switchButton.addEventListener('click', async () => {
+          if (current.dirty && !await confirmSheet(switchButton, '브랜치 전환', '현재 작업을 커밋한 뒤 전환합니다.', { confirmLabel: '전환' })) return;
           void perform(() => controller.switchBranch(branch.name));
         });
         actions.appendChild(switchButton);
@@ -906,8 +1011,8 @@ export function createVersionManagerPage(controller: VersionManagerController): 
         remove.dataset.versionAction = 'delete';
         remove.setAttribute('aria-label', `${branch.name} 브랜치 삭제`);
         remove.dataset.versionMutation = 'true';
-        remove.addEventListener('click', () => {
-          if (!window.confirm(`“${branch.name}” 브랜치를 영구 삭제할까요? 태그나 다른 브랜치가 참조하지 않는 커밋은 정리 전까지 남습니다.`)) return;
+        remove.addEventListener('click', async () => {
+          if (!await confirmSheet(remove, `“${branch.name}” 브랜치 삭제`, '되돌릴 수 없습니다.', { confirmLabel: '삭제', destructive: true })) return;
           void perform(() => controller.deleteBranch(branch.name));
         });
         actions.appendChild(remove);
@@ -935,8 +1040,8 @@ export function createVersionManagerPage(controller: VersionManagerController): 
         discard.type = 'button';
         discard.setAttribute('aria-label', `${draft.sourceBranch} 병합 초안 버리기`);
         discard.dataset.versionMutation = 'true';
-        discard.addEventListener('click', () => {
-          if (window.confirm(`${draft.sourceBranch} → ${draft.targetBranch} 병합 초안을 버릴까요?`)) {
+        discard.addEventListener('click', async () => {
+          if (await confirmSheet(discard, '병합 초안 버리기', `${draft.sourceBranch} → ${draft.targetBranch}`, { confirmLabel: '버리기', destructive: true })) {
             void perform(() => controller.discardMergeDraft(draft.id));
           }
         });
@@ -973,8 +1078,8 @@ export function createVersionManagerPage(controller: VersionManagerController): 
       const remove = el('button', 'ag-versions-danger', '삭제');
       remove.type = 'button';
       remove.dataset.versionMutation = 'true';
-      remove.addEventListener('click', () => {
-        if (window.confirm('이 보관 항목을 영구 삭제할까요?')) void perform(() => controller.deleteShelf(item.id));
+      remove.addEventListener('click', async () => {
+        if (await confirmSheet(remove, '보관 항목 삭제', '되돌릴 수 없습니다.', { confirmLabel: '삭제', destructive: true })) void perform(() => controller.deleteShelf(item.id));
       });
       actions.append(apply, pop, remove);
       row.append(copy, actions);
@@ -995,8 +1100,8 @@ export function createVersionManagerPage(controller: VersionManagerController): 
       notice.hidden = false;
       notice.dataset.kind = 'empty';
       notice.replaceChildren(
-        el('strong', '', '먼저 문서를 저장하세요'),
-        el('span', '', '버전 기록은 저장된 문서에 연결됩니다. 다른 이름으로 저장해도 같은 기록이 이어집니다.'),
+        el('strong', '', '문서 저장 필요'),
+        el('span', '', '저장한 문서부터 버전을 기록합니다.'),
       );
       return;
     }
@@ -1008,7 +1113,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
       enable.dataset.versionEnable = 'true';
       enable.addEventListener('click', () => void perform(() => controller.enable()));
       notice.replaceChildren(
-        el('strong', '', '문서 변경을 안전하게 되돌리세요'),
+        el('strong', '', '버전 기록'),
         el('span', '', '커밋과 브랜치는 이 기기에만 저장됩니다.'),
         enable,
       );
@@ -1016,6 +1121,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
   }
 
   function render(next = current): void {
+    if (next.documentId !== current.documentId) { recovering = false; recoveryEntries = []; }
     if (next !== current && invalidatesCompletedComparisons(current, next)) {
       comparedCommits.clear();
     }
@@ -1038,6 +1144,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     renderHistory();
     renderBranches();
     renderShelves();
+    if (recovering) renderRecovery();
     renderMutationState();
   }
 
@@ -1102,7 +1209,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
           label: `소스 브랜치 (${candidates.map((branch) => branch.name).join(', ')})`,
           validate: (value) => candidates.some((branch) => branch.name === value)
             ? null
-            : '목록에 있는 브랜치 이름을 정확히 입력하세요.',
+            : '목록에 있는 브랜치 이름 입력',
         });
     if (source) await perform(() => controller.startMerge(source));
   })());
@@ -1113,6 +1220,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     event.preventDefault();
     event.stopPropagation();
     if (dateTooltip.classList.contains('ag-visible')) { hideDateTooltip(); return; }
+    if (recovering) { leaveRecovery(); return; }
     page.dispatchEvent(new CustomEvent('ag-versions-close'));
   });
 

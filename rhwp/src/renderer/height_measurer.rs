@@ -8,8 +8,9 @@ use super::style_resolver::ResolvedStyleSet;
 use super::{hwpunit_to_px, DEFAULT_DPI};
 use crate::model::control::Control;
 use crate::model::footnote::{Footnote, FootnoteShape};
-use crate::model::paragraph::Paragraph;
+use crate::model::paragraph::{LineSeg, Paragraph};
 use crate::model::shape::{Caption, CommonObjAttr, TextWrap, VertRelTo};
+use crate::model::style::LineSpacingType;
 use crate::model::table::{Table, TablePageBreak};
 
 /// treat_as_char 표가 인라인(텍스트와 나란히)인지 판별
@@ -140,21 +141,173 @@ fn empty_paragraph_fallback_line_metrics(
     ))
 }
 
+/// 병합 셀 요구 높이 `(시작 행, 걸침 수, 요구 높이, 허용 오차)` 를 끝 행 순서로 적용한다.
+/// 부족분이 허용 오차를 넘으면 걸친 마지막 행에 더한다.
+/// 끝 행이 앞선 요구부터 확정하므로, 겹친 병합 셀이 같은 성장분을 이중으로 더하지 않는다
+/// (tb-org-02: rs=2 셀 콘텐츠가 r7 을 키우면 r7..r9 rs=3 선언 높이는 이미 충족 — 한컴 동일).
+pub(crate) fn grow_rows_for_span_requirements(
+    row_heights: &mut [f64],
+    requirements: &mut [(usize, usize, f64, f64)],
+) {
+    requirements.sort_by_key(|&(r, span, _, _)| r + span);
+    for &(r, span, required, tolerance) in requirements.iter() {
+        if span == 0 || r + span > row_heights.len() {
+            continue;
+        }
+        let combined: f64 = row_heights[r..r + span].iter().sum();
+        if required > combined + tolerance {
+            row_heights[r + span - 1] += required - combined;
+        }
+    }
+}
+
 /// Whether a composed table-cell line contributes its stored trailing spacing.
 ///
-/// Full-cell and partial-cell paint both stop at the final visible line box.  The
-/// one exception is a non-inline CellBreak table: there the last spacing is a
-/// structural pagination advance between paragraph units, not trailing paint.
+/// Full-cell and partial-cell paint both stop at the final visible line box.
+/// CellBreak/RowBreak 마지막 간격은 저장된 구조적 진행값이 있을 때만 유지한다.
 #[inline]
 pub(crate) fn include_table_cell_line_spacing(
     table: &Table,
     is_cell_last_line: bool,
     cell_para_count: usize,
+    hwpx_structural_tail: i32,
 ) -> bool {
+    let _ = cell_para_count;
     !is_cell_last_line
-        || (cell_para_count > 1
-            && !table.common.treat_as_char
-            && matches!(table.page_break, TablePageBreak::CellBreak))
+        || (!table.common.treat_as_char
+            && hwpx_structural_tail != 0
+            && matches!(
+                table.page_break,
+                TablePageBreak::CellBreak | TablePageBreak::RowBreak
+            ))
+}
+
+#[inline]
+pub(crate) fn include_table_cell_spacing_after(
+    table: &Table,
+    is_last_para: bool,
+    hwpx_structural_tail: i32,
+) -> bool {
+    !is_last_para
+        || (!table.common.treat_as_char
+            && hwpx_structural_tail > 0
+            && matches!(
+                table.page_break,
+                TablePageBreak::CellBreak | TablePageBreak::RowBreak
+            ))
+}
+
+/// HWPX generated percent lines and authored compressed lines carry their
+/// signed pitch through the final line, including a one-paragraph cell.
+pub(crate) fn hwpx_structural_cell_tail(
+    para: &Paragraph,
+    styles: &ResolvedStyleSet,
+    dpi: f64,
+) -> i32 {
+    let Some(style) = styles.para_styles.get(para.para_shape_id as usize) else {
+        return 0;
+    };
+    let Some(last) = para.line_segs.last() else {
+        return 0;
+    };
+    if !para.controls.is_empty() {
+        return 0;
+    }
+    let line_height = hwpunit_to_px(last.line_height, dpi);
+    let line_spacing = hwpunit_to_px(last.line_spacing, dpi);
+    if last.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY == 0 && line_spacing < 0.0 {
+        let expected_pitch = match style.line_spacing_type {
+            LineSpacingType::Fixed => style.line_spacing,
+            LineSpacingType::Percent => line_height * style.line_spacing / 100.0,
+            _ => return 0,
+        };
+        return if (line_height + line_spacing - expected_pitch).abs() <= 0.25 {
+            last.line_spacing
+        } else {
+            0
+        };
+    }
+    if style.line_spacing_type != LineSpacingType::Percent
+        || line_spacing <= 0.0
+        || !crate::renderer::para_has_no_stored_line_segs(para)
+    {
+        return 0;
+    }
+    let Some(font_size) = para
+        .char_shape_id_at(last.text_start as usize)
+        .or_else(|| para.char_shapes.first().map(|shape| shape.char_shape_id))
+        .and_then(|id| styles.char_styles.get(id as usize))
+        .map(|style| style.font_size)
+    else {
+        return 0;
+    };
+    if (line_height - font_size).abs() <= 0.25 {
+        last.line_spacing
+    } else {
+        0
+    }
+}
+
+#[cfg(test)]
+mod hwpx_synthetic_tail_tests {
+    use super::*;
+    use crate::model::paragraph::{CharShapeRef, LineSeg};
+    use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle};
+
+    #[test]
+    fn rowbreak_trailing_advance_uses_generated_or_authored_pitch() {
+        let table = Table {
+            page_break: TablePageBreak::RowBreak,
+            ..Table::default()
+        };
+        let styles = ResolvedStyleSet {
+            char_styles: vec![ResolvedCharStyle {
+                font_size: hwpunit_to_px(1_000, 96.0),
+                ..ResolvedCharStyle::default()
+            }],
+            para_styles: vec![ResolvedParaStyle {
+                line_spacing: 135.0,
+                ..ResolvedParaStyle::default()
+            }],
+            ..ResolvedStyleSet::default()
+        };
+        let mut paragraph = Paragraph {
+            text: "가".to_string(),
+            char_shapes: vec![CharShapeRef::default()],
+            line_segs: vec![LineSeg {
+                line_height: 1_000,
+                line_spacing: 1_282,
+                tag: LineSeg::TAG_IMPLEMENTATION_PROPERTY,
+                ..LineSeg::default()
+            }],
+            ..Paragraph::default()
+        };
+        let eligible = hwpx_structural_cell_tail(&paragraph, &styles, 96.0);
+        assert!(eligible > 0);
+        assert!(!include_table_cell_line_spacing(&table, true, 2, 0));
+        assert!(include_table_cell_line_spacing(&table, true, 2, eligible));
+        assert!(include_table_cell_line_spacing(&table, true, 1, eligible));
+        assert!(include_table_cell_spacing_after(&table, true, eligible));
+
+        paragraph.line_segs[0].tag = LineSeg::TAG_SINGLE_SEGMENT_LINE;
+        assert_eq!(hwpx_structural_cell_tail(&paragraph, &styles, 96.0), 0);
+        assert!(!include_table_cell_line_spacing(&table, true, 2, 0));
+
+        paragraph.line_segs[0].line_height = 1_903;
+        paragraph.line_segs[0].line_spacing = -373;
+        let fixed_styles = ResolvedStyleSet {
+            para_styles: vec![ResolvedParaStyle {
+                line_spacing_type: LineSpacingType::Fixed,
+                line_spacing: hwpunit_to_px(1_530, 96.0),
+                ..ResolvedParaStyle::default()
+            }],
+            ..styles
+        };
+        let fixed_tail = hwpx_structural_cell_tail(&paragraph, &fixed_styles, 96.0);
+        assert!(fixed_tail < 0);
+        assert!(include_table_cell_line_spacing(&table, true, 1, fixed_tail));
+        assert!(!include_table_cell_spacing_after(&table, true, fixed_tail));
+    }
 }
 
 /// 문단의 측정된 높이 정보
@@ -203,14 +356,20 @@ pub struct MeasuredTable {
     pub para_index: usize,
     /// 컨트롤 인덱스
     pub control_index: usize,
+    /// 컨트롤 인덱스가 바뀌어도 다른 표의 기준 행 높이를 재사용하지 않도록 하는 개체 ID.
+    pub source_instance_id: u32,
     /// 총 높이 (px, 캡션 포함)
     pub total_height: f64,
     /// 행별 높이 목록 (px)
     pub row_heights: Vec<f64>,
+    /// 저장된 TAC 표 높이에 맞춰 축소하기 전의 행별 측정 높이.
+    pub raw_row_heights: Vec<f64>,
     /// [편집 세션] 로드 시점(비편집) 측정의 행 배분 — 편집 재측정의 행별 하한 기준.
     /// 직전 측정이 아니라 이 값을 하한으로 써야 undo/삭제로 내용이 줄었을 때
     /// 행이 로드 배분까지 되돌아온다. 비편집 측정은 None(자기 자신이 기준).
     pub baseline_row_heights: Option<Vec<f64>>,
+    /// 여러 번 편집해도 유지하는 로드 시점의 축소 전 행 높이.
+    pub baseline_raw_row_heights: Option<Vec<f64>>,
     /// 캡션 높이 (px)
     pub caption_height: f64,
     /// 셀 간격 (px)
@@ -257,6 +416,16 @@ pub fn fit_measured_table_to_declared_height(
     // 페이지가 앞당겨진다(#1073).
     let min_reasonable = current_row_sum * 0.75;
     let max_reasonable = current_row_sum * 1.35;
+    if std::env::var("RHWP_DEBUG_ROWFIT").is_ok() {
+        eprintln!(
+            "MEASFIT tbl={} target={:.2} current={:.2} crit={:?} rows={:?}",
+            table.common.ctrl_id,
+            target_row_sum,
+            current_row_sum,
+            table.common.height_criterion,
+            fitted.row_heights
+        );
+    }
     if target_row_sum < min_reasonable || target_row_sum > max_reasonable {
         return fitted;
     }
@@ -364,8 +533,10 @@ pub struct MeasuredSection {
 pub struct HeightMeasurer {
     dpi: f64,
     preserve_first_cell_spacing_before: bool,
+    native_hwpx_cell_margin: bool,
     is_hwp3_variant: bool,
     session_edited: bool,
+    own_line_layout: bool,
     use_hwp3_origin_flow_spacing_before: bool,
     render_normalization:
         std::sync::Arc<crate::renderer::render_normalization::RenderNormalizationOverlay>,
@@ -376,13 +547,21 @@ impl HeightMeasurer {
         Self {
             dpi,
             preserve_first_cell_spacing_before: false,
+            native_hwpx_cell_margin: false,
             is_hwp3_variant: false,
             session_edited: false,
+            own_line_layout: false,
             use_hwp3_origin_flow_spacing_before: false,
             render_normalization: std::sync::Arc::new(
                 crate::renderer::render_normalization::RenderNormalizationOverlay::default(),
             ),
         }
+    }
+
+    /// 생성한 본문 줄은 저장 캐시의 마스킹/대체 글꼴 보정으로 다시 나누지 않는다.
+    pub fn with_own_line_layout(mut self, enabled: bool) -> Self {
+        self.own_line_layout = enabled;
+        self
     }
 
     pub fn with_hwp3_variant(mut self, enabled: bool) -> Self {
@@ -403,6 +582,23 @@ impl HeightMeasurer {
     pub fn with_hwpx_cell_spacing(mut self, enabled: bool) -> Self {
         self.preserve_first_cell_spacing_before = enabled;
         self
+    }
+
+    pub fn with_native_hwpx_cell_margin(mut self, enabled: bool) -> Self {
+        self.native_hwpx_cell_margin = enabled;
+        self
+    }
+
+    fn effective_cell_padding(
+        &self,
+        cell: &crate::model::table::Cell,
+        table: &Table,
+    ) -> crate::model::Padding {
+        if self.native_hwpx_cell_margin {
+            cell.effective_hwpx_padding(&table.padding)
+        } else {
+            cell.effective_padding(&table.padding)
+        }
     }
 
     pub fn with_hwp3_origin_flow_spacing_before(mut self, enabled: bool) -> Self {
@@ -630,6 +826,7 @@ impl HeightMeasurer {
                     );
                     Some(cloned)
                 } else if inner > 0.0
+                    && !self.own_line_layout
                     && crate::renderer::composer::stored_lines_stale_for_body(
                         c, para, inner, styles,
                     )
@@ -637,7 +834,7 @@ impl HeightMeasurer {
                     // [#2279] 마스킹 저장분할 stale(실폭-과잉/줄수-과소) 본문 문단
                     // fresh 재래핑 — typeset/paragraph_layout(렌더)와 동일.
                     let mut cloned = c.clone();
-                    crate::renderer::composer::recompose_stored_lines_if_overflowing_body(
+                    crate::renderer::composer::recompose_stale_stored_lines_for_body(
                         &mut cloned,
                         para,
                         inner,
@@ -730,7 +927,7 @@ impl HeightMeasurer {
                     } else {
                         (raw_lh, hwpunit_to_px(line.line_spacing, self.dpi))
                     };
-                    let extra_rows =
+                    let flow_lh =
                         crate::renderer::equation_tac_flow::compute_equation_only_tac_line_flow(
                             Some(para),
                             comp,
@@ -739,12 +936,17 @@ impl HeightMeasurer {
                             equation_line_available_width_px(0).unwrap_or(f64::INFINITY),
                             equation_line_available_width_px(1).unwrap_or(f64::INFINITY),
                         )
-                        .map(|flow| flow.extra_rows)
-                        .unwrap_or(0);
-                    (
-                        lh + extra_rows as f64 * (lh + line_spacing_px),
-                        line_spacing_px,
-                    )
+                        .map(|flow| {
+                            flow.flow_height_px(
+                                para,
+                                &tac_offsets_px,
+                                lh,
+                                line_spacing_px,
+                                self.dpi,
+                            )
+                        })
+                        .unwrap_or(lh);
+                    (flow_lh, line_spacing_px)
                 })
                 .collect();
             if pairs.is_empty() {
@@ -1006,37 +1208,111 @@ impl HeightMeasurer {
         }
         paragraphs
             .iter()
-            .map(|p| {
-                let nested_h: f64 = p
-                    .controls
-                    .iter()
-                    .filter_map(|ctrl| {
-                        if let Control::Table(nested) = ctrl {
-                            let stretch =
-                                self.render_normalization.nested_table_width_scale(nested);
-                            let mt =
-                                self.measure_table_impl(nested, 0, 0, styles, depth + 1, stretch);
-                            // [#2148 실험] NO_LS 중첩 표 선언 신뢰 — 성장 전용 max.
-                            let declared = hwpunit_to_px(nested.common.height as i32, self.dpi);
+            .enumerate()
+            .map(|(pidx, p)| {
+                let para_top = p
+                    .line_segs
+                    .first()
+                    .map(|s| hwpunit_to_px(s.vertical_pos, self.dpi))
+                    .unwrap_or(0.0);
+                // 저장 vpos(첫 줄 상단)에는 문단 앞 간격(spacing_before)이 이미
+                // 들어 있다 — PARA 기준 개체의 수직 원점은 문단 자체의 시작
+                // (간격 이전)이므로 vpos 에서 spacing_before 를 빼야 한다
+                // (38 청양 체크리스트 셀: vpos 200 = spacing_before 200 + 기준 0).
+                let para_base = {
+                    let sb = if pidx > 0 || self.preserve_first_cell_spacing_before {
+                        styles
+                            .para_styles
+                            .get(p.para_shape_id as usize)
+                            .map(|s| s.spacing_before)
+                            .unwrap_or(0.0)
+                    } else {
+                        0.0
+                    };
+                    (para_top - sb).max(0.0)
+                };
+                // 같은 줄에 나란히 놓이는 TAC 표는 높이가 겹친다 — 줄별 최댓값만
+                // 세로 범위에 반영한다 (composer::tac_table_ctrls_by_line 참조).
+                let comp = crate::renderer::composer::compose_paragraph(p);
+                let groups = crate::renderer::composer::tac_table_ctrls_by_line(p, &comp);
+                let mut grouped = std::collections::HashSet::new();
+                // 반환: (적층 높이 기여분, PARA 기준 프레임의 절대 하단)
+                let table_h = |ctrl: &Control| -> Option<(f64, Option<f64>)> {
+                    if let Control::Table(nested) = ctrl {
+                        let stretch = self.render_normalization.nested_table_width_scale(nested);
+                        let mt = self.measure_table_impl(nested, 0, 0, styles, depth + 1, stretch);
+                        // [#2148 실험] NO_LS 중첩 표 선언 신뢰 — 성장 전용 max.
+                        let declared = hwpunit_to_px(nested.common.height as i32, self.dpi);
+                        // PARA 기준 어울림 표는 고정 프레임 개체다: 박스는
+                        // 문단 시작+vertOffset+outMarginTop 에 선언 높이로 배치되고
+                        // (내용이 프레임보다 길면 넘침) 하단 범위 =
+                        // para_base+vertOffset+om_top+선언h+om_bottom
+                        // (35/38 신청서 점선 박스·체크리스트 중첩 표 — 한컴 cellSz 가
+                        // vertOffset+선언h+cell pad 와 정확히 일치).
+                        if !nested.common.treat_as_char
+                            && matches!(nested.common.vert_rel_to, VertRelTo::Para)
+                        {
+                            let voff = hwpunit_to_px(
+                                crate::renderer::float_placement::signed_hwpunit(
+                                    nested.common.vertical_offset,
+                                )
+                                .max(0),
+                                self.dpi,
+                            );
+                            let om_top = hwpunit_to_px(nested.outer_margin_top as i32, self.dpi);
+                            let om_bottom =
+                                hwpunit_to_px(nested.outer_margin_bottom as i32, self.dpi);
+                            // 내용이 선언 프레임보다 길면 셀이 넘침까지
+                            // 포함한다 — 선언 고정 프레임은 성장 전용.
+                            let frame = declared.max(mt.total_height);
+                            Some((0.0, Some(para_base + voff + om_top + frame + om_bottom)))
+                        } else {
                             // [#2169] om 가산은 additive 경로(cell_controls_height)
                             // 전담 — vpos 기반 max 경로는 저장 vpos 가 배치를 이미
                             // 반영하므로 미가산 (자기-export HWPX 왕복 이중가산 방지).
-                            Some(mt.total_height.max(declared))
-                        } else {
-                            None
+                            Some((mt.total_height.max(declared), None))
                         }
+                    } else {
+                        None
+                    }
+                };
+                let mut nested_h: f64 = groups
+                    .iter()
+                    .map(|g| {
+                        g.iter()
+                            .filter_map(|&ci| {
+                                grouped.insert(ci);
+                                table_h(&p.controls[ci])
+                            })
+                            .fold(0.0f64, |acc, (h, _)| acc.max(h))
                     })
                     .sum();
-                if nested_h <= 0.0 {
+                let mut float_bottom = 0.0f64;
+                for (ci, ctrl) in p.controls.iter().enumerate() {
+                    if grouped.contains(&ci) {
+                        continue;
+                    }
+                    if let Some((h, fb)) = table_h(ctrl) {
+                        nested_h += h;
+                        if let Some(fb) = fb {
+                            float_bottom = float_bottom.max(fb);
+                        }
+                    }
+                }
+                // grouped TAC 표 내부의 PARA 프레임 하단도 반영한다.
+                for g in &groups {
+                    for &ci in g {
+                        if let Some((_, Some(fb))) = table_h(&p.controls[ci]) {
+                            float_bottom = float_bottom.max(fb);
+                        }
+                    }
+                }
+                let stacked = if nested_h <= 0.0 {
                     0.0
                 } else {
-                    let para_top = p
-                        .line_segs
-                        .first()
-                        .map(|s| hwpunit_to_px(s.vertical_pos, self.dpi))
-                        .unwrap_or(0.0);
                     para_top + nested_h
-                }
+                };
+                stacked.max(float_bottom)
             })
             .fold(0.0f64, f64::max)
     }
@@ -1062,9 +1338,12 @@ impl HeightMeasurer {
             return MeasuredTable {
                 para_index,
                 control_index,
+                source_instance_id: table.common.instance_id,
                 total_height: 0.0,
                 row_heights: vec![0.0; rc],
+                raw_row_heights: vec![0.0; rc],
                 baseline_row_heights: None,
+                baseline_raw_row_heights: None,
                 caption_height: 0.0,
                 cell_spacing: 0.0,
                 cumulative_heights: vec![0.0; rc + 1],
@@ -1111,7 +1390,9 @@ impl HeightMeasurer {
                 // #493 세로 Shift 리사이즈(셀보호2.hwp 셀[20] aim=true pad top/bottom=0)가
                 // 이 의미에 의존한다 (#1809 완전 통일 시도는 해당 테스트 회귀로 원복 —
                 // vertical_shift_local_height_keeps_unrelated_cells_stable).
-                let eff_pad = if cell.apply_inner_margin {
+                let eff_pad = if self.native_hwpx_cell_margin {
+                    cell.effective_hwpx_padding(&table.padding)
+                } else if cell.apply_inner_margin {
                     cell.padding
                 } else {
                     cell.effective_padding(&table.padding)
@@ -1129,6 +1410,15 @@ impl HeightMeasurer {
                 // [#2279 axis B 보류] 측정 shrink 폭은 80168 r7(한글 8줄) 회귀로 보류
                 // — table_layout::cell_units_uncached 의 [#2279 axis B 보류] 참조.
                 let cell_inner_width = (cell_w_px - pad_left - pad_right).max(0.0);
+                // [lso-load3] 줄 정보 없는 셀 문단 재분할 폭은 편집·로드 합성과 같은
+                // 한컴 셀 줄 폭 모델 (`LayoutEngine::hancom_cell_wrap_width_px`).
+                let wrap_width = crate::renderer::layout::LayoutEngine::hancom_cell_wrap_width_px(
+                    table,
+                    cell,
+                    self.dpi,
+                    width_scale,
+                )
+                .unwrap_or(cell_inner_width);
 
                 // 셀 내 문단들의 실제 높이 합산
                 let text_height: f64 = if cell.text_direction != 0 {
@@ -1159,11 +1449,12 @@ impl HeightMeasurer {
                             // [Task #671] line_segs 비어 있는 셀 paragraph 의 단일 ComposedLine
                             // 압축 결과를 셀 가용 너비에 맞춰 다중 ComposedLine 으로 재분할.
                             // 측정/렌더링 일관성 (layout 의 recompose_for_cell_width 호출과 동일).
-                            crate::renderer::composer::recompose_for_cell_width(
+                            crate::renderer::composer::recompose_for_cell_width_for_source(
                                 &mut comp,
                                 p,
-                                cell_inner_width,
+                                wrap_width,
                                 styles,
+                                self.native_hwpx_cell_margin,
                             );
                             let para_style = styles.para_styles.get(p.para_shape_id as usize);
                             let is_last_para = pidx + 1 == cell_para_count;
@@ -1172,7 +1463,12 @@ impl HeightMeasurer {
                             } else {
                                 0.0
                             };
-                            let spacing_after = if !is_last_para {
+                            let tail = if self.native_hwpx_cell_margin {
+                                hwpx_structural_cell_tail(p, styles, self.dpi)
+                            } else {
+                                0
+                            };
+                            let spacing_after = if include_table_cell_spacing_after(table, is_last_para, tail) {
                                 para_style.map(|s| s.spacing_after).unwrap_or(0.0)
                             } else {
                                 0.0
@@ -1248,6 +1544,18 @@ impl HeightMeasurer {
                                     hwpunit_to_px(400, self.dpi)
                                 };
                                 spacing_before + h + spacing_after
+                            } else if crate::renderer::para_has_no_stored_line_segs(p)
+                                && !p.controls.is_empty()
+                                && p.controls.iter().all(|c| matches!(c, Control::Table(_)))
+                                && !p.text.chars().any(|ch| {
+                                    !ch.is_whitespace() && ch > '\u{001F}' && ch != '\u{FFFC}'
+                                })
+                            {
+                                // [#2169] 합성 줄이 있어도 표만 든 anchor 빈 문단 몫 = 0.
+                                // 합성 줄 높이는 중첩 표 높이를 이미 담고 있어, 중첩 몫을
+                                // 따로 더하는 NO_LS 가산 경로에서 표가 두 번 계상된다
+                                // (1×1 래퍼 행이 내부 표 + 줄 = 2배로 부풀던 문제).
+                                spacing_before + spacing_after
                             } else {
                                 let cell_ls_val =
                                     para_style.map(|s| s.line_spacing).unwrap_or(160.0);
@@ -1328,13 +1636,19 @@ impl HeightMeasurer {
                                                         && is_cell_last_line),
                                             )
                                         };
-                                        // Paint excludes the final visible gap.  Only a
-                                        // fragmentable, non-inline CellBreak cell keeps it as a
-                                        // structural paragraph-unit advance.
+                                        let h = h.max(
+                                            crate::renderer::equation::composed_line_flow_height_px(
+                                                p, &comp, i, self.dpi,
+                                            )
+                                            .unwrap_or(0.0),
+                                        );
+                                        // Generated HWPX RowBreak cells also retain the final
+                                        // paragraph-unit advance after font reflow.
                                         let include_trailing_ls = include_table_cell_line_spacing(
                                             table,
                                             is_cell_last_line,
                                             cell_para_count,
+                                            tail,
                                         );
                                         if include_trailing_ls {
                                             h + hwpunit_to_px(line.line_spacing, self.dpi)
@@ -1465,10 +1779,14 @@ impl HeightMeasurer {
                 };
 
                 // 패딩 포함 총 필요 높이
-                // [Task #501] cell.padding 이 IR cell.height 의 절반을 초과하는 비정상
+                // [Task #501] cell.padding 이 IR cell.height 자체를 초과하는 비정상
                 // 케이스 (mel-001 p2 셀[21]: cell.h=1280 HU, pad.top+bottom=3400 HU) 가드:
                 // 비정상 padding 이 row_heights 를 확장하면 TAC 표 비례 축소가 모든 행에
                 // 영향. content_height 가 IR cell.height 안에 들어가면 IR 권위 우선.
+                // [macOS 정합] 문턱을 pad>h 로 좁힌다 — 빈 저장 셀의
+                // lh+pad 가 h 를 살짝 넘는 정상 케이스(09-table-004 r1:
+                // h=482 < lh300+pad282=582 → 한컴 행 5.7pt)까지 IR 고정하면
+                // 한컴이 강제하는 최소 행높이를 놓친다.
                 let total_pad = pad_top + pad_bottom;
                 let cell_h_px = if cell.height < 0x80000000 {
                     hwpunit_to_px(cell.height as i32, self.dpi)
@@ -1492,10 +1810,21 @@ impl HeightMeasurer {
                         .paragraphs
                         .iter()
                         .all(|p| !crate::renderer::para_has_no_stored_line_segs(p));
-                let required_height = if cell_h_px > 0.0
-                    && total_pad > cell_h_px * 0.5
-                    && content_height <= cell_h_px
-                {
+                // [저장 LINE_SEG 셀 — 상위 표 한정] layout 의 authored-exact 미러:
+                // 측정 흐름이 선언 셀 h와 사실상 같으면 작성 지오메트리에 pad가
+                // 이미 포함된 정합 → 흐름 그대로(#2211); 다르면 한컴은
+                // pad+흐름으로 행을 계산한다 (06-multi-table-001 pi20:
+                // textless r0 h=200/ls=100 → ≈382HU, r1-r3 h=280/ls=1000 →
+                // ≈1282HU). depth>0 는 기존 relaxed_pad_mirror 경로 유지 —
+                // 중첩 셀은 #2214 계보 저장 지오메트리 그대로.
+                let all_stored_ls = !cell.paragraphs.is_empty()
+                    && cell
+                        .paragraphs
+                        .iter()
+                        .all(|p| !crate::renderer::para_has_no_stored_line_segs(p));
+                let required_height = if all_stored_ls && depth == 0 && cell_h_px > 0.0 {
+                    content_height + total_pad
+                } else if cell_h_px > 0.0 && total_pad > cell_h_px && content_height <= cell_h_px {
                     cell_h_px
                 } else if relaxed_pad_mirror {
                     let non_inline_h = self.measure_non_inline_controls_height(&cell.paragraphs);
@@ -1515,23 +1844,24 @@ impl HeightMeasurer {
                 // structural trailing 을 보존하므로 required 가 선언높이를 초과할 수 있다
                 // (2501937 row0: 콘텐츠 10016HU + trailing 600HU + pad → 149.1px >
                 // 선언 142.2px). 초과분이 전적으로 그 trailing 이면 선언높이로 clamp.
-                // TAC/RowBreak 는 측정 단계에서 마지막 가시 gap 을 이미 제외하므로 같은
-                // helper 로 0을 반환해 여기서 이중 차감하지 않는다.
+                // 일반 TAC/RowBreak 는 마지막 가시 gap 을 제외한다. HWPX 합성
+                // RowBreak 의 양수 gap 은 재조판 결과이므로 선언높이로 clamp 하지 않는다.
                 let cell_last_trailing_ls = if cell.text_direction == 0
                     && !has_nested_table_in_cell
                     && cell.paragraphs.len() > 1
                     && !matches!(table.page_break, TablePageBreak::RowBreak)
-                    && include_table_cell_line_spacing(table, true, cell.paragraphs.len())
+                    && include_table_cell_line_spacing(table, true, cell.paragraphs.len(), 0)
                 {
                     cell.paragraphs
                         .last()
                         .map(|p| {
                             let mut comp = compose_paragraph(p);
-                            crate::renderer::composer::recompose_for_cell_width(
+                            crate::renderer::composer::recompose_for_cell_width_for_source(
                                 &mut comp,
                                 p,
-                                cell_inner_width,
+                                wrap_width,
                                 styles,
+                                self.native_hwpx_cell_margin,
                             );
                             comp.lines
                                 .last()
@@ -1577,7 +1907,7 @@ impl HeightMeasurer {
                             .iter()
                             .all(|p| !crate::renderer::para_has_no_stored_line_segs(p));
                     eprintln!(
-                        "DIAG_ROWH r={} c={} decl={:.1} req={:.1} content={:.1} pad={:.1} trail={:.1} stored={} nested={}",
+                        "DIAG_ROWH d={depth} r={} c={} decl={:.1} req={:.1} content={:.1} pad={:.1} trail={:.1} stored={} nested={}",
                         cell.row,
                         cell.col,
                         cell_h_px,
@@ -1594,6 +1924,9 @@ impl HeightMeasurer {
                 }
             }
         }
+
+        // 병합 셀 요구 높이 — 선언 높이(2-b)와 콘텐츠 높이(2-c)를 끝 행 순서로 함께 적용
+        let mut span_requirements: Vec<(usize, usize, f64, f64)> = Vec::new();
 
         // 2-b단계: 병합 셀에서 미지 행 높이를 반복적으로 해결
         {
@@ -1622,8 +1955,21 @@ impl HeightMeasurer {
                     let unknown_rows: Vec<usize> =
                         (r..r + span).filter(|&i| row_heights[i] == 0.0).collect();
                     if unknown_rows.len() == 1 {
+                        // 미지 행이 걸침 중간 행이면 잔여는 걸침 끝 행이 흡수한다 —
+                        // 한컴은 병합 내부의 빈 행을 부풀리지 않는다 (06-multi-table
+                        // -001 p2 통합고용정책국 셀 상단 +5.2px). 끝 행이 미지면
+                        // 대입과 동치 (해당 행은 0). 시작 행이 미지면 시작 행이 받는다 —
+                        // 걸침 셀 시작 행은 셀 상자 높이를 직접 구성하므로, 끝 행으로
+                        // 보낸 잔여는 선언 행 그리드 스냅(coherent_declared_row_grid)에
+                        // 지워져 걸침 합이 선언 높이보다 작아진다 (task2146 r11: rs=7
+                        // 선언 671.4px 의 유일 미지 행 = 시작 행).
                         let remaining = (total_h - known_sum).max(0.0);
-                        row_heights[unknown_rows[0]] = remaining;
+                        let u = unknown_rows[0];
+                        if u == r {
+                            row_heights[u] = remaining;
+                        } else {
+                            row_heights[r + span - 1] += remaining;
+                        }
                         progress = true;
                     }
                 }
@@ -1636,11 +1982,12 @@ impl HeightMeasurer {
                 let unknown_rows: Vec<usize> =
                     (r..r + span).filter(|&i| row_heights[i] == 0.0).collect();
                 if !unknown_rows.is_empty() {
+                    // 다수 미지 행: 한컴은 걸침 셀 높이를 끝 행에 몰아 넣는다
+                    // (grow_rows_for_span_requirements / #2291 하단 정렬 규칙과 동일).
+                    // 균등 배분하면 미지 행이 괘선 사이에서 부풀어 걸침 시작 셀의
+                    // 상단이 내려간다 (06-multi-table-001 p2 통합고용정책국 +5.2px).
                     let remaining = (total_h - known_sum).max(0.0);
-                    let per_row = remaining / unknown_rows.len() as f64;
-                    for i in unknown_rows {
-                        row_heights[i] = per_row;
-                    }
+                    row_heights[r + span - 1] += remaining;
                 }
             }
             // [#2291/#2237] 병합 셀 **선언** 높이가 걸친 행합을 초과하면 잔여를
@@ -1649,12 +1996,8 @@ impl HeightMeasurer {
             // resolve_row_heights(table_layout)와 동일 규칙 — 분할 표의 컷
             // 회계(mt.row_heights)에도 반영되어야 rowspan 중첩 문서의 쪽당
             // +15% 조밀(연결맵 −35쪽 지배 성분)이 정합한다.
-            for &(r, span, total_h) in &constraints {
-                let known_sum: f64 = (r..r + span).map(|i| row_heights[i]).sum();
-                if total_h > known_sum + 0.5 {
-                    row_heights[r + span - 1] += total_h - known_sum;
-                }
-            }
+            // 적용은 2-c 콘텐츠 요구와 함께 끝 행 순서로 한다 (grow_rows_for_span_requirements).
+            span_requirements.extend(constraints.iter().map(|&(r, span, h)| (r, span, h, 0.5)));
         }
 
         // 2-c단계: 병합 셀의 실제 컨텐츠 높이가 결합 행 높이 초과 시 마지막 행 확장
@@ -1667,7 +2010,7 @@ impl HeightMeasurer {
                 // 레이아웃(resolve_cell_padding)과 정합한다. 직접 분기가 남으면
                 // HWPX→HWP 변환의 micro-grid 계약(aim 일괄 세트)만으로 병합 셀
                 // 행높이 측정이 갈린다 (admrul_0296 행 32.37→31.60, 표 3.87px).
-                let eff_pad = cell.effective_padding(&table.padding);
+                let eff_pad = self.effective_cell_padding(cell, table);
                 let (pad_top, pad_bottom) = (
                     hwpunit_to_px(eff_pad.top as i32, self.dpi),
                     hwpunit_to_px(eff_pad.bottom as i32, self.dpi),
@@ -1683,6 +2026,15 @@ impl HeightMeasurer {
                     0.0
                 };
                 let cell_inner_width = (cell_w_px - pad_left - pad_right).max(0.0);
+                // [lso-load3] 줄 정보 없는 셀 문단 재분할 폭은 편집·로드 합성과 같은
+                // 한컴 셀 줄 폭 모델 (`LayoutEngine::hancom_cell_wrap_width_px`).
+                let wrap_width = crate::renderer::layout::LayoutEngine::hancom_cell_wrap_width_px(
+                    table,
+                    cell,
+                    self.dpi,
+                    width_scale,
+                )
+                .unwrap_or(cell_inner_width);
                 let text_height: f64 = if cell.text_direction != 0 {
                     // 세로쓰기: max(segment_width)
                     let mut max_h: f64 = 0.0;
@@ -1708,11 +2060,12 @@ impl HeightMeasurer {
                             let mut comp = compose_paragraph(p);
                             // [Task #671] line_segs 비어 있는 셀 paragraph 의 단일 ComposedLine
                             // 압축 결과를 셀 가용 너비에 맞춰 다중 ComposedLine 으로 재분할.
-                            crate::renderer::composer::recompose_for_cell_width(
+                            crate::renderer::composer::recompose_for_cell_width_for_source(
                                 &mut comp,
                                 p,
-                                cell_inner_width,
+                                wrap_width,
                                 styles,
+                                self.native_hwpx_cell_margin,
                             );
                             let para_style = styles.para_styles.get(p.para_shape_id as usize);
                             let is_last_para = pidx + 1 == cell_para_count;
@@ -1721,7 +2074,12 @@ impl HeightMeasurer {
                             } else {
                                 0.0
                             };
-                            let spacing_after = if !is_last_para {
+                            let tail = if self.native_hwpx_cell_margin {
+                                hwpx_structural_cell_tail(p, styles, self.dpi)
+                            } else {
+                                0
+                            };
+                            let spacing_after = if include_table_cell_spacing_after(table, is_last_para, tail) {
                                 para_style.map(|s| s.spacing_after).unwrap_or(0.0)
                             } else {
                                 0.0
@@ -1877,10 +2235,17 @@ impl HeightMeasurer {
                                                         && is_cell_last_line),
                                             )
                                         };
+                                        let h = h.max(
+                                            crate::renderer::equation::composed_line_flow_height_px(
+                                                p, &comp, i, self.dpi,
+                                            )
+                                            .unwrap_or(0.0),
+                                        );
                                         let include_trailing_ls = include_table_cell_line_spacing(
                                             table,
                                             is_cell_last_line,
                                             cell_para_count,
+                                            tail,
                                         );
                                         if include_trailing_ls {
                                             h + hwpunit_to_px(line.line_spacing, self.dpi)
@@ -1924,13 +2289,10 @@ impl HeightMeasurer {
                         .max(wrap_bottom);
                     content_height + pad_top + pad_bottom
                 };
-                let combined: f64 = (r..r + span).map(|i| row_heights[i]).sum();
-                if required_height > combined {
-                    let deficit = required_height - combined;
-                    row_heights[r + span - 1] += deficit;
-                }
+                span_requirements.push((r, span, required_height, 0.0));
             }
         }
+        grow_rows_for_span_requirements(&mut row_heights, &mut span_requirements);
 
         // A RowBreak table can carry a complete saved row grid even when its cell paragraphs have
         // no LINE_SEG records. Fallback font metrics are useful for rejecting a stale grid, but
@@ -1973,9 +2335,28 @@ impl HeightMeasurer {
             }
         }
 
-        // 3단계: 높이가 0인 행은 기본값 적용
-        for h in &mut row_heights {
-            if *h <= 0.0 {
+        // 3단계: 높이가 0인 행은 기본값 적용.
+        // 단, 모든 셀이 복수 행 병합에 속한 행(걸침 내부 행)은 한컴이 실제로 0 으로
+        // 붕괴시킨다 — 걸침 셀이 시각적으로 그 구간을 메우므로 행 자체 높이는
+        // 필요 없다. 400HU 로 채우면 걸침 시작 셀의 상단이 내려간다
+        // (06-multi-table-001 p2: 행15·16 → 통합고용정책국 +5.2px).
+        let mut row_has_rs1 = vec![false; row_count];
+        let mut row_covered = vec![false; row_count];
+        for cell in &table.cells {
+            let r = cell.row as usize;
+            if r >= row_count {
+                continue;
+            }
+            if cell.row_span <= 1 {
+                row_has_rs1[r] = true;
+            }
+            let span_end = (r + cell.row_span.max(1) as usize).min(row_count);
+            for rr in r..span_end {
+                row_covered[rr] = true;
+            }
+        }
+        for (i, h) in row_heights.iter_mut().enumerate() {
+            if *h <= 0.0 && !(row_covered[i] && !row_has_rs1[i]) {
                 *h = hwpunit_to_px(400, self.dpi);
             }
         }
@@ -1984,6 +2365,7 @@ impl HeightMeasurer {
         let cell_spacing = hwpunit_to_px(table.cell_spacing as i32, self.dpi);
         let raw_table_height: f64 =
             row_heights.iter().sum::<f64>() + cell_spacing * (row_count.saturating_sub(1) as f64);
+        let raw_row_heights = row_heights.clone();
         // TAC 표: common.height(표 속성 높이)를 상한으로 사용
         // 한컴은 TAC 표의 높이를 속성값으로 유지 (셀 콘텐츠 넘침은 클리핑)
         // 비-TAC 표: 셀 콘텐츠 기반 확장 유지 (행 분할 필요)
@@ -2110,7 +2492,7 @@ impl HeightMeasurer {
                 .filter(|cell| (cell.row as usize) < row_count)
                 .map(|cell| {
                     // [#1809] aim 직접 분기 → 단일 출처 통일 (위 2-c단계와 동일 근거)
-                    let eff_pad = cell.effective_padding(&table.padding);
+                    let eff_pad = self.effective_cell_padding(cell, table);
                     let pad_top = hwpunit_to_px(eff_pad.top as i32, self.dpi);
                     let pad_bottom = hwpunit_to_px(eff_pad.bottom as i32, self.dpi);
 
@@ -2129,11 +2511,17 @@ impl HeightMeasurer {
                         } else {
                             0.0
                         };
-                        let spacing_after = if !is_last_para {
-                            para_style.map(|s| s.spacing_after).unwrap_or(0.0)
+                        let tail = if self.native_hwpx_cell_margin {
+                            hwpx_structural_cell_tail(p, styles, self.dpi)
                         } else {
-                            0.0
+                            0
                         };
+                        let spacing_after =
+                            if include_table_cell_spacing_after(table, is_last_para, tail) {
+                                para_style.map(|s| s.spacing_after).unwrap_or(0.0)
+                            } else {
+                                0.0
+                            };
                         // LINE_SEG의 line_height에 이미 중첩 표 높이가 반영되어 있으므로
                         // 별도 추가 줄로 넣으면 이중 계산됨
                         if comp.lines.is_empty() {
@@ -2198,6 +2586,12 @@ impl HeightMeasurer {
                                                 && is_cell_last_line),
                                     )
                                 };
+                                let h = h.max(
+                                    crate::renderer::equation::composed_line_flow_height_px(
+                                        p, &comp, li, self.dpi,
+                                    )
+                                    .unwrap_or(0.0),
+                                );
                                 let ls = hwpunit_to_px(line.line_spacing, self.dpi);
                                 let mut line_h = if !is_cell_last_line { h + ls } else { h };
                                 if li == 0 {
@@ -2297,9 +2691,12 @@ impl HeightMeasurer {
         MeasuredTable {
             para_index,
             control_index,
+            source_instance_id: table.common.instance_id,
             total_height,
             row_heights,
+            raw_row_heights,
             baseline_row_heights: None,
+            baseline_raw_row_heights: None,
             caption_height,
             cell_spacing,
             cumulative_heights,
@@ -2321,7 +2718,18 @@ impl HeightMeasurer {
     /// 편집기의 행 배분은 선언 높이 비례 팽창이라, 한 셀이 자라면 다른 행의
     /// 몫을 잠식해 행 경계가 위로 밀린다. 한글은 편집한 행만 키우고 나머지
     /// 행의 저장 배분을 보존한다.
-    fn floor_rows_to_prev(mt: &mut MeasuredTable, prev: &MeasuredTable, cell_spacing: f64) {
+    fn floor_rows_to_prev(
+        mt: &mut MeasuredTable,
+        prev: &MeasuredTable,
+        cell_spacing: f64,
+        treat_as_char: bool,
+        instance_id: u32,
+    ) {
+        if (instance_id != 0 || prev.source_instance_id != 0)
+            && instance_id != prev.source_instance_id
+        {
+            return;
+        }
         // 하한 기준은 직전 측정이 아니라 **로드 시점 배분**이다 — 직전 측정을
         // 기준으로 삼으면 편집으로 커진 행이 undo/삭제 뒤에도 하한에 걸려
         // 되돌아오지 못한다(셀 끝 Enter 4회 → 역병합 4회: 표가 커진 채 잔존,
@@ -2335,11 +2743,31 @@ impl HeightMeasurer {
             return;
         }
         mt.baseline_row_heights = Some(baseline.clone());
+        let baseline_raw = prev
+            .baseline_raw_row_heights
+            .as_ref()
+            .unwrap_or(&prev.raw_row_heights);
+        if baseline_raw.len() == mt.raw_row_heights.len() {
+            mt.baseline_raw_row_heights = Some(baseline_raw.clone());
+        }
+        // 로드 때 저장 TAC 높이에 맞춰 각 행을 축소했으면, 내용이 그대로인 행은
+        // 그 배분을 유지하고 실제로 자란 행에만 로드 이후 성장분을 더한다.
+        let was_fitted_down = treat_as_char
+            && baseline_raw.len() == baseline.len()
+            && baseline_raw.iter().sum::<f64>() > baseline.iter().sum::<f64>() + 0.5;
         let mut changed = false;
-        for (h, b) in mt.row_heights.iter_mut().zip(baseline.iter()) {
-            if *h + 0.05 < *b {
-                *h = *b;
-                changed = true;
+        for (row, (h, b)) in mt.row_heights.iter_mut().zip(baseline.iter()).enumerate() {
+            let minimum = if was_fitted_down {
+                let growth = (mt.raw_row_heights[row] - baseline_raw[row]).max(0.0);
+                *b + growth
+            } else {
+                *b
+            };
+            if was_fitted_down || *h + 0.05 < minimum {
+                if (*h - minimum).abs() > 0.05 {
+                    changed = true;
+                }
+                *h = minimum;
             }
         }
         if !changed {
@@ -2414,7 +2842,13 @@ impl HeightMeasurer {
                     if self.session_edited {
                         if let Some(prev) = prev_measured.get_measured_table(para_idx, ctrl_idx) {
                             let cs = hwpunit_to_px(table.cell_spacing as i32, self.dpi);
-                            Self::floor_rows_to_prev(&mut measured_table, prev, cs);
+                            Self::floor_rows_to_prev(
+                                &mut measured_table,
+                                prev,
+                                cs,
+                                table.common.treat_as_char,
+                                table.common.instance_id,
+                            );
                         }
                     }
                     measured_tables.push(measured_table);
@@ -2482,7 +2916,13 @@ impl HeightMeasurer {
                                     prev_measured.get_measured_table(para_idx, ctrl_idx)
                                 {
                                     let cs = hwpunit_to_px(table.cell_spacing as i32, self.dpi);
-                                    Self::floor_rows_to_prev(&mut mt, prev, cs);
+                                    Self::floor_rows_to_prev(
+                                        &mut mt,
+                                        prev,
+                                        cs,
+                                        table.common.treat_as_char,
+                                        table.common.instance_id,
+                                    );
                                 }
                             }
                             measured_tables.push(mt);
@@ -2531,7 +2971,13 @@ impl HeightMeasurer {
                     if self.session_edited {
                         if let Some(prev) = prev_measured.get_measured_table(para_idx, ctrl_idx) {
                             let cs = hwpunit_to_px(table.cell_spacing as i32, self.dpi);
-                            Self::floor_rows_to_prev(&mut mt, prev, cs);
+                            Self::floor_rows_to_prev(
+                                &mut mt,
+                                prev,
+                                cs,
+                                table.common.treat_as_char,
+                                table.common.instance_id,
+                            );
                         }
                     }
                     measured_tables.push(mt);
@@ -2579,6 +3025,17 @@ impl HeightMeasurer {
 }
 
 impl MeasuredTable {
+    pub(crate) fn has_row_growth(&self) -> bool {
+        self.baseline_row_heights.as_ref().is_some_and(|baseline| {
+            self.row_heights.len() == baseline.len()
+                && self
+                    .row_heights
+                    .iter()
+                    .zip(baseline)
+                    .any(|(height, loaded)| *height > *loaded + 0.05)
+        })
+    }
+
     /// 지정 행의 셀별 남은 콘텐츠 높이 최대값을 반환한다.
     /// 셀의 콘텐츠 높이가 행 높이(패딩 제외)를 초과하면 행 높이로 캡핑한다.
     /// (HWP가 지정한 행 높이 = 보이는 콘텐츠 높이; 중첩 표의 클리핑된 높이만 반영)
@@ -3017,20 +3474,7 @@ impl HeightMeasurer {
         let mut footnote_content_height = 0.0;
         for (i, footnote) in footnotes.iter().enumerate() {
             // 각주 문단 높이 추정: LineSeg가 있으면 사용, 없으면 기본값
-            let mut fn_height = 0.0;
-            for para in &footnote.paragraphs {
-                if para.line_segs.is_empty() {
-                    fn_height += hwpunit_to_px(400, self.dpi); // 기본 약 14pt
-                } else {
-                    for seg in &para.line_segs {
-                        fn_height += hwpunit_to_px(seg.line_height, self.dpi);
-                    }
-                }
-            }
-            // 빈 각주도 최소 높이 보장
-            if fn_height <= 0.0 {
-                fn_height = hwpunit_to_px(400, self.dpi);
-            }
+            let fn_height = self.estimate_single_footnote_height(footnote);
             footnote_content_height += fn_height;
 
             // 각주 간 간격 (마지막 각주 제외)
@@ -3044,14 +3488,22 @@ impl HeightMeasurer {
     }
 
     /// 단일 각주의 높이를 추정한다.
+    /// 레이아웃(`layout_footnote_area`)과 같이 줄 사이 간격을 포함하고 각주의 마지막 줄
+    /// 뒤 간격만 제외한다.
     pub fn estimate_single_footnote_height(&self, footnote: &Footnote) -> f64 {
         let mut fn_height = 0.0;
-        for para in &footnote.paragraphs {
+        let para_count = footnote.paragraphs.len();
+        for (p_idx, para) in footnote.paragraphs.iter().enumerate() {
             if para.line_segs.is_empty() {
                 fn_height += hwpunit_to_px(400, self.dpi);
             } else {
-                for seg in &para.line_segs {
+                let last_para = p_idx + 1 == para_count;
+                let line_count = para.line_segs.len();
+                for (l_idx, seg) in para.line_segs.iter().enumerate() {
                     fn_height += hwpunit_to_px(seg.line_height, self.dpi);
+                    if !(last_para && l_idx + 1 == line_count) {
+                        fn_height += hwpunit_to_px(seg.line_spacing, self.dpi);
+                    }
                 }
             }
         }
@@ -3065,6 +3517,19 @@ impl HeightMeasurer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// tb-org-02: r6..r7 rs=2 콘텐츠가 r7 을 키우면 r7..r9 rs=3 선언 높이는 이미 충족된다.
+    /// 선언 잔여를 먼저 r9 에 더하면 같은 82HU 가 두 번 들어간다 (한컴: r7 만 성장).
+    #[test]
+    fn span_requirements_apply_in_end_row_order_without_double_growth() {
+        let mut rows = vec![1782.0, 4918.0, 100.0, 280.0];
+        let mut reqs = vec![
+            (1, 3, 5380.0, 0.5),          // 선언 rs=3 (r1..r3)
+            (0, 2, 1782.0 + 5000.0, 0.0), // 콘텐츠 rs=2 (r0..r1)
+        ];
+        grow_rows_for_span_requirements(&mut rows, &mut reqs);
+        assert_eq!(rows, vec![1782.0, 5000.0, 100.0, 280.0]);
+    }
     use crate::model::paragraph::{LineSeg, Paragraph};
     use crate::model::table::{Cell, Table};
     use crate::renderer::layout::LayoutEngine;
@@ -3280,6 +3745,95 @@ mod tests {
     }
 
     #[test]
+    fn inline_equation_ascent_is_counted_by_row_measurement_and_cut() {
+        use crate::model::control::Equation;
+        use crate::model::provenance::LayoutCompatibilityProfile;
+
+        let mut eq = Equation::default();
+        eq.common.treat_as_char = true;
+        eq.common.height = 1_020;
+        eq.common.width = 3_000;
+        eq.font_size = 1_000;
+        eq.script = "x^{2}".to_string();
+        eq.baseline = 78;
+        let paragraph = Paragraph {
+            controls: vec![Control::Equation(Box::new(eq))],
+            line_segs: vec![LineSeg {
+                line_height: 1_020,
+                line_spacing: 350,
+                baseline_distance: 796,
+                tag: LineSeg::TAG_IMPLEMENTATION_PROPERTY,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let table = Table {
+            row_count: 1,
+            col_count: 1,
+            page_break: TablePageBreak::RowBreak,
+            common: CommonObjAttr {
+                treat_as_char: false,
+                width: 10_000,
+                ..Default::default()
+            },
+            cells: vec![Cell {
+                row_span: 1,
+                col_span: 1,
+                width: 10_000,
+                height: 1_000,
+                paragraphs: vec![paragraph],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let styles = ResolvedStyleSet::default();
+        let measured = HeightMeasurer::with_default_dpi()
+            .with_hwpx_cell_spacing(true)
+            .measure_table(&table, 0, 0, &styles)
+            .row_heights[0];
+        let layout = LayoutEngine::new(DEFAULT_DPI);
+        layout.set_layout_profile(LayoutCompatibilityProfile::new(
+            false, false, true, false, false,
+        ));
+        let cut = layout.row_cut_content_height(&table, 0, &[], &[], &styles);
+        assert!(measured > hwpunit_to_px(1_020, DEFAULT_DPI));
+        assert!(
+            (measured - cut).abs() < 0.001,
+            "measured={measured} cut={cut}"
+        );
+
+        let generated = &table.cells[0].paragraphs[0];
+        let generated_comp = compose_paragraph(generated);
+        assert!(crate::renderer::equation::composed_line_flow_height_px(
+            generated,
+            &generated_comp,
+            0,
+            DEFAULT_DPI,
+        )
+        .is_some());
+        let mut authored = generated.clone();
+        authored.line_segs[0].tag = 0;
+        let authored_comp = compose_paragraph(&authored);
+        assert!(crate::renderer::equation::composed_line_flow_height_px(
+            &authored,
+            &authored_comp,
+            0,
+            DEFAULT_DPI,
+        )
+        .is_none());
+        let mut mixed = generated.clone();
+        mixed.text = "text".to_string();
+        let mixed_comp = compose_paragraph(&mixed);
+        assert!(crate::renderer::equation::composed_line_flow_height_px(
+            &mixed,
+            &mixed_comp,
+            0,
+            DEFAULT_DPI,
+        )
+        .is_none());
+    }
+
+    #[test]
     fn hwpx_first_cell_spacing_is_counted_in_row_height_and_split_units() {
         use crate::model::provenance::LayoutCompatibilityProfile;
         use crate::renderer::style_resolver::ResolvedParaStyle;
@@ -3340,13 +3894,13 @@ mod tests {
     }
 
     #[test]
-    fn non_tac_cellbreak_keeps_structural_final_spacing() {
+    fn non_tac_cellbreak_excludes_final_spacing_without_structural_tail() {
         let measurer = HeightMeasurer::with_default_dpi();
         let styles = ResolvedStyleSet::default();
         let table = stored_two_paragraph_table(false, TablePageBreak::CellBreak);
         let measured = measurer.measure_table(&table, 0, 0, &styles);
-        // CellBreak exposes paragraph units to pagination, so both 960-HU advances remain.
-        let expected = hwpunit_to_px(5120, DEFAULT_DPI);
+        // 줄 사이 간격만 포함하고 마지막 줄 뒤 간격은 셀 높이에서 제외한다.
+        let expected = hwpunit_to_px(4160, DEFAULT_DPI);
 
         assert!(
             (measured.row_heights[0] - expected).abs() < 0.001,
@@ -3416,9 +3970,12 @@ mod tests {
         let mt = MeasuredTable {
             para_index: 0,
             control_index: 0,
+            source_instance_id: 0,
             total_height: 100.0,
             row_heights: vec![20.0, 30.0, 25.0],
+            raw_row_heights: vec![20.0, 30.0, 25.0],
             baseline_row_heights: None,
+            baseline_raw_row_heights: None,
             caption_height: 0.0,
             cell_spacing: 5.0,
             cumulative_heights: vec![0.0, 20.0, 55.0, 85.0], // 0, 20, 20+30+5, 55+25+5
@@ -3439,9 +3996,12 @@ mod tests {
         let mt = MeasuredTable {
             para_index: 0,
             control_index: 0,
+            source_instance_id: 0,
             total_height: 100.0,
             row_heights: vec![20.0, 30.0, 25.0, 40.0],
+            raw_row_heights: vec![20.0, 30.0, 25.0, 40.0],
             baseline_row_heights: None,
+            baseline_raw_row_heights: None,
             caption_height: 0.0,
             cell_spacing: 5.0,
             cumulative_heights: vec![0.0, 20.0, 55.0, 85.0, 130.0],
@@ -3469,9 +4029,12 @@ mod tests {
         let mt = MeasuredTable {
             para_index: 0,
             control_index: 0,
+            source_instance_id: 0,
             total_height: 100.0,
             row_heights: vec![50.0, 30.0],
+            raw_row_heights: vec![50.0, 30.0],
             baseline_row_heights: None,
+            baseline_raw_row_heights: None,
             caption_height: 0.0,
             cell_spacing: 5.0,
             cumulative_heights: vec![0.0, 50.0, 85.0],
@@ -3491,9 +4054,12 @@ mod tests {
         let mt = MeasuredTable {
             para_index: 0,
             control_index: 0,
+            source_instance_id: 0,
             total_height: 100.0,
             row_heights: vec![20.0, 30.0, 25.0],
+            raw_row_heights: vec![20.0, 30.0, 25.0],
             baseline_row_heights: None,
+            baseline_raw_row_heights: None,
             caption_height: 0.0,
             cell_spacing: 5.0,
             cumulative_heights: vec![0.0, 20.0, 55.0, 85.0],
@@ -3524,9 +4090,12 @@ mod tests {
         let mt = MeasuredTable {
             para_index: 0,
             control_index: 0,
+            source_instance_id: 0,
             total_height: 100.0,
             row_heights: vec![50.0, 30.0, 25.0],
+            raw_row_heights: vec![50.0, 30.0, 25.0],
             baseline_row_heights: None,
+            baseline_raw_row_heights: None,
             caption_height: 0.0,
             cell_spacing: 5.0,
             cumulative_heights: vec![0.0, 50.0, 85.0, 115.0],
@@ -3552,9 +4121,12 @@ mod tests {
         let mt = MeasuredTable {
             para_index: 0,
             control_index: 0,
+            source_instance_id: 0,
             total_height: 0.0,
             row_heights: vec![],
+            raw_row_heights: vec![],
             baseline_row_heights: None,
+            baseline_raw_row_heights: None,
             caption_height: 0.0,
             cell_spacing: 0.0,
             cumulative_heights: vec![0.0],
@@ -3574,9 +4146,12 @@ mod tests {
         let mt = MeasuredTable {
             para_index: 0,
             control_index: 0,
+            source_instance_id: 0,
             total_height: 50.0,
             row_heights: vec![50.0],
+            raw_row_heights: vec![50.0],
             baseline_row_heights: None,
+            baseline_raw_row_heights: None,
             caption_height: 0.0,
             cell_spacing: 0.0,
             cumulative_heights: vec![0.0, 50.0],
@@ -3698,9 +4273,12 @@ mod tests {
         let mt = MeasuredTable {
             para_index: 0,
             control_index: 0,
+            source_instance_id: 0,
             total_height: 100.0,
             row_heights: vec![20.0, 30.0, 25.0],
+            raw_row_heights: vec![20.0, 30.0, 25.0],
             baseline_row_heights: None,
+            baseline_raw_row_heights: None,
             caption_height: 0.0,
             cell_spacing: 5.0,
             cumulative_heights: vec![0.0, 20.0, 55.0, 85.0],
@@ -3731,9 +4309,12 @@ mod tests {
         let mt = MeasuredTable {
             para_index: 0,
             control_index: 0,
+            source_instance_id: 0,
             total_height: 50.0,
             row_heights: vec![20.0, 30.0],
+            raw_row_heights: vec![20.0, 30.0],
             baseline_row_heights: None,
+            baseline_raw_row_heights: None,
             caption_height: 0.0,
             cell_spacing: 5.0,
             cumulative_heights: vec![0.0, 20.0, 55.0],
@@ -3758,9 +4339,12 @@ mod tests {
         let mt = MeasuredTable {
             para_index: 0,
             control_index: 0,
+            source_instance_id: 0,
             total_height: 100.0,
             row_heights: vec![10.0, 10.0, 10.0, 10.0, 10.0],
+            raw_row_heights: vec![10.0, 10.0, 10.0, 10.0, 10.0],
             baseline_row_heights: None,
+            baseline_raw_row_heights: None,
             caption_height: 0.0,
             cell_spacing: 0.0,
             cumulative_heights: vec![0.0, 10.0, 20.0, 30.0, 40.0, 50.0],
@@ -3791,9 +4375,12 @@ mod tests {
         let mt = MeasuredTable {
             para_index: 0,
             control_index: 0,
+            source_instance_id: 0,
             total_height: 100.0,
             row_heights: vec![10.0, 10.0, 10.0, 10.0, 10.0],
+            raw_row_heights: vec![10.0, 10.0, 10.0, 10.0, 10.0],
             baseline_row_heights: None,
+            baseline_raw_row_heights: None,
             caption_height: 0.0,
             cell_spacing: 0.0,
             cumulative_heights: vec![0.0, 10.0, 20.0, 30.0, 40.0, 50.0],
@@ -3816,9 +4403,12 @@ mod tests {
         let mut mt = MeasuredTable {
             para_index: 0,
             control_index: 0,
+            source_instance_id: 0,
             total_height: 0.0,
             row_heights: vec![],
+            raw_row_heights: vec![],
             baseline_row_heights: None,
+            baseline_raw_row_heights: None,
             caption_height: 0.0,
             cell_spacing: 0.0,
             cumulative_heights: vec![0.0],

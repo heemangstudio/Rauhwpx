@@ -493,15 +493,16 @@ export function createSkillsShelf(options: {
   function beginDrag(event: PointerEvent, item: HTMLElement): void {
     if (event.button !== 0) return;
     event.preventDefault();
+    const grabbedTop = item.getBoundingClientRect().top;
+    const grabOffset = event.clientY - grabbedTop;
     cancelReflowAnimations();
     draggingName = item.dataset.skillName ?? null;
     dragOriginalNames = [...list.querySelectorAll<HTMLElement>('[data-skill-name]')]
       .map((candidate) => candidate.dataset.skillName)
       .filter((name): name is string => Boolean(name));
     const pointerId = event.pointerId;
-    const grabOffset = event.clientY - item.getBoundingClientRect().top;
-    let dragTranslateY = 0;
-    item.style.top = '0px';
+    let dragTranslateY = grabbedTop - item.getBoundingClientRect().top;
+    item.style.top = `${dragTranslateY}px`;
     item.classList.add('ag-skill-dragging');
     root.classList.add('ag-skills-dragging');
     const move = (moveEvent: PointerEvent) => {

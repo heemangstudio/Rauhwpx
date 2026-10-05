@@ -265,7 +265,7 @@ impl Paginator {
 
         // 머리말/꼬리말/쪽 번호 위치/새 번호 지정 컨트롤 수집
         let (hf_entries, page_number_pos, page_hides, new_page_numbers) =
-            Self::collect_header_footer_controls(paragraphs, section_index);
+            Self::collect_header_footer_controls(paragraphs, section_index, opts.hwpx_container);
 
         let col_count = column_def.column_count.max(1);
         let default_footnote_shape = crate::model::footnote::FootnoteShape::default();
@@ -343,6 +343,9 @@ impl Paginator {
             );
             let mut para_height =
                 measured.get_paragraph_height(para_idx).unwrap_or(0.0) + leading_topbottom_flow_px;
+            if crate::renderer::layout::is_empty_topbottom_picture_guide(para, false) {
+                para_height = 0.0;
+            }
 
             // 빈 줄 감추기 (구역 설정 bit 19)
             // 한컴 도움말: "각 쪽의 시작 부분에 빈 줄이 나오면, 두 개의 빈 줄까지는
@@ -564,7 +567,7 @@ impl Paginator {
             }
 
             if (force_page_break || para_style_break || variant_vpos_reset_break)
-                && !st.current_items.is_empty()
+                && (!st.current_items.is_empty() || st.current_column > 0)
             {
                 self.process_page_break(&mut st);
             }
@@ -1123,8 +1126,8 @@ impl Paginator {
             pages: st.pages,
             wrap_around_paras: all_wrap_around_paras,
             hidden_empty_paras,
-            pre_emitted_host_paras: std::collections::HashSet::new(),
-            pre_emitted_host_heights: std::collections::HashMap::new(),
+            pre_emitted_host_paras: st.pre_emitted_host_paras,
+            pre_emitted_host_heights: st.pre_emitted_host_heights,
             endnotes: Vec::new(),
             endnote_paragraphs: Vec::new(),
             endnote_para_sources: Vec::new(),
@@ -1138,6 +1141,7 @@ impl Paginator {
     fn collect_header_footer_controls(
         paragraphs: &[Paragraph],
         section_index: usize,
+        hwpx_container: bool,
     ) -> (
         Vec<(usize, HeaderFooterRef, bool, HeaderFooterApply)>,
         Option<crate::model::control::PageNumberPos>,
@@ -1148,7 +1152,8 @@ impl Paginator {
         let mut page_number_pos: Option<crate::model::control::PageNumberPos> = None;
         // (para_index, PageHide) — 각 PageHide가 속한 문단 인덱스
         let mut page_hides: Vec<(usize, crate::model::control::PageHide)> = Vec::new();
-        let mut new_page_numbers: Vec<(usize, u16)> = Vec::new();
+        let new_page_numbers =
+            crate::renderer::page_number::collect_page_number_resets(paragraphs, hwpx_container);
 
         for (pi, para) in paragraphs.iter().enumerate() {
             for (ci, ctrl) in para.controls.iter().enumerate() {
@@ -1158,6 +1163,7 @@ impl Paginator {
                             para_index: pi,
                             control_index: ci,
                             source_section_index: section_index,
+                            cell_path: Vec::new(),
                         };
                         hf_entries.push((pi, r, true, h.apply_to));
                     }
@@ -1166,6 +1172,7 @@ impl Paginator {
                             para_index: pi,
                             control_index: ci,
                             source_section_index: section_index,
+                            cell_path: Vec::new(),
                         };
                         hf_entries.push((pi, r, false, f.apply_to));
                     }
@@ -1175,13 +1182,17 @@ impl Paginator {
                     Control::PageNumberPos(pnp) => {
                         page_number_pos = Some(pnp.clone());
                     }
-                    Control::NewNumber(nn) => {
-                        if nn.number_type == crate::model::control::AutoNumberType::Page {
-                            new_page_numbers.push((pi, nn.number));
-                        }
-                    }
                     Control::Table(table) => {
                         Self::collect_pagehide_in_table(table, pi, &mut page_hides);
+                        super::collect_cell_header_footer(
+                            table,
+                            pi,
+                            ci,
+                            section_index,
+                            &mut Vec::new(),
+                            &mut hf_entries,
+                            &mut page_number_pos,
+                        );
                     }
                     _ => {}
                 }
@@ -2567,6 +2578,53 @@ impl Paginator {
         };
         let remaining_on_page =
             table_available_height - st.current_height - host_text_height - v_offset_px;
+
+        // 쪽나눔=None 표는 한글이 행 분할하지 않는다 — fresh 쪽(본문+하단 슬랙)에
+        // 들어가면 잔여 부족 시 통째로 다음 쪽/단에 둔다 (typeset.rs 의 #2097
+        // 가드와 동일 규칙; hwp_table_test.hwpx 11x3 표). fresh 쪽+슬랙에도 못
+        // 들어가는 초대형 표만 기존 분할 폴백으로 넘긴다.
+        // 호스트 문단의 텍스트 줄은 이월 전 현재 쪽에 PartialParagraph 로 남긴다
+        // (한글 문서순: 텍스트 → 표 이월) — pre_emitted_host_paras 표시로 layout
+        // 의 표 항목 host 렌더가 이월된 쪽에서 같은 텍스트를 다시 그리지 않게 한다.
+        let below_body_slack =
+            (st.layout.page_height - (st.layout.body_area.y + st.layout.body_area.height)).max(0.0);
+        let table_fits_fresh = host_text_height + v_offset_px + mt.total_height
+            <= base_available_height + below_body_slack;
+        // vertOffset>0 으로 앵커가 고정되고 호스트 문단에 텍스트가 있는 None 표만
+        // 통째 이월 — 유동(voff=0) 또는 빈 호스트의 None 표는 한글이 행 분할한다
+        // (text_footnote_tail_overpagination pi=1371 voff=0 / pi=4342 voff=60·빈 호스트:
+        // 한컴이 쪽 경계에서 행 분할).
+        if matches!(table.page_break, crate::model::table::TablePageBreak::None)
+            && table_fits_fresh
+            && !para.text.is_empty()
+            && crate::renderer::float_placement::signed_hwpunit(table.common.vertical_offset) > 0
+        {
+            if host_text_height > 0.0 && !st.current_items.is_empty() {
+                if let Some(mp) = measured.get_measured_paragraph(para_idx) {
+                    let host_lines = mp.line_heights.len();
+                    if host_lines > 0 {
+                        st.current_items.push(PageItem::PartialParagraph {
+                            para_index: para_idx,
+                            start_line: 0,
+                            end_line: host_lines,
+                        });
+                        st.current_height += host_text_height;
+                        st.pre_emitted_host_paras.insert(para_idx);
+                        st.pre_emitted_host_heights
+                            .insert(para_idx, host_text_height);
+                    }
+                }
+            }
+            if !st.current_items.is_empty() {
+                st.advance_column_or_new_page();
+            }
+            st.current_items.push(PageItem::Table {
+                para_index: para_idx,
+                control_index: ctrl_idx,
+            });
+            st.current_height += mt.total_height + host_spacing;
+            return;
+        }
 
         // Task #398 v2: 보호 블록(2~3 rows)만 블록 단위 advance.
         // 큰 rowspan(>3)은 행 단위 분할 허용 (HanCom-compat).

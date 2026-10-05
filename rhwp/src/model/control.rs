@@ -481,6 +481,27 @@ pub struct FormObject {
     pub properties: HashMap<String, String>,
 }
 
+impl FormObject {
+    /// 양식 개체의 바깥 가로 여백 (HWPUNIT). HWPX 속성의 원문은 그대로 보존한다.
+    pub fn horizontal_margins(&self) -> (i32, i32) {
+        let value = |name: &str| {
+            self.properties
+                .get(name)
+                .and_then(|v| v.parse::<i32>().ok())
+                .unwrap_or(0)
+                .max(0)
+        };
+        (value("OutMarginLeft"), value("OutMarginRight"))
+    }
+
+    pub fn occupied_width(&self) -> i32 {
+        let (left, right) = self.horizontal_margins();
+        (self.width as i32)
+            .saturating_add(left)
+            .saturating_add(right)
+    }
+}
+
 /// 알 수 없는 컨트롤
 #[derive(Debug, Clone, Default)]
 pub struct UnknownControl {

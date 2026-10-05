@@ -503,12 +503,20 @@ function cloudMock() {
 }
 
 const port = await availablePort();
+// 개발 서버가 띄우는 실제 허브는 이 컴퓨터의 Claude·Codex 를 읽고 업데이트 토스트를 띄운다.
+// 그 토스트가 Cloud 설정 버튼을 가려 클릭을 가로채므로, 아무도 듣지 않는 포트를 허브로 지정한다.
+let deadHubPort = await availablePort();
+while (deadHubPort === port) deadHubPort = await availablePort();
 const viteUrl = `http://127.0.0.1:${port}`;
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rauhwpx-cloud-onboarding-'));
 const vite = spawn(
   process.execPath,
   [path.join(studioRoot, 'node_modules', 'vite', 'bin', 'vite.js'), '--host', '127.0.0.1', '--port', String(port), '--strictPort'],
-  { cwd: studioRoot, env: { ...process.env, BROWSER: 'none' }, stdio: ['ignore', 'ignore', 'ignore'] },
+  {
+    cwd: studioRoot,
+    env: { ...process.env, BROWSER: 'none', RHWP_SKIP_AGENT_HUB: '1', RHWP_AGENT_PORT: String(deadHubPort) },
+    stdio: ['ignore', 'ignore', 'ignore'],
+  },
 );
 let browser;
 
@@ -559,8 +567,8 @@ try {
       checked: node.getAttribute('aria-checked'),
     }))),
     [
-      { mode: 'app-hosted', heading: 'Raucloud', note: 'Railway 사용 가능', checked: 'true' },
-      { mode: 'self-hosted', heading: '내 서버 사용', note: 'SSH와 비밀번호 없는 sudo가 필요합니다', checked: 'false' },
+      { mode: 'app-hosted', heading: 'Raucloud', note: 'Rauhwpx 관리형', checked: 'true' },
+      { mode: 'self-hosted', heading: '내 서버 사용', note: 'Mac mini · Linux · SSH', checked: 'false' },
     ],
   );
   assert.equal(await page.$eval('.ag-cloud-setup-options', (node) => node.getAttribute('role')), 'radiogroup');
@@ -671,7 +679,7 @@ try {
   await fillInput(page, 'VPS 주소', 'cloud-vps.tailnet.ts.net');
   await page.evaluate(() => window.__cloudHarness.setTestFailures(1));
   await clickButton(page, '연결 확인');
-  await waitForTitle(page, 'VPS 연결을 확인하세요');
+  await waitForTitle(page, 'VPS 연결 실패');
   assert.match(await page.$eval('.ag-cloud-setup-callout strong', (node) => node.textContent), /원격 호스트에 연결할 수 없습니다/);
   await clickButton(page, '다시 확인');
   await waitForTitle(page, '연결할 수 있습니다');
@@ -760,7 +768,7 @@ try {
   await clickButton(page, '환경 연결');
   await page.waitForFunction(() => document.querySelectorAll('.ag-cloud-setup-field-error').length >= 3);
   const existingErrors = await page.$$eval('.ag-cloud-setup-field-error', (nodes) => nodes.map((node) => node.textContent));
-  assert.ok(existingErrors.some((text) => text?.includes('서버에서 표시한 ID 키')));
+  assert.ok(existingErrors.some((text) => text?.includes('서버 ID 키 필요')));
   assert.ok(existingErrors.some((text) => text?.includes('XXXX-XXXX-XXXX')));
   assert.equal(await page.evaluate(() => window.__cloudHarness.calls.some((call) => call.method === 'cloudPair')), false);
 
@@ -804,7 +812,7 @@ try {
   await openChoice(page);
   assert.equal(
     await page.$eval('.ag-cloud-setup-option[data-server-mode="app-hosted"] .ag-cloud-setup-option-note', (node) => node.textContent.trim()),
-    '이 빌드에서는 아직 사용할 수 없습니다',
+    '이 빌드에서 사용 불가',
   );
   assert.equal(
     await page.$eval('.ag-cloud-setup-option[data-server-mode="self-hosted"]', (node) => node.getAttribute('aria-checked')),
@@ -860,7 +868,7 @@ try {
   await page.evaluate(() => window.__cloudHarness.setSpawnDelay(1_500));
   await clickButton(page, '다시 시도');
   await waitForTitle(page, 'Raucloud 준비 중');
-  assert.match(await page.$eval('.ag-cloud-setup-description', (node) => node.textContent), /최대 30분이 걸릴 수 있습니다/);
+  assert.match(await page.$eval('.ag-cloud-setup-description', (node) => node.textContent), /연결 중 · 최대 30분/);
   assert.match(await page.$eval('.ag-cloud-setup-wait', (node) => node.textContent), /^(?:\d+분 )?\d+초$/);
   assert.deepEqual(
     await page.$$eval('.ag-cloud-setup-footer button', (nodes) => nodes.map((node) => ({
@@ -957,7 +965,7 @@ try {
   await waitForTitle(page, '연결할 수 있습니다');
   await clickButton(page, 'Cloud 환경 설치');
   await waitForTitle(page, 'Cloud 설정을 마치지 못했습니다');
-  assert.match(await page.$eval('.ag-cloud-setup-callout strong', (node) => node.textContent), /앱 샌드박스를 먼저 종료하세요/);
+  assert.match(await page.$eval('.ag-cloud-setup-callout strong', (node) => node.textContent), /앱 샌드박스 종료 필요/);
   console.log('  PASS a live app sandbox blocks a self-hosted install instead of leaking a paid server');
 
   await clickStable(page, '.ag-cloud-setup-close');
@@ -985,22 +993,22 @@ try {
   );
   assert.match(
     await page.$eval('.ag-cloud-setup-callout p', (node) => node.textContent),
-    /공급자 콘솔에서 남은 서버를 직접 삭제하세요/,
+    /공급자 콘솔에서 서버를 직접 삭제합니다/,
   );
   await clickButton(page, '서버 종료');
   await waitForTitle(page, 'Cloud 서버 선택');
   // 원격 서버가 남았다는 사실을 숨기면 사용자는 계속 요금을 낸다. 눈에 보여야 한다.
   assert.match(
     await page.$eval('.ag-cloud-setup-callout strong', (node) => node.textContent),
-    /남은 서버를 확인하세요/,
+    /남은 서버 확인/,
   );
   assert.match(
     await page.$eval('.ag-cloud-setup-callout p', (node) => node.textContent),
-    /남은 서버는 공급자 콘솔에서 직접 삭제하세요/,
+    /남은 서버는 공급자 콘솔에서 삭제/,
   );
   assert.match(
     await page.$eval('.ag-cloud-setup-live', (node) => node.textContent),
-    /남은 서버는 공급자 콘솔에서 직접 삭제하세요/,
+    /남은 서버는 공급자 콘솔에서 삭제/,
   );
   await clickButton(page, '취소');
   await page.waitForSelector('.ag-cloud-setup-overlay[hidden]');

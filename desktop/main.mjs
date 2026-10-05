@@ -9,7 +9,6 @@ import {
   autoUpdater as nativeAutoUpdater,
   BrowserWindow,
   Menu,
-  clipboard,
   dialog,
   ipcMain,
   nativeTheme,
@@ -18,6 +17,7 @@ import {
   powerMonitor,
   protocol,
   safeStorage,
+  screen,
   session as electronSession,
   shell,
 } from 'electron';
@@ -36,7 +36,7 @@ import {
   waitForHub,
   waitForHubReadyLine,
 } from './agent-hub.mjs';
-import { DocumentLeaseManager } from './document-leases.mjs';
+import { DocumentLeaseManager, releaseRendererDocuments } from './document-leases.mjs';
 import { quarantineBookmarkState, readBookmarkState } from './bookmark-state.mjs';
 import {
   MAX_GENERATED_DOCUMENT_BYTES,
@@ -60,6 +60,7 @@ import {
 } from './studio-protocol.mjs';
 import { createSecretVault, handleSecretRequest } from './secret-vault.mjs';
 import { CloudClient } from './cloud-client.mjs';
+import { BoatCloud, BoatError, installBoatStatusCadence } from './cloud-boat.mjs';
 import {
   createRaucloudBrokerProvider,
   raucloudBrokerUrl,
@@ -77,8 +78,15 @@ import { collectProviderAuth } from './provider-auth.mjs';
 import { applyCloudRecovery } from './cloud-result.mjs';
 import { isNewerStableVersion, selectDebAsset } from './update-policy.mjs';
 import { createUpdateLifecycle, completeWindowClose } from './update-lifecycle.mjs';
-import { documentEditMenuItem } from './edit-menu.mjs';
-import { deliverPlainTextPaste } from './plain-text-paste.mjs';
+import { installAppMenu } from './app-menu.mjs';
+import {
+  AgentAttention,
+  WindowFrameStore,
+  applyDocumentState,
+  installTextContextMenu,
+  popupContextMenu,
+  showUnsavedChangesSheet,
+} from './native-shell.mjs';
 import {
   hasPendingLaunchCleanupSync,
   retainLaunchRootForProcessCleanupSync,
@@ -93,6 +101,7 @@ import {
   writeLaunchOwnerMetadata,
 } from './runtime-cleanup.mjs';
 import { reportUniqueInstall, uniqueInstallsPublicUrl } from './unique-install.mjs';
+import { createSystemFontService } from './system-fonts.mjs';
 import {
   nativeExtractorFileName,
   sourceStagedNativeExtractorPath,
@@ -100,8 +109,8 @@ import {
 
 const { autoUpdater } = electronUpdater;
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
-const RELEASES_URL = 'https://github.com/ghandhitechnology/Rauhwpx/releases/latest';
-const RELEASES_API_URL = 'https://api.github.com/repos/ghandhitechnology/Rauhwpx/releases/latest';
+const RELEASES_URL = 'https://github.com/heemangstudio/Rauhwpx/releases/latest';
+const RELEASES_API_URL = 'https://api.github.com/repos/heemangstudio/Rauhwpx/releases/latest';
 const PRELOAD_PATH = join(__dirname, 'preload.cjs');
 const devUrl = resolveDevelopmentUrl({
   packaged: app.isPackaged,
@@ -112,6 +121,11 @@ const hubToken = createHubToken();
 const devOrigin = devUrl ? new URL(devUrl).origin : null;
 
 const CLOUD_CLOSE_WAIT_MS = 120_000;
+// A hub that dies at every boot stops respawning here; the next window or
+// sidebar request tries again.
+const MAX_HUB_AUTO_RESTARTS = 5;
+// A live hub that misses the short health probe gets one longer probe first.
+const HUB_BUSY_HEALTH_TIMEOUT_MS = 2500;
 // Vite gives every hot update a new timestamped URL. Reusing Electron's
 // persistent HTTP cache across dev runs otherwise leaves one JS/WASM entry per
 // edit and per worktree in the production profile.
@@ -186,11 +200,29 @@ class AgentHubOwner {
   #restartAttempt = 0;
   #restartTimer = null;
   #stoppingChild = null;
-  #restartRequired = false;
+  // Windows-only: the hub leader exited without the shutdown handshake, so its
+  // descendants may be orphaned. The owner stays usable — the next start runs
+  // on a fresh per-epoch workspace the orphans cannot reach.
+  #quarantined = false;
+  #epoch = 0;
+  #ownedRuntimeDirs = new Set();
+  #ownedWorkDirs = new Set();
 
   constructor({ runtimeDir, workDir }) {
     this.runtimeDir = runtimeDir;
     this.workDir = workDir;
+    this.runtimeRoot = dirname(runtimeDir);
+    this.workRoot = dirname(workDir);
+    this.#ownedRuntimeDirs.add(runtimeDir);
+    this.#ownedWorkDirs.add(workDir);
+  }
+
+  activeRuntimeDir() {
+    return this.#epoch === 0 ? this.runtimeDir : join(this.runtimeRoot, `${launchId}-r${this.#epoch}`);
+  }
+
+  activeWorkDir() {
+    return this.#epoch === 0 ? this.workDir : join(this.workRoot, `${launchId}-r${this.#epoch}`);
   }
 
   context() {
@@ -203,7 +235,14 @@ class AgentHubOwner {
   }
 
   scheduleRestart() {
-    if (this.#disposed || quitting || this.#restartTimer || this.#restartRequired) return;
+    if (this.#disposed || quitting || this.#restartTimer || this.#quarantined) return;
+    if (this.#restartAttempt >= MAX_HUB_AUTO_RESTARTS) {
+      // Warn once; a successful start resets #restartAttempt to 0.
+      if (this.#restartAttempt++ === MAX_HUB_AUTO_RESTARTS) {
+        console.warn('[rauhwpx] agent hub keeps exiting; automatic restarts stopped until the next window or sidebar request');
+      }
+      return;
+    }
     const delay = nextHubRestartDelay(this.#restartAttempt++);
     console.warn(`[rauhwpx] owned agent hub exited; restarting in ${delay}ms`);
     this.#restartTimer = setTimeout(() => {
@@ -215,26 +254,19 @@ class AgentHubOwner {
     }, delay);
   }
 
-  restartRequiredError() {
-    const error = new Error(
-      'The agent hub exited before its Windows process tree could be confirmed stopped. Restart Rauhwpx before using the agent hub again.',
-    );
-    error.code = 'AGENT_HUB_RESTART_REQUIRED';
-    return error;
-  }
-
   quarantineUnexpectedWindowsExit() {
-    if (this.#restartRequired) return;
-    this.#restartRequired = true;
+    if (this.#quarantined) return;
+    this.#quarantined = true;
     this.clearRestart();
     try {
-      retainLaunchRootForProcessCleanupSync(this.workDir, { launchId });
+      retainLaunchRootForProcessCleanupSync(this.activeWorkDir(), { launchId });
     } catch (error) {
       console.warn('[rauhwpx] process cleanup retention marker failed:', error);
     }
     console.warn(
-      '[rauhwpx] owned agent hub exited unexpectedly on Windows; retaining launch work and requiring an app restart:',
-      this.workDir,
+      '[rauhwpx] owned agent hub exited unexpectedly on Windows; descendants may be orphaned.',
+      'Retaining launch work and moving the next hub start to a fresh workspace:',
+      this.activeWorkDir(),
     );
   }
 
@@ -245,8 +277,12 @@ class AgentHubOwner {
     this.#stoppingChild = child;
     let cleanupPrepared = false;
     try {
-      if (this.#restartRequired && (child?.exitCode != null || child?.signalCode != null)) {
-        throw this.restartRequiredError();
+      if (child != null && (child.exitCode != null || child.signalCode != null)) {
+        // The leader is already dead. A quarantined tree stays abandoned, not
+        // killed: numeric-PID kills can retarget reused PIDs on Windows, so the
+        // next start() instead moves to a fresh workspace they cannot reach.
+        if (this.#child === child) this.#child = null;
+        return;
       }
       if (context) {
         try {
@@ -269,11 +305,14 @@ class AgentHubOwner {
         // Preserve the exited leader's PID/tree identity and make every outer
         // cleanup layer retain the launch root until a reboot proves safety.
         try {
-          retainLaunchRootForProcessCleanupSync(this.workDir, { launchId });
+          retainLaunchRootForProcessCleanupSync(this.activeWorkDir(), { launchId });
         } catch (error) {
           console.warn('[rauhwpx] process cleanup retention marker failed:', error);
         }
         if (!this.#child || this.#child === child) this.#child = child;
+        // The tree could not be proven stopped — the next start must not share
+        // its workspace.
+        this.#quarantined = true;
         throw new Error(`Agent hub process tree ${child?.pid ?? 'unknown'} survived shutdown`);
       }
       if (this.#child === child) this.#child = null;
@@ -284,7 +323,14 @@ class AgentHubOwner {
 
   async start() {
     if (this.#disposed) throw new Error('Agent hub owner has been disposed');
-    if (this.#restartRequired) throw this.restartRequiredError();
+    if (this.#quarantined) {
+      // An unprovable tree was quarantined. It keeps its old workspace (marked
+      // for reboot-level cleanup) while the next hub starts on a fresh epoch
+      // directory that no orphan can lock or corrupt.
+      this.#quarantined = false;
+      this.#epoch += 1;
+      console.warn(`[rauhwpx] restarting agent hub on an isolated workspace (epoch ${this.#epoch})`);
+    }
     if (this.#startPromise) return this.#startPromise;
     this.#startPromise = this.startOwnedChild();
     try {
@@ -295,16 +341,27 @@ class AgentHubOwner {
   }
 
   async startOwnedChild() {
-    mkdirSync(this.runtimeDir, { recursive: true, mode: 0o700 });
-    mkdirSync(this.workDir, { recursive: true, mode: 0o700 });
+    const runtimeDir = this.activeRuntimeDir();
+    const workDir = this.activeWorkDir();
+    mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
+    mkdirSync(workDir, { recursive: true, mode: 0o700 });
+    this.#ownedRuntimeDirs.add(runtimeDir);
+    this.#ownedWorkDirs.add(workDir);
     if (this.#child && this.#context) {
-      const healthy = await isHubHealthy(this.#context.port, {
+      const child = this.#child;
+      const context = this.#context;
+      const probe = (timeoutMs) => isHubHealthy(context.port, {
         token: hubToken,
         launchId,
-        expectedPid: this.#child.pid,
+        expectedPid: child.pid,
         expectedLaunchId: launchId,
+        ...(timeoutMs ? { timeoutMs } : {}),
       });
-      if (healthy) return { started: false, ready: true, context: this.#context };
+      // A busy hub (GC, a large payload, waking from sleep) must not lose every
+      // agent session over one missed probe. An exited child is onExit's job.
+      const running = () => child.exitCode == null && child.signalCode == null;
+      const healthy = await probe() || (running() && await probe(HUB_BUSY_HEALTH_TIMEOUT_MS));
+      if (healthy && this.#context === context) return { started: false, ready: true, context };
       await this.stopCurrent();
     } else if (this.#child) {
       await this.stopCurrent();
@@ -333,8 +390,8 @@ class AgentHubOwner {
         RHWP_LAUNCH_ID: launchId,
         RHWP_OWNER_PID: String(process.pid),
         RHWP_OWNER_IPC: '1',
-        RHWP_RUNTIME_DIR: this.runtimeDir,
-        RHWP_WORK_DIR: this.workDir,
+        RHWP_RUNTIME_DIR: runtimeDir,
+        RHWP_WORK_DIR: workDir,
         RHWP_AGENT_INSTRUCTIONS_DIR: join(app.getPath('userData'), 'agent-instructions'),
         RHWP_OWN_RUNTIME_DIR: '1',
         RHWP_OWN_WORK_DIR: '1',
@@ -343,7 +400,7 @@ class AgentHubOwner {
       },
     });
     if (!launch) throw new Error(`Agent hub launch command not found: ${server}`);
-    launch.cwd = this.workDir;
+    launch.cwd = workDir;
 
     console.log(`[rauhwpx] starting owned agent hub via ${launch.via}`);
     const child = spawnHubProcess(launch, {
@@ -356,6 +413,20 @@ class AgentHubOwner {
           return;
         }
         if (!secretVault) return;
+        // boat credentials stay in the main process; the hub never needs them.
+        if (message?.type === 'rhwp-secret-request' && typeof message.key === 'string'
+          && message.key.startsWith('cloud.boat.')) {
+          if (source.connected) {
+            source.send({
+              type: 'rhwp-secret-response',
+              id: message.id,
+              ok: false,
+              error: 'This secret is not available to the agent hub.',
+              code: 'SECRET_ACCESS_DENIED',
+            });
+          }
+          return;
+        }
         void handleSecretRequest(secretVault, message).then((response) => {
           if (response && source.connected) source.send(response);
         });
@@ -416,11 +487,15 @@ class AgentHubOwner {
     this.#stopPromise = (async () => {
       await this.#startPromise?.catch(() => {});
       await this.stopCurrent();
-      await rm(this.runtimeDir, { recursive: true, force: true });
-      if (hasPendingLaunchCleanupSync(this.workDir)) {
-        console.warn('[rauhwpx] retaining launch work for pending cleanup:', this.workDir);
-      } else {
-        await rm(this.workDir, { recursive: true, force: true });
+      for (const dir of this.#ownedRuntimeDirs) {
+        await rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
+      for (const dir of this.#ownedWorkDirs) {
+        if (hasPendingLaunchCleanupSync(dir)) {
+          console.warn('[rauhwpx] retaining launch work for pending cleanup:', dir);
+        } else {
+          await rm(dir, { recursive: true, force: true }).catch(() => {});
+        }
       }
     })();
     return this.#stopPromise;
@@ -435,6 +510,7 @@ let cloudAccountSession = null;
 let cloudCoordinator = null;
 let cloudTransport = null;
 let stopCloudContinuityTriggers = () => {};
+let stopBoatStatusCadence = () => {};
 const cloudDisplayConnections = new CloudDisplayRegistry({
   openDisplay: (sessionId, listener, options) => requireCloudCoordinator().openDisplay(
     sessionId,
@@ -475,6 +551,10 @@ const sessions = new SessionManager({
 const documentLeases = new DocumentLeaseManager();
 const nativeFiles = new NativeFileHandleRegistry();
 const nativeBookmarkFile = join(app.getPath('userData'), 'native-document-bookmarks.json');
+const systemFonts = createSystemFontService({
+  cacheDir: join(app.getPath('userData'), 'fonts'),
+  log: (line) => console.log(`[rauhwpx] fonts: ${line}`),
+});
 const cloudEditDraftStore = new CloudEditDraftStore({
   root: join(app.getPath('userData'), 'cloud', 'edit-drafts'),
 });
@@ -515,6 +595,24 @@ const nativeBookmarkWriter = new SerializedStateWriter({
   onError: (error) => console.warn('[rauhwpx] native bookmark persist failed:', error),
 });
 
+const windowFrames = new WindowFrameStore({
+  filePath: join(app.getPath('userData'), 'window-frame.json'),
+  screen,
+  writeAtomically: writeNativeFileAtomically,
+});
+const agentAttention = new AgentAttention({ app, Notification: ElectronNotification });
+
+/** 열거나 저장한 네이티브 파일을 Dock·최근 사용 메뉴에 올린다. */
+function noteRecentDocument(sessionId, handleId) {
+  if (process.platform !== 'darwin' && process.platform !== 'win32') return;
+  try {
+    const filePath = nativeFiles.sourcePathForSender(sessionId, handleId);
+    if (filePath) app.addRecentDocument(filePath);
+  } catch (error) {
+    console.warn('[rauhwpx] recent document update failed:', error);
+  }
+}
+
 function normalizeCloudScope(payload = {}) {
   const threadId = typeof payload.threadId === 'string' && payload.threadId.length <= 256
     ? payload.threadId
@@ -538,6 +636,8 @@ function applyCloudSnapshot(session, snapshot) {
 }
 
 async function scopedCloudSnapshot(session, operation = null, { refresh = false } = {}) {
+  // 시작 중의 이벤트 방송이 반쯤 채워진 스냅숏을 보내지 않도록 Cloud 시작을 기다린다.
+  await cloudStartup;
   const scope = session.cloudScope ?? { threadId: '', documentId: null };
   const options = {
     originSessionId: session.sessionId,
@@ -599,6 +699,10 @@ async function broadcastCloudEvent(payload) {
 
 const pendingMergeNotifications = new Map();
 let mergeNotificationTimer = null;
+// Held until click or close so the click handler is not garbage-collected.
+const cloudMergeNotifications = new Set();
+// At most one broadcast runs; events that arrive meanwhile join the next batch.
+let cloudBroadcastInFlight = false;
 
 async function openCloudNotification(payload) {
   const windows = sessions.windows().filter((candidate) => !candidate.isDestroyed());
@@ -653,11 +757,15 @@ function notifyCloudMergeReady(payload) {
             ? `${first.fileName}${Number.isSafeInteger(first.turn) ? ` · ${first.turn}턴` : ''}`
             : '검토할 Cloud 변경이 도착했습니다.',
       });
+      cloudMergeNotifications.add(notification);
+      const release = () => cloudMergeNotifications.delete(notification);
       notification.on('click', () => {
+        release();
         void openCloudNotification(first).catch((error) => {
           console.warn('[rauhwpx] cloud notification open failed:', error);
         });
       });
+      notification.on('close', release);
       notification.show();
     } catch (error) {
       console.warn('[rauhwpx] cloud notification failed:', error);
@@ -674,15 +782,25 @@ function queueCloudBroadcast(payload) {
   // Renderers reconcile from the per-window snapshot added at broadcast time.
   const { handoff, snapshot, ...notification } = payload;
   cloudBroadcastPending.push(notification);
-  if (cloudBroadcastTimer) return;
+  scheduleCloudBroadcast();
+}
+
+function scheduleCloudBroadcast() {
+  // A slow broadcast (many windows, a long timeline) must not stack snapshot
+  // rebuilds behind it; the next batch is armed once it settles.
+  if (cloudBroadcastTimer || cloudBroadcastInFlight) return;
   cloudBroadcastTimer = setTimeout(() => {
     cloudBroadcastTimer = null;
     const events = cloudBroadcastPending;
     cloudBroadcastPending = [];
     if (!events.length) return;
-    cloudBroadcastChain = cloudBroadcastChain
-      .then(() => broadcastCloudEvent({ type: 'cloud-event-batch', events }))
-      .catch((error) => console.warn('[rauhwpx] cloud event broadcast failed:', error));
+    cloudBroadcastInFlight = true;
+    cloudBroadcastChain = broadcastCloudEvent({ type: 'cloud-event-batch', events })
+      .catch((error) => console.warn('[rauhwpx] cloud event broadcast failed:', error))
+      .finally(() => {
+        cloudBroadcastInFlight = false;
+        if (cloudBroadcastPending.length) scheduleCloudBroadcast();
+      });
   }, CLOUD_BROADCAST_COALESCE_MS);
   cloudBroadcastTimer.unref?.();
 }
@@ -690,6 +808,21 @@ function queueCloudBroadcast(payload) {
 function requireCloudCoordinator() {
   if (!cloudCoordinator) throw new Error('Cloud service is not ready');
   return cloudCoordinator;
+}
+
+// 첫 창은 Cloud 시작을 기다리지 않고 뜬다. cloud IPC와 스냅숏은 시작이 끝날 때까지
+// 기다리고, 시작이 실패하면 같은 오류로 거절된다.
+let settleCloudStartup = { resolve: () => {}, reject: () => {} };
+const cloudStartup = new Promise((resolve, reject) => {
+  settleCloudStartup = { resolve, reject };
+});
+cloudStartup.catch(() => {});
+
+function handleCloudIpc(channel, handler) {
+  ipcMain.handle(channel, async (event, ...args) => {
+    await cloudStartup;
+    return handler(event, ...args);
+  });
 }
 
 const RAUCLOUD_DEVICE_SECRET = 'cloud.managed-device-id';
@@ -743,6 +876,7 @@ const updateLifecycle = createUpdateLifecycle({
   cleanupTasks: [
     () => cloudDisplayConnections.closeAll(),
     () => stopCloudContinuityTriggers(),
+    () => stopBoatStatusCadence(),
     () => cloudCoordinator?.stop(),
     () => hubOwner.teardown(),
   ],
@@ -845,7 +979,9 @@ async function checkForAppUpdates({ manual = true } = {}) {
       }
       const result = await autoUpdater.checkForUpdates();
       // Keep a user-requested automatic download interactive until it settles.
+      // The updater 'error' listener already logs a failed background download.
       if (manualUpdateCheck && result?.downloadPromise) await result.downloadPromise;
+      else void result?.downloadPromise?.catch(() => {});
       return result;
     } catch (error) {
       if (manualUpdateCheck) await updateLifecycle.reportError(error);
@@ -859,76 +995,24 @@ async function checkForAppUpdates({ manual = true } = {}) {
 }
 
 function installMenu() {
-  const isMac = process.platform === 'darwin';
-  const checkForUpdates = {
-    label: 'Check for Updates…',
-    click: () => {
+  installAppMenu({
+    checkForUpdates: () => {
       if (!app.isPackaged) {
         void shell.openExternal(RELEASES_URL);
         return;
       }
       void checkForAppUpdates();
     },
-  };
-  const newWindow = {
-    label: 'New Window',
-    accelerator: 'CmdOrCtrl+Shift+N',
-    click: () => queueLaunch(launchRequest({ source: 'new-window' })),
-  };
-  const pasteWithoutFormatting = {
-    id: 'edit-paste-without-formatting',
-    label: 'Paste Without Formatting',
-    accelerator: 'CmdOrCtrl+Shift+V',
-    click: (_menuItem, browserWindow) => {
-      deliverPlainTextPaste(
-        browserWindow ?? BrowserWindow.getFocusedWindow(),
-        () => clipboard.readText(),
-      );
+    openNewWindow: () => queueLaunch(launchRequest({ source: 'new-window' })),
+    isTrustedSender: (event) => {
+      try {
+        sessionForEvent(event);
+        return true;
+      } catch {
+        return false;
+      }
     },
-  };
-  Menu.setApplicationMenu(Menu.buildFromTemplate([
-    ...(isMac ? [{
-      label: 'Rauhwpx',
-      submenu: [
-        { role: 'about' },
-        { type: 'separator' },
-        checkForUpdates,
-        { type: 'separator' },
-        { role: 'hide' },
-        { role: 'hideOthers' },
-        { role: 'unhide' },
-        { type: 'separator' },
-        { role: 'quit' },
-      ],
-    }] : []),
-    {
-      label: 'File',
-      submenu: [
-        newWindow,
-        { type: 'separator' },
-        ...(!isMac ? [checkForUpdates, { type: 'separator' }] : []),
-        { role: isMac ? 'close' : 'quit' },
-      ],
-    },
-    {
-      label: 'Edit',
-      submenu: [
-        documentEditMenuItem('undo', 'Undo', 'CmdOrCtrl+Z'),
-        documentEditMenuItem('redo', 'Redo', isMac ? 'Cmd+Shift+Z' : 'Ctrl+Y'),
-        { type: 'separator' },
-        { role: 'cut' },
-        { role: 'copy' },
-        { role: 'paste' },
-        pasteWithoutFormatting,
-        documentEditMenuItem('delete', 'Delete'),
-        { type: 'separator' },
-        documentEditMenuItem('select-all', 'Select All', 'CmdOrCtrl+A'),
-      ],
-    },
-    { role: 'viewMenu' },
-    { role: 'windowMenu' },
-    ...(isMac ? [] : [{ role: 'help', submenu: [{ role: 'about' }] }]),
-  ]));
+  });
 }
 
 function cascadedWindowPosition() {
@@ -939,16 +1023,18 @@ function cascadedWindowPosition() {
 }
 
 async function createWindow(launch = launchRequest(), { generatedDocument = null } = {}) {
-  await hubOwner.ensure();
-  const closeHubContext = hubOwner.context();
-  if (!closeHubContext) throw new Error('Agent hub context is unavailable');
+  // 허브는 창과 나란히 뜬다. 렌더러의 세션 문맥 요청(desktop:get-session-context)이
+  // 허브 준비를 기다리므로 창 생성은 허브를 막지 않는다.
+  void hubOwner.ensure().catch(() => {});
   const backgroundColor = nativeTheme.shouldUseDarkColors ? '#141416' : '#f5f5f7';
   const isMac = process.platform === 'darwin';
+  // 실행 후 첫 창만 지난 프레임을 되살리고, 이후 창은 28px 계단식으로 연다.
+  const restoredFrame = sessions.windows().length === 0
+    ? windowFrames.takeInitialFrame({ minWidth: 900, minHeight: 640 })
+    : null;
   const window = new BrowserWindow({
-    ...cascadedWindowPosition(),
+    ...(restoredFrame ? restoredFrame.bounds : { ...cascadedWindowPosition(), width: 1440, height: 920 }),
     title: 'Rauhwpx',
-    width: 1440,
-    height: 920,
     minWidth: 900,
     minHeight: 640,
     show: false,
@@ -965,6 +1051,9 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
       sandbox: true,
     },
   });
+  const windowId = window.id;
+  windowFrames.track(window);
+  installTextContextMenu({ Menu, webContents: window.webContents, window, isMac });
   const displayOwnerId = window.webContents.id;
   const closeDisplayConnection = () => {
     void cloudDisplayConnections.close(displayOwnerId);
@@ -976,24 +1065,38 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
   session.cloudEditDraft = session.generatedDocument?.cloudEditDraft ?? null;
   session.allowCloseOnce = false;
   session.pendingCloseRequestId = null;
+  // The renderer registers its close listener while main.ts evaluates, and an
+  // earlier request is dropped. A close before the first load waits for it.
+  session.rendererLoaded = false;
+  session.closeDeferred = false;
+  session.rendererLoadFailed = false;
   session.cloudLocked = false;
   session.cloudHandoffId = null;
   session.cloudTransferPromise = null;
   session.cloudScope = { threadId: '', documentId: null };
   session.cloudTransferIntent = null;
-  window.on('close', (event) => {
-    if (session.allowCloseOnce) return;
-    // A dead renderer can never answer the Save–Discard–Cancel prompt.
-    // Blocking the close here would leave an unclosable window that also
-    // stalls quit, so let the close proceed instead.
-    if (window.webContents.isDestroyed() || window.webContents.isCrashed()) return;
-    event.preventDefault();
+  const requestRendererClose = () => {
     if (session.pendingCloseRequestId) return;
     session.pendingCloseRequestId = randomUUID();
     window.webContents.send('desktop:close-requested', {
       requestId: session.pendingCloseRequestId,
       reason: quitRequested ? 'quit' : 'close',
     });
+  };
+  window.on('close', (event) => {
+    if (session.allowCloseOnce) return;
+    // A dead renderer can never answer the Save–Discard–Cancel prompt.
+    // Blocking the close here would leave an unclosable window that also
+    // stalls quit, so let the close proceed instead.
+    if (window.webContents.isDestroyed() || window.webContents.isCrashed()) return;
+    // A window whose first load failed has no document and no listener.
+    if (session.rendererLoadFailed) return;
+    event.preventDefault();
+    if (!session.rendererLoaded) {
+      session.closeDeferred = true;
+      return;
+    }
+    requestRendererClose();
   });
   window.on('closed', () => {
     for (const [requestId, pending] of pendingCloudEditDraftSaves) {
@@ -1002,14 +1105,15 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
       pending.reject(new Error('Cloud edit window closed before saving'));
     }
     closeDisplayConnection();
-    documentLeases.releaseSession(session.sessionId);
-    nativeFiles.releaseSession(session.sessionId);
+    agentAttention.forget(windowId);
+    releaseRendererDocuments(session.sessionId, { documentLeases, nativeFiles });
     sessions.removeWindow(window);
     if (quitRequested) setImmediate(() => {
       if (quitRequested && !quitting) app.quit();
     });
-    const hub = hubOwner.context() ?? closeHubContext;
-    void closeHubSession({
+    // 멈추거나 죽은 허브는 세션을 스스로 정리한다. 그 포트로 소유자 토큰을 보내지 않는다.
+    const hub = hubOwner.context();
+    if (hub) void closeHubSession({
       port: hub.port,
       token: hubToken,
       launchId,
@@ -1028,6 +1132,7 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
         return null;
       }
       launchFiles.push(result.descriptor);
+      noteRecentDocument(session.sessionId, result.descriptor.handleId);
     }
   } catch (error) {
     window.destroy();
@@ -1049,9 +1154,36 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
     // An unanswered close prompt died with the renderer; clear it so the
     // window can close (the close handler skips the prompt for dead renderers).
     session.pendingCloseRequestId = null;
+    // The dead renderer's document is gone. Free its path so opening the file
+    // again starts a working window instead of focusing this blank one, and so
+    // a reload does not resend handles that no longer exist.
+    releaseRendererDocuments(session.sessionId, { documentLeases, nativeFiles });
+    launchFiles.length = 0;
   });
   window.webContents.once('destroyed', closeDisplayConnection);
   window.webContents.setWindowOpenHandler(({ url }) => {
+    // 인쇄 미리보기 같은 앱 내부 surface는 외부 브라우저가 아니라 네이티브
+    // 자식 창으로 연다 — renderer 의 window.open 이 반환하는 창에 문서를 쓰고
+    // print() 로 시스템 인쇄 대화상자를 연다.
+    if (isTrustedRendererUrl(url)) {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          width: 1120,
+          height: 820,
+          minWidth: 480,
+          minHeight: 360,
+          autoHideMenuBar: true,
+          title: 'Rauhwpx',
+          webPreferences: {
+            preload: PRELOAD_PATH,
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: true,
+          },
+        },
+      };
+    }
     if (/^https?:/i.test(url)) void shell.openExternal(url);
     return { action: 'deny' };
   });
@@ -1061,15 +1193,33 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
     });
   }
   window.webContents.on('did-finish-load', () => {
+    session.rendererLoaded = true;
+    // A reload after a failed first load brings back the document and its prompt.
+    session.rendererLoadFailed = false;
+    // A request sent to a previous document can never be answered (dev reload).
+    session.pendingCloseRequestId = null;
     if (launchFiles.length > 0 && !window.isDestroyed()) {
       window.webContents.send('desktop:open-files', launchFiles);
     }
     if (session.generatedDocument && !window.isDestroyed()) {
       window.webContents.send('desktop:open-generated-document', session.generatedDocument);
     }
+    if (session.closeDeferred && !window.isDestroyed()) {
+      session.closeDeferred = false;
+      requestRendererClose();
+    }
+  });
+  window.webContents.on('did-fail-load', (_event, errorCode, _description, _url, isMainFrame) => {
+    // -3 (ERR_ABORTED) means another navigation took over. Once loaded, a
+    // window always keeps its close prompt.
+    if (!isMainFrame || errorCode === -3 || session.rendererLoaded) return;
+    session.rendererLoadFailed = true;
+    if (session.closeDeferred && !window.isDestroyed()) window.close();
   });
   window.once('ready-to-show', () => {
-    if (!window.isDestroyed()) window.show();
+    if (window.isDestroyed()) return;
+    if (restoredFrame?.zoomed) window.maximize();
+    window.show();
   });
   await window.loadURL(devUrl || STUDIO_URL);
   if (!window.isDestroyed() && !window.isVisible()) window.show();
@@ -1113,6 +1263,15 @@ ipcMain.handle('desktop:get-session-context', (event) => {
   sessionForEvent(event);
   return sessions.contextForSender(event.sender);
 });
+ipcMain.handle('desktop:fonts-list', (event, options = {}) => {
+  sessionForEvent(event);
+  if (process.env.RHWP_SYSTEM_FONTS === 'off') throw new Error('System font discovery is disabled');
+  return systemFonts.list({ refresh: options?.refresh === true });
+});
+ipcMain.handle('desktop:fonts-read', (event, id) => {
+  sessionForEvent(event);
+  return systemFonts.readFace(id);
+});
 ipcMain.handle('desktop:get-launch-files', (event) => {
   const session = sessionForEvent(event);
   return nativeFiles.descriptorsForSession(session.sessionId);
@@ -1120,6 +1279,13 @@ ipcMain.handle('desktop:get-launch-files', (event) => {
 ipcMain.handle('desktop:get-launch-generated-document', (event) => {
   const session = sessionForEvent(event);
   return session.generatedDocument;
+});
+ipcMain.handle('desktop:print', (event) => {
+  // 인쇄 미리보기 자식 창처럼 세션에 등록되지 않은 창도 허용하되, 신뢰 origin
+  // 에서 온 요청만 본다. 시스템 인쇄 대화상자를 호출한 창의 내용에 연다.
+  const senderUrl = event.senderFrame?.url || event.sender.getURL();
+  if (!isTrustedRendererUrl(senderUrl)) throw new Error('Untrusted renderer IPC sender');
+  event.sender.print();
 });
 ipcMain.handle('desktop:open-generated-document-window', async (event, payload = {}) => {
   const session = sessionForEvent(event);
@@ -1178,6 +1344,7 @@ ipcMain.handle('desktop:pick-native-open-file', async (event, options = {}) => {
     sessions.focusSession(result.ownerSessionId);
     return { owned: true };
   }
+  noteRecentDocument(session.sessionId, result.descriptor.handleId);
   return { ...result.descriptor, saveTargetCreated: result.created };
 });
 ipcMain.handle('desktop:pick-legacy-history-folder', async (event) => {
@@ -1211,6 +1378,7 @@ ipcMain.handle('desktop:claim-native-dropped-file', async (event, filePath) => {
     sessions.focusSession(result.ownerSessionId);
     return { owned: true };
   }
+  noteRecentDocument(session.sessionId, result.descriptor.handleId);
   return { ...result.descriptor, saveTargetCreated: result.created };
 });
 ipcMain.handle('desktop:pick-native-save-file', async (event, options = {}) => {
@@ -1223,8 +1391,14 @@ ipcMain.handle('desktop:pick-native-save-file', async (event, options = {}) => {
     options.suggestedName,
     `document.${extension}`,
   );
+  // NSSavePanel의 이름 필드에 확장자가 미리 들어가 있으면 중간 편집마다
+  // 관리 확장자를 다시 적용해 커서가 튀고, 사용자가 직접 친 확장자 위에
+  // .hwpx 를 이어 붙여 name.hwpx.hwpx 가 된다. 순수 이름만 넘긴다.
+  const suggestedStem = ['.hwp', '.hwpx', '.hml', '.rhwpx'].includes(extname(suggestedName).toLowerCase())
+    ? basename(suggestedName, extname(suggestedName))
+    : suggestedName;
   const picked = await dialog.showSaveDialog(window, {
-    defaultPath: suggestedName,
+    defaultPath: suggestedStem,
     filters: [{
       name: extension === 'rhwpx' ? 'RauHWPX history archive' : `${extension.toUpperCase()} document`,
       extensions: [extension],
@@ -1232,10 +1406,14 @@ ipcMain.handle('desktop:pick-native-save-file', async (event, options = {}) => {
     properties: ['showOverwriteConfirmation', 'createDirectory'],
   });
   if (picked.canceled || !picked.filePath) return null;
-  const filePath = extname(picked.filePath) ? picked.filePath : `${picked.filePath}.${extension}`;
-  if (extname(filePath).toLowerCase() !== `.${extension}`) {
-    throw new Error(`Save target must use the .${extension} extension`);
+  // 사용자가 .hwp/.hwpx/.hml 등을 직접 치면 패널이 관리 확장자를 그대로 덧붙여
+  // name.hwpx.hwpx 가 된다. 문서 확장자 꼬리를 모두 떼고 관리 확장자를 한 번만 붙인다.
+  const saveDir = dirname(picked.filePath);
+  let saveStem = basename(picked.filePath);
+  while (['.hwp', '.hwpx', '.hml', '.rhwpx'].includes(extname(saveStem).toLowerCase())) {
+    saveStem = saveStem.slice(0, -extname(saveStem).length);
   }
+  const filePath = join(saveDir, `${saveStem || 'document'}.${extension}`);
   const result = await nativeFiles.createSaveTarget(session.sessionId, filePath);
   if (!result.ok) {
     sessions.focusSession(result.ownerSessionId);
@@ -1259,13 +1437,20 @@ ipcMain.handle('desktop:native-file-validate-save', (event, handleId, identity) 
   const session = sessionForEvent(event);
   return nativeFiles.validateSave(session.sessionId, handleId, identity, documentLeases);
 });
-ipcMain.handle('desktop:native-file-write', (event, handleId, bytes, identity) => {
+ipcMain.handle('desktop:native-file-write', async (event, handleId, bytes, identity) => {
   const session = sessionForEvent(event);
-  return nativeFiles.write(session.sessionId, handleId, bytes, identity, documentLeases);
+  const written = await nativeFiles.write(session.sessionId, handleId, bytes, identity, documentLeases);
+  noteRecentDocument(session.sessionId, handleId);
+  return written;
 });
 ipcMain.handle('desktop:native-file-is-same', (event, firstHandleId, secondHandleId) => {
   const session = sessionForEvent(event);
   return nativeFiles.isSameEntry(session.sessionId, firstHandleId, secondHandleId);
+});
+ipcMain.handle('desktop:native-file-adopt-loaded', (event, handleId, digest) => {
+  const session = sessionForEvent(event);
+  if (typeof handleId !== 'string' || !handleId) return false;
+  return nativeFiles.adoptLoadedContent(session.sessionId, handleId, digest);
 });
 ipcMain.handle('desktop:remember-native-document', async (event, documentId, handleId, digest) => {
   const session = sessionForEvent(event);
@@ -1283,6 +1468,7 @@ ipcMain.handle('desktop:reopen-native-document', async (event, documentId) => {
     sessions.focusSession(result.ownerSessionId);
     return { owned: true };
   }
+  noteRecentDocument(session.sessionId, result.descriptor.handleId);
   return { ...result.descriptor, saveTargetCreated: result.created };
 });
 ipcMain.handle('desktop:search-nearby-native-document', async (event, documentId, options = {}) => {
@@ -1342,69 +1528,169 @@ ipcMain.handle('desktop:document-release', (event) => {
   const session = sessionForEvent(event);
   documentLeases.releaseSession(session.sessionId);
 });
-ipcMain.handle('cloud:get-state', async (event, payload = {}) => {
+handleCloudIpc('cloud:get-state', async (event, payload = {}) => {
   const session = sessionForEvent(event);
   session.cloudScope = normalizeCloudScope(payload);
   return scopedCloudSnapshot(session, null, { refresh: true });
 });
-ipcMain.handle('cloud:save-profile', async (event, payload) => {
+handleCloudIpc('cloud:save-profile', async (event, payload) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().saveProfile(payload));
 });
-ipcMain.handle('cloud:test-profile', async (event, payload) => {
+handleCloudIpc('cloud:test-profile', async (event, payload) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().testProfile(payload));
 });
-ipcMain.handle('cloud:provision', async (event, payload) => {
+handleCloudIpc('cloud:provision', async (event, payload) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().provision(payload));
 });
-ipcMain.handle('cloud:pair', async (event, payload) => {
+handleCloudIpc('cloud:pair', async (event, payload) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().pair(payload));
 });
-ipcMain.handle('cloud:select-server-mode', async (event, payload = {}) => {
+handleCloudIpc('cloud:select-server-mode', async (event, payload = {}) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().selectServerMode(payload?.mode));
 });
-ipcMain.handle('cloud:spawn-sandbox', async (event, payload = {}) => {
+handleCloudIpc('cloud:spawn-sandbox', async (event, payload = {}) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().spawnAppServer({
     providerId: payload?.providerId ?? null,
     selectedProvider: payload?.selectedProvider ?? null,
   }));
 });
-ipcMain.handle('cloud:sandbox-status', async (event) => {
+handleCloudIpc('cloud:sandbox-status', async (event) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().appServerStatus());
 });
-ipcMain.handle('cloud:force-quit-account', async (event) => {
+handleCloudIpc('cloud:force-quit-account', async (event) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().forceQuitAccountCloud());
 });
-ipcMain.handle('cloud:reconnect-link', async (event) => {
+handleCloudIpc('cloud:reconnect-link', async (event, payload = {}) => {
   const session = sessionForEvent(event);
-  return scopedCloudSnapshot(session, await requireCloudCoordinator().reconnectCloud());
+  // Only a pressed 다시 연결 button sends `explicit`; automatic reconnects never start a stopped boat VM.
+  return scopedCloudSnapshot(session, await requireCloudCoordinator().reconnectCloud({
+    userIntent: payload?.explicit === true,
+  }));
 });
-ipcMain.handle('cloud:recreate-link', async (event) => {
+handleCloudIpc('cloud:restart-service', async (event) => {
+  const session = sessionForEvent(event);
+  return scopedCloudSnapshot(session, await requireCloudCoordinator().restartCloudService());
+});
+handleCloudIpc('cloud:inspect-host-key', async (event) => {
+  sessionForEvent(event);
+  return requireCloudCoordinator().inspectHostKey();
+});
+handleCloudIpc('cloud:trust-host-key', async (event, payload = {}) => {
+  const session = sessionForEvent(event);
+  return scopedCloudSnapshot(session, await requireCloudCoordinator().trustHostKey({
+    fingerprint: typeof payload?.fingerprint === 'string' ? payload.fingerprint : '',
+  }));
+});
+handleCloudIpc('cloud:reimport-logins', async (event, payload = {}) => {
+  const session = sessionForEvent(event);
+  return scopedCloudSnapshot(session, await requireCloudCoordinator().reimportProviderLogins({
+    provider: typeof payload?.provider === 'string' ? payload.provider : null,
+  }));
+});
+handleCloudIpc('cloud:discard-missing-sessions', async (event) => {
+  const session = sessionForEvent(event);
+  return scopedCloudSnapshot(session, await requireCloudCoordinator().discardMissingSessions());
+});
+handleCloudIpc('cloud:recreate-link', async (event) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().recreateCloud());
 });
-ipcMain.handle('cloud:teardown-sandbox', async (event, payload = {}) => {
+handleCloudIpc('cloud:teardown-sandbox', async (event, payload = {}) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().teardownAppServer({
     force: payload?.force === true,
   }));
 });
-ipcMain.handle('cloud:takeover-sandbox', async (event) => {
+handleCloudIpc('cloud:takeover-sandbox', async (event) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().takeoverAppServer());
 });
-ipcMain.handle('cloud:account-logout', async (event) => {
+handleCloudIpc('cloud:account-logout', async (event) => {
   const session = sessionForEvent(event);
   return scopedCloudSnapshot(session, await requireCloudCoordinator().logoutRaucloud());
 });
-ipcMain.handle('cloud:transfer-intent', async (event, payload = {}) => {
+const BOAT_LINK_KINDS = new Set(['verification', 'checkout', 'api-keys', 'dashboard']);
+
+/**
+ * boat 채널은 예외 대신 봉투를 돌려준다. invoke 거절은 메시지만 남기고 code를 잃기 때문에
+ * preload가 봉투를 풀어 code와 한국어 메시지를 함께 전달한다.
+ */
+function boatIpcFailure(error) {
+  const code = typeof error?.code === 'string' && /^BOAT_[A-Z_]+$/.test(error.code) ? error.code : 'BOAT_UNAVAILABLE';
+  const message = error instanceof BoatError
+    || (typeof error?.message === 'string' && /[가-힣]/.test(error.message))
+    ? error.message
+    : 'boat 요청을 처리하지 못했습니다.';
+  return { code, message };
+}
+
+function handleBoat(channel, run) {
+  ipcMain.handle(channel, async (event, payload) => {
+    const session = sessionForEvent(event);
+    try {
+      await cloudStartup;
+      return { ok: true, value: await run(session, payload && typeof payload === 'object' ? payload : {}) };
+    } catch (error) {
+      console.warn(`[rauhwpx] ${channel} failed:`, error?.code ?? '', error?.detail ?? error?.message ?? error);
+      return { ok: false, error: boatIpcFailure(error) };
+    }
+  });
+}
+
+function boatText(value, maxLength) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return text.length <= maxLength ? text : '';
+}
+
+handleBoat('cloud:boat-email-start', (_session, payload) => (
+  requireCloudCoordinator().boatStartEmailSignIn({ email: boatText(payload.email, 254) })
+));
+handleBoat('cloud:boat-email-poll', async (session, payload) => {
+  const claimId = boatText(payload.claimId, 64);
+  if (!/^[0-9a-f-]{36}$/i.test(claimId)) return { status: 'expired' };
+  const result = await requireCloudCoordinator().boatPollSignIn({ claimId });
+  return result.status === 'connected'
+    ? { status: 'connected', snapshot: await scopedCloudSnapshot(session, result.snapshot) }
+    : { status: result.status };
+});
+handleBoat('cloud:boat-connect-key', async (session, payload) => (
+  scopedCloudSnapshot(session, await requireCloudCoordinator().boatConnectApiKey({
+    apiKey: boatText(payload.apiKey, 512),
+  }))
+));
+handleBoat('cloud:boat-open-link', (_session, payload) => {
+  const kind = BOAT_LINK_KINDS.has(payload.kind) ? payload.kind : null;
+  if (!kind) throw new BoatError('BOAT_LINK_UNAVAILABLE');
+  return requireCloudCoordinator().boatOpenLink({ kind, claimId: boatText(payload.claimId, 64) || null });
+});
+handleBoat('cloud:boat-setup', async (session, payload) => (
+  scopedCloudSnapshot(session, await requireCloudCoordinator().boatSetup({
+    machine: payload.machine === 'small' ? 'small' : 'default',
+  }))
+));
+handleBoat('cloud:boat-wake', async (session) => (
+  scopedCloudSnapshot(session, await requireCloudCoordinator().boatWake())
+));
+handleBoat('cloud:boat-stop', async (session) => (
+  scopedCloudSnapshot(session, await requireCloudCoordinator().boatStop())
+));
+handleBoat('cloud:boat-refresh', async (session) => (
+  scopedCloudSnapshot(session, await requireCloudCoordinator().boatRefresh())
+));
+handleBoat('cloud:boat-disconnect', async (session, payload) => (
+  scopedCloudSnapshot(session, await requireCloudCoordinator().boatDisconnect({
+    deleteServer: payload.deleteServer === true,
+  }))
+));
+handleCloudIpc('cloud:transfer-intent', async (event, payload = {}) => {
   const session = sessionForEvent(event);
   const scope = normalizeCloudScope(payload);
   session.cloudScope = scope;
@@ -1423,7 +1709,7 @@ ipcMain.handle('cloud:transfer-intent', async (event, payload = {}) => {
   }
   return scopedCloudSnapshot(session);
 });
-ipcMain.handle('cloud:read-reference', async (event, payload = {}) => {
+handleCloudIpc('cloud:read-reference', async (event, payload = {}) => {
   sessionForEvent(event);
   const id = String(payload.id ?? '');
   const scope = String(payload.scope ?? '');
@@ -1456,7 +1742,7 @@ ipcMain.handle('cloud:read-reference', async (event, payload = {}) => {
   if (!expectedDigest || expectedDigest !== digest) throw new Error('Reference export failed integrity verification');
   return { bytes: new Uint8Array(bytes), sha256: digest, size: bytes.length };
 });
-ipcMain.handle('cloud:transfer', async (event, payload) => {
+handleCloudIpc('cloud:transfer', async (event, payload) => {
   const session = sessionForEvent(event);
   session.cloudScope = normalizeCloudScope(payload);
   if (payload?.permissionProfile !== 'unrestricted') {
@@ -1491,12 +1777,12 @@ ipcMain.handle('cloud:transfer', async (event, payload) => {
     session.cloudTransferPromise = null;
   }
 });
-ipcMain.handle('cloud:command', async (event, payload) => {
+handleCloudIpc('cloud:command', async (event, payload) => {
   const session = sessionForEvent(event);
   const operation = await requireCloudCoordinator().command(payload);
   return scopedCloudSnapshot(session, operation);
 });
-ipcMain.handle('cloud:begin-edit', async (event, payload = {}) => {
+handleCloudIpc('cloud:begin-edit', async (event, payload = {}) => {
   const session = sessionForEvent(event);
   const sessionId = String(payload?.sessionId ?? '');
   if (!/^[A-Za-z0-9_-]{8,128}$/.test(sessionId)) throw new Error('Invalid cloud session id');
@@ -1540,7 +1826,7 @@ ipcMain.handle('cloud:begin-edit', async (event, payload = {}) => {
     },
   };
 });
-ipcMain.handle('cloud:edit-draft-save', async (event, payload = {}) => {
+handleCloudIpc('cloud:edit-draft-save', async (event, payload = {}) => {
   const session = sessionForEvent(event);
   const identity = session.cloudEditDraft;
   const requestId = typeof payload?.requestId === 'string' ? payload.requestId : null;
@@ -1567,7 +1853,7 @@ ipcMain.handle('cloud:edit-draft-save', async (event, payload = {}) => {
     throw error;
   }
 });
-ipcMain.handle('cloud:continue-edit', async (event, payload = {}) => {
+handleCloudIpc('cloud:continue-edit', async (event, payload = {}) => {
   const session = sessionForEvent(event);
   const sessionId = String(payload?.sessionId ?? '');
   const editSessionId = String(payload?.editSessionId ?? '');
@@ -1602,19 +1888,21 @@ ipcMain.handle('cloud:continue-edit', async (event, payload = {}) => {
     editDraft: null,
   };
 });
-ipcMain.handle('cloud:dismiss-session', async (event, payload) => {
+handleCloudIpc('cloud:dismiss-session', async (event, payload) => {
   const session = sessionForEvent(event);
   const operation = await requireCloudCoordinator().dismissSession(payload);
   return scopedCloudSnapshot(session, operation);
 });
-ipcMain.handle('cloud:complete-takeover', async (event, payload) => {
+handleCloudIpc('cloud:complete-takeover', async (event, payload) => {
   const session = sessionForEvent(event);
   const operation = await requireCloudCoordinator().completeTakeover(payload);
   return scopedCloudSnapshot(session, operation);
 });
-ipcMain.handle('cloud:download-result', async (event, payload) => {
+handleCloudIpc('cloud:download-result', async (event, payload) => {
   const session = sessionForEvent(event);
   const coordinator = requireCloudCoordinator();
+  // Wake before taking the handoff reader: a resumed boat VM may need a new SSH address.
+  await coordinator.wakeBoatForUser({ reason: 'download', sessionId: payload?.sessionId });
   return coordinator.withActiveHandoff(payload.sessionId, async () => {
     const result = await coordinator.downloadResult(payload);
     const handoff = await coordinator.handoffForSession(payload?.sessionId);
@@ -1641,7 +1929,7 @@ ipcMain.handle('cloud:download-result', async (event, payload) => {
     };
   });
 });
-ipcMain.handle('cloud:prepare-restart-document', async (event, payload) => {
+handleCloudIpc('cloud:prepare-restart-document', async (event, payload) => {
   const session = sessionForEvent(event);
   const sessionId = String(payload?.sessionId ?? '');
   if (!/^[A-Za-z0-9_-]{8,128}$/.test(sessionId)) throw new Error('Invalid cloud session id');
@@ -1650,7 +1938,7 @@ ipcMain.handle('cloud:prepare-restart-document', async (event, payload) => {
     originPath: documentLeases.leaseForSession(session.sessionId)?.canonicalPath ?? null,
   });
 });
-ipcMain.handle('cloud:download-checkpoint', async (event, payload) => {
+handleCloudIpc('cloud:download-checkpoint', async (event, payload) => {
   sessionForEvent(event);
   const sessionId = String(payload?.sessionId ?? '');
   if (!/^[A-Za-z0-9_-]{8,128}$/.test(sessionId)) throw new Error('Invalid cloud session id');
@@ -1660,9 +1948,28 @@ ipcMain.handle('cloud:download-checkpoint', async (event, payload) => {
   }
   const kind = payload?.kind ?? null;
   if (kind !== null && kind !== 'turn') throw new Error('Invalid cloud checkpoint kind');
-  return requireCloudCoordinator().downloadCheckpoint({ sessionId, operationId, ...(kind ? { kind } : {}) });
+  try {
+    return {
+      ok: true,
+      value: await requireCloudCoordinator().downloadCheckpoint({
+        sessionId,
+        operationId,
+        ...(kind ? { kind } : {}),
+        explicit: payload?.explicit === true,
+      }),
+    };
+  } catch (error) {
+    // A stopped boat VM answers BOAT_SERVER_STOPPED; the envelope keeps that code across IPC.
+    if (error instanceof BoatError) return { ok: false, error: boatIpcFailure(error) };
+    // A missing checkpoint stays missing until the session changes. The mirror stops asking.
+    const status = Number(error?.status);
+    if (error?.retryable === false && status >= 400 && status < 500 && typeof error?.code === 'string') {
+      return { ok: false, error: { code: error.code, message: 'Cloud 체크포인트를 찾지 못했습니다.', retryable: false } };
+    }
+    throw error;
+  }
 });
-ipcMain.handle('cloud:publish-checkpoint', async (event, payload) => {
+handleCloudIpc('cloud:publish-checkpoint', async (event, payload) => {
   const session = sessionForEvent(event);
   const sessionId = String(payload?.sessionId ?? '');
   if (!/^[A-Za-z0-9_-]{8,128}$/.test(sessionId)) throw new Error('Invalid cloud session id');
@@ -1671,6 +1978,7 @@ ipcMain.handle('cloud:publish-checkpoint', async (event, payload) => {
     throw new Error('Invalid cloud checkpoint operation id');
   }
   const coordinator = requireCloudCoordinator();
+  await coordinator.wakeBoatForUser({ reason: 'checkpoint' });
   return coordinator.withActiveHandoff(sessionId, async (handoff) => {
     const lease = documentLeases.leaseForSession(session.sessionId);
     if (!handoff || !lease || lease.identity.documentId !== handoff.originDocumentId
@@ -1680,7 +1988,7 @@ ipcMain.handle('cloud:publish-checkpoint', async (event, payload) => {
     return coordinator.publishCheckpoint({ sessionId, operationId });
   });
 });
-ipcMain.handle('cloud:display-open', async (event, payload = {}) => {
+handleCloudIpc('cloud:display-open', async (event, payload = {}) => {
   sessionForEvent(event);
   const sessionId = String(payload?.sessionId ?? '');
   if (!/^[A-Za-z0-9_-]{8,128}$/.test(sessionId)) throw new Error('Invalid cloud session id');
@@ -1689,19 +1997,19 @@ ipcMain.handle('cloud:display-open', async (event, payload = {}) => {
     if (!sender.isDestroyed()) sender.send('cloud:display-event', { connectionId, event: displayEvent });
   });
 });
-ipcMain.handle('cloud:display-close', async (event, payload = {}) => {
+handleCloudIpc('cloud:display-close', async (event, payload = {}) => {
   sessionForEvent(event);
   const connectionId = typeof payload?.connectionId === 'string' ? payload.connectionId : '';
   if (!connectionId) return false;
   return cloudDisplayConnections.close(event.sender.id, connectionId);
 });
-ipcMain.handle('cloud:display-input', async (event, payload = {}) => {
+handleCloudIpc('cloud:display-input', async (event, payload = {}) => {
   sessionForEvent(event);
   const connectionId = typeof payload?.connectionId === 'string' ? payload.connectionId : '';
   if (!connectionId) throw new Error('Invalid cloud display connection id');
   return cloudDisplayConnections.sendInput(event.sender.id, connectionId, payload.event);
 });
-ipcMain.handle('cloud:resolve-result', async (event, payload = {}) => {
+handleCloudIpc('cloud:resolve-result', async (event, payload = {}) => {
   const session = sessionForEvent(event);
   const coordinator = requireCloudCoordinator();
   return coordinator.withActiveHandoff(payload.sessionId, async (handoff) => {
@@ -1746,6 +2054,35 @@ ipcMain.handle('cloud:resolve-result', async (event, payload = {}) => {
   });
 });
 ipcMain.handle('window:is-fullscreen', (event) => sessionForEvent(event).window.isFullScreen());
+ipcMain.on('desktop:set-document-state', (event, state) => {
+  try {
+    applyDocumentState(sessionForEvent(event).window, { edited: state?.edited === true });
+  } catch (error) {
+    console.warn('[rauhwpx] document state update failed:', error);
+  }
+});
+ipcMain.on('desktop:set-pending-review-count', (event, count) => {
+  try {
+    agentAttention.setPendingCount(sessionForEvent(event).window.id, count);
+  } catch (error) {
+    console.warn('[rauhwpx] pending review badge update failed:', error);
+  }
+});
+ipcMain.on('desktop:agent-turn-finished', (event, payload) => {
+  try {
+    agentAttention.turnFinished(sessionForEvent(event).window, payload ?? {});
+  } catch (error) {
+    console.warn('[rauhwpx] agent turn notification failed:', error);
+  }
+});
+ipcMain.handle('desktop:show-context-menu', (event, items) => {
+  const window = sessionForEvent(event).window;
+  return popupContextMenu({ Menu, window, items });
+});
+ipcMain.handle('desktop:show-unsaved-changes-sheet', (event, payload) => {
+  const window = sessionForEvent(event).window;
+  return showUnsavedChangesSheet({ dialog, window, fileName: payload?.fileName });
+});
 ipcMain.handle('desktop:close-response', async (event, requestId, allowClose) => {
   const session = sessionForEvent(event);
   if (session.pendingCloseRequestId !== requestId) return false;
@@ -1800,7 +2137,8 @@ if (!hasSingleInstanceLock) {
       writeLaunchOwnerMetadata(runtimeDir, owner),
       writeLaunchOwnerMetadata(workDir, owner),
     ]);
-    await Promise.all([
+    // 지난 실행의 찌꺼기 정리는 첫 창을 막지 않는다.
+    const staleCleanup = Promise.all([
       bestEffortStartupCleanup(
         'stale runtime',
         removeStaleLaunchDirectories(runtimeRoot, launchId, {
@@ -1821,18 +2159,24 @@ if (!hasSingleInstanceLock) {
         'legacy launch workspace',
         removeLegacyLaunchDirectories(legacyWorkRoot, launchId),
       ),
-      ...(devUrl ? [bestEffortStartupCleanup(
+    ]);
+    if (devUrl) {
+      await bestEffortStartupCleanup(
         'development browser cache',
         prepareDevelopmentCaches(
           electronSession.defaultSession,
           join(runtimeDir, 'code-cache'),
         ),
-      )] : []),
-    ]);
+      );
+    }
     secretVault = createSecretVault({
       filePath: join(app.getPath('userData'), 'secrets.json'),
       safeStorage,
     });
+    // 허브는 비밀 저장소가 생긴 직후 띄워 첫 창과 나란히 준비한다(허브의 비밀 요청은 이 저장소로 간다).
+    // 실패는 아래에서 기다려 예전처럼 알린다.
+    const hubStartup = hubOwner.ensure();
+    hubStartup.catch(() => {});
     cloudAccountSession = createAccountSession({
       secretStore: secretVault,
       creditsClient: createRauCreditsClient({
@@ -1843,12 +2187,20 @@ if (!hasSingleInstanceLock) {
       }),
     });
     const knownHostsPath = join(app.getPath('userData'), 'cloud', 'ssh-known-hosts');
+    const boatCloud = new BoatCloud({
+      vault: secretVault,
+      fetchImpl: (...args) => net.fetch(...args),
+      dataDir: join(app.getPath('userData'), 'cloud'),
+      knownHostsPath,
+      openExternal: (url) => shell.openExternal(url),
+    });
     cloudTransport = new CloudApiTransport({
       tunnelManager: new SshTunnelManager({ knownHostsPath }),
     });
     const cloudClient = new CloudClient({
       vault: secretVault,
-      fetchImpl: (...args) => net.fetch(...args),
+      // Node fetch keeps session/display streams from exhausting Chromium's
+      // per-origin HTTP/1 connection pool and starving Cloud control requests.
       transport: cloudTransport,
     });
     cloudCoordinator = new CloudCoordinator({
@@ -1861,6 +2213,7 @@ if (!hasSingleInstanceLock) {
         bootstrapDir: unpackedPath(join(__dirname, '..', 'cloud', 'release')),
         appVersion: app.getVersion(),
         knownHostsPath,
+        devUnsignedRuntime: !app.isPackaged && process.env.RAUHWpx_CLOUD_DEV_UNSIGNED === '1',
       }),
       recoveryDir: join(app.getPath('userData'), 'cloud', 'recovery'),
       appServers: [createRaucloudBrokerProvider({
@@ -1883,20 +2236,34 @@ if (!hasSingleInstanceLock) {
         readSecret: (key) => secretVault.get(key),
         readFileImpl: readFile,
       }),
+      boat: boatCloud,
     });
     cloudCoordinator.on('event', queueCloudBroadcast);
-    await cloudCoordinator.start();
-    stopCloudContinuityTriggers = installCloudContinuityTriggers({
-      powerMonitor,
-      isOnline: () => net.isOnline(),
-      reconcile: (options) => cloudCoordinator?.reconcileContinuity(options),
-      keepWarm: (options) => cloudCoordinator?.prewarmAppServer(options),
+    // Cloud 시작(계정·프로필 확인, 네트워크 왕복)은 첫 창과 나란히 진행한다.
+    const cloudReady = cloudCoordinator.start().then(() => {
+      // boat status is read only while someone can see it (or setup runs); it never wakes the VM.
+      stopBoatStatusCadence = installBoatStatusCadence({
+        isWanted: () => cloudCoordinator?.boatSetupActive() || sessions.windows().some((window) => (
+          !window.isDestroyed() && window.isVisible() && !window.isMinimized()
+        )),
+        refresh: () => cloudCoordinator?.refreshBoatStatus({ reason: 'cadence' }),
+      });
+      app.on('browser-window-focus', () => {
+        void cloudCoordinator?.refreshBoatStatus({ reason: 'focus' });
+      });
+      stopCloudContinuityTriggers = installCloudContinuityTriggers({
+        powerMonitor,
+        isOnline: () => net.isOnline(),
+        reconcile: (options) => cloudCoordinator?.reconcileContinuity(options),
+        keepWarm: (options) => cloudCoordinator?.prewarmAppServer(options),
+      });
     });
+    cloudReady.then(settleCloudStartup.resolve, settleCloudStartup.reject);
     configureAutoUpdater();
     await loadNativeBookmarks();
+    await windowFrames.load();
     installMenu();
     if (!devUrl) installStudioProtocol({ protocol, net, root: studioDist() });
-    await hubOwner.ensure();
     desktopReady = true;
     const launches = pendingLaunches.splice(0);
     let failedLaunches = 0;
@@ -1912,6 +2279,8 @@ if (!hasSingleInstanceLock) {
       app.quit();
       return;
     }
+    // 허브나 Cloud 시작 실패는 창이 뜬 뒤에도 예전처럼 오류 창을 띄우고 종료한다.
+    await Promise.all([hubStartup, cloudReady, staleCleanup]);
     void finishUniqueInstallMetric();
     if (app.isPackaged && ['darwin', 'linux'].includes(process.platform)) {
       setTimeout(() => {
@@ -1920,7 +2289,8 @@ if (!hasSingleInstanceLock) {
     }
   }).catch((error) => {
     resolveUniqueInstallSync();
-    showLaunchError(error);
+    // 창이 먼저 뜨므로 시작 중에 종료하면 허브/Cloud 시작이 거절될 수 있다. 그때는 알리지 않는다.
+    if (!quitting) showLaunchError(error);
     app.quit();
   });
 
@@ -1934,7 +2304,7 @@ if (!hasSingleInstanceLock) {
     const window = windows.at(-1);
     if (window?.isMinimized()) window.restore();
     window?.focus();
-    void hubOwner.ensure();
+    void hubOwner.ensure().catch((error) => console.warn('[rauhwpx] agent hub ensure failed:', error));
   });
 
   app.on('window-all-closed', () => {

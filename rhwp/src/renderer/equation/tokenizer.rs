@@ -175,7 +175,7 @@ impl Tokenizer {
         }
 
         for kw in [
-            "bold", "it", "rm", "times", "sim", "TIMES", "SIM", "RM", "IT", "BOLD",
+            "bold", "it", "rm", "times", "sim", "TIMES", "SIM", "RM", "IT", "BOLD", "Rm",
         ] {
             if self.matches_at(kw) {
                 let after = self.peek(kw.len());
@@ -188,7 +188,8 @@ impl Tokenizer {
 
         // [#1204-A] root/sqrt + 관계연산자(GEQ/LEQ/GE/LE) 가 숫자에 붙은 경우 분리.
         // (`root3`→√3, `GEQ5`→≥5, `GE0`→≥0.) over/atop 와 동일하게 숫자 한정 —
-        // letter 변수와의 충돌(Task #576 주석) 회피. GEQ/LEQ 를 GE/LE 보다 먼저 검사
+        // 긴 letter 식별자와의 충돌(Task #576 주석) 회피. 한 글자 root 피연산자는
+        // 아래에서 별도로 분리한다. GEQ/LEQ 를 GE/LE 보다 먼저 검사
         // (긴 매칭 우선; digit-guard 로도 안전하나 명시적 순서 유지).
         for kw in ["root", "sqrt", "ROOT", "SQRT", "GEQ", "LEQ", "GE", "LE"] {
             if self.matches_at(kw) {
@@ -198,6 +199,17 @@ impl Tokenizer {
                     return Token::new(TokenType::Command, kw, start);
                 }
             }
+        }
+
+        // Hancom splits a glued one-letter radicand (`rootx`, `rootn`, `roota`)
+        // into the root command and its operand. Keep longer identifiers intact.
+        if self.matches_at_ascii_ci("root")
+            && matches!(self.peek(4), Some(c) if c.is_ascii_alphabetic())
+            && !matches!(self.peek(5), Some(c) if c.is_ascii_alphanumeric())
+        {
+            let value: String = self.chars[start..start + 4].iter().collect();
+            self.pos += 4;
+            return Token::new(TokenType::Command, value, start);
         }
 
         // [#1204-C] prime 이 글자/숫자에 붙은 경우 분리 (`primeF`→′ F).
@@ -221,13 +233,36 @@ impl Tokenizer {
             }
         }
 
+        // Hancom accepts a closing LEFT/RIGHT delimiter directly after a
+        // known symbol, as in `sigmaRIGHT )`. Keep unrelated identifiers intact.
+        if let Some(prefix) = value.strip_suffix("RIGHT") {
+            if is_eq_keyword(prefix) {
+                self.pos = start + prefix.len();
+                return Token::new(TokenType::Command, prefix, start);
+            }
+        }
+
         // [#1204-E] glued keyword prefix 분리: hwpeq 는 키워드를 피연산자에 공백 없이
-        // 붙여 쓸 수 있다 (`tanx`→tan x, `barMH`→bar MH, `LEQb`→≤ b, `trianglePQR`→△ PQR).
+        // 붙여 쓸 수 있다 (`tanx`→tan x, `barMH`→bar MH, `LEQb`→≤ b, `trianglePQR`→∆ PQR).
         // run 전체가 키워드가 아니면, 앞쪽에 붙은 알려진 키워드의 최장 prefix 를 분리한다.
         // 나머지는 다음 호출에서 재토큰화되어 chain (`rmbarFF`→rm bar FF) 도 처리된다.
         if let Some(k) = longest_keyword_prefix(&value) {
             self.pos = start + k;
             return Token::new(TokenType::Command, value[..k].to_string(), start);
+        }
+
+        // 키워드 바로 뒤에 붙은 숫자는 피연산자다 (`4 cdot1` → 4·1).
+        let alpha_len = value
+            .bytes()
+            .take_while(|b| b.is_ascii_alphabetic())
+            .count();
+        if alpha_len >= 2
+            && alpha_len < value.len()
+            && value.bytes().skip(alpha_len).all(|b| b.is_ascii_digit())
+            && is_eq_keyword(&value[..alpha_len])
+        {
+            self.pos = start + alpha_len;
+            return Token::new(TokenType::Command, value[..alpha_len].to_string(), start);
         }
 
         Token::new(TokenType::Command, value, start)
@@ -452,6 +487,12 @@ impl Tokenizer {
             return Token::new(TokenType::Symbol, ch.to_string(), start);
         }
 
+        // 원문자 식 번호는 숫자처럼 정체로 그리고 독립 토큰으로 둔다.
+        if super::symbols::is_circled_number(ch) {
+            self.pos += 1;
+            return Token::new(TokenType::Number, ch.to_string(), start);
+        }
+
         // 숫자
         if ch.is_ascii_digit() {
             return self.read_number();
@@ -474,7 +515,7 @@ impl Tokenizer {
         if !ch.is_ascii() {
             let mut value = String::new();
             while let Some(c) = self.current() {
-                if c.is_ascii() || c == ' ' {
+                if c.is_ascii() || c == ' ' || super::symbols::is_circled_number(c) {
                     break;
                 }
                 value.push(c);
@@ -524,9 +565,11 @@ fn is_eq_keyword(s: &str) -> bool {
 /// [#1204-E] glued 분리에 **안전한** 키워드 allowlist (소문자, 대소문자 무시 비교).
 /// hwpeq 에서 피연산자에 공백 없이 붙는 게 흔하고, 변수/그리스/`over`·`root` 등
 /// 모호 prefix 와 충돌하지 않는 명령만 포함한다.
-/// (제외: greek(alphabet), over/atop(overlap, #1122), root/sqrt(rootn), arg/max(argmax),
+/// (제외: 모호한 Greek 접두사(alphabet), over/atop(overlap, #1122), 긴 root/sqrt 식별자, arg/max(argmax),
 ///  ge/le 2자(LEFT 등 충돌) — 이들은 분리하지 않는다.)
 const GLUE_SAFE: &[&str] = &[
+    // 한컴 원본: pix/piy/pit/piano 는 π+피연산자, pile 은 예약어로 유지.
+    "pi",
     // 삼각/쌍곡 함수 (longest-first 는 is_eq_keyword whole-check 가 보장)
     "sinh",
     "cosh",
@@ -596,6 +639,25 @@ pub fn tokenize(script: &str) -> Vec<Token> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn circled_equation_numbers_are_upright_numeric_tokens() {
+        let tokens = super::tokenize("①한글②x");
+        let visible: Vec<_> = tokens
+            .iter()
+            .filter(|t| t.ty != super::TokenType::Eof)
+            .map(|t| (t.ty, t.value.as_str()))
+            .collect();
+        assert_eq!(
+            visible,
+            vec![
+                (super::TokenType::Number, "①"),
+                (super::TokenType::Text, "한글"),
+                (super::TokenType::Number, "②"),
+                (super::TokenType::Command, "x"),
+            ]
+        );
+    }
+
     use super::*;
 
     fn values(tokens: &[Token]) -> Vec<&str> {
@@ -622,6 +684,16 @@ mod tests {
             types(&tokens),
             vec![TokenType::Number, TokenType::Command, TokenType::Number]
         );
+    }
+
+    #[test]
+    fn symbol_followed_by_closing_delimiter_keeps_delimiter() {
+        assert_eq!(
+            values(&tokenize("RMN LEFT ( itm,~ sigmaRIGHT )")),
+            vec!["RM", "N", "LEFT", "(", "it", "m", ",", "~", "sigma", "RIGHT", ")"]
+        );
+        assert_eq!(values(&tokenize("bright )")), vec!["bright", ")"]);
+        assert_eq!(values(&tokenize("sigmaRIGHTMOST")), vec!["sigmaRIGHTMOST"]);
     }
 
     #[test]
@@ -832,13 +904,24 @@ mod tests {
         assert_eq!(values(&tokenize("GEQ5")), vec!["GEQ", "5"]);
         assert_eq!(values(&tokenize("GE0")), vec!["GE", "0"]);
         assert_eq!(values(&tokenize("LEQ3")), vec!["LEQ", "3"]);
-        // 숫자가 아니면 분리하지 않음 (letter 변수 충돌 회피)
-        assert_eq!(values(&tokenize("rootn")), vec!["rootn"]);
+        // 한 글자 변수는 Hancom에서 피근호식이다.
+        assert_eq!(values(&tokenize("rootn")), vec!["root", "n"]);
         // 중괄호/공백 형태는 영향 없음
         assert_eq!(
             values(&tokenize("root {4} of {x}")),
             vec!["root", "{", "4", "}", "of", "{", "x", "}"]
         );
+    }
+
+    #[test]
+    fn single_letter_after_root_is_a_separate_radicand() {
+        assert_eq!(values(&tokenize("x rootx")), vec!["x", "root", "x"]);
+        assert_eq!(values(&tokenize("ROOTX")), vec!["ROOT", "X"]);
+        assert_eq!(
+            values(&tokenize("roota rootn")),
+            vec!["root", "a", "root", "n"]
+        );
+        assert_eq!(values(&tokenize("rootxyz")), vec!["rootxyz"]);
     }
 
     // [#1204-C] prime 이 alnum 에 붙은 경우 분리 (`primeF`→′ F)
@@ -863,12 +946,22 @@ mod tests {
         assert_eq!(values(&tokenize("coshx")), vec!["cosh", "x"]);
     }
 
-    // [#1204-E] 회귀 가드: greek/root/arg 등 모호 prefix 는 분리 금지.
+    #[test]
+    fn pi_prefix_splits_operands_but_keeps_reserved_pile() {
+        assert_eq!(values(&tokenize("sin pix")), vec!["sin", "pi", "x"]);
+        assert_eq!(values(&tokenize("cos piy")), vec!["cos", "pi", "y"]);
+        assert_eq!(values(&tokenize("pit")), vec!["pi", "t"]);
+        assert_eq!(values(&tokenize("pi")), vec!["pi"]);
+        assert_eq!(values(&tokenize("pile")), vec!["pile"]);
+        assert_eq!(values(&tokenize("piano")), vec!["pi", "ano"]);
+    }
+
+    // [#1204-E] 회귀 가드: greek/arg 및 긴 root 식별자는 분리 금지.
     #[test]
     fn test_glued_keyword_no_oversplit() {
         assert_eq!(values(&tokenize("alphabet")), vec!["alphabet"]); // greek 제외
         assert_eq!(values(&tokenize("argmax")), vec!["argmax"]); // arg/max 제외
-        assert_eq!(values(&tokenize("rootn")), vec!["rootn"]); // root letter 제외
+        assert_eq!(values(&tokenize("rootxyz")), vec!["rootxyz"]);
     }
 
     // [#1204-E] cap/cup (집합연산) 가 글자에 붙은 경우 분리 (`capB`→∩ B)

@@ -67,9 +67,17 @@ export class ConversationBackup {
   flush() {
     if (this.flushing) return this.flushing;
     this.flushing = (async () => {
+      // A session that keeps failing (missing identity, storage limit) stays
+      // pending and first in line; it must not starve the sessions after it.
+      let failure = null;
       for (const row of this.database.prepare('SELECT session_id FROM conversation_backup_pending').all()) {
-        await this.save(row.session_id);
+        try {
+          await this.save(row.session_id);
+        } catch (error) {
+          failure ??= error;
+        }
       }
+      if (failure) throw failure;
     })().finally(() => { this.flushing = null; });
     return this.flushing;
   }

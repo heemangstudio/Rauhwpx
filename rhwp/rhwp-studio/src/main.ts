@@ -1,4 +1,4 @@
-import { WasmBridge, type PreparedWasmDocument } from '@/core/wasm-bridge';
+import { WasmBridge, installDeclaredFontAvailabilityProbe, type PreparedWasmDocument } from '@/core/wasm-bridge';
 import { installDocumentTitle } from '@/ui/document-title';
 import { FALLBACK_DOCUMENT_FILE_NAME } from '@/core/document-names';
 import type { DocumentInfo } from '@/core/types';
@@ -23,13 +23,21 @@ import {
 } from '@/view/canvaskit/image-header';
 import { InputHandler } from '@/engine/input-handler';
 import { Toolbar } from '@/ui/toolbar';
+import { EditorToolbarOverflow } from '@/ui/editor-toolbar-overflow';
+import { setupTableRibbonMenus, type TableRibbonMenusController } from '@/ui/table-ribbon-menu';
+import { EditorStyleOverflow } from '@/ui/editor-style-overflow';
+import { setupStatusZoomSlider } from '@/ui/status-zoom';
+import { describePaperSize } from '@/ui/status-paper-size';
+import { StatusCharacterCounter } from '@/ui/status-character-count';
 import { MenuBar } from '@/ui/menu-bar';
+import { installDesktopNativeMenu } from '@/desktop-native-menu';
 import { loadWebFonts, resolveCanvasKitFontPlan } from '@/core/font-loader';
 import { withCanvasKitSurfaceBlockers } from '@/core/canvaskit-document-preflight';
 import { loadExtensionViewerSettings, type ExtensionViewerSettings } from '@/core/extension-settings';
 import { CommandRegistry } from '@/command/registry';
 import { CommandDispatcher } from '@/command/dispatcher';
 import { defaultShortcuts, matchShortcut } from '@/command/shortcut-map';
+import { detectPlatformKind } from '@/engine/navigation-keymap';
 import { allowsDocumentShortcut, isEditorInput, ownsTextInput } from '@/command/shortcut-target';
 import type { EditorContext, CommandServices, EditorEditMode } from '@/command/types';
 import {
@@ -58,7 +66,8 @@ import {
   readFileFromHandle,
   type FileSystemFileHandleLike,
 } from '@/command/file-system-access';
-import { forgetConvertedHmlSaveHandle } from '@/command/save-target';
+import { fileNameForFormat, forgetConvertedHmlSaveHandle } from '@/command/save-target';
+import { onEngineTrap } from '@/core/engine-trap';
 import { ContextMenu } from '@/ui/context-menu';
 import { CommandPalette } from '@/ui/command-palette';
 import { showHmlImportWarning } from '@/ui/hml-import-warning';
@@ -77,18 +86,56 @@ import {
   setThemeMode,
   syncThemeMenu,
 } from '@/core/theme';
+import { initWindowActivity } from '@/core/window-activity';
 import { analyzeDocumentFonts } from '@/core/document-font-status';
-import { detectLocalFonts, getLocalFontState, loadStoredLocalFonts } from '@/core/local-fonts';
+import { createHubFontHost } from '@/core/hub-fonts';
+import { configureFontDetection, detectAllFonts, fontDetectionMessage } from '@/core/font-detection';
+import { showDocumentFontsDialog } from '@/ui/document-fonts-dialog';
+import {
+  configureDesktopFonts,
+  finalizeDesktopFontReport,
+  fontReportsChangedLayout,
+  hasSystemFontHost,
+  setHubFontHost,
+  isDesktopFontIndexReady,
+  isDesktopFontsSupported,
+  loadDesktopFontIndex,
+  prepareDesktopFontsForDocument,
+  prepareLocalFontAccessMetrics,
+  prepareSystemFontsForDocument,
+  settleWithin,
+  syncImportedFontMetrics,
+  unattemptedDesktopFonts,
+  type DesktopFontReport,
+} from '@/core/desktop-fonts';
+import { takeHftOutlineChange } from '@/core/hft-glyphs';
+import {
+  chooseFontFolder,
+  getFontFolderState,
+  isFontFolderSupported,
+  onFontFolderStateChange,
+  reconnectFontFolder,
+  restoreFontFolder,
+  type FontFolderState,
+} from '@/core/font-folder';
+import {
+  getLocalFonts, importLocalFontFiles, localFontImportMessage, loadStoredLocalFonts,
+  repairLocalFontFacesFor, resolveLocalFont, setActiveDocumentFonts,
+} from '@/core/local-fonts';
 import { userSettings, type EditorScalarSettings } from '@/core/user-settings';
 import { AutosaveManager, type AutosaveScheduleSettings, type AutosaveStatus } from '@/recovery/autosave-manager';
 import {
   clearRecoverableAutosaveDrafts,
-  deleteAutosaveDraft,
+  defaultAutosaveLocks,
+  getAutosaveDraft,
   listRecoverableAutosaveDrafts,
-  type AutosaveDraft,
+  markAutosaveDraftsOffered,
+  type AutosaveDraftSummary,
 } from '@/recovery/autosave-store';
-import { recoveryFileName } from '@/recovery/recovery-format';
+import { HostSaveTracker } from '@/recovery/host-save';
+import { offerAutosaveRecovery, restoreAutosaveDraft } from '@/recovery/recovery-flow';
 import { showAutosaveRecoveryDialog } from '@/recovery/recovery-ui';
+import { isPinnedDocumentEnabled, startPinnedDocument } from '@/recovery/pinned-document';
 import { CellSelectionRenderer } from '@/engine/cell-selection-renderer';
 import { TableObjectRenderer } from '@/engine/table-object-renderer';
 import { TableResizeRenderer } from '@/engine/table-resize-renderer';
@@ -108,14 +155,17 @@ import {
 import { calculateFitPageZoom, calculateFitWidthZoom } from '@/view/zoom-fit';
 import { installEmbedRuntime } from '@/embed/runtime';
 import {
+  adoptLoadedNativeFileContent,
   bindNativeFileHandleIdentity,
   cancelDesktopDocument,
   captureDesktopNativeDroppedFile,
   commitDesktopDocument,
   getNativeFileHandleVerifiedDocumentId,
   getRendererSessionContext,
+  installDesktopAgentAttention,
   installDesktopCloseHandling,
   installDesktopCloudEditDraftSaveHandling,
+  installDesktopDocumentState,
   installDesktopFileHandling,
   installDesktopGeneratedDocumentHandling,
   installDesktopPlainTextPasteHandling,
@@ -220,6 +270,7 @@ const autosaveManager = new AutosaveManager({
   exportBytes: () => wasm.exportHwp(),
   schedule: autosaveScheduleFromUserSettings(),
   onStatus: handleAutosaveStatus,
+  locks: defaultAutosaveLocks(),
 });
 void rendererSessionContextPromise.then((context) => {
   if (context) {
@@ -227,6 +278,15 @@ void rendererSessionContextPromise.then((context) => {
   }
 });
 autosaveManager.connect(eventBus);
+onEngineTrap(() => {
+  // 멈춘 엔진이 아직 읽기는 받아 줄 때 지금 상태를 복구본으로 남긴다.
+  void autosaveManager.flushNow('engine-trap');
+  showToast({
+    message: '문서 엔진이 멈춰 편집을 중단했습니다.\n사본을 저장한 뒤 앱을 다시 여세요.',
+    durationMs: 0,
+    action: { label: '사본 저장', onClick: saveTrappedDocumentCopy },
+  });
+});
 window.addEventListener('pagehide', (event) => {
   if (!event.persisted) {
     disposeCloudEditDraftSaveHandling();
@@ -238,26 +298,47 @@ initThemeSync((effective, mode) => {
   eventBus.emit('theme-changed', { mode, effective });
   eventBus.emit('command-state-changed');
 });
+initWindowActivity();
+
+/** 엔진 trap 뒤 저장 명령은 승인·조판 같은 쓰기를 거치므로, 읽기만으로 사본을 내려받는다. */
+function saveTrappedDocumentCopy(): void {
+  try {
+    const bytes = wasm.exportHwpx();
+    const base = fileNameForFormat(wasm.fileName, 'hwpx').replace(/\.hwpx$/i, '');
+    const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: 'application/hwp+zip' }));
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `${base} 복구본.hwpx`;
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (error) {
+    console.error('[engine] 멈춘 엔진에서 사본을 만들지 못했습니다:', error);
+    showToast({ message: '사본을 만들지 못했습니다. 앱을 다시 열어 자동 저장본으로 복구하세요.', durationMs: 0 });
+  }
+}
 
 /**
  * 호스트 저장 완료 통지 (#2660).
  *
  * 호스트가 내보내기 바이트의 영속화(업로드/핸드오프)를 마친 뒤 호출한다.
- * draft 삭제 "완료"까지 await하므로, resolve 이후 팝업을 닫아도 IndexedDB
- * 삭제가 잘리지 않는다. export 시점에는 호출하지 않는다(실패 시 백업 보존).
+ * 마지막 RPC export 이후 편집이 있으면 dirty 와 복구용 draft 를 남긴다.
  */
+const hostSave = new HostSaveTracker({
+  documentState,
+  setFileName: (fileName) => { wasm.fileName = fileName; },
+  emitSaved: () => {
+    eventBus.emit('document-context-changed');
+    eventBus.emit('document-saved', {
+      reason: 'host-save',
+      fileName: wasm.fileName,
+      sourceFormat: wasm.getSourceFormat(),
+    });
+  },
+  discardDraft: (reason) => autosaveManager.discardCurrentDraft(reason),
+});
+
 async function completeHostSave(fileName?: string): Promise<{ ok: true; wasDirty: boolean }> {
-  const wasDirty = documentState.isDirty();
-  if (fileName) wasm.fileName = fileName;
-  documentState.markClean('host-save');
-  eventBus.emit('document-context-changed');
-  eventBus.emit('document-saved', {
-    reason: 'host-save',
-    fileName: wasm.fileName,
-    sourceFormat: wasm.getSourceFormat(),
-  });
-  await autosaveManager.discardCurrentDraft('host-save');
-  return { ok: true, wasDirty };
+  return hostSave.complete(fileName);
 }
 
 // 호스트 통합용 공개 API — 팝업/포크 등 SDK 없이 스튜디오 페이지 안에서 통합하는
@@ -277,7 +358,11 @@ if (import.meta.env.DEV) {
 }
 let canvasView: CanvasView | null = null;
 let inputHandler: InputHandler | null = null;
+let commandPalette: CommandPalette | null = null;
 let toolbar: Toolbar | null = null;
+let editorToolbarOverflow: EditorToolbarOverflow | null = null;
+let tableRibbonMenus: TableRibbonMenusController | null = null;
+let editorStyleOverflow: EditorStyleOverflow | null = null;
 let ruler: Ruler | null = null;
 let rendererSession: RendererSession | null = null;
 let editMode: EditorEditMode = 'normal';
@@ -305,6 +390,11 @@ class DocumentOwnedElsewhereError extends Error {
 let extensionViewerSettings: ExtensionViewerSettings = {
   disableExternalWebFonts: false,
 };
+
+/** 제한 시간을 넘겨 늦게 도착한 웹폰트로 이미 그린 페이지를 다시 그린다. */
+function repaintAfterLateWebFonts(): void {
+  if (wasm.hasLoadedDocument()) eventBus.emit('document-view-changed');
+}
 
 function createActiveDocumentId(): string {
   return globalThis.crypto?.randomUUID?.()
@@ -440,7 +530,7 @@ async function prepareCloudTransferDocument(startId: string, restart?: { documen
   }
   const sourceFormat = wasm.getSourceFormat();
   if (sourceFormat !== 'hwp' && sourceFormat !== 'hwpx' && sourceFormat !== 'hml') {
-    throw new Error(`클라우드에서 지원하지 않는 문서 형식입니다: ${sourceFormat}`);
+    throw new Error(`Cloud에서 지원하지 않는 문서 형식입니다: ${sourceFormat}`);
   }
   const format = sourceFormat;
   let bytes = exportDocumentForFormat(wasm, format);
@@ -699,7 +789,7 @@ async function applyCloudResult(result: CloudDownloadResult, resolution: CloudRe
       showToast({ message: `${reason}두 파일을 모두 보관했습니다: 원본, ${copy}`, durationMs: 4500 });
       return null;
     }
-    showToast({ message: '클라우드 결과를 버렸습니다.', durationMs: 3000 });
+    showToast({ message: 'Cloud 결과를 버렸습니다.', durationMs: 3000 });
     return null;
   }
   const requestId = `cloud-result-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -711,11 +801,11 @@ async function applyCloudResult(result: CloudDownloadResult, resolution: CloudRe
       off();
       if (timeout) clearTimeout(timeout);
       if (outcome.ok) resolve();
-      else reject(new Error(outcome.error || '클라우드 결과 열기가 취소되었습니다.'));
+      else reject(new Error(outcome.error || 'Cloud 결과 열기가 취소되었습니다.'));
     });
     timeout = setTimeout(() => {
       off();
-      reject(new Error('클라우드 결과 열기 시간이 초과되었습니다.'));
+      reject(new Error('Cloud 결과 열기 시간이 초과되었습니다.'));
     }, 90_000);
   });
   eventBus.emit('open-document-bytes', {
@@ -728,11 +818,11 @@ async function applyCloudResult(result: CloudDownloadResult, resolution: CloudRe
   try {
     await opened;
     if (!activeDocumentId) throw new Error('Cloud 결과에 로컬 문서 ID를 할당하지 못했습니다.');
-    showToast({ message: `${result.fileName}에 클라우드 결과를 반영했습니다.`, durationMs: 3500 });
+    showToast({ message: `${result.fileName}에 Cloud 결과를 반영했습니다.`, durationMs: 3500 });
     return { documentId: activeDocumentId, fileName: result.fileName };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    showToast({ message: `클라우드 결과를 열지 못했습니다: ${message}`, durationMs: 4500 });
+    showToast({ message: `Cloud 결과를 열지 못했습니다: ${message}`, durationMs: 4500 });
     throw error;
   }
 }
@@ -742,7 +832,7 @@ async function applyCloudTakeover(takeover: CloudTakeoverPayload): Promise<{
   fileName: string;
 } | null> {
   if (!takeover.document) {
-    showToast({ message: '클라우드 작업을 중단하고 이 기기로 편집 권한을 가져왔습니다.', durationMs: 3500 });
+    showToast({ message: 'Cloud 작업을 중단하고 이 기기로 편집 권한을 가져왔습니다.', durationMs: 3500 });
     return null;
   }
   const requestId = `cloud-takeover-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -754,11 +844,11 @@ async function applyCloudTakeover(takeover: CloudTakeoverPayload): Promise<{
       off();
       if (timeout) clearTimeout(timeout);
       if (result.ok) resolve();
-      else reject(new Error(result.error || '클라우드 체크포인트 열기가 취소되었습니다.'));
+      else reject(new Error(result.error || 'Cloud 체크포인트 열기가 취소되었습니다.'));
     });
     timeout = setTimeout(() => {
       off();
-      reject(new Error('클라우드 체크포인트 열기 시간이 초과되었습니다.'));
+      reject(new Error('Cloud 체크포인트 열기 시간이 초과되었습니다.'));
     }, 90_000);
   });
   eventBus.emit('open-document-bytes', {
@@ -769,9 +859,9 @@ async function applyCloudTakeover(takeover: CloudTakeoverPayload): Promise<{
     skipUnsavedGuard: true,
   });
   await opened;
-  if (!activeDocumentId) throw new Error('클라우드 체크포인트에 로컬 문서 ID를 할당하지 못했습니다.');
+  if (!activeDocumentId) throw new Error('Cloud 체크포인트에 로컬 문서 ID를 할당하지 못했습니다.');
   showToast({
-    message: `${takeover.document.fileName}의 최신 클라우드 체크포인트를 열었습니다.`,
+    message: `${takeover.document.fileName}의 최신 Cloud 체크포인트를 열었습니다.`,
     durationMs: 4000,
   });
   return { documentId: activeDocumentId, fileName: takeover.document.fileName };
@@ -850,7 +940,7 @@ const commandServices: CommandServices = {
     return {
       opCount: sets().reduce((sum, set) => sum + set.ops.length, 0),
       approveAll: () => sets().every((set) => pending.approve(set.id)),
-      rejectAll: () => { for (const set of sets()) pending.reject(set.id); },
+      rejectAll: () => pending.rejectAll(),
     };
   },
 };
@@ -884,6 +974,88 @@ const sbMessage = () => document.getElementById('sb-message')!;
 const sbPage = () => document.getElementById('sb-page')!;
 const sbSection = () => document.getElementById('sb-section')!;
 const sbZoomVal = () => document.getElementById('sb-zoom-val')!;
+const sbPaper = () => document.getElementById('sb-paper')!;
+const sbCount = () => document.getElementById('sb-count')!;
+let statusSectionIndex = 0;
+let paperStatusFrame = 0;
+let characterStatusFrame = 0;
+let characterRecountTimer: ReturnType<typeof setTimeout> | null = null;
+const CHARACTER_RECOUNT_IDLE_MS = 150;
+const statusCharacterCounter = new StatusCharacterCounter();
+const statusNumber = new Intl.NumberFormat('ko-KR');
+
+function updatePaperStatus(): void {
+  paperStatusFrame = 0;
+  const paper = sbPaper();
+  try {
+    if (wasm.getSectionCount() === 0) {
+      paper.textContent = '—';
+      paper.title = '용지 크기';
+      return;
+    }
+    const size = describePaperSize(wasm.getPageDef(statusSectionIndex));
+    paper.textContent = size.label;
+    paper.title = size.title;
+  } catch {
+    paper.textContent = '—';
+    paper.title = '용지 크기';
+  }
+}
+
+function schedulePaperStatus(): void {
+  if (!paperStatusFrame) paperStatusFrame = requestAnimationFrame(updatePaperStatus);
+}
+
+function updateCharacterStatus(): void {
+  characterStatusFrame = 0;
+  const indicator = sbCount();
+  if (!inputHandler) {
+    indicator.textContent = '0글자';
+    indicator.title = '문서 글자 수';
+    return;
+  }
+  try {
+    if (wasm.getSectionCount() === 0) {
+      indicator.textContent = '0글자';
+      indicator.title = '문서 글자 수';
+      return;
+    }
+    const { current, total, scope } = statusCharacterCounter.read(wasm, inputHandler);
+    indicator.textContent = scope === 'document'
+      ? `${statusNumber.format(total)}글자`
+      : `${statusNumber.format(current)}/${statusNumber.format(total)}글자`;
+    indicator.title = scope === 'selection'
+      ? '선택한 글자 / 전체 글자'
+      : scope === 'cell' ? '현재 셀 글자 / 전체 글자' : '문서 글자 수';
+  } catch (error) {
+    console.warn('[status] 글자 수를 읽지 못했습니다:', error);
+    indicator.textContent = '—';
+    indicator.title = '글자 수를 읽지 못했습니다';
+  }
+}
+
+function scheduleCharacterStatus(invalidate = false): void {
+  if (invalidate) {
+    cancelCharacterRecount();
+    statusCharacterCounter.invalidate();
+  }
+  if (!characterStatusFrame) characterStatusFrame = requestAnimationFrame(updateCharacterStatus);
+}
+
+/** 편집 뒤 전체 글자 수는 문서 전체를 다시 세므로 타이핑이 멈춘 뒤 한 번만 갱신한다. */
+function scheduleCharacterRecount(): void {
+  cancelCharacterRecount();
+  characterRecountTimer = setTimeout(() => {
+    characterRecountTimer = null;
+    scheduleCharacterStatus(true);
+  }, CHARACTER_RECOUNT_IDLE_MS);
+}
+
+function cancelCharacterRecount(): void {
+  if (characterRecountTimer === null) return;
+  clearTimeout(characterRecountTimer);
+  characterRecountTimer = null;
+}
 let autosaveStatusRestoreTimer: ReturnType<typeof setTimeout> | null = null;
 let autosavePreviousMessage: string | null = null;
 
@@ -955,10 +1127,218 @@ async function updateLoadProgress(percent: number, label: string): Promise<void>
   await waitForNextPaint();
 }
 
+/** 문서 로드가 데스크톱 글꼴 연결을 기다리는 최대 시간. 넘기면 백그라운드에서 마저 연결한다. */
+const DESKTOP_FONT_LOAD_BUDGET_MS = 4000;
+const DESKTOP_FONT_EDIT_DEBOUNCE_MS = 600;
+let desktopFontEditTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** 브라우저에서 저장된 글꼴 폴더를 다시 연결하는 작업. 첫 문서 로드가 잠깐 기다린다. */
+let fontFolderRestore: Promise<unknown> | null = null;
+
+function initializeDesktopFonts(): void {
+  // "로컬 글꼴 감지"는 설치 글꼴·데스크톱·허브·글꼴 폴더를 한 번에 모두 돌린다.
+  configureFontDetection({
+    documentFonts: () => {
+      try {
+        return wasm.pageCount > 0 ? wasm.getDocumentInfo().fontsUsed : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+    applyReports: (reports) => {
+      applyLateFontReports(reports);
+      eventBus.emit('local-fonts-changed', {
+        fonts: getLocalFonts({ includeRegistered: true }),
+        source: 'detect-all',
+      });
+      prepareCanvasKitLocalFonts(wasm.getDocumentInfo().fontsUsed);
+      prepareLocalFontRepairs(wasm.getDocumentInfo().fontsUsed);
+    },
+  });
+  // 런타임 메트릭은 데스크톱·글꼴 폴더·가져온 파일·로컬 글꼴 감지 모두에 쓴다.
+  configureDesktopFonts({
+    metrics: wasm.getRuntimeFontMetricsApi(),
+    onLateRegistration: applyLateDesktopFontReport,
+  });
+  if (isDesktopFontsSupported()) {
+    // 첫 문서가 열리기 전에 색인을 미리 받아 둔다.
+    void loadDesktopFontIndex().catch((error) => {
+      console.warn('[DesktopFonts] 글꼴 색인 준비 실패:', error);
+    });
+    return;
+  }
+  if (!isFontFolderSupported()) return;
+  installFontFolderStatusButton();
+  onFontFolderStateChange(handleFontFolderState);
+  fontFolderRestore = restoreFontFolder().catch((error) => {
+    console.warn('[FontFolder] 저장된 글꼴 폴더를 다시 연결하지 못했습니다:', error);
+  });
+}
+
+/** 권한을 다시 받아야 할 때만 상태 바에 한 번 누르는 버튼을 띄운다. */
+function installFontFolderStatusButton(): void {
+  const button = document.getElementById('sb-font-folder') as HTMLButtonElement | null;
+  if (!button) return;
+  button.addEventListener('click', () => {
+    // 권한 요청은 클릭 처리 안에서 바로 해야 한다.
+    reconnectFontFolder().catch((error) => {
+      console.warn('[FontFolder] 다시 연결 실패:', error);
+      showToast({ message: '글꼴 폴더를 다시 연결하지 못했습니다.', durationMs: 5000 });
+    });
+  });
+}
+
+function handleFontFolderState(state: FontFolderState): void {
+  const button = document.getElementById('sb-font-folder') as HTMLButtonElement | null;
+  if (button) button.hidden = state.status !== 'needs-permission';
+  if (state.status === 'connected') connectPendingDocumentFonts();
+}
+
+/**
+ * 브라우저에서 로컬 에이전트 허브가 내주는 설치 글꼴을 쓴다. 폴더 선택·권한 요청이 필요 없다.
+ * 데스크톱 preload나 연결한 글꼴 폴더가 있으면 그쪽이 먼저다.
+ */
+function installHubFonts(bridge: AgentBridge): void {
+  if (isDesktopFontsSupported()) return;
+  setHubFontHost(createHubFontHost({ access: () => bridge.getHubFontAccess() }));
+  bridge.onEvent((event) => {
+    if (event.type === 'connection' && event.state === 'connected') connectPendingDocumentFonts();
+  });
+}
+
+/** 글꼴 색인 host가 새로 준비되면 열린 문서에서 아직 시도하지 않은 글꼴을 연결한다. */
+function connectPendingDocumentFonts(): void {
+  if (wasm.pageCount === 0 || !hasSystemFontHost()) return;
+  let fontsUsed: string[] | undefined;
+  try {
+    fontsUsed = wasm.getDocumentInfo().fontsUsed;
+  } catch {
+    return;
+  }
+  const pending = unattemptedDesktopFonts(fontsUsed);
+  if (!pending.length) return;
+  void prepareDesktopFontsForDocument(pending)
+    .then((report) => {
+      applyLateDesktopFontReport(report);
+      updateFontStatusButton();
+    })
+    .catch((error) => console.warn('[SystemFonts] 문서 글꼴 연결 실패:', error));
+}
+
+/** 문서 로드 뒤에 끝난 연결 결과를 레이아웃·화면·CanvasKit에 반영한다. */
+function applyLateDesktopFontReport(report: DesktopFontReport): void {
+  applyLateFontReports([report]);
+}
+
+function applyLateFontReports(reports: readonly DesktopFontReport[]): void {
+  // HFT 윤곽선은 폭을 바꾸지 않지만 같은 경로로 다시 그린다.
+  const hftChanged = takeHftOutlineChange();
+  if (fontReportsChangedLayout(reports) || hftChanged) eventBus.emit('font-files-imported');
+  for (const report of reports) finalizeDesktopFontReport(report);
+}
+
+/** 로컬 글꼴 감지 결과가 바뀌면 현재 문서 글꼴의 레이아웃 메트릭을 등록한다. */
+function syncLocalFontAccessMetrics(): void {
+  let fontsUsed: string[] | undefined;
+  try {
+    fontsUsed = wasm.pageCount > 0 ? wasm.getDocumentInfo().fontsUsed : undefined;
+  } catch {
+    return;
+  }
+  if (!fontsUsed?.length) return;
+  void prepareLocalFontAccessMetrics(fontsUsed)
+    .then((report) => {
+      if (report && report.totals.metricsRegistered > 0) applyLateFontReports([report]);
+    })
+    .catch((error) => console.warn('[LocalFonts] 레이아웃 메트릭 등록 실패:', error));
+}
+
+/** 편집·에이전트·붙여넣기로 새 글꼴이 문서에 들어오면 데스크톱 글꼴에서 찾아 연결한다. */
+function scheduleDesktopFontSync(): void {
+  if (!hasSystemFontHost()) return;
+  if (desktopFontEditTimer !== null) clearTimeout(desktopFontEditTimer);
+  desktopFontEditTimer = setTimeout(() => {
+    desktopFontEditTimer = null;
+    let fontsUsed: string[] | undefined;
+    try {
+      fontsUsed = wasm.getDocumentInfo().fontsUsed;
+    } catch {
+      return;
+    }
+    const pending = unattemptedDesktopFonts(fontsUsed);
+    if (!pending.length) return;
+    void prepareDesktopFontsForDocument(pending)
+      .then(applyLateDesktopFontReport)
+      .catch((error) => console.warn('[DesktopFonts] 새 글꼴 연결 실패:', error));
+  }, DESKTOP_FONT_EDIT_DEBOUNCE_MS);
+}
+
+/**
+ * 실제 글꼴로 보이지 않는 문서 글꼴이 있으면 상태 바에 "글꼴 N개 대체됨"을 띄운다.
+ * 누르면 대체된 글꼴과 대신 쓰는 글꼴, 연결된 글꼴 목록을 연다.
+ */
+function updateFontStatusButton(): void {
+  const button = document.getElementById('sb-font-status') as HTMLButtonElement | null;
+  if (!button) return;
+  let fontsUsed: string[] | undefined;
+  try {
+    fontsUsed = wasm.pageCount > 0 ? wasm.getDocumentInfo().fontsUsed : undefined;
+  } catch {
+    fontsUsed = undefined;
+  }
+  const report = fontsUsed?.length ? analyzeDocumentFonts(fontsUsed) : null;
+  const substituted = report ? report.total - report.summary.available : 0;
+  button.hidden = substituted <= 0;
+  button.textContent = substituted > 0 ? `글꼴 ${substituted}개 대체됨` : '';
+}
+
+function installFontStatusButton(): void {
+  const button = document.getElementById('sb-font-status') as HTMLButtonElement | null;
+  if (!button) return;
+  button.addEventListener('click', () => {
+    let fontsUsed: string[] | undefined;
+    try {
+      fontsUsed = wasm.getDocumentInfo().fontsUsed;
+    } catch {
+      return;
+    }
+    if (!fontsUsed?.length) return;
+    const offerFolder = !isDesktopFontsSupported() && isFontFolderSupported()
+      && getFontFolderState().status !== 'connected';
+    showDocumentFontsDialog(analyzeDocumentFonts(fontsUsed), {
+      sourceFileFor: (name) => resolveLocalFont(name)?.sourcePath?.split(/[\\/]/).pop() ?? null,
+      connectFolder: offerFolder
+        ? () => {
+          const connect = getFontFolderState().status === 'needs-permission' ? reconnectFontFolder : chooseFontFolder;
+          connect().catch((error: unknown) => {
+            console.warn('[FontFolder] 연결 실패:', error);
+            showToast({ message: '글꼴 폴더를 연결하지 못했습니다.', durationMs: 5000 });
+          });
+        }
+        : null,
+    });
+  });
+  for (const event of ['local-fonts-changed', 'font-files-imported'] as const) {
+    eventBus.on(event, updateFontStatusButton);
+  }
+}
+
 /**
  * CanvasKit은 browser CSS font fallback을 사용하지 않는다. 초기 페이지를 먼저 표시한 뒤,
  * 저장된 권한 범위 안에서 필요한 local face를 준비하고 등록된 경우에만 다시 그린다.
  */
+/** 설치 글꼴 중 합성 글리프 bbox 가 잘린 face 를 복구해 Canvas2D 에 등록하고, 등록되면 다시 그린다. */
+function prepareLocalFontRepairs(fontNames: readonly string[] | undefined): void {
+  if (!fontNames?.length) return;
+  const requestedFonts = [...fontNames];
+  void (async () => {
+    await loadStoredLocalFonts();
+    if (await repairLocalFontFacesFor(requestedFonts)) eventBus.emit('document-view-changed');
+  })().catch((error) => {
+    console.warn('[LocalFonts] 설치 글꼴 복구 등록 실패, 설치 글꼴로 계속 표시합니다:', error);
+  });
+}
+
 function prepareCanvasKitLocalFonts(fontNames: readonly string[] | undefined): void {
   const renderer = canvasView?.getRenderBackend() === 'canvaskit'
     ? rendererSession?.getCanvasKitRenderer() ?? null
@@ -983,6 +1363,16 @@ function prepareCanvasKitLocalFonts(fontNames: readonly string[] | undefined): v
 async function initialize(): Promise<void> {
   installWebAppShell();
   installDesktopWindowChrome();
+  installDesktopDocumentState({
+    subscribe: (update) => {
+      for (const name of ['document-context-changed', 'document-dirty-changed', 'document-saved']) {
+        eventBus.on(name, update);
+      }
+    },
+    hasDocument: () => wasm.hasLoadedDocument(),
+    isDirty: () => documentState.isDirty(),
+  });
+  editorStyleOverflow = new EditorStyleOverflow(document.getElementById('style-bar')!);
   const msg = sbMessage();
   try {
     extensionViewerSettings = await loadExtensionViewerSettings();
@@ -992,12 +1382,23 @@ async function initialize(): Promise<void> {
     msg.textContent = extensionViewerSettings.disableExternalWebFonts
       ? '로컬 폰트 준비 중...'
       : '웹폰트 로딩 중...';
-    await loadWebFonts([], undefined, extensionViewerSettings);  // CSS @font-face 등록 + CRITICAL 폰트만 로드
+    // 대체 CSS 별칭이 원본 설치 여부를 가리지 않도록 등록 전에 측정한다.
+    installDeclaredFontAvailabilityProbe();
+    // CSS @font-face 등록 + CRITICAL 폰트만 로드
+    await loadWebFonts([], undefined, { ...extensionViewerSettings, onLateLoad: repaintAfterLateWebFonts });
     msg.textContent = 'WASM 로딩 중...';
     await wasm.initialize();
+    if (import.meta.env.DEV && import.meta.env.VITE_RHWP_DEV_FONT_PACK === '1') {
+      msg.textContent = '글꼴 준비 중...';
+      const { loadConfiguredDevFontPack } = await import('./core/dev-font-pack.ts');
+      await loadConfiguredDevFontPack((loaded, total) => {
+        msg.textContent = `글꼴 준비 중... (${loaded}/${total})`;
+      });
+    }
     if (import.meta.env.DEV) {
       initRhwpDev(wasm);
     }
+    initializeDesktopFonts();
     const renderBackendRequest = resolveRenderBackendRequest(window.location.search);
     const canvaskitModeRequest = resolveCanvasKitRenderModeRequest(window.location.search);
     const canvaskitMode = canvaskitModeRequest.mode;
@@ -1104,7 +1505,16 @@ async function initialize(): Promise<void> {
     // InputHandler에 커맨드 디스패처 및 컨텍스트 메뉴 주입
     inputHandler.setDispatcher(dispatcher);
     inputHandler.setContextMenu(new ContextMenu(dispatcher, registry));
-    inputHandler.setCommandPalette(new CommandPalette(registry, dispatcher));
+    commandPalette = new CommandPalette(registry, dispatcher);
+    inputHandler.setCommandPalette(commandPalette);
+    const commandSearch = document.getElementById('editor-command-search');
+    if (commandSearch) {
+      const shortcutLabel = detectPlatformKind() === 'mac' ? '⌘/' : 'Ctrl+/';
+      const shortcut = commandSearch.querySelector('kbd');
+      if (shortcut) shortcut.textContent = shortcutLabel;
+      commandSearch.title = `명령 검색 (${shortcutLabel})`;
+      commandSearch.addEventListener('click', () => commandPalette?.open());
+    }
     inputHandler.setCellSelectionRenderer(
       new CellSelectionRenderer(container, canvasView.getVirtualScroll()),
     );
@@ -1123,6 +1533,7 @@ async function initialize(): Promise<void> {
         if (menuName === 'file') void renderRecentSubmenu();
       },
     });
+    installDesktopNativeMenu({ menuBar: document.getElementById('menu-bar')!, dispatcher, registry, eventBus });
 
     // 툴바 내 data-cmd 버튼 클릭 → 커맨드 디스패치
     // (.tb-btn + 서식바 접기 버튼 .sb-collapse-btn)
@@ -1131,6 +1542,12 @@ async function initialize(): Promise<void> {
         e.preventDefault();
         const cmd = (btn as HTMLElement).dataset.cmd;
         if (cmd) dispatcher.dispatch(cmd, { anchorEl: btn as HTMLElement });
+      });
+      (btn as HTMLElement).addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        const cmd = (btn as HTMLElement).dataset.cmd;
+        if (cmd && dispatcher.isEnabled(cmd)) dispatcher.dispatch(cmd, { anchorEl: btn as HTMLElement });
       });
     });
 
@@ -1176,6 +1593,17 @@ async function initialize(): Promise<void> {
     setupFileInput();
     setupZoomControls();
     setupEventListeners();
+    tableRibbonMenus = setupTableRibbonMenus(
+      document.getElementById('icon-toolbar')!,
+      (command, anchor) => {
+        const fromOverflow = Boolean(anchor.closest('#editor-toolbar-overflow'));
+        dispatcher.dispatch(command, { anchorEl: anchor });
+        if (fromOverflow) editorToolbarOverflow?.closePopover();
+      },
+      (command) => dispatcher.isEnabled(command),
+    );
+    editorToolbarOverflow = new EditorToolbarOverflow(document.getElementById('icon-toolbar')!);
+    editorStyleOverflow?.refresh();
     setupGlobalShortcuts();
     installDesktopFileHandling((handles) => {
       const handle = handles[0];
@@ -1210,8 +1638,9 @@ async function initialize(): Promise<void> {
     installDesktopPlainTextPasteHandling((text) => {
       inputHandler?.performPlainTextPaste(text);
     });
-    void loadFromUrlParam();
-    void offerAutosaveRecoveryIfIdle();
+    if (isPinnedDocumentEnabled()) void loadPinnedDocument();
+    else void loadFromUrlParam();
+    void offerAutosaveRecoveryAtStartup();
     installPwaFileHandling(window as FileHandlingWindowLike, {
       openDocumentBytes(payload) {
         eventBus.emit('open-document-bytes', payload);
@@ -1254,7 +1683,15 @@ async function initialize(): Promise<void> {
         isReadOnly: () => documentReadOnly,
       });
       agentBridgeRef = agentBridge;
+      installHubFonts(agentBridge);
       agentBridge.onEditingLeaseChange(setAgentEditingLease);
+      installDesktopAgentAttention({
+        onEvent: (cb) => agentBridge.onEvent(cb),
+        onPendingChange: (cb) => agentBridge.pendingEdits.onChange(cb),
+        pendingReviewCount: () => agentBridge.pendingEdits.getChangeSets()
+          .filter((set) => set.ops.length > 0).length,
+        documentTitle: () => (wasm.hasLoadedDocument() ? wasm.fileName : ''),
+      });
       const cloudRuntime = installCloudDocumentRuntimeApi(agentBridge);
       const versionController = new DocumentVersionController({
         wasm,
@@ -1277,6 +1714,15 @@ async function initialize(): Promise<void> {
             committed: commitEditorSettingsRuntime,
           },
           versionController,
+          getAgentUndoEntry: () => inputHandler?.getAgentUndoEntry() ?? null,
+          undoAgentTurn: (entry) => inputHandler?.undoAgentTurn(entry) ?? false,
+          navigateToChange: (position, anchor) => {
+            if (!inputHandler) return;
+            if (anchor && position.cellIndex === undefined) {
+              position = { ...position, cursorRect: { ...anchor } };
+            }
+            inputHandler.moveCursorTo(position);
+          },
           openClassicVersionControl: () => openClassicDocumentHistory(commandServices),
           getDocumentContext: () => {
             const documentName = wasm.pageCount > 0 ? wasm.fileName : null;
@@ -1293,6 +1739,7 @@ async function initialize(): Promise<void> {
               isDirty: documentState.isDirty(),
               isNewDocument: wasm.isNewDocument,
               sourceFormat: wasm.getSourceFormat(),
+              pageCount: wasm.pageCount,
             };
           },
           moveToLibraryDocument: async (target) => {
@@ -1305,8 +1752,9 @@ async function initialize(): Promise<void> {
           applyCloudResult,
           publishCloudCheckpoint,
           isCloudCheckpointMerged: (checkpoint) => versionController.isCloudCheckpointMerged(checkpoint),
-          mergeCloudCheckpoint: async (startId, checkpoint) => {
-            const applied = await versionController.mergeCloudCheckpoint(startId, checkpoint);
+          cloudBranchName: (startId) => versionController.cloudBranchName(startId),
+          mergeCloudCheckpoint: async (startId, checkpoint, options) => {
+            const applied = await versionController.mergeCloudCheckpoint(startId, checkpoint, options);
             if (applied) await versionController.refresh();
             return applied;
           },
@@ -1338,8 +1786,8 @@ async function initialize(): Promise<void> {
     rendererInitialized = true;
   } catch (error) {
     rendererInitializationError = error instanceof Error ? error.message : String(error);
-    msg.textContent = `WASM 초기화 실패: ${error}`;
-    console.error('[main] WASM 초기화 실패:', error);
+    msg.textContent = `초기화 실패: ${error}`;
+    console.error('[main] 초기화 실패:', error);
   }
 }
 
@@ -1348,6 +1796,16 @@ async function initialize(): Promise<void> {
  * 예: 문서 미로드 상태에서도 Alt+N(새 문서), Ctrl+O(열기) 등.
  */
 function setupGlobalShortcuts(): void {
+  document.addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey
+      || e.key !== '/'
+      || e.isComposing || e.defaultPrevented) return;
+    const target = e.target instanceof Element ? e.target : null;
+    if (!allowsDocumentShortcut(target)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    commandPalette?.open();
+  }, true);
   document.addEventListener('keydown', (e) => {
     const target = e.target instanceof Element ? e.target : null;
     if (e.defaultPrevented || e.isComposing || !allowsDocumentShortcut(target)) return;
@@ -1369,6 +1827,7 @@ function setupFileInput(): void {
 
   openAction?.addEventListener('click', () => dispatcher.dispatch('file:open'));
   newAction?.addEventListener('click', () => dispatcher.dispatch('file:new-doc'));
+  void renderEmptyStateRecents();
 
   fileInput.addEventListener('change', async (e) => {
     const input = e.target as HTMLInputElement;
@@ -1501,6 +1960,7 @@ function setupFileInput(): void {
 function setupZoomControls(): void {
   if (!canvasView) return;
   const vm = canvasView.getViewportManager();
+  setupStatusZoomSlider(document.getElementById('sb-zoom-range') as HTMLInputElement, sbZoomVal(), vm, eventBus);
 
   document.getElementById('sb-zoom-in')!.addEventListener('click', () => {
     vm.smoothZoomBy(0.1);
@@ -1550,6 +2010,19 @@ function setupZoomControls(): void {
 let totalSections = 1;
 
 function setupEventListeners(): void {
+  installFontStatusButton();
+  eventBus.on('font-files-imported', () => {
+    try {
+      // 직접 가져온 파일도 레이아웃 메트릭에 올린다.
+      syncImportedFontMetrics();
+      wasm.refreshLayout();
+      eventBus.emit('document-view-changed');
+      prepareCanvasKitLocalFonts(wasm.getDocumentInfo().fontsUsed);
+    } catch (error) {
+      console.warn('[LocalFonts] 글꼴 가져오기 뒤 문서 갱신 실패:', error);
+    }
+  });
+  eventBus.on('local-fonts-changed', () => syncLocalFontAccessMetrics());
   eventBus.on('current-page-changed', (page, _total) => {
     const pageIdx = page as number;
     sbPage().textContent = `${pageIdx + 1} / ${_total} 쪽`;
@@ -1558,7 +2031,9 @@ function setupEventListeners(): void {
     if (wasm.pageCount > 0) {
       try {
         const pageInfo = wasm.getPageInfo(pageIdx);
+        statusSectionIndex = pageInfo.sectionIndex;
         sbSection().textContent = `구역: ${pageInfo.sectionIndex + 1} / ${totalSections}`;
+        schedulePaperStatus();
       } catch { /* 무시 */ }
     }
   });
@@ -1567,6 +2042,19 @@ function setupEventListeners(): void {
     sbZoomVal().textContent = `${Math.round((zoom as number) * 100)}%`;
   });
 
+  eventBus.on('cursor-rect-updated', () => {
+    if (inputHandler) {
+      const section = inputHandler.getCursorPosition().sectionIndex;
+      if (section !== statusSectionIndex) {
+        statusSectionIndex = section;
+        schedulePaperStatus();
+      }
+    }
+    scheduleCharacterStatus();
+  });
+
+  eventBus.on('cell-selection-changed', () => scheduleCharacterStatus());
+
   // 삽입/수정 모드 토글
   eventBus.on('insert-mode-changed', (insertMode) => {
     document.getElementById('sb-mode')!.textContent = (insertMode as boolean) ? '삽입' : '수정';
@@ -1574,11 +2062,16 @@ function setupEventListeners(): void {
 
   eventBus.on('document-mutated', (reason) => {
     documentState.markDirty(typeof reason === 'string' ? reason : 'document-mutated');
+    schedulePaperStatus();
+    scheduleCharacterRecount();
   });
 
   eventBus.on('document-changed', (reason) => {
     documentState.markDirty(typeof reason === 'string' ? reason : 'document-changed');
     scheduleCloudEditDraftSave();
+    schedulePaperStatus();
+    scheduleCharacterRecount();
+    scheduleDesktopFontSync();
   });
 
   eventBus.on('renderer-selection-changed', (payload) => {
@@ -1667,8 +2160,14 @@ function setupEventListeners(): void {
       headerFooterActive,
       noteActive: noteToolbarActive,
     });
+    if (mode !== 'table') tableRibbonMenus?.closeAll();
     defaultTbGroups.forEach((element) => {
       element.style.display = mode === 'default' ? '' : 'none';
+    });
+    document.querySelectorAll<HTMLButtonElement>(
+      '#icon-toolbar .tb-group:not(.tb-mode-group) .tb-btn[data-cmd]',
+    ).forEach((button) => {
+      button.disabled = !dispatcher.isEnabled(button.dataset.cmd ?? '');
     });
     modeGroups.forEach((group) => {
       group.style.display = group.dataset.toolbarMode === mode ? '' : 'none';
@@ -1703,6 +2202,7 @@ function setupEventListeners(): void {
         });
       }
     });
+    tableRibbonMenus?.refresh();
     document.getElementById('icon-toolbar')?.setAttribute('data-context-mode', mode);
     return mode;
   };
@@ -1724,6 +2224,7 @@ function setupEventListeners(): void {
     applyContextualToolbarMode();
   });
   eventBus.on('cursor-format-changed', applyContextualToolbarMode);
+  eventBus.on('cell-selection-changed', applyContextualToolbarMode);
   eventBus.on('command-state-changed', applyContextualToolbarMode);
 
   // 머리말/꼬리말 편집 모드 시 도구상자 전환 + 본문 dimming
@@ -1798,25 +2299,57 @@ function applySavedTextMarkSettings(): void {
 
 async function initializeDocument(
   docInfo: DocumentInfo,
-  displayName: string,
   options: { suppressDialogs?: boolean } = {},
 ): Promise<void> {
   const msg = sbMessage();
   try {
     await updateLoadProgress(55, '폰트 준비 중...');
+    setActiveDocumentFonts(docInfo.fontsUsed ?? []);
+    const desktopFontsStartedAt = performance.now();
+    // 저장된 글꼴 폴더 핸들을 먼저 확인한다 (IndexedDB 조회뿐이라 짧다).
+    if (fontFolderRestore) await settleWithin(fontFolderRestore, DESKTOP_FONT_LOAD_BUDGET_MS);
+    // 웹 글꼴과 함께 사용자 PC의 글꼴(데스크톱 색인·글꼴 폴더·로컬 글꼴 감지)을 연결한다.
+    // 첫 페이지가 실제 글꼴로 조판되도록 제한 시간 안에 끝나면 레이아웃을 다시 계산한 뒤 그린다.
+    const fontsUsed = docInfo.fontsUsed;
+    const desktopFonts = fontsUsed?.length
+      ? (async () => {
+        await loadStoredLocalFonts();
+        return prepareSystemFontsForDocument(fontsUsed);
+      })().catch((error): DesktopFontReport[] => {
+        console.warn('[DesktopFonts] 문서 글꼴 연결 실패:', error);
+        return [];
+      })
+      : null;
     if (docInfo.fontsUsed?.length) {
       await loadWebFonts(docInfo.fontsUsed, (loaded, total) => {
         const fontPercent = total > 0 ? 55 + Math.round((loaded / total) * 20) : 65;
         msg.textContent = `파일 로딩 ${fontPercent}% - 폰트 로딩 중... (${loaded}/${total})`;
-      }, extensionViewerSettings);
+      }, { ...extensionViewerSettings, onLateLoad: repaintAfterLateWebFonts });
+    }
+    if (desktopFonts) {
+      const budget = DESKTOP_FONT_LOAD_BUDGET_MS - (performance.now() - desktopFontsStartedAt);
+      const settled = await settleWithin(desktopFonts, budget);
+      if (settled) {
+        const reports = settled.value;
+        const hftChanged = takeHftOutlineChange();
+        if (fontReportsChangedLayout(reports) || hftChanged) wasm.refreshLayout();
+        for (const report of reports) finalizeDesktopFontReport(report);
+      } else {
+        console.info(`[DesktopFonts] ${DESKTOP_FONT_LOAD_BUDGET_MS}ms 안에 끝나지 않아 백그라운드에서 계속 연결합니다.`);
+        // 글꼴 등록은 세션 전체에 적용되므로 그사이 다른 문서가 열렸어도 현재 문서를 다시 조판한다.
+        void desktopFonts.then(applyLateFontReports);
+      }
     }
     await updateLoadProgress(75, '문서 상태 적용 중...');
     totalSections = docInfo.sectionCount ?? 1;
+    statusSectionIndex = 0;
     sbSection().textContent = `구역: 1 / ${totalSections}`;
+    schedulePaperStatus();
     applySavedTextMarkSettings();
     await updateLoadProgress(82, '페이지 렌더 준비 중...');
     await canvasView?.loadDocument();
     prepareCanvasKitLocalFonts(docInfo.fontsUsed);
+    prepareLocalFontRepairs(docInfo.fontsUsed);
     await updateLoadProgress(90, '도구 모음 준비 중...');
     toolbar?.setEnabled(!documentReadOnly && !agentUserEditingLocked());
     toolbar?.initFontDropdown(docInfo.fontsUsed);
@@ -1847,17 +2380,17 @@ async function initializeDocument(
     }
 
     if (!options.suppressDialogs) {
-      await promptLocalFontsIfNeeded(docInfo, displayName);
+      await promptLocalFontsIfNeeded(docInfo);
     }
 
     // 로컬 글꼴 감지 결과가 뷰를 갱신한 뒤에 캐럿을 연결해야 입력 포커스가 재설정과 경합하지 않는다.
     await updateLoadProgress(96, '편집 상태 초기화 중...');
     inputHandler?.activateWithCaretPosition();
     eventBus.emit('document-context-changed');
+    scheduleCharacterStatus(true);
     // 최종 단계 뒤에는 비동기 작업이 없으므로 100% progress paint를 기다리지 않는다.
-    msg.textContent = documentReadOnly
-      ? `${displayName} · 템플릿 미리보기 (읽기 전용)`
-      : displayName;
+    msg.textContent = documentReadOnly ? '읽기 전용' : '';
+    updateFontStatusButton();
 
     // #2527: 자동 보정을 하지 않으므로 로드 직후 문서는 항상 clean.
     documentState.markClean('document-initialized');
@@ -1873,7 +2406,7 @@ async function initializeDocument(
   }
 }
 
-async function promptLocalFontsIfNeeded(docInfo: DocumentInfo, displayName: string): Promise<void> {
+async function promptLocalFontsIfNeeded(docInfo: DocumentInfo): Promise<void> {
   if (!docInfo.fontsUsed?.length) return;
 
   const msg = sbMessage();
@@ -1882,30 +2415,55 @@ async function promptLocalFontsIfNeeded(docInfo: DocumentInfo, displayName: stri
     const report = analyzeDocumentFonts(docInfo.fontsUsed);
     if (!report.shouldPromptLocalAccess) return;
 
+    const folderState = getFontFolderState();
+    // 글꼴 폴더나 에이전트 허브의 글꼴 색인을 받았으면 데스크톱처럼 문서를 열 때 묻지 않는다.
+    // 연결하지 못한 글꼴 수는 상태 바에, 감지·가져오기는 설정에 있다.
+    if (folderState.status === 'connected' || folderState.status === 'connecting') return;
+    if (isDesktopFontIndexReady()) return;
+    const reconnect = folderState.status === 'needs-permission';
+    const offerFolder = !isDesktopFontsSupported() && isFontFolderSupported()
+      && (folderState.status === 'none' || folderState.status === 'error' || reconnect);
     const choice = await showLocalFontsModalIfNeeded(report, {
       disableExternalWebFonts: extensionViewerSettings.disableExternalWebFonts,
+      folder: offerFolder
+        ? { reconnect, connect: () => (reconnect ? reconnectFontFolder() : chooseFontFolder()) }
+        : null,
     });
+    if (typeof choice === 'object' && choice.type === 'folder') {
+      // 색인은 뒤에서 이어 가고, 연결되면 handleFontFolderState가 문서 글꼴을 연결해 다시 조판한다.
+      void choice.result.catch((error: unknown) => {
+        console.warn('[FontFolder] 연결 실패:', error);
+        showToast({ message: '글꼴 폴더를 연결하지 못했습니다.', durationMs: 5000 });
+      });
+      return;
+    }
+    if (typeof choice === 'object' && choice.type === 'import') {
+      try {
+        const result = await importLocalFontFiles(choice.files);
+        const hftChanged = takeHftOutlineChange();
+        if (result.imported.length > 0 || hftChanged) {
+          const fonts = getLocalFonts({ includeRegistered: true });
+          eventBus.emit('local-fonts-changed', { fonts, report: analyzeDocumentFonts(docInfo.fontsUsed) });
+          eventBus.emit('font-files-imported');
+        }
+        showToast({ message: localFontImportMessage(result), durationMs: result.rejected.length ? 8000 : 5000 });
+      } catch (error) {
+        showToast({
+          message: error instanceof Error ? error.message : '글꼴 파일을 불러오지 못했습니다.',
+          durationMs: 6000,
+        });
+      }
+      return;
+    }
     if (choice !== 'detect') return;
 
-    msg.textContent = '로컬 글꼴 감지 중...';
-    const fonts = await detectLocalFonts({
-      force: true,
-      includeRegistered: true,
-      candidateFamilies: docInfo.fontsUsed,
-    });
-    const nextReport = analyzeDocumentFonts(docInfo.fontsUsed);
-    eventBus.emit('local-fonts-changed', { fonts, report: nextReport });
-    prepareCanvasKitLocalFonts(docInfo.fontsUsed);
-    const state = getLocalFontState();
-    const resultLabel = state.source === 'font-presence-probe' ? '확인됨' : '감지됨';
-    msg.textContent = `${displayName} (로컬 글꼴 ${fonts.length}개 ${resultLabel})`;
-    showToast({
-      message: `로컬 글꼴 ${fonts.length}개를 ${resultLabel.replace('됨', '')}하고 저장했습니다.\n다음 문서 로드부터 감지 결과를 재사용합니다.`,
-      durationMs: 5000,
-    });
+    msg.textContent = '글꼴 감지 중...';
+    const result = await detectAllFonts();
+    msg.textContent = '';
+    showToast({ message: fontDetectionMessage(result), durationMs: 5000 });
   } catch (error) {
     console.warn('[local-fonts] 감지 안내/실행 실패 (치명적이지 않음):', error);
-    msg.textContent = displayName;
+    msg.textContent = '';
     showToast({
       message: '로컬 글꼴 감지에 실패했습니다.\n웹 대체 글꼴로 계속 표시합니다.',
       durationMs: 8000,
@@ -2036,6 +2594,10 @@ async function loadBytes(
     suppressDialogs?: boolean;
     grant?: VerifiedDocumentGrant | null;
     preparedDocument?: PreparedWasmDocument;
+    /** 복구한 draft 의 id. 새 id 대신 이 id 로 자동 저장해 복구본을 제자리에서 갱신한다. */
+    autosaveDraftId?: string;
+    /** fileHandle 이 가리키는 파일 전체 바이트. data 가 그 안의 문서일 때(RHWPX) 넘긴다. */
+    nativeSourceBytes?: Uint8Array;
   } = {},
 ): Promise<void> {
   const ownership = await reserveDocumentOpen(
@@ -2077,9 +2639,13 @@ async function loadBytes(
     ownership.identity.sourceDigest,
   )
     .catch((error) => console.warn('[desktop] native document bookmark failed:', error));
+  // 같은 창에서 같은 파일을 다시 열면 핸들이 재사용된다. 방금 연 바이트를 저장 충돌 기준으로 삼는다.
+  await adoptLoadedNativeFileContent(fileHandle, options.nativeSourceBytes ?? data)
+    .catch((error) => console.warn('[desktop] 네이티브 파일 저장 기준 갱신 실패:', error));
   await releaseReplacedNativeFileHandle(previousFileHandle, fileHandle)
     .catch((error) => console.warn('[desktop] 교체된 네이티브 파일 핸들 해제 실패:', error));
   prepareCanvasRendererDocument();
+  hostSave.reset();
   eventBus.emit('document-swapped');
   await updateLoadProgress(45, '자동 저장 준비 중...');
   forgetConvertedHmlSaveHandle(fileHandle);
@@ -2109,14 +2675,53 @@ async function loadBytes(
   }
 
   await autosaveManager.beginDocument(
-    { fileName: wasm.fileName, sourceFormat: wasm.getSourceFormat() },
+    {
+      fileName: wasm.fileName,
+      sourceFormat: wasm.getSourceFormat(),
+      ...(options.autosaveDraftId ? { draftId: options.autosaveDraftId } : {}),
+    },
     { discardPreviousDraft: true },
   );
   await updateLoadProgress(50, '문서 초기화 중...');
   const elapsed = performance.now() - startTime;
-  await initializeDocument(docInfo, `${fileName} — ${docInfo.pageCount}페이지 (${elapsed.toFixed(1)}ms)`, {
+  console.debug(`[load] ${fileName}: ${docInfo.pageCount} pages in ${elapsed.toFixed(1)}ms`);
+  await initializeDocument(docInfo, {
     suppressDialogs: options.suppressDialogs,
   });
+}
+
+/** 시작 화면(empty state)의 최근 문서 목록 — 파일 메뉴 서브패널과 같은 목록/명령을 쓴다. */
+async function renderEmptyStateRecents(): Promise<void> {
+  const host = document.getElementById('document-recent-list');
+  if (!host) return;
+  let recents;
+  try {
+    recents = await listRecentDocs();
+  } catch {
+    return;
+  }
+  if (!recents.length) return;
+  const title = document.createElement('h3');
+  title.className = 'empty-recent-title';
+  title.textContent = '최근 문서';
+  const list = document.createElement('div');
+  list.className = 'empty-recent-list';
+  for (const doc of recents.slice(0, 8)) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'empty-recent-item';
+    item.title = doc.fileName;
+    const name = document.createElement('span');
+    name.className = 'empty-recent-name';
+    name.textContent = doc.fileName;
+    const format = document.createElement('span');
+    format.className = 'empty-recent-format';
+    format.textContent = doc.sourceFormat.toUpperCase();
+    item.append(name, format);
+    item.addEventListener('click', () => dispatcher.dispatch('file:open-recent', { id: doc.id }));
+    list.appendChild(item);
+  }
+  host.replaceChildren(title, list);
 }
 
 /** 파일 메뉴 "최근 문서" 서브패널을 최신 목록으로 다시 렌더한다(메뉴 open 시 호출). */
@@ -2189,52 +2794,73 @@ async function renderRecentSubmenu(): Promise<void> {
 
 function shouldSkipInitialAutosaveRecovery(): boolean {
   const params = new URLSearchParams(window.location.search);
-  return params.has('url');
+  return params.has('url') || isPinnedDocumentEnabled();
 }
 
-async function offerAutosaveRecoveryIfIdle(): Promise<void> {
+async function loadPinnedDocument(): Promise<void> {
+  try {
+    await startPinnedDocument({
+      eventBus,
+      // 글꼴 구성은 서버 쪽 번들 글꼴을 그대로 쓰므로 기기별 로컬 글꼴 안내를 띄우지 않는다.
+      loadBytes: (data, fileName) => loadBytes(data, fileName, null, performance.now(), {
+        skipRecent: true,
+        suppressDialogs: true,
+      }),
+      exportBytes: () => wasm.exportHwp(),
+      markSaved: () => {
+        documentState.markClean('pinned-save');
+        void autosaveManager.discardCurrentDraft('pinned-save');
+      },
+    });
+  } catch (error) {
+    showLoadError(error);
+  }
+}
+
+async function offerAutosaveRecoveryAtStartup(): Promise<void> {
   if (shouldSkipInitialAutosaveRecovery()) return;
 
   try {
     await rendererSessionContextPromise;
-    const drafts = (await listRecoverableAutosaveDrafts())
-      .filter((draft) => draft.data.byteLength > 0);
-    if (drafts.length === 0) return;
-    if (wasm.pageCount > 0 || documentState.isDirty()) return;
-
-    const choice = await showAutosaveRecoveryDialog(drafts);
-    if (choice.action === 'later') return;
-    if (choice.action === 'delete-all') {
-      await clearRecoverableAutosaveDrafts();
-      showToast({ message: '복구 후보를 삭제했습니다.', durationMs: 2200 });
-      return;
-    }
-
-    const draft = drafts.find((item) => item.id === choice.draftId);
-    if (!draft) return;
-    try {
-      await restoreAutosaveDraft(draft);
-    } catch (error) {
-      showLoadError(error);
-    }
+    await offerAutosaveRecovery({
+      listRecoverable: () => listRecoverableAutosaveDrafts(),
+      hasOpenDocument: () => wasm.pageCount > 0 || documentState.isDirty(),
+      notifyAvailable: (open) => showToast({
+        message: '복구할 수 있는 자동 저장본이 있습니다.',
+        durationMs: 0,
+        action: { label: '복구', onClick: open },
+      }),
+      markOffered: (ids) => markAutosaveDraftsOffered(ids),
+      showDialog: (drafts) => showAutosaveRecoveryDialog(drafts),
+      clearRecoverable: () => clearRecoverableAutosaveDrafts(),
+      canReplaceCurrentDocument: () => canReplaceCurrentDocument(),
+      restore: (draft) => restoreAutosaveDraftIntoEditor(draft),
+      toast: (message, durationMs) => showToast({ message, durationMs }),
+      onRestoreError: (error) => showLoadError(error),
+    });
   } catch (error) {
     console.warn('[autosave] 복구 후보 확인 실패:', error);
   }
 }
 
-async function restoreAutosaveDraft(draft: AutosaveDraft): Promise<void> {
-  const fileName = recoveryFileName(draft.fileName);
-  await loadBytes(new Uint8Array(draft.data), fileName, null, performance.now(), { skipRecent: true });
-  await deleteAutosaveDraft(draft.id);
-  documentState.markDirty('autosave-recovered');
-  showToast({
-    message: `"${fileName}" 복구본을 열었습니다.\n원본 파일은 자동으로 덮어쓰지 않습니다.`,
-    durationMs: 5000,
+function restoreAutosaveDraftIntoEditor(draft: AutosaveDraftSummary): Promise<void> {
+  return restoreAutosaveDraft(draft, {
+    readDraft: (id) => getAutosaveDraft(id),
+    releaseCurrentDocument: () => {
+      if (documentState.isDirty()) documentState.markClean('autosave-restore-replace');
+    },
+    load: (bytes, fileName, draftId) => loadBytes(bytes, fileName, null, performance.now(), {
+      skipRecent: true,
+      autosaveDraftId: draftId,
+    }),
+    markDirty: () => documentState.markDirty('autosave-recovered'),
+    flush: () => autosaveManager.flushNow('autosave-recovered'),
+    toast: (message, durationMs) => showToast({ message, durationMs }),
   });
 }
 
 
-async function createNewDocument(): Promise<void> {
+async function createNewDocument(): Promise<boolean> {
   const msg = sbMessage();
   const previousFileHandle = wasm.currentFileHandle;
   const identity = { documentId: createActiveDocumentId(), sourceDigest: null };
@@ -2246,6 +2872,7 @@ async function createNewDocument(): Promise<void> {
     const docInfo = wasm.createNewDocument();
     await commitDesktopDocument(reservationId);
     activeDocumentId = identity.documentId;
+    hostSave.reset();
     await releaseReplacedNativeFileHandle(previousFileHandle, wasm.currentFileHandle)
       .catch((error) => console.warn('[desktop] 새 문서 전환 핸들 해제 실패:', error));
     prepareCanvasRendererDocument();
@@ -2253,7 +2880,8 @@ async function createNewDocument(): Promise<void> {
       { fileName: wasm.fileName, sourceFormat: wasm.getSourceFormat() },
       { discardPreviousDraft: true },
     );
-    await initializeDocument(docInfo, `${wasm.fileName} — ${docInfo.pageCount}페이지`);
+    await initializeDocument(docInfo);
+    return true;
   } catch (error) {
     await cancelDesktopDocument(reservationId).catch(() => {});
     activeDocumentId = null;
@@ -2264,6 +2892,7 @@ async function createNewDocument(): Promise<void> {
       .catch(() => {});
     msg.textContent = `새 문서 생성 실패: ${error}`;
     console.error('[main] 새 문서 생성 실패:', error);
+    return false;
   }
 }
 
@@ -2321,6 +2950,7 @@ async function openDocumentBytes(data: OpenDocumentBytesEvent) {
               documentId: bundle.snapshot.repository.documentId,
             },
             preparedDocument,
+            nativeSourceBytes: data.bytes,
           },
         );
         persistActiveBranch(bundle.snapshot.repository.documentId, bundle.activeBranch);
@@ -2360,9 +2990,21 @@ async function openDocumentBytes(data: OpenDocumentBytesEvent) {
 // 커맨드에서 새 문서 생성 호출
 eventBus.on('create-new-document', (payload) => {
   void (async () => {
-    const options = payload as { skipUnsavedGuard?: boolean } | undefined;
-    if (!await canReplaceCurrentDocument(options?.skipUnsavedGuard)) return;
-    await createNewDocument();
+    const options = payload as { skipUnsavedGuard?: boolean; requestId?: string } | undefined;
+    const notify = (ok: boolean, error?: string) => {
+      if (options?.requestId) eventBus.emit('create-new-document:done', { requestId: options.requestId, ok, error });
+    };
+    try {
+      if (!await canReplaceCurrentDocument(options?.skipUnsavedGuard)) {
+        notify(false, '문서 생성이 취소되었습니다.');
+        return;
+      }
+      const ok = await createNewDocument();
+      notify(ok, ok ? undefined : sbMessage().textContent ?? '문서 생성 실패');
+    } catch (error) {
+      notify(false, error instanceof Error ? error.message : String(error));
+      console.error('[main] 새 문서 생성 요청 실패:', error);
+    }
   })();
 });
 eventBus.on('open-document-bytes', async (payload) => {
@@ -2590,14 +3232,17 @@ installEmbedRuntime({
     },
     async exportHwp() {
       await initPromise;
+      hostSave.recordExport();
       return wasm.exportHwp();
     },
     async exportHwpx() {
       await initPromise;
+      hostSave.recordExport();
       return wasm.exportHwpx();
     },
     async exportHml() {
       await initPromise;
+      hostSave.recordExport();
       return wasm.exportHml();
     },
     async getHmlSaveState() {

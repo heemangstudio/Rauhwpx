@@ -33,7 +33,7 @@ export const MUTATING_METHODS: readonly string[] = [
   'splitParagraphInCellByPath',
   'mergeParagraphInCellByPath',
   // 표 구조/속성
-  'createTable', 'createTableEx', 'deleteTableControl', 'insertTableRow',
+  'createTable', 'createTableEx', 'deleteTableControl', 'deleteCellTableControlByPath', 'insertTableRow',
   'insertTableColumn', 'deleteTableRow', 'deleteTableColumn', 'mergeTableCells',
   'splitTableCell', 'splitTableCellInto', 'splitTableCellsInRange', 'resizeTableCells',
   'insertTableRowByPath', 'insertTableColumnByPath',
@@ -42,13 +42,14 @@ export const MUTATING_METHODS: readonly string[] = [
   'splitTableCellIntoByPath', 'splitTableCellsInRangeByPath',
   'resizeTableCellsByPath', // [#7189] 중첩 표는 평면 resizeTableCells 로 닿지 않는다
   'moveTableOffset', 'setTableProperties', 'setCellProperties', 'setCellZoneProperties',
+  'pasteTableCellRange', 'clearTableCellRange',
   'pasteTableCellsTransposed', 'transposeTableCellsInPlace', 'pasteTableCellsTransposedAsTable',
   'evaluateTableFormula', 'evaluateTableFormulaEx',
   'setTableColumnWidths', 'fitTableToPage', 'setTableCaptionText',
   // 그림/도형/수식 개체
   'insertPicture', 'assignPictureImage', 'setPictureProperties',
   'setHeaderFooterPictureProperties', 'setCellPicturePropertiesByPath',
-  'setCellShapePropertiesByPath', 'deletePictureControl', 'movePictureControl', 'deleteCellPictureControlByPath',
+  'setCellShapePropertiesByPath', 'deletePictureControl', 'movePictureControl', 'movePictureControlByPath', 'deleteCellPictureControlByPath',
   'createShapeControl', 'setShapeProperties', 'deleteShapeControl', 'changeObjectZOrder',
   'groupShapes', 'ungroupShape', 'moveLineEndpoint', 'updateConnectorsInSection',
   'insertEquation', 'promoteOleEquation', 'setEquationProperties', 'setEquationPropertiesByPath', 'setNoteEquationProperties', 'deleteEquationControl',
@@ -94,8 +95,8 @@ export const MUTATING_METHODS: readonly string[] = [
  * They are agent-visible because structured/transposed paste requires the matching copy step.
  */
 export const AGENT_EDIT_SESSION_METHODS: readonly string[] = [
-  'copySelection', 'copySelectionAcrossSections', 'copySelectionInCell', 'copyControl',
-  'copyTableCellsTransposed', 'toggleHideHeaderFooter',
+  'copySelection', 'copySelectionAcrossSections', 'copySelectionInCell', 'copySelectionInCellByPath', 'copyControl',
+  'copyTableCellRange', 'copyTableCellsTransposed', 'toggleHideHeaderFooter',
 ];
 
 /** Undo를 직접 소유하는 편집기 경계에서만 호출하며 에이전트 RPC에는 노출하지 않는 변이. */

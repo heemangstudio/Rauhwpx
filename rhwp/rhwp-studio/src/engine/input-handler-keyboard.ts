@@ -12,7 +12,7 @@ import {
   type NavigationAction,
   type NavigationKeyInput,
 } from './navigation-keymap';
-import type { DocumentPosition, CellPathLike, CursorRect } from '@/core/types';
+import type { DocumentPosition, CellPathLike, CellPathEntry, CursorRect } from '@/core/types';
 import type { WasmBridge } from '@/core/wasm-bridge';
 import { INSERTED_IMAGE_MAX_BYTES, readBlobBytesWithLimit } from '@/core/document-input-limits';
 import { canDeleteObjectControl } from './input-handler-picture';
@@ -27,6 +27,9 @@ import { inlinePictureInsertionTarget } from './inline-picture-target';
 import { inlineOfficeClipboardImages, liftImagesToBlockLevel, needsRtfImageInlining } from './office-clipboard-images';
 import { extractHwpJsonModel, HWPJSON_PASTE_MAX_CHARS, sanitizeOfficeHtmlForCore } from './office-html-sanitize';
 import { isLastTableCell, remapTableCellPosition, tableModelPathJson } from '@/core/table-structural-cursor';
+import { showToast } from '@/ui/toast';
+import { CursorState } from './cursor';
+import { selectCurrentTableCell } from './table-cell-selection';
 
 const RHWP_CLIPBOARD_MARKER_RE = /<!--\s*rhwp-studio-clipboard:([A-Za-z0-9._:-]+)\s*-->/;
 const PAGINATION_BOUNDARY_KEYS = new Set([
@@ -421,6 +424,21 @@ export function pictureCellPathJson(
   ref: { cellPath?: CellPathLike } | null,
 ): string {
   return ref && ref.cellPath && ref.cellPath.length > 0 ? JSON.stringify(ref.cellPath) : '';
+}
+
+/** The selected table lives in the parent cell paragraph of its innermost path entry. */
+export function tableControlCopyAddress(ref: { ci: number; cellPath?: CellPathEntry[] }): {
+  controlIndex: number;
+  cellPathJson: string;
+} {
+  const path = ref.cellPath;
+  if (path && path.length > 1) {
+    return {
+      controlIndex: path[path.length - 1].controlIndex,
+      cellPathJson: JSON.stringify(path.slice(0, -1)),
+    };
+  }
+  return { controlIndex: ref.ci, cellPathJson: '' };
 }
 
 /** 이미지 컨트롤의 바이너리를 포함하여 시스템 클립보드에 기록한다. */
@@ -1130,6 +1148,7 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
       e.preventDefault();
       const ref = this.cursor.getSelectedPictureRef();
       if (ref) {
+        let copied = false;
         try {
           const cellPathJson = pictureCellPathJson(ref);
           this.wasm.copyControl(ref.sec, ref.ppi, ref.ci, cellPathJson);
@@ -1144,9 +1163,11 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
             writeTextHtmlToClipboard(text, markedHtml)
               .catch(() => navigator.clipboard.writeText(text).catch(() => {}));
           }
+          copied = true;
         } catch (err) {
           console.warn('[InputHandler] 개체 복사 실패:', err);
         }
+        if (!copied) return;
         this.cursor.moveOutOfSelectedPicture();
         this.pictureObjectRenderer?.clear();
         this.eventBus.emit('picture-object-selection-changed', false);
@@ -1234,15 +1255,12 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
       const ref = this.cursor.getSelectedTableRef();
       if (ref) {
         try {
-          // [Task #2880] 중첩 표(셀 안 표) 선택 시 cellPath 를 native 에 전달하지 않으면
-          // copyControl/exportControlHtml 이 본문 표로 오인해 엉뚱한 표를 복사한다.
-          // 그림 개체 Ctrl+C(위 pictureCellPathJson 사용부) 와 동일하게 cellPathJson 전달.
-          const cellPathJson = pictureCellPathJson(ref);
-          this.wasm.copyControl(ref.sec, ref.ppi, ref.ci, cellPathJson);
+          const { controlIndex, cellPathJson } = tableControlCopyAddress(ref);
+          this.wasm.copyControl(ref.sec, ref.ppi, controlIndex, cellPathJson);
           const text = this.wasm.getClipboardText();
           if (text) {
             let html = '';
-            try { html = this.wasm.exportControlHtml(ref.sec, ref.ppi, ref.ci, cellPathJson) || ''; } catch { /* 무시 */ }
+            try { html = this.wasm.exportControlHtml(ref.sec, ref.ppi, controlIndex, cellPathJson) || ''; } catch { /* 무시 */ }
             const markedHtml = prepareRhwpInternalClipboardHtml(this, html, text);
             writeTextHtmlToClipboard(text, markedHtml)
               .catch(() => navigator.clipboard.writeText(text).catch(() => {}));
@@ -1258,21 +1276,24 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
       e.preventDefault();
       const ref = this.cursor.getSelectedTableRef();
       if (ref && !(ref.cellPath && ref.cellPath.length > 1)) {
+        let copied = false;
         try {
           // [Task #2880] Ctrl+C 사이드와 동일하게 cellPath 를 copyControl/exportControlHtml 에 전달.
-          const cellPathJson = pictureCellPathJson(ref);
-          this.wasm.copyControl(ref.sec, ref.ppi, ref.ci, cellPathJson);
+          const { controlIndex, cellPathJson } = tableControlCopyAddress(ref);
+          this.wasm.copyControl(ref.sec, ref.ppi, controlIndex, cellPathJson);
           const text = this.wasm.getClipboardText();
           if (text) {
             let html = '';
-            try { html = this.wasm.exportControlHtml(ref.sec, ref.ppi, ref.ci, cellPathJson) || ''; } catch { /* 무시 */ }
+            try { html = this.wasm.exportControlHtml(ref.sec, ref.ppi, controlIndex, cellPathJson) || ''; } catch { /* 무시 */ }
             const markedHtml = prepareRhwpInternalClipboardHtml(this, html, text);
             writeTextHtmlToClipboard(text, markedHtml)
               .catch(() => navigator.clipboard.writeText(text).catch(() => {}));
           }
+          copied = true;
         } catch (err) {
           console.warn('[InputHandler] 표 복사 실패:', err);
         }
+        if (!copied) return;
         this.cursor.moveOutOfSelectedTable();
         this.eventBus.emit('table-object-selection-changed', false);
         this.executeOperation({ kind: 'snapshot', operationType: 'cutTable', operation: (wasm: WasmBridge) => {
@@ -1314,8 +1335,23 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
     return;
   }
 
+  // 셀 들여쓰기 단축키는 셀 블록을 해제하기 전에 전체 선택 문단에 적용한다.
+  if (this.cursor.isInCell() && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey
+    && (e.key === '[' || e.key === ']')) {
+    e.preventDefault();
+    this.changeOutlineLevel(e.key === ']' ? 1 : -1);
+    return;
+  }
+
   // ─── 셀 선택 모드 중 키 처리 ────────────────────────────
   if (this.cursor.isInCellSelectionMode()) {
+    // 브라우저의 copy/cut/paste 이벤트가 셀 블록을 그대로 받게 한다.
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && ['c', 'x', 'v'].includes(e.key.toLowerCase())) return;
+    if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === 'Delete' || e.key === 'Backspace')) {
+      e.preventDefault();
+      clearSelectedCellBlock.call(this);
+      return;
+    }
     if (e.key === 'Escape') {
       e.preventDefault();
       // 셀 선택 모드 → 표 객체 선택 모드
@@ -1346,13 +1382,19 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
       }
       return;
     }
-    if (e.key === 'ArrowUp' || e.key === 'ArrowDown' ||
-        e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    const isArrow = e.key === 'ArrowUp' || e.key === 'ArrowDown' ||
+      e.key === 'ArrowLeft' || e.key === 'ArrowRight';
+    if (isArrow && !e.shiftKey && this.cursor.isExtendedCellSelection()) {
+      // Shift 로 넓힌 셀 블록은 글자 선택처럼 방향키만 누르면 풀리고 캐럿이 움직인다.
+      this.cursor.exitCellSelectionMode();
+      this.cellSelectionRenderer?.clear();
+      this.updateCaret();
+    } else if (isArrow) {
       e.preventDefault();
       const dr = e.key === 'ArrowUp' ? -1 : e.key === 'ArrowDown' ? 1 : 0;
       const dc = e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1 : 0;
       const phase = this.cursor.getCellSelectionPhase();
-      if (phase === 2) {
+      if (e.shiftKey || phase === 2) {
         // phase 2: 범위 확장 (anchor 고정, focus만 이동)
         this.cursor.expandCellSelection(dr, dc);
       } else if (phase === 3) {
@@ -1390,6 +1432,12 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
     }
     // 수정자 키(Shift/Ctrl/Alt/Meta)만 누른 경우 무시
     if (e.key === 'Shift' || e.key === 'Control' || e.key === 'Alt' || e.key === 'Meta') {
+      return;
+    }
+    // 모두 선택은 셀 블록에서 시작해 표 전체 → 바깥으로 넓힌다 (모드를 먼저 풀지 않는다).
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && matchShortcut(e, defaultShortcuts) === 'edit:select-all') {
+      e.preventDefault();
+      handleSelectAll.call(this);
       return;
     }
     // 그 외 키 → 셀 선택 모드 종료 후 기존 처리로 넘김
@@ -1602,6 +1650,15 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
         return;
       }
       if (this.cursor.isInCell() && !this.cursor.isInTextBox()) {
+        // Option(Alt)+Tab: 셀 안에 탭 문자를 넣는다 (Ctrl+Tab 은 handleCtrlKey).
+        if (e.altKey) {
+          insertTabInCell.call(this);
+          break;
+        }
+        // 목록 항목 맨 앞(또는 목록 문단을 걸친 선택)의 Tab 은 셀 이동 대신 수준을 바꾼다.
+        if (isListIndentTab.call(this) && this.shiftParagraphIndent(e.shiftKey ? -1 : 1, true)) {
+          break;
+        }
         if (e.shiftKey) {
           this.cursor.moveToCellPrev();
         } else if (insertRowAfterLastTableCellByTab.call(this)) {
@@ -1685,6 +1742,15 @@ export function handleCtrlKey(this: any, e: KeyboardEvent): void {
 
   // 커맨드 시스템에 없는 직접 처리 (Ctrl/Cmd+Backspace, Ctrl+Home/End, Ctrl/Cmd+Arrow 등)
   switch (e.key.toLowerCase()) {
+    case 'tab': {
+      // Ctrl+Tab: 표 셀 안의 탭 문자 (한컴과 같은 키). 브라우저가 가로채지 않는 환경에서 동작한다.
+      if (e.ctrlKey && !e.metaKey && this.cursor.isInCell() && !this.cursor.isInTextBox()
+          && !this.isFormMode?.()) {
+        e.preventDefault();
+        insertTabInCell.call(this);
+      }
+      break;
+    }
     case 'backspace': {
       e.preventDefault();
       if (this.isFormMode?.()) return;
@@ -1789,6 +1855,57 @@ export function handleCtrlKey(this: any, e: KeyboardEvent): void {
   }
 }
 
+/** 셀 안에 탭 문자를 넣는다 (선택이 있으면 먼저 지운다). */
+function insertTabInCell(this: any): void {
+  if (this.cursor.hasSelection()) this.deleteSelection?.();
+  this.executeOperation({ kind: 'command', command: new InsertTabCommand(this.cursor.getPosition()) });
+}
+
+/** 표 안 Tab 이 목록 수준을 바꿀 자리인가 — 목록 문단 맨 앞의 캐럿, 또는 문단을 걸친 선택. */
+function isListIndentTab(this: any): boolean {
+  if (this.cursor.hasSelection()) {
+    const sel = this.cursor.getSelectionOrdered();
+    if (!sel) return false;
+    const para = (p: any) => p.cellPath?.at(-1)?.cellParaIndex ?? p.cellParaIndex ?? p.paragraphIndex;
+    return para(sel.start) !== para(sel.end) || sel.start.charOffset === 0;
+  }
+  if (this.cursor.getPosition().charOffset !== 0) return false;
+  try {
+    const props = this.getParaProperties();
+    return !!props.headType && props.headType !== 'None';
+  } catch {
+    return false;
+  }
+}
+
+/** 표 전체가 선택된 상태의 모두 선택: 표를 감싼 셀 내용, 본문 표면 문서 전체를 고른다. */
+function selectTableContainer(this: any): boolean {
+  const ctx = this.cursor.getCellTableContext();
+  this.cursor.exitCellSelectionMode();
+  this.cellSelectionRenderer?.clear();
+  const path = ctx?.cellPath ?? [];
+  if (ctx && path.length > 1) {
+    const outer = path.slice(0, -1).map((entry: any) => ({ ...entry }));
+    const host = outer[outer.length - 1];
+    this.cursor.moveTo({
+      sectionIndex: ctx.sec,
+      paragraphIndex: host.cellParaIndex,
+      charOffset: 0,
+      parentParaIndex: ctx.ppi,
+      controlIndex: outer[0].controlIndex,
+      cellIndex: outer[0].cellIndex,
+      cellParaIndex: outer[0].cellParaIndex,
+      cellPath: outer,
+    });
+    if (this.cursor.selectAllInCurrentCell()) {
+      this.updateCaret();
+      this.eventBus.emit('command-state-changed');
+      return true;
+    }
+  }
+  return false;
+}
+
 export function handleSelectAll(this: any): void {
   if (this.cursor.isInHeaderFooter()) {
     this.cursor.selectAllInHeaderFooter();
@@ -1796,10 +1913,26 @@ export function handleSelectAll(this: any): void {
     return;
   }
 
-  if (this.cursor.isInCell() && !this.cursor.isInTextBox()) {
-    this.cursor.exitCellSelectionMode();
-    this.cellSelectionRenderer?.clear();
+  // 표 안에서는 누를 때마다 셀 내용 → 표 전체 셀 → 표를 감싼 셀(또는 문서)로 넓힌다.
+  if (this.cursor.isInCellSelectionMode()) {
+    if (this.cursor.getCellSelectionPhase() !== 3 && this.cursor.selectWholeTableCells()) {
+      this.updateCellSelection();
+      this.eventBus.emit('command-state-changed');
+      return;
+    }
+    if (selectTableContainer.call(this)) return;
+  } else if (this.cursor.isInCell() && !this.cursor.isInTextBox()) {
+    const before = this.cursor.getSelectionOrdered();
     if (this.cursor.selectAllInCurrentCell()) {
+      const after = this.cursor.getSelectionOrdered();
+      const unchanged = before && after
+        && CursorState.comparePositions(before.start, after.start) === 0
+        && CursorState.comparePositions(before.end, after.end) === 0;
+      if (unchanged && selectCurrentTableCell(this) && this.cursor.selectWholeTableCells()) {
+        this.updateCellSelection();
+        this.eventBus.emit('command-state-changed');
+        return;
+      }
       this.updateCaret();
       this.eventBus.emit('command-state-changed');
     }
@@ -1842,12 +1975,66 @@ function copyHeaderFooterSelection(this: any, e: ClipboardEvent): boolean {
   }
 }
 
-export function onCopy(this: any, e: ClipboardEvent): void {
-  if (!this.active) return;
+function selectedCellBlock(self: any) {
+  const context = self.cursor.getCellTableContext();
+  const range = self.cursor.getSelectedCellRange();
+  if (!context || !range) return null;
+  if (self.cursor.getExcludedCells?.().size) {
+    showToast({ message: '연속된 셀 블록을 선택해 주세요.' });
+    return null;
+  }
+  const path = context.cellPath?.length ? context.cellPath
+    : [{ controlIndex: context.ci, cellIndex: 0, cellParaIndex: 0 }];
+  return { ...context, ...range, pathJson: JSON.stringify(path) };
+}
+
+function cellBlockStartPosition(self: any, wasm: WasmBridge, block: NonNullable<ReturnType<typeof selectedCellBlock>>): DocumentPosition {
+  const target = wasm.getTableCellTargetByPath(block.sec, block.ppi, block.pathJson,
+    block.startRow, block.startCol, 0);
+  return remapTableCellPosition(self.cursor.getPosition(), target, true);
+}
+
+/** 셀 구조와 서식은 남기고 선택한 셀 내용만 한 번의 실행 취소로 지운다. */
+export function clearSelectedCellBlock(this: any): void {
+  if (this.readOnly || this.userEditingLocked || this.isFormMode?.()
+    || this.cursor.isProtectedCellSelectionMode()) return;
+  const block = selectedCellBlock(this);
+  if (!block) return;
+  try {
+    this.executeOperation({ kind: 'snapshot', operationType: 'clearTableCellRange', operation: (wasm: WasmBridge) => {
+      wasm.clearTableCellRange(block.sec, block.ppi, block.pathJson,
+        block.startRow, block.startCol, block.endRow, block.endCol);
+      return cellBlockStartPosition(this, wasm, block);
+    }});
+    this.updateCellSelection();
+  } catch (error) {
+    showToast({ message: String(error) });
+  }
+}
+
+export function onCopy(this: any, e: ClipboardEvent): boolean {
+  if (!this.active) return false;
+  if (this.cursor.isInCellSelectionMode?.()) {
+    e.preventDefault();
+    const block = selectedCellBlock(this);
+    if (!block) return false;
+    try {
+      const result = this.wasm.copyTableCellRange(block.sec, block.ppi, block.pathJson,
+        block.startRow, block.startCol, block.endRow, block.endCol);
+      const html = prepareRhwpInternalClipboardHtml(this, result.html, result.text);
+      this.rhwpCellBlockClipboardToken = this.rhwpClipboardToken;
+      e.clipboardData?.setData('text/plain', result.text);
+      e.clipboardData?.setData('text/html', html);
+      return true;
+    } catch (error) {
+      showToast({ message: String(error) });
+      return false;
+    }
+  }
+
 
   if (this.cursor.isInHeaderFooter() && this.getNonEmptyHeaderFooterSelection()) {
-    copyHeaderFooterSelection.call(this, e);
-    return;
+    return copyHeaderFooterSelection.call(this, e);
   }
 
   // 개체(글상자/그림) 선택 모드 → 개체 복사
@@ -1871,28 +2058,65 @@ export function onCopy(this: any, e: ClipboardEvent): void {
           writeImageToClipboard(this.wasm, ref.sec, ref.ppi, ref.ci, text, markedHtml, cellPathJson)
             .catch(() => {});
         }
+        return true;
       } catch (err) {
         console.warn('[InputHandler] 개체 복사 실패:', err);
       }
     }
-    return;
+    return false;
   }
 
-  if (!this.cursor.hasSelection()) return;
+  if (!this.cursor.hasSelection()) return false;
   e.preventDefault();
 
   const sel = this.cursor.getSelectionOrdered();
-  if (!sel) return;
+  if (!sel) return false;
   const { start, end } = sel;
 
   try {
     // WASM 내부 클립보드에 복사 (서식 보존)
     if (start.parentParaIndex !== undefined) {
-      this.wasm.copySelectionInCell(
-        start.sectionIndex, start.parentParaIndex, start.controlIndex!, start.cellIndex!,
-        start.cellParaIndex!, start.charOffset,
-        end.cellParaIndex!, end.charOffset,
-      );
+      if (!!start.cellPath?.length !== !!end.cellPath?.length
+        || end.parentParaIndex === undefined
+        || start.sectionIndex !== end.sectionIndex
+        || start.parentParaIndex !== end.parentParaIndex) {
+        showToast({ message: '여러 셀 선택은 복사할 수 없습니다.' });
+        return false;
+      }
+      if (start.cellPath?.length && end.cellPath?.length) {
+        const startPath = start.cellPath;
+        const endPath = end.cellPath;
+        const sameCell = start.sectionIndex === end.sectionIndex
+          && start.parentParaIndex === end.parentParaIndex
+          && startPath.length === endPath.length
+          && startPath.every((entry: CellPathEntry, index: number) =>
+            entry.controlIndex === endPath[index].controlIndex
+            && entry.cellIndex === endPath[index].cellIndex
+            && (index === startPath.length - 1
+              || entry.cellParaIndex === endPath[index].cellParaIndex));
+        if (!sameCell) {
+          showToast({ message: '여러 셀 선택은 복사할 수 없습니다.' });
+          return false;
+        }
+        this.wasm.copySelectionInCellByPath(
+          start.sectionIndex, start.parentParaIndex, JSON.stringify(startPath),
+          startPath[startPath.length - 1].cellParaIndex, start.charOffset,
+          endPath[endPath.length - 1].cellParaIndex, end.charOffset,
+        );
+      } else {
+        if (start.controlIndex !== end.controlIndex || start.cellIndex !== end.cellIndex) {
+          showToast({ message: '여러 셀 선택은 복사할 수 없습니다.' });
+          return false;
+        }
+        this.wasm.copySelectionInCell(
+          start.sectionIndex, start.parentParaIndex, start.controlIndex!, start.cellIndex!,
+          start.cellParaIndex!, start.charOffset,
+          end.cellParaIndex!, end.charOffset,
+        );
+      }
+    } else if (end.parentParaIndex !== undefined) {
+      showToast({ message: '본문과 셀을 함께 복사할 수 없습니다.' });
+      return false;
     } else if (start.sectionIndex === end.sectionIndex) {
       this.wasm.copySelection(
         start.sectionIndex,
@@ -1914,11 +2138,19 @@ export function onCopy(this: any, e: ClipboardEvent): void {
       let html = '';
       try {
         if (start.parentParaIndex !== undefined) {
-          html = this.wasm.exportSelectionInCellHtml(
-            start.sectionIndex, start.parentParaIndex, start.controlIndex!, start.cellIndex!,
-            start.cellParaIndex!, start.charOffset,
-            end.cellParaIndex!, end.charOffset,
-          );
+          if (start.cellPath?.length && end.cellPath?.length) {
+            html = this.wasm.exportSelectionInCellByPathHtml(
+              start.sectionIndex, start.parentParaIndex, JSON.stringify(start.cellPath),
+              start.cellPath[start.cellPath.length - 1].cellParaIndex, start.charOffset,
+              end.cellPath[end.cellPath.length - 1].cellParaIndex, end.charOffset,
+            );
+          } else {
+            html = this.wasm.exportSelectionInCellHtml(
+              start.sectionIndex, start.parentParaIndex, start.controlIndex!, start.cellIndex!,
+              start.cellParaIndex!, start.charOffset,
+              end.cellParaIndex!, end.charOffset,
+            );
+          }
         } else if (start.sectionIndex === end.sectionIndex) {
           html = this.wasm.exportSelectionHtml(
             start.sectionIndex,
@@ -1935,8 +2167,10 @@ export function onCopy(this: any, e: ClipboardEvent): void {
       const markedHtml = prepareRhwpInternalClipboardHtml(this, html, text);
       e.clipboardData.setData('text/html', markedHtml);
     }
+    return true;
   } catch (err) {
     console.warn('[InputHandler] 복사 실패:', err);
+    return false;
   }
 }
 
@@ -1951,6 +2185,13 @@ export function onCut(this: any, e: ClipboardEvent): void {
     return;
   }
 
+  if (this.cursor.isInCellSelectionMode?.()) {
+    e.preventDefault();
+    if (this.cursor.isProtectedCellSelectionMode()) return;
+    if (onCopy.call(this, e)) clearSelectedCellBlock.call(this);
+    return;
+  }
+
   if (this.cursor.isInHeaderFooter() && this.getNonEmptyHeaderFooterSelection()) {
     if (copyHeaderFooterSelection.call(this, e)) this.deleteSelection();
     return;
@@ -1960,7 +2201,7 @@ export function onCut(this: any, e: ClipboardEvent): void {
   if (this.cursor.isInPictureObjectSelection()) {
     const ref = this.cursor.getSelectedPictureRef();
     if (ref) {
-      this.onCopy(e); // 클립보드에 복사
+      if (!this.onCopy(e)) return;
       this.cursor.moveOutOfSelectedPicture();
       this.pictureObjectRenderer?.clear();
       this.eventBus.emit('picture-object-selection-changed', false);
@@ -1974,7 +2215,7 @@ export function onCut(this: any, e: ClipboardEvent): void {
 
   if (!this.cursor.hasSelection()) return;
   // 먼저 복사
-  this.onCopy(e);
+  if (!this.onCopy(e)) return;
   // 선택 영역 삭제
   this.deleteSelection();
 }
@@ -2025,19 +2266,52 @@ export function onPaste(this: any, e: ClipboardEvent): void {
   const hasCurrentInternalMarker = hasCurrentRhwpClipboardMarker(this, html);
   const internalClipboardText = this.wasm.getClipboardText?.() || '';
   const hasMatchingInternalControlText =
-    this.wasm.clipboardHasControl?.() === true &&
+    !html && text === '[그림]' &&
+    this.wasm.clipboardIsSingleControl?.() === true &&
     !!internalClipboardText &&
     text === internalClipboardText;
   const useInternalClipboard =
     this.wasm.hasInternalClipboard() &&
     (!clipboardData || hasCurrentInternalMarker || hasMatchingInternalControlText);
 
+  const cellBlockClipboard = useInternalClipboard && this.rhwpCellBlockClipboardToken
+    && this.rhwpCellBlockClipboardToken === this.rhwpClipboardToken;
+  if (cellBlockClipboard && (this.cursor.isInCellSelectionMode?.() || this.cursor.isInCell?.())) {
+    if (this.cursor.isProtectedCellSelectionMode()) return;
+    try {
+      let block = selectedCellBlock(this);
+      if (!this.cursor.isInCellSelectionMode()) {
+        const context = this.cursor.getCellTableContext();
+        if (!context) return;
+        const pathJson = tableModelPathJson(pos);
+        const cell = this.wasm.getCellInfoByPath(context.sec, context.ppi, pathJson);
+        block = { ...context, pathJson, startRow: cell.row, startCol: cell.col, endRow: cell.row, endCol: cell.col };
+      }
+      if (!block) return;
+      const target = block;
+      this.executeOperation({ kind: 'snapshot', operationType: 'pasteTableCellRange', operation: (wasm: WasmBridge) => {
+        wasm.pasteTableCellRange(target.sec, target.ppi, target.pathJson, target.startRow, target.startCol);
+        return cellBlockStartPosition(this, wasm, target);
+      }});
+      if (this.cursor.isInCellSelectionMode()) this.updateCellSelection();
+    } catch (error) {
+      showToast({ message: String(error) });
+    }
+    return;
+  }
+  if (this.cursor.isInCellSelectionMode?.()) {
+    if (this.cursor.isProtectedCellSelectionMode()) return;
+    // 텍스트/외부 HTML은 현재 셀의 기존 붙여넣기 경로를 따른다.
+    this.cursor.exitCellSelectionMode();
+    this.cellSelectionRenderer?.clear();
+  }
+
   // 내부 복사 marker가 있으면 내부 클립보드를 사용한다.
   // 이미지 컨트롤은 브라우저가 marker 없는 plain text만 paste 이벤트에 넘기는 경우가 있어
   // 현재 내부 컨트롤의 표시 텍스트와 일치하면 같은 rhwp 복사로 판단한다.
   if (useInternalClipboard) {
     // 컨트롤(개체) 붙여넣기 — 본문에서만 허용
-    if (this.wasm.clipboardHasControl() && pos.parentParaIndex === undefined) {
+    if (this.wasm.clipboardIsSingleControl?.() === true && pos.parentParaIndex === undefined) {
       this.executeOperation({ kind: 'snapshot', operationType: 'pasteControl', operation: (wasm: WasmBridge) => {
         if (hasSelection) this.deleteSelection();
         const p = this.cursor.getPosition();

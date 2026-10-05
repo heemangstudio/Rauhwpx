@@ -72,7 +72,28 @@ pub(crate) fn picture_flow_frame_size_hu(picture: &Picture) -> (i32, i32) {
                 | crate::model::shape::TextWrap::Through
         );
     if flows_beside && picture.common.width > 0 && picture.common.height > 0 {
-        (picture.common.width as i32, picture.common.height as i32)
+        // 상대 크기(문단/단/쪽/종이 기준)의 width/height 는 백분율(1/100 %)이다.
+        // 한컴이 해석한 실제 크기는 current(curSz)에 저장된다.
+        use crate::model::shape::SizeCriterion;
+        let resolved = |criterion: SizeCriterion, raw: u32, current: u32| {
+            if !matches!(criterion, SizeCriterion::Absolute) && current > 0 {
+                current as i32
+            } else {
+                raw as i32
+            }
+        };
+        (
+            resolved(
+                picture.common.width_criterion,
+                picture.common.width,
+                picture.shape_attr.current_width,
+            ),
+            resolved(
+                picture.common.height_criterion,
+                picture.common.height,
+                picture.shape_attr.current_height,
+            ),
+        )
     } else {
         picture_display_size_hu(picture)
     }
@@ -288,24 +309,11 @@ pub(crate) fn drawing_to_shape_style(
     });
 
     let gradient = match drawing.fill.fill_type {
-        FillType::Gradient => drawing.fill.gradient.as_ref().map(|g| {
-            let positions: Vec<f64> = if g.positions.is_empty() {
-                let n = g.colors.len();
-                (0..n)
-                    .map(|i| i as f64 / (n.max(2) - 1).max(1) as f64)
-                    .collect()
-            } else {
-                g.positions.iter().map(|&p| p as f64 / 100.0).collect()
-            };
-            Box::new(GradientFillInfo {
-                gradient_type: g.gradient_type,
-                angle: g.angle,
-                center_x: g.center_x,
-                center_y: g.center_y,
-                colors: g.colors.clone(),
-                positions,
-            })
-        }),
+        FillType::Gradient => drawing
+            .fill
+            .gradient
+            .as_ref()
+            .map(|g| Box::new(GradientFillInfo::from_model(g))),
         _ => None,
     };
 
@@ -524,8 +532,8 @@ fn shape_border_width_to_px(width: i32) -> f64 {
     }
     // HWPUNIT → px: width * 96 / 7200
     let px = width as f64 * 96.0 / 7200.0;
-    // 최소 0.5px 보장 (너무 얇으면 안 보임)
-    px.max(0.5).min(38.0)
+    // 양수로 저장된 선 굵기를 그대로 쓴다. 0 굵기의 기본선은 호출자가 처리한다.
+    px.min(38.0)
 }
 
 /// LayoutRect → BoundingBox 변환

@@ -6,14 +6,13 @@ use crate::parser::control::parse_common_obj_attr;
 use serde_json::Value;
 
 #[test]
-fn font_aware_factories_preserve_input_policy_and_only_select_hcr_for_hwpx() {
+fn font_aware_factories_preserve_input_policy_and_default_to_mac_metrics() {
     use crate::parser::limits::InputPolicy;
     let hwpx = include_bytes!(
         "../../tests/fixtures/editing_parity/mac-hancom-12.30.0/body-mixed-text/edited.hwpx"
     );
-    let normal = open_with_hwpx_font_metrics(hwpx, InputPolicy::Untrusted, "hcr-declared").unwrap();
-    let local =
-        open_with_hwpx_font_metrics(hwpx, InputPolicy::LocalFileOnce, "hcr-declared").unwrap();
+    let normal = open_with_font_metrics(hwpx, InputPolicy::Untrusted, "hcr-declared").unwrap();
+    let local = open_with_font_metrics(hwpx, InputPolicy::LocalFileOnce, "hcr-declared").unwrap();
     assert_eq!(normal.get_font_metrics_policy(), "hcr-declared");
     assert_eq!(
         normal.get_page_text_layout_native(0).unwrap(),
@@ -23,17 +22,21 @@ fn font_aware_factories_preserve_input_policy_and_only_select_hcr_for_hwpx() {
         include_bytes!("../../saved/blank2010.hwp").as_slice(),
         include_bytes!("../../samples/hml/formatting_table.hml").as_slice(),
     ] {
-        let doc =
-            open_with_hwpx_font_metrics(bytes, InputPolicy::Untrusted, "hcr-declared").unwrap();
-        assert_eq!(doc.get_font_metrics_policy(), "hancom-windows");
+        // 기준 플랫폼은 macOS 한컴 — 모든 포맷의 기본값이 HCR 선언 메트릭이고,
+        // Windows 치환 규칙은 명시 요청 시에만 적용된다.
+        assert_eq!(
+            HwpDocument::new(bytes).unwrap().get_font_metrics_policy(),
+            "hcr-declared"
+        );
+        let windows =
+            open_with_font_metrics(bytes, InputPolicy::Untrusted, "hancom-windows").unwrap();
+        assert_eq!(windows.get_font_metrics_policy(), "hancom-windows");
     }
-    assert!(open_with_hwpx_font_metrics(hwpx, InputPolicy::Untrusted, "invalid").is_err());
-    assert!(open_with_hwpx_font_metrics(
-        b"invalid document",
-        InputPolicy::Untrusted,
-        "hcr-declared"
-    )
-    .is_err());
+    assert!(open_with_font_metrics(hwpx, InputPolicy::Untrusted, "invalid").is_err());
+    assert!(
+        open_with_font_metrics(b"invalid document", InputPolicy::Untrusted, "hcr-declared")
+            .is_err()
+    );
 }
 
 #[test]
@@ -2031,7 +2034,8 @@ fn create_doc_with_page_count_boundary_table() -> HwpDocument {
             col: 0,
             row_span: 1,
             col_span: 1,
-            width: if row + 1 == row_count { 2_200 } else { 42_000 },
+            // 셀 편집 reflow 는 그리드 폭으로 줄을 나눈다. 1열 표의 모든 셀 폭을 같게 둔다.
+            width: 42_000,
             height: if row + 1 == row_count { 600 } else { 5_250 },
             paragraphs: vec![Paragraph {
                 text: text.to_string(),
@@ -2171,7 +2175,8 @@ fn issue2424_page_count_is_held_until_shadow_layout_commits() {
     let initial_page_count = doc.page_count();
     assert_eq!(initial_page_count, 1, "fixture must begin on one page");
 
-    let inserted = "가".repeat(48);
+    // 마지막 행이 세 줄이 되어야 본문 하단을 넘는다.
+    let inserted = "가".repeat(96);
     let edit_raw = doc
         .insert_text_in_cell_native_deferred_pagination(0, 0, 0, 12, 0, 1, &inserted)
         .expect("deferred boundary insert");
@@ -4714,6 +4719,57 @@ fn test_clipboard_copy_control_cell_path_json_arg() {
     let r_arr = doc.copy_control(0, 0, "[]", 0);
     assert!(r_arr.is_ok(), "[] cell_path_json 본문 복사 실패");
     assert!(r_arr.unwrap().contains("[표]"));
+}
+
+#[test]
+fn cell_logical_length_keeps_text_after_inline_equation_in_select_all() {
+    use crate::model::control::{Control, Equation};
+    use crate::model::table::{Cell, Table};
+    let mut doc = create_doc_with_table();
+    let mut equation = Equation {
+        script: "x".into(),
+        ..Default::default()
+    };
+    equation.common.treat_as_char = true;
+    let source = Paragraph {
+        text: "ABC".into(),
+        char_offsets: vec![0, 9, 10],
+        char_count: 12,
+        controls: vec![Control::Equation(Box::new(equation))],
+        ..Default::default()
+    };
+    let Control::Table(table) = &mut doc.document.sections[0].paragraphs[0].controls[0] else {
+        panic!("table");
+    };
+    table.cells[0].paragraphs = vec![source.clone()];
+    let flat = r#"[{"controlIndex":0,"cellIndex":0,"cellParaIndex":0}]"#;
+    assert_eq!(
+        doc.get_cell_paragraph_length_by_path(0, 0, flat).unwrap(),
+        3
+    );
+    assert_eq!(doc.get_cell_logical_length_by_path(0, 0, flat).unwrap(), 4);
+
+    let Control::Table(table) = &mut doc.document.sections[0].paragraphs[0].controls[0] else {
+        unreachable!()
+    };
+    table.cells[0].paragraphs = vec![Paragraph {
+        controls: vec![Control::Table(Box::new(Table {
+            row_count: 1,
+            col_count: 1,
+            cells: vec![Cell {
+                paragraphs: vec![source],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }))],
+        ..Default::default()
+    }];
+    let nested = r#"[{"controlIndex":0,"cellIndex":0,"cellParaIndex":0},{"controlIndex":0,"cellIndex":0,"cellParaIndex":0}]"#;
+    let end = doc.get_cell_logical_length_by_path(0, 0, nested).unwrap();
+    assert_eq!(end, 4);
+    doc.copy_selection_in_cell_by_path(0, 0, nested, 0, 0, 0, end)
+        .unwrap();
+    assert_eq!(doc.get_clipboard_text(), "ABC");
 }
 
 /// [Task #1161] 떠 있는 그림(tac=false)을 반복 붙여넣으면 cascade 오프셋이 누적된다.
@@ -25482,7 +25538,7 @@ fn task1413_insert_click_here_field_by_path_ex_equivalent() {
 #[test]
 fn task1413_insert_text_in_cell_ex_equivalent() {
     let mut a = create_doc_with_table();
-    let rp = a.insert_text_in_cell(0, 0, 0, 0, 0, 0, "텍스트");
+    let rp = a.insert_text_in_cell(0, 0, 0, 0, 0, 0, "텍스트", None);
     let mut b = create_doc_with_table();
     let re = b.insert_text_in_cell_ex(
         r#"{"sectionIdx":0,"parentParaIdx":0,"controlIdx":0,"cellIdx":0,"cellParaIdx":0,"charOffset":0,"text":"텍스트"}"#,
@@ -25493,7 +25549,7 @@ fn task1413_insert_text_in_cell_ex_equivalent() {
 #[test]
 fn task1413_get_text_in_cell_ex_equivalent() {
     let a = create_doc_with_table();
-    let rp = a.get_text_in_cell(0, 0, 0, 0, 0, 0, 1);
+    let rp = a.get_text_in_cell(0, 0, 0, 0, 0, 0, 1, None);
     let re = a.get_text_in_cell_ex(
         r#"{"sectionIdx":0,"parentParaIdx":0,"controlIdx":0,"cellIdx":0,"cellParaIdx":0,"charOffset":0,"count":1}"#,
     );
@@ -25503,7 +25559,7 @@ fn task1413_get_text_in_cell_ex_equivalent() {
 #[test]
 fn task1413_delete_text_in_cell_ex_equivalent() {
     let mut a = create_doc_with_table();
-    let rp = a.delete_text_in_cell(0, 0, 0, 0, 0, 0, 1);
+    let rp = a.delete_text_in_cell(0, 0, 0, 0, 0, 0, 1, None);
     let mut b = create_doc_with_table();
     let re = b.delete_text_in_cell_ex(
         r#"{"sectionIdx":0,"parentParaIdx":0,"controlIdx":0,"cellIdx":0,"cellParaIdx":0,"charOffset":0,"count":1}"#,
@@ -25822,18 +25878,18 @@ fn issue2214_scoped_cache_coherence_preserves_transient_pagination() {
         issue2214_assert_cut_continuity(label, "initial", &initial_cuts);
 
         // #2195 이후에도 44번째 입력은 target paragraph의 상대 flow advance를 바꾼다.
-        // 다만 선언 셀 높이가 증가분을 흡수해 full pagination의 cut/bounds는 불변이다.
+        // flush 전 pagination 조각은 그대로 두고, flush 에서만 cut/bounds 가 갱신된다.
         // render_normalized warm tree는 flush 전에도 매 mutation을 즉시 반영해야 한다.
         // [#2430] HY/한양 ASCII 실측 교정으로 숫자 advance 가 0.625→0.497em 으로
-        // 좁아져 줄 채움 임계가 44→56 입력으로 이동 (probe 실측, hwp/hwpx 동일).
-        for inserted in 0..56 {
+        // 좁아져 줄 채움 임계가 44→56→55 입력으로 이동 (probe 실측, hwp/hwpx 동일).
+        for inserted in 0..55 {
             let raw = doc
                 .insert_text_in_cell_native_deferred_pagination(0, 0, 2, 2, 5, 130 + inserted, "1")
                 .expect("deferred sequential insert");
             let result: Value = serde_json::from_str(&raw).expect("edit result json");
             assert_eq!(
                 result["cellFlowChanged"].as_bool(),
-                Some(inserted == 55),
+                Some(inserted == 54),
                 "{label}: input {} flow signal",
                 inserted + 1
             );
@@ -25847,7 +25903,7 @@ fn issue2214_scoped_cache_coherence_preserves_transient_pagination() {
             .map(|(_, _, end)| *end)
             .expect("transient target end");
         let transient_rect = doc
-            .get_cursor_rect_in_cell_native(0, 0, 2, 2, 5, 186)
+            .get_cursor_rect_in_cell_native(0, 0, 2, 2, 5, 185)
             .expect("transient direct rect");
 
         doc.flush_deferred_pagination()
@@ -25861,15 +25917,15 @@ fn issue2214_scoped_cache_coherence_preserves_transient_pagination() {
             .map(|(_, _, end)| *end)
             .expect("flushed target end");
         let flushed_rect = doc
-            .get_cursor_rect_in_cell_native(0, 0, 2, 2, 5, 186)
+            .get_cursor_rect_in_cell_native(0, 0, 2, 2, 5, 185)
             .expect("flushed direct rect");
 
         eprintln!(
             "#2214 {label}: transient max={transient_max} rect={transient_rect}; flushed max={flushed_max} rect={flushed_rect}; cuts transient={transient_cut:?} flushed={flushed_cut:?}"
         );
 
-        assert_eq!(transient_max, 186, "{label}: scoped warm tree coherence");
-        assert_eq!(flushed_max, 186, "{label}: flush oracle");
+        assert_eq!(transient_max, 185, "{label}: scoped warm tree coherence");
+        assert_eq!(flushed_max, 185, "{label}: flush oracle");
         assert_eq!(
             transient_ranges, flushed_ranges,
             "{label}: transient target UTF-16 ranges must equal flush oracle"
@@ -25884,15 +25940,14 @@ fn issue2214_scoped_cache_coherence_preserves_transient_pagination() {
             vec![37],
             "{label}: transient page-zero cut"
         );
+        // 첫 쪽 조각은 저장 쪽 경계(vpos 리셋) 직전 줄에서 끝나므로 그 줄 간격이
+        // 조각 높이에서 빠진다. 그 여유에 추가된 한 줄이 들어가 flush 후 첫 쪽이
+        // 한 유닛을 더 담는다.
         assert_eq!(flushed_cut.start_cut, Vec::<usize>::new());
         assert_eq!(
             flushed_cut.end_cut,
-            vec![37],
+            vec![38],
             "{label}: flushed page-zero cut"
-        );
-        assert_eq!(
-            transient_cut, flushed_cut,
-            "{label}: #2195 declared height must absorb the first-page advance"
         );
         let changed_pages = transient_cuts
             .iter()
@@ -25912,37 +25967,41 @@ fn issue2214_scoped_cache_coherence_preserves_transient_pagination() {
         );
         assert_eq!(
             changed_pages,
-            (2..doc.page_count() as usize).collect::<Vec<_>>(),
-            "{label}: flush must realign downstream continuation cuts"
+            (0..doc.page_count() as usize).collect::<Vec<_>>(),
+            "{label}: flush must realign every fragment after the grown first page"
         );
         let transient_rect_json: Value =
             serde_json::from_str(&transient_rect).expect("transient rect json");
         let flushed_rect_json: Value =
             serde_json::from_str(&flushed_rect).expect("flushed rect json");
-        for key in ["pageIndex", "x", "y", "height", "cellOverflowed"] {
+        for key in ["pageIndex", "x", "height", "cellOverflowed"] {
             assert_eq!(
                 transient_rect_json.get(key),
                 flushed_rect_json.get(key),
                 "{label}: transient cursor field {key} must equal flush oracle"
             );
         }
-        assert_eq!(
-            transient_rect_json.get("cellBounds"),
-            flushed_rect_json.get("cellBounds"),
-            "{label}: absorbed flow boundary must preserve cell bounds"
-        );
         let transient_bounds_h = transient_rect_json["cellBounds"]["h"]
             .as_f64()
             .expect("transient bounds h");
         let flushed_bounds_h = flushed_rect_json["cellBounds"]["h"]
             .as_f64()
             .expect("flushed bounds h");
+        // 잘린 셀 조각도 셀 세로 정렬(가운데)을 따르므로, flush 가 조각 높이를 바꾸면
+        // 커서 y 는 그 변화의 절반 안에서만 움직일 수 있다.
+        let dy = (transient_rect_json["y"].as_f64().expect("transient y")
+            - flushed_rect_json["y"].as_f64().expect("flushed y"))
+        .abs();
         assert!(
-            (transient_bounds_h - 945.9).abs() <= 0.2,
+            dy <= (flushed_bounds_h - transient_bounds_h).abs() / 2.0 + 0.5,
+            "{label}: transient cursor y moved {dy} beyond the fragment re-centering"
+        );
+        assert!(
+            (transient_bounds_h - 947.8).abs() <= 0.2,
             "{label}: transient bounds h={transient_bounds_h}"
         );
         assert!(
-            (flushed_bounds_h - 945.9).abs() <= 0.2,
+            (flushed_bounds_h - 963.8).abs() <= 0.2,
             "{label}: flushed bounds h={flushed_bounds_h}"
         );
         assert_eq!(doc.page_count(), 115, "{label}: page count");
@@ -25964,7 +26023,7 @@ fn issue2424_resumable_pagination_commits_only_after_final_fragment() {
         let bytes = std::fs::read(path).expect("read #2424 fixture");
         let mut doc = HwpDocument::from_bytes(&bytes).expect("load #2424 fixture");
 
-        for inserted in 0..56 {
+        for inserted in 0..55 {
             doc.insert_text_in_cell_native_deferred_pagination(0, 0, 2, 2, 5, 130 + inserted, "1")
                 .expect("deferred sequential insert");
         }
@@ -26018,7 +26077,7 @@ fn issue2424_resumable_pagination_commits_only_after_final_fragment() {
                 .zip(&committed_cuts)
                 .filter(|(before, after)| before != after)
                 .count(),
-            113,
+            115,
             "{label}: committed cut chain must match the full-pagination oracle"
         );
     }
@@ -26038,14 +26097,14 @@ fn issue2424_resumable_delete_commits_only_after_final_fragment() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
         let bytes = std::fs::read(path).expect("read #2424 fixture");
         let mut doc = HwpDocument::from_bytes(&bytes).expect("load #2424 fixture");
-        doc.insert_text_in_cell_native_deferred_pagination(0, 0, 2, 2, 5, 130, &"1".repeat(56))
+        doc.insert_text_in_cell_native_deferred_pagination(0, 0, 2, 2, 5, 130, &"1".repeat(55))
             .expect("prepare fifth cell line");
         doc.flush_deferred_pagination()
             .expect("commit expanded pagination");
         let expanded_cuts = issue2214_target_cuts(&doc);
 
         let delete_raw = doc
-            .delete_text_in_cell_native_deferred_pagination(0, 0, 2, 2, 5, 185, 1)
+            .delete_text_in_cell_native_deferred_pagination(0, 0, 2, 2, 5, 184, 1)
             .expect("deferred line-shrinking delete");
         let delete: Value = serde_json::from_str(&delete_raw).expect("delete result");
         assert_eq!(
@@ -26091,7 +26150,7 @@ fn issue2424_resumable_delete_commits_only_after_final_fragment() {
 
         let mut oracle = HwpDocument::from_bytes(&bytes).expect("load delete oracle");
         oracle
-            .insert_text_in_cell_native(0, 0, 2, 2, 5, 130, &"1".repeat(55))
+            .insert_text_in_cell_native(0, 0, 2, 2, 5, 130, &"1".repeat(54))
             .expect("full-pagination delete oracle state");
         assert_eq!(
             committed_cuts,
@@ -26111,7 +26170,7 @@ fn issue2424_new_edit_stales_old_job_and_sync_flush_restarts_latest_revision() {
         .join("samples/issue1949_giant_cell_nested_tables_perf.hwp");
     let bytes = std::fs::read(path).expect("read #2424 fixture");
     let mut doc = HwpDocument::from_bytes(&bytes).expect("load #2424 fixture");
-    for inserted in 0..56 {
+    for inserted in 0..55 {
         doc.insert_text_in_cell_native_deferred_pagination(0, 0, 2, 2, 5, 130 + inserted, "1")
             .expect("deferred sequential insert");
     }
@@ -26130,7 +26189,7 @@ fn issue2424_new_edit_stales_old_job_and_sync_flush_restarts_latest_revision() {
     .expect("step json");
     assert_eq!(first_step["status"], "pending");
 
-    doc.insert_text_in_cell_native_deferred_pagination(0, 0, 2, 2, 5, 186, "1")
+    doc.insert_text_in_cell_native_deferred_pagination(0, 0, 2, 2, 5, 185, "1")
         .expect("new edit supersedes first revision");
     let stale: Value = serde_json::from_str(
         &doc.step_deferred_pagination(1)

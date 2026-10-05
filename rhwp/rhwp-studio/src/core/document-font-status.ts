@@ -1,5 +1,6 @@
 import { REGISTERED_FONTS, resolveRegisteredFontFaceIdentity } from './font-loader.ts';
 import { resolveFont } from './font-substitution.ts';
+import { isSystemFontIndexComplete } from './desktop-fonts.ts';
 import {
   getDetectedLocalFonts,
   getLocalFontDetectionMethod,
@@ -54,6 +55,11 @@ export interface AnalyzeDocumentFontsOptions {
   localSnapshotSource?: LocalFontDetectionSource | null;
   localCheckedFonts?: string[];
   detectionMethod?: LocalFontDetectionSource | null;
+  /**
+   * 데스크톱 글꼴 색인을 이미 받았는지. 색인은 설치 글꼴 전체를 다루므로
+   * 연결되지 않은 글꼴을 브라우저 로컬 글꼴 감지로 다시 확인하지 않는다.
+   */
+  desktopIndexComplete?: boolean;
 }
 
 const GENERIC_FONTS = new Set(['serif', 'sans-serif', 'monospace']);
@@ -93,6 +99,7 @@ export function analyzeDocumentFonts(
   const localCheckedFonts = options.localCheckedFonts ?? localState.checkedFamilies;
   const localCheckedSet = new Set(localCheckedFonts);
   const detectionMethod = options.detectionMethod ?? getLocalFontDetectionMethod();
+  const desktopIndexComplete = options.desktopIndexComplete ?? isSystemFontIndexComplete();
 
   const summary: DocumentFontStatusSummary = {
     available: 0,
@@ -132,6 +139,7 @@ export function analyzeDocumentFonts(
     const substituteFont = resolveWebSubstitute(fontName);
 
     const needsLocalCheck = localSupported
+      && !desktopIndexComplete
       && (!localSnapshotStored || (!localSnapshotComplete && !localCheckedSet.has(fontName)));
 
     if (needsLocalCheck) {

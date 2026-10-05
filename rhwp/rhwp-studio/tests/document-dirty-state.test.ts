@@ -117,3 +117,28 @@ test('DocumentDirtyState beforeunload 해제 함수는 설치한 핸들러만 �
   fakeWindow.dispatch('beforeunload', event);
   assert.equal(event.defaultPrevented, false);
 });
+
+test('저장 중 들어온 편집은 오래된 저장 토큰으로 clean 이 되지 않는다', () => {
+  const eventBus = new EventBus();
+  const changes: DirtyStateChange[] = [];
+  eventBus.on('document-dirty-changed', (payload) => changes.push(payload as DirtyStateChange));
+  const state = new DocumentDirtyState(eventBus);
+
+  state.markDirty('typing');
+  const token = state.captureRevision();
+  // 이미 dirty 인 문서에 들어온 편집도 세대를 올려야 한다.
+  state.markDirty('typing-during-save');
+  assert.notEqual(state.captureRevision(), token);
+
+  assert.equal(state.markCleanIfUnchanged(token, 'save'), false);
+  assert.equal(state.isDirty(), true);
+  assert.deepEqual(changes, [{ dirty: true, reason: 'typing' }]);
+
+  const fresh = state.captureRevision();
+  assert.equal(state.markCleanIfUnchanged(fresh, 'save'), true);
+  assert.equal(state.isDirty(), false);
+  assert.deepEqual(changes, [
+    { dirty: true, reason: 'typing' },
+    { dirty: false, reason: 'save' },
+  ]);
+});

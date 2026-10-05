@@ -74,7 +74,9 @@ export function buildCodexAppServerArgv(opts, { enableDefaultModeUserInput = fal
     '--disable', 'apps',
     '--disable', 'browser_use',
     '--disable', 'computer_use',
-    '--disable', 'image_generation',
+    ...(opts.toolProfile === 'copy-layout-worker'
+      ? ['--disable', 'image_generation']
+      : ['--enable', 'image_generation']),
     ...(opts.toolProfile === 'copy-layout-worker'
       ? [
         '--disable', 'multi_agent', '--disable', 'shell_tool', '--disable', 'unified_exec',
@@ -392,6 +394,12 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
   let starting = false;
   let disposed = false;
   let interruptRequested = false;
+  // Stop나 다음 메시지가 진행 중인 시작 시도를 대체하면 값이 바뀐다. 대체된
+  // 시도는 늦게 도착한 실패를 legacy 전환이나 두 번째 turn-end로 바꾸지 않는다.
+  let turnAttempt = 0;
+  // 이 CLI가 런타임 enablement를 무시한다는 것이 확인되면 이후 턴은 처음부터
+  // 기능 플래그를 붙여 한 번만 spawn한다.
+  let defaultModeFlagRequired = false;
   /** @type {import('./backend.mjs').AgentSession | null} */
   let fallback = null;
   let stderrTail = '';
@@ -797,6 +805,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     try {
       const result = await negotiate(connection, { featureForced });
       if (result.restartWithFeature) {
+        defaultModeFlagRequired = true;
         await stopNegotiationProcess(child, connection);
         return startConnection({ featureForced: true });
       }
@@ -822,10 +831,13 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
         }
       }
       if (!readyPromise) {
-        readyPromise = startConnection().catch((error) => {
-          readyPromise = null;
+        const connecting = startConnection({
+          featureForced: defaultModeFlagRequired && providerInteractionMode(opts) !== 'plan',
+        }).catch((error) => {
+          if (readyPromise === connecting) readyPromise = null;
           throw error;
         });
+        readyPromise = connecting;
       }
       return readyPromise;
     });
@@ -884,7 +896,8 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     return cleaned;
   }
 
-  async function switchToLegacy(text, error) {
+  async function switchToLegacy(text, error, attempt) {
+    const superseded = () => disposed || attempt !== turnAttempt;
     const reportCleanupFailure = () => {
       const message = 'Codex app-server process-tree cleanup could not be confirmed.';
       onEvent({ type: 'error', agent: 'codex', message });
@@ -893,12 +906,12 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     if (providerInteractionMode(opts) === 'plan') {
       process.stderr.write(`[codex-app-server] native plan mode unavailable: ${safeMessage(error)}\n`);
       const cleaned = await stopConnection();
+      if (superseded()) return;
       starting = false;
       if (!cleaned) {
         reportCleanupFailure();
         return;
       }
-      if (disposed) return;
       const message = `Codex native Plan mode is unavailable: ${safeMessage(error)}`;
       onEvent({ type: 'error', agent: 'codex', message });
       onEvent({ type: 'turn-end', agent: 'codex', stopReason: 'failed', errorMessage: message });
@@ -906,12 +919,12 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     }
     process.stderr.write(`[codex-app-server] using legacy exec fallback: ${safeMessage(error)}\n`);
     const cleaned = await stopConnection();
+    if (superseded()) return;
     if (!cleaned) {
       starting = false;
       reportCleanupFailure();
       return;
     }
-    if (disposed) return;
     fallback = createLegacySession?.(threadId) ?? null;
     starting = false;
     if (!fallback) {
@@ -922,21 +935,25 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     fallback.sendUserMessage(text);
   }
 
-  async function startTurn(text) {
+  async function startTurn(text, attempt) {
+    const stale = () => disposed || attempt !== turnAttempt;
     let connection;
     try {
       connection = await ensureConnection();
     } catch (error) {
-      if (!disposed) await switchToLegacy(text, error);
+      if (stale()) return;
+      await switchToLegacy(text, error, attempt);
       return;
     }
-    if (disposed || fallback || interruptRequested) {
+    if (stale()) return;
+    if (fallback || interruptRequested) {
       starting = false;
       return;
     }
     try {
       await attachThread(connection);
     } catch (error) {
+      if (stale()) return;
       starting = false;
       const detail = safeMessage(error);
       const cleaned = await stopConnection();
@@ -945,7 +962,8 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
       onEvent({ type: 'turn-end', agent: 'codex', stopReason: 'failed', errorMessage: message });
       return;
     }
-    if (disposed || interruptRequested) {
+    if (stale()) return;
+    if (interruptRequested) {
       starting = false;
       return;
     }
@@ -963,7 +981,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
         effort: opts.effort ?? null,
         collaborationMode: collaborationMode(opts),
       });
-      if (disposed || interruptRequested || (!starting && !turnOpen)) return;
+      if (stale() || interruptRequested || (!starting && !turnOpen)) return;
       const responseTurnId = String(response?.turn?.id ?? '');
       if (!responseTurnId) throw new Error('Codex app-server turn/start returned no turn id');
       if (turnOpen) {
@@ -977,6 +995,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
       const ownsPending = pendingTurnStart?.connection === connection
         && pendingTurnStart.generation === turnGeneration;
       if (ownsPending) pendingTurnStart = null;
+      if (stale()) return;
       const ownedActiveTurn = turnOpen && connectionIsCurrent(connection, turnGeneration);
       if (starting || ownedActiveTurn) {
         starting = false;
@@ -1007,7 +1026,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
       if (starting || turnOpen) throw new Error('A Codex turn is already running');
       starting = true;
       interruptRequested = false;
-      void startTurn(text);
+      void startTurn(text, ++turnAttempt);
     },
     async setPermissionProfile(profile) {
       if (fallback) return fallback.setPermissionProfile(profile);
@@ -1085,6 +1104,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
         restartPromise = priorRestart.then(() => stopConnection());
         endTurn({ type: 'turn-end', agent: 'codex', stopReason: 'interrupted' });
       } else if (starting) {
+        turnAttempt += 1;
         starting = false;
         pendingTurnStart = null;
         onEvent({ type: 'turn-end', agent: 'codex', stopReason: 'interrupted' });

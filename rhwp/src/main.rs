@@ -65,6 +65,7 @@ fn main() {
         Some("dump-records") => exit_with(dump_raw_records(&args[2..])),
         Some("ir-diff") => exit_with(ir_diff(&args[2..])),
         Some("hwpx-roundtrip") => rhwp::diagnostics::hwpx_roundtrip_batch::run(&args[2..]),
+        Some("lineseg-oracle") => rhwp::diagnostics::lineseg_oracle::run(&args[2..]),
         Some("hwp5-roundtrip") => rhwp::diagnostics::hwp5_roundtrip_batch::run(&args[2..]),
         Some("render-diff") => rhwp::diagnostics::render_geom_diff::run(&args[2..]),
         Some("bench") => rhwp::diagnostics::bench::run(&args[2..]),
@@ -616,6 +617,11 @@ fn show_capabilities(args: &[String]) -> i32 {
             "왕복/두 파일 렌더 기하 차이 검증",
         ),
         cmd("hwpx-roundtrip", "diagnostic", "HWPX 왕복 무손실 게이트"),
+        cmd(
+            "lineseg-oracle",
+            "diagnostic",
+            "한컴 저장 LINE_SEG 대비 줄 계산 채점",
+        ),
         cmd("hwp5-roundtrip", "diagnostic", "HWP5 왕복 무손실 게이트"),
         cmd("bench", "diagnostic", "성능 벤치마크"),
         cmd("hwp5-inventory", "diagnostic", "HWP5 레코드 인벤토리"),
@@ -675,6 +681,9 @@ fn print_help() {
     println!("      --embed-fonts           폰트 서브셋 임베딩 (사용 글자만 base64)");
     println!("      --embed-fonts=full      폰트 전체 임베딩 (base64)");
     println!("      --font-path <경로>      폰트 파일 또는 디렉토리 (여러 번 지정 가능)");
+    println!(
+        "      --font-metrics <정책>   글자 폭 정책: mac (기본) | windows (Windows 한글 치환)"
+    );
     println!("      --json                  산출물 매니페스트를 JSON으로 stdout에 출력");
     println!();
     println!("  export-render-tree <파일.hwp> [옵션]");
@@ -701,6 +710,9 @@ fn print_help() {
         "      --profile <프로필>      출력 프로필: screen|print|high-quality|fast-preview (기본: high-quality)"
     );
     println!("      --font-path <경로>      폰트 파일 또는 디렉토리 (여러 번 지정 가능)");
+    println!(
+        "      --font-metrics <정책>   글자 폭 정책: mac (기본) | windows (Windows 한글 치환)"
+    );
     println!("                              한컴 전용 폰트 (HY견명조 등) 가 시스템에 없을 때 ttfs 디렉토리 지정");
     println!("      --scale <배율>          렌더링 배율 (기본: 1.0)");
     println!("      --max-dimension <픽셀>  한 변 최대 픽셀 (longest edge). VLM 입력 한도용.");
@@ -757,6 +769,9 @@ fn print_help() {
     );
     println!("      --raster-dpi <DPI>      direct backend fallback raster DPI (기본값: 144)");
     println!("      --font-path <경로>      폰트 파일 또는 디렉토리 (여러 번 지정 가능)");
+    println!(
+        "      --font-metrics <정책>   글자 폭 정책: mac (기본) | windows (Windows 한글 치환)"
+    );
     println!("      --fallback-serif <명>   PDF serif generic fallback family");
     println!("      --fallback-sans <명>    PDF sans-serif generic fallback family");
     println!("      --fallback-mono <명>    PDF monospace generic fallback family");
@@ -850,6 +865,10 @@ fn print_help() {
     println!("      HWPX → IR → HWPX roundtrip 검증 (Task #1315 baseline)");
     println!("      재조립 .hwpx와 inventory.tsv를 출력 폴더(기본 output/poc/task1315)에 생성");
     println!("      --lineseg-report: 문단별 lineseg diff를 lineseg_diff.tsv로 산출 (#1380 측정)");
+    println!("  lineseg-oracle <파일 | --batch 폴더> [-o <출력폴더>] [--font-path <경로>] [-j N] [--json]");
+    println!("      한컴 저장 LINE_SEG 를 정답으로 누락 경로 줄 계산(reflow_line_segs)을 채점");
+    println!("      summary.json, mismatches.tsv, docs/*.json 출력 (기본 output/lineseg-oracle)");
+    println!("      RHWP_IGNORE_STORED_LINESEGS=1: 모든 export 에서 저장 LINE_SEG 를 버리고 조판");
     println!("  hwp5-roundtrip <파일.hwp | --batch 폴더> [-o <출력폴더>]");
     println!("      HWP5 → IR → HWP5 roundtrip 무손실 검증 (Task #1552)");
     println!("      재조립 .rt.hwp와 inventory.tsv를 출력 폴더(기본 output/poc/task1552)에 생성");
@@ -930,6 +949,7 @@ fn export_svg(args: &[String]) -> i32 {
     let mut respect_vpos_reset = false;
     let mut font_embed_mode = rhwp::renderer::svg::FontEmbedMode::None;
     let mut font_paths: Vec<std::path::PathBuf> = Vec::new();
+    let mut font_metrics = rhwp::model::provenance::FontMetricsPolicy::default();
     let mut render_profile: Option<rhwp::paint::RenderProfile> = None;
     let mut json_mode = false;
 
@@ -1052,6 +1072,21 @@ fn export_svg(args: &[String]) -> i32 {
                 font_embed_mode = rhwp::renderer::svg::FontEmbedMode::Full;
                 i += 1;
             }
+            "--font-metrics" => {
+                match args
+                    .get(i + 1)
+                    .and_then(|v| rhwp::model::provenance::FontMetricsPolicy::parse(v))
+                {
+                    Some(policy) => {
+                        font_metrics = policy;
+                        i += 2;
+                    }
+                    None => {
+                        eprintln!("오류: --font-metrics 값은 mac 또는 windows 여야 합니다.");
+                        return EXIT_USAGE;
+                    }
+                }
+            }
             "--font-path" => {
                 if i + 1 < args.len() {
                     font_paths.push(std::path::PathBuf::from(&args[i + 1]));
@@ -1105,8 +1140,13 @@ fn export_svg(args: &[String]) -> i32 {
 
     let source_format = rhwp::parser::detect_format(&data);
 
-    // 문서 로드
-    let mut doc = match rhwp::wasm_api::HwpDocument::from_local_file_bytes(&data) {
+    // 로드 시점 재조판이 폰트 실측을 하므로 custom face 등록은 문서 구성보다 먼저다
+    // (export-png 의 같은 규칙과 정합).
+    rhwp::renderer::font_paths::register_font_face_availability(&font_paths);
+    let mut doc = match rhwp::wasm_api::HwpDocument::from_local_file_bytes_with_font_metrics(
+        &data,
+        font_metrics,
+    ) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("오류: 문서 파싱 실패 - {}", e);
@@ -1686,6 +1726,7 @@ fn export_png(args: &[String]) -> i32 {
     let mut output_dir = "output".to_string();
     let mut target_page: Option<u32> = None;
     let mut font_paths: Vec<std::path::PathBuf> = Vec::new();
+    let mut font_metrics = rhwp::model::provenance::FontMetricsPolicy::default();
     let mut scale: Option<f64> = None;
     let mut max_dimension: Option<i32> = None;
     let mut vlm_target: Option<VlmTarget> = None;
@@ -1733,6 +1774,21 @@ fn export_png(args: &[String]) -> i32 {
                 } else {
                     eprintln!("오류: --profile 뒤에 프로필 이름이 필요합니다.");
                     return EXIT_USAGE;
+                }
+            }
+            "--font-metrics" => {
+                match args
+                    .get(i + 1)
+                    .and_then(|v| rhwp::model::provenance::FontMetricsPolicy::parse(v))
+                {
+                    Some(policy) => {
+                        font_metrics = policy;
+                        i += 2;
+                    }
+                    None => {
+                        eprintln!("오류: --font-metrics 값은 mac 또는 windows 여야 합니다.");
+                        return EXIT_USAGE;
+                    }
                 }
             }
             "--font-path" => {
@@ -1845,7 +1901,14 @@ fn export_png(args: &[String]) -> i32 {
         }
     };
 
-    let mut core = match rhwp::document_core::DocumentCore::from_local_file_bytes(&data) {
+    // 로드 시점 재조판(누락 lineseg 재구성)이 폰트 실측을 이미 하므로, custom face
+    // 등록은 문서 구성보다 먼저여야 한다 — 나중에 등록하면 수식 레이아웃이
+    // 베이크드 메트릭으로 굳어 렌더 시점의 페인트와 어긋난다.
+    rhwp::renderer::font_paths::register_font_face_availability(&font_paths);
+    let mut core = match rhwp::document_core::DocumentCore::from_local_file_bytes_with_font_metrics(
+        &data,
+        font_metrics,
+    ) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("오류: HWP 파싱 실패 - {:?}", e);
@@ -1972,6 +2035,7 @@ fn export_pdf(args: &[String]) -> i32 {
         let mut target_page: Option<u32> = None;
         let mut pdf_backend = rhwp::renderer::pdf::PdfBackend::default();
         let mut pdf_options = rhwp::renderer::pdf::PdfExportOptions::default();
+        let mut font_metrics = rhwp::model::provenance::FontMetricsPolicy::default();
         let mut direct_pdf_options = rhwp::renderer::pdf::DirectPdfExportOptions::default();
         let mut render_profile: Option<rhwp::paint::RenderProfile> = None;
         let mut compatibility_only_options = Vec::new();
@@ -2074,6 +2138,21 @@ fn export_pdf(args: &[String]) -> i32 {
                     direct_pdf_options.raster_dpi = raster_dpi;
                     direct_raster_dpi_was_set = true;
                     i += 1;
+                }
+                "--font-metrics" => {
+                    match args
+                        .get(i + 1)
+                        .and_then(|v| rhwp::model::provenance::FontMetricsPolicy::parse(v))
+                    {
+                        Some(policy) => {
+                            font_metrics = policy;
+                            i += 2;
+                        }
+                        None => {
+                            eprintln!("오류: --font-metrics 값은 mac 또는 windows 여야 합니다.");
+                            return 2;
+                        }
+                    }
                 }
                 "--font-path" => {
                     if i + 1 < args.len() {
@@ -2230,7 +2309,11 @@ fn export_pdf(args: &[String]) -> i32 {
             }
         };
 
-        let mut doc = match rhwp::wasm_api::HwpDocument::from_local_file_bytes(&data) {
+        rhwp::renderer::font_paths::register_font_face_availability(&pdf_options.font_paths);
+        let mut doc = match rhwp::wasm_api::HwpDocument::from_local_file_bytes_with_font_metrics(
+            &data,
+            font_metrics,
+        ) {
             Ok(d) => d,
             Err(e) => {
                 eprintln!("오류: 문서 파싱 실패 - {}", e);
@@ -2340,6 +2423,7 @@ fn print_export_pdf_usage() {
     );
     eprintln!("      --raster-dpi <DPI>    direct backend fallback raster DPI (기본값: 144)");
     eprintln!("      --font-path <경로>   폰트 파일 또는 디렉토리 (여러 번 지정 가능)");
+    eprintln!("      --font-metrics <mac|windows> 글자 폭 정책 (기본값: mac)");
     eprintln!("      --fallback-serif <명>");
     eprintln!("      --fallback-sans <명>");
     eprintln!("      --fallback-mono <명>");
@@ -5016,7 +5100,7 @@ fn dump_controls(args: &[String]) -> i32 {
                     "       keep: with_next={} keep_lines={} widow_orphan={} pbreak_before={} (attr1=0x{:08X} attr2=0x{:08X})",
                     (ps.attr1 >> 17) & 1 != 0 || (ps.attr2 >> 6) & 1 != 0,
                     (ps.attr1 >> 18) & 1 != 0 || (ps.attr2 >> 7) & 1 != 0,
-                    (ps.attr1 >> 16) & 1 != 0 || (ps.attr2 >> 5) & 1 != 0,
+                    (ps.attr1 >> 16) & 1 != 0,
                     (ps.attr1 >> 19) & 1 != 0 || (ps.attr2 >> 8) & 1 != 0,
                     ps.attr1, ps.attr2
                 );
@@ -6955,7 +7039,8 @@ fn diff_shape_textbox(
 ///
 /// HWPX 파서(`parse_tab_extension`)는 인라인 탭을 `ext[0]`=width,
 /// `ext[2]`=`type<<8 | leader`(leader 는 low byte), `ext[6]`=0x0009 마커로만 채우고
-/// `ext[1]`·`ext[3]`·`ext[4]`·`ext[5]`는 0 으로 둔다. HWPX 직렬화(`render_hp_t_content`)도
+/// `ext[1]`·`ext[3]`·`ext[4]`는 0 으로 둔다. `ext[5]`는 탭 간격/저장 거리의 내부
+/// 의미 마커로 쓰고 HWP5 직렬화 전에 지운다. HWPX 직렬화(`render_hp_t_content`)도
 /// width/leader/type 를 오직 `ext[0]`·`ext[2]`에서만 읽는다. 반면 HWP5 인라인 탭(8 WCHAR
 /// 블록)은 `ext[1]`을 leader/fill 슬롯으로, `ext[3]`·`ext[4]`·`ext[5]`를 WCHAR 4~6 원본
 /// 바이트(보통 0x20)로 채운다 — 이들은 HWPX `<hp:tab>`에 대응 속성이 없어 HWPX 쪽이 항상
@@ -8264,6 +8349,7 @@ fn edit_set_cell(args: &[String]) -> i32 {
                 pi as u32,
                 0,
                 *len as u32,
+                None,
             ) {
                 eprintln!("오류: 셀 비우기 실패(문단 {}) - {:?}", pi, e);
                 return EXIT_RUNTIME;
@@ -8278,6 +8364,7 @@ fn edit_set_cell(args: &[String]) -> i32 {
                 0,
                 0,
                 new_text,
+                None,
             ) {
                 eprintln!("오류: 셀 쓰기 실패 - {:?}", e);
                 // 실패 시 원본 불변 — 출력 파일을 쓰지 않고 즉시 끝낸다.

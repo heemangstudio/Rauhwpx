@@ -336,6 +336,22 @@ fn max_equation_visual_bottom_in_region(
         .max_by(|a, b| a.partial_cmp(b).unwrap())
 }
 
+fn max_para_equation_visual_bottom(node: &RenderNode, para_index: usize) -> Option<f64> {
+    let own = match &node.node_type {
+        RenderNodeType::Equation(eq) if eq.para_index == Some(para_index) => {
+            Some(node.bbox.y + eq.layout_box.height)
+        }
+        _ => None,
+    };
+    own.into_iter()
+        .chain(
+            node.children
+                .iter()
+                .filter_map(|child| max_para_equation_visual_bottom(child, para_index)),
+        )
+        .max_by(|a, b| a.partial_cmp(b).unwrap())
+}
+
 fn max_para_content_bottom(node: &RenderNode, para_index: usize) -> Option<f64> {
     let own = match &node.node_type {
         RenderNodeType::TextLine(line) if line.para_index == Some(para_index) => {
@@ -423,13 +439,10 @@ fn issue_1189_2022_nov_page1_question1_marker_gap_matches_pdf() {
     let tree = doc.build_page_render_tree(0).expect("page 1 render tree");
 
     let question1_eq = find_equation_bbox(&tree.root, 0, 4).expect("문1 수식");
+    // macOS 한컴 PDF에서 6.7pt 위첨자 미주 번호 다음 수식의 x는 58.08px이다.
     assert!(
-        question1_eq.x <= 72.0,
-        "문1 본문 미주 마커 앞 HWP5 placeholder가 0폭이어야 수식이 한컴/PDF처럼 문항 번호 바로 뒤에 붙음: {question1_eq:?}"
-    );
-    assert!(
-        question1_eq.x >= 68.0,
-        "문1 수식이 문항 번호와 겹치면 안 됨: {question1_eq:?}"
+        (question1_eq.x - 58.08).abs() <= 0.5,
+        "문1 수식은 한컴/PDF의 미주 번호 바로 뒤에서 시작해야 함: {question1_eq:?}"
     );
 }
 
@@ -3176,8 +3189,10 @@ fn issue_1284_2022_oct_page15_question28_formula_does_not_overlap_case_label() {
     let doc = HwpDocument::from_bytes(&bytes).expect("parse");
     let tree = doc.build_page_render_tree(14).expect("page 15 render tree");
 
-    let equation_bottom = max_equation_bottom_in_region(&tree.root, 390.0, 570.0, 740.0, 790.0)
-        .expect("문28 중간 수식");
+    // 고정 y 창으로 찾으면 수식이 한컴 위치(줄 상단)로 올라간 뒤 (ii) 줄의 인라인 수식까지
+    // 창에 들어온다. 문28 중간 수식 문단(pi=816) 자체의 하단을 기준으로 삼는다.
+    // EQEDIT 저장 높이는 편집 상자에 남으므로 실제 수식 레이아웃의 하단을 확인한다.
+    let equation_bottom = max_para_equation_visual_bottom(&tree.root, 816).expect("문28 중간 수식");
     let next_text = find_text_line_bbox(&tree.root, 817, 0).expect("문28 (ii) 본문");
 
     assert!(
@@ -3453,13 +3468,26 @@ fn issue_1256_2022_sep_page10_question12_keeps_between_notes_gap() {
         max_formula_right <= 760.5,
         "문12 수식-only 흐름은 오른쪽 단을 넘지 않아야 함(#1310): max_right={max_formula_right}"
     );
+    // #374(9a7b639a)는 인라인 수식 줄 전진을 한컴 macOS 실측(eq-002)에 맞춰
+    // min(선언 폭, paint 폭+양쪽 여백)으로 바꿨다(macOS 한컴 우선 정책). 이 규칙에서는
+    // 세 번째 TAC 수식(가장 넓은 수식)이 첫 visual row 안에 들어간다. 위 PDF 는 한컴
+    // Windows(Hwp 2024) 출력이라 저장 폭 기준으로 줄바꿈하며, 이 문서의 한컴 macOS
+    // 출력은 아직 없다. 넘친 수식이 이어지는 visual row 는 여전히 #1310 내어쓰기
+    // 60.5pt 전체 x 에서 시작해야 한다.
+    let first_row_widest = question12_formulas
+        .iter()
+        .filter(|bbox| (bbox.y - question12_formula.y).abs() <= 3.0)
+        .any(|bbox| bbox.width > 170.0);
+    assert!(
+        first_row_widest,
+        "문12 세 번째 TAC 수식은 #374 수식 전진 규칙에서 첫 visual row에 남아야 함: {question12_formulas:?}"
+    );
     assert!(
         question12_formulas.iter().any(|bbox| {
             (bbox.x - (question12_formula.x + 80.7)).abs() <= 7.0
                 && bbox.y > question12_formula.y + 25.0
-                && bbox.width > 170.0
         }),
-        "문12 첫 수식 줄에서 넘친 세 번째 TAC 수식은 다음 visual row로 줄바꿈되고 한컴 UI 내어쓰기 60.5pt 전체 x를 적용해야 함(#1310): {question12_formulas:?}"
+        "문12 수식-only 문단의 후속 visual row는 한컴 UI 내어쓰기 60.5pt 전체 x를 적용해야 함(#1310): {question12_formulas:?}"
     );
     let formula_bottom = question12_formulas
         .iter()
@@ -3692,4 +3720,32 @@ fn issue_1139_endnote_equation_exposes_note_ref_and_properties() {
         Some(false),
         "캡션이 없는 수식은 수식 속성 여백/캡션 탭에서 위치 없음으로 표시되어야 함: {props}"
     );
+}
+
+#[test]
+fn paragraph_relative_square_picture_uses_authored_offset_once() {
+    let bytes = std::fs::read("samples/3-11월_실전_통합_2022.hwpx").expect("sample");
+    let doc = HwpDocument::from_bytes(&bytes).expect("parse");
+    let tree = doc.build_page_render_tree(20).expect("page 21 render tree");
+    let picture = find_image_bbox(&tree.root, 978, 0).expect("paragraph-relative triangle");
+    let first_line = find_text_line_bbox(&tree.root, 978, 0).expect("anchor paragraph first line");
+
+    // macOS 한컴 PDF: 그림은 문단 첫 줄에서 저장 vertOffset=2583HU만큼 떨어진다.
+    // 두 번째 줄부터 폭이 좁아진다는 이유로 그 줄의 진행량을 다시 더하지 않는다.
+    assert!((picture.y - first_line.y - 2583.0 / 75.0).abs() < 0.5);
+}
+
+#[test]
+fn inline_shape_anchor_includes_outer_margin_and_caption_height() {
+    let bytes = std::fs::read("samples/3-11월_실전_통합_2022.hwpx").expect("sample");
+    let doc = HwpDocument::from_bytes(&bytes).expect("parse");
+    let tree = doc.build_page_render_tree(8).expect("page 9 render tree");
+    let shape = find_rectangle_bbox(&tree.root, 441, 0).expect("captioned inline box");
+    let line = find_text_line_bbox(&tree.root, 441, 0).expect("inline box host");
+    // 캡션 700HU와 간격 141HU를 포함한 개체 상자로 기준선을 맞춘다.
+    assert!((shape.x - line.x - 283.0 / 75.0).abs() < 0.05);
+    assert!((shape.y - line.y - 841.0 / 75.0).abs() < 0.05);
+    let uncaptioned = find_rectangle_bbox(&tree.root, 442, 0).expect("uncaptioned inline box");
+    let next_line = find_text_line_bbox(&tree.root, 442, 0).expect("next box host");
+    assert!((uncaptioned.y - next_line.y).abs() < 0.05);
 }

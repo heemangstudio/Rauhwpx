@@ -1,4 +1,7 @@
 import init, { HwpDocument, version } from '@wasm/rhwp.js';
+import { guardEngineCalls } from './engine-trap';
+import { setHftWasmApi } from './hft-glyphs';
+import { setImageDownsampleApi, setImageAffineSampleApi } from './image-sampling';
 import { withBodyTextPaginationBatch } from './pagination-batch';
 import { requireCharShapeRunsDocument, parseCharShapeRuns, validateCharShapeRuns } from './char-shape-runs';
 import type { CharShapeRun } from './types';
@@ -8,7 +11,7 @@ import { blake3 } from '@noble/hashes/blake3.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import type { DocumentInfo, PageInfo, PageDef, SectionDef, PageBorderFillSettings, EndnoteShapeSettings, NoteEditInfo, CursorRect, HitTestResult, BodyFootnoteMarkerHit, FootnoteAtCursorResult, DeleteFootnoteResult, LineInfo, TableDimensions, CellInfo, TableCellTarget, CellBbox, CellProperties, TableProperties, DocumentPosition, MoveVerticalResult, SelectionRect, CharProperties, ParaProperties, CellPathEntry, CellPathLike, NavContextEntry, FieldInfoResult, BookmarkInfo, LayerRenderProfile, PageLayerTree, CanvasKitDocumentPreflight } from './types';
 import { parseCanvasKitDocumentPreflight } from './canvaskit-document-preflight';
-import { fontMetricsPolicyForEnvironment } from './font-metrics-policy';
+import { DEFAULT_FONT_METRICS_POLICY } from './font-metrics-policy';
 import {
   normalizeHmlSaveState,
   parseHmlSaveState,
@@ -120,6 +123,13 @@ interface PictureTransformJournalDocument {
   discardPictureTransform(id: number): void;
 }
 
+interface ParagraphCaptureDocument {
+  captureParagraph(sec: number, para: number): number;
+  restoreCapturedParagraph(id: number, sec: number, para: number): void;
+  discardParagraphCapture(id: number): void;
+  getParagraphContentDigest(sec: number, para: number): string;
+}
+
 /** [#6806] 세 함수가 모두 있는 빌드에서만 그림 리사이즈 Undo 를 저널로 기록한다. */
 function pictureTransformJournalDocument(doc: HwpDocument | null): PictureTransformJournalDocument {
   if (!doc) throw new Error('문서가 로드되지 않았습니다');
@@ -223,6 +233,11 @@ export interface WebCanvasImageCacheStats {
 }
 
 import { fontFamilyChainForDisplay } from './font-substitution';
+import { createEquationFontResolver, createEquationLiteralFontResolver, createEquationTextMeasurer } from './equation-font';
+import { getImportedLocalFontBytes, hasImportedLocalFontFace, resolveLocalFont } from './local-fonts';
+import { createDeclaredFontAvailabilityProbe } from './font-presence';
+import { getWebFontSubstituteFamilies } from './font-loader';
+import type { RuntimeFontMetricsApi } from './desktop-fonts.ts';
 import type { FileSystemFileHandleLike } from '@/command/file-system-access';
 import {
   connectSubsecondDevtools,
@@ -259,9 +274,44 @@ function substituteCssFontFamily(cssFont: string): string {
 
 let canvasFontSubstitutionInstalled = false;
 
+/**
+ * Canvas 텍스트 페인트의 폰트 치환과 별개로, 원본 face 의 실제 존재 여부를 조판기에 알린다.
+ * 패치 전 font setter 를 쓰지 않으면 없는 face 도 fallback 체인으로 치환되어 항상
+ * "설치됨" 으로 검출된다. 가져온 face 는 로컬 등록부에서도 확인한다.
+ */
+export function installDeclaredFontAvailabilityProbe(): void {
+  const host = globalThis as Record<string, unknown>;
+  if (typeof host.isDeclaredFontFamilyAvailable === 'function') return;
+  if (typeof CanvasRenderingContext2D === 'undefined') return;
+  const descriptor = Object.getOwnPropertyDescriptor(CanvasRenderingContext2D.prototype, 'font');
+  const context = document.createElement('canvas').getContext('2d');
+  if (!descriptor?.get || !descriptor.set || !context) return;
+  host.isDeclaredFontFamilyAvailable = createDeclaredFontAvailabilityProbe(
+    context,
+    { get: descriptor.get, set: descriptor.set },
+    hasImportedLocalFontFace,
+    getWebFontSubstituteFamilies(),
+  );
+}
+
 function installCanvasFontSubstitution(): void {
   if (canvasFontSubstitutionInstalled) return;
   if (typeof CanvasRenderingContext2D === 'undefined') return;
+
+  (globalThis as Record<string, unknown>).resolveEquationFontFamily = createEquationFontResolver(
+    resolveLocalFont,
+    getImportedLocalFontBytes,
+  );
+
+  (globalThis as Record<string, unknown>).resolveEquationLiteralFont = createEquationLiteralFontResolver(
+    resolveLocalFont,
+    getImportedLocalFontBytes,
+  );
+
+  (globalThis as Record<string, unknown>).measureEquationTextMetrics = createEquationTextMeasurer(
+    resolveLocalFont,
+    getImportedLocalFontBytes,
+  );
 
   const proto = CanvasRenderingContext2D.prototype;
   const descriptor = Object.getOwnPropertyDescriptor(proto, 'font');
@@ -333,6 +383,15 @@ export class WasmBridge {
   private set documentGeneration(value: number) {
     this._documentGeneration = value;
   }
+  /**
+   * 문서 인스턴스 번호 — 문서를 내리거나 다른 문서를 들일 때만 오른다. documentGeneration 과
+   * 달리 스냅샷 복원·내용 교체로는 오르지 않아, 에이전트 revision 과 대기 편집이 "같은 문서"를
+   * 판별하는 기준이 된다 (대기 편집은 스테이징·승인·거절마다 스냅샷을 복원한다).
+   */
+  private _documentInstance = 0;
+  get documentInstance(): number {
+    return this._documentInstance;
+  }
   private initialized = false;
   private _fileName = FALLBACK_DOCUMENT_FILE_NAME;
   private _currentFileHandle: FileSystemFileHandleLike | null = null;
@@ -346,9 +405,23 @@ export class WasmBridge {
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
+    installDeclaredFontAvailabilityProbe();
     installCanvasFontSubstitution();
     this.installMeasureTextWidth();
     await init();
+    guardEngineCalls(HwpDocument.prototype);
+    const downsampleRgba = Reflect.get(wasmExports, 'smoothHermiteDownsampleRgba');
+    setImageDownsampleApi(typeof downsampleRgba === 'function' ? downsampleRgba : null);
+    const affineSampleRgba = Reflect.get(wasmExports, 'gridfitAffineSampleRgba');
+    setImageAffineSampleApi(typeof affineSampleRgba === 'function' ? affineSampleRgba : null);
+    const registerHft = Reflect.get(wasmExports, 'registerHftFont');
+    const hftGlyphPathEm = Reflect.get(wasmExports, 'hftGlyphPathEm');
+    setHftWasmApi(typeof registerHft === 'function' && typeof hftGlyphPathEm === 'function'
+      ? {
+        register: bytes => Boolean(registerHft(bytes)),
+        glyphPath: (family, codePoint) => String(hftGlyphPathEm(family, codePoint)),
+      }
+      : null);
     if (!disconnectSubsecondDevtools) {
       disconnectSubsecondDevtools = connectSubsecondDevtools(
         wasmExports as unknown as SubsecondWasmExports,
@@ -356,6 +429,27 @@ export class WasmBridge {
     }
     this.initialized = true;
     console.log(`[WasmBridge] WASM 초기화 완료 (rhwp ${version()})`);
+  }
+
+  /** 런타임 글꼴 메트릭 wasm 함수. 이 기능 이전 wasm 빌드면 null이다. */
+  getRuntimeFontMetricsApi(): RuntimeFontMetricsApi | null {
+    const register = Reflect.get(wasmExports, 'registerRuntimeFontMetrics');
+    if (typeof register !== 'function') return null;
+    const clear = Reflect.get(wasmExports, 'clearRuntimeFontMetrics');
+    const report = Reflect.get(wasmExports, 'getRuntimeFontMetricsReport');
+    const hasBaked = Reflect.get(wasmExports, 'hasBakedFontMetrics');
+    const fallbackFamilies = Reflect.get(wasmExports, 'fontFallbackFamilies');
+    return {
+      register: (bytes, aliasesJson, bold, italic) => String(register(bytes, aliasesJson, bold, italic)),
+      ...(typeof clear === 'function' ? { clear: () => { clear(); } } : {}),
+      ...(typeof report === 'function' ? { report: () => String(report()) } : {}),
+      ...(typeof hasBaked === 'function'
+        ? { hasBaked: (name: string, bold: boolean, italic: boolean) => Boolean(hasBaked(name, bold, italic)) }
+        : {}),
+      ...(typeof fallbackFamilies === 'function'
+        ? { fallbackFamilies: (name: string, fontSubst?: string): string[] => JSON.parse(String(fallbackFamilies(name, fontSubst))) }
+        : {}),
+    };
   }
 
   isSubsecondHotpatchEnabled(): boolean {
@@ -414,6 +508,7 @@ export class WasmBridge {
    */
   releaseDocument(): void {
     this.documentGeneration++;
+    this._documentInstance++;
     if (this.doc) {
       try {
         this.doc.free();
@@ -428,7 +523,7 @@ export class WasmBridge {
 
   loadDocument(data: Uint8Array, fileName?: string): DocumentInfo {
     return this.loadDocumentFromFactory(data, fileName,
-      (bytes) => HwpDocument.fromBytesWithFontMetrics(bytes, this.requestedHwpxFontMetrics()));
+      (bytes) => HwpDocument.fromBytesWithFontMetrics(bytes, DEFAULT_FONT_METRICS_POLICY));
   }
 
   /**
@@ -441,7 +536,7 @@ export class WasmBridge {
     const nextDocumentDigest = `blake3:${bytesToHex(blake3(data))}`;
     let nextDoc: HwpDocument | null = null;
     try {
-      nextDoc = HwpDocument.fromBytesWithFontMetrics(data, this.requestedHwpxFontMetrics());
+      nextDoc = HwpDocument.fromBytesWithFontMetrics(data, DEFAULT_FONT_METRICS_POLICY);
       nextDoc.convertToEditable();
       this.ensureParagraphStableIdsFor(nextDoc);
       nextDoc.setFileName(nextFileName);
@@ -470,6 +565,7 @@ export class WasmBridge {
     }
     const next = prepared.take();
     this.documentGeneration++;
+    this._documentInstance++;
     if (this.doc) {
       try {
         this.doc.free();
@@ -493,7 +589,7 @@ export class WasmBridge {
     return this.loadDocumentFromFactory(
       data,
       fileName,
-      (bytes) => HwpDocument.fromTrustedLocalFileBytesWithFontMetrics(bytes, this.requestedHwpxFontMetrics()),
+      (bytes) => HwpDocument.fromTrustedLocalFileBytesWithFontMetrics(bytes, DEFAULT_FONT_METRICS_POLICY),
     );
   }
 
@@ -556,14 +652,8 @@ export class WasmBridge {
     return JSON.parse(raw) as DocumentInfo;
   }
 
-  private requestedHwpxFontMetrics(): string {
-    const platform = typeof navigator === 'undefined' ? '' : navigator.platform;
-    // The WASM factory detects the real format and limits this choice to HWPX.
-    return fontMetricsPolicyForEnvironment(platform, 'hwpx');
-  }
-
   getFontMetricsPolicy(): string {
-    return this.doc?.getFontMetricsPolicy() ?? 'hancom-windows';
+    return this.doc?.getFontMetricsPolicy() ?? DEFAULT_FONT_METRICS_POLICY;
   }
 
   /** [Task #741 후속] 외부 file path 그림을 dev 서버에서 fetch + inject. */
@@ -846,6 +936,26 @@ export class WasmBridge {
 
   getSectionCount(): number {
     return this.doc?.getSectionCount() ?? 0;
+  }
+
+  getDocumentCharacterCount(): number {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return (this.doc as any).getDocumentCharacterCount();
+  }
+
+  getBodyRangeCharacterCount(startSec: number, startPara: number, startOffset: number, endSec: number, endPara: number, endOffset: number): number {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return (this.doc as any).getBodyRangeCharacterCount(startSec, startPara, startOffset, endSec, endPara, endOffset);
+  }
+
+  getContainerCharacterCountByPath(sec: number, parentPara: number, pathJson: string): number {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return (this.doc as any).getContainerCharacterCountByPath(sec, parentPara, pathJson);
+  }
+
+  getContainerRangeCharacterCountByPath(sec: number, parentPara: number, pathJson: string, startPara: number, startOffset: number, endPara: number, endOffset: number): number {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return (this.doc as any).getContainerRangeCharacterCountByPath(sec, parentPara, pathJson, startPara, startOffset, endPara, endOffset);
   }
 
   getPageInfo(pageNum: number): PageInfo {
@@ -1199,9 +1309,9 @@ export class WasmBridge {
     return withBodyTextPaginationBatch(this.doc, sectionIdx, edit);
   }
 
-  insertText(sec: number, para: number, charOffset: number, text: string): string {
+  insertText(sec: number, para: number, charOffset: number, text: string, logical = false): string {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
-    return this.doc.insertText(sec, para, charOffset, text);
+    return this.doc.insertText(sec, para, charOffset, text, logical);
   }
 
   insertTextLogical(sec: number, para: number, logicalOffset: number, text: string): string {
@@ -1215,6 +1325,7 @@ export class WasmBridge {
     charOffset: number,
     deleteCount: number,
     text: string,
+    logical = false,
   ): LocalBodyTextReplaceResult {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     const doc = this.doc as unknown as {
@@ -1224,18 +1335,19 @@ export class WasmBridge {
         charOffset: number,
         deleteCount: number,
         text: string,
+        logical?: boolean,
       ) => string;
     };
     if (typeof doc.replaceBodyTextLocal === 'function') {
       return parseLocalBodyTextReplaceResult(
-        doc.replaceBodyTextLocal(sec, para, charOffset, deleteCount, text),
+        doc.replaceBodyTextLocal(sec, para, charOffset, deleteCount, text, logical),
       );
     }
     if (deleteCount > 0) {
-      this.doc.deleteText(sec, para, charOffset, deleteCount);
+      this.doc.deleteText(sec, para, charOffset, deleteCount, logical);
     }
     if (text.length > 0) {
-      this.doc.insertText(sec, para, charOffset, text);
+      this.doc.insertText(sec, para, charOffset, text, logical);
     }
     return {
       ok: true,
@@ -1245,9 +1357,9 @@ export class WasmBridge {
     };
   }
 
-  deleteText(sec: number, para: number, charOffset: number, count: number): string {
+  deleteText(sec: number, para: number, charOffset: number, count: number, logical = false): string {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
-    return this.doc.deleteText(sec, para, charOffset, count);
+    return this.doc.deleteText(sec, para, charOffset, count, logical);
   }
 
   splitParagraph(sec: number, para: number, charOffset: number, removedParaMeta?: RemovedParaMeta): string {
@@ -1317,14 +1429,19 @@ export class WasmBridge {
     return this.doc.mergeParagraphInCell(sec, parentPara, controlIdx, cellIdx, cellParaIdx);
   }
 
-  getTextRange(sec: number, para: number, charOffset: number, count: number): string {
+  getTextRange(sec: number, para: number, charOffset: number, count: number, logical = false): string {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
-    return this.doc.getTextRange(sec, para, charOffset, count);
+    return this.doc.getTextRange(sec, para, charOffset, count, logical);
   }
 
   getParagraphLength(sec: number, para: number): number {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return this.doc.getParagraphLength(sec, para);
+  }
+
+  getLogicalLength(sec: number, para: number): number {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return this.doc.getLogicalLength(sec, para);
   }
 
   /**
@@ -1423,12 +1540,12 @@ export class WasmBridge {
     return JSON.parse(this.doc.getCursorRectInCell(sec, parentPara, controlIdx, cellIdx, cellParaIdx, charOffset));
   }
 
-  insertTextInCell(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, text: string): string {
+  insertTextInCell(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, text: string, logical = false): string {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
-    return this.doc.insertTextInCell(sec, parentPara, controlIdx, cellIdx, cellParaIdx, charOffset, text);
+    return this.doc.insertTextInCell(sec, parentPara, controlIdx, cellIdx, cellParaIdx, charOffset, text, logical);
   }
 
-  insertTextInCellDeferredPagination(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, text: string): DeferredCellTextMutationResult {
+  insertTextInCellDeferredPagination(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, text: string, logical = false): DeferredCellTextMutationResult {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     const d = this.doc as unknown as {
       insertTextInCellDeferredPagination?: (
@@ -1439,15 +1556,16 @@ export class WasmBridge {
         cellParaIdx: number,
         charOffset: number,
         text: string,
+        logical?: boolean,
       ) => string;
     };
     let raw: string;
     let paginationDeferred = false;
     if (typeof d.insertTextInCellDeferredPagination === 'function') {
-      raw = d.insertTextInCellDeferredPagination(sec, parentPara, controlIdx, cellIdx, cellParaIdx, charOffset, text);
+      raw = d.insertTextInCellDeferredPagination(sec, parentPara, controlIdx, cellIdx, cellParaIdx, charOffset, text, logical);
       paginationDeferred = true;
     } else {
-      raw = this.doc.insertTextInCell(sec, parentPara, controlIdx, cellIdx, cellParaIdx, charOffset, text);
+      raw = this.doc.insertTextInCell(sec, parentPara, controlIdx, cellIdx, cellParaIdx, charOffset, text, logical);
     }
     const parsed = JSON.parse(raw) as Partial<DeferredCellTextMutationResult>;
     const parsedCharOffset = parsed.charOffset;
@@ -1477,6 +1595,7 @@ export class WasmBridge {
     charOffset: number,
     deleteCount: number,
     text: string,
+    logical = false,
   ): DeferredCellTextMutationResult {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     const d = this.doc as unknown as {
@@ -1489,6 +1608,7 @@ export class WasmBridge {
         charOffset: number,
         deleteCount: number,
         text: string,
+        logical?: boolean,
       ) => string;
     };
 
@@ -1504,6 +1624,7 @@ export class WasmBridge {
         charOffset,
         deleteCount,
         text,
+        logical,
       );
       paginationDeferred = true;
     } else {
@@ -1516,6 +1637,7 @@ export class WasmBridge {
           cellParaIdx,
           charOffset,
           deleteCount,
+          logical,
         );
       } else {
         raw = JSON.stringify({ ok: true, charOffset });
@@ -1529,6 +1651,7 @@ export class WasmBridge {
           cellParaIdx,
           charOffset,
           text,
+          logical,
         );
       }
     }
@@ -1550,12 +1673,12 @@ export class WasmBridge {
     };
   }
 
-  deleteTextInCell(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, count: number): string {
+  deleteTextInCell(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, count: number, logical = false): string {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
-    return this.doc.deleteTextInCell(sec, parentPara, controlIdx, cellIdx, cellParaIdx, charOffset, count);
+    return this.doc.deleteTextInCell(sec, parentPara, controlIdx, cellIdx, cellParaIdx, charOffset, count, logical);
   }
 
-  deleteTextInCellDeferredPagination(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, count: number): DeferredCellTextMutationResult {
+  deleteTextInCellDeferredPagination(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, count: number, logical = false): DeferredCellTextMutationResult {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     const d = this.doc as unknown as {
       deleteTextInCellDeferredPagination?: (
@@ -1566,15 +1689,16 @@ export class WasmBridge {
         cellParaIdx: number,
         charOffset: number,
         count: number,
+        logical?: boolean,
       ) => string;
     };
     let raw: string;
     let paginationDeferred = false;
     if (typeof d.deleteTextInCellDeferredPagination === 'function') {
-      raw = d.deleteTextInCellDeferredPagination(sec, parentPara, controlIdx, cellIdx, cellParaIdx, charOffset, count);
+      raw = d.deleteTextInCellDeferredPagination(sec, parentPara, controlIdx, cellIdx, cellParaIdx, charOffset, count, logical);
       paginationDeferred = true;
     } else {
-      raw = this.doc.deleteTextInCell(sec, parentPara, controlIdx, cellIdx, cellParaIdx, charOffset, count);
+      raw = this.doc.deleteTextInCell(sec, parentPara, controlIdx, cellIdx, cellParaIdx, charOffset, count, logical);
     }
     const parsed = JSON.parse(raw) as Partial<DeferredCellTextMutationResult>;
     const parsedCharOffset = parsed.charOffset;
@@ -1595,20 +1719,20 @@ export class WasmBridge {
 
   // ─── 중첩 표 path 기반 편집 API ──────────────────────────
 
-  insertTextInCellByPath(sec: number, parentPara: number, pathJson: string, charOffset: number, text: string): string {
+  insertTextInCellByPath(sec: number, parentPara: number, pathJson: string, charOffset: number, text: string, logical = false): string {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
-    return (this.doc as any).insertTextInCellByPath(sec, parentPara, pathJson, charOffset, text);
+    return (this.doc as any).insertTextInCellByPath(sec, parentPara, pathJson, charOffset, text, logical);
   }
 
-  deleteTextInCellByPath(sec: number, parentPara: number, pathJson: string, charOffset: number, count: number): string {
+  deleteTextInCellByPath(sec: number, parentPara: number, pathJson: string, charOffset: number, count: number, logical = false): string {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
-    return (this.doc as any).deleteTextInCellByPath(sec, parentPara, pathJson, charOffset, count);
+    return (this.doc as any).deleteTextInCellByPath(sec, parentPara, pathJson, charOffset, count, logical);
   }
 
   /** deleteRangeInCell 의 cellPath 변형 — 중첩 표 셀의 선택 삭제가 최내곽 셀을 대상으로 한다. */
-  deleteRangeInCellByPath(sec: number, parentPara: number, pathJson: string, startPara: number, startOffset: number, endPara: number, endOffset: number): string {
+  deleteRangeInCellByPath(sec: number, parentPara: number, pathJson: string, startPara: number, startOffset: number, endPara: number, endOffset: number, logical = false): string {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
-    return (this.doc as any).deleteRangeInCellByPath(sec, parentPara, pathJson, startPara, startOffset, endPara, endOffset);
+    return (this.doc as any).deleteRangeInCellByPath(sec, parentPara, pathJson, startPara, startOffset, endPara, endOffset, logical);
   }
 
   splitParagraphInCellByPath(sec: number, parentPara: number, pathJson: string, charOffset: number, removedParaMeta?: RemovedParaMeta): string {
@@ -1621,14 +1745,14 @@ export class WasmBridge {
     return (this.doc as any).mergeParagraphInCellByPath(sec, parentPara, pathJson);
   }
 
-  getTextInCell(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, count: number): string {
+  getTextInCell(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, count: number, logical = false): string {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
-    return this.doc.getTextInCell(sec, parentPara, controlIdx, cellIdx, cellParaIdx, charOffset, count);
+    return this.doc.getTextInCell(sec, parentPara, controlIdx, cellIdx, cellParaIdx, charOffset, count, logical);
   }
 
-  getTextInCellByPath(sec: number, parentPara: number, pathJson: string, charOffset: number, count: number): string {
+  getTextInCellByPath(sec: number, parentPara: number, pathJson: string, charOffset: number, count: number, logical = false): string {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
-    return (this.doc as any).getTextInCellByPath(sec, parentPara, pathJson, charOffset, count);
+    return (this.doc as any).getTextInCellByPath(sec, parentPara, pathJson, charOffset, count, logical);
   }
 
   logicalToTextOffsetInCell(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, logicalOffset: number): number {
@@ -1636,6 +1760,17 @@ export class WasmBridge {
     return (this.doc as any).logicalToTextOffsetInCell(
       sec, parentPara, controlIdx, cellIdx, cellParaIdx, logicalOffset,
     );
+  }
+
+  /** 텍스트 오프셋(에이전트 좌표) → 편집 캐럿 좌표. 인라인 개체를 1칸으로 센다. */
+  textToLogicalOffset(sec: number, para: number, textOffset: number): number {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return (this.doc as any).textToLogicalOffset(sec, para, textOffset);
+  }
+
+  textToLogicalOffsetInCellByPath(sec: number, parentPara: number, pathJson: string, textOffset: number): number {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return (this.doc as any).textToLogicalOffsetInCellByPath(sec, parentPara, pathJson, textOffset);
   }
 
   logicalToTextOffsetInCellByPath(sec: number, parentPara: number, pathJson: string, logicalOffset: number): number {
@@ -1663,12 +1798,24 @@ export class WasmBridge {
     return this.doc.getCellParagraphLengthByPath(sec, parentPara, pathJson);
   }
 
+  getCellLogicalLengthByPath(sec: number, parentPara: number, pathJson: string): number {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return (this.doc as any).getCellLogicalLengthByPath(sec, parentPara, pathJson);
+  }
+
   getCellTextDirection(sec: number, parentPara: number, controlIdx: number, cellIdx: number): number {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return this.doc.getCellTextDirection(sec, parentPara, controlIdx, cellIdx);
   }
 
   // ─── 커서 이동 API ─────────────────────────────────────────
+
+  /** 본문 문단이 걸친 전역 쪽 번호 목록. 조판 결과만 읽는다. API 가 없는 구버전 WASM 이면 null. */
+  getParagraphPages(sec: number, para: number): number[] | null {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    if (typeof this.doc.getParagraphPages !== 'function') return null;
+    return Array.from(this.doc.getParagraphPages(sec, para));
+  }
 
   getLineInfo(sec: number, para: number, charOffset: number): LineInfo {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
@@ -1721,9 +1868,29 @@ export class WasmBridge {
     return JSON.parse(this.doc.getShapeBBox(sec, parentPara, controlIdx));
   }
 
+  getObjectBBox(
+    kind: 'image' | 'equation', sec: number, parentPara: number, controlIdx: number,
+    cellIdx?: number, cellParaIdx?: number, innerControlIdx?: number, cellPath?: CellPathLike,
+  ): { pageIndex: number; x: number; y: number; width: number; height: number } {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    const doc = this.doc as unknown as {
+      getObjectBBox(kind: string, sec: number, para: number, ctrl: number,
+        cell?: number, cellPara?: number, innerCtrl?: number, pathJson?: string): string;
+    };
+    return JSON.parse(doc.getObjectBBox(
+      kind, sec, parentPara, controlIdx, cellIdx, cellParaIdx, innerControlIdx,
+      cellPath ? JSON.stringify(cellPath) : undefined,
+    ));
+  }
+
   deleteTableControl(sec: number, parentPara: number, controlIdx: number): { ok: boolean } {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse(this.doc.deleteTableControl(sec, parentPara, controlIdx));
+  }
+
+  deleteCellTableControlByPath(sec: number, parentPara: number, pathJson: string, controlIdx: number): { ok: boolean } {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse(this.doc.deleteCellTableControlByPath(sec, parentPara, pathJson, controlIdx));
   }
 
   getCellProperties(sec: number, parentPara: number, controlIdx: number, cellIdx: number): CellProperties {
@@ -1918,6 +2085,21 @@ export class WasmBridge {
   ): { ok: boolean; cellCount: number } {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse((this.doc as any).splitTableCellsInRangeByPath(sec, parentPara, pathJson, startRow, startCol, endRow, endCol, nRows, mCols, equalRowHeight));
+  }
+
+  copyTableCellRange(sec: number, parent: number, pathJson: string, startRow: number, startCol: number, endRow: number, endCol: number): { ok: boolean; text: string; html: string } {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse((this.doc as any).copyTableCellRange(sec, parent, pathJson, startRow, startCol, endRow, endCol));
+  }
+
+  clearTableCellRange(sec: number, parent: number, pathJson: string, startRow: number, startCol: number, endRow: number, endCol: number): { ok: boolean } {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse((this.doc as any).clearTableCellRange(sec, parent, pathJson, startRow, startCol, endRow, endCol));
+  }
+
+  pasteTableCellRange(sec: number, parent: number, pathJson: string, startRow: number, startCol: number): { ok: boolean } {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse((this.doc as any).pasteTableCellRange(sec, parent, pathJson, startRow, startCol));
   }
 
   copyTableCellsTransposed(
@@ -2117,6 +2299,12 @@ export class WasmBridge {
     return JSON.parse(this.doc.getPageControlLayout(pageNum));
   }
 
+  /** 쪽의 줄 상자·베이스라인·런 x 범위 (에이전트 get_page_geometry 용, px) */
+  getPageLineLayout(pageNum: number): { lines: import('./types').LineLayoutItem[] } {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse(this.doc.getPageLineLayout(pageNum));
+  }
+
   getPictureProperties(sec: number, para: number, ci: number): import('./types').PictureProperties {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse(this.doc.getPictureProperties(sec, para, ci));
@@ -2287,6 +2475,26 @@ export class WasmBridge {
   deletePictureControl(sec: number, para: number, ci: number): { ok: boolean } {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse(this.doc.deletePictureControl(sec, para, ci));
+  }
+
+  /** 본문 및 중첩 표 셀 사이에서 인라인 그림을 이동한다. */
+  movePictureControlByPath(
+    sec: number, fromParentPara: number, fromPath: CellPathLike, fromControl: number,
+    toParentPara: number, toPath: CellPathLike, toCharOffset: number,
+  ): { ok: boolean; moved: boolean; paraIdx: number; controlIdx: number; cellPath: CellPathEntry[]; charOffset: number } {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    const serializePath = (path: CellPathLike): string => JSON.stringify(path.map(entry =>
+      'controlIndex' in entry ? entry : {
+        controlIndex: entry.controlIdx, cellIndex: entry.cellIdx, cellParaIndex: entry.cellParaIdx,
+      }));
+    const doc = this.doc as unknown as {
+      movePictureControlByPath(sec: number, fromParent: number, fromPath: string, fromControl: number,
+        toParent: number, toPath: string, offset: number): string;
+    };
+    return JSON.parse(doc.movePictureControlByPath(
+      sec, fromParentPara, serializePath(fromPath), fromControl,
+      toParentPara, serializePath(toPath), toCharOffset,
+    ));
   }
 
   /** 글자처럼 취급(tac) 그림 컨트롤을 같은 구역 내 새 캐럿 위치로 이동한다. */
@@ -2675,20 +2883,56 @@ export class WasmBridge {
     ));
   }
 
+  /** 표를 가로지르는 선택 끝점을 표를 품은 컨테이너 좌표로 올린다. 구버전 WASM 이면 null. */
+  getTableBoundaryPosition(request: {
+    sectionIndex: number;
+    parentParaIndex: number;
+    containerPath: CellPathEntry[];
+    hostParaIndex: number;
+    controlIndex: number;
+    after: boolean;
+  }): { paraIdx: number; charOffset: number } | null {
+    const doc = this.doc as any;
+    if (!doc || typeof doc.getTableBoundaryPosition !== 'function') return null;
+    return JSON.parse(doc.getTableBoundaryPosition(
+      request.sectionIndex,
+      request.parentParaIndex,
+      JSON.stringify(request.containerPath),
+      request.hostParaIndex,
+      request.controlIndex,
+      request.after,
+    ));
+  }
+
+  /** 본문 또는 셀 범위에 통째로 든 표 주소. */
+  getTableControlsInSelection(
+    sec: number, parentPara: number, containerPath: CellPathEntry[],
+    startPara: number, startOffset: number, endPara: number, endOffset: number,
+  ): Array<{ sec: number; ppi: number; ci: number; cellPath?: CellPathEntry[] }> {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    const doc = this.doc as any;
+    if (typeof doc.getTableControlsInSelection !== 'function') return [];
+    return (JSON.parse(doc.getTableControlsInSelection(
+      sec, parentPara, JSON.stringify(containerPath), startPara, startOffset, endPara, endOffset,
+    )) as Array<{ sec: number; ppi: number; ci: number; cellPath?: CellPathEntry[] | null }>).map(ref => ({
+      ...ref, cellPath: ref.cellPath ?? undefined,
+    }));
+  }
+
   getSelectionRectsInFootnote(pageNum: number, footnoteIndex: number, startFnPara: number, startOffset: number, endFnPara: number, endOffset: number): SelectionRect[] {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse((this.doc as any).getSelectionRectsInFootnote(pageNum, footnoteIndex, startFnPara, startOffset, endFnPara, endOffset));
   }
 
-  deleteRange(sec: number, startPara: number, startOffset: number, endPara: number, endOffset: number): { ok: boolean; paraIdx: number; charOffset: number } {
+  deleteRange(sec: number, startPara: number, startOffset: number, endPara: number, endOffset: number, logical = false): { ok: boolean; paraIdx: number; charOffset: number } {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
-    return JSON.parse(this.doc.deleteRange(sec, startPara, startOffset, endPara, endOffset));
+    return JSON.parse(this.doc.deleteRange(sec, startPara, startOffset, endPara, endOffset, logical));
   }
 
-  deleteRangeAcrossSections(startSec: number, startPara: number, startOffset: number, endSec: number, endPara: number, endOffset: number): { ok: boolean; sectionIdx: number; paraIdx: number; charOffset: number } {
+  deleteRangeAcrossSections(startSec: number, startPara: number, startOffset: number, endSec: number, endPara: number, endOffset: number, logical = false): { ok: boolean; sectionIdx: number; paraIdx: number; charOffset: number } {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse(this.doc.deleteRangeAcrossSections(
-      startSec, startPara, startOffset, endSec, endPara, endOffset,
+      startSec, startPara, startOffset, endSec, endPara, endOffset, logical,
     ));
   }
 
@@ -2714,6 +2958,11 @@ export class WasmBridge {
   copySelectionInCell(sec: number, parentPara: number, controlIdx: number, cellIdx: number, startCellPara: number, startOffset: number, endCellPara: number, endOffset: number): string {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return this.doc.copySelectionInCell(sec, parentPara, controlIdx, cellIdx, startCellPara, startOffset, endCellPara, endOffset);
+  }
+
+  copySelectionInCellByPath(sec: number, parentPara: number, pathJson: string, startCellPara: number, startOffset: number, endCellPara: number, endOffset: number): string {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return (this.doc as any).copySelectionInCellByPath(sec, parentPara, pathJson, startCellPara, startOffset, endCellPara, endOffset);
   }
 
   pasteInternal(sec: number, para: number, charOffset: number): string {
@@ -2789,6 +3038,11 @@ export class WasmBridge {
     return this.doc.clipboardHasControl();
   }
 
+  clipboardIsSingleControl(): boolean {
+    if (!this.doc) return false;
+    return (this.doc as any).clipboardIsSingleControl?.() === true;
+  }
+
   pasteControl(sec: number, para: number, charOffset: number): string {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return this.doc.pasteControl(sec, para, charOffset);
@@ -2809,6 +3063,11 @@ export class WasmBridge {
   exportSelectionInCellHtml(sec: number, parentPara: number, controlIdx: number, cellIdx: number, startCellPara: number, startOffset: number, endCellPara: number, endOffset: number): string {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return this.doc.exportSelectionInCellHtml(sec, parentPara, controlIdx, cellIdx, startCellPara, startOffset, endCellPara, endOffset);
+  }
+
+  exportSelectionInCellByPathHtml(sec: number, parentPara: number, pathJson: string, startCellPara: number, startOffset: number, endCellPara: number, endOffset: number): string {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return (this.doc as any).exportSelectionInCellByPathHtml(sec, parentPara, pathJson, startCellPara, startOffset, endCellPara, endOffset);
   }
 
   /**
@@ -3218,6 +3477,43 @@ export class WasmBridge {
 
   discardPictureTransform(id: number): void {
     pictureTransformJournalDocument(this.doc).discardPictureTransform(id);
+  }
+
+  /**
+   * 에이전트 대기 편집의 문단 단위 역연산 — 본문 문단 하나를 통째로 보관한다.
+   * 이 기능이 없는 WASM 빌드면 null 이다 (호출자는 문서 스냅샷으로 되돌린다).
+   */
+  captureParagraph(sec: number, para: number): number | null {
+    const doc = this.paragraphCaptureDocument();
+    return doc ? doc.captureParagraph(sec, para) : null;
+  }
+
+  /** 보관한 문단으로 지정 위치의 본문 문단을 되돌린다. 보관본은 discard 전까지 남는다. */
+  restoreCapturedParagraph(id: number, sec: number, para: number): void {
+    const doc = this.paragraphCaptureDocument();
+    if (!doc) throw new Error('문단 보관을 지원하는 WASM 빌드가 필요합니다');
+    doc.restoreCapturedParagraph(id, sec, para);
+  }
+
+  discardParagraphCapture(id: number): void {
+    this.paragraphCaptureDocument()?.discardParagraphCapture(id);
+  }
+
+  /** 레이아웃을 뺀 본문 문단 내용 지문 — 기능이 없는 빌드면 null. */
+  getParagraphContentDigest(sec: number, para: number): string | null {
+    const doc = this.paragraphCaptureDocument();
+    return doc ? doc.getParagraphContentDigest(sec, para) : null;
+  }
+
+  private paragraphCaptureDocument(): ParagraphCaptureDocument | null {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    const doc = this.doc as unknown as Partial<ParagraphCaptureDocument>;
+    return typeof doc.captureParagraph === 'function'
+      && typeof doc.restoreCapturedParagraph === 'function'
+      && typeof doc.discardParagraphCapture === 'function'
+      && typeof doc.getParagraphContentDigest === 'function'
+      ? doc as ParagraphCaptureDocument
+      : null;
   }
 
   saveSnapshot(): number {
@@ -3771,7 +4067,8 @@ export class WasmBridge {
     return JSON.parse((this.doc as any).replaceAll(query, newText, caseSensitive));
   }
 
-  getPositionOfPage(globalPage: number): { ok: boolean; sec?: number; para?: number; charOffset?: number } {
+  /** continued = 그 쪽이 앞 쪽에서 넘어온 문단(또는 표 행) 중간에서 시작한다. */
+  getPositionOfPage(globalPage: number): { ok: boolean; sec?: number; para?: number; charOffset?: number; continued?: boolean } {
     if (!this.doc || typeof (this.doc as any).getPositionOfPage !== 'function') return { ok: false };
     return JSON.parse((this.doc as any).getPositionOfPage(globalPage));
   }

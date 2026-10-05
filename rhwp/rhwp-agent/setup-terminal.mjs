@@ -3,7 +3,12 @@ import { createRequire } from 'node:module';
 import { applyManagedCliLaunch } from './npm-cli-launch.mjs';
 import { terminateAndWaitForProcessTreeExit } from './process-tree.mjs';
 
-const require = createRequire(import.meta.url);
+// On macOS the hub runs from app.asar.unpacked. node-pty rewrites app.asar in its
+// helper path, so loading it from that physical directory doubles .unpacked.
+// Electron resolves the logical archive path to the same unpacked native files.
+const require = createRequire(process.platform === 'darwin' && process.versions.electron
+  ? import.meta.url.replace(/\/app\.asar\.unpacked\//, '/app.asar/')
+  : import.meta.url);
 const failure = (code, message) => Object.assign(new Error(message), { code });
 
 /**
@@ -13,26 +18,36 @@ const failure = (code, message) => Object.assign(new Error(message), { code });
  * and otherwise re-kills the exited console PID list, which may already be
  * reused. Release the JS-side handles directly so a finished login cannot pin
  * hub resources or the hub's event loop.
+ * These private handles match node-pty 1.1.0, pinned in package.json and its
+ * lockfile. Keep the shape check when upgrading that dependency.
  */
 function releaseWindowsPty(terminal) {
   const agent = terminal._agent;
-  if (!agent || typeof agent !== 'object') return;
-  try { agent._inSocket?.destroy(); } catch {}
-  try { agent._outSocket?.destroy(); } catch {}
-  try { agent._conoutSocketWorker?.dispose(); } catch {}
+  const handles = [[agent?._inSocket, 'destroy'], [agent?._outSocket, 'destroy'],
+    [agent?._conoutSocketWorker, 'dispose']];
+  if (handles.some(([handle, method]) => typeof handle?.[method] !== 'function')) {
+    console.warn('Windows PTY cleanup: unexpected node-pty handle shape; expected pinned node-pty 1.1.0.');
+  }
+  for (const [handle, method] of handles) {
+    if (typeof handle?.[method] !== 'function') continue;
+    try { handle[method](); } catch {
+      console.warn(`Windows PTY cleanup: node-pty 1.1.0 handle ${method} failed.`);
+    }
+  }
 }
 
 /** A fixed login command, never a shell. Input/output belongs to its owning auth run. */
 export function createSetupTerminal({ command, argv, env, cwd, onOutput, signal,
+  platform = process.platform,
   timeoutMs = 10 * 60_000, spawnPty = (...args) => require('node-pty').spawn(...args),
   terminate = terminateAndWaitForProcessTreeExit,
 }) {
   if (signal?.aborted) throw failure('AGENT_AUTH_CANCELLED', '로그인을 취소했어요.');
   let terminal;
   try {
-    const launched = applyManagedCliLaunch(command, argv, { env, platform: process.platform });
+    const launched = applyManagedCliLaunch(command, argv, { env, platform });
     const spawnEnv = launched.env ?? env;
-    const launch = process.platform === 'win32'
+    const launch = platform === 'win32'
       ? require('cross-spawn/lib/parse')(launched.command, launched.argv, { env: spawnEnv })
       : { command: launched.command, args: launched.argv, options: {} };
     const args = launch.options.windowsVerbatimArguments ? launch.args.join(' ') : launch.args;
@@ -82,7 +97,7 @@ export function createSetupTerminal({ command, argv, env, cwd, onOutput, signal,
     child.emit('exit', exitCode, signal);
     child.emit('close', exitCode, signal);
     resolveExit(exitCode);
-    if (process.platform === 'win32') releaseWindowsPty(terminal);
+    if (platform === 'win32') releaseWindowsPty(terminal);
   });
   signal?.addEventListener('abort', abort, { once: true });
   if (signal?.aborted) abort();

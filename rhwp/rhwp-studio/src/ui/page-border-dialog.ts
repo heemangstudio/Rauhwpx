@@ -3,6 +3,7 @@ import type { EventBus } from '@/core/event-bus';
 import type { CommandServices } from '@/command/types';
 import type { PageBorderFillSettings, BorderLineProps } from '@/core/types';
 import type { WasmBridge } from '@/core/wasm-bridge';
+import { buildPageBorderPatch, type PageBorderForm } from './page-border-model';
 
 const HWPUNIT_PER_MM = 7200 / 25.4;
 
@@ -48,6 +49,10 @@ export class PageBorderDialog extends ModalDialog {
   private bgPatternColorInput!: HTMLInputElement;
   private bgPatternSelect!: HTMLSelectElement;
   private fillAreaPaper!: HTMLInputElement;
+  /** 배경 칸을 건드렸는가 — 건드리지 않으면 기존 채우기(그림·그러데이션 포함)를 보존한다 */
+  private fillTouched = false;
+  /** 간격 칸에 채운 표시값 — 그대로면 원본 HWPUNIT 를 보낸다(0.01mm 반올림 누적 방지) */
+  private shownSpacing: Record<Side, string> = { Left: '', Right: '', Top: '', Bottom: '' };
 
   private borderEdits: Record<Side, BorderLineProps> = {
     Left: { type: 0, width: 0, color: '#000000' },
@@ -67,6 +72,7 @@ export class PageBorderDialog extends ModalDialog {
 
   show(): void {
     this.settings = this.wasm.getPageBorderFill(this.sectionIdx);
+    this.fillTouched = false;
     this.borderEdits = {
       Left: { ...this.settings.borderLeft },
       Right: { ...this.settings.borderRight },
@@ -112,13 +118,12 @@ export class PageBorderDialog extends ModalDialog {
 
   protected onConfirm(): void {
     const applyPage = this.radioValue('page-border-apply', 'all');
-    const next: PageBorderFillSettings = {
-      ...this.settings,
+    const form: PageBorderForm = {
       basis: this.basisPaper.checked ? 'paper' : 'page',
-      spacingLeft: mmToHwp(parseFloat(this.spacingInputs.Left.value)),
-      spacingRight: mmToHwp(parseFloat(this.spacingInputs.Right.value)),
-      spacingTop: mmToHwp(parseFloat(this.spacingInputs.Top.value)),
-      spacingBottom: mmToHwp(parseFloat(this.spacingInputs.Bottom.value)),
+      spacingLeft: this.spacingValue('Left', this.settings.spacingLeft),
+      spacingRight: this.spacingValue('Right', this.settings.spacingRight),
+      spacingTop: this.spacingValue('Top', this.settings.spacingTop),
+      spacingBottom: this.spacingValue('Bottom', this.settings.spacingBottom),
       borderLeft: this.borderNoneCheck.checked ? noneBorder() : { ...this.borderEdits.Left },
       borderRight: this.borderNoneCheck.checked ? noneBorder() : { ...this.borderEdits.Right },
       borderTop: this.borderNoneCheck.checked ? noneBorder() : { ...this.borderEdits.Top },
@@ -134,6 +139,9 @@ export class PageBorderDialog extends ModalDialog {
       hideFill: applyPage === 'exceptFirst',
       applyPage: applyPage === 'exceptFirst' ? 'exceptFirst' : 'all',
     };
+    // 배경을 건드리지 않았으면 채우기 키를 빼 엔진이 기존 채우기를 복제하게 한다.
+    // 엔진은 빠진 키를 현재 값으로 두므로 부분 JSON 이 곧 올바른 입력이다.
+    const next = buildPageBorderPatch(this.settings, form, this.fillTouched) as unknown as PageBorderFillSettings;
 
     // [쪽 테두리/배경 이관] snapshot 으로 라우팅(#2077 동형). services 미주입 시 직접 적용 fallback.
     const apply = () => this.wasm.setPageBorderFill(this.sectionIdx, next);
@@ -148,6 +156,11 @@ export class PageBorderDialog extends ModalDialog {
       apply();
       this.eventBus.emit('document-changed');
     }
+  }
+
+  private spacingValue(side: Side, original: number): number {
+    const raw = this.spacingInputs[side].value;
+    return raw === this.shownSpacing[side] ? original : mmToHwp(parseFloat(raw));
   }
 
   private buildBorderTab(): HTMLElement {
@@ -222,6 +235,11 @@ export class PageBorderDialog extends ModalDialog {
     });
     const colorRow = this.row();
     colorRow.append(this.bgColorRadio, this.bgColorInput, this.label('무늬 색'), this.bgPatternColorInput, this.bgPatternSelect);
+    const markFillTouched = () => { this.fillTouched = true; };
+    for (const control of [this.bgNoneRadio, this.bgColorRadio, this.bgColorInput, this.bgPatternColorInput, this.bgPatternSelect]) {
+      control.addEventListener('change', markFillTouched);
+      control.addEventListener('input', markFillTouched);
+    }
     const grad = this.radio('page-border-bg', 'gradient', '그라데이션');
     grad.disabled = true;
     const picture = this.checkbox('그림');
@@ -303,6 +321,7 @@ export class PageBorderDialog extends ModalDialog {
     this.spacingInputs.Right.value = String(hwpToMm(this.settings.spacingRight));
     this.spacingInputs.Top.value = String(hwpToMm(this.settings.spacingTop));
     this.spacingInputs.Bottom.value = String(hwpToMm(this.settings.spacingBottom));
+    for (const side of ALL_SIDES) this.shownSpacing[side] = this.spacingInputs[side].value;
 
     const hasBorder = Object.values(this.borderEdits).some(border => border.type !== 0);
     this.borderNoneCheck.checked = !hasBorder;

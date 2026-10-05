@@ -24,6 +24,51 @@ export interface CapturedVersionSnapshot {
   compareSnapshot: CompareDocumentSnapshot;
 }
 
+/** One editor revision owns one export, shared by dirty checks and checkpoints. */
+export class VersionSnapshotCache {
+  #key: string | null = null;
+  #content: { bytes: Uint8Array; fingerprint: ContentFingerprint } | null = null;
+  #snapshot: CapturedVersionSnapshot | null = null;
+
+  clear(): void {
+    this.#key = null;
+    this.#content = null;
+    this.#snapshot = null;
+  }
+
+  invalidateUnless(fingerprint: string): void {
+    if (this.#content?.fingerprint !== fingerprint) this.clear();
+  }
+
+  #getContent(wasm: WasmBridge, documentId: string | null, revision: number) {
+    const key = JSON.stringify([documentId, revision, currentSaveFormat(wasm), wasm.fileName, wasm.getSourceFormat()]);
+    if (this.#key !== key || !this.#content) {
+      const bytes = exportVersionContent(wasm);
+      this.#content = { bytes, fingerprint: fingerprintBytes(bytes) };
+      this.#key = key;
+      this.#snapshot = null;
+    }
+    return this.#content;
+  }
+
+  fingerprint(wasm: WasmBridge, documentId: string | null, revision: number): ContentFingerprint {
+    return this.#getContent(wasm, documentId, revision).fingerprint;
+  }
+
+  capture(wasm: WasmBridge, documentId: string | null, revision: number): CapturedVersionSnapshot {
+    const content = this.#getContent(wasm, documentId, revision);
+    // 실시간 캡처(로드/저장 직후 베이스라인·더티 추적)는 강제 전체 재조판을 건너뛴다.
+    // 대형 문서에서 한 번의 재조판이 입력을 수 분간 멈추게 하며, 백그라운드에서
+    // 진행 중인 지연 조판을 통째로 무효화한다.
+    return this.#snapshot ??= {
+      ...content,
+      compareSnapshot: buildSnapshotFromWasm(
+        wasm, wasm.fileName, { ...VERSION_COMPARE_OPTIONS, refreshLayout: false },
+      ),
+    };
+  }
+}
+
 export interface VersionDiffAnalysis {
   stats: VersionStats;
   titleSummary: CheckpointTitleSummary;

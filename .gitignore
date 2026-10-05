@@ -1,5 +1,6 @@
 .worktrees/
 node_modules/
+.tools/
 release/
 build/icon.iconset/
 .DS_Store
@@ -16,3 +17,4 @@ cloud/.linux-target.*/
 
 rhwp/rhwp-studio/dist-sidebar/
 rhwp/rhwp-studio/sidebar-preview/artifacts/
+/output/

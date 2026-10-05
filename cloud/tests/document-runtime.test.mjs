@@ -9,6 +9,7 @@ import { runSession } from '../document-runtime/run.mjs';
 import { createSessionDisplayMode } from '../document-runtime/session-display.mjs';
 import {
   chromiumLaunchOptions,
+  isProviderAuthFailure,
   launchChromium,
   safeHubBaseEnvironment,
   uploadRequiredReferences,
@@ -20,6 +21,31 @@ import {
   TIMELINE_VERSION,
   TimelineRecorder,
 } from '../document-runtime/timeline.mjs';
+
+test('provider auth failures are recognized from real CLI texts without matching generic 401s', () => {
+  for (const text of [
+    'Invalid API key · Please run /login',
+    'API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"OAuth token has expired."}}',
+    'OAuth token revoked · Please run /login',
+    'Not logged in · Please run /login',
+    'unexpected status 401 Unauthorized: Your access token could not be refreshed. Please log in again.',
+    'Your refresh token has expired. Please log out and sign in again.',
+    '{"error":{"code":"refresh_token_expired"}}',
+    'invalid_grant',
+    'No API key found for openrouter.',
+    '401 No auth credentials found',
+    'Unauthorized',
+  ]) assert.equal(isProviderAuthFailure(text), true, text);
+  for (const text of [
+    'Revenue grew 401 percent in the second quarter',
+    'Section 401(k) plans were summarized',
+    'Unauthorized copies of this document are prohibited',
+    'invalid hub token',
+    'Provider stopped with max_tokens',
+    '',
+    undefined,
+  ]) assert.equal(isProviderAuthFailure(text), false, String(text));
+});
 
 function portableTimeline(provider = 'codex') {
   return {
@@ -255,6 +281,22 @@ test('required reference indexing fails closed after publishing a bounded diagno
     name: 'required-policy.hwp',
     message: 'extractor unavailable',
   }]);
+});
+
+test('indexed image references give the provider an exact vision tool target', async () => {
+  const references = [{ name: 'photo.png', mimeType: 'image/png', filename: '/workspace/input/photo.png' }];
+  const indexed = await uploadRequiredReferences({
+    page: { evaluate: async () => ({ id: 'reference-image-1', status: 'ready', kind: 'image' }) },
+    bootstrap: 'b'.repeat(43),
+    origin: 'http://127.0.0.1:7700',
+    references,
+    scopeId: 'thread-reference',
+    onEvent: async () => {},
+  });
+  assert.equal(indexed[0].fileId, 'reference-image-1');
+  const prompt = composeTurnPrompt('Use the attached image', indexed);
+  assert.match(prompt, /reference-image-1/);
+  assert.match(prompt, /read_reference_image/);
 });
 
 test('runSession performs provider turns, checkpoints edits, publishes a portable timeline, and returns edited bytes', async (t) => {
@@ -535,6 +577,9 @@ test('persistent runSession stays warm between turns and finishes only after End
           attachments: [{
             attachmentId: 'notes', version: 1, blobId: 'a'.repeat(64),
             name: 'notes.txt', mimeType: 'text/plain', size: 12,
+          }, {
+            attachmentId: 'photo', version: 1, blobId: 'a'.repeat(64),
+            name: `${'long-name-'.repeat(22)}.png`, mimeType: 'image/png', size: 12,
           }],
         }] };
       }
@@ -591,6 +636,7 @@ test('persistent runSession stays warm between turns and finishes only after End
   assert.match(prompts[1], /Apply the follow-up/);
   assert.match(prompts[1], /notes\.txt/);
   assert.equal(addedReferences[0].version, 1);
+  assert.match(addedReferences[1].name, /\.png$/);
   assert.deepEqual(turnModes, ['direct', 'plan']);
   assert.equal(workflowChanges.at(-1), 'plan');
   assert.equal(finishClaims, 4);

@@ -303,6 +303,79 @@ test('다른 창 소유 선택은 열지 않는다', async () => {
   assert.match(calls.toasts.join('\n'), /다른 창/);
 });
 
+function trackedHandle(name: string, released: string[]): FileSystemFileHandleLike {
+  const file = handle(name, { identityKind: 'native-path' });
+  file.releaseUnusedSaveTarget = async () => { released.push(name); };
+  return file;
+}
+
+/** A live handle whose file is gone, so opening falls through to the other strategies. */
+function goneLiveHandle(): FileSystemFileHandleLike {
+  return handle('보고서.hwp', { identityKind: 'native-path' });
+}
+
+function readUnlessGone(live: FileSystemFileHandleLike, fail = false) {
+  return async (file: FileSystemFileHandleLike) => {
+    if (file === live || fail) throw new Error('EIO');
+    return { bytes: new Uint8Array([9]), name: file.name };
+  };
+}
+
+test('a refuted or unreadable remembered handle is released so other windows can open the path', async () => {
+  for (const readFails of [false, true]) {
+    const released: string[] = [];
+    const live = goneLiveHandle();
+    const remembered = trackedHandle('other-file.hwp', released);
+    const { deps, calls } = makeDeps({
+      reopenRemembered: async () => remembered,
+      readHandle: readUnlessGone(live, readFails),
+      pickForProject: undefined,
+    });
+    const result = await openProjectFile(claim({ liveHandle: live }), deps);
+    assert.equal(result.kind, 'not-found');
+    assert.equal(calls.loaded.length, 0);
+    assert.deepEqual(released, ['other-file.hwp'], `readFails=${readFails}`);
+  }
+});
+
+test('rejected, unreadable and unloadable picks all release their handles', async () => {
+  const released: string[] = [];
+  const live = goneLiveHandle();
+  const queue = [trackedHandle('wrong-1.hwp', released), trackedHandle('wrong-2.hwp', released)];
+  const refuted = makeDeps({
+    readHandle: readUnlessGone(live),
+    pickForProject: async () => queue.shift() ?? null,
+  });
+  assert.equal((await openProjectFile(claim({ liveHandle: live }), refuted.deps)).kind, 'not-this-file');
+  assert.deepEqual(released, ['wrong-1.hwp', 'wrong-2.hwp'], 'both the retried and the final pick');
+
+  released.length = 0;
+  const unreadable = makeDeps({
+    readHandle: async () => { throw new Error('EIO'); },
+    pickForProject: async () => trackedHandle('broken.hwp', released),
+  });
+  assert.equal((await openProjectFile(claim(), unreadable.deps)).kind, 'not-this-file');
+  assert.deepEqual(released, ['broken.hwp']);
+
+  released.length = 0;
+  const failedLoad = makeDeps({
+    pickForProject: async () => trackedHandle('match.hwp', released),
+    loadBound: async () => { throw new Error('load failed'); },
+  });
+  await assert.rejects(openProjectFile(claim(), failedLoad.deps), /load failed/);
+  assert.deepEqual(released, ['match.hwp']);
+});
+
+test('an opened document keeps the handle it was loaded through', async () => {
+  const released: string[] = [];
+  const { deps, calls } = makeDeps({
+    reopenRemembered: async () => trackedHandle('보고서.hwp', released),
+  });
+  assert.equal((await openProjectFile(claim(), deps)).kind, 'opened');
+  assert.equal(calls.loaded.length, 1);
+  assert.deepEqual(released, []);
+});
+
 test('기억된 위치는 바이트가 달라도 제자리 편집으로 연다', async () => {
   const picked = handle('보고서.hwp');
   const { deps, calls } = makeDeps({

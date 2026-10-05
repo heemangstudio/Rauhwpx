@@ -223,7 +223,7 @@ test('the controller forwards every server mode call to its own IPC channel', as
   ]);
 
   const bare = createCloudController({} as never);
-  await assert.rejects(bare.spawnSandbox(), /클라우드 에이전트를 지원하지 않습니다/);
+  await assert.rejects(bare.spawnSandbox(), /Cloud 에이전트를 지원하지 않습니다/);
   controller.dispose();
 });
 
@@ -362,7 +362,7 @@ test('app server failures read as something the user can act on', () => {
   assert.equal(mapSandboxIssue(new Error('App sandbox did not answer its health check')).title, '샌드박스가 응답하지 않습니다');
   assert.equal(
     mapSandboxIssue(new Error('Finish or cancel the cloud work on this sandbox before shutting it down.')).title,
-    '진행 중인 클라우드 작업이 있습니다',
+    '진행 중인 Cloud 작업이 있습니다',
   );
   assert.equal(mapSandboxIssue(new Error('App sandbox failed identity verification')).title, '샌드박스 ID를 확인하지 못했습니다');
   assert.equal(mapSandboxIssue(new Error('something else')).title, 'Raucloud를 준비하지 못했습니다');
@@ -377,7 +377,7 @@ test('app server failures read as something the user can act on', () => {
   // 내 서버로 옮기려다 막힌 사용자는 SSH 오류가 아니라 샌드박스 종료 안내를 받아야 한다.
   assert.equal(
     mapCloudSetupIssue(new Error('Shut down the app-provided sandbox before connecting your own server.')).title,
-    '앱 샌드박스를 먼저 종료하세요',
+    '앱 샌드박스 종료 필요',
   );
 });
 
@@ -402,14 +402,14 @@ test('the dialog offers both servers and only restorable sandbox actions', () =>
   assert.match(onboarding, /controller\.sandboxStatus\(\)/);
   assert.doesNotMatch(onboarding, /controller\.takeoverSandbox\(\)/);
   assert.match(onboarding, /서버 강제 종료로 끊을 수 있습니다/);
-  assert.match(onboarding, /남은 서버는 공급자 콘솔에서 직접 삭제하세요/);
+  assert.match(onboarding, /남은 서버는 공급자 콘솔에서 삭제/);
   // 놓고 온 유료 서버는 화면에 보여야 한다. 스크린 리더 전용 안내로는 부족하다.
-  assert.match(onboarding, /state\.notice.*callout\('cloud', '남은 서버를 확인하세요', state\.notice\)/);
+  assert.match(onboarding, /state\.notice.*callout\('cloud', '남은 서버 확인', state\.notice\)/);
   assert.match(onboarding, /'Raucloud를 종료하지 못했습니다'\n\s*: 'Raucloud를 준비하지 못했습니다'/);
   assert.match(onboarding, /운영자가 \$\{provider\.missingConfig\.join\(', '\)\}/);
   assert.match(onboarding, /state\.kind !== 'sandbox-intro' && state\.kind !== 'sandbox-failed'/);
   assert.match(onboarding, /kind: 'sandbox-provisioning'/);
-  assert.match(onboarding, /서버 생성과 첫 시작에는 최대 \$\{RAUCLOUD_SETUP_WAIT_MINUTES\}분이 걸릴 수 있습니다/);
+  assert.match(onboarding, /연결 중 · 최대 \$\{RAUCLOUD_SETUP_WAIT_MINUTES\}분/);
   assert.match(onboarding, /return raucloudSetupElapsed\(startedAt\)/);
   assert.match(onboarding, /진행 보기/);
   assert.match(onboarding, /Raucloud를 종료하고 있습니다/);
@@ -424,10 +424,10 @@ test('the dialog offers both servers and only restorable sandbox actions', () =>
   assert.match(preload, /cloudTeardownSandbox: \(payload\) => ipcRenderer\.invoke\('cloud:teardown-sandbox', payload\)/);
   assert.match(preload, /cloudTakeoverSandbox: \(\) => ipcRenderer\.invoke\('cloud:takeover-sandbox'\)/);
   assert.match(preload, /cloudForceQuitAccount: \(\) => ipcRenderer\.invoke\('cloud:force-quit-account'\)/);
-  assert.match(preload, /cloudReconnectLink: \(\) => ipcRenderer\.invoke\('cloud:reconnect-link'\)/);
+  assert.match(preload, /cloudReconnectLink: \([^)]*\) => ipcRenderer\.invoke\('cloud:reconnect-link'/);
   assert.match(preload, /cloudRecreateLink: \(\) => ipcRenderer\.invoke\('cloud:recreate-link'\)/);
   for (const channel of ['cloud:select-server-mode', 'cloud:spawn-sandbox', 'cloud:sandbox-status', 'cloud:teardown-sandbox', 'cloud:takeover-sandbox', 'cloud:force-quit-account', 'cloud:reconnect-link', 'cloud:recreate-link']) {
-    assert.match(desktopMain, new RegExp(`ipcMain\\.handle\\('${channel}'`));
+    assert.match(desktopMain, new RegExp(`(?:ipcMain\\.handle|handleCloudIpc)\\('${channel}'`));
   }
   assert.match(desktopMain, /createRaucloudBrokerProvider\(\{/);
   assert.match(desktopMain, /authorizeOwnedBackend: \(request, options\) =>/);

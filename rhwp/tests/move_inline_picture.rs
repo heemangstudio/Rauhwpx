@@ -406,3 +406,307 @@ fn move_same_position_is_noop() {
     let para = &core.document().sections[0].paragraphs[para_idx];
     assert_eq!(snapshot(para), before, "no-move 시 문단 상태 불변");
 }
+
+fn table_fixture() -> DocumentCore {
+    use rhwp::model::table::{Cell, Table};
+    fn text() -> Paragraph {
+        let mut para = Paragraph::new_empty();
+        para.insert_text_at(0, "a😀bc");
+        para
+    }
+    let mut table = Table::default();
+    table.row_count = 1;
+    table.col_count = 2;
+    table.common.width = 24000;
+    table.common.height = 6000;
+    table.common.treat_as_char = true;
+    table.cells = (0..2)
+        .map(|col| Cell {
+            col,
+            row: 0,
+            col_span: 1,
+            row_span: 1,
+            width: 12000,
+            height: 6000,
+            paragraphs: vec![text()],
+            ..Default::default()
+        })
+        .collect();
+    table.rebuild_grid();
+    let mut core = load_core();
+    core.document_mut().sections[0].paragraphs = vec![Paragraph::new_empty()];
+    let body = &mut core.document_mut().sections[0].paragraphs[0];
+    body.controls.push(Control::Table(Box::new(table)));
+    body.ctrl_data_records.push(None);
+    body.char_count += 8;
+    core
+}
+
+fn path_para<'a>(core: &'a DocumentCore, path: &[(usize, usize, usize)]) -> &'a Paragraph {
+    let mut para = &core.document().sections[0].paragraphs[0];
+    for &(ctrl, cell, child) in path {
+        let Control::Table(table) = &para.controls[ctrl] else {
+            panic!("table")
+        };
+        para = &table.cells[cell].paragraphs[child];
+    }
+    para
+}
+
+fn path_para_mut<'a>(
+    core: &'a mut DocumentCore,
+    path: &[(usize, usize, usize)],
+) -> &'a mut Paragraph {
+    let mut para = &mut core.document_mut().sections[0].paragraphs[0];
+    for &(ctrl, cell, child) in path {
+        let Control::Table(table) = &mut para.controls[ctrl] else {
+            panic!("table")
+        };
+        para = &mut table.cells[cell].paragraphs[child];
+    }
+    para
+}
+
+fn insert_in_path(core: &mut DocumentCore, path: &[(usize, usize, usize)], offset: usize) -> usize {
+    let raw = core
+        .insert_picture_with_placement_native(
+            0,
+            0,
+            offset,
+            path,
+            TINY_PNG,
+            1000,
+            1000,
+            1,
+            1,
+            "png",
+            "cell picture",
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+    serde_json::from_str::<serde_json::Value>(&raw).unwrap()["controlIdx"]
+        .as_u64()
+        .unwrap() as usize
+}
+
+fn move_in_path(
+    core: &mut DocumentCore,
+    from: &[(usize, usize, usize)],
+    ctrl: usize,
+    to: &[(usize, usize, usize)],
+    offset: usize,
+) -> serde_json::Value {
+    let raw = core
+        .move_picture_control_by_path_native(0, 0, from, ctrl, 0, to, offset)
+        .unwrap();
+    serde_json::from_str(&raw).unwrap()
+}
+
+#[test]
+fn move_between_cells_preserves_picture_bytes_and_text_metadata() {
+    use rhwp::model::paragraph::{CharShapeRef, RangeTag};
+    let mut core = table_fixture();
+    let from = [(0, 0, 0)];
+    let to = [(0, 1, 0)];
+    let source = path_para_mut(&mut core, &from);
+    source.char_shapes = vec![
+        CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 0,
+        },
+        CharShapeRef {
+            start_pos: 3,
+            char_shape_id: 0,
+        },
+    ];
+    source.range_tags = vec![RangeTag {
+        start: 3,
+        end: 5,
+        tag: 0,
+    }];
+    let ctrl = insert_in_path(&mut core, &from, 1);
+    let source = path_para_mut(&mut core, &from);
+    source.ctrl_data_records[ctrl] = Some(vec![1, 9, 8, 4]);
+    let picture = format!("{:?}", source.controls[ctrl]);
+    let bin = core.document().bin_data_content[0].data.load();
+    let moved = move_in_path(&mut core, &from, ctrl, &to, 2);
+    assert_eq!(moved["charOffset"], 2);
+    assert_eq!(moved["cellPath"][0]["cellIndex"], 1);
+    let source = path_para(&core, &from);
+    assert!(!has_picture(source));
+    assert_eq!(source.text, "a😀bc");
+    assert_eq!(source.char_offsets, vec![0, 1, 3, 4]);
+    assert_eq!(source.char_shapes[1].start_pos, 3);
+    assert_eq!(
+        (source.range_tags[0].start, source.range_tags[0].end),
+        (3, 5)
+    );
+    let target = path_para(&core, &to);
+    assert_eq!(target.text, "a😀bc");
+    assert_eq!(target.char_offsets, vec![0, 1, 11, 12]);
+    assert_eq!(format!("{:?}", target.controls[0]), picture);
+    assert_eq!(target.ctrl_data_records[0], Some(vec![1, 9, 8, 4]));
+    assert_eq!(core.document().bin_data_content.len(), 1);
+    assert_eq!(core.document().bin_data_content[0].data.load(), bin);
+    assert_picture_renders(&mut core, 0, "셀 이동");
+}
+
+#[test]
+fn move_in_same_cell_uses_logical_offsets_between_adjacent_pictures() {
+    let mut core = table_fixture();
+    let path = [(0, 0, 0)];
+    let first = insert_in_path(&mut core, &path, 1);
+    let second = insert_in_path(&mut core, &path, 2);
+    let original = snapshot(path_para(&core, &path));
+    let moved = move_in_path(&mut core, &path, second, &path, 1);
+    assert_eq!(moved["controlIdx"], first);
+    assert_eq!(moved["charOffset"], 1);
+    assert_eq!(snapshot(path_para(&core, &path)), original);
+    let moved = move_in_path(&mut core, &path, 0, &path, 5);
+    assert_eq!(moved["charOffset"], 4);
+    assert_eq!(path_para(&core, &path).char_offsets, vec![0, 9, 11, 20]);
+    let before = format!("{:?}", path_para(&core, &path));
+    let noop = move_in_path(&mut core, &path, 1, &path, 5);
+    assert_eq!(noop["moved"], false);
+    assert_eq!(format!("{:?}", path_para(&core, &path)), before);
+}
+
+#[test]
+fn move_nested_picture_to_parent_cell_updates_ancestor_indices() {
+    let mut core = table_fixture();
+    let nested = path_para(&core, &[]).controls[0].clone();
+    let parent = [(0, 0, 0)];
+    let cell = path_para_mut(&mut core, &parent);
+    cell.controls.push(nested);
+    cell.ctrl_data_records.push(None);
+    cell.char_count += 8;
+    let from = [(0, 0, 0), (0, 1, 0)];
+    let ctrl = insert_in_path(&mut core, &from, 1);
+    let result = move_in_path(&mut core, &from, ctrl, &parent, 0);
+    assert_eq!(result["charOffset"], 0);
+    assert!(has_picture(path_para(&core, &parent)));
+    assert!(!has_picture(path_para(&core, &[(0, 0, 0), (1, 1, 0)])));
+    // 그림 앞에 있던 중첩 표 인덱스가 삭제에 의해 다시 0으로 돌아간다.
+    let back = move_in_path(&mut core, &parent, 0, &[(0, 0, 0), (1, 1, 0)], 1);
+    assert_eq!(back["cellPath"][1]["controlIndex"], 0);
+    assert!(has_picture(path_para(&core, &from)));
+}
+
+#[test]
+fn move_cell_picture_to_body_and_back_adjusts_table_path() {
+    let mut core = table_fixture();
+    let from = [(0, 0, 0)];
+    let ctrl = insert_in_path(&mut core, &from, 1);
+    let body = move_in_path(&mut core, &from, ctrl, &[], 0);
+    assert_eq!(body["cellPath"], serde_json::json!([]));
+    assert_eq!(body["controlIdx"], 0);
+    assert!(!has_picture(path_para(&core, &[(1, 0, 0)])));
+    let back = move_in_path(&mut core, &[], 0, &[(1, 1, 0)], 2);
+    assert_eq!(back["cellPath"][0]["controlIndex"], 0);
+    assert!(has_picture(path_para(&core, &[(0, 1, 0)])));
+}
+
+#[test]
+fn invalid_cell_move_does_not_remove_source_picture() {
+    let mut core = table_fixture();
+    let from = [(0, 0, 0)];
+    let ctrl = insert_in_path(&mut core, &from, 1);
+    let before = format!("{:?}", core.document().sections[0]);
+    assert!(core
+        .move_picture_control_by_path_native(0, 0, &from, ctrl, 0, &[(0, 9, 0)], 0)
+        .is_err());
+    assert_eq!(format!("{:?}", core.document().sections[0]), before);
+}
+
+/// 문서 마지막 문단의 표 셀에서 그림을 표 밖으로 끌어낸 경우 (스튜디오 표 밖 드롭):
+/// 표 뒤에 빈 본문 문단을 만들고 그림을 옮긴 결과가 HWP 저장·재로드 후에도 유지된다.
+#[test]
+fn move_cell_picture_below_last_table_survives_hwp_roundtrip() {
+    let mut core = load_core();
+    let last = core.document().sections[0].paragraphs.len() - 1;
+    let created: serde_json::Value =
+        serde_json::from_str(&core.create_table_native(0, last, 0, 2, 2).unwrap()).unwrap();
+    let table_para = created["paraIdx"].as_u64().unwrap() as usize;
+    let table_ctrl = created["controlIdx"].as_u64().unwrap() as usize;
+    // 표 아래 기본 빈 문단을 지워 표 문단을 구역 마지막 문단으로 만든다.
+    while core.document().sections[0].paragraphs.len() > table_para + 1 {
+        core.delete_paragraph_native(0, table_para + 1).unwrap();
+    }
+    let cell = [(table_ctrl, 0, 0)];
+    let raw = core
+        .insert_picture_with_placement_native(
+            0,
+            table_para,
+            0,
+            &cell,
+            TINY_PNG,
+            1000,
+            1000,
+            1,
+            1,
+            "png",
+            "cell picture",
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+    let pic_ctrl = serde_json::from_str::<serde_json::Value>(&raw).unwrap()["controlIdx"]
+        .as_u64()
+        .unwrap() as usize;
+    let bin = core.document().bin_data_content.last().unwrap().data.load();
+
+    core.insert_paragraph_native(0, table_para + 1).unwrap();
+    let moved: serde_json::Value = serde_json::from_str(
+        &core
+            .move_picture_control_by_path_native(
+                0,
+                table_para,
+                &cell,
+                pic_ctrl,
+                table_para + 1,
+                &[],
+                0,
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(moved["moved"], true);
+    assert_eq!(moved["paraIdx"], table_para + 1);
+    assert_eq!(moved["cellPath"], serde_json::json!([]));
+
+    let bytes = core.export_hwp_with_adapter().expect("HWP 저장");
+    let mut reloaded = DocumentCore::from_bytes(&bytes).expect("HWP 재로드");
+    let paras = &reloaded.document().sections[0].paragraphs;
+    assert_eq!(paras.len(), table_para + 2, "표 뒤 문단이 하나 생겨야 한다");
+    let Control::Table(table) = &paras[table_para].controls[table_ctrl] else {
+        panic!("표 컨트롤 위치 유지");
+    };
+    assert!(
+        table
+            .cells
+            .iter()
+            .all(|c| c.paragraphs.iter().all(|p| !has_picture(p))),
+        "원래 셀에서 그림이 빠져야 한다"
+    );
+    let body = &paras[table_para + 1];
+    let Some(Control::Picture(pic)) = body.controls.first() else {
+        panic!("표 뒤 문단에 그림이 있어야 한다: {:?}", body.controls);
+    };
+    assert!(pic.common.treat_as_char);
+    assert_eq!((pic.common.width, pic.common.height), (1000, 1000));
+    assert_eq!(
+        reloaded
+            .document()
+            .bin_data_content
+            .last()
+            .unwrap()
+            .data
+            .load(),
+        bin,
+        "그림 데이터 보존"
+    );
+    assert_picture_renders(&mut reloaded, 0, "표 밖 이동 재로드");
+}

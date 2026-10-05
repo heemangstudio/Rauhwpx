@@ -10,7 +10,7 @@ import type {
   CloudTransferRequest,
 } from './types.ts';
 
-export const CLOUD_UNSAVED_MESSAGE = '클라우드 사용 전 문서를 저장해주세요';
+export const CLOUD_UNSAVED_MESSAGE = 'Cloud를 쓰려면 먼저 문서를 저장하세요.';
 
 export const CLOUD_SUPPORTED_AGENTS = ['claude', 'codex', 'pi'] as const;
 
@@ -49,7 +49,7 @@ export function isCloudSupportedFormat(format: string | null): format is CloudSu
 
 export function validateCloudStartDocument(state: CloudStartDocumentState): CloudStartDocumentResult {
   if (!state.hasDocument) {
-    return { ok: false, reason: 'missing', message: '먼저 클라우드에서 작업할 문서를 여세요.' };
+    return { ok: false, reason: 'missing', message: '먼저 Cloud에서 작업할 문서를 여세요.' };
   }
   if (state.isNew) {
     return { ok: false, reason: 'unsaved', message: CLOUD_UNSAVED_MESSAGE };
@@ -58,7 +58,7 @@ export function validateCloudStartDocument(state: CloudStartDocumentState): Clou
     return {
       ok: false,
       reason: 'unsupported',
-      message: `클라우드에서 지원하지 않는 문서 형식입니다: ${state.format ?? 'unknown'}`,
+      message: `Cloud에서 지원하지 않는 문서 형식입니다: ${state.format ?? 'unknown'}`,
     };
   }
   return { ok: true, format: state.format };
