@@ -208,6 +208,7 @@ test('executor: document-write helper covers every mutating tool', () => {
     'apply_list',
     'apply_para_format',
     'apply_style',
+    'commit_version',
     'create_table',
     'delete_range',
     'delete_table',

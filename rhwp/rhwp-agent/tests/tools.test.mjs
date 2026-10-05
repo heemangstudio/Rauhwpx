@@ -26,8 +26,8 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 const byName = new Map(TOOL_DEFINITIONS.map((d) => [d.name, d]));
 
-test('도구는 정확히 89개, 이름 중복 없음', () => {
-  assert.equal(TOOL_DEFINITIONS.length, 89);
+test('도구는 정확히 90개, 이름 중복 없음', () => {
+  assert.equal(TOOL_DEFINITIONS.length, 90);
   assert.equal(byName.size, TOOL_DEFINITIONS.length, 'duplicate tool names');
 });
 
@@ -143,7 +143,7 @@ test('anchor 내부 필드는 validate 훅이 모양을 고정한다', () => {
 
 test('도구 프로필은 direct 호환성과 planning/implementing 가시성을 지킨다', () => {
   const direct = new Set(filterToolDefinitions('direct').map((definition) => definition.name));
-  assert.equal(direct.size, 77);
+  assert.equal(direct.size, 78);
   assert.equal(byName.get('commit_product_skill')?.category, 'instruction-write');
   assert.equal(byName.get('list_harness_skills')?.category, 'instruction-read');
   assert.ok(direct.has('commit_product_skill'));
@@ -209,9 +209,9 @@ test('도구 프로필은 direct 호환성과 planning/implementing 가시성을
 
   assert.ok(filterToolDefinitions('awaiting-approval').some((definition) => definition.name === 'ask_user_question'));
   assert.ok(filterToolDefinitions('awaiting-approval').some((definition) => definition.name === 'present_implementation_plan'));
-  assert.ok(implementing.has('update_plan_progress'));
-  assert.ok(!planning.has('update_plan_progress'));
-  assert.ok(!direct.has('update_plan_progress'));
+  assert.ok(implementing.has('update_todos'));
+  assert.ok(!planning.has('update_todos'));
+  assert.ok(!direct.has('update_todos'));
   assert.ok(!filterToolDefinitions('awaiting-approval').some((definition) => definition.name === 'commit_product_skill'));
 
   const worker = filterToolDefinitions('copy-layout-worker').map((definition) => definition.name);
@@ -1005,7 +1005,8 @@ test('표·셀 속성은 타입이 있는 객체이고 모르는 키는 올바�
 // (zod-to-json-schema, strictUnions, input)으로 글자 수를 재서 한도를 넘지 못하게 한다.
 // 공유 규칙은 RHWP_TOOL_RULES 에 한 번만 두고, 새 도구도 이 한도 안에 들어와야 한다.
 // P0 기준선: 70개 106,936자 (edit_table 10,174자).
-const DIRECT_DEFINITION_TOTAL_LIMIT = 60_000;
+// commit_version(전체 모드 버전 커밋) 추가분만큼 올렸다.
+const DIRECT_DEFINITION_TOTAL_LIMIT = 60_300;
 const TOOL_DEFINITION_LIMIT = 3_000;
 
 test('direct 프로필 도구 정의 크기가 한도를 넘지 않는다', () => {

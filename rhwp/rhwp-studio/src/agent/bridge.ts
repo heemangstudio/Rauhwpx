@@ -1273,6 +1273,7 @@ export class AgentBridgeImpl implements AgentBridge {
   private sessionId = '';
   private httpBaseUrl = '';
   private readonly options?: AgentBridgeOptions;
+  private readonly versionCommit?: (message: string) => Promise<void>;
   private ws: WebSocket | null = null;
   private state: ConnectionState = 'disconnected';
   /** 지금까지 실패한 연결 시도 수. 허브의 welcome 을 받으면 0 으로 돌아간다. */
@@ -1389,6 +1390,7 @@ export class AgentBridgeImpl implements AgentBridge {
   private activeTemplateId: string | null = null;
 
   constructor(deps: AgentBridgeDeps, opts?: AgentBridgeOptions) {
+    this.versionCommit = deps.commitVersion;
     // revision 은 문서 인스턴스에 묶고, 페이지 로드마다 다른 값에서 시작한다 — 다른 문서나
     // 새로고침 이전 페이지에서 든 expectedRevision 이 우연히 맞아 엉뚱한 문서에 쓰이지 않게 한다.
     this.revision = new RevisionTracker(deps.eventBus, {
@@ -1881,6 +1883,27 @@ export class AgentBridgeImpl implements AgentBridge {
   /** 전체 모드: 쓰기가 검토 없이 바로 문서에 반영된다 (쓰기 도구 하나 = undo 한 단계). */
   private writesApplyDirectly(): boolean {
     return writesApplyDirectly(this.workflow, this.phase, this.permissionProfile);
+  }
+
+  /** 전체 모드 에이전트의 버전 커밋. 검토 단계가 있는 모드에서는 받지 않는다. */
+  private async commitVersion(args: unknown): Promise<{ committed: true; message: string }> {
+    if (!this.writesApplyDirectly()) {
+      throw new AgentToolError('COMMIT_REQUIRES_FULL_ACCESS', 'commit_version is available in 전체 mode only.');
+    }
+    const raw = (args as { message?: unknown } | null)?.message;
+    const message = typeof raw === 'string' ? raw.trim().split('\n')[0]!.slice(0, 200) : '';
+    if (!message) throw new AgentToolError('INVALID_ARGS', 'commit_version needs a one-line message.');
+    if (!this.versionCommit) {
+      throw new AgentToolError('VERSIONING_UNAVAILABLE', 'Version history is not available for this document.');
+    }
+    // 열린 직접 반영 set 이 있으면 먼저 확정해 커밋에 빠짐없이 담는다.
+    this.pendingEdits.commitOpen();
+    try {
+      await this.versionCommit(message);
+    } catch (e) {
+      throw new AgentToolError('COMMIT_FAILED', e instanceof Error ? e.message : String(e));
+    }
+    return { committed: true, message };
   }
 
   /** 전체 모드에서 쓰기 도구가 끝나면(성공·실패 모두) 그 도구가 남긴 편집을 곧바로 확정한다. */
@@ -3024,7 +3047,7 @@ export class AgentBridgeImpl implements AgentBridge {
     this.syncEditingLease();
     // 턴 시작을 놓친 쓰기도 전체 모드에서는 미리보기 표시 없이 바로 확정된다.
     if (isDocumentWriteTool(tool) && this.writesApplyDirectly()) this.pendingEdits.setDirectApply(true);
-    void this.executor
+    const run = tool === 'commit_version' ? this.commitVersion(args) : this.executor
       .execute(tool, args, agent, {
         workflow: this.workflow,
         phase: msg.phase,
@@ -3035,7 +3058,8 @@ export class AgentBridgeImpl implements AgentBridge {
         template: readDocumentTemplate(msg.template) ?? undefined,
         requestIsActive,
         ...(trace ? { trace } : {}),
-      })
+      });
+    void run
       .then(
         (result) => { this.commitDirectWrite(tool); return result; },
         (e: unknown) => { this.commitDirectWrite(tool); throw e; },

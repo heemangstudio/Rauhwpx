@@ -503,9 +503,9 @@ test('phase prompts separate planning from approved implementation', () => {
   assert.match(implementing, /approved canonical implementation plan/);
   assert.match(implementing, /relevant workspace and live-document state are worth re-reading/);
   assert.match(implementing, /every validation listed in the plan/);
-  assert.match(implementing, /update_plan_progress/);
-  assert.match(implementing, /completed, blocked, and deferred plan items/);
-  assert.match(implementing, /Unverified or deferred work is not completed/);
+  assert.match(implementing, /update_todos is the todo list the user watches/);
+  assert.match(implementing, /completed, blocked, and deferred items/);
+  assert.match(implementing, /completed means the work and its check succeeded/);
   assert.doesNotMatch(implementing, /roll back staged changes|roll them back/);
   assert.match(implementing, /apply directly to the live document as ordinary undoable edits/);
   assert.match(implementing, /can mix with semantic writes in the same turn/);

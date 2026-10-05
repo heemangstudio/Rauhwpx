@@ -518,14 +518,14 @@ export const IMPLEMENTATION_PLAN_SHAPE = Object.freeze({
   decisions: z.array(z.string().min(1).max(2_000)).min(1).max(100),
   steps: z.array(z.object({
     id: z.string().min(1).max(100).optional(),
-    title: z.string().min(1).max(300),
-    details: z.string().min(1).max(3_000),
+    title: z.string().min(1).max(300).describe('One-line imperative todo, e.g. "Rewrite the 개요 paragraph so the goal comes first" or "Verify the schedule table fits one page via get_page_geometry"'),
+    details: z.string().min(1).max(3_000).optional().describe('Only when the one-liner cannot carry a needed detail'),
     target: z.string().min(1).max(1_000).optional().describe('Affected section, paragraph, table, or page'),
     preview: z.string().min(1).max(3_000).optional().describe('Proposed text or the visible result'),
     files: z.array(z.string().min(1).max(1_000)).max(100).optional(),
-  }).strict()).min(1).max(100),
+  }).strict()).min(1).max(100).describe('Ordered todo list, verification todos included'),
   files: z.array(z.string().min(1).max(1_000)).max(200),
-  validation: z.array(z.string().min(1).max(1_000)).min(1).max(100),
+  validation: z.array(z.string().min(1).max(1_000)).max(100).describe('Checks beyond the verification todos; may be empty'),
   risks: z.array(z.string().min(1).max(2_000)).max(100),
   exclusions: z.array(z.string().min(1).max(1_000)).max(100),
   sources: z.array(z.object({
@@ -788,6 +788,13 @@ const BASE_TOOL_DEFINITIONS = [
     name: 'publish_cloud_document',
     description: 'Cloud workers only: announce the finished Cloud document so the user can merge it into their local branch after this turn; the original file is not overwritten.',
     shape: {},
+  },
+  {
+    name: 'commit_version',
+    description: '전체 mode only: commit the live document to its version history with a one-line message.',
+    shape: {
+      message: z.string().min(1).max(200),
+    },
   },
   {
     name: 'find_text',
@@ -1527,13 +1534,16 @@ const BASE_TOOL_DEFINITIONS = [
     shape: IMPLEMENTATION_PLAN_SHAPE,
   },
   {
-    name: 'update_plan_progress',
-    description: 'Update one step of the approved plan. Mark in-progress before working, completed only after the work and its validation succeed, or blocked with a reason. This updates the user-visible checklist; it does not approve or commit document changes.',
+    name: 'update_todos',
+    description: 'Replace the todo list of the approved plan; the user sees it as a live timeline. It starts as the plan steps (ids step-1…). Send the whole list each time: one-line imperative items, typically one in-progress at a time; split, add or reorder items as the work reveals them. completed means the work and its check succeeded; blocked carries a note. Does not approve or commit document changes.',
     shape: {
       planId: z.string().min(1).max(256),
-      stepId: z.string().min(1).max(100),
-      status: z.enum(['pending', 'in-progress', 'completed', 'blocked']),
-      note: z.string().min(1).max(2_000).optional(),
+      todos: z.array(z.object({
+        id: z.string().min(1).max(100).optional().describe('Keep an existing id when updating that item; omit for a new item'),
+        content: z.string().min(1).max(300).describe('One-line imperative task'),
+        status: z.enum(['pending', 'in-progress', 'completed', 'blocked']),
+        note: z.string().min(1).max(2_000).optional(),
+      }).strict()).min(1).max(100),
     },
   },
   {
@@ -1723,6 +1733,7 @@ export const TOOL_CLASSIFICATIONS = Object.freeze({
   get_document_info: 'document-read',
   materialize_document_snapshot: 'document-read',
   publish_cloud_document: 'document-write',
+  commit_version: 'document-write',
   find_text: 'document-read',
   render_page: 'document-read',
   get_page_geometry: 'document-read',
@@ -1774,7 +1785,7 @@ export const TOOL_CLASSIFICATIONS = Object.freeze({
   verify_changes: 'document-read',
   ask_user_question: 'user-interaction',
   present_implementation_plan: 'planning-control',
-  update_plan_progress: 'plan-progress',
+  update_todos: 'plan-progress',
   download_file: 'download-write',
   publish_artifact: 'artifact-write',
   delegate_copy_layout: 'background-control',

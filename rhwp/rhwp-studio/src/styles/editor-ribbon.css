@@ -5,9 +5,9 @@
   --ribbon-selected-edge: #b6bec9;
 }
 :root[data-theme-effective='dark'] :is(#studio-header, #editor-area, #status-bar, .modal-overlay, .cp-overlay, .font-picker-menu, .context-menu) {
-  --ribbon-accent: #7fa6dc;
-  --ribbon-accent-soft: #7fa6dc33;
-  --ribbon-selected-edge: #5c5c5c;
+  --ribbon-accent: #ef6a62;
+  --ribbon-accent-soft: #ef6a622e;
+  --ribbon-selected-edge: #3a3a3a;
 }
 
 .tb-icon-sprite { position: absolute; width: 0; height: 0; overflow: hidden; }

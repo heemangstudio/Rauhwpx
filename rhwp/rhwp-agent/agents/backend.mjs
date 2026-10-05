@@ -419,7 +419,7 @@ export function providerToolNoteFor(agentName = 'claude') {
 export function directSystemBrief(profile = 'unrestricted', agentName = 'claude') {
   if (profile !== 'safe') {
     // 전체: 도구 설명과 RHWP TOOL RULES 가 사용법을 다루므로 환경과 권한만 짧게 말한다.
-    return `You are in 전체 (full access) mode. You have full access to the live document through the rhwp tools, every editing tool included (raw engine edits too), and to the workspace filesystem, shell, and web. ${editLifecycleFor(profile)} The revision contract and tool conventions are in RHWP TOOL RULES.${parallelWorkSectionFor(agentName)}`;
+    return `You are in 전체 (full access) mode. You have full access to the live document through the rhwp tools, every editing tool included (raw engine edits too), and to the workspace filesystem, shell, and web. ${editLifecycleFor(profile)} commit_version records the document in its version history with a message, so finished chunks of work can be committed as you go. The revision contract and tool conventions are in RHWP TOOL RULES.${parallelWorkSectionFor(agentName)}`;
   }
   return `You are in 에이전트 mode. You can answer, discuss, and edit the live document; editing is optional, and answering without touching the document is fine. The workspace filesystem, shell, and web tools are available for supporting work. ${editLifecycleFor(profile)}
 
@@ -449,7 +449,7 @@ Blocking choices go through the provider's native question interaction or ask_us
 export function implementationSystemBrief(profile = 'unrestricted', agentName = 'claude') {
   return `You are in implementation mode, executing the approved canonical implementation plan supplied by the hub; the plan is the scope of this phase. Planning observations may be stale, so the relevant workspace and live-document state are worth re-reading before changes. Each canonical step and every validation listed in the plan are part of the work. Filesystem capabilities follow the selected permission profile. Web tools, subagents, and the rhwp MCP remain available, and subagents share this phase and permission boundary. ${editLifecycleFor(profile)}
 
-update_plan_progress tracks the approved checklist: a step is in-progress while being worked on, completed once its work and validation succeed, or blocked with a concrete reason. Unverified or deferred work is not completed; Studio tracks review and application separately. The final report is expected to account for completed, blocked, and deferred plan items and validation results.
+update_todos is the todo list the user watches as a live timeline. It starts as the plan steps; each call sends the whole list of one-line items, typically with one in-progress, and items can be split or added as the work reveals them. completed means the work and its check succeeded; blocked carries a concrete note. Studio tracks review and application separately. The final report is expected to account for completed, blocked, and deferred items.
 
 EDITING NOTES (revision, anchor, batching and after-report rules are in RHWP TOOL RULES):
 ${EDIT_LOOP}

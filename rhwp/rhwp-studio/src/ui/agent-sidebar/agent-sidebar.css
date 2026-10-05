@@ -185,6 +185,8 @@ body.ag-sidebar-resizing {
      와 같은 밝기대(대비 5.4:1)에 둔다 — 더 어두우면 채움 버튼 글자가 뭉갠다. */
   --ag-grok: #758ca3;
   --ag-cursor: #7f7ca4;
+  /* 터미널 todo 강조 — 앱 강조색(빨강). */
+  --ag-todo-accent: #b8433c;
   --ag-opencode: #a19b98;
   --ag-rau-wash: rgba(141, 134, 128, 0.10);
   --ag-claude-wash: rgba(196, 120, 90, 0.10);
@@ -332,17 +334,21 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
 }
 
 :root[data-theme-effective='dark'] .ag-root {
-  --n-surface: #262626;
-  --n-surface-raised: #2f2f2f;
-  --n-surface-sunken: #1c1c1c;
-  --n-canvas: #262626;
-  --n-text: #ededed;
+  /* 거의 검정 — 문서보다 한 단계 깊게 가라앉는다. */
+  --n-surface: #0c0c0c;
+  /* 사용자 말풍선은 바닥보다 한 단 밝은 무채색 면이다. */
+  --ag-bubble-bg: #141414;
+  --n-surface-raised: #181818;
+  --n-surface-sunken: #050505;
+  --n-canvas: #0c0c0c;
+  --n-text: #e6e6e6;
   --ag-rau: #d4cdc4;
   --ag-claude: #d49174;
   --ag-codex: #7aa8e0;
   --ag-pi: #6cc0aa;
   --ag-grok: #8fa8c0;
   --ag-cursor: #a9a5d1;
+  --ag-todo-accent: #ef6a62;
   --ag-opencode: #cfcecd;
   --ag-rau-wash: rgba(212, 205, 196, 0.16);
   --ag-claude-wash: rgba(212, 145, 116, 0.16);
@@ -878,11 +884,12 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
 }
 
 /* ─── 에이전트 모드 칩 ──────────────────────────────────
-   채팅 파랑 · 플랜 차콜 · 에이전트 잉크 · 전체 빨강. 칩 글자와 메뉴 점이 같은 색을 쓴다. */
+   macOS 팝업 버튼: 모드 아이콘 + 이름 + 위아래 갈매기. 채팅 파랑 · 플랜 차콜 ·
+   에이전트 잉크 · 전체 빨강. 누름은 즉시 줄어들고, 메뉴는 칩에서 자라난다. */
 .ag-mode {
   --ag-mode-chat: var(--ag-link);
-  --ag-mode-plan: color-mix(in oklab, var(--ag-text) 72%, var(--ag-bg));
-  --ag-mode-agent: var(--ag-text);
+  --ag-mode-plan: color-mix(in oklab, var(--ag-text) 78%, var(--ag-bg));
+  --ag-mode-agent: var(--ag-ok);
   --ag-mode-full: var(--ag-err);
   --ag-mode-color: var(--ag-mode-agent);
   position: relative;
@@ -895,41 +902,98 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
 .ag-mode[data-mode='plan'] { --ag-mode-color: var(--ag-mode-plan); }
 .ag-mode[data-mode='full'] { --ag-mode-color: var(--ag-mode-full); }
 
-.ag-mode-btn {
+.ag-root .ag-mode .ag-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 6px 0 8px;
+  border-radius: var(--ag-r-row);
+  background: var(--ag-hover);
   color: var(--ag-mode-color);
   font-weight: var(--ag-fw-medium);
+  letter-spacing: -0.01em;
+  transition: var(--ag-transition-color), transform 100ms var(--ag-ease-out);
 }
 
-.ag-mode-btn:hover:not(:disabled) {
+.ag-mode[data-mode='agent'] .ag-mode-btn {
+  background: transparent;
+}
+
+.ag-root .ag-mode .ag-mode-btn:hover:not(:disabled),
+.ag-mode.ag-model-open .ag-mode-btn {
+  background: var(--ag-selected);
   color: var(--ag-mode-color);
 }
 
-.ag-mode:not([data-mode='agent']) .ag-mode-btn {
-  background: color-mix(in oklab, var(--ag-mode-color) 10%, transparent);
+.ag-mode[data-mode='agent'] .ag-mode-btn:hover:not(:disabled),
+.ag-mode[data-mode='agent'].ag-model-open .ag-mode-btn {
+  background: var(--ag-hover);
 }
 
-.ag-mode:not([data-mode='agent']) .ag-mode-btn:hover:not(:disabled) {
-  background: color-mix(in oklab, var(--ag-mode-color) 16%, transparent);
+/* 누름은 손을 대는 순간 보인다 (motion.css: 누름은 전환 없이). */
+.ag-root .ag-mode .ag-mode-btn:active:not(:disabled) {
+  transform: scale(0.96);
+  transition-duration: 0ms;
+}
+
+.ag-mode-btn-caret {
+  width: 11px;
+  height: 11px;
+  opacity: 0.55;
 }
 
 .ag-mode-btn:disabled {
-  opacity: 0.72;
+  opacity: 0.5;
   cursor: default;
 }
 
-/* 입력기 아래 줄에 있으므로 메뉴는 칩 위로, 오른쪽 끝에 맞춰 열린다. */
+/* 메뉴는 머티리얼 층이다: 반투명 + 흐림, 칩의 오른쪽 아래 모서리에서 자라난다. */
 .ag-mode .ag-mode-menu {
   top: auto;
   right: 0;
-  bottom: calc(100% + 4px);
+  bottom: calc(100% + 6px);
   left: auto;
-  min-width: 128px;
+  width: 212px;
+  min-width: 0;
+  padding: 5px;
+  /* 배경과 확실히 갈리도록 한 단계 밝은 면 + 밝은 테두리 선. */
+  background: color-mix(in oklab, color-mix(in oklab, var(--ag-raised) 90%, var(--ag-text)) 88%, transparent);
+  -webkit-backdrop-filter: blur(28px) saturate(180%);
+  backdrop-filter: blur(28px) saturate(180%);
+  box-shadow: var(--ag-elev-popover), inset 0 0 0 1px var(--ag-border-strong);
   transform-origin: bottom right;
-  transform: translateY(6px) scaleY(0.96);
+  transform: scale(0.9);
+  transition:
+    opacity var(--ag-dur-fast) var(--ag-ease-out),
+    transform var(--ag-dur-exit) var(--ag-ease-out),
+    visibility 0s linear var(--ag-dur-exit);
 }
 
 .ag-mode.ag-model-open .ag-mode-menu {
-  transform: translateY(0) scaleY(1);
+  transform: scale(1);
+  transition:
+    opacity var(--ag-dur-fast) var(--ag-ease-out),
+    transform var(--ag-dur-slow) var(--ag-spring),
+    visibility 0s linear 0s;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .ag-mode .ag-mode-menu {
+    background: var(--ag-raised);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-mode .ag-mode-menu,
+  .ag-mode.ag-model-open .ag-mode-menu {
+    transform: none;
+  }
+
+  .ag-root .ag-mode-btn:active:not(:disabled) {
+    transform: none;
+  }
 }
 
 .ag-mode-item[data-mode='chat'] { --ag-mode-color: var(--ag-mode-chat); }
@@ -937,19 +1001,68 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
 .ag-mode-item[data-mode='agent'] { --ag-mode-color: var(--ag-mode-agent); }
 .ag-mode-item[data-mode='full'] { --ag-mode-color: var(--ag-mode-full); }
 
-.ag-mode-dot {
-  width: 8px;
-  height: 8px;
+.ag-mode .ag-mode-item {
+  gap: 10px;
+  min-height: 40px;
+  padding: 5px 8px 5px 10px;
+}
+
+.ag-mode .ag-mode-item.ag-active {
+  background: transparent;
+  font-weight: inherit;
+}
+
+.ag-mode .ag-mode-item:hover:not(:disabled),
+.ag-mode .ag-mode-item:focus-visible {
+  background: var(--ag-hover);
+}
+
+.ag-mode .ag-mode-item:active:not(:disabled) {
+  background: var(--ag-selected);
+}
+
+.ag-mode-text {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+  line-height: 1.25;
+}
+
+.ag-mode-name {
+  color: var(--ag-mode-color);
+  font-weight: var(--ag-fw-medium);
+}
+
+.ag-mode-detail {
+  color: var(--ag-text-tertiary);
+  font-size: var(--ag-fs-meta);
+}
+
+.ag-mode-check {
   flex: 0 0 auto;
-  border-radius: var(--ag-r-pill);
-  background: var(--ag-mode-color);
+  width: 13px;
+  height: 13px;
+  color: var(--ag-text);
+  visibility: hidden;
+}
+
+.ag-mode-item.ag-active .ag-mode-check {
+  visibility: visible;
+}
+
+.ag-mode-separator {
+  height: 0.5px;
+  margin: 4px 8px;
+  background: var(--ag-border-strong);
 }
 
 .ag-mode-item:disabled {
   color: var(--ag-text-disabled);
 }
 
-.ag-mode-item:disabled .ag-mode-dot {
+.ag-mode-item:disabled .ag-mode-text {
   opacity: 0.4;
 }
 
@@ -4219,15 +4332,16 @@ button.ag-skill-copy {
    계획은 변경 검토와 분리된 채 입력기 바로 위에 머문다. */
 .ag-plan-surface {
   position: relative;
-  flex: 0 1 auto;
+  /* 계획은 내용만큼 펼쳐진다 — 대화가 대신 줄어든다. 사이드바보다 길 때만 스크롤한다. */
+  flex: 0 0 auto;
   display: grid;
   grid-template-rows: minmax(0, 1fr);
-  max-height: 58%;
+  max-height: calc(100% - 48px);
   min-height: 0;
   overflow: hidden;
-  padding: 12px;
+  padding: 0 12px 6px;
   border-top: 0;
-  background: var(--ag-bg-2);
+  background: transparent;
   transition:
     grid-template-rows var(--ag-dur-slow) var(--ag-spring-soft),
     max-height var(--ag-dur-slow) var(--ag-spring-soft),
@@ -4270,31 +4384,34 @@ button.ag-skill-copy {
 
 .ag-plan-restore {
   position: relative;
-  flex: 0 0 38px;
-  display: grid;
-  width: 38px;
-  height: 38px;
-  padding: 0;
-  place-items: center;
+  flex: 0 0 auto;
+  display: flex;
+  min-width: 0;
+  height: 30px;
+  align-items: center;
+  gap: 8px;
+  margin: 0 12px 4px;
+  padding: 0 6px 0 10px;
   border: 0;
   border-radius: var(--ag-r-row);
   background: transparent;
   color: var(--ag-text-secondary);
-  opacity: 0;
-  pointer-events: none;
-  transform: scale(0.35);
+  font: inherit;
+  font-size: var(--ag-fs-secondary);
+  text-align: left;
   cursor: default;
+  animation: ag-plan-restore-in var(--ag-dur-base) var(--ag-ease-out) both;
   transition:
-    opacity var(--ag-dur-fast) var(--ag-motion-out),
-    transform var(--ag-dur-base) var(--ag-spring-soft),
-    background-color var(--ag-dur-fast) var(--ag-ease-out);
+    background-color var(--ag-dur-fast) var(--ag-ease-out),
+    color var(--ag-dur-fast) var(--ag-ease-out);
 }
 
-.ag-composer-overlay.ag-has-plan-restore .ag-plan-restore {
-  opacity: 1;
-  pointer-events: auto;
-  transform: scale(1);
-  transition-delay: 140ms, 90ms, 0ms;
+.ag-plan-restore[hidden] {
+  display: none;
+}
+
+@keyframes ag-plan-restore-in {
+  from { opacity: 0; transform: translateY(4px); }
 }
 
 .ag-plan-restore:hover {
@@ -4307,9 +4424,171 @@ button.ag-skill-copy {
   outline-offset: -2px;
 }
 
-.ag-plan-history-icon {
-  width: 20px;
-  height: 20px;
+.ag-plan-restore[data-status='in-progress'] {
+  color: var(--ag-text);
+}
+
+.ag-plan-restore-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 할 일 하나가 칸 하나다: 끝난 칸은 채우고, 지금 칸은 숨 쉬듯 깜빡인다. */
+.ag-plan-restore-track {
+  display: inline-flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  gap: 3px;
+}
+
+.ag-plan-restore-tick {
+  width: 10px;
+  height: 3px;
+  flex: 0 1 10px;
+  min-width: 3px;
+  border-radius: 2px;
+  background: var(--ag-border-strong);
+}
+
+.ag-plan-restore-tick[data-status='completed'] {
+  background: var(--ag-text-secondary);
+}
+
+.ag-plan-restore-tick[data-status='in-progress'] {
+  background: var(--ag-text);
+  animation: ag-todo-pulse 1.4s ease-in-out infinite;
+}
+
+.ag-plan-restore-tick[data-status='blocked'] {
+  background: var(--ag-err);
+}
+
+@keyframes ag-todo-pulse {
+  50% { opacity: 0.35; }
+}
+
+.ag-plan-restore-count {
+  flex: 0 0 auto;
+  color: var(--ag-text-tertiary);
+  font-family: var(--ag-mono);
+  font-size: var(--ag-fs-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.ag-plan-restore-count:empty {
+  display: none;
+}
+
+/* 펼치면 위로 자라나므로 갈매기는 위를 향한다. */
+.ag-plan-restore-caret {
+  flex: 0 0 auto;
+  width: 11px;
+  height: 11px;
+  color: var(--ag-text-tertiary);
+  transform: rotate(180deg);
+}
+
+/* ─── todo 줄 (계획 카드 · 접힌 줄 공용) ─────────────────
+   터미널 todo 목록: 고정폭 글꼴, ❯ □ 할 일 (진행 중), 지금 줄만 칠한다. */
+.ag-todo-mark {
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 1.2ch;
+  justify-content: center;
+  color: var(--ag-text-tertiary);
+  font-family: var(--ag-mono);
+}
+
+.ag-todo-mark .ui-spinner {
+  width: 11px;
+  height: 11px;
+}
+
+.ag-todo-mark[data-status='in-progress'] { color: var(--ag-text); }
+.ag-todo-mark[data-status='blocked'] { color: var(--ag-err); }
+
+.ag-todo-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 4px;
+  font-family: var(--ag-mono);
+  font-size: var(--ag-fs-meta);
+}
+
+.ag-todo-heading h4 {
+  margin: 0;
+  color: var(--ag-todo-accent);
+  font-size: inherit;
+  font-weight: var(--ag-fw-strong);
+}
+
+.ag-todo-count {
+  color: var(--ag-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.ag-todo-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0 -6px;
+  padding: 0;
+  list-style: none;
+  font-family: var(--ag-mono);
+  font-size: var(--ag-fs-secondary);
+  line-height: 1.6;
+}
+
+.ag-todo {
+  display: grid;
+  grid-template-columns: 1.4ch 1.2ch minmax(0, 1fr);
+  column-gap: 1ch;
+  align-items: baseline;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.ag-todo[data-status='in-progress'] {
+  background: var(--ag-selected);
+}
+
+.ag-todo-caret {
+  color: var(--ag-todo-accent);
+  font-weight: var(--ag-fw-strong);
+}
+
+.ag-todo-text {
+  min-width: 0;
+  color: var(--ag-text);
+}
+
+.ag-todo[data-status='completed'] .ag-todo-text {
+  color: var(--ag-text-tertiary);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in oklab, var(--ag-text-tertiary) 60%, transparent);
+}
+
+.ag-todo-suffix {
+  color: var(--ag-text-tertiary);
+}
+
+.ag-todo-note {
+  grid-column: 3;
+  color: var(--ag-text-tertiary);
+}
+
+.ag-todo[data-status='blocked'] .ag-todo-note,
+.ag-todo[data-status='blocked'] .ag-todo-suffix {
+  color: var(--ag-err);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-plan-restore-tick[data-status='in-progress'] {
+    animation: none;
+  }
 }
 
 /* 진행 표시는 앱 공용 .ui-spinner 이다. 여기서는 크기만 정한다. */
@@ -4379,16 +4658,17 @@ button.ag-skill-copy {
 
 .ag-plan-minimize {
   display: inline-flex;
-  width: 24px;
-  height: 24px;
-  flex: 0 0 24px;
+  height: 26px;
+  flex: 0 0 auto;
   align-items: center;
-  justify-content: center;
-  padding: 0;
+  gap: 4px;
+  padding: 0 6px 0 8px;
   border: 0;
-  border-radius: var(--ag-r-chip);
+  border-radius: var(--ag-r-row);
   background: transparent;
-  color: var(--ag-text-muted);
+  color: var(--ag-text-secondary);
+  font: inherit;
+  font-size: var(--ag-fs-meta);
   margin-left: auto;
   cursor: default;
 }
@@ -4396,6 +4676,15 @@ button.ag-skill-copy {
 .ag-plan-minimize:hover {
   background: var(--ag-hover);
   color: var(--ag-text);
+}
+
+.ag-plan-minimize:active {
+  background: var(--ag-selected);
+}
+
+.ag-plan-minimize-caret {
+  width: 11px;
+  height: 11px;
 }
 
 .ag-plan-minimize:focus-visible {
@@ -4598,19 +4887,48 @@ button.ag-skill-copy {
 }
 
 .ag-plan-actions > button {
-  flex: 1 1 auto;
-  padding-inline: 12px;
+  flex: 0 0 auto;
+  min-height: 28px;
+  padding: 0 12px;
+  border-radius: 4px;
   white-space: nowrap;
+  letter-spacing: -0.01em;
+  transition: var(--ag-transition-color), transform 100ms var(--ag-ease-out);
 }
 
-/* 전체 접근 실행은 전체 모드 칩과 같은 빨강이다. */
+.ag-plan-actions > button:active:not(:disabled) {
+  transform: scale(0.97);
+  transition-duration: 0ms;
+}
+
+/* 수정 요청은 가벼운 글자 버튼으로 왼쪽에, 실행 두 개는 오른쪽에 둔다.
+   기본 동작(에이전트로 실행)이 맨 오른쪽이다. */
+.ag-plan-actions .ag-plan-revise {
+  margin-right: auto;
+  padding-inline: 10px;
+  background: transparent;
+  color: var(--ag-text-secondary);
+}
+
+.ag-plan-actions .ag-plan-revise:hover:not(:disabled) {
+  background: var(--ag-hover);
+  color: var(--ag-text);
+}
+
+/* 전체 접근 실행은 전체 모드 칩과 같은 빨강이다. 기본 동작과 겨루지 않게 옅게 칠한다. */
 .ag-plan-actions .ag-plan-approve-full {
-  background: var(--ag-err);
-  color: #fff;
+  background: color-mix(in oklab, var(--ag-err) 11%, transparent);
+  color: var(--ag-err);
 }
 
 .ag-plan-actions .ag-plan-approve-full:hover:not(:disabled) {
-  background: color-mix(in oklab, var(--ag-err) 86%, var(--ag-text));
+  background: color-mix(in oklab, var(--ag-err) 17%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-plan-actions > button:active:not(:disabled) {
+    transform: none;
+  }
 }
 
 .ag-plan-note {
@@ -8932,4 +9250,125 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 @media (prefers-reduced-motion: reduce) {
   .ag-header-icon-btn.ag-undo-arrive,
   .ag-header-icon-btn.ag-undo-arrive .ag-icon { animation: none; }
+}
+
+
+/* ─── 버전 아이콘의 커밋 전 숫자 ──────────────────────── */
+.ag-versions-btn {
+  position: relative;
+}
+
+.ag-versions-badge {
+  position: absolute;
+  top: 2px;
+  right: 1px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: var(--ag-r-pill);
+  background: var(--ag-text);
+  color: var(--ag-bg);
+  font-family: var(--ag-mono);
+  font-size: 9px;
+  font-weight: var(--ag-fw-strong);
+  line-height: 14px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  animation: ag-badge-in var(--ag-dur-base) var(--ag-spring) both;
+}
+
+.ag-versions-badge[hidden] {
+  display: none;
+}
+
+/* 변경은 있는데 줄 단위로 셀 수 없으면 숫자 없이 점 하나. */
+.ag-versions-badge.ag-dot-only {
+  top: 6px;
+  right: 6px;
+  min-width: 6px;
+  width: 6px;
+  height: 6px;
+  padding: 0;
+}
+
+@keyframes ag-badge-in {
+  from { transform: scale(0.4); opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-versions-badge { animation: none; }
+}
+
+/* ─── 버전 창의 변경 탭 ───────────────────────────────── */
+.ag-versions-tab-count {
+  margin-left: 5px;
+  color: var(--ag-text-tertiary);
+  font-family: var(--ag-mono);
+  font-size: var(--ag-fs-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.ag-versions-tab.ag-active .ag-versions-tab-count {
+  color: var(--ag-text-secondary);
+}
+
+.ag-versions-changes {
+  padding: 4px 12px 12px;
+}
+
+.ag-versions-changes-host .ag-changes-section {
+  padding: 4px 0 0;
+}
+
+.ag-versions-changes-host .ag-changes-section-head {
+  display: none;
+}
+
+.ag-versions-changes-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 48px 0 24px;
+  color: var(--ag-text-tertiary);
+  font-size: var(--ag-fs-meta);
+}
+
+.ag-versions-changes-empty[hidden],
+.ag-versions-changes-host[hidden] {
+  display: none;
+}
+
+/* 점 그림: 고정폭 점으로 그린 작은 장식. 글자가 아니라 그림이다. */
+.ag-dot-art {
+  margin: 0;
+  color: var(--ag-text-tertiary);
+  font-family: var(--ag-mono);
+  font-size: 11px;
+  line-height: 1.05;
+  letter-spacing: 0.08em;
+  white-space: pre;
+  user-select: none;
+}
+
+/* 탭 줄 아래는 실선 대신 점선 — 점 그림과 같은 결. */
+.ag-versions-page .ag-versions-tabs {
+  border-bottom: 0;
+  background-image: radial-gradient(circle, var(--ag-border-strong) 1px, transparent 1.4px);
+  background-position: 0 100%;
+  background-repeat: repeat-x;
+  background-size: 6px 3px;
+}
+
+/* 변경 목록의 끝을 점 세 개로 닫는다. */
+.ag-versions-changes-host::after {
+  content: '·  ·  ·';
+  display: block;
+  padding-top: 14px;
+  color: var(--ag-text-tertiary);
+  font-family: var(--ag-mono);
+  letter-spacing: 0.2em;
+  text-align: center;
+  opacity: 0.6;
 }

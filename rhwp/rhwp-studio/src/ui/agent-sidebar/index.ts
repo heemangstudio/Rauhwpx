@@ -208,7 +208,7 @@ import type {
 } from '../../agent/inline-prompt-context.ts';
 import { createUserQuestionController } from './user-question-controller.ts';
 import { createModeMenu, parseModeCommand } from './mode-menu.ts';
-import { agentModeFor, agentModeTarget, type AgentMode } from '../../agent/types.ts';
+import { agentModeFor, agentModeTarget, planTodoTitle, type AgentMode } from '../../agent/types.ts';
 import './sidebar-button-modern.css';
 
 export interface AgentSidebarDeps {
@@ -1705,6 +1705,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   versionsBtn.setAttribute('aria-controls', 'ag-versions-panel');
   versionsBtn.title = '버전';
   versionsBtn.appendChild(createIcon('changes'));
+  // 커밋 전 변경 수 — 아이콘 오른쪽 위의 작은 숫자.
+  const versionsBadge = el('span', 'ag-versions-badge');
+  versionsBadge.setAttribute('aria-hidden', 'true');
+  versionsBadge.hidden = true;
+  versionsBtn.appendChild(versionsBadge);
   versionsBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     openConfiguredVersionControl();
@@ -1799,6 +1804,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   }
 
   function setConfigPanelOpen(open: boolean): void {
+    if (open && !configPanelOpen) collapseExpandedSurfaces('config');
     configPanelOpen = open;
     if (configHideTimer !== null) {
       window.clearTimeout(configHideTimer);
@@ -3431,16 +3437,20 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   planSurface.setAttribute('aria-label', '실행 계획');
   const planCardSlot = el('div', 'ag-plan-card-slot');
   const planRestore = el('button', 'ag-plan-restore');
+  planRestore.hidden = true;
   planRestore.type = 'button';
   planRestore.setAttribute('aria-label', '계획 펼치기');
   planRestore.title = '계획 펼치기';
   planRestore.setAttribute('aria-hidden', 'true');
   planRestore.inert = true;
-  const planOrbit = el('span', 'ag-plan-orbit ui-spinner');
-  planOrbit.setAttribute('aria-hidden', 'true');
-  const planHistoryIcon = createIcon('changes', 'ag-plan-history-icon');
-  planHistoryIcon.setAttribute('aria-hidden', 'true');
-  planRestore.appendChild(planOrbit);
+  // 접힌 계획은 입력기 위 전체 폭의 한 줄 타임라인이다: 지금 할 일 · 진행 칸 · n/m · ⌃.
+  const planRestoreMark = el('span', 'ag-plan-restore-mark');
+  const planRestoreLabel = el('span', 'ag-plan-restore-label', '계획');
+  const planRestoreTrack = el('span', 'ag-plan-restore-track');
+  planRestoreTrack.setAttribute('aria-hidden', 'true');
+  const planRestoreCount = el('span', 'ag-plan-restore-count');
+  const planRestoreCaret = createChevron('ag-plan-restore-caret');
+  planRestore.append(planRestoreMark, planRestoreLabel, planRestoreTrack, planRestoreCount, planRestoreCaret);
   planRestore.addEventListener('click', () => setPlanMinimized(false));
   planSurface.append(planCardSlot);
   let initialSetup: InitialSetupUi | null = null;
@@ -3636,7 +3646,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   // 서로의 자리를 침범하지 않도록 하나의 semantic cluster로 묶는다.
   const composerOverlay = el('div', 'ag-composer-overlay');
   composerOverlay.setAttribute('aria-label', '현재 작업 상태');
-  composerOverlay.append(planRestore);
   const composerMeta = el('div', 'ag-composer-meta');
   composerMeta.setAttribute('aria-label', '에이전트 및 채팅 설정');
   composerMeta.append(selectors, composerUtilities);
@@ -3827,7 +3836,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   // 사이드바에서는 변경 검토와 계획을 분리한다. 계획은 입력기 바로 위에
   // 머물러 접었을 때 작은 진행 표시로 이어지고, 변경 검토는 가려지지 않는다.
   // 질문 카드와 입력기는 인접 형제여야 하나의 입력 면으로 이어진다.
-  chatPage.append(header, messages, review, compactChanges, planSurface, reconnectChip, calibrationChip, questionController.root, composer);
+  chatPage.append(header, messages, review, compactChanges, planSurface, planRestore, reconnectChip, calibrationChip, questionController.root, composer);
   messages.after(latestDock);
 
   /** 입력기 하단 한 줄이 겹치지 않고 붙는 폭을 재서 사이드바 최솟값으로 쓴다.
@@ -4065,6 +4074,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   reviewColumnActions.append(reviewColumnUndo, reviewColumnClose);
   reviewColumnHead.append(reviewColumnHeading, reviewColumnActions);
   reviewColumn.appendChild(reviewColumnHead);
+  // 버전 창은 변경 탭이 changes drawer 를 품으므로 drawer 보다 먼저 만든다.
+  const versionManagerPage = versionController
+    ? createVersionManagerPage(versionController)
+    : null;
   const changesDrawer = createChangesDrawer({
     versionController,
     isEditing: () => bridge.getEditingLease().active || mergeResolverLocked,
@@ -4179,14 +4192,15 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     void requestSettingsClose(fullscreen ? workspaceSettingsBtn : settingsBtn);
   });
 
-  const versionManagerPage = versionController
-    ? createVersionManagerPage(versionController)
-    : null;
   const versionsPage = versionManagerPage?.element ?? el('section', 'ag-versions-page');
   if (!versionManagerPage) {
     versionsPage.id = 'ag-versions-panel';
     versionsPage.setAttribute('aria-hidden', 'true');
     versionsPage.inert = true;
+  }
+  if (versionManagerPage) {
+    changesDrawer.setCompactHost(versionManagerPage.changesHost);
+    updateCompactChangesVisibility();
   }
   versionsPage.addEventListener('ag-versions-close', () => {
     setVersionsPanelOpen(false);
@@ -4354,6 +4368,18 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     workspaceThreadsBtn.setAttribute('aria-label', workspaceThreadsBtn.title);
   }
 
+  /**
+   * 입력기 주변에서 펼쳐지는 면(커밋 전 변경, 계획, 모델 설정)은 한 번에 하나만 펼친다.
+   * 하나를 펼치면 나머지는 접힌다 — 계획은 지우지 않고 '계획' 알약으로 접는다.
+   */
+  function collapseExpandedSurfaces(keep: 'changes' | 'plan' | 'config'): void {
+    if (keep !== 'changes' && compactChangesOpen) setCompactChangesOpen(false);
+    if (keep !== 'config' && configPanelOpen) setConfigPanelOpen(false);
+    if (keep !== 'plan' && !fullscreen && activePlan !== null && !planMinimized && !planSurface.hidden) {
+      setPlanMinimized(true);
+    }
+  }
+
   function isCompactWorkspace(): boolean {
     return fullscreen && workspaceCompact;
   }
@@ -4362,18 +4388,34 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     const next = open && !fullscreen && !compactChanges.hidden;
     if (compactChangesOpen === next) return;
     compactChangesOpen = next;
+    if (next) collapseExpandedSurfaces('changes');
     compactChangesContent.hidden = !next;
     compactChangesToggle.setAttribute('aria-expanded', String(next));
     compactChanges.classList.toggle('ag-open', next);
     if (next) void changesDrawer.refresh();
   }
 
+  /** 커밋 전 변경이 사는 곳 — 버전 창의 변경 탭. 버전 창이 없으면 예전 입력기 위 막대. */
+  function compactChangesHost(): HTMLElement {
+    return versionManagerPage?.changesHost ?? compactChangesContent;
+  }
+
   function updateCompactChangesVisibility(): void {
     const state = versionController?.getState();
-    const visible = !fullscreen && Boolean(state?.saved && state.enabled && state.dirty);
-    compactChanges.hidden = !visible;
+    const dirty = Boolean(state?.saved && state.enabled && state.dirty);
+    // 입력기 위 막대 대신 헤더 버전 아이콘의 숫자와 변경 탭으로 보인다.
+    const inVersionsTab = versionManagerPage !== null;
+    compactChanges.hidden = inVersionsTab || fullscreen || !dirty;
     compactChangesCount.textContent = workingDiff.length ? `${workingDiff.length}건` : '';
-    if (!visible) setCompactChangesOpen(false);
+    if (compactChanges.hidden) setCompactChangesOpen(false);
+    const count = dirty ? workingDiff.length : 0;
+    versionsBadge.hidden = !dirty;
+    versionsBadge.textContent = count > 99 ? '99+' : count > 0 ? String(count) : '';
+    versionsBadge.classList.toggle('ag-dot-only', dirty && count === 0);
+    const label = dirty ? `버전 · 커밋 전 변경 ${count}` : '버전';
+    versionsBtn.setAttribute('aria-label', label);
+    versionsBtn.title = label;
+    versionManagerPage?.setChangeCount(dirty ? Math.max(count, 1) : 0);
   }
 
   function clearCompactRailHoverClose(): void {
@@ -4556,17 +4598,48 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     planSurface.classList.toggle('ag-plan-minimized', compact);
     planCardSlot.setAttribute('aria-hidden', compact ? 'true' : 'false');
     planCardSlot.inert = compact;
-    planRestore.replaceChildren(activePlanHistorical ? planHistoryIcon : planOrbit);
+    renderPlanTimeline();
     const restoreLabel = activePlanHistorical ? '계획 기록 펼치기' : '계획 펼치기';
     planRestore.setAttribute('aria-label', restoreLabel);
     planRestore.title = restoreLabel;
+    // 접힌 계획 줄은 흐름 안의 한 줄이다 — 대화 위에 떠서 글자를 덮지 않는다.
+    planRestore.hidden = !compact;
     planRestore.setAttribute('aria-hidden', compact ? 'false' : 'true');
     planRestore.inert = !compact;
     syncComposerOverlay();
   }
 
+  /** 접힌 계획 줄을 지금 todo 상태로 다시 그린다. */
+  function renderPlanTimeline(): void {
+    const plan = activePlan;
+    const todos = plan ? planTodos(plan) : [];
+    const running = !activePlanHistorical && plan?.execution?.status === 'running';
+    const current = plan?.execution
+      ? todos.find((todo) => todo.status === 'in-progress')
+        ?? todos.find((todo) => todo.status === 'blocked')
+        ?? todos.find((todo) => todo.status === 'pending')
+      : undefined;
+    const done = todos.filter((todo) => todo.status === 'completed').length;
+    const allDone = plan?.execution !== undefined && todos.length > 0 && done === todos.length;
+    const status: PlanTodoStatus = allDone ? 'completed'
+      : current?.status === 'in-progress' && !running ? 'pending' : current?.status ?? 'pending';
+    planRestoreMark.replaceChildren(todoMark(status));
+    planRestoreLabel.textContent = activePlanHistorical ? `계획 기록 · ${plan?.title ?? ''}`
+      : current ? current.title
+        : allDone ? '모든 할 일을 마쳤습니다'
+          : plan?.title || '계획';
+    planRestore.dataset.status = status;
+    planRestoreTrack.replaceChildren(...(plan?.execution ? todos.slice(0, 24) : []).map((todo) => {
+      const tick = el('span', 'ag-plan-restore-tick');
+      tick.dataset.status = todo.status;
+      return tick;
+    }));
+    planRestoreCount.textContent = plan?.execution ? `${done}/${todos.length}` : '';
+  }
+
   function setPlanMinimized(minimized: boolean): void {
     planMinimized = minimized;
+    if (!minimized) collapseExpandedSurfaces('plan');
     applyPlanMinimizedState();
     if (!minimized) {
       window.requestAnimationFrame(() => {
@@ -4653,8 +4726,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     threadsPage.setAttribute('aria-hidden', 'true');
     chatPage.setAttribute('aria-hidden', 'false');
     // 변경 검토·계획·질문·입력기는 다시 사이드바의 분리된 inline 흐름으로 돌아간다.
-    chatPage.append(review, compactChanges, planSurface, questionController.root, composer);
-    changesDrawer.setCompactHost(compactChangesContent);
+    chatPage.append(review, compactChanges, planSurface, planRestore, questionController.root, composer);
+    changesDrawer.setCompactHost(compactChangesHost());
     updateCompactChangesVisibility();
     applyPlanMinimizedState();
   }
@@ -5022,8 +5095,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     versionsPage.inert = !open;
     chatPage.setAttribute('aria-hidden', open ? 'true' : 'false');
     chatPage.inert = open;
-    if (open) versionManagerPage?.open();
-    else versionManagerPage?.close();
+    if (open) {
+      // 커밋할 변경이 있으면 변경 탭부터 보인다.
+      if (!versionsBadge.hidden) versionManagerPage?.showTab('changes');
+      versionManagerPage?.open();
+      if (!versionsBadge.hidden) void changesDrawer.refresh();
+    } else versionManagerPage?.close();
   }
 
   function applyFastCommand(action: 'on' | 'off' | 'status' | 'toggle'): void {
@@ -8841,6 +8918,37 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     return true;
   }
 
+  type PlanTodoStatus = 'pending' | 'in-progress' | 'completed' | 'blocked';
+
+  /** 계획 카드와 접힌 타임라인이 같이 쓰는 todo 목록. 실행 전에는 계획 단계 그대로다. */
+  function planTodos(plan: StructuredPlan): Array<{ id: string; title: string; status: PlanTodoStatus; note: string }> {
+    if (plan.execution) {
+      return plan.execution.steps.map((todo) => ({
+        id: todo.stepId, title: planTodoTitle(plan, todo), status: todo.status, note: todo.note?.trim() ?? '',
+      }));
+    }
+    // 별도 검증 항목은 todo 끝에 붙인다 — 실행 때 허브도 같은 순서로 목록을 연다.
+    return [
+      ...plan.steps.map((step, index) => ({
+        id: step.id ?? `step-${index + 1}`, title: step.title || '단계', status: 'pending' as const, note: '',
+      })),
+      ...plan.validation.map((entry, index) => ({ id: `verify-${index + 1}`, title: entry, status: 'pending' as const, note: '' })),
+    ];
+  }
+
+  /**
+   * 터미널 todo 표시. glyph: □ 대기·진행, ■ 완료, ⊠ 확인 필요.
+   * live(접힌 줄)에서는 진행 중인 할 일만 회전 표시로 살아 움직인다.
+   */
+  function todoMark(status: PlanTodoStatus, style: 'glyph' | 'live' = 'live'): HTMLElement {
+    const mark = el('span', 'ag-todo-mark');
+    mark.dataset.status = status;
+    mark.setAttribute('aria-label', ({ pending: '대기', 'in-progress': '진행 중', completed: '완료', blocked: '확인 필요' })[status]);
+    if (style === 'live' && status === 'in-progress') mark.appendChild(el('span', 'ui-spinner'));
+    else mark.textContent = status === 'completed' ? '■' : status === 'blocked' ? '⊠' : '□';
+    return mark;
+  }
+
   function recordPlan(plan: StructuredPlan): void {
     planHistory = [...planHistory.filter((p) => p.planId !== plan.planId), plan];
     currentThread.latestPlan = plan;
@@ -8927,139 +9035,81 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     card.dataset.planId = plan.planId;
 
     const head = el('header', 'ag-plan-head');
+    // 머리는 한 줄이다: 제목 · 상태 · 접기. 목표·요약 문장은 제목 툴팁으로만 남긴다.
     const kickerRow = el('div', 'ag-plan-kicker-row');
-    kickerRow.append(el('span', 'ag-plan-kicker', plan.execution ? '문서 작업' : '계획 초안'));
-    kickerRow.append(el(
-      'span',
-      'ag-plan-phase',
-      activePlanHistorical ? '계획 기록' : plan.execution
-        ? ({ running: '실행 중', 'awaiting-review': '검토 대기', completed: '완료', blocked: '확인 필요', interrupted: '중단됨' })[plan.execution.status]
-        : PLANNING_PHASE_LABEL[planningPhase],
-    ));
+    const title = el('h3', 'ag-plan-title', plan.title || '제목 없는 계획');
+    title.id = titleId;
+    const goalText = (plan.goal || plan.summary || '').trim();
+    if (goalText) title.title = goalText;
+    kickerRow.append(title);
+    const phaseText = activePlanHistorical ? '계획 기록' : plan.execution
+      ? ({ running: '실행 중', 'awaiting-review': '검토 대기', completed: '완료', blocked: '확인 필요', interrupted: '중단됨' })[plan.execution.status]
+      : PLANNING_PHASE_LABEL[planningPhase];
+    const phase = el('span', 'ag-plan-phase', plan.revision && plan.revision > 1 ? `v${plan.revision} · ${phaseText}` : phaseText);
+    if (plan.changeSummary) phase.title = plan.changeSummary;
+    kickerRow.append(phase);
     const planIdReadout = el('span', 'ag-plan-id', plan.planId);
     planIdReadout.title = plan.planId;
     kickerRow.append(planIdReadout);
     const minimize = el('button', 'ag-plan-minimize');
     minimize.type = 'button';
-    minimize.setAttribute('aria-label', '계획 최소화');
-    minimize.title = '계획 최소화';
-    minimize.appendChild(createIcon('minimize'));
+    minimize.setAttribute('aria-label', '계획 접기');
+    minimize.title = '계획 접기';
+    minimize.append(el('span', 'ag-plan-minimize-label', '접기'), createChevron('ag-plan-minimize-caret'));
     minimize.addEventListener('click', () => setPlanMinimized(true));
     kickerRow.append(minimize);
     head.appendChild(kickerRow);
-
-    const title = el('h3', 'ag-plan-title', plan.title || '제목 없는 계획');
-    title.id = titleId;
-    head.appendChild(title);
-
-    const goalText = (plan.goal || plan.summary || '').trim();
-    if (goalText) head.appendChild(el('p', 'ag-plan-goal', goalText));
-    if (plan.revision && plan.revision > 1) {
-      head.appendChild(el('p', 'ag-plan-revision', `${plan.revision}차 초안${plan.changeSummary ? ` · ${plan.changeSummary}` : ''}`));
-    }
     card.appendChild(head);
 
     const body = el('div', 'ag-plan-body');
     body.id = `ag-plan-body-${plan.planId}`;
-    if (plan.summary?.trim() && plan.summary.trim() !== goalText) {
-      body.appendChild(el('p', 'ag-plan-summary', plan.summary.trim()));
-    }
-    if (plan.steps.length > 0) {
+    const todos = planTodos(plan);
+    if (todos.length > 0) {
+      // 코딩 에이전트의 todo 목록처럼 한 줄 항목만 늘어놓는다. 실행 중에는 에이전트가
+      // update_todos 로 고친 목록 그대로다.
       const section = el('section', 'ag-plan-steps');
-      const completed = plan.execution?.steps.filter((step) => step.status === 'completed').length ?? 0;
-      const heading = el('div', 'ag-plan-section-heading');
-      heading.appendChild(el('h4', '', plan.execution ? '진행 상황' : '작업 순서'));
-      if (plan.execution) {
-        const count = el('span', 'ag-plan-step-count', `${completed} / ${plan.steps.length}`);
-        count.setAttribute('role', 'status');
-        count.setAttribute('aria-live', 'polite');
-        heading.appendChild(count);
-      }
+      const completed = todos.filter((todo) => todo.status === 'completed').length;
+      const heading = el('div', 'ag-todo-heading');
+      heading.appendChild(el('h4', '', '할 일'));
+      const count = el('span', 'ag-todo-count', plan.execution ? `${completed}/${todos.length}` : `${todos.length}개`);
+      count.setAttribute('role', 'status');
+      count.setAttribute('aria-live', 'polite');
+      heading.appendChild(count);
       section.appendChild(heading);
-      const list = el('ol', 'ag-plan-step-list');
-      plan.steps.forEach((step, index) => {
-        const stepId = step.id ?? `step-${index + 1}`;
-        const progress = plan.execution?.steps.find((entry) => entry.stepId === stepId);
-        const status = progress?.status ?? 'pending';
-        const item = el('li', 'ag-plan-step');
-        item.dataset.stepId = stepId;
-        item.dataset.status = status;
-        const content = el('div', 'ag-plan-step-content');
-        if (step.details?.trim()) content.appendChild(el('p', '', step.details.trim()));
-        if (step.files?.length) content.appendChild(el('p', 'ag-plan-step-meta', `파일 · ${step.files.join(', ')}`));
-        const hasDetails = content.childElementCount > 0;
-        const details = el(hasDetails ? 'details' : 'div', 'ag-plan-step-details');
-        const summary = el(hasDetails ? 'summary' : 'div', 'ag-plan-step-summary');
-        const number = el('span', 'ag-plan-step-number', String(index + 1).padStart(2, '0'));
-        if (progress?.status === 'completed') {
-          number.replaceChildren(createIcon('check'));
-          number.setAttribute('aria-label', `${index + 1}단계 완료`);
-        } else if (progress?.status === 'in-progress') {
-          const spinner = el('span', 'ag-plan-step-spinner ui-spinner');
-          spinner.setAttribute('aria-hidden', 'true');
-          number.replaceChildren(spinner);
-          number.setAttribute('aria-label', `${index + 1}단계 진행 중`);
-        }
-        const main = el('span', 'ag-plan-step-main');
-        main.appendChild(el('span', 'ag-plan-step-title', step.title || '단계'));
-        if (step.target?.trim()) main.appendChild(el('span', 'ag-plan-step-preview', `대상 · ${step.target.trim()}`));
-        if (step.preview?.trim()) main.appendChild(el('span', 'ag-plan-step-preview', `예상 결과 · ${step.preview.trim()}`));
-        if (progress?.note?.trim()) main.appendChild(el('span', 'ag-plan-step-note', progress.note.trim()));
-        const statusLabel = ({ pending: '대기', 'in-progress': '진행 중', completed: '완료', blocked: '확인 필요' })[status];
-        const state = el('span', 'ag-plan-step-status', plan.execution ? statusLabel : '');
-        summary.append(number, main, state);
-        details.appendChild(summary);
-        if (hasDetails) details.appendChild(content);
-        else details.classList.add('ag-plan-step-plain');
-        item.appendChild(details);
-        list.appendChild(item);
-      });
-      section.appendChild(list);
-      body.appendChild(section);
-    }
-    if (plan.validation.length) {
-      const section = el('section', 'ag-plan-validation');
-      section.appendChild(el('h4', '', '검증'));
-      const list = el('ul', 'ag-plan-validation-list');
-      for (const entry of plan.validation) list.appendChild(el('li', '', entry));
-      section.appendChild(list);
-      body.appendChild(section);
-    }
-    for (const [label, entries] of [
-      ['예상 파일', plan.files], ['위험', plan.risks], ['가정', plan.assumptions],
-      ['결정', plan.decisions], ['제외', plan.exclusions],
-    ] as const) {
-      if (!entries.length) continue;
-      const details = el('details', 'ag-plan-secondary');
-      details.dataset.label = label;
-      details.appendChild(el('summary', '', `${label} · ${entries.length}`));
-      const list = el('ul', '');
-      for (const entry of entries) list.appendChild(el('li', '', entry));
-      details.appendChild(list);
-      body.appendChild(details);
-    }
-    if (plan.sources?.length) {
-      const sources = el('section', 'ag-plan-sources');
-      sources.appendChild(el('h4', '', '참고 자료'));
-      const list = el('ul', 'ag-plan-source-list');
-      for (const source of plan.sources) {
-        const item = el('li', 'ag-plan-source');
-        const href = source.url ? safeMarkdownHref(source.url) : null;
-        if (href) {
-          const link = el('a', '', source.title || href);
-          link.href = href;
-          link.target = '_blank';
-          link.rel = 'noopener noreferrer';
-          item.appendChild(link);
-        } else {
-          item.appendChild(el('span', '', source.title || '자료'));
-        }
-        if (source.note?.trim()) item.appendChild(el('span', 'ag-plan-source-note', source.note.trim()));
-        const locator = [source.fileId, source.chunkId].filter(Boolean).join(' · ');
-        if (locator) item.appendChild(el('span', 'ag-plan-source-locator', locator));
+      const list = el('ol', 'ag-todo-list');
+      for (const todo of todos) {
+        const item = el('li', 'ag-todo');
+        item.dataset.stepId = todo.id;
+        item.dataset.status = todo.status;
+        // ❯ □ 할 일 (진행 중) — 터미널 todo 목록 그대로.
+        const caret = el('span', 'ag-todo-caret', todo.status === 'in-progress' ? '❯' : '');
+        caret.setAttribute('aria-hidden', 'true');
+        const text = el('span', 'ag-todo-text', todo.title);
+        const suffix = ({ 'in-progress': '진행 중', blocked: '확인 필요' } as Partial<Record<PlanTodoStatus, string>>)[todo.status];
+        if (suffix) text.appendChild(el('span', 'ag-todo-suffix', ` (${suffix})`));
+        item.append(caret, todoMark(todo.status, 'glyph'), text);
+        if (todo.note) item.appendChild(el('span', 'ag-todo-note', todo.note));
         list.appendChild(item);
       }
-      sources.appendChild(list);
+      section.appendChild(list);
+      body.appendChild(section);
+    }
+    // 참고 자료는 맨 아래 한 줄 알약으로만 보인다. 설명은 툴팁이다.
+    if (plan.sources?.length) {
+      const sources = el('div', 'ag-plan-sources');
+      sources.appendChild(el('span', 'ag-plan-sources-label', '참고'));
+      for (const source of plan.sources) {
+        const href = source.url ? safeMarkdownHref(source.url) : null;
+        const pill = el(href ? 'a' : 'span', 'ag-plan-source-pill', source.title || href || '자료');
+        if (href && pill instanceof HTMLAnchorElement) {
+          pill.href = href;
+          pill.target = '_blank';
+          pill.rel = 'noopener noreferrer';
+        }
+        const tip = [source.note?.trim(), [source.fileId, source.chunkId].filter(Boolean).join(' · ')].filter(Boolean).join('\n');
+        if (tip) pill.title = tip;
+        sources.appendChild(pill);
+      }
       body.appendChild(sources);
     }
     card.appendChild(body);
@@ -9084,7 +9134,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       revise.type = 'button';
       revise.disabled = !planApprovable || planActionPending || planningPhase === 'switching' || turnRunning;
       revise.addEventListener('click', () => preparePlanRevision(plan.planId));
-      actions.append(approve, approveFull, revise);
+      actions.append(revise, approveFull, approve);
       if (planningPhase === 'awaiting-approval') footer.appendChild(actions);
 
       let noteText = '';
@@ -9184,6 +9234,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
         activePlan = e.plan;
         activePlanHistorical = false;
         planMinimized = false;
+        collapseExpandedSurfaces('plan');
         planApprovable = true;
         recordPlan(e.plan);
         presentPlanInChat(e.plan);
@@ -9224,6 +9275,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
         recordPlan(e.latestPlan);
         setPlanningPhase(e.phase);
         showPlanExecution(e.planId);
+        renderPlanTimeline();
         return true;
       case 'planning-document-saved':
         systemMessage('문서를 저장했습니다');

@@ -54,7 +54,7 @@ try {
     if (scene.id === 'menu-mode') assert.equal(await page.$$eval('.ag-mode.ag-model-open .ag-mode-item', (nodes) => nodes.length), 4);
     if (scene.id === 'plan-run-modes') {
       assert.deepEqual(await page.$$eval('.ag-plan-actions button', (nodes) => nodes.map((node) => node.textContent)),
-        ['에이전트로 실행', '전체 접근으로 실행', '수정 요청']);
+        ['수정 요청', '전체 접근으로 실행', '에이전트로 실행']);
     }
     if (scene.params['cloud-phase']) assert.notEqual(await page.evaluate(() => window.sidebarPreview.cloud.controller.getSnapshot().session.kind), 'idle');
     if (['chat-empty', 'chat-review', 'chat-changes-full', 'cloud-options', 'cloud-disconnected',

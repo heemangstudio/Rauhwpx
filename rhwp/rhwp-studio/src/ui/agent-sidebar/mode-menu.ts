@@ -6,6 +6,15 @@
  * 맡는다. 이 모듈은 표시와 메뉴 상호작용만 가진다.
  */
 import { AGENT_MODES, AGENT_MODE_LABEL, type AgentMode } from '../../agent/types.ts';
+import { createIcon } from './icons.ts';
+
+/** 메뉴 행의 한 줄 설명 — 모드가 문서에 무엇을 하는지만 말한다. */
+const MODE_DETAIL: Readonly<Record<AgentMode, string>> = {
+  chat: '읽기 전용',
+  plan: '계획 작성',
+  agent: '검토 후 반영',
+  full: '바로 반영',
+};
 
 export interface ModeMenuState {
   mode: AgentMode;
@@ -34,6 +43,9 @@ export function createModeMenu(onSelect: (mode: AgentMode) => void): ModeMenu {
   trigger.setAttribute('aria-haspopup', 'menu');
   trigger.setAttribute('aria-expanded', 'false');
   trigger.setAttribute('aria-controls', 'ag-mode-menu');
+  const triggerLabel = document.createElement('span');
+  triggerLabel.className = 'ag-mode-btn-label';
+  trigger.append(triggerLabel, createIcon('updown', 'ag-mode-btn-caret'));
 
   const menu = document.createElement('div');
   menu.className = 'ag-model-menu ag-mode-menu';
@@ -51,10 +63,16 @@ export function createModeMenu(onSelect: (mode: AgentMode) => void): ModeMenu {
     item.setAttribute('role', 'menuitemradio');
     item.setAttribute('aria-checked', 'false');
     item.tabIndex = -1;
-    const dot = document.createElement('span');
-    dot.className = 'ag-mode-dot';
-    dot.setAttribute('aria-hidden', 'true');
-    item.append(dot, document.createTextNode(AGENT_MODE_LABEL[mode]));
+    const text = document.createElement('span');
+    text.className = 'ag-mode-text';
+    const name = document.createElement('span');
+    name.className = 'ag-mode-name';
+    name.textContent = AGENT_MODE_LABEL[mode];
+    const detail = document.createElement('span');
+    detail.className = 'ag-mode-detail';
+    detail.textContent = MODE_DETAIL[mode];
+    text.append(name, detail);
+    item.append(text, createIcon('check', 'ag-mode-check'));
     item.addEventListener('click', () => {
       if (item.disabled) return;
       setOpen(false);
@@ -62,6 +80,13 @@ export function createModeMenu(onSelect: (mode: AgentMode) => void): ModeMenu {
       onSelect(mode);
     });
     items.set(mode, item);
+    // 전체는 검토 없이 문서를 바꾸므로 구분선 아래에 따로 둔다.
+    if (mode === 'full') {
+      const separator = document.createElement('div');
+      separator.className = 'ag-mode-separator';
+      separator.setAttribute('role', 'separator');
+      menu.appendChild(separator);
+    }
     menu.appendChild(item);
   }
   root.append(trigger, menu);
@@ -134,7 +159,7 @@ export function createModeMenu(onSelect: (mode: AgentMode) => void): ModeMenu {
   function update(state: ModeMenuState): void {
     current = state.mode;
     const label = AGENT_MODE_LABEL[state.mode];
-    trigger.textContent = label;
+    triggerLabel.textContent = label;
     trigger.dataset.mode = state.mode;
     trigger.disabled = state.disabled;
     trigger.setAttribute('aria-label', `에이전트 모드: ${label}`);

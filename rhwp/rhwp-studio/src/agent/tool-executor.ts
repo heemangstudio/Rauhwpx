@@ -327,6 +327,7 @@ interface ParaTargets {
 /** Every Studio tool that can create or stage a document mutation. */
 export const DOCUMENT_WRITE_TOOLS: ReadonlySet<string> = new Set([
   'publish_cloud_document',
+  'commit_version',
   'apply_edits',
   'insert_text',
   'delete_range',

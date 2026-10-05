@@ -1683,6 +1683,10 @@ async function initialize(): Promise<void> {
         canvasView,
         documentState,
         isReadOnly: () => documentReadOnly,
+        commitVersion: async (message) => {
+          if (!versionControllerRef) throw new Error('Version history is not ready yet.');
+          await versionControllerRef.checkpoint(message);
+        },
       });
       agentBridgeRef = agentBridge;
       installHubFonts(agentBridge);

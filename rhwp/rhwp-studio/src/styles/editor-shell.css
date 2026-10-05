@@ -98,67 +98,68 @@
   --color-focus-border: var(--focus-ring);
 }
 :root[data-theme-effective='dark'] :is(#studio-header, #editor-area, #status-bar, .modal-overlay, .cp-overlay, .font-picker-menu, .context-menu) {
-  --n-surface: #262626;
-  --n-surface-raised: #2f2f2f;
-  --n-surface-sunken: #1c1c1c;
-  --n-canvas: #262626;
-  --n-text: #ededed;
-  --n-text-secondary: #c8c8c8;
-  --n-text-muted: #a1a1a1;
-  --n-text-placeholder: #8d8d8d;
-  --n-text-disabled: #6b6b6b;
-  --n-hairline: #393939;
-  --n-hairline-strong: #555555;
-  --n-fill-hover: #343434;
-  --n-fill-active: #3e3e3e;
-  --n-fill-selected: #444444;
-  --n-fill-selected-soft: #303030;
-  --n-on-accent: #1c1c1c;
-  --accent-primary: #e2e2e2;
-  --accent-strong: #f3f3f3;
-  --accent-light: #cfcfcf;
-  --accent-hover: #f7f7f7;
-  --accent-subtle: #6b6b6b;
-  --ui-bg: #262626;
-  --ui-bg-light: #2f2f2f;
-  --ui-surface: #262626;
-  --ui-surface-raised: #2f2f2f;
-  --ui-surface-muted: #1c1c1c;
-  --ui-text: #ededed;
-  --ui-text-secondary: #c8c8c8;
-  --ui-text-muted: #a1a1a1;
-  --ui-text-hint: #a1a1a1;
-  --ui-text-disabled: #6b6b6b;
-  --ui-text-placeholder: #8d8d8d;
-  --ui-text-on-accent: #1c1c1c;
-  --ui-border: #393939;
-  --ui-border-light: #555555;
-  --ui-border-subtle: #393939;
-  --ui-border-strong: #555555;
-  --ui-hover: #343434;
-  --ui-hover-strong: #3a3a3a;
-  --ui-active: #3e3e3e;
-  --ui-selected: #444444;
-  --ui-accent-bg: #444444;
-  --ui-accent-bg-light: #303030;
-  --ui-menu-open: #e2e2e2;
-  --ui-menu-open-border: #e2e2e2;
-  --ui-chrome-menu: #262626;
-  --ui-chrome-tool: #262626;
-  --ui-toolbar-bg-start: #262626;
-  --ui-toolbar-bg-end: #262626;
-  --ui-footer-bg: #262626;
-  --doc-workspace: #181818;
-  --doc-paper-shadow: 0 0 0 1px #3c3c3c, 0 4px 16px #00000080;
-  --focus-ring: #cfcfcf;
-  --ruler-bg: #262626;
-  --ruler-body: #262626;
-  --ruler-tick: #8d8d8d;
-  --ruler-text: #c8c8c8;
-  --ruler-marker: #cfcfcf;
-  --editor-glass: #2f2f2ff2;
-  --shadow-dropdown: 0 8px 28px #00000066;
-  --shadow-dialog: 0 16px 48px #00000080;
+  /* 먹색 크롬 + 빨강 강조. 에이전트 사이드바와 같은 램프다. */
+  --n-surface: #0f0f0f;
+  --n-surface-raised: #181818;
+  --n-surface-sunken: #080808;
+  --n-canvas: #0f0f0f;
+  --n-text: #e6e6e6;
+  --n-text-secondary: #b4b4b4;
+  --n-text-muted: #8f8f8f;
+  --n-text-placeholder: #787878;
+  --n-text-disabled: #5a5a5a;
+  --n-hairline: #262626;
+  --n-hairline-strong: #363636;
+  --n-fill-hover: #1c1c1c;
+  --n-fill-active: #242424;
+  --n-fill-selected: #2e2e2e;
+  --n-fill-selected-soft: #1a1a1a;
+  --n-on-accent: #2a0e0c;
+  --accent-primary: #ef6a62;
+  --accent-strong: #ff9a92;
+  --accent-light: #f4877f;
+  --accent-hover: #d4544d;
+  --accent-subtle: #a8443e;
+  --ui-bg: #0f0f0f;
+  --ui-bg-light: #181818;
+  --ui-surface: #0f0f0f;
+  --ui-surface-raised: #181818;
+  --ui-surface-muted: #080808;
+  --ui-text: #e6e6e6;
+  --ui-text-secondary: #b4b4b4;
+  --ui-text-muted: #8f8f8f;
+  --ui-text-hint: #8f8f8f;
+  --ui-text-disabled: #5a5a5a;
+  --ui-text-placeholder: #787878;
+  --ui-text-on-accent: #2a0e0c;
+  --ui-border: #262626;
+  --ui-border-light: #363636;
+  --ui-border-subtle: #1e1e1e;
+  --ui-border-strong: #363636;
+  --ui-hover: #1c1c1c;
+  --ui-hover-strong: #202020;
+  --ui-active: #242424;
+  --ui-selected: #2e2e2e;
+  --ui-accent-bg: #2e2e2e;
+  --ui-accent-bg-light: #1a1a1a;
+  --ui-menu-open: #2e2e2e;
+  --ui-menu-open-border: #2e2e2e;
+  --ui-chrome-menu: #0f0f0f;
+  --ui-chrome-tool: #0f0f0f;
+  --ui-toolbar-bg-start: #0f0f0f;
+  --ui-toolbar-bg-end: #0f0f0f;
+  --ui-footer-bg: #0f0f0f;
+  --doc-workspace: #191919;
+  --doc-paper-shadow: 0 0 0 1px #00000099, 0 6px 24px #00000080;
+  --focus-ring: #ef6a62;
+  --ruler-bg: #0f0f0f;
+  --ruler-body: #181818;
+  --ruler-tick: #787878;
+  --ruler-text: #b4b4b4;
+  --ruler-marker: #ef6a62;
+  --editor-glass: #181818f2;
+  --shadow-dropdown: 0 8px 28px #00000080;
+  --shadow-dialog: 0 16px 48px #00000099;
 }
 #studio-header { box-shadow: none; color: var(--ui-text); }
 #studio-header:has(.tb-overflow-open) { z-index: 100; }
@@ -187,7 +188,7 @@
 #menu-bar { height: 32px; padding: 0 10px; background: var(--ui-surface); border-bottom: 0; gap: 2px; }
 .menu-title { padding: 3px 9px; border-radius: 5px; font-size: 13px; }
 #style-bar { --editor-field-border: #dfe3e9; min-height: 38px; padding: 4px 10px; gap: 3px 0; background: var(--ui-surface); }
-:root[data-theme-effective='dark'] #style-bar { --editor-field-border: #3d3d3d; }
+:root[data-theme-effective='dark'] #style-bar { --editor-field-border: #2a2a2a; }
 #style-bar :is(.sb-combo, .sb-size, .sb-size-unit, .sb-size-arrows .sb-arrow, .sb-ls-select, .sb-ls-arrows .sb-arrow, .sb-field-grid .sb-size-group) { border-color: var(--editor-field-border); }
 #style-bar :is(.sb-combo, .sb-size, .sb-ls-select):focus,
 #style-bar .sb-field-grid .sb-size-group:focus-within { border-color: var(--focus-ring); }

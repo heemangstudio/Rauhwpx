@@ -7,7 +7,7 @@ import { versionErrorOf } from '../../versioning/types.ts';
 import { showContextMenu } from '../native-context-menu.ts';
 import { createChevron } from '../chevron.ts';
 
-export type VersionTab = 'history' | 'branches' | 'shelves';
+export type VersionTab = 'changes' | 'history' | 'branches' | 'shelves';
 
 export interface VersionCommitView {
   id: string;
@@ -124,6 +124,11 @@ export interface VersionRecoveryView {
 
 export interface VersionManagerPage {
   element: HTMLElement;
+  /** 커밋 전 변경(변경 탭)이 들어갈 자리. 사이드바가 changes drawer 를 여기에 붙인다. */
+  changesHost: HTMLElement;
+  /** 커밋 전 변경 수 — 변경 탭 옆 숫자. 0 이면 숨긴다. */
+  setChangeCount(count: number): void;
+  showTab(tab: VersionTab): void;
   open(): void;
   close(): void;
   dispose(): void;
@@ -397,6 +402,16 @@ function laneGraph(
   return graph;
 }
 
+/** 빈 변경 탭의 점 그림 — 접힌 귀퉁이가 있는 빈 종이. */
+const DOT_ART_CLEAN = [
+  '· · · · · ·  ',
+  '·         · ·',
+  '·           ·',
+  '·    ✓      ·',
+  '·           ·',
+  '· · · · · · ·',
+].join('\n');
+
 function reasonLabel(reason: string): string {
   const labels: Record<string, string> = {
     initial: '첫 버전',
@@ -453,6 +468,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
   tabs.setAttribute('role', 'tablist');
   tabs.setAttribute('aria-label', '버전 보기');
   const tabDefs: Array<{ id: VersionTab; label: string }> = [
+    { id: 'changes', label: '변경' },
     { id: 'history', label: '그래프' },
     { id: 'branches', label: '브랜치' },
     { id: 'shelves', label: '보관함' },
@@ -465,6 +481,11 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     button.id = `ag-versions-${tab.id}-tab`;
     button.setAttribute('role', 'tab');
     button.setAttribute('aria-controls', `ag-versions-${tab.id}-tabpanel`);
+    if (tab.id === 'changes') {
+      const count = el('span', 'ag-versions-tab-count');
+      count.hidden = true;
+      button.appendChild(count);
+    }
     tabs.appendChild(button);
     tabButtons.set(tab.id, button);
   }
@@ -554,7 +575,17 @@ export function createVersionManagerPage(controller: VersionManagerController): 
   branchesPanel.setAttribute('role', 'tabpanel');
   const shelvesPanel = el('div', 'ag-versions-panel ag-versions-shelves');
   shelvesPanel.setAttribute('role', 'tabpanel');
+  // 변경 탭: 커밋 전 diff 와 커밋 입력. 비었을 때는 점으로 그린 빈 종이 한 장만 둔다.
+  const changesPanel = el('div', 'ag-versions-panel ag-versions-changes');
+  changesPanel.setAttribute('role', 'tabpanel');
+  const changesEmpty = el('div', 'ag-versions-changes-empty');
+  changesEmpty.setAttribute('aria-label', '커밋 전 변경 없음');
+  changesEmpty.append(el('pre', 'ag-dot-art', DOT_ART_CLEAN), el('span', '', '깨끗함'));
+  const changesHost = el('div', 'ag-versions-changes-host');
+  changesPanel.append(changesEmpty, changesHost);
+  let changeCount = 0;
   const tabPanels = new Map<VersionTab, HTMLElement>([
+    ['changes', changesPanel],
     ['history', historyPanel],
     ['branches', branchesPanel],
     ['shelves', shelvesPanel],
@@ -563,7 +594,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     panel.id = `ag-versions-${id}-tabpanel`;
     panel.setAttribute('aria-labelledby', `ag-versions-${id}-tab`);
   }
-  body.append(historyPanel, branchesPanel, shelvesPanel);
+  body.append(changesPanel, historyPanel, branchesPanel, shelvesPanel);
   const recoveryPanel = el('div', 'ag-versions-panel ag-versions-recovery');
   recoveryPanel.hidden = true;
   body.append(recoveryPanel);
@@ -692,6 +723,10 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     title.textContent = recovering ? '복구' : '버전';
     subtitle.hidden = recovering;
     branchStrip.hidden = tab !== 'history';
+    // 변경 탭은 자체 커밋 입력을 가진다 — 그래프 도구 줄은 숨긴다.
+    toolbar.hidden = recovering || tab === 'changes';
+    changesEmpty.hidden = changeCount > 0;
+    changesHost.hidden = changeCount === 0;
     createBranchButton.hidden = tab !== 'branches';
     shelf.hidden = tab !== 'shelves';
     for (const [id, button] of tabButtons) {
@@ -1235,6 +1270,21 @@ export function createVersionManagerPage(controller: VersionManagerController): 
 
   return {
     element: page,
+    changesHost,
+    setChangeCount(count: number): void {
+      changeCount = Math.max(0, count);
+      const badge = tabButtons.get('changes')?.querySelector<HTMLElement>('.ag-versions-tab-count');
+      if (badge) {
+        badge.hidden = changeCount === 0;
+        badge.textContent = String(changeCount);
+      }
+      changesEmpty.hidden = changeCount > 0;
+      changesHost.hidden = changeCount === 0;
+    },
+    showTab(next: VersionTab): void {
+      tab = next;
+      renderTabs();
+    },
     open(): void {
       active = true;
       void controller.refresh();

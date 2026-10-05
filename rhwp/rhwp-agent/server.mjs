@@ -4774,7 +4774,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
       try {
         args = toolArgSchema(tool, definition).parse(msg.args ?? {});
         definition.validate?.(args);
-        if ((tool === 'present_implementation_plan' || tool === 'update_plan_progress')
+        if ((tool === 'present_implementation_plan' || tool === 'update_todos')
           && (workerJob || sock.piSubagentId || sock.agentRole !== 'chat' || msg.parentTaskId)) {
           throw workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root conversation may manage the plan');
         }
@@ -5244,9 +5244,9 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
         }
         return;
       }
-      if (tool === 'update_plan_progress') {
+      if (tool === 'update_todos') {
         try {
-          const snapshot = record.agentSession.planning.updateProgress(args);
+          const snapshot = record.agentSession.planning.updateTodos(args);
           sendJson(record.studioSocket, { v: 1, type: 'plan-progress', ...snapshot });
           sendResult(snapshot);
         } catch (error) {
