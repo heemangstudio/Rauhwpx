@@ -143,6 +143,8 @@ export interface RhwpDesktopApi {
   }) => void) => void;
   platform?: string;
   isFullScreen?: () => Promise<boolean>;
+  /** 네이티브 인쇄 대화상자를 호출 창의 내용으로 연다 (Electron 데스크톱 전용). */
+  printCurrentWindow?: () => Promise<void>;
   onFullScreenChange?: (callback: (fullscreen: boolean) => void) => void;
   onOpenFiles?: (callback: (files: NativeFileHandleDescriptor[]) => void) => void;
   onOpenGeneratedDocument?: (callback: (payload: {

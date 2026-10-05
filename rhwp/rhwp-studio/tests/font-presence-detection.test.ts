@@ -87,3 +87,27 @@ test('페인트용 Canvas 치환 뒤에도 원본 face 의 설치 여부를 판�
   assert.equal(available('Apple SD Gothic Neo'), true);
   assert.equal(available('Imported Face'), true);
 });
+
+test('대체 웹폰트 CSS 별칭은 원본 face의 설치 여부를 바꾸지 않는다', () => {
+  const ctx = makeProbeContext(['Installed Face']);
+  const original = Object.getOwnPropertyDescriptor(ctx, 'font')!;
+  let webSubstituteLoaded = false;
+  let actualFaceImported = false;
+  const measure = ctx.measureText.bind(ctx);
+  ctx.measureText = text => webSubstituteLoaded && ctx.font.includes('"Missing Face"')
+    ? { width: 10 * text.length + 7 } as TextMetrics
+    : measure(text);
+  const available = createDeclaredFontAvailabilityProbe(
+    ctx,
+    { get: original.get!, set: original.set! },
+    family => actualFaceImported && family === 'Missing Face',
+    ['Missing Face', 'Installed Face'],
+  );
+
+  webSubstituteLoaded = true;
+  assert.equal(isFontFamilyAvailable('Missing Face', ctx), true);
+  assert.equal(available('Missing Face'), false);
+  assert.equal(available('Installed Face'), true);
+  actualFaceImported = true;
+  assert.equal(available('Missing Face'), true);
+});

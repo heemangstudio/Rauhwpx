@@ -19,6 +19,81 @@ impl EquationTacLineFlow {
     pub(crate) fn visual_line_idx_for_row(&self, row: usize) -> usize {
         self.visual_row_base + row
     }
+
+    /// A wrapped equation-only line may contain controls of different heights.
+    /// The composed line stores the tallest control's height, but Hancom advances
+    /// each physical row by the height of the controls actually placed on it.
+    fn physical_row_heights_px(
+        &self,
+        para: &Paragraph,
+        tac_offsets_px: &[(usize, f64, usize)],
+        line_height: f64,
+        dpi: f64,
+    ) -> Option<Vec<f64>> {
+        if self.extra_rows == 0 {
+            return None;
+        }
+        let mut heights = vec![0.0f64; self.extra_rows + 1];
+        for &(tac_index, row) in &self.tac_rows {
+            let &(_, _, control_index) = tac_offsets_px.get(tac_index)?;
+            let Some(Control::Equation(eq)) = para.controls.get(control_index) else {
+                return None;
+            };
+            let occupied_hu = eq.common.height as i32
+                + eq.common.margin.top as i32
+                + eq.common.margin.bottom as i32;
+            heights[row] = heights[row].max(crate::renderer::hwpunit_to_px(occupied_hu, dpi));
+        }
+        let tallest = heights.iter().copied().fold(0.0f64, f64::max);
+        // A saved line can intentionally suppress the equation's ink overhang.
+        // Its explicit height remains authoritative in that case.
+        if heights.iter().any(|h| *h <= 0.0) || tallest > line_height + 0.01 {
+            return None;
+        }
+        let shared_clearance = (line_height - tallest).max(0.0);
+        for height in &mut heights {
+            *height += shared_clearance;
+        }
+        Some(heights)
+    }
+
+    pub(crate) fn row_offset_px(
+        &self,
+        row: usize,
+        para: &Paragraph,
+        tac_offsets_px: &[(usize, f64, usize)],
+        line_height: f64,
+        line_spacing: f64,
+        dpi: f64,
+    ) -> f64 {
+        let row = row.min(self.extra_rows);
+        let heights = self.physical_row_heights_px(para, tac_offsets_px, line_height, dpi);
+        (0..row)
+            .map(|index| {
+                heights
+                    .as_ref()
+                    .map(|heights| heights[index])
+                    .unwrap_or(line_height)
+                    + line_spacing
+            })
+            .sum()
+    }
+
+    pub(crate) fn flow_height_px(
+        &self,
+        para: &Paragraph,
+        tac_offsets_px: &[(usize, f64, usize)],
+        line_height: f64,
+        line_spacing: f64,
+        dpi: f64,
+    ) -> f64 {
+        let heights = self.physical_row_heights_px(para, tac_offsets_px, line_height, dpi);
+        heights
+            .as_ref()
+            .map(|heights| heights.iter().sum::<f64>())
+            .unwrap_or(line_height * (self.extra_rows + 1) as f64)
+            + line_spacing * self.extra_rows as f64
+    }
 }
 
 pub(crate) fn compute_equation_only_tac_line_flow(
@@ -186,6 +261,118 @@ pub(crate) fn paragraph_effective_margin_left_with_indent_scale(
     indent_scale: f64,
 ) -> f64 {
     margin_left + paragraph_line_indent_with_scale(indent, visual_line_idx, indent_scale)
+}
+
+/// TAC-only 수식 행도 일반 TextLine 과 같은 문단 들여쓰기를 쓴다.
+/// 기존 HWP3 셀/비수식 TAC 의 절반 배율만 보존한다.
+pub(crate) fn tac_indent_scale(hwp3_layout: bool, in_cell: bool, equation_only: bool) -> f64 {
+    if hwp3_layout && (in_cell || !equation_only) {
+        0.5
+    } else {
+        1.0
+    }
+}
+
+#[cfg(test)]
+mod indent_tests {
+    use super::{paragraph_effective_margin_left_with_indent_scale, tac_indent_scale};
+
+    #[test]
+    fn equation_tac_continuation_uses_one_authored_indent() {
+        let margin = 20.0;
+        let hanging = -6.37;
+        for (hwp3, in_cell, equation_only, expected) in [
+            (false, false, true, 26.37),
+            (false, true, true, 26.37),
+            (true, false, true, 26.37),
+            (true, true, true, 23.185),
+            (true, false, false, 23.185),
+        ] {
+            let scale = tac_indent_scale(hwp3, in_cell, equation_only);
+            let x = paragraph_effective_margin_left_with_indent_scale(margin, hanging, 1, scale);
+            assert!(
+                (x - expected).abs() < 0.0001,
+                "hwp3={hwp3} in_cell={in_cell} equation_only={equation_only}: {x}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod row_height_tests {
+    use super::EquationTacLineFlow;
+    use crate::model::control::{Control, Equation};
+    use crate::model::paragraph::Paragraph;
+
+    fn equation(height: u32) -> Control {
+        let mut eq = Equation::default();
+        eq.common.height = height;
+        Control::Equation(Box::new(eq))
+    }
+
+    #[test]
+    fn wrapped_equation_rows_use_their_own_control_heights() {
+        let mut para = Paragraph {
+            controls: vec![equation(2298), equation(2395)],
+            ..Default::default()
+        };
+        let flow = EquationTacLineFlow {
+            tac_rows: vec![(0, 0), (1, 1)],
+            extra_rows: 1,
+            visual_row_base: 0,
+        };
+        let tacs = [(0, 1.0, 0), (1, 1.0, 1)];
+        let dpi = 96.0;
+        let tall = crate::renderer::hwpunit_to_px(2395, dpi);
+        let short = crate::renderer::hwpunit_to_px(2298, dpi);
+        let spacing = 6.0;
+        let offset = flow.row_offset_px(1, &para, &tacs, tall, spacing, dpi);
+        assert!((offset - short - spacing).abs() < 0.001);
+        assert!(
+            (flow.flow_height_px(&para, &tacs, tall, spacing, dpi) - short - tall - spacing).abs()
+                < 0.001
+        );
+
+        para.controls.swap(0, 1);
+        let offset = flow.row_offset_px(1, &para, &tacs, tall, spacing, dpi);
+        assert!((offset - tall - spacing).abs() < 0.001);
+        assert!(
+            (flow.flow_height_px(&para, &tacs, tall, spacing, dpi) - short - tall - spacing).abs()
+                < 0.001
+        );
+
+        para.controls[1] = equation(2395);
+        assert!(
+            (flow.flow_height_px(&para, &tacs, tall, spacing, dpi) - 2.0 * tall - spacing).abs()
+                < 0.001
+        );
+    }
+
+    #[test]
+    fn saved_short_line_and_explicit_single_row_keep_their_height() {
+        let para = Paragraph {
+            controls: vec![equation(2298), equation(2395)],
+            ..Default::default()
+        };
+        let tacs = [(0, 1.0, 0), (1, 1.0, 1)];
+        let mut flow = EquationTacLineFlow {
+            tac_rows: vec![(0, 0), (1, 1)],
+            extra_rows: 1,
+            visual_row_base: 0,
+        };
+        let line_height = 12.0;
+        let spacing = 6.0;
+        assert_eq!(
+            flow.flow_height_px(&para, &tacs, line_height, spacing, 96.0),
+            30.0
+        );
+        flow.tac_rows = vec![(0, 0)];
+        flow.extra_rows = 0;
+        assert_eq!(
+            flow.flow_height_px(&para, &tacs, line_height, spacing, 96.0),
+            line_height
+        );
+    }
 }
 
 fn equation_only_tac_line_assignment(

@@ -8,6 +8,11 @@ pub(crate) use helpers::*;
 
 pub mod builders;
 mod commands;
+
+/// 설정 시(`=1`) 로드 단계에서 저장 LINE_SEG 를 모두 버리고 누락 경로로 조판한다
+/// (`rhwp lineseg-oracle` 강제 재조판 계측용).
+pub const IGNORE_STORED_LINESEGS_ENV: &str = "RHWP_IGNORE_STORED_LINESEGS";
+mod equation_fonts;
 pub(crate) use commands::caret_edit::CaretParagraph;
 pub mod converters;
 pub(crate) mod html_table_import;
@@ -530,8 +535,18 @@ impl DocumentCore {
                 let resolved = resolve_font_substitution(&font.name, font.alt_type, lang_idx)
                     .unwrap_or(&font.name);
                 fonts.insert(resolved.to_string());
+                if let Some(substitute) = font
+                    .subst_font
+                    .as_ref()
+                    .map(|subst| subst.face.as_str())
+                    .filter(|name| !name.is_empty())
+                    .or_else(|| font.alt_name.as_deref().filter(|name| !name.is_empty()))
+                {
+                    fonts.insert(substitute.to_string());
+                }
             }
         }
+        equation_fonts::collect(&self.document, &mut fonts);
         let fonts_json: Vec<String> = fonts
             .iter()
             .map(|f| {
@@ -704,6 +719,31 @@ impl DocumentCore {
 #[cfg(test)]
 mod event_log_tests {
     use super::*;
+
+    #[test]
+    fn document_info_discovers_declared_substitute_faces() {
+        use crate::model::style::{Font, SubstFont};
+        let mut core = DocumentCore::new_empty();
+        core.document.doc_info.font_faces = vec![vec![
+            Font {
+                name: "Missing source face".into(),
+                subst_font: Some(SubstFont {
+                    face: "한컴바탕".into(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            Font {
+                name: "Missing legacy face".into(),
+                alt_name: Some("함초롬바탕".into()),
+                ..Default::default()
+            },
+        ]];
+        let info: serde_json::Value = serde_json::from_str(&core.get_document_info()).unwrap();
+        let fonts = info["fontsUsed"].as_array().unwrap();
+        assert!(fonts.iter().any(|name| name == "한컴바탕"));
+        assert!(fonts.iter().any(|name| name == "함초롬바탕"));
+    }
 
     fn event(offset: usize) -> DocumentEvent {
         DocumentEvent::TextInserted {

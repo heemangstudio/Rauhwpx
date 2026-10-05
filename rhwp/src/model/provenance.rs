@@ -67,6 +67,10 @@ pub struct SourceProvenance {
     /// rhwp HWPX→HWP 변환본 (`/RhwpHwpxOrigin` 마커, Issue #1770) —
     /// `is_hwpx_variant` 동치.
     pub hwpx_lineage: bool,
+    /// [lso-load4] 저장 줄 정보가 전혀 없어 로드가 모든 줄을 한컴 규칙으로 직접 조판한
+    /// XML 문서 — vpos 사다리가 순차 배치와 같은 계산이므로 저장 사다리용 vpos 보정을
+    /// 끈다.
+    pub own_line_layout: bool,
 }
 
 /// 레이아웃 호환 정책 질의 표면.
@@ -86,6 +90,10 @@ pub struct LayoutCompatibilityProfile {
     do_not_align_last_forbidden: bool,
     adjust_baseline_in_fixed_line_spacing: bool,
     ms_word_compatible_layout: bool,
+    /// 원본 컨테이너가 HWPX(OWPML) 인지 — 변환 계보와 무관한 순수 포맷 판정.
+    hwpx_container: bool,
+    /// 저장 줄 정보 없이 로드가 전부 조판한 문서 ([`SourceProvenance::own_line_layout`]).
+    own_line_layout: bool,
     /// 이 세션에서 편집 명령이 문서를 변조했다(native HWP5 섹션의 raw_stream 소실).
     /// 저장 시점 형상 전용 보정(선언 높이 fit-down 등)은 편집 문서에서 꺼야 한다 —
     /// 한글 편집기도 편집 중에는 측정 기반으로 재조판한다.
@@ -110,8 +118,31 @@ impl LayoutCompatibilityProfile {
             do_not_align_last_forbidden: false,
             adjust_baseline_in_fixed_line_spacing: false,
             ms_word_compatible_layout: false,
+            hwpx_container: false,
+            own_line_layout: false,
             session_edited: false,
         }
+    }
+
+    pub(crate) fn with_own_line_layout(mut self, enabled: bool) -> Self {
+        self.own_line_layout = enabled;
+        self
+    }
+
+    /// 저장 줄 정보 없이 로드가 모든 줄을 한컴 규칙으로 조판한 문서인가.
+    pub fn own_line_layout(&self) -> bool {
+        self.own_line_layout
+    }
+
+    pub(crate) fn with_hwpx_container(mut self, enabled: bool) -> Self {
+        self.hwpx_container = enabled;
+        self
+    }
+
+    /// 원본 컨테이너가 HWPX 인지. 한컴은 같은 문서라도 HWP/HWPX 읽기 경로가
+    /// 다르게 해석하는 컨트롤이 있다 (개체 컨테이너 문단의 새 번호 등).
+    pub fn hwpx_container(&self) -> bool {
+        self.hwpx_container
     }
 
     /// 이 세션의 편집 변조를 표시한다. `Document::layout_profile` 만 이 값을

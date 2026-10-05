@@ -114,6 +114,33 @@ export default function init(): Promise<void>;
 /** 버전 문자열 반환 */
 export function version(): string;
 
+/** RGBA 이미지를 지정한 영역에서 목표 크기로 Hermite 축소한다. */
+export function smoothHermiteDownsampleRgba(
+  pixels: Uint8Array,
+  sourceWidth: number,
+  sourceHeight: number,
+  cropLeft: number,
+  cropTop: number,
+  cropRight: number,
+  cropBottom: number,
+  targetWidth: number,
+  targetHeight: number,
+): Uint8Array;
+
+/** RGBA 이미지를 지정한 영역에서 목표 크기로 양선형/최근접 샘플링한다. */
+export function gridfitAffineSampleRgba(
+  pixels: Uint8Array,
+  sourceWidth: number,
+  sourceHeight: number,
+  cropLeft: number,
+  cropTop: number,
+  cropRight: number,
+  cropBottom: number,
+  targetWidth: number,
+  targetHeight: number,
+  nearest: boolean,
+): Uint8Array;
+
 /**
  * 사용자가 설치한 폰트 바이트로 레이아웃용 글자 폭 메트릭을 등록한다.
  * aliasesJson 은 폰트명 별칭 JSON 배열. 같은 별칭 + bold + italic 은 교체한다.
@@ -126,6 +153,15 @@ export function registerRuntimeFontMetrics(
   bold: boolean,
   italic: boolean,
 ): string;
+
+/** 정확한 글꼴이 없을 때 로드할 엔진 대체 후보의 JSON 배열. 호스트 등록 상태와 무관하다. */
+export function fontFallbackFamilies(fontFamily: string, fontSubst?: string): string;
+
+/** 사용자 HFT 파일의 그리기 전용 윤곽선을 등록한다. 지원하지 않는 은행이면 false. */
+export function registerHftFont(bytes: Uint8Array): boolean;
+
+/** 등록된 HFT 글리프의 SVG 경로 (1000 = 1em). 없으면 빈 문자열. */
+export function hftGlyphPathEm(family: string, codePoint: number): string;
 
 /** 등록된 런타임 폰트 메트릭을 모두 제거한다. */
 export function clearRuntimeFontMetrics(): void;

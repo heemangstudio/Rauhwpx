@@ -1,4 +1,4 @@
-import { WasmBridge, type PreparedWasmDocument } from '@/core/wasm-bridge';
+import { WasmBridge, installDeclaredFontAvailabilityProbe, type PreparedWasmDocument } from '@/core/wasm-bridge';
 import { installDocumentTitle } from '@/ui/document-title';
 import { FALLBACK_DOCUMENT_FILE_NAME } from '@/core/document-names';
 import type { DocumentInfo } from '@/core/types';
@@ -108,6 +108,7 @@ import {
   unattemptedDesktopFonts,
   type DesktopFontReport,
 } from '@/core/desktop-fonts';
+import { takeHftOutlineChange } from '@/core/hft-glyphs';
 import {
   chooseFontFolder,
   getFontFolderState,
@@ -979,7 +980,7 @@ let statusSectionIndex = 0;
 let paperStatusFrame = 0;
 let characterStatusFrame = 0;
 let characterRecountTimer: ReturnType<typeof setTimeout> | null = null;
-const CHARACTER_RECOUNT_IDLE_MS = 300;
+const CHARACTER_RECOUNT_IDLE_MS = 150;
 const statusCharacterCounter = new StatusCharacterCounter();
 const statusNumber = new Intl.NumberFormat('ko-KR');
 
@@ -1230,7 +1231,9 @@ function applyLateDesktopFontReport(report: DesktopFontReport): void {
 }
 
 function applyLateFontReports(reports: readonly DesktopFontReport[]): void {
-  if (fontReportsChangedLayout(reports)) eventBus.emit('font-files-imported');
+  // HFT 윤곽선은 폭을 바꾸지 않지만 같은 경로로 다시 그린다.
+  const hftChanged = takeHftOutlineChange();
+  if (fontReportsChangedLayout(reports) || hftChanged) eventBus.emit('font-files-imported');
   for (const report of reports) finalizeDesktopFontReport(report);
 }
 
@@ -1379,6 +1382,8 @@ async function initialize(): Promise<void> {
     msg.textContent = extensionViewerSettings.disableExternalWebFonts
       ? '로컬 폰트 준비 중...'
       : '웹폰트 로딩 중...';
+    // 대체 CSS 별칭이 원본 설치 여부를 가리지 않도록 등록 전에 측정한다.
+    installDeclaredFontAvailabilityProbe();
     // CSS @font-face 등록 + CRITICAL 폰트만 로드
     await loadWebFonts([], undefined, { ...extensionViewerSettings, onLateLoad: repaintAfterLateWebFonts });
     msg.textContent = 'WASM 로딩 중...';
@@ -1734,6 +1739,7 @@ async function initialize(): Promise<void> {
               isDirty: documentState.isDirty(),
               isNewDocument: wasm.isNewDocument,
               sourceFormat: wasm.getSourceFormat(),
+              pageCount: wasm.pageCount,
             };
           },
           moveToLibraryDocument: async (target) => {
@@ -1821,6 +1827,7 @@ function setupFileInput(): void {
 
   openAction?.addEventListener('click', () => dispatcher.dispatch('file:open'));
   newAction?.addEventListener('click', () => dispatcher.dispatch('file:new-doc'));
+  void renderEmptyStateRecents();
 
   fileInput.addEventListener('change', async (e) => {
     const input = e.target as HTMLInputElement;
@@ -2324,7 +2331,8 @@ async function initializeDocument(
       const settled = await settleWithin(desktopFonts, budget);
       if (settled) {
         const reports = settled.value;
-        if (fontReportsChangedLayout(reports)) wasm.refreshLayout();
+        const hftChanged = takeHftOutlineChange();
+        if (fontReportsChangedLayout(reports) || hftChanged) wasm.refreshLayout();
         for (const report of reports) finalizeDesktopFontReport(report);
       } else {
         console.info(`[DesktopFonts] ${DESKTOP_FONT_LOAD_BUDGET_MS}ms 안에 끝나지 않아 백그라운드에서 계속 연결합니다.`);
@@ -2432,7 +2440,8 @@ async function promptLocalFontsIfNeeded(docInfo: DocumentInfo): Promise<void> {
     if (typeof choice === 'object' && choice.type === 'import') {
       try {
         const result = await importLocalFontFiles(choice.files);
-        if (result.imported.length > 0) {
+        const hftChanged = takeHftOutlineChange();
+        if (result.imported.length > 0 || hftChanged) {
           const fonts = getLocalFonts({ includeRegistered: true });
           eventBus.emit('local-fonts-changed', { fonts, report: analyzeDocumentFonts(docInfo.fontsUsed) });
           eventBus.emit('font-files-imported');
@@ -2681,6 +2690,40 @@ async function loadBytes(
   });
 }
 
+/** 시작 화면(empty state)의 최근 문서 목록 — 파일 메뉴 서브패널과 같은 목록/명령을 쓴다. */
+async function renderEmptyStateRecents(): Promise<void> {
+  const host = document.getElementById('document-recent-list');
+  if (!host) return;
+  let recents;
+  try {
+    recents = await listRecentDocs();
+  } catch {
+    return;
+  }
+  if (!recents.length) return;
+  const title = document.createElement('h3');
+  title.className = 'empty-recent-title';
+  title.textContent = '최근 문서';
+  const list = document.createElement('div');
+  list.className = 'empty-recent-list';
+  for (const doc of recents.slice(0, 8)) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'empty-recent-item';
+    item.title = doc.fileName;
+    const name = document.createElement('span');
+    name.className = 'empty-recent-name';
+    name.textContent = doc.fileName;
+    const format = document.createElement('span');
+    format.className = 'empty-recent-format';
+    format.textContent = doc.sourceFormat.toUpperCase();
+    item.append(name, format);
+    item.addEventListener('click', () => dispatcher.dispatch('file:open-recent', { id: doc.id }));
+    list.appendChild(item);
+  }
+  host.replaceChildren(title, list);
+}
+
 /** 파일 메뉴 "최근 문서" 서브패널을 최신 목록으로 다시 렌더한다(메뉴 open 시 호출). */
 async function renderRecentSubmenu(): Promise<void> {
   const panel = document.getElementById('recent-docs-panel');
@@ -2817,7 +2860,7 @@ function restoreAutosaveDraftIntoEditor(draft: AutosaveDraftSummary): Promise<vo
 }
 
 
-async function createNewDocument(): Promise<void> {
+async function createNewDocument(): Promise<boolean> {
   const msg = sbMessage();
   const previousFileHandle = wasm.currentFileHandle;
   const identity = { documentId: createActiveDocumentId(), sourceDigest: null };
@@ -2838,6 +2881,7 @@ async function createNewDocument(): Promise<void> {
       { discardPreviousDraft: true },
     );
     await initializeDocument(docInfo);
+    return true;
   } catch (error) {
     await cancelDesktopDocument(reservationId).catch(() => {});
     activeDocumentId = null;
@@ -2848,6 +2892,7 @@ async function createNewDocument(): Promise<void> {
       .catch(() => {});
     msg.textContent = `새 문서 생성 실패: ${error}`;
     console.error('[main] 새 문서 생성 실패:', error);
+    return false;
   }
 }
 
@@ -2945,9 +2990,21 @@ async function openDocumentBytes(data: OpenDocumentBytesEvent) {
 // 커맨드에서 새 문서 생성 호출
 eventBus.on('create-new-document', (payload) => {
   void (async () => {
-    const options = payload as { skipUnsavedGuard?: boolean } | undefined;
-    if (!await canReplaceCurrentDocument(options?.skipUnsavedGuard)) return;
-    await createNewDocument();
+    const options = payload as { skipUnsavedGuard?: boolean; requestId?: string } | undefined;
+    const notify = (ok: boolean, error?: string) => {
+      if (options?.requestId) eventBus.emit('create-new-document:done', { requestId: options.requestId, ok, error });
+    };
+    try {
+      if (!await canReplaceCurrentDocument(options?.skipUnsavedGuard)) {
+        notify(false, '문서 생성이 취소되었습니다.');
+        return;
+      }
+      const ok = await createNewDocument();
+      notify(ok, ok ? undefined : sbMessage().textContent ?? '문서 생성 실패');
+    } catch (error) {
+      notify(false, error instanceof Error ? error.message : String(error));
+      console.error('[main] 새 문서 생성 요청 실패:', error);
+    }
   })();
 });
 eventBus.on('open-document-bytes', async (payload) => {

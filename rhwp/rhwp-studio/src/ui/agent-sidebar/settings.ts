@@ -408,6 +408,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   const pendingInstalls = new Set<AgentName>();
   let setupCloseTimer: ReturnType<typeof setTimeout> | null = null;
   let setupMessage = '';
+  /** 설치·로그인 실패 상세 — 메시지 배너 아래 펼침 상자로만 보인다. */
+  let setupDetail = '';
+  let setupDetailFor = '';
   let setupReauth = false;
   let setupCodePending = false;
   /** 브라우저 로그인이 진행 중인 동안 카드에 직접 그릴 인증 주소와 기기 코드. */
@@ -853,6 +856,10 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   setupProgressLine.hidden = true;
   const setupError = el('p', 'ag-agent-setup-error');
   setupError.hidden = true;
+  const setupErrorDetail = el('details', 'ag-agent-setup-error-detail');
+  const setupErrorDetailText = el('pre', '');
+  setupErrorDetail.append(el('summary', '', '자세한 출력'), setupErrorDetailText);
+  setupErrorDetail.hidden = true;
 
   const setupInstallPane = el('div', 'ag-agent-setup-pane');
   const setupInstall = el('button', 'ag-agent-setup-primary', '설치하고 계속');
@@ -964,6 +971,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     setupProgress,
     setupProgressLine,
     setupError,
+    setupErrorDetail,
     setupInstallPane,
     setupAuthPane,
     setupDonePane,
@@ -2295,7 +2303,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       } else if (working) {
         label = setup?.installing ? '설치 중…' : '로그인 중…';
         message = '설정에서 진행 상황 확인';
-      } else if (setup?.updateRequired) {
+      } else if (setup?.installed === true && setup?.updateRequired) {
+        // 설치 전에는 번들 런타임의 오래된 버전이 updateRequired 를 켠다 —
+        // 미설치 프로바이더에 업데이트 안내를 띄우지 않는다.
         label = '업데이트 필요';
         message = '설정에서 업데이트';
       } else if (!setup && !health) {
@@ -2315,9 +2325,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       row.detail.textContent = label;
       row.detail.title = label;
       row.detail.classList.toggle('ag-settings-account-detail', online && connected && label === (identity || '연결됨'));
-      row.detail.classList.toggle('ag-update-required', online && setup?.updateRequired === true);
+      row.detail.classList.toggle('ag-update-required', online && setup?.installed === true && setup?.updateRequired === true);
       row.message.textContent = message;
-      row.setup.textContent = working ? '진행 상황 보기' : setup?.updateRequired ? '업데이트' : connected ? '계정 관리' : '연결하기';
+      row.setup.textContent = working ? '진행 상황 보기' : setup?.installed && setup?.updateRequired ? '업데이트' : connected ? '계정 관리' : '연결하기';
       row.setup.disabled = !online || (!setup && !health);
       row.setup.setAttribute('aria-label', `${AGENT_LABEL[agent]} ${row.setup.textContent}`);
     }
@@ -2327,7 +2337,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   function announceProviderUpdates(statuses: AgentSetupStatusMap): void {
     for (const agent of ['claude', 'codex'] as const) {
       const status = statuses[agent];
-      if (!status?.updateRequired || !status.latestVersion) continue;
+      // 설치 전에는 번들 런타임의 오래된 버전이 updateRequired 를 켠다.
+      // 아무것도 설치되지 않은 첫 실행에 업데이트 배너를 띄우지 않는다.
+      if (!status?.installed || !status.updateRequired || !status.latestVersion) continue;
       const key = `${agent}@${status.latestVersion}`;
       if (announcedUpdates.has(key)) continue;
       announcedUpdates.add(key);
@@ -2751,6 +2763,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     setupRauAuthFeedback.hidden = agent !== 'rau' || rauAuthFeedback !== 'success';
     setupError.textContent = setupMessage;
     setupError.hidden = !setupMessage;
+    const errorDetail = setupMessage === setupDetailFor ? setupDetail : '';
+    setupErrorDetail.hidden = !errorDetail;
+    setupErrorDetailText.textContent = errorDetail;
     setupProgress.hidden = setupProgressPercent <= 0;
     setupProgressLine.hidden = setupProgressPercent <= 0;
     setupProgressLine.textContent = setupProgressPercent > 0
@@ -2770,10 +2785,16 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     restoreSetupFocus();
   }
 
-  /** 브라우저 로그인이 도는 동안만 주소·코드 상자를 세운다. */
+  /** 로그인이 진행 중일 때 주소·코드 상자와 대기/취소 줄을 세운다. */
   function renderSetupLoginBox(): void {
-    const authorizing = setupOauthPending && setupBusy && !supportsTerminalSetup(setupAgent);
+    // 인증이 진행 중일 때 버튼만 무효화하면 이유가 보이지 않는다. 어떤 로그인이라도
+    // 실행 중이면 대기 문구와 취소 버튼을 노출한다(키 검사 중에는 주소/코드 행만 비어 있다).
+    // 설치/업데이트처럼 진행률 막대가 진행 상황을 대신 보여 주는 동안에는 띄우지 않는다.
+    const authorizing = setupBusy && setupProgressPercent <= 0 && !supportsTerminalSetup(setupAgent);
     setupLoginBox.hidden = !authorizing;
+    setupLoginWait.textContent = setupOauthPending || setupAuthUrl || setupUserCode
+      ? '브라우저에서 로그인하면 자동으로 완료됩니다.'
+      : '로그인을 확인하는 중입니다.';
     setupAuthUrlRow.hidden = !setupAuthUrl;
     if (setupAuthUrl) {
       setupAuthLink.href = setupAuthUrl;
@@ -3878,6 +3899,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
             setupBusy = false;
             setupCodePending = false;
             setupMessage = ev.message;
+            setupDetail = ev.detail ?? '';
+            setupDetailFor = ev.message;
             resetRauAuthFeedback();
             clearSetupAuthPrompt();
             resetSetupInstallProgress();

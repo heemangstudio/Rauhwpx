@@ -43,11 +43,11 @@ test('fontFamilyChainForDisplay는 중복 없이 generic font를 그대로 처�
   assert.equal(fontFamilyChainForDisplay('serif', 0, 0), 'serif');
   assert.equal(
     fontFamilyChainForDisplay('없는글꼴', 0, 0),
-    '"함초롬돋움", "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", "Pretendard", sans-serif',
+    '"함초롬돋움", "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", "Pretendard", "나눔고딕", sans-serif',
   );
   assert.equal(
     fontFamilyChainForDisplay('없는글꼴', 0, 0, { confirmedLocalFonts: ['없는글꼴'] }),
-    '"없는글꼴", "함초롬돋움", "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", "Pretendard", sans-serif',
+    '"없는글꼴", "함초롬돋움", "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", "Pretendard", "나눔고딕", sans-serif',
   );
 });
 
@@ -61,8 +61,17 @@ test('한컴 고딕 대체 글꼴은 원본 뒤에 와서 누락된 글립만 �
 test('fontFamilyWithFallback 기존 helper는 동일한 fallback 계열을 사용한다', () => {
   assert.equal(
     fontFamilyWithFallback('굴림체'),
-    '"굴림체", "GulimChe", "D2Coding", "Noto Sans Mono", monospace',
+    '"굴림체", "GulimChe", "D2Coding", "Noto Sans Mono", "나눔고딕코딩", monospace',
   );
+});
+
+test('번들 폴백 서체가 OS 글꼴 없는 환경의 가나·키릴을 커버한다', () => {
+  // 브라우저는 font-family 목록 안에서만 글리프 대체를 찾는다. generic 앞의
+  // 나눔 서체는 항상 로드되는(CRITICAL_FONTS) 웹폰트라 Windows Server 처럼
+  // OS 일본어·키릴 폰트가 없는 환경에서도 tofu 대신 실제 글리프가 나온다.
+  assert.match(fontFamilyChainForDisplay('없는글꼴', 0, 0), /"나눔고딕", sans-serif$/);
+  assert.match(fontFamilyChainForDisplay('없는글꼴xyz', 0, 0), /"나눔고딕", sans-serif$/);
+  assert.match(fontFamilyChainForDisplay('바탕', 0, 0), /"나눔명조", serif$/);
 });
 
 test('수식 글꼴의 변수와 숫자는 본문 고딕 fallback으로 치환하지 않는다', () => {
@@ -79,4 +88,15 @@ test('수식 글꼴의 변수와 숫자는 본문 고딕 fallback으로 치환�
     confirmedLocalFonts: ['HYhwpEQ'],
   });
   assert.match(installed, /^"HYhwpEQ", "Times New Roman"/);
+});
+
+test('Hollyhock는 HFT 원본 이름과 Helvetica 쌍을 유지한다', () => {
+  for (const altType of [0, 1, 2]) {
+    assert.equal(resolveFont('HCI Hollyhock', altType, 1), 'HCI Hollyhock');
+    assert.match(fontFamilyChainForDisplay('HCI Hollyhock', altType, 1), /^"Helvetica", "Arial",/);
+  }
+  const chain = fontFamilyWithFallback('HCI Hollyhock');
+  assert.match(chain, /^"HCI Hollyhock", "Helvetica", "Arial",/);
+  assert.match(chain, /sans-serif$/);
+  assert.doesNotMatch(chain, /"HY중고딕"|"Noto Serif KR"/);
 });

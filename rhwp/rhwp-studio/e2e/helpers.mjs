@@ -224,9 +224,31 @@ export async function createNewDocument(page) {
   // ② 모달의 document-capture 키 핸들러가 이후 모든 실키 입력을 삼킨다
   // (실키 Ctrl+Z smoke 가 검출). e2e 셋업은 가드를 명시적으로 우회한다 —
   // 가드 동작 자체는 unsaved-changes-guard.test.mjs 가 자체 emit 으로 검증.
-  await page.evaluate(() => window.__eventBus?.emit('create-new-document', { skipUnsavedGuard: true }));
+  const result = await page.evaluate(() => new Promise((resolve, reject) => {
+    const bus = window.__eventBus;
+    if (!bus) { reject(new Error('Document event bus is unavailable')); return; }
+    const requestId = crypto.randomUUID();
+    const timer = setTimeout(() => { off(); reject(new Error('New document did not finish initializing')); }, 15000);
+    const off = bus.on('create-new-document:done', (result) => {
+      if (result.requestId !== requestId) return;
+      clearTimeout(timer); off(); resolve(result);
+    });
+    bus.emit('create-new-document', { skipUnsavedGuard: true, requestId });
+  }));
+  if (!result.ok) throw new Error(result.error || 'New document initialization failed');
   await page.waitForSelector(CANVAS_SELECTOR, { timeout: 10000 });
-  await page.evaluate(() => new Promise(r => setTimeout(r, 1000)));
+  await waitForState(page, 'new document input ready', () => Boolean(window.__inputHandler && window.__wasm?.pageCount > 0));
+}
+
+/** Wait for an observable result; include the named state in failures. */
+export async function waitForState(page, label, predicate, ...args) {
+  try { await page.waitForFunction(predicate, { timeout: 15000 }, ...args); }
+  catch (error) { throw new Error(`Timed out waiting for ${label}: ${error.message}`, { cause: error }); }
+}
+
+/** Allow the current layout/paint cycle to complete without a fixed settling delay. */
+export async function waitForPaint(page) {
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 }
 
 /** HWP 파일을 fetch하여 문서 로드 + 캔버스 대기 */

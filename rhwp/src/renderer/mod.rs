@@ -22,10 +22,12 @@ pub mod font_paths;
 pub(crate) mod form_caption;
 pub mod height_cursor;
 pub mod height_measurer;
+pub mod hft_glyphs;
 mod hft_metrics;
 pub mod html;
 pub mod hyperlinks;
 pub(crate) mod image_header;
+pub(crate) mod image_resample;
 pub mod image_resolver;
 pub mod layer_renderer;
 pub mod layout;
@@ -120,18 +122,56 @@ pub(crate) fn clamp_tab_leader_end_x(
         .unwrap_or(leader.end_x)
 }
 
+/// 형광펜(글자 음영) 사각형의 기준선 위 높이 (em). 한컴(macOS)은 음영을 글자 높이
+/// 1em 상자로 칠하고 기준선을 그 0.85em 지점에 둔다 — mel-001 p4 15pt 음영
+/// = 기준선 −12.72pt ~ +2.4pt.
+pub(crate) const SHADE_ASCENT_EM: f64 = 0.85;
+
+/// 점선(채움 3) 탭 리더의 점 배치: 한컴은 글자 크기 1/4 간격의 가운뎃점 글리프로 채우고
+/// 마지막 점이 뒤 글자 바로 앞에 닿는다 (aift 목차 돋움체 12.96pt: 3.24pt 간격, 점 지름
+/// 약 0.12em). `clamped_end` 는 `clamp_tab_leader_end_x` 결과(뒤 글자 앞 1/4em).
+/// 반환: (첫 점 중심 x, 마지막 점 중심 x, 점 지름, 간격). 점이 없으면 None.
+pub(crate) fn dot_tab_leader_layout(
+    start: f64,
+    clamped_end: f64,
+    font_size: f64,
+) -> Option<(f64, f64, f64, f64)> {
+    let pitch = font_size / 4.0;
+    let diameter = font_size * 0.12;
+    if pitch <= 0.0 {
+        return None;
+    }
+    let last = clamped_end + pitch - diameter / 2.0;
+    // 전각 가운뎃점 글리프의 앞쪽 반각 여백은 채우지 않는다. 끝점 기준의
+    // 점 위상은 유지하되 앞 글자에 닿는 두 점 자리를 비운다.
+    let ink_start = start + font_size * 0.5;
+    let count = ((last - ink_start - diameter / 2.0) / pitch).floor();
+    if count < 0.0 {
+        return None;
+    }
+    Some((last - count * pitch, last, diameter, pitch))
+}
+
 /// 텍스트 렌더링 스타일
 #[derive(Debug, Clone, Serialize)]
 pub struct TextStyle {
     /// Font substitution policy shared by wrapping and glyph positioning.
     pub font_metrics_policy: crate::model::provenance::FontMetricsPolicy,
-    /// 라틴 run의 일반 공백은 글꼴 고유 advance를 쓴다. 한글 공백은 반각을 유지한다.
+    /// 일반 공백을 글꼴 고유 advance 로 잰다 (MS Word 호환 라틴 run, 또는 글자 모양의
+    /// "글꼴에 어울리는 빈칸"). 아니면 반각을 유지한다.
     pub latin_space: bool,
     /// 글꼴 이름
     pub font_family: String,
     /// 문서가 선언한 대체 글꼴 face (HWPX `<hh:substFont>` / HWP5 alt_name).
     /// 원본 글꼴 미설치 시 generic 폴백보다 먼저 시도할 이름. 비어 있으면 없음.
     pub font_subst: String,
+    /// 문서가 지정한 원본 HFT 글꼴 이름 (HFT 가 아니면 빈 문자열).
+    /// `font_family` 는 측정용 대체 서체일 수 있다. 설치된 HFT 윤곽선이 있으면
+    /// 렌더러가 글자 모양만 이 서체로 그린다 (`hft_glyphs`).
+    pub hft_family: String,
+    /// 글자 위치 (CharShape 상대 위치, 글자 크기 비율, 양수 = 아래로).
+    /// 줄 배치는 바꾸지 않고 글리프만 기준선에서 옮긴다.
+    pub char_offset: f64,
     /// 글꼴 크기 (px)
     pub font_size: f64,
     /// 글자 색상
@@ -202,6 +242,10 @@ pub struct TextStyle {
     pub superscript: bool,
     /// 아래 첨자
     pub subscript: bool,
+    /// 첨자 측정 스타일에서만 쓰는 원래 글자 크기(px). 0 이면 첨자 측정이 아니다.
+    /// 한컴(macOS)은 첨자 run 의 빈칸을 줄이지 않고 원래 크기의 em/2 로 조판한다.
+    #[serde(skip)]
+    pub script_base_size: f64,
     /// 강조점 종류 (0=없음, 1~6)
     pub emphasis_dot: u8,
     /// 밑줄 모양 (표 27 선 종류, 0=실선 ~ 10=삼중선)
@@ -217,6 +261,32 @@ pub struct TextStyle {
 }
 
 impl TextStyle {
+    /// 문서 선언 대체를 보존하며 원본 HFT 별칭의 대체 서체를 해소한다.
+    /// 미설치 HY신명조 TTF는 함초롬바탕, 신명 HFT 별칭은 한컴바탕을 쓴다.
+    pub fn effective_font_subst(&self) -> &str {
+        if self.font_subst.is_empty()
+            && self.font_family == "HY신명조"
+            && !self.hft_family.is_empty()
+        {
+            "한컴바탕"
+        } else {
+            &self.font_subst
+        }
+    }
+
+    /// HFT의 굵게는 원본 폭에 반영하고, 대응 서체의 윤곽선 굵기는 유지한다.
+    /// 실제 Bold face 또는 원본보다 가는 명조 대체 서체는 굵게 그린다.
+    pub fn paint_bold(&self) -> bool {
+        self.bold
+            && (self.hft_family.is_empty()
+                // 한양신명조의 바탕 대체 윤곽선은 원본 HFT보다 가늘어 획 보정이 필요하다.
+                || self.hft_family == "한양신명조"
+                || font_metrics_data::find_metric(&self.hft_family, true, self.italic)
+                    .is_some_and(|matched| matched.metric.bold)
+                || self.font_metrics_policy
+                    == crate::model::provenance::FontMetricsPolicy::HancomWindows)
+    }
+
     /// 시각적 bold 여부.
     ///
     /// CharShape.bold=true 외에도 HY헤드라인M 같은 heavy display face 를
@@ -224,21 +294,33 @@ impl TextStyle {
     /// 시각 bold 소실을 보완하기 위해 SVG 출력 시 font-weight="bold" 강제에
     /// 사용된다.
     pub fn is_visually_bold(&self) -> bool {
-        self.bold
-            || crate::renderer::style_resolver::is_heavy_display_face(&self.font_family)
-            || crate::renderer::style_resolver::is_bold_weight_face(&self.font_family)
+        self.paint_bold()
+            || (self.face_name_weight_applies()
+                && (crate::renderer::style_resolver::is_heavy_display_face(&self.font_family)
+                    || crate::renderer::style_resolver::is_bold_weight_face(&self.font_family)))
     }
 
     /// 중고딕 계열(font-weight 500) 여부. SVG/HTML 출력 시 `font-weight: 500` 힌트 삽입에 사용.
     pub fn is_medium_weight(&self) -> bool {
-        !self.bold && crate::renderer::style_resolver::is_medium_weight_face(&self.font_family)
+        !self.paint_bold()
+            && self.face_name_weight_applies()
+            && crate::renderer::style_resolver::is_medium_weight_face(&self.font_family)
+    }
+
+    /// face 이름의 굵기 표기(Light/Bold/중고딕 등)를 대체 서체 굵기 힌트로 쓸지.
+    /// 한컴이 기본 글꼴로 대체하는 미해석 face 는 이름과 무관하게 보통 굵기로
+    /// 그린다 (`hancom_unresolved_face`).
+    fn face_name_weight_applies(&self) -> bool {
+        !hancom_unresolved_face(style_resolver::primary_font_name(&self.font_family))
     }
 
     /// CSS/SVG font-weight hint for fallback rendering.
     pub fn css_font_weight(&self) -> Option<&'static str> {
         if self.is_visually_bold() {
             Some("bold")
-        } else if crate::renderer::style_resolver::is_light_weight_face(&self.font_family) {
+        } else if self.face_name_weight_applies()
+            && crate::renderer::style_resolver::is_light_weight_face(&self.font_family)
+        {
             Some("300")
         } else if self.is_medium_weight() {
             Some("500")
@@ -253,8 +335,11 @@ impl Default for TextStyle {
         Self {
             font_metrics_policy: Default::default(),
             latin_space: false,
+            script_base_size: 0.0,
             font_family: String::new(),
             font_subst: String::new(),
+            hft_family: String::new(),
+            char_offset: 0.0,
             font_size: 0.0,
             color: 0,
             bold: false,
@@ -304,7 +389,7 @@ pub(crate) const FAUX_BOLD_STROKE_EM: f64 = 0.025;
 /// 실제 Bold 메트릭이 없을 때만 한/글과 같은 가는 합성 획을 추가한다.
 /// Bold 서체에 획까지 겹치면 글자가 과하게 두꺼워진다.
 pub(crate) fn faux_bold_stroke_width(style: &TextStyle, font_size: f64) -> Option<f64> {
-    if !style.bold {
+    if !style.paint_bold() {
         return None;
     }
     let primary = style_resolver::primary_font_name(&style.font_family);
@@ -346,6 +431,30 @@ pub(crate) fn macos_synthetic_bold_em(
     None
 }
 
+/// 한컴(macOS)이 HFT 서체의 굵게를 합성할 때 글자마다 더하는 advance(글자 크기 대비).
+/// 획 두께와 별개다 — 한양신명조 굵게 영문은 획이 거의 그대로인데 글자당 약 1/24em
+/// 씩 벌어진다 (복학원서 PDF 세 줄 실측 0.041·0.041·0.044em, HFT 폭 기준).
+/// 실측이 없는 HFT 는 None 으로 두어 공통 획 비율을 쓴다.
+pub(crate) fn hft_synthetic_bold_advance_em(font_name: &str) -> Option<f64> {
+    match font_name.trim() {
+        "한양신명조" => Some(1.0 / 24.0),
+        _ => None,
+    }
+}
+
+/// 한양 HFT 한글 글꼴(KS 고정폭, 전각 1em)이 직접 그리는 점 줄임표류인지.
+///
+/// 한컴은 한글 슬롯의 `․ ‥ …`(U+2024–U+2026)을 한양 HFT 한글 글꼴의 KS 전각
+/// 글자로 조판한다 — 복학원서 `휴․복학` 의 점이 한컴 Mac/Windows PDF 모두 1em
+/// 칸을 차지한다(대체 TTF 의 0.17–0.29em 이 아니다).
+pub(crate) fn hft_hangul_fullwidth_char(font_name: &str, c: char) -> bool {
+    matches!(c, '\u{2024}'..='\u{2026}')
+        && matches!(
+            font_name.trim(),
+            "한양신명조" | "한양견명조" | "한양중고딕" | "한양견고딕"
+        )
+}
+
 /// 위/아래 첨자 glyph 크기 비율. 한컴(macOS) PDF 실측: 15pt 본문 → 9.6pt (80/125 장치 단위).
 pub(crate) const SCRIPT_GLYPH_SCALE: f64 = 0.64;
 /// 위첨자 기준선 상승량 (기본 글자 크기 대비). 한컴 PDF 실측: 15pt → 6.6pt.
@@ -357,6 +466,26 @@ pub(crate) const SUBSCRIPT_DROP_EM: f64 = 0.12;
 /// 진행폭도 같은 비율로 줄어들며, 이는 측정 단계(`text_measurement::script_measure_style`)가
 /// 맡으므로 렌더러는 레이아웃 글자 위치를 그대로 쓴다.
 pub(crate) fn script_glyph_size_and_shift(style: &TextStyle, base_font_size: f64) -> (f64, f64) {
+    let (size, dy) = script_glyph_size_and_shift_only(style, base_font_size);
+    (size, dy + char_offset_dy(style))
+}
+
+/// 글자 위치(%)에 따른 글리프 기준선 이동량(px, 양수 = 아래로).
+///
+/// 한컴은 글리프를 글자 크기 비율만큼 내린다(음수는 올림) — onsaemiro 본문(-10%,
+/// 9.8pt)이 한컴 PDF 에서 기준선보다 0.96pt 위에 놓인다. 밑줄·취소선은 옮기지 않는다
+/// (exam-kor 2쪽: -10% 본문의 밑줄이 원래 기준선 기준 위치에 그대로 있다). 렌더러는
+/// `script_glyph_size_and_shift` 로 옮긴 y 에서 이 값을 빼 장식선 y 를 얻는다.
+pub(crate) fn char_offset_dy(style: &TextStyle) -> f64 {
+    let size = if style.font_size > 0.0 {
+        style.font_size
+    } else {
+        12.0
+    };
+    size * style.char_offset
+}
+
+fn script_glyph_size_and_shift_only(style: &TextStyle, base_font_size: f64) -> (f64, f64) {
     if style.superscript {
         (
             base_font_size * SCRIPT_GLYPH_SCALE,
@@ -395,6 +524,15 @@ pub(crate) fn halfwidth_punct_glyph_offset(
     };
     if !layout::is_halfwidth_forced_punct(ch) || !natural.is_finite() || glyph_advance <= 0.0 {
         return None;
+    }
+    // HFT 한 점 지시자는 전각 KS 칸에 놓인다. 대체 TTF 의 좁은 점 글리프는
+    // 그 칸 가운데에 두되 원문 advance 와 뒤따르는 글자 위치는 보존한다.
+    if ch == '\u{2024}'
+        && !style.hft_family.is_empty()
+        && style.font_metrics_policy == crate::model::provenance::FontMetricsPolicy::HcrDeclared
+        && glyph_advance > natural
+    {
+        return Some((glyph_advance - natural) / 2.0);
     }
     // 여는 쪽(Unicode Ps/Pi): 잉크가 전각 칸의 오른쪽 반에 있다.
     let opening = matches!(
@@ -445,7 +583,18 @@ pub(crate) fn halfwidth_punct_glyph_offsets(text: &str, style: &TextStyle) -> Ve
             if !layout::is_halfwidth_forced_punct(ch) {
                 return None;
             }
-            let natural = layout::registered_glyph_advance(ch, style)? * ratio;
+            let natural = if ch == '\u{2024}' && !style.hft_family.is_empty() {
+                hft_substitute_faces(&style.hft_family)
+                    .iter()
+                    .find_map(|family| {
+                        let mut paint_style = style.clone();
+                        paint_style.font_family = (*family).into();
+                        paint_style.hft_family.clear();
+                        layout::registered_glyph_advance(ch, &paint_style)
+                    })
+            } else {
+                layout::registered_glyph_advance(ch, style)
+            }? * ratio;
             let advance = glyph_positions.get(idx + 1)? - glyph_positions.get(idx)?;
             let offset =
                 halfwidth_punct_glyph_offset(ch.encode_utf8(&mut utf8), natural, advance, style)?;
@@ -457,6 +606,69 @@ pub(crate) fn halfwidth_punct_glyph_offsets(text: &str, style: &TextStyle) -> Ve
 #[cfg(test)]
 mod faux_bold_tests {
     use super::{faux_bold_stroke_width, TextStyle};
+
+    #[test]
+    fn hft_fallback_keeps_layout_bold_without_synthetic_paint() {
+        let mut style = TextStyle {
+            font_family: "한양중고딕".into(),
+            hft_family: "한양중고딕".into(),
+            font_metrics_policy: crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+            bold: true,
+            ..TextStyle::default()
+        };
+        assert!(style.bold);
+        assert!(!style.paint_bold());
+        assert_eq!(faux_bold_stroke_width(&style, 16.0), None);
+        assert!(!crate::paint::paint_op::PaintTextStyle::from(&style).bold);
+        style.hft_family = "한양신명조".into();
+        style.font_family = "한양신명조".into();
+        assert!(style.paint_bold());
+        style.hft_family = "HCI Poppy".into();
+        style.font_family = "HCI Poppy".into();
+        assert!(style.paint_bold());
+        style.hft_family.clear();
+        assert!(style.paint_bold());
+        style.hft_family = "한양중고딕".into();
+        style.font_metrics_policy = crate::model::provenance::FontMetricsPolicy::HancomWindows;
+        assert!(style.paint_bold());
+    }
+
+    #[test]
+    fn hft_dot_is_centered_without_changing_its_source_advance() {
+        let style = TextStyle {
+            font_family: "한양신명조".into(),
+            hft_family: "한양신명조".into(),
+            font_size: 16.0,
+            font_metrics_policy: crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+            ..Default::default()
+        };
+        assert_eq!(
+            super::halfwidth_punct_glyph_offset("․", 2.56, 16.0, &style),
+            Some(6.72)
+        );
+        let offsets = super::halfwidth_punct_glyph_offsets("가․나", &style);
+        assert_eq!(offsets.len(), 1, "{offsets:?}");
+        assert_eq!(offsets[0].0, 1);
+        assert!(offsets[0].1 > 5.0 && offsets[0].1 < 7.0, "{offsets:?}");
+        let positions = super::layout::compute_char_positions("가․나", &style);
+        assert_eq!(positions, vec![0.0, 16.0, 32.0, 48.0]);
+        let regular = TextStyle {
+            hft_family: String::new(),
+            ..style.clone()
+        };
+        assert_eq!(
+            super::halfwidth_punct_glyph_offset("․", 2.56, 16.0, &regular),
+            None
+        );
+        let windows = TextStyle {
+            font_metrics_policy: crate::model::provenance::FontMetricsPolicy::HancomWindows,
+            ..style
+        };
+        assert_eq!(
+            super::halfwidth_punct_glyph_offset("․", 2.56, 16.0, &windows),
+            None
+        );
+    }
 
     #[test]
     fn stroke_is_only_needed_when_bold_metrics_are_missing() {
@@ -549,6 +761,115 @@ pub struct GradientFillInfo {
     pub colors: Vec<ColorRef>,
     /// 색상 위치 (0.0~1.0 정규화)
     pub positions: Vec<f64>,
+}
+
+/// 글자 겹치기 안쪽 글자 크기 비율 (`charSz`).
+/// 양수는 백분율, 음수는 10% 단계 축소 (한컴 PDF 실측: -2 → 0.8, 17pt→13.56pt;
+/// -3 → 0.7), 0 은 100%.
+pub fn char_overlap_inner_ratio(inner_char_size: i8) -> f64 {
+    match inner_char_size {
+        n if n > 0 => f64::from(n) / 100.0,
+        n if n < 0 => (1.0 + f64::from(n) * 0.10).max(0.1),
+        _ => 1.0,
+    }
+}
+
+/// 글자 겹치기 테두리 도형을 그리는 글자. 한컴(macOS)은 테두리를 도형으로 긋지 않고
+/// 런 글꼴의 도형 글자를 런 크기·기준선 그대로 찍는다 (k-water-rfp `❸` 실측: 17pt
+/// HY헤드라인M `■` 글리프 위에 흰 13.56pt 숫자). 삼각형 등은 기존 도형 경로를 쓴다.
+pub fn char_overlap_shape_glyph(border_type: u8) -> Option<char> {
+    match border_type {
+        1 => Some('○'),
+        2 => Some('●'),
+        3 => Some('□'),
+        4 => Some('■'),
+        _ => None,
+    }
+}
+
+impl GradientFillInfo {
+    /// 모델 그라데이션 → 렌더링 정보. 원형은 한컴처럼 계단 색으로 펼친다.
+    pub fn from_model(g: &crate::model::style::GradientFill) -> Self {
+        let n = g.colors.len();
+        let positions: Vec<f64> = if g.positions.is_empty() {
+            (0..n).map(|i| i as f64 / (n.max(2) - 1) as f64).collect()
+        } else {
+            g.positions.iter().map(|&p| p as f64 / 100.0).collect()
+        };
+        let (colors, positions) = if g.gradient_type == 2 {
+            hancom_radial_steps(&g.colors, &positions, g.blur, g.step_center)
+        } else {
+            (g.colors.clone(), positions)
+        };
+        Self {
+            gradient_type: g.gradient_type,
+            angle: g.angle,
+            center_x: g.center_x,
+            center_y: g.center_y,
+            colors,
+            positions,
+        }
+    }
+}
+
+/// 한컴 원형 그라데이션의 계단 색 stop (같은 위치에 두 stop 을 둬 경계를 끊는다).
+///
+/// 한컴 Mac PDF 실측 (k-water-rfp 표지 셀 step 26·stepCenter 44, 2.1 절 사각형 step 50·
+/// stepCenter 50): 반지름 max(w,h)/2 를 `step` 개 동심원 띠로 나누고, 안쪽 절반의 띠가
+/// 중심~stepCenter%, 바깥 절반이 stepCenter%~가장자리를 고르게 덮는다. 중심에서 k 번째
+/// 띠 색은 첫 색 + trunc((끝 색 - 첫 색)·k/(step-1)) (채널별 정수 버림).
+fn hancom_radial_steps(
+    colors: &[ColorRef],
+    positions: &[f64],
+    steps: i16,
+    step_center: u8,
+) -> (Vec<ColorRef>, Vec<f64>) {
+    if colors.len() < 2 || positions.len() != colors.len() || steps < 2 {
+        return (colors.to_vec(), positions.to_vec());
+    }
+    let n = steps.min(256) as usize;
+    let inner = n / 2;
+    let outer = n - inner;
+    let c = (f64::from(step_center) / 100.0).clamp(0.0, 1.0);
+    let edge = |k: usize| -> f64 {
+        if k <= inner {
+            c * k as f64 / inner.max(1) as f64
+        } else {
+            c + (1.0 - c) * (k - inner) as f64 / outer as f64
+        }
+    };
+    // 띠 k 의 색: 색 목록 구간에서 정수 버림 보간
+    let band_color = |k: usize| -> ColorRef {
+        let u = k as f64 / (n - 1) as f64;
+        let seg = positions
+            .windows(2)
+            .position(|w| u <= w[1])
+            .unwrap_or(positions.len() - 2);
+        let (p0, p1) = (positions[seg], positions[seg + 1]);
+        let f = if p1 > p0 {
+            ((u - p0) / (p1 - p0)).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let (a, b) = (colors[seg], colors[seg + 1]);
+        let ch = |shift: u32| -> u32 {
+            let ca = ((a >> shift) & 0xFF) as f64;
+            let cb = ((b >> shift) & 0xFF) as f64;
+            ((ca + ((cb - ca) * f + 1e-9 * (cb - ca).signum()).trunc()).clamp(0.0, 255.0) as u32)
+                << shift
+        };
+        (a & 0xFF00_0000) | ch(16) | ch(8) | ch(0)
+    };
+    let mut out_colors = Vec::with_capacity(n * 2);
+    let mut out_positions = Vec::with_capacity(n * 2);
+    for k in 0..n {
+        let color = band_color(k);
+        out_colors.push(color);
+        out_positions.push(edge(k));
+        out_colors.push(color);
+        out_positions.push(edge(k + 1));
+    }
+    (out_colors, out_positions)
 }
 
 /// 선 렌더링 스타일
@@ -1105,6 +1426,16 @@ pub fn corrected_line_metrics_for_source(
         && (max_fs <= 0.0 || raw_text_height + 0.5 >= max_fs * 0.8)
     {
         (raw_text_height, ls)
+    } else if use_stored_text_height
+        && raw_lh > 0.0
+        && raw_text_height > lh
+        && raw_text_height <= raw_lh * 1.5
+    {
+        // 저장 글자 높이가 줄 높이보다 크면 한컴은 글자 높이로 다음 줄을 놓는다
+        // (다음 vertpos = vertpos + textheight + spacing). mel-001 p6 의 글자 테두리
+        // 줄(vertsize 1498 · textheight 1696), onsaemiro·exam-social 의 줄이 모두
+        // 이 규칙으로 저장돼 있다.
+        (raw_text_height, ls)
     } else {
         (lh, ls)
     }
@@ -1346,55 +1677,133 @@ pub fn base_family_without_weight_suffix(font_family: &str) -> Option<String> {
     (tokens.len() < original_len).then(|| tokens.join(" "))
 }
 
-/// 체인에 넣을 문서 선언 대체 글꼴.
-///
-/// 한컴이 정한 설치 대체 서체가 있는 HFT 글꼴(HCI Poppy → Palatino 등)은 그
-/// 서체가 generic 체인 맨 앞에 온다. 문서 대체 글꼴(예: Batang)을 그 앞에 두면
-/// 영문 글리프가 명조로 그려지므로 넣지 않는다.
-fn chain_font_subst<'a>(font_family: &str, font_subst: &'a str) -> &'a str {
-    if hft_substitute_faces(font_family).is_empty() {
-        font_subst
-    } else {
-        ""
+/// 같은 family가 여러 fallback 단계에 있어도 첫 위치와 표기만 남긴다.
+fn join_unique_font_families(families: &[String], separator: &str) -> String {
+    let mut names = Vec::new();
+    let mut unique = Vec::new();
+    for group in families {
+        for family in group.split(',') {
+            let family = family.trim();
+            let name = family.trim_matches(['\'', '"']);
+            if !name.is_empty() && !names.contains(&name) {
+                names.push(name);
+                unique.push(family);
+            }
+        }
     }
+    unique.join(separator)
 }
 
-/// [#3314] 렌더용 폴백 체인 문자열: `요청 face → (base family) → generic 체인`.
+/// 렌더용 체인: 요청 face → base family → HFT/문서 대체 → generic.
 pub fn render_font_family_chain(font_family: &str, font_subst: &str) -> String {
-    let fb = generic_fallback(font_family);
-    let font_subst = chain_font_subst(font_family, font_subst);
-    let subst = if font_subst.is_empty() {
-        String::new()
-    } else {
-        format!("'{}',", font_subst)
-    };
-    match base_family_without_weight_suffix(font_family) {
-        Some(base) => format!("{},'{}',{}{}", font_family, base, subst, fb),
-        None => format!("{},{}{}", font_family, subst, fb),
+    let mut families = vec![font_family.to_string()];
+    if let Some(base) = base_family_without_weight_suffix(font_family) {
+        families.push(format!("'{base}'"));
     }
+    families.extend(
+        font_fallback_families(font_family, font_subst)
+            .into_iter()
+            .map(|name| format!("'{name}'")),
+    );
+    families.push(generic_fallback(font_family).to_string());
+    join_unique_font_families(&families, ",")
 }
 
-/// Canvas 2D 렌더용 인용 font-family 체인.
-///
-/// [#3314] Canvas API가 요구하는 인용 형식을 유지하면서, 굵기 접미사 face
-/// 바로 뒤에 base family를 넣어 generic 폴백보다 먼저 선택되게 한다.
-/// 측정 경로에는 사용하지 않는다.
+/// Canvas 2D도 문서 대체 서체와 HFT 우선순위를 같은 규칙으로 해석한다.
 pub fn canvas_font_family_chain(font_family: &str, font_subst: &str) -> String {
     if font_family.is_empty() {
         return "sans-serif".to_string();
     }
-
-    let fallback = generic_fallback(font_family);
-    let font_subst = chain_font_subst(font_family, font_subst);
-    let subst = if font_subst.is_empty() {
-        String::new()
-    } else {
-        format!(" \"{}\",", font_subst)
-    };
-    match base_family_without_weight_suffix(font_family) {
-        Some(base) => format!("\"{}\", \"{}\",{} {}", font_family, base, subst, fallback),
-        None => format!("\"{}\",{} {}", font_family, subst, fallback),
+    let mut families = vec![format!("\"{font_family}\"")];
+    if let Some(base) = base_family_without_weight_suffix(font_family) {
+        families.push(format!("\"{base}\""));
     }
+    families.extend(
+        font_fallback_families(font_family, font_subst)
+            .into_iter()
+            .map(|name| format!("\"{name}\"")),
+    );
+    families.push(generic_fallback(font_family).to_string());
+    join_unique_font_families(&families, ", ")
+}
+
+/// run 의 원본 HFT 서체에서 `ch` 윤곽선을 찾는다 (설치된 HFT 를 등록한 경우만).
+///
+/// 기울임은 한컴의 합성 기울기를 아직 재현하지 않으므로 기존 대체 서체로 그린다.
+pub(crate) fn hft_glyph_for_style(
+    style: &TextStyle,
+    ch: char,
+) -> Option<std::sync::Arc<hft_glyphs::HftGlyph>> {
+    if style.hft_family.is_empty() || style.italic {
+        return None;
+    }
+    hft_glyphs::hft_glyph(&style.hft_family, ch)
+}
+
+/// macOS 한컴은 굵은 세로쓰기 HFT 한글의 원래 윤곽선에 아래쪽 굵은 사본을 겹친다.
+/// 추가 사본의 위치와 굵기는 글자 크기에 비례하며 레이아웃 폭은 바꾸지 않는다.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct HftVerticalBoldCopy {
+    pub offset_x: f64,
+    pub offset_y: f64,
+    pub rotation: f64,
+    pub embolden_x: f64,
+}
+
+impl HftVerticalBoldCopy {
+    pub fn x_offsets(self) -> impl Iterator<Item = f64> {
+        (0..=5).map(move |step| self.embolden_x * f64::from(step) / 5.0)
+    }
+
+    /// 사본은 글리프 효과만 반복하고 음영·강조점·장식선은 원래 위치에 둔다.
+    pub fn glyph_style(self, style: &TextStyle) -> TextStyle {
+        TextStyle {
+            underline: crate::model::style::UnderlineType::None,
+            strikethrough: false,
+            emphasis_dot: 0,
+            shade_color: 0xFFFF_FFFF,
+            ..style.clone()
+        }
+    }
+}
+
+pub(crate) fn hft_vertical_bold_copy(
+    style: &TextStyle,
+    text: &str,
+    is_vertical: bool,
+) -> Option<HftVerticalBoldCopy> {
+    if style.font_metrics_policy != crate::model::provenance::FontMetricsPolicy::HcrDeclared
+        || !is_vertical
+        || !style.bold
+        || style.italic
+        || style.hft_family.is_empty()
+        || text.is_empty()
+        || !(text.chars().all(layout::is_cjk_char) || matches!(text, "(" | ")"))
+    {
+        return None;
+    }
+    let (size, _) = script_glyph_size_and_shift(style, style.font_size.max(1.0));
+    let rotated = matches!(text, "(" | ")");
+    let embolden_x = size * 0.05;
+    Some(HftVerticalBoldCopy {
+        offset_x: if rotated { -embolden_x / 2.0 } else { 0.0 },
+        offset_y: if rotated {
+            embolden_x / 2.0
+        } else {
+            size * 0.9
+        },
+        rotation: if rotated { 90.0 } else { 0.0 },
+        embolden_x,
+    })
+}
+
+/// 대응 HY TTF가 있는 HFT의 가운뎃점은 원래 글꼴의 전각 자형을 쓴다.
+/// 일반 대체 점의 0.3em 폭과 원형 도형은 이 서체의 사각 점에 맞지 않는다.
+pub(crate) fn hft_uses_paired_middle_dot(style: &TextStyle) -> bool {
+    style.font_metrics_policy == crate::model::provenance::FontMetricsPolicy::HcrDeclared
+        && hft_substitute_faces(&style.hft_family)
+            .first()
+            .is_some_and(|name| name.starts_with("HY"))
 }
 
 /// 한컴 전용 HFT 영문 글꼴 대신 글리프를 그릴 설치 서체 (선호 순서).
@@ -1408,12 +1817,18 @@ pub fn canvas_font_family_chain(font_family: &str, font_subst: &str) -> String {
 pub(crate) fn hft_substitute_faces(font_family: &str) -> &'static [&'static str] {
     match font_family.trim() {
         "HCI Poppy" => &["Palatino", "Palatino Linotype", "Book Antiqua"],
+        // HMEHL*.HFT 설명의 Helvetica 쌍. 조판 폭은 HFT 512/em 테이블을 유지한다.
+        "HCI Hollyhock" => &["Helvetica", "Arial"],
         // 한양 견명조/견고딕 HFT 에는 한컴 배포 TTF 쌍이 있다
         // (known_font_filenames: 한양견명조→HYMJRE.TTF, 한양견고딕→HYGTRE.TTF).
         // 원명은 font_metrics_data 의 HanyangKyun* 메트릭이 재므로 레이아웃은
         // 그대로 두고, 미설치 시 글리프 소스만 같은 face 의 TTF 로 대체한다.
         "한양견명조" => &["HY견명조", "HYmjrE"],
         "한양견고딕" => &["HY견고딕", "HYgtrE"],
+        // 한양신명조 HFT(HGSMJ/ENSMJ)는 한컴이 자체 폭으로 조판한다 — 복학원서의
+        // 영문 줄 폭이 한컴 Mac/Windows PDF 모두 HFT 폭과 맞고 한컴바탕 hmtx 보다
+        // 약 2% 좁다. 글리프만 명조 번들로 대체한다.
+        "한양신명조" => &["한컴바탕", "Haansoft Batang", "함초롬바탕", "HCR Batang"],
         "신명 디나루" => &["돋움", "한컴돋움", "Haansoft Dotum"],
         // [macOS 정합] 한컴 FontMap.dat `mapFontClass=…,DOTUM` — 돋움 계열
         // HFT 가 미설치면 한컴은 돋움 계열 번들(한컴돋움)로 그린다.
@@ -1436,6 +1851,17 @@ pub(crate) fn hft_substitute_faces(font_family: &str) -> &'static [&'static str]
 /// `hft_substitute_faces` 와 달리 generic fallback 체인과 무관하며, 요청
 /// family 가 어느 경로로도 해석되지 않을 때만 호출자가 적용한다.
 pub(crate) fn hancom_substitute_faces(font_family: &str) -> &'static [&'static str] {
+    let declared = hancom_fontmap_faces(font_family);
+    if !declared.is_empty() {
+        declared
+    } else if hancom_unresolved_face(font_family) {
+        HANCOM_DEFAULT_FACES
+    } else {
+        &[]
+    }
+}
+
+fn hancom_fontmap_faces(font_family: &str) -> &'static [&'static str] {
     match font_family.trim() {
         "바탕" | "Batang" | "바탕체" | "BatangChe" | "궁서" | "Gungsuh" | "궁서체"
         | "GungsuhChe" => &["한컴바탕", "Haansoft Batang", "함초롬바탕", "HCR Batang"],
@@ -1443,13 +1869,127 @@ pub(crate) fn hancom_substitute_faces(font_family: &str) -> &'static [&'static s
         // exam-kor-1p 정답지는 HY신명조/한양신명조 런을 HCRBatang 글리프로 굽는다.
         // 두 서체를 generic serif chain 에 맡기면 macOS 는 AppleMyungjo 를 먼저
         // 잡아 한컴 출력과 다른 명조로 렌더한다.
-        "HY신명조" | "한양신명조" | "신명 신명조" | "신명 견명조" | "신명 중명조" | "명조"
-        | "새문명조" => &["한컴바탕", "Haansoft Batang", "함초롬바탕", "HCR Batang"],
+        // HY신명조 TTF 미설치·문서 대체 미지정 시 Mac 한컴은 HCRBatang을 쓴다.
+        // 굴착복구 현황의 한글 0.97em / 하이픈·숫자 0.55em과 PDF 임베드 서체로 확인.
+        // 문서가 한컴바탕을 지정한 경우는 font_fallback_families의 앞선 후보가 우선한다.
+        "HY신명조" => &["함초롬바탕", "HCR Batang", "한컴바탕", "Haansoft Batang"],
+        "신명 신명조" | "신명 견명조" | "신명 중명조" | "명조" | "새문명조" => {
+            &["한컴바탕", "Haansoft Batang", "함초롬바탕", "HCR Batang"]
+        }
         "돋움" | "Dotum" | "돋움체" | "DotumChe" | "굴림" | "Gulim" | "굴림체" | "GulimChe" => {
             &["한컴돋움", "Haansoft Dotum", "함초롬돋움", "HCR Dotum"]
         }
         _ => &[],
     }
+}
+
+/// 한컴 기본 글꼴 (함초롬돋움). 요청 face 를 어떤 경로로도 해석하지 못하면 쓴다.
+pub(crate) const HANCOM_DEFAULT_FACES: &[&str] = &["함초롬돋움", "HCR Dotum"];
+
+/// 사용 가능 여부를 조회하지 않는 선언 글꼴 판정. 메트릭이 있어도 FontMap의
+/// 그리기 대체 후보를 숨기지 않도록 후보 수집과 별도로 사용한다.
+fn hancom_known_face(name: &str) -> bool {
+    if name.is_empty() || name.contains(',') || HANCOM_DEFAULT_FACES.contains(&name) {
+        return true;
+    }
+    if !hft_substitute_faces(name).is_empty()
+        || hft_metric_fallback(name).is_some()
+        || font_metrics_data::find_metric(name, false, false).is_some()
+    {
+        return true;
+    }
+    // KoPub 돋움/바탕은 자체 폭 규칙(`kopub_char_width`)을 유지한다.
+    let lower = name.to_lowercase();
+    if name.contains("KoPub돋움체")
+        || name.contains("KoPub바탕체")
+        || lower.contains("kopub dotum")
+        || lower.contains("kopub batang")
+    {
+        return true;
+    }
+    false
+}
+
+/// 문서 대체 글꼴은 한컴의 문서 face 이름으로 조회한다.
+/// `HCR Batang`은 실제 TTF 영문 family여도 이 조회에서는 인식하지 않는다.
+/// Mac 한컴 교차 검증: 동일 문서에서 `함초롬바탕`은 HCRBatang을 선택하지만
+/// `HCR Batang`은 기본 HCRDotum으로 돌아간다. 원본 face 이름에는 적용하지 않는다.
+pub(crate) fn hancom_document_substitute(font_subst: &str) -> &str {
+    match font_subst.trim() {
+        "HCR Batang" => "",
+        name => name,
+    }
+}
+
+/// 정확한 요청 글꼴을 찾지 못했을 때 로드할 그리기 후보. 순서와 중복 제거는
+/// 모든 호스트에서 같으며 현재 설치/등록된 글꼴에 의존하지 않는다.
+pub(crate) fn font_fallback_families(font_family: &str, font_subst: &str) -> Vec<String> {
+    let name = font_family.trim();
+    let mut families = Vec::new();
+    let mut push = |family: &str| {
+        if !family.is_empty() && family != name && !families.iter().any(|item| item == family) {
+            families.push(family.to_string());
+        }
+    };
+    // HFT 고유 치환(HCI Poppy → Palatino 등)은 문서의 일반 대체 서체보다 앞선다.
+    for family in hft_substitute_faces(name) {
+        push(family);
+    }
+    push(hancom_document_substitute(font_subst));
+    for family in hancom_fontmap_faces(name) {
+        push(family);
+    }
+    if !hancom_known_face(name) {
+        for family in HANCOM_DEFAULT_FACES {
+            push(family);
+        }
+    }
+    families
+}
+
+/// [macOS 정합] 한컴이 이름으로 해석하지 못하는 face 인가.
+///
+/// 한컴(macOS)은 요청 face 가 설치·번들·FontMap 치환 어디에도 없으면 face 이름
+/// (바탕/돋움, Light/Bold 등)과 무관하게 기본 글꼴 함초롬돋움으로 조판하고
+/// 그린다. 굵기는 글자 모양의 진하게 속성만 따른다 — onsaemiro-textbook 정답지는
+/// KoPubWorld바탕체 Light·배달의민족 도현·IM혜민 Bold 등 미설치 서체 런을 모두
+/// HCRDotum(진하게 런만 HCRDotum-Bold)으로 굽는다.
+///
+/// 해석 가능 = 내장 메트릭(HFT 포함)·한컴 FontMap 치환·문서 내장/런타임 등록
+/// face·custom 폰트 경로·시스템 폰트 중 하나라도 있음. 내장 메트릭이 있는
+/// face 는 종전대로 그 메트릭을 쓴다.
+pub(crate) fn hancom_unresolved_face(font_family: &str) -> bool {
+    let name = font_family.trim();
+    if hancom_known_face(name) {
+        return false;
+    }
+    if layout::active_shaping_face_available(name)
+        || runtime_font_metrics::bold_fallback(name, false).is_some()
+    {
+        return false;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if font_paths::custom_font_face_available(name) {
+            return false;
+        }
+        thread_local! {
+            static SYSTEM_FACE_CACHE: std::cell::RefCell<std::collections::HashMap<String, bool>> =
+                std::cell::RefCell::new(std::collections::HashMap::new());
+        }
+        let on_system = SYSTEM_FACE_CACHE.with(|cache| {
+            if let Some(hit) = cache.borrow().get(name) {
+                return *hit;
+            }
+            let hit = font_paths::font_family_available(name, &[]);
+            cache.borrow_mut().insert(name.to_string(), hit);
+            hit
+        });
+        if on_system {
+            return false;
+        }
+    }
+    true
 }
 
 /// HFT 폭 테이블에 없는 글자(0x7F 이후)를 잴 글꼴.
@@ -1486,6 +2026,11 @@ pub fn generic_fallback(font_family: &str) -> &'static str {
         // 'Noto Sans KR ExtraLight'(rsvg 페이지 밀도 0.277)를 무거운 Noto 직전에 삽입 —
         // 시스템 고딕 렌더는 무영향, Noto 폴백만 가볍게 교체.
         return "'Malgun Gothic','맑은 고딕','Apple SD Gothic Neo','Noto Sans KR ExtraLight','Noto Sans KR','Pretendard','Haansoft Dotum','한컴돋움','HCR Dotum','함초롬돋움','HCR Batang Ext-B','함초롬바탕 확장B','HCR Batang Ext','함초롬바탕 확장','HCR Batang','함초롬바탕','Source Han Serif K Old Hangul',sans-serif";
+    }
+    // 한컴이 해석하지 못하는 face 는 이름 분류(바탕체=고정폭 등)와 무관하게
+    // 기본 글꼴 함초롬돋움으로 그린다 (`hancom_unresolved_face`).
+    if hancom_unresolved_face(font_family) {
+        return "'HCR Dotum','함초롬돋움','Malgun Gothic','맑은 고딕','Apple SD Gothic Neo','Noto Sans KR','Pretendard','HCR Batang Ext-B','함초롬바탕 확장B','HCR Batang Ext','함초롬바탕 확장','HCR Batang','함초롬바탕','Source Han Serif K Old Hangul',sans-serif";
     }
     // 고정폭 키워드
     let lower = font_family.to_ascii_lowercase();
@@ -1887,6 +2432,24 @@ fn format_hanja_number(n: u16) -> String {
 mod tests {
     use super::*;
 
+    /// 한컴 Mac PDF 실측 (k-water-rfp 표지 셀): step 26·stepCenter 44 원형은 안쪽 13띠가
+    /// 반지름 0~44%, 바깥 13띠가 44~100% 를 덮고, 띠 색은 채널별 정수 버림 보간이다.
+    #[test]
+    fn hancom_radial_gradient_steps_follow_step_center() {
+        // ColorRef 는 0x00BBGGRR
+        let center = 0x00FE_E6D6; // #D6E6FE
+        let edge = 0x0080_0000; // #000080
+        let (colors, positions) = hancom_radial_steps(&[center, edge], &[0.0, 1.0], 26, 44);
+        assert_eq!(colors.len(), 52);
+        assert_eq!(colors[0], center);
+        assert_eq!(colors[51], edge);
+        // 바깥에서 두 번째 띠: (9, 10, 134) — 버림 보간 (한컴 PDF 0.0353/0.0392/0.5255)
+        assert_eq!(colors[49], 0x0086_0A09);
+        assert!((positions[26] - 0.44).abs() < 1e-9);
+        assert!((positions[2] - 0.44 / 13.0).abs() < 1e-9);
+        assert!((positions[51] - 1.0).abs() < 1e-9);
+    }
+
     #[test]
     fn test_render_backend_from_str() {
         assert_eq!(
@@ -1980,6 +2543,23 @@ mod tests {
 
         assert!((line_height - max_fs).abs() < 0.01);
         assert!((line_spacing - max_fs * 0.6).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_source_line_metrics_advance_by_taller_stored_text_height() {
+        // mel-001 p6: vertsize 1498 · textheight 1696 → 다음 줄은 textheight 기준.
+        let max_fs = hwpunit_to_px(1300, 96.0);
+        let (line_height, _) = corrected_line_metrics_for_source(
+            hwpunit_to_px(1498, 96.0),
+            hwpunit_to_px(1696, 96.0),
+            hwpunit_to_px(1016, 96.0),
+            max_fs,
+            LineSpacingType::Percent,
+            160.0,
+            true,
+            false,
+        );
+        assert!((line_height - hwpunit_to_px(1696, 96.0)).abs() < 0.01);
     }
 
     #[test]
@@ -2205,30 +2785,60 @@ mod tests {
         let poppy = render_font_family_chain("HCI Poppy", "Batang");
         assert!(poppy.starts_with("HCI Poppy,'Palatino','Palatino Linotype',"));
         assert!(canvas_font_family_chain("HCI Poppy", "Batang")
-            .starts_with("\"HCI Poppy\", 'Palatino','Palatino Linotype',"));
+            .starts_with("\"HCI Poppy\", \"Palatino\", \"Palatino Linotype\","));
 
+        let canvas = canvas_font_family_chain("Noto Serif KR Black", "");
+        assert!(canvas.starts_with("\"Noto Serif KR Black\", \"Noto Serif KR\","));
         assert_eq!(
-            canvas_font_family_chain("Noto Serif KR Black", ""),
-            format!(
-                "\"Noto Serif KR Black\", \"Noto Serif KR\", {}",
-                generic_fallback("Noto Serif KR Black")
-            )
+            canvas.rsplit(',').next().unwrap().trim(),
+            generic_fallback("Noto Serif KR Black")
+                .rsplit(',')
+                .next()
+                .unwrap()
         );
-        assert_eq!(
-            canvas_font_family_chain("맑은 고딕", ""),
-            format!("\"맑은 고딕\", {}", generic_fallback("맑은 고딕"))
-        );
-        assert_eq!(
-            canvas_font_family_chain("나눔고딕", "한컴바탕"),
-            format!(
-                "\"나눔고딕\", \"한컴바탕\", {}",
-                generic_fallback("나눔고딕")
-            )
-        );
+        let korean = canvas_font_family_chain("맑은 고딕", "");
+        assert!(korean.starts_with("\"맑은 고딕\", 'Malgun Gothic',"));
+        let sub = canvas_font_family_chain("나눔고딕", "한컴바탕");
+        assert!(sub.starts_with("\"나눔고딕\", \"한컴바탕\","));
+        for family_chain in [&chain, &plain, &poppy, &canvas, &korean, &sub] {
+            let names: Vec<_> = family_chain
+                .split(',')
+                .map(|family| family.trim().trim_matches(['\'', '"']))
+                .collect();
+            for (index, name) in names.iter().enumerate() {
+                assert!(
+                    !names[..index].contains(name),
+                    "중복 family: {family_chain}"
+                );
+            }
+        }
     }
 
     #[test]
     fn test_generic_fallback() {
+        // 시스템 설치 상태와 무관하게 알려진 face 의 이름 분류를 검증한다.
+        // 미설치 face 는 macOS 한컴 기본 서체로 내려가는 별도 계약이다.
+        assert!(generic_fallback("__rhwp_missing_Serif_Mono__")
+            .starts_with("'HCR Dotum','함초롬돋움',"));
+        let font = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/ttfs/opensource/NotoSansKR-Regular.ttf"
+        ))
+        .unwrap();
+        let aliases: Vec<String> = [
+            "D2Coding ligature",
+            "Noto Sans Mono",
+            "Noto Serif CJK SC",
+            "Liberation Serif",
+            "Noto Serif KR",
+            "Liberation Sans",
+            "Noto Sans KR",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        crate::renderer::runtime_font_metrics::register(&font, &aliases, false, false).unwrap();
+
         let serif = "'Batang','바탕','Nanum Myeongjo','AppleMyungjo','Noto Serif KR','Noto Serif CJK KR','Haansoft Batang','한컴바탕','HCR Batang Ext-B','함초롬바탕 확장B','HCR Batang Ext','함초롬바탕 확장','HCR Batang','함초롬바탕','Source Han Serif K Old Hangul',serif";
         let sans = "'Malgun Gothic','맑은 고딕','Apple SD Gothic Neo','Noto Sans KR ExtraLight','Noto Sans KR','Pretendard','Haansoft Dotum','한컴돋움','HCR Dotum','함초롬돋움','HCR Batang Ext-B','함초롬바탕 확장B','HCR Batang Ext','함초롬바탕 확장','HCR Batang','함초롬바탕','Source Han Serif K Old Hangul',sans-serif";
         // Task #1224: ExtraLight 가 무거운 Noto 직전에 위치하는지 명시 검증
@@ -2274,6 +2884,7 @@ mod tests {
         assert_eq!(generic_fallback("Noto Sans KR"), sans);
         // 빈 문자열
         assert_eq!(generic_fallback(""), sans);
+        crate::renderer::runtime_font_metrics::clear();
     }
 
     #[test]
@@ -2308,10 +2919,59 @@ mod tests {
     }
 
     #[test]
+    fn hft_vertical_bold_copy_preserves_source_orientation_and_profile() {
+        let mut style = TextStyle {
+            font_size: 16.0,
+            bold: true,
+            hft_family: "한양중고딕".into(),
+            font_metrics_policy: crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+            ..Default::default()
+        };
+        let copy = hft_vertical_bold_copy(&style, "데", true).unwrap();
+        assert_eq!(copy.offset_y, 14.4);
+        assert_eq!(copy.embolden_x, 0.8);
+        assert_eq!(copy.x_offsets().count(), 6);
+        assert!(hft_vertical_bold_copy(&style, "데", false).is_none());
+        let paren = hft_vertical_bold_copy(&style, "(", true).unwrap();
+        assert_eq!(paren.offset_x, -0.4);
+        assert_eq!(paren.offset_y, 0.4);
+        assert_eq!(paren.rotation, 90.0);
+        assert_eq!(paren.embolden_x, 0.8);
+        assert!(hft_vertical_bold_copy(&style, "A", true).is_none());
+        assert!(hft_vertical_bold_copy(&style, "데(A)", true).is_none());
+        assert!(hft_vertical_bold_copy(&style, "", true).is_none());
+        style.font_metrics_policy = crate::model::provenance::FontMetricsPolicy::HancomWindows;
+        assert!(hft_vertical_bold_copy(&style, "데", true).is_none());
+        style.font_metrics_policy = crate::model::provenance::FontMetricsPolicy::HcrDeclared;
+        style.bold = false;
+        assert!(hft_vertical_bold_copy(&style, "데", true).is_none());
+        style.bold = true;
+        style.italic = true;
+        assert!(hft_vertical_bold_copy(&style, "데", true).is_none());
+        style.italic = false;
+        style.hft_family.clear();
+        assert!(hft_vertical_bold_copy(&style, "데", true).is_none());
+    }
+
+    #[test]
     fn test_format_number_hangul() {
         assert_eq!(format_number(1, NumberFormat::HangulGaNaDa), "가");
         assert_eq!(format_number(2, NumberFormat::HangulGaNaDa), "나");
         assert_eq!(format_number(1, NumberFormat::HangulNumber), "일");
         assert_eq!(format_number(12, NumberFormat::HangulNumber), "십이");
+    }
+}
+
+#[cfg(test)]
+mod tab_leader_spacing_tests {
+    use super::dot_tab_leader_layout;
+
+    #[test]
+    fn tab_leader_reserves_leading_glyph_bearing_without_changing_end_phase() {
+        let (first, last, diameter, pitch) = dot_tab_leader_layout(20.0, 100.0, 16.0).unwrap();
+        assert!(first - diameter / 2.0 >= 28.0);
+        assert!((last - 103.04).abs() < 1e-9);
+        assert!(((last - first) / pitch).fract().abs() < 1e-9);
+        assert!(dot_tab_leader_layout(20.0, 23.0, 16.0).is_none());
     }
 }

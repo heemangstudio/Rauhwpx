@@ -80,6 +80,16 @@ export async function writeRenderPng({ workDir, target, data }) {
   assertInside(realParent);
   const bytes = Buffer.from(data, 'base64');
   const finalPath = path.join(realParent, path.basename(target));
+  // Windows 는 O_NOFOLLOW 를 지원하지 않아 심볼릭 파일을 따라 열린다 — lstat 로
+  // 마지막 성분의 링크를 먼저 거절한다. (재생성 경합은 flags 의 O_NOFOLLOW 가 POSIX 에서 막는다.)
+  try {
+    const stat = await fs.lstat(finalPath);
+    if (stat.isSymbolicLink()) {
+      throw saveError('INVALID_ARGS', 'savePath must not be a symbolic link');
+    }
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
   const flags = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC
     | (fsConstants.O_NOFOLLOW ?? 0);
   const handle = await fs.open(finalPath, flags, 0o600);

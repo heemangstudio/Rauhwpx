@@ -818,6 +818,7 @@ pub(crate) fn parse_hwpx_validated(data: &[u8]) -> Result<Document, HwpxError> {
             format: crate::model::provenance::SourceFormat::Hwpx,
             hwp3_lineage: false,
             hwpx_lineage: false,
+            own_line_layout: false,
         },
     };
 

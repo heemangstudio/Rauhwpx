@@ -79,7 +79,7 @@ async function openPage(): Promise<Page> {
     const branchLabels = (id: string) => branches
       .filter((branch) => branch.headId === id)
       .map((branch) => branch.name);
-    const state = {
+    let state = {
       documentId: 'branch-browser-test',
       documentName: 'branch-browser-test.hwpx',
       saved: true,
@@ -182,6 +182,10 @@ async function openPage(): Promise<Page> {
         calls,
         close: () => manager.close(),
         dispose: () => manager.dispose(),
+        update(patch: Partial<typeof state>) {
+          state = { ...state, ...patch };
+          listener(state);
+        },
         setBlocked(reason: string | null) {
           state.mutationBlockedReason = reason;
           listener(state);
@@ -192,17 +196,50 @@ async function openPage(): Promise<Page> {
   return page;
 }
 
-test('closing the page cancels an open merge prompt before it can start work', async () => {
+for (const action of ['close', 'dispose'] as const) test(`${action} cancels an open merge prompt before it can start work`, async () => {
   const page = await openPage();
   try {
     await page.click('.ag-versions-toolbar [data-version-action="merge"]');
     await page.waitForSelector('.ag-version-prompt-overlay');
-    await page.evaluate(() => (window as any).__versionManagerHarness.close());
+    await page.evaluate((action) => (window as any).__versionManagerHarness[action](), action);
     assert.equal(await page.$('.ag-version-prompt-overlay'), null);
     assert.deepEqual(await page.evaluate(() => (window as any).__versionManagerHarness.calls), []);
   } finally {
     await page.close();
   }
+});
+
+test('restore requires a current comparison and saved/enabled document state', async () => {
+  const page=await openPage();
+  try {
+    const restore=()=>page.$eval('.ag-versions-inspector-actions button:nth-child(2)',(b)=> (b as HTMLButtonElement).disabled);
+    assert.equal(await restore(),true);
+    await page.click('.ag-versions-inspector-actions button:first-child');
+    await page.waitForFunction(()=>!(document.querySelector('.ag-versions-inspector-actions button:nth-child(2)') as HTMLButtonElement).disabled);
+    await page.evaluate(()=>(window as any).__versionManagerHarness.update({dirty:true}));
+    assert.equal(await restore(),true,'A mutation invalidates the comparison');
+    for(const patch of [{saved:false},{saved:true,enabled:false},{enabled:true,mutationBlockedReason:'Agent editing'}]) {
+      await page.evaluate((patch)=>(window as any).__versionManagerHarness.update(patch),patch);
+      const actions=await page.$$eval('[data-version-mutation="true"]',nodes=>nodes.filter(n=>(n as HTMLElement).checkVisibility()).map(n=>(n as HTMLButtonElement).disabled));
+      assert(actions.every(Boolean),'Unavailable document state blocks visible mutations');
+      assert.equal(await page.$eval('.ag-versions-toolbar button:first-child', b=>(b as HTMLButtonElement).disabled),true);
+      assert.deepEqual(await page.evaluate(()=>(window as any).__versionManagerHarness.calls),[]);
+    }
+  } finally { await page.close(); }
+});
+
+test('cancelling a named dialog restores focus and keeps mutation calls empty', async () => {
+  const page=await openPage();
+  try {
+    const action='.ag-versions-toolbar [data-version-action="merge"]';
+    await page.focus(action);await page.keyboard.press('Enter');
+    await page.waitForSelector('.ag-version-prompt-overlay');
+    assert.equal(await page.$eval('.ag-version-prompt-overlay [role="dialog"]', el=>el.getAttribute('aria-modal')),'true');
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(()=>!document.querySelector('.ag-version-prompt-overlay'));
+    assert.equal(await page.$eval(action,el=>el===document.activeElement),true);
+    assert.deepEqual(await page.evaluate(()=>(window as any).__versionManagerHarness.calls),[]);
+  } finally { await page.close(); }
 });
 
 test('recovery uses a fresh branch name and leaves the current document selected', async () => {

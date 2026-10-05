@@ -107,6 +107,19 @@ pub fn write_picture<W: Write>(
     // [#1501] 그룹 자식 pic 의 transMatrix(render_tx/sx) 보존 — 종전 identity 고정 출력은
     // 그룹 내 자식을 원점·고유크기로 붕괴시켰다. shape.rs 의 raw_rendering 디코더 공유.
     super::shape::write_rendering_info(w, &pic.shape_attr)?;
+    // 그림도 도형과 같은 lineShape를 보존해야 저장 후 테두리가 사라지지 않는다.
+    if pic.border_attr.attr != 0
+        || pic.border_color != 0
+        || pic.border_width != 0
+        || pic.border_attr.outline_style != 0
+    {
+        let border = crate::model::style::ShapeBorderLine {
+            color: pic.border_color,
+            width: pic.border_width,
+            ..pic.border_attr
+        };
+        super::shape::write_line_shape(w, &border)?;
+    }
     write_img_rect(w, pic)?;
     write_img_clip(w, pic)?;
     write_in_margin(w, pic)?;
@@ -961,7 +974,7 @@ mod tests {
     // ---------- #2712: 그림 hp:sz 크기 기준·크기 보호 라운드트립 ----------
 
     /// 그림 조각을 한 문단짜리 `<hs:sec>` 으로 감싸 다시 파싱한다(IR 수준 역검증용).
-    fn reparse_pic_common(fragment: &str) -> CommonObjAttr {
+    fn reparse_picture(fragment: &str) -> Picture {
         let xml = format!(
             concat!(
                 r#"<?xml version="1.0" encoding="UTF-8"?>"#,
@@ -975,9 +988,32 @@ mod tests {
         let section = crate::parser::hwpx::section::parse_hwpx_section(&xml)
             .expect("파싱 가능한 그림 조각이어야 함");
         match &section.paragraphs[0].controls[0] {
-            crate::model::control::Control::Picture(p) => p.common.clone(),
+            crate::model::control::Control::Picture(p) => (**p).clone(),
             other => panic!("그림 컨트롤이어야 함: {other:?}"),
         }
+    }
+
+    fn reparse_pic_common(fragment: &str) -> CommonObjAttr {
+        reparse_picture(fragment).common
+    }
+
+    #[test]
+    fn picture_border_survives_hwpx_round_trip() {
+        let source = r##"<hp:pic><hp:lineShape color="#123456" width="42" style="DASH"
+            endCap="SQUARE" headStyle="NORMAL" tailStyle="NORMAL"
+            headSz="SMALL_SMALL" tailSz="SMALL_SMALL" outlineStyle="INNER"/>
+            <hc:img binaryItemIDRef="image1"/></hp:pic>"##;
+        let before = reparse_picture(source);
+        let doc = make_doc_with_bin(1, "png");
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let xml = serialize(&before, &mut ctx);
+        let after = reparse_picture(&xml);
+        assert_eq!(after.border_color, before.border_color);
+        assert_eq!(after.border_width, 42);
+        assert_eq!(after.border_attr.attr, before.border_attr.attr);
+        assert_eq!(after.border_attr.color, before.border_attr.color);
+        assert_eq!(after.border_attr.width, before.border_attr.width);
+        assert_eq!(after.border_attr.outline_style, 2);
     }
 
     #[test]

@@ -1231,27 +1231,18 @@ impl DocumentCore {
         apply_to: u8,
         hf_para_idx: usize,
     ) {
-        use crate::renderer::hwpunit_to_px;
-
-        // 머리말/꼬리말 영역 폭 = 페이지 텍스트 영역 폭
-        let available_width = {
-            let section = &self.document.sections[section_idx];
-            let page_def = &section.section_def.page_def;
-            let text_width =
-                page_def.width as i32 - page_def.margin_left as i32 - page_def.margin_right as i32;
-            hwpunit_to_px(text_width, self.dpi)
-        };
-
-        // 문단 여백 적용
+        // 머리말/꼬리말 줄 폭 = 쪽 본문 폭 − 문단 여백 (한컴 4 HU 격자, 본문과 같은 모델)
         let para_shape_id =
             match self.get_hf_paragraph_ref(section_idx, is_header, apply_to, hf_para_idx) {
                 Some(p) => p.para_shape_id,
                 None => return,
             };
-        let para_style = self.styles.para_styles.get(para_shape_id as usize);
-        let margin_left = para_style.map(|s| s.margin_left).unwrap_or(0.0);
-        let margin_right = para_style.map(|s| s.margin_right).unwrap_or(0.0);
-        let final_width = (available_width - margin_left - margin_right).max(0.0);
+        let final_width = Self::page_text_line_width_px(
+            &self.document.sections[section_idx].section_def.page_def,
+            para_shape_id,
+            &self.styles,
+            self.dpi,
+        );
 
         // 가변 참조로 리플로우 실행
         let apply = header_footer_apply_from_u8(apply_to);

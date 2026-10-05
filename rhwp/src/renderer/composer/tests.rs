@@ -4,6 +4,155 @@ use crate::model::paragraph::{CharShapeRef, LineSeg, Paragraph};
 use crate::model::shape::{HorzAlign, HorzRelTo, TextFlow, TextWrap, VertAlign, VertRelTo};
 
 #[test]
+fn squeeze_reflow_keeps_overwide_text_on_one_line() {
+    use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle};
+
+    // macOS 한컴 탐침의 두 글꼴과 폭: 저장 줄 없이 열어도 전부 한 줄이다.
+    for family in ["맑은 고딕", "함초롬바탕"] {
+        let mut styles = ResolvedStyleSet {
+            char_styles: vec![ResolvedCharStyle {
+                font_family: family.into(),
+                font_families: vec![family.into(); 7],
+                font_size: 16.0,
+                ..Default::default()
+            }],
+            para_styles: vec![ResolvedParaStyle {
+                line_wrap_squeeze: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        for width_pt in [160.0, 141.0, 130.0, 117.6, 100.0, 80.0, 60.0] {
+            let text = "･건강진단 비용지원(연중)";
+            let mut para = Paragraph {
+                text: text.into(),
+                char_offsets: (0..text.chars().count() as u32).collect(),
+                char_shapes: vec![CharShapeRef::default()],
+                ..Default::default()
+            };
+            let width = width_pt / 0.75;
+            reflow_line_segs(&mut para, width, &styles, 96.0);
+            assert_eq!(para.line_segs.len(), 1, "{family}, {width_pt}pt");
+            assert_eq!(para.line_segs[0].segment_width, (width_pt * 100.0) as i32);
+            let composed = compose_paragraph(&para);
+            assert!(!stored_lines_stale_for_body(
+                &composed, &para, width, &styles
+            ));
+
+            // 압축 설정이 없으면 같은 폭에서 일반 줄바꿈한다.
+            if width_pt == 60.0 {
+                styles.para_styles[0].line_wrap_squeeze = false;
+                assert!(stored_lines_stale_for_body(
+                    &composed, &para, width, &styles
+                ));
+                reflow_line_segs(&mut para, width, &styles, 96.0);
+                assert!(para.line_segs.len() > 1);
+            }
+        }
+    }
+}
+
+#[test]
+fn squeeze_saved_lines_still_invalidate_substituted_numbering_fonts() {
+    use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle};
+
+    let styles = ResolvedStyleSet {
+        char_styles: vec![ResolvedCharStyle {
+            font_family: "Missing Squeeze Test Font".into(),
+            font_families: vec!["Missing Squeeze Test Font".into(); 7],
+            font_metrics_policy: crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+            font_size: 16.0,
+            ..Default::default()
+        }],
+        para_styles: vec![ResolvedParaStyle {
+            line_wrap_squeeze: true,
+            head_type: crate::model::style::HeadType::Number,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut para = Paragraph {
+        text: "번호 문단의 대체 글꼴".into(),
+        ..Default::default()
+    };
+    reflow_line_segs(&mut para, 80.0, &styles, 96.0);
+    assert!(stored_line_segs_structurally_coherent(&para));
+    let mut composed = compose_paragraph(&para);
+    assert!(stored_lines_stale_for_body(&composed, &para, 80.0, &styles));
+    recompose_stale_stored_lines_for_body(&mut composed, &para, 80.0, &styles);
+    assert_eq!(composed.lines.len(), 1);
+}
+
+#[test]
+fn squeeze_reflow_preserves_explicit_empty_lines_and_run_heights() {
+    use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle};
+
+    let styles = ResolvedStyleSet {
+        char_styles: [16.0, 24.0]
+            .map(|font_size| ResolvedCharStyle {
+                font_size,
+                ..Default::default()
+            })
+            .to_vec(),
+        para_styles: vec![ResolvedParaStyle {
+            line_wrap_squeeze: true,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut para = Paragraph {
+        text: "가나\t다\n\n라\n".into(),
+        char_offsets: (0..8).collect(),
+        char_shapes: vec![
+            CharShapeRef::default(),
+            CharShapeRef {
+                start_pos: 6,
+                char_shape_id: 1,
+            },
+            CharShapeRef {
+                start_pos: 7,
+                char_shape_id: 0,
+            },
+        ],
+        ..Default::default()
+    };
+    reflow_line_segs(&mut para, 20.0, &styles, 96.0);
+    assert_eq!(
+        para.line_segs
+            .iter()
+            .map(|s| s.text_start)
+            .collect::<Vec<_>>(),
+        [0, 5, 6, 8]
+    );
+    assert_eq!(
+        para.line_segs
+            .iter()
+            .map(|s| s.line_height)
+            .collect::<Vec<_>>(),
+        [1200, 1200, 1800, 1200]
+    );
+    assert!(para.line_segs.iter().all(|s| s.segment_width == 1500));
+
+    // 줄나눔 자료의 구조 오류는 SQUEEZE에서도 계속 재배치 대상이다.
+    para.line_segs[1].text_start = 99;
+    let composed = compose_paragraph(&para);
+    assert!(stored_lines_stale_for_body(&composed, &para, 20.0, &styles));
+}
+
+#[test]
+fn reflow_discards_saved_hwpx_tab_distance_marker() {
+    let mut para = Paragraph {
+        text: "A\tB".into(),
+        char_offsets: (0..3).collect(),
+        char_shapes: vec![CharShapeRef::default()],
+        tab_extended: vec![[600, 0, 0x0200, 0, 0, 0x4003, 9]],
+        ..Default::default()
+    };
+    reflow_line_segs(&mut para, 200.0, &ResolvedStyleSet::default(), 96.0);
+    assert_eq!(para.tab_extended[0][5], 3);
+}
+
+#[test]
 fn native_generated_cell_reflow_uses_paragraph_margins_and_positive_indent() {
     use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle};
     let para = Paragraph {
@@ -1205,10 +1354,28 @@ fn test_reflow_condense_shrinks_measured_space_width() {
         ..Default::default()
     };
 
-    // Natural width is 50px: 8 latin chars at 5px + 2 spaces at 5px.
-    // condense=20 allows each measured space to shrink by 20%, saving 2px.
-    reflow_line_segs(&mut para, 48.0, &styles, 96.0);
+    // 폭은 측정값에서 잡는다 (글자 폭은 1/1800인치 격자로 양자화된다). condense=20 은
+    // 공백마다 20% 를 줄일 수 있다 — 그 절반만큼 좁은 줄에도 한 줄로 들어가야 한다.
+    let chars: Vec<char> = para.text.chars().collect();
+    let tokens = tokenize_paragraph(&chars, &para.char_offsets, &para.char_shapes, &styles, 0, 0);
+    let (mut natural, mut spaces) = (0.0, 0.0);
+    for t in &tokens {
+        match t {
+            BreakToken::Text { width, .. } => natural += width,
+            BreakToken::Space { width, .. } => {
+                natural += width;
+                spaces += width;
+            }
+            _ => {}
+        }
+    }
+    let width = natural - spaces * 0.2 * 0.5;
+    let mut plain = para.clone();
+    reflow_line_segs(&mut para, width, &styles, 96.0);
     assert_eq!(para.line_segs.len(), 1);
+    styles.para_styles[0].condense_min_space = 0;
+    reflow_line_segs(&mut plain, width, &styles, 96.0);
+    assert_eq!(plain.line_segs.len(), 2, "공백 압축 없이는 넘친다");
 }
 
 /// 강제 줄 바꿈: \n에서 즉시 줄 바꿈
@@ -1368,7 +1535,7 @@ fn test_tokenize_line_break() {
 
     let tokens = tokenize_paragraph(&text, &offsets, &shapes, &styles, 0, 0);
     assert_eq!(tokens.len(), 3);
-    assert!(matches!(tokens[1], BreakToken::LineBreak { idx: 1 }));
+    assert!(matches!(tokens[1], BreakToken::LineBreak { idx: 1, .. }));
 }
 
 // ─── Task #555: PUA 옛한글 → 자모 변환 후 폰트 매트릭스 ───

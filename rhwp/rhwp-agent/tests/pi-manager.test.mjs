@@ -8,7 +8,7 @@ import test from 'node:test';
 
 import { replaceFileAtomically } from '../harness-update.mjs';
 import {
-  createPiManager,
+  createPiManager as createPiManagerProduction,
   defaultPiRoot,
   PI_API_KEY_MAX_CHARS,
   PI_MODEL_ID_MAX_CHARS,
@@ -17,6 +17,9 @@ import {
   PI_SETTINGS_MAX_BYTES,
 } from '../pi-manager.mjs';
 import { createMemorySecretStore } from '../secret-store.mjs';
+
+// Injected registry responses must not be bypassed by the developer host's proxy.
+const createPiManager = (options) => createPiManagerProduction({ baseEnv: {}, ...options });
 
 const PI_PACKAGE = '@earendil-works/pi-coding-agent';
 

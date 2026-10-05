@@ -1,3 +1,4 @@
+import { launchCopyLayoutWorker } from './copy-layout-worker.mjs';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, promises as fs } from 'node:fs';
@@ -46,6 +47,7 @@ import {
 import { DownloadManager } from './download-manager.mjs';
 import { DocumentSnapshotManager } from './document-snapshot-manager.mjs';
 import { ArtifactStore } from './artifact-store.mjs';
+import { cloudReferenceRoots } from './cloud-reference-roots.mjs';
 import { BrowserbaseFleet, normalizeBrowserbaseOverride, validateBrowserbaseCredentials } from './browserbase-session.mjs';
 import { createProviderHealth } from './provider-health.mjs';
 import { createUsageStore } from './usage-store.mjs';
@@ -158,6 +160,7 @@ if (PRODUCTION && !process.env.RHWP_WORK_DIR) {
   throw Object.assign(new Error('RHWP_WORK_DIR is required in production'), { code: 'HUB_WORK_DIR_REQUIRED' });
 }
 const WORK_ROOT = path.resolve(process.env.RHWP_WORK_DIR || path.join(os.tmpdir(), `rhwp-agent-work-${process.pid}`));
+const CLOUD_REFERENCE_ROOTS = cloudReferenceRoots(WORK_ROOT);
 const RUNTIME_ROOT = process.env.RHWP_RUNTIME_DIR
   ? path.resolve(process.env.RHWP_RUNTIME_DIR)
   : null;
@@ -400,6 +403,7 @@ const sessions = new HubSessionRegistry({
       downloadManager.baseDir,
       documentSnapshotManager.baseDir,
       copyLayoutGeneratedRoot,
+      ...CLOUD_REFERENCE_ROOTS,
     ]);
     return {
       sessionId,
@@ -803,6 +807,7 @@ function sendAgentSetupError(record, sock, requestId, agent, error, fallback = '
     agent,
     code: error?.code ?? fallback,
     message: String(error?.message ?? error),
+    ...(typeof error?.detail === 'string' && error.detail ? { detail: error.detail } : {}),
   });
 }
 
@@ -855,6 +860,7 @@ function sendAuthRunError(run, error, fallback = 'AGENT_AUTH_FAILED') {
     agent: run.agent,
     code: error?.code ?? fallback,
     message: String(error?.message ?? error),
+    ...(typeof error?.detail === 'string' && error.detail ? { detail: error.detail } : {}),
   });
 }
 
@@ -2289,73 +2295,30 @@ function makeTemplateWorkerEventHandler(record, job) {
 }
 
 async function launchTemplateJob(record, job) {
-  // The owning chat provider can mutate record.workDir. Keep even the
-  // worker's read-only cwd under a sibling hub-owned parent so it cannot be
-  // swapped to a symlink/junction before the worker opens files.
-  const jobDir = path.join(record.recordRoot, 'copy-layout-workspaces', job.jobId);
-  const jobGeneratedRoot = path.join(record.copyLayoutGeneratedRoot, job.jobId);
-  const jobSnapshotRoot = record.documentSnapshotManager.readOnlyRootForChat(job.jobId);
-  const providerRoot = path.join(record.recordRoot, 'copy-layout-providers', job.jobId);
-  const isolatedHome = path.join(providerRoot, 'home');
-  const codexHome = path.join(isolatedHome, '.codex');
-  job.providerHomes = { isolatedHome, codexHome };
-  job.providerRoot = providerRoot;
-  await fs.mkdir(jobDir, { recursive: true, mode: 0o700 });
-  await fs.mkdir(providerRoot, { recursive: true, mode: 0o700 });
-  await ensureBootWork();
-  prepareCodexHome(codexHome, sourceCodexAuthPath);
-  prepareClaudeHome(isolatedHome, sourceClaudeAuth);
-  job.jobDir = jobDir;
-  job.generatedRoot = jobGeneratedRoot;
-  job.snapshotRoot = jobSnapshotRoot;
-
-  const opts = {
-    rootDir: jobDir,
-    workDir: jobDir,
-    // A background worker can read only its own immutable snapshot and
-    // generated candidates, never the owning chat's workspace/downloads.
-    readOnlyRoots: [jobSnapshotRoot, jobGeneratedRoot],
-    mcpScriptPath: MCP_SCRIPT,
+  return launchCopyLayoutWorker(record, job, {
+    ensureBootWork,
+    prepareCodexHome,
+    sourceCodexAuthPath,
+    prepareClaudeHome,
+    sourceClaudeAuth,
+    MCP_SCRIPT,
     hubPort,
-    token: sessions.issue(TOKEN, record.sessionId, {
-      audience: HUB_CAPABILITY_AUDIENCES.COPY_LAYOUT_WORKER,
-      resource: job.jobId,
-    }),
-    sessionId: record.sessionId,
-    model: job.model,
-    effort: job.effort,
-    permissionProfile: 'safe',
-    isolatedHome,
-    codexHome,
-    codexAuthPath: sourceCodexAuthPath,
-    codexBin: cliSetupStatus.codex?.installed ? cliSetup.binPath('codex') : 'codex',
-    claudeBin: cliSetupStatus.claude?.installed ? cliSetup.binPath('claude') : 'claude',
-    providerEnv: job.agent === 'claude'
-      ? claudeRuntimeEnv(isolatedHome)
-      : (CLI_SETUP_AGENTS.includes(job.agent) ? cliSetup.envFor(job.agent) : {}),
-    onEvent: makeTemplateWorkerEventHandler(record, job),
-    workflow: 'direct',
-    phase: 'implementing',
-    capabilityEpoch: job.capabilityEpoch,
-    toolProfile: 'copy-layout-worker',
-    agentRole: job.workerRole,
-    systemPromptOverride: buildCopyLayoutWorkerPrompt({
-      jobId: job.jobId,
-      binding: job.binding,
-      jobDir,
-    }),
-    piBin: piManager.piBin,
-    piRoot: piManager.rootDir,
-    openRouterApiKey: openRouterManager(job.agent)?.apiKey() ?? undefined,
-    agentName: OPENROUTER_AGENTS.has(job.agent) ? job.agent : 'pi',
-    reasoning: OPENROUTER_AGENTS.has(job.agent)
-      ? Boolean(piModelConfig(job.model, job.agent)?.reasoning)
-      : false,
-  };
-  const createBackend = SESSION_FACTORIES[job.agent];
-  if (!createBackend) throw unknownAgentError(job.agent);
-  job.backend = createBackend(opts);
-  job.backend.sendUserMessage('Begin the autonomous copy-layout workflow now. Follow the system workflow exactly and do not ask questions.');
+    sessions,
+    TOKEN,
+    HUB_CAPABILITY_AUDIENCES,
+    cliSetupStatus,
+    cliSetup,
+    claudeRuntimeEnv,
+    CLI_SETUP_AGENTS,
+    makeTemplateWorkerEventHandler,
+    buildCopyLayoutWorkerPrompt,
+    piManager,
+    openRouterManager,
+    OPENROUTER_AGENTS,
+    piModelConfig,
+    SESSION_FACTORIES,
+    unknownAgentError
+  });
 }
 
 function createTemplateJob(record, activeSession, binding) {
@@ -2746,11 +2709,13 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
   // Studio 가 메시지에 실어 보낸 문서 읽기 — 사용자 요청 바로 앞에 둔다. 승인·수정·허브 생성 턴은 이 경로를 타지 않는다.
   // 모양이 어긋난 스냅샷은 버리고 메시지는 그대로 보낸다.
   const liveDocument = normalizeDocumentSnapshot(msg.documentSnapshot);
-  void skillRegistry.promptContext(msg.text, typeof msg.skillName === 'string' ? msg.skillName : undefined, {
-    phase: activeSession.planning.snapshot().phase,
-    agent: activeSession.agent,
-    requestContext: liveDocumentBlock(liveDocument),
-  })
+  void Promise.resolve()
+    .then(() => requireAgentAuthenticated(activeSession.agent))
+    .then(() => skillRegistry.promptContext(msg.text, typeof msg.skillName === 'string' ? msg.skillName : undefined, {
+      phase: activeSession.planning.snapshot().phase,
+      agent: activeSession.agent,
+      requestContext: liveDocumentBlock(liveDocument),
+    }))
     .then((prompt) => {
       // Skill context is loaded asynchronously. An interrupt can settle this
       // turn and a later message can start another turn on the same session
@@ -2781,8 +2746,23 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
       activeSession.status = 'idle';
       activeSession.turnId = null;
       record.userQuestionResponseReceipts.clear();
-      sendJson(sock, { v: 1, type: 'chat-error', code: e?.code ?? 'AGENT_SPAWN_FAILED', message: String(e?.message ?? e) });
+      sendJson(sock, { v: 1, type: 'chat-error', code: e?.code ?? 'AGENT_SPAWN_FAILED', message: describeHubError(e) });
     });
+}
+
+async function requireAgentAuthenticated(agent) {
+  if (!CLI_SETUP_AGENTS.includes(agent)) return;
+  // An unauthenticated CLI turn used to fail inside the provider with a bare
+  // turn-end that rendered as a literal "undefined" in chat — surface the real
+  // cause before the provider ever spawns. Status is re-read per message so a
+  // login completed mid-session takes effect without a restart.
+  const setup = await cliSetup.status(agent).catch(() => null);
+  if (setup && setup.authenticated !== true) {
+    throw Object.assign(
+      new Error(`${agent === 'claude' ? 'Claude' : 'Codex'} 로그인이 필요합니다. 설정 탭에서 로그인한 뒤 다시 시도해 주세요.`),
+      { code: 'AGENT_AUTH_REQUIRED' },
+    );
+  }
 }
 
 async function dispatchStagedUserMessage(record, sock, msg, activeSession) {
@@ -2995,12 +2975,20 @@ async function startSession(
   return record.agentSession;
 }
 
+function describeHubError(error, fallback = '알 수 없는 오류가 발생했습니다.') {
+  // String({code:'X'}) 는 "[object Object]", String(undefined) 는 "undefined"
+  // 라서 그대로 보내면 채팅에 깨진 문구가 뜬다.
+  if (typeof error?.message === 'string' && error.message) return error.message;
+  if (typeof error === 'string' && error) return error;
+  return fallback;
+}
+
 function sendChatError(sock, error, fallbackCode = 'WORKFLOW_ERROR') {
   sendJson(sock, {
     v: 1,
     type: 'chat-error',
     code: error?.code ?? fallbackCode,
-    message: String(error?.message ?? error),
+    message: describeHubError(error),
   });
 }
 
@@ -3011,7 +2999,7 @@ function sendPiError(record, sock, requestId, error, fallbackCode) {
     type: 'pi-error',
     requestId,
     code: error?.code ?? fallbackCode,
-    message: String(error?.message ?? error),
+    message: describeHubError(error),
   });
 }
 
@@ -3298,7 +3286,7 @@ async function handleStudioMessage(record, sock, msg) {
       const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
       const rejectStart = (error, fallbackCode = 'INVALID_REQUEST') => sendJson(sock, {
         v: 1, type: 'chat-error', requestId, session: sessionInfo(record),
-        code: error?.code ?? fallbackCode, message: String(error?.message ?? error),
+        code: error?.code ?? fallbackCode, message: describeHubError(error),
       });
       const agent = msg.agent;
       if (!KNOWN_AGENTS.has(agent)) {

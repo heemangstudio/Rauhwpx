@@ -116,9 +116,10 @@ try {
     const lastBox = await rows.at(-1).boundingBox();
     const x = handleBox.x + handleBox.width / 2;
     const startY = handleBox.y + handleBox.height / 2;
-    const grabOffset = startY - rowBox.y;
+    await draggedRow.evaluate(node=>window.addEventListener('pointerdown',event=>{window.__reviewGrabOffset=event.clientY-node.getBoundingClientRect().top;},{capture:true,once:true}));
     await page.mouse.move(x, startY);
     await page.mouse.down();
+    const grabOffset = await page.evaluate(()=>window.__reviewGrabOffset);
     let previousIndex = 0;
     for (const y of [startY + 6, startY + 20, lastBox.y + lastBox.height / 2]) {
       await page.mouse.move(x, y);
@@ -166,6 +167,7 @@ try {
   await page.waitForFunction((expected) => JSON.stringify([...document.querySelectorAll('.ag-skills-list [data-skill-name]')].map((node) => node.getAttribute('data-skill-name'))) === JSON.stringify(expected), {}, beforeKeyboard);
   await page.keyboard.press('ArrowDown');
   await page.waitForFunction((expected) => JSON.stringify([...document.querySelectorAll('.ag-skills-list [data-skill-name]')].map((node) => node.getAttribute('data-skill-name'))) === JSON.stringify(expected), {}, keyboardNames);
+  await page.evaluate(async()=>{await Promise.all(document.querySelector('.ag-skills-list').getAnimations({subtree:true}).map(animation=>animation.finished.catch(()=>{})));});
   const keyboardDragHandle = await page.$('.ag-skills-list [data-skill-name] .ag-skill-drag-handle');
   assert(keyboardDragHandle);
   const keyboardDragBox = await keyboardDragHandle.boundingBox();

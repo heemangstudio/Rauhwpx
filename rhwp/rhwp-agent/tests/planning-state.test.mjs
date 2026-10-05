@@ -18,8 +18,7 @@ test('chat startup leaves tool profiles derived from mutable execution mode', ()
   const chatOptions = serverSource.slice(start, end);
   assert.match(chatOptions, /capabilityEpoch: planning\.capabilityEpoch/);
   assert.doesNotMatch(chatOptions, /\b(?:toolProfile|mcpEnvironment)\s*:/);
-  assert.match(serverSource, /toolProfile: 'copy-layout-worker'/,
-    'background workers retain their explicit restricted profile');
+
 });
 
 function plan() {

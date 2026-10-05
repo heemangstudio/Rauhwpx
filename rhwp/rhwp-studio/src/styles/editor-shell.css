@@ -162,6 +162,11 @@
 }
 #studio-header { box-shadow: none; color: var(--ui-text); }
 #studio-header:has(.tb-overflow-open) { z-index: 100; }
+/* 드롭다운 메뉴가 에이전트 사이드바(z-index:50) 위로 열리도록 —
+   메뉴가 열려 있는 동안만 헤더 스태킹 컨텍스트를 올린다.
+   이게 없으면 .md-sub-panel 이 사이드바 아래에 깔려서
+   패널을 향한 포인터 이벤트가 전부 사이드바로 빠진다. */
+#studio-header:has(.menu-item.open) { z-index: 100; }
 .editor-command-search {
   display: inline-flex;
   align-items: center;

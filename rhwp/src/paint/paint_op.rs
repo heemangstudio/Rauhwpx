@@ -1483,9 +1483,12 @@ pub struct GlyphRunDiagnostics {
 #[derive(Debug, Clone)]
 pub struct PaintTextStyle {
     pub font_family: String,
+    pub font_subst: String,
     pub font_size: f64,
     pub color: ColorRef,
     pub bold: bool,
+    /// Regular/Italic face 에 합성할 획 두께. 단위는 문서 px.
+    pub faux_bold_stroke_width: Option<f64>,
     pub italic: bool,
     pub underline: UnderlineType,
     pub strikethrough: bool,
@@ -1512,9 +1515,18 @@ impl From<&TextStyle> for PaintTextStyle {
     fn from(style: &TextStyle) -> Self {
         Self {
             font_family: style.font_family.clone(),
+            font_subst: style.effective_font_subst().to_string(),
             font_size: style.font_size,
             color: style.color,
-            bold: style.bold,
+            bold: style.paint_bold(),
+            faux_bold_stroke_width: crate::renderer::faux_bold_stroke_width(
+                style,
+                if style.font_size > 0.0 {
+                    style.font_size
+                } else {
+                    12.0
+                },
+            ),
             italic: style.italic,
             underline: style.underline,
             strikethrough: style.strikethrough,
@@ -1545,6 +1557,7 @@ impl PaintTextStyle {
     pub fn is_fill_only_glyph_replay(&self) -> bool {
         let ratio = if self.ratio > 0.0 { self.ratio } else { 1.0 };
         (ratio - 1.0).abs() <= 0.001
+            && self.faux_bold_stroke_width.is_none()
             && self.tab_leaders.is_empty()
             && self.underline == UnderlineType::None
             && !self.strikethrough

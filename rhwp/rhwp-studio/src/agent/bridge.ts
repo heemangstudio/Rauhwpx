@@ -2625,6 +2625,7 @@ export class AgentBridgeImpl implements AgentBridge {
           ...(typeof msg.authRunId === 'string' ? { authRunId: msg.authRunId } : {}),
           code: typeof msg.code === 'string' ? msg.code : 'AGENT_SETUP_FAILED',
           message: typeof msg.message === 'string' ? msg.message : 'Agent setup failed',
+          ...(typeof msg.detail === 'string' && msg.detail ? { detail: msg.detail } : {}),
         });
         break;
       }
@@ -3275,7 +3276,10 @@ export class AgentBridgeImpl implements AgentBridge {
       };
       message = { text, skillName, context, messageId, stagedReferenceIds: [...stagedReferenceIds], resolve: settle };
       signal?.addEventListener('abort', cancel, { once: true });
-      if (this.pendingChatStart || this.workflowSwitchPending || this.activeAgent === null || this.queuedMessages.length > 0) {
+      // 끊긴 소켓에 곧바로 보내면 sendJson 실패로 메시지가 조용히 사라진다 — 재연결이
+      // 살릴 큐에 넣고, flushQueuedMessages 가 연결 뒤에 다시 보낸다.
+      if (this.pendingChatStart || this.workflowSwitchPending || this.activeAgent === null
+        || this.queuedMessages.length > 0 || this.state !== 'connected') {
         this.queuedMessages.push(message);
         if (this.activeAgent === null) {
           // 연결 중에도 시작 대기를 남겨 재접속이 첫 메시지를 다시 보낼 수 있게 한다.

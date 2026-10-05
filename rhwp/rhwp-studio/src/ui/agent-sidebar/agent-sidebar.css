@@ -7073,6 +7073,13 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   margin-bottom: 20px;
 }
 
+.ag-fullscreen .ag-chat-page > .ag-calibration-chip {
+  box-sizing: border-box;
+  max-width: min(var(--ag-column-w), calc(100% - 2 * var(--ag-column-gutter)));
+  margin-inline-start: max(var(--ag-column-gutter), calc((100% - var(--ag-column-w)) / 2));
+  margin-inline-end: 0;
+}
+
 /* 변경 사항은 대화를 유지한 채 오른쪽 열을 차지하는 docked drawer다. */
 .ag-fullscreen .ag-review-column,
 .ag-fullscreen.ag-review-collapsed .ag-review-column,

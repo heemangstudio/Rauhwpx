@@ -57,6 +57,8 @@ const pi = artifact(provider, '@earendil-works/pi-coding-agent');
 const npmRequire = createRequire(path.join(npm.installed, 'package.json'));
 assert.equal(npmRequire('brace-expansion/package.json').version, '5.0.12');
 assert.equal(npmRequire('undici/package.json').version, '6.28.1');
+assert.equal(npmRequire('http-cache-semantics/package.json').version, npm.provenance.verification.packedHttpCacheSemantics);
+assert.equal(npmRequire('ip-address/package.json').version, npm.provenance.verification.packedIpAddress);
 assert.equal(createRequire(path.join(pi.installed, 'package.json'))('minimatch/package.json').version, '10.2.6');
 const copies = [agent, provider].flatMap((project) => braceCopies(path.join(project, 'node_modules')));
 assert.ok(copies.length >= 2);

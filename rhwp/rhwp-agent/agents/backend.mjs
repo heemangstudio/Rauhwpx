@@ -7,6 +7,7 @@ import {
   waitForProcessTreeExit,
 } from '../process-tree.mjs';
 import { RHWP_TOOL_RULES } from '../tool-rules.mjs';
+import { HUMANIZE_KOREAN_RULES } from '../humanizer.mjs';
 
 const ANSI_ESCAPE = /\x1B\[[0-?]*[ -/]*[@-~]/g;
 const SECRET_ASSIGNMENT = /((?:["']?(?:access[_-]?token|refresh[_-]?token|api[_-]?key|authorization|cookie|password|secret|token|oauth[_-]?code|authorization[_-]?code|user[_-]?code|code[_-]?verifier|state)["']?)\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}]+)/gi;
@@ -351,7 +352,7 @@ export const RHWP_SUBAGENTS = {
   'doc-editor': {
     description: 'Edits one assigned region of the live rhwp document via the mcp__rhwp__ tools. Use for parallel document editing: one contiguous paragraph range (a page, a section) per editor.',
     disallowedTools: ['AskUserQuestion', 'mcp__rhwp__ask_user_question'],
-    prompt: 'You edit ONE assigned region of the live rhwp document through the mcp__rhwp__ tools. First read your region yourself with ONE get_structure range {sectionIdx, fromPara, toPara} text:"full" (read_batch only for what it lacks) — never trust coordinates quoted in your spawn prompt. Stay strictly inside your assigned paragraph range: never touch other regions, other tables, or document-wide settings (replace_all, set_page_layout, apply_engine_edits are off-limits). Send your edits as ONE apply_edits call (up to 32 items), addressing text with find and a paraIdx inside your range. Chain each returned revision into the next write\'s expectedRevision — never send writes in parallel. Sibling agents edit other regions concurrently; their disjoint writes are rebased automatically, so REVISION_MISMATCH means a real conflict — re-read your region and retry. If clarification is required, report it to the root agent; never ask the user directly. Finish when the after report shows no warnings (fix and re-check otherwise), then report exactly what changed, including the paragraph range you touched.\n\n' + RHWP_TOOL_RULES,
+    prompt: 'You edit ONE assigned region of the live rhwp document through the mcp__rhwp__ tools. First read your region yourself with ONE get_structure range {sectionIdx, fromPara, toPara} text:"full" (read_batch only for what it lacks) — never trust coordinates quoted in your spawn prompt. Stay strictly inside your assigned paragraph range: never touch other regions, other tables, or document-wide settings (replace_all, set_page_layout, apply_engine_edits are off-limits). Send your edits as ONE apply_edits call (up to 32 items), addressing text with find and a paraIdx inside your range. Chain each returned revision into the next write\'s expectedRevision — never send writes in parallel. Sibling agents edit other regions concurrently; their disjoint writes are rebased automatically, so REVISION_MISMATCH means a real conflict — re-read your region and retry. If clarification is required, report it to the root agent; never ask the user directly. Finish when the after report shows no warnings (fix and re-check otherwise), then report exactly what changed, including the paragraph range you touched.\n\n' + RHWP_TOOL_RULES + '\n\n' + HUMANIZE_KOREAN_RULES,
   },
   'doc-researcher': {
     description: 'Read-only research for document work: web search/fetch, reference files, and document reads. Never writes to the document or the workspace.',
@@ -541,7 +542,7 @@ export function systemBriefFor(opts = {}, agentName = 'claude') {
   if (typeof opts.systemPromptOverride === 'string' && opts.systemPromptOverride.trim()) {
     return opts.systemPromptOverride;
   }
-  return `${workflowBriefFor(opts, agentName)}\n\n${RHWP_TOOL_RULES}`;
+  return `${workflowBriefFor(opts, agentName)}\n\n${RHWP_TOOL_RULES}\n\n${HUMANIZE_KOREAN_RULES}`;
 }
 
 /** 워크플로·단계별 브리프. 공유 도구 규칙(RHWP_TOOL_RULES)은 systemBriefFor 가 끝에 붙인다. */

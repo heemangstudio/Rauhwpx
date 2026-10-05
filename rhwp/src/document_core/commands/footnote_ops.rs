@@ -409,6 +409,66 @@ impl DocumentCore {
         }
     }
 
+    /// 각주/미주 문단 재래핑 폭(px). 편집 reflow 와 lineseg 오라클이 공유한다.
+    ///
+    /// 한컴은 주석을 단 폭으로 조판한다 (2단 시험지 미주: 쪽 본문 54426 이 아니라 단 폭
+    /// 26788 로 저장). 각주 `통단으로 배열` 만 본문 전체 폭을 쓴다. 단 폭은 본문 문단과
+    /// 같이 4 HWPUNIT 격자로 내리고 문단 좌우 여백을 뺀다. 단은 주석이 달린 본문 문단의
+    /// 단(다단 정의·페이지네이션 단 번호)이다.
+    pub(crate) fn note_reflow_width(
+        &self,
+        section_idx: usize,
+        para_idx: usize,
+        is_footnote: bool,
+        para_shape_id: u16,
+    ) -> f64 {
+        let section = &self.document.sections[section_idx];
+        let column_def = Self::find_column_def_for_paragraph(&section.paragraphs, para_idx);
+        let col_idx = self
+            .para_column_map
+            .get(section_idx)
+            .and_then(|m| m.get(para_idx))
+            .copied()
+            .unwrap_or(0) as usize;
+        Self::note_line_width_px(
+            &section.section_def,
+            &column_def,
+            col_idx,
+            is_footnote,
+            para_shape_id,
+            &self.styles,
+            self.dpi,
+        )
+    }
+
+    /// [`Self::note_reflow_width`] 의 엔진 상태 없는 본체 — 로드 합성도 쓴다 (단 번호를
+    /// 아직 모르는 로드 시점은 첫 단).
+    pub(crate) fn note_line_width_px(
+        section_def: &crate::model::document::SectionDef,
+        column_def: &crate::model::page::ColumnDef,
+        col_idx: usize,
+        is_footnote: bool,
+        para_shape_id: u16,
+        styles: &crate::renderer::style_resolver::ResolvedStyleSet,
+        dpi: f64,
+    ) -> f64 {
+        use crate::model::footnote::FootnotePlacement;
+        use crate::renderer::page_layout::PageLayoutInfo;
+        let layout = PageLayoutInfo::from_page_def(&section_def.page_def, column_def, dpi);
+        let across =
+            is_footnote && section_def.footnote_shape.placement == FootnotePlacement::BelowText;
+        let area_px = if across {
+            layout.body_area.width
+        } else {
+            layout
+                .column_areas
+                .get(col_idx)
+                .or(layout.column_areas.first())
+                .map_or(layout.body_area.width, |a| a.width)
+        };
+        Self::column_line_width_px(area_px, para_shape_id, styles, dpi)
+    }
+
     /// 각주 문단 리플로우
     pub(crate) fn reflow_footnote_paragraph(
         &mut self,
@@ -417,31 +477,17 @@ impl DocumentCore {
         control_idx: usize,
         fn_para_idx: usize,
     ) {
-        use crate::renderer::hwpunit_to_px;
-
-        // 각주 영역 폭 = 페이지 텍스트 영역 폭
-        let available_width = {
-            let section = &self.document.sections[section_idx];
-            let page_def = &section.section_def.page_def;
-            let text_width =
-                page_def.width as i32 - page_def.margin_left as i32 - page_def.margin_right as i32;
-            hwpunit_to_px(text_width, self.dpi)
+        let Some(para_shape_id) = self
+            .get_footnote_paragraph_ref(section_idx, para_idx, control_idx, fn_para_idx)
+            .map(|p| p.para_shape_id)
+        else {
+            return;
         };
-
-        // 문단 여백 적용
-        let para_shape_id = match self.get_footnote_paragraph_ref(
-            section_idx,
-            para_idx,
-            control_idx,
-            fn_para_idx,
-        ) {
-            Some(p) => p.para_shape_id,
-            None => return,
-        };
-        let para_style = self.styles.para_styles.get(para_shape_id as usize);
-        let margin_left = para_style.map(|s| s.margin_left).unwrap_or(0.0);
-        let margin_right = para_style.map(|s| s.margin_right).unwrap_or(0.0);
-        let final_width = (available_width - margin_left - margin_right).max(0.0);
+        let is_footnote = matches!(
+            self.document.sections[section_idx].paragraphs[para_idx].controls[control_idx],
+            Control::Footnote(_)
+        );
+        let final_width = self.note_reflow_width(section_idx, para_idx, is_footnote, para_shape_id);
 
         // 가변 참조로 리플로우 실행
         let section = &mut self.document.sections[section_idx];
@@ -836,6 +882,90 @@ impl DocumentCore {
 mod tests {
     use crate::document_core::DocumentCore;
     use crate::model::control::Control;
+
+    /// 저장 줄 정보 없이 로드해도(로드 합성 경로) 미주와 표 셀이 편집 경로와 같은 한컴 폭
+    /// 모델로 합성된다 — 한컴 저장 줄 폭과 1 HU 이내 (px→HU 절단 여유).
+    #[test]
+    fn load_path_synthesizes_note_and_cell_lines_with_hancom_widths() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/samples/3-09월_교육_통합_2022.hwpx"
+        );
+        let data = std::fs::read(path).unwrap();
+        let stored = DocumentCore::from_bytes(&data).unwrap();
+        let loaded = DocumentCore::from_bytes_ignoring_stored_linesegs(&data).unwrap();
+        let first_note = |core: &DocumentCore| {
+            core.document.sections[0].paragraphs[0]
+                .controls
+                .iter()
+                .find_map(|c| match c {
+                    Control::Endnote(e) => e.paragraphs.first().cloned(),
+                    _ => None,
+                })
+                .expect("미주")
+        };
+        let want = first_note(&stored).line_segs[0].segment_width;
+        let got = first_note(&loaded).line_segs[0].segment_width;
+        assert!(
+            (want - got).abs() <= 1,
+            "미주 줄 폭 저장 {want} 로드 합성 {got}"
+        );
+
+        let mut cells = 0;
+        for (sp, lp) in stored.document.sections[0]
+            .paragraphs
+            .iter()
+            .zip(&loaded.document.sections[0].paragraphs)
+        {
+            for (sc, lc) in sp.controls.iter().zip(&lp.controls) {
+                let (Control::Table(st), Control::Table(lt)) = (sc, lc) else {
+                    continue;
+                };
+                for (scell, lcell) in st.cells.iter().zip(&lt.cells) {
+                    let (Some(a), Some(b)) = (
+                        scell.paragraphs.first().and_then(|p| p.line_segs.first()),
+                        lcell.paragraphs.first().and_then(|p| p.line_segs.first()),
+                    ) else {
+                        continue;
+                    };
+                    if a.segment_width > 0 {
+                        cells += 1;
+                        let d = (a.segment_width - b.segment_width).abs();
+                        assert!(
+                            d <= 1,
+                            "셀 줄 폭 저장 {} 로드 합성 {}",
+                            a.segment_width,
+                            b.segment_width
+                        );
+                    }
+                }
+            }
+        }
+        assert!(cells > 0, "표 셀 비교 대상");
+    }
+
+    /// 2단 구역의 미주는 단 폭으로 줄을 나눈다 (한컴 저장: 쪽 본문 54426 이 아니라 26788).
+    #[test]
+    fn endnote_reflow_width_is_column_width() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/samples/3-09월_교육_통합_2022.hwpx"
+        );
+        let core = DocumentCore::from_bytes(&std::fs::read(path).unwrap()).unwrap();
+        let para = &core.document.sections[0].paragraphs[0];
+        let note = para
+            .controls
+            .iter()
+            .find_map(|c| match c {
+                Control::Endnote(e) => e.paragraphs.first(),
+                _ => None,
+            })
+            .expect("미주");
+        let stored = note.line_segs[0].segment_width;
+        let px = core.note_reflow_width(0, 0, false, note.para_shape_id);
+        assert_eq!(stored, 26788);
+        assert_eq!(crate::renderer::px_to_hwpunit_round(px, core.dpi), stored);
+    }
 
     /// 본문 최상위(표/글상자 밖) 미주는 renumber_footnotes_in_section 의 바깥쪽 match 에
     /// Control::Endnote 분기가 없어 각주 삭제 후에도 번호가 갱신되지 않던 결함의 회귀 테스트.

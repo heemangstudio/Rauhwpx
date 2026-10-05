@@ -200,10 +200,20 @@ export function resolveRegisteredFontFaceIdentity(
   };
 }
 
+/** 원본 이름으로 다른 실제 서체를 등록하는 CSS 별칭 목록. */
+export function getWebFontSubstituteFamilies(): readonly string[] {
+  return FONT_LIST.filter(entry => {
+    const loadedFamily = FONT_FILE_FACE_NAMES.get(entry.file) ?? entry.name;
+    return normalizeFontFamily(loadedFamily) !== normalizeFontFamily(entry.name);
+  }).map(entry => entry.name);
+}
+
 /** 초기 렌더링에 필수인 폰트 (대부분의 HWP 문서 기본 서체) */
 // 수식 글꼴은 DocInfo의 일반 font_faces 목록에 없으므로 첫 Canvas paint 전에
 // 기본 수식 fallback도 준비한다. 뒤늦은 CSS 로드는 이미 그린 canvas를 갱신하지 않는다.
-const CRITICAL_FONTS = new Set(['함초롬바탕', '함초롬돋움', 'Latin Modern Math']);
+// 최종 fallback 서체(나눔)도 항상 올린다 — OS 에 가나·키릴 폰트가 없는 환경에서
+// 문서 서체 체인 말단의 LAST_RESORT_* 가 실제로 로드돼 있어야 tofu 가 안 나온다.
+const CRITICAL_FONTS = new Set(['함초롬바탕', '함초롬돋움', 'Latin Modern Math', '나눔고딕', '나눔명조']);
 
 /** CSS @font-face 등록 여부 (중복 등록 방지) */
 let fontFaceRegistrationMode: 'all' | 'local-only' | null = null;

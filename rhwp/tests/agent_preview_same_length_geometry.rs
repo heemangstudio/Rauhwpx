@@ -188,11 +188,32 @@ fn jinan_title_growth_preserves_other_row_heights_and_restores() {
     core.insert_text_in_cell_native(0, 0, 2, 0, 0, 0, &expanded)
         .unwrap();
     let expanded_cells = table_cells(&core);
-    assert_eq!(before_cells.len(), expanded_cells.len());
+    // 자란 제목 행 때문에 표가 쪽을 넘으면 RowBreak 표는 행 안에서 나뉜다 — 나뉜 행은
+    // 두 조각에 나오므로 높이 비교에서 빼고, 나머지 편집하지 않은 행은 그대로여야 한다.
+    let cell_key = |cell: &Value| (cell["row"].as_u64().unwrap(), cell["col"].as_u64().unwrap());
+    let mut fragment_count = std::collections::HashMap::new();
+    for cell in &expanded_cells {
+        *fragment_count.entry(cell_key(cell)).or_insert(0usize) += 1;
+    }
+    for before in &before_cells {
+        assert!(
+            fragment_count.contains_key(&cell_key(before)),
+            "Jinan cell {:?} disappeared after the title grew",
+            cell_key(before)
+        );
+    }
     assert!(
         expanded_cells[0]["h"].as_f64().unwrap() > before_cells[0]["h"].as_f64().unwrap() + 5.0
     );
-    for (before, after) in before_cells.iter().zip(&expanded_cells).skip(1) {
+    for before in before_cells.iter().skip(1) {
+        let key = cell_key(before);
+        if fragment_count[&key] > 1 {
+            continue;
+        }
+        let after = expanded_cells
+            .iter()
+            .find(|cell| cell_key(cell) == key)
+            .unwrap();
         assert_eq!(
             before["h"], after["h"],
             "an unedited Jinan row changed height"

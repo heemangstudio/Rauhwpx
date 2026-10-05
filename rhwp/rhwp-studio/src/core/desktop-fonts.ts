@@ -40,6 +40,8 @@ import {
   type LocalFontFaceNames,
   type LocalFontRecord,
 } from './local-fonts.ts';
+import { hftWasmApiGeneration, registerHftOutlines } from './hft-glyphs.ts';
+import { isLegacyEquationFont } from './equation-font.ts';
 
 // ─── preload 계약 ─────────────────────────────────────────────
 
@@ -104,6 +106,8 @@ export interface RuntimeFontMetricsApi {
   report?(): string;
   /** 엔진 내장 메트릭 보유 여부. 노출되면 layoutMetrics 판정에 쓴다. */
   hasBaked?(name: string, bold: boolean, italic: boolean): boolean;
+  /** 엔진이 사용하는 설치 글꼴 치환 후보. 순서는 엔진의 선호 순서다. */
+  fallbackFamilies?(name: string, fontSubst?: string): readonly string[];
 }
 
 // ─── 보고서 ───────────────────────────────────────────────────
@@ -637,6 +641,7 @@ function resetHostState(): void {
   indexStale = false;
   attemptedFonts.clear();
   inflightReads.clear();
+  hftOutlineFaceReads.clear();
   installByteReader();
   installDebugHandle();
 }
@@ -798,6 +803,7 @@ export function loadDesktopFontIndex(options: { refresh?: boolean } = {}): Promi
     if (getSystemFontHost() !== host) throw new Error('system font host changed');
     currentIndex = index;
     currentLookup = buildDesktopFontLookup(index);
+    if (refresh) hftOutlineFaceReads.clear();
     desktopMenuNames = null;
     const byRoot = (index.roots ?? []).map(root => `${root.kind}:${root.fileCount}${root.exists ? '' : '(없음)'}`).join(' ');
     console.info(
@@ -855,6 +861,11 @@ function uniqueFontNames(fontNames: readonly string[] | undefined): string[] {
 
 function metricsApi(): RuntimeFontMetricsApi | null {
   return config.metrics ?? null;
+}
+
+/** 데스크톱 준비와 CanvasKit 재생이 같은 엔진 치환 순서를 사용한다. */
+export function rendererFontFallbackFamilies(name: string, fontSubst?: string): readonly string[] {
+  return metricsApi()?.fallbackFamilies?.(name, fontSubst) ?? [];
 }
 
 interface MetricsRegistration {
@@ -1078,6 +1089,37 @@ export async function prepareDesktopFontsForDocument(
     return report;
   }
   const lookup = currentLookup ?? buildDesktopFontLookup(index);
+  // HY 수식의 적분 윤곽과 미커버 기호(′, □, ∆)용 서체는 설치된 경우에만 준비한다.
+  if (names.some(isLegacyEquationFont)) {
+    for (const auxiliary of ['STIXGeneral', 'Haansoft Batang']) {
+      if (names.some(name => exactFontKey(name) === exactFontKey(auxiliary))
+        || !isDesktopFontMatch(matchDesktopFont(auxiliary, lookup))) continue;
+      names.push(auxiliary);
+      attemptedFonts.add(exactFontKey(auxiliary));
+      lastRequested = uniqueFontNames([...lastRequested, auxiliary]);
+    }
+  }
+  // 문서가 요청한 face가 없으면 엔진이 먼저 선택할 설치 서체도 준비한다.
+  // 대체 face를 원본 이름의 별칭으로 등록하면 HFT 고유 폭까지 덮어쓰므로
+  // 실제 이름으로만 연결하고, 원본 face의 누락 정보는 그대로 남긴다.
+  const fallbackFamilies = metricsApi()?.fallbackFamilies;
+  if (fallbackFamilies) {
+    const substitutes: string[] = [];
+    for (const requested of names) {
+      const match = matchDesktopFont(requested, lookup);
+      if (resolveSessionLocalFont(requested)
+        || (isDesktopFontMatch(match) && match.anchor.format !== 'hft')) continue;
+      const substitute = fallbackFamilies(requested).find(candidate => (
+        resolveSessionLocalFont(candidate) || isDesktopFontMatch(matchDesktopFont(candidate, lookup))
+      ));
+      if (substitute) substitutes.push(substitute);
+    }
+    for (const substitute of uniqueFontNames(substitutes)) {
+      if (!names.some(name => exactFontKey(name) === exactFontKey(substitute))) names.push(substitute);
+      attemptedFonts.add(exactFontKey(substitute));
+    }
+    lastRequested = uniqueFontNames([...lastRequested, ...names]);
+  }
   const indexedAt = now();
 
   const items = new Map<string, DesktopFontReportItem>();
@@ -1292,6 +1334,9 @@ export async function prepareDesktopFontsForDocument(
   };
   lastReport = report;
   installDebugHandle();
+  await registerDesktopHftOutlines(names).catch((error) => {
+    console.warn('[HFT] 한컴 HFT 윤곽선 연결 실패:', error);
+  });
   return report;
 }
 
@@ -1533,13 +1578,56 @@ export async function prepareSystemFontsForDocument(
   options: PrepareDesktopFontsOptions = {},
 ): Promise<DesktopFontReport[]> {
   const reports: DesktopFontReport[] = [];
-  if (hasSystemFontHost() && fontsUsed?.length) reports.push(await prepareDesktopFontsForDocument(fontsUsed, options));
+  if (hasSystemFontHost() && fontsUsed?.length) {
+    reports.push(await prepareDesktopFontsForDocument(fontsUsed, options));
+  }
   const local = await prepareLocalFontAccessMetrics(fontsUsed).catch((error) => {
     console.warn(`${logTag('local-font-access')} 메트릭 등록 실패:`, error);
     return null;
   });
   if (local) reports.push(local);
   return reports;
+}
+
+const hftOutlineFaceReads = new Map<string, Promise<boolean>>();
+let hftOutlineApiGeneration = -1;
+
+/**
+ * 문서가 쓰는 이름의 한컴 HFT 파일(한글·영문·한자 은행)을 모두 엔진에 윤곽선 소스로 등록한다.
+ * 브라우저 face 를 고르는 매칭과 달리 같은 이름의 은행이 여럿이므로 전부 읽는다.
+ */
+async function registerDesktopHftOutlines(fontsUsed: readonly string[]): Promise<number> {
+  const host = getSystemFontHost();
+  if (!host) return 0;
+  const generation = hftWasmApiGeneration();
+  if (generation !== hftOutlineApiGeneration) {
+    hftOutlineFaceReads.clear();
+    hftOutlineApiGeneration = generation;
+  }
+  const index = await loadDesktopFontIndex();
+  const wanted = new Set(uniqueFontNames(fontsUsed).map(name => name.trim()));
+  let registered = 0;
+  for (const face of index.faces) {
+    if (face.format !== 'hft') continue;
+    if (![...face.families, ...face.koreanNames].some(name => wanted.has(name.trim()))) continue;
+    let read = hftOutlineFaceReads.get(face.id);
+    if (!read) {
+      read = readDesktopFace(host, face.id)
+        .then(bytes => registerHftOutlines(bytes))
+        .catch((error) => {
+          console.warn(`[HFT] ${face.path} 를 읽지 못했습니다:`, error);
+          return false;
+        });
+      hftOutlineFaceReads.set(face.id, read);
+      void read.then(ok => {
+        if (!ok && hftOutlineFaceReads.get(face.id) === read) hftOutlineFaceReads.delete(face.id);
+      });
+      if (await read) registered += 1;
+    } else {
+      await read;
+    }
+  }
+  return registered;
 }
 
 /** 새 face나 메트릭이 등록돼 레이아웃을 다시 계산해야 하는지 */
@@ -1621,8 +1709,10 @@ export function finalizeDesktopFontReport(report: DesktopFontReport): DesktopFon
         baked = null;
       }
     }
-    if (baked !== null) {
-      // 엔진 순서: 내장 → 런타임 → 추정
+    if ((hits ?? 0) > 0) {
+      // HcrDeclared는 설치 face의 실제 hmtx를 내장 메트릭보다 먼저 쓴다.
+      item.layoutMetrics = 'runtime';
+    } else if (baked !== null) {
       item.layoutMetrics = baked ? 'baked' : registered ? 'runtime' : 'heuristic';
     } else if (registered) {
       // 등록했는데 레이아웃 뒤 hit가 0이면 내장 메트릭이 먼저 쓰인 것으로 추정한다.
@@ -1761,5 +1851,7 @@ export function resetDesktopFontsForTests(): void {
   metricAliasesByFace.clear();
   registrationTail = Promise.resolve();
   inflightReads.clear();
+  hftOutlineFaceReads.clear();
+  hftOutlineApiGeneration = -1;
   indexStale = false;
 }

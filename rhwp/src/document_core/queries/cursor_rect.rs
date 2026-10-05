@@ -4043,8 +4043,8 @@ impl DocumentCore {
                 if let Some(ref r) = hf_ref {
                     let source_sec = r.source_section_index;
                     if let Some(section) = self.document.sections.get(source_sec) {
-                        if let Some(para) = section.paragraphs.get(r.para_index) {
-                            if let Some(ctrl) = para.controls.get(r.control_index) {
+                        {
+                            if let Some(ctrl) = r.resolve(&section.paragraphs) {
                                 let apply_to = match ctrl {
                                     Control::Header(h) => match h.apply_to {
                                         HeaderFooterApply::Both => 0,

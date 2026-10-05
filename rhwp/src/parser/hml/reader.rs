@@ -681,6 +681,9 @@ impl<'a> ReadState<'a> {
             alignment: parse_alignment(attribute(element, b"Align")?.as_deref()),
             tab_def_id: parse_attribute(element, b"TabDef")?.unwrap_or(0),
             para_level: parse_attribute(element, b"Level")?.unwrap_or(0),
+            // PARAMARGIN 이 없는 문단 모양의 줄 간격은 HML 기본값(비율 160%)이다. 0 으로 두면
+            // '비율 0%'(줄 간격 = −줄 높이, 한컴 실측)로 해석되어 모든 줄이 한 자리에 겹친다.
+            line_spacing: 160,
             ..Default::default()
         };
         if !set_indexed(
