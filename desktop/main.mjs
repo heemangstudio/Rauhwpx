@@ -1329,8 +1329,14 @@ ipcMain.handle('desktop:pick-native-save-file', async (event, options = {}) => {
     options.suggestedName,
     `document.${extension}`,
   );
+  // NSSavePanel의 이름 필드에 확장자가 미리 들어가 있으면 중간 편집마다
+  // 관리 확장자를 다시 적용해 커서가 튀고, 사용자가 직접 친 확장자 위에
+  // .hwpx 를 이어 붙여 name.hwpx.hwpx 가 된다. 순수 이름만 넘긴다.
+  const suggestedStem = ['.hwp', '.hwpx', '.hml', '.rhwpx'].includes(extname(suggestedName).toLowerCase())
+    ? basename(suggestedName, extname(suggestedName))
+    : suggestedName;
   const picked = await dialog.showSaveDialog(window, {
-    defaultPath: suggestedName,
+    defaultPath: suggestedStem,
     filters: [{
       name: extension === 'rhwpx' ? 'RauHWPX history archive' : `${extension.toUpperCase()} document`,
       extensions: [extension],
@@ -1338,10 +1344,14 @@ ipcMain.handle('desktop:pick-native-save-file', async (event, options = {}) => {
     properties: ['showOverwriteConfirmation', 'createDirectory'],
   });
   if (picked.canceled || !picked.filePath) return null;
-  const filePath = extname(picked.filePath) ? picked.filePath : `${picked.filePath}.${extension}`;
-  if (extname(filePath).toLowerCase() !== `.${extension}`) {
-    throw new Error(`Save target must use the .${extension} extension`);
+  // 사용자가 .hwp/.hwpx/.hml 등을 직접 치면 패널이 관리 확장자를 그대로 덧붙여
+  // name.hwpx.hwpx 가 된다. 문서 확장자 꼬리를 모두 떼고 관리 확장자를 한 번만 붙인다.
+  const saveDir = dirname(picked.filePath);
+  let saveStem = basename(picked.filePath);
+  while (['.hwp', '.hwpx', '.hml', '.rhwpx'].includes(extname(saveStem).toLowerCase())) {
+    saveStem = saveStem.slice(0, -extname(saveStem).length);
   }
+  const filePath = join(saveDir, `${saveStem || 'document'}.${extension}`);
   const result = await nativeFiles.createSaveTarget(session.sessionId, filePath);
   if (!result.ok) {
     sessions.focusSession(result.ownerSessionId);

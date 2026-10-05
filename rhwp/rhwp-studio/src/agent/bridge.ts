@@ -2625,6 +2625,7 @@ export class AgentBridgeImpl implements AgentBridge {
           ...(typeof msg.authRunId === 'string' ? { authRunId: msg.authRunId } : {}),
           code: typeof msg.code === 'string' ? msg.code : 'AGENT_SETUP_FAILED',
           message: typeof msg.message === 'string' ? msg.message : 'Agent setup failed',
+          ...(typeof msg.detail === 'string' && msg.detail ? { detail: msg.detail } : {}),
         });
         break;
       }

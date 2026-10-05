@@ -807,6 +807,7 @@ function sendAgentSetupError(record, sock, requestId, agent, error, fallback = '
     agent,
     code: error?.code ?? fallback,
     message: String(error?.message ?? error),
+    ...(typeof error?.detail === 'string' && error.detail ? { detail: error.detail } : {}),
   });
 }
 
@@ -859,6 +860,7 @@ function sendAuthRunError(run, error, fallback = 'AGENT_AUTH_FAILED') {
     agent: run.agent,
     code: error?.code ?? fallback,
     message: String(error?.message ?? error),
+    ...(typeof error?.detail === 'string' && error.detail ? { detail: error.detail } : {}),
   });
 }
 

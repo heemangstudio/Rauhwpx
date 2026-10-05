@@ -124,8 +124,9 @@ test('브라우저 로그인은 인증 주소와 기기 코드를 카드 안에 
   );
   assert.match(settings, /setupCodeSubmit\.disabled = connectionState !== 'connected' \|\| !setupCode\.input\.value\.trim\(\);\s*restoreSetupFocus\(\);/);
   assert.match(settings, /renderPi\(\);\s*restoreSetupFocus\(\);/);
-  // 상자는 oauth 로그인이 도는 동안에만 선다.
-  assert.match(settings, /const authorizing = setupOauthPending && setupBusy && !supportsTerminalSetup\(setupAgent\);\s*setupLoginBox\.hidden = !authorizing/);
+  // 상자는 이 에이전트의 로그인이 진행 중인 동안 선다 — 주소·코드가 아직 없는
+  // 시작 직후·키 검사 중에도 대기 문구와 취소 버튼이 보여야 버튼이 멈춰 보이지 않는다.
+  assert.match(settings, /const authorizing = setupBusy && setupProgressPercent <= 0 && !supportsTerminalSetup\(setupAgent\);\s*setupLoginBox\.hidden = !authorizing/);
   assert.match(settings, /if \(ev\.authUrl\) setupAuthUrl = ev\.authUrl;\s*if \(ev\.userCode \|\| ev\.pairingCode\) setupUserCode = ev\.userCode \?\? ev\.pairingCode \?\? null;/);
   assert.match(settings, /if \(method === 'oauth' && started\.authUrl\) setupAuthUrl = started\.authUrl/);
   // 자동 열기 시도는 그대로 남는다.
