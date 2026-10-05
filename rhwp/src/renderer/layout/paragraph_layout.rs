@@ -1951,6 +1951,7 @@ fn compute_line_extra_spacing(
     in_cell: bool,
     needs_justify: bool,
     needs_distribute: bool,
+    wraps_before_inline_block: bool,
     has_tabs: bool,
     suppress_cell_overflow_spacing: bool,
     total_char_count: usize,
@@ -1962,6 +1963,8 @@ fn compute_line_extra_spacing(
     // 양쪽 정렬 안전장치: 가득 찬 자동 줄바꿈 줄의 여유는 다음 줄 첫 어절보다 작으므로
     // 간격 하나에 글자 두 개 폭 넘게, 글자 하나에 반 글자 폭 넘게 붙지 않는다. 그보다
     // 크면 실제로 찬 줄이 아니므로(낡은 줄 정보 등) 늘리지 않고 앞쪽 정렬로 둔다.
+    // 다음 인라인 개체가 남은 폭에 들어가지 않은 자동 줄바꿈은 큰 여유도 정상이다.
+    // 한컴은 이 줄에도 배분하며, 명시 줄바꿈과 문단 끝만 양쪽 정렬에서 제외한다.
     // 나눔 정렬(Split)은 짧은 줄도 끝까지 배분하는 것이 정의이므로 제외한다.
     // 기준 글자 크기는 보이는 글자가 있는 run 에서만 잡는다 (줄 끝 공백만 큰 경우 제외).
     let line_font_size = comp_line
@@ -1972,6 +1975,7 @@ fn compute_line_extra_spacing(
         .fold(0.0f64, f64::max);
     let stretch_is_implausible = |per_gap: f64, gap_limit_em: f64| -> bool {
         alignment == Alignment::Justify
+            && !wraps_before_inline_block
             && line_font_size > 0.0
             && per_gap > line_font_size * gap_limit_em
     };
@@ -2159,22 +2163,28 @@ fn needs_word_distribution(
     }
 }
 
-/// 다음 줄이 글자처럼 취급 그림/도형/표로 시작하는지 — 즉 이 줄이 글자로 차서가 아니라
-/// 다음 개체가 남은 폭에 들어가지 않아 끝났는지 판정한다. 수식은 글자 흐름의 일부라
-/// 한컴처럼 일반 줄바꿈으로 본다.
-fn line_ends_before_inline_block_object(
+/// 다음 줄 선두의 인라인 개체가 현재 줄의 남은 폭보다 넓은지 판정한다.
+/// 저장 줄 정보가 낡아 개체가 들어갈 수 있는 경우에는 간격 안전장치를 유지한다.
+fn line_wraps_before_inline_block_object(
     para: Option<&Paragraph>,
     comp: &ComposedParagraph,
     tac_offsets_px: &[(usize, f64, usize)],
     line_idx: usize,
+    remaining_width: f64,
 ) -> bool {
-    let (Some(para), Some(next)) = (para, comp.lines.get(line_idx + 1)) else {
+    let (Some(para), Some(line), Some(next)) =
+        (para, comp.lines.get(line_idx), comp.lines.get(line_idx + 1))
+    else {
         return false;
     };
+    if line.has_line_break {
+        return false;
+    }
     tac_offsets_for_line(comp, tac_offsets_px, line_idx + 1)
         .iter()
-        .any(|(pos, _, ci)| {
+        .any(|(pos, width, ci)| {
             *pos == next.char_start
+                && *width > remaining_width.max(0.0)
                 && match para.controls.get(*ci) {
                     Some(Control::Picture(pic)) => pic.common.treat_as_char,
                     Some(Control::Shape(shape)) => shape.common().treat_as_char,
@@ -4749,18 +4759,8 @@ impl LayoutEngine {
                 tac_table_alignment_margin_width(para, &line_tac_offsets_for_width, self.dpi);
             let is_last_line_of_para = line_idx == end - 1 && end == composed.lines.len();
 
-            // 정렬별 간격 분배 계산
-            // 양쪽 정렬은 글자로 가득 찬 자동 줄바꿈 줄만 늘린다. 강제 줄바꿈 줄, 문단 끝 줄과
-            // 함께, 다음 글자처럼 취급 그림/도형/표가 들어가지 않아 끊긴 줄도 앞쪽 정렬로 둔다
-            // (그림 앞 짧은 줄이 칸 전체로 벌어지지 않게 — Google Docs 와 같은 규칙).
-            let has_forced_break = comp_line.has_line_break
-                || (alignment == Alignment::Justify
-                    && line_ends_before_inline_block_object(
-                        para,
-                        composed,
-                        &tac_offsets_px,
-                        line_idx,
-                    ));
+            // 양쪽 정렬은 명시 줄바꿈과 문단 마지막 줄에서만 배분을 멈춘다.
+            let has_forced_break = comp_line.has_line_break;
             let needs_justify =
                 needs_word_distribution(alignment, is_last_line_of_para, has_forced_break);
             // 저장 줄 폭(LINE_SEG segment_width)은 그 줄을 나눈 폭이다. 표 크기 조절 등으로
@@ -4785,6 +4785,15 @@ impl LayoutEngine {
                 } else {
                     available_width
                 };
+
+            let wraps_before_inline_block = needs_justify
+                && line_wraps_before_inline_block_object(
+                    para,
+                    composed,
+                    &tac_offsets_px,
+                    line_idx,
+                    spacing_width - total_text_width,
+                );
 
             let has_tabs = comp_line.runs.iter().any(|r| r.text.contains('\t'));
             // 자간은 **그려지는 글자**에 나눠 붙으므로 폭(`total_text_width`)과 같은
@@ -4839,6 +4848,7 @@ impl LayoutEngine {
                 cell_ctx.is_some(),
                 needs_justify,
                 needs_distribute,
+                wraps_before_inline_block,
                 has_tabs,
                 suppress_cell_overflow_spacing,
                 total_char_count,
@@ -8066,7 +8076,12 @@ pub(crate) struct ParaInlineState {
 
 #[cfg(test)]
 mod issue_2809_split_alignment_tests {
-    use super::{compute_line_extra_spacing, needs_word_distribution};
+    use super::{
+        compute_line_extra_spacing, line_wraps_before_inline_block_object, needs_word_distribution,
+    };
+    use crate::model::control::Control;
+    use crate::model::image::Picture;
+    use crate::model::paragraph::Paragraph;
     use crate::model::style::Alignment;
     use crate::renderer::composer::{ComposedLine, ComposedTextRun};
     use crate::renderer::layout::text_measurement::{estimate_text_width, resolved_to_text_style};
@@ -8098,6 +8113,82 @@ mod issue_2809_split_alignment_tests {
     }
 
     #[test]
+    fn justify_object_wrap_distributes_wide_gaps_but_preserves_break_and_stale_line_guards() {
+        let mut picture = Picture::default();
+        picture.common.treat_as_char = true;
+        let para = Paragraph {
+            controls: vec![Control::Picture(Box::new(picture))],
+            ..Default::default()
+        };
+        let mut composed = crate::renderer::composer::compose_paragraph(&para);
+        let mut line = split_label_line();
+        line.runs[0].text = "그림 앞의 글입니다".into();
+        let next_start = line.runs[0].text.chars().count();
+        let mut next = line.clone();
+        next.char_start = next_start;
+        next.runs[0].text = ".".into();
+        composed.lines = vec![line.clone(), next];
+        let offsets = vec![(next_start, 180.0, 0)];
+        let styles = ResolvedStyleSet {
+            char_styles: vec![ResolvedCharStyle {
+                font_size: 12.0,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let total = estimate_text_width(&line.runs[0].text, &resolved_to_text_style(&styles, 0, 0));
+        let slack = 120.0;
+        let spacing = |needs_justify, wraps_before_object| {
+            compute_line_extra_spacing(
+                &line,
+                &styles,
+                Alignment::Justify,
+                true,
+                needs_justify,
+                false,
+                wraps_before_object,
+                false,
+                false,
+                next_start,
+                total,
+                total + slack,
+                40.0,
+                0,
+            )
+        };
+        let wraps =
+            line_wraps_before_inline_block_object(Some(&para), &composed, &offsets, 0, slack);
+        assert!(wraps);
+        assert_eq!(spacing(true, wraps), (slack / 2.0, 0.0, 0.0));
+        assert_eq!(spacing(true, false), (0.0, 0.0, 0.0));
+        // 개체가 들어갈 수 있는 낡은 저장 줄 정보에는 큰 간격을 허용하지 않는다.
+        assert!(!line_wraps_before_inline_block_object(
+            Some(&para),
+            &composed,
+            &offsets,
+            0,
+            180.0,
+        ));
+        composed.lines[0].has_line_break = true;
+        assert!(!line_wraps_before_inline_block_object(
+            Some(&para),
+            &composed,
+            &offsets,
+            0,
+            slack,
+        ));
+        for (last, forced) in [(false, true), (true, false)] {
+            assert_eq!(
+                spacing(
+                    needs_word_distribution(Alignment::Justify, last, forced),
+                    wraps
+                ),
+                (0.0, 0.0, 0.0),
+            );
+        }
+    }
+
+    #[test]
     fn split_label_assigns_positive_slack_to_interior_spaces() {
         let line = split_label_line();
         let (extra_word, extra_char, extra_dash) = compute_line_extra_spacing(
@@ -8106,6 +8197,7 @@ mod issue_2809_split_alignment_tests {
             Alignment::Split,
             true,
             true,
+            false,
             false,
             false,
             false,
@@ -8172,6 +8264,7 @@ mod issue_2809_split_alignment_tests {
                 false,
                 false,
                 false,
+                false,
                 line.runs.iter().map(|r| r.text.chars().count()).sum(),
                 total_width,
                 visible_width + 8.0,
@@ -8200,6 +8293,7 @@ mod issue_2809_split_alignment_tests {
                     Alignment::Justify,
                     in_cell,
                     true,
+                    false,
                     false,
                     false,
                     false,
@@ -8235,6 +8329,7 @@ mod issue_2809_split_alignment_tests {
             Alignment::Split,
             true,
             true,
+            false,
             false,
             false,
             false,
