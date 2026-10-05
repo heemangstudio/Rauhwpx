@@ -2166,7 +2166,10 @@ pub fn recompose_for_native_hwpx_cell_width(
         cell_inner_width_px,
         styles,
         0.0,
-        para.controls.is_empty(),
+        para.controls
+            .iter()
+            .all(|control| matches!(control, Control::ColumnDef(_) | Control::SectionDef(_))),
+        true,
     );
 }
 
@@ -2176,8 +2179,20 @@ pub fn recompose_for_cell_width_for_source(
     cell_inner_width_px: f64,
     styles: &ResolvedStyleSet,
     native_hwpx: bool,
+    line_wrap: crate::model::table::CellLineWrap,
 ) {
-    if native_hwpx {
+    if line_wrap == crate::model::table::CellLineWrap::Squeeze {
+        // 줄을 폭으로 나누지 않고 음수 자간 압축에 넘긴다. 명시 개행과 저장 줄은 보존한다.
+        recompose_for_cell_width_impl_with_generated(
+            composed,
+            para,
+            cell_inner_width_px,
+            styles,
+            0.0,
+            true,
+            false,
+        );
+    } else if native_hwpx {
         recompose_for_native_hwpx_cell_width(composed, para, cell_inner_width_px, styles);
     } else {
         recompose_for_cell_width(composed, para, cell_inner_width_px, styles);
@@ -2198,6 +2213,7 @@ fn recompose_for_cell_width_impl(
         styles,
         first_line_reserve_px,
         false,
+        true,
     );
 }
 
@@ -2208,6 +2224,7 @@ fn recompose_for_cell_width_impl_with_generated(
     styles: &ResolvedStyleSet,
     first_line_reserve_px: f64,
     allow_generated_multiline: bool,
+    wrap_at_width: bool,
 ) {
     let has_synthetic_line_segs = !para.line_segs.is_empty()
         && para
@@ -2308,7 +2325,45 @@ fn recompose_for_cell_width_impl_with_generated(
     // 종전에는 전 줄을 한 줄로 합쳐 폭 기준 재분할 → \n 경계 소실로 생성계
     // NO_LS 셀이 과소 (80168 pi=362 조문 표: 한글 11줄 vs 8줄, -58px).
     // \n 으로 닫히는 그룹 단위로 합쳐 각 그룹을 독립 재래핑한다.
-    let src_lines = std::mem::take(&mut composed.lines);
+    let mut src_lines = std::mem::take(&mut composed.lines);
+    if !wrap_at_width {
+        // NO_LS 폴백의 run 안에 남은 개행도 폭에 의존하지 않고 분리한다.
+        src_lines = src_lines
+            .into_iter()
+            .flat_map(|line| {
+                let mut pieces = Vec::new();
+                let mut part = line.clone();
+                part.runs.clear();
+                let mut char_pos = line.char_start;
+                for run in line.runs {
+                    if run.text.is_empty() {
+                        part.runs.push(run);
+                        continue;
+                    }
+                    let segments: Vec<_> = run.text.split('\n').collect();
+                    for (index, text) in segments.iter().enumerate() {
+                        if !text.is_empty() {
+                            let mut fragment = run.clone();
+                            fragment.text = (*text).to_owned();
+                            part.runs.push(fragment);
+                            char_pos += text.chars().count();
+                        }
+                        if index + 1 < segments.len() {
+                            part.has_line_break = true;
+                            pieces.push(part.clone());
+                            char_pos += 1;
+                            part.runs.clear();
+                            part.char_start = char_pos;
+                            part.has_line_break = false;
+                        }
+                    }
+                }
+                // 마지막 개행 뒤의 빈 줄도 실제 작성된 줄 경계다.
+                pieces.push(part);
+                pieces
+            })
+            .collect();
+    }
     let mut groups: Vec<(ComposedLine, bool)> = Vec::new();
     let mut cur: Option<ComposedLine> = None;
     // [#2070] 그룹 경계는 para.text 의 **실제 '\n'** 로만 판정한다.
@@ -2375,7 +2430,7 @@ fn recompose_for_cell_width_impl_with_generated(
             }
             w
         };
-        if total_width - trailing_space_w <= g_first + 0.5 {
+        if !wrap_at_width || total_width - trailing_space_w <= g_first + 0.5 {
             composed.lines.push(combined_line);
         } else {
             let mut frags = split_composed_line_by_width(
@@ -2629,6 +2684,8 @@ fn split_composed_line_by_width(
     let mut chars_in_line = 0usize;
     let mut current_run_text = String::new();
     let mut current_run_template: Option<ComposedTextRun> = None;
+    // 긴 어절의 글자 채움 상태는 합성 줄/언어/서식 run 경계를 지나서도 유지한다.
+    let mut oversized_word_continuation = false;
 
     let flush_run =
         |runs: &mut Vec<ComposedTextRun>, text: &mut String, template: &Option<ComposedTextRun>| {
@@ -2780,7 +2837,8 @@ fn split_composed_line_by_width(
                 };
                 let fitting_width = word_width - terminal_space;
                 // 현재 단어가 추가되면 max_width 초과하는지 검사
-                if current_width - space_w * space_condense + fitting_width > limit(&result)
+                if !oversized_word_continuation
+                    && current_width - space_w * space_condense + fitting_width > limit(&result)
                     && (chars_in_line > 0 || !current_run_text.is_empty())
                 {
                     // 현재 줄을 flush 후 새 줄 시작
@@ -2800,13 +2858,17 @@ fn split_composed_line_by_width(
                     hung = false;
                 }
                 // 단어 자체가 max_width 초과 시 글자 단위 break
-                if fitting_width > limit(&result) && current_width == 0.0 {
+                if oversized_word_continuation
+                    || (fitting_width > limit(&result) && current_width == 0.0)
+                {
                     for wch in word.chars() {
                         let wch_str: String = std::iter::once(wch).collect();
                         let wch_width =
                             crate::renderer::layout::estimate_text_width_unrounded(&wch_str, &ts);
                         if current_width - space_w * space_condense + wch_width > limit(&result)
                             && chars_in_line > 0
+                            // 어절 맞춤에서 뺀 마지막 공백은 글자 채움에서도 직전 줄에 둔다.
+                            && !(native_word_flow && wch == ' ')
                         {
                             flush_run(
                                 &mut current_runs,
@@ -2825,6 +2887,9 @@ fn split_composed_line_by_width(
                         }
                         current_run_text.push(wch);
                         current_width += wch_width;
+                        if native_word_flow && wch == ' ' {
+                            space_w += wch_width;
+                        }
                         chars_in_line += 1;
                     }
                 } else {
@@ -2835,6 +2900,7 @@ fn split_composed_line_by_width(
                     chars_in_line += word.chars().count();
                 }
                 word.clear();
+                oversized_word_continuation = false;
             }
         }
         // run 끝에 남은 단어 처리
@@ -2861,8 +2927,9 @@ fn split_composed_line_by_width(
                     }
                 }
             }
-            if current_width - space_w * space_condense + word_width + continuation_width
-                > limit(&result)
+            if !oversized_word_continuation
+                && current_width - space_w * space_condense + word_width + continuation_width
+                    > limit(&result)
                 && (chars_in_line > 0 || !current_run_text.is_empty())
             {
                 flush_run(
@@ -2881,7 +2948,9 @@ fn split_composed_line_by_width(
                 hung = false;
             }
             // 단어 자체가 max_width 초과 시 글자 단위 break
-            if word_width > limit(&result) && current_width == 0.0 {
+            let fill_oversized_word = oversized_word_continuation
+                || (native_word_flow && word_width + continuation_width > limit(&result));
+            if fill_oversized_word || (word_width > limit(&result) && current_width == 0.0) {
                 for wch in word.chars() {
                     let wch_str: String = std::iter::once(wch).collect();
                     let wch_width =
@@ -2913,6 +2982,7 @@ fn split_composed_line_by_width(
                 current_width += word_width;
                 chars_in_line += word.chars().count();
             }
+            oversized_word_continuation = fill_oversized_word && continuation_width > 0.0;
         }
     }
     // 마지막 줄 flush

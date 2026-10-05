@@ -2410,22 +2410,10 @@ impl LayoutEngine {
         let table_widths: Vec<f64> = inline_tables
             .iter()
             .map(|(_, t)| {
-                // col_widths로부터 table_width 계산
+                // 병합 셀만 폭을 제공하는 열도 실제 표 렌더링과 같은 격자로 계산한다.
                 let col_count = t.col_count as usize;
                 let cell_spacing = hwpunit_to_px(t.cell_spacing as i32, self.dpi);
-                let mut col_widths = vec![0.0f64; col_count];
-                for cell in &t.cells {
-                    let c = cell.col as usize;
-                    let span = cell.col_span.max(1) as usize;
-                    if c + span <= col_count {
-                        let w = hwpunit_to_px(cell.width as i32, self.dpi);
-                        if span == 1 {
-                            if w > col_widths[c] {
-                                col_widths[c] = w;
-                            }
-                        }
-                    }
-                }
+                let col_widths = self.resolve_column_widths(t, col_count);
                 let total: f64 = col_widths.iter().sum::<f64>()
                     + cell_spacing * (col_count.saturating_sub(1) as f64);
                 total
@@ -2451,16 +2439,36 @@ impl LayoutEngine {
             .map(|cs| cs.char_shape_id as u32)
             .unwrap_or(0);
 
+        let control_positions = para.control_text_positions();
         let seg_widths: Vec<f64> = segments
             .iter()
-            .map(|(s, e)| {
-                let seg_text: String = text_chars[*s..*e].iter().collect();
+            .enumerate()
+            .map(|(segment_index, (s, e))| {
+                // 마지막 TAC 표 뒤의 공백은 중앙/오른쪽 정렬의 끝 폭에서 제외한다.
+                // 표 앞 공백은 텍스트와 표 사이의 실제 자리이므로 유지한다.
+                let mut alignment_end = *e;
+                if segment_index + 1 == segments.len()
+                    && table_widths.last().is_some_and(|width| *width > 0.0)
+                    && inline_tables.last().is_some_and(|(control_index, _)| {
+                        control_positions
+                            .get(*control_index)
+                            .is_some_and(|position| *position <= *s && *position < *e)
+                    })
+                    && matches!(alignment, Alignment::Center | Alignment::Right)
+                {
+                    while alignment_end > *s
+                        && matches!(text_chars[alignment_end - 1], ' ' | '\u{3000}')
+                    {
+                        alignment_end -= 1;
+                    }
+                }
+                let seg_text: String = text_chars[*s..alignment_end].iter().collect();
                 if seg_text.is_empty() {
                     return 0.0;
                 }
                 // 세그먼트 내 char_shape 변경을 고려한 폭 계산
                 let mut total = 0.0;
-                for ch_idx in *s..*e {
+                for ch_idx in *s..alignment_end {
                     // 해당 문자의 char_shape 찾기
                     let utf16_pos = offsets[ch_idx];
                     let cs_id = para
@@ -2622,7 +2630,6 @@ impl LayoutEngine {
         let mut wrapped_below_table = false; // 텍스트가 표 아래로 줄바꿈되었는지
                                              // [Task #518] 다음 break 인덱스 (line_break_char_indices 안에서)
         let mut next_break: usize = 0;
-        let control_positions = para.control_text_positions();
 
         for (s, e) in &segments {
             // 텍스트 세그먼트 렌더링 (줄바꿈 지원)
@@ -9410,5 +9417,114 @@ mod compatibility_line_position_tests {
     fn authored_textbox_position_already_contains_paragraph_before_spacing() {
         assert_eq!(layout_line(0.0, false, true, false, 0).0, 4.0);
         assert_eq!(layout_line(0.0, false, true, true, 0).0, 8.0);
+    }
+}
+
+#[cfg(test)]
+mod inline_table_terminal_space_alignment_tests {
+    use super::*;
+    use crate::model::control::Control;
+    use crate::model::paragraph::{CharShapeRef, LineSeg};
+    use crate::model::table::{Cell, Table};
+    use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle};
+
+    #[test]
+    fn inline_table_alignment_excludes_terminal_spaces_and_keeps_leading_spaces() {
+        let table_x = |trailing: bool, space: &str, alignment| {
+            let table = Table {
+                row_count: 1,
+                col_count: 1,
+                common: crate::model::shape::CommonObjAttr {
+                    treat_as_char: true,
+                    width: 10_000,
+                    height: 1_500,
+                    ..Default::default()
+                },
+                cells: vec![Cell {
+                    row_span: 1,
+                    col_span: 1,
+                    width: 10_000,
+                    height: 1_500,
+                    paragraphs: vec![Paragraph::new_empty()],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let para = Paragraph {
+                text: space.into(),
+                char_offsets: vec![if trailing { 8 } else { 0 }],
+                char_shapes: vec![CharShapeRef::default()],
+                controls: vec![Control::Table(Box::new(table))],
+                line_segs: vec![LineSeg {
+                    line_height: 1_500,
+                    baseline_distance: 1_275,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let styles = ResolvedStyleSet {
+                char_styles: vec![ResolvedCharStyle {
+                    font_size: 12.0,
+                    ..Default::default()
+                }],
+                para_styles: vec![ResolvedParaStyle {
+                    alignment,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let engine = LayoutEngine::new(96.0);
+            let area = LayoutRect {
+                x: 0.0,
+                y: 0.0,
+                width: 400.0,
+                height: 800.0,
+            };
+            let mut tree = PageRenderTree::new(0, 800.0, 1100.0);
+            let mut parent = RenderNode::new(
+                tree.next_id(),
+                RenderNodeType::Column(0),
+                BoundingBox::new(0.0, 0.0, 400.0, 800.0),
+            );
+            engine.layout_inline_table_paragraph(
+                &mut tree,
+                &mut parent,
+                &para,
+                None,
+                &styles,
+                &area,
+                0.0,
+                0,
+                0,
+                &[],
+                &[],
+            );
+            parent
+                .children
+                .iter()
+                .find(|node| matches!(node.node_type, RenderNodeType::Table(_)))
+                .unwrap()
+                .bbox
+                .x
+        };
+        let style = crate::renderer::TextStyle {
+            font_size: 12.0,
+            ..Default::default()
+        };
+        let table_width = hwpunit_to_px(10_000, 96.0);
+        for space in [" ", "\u{3000}"] {
+            let center = (400.0 - table_width) / 2.0;
+            assert!((table_x(true, space, Alignment::Center) - center).abs() < 0.01);
+            assert!(
+                (table_x(false, space, Alignment::Center)
+                    - center
+                    - estimate_text_width(space, &style) / 2.0)
+                    .abs()
+                    < 0.01
+            );
+            let right = 400.0 - table_width;
+            assert!((table_x(true, space, Alignment::Right) - right).abs() < 0.01);
+            assert!((table_x(false, space, Alignment::Right) - right).abs() < 0.01);
+        }
     }
 }

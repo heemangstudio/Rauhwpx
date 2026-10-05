@@ -239,6 +239,23 @@ test('세션 글꼴 파일은 웹 대체 face보다 먼저 선택되고 CanvasKi
     const loaded = await loadLocalFontBytesFor(['맑은 고딕']);
     assert.deepEqual(new Uint8Array(loaded.get(localFontFaceKey(imported[0]!))!), bytes);
     assert.equal(getLocalFontState().stored, false);
+    const importedHcr = await importLocalFontFiles([new File([createSfntWithNameRecords([
+      { nameId: 1, value: 'HCR Batang' }, { nameId: 1, value: '함초롬바탕' },
+      { nameId: 2, value: 'Regular' }, { nameId: 6, value: 'HCRBatang-Regular' },
+    ])], 'HCR.ttf')]);
+    const hcrFamily = importedHcr.imported[0]?.runtimeFamily;
+    assert.ok(hcrFamily);
+    for (const family of ['HY신명조', '한양신명조']) {
+      const chain = fontFamilyChainForDisplay(family);
+      assert.ok(chain.indexOf(hcrFamily!) < chain.indexOf('serif'));
+    }
+    const requestedHy = await importLocalFontFiles([new File([createSfntWithNameRecords([
+      { nameId: 1, value: 'HY신명조' }, { nameId: 2, value: 'Regular' },
+      { nameId: 6, value: 'HYSMyeongjo-Regular' },
+    ])], 'HY.ttf')]);
+    assert.equal(firstQuotedFontFamily(fontFamilyChainForDisplay('HY신명조')),
+      requestedHy.imported[0]?.runtimeFamily);
+
   } finally {
     resetLocalFontsForTests();
     g.document = originalDocument;

@@ -220,6 +220,9 @@ impl SvgRenderer {
             return 1;
         }
         if let Some(layer) = node.layer {
+            if layer.local_to_parent {
+                return 3;
+            }
             if let Some(text_wrap) = layer.text_wrap {
                 return match text_wrap {
                     crate::model::shape::TextWrap::BehindText => 2,
@@ -239,7 +242,7 @@ impl SvgRenderer {
     }
 
     fn node_z_sort_key(node: &RenderNode) -> (u8, i32, u32) {
-        let layer = node.layer;
+        let layer = node.layer.filter(|layer| !layer.local_to_parent);
         (
             Self::node_z_plane(node),
             layer.map(|l| l.z_order).unwrap_or(0),
@@ -1168,6 +1171,35 @@ impl SvgRenderer {
         style: &ShapeStyle,
         gradient: Option<&GradientFillInfo>,
     ) {
+        let fan = gradient.and_then(|gradient| {
+            super::gradient_fill::conical_polygons(gradient, BoundingBox::new(x, y, w, h))
+        });
+        if let Some(polygons) = fan {
+            self.clip_counter += 1;
+            let id = format!("conical{}", self.clip_counter);
+            self.defs.push(format!("<clipPath id=\"{id}\"><rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" rx=\"{corner_radius}\"/></clipPath>"));
+            self.output
+                .push_str(&format!("<g clip-path=\"url(#{id})\">"));
+            for polygon in polygons {
+                let points = polygon
+                    .points
+                    .iter()
+                    .map(|(x, y)| format!("{x},{y}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                self.output.push_str(&format!(
+                    "<polygon points=\"{points}\" fill=\"{}\" opacity=\"{}\"/>",
+                    color_to_svg(polygon.color),
+                    style.opacity
+                ));
+            }
+            self.output.push_str("</g>");
+            let mut stroke = style.clone();
+            stroke.fill_color = None;
+            stroke.pattern = None;
+            self.draw_rect_with_gradient(x, y, w, h, corner_radius, &stroke, None);
+            return;
+        }
         let mut attrs = format!("x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"", x, y, w, h);
 
         if corner_radius > 0.0 {

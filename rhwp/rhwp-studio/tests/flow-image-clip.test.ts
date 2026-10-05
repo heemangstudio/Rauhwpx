@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { layerPaintOpReplayPlane } from '../src/view/canvaskit/replay-plane.ts';
+import type { LayerInfo, LayerPaintOp } from '../src/core/types';
 
 import {
   collectFlowImagePaintOps,
@@ -70,6 +72,32 @@ test('flow image collector leaves unclipped images unchanged', () => {
   assert.equal(images.length, 1);
   assert.equal(images[0].clip, null);
   assert.deepEqual(visibleFlowImageBbox(images[0]), { x: 3, y: 4, width: 5, height: 6 });
+});
+
+test('cell images inherit the outer replay plane across nested local content', () => {
+  const local = { textWrap: 'behindText', zOrder: 9, stableIndex: 2, localToParent: true };
+  for (const [parent, expected] of [
+    [undefined, 'flow'],
+    [{ textWrap: 'inFrontOfText', zOrder: 1, stableIndex: 0 }, 'inFrontOfText'],
+    [{ textWrap: 'inFrontOfText', zOrder: 1, stableIndex: 0, masterPage: true }, 'behindText'],
+  ] as const) {
+    const planes: string[] = [];
+    const collected = collectFlowImagePaintOps({
+      kind: 'group', layer: parent,
+      children: [{ kind: 'group', layer: local, children: [{
+        kind: 'leaf',
+        layer: { textWrap: 'inFrontOfText', zOrder: 20, stableIndex: 0 },
+        ops: [{ ...image({ x: 3, y: 4, width: 5, height: 6 }), wrap: 'inFrontOfText' }],
+      }] }],
+    }, (op, layer) => {
+      const plane = layerPaintOpReplayPlane(op as LayerPaintOp, layer as LayerInfo);
+      planes.push(plane);
+      return op.type === 'image' && plane === 'flow';
+    });
+    assert.deepEqual(planes, [expected]);
+    assert.equal(collected.length, expected === 'flow' ? 1 : 0);
+    assert.equal(local.textWrap, 'behindText');
+  }
 });
 
 // composeImageFilter 효과별 CSS filter 문자열 pin (PR #2523 검토 후속 권고).

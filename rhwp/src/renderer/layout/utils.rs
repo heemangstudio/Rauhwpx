@@ -302,6 +302,8 @@ pub(crate) fn drawing_to_shape_style(
                 angle: g.angle,
                 center_x: g.center_x,
                 center_y: g.center_y,
+                step: g.blur,
+                step_center: g.step_center,
                 colors: g.colors.clone(),
                 positions,
             })

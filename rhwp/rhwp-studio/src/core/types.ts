@@ -1037,6 +1037,8 @@ export interface LayerInfo {
   stableIndex: number;
   /** 바탕쪽 유래 여부 (#2318). true 면 replay plane 이 behindText 로 상한 고정된다. */
   masterPage?: boolean;
+  /** 셀 내부 개체 순서는 부모의 페이지 재생 면 안에서만 적용한다. */
+  localToParent?: boolean;
 }
 
 export type LayerNode = LayerGroupNode | LayerClipNode | LayerLeafNode;
@@ -1214,8 +1216,12 @@ export interface LayerGradientFill {
   angle: number;
   centerX: number;
   centerY: number;
+  step?: number;
+  stepCenter?: number;
   colors: string[];
   positions: number[];
+  conicalClipRadius?: number;
+  conicalPolygons?: Array<{ color: string; points: Array<[number, number]> }>;
 }
 
 export interface LayerLineOp {

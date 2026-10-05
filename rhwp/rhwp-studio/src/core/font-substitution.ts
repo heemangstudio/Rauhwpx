@@ -10,7 +10,7 @@
  *   3. 최종 fallback → generic serif/sans-serif
  */
 
-import { REGISTERED_FONTS } from './font-loader.ts';
+import { REGISTERED_FONTS, getDetectedOSFonts, isSubstitutedWebFontRegistered } from './font-loader.ts';
 import { getLocalFontLookupGeneration, repairedLocalFontFamily, resolveLocalFont } from './local-fonts.ts';
 import { equationFontFamilies } from './equation-font.ts';
 
@@ -246,6 +246,12 @@ function systemFallbackFamilies(fontName: string): string[] {
   if (hftFaces) {
     return [...hftFaces, 'Batang', 'AppleMyungjo', 'Noto Serif KR', 'serif'];
   }
+  // macOS 한컴의 검증된 HY 신명조 쌍은 가져온 HCR face를 제네릭 serif보다 먼저 쓴다.
+  if (fontName.trim() === 'HY신명조' || fontName.trim() === '한양신명조') {
+    const hcr = resolveLocalFont('HCR Batang');
+    return [hcr?.runtimeFamily ?? '함초롬바탕', 'HCR Batang', '한컴바탕', 'Haansoft Batang',
+      'Batang', 'AppleMyungjo', 'Noto Serif KR', 'serif'];
+  }
   // Serif 판별 — 문자 클래스가 아니라 실제 서체명 토큰으로 검사한다.
   // (기존 `[바탕명조궁서]` 는 '서울남산체'·'고딕서체' 처럼 해당 글자가 스치기만 해도
   //  명조로 오분류했다.)
@@ -354,13 +360,21 @@ export function fontFamilyChainForDisplay(
     _displayChainCache.clear();
     _displayChainGeneration = generation;
   }
-  const cacheKey = langId + '\0' + fontName + '\0' + altType;
+  const proxy = prefersHcrOverWebProxy(fontName);
+  const cacheKey = Number(proxy) + '\0' + Number(getDetectedOSFonts().has(fontName))
+    + '\0' + langId + '\0' + fontName + '\0' + altType;
   let chain = _displayChainCache.get(cacheKey);
   if (chain === undefined) {
     chain = buildFontFamilyChainForDisplay(fontName, altType, langId, options);
     _displayChainCache.set(cacheKey, chain);
   }
   return chain;
+}
+
+/** 검증된 HY 쌍의 Noto 웹 별칭은 HCR face보다 앞에 두지 않는다. */
+export function prefersHcrOverWebProxy(family: string): boolean {
+  return /^(HY신명조|한양신명조)$/.test(family)
+    && isSubstitutedWebFontRegistered(family);
 }
 
 function buildFontFamilyChainForDisplay(
@@ -379,7 +393,8 @@ function buildFontFamilyChainForDisplay(
     : null;
   const originalAllowed =
     options.includeUnconfirmedOriginal === true ||
-    REGISTERED_FONTS.has(fontName) ||
+    (/^(HY신명조|한양신명조)$/.test(fontName) && getDetectedOSFonts().has(fontName)) ||
+    (REGISTERED_FONTS.has(fontName) && !prefersHcrOverWebProxy(fontName)) ||
     confirmedLocalFontSet.has(fontName.toLocaleLowerCase('en-US'));
 
   if (localRecord) {

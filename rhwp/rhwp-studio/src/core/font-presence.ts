@@ -79,13 +79,24 @@ export function createDeclaredFontAvailabilityProbe(
   context: ProbeContext,
   originalFont: { get: () => string; set: (value: string) => void },
   importedFaceAvailable: (family: string) => boolean,
+  substitutedWebFace: (family: string) => boolean = () => false,
+): (family: string) => boolean {
+  const rawAvailable = createRawFontAvailabilityProbe(context, originalFont);
+  return family => importedFaceAvailable(family)
+    || (!substitutedWebFace(family) && rawAvailable(family));
+}
+
+/** 가져온 runtime 별칭이나 표시 체인을 제외한 원본 CSS face만 확인한다. */
+export function createRawFontAvailabilityProbe(
+  context: ProbeContext,
+  originalFont: { get: () => string; set: (value: string) => void },
 ): (family: string) => boolean {
   const rawContext: ProbeContext = {
     get font() { return originalFont.get.call(context); },
     set font(value: string) { originalFont.set.call(context, value); },
     measureText(text: string) { return context.measureText(text); },
   };
-  return family => importedFaceAvailable(family) || isFontFamilyAvailable(family, rawContext);
+  return family => isFontFamilyAvailable(family, rawContext);
 }
 
 /** 여러 서체를 한 컨텍스트로 일괄 판정한다. */

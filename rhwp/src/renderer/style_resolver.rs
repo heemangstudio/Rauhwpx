@@ -1078,6 +1078,8 @@ fn resolve_single_border_style(bf: &BorderFill) -> ResolvedBorderStyle {
                 angle: g.angle,
                 center_x: g.center_x,
                 center_y: g.center_y,
+                step: g.blur,
+                step_center: g.step_center,
                 colors: g.colors.clone(),
                 positions,
             }))

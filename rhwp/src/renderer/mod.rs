@@ -20,6 +20,7 @@ pub mod font_metrics_data;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod font_paths;
 pub(crate) mod form_caption;
+pub(crate) mod gradient_fill;
 pub mod height_cursor;
 pub mod height_measurer;
 mod hft_metrics;
@@ -536,6 +537,10 @@ pub struct GradientFillInfo {
     pub center_x: i16,
     /// 세로 중심 (%)
     pub center_y: i16,
+    /// 번짐 단계 (HWPX step, 모델 blur)
+    pub step: i16,
+    /// 번짐 중심 (%)
+    pub step_center: u8,
     /// 색상 목록 (ColorRef)
     pub colors: Vec<ColorRef>,
     /// 색상 위치 (0.0~1.0 정규화)
@@ -1352,6 +1357,13 @@ fn chain_font_subst<'a>(font_family: &str, font_subst: &'a str) -> &'a str {
 
 /// [#3314] 렌더용 폴백 체인 문자열: `요청 face → (base family) → generic 체인`.
 pub fn render_font_family_chain(font_family: &str, font_subst: &str) -> String {
+    // 스타일에 붙은 제네릭 체인보다 검증된 한컴 대체 face를 먼저 선택한다.
+    let primary = style_resolver::primary_font_name(font_family);
+    let font_family = if matches!(primary, "HY신명조" | "한양신명조") {
+        primary
+    } else {
+        font_family
+    };
     let fb = generic_fallback(font_family);
     let font_subst = chain_font_subst(font_family, font_subst);
     let subst = if font_subst.is_empty() {
@@ -1371,6 +1383,13 @@ pub fn render_font_family_chain(font_family: &str, font_subst: &str) -> String {
 /// 바로 뒤에 base family를 넣어 generic 폴백보다 먼저 선택되게 한다.
 /// 측정 경로에는 사용하지 않는다.
 pub fn canvas_font_family_chain(font_family: &str, font_subst: &str) -> String {
+    // 스타일에 붙은 제네릭 체인보다 검증된 한컴 대체 face를 먼저 선택한다.
+    let primary = style_resolver::primary_font_name(font_family);
+    let font_family = if matches!(primary, "HY신명조" | "한양신명조") {
+        primary
+    } else {
+        font_family
+    };
     if font_family.is_empty() {
         return "sans-serif".to_string();
     }
@@ -1426,8 +1445,12 @@ pub(crate) fn hancom_substitute_faces(font_family: &str) -> &'static [&'static s
         // exam-kor-1p 정답지는 HY신명조/한양신명조 런을 HCRBatang 글리프로 굽는다.
         // 두 서체를 generic serif chain 에 맡기면 macOS 는 AppleMyungjo 를 먼저
         // 잡아 한컴 출력과 다른 명조로 렌더한다.
-        "HY신명조" | "한양신명조" | "신명 신명조" | "신명 견명조" | "신명 중명조" | "명조"
-        | "새문명조" => &["한컴바탕", "Haansoft Batang", "함초롬바탕", "HCR Batang"],
+        "HY신명조" | "한양신명조" => {
+            &["함초롬바탕", "HCR Batang", "한컴바탕", "Haansoft Batang"]
+        }
+        "신명 신명조" | "신명 견명조" | "신명 중명조" | "명조" | "새문명조" => {
+            &["한컴바탕", "Haansoft Batang", "함초롬바탕", "HCR Batang"]
+        }
         "돋움" | "Dotum" | "돋움체" | "DotumChe" | "굴림" | "Gulim" | "굴림체" | "GulimChe" => {
             &["한컴돋움", "Haansoft Dotum", "함초롬돋움", "HCR Dotum"]
         }
@@ -1498,6 +1521,12 @@ pub fn generic_fallback(font_family: &str) -> &'static str {
     }
     if font_family.trim() == "신명 디나루" {
         return "'돋움','한컴돋움','Haansoft Dotum','Malgun Gothic','맑은 고딕','Apple SD Gothic Neo','Noto Sans KR',sans-serif";
+    }
+    // 네이티브 설치 대체 순서와 SVG/Canvas 체인을 맞춘다. 요청 face는 호출자가
+    // 체인 맨 앞에 두므로 실폰트가 있으면 그대로 쓰고, HCR 미설치 시에는 기존
+    // 한컴바탕 및 제네릭 명조 후보로 내려간다.
+    if matches!(font_family.trim(), "HY신명조" | "한양신명조") {
+        return "'함초롬바탕','HCR Batang','한컴바탕','Haansoft Batang','Batang','바탕','Nanum Myeongjo','AppleMyungjo','Noto Serif KR','Noto Serif CJK KR','HCR Batang Ext-B','함초롬바탕 확장B','HCR Batang Ext','함초롬바탕 확장','Source Han Serif K Old Hangul',serif";
     }
     // 한양 HFT → 한컴 TTF 쌍(hft_substitute_faces 와 같은 매핑)을 generic 체인
     // 앞에 둔다. 미설치 환경에선 자연스럽게 다음 후보로 넘어간다.
@@ -1852,6 +1881,33 @@ fn format_hanja_number(n: u16) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mac_missing_serif_substitution_keeps_shared_render_policy() {
+        for family in ["HY신명조", "한양신명조"] {
+            let prepared = format!("{family}, Batang, AppleMyungjo, serif");
+            for chain in [
+                super::render_font_family_chain(&prepared, ""),
+                super::canvas_font_family_chain(&prepared, ""),
+            ] {
+                assert!(chain.find("함초롬바탕").unwrap() < chain.find("serif").unwrap());
+                assert!(
+                    chain.find("HCR Batang").unwrap()
+                        < chain.find("Batang, AppleMyungjo").unwrap_or(usize::MAX)
+                );
+            }
+            assert_eq!(super::hancom_substitute_faces(family)[0], "함초롬바탕");
+            let svg = super::render_font_family_chain(family, "");
+            let canvas = super::canvas_font_family_chain(family, "");
+            for chain in [&svg, &canvas] {
+                assert!(chain.find(family).unwrap() < chain.find("함초롬바탕").unwrap());
+                assert!(chain.find("HCR Batang").unwrap() < chain.find("Haansoft Batang").unwrap());
+            }
+        }
+        for family in ["바탕", "궁서", "신명 중명조", "새문명조"] {
+            assert_eq!(super::hancom_substitute_faces(family)[0], "한컴바탕");
+        }
+    }
+
     use super::*;
 
     #[test]

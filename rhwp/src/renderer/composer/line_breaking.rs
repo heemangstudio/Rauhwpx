@@ -1746,7 +1746,11 @@ fn inline_control_metrics_hwp(ctrl: &Control) -> Option<InlineControlMetricsHwp>
         }
         Control::Table(table) if table.common.treat_as_char => {
             let width = table.get_column_widths().iter().sum::<u32>() as i32;
-            let height = table.common.height as i32;
+            // TAC 표의 줄 상자는 표 잉크 높이에 바깥 위/아래 여백을 더한다.
+            // 기본 85% 기준선도 이 점유 높이를 사용한다.
+            let height = (table.common.height as i32)
+                .saturating_add(i32::from(table.outer_margin_top))
+                .saturating_add(i32::from(table.outer_margin_bottom));
             (width, height, (height as f64 * 0.85).round() as i32)
         }
         Control::Equation(eq) if eq.common.treat_as_char => {
@@ -1867,6 +1871,46 @@ mod inline_equation_metric_tests {
     use super::*;
     use crate::model::control::Equation;
     use crate::model::shape::CommonObjAttr;
+
+    #[test]
+    fn inline_table_reflow_reserves_outer_vertical_margins() {
+        use crate::model::table::{Cell, Table};
+
+        for (top, bottom) in [(0, 0), (200, 300)] {
+            let table = Table {
+                common: CommonObjAttr {
+                    treat_as_char: true,
+                    width: 6000,
+                    height: 4000,
+                    ..Default::default()
+                },
+                row_count: 1,
+                col_count: 1,
+                outer_margin_top: top,
+                outer_margin_bottom: bottom,
+                cells: vec![Cell {
+                    width: 6000,
+                    height: 4000,
+                    row_span: 1,
+                    col_span: 1,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let mut para = Paragraph {
+                controls: vec![Control::Table(Box::new(table))],
+                ..Default::default()
+            };
+            reflow_line_segs(&mut para, 400.0, &ResolvedStyleSet::default(), 96.0);
+            assert_eq!(para.line_segs.len(), 1);
+            let occupied_height = 4000 + i32::from(top) + i32::from(bottom);
+            assert_eq!(para.line_segs[0].line_height, occupied_height);
+            assert_eq!(
+                para.line_segs[0].baseline_distance,
+                (occupied_height as f64 * 0.85).round() as i32
+            );
+        }
+    }
 
     #[test]
     fn equation_reflow_reserves_outer_margins_and_authored_baseline() {

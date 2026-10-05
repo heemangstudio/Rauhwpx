@@ -1802,7 +1802,8 @@ impl DocumentCore {
             has_front: &mut bool,
             inherited_layer: Option<RenderLayerInfo>,
         ) {
-            let active_layer = node.layer.or(inherited_layer);
+            let active_layer =
+                crate::paint::replay_order::inherited_replay_layer(node.layer, inherited_layer);
             match &node.kind {
                 LayerNodeKind::Group { children, .. } => {
                     for child in children {

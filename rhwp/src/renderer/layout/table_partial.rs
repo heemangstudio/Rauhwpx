@@ -548,9 +548,12 @@ impl LayoutEngine {
                         inner_width,
                         styles,
                         self.profile.get().native_hwpx_cell_margin(),
+                        cell.line_wrap,
                     );
                     // [#2291] 부실 저장(ls==1·실폭 초과) 재분할 — 가로쓰기 셀 한정.
-                    if cell.text_direction == 0 {
+                    if cell.text_direction == 0
+                        && cell.line_wrap != crate::model::table::CellLineWrap::Squeeze
+                    {
                         crate::renderer::composer::recompose_stored_single_line_if_overflowing(
                             comp,
                             para,
@@ -687,6 +690,13 @@ impl LayoutEngine {
                 }
             };
 
+            let total_content_height = if cell.text_direction == 0 {
+                total_content_height
+                    .max(self.calc_cell_alignment_objects_bottom_height(&cell.paragraphs))
+            } else {
+                total_content_height
+            };
+
             // 수직 정렬
             use crate::model::table::VerticalAlign;
             // [Task #697 후속] 분할 행이라도 이 셀의 line_ranges 가 셀의 모든 paragraph line 을
@@ -721,6 +731,7 @@ impl LayoutEngine {
                     total_content_height,
                 );
 
+            let content_children_start = cell_node.children.len();
             // 세로쓰기 셀: 별도 레이아웃 경로 (가로 레이아웃 루프 대신)
             if cell.text_direction != 0 {
                 let vert_inner_area = LayoutRect {
@@ -1028,6 +1039,7 @@ impl LayoutEngine {
                                 previous_inline_control_pos = position;
                             }
                         }
+                        let children_start = cell_node.children.len();
                         match ctrl {
                             Control::Picture(pic) => {
                                 if !pic.common.treat_as_char
@@ -1314,6 +1326,7 @@ impl LayoutEngine {
                                         bin_data_content,
                                         clamp_header_negative_para_offset,
                                         table_cell_ctx,
+                                        Some(&cell_context),
                                     );
                                     inline_x += shape_w;
                                 } else {
@@ -1367,6 +1380,7 @@ impl LayoutEngine {
                                         bin_data_content,
                                         clamp_header_negative_para_offset,
                                         table_cell_ctx,
+                                        Some(&cell_context),
                                     );
                                     let is_top_and_bottom_shape = matches!(
                                         shape.common().text_wrap,
@@ -1691,6 +1705,13 @@ impl LayoutEngine {
                             }
                             _ => {}
                         }
+                        Self::layer_cell_control_children(
+                            &mut cell_node,
+                            children_start,
+                            ctrl,
+                            cp_idx,
+                            ctrl_idx,
+                        );
                     }
                     if rendered_top_and_bottom_non_inline {
                         para_y +=
@@ -1757,6 +1778,7 @@ impl LayoutEngine {
                 }
             }
 
+            Self::sort_cell_paint_children(&mut cell_node, content_children_start);
             table_node.children.push(cell_node);
         }
     }

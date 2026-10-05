@@ -123,27 +123,29 @@ fn declared_family_available(font_family: &str) -> bool {
     }
     #[cfg(target_arch = "wasm32")]
     {
-        use wasm_bindgen::{JsCast, JsValue};
-
-        if let Some(hit) = BROWSER_FONT_AVAIL.with(|cache| cache.borrow().get(primary).copied()) {
-            return hit;
-        }
-        let global = js_sys::global();
-        let available =
-            js_sys::Reflect::get(&global, &JsValue::from_str("isDeclaredFontFamilyAvailable"))
-                .ok()
-                .and_then(|value| value.dyn_into::<js_sys::Function>().ok())
-                .and_then(|probe| probe.call1(&global, &JsValue::from_str(primary)).ok())
-                .and_then(|value| value.as_bool());
-        if let Some(available) = available {
-            BROWSER_FONT_AVAIL.with(|cache| {
-                cache.borrow_mut().insert(primary.to_string(), available);
-            });
-            available
-        } else {
-            true
-        }
+        browser_font_family_available(primary).unwrap_or(true)
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn browser_font_family_available(primary: &str) -> Option<bool> {
+    use wasm_bindgen::{JsCast, JsValue};
+    if let Some(hit) = BROWSER_FONT_AVAIL.with(|cache| cache.borrow().get(primary).copied()) {
+        return Some(hit);
+    }
+    let global = js_sys::global();
+    let available =
+        js_sys::Reflect::get(&global, &JsValue::from_str("isDeclaredFontFamilyAvailable"))
+            .ok()
+            .and_then(|value| value.dyn_into::<js_sys::Function>().ok())
+            .and_then(|probe| probe.call1(&global, &JsValue::from_str(primary)).ok())
+            .and_then(|value| value.as_bool());
+    if let Some(available) = available {
+        BROWSER_FONT_AVAIL.with(|cache| {
+            cache.borrow_mut().insert(primary.to_string(), available);
+        });
+    }
+    available
 }
 
 /// substFont(문서 선언 대체 글꼴)의 측정 규칙.
@@ -2125,9 +2127,9 @@ fn custom_font_face_available(name: &str) -> bool {
 
 #[cfg(target_arch = "wasm32")]
 fn custom_font_face_available(name: &str) -> bool {
-    // 가져온 브라우저 폰트는 Canvas 가 그린다. 조판 폭은 내장 메트릭을 우선하고,
-    // 미수록 글자만 런타임 레지스트리에서 잰다. 문서 내장 shaping face는 자체 폭을 쓴다.
-    active_shaping_face_available(name)
+    // 가져온 face의 실재 판정은 Canvas와 공유한다. 조판은 정본 메트릭을 사용하며,
+    // 바이트가 없는 브라우저 face에는 hmtx 경로를 강제하지 않는다. 훅 미제공은 미등록이다.
+    active_shaping_face_available(name) || browser_font_family_available(name).unwrap_or(false)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -3559,6 +3561,54 @@ mod tests {
             estimate_text_width_unrounded("e\u{301}x", &style),
             *positions.last().unwrap()
         );
+    }
+
+    #[test]
+    fn mac_missing_serif_substitution_respects_available_and_requested_faces() {
+        let bytes: std::sync::Arc<[u8]> = std::sync::Arc::from(
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/fonts/RHWPShapingFixture.ttf"
+            ))
+            .as_slice(),
+        );
+        let face = |family: &str| ResolvedShapingFont {
+            family: family.to_string(),
+            bytes: bytes.clone(),
+            face_index: 0,
+        };
+        let width = |family: &str, policy| {
+            measure_char_width_with_policy(family, false, false, '한', 20.0, policy).unwrap()
+        };
+        let mac = FontMetricsPolicy::HcrDeclared;
+        let windows = FontMetricsPolicy::HancomWindows;
+        let hcr = width("함초롬바탕", mac);
+        let haansoft = width("한컴바탕", mac);
+        let unavailable = width("HY신명조", mac);
+        let legacy = width("HY신명조", windows);
+        {
+            let _scope = enter_resolved_shaping_fonts(vec![face("한컴바탕")]);
+            assert_eq!(width("HY신명조", mac), haansoft);
+        }
+        {
+            let _scope = enter_resolved_shaping_fonts(vec![face("함초롬바탕"), face("한컴바탕")]);
+            for family in ["HY신명조", "한양신명조"] {
+                assert_eq!(width(family, mac), hcr);
+                assert_eq!(
+                    measure_char_width_with_policy(family, false, false, ' ', 20.0, mac),
+                    Some(10.0)
+                );
+            }
+            assert_eq!(width("HY신명조", windows), legacy);
+        }
+        {
+            let _scope = enter_resolved_shaping_fonts(vec![face("HY신명조"), face("함초롬바탕")]);
+            let actual = quantize_hwp_px(
+                custom_face_char_em_advance("HY신명조", false, false, '한').unwrap() * 20.0,
+            );
+            assert_eq!(width("HY신명조", mac), actual);
+        }
+        assert_eq!(width("HY신명조", mac), unavailable);
     }
 
     #[test]

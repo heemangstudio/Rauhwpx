@@ -20,6 +20,44 @@ use crate::model::style::Alignment;
 use crate::model::table::VerticalAlign;
 
 impl LayoutEngine {
+    /// 셀의 개체 배치 순서는 유지하고 방출된 노드에 페인트 순서만 기록한다.
+    pub(super) fn layer_cell_control_children(
+        node: &mut RenderNode,
+        start: usize,
+        control: &Control,
+        para_index: usize,
+        control_index: usize,
+    ) {
+        let common = match control {
+            Control::Picture(picture) => &picture.common,
+            Control::Shape(shape) => shape.common(),
+            Control::Table(table) => &table.common,
+            Control::Equation(equation) => &equation.common,
+            _ => return,
+        };
+        let mut layer =
+            Self::render_layer_from_common(common, para_index, control_index).for_parent();
+        if common.treat_as_char {
+            layer.text_wrap = None;
+        }
+        for child in &mut node.children[start..] {
+            child.set_layer(layer);
+        }
+    }
+
+    pub(super) fn sort_cell_paint_children(node: &mut RenderNode, start: usize) {
+        use crate::model::shape::TextWrap;
+        // native 497b0c: TAC/일반 개체는 중간, 뒤/앞 개체는 별도 면에 놓는다.
+        // 같은 면과 zOrder는 원래 순서를 유지한다.
+        node.children[start..].sort_by_key(|child| {
+            let plane = match child.layer.and_then(|layer| layer.text_wrap) {
+                Some(TextWrap::BehindText) => -1_i8,
+                Some(TextWrap::InFrontOfText) => 1,
+                _ => 0,
+            };
+            (plane, child.layer.map(|layer| layer.z_order).unwrap_or(0))
+        });
+    }
     /// 세로쓰기 셀의 텍스트를 수직 방향으로 배치한다.
     ///
     /// HWP 세로쓰기 규칙:
@@ -330,6 +368,7 @@ impl LayoutEngine {
         clamp_header_negative_para_offset: bool,
         // [Task #1138] 표 셀 컨텍스트: (section_idx, outer_para_idx, outer_table_ctrl_idx, cell_idx, cell_para_idx, inner_control_idx)
         table_cell_ctx: Option<(usize, usize, usize, usize, usize, usize)>,
+        cell_context: Option<&CellContext>,
     ) {
         let child_common = shape.common();
 
@@ -392,6 +431,10 @@ impl LayoutEngine {
             ),
             None => (0, 0, 0, None),
         };
+        // 셀 개체의 글상자에도 바깥 표 경로를 전달한다.
+        let parent_cell_path = cell_context
+            .map(|context| context.path.as_slice())
+            .unwrap_or(&[]);
         self.layout_shape_object(
             tree,
             cell_node,
@@ -401,12 +444,14 @@ impl LayoutEngine {
             child_w,
             child_h,
             sec_idx,
-            outer_para_idx,
+            cell_context
+                .map(|context| context.parent_para_index)
+                .unwrap_or(outer_para_idx),
             inner_ctrl_idx,
             styles,
             bin_data_content,
             &empty_map,
-            &[],
+            parent_cell_path,
             shape_table_cell_ref,
             false,
         );
@@ -863,5 +908,865 @@ impl LayoutEngine {
 
         parent.children.push(table_node);
         table_y + table_height
+    }
+}
+
+#[cfg(test)]
+mod cell_paint_order_tests {
+    use super::*;
+    use crate::model::shape::{CommonObjAttr, RectangleShape, ShapeObject, TextWrap};
+    use crate::model::table::{Cell, Table, TablePageBreak};
+
+    #[test]
+    fn cell_alignment_includes_para_flow_holders_in_both_paint_planes() {
+        use crate::model::paragraph::LineSeg;
+        use crate::model::shape::VertRelTo;
+        use crate::model::table::VerticalAlign;
+        fn anchor(node: &RenderNode) -> Option<BoundingBox> {
+            if let RenderNodeType::TextRun(run) = &node.node_type {
+                if run.text == "anchor" {
+                    return Some(node.bbox);
+                }
+            }
+            node.children.iter().find_map(anchor)
+        }
+        let engine = LayoutEngine::new(96.0);
+        let styles = ResolvedStyleSet {
+            char_styles: vec![crate::renderer::style_resolver::ResolvedCharStyle {
+                font_size: 16.0,
+                ..Default::default()
+            }],
+            para_styles: vec![crate::renderer::style_resolver::ResolvedParaStyle {
+                line_spacing: 100.0,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let area = LayoutRect {
+            x: 0.0,
+            y: 0.0,
+            width: 500.0,
+            height: 800.0,
+        };
+        for partial in [false, true] {
+            for (authored, later_paragraph) in [(false, false), (true, false), (false, true)] {
+                for text_wrap in [TextWrap::InFrontOfText, TextWrap::BehindText] {
+                    for (flow_with_text, vert_rel_to, eligible) in [
+                        (true, VertRelTo::Para, true),
+                        (false, VertRelTo::Para, false),
+                        (true, VertRelTo::Page, false),
+                    ] {
+                        let mut positions = Vec::new();
+                        for vertical_align in [
+                            VerticalAlign::Top,
+                            VerticalAlign::Center,
+                            VerticalAlign::Bottom,
+                        ] {
+                            let control =
+                                Control::Shape(Box::new(ShapeObject::Rectangle(RectangleShape {
+                                    common: CommonObjAttr {
+                                        width: 750,
+                                        height: 3_000,
+                                        vertical_offset: 1_500,
+                                        flow_with_text,
+                                        vert_rel_to,
+                                        text_wrap,
+                                        allow_overlap: true,
+                                        ..Default::default()
+                                    },
+                                    ..Default::default()
+                                })));
+                            let mut table = Table {
+                                row_count: 1,
+                                col_count: 1,
+                                page_break: TablePageBreak::RowBreak,
+                                common: CommonObjAttr {
+                                    width: 15_000,
+                                    height: 7_500,
+                                    treat_as_char: true,
+                                    ..Default::default()
+                                },
+                                cells: vec![Cell {
+                                    row_span: 1,
+                                    col_span: 1,
+                                    width: 15_000,
+                                    height: 7_500,
+                                    vertical_align,
+                                    paragraphs: vec![Paragraph {
+                                        text: "anchor".into(),
+                                        controls: vec![control],
+                                        line_segs: if authored {
+                                            vec![LineSeg {
+                                                line_height: 1_200,
+                                                text_height: 1_200,
+                                                baseline_distance: 1_020,
+                                                segment_width: 15_000,
+                                                ..Default::default()
+                                            }]
+                                        } else {
+                                            vec![]
+                                        },
+                                        ..Default::default()
+                                    }],
+                                    ..Default::default()
+                                }],
+                                ..Default::default()
+                            };
+                            if later_paragraph {
+                                table.cells[0].paragraphs.insert(
+                                    0,
+                                    Paragraph {
+                                        text: "lead".into(),
+                                        ..Default::default()
+                                    },
+                                );
+                            }
+                            let mut tree = PageRenderTree::new(0, 800.0, 1100.0);
+                            let mut parent = RenderNode::new(
+                                tree.next_id(),
+                                RenderNodeType::Column(0),
+                                BoundingBox::new(0.0, 0.0, 500.0, 800.0),
+                            );
+                            if partial {
+                                let paragraphs = vec![Paragraph {
+                                    controls: vec![Control::Table(Box::new(table))],
+                                    ..Default::default()
+                                }];
+                                engine.layout_partial_table(
+                                    &mut tree,
+                                    &mut parent,
+                                    &paragraphs,
+                                    0,
+                                    0,
+                                    0,
+                                    &styles,
+                                    0,
+                                    &area,
+                                    0.0,
+                                    &[],
+                                    0,
+                                    1,
+                                    false,
+                                    &[],
+                                    &[],
+                                    false,
+                                    0.0,
+                                    0.0,
+                                    None,
+                                    false,
+                                    None,
+                                    &[],
+                                );
+                            } else {
+                                engine.layout_table(
+                                    &mut tree,
+                                    &mut parent,
+                                    &table,
+                                    0,
+                                    &styles,
+                                    0,
+                                    &area,
+                                    0.0,
+                                    &[],
+                                    None,
+                                    0,
+                                    Some((0, 0)),
+                                    Alignment::Left,
+                                    None,
+                                    0.0,
+                                    0.0,
+                                    None,
+                                    None,
+                                    None,
+                                    false,
+                                    false,
+                                    false,
+                                );
+                            }
+                            positions.push(anchor(&parent).expect("cell anchor"));
+                        }
+                        let used_height = if later_paragraph {
+                            32.0
+                        } else if eligible {
+                            60.0
+                        } else {
+                            16.0
+                        };
+                        for (index, factor) in [(1, 0.5), (2, 1.0)] {
+                            let expected = (100.0 - used_height) * factor;
+                            assert!((positions[index].y - positions[0].y - expected).abs() < 0.5,
+                                "partial={partial}, authored={authored}, later={later_paragraph}, wrap={text_wrap:?}, flow={flow_with_text}, rel={vert_rel_to:?}, positions={positions:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fresh_cell_textboxes_wrap_at_inner_width_and_align_the_whole_list() {
+        use crate::model::table::VerticalAlign;
+        fn text_lines(node: &RenderNode, in_textbox: bool, result: &mut Vec<BoundingBox>) {
+            let in_textbox = in_textbox || matches!(node.node_type, RenderNodeType::TextBox);
+            if in_textbox && matches!(node.node_type, RenderNodeType::TextLine(_)) {
+                result.push(node.bbox);
+            }
+            for child in &node.children {
+                text_lines(child, in_textbox, result);
+            }
+        }
+        fn check_visible_bold_runs(node: &RenderNode, in_textbox: bool) {
+            let in_textbox = in_textbox || matches!(node.node_type, RenderNodeType::TextBox);
+            if let RenderNodeType::TextRun(run) = &node.node_type {
+                if in_textbox && !run.text.trim().is_empty() {
+                    assert!(run.style.bold, "{}", run.text);
+                }
+            }
+            for child in &node.children {
+                check_visible_bold_runs(child, in_textbox);
+            }
+        }
+        let styles = ResolvedStyleSet {
+            char_styles: vec![
+                crate::renderer::style_resolver::ResolvedCharStyle {
+                    font_size: 12.0,
+                    ..Default::default()
+                },
+                crate::renderer::style_resolver::ResolvedCharStyle {
+                    font_size: 12.0,
+                    bold: true,
+                    ..Default::default()
+                },
+            ],
+            para_styles: vec![crate::renderer::style_resolver::ResolvedParaStyle {
+                line_spacing: 125.0,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let engine = LayoutEngine::new(96.0);
+        let area = LayoutRect {
+            x: 0.0,
+            y: 0.0,
+            width: 500.0,
+            height: 800.0,
+        };
+        for partial in [false, true] {
+            for (explicit_break, grouped) in [(false, false), (true, false), (false, true)] {
+                let mut positions = Vec::new();
+                for vertical_align in [
+                    VerticalAlign::Top,
+                    VerticalAlign::Center,
+                    VerticalAlign::Bottom,
+                ] {
+                    let shape = ShapeObject::Rectangle(RectangleShape {
+                        common: CommonObjAttr {
+                            width: 6_000,
+                            height: 7_500,
+                            ..Default::default()
+                        },
+                        drawing: crate::model::shape::DrawingObjAttr {
+                            shape_attr: crate::model::shape::ShapeComponentAttr {
+                                group_level: if grouped { 1 } else { 0 },
+                                original_width: 6_000,
+                                original_height: 7_500,
+                                ..Default::default()
+                            },
+                            text_box: Some(crate::model::shape::TextBox {
+                                vertical_align,
+                                paragraphs: if grouped {
+                                    vec!["  first", "  second", "  third"]
+                                } else {
+                                    vec![
+                                        "가나다라마바사아자차카타",
+                                        if explicit_break { "끝\n말" } else { "끝" },
+                                    ]
+                                }
+                                .into_iter()
+                                .map(|text| Paragraph {
+                                    text: text.into(),
+                                    char_shapes: if grouped {
+                                        vec![
+                                            crate::model::paragraph::CharShapeRef::default(),
+                                            crate::model::paragraph::CharShapeRef {
+                                                start_pos: 2,
+                                                char_shape_id: 1,
+                                            },
+                                        ]
+                                    } else {
+                                        vec![]
+                                    },
+                                    ..Default::default()
+                                })
+                                .collect(),
+                                ..Default::default()
+                            }),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    });
+                    let shape = if grouped {
+                        ShapeObject::Group(crate::model::shape::GroupShape {
+                            common: CommonObjAttr {
+                                width: 6_000,
+                                height: 7_500,
+                                ..Default::default()
+                            },
+                            children: vec![shape],
+                            ..Default::default()
+                        })
+                    } else {
+                        shape
+                    };
+                    let table = Table {
+                        row_count: 1,
+                        col_count: 1,
+                        page_break: TablePageBreak::RowBreak,
+                        common: CommonObjAttr {
+                            width: 15_000,
+                            height: 15_000,
+                            treat_as_char: true,
+                            ..Default::default()
+                        },
+                        cells: vec![Cell {
+                            row_span: 1,
+                            col_span: 1,
+                            width: 15_000,
+                            height: 15_000,
+                            paragraphs: vec![Paragraph {
+                                text: "anchor".into(),
+                                controls: vec![Control::Shape(Box::new(shape))],
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    };
+                    let mut tree = PageRenderTree::new(0, 800.0, 1100.0);
+                    let mut parent = RenderNode::new(
+                        tree.next_id(),
+                        RenderNodeType::Column(0),
+                        BoundingBox::new(0.0, 0.0, 500.0, 800.0),
+                    );
+                    if partial {
+                        let paragraphs = vec![Paragraph {
+                            controls: vec![Control::Table(Box::new(table))],
+                            ..Default::default()
+                        }];
+                        engine.layout_partial_table(
+                            &mut tree,
+                            &mut parent,
+                            &paragraphs,
+                            0,
+                            0,
+                            0,
+                            &styles,
+                            0,
+                            &area,
+                            0.0,
+                            &[],
+                            0,
+                            1,
+                            false,
+                            &[],
+                            &[],
+                            false,
+                            0.0,
+                            0.0,
+                            None,
+                            false,
+                            None,
+                            &[],
+                        );
+                    } else {
+                        engine.layout_table(
+                            &mut tree,
+                            &mut parent,
+                            &table,
+                            0,
+                            &styles,
+                            0,
+                            &area,
+                            0.0,
+                            &[],
+                            None,
+                            0,
+                            Some((0, 0)),
+                            Alignment::Left,
+                            None,
+                            0.0,
+                            0.0,
+                            None,
+                            None,
+                            None,
+                            false,
+                            false,
+                            false,
+                        );
+                    }
+                    let mut lines = Vec::new();
+                    text_lines(&parent, false, &mut lines);
+                    if grouped {
+                        check_visible_bold_runs(&parent, false);
+                    }
+                    assert_eq!(
+                        lines.len(),
+                        if explicit_break { 4 } else { 3 },
+                        "partial={partial}"
+                    );
+                    assert!(lines.iter().all(|line| line.width <= 80.0 + 0.01));
+                    positions.push(lines);
+                }
+                let extent = positions[0].last().unwrap().y + positions[0].last().unwrap().height
+                    - positions[0][0].y;
+                let slack = 100.0 - extent;
+                for (index, expected) in [(1, slack / 2.0), (2, slack)] {
+                    for line in 0..positions[0].len() {
+                        assert!((positions[index][line].y - positions[0][line].y - expected).abs() < 0.5,
+                            "partial={partial}, LF={explicit_break}, alignment={index}, positions={positions:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fresh_multiple_paragraphs_align_as_a_complete_cell_in_full_and_partial_layout() {
+        use crate::model::paragraph::LineSeg;
+        use crate::model::table::VerticalAlign;
+        fn lines(node: &RenderNode, result: &mut Vec<BoundingBox>) {
+            if matches!(node.node_type, RenderNodeType::TextLine(_)) {
+                result.push(node.bbox);
+            }
+            for child in &node.children {
+                lines(child, result);
+            }
+        }
+        let engine = LayoutEngine::new(96.0);
+        let styles = ResolvedStyleSet {
+            char_styles: vec![crate::renderer::style_resolver::ResolvedCharStyle {
+                font_size: 16.0,
+                ..Default::default()
+            }],
+            para_styles: vec![crate::renderer::style_resolver::ResolvedParaStyle {
+                line_spacing: 125.0,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let area = LayoutRect {
+            x: 0.0,
+            y: 0.0,
+            width: 500.0,
+            height: 800.0,
+        };
+        for partial in [false, true] {
+            let mut positions = Vec::new();
+            for vertical_align in [
+                VerticalAlign::Top,
+                VerticalAlign::Center,
+                VerticalAlign::Bottom,
+            ] {
+                let table = Table {
+                    row_count: 1,
+                    col_count: 1,
+                    page_break: TablePageBreak::RowBreak,
+                    common: CommonObjAttr {
+                        width: 15_000,
+                        height: 6_000,
+                        treat_as_char: true,
+                        ..Default::default()
+                    },
+                    cells: vec![Cell {
+                        row_span: 1,
+                        col_span: 1,
+                        width: 15_000,
+                        height: 6_000,
+                        vertical_align,
+                        paragraphs: ["first", "second"]
+                            .into_iter()
+                            .map(|text| Paragraph {
+                                text: text.into(),
+                                line_segs: vec![LineSeg {
+                                    line_height: 1_200,
+                                    text_height: 1_200,
+                                    baseline_distance: 1_020,
+                                    line_spacing: 300,
+                                    segment_width: 15_000,
+                                    tag: LineSeg::TAG_IMPLEMENTATION_PROPERTY,
+                                    ..Default::default()
+                                }],
+                                ..Default::default()
+                            })
+                            .collect(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                };
+                let mut tree = PageRenderTree::new(0, 800.0, 1100.0);
+                let mut parent = RenderNode::new(
+                    tree.next_id(),
+                    RenderNodeType::Column(0),
+                    BoundingBox::new(0.0, 0.0, 500.0, 800.0),
+                );
+                if partial {
+                    let paragraphs = vec![Paragraph {
+                        controls: vec![Control::Table(Box::new(table))],
+                        ..Default::default()
+                    }];
+                    engine.layout_partial_table(
+                        &mut tree,
+                        &mut parent,
+                        &paragraphs,
+                        0,
+                        0,
+                        0,
+                        &styles,
+                        0,
+                        &area,
+                        0.0,
+                        &[],
+                        0,
+                        1,
+                        false,
+                        &[],
+                        &[],
+                        false,
+                        0.0,
+                        0.0,
+                        None,
+                        false,
+                        None,
+                        &[],
+                    );
+                } else {
+                    engine.layout_table(
+                        &mut tree,
+                        &mut parent,
+                        &table,
+                        0,
+                        &styles,
+                        0,
+                        &area,
+                        0.0,
+                        &[],
+                        None,
+                        0,
+                        Some((0, 0)),
+                        Alignment::Left,
+                        None,
+                        0.0,
+                        0.0,
+                        None,
+                        None,
+                        None,
+                        false,
+                        false,
+                        false,
+                    );
+                }
+                let mut text_lines = Vec::new();
+                lines(&parent, &mut text_lines);
+                assert_eq!(text_lines.len(), 2);
+                positions.push(text_lines);
+            }
+            let extent = positions[0][1].y + positions[0][1].height - positions[0][0].y;
+            let slack = 80.0 - extent;
+            for (index, expected) in [(1, slack / 2.0), (2, slack)] {
+                for line in 0..2 {
+                    assert!((positions[index][line].y - positions[0][line].y - expected).abs() < 0.5,
+                        "partial={partial}, alignment={index}, line={line}, positions={positions:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn floating_cell_controls_use_stable_planes_and_z_order_in_full_and_partial_tables() {
+        let controls = [
+            (TextWrap::InFrontOfText, 9),
+            (TextWrap::BehindText, 99),
+            (TextWrap::InFrontOfText, 8),
+            (TextWrap::TopAndBottom, -5),
+            (TextWrap::InFrontOfText, 9),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (text_wrap, z_order))| {
+            Control::Shape(Box::new(ShapeObject::Rectangle(RectangleShape {
+                common: CommonObjAttr {
+                    text_wrap,
+                    z_order,
+                    width: 1_000,
+                    height: 1_000,
+                    horizontal_offset: index as u32 * 1_000,
+                    vertical_offset: 4_000,
+                    ..Default::default()
+                },
+                drawing: crate::model::shape::DrawingObjAttr {
+                    shape_attr: if index == 4 {
+                        crate::model::shape::ShapeComponentAttr {
+                            original_width: 1_000,
+                            original_height: 1_000,
+                            current_width: 4_000,
+                            current_height: 4_000,
+                            ..Default::default()
+                        }
+                    } else {
+                        Default::default()
+                    },
+                    text_box: (index == 4).then(|| crate::model::shape::TextBox {
+                        paragraphs: vec![Paragraph {
+                            text: "label".into(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }),
+                    fill: crate::model::style::Fill {
+                        fill_type: crate::model::style::FillType::Solid,
+                        solid: Some(crate::model::style::SolidFill {
+                            background_color: 0x000000ff,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            })))
+        })
+        .collect();
+        let table = Table {
+            row_count: 1,
+            col_count: 1,
+            page_break: TablePageBreak::RowBreak,
+            common: CommonObjAttr {
+                width: 10_000,
+                height: 10_000,
+                ..Default::default()
+            },
+            cells: vec![Cell {
+                row_span: 1,
+                col_span: 1,
+                width: 10_000,
+                height: 10_000,
+                border_fill_id: 1,
+                paragraphs: vec![Paragraph {
+                    text: "anchor".into(),
+                    controls,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let styles = ResolvedStyleSet {
+            char_styles: vec![crate::renderer::style_resolver::ResolvedCharStyle {
+                font_size: 12.0,
+                ..Default::default()
+            }],
+            border_styles: vec![crate::renderer::style_resolver::ResolvedBorderStyle {
+                fill_color: Some(0x00ffffff),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let engine = LayoutEngine::new(96.0);
+        let area = LayoutRect {
+            x: 0.0,
+            y: 0.0,
+            width: 500.0,
+            height: 800.0,
+        };
+        for partial in [false, true] {
+            let mut tree = PageRenderTree::new(0, 800.0, 1100.0);
+            let mut parent = RenderNode::new(
+                tree.next_id(),
+                RenderNodeType::Column(0),
+                BoundingBox::new(0.0, 0.0, 500.0, 800.0),
+            );
+            if partial {
+                let paragraphs = vec![Paragraph {
+                    controls: vec![Control::Table(Box::new(table.clone()))],
+                    ..Default::default()
+                }];
+                engine.layout_partial_table(
+                    &mut tree,
+                    &mut parent,
+                    &paragraphs,
+                    0,
+                    0,
+                    0,
+                    &styles,
+                    0,
+                    &area,
+                    0.0,
+                    &[],
+                    0,
+                    1,
+                    false,
+                    &[],
+                    &[],
+                    false,
+                    0.0,
+                    0.0,
+                    None,
+                    false,
+                    None,
+                    &[],
+                );
+            } else {
+                engine.layout_table(
+                    &mut tree,
+                    &mut parent,
+                    &table,
+                    0,
+                    &styles,
+                    0,
+                    &area,
+                    0.0,
+                    &[],
+                    None,
+                    0,
+                    Some((0, 0)),
+                    Alignment::Left,
+                    Some(CellContext {
+                        parent_para_index: 7,
+                        path: vec![
+                            CellPathEntry {
+                                control_index: 5,
+                                cell_index: 2,
+                                cell_para_index: 1,
+                                text_direction: 1,
+                                line_wrap_squeeze: true,
+                            },
+                            CellPathEntry {
+                                control_index: 0,
+                                cell_index: 0,
+                                cell_para_index: 0,
+                                text_direction: 0,
+                                line_wrap_squeeze: false,
+                            },
+                        ],
+                    }),
+                    0.0,
+                    0.0,
+                    None,
+                    None,
+                    None,
+                    false,
+                    false,
+                    false,
+                );
+            }
+            let table_node = parent
+                .children
+                .iter()
+                .find(|node| matches!(node.node_type, RenderNodeType::Table(_)))
+                .unwrap();
+            let cell_node = table_node
+                .children
+                .iter()
+                .find(|node| matches!(node.node_type, RenderNodeType::TableCell(_)))
+                .unwrap();
+            fn label_sizes(
+                node: &RenderNode,
+                sizes: &mut Vec<f64>,
+                text: &mut String,
+                partial: bool,
+            ) {
+                if let RenderNodeType::TextRun(run) = &node.node_type {
+                    if run.cell_context.as_ref().is_some_and(|context| {
+                        context
+                            .path
+                            .last()
+                            .is_some_and(|entry| entry.control_index == 4)
+                    }) {
+                        sizes.push(run.style.font_size);
+                        text.push_str(&run.text);
+                        let context = run.cell_context.as_ref().unwrap();
+                        assert_eq!(context.path.len(), if partial { 2 } else { 3 });
+                        assert_eq!(context.path.last().unwrap().control_index, 4);
+                        if !partial {
+                            assert_eq!(context.parent_para_index, 7);
+                            assert_eq!(context.path[0].control_index, 5);
+                            assert_eq!(context.path[0].text_direction, 1);
+                            assert!(context.path[0].line_wrap_squeeze);
+                        }
+                    }
+                }
+                for child in &node.children {
+                    label_sizes(child, sizes, text, partial);
+                }
+            }
+            let mut sizes = Vec::new();
+            let mut label = String::new();
+            label_sizes(cell_node, &mut sizes, &mut label, partial);
+            assert_eq!(label, "label");
+            assert!(
+                !sizes.is_empty() && sizes.iter().all(|size| *size == 12.0),
+                "wrapped cell textbox must retain authored font size: {sizes:?}"
+            );
+            assert!(cell_node.children[0].layer.is_none());
+            assert!(
+                matches!(
+                    cell_node.children[0].node_type,
+                    RenderNodeType::Rectangle(_)
+                ),
+                "cell background must precede even BehindText objects"
+            );
+            let painted: Vec<_> = cell_node
+                .children
+                .iter()
+                .filter_map(|node| node.layer.map(|layer| (layer.stable_index, layer.z_order)))
+                .collect();
+            assert_eq!(
+                painted,
+                vec![(1, 99), (3, -5), (2, 8), (0, 9), (4, 9)],
+                "partial={partial}"
+            );
+            assert!(cell_node
+                .children
+                .iter()
+                .filter_map(|node| node.layer)
+                .all(|layer| layer.local_to_parent));
+            let behind_bbox = cell_node
+                .children
+                .iter()
+                .find(|node| node.layer.is_some_and(|layer| layer.stable_index == 1))
+                .unwrap()
+                .bbox;
+            for outer_wrap in [None, Some(TextWrap::InFrontOfText)] {
+                parent.layer = outer_wrap.map(|wrap| RenderLayerInfo::new(Some(wrap), 1, 0));
+                tree.root.children = vec![parent.clone()];
+                let mut svg = crate::renderer::svg::SvgRenderer::new();
+                svg.render_tree(&tree);
+                let output = svg.output().to_uppercase();
+                assert!(
+                    output.find("#FFFFFF").unwrap() < output.find("#FF0000").unwrap(),
+                    "SVG must paint the opaque cell background before its BehindText object"
+                );
+
+                #[cfg(feature = "native-skia")]
+                {
+                    let layers =
+                        crate::paint::LayerBuilder::new(crate::paint::RenderProfile::Print)
+                            .build(&tree);
+                    let output = crate::renderer::skia::SkiaLayerRenderer::new()
+                        .render_raster_with_options(
+                            &layers,
+                            crate::renderer::layer_renderer::RasterRenderOptions::default(),
+                        )
+                        .unwrap();
+                    let pixels = image::load_from_memory(&output.bytes).unwrap().to_rgba8();
+                    let pixel = pixels.get_pixel(
+                        (behind_bbox.x + behind_bbox.width / 2.0) as u32,
+                        (behind_bbox.y + behind_bbox.height / 2.0) as u32,
+                    );
+                    assert_eq!(pixel.0, [255, 0, 0, 255],
+                        "BehindText object must stay visible above its cell background: partial={partial}, outer={outer_wrap:?}");
+                }
+            }
+        }
     }
 }

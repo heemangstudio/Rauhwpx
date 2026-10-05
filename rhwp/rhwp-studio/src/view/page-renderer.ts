@@ -1,6 +1,6 @@
 import type { WasmBridge } from '@/core/wasm-bridge';
 import type { LayerRenderProfile, PageInfo } from '@/core/types';
-import { layerPaintOpReplayPlane } from './canvaskit/replay-plane';
+import { inheritedReplayLayer, layerPaintOpReplayPlane } from './canvaskit/replay-plane';
 import type { CanvasKitLayerRenderer, CanvasKitRenderDiagnostics } from './canvaskit-renderer';
 import { collectLayerImagePrefetch } from './raw-svg-prefetch';
 import { ImagePrefetcher } from './image-prefetch';
@@ -1166,7 +1166,7 @@ function collectLayerPlaneSummary(
   inheritedLayer: any,
 ): void {
   if (!node || typeof node !== 'object') return;
-  const activeLayer = node.layer ?? inheritedLayer;
+  const activeLayer = inheritedReplayLayer(node.layer, inheritedLayer);
   if (Array.isArray(node.ops)) {
     for (const op of node.ops) {
       if (!op || typeof op !== 'object') continue;

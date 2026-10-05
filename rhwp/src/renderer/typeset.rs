@@ -17893,10 +17893,16 @@ impl TypesetEngine {
             let min_content = if first_row_splittable {
                 mt.min_first_line_height_for_row(0, 0.0) + mt.max_padding_for_row(0)
             } else if first_row_force_splittable {
-                // force-split 케이스: 콘텐츠 한 줄 + padding 정도면 분할 가능
-                let pad = mt.max_padding_for_row(0);
-                let line_h = mt.row_heights.first().copied().unwrap_or(0.0).min(20.0);
-                pad + line_h
+                // 단일 줄 셀의 빈 꼬리만 나누므로 모든 셀의 첫 줄은 통째로 들어가야 한다.
+                mt.cells
+                    .iter()
+                    .filter(|cell| cell.row == 0 && cell.row_span == 1)
+                    .map(|cell| {
+                        cell.line_heights.first().copied().unwrap_or(0.0)
+                            + cell.padding_top
+                            + cell.padding_bottom
+                    })
+                    .fold(0.0_f64, f64::max)
             } else {
                 f64::MAX
             };
@@ -19710,6 +19716,117 @@ mod tests {
             }],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn first_row_picture_moves_to_fresh_page_while_empty_cell_tail_can_split() {
+        let first_table_page = |has_picture, with_short_sibling| {
+            let mut cell_para =
+                make_paragraph_with_height(if has_picture { 25_000 } else { 1_000 });
+            if has_picture {
+                cell_para.controls.push(Control::Picture(Box::new(Picture {
+                    common: CommonObjAttr {
+                        treat_as_char: true,
+                        width: 10_000,
+                        height: 25_000,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })));
+            }
+            let mut cells = vec![Cell {
+                row_span: 1,
+                col_span: 1,
+                width: 30_000,
+                height: 25_000,
+                paragraphs: vec![cell_para],
+                ..Default::default()
+            }];
+            if with_short_sibling {
+                cells.push(Cell {
+                    col: 1,
+                    row_span: 1,
+                    col_span: 1,
+                    width: 30_000,
+                    height: 25_000,
+                    paragraphs: vec![make_paragraph_with_height(1_000)],
+                    ..Default::default()
+                });
+            }
+            let table = Table {
+                row_count: 1,
+                col_count: if with_short_sibling { 2 } else { 1 },
+                page_break: TablePageBreak::RowBreak,
+                common: CommonObjAttr {
+                    flow_with_text: true,
+                    text_wrap: TextWrap::TopAndBottom,
+                    vert_rel_to: VertRelTo::Para,
+                    vertical_offset: 1_000,
+                    width: 30_000,
+                    height: 25_000,
+                    ..Default::default()
+                },
+                cells,
+                ..Default::default()
+            };
+            let paragraphs = vec![
+                make_paragraph_with_height(55_000),
+                Paragraph {
+                    text: "heading".into(),
+                    controls: vec![Control::Table(Box::new(table))],
+                    ..Default::default()
+                },
+            ];
+            let composed: Vec<_> = paragraphs
+                .iter()
+                .map(crate::renderer::composer::compose_paragraph)
+                .collect();
+            let styles = ResolvedStyleSet::default();
+            let page_def = a4_page_def();
+            let col_def = ColumnDef::default();
+            let (_, measured) = Paginator::with_default_dpi().paginate(
+                &paragraphs,
+                &composed,
+                &styles,
+                &page_def,
+                &col_def,
+                0,
+            );
+            let result = TypesetEngine::with_default_dpi().typeset_section(
+                &paragraphs,
+                &composed,
+                &styles,
+                &page_def,
+                &col_def,
+                0,
+                &measured.tables,
+                false,
+                &std::collections::HashSet::new(),
+            );
+            result
+                .pages
+                .iter()
+                .position(|page| {
+                    page.column_contents
+                        .iter()
+                        .flat_map(|col| &col.items)
+                        .any(|item| {
+                            matches!(
+                                item,
+                                PageItem::Table { para_index: 1, .. }
+                                    | PageItem::PartialTable {
+                                        para_index: 1,
+                                        start_row: 0,
+                                        ..
+                                    }
+                            )
+                        })
+                })
+                .expect("table must be placed")
+        };
+        assert_eq!(first_table_page(true, false), 1);
+        assert_eq!(first_table_page(true, true), 1);
+        assert_eq!(first_table_page(false, false), 0);
     }
 
     #[test]

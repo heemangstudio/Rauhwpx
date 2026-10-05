@@ -80,3 +80,11 @@ test('수식 글꼴의 변수와 숫자는 본문 고딕 fallback으로 치환�
   });
   assert.match(installed, /^"HYhwpEQ", "Times New Roman"/);
 });
+
+test('검증된 HY 신명조 쌍은 HCR 대체 face를 generic serif보다 먼저 유지한다', () => {
+  for (const family of ['HY신명조', '한양신명조']) {
+    const chain = fontFamilyChainForDisplay(family, 0, 0);
+    assert.ok(chain.indexOf('함초롬바탕') < chain.indexOf('serif'));
+    assert.ok(chain.indexOf('HCR Batang') < chain.indexOf('Haansoft Batang'));
+  }
+});

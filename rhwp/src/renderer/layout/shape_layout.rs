@@ -2533,7 +2533,20 @@ impl LayoutEngine {
             // u32 로 보존한 값이면(예: curSz height 4294965455 = -1841) 확대율로
             // 사용하지 않는다. 이를 양수로 해석하면 sh_ratio 가 수백만 배가 되어
             // 내부 글꼴이 0px 에 가깝게 붕괴한다.
-            if min_ratio > 1.5 && !parent_treat_as_char {
+            // 일반 셀/중첩 글상자의 글자 크기는 작성 스타일을 그대로 사용한다.
+            // 바탕쪽 자동번호에 적용하던 보정은 쪽번호 필드와 최상위 경로에 남긴다.
+            let has_page_number = text_box.paragraphs.iter().any(|para| {
+                para.controls.iter().any(|control| {
+                    matches!(control, crate::model::control::Control::AutoNumber(number)
+                        if matches!(number.number_type,
+                            crate::model::control::AutoNumberType::Page
+                            | crate::model::control::AutoNumberType::TotalPage))
+                })
+            });
+            if min_ratio > 1.5
+                && !parent_treat_as_char
+                && (parent_cell_path.is_empty() || has_page_number)
+            {
                 let inv = (2.0 / max_ratio).min(1.0);
                 let mut local = styles.clone();
                 for cs in local.char_styles.iter_mut() {
@@ -2554,7 +2567,33 @@ impl LayoutEngine {
         // (0=가로, 1=영문 눕힘, 2=영문 세움)
         // 주의: 테이블 셀은 bit 16~18이지만 글상자 LIST_HEADER는 bit 0~2
         let text_direction = (text_box.list_attr & 0x07) as u8;
-        let reflowed_textbox_paragraphs = if should_reflow_matrix_textbox_lines(
+        // 저장 조판이 없는 일반 셀 글상자는 현재 내부 폭과 작성 스타일로 조판한다.
+        // 양의 축척만 있는 그룹 자식도 이미 계산된 내부 영역을 사용한다.
+        // 회전/전단/반전, 바탕쪽 및 실제 저장 줄의 별도 좌표 계약은 그대로 둔다.
+        let ordinary_cell_frame = !matrix_positioned
+            || (sa.group_level > 0
+                && sa.render_sx > 0.0
+                && sa.render_sy > 0.0
+                && sa.render_b.abs() <= 1e-6
+                && sa.render_c.abs() <= 1e-6);
+        let fresh_cell_textbox = ordinary_cell_frame
+            && !parent_cell_path.is_empty()
+            && text_direction == 0
+            && text_box.list_attr & 0x18 == 0
+            && inner_area.width > 0.0
+            && !text_box.paragraphs.is_empty()
+            && text_box
+                .paragraphs
+                .iter()
+                .all(crate::renderer::para_has_no_stored_line_segs);
+        let reflowed_textbox_paragraphs = if fresh_cell_textbox {
+            let mut paragraphs = text_box.paragraphs.clone();
+            for para in &mut paragraphs {
+                para.line_segs.clear();
+                reflow_line_segs(para, inner_area.width, styles, self.dpi);
+            }
+            Some(paragraphs)
+        } else if should_reflow_matrix_textbox_lines(
             matrix_positioned,
             drawing,
             text_box,
@@ -2765,15 +2804,23 @@ impl LayoutEngine {
                     // line_seg 높이만으로 CENTER 오프셋을 계산할 수 없다. 그렇게 하면 그림이 실제
                     // 콘텐츠 높이에서 빠지고, 아래 picture container가 오프셋 이후 남은 높이로
                     // 줄어들어 한컴보다 과도하게 축소된다.
-                    let mut total_content_height = textbox_paragraphs[..para_count]
-                        .iter()
-                        .flat_map(|p| p.line_segs.last())
-                        .map(|ls| {
-                            textbox_vpos_px(ls.vertical_pos, textbox_vpos_origin_hu, self.dpi)
-                                + hwpunit_to_px(ls.line_height, self.dpi)
-                        })
-                        .last()
-                        .unwrap_or(0.0);
+                    let mut total_content_height = if fresh_cell_textbox {
+                        self.calc_composed_paras_content_height(
+                            &composed_paras,
+                            &textbox_paragraphs[..para_count],
+                            styles,
+                        )
+                    } else {
+                        textbox_paragraphs[..para_count]
+                            .iter()
+                            .flat_map(|p| p.line_segs.last())
+                            .map(|ls| {
+                                textbox_vpos_px(ls.vertical_pos, textbox_vpos_origin_hu, self.dpi)
+                                    + hwpunit_to_px(ls.line_height, self.dpi)
+                            })
+                            .last()
+                            .unwrap_or(0.0)
+                    };
 
                     for para in &textbox_paragraphs[..para_count] {
                         let para_vpos = para

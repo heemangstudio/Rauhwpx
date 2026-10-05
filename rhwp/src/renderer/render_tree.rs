@@ -79,6 +79,9 @@ pub struct RenderLayerInfo {
     /// 분류는 이 플래그로 BehindText 상한을 적용한다 (#2318, SVG node_z_plane 계약).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub master_page: bool,
+    /// 셀 내부 정렬은 부모의 페이지 면 안에서만 적용한다.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub local_to_parent: bool,
 }
 
 impl RenderLayerInfo {
@@ -88,12 +91,18 @@ impl RenderLayerInfo {
             z_order,
             stable_index,
             master_page: false,
+            local_to_parent: false,
         }
     }
 
     /// 바탕쪽 유래 표시를 부여한 사본을 반환한다 (#2318).
     pub fn for_master_page(mut self) -> Self {
         self.master_page = true;
+        self
+    }
+
+    pub fn for_parent(mut self) -> Self {
+        self.local_to_parent = true;
         self
     }
 }

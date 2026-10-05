@@ -1238,6 +1238,8 @@ mod tests {
             angle: 0,
             center_x: 50,
             center_y: 50,
+            step: 0,
+            step_center: 0,
             colors: vec![0x000000ff, 0x00ff0000],
             positions: vec![0.0, 1.0],
         };

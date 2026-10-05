@@ -200,6 +200,13 @@ export function resolveRegisteredFontFaceIdentity(
   };
 }
 
+/** 등록된 CSS 별칭이 실제 선언 face 대신 다른 파일을 제공하는지 확인한다. */
+export function isSubstitutedWebFontRegistered(family: string): boolean {
+  if (!fontFaceRegistrationMode) return false;
+  const identity = resolveRegisteredFontFaceIdentity(family);
+  return !!identity?.substituted && !detectedOSFonts.has(identity.requestedFamily);
+}
+
 /** 초기 렌더링에 필수인 폰트 (대부분의 HWP 문서 기본 서체) */
 // 수식 글꼴은 DocInfo의 일반 font_faces 목록에 없으므로 첫 Canvas paint 전에
 // 기본 수식 fallback도 준비한다. 뒤늦은 CSS 로드는 이미 그린 canvas를 갱신하지 않는다.
@@ -369,6 +376,8 @@ const OS_FONT_CANDIDATES = [
   // Windows
   '맑은 고딕', 'Malgun Gothic', '바탕', 'Batang', '돋움', 'Dotum',
   '굴림', 'Gulim', '굴림체', 'GulimChe', '바탕체', 'BatangChe', '궁서', 'Gungsuh',
+  // 대체 CSS 별칭 등록 전에 실제 HY face도 보존한다.
+  'HY신명조', '한양신명조',
   // macOS / iOS
   'Apple SD Gothic Neo', 'AppleMyungjo', 'AppleGothic',
   // Android
@@ -382,7 +391,11 @@ function detectOSFonts(): void {
   if (!ctx) return;
   for (const name of OS_FONT_CANDIDATES) {
     try {
-      if (isFontFamilyAvailable(name, ctx)) {
+      // Canvas 표시 체인 치환을 우회한 원본 accessor 프로브를 우선한다.
+      const rawProbe = (globalThis as typeof globalThis & {
+        isInstalledFontFamilyAvailable?: (family: string) => boolean;
+      }).isInstalledFontFamilyAvailable;
+      if (rawProbe ? rawProbe(name) : isFontFamilyAvailable(name, ctx)) {
         detectedOSFonts.add(name);
       }
     } catch { /* 무시 */ }
