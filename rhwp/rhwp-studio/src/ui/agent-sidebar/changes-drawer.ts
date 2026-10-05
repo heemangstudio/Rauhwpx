@@ -4,6 +4,7 @@ import { createIcon } from './icons.ts';
 import { appendSvgMarkup } from '../dom-utils.ts';
 import type { PendingOp } from '../../agent/types.ts';
 import type { DiffItem } from '../../compare/types.ts';
+import { versionErrorOf } from '../../versioning/types.ts';
 import type { VersionCommitView, VersionManagerController, VersionManagerState } from './version-manager.ts';
 
 export interface ChangesDrawerOptions {
@@ -813,7 +814,10 @@ export function createChangesDrawer(options: ChangesDrawerOptions): ChangesDrawe
       if (disposed || request !== serial || controller.getState().documentId !== documentId) return;
       workingItems = [];
       options.onWorkingDiff?.([]);
-      workingError = error instanceof Error ? error.message : String(error);
+      // 문서 교체 동안 repository 갱신이 끝나기 전엔 STALE_WORKSPACE 가 일시적으로
+      // 나온다 — 곧 새 state refresh 가 다시 채우므로 오류 표시 없이 비워 둔다.
+      workingError = versionErrorOf(error)?.code === 'STALE_WORKSPACE' ? null
+        : error instanceof Error ? error.message : String(error);
     } finally {
       if (!disposed && request === serial) {
         loading = false;

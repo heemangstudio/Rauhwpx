@@ -890,18 +890,12 @@ export class DocumentVersionController implements VersionManagerController {
       }
       // 문서 교체 직후 refresh 가 새 repository 를 채우기 전엔 이전 문서의 repository 가
       // 남아 있다. 그 HEAD 와 새 문서를 비교하면 파싱 결과 전체가 '커밋 전' 카운터로
-      // 올라가므로 빈 diff 를 돌려준다.
-      if (!this.#repository || String(this.#repository.documentId) !== String(requestedDocumentId)) return [];
-      const cache = this.#workingDiffCache;
-      if (cache
-        && cache.documentId === requestedDocumentId
-        && cache.revision === requestedRevision
-        && cache.repositoryId === this.#repository.id
-        && cache.repositoryRevision === this.#repository.revision) {
-        return cache.items;
+      // 올라가므로 stale 로 거절한다 — 표시 경로는 이를 일시적 빈 diff 로 다룬다.
+      if (this.#repository && String(this.#repository.documentId) !== String(requestedDocumentId)) {
+        throw new VersionError('STALE_WORKSPACE', 'The repository is still loading for this document');
       }
-      const workspace = this.#captureWorkspaceToken();
       const repository = this.#requireRepository();
+      const workspace = this.#captureWorkspaceToken();
       const branch = this.#requireActiveBranch();
       const freshBranch = await this.#store.getBranch(repository.id, branch.name);
       this.#assertWorkspaceToken(workspace);
@@ -910,6 +904,16 @@ export class DocumentVersionController implements VersionManagerController {
       const stored = await this.#store.getCompareSnapshot(head.compareSnapshotId);
       this.#assertWorkspaceToken(workspace);
       if (!stored) throw new VersionError('CORRUPT_BLOB', 'HEAD comparison data is missing');
+      // stale 검증(브랜치/HEAD/workspace 토큰)은 매 호출마다 수행하고, 캐시가 유효하면
+      // 비용이 큰 snapshot 캡처+비교만 건너뛴다.
+      const cache = this.#workingDiffCache;
+      if (cache
+        && cache.documentId === requestedDocumentId
+        && cache.revision === requestedRevision
+        && cache.repositoryId === repository.id
+        && cache.repositoryRevision === repository.revision) {
+        return cache.items;
+      }
       // 실시간 '커밋 전' diff 는 강제 전체 재조판을 건너뛴다 — 대형 문서에서 한 번의
       // 재조판이 입력을 수 분간 멈추게 한다 (페이지 라벨은 마지막 확정 트리 기준).
       const compareOptions: CompareOptions = { ...VERSION_COMPARE_OPTIONS, refreshLayout: false };
