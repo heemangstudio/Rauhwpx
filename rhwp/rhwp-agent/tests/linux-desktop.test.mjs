@@ -26,6 +26,10 @@ const desktopMain = readFileSync(
   new URL('../../../desktop/main.mjs', import.meta.url),
   'utf8',
 );
+const buildWasmScript = readFileSync(
+  new URL('../../../scripts/build-wasm.mjs', import.meta.url),
+  'utf8',
+);
 
 function fakeSafeStorage(backend) {
   return {
@@ -84,7 +88,8 @@ test('Repository browser checks build WASM with the shared pinned toolchain', ()
   assert.match(rustSetup, /toolchain:\s*1\.93\.1/);
   assert.match(rustSetup, /wasm-pack --version 0\.15\.0/);
   assert.match(desktopChecks, /uses: \.\/\.github\/actions\/build-wasm/);
-  assert.match(rootPackage.scripts['build:wasm'], /wasm-pack build --target web/);
+  assert.match(rootPackage.scripts['build:wasm'], /node scripts\/build-wasm\.mjs/);
+  assert.match(buildWasmScript, /wasm-pack',\s*\['build', '--target', 'web'/);
 });
 
 test('Linux releases run on native Blacksmith Ubuntu x64 and arm64 runners', () => {
