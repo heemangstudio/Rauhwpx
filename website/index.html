@@ -492,6 +492,28 @@ html.js.motion .drop.in{visibility:visible;animation:drop calc(var(--frame)*8) s
   .stk{width:46px;height:46px}
   .stub dd{font-size:15px}
 }
+/* ── 터치 기기(iPad·휴대폰): 스크롤이 끊기지 않게 ─────────
+   WebKit은 SVG 필터와 SVG 무늬를 다시 그릴 때마다 CPU로 계산해요.
+   무늬는 같은 그림을 미리 구워 두고, 필터 그림자는 상자 그림자로 바꿔요.
+   선 떨림은 멈춘 한 장으로 둬요 (JS) */
+@media (hover:none) and (pointer:coarse){
+  :root{
+    --tooth:url(assets/tex-tooth.webp);
+    --dust:url(assets/tex-dust.webp);
+    --soot:url(assets/tex-soot.webp);
+    --rub:url(assets/tex-rub.webp);
+    --grain-w:url(assets/tex-grain-w.webp);
+  }
+  .mast{background:rgba(236,236,234,.97);-webkit-backdrop-filter:none;backdrop-filter:none}
+  /* 움직이는 것은 제 레이어에서: 위치와 투명도만 바뀌고 다시 그리지 않아요 */
+  .hero-copy,.hero.is-seq .sh{will-change:transform,opacity}
+  /* 그어지는 창 선: 필터 대신 같은 결의 가루 무늬로 가려서 목탄 결만 남겨요 */
+  .winline{-webkit-mask:url(assets/tex-line-grain.webp) 0 0/128px 128px;mask:url(assets/tex-line-grain.webp) 0 0/128px 128px}
+  .app{filter:none;box-shadow:0 1px 1px rgba(0,0,0,.22),0 16px 22px rgba(0,0,0,.16)}
+  .torn{filter:none}
+  .torn>.pin{box-shadow:0 .5px 1px rgba(10,10,10,.25),0 6px 10px rgba(10,10,10,.14)}
+  .ticket-wrap{filter:none;box-shadow:0 .5px 1px rgba(10,10,10,.2),0 6px 12px rgba(10,10,10,.12)}
+}
 @media (prefers-reduced-motion:reduce){
   .boil,.ul path{animation:none}
   .ul path{stroke-dashoffset:0}
@@ -950,9 +972,11 @@ var APP={
 (function(){
   var doc=document.documentElement;
   var MOTION=doc.classList.contains('motion');
+  /* 터치 기기: 너비가 아니라 입력 방식으로 가려요 (iPad는 900px보다 넓기도 해요) */
+  var TOUCH=!!window.matchMedia&&matchMedia('(hover:none) and (pointer:coarse)').matches;
   var q=function(s,c){return Array.prototype.slice.call((c||document).querySelectorAll(s));};
   function noop(){}
-  window.__rh={q:q,MOTION:MOTION};
+  window.__rh={q:q,MOTION:MOTION,TOUCH:TOUCH};
 
   /* 종이 안 문서 자리를 APP 값에 맞춰요 */
   doc.style.setProperty('--doc-l',((APP.clip.x-APP.paper.x)/APP.paper.w*100).toFixed(3)+'%');
@@ -1071,9 +1095,10 @@ var APP={
     drops.forEach(function(el){dio.observe(el);});
   }else{drops.forEach(function(el){el.classList.add('in');});}
 
-  /* ── 선 떨림: 보이는 동안만 ── */
+  /* ── 선 떨림: 보이는 동안만. 터치 기기는 멈춘 한 장 ── */
   var boils=q('[data-boil]');
-  if(MOTION&&'IntersectionObserver' in window){
+  if(MOTION&&TOUCH){boils.forEach(function(el){el.classList.add('cc');});}
+  else if(MOTION&&'IntersectionObserver' in window){
     var bio=new IntersectionObserver(function(es){
       es.forEach(function(e){e.target.classList.toggle('boil',e.isIntersecting);});
     });
@@ -1086,7 +1111,7 @@ var APP={
 /* ── 히어로: 쌓이고, 흩어지고, 앱 한 장으로 모여요 ── */
 (function(){
   var R=window.__rh;if(!R||!R.MOTION)return;
-  var q=R.q;
+  var q=R.q,TOUCH=R.TOUCH;
   function noop(){}
   var hero=document.querySelector('.hero'),stage=hero.querySelector('.stage');
   var copy=hero.querySelector('.hero-copy'),smudge=hero.querySelector('.smudge');
@@ -1365,9 +1390,11 @@ var APP={
         sk.p.style.visibility=vis;sk.h.style.visibility=vis;sk.pr.style.visibility=vis;
       }
     }
-    var ho=p<.3?0:p<.33?.08:.16;
-    hatch.setAttribute('opacity',ho);fills.setAttribute('opacity',p<.44?0:.5);
-    wl.classList.toggle('boil',p>T.draw0&&p<.9);
+    /* 값이 그대로면 손대지 않아요. 같은 값을 다시 넣어도 다시 그리는 브라우저가 있어요 */
+    var ho=p<.3?0:p<.33?.08:.16,fo=p<.44?0:.5;
+    if(hatch._o!==ho){hatch._o=ho;hatch.setAttribute('opacity',ho);}
+    if(fills._o!==fo){fills._o=fo;fills.setAttribute('opacity',fo);}
+    if(!TOUCH)wl.classList.toggle('boil',p>T.draw0&&p<.9);
 
     /* 앱이 인화지처럼 세 번에 걸쳐 떠올라요 */
     var ao=p<T.dev[0]?0:p<T.dev[1]?.3:p<T.dev[2]?.65:1;
@@ -1377,7 +1404,8 @@ var APP={
     appVideo(p);
     var ko=p<T.cap[0]?0:p<T.cap[1]?.5:1;
     cap.style.opacity=ko;cap.style.visibility=ko?'visible':'hidden';
-    frEl.textContent=('00'+(INTRO_LEN+Math.round(p*N))).slice(-3);
+    var fr=('00'+(INTRO_LEN+Math.round(p*N))).slice(-3);
+    if(frEl.textContent!==fr)frEl.textContent=fr;
   }
 
   /* 맨 위 장 영상: 더미에서 재생 → 흩어지면 포스터 → 모일 때 첫 장면에서 멈춤 */
