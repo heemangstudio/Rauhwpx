@@ -2572,7 +2572,8 @@ pub(crate) use picture_footnote::{caption_height_px, format_footnote_number};
 pub(crate) use table_layout::border_style_has_diagonal;
 pub(crate) use table_partial::NATIVE_HWPX_CONTINUED_BORDER_INSET_HU;
 pub(crate) use text_measurement::{
-    active_shaping_face_available, clear_measure_caches, compute_char_positions,
+    active_shaping_face_available, clear_measure_caches, clear_measure_width_cache,
+    compute_char_positions,
     compute_glyph_positions, enter_resolved_shaping_fonts, estimate_text_width,
     estimate_text_width_unrounded, extract_tab_leaders_with_extended, find_next_tab_stop,
     hancom_pua_face_has_glyph, is_cjk_char, is_halfwidth_cjk_quote, is_halfwidth_forced_punct,

@@ -2249,7 +2249,7 @@ export class CanvasKitLayerRenderer {
             // Native와 같은 순서: 설치된 run face의 누락 글리프는 함초롬돋움이
             // 먼저 받는다. FontMap은 face 자체가 없을 때의 치환 순서다.
             const missingGlyphFamilies = style.hftFamily ? [] : ['HCR Dotum', '함초롬돋움'];
-            for (const family of [...missingGlyphFamilies, ...rendererFontFallbackFamilies(requestedFontFamily, style.fontSubst), 'HCR Dotum', 'HCR Batang', ...HANCOM_PUA_FALLBACK_FAMILIES]) {
+            for (const family of [...missingGlyphFamilies, ...rendererFontFallbackFamilies(requestedFontFamily, style.fontSubst), 'HCR Dotum', 'HCR Batang', ...HANCOM_PUA_FALLBACK_FAMILIES, '나눔고딕', '나눔명조']) {
               const fallback = this.findStyledPreparedTypeface(family, style.bold === true, style.italic === true);
               const face = fallback.prepared?.typeface;
               if (!face || faces.has(face)) continue;
@@ -2573,7 +2573,7 @@ export class CanvasKitLayerRenderer {
       // 원래 글자 크기와 기준선에서 같은 원점에 겹친다.
       const faces = new Set<Typeface>();
       if (primaryTypeface) faces.add(primaryTypeface);
-      for (const family of ['HCR Dotum', '함초롬돋움', 'HCR Batang', '함초롬바탕', ...HANCOM_PUA_FALLBACK_FAMILIES]) {
+      for (const family of ['HCR Dotum', '함초롬돋움', 'HCR Batang', '함초롬바탕', ...HANCOM_PUA_FALLBACK_FAMILIES, '나눔고딕', '나눔명조']) {
         const face = this.findStyledPreparedTypeface(family, style.bold === true, style.italic === true).prepared?.typeface;
         if (face) faces.add(face);
       }

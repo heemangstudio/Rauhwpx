@@ -813,10 +813,17 @@ pub fn register_hft_bytes(bytes: Vec<u8>) -> bool {
     let has_hyphen =
         insert_rectangular_hyphen(rectangular_hyphen(&mut std::io::Cursor::new(&bytes)));
     let Some((family, bank)) = Bank::parse(Arc::from(bytes)) else {
+        if has_hyphen || has_advances {
+            super::layout::clear_measure_width_cache();
+        }
         return has_hyphen || has_advances;
     };
     let kind = bank.layout.kind;
-    insert_slot(family, kind, Slot::Ready(bank))
+    let inserted = insert_slot(family, kind, Slot::Ready(bank));
+    if inserted || has_advances || has_hyphen {
+        super::layout::clear_measure_width_cache();
+    }
+    inserted
 }
 
 /// `.hft` 파일 판별.
@@ -866,12 +873,16 @@ pub fn register_hft_sources(sources: &[std::path::PathBuf]) {
             if !fresh {
                 continue;
             }
+            let mut changed = false;
             if let Ok(mut reader) = std::fs::File::open(&file) {
-                insert_rectangular_hyphen(rectangular_hyphen(&mut reader));
-                insert_latin_advances(latin_advances(&mut reader));
+                changed |= insert_rectangular_hyphen(rectangular_hyphen(&mut reader));
+                changed |= insert_latin_advances(latin_advances(&mut reader));
             }
             if let Some((family, kind)) = probe_hft_file(&file) {
-                insert_slot(family, kind, Slot::Pending(file));
+                changed |= insert_slot(family, kind, Slot::Pending(file));
+            }
+            if changed {
+                super::layout::clear_measure_width_cache();
             }
         }
     }

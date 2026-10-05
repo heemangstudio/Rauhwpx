@@ -20,7 +20,7 @@
     "status": "node rhwp/rhwp-agent/ctl.mjs status",
     "check:docs": "node scripts/check-publish-docs.mjs && node --test scripts/check-publish-docs.test.mjs",
     "dev:desktop": "wait-on http://127.0.0.1:7700 && cross-env RHWP_DEV_URL=http://127.0.0.1:7700 electron .",
-    "build:wasm": "cd rhwp && wasm-pack build --target web",
+    "build:wasm": "node scripts/build-wasm.mjs",
     "build:native": "cd rhwp && cargo build --locked --release --bin rhwp && node ../desktop/stage-native-rhwp.mjs",
     "build:studio:app": "npm --prefix rhwp/rhwp-studio run build",
     "build:studio": "npm run build:wasm && npm run build:studio:app",

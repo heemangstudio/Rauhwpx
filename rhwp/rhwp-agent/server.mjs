@@ -2707,11 +2707,13 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
   // Studio 가 메시지에 실어 보낸 문서 읽기 — 사용자 요청 바로 앞에 둔다. 승인·수정·허브 생성 턴은 이 경로를 타지 않는다.
   // 모양이 어긋난 스냅샷은 버리고 메시지는 그대로 보낸다.
   const liveDocument = normalizeDocumentSnapshot(msg.documentSnapshot);
-  void skillRegistry.promptContext(msg.text, typeof msg.skillName === 'string' ? msg.skillName : undefined, {
-    phase: activeSession.planning.snapshot().phase,
-    agent: activeSession.agent,
-    requestContext: liveDocumentBlock(liveDocument),
-  })
+  void Promise.resolve()
+    .then(() => requireAgentAuthenticated(activeSession.agent))
+    .then(() => skillRegistry.promptContext(msg.text, typeof msg.skillName === 'string' ? msg.skillName : undefined, {
+      phase: activeSession.planning.snapshot().phase,
+      agent: activeSession.agent,
+      requestContext: liveDocumentBlock(liveDocument),
+    }))
     .then((prompt) => {
       // Skill context is loaded asynchronously. An interrupt can settle this
       // turn and a later message can start another turn on the same session
@@ -2742,8 +2744,23 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
       activeSession.status = 'idle';
       activeSession.turnId = null;
       record.userQuestionResponseReceipts.clear();
-      sendJson(sock, { v: 1, type: 'chat-error', code: e?.code ?? 'AGENT_SPAWN_FAILED', message: String(e?.message ?? e) });
+      sendJson(sock, { v: 1, type: 'chat-error', code: e?.code ?? 'AGENT_SPAWN_FAILED', message: describeHubError(e) });
     });
+}
+
+async function requireAgentAuthenticated(agent) {
+  if (!CLI_SETUP_AGENTS.includes(agent)) return;
+  // An unauthenticated CLI turn used to fail inside the provider with a bare
+  // turn-end that rendered as a literal "undefined" in chat — surface the real
+  // cause before the provider ever spawns. Status is re-read per message so a
+  // login completed mid-session takes effect without a restart.
+  const setup = await cliSetup.status(agent).catch(() => null);
+  if (setup && setup.authenticated !== true) {
+    throw Object.assign(
+      new Error(`${agent === 'claude' ? 'Claude' : 'Codex'} 로그인이 필요합니다. 설정 탭에서 로그인한 뒤 다시 시도해 주세요.`),
+      { code: 'AGENT_AUTH_REQUIRED' },
+    );
+  }
 }
 
 async function dispatchStagedUserMessage(record, sock, msg, activeSession) {
@@ -2956,12 +2973,20 @@ async function startSession(
   return record.agentSession;
 }
 
+function describeHubError(error, fallback = '알 수 없는 오류가 발생했습니다.') {
+  // String({code:'X'}) 는 "[object Object]", String(undefined) 는 "undefined"
+  // 라서 그대로 보내면 채팅에 깨진 문구가 뜬다.
+  if (typeof error?.message === 'string' && error.message) return error.message;
+  if (typeof error === 'string' && error) return error;
+  return fallback;
+}
+
 function sendChatError(sock, error, fallbackCode = 'WORKFLOW_ERROR') {
   sendJson(sock, {
     v: 1,
     type: 'chat-error',
     code: error?.code ?? fallbackCode,
-    message: String(error?.message ?? error),
+    message: describeHubError(error),
   });
 }
 
@@ -2972,7 +2997,7 @@ function sendPiError(record, sock, requestId, error, fallbackCode) {
     type: 'pi-error',
     requestId,
     code: error?.code ?? fallbackCode,
-    message: String(error?.message ?? error),
+    message: describeHubError(error),
   });
 }
 
@@ -3259,7 +3284,7 @@ async function handleStudioMessage(record, sock, msg) {
       const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
       const rejectStart = (error, fallbackCode = 'INVALID_REQUEST') => sendJson(sock, {
         v: 1, type: 'chat-error', requestId, session: sessionInfo(record),
-        code: error?.code ?? fallbackCode, message: String(error?.message ?? error),
+        code: error?.code ?? fallbackCode, message: describeHubError(error),
       });
       const agent = msg.agent;
       if (!KNOWN_AGENTS.has(agent)) {

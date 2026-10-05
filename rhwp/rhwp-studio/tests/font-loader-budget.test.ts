@@ -56,9 +56,15 @@ test('FontFace.load가 응답하지 않아도 loadWebFonts는 제한 시간 안�
     assert.equal(constructed.length, constructedBefore);
 
     // 늦게 도착한 글꼴은 등록되고, 다시 그리기 알림은 파일마다 한 번이다.
-    while (pendingLoads.length > 0) {
-      pendingLoads.shift()!();
-      await new Promise(resolve => setTimeout(resolve, 0));
+    // 로드가 배치로 나뉘면 다음 배치의 FontFace 요청이 한 틱 뒤에 잡히므로
+    // 큐가 완전히 빈 상태가 한 틱 유지될 때까지 비운다.
+    for (;;) {
+      while (pendingLoads.length > 0) {
+        pendingLoads.shift()!();
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+      await new Promise(resolve => setTimeout(resolve, 10));
+      if (pendingLoads.length === 0) break;
     }
     assert.ok(added.length > 0);
     const notified = lateFiles.flat();

@@ -980,7 +980,7 @@ let statusSectionIndex = 0;
 let paperStatusFrame = 0;
 let characterStatusFrame = 0;
 let characterRecountTimer: ReturnType<typeof setTimeout> | null = null;
-const CHARACTER_RECOUNT_IDLE_MS = 300;
+const CHARACTER_RECOUNT_IDLE_MS = 150;
 const statusCharacterCounter = new StatusCharacterCounter();
 const statusNumber = new Intl.NumberFormat('ko-KR');
 
@@ -1739,6 +1739,7 @@ async function initialize(): Promise<void> {
               isDirty: documentState.isDirty(),
               isNewDocument: wasm.isNewDocument,
               sourceFormat: wasm.getSourceFormat(),
+              pageCount: wasm.pageCount,
             };
           },
           moveToLibraryDocument: async (target) => {
@@ -1826,6 +1827,7 @@ function setupFileInput(): void {
 
   openAction?.addEventListener('click', () => dispatcher.dispatch('file:open'));
   newAction?.addEventListener('click', () => dispatcher.dispatch('file:new-doc'));
+  void renderEmptyStateRecents();
 
   fileInput.addEventListener('change', async (e) => {
     const input = e.target as HTMLInputElement;
@@ -2686,6 +2688,40 @@ async function loadBytes(
   await initializeDocument(docInfo, {
     suppressDialogs: options.suppressDialogs,
   });
+}
+
+/** 시작 화면(empty state)의 최근 문서 목록 — 파일 메뉴 서브패널과 같은 목록/명령을 쓴다. */
+async function renderEmptyStateRecents(): Promise<void> {
+  const host = document.getElementById('document-recent-list');
+  if (!host) return;
+  let recents;
+  try {
+    recents = await listRecentDocs();
+  } catch {
+    return;
+  }
+  if (!recents.length) return;
+  const title = document.createElement('h3');
+  title.className = 'empty-recent-title';
+  title.textContent = '최근 문서';
+  const list = document.createElement('div');
+  list.className = 'empty-recent-list';
+  for (const doc of recents.slice(0, 8)) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'empty-recent-item';
+    item.title = doc.fileName;
+    const name = document.createElement('span');
+    name.className = 'empty-recent-name';
+    name.textContent = doc.fileName;
+    const format = document.createElement('span');
+    format.className = 'empty-recent-format';
+    format.textContent = doc.sourceFormat.toUpperCase();
+    item.append(name, format);
+    item.addEventListener('click', () => dispatcher.dispatch('file:open-recent', { id: doc.id }));
+    list.appendChild(item);
+  }
+  host.replaceChildren(title, list);
 }
 
 /** 파일 메뉴 "최근 문서" 서브패널을 최신 목록으로 다시 렌더한다(메뉴 open 시 호출). */

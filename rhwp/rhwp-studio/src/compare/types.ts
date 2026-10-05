@@ -32,6 +32,12 @@ export interface CompareOptions {
   anchorTuning?: CompareAnchorTuning;
   /** 브라우저 프리징 방지용 계산 가드레일 */
   performanceTuning?: ComparePerformanceTuning;
+  /**
+   * 스냅샷 직전 강제 전체 재조판(`wasm.refreshLayout`) 여부 — 기본 true.
+   * 편집 중 실시간 '커밋 전' diff 처럼 입력을 막는 비용이 정확도보다 큰 경로만
+   * false 를 넘긴다 (페이지 라벨이 다소 늦게 따라갈 수 있음).
+   */
+  refreshLayout?: boolean;
 }
 
 export interface CompareDocMeta {

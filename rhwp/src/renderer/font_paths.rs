@@ -381,6 +381,8 @@ fn register_font_file_faces(file: &Path) {
             }
         }
     }
+    // 등록 face 목록이 바뀌었으므로 글자 폭 측정 캐시를 비운다.
+    crate::renderer::layout::clear_measure_width_cache();
 }
 
 /// custom source(`extra` = 호출자 지정 경로 + `RHWP_FONT_PATH`)의 face 이름을
