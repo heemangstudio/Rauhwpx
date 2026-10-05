@@ -2303,7 +2303,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       } else if (working) {
         label = setup?.installing ? '설치 중…' : '로그인 중…';
         message = '설정에서 진행 상황 확인';
-      } else if (setup?.updateRequired) {
+      } else if (setup?.installed === true && setup?.updateRequired) {
+        // 설치 전에는 번들 런타임의 오래된 버전이 updateRequired 를 켠다 —
+        // 미설치 프로바이더에 업데이트 안내를 띄우지 않는다.
         label = '업데이트 필요';
         message = '설정에서 업데이트';
       } else if (!setup && !health) {
