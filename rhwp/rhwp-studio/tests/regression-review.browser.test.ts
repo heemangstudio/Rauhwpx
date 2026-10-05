@@ -442,6 +442,53 @@ test('chat markdown and reference search treat hostile markup as data', async (t
   assert.equal(hit.injected, 0);
 });
 
+test('streamed chat markdown matches fresh rendering and preserves completed content', async (t) => {
+  const page = await open(t);
+  const result = await page.evaluate(async () => {
+    const { renderChatMarkdown } = await import('/src/ui/agent-sidebar/chat-markdown.ts');
+    const target = document.createElement('div');
+    document.body.append(target);
+    const extra = document.createElement('button');
+    extra.textContent = '답변 복사';
+    target.append(extra);
+    const opening = '첫 문단\n\n';
+    renderChatMarkdown(target, opening, { streaming: true });
+    const first = target.querySelector('[data-md-block]');
+    const source = opening + '## 제목\n\n- [x] 하나\n  설명\n- [ ] 둘\n\n'
+      + '| 한글 | 값 |\n|---|---:|\n| 가 | **나** |\n\n'
+      + '```md\n~~~\n\n코드\n```\n\n'
+      + '$$\n가\n\n# 수식 안\n\n나\n$$\n\n끝';
+    const body = (node: Element) => [...node.querySelectorAll(':scope > [data-md-block]')]
+      .map((block) => block.outerHTML);
+    const mismatches: number[] = [];
+    for (let end = opening.length; end <= source.length; end += 1) {
+      const chunk = source.slice(0, end);
+      renderChatMarkdown(target, chunk, { streaming: true });
+      const expected = document.createElement('div');
+      renderChatMarkdown(expected, chunk, { streaming: true });
+      if (JSON.stringify(body(target)) !== JSON.stringify(body(expected))) mismatches.push(end);
+    }
+    renderChatMarkdown(target, source);
+    const final = document.createElement('div');
+    renderChatMarkdown(final, source);
+    const completed = JSON.stringify(body(target)) === JSON.stringify(body(final));
+    const preserved = first === target.querySelector('[data-md-block]') && extra.parentElement === target;
+    renderChatMarkdown(target, '교체한 답변');
+    return {
+      mismatches,
+      completed,
+      preserved,
+      replaced: body(target).length === 1 && target.firstElementChild?.textContent === '교체한 답변',
+      extraPreserved: extra.parentElement === target,
+    };
+  });
+  assert.deepEqual(result.mismatches, []);
+  assert.equal(result.completed, true);
+  assert.equal(result.preserved, true);
+  assert.equal(result.replaced, true);
+  assert.equal(result.extraPreserved, true);
+});
+
 test('keyboard skill selection sends the explicit skill and preserves the requested instruction', async (t) => {
   const page = await open(t);
   await page.evaluate(() => {

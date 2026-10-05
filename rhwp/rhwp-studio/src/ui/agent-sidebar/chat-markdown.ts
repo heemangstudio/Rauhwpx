@@ -1,6 +1,6 @@
 import {
   appendMarkdownBlocks,
-  tokenizeMarkdown,
+  MarkdownTokenCache,
   type Block,
   type MarkdownNode,
   type MarkdownRenderOptions,
@@ -13,9 +13,17 @@ type KatexModule = typeof import('katex');
 let katexModule: KatexModule | null = null;
 let katexLoad: Promise<void> | null = null;
 const pendingMathTargets = new Set<HTMLElement>();
-const markdownSourceByTarget = new WeakMap<HTMLElement, { source: string; opts: ChatMarkdownOptions }>();
+interface ChatMarkdownState {
+  source: string;
+  opts: ChatMarkdownOptions;
+  tokens: MarkdownTokenCache;
+  fenceLine: number;
+  openFence: string | null;
+}
+const markdownSourceByTarget = new WeakMap<HTMLElement, ChatMarkdownState>();
 /** target 의 최상위 자식 순서대로, 각 노드를 만든 블록의 직렬화 키. */
 const blockKeysByTarget = new WeakMap<HTMLElement, string[]>();
+const keyByBlock = new WeakMap<Block, string>();
 
 export interface ChatMarkdownOptions {
   /** 스트리밍 중에는 완성된 블록만 그린다. 쓰는 중인 마지막 블록은 다음 블록이 시작될 때까지 보류한다. */
@@ -92,10 +100,30 @@ function fencesClosed(source: string): boolean {
   return open === null;
 }
 
-export function stableStreamingBlocks(blocks: readonly Block[], source: string): Block[] {
+function cachedFencesClosed(state: ChatMarkdownState): boolean {
+  let open = state.openFence;
+  let start = state.fenceLine;
+  while (start <= state.source.length) {
+    const end = state.source.indexOf('\n', start);
+    const mark = RE_FENCE_MARK.exec(state.source.slice(start, end < 0 ? undefined : end))?.[1];
+    if (mark) open = open === null ? mark : open === mark ? null : open;
+    // 마지막 줄은 다음 청크가 완성하므로 그 줄 앞의 상태만 저장한다.
+    if (end < 0) return open === null;
+    start = end + 1;
+    state.fenceLine = start;
+    state.openFence = open;
+  }
+  return open === null;
+}
+
+export function stableStreamingBlocks(
+  blocks: readonly Block[],
+  source: string,
+  closedFences = fencesClosed(source),
+): Block[] {
   if (blocks.length === 0) return [];
   const last = blocks[blocks.length - 1]!;
-  const lastClosed = fencesClosed(source) && /\n[ \t]*\n\s*$/u.test(source);
+  const lastClosed = closedFences && /\n[ \t]*\n\s*$/u.test(source);
   if (lastClosed) return [...blocks];
   const stable = blocks.slice(0, -1);
   if (last.kind === 'list' && last.items.length > 1) {
@@ -213,10 +241,26 @@ const CHAT_MARKDOWN_OPTIONS: MarkdownRenderOptions = {
  * 그대로 두고 달라진 블록만 새로 만들어, 스트리밍 중에도 읽던 문단이 흔들리지 않는다.
  */
 export function renderChatMarkdown(target: HTMLElement, source: string, opts: ChatMarkdownOptions = {}) {
-  markdownSourceByTarget.set(target, { source, opts });
-  const parsed = tokenizeMarkdown(source);
-  const blocks = opts.streaming ? stableStreamingBlocks(parsed, source) : parsed;
-  const keys = blocks.map((block) => JSON.stringify(block));
+  const state = markdownSourceByTarget.get(target) ?? {
+    source: '', opts, tokens: new MarkdownTokenCache(), fenceLine: 0, openFence: null,
+  };
+  if (!source.startsWith(state.source)) {
+    state.fenceLine = 0;
+    state.openFence = null;
+  }
+  state.source = source;
+  state.opts = opts;
+  markdownSourceByTarget.set(target, state);
+  const parsed = state.tokens.tokenize(source);
+  const blocks = opts.streaming ? stableStreamingBlocks(parsed, source, cachedFencesClosed(state)) : parsed;
+  const keys = blocks.map((block) => {
+    let key = keyByBlock.get(block);
+    if (key === undefined) {
+      key = JSON.stringify(block);
+      keyByBlock.set(block, key);
+    }
+    return key;
+  });
   let nodes = blockNodesOf(target);
   let previous = blockKeysByTarget.get(target);
   if (!previous || previous.length !== nodes.length) {

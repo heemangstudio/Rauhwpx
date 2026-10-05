@@ -5,6 +5,8 @@ import {
   appendMarkdown,
   escapeMarkdown,
   fileBadgeFor,
+  MarkdownTokenCache,
+  MD_LIMITS,
   planToMarkdown,
   safeMarkdownHref,
   tokenizeInline,
@@ -315,4 +317,60 @@ test('스트리밍 중에는 다음 블록이 시작된 블록만 완성으로 �
   assert.deepEqual(kinds('앞\n\n```ts\nconst a = 1;\n```\n\n'), ['paragraph', 'code']);
   assert.deepEqual(kinds('| a | b |\n|---|---|\n| 1 | 2 |'), []);
   assert.deepEqual(kinds('앞\n\n```md\n~~~\n\n'), ['paragraph']);
+});
+
+test('이어서 파싱한 Markdown은 모든 청크 경계에서 전체 파싱과 같다', () => {
+  const samples = [
+    '# 제목\n\n한글 한글 😀 **강조**와 [링크](https://example.com/a(b))\n\n다음 문단',
+    '앞\r\n\r\n1. 첫 항목\r\n\t보조 설명\r\n\r\n2. 다음 항목\r\n\r\n뒤',
+    '앞\r\r가운데\r\r다음\r\r- 항목\r\t설명\r\r뒤\r\n\r\n끝 😀',
+    '앞\n\n- [x] 끝\n  - 안쪽\n    설명\n- [ ] 다음\n\n\n뒤',
+    '앞\n\n```md\n~~~\n\n> 코드 안\n```\n\n뒤',
+    '앞\n\n| 항목 | 값 |\n| :--- | ---: |\n| `a|b` | ₩(x+1₩) |\n\n뒤',
+    '앞\n\n> 인용\n> - 하나\n>\n> - 둘\n\n---\n\n뒤',
+    '앞\n\n$$\n가\n\n# 아직 수식 안\n\n나\n$$\n\n뒤',
+    '앞\n\n₩[\n₩frac{가}{나}\n\n- 수식 안\n₩]\n\n뒤',
+    '앞\n\n$$\n\n$$\n\n뒤\n\n\\[끝나지 않음',
+  ];
+  for (const source of samples) {
+    const cache = new MarkdownTokenCache();
+    for (let end = 0; end <= source.length; end += 1) {
+      const chunk = source.slice(0, end);
+      assert.deepEqual(cache.tokenize(chunk), tokenizeMarkdown(chunk), `${JSON.stringify(source)} at ${end}`);
+    }
+  }
+});
+
+test('본문 교체·축약 후에도 Markdown 캐시가 이전 답변을 남기지 않는다', () => {
+  const cache = new MarkdownTokenCache();
+  for (const source of [
+    '앞\n\n가운데\n\n뒤',
+    '앞\n\n가운데\n\n뒤에 이어짐',
+    '앞\n\n고친 가운데\n\n뒤',
+    '앞',
+    '',
+    '| 새 | 답변 |\n|---|---|\n| 1 | 2 |',
+  ]) {
+    assert.deepEqual(cache.tokenize(source), tokenizeMarkdown(source));
+  }
+});
+
+test('이어서 파싱해도 문자·줄·블록·목록·표 한계를 전체 답변에 적용한다', () => {
+  const prefix = '앞\r\n\r\n가운데\r\r다음\n\n';
+  const samples = [
+    '문단\n\n'.repeat(MD_LIMITS.maxBlocks + 10),
+    `${'a'.repeat(MD_LIMITS.maxChars - 1)}😀\n\n뒤`,
+    prefix + 'a'.repeat(MD_LIMITS.maxChars - prefix.length - 1) + '😀\n\n뒤',
+    '\n'.repeat(MD_LIMITS.maxLines - 3) + '끝\n\n나중',
+    prefix + '\n'.repeat(MD_LIMITS.maxLines - 10) + '끝\n\n나중\n\n더 뒤',
+    '- 항목\n'.repeat(MD_LIMITS.maxListItems + 5) + '\n뒤',
+    '| a | b |\n|---|---|\n' + '| 1 | 2 |\n'.repeat(MD_LIMITS.maxTableRows + 5) + '\n뒤',
+  ];
+  for (const source of samples) {
+    const cache = new MarkdownTokenCache();
+    for (let end = 0; end < source.length; end += 97) {
+      assert.deepEqual(cache.tokenize(source.slice(0, end)), tokenizeMarkdown(source.slice(0, end)));
+    }
+    assert.deepEqual(cache.tokenize(source), tokenizeMarkdown(source));
+  }
 });

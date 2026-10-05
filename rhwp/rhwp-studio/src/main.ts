@@ -1380,14 +1380,16 @@ async function initialize(): Promise<void> {
       console.info('[main] 외부 웹폰트 사용 안 함 옵션이 켜져 있습니다.');
     }
     msg.textContent = extensionViewerSettings.disableExternalWebFonts
-      ? '로컬 폰트 준비 중...'
-      : '웹폰트 로딩 중...';
+      ? 'WASM 및 로컬 폰트 준비 중...'
+      : 'WASM 및 웹폰트 로딩 중...';
     // 대체 CSS 별칭이 원본 설치 여부를 가리지 않도록 등록 전에 측정한다.
     installDeclaredFontAvailabilityProbe();
-    // CSS @font-face 등록 + CRITICAL 폰트만 로드
-    await loadWebFonts([], undefined, { ...extensionViewerSettings, onLateLoad: repaintAfterLateWebFonts });
-    msg.textContent = 'WASM 로딩 중...';
-    await wasm.initialize();
+    // OS 폰트 감지·CSS 등록을 먼저 시작하고, 네트워크 로드와 WASM 컴파일은 겹친다.
+    // 첫 문서 조판은 두 작업이 준비된 뒤에만 진행한다.
+    await Promise.all([
+      loadWebFonts([], undefined, { ...extensionViewerSettings, onLateLoad: repaintAfterLateWebFonts }),
+      wasm.initialize(),
+    ]);
     if (import.meta.env.DEV && import.meta.env.VITE_RHWP_DEV_FONT_PACK === '1') {
       msg.textContent = '글꼴 준비 중...';
       const { loadConfiguredDevFontPack } = await import('./core/dev-font-pack.ts');
