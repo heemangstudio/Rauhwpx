@@ -732,13 +732,24 @@ export async function writeNativeFileAtomically(
     if (sourceInfo && platform === 'win32') {
       // Copy only the DACL, after the temp handle is closed. icacls /save
       // reads DACL entries, not owner or SACL.
-      await copyWindowsDacl(
-        filePath,
-        temporaryPath,
-        runCommandImpl,
-        windowsSystemRoot,
-        windowsProcessEnv,
-      );
+      try {
+        await copyWindowsDacl(
+          filePath,
+          temporaryPath,
+          runCommandImpl,
+          windowsSystemRoot,
+          windowsProcessEnv,
+        );
+      } catch (error) {
+        // icacls cannot save the DACL of a source that was deleted or moved
+        // while the copy was prepared; that is the same concurrent change the
+        // rename-aside below would report, not a metadata failure.
+        if (error?.code !== 'NATIVE_FILE_METADATA_COPY_FAILED') throw error;
+        const sourceGone = await statImpl(filePath, { bigint: true })
+          .then(() => false, (statError) => statError?.code === 'ENOENT');
+        if (sourceGone) throw nativeFileConflictError();
+        throw error;
+      }
     }
 
     try {
