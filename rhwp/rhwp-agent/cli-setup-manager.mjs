@@ -59,7 +59,13 @@ export function defaultCliSetupRoot(env = process.env, platform = process.platfo
   if (platform === 'win32') return pathImpl.join(env.APPDATA || pathImpl.join(home, 'AppData', 'Roaming'), 'rhwp', 'cli');
   return pathImpl.join(env.XDG_DATA_HOME || pathImpl.join(home, '.local', 'share'), 'rhwp', 'cli');
 }
-function setupError(code, message) { const error = new Error(message); error.code = code; return error; }
+function setupError(code, message, detail = null) {
+  const error = new Error(message);
+  error.code = code;
+  // 원시 터미널 출력은 배너 문구가 아니라 펼쳐보기 상세로만 내려보낸다.
+  if (typeof detail === 'string' && detail) error.detail = detail;
+  return error;
+}
 function keyTail(value) { const text = String(value ?? '').trim(); return text ? text.slice(-4) : null; }
 /** `codex-cli 0.159.0`, `2.1.284 (Claude Code)` 처럼 CLI 마다 다른 --version 출력에서 버전만 꺼낸다. */
 export function parseCliVersion(output) {
@@ -542,7 +548,7 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
         const detail = cleanOutput(output).split('\n').map((line) => line.trim()).filter(Boolean).slice(-3).join(' ');
         throw setupError('AGENT_AUTH_FAILED', result?.code === 0
           ? 'Claude 로그인이 끝났지만 토큰을 받지 못했어요. 다시 시도해 주세요.'
-          : `Claude 로그인을 완료하지 못했어요.${detail ? ` ${detail.slice(-300)}` : ''}`);
+          : 'Claude 로그인을 완료하지 못했어요. 다시 시도해 주세요.', detail.slice(-300) || null);
       }
       if (signal?.aborted) throw setupError('AGENT_AUTH_CANCELLED', '로그인을 취소했어요.');
       const verdict = await verifyClaude({ token: parsed.token, fetchImpl });

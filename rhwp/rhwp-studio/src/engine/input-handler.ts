@@ -3847,6 +3847,10 @@ export class InputHandler {
   /** 네이티브 IME 후보창이 실제 캐럿 근처에 열리도록 숨은 입력을 배치한다. */
   private positionImeInput(rect: CursorRect, zoom: number): void {
     if (this._isIOS) return;
+    // 조합 중에는 숨은 textarea를 움직이지 않는다. macOS IME는 입력 요소의 기하가
+    // 바뀌면 진행 중인 조합을 중간 확정할 수 있어, 자모 단위로 잘린 글자(ㅂ고,
+    // ㅂ비고 등)가 확정 텍스트로 박힌다. 조합이 끝나면 caret 갱신이 위치를 다시 맞춘다.
+    if (this.isComposing) return;
     const scrollContent = this.container.querySelector<HTMLElement>('#scroll-content');
     const contentRect = scrollContent?.getBoundingClientRect() ?? this.container.getBoundingClientRect();
     const contentWidth = scrollContent?.clientWidth ?? this.container.clientWidth;

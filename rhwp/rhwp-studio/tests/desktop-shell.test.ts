@@ -1020,6 +1020,17 @@ test('desktop package registers supported document associations without bundling
 });
 
 
+test('save picker strips document extensions so the managed one is applied once', () => {
+  // The suggested name enters the NSSavePanel field without a managed tail, and
+  // every document extension a user could type is stripped before `.ext` is
+  // appended — so `name.hwpx` never becomes `name.hwpx.hwpx`.
+  assert.match(desktopMain, /const suggestedStem = \['\.hwp', '\.hwpx', '\.hml', '\.rhwpx'\]\.includes\(extname\(suggestedName\)\.toLowerCase\(\)\)/);
+  assert.match(desktopMain, /defaultPath: suggestedStem/);
+  assert.match(desktopMain, /while \(\['\.hwp', '\.hwpx', '\.hml', '\.rhwpx'\]\.includes\(extname\(saveStem\)\.toLowerCase\(\)\)\)/);
+  assert.match(desktopMain, /const filePath = join\(saveDir, `\$\{saveStem \|\| 'document'\}\.\$\{extension\}`\)/);
+});
+
+
 test('desktop edit accelerators send commands to the focused renderer', () => {
   const events: unknown[] = [];
   const item = documentEditMenuItem('undo', 'Undo', 'CmdOrCtrl+Z');

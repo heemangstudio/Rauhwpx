@@ -925,7 +925,7 @@ export type SidebarEvent =
       totalBytes?: number;
     }
   | { type: 'agent-setup-terminal'; agent: AgentName; authRunId: string; data?: string; ready?: boolean; reset?: boolean }
-  | { type: 'agent-setup-error'; agent: AgentName | null; authRunId?: string; code: string; message: string }
+  | { type: 'agent-setup-error'; agent: AgentName | null; authRunId?: string; code: string; message: string; detail?: string }
   | { type: 'account-status'; status: AccountSessionStatus }
   | {
       type: 'account-login-progress';

@@ -123,7 +123,9 @@ test('a login that prints no token fails without storing anything', async (t) =>
   await manager.init();
   await assert.rejects(
     manager.authenticate('claude', 'oauth', undefined, undefined, { terminal: true }),
-    (error) => error.code === 'AGENT_AUTH_FAILED' && /account on hold/.test(error.message),
+    (error) => error.code === 'AGENT_AUTH_FAILED'
+      && !/account on hold/.test(error.message)
+      && /account on hold/.test(error.detail ?? ''),
   );
   assert.equal(await secretStore.get('rhwp.claude.oauth-token'), null);
   assert.equal((await manager.status('claude')).authenticated, false);

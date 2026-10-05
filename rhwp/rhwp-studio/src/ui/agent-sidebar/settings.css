@@ -1028,6 +1028,26 @@
   color: var(--ag-err);
 }
 
+.ag-agent-setup-error-detail {
+  font-size: var(--ag-fs-meta);
+  color: var(--ag-text-muted);
+}
+
+.ag-agent-setup-error-detail > summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+.ag-agent-setup-error-detail > pre {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: var(--ag-fs-meta);
+  color: var(--ag-text-muted);
+  max-height: 120px;
+  overflow: auto;
+}
+
 .ag-agent-setup-primary {
   align-self: stretch;
   min-height: 40px;
