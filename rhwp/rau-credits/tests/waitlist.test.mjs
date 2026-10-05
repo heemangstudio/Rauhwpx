@@ -26,8 +26,12 @@ test('website signups are stored once, readable only with the admin token, and n
     store: createMemoryStore(emptyWaitlistState()),
     now: () => Date.parse('2026-10-06T00:00:00.000Z'),
     adminToken: ADMIN,
-    notifyUrl: 'https://hooks.test/waitlist',
-    fetchImpl: async (_url, init) => { notified.push(JSON.parse(init.body).content); return new Response(''); },
+    telegramBotToken: 'bot-token',
+    telegramChatId: '42',
+    fetchImpl: async (url, init) => {
+      notified.push([url, JSON.parse(init.body)]);
+      return new Response('{}');
+    },
   });
   const server = await listen(waitlist);
   try {
@@ -55,7 +59,10 @@ test('website signups are stored once, readable only with the admin token, and n
       count: 1,
       entries: [{ email: 'Andy@Example.com', joinedAt: '2026-10-06T00:00:00.000Z' }],
     });
-    assert.deepEqual(notified, ['Rauhwpx 체험 신청: Andy@Example.com']);
+    assert.deepEqual(notified, [[
+      'https://api.telegram.org/botbot-token/sendMessage',
+      { chat_id: '42', text: 'Rauhwpx 체험 신청: Andy@Example.com' },
+    ]]);
   } finally {
     await server.close();
   }

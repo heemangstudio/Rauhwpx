@@ -24,7 +24,7 @@ All routes are authorized through an active account session.
 
 ## Beta waitlist
 
-The website's 체험 신청 form posts `{ email }` as `text/plain` to `POST /v1/waitlist` (CORS open, 10 per IP per 10 minutes). Emails are stored once in `waitlist.json` on the `/data` volume. `GET /v1/waitlist` with `Authorization: Bearer $RAU_WAITLIST_ADMIN_TOKEN` lists them; without that variable the list stays closed. Set `RAU_WAITLIST_NOTIFY_URL` to a Discord or Slack incoming webhook to get a message for each new signup. Pairing receipts are returned only to the device bound to the controlling session.
+The website's 체험 신청 form posts `{ email }` as `text/plain` to `POST /v1/waitlist` (CORS open, 10 per IP per 10 minutes). Emails are stored once in `waitlist.json` on the `/data` volume. `GET /v1/waitlist` with `Authorization: Bearer $RAU_WAITLIST_ADMIN_TOKEN` lists them; without that variable the list stays closed. Set `RAU_WAITLIST_TELEGRAM_BOT_TOKEN` and `RAU_WAITLIST_TELEGRAM_CHAT_ID` to get a Telegram message for each new signup. Pairing receipts are returned only to the device bound to the controlling session.
 
 ## Worker API
 
