@@ -36,7 +36,8 @@ export function createWaitlistService({
   store = createMemoryStore(emptyWaitlistState()),
   now = Date.now,
   adminToken = '',
-  notifyUrl = '',
+  telegramBotToken = '',
+  telegramChatId = '',
   fetchImpl = globalThis.fetch,
 } = {}) {
   let mutation = Promise.resolve();
@@ -48,18 +49,18 @@ export function createWaitlistService({
   }
 
   async function notify(email) {
-    if (!notifyUrl) return;
-    const text = `Rauhwpx 체험 신청: ${email}`;
+    if (!telegramBotToken || !telegramChatId) return;
     try {
-      // Discord 는 content, Slack 은 text 를 읽는다.
-      await fetchImpl(notifyUrl, {
+      const response = await fetchImpl(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: text, text }),
+        body: JSON.stringify({ chat_id: telegramChatId, text: `Rauhwpx 체험 신청: ${email}` }),
         signal: AbortSignal.timeout(NOTIFY_TIMEOUT_MS),
       });
+      if (!response.ok) throw new Error(`Telegram HTTP ${response.status}`);
     } catch (error) {
-      process.stderr.write(`[rau-credits] waitlist notify failed: ${error?.message ?? error}\n`);
+      // 토큰이 로그에 남지 않도록 메시지만 적는다.
+      process.stderr.write(`[rau-credits] waitlist notify failed: ${String(error?.message ?? error).replace(telegramBotToken, '***')}\n`);
     }
   }
 

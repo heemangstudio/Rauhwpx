@@ -75,7 +75,8 @@ export async function createCreditsHttpServer(options = {}) {
     }),
     now: options.now,
     adminToken: options.waitlistAdminToken ?? process.env.RAU_WAITLIST_ADMIN_TOKEN ?? '',
-    notifyUrl: options.waitlistNotifyUrl ?? process.env.RAU_WAITLIST_NOTIFY_URL ?? '',
+    telegramBotToken: options.waitlistTelegramBotToken ?? process.env.RAU_WAITLIST_TELEGRAM_BOT_TOKEN ?? '',
+    telegramChatId: options.waitlistTelegramChatId ?? process.env.RAU_WAITLIST_TELEGRAM_CHAT_ID ?? '',
     fetchImpl: options.fetchImpl,
   });
   const listener = creditsRequestListener(service, { uniqueInstalls, waitlist });
