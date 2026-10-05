@@ -335,10 +335,10 @@ test(`linear history ${reviewAction} saves a recoverable review checkpoint`, { t
       }, mode);
       const dark = mode !== 'light';
       assert.equal(colors.effective, dark ? 'dark' : 'light');
-      assert.equal(colors.background, dark ? 'rgb(30, 30, 32)' : 'rgb(255, 255, 255)');
+      assert.equal(colors.background, dark ? 'rgb(15, 15, 15)' : 'rgb(255, 255, 255)');
       assert.equal(colors.input, colors.background);
       assert.notEqual(colors.foreground, colors.background);
-      assert.equal(colors.workspace, dark ? 'rgb(15, 15, 17)' : 'rgb(228, 228, 234)');
+      assert.equal(colors.workspace, dark ? 'rgb(25, 25, 25)' : 'rgb(228, 228, 234)');
       assert.equal(colors.paper, 'rgb(255, 255, 255)');
     }
     assert.equal(await page.$('.merge-mode-select'), null);
