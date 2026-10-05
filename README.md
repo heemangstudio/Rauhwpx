@@ -72,8 +72,6 @@
 | Windows · x64 | `.exe` | 미서명, SmartScreen 경고가 뜰 수 있음 |
 | Linux · x64, arm64 | `.AppImage` `.deb` | |
 
-새 변경을 먼저 써 보려면 매일 새벽 3시에 빌드되는 macOS·Windows용 [nightly](https://github.com/heemangstudio/Rauhwpx/releases/tag/nightly)를 받습니다.
-
 ## AI 연결
 
 **설정 → 연결**에서 쓸 AI를 고르면 설치와 로그인까지 앱이 안내합니다.

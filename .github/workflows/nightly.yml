@@ -1,4 +1,4 @@
-name: Nightly verification and release
+name: Nightly verification
 
 on:
   schedule:
@@ -44,9 +44,18 @@ jobs:
 
       - name: Install pinned cargo-audit
         run: |
-          if [[ "$(cargo audit --version 2>/dev/null || true)" != "cargo-audit 0.22.2" ]]; then
-            cargo install cargo-audit --version 0.22.2 --locked --force
-          fi
+          # Cargo's subcommand invocation can print cargo-audit-audit.
+          # Accept either exact pinned spelling instead of rebuilding a valid cache.
+          audit_version="$(cargo audit --version 2>/dev/null || true)"
+          case "$audit_version" in
+            'cargo-audit 0.22.2'|'cargo-audit-audit 0.22.2') ;;
+            *) cargo install cargo-audit --version 0.22.2 --locked --force ;;
+          esac
+          audit_version="$(cargo audit --version)"
+          case "$audit_version" in
+            'cargo-audit 0.22.2'|'cargo-audit-audit 0.22.2') ;;
+            *) echo "Unexpected cargo-audit version: $audit_version" >&2; exit 1 ;;
+          esac
 
       - name: Reject RustSec vulnerabilities and new warnings
         working-directory: rhwp
@@ -197,201 +206,3 @@ jobs:
           npm --prefix rhwp/rhwp-studio run e2e:cloud-onboarding
           npm --prefix rhwp/rhwp-studio run e2e:cloud-workspace
           npm --prefix rhwp/rhwp-studio run e2e:cloud-display
-
-  prepare:
-    name: Prepare nightly identity
-    needs: [engine, app]
-    if: github.ref == 'refs/heads/main'
-    runs-on: blacksmith-2vcpu-ubuntu-2404
-    timeout-minutes: 15
-    outputs:
-      version: ${{ steps.identity.outputs.version }}
-      date: ${{ steps.identity.outputs.date }}
-      sha: ${{ steps.identity.outputs.sha }}
-      short_sha: ${{ steps.identity.outputs.short_sha }}
-
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: 22.23.3
-
-      - name: Compute nightly identity and notes
-        id: identity
-        run: |
-          set -euo pipefail
-          base_version="$(jq -r .version package.json)"
-          date="$(date -u +%F)"
-          compact_date="${date//-/}"
-          sha="${GITHUB_SHA}"
-          short_sha="${sha:0:7}"
-          version="${base_version}-nightly.${compact_date}.${short_sha}"
-
-          {
-            echo "version=${version}"
-            echo "date=${date}"
-            echo "sha=${sha}"
-            echo "short_sha=${short_sha}"
-          } >> "${GITHUB_OUTPUT}"
-
-          {
-            echo "VERSION=${version}"
-            echo "DATE=${date}"
-            echo "SHA=${sha}"
-            echo "SHORT_SHA=${short_sha}"
-          } > nightly-identity.env
-
-          {
-            echo "# Rauhwpx nightly pre-release"
-            echo
-            echo "- UTC date: ${date}"
-            echo "- Full SHA: ${sha}"
-            echo "- Short SHA: ${short_sha}"
-            echo "- Version: ${version}"
-            echo
-            echo "## Changelog"
-            echo
-            changelog=""
-            if git rev-parse --verify --quiet refs/tags/nightly >/dev/null &&
-              git merge-base --is-ancestor nightly HEAD; then
-              changelog="$(git log nightly..HEAD --pretty=format:'- %s (%h)')"
-            else
-              changelog="$(git log -20 --pretty=format:'- %s (%h)')"
-            fi
-            if [[ -n "${changelog}" ]]; then
-              printf '%s\n' "${changelog}"
-            else
-              echo "- No commits since the previous nightly."
-            fi
-          } > nightly-notes.md
-
-      - name: Upload nightly identity
-        uses: actions/upload-artifact@v4
-        with:
-          name: nightly-identity
-          if-no-files-found: error
-          path: |
-            nightly-identity.env
-            nightly-notes.md
-
-  macos:
-    name: Build macOS installers
-    needs: prepare
-    runs-on: blacksmith-6vcpu-macos-15
-    timeout-minutes: 120
-    environment: macos-release
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          persist-credentials: false
-          ref: ${{ github.sha }}
-      - uses: ./.github/actions/package-desktop
-        with:
-          platform: macos
-          artifact: macos-nightly
-          wasm-artifact: tested-wasm
-          version: ${{ needs.prepare.outputs.version }}
-          signed: 'true'
-          certificate: ${{ secrets.MACOS_CERTIFICATE }}
-          certificate-password: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-          apple-id: ${{ secrets.APPLE_ID }}
-          apple-team-id: ${{ secrets.APPLE_TEAM_ID }}
-          apple-password: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-
-  windows:
-    name: Build Windows installers
-    needs: prepare
-    runs-on: blacksmith-4vcpu-windows-2025
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          persist-credentials: false
-          ref: ${{ github.sha }}
-      - uses: ./.github/actions/package-desktop
-        with:
-          platform: windows
-          artifact: windows-nightly
-          wasm-artifact: tested-wasm
-          version: ${{ needs.prepare.outputs.version }}
-
-  publish:
-    name: Publish nightly GitHub Release
-    if: github.ref == 'refs/heads/main'
-    needs: [macos, windows]
-    runs-on: blacksmith-2vcpu-ubuntu-2404
-    timeout-minutes: 15
-    permissions:
-      contents: write
-
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v5
-
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: '*-nightly'
-          path: release
-          merge-multiple: true
-
-      - name: Download nightly identity
-        uses: actions/download-artifact@v4
-        with:
-          name: nightly-identity
-          path: release
-
-      - name: Generate checksums
-        run: |
-          cd release
-          sha256sum ./*.dmg ./*.zip ./*.exe > SHA256SUMS.txt
-
-      - name: Publish nightly GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          source release/nightly-identity.env
-          extras=()
-          if [ -f release/latest-mac.yml ]; then extras+=(release/latest-mac.yml); fi
-          if [ -f release/latest.yml ]; then extras+=(release/latest.yml); fi
-          for blockmap in release/*.zip.blockmap; do
-            if [ -f "${blockmap}" ]; then extras+=("${blockmap}"); fi
-          done
-
-          lookup_error="release/nightly-release-lookup.err"
-          if existing_release_id="$(
-            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/nightly" --jq '.id' \
-              2>"${lookup_error}"
-          )"; then
-            rm -f "${lookup_error}"
-          elif grep -q 'HTTP 404' "${lookup_error}"; then
-            existing_release_id=""
-            rm -f "${lookup_error}"
-          else
-            cat "${lookup_error}" >&2
-            exit 1
-          fi
-          if [[ -n "${existing_release_id}" ]]; then
-            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/${existing_release_id}"
-          fi
-          git tag -f nightly "$GITHUB_SHA"
-          git push origin refs/tags/nightly --force
-          gh release create nightly \
-            release/*.dmg \
-            release/*.zip \
-            release/*.exe \
-            release/*.exe.blockmap \
-            release/SHA256SUMS.txt \
-            "${extras[@]}" \
-            --prerelease \
-            --latest=false \
-            --target "$GITHUB_SHA" \
-            --title "Rauhwpx nightly ${DATE} (${SHORT_SHA})" \
-            --notes-file release/nightly-notes.md

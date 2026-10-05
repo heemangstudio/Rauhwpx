@@ -78,22 +78,63 @@ test('one PR-only workflow owns each protected check name', () => {
   assert.equal(Object.hasOwn(pr[0].on, 'push'), false);
 });
 
-test('releases depend on verification within the same workflow run', () => {
+test('tagged releases depend on verification within the same workflow run', () => {
+  const release = workflows['release.yml'];
+  for (const platform of ['macos', 'windows']) {
+    const checkout = release.jobs[platform].steps.find((step) => step.uses?.startsWith('actions/checkout@'));
+    assert.equal(checkout.with.ref, '${{ github.sha }}', `release packages the verified commit on ${platform}`);
+  }
+  assert.ok(ancestors(release, 'publish').has('verification'));
+});
+
+test('nightly runs verification daily without building or publishing installers', () => {
   const nightly = workflows['nightly.yml'];
-  assert.ok(Object.hasOwn(nightly.on, 'schedule'));
-  for (const id of ['prepare', 'macos', 'windows', 'publish']) {
-    const dependencies = ancestors(nightly, id);
-    for (const verification of ['engine', 'app']) assert.ok(dependencies.has(verification), `${id} requires ${verification}`);
+  assert.deepEqual(nightly.on.schedule, [{ cron: '0 18 * * *' }]);
+  assert.ok(Object.hasOwn(nightly.on, 'workflow_dispatch'));
+  assert.deepEqual(Object.keys(nightly.jobs).sort(), ['app', 'engine']);
+  assert.equal(nightly.jobs.app.needs, 'engine');
+  assert.equal(nightly.concurrency.group, 'nightly-${{ github.ref }}');
+  assert.equal(nightly.concurrency['cancel-in-progress'], false);
+  const commands = Object.values(nightly.jobs).flatMap((job) => job.steps)
+    .map((step) => `${step.uses ?? ''} ${step.run ?? ''}`).join('\n');
+  assert.match(commands, /cargo nextest run --locked --workspace --test-threads 8/);
+  assert.match(commands, /cargo test --locked --workspace --doc/);
+  assert.match(commands, /cargo audit --no-fetch -D warnings/);
+  assert.doesNotMatch(commands, /package-desktop|gh release|git tag|git push|secrets\./);
+  const upload = nightly.jobs.engine.steps.find((step) => step.uses?.startsWith('actions/upload-artifact@'));
+  const download = nightly.jobs.app.steps.find((step) => step.uses?.startsWith('actions/download-artifact@'));
+  assert.equal(upload.with.name, 'tested-wasm');
+  assert.equal(download.with.name, upload.with.name);
+});
+
+test('cached pinned audit tool avoids rebuilds and incorrect tools still reinstall or fail', { skip: process.platform === 'win32' }, () => {
+  const run = workflows['nightly.yml'].jobs.engine.steps
+    .find((step) => step.name === 'Install pinned cargo-audit').run;
+  for (const initial of ['cargo-audit 0.22.2', 'cargo-audit-audit 0.22.2', 'cargo-audit 0.22.1', '', 'cargo-audit 0.22.2-untrusted']) {
+    const result = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', `
+      cargo() {
+        if [[ "$1 $2" == 'audit --version' ]]; then
+          [[ -n "$RAU_AUDIT_TEST_CURRENT" ]] || return 127
+          printf '%s\\n' "$RAU_AUDIT_TEST_CURRENT"
+        elif [[ "$*" == 'install cargo-audit --version 0.22.2 --locked --force' ]]; then
+          printf 'INSTALL_PINNED_AUDIT\\n'
+          RAU_AUDIT_TEST_CURRENT='cargo-audit-audit 0.22.2'
+        else
+          return 2
+        fi
+      }
+      ${run}
+    `], { encoding: 'utf8', timeout: 5000, env: { ...process.env, RAU_AUDIT_TEST_CURRENT: initial } });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.includes('INSTALL_PINNED_AUDIT'), !['cargo-audit 0.22.2', 'cargo-audit-audit 0.22.2'].includes(initial));
   }
-  assert.equal(nightly.jobs.prepare.if, "github.ref == 'refs/heads/main'");
-  for (const filename of ['nightly.yml', 'release.yml']) {
-    const workflow = workflows[filename];
-    for (const platform of ['macos', 'windows']) {
-      const checkout = workflow.jobs[platform].steps.find((step) => step.uses?.startsWith('actions/checkout@'));
-      assert.equal(checkout.with.ref, '${{ github.sha }}', `${filename} packages the verified commit`);
-    }
-  }
-  assert.ok(ancestors(workflows['release.yml'], 'publish').has('verification'));
+  const broken = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', `
+    cargo() { if [[ "$1" == install ]]; then return 0; fi; printf 'cargo-audit 0.22.1\\n'; }
+    ${run}
+  `], { encoding: 'utf8', timeout: 5000 });
+  assert.equal(broken.status, 1);
+  assert.match(broken.stderr, /Unexpected cargo-audit version/);
 });
 
 test('PR checks retain Cloud contracts and nightly keeps the browser handoff', () => {
@@ -122,6 +163,51 @@ test('production verification audits every lock and exercises actual providers o
   assert.ok(installIndex >= 0 && installIndex < verifyIndex);
   assert.match(commands, /verify-production-dependencies\.mjs --electron/);
   assert.doesNotMatch(commands, /--force|--ignore-engines|engine-strict=false/);
+});
+
+test('every workflow keeps compute on Blacksmith', () => {
+  for (const [filename, workflow] of Object.entries(workflows)) {
+    for (const [id, job] of Object.entries(workflow.jobs)) {
+      if (job['runs-on'] === '${{ matrix.runner }}') {
+        assert.ok(job.strategy.matrix.include.length > 0);
+        for (const entry of job.strategy.matrix.include) assert.match(entry.runner, /^blacksmith-/, `${filename}/${id}`);
+      } else {
+        assert.match(job['runs-on'], /blacksmith-/, `${filename}/${id}`);
+      }
+    }
+  }
+});
+
+test('PR checks stay on Blacksmith and preserve platform architectures', () => {
+  const checks = workflows['checks.yml'];
+  for (const job of Object.values(checks.jobs)) {
+    assert.match(job['runs-on'], /blacksmith/);
+    if (!job.strategy?.matrix?.include) assert.match(job['runs-on'], /blacksmith-\d+vcpu-ubuntu-2404/);
+  }
+  for (const id of ['session-tests', 'production-dependencies']) {
+    const job = checks.jobs[id];
+    for (const entry of job.strategy.matrix.include) {
+      assert.equal(entry.runner, { 'macos-15': 'blacksmith-6vcpu-macos-15', 'windows-latest': 'blacksmith-2vcpu-windows-2025', 'ubuntu-24.04': 'blacksmith-4vcpu-ubuntu-2404' }[entry.os]);
+      assert.equal(entry.architecture, entry.os === 'macos-15' ? 'arm64' : 'x64');
+    }
+    const architecture = job.steps.find((step) => step.name === 'Assert runner architecture');
+    assert.equal(architecture.env.EXPECTED_NODE_ARCH, '${{ matrix.architecture }}');
+    assert.match(architecture.run, /process\.arch/);
+    assert.equal(job.if, '${{ !cancelled() }}');
+  }
+});
+
+test('production dependency download cache keys cover all locks without replacing real installs', () => {
+  const job = workflows['checks.yml'].jobs['production-dependencies'];
+  const setup = job.steps.find((step) => step.uses?.startsWith('actions/setup-node@'));
+  assert.equal(setup.with.cache, 'npm');
+  assert.deepEqual(setup.with['cache-dependency-path'].trim().split('\n'), [
+    'package-lock.json', 'rhwp/rhwp-agent/package-lock.json', 'rhwp/rhwp-studio/package-lock.json',
+    'rhwp/rau-credits/package-lock.json', 'cloud/package-lock.json', 'cloud/install/provider-runtime/package-lock.json',
+  ]);
+  const installs = job.steps.find((step) => step.name === 'Install actual packaged dependencies');
+  assert.equal(installs.if, "needs.changes.outputs.app != 'false'");
+  assert.match(installs.run, /ci --no-audit --no-fund/);
 });
 
 test('dependency container verification cannot publish and checks both runtime users offline', () => {
