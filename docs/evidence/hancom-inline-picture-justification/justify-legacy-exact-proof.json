@@ -1,0 +1,180 @@
+{
+  "fixture": "justify-legacy-exact.hwpx",
+  "inputSha256": "05842cf499af4d6e506edcb657762b7f21ac6e2338b4bc3387a7e01aeca81f10",
+  "reference": "justify-legacy-exact-hancom.pdf",
+  "referenceSha256": "1f89cbbcfe3b41fa429f63d9a6e5fcb7822c550b31bda86125c1f8bb7e12b900",
+  "officialApp": "Hancom HWP2022 Mac12.30.0 build6446",
+  "pageCount": 1,
+  "lines": [
+    {
+      "yPt": 97.1,
+      "words": [
+        {
+          "text": "짧은",
+          "xStartPt": 85.08001,
+          "xEndPt": 104.46117
+        },
+        {
+          "text": "첫",
+          "xStartPt": 109.56,
+          "xEndPt": 119.2212
+        },
+        {
+          "text": "줄",
+          "xStartPt": 124.2,
+          "xEndPt": 133.86119
+        }
+      ],
+      "inkGapsPt": [
+        5.09882,
+        4.9788
+      ]
+    },
+    {
+      "yPt": 113.06,
+      "words": [
+        {
+          "text": "가나다",
+          "xStartPt": 85.08001,
+          "xEndPt": 114.18114
+        },
+        {
+          "text": "라마바",
+          "xStartPt": 119.76,
+          "xEndPt": 148.86113
+        },
+        {
+          "text": "사아자",
+          "xStartPt": 154.32001,
+          "xEndPt": 183.42113
+        },
+        {
+          "text": "차카타",
+          "xStartPt": 189.0,
+          "xEndPt": 218.10112
+        },
+        {
+          "text": "파하",
+          "xStartPt": 223.56,
+          "xEndPt": 242.94116
+        },
+        {
+          "text": "가나다",
+          "xStartPt": 248.52,
+          "xEndPt": 277.62112
+        },
+        {
+          "text": "라마바",
+          "xStartPt": 283.07999,
+          "xEndPt": 312.18112
+        },
+        {
+          "text": "사아자",
+          "xStartPt": 317.76001,
+          "xEndPt": 346.86115
+        },
+        {
+          "text": "차카타",
+          "xStartPt": 352.32001,
+          "xEndPt": 381.42114
+        },
+        {
+          "text": "파하",
+          "xStartPt": 387.0,
+          "xEndPt": 406.38116
+        },
+        {
+          "text": "가나다",
+          "xStartPt": 411.84,
+          "xEndPt": 440.94113
+        },
+        {
+          "text": "라마바",
+          "xStartPt": 446.51999,
+          "xEndPt": 475.62112
+        },
+        {
+          "text": "사아자",
+          "xStartPt": 481.07999,
+          "xEndPt": 510.18112
+        }
+      ],
+      "inkGapsPt": [
+        5.57887,
+        5.45888,
+        5.57887,
+        5.45888,
+        5.57884,
+        5.45886,
+        5.57889,
+        5.45886,
+        5.57886,
+        5.45883,
+        5.57886,
+        5.45886
+      ]
+    },
+    {
+      "yPt": 129.14,
+      "words": [
+        {
+          "text": "차카타",
+          "xStartPt": 85.08001,
+          "xEndPt": 114.18114
+        },
+        {
+          "text": "파하",
+          "xStartPt": 132.96001,
+          "xEndPt": 152.34117
+        },
+        {
+          "text": "가나다",
+          "xStartPt": 171.12,
+          "xEndPt": 200.22112
+        },
+        {
+          "text": "라마바",
+          "xStartPt": 219.0,
+          "xEndPt": 248.10112
+        },
+        {
+          "text": "사아자",
+          "xStartPt": 266.88,
+          "xEndPt": 295.98114
+        },
+        {
+          "text": "차카타",
+          "xStartPt": 314.76001,
+          "xEndPt": 343.86115
+        },
+        {
+          "text": "파하",
+          "xStartPt": 362.76001,
+          "xEndPt": 382.14117
+        },
+        {
+          "text": "간섭무늬를",
+          "xStartPt": 400.92001,
+          "xEndPt": 449.46106
+        },
+        {
+          "text": "형성한다.",
+          "xStartPt": 468.23999,
+          "xEndPt": 510.30719
+        }
+      ],
+      "inkGapsPt": [
+        18.77887,
+        18.77882,
+        18.77888,
+        18.77888,
+        18.77887,
+        18.89886,
+        18.77884,
+        18.77893
+      ]
+    }
+  ],
+  "conclusion": "Explicit LF line remains packed; ordinary wrap justified; final-picture wrap has larger internal gaps and retains punctuation.",
+  "corpusCountContribution": 0
+}
