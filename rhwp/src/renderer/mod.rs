@@ -38,6 +38,7 @@ pub mod pdf;
 pub mod pua_oldhangul;
 pub mod render_normalization;
 pub mod render_tree;
+pub(crate) mod ruby;
 pub(crate) mod runtime_font_metrics;
 pub mod scheduler;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-skia"))]

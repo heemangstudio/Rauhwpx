@@ -3793,7 +3793,13 @@ impl LayoutEngine {
             let mut v: Vec<(usize, f64, usize)> = composed
                 .tac_controls
                 .iter()
-                .map(|(pos, w_hu, ci)| (*pos, hwpunit_to_px(*w_hu, self.dpi), *ci))
+                .map(|(pos, w_hu, ci)| {
+                    let w = para
+                        .and_then(|p| super::super::ruby::prepare(p, *ci, styles, self.dpi))
+                        .map(|r| r.main_width)
+                        .unwrap_or_else(|| hwpunit_to_px(*w_hu, self.dpi));
+                    (*pos, w, *ci)
+                })
                 .collect();
             v.sort_by_key(|(p, _, _)| *p);
             v
@@ -6757,6 +6763,20 @@ impl LayoutEngine {
                         }
                     }
                     // tac 폭만큼 x 전진 (+ TAC 표 outMargin 좌/우 — Issue #3396)
+                    if let Some(ruby) =
+                        para.and_then(|p| super::super::ruby::prepare(p, tac_ci, styles, self.dpi))
+                    {
+                        super::super::ruby::append_nodes(
+                            ruby,
+                            tree,
+                            &mut line_node.children,
+                            x,
+                            y + baseline,
+                            section_index,
+                            para_index,
+                            &cell_ctx,
+                        );
+                    }
                     x += tac_w + tac_table_om.0 + tac_table_om.1;
                     sub_char_offset += 1;
                     seg_start = tac_rel;
@@ -7534,7 +7554,9 @@ impl LayoutEngine {
         let empty_line_tac_allowed = cell_ctx.is_none()
             || is_caption_cell_context(cell_ctx.as_ref())
             || para.is_some_and(|p| {
-                is_projected_cell_stack_picture_paragraph(p, 0)
+                line_tac_offsets.iter().all(|(_, _, ci)| {
+                    matches!(p.controls.get(*ci), Some(Control::Ruby(r)) if r.option == 0)
+                }) || is_projected_cell_stack_picture_paragraph(p, 0)
                     || empty_cell_tac_picture_line_uses_stored_baseline(
                         p,
                         line_tac_offsets,
@@ -7557,6 +7579,19 @@ impl LayoutEngine {
                 };
                 let mut img_x = vars.effective_col_x + vars.effective_margin_left + align_offset;
                 for &(_, tac_w, tac_ci) in line_tac_offsets {
+                    if let Some(ruby) = super::super::ruby::prepare(p, tac_ci, styles, self.dpi) {
+                        super::super::ruby::append_nodes(
+                            ruby,
+                            tree,
+                            &mut line_node.children,
+                            img_x,
+                            vars.y + vars.baseline,
+                            vars.section_index,
+                            vars.para_index,
+                            &cell_ctx,
+                        );
+                        img_x += tac_w;
+                    }
                     if let Some(ctrl) = p.controls.get(tac_ci) {
                         // [Issue #476] 빈 문단 + 인라인 Shape: inline_pos 등록 후 shape_layout 이 그리도록 위임.
                         // 등록하지 않으면 layout_shape 가 inline_pos=None 으로 받아 fallback 위치에 그리거나,

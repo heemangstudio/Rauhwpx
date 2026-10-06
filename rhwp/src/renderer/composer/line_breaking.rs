@@ -1833,17 +1833,22 @@ fn apply_inline_control_metrics_to_text_lines(
     para: &Paragraph,
     line_breaks: &[LineBreakResult],
     line_segs: &mut [LineSeg],
+    styles: &ResolvedStyleSet,
+    dpi: f64,
 ) {
     if line_breaks.is_empty() || line_segs.is_empty() {
         return;
     }
 
-    let positions = para.control_text_positions();
+    let mut positions = para.control_text_positions();
+    crate::renderer::ruby::project_control_positions(para, &mut positions);
     for (control_index, control) in para.controls.iter().enumerate() {
         if matches!(control, Control::Form(_)) {
             continue;
         }
-        let Some(metrics) = inline_control_metrics_hwp(control) else {
+        let Some(metrics) = ruby_control_metrics(para, control_index, styles, dpi)
+            .or_else(|| inline_control_metrics_hwp(control))
+        else {
             continue;
         };
         let position = positions
@@ -2180,7 +2185,13 @@ mod inline_equation_metric_tests {
         };
         let mut line_segs = vec![plain_line.clone(), plain_line.clone()];
 
-        apply_inline_control_metrics_to_text_lines(&para, &line_breaks, &mut line_segs);
+        apply_inline_control_metrics_to_text_lines(
+            &para,
+            &line_breaks,
+            &mut line_segs,
+            &ResolvedStyleSet::default(),
+            96.0,
+        );
 
         assert_eq!(line_segs[0].line_height, plain_line.line_height);
         assert_eq!(line_segs[0].baseline_distance, plain_line.baseline_distance);
@@ -2956,7 +2967,9 @@ pub(crate) fn reflow_line_segs(
             .iter()
             .enumerate()
             .filter_map(|(ci, control)| {
-                inline_control_metrics_hwp(control).map(|metrics| (ci, metrics))
+                ruby_control_metrics(para, ci, styles, dpi)
+                    .or_else(|| inline_control_metrics_hwp(control))
+                    .map(|metrics| (ci, metrics))
             })
             .collect::<Vec<_>>();
         // HWPX 책갈피·숨은 설명은 확장 레코드를 소비하지 않는 메타데이터다.
@@ -3209,15 +3222,23 @@ pub(crate) fn reflow_line_segs(
     // own_line: 표/그림/도형은 한컴이 전용 줄을 부여하는 블록형 개체로 취급한다
     // (수식은 텍스트 흐름 개체). 블록형 개체 줄에서 넘치는 후행 토큰은 통째로
     // 다음 줄로 본내 한 글자 run 조각남을 피한다 (pr_2219).
-    let control_positions = para.control_text_positions();
+    let mut control_positions = para.control_text_positions();
+    crate::renderer::ruby::project_control_positions(para, &mut control_positions);
     let mut inline_controls: Vec<(usize, i32, bool)> = para
         .controls
         .iter()
         .enumerate()
         .filter(|(_, ctrl)| !matches!(ctrl, Control::Form(_)))
         .filter_map(|(ci, ctrl)| {
-            inline_control_metrics_hwp(ctrl)
-                .map(|m| (ci, m.width, !matches!(ctrl, Control::Equation(_))))
+            ruby_control_metrics(para, ci, styles, dpi)
+                .or_else(|| inline_control_metrics_hwp(ctrl))
+                .map(|m| {
+                    (
+                        ci,
+                        m.width,
+                        !matches!(ctrl, Control::Equation(_) | Control::Ruby(_)),
+                    )
+                })
         })
         .map(|(ci, width, own_line)| {
             let pos = control_positions
@@ -3321,7 +3342,7 @@ pub(crate) fn reflow_line_segs(
 
     // Reserve each object's height on its actual line. Applying the largest
     // picture to the first line creates a blank band above wrapped pictures.
-    apply_inline_control_metrics_to_text_lines(para, &line_breaks, &mut new_line_segs);
+    apply_inline_control_metrics_to_text_lines(para, &line_breaks, &mut new_line_segs, styles, dpi);
 
     // 어울림 배제 계획이 있으면 줄별 wrap zone 을 seg 에 기록한다 — 채움(2차
     // fill_lines)과 동일한 결정적 대역 계산이라 텍스트가 기록 폭을 넘지 않는다.
@@ -3610,4 +3631,18 @@ fn compute_line_spacing_hwp(
             (min_hwp - line_height_hwp).max(0)
         }
     }
+}
+
+fn ruby_control_metrics(
+    para: &Paragraph,
+    ci: usize,
+    styles: &ResolvedStyleSet,
+    dpi: f64,
+) -> Option<InlineControlMetricsHwp> {
+    let r = super::super::ruby::prepare(para, ci, styles, dpi)?;
+    Some(InlineControlMetricsHwp {
+        width: super::super::px_to_hwpunit_round(r.main_width, dpi),
+        height: r.height_hu,
+        baseline: r.baseline_hu,
+    })
 }

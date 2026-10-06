@@ -388,6 +388,7 @@ pub fn compose_paragraph(para: &Paragraph) -> ComposedParagraph {
                         i,
                     ))
                 }
+                Control::Ruby(r) if r.option == 0 => Some((pos, 0, i)),
                 Control::Form(f) => Some((pos, f.width as i32, i)),
                 Control::Table(t)
                     if t.common.treat_as_char
@@ -1361,6 +1362,7 @@ fn identify_inline_controls(para: &Paragraph) -> Vec<InlineControl> {
             Control::Shape(shape) if shape.common().treat_as_char => InlineControlType::Shape,
             Control::Picture(pic) if pic.common.treat_as_char => InlineControlType::Shape,
             Control::Equation(eq) if eq.common.treat_as_char => InlineControlType::Shape,
+            Control::Ruby(r) if r.option == 0 => InlineControlType::Other,
             Control::SectionDef(_) | Control::ColumnDef(_) => InlineControlType::Other,
             _ => continue,
         };
@@ -1393,6 +1395,7 @@ fn is_render_inline_control(ctrl: &Control) -> bool {
         Control::Shape(shape) => shape.common().treat_as_char,
         Control::Table(table) => table.common.treat_as_char,
         Control::Equation(eq) => eq.common.treat_as_char,
+        Control::Ruby(r) => r.option == 0,
         Control::Form(_) => true,
         _ => false,
     }
@@ -1400,10 +1403,22 @@ fn is_render_inline_control(ctrl: &Control) -> bool {
 
 fn find_render_inline_control_positions(para: &Paragraph) -> Vec<usize> {
     if para.text.is_empty() && para.char_offsets.is_empty() {
+        // 한 빈 줄에 들어간 덧말은 같은 가시 문자 위치를 공유한다.
+        // 여러 저장/자동 줄의 기존 제어 순번 귀속과 다른 개체 경로는 유지한다.
+        let ruby_single_host = para.line_segs.len() == 1
+            && para.controls.iter().all(|c| {
+                matches!(c,
+                    Control::Ruby(r) if r.option == 0
+                ) || matches!(c, Control::Bookmark(_) | Control::HiddenComment(_))
+            });
         let mut inline_seen = 0usize;
         let mut positions = Vec::with_capacity(para.controls.len());
         for ctrl in &para.controls {
-            positions.push(inline_seen);
+            positions.push(if ruby_single_host && matches!(ctrl, Control::Ruby(_)) {
+                0
+            } else {
+                inline_seen
+            });
             if is_render_inline_control(ctrl) {
                 inline_seen += 1;
             }
@@ -1411,7 +1426,9 @@ fn find_render_inline_control_positions(para: &Paragraph) -> Vec<usize> {
         return positions;
     }
 
-    find_control_text_positions(para)
+    let mut positions = find_control_text_positions(para);
+    super::ruby::project_control_positions(para, &mut positions);
+    positions
 }
 
 /// CharOverlap 컨트롤의 글자를 조합된 텍스트에 올바른 위치로 삽입한다.
@@ -1755,6 +1772,7 @@ pub fn recompose_for_body_width(
     column_inner_width_px: f64,
     styles: &ResolvedStyleSet,
 ) {
+    resolve_ruby_widths(composed, para, styles, column_inner_width_px, true);
     restyle_fallback_runs_by_char_shapes(composed, para);
     recompose_for_cell_width(composed, para, column_inner_width_px, styles);
 }
@@ -2451,6 +2469,23 @@ fn recompose_for_cell_width_impl_with_generated(
     allow_generated_multiline: bool,
     wrap_at_width: bool,
 ) {
+    resolve_ruby_widths(composed, para, styles, cell_inner_width_px, wrap_at_width);
+    // 글자 없는 fresh 덧말의 줄 소유권은 위 폭 분할 결과를 유지한다.
+    // 빈 text run을 일반 문단으로 합치면 두 번째 줄의 제어가 사라진다.
+    if para.text.is_empty()
+        && super::para_has_no_stored_line_segs(para)
+        && cell_inner_width_px > 0.0
+        && para
+            .controls
+            .iter()
+            .any(|c| matches!(c, Control::Ruby(r) if r.option == 0))
+        && para.controls.iter().all(|c| {
+            matches!(c, Control::Ruby(r) if r.option == 0)
+                || matches!(c, Control::Bookmark(_) | Control::HiddenComment(_))
+        })
+    {
+        return;
+    }
     let has_synthetic_line_segs = !para.line_segs.is_empty()
         && para
             .line_segs
@@ -3796,3 +3831,32 @@ mod p1_text_reflow_tests {
 }
 #[cfg(test)]
 mod tests;
+
+fn resolve_ruby_widths(
+    composed: &mut ComposedParagraph,
+    para: &Paragraph,
+    styles: &ResolvedStyleSet,
+    width_px: f64,
+    wrap_at_width: bool,
+) {
+    // 글자 없는 덧말 문단도 본문 문자열을 가진 하나의 인라인 제어다.
+    // 실제 저장 줄은 그대로 두고 fresh geometry만 현재 셀/단 폭에서 만든다.
+    if (para.text.is_empty() || wrap_at_width)
+        && super::para_has_no_stored_line_segs(para)
+        && width_px > 0.0
+        && para
+            .controls
+            .iter()
+            .any(|c| matches!(c, Control::Ruby(r) if r.option == 0))
+    {
+        let mut local = para.clone();
+        local.line_segs.clear();
+        line_breaking::reflow_line_segs(&mut local, width_px, styles, 96.0);
+        *composed = compose_paragraph(&local);
+    }
+    for (_, width, ci) in &mut composed.tac_controls {
+        if let Some(ruby) = super::ruby::prepare(para, *ci, styles, 96.0) {
+            *width = super::px_to_hwpunit_round(ruby.main_width, 96.0);
+        }
+    }
+}
