@@ -4326,9 +4326,37 @@ impl LayoutEngine {
                 {
                     ls_val * 0.8
                 } else {
+                    // 현대 HWPX 셀의 NO_LS 폴백은 400/320 템플릿 대신
+                    // 원 글자모양 높이의 85% 기준선을 쓴다(233af0).
+                    // 저장 기준선·글꼴 높이 모드·다른 판의 80% 보정은 유지한다.
+                    let fresh_cell_font_baseline = self.profile.get().native_hwpx_cell_margin()
+                        && cell_ctx.as_ref().is_some_and(|ctx| {
+                            ctx.path.last().is_some_and(|step| step.text_direction == 0)
+                        })
+                        && para.is_some_and(|p| p.line_segs.is_empty() && p.controls.is_empty())
+                        && para_style.is_some_and(|ps| !ps.font_line_height)
+                        && ls_type != LineSpacingType::Fixed
+                        && comp_line.line_height == 400
+                        && comp_line.baseline_distance == 320;
+                    let raw_baseline = if fresh_cell_font_baseline {
+                        let base_px = comp_line
+                            .runs
+                            .iter()
+                            .filter_map(|run| {
+                                styles
+                                    .char_styles
+                                    .get(run.char_style_id as usize)
+                                    .map(|style| style.font_size)
+                            })
+                            .fold(0.0f64, f64::max);
+                        let base_hu = (base_px * 7200.0 / self.dpi).round() as i64;
+                        hwpunit_to_px(((base_hu * 85 + 50) / 100) as i32, self.dpi)
+                    } else {
+                        hwpunit_to_px(comp_line.baseline_distance, self.dpi)
+                    };
                     let baseline = ensure_min_baseline(
                         crate::renderer::corrected_line_baseline_for_source(
-                            hwpunit_to_px(comp_line.baseline_distance, self.dpi),
+                            raw_baseline,
                             max_fs,
                             source_metrics_reflowed,
                         ),

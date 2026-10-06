@@ -223,6 +223,8 @@ pub struct ResolvedParaStyle {
     pub page_break_before: bool,
     /// 문단 세로 정렬 — attr1 bit 20-21 (0=BASELINE, 1=TOP, 2=CENTER, 3=BOTTOM)
     pub vertical_align: u8,
+    /// 글꼴 메트릭으로 줄 높이 계산 — attr1 bit 22
+    pub font_line_height: bool,
 }
 
 impl Default for ResolvedParaStyle {
@@ -252,6 +254,7 @@ impl Default for ResolvedParaStyle {
             keep_lines: false,
             page_break_before: false,
             vertical_align: 0,
+            font_line_height: false,
         }
     }
 }
@@ -310,6 +313,10 @@ impl Default for ResolvedBorderStyle {
 /// 해소된 스타일 세트 (DocInfo에서 변환)
 #[derive(Debug, Default, Clone)]
 pub struct ResolvedStyleSet {
+    /// 런타임 플랫폼 측정 정책. 빈 글자 스타일 목록에서도 문서 정책을 보존한다.
+    pub font_metrics_policy: crate::model::provenance::FontMetricsPolicy,
+    /// 잘못된 글자 모양 참조도 작성된 쪽 번호 스타일로 구별한다.
+    pub has_page_number_style: bool,
     /// 글자 스타일 목록 (char_shapes[id]에 대응)
     pub char_styles: Vec<ResolvedCharStyle>,
     /// 문단 스타일 목록 (para_shapes[id]에 대응)
@@ -347,6 +354,11 @@ pub fn resolve_styles_with_variant(
     let bullets = doc_info.bullets.clone();
 
     ResolvedStyleSet {
+        font_metrics_policy: doc_info.font_metrics_policy,
+        has_page_number_style: doc_info
+            .styles
+            .iter()
+            .any(|style| style.local_name == "쪽 번호" || style.english_name == "Page Number"),
         char_styles,
         para_styles,
         border_styles,
@@ -1012,6 +1024,7 @@ fn resolve_single_para_style(
         keep_lines: (ps.attr1 >> 18) & 1 != 0 || (ps.attr2 >> 7) & 1 != 0,
         page_break_before: (ps.attr1 >> 19) & 1 != 0 || (ps.attr2 >> 8) & 1 != 0,
         vertical_align: ((ps.attr1 >> 20) & 0x03) as u8,
+        font_line_height: (ps.attr1 >> 22) & 1 != 0,
     }
 }
 

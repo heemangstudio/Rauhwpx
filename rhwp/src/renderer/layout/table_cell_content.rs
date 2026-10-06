@@ -5,9 +5,7 @@ use super::super::page_layout::LayoutRect;
 use super::super::render_tree::*;
 use super::super::style_resolver::ResolvedStyleSet;
 use super::super::{hwpunit_to_px, ShapeStyle, TextStyle};
-use super::border_rendering::{
-    build_row_col_x, collect_cell_borders, render_edge_borders, render_transparent_borders,
-};
+use super::border_rendering::{build_row_col_x, collect_cell_borders, render_transparent_borders};
 use super::text_measurement::{
     is_cjk_char, is_vertical_rotate_char, resolved_to_text_style, vertical_substitute_char,
 };
@@ -706,7 +704,16 @@ impl LayoutEngine {
                         &cell.paragraphs,
                         styles,
                     ))
-                    .max(self.calc_nested_controls_bottom_height(&cell.paragraphs, styles))
+                    .max(
+                        self.calc_nested_controls_bottom_height(
+                            &cell.paragraphs,
+                            styles,
+                            (self.profile.get().native_hwpx_cell_margin()
+                                && cell.text_direction == 0
+                                && cell.line_wrap == crate::model::table::CellLineWrap::Break)
+                                .then_some(inner_width),
+                        ),
+                    )
             } else {
                 self.calc_composed_paras_content_height(&composed_paras, &cell.paragraphs, styles)
             };
@@ -897,9 +904,24 @@ impl LayoutEngine {
         }
 
         // 엣지 기반 테두리 렌더링
-        table_node.children.extend(render_edge_borders(
-            tree, &h_edges, &v_edges, &row_col_x, &row_y, table_x, table_y,
-        ));
+        table_node
+            .children
+            .extend(super::border_rendering::render_edge_borders_with_policy(
+                tree,
+                &h_edges,
+                &v_edges,
+                &row_col_x,
+                &row_y,
+                table_x,
+                table_y,
+                super::border_rendering::mac_print_double_policy(
+                    table,
+                    styles,
+                    self.profile.get().native_hwpx_cell_margin(),
+                    self.dpi,
+                    true,
+                ),
+            ));
         if self.show_transparent_borders.get() {
             table_node.children.extend(render_transparent_borders(
                 tree, &h_edges, &v_edges, &row_col_x, &row_y, table_x, table_y,

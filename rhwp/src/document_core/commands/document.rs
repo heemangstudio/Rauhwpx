@@ -1937,7 +1937,92 @@ impl DocumentCore {
                         ))
                     })
                     .collect();
+                // 새 TAC 한 줄의 실제 점유 advance가 양쪽 저장 좌표와 정확히
+                // 이어지면 그 사다리는 이미 유효하다. 전체 재계산으로 저장 좌표까지
+                // 옮기면 뒤의 saved-vpos 보정에서 같은 간격을 다시 소비할 수 있다.
+                let mut coherent_saved = HashSet::new();
+                if native_hwpx_cell_margin
+                    && styles.font_metrics_policy
+                        == crate::model::provenance::FontMetricsPolicy::HcrDeclared
+                {
+                    let body_height = px_to_hwpunit(layout.body_area.height, dpi);
+                    for pi in 1..section.paragraphs.len().saturating_sub(1) {
+                        let para = &section.paragraphs[pi];
+                        let [seg] = para.line_segs.as_slice() else {
+                            continue;
+                        };
+                        let [Control::Table(table)] = para.controls.as_slice() else {
+                            continue;
+                        };
+                        if !reflowed_paras.contains(&pi)
+                            || !para.text.is_empty()
+                            || para.char_count != 9
+                            || para.char_shapes.is_empty()
+                            || !para.field_ranges.is_empty()
+                            || !para.orphan_field_ends.is_empty()
+                            || !styles
+                                .para_styles
+                                .get(para.para_shape_id as usize)
+                                .is_some_and(|style| {
+                                    style.line_spacing_type
+                                        == crate::model::style::LineSpacingType::Percent
+                                })
+                            || !table.common.treat_as_char
+                            || table.common.affect_line_spacing
+                            || table.caption.is_some()
+                            || table.cell_spacing != 0
+                            || seg.line_height <= 0
+                            || seg.line_height != seg.text_height
+                            || i64::from(seg.line_height)
+                                < i64::from(table.common.height)
+                                    + i64::from(table.outer_margin_top)
+                                    + i64::from(table.outer_margin_bottom)
+                        {
+                            continue;
+                        }
+                        let (Some((_, previous_end)), Some((next_start, _))) =
+                            (orig_span[pi - 1], orig_span[pi + 1])
+                        else {
+                            continue;
+                        };
+                        let expected_end = i64::from(previous_end)
+                            + i64::from(seg.line_height)
+                            + i64::from(seg.line_spacing);
+                        let next_height = section.paragraphs[pi + 1].line_segs[0].line_height;
+                        let occupied_end = expected_end - i64::from(seg.line_spacing);
+                        let fits_before_reset = next_start == 0
+                            && occupied_end > 0
+                            && occupied_end <= i64::from(body_height)
+                            && expected_end + i64::from(next_height) > i64::from(body_height);
+                        if expected_end != i64::from(next_start) && !fits_before_reset {
+                            continue;
+                        }
+                        let mut left = pi - 1;
+                        coherent_saved.insert(left);
+                        while left > 0
+                            && matches!((orig_span[left - 1], orig_span[left]),
+                                (Some((_, end)), Some((start, _))) if end == start)
+                        {
+                            left -= 1;
+                            coherent_saved.insert(left);
+                        }
+                        let mut right = pi + 1;
+                        coherent_saved.insert(right);
+                        while right + 1 < orig_span.len()
+                            && matches!((orig_span[right], orig_span[right + 1]),
+                                (Some((_, end)), Some((start, _))) if end == start)
+                        {
+                            right += 1;
+                            coherent_saved.insert(right);
+                        }
+                    }
+                }
                 for (pi, para) in section.paragraphs.iter_mut().enumerate() {
+                    if coherent_saved.contains(&pi) {
+                        running_vpos = orig_span[pi].unwrap().1;
+                        prev_stored_last_vpos = para.line_segs.last().unwrap().vertical_pos;
+                        continue;
+                    }
                     let was_reflowed = reflowed_paras.contains(&pi);
                     let hosts_bottom_fixed_frame = para.controls.iter().any(|c| {
                         matches!(c, Control::Table(t)

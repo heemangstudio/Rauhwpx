@@ -42,6 +42,9 @@ fn squeeze_cell_keeps_wide_text_on_one_line_and_preserves_explicit_newlines() {
                 &styles,
                 true,
                 CellLineWrap::Squeeze,
+                0,
+                true,
+                crate::renderer::DEFAULT_DPI,
             );
             assert_eq!(
                 squeeze.lines.len(),
@@ -70,6 +73,9 @@ fn squeeze_cell_keeps_wide_text_on_one_line_and_preserves_explicit_newlines() {
                 &styles,
                 true,
                 CellLineWrap::Break,
+                0,
+                true,
+                crate::renderer::DEFAULT_DPI,
             );
             assert!(wrapped.lines.len() > squeeze.lines.len());
         }
@@ -112,6 +118,9 @@ fn native_generated_cell_reflow_uses_paragraph_margins_and_positive_indent() {
         &styles,
         true,
         crate::model::table::CellLineWrap::Break,
+        0,
+        true,
+        crate::renderer::DEFAULT_DPI,
     );
     assert_eq!(native.lines.len(), 2);
     let first: String = native.lines[0]
@@ -128,6 +137,9 @@ fn native_generated_cell_reflow_uses_paragraph_margins_and_positive_indent() {
         &styles,
         false,
         crate::model::table::CellLineWrap::Break,
+        0,
+        true,
+        crate::renderer::DEFAULT_DPI,
     );
     assert_eq!(legacy.lines.len(), 1);
 }
@@ -170,6 +182,9 @@ fn native_hwpx_rewraps_generated_breaks_but_preserves_authored_breaks() {
         &styles,
         true,
         crate::model::table::CellLineWrap::Break,
+        0,
+        true,
+        crate::renderer::DEFAULT_DPI,
     );
     assert_eq!(generated.lines.len(), 1);
 
@@ -192,6 +207,9 @@ fn native_hwpx_rewraps_generated_breaks_but_preserves_authored_breaks() {
         &styles,
         true,
         crate::model::table::CellLineWrap::Break,
+        0,
+        true,
+        crate::renderer::DEFAULT_DPI,
     );
     assert_eq!(authored.lines.len(), 2);
 }

@@ -1261,7 +1261,7 @@ fn para_has_non_whitespace_text(para: &Paragraph) -> bool {
 ///
 /// 한글은 호스트 텍스트를 표의 세로 오프셋보다 앞선 저장 vpos 에 그대로 둔다
 /// (00072 별표 제목: 저장 줄 3420 < 표 vertOffset 4129 → 1쪽 표 위).
-fn stored_host_lines_precede_float(
+pub(crate) fn stored_host_lines_precede_float(
     para: &Paragraph,
     table: &crate::model::table::Table,
     control_index: usize,
@@ -1336,6 +1336,66 @@ pub(crate) fn stored_float_anchor_offset_px(
         return 0.0;
     };
     hwpunit_to_px((anchor_top - base).max(0), dpi)
+}
+
+pub(crate) fn stored_local_host_precedes_float(
+    para: &Paragraph,
+    previous: &Paragraph,
+    table: &crate::model::table::Table,
+    control_index: usize,
+    body_height_hu: i32,
+) -> bool {
+    let is_authored = |seg: &LineSeg| seg.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY == 0;
+    let (Some(first), Some(last), Some(prev_last)) = (
+        para.line_segs.first(),
+        para.line_segs.last(),
+        previous.line_segs.last(),
+    ) else {
+        return false;
+    };
+    is_authored(prev_last)
+        && para
+            .line_segs
+            .iter()
+            .all(|seg| is_authored(seg) && seg.line_height > 0)
+        && para
+            .line_segs
+            .windows(2)
+            .all(|pair| pair[0].vertical_pos <= pair[1].vertical_pos)
+        && first.vertical_pos >= 0
+        && prev_last.vertical_pos >= 0
+        && prev_last
+            .vertical_pos
+            .saturating_add(prev_last.line_height)
+            .saturating_add(prev_last.line_spacing)
+            == first.vertical_pos
+        && last.vertical_pos.saturating_add(last.line_height) <= body_height_hu
+        && stored_host_lines_precede_float(para, table, control_index)
+}
+
+pub(crate) fn stored_float_origin_is_in_host_tail_gap(
+    para: &Paragraph,
+    table: &crate::model::table::Table,
+    control_index: usize,
+) -> bool {
+    let stored: Vec<_> = para
+        .line_segs
+        .iter()
+        .filter(|line| line.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY == 0)
+        .collect();
+    let (Some(first), Some(last), Some(anchor)) = (
+        stored.first(),
+        stored.last(),
+        stored_float_anchor_line_top(para, control_index, &stored),
+    ) else {
+        return false;
+    };
+    let occupied_end = i64::from(last.vertical_pos) + i64::from(last.line_height);
+    let float_origin = i64::from(anchor) + i64::from(signed_hwpunit(table.common.vertical_offset));
+    last.line_spacing > 0
+        && first.vertical_pos >= 0
+        && occupied_end <= float_origin
+        && float_origin < occupied_end + i64::from(last.line_spacing)
 }
 
 fn repeats_native_empty_host_rowbreak_fragment_margin(
@@ -4711,7 +4771,7 @@ impl LayoutEngine {
             // 0.707배 축소된 7.07pt 로 설명됨). 종전 값 10.0 은 pt 로 의도된 값이
             // px 필드에 들어가 96dpi 에서 7.5pt 로 렌더되던 단위 혼동이었다.
             // 글꼴·크기는 문서의 '쪽 번호' 스타일 글자 모양을 따르고(기본 10pt), 스타일이
-            // 없는 문서만 종전 바탕 10pt 로 그린다. 번호·기호는 영문 글꼴로 그린다.
+            // 없는 문서는 플랫폼 호환 기본값을 쓴다. 번호·기호는 영문 글꼴로 그린다.
             const PAGE_NUMBER_PT: f64 = 10.0;
             let style = match styles.page_number_char_shape {
                 Some(id) => {
@@ -4720,6 +4780,21 @@ impl LayoutEngine {
                         style.font_size = PAGE_NUMBER_PT * self.dpi / 72.0;
                     }
                     style
+                }
+                None if !styles.has_page_number_style
+                    && !self.profile.get().hwp3_native_layout()
+                    && !self.profile.get().hwp3_layout()
+                    && styles.font_metrics_policy
+                        == crate::model::provenance::FontMetricsPolicy::HcrDeclared =>
+                {
+                    TextStyle {
+                        // macOS 한글의 스타일 없는 쪽 번호 출력과 맞춘 10pt 호환 기본값.
+                        // 가져온 글자 모양 0번이나 내부 기본 글꼴 요청을 복원한 값은 아니다.
+                        font_family: "함초롬돋움".to_string(),
+                        font_size: PAGE_NUMBER_PT * self.dpi / 72.0,
+                        color: 0x000000,
+                        ..Default::default()
+                    }
                 }
                 None => TextStyle {
                     font_family: "바탕".to_string(),
@@ -7218,6 +7293,18 @@ impl LayoutEngine {
                         return (y_offset, false);
                     }
 
+                    // 합성 쪽번호 위치 제어 줄은 잉크가 없어도 실제 줄 전진을 갖는다.
+                    if *start_line == 1
+                        && *end_line == 2
+                        && crate::renderer::composer::fresh_page_number_tail_line(para)
+                    {
+                        let seg = &para.line_segs[1];
+                        return (
+                            y_offset + hwpunit_to_px(seg.line_height + seg.line_spacing, self.dpi),
+                            true,
+                        );
+                    }
+
                     // TAC 블록 표 문단의 post-text PP: 텍스트가 공백만이면 건너뜀
                     // (Table PageItem에서 이미 y_offset이 결정됨)
                     if prev_tac_seg_applied {
@@ -8873,13 +8960,18 @@ impl LayoutEngine {
                             Control::Table(_) | Control::Picture(_) | Control::Shape(_)
                         )
                     });
-                let host_seg = para.line_segs.get(control_index).or_else(|| {
-                    if only_invisible_before_tac {
-                        para.line_segs.last()
-                    } else {
-                        None
-                    }
-                });
+                let host_seg = if crate::renderer::composer::fresh_page_number_tail_line(para) {
+                    // 제어 배열 인덱스가 아니라 확인된 표줄의 간격을 사용한다.
+                    para.line_segs.first()
+                } else {
+                    para.line_segs.get(control_index).or_else(|| {
+                        if only_invisible_before_tac {
+                            para.line_segs.last()
+                        } else {
+                            None
+                        }
+                    })
+                };
                 // [Task #2220] 저장 host lh 가 표 outer_margin 을 포함하는 증거
                 // (lh ≥ 표 선언높이 + om 상하합, 주보 p1: 24700 = 22996 + 852×2).
                 // 이 경우 저장 lh 기반 advance 는 문단 줄 상단(para_y) 기준이어야
@@ -9202,7 +9294,18 @@ impl LayoutEngine {
                     && matches!(t.common.vert_rel_to, crate::model::shape::VertRelTo::Para)
                     && (t.common.vertical_offset as i32) > 0
                 {
-                    para_start_y.get(&para_index).copied().unwrap_or(y_offset)
+                    if self
+                        .pre_emitted_host_heights
+                        .borrow()
+                        .contains_key(&para_index)
+                    {
+                        // table_partial은 host 종료 위치에서 시작하여 그 높이를
+                        // vertOffset에서 뺀다. 여기서 문단 시작으로 되돌리면
+                        // host 높이가 두 번 빠져 표가 텍스트 위로 올라온다.
+                        y_offset
+                    } else {
+                        para_start_y.get(&para_index).copied().unwrap_or(y_offset)
+                    }
                 } else {
                     y_offset
                 }

@@ -2199,8 +2199,17 @@ fn measure_char_width_with_policy(
     // 구버전 TTF 기준이라 실폰트와 엇갈린다 (HY헤드라인M '.' 0.208→0.242em 등).
     // 공백은 HWP em/2 문서 규약이 우선이고, cmap 에 없는 글자는 베이크드
     // 경로로 폴백한다.
-    if policy == FontMetricsPolicy::HcrDeclared && face_available && c != ' ' {
-        if let Some(mut em_advance) = custom_face_char_em_advance(primary_name, bold, italic, c) {
+    if policy == FontMetricsPolicy::HcrDeclared && c != ' ' {
+        let actual_advance = face_available
+            .then(|| custom_face_char_em_advance(primary_name, bold, italic, c))
+            .flatten()
+            .or_else(|| {
+                // 직접 가져온 파일의 hmtx도 실제 요청 face의 메트릭이다.
+                // 내장 테이블이 글자를 수록해도 구버전 폭으로 되돌리지 않는다.
+                crate::renderer::runtime_font_metrics::char_advance(primary_name, bold, italic, c)
+                    .map(|advance| f64::from(advance.units) / f64::from(advance.em_size))
+            });
+        if let Some(mut em_advance) = actual_advance {
             // 한컴 반각 강제는 문서 규약이라 실폰트에도 동일하게 적용한다 —
             // 실 hmtx 가 전각이면 구두점/인용부호를 em/2 로 줄인다.
             if (matches!(c, '\u{2018}'..='\u{2027}') || is_halfwidth_cjk_quote(c))
@@ -4079,6 +4088,60 @@ mod tests {
     // ── 런타임 폰트 메트릭 (사용자 설치 폰트) ──
 
     #[test]
+    fn registered_actual_face_replaces_covered_baked_width_only_in_mac_policy() {
+        use crate::renderer::runtime_font_metrics as runtime;
+        let bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/ttfs/opensource/NotoSansKR-Regular.ttf"
+        ))
+        .unwrap();
+        let face = ttf_parser::Face::parse(&bytes, 0).unwrap();
+        let family = "Noto Sans KR";
+        assert!(face
+            .names()
+            .into_iter()
+            .any(|name| { name.to_string().as_deref() == Some(family) }));
+        let size = 24.0;
+        let baked = font_metrics_data::find_metric(family, false, false).unwrap();
+        let (character, actual) = ('!'..='~')
+            .find_map(|character| {
+                let glyph = face.glyph_index(character)?;
+                let actual = quantize_hwp_px(
+                    f64::from(face.glyph_hor_advance(glyph)?) * size
+                        / f64::from(face.units_per_em()),
+                );
+                let old = quantize_hwp_px(
+                    f64::from(baked.metric.get_width(character)?) * size
+                        / f64::from(baked.metric.em_size),
+                );
+                ((actual - old).abs() > 0.02).then_some((character, actual))
+            })
+            .expect("가져온 face와 내장 face의 advance가 다른 글자");
+        let measure = |policy, character| {
+            measure_char_width_with_policy(family, false, false, character, size, policy)
+        };
+        runtime::clear();
+        let old_mac = measure(FontMetricsPolicy::HcrDeclared, character);
+        let old_windows = measure(FontMetricsPolicy::HancomWindows, character);
+        runtime::register(&bytes, &[family.to_owned()], false, false).unwrap();
+        assert_eq!(
+            measure(FontMetricsPolicy::HcrDeclared, character),
+            Some(actual)
+        );
+        assert_ne!(Some(actual), old_mac);
+        assert_eq!(
+            measure(FontMetricsPolicy::HancomWindows, character),
+            old_windows
+        );
+        assert_eq!(
+            measure(FontMetricsPolicy::HcrDeclared, ' '),
+            Some(size / 2.0)
+        );
+        runtime::clear();
+        assert_eq!(measure(FontMetricsPolicy::HcrDeclared, character), old_mac);
+    }
+
+    #[test]
     fn runtime_font_metrics_replace_heuristic_widths_until_cleared() {
         use crate::renderer::runtime_font_metrics as runtime;
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/ttfs/opensource/");
@@ -4147,10 +4210,12 @@ mod tests {
         );
         assert!(crate::renderer::faux_bold_stroke_width(&bold_style, fs).is_none());
 
-        // 내장 메트릭이 있는 이름은 기존 동작 그대로.
-        let baked = w("함초롬돋움", false, 'i');
+        // 직접 등록한 face는 내장 메트릭이 글자를 수록해도 실제 폭을 쓴다.
         runtime::register(&light, &["함초롬돋움".to_string()], false, false).unwrap();
-        assert_eq!(w("함초롬돋움", false, 'i'), baked);
+        assert_eq!(
+            w("함초롬돋움", false, 'i'),
+            Some(advance_px(&light, 'i', fs))
+        );
 
         assert!(runtime::report_json().contains("\"hits\":"));
         assert!(runtime::register(b"not a font", &aliases, false, false).is_err());

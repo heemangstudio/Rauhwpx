@@ -187,6 +187,7 @@ mod tests {
             }],
             numberings: Vec::new(),
             bullets: Vec::new(),
+            ..Default::default()
         };
 
         let page_content = PageContent {
@@ -2660,6 +2661,7 @@ mod tests {
             border_styles: Vec::new(),
             numberings: Vec::new(),
             bullets: Vec::new(),
+            ..Default::default()
         };
         let page_content = PageContent {
             page_index: 0,
@@ -2810,6 +2812,7 @@ mod tests {
             border_styles: Vec::new(),
             numberings: Vec::new(),
             bullets: Vec::new(),
+            ..Default::default()
         };
         let page_content = PageContent {
             page_index: 0,

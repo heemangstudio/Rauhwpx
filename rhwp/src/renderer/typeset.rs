@@ -129,6 +129,7 @@ struct BlockTableContinuationPreparedState {
     native_cellbreak_fragment_spacing_hu: Option<(i32, i32)>,
     saved_residual_split_hu: Option<(i32, i32)>,
     budget_para_start_height: f64,
+    host_has_local_saved_flow: bool,
 }
 
 /// [#2424] 한 continuation iteration이 caller-controlled step에 돌려주는 진행 상태.
@@ -14910,6 +14911,12 @@ impl TypesetEngine {
             // cap 을 정당하게 넘는다 — cap 으로 되감으면 후행 문단이 성장분만큼
             // 안 밀려 쪽 하단을 넘긴다(셀 Enter 재현: 후행 안내 문단 잘림).
             let cap = session_grown_tac_total.map_or(cap, |grown| cap.max(grown));
+            // 합성 쪽번호 제어 줄의 전진은 표줄 한 개의 저장 cap 으로 되감지 않는다.
+            let cap = if crate::renderer::composer::fresh_page_number_tail_line(para) {
+                fmt.total_height
+            } else {
+                cap
+            };
             // [#2279 누적Δ] 저장 ladder 가 host paraPr spacing 을 누락한 기계생성
             // 결재문서(HWPX, 빈 host TAC 표): 저장 스텝(다음 문단 vpos−현 vpos)이
             // fmt.total_height(sb+lh+ls+sa)보다 짧으면 생성기가 sa/sb 를 좌표에
@@ -15653,12 +15660,20 @@ impl TypesetEngine {
             && table.common.treat_as_char
             && pre_table_end_line == 0
             && total_lines <= 1;
-        let has_post_text = !para.text.is_empty()
+        // fresh 제어 전용 줄도 표 뒤에서 실제 줄 전진을 소비한다.
+        // 합성 축이 확인된 쪽번호 위치 제어의 별도 줄만 선택한다.
+        let fresh_page_number_tail = crate::renderer::composer::fresh_page_number_tail_line(para)
+            && post_table_start == 1
+            && total_lines == 2;
+        let has_post_text = (!para.text.is_empty() || fresh_page_number_tail)
             && total_lines > post_table_start
             && !whitespace_only_single_tac_host_line;
         let should_add_post_text =
             is_last_table && tac_table_count <= 1 && has_post_text && !pre_text_exists;
         if should_add_post_text {
+            if fresh_page_number_tail {
+                st.current_height += fmt.line_advance(0) - fmt.line_heights[0];
+            }
             let post_height: f64 = fmt.line_advances_sum(post_table_start..total_lines);
             // [#2808] 소비 조건을 layout 의 same_owner_table_precedes 와 동일하게
             // 다중 co-anchored float host 로 한정 — 단일 표 host post-text 는 기존
@@ -18068,8 +18083,29 @@ impl TypesetEngine {
                 seg.vertical_pos
                     > crate::renderer::px_to_hwpunit(st.layout.body_area.height, self.dpi)
             });
+        // 저장 좌표가 쪽 내부 좌표여도 바로 앞 저장 문단의 끝과 정확히
+        // 이어지는 host는 같은 쪽의 텍스트다. 누적 좌표로 재작성되었는지에
+        // 의존하지 않고, 실제 남은 공간 판정은 pre-emit 경로에 맡긴다.
+        let host_has_local_saved_flow = st.profile.native_hwpx_cell_margin()
+            && styles.font_metrics_policy
+                == crate::model::provenance::FontMetricsPolicy::HcrDeclared
+            && para_idx.checked_sub(1).is_some_and(|prev_idx| {
+                let Some(previous) = paragraphs_all.get(prev_idx) else {
+                    return false;
+                };
+                crate::renderer::layout::stored_local_host_precedes_float(
+                    para,
+                    previous,
+                    table,
+                    ctrl_idx,
+                    crate::renderer::px_to_hwpunit(st.layout.body_area.height, self.dpi),
+                ) && st
+                    .current_items
+                    .iter()
+                    .any(|item| page_item_para_index(item) == Some(prev_idx))
+            });
         if st.profile.hwpx_stored_layout()
-            && host_vpos_is_cumulative
+            && (host_vpos_is_cumulative || host_has_local_saved_flow)
             && !table.common.treat_as_char
             && is_para_topbottom_float(&table.common)
             && matches!(
@@ -18109,6 +18145,7 @@ impl TypesetEngine {
             native_cellbreak_fragment_spacing_hu,
             saved_residual_split_hu,
             budget_para_start_height,
+            host_has_local_saved_flow,
         };
         let source = BlockTableContinuationSource {
             para_index: para_idx,
@@ -18259,7 +18296,15 @@ impl TypesetEngine {
                             .get(&para_idx)
                             .copied()
                             .unwrap_or(0.0);
-                        (raw - host_h).max(0.0)
+                        if prepared.host_has_local_saved_flow && host_h > 0.0
+                            && crate::renderer::layout::stored_float_origin_is_in_host_tail_gap(para, table, ctrl_idx)
+                        {
+                            // 저장 개체 원점은 마지막 글줄 뒤 간격 안에도 올 수 있다.
+                            // host advance를 이미 소비했으므로 음수 보정을 보존한다.
+                            raw - host_h
+                        } else {
+                            (raw - host_h).max(0.0)
+                        }
                     } else {
                         0.0
                     }
@@ -20637,6 +20682,7 @@ mod tests {
             native_cellbreak_fragment_spacing_hu: None,
             saved_residual_split_hu: None,
             budget_para_start_height: 0.0,
+            host_has_local_saved_flow: false,
         };
         let flow_layout =
             PageLayoutInfo::from_page_def(&a4_page_def(), &ColumnDef::default(), DEFAULT_DPI);

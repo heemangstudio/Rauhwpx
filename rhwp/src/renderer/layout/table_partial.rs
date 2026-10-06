@@ -8,9 +8,7 @@ use super::super::page_layout::LayoutRect;
 use super::super::render_tree::*;
 use super::super::style_resolver::ResolvedStyleSet;
 use super::super::{hwpunit_to_px, ShapeStyle};
-use super::border_rendering::{
-    build_row_col_x, collect_cell_borders, render_edge_borders, render_transparent_borders,
-};
+use super::border_rendering::{build_row_col_x, collect_cell_borders, render_transparent_borders};
 use super::table_layout::{
     calc_nested_split_rows, effective_margin_left_line,
     native_rowbreak_para_float_uses_outer_margin_box, NestedTableSplit,
@@ -549,6 +547,9 @@ impl LayoutEngine {
                         styles,
                         self.profile.get().native_hwpx_cell_margin(),
                         cell.line_wrap,
+                        cell.text_direction,
+                        true,
+                        self.dpi,
                     );
                     // [#2291] 부실 저장(ls==1·실폭 초과) 재분할 — 가로쓰기 셀 한정.
                     if cell.text_direction == 0
@@ -671,8 +672,14 @@ impl LayoutEngine {
                         &cell.paragraphs,
                         styles,
                     );
-                    let nested_bottom =
-                        self.calc_nested_controls_bottom_height(&cell.paragraphs, styles);
+                    let nested_bottom = self.calc_nested_controls_bottom_height(
+                        &cell.paragraphs,
+                        styles,
+                        (self.profile.get().native_hwpx_cell_margin()
+                            && cell.text_direction == 0
+                            && cell.line_wrap == crate::model::table::CellLineWrap::Break)
+                            .then_some(inner_width),
+                    );
                     vpos_h
                         .max(line_h)
                         .max(nested_bottom)
@@ -1899,7 +1906,28 @@ impl LayoutEngine {
             if host_pre_emitted {
                 raw += stored_float_anchor_offset_px(para, table, control_index, self.dpi);
             }
-            (raw - host_h).max(0.0)
+            let saved_local_tail_gap = self.profile.get().native_hwpx_cell_margin()
+                && styles.font_metrics_policy
+                    == crate::model::provenance::FontMetricsPolicy::HcrDeclared
+                && host_pre_emitted
+                && para_index
+                    .checked_sub(1)
+                    .and_then(|index| paragraphs.get(index))
+                    .is_some_and(|previous| {
+                        super::stored_local_host_precedes_float(
+                            para,
+                            previous,
+                            table,
+                            control_index,
+                            crate::renderer::px_to_hwpunit(col_area.height, self.dpi),
+                        )
+                    })
+                && super::stored_float_origin_is_in_host_tail_gap(para, table, control_index);
+            if saved_local_tail_gap {
+                raw - host_h
+            } else {
+                (raw - host_h).max(0.0)
+            }
         } else {
             0.0
         };
@@ -2542,15 +2570,27 @@ impl LayoutEngine {
         );
 
         // 엣지 기반 테두리 렌더링
-        table_node.children.extend(render_edge_borders(
-            tree,
-            &h_edges,
-            &v_edges,
-            &row_col_x,
-            &grid_row_y,
-            table_x,
-            table_y,
-        ));
+        table_node
+            .children
+            .extend(super::border_rendering::render_edge_borders_with_policy(
+                tree,
+                &h_edges,
+                &v_edges,
+                &row_col_x,
+                &grid_row_y,
+                table_x,
+                table_y,
+                super::border_rendering::mac_print_double_policy(
+                    table,
+                    styles,
+                    self.profile.get().native_hwpx_cell_margin(),
+                    self.dpi,
+                    start_row == 0
+                        && end_row >= row_count
+                        && start_cut.is_empty()
+                        && end_cut.is_empty(),
+                ),
+            ));
         if self.show_transparent_borders.get() {
             table_node.children.extend(render_transparent_borders(
                 tree,

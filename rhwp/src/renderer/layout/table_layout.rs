@@ -177,7 +177,7 @@ use super::super::composer::effective_text_for_metrics;
 use super::super::{hwpunit_to_px, ShapeStyle};
 use super::border_rendering::{
     build_row_col_x, collect_cell_borders, create_border_line_nodes, render_cell_diagonal,
-    render_edge_borders, render_transparent_borders,
+    render_transparent_borders,
 };
 use super::text_measurement::{estimate_text_width, resolved_to_text_style};
 use super::utils::find_bin_data;
@@ -315,6 +315,7 @@ fn hancom_hwpx_table_outer_border_nodes(
     row_y: &[f64],
     table_x: f64,
     table_y: f64,
+    policy: Option<super::border_rendering::MacPrintDouble>,
 ) -> Vec<RenderNode> {
     if depth != 0
         || !hwpx_stored_layout
@@ -353,7 +354,9 @@ fn hancom_hwpx_table_outer_border_nodes(
             }
         })
         .collect();
-    render_edge_borders(tree, &outer_h, &outer_v, row_col_x, row_y, table_x, table_y)
+    super::border_rendering::render_edge_borders_with_policy(
+        tree, &outer_h, &outer_v, row_col_x, row_y, table_x, table_y, policy,
+    )
 }
 
 fn caption_flow_extra(caption: &Option<Caption>, caption_height: f64, caption_spacing: f64) -> f64 {
@@ -2004,9 +2007,24 @@ impl LayoutEngine {
 
         // ── 6. 테두리 렌더링 ──
         if independent_col_row_y.is_none() {
-            table_node.children.extend(render_edge_borders(
-                tree, &h_edges, &v_edges, &row_col_x, &row_y, table_x, table_y,
-            ));
+            table_node
+                .children
+                .extend(super::border_rendering::render_edge_borders_with_policy(
+                    tree,
+                    &h_edges,
+                    &v_edges,
+                    &row_col_x,
+                    &row_y,
+                    table_x,
+                    table_y,
+                    super::border_rendering::mac_print_double_policy(
+                        table,
+                        styles,
+                        self.profile.get().native_hwpx_cell_margin(),
+                        self.dpi,
+                        nested_split.is_none(),
+                    ),
+                ));
             table_node
                 .children
                 .extend(hancom_hwpx_table_outer_border_nodes(
@@ -2020,6 +2038,13 @@ impl LayoutEngine {
                     &row_y,
                     table_x,
                     table_y,
+                    super::border_rendering::mac_print_double_policy(
+                        table,
+                        styles,
+                        self.profile.get().native_hwpx_cell_margin(),
+                        self.dpi,
+                        nested_split.is_none(),
+                    ),
                 ));
             if self.show_transparent_borders.get() {
                 table_node.children.extend(render_transparent_borders(
@@ -2424,6 +2449,7 @@ impl LayoutEngine {
                         styles,
                         inner_width,
                         cell.line_wrap,
+                        cell.text_direction,
                     );
                     // Stored LINE_SEG rows normally already include their authored cell padding,
                     // so re-adding it would grow every row (#2211). The exception is an authored
@@ -2542,6 +2568,7 @@ impl LayoutEngine {
                     styles,
                     inner_width,
                     cell.line_wrap,
+                    cell.text_direction,
                 );
                 let line_req = if relaxed_pad && Self::cell_has_stored_line_segs(cell) {
                     line_based
@@ -2602,12 +2629,14 @@ impl LayoutEngine {
         styles: &ResolvedStyleSet,
         cell_inner_width_px: f64,
         line_wrap: crate::model::table::CellLineWrap,
+        cell_text_direction: u8,
     ) -> f64 {
         let (line_based, object_based) = self.calc_cell_paragraphs_content_parts(
             paragraphs,
             styles,
             cell_inner_width_px,
             line_wrap,
+            cell_text_direction,
         );
         line_based.max(object_based)
     }
@@ -2622,6 +2651,7 @@ impl LayoutEngine {
         styles: &ResolvedStyleSet,
         cell_inner_width_px: f64,
         line_wrap: crate::model::table::CellLineWrap,
+        cell_text_direction: u8,
     ) -> (f64, f64) {
         let cell_para_count = paragraphs.len();
         let line_based_height: f64 = paragraphs
@@ -2639,6 +2669,9 @@ impl LayoutEngine {
                     styles,
                     self.profile.get().native_hwpx_cell_margin(),
                     line_wrap,
+                    cell_text_direction,
+                    true,
+                    self.dpi,
                 );
                 self.calc_para_lines_height(
                     &comp.lines,
@@ -2655,7 +2688,14 @@ impl LayoutEngine {
             })
             .sum();
         let object_based = self
-            .calc_nested_controls_bottom_height(paragraphs, styles)
+            .calc_nested_controls_bottom_height(
+                paragraphs,
+                styles,
+                (self.profile.get().native_hwpx_cell_margin()
+                    && cell_text_direction == 0
+                    && line_wrap == crate::model::table::CellLineWrap::Break)
+                    .then_some(cell_inner_width_px),
+            )
             .max(self.calc_non_inline_controls_flow_height(paragraphs))
             .max(self.calc_cell_wrap_objects_bottom_height(paragraphs));
         (line_based_height, object_based)
@@ -4619,7 +4659,22 @@ impl LayoutEngine {
                                 } else {
                                     para_y_before_compose
                                 };
-                                let table_anchor_y = if native_saved_text_frame_outer_box {
+                                // 빈 run TAC 폴백은 inline_x_override 때문에 표 배치의
+                                // 바깥여백 처리를 우회한다. 생성 줄이 점유 높이를 포함하면
+                                // 저장 셀과 같이 괘선을 outerTop 안쪽에 한 번만 놓는다.
+                                let fresh_occupied_table_box = self.profile.get().native_hwpx_cell_margin()
+                                    && cell.text_direction == 0
+                                    && cell.line_wrap == crate::model::table::CellLineWrap::Break
+                                    && para.controls.iter().filter(|control| {
+                                        matches!(control, Control::Table(_))
+                                    }).count() == 1
+                                    && super::super::height_measurer::HeightMeasurer::new(self.dpi)
+                                        .fresh_tac_cell_width_is_verified(cell, table)
+                                    && crate::renderer::composer::generated_tac_table_line_covers_object(
+                                        para, inner_width, styles, self.dpi);
+                                let table_anchor_y = if native_saved_text_frame_outer_box
+                                    || fresh_occupied_table_box
+                                {
                                     table_anchor_y
                                         + hwpunit_to_px(
                                             nested_table.outer_margin_top as i32,
@@ -5188,6 +5243,9 @@ impl LayoutEngine {
                         styles,
                         self.profile.get().native_hwpx_cell_margin(),
                         cell.line_wrap,
+                        cell.text_direction,
+                        true,
+                        self.dpi,
                     );
                 }
             }
@@ -5286,8 +5344,14 @@ impl LayoutEngine {
                     0.0
                 };
 
-                let nested_bottom =
-                    self.calc_nested_controls_bottom_height(&cell.paragraphs, styles);
+                let nested_bottom = self.calc_nested_controls_bottom_height(
+                    &cell.paragraphs,
+                    styles,
+                    (self.profile.get().native_hwpx_cell_margin()
+                        && cell.text_direction == 0
+                        && cell.line_wrap == crate::model::table::CellLineWrap::Break)
+                        .then_some(inner_width),
+                );
                 let wrap_object_bottom =
                     self.calc_cell_wrap_objects_bottom_height(&cell.paragraphs);
                 composed_height
@@ -5393,7 +5457,14 @@ impl LayoutEngine {
             // 넘는 셀은 저장 흐름 신뢰 대상이 아니다 — TopAndBottom flow 개체만
             // 저장 vpos 에 흡수된다(악보 셀).
             let non_flow_object_extent = self
-                .calc_nested_controls_bottom_height(&cell.paragraphs, styles)
+                .calc_nested_controls_bottom_height(
+                    &cell.paragraphs,
+                    styles,
+                    (self.profile.get().native_hwpx_cell_margin()
+                        && cell.text_direction == 0
+                        && cell.line_wrap == crate::model::table::CellLineWrap::Break)
+                        .then_some(inner_width),
+                )
                 .max(self.calc_cell_wrap_objects_bottom_height(&cell.paragraphs))
                 .max(alignment_object_extent);
             // [#2148 #2279] 저장 vpos 흐름이 물리적으로 줄들을 담지 못하는 퇴화
@@ -5596,21 +5667,28 @@ impl LayoutEngine {
         &self,
         paragraphs: &[Paragraph],
         styles: &ResolvedStyleSet,
+        shared_inline_width: Option<f64>,
     ) -> f64 {
         paragraphs
             .iter()
             .map(|p| {
-                let nested_h: f64 = p
-                    .controls
-                    .iter()
-                    .map(|ctrl| {
-                        if let Control::Table(t) = ctrl {
-                            self.calc_nested_table_height(t, styles)
-                        } else {
-                            0.0
-                        }
-                    })
-                    .sum();
+                let inline_line = shared_inline_width.is_some_and(|width| {
+                    crate::renderer::composer::fresh_adjacent_tac_tables_fit(
+                        p, width, styles, self.dpi,
+                    )
+                });
+                let nested_heights = p.controls.iter().map(|ctrl| {
+                    if let Control::Table(t) = ctrl {
+                        self.calc_nested_table_height(t, styles)
+                    } else {
+                        0.0
+                    }
+                });
+                let nested_h = if inline_line {
+                    nested_heights.fold(0.0f64, f64::max)
+                } else {
+                    nested_heights.sum::<f64>()
+                };
                 if nested_h <= 0.0 {
                     0.0
                 } else {
@@ -5873,17 +5951,35 @@ impl LayoutEngine {
             // 중첩 표 포함 문단(atomic) — line_count==0 또는 has_table_in_para
             let has_table_in_para = para.controls.iter().any(|c| matches!(c, Control::Table(_)));
             if line_count == 0 || has_table_in_para {
-                let nested_h: f64 = para
-                    .controls
-                    .iter()
-                    .map(|ctrl| {
-                        if let Control::Table(t) = ctrl {
-                            self.calc_nested_table_height(t, styles)
-                        } else {
-                            0.0
-                        }
-                    })
-                    .sum();
+                let nested_heights = para.controls.iter().map(|ctrl| {
+                    if let Control::Table(t) = ctrl {
+                        self.calc_nested_table_height(t, styles)
+                    } else {
+                        0.0
+                    }
+                });
+                let shared_line = self.profile.get().native_hwpx_cell_margin()
+                    && cell.text_direction == 0
+                    && cell.line_wrap == crate::model::table::CellLineWrap::Break
+                    && comp.lines.len() == 1
+                    && comp.tac_controls.len() >= 2
+                    && crate::renderer::composer::fresh_adjacent_tac_tables_fit(
+                        para,
+                        hwpunit_to_px(
+                            comp.lines
+                                .first()
+                                .map(|line| line.segment_width)
+                                .unwrap_or(0),
+                            self.dpi,
+                        ),
+                        styles,
+                        self.dpi,
+                    );
+                let nested_h = if shared_line {
+                    nested_heights.fold(0.0f64, f64::max)
+                } else {
+                    nested_heights.sum::<f64>()
+                };
                 let para_h = if line_count == 0 {
                     let h = if nested_h > 0.0 {
                         nested_h
@@ -6070,6 +6166,9 @@ impl LayoutEngine {
                     styles,
                     self.profile.get().native_hwpx_cell_margin(),
                     cell.line_wrap,
+                    cell.text_direction,
+                    true,
+                    self.dpi,
                 );
                 // [#2279 axis A] 종전에는 comp.lines 빈 문단을 통째 skip 해 (a) 2단계
                 // 중첩 표(빈 문단 소속)와 (b) 빈 문단 줄박스가 유닛에서 누락됐다 —
@@ -6077,17 +6176,29 @@ impl LayoutEngine {
                 // 933px vs mt·한글 ~1402px 의 -448 주성분. 중첩 표는
                 // calc_nested_table_height(행합+cs+outer margin, 측정 단일 출처),
                 // 빈 문단은 #2169 em 줄박스 규칙으로 유닛화한다.
-                let nested_h: f64 = para
-                    .controls
-                    .iter()
-                    .map(|ctrl| {
-                        if let Control::Table(t) = ctrl {
-                            self.calc_nested_table_height(t, styles)
-                        } else {
-                            0.0
-                        }
-                    })
-                    .sum();
+                let nested_heights = para.controls.iter().map(|ctrl| {
+                    if let Control::Table(t) = ctrl {
+                        self.calc_nested_table_height(t, styles)
+                    } else {
+                        0.0
+                    }
+                });
+                let shared_line = self.profile.get().native_hwpx_cell_margin()
+                    && cell.text_direction == 0
+                    && cell.line_wrap == crate::model::table::CellLineWrap::Break
+                    && comp.lines.len() == 1
+                    && comp.tac_controls.len() >= 2
+                    && crate::renderer::composer::fresh_adjacent_tac_tables_fit(
+                        para,
+                        inner_width,
+                        styles,
+                        self.dpi,
+                    );
+                let nested_h = if shared_line {
+                    nested_heights.fold(0.0f64, f64::max)
+                } else {
+                    nested_heights.sum::<f64>()
+                };
                 let empty_line_box = if comp.lines.is_empty()
                     && nested_h <= 0.0
                     && para.line_segs.is_empty()
@@ -6237,6 +6348,9 @@ impl LayoutEngine {
                             styles,
                             self.profile.get().native_hwpx_cell_margin(),
                             cell.line_wrap,
+                            cell.text_direction,
+                            true,
+                            self.dpi,
                         );
                         let nctl = para.controls.len();
                         eprintln!(
@@ -6822,6 +6936,9 @@ impl LayoutEngine {
                 styles,
                 self.profile.get().native_hwpx_cell_margin(),
                 cell.line_wrap,
+                cell.text_direction,
+                true,
+                self.dpi,
             );
             // [#2291] 부실 저장(ls==1 인데 실폭 초과) 문단 재분할 — 가로쓰기 셀 한정.
             if cell.text_direction == 0
@@ -7499,22 +7616,33 @@ impl LayoutEngine {
             }
             if line_count == 0 || has_table_in_para {
                 // 중첩 표/빈 문단 — atomic 유닛 1개.
-                let nested_h: f64 = p
-                    .controls
-                    .iter()
-                    .map(|ctrl| {
-                        if let Control::Table(t) = ctrl {
-                            self.calc_nested_table_height(t, styles)
-                                + if is_last_para {
-                                    para_relative_float_table_lead(t, self.dpi)
-                                } else {
-                                    0.0
-                                }
-                        } else {
-                            0.0
-                        }
-                    })
-                    .sum();
+                let nested_heights = p.controls.iter().map(|ctrl| {
+                    if let Control::Table(t) = ctrl {
+                        self.calc_nested_table_height(t, styles)
+                            + if is_last_para {
+                                para_relative_float_table_lead(t, self.dpi)
+                            } else {
+                                0.0
+                            }
+                    } else {
+                        0.0
+                    }
+                });
+                let shared_line = self.profile.get().native_hwpx_cell_margin()
+                    && cell.text_direction == 0
+                    && cell.line_wrap == crate::model::table::CellLineWrap::Break
+                    && comp.lines.len() == 1
+                    && crate::renderer::composer::fresh_adjacent_tac_tables_fit(
+                        p,
+                        inner_width,
+                        styles,
+                        self.dpi,
+                    );
+                let nested_h = if shared_line {
+                    nested_heights.fold(0.0f64, f64::max)
+                } else {
+                    nested_heights.sum::<f64>()
+                };
                 let para_h = if collapse_empty_rowbreak_spacer {
                     0.0
                 } else if line_count == 0 {
@@ -11008,7 +11136,7 @@ mod row_cut_tests {
         let (table, h_edges, v_edges, row_col_x, row_y) = hwpx_outer_border_fixture();
         let mut tree = PageRenderTree::new(0, 800.0, 1100.0);
         let nodes = hancom_hwpx_table_outer_border_nodes(
-            &mut tree, &table, true, 0, &h_edges, &v_edges, &row_col_x, &row_y, 10.0, 10.0,
+            &mut tree, &table, true, 0, &h_edges, &v_edges, &row_col_x, &row_y, 10.0, 10.0, None,
         );
 
         assert_eq!(nodes.len(), 4, "one merged rule per outer edge");
@@ -11025,7 +11153,7 @@ mod row_cut_tests {
         let (table, h_edges, v_edges, row_col_x, row_y) = hwpx_outer_border_fixture();
         let mut tree = PageRenderTree::new(0, 800.0, 1100.0);
         let nodes = hancom_hwpx_table_outer_border_nodes(
-            &mut tree, &table, false, 0, &h_edges, &v_edges, &row_col_x, &row_y, 10.0, 10.0,
+            &mut tree, &table, false, 0, &h_edges, &v_edges, &row_col_x, &row_y, 10.0, 10.0, None,
         );
 
         assert!(nodes.is_empty());

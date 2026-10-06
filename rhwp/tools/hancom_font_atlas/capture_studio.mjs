@@ -81,6 +81,17 @@ try {
         }
         imports.push({ path: fontPath, ...report });
       }
+      const runtimeFontMetrics = await page.evaluate(async (hasImports) => {
+        // Match the real file-import UI: register imported advances and refresh layout.
+        if (hasImports) window.__eventBus.emit('font-files-imported');
+        await document.fonts.ready;
+        const report = window.__wasm.getRuntimeFontMetricsApi()?.report?.();
+        const metrics = report ? JSON.parse(report) : null;
+        if (hasImports && (!Array.isArray(metrics) || metrics.length === 0)) {
+          throw new Error('Imported font metrics were not registered by the Studio UI lifecycle');
+        }
+        return metrics;
+      }, imports.length > 0);
       const source = readFileSync(doc.source).toString('base64');
       const opened = await page.evaluate(async ({ id, source }) => {
         const requestId = `font-atlas-${id}`;
@@ -113,7 +124,7 @@ try {
         writeFileSync(file, Buffer.from(shot.png.split(',')[1], 'base64'));
         captures.push({ file, width: shot.width, height: shot.height });
       }
-      results[id] = { source: doc.source, imports, pageCount, captures };
+      results[id] = { source: doc.source, imports, runtimeFontMetrics, pageCount, captures };
       console.log(`${id}: ${pageCount} pages, ${imports.flatMap(item => item.imported).length}/${fontPaths.length} faces imported`);
     } finally {
       await page.close();
