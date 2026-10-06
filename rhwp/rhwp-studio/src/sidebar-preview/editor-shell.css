@@ -27,4 +27,3 @@
   .preview-editor #scroll-container { padding: 18px 12px 40px; }
   .editor-fixture-page { min-height: 760px; padding: 38px 32px; }
 }
-:root[data-theme-effective='dark'] .editor-fixture-page { filter: brightness(0.86); }
