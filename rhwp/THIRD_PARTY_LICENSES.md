@@ -101,7 +101,7 @@ rhwp 프로젝트가 사용하는 서드파티 라이브러리 및 리소스의 
 | 패키지 | Lock 버전 | 라이선스 | 용도 |
 |--------|-----------|---------|------|
 | @browserbasehq/stagehand | 4.0.2 | MIT | Browserbase 원격 브라우저 sidecar SDK |
-| @modelcontextprotocol/sdk | 1.30.0 | MIT | 에이전트·브라우저 MCP 서버/클라이언트 |
+| @modelcontextprotocol/sdk | 1.31.0 | MIT | 에이전트·브라우저 MCP 서버/클라이언트 |
 | ws | 8.21.3 | MIT | 로컬 hub WebSocket transport |
 | zod | 4.4.3 | MIT | MCP 도구 입력 검증 |
 
