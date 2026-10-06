@@ -118,6 +118,21 @@ test('Claude native options expose AskUserQuestion in direct, plan, and question
   }
 });
 
+test('Claude plan mode lets hub-gated rhwp tools through the permission prompt', async () => {
+  const sdk = buildClaudeSdkOptions(
+    { ...baseOpts, workflow: 'plan', phase: 'planning' },
+    '00000000-0000-4000-8000-000000000000',
+    false,
+    new AbortController(),
+  );
+  const context = { signal: new AbortController().signal, toolUseID: 'toolu-plan', requestId: 'permission-plan' };
+  const input = { title: 'Plan' };
+  for (const tool of ['mcp__rhwp__present_implementation_plan', 'mcp__rhwp__update_todos']) {
+    assert.deepEqual(await sdk.canUseTool(tool, input, context), { behavior: 'allow', updatedInput: input });
+  }
+  assert.equal((await sdk.canUseTool('Write', {}, context)).behavior, 'deny');
+});
+
 test('Claude denies AskUserQuestion from SDK subagents without invoking the host', async () => {
   let calls = 0;
   const handler = createClaudeAskUserQuestionPermissionHandler({
