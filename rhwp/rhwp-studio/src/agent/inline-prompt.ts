@@ -224,9 +224,9 @@ class InlinePromptController {
       }));
     }
     this.unsubs.push(eventBus.on('document-view-changed', () => this.hideAll()));
-    // 에이전트가 문서를 잡는 순간 칩·상자를 걷는다. 보내는 중인 상자는 send 가 닫는다.
+    // 에이전트가 문서를 잡는 순간 칩을 걷는다. 열린 상자는 이미 굳힌 컨텍스트와 초안을 지킨다.
     this.unsubs.push(eventBus.on('command-state-changed', () => {
-      if (this.state !== 'hidden' && !this.sending && this.deps.inputHandler.isUserEditingLocked()) this.hideAll();
+      if (this.state === 'chip' && this.deps.inputHandler.isUserEditingLocked()) this.hideAll();
     }));
     for (const name of ['zoom-changed', 'viewport-resize', 'viewport-inset-changed', 'page-layout-changed']) {
       this.unsubs.push(eventBus.on(name, () => this.reposition()));

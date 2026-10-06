@@ -4465,6 +4465,7 @@ export class InputHandler {
     this.flushDeferredPaginationIfNeeded('before-deactivate', false);
     this.cancelPicturePreviewDrags();
     this.active = false;
+    this.lockedUserSelection = null;
     // 문서 교체와 mutation renderer 선택이 경합해 layout 완료 이벤트가 생략돼도
     // 이전 문서의 one-shot reveal 예약을 다음 문서로 넘기지 않는다.
     this.caretLayoutReveal.clear();
