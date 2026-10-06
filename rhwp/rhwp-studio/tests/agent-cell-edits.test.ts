@@ -193,8 +193,10 @@ function makeExecutor(cursor?: Record<string, unknown>) {
     hasTemplateMutation: () => false,
   };
   const inputHandler = {
-    getCursorPosition: () => cursor ?? { sectionIndex: 0, paragraphIndex: 0, charOffset: 0 },
-    getSelection: () => null,
+    getUserSelectionContext: () => ({
+      cursor: cursor ?? { sectionIndex: 0, paragraphIndex: 0, charOffset: 0 },
+      selection: null,
+    }),
   };
   const executor = new AgentToolExecutor({
     wasm: wasm as never,

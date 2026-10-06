@@ -505,6 +505,7 @@ function setAgentEditingLease(lease: AgentEditingLease): void {
   }
   inputHandler?.setUserEditingLocked(agentUserEditingLocked());
   toolbar?.setEnabled(wasm.pageCount > 0 && !documentReadOnly && !agentUserEditingLocked());
+  scheduleCharacterStatus();
   eventBus.emit('command-state-changed');
 }
 

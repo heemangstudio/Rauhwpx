@@ -520,6 +520,11 @@ export class InputHandler {
   private readOnly = false;
   /** 활성 에이전트 턴 동안 사람의 입력만 막고 자율 편집 경로는 열어 둔다. */
   private userEditingLocked = false;
+  /** 잠금 직전 사용자 선택. 화면에서는 지우고 에이전트의 get_selection 에만 남긴다. */
+  private lockedUserSelection: {
+    cursor: DocumentPosition;
+    selection: { start: DocumentPosition; end: DocumentPosition } | null;
+  } | null = null;
   private get isComposing() { return this.imeSession.isComposing; }
   private compositionAnchor: DocumentPosition | null = null;
   /** 조합 시작 시점의 exact 좌표. 조합 갱신마다 같은 anchor를 다시 탐색하지 않는다. */
@@ -4460,6 +4465,7 @@ export class InputHandler {
     this.flushDeferredPaginationIfNeeded('before-deactivate', false);
     this.cancelPicturePreviewDrags();
     this.active = false;
+    this.lockedUserSelection = null;
     // 문서 교체와 mutation renderer 선택이 경합해 layout 완료 이벤트가 생략돼도
     // 이전 문서의 one-shot reveal 예약을 다음 문서로 넘기지 않는다.
     this.caretLayoutReveal.clear();
@@ -4649,8 +4655,47 @@ export class InputHandler {
       this.resetTextareaBuffer();
       this.clearPendingCharFormat();
       this.container.style.cursor = '';
+      this.lockedUserSelection = {
+        cursor: this.cursor.getPosition(),
+        selection: this.cursor.getSelectionOrdered(),
+      };
+      this.clearUserSelectionForLock();
+    } else {
+      this.lockedUserSelection = null;
     }
     this.eventBus.emit('command-state-changed');
+  }
+
+  /** 잠긴 동안 사용자가 문서 선택을 붙잡고 있지 않도록 모든 선택 표시를 걷어낸다. */
+  private clearUserSelectionForLock(): void {
+    if (this.cursor.isInPictureObjectSelection()) {
+      this.cursor.exitPictureObjectSelection();
+      this.pictureObjectRenderer?.clear();
+      this.eventBus.emit('picture-object-selection-changed', false);
+    }
+    if (this.cursor.isInTableObjectSelection()) {
+      this.cursor.exitTableObjectSelection();
+      this.tableObjectRenderer?.clear();
+      this.eventBus.emit('table-object-selection-changed', false);
+    }
+    if (this.cursor.isInCellSelectionMode()) {
+      this.cursor.exitCellSelectionMode();
+      this.cellSelectionRenderer?.clear();
+      this.eventBus.emit('cell-selection-changed');
+    }
+    this.cursor.exitBlockSelectionMode();
+    this.selectionRenderer.clear();
+    this.caret.hide();
+    this.emitCursorFormatState();
+  }
+
+  /** 에이전트에게 보여 줄 사용자 커서·선택. 잠금 중에는 잠그기 직전 값을 돌려준다. */
+  getUserSelectionContext(): {
+    cursor: DocumentPosition;
+    selection: { start: DocumentPosition; end: DocumentPosition } | null;
+  } {
+    return this.lockedUserSelection
+      ?? { cursor: this.cursor.getPosition(), selection: this.cursor.getSelectionOrdered() };
   }
 
   /** 양식 모드인가? */

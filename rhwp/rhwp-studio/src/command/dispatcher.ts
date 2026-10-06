@@ -34,9 +34,16 @@ const READ_ONLY_ALLOWED_IDS = new Set([
   'file:print',
 ]);
 
+/** 에이전트가 문서를 잡은 동안에는 새 선택도 만들 수 없다. */
+const AGENT_LOCK_ALLOWED_IDS = new Set([
+  'edit:copy',
+  'file:print',
+]);
+
 function isBlockedByDocumentEditLock(commandId: string, ctx: EditorContext): boolean {
   if (ctx.readOnly !== true && ctx.userEditingLocked !== true) return false;
-  return !READ_ONLY_ALLOWED_IDS.has(commandId)
+  const allowed = ctx.userEditingLocked === true ? AGENT_LOCK_ALLOWED_IDS : READ_ONLY_ALLOWED_IDS;
+  return !allowed.has(commandId)
     && !commandId.startsWith('view:')
     && !commandId.startsWith('help:');
 }

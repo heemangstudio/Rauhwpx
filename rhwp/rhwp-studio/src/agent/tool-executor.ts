@@ -2648,8 +2648,7 @@ export class AgentToolExecutor {
   private getSelection(): unknown {
     this.requireDocLoaded();
     const { inputHandler, wasm } = this.deps;
-    const cursor = inputHandler.getCursorPosition();
-    const sel = inputHandler.getSelection();
+    const { cursor, selection: sel } = inputHandler.getUserSelectionContext();
     // 커서/선택의 charOffset 은 논리 오프셋(텍스트 문자 + 앞선 인라인 컨트롤 1개당 +1)이다.
     // 다른 툴은 텍스트 오프셋을 쓰므로 본문·셀 문단 모두 텍스트 오프셋으로 변환해 반환한다.
     interface SelPoint {

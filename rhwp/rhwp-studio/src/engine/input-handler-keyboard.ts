@@ -659,11 +659,13 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
   if (this.readOnly || this.userEditingLocked) {
     const key = e.key.toLowerCase();
     const commandId = matchShortcut(e, defaultShortcuts);
+    const selecting = commandId === 'edit:select-all' || commandId === 'edit:find';
     const primaryShortcut = commandId?.startsWith('view:')
-      || (commandId && ['edit:select-all', 'edit:find', 'file:print'].includes(commandId))
+      || commandId === 'file:print'
+      || (selecting && !this.userEditingLocked)
       || ((e.ctrlKey || e.metaKey) && !e.altKey && (key === 'c' || e.code === 'KeyC'));
-    const navigation = ['arrowleft', 'arrowright', 'arrowup', 'arrowdown', 'home', 'end', 'pageup', 'pagedown', 'escape']
-      .includes(key);
+    const navigation = key === 'escape' || (!this.userEditingLocked
+      && ['arrowleft', 'arrowright', 'arrowup', 'arrowdown', 'home', 'end', 'pageup', 'pagedown'].includes(key));
     if (!primaryShortcut && !navigation) {
       e.preventDefault();
       this.resetTextareaBuffer?.();
