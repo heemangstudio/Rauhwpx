@@ -3942,6 +3942,13 @@ impl DocumentCore {
     /// 측정 통일(B). `paginate_pass` 의 `force_break_before` 훅과 `LayoutOverflow` 의
     /// section_index/is_first_in_column 계측은 측정 통일 작업의 진단·후속용으로 유지한다.
     pub(crate) fn paginate(&mut self) {
+        self.paginate_with_root_refresh_tables(&std::collections::HashSet::new());
+    }
+
+    pub(crate) fn paginate_with_root_refresh_tables(
+        &mut self,
+        root_refresh_tables: &std::collections::HashSet<u32>,
+    ) {
         let fonts = self.collect_resolved_shaping_fonts();
         let has_embedded_hft = self
             .document
@@ -3965,23 +3972,30 @@ impl DocumentCore {
                     self.document.layout_profile().hwp3_layout(),
                 );
             }
-            self.paginate_with_resolved_shaping_fonts()
+            self.paginate_with_resolved_shaping_fonts(root_refresh_tables)
         });
     }
 
-    fn paginate_with_resolved_shaping_fonts(&mut self) {
+    fn paginate_with_resolved_shaping_fonts(
+        &mut self,
+        root_refresh_tables: &std::collections::HashSet<u32>,
+    ) {
         self.header_footer_preview_tree_cache.borrow_mut().take();
         self.pending_pagination_job = None;
         let sec_count = self.document.sections.len().max(1);
         let empty_breaks: Vec<std::collections::HashSet<usize>> =
             vec![std::collections::HashSet::new(); sec_count];
-        self.paginate_pass(&empty_breaks);
+        self.paginate_pass(&empty_breaks, root_refresh_tables);
         // [#2424] full path가 최신 dirty state를 반영했으므로 deferred target을 소비한다.
         // 이후 resumable job도 shadow result commit 성공 시 같은 수명 규칙을 적용한다.
         self.deferred_pagination_descriptor = None;
     }
 
-    fn paginate_pass(&mut self, force_breaks: &[std::collections::HashSet<usize>]) {
+    fn paginate_pass(
+        &mut self,
+        force_breaks: &[std::collections::HashSet<usize>],
+        root_refresh_tables: &std::collections::HashSet<u32>,
+    ) {
         #[cfg(not(target_arch = "wasm32"))]
         let issue2424_profile_enabled =
             std::env::var("RHWP_2424_PROFILE").is_ok_and(|value| !value.is_empty() && value != "0");
@@ -4029,6 +4043,7 @@ impl DocumentCore {
             .with_hwp3_variant(profile.hwp3_layout())
             .with_hwpx_cell_spacing(profile.hwpx_stored_layout() || profile.hwp5_origin_hwpx())
             .with_native_hwpx_cell_margin(profile.native_hwpx_cell_margin())
+            .with_root_refresh_tables(root_refresh_tables)
             .with_hwp3_origin_flow_spacing_before(hwp3_origin_flow_spacing_before)
             .with_session_edited(profile.session_edited())
             .with_render_normalization(std::sync::Arc::clone(&self.render_normalization.overlay));

@@ -3306,12 +3306,90 @@ impl DocumentCore {
         }
     }
 
+    // 새로고침 전에 깨끗했던 유일한 루트 소유자만 기록한다. 중첩/캡션 등에서 같은
+    // ID가 재사용되면 캐시 무효화와 실제 편집을 구별할 수 없으므로 허용하지 않는다.
+    fn clean_root_refresh_tables(&self) -> HashSet<u32> {
+        fn caption(caption: &Option<Caption>, counts: &mut HashMap<u32, usize>) {
+            if let Some(caption) = caption {
+                paragraphs(&caption.paragraphs, counts);
+            }
+        }
+        fn shape(value: &ShapeObject, counts: &mut HashMap<u32, usize>) {
+            if let Some(drawing) = value.drawing() {
+                if let Some(text) = &drawing.text_box {
+                    paragraphs(&text.paragraphs, counts);
+                }
+                caption(&drawing.caption, counts);
+            }
+            match value {
+                ShapeObject::Group(group) => {
+                    caption(&group.caption, counts);
+                    for child in &group.children {
+                        shape(child, counts);
+                    }
+                }
+                ShapeObject::Picture(picture) => caption(&picture.caption, counts),
+                ShapeObject::Chart(chart) => caption(&chart.caption, counts),
+                ShapeObject::Ole(ole) => caption(&ole.caption, counts),
+                _ => {}
+            }
+        }
+        fn paragraphs(paras: &[Paragraph], counts: &mut HashMap<u32, usize>) {
+            for para in paras {
+                for control in &para.controls {
+                    match control {
+                        Control::Table(table) => {
+                            *counts.entry(table.common.instance_id).or_default() += 1;
+                            for cell in &table.cells {
+                                paragraphs(&cell.paragraphs, counts);
+                            }
+                            caption(&table.caption, counts);
+                        }
+                        Control::Shape(value) => shape(value, counts),
+                        Control::Picture(picture) => caption(&picture.caption, counts),
+                        Control::Header(header) => paragraphs(&header.paragraphs, counts),
+                        Control::Footer(footer) => paragraphs(&footer.paragraphs, counts),
+                        Control::Footnote(note) => paragraphs(&note.paragraphs, counts),
+                        Control::Endnote(note) => paragraphs(&note.paragraphs, counts),
+                        Control::HiddenComment(comment) => paragraphs(&comment.paragraphs, counts),
+                        Control::Field(field) => paragraphs(&field.memo_paragraphs, counts),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        if !self.document.layout_profile().native_hwpx_cell_margin() {
+            return HashSet::new();
+        }
+        let mut counts = HashMap::new();
+        for section in &self.document.sections {
+            paragraphs(&section.paragraphs, &mut counts);
+            for master in &section.section_def.master_pages {
+                paragraphs(&master.paragraphs, &mut counts);
+            }
+        }
+        self.document
+            .sections
+            .iter()
+            .flat_map(|section| &section.paragraphs)
+            .flat_map(|para| &para.controls)
+            .filter_map(|control| {
+                let Control::Table(table) = control else {
+                    return None;
+                };
+                let id = table.common.instance_id;
+                (!table.dirty && id > 0 && counts.get(&id) == Some(&1)).then_some(id)
+            })
+            .collect()
+    }
+
     /// 현재 Document IR은 건드리지 않고, 그로부터 파생된 모든 조판 캐시를 다시 만든다.
     ///
     /// 여러 저수준 편집을 연달아 수행하는 호출자는 각 단계의 증분 캐시를 최종 결과로
     /// 노출하면 안 된다. 특히 에이전트 미리보기처럼 split/delete/format을 한 논리
     /// 연산으로 묶는 경로는 이 메서드로 연산 경계에서 단 한 번 권위 조판을 확정한다.
     pub fn refresh_layout_native(&mut self) {
+        let root_refresh_tables = self.clean_root_refresh_tables();
         // 폰트 등록 변화 후 새로고침이 캐시된 폭을 재사용하지 않도록 비운다.
         crate::renderer::layout::clear_measure_caches();
         self.render_normalization.sections.clear();
@@ -3348,7 +3426,7 @@ impl DocumentCore {
         self.para_offset = vec![0; section_count];
         self.invalidate_page_tree_cache();
         self.overflow_links_cache.borrow_mut().clear();
-        self.paginate();
+        self.paginate_with_root_refresh_tables(&root_refresh_tables);
     }
 
     /// 지정 ID의 스냅샷으로 Document를 복원한다.

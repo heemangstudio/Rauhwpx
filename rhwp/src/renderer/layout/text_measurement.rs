@@ -2210,9 +2210,9 @@ fn measure_char_width_with_policy(
                     .map(|advance| f64::from(advance.units) / f64::from(advance.em_size))
             });
         if let Some(mut em_advance) = actual_advance {
-            // 실제 face의 곡선 큰따옴표 advance는 보존한다. 나머지 구두점의
+            // 실제 face의 곡선 큰따옴표와 낫표 advance는 보존한다. 나머지 구두점의
             // 기존 반각 정책과 내장/미등록 face 경로는 그대로 유지한다.
-            if !matches!(c, '\u{201c}' | '\u{201d}')
+            if !matches!(c, '\u{201c}' | '\u{201d}' | '\u{300c}' | '\u{300d}')
                 && (matches!(c, '\u{2018}'..='\u{2027}') || is_halfwidth_cjk_quote(c))
                 && em_advance >= 1.0
             {
@@ -4143,7 +4143,7 @@ mod tests {
     }
 
     #[test]
-    fn registered_double_quote_advances_follow_font_records() {
+    fn registered_quote_advances_follow_font_records() {
         use crate::renderer::runtime_font_metrics as runtime;
         let mut bytes = std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -4168,20 +4168,60 @@ mod tests {
             let offset = hmtx_offset + usize::from(glyph.min(metrics_count - 1)) * 4;
             bytes[offset..offset + 2].copy_from_slice(&em.to_be_bytes());
         }
+        // 기존 quote glyph에 Unicode 낫표를 연결하는 작은 fixture cmap을 덧붙인다.
+        // glyph 자체와 UPEM에서 유도한 hmtx 외의 폰트 데이터는 변경하지 않는다.
+        let mappings = [
+            ('‘', glyphs[0]),
+            ('’', glyphs[1]),
+            ('“', glyphs[0]),
+            ('”', glyphs[1]),
+            ('「', glyphs[0]),
+            ('」', glyphs[1]),
+        ];
+        let cmap = (0..usize::from(table_count))
+            .map(|index| 12 + 16 * index)
+            .find(|&offset| &bytes[offset..offset + 4] == b"cmap")
+            .unwrap();
+        let mut replacement = Vec::new();
+        for value in [0u16, 1, 0, 4] {
+            replacement.extend_from_slice(&value.to_be_bytes());
+        }
+        replacement.extend_from_slice(&12u32.to_be_bytes());
+        replacement.extend_from_slice(&12u16.to_be_bytes());
+        replacement.extend_from_slice(&0u16.to_be_bytes());
+        for value in [16 + 12 * mappings.len() as u32, 0, mappings.len() as u32] {
+            replacement.extend_from_slice(&value.to_be_bytes());
+        }
+        for (character, glyph) in mappings {
+            replacement.extend_from_slice(&u32::from(character).to_be_bytes());
+            replacement.extend_from_slice(&u32::from(character).to_be_bytes());
+            replacement.extend_from_slice(&u32::from(glyph).to_be_bytes());
+        }
+        let offset = u32::try_from(bytes.len()).unwrap();
+        let length = u32::try_from(replacement.len()).unwrap();
+        bytes[cmap + 8..cmap + 12].copy_from_slice(&offset.to_be_bytes());
+        bytes[cmap + 12..cmap + 16].copy_from_slice(&length.to_be_bytes());
+        bytes.extend_from_slice(&replacement);
         let family = "Noto Sans KR";
         let size = 24.0;
         let measure =
             |policy, c| measure_char_width_with_policy(family, false, false, c, size, policy);
         runtime::clear();
         let windows = ['“', '”'].map(|c| measure(FontMetricsPolicy::HancomWindows, c));
-        let unregistered = ['“', '”'].map(|c| measure(FontMetricsPolicy::HcrDeclared, c));
+        let unregistered =
+            ['“', '”', '「', '」'].map(|c| measure(FontMetricsPolicy::HcrDeclared, c));
         runtime::register(&bytes, &[family.to_owned()], false, false).unwrap();
-        for (index, c) in ['“', '”'].into_iter().enumerate() {
+        for (index, c) in ['“', '”', '「', '」'].into_iter().enumerate() {
             assert_eq!(measure(FontMetricsPolicy::HcrDeclared, c), Some(size));
-            assert_eq!(measure(FontMetricsPolicy::HancomWindows, c), windows[index]);
+            if index < windows.len() {
+                assert_eq!(measure(FontMetricsPolicy::HancomWindows, c), windows[index]);
+            }
+        }
+        for c in ['‘', '’'] {
+            assert_eq!(measure(FontMetricsPolicy::HcrDeclared, c), Some(size / 2.0));
         }
         runtime::clear();
-        for (index, c) in ['“', '”'].into_iter().enumerate() {
+        for (index, c) in ['“', '”', '「', '」'].into_iter().enumerate() {
             assert_eq!(
                 measure(FontMetricsPolicy::HcrDeclared, c),
                 unregistered[index]
@@ -4245,6 +4285,56 @@ mod tests {
             assert_eq!(
                 measure(FontMetricsPolicy::HcrDeclared, c),
                 legacy_mac[index]
+            );
+        }
+    }
+
+    #[test]
+    fn registered_corner_quotes_preserve_face_advances_only_in_mac_policy() {
+        use crate::renderer::runtime_font_metrics as runtime;
+        let Ok(bytes) = std::fs::read(
+            "/Applications/Hancom Office HWP.app/Contents/Resources/Hnc/Shared/TTF/Install/GulimChe.TTF",
+        ) else {
+            // 선택적 설치 폰트가 없는 환경도 공개 fixture 등록 테스트를 수행한다.
+            return;
+        };
+        let face = ttf_parser::Face::parse(&bytes, 0).unwrap();
+        let family = "굴림체";
+        let size = 16.0;
+        let measure =
+            |policy, c| measure_char_width_with_policy(family, false, false, c, size, policy);
+        let characters = ['「', '」', '"', '‘', '’'];
+        runtime::clear();
+        let windows = characters.map(|c| measure(FontMetricsPolicy::HancomWindows, c));
+        let unregistered = characters.map(|c| measure(FontMetricsPolicy::HcrDeclared, c));
+        runtime::register(&bytes, &[family.to_owned()], false, false).unwrap();
+        for c in ['「', '」', '"'] {
+            let glyph = face.glyph_index(c).unwrap();
+            let units = face.glyph_hor_advance(glyph).unwrap();
+            let expected =
+                quantize_hwp_px(f64::from(units) * size / f64::from(face.units_per_em()));
+            if c != '"' {
+                assert!(units >= face.units_per_em());
+            }
+            assert_eq!(measure(FontMetricsPolicy::HcrDeclared, c), Some(expected));
+        }
+        for (index, c) in characters.into_iter().enumerate() {
+            assert_eq!(measure(FontMetricsPolicy::HancomWindows, c), windows[index]);
+            if matches!(c, '‘' | '’') {
+                let glyph = face.glyph_index(c).unwrap();
+                let advance = f64::from(face.glyph_hor_advance(glyph).unwrap())
+                    / f64::from(face.units_per_em());
+                assert_eq!(
+                    measure(FontMetricsPolicy::HcrDeclared, c),
+                    Some(quantize_hwp_px(advance.min(0.5) * size))
+                );
+            }
+        }
+        runtime::clear();
+        for (index, c) in characters.into_iter().enumerate() {
+            assert_eq!(
+                measure(FontMetricsPolicy::HcrDeclared, c),
+                unregistered[index]
             );
         }
     }
