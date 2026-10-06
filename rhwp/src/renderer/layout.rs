@@ -7627,7 +7627,26 @@ impl LayoutEngine {
             let alignment = para_style.map(|s| s.alignment).unwrap_or(Alignment::Left);
             let margin_left = para_style.map(|s| s.margin_left).unwrap_or(0.0);
             let indent = para_style.map(|s| s.indent).unwrap_or(0.0);
-            let effective_margin = if indent > 0.0 {
+            // 독립된 문단 기준 float는 본문 첫 줄 들여쓰기와 별도 기준을 쓴다.
+            let float_ignores_first_indent = self.profile.get().native_hwpx_cell_margin()
+                && paragraphs
+                    .iter()
+                    .flat_map(|p| &p.controls)
+                    .filter_map(|control| match control {
+                        Control::SectionDef(def) => Some(def.text_direction),
+                        _ => None,
+                    })
+                    .fold((false, true), |(_, all), direction| {
+                        (true, all && direction == 0)
+                    })
+                    == (true, true)
+                && styles.font_metrics_policy
+                    == crate::model::provenance::FontMetricsPolicy::HcrDeclared
+                && !t.common.treat_as_char
+                && t.common.flow_with_text
+                && t.common.text_wrap == crate::model::shape::TextWrap::TopAndBottom
+                && t.common.horz_rel_to == crate::model::shape::HorzRelTo::Para;
+            let effective_margin = if indent > 0.0 && !float_ignores_first_indent {
                 margin_left + indent
             } else {
                 margin_left
