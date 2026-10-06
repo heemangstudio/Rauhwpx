@@ -346,11 +346,6 @@
   background: var(--doc-paper);
 }
 
-/* 어두운 테마에서 흰 용지는 눈부시다 — 색은 그대로 두고 밝기만 한 단 낮춘다. */
-:root[data-theme-effective='dark'] #scroll-content canvas {
-  filter: brightness(0.86);
-}
-
 #scroll-content .page-grid-overlay {
   position: absolute;
   mix-blend-mode: multiply;
