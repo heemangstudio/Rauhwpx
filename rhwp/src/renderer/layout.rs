@@ -2393,6 +2393,9 @@ pub struct LayoutEngine {
     /// `cell_units_cache` 와 동일 조판 경계에서 clear 한다.
     table_nested_text_flag_cache: std::cell::RefCell<std::collections::HashMap<usize, bool>>,
     resolved_shaping_fonts: std::cell::RefCell<Vec<ResolvedShapingFont>>,
+    /// 본문 단 렌더 동안만 알려진 가로쓰기/비격자 구역을 증명한다.
+    /// 중첩 셀은 상속하고 머리말/바탕쪽/문맥 미상 호출은 기존 폭 정책을 유지한다.
+    plain_distribute_section: std::cell::Cell<bool>,
     /// Issue #2214 test-only: cache miss가 실제 table-wide scan으로 이어진 횟수.
     #[cfg(test)]
     table_nested_text_flag_scan_count: std::cell::Cell<usize>,
@@ -2487,6 +2490,7 @@ impl LayoutEngine {
             cell_units_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             table_nested_text_flag_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             resolved_shaping_fonts: std::cell::RefCell::new(Vec::new()),
+            plain_distribute_section: std::cell::Cell::new(false),
             #[cfg(test)]
             table_nested_text_flag_scan_count: std::cell::Cell::new(0),
         }
@@ -5685,6 +5689,22 @@ impl LayoutEngine {
         wrap_around_paras: &[super::pagination::WrapAroundPara],
         body_wide_reserved: &[(usize, f64)],
     ) -> (RenderNode, f64) {
+        let mut section_defs = paragraphs
+            .iter()
+            .flat_map(|para| &para.controls)
+            .filter_map(|ctrl| {
+                if let Control::SectionDef(def) = ctrl {
+                    Some(def)
+                } else {
+                    None
+                }
+            })
+            .peekable();
+        let known_plain_section = section_defs.peek().is_some()
+            && section_defs
+                .all(|def| def.text_direction == 0 && def.line_grid == 0 && def.char_grid == 0);
+        let previous_distribute_section =
+            self.plain_distribute_section.replace(known_plain_section);
         let col_node_id = tree.next_id();
         let mut col_node = RenderNode::new(
             col_node_id,
@@ -6953,6 +6973,8 @@ impl LayoutEngine {
         // 문단 테두리/배경 연속 그룹 병합 렌더링 — #2120 추출
         self.render_para_border_groups(tree, composed, &mut col_node, styles, col_area);
 
+        self.plain_distribute_section
+            .set(previous_distribute_section);
         (col_node, y_offset)
     }
 

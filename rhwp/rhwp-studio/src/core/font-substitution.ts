@@ -11,7 +11,7 @@
  */
 
 import { REGISTERED_FONTS, getDetectedOSFonts, isSubstitutedWebFontRegistered } from './font-loader.ts';
-import { getLocalFontLookupGeneration, repairedLocalFontFamily, resolveLocalFont } from './local-fonts.ts';
+import { getLocalFontLookupGeneration, hasImportedLocalFontFace, repairedLocalFontFamily, resolveLocalFont } from './local-fonts.ts';
 import { equationFontFamilies } from './equation-font.ts';
 
 // 치환 엔트리: [원본폰트, 원본타입, 대체폰트, 대체타입]
@@ -377,6 +377,34 @@ export function prefersHcrOverWebProxy(family: string): boolean {
     && isSubstitutedWebFontRegistered(family);
 }
 
+/** 엔진 hancom_substitute_faces와 같은 후보 순서. 웹 별칭 대신 실제 가져온 face만 선택한다. */
+function importedHancomSubstitute(fontName: string): string | null {
+  let candidates: readonly string[];
+  switch (fontName.trim()) {
+    case '바탕': case 'Batang': case '바탕체': case 'BatangChe':
+    case '궁서': case 'Gungsuh': case '궁서체': case 'GungsuhChe':
+    case '신명 신명조': case '신명 견명조': case '신명 중명조': case '명조': case '새문명조':
+      candidates = ['한컴바탕', 'Haansoft Batang', '함초롬바탕', 'HCR Batang'];
+      break;
+    case 'HY신명조': case '한양신명조':
+      candidates = ['함초롬바탕', 'HCR Batang', '한컴바탕', 'Haansoft Batang'];
+      break;
+    case '돋움': case 'Dotum': case '돋움체': case 'DotumChe':
+    case '굴림': case 'Gulim': case '굴림체': case 'GulimChe':
+      candidates = ['한컴돋움', 'Haansoft Dotum', '함초롬돋움', 'HCR Dotum'];
+      break;
+    default:
+      return null;
+  }
+  for (const candidate of candidates) {
+    const record = resolveLocalFont(candidate);
+    if (record?.source === 'imported' && record.runtimeFamily && hasImportedLocalFontFace(candidate)) {
+      return record.runtimeFamily;
+    }
+  }
+  return null;
+}
+
 function buildFontFamilyChainForDisplay(
   fontName: string,
   altType: number,
@@ -391,6 +419,8 @@ function buildFontFamilyChainForDisplay(
   const localRecord = options.confirmedLocalFonts === undefined
     ? resolveLocalFont(fontName)
     : null;
+  const nativeSubstitute = !localRecord && options.confirmedLocalFonts === undefined
+    && options.includeUnconfirmedOriginal !== true ? importedHancomSubstitute(fontName) : null;
   const originalAllowed =
     options.includeUnconfirmedOriginal === true ||
     (/^(HY신명조|한양신명조)$/.test(fontName) && getDetectedOSFonts().has(fontName)) ||
@@ -402,6 +432,8 @@ function buildFontFamilyChainForDisplay(
       families,
       localRecord.runtimeFamily ?? repairedLocalFontFamily(localRecord) ?? localRecord.family,
     );
+  } else if (nativeSubstitute) {
+    pushUniqueFontFamily(families, nativeSubstitute);
   } else if (originalAllowed) {
     pushUniqueFontFamily(families, fontName);
   }

@@ -1890,6 +1890,62 @@ fn line_trailing_letter_spacing(
     0.0
 }
 
+/// 한 단 정의는 가시 글자/인라인 폭을 만들지 않는다. 활성 다단을 바꾸는 본문
+/// 정의와 그 밖의 제어자는 호출부/필드 검증을 통과하지 않으면 기존 정책을 쓴다.
+fn plain_distribute_controls(para: &Paragraph, allow_single_column_metadata: bool) -> bool {
+    match para.controls.as_slice() {
+        [] => true,
+        [Control::ColumnDef(def)] if allow_single_column_metadata => {
+            def.column_type == crate::model::page::ColumnType::Normal
+                && def.direction == crate::model::page::ColumnDirection::LeftToRight
+                && def.column_count == 1
+                && def.same_width
+                && def.spacing == 0
+                && def.widths.is_empty()
+                && def.gaps.is_empty()
+                && def.separator_type == 0
+        }
+        _ => false,
+    }
+}
+
+/// 비격자 일반 글자 배분은 마지막 가시 글자 뒤 자간을 점유 폭에 넣지 않는다.
+/// native 32fed4의 끝 위치 분기에서 자간을 생략한 뒤 331bdc가 N-1 틈에 배분한다.
+/// 구역/문단 문맥은 호출부에서 검증하며, 음수 배분과 변환/제어 문자 폭은 유지한다.
+fn plain_distribute_used_width(
+    comp_line: &ComposedLine,
+    styles: &ResolvedStyleSet,
+    total_width: f64,
+    available_width: f64,
+    tab_width: f64,
+) -> f64 {
+    if comp_line.runs.iter().any(|run| {
+        run.char_overlap.is_some()
+            || run.footnote_marker.is_some()
+            || run.display_text.is_some()
+            || styles.char_styles.get(run.char_style_id as usize).is_none()
+            || run.text.chars().any(|ch| {
+                ch.is_control()
+                    || ch == '\u{FFFC}'
+                    || matches!(ch as u32, 0x1100..=0x11FF | 0xA960..=0xA97F | 0xD7B0..=0xD7FF)
+            })
+    }) {
+        return total_width;
+    }
+    let trailing_spaces = line_trailing_space_width(comp_line, styles, tab_width);
+    let corrected = total_width - line_trailing_letter_spacing(comp_line, styles, tab_width);
+    if total_width.is_finite()
+        && corrected.is_finite()
+        && total_width - trailing_spaces <= available_width
+        && corrected - trailing_spaces <= available_width
+        && corrected >= 0.0
+    {
+        corrected
+    } else {
+        total_width
+    }
+}
+
 /// 가운데/오른쪽 정렬 폭에서 제외할 줄 끝 여분 폭(px) — 줄 끝 공백과 마지막 글자 뒤
 /// 자간. 한컴은 둘 다 정렬 폭에 넣지 않는다 (hy-001 `과  장 ` 오른쪽 정렬 셀 실측).
 fn line_trailing_space_width(
@@ -4882,6 +4938,29 @@ impl LayoutEngine {
                 .map(|(line, runs)| line.runs[..*runs].iter().map(|r| r.text.len()).sum())
                 .unwrap_or(0);
 
+            let distribution_used_width = if needs_distribute
+                && self.plain_distribute_section.get()
+                && self.profile.get().native_hwpx_cell_margin()
+                && styles.font_metrics_policy
+                    == crate::model::provenance::FontMetricsPolicy::HcrDeclared
+                && para.is_some_and(|p| {
+                    plain_distribute_controls(p, cell_ctx.is_some() || multi_col_width_hu.is_none())
+                })
+                && para_style.is_some_and(|style| style.head_type == HeadType::None)
+                && cell_ctx
+                    .as_ref()
+                    .is_none_or(|ctx| ctx.path.iter().all(|entry| entry.text_direction == 0))
+            {
+                plain_distribute_used_width(
+                    comp_line,
+                    styles,
+                    total_text_width,
+                    spacing_width,
+                    tab_width,
+                )
+            } else {
+                total_text_width
+            };
             let (extra_word_sp, extra_char_sp, extra_dash_sp) = compute_line_extra_spacing(
                 comp_line,
                 styles,
@@ -4893,7 +4972,7 @@ impl LayoutEngine {
                 has_tabs,
                 suppress_cell_overflow_spacing,
                 total_char_count,
-                total_text_width,
+                distribution_used_width,
                 spacing_width,
                 tab_width,
                 natural_leading_spaces,
@@ -9084,6 +9163,258 @@ mod pua_mapping_tests {
         assert_eq!(map_pua_bullet_char('\u{F0090}'), '\u{F0090}');
         assert_eq!(map_pua_bullet_char('\u{F0000}'), '\u{F0000}');
         assert_eq!(map_pua_bullet_char('\u{F00CF}'), '\u{F00CF}');
+    }
+}
+
+#[cfg(test)]
+mod plain_distribution_load_tests {
+    use super::*;
+    use crate::document_core::DocumentCore;
+    use crate::model::document::{Document, Section};
+    use crate::model::paragraph::CharShapeRef;
+    use crate::model::provenance::FontMetricsPolicy;
+    use crate::model::style::{CharShape, ParaShape};
+    use crate::model::table::{Cell, Table};
+
+    fn rendered_label(
+        tracking: i8,
+        in_cell: bool,
+        policy: FontMetricsPolicy,
+        grid: i16,
+        vertical: u8,
+    ) -> (TextStyle, f64) {
+        rendered_label_with_control(tracking, in_cell, policy, grid, vertical, None)
+    }
+
+    fn rendered_label_with_control(
+        tracking: i8,
+        in_cell: bool,
+        policy: FontMetricsPolicy,
+        grid: i16,
+        vertical: u8,
+        control: Option<Control>,
+    ) -> (TextStyle, f64) {
+        let mut doc = Document::default();
+        doc.doc_info.char_shapes = vec![
+            CharShape {
+                base_size: 1500,
+                ratios: [100; 7],
+                relative_sizes: [100; 7],
+                spacings: [tracking; 7],
+                ..Default::default()
+            },
+            // 줄 끝 빈 런의 서식은 마지막 가시 글자의 자간을 대체하지 않는다.
+            CharShape {
+                base_size: 1500,
+                ratios: [100; 7],
+                relative_sizes: [100; 7],
+                spacings: [-40; 7],
+                ..Default::default()
+            },
+        ];
+        doc.doc_info.para_shapes = vec![
+            ParaShape::default(),
+            ParaShape {
+                alignment: Alignment::Distribute,
+                ..Default::default()
+            },
+        ];
+        let mut label = Paragraph {
+            text: "가나다라".into(),
+            char_count: 5,
+            para_shape_id: 1,
+            char_shapes: vec![
+                CharShapeRef {
+                    start_pos: 0,
+                    char_shape_id: 0,
+                },
+                CharShapeRef {
+                    start_pos: 4,
+                    char_shape_id: 1,
+                },
+            ],
+            line_segs: vec![LineSeg {
+                line_height: 1500,
+                text_height: 1500,
+                baseline_distance: 1275,
+                segment_width: 9000,
+                tag: LineSeg::TAG_SINGLE_SEGMENT_LINE,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        if let Some(control) = control {
+            label.char_count += 8;
+            label.char_shapes[1].start_pos += 8;
+            label.controls.push(control);
+        }
+        let mut section = Section::default();
+        section.section_def.line_grid = grid;
+        section.section_def.text_direction = vertical;
+        section.section_def.page_def.width = 11000;
+        section.section_def.page_def.height = 30000;
+        section.section_def.page_def.margin_left = 1000;
+        section.section_def.page_def.margin_right = 1000;
+        section.section_def.page_def.margin_top = 1000;
+        section.section_def.page_def.margin_bottom = 1000;
+        let host = if in_cell {
+            let mut table = Table {
+                row_count: 1,
+                col_count: 1,
+                cells: vec![Cell {
+                    width: 9000,
+                    height: 3000,
+                    row_span: 1,
+                    col_span: 1,
+                    paragraphs: vec![label],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            table.common.width = 9000;
+            table.common.height = 3000;
+            table.common.treat_as_char = true;
+            table.rebuild_grid();
+            Paragraph {
+                char_count: 9,
+                char_shapes: vec![CharShapeRef::default()],
+                controls: vec![Control::Table(Box::new(table))],
+                ..Default::default()
+            }
+        } else {
+            label
+        };
+        section.paragraphs = vec![
+            Paragraph {
+                char_count: 17,
+                char_shapes: vec![CharShapeRef::default()],
+                controls: vec![
+                    Control::SectionDef(Box::new(section.section_def.clone())),
+                    Control::ColumnDef(Default::default()),
+                ],
+                ..Default::default()
+            },
+            host,
+        ];
+        doc.sections = vec![section];
+        let bytes = crate::serializer::hwpx::serialize_hwpx(&doc).unwrap();
+        let core = DocumentCore::from_bytes_with_font_metrics(&bytes, policy).unwrap();
+        let original = format!("{:?}", core.document().sections[0].paragraphs);
+        let tree = core.build_page_render_tree(0).unwrap();
+        assert_eq!(
+            original,
+            format!("{:?}", core.document().sections[0].paragraphs),
+            "painting preserves authored runs and line geometry"
+        );
+        fn find(node: &RenderNode) -> Option<(TextStyle, f64)> {
+            if let RenderNodeType::TextRun(run) = &node.node_type {
+                if run.text == "가나다라" {
+                    return Some((run.style.clone(), node.bbox.width));
+                }
+            }
+            node.children.iter().find_map(find)
+        }
+        find(&tree.root).unwrap()
+    }
+
+    #[test]
+    fn loaded_plain_distribution_excludes_only_visible_terminal_tracking() {
+        for in_cell in [false, true] {
+            for tracking in [-20, 0, 10] {
+                let (style, _) =
+                    rendered_label(tracking, in_cell, FontMetricsPolicy::HcrDeclared, 0, 0);
+                let positions = compute_char_positions("가나다라", &style);
+                let mut bare = style.clone();
+                bare.letter_spacing = 0.0;
+                bare.extra_char_spacing = 0.0;
+                let last_ink_end = positions[3] + estimate_text_width("라", &bare);
+                assert!(
+                    (last_ink_end - 120.0).abs() < 0.01,
+                    "cell={in_cell} tracking={tracking}: {last_ink_end}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn loaded_single_column_metadata_does_not_add_an_inline_tracking_opportunity() {
+        for in_cell in [false, true] {
+            let control = Control::ColumnDef(crate::model::page::ColumnDef {
+                column_count: 1,
+                same_width: true,
+                ..Default::default()
+            });
+            let ordinary = rendered_label(-20, in_cell, FontMetricsPolicy::HcrDeclared, 0, 0).0;
+            let metadata = rendered_label_with_control(
+                -20,
+                in_cell,
+                FontMetricsPolicy::HcrDeclared,
+                0,
+                0,
+                Some(control),
+            )
+            .0;
+            assert!((ordinary.extra_char_spacing - metadata.extra_char_spacing).abs() < 0.01);
+            let mut bare = metadata.clone();
+            bare.letter_spacing = 0.0;
+            bare.extra_char_spacing = 0.0;
+            let end =
+                compute_char_positions("가나다라", &metadata)[3] + estimate_text_width("라", &bare);
+            assert!((end - 120.0).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn other_loaded_controls_preserve_legacy_distribution() {
+        for in_cell in [false, true] {
+            for control in [
+                Control::ColumnDef(crate::model::page::ColumnDef {
+                    column_count: 2,
+                    same_width: true,
+                    ..Default::default()
+                }),
+                Control::PageHide(Default::default()),
+            ] {
+                let native = rendered_label_with_control(
+                    -20,
+                    in_cell,
+                    FontMetricsPolicy::HcrDeclared,
+                    0,
+                    0,
+                    Some(control.clone()),
+                )
+                .0;
+                let windows = rendered_label_with_control(
+                    -20,
+                    in_cell,
+                    FontMetricsPolicy::HancomWindows,
+                    0,
+                    0,
+                    Some(control),
+                )
+                .0;
+                assert!((native.extra_char_spacing - windows.extra_char_spacing).abs() < 0.01);
+            }
+        }
+    }
+
+    #[test]
+    fn unsupported_distribution_context_keeps_terminal_tracking_policy() {
+        let native = rendered_label(-20, false, FontMetricsPolicy::HcrDeclared, 0, 0)
+            .0
+            .extra_char_spacing;
+        let windows = rendered_label(-20, false, FontMetricsPolicy::HancomWindows, 0, 0)
+            .0
+            .extra_char_spacing;
+        let grid = rendered_label(-20, false, FontMetricsPolicy::HcrDeclared, 300, 0)
+            .0
+            .extra_char_spacing;
+        let vertical = rendered_label(-20, false, FontMetricsPolicy::HcrDeclared, 0, 1)
+            .0
+            .extra_char_spacing;
+        assert!((windows - native - 4.0 / 3.0).abs() < 0.01);
+        assert!((grid - windows).abs() < 0.01);
+        assert!((vertical - windows).abs() < 0.01);
     }
 }
 

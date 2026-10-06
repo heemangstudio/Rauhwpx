@@ -138,13 +138,19 @@ impl ResolvedCharStyle {
     }
 
     /// 지정 언어 카테고리 글꼴의 문서 선언 대체 글꼴 face 를 반환한다.
-    /// 해당 언어에 없으면 한국어(0번) 폴백. 없으면 빈 문자열.
+    /// 원본 글꼴 슬롯이 있으면 빈 대체 이름도 그대로 유지한다.
+    /// 원본 글꼴 자체가 한국어로 폴백할 때만 대체 글꼴도 함께 폴백한다.
     pub fn font_subst_for_lang(&self, lang_index: usize) -> &str {
-        if lang_index < self.subst_families.len() {
-            let name = &self.subst_families[lang_index];
-            if !name.is_empty() {
-                return name;
-            }
+        if self
+            .font_families
+            .get(lang_index)
+            .is_some_and(|name| !name.is_empty())
+        {
+            return self
+                .subst_families
+                .get(lang_index)
+                .map(|name| name.as_str())
+                .unwrap_or("");
         }
         self.subst_families
             .first()
@@ -1599,10 +1605,17 @@ mod tests {
 
     #[test]
     fn test_font_family_for_lang_fallback() {
-        let doc_info = make_doc_info_with_multilang_fonts();
+        let mut doc_info = make_doc_info_with_multilang_fonts();
+        doc_info.font_faces[0][0].alt_name = Some("Hangul substitute".to_string());
+        doc_info.font_faces[2][0].alt_name = Some("Hanja substitute".to_string());
         let styles = resolve_styles(&doc_info, DEFAULT_DPI);
 
         let cs = &styles.char_styles[0];
+        assert_eq!(cs.font_subst_for_lang(0), "Hangul substitute");
+        assert_eq!(cs.font_subst_for_lang(1), "");
+        assert_eq!(cs.font_subst_for_lang(2), "Hanja substitute");
+        assert_eq!(cs.font_subst_for_lang(3), "Hangul substitute");
+        assert_eq!(cs.font_subst_for_lang(99), "Hangul substitute");
         assert_eq!(cs.font_family_for_lang(0), "함초롬돋움");
         assert_eq!(cs.font_family_for_lang(1), "Arial");
         assert_eq!(cs.font_family_for_lang(3), "함초롬돋움"); // 빈 문자열 → 한국어 폴백
