@@ -1173,6 +1173,7 @@ struct RunEmitVars {
     effective_margin_left: f64,
     end: usize,
     extra_char_sp: f64,
+    native_negative_spacing: bool,
     extra_dash_sp: f64,
     extra_word_sp: f64,
     /// 줄 머리 공백 run 수 — 이 run 들은 extra_word_sp 를 받지 않는다.
@@ -1944,6 +1945,153 @@ fn plain_distribute_used_width(
     } else {
         total_width
     }
+}
+
+/// 완전 보존한 73b410 직접 class=0 분기와 Foundation category!=1 자료.
+/// 문맥 스캔을 요구하는 태그/결합 문자와 Jamo 등은 기존 정책을 유지한다.
+fn native_ordinary_spacing_character(ch: char) -> bool {
+    let cp = ch as usize;
+    cp < 65536
+        && !ch.is_control()
+        && !ch.is_whitespace()
+        && !matches!(cp, 0x1100..=0x11ff | 0xa960..=0xa97f | 0xd7b0..=0xd7ff | 0xfffc | 0x00ad)
+        && include_bytes!("native_ordinary_spacing_bmp.bin")[cp / 8] & (1 << (cp % 8)) != 0
+}
+
+fn inactive_spacing_border(styles: &ResolvedStyleSet, id: u16) -> bool {
+    id == 0
+        || styles
+            .border_styles
+            .get(usize::from(id - 1))
+            .is_some_and(|border| {
+                border
+                    .borders
+                    .iter()
+                    .all(|line| line.line_type == crate::model::style::BorderLineType::None)
+                    && border.fill_color.is_none()
+                    && border.pattern.is_none()
+                    && border.gradient.is_none()
+                    && border.image_fill.is_none()
+                    && border.diagonal_attr == 0
+                    && border.center_line == crate::model::style::CenterLine::None
+            })
+}
+
+/// native 331bdc의 음수 fallback은 마지막 글자 뒤를 제외한 N-1 틈에
+/// signed HU 나눗셈을 적용한다. 글꼴 공급자/격자/문맥 분류는 재구성하지 않는다.
+fn plain_negative_spacing(
+    line: &ComposedLine,
+    para: &Paragraph,
+    styles: &ResolvedStyleSet,
+    width: f64,
+    unit: f64,
+) -> Option<f64> {
+    if !para.controls.is_empty()
+        || !para.range_tags.is_empty()
+        || !para.markpen_marks.is_empty()
+        || !para.field_ranges.is_empty()
+        || !para.orphan_field_ends.is_empty()
+        || line.has_line_break
+        || para.char_count as usize != para.text.encode_utf16().count() + 1
+    {
+        return None;
+    }
+    let first = line.runs.iter().find(|run| !run.text.is_empty())?;
+    let cs = styles.char_styles.get(first.char_style_id as usize)?;
+    if cs.has_nondefault_glyph_geometry
+        || cs.kerning
+        || cs.bold
+        || cs.italic
+        || cs.superscript
+        || cs.subscript
+        || cs.emboss
+        || cs.engrave
+        || cs.outline_type != 0
+        || cs.shadow_type != 0
+        || cs.emphasis_dot != 0
+        || cs.underline != UnderlineType::None
+        || cs.strikethrough
+        || !matches!(cs.shade_color, 0x00ffffff | 0xffffffff)
+        || !inactive_spacing_border(styles, cs.border_fill_id)
+    {
+        return None;
+    }
+    let mut advances = Vec::new();
+    for run in &line.runs {
+        if run.text.is_empty() {
+            continue;
+        }
+        if run.char_style_id != first.char_style_id
+            || run.char_overlap.is_some()
+            || run.footnote_marker.is_some()
+            || run.display_text.is_some()
+        {
+            return None;
+        }
+        let style = resolved_to_text_style(styles, run.char_style_id, run.lang_index);
+        if style.letter_spacing != 0.0
+            || style.ratio != 1.0
+            || !style.font_size.is_finite()
+            || style.font_size <= 0.0
+        {
+            return None;
+        }
+        for ch in run.text.chars() {
+            if !native_ordinary_spacing_character(ch) {
+                return None;
+            }
+            let value = compute_char_positions(&ch.to_string(), &style)
+                .last()
+                .copied()?
+                / unit;
+            if !value.is_finite()
+                || value <= 0.0
+                || value > i32::MAX as f64
+                || (value - value.round()).abs() > 1e-6
+            {
+                return None;
+            }
+            advances.push(value.round() as i32);
+        }
+    }
+    let count = i32::try_from(advances.len()).ok()?.checked_sub(1)?;
+    if count <= 0 || !width.is_finite() || width <= 0.0 {
+        return None;
+    }
+    let interval = width / unit;
+    if interval > i32::MAX as f64 || (interval - interval.round()).abs() > 1e-6 {
+        return None;
+    }
+    let used = advances
+        .iter()
+        .try_fold(0i32, |sum, advance| sum.checked_add(*advance))?;
+    let deficit = (interval.round() as i32).checked_sub(used)?;
+    if deficit >= 0 {
+        return None;
+    }
+    let gap = deficit / count;
+    advances
+        .iter()
+        .all(|advance| advance.checked_add(gap).is_some_and(|v| v > 0))
+        .then_some(f64::from(gap) * unit)
+}
+
+// 런/스크립트 경계는 글자 간 틈을 없애지 않는다. 마지막 글자만 자연 폭을 남긴다.
+fn split_negative_spacing_terminal(line: &ComposedLine) -> ComposedLine {
+    let mut result = line.clone();
+    let index = result
+        .runs
+        .iter()
+        .rposition(|run| !run.text.is_empty())
+        .unwrap();
+    let run = &mut result.runs[index];
+    let start = run.text.char_indices().last().unwrap().0;
+    if start != 0 {
+        let mut terminal = run.clone();
+        terminal.text = run.text.split_off(start);
+        result.runs.insert(index + 1, terminal);
+    }
+    result
 }
 
 /// 가운데/오른쪽 정렬 폭에서 제외할 줄 끝 여분 폭(px) — 줄 끝 공백과 마지막 글자 뒤
@@ -4961,7 +5109,7 @@ impl LayoutEngine {
             } else {
                 total_text_width
             };
-            let (extra_word_sp, extra_char_sp, extra_dash_sp) = compute_line_extra_spacing(
+            let (extra_word_sp, mut extra_char_sp, extra_dash_sp) = compute_line_extra_spacing(
                 comp_line,
                 styles,
                 alignment,
@@ -4977,6 +5125,44 @@ impl LayoutEngine {
                 tab_width,
                 natural_leading_spaces,
             );
+
+            let native_negative_spacing = self.plain_distribute_section.get()
+                && self.dpi == crate::renderer::DEFAULT_DPI
+                && self.profile.get().native_hwpx_cell_margin()
+                && !self.profile.get().ms_word_compatible_layout()
+                && !self.profile.get().hwp3_layout()
+                && styles.font_metrics_policy
+                    == crate::model::provenance::FontMetricsPolicy::HcrDeclared
+                && cell_ctx.as_ref().is_some_and(|ctx| {
+                    ctx.line_wrap_squeeze()
+                        && ctx.path.iter().all(|entry| entry.text_direction == 0)
+                })
+                && !needs_justify
+                && !needs_distribute
+                && !has_tabs
+                && para_style.is_some_and(|style| {
+                    style.head_type == HeadType::None
+                        && !style.font_line_height
+                        && !style.auto_tab_right
+                        && style.tab_stops.is_empty()
+                        && inactive_spacing_border(styles, style.border_fill_id)
+                })
+                && para
+                    .and_then(|p| {
+                        plain_negative_spacing(
+                            comp_line,
+                            p,
+                            styles,
+                            spacing_width,
+                            hwpunit_to_px(1, self.dpi),
+                        )
+                    })
+                    .is_some_and(|gap| {
+                        extra_char_sp = gap;
+                        true
+                    });
+            let negative_spacing_line =
+                native_negative_spacing.then(|| split_negative_spacing_terminal(comp_line));
 
             let line_plain_text: String = comp_line.runs.iter().map(|r| r.text.as_str()).collect();
             let is_answer_sheet_number_label =
@@ -5164,9 +5350,11 @@ impl LayoutEngine {
                 tree,
                 &mut line_node,
                 col_node,
-                leading_space_split
-                    .as_ref()
-                    .map_or(comp_line, |(line, _)| line),
+                negative_spacing_line.as_ref().unwrap_or_else(|| {
+                    leading_space_split
+                        .as_ref()
+                        .map_or(comp_line, |(line, _)| line)
+                }),
                 composed,
                 para,
                 bin_data_content,
@@ -5191,6 +5379,7 @@ impl LayoutEngine {
                     effective_margin_left,
                     end,
                     extra_char_sp,
+                    native_negative_spacing,
                     extra_dash_sp,
                     extra_word_sp,
                     natural_leading_space_runs: leading_space_split
@@ -5737,6 +5926,7 @@ impl LayoutEngine {
             effective_margin_left,
             end,
             extra_char_sp,
+            native_negative_spacing,
             extra_dash_sp,
             extra_word_sp,
             natural_leading_space_runs,
@@ -5951,7 +6141,10 @@ impl LayoutEngine {
             } else {
                 extra_word_sp
             };
-            text_style.extra_char_spacing = extra_char_sp;
+            let terminal = native_negative_spacing
+                && Some(run_idx) == comp_line.runs.iter().rposition(|run| !run.text.is_empty());
+            text_style.extra_char_spacing = if terminal { 0.0 } else { extra_char_sp };
+            text_style.native_negative_spacing = native_negative_spacing && !terminal;
             text_style.extra_dash_advance = extra_dash_sp;
             // [Task #874 #2] composer lang split (예: "F3→Alt+I" → "F3"/"→"/"Alt+I")
             // 으로 auto_tab_right post-tab 콘텐츠가 후속 run 으로 흩어진 경우, 현재
@@ -5987,7 +6180,13 @@ impl LayoutEngine {
                 .get(run.char_style_id as usize)
                 .map(|cs| cs.border_fill_id)
                 .unwrap_or(0);
-            let full_width = if run.char_overlap.is_some() {
+            let full_width = if native_negative_spacing {
+                // 같은 줄의 스크립트 런 경계에서 px 반올림을 다시 누적하지 않는다.
+                compute_char_positions(effective_text_for_metrics(run), &text_style)
+                    .last()
+                    .copied()
+                    .unwrap_or(0.0)
+            } else if run.char_overlap.is_some() {
                 // 글자겹침: 한 컨트롤은 payload 글자 수와 무관하게 1글자 폭.
                 let fs = if text_style.font_size > 0.0 {
                     text_style.font_size

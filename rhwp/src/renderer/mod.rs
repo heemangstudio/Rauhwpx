@@ -183,6 +183,10 @@ pub struct TextStyle {
     pub extra_word_spacing: f64,
     /// 배분/나눔 정렬용: 글자당 추가 간격 (px)
     pub extra_char_spacing: f64,
+    /// 검증된 비격자 일반 글자 압축. 문서 자간의 최소 폭 정책은 바꾸지 않는다.
+    #[serde(skip)]
+    #[doc(hidden)]
+    pub native_negative_spacing: bool,
     /// Legacy compatibility spacing retained in serialized styles.
     /// Literal hyphens are ordinary text; real leaders use `tab_leaders`.
     pub extra_dash_advance: f64,
@@ -277,6 +281,7 @@ impl Default for TextStyle {
             inline_tabs: Vec::new(),
             extra_word_spacing: 0.0,
             extra_char_spacing: 0.0,
+            native_negative_spacing: false,
             extra_dash_advance: 0.0,
             outline_type: 0,
             shadow_type: 0,

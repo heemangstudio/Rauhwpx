@@ -582,6 +582,30 @@ pub fn extract_tab_leaders_with_extended(
 /// [#2132] 공용 글자-워크 — Embedded/Wasm measurer 의 compute_char_positions 중복 소거.
 /// 폭 산출원(char_px_raw)과 인라인 탭 divergent 경로(inline_tab_x)만 measurer 별 훅.
 /// 나머지(특수문자, 자간 클램프, 공백, 커스텀/기본 탭)는 1벌.
+// 작성된 자간은 기존 최소 폭을 유지한다. 검증된 조판 압축만 별도로 더한다.
+fn character_advance(base: f64, c: char, style: &TextStyle, font_size: f64) -> f64 {
+    let authored = base + glyph_letter_spacing(style.letter_spacing, base, font_size);
+    let word = if c == ' ' {
+        style.extra_word_spacing
+    } else {
+        0.0
+    };
+    if style.native_negative_spacing
+        && style.letter_spacing == 0.0
+        && style.extra_char_spacing < 0.0
+        && authored + style.extra_char_spacing + word > 0.0
+    {
+        authored + style.extra_char_spacing + word
+    } else {
+        let advance = authored + style.extra_char_spacing + word;
+        if style.letter_spacing + style.extra_char_spacing < 0.0 {
+            advance.max(base * 0.5)
+        } else {
+            advance
+        }
+    }
+}
+
 fn compute_char_positions_walk(
     text: &str,
     style: &TextStyle,
@@ -618,19 +642,7 @@ fn compute_char_positions_walk(
             return 0.0;
         }
         let char_px = char_px_raw(i, c, &chars, &cluster_len);
-        let mut w = char_px * ratio
-            + glyph_letter_spacing(style.letter_spacing, char_px * ratio, font_size)
-            + style.extra_char_spacing;
-        if c == ' ' {
-            w += style.extra_word_spacing;
-        }
-        // 음수 자간(letter_spacing + extra_char_spacing < 0) 시
-        // per-char 최소 advance 클램프로 narrow glyph 역진 방지.
-        if style.letter_spacing + style.extra_char_spacing < 0.0 {
-            let min_w = char_px * ratio * 0.5;
-            w = w.max(min_w);
-        }
-        w
+        character_advance(char_px * ratio, c, style, font_size)
     };
 
     let mut tab_char_idx = 0usize; // inline_tabs 인덱스
@@ -794,21 +806,7 @@ impl TextMeasurer for EmbeddedTextMeasurer {
                 font_size * 0.5
             };
             let base_w = base_w_raw;
-            let mut w = base_w * ratio
-                + glyph_letter_spacing(style.letter_spacing, base_w * ratio, font_size)
-                + style.extra_char_spacing;
-            if c == ' ' {
-                w += style.extra_word_spacing;
-            }
-            // 음수 자간(letter_spacing + extra_char_spacing < 0) 시
-            // per-char 최소 advance = base*ratio*0.5 로 클램프하여 narrow
-            // glyph(콤마/마침표 등) 이 뒷 글자와 역진 겹침되는 것을 방지한다.
-            // 문서 CharShape 의 음수 자간 및 paragraph_layout 의 압축 모두 포함.
-            if style.letter_spacing + style.extra_char_spacing < 0.0 {
-                let min_w = base_w * ratio * 0.5;
-                w = w.max(min_w);
-            }
-            w
+            character_advance(base_w * ratio, c, style, font_size)
         };
 
         let mut total = 0.0;
@@ -1394,19 +1392,7 @@ impl TextMeasurer for WasmTextMeasurer {
                 )
             };
             let char_px = char_px_raw;
-            let mut w = char_px * ratio
-                + glyph_letter_spacing(style.letter_spacing, char_px * ratio, font_size)
-                + style.extra_char_spacing;
-            if c == ' ' {
-                w += style.extra_word_spacing;
-            }
-            // 음수 자간(letter_spacing + extra_char_spacing < 0) 시
-            // per-char 최소 advance 클램프로 narrow glyph 역진 방지.
-            if style.letter_spacing + style.extra_char_spacing < 0.0 {
-                let min_w = char_px * ratio * 0.5;
-                w = w.max(min_w);
-            }
-            w
+            character_advance(char_px * ratio, c, style, font_size)
         };
 
         let mut total = 0.0;
@@ -1738,6 +1724,7 @@ pub(crate) fn resolved_to_text_style(
             inline_tabs: Vec::new(),
             extra_word_spacing: 0.0,
             extra_char_spacing: 0.0,
+            native_negative_spacing: false,
             extra_dash_advance: 0.0,
             outline_type: cs.outline_type,
             shadow_type: cs.shadow_type,
@@ -2541,19 +2528,7 @@ pub(crate) fn estimate_text_width_unrounded(text: &str, style: &TextStyle) -> f6
             font_size * 0.5
         };
         let base_w = base_w_raw;
-        let mut w = base_w * ratio
-            + glyph_letter_spacing(style.letter_spacing, base_w * ratio, font_size)
-            + style.extra_char_spacing;
-        if c == ' ' {
-            w += style.extra_word_spacing;
-        }
-        // 음수 자간(letter_spacing + extra_char_spacing < 0) 시
-        // per-char 최소 advance 클램프로 narrow glyph 역진 방지.
-        if style.letter_spacing + style.extra_char_spacing < 0.0 {
-            let min_w = base_w * ratio * 0.5;
-            w = w.max(min_w);
-        }
-        w
+        character_advance(base_w * ratio, c, style, font_size)
     };
 
     let mut total = 0.0;

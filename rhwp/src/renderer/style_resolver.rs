@@ -21,6 +21,9 @@ pub struct ResolvedCharStyle {
     pub font_metrics_policy: crate::model::provenance::FontMetricsPolicy,
     /// MS Word compatibility uses the Latin face's own space advance.
     pub latin_font_space: bool,
+    /// 글자 위치/상대 크기 지정은 일반 기본 축 간격 계약에서 제외한다.
+    #[doc(hidden)]
+    pub has_nondefault_glyph_geometry: bool,
     /// 글꼴 이름 (한국어 = 기본값, font_families[0]과 동일)
     pub font_family: String,
     /// 7개 언어 카테고리별 글꼴 이름
@@ -90,6 +93,7 @@ impl Default for ResolvedCharStyle {
         Self {
             font_metrics_policy: Default::default(),
             latin_font_space: false,
+            has_nondefault_glyph_geometry: false,
             font_family: String::new(),
             font_families: Vec::new(),
             subst_families: Vec::new(),
@@ -424,6 +428,8 @@ fn resolve_single_char_style(cs: &CharShape, doc_info: &DocInfo, dpi: f64) -> Re
 
     ResolvedCharStyle {
         font_metrics_policy: doc_info.font_metrics_policy,
+        has_nondefault_glyph_geometry: cs.char_offsets.iter().any(|value| *value != 0)
+            || cs.relative_sizes.iter().any(|value| *value != 100),
         latin_font_space: doc_info
             .hwpx_target_program
             .as_deref()
