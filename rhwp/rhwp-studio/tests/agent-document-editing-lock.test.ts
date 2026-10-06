@@ -20,7 +20,7 @@ const css = source('../src/styles/editor.css');
 
 test('agent editing lock blocks mutations but leaves view and copy commands available', () => {
   const executed: string[] = [];
-  const definitions = new Map(['edit:copy', 'view:zoom-in', 'format:bold', 'insert:table', 'file:open'].map((id) => [
+  const definitions = new Map(['edit:copy', 'view:zoom-in', 'format:bold', 'insert:table', 'file:open', 'edit:select-all', 'edit:find'].map((id) => [
     id,
     { execute: () => executed.push(id) },
   ]));
@@ -35,6 +35,8 @@ test('agent editing lock blocks mutations but leaves view and copy commands avai
   assert.equal(dispatcher.dispatch('format:bold'), false);
   assert.equal(dispatcher.dispatch('insert:table'), false);
   assert.equal(dispatcher.dispatch('file:open'), false);
+  assert.equal(dispatcher.dispatch('edit:select-all'), false);
+  assert.equal(dispatcher.dispatch('edit:find'), false);
   assert.deepEqual(executed, ['edit:copy', 'view:zoom-in']);
 });
 

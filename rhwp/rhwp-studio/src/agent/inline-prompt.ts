@@ -224,6 +224,10 @@ class InlinePromptController {
       }));
     }
     this.unsubs.push(eventBus.on('document-view-changed', () => this.hideAll()));
+    // 에이전트가 문서를 잡는 순간 칩·상자를 걷는다. 보내는 중인 상자는 send 가 닫는다.
+    this.unsubs.push(eventBus.on('command-state-changed', () => {
+      if (this.state !== 'hidden' && !this.sending && this.deps.inputHandler.isUserEditingLocked()) this.hideAll();
+    }));
     for (const name of ['zoom-changed', 'viewport-resize', 'viewport-inset-changed', 'page-layout-changed']) {
       this.unsubs.push(eventBus.on(name, () => this.reposition()));
     }
@@ -270,6 +274,10 @@ class InlinePromptController {
       return;
     }
     if (this.state === 'open' || this.pointerActive) return;
+    if (this.deps.inputHandler.isUserEditingLocked()) {
+      if (this.state === 'chip') this.hideAll();
+      return;
+    }
     const source = this.currentSelection();
     if (!source) {
       if (this.state === 'chip') this.hideAll();

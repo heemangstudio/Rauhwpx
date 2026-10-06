@@ -191,6 +191,45 @@ runTest('인라인 프롬프트 선택 칩/입력 상자 테스트', async ({ pa
   });
   assert(closed, '마무리 시 상자가 닫혀 있어야 함');
 
+  setTestCase('에이전트가 문서를 잡으면 선택과 칩이 사라지고 다시 생기지 않는다');
+  await page.mouse.move(drag.from.x + 1, drag.from.y);
+  await page.mouse.down();
+  await page.mouse.move(drag.to.x, drag.to.y, { steps: 8 });
+  await page.mouse.up();
+  await waitForState(page, 'chip before lock', () => { const c=document.querySelector('.ag-inline-chip'); return c && !c.hidden && c.checkVisibility(); });
+  await page.evaluate(() => {
+    window.__agentBridge.handleMessage({ type: 'agent-event', event: { type: 'turn-start', agent: 'claude', turnId: 'lock-test' } });
+  });
+  await waitForState(page, 'agent lock', () => window.__inputHandler.isUserEditingLocked());
+  await page.mouse.move(drag.from.x + 1, drag.from.y);
+  await page.mouse.down();
+  await page.mouse.move(drag.to.x, drag.to.y, { steps: 8 });
+  await page.mouse.up();
+  await page.keyboard.down('Shift');
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.up('Shift');
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  const locked = await page.evaluate(() => ({
+    chipHidden: document.querySelector('.ag-inline-chip')?.hidden ?? true,
+    selection: window.__inputHandler.getSelection(),
+    highlights: [...document.querySelectorAll('.selection-highlight')].filter((el) => el.style.display !== 'none').length,
+    agentSelection: window.__inputHandler.getUserSelectionContext().selection,
+  }));
+  assert(locked.chipHidden, '잠금 중에는 칩이 보이면 안 됨');
+  assert(locked.selection === null && locked.highlights === 0, `잠금 시 화면 선택이 사라져야 함 (${JSON.stringify(locked)})`);
+  assert(locked.agentSelection?.end?.charOffset === 10, 'get_selection 은 잠그기 직전 선택을 돌려줘야 함');
+  await screenshot(page, 'inline-prompt-agent-locked');
+  await page.evaluate(() => {
+    window.__agentBridge.handleMessage({ type: 'agent-event', event: { type: 'turn-end', agent: 'claude', turnId: 'lock-test' } });
+  });
+  await waitForState(page, 'agent unlock', () => !window.__inputHandler.isUserEditingLocked());
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  const unlocked = await page.evaluate(() => ({
+    chipHidden: document.querySelector('.ag-inline-chip')?.hidden ?? true,
+    selection: window.__inputHandler.getSelection(),
+  }));
+  assert(unlocked.chipHidden && unlocked.selection === null, '잠금이 풀려도 지운 선택과 칩은 돌아오지 않아야 함');
+
   setTestCase('이미지 선택은 정확한 주소와 실제 PNG 첨부를 캡처한다');
   await createNewDocument(page);
   const insertedImage = await page.evaluate(() => {
