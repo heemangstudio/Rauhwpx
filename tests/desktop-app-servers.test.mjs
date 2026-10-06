@@ -886,6 +886,88 @@ test('concurrent spawns share one sandbox and the choice survives a restart', as
   assert.equal(resumed.profile.mode, 'app-hosted');
 });
 
+test('unsupported Cloud agents are rejected before sandbox side effects', async (t) => {
+  for (const selectedProvider of ['rau', '', 'CODEX ', 'openai']) {
+    await t.test(JSON.stringify(selectedProvider), async (t) => {
+      const collected = [];
+      const { coordinator, provider, client, vault } = sandboxCoordinator({
+        collectProviderAuth: async (name) => {
+          collected.push(name);
+          return { provider: name, files: [] };
+        },
+      });
+      t.after(() => coordinator.stop());
+      const started = await coordinator.start();
+      const before = new Map(vault.values);
+      const writes = [];
+      for (const method of ['set', 'delete']) {
+        const original = vault[method];
+        vault[method] = async (...args) => {
+          writes.push([method, args[0]]);
+          return original(...args);
+        };
+      }
+      const events = [];
+      coordinator.on('event', (event) => events.push(event.type));
+
+      await assert.rejects(coordinator.spawnAppServer({ selectedProvider }), {
+        message: `Unsupported cloud provider: ${selectedProvider.toLowerCase()}`,
+      });
+      assert.equal(provider.calls.spawn, 0, 'invalid input must not allocate a sandbox');
+      assert.equal(provider.calls.teardown, 0, 'there is no sandbox to clean up');
+      assert.deepEqual(collected, [], 'invalid input must not collect provider credentials');
+      assert.deepEqual(writes, [], 'invalid input must not write a journal, profile or credentials');
+      assert.deepEqual(vault.values, before);
+      assert.equal(await client.loadPendingAppSandbox(), null);
+      assert.equal(events.includes('sandbox-provision-started'), false);
+      assert.equal((await coordinator.snapshot()).server.lifecycle, started.server.lifecycle);
+
+      const ready = await coordinator.spawnAppServer();
+      assert.equal(ready.server.lifecycle, 'ready', 'a rejected choice must not block a valid retry');
+      assert.equal(provider.calls.spawn, 1);
+      assert.equal(provider.calls.spawnOptions[0].selectedProvider, 'codex');
+    });
+  }
+});
+
+test('sandbox agents are normalized before credential collection and provisioning', async (t) => {
+  for (const [selectedProvider, expected] of [['CLAUDE', 'claude'], ['CoDeX', 'codex'], ['PI', 'pi'], [null, 'codex']]) {
+    await t.test(JSON.stringify(selectedProvider), async (t) => {
+      const collected = [];
+      const { coordinator, provider, client } = sandboxCoordinator({
+        collectProviderAuth: async (name) => {
+          collected.push(name);
+          return { provider: name, files: [] };
+        },
+      });
+      t.after(() => coordinator.stop());
+      await coordinator.start();
+      const ready = await coordinator.spawnAppServer({ selectedProvider });
+      assert.equal(provider.calls.spawnOptions[0].selectedProvider, expected);
+      assert.deepEqual(collected, [expected]);
+      assert.equal(provider.calls.spawnOptions[0].credentials.provider, expected);
+      assert.equal(ready.server.lifecycle, 'ready');
+      assert.equal((await client.loadProfile()).provider, expected);
+    });
+  }
+});
+
+test('sandbox agent choice falls back to the saved provider', async (t) => {
+  const { coordinator, provider, client } = sandboxCoordinator();
+  t.after(() => coordinator.stop());
+  await client.saveProfile({
+    endpoint: 'https://vps.example.ts.net/rauhwpx-cloud',
+    ssh: { host: 'vps.example.ts.net', user: 'cloud', useTailscaleSsh: true },
+    serverPublicKey: SERVER_KEY,
+    provider: 'PI',
+  });
+  await coordinator.start();
+  const ready = await coordinator.spawnAppServer({ selectedProvider: null });
+  assert.equal(provider.calls.spawnOptions[0].selectedProvider, 'pi');
+  assert.equal(ready.server.lifecycle, 'ready');
+  assert.equal((await client.loadProfile()).provider, 'pi');
+});
+
 test('a second managed run on the same warm worker reuses the paired device credentials', async () => {
   const vault = memoryVault();
   let redeemCalls = 0;

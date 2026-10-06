@@ -220,6 +220,12 @@ export function normalizeCloudLimits(raw = {}) {
   });
 }
 
+export function normalizeCloudProvider(value, fallback = 'codex') {
+  const provider = value == null ? fallback : String(value).toLowerCase();
+  if (!CLOUD_PROVIDERS.includes(provider)) throw new Error(`Unsupported cloud provider: ${provider}`);
+  return provider;
+}
+
 export function normalizeCloudProfile(raw = {}) {
   const mode = raw.mode == null ? 'self-hosted' : String(raw.mode);
   if (!CLOUD_SERVER_MODES.includes(mode)) throw new Error(`Unsupported cloud server mode: ${mode}`);
@@ -233,8 +239,7 @@ export function normalizeCloudProfile(raw = {}) {
     ? { kind: 'public-https', endpoint: normalizeCloudEndpoint(raw.endpoint) }
     : normalizeApi(boat && !raw.api && raw.transport == null ? { ...raw, transport: 'ssh-tunnel' } : raw, ssh);
   if (boat && api.kind !== 'ssh-tunnel') throw new Error('boat servers require the SSH tunnel transport');
-  const provider = raw.provider == null ? 'codex' : String(raw.provider).toLowerCase();
-  if (!CLOUD_PROVIDERS.includes(provider)) throw new Error(`Unsupported cloud provider: ${provider}`);
+  const provider = normalizeCloudProvider(raw.provider);
   const serverPublicKey = String(raw.serverPublicKey ?? '').trim();
   if (serverPublicKey) {
     if (!/^ed25519:[A-Za-z0-9_-]{59}$/.test(serverPublicKey)) {
