@@ -177,6 +177,12 @@ export function createClaudeAskUserQuestionPermissionHandler(opts) {
     return null;
   }
   return async (toolName, input, context) => {
+    // Plan mode prompts for every MCP tool without readOnlyHint, including
+    // present_implementation_plan. The hub already authorizes each rhwp call
+    // against the workflow phase and capability epoch, so pass them through.
+    if (toolName.startsWith('mcp__rhwp__')) {
+      return { behavior: 'allow', updatedInput: input };
+    }
     if (toolName !== 'AskUserQuestion') {
       return { behavior: 'deny', message: `Interactive permission is unavailable for ${toolName}.`, interrupt: false };
     }
