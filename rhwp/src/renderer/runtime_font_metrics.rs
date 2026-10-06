@@ -431,6 +431,11 @@ fn select_face(
     Some((pick, bold && !faces[pick].bold))
 }
 
+/// 등록 페이스의 존재 여부. 특정 글리프의 cmap 수록 여부와 구분한다.
+pub(crate) fn has_face(primary_name: &str, bold: bool, italic: bool) -> bool {
+    REGISTRY.with(|registry| select_face(&registry.borrow(), primary_name, bold, italic).is_some())
+}
+
 /// 런타임 페이스의 글리프 advance. 공백은 내장 메트릭과 같이 em/2 로 고정한다.
 /// 페이스가 없거나 글리프가 없으면 None.
 pub(crate) fn char_advance(

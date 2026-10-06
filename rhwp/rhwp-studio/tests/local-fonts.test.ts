@@ -25,7 +25,7 @@ import {
   type LocalFontSnapshot,
 } from '../src/core/local-fonts.ts';
 import { analyzeDocumentFonts } from '../src/core/document-font-status.ts';
-import { fontFamilyChainForDisplay } from '../src/core/font-substitution.ts';
+import { fontFamilyChainForDisplay, prefersImportedHancomSubstitute } from '../src/core/font-substitution.ts';
 
 const STORAGE_KEY = 'rhwp-local-fonts';
 
@@ -193,6 +193,7 @@ test('세션 글꼴 파일은 웹 대체 face보다 먼저 선택되고 CanvasKi
   const g = globalThis as TestGlobals & { FontFace?: unknown };
   const originalDocument = g.document;
   const originalFontFace = g.FontFace;
+  const originalStorage = g.localStorage;
   const added: Array<{ family: string; source: ArrayBuffer }> = [];
   const bytes = createSfntWithNameRecords([
     { nameId: 1, value: 'Malgun Gothic' },
@@ -219,6 +220,7 @@ test('세션 글꼴 파일은 웹 대체 face보다 먼저 선택되고 CanvasKi
     },
   };
   const batangBeforeImport = fontFamilyChainForDisplay('바탕');
+  assert.equal(prefersImportedHancomSubstitute('바탕'), false);
   const unrelatedBeforeImport = fontFamilyChainForDisplay('없는글꼴');
   try {
     // 가져오기 전에 만든 체인은 캐시되므로, 가져온 뒤 새 face 로 바뀌어야 한다.
@@ -250,7 +252,19 @@ test('세션 글꼴 파일은 웹 대체 face보다 먼저 선택되고 CanvasKi
     assert.notEqual(firstQuotedFontFamily(batangBeforeImport), nativeBatangFamily);
     for (const family of ['바탕', 'Batang', '바탕체', 'BatangChe', '궁서']) {
       assert.equal(firstQuotedFontFamily(fontFamilyChainForDisplay(family)), nativeBatangFamily);
+      assert.equal(prefersImportedHancomSubstitute(family), true);
     }
+    // 등록 bytes가 없어도 실제 로컬 감지 레코드의 원본 face가 우선이다.
+    g.localStorage = createStorage({ [STORAGE_KEY]: JSON.stringify({
+      version: 1, detectedAt: '2026-06-21T00:00:00.000Z',
+      families: ['궁서'], source: 'local-font-access',
+    }) });
+    await loadStoredLocalFonts();
+    assert.ok(resolveLocalFont('궁서'));
+    assert.equal(prefersImportedHancomSubstitute('궁서'), false);
+    assert.equal(firstQuotedFontFamily(fontFamilyChainForDisplay('궁서')), '궁서');
+    await clearStoredLocalFonts();
+    assert.equal(prefersImportedHancomSubstitute('궁서'), true);
     assert.equal(fontFamilyChainForDisplay('없는글꼴'), unrelatedBeforeImport);
     assert.equal(firstQuotedFontFamily(fontFamilyChainForDisplay('바탕', 0, 0, {
       confirmedLocalFonts: ['바탕'],
@@ -264,6 +278,7 @@ test('세션 글꼴 파일은 웹 대체 face보다 먼저 선택되고 CanvasKi
     ])], 'RequestedBatang.ttf')]);
     assert.equal(firstQuotedFontFamily(fontFamilyChainForDisplay('바탕')),
       requestedBatang.imported[0]?.runtimeFamily);
+    assert.equal(prefersImportedHancomSubstitute('바탕'), false);
     const importedHcr = await importLocalFontFiles([new File([createSfntWithNameRecords([
       { nameId: 1, value: 'HCR Batang' }, { nameId: 1, value: '함초롬바탕' },
       { nameId: 2, value: 'Regular' }, { nameId: 6, value: 'HCRBatang-Regular' },
@@ -285,6 +300,7 @@ test('세션 글꼴 파일은 웹 대체 face보다 먼저 선택되고 CanvasKi
     resetLocalFontsForTests();
     g.document = originalDocument;
     g.FontFace = originalFontFace;
+    g.localStorage = originalStorage;
   }
   assert.equal(fontFamilyChainForDisplay('바탕'), batangBeforeImport);
   assert.equal(fontFamilyChainForDisplay('없는글꼴'), unrelatedBeforeImport);

@@ -2186,11 +2186,17 @@ fn measure_char_width_with_policy(
     // 치환 메트릭은 치환 서체가 실제로 설치돼 있을 때만(그 서체로 그려질 때) 쓴다.
     // 치환 서체도 없으면 페인트는 제네릭 폴백으로 내려가므로 요청 face의 베이크드
     // 정본 폭(돋움체 전각 구두점 등)이 더 가깝다.
-    let metric_name = if policy == FontMetricsPolicy::HcrDeclared && !face_available {
+    let metric_name = if policy == FontMetricsPolicy::HcrDeclared
+        && !face_available
+        && !crate::renderer::runtime_font_metrics::has_face(primary_name, bold, italic)
+    {
         crate::renderer::hancom_substitute_faces(primary_name)
             .iter()
             .copied()
-            .find(|s| custom_font_face_available(s))
+            .find(|s| {
+                custom_font_face_available(s)
+                    || crate::renderer::runtime_font_metrics::has_face(s, bold, italic)
+            })
             .unwrap_or(primary_name)
     } else {
         primary_name
@@ -2207,6 +2213,19 @@ fn measure_char_width_with_policy(
                 // 직접 가져온 파일의 hmtx도 실제 요청 face의 메트릭이다.
                 // 내장 테이블이 글자를 수록해도 구버전 폭으로 되돌리지 않는다.
                 crate::renderer::runtime_font_metrics::char_advance(primary_name, bold, italic, c)
+                    .map(|advance| f64::from(advance.units) / f64::from(advance.em_size))
+            })
+            .or_else(|| {
+                // Canvas가 실제 가져온 한컴 대체 face를 선택한 경우 조판도 같은
+                // 등록 advance를 사용한다. 원본 face의 없는 글자는 기존 폴백을 유지한다.
+                (metric_name != primary_name
+                    && !crate::renderer::runtime_font_metrics::has_face(primary_name, bold, italic))
+                    .then(|| {
+                        crate::renderer::runtime_font_metrics::char_advance(
+                            metric_name, bold, italic, c,
+                        )
+                    })
+                    .flatten()
                     .map(|advance| f64::from(advance.units) / f64::from(advance.em_size))
             });
         if let Some(mut em_advance) = actual_advance {
@@ -4140,6 +4159,58 @@ mod tests {
         );
         runtime::clear();
         assert_eq!(measure(FontMetricsPolicy::HcrDeclared, character), old_mac);
+    }
+
+    #[test]
+    fn registered_substitute_metrics_preserve_requested_face_precedence() {
+        use crate::renderer::runtime_font_metrics as runtime;
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/ttfs/opensource/");
+        let regular = std::fs::read(format!("{dir}NotoSansKR-Regular.ttf")).unwrap();
+        let light = std::fs::read(format!("{dir}NotoSansKR-ExtraLight.ttf")).unwrap();
+        let size = 24.0;
+        let actual = |bytes: &[u8], c: char| {
+            let face = ttf_parser::Face::parse(bytes, 0).unwrap();
+            let glyph = face.glyph_index(c).unwrap();
+            quantize_hwp_px(
+                f64::from(face.glyph_hor_advance(glyph).unwrap()) * size
+                    / f64::from(face.units_per_em()),
+            )
+        };
+        let measure =
+            |policy, c| measure_char_width_with_policy("바탕", false, false, c, size, policy);
+        runtime::clear();
+        let legacy = measure(FontMetricsPolicy::HcrDeclared, 'W');
+        let windows = measure(FontMetricsPolicy::HancomWindows, 'W');
+        // 공개 fixture의 등록 별칭은 caller가 제공하는 정상 registry 입력이다.
+        // 실제 한컴 face의 별칭/바이트는 별도 native/브라우저 비교로 검증한다.
+        runtime::register(&regular, &["한컴바탕".to_owned()], false, false).unwrap();
+        assert_eq!(
+            measure(FontMetricsPolicy::HcrDeclared, 'W'),
+            Some(actual(&regular, 'W'))
+        );
+        assert_ne!(legacy, Some(actual(&regular, 'W')));
+        assert_eq!(measure(FontMetricsPolicy::HancomWindows, 'W'), windows);
+        runtime::register(&light, &["바탕".to_owned()], false, false).unwrap();
+        assert_ne!(actual(&regular, 'W'), actual(&light, 'W'));
+        assert_eq!(
+            measure(FontMetricsPolicy::HcrDeclared, 'W'),
+            Some(actual(&light, 'W'))
+        );
+        // glyph 부재를 face 부재로 해석하지 않는다.
+        assert!(runtime::has_face("바탕", false, false));
+        assert!(runtime::char_advance("바탕", false, false, '\u{10ffff}').is_none());
+        runtime::clear();
+        runtime::register(&light, &["바탕".to_owned()], false, false).unwrap();
+        assert!(runtime::char_advance("바탕", false, false, '™').is_none());
+        let missing_glyph_fallback = measure(FontMetricsPolicy::HcrDeclared, '™');
+        runtime::register(&regular, &["한컴바탕".to_owned()], false, false).unwrap();
+        assert!(runtime::char_advance("한컴바탕", false, false, '™').is_some());
+        assert_eq!(
+            measure(FontMetricsPolicy::HcrDeclared, '™'),
+            missing_glyph_fallback
+        );
+        runtime::clear();
+        assert_eq!(measure(FontMetricsPolicy::HcrDeclared, 'W'), legacy);
     }
 
     #[test]

@@ -230,7 +230,7 @@ export interface WebCanvasImageCacheStats {
   htmlImageSourceBytes: number;
 }
 
-import { fontFamilyChainForDisplay, prefersHcrOverWebProxy } from './font-substitution';
+import { fontFamilyChainForDisplay, prefersHcrOverWebProxy, prefersImportedHancomSubstitute } from './font-substitution';
 import { createEquationFontResolver, createEquationLiteralFontResolver, createEquationTextMeasurer } from './equation-font';
 import { getImportedLocalFontBytes, hasImportedLocalFontFace, resolveLocalFont } from './local-fonts';
 import { createDeclaredFontAvailabilityProbe, createRawFontAvailabilityProbe } from './font-presence';
@@ -292,7 +292,7 @@ function installDeclaredFontAvailabilityProbe(): void {
     context,
     { get: descriptor.get, set: descriptor.set },
     hasImportedLocalFontFace,
-    prefersHcrOverWebProxy,
+    family => prefersHcrOverWebProxy(family) || prefersImportedHancomSubstitute(family),
   );
 }
 

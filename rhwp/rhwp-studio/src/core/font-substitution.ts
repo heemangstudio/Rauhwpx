@@ -405,6 +405,11 @@ function importedHancomSubstitute(fontName: string): string | null {
   return null;
 }
 
+/** 실제 원본 local/OS face가 없고 가져온 한컴 대체 face가 표시 우선권을 갖는 경우. */
+export function prefersImportedHancomSubstitute(fontName: string): boolean {
+  return !resolveLocalFont(fontName) && importedHancomSubstitute(fontName) !== null;
+}
+
 function buildFontFamilyChainForDisplay(
   fontName: string,
   altType: number,
