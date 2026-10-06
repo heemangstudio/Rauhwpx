@@ -25461,7 +25461,7 @@ fn task1413_set_char_shape_id_in_cell_ex_equivalent() {
 #[test]
 fn task1413_get_selection_rects_in_cell_ex_equivalent() {
     let doc = create_doc_with_table();
-    let res_pos = doc.get_selection_rects_in_cell(0, 0, 0, 0, 0, 0, 0, 0);
+    let res_pos = doc.get_selection_rects_in_cell(0, 0, 0, 0, 0, 0, 0, 0, None);
     let res_ex = doc.get_selection_rects_in_cell_ex(
         r#"{"sectionIdx":0,"parentParaIdx":0,"controlIdx":0,"cellIdx":0,"startCellParaIdx":0,
             "startCharOffset":0,"endCellParaIdx":0,"endCharOffset":0}"#,

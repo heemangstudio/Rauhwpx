@@ -433,6 +433,10 @@ export class PendingOverlayRenderer {
     }
   }
 
+  /**
+   * 밑줄은 rect 아래 변에 그린다. 선택 띠처럼 줄 사이를 메운 rect 를 쓰면 밑줄이
+   * 다음 줄 위쪽 간격에 뜨므로, 줄 사이를 메우지 않은(closeGaps=false) rect 를 쓴다.
+   */
   private rangeRects(range: DocRange): SelectionRect[] {
     const cell = range.cell;
     const start = this.caretOffset(range, range.startParaIdx, range.startCharOffset, 'after');
@@ -442,17 +446,20 @@ export class PendingOverlayRenderer {
         range.sectionIdx, cell.paraIdx, cell.path,
         range.startParaIdx, start,
         range.endParaIdx, end,
+        false,
       )
       : cell
       ? this.deps.wasm.getSelectionRectsInCell(
         range.sectionIdx, cell.paraIdx, cell.controlIdx, cell.cellIdx,
         range.startParaIdx, start,
         range.endParaIdx, end,
+        undefined, false,
       )
       : this.deps.wasm.getSelectionRects(
         range.sectionIdx,
         range.startParaIdx, start,
         range.endParaIdx, end,
+        false,
       );
   }
 
@@ -1028,7 +1035,7 @@ export class PendingOverlayRenderer {
             );
             return wasm.getSelectionRectsByPath(
               ref.sectionIdx, ref.cell.paraIdx, ref.cell.path,
-              ref.paraIdx, 0, ref.paraIdx, len,
+              ref.paraIdx, 0, ref.paraIdx, len, false,
             );
           }
           const len = wasm.getCellLogicalLengthByPath(
@@ -1036,12 +1043,12 @@ export class PendingOverlayRenderer {
           );
           return wasm.getSelectionRectsInCell(
             ref.sectionIdx, ref.cell.paraIdx, ref.cell.controlIdx, ref.cell.cellIdx,
-            ref.paraIdx, 0, ref.paraIdx, len,
+            ref.paraIdx, 0, ref.paraIdx, len, undefined, false,
           );
         }
         const end = Math.max(ref.paraIdx, ref.endParaIdx ?? ref.paraIdx);
         const len = wasm.getLogicalLength(ref.sectionIdx, end);
-        return wasm.getSelectionRects(ref.sectionIdx, ref.paraIdx, 0, end, len);
+        return wasm.getSelectionRects(ref.sectionIdx, ref.paraIdx, 0, end, len, false);
       }
     }
   }

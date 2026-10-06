@@ -1992,6 +1992,8 @@ impl DocumentCore {
     ///
     /// cell_ctx: Some((ppi, ci, cei)) 면 셀 내부, None 이면 본문.
     /// start/end_para_idx: 셀 내부일 때는 cellParaIndex.
+    /// close_gaps: 마우스 선택처럼 줄 사이 틈을 메워 연속된 띠로 만든다. false 면
+    /// 각 줄 rect 가 글자 높이만 덮는다 (에이전트 변경 밑줄용).
     pub(crate) fn get_selection_rects_native(
         &self,
         section_idx: usize,
@@ -2001,6 +2003,7 @@ impl DocumentCore {
         end_char_offset: usize,
         cell_ctx: Option<SelCellAddr>,
         page_hints: Option<(u32, u32)>,
+        close_gaps: bool,
     ) -> Result<String, HwpError> {
         let _font_scope = self.resolved_shaping_font_scope();
         use crate::renderer::layout::compute_char_positions;
@@ -2607,10 +2610,13 @@ impl DocumentCore {
                 end_char_offset,
                 cell_ctx.clone(),
                 None,
+                close_gaps,
             );
         }
 
-        close_selection_line_gaps(&mut rects);
+        if close_gaps {
+            close_selection_line_gaps(&mut rects);
+        }
         let rects: Vec<String> = rects
             .iter()
             .map(|r| {

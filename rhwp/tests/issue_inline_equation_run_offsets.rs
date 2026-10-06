@@ -38,7 +38,7 @@ fn 인라인_수식_뒤의_글자_런은_논리_오프셋을_유지한다() {
     }
 
     // 끝 문자 한 글자 선택도 사각형이 나와야 한다.
-    let last = doc.get_selection_rects(0, 0, 9, 0, 10).unwrap();
+    let last = doc.get_selection_rects(0, 0, 9, 0, 10, None).unwrap();
     assert!(
         last.contains("\"width\""),
         "마지막 글자 선택 rect 누락: {last}"
