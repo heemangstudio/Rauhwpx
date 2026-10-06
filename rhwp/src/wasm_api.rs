@@ -7149,6 +7149,8 @@ impl HwpDocument {
 
     /// 본문 선택 영역의 줄별 사각형을 반환한다.
     ///
+    /// `closeGaps` 를 false 로 주면 줄 사이 틈을 메우지 않는다 (생략 시 메움).
+    ///
     /// 반환: JSON 배열 `[{"pageIndex":N,"x":F,"y":F,"width":F,"height":F}, ...]`
     #[wasm_bindgen(js_name = getSelectionRects)]
     pub fn get_selection_rects(
@@ -7158,6 +7160,7 @@ impl HwpDocument {
         start_char_offset: u32,
         end_para_idx: u32,
         end_char_offset: u32,
+        close_gaps: Option<bool>,
     ) -> Result<String, JsValue> {
         self.get_selection_rects_native(
             section_idx as usize,
@@ -7167,6 +7170,7 @@ impl HwpDocument {
             end_char_offset as usize,
             None,
             None,
+            close_gaps.unwrap_or(true),
         )
         .map_err(|e| e.into())
     }
@@ -7185,6 +7189,7 @@ impl HwpDocument {
         start_char_offset: u32,
         end_cell_para_idx: u32,
         end_char_offset: u32,
+        close_gaps: Option<bool>,
     ) -> Result<String, JsValue> {
         self.get_selection_rects_native(
             section_idx as usize,
@@ -7198,6 +7203,7 @@ impl HwpDocument {
                 cell_idx as usize,
             )),
             None,
+            close_gaps.unwrap_or(true),
         )
         .map_err(|e| e.into())
     }
@@ -7217,6 +7223,7 @@ impl HwpDocument {
         start_char_offset: u32,
         end_cell_para_idx: u32,
         end_char_offset: u32,
+        close_gaps: Option<bool>,
     ) -> Result<String, JsValue> {
         let path = parse_cell_path_arg(cell_path_json)?;
         self.get_selection_rects_native(
@@ -7230,6 +7237,7 @@ impl HwpDocument {
                 path,
             )),
             None,
+            close_gaps.unwrap_or(true),
         )
         .map_err(|e| e.into())
     }
@@ -7291,7 +7299,7 @@ impl HwpDocument {
     /// `getSelectionRectsInCell` 의 options object 변형 (#1413).
     ///
     /// options JSON 키: `{ sectionIdx, parentParaIdx, controlIdx, cellIdx, startCellParaIdx,
-    /// startCharOffset, endCellParaIdx, endCharOffset, startPageHint?, endPageHint? }`.
+    /// startCharOffset, endCellParaIdx, endCharOffset, startPageHint?, endPageHint?, closeGaps? }`.
     /// page hint가 누락되거나 유효하지 않으면 positional 과 동일한 전체 탐색을 사용한다.
     #[wasm_bindgen(js_name = getSelectionRectsInCellEx)]
     pub fn get_selection_rects_in_cell_ex(&self, options_json: &str) -> Result<String, JsValue> {
@@ -7308,6 +7316,7 @@ impl HwpDocument {
                 json_u32(options_json, "cellIdx").unwrap_or(0) as usize,
             )),
             json_u32(options_json, "startPageHint").zip(json_u32(options_json, "endPageHint")),
+            crate::document_core::helpers::json_bool(options_json, "closeGaps").unwrap_or(true),
         )
         .map_err(|e| e.into())
     }

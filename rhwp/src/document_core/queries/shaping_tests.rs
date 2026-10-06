@@ -73,7 +73,7 @@ fn embedded_shaping_keeps_caret_selection_and_hit_testing_in_agreement() {
         near(end["x"].as_f64().unwrap() - x, width);
         let rects: Vec<Value> = serde_json::from_str(
             &core
-                .get_selection_rects_native(0, 0, 0, 0, text.chars().count(), None, None)
+                .get_selection_rects_native(0, 0, 0, 0, text.chars().count(), None, None, true)
                 .unwrap(),
         )
         .unwrap();

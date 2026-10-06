@@ -1258,7 +1258,7 @@ fn issue_1139_endnote_virtual_paragraph_selection_rects_are_available() {
     );
 
     let rects = doc
-        .get_selection_rects(0, 868, 0, 868, 8)
+        .get_selection_rects(0, 868, 0, 868, 8, None)
         .unwrap_or_else(|e| panic!("미주 가상 문단 선택 사각형 조회 실패: {e:?}"));
     let rects: Value = serde_json::from_str(&rects).expect("selection rects json");
     let rects = rects.as_array().expect("selection rect array");
@@ -1872,7 +1872,7 @@ fn issue_1189_2022_oct_page17_endnote_drag_selection_covers_equation_tail_lines(
     let tree = doc.build_page_render_tree(16).expect("page 17 render tree");
 
     let rects = doc
-        .get_selection_rects(0, 915, 0, 921, 3)
+        .get_selection_rects(0, 915, 0, 921, 3, None)
         .unwrap_or_else(|e| panic!("17쪽 문27 미주 드래그 선택 사각형 조회 실패: {e:?}"));
     let rects: Value = serde_json::from_str(&rects).expect("selection rects json");
     let rects = rects.as_array().expect("selection rect array");

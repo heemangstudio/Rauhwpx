@@ -2848,12 +2848,13 @@ export class WasmBridge {
 
   // ─── Selection API ──────────────────────────────────────
 
-  getSelectionRects(sec: number, startPara: number, startOffset: number, endPara: number, endOffset: number): SelectionRect[] {
+  /** closeGaps=false 면 줄 rect 가 글자 높이만 덮는다 (생략 시 선택 띠처럼 줄 사이를 메움). */
+  getSelectionRects(sec: number, startPara: number, startOffset: number, endPara: number, endOffset: number, closeGaps?: boolean): SelectionRect[] {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
-    return JSON.parse(this.doc.getSelectionRects(sec, startPara, startOffset, endPara, endOffset));
+    return JSON.parse(this.doc.getSelectionRects(sec, startPara, startOffset, endPara, endOffset, closeGaps));
   }
 
-  getSelectionRectsInCell(sec: number, parentPara: number, controlIdx: number, cellIdx: number, startCellPara: number, startOffset: number, endCellPara: number, endOffset: number, pageHints?: SelectionPageHints): SelectionRect[] {
+  getSelectionRectsInCell(sec: number, parentPara: number, controlIdx: number, cellIdx: number, startCellPara: number, startOffset: number, endCellPara: number, endOffset: number, pageHints?: SelectionPageHints, closeGaps?: boolean): SelectionRect[] {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return getSelectionRectsInCellWithPageHints(
       this.doc as unknown as CellSelectionRectDocument,
@@ -2866,6 +2867,7 @@ export class WasmBridge {
         startCharOffset: startOffset,
         endCellParaIdx: endCellPara,
         endCharOffset: endOffset,
+        closeGaps,
       },
       pageHints,
     );
@@ -2876,10 +2878,10 @@ export class WasmBridge {
    * 최외곽 셀만 가리키므로 cellPath 전체를 전달한다. path 마지막 entry 의
    * cellParaIndex 는 start/end 인자로 대체된다.
    */
-  getSelectionRectsByPath(sec: number, parentPara: number, cellPath: unknown[], startCellPara: number, startOffset: number, endCellPara: number, endOffset: number): SelectionRect[] {
+  getSelectionRectsByPath(sec: number, parentPara: number, cellPath: unknown[], startCellPara: number, startOffset: number, endCellPara: number, endOffset: number, closeGaps?: boolean): SelectionRect[] {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse((this.doc as any).getSelectionRectsByPath(
-      sec, parentPara, JSON.stringify(cellPath), startCellPara, startOffset, endCellPara, endOffset,
+      sec, parentPara, JSON.stringify(cellPath), startCellPara, startOffset, endCellPara, endOffset, closeGaps,
     ));
   }
 

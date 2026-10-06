@@ -73,7 +73,7 @@ fn issue_658_exam_social_data_cell_selection_rects_do_not_overflow_page() {
 
     // 영상의 페이지 2 오른쪽 자료 박스: section=1, parent_para=16, control=0, cell=0.
     let rects_json = doc
-        .get_selection_rects_in_cell(1, 16, 0, 0, 0, 0, 6, 469)
+        .get_selection_rects_in_cell(1, 16, 0, 0, 0, 0, 6, 469, None)
         .expect("cell selection rects");
     let rects = parse_rects(&rects_json);
 
@@ -81,7 +81,7 @@ fn issue_658_exam_social_data_cell_selection_rects_do_not_overflow_page() {
     assert_rects_inside_page(&rects, page_width);
 
     let first_para_json = doc
-        .get_selection_rects_in_cell(1, 16, 0, 0, 0, 0, 0, 209)
+        .get_selection_rects_in_cell(1, 16, 0, 0, 0, 0, 0, 209, None)
         .expect("first cell paragraph selection rects");
     let first_para_rects = parse_rects(&first_para_json);
     assert_eq!(first_para_rects.len(), 3, "rects json: {first_para_json}");
@@ -100,7 +100,7 @@ fn issue_658_exam_social_body_multiline_selection_uses_next_line_start() {
     let page_width = json_number(&page_info, "width");
 
     let rects_json = doc
-        .get_selection_rects(1, 15, 0, 15, 66)
+        .get_selection_rects(1, 15, 0, 15, 66, None)
         .expect("body selection rects");
     let rects = parse_rects(&rects_json);
 
