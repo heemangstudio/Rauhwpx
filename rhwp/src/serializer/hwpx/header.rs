@@ -1414,12 +1414,15 @@ fn write_compatible_document<W: Write>(
             doc_info.hwpx_target_program.as_deref().unwrap_or("HWP201X"),
         )],
     )?;
+    // upstream #7478: HWP5 필드 묶음 이름은 HWPX의 자식 요소가 아니다.
+    // 기본 폴백은 Hancom reference와 같은 빈 블록으로 쓰되, 포크에서 지원하는
+    // 실제 호환성 설정이 있으면 그 요소와 targetProgram은 보존한다.
+    if !doc_info.adjust_baseline_in_fixed_line_spacing && !doc_info.do_not_align_last_forbidden {
+        empty_tag(w, "hh:layoutCompatibility", &[])?;
+        end_tag(w, "hh:compatibleDocument")?;
+        return Ok(());
+    }
     super::utils::start_tag(w, "hh:layoutCompatibility")?;
-    empty_tag(w, "hh:char", &[])?;
-    empty_tag(w, "hh:paragraph", &[])?;
-    empty_tag(w, "hh:section", &[])?;
-    empty_tag(w, "hh:object", &[])?;
-    empty_tag(w, "hh:field", &[])?;
     if doc_info.adjust_baseline_in_fixed_line_spacing {
         empty_tag(w, "hh:adjustBaselineInFixedLinespacing", &[])?;
     }
@@ -1639,8 +1642,8 @@ mod tests {
         let ctx = SerializeContext::collect_from_document(&doc);
         let xml = String::from_utf8(write_header(&doc, &ctx).unwrap()).unwrap();
         assert!(
-            xml.contains("<hh:layoutCompatibility><hh:char/><hh:paragraph/><hh:section/><hh:object/><hh:field/></hh:layoutCompatibility>"),
-            "원본 부재 시 하드코딩 폴백: {xml}"
+            xml.contains("<hh:layoutCompatibility/></hh:compatibleDocument>"),
+            "원본 부재 시 폴백도 reference와 같은 빈 호환성 블록: {xml}"
         );
         assert!(xml.contains(r#"<hh:trackchageConfig flags="0"/>"#));
     }
