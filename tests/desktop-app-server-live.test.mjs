@@ -160,6 +160,19 @@ async function liveHarness(t, { boot = true, healthStatuses = [] } = {}) {
   };
 }
 
+test('unsupported Cloud agents never reach Railway provisioning', async (t) => {
+  const live = await liveHarness(t);
+  t.after(() => live.coordinator.stop());
+  const started = await live.coordinator.start();
+  await assert.rejects(live.coordinator.spawnAppServer({ selectedProvider: 'rau' }), {
+    message: 'Unsupported cloud provider: rau',
+  });
+  assert.deepEqual(live.names(), [], 'invalid input must not issue any Railway GraphQL request');
+  assert.equal(live.plane(), null, 'invalid input must not boot the control plane');
+  assert.equal(await live.client.loadPendingAppSandbox(), null);
+  assert.equal((await live.coordinator.snapshot()).server.lifecycle, started.server.lifecycle);
+});
+
 test('Railway onboarding waits through a transient route miss before health', async (t) => {
   const live = await liveHarness(t, { healthStatuses: [404] });
   await live.coordinator.start();
