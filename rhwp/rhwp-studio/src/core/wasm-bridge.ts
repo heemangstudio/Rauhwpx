@@ -1,5 +1,7 @@
 import init, { HwpDocument, version } from '@wasm/rhwp.js';
 import { guardEngineCalls } from './engine-trap';
+import { setHftWasmApi } from './hft-glyphs';
+import { setImageDownsampleApi, setImageAffineSampleApi } from './image-sampling';
 import { withBodyTextPaginationBatch } from './pagination-batch';
 import { requireCharShapeRunsDocument, parseCharShapeRuns, validateCharShapeRuns } from './char-shape-runs';
 import type { CharShapeRun } from './types';
@@ -234,6 +236,7 @@ import { fontFamilyChainForDisplay, prefersHcrOverWebProxy, prefersImportedHanco
 import { createEquationFontResolver, createEquationLiteralFontResolver, createEquationTextMeasurer } from './equation-font';
 import { getImportedLocalFontBytes, hasImportedLocalFontFace, resolveLocalFont } from './local-fonts';
 import { createDeclaredFontAvailabilityProbe, createRawFontAvailabilityProbe } from './font-presence';
+import { getWebFontSubstituteFamilies } from './font-loader';
 import type { RuntimeFontMetricsApi } from './desktop-fonts.ts';
 import type { FileSystemFileHandleLike } from '@/command/file-system-access';
 import {
@@ -276,7 +279,7 @@ let canvasFontSubstitutionInstalled = false;
  * 패치 전 font setter 를 쓰지 않으면 없는 face 도 fallback 체인으로 치환되어 항상
  * "설치됨" 으로 검출된다. 가져온 face 는 로컬 등록부에서도 확인한다.
  */
-function installDeclaredFontAvailabilityProbe(): void {
+export function installDeclaredFontAvailabilityProbe(): void {
   const host = globalThis as Record<string, unknown>;
   if (typeof host.isDeclaredFontFamilyAvailable === 'function') return;
   if (typeof CanvasRenderingContext2D === 'undefined') return;
@@ -292,6 +295,7 @@ function installDeclaredFontAvailabilityProbe(): void {
     context,
     { get: descriptor.get, set: descriptor.set },
     hasImportedLocalFontFace,
+    getWebFontSubstituteFamilies(),
     family => prefersHcrOverWebProxy(family) || prefersImportedHancomSubstitute(family),
   );
 }
@@ -412,6 +416,18 @@ export class WasmBridge {
     this.installMeasureTextWidth();
     await init();
     guardEngineCalls(HwpDocument.prototype);
+    const downsampleRgba = Reflect.get(wasmExports, 'smoothHermiteDownsampleRgba');
+    setImageDownsampleApi(typeof downsampleRgba === 'function' ? downsampleRgba : null);
+    const affineSampleRgba = Reflect.get(wasmExports, 'gridfitAffineSampleRgba');
+    setImageAffineSampleApi(typeof affineSampleRgba === 'function' ? affineSampleRgba : null);
+    const registerHft = Reflect.get(wasmExports, 'registerHftFont');
+    const hftGlyphPathEm = Reflect.get(wasmExports, 'hftGlyphPathEm');
+    setHftWasmApi(typeof registerHft === 'function' && typeof hftGlyphPathEm === 'function'
+      ? {
+        register: bytes => Boolean(registerHft(bytes)),
+        glyphPath: (family, codePoint) => String(hftGlyphPathEm(family, codePoint)),
+      }
+      : null);
     if (!disconnectSubsecondDevtools) {
       disconnectSubsecondDevtools = connectSubsecondDevtools(
         wasmExports as unknown as SubsecondWasmExports,
@@ -428,12 +444,16 @@ export class WasmBridge {
     const clear = Reflect.get(wasmExports, 'clearRuntimeFontMetrics');
     const report = Reflect.get(wasmExports, 'getRuntimeFontMetricsReport');
     const hasBaked = Reflect.get(wasmExports, 'hasBakedFontMetrics');
+    const fallbackFamilies = Reflect.get(wasmExports, 'fontFallbackFamilies');
     return {
       register: (bytes, aliasesJson, bold, italic) => String(register(bytes, aliasesJson, bold, italic)),
       ...(typeof clear === 'function' ? { clear: () => { clear(); } } : {}),
       ...(typeof report === 'function' ? { report: () => String(report()) } : {}),
       ...(typeof hasBaked === 'function'
         ? { hasBaked: (name: string, bold: boolean, italic: boolean) => Boolean(hasBaked(name, bold, italic)) }
+        : {}),
+      ...(typeof fallbackFamilies === 'function'
+        ? { fallbackFamilies: (name: string, fontSubst?: string): string[] => JSON.parse(String(fallbackFamilies(name, fontSubst))) }
         : {}),
     };
   }
@@ -2834,12 +2854,13 @@ export class WasmBridge {
 
   // ─── Selection API ──────────────────────────────────────
 
-  getSelectionRects(sec: number, startPara: number, startOffset: number, endPara: number, endOffset: number): SelectionRect[] {
+  /** closeGaps=false 면 줄 rect 가 글자 높이만 덮는다 (생략 시 선택 띠처럼 줄 사이를 메움). */
+  getSelectionRects(sec: number, startPara: number, startOffset: number, endPara: number, endOffset: number, closeGaps?: boolean): SelectionRect[] {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
-    return JSON.parse(this.doc.getSelectionRects(sec, startPara, startOffset, endPara, endOffset));
+    return JSON.parse(this.doc.getSelectionRects(sec, startPara, startOffset, endPara, endOffset, closeGaps));
   }
 
-  getSelectionRectsInCell(sec: number, parentPara: number, controlIdx: number, cellIdx: number, startCellPara: number, startOffset: number, endCellPara: number, endOffset: number, pageHints?: SelectionPageHints): SelectionRect[] {
+  getSelectionRectsInCell(sec: number, parentPara: number, controlIdx: number, cellIdx: number, startCellPara: number, startOffset: number, endCellPara: number, endOffset: number, pageHints?: SelectionPageHints, closeGaps?: boolean): SelectionRect[] {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return getSelectionRectsInCellWithPageHints(
       this.doc as unknown as CellSelectionRectDocument,
@@ -2852,6 +2873,7 @@ export class WasmBridge {
         startCharOffset: startOffset,
         endCellParaIdx: endCellPara,
         endCharOffset: endOffset,
+        closeGaps,
       },
       pageHints,
     );
@@ -2862,10 +2884,10 @@ export class WasmBridge {
    * 최외곽 셀만 가리키므로 cellPath 전체를 전달한다. path 마지막 entry 의
    * cellParaIndex 는 start/end 인자로 대체된다.
    */
-  getSelectionRectsByPath(sec: number, parentPara: number, cellPath: unknown[], startCellPara: number, startOffset: number, endCellPara: number, endOffset: number): SelectionRect[] {
+  getSelectionRectsByPath(sec: number, parentPara: number, cellPath: unknown[], startCellPara: number, startOffset: number, endCellPara: number, endOffset: number, closeGaps?: boolean): SelectionRect[] {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse((this.doc as any).getSelectionRectsByPath(
-      sec, parentPara, JSON.stringify(cellPath), startCellPara, startOffset, endCellPara, endOffset,
+      sec, parentPara, JSON.stringify(cellPath), startCellPara, startOffset, endCellPara, endOffset, closeGaps,
     ));
   }
 

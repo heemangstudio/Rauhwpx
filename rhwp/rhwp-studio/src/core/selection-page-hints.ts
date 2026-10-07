@@ -14,6 +14,8 @@ export interface CellSelectionRectQuery {
   startCharOffset: number;
   endCellParaIdx: number;
   endCharOffset: number;
+  /** false 면 줄 사이 틈을 메우지 않는다. 생략하면 엔진 기본값(메움). */
+  closeGaps?: boolean;
 }
 
 export interface CellSelectionRectDocument {
@@ -26,6 +28,7 @@ export interface CellSelectionRectDocument {
     startCharOffset: number,
     endCellParaIdx: number,
     endCharOffset: number,
+    closeGaps?: boolean,
   ): string;
   getSelectionRectsInCellEx?: (optionsJson: string) => string;
 }
@@ -64,6 +67,7 @@ export function getSelectionRectsInCellWithPageHints(
       query.startCharOffset,
       query.endCellParaIdx,
       query.endCharOffset,
+      ...(query.closeGaps === undefined ? [] : [query.closeGaps]),
     );
 
   return JSON.parse(json) as SelectionRect[];

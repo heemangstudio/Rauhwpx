@@ -475,7 +475,16 @@ impl PaintOp {
                     write_gradient(buf, gradient, None);
                 }
                 if let Some(image) = &background.image {
-                    let base64_data = base64::engine::general_purpose::STANDARD.encode(&image.data);
+                    // 밝기·대비는 한컴 방식으로 구운 픽셀을 내보낸다 (Studio 는 효과를 따로
+                    // 적용하지 않는다).
+                    let baked = crate::renderer::image_resolver::hancom_adjusted_picture_png_bytes(
+                        &image.data,
+                        image.effect,
+                        image.brightness,
+                        image.contrast,
+                    );
+                    let base64_data = base64::engine::general_purpose::STANDARD
+                        .encode(baked.as_deref().unwrap_or(&image.data));
                     let _ = write!(
                         buf,
                         ",\"image\":{{\"fillMode\":{},\"base64\":{}}}",
@@ -495,12 +504,32 @@ impl PaintOp {
                     buf,
                     ",\"text\":{},\"baseline\":{:.3},\"rotation\":{:.3},\"isVertical\":{},\"orientation\":{},\"projectionKind\":{},\"clusterBasis\":\"legacyPosition\"",
                     json_escape(&run.text),
-                    run.baseline,
+                    // 글자 위치(%) 기준선 이동 — CanvasKit 재생은 이 baseline 을 그대로 쓴다.
+                    run.baseline + run.style.font_size * run.style.char_offset,
                     run.rotation,
                     run.is_vertical,
                     json_escape(text_orientation_str(run)),
                     json_escape(text_projection_kind_str(run)),
                 );
+                if let Some(copy) = crate::renderer::hft_vertical_bold_copy(
+                    &run.style,
+                    run.display_or_text(),
+                    run.is_vertical && run.rotation == 0.0 && run.char_overlap.is_none(),
+                ) {
+                    let _ = write!(
+                        buf,
+                        ",\"hftVerticalBoldCopy\":{{\"offsetY\":{:.3},\"emboldenX\":{:.3}",
+                        copy.offset_y, copy.embolden_x,
+                    );
+                    if copy.rotation != 0.0 {
+                        let _ = write!(
+                            buf,
+                            ",\"offsetX\":{:.3},\"rotation\":{:.3}",
+                            copy.offset_x, copy.rotation,
+                        );
+                    }
+                    buf.push('}');
+                }
                 if let Some(display_text) = &display_text {
                     let _ = write!(buf, ",\"displayText\":{}", json_escape(display_text));
                 }
@@ -742,12 +771,16 @@ impl PaintOp {
                 buf.push('{');
                 buf.push_str("\"type\":\"footnoteMarker\",\"bbox\":");
                 write_bbox(buf, *bbox);
+                let font_size = (marker.base_font_size * 0.75).max(7.0);
+                let baseline = marker.baseline - (marker.base_font_size - font_size) * 0.85;
                 let _ = write!(
                     buf,
-                    ",\"text\":{},\"fontFamily\":{},\"fontSize\":{:.3},\"color\":{}",
+                    ",\"text\":{},\"fontFamily\":{},\"fontSize\":{:.3},\"baseline\":{:.3},\"bold\":{},\"color\":{}",
                     json_escape(&marker.text),
                     json_escape(&marker.font_family),
-                    (marker.base_font_size * 0.55).max(7.0),
+                    font_size,
+                    baseline,
+                    marker.bold,
                     json_escape(&color_ref_to_css(marker.color)),
                 );
                 buf.push('}');
@@ -919,6 +952,10 @@ impl PaintOp {
                 let opacity = image.opacity.clamp(0.0, 1.0);
                 if opacity < 1.0 {
                     let _ = write!(buf, ",\"opacity\":{:.6}", opacity);
+                }
+                if let Some(ref shadow) = image.shadow {
+                    buf.push_str(",\"shadow\":");
+                    buf.push_str(&serde_json::to_string(shadow).expect("finite image shadow"));
                 }
                 // 워터마크 메타정보 (Task #516, AI 활용)
                 let attr = crate::model::image::ImageAttr {
@@ -1441,7 +1478,7 @@ fn write_text_style(buf: &mut String, style: &TextStyle) {
         json_escape(&style.font_family),
         style.font_size,
         json_escape(&color_ref_to_css(style.color)),
-        style.bold,
+        style.paint_bold(),
         style.italic,
         style.ratio,
         json_escape(underline_type_str(style.underline)),
@@ -1462,6 +1499,30 @@ fn write_text_style(buf: &mut String, style: &TextStyle) {
         json_escape(&color_ref_to_css(style.shade_color)),
         style.emphasis_dot,
     );
+    if let Some(width) = crate::renderer::faux_bold_stroke_width(
+        style,
+        if style.font_size > 0.0 {
+            style.font_size
+        } else {
+            12.0
+        },
+    ) {
+        let _ = write!(buf, ",\"fauxBoldStrokeWidth\":{width:.6}");
+    }
+    // 기본값이 아닐 때만 싣는다 (기존 직렬화 결과 불변).
+    if !style.hft_family.is_empty() {
+        let _ = write!(buf, ",\"hftFamily\":{}", json_escape(&style.hft_family));
+    }
+    if style.char_offset != 0.0 {
+        let _ = write!(buf, ",\"charOffset\":{:.4}", style.char_offset);
+    }
+    if !style.effective_font_subst().is_empty() {
+        let _ = write!(
+            buf,
+            ",\"fontSubst\":{}",
+            json_escape(style.effective_font_subst())
+        );
+    }
     buf.push('}');
 }
 
@@ -1494,6 +1555,12 @@ fn write_paint_text_style(buf: &mut String, style: &PaintTextStyle) {
         json_escape(&color_ref_to_css(style.shade_color)),
         style.emphasis_dot,
     );
+    if let Some(width) = style.faux_bold_stroke_width {
+        let _ = write!(buf, ",\"fauxBoldStrokeWidth\":{width:.6}");
+    }
+    if !style.font_subst.is_empty() {
+        let _ = write!(buf, ",\"fontSubst\":{}", json_escape(&style.font_subst));
+    }
     buf.push('}');
 }
 
@@ -1545,7 +1612,11 @@ fn bounded_text_prefix(text: &str) -> (String, bool) {
 
 fn bounded_display_text_for_run(run: &TextRunNode) -> (String, bool) {
     let (source_prefix, source_complete) = bounded_text_prefix(run.display_or_text());
-    let display_text = expand_pua_display_text(&source_prefix);
+    let display_text = if run.display_text.is_some() {
+        source_prefix
+    } else {
+        expand_pua_display_text(&source_prefix)
+    };
     let (display_prefix, display_complete) = bounded_text_prefix(&display_text);
     (display_prefix, source_complete && display_complete)
 }
@@ -1558,7 +1629,10 @@ fn write_bounded_text_positions(buf: &mut String, text: &str, style: &TextStyle)
 }
 
 fn display_text_for_text_run(run: &TextRunNode) -> Option<String> {
-    let display_text = expand_pua_display_text(run.display_or_text());
+    if let Some(display_text) = &run.display_text {
+        return Some(display_text.clone());
+    }
+    let display_text = expand_pua_display_text(&run.text);
     (display_text != run.text.as_str()).then_some(display_text)
 }
 
@@ -2520,11 +2594,8 @@ fn write_glyph_run_diagnostics(buf: &mut String, diagnostics: &GlyphRunDiagnosti
 fn write_text_decoration(buf: &mut String, kind: TextDecorationKind, run: &TextRunNode) {
     let (color, shape, underline, emphasis_dot) = match kind {
         TextDecorationKind::Underline => (
-            if run.style.underline_color != 0 {
-                run.style.underline_color
-            } else {
-                run.style.color
-            },
+            // 밑줄 색은 글자 색과 별개다 — 0(검정)도 지정값이다.
+            run.style.underline_color,
             run.style.underline_shape,
             run.style.underline,
             0,
@@ -2845,8 +2916,17 @@ fn write_equation_layout_kind(buf: &mut String, kind: &LayoutKind) {
             write_optional_equation_box(buf, "sup", sup.as_deref());
             buf.push('}');
         }
-        LayoutKind::Limit { is_upper, sub } => {
-            let _ = write!(buf, "{{\"type\":\"limit\",\"isUpper\":{}", is_upper);
+        LayoutKind::Limit {
+            is_upper,
+            sub,
+            name_x,
+            name_y,
+        } => {
+            let _ = write!(
+                buf,
+                "{{\"type\":\"limit\",\"isUpper\":{},\"nameX\":{},\"nameY\":{}",
+                is_upper, name_x, name_y
+            );
             write_optional_equation_box(buf, "sub", sub.as_deref());
             buf.push('}');
         }
@@ -3180,7 +3260,7 @@ mod tests {
     use serde_json::Value;
 
     #[test]
-    fn equation_layout_serializes_measured_advances_only_when_present() {
+    fn equation_layout_serializes_glyph_advances_and_limit_offsets() {
         let mut layout = LayoutBox {
             glyph_advances: Some(vec![6.3, 6.3]),
             x: 0.0,
@@ -3200,6 +3280,133 @@ mod tests {
         write_equation_layout_box(&mut json, &layout);
         let parsed: Value = serde_json::from_str(&json).unwrap();
         assert!(parsed.get("glyphAdvances").is_none());
+        layout.kind = LayoutKind::Limit {
+            is_upper: false,
+            sub: Some(Box::new(layout.clone())),
+            name_x: 2.5,
+            name_y: 1.56,
+        };
+        json.clear();
+        write_equation_layout_box(&mut json, &layout);
+        let parsed: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["kind"]["nameX"], 2.5);
+        assert_eq!(parsed["kind"]["nameY"], 1.56);
+        assert_eq!(parsed["kind"]["sub"]["kind"]["text"], "12");
+    }
+
+    #[test]
+    fn both_text_payloads_preserve_regular_face_faux_bold_paint() {
+        for (family, expected) in [("한양신명조", Some(0.4)), ("HCR Dotum", None)] {
+            let style = TextStyle {
+                font_family: family.into(),
+                font_size: 16.0,
+                bold: true,
+                ..Default::default()
+            };
+            let paint = PaintTextStyle::from(&style);
+            assert_eq!(paint.faux_bold_stroke_width, expected);
+            if expected.is_some() {
+                assert!(!paint.is_fill_only_glyph_replay());
+            }
+            let mut text_json = String::new();
+            let mut paint_json = String::new();
+            write_text_style(&mut text_json, &style);
+            write_paint_text_style(&mut paint_json, &paint);
+            for raw in [text_json, paint_json] {
+                let json: Value = serde_json::from_str(&raw).unwrap();
+                assert_eq!(json["bold"], true);
+                assert_eq!(
+                    json.get("fauxBoldStrokeWidth").and_then(Value::as_f64),
+                    expected
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn hft_paint_substitute_is_emitted_without_changing_layout_style() {
+        let style = TextStyle {
+            font_family: "HY신명조".into(),
+            hft_family: "신명 중명조".into(),
+            ..Default::default()
+        };
+        let mut raw = String::new();
+        write_text_style(&mut raw, &style);
+        let json: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(json["fontSubst"], "한컴바탕");
+        raw.clear();
+        write_paint_text_style(&mut raw, &PaintTextStyle::from(&style));
+        let json: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(json["fontSubst"], "한컴바탕");
+        assert!(style.font_subst.is_empty());
+    }
+
+    #[test]
+    fn document_substitute_is_preserved_in_both_text_style_payloads() {
+        let style = TextStyle {
+            font_family: "Unavailable document face".to_string(),
+            font_subst: "한컴바탕".to_string(),
+            ..Default::default()
+        };
+        let mut raw = String::new();
+        write_text_style(&mut raw, &style);
+        let json: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(json["fontSubst"], "한컴바탕");
+        raw.clear();
+        write_paint_text_style(&mut raw, &PaintTextStyle::from(&style));
+        let json: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(json["fontSubst"], "한컴바탕");
+        raw.clear();
+        write_text_style(&mut raw, &TextStyle::default());
+        assert!(!raw.contains("fontSubst"));
+    }
+
+    #[test]
+    fn serializes_hft_vertical_bold_copy_before_paint_weight_is_flattened() {
+        let mut run = TextRunNode {
+            text: "데".into(),
+            style: TextStyle {
+                font_family: "한양중고딕".into(),
+                hft_family: "한양중고딕".into(),
+                font_size: 16.0,
+                bold: true,
+                ..Default::default()
+            },
+            char_shape_id: None,
+            para_shape_id: None,
+            section_index: None,
+            para_index: None,
+            char_start: None,
+            cell_context: None,
+            is_para_end: false,
+            is_line_break_end: false,
+            rotation: 0.0,
+            is_vertical: true,
+            char_overlap: None,
+            border_fill_id: 0,
+            baseline: 13.6,
+            field_marker: FieldMarkerType::None,
+            display_text: None,
+        };
+        let serialize = |run: TextRunNode| {
+            let bbox = BoundingBox::new(0.0, 0.0, 16.0, 16.0);
+            PageLayerTree::new(
+                16.0,
+                16.0,
+                LayerNode::leaf(bbox, None, vec![PaintOp::text_run(bbox, run)]),
+            )
+            .to_json()
+        };
+        let json = serialize(run.clone());
+        assert!(json.contains("\"hftVerticalBoldCopy\":{\"offsetY\":14.400,\"emboldenX\":0.800}"));
+        assert!(!run.style.paint_bold());
+        run.text = "(".into();
+        let json = serialize(run.clone());
+        assert!(json.contains(
+            "\"offsetY\":0.400,\"emboldenX\":0.800,\"offsetX\":-0.400,\"rotation\":90.000"
+        ));
+        run.is_vertical = false;
+        assert!(!serialize(run).contains("hftVerticalBoldCopy"));
     }
 
     #[test]
@@ -3354,8 +3561,8 @@ mod tests {
             font_size: 16.0,
             ..Default::default()
         };
-        let text = "\u{F012B}(Signature)";
-        let display_text = "(인)(Signature)";
+        let text = "\u{F03C5} 확인";
+        let display_text = "□ 확인";
         let source_positions = compute_char_positions(text, &style);
         let display_positions = compute_char_positions(display_text, &style);
         let text_run = PaintOp::text_run(
@@ -3457,6 +3664,57 @@ mod tests {
 
         assert!(json.contains("\"displayText\":\"\""));
         assert!(json.contains("\"displayPositions\":[]"));
+    }
+
+    #[test]
+    fn preserves_explicit_pua_display_projection() {
+        let text_run = PaintOp::text_run(
+            BoundingBox::new(10.0, 20.0, 80.0, 18.0),
+            TextRunNode {
+                text: "\u{F081C}\u{F012B}".to_string(),
+                style: TextStyle {
+                    font_family: "Noto Sans KR".to_string(),
+                    font_size: 16.0,
+                    ..Default::default()
+                },
+                char_shape_id: None,
+                para_shape_id: None,
+                section_index: None,
+                para_index: None,
+                char_start: None,
+                cell_context: None,
+                is_para_end: false,
+                is_line_break_end: false,
+                rotation: 0.0,
+                is_vertical: false,
+                char_overlap: None,
+                border_fill_id: 0,
+                baseline: 13.0,
+                field_marker: FieldMarkerType::None,
+                display_text: Some("\u{F081C}\u{F012B}".to_string()),
+            },
+        );
+        let tree = PageLayerTree::new(
+            120.0,
+            80.0,
+            LayerNode::leaf(
+                BoundingBox::new(0.0, 0.0, 120.0, 80.0),
+                None,
+                vec![text_run],
+            ),
+        );
+
+        let json = tree.to_json();
+
+        let value: Value = serde_json::from_str(&json).expect("valid layer JSON");
+        assert_eq!(value["root"]["ops"][0]["displayText"], "\u{F081C}\u{F012B}");
+        assert_eq!(
+            value["root"]["ops"][0]["displayPositions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
     }
 
     #[test]
@@ -3587,7 +3845,7 @@ mod tests {
             border_fill_id: 0,
             baseline: 20.0,
             field_marker: FieldMarkerType::None,
-            display_text: None,
+            display_text: Some("(인)".into()),
         };
         let bbox = BoundingBox::new(0.0, 0.0, 80.0, 24.0);
         let tree = PageLayerTree::new(

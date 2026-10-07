@@ -72,8 +72,6 @@
 | Windows · x64 | `.exe` | 미서명, SmartScreen 경고가 뜰 수 있음 |
 | Linux · x64, arm64 | `.AppImage` `.deb` | |
 
-새 변경을 먼저 써 보려면 매일 새벽 3시에 빌드되는 macOS·Windows용 [nightly](https://github.com/heemangstudio/Rauhwpx/releases/tag/nightly)를 받습니다.
-
 ## AI 연결
 
 **설정 → 연결**에서 쓸 AI를 고르면 설치와 로그인까지 앱이 안내합니다.
@@ -81,7 +79,7 @@
 | 연결 | 방식 |
 | --- | --- |
 | Rau | Rau 계정의 크레딧으로 모델을 사용합니다 |
-| Claude · Codex · Grok · Cursor · OpenCode | 각 도구의 계정과 인증을 그대로 연결합니다 |
+| Claude · Codex | 각 도구의 계정과 인증을 그대로 연결합니다 |
 | Pi | OpenRouter 키와 모델 설정을 사용합니다 |
 
 권한은 두 가지입니다. **안전**에서는 AI의 편집이 검토 대기로 남고, **전체 접근**에서는 한 번의 실행 취소로 되돌릴 수 있는 묶음으로 바로 반영됩니다. 처음에는 안전으로 작은 문단부터 맡겨 보는 편이 좋습니다.

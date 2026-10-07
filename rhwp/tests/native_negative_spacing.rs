@@ -189,11 +189,13 @@ fn widths(text: &str) -> Vec<i32> {
     let face = ttf_parser::Face::parse(FONT, 0).unwrap();
     text.chars()
         .map(|ch| {
-            (f64::from(
+            let advance = u32::from(
                 face.glyph_hor_advance(face.glyph_index(ch).unwrap())
                     .unwrap(),
-            ) * 1200.0
-                / f64::from(face.units_per_em())) as i32
+            );
+            let em = u32::from(face.units_per_em());
+            // 12pt는 300 배치 단위다. hmtx를 4HU 격자에 0.5 올림한다.
+            ((advance * 300 * 2 + em) / (em * 2) * 4) as i32
         })
         .collect()
 }
@@ -205,49 +207,62 @@ fn loaded_script_runs_compress_only_between_positive_glyph_advances() {
     let narrow = natural[3];
     let gap = -(narrow * 3 / 4);
     let width = natural.iter().sum::<i32>() + gap * (natural.len() as i32 - 1);
-    let (core, runs) = loaded(text, width, Context::default());
-    assert!(
-        runs.len() > 2,
-        "script runs and terminal glyph remain separate"
-    );
-    assert_eq!(
-        runs.iter()
-            .map(|(_, _, run)| run.text.as_str())
-            .collect::<String>(),
-        text
-    );
-    let terminal = &runs.last().unwrap().2;
-    assert_eq!(terminal.text, "i");
-    assert_eq!(terminal.style.extra_char_spacing, 0.0);
-    let mut offset = 0usize;
-    let start = runs[0].0;
-    let mut expected = 0i32;
-    for (x, _, run) in &runs {
-        assert!((x - start - f64::from(expected) / 75.0).abs() < 0.02);
-        assert_eq!(run.char_start, Some(offset));
-        for _ in run.text.chars() {
-            expected += natural[offset] + if offset + 1 == natural.len() { 0 } else { gap };
-            offset += 1;
+    // signed HU 나눗셈은 N-1 틈마다 같은 정수 간격을 쓰고 나머지는 남긴다.
+    for remainder in 0..natural.len() as i32 - 1 {
+        let saved_width = width - remainder;
+        let (core, runs) = loaded(text, saved_width, Context::default());
+        assert!(
+            runs.len() > 2,
+            "script runs and terminal glyph remain separate"
+        );
+        assert_eq!(
+            runs.iter()
+                .map(|(_, _, run)| run.text.as_str())
+                .collect::<String>(),
+            text
+        );
+        let terminal = &runs.last().unwrap().2;
+        assert_eq!(terminal.text, "i");
+        assert_eq!(terminal.style.extra_char_spacing, 0.0);
+        let mut offset = 0usize;
+        let start = runs[0].0;
+        let mut expected = 0i32;
+        for (x, _, run) in &runs {
+            assert!((x - start - f64::from(expected) / 75.0).abs() < 0.02);
+            assert_eq!(run.char_start, Some(offset));
+            for _ in run.text.chars() {
+                expected += natural[offset] + if offset + 1 == natural.len() { 0 } else { gap };
+                offset += 1;
+            }
+            if run.text != "i" {
+                assert!((run.style.extra_char_spacing - f64::from(gap) / 75.0).abs() < 1e-6);
+            }
         }
-        if run.text != "i" {
-            assert!((run.style.extra_char_spacing - f64::from(gap) / 75.0).abs() < 1e-6);
+        let last = runs.last().unwrap();
+        let span = last.0 + last.1 - start;
+        assert!((span - f64::from(expected) / 75.0).abs() < 1e-6);
+        if remainder == 0 {
+            assert!((span - f64::from(saved_width) / 75.0).abs() < 0.02);
+        } else {
+            let overrun = span * 75.0 - f64::from(saved_width);
+            assert!((overrun - f64::from(remainder)).abs() < 1e-6);
+            assert!(overrun > 0.0 && overrun < (natural.len() - 1) as f64);
         }
+        // Exercise the public character walk, including a narrow punctuation below its legacy half width.
+        let json: serde_json::Value =
+            serde_json::from_str(&core.get_page_text_layout_native(0).unwrap()).unwrap();
+        let dot = json["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|run| run["text"].as_str().is_some_and(|t| t.contains('.')))
+            .unwrap();
+        let chars: Vec<_> = dot["text"].as_str().unwrap().chars().collect();
+        let index = chars.iter().position(|ch| *ch == '.').unwrap();
+        let advance =
+            dot["charX"][index + 1].as_f64().unwrap() - dot["charX"][index].as_f64().unwrap();
+        assert!(advance > 0.0 && advance < f64::from(narrow) / 150.0);
     }
-    let last = runs.last().unwrap();
-    assert!((last.0 + last.1 - start - f64::from(width) / 75.0).abs() < 0.02);
-    // Exercise the public character walk, including a narrow punctuation below its legacy half width.
-    let json: serde_json::Value =
-        serde_json::from_str(&core.get_page_text_layout_native(0).unwrap()).unwrap();
-    let dot = json["runs"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|run| run["text"].as_str().is_some_and(|t| t.contains('.')))
-        .unwrap();
-    let chars: Vec<_> = dot["text"].as_str().unwrap().chars().collect();
-    let index = chars.iter().position(|ch| *ch == '.').unwrap();
-    let advance = dot["charX"][index + 1].as_f64().unwrap() - dot["charX"][index].as_f64().unwrap();
-    assert!(advance > 0.0 && advance < f64::from(narrow) / 150.0);
     rhwp::wasm_api::clear_runtime_font_metrics();
 }
 

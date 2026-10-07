@@ -9,6 +9,7 @@ import {
   resolveCreditsOrigin,
   resolveUniqueInstallPingKey,
   resolveUniqueInstallsDbPath,
+  resolveWaitlistDbPath,
 } from './config.mjs';
 import { creditsRequestListener, createCreditsService } from './service.mjs';
 import { createRailwayCloudProvisioner, railwayCloudConfigFromEnv } from './cloud-provisioner.mjs';
@@ -19,6 +20,7 @@ import {
   createUniqueInstallsService,
   emptyUniqueInstallsState,
 } from './unique-installs.mjs';
+import { createWaitlistService, emptyWaitlistState } from './waitlist.mjs';
 
 export async function createCreditsHttpServer(options = {}) {
   const port = options.port ?? DEFAULT_PORT;
@@ -67,7 +69,17 @@ export async function createCreditsHttpServer(options = {}) {
     pingKey: options.pingKey
       ?? (resolveUniqueInstallPingKey() || DEFAULT_UNIQUE_INSTALL_PING_KEY),
   });
-  const listener = creditsRequestListener(service, { uniqueInstalls });
+  const waitlist = createWaitlistService({
+    store: options.waitlistStore ?? createFileStore(options.waitlistDbPath ?? resolveWaitlistDbPath(), {
+      emptyState: emptyWaitlistState,
+    }),
+    now: options.now,
+    adminToken: options.waitlistAdminToken ?? process.env.RAU_WAITLIST_ADMIN_TOKEN ?? '',
+    telegramBotToken: options.waitlistTelegramBotToken ?? process.env.RAU_WAITLIST_TELEGRAM_BOT_TOKEN ?? '',
+    telegramChatId: options.waitlistTelegramChatId ?? process.env.RAU_WAITLIST_TELEGRAM_CHAT_ID ?? '',
+    fetchImpl: options.fetchImpl,
+  });
+  const listener = creditsRequestListener(service, { uniqueInstalls, waitlist });
   const server = http.createServer((req, res) => {
     void Promise.resolve(listener(req, res)).catch(() => {
       if (!res.headersSent) {

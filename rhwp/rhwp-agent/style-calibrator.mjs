@@ -251,7 +251,8 @@ function runCli(command, args, stdin, cwd, timeoutMs, unavailableCode, deps = {}
   return new Promise((resolve, reject) => {
     const spawnProcess = deps.spawnProcess ?? spawn;
     const terminateProcess = deps.terminateProcess ?? terminateProcessTree;
-    const spawnEnv = isolatedProcessEnv(deps);
+    // 프로바이더 env 가 있으면 그것을 쓴다. Claude 는 허브가 정한 로그인만 받아야 한다.
+    const spawnEnv = isolatedProcessEnv(deps, deps.providerEnvs?.[command] ?? process.env);
     const launched = applyManagedCliLaunch(command, args, {
       platform: deps.platform,
       nodeCommand: deps.nodeCommand,
@@ -776,6 +777,7 @@ export function renderStyleMarkdown({
  * @param {{ run?: typeof runCodex, runClaude?: typeof runClaude, useOpenRouter?: boolean,
  *   piManager?: any, openRouter?: any, projectRoot?: string, isolatedHome?: string,
  *   sessionId?: string, spawnProcess?: typeof spawn, terminateProcess?: typeof terminateProcessTree,
+ *   providerEnvs?: Record<string, Record<string, string>>,
  *   onProgress?: (event: object) => void }} [deps]
  */
 export async function calibrateWritingStyle(input, { run = runCodex, ...deps } = {}) {

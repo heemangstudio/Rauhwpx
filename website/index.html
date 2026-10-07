@@ -126,9 +126,6 @@ a{color:inherit}
 .btn--line::before{background:var(--sheet);box-shadow:inset 0 0 0 2px var(--ink)}
 .btn--sm{--h:38px;padding:0 15px;font-size:14px}
 .btn svg{width:17px;height:17px;flex:0 0 auto}
-.gh-stars{display:none;font:500 13px/1 var(--mono);letter-spacing:0;color:var(--ink-3);margin-left:2px}
-.gh-stars.is-on{display:inline}
-.star{margin-right:3px}
 .tlink{font-size:15px;color:var(--ink-2);text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:4px;text-decoration-color:var(--ink-4);display:inline-flex;align-items:center;min-height:40px}
 .tlink:hover{text-decoration-color:var(--ink)}
 
@@ -405,7 +402,17 @@ html.js.motion .drop.in{visibility:visible;animation:drop calc(var(--frame)*8) s
   mask:radial-gradient(circle 13px at calc(100% - var(--stub)) 0,#0000 97%,#000) top/100% 51% no-repeat,radial-gradient(circle 13px at calc(100% - var(--stub)) 100%,#0000 97%,#000) bottom/100% 51% no-repeat;}
 .ticket .main{padding:clamp(40px,5vw,64px) clamp(24px,5vw,64px) clamp(36px,4vw,52px)}
 .ticket .h2{font-size:clamp(32px,4.4vw,58px)}
-.ticket .cta{margin-top:34px}
+.apply-lead{margin:18px 0 0;font-size:17px;line-height:1.6;color:var(--ink-2)}
+.apply{display:flex;flex-wrap:wrap;gap:12px 14px;margin-top:30px;max-width:560px}
+.apply__field{flex:1 1 240px;display:flex}
+.apply input{width:100%;min-height:50px;padding:0 16px;border:2px solid var(--ink);border-radius:3px;background:var(--sheet);font:500 16px/1 var(--sans);color:var(--ink);outline:none}
+.apply input::placeholder{color:var(--ink-4)}
+.apply input:focus-visible{box-shadow:0 0 0 3px var(--rule)}
+.apply .btn{border:0;cursor:pointer}
+.apply .btn:disabled{opacity:.6;cursor:default}
+.apply-note{margin:12px 0 0;min-height:22px;font-size:15px;color:var(--ink-2)}
+.apply-note.is-bad{color:#9b2c1f}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .stub{position:relative;padding:clamp(40px,5vw,64px) 30px;background:repeating-linear-gradient(to bottom,var(--ink-3) 0 6px,transparent 6px 12px) left/1.5px 100% no-repeat}
 .stub dl{margin:0;display:grid;gap:18px}
 .stub dt{font:500 11px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--ink-4)}
@@ -484,6 +491,28 @@ html.js.motion .drop.in{visibility:visible;animation:drop calc(var(--frame)*8) s
   .conn-card a .go{grid-column:2;justify-self:start;margin:-8px 0 14px}
   .stk{width:46px;height:46px}
   .stub dd{font-size:15px}
+}
+/* ── 터치 기기(iPad·휴대폰): 스크롤이 끊기지 않게 ─────────
+   WebKit은 SVG 필터와 SVG 무늬를 다시 그릴 때마다 CPU로 계산해요.
+   무늬는 같은 그림을 미리 구워 두고, 필터 그림자는 상자 그림자로 바꿔요.
+   선 떨림은 멈춘 한 장으로 둬요 (JS) */
+@media (hover:none) and (pointer:coarse){
+  :root{
+    --tooth:url(assets/tex-tooth.webp);
+    --dust:url(assets/tex-dust.webp);
+    --soot:url(assets/tex-soot.webp);
+    --rub:url(assets/tex-rub.webp);
+    --grain-w:url(assets/tex-grain-w.webp);
+  }
+  .mast{background:rgba(236,236,234,.97);-webkit-backdrop-filter:none;backdrop-filter:none}
+  /* 움직이는 것은 제 레이어에서: 위치와 투명도만 바뀌고 다시 그리지 않아요 */
+  .hero-copy,.hero.is-seq .sh{will-change:transform,opacity}
+  /* 그어지는 창 선: 필터 대신 같은 결의 가루 무늬로 가려서 목탄 결만 남겨요 */
+  .winline{-webkit-mask:url(assets/tex-line-grain.webp) 0 0/128px 128px;mask:url(assets/tex-line-grain.webp) 0 0/128px 128px}
+  .app{filter:none;box-shadow:0 1px 1px rgba(0,0,0,.22),0 16px 22px rgba(0,0,0,.16)}
+  .torn{filter:none}
+  .torn>.pin{box-shadow:0 .5px 1px rgba(10,10,10,.25),0 6px 10px rgba(10,10,10,.14)}
+  .ticket-wrap{filter:none;box-shadow:0 .5px 1px rgba(10,10,10,.2),0 6px 12px rgba(10,10,10,.12)}
 }
 @media (prefers-reduced-motion:reduce){
   .boil,.ul path{animation:none}
@@ -566,9 +595,7 @@ if(!window.matchMedia||!matchMedia('(prefers-reduced-motion: reduce)').matches)d
       <a href="#features">기능</a>
       <a href="#flow">예시</a>
       <a href="#connect">연결</a>
-      <a href="pricing.html">요금제</a>
-      <a href="https://github.com/heemangstudio/Rauhwpx">GitHub<span class="gh-stars"></span></a>
-      <a class="btn btn--ink btn--sm" data-download="mac" href="https://github.com/heemangstudio/Rauhwpx/releases/latest">다운로드</a>
+      <a class="btn btn--ink btn--sm" href="#apply">체험 신청</a>
     </nav>
   </div>
   <svg class="mast__rule cc" viewBox="0 0 1000 6" preserveAspectRatio="none" aria-hidden="true"><path d="M-4 3.2C180 2.1 330 4.4 520 3.1S850 2.2 1004 3.6" fill="none" stroke="currentColor" stroke-width="1.6" vector-effect="non-scaling-stroke"/></svg>
@@ -583,13 +610,9 @@ if(!window.matchMedia||!matchMedia('(prefers-reduced-motion: reduce)').matches)d
         <h1 id="hero-title" class="charcoal"><span class="l1">귀찮은 이를 위한</span> <span class="l2">한글, <span class="ul">Rauhwpx<svg viewBox="0 0 200 12" preserveAspectRatio="none" aria-hidden="true"><path pathLength="1" d="M3 8.6C38 5.2 70 3.6 104 4.5c30 .8 58 2.6 93 .2M150 7.4c16-.9 30-.8 44-2.1" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"/></svg></span></span></h1>
         <p class="lead">한글 파일을 열어 두고, 에이전트에게 말로 시키세요. 문서는 에이전트가 직접 써요.</p>
         <div class="cta">
-          <a class="btn btn--ink" data-download="mac" href="https://github.com/heemangstudio/Rauhwpx/releases/latest"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v10m0 0-4-4m4 4 4-4M4 16.5h12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>macOS용 다운로드</a>
-          <a class="btn btn--line" href="https://github.com/heemangstudio/Rauhwpx">Star on GitHub<span class="gh-stars"></span></a>
+          <a class="btn btn--ink" href="#apply">체험 신청하기</a>
         </div>
-        <div class="cta__sub">
-          <a class="tlink" data-download="windows" href="https://github.com/heemangstudio/Rauhwpx/releases/latest">Windows용 다운로드</a>
-        </div>
-        <p class="mono ver"><span data-release-version>v1.0.0</span> · macOS · Windows</p>
+        <p class="mono ver">Beta · macOS · Windows</p>
       </div>
 
       <div class="smudge" aria-hidden="true"><svg viewBox="0 0 300 120"><ellipse cx="150" cy="60" rx="118" ry="30" fill="#1b1b1a" opacity=".3" filter="url(#smear)"/></svg></div>
@@ -868,25 +891,27 @@ if(!window.matchMedia||!matchMedia('(prefers-reduced-motion: reduce)').matches)d
     </div>
   </section>
 
-  <!-- ─────────── 다운로드 ─────────── -->
-  <section class="sec" id="download" aria-labelledby="d-title" style="padding-top:0">
+  <!-- ─────────── 체험 신청 ─────────── -->
+  <section class="sec" id="apply" aria-labelledby="d-title" style="padding-top:0">
     <div class="wrap">
       <div class="ticket-wrap drop" style="--r:-.5deg">
         <div class="ticket">
           <div class="main">
-            <p class="idx mono">04 · 다운로드</p>
-            <h2 id="d-title" class="h2 charcoal" style="margin-top:18px">문서 작업은 이제<br>한곳에서 해결하세요</h2>
-            <div class="cta">
-              <a class="btn btn--ink" data-download="mac" href="https://github.com/heemangstudio/Rauhwpx/releases/latest"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v10m0 0-4-4m4 4 4-4M4 16.5h12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>macOS용 다운로드</a>
-              <a class="btn btn--line" data-download="windows" href="https://github.com/heemangstudio/Rauhwpx/releases/latest">Windows용</a>
-            </div>
-            <div class="cta__sub">
-              <a class="tlink" href="https://github.com/heemangstudio/Rauhwpx">Star on GitHub<span class="gh-stars"></span></a>
-            </div>
+            <p class="idx mono">04 · 베타 체험</p>
+            <h2 id="d-title" class="h2 charcoal" style="margin-top:18px">지금은 베타 버전이에요</h2>
+            <p class="apply-lead">이메일을 남겨 주시면 1–3일 안에 연락드릴게요.</p>
+            <form class="apply" data-apply novalidate>
+              <label class="apply__field">
+                <span class="sr">이메일</span>
+                <input type="email" name="email" autocomplete="email" inputmode="email" required placeholder="you@example.com">
+              </label>
+              <button class="btn btn--ink" type="submit">체험 신청하기</button>
+            </form>
+            <p class="apply-note" data-apply-note role="status" aria-live="polite"></p>
           </div>
           <div class="stub">
             <dl>
-              <div><dt>Version</dt><dd data-release-version>v1.0.0</dd></div>
+              <div><dt>Stage</dt><dd>Beta</dd></div>
               <div><dt>Platform</dt><dd>macOS · Windows</dd></div>
               <div><dt>License</dt><dd>MIT</dd></div>
             </dl>
@@ -907,16 +932,12 @@ if(!window.matchMedia||!matchMedia('(prefers-reduced-motion: reduce)').matches)d
       <a href="#gongmun">문서 편집</a>
       <a href="#flow">예시</a>
       <a href="#connect">연결</a>
-      <a href="pricing.html">요금제</a>
-      <a href="https://github.com/heemangstudio/Rauhwpx">GitHub</a>
-      <a href="https://github.com/heemangstudio/Rauhwpx/releases">릴리스</a>
-      <a href="https://github.com/heemangstudio/Rauhwpx/issues/new">이슈</a>
+      <a href="#apply">체험 신청</a>
       <a href="tos.html">이용약관</a>
     </nav>
     <p class="colophon">
-      <span><span data-release-version>v1.0.0</span> 정식 버전</span>
-      <span><a href="https://github.com/edwardkim/rhwp">edwardkim/rhwp</a> 포크 · MIT</span>
-      <span>macOS 빌드는 서명돼 있어요. Windows 빌드는 서명되지 않았어요.</span>
+      <span>Beta</span>
+      <span>edwardkim/rhwp 포크 · MIT</span>
       <span>문의 <a href="mailto:heemang12bo@gmail.com">heemang12bo@gmail.com</a></span>
     </p>
   </div>
@@ -951,9 +972,11 @@ var APP={
 (function(){
   var doc=document.documentElement;
   var MOTION=doc.classList.contains('motion');
+  /* 터치 기기: 너비가 아니라 입력 방식으로 가려요 (iPad는 900px보다 넓기도 해요) */
+  var TOUCH=!!window.matchMedia&&matchMedia('(hover:none) and (pointer:coarse)').matches;
   var q=function(s,c){return Array.prototype.slice.call((c||document).querySelectorAll(s));};
   function noop(){}
-  window.__rh={q:q,MOTION:MOTION};
+  window.__rh={q:q,MOTION:MOTION,TOUCH:TOUCH};
 
   /* 종이 안 문서 자리를 APP 값에 맞춰요 */
   doc.style.setProperty('--doc-l',((APP.clip.x-APP.paper.x)/APP.paper.w*100).toFixed(3)+'%');
@@ -1072,9 +1095,10 @@ var APP={
     drops.forEach(function(el){dio.observe(el);});
   }else{drops.forEach(function(el){el.classList.add('in');});}
 
-  /* ── 선 떨림: 보이는 동안만 ── */
+  /* ── 선 떨림: 보이는 동안만. 터치 기기는 멈춘 한 장 ── */
   var boils=q('[data-boil]');
-  if(MOTION&&'IntersectionObserver' in window){
+  if(MOTION&&TOUCH){boils.forEach(function(el){el.classList.add('cc');});}
+  else if(MOTION&&'IntersectionObserver' in window){
     var bio=new IntersectionObserver(function(es){
       es.forEach(function(e){e.target.classList.toggle('boil',e.isIntersecting);});
     });
@@ -1087,7 +1111,7 @@ var APP={
 /* ── 히어로: 쌓이고, 흩어지고, 앱 한 장으로 모여요 ── */
 (function(){
   var R=window.__rh;if(!R||!R.MOTION)return;
-  var q=R.q;
+  var q=R.q,TOUCH=R.TOUCH;
   function noop(){}
   var hero=document.querySelector('.hero'),stage=hero.querySelector('.stage');
   var copy=hero.querySelector('.hero-copy'),smudge=hero.querySelector('.smudge');
@@ -1366,9 +1390,11 @@ var APP={
         sk.p.style.visibility=vis;sk.h.style.visibility=vis;sk.pr.style.visibility=vis;
       }
     }
-    var ho=p<.3?0:p<.33?.08:.16;
-    hatch.setAttribute('opacity',ho);fills.setAttribute('opacity',p<.44?0:.5);
-    wl.classList.toggle('boil',p>T.draw0&&p<.9);
+    /* 값이 그대로면 손대지 않아요. 같은 값을 다시 넣어도 다시 그리는 브라우저가 있어요 */
+    var ho=p<.3?0:p<.33?.08:.16,fo=p<.44?0:.5;
+    if(hatch._o!==ho){hatch._o=ho;hatch.setAttribute('opacity',ho);}
+    if(fills._o!==fo){fills._o=fo;fills.setAttribute('opacity',fo);}
+    if(!TOUCH)wl.classList.toggle('boil',p>T.draw0&&p<.9);
 
     /* 앱이 인화지처럼 세 번에 걸쳐 떠올라요 */
     var ao=p<T.dev[0]?0:p<T.dev[1]?.3:p<T.dev[2]?.65:1;
@@ -1378,7 +1404,8 @@ var APP={
     appVideo(p);
     var ko=p<T.cap[0]?0:p<T.cap[1]?.5:1;
     cap.style.opacity=ko;cap.style.visibility=ko?'visible':'hidden';
-    frEl.textContent=('00'+(INTRO_LEN+Math.round(p*N))).slice(-3);
+    var fr=('00'+(INTRO_LEN+Math.round(p*N))).slice(-3);
+    if(frEl.textContent!==fr)frEl.textContent=fr;
   }
 
   /* 맨 위 장 영상: 더미에서 재생 → 흩어지면 포스터 → 모일 때 첫 장면에서 멈춤 */
@@ -1514,55 +1541,29 @@ var APP={
 
 <script>
 (function(){
-  var releaseUrl='https://github.com/heemangstudio/Rauhwpx/releases/latest';
-  var links={
-    mac:document.querySelectorAll('[data-download="mac"]'),
-    windows:document.querySelectorAll('[data-download="windows"]')
-  };
-  function setLinks(kind,url){
-    Array.prototype.forEach.call(links[kind],function(link){link.href=url;});
-  }
-  setLinks('mac',releaseUrl);
-  setLinks('windows',releaseUrl);
-  fetch('https://api.github.com/repos/heemangstudio/Rauhwpx/releases/latest')
-    .then(function(r){return r.ok?r.json():null;})
-    .then(function(release){
-      if(!release||!Array.isArray(release.assets))return;
-      var mac=release.assets.find(function(asset){return /arm64\.dmg$/i.test(asset.name);});
-      var windows=release.assets.find(function(asset){return /x64\.exe$/i.test(asset.name);});
-      if(mac)setLinks('mac',mac.browser_download_url);
-      if(windows)setLinks('windows',windows.browser_download_url);
-      if(release.tag_name){
-        Array.prototype.forEach.call(document.querySelectorAll('[data-release-version]'),function(slot){
-          slot.textContent=release.tag_name;
-        });
-      }
+  var form=document.querySelector('[data-apply]');
+  var note=document.querySelector('[data-apply-note]');
+  if(!form)return;
+  var input=form.querySelector('input');
+  var button=form.querySelector('button');
+  function say(text,bad){note.textContent=text;note.classList.toggle('is-bad',!!bad);}
+  form.addEventListener('submit',function(e){
+    e.preventDefault();
+    var email=input.value.trim();
+    if(!input.checkValidity()||!email){say('이메일 주소를 다시 확인해 주세요',true);input.focus();return;}
+    button.disabled=true;say('보내는 중…');
+    // text/plain 이라 preflight 없이 바로 보내요
+    fetch('https://rau-credits-production.up.railway.app/v1/waitlist',{
+      method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify({email:email})
     })
-    .catch(function(){});
-})();
-</script>
-
-<script>
-(function(){
-  var slots=document.querySelectorAll('.gh-stars');
-  if(!slots.length)return;
-  function put(n){
-    var t=n>=1000?(n/1000).toFixed(1).replace(/\.0$/,'')+'k':String(n);
-    slots.forEach(function(s){s.innerHTML='<span class="star">★</span>'+t;s.classList.add('is-on');});
-  }
-  var KEY='rauhwpx-gh-stars';
-  try{
-    var c=JSON.parse(sessionStorage.getItem(KEY));
-    if(c&&Date.now()-c.t<36e5){put(c.n);return;}
-  }catch(e){}
-  fetch('https://api.github.com/repos/heemangstudio/Rauhwpx')
-    .then(function(r){return r.ok?r.json():null;})
-    .then(function(d){
-      if(!d||typeof d.stargazers_count!=='number')return;
-      put(d.stargazers_count);
-      try{sessionStorage.setItem(KEY,JSON.stringify({n:d.stargazers_count,t:Date.now()}));}catch(e){}
-    })
-    .catch(function(){});
+      .then(function(r){return r.json().catch(function(){return {};}).then(function(b){return {ok:r.ok,body:b};});})
+      .then(function(res){
+        if(!res.ok)throw new Error(res.body.message||'');
+        form.reset();say('신청됐어요. 1–3일 안에 메일 드릴게요.');
+      })
+      .catch(function(err){say(err.message||'보내지 못했어요. 잠시 후 다시 시도해 주세요',true);})
+      .then(function(){button.disabled=false;});
+  });
 })();
 </script>
 </body>

@@ -20,6 +20,8 @@ export interface PendingEditDeps {
   inputHandler: InputHandler;
   canvasView: CanvasView;
   overlay: PendingOverlayRenderer;
+  /** 문서 내용이 그대로인 작업을 감싼다 — run 이 true 를 돌려주면 그 동안의 revision bump 를 내용 불변으로 기록한다. */
+  contentNeutral?: (run: () => boolean) => boolean;
 }
 
 /**
@@ -262,6 +264,23 @@ function scalarLen(s: string): number {
   return [...s].length;
 }
 
+/** 두 구간 목록이 글자마다 같은 모양인가 — 이웃한 같은 모양 구간은 하나로 본다. */
+function sameCharShapes(a: readonly CharShapeRun[], b: readonly CharShapeRun[]): boolean {
+  const merged = (runs: readonly CharShapeRun[]): CharShapeRun[] => {
+    const out: CharShapeRun[] = [];
+    for (const run of runs) {
+      const last = out.at(-1);
+      if (last && last.endOffset === run.startOffset && last.charShapeId === run.charShapeId) last.endOffset = run.endOffset;
+      else out.push({ ...run });
+    }
+    return out;
+  };
+  const x = merged(a);
+  const y = merged(b);
+  return x.length === y.length && x.every((run, i) => run.startOffset === y[i].startOffset
+    && run.endOffset === y[i].endOffset && run.charShapeId === y[i].charShapeId);
+}
+
 /** 머리말/꼬리말 텍스트의 {n}/{total} 플레이스홀더를 엔진 필드 문자로 치환한다 */
 function hfFieldMarkers(s: string): string {
   return s.replaceAll('{n}', '\u{0015}').replaceAll('{total}', '\u{0016}');
@@ -343,6 +362,12 @@ export class PendingEditManager {
    * 배치가 문서 클론을 N+1 번 하던 것을 1 번으로 줄인다.
    */
   private inAtomicBatch = false;
+  /**
+   * 전체 모드(검토 없는 직접 반영). 열린 set 은 쓰기 도구 하나가 끝날 때마다 commitOpen 으로
+   * 곧바로 undo 항목이 되므로 미리보기 표시를 그리지 않는다. 이전 모드에서 남은 검토 대기
+   * set 은 그대로 표시한다.
+   */
+  private directApply = false;
   private templateLocked = false;
   // 파라미터 프로퍼티 대신 명시적 할당 (node --test strip-only 모드 호환).
   private deps: PendingEditDeps;
@@ -405,6 +430,33 @@ export class PendingEditManager {
     this.sets.push(set);
     this.open = set;
     this.emitChange({ type: 'ops-changed' });
+  }
+
+  /** 전체 모드 전환 — 열린 set 의 미리보기 표시 여부만 바뀐다. */
+  setDirectApply(on: boolean): void {
+    if (this.directApply === on) return;
+    this.directApply = on;
+    this.syncOverlay();
+  }
+
+  /**
+   * 열린 set 을 검토 없이 곧바로 확정한다 (전체 모드의 쓰기 도구 하나 = undo 한 단계).
+   * set-finalized 를 거치지 않으므로 검토 목록·변경 사항 기록에 남지 않는다.
+   * 확정에 실패하면 검토 대기로 남긴다 — 편집을 잃지 않는다.
+   */
+  commitOpen(): boolean {
+    this.syncDocumentInstance();
+    const set = this.open;
+    if (!set || set.ops.length === 0) return true;
+    if (this.approve(set.id, { direct: true })) return true;
+    // 확정 실패(스냅샷 저장 실패 등): 편집은 문서에 남기고 일반 검토 대기로 돌린다.
+    if (this.open === set) this.open = null;
+    if (this.sets.includes(set) && set.status === 'open') {
+      set.status = 'awaiting-review';
+      this.syncOverlay();
+      this.emitChange({ type: 'set-finalized', changeSetId: set.id });
+    }
+    return false;
   }
 
   /**
@@ -631,7 +683,8 @@ export class PendingEditManager {
     if (keys.length === 0 && format.fontId === undefined) {
       throw new AgentToolError('INVALID_ARGS', 'at least one format property is required');
     }
-    // 역서식은 시작 지점 단일 샘플 근사 — 혼합 서식 범위에서는 부정확할 수 있다 (Phase-1 한계).
+    // 되돌림은 적용 전 글자 모양 구간을 다시 입힌다. 시작 지점 단일 샘플 역서식은 구간을 쓸 수
+    // 없을 때의 폴백이다 — 혼합 서식 범위에서는 부정확하다.
     const cell = range.cell;
     const props: CharProperties = cell?.path
       ? this.deps.wasm.getCellCharPropertiesAtByPath(
@@ -661,8 +714,10 @@ export class PendingEditManager {
         } catch { /* 역서식은 best-effort */ }
       }
     }
+    const charShapeRuns = this.tryCaptureCharShapeRuns(range);
     const raw = this.applyFormatRaw(range, format);
     this.parseOkLenient(raw, 'applyCharFormat');
+    const appliedCharShapeRuns = charShapeRuns && this.tryCaptureCharShapeRuns(range);
     // 되돌림 전 드리프트 프로브용 범위 텍스트 (best-effort — 캡처 실패 시 프로브 생략)
     let rangeText: string | undefined;
     try {
@@ -671,6 +726,7 @@ export class PendingEditManager {
     const set = this.ensureOpenSet(agent);
     const op: PendingOp = {
       kind: 'format', id: this.nextId('op'), agent: set.agent, range: { ...range }, format: { ...format }, inverse,
+      ...(charShapeRuns && appliedCharShapeRuns ? { charShapeRuns, appliedCharShapeRuns } : {}),
       text: rangeText,
       ...(rangeText !== undefined ? { applied: this.appliedAt(range) } : {}),
     };
@@ -1079,7 +1135,7 @@ export class PendingEditManager {
    * approve — 모든 op 은 이미 적용돼 있으므로 문서는 그대로 두고, 되돌린 before 상태를
    * 잠시 캡처해 단일 undo 항목으로 채택한다 ("이미 적용된 것을 유지").
    */
-  approve(changeSetId: string): boolean {
+  approve(changeSetId: string, opts: { direct?: boolean } = {}): boolean {
     this.syncDocumentInstance();
     const set = this.sets.find((s) => s.id === changeSetId);
     if (!set) return false;
@@ -1088,13 +1144,15 @@ export class PendingEditManager {
     const userEditSeqNow = this.userEditSeq;
     this.selfMutating++;
     try {
-      return this.approveInner(set, changeSetId, userEditSeqNow);
+      // 승인은 미리보기를 그대로 채택한다 — 문서 내용은 승인 전후가 같다.
+      const run = (): boolean => this.approveInner(set, changeSetId, userEditSeqNow, opts.direct === true);
+      return this.deps.contentNeutral ? this.deps.contentNeutral(run) : run();
     } finally {
       this.selfMutating--;
     }
   }
 
-  private approveInner(set: PendingChangeSet, changeSetId: string, userEditSeqNow: number): boolean {
+  private approveInner(set: PendingChangeSet, changeSetId: string, userEditSeqNow: number, direct: boolean): boolean {
     if (set === this.open) this.open = null;
     // 승인 직전에도 현재 IR에서 권위 조판을 다시 만든다. 미리보기 캐시가 어긋난
     // 상태를 after snapshot으로 굳히거나, 승인 뒤에만 우연히 고쳐지는 일을 막는다.
@@ -1105,7 +1163,7 @@ export class PendingEditManager {
       this.removeSet(set);
       this.syncOverlay();
       this.settledSetSeq++;
-      this.emitChange({ type: 'approved', changeSetId });
+      this.emitChange({ type: 'approved', changeSetId, ...(direct ? { direct: true } : {}) });
       return true;
     }
 
@@ -1196,7 +1254,7 @@ export class PendingEditManager {
     this.syncOverlay();
     // 승인은 모든 편집을 문서에 남긴다 — 빠진 op 은 이번 undo 항목에서만 제외된다.
     this.emitDrops(changeSetId, set, dropped, causes, failed, false);
-    this.emitChange({ type: 'approved', changeSetId });
+    this.emitChange({ type: 'approved', changeSetId, ...(direct ? { direct: true } : {}) });
     return true;
   }
 
@@ -1507,6 +1565,7 @@ export class PendingEditManager {
     }
     const ops: OverlayOp[] = [];
     for (const set of this.sets) {
+      if (this.directApply && set === this.open) continue;
       for (const op of set.ops) {
         if (op.kind === 'field' || op.kind === 'template') continue;
         if (op.kind === 'object' && op.obj.type === 'engineBatch') {
@@ -3510,7 +3569,7 @@ export class PendingEditManager {
           this.revertReplaceOp(op, ops, keepPreviewsOf, userEditSeqNow);
         } else if (op.kind === 'format') {
           this.restoreAppliedRange(op, ops, keepPreviewsOf, userEditSeqNow);
-          this.applyFormatRaw(op.range, op.inverse);
+          this.revertFormatOp(op);
         } else if (op.kind === 'field') {
           wasm.setFieldValueByName(op.name, op.oldValue);
         } else if (op.kind === 'template') {
@@ -3793,6 +3852,38 @@ export class PendingEditManager {
       }
       offset += length + 1;
     }
+  }
+
+  /** 구간 읽기가 없는 엔진이거나 읽기에 실패하면 undefined — 호출자는 단일 샘플로 폴백한다. */
+  private tryCaptureCharShapeRuns(range: DocRange): CharShapeRun[] | undefined {
+    try {
+      return this.captureCharShapeRuns(range);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * 서식 op 되돌림. 범위가 적용 직후 그대로면(텍스트도 글자 모양 구간도 같으면) 적용 전 구간을
+   * 다시 입혀 글자마다 원래 모양을 복원한다. 같은 턴의 나중 편집은 먼저 되돌아가므로 보통은
+   * 이 경로다. 구간을 못 잡았거나, 되돌림 대상 밖의 편집(다른 set·사용자)이 범위의 텍스트나
+   * 모양을 바꿨으면 단일 샘플 역서식으로 되돌린다 — 에이전트가 건 속성만 되돌리고 다른 편집이
+   * 남긴 글자·서식은 그대로 둔다.
+   */
+  private revertFormatOp(op: Extract<PendingOp, { kind: 'format' }>): void {
+    const { charShapeRuns: runs, appliedCharShapeRuns: applied, text } = op;
+    if (runs && applied && text !== undefined && this.readRangeText(op.range) === text) {
+      const current = this.tryCaptureCharShapeRuns(op.range);
+      if (current && sameCharShapes(current, applied)) {
+        try {
+          this.applyCharShapeRuns(op.range, text, runs);
+          return;
+        } catch (error) {
+          console.warn('[pending-edits] format run restore failed; falling back to the inverse format', error);
+        }
+      }
+    }
+    this.applyFormatRaw(op.range, op.inverse);
   }
 
   /** 캡처한 글자 모양을 범위 전체에 적용한다 (멀티 문단은 문단별로 쪼갠다) */

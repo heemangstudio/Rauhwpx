@@ -954,7 +954,9 @@ function fillSnapshotFromWasm(
   options: CompareOptions,
 ): CompareDocumentSnapshot {
   // 비교 스냅샷 직전에 강제 재조판하여 폰트/도형 반영 지연으로 인한 페이지 밀림을 줄인다.
-  wasm.refreshLayout();
+  // 대형 문서에서 재조판은 입력을 장시간 멈추게 하므로 실시간(편집 중) diff 는
+  // options.refreshLayout === false 로 건너뛰고 마지막으로 확정된 페이지 트리를 쓴다.
+  if (options.refreshLayout !== false) wasm.refreshLayout();
 
   const displayedPageByGlobalPage = new Map<number, number>();
   const pageDefinitions: unknown[] = [];

@@ -235,7 +235,9 @@ fn issue_2214_warm_deferred_tree_and_cursor_are_exact() {
             format!("{original_text}{}", "1".repeat(56)),
             "{label}: deferred edit must append exactly 56 characters"
         );
-        assert_eq!(line_starts(&doc), vec![0, 44, 84, 122, 129]);
+        // `…적용한다.111…`: 줄 머리 금칙 `.` 앞 글자 `다` 가 함께 다음 줄로 간다 — macOS 한컴
+        // 실측(스윕 J_kinsoku KEEP_WORD: `가.111…` 이 둘째 줄 머리)과 같다.
+        assert_eq!(line_starts(&doc), vec![0, 44, 84, 122, 128]);
         assert_eq!(
             doc.page_count(),
             115,
@@ -360,7 +362,8 @@ fn issue_2214_cell_flow_transition_baseline() {
                 .expect("per-key deferred insert");
             let result = parse_cell_edit_result(result);
             let delta = relative_flow_advance(target_paragraph(&doc50)) - before;
-            let expected = if inserted == 55 { 1920 } else { 0 };
+            // 한양 글꼴 Mac HFT 폭 표(숫자 '1' 0.500em, probe ±0.002pt)로 줄 채움이 55번째 입력.
+            let expected = if inserted == 54 { 1920 } else { 0 };
             assert_eq!(
                 result.char_offset,
                 INSERT_OFFSET + inserted + 1,
@@ -391,10 +394,11 @@ fn issue_2214_cell_flow_transition_baseline() {
         }
         assert_eq!(
             changed_inputs,
-            vec![56],
+            vec![55],
             "{label}: exactly one flow boundary"
         );
-        assert_eq!(line_starts(&doc50), vec![0, 44, 84, 122, 129]);
+        // 줄 머리 금칙 `.` 앞 글자도 함께 넘어간다 (macOS 한컴 실측, 스윕 J_kinsoku).
+        assert_eq!(line_starts(&doc50), vec![0, 44, 84, 122, 128]);
         assert_eq!(
             target_paragraph(&doc50).text,
             format!("{original50}{}", "1".repeat(62)),

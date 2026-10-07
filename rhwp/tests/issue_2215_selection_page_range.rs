@@ -207,7 +207,7 @@ fn issue_2215_hwp_and_hwpx_preserve_normal_selection_oracles() {
 fn issue_2215_missing_or_invalid_hints_match_the_positional_fallback() {
     let mut doc = load_sample("exam_social.hwp");
     let positional = doc
-        .get_selection_rects_in_cell(1, 16, 0, 0, 0, 0, 6, 469)
+        .get_selection_rects_in_cell(1, 16, 0, 0, 0, 0, 6, 469, None)
         .expect("positional fallback");
     let base = json!({
         "sectionIdx": 1,

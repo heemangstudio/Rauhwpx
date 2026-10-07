@@ -1,5 +1,7 @@
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { resolveCommandOnPath, resolveNpmCliLaunch } from './npm-cli-launch.mjs';
 import { OFFICIAL_CLAUDE_MODELS, claudeModelDescription, claudeModelLabel } from './claude-model-label.mjs';
 
 const CACHE_MS = 5 * 60 * 1000;
@@ -8,13 +10,21 @@ const TIMEOUT_MS = 12_000;
 /** Ask the managed Claude CLI for the models available to this account. */
 export async function discoverClaudeModels({
   bin, env = process.env, cwd = process.cwd(), queryModels = query, timeoutMs = TIMEOUT_MS,
+  platform = process.platform,
 } = {}) {
+  // 채팅(agents/claude.mjs)과 같은 실행 파일을 고른다. 경로가 없으면 SDK 는 PATH 대신
+  // 자체 번들 런타임으로 떨어져 채팅과 다른 버전의 목록을 돌려준다.
+  const launch = resolveNpmCliLaunch(bin || 'claude', { platform, env });
+  let executable = launch.leadingArgs[0] ?? launch.command;
+  if (!path.isAbsolute(executable)) {
+    executable = platform === 'win32' ? null : resolveCommandOnPath(executable, { env });
+  }
   const stream = queryModels({
     // An empty input stream opens the SDK control channel without sending a prompt.
     prompt: (async function* () {})(),
     options: {
-      cwd, env, settingSources: [], tools: [],
-      ...(bin && path.isAbsolute(bin) ? { pathToClaudeCodeExecutable: bin } : {}),
+      cwd, env: { ...env, ...launch.env }, settingSources: [], tools: [],
+      ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
     },
   });
   let timeout;
@@ -121,10 +131,16 @@ function compareRank(a, b) {
   return 0;
 }
 
+/** 캐시 키에 넣을 자격 증명 지문. 계정이 바뀌면 이전 계정의 목록을 쓰지 않는다. */
+function credentialFingerprint(env) {
+  const secret = env?.CLAUDE_CODE_OAUTH_TOKEN || env?.ANTHROPIC_API_KEY || '';
+  return secret ? createHash('sha256').update(secret).digest('hex').slice(0, 16) : '';
+}
+
 export function createClaudeModelCatalog({ discover = discoverClaudeModels, now = Date.now } = {}) {
   const cache = new Map();
   return async function claudeModelCatalog(options = {}, { refresh = false } = {}) {
-    const key = `${options.bin ?? ''}\0${options.env?.CLAUDE_CONFIG_DIR ?? ''}`;
+    const key = `${options.bin ?? ''}\0${options.env?.CLAUDE_CONFIG_DIR ?? ''}\0${credentialFingerprint(options.env)}`;
     let entry = cache.get(key);
     if (refresh || !entry || entry.expiresAt <= now()) {
       const pending = Promise.resolve().then(() => discover(options)).then((models) => {

@@ -235,10 +235,12 @@ fn test_svg_draw_text_superscript_adjusts_baseline_and_size() {
     );
 }
 
-/// 전각 `「` 는 반각 칸을 받지만 glyph 는 찌그러뜨리지 않고 칸 오른쪽 끝에 맞춘다
-/// (한컴 macOS PDF, `renderer::halfwidth_punct_glyph_offset`).
+/// `「` 는 한컴(macOS)에서 전각 칸으로 조판된다 — glyph 를 찌그러뜨리지 않고
+/// 칸 왼쪽(원점)에 그린다 (공식 PDF 실측 「 advance 0.82–1.00em:
+/// 35-voucher/38-cheongyang/36-apartment-form; `renderer::halfwidth_punct_glyph_offset`
+/// 의 반각 칸 보정은 HancomWindows 규약에서만 발동한다).
 #[test]
-fn test_svg_draw_text_corner_quote_keeps_full_glyph_in_halfwidth_slot() {
+fn test_svg_draw_text_corner_quote_keeps_full_glyph_in_fullwidth_slot() {
     let mut renderer = SvgRenderer::new();
     renderer.begin_page(800.0, 600.0);
     renderer.draw_text(
@@ -261,11 +263,12 @@ fn test_svg_draw_text_corner_quote_keeps_full_glyph_in_halfwidth_slot() {
         .find(|line| line.contains(">여</text>"))
         .expect("SVG must emit the following Hangul character");
 
+    // 칸은 전각 — textLength 가 있어도 전각 폭(HWPUNIT 양자화 ≈13.32px)이다.
     assert!(
-        !quote_line.contains("textLength="),
-        "`「` glyph 를 반각 칸에 찌그러뜨리면 안 됨: {quote_line}"
+        !quote_line.contains("textLength=\"6") && !quote_line.contains("textLength=\"5"),
+        "`「` 칸이 반각으로 찌그러지면 안 됨: {quote_line}"
     );
-    // 돋움체 `「` = 전각 13.333px, 칸 = 반각(HWPUNIT 양자화) → glyph 원점은 칸보다 반각만큼 왼쪽.
+    // 돋움체 `「` = 전각 칸 13.333px — glyph 원점은 칸 시작과 같다.
     let quote_x: f64 = quote_line
         .split("x=\"")
         .nth(1)
@@ -273,8 +276,8 @@ fn test_svg_draw_text_corner_quote_keeps_full_glyph_in_halfwidth_slot() {
         .and_then(|v| v.parse().ok())
         .expect("quote x");
     assert!(
-        (quote_x - (10.0 - 13.333 / 2.0)).abs() < 0.05,
-        "여는 낫표는 칸 오른쪽 끝에 맞춰야 함: {quote_line}"
+        (quote_x - 10.0).abs() < 0.05,
+        "여는 낫표는 전각 칸의 원점에 그려야 함: {quote_line}"
     );
     assert!(
         !hangul_line.contains("textLength="),
@@ -346,12 +349,14 @@ fn test_svg_text_decoration() {
         },
     );
     let output = renderer.output();
-    // 밑줄: <line> 요소로 출력
-    let underline_count = output.matches("y1=\"22\"").count(); // y + 2.0
+    // 밑줄: <line> 요소로 출력. macOS 한컴 실측 기하 — baseline + 0.167em
+    // (28-agritech-review 밑줄 측정): 16px 글꼴은 20 + 16*0.167 = 22.672.
+    let underline_count = output.matches("y1=\"22.672\"").count();
     assert!(underline_count > 0, "밑줄 <line> 요소가 있어야 함");
-    // 취소선: <line> 요소로 출력
+    // 취소선/밑줄 선 두께도 em 상대 — 얇은 선 0.043em (28-agritech-review
+    // SLIM_THICK 실측): 16*0.043 = 0.688.
     let strike_count = output
-        .matches("stroke=\"#000000\" stroke-width=\"1\"")
+        .matches("stroke=\"#000000\" stroke-width=\"0.688\"")
         .count();
     assert!(strike_count >= 2, "취소선과 밑줄 <line> 요소가 있어야 함");
 }
@@ -604,7 +609,7 @@ fn test_page_background_image_zoom_contains() {
     let output = renderer.output();
     assert!(
         output.contains(
-            "<image x=\"10\" y=\"20\" width=\"100\" height=\"50\" preserveAspectRatio=\"xMidYMid meet\""
+            "<svg x=\"10\" y=\"20\" width=\"100\" height=\"50\" viewBox=\"0 0 100 50\" overflow=\"hidden\"><image x=\"25\" y=\"0\" width=\"50\" height=\"50\" preserveAspectRatio=\"none\""
         ),
         "쪽 배경 Zoom은 contain이다: {output}"
     );
@@ -626,7 +631,7 @@ fn test_image_node_none_contains_in_bbox() {
     let output = render_image_node_fill_svg(ImageFillMode::None);
     assert!(
         output.contains(
-            "<image x=\"10\" y=\"20\" width=\"100\" height=\"50\" preserveAspectRatio=\"xMidYMid meet\""
+            "<svg x=\"10\" y=\"20\" width=\"100\" height=\"50\" viewBox=\"0 0 100 50\" overflow=\"hidden\"><image x=\"25\" y=\"0\" width=\"50\" height=\"50\" preserveAspectRatio=\"none\""
         ),
         "ImageNode None은 상자 contain이다: {output}"
     );
@@ -645,7 +650,7 @@ fn test_image_node_zoom_contains_in_bbox() {
     let output = render_image_node_fill_svg(ImageFillMode::Zoom);
     assert!(
         output.contains(
-            "<image x=\"10\" y=\"20\" width=\"100\" height=\"50\" preserveAspectRatio=\"xMidYMid meet\""
+            "<svg x=\"10\" y=\"20\" width=\"100\" height=\"50\" viewBox=\"0 0 100 50\" overflow=\"hidden\"><image x=\"25\" y=\"0\" width=\"50\" height=\"50\" preserveAspectRatio=\"none\""
         ),
         "ImageNode Zoom은 상자 contain이다: {output}"
     );
@@ -690,91 +695,49 @@ fn test_page_background_image_center_uses_original_image_size() {
     );
 }
 
+/// 한컴은 밝기·대비가 있는 그림을 보정한 픽셀로 그리고 반투명을 더하지 않는다
+/// (한컴 Mac PDF 실측). SVG 는 구운 PNG 만 내보내고 필터·opacity 를 겹치지 않는다.
 #[test]
-fn test_page_background_image_realpic_watermark_preserves_color_with_opacity() {
+fn test_page_background_image_watermark_is_baked_without_opacity() {
     let png = bmp_bytes_to_png_bytes(&make_minimal_bmp_2x2()).expect("BMP->PNG 변환 실패");
-    let image = PageBackgroundImage {
-        data: png.into(),
-        fill_mode: ImageFillMode::Center,
-        brightness: -50,
-        contrast: 70,
-        effect: crate::model::image::ImageEffect::RealPic,
-    };
-    let bbox = BoundingBox::new(10.0, 20.0, 100.0, 50.0);
-    let mut renderer = SvgRenderer::new();
-    renderer.begin_page(200.0, 100.0);
+    for effect in [
+        crate::model::image::ImageEffect::RealPic,
+        crate::model::image::ImageEffect::GrayScale,
+    ] {
+        let image = PageBackgroundImage {
+            data: png.clone().into(),
+            fill_mode: ImageFillMode::Center,
+            brightness: 70,
+            contrast: -50,
+            effect,
+        };
+        let bbox = BoundingBox::new(10.0, 20.0, 100.0, 50.0);
+        let mut renderer = SvgRenderer::new();
+        renderer.begin_page(200.0, 100.0);
 
-    renderer.render_page_background_image(&image, &bbox);
+        renderer.render_page_background_image(&image, &bbox);
 
-    let output = renderer.output();
-    assert!(
-        !output.contains("rhwp-img-bc-b-50c70"),
-        "RealPic PageBackground watermark should preserve source color without brightness/contrast filter: {output}"
-    );
-    assert!(
-        !output.contains("rhwp-realpic-watermark-tone"),
-        "RealPic PageBackground watermark should bake the shared tone transform into image pixels: {output}"
-    );
-    assert!(
-        output.contains("data:image/png;base64,"),
-        "RealPic PageBackground watermark should render as a tone-baked PNG: {output}"
-    );
-    assert!(
-        output.contains(&format!(
-            "<g opacity=\"{}\">",
-            REAL_PICTURE_WATERMARK_PAGE_OPACITY
-        )),
-        "PageBackground watermark preset should apply page watermark opacity: {output}"
-    );
-    assert!(
-        output.contains(
-            "<g clip-path=\"url(#fill-clip-1)\"><image x=\"59\" y=\"44\" width=\"2\" height=\"2\" preserveAspectRatio=\"none\""
-        ),
-        "PageBackground watermark should still preserve Center placement: {output}"
-    );
+        let output = renderer.output();
+        assert!(output.contains("data:image/png;base64,"), "{output}");
+        assert!(!output.contains("<g opacity="), "{output}");
+        assert!(!output.contains("rhwp-img-bc-"), "{output}");
+        assert!(!output.contains("rhwp-img-grayscale"), "{output}");
+        assert!(
+            output.contains(
+                "<g clip-path=\"url(#fill-clip-1)\"><image x=\"59\" y=\"44\" width=\"2\" height=\"2\" preserveAspectRatio=\"none\""
+            ),
+            "PageBackground watermark should still preserve Center placement: {output}"
+        );
+    }
 }
 
 #[test]
-fn test_page_background_image_non_realpic_watermark_uses_legacy_opacity() {
-    let png = bmp_bytes_to_png_bytes(&make_minimal_bmp_2x2()).expect("BMP->PNG 변환 실패");
-    let image = PageBackgroundImage {
-        data: png.into(),
-        fill_mode: ImageFillMode::FitToSize,
-        brightness: -50,
-        contrast: 70,
-        effect: crate::model::image::ImageEffect::GrayScale,
-    };
-    let bbox = BoundingBox::new(10.0, 20.0, 100.0, 50.0);
-    let mut renderer = SvgRenderer::new();
-    renderer.begin_page(200.0, 100.0);
-
-    renderer.render_page_background_image(&image, &bbox);
-
-    let output = renderer.output();
-    assert!(
-        output.contains(&format!(
-            "<g opacity=\"{}\">",
-            LEGACY_IMAGE_WATERMARK_OPACITY
-        )),
-        "non-RealPic PageBackground watermark should apply legacy watermark opacity: {output}"
-    );
-    assert!(
-        output.contains("rhwp-img-grayscale"),
-        "non-RealPic PageBackground watermark should keep the image effect filter: {output}"
-    );
-    assert!(
-        output.contains("rhwp-img-bc-b-50c70"),
-        "non-RealPic PageBackground watermark should keep the brightness/contrast filter: {output}"
-    );
-}
-
-#[test]
-fn test_background_image_realpic_watermark_fill_preserves_color_with_opacity() {
+fn test_image_node_watermark_is_baked_without_opacity() {
     let png = bmp_bytes_to_png_bytes(&make_minimal_bmp_2x2()).expect("BMP->PNG 변환 실패");
     let mut image = ImageNode::new(1, Some(png));
     image.fill_mode = Some(ImageFillMode::FitToSize);
-    image.brightness = -50;
-    image.contrast = 70;
+    image.brightness = 70;
+    image.contrast = -50;
     image.effect = crate::model::image::ImageEffect::RealPic;
     let bbox = BoundingBox::new(10.0, 20.0, 100.0, 50.0);
     let mut renderer = SvgRenderer::new();
@@ -783,21 +746,9 @@ fn test_background_image_realpic_watermark_fill_preserves_color_with_opacity() {
     renderer.render_image_node(&image, &bbox);
 
     let output = renderer.output();
-    assert!(
-        !output.contains("rhwp-img-bc-b-50c70"),
-        "RealPic background watermark fill should preserve source color without brightness/contrast filter: {output}"
-    );
-    assert!(
-        !output.contains("rhwp-realpic-watermark-tone"),
-        "RealPic background watermark fill should bake the shared tone transform into image pixels: {output}"
-    );
-    assert!(
-        output.contains(&format!(
-            "<g opacity=\"{}\">",
-            REAL_PICTURE_WATERMARK_FILL_OPACITY
-        )),
-        "RealPic background watermark fill should apply fill watermark opacity: {output}"
-    );
+    assert!(output.contains("data:image/png;base64,"), "{output}");
+    assert!(!output.contains("<g opacity="), "{output}");
+    assert!(!output.contains("rhwp-img-bc-"), "{output}");
 }
 
 #[test]
@@ -845,7 +796,7 @@ fn test_brightness_contrast_filter_pure_brightness() {
     );
 }
 
-/// 순수 대비 (b=0, c=50) → slope=1.5, intercept=-0.25
+/// 순수 대비 (b=0, c=50) → slope=1.5, 한컴 기준값 128/255 로 intercept=-0.2510
 #[test]
 fn test_brightness_contrast_filter_pure_contrast() {
     let mut renderer = SvgRenderer::new();
@@ -856,8 +807,8 @@ fn test_brightness_contrast_filter_pure_contrast() {
         "slope expected 1.5000: {def}"
     );
     assert!(
-        def.contains("intercept=\"-0.2500\""),
-        "intercept expected -0.2500: {def}"
+        def.contains("intercept=\"-0.2510\""),
+        "intercept expected -0.2510: {def}"
     );
 }
 

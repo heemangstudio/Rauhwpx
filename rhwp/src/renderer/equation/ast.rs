@@ -27,6 +27,9 @@ pub enum EqNode {
     /// 수평 나열 (여러 노드의 연속)
     Row(Vec<EqNode>),
 
+    /// 적분·극한의 명시적 피연산식 그룹. 뒤 연산자 앞 간격을 끊는다.
+    OperatorBody(Box<EqNode>),
+
     /// 일반 텍스트 (이탤릭체로 렌더링되는 변수 등)
     Text(String),
 

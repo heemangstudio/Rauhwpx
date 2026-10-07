@@ -26,7 +26,7 @@ body:not(.ag-sidebar-open) .ag-inline-box {
   gap: 5px;
   padding: 3px 10px;
   border: 1px solid var(--ui-border-strong);
-  border-radius: 999px;
+  border-radius: var(--ag-r-chip);
   background: var(--ui-surface-raised);
   color: var(--ui-text-secondary);
   font-family: var(--font-family-ui);
@@ -94,7 +94,7 @@ body:not(.ag-sidebar-open) .ag-inline-box {
   gap: 4px;
   padding: 2px 5px 2px 7px;
   border: 1px solid var(--ui-border);
-  border-radius: 999px;
+  border-radius: var(--ag-r-chip);
   color: var(--ui-text-secondary);
   font-family: var(--font-family-ui);
   font-size: 10px;
@@ -148,7 +148,7 @@ body:not(.ag-sidebar-open) .ag-inline-box {
   flex: 0 0 auto;
   padding: 2px 8px;
   border: 1px solid var(--ui-border);
-  border-radius: 999px;
+  border-radius: var(--ag-r-chip);
   background: transparent;
   color: var(--ui-text-secondary);
   font-family: var(--font-family-ui);
@@ -156,9 +156,14 @@ body:not(.ag-sidebar-open) .ag-inline-box {
   cursor: default;
 }
 
-.ag-inline-permission:hover {
+.ag-inline-permission:hover:not(:disabled) {
   background: var(--ui-hover);
   color: var(--ui-text);
+}
+
+/* 채팅·플랜 모드는 표시만 한다 — 바꾸는 곳은 사이드바 모드 칩이다. */
+.ag-inline-permission:disabled {
+  opacity: 0.72;
 }
 
 .ag-inline-permission.ag-inline-unrestricted {

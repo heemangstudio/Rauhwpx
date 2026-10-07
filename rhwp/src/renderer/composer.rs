@@ -371,25 +371,24 @@ pub fn compose_paragraph(para: &Paragraph) -> ComposedParagraph {
                     Some((pos, inline_picture_occupied_width_hu(p), i))
                 }
                 Control::Shape(s) if s.common().treat_as_char => {
-                    Some((pos, s.common().width as i32, i))
+                    let common = s.common();
+                    let width = (i64::from(common.width)
+                        + i64::from(common.margin.left)
+                        + i64::from(common.margin.right))
+                    .clamp(0, i64::from(i32::MAX)) as i32;
+                    Some((pos, width, i))
                 }
                 Control::Equation(eq) if eq.common.treat_as_char => {
-                    // 인라인 수식의 줄 전진 = min(선언 폭, paint 폭+양쪽 여백).
-                    // 내용이 선언 폭보다 짧으면 선언 폭의 자리를 차지하고, 넘치면
-                    // paint 폭만큼만 간다 (eq-002 실측: `f(n)`은 선언 18.51pt→17.9pt
-                    // 전진인 반면 72.98pt 개체는 paint 68.8pt 까지만).
-                    let painted = super::equation::fitted_width_hwp(eq);
-                    Some((
-                        pos,
-                        (painted as i32)
-                            .saturating_add(i32::from(eq.common.margin.left))
-                            .saturating_add(i32::from(eq.common.margin.right))
-                            .min(eq.common.width as i32),
-                        i,
-                    ))
+                    // 인라인 수식의 줄 전진 = 선언(개체 상자) 폭 + 양쪽 outMargin.
+                    // 여백은 선언 폭 바깥에 더해진다 (eq-002 실측: `=8` 선언 12.01pt 개체는
+                    // 13.13pt 전진 = 선언+여백, tab 경계 7840/8000HWU 격자와 일치).
+                    // 한컴은 내용이 상자보다 작아도 상자 자리를 유지한다
+                    // (eq-002 `f(n)` 전진 1788HWU ≈ 선언 1677+여백 112).
+                    let w = super::equation::occupied_width_hwp(eq);
+                    Some((pos, w, i))
                 }
                 Control::Ruby(r) if r.option == 0 => Some((pos, 0, i)),
-                Control::Form(f) => Some((pos, f.width as i32, i)),
+                Control::Form(f) => Some((pos, f.occupied_width(), i)),
                 Control::Table(t)
                     if t.common.treat_as_char
                         && super::height_measurer::is_tac_table_inline_in_para(
@@ -540,29 +539,32 @@ fn expand_auto_number_display(composed: &mut ComposedParagraph, para: &Paragraph
 /// 보유하나, OFL 폰트 (Noto Serif KR / Source Han Serif K 등) 는 KS X 1026-1
 /// 자모 영역만 지원하므로 PUA → 자모 변환 후 합자 렌더링이 필요.
 ///
-/// `U+F012B` 같은 한컴 전용 PUA 기호는 표준 Unicode 단일 문자 대응이 없어서
-/// 표시 문자열(`(인)`)로 확장한다. 본 함수는 `run.text` 를 변경하지 않고
+/// 표준 Unicode 표시 문자열이 있는 한컴 PUA 기호만 확장한다. 날인 기호
+/// U+F012B 는 함초롬 글리프를 유지한다. 본 함수는 `run.text` 를 변경하지 않고
 /// `run.display_text` 에만 변환 결과를 저장한다. 이는 `char_offsets`,
 /// `line.char_start`, `line_chars` 등 인덱싱 불변성을 유지하기 위함이다
 /// (PUA 1 char = display N chars).
 ///
 /// 매핑 표: KTUG HanyangPuaTableProject (Public Domain).
 fn convert_pua_display_text(composed: &mut ComposedParagraph) {
-    use super::pua_oldhangul::map_pua_old_hangul;
+    use super::pua_oldhangul::display_pua_old_hangul;
     for line in composed.lines.iter_mut() {
         for run in line.runs.iter_mut() {
-            if !run
-                .text
-                .chars()
-                .any(|ch| pua_plain_text_display(ch).is_some() || map_pua_old_hangul(ch).is_some())
-            {
+            if !run.text.chars().any(|ch| {
+                ch == '\u{00AD}'
+                    || pua_plain_text_display(ch).is_some()
+                    || display_pua_old_hangul(ch).is_some()
+            }) {
                 continue;
             }
             let mut display = String::with_capacity(run.text.len() * 3);
             for ch in run.text.chars() {
-                if let Some(replacement) = pua_plain_text_display(ch) {
+                if ch == '\u{00AD}' {
+                    // 하이픈(HWP 코드 24 / U+00AD)은 한컴이 보이는 '-' 로 그린다.
+                    display.push('-');
+                } else if let Some(replacement) = pua_plain_text_display(ch) {
                     display.push_str(replacement);
-                } else if let Some(jamos) = map_pua_old_hangul(ch) {
+                } else if let Some(jamos) = display_pua_old_hangul(ch) {
                     display.extend(jamos.iter().copied());
                 } else {
                     display.push(ch);
@@ -1389,6 +1391,44 @@ fn find_control_text_positions(para: &Paragraph) -> Vec<usize> {
     crate::document_core::find_control_text_positions(para)
 }
 
+/// 문단 안의 treat_as_char 표를 "배치 줄" 단위로 묶어 돌려준다.
+///
+/// 같은 줄에 나란히 조판되는 TAC 표는 세로 높이가 겹치므로, 중첩 표가 차지하는
+/// 세로 범위를 계산할 때 줄별 최댓값을 써야 한다. 단순 합산은 옆으로 놓인 표를
+/// 아래로 쌓은 것처럼 과대 측정한다 (40-fire-report 본문 첫 셀: 4×2 표 + 6×5 표가
+/// 한 줄에 나란히 → 합산 197.3pt 대신 줄 최댓값 117.9pt).
+///
+/// 반환: 같은 줄의 control 인덱스 그룹 목록 (문서 순서 보존).
+/// `comp.tac_controls` 에 없는 표(비인라인 TAC, 비-TAC)는 포함하지 않는다 —
+/// 호출측이 각각 별도 그룹으로 취급해 합산한다.
+pub fn tac_table_ctrls_by_line(para: &Paragraph, comp: &ComposedParagraph) -> Vec<Vec<usize>> {
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut last_line: Option<usize> = None;
+    for &(pos, _w, ci) in &comp.tac_controls {
+        let is_tac_table = matches!(
+            para.controls.get(ci),
+            Some(Control::Table(t)) if t.common.treat_as_char
+        );
+        if !is_tac_table {
+            continue;
+        }
+        // tac_offsets_for_line 과 동일 규칙: pos ∈ [char_start, 다음 줄 char_start)
+        // — rposition 은 char_start <= pos 인 마지막 줄을 고른다.
+        let line_idx = comp
+            .lines
+            .iter()
+            .rposition(|line| line.char_start <= pos)
+            .unwrap_or(0);
+        if last_line == Some(line_idx) {
+            groups.last_mut().unwrap().push(ci);
+        } else {
+            groups.push(vec![ci]);
+            last_line = Some(line_idx);
+        }
+    }
+    groups
+}
+
 fn is_render_inline_control(ctrl: &Control) -> bool {
     match ctrl {
         Control::Picture(pic) => pic.common.treat_as_char,
@@ -1741,24 +1781,57 @@ pub(crate) fn restyle_fallback_runs_by_char_shapes(
         return;
     }
     let cs_visible_starts = char_shape_visible_starts(&para.char_offsets, &para.char_shapes);
+    let carries_metadata = |run: &ComposedTextRun| {
+        run.display_text.is_some() || run.footnote_marker.is_some() || run.char_overlap.is_some()
+    };
     for line in composed.lines.iter_mut() {
         let text: String = line.runs.iter().map(|r| r.text.as_str()).collect();
         if text.is_empty() {
             continue;
         }
         let start = line.char_start;
-        let end = start + text.chars().count();
-        let restyled = split_by_char_shapes(
-            &text,
-            start,
-            end,
-            &para.char_offsets,
-            &para.char_shapes,
-            &cs_visible_starts,
-        );
-        if !restyled.is_empty() {
-            line.runs = restyled;
+        if !line.runs.iter().any(carries_metadata) {
+            let end = start + text.chars().count();
+            let restyled = split_by_char_shapes(
+                &text,
+                start,
+                end,
+                &para.char_offsets,
+                &para.char_shapes,
+                &cs_visible_starts,
+            );
+            if !restyled.is_empty() {
+                line.runs = restyled;
+            }
+            continue;
         }
+        // 표시 치환(머리말/꼬리말 쪽번호 필드, PUA 확장)·각주 표식·글자 겹침 run 은
+        // 텍스트만으로 다시 만들 수 없다 — 그대로 두고 나머지 run 만 글자모양으로
+        // 재분할한다. 줄 전체를 재분할하면 꼬리말 쪽번호가 placeholder 공백으로 그려진다.
+        let mut runs = Vec::with_capacity(line.runs.len());
+        let mut pos = start;
+        for run in std::mem::take(&mut line.runs) {
+            let len = run.text.chars().count();
+            if carries_metadata(&run) || run.text.is_empty() {
+                runs.push(run);
+            } else {
+                let restyled = split_by_char_shapes(
+                    &run.text,
+                    pos,
+                    pos + len,
+                    &para.char_offsets,
+                    &para.char_shapes,
+                    &cs_visible_starts,
+                );
+                if restyled.is_empty() {
+                    runs.push(run);
+                } else {
+                    runs.extend(restyled);
+                }
+            }
+            pos += len;
+        }
+        line.runs = runs;
     }
 }
 
@@ -1791,6 +1864,14 @@ pub fn recompose_stored_single_line_if_overflowing(
     cell_inner_width_px: f64,
     styles: &ResolvedStyleSet,
 ) {
+    // SQUEEZE 는 저장된 한 줄을 자간 압축으로 맞추므로 재줄바꿈하지 않는다.
+    if styles
+        .para_styles
+        .get(para.para_shape_id as usize)
+        .is_some_and(|style| style.line_wrap_squeeze)
+    {
+        return;
+    }
     let stored_single = para.line_segs.len() == 1
         && para
             .line_segs
@@ -2147,7 +2228,12 @@ fn compact_tac_marker_stored_lines_stale(
         styles,
         marker_width_px,
     );
-    let stale = probe.lines.len() > composed.lines.len();
+    // 저장줄이 TAC 표식 폭까지 합산해도 컬럼의 +5% 관용 안에 들어가면 한컴도
+    // 그 줄을 그대로 유지한 것이다 — ±2~3%의 미세 초과로 재래핑하면
+    // Center/Right 정렬 줄의 x 가 통째로 이동한다 (issue_1486 hwpx_sample2
+    // p29 로고 문단: 620.0+115.7=735.7 ≤ 718.1×1.05).
+    let stale = probe.lines.len() > composed.lines.len()
+        && first_text_width + marker_width_px > inner_width_px * 1.05;
     if stale && std::env::var("RHWP_DIAG_REWRAP").is_ok() {
         eprintln!(
             "DIAG_REWRAP tac-host inner={:.0} first={:.1} marker={:.1} stored={} fresh={} text='{}'",
@@ -2162,6 +2248,202 @@ fn compact_tac_marker_stored_lines_stale(
     stale
 }
 
+/// [macOS 정합] 문단 번호 문단의 저장 줄 나눔이 참조 환경에 없는 서체로 계산됐는가.
+///
+/// 한컴은 저장 lineSeg 의 줄 나눔을 유지하고 넘친 폭은 줄 안에서 흡수하지만,
+/// 문단 번호/개요 문단은 번호를 다시 만들면서 문단을 다시 조판한다. 해석하지
+/// 못한 face 를 기본 글꼴(함초롬돋움)로 대체하면 그 재조판 줄 나눔이 원본 서체
+/// 기준 저장 분할과 달라진다 (onsaemiro-textbook: KoPubWorld바탕체 발문 `02 …
+/// 것은?` 저장 1줄을 한컴은 2줄로 접고, 같은 서체의 일반 본문 문단은 저장
+/// 분할 그대로 공백을 줄여 맞춘다).
+pub(crate) fn stored_lines_use_substituted_face(
+    composed: &ComposedParagraph,
+    styles: &ResolvedStyleSet,
+) -> bool {
+    let numbered = styles
+        .para_styles
+        .get(composed.para_style_id as usize)
+        .is_some_and(|ps| ps.head_type != crate::model::style::HeadType::None);
+    numbered && composed_uses_substituted_face(composed, styles)
+}
+
+/// 보이는 글자가 있는 run 중 하나라도 한컴이 기본 글꼴로 대체하는 face 를 쓰는가.
+pub(crate) fn composed_uses_substituted_face(
+    composed: &ComposedParagraph,
+    styles: &ResolvedStyleSet,
+) -> bool {
+    composed
+        .lines
+        .iter()
+        .flat_map(|line| &line.runs)
+        .any(|run| {
+            if run.text.chars().all(char::is_whitespace) {
+                return false;
+            }
+            let Some(cs) = styles.char_styles.get(run.char_style_id as usize) else {
+                return false;
+            };
+            cs.font_metrics_policy == crate::model::provenance::FontMetricsPolicy::HcrDeclared
+                && crate::renderer::hancom_unresolved_face(cs.font_family_for_lang(run.lang_index))
+        })
+}
+
+/// [macOS 정합] 어울림 개체를 품은 본문 문단의 저장 줄을 대체 서체 기준으로 다시 만든다.
+///
+/// 한컴은 문단 안 어울림(Square/Tight/Through) 개체 옆 문단을 개체 배치와 함께 다시
+/// 조판한다. 해석하지 못한 face 를 기본 글꼴로 대체하면 그 줄 나눔이 원본 서체 기준
+/// 저장 분할과 달라진다 (onsaemiro-textbook p41 `[A]` 괄호 표 옆 문단: 저장 4줄 →
+/// 한컴 5줄). 렌더 사본에만 적용하며, 바뀐 문단 인덱스를 돌려준다. 줄 시작
+/// (column_start)은 저장 규약대로 단 왼쪽 기준이다.
+/// 문단 안 어울림 개체를 품은 문단이 하나라도 있는가 (투영 복제 전 값싼 사전 판정).
+pub(crate) fn has_substituted_wrap_host_candidate(paragraphs: &[Paragraph]) -> bool {
+    paragraphs.iter().any(paragraph_hosts_side_wrap)
+}
+
+fn paragraph_hosts_side_wrap(para: &Paragraph) -> bool {
+    para.controls.iter().any(|ctrl| {
+        let common = match ctrl {
+            Control::Picture(pic) => &pic.common,
+            Control::Shape(shape) => shape.common(),
+            Control::Table(table) => &table.common,
+            _ => return false,
+        };
+        !common.treat_as_char
+            && matches!(
+                common.text_wrap,
+                crate::model::shape::TextWrap::Square
+                    | crate::model::shape::TextWrap::Tight
+                    | crate::model::shape::TextWrap::Through
+            )
+            && matches!(common.vert_rel_to, crate::model::shape::VertRelTo::Para)
+    })
+}
+
+pub(crate) fn reflow_substituted_wrap_hosts(
+    paragraphs: &mut [Paragraph],
+    styles: &ResolvedStyleSet,
+    column_width_px: f64,
+    single_column_body_height_hu: Option<i32>,
+    dpi: f64,
+) -> Vec<usize> {
+    let mut changed = Vec::new();
+    let mut grown_ranges: Vec<std::ops::Range<usize>> = Vec::new();
+    for idx in 0..paragraphs.len() {
+        let para = &mut paragraphs[idx];
+        let hosts_side_wrap = paragraph_hosts_side_wrap(para);
+        let authoritative = !para.line_segs.is_empty()
+            && para
+                .line_segs
+                .iter()
+                .all(|seg| seg.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY == 0);
+        if !hosts_side_wrap
+            || !authoritative
+            || para.text.is_empty()
+            || !composed_uses_substituted_face(&compose_paragraph(para), styles)
+        {
+            continue;
+        }
+        let (ml, mr) = styles
+            .para_styles
+            .get(para.para_shape_id as usize)
+            .map(|ps| (ps.margin_left, ps.margin_right))
+            .unwrap_or((0.0, 0.0));
+        let width = column_width_px - ml - mr;
+        if width <= 0.0 {
+            continue;
+        }
+        let stored_end = para
+            .line_segs
+            .last()
+            .map(|ls| ls.vertical_pos + ls.line_height + ls.line_spacing);
+        line_breaking::reflow_line_segs(para, width, styles, dpi);
+        // 실제로 좁힌 줄이 있는 어울림 계획만 문단 안쪽 좌표를 반환한다.
+        // 개체가 줄 대역 밖에 있으면 일반 줄 생성이 이미 왼쪽 여백을 넣었다.
+        let full_width_hu = crate::renderer::px_to_hwpunit_round(width, dpi);
+        if para
+            .line_segs
+            .iter()
+            .any(|seg| seg.segment_width < full_width_hu)
+        {
+            let ml_hu = crate::renderer::px_to_hwpunit_round(ml, dpi);
+            for seg in &mut para.line_segs {
+                seg.column_start += ml_hu;
+            }
+        }
+        let growth = line_breaking::paragraph_flow_end(para)
+            .zip(stored_end)
+            .map(|(new, old)| new.saturating_sub(old))
+            .unwrap_or(0);
+        if growth > 0 && single_column_body_height_hu.is_some() {
+            // 대체 서체 때문에 늘어난 줄은 저장 쪽 경계 뒤에서도 본문 흐름을
+            // 민다. 명시적 쪽/단 나눔까지 같은 증가량을 유지한 뒤 실제 쪽 높이로
+            // 넘친 줄을 다시 배치한다. 이전 soft reset 에서 증가량을 버리면
+            // 넘친 한 줄만 둔 쪽이 생기고 다음 문단이 한 쪽 더 밀린다.
+            let end = paragraphs[idx + 1..]
+                .iter()
+                .position(|p| {
+                    p.column_type != crate::model::paragraph::ColumnBreakType::None
+                        || styles
+                            .para_styles
+                            .get(p.para_shape_id as usize)
+                            .is_some_and(|style| style.page_break_before)
+                })
+                .map(|offset| idx + 1 + offset)
+                .unwrap_or(paragraphs.len());
+            for following in &mut paragraphs[idx + 1..end] {
+                for seg in &mut following.line_segs {
+                    seg.vertical_pos = seg.vertical_pos.saturating_add(growth);
+                }
+            }
+            if let Some(previous) = grown_ranges.last_mut().filter(|range| range.end >= idx) {
+                previous.end = previous.end.max(end);
+            } else {
+                grown_ranges.push(idx..end);
+            }
+        } else {
+            line_breaking::recalculate_section_vpos(
+                paragraphs,
+                idx,
+                None,
+                stored_end,
+                styles,
+                dpi,
+                styles.hwp3_variant,
+            );
+        }
+        changed.push(idx);
+    }
+    if let Some(body_height_hu) = single_column_body_height_hu {
+        for range in grown_ranges {
+            roll_over_grown_saved_lines(&mut paragraphs[range], body_height_hu);
+        }
+    }
+    changed
+}
+
+/// 렌더 사본에서만 성장한 저장 줄을 실제 쪽 높이에 맞춘다. 이전 저장 쪽의
+/// reset 은 증가분을 포함한 다음 쪽 좌표를 유지하고, 그 앞에서 넘친 줄은
+/// 새 쪽의 0부터 잇는다. 빈 줄도 같은 흐름을 써 명시적 나눔 앞 빈 쪽을 보존한다.
+fn roll_over_grown_saved_lines(paragraphs: &mut [Paragraph], body_height_hu: i32) {
+    let mut previous_source_vpos = None;
+    let mut overflow_origin = 0;
+    for para in paragraphs {
+        for seg in &mut para.line_segs {
+            let source_vpos = seg.vertical_pos;
+            if previous_source_vpos.is_some_and(|previous| source_vpos < previous) {
+                overflow_origin = 0;
+            }
+            let mut vpos = source_vpos.saturating_sub(overflow_origin);
+            if vpos > 0 && vpos.saturating_add(seg.line_height) > body_height_hu {
+                overflow_origin = source_vpos;
+                vpos = 0;
+            }
+            seg.vertical_pos = vpos;
+            previous_source_vpos = Some(source_vpos);
+        }
+    }
+}
+
 /// 본문 저장 lineSeg 를 신뢰할 수 없는 공통 판정. 마스킹/물리적 과밀과
 /// 작은 TAC 표식 host 폭 누락을 한 경로로 묶어 측정·조판·렌더가 같은 줄을 쓴다.
 pub fn stored_lines_stale_for_body(
@@ -2172,6 +2454,18 @@ pub fn stored_lines_stale_for_body(
 ) -> bool {
     if !stored_line_segs_structurally_coherent(para) {
         return true;
+    }
+    if stored_lines_use_substituted_face(composed, styles) {
+        return true;
+    }
+    // SQUEEZE의 자연 폭 초과는 자간 압축으로 처리한다. 폭만 보고 저장 줄을
+    // 버리면 1.5배 이상 압축되는 문단이 일반 줄바꿈으로 다시 나뉜다.
+    if styles
+        .para_styles
+        .get(para.para_shape_id as usize)
+        .is_some_and(|style| style.line_wrap_squeeze)
+    {
+        return false;
     }
     let mut masked_overflow = false;
     if inner_width_px > 0.0
@@ -2221,13 +2515,26 @@ pub fn recompose_stale_stored_lines_for_body(
     } else {
         0.0
     };
+    // 대체 서체 재조판은 한컴처럼 문단 들여쓰기/내어쓰기를 줄별로 뺀다 — 호출자의
+    // 폭은 이미 문단 좌우 여백을 뺀 값이다.
+    let body_inner = stored_lines_use_substituted_face(composed, styles).then(|| {
+        crate::renderer::layout::numbering_marker_reserve(
+            styles,
+            para,
+            composed,
+            crate::renderer::DEFAULT_DPI,
+        )
+    });
     restyle_fallback_runs_by_char_shapes(composed, &para_no_ls);
-    recompose_for_cell_width_impl(
+    recompose_for_cell_width_impl_with_generated(
         composed,
         &para_no_ls,
         column_inner_width_px,
         styles,
         first_line_reserve_px,
+        false,
+        true,
+        body_inner,
     );
 }
 
@@ -2258,6 +2565,7 @@ pub fn recompose_for_native_hwpx_cell_width(
             .iter()
             .all(|control| matches!(control, Control::ColumnDef(_) | Control::SectionDef(_))),
         true,
+        None,
     );
 }
 
@@ -2434,6 +2742,7 @@ pub fn recompose_for_cell_width_for_source(
             0.0,
             true,
             false,
+            None,
         );
     } else if native_hwpx {
         recompose_for_native_hwpx_cell_width(composed, para, cell_inner_width_px, styles);
@@ -2457,9 +2766,13 @@ fn recompose_for_cell_width_impl(
         first_line_reserve_px,
         false,
         true,
+        None,
     );
 }
 
+/// `body_inner_width` = 폭이 이미 문단 좌우 여백을 뺀 본문 내폭이다 (값은 문단 번호
+/// 마커 점유 폭: 첫 줄, 이어지는 줄). 첫 줄은 들여쓰기, 이어지는 줄은 내어쓰기만큼
+/// 더 좁다.
 fn recompose_for_cell_width_impl_with_generated(
     composed: &mut ComposedParagraph,
     para: &Paragraph,
@@ -2468,7 +2781,13 @@ fn recompose_for_cell_width_impl_with_generated(
     first_line_reserve_px: f64,
     allow_generated_multiline: bool,
     wrap_at_width: bool,
+    body_inner_width: Option<(f64, f64)>,
 ) {
+    let wrap_at_width = wrap_at_width
+        && !styles
+            .para_styles
+            .get(para.para_shape_id as usize)
+            .is_some_and(|ps| ps.line_wrap_squeeze);
     resolve_ruby_widths(composed, para, styles, cell_inner_width_px, wrap_at_width);
     // 글자 없는 fresh 덧말의 줄 소유권은 위 폭 분할 결과를 유지한다.
     // 빈 text run을 일반 문단으로 합치면 두 번째 줄의 제어가 사라진다.
@@ -2523,7 +2842,12 @@ fn recompose_for_cell_width_impl_with_generated(
         .para_styles
         .get(para.para_shape_id as usize)
         .map(|ps| {
-            if ps.indent < 0.0 && !hwp3_legacy_bullet {
+            if let Some((first_marker, cont_marker)) = body_inner_width {
+                (
+                    (cell_inner_width_px - ps.indent.max(0.0) - first_marker).max(0.0),
+                    (cell_inner_width_px - (-ps.indent).max(0.0) - cont_marker).max(0.0),
+                )
+            } else if ps.indent < 0.0 && !hwp3_legacy_bullet {
                 let continuation_left = ps.margin_left + ps.indent.abs();
                 let first_left = ps.margin_left;
                 (
@@ -2748,8 +3072,22 @@ fn recompose_for_cell_width_impl_with_generated(
                         resolved_to_text_style(styles, r.char_style_id, r.lang_index).font_size
                     })
                     .fold(0.0f64, f64::max);
+                // 문단 번호 마커는 run 이 아니지만 첫 줄 높이를 정한다 — 마커가 본문보다
+                // 크면(onsaemiro 발문 `02` 12pt + 본문 10pt) 첫 줄은 저장 높이를 두고
+                // 이어지는 줄만 본문 글자 크기로 줄인다.
+                let marker_fs = body_inner_width
+                    .filter(|&(first_marker, _)| first_marker > 0.0 && gi == 0)
+                    .and_then(|_| composed.lines.get(start))
+                    .map(|l| {
+                        crate::renderer::hwpunit_to_px(l.line_height, crate::renderer::DEFAULT_DPI)
+                    })
+                    .unwrap_or(0.0);
+                let group_max_fs = group_max_fs.max(marker_fs);
                 if group_max_fs > 0.0 {
-                    for line in composed.lines[start..].iter_mut() {
+                    for (li, line) in composed.lines[start..].iter_mut().enumerate() {
+                        if marker_fs > 0.0 && li == 0 {
+                            continue;
+                        }
                         let line_max_fs = line
                             .runs
                             .iter()
@@ -2818,7 +3156,15 @@ pub(crate) fn shrunk_cell_horizontal_padding(
     }
 
     let mut max_line_w = 0.0f64;
-    for comp in composed_paras {
+    for (para_idx, comp) in composed_paras.iter().enumerate() {
+        // 한컴이 저장한 줄 정보가 있으면 그 줄은 실제 자간(음수 포함)으로 이 폭에
+        // 조판된 것이다 — 자간을 지운 자연 폭으로 넘침을 판정하면 안 여백을 잘못
+        // 깎는다 (hcar-001 p6 `최 초 등 록 일` 자간 -25% 셀: 한컴은 510HU 여백 유지).
+        let stored_layout = paragraphs.get(para_idx).is_some_and(|p| {
+            p.line_segs
+                .first()
+                .is_some_and(|seg| seg.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY == 0)
+        });
         for line in &comp.lines {
             let mut w = 0.0;
             for run in &line.runs {
@@ -2834,7 +3180,7 @@ pub(crate) fn shrunk_cell_horizontal_padding(
                     continue;
                 }
                 // 자연 폭 측정: 음수 자간을 제거하여 글리프가 서로 겹치지 않는 최소 폭을 얻음
-                if ts.letter_spacing < 0.0 {
+                if ts.letter_spacing < 0.0 && !stored_layout {
                     ts.letter_spacing = 0.0;
                 }
                 // [Task #555] PUA 옛한글 변환 후 자모 시퀀스 폭 사용.
@@ -3053,6 +3399,46 @@ fn split_composed_line_by_width(
                     } else {
                         None
                     };
+                    // 직전 글자가 앞 run(언어/글자 모양 경계 — `것은` 뒤 라틴 `?`)에
+                    // 있어도 행두 금칙은 같다. 그 글자를 제 run 그대로 이월한다.
+                    let carried_run: Option<(ComposedTextRun, f64)> = if carried.is_none()
+                        && is_line_start_forbidden(ch)
+                        && chars_in_line > 1
+                        && current_run_text.is_empty()
+                    {
+                        current_runs.last_mut().and_then(|prev_run| {
+                            let prev = prev_run.text.chars().last()?;
+                            if prev == ' '
+                                || is_line_start_forbidden(prev)
+                                || prev_run.display_text.is_some()
+                                || prev_run.footnote_marker.is_some()
+                            {
+                                return None;
+                            }
+                            prev_run.text.pop();
+                            let prev_ts = resolved_to_text_style(
+                                styles,
+                                prev_run.char_style_id,
+                                prev_run.lang_index,
+                            );
+                            let prev_w = crate::renderer::layout::estimate_text_width_unrounded(
+                                &prev.to_string(),
+                                &prev_ts,
+                            );
+                            let mut moved = prev_run.clone();
+                            moved.text = prev.to_string();
+                            Some((moved, prev_w))
+                        })
+                    } else {
+                        None
+                    };
+                    if let Some((_, pw)) = &carried_run {
+                        current_width -= pw;
+                        chars_in_line -= 1;
+                        if current_runs.last().is_some_and(|r| r.text.is_empty()) {
+                            current_runs.pop();
+                        }
+                    }
                     flush_run(
                         &mut current_runs,
                         &mut current_run_text,
@@ -3069,6 +3455,11 @@ fn split_composed_line_by_width(
                     hung = false;
                     if let Some((pch, pw)) = carried {
                         current_run_text.push(pch);
+                        current_width += pw;
+                        chars_in_line += 1;
+                    }
+                    if let Some((moved, pw)) = carried_run {
+                        current_runs.push(moved);
                         current_width += pw;
                         chars_in_line += 1;
                     }
@@ -3370,9 +3761,10 @@ fn pua_enclosed_border_type(ch: char) -> Option<u8> {
     None
 }
 
-fn pua_plain_text_display(ch: char) -> Option<&'static str> {
+pub(crate) fn pua_plain_text_display(ch: char) -> Option<&'static str> {
     match ch as u32 {
-        0xF012B => Some("(인)"),
+        // 날인 기호 U+F012B 는 함초롬바탕의 원형 인 글리프와 0.97em 폭을 유지한다.
+        // 문자열 (인) 으로 확장하면 원 모양과 뒤따르는 본문 위치가 달라진다.
         // 2025 행정업무운영 편람 p08 TOC bullet. Hancom PDF renders this
         // private-use marker as a filled square bullet.
         0xF031C => Some("■"),
@@ -3395,8 +3787,63 @@ fn pua_plain_text_display(ch: char) -> Option<&'static str> {
 pub fn pua_missing_glyph_substitute(ch: char) -> Option<char> {
     match ch as u32 {
         0xF02FC => Some('\u{25BA}'), // ► BLACK RIGHT-POINTING POINTER
+        // 한컴 PUA 선문자 — 본문 표시 문자열은 원문을 유지하고(Task #826 폭 정정),
+        // 글꼴 체인에 글리프가 없을 때만 box-drawing 으로 대체한다.
+        0xF080F => Some('\u{2501}'), // ━ BOX DRAWINGS HEAVY HORIZONTAL
+        0xF0811 => Some('\u{250C}'), // ┌ BOX DRAWINGS LIGHT DOWN AND RIGHT
+        0xF0817 => Some('\u{2514}'), // └ BOX DRAWINGS LIGHT UP AND RIGHT
+        0xF081A => Some('\u{2500}'), // ─ BOX DRAWINGS LIGHT HORIZONTAL
+        0xF0827 => Some('\u{25A0}'), // ■ BLACK SQUARE
+        // 한컴(macOS)은 U+F09E 를 글리프 보유 face(Haansoft Batang)로 그린다.
+        // 글리프가 없는 환경에서는 · 를 원문 advance 에 맞춰 대체한다
+        // (29-civil-petition: symbol face 굴림체 의 전각 · 가 아닌 0.458em 측정).
+        0xF09E => Some('\u{00B7}'), // · MIDDLE DOT
+        // U+F0FC 도 Haansoft Batang 글리프(가는 체크)로 그려진다 (oss-result p5).
+        0xF0FC => Some('\u{2713}'), // ✓ CHECK MARK
+        // 책괄호·예시 마커 (exam-kor p17) — 한컴은 함초롬바탕/한컴바탕 글리프로 그린다.
+        0xF0854 => Some('\u{300E}'), // 『 LEFT WHITE CORNER BRACKET
+        0xF0855 => Some('\u{300F}'), // 』 RIGHT WHITE CORNER BRACKET
+        0xF00DA => Some('\u{25B8}'), // ▸ BLACK RIGHT-POINTING SMALL TRIANGLE
+        // 나머지 Wingdings PUA 는 표준 문자 근사 매핑으로 대체한다.
+        _ if is_wingdings_pua(ch) => {
+            Some(super::layout::map_pua_bullet_char(ch)).filter(|&mapped| mapped != ch)
+        }
         _ => None,
     }
+}
+
+/// Wingdings 호환 PUA(U+F020..=U+F0FF) 여부.
+///
+/// [macOS 정합] 한컴(macOS)은 이 영역 글자를 run 서체와 무관하게 글리프를 가진
+/// 번들 face(Haansoft Batang)의 PUA 글리프·advance 로 조판한다 — mel-001 의
+/// 휴먼명조 run `U+F076`(❖) 0.8906em, gov-welfare-request `U+F0FE` 1.035em,
+/// oss-result `U+F0FC` 0.891em 이 모두 Haansoft-Batang 으로 임베드된다.
+/// 그래서 조판 텍스트는 원문 PUA 를 유지하고(폭 = Haansoft Batang hmtx),
+/// 글리프가 없는 환경의 표준 문자 대체는 paint 단계가 맡는다.
+pub fn is_wingdings_pua(ch: char) -> bool {
+    (0xF020..=0xF0FF).contains(&(ch as u32))
+}
+
+/// 문자열 기반 렌더러(SVG/HTML/Canvas 명령)용 표시 문자열.
+///
+/// 글리프 유무를 알 수 없는 출력이므로 Wingdings PUA 를 표준 문자로 대체한다.
+/// 글꼴 체인을 직접 다루는 Skia/WebCanvas/CanvasKit 은 [`expand_pua_display_text`]
+/// 원문을 받아 글리프가 없을 때만 `pua_missing_glyph_substitute` 로 대체한다.
+pub fn expand_pua_render_text(text: &str) -> String {
+    let display = expand_pua_display_text(text);
+    if !display.chars().any(is_wingdings_pua) {
+        return display;
+    }
+    display
+        .chars()
+        .map(|ch| {
+            if is_wingdings_pua(ch) {
+                pua_missing_glyph_substitute(ch).unwrap_or(ch)
+            } else {
+                ch
+            }
+        })
+        .collect()
 }
 
 /// 한글 방점(U+302E/U+302F)을 렌더용 spacing 가운데 점 글리프로 치환한다. (Task #1735)
@@ -3425,7 +3872,7 @@ fn tone_mark_display(ch: char) -> Option<char> {
 /// CharOverlap 전용 숫자(`U+F02CE..=U+F02E1`)는 여기서 확장하지 않는다.
 /// 해당 문자는 `pua_to_display_text()`가 글자겹침 렌더러에서만 처리한다.
 pub fn expand_pua_display_text(text: &str) -> String {
-    use super::pua_oldhangul::map_pua_old_hangul;
+    use super::pua_oldhangul::display_pua_old_hangul;
 
     let mut out = String::with_capacity(text.len());
     for ch in text.chars() {
@@ -3436,18 +3883,26 @@ pub fn expand_pua_display_text(text: &str) -> String {
             out.push(dot);
         } else if let Some(replacement) = pua_plain_text_display(ch) {
             out.push_str(replacement);
-        } else if let Some(jamos) = map_pua_old_hangul(ch) {
+        } else if let Some(jamos) = display_pua_old_hangul(ch) {
             out.extend(jamos.iter().copied());
+        } else if matches!(
+            ch,
+            '\u{F080F}' | '\u{F0811}' | '\u{F0817}' | '\u{F081A}' | '\u{F0827}'
+        ) {
+            // [Task #826 폭 정정] 한컴은 이 선문자를 자체 PUA 글리프(반각 0.485em,
+            // 함초롬돋움)로 그린다. 표준 box-drawing 문자로 치환하면 요청 서체의
+            // 실측 advance(맑은 고딕 ━ = 1em)가 반영돼 줄이 셀 끝까지 벌어진다
+            // (28-agritech-review). 원문을 유지하고, 글리프 부재 환경의 대체는
+            // paint 단계 `pua_missing_glyph_substitute` 에 위임한다.
+            out.push(ch);
+        } else if is_wingdings_pua(ch) {
+            // Wingdings PUA 는 원문 유지 — 조판 폭은 Haansoft Batang 기준 (is_wingdings_pua).
+            out.push(ch);
         } else {
             out.push(super::layout::map_pua_bullet_char(ch));
         }
     }
     out
-}
-
-/// 일반 텍스트 렌더링 경로의 기존 helper 이름.
-pub fn expand_pua_render_text(text: &str) -> String {
-    expand_pua_display_text(text)
 }
 
 /// PUA 테두리 숫자와 한컴 PUA 기호를 표시 문자열로 변환한다. (렌더러 전용)
@@ -3553,9 +4008,151 @@ mod line_breaking;
 pub mod lineseg_compare;
 
 pub(crate) use line_breaking::{
-    is_line_end_forbidden, is_line_start_forbidden, paragraph_flow_end, recalculate_section_vpos,
-    reflow_line_segs, tokenize_paragraph, BreakToken,
+    auto_spacing_gap_between, is_line_end_forbidden, is_line_start_forbidden, paragraph_flow_end,
+    recalculate_section_vpos, reflow_line_segs, reflow_line_segs_with_exclusions,
+    reflow_line_segs_with_squeeze, tokenize_paragraph, BreakToken,
 };
+
+/// 글자처럼 취급한 자동 높이 글상자는 현재 수식 내용으로 줄 높이를 다시 잰다.
+/// 저장 줄 나눔은 유지하고 렌더 사본의 높이·기준선·세로 위치만 갱신한다.
+pub(crate) fn recompose_textbox_line_metrics(
+    paragraphs: &mut [Paragraph],
+    styles: &ResolvedStyleSet,
+    dpi: f64,
+) -> bool {
+    let mut has_equation = false;
+    for control in paragraphs.iter().flat_map(|p| &p.controls) {
+        let Control::Equation(eq) = control else {
+            return false;
+        };
+        if !eq.common.treat_as_char
+            || eq.version_info != "Equation Version 60"
+            || crate::renderer::equation::natural_width_hwp(eq).is_none()
+        {
+            return false;
+        }
+        has_equation = true;
+    }
+    if !has_equation {
+        return false;
+    }
+    compose_textbox_line_metrics(paragraphs, styles, dpi)
+}
+
+fn compose_textbox_line_metrics(
+    paragraphs: &mut [Paragraph],
+    styles: &ResolvedStyleSet,
+    dpi: f64,
+) -> bool {
+    use crate::model::style::LineSpacingType;
+    let composed: Vec<_> = paragraphs.iter().map(compose_paragraph).collect();
+    if paragraphs
+        .iter()
+        .zip(&composed)
+        .any(|(p, c)| p.line_segs.len() != c.lines.len() || c.lines.is_empty())
+    {
+        return false;
+    }
+    let mut y = 0i32;
+    for (para, comp) in paragraphs.iter_mut().zip(composed) {
+        let ps = styles.para_styles.get(para.para_shape_id as usize);
+        y += ps
+            .map(|s| px_to_hwpunit(s.spacing_before, dpi))
+            .unwrap_or(0);
+        for (index, (seg, line)) in para.line_segs.iter_mut().zip(&comp.lines).enumerate() {
+            let run_fs = line
+                .runs
+                .iter()
+                .map(|r| resolved_to_text_style(styles, r.char_style_id, r.lang_index).font_size)
+                .fold(0.0_f64, f64::max);
+            let fs = if run_fs > 0.0 {
+                run_fs
+            } else {
+                para.char_shapes
+                    .first()
+                    .map(|cs| resolved_to_text_style(styles, cs.char_shape_id, 0).font_size)
+                    .unwrap_or(12.0)
+            };
+            let font_hu = px_to_hwpunit(fs, dpi).max(1);
+            let text_baseline = font_hu as f64 * 0.85;
+            let mut height = font_hu;
+            let mut baseline = text_baseline;
+            for &(pos, _, ci) in &comp.tac_controls {
+                let owner = comp
+                    .lines
+                    .iter()
+                    .rposition(|l| l.char_start <= pos)
+                    .unwrap_or(0);
+                if owner != index {
+                    continue;
+                }
+                let Control::Equation(eq) = &para.controls[ci] else {
+                    continue;
+                };
+                let (_, natural_height, natural_baseline) =
+                    crate::renderer::equation::intrinsic_metrics_hwp_with_version(
+                        &eq.script,
+                        eq.font_size,
+                        &eq.font_name,
+                        &eq.version_info,
+                    );
+                let (natural_height, natural_baseline) =
+                    crate::renderer::equation::generated_draw_text_vector_flow_metrics_px(
+                        &eq.script,
+                        eq.font_size,
+                        dpi,
+                        &eq.font_name,
+                        &eq.version_info,
+                    )
+                    .map(|metrics| {
+                        (
+                            px_to_hwpunit(metrics.height, dpi),
+                            px_to_hwpunit(metrics.baseline, dpi),
+                        )
+                    })
+                    .unwrap_or((natural_height as i32, natural_baseline as i32));
+                let occupied =
+                    crate::renderer::equation::generated_draw_text_fraction_flow_height_px(
+                        &eq.script,
+                        eq.font_size,
+                        dpi,
+                        &eq.font_name,
+                        &eq.version_info,
+                    )
+                    .map(|h| px_to_hwpunit(h, dpi))
+                    .unwrap_or(natural_height);
+                height = height.max(
+                    occupied + i32::from(eq.common.margin.top) + i32::from(eq.common.margin.bottom),
+                );
+                baseline = baseline.max(
+                    natural_baseline as f64 + text_baseline - eq.font_size as f64 * 0.8
+                        + f64::from(eq.common.margin.top),
+                );
+            }
+            let spacing = ps
+                .map(|s| match s.line_spacing_type {
+                    LineSpacingType::Percent => {
+                        px_to_hwpunit(fs * (s.line_spacing - 100.0) / 100.0, dpi)
+                    }
+                    _ => line_breaking::compute_line_spacing_hwp(
+                        s.line_spacing_type,
+                        s.line_spacing,
+                        height,
+                        dpi,
+                    ),
+                })
+                .unwrap_or(0);
+            seg.vertical_pos = y;
+            seg.line_height = height;
+            seg.text_height = height;
+            seg.baseline_distance = (baseline.round() as i32).clamp(0, height);
+            seg.line_spacing = spacing;
+            y += height + spacing;
+        }
+        y += ps.map(|s| px_to_hwpunit(s.spacing_after, dpi)).unwrap_or(0);
+    }
+    true
+}
 
 #[cfg(test)]
 mod lineseg_compare_tests;
@@ -3715,6 +4312,250 @@ mod p1_text_reflow_tests {
             .line_segs
             .iter()
             .all(|seg| seg.segment_width == px_to_hwpunit(180.0, 96.0)));
+    }
+
+    #[test]
+    fn substituted_wrap_hosts_apply_left_margin_once_inside_and_outside_wrap_bands() {
+        use crate::model::shape::{
+            CommonObjAttr, HorzRelTo, RectangleShape, ShapeObject, VertRelTo,
+        };
+
+        let mut styles = styles();
+        let cs = &mut styles.char_styles[0];
+        cs.font_family = "Missing Wrap Test Font".into();
+        cs.font_families = vec![cs.font_family.clone(); 7];
+        cs.font_metrics_policy = crate::model::provenance::FontMetricsPolicy::HcrDeclared;
+        styles.para_styles[0].margin_left = 12.0;
+        styles.para_styles[0].indent = 0.0;
+        for (horz_rel_to, vertical_offset, narrowed) in [
+            (HorzRelTo::Para, 0, true),
+            (HorzRelTo::Para, 100_000, false),
+            (HorzRelTo::Page, 0, false),
+        ] {
+            let mut para = paragraph(&"문단 왼쪽 여백과 개체 옆 줄 나눔을 확인합니다. ".repeat(8));
+            para.char_offsets.iter_mut().for_each(|pos| *pos += 8);
+            para.char_count += 8;
+            para.controls
+                .push(Control::Shape(Box::new(ShapeObject::Rectangle(
+                    RectangleShape {
+                        common: CommonObjAttr {
+                            width: 3750,
+                            height: 1200,
+                            vertical_offset,
+                            vert_rel_to: VertRelTo::Para,
+                            horz_rel_to,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                ))));
+            para.line_segs = vec![LineSeg {
+                line_height: 1200,
+                text_height: 1200,
+                baseline_distance: 1020,
+                column_start: 900,
+                segment_width: 21600,
+                ..Default::default()
+            }];
+            assert_eq!(
+                reflow_substituted_wrap_hosts(
+                    std::slice::from_mut(&mut para),
+                    &styles,
+                    300.0,
+                    None,
+                    96.0
+                ),
+                vec![0]
+            );
+            assert!(para.line_segs.len() > 2);
+            assert_eq!(
+                para.line_segs[0].column_start,
+                if narrowed { 4650 } else { 900 }
+            );
+            assert_eq!(
+                para.line_segs[0].segment_width,
+                if narrowed { 17850 } else { 21600 }
+            );
+            for seg in &para.line_segs {
+                assert_eq!(seg.column_start + seg.segment_width, 22500);
+            }
+            assert!(para.line_segs.iter().any(|seg| seg.column_start == 900));
+        }
+    }
+
+    #[test]
+    fn textbox_metrics_preserve_fixed_and_negative_spacing_across_lines_and_paragraphs() {
+        use crate::model::style::LineSpacingType::{Fixed, Minimum, SpaceOnly};
+
+        let mut styles = styles();
+        styles.char_styles[0].font_size = 12.0;
+        let mut source = paragraph("first\nsecond");
+        source.char_offsets.iter_mut().for_each(|pos| *pos += 8);
+        source.char_count += 8;
+        source.controls.push(Control::Equation(Box::new(
+            crate::model::control::Equation {
+                common: crate::model::shape::CommonObjAttr {
+                    treat_as_char: true,
+                    height: 900,
+                    ..Default::default()
+                },
+                font_size: 900,
+                script: "x=1".into(),
+                font_name: "HYhwpEQ".into(),
+                version_info: "Equation Version 60".into(),
+                ..Default::default()
+            },
+        )));
+        let seg = LineSeg {
+            line_height: 900,
+            text_height: 900,
+            baseline_distance: 765,
+            segment_width: 24000,
+            ..Default::default()
+        };
+        source.line_segs = vec![
+            seg.clone(),
+            LineSeg {
+                text_start: 14,
+                ..seg.clone()
+            },
+        ];
+        for (kind, value_hu, pitch_hu) in [
+            (Fixed, 500, 500),
+            (Fixed, 900, 900),
+            (Fixed, 1500, 1500),
+            (Fixed, 0, 900),
+            (SpaceOnly, -200, 700),
+            (SpaceOnly, 0, 900),
+            (SpaceOnly, 400, 1300),
+            (Minimum, 500, 900),
+            (Minimum, 1500, 1500),
+        ] {
+            styles.para_styles[0].line_spacing_type = kind;
+            styles.para_styles[0].line_spacing = crate::renderer::hwpunit_to_px(value_hu, 96.0);
+            let mut next = paragraph("next");
+            next.line_segs = vec![seg.clone()];
+            let mut paragraphs = [source.clone(), next];
+            assert!(compose_textbox_line_metrics(&mut paragraphs, &styles, 96.0));
+            let lines: Vec<_> = paragraphs.iter().flat_map(|p| &p.line_segs).collect();
+            for (index, line) in lines.iter().enumerate() {
+                assert_eq!(line.line_height, 900);
+                assert_eq!(line.line_spacing, pitch_hu - 900, "{kind:?} {value_hu}");
+                assert_eq!(
+                    line.vertical_pos,
+                    index as i32 * pitch_hu,
+                    "{kind:?} {value_hu}"
+                );
+            }
+        }
+    }
+
+    fn assert_textbox_live_equation_metrics(
+        compose_metrics: fn(&mut [Paragraph], &ResolvedStyleSet, f64) -> bool,
+    ) {
+        let mut styles = styles();
+        styles.char_styles[0].font_size = 12.0;
+        styles.para_styles[0].line_spacing = 150.0;
+        let mut equation = crate::model::control::Equation::default();
+        equation.common.treat_as_char = true;
+        equation.common.height = 2070;
+        equation.font_size = 900;
+        equation.script = "{5} over {2}".to_string();
+        equation.font_name = "HYhwpEQ".to_string();
+        equation.version_info = "Equation Version 60".to_string();
+        let mut source = paragraph("x\nafter");
+        source.char_offsets = (8..15).collect();
+        source.char_count = 16;
+        source.controls = vec![Control::Equation(Box::new(equation))];
+        source.line_segs = vec![LineSeg {
+            vertical_pos: 3000,
+            line_height: 2070,
+            text_height: 2070,
+            baseline_distance: 1366,
+            line_spacing: 452,
+            column_start: 1200,
+            segment_width: 24000,
+            tag: LineSeg::TAG_LAST_SEGMENT,
+            ..Default::default()
+        }];
+        let saved = source.line_segs[0].clone();
+        source.line_segs.push(LineSeg {
+            text_start: 10,
+            vertical_pos: 5500,
+            ..saved.clone()
+        });
+        let mut paragraphs = vec![source.clone(), paragraph("after")];
+        paragraphs[1].line_segs = vec![saved.clone()];
+        assert!(compose_metrics(&mut paragraphs, &styles, 96.0));
+        let fraction_height = paragraphs[0].line_segs[0].line_height;
+        assert!(fraction_height > 1800);
+        assert_eq!(paragraphs[0].line_segs[0].vertical_pos, 0);
+        assert_eq!(
+            paragraphs[0].line_segs[1].vertical_pos,
+            fraction_height + 450
+        );
+        assert_eq!(
+            paragraphs[1].line_segs[0].vertical_pos,
+            fraction_height + 1800
+        );
+        let Control::Equation(eq) = &mut paragraphs[0].controls[0] else {
+            unreachable!()
+        };
+        eq.script = "5".to_string();
+        assert_eq!(eq.common.height, 2070);
+        assert!(compose_metrics(&mut paragraphs, &styles, 96.0));
+        assert_eq!(paragraphs[0].line_segs[0].line_height, 900);
+        assert_eq!(paragraphs[0].line_segs[1].vertical_pos, 1350);
+        assert_eq!(paragraphs[1].line_segs[0].vertical_pos, 2700);
+        assert_eq!(paragraphs[0].line_segs[1].text_start, 10);
+        let actual = &paragraphs[0].line_segs[0];
+        assert_eq!(
+            (
+                actual.text_start,
+                actual.column_start,
+                actual.segment_width,
+                actual.tag
+            ),
+            (
+                saved.text_start,
+                saved.column_start,
+                saved.segment_width,
+                saved.tag
+            )
+        );
+        assert_eq!(source.line_segs[0].vertical_pos, 3000);
+        assert_eq!(source.line_segs[0].line_height, 2070);
+
+        let Control::Equation(eq) = &mut paragraphs[0].controls[0] else {
+            unreachable!()
+        };
+        eq.font_name = "UnavailableEquationFace".to_string();
+        let before = paragraphs[0].line_segs[0].clone();
+        assert!(!recompose_textbox_line_metrics(
+            &mut paragraphs,
+            &styles,
+            96.0
+        ));
+        assert_eq!(paragraphs[0].line_segs[0].line_height, before.line_height);
+        assert_eq!(paragraphs[0].line_segs[0].vertical_pos, before.vertical_pos);
+    }
+    #[test]
+    fn textbox_metrics_follow_live_equations_without_changing_saved_wraps() {
+        assert_textbox_live_equation_metrics(compose_textbox_line_metrics);
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-skia"))]
+    #[test]
+    fn textbox_public_recomposition_uses_loaded_source_face() {
+        // 원본 수식 서체는 저장소에 배포하지 않는다. 제공된 서체로 실제
+        // 공개 진입점의 face guard까지 검사하고, 위 테스트는 CI에서도 조판을 검사한다.
+        let Some(font) = std::env::var_os("RHWP_HANCOM_TEST_FONT") else {
+            return;
+        };
+        crate::renderer::font_paths::register_font_face_availability(&[std::path::PathBuf::from(
+            font,
+        )]);
+        assert_textbox_live_equation_metrics(recompose_textbox_line_metrics);
     }
 
     #[test]

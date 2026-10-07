@@ -37,7 +37,7 @@ Document editing runs on your machine. AI requests send prompts and any document
 
 ## Agent
 
-Claude, Codex, Pi, Grok, Cursor, and OpenCode can each drive the open document. Semantic reads and writes cover common work. `apply_edits` applies up to 32 changes in one atomic call. Registry-generated engine batches cover classified mutations.
+Claude, Codex, and Pi can each drive the open document. Semantic reads and writes cover common work. `apply_edits` applies up to 32 changes in one atomic call. Registry-generated engine batches cover classified mutations.
 
 Staged edits appear in the document. **안전** holds successful edits for review. **전체 접근** commits them as one undo step. A failed turn restores the prior snapshot. In plan mode the document stays read-only until you approve.
 
@@ -55,7 +55,7 @@ Saving over an existing desktop file uses a crash-safe compare-and-swap and requ
 
 Testers on macOS and Windows can use the [nightly](https://github.com/heemangstudio/Rauhwpx/releases/tag/nightly) pre-release. Artifact names use `<version>-nightly.<date>.<sha>`, with a UTC `YYYYMMDD` date and the first seven SHA characters.
 
-Connect a provider from **Settings → Connection**. Claude, Codex, Pi, Grok, Cursor, and OpenCode can be installed there, and the app offers each provider's supported sign-in method. OpenCode can also reuse credentials created by `opencode auth login`.
+Connect a provider from **Settings → Connection**. Claude, Codex, and Pi can be installed there, and the app offers each provider's supported sign-in method.
 
 ## Development
 

@@ -182,5 +182,16 @@
     "data/targeted-parity/candidates/fdi-negative-spacing-stage1v2/root-completion",
     "data/targeted-parity/candidates/fdi-negative-spacing-stage1v2/root-native",
     "data/targeted-parity/candidates/fdi-negative-spacing-stage1v2/root-browser"
-  ]
+  ],
+  "main_integration_validation": {
+    "base_commit": "674159d8efb37bc5839f7742a8260190f8568496",
+    "status": "in progress",
+    "conflict_files_resolved": 23,
+    "studio": {
+      "passed": 2672,
+      "failed": 0,
+      "skipped": 2
+    },
+    "native_or_gui_calibration_restarted": false
+  }
 }

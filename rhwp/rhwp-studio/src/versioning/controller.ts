@@ -4,7 +4,7 @@ import type { AgentBridge } from '../agent/bridge.ts';
 import type { CheckpointTitleSummary } from '../agent/types.ts';
 import { CompareSessionStore } from '../compare/session.ts';
 import { buildSnapshotFromWasm, compareDocuments, compareSnapshots } from '../compare/diff-engine.ts';
-import type { DiffItem } from '../compare/types.ts';
+import type { CompareOptions, DiffItem } from '../compare/types.ts';
 import type { EventBus } from '../core/event-bus.ts';
 import type { DocumentDirtyState } from '../core/document-dirty-state.ts';
 import { INSERTED_IMAGE_MAX_BYTES, readBlobBytesWithLimit } from '../core/document-input-limits.ts';
@@ -279,6 +279,14 @@ export class DocumentVersionController implements VersionManagerController {
   #semanticDirty = false;
   #semanticDirtyRevision = -1;
   #refreshEpoch = 0;
+  /** 같은 편집 revision 에 대한 '커밋 전' diff 재계산을 막는 캐시 (대형 문서 freeze 방지). */
+  #workingDiffCache: {
+    documentId: string | null;
+    revision: number;
+    repositoryId: RepositoryId;
+    repositoryRevision: number;
+    items: DiffItem[];
+  } | null = null;
   #operation = Promise.resolve();
   #mergeResolverActive = false;
   #mergeCompletion: Promise<boolean> | null = null;
@@ -875,12 +883,19 @@ export class DocumentVersionController implements VersionManagerController {
 
   async diffWorkingTree(): Promise<DiffItem[]> {
     const requestedDocumentId = this.#getDocumentId();
+    const requestedRevision = this.#editorRevision;
     return this.#enqueue(async () => {
       if (this.#getDocumentId() !== requestedDocumentId) {
         throw new VersionError('STALE_WORKSPACE', 'The document changed before comparison started');
       }
-      const workspace = this.#captureWorkspaceToken();
+      // 문서 교체 직후 refresh 가 새 repository 를 채우기 전엔 이전 문서의 repository 가
+      // 남아 있다. 그 HEAD 와 새 문서를 비교하면 파싱 결과 전체가 '커밋 전' 카운터로
+      // 올라가므로 stale 로 거절한다 — 표시 경로는 이를 일시적 빈 diff 로 다룬다.
+      if (this.#repository && String(this.#repository.documentId) !== String(requestedDocumentId)) {
+        throw new VersionError('STALE_WORKSPACE', 'The repository is still loading for this document');
+      }
       const repository = this.#requireRepository();
+      const workspace = this.#captureWorkspaceToken();
       const branch = this.#requireActiveBranch();
       const freshBranch = await this.#store.getBranch(repository.id, branch.name);
       this.#assertWorkspaceToken(workspace);
@@ -889,13 +904,33 @@ export class DocumentVersionController implements VersionManagerController {
       const stored = await this.#store.getCompareSnapshot(head.compareSnapshotId);
       this.#assertWorkspaceToken(workspace);
       if (!stored) throw new VersionError('CORRUPT_BLOB', 'HEAD comparison data is missing');
-      const current = buildSnapshotFromWasm(this.#wasm, this.#wasm.fileName, VERSION_COMPARE_OPTIONS);
-      const diffs = compareSnapshots(stored.snapshot, current, VERSION_COMPARE_OPTIONS).diffItems;
+      // stale 검증(브랜치/HEAD/workspace 토큰)은 매 호출마다 수행하고, 캐시가 유효하면
+      // 비용이 큰 snapshot 캡처+비교만 건너뛴다.
+      const cache = this.#workingDiffCache;
+      if (cache
+        && cache.documentId === requestedDocumentId
+        && cache.revision === requestedRevision
+        && cache.repositoryId === repository.id
+        && cache.repositoryRevision === repository.revision) {
+        return cache.items;
+      }
+      // 실시간 '커밋 전' diff 는 강제 전체 재조판을 건너뛴다 — 대형 문서에서 한 번의
+      // 재조판이 입력을 수 분간 멈추게 한다 (페이지 라벨은 마지막 확정 트리 기준).
+      const compareOptions: CompareOptions = { ...VERSION_COMPARE_OPTIONS, refreshLayout: false };
+      const current = buildSnapshotFromWasm(this.#wasm, this.#wasm.fileName, compareOptions);
+      const diffs = compareSnapshots(stored.snapshot, current, compareOptions).diffItems;
       const latestBranch = await this.#store.getBranch(repository.id, branch.name);
       this.#assertWorkspaceToken(workspace);
       if (!latestBranch || latestBranch.revision !== freshBranch.revision || latestBranch.target !== freshBranch.target) {
         throw new VersionError('STALE_WORKSPACE', 'HEAD changed during comparison');
       }
+      this.#workingDiffCache = {
+        documentId: requestedDocumentId,
+        revision: this.#editorRevision,
+        repositoryId: repository.id,
+        repositoryRevision: repository.revision,
+        items: diffs,
+      };
       return diffs;
     });
   }

@@ -14,6 +14,59 @@ use std::collections::HashSet;
 
 use crate::renderer::pagination::{PageContent, PageItem};
 
+/// 본문과 표의 첫 셀 첫 문단에 붙은 쪽 번호 재시작을 소유 문단 순서로 수집한다.
+/// 표 안의 뒤쪽 문단은 분할 페이지가 달라질 수 있으므로 표 시작에 당겨 적용하지 않는다.
+pub(crate) fn collect_page_number_resets(
+    paragraphs: &[crate::model::paragraph::Paragraph],
+    hwpx_container: bool,
+) -> Vec<(usize, u16)> {
+    use crate::model::control::{AutoNumberType, Control};
+    fn collect(
+        paragraph: &crate::model::paragraph::Paragraph,
+        host_index: usize,
+        hwpx: bool,
+        resets: &mut Vec<(usize, u16)>,
+    ) {
+        let marker_only = paragraph.text.chars().all(|c| {
+            matches!(c, '\u{0000}'..='\u{0008}' | '\u{000B}' | '\u{000C}'
+                | '\u{000E}'..='\u{001F}' | '\u{FFFC}')
+        });
+        let object_container = marker_only
+            && paragraph.controls.iter().any(|control| {
+                matches!(
+                    control,
+                    Control::Table(_) | Control::Picture(_) | Control::Shape(_)
+                )
+            });
+        for control in &paragraph.controls {
+            match control {
+                Control::NewNumber(number)
+                    if number.number_type == AutoNumberType::Page
+                        && (hwpx || !object_container) =>
+                {
+                    resets.push((host_index, number.number));
+                }
+                Control::Table(table) if hwpx => {
+                    if let Some(first) = table
+                        .cells
+                        .iter()
+                        .find(|cell| cell.row == 0 && cell.col == 0)
+                        .and_then(|cell| cell.paragraphs.first())
+                    {
+                        collect(first, host_index, hwpx, resets);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut resets = Vec::new();
+    for (index, paragraph) in paragraphs.iter().enumerate() {
+        collect(paragraph, index, hwpx_container, &mut resets);
+    }
+    resets
+}
+
 /// 쪽번호를 1회성 NewNumber 적용 + 단조 증가로 계산하는 어시스턴트.
 pub(crate) struct PageNumberAssigner<'a> {
     new_page_numbers: &'a [(usize, u16)],
@@ -136,6 +189,46 @@ mod tests {
             active_master_page: None,
             extra_master_pages: Vec::new(),
         }
+    }
+
+    #[test]
+    fn section_carry_continues_until_a_later_explicit_reset() {
+        let resets = [(5, 1)];
+        let mut assigner = PageNumberAssigner::new(&resets, 2);
+        for (paragraph, expected) in [(0, 2), (2, 3), (4, 4), (5, 1), (6, 2)] {
+            let page = mk_page(vec![PageItem::FullParagraph {
+                para_index: paragraph,
+            }]);
+            assert_eq!(assigner.assign(&page), expected);
+        }
+    }
+
+    #[test]
+    fn leading_table_cell_reset_belongs_to_the_table_start() {
+        use crate::model::control::{AutoNumberType, Control, NewNumber};
+        use crate::model::paragraph::Paragraph;
+        use crate::model::table::{Cell, Table};
+        let mut first = Paragraph::default();
+        first.controls.push(Control::NewNumber(NewNumber {
+            number_type: AutoNumberType::Page,
+            number: 1,
+            ..Default::default()
+        }));
+        let mut cell = Cell::default();
+        cell.paragraphs.push(first);
+        let mut table = Table::default();
+        table.cells.push(cell);
+        let mut host = Paragraph::default();
+        host.controls.push(Control::Table(Box::new(table)));
+        let resets = collect_page_number_resets(&[host], true);
+        assert_eq!(resets, [(0, 1)]);
+        let mut assigner = PageNumberAssigner::new(&resets, 3);
+        let first = mk_page(vec![PageItem::Table {
+            para_index: 0,
+            control_index: 0,
+        }]);
+        assert_eq!(assigner.assign(&first), 1);
+        assert_eq!(assigner.assign(&first), 2);
     }
 
     #[test]

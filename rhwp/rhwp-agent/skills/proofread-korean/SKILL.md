@@ -4,7 +4,7 @@ description: Proofread Korean HWP/HWPX writing for spelling, spacing, grammar, p
 icon: pencil
 ---
 
-Read the relevant pages or range once with `get_structure` `text: "full"` (`pages: [first, last]` when the user names pages); its tags mark headings and bold.
+Work from the `live_document` block when it shows the relevant text in full; otherwise read the pages or range once with `get_structure` `text: "full"` (`pages: [first, last]` when the user names pages). Its tags mark headings and bold.
 
 1. Preserve names, figures, dates, legal meaning, and the author's intended level of formality.
 2. Correct only defensible spelling, spacing, grammar, punctuation, and awkward phrasing.

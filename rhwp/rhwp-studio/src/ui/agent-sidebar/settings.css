@@ -294,7 +294,7 @@
   height: 32px;
   padding: 0 14px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: var(--n-ink-fill-hover);
   color: var(--n-ink);
   font: inherit;
@@ -330,7 +330,7 @@
   height: 32px;
   padding: 0 16px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: var(--ag-primary-bg);
   color: var(--ag-primary-fg);
   font: inherit;
@@ -396,7 +396,7 @@
   height: 28px;
   padding: 0 6px;
   border: 1px solid var(--ag-border-strong);
-  border-radius: var(--ag-r-chip);
+  border-radius: var(--ag-r-row);
   background: var(--ag-input-bg);
   color: var(--ag-text);
   font: inherit;
@@ -723,7 +723,7 @@
   align-self: flex-start;
   place-items: center;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: transparent;
   color: var(--ag-text-secondary);
   cursor: default;
@@ -1028,11 +1028,31 @@
   color: var(--ag-err);
 }
 
+.ag-agent-setup-error-detail {
+  font-size: var(--ag-fs-meta);
+  color: var(--ag-text-muted);
+}
+
+.ag-agent-setup-error-detail > summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+.ag-agent-setup-error-detail > pre {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: var(--ag-fs-meta);
+  color: var(--ag-text-muted);
+  max-height: 120px;
+  overflow: auto;
+}
+
 .ag-agent-setup-primary {
   align-self: stretch;
   min-height: 40px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: var(--ag-primary-bg);
   color: var(--ag-primary-fg);
   transition: var(--ag-transition-color);
@@ -1207,7 +1227,7 @@
   overflow: hidden;
   padding: 7px 9px;
   border: 1px solid var(--ag-border);
-  border-radius: var(--ag-r-chip);
+  border-radius: var(--ag-r-row);
   background: var(--ag-bg);
   color: var(--accent-primary);
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
@@ -1238,7 +1258,7 @@
 .ag-agent-login-code-value {
   padding: 6px 12px;
   border: 1px solid var(--ag-border);
-  border-radius: var(--ag-r-chip);
+  border-radius: var(--ag-r-row);
   background: var(--ag-bg);
   color: var(--ag-text);
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
@@ -1373,7 +1393,7 @@
   height: 28px;
   padding: 0 10px;
   border: 0;
-  border-radius: var(--ag-r-chip);
+  border-radius: var(--ag-r-row);
   background: var(--n-ink-fill-hover);
   color: var(--ag-text);
   font: inherit;
@@ -1847,7 +1867,7 @@
   flex: 0 0 auto;
   padding: 2px;
   border: 1px solid var(--ag-border);
-  border-radius: var(--ag-r-chip);
+  border-radius: var(--ag-r-row);
   background: var(--ag-input-bg);
 }
 
@@ -1856,7 +1876,7 @@
   height: 26px;
   padding: 0 8px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-chip);
   background: transparent;
   color: var(--ag-text-secondary);
   font: inherit;
@@ -1896,7 +1916,7 @@
   height: 30px;
   padding: 0 7px;
   border: 1px solid var(--ag-border-strong);
-  border-radius: var(--ag-r-chip);
+  border-radius: var(--ag-r-row);
   background: var(--ag-input-bg);
   color: var(--ag-text);
   font: inherit;
@@ -1944,7 +1964,7 @@
 .ag-settings-disclosure-toggle:focus-visible {
   outline: var(--ag-focus-ring);
   outline-offset: 2px;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
 }
 
 .ag-settings-disclosure-chevron {
@@ -2024,7 +2044,7 @@
 
 .ag-settings-resource-badge {
   padding: 3px 7px;
-  border-radius: 999px;
+  border-radius: var(--ag-r-chip);
   background: var(--ag-selected);
   color: var(--ag-text-muted);
   font-size: var(--ag-micro);
@@ -2275,7 +2295,7 @@
   height: 26px;
   padding: 5px;
   border: 0;
-  border-radius: 50%;
+  border-radius: var(--ag-r-chip);
   background: transparent;
   color: var(--ag-text-secondary);
   cursor: default;
@@ -2512,14 +2532,14 @@
   font-weight: var(--ag-fw-medium);
 }
 
-/* 좁은 폭: 탭 줄을 알약 분할 컨트롤 하나로. */
+/* 좁은 폭: 탭 줄을 분할 컨트롤 하나로. */
 @container settings-hub (max-width: 760px) {
   .ag-settings-page .ag-settings-nav {
     margin: 12px 16px 0;
     padding: 3px;
     gap: 2px;
     border: 0;
-    border-radius: var(--ag-r-pill);
+    border-radius: var(--ag-r-row);
     background: var(--n-ink-fill-hover);
   }
 
@@ -2527,7 +2547,7 @@
     /* 좁은 설정에서는 탭이 가로줄의 폭을 나눈다. */
     flex: 1 1 auto;
     min-height: 30px;
-    border-radius: var(--ag-r-pill);
+    border-radius: var(--ag-r-chip);
     font-size: var(--ag-fs-secondary);
   }
 
@@ -2596,7 +2616,7 @@
   padding: 0;
   justify-content: center;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: transparent;
   color: var(--n-ink-secondary);
 }
@@ -2682,13 +2702,13 @@
   display: none;
 }
 
-/* 버튼: 보조 = 옅은 잉크 채움 알약, 기본 = 잉크 알약. 테두리는 긋지 않는다.
+/* 버튼: 보조 = 옅은 잉크 채움, 기본 = 잉크 채움. 테두리는 긋지 않는다.
    sidebar-button-modern.css 가 뒤에 로드되므로 .ag-root 를 붙여 이긴다. */
 .ag-root .ag-settings-page .ag-settings-btn {
   height: 32px;
   padding: 0 14px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: var(--n-ink-fill-hover);
   color: var(--n-ink);
   font-size: var(--ag-fs-secondary);
@@ -2711,7 +2731,7 @@
 .ag-root .ag-settings-page .ag-settings-primary {
   height: 32px;
   padding: 0 16px;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   font-size: var(--ag-fs-secondary);
 }
 
@@ -3161,7 +3181,7 @@
   height: 31px;
   padding: 0;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: transparent;
   color: var(--ag-text-muted);
   cursor: default;
@@ -3426,7 +3446,7 @@
   height: 36px;
   padding: 0 14px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: var(--n-ink-fill-hover);
   color: var(--n-ink);
   font-size: var(--ag-fs-body);
@@ -3445,7 +3465,7 @@
   height: 36px;
   padding: 0 14px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   background: var(--n-ink-fill-hover);
   color: var(--n-ink);
   transition: var(--ag-transition-color);

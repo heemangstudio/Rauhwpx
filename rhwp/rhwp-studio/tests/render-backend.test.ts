@@ -349,11 +349,11 @@ test('CanvasKit contain rect matches the Hancom cell-fill geometry', () => {
     height: 57.10666666666667,
   };
   const fit = canvasKitImageContainRect(cell, 1628, 563);
-  assert.ok(Math.abs(fit.width - 165.16) < 0.05, `width=${fit.width}`);
-  assert.ok(Math.abs(fit.height - cell.height) < 1e-9, `height=${fit.height}`);
-  assert.ok(Math.abs(fit.x - 510.72) < 0.05, `x=${fit.x}`);
-  assert.ok(Math.abs(fit.x + fit.width - 675.88) < 0.05, `right=${fit.x + fit.width}`);
-  assert.ok(Math.abs(fit.y - cell.y) < 1e-9, `y=${fit.y}`);
+  assert.ok(Math.abs(fit.width - 179.08) < 0.001, `width=${fit.width}`);
+  assert.ok(Math.abs(fit.height - 61.93) < 0.001, `height=${fit.height}`);
+  assert.ok(Math.abs(fit.x - 503.76) < 0.001, `x=${fit.x}`);
+  assert.ok(fit.height > cell.height);
+  assert.ok(Math.abs(fit.y - cell.y) < 0.001, `y=${fit.y}`);
   assert.notEqual(Math.round(fit.width), 1628);
   assert.notEqual(Math.round(fit.x), Math.round(cell.x));
   assert.deepEqual(canvasKitImageContainRect(cell, 0, 0), {

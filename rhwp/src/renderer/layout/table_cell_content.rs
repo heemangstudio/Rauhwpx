@@ -5,9 +5,13 @@ use super::super::page_layout::LayoutRect;
 use super::super::render_tree::*;
 use super::super::style_resolver::ResolvedStyleSet;
 use super::super::{hwpunit_to_px, ShapeStyle, TextStyle};
-use super::border_rendering::{build_row_col_x, collect_cell_borders, render_transparent_borders};
+use super::border_rendering::{
+    build_row_col_x, collect_cell_borders, collect_zone_borders, render_cell_diagonal,
+    render_transparent_borders,
+};
 use super::text_measurement::{
-    is_cjk_char, is_vertical_rotate_char, resolved_to_text_style, vertical_substitute_char,
+    hft_vertical_advance, is_cjk_char, is_vertical_rotate_char, resolved_to_text_style,
+    vertical_substitute_char,
 };
 use super::utils::{extract_shape_transform, find_bin_data};
 use super::{CellContext, CellPathEntry, LayoutEngine};
@@ -89,6 +93,8 @@ impl LayoutEngine {
             cell_para_index: usize,
             char_offset: usize,
             is_para_end: bool,
+            advance: f64,
+            hft_vertical: bool,
         }
 
         struct ColumnInfo {
@@ -166,11 +172,14 @@ impl LayoutEngine {
                         // 세로쓰기에서 구두점/기호만 반칸 advance (영문/숫자는 캐릭터 높이)
                         let half_advance =
                             needs_rotation || (!is_cjk_char(ch) && !ch.is_ascii_alphanumeric());
-                        let advance = if half_advance {
-                            text_style.font_size * 0.5
-                        } else {
-                            text_style.font_size
-                        };
+                        let hft_advance = hft_vertical_advance(&text_style, ch);
+                        let advance = hft_advance.unwrap_or_else(|| {
+                            if half_advance {
+                                text_style.font_size * 0.5
+                            } else {
+                                text_style.font_size
+                            }
+                        });
                         chars.push(CharInfo {
                             ch,
                             style: text_style.clone(),
@@ -179,6 +188,8 @@ impl LayoutEngine {
                             cell_para_index: cp_idx,
                             char_offset,
                             is_para_end: false,
+                            advance,
+                            hft_vertical: hft_advance.is_some(),
                         });
                         col_height += advance;
                         char_offset += 1;
@@ -241,10 +252,21 @@ impl LayoutEngine {
         // 3. 각 글자를 TextLine + TextRun 노드로 생성
         let mut col_x = cols_x_start + total_cols_width;
 
-        for col in &columns {
+        for (col_idx, col) in columns.iter().enumerate() {
             col_x -= col.col_width;
+            let hft_vertical = chars[col.start_idx..col.end_idx]
+                .iter()
+                .all(|ci| ci.hft_vertical);
 
-            let free_space = (inner_area.height - col.total_height).max(0.0);
+            // HFT의 세로 기준점은 실제 글자 전진의 합으로 중앙에 놓인다.
+            // 일반 글꼴은 저장 줄 상자(글자 높이+줄간격)를 사용한다.
+            let n_chars = col.end_idx.saturating_sub(col.start_idx) as f64;
+            let valign_height = if hft_vertical {
+                col.total_height
+            } else {
+                col.total_height + n_chars * col.absorbed_spacing
+            };
+            let free_space = (inner_area.height - valign_height).max(0.0);
             let y_start = inner_area.y
                 + match col.alignment {
                     Alignment::Center | Alignment::Distribute => free_space / 2.0,
@@ -259,12 +281,16 @@ impl LayoutEngine {
                 let is_rotate = is_vertical_rotate_char(ci.ch);
                 let needs_rotation = is_rotate || (text_direction == 1 && !is_cjk_char(ci.ch));
                 // 세로쓰기에서 구두점/기호만 반칸 advance (영문/숫자는 캐릭터 높이)
-                let half_advance =
-                    needs_rotation || (!is_cjk_char(ci.ch) && !ci.ch.is_ascii_alphanumeric());
-                let advance = if half_advance {
-                    ci.style.font_size * 0.5
+                let advance = ci.advance;
+                let baseline = if hft_vertical {
+                    advance
                 } else {
-                    ci.style.font_size
+                    advance * 0.85
+                };
+                let char_top = if hft_vertical {
+                    char_y - advance
+                } else {
+                    char_y
                 };
 
                 // 열 높이 초과 시 렌더링 중단
@@ -272,12 +298,26 @@ impl LayoutEngine {
                     break;
                 }
 
-                // 세로쓰기: 모든 문자를 칼럼 중앙에 전각 배치 (영문눕힘과 동일)
+                // 칼럼 피치에 흡수된 줄간격은 다음 칼럼 쪽(왼쪽)에 둔다.
+                // 글자를 피치 전체의 중앙에 놓으면 여러 칼럼에서 오른쪽
+                // 글자까지 줄간격의 절반만큼 왼쪽으로 밀린다.
                 let char_width = ci.style.font_size;
-
-                let char_x = col_x + (col.col_width - char_width) / 2.0;
+                let leading_spacing = if col_idx + 1 == columns.len() {
+                    0.0
+                } else {
+                    col.absorbed_spacing
+                };
+                let visual_width = col.col_width - leading_spacing;
+                let mut char_x = col_x + leading_spacing + (visual_width - char_width) / 2.0;
+                if hft_vertical {
+                    // HFT 라틴 기준점은 em 하단의 0.15em 위에 있다. 한글은
+                    // 0.05em 합성 굵게의 추가 폭까지 포함해 열 중앙에 둔다.
+                    char_x += ci.style.font_size * if is_cjk_char(ci.ch) { -0.025 } else { 0.15 };
+                }
                 // 기호 대체: 세로 형태 Unicode가 있으면 대체 문자를 사용 (회전 불필요)
-                let (render_ch, rotation) = if needs_rotation {
+                let (render_ch, rotation) = if hft_vertical {
+                    (ci.ch, 0.0)
+                } else if needs_rotation {
                     if let Some(sub) = vertical_substitute_char(ci.ch) {
                         (sub, 0.0)
                     } else {
@@ -290,8 +330,8 @@ impl LayoutEngine {
                 let line_id = tree.next_id();
                 let mut line_node = RenderNode::new(
                     line_id,
-                    RenderNodeType::TextLine(TextLineNode::new(advance, advance * 0.85)),
-                    BoundingBox::new(char_x, char_y, char_width, advance),
+                    RenderNodeType::TextLine(TextLineNode::new(advance, baseline)),
+                    BoundingBox::new(char_x, char_top, char_width, advance),
                 );
 
                 let run_id = tree.next_id();
@@ -321,6 +361,7 @@ impl LayoutEngine {
                                     cell_para_index: ci.cell_para_index,
                                     text_direction: 0,
                                     line_wrap_squeeze: false,
+                                    row_span: 1,
                                 }],
                             })
                         },
@@ -334,11 +375,11 @@ impl LayoutEngine {
                             .get(ci.char_style_id as usize)
                             .map(|cs| cs.border_fill_id)
                             .unwrap_or(0),
-                        baseline: advance * 0.85,
+                        baseline,
                         field_marker: FieldMarkerType::None,
                         display_text: None,
                     }),
-                    BoundingBox::new(char_x, char_y, char_width, advance),
+                    BoundingBox::new(char_x, char_top, char_width, advance),
                 );
 
                 line_node.children.push(run_node);
@@ -433,6 +474,7 @@ impl LayoutEngine {
         let parent_cell_path = cell_context
             .map(|context| context.path.as_slice())
             .unwrap_or(&[]);
+        let children_start = cell_node.children.len();
         self.layout_shape_object(
             tree,
             cell_node,
@@ -453,6 +495,17 @@ impl LayoutEngine {
             shape_table_cell_ref,
             false,
         );
+        // 셀 안 비인라인(글앞으로/글뒤로 등) 도형에도 본문과 같은 렌더 레이어
+        // (text_wrap 페인트 평면 + z_order)를 부여한다. 레이어가 없으면 도형이
+        // 플로우 컨텐츠와 문서 순서로 칠해져, 컨트롤 순서가 뒤인 셀 인라인 그림이
+        // 글앞으로 도형 위를 덮는다 (본문 경로 layout.rs 의 set_layer 후처리와 동일).
+        if !child_common.treat_as_char {
+            let layer =
+                Self::render_layer_from_common(child_common, outer_para_idx, inner_ctrl_idx);
+            for child in &mut cell_node.children[children_start..] {
+                child.set_layer(layer);
+            }
+        }
     }
 
     /// TextBox 내부에 포함된 표를 레이아웃한다.
@@ -750,6 +803,7 @@ impl LayoutEngine {
                         text_direction: cell.text_direction,
                         line_wrap_squeeze: cell.line_wrap
                             == crate::model::table::CellLineWrap::Squeeze,
+                        row_span: cell.row_span,
                     });
                     (
                         sec_idx,
@@ -803,14 +857,9 @@ impl LayoutEngine {
                                 } else {
                                     (0.0, 0.0, 0.0)
                                 };
-                            // 셀 내부에 맞추어 크기 제한
-                            let fit_w =
-                                pic_w.min((inner_width - margin_left - margin_right).max(0.0));
-                            let fit_h = if pic_w > 0.0 {
-                                pic_h * (fit_w / pic_w)
-                            } else {
-                                pic_h
-                            };
+                            // 셀보다 넓은 그림도 원래 크기로 넘겨 그린다 (table_layout 과
+                            // 같은 한컴 규칙).
+                            let (fit_w, fit_h) = (pic_w, pic_h);
                             // TAC: 문단 시작 위치 (표의 왼쪽 상단)
                             let pic_x = inner_x + margin_left;
                             // vpos 기반 y 위치: LINE_SEG의 vertical_pos 사용
@@ -843,6 +892,7 @@ impl LayoutEngine {
                                         text_direction: cell.text_direction,
                                         line_wrap_squeeze: cell.line_wrap
                                             == crate::model::table::CellLineWrap::Squeeze,
+                                        row_span: cell.row_span,
                                     });
                                     CellContext {
                                         parent_para_index: outer_pi,
@@ -866,6 +916,9 @@ impl LayoutEngine {
                                     brightness: pic.image_attr.brightness,
                                     contrast: pic.image_attr.contrast,
                                     opacity: pic.image_attr.opacity(),
+                                    shadow: crate::renderer::render_tree::ImageShadow::from_picture(
+                                        pic, self.dpi,
+                                    ),
                                     text_wrap: None,
                                     external_path: pic.image_attr.external_path.clone(),
                                     header_footer_ref: None,
@@ -900,8 +953,23 @@ impl LayoutEngine {
                 }
             }
 
+            cell_node.children.sort_by_key(Self::paper_node_sort_key);
             table_node.children.push(cell_node);
+            if let Some(bs) = border_style {
+                table_node.children.extend(render_cell_diagonal(
+                    tree, bs, cell_x, cell_y, cell_w, cell_h,
+                ));
+            }
         }
+
+        collect_zone_borders(
+            &mut h_edges,
+            &mut v_edges,
+            table,
+            &styles.border_styles,
+            None,
+            None,
+        );
 
         // 엣지 기반 테두리 렌더링
         table_node
@@ -1661,6 +1729,7 @@ mod cell_paint_order_tests {
                                 cell_para_index: 1,
                                 text_direction: 1,
                                 line_wrap_squeeze: true,
+                                row_span: 1,
                             },
                             CellPathEntry {
                                 control_index: 0,
@@ -1668,6 +1737,7 @@ mod cell_paint_order_tests {
                                 cell_para_index: 0,
                                 text_direction: 0,
                                 line_wrap_squeeze: false,
+                                row_span: 1,
                             },
                         ],
                     }),

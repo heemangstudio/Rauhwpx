@@ -156,7 +156,7 @@
   min-height: 40px;
   padding: 0 16px;
   border: 0;
-  border-radius: var(--ag-r-pill);
+  border-radius: var(--ag-r-row);
   font: inherit;
   font-size: var(--ag-fs-body);
   font-weight: var(--ag-fw-medium);

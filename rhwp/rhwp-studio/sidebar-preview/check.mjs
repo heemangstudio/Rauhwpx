@@ -1,9 +1,9 @@
+import { checkChipAlignment } from './chip-alignment.check.mjs';
 import { checkPiModels } from './pi-models.check.mjs';
 import { checkCloudMergeRecovery } from './cloud-merge-recovery.check.mjs';
 import { checkCloudSetup } from './cloud-setup.check.mjs';
 import { checkBoatSetup } from './boat-setup.check.mjs';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
@@ -15,19 +15,11 @@ import { checkCloudRecovery } from './cloud-recovery.check.mjs';
 import { checkCloudStream } from './cloud-stream.check.mjs';
 import { checkChangesPreview } from './changes.check.mjs';
 import { checkPlanPreview } from './plan.check.mjs';
-import { browserLaunchArgs } from '../tests/browser-support.ts';
+import { browserLaunchArgs, findBrowserExecutable } from '../tests/browser-support.ts';
 
 const studio = resolve(import.meta.dirname, '..');
 const artifacts = resolve(import.meta.dirname, 'artifacts');
-const executablePath = [
-  process.env.CHROME_PATH,
-  process.env.PUPPETEER_EXECUTABLE_PATH,
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  '/usr/bin/google-chrome',
-  '/usr/bin/google-chrome-stable',
-  '/usr/bin/chromium',
-  '/usr/bin/chromium-browser',
-].find((path) => path && existsSync(path));
+const executablePath = findBrowserExecutable();
 assert(executablePath, 'Set CHROME_PATH to a Chrome/Chromium executable.');
 await mkdir(artifacts, { recursive: true });
 const sampleFile = resolve(artifacts, 'sample.txt');
@@ -120,8 +112,15 @@ try {
     );
     assert(clicked, `Visible ${selector} with text ${text}`);
   }
+  async function openLocal(query = '') {
+    await open(query);
+    await page.click('.ag-header .ag-threads-btn');
+    await page.waitForSelector('.ag-threads-new', { visible: true });
+    await page.click('.ag-threads-new');
+    await page.click('.ag-header [data-workspace-mode="local"]');
+  }
   async function play(scenario) {
-    await open(`scenario=${scenario}`);
+    await openLocal(`scenario=${scenario}`);
     await page.click('#play');
     await page.waitForFunction(() =>
       window.sidebarPreview.bridge.isTurnRunning(),
@@ -144,6 +143,7 @@ try {
       throw new Error(`${name}: ${error.message}\nRuntime errors: ${JSON.stringify(errors)}\nBlocked requests: ${JSON.stringify(forbidden)}`, { cause: error });
     }
   }
+  await step('Fullscreen provider chip follows the composer column', () => checkChipAlignment(page, origin));
   await step('First Cloud server creation, cancel, refresh and recreation',
     () => checkCloudSetup(page, origin, artifacts));
   await step('boat server setup by email and API key, card start/stop, disconnect and delete at 280/480/900px',
@@ -364,8 +364,7 @@ try {
   await step('Tool activity labels stay compact during and after a turn', async () => {
     await play('chat');
     assert.equal(await page.$eval('.ag-activity-label', node => node.textContent), 'read_document');
-    await open('scenario=tools');
-    await page.click('#play');
+    await play('tools');
     const turnLabel = '편집 2번 · 읽기 1번 · 도구 1번 · 오류 1';
     await page.waitForFunction((label) => !window.sidebarPreview.bridge.isTurnRunning()
       && document.querySelector('.ag-activity-label')?.textContent === label, {}, turnLabel);
@@ -411,7 +410,7 @@ try {
     await screenshot('tool-activity');
   });
   await step('Chat follows a send and yields to manual scrolling', async () => {
-    await open('scenario=chat&hold=1');
+    await openLocal('scenario=chat&hold=1');
     await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'no-preference' }]);
     await page.evaluate(() => {
       const messages = document.querySelector('.ag-messages');

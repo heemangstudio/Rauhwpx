@@ -183,7 +183,21 @@ export function installAppMenu({ checkForUpdates, openNewWindow, isTrustedSender
         ]),
       },
       { label: 'Window', role: 'window', submenu: [minimizeWindow('Minimize'), { role: 'close' }] },
-      { role: 'help', submenu: [{ role: 'about' }] },
+      {
+        role: 'help',
+        submenu: [{
+          label: `${app.getName()} 정보`,
+          // 네이티브 about 패널은 "Electron 43.x" 만 보인다 — 렌더러의 제품 정보
+          // 다이얼로그(앱 이름·버전·라이선스)를 연다.
+          click: (_menuItem, browserWindow) => {
+            sendToWindow(
+              browserWindow ?? BrowserWindow.getFocusedWindow(),
+              MENU_COMMAND_CHANNEL,
+              { commandId: 'file:about' },
+            );
+          },
+        }],
+      },
     ]));
     return;
   }
@@ -279,7 +293,12 @@ export function installAppMenu({ checkForUpdates, openNewWindow, isTrustedSender
         submenu: [
           about
             ? { ...rendererEntry(about, owner), label: `${appName} 정보` }
-            : { role: 'about', label: `${appName} 정보` },
+            : {
+              label: `${appName} 정보`,
+              click: (_menuItem, browserWindow) => {
+                sendToWindow(browserWindow ?? owner, MENU_COMMAND_CHANNEL, { commandId: 'file:about' });
+              },
+            },
           { type: 'separator' },
           { label: '업데이트 확인…', click: checkForUpdates },
           { type: 'separator' },

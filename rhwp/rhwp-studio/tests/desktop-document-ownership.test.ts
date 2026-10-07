@@ -1570,6 +1570,28 @@ test('Windows DACL-copy failure leaves the destination and removes the temp file
   });
 });
 
+test('Windows DACL failures report a conflict only when the source disappeared', async () => {
+  for (const disappears of [false, true]) {
+    await withTemporaryDirectory(async (directory) => {
+      const target = join(directory, 'report.hwp');
+      await writeFs(target, 'previous');
+      await assert.rejects(
+        writeNativeFileAtomically(target, new Uint8Array([7, 8]), {
+          platform: 'win32',
+          windowsSystemRoot: 'C:\\Windows',
+          runCommandImpl: async () => {
+            if (disappears) await rmFs(target);
+            throw Object.assign(new Error('DACL copy failed'), { code: 'NATIVE_FILE_METADATA_COPY_FAILED' });
+          },
+        }),
+        { code: disappears ? NATIVE_FILE_CONFLICT_CODE : 'NATIVE_FILE_METADATA_COPY_FAILED' },
+      );
+      assert.deepEqual(await readdir(directory), disappears ? [] : ['report.hwp']);
+      if (!disappears) assert.equal(await readFs(target, 'utf8'), 'previous');
+    });
+  }
+});
+
 test('a hung Windows metadata command is tree-killed and awaited before rejection', async () => {
   class FakeChild extends EventEmitter {
     exitCode: number | null = null;

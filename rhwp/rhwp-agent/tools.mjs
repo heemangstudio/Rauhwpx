@@ -7,7 +7,7 @@ import { MCP_USER_QUESTION_SHAPE } from './user-question.mjs';
 export { RHWP_TOOL_RULES } from './tool-rules.mjs';
 
 // 쓰기 도구 설명 끝에 붙는 한 줄 포인터. 규칙 본문은 RHWP_TOOL_RULES 에만 둔다.
-const WRITE_POINTER = 'Staged (rhwp tool rules).';
+const WRITE_POINTER = 'Write (rhwp tool rules).';
 
 /**
  * apply_edits 배치에 넣을 수 있는 semantic write — 스튜디오 executor 의
@@ -135,17 +135,72 @@ function zoneCorner(description) {
  * (occurrence/within/position, 해석 시점, 오류 동작)은 RHWP_TOOL_RULES 에만 둔다.
  */
 function anchorParam() {
-  return z.record(z.string(), z.unknown()).optional()
-    .describe('{text,occurrence?,within?,position?} (rhwp tool rules)');
+  // 문자열 앵커는 {text} 의 줄임 — 스키마 글자 수를 늘리지 않게 파싱 단계에서 객체로 바꾼다.
+  return z.preprocess(
+    (value) => (typeof value === 'string' ? { text: value } : value),
+    z.record(z.string(), z.unknown()).optional(),
+  ).describe('Long form of find');
+}
+
+/**
+ * find 단축 — find:"찾을 텍스트" 는 anchor:{text} 와 같고, 옆의 occurrence/position 은 anchor 안쪽과
+ * 같은 뜻이다. 중첩 없는 평평한 인자라 모델이 중괄호를 닫다가 text 를 빠뜨리지 않는다. 검색 범위는
+ * 옆의 paraIdx/cell 이 정한다. 값 검증은 validateAnchorTool 과 스튜디오 executor 가 한다 (크기 한도).
+ */
+function findParams() {
+  return {
+    find: z.string().optional(),
+    occurrence: z.number().int().optional(),
+    position: z.string().optional(),
+  };
 }
 
 const ANCHOR_KEYS = ['text', 'occurrence', 'within', 'position'];
 const ANCHOR_WITHIN_KEYS = ['sectionIdx', 'paraRange', 'cell'];
+/** delete_range / replace_range 의 좌표 키 전체. */
+const RANGE_COORD_KEYS = ['sectionIdx', 'startParaIdx', 'startCharOffset', 'endParaIdx', 'endCharOffset'];
 
-/** anchor 내부 필드 검증 — 레코드 스키마가 풀어주는 만큼 여기서 모양을 고정한다. */
-function validateAnchorShape(anchor) {
+/**
+ * find 와 anchor 를 한 앵커로 모은다 — find 는 {text} 이고, 최상위 occurrence/position 은 앵커가
+ * 정하지 않은 값을 채운다. find 와 anchor 를 함께 보내거나 같은 값을 두 곳에서 다르게 주면 거절한다.
+ * 둘 다 없으면 undefined (최상위 occurrence/position 만 남아 있으면 거절).
+ */
+function anchorFromArgs(args) {
+  const present = (v) => v !== undefined && v !== null;
+  const refiners = ['occurrence', 'position'].filter((k) => present(args[k]));
+  if (present(args.find) && present(args.anchor)) {
+    throw invalidArgs('pass find or anchor, not both — find:"text" is the short form of anchor:{text:"text"}');
+  }
+  if (!present(args.find) && !present(args.anchor)) {
+    if (refiners.length > 0) {
+      throw invalidArgs(`${refiners.join('/')} refines a text match — add find:"text", or drop ${refiners.join('/')}`);
+    }
+    return undefined;
+  }
+  if (present(args.find) && (typeof args.find !== 'string' || args.find.length < 1)) {
+    throw invalidArgs('find must be the exact text to locate (a non-empty string)');
+  }
+  const anchor = present(args.find) ? { text: args.find }
+    : typeof args.anchor === 'string' ? { text: args.anchor } : args.anchor;
+  if (typeof anchor !== 'object' || Array.isArray(anchor)) return anchor;
+  const merged = { ...anchor };
+  for (const key of refiners) {
+    if (present(anchor[key]) && anchor[key] !== args[key]) {
+      throw invalidArgs(`${key} ${JSON.stringify(args[key])} and anchor.${key} ${JSON.stringify(anchor[key])} disagree — send only one`);
+    }
+    merged[key] = args[key];
+  }
+  return merged;
+}
+
+/**
+ * anchor 내부 필드 검증 — 레코드 스키마가 풀어주는 만큼 여기서 모양을 고정한다. 문자열은 {text} 로 본다.
+ * prefix 는 오류에 싣는 키 앞머리다 — find 꼴이면 occurrence/position 이 최상위 인자라 비운다.
+ */
+function validateAnchorShape(anchor, prefix = 'anchor.') {
+  if (typeof anchor === 'string') anchor = { text: anchor };
   if (typeof anchor !== 'object' || Array.isArray(anchor)) {
-    throw invalidArgs('anchor must be an object {text, occurrence?, within?, position?}');
+    throw invalidArgs('anchor must be {text, occurrence?, within?, position?} or the text itself as a string');
   }
   const unknown = Object.keys(anchor).filter((k) => !ANCHOR_KEYS.includes(k));
   if (unknown.length > 0) {
@@ -157,12 +212,12 @@ function validateAnchorShape(anchor) {
   const occurrence = anchor.occurrence;
   if (occurrence !== undefined && occurrence !== null
     && (typeof occurrence !== 'number' || !Number.isSafeInteger(occurrence) || occurrence < 1)) {
-    throw invalidArgs('anchor.occurrence must be a 1-based integer (>= 1)');
+    throw invalidArgs(`${prefix}occurrence must be a 1-based integer (>= 1)`);
   }
   const position = anchor.position;
   if (position !== undefined && position !== null
     && position !== 'before' && position !== 'after' && position !== 'replace') {
-    throw invalidArgs(`anchor.position must be "before" | "after" | "replace" (got ${JSON.stringify(position)})`);
+    throw invalidArgs(`${prefix}position must be "before" | "after" | "replace" (got ${JSON.stringify(position)})`);
   }
   const within = anchor.within;
   if (within !== undefined && within !== null) {
@@ -177,24 +232,72 @@ function validateAnchorShape(anchor) {
 }
 
 /**
- * anchor 와 숫자 좌표는 둘 중 하나만 받는다 — 스튜디오 executor 도 같은 검사를
- * 다시 하므로 apply_edits 항목에서도 동일하게 실패한다.
- * @param {string[]} coordKeys 좌표 방식일 때 반드시 있어야 하는 키
- * @param {string[]} extraClashKeys anchor 와 함께면 안 되는 추가 키 (cell/cellPath)
+ * 여러 문단 대상 (서식 도구 공용) — 항목은 문단 번호 또는 [첫, 끝] 구간이다. 스키마는 크기 한도
+ * 때문에 느슨한 배열로 두고 모양은 validateParas 가, 범위·중복·개수 한도는 스튜디오 executor 가 본다.
  */
-function validateAnchorTool(args, coordKeys, extraClashKeys = []) {
-  const present = (k) => args[k] !== undefined && args[k] !== null;
-  if (present('anchor')) {
-    const clash = [...coordKeys, ...extraClashKeys].filter(present);
-    if (clash.length > 0) {
-      throw invalidArgs(`pass either anchor or coordinates, not both (got ${clash.join('/')}) — anchor.within scopes the search instead`);
+function parasParam() {
+  return z.array(z.unknown()).optional().describe('paraIdx or [first,last]');
+}
+
+/** find/anchor 와 함께 올 수 없는 글자 오프셋 — 둘 다 위치를 정한다 (문단 좌표·cell 은 검색 범위라 괜찮다). */
+const CHAR_OFFSET_KEYS = ['charOffset', 'startCharOffset', 'endCharOffset', 'startOffset', 'endOffset'];
+
+/** paras 와 함께 올 수 없는 주소 인자 — paras 가 대상 문단을 이미 정한다. */
+const PARAS_CLASH_KEYS = ['paraIdx', 'startOffset', 'endOffset', 'find', 'anchor'];
+
+function validateParas(args) {
+  const clash = PARAS_CLASH_KEYS.filter((k) => args[k] !== undefined && args[k] !== null);
+  if (clash.length > 0) {
+    throw invalidArgs(`paras already names the target paragraphs — drop ${clash.join(', ')}, or send that target as a separate item`);
+  }
+  const isIndex = (v) => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+  if (!Array.isArray(args.paras) || args.paras.length < 1 || args.paras.length > 64) {
+    throw invalidArgs('paras must list 1..64 entries, each a paragraph index or an inclusive [first, last] range, e.g. [48, [51, 53]]');
+  }
+  args.paras.forEach((entry, index) => {
+    const range = Array.isArray(entry) && entry.length === 2 && isIndex(entry[0]) && isIndex(entry[1]);
+    if (range && entry[1] < entry[0]) {
+      throw invalidArgs(`paras[${index}] [${entry[0]}, ${entry[1]}] is reversed — send [${entry[1]}, ${entry[0]}]`);
     }
-    validateAnchorShape(args.anchor);
+    if (!range && !isIndex(entry)) {
+      throw invalidArgs(`paras[${index}] must be a paragraph index or an inclusive [first, last] range (got ${JSON.stringify(entry)})`);
+    }
+  });
+}
+
+/**
+ * 대상 주소 검증 — paras 가 있으면 그 모양만, find/anchor 가 있으면 그 모양을 본다 (옆에 온
+ * 문단 좌표·cell 은 스튜디오 executor 가 검색 범위로 쓰고, 글자 오프셋은 위치를 둘로 만들어 거절한다). 둘 다 없으면
+ * 좌표가 있어야 한다. sectionIdx(구역이 하나뿐인 문서)와 범위 도구의 endParaIdx 는 executor 가
+ * 채우므로 요구하지 않고, apply_char_format 은 오프셋이 둘 다 없으면 문단 전체라 오프셋도 요구하지 않는다.
+ * @param {string} tool 오류 메시지에 싣는 도구 이름
+ * @param {string[]} coordKeys 좌표 방식의 전체 키 — 누락 오류가 통째로 알려준다
+ * @param {{anchor?: boolean, paras?: boolean}} [accepts] 좌표 대신 받는 주소 방식
+ */
+function validateAnchorTool(tool, args, coordKeys, { anchor = true, paras = false } = {}) {
+  const present = (k) => args[k] !== undefined && args[k] !== null;
+  if (paras && present('paras')) {
+    validateParas(args);
     return;
   }
-  const missing = coordKeys.filter((k) => !present(k));
+  const textAnchor = anchor ? anchorFromArgs(args) : undefined;
+  if (textAnchor !== undefined) {
+    const via = present('find') ? 'find' : 'anchor';
+    const offsets = CHAR_OFFSET_KEYS.filter(present);
+    if (offsets.length > 0) {
+      throw invalidArgs(`${offsets.join('/')} and ${via} both place the target — send ${via} (with position/occurrence if needed) or ${offsets.join('/')}, not both`);
+    }
+    validateAnchorShape(textAnchor, via === 'find' ? '' : 'anchor.');
+    return;
+  }
+  const wholePara = tool === 'apply_char_format' && !present('startOffset') && !present('endOffset');
+  const keys = wholePara ? coordKeys.filter((k) => k !== 'startOffset' && k !== 'endOffset') : coordKeys;
+  // 범위 도구의 paraIdx 는 startParaIdx 의 별칭이다 (executor 가 옮긴다).
+  const missing = keys.filter((k) => k !== 'sectionIdx' && k !== 'endParaIdx' && !present(k)
+    && !(k === 'startParaIdx' && present('paraIdx')));
   if (missing.length > 0) {
-    throw invalidArgs(`missing ${missing.join('/')} — pass coordinates or an anchor {text, occurrence?, within?, position?}`);
+    const alternatives = [anchor ? 'find' : '', paras ? 'paras' : ''].filter(Boolean).join(' or ');
+    throw invalidArgs(`${tool} needs ${keys.join(', ')} — or ${alternatives} (missing ${missing.join(', ')})`);
   }
 }
 
@@ -415,14 +518,14 @@ export const IMPLEMENTATION_PLAN_SHAPE = Object.freeze({
   decisions: z.array(z.string().min(1).max(2_000)).min(1).max(100),
   steps: z.array(z.object({
     id: z.string().min(1).max(100).optional(),
-    title: z.string().min(1).max(300),
-    details: z.string().min(1).max(3_000),
+    title: z.string().min(1).max(300).describe('One-line imperative todo, e.g. "Rewrite the 개요 paragraph so the goal comes first" or "Verify the schedule table fits one page via get_page_geometry"'),
+    details: z.string().min(1).max(3_000).optional().describe('Only when the one-liner cannot carry a needed detail'),
     target: z.string().min(1).max(1_000).optional().describe('Affected section, paragraph, table, or page'),
     preview: z.string().min(1).max(3_000).optional().describe('Proposed text or the visible result'),
     files: z.array(z.string().min(1).max(1_000)).max(100).optional(),
-  }).strict()).min(1).max(100),
+  }).strict()).min(1).max(100).describe('Ordered todo list, verification todos included'),
   files: z.array(z.string().min(1).max(1_000)).max(200),
-  validation: z.array(z.string().min(1).max(1_000)).min(1).max(100),
+  validation: z.array(z.string().min(1).max(1_000)).max(100).describe('Checks beyond the verification todos; may be empty'),
   risks: z.array(z.string().min(1).max(2_000)).max(100),
   exclusions: z.array(z.string().min(1).max(1_000)).max(100),
   sources: z.array(z.object({
@@ -687,6 +790,13 @@ const BASE_TOOL_DEFINITIONS = [
     shape: {},
   },
   {
+    name: 'commit_version',
+    description: '전체 mode only: commit the live document to its version history with a one-line message.',
+    shape: {
+      message: z.string().min(1).max(200),
+    },
+  },
+  {
     name: 'find_text',
     description: `Search body and table cell text (nested too) for a string. Returns sectionIdx, paraIdx, charOffset, length, context. Cell matches carry cell, nested ones cellPath; pass as-is to read/write tools (paraIdx is relative to that cell). Never spans paragraphs.`,
     shape: {
@@ -769,7 +879,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'apply_engine_edits',
-    description: `Apply 1-32 engine mutations in order as one atomic staged edit (rhwp tool rules): the escape hatch for every other method returned by get_engine_edit_capabilities. op = {method, args} (positional; Uint8Array as {$base64}). Any failure restores the pre-batch state; mixes with semantic writes. Needs expectedRevision.`,
+    description: `Apply 1-32 engine mutations in order as one atomic edit (rhwp tool rules): the escape hatch for every other method returned by get_engine_edit_capabilities. op = {method, args} (positional; Uint8Array as {$base64}). Any failure restores the pre-batch state; mixes with semantic writes. Needs expectedRevision.`,
     shape: {
       expectedRevision: z.number().int(),
       operations: z.array(z.object({
@@ -789,14 +899,15 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'apply_edits',
-    description: `Apply 1-32 staged edits in ONE call under one expectedRevision: items are {tool, args} (args minus expectedRevision and render), run in order. Any failure rolls back the batch and names the index. ${WRITE_POINTER}`,
+    description: `Apply 1-32 edits in ONE call. Items are {tool, …that tool's arguments}, e.g. {tool:"replace_range",paraIdx:64,find:"old",text:"new"}, run in order. Any failure rolls back the whole batch. ${WRITE_POINTER}`,
     shape: {
       expectedRevision: z.number().int(),
       render: renderParam(),
+      // 항목은 평평한 {tool, …인자} — 인자 키(와 옛 {tool, args} 의 args)는 그대로 통과시켜
+      // 스튜디오 executor 가 푼다. 기본 strip 이면 tool 옆의 인자가 여기서 사라진다.
       edits: z.array(z.object({
         tool: z.enum(BATCHABLE_EDIT_TOOL_NAMES),
-        args: z.record(z.string(), z.unknown()),
-      })).min(1).max(32),
+      }).passthrough()).min(1).max(32),
     },
   },
   {
@@ -806,24 +917,25 @@ const BASE_TOOL_DEFINITIONS = [
       reads: z.array(z.object({
         tool: z.enum(BATCHABLE_READ_TOOL_NAMES),
         args: z.record(z.string(), z.unknown()).optional(),
-      }).strict()).min(1).max(16),
+      }).passthrough()).min(1).max(16),
     },
   },
   {
     name: 'insert_text',
-    description: `Insert text at charOffset or at an anchor. "\\n" splits paragraphs ("\\r\\n"/"\\r" become "\\n"). Max 10000 chars per call. ${WRITE_POINTER}`,
+    description: `Insert text at charOffset, or before/after the text matched by find (position, default after). "\\n" splits paragraphs. ${WRITE_POINTER}`,
     shape: {
       expectedRevision: z.number().int(),
       render: renderParam(),
       sectionIdx: z.number().int().optional(),
       paraIdx: z.number().int().optional(),
       charOffset: z.number().int().optional(),
+      ...findParams(),
       anchor: anchorParam(),
-      text: z.string().min(1).max(10000),
+      text: z.string().max(10000),
       cell: cellParam(),
       cellPath: cellPathParam(),
     },
-    validate: (args) => validateAnchorTool(args, ['sectionIdx', 'paraIdx', 'charOffset'], ['cell', 'cellPath']),
+    validate: (args) => validateAnchorTool('insert_text', args, ['sectionIdx', 'paraIdx', 'charOffset']),
   },
   {
     name: 'template_apply_section_layout',
@@ -874,47 +986,53 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'delete_range',
-    description: `Delete a text range (coordinates or an anchor). Later coordinates shift at once; collapsedAt gives the collapse point. Ranges crossing a table are rejected (edit inside with cell/cellPath). To rewrite text use replace_range. ${WRITE_POINTER}`,
-    shape: {
-      expectedRevision: z.number().int(),
-      render: renderParam(),
-      sectionIdx: z.number().int().optional(),
-      startParaIdx: z.number().int().optional(),
-      startCharOffset: z.number().int().optional(),
-      endParaIdx: z.number().int().optional(),
-      endCharOffset: z.number().int().optional(),
-      anchor: anchorParam(),
-      cell: cellParam(),
-      cellPath: cellPathParam(),
-    },
-    validate: (args) => validateAnchorTool(args, ['sectionIdx', 'startParaIdx', 'startCharOffset', 'endParaIdx', 'endCharOffset'], ['cell', 'cellPath']),
-  },
-  {
-    name: 'replace_range',
-    description: `Replace a text range (coordinates or an anchor) with new text in one atomic op that keeps formatting; prefer it over delete_range + insert_text. Ranges crossing a table are rejected (edit inside with cell/cellPath). ${WRITE_POINTER}`,
-    shape: {
-      expectedRevision: z.number().int(),
-      render: renderParam(),
-      sectionIdx: z.number().int().optional(),
-      startParaIdx: z.number().int().optional(),
-      startCharOffset: z.number().int().optional(),
-      endParaIdx: z.number().int().optional(),
-      endCharOffset: z.number().int().optional(),
-      anchor: anchorParam(),
-      text: z.string().min(1).max(10000),
-      cell: cellParam(),
-      cellPath: cellPathParam(),
-    },
-    validate: (args) => validateAnchorTool(args, ['sectionIdx', 'startParaIdx', 'startCharOffset', 'endParaIdx', 'endCharOffset'], ['cell', 'cellPath']),
-  },
-  {
-    name: 'apply_char_format',
-    description: `Apply character formatting to startOffset..endOffset of one paragraph, or to an anchor's match. Absolute values; no need to read the format first. widthPercent/letterSpacingPercent take a percent or a 7-slot array. ${WRITE_POINTER}`,
+    description: `Delete the text matched by find, or a coordinate range. A range may not cross a table (edit inside with cell/cellPath). ${WRITE_POINTER}`,
     shape: {
       expectedRevision: z.number().int(),
       render: renderParam(),
       sectionIdx: z.number().int().optional(),
       paraIdx: z.number().int().optional(),
+      ...findParams(),
+      startParaIdx: z.number().int().optional(),
+      startCharOffset: z.number().int().optional(),
+      endParaIdx: z.number().int().optional(),
+      endCharOffset: z.number().int().optional(),
+      anchor: anchorParam(),
+      cell: cellParam(),
+      cellPath: cellPathParam(),
+    },
+    validate: (args) => validateAnchorTool('delete_range', args, RANGE_COORD_KEYS),
+  },
+  {
+    name: 'replace_range',
+    description: `Replace the text matched by find, or a coordinate range, with text. Keeps formatting; prefer it over delete_range + insert_text. ${WRITE_POINTER}`,
+    shape: {
+      expectedRevision: z.number().int(),
+      render: renderParam(),
+      sectionIdx: z.number().int().optional(),
+      paraIdx: z.number().int().optional(),
+      ...findParams(),
+      startParaIdx: z.number().int().optional(),
+      startCharOffset: z.number().int().optional(),
+      endParaIdx: z.number().int().optional(),
+      endCharOffset: z.number().int().optional(),
+      anchor: anchorParam(),
+      text: z.string().max(10000),
+      cell: cellParam(),
+      cellPath: cellPathParam(),
+    },
+    validate: (args) => validateAnchorTool('replace_range', args, RANGE_COORD_KEYS),
+  },
+  {
+    name: 'apply_char_format',
+    description: `Format the text matched by find, startOffset..endOffset of paraIdx, the whole paragraph without offsets, or every paragraph in paras. Absolute values; no need to read the format first. ${WRITE_POINTER}`,
+    shape: {
+      expectedRevision: z.number().int(),
+      render: renderParam(),
+      sectionIdx: z.number().int().optional(),
+      paraIdx: z.number().int().optional(),
+      ...findParams(),
+      paras: parasParam(),
       startOffset: z.number().int().optional(),
       endOffset: z.number().int().optional(),
       anchor: anchorParam(),
@@ -924,15 +1042,16 @@ const BASE_TOOL_DEFINITIONS = [
       italic: z.boolean().optional(),
       underline: z.boolean().optional(),
       strikethrough: z.boolean().optional(),
-      fontSizePt: z.number().positive().optional(),
-      textColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
-      fontFamily: z.string().min(1).optional().describe('From get_document_info fontQuery'),
-      widthPercent: z.union([z.number().min(50).max(200), z.array(z.number().min(50).max(200)).length(7)]).optional()
+      // 양수·빈 문자열·색 형식·슬롯별 범위는 스튜디오 executor 가 검증한다 (정의 크기 한도 — paras·find 몫을 여기서 낸다).
+      fontSizePt: z.number().optional(),
+      textColor: z.string().optional(),
+      fontFamily: z.string().optional().describe('From get_document_info fontQuery'),
+      widthPercent: z.union([z.number().min(50).max(200), z.array(z.number()).length(7)]).optional()
         .describe('Glyph width percent (장평)'),
-      letterSpacingPercent: z.union([z.number().min(-50).max(50), z.array(z.number().min(-50).max(50)).length(7)]).optional()
+      letterSpacingPercent: z.union([z.number().min(-50).max(50), z.array(z.number()).length(7)]).optional()
         .describe('Glyph tracking percent (자간)'),
     },
-    validate: (args) => validateAnchorTool(args, ['sectionIdx', 'paraIdx', 'startOffset', 'endOffset'], ['cell', 'cellPath']),
+    validate: (args) => validateAnchorTool('apply_char_format', args, ['sectionIdx', 'paraIdx', 'startOffset', 'endOffset'], { paras: true }),
   },
   {
     name: 'create_table',
@@ -1055,19 +1174,21 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'apply_para_format',
-    description: `Format one paragraph by address or anchor (its paragraph): alignment, spacing/indent/margins (pt), lineSpacingPercent or lineSpacingType + lineSpacingPt, pageBreakBefore, tabStops, borders + borderSpacingMm, koreanBreakUnit, list fields (headType "none" clears; new lists: apply_list). ${WRITE_POINTER}`,
+    description: `Format paragraph paraIdx, every paragraph in paras, or the paragraph matched by find. Line spacing: lineSpacingPercent or lineSpacingType + lineSpacingPt; headType "none" clears a list (new lists: apply_list). ${WRITE_POINTER}`,
     shape: {
       expectedRevision: z.number().int(),
       render: renderParam(),
       sectionIdx: z.number().int().optional(),
       paraIdx: z.number().int().optional(),
+      ...findParams(),
+      paras: parasParam(),
       anchor: anchorParam(),
       cell: cellParam(),
       cellPath: cellPathParam(),
       alignment: z.enum(['left', 'center', 'right', 'justify', 'distribute']).optional(),
       lineSpacingPercent: z.number().optional().describe('160 = Korean default'),
       lineSpacingType: z.enum(['percent', 'fixed', 'atLeast', 'spaceOnly']).optional(),
-      lineSpacingPt: z.number().positive().optional(),
+      lineSpacingPt: z.number().optional(),
       spaceBeforePt: z.number().optional(),
       spaceAfterPt: z.number().optional(),
       indentPt: z.number().optional().describe('Negative = hanging'),
@@ -1081,9 +1202,9 @@ const BASE_TOOL_DEFINITIONS = [
       headType: z.enum(['none', 'number', 'bullet', 'outline']).optional(),
       numberingId: z.number().int().optional(),
       paraLevel: z.number().int().max(6).optional(),
-      bulletChar: z.string().min(1).optional(),
+      bulletChar: z.string().optional(),
     },
-    validate: (args) => validateAnchorTool(args, ['sectionIdx', 'paraIdx'], ['cell']),
+    validate: (args) => validateAnchorTool('apply_para_format', args, ['sectionIdx', 'paraIdx'], { paras: true }),
   },
   {
     name: 'apply_list',
@@ -1113,15 +1234,17 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'apply_style',
-    description: `Apply a named style (from list_styles) to one paragraph. ${WRITE_POINTER}`,
+    description: `Apply a list_styles style to paragraph paraIdx or every paragraph in paras. ${WRITE_POINTER}`,
     shape: {
       expectedRevision: z.number().int(),
       render: renderParam(),
-      sectionIdx: z.number().int(),
-      paraIdx: z.number().int(),
+      sectionIdx: z.number().int().optional(),
+      paraIdx: z.number().int().optional(),
+      paras: parasParam(),
       cell: cellParam(),
       styleId: z.number().int(),
     },
+    validate: (args) => validateAnchorTool('apply_style', args, ['sectionIdx', 'paraIdx'], { anchor: false, paras: true }),
   },
   {
     // insert_image 만 특별 — 파일은 mcp-stdio 프로세스가 읽어 base64 로 허브에 전달하므로
@@ -1161,7 +1284,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'insert_equation',
-    description: `Insert an inline equation at charOffset. ALWAYS preview_equation the same script first and fix until warnings is empty (syntax guide there). Take fontSizePt from surrounding get_char_format. ${WRITE_POINTER}`,
+    description: `Insert an inline equation at charOffset. preview_equation on the same script reports warnings first (syntax guide there). Take fontSizePt from surrounding get_char_format. ${WRITE_POINTER}`,
     shape: {
       expectedRevision: z.number().int(),
       render: renderParam(),
@@ -1393,7 +1516,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'verify_changes',
-    description: `Optional review summary (writes already return an after report) of ops staged since your last call this turn (full:true = whole set): kind/summary, text, pages, warnings; includeImage:true adds a PNG of the first page. Deleted text is gone; do NOT re-insert it.`,
+    description: `Optional review summary (writes already return an after report) of ops applied since your last call this turn (full:true = whole set): kind/summary, text, pages, warnings; includeImage:true adds a PNG of the first page. Deleted text is gone; do NOT re-insert it.`,
     shape: {
       changeSetId: z.string().min(1).optional(),
       includeImage: z.boolean().default(false).optional(),
@@ -1411,13 +1534,16 @@ const BASE_TOOL_DEFINITIONS = [
     shape: IMPLEMENTATION_PLAN_SHAPE,
   },
   {
-    name: 'update_plan_progress',
-    description: 'Update one step of the approved plan. Mark in-progress before working, completed only after the work and its validation succeed, or blocked with a reason. This updates the user-visible checklist; it does not approve or commit document changes.',
+    name: 'update_todos',
+    description: 'Replace the todo list of the approved plan; the user sees it as a live timeline. It starts as the plan steps (ids step-1…). Send the whole list each time: one-line imperative items, typically one in-progress at a time; split, add or reorder items as the work reveals them. completed means the work and its check succeeded; blocked carries a note. Does not approve or commit document changes.',
     shape: {
       planId: z.string().min(1).max(256),
-      stepId: z.string().min(1).max(100),
-      status: z.enum(['pending', 'in-progress', 'completed', 'blocked']),
-      note: z.string().min(1).max(2_000).optional(),
+      todos: z.array(z.object({
+        id: z.string().min(1).max(100).optional().describe('Keep an existing id when updating that item; omit for a new item'),
+        content: z.string().min(1).max(300).describe('One-line imperative task'),
+        status: z.enum(['pending', 'in-progress', 'completed', 'blocked']),
+        note: z.string().min(1).max(2_000).optional(),
+      }).strict()).min(1).max(100),
     },
   },
   {
@@ -1607,6 +1733,7 @@ export const TOOL_CLASSIFICATIONS = Object.freeze({
   get_document_info: 'document-read',
   materialize_document_snapshot: 'document-read',
   publish_cloud_document: 'document-write',
+  commit_version: 'document-write',
   find_text: 'document-read',
   render_page: 'document-read',
   get_page_geometry: 'document-read',
@@ -1658,7 +1785,7 @@ export const TOOL_CLASSIFICATIONS = Object.freeze({
   verify_changes: 'document-read',
   ask_user_question: 'user-interaction',
   present_implementation_plan: 'planning-control',
-  update_plan_progress: 'plan-progress',
+  update_todos: 'plan-progress',
   download_file: 'download-write',
   publish_artifact: 'artifact-write',
   delegate_copy_layout: 'background-control',

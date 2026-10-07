@@ -43,6 +43,7 @@ import {
   formatUsageAge,
 } from './usage-format.ts';
 import type { SidebarBridge } from '../../agent/bridge.ts';
+import { AGENT_MODES, AGENT_MODE_LABEL, isAgentMode, type AgentMode } from '../../agent/types.ts';
 import type { EventBus } from '../../core/event-bus.ts';
 import type {
   AgentName,
@@ -92,10 +93,17 @@ const CONN_LABEL: Record<ConnectionState, string> = {
   replaced: '다른 탭에서 사용 중',
 };
 
-const PERMISSION_OPTIONS: ReadonlyArray<{ id: PermissionProfile; label: string }> = [
-  { id: 'safe', label: '안전 — 편집은 검토 후 승인, 파일은 프로젝트 안에서만' },
-  { id: 'unrestricted', label: '전체 접근 — 자유 편집, 노트북 전체' },
-];
+/** 새 대화의 기본 모드. 옵션 title 에만 짧은 설명을 둔다. */
+const MODE_OPTIONS: ReadonlyArray<{ id: AgentMode; label: string; title: string }> = AGENT_MODES.map((id) => ({
+  id,
+  label: AGENT_MODE_LABEL[id],
+  title: {
+    chat: '읽기 전용',
+    plan: '계획을 세우고 승인 후 실행',
+    agent: '편집은 검토 후 반영',
+    full: '편집 즉시 반영, 노트북 전체 접근',
+  }[id],
+}));
 
 
 
@@ -404,8 +412,13 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   let setupStatuses: AgentSetupStatusMap | null = null;
   let setupAgent: AgentName | null = null;
   let setupBusy = false;
+  /** 이 탭이 보낸 뒤 아직 응답을 받지 못한 설치 요청. */
+  const pendingInstalls = new Set<AgentName>();
   let setupCloseTimer: ReturnType<typeof setTimeout> | null = null;
   let setupMessage = '';
+  /** 설치·로그인 실패 상세 — 메시지 배너 아래 펼침 상자로만 보인다. */
+  let setupDetail = '';
+  let setupDetailFor = '';
   let setupReauth = false;
   let setupCodePending = false;
   /** 브라우저 로그인이 진행 중인 동안 카드에 직접 그릴 인증 주소와 기기 코드. */
@@ -830,7 +843,10 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   const setupAccountValue = el('span', 'ag-agent-setup-row-value');
   const setupDoneChange = el('button', 'ag-settings-btn', '로그인 방식 변경');
   setupDoneChange.type = 'button';
-  setupAccountRow.append(el('span', 'ag-agent-setup-row-label', '계정'), setupAccountValue, setupDoneChange);
+  const setupAccountLogout = el('button', 'ag-settings-btn', '로그아웃');
+  setupAccountLogout.type = 'button';
+  setupAccountLogout.hidden = true;
+  setupAccountRow.append(el('span', 'ag-agent-setup-row-label', '계정'), setupAccountValue, setupDoneChange, setupAccountLogout);
   const setupVersionRow = el('div', 'ag-agent-setup-row');
   const setupVersionValue = el('span', 'ag-agent-setup-row-value');
   const setupUpdate = el('button', 'ag-settings-btn ag-agent-setup-update', '업데이트');
@@ -848,6 +864,10 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   setupProgressLine.hidden = true;
   const setupError = el('p', 'ag-agent-setup-error');
   setupError.hidden = true;
+  const setupErrorDetail = el('details', 'ag-agent-setup-error-detail');
+  const setupErrorDetailText = el('pre', '');
+  setupErrorDetail.append(el('summary', '', '자세한 출력'), setupErrorDetailText);
+  setupErrorDetail.hidden = true;
 
   const setupInstallPane = el('div', 'ag-agent-setup-pane');
   const setupInstall = el('button', 'ag-agent-setup-primary', '설치하고 계속');
@@ -959,6 +979,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     setupProgress,
     setupProgressLine,
     setupError,
+    setupErrorDetail,
     setupInstallPane,
     setupAuthPane,
     setupDonePane,
@@ -1005,6 +1026,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     cancel: () => setupLoginCancel.click(),
   });
   setupAuthPane.append(setupTerminal.root);
+  setupTerminal.setOnline(connectionState === 'connected');
   setupLoginCancel.addEventListener('click', () => {
     if (setupAgent && setupAuthRunId) {
       abandonedAuthRunIds.add(setupAuthRunId);
@@ -1043,6 +1065,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   });
   setupDoneDisconnect.addEventListener('click', () => {
     void disconnectRau();
+  });
+  setupAccountLogout.addEventListener('click', () => {
+    void disconnectProvider('claude');
   });
   setupOverlay.addEventListener('pointerdown', (event) => {
     if (event.target === setupOverlay) closeAgentSetup();
@@ -1103,17 +1128,15 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   agentField.field.insertBefore(providerMark, agentField.select);
   const modelField = createSelect('모델', []);
   const effortField = createSelect('추론 강도', []);
-  const permissionField = createSelect('권한', PERMISSION_OPTIONS.map(option => ({
-    ...option, label: option.id === 'safe' ? '안전 · 검토 후 승인' : '전체 접근',
-  })));
-  for (const option of permissionField.select.options) {
-    option.title = PERMISSION_OPTIONS.find(item => item.id === option.value)?.label ?? '';
+  const modeField = createSelect('모드', MODE_OPTIONS.map(({ id, label }) => ({ id, label })));
+  for (const option of modeField.select.options) {
+    option.title = MODE_OPTIONS.find(item => item.id === option.value)?.title ?? '';
   }
   defaults.body.append(
     agentField.field,
     modelField.field,
     effortField.field,
-    permissionField.field,
+    modeField.field,
   );
 
   agentField.select.addEventListener('change', () => {
@@ -1127,10 +1150,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   effortField.select.addEventListener('change', () => {
     stagePrefs({ defaultEffort: effortField.select.value });
   });
-  permissionField.select.addEventListener('change', () => {
-    const next: PermissionProfile =
-      permissionField.select.value === 'unrestricted' ? 'unrestricted' : 'safe';
-    stagePrefs({ defaultPermissionProfile: next });
+  modeField.select.addEventListener('change', () => {
+    const value = modeField.select.value;
+    stagePrefs({ defaultMode: isAgentMode(value) ? value : 'agent' });
   });
 
   const modelCatalogSection = createSection('사용할 모델');
@@ -1529,7 +1551,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     return left.defaultAgent === right.defaultAgent
       && left.defaultModel === right.defaultModel
       && left.defaultEffort === right.defaultEffort
-      && left.defaultPermissionProfile === right.defaultPermissionProfile
+      && left.defaultMode === right.defaultMode
       && PLAN_AGENTS.every((agent) => left.selectedModels[agent].join('\u0000') === right.selectedModels[agent].join('\u0000'));
   }
 
@@ -1582,7 +1604,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     agentField.select.disabled = aiPrefsSaving;
     modelField.select.disabled = aiPrefsSaving;
     effortField.select.disabled = aiPrefsSaving;
-    permissionField.select.disabled = aiPrefsSaving;
+    modeField.select.disabled = aiPrefsSaving;
     modelCatalogList.inert = aiPrefsSaving;
     modelCatalogRefresh.disabled = aiPrefsSaving || connectionState !== 'connected'
       || (modelCatalogAgent === 'pi'
@@ -1643,9 +1665,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         return false;
       }
     }
-    if (nextPrefs.defaultPermissionProfile === 'unrestricted'
-      && prefsBaseline.defaultPermissionProfile !== 'unrestricted'
-      && !await confirmSheet(aiStatus, '기본값을 전체 접근으로', UNRESTRICTED_DEFAULT_WARNING, { confirmLabel: '적용' })) {
+    if (nextPrefs.defaultMode === 'full'
+      && prefsBaseline.defaultMode !== 'full'
+      && !await confirmSheet(aiStatus, '기본 모드를 전체로', UNRESTRICTED_DEFAULT_WARNING, { confirmLabel: '적용' })) {
       aiStatus.textContent = '적용 취소';
       aiStatus.hidden = false;
       return false;
@@ -2045,7 +2067,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       prefsDraft.defaultEffort,
       prefsDraft.defaultModel,
     );
-    permissionField.select.value = prefsDraft.defaultPermissionProfile;
+    modeField.select.value = prefsDraft.defaultMode;
   }
 
   function applyAccountLoginStart(started: AccountLoginStart): void {
@@ -2286,7 +2308,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       } else if (working) {
         label = setup?.installing ? '설치 중…' : '로그인 중…';
         message = '설정에서 진행 상황 확인';
-      } else if (setup?.updateRequired) {
+      } else if (setup?.installed === true && setup?.updateRequired) {
+        // 설치 전에는 번들 런타임의 오래된 버전이 updateRequired 를 켠다 —
+        // 미설치 프로바이더에 업데이트 안내를 띄우지 않는다.
         label = '업데이트 필요';
         message = '설정에서 업데이트';
       } else if (!setup && !health) {
@@ -2306,9 +2330,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       row.detail.textContent = label;
       row.detail.title = label;
       row.detail.classList.toggle('ag-settings-account-detail', online && connected && label === (identity || '연결됨'));
-      row.detail.classList.toggle('ag-update-required', online && setup?.updateRequired === true);
+      row.detail.classList.toggle('ag-update-required', online && setup?.installed === true && setup?.updateRequired === true);
       row.message.textContent = message;
-      row.setup.textContent = working ? '진행 상황 보기' : setup?.updateRequired ? '업데이트' : connected ? '계정 관리' : '연결하기';
+      row.setup.textContent = working ? '진행 상황 보기' : setup?.installed && setup?.updateRequired ? '업데이트' : connected ? '계정 관리' : '연결하기';
       row.setup.disabled = !online || (!setup && !health);
       row.setup.setAttribute('aria-label', `${AGENT_LABEL[agent]} ${row.setup.textContent}`);
     }
@@ -2318,7 +2342,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   function announceProviderUpdates(statuses: AgentSetupStatusMap): void {
     for (const agent of ['claude', 'codex'] as const) {
       const status = statuses[agent];
-      if (!status?.updateRequired || !status.latestVersion) continue;
+      // 설치 전에는 번들 런타임의 오래된 버전이 updateRequired 를 켠다.
+      // 아무것도 설치되지 않은 첫 실행에 업데이트 배너를 띄우지 않는다.
+      if (!status?.installed || !status.updateRequired || !status.latestVersion) continue;
       const key = `${agent}@${status.latestVersion}`;
       if (announcedUpdates.has(key)) continue;
       announcedUpdates.add(key);
@@ -2717,11 +2743,14 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       : status?.account
         ? status.account
         : status?.authenticated
-          ? agent === 'opencode' ? 'CLI 자격 증명' : '웹 계정'
+          ? agent === 'opencode' ? 'CLI 자격 증명'
+            : status.authSource === 'local' ? '터미널 로그인' : '웹 계정'
           : 'CLI 로그인';
     setupAccountValue.title = setupAccountValue.textContent;
     setupDoneChange.hidden = agent === 'rau';
     setupDoneChange.disabled = setupBusy;
+    setupAccountLogout.hidden = agent !== 'claude' || !connected;
+    setupAccountLogout.disabled = setupBusy || connectionState !== 'connected';
     setupVersionRow.hidden = agent === 'rau' || !(updateVersion || (showConnected && status?.version));
     setupVersionValue.replaceChildren(status?.version ?? '');
     if (updateVersion) {
@@ -2739,6 +2768,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     setupRauAuthFeedback.hidden = agent !== 'rau' || rauAuthFeedback !== 'success';
     setupError.textContent = setupMessage;
     setupError.hidden = !setupMessage;
+    const errorDetail = setupMessage === setupDetailFor ? setupDetail : '';
+    setupErrorDetail.hidden = !errorDetail;
+    setupErrorDetailText.textContent = errorDetail;
     setupProgress.hidden = setupProgressPercent <= 0;
     setupProgressLine.hidden = setupProgressPercent <= 0;
     setupProgressLine.textContent = setupProgressPercent > 0
@@ -2758,10 +2790,16 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     restoreSetupFocus();
   }
 
-  /** 브라우저 로그인이 도는 동안만 주소·코드 상자를 세운다. */
+  /** 로그인이 진행 중일 때 주소·코드 상자와 대기/취소 줄을 세운다. */
   function renderSetupLoginBox(): void {
-    const authorizing = setupOauthPending && setupBusy && !supportsTerminalSetup(setupAgent);
+    // 인증이 진행 중일 때 버튼만 무효화하면 이유가 보이지 않는다. 어떤 로그인이라도
+    // 실행 중이면 대기 문구와 취소 버튼을 노출한다(키 검사 중에는 주소/코드 행만 비어 있다).
+    // 설치/업데이트처럼 진행률 막대가 진행 상황을 대신 보여 주는 동안에는 띄우지 않는다.
+    const authorizing = setupBusy && setupProgressPercent <= 0 && !supportsTerminalSetup(setupAgent);
     setupLoginBox.hidden = !authorizing;
+    setupLoginWait.textContent = setupOauthPending || setupAuthUrl || setupUserCode
+      ? '브라우저에서 로그인하면 자동으로 완료됩니다.'
+      : '로그인을 확인하는 중입니다.';
     setupAuthUrlRow.hidden = !setupAuthUrl;
     if (setupAuthUrl) {
       setupAuthLink.href = setupAuthUrl;
@@ -2790,18 +2828,38 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       await runPiInstall();
       return;
     }
+    const agent = setupAgent;
     setupBusy = true;
     setupMessage = '';
     resetSetupInstallProgress();
     setSetupInstallProgress(8, 'preparing');
     renderAgentSetup();
-    const statuses = await bridge.installAgent(setupAgent);
+    pendingInstalls.add(agent);
+    const statuses = await bridge.installAgent(agent).finally(() => pendingInstalls.delete(agent));
+    if (disposed) return;
+    if (statuses) setupStatuses = statuses;
+    // 그사이 다른 프로바이더 창을 열었다면 그 창의 진행 상태는 건드리지 않는다.
+    if (setupAgent === agent) {
+      setupBusy = false;
+      if (!statuses && !setupMessage) setupMessage = '설치 실패';
+    }
+    renderAgentSetup();
+    renderProviders();
+  }
+
+  async function disconnectProvider(agent: AgentName): Promise<void> {
+    if (setupBusy || connectionState !== 'connected') return;
+    setupBusy = true;
+    setupMessage = '';
+    renderAgentSetup();
+    const statuses = await bridge.disconnectAgent(agent);
     if (disposed) return;
     setupBusy = false;
     if (statuses) setupStatuses = statuses;
-    else if (!setupMessage) setupMessage = '설치 실패';
+    else if (!setupMessage) setupMessage = '로그아웃 실패';
     renderAgentSetup();
     renderProviders();
+    renderUsage();
   }
 
   async function disconnectRau(): Promise<void> {
@@ -3646,6 +3704,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       switch (ev.type) {
         case 'connection':
           connectionState = ev.state;
+          setupTerminal.setOnline(ev.state === 'connected');
           renderConnection();
           renderProviders();
           renderPi();
@@ -3764,6 +3823,14 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
             setupUserCode = selectedStatus.pairingCode ?? setupUserCode;
             if (setupAgent === 'rau' || setupAgent === 'claude') setupCodePending = true;
           }
+          // 재접속했거나 다른 탭에서 시작한 설치도 끝날 때까지 설치 중으로 보인다.
+          const installInFlight = setupAgent !== null && setupAgent !== 'pi'
+            && (selectedStatus?.installing === true || pendingInstalls.has(setupAgent));
+          if (installInFlight && isSetupOpen() && !setupBusy) {
+            setupBusy = true;
+            setupMessage = '';
+            if (setupProgressPercent <= 0) setSetupInstallProgress(8, 'preparing');
+          }
           if (rauWasIncomplete && ev.statuses.rau?.setupComplete === true) {
             persistPrefs({
               ...prefs,
@@ -3775,7 +3842,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
           const inFlight = setupAgent !== null && setupBusy
             && ((ev.statuses[setupAgent]?.authenticating === true
                 && ev.statuses[setupAgent]?.authOwnedByThisSession === true)
-              || ev.statuses[setupAgent]?.installing === true);
+              || ev.statuses[setupAgent]?.installing === true
+              || pendingInstalls.has(setupAgent));
           if (!inFlight) {
             setupBusy = false;
             setupReauth = false;
@@ -3793,6 +3861,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         }
         case 'agent-setup-terminal':
           if (!supportsTerminalSetup(setupAgent) || ev.agent !== setupAgent || !setupBusy || !setupOauthPending) break;
+          if (abandonedAuthRunIds.has(ev.authRunId)) break;
           if (setupAuthRunId && ev.authRunId !== setupAuthRunId) break;
           setupAuthRunId = ev.authRunId;
           setupBusy = true;
@@ -3804,6 +3873,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         case 'agent-setup-progress':
           if (setupAgent === ev.agent) {
             if (ev.authRunId && setupAuthRunId && ev.authRunId !== setupAuthRunId) break;
+            // 끊긴 사이 취소한 실행은 재연결 때 재생돼도 다시 열지 않는다.
+            if (ev.authRunId && abandonedAuthRunIds.has(ev.authRunId)) break;
             if (ev.authRunId) setupAuthRunId = ev.authRunId;
             setupBusy = ev.state !== 'done';
             // API 키 검증 중에도 authorizing 이 온다 — 브라우저 로그인 근거가 있을 때만 상자를 연다.
@@ -3833,6 +3904,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
             setupBusy = false;
             setupCodePending = false;
             setupMessage = ev.message;
+            setupDetail = ev.detail ?? '';
+            setupDetailFor = ev.message;
             resetRauAuthFeedback();
             clearSetupAuthPrompt();
             resetSetupInstallProgress();

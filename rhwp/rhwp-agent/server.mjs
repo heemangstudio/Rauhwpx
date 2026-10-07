@@ -1,6 +1,7 @@
+import { launchCopyLayoutWorker } from './copy-layout-worker.mjs';
 import http from 'node:http';
 import crypto from 'node:crypto';
-import { existsSync, mkdirSync, promises as fs } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,13 +12,7 @@ import {
   flushClaudeCredentialMirrors,
   prepareClaudeHome,
 } from './agents/claude.mjs';
-import {
-  claudeCredentialExpiry,
-  parseClaudeOAuthCredential,
-  readClaudeCredentialFile,
-  readClaudeOAuthCredential,
-  writeClaudeCredentialFile,
-} from './claude-credentials.mjs';
+import { deleteClaudeKeychainItem } from './claude-credentials.mjs';
 import {
   createCodexSession,
   flushCodexCredentialMirror,
@@ -52,6 +47,7 @@ import {
 import { DownloadManager } from './download-manager.mjs';
 import { DocumentSnapshotManager } from './document-snapshot-manager.mjs';
 import { ArtifactStore } from './artifact-store.mjs';
+import { cloudReferenceRoots } from './cloud-reference-roots.mjs';
 import { BrowserbaseFleet, normalizeBrowserbaseOverride, validateBrowserbaseCredentials } from './browserbase-session.mjs';
 import { createProviderHealth } from './provider-health.mjs';
 import { createUsageStore } from './usage-store.mjs';
@@ -97,6 +93,8 @@ import {
   addActiveDocumentContext,
   assertMessageScope,
   attachActiveDocumentIdentity,
+  liveDocumentBlock,
+  normalizeDocumentSnapshot,
   referenceScopesForSession,
   resolveSessionIdentity,
 } from './reference-session.mjs';
@@ -162,6 +160,7 @@ if (PRODUCTION && !process.env.RHWP_WORK_DIR) {
   throw Object.assign(new Error('RHWP_WORK_DIR is required in production'), { code: 'HUB_WORK_DIR_REQUIRED' });
 }
 const WORK_ROOT = path.resolve(process.env.RHWP_WORK_DIR || path.join(os.tmpdir(), `rhwp-agent-work-${process.pid}`));
+const CLOUD_REFERENCE_ROOTS = cloudReferenceRoots(WORK_ROOT);
 const RUNTIME_ROOT = process.env.RHWP_RUNTIME_DIR
   ? path.resolve(process.env.RHWP_RUNTIME_DIR)
   : null;
@@ -225,29 +224,22 @@ function toolArgSchema(tool, definition) {
 const HOST_PROFILE_HOME = process.platform === 'win32' && process.env.USERPROFILE
   ? path.resolve(process.env.USERPROFILE)
   : os.homedir();
-const SOURCE_CLAUDE_CONFIG_DIR = typeof process.env.CLAUDE_CONFIG_DIR === 'string'
-  && process.env.CLAUDE_CONFIG_DIR.trim()
-  ? path.resolve(process.env.CLAUDE_CONFIG_DIR)
-  : path.join(HOST_PROFILE_HOME, '.claude');
-const SOURCE_CLAUDE_CREDENTIALS = path.join(SOURCE_CLAUDE_CONFIG_DIR, '.credentials.json');
 const SOURCE_CLAUDE_CONFIG = path.join(HOST_PROFILE_HOME, '.claude.json');
-const sourceCodexHomes = [...new Set([
-  process.env.CODEX_HOME,
-  path.join(HOST_PROFILE_HOME, '.codex'),
-].filter(Boolean))];
-async function findSourceCodexAuthPath() {
-  for (const sourceCodexHome of sourceCodexHomes) {
-    const authPath = path.join(sourceCodexHome, 'auth.json');
-    try {
-      const authStat = await fs.lstat(authPath);
-      if (authStat.isFile() && !authStat.isSymbolicLink()) return authPath;
-    } catch (error) {
-      if (error?.code !== 'ENOENT') throw error;
-    }
+// 설정 상태·사용량과 같은 프로필만 본다. 선택한 CODEX_HOME 이 비어 있어도 다른 프로필로 넘어가지 않는다.
+const sourceCodexHome = process.env.CODEX_HOME?.trim()
+  ? path.resolve(process.env.CODEX_HOME)
+  : path.join(HOST_PROFILE_HOME, '.codex');
+function findSourceCodexAuthPath() {
+  const authPath = path.join(sourceCodexHome, 'auth.json');
+  try {
+    const authStat = lstatSync(authPath);
+    if (authStat.isFile() && !authStat.isSymbolicLink()) return authPath;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
   }
   return undefined;
 }
-let sourceCodexAuthPath = await findSourceCodexAuthPath();
+let sourceCodexAuthPath = findSourceCodexAuthPath();
 const writingStyleStore = await new WritingStyleStore().init();
 const agentInstructionsStore = await new AgentInstructionsStore().init();
 const skillRegistry = await new SkillRegistry({ bundledRoot: BUNDLED_SKILLS, writingStyleStore }).init();
@@ -271,55 +263,12 @@ function mutateSharedNpmPrefix(operation) {
   npmPrefixMutationQueue = running.catch(() => {});
   return running;
 }
-const cliSetup = await createCliSetupManager({ secretStore }).init();
-const CLAUDE_CREDENTIAL_SEED_FILE = path.join(
-  cliSetup.rootDir,
-  'claude-source-credentials',
-  '.credentials.json',
-);
+const cliSetup = await createCliSetupManager({ secretStore, deleteKeychainItem: deleteClaudeKeychainItem }).init();
 /**
- * Codex is usable the moment its profile holds an `auth.json`, because that
- * file is copied into every isolated home. Claude's login can instead live only
- * in the macOS Keychain, where the same seeding path cannot reach it, so a
- * Keychain-only profile is materialized once into a hub-owned file.
- *
- * The profile's own credential file always wins, and a previously materialized
- * seed is kept while it is at least as fresh as the Keychain — an isolated
- * session refreshes its token through copy-back, and that refreshed value must
- * not be replaced by the older Keychain copy.
+ * Claude children get their login from CLAUDE_CODE_OAUTH_TOKEN (see
+ * cliSetup.envFor), so isolated homes only receive the portable config.
  */
-async function resolveSourceClaudeAuth() {
-  const fallback = {
-    credentialsPath: SOURCE_CLAUDE_CREDENTIALS,
-    configPath: SOURCE_CLAUDE_CONFIG,
-  };
-  const resolved = await readClaudeOAuthCredential({
-    homeDir: HOST_PROFILE_HOME,
-    configDir: SOURCE_CLAUDE_CONFIG_DIR,
-    env: process.env,
-    platform: process.platform,
-  }).catch(() => null);
-  if (!resolved) return fallback;
-  if (resolved.source === 'file') return { credentialsPath: resolved.file, configPath: SOURCE_CLAUDE_CONFIG };
-  const fromKeychain = parseClaudeOAuthCredential(resolved.text);
-  const seeded = await readClaudeCredentialFile(CLAUDE_CREDENTIAL_SEED_FILE);
-  if (seeded && claudeCredentialExpiry(seeded) >= claudeCredentialExpiry(fromKeychain)) {
-    return { credentialsPath: CLAUDE_CREDENTIAL_SEED_FILE, configPath: SOURCE_CLAUDE_CONFIG };
-  }
-  const written = await writeClaudeCredentialFile(CLAUDE_CREDENTIAL_SEED_FILE, resolved.text)
-    .then(() => true, () => false);
-  return {
-    credentialsPath: written ? CLAUDE_CREDENTIAL_SEED_FILE : SOURCE_CLAUDE_CREDENTIALS,
-    configPath: SOURCE_CLAUDE_CONFIG,
-  };
-}
-// Keychain 읽기(/usr/bin/security)는 접근 허가 창이 뜨면 몇 초씩 걸리므로 준비 줄을 막지 않는다.
-// 기동 직후 bootWork 가 한 번 읽을 때까지는 디스크 경로를 쓴다.
-const provisionalClaudeAuth = Object.freeze({
-  credentialsPath: SOURCE_CLAUDE_CREDENTIALS,
-  configPath: SOURCE_CLAUDE_CONFIG,
-});
-let sourceClaudeAuth = provisionalClaudeAuth;
+const sourceClaudeAuth = Object.freeze({ configPath: SOURCE_CLAUDE_CONFIG });
 function claudeRuntimeEnv(isolatedHome) {
   return {
     ...cliSetup.envFor('claude'),
@@ -372,13 +321,9 @@ let openRouterCreditsKey = null;
 let bootWorkPromise = null;
 function ensureBootWork() {
   bootWorkPromise ??= Promise.all([
-    resolveSourceClaudeAuth().then((auth) => {
-      // 기동 중에 로그인 흐름이 먼저 새 값을 넣었다면 그대로 둔다.
-      if (sourceClaudeAuth !== provisionalClaudeAuth) return;
-      sourceClaudeAuth = auth;
-      // 준비 전에 만든 기록의 격리 홈도 실제 자격 증명으로 다시 맞춘다.
-      refreshSessionCredentials('claude');
-    }).catch((error) => log(`claude credential lookup failed: ${error?.message ?? error}`)),
+    // 저장된 Claude 토큰이 아직 받아들여지는지 한 번 확인한다. 네트워크가 없으면 그대로 둔다.
+    cliSetup.verifyAuth('claude')
+      .catch((error) => log(`claude credential check failed: ${error?.message ?? error}`)),
     ...['claude', 'codex'].map((agent) => cliSetup.status(agent).then((status) => {
       if (cliSetupStatus[agent] === provisionalCliSetup[agent]) cliSetupStatus[agent] = status;
     }).catch((error) => log(`${agent} setup status failed: ${error?.message ?? error}`))),
@@ -445,6 +390,7 @@ const sessions = new HubSessionRegistry({
     const codexHome = path.join(isolatedHome, '.codex');
     mkdirSync(workDir, { recursive: true, mode: 0o700 });
     mkdirSync(hubStorageDir, { recursive: true, mode: 0o700 });
+    syncSourceCodexAuth();
     prepareCodexHome(codexHome, sourceCodexAuthPath);
     prepareClaudeHome(isolatedHome, sourceClaudeAuth);
     const downloadManager = new DownloadManager({ rootDir: hubStorageDir, writableRoot: workDir });
@@ -457,6 +403,7 @@ const sessions = new HubSessionRegistry({
       downloadManager.baseDir,
       documentSnapshotManager.baseDir,
       copyLayoutGeneratedRoot,
+      ...CLOUD_REFERENCE_ROOTS,
     ]);
     return {
       sessionId,
@@ -624,6 +571,23 @@ function consumeAuthorizedInstructionDraft(record, msg) {
   return draft;
 }
 
+/**
+ * 허브 밖에서 `codex login`/로그아웃한 결과를 반영한다. 원본 auth.json 이 생기거나
+ * 사라졌으면 이미 열린 세션의 격리 홈도 다시 연결한다.
+ */
+function syncSourceCodexAuth() {
+  let next;
+  try { next = findSourceCodexAuthPath(); } catch (error) {
+    log(`codex credential lookup failed: ${error?.message ?? error}`);
+    return;
+  }
+  if (next === sourceCodexAuthPath) return;
+  sourceCodexAuthPath = next;
+  try { refreshSessionCredentials('codex'); } catch (error) {
+    log(`codex session credential refresh failed: ${error?.message ?? error}`);
+  }
+}
+
 function refreshSessionCredentials(agent) {
   for (const record of sessions.values()) {
     if (agent === 'codex') prepareCodexHome(record.codexHome, sourceCodexAuthPath);
@@ -745,11 +709,18 @@ function broadcastAgentSetupStatuses(statuses) {
 
 
 async function agentSetupStatuses(ownerSessionId = null, refresh = false) {
+  // A forced refresh follows a failed turn or a user action, so check the
+  // credential with Anthropic instead of trusting what is on disk.
+  if (refresh) {
+    await cliSetup.verifyAuth('claude', { force: true })
+      .catch((error) => log(`claude credential check failed: ${error?.message ?? error}`));
+  }
   const [claudeSetup, codexSetup, health] = await Promise.all([
     cliSetup.status('claude'),
     cliSetup.status('codex'),
     providerHealth.check(refresh),
   ]);
+  syncSourceCodexAuth();
   const withDetectedHarness = (status, provider) => {
     const available = provider?.available === true;
     const connected = available && status.authenticated;
@@ -836,6 +807,7 @@ function sendAgentSetupError(record, sock, requestId, agent, error, fallback = '
     agent,
     code: error?.code ?? fallback,
     message: String(error?.message ?? error),
+    ...(typeof error?.detail === 'string' && error.detail ? { detail: error.detail } : {}),
   });
 }
 
@@ -888,6 +860,7 @@ function sendAuthRunError(run, error, fallback = 'AGENT_AUTH_FAILED') {
     agent: run.agent,
     code: error?.code ?? fallback,
     message: String(error?.message ?? error),
+    ...(typeof error?.detail === 'string' && error.detail ? { detail: error.detail } : {}),
   });
 }
 
@@ -1105,14 +1078,18 @@ async function modelCatalog(agent, record, { refresh = false } = {}) {
     env: claudeRuntimeEnv(record.isolatedHome),
     cwd: record.workDir ?? ROOT,
   }, { refresh });
-  else if (agent === 'codex') models = await codexModelCatalog({
-    bin: cliSetupStatus.codex?.installed ? cliSetup.binPath('codex') : 'codex',
-    env: cliSetup.envFor('codex'),
-    isolatedHome: record.isolatedHome,
-    codexHome: record.codexHome,
-    cwd: record.workDir ?? ROOT,
-  }, { refresh });
-  else throw unknownAgentError(agent);
+  else if (agent === 'codex') {
+    const options = {
+      bin: cliSetupStatus.codex?.installed ? cliSetup.binPath('codex') : 'codex',
+      env: cliSetup.envFor('codex'),
+      isolatedHome: record.isolatedHome,
+      codexHome: record.codexHome,
+      cwd: record.workDir ?? ROOT,
+    };
+    models = await codexModelCatalog(options, { refresh });
+    // 새로고침한 목록과 sol/luna 같은 별칭이 같은 모델을 가리키게 한다.
+    if (refresh) resolveCodexModel.remember(options, models);
+  } else throw unknownAgentError(agent);
   record.modelCatalogs ??= {};
   record.modelCatalogs[agent] = models;
   return models;
@@ -2318,73 +2295,30 @@ function makeTemplateWorkerEventHandler(record, job) {
 }
 
 async function launchTemplateJob(record, job) {
-  // The owning chat provider can mutate record.workDir. Keep even the
-  // worker's read-only cwd under a sibling hub-owned parent so it cannot be
-  // swapped to a symlink/junction before the worker opens files.
-  const jobDir = path.join(record.recordRoot, 'copy-layout-workspaces', job.jobId);
-  const jobGeneratedRoot = path.join(record.copyLayoutGeneratedRoot, job.jobId);
-  const jobSnapshotRoot = record.documentSnapshotManager.readOnlyRootForChat(job.jobId);
-  const providerRoot = path.join(record.recordRoot, 'copy-layout-providers', job.jobId);
-  const isolatedHome = path.join(providerRoot, 'home');
-  const codexHome = path.join(isolatedHome, '.codex');
-  job.providerHomes = { isolatedHome, codexHome };
-  job.providerRoot = providerRoot;
-  await fs.mkdir(jobDir, { recursive: true, mode: 0o700 });
-  await fs.mkdir(providerRoot, { recursive: true, mode: 0o700 });
-  await ensureBootWork();
-  prepareCodexHome(codexHome, sourceCodexAuthPath);
-  prepareClaudeHome(isolatedHome, sourceClaudeAuth);
-  job.jobDir = jobDir;
-  job.generatedRoot = jobGeneratedRoot;
-  job.snapshotRoot = jobSnapshotRoot;
-
-  const opts = {
-    rootDir: jobDir,
-    workDir: jobDir,
-    // A background worker can read only its own immutable snapshot and
-    // generated candidates, never the owning chat's workspace/downloads.
-    readOnlyRoots: [jobSnapshotRoot, jobGeneratedRoot],
-    mcpScriptPath: MCP_SCRIPT,
+  return launchCopyLayoutWorker(record, job, {
+    ensureBootWork,
+    prepareCodexHome,
+    sourceCodexAuthPath,
+    prepareClaudeHome,
+    sourceClaudeAuth,
+    MCP_SCRIPT,
     hubPort,
-    token: sessions.issue(TOKEN, record.sessionId, {
-      audience: HUB_CAPABILITY_AUDIENCES.COPY_LAYOUT_WORKER,
-      resource: job.jobId,
-    }),
-    sessionId: record.sessionId,
-    model: job.model,
-    effort: job.effort,
-    permissionProfile: 'safe',
-    isolatedHome,
-    codexHome,
-    codexAuthPath: sourceCodexAuthPath,
-    codexBin: cliSetupStatus.codex?.installed ? cliSetup.binPath('codex') : 'codex',
-    claudeBin: cliSetupStatus.claude?.installed ? cliSetup.binPath('claude') : 'claude',
-    providerEnv: job.agent === 'claude'
-      ? claudeRuntimeEnv(isolatedHome)
-      : (CLI_SETUP_AGENTS.includes(job.agent) ? cliSetup.envFor(job.agent) : {}),
-    onEvent: makeTemplateWorkerEventHandler(record, job),
-    workflow: 'direct',
-    phase: 'implementing',
-    capabilityEpoch: job.capabilityEpoch,
-    toolProfile: 'copy-layout-worker',
-    agentRole: job.workerRole,
-    systemPromptOverride: buildCopyLayoutWorkerPrompt({
-      jobId: job.jobId,
-      binding: job.binding,
-      jobDir,
-    }),
-    piBin: piManager.piBin,
-    piRoot: piManager.rootDir,
-    openRouterApiKey: openRouterManager(job.agent)?.apiKey() ?? undefined,
-    agentName: OPENROUTER_AGENTS.has(job.agent) ? job.agent : 'pi',
-    reasoning: OPENROUTER_AGENTS.has(job.agent)
-      ? Boolean(piModelConfig(job.model, job.agent)?.reasoning)
-      : false,
-  };
-  const createBackend = SESSION_FACTORIES[job.agent];
-  if (!createBackend) throw unknownAgentError(job.agent);
-  job.backend = createBackend(opts);
-  job.backend.sendUserMessage('Begin the autonomous copy-layout workflow now. Follow the system workflow exactly and do not ask questions.');
+    sessions,
+    TOKEN,
+    HUB_CAPABILITY_AUDIENCES,
+    cliSetupStatus,
+    cliSetup,
+    claudeRuntimeEnv,
+    CLI_SETUP_AGENTS,
+    makeTemplateWorkerEventHandler,
+    buildCopyLayoutWorkerPrompt,
+    piManager,
+    openRouterManager,
+    OPENROUTER_AGENTS,
+    piModelConfig,
+    SESSION_FACTORIES,
+    unknownAgentError
+  });
 }
 
 function createTemplateJob(record, activeSession, binding) {
@@ -2632,6 +2566,12 @@ function resolvePermissionProfile(value) {
   return value === 'unrestricted' ? 'unrestricted' : 'safe';
 }
 
+/** 플랜 승인에 실린 권한은 엄격히 검사한다 — 오타가 조용히 safe 로 떨어지지 않게. */
+function approvalPermissionProfile(value) {
+  if (value === 'safe' || value === 'unrestricted') return value;
+  throw workflowError('INVALID_PERMISSION_PROFILE', `Unknown permission profile: ${String(value)}`);
+}
+
 function resolveWorkflow(value) {
   if (value === undefined || value === null) return 'direct';
   if (value === 'direct' || value === 'plan' || value === 'question') return value;
@@ -2772,15 +2712,23 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
     generation: activeSession.generation,
     turnId: activeSession.turnId,
   });
-  void skillRegistry.promptContext(msg.text, typeof msg.skillName === 'string' ? msg.skillName : undefined, {
-    phase: activeSession.planning.snapshot().phase,
-    agent: activeSession.agent,
-  })
+  // Studio 가 메시지에 실어 보낸 문서 읽기 — 사용자 요청 바로 앞에 둔다. 승인·수정·허브 생성 턴은 이 경로를 타지 않는다.
+  // 모양이 어긋난 스냅샷은 버리고 메시지는 그대로 보낸다.
+  const liveDocument = normalizeDocumentSnapshot(msg.documentSnapshot);
+  void Promise.resolve()
+    .then(() => requireAgentAuthenticated(activeSession.agent))
+    .then(() => skillRegistry.promptContext(msg.text, typeof msg.skillName === 'string' ? msg.skillName : undefined, {
+      phase: activeSession.planning.snapshot().phase,
+      agent: activeSession.agent,
+      requestContext: liveDocumentBlock(liveDocument),
+    }))
     .then((prompt) => {
       // Skill context is loaded asynchronously. An interrupt can settle this
       // turn and a later message can start another turn on the same session
       // before the read completes, so session identity alone is insufficient.
       if (!providerTurnIsCurrent(record, providerTurn)) return;
+      // 스냅샷도 에이전트가 본 문서 상태다 — 읽기 도구 없이 세운 계획이 승인 때 stale 로 거절되지 않게 한다.
+      if (liveDocument) activeSession.lastObservedDocumentRevision = liveDocument.revision;
       if (activeSession.planning.phase === 'awaiting-approval') {
         prompt = `The current plan remains open for review. Answer questions and research normally. If this message requests concrete changes to the plan, revise it directly with present_implementation_plan; do not ask the user to request a draft again. Never treat discussion as approval to edit the document.\n\nCurrent plan:\n${JSON.stringify(activeSession.planning.latestPlan.plan)}\n\n${prompt}`;
       }
@@ -2804,8 +2752,23 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
       activeSession.status = 'idle';
       activeSession.turnId = null;
       record.userQuestionResponseReceipts.clear();
-      sendJson(sock, { v: 1, type: 'chat-error', code: e?.code ?? 'AGENT_SPAWN_FAILED', message: String(e?.message ?? e) });
+      sendJson(sock, { v: 1, type: 'chat-error', code: e?.code ?? 'AGENT_SPAWN_FAILED', message: describeHubError(e) });
     });
+}
+
+async function requireAgentAuthenticated(agent) {
+  if (!CLI_SETUP_AGENTS.includes(agent)) return;
+  // An unauthenticated CLI turn used to fail inside the provider with a bare
+  // turn-end that rendered as a literal "undefined" in chat — surface the real
+  // cause before the provider ever spawns. Status is re-read per message so a
+  // login completed mid-session takes effect without a restart.
+  const setup = await cliSetup.status(agent).catch(() => null);
+  if (setup && setup.authenticated !== true) {
+    throw Object.assign(
+      new Error(`${agent === 'claude' ? 'Claude' : 'Codex'} 로그인이 필요합니다. 설정 탭에서 로그인한 뒤 다시 시도해 주세요.`),
+      { code: 'AGENT_AUTH_REQUIRED' },
+    );
+  }
 }
 
 async function dispatchStagedUserMessage(record, sock, msg, activeSession) {
@@ -2872,6 +2835,8 @@ async function startSession(
 ) {
   if (record.processCleanupUncertain === true) throw agentProcessCleanupUncertain();
   await ensureBootWork();
+  // A reused terminal login may have been refreshed since the last status read.
+  if (agent === 'claude') await cliSetup.refreshAuth('claude').catch(() => {});
   const model = await resolveModel(agent, requestedModel, record);
   const effort = resolveEffort(agent, model, requestedEffort, record);
   const permissionProfile = resolvePermissionProfile(requestedPermission);
@@ -3016,12 +2981,20 @@ async function startSession(
   return record.agentSession;
 }
 
+function describeHubError(error, fallback = '알 수 없는 오류가 발생했습니다.') {
+  // String({code:'X'}) 는 "[object Object]", String(undefined) 는 "undefined"
+  // 라서 그대로 보내면 채팅에 깨진 문구가 뜬다.
+  if (typeof error?.message === 'string' && error.message) return error.message;
+  if (typeof error === 'string' && error) return error;
+  return fallback;
+}
+
 function sendChatError(sock, error, fallbackCode = 'WORKFLOW_ERROR') {
   sendJson(sock, {
     v: 1,
     type: 'chat-error',
     code: error?.code ?? fallbackCode,
-    message: String(error?.message ?? error),
+    message: describeHubError(error),
   });
 }
 
@@ -3032,7 +3005,7 @@ function sendPiError(record, sock, requestId, error, fallbackCode) {
     type: 'pi-error',
     requestId,
     code: error?.code ?? fallbackCode,
-    message: String(error?.message ?? error),
+    message: describeHubError(error),
   });
 }
 
@@ -3123,6 +3096,11 @@ async function approveImplementationPlan(record, sock, msg) {
   const activeSession = record.agentSession;
   if (!activeSession) throw workflowError('AGENT_NOT_STARTED', 'Start a chat before approving a plan');
   requireWorkflowSwitchBackend(activeSession);
+  // 승인 시 고른 실행 권한(에이전트=safe, 전체=unrestricted). 생략하면 현재 프로필을 유지한다.
+  const requestedProfile = msg.permissionProfile === undefined || msg.permissionProfile === null
+    ? null
+    : approvalPermissionProfile(msg.permissionProfile);
+  // 승인 검증이 먼저다 — 거절된 승인은 권한을 바꾸지 않는다.
   const transition = activeSession.planning.beginApproval({
     planId: String(msg.planId ?? ''),
     sessionStatus: activeSession.status,
@@ -3130,6 +3108,14 @@ async function approveImplementationPlan(record, sock, msg) {
   });
   sendJson(sock, { v: 1, type: 'plan-approved', ...activeSession.planning.snapshot() });
   try {
+    if (requestedProfile && requestedProfile !== activeSession.permissionProfile) {
+      // 실행 모드 전환 전에 권한을 바꿔야 구현 턴이 고른 권한으로 시작한다.
+      // 실패하면 아래 catch 가 failSwitch 로 승인 대기로 되돌린다.
+      await Promise.resolve(activeSession.backend.setPermissionProfile(requestedProfile));
+      if (record.agentSession !== activeSession || activeSession.planning.phase !== 'switching') return;
+      activeSession.permissionProfile = requestedProfile;
+      sendJson(sock, { v: 1, type: 'chat-permission-changed', permissionProfile: requestedProfile });
+    }
     await activeSession.backend.setExecutionMode(providerModeRequest(activeSession, 'implementing'));
     if (record.agentSession !== activeSession || activeSession.planning.phase !== 'switching') return;
     activeSession.planning.completeSwitch(transition.approvedPlan.planId);
@@ -3319,7 +3305,7 @@ async function handleStudioMessage(record, sock, msg) {
       const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
       const rejectStart = (error, fallbackCode = 'INVALID_REQUEST') => sendJson(sock, {
         v: 1, type: 'chat-error', requestId, session: sessionInfo(record),
-        code: error?.code ?? fallbackCode, message: String(error?.message ?? error),
+        code: error?.code ?? fallbackCode, message: describeHubError(error),
       });
       const agent = msg.agent;
       if (!KNOWN_AGENTS.has(agent)) {
@@ -3922,13 +3908,21 @@ async function handleStudioMessage(record, sock, msg) {
           piStatus = status;
         })
         : cliSetup.install(agent, progress).then((status) => { cliSetupStatus[agent] = status; });
+      // 설치 중이라는 사실과 결과는 모든 Studio 에 알린다. 요청한 탭이 재접속해도 설치 상태를 잃지 않는다.
+      void agentSetupStatuses().then(broadcastAgentSetupStatuses).catch(() => {});
       void installing
-        .then(() => agentSetupStatuses(record.sessionId))
-        .then((statuses) => {
-          replyToStudio(record, sock, { v: 1, type: 'agent-setup-status', requestId, statuses });
-          void providerHealth.check(true).then((providers) => replyToStudio(record, sock, { v: 1, type: 'provider-status', providers }));
+        // 새 바이너리를 감지한 뒤 상태를 만들어야 완료 프레임의 available/connected 가 맞다.
+        .then(() => providerHealth.check(true))
+        .then(async (providers) => {
+          broadcastToStudios({ v: 1, type: 'provider-status', providers });
+          const statuses = await agentSetupStatuses();
+          replyToStudio(record, sock, { v: 1, type: 'agent-setup-status', requestId, statuses: withAuthRunStatus(statuses, record.sessionId) });
+          broadcastAgentSetupStatuses(statuses);
         })
-        .catch((e) => sendAgentSetupError(record, sock, requestId, agent, e, 'AGENT_INSTALL_FAILED'));
+        .catch((e) => {
+          sendAgentSetupError(record, sock, requestId, agent, e, 'AGENT_INSTALL_FAILED');
+          void agentSetupStatuses().then(broadcastAgentSetupStatuses).catch(() => {});
+        });
       return;
     }
     case 'agent-setup-auth': {
@@ -4060,8 +4054,7 @@ async function handleStudioMessage(record, sock, msg) {
           .then(async (status) => {
             await ensureBootWork();
             cliSetupStatus[agent] = status;
-            if (agent === 'codex') sourceCodexAuthPath = await findSourceCodexAuthPath();
-            if (agent === 'claude') sourceClaudeAuth = await resolveSourceClaudeAuth();
+            if (agent === 'codex') sourceCodexAuthPath = findSourceCodexAuthPath();
             refreshSessionCredentials(agent);
             if (agent === 'claude' || agent === 'codex') {
               providerLimits.invalidate();
@@ -4134,12 +4127,28 @@ async function handleStudioMessage(record, sock, msg) {
         });
         void broadcastFreshAgentSetupStatuses();
       } catch (error) {
+        // 이미 끝난 실행을 겨냥한 취소(재연결 뒤 늦게 도착한 취소 등)는 목적을 이미 이룬 것이다.
+        if (authRuns.get(agent)?.runId !== msg.authRunId) return;
         sendAgentSetupError(record, sock, null, agent, error, 'AGENT_AUTH_FAILED');
       }
       return;
     }
     case 'agent-setup-disconnect': {
-      sendAgentSetupError(record, sock, msg.requestId ?? null, msg.agent, new Error('Provider disconnect is not supported.'));
+      const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
+      if (msg.agent !== 'claude') {
+        sendAgentSetupError(record, sock, requestId, msg.agent, new Error('Provider disconnect is not supported.'));
+        return;
+      }
+      const run = authRuns.get('claude');
+      if (run) authRuns.cancelOwned({ agent: 'claude', runId: run.runId, ownerSessionId: run.ownerSessionId, reason: 'disconnected' });
+      void cliSetup.disconnect('claude')
+        .then(async () => {
+          providerLimits.invalidate();
+          const statuses = await agentSetupStatuses(record.sessionId);
+          replyToStudio(record, sock, { v: 1, type: 'agent-setup-status', requestId, statuses });
+          await broadcastFreshAgentSetupStatuses();
+        })
+        .catch((e) => sendAgentSetupError(record, sock, requestId, 'claude', e, 'AGENT_AUTH_FAILED'));
       return;
     }
     case 'usage-request': {
@@ -4358,6 +4367,7 @@ async function handleStudioMessage(record, sock, msg) {
               workDir: record.workDir,
               isolatedHome: record.isolatedHome,
               sessionId: record.sessionId,
+              providerEnvs: { claude: claudeRuntimeEnv(record.isolatedHome) },
               spawnProcess: (command, args, options) => auxSpawnProcess(record, command, args, options),
               terminateProcess: terminateProcessTree,
               cleanupProcessOutcome: (child) => beginAuxiliaryProcessCleanupOutcome(record, child),
@@ -4764,7 +4774,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
       try {
         args = toolArgSchema(tool, definition).parse(msg.args ?? {});
         definition.validate?.(args);
-        if ((tool === 'present_implementation_plan' || tool === 'update_plan_progress')
+        if ((tool === 'present_implementation_plan' || tool === 'update_todos')
           && (workerJob || sock.piSubagentId || sock.agentRole !== 'chat' || msg.parentTaskId)) {
           throw workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root conversation may manage the plan');
         }
@@ -5234,9 +5244,9 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
         }
         return;
       }
-      if (tool === 'update_plan_progress') {
+      if (tool === 'update_todos') {
         try {
-          const snapshot = record.agentSession.planning.updateProgress(args);
+          const snapshot = record.agentSession.planning.updateTodos(args);
           sendJson(record.studioSocket, { v: 1, type: 'plan-progress', ...snapshot });
           sendResult(snapshot);
         } catch (error) {

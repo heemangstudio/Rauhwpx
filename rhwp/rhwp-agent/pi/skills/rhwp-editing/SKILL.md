@@ -7,8 +7,9 @@ description: Pending-edit and revision workflow for changing the live HWP/HWPX d
 
 ## 시작
 
-1. `get_structure` 를 먼저 불러 좌표(`sectionIdx`/`paraIdx`/`charOffset`)와 현재 `revision` 을 확보한다.
-   결과는 문단마다 `s0 p12 (40) 텍스트…` 한 줄인 텍스트이고 둘째 줄이 범례다. JSON 이 필요하면 `format: "json"`.
+1. 사용자 메시지의 `live_document` 블록에서 좌표(`sectionIdx`/`paraIdx`/`charOffset`)와 현재 `revision` 을 얻는다.
+   블록이 없거나 필요한 곳이 빠졌을 때만 `get_structure` 를 부른다.
+   둘 다 문단마다 `s0 p12 (40) 텍스트…` 한 줄인 텍스트이고 둘째 줄이 범례다. JSON 이 필요하면 `format: "json"`.
 2. 정확한 오프셋이 필요하면 `find_text` 로 위치를 찾는다. `charOffset` 은 텍스트 문자만 세므로
    표·그림 같은 인라인 컨트롤이 섞인 문단에서는 눈으로 센 값을 쓰지 않는다.
 3. 원본 HWP/HWPX 파일은 셸이나 파일 도구로 절대 건드리지 않는다. 문서 변경은 rhwp 도구로만 한다.

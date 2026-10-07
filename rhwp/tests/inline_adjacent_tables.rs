@@ -652,8 +652,8 @@ fn generated_single_table_occupied_box_centers_its_ink_with_outer_margins() {
             assert_eq!(tables.len(), 2);
             let child = tables[1];
             let expected = if authored {
-                // 실제 저장 경계는 이 fresh 폴백 수선의 대상이 아니다.
-                cell.y + (cell.height - occupied as f64 / 75.0) / 2.0
+                // 저장 점유 상자는 여백까지 중앙 정렬하고 괘선은 위 여백 안쪽에 둔다.
+                cell.y + (cell.height - occupied as f64 / 75.0) / 2.0 + f64::from(margin) / 75.0
             } else {
                 cell.y + (cell.height - child.height) / 2.0
             };

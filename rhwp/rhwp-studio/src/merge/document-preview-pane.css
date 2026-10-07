@@ -67,7 +67,7 @@
   max-width: calc(100% - 48px);
   min-height: 0;
   padding: 4px 10px;
-  border-radius: 999px;
+  border-radius: 6px;
   background: color-mix(in srgb, var(--merge-surface, #fff) 88%, transparent);
   box-shadow: 0 1px 4px #0000001a;
   pointer-events: none;

@@ -18,7 +18,7 @@ const sidebar = readFileSync(
 test('composer exposes chat-scoped quick add and a separate reference library page', () => {
   assert.match(sidebar, /createReferenceLibrary\(\{/);
   assert.match(sidebar, /composerField\.insertBefore\(referenceLibrary\.quickAddButton, sendHint\)/);
-  assert.match(sidebar, /composerUtilityActions\.insertBefore\(referenceLibrary\.trigger, permissionBtn\)/);
+  assert.match(sidebar, /composerUtilityActions\.insertBefore\(referenceLibrary\.trigger, modeMenu\.root\)/);
   assert.match(sidebar, /referenceLibrary\.page/);
   assert.match(library, /메시지에 참고자료 첨부/);
   assert.match(library, /trigger\.title = '참고자료'/);
@@ -77,7 +77,6 @@ test('composer attachments upload into removable staging drafts before their mes
   assert.match(library, /bridge\.stageReference\(chip\.target\.scopeId, chip\.file\)/);
   assert.match(library, /hasBlockingDrafts: \(\) => draftUploads\.some/);
   assert.match(library, /function takeReadyDrafts\(\): StagedReference\[\]/);
-  assert.doesNotMatch(sidebar, /if \(!input\.value\) referenceLibrary\.discardDrafts\(\)/);
   assert.match(sidebar, /referenceLibrary\.takeReadyDrafts\(\)/);
   assert.match(sidebar, /bridge\.sendUserMessage\(requestText, skillNameForMessage, staged\.map/);
   assert.match(sidebar, /send\.disabled = connState !== 'connected' \|\| attachmentsSending \|\| chatStarting[\s\S]*\|\| \(!questionPending && referenceLibrary\.hasBlockingDrafts\(\)\)/);

@@ -25461,7 +25461,7 @@ fn task1413_set_char_shape_id_in_cell_ex_equivalent() {
 #[test]
 fn task1413_get_selection_rects_in_cell_ex_equivalent() {
     let doc = create_doc_with_table();
-    let res_pos = doc.get_selection_rects_in_cell(0, 0, 0, 0, 0, 0, 0, 0);
+    let res_pos = doc.get_selection_rects_in_cell(0, 0, 0, 0, 0, 0, 0, 0, None);
     let res_ex = doc.get_selection_rects_in_cell_ex(
         r#"{"sectionIdx":0,"parentParaIdx":0,"controlIdx":0,"cellIdx":0,"startCellParaIdx":0,
             "startCharOffset":0,"endCellParaIdx":0,"endCharOffset":0}"#,
@@ -25881,15 +25881,15 @@ fn issue2214_scoped_cache_coherence_preserves_transient_pagination() {
         // flush 전 pagination 조각은 그대로 두고, flush 에서만 cut/bounds 가 갱신된다.
         // render_normalized warm tree는 flush 전에도 매 mutation을 즉시 반영해야 한다.
         // [#2430] HY/한양 ASCII 실측 교정으로 숫자 advance 가 0.625→0.497em 으로
-        // 좁아져 줄 채움 임계가 44→56 입력으로 이동 (probe 실측, hwp/hwpx 동일).
-        for inserted in 0..56 {
+        // 좁아져 줄 채움 임계가 44→56→55 입력으로 이동 (probe 실측, hwp/hwpx 동일).
+        for inserted in 0..55 {
             let raw = doc
                 .insert_text_in_cell_native_deferred_pagination(0, 0, 2, 2, 5, 130 + inserted, "1")
                 .expect("deferred sequential insert");
             let result: Value = serde_json::from_str(&raw).expect("edit result json");
             assert_eq!(
                 result["cellFlowChanged"].as_bool(),
-                Some(inserted == 55),
+                Some(inserted == 54),
                 "{label}: input {} flow signal",
                 inserted + 1
             );
@@ -25903,7 +25903,7 @@ fn issue2214_scoped_cache_coherence_preserves_transient_pagination() {
             .map(|(_, _, end)| *end)
             .expect("transient target end");
         let transient_rect = doc
-            .get_cursor_rect_in_cell_native(0, 0, 2, 2, 5, 186)
+            .get_cursor_rect_in_cell_native(0, 0, 2, 2, 5, 185)
             .expect("transient direct rect");
 
         doc.flush_deferred_pagination()
@@ -25917,15 +25917,15 @@ fn issue2214_scoped_cache_coherence_preserves_transient_pagination() {
             .map(|(_, _, end)| *end)
             .expect("flushed target end");
         let flushed_rect = doc
-            .get_cursor_rect_in_cell_native(0, 0, 2, 2, 5, 186)
+            .get_cursor_rect_in_cell_native(0, 0, 2, 2, 5, 185)
             .expect("flushed direct rect");
 
         eprintln!(
             "#2214 {label}: transient max={transient_max} rect={transient_rect}; flushed max={flushed_max} rect={flushed_rect}; cuts transient={transient_cut:?} flushed={flushed_cut:?}"
         );
 
-        assert_eq!(transient_max, 186, "{label}: scoped warm tree coherence");
-        assert_eq!(flushed_max, 186, "{label}: flush oracle");
+        assert_eq!(transient_max, 185, "{label}: scoped warm tree coherence");
+        assert_eq!(flushed_max, 185, "{label}: flush oracle");
         assert_eq!(
             transient_ranges, flushed_ranges,
             "{label}: transient target UTF-16 ranges must equal flush oracle"
@@ -25974,7 +25974,7 @@ fn issue2214_scoped_cache_coherence_preserves_transient_pagination() {
             serde_json::from_str(&transient_rect).expect("transient rect json");
         let flushed_rect_json: Value =
             serde_json::from_str(&flushed_rect).expect("flushed rect json");
-        for key in ["pageIndex", "x", "y", "height", "cellOverflowed"] {
+        for key in ["pageIndex", "x", "height", "cellOverflowed"] {
             assert_eq!(
                 transient_rect_json.get(key),
                 flushed_rect_json.get(key),
@@ -25987,6 +25987,15 @@ fn issue2214_scoped_cache_coherence_preserves_transient_pagination() {
         let flushed_bounds_h = flushed_rect_json["cellBounds"]["h"]
             .as_f64()
             .expect("flushed bounds h");
+        // 잘린 셀 조각도 셀 세로 정렬(가운데)을 따르므로, flush 가 조각 높이를 바꾸면
+        // 커서 y 는 그 변화의 절반 안에서만 움직일 수 있다.
+        let dy = (transient_rect_json["y"].as_f64().expect("transient y")
+            - flushed_rect_json["y"].as_f64().expect("flushed y"))
+        .abs();
+        assert!(
+            dy <= (flushed_bounds_h - transient_bounds_h).abs() / 2.0 + 0.5,
+            "{label}: transient cursor y moved {dy} beyond the fragment re-centering"
+        );
         assert!(
             (transient_bounds_h - 947.8).abs() <= 0.2,
             "{label}: transient bounds h={transient_bounds_h}"
@@ -26014,7 +26023,7 @@ fn issue2424_resumable_pagination_commits_only_after_final_fragment() {
         let bytes = std::fs::read(path).expect("read #2424 fixture");
         let mut doc = HwpDocument::from_bytes(&bytes).expect("load #2424 fixture");
 
-        for inserted in 0..56 {
+        for inserted in 0..55 {
             doc.insert_text_in_cell_native_deferred_pagination(0, 0, 2, 2, 5, 130 + inserted, "1")
                 .expect("deferred sequential insert");
         }
@@ -26088,14 +26097,14 @@ fn issue2424_resumable_delete_commits_only_after_final_fragment() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
         let bytes = std::fs::read(path).expect("read #2424 fixture");
         let mut doc = HwpDocument::from_bytes(&bytes).expect("load #2424 fixture");
-        doc.insert_text_in_cell_native_deferred_pagination(0, 0, 2, 2, 5, 130, &"1".repeat(56))
+        doc.insert_text_in_cell_native_deferred_pagination(0, 0, 2, 2, 5, 130, &"1".repeat(55))
             .expect("prepare fifth cell line");
         doc.flush_deferred_pagination()
             .expect("commit expanded pagination");
         let expanded_cuts = issue2214_target_cuts(&doc);
 
         let delete_raw = doc
-            .delete_text_in_cell_native_deferred_pagination(0, 0, 2, 2, 5, 185, 1)
+            .delete_text_in_cell_native_deferred_pagination(0, 0, 2, 2, 5, 184, 1)
             .expect("deferred line-shrinking delete");
         let delete: Value = serde_json::from_str(&delete_raw).expect("delete result");
         assert_eq!(
@@ -26141,7 +26150,7 @@ fn issue2424_resumable_delete_commits_only_after_final_fragment() {
 
         let mut oracle = HwpDocument::from_bytes(&bytes).expect("load delete oracle");
         oracle
-            .insert_text_in_cell_native(0, 0, 2, 2, 5, 130, &"1".repeat(55))
+            .insert_text_in_cell_native(0, 0, 2, 2, 5, 130, &"1".repeat(54))
             .expect("full-pagination delete oracle state");
         assert_eq!(
             committed_cuts,
@@ -26161,7 +26170,7 @@ fn issue2424_new_edit_stales_old_job_and_sync_flush_restarts_latest_revision() {
         .join("samples/issue1949_giant_cell_nested_tables_perf.hwp");
     let bytes = std::fs::read(path).expect("read #2424 fixture");
     let mut doc = HwpDocument::from_bytes(&bytes).expect("load #2424 fixture");
-    for inserted in 0..56 {
+    for inserted in 0..55 {
         doc.insert_text_in_cell_native_deferred_pagination(0, 0, 2, 2, 5, 130 + inserted, "1")
             .expect("deferred sequential insert");
     }
@@ -26180,7 +26189,7 @@ fn issue2424_new_edit_stales_old_job_and_sync_flush_restarts_latest_revision() {
     .expect("step json");
     assert_eq!(first_step["status"], "pending");
 
-    doc.insert_text_in_cell_native_deferred_pagination(0, 0, 2, 2, 5, 186, "1")
+    doc.insert_text_in_cell_native_deferred_pagination(0, 0, 2, 2, 5, 185, "1")
         .expect("new edit supersedes first revision");
     let stale: Value = serde_json::from_str(
         &doc.step_deferred_pagination(1)

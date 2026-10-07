@@ -79,11 +79,18 @@ export function createDeclaredFontAvailabilityProbe(
   context: ProbeContext,
   originalFont: { get: () => string; set: (value: string) => void },
   importedFaceAvailable: (family: string) => boolean,
+  substitutedWebFamilies: readonly string[] = [],
   substitutedWebFace: (family: string) => boolean = () => false,
 ): (family: string) => boolean {
   const rawAvailable = createRawFontAvailabilityProbe(context, originalFont);
+  // 웹 별칭이 원본 face의 설치 여부를 바꾸기 전에 OS 출처를 보존한다.
+  const key = (family: string) => family.trim().normalize('NFC').toLowerCase();
+  const originalAvailability = new Map(substitutedWebFamilies.map(family => [
+    key(family), rawAvailable(family),
+  ]));
   return family => importedFaceAvailable(family)
-    || (!substitutedWebFace(family) && rawAvailable(family));
+    || (originalAvailability.get(key(family))
+      ?? (!substitutedWebFace(family) && rawAvailable(family)));
 }
 
 /** 가져온 runtime 별칭이나 표시 체인을 제외한 원본 CSS face만 확인한다. */

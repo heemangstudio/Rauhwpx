@@ -6,12 +6,13 @@ use super::font_lookup::{
     legacy_typeface_for_style, match_system_family_style, SystemFontFamilies,
 };
 use super::renderer::{typeface_for_style, TypefaceCatalog};
-use super::text_replay::draw_text_run;
+use super::text_replay::{draw_text_run, draw_text_run_tracked};
 
 use crate::renderer::equation::ast::MatrixStyle;
 use crate::renderer::equation::layout::{
-    integral_geom, is_integral_symbol, leaf_font_size, LayoutBox, LayoutKind, BIG_OP_SCALE,
-    INTEGRAL_SCALE, SCRIPT_SCALE,
+    integral_fallback_top_y, integral_geom, is_integral_symbol, leaf_font_size, sqrt_pua_geometry,
+    LayoutBox, LayoutKind, BIG_OP_SCALE, INTEGRAL_SCALE, MODERN_HY_SUM_ADVANCE_EM,
+    MODERN_HY_SUM_BASELINE, MODERN_HY_SUM_SCALE, MODERN_HY_SUM_TRAIL_PAD, SCRIPT_SCALE,
 };
 use crate::renderer::equation::symbols::{DecoKind, FontStyleKind};
 
@@ -53,6 +54,7 @@ pub fn render_equation(
         custom: custom_typefaces,
         bundled: bundled_typefaces,
         system: system_families,
+        // 레이아웃의 is_modern_hy 와 같은 판정 — 버전60 수식은 크기와 무관하게 현대다.
         modern: !version_info.is_empty(),
     };
     render_box(
@@ -127,7 +129,15 @@ fn render_box(
                 x,
                 y + lb.baseline,
                 leaf_font_size(lb, fs),
-                italic && !text.chars().any(|c| matches!(c, '\u{3000}'..='\u{9FFF}' | '\u{F900}'..='\u{FAFF}' | '\u{AC00}'..='\u{D7AF}')),
+                italic
+                    && !text
+                        .chars()
+                        .any(crate::renderer::equation::layout::is_cjk_char)
+                    && !(fonts.modern
+                        && crate::renderer::equation::font::modern_hancom_fallback_run_advance_em(
+                            text,
+                        )
+                        .is_some()),
                 bold,
                 color,
                 false,
@@ -164,10 +174,9 @@ fn render_box(
             );
         }
         LayoutKind::MathSymbol(text) => {
-            // Task #1317: 적분 기호(∫)는 폰트 text 가 아닌 stroke path 로 렌더(geom SSOT,
-            // svg/canvas 와 동일). 그 외 MathSymbol 은 text 렌더.
+            // 적분은 현대 HY의 굽은 글리프를 우선하고, 나머지는 stroke path 를 쓴다.
             if is_integral_symbol(text) {
-                draw_integral(canvas, x, y, fs, color);
+                draw_integral(canvas, fonts, font_families, x, y, fs, color);
             } else {
                 draw_text(
                     canvas,
@@ -218,13 +227,16 @@ fn render_box(
             );
             // HY 분수선은 e06d 막대를 상자 폭으로 늘려 칠한다. 현대 수식의
             // 세로 크기는 본문 em과 같고, 구형 HFT만 기존 1.256배를 사용한다.
+            // legacy 분수선의 잉크 중심은 기준선 아래 ~0.30em(수학 축)에 놓인다 —
+            // e06d 잉크 중심이 org 위 0.604em이므로 org = baseline + 0.46em
+            // (02-eq-01 실측: 막대 잉크 y = 본문 기준선−0.27~0.34em).
             let bar_painted = draw_legacy_pua_glyph(
                 canvas,
                 fonts,
                 font_families,
                 '\u{e06d}',
                 x + *bar_inset,
-                y + lb.baseline + fs * 0.3,
+                y + lb.baseline + fs * if fonts.modern { 0.3 } else { 0.46 },
                 fs * if fonts.modern { 1.0 } else { 1.256 },
                 Some(lb.width - *bar_inset * 2.0),
                 color,
@@ -278,16 +290,15 @@ fn render_box(
         }
         LayoutKind::Sqrt { index, body } => {
             let sign_x = x;
-            // 한컴 legacy 서체는 √ = e05c 기호(기호 zone ~1em, 본문 높이에 비례한
-            // 크기 — 실측 1.052fs~1.126fs) + e06d 윗줄(본문 위를 덮도록 늘림)으로 칠한다.
+            let geom = sqrt_pua_geometry(body, lb.baseline, lb.width, fs, fonts.modern);
             let sign_painted = draw_legacy_pua_glyph(
                 canvas,
                 fonts,
                 font_families,
                 '\u{e05c}',
                 x + body.x - fs,
-                y + lb.baseline,
-                fs * 0.682 + body.height * 0.37,
+                y + geom.sign_baseline,
+                geom.sign_size,
                 Some(fs),
                 color,
             );
@@ -298,9 +309,9 @@ fn render_box(
                     font_families,
                     '\u{e06d}',
                     x + body.x - fs * 0.03,
-                    y + body.y + body.height * 0.694,
-                    body.height * 1.11,
-                    Some(body.width + fs * 0.17),
+                    y + geom.bar_baseline,
+                    geom.bar_size,
+                    Some(geom.bar_advance),
                     color,
                 );
             }
@@ -443,20 +454,39 @@ fn render_box(
         }
         LayoutKind::BigOp { symbol, sub, sup } => {
             let is_integral = is_integral_symbol(symbol);
+            let modern_hy_sum = symbol == "∑"
+                && fonts.modern
+                && font_families.first().is_some_and(|name| {
+                    crate::renderer::equation::font::is_legacy_equation_font(name)
+                });
             // Task #1313: 적분은 전용 스케일(INTEGRAL_SCALE), ∑/∏ 등은 BIG_OP_SCALE.
             let op_fs = fs
                 * if is_integral {
                     INTEGRAL_SCALE
+                } else if modern_hy_sum {
+                    MODERN_HY_SUM_SCALE
                 } else {
                     BIG_OP_SCALE
                 };
             if is_integral {
-                // Task #1317: 적분 기호는 stroke path 로 렌더(geom SSOT).
-                draw_integral(canvas, x, y, fs, color);
+                // 현대 HY는 글리프를 우선하고, 나머지는 stroke path 를 쓴다.
+                draw_integral(canvas, fonts, font_families, x, y, fs, color);
             } else {
                 let sup_h = sup.as_ref().map(|b| b.height + fs * 0.05).unwrap_or(0.0);
-                let op_x = x + (lb.width - estimate_op_width(symbol, op_fs)) / 2.0;
-                let op_y = y + sup_h + op_fs * 0.8;
+                let op_x = if modern_hy_sum {
+                    x + (lb.width - fs * MODERN_HY_SUM_TRAIL_PAD - op_fs * MODERN_HY_SUM_ADVANCE_EM)
+                        / 2.0
+                } else {
+                    x + (lb.width - estimate_op_width(symbol, op_fs)) / 2.0
+                };
+                let op_y = y
+                    + sup_h
+                    + op_fs
+                        * if modern_hy_sum {
+                            MODERN_HY_SUM_BASELINE
+                        } else {
+                            0.8
+                        };
                 draw_text(
                     canvas,
                     fonts,
@@ -481,7 +511,7 @@ fn render_box(
                     y,
                     color,
                     fs * SCRIPT_SCALE,
-                    false,
+                    modern_hy_sum && italic,
                     false,
                 );
             }
@@ -495,25 +525,38 @@ fn render_box(
                     y,
                     color,
                     fs * SCRIPT_SCALE,
-                    false,
+                    modern_hy_sum && italic,
                     false,
                 );
             }
         }
-        LayoutKind::Limit { is_upper, sub } => {
+        LayoutKind::Limit {
+            is_upper,
+            sub,
+            name_x,
+            name_y,
+        } => {
             let name = if *is_upper { "Lim" } else { "lim" };
-            draw_text(
+            // 이름 크기는 상자 기준선(0.8×이름 크기)에서 얻는다 — 현대 HY는 1.2배이고
+            // 자연 advance로 칠한다(포개기 없음).
+            let name_fs = lb.baseline / 0.8;
+            draw_text_tracked(
                 canvas,
                 fonts,
                 font_families,
                 name,
-                x,
-                y + fs * 0.8,
-                fs,
+                x + name_x,
+                y + lb.baseline + name_y,
+                name_fs,
                 false,
                 false,
                 color,
                 false,
+                if fonts.modern {
+                    1.0
+                } else {
+                    crate::renderer::equation::font::EQUATION_GLYPH_TRACKING
+                },
             );
             if let Some(sub) = sub {
                 render_box(
@@ -525,7 +568,7 @@ fn render_box(
                     y,
                     color,
                     fs * SCRIPT_SCALE,
-                    false,
+                    italic,
                     false,
                 );
             }
@@ -655,13 +698,76 @@ fn render_box(
             modern_extent,
         } => {
             let paren_w = fs * 0.333;
+            let paren_w = crate::renderer::equation::layout::paren_bar_slot(
+                lb, body, left, right, fs, paren_w,
+            );
             let use_glyph = lb.height <= fs * 1.2;
-            // legacy는 큰 괄호도 e044/e045 글립을 slot 폭으로 늘려 칠고 세로는
-            // 기준선 기준 -1.05em~+0.26em 범위를 덮는다 (eq-002 실측).
+            // legacy는 큰 괄호도 e044/e045 글립을 slot 폭으로 늘려 칠고, 세로는
+            // 본문 상자 높이의 ~0.94배를 덮는다 (02-eq-01 실측: 본문 29.3pt →
+            // 괄호 잉크 27.6pt, 위쪽 0.03h 여백).
             let left_stretch = !use_glyph && matches!(left.as_str(), "(" | ")");
-            if !left.is_empty() {
-                let legacy_painted = left_stretch && {
+            let left_square = !use_glyph && left == "[";
+            // 현대 HY 중괄호(cases)는 e04b 글립을 줄 범위 높이로 세로만 늘려 칠한다.
+            let brace_painted = left == "{"
+                && modern_extent.is_some_and(|(top, height)| {
+                    draw_legacy_pua_glyph_scaled(
+                        canvas,
+                        fonts,
+                        font_families,
+                        '\u{e04b}',
+                        (
+                            113.0 / 1024.0,
+                            -203.0 / 1024.0,
+                            446.0 / 1024.0,
+                            821.0 / 1024.0,
+                        ),
+                        (
+                            x + fs * 113.0 / 1024.0,
+                            y + top,
+                            fs * 333.0 / 1024.0,
+                            height,
+                        ),
+                        color,
+                    )
+                });
+            // 현대 HY 일반 중괄호 묶음은 e04b/e04c의 가로 잉크 폭을
+            // 기본 글자 크기로 유지하고 세로만 본문 높이로 늘린다.
+            let brace_glyph = |glyph: char, gx: f64| {
+                let layout_height = lb.height.max(fs);
+                let ink_height = crate::renderer::equation::layout::content_bottom(body)
+                    .max(fs)
+                    .min(layout_height);
+                let baseline = y + lb.height / 2.0 + layout_height * 0.309;
+                draw_legacy_pua_glyph_scaled(
+                    canvas,
+                    fonts,
+                    font_families,
+                    glyph,
+                    (
+                        113.0 / 1024.0,
+                        -203.0 / 1024.0,
+                        446.0 / 1024.0,
+                        821.0 / 1024.0,
+                    ),
+                    (
+                        gx + fs * 113.0 / 1024.0,
+                        baseline - layout_height * 821.0 / 1024.0,
+                        fs * 333.0 / 1024.0,
+                        ink_height,
+                    ),
+                    color,
+                )
+            };
+            let brace_painted = brace_painted
+                || (fonts.modern
+                    && left == "{"
+                    && modern_extent.is_none()
+                    && brace_glyph('\u{e04b}', x));
+            if !left.is_empty() && !brace_painted {
+                let legacy_painted = (left_stretch && {
                     let (ink, g) = paren_glyph_ink(left);
+                    // 괄호 잉크는 ~0.45em 폭으로 slot(0.39em) 안에 가운데 놓인다
+                    // (02-eq-01 eq37/eq40 실측 잉크 폭 ~5.4pt@fs12-13).
                     draw_legacy_pua_glyph_scaled(
                         canvas,
                         fonts,
@@ -671,19 +777,37 @@ fn render_box(
                         if let Some((top, height)) = *modern_extent {
                             (x + ink.0 * fs, y + top, (ink.2 - ink.0) * fs, height)
                         } else {
-                            (x, y + lb.baseline - fs * 1.05, fs * 0.39, fs * 1.31)
+                            (
+                                x - fs * 0.03,
+                                y + lb.height * 0.03,
+                                fs * 0.45,
+                                lb.height * 0.94,
+                            )
                         },
                         color,
                     )
-                };
+                }) || (left_square
+                    && draw_legacy_square_bracket(
+                        canvas,
+                        fonts,
+                        font_families,
+                        true,
+                        x,
+                        y + lb.height * 0.03,
+                        lb.height * 0.94,
+                        fs,
+                        color,
+                    ));
                 if legacy_painted {
-                } else if use_glyph && (left == "(" || left == ")") {
+                } else if use_glyph && matches!(left.as_str(), "(" | ")" | "[" | "]") {
                     draw_text(
                         canvas,
                         fonts,
                         font_families,
                         left,
-                        x,
+                        x + crate::renderer::equation::layout::paren_left_square_ink_offset(
+                            lb, body, left, right, fs,
+                        ),
                         y + lb.baseline,
                         fs,
                         false,
@@ -719,9 +843,15 @@ fn render_box(
                 bold,
             );
             let right_stretch = !use_glyph && matches!(right.as_str(), "(" | ")");
-            if !right.is_empty() {
-                let right_x = x + lb.width - paren_w;
-                let legacy_painted = right_stretch && {
+            let right_square = !use_glyph && right == "]";
+            let right_slot = crate::renderer::equation::layout::paren_right_slot(
+                lb, body, left, right, fs, paren_w,
+            );
+            let right_brace_painted =
+                fonts.modern && right == "}" && brace_glyph('\u{e04c}', x + lb.width - right_slot);
+            if !right.is_empty() && !right_brace_painted {
+                let right_x = x + lb.width - right_slot;
+                let legacy_painted = (right_stretch && {
                     let (ink, g) = paren_glyph_ink(right);
                     draw_legacy_pua_glyph_scaled(
                         canvas,
@@ -738,17 +868,28 @@ fn render_box(
                             )
                         } else {
                             (
-                                x + lb.width - fs * 0.39,
-                                y + lb.baseline - fs * 1.05,
-                                fs * 0.39,
-                                fs * 1.31,
+                                x + lb.width - fs * 0.42,
+                                y + lb.height * 0.03,
+                                fs * 0.45,
+                                lb.height * 0.94,
                             )
                         },
                         color,
                     )
-                };
+                }) || (right_square
+                    && draw_legacy_square_bracket(
+                        canvas,
+                        fonts,
+                        font_families,
+                        false,
+                        x + lb.width - fs * 0.494,
+                        y + lb.height * 0.03,
+                        lb.height * 0.94,
+                        fs,
+                        color,
+                    ));
                 if legacy_painted {
-                } else if use_glyph && (right == "(" || right == ")") {
+                } else if use_glyph && matches!(right.as_str(), "(" | ")" | "[" | "]") {
                     draw_text(
                         canvas,
                         fonts,
@@ -835,6 +976,37 @@ fn draw_text(
     color: Color,
     centered: bool,
 ) {
+    draw_text_tracked(
+        canvas,
+        fonts,
+        font_families,
+        text,
+        x,
+        baseline_y,
+        font_size,
+        italic,
+        bold,
+        color,
+        centered,
+        crate::renderer::equation::font::EQUATION_GLYPH_TRACKING,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_text_tracked(
+    canvas: &Canvas,
+    fonts: &EqFonts<'_>,
+    font_families: &[&str],
+    text: &str,
+    x: f64,
+    baseline_y: f64,
+    font_size: f64,
+    italic: bool,
+    bold: bool,
+    color: Color,
+    centered: bool,
+    legacy_tracking: f64,
+) {
     if text.is_empty() {
         return;
     }
@@ -879,18 +1051,22 @@ fn draw_text(
                 let mut paint = Paint::default();
                 paint.set_anti_alias(true);
                 paint.set_color(color);
-                let width = font.measure_str(&glyphs, Some(&paint)).0 as f64;
+                // 한컴 수식기는 run 안 글립의 진행폭을 자연폭×0.9로 포갠다 —
+                // layout(measure_legacy_run_native)과 같은 비율로 스텝을 좁힌다.
+                let tracking = legacy_tracking;
+                let width = font.measure_str(&glyphs, Some(&paint)).0 as f64 * tracking;
                 let mut pen = x - if centered { width / 2.0 } else { 0.0 };
                 for (run, skew, shift) in runs {
                     font.set_skew_x(if skew { -0.2 } else { 0.0 });
-                    draw_text_run(
+                    draw_text_run_tracked(
                         canvas,
                         &run,
                         (pen as f32, (baseline_y + shift * font_size) as f32),
                         &font,
                         &paint,
+                        tracking,
                     );
-                    pen += font.measure_str(&run, Some(&paint)).0 as f64;
+                    pen += font.measure_str(&run, Some(&paint)).0 as f64 * tracking;
                 }
                 return;
             }
@@ -917,18 +1093,29 @@ fn draw_text(
     paint.set_style(paint::Style::Fill);
     paint.set_color(color);
 
+    // legacy 수식 서체는 커버 못 하는 문자(한글 등)도 fallback 서체로
+    // 칠하면서 진행폭을 0.9배로 포갠다 — 위 PUA 경로와 같은 추적값.
+    let tracking = if font_families
+        .first()
+        .is_some_and(|name| crate::renderer::equation::font::is_legacy_equation_font(name))
+    {
+        legacy_tracking
+    } else {
+        1.0
+    };
     let draw_x = if centered {
         let (width, _) = font.measure_str(text, Some(&paint));
-        x - f64::from(width) / 2.0
+        x - f64::from(width) * tracking / 2.0
     } else {
         x
     };
-    draw_text_run(
+    draw_text_run_tracked(
         canvas,
         text,
         (draw_x as f32, baseline_y as f32),
         &font,
         &paint,
+        tracking,
     );
 }
 
@@ -1038,19 +1225,148 @@ fn draw_legacy_pua_glyph_scaled(
     true
 }
 
+// legacy 큰 대괄호는 e100/e101/e103(좌)·e102/e105/e104(우) 세 파트를 각각
+// ~1em 크기로 쌓아 칠한다 (02-eq-01 실측). 위·아래 파트는 잉크 끝단에 붙이고
+// 가운데 연장 파트(e101/e105, 세로 막대)는 남은 구간에 균등 배치한다.
+// 글립 잉크 경계(em): 위/아래 파트 −0.208..0.733 / −0.152..0.792,
+// 가운데 파트 −0.208..0.792.
+fn draw_legacy_square_bracket(
+    canvas: &Canvas,
+    fonts: &EqFonts<'_>,
+    font_families: &[&str],
+    left: bool,
+    x: f64,
+    ty: f64,
+    th: f64,
+    fs: f64,
+    color: Color,
+) -> bool {
+    let (top_g, mid_g, bot_g) = if left {
+        ('\u{e100}', '\u{e101}', '\u{e103}')
+    } else {
+        ('\u{e102}', '\u{e105}', '\u{e104}')
+    };
+    if th <= 0.0 {
+        return false;
+    }
+    let s = fs;
+    let top_org = ty + 0.733 * s;
+    let bot_org = ty + th - 0.152 * s;
+    if !draw_legacy_pua_glyph(
+        canvas,
+        fonts,
+        font_families,
+        top_g,
+        x,
+        top_org,
+        s,
+        None,
+        color,
+    ) || !draw_legacy_pua_glyph(
+        canvas,
+        fonts,
+        font_families,
+        bot_g,
+        x,
+        bot_org,
+        s,
+        None,
+        color,
+    ) {
+        return false;
+    }
+    let top_ink_bottom = ty + 0.941 * s;
+    let bot_ink_top = ty + th - 0.944 * s;
+    let span = (bot_ink_top - top_ink_bottom).max(0.0);
+    let mid_h = s;
+    let n = ((span + mid_h * 0.2) / (mid_h * 0.7)).ceil().max(1.0) as i32;
+    for i in 0..n {
+        let center = top_ink_bottom + span * (i as f64 + 0.5) / f64::from(n);
+        let org = center + 0.292 * s;
+        if !draw_legacy_pua_glyph(canvas, fonts, font_families, mid_g, x, org, s, None, color) {
+            return false;
+        }
+    }
+    true
+}
+
 fn equation_typeface_for_text_in_families(
     families: &[&str],
     fonts: &EqFonts<'_>,
     font_style: FontStyle,
     text: &str,
 ) -> Option<Typeface> {
-    families
+    if fonts.modern
+        && families
+            .first()
+            .is_some_and(|family| crate::renderer::equation::font::is_legacy_equation_font(family))
+        && crate::renderer::equation::font::modern_hancom_fallback_run_advance_em(text).is_some()
+    {
+        if let Some(typeface) = fonts
+            .resolve("Haansoft Batang", font_style)
+            .filter(|typeface| typeface_covers_text(typeface, text))
+        {
+            return Some(typeface);
+        }
+    }
+    let resolved: Vec<Typeface> = families
         .iter()
         .copied()
         .filter(|family| !crate::renderer::equation::font::is_legacy_equation_font(family))
         .filter_map(|family| fonts.resolve(family, font_style))
+        .collect();
+    if let Some(typeface) = resolved
+        .iter()
         .find(|typeface| typeface_covers_text(typeface, text))
-        .or_else(|| legacy_typeface_for_style(fonts.mgr, font_style))
+    {
+        return Some(typeface.clone());
+    }
+    // macOS 한컴의 현대 HY 수식은 HYhwpEQ가 커버하지 않는 한글을
+    // Haansoft Batang으로 칠한다. 번들 서체가 등록된 경우 같은 원본
+    // 글립을 우선하고, 없는 환경에서는 기존 serif fallback을 유지한다.
+    if fonts.modern
+        && families
+            .first()
+            .is_some_and(|family| crate::renderer::equation::font::is_legacy_equation_font(family))
+        && text
+            .chars()
+            .any(crate::renderer::equation::layout::is_cjk_char)
+    {
+        if let Some(typeface) = fonts
+            .resolve("Haansoft Batang", font_style)
+            .filter(|typeface| typeface_covers_text(typeface, text))
+        {
+            return Some(typeface);
+        }
+    }
+    // 수식 서체 체인이 커버하지 못하는 문자(수식 안 한글 등): 본문 텍스트
+    // 경로(text_replay::typeface_for_character)와 동일하게 커버 서체를 찾는다.
+    // serif 계열 CJK fallback 후보 → 시스템 문자 fallback 순. 바로 legacy
+    // 서체로 떨어지면 한글이 .notdef(tofu)로 그려진다.
+    let uncovered = text.chars().find(|character| {
+        !character.is_whitespace()
+            && resolved
+                .iter()
+                .all(|typeface| typeface.unichar_to_glyph(*character as i32) == 0)
+    });
+    if uncovered.is_some() {
+        if let Some(typeface) = super::text_replay::SERIF_CJK_FALLBACK_FAMILIES
+            .iter()
+            .filter_map(|family| fonts.resolve(family, font_style))
+            .find(|typeface| typeface_covers_text(typeface, text))
+        {
+            return Some(typeface);
+        }
+        if let Some(typeface) = uncovered.and_then(|character| {
+            fonts
+                .mgr
+                .match_family_style_character("", font_style, &[], character as i32)
+                .filter(|typeface| typeface.unichar_to_glyph(character as i32) != 0)
+        }) {
+            return Some(typeface);
+        }
+    }
+    legacy_typeface_for_style(fonts.mgr, font_style)
 }
 
 fn typeface_covers_text(typeface: &Typeface, text: &str) -> bool {
@@ -1267,6 +1583,13 @@ fn draw_decoration(
                 &paint,
             );
         }
+        DecoKind::StrikeThrough => {
+            canvas.draw_line(
+                ((mid_x - half_w) as f32, (y + fs * 1.14) as f32),
+                ((mid_x + half_w) as f32, (y + fs * 0.14) as f32),
+                &paint,
+            );
+        }
         _ => {
             canvas.draw_line(
                 ((mid_x - half_w * 0.5) as f32, (y + fs * 0.1) as f32),
@@ -1281,22 +1604,54 @@ fn estimate_op_width(text: &str, fs: f64) -> f64 {
     text.chars().count() as f64 * fs * 0.6
 }
 
-/// 적분 기호(∫)를 stroke path 로 렌더 (Task #1317).
+/// 현대 HY 적분은 굽은 글리프를 칠하고, 다른 적분은 기존 stroke path 를 사용한다.
 ///
-/// svg_render.rs `integral_path` / canvas_render.rs `draw_integral` 와 동일한
-/// `integral_geom` 기하·곡선을 사용해 SVG/Canvas/Skia 3경로가 정합한다. 폰트
-/// 비의존으로 글리프 bbox 가 결정적이며 상·하한 attach point 와 어긋나지 않는다.
-fn draw_integral(canvas: &Canvas, x: f64, y: f64, fs: f64, color: Color) {
+/// 대체 stroke path 는 SVG/Canvas 와 같은 적분 잉크 범위를 사용한다.
+fn draw_integral(
+    canvas: &Canvas,
+    fonts: &EqFonts<'_>,
+    font_families: &[&str],
+    x: f64,
+    y: f64,
+    fs: f64,
+    color: Color,
+) {
+    let modern_hy = fonts.modern
+        && font_families
+            .first()
+            .is_some_and(|name| crate::renderer::equation::font::is_legacy_equation_font(name));
+    if modern_hy {
+        // STIXGeneral ∫의 잉크 높이(1.144em)를 현대 HY의 약 2em에 맞춘다.
+        let mgr = FontMgr::default();
+        if let Some(face) = mgr.match_family_style("STIXGeneral", FontStyle::normal()) {
+            if typeface_covers_text(&face, "∫") {
+                let mut font = Font::new(face, (fs * 1.748) as f32);
+                font.set_edging(font::Edging::AntiAlias);
+                let mut paint = Paint::default();
+                paint.set_anti_alias(true);
+                paint.set_color(color);
+                draw_text_run(
+                    canvas,
+                    "∫",
+                    ((x + fs * 0.042) as f32, (y + fs * 1.94) as f32),
+                    &font,
+                    &paint,
+                );
+                return;
+            }
+        }
+    }
     let g = integral_geom(fs);
-    let h = g.bottom_y - g.top_y;
+    let top_y = integral_fallback_top_y(g, fs, modern_hy);
+    let h = g.bottom_y - top_y;
     let p0x = x + g.bottom_hook_x;
     let p0y = y + g.bottom_y;
     let p3x = x + g.top_hook_x;
-    let p3y = y + g.top_y;
+    let p3y = y + top_y;
     let c1x = x + g.width * 1.02;
     let c1y = y + g.bottom_y - h * 0.30;
     let c2x = x - g.width * 0.10;
-    let c2y = y + g.top_y + h * 0.30;
+    let c2y = y + top_y + h * 0.30;
     let mut paint = stroke_paint(color, g.stroke_w);
     paint.set_stroke_cap(paint::Cap::Round);
     let mut path = PathBuilder::new();

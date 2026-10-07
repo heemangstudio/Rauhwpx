@@ -13,6 +13,9 @@ inputs:
   artifact:
     description: Optional artifact upload name.
     default: ''
+  wasm-artifact:
+    description: Optional WASM package artifact built earlier in the run.
+    default: ''
   certificate:
     description: Developer ID certificate.
     required: false
@@ -33,7 +36,7 @@ runs:
   steps:
     - uses: actions/setup-node@v5
       with:
-        node-version: 22.18.0
+        node-version: 22.23.3
         cache: npm
         cache-dependency-path: |
           package-lock.json
@@ -60,6 +63,7 @@ runs:
     - uses: ./.github/actions/build-wasm
       with:
         setup-rust: 'false'
+        artifact: ${{ inputs.wasm-artifact }}
     - name: Set nightly package version
       if: inputs.version != ''
       shell: bash

@@ -64,7 +64,7 @@ fn page_start_continued_means_the_paragraph_began_on_an_earlier_page() {
 #[test]
 fn body_selection_rects_through_the_page_tree_cache_match_a_fresh_document() {
     let rects = |doc: &HwpDocument| {
-        doc.get_selection_rects(0, 1, 0, 3, 2)
+        doc.get_selection_rects(0, 1, 0, 3, 2, None)
             .expect("body selection rects")
     };
     let mut warm = load_sample("biz_plan.hwp");

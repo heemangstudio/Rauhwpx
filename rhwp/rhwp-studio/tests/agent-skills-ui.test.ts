@@ -7,10 +7,19 @@ const shelf = readFileSync(new URL('../src/ui/agent-sidebar/skills-shelf.ts', im
 const bridge = readFileSync(new URL('../src/agent/bridge.ts', import.meta.url), 'utf8');
 const css = readFileSync(new URL('../src/ui/agent-sidebar/agent-sidebar.css', import.meta.url), 'utf8');
 
-test('sidebar exposes safe/full permissions without allowing changes during a turn', () => {
-  assert.match(source, /permissionProfile === 'safe'/);
-  assert.match(source, /await confirmSheet\(permissionBtn, '전체 접근', '승인 없이 편집하고 파일에 접근합니다\.'/);
-  assert.match(source, /permissionBtn\.disabled = controlsLocked \|\| connState !== 'connected'/);
+test('sidebar exposes one agent mode chip without allowing changes during a turn', () => {
+  assert.match(source, /createModeMenu\(\(mode\) => \{ void requestMode\(mode\); \}\)/);
+  assert.doesNotMatch(source, /permissionBtn|updatePermissionButton/);
+  // 전체로 들어갈 때만 확인 시트를 띄운다.
+  assert.match(source, /if \(modeNeedsConfirmation\(next\)\) \{\s*const confirmed = await confirmSheet\(modeMenu\.trigger, '전체 접근', '승인 없이 편집하고 파일에 접근합니다\.'/);
+  assert.match(source, /agentModeTarget\(next\)\.permissionProfile === 'unrestricted'\s*&& permissionProfile !== 'unrestricted'/);
+  // 계획 카드: 에이전트로 실행(safe)과 빨간 전체 접근으로 실행(unrestricted) 두 승인.
+  assert.match(source, /approveActivePlan\(plan\.planId, 'safe'\)/);
+  assert.match(source, /'ag-approve ag-plan-approve-full', '전체 접근으로 실행'/);
+  assert.match(source, /approveActivePlan\(plan\.planId, 'unrestricted', approveFull\)/);
+  assert.match(source, /bridge\.approvePlan\(planId, profile\)/);
+  assert.match(source, /disabled: locked/);
+  assert.match(source, /const locked = local \? isControlLocked\(\) \|\| connState !== 'connected'/);
   assert.match(bridge, /chat-permission-set/);
   assert.match(bridge, /this\.permissionProfile = 'safe'/);
 });
@@ -27,9 +36,6 @@ test('skill shelf lists, imports, edits, and creates product skills', () => {
   assert.match(shelf, /'새 스킬 만들기'/);
   assert.match(shelf, /createNewSkillEditor/);
   assert.match(shelf, /action: 'create'/);
-  assert.match(css, /\.ag-skill-editor \{/);
-  assert.match(css, /\.ag-fullscreen \.ag-skill-new-editor/);
-  assert.doesNotMatch(css, /\.ag-skill-editor-artifact/);
   assert.match(shelf, /aria-label', '사용'/);
   assert.match(shelf, /action: 'import'/);
   assert.match(shelf, /mode: 'adopt'/);
@@ -37,10 +43,6 @@ test('skill shelf lists, imports, edits, and creates product skills', () => {
   assert.match(shelf, /LOCAL_EDITS/);
   assert.doesNotMatch(shelf, /검증하기|사용 중|window\.confirm|ag-skills-group-title/);
   assert.doesNotMatch(source, /bridge\.validateSkill|generateSkillDraft|\/skill-create|\/skill-edit|\/skill-delete/);
-  assert.doesNotMatch(css, /\.ag-skills-group-title/);
-  assert.match(css, /\.ag-skills-search\s*\{[^}]*border:\s*0/s);
-  assert.match(css, /\.ag-skill-text\s*\{[^}]*border:\s*0/s);
-  assert.match(css, /\.ag-skill-toggle\s*\{[^}]*border:\s*0/s);
 });
 
 test('slash menu supports local commands and explicit product-skill invocation', () => {

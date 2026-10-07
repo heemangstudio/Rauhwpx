@@ -9,6 +9,7 @@ import type { EventBus } from '../core/event-bus.ts';
 import type { CanvasView } from '../view/canvas-view.ts';
 import type { InputHandler } from '../engine/input-handler.ts';
 import type { CellPathLike, ControlLayoutItem, CursorRect, DocumentPosition } from '../core/types.ts';
+import { AGENT_MODE_LABEL, agentModeFor, type AgentMode } from './types.ts';
 import type { AgentBridge } from './bridge.ts';
 import { selectedTablesInRange } from '../engine/selected-tables.ts';
 import { cellChain } from '../engine/table-selection-rects.ts';
@@ -223,6 +224,10 @@ class InlinePromptController {
       }));
     }
     this.unsubs.push(eventBus.on('document-view-changed', () => this.hideAll()));
+    // 에이전트가 문서를 잡는 순간 칩을 걷는다. 열린 상자는 이미 굳힌 컨텍스트와 초안을 지킨다.
+    this.unsubs.push(eventBus.on('command-state-changed', () => {
+      if (this.state === 'chip' && this.deps.inputHandler.isUserEditingLocked()) this.hideAll();
+    }));
     for (const name of ['zoom-changed', 'viewport-resize', 'viewport-inset-changed', 'page-layout-changed']) {
       this.unsubs.push(eventBus.on(name, () => this.reposition()));
     }
@@ -231,7 +236,8 @@ class InlinePromptController {
       else this.scheduleCheck();
     }));
     this.unsubs.push(bridge.onEvent((e) => {
-      if (e.type === 'connection' || e.type === 'permission-changed') this.refreshControls();
+      if (e.type === 'connection' || e.type === 'permission-changed' || e.type === 'workflow-changed'
+        || e.type === 'plan-approved' || e.type === 'implementation-started') this.refreshControls();
     }));
 
     document.addEventListener('pointerdown', this.onGlobalPointerDown, true);
@@ -268,6 +274,10 @@ class InlinePromptController {
       return;
     }
     if (this.state === 'open' || this.pointerActive) return;
+    if (this.deps.inputHandler.isUserEditingLocked()) {
+      if (this.state === 'chip') this.hideAll();
+      return;
+    }
     const source = this.currentSelection();
     if (!source) {
       if (this.state === 'chip') this.hideAll();
@@ -1047,9 +1057,18 @@ class InlinePromptController {
     for (const url of this.previewUrls.splice(0)) URL.revokeObjectURL(url);
   }
 
+  /** 사이드바 모드 칩과 같은 모드. 여기서는 에이전트 ↔ 전체만 바꾼다. */
+  private currentMode(): AgentMode {
+    const { bridge } = this.deps;
+    const state = bridge.getWorkflowState();
+    return agentModeFor(state.workflow, state.phase, bridge.getPermissionProfile());
+  }
+
   private togglePermission(): void {
     const { bridge } = this.deps;
-    if (bridge.getPermissionProfile() === 'safe') {
+    const mode = this.currentMode();
+    if (mode !== 'agent' && mode !== 'full') return;
+    if (mode === 'agent') {
       const confirmed = window.confirm('전체 접근을 켜면 에이전트가 승인 없이 문서를 편집하고, 명령과 파일 도구가 노트북 전체에 접근할 수 있습니다. 이 채팅에서 계속 허용할까요?');
       if (!confirmed) return;
       bridge.setPermissionProfile('unrestricted');
@@ -1060,12 +1079,12 @@ class InlinePromptController {
 
   private refreshControls(): void {
     const { bridge } = this.deps;
-    const unrestricted = bridge.getPermissionProfile() === 'unrestricted';
-    this.permissionBtn.textContent = unrestricted ? '전체' : '안전';
-    this.permissionBtn.classList.toggle('ag-inline-unrestricted', unrestricted);
-    this.permissionBtn.title = unrestricted
-      ? '에이전트 권한: 전체 접근. 클릭하여 안전 모드로 전환'
-      : '에이전트 권한: 안전. 문서 편집은 턴이 끝나면 검토 후 반영됩니다';
+    const mode = this.currentMode();
+    this.permissionBtn.textContent = AGENT_MODE_LABEL[mode];
+    this.permissionBtn.dataset.mode = mode;
+    this.permissionBtn.classList.toggle('ag-inline-unrestricted', mode === 'full');
+    this.permissionBtn.disabled = mode === 'chat' || mode === 'plan';
+    this.permissionBtn.title = mode === 'full' ? '에이전트 모드로 전환' : mode === 'agent' ? '전체 모드로 전환' : '';
     const connected = bridge.getConnectionState() === 'connected';
     this.sendBtn.disabled = !connected || this.sending || !this.captured;
     this.sendBtn.title = connected ? (this.sending ? '선택 자료를 보내는 중입니다' : '') : '에이전트 허브에 연결되어 있지 않습니다';

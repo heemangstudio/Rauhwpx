@@ -101,7 +101,7 @@ rhwp 프로젝트가 사용하는 서드파티 라이브러리 및 리소스의 
 | 패키지 | Lock 버전 | 라이선스 | 용도 |
 |--------|-----------|---------|------|
 | @browserbasehq/stagehand | 4.0.2 | MIT | Browserbase 원격 브라우저 sidecar SDK |
-| @modelcontextprotocol/sdk | 1.30.0 | MIT | 에이전트·브라우저 MCP 서버/클라이언트 |
+| @modelcontextprotocol/sdk | 1.31.0 | MIT | 에이전트·브라우저 MCP 서버/클라이언트 |
 | ws | 8.21.3 | MIT | 로컬 hub WebSocket transport |
 | zod | 4.4.3 | MIT | MCP 도구 입력 검증 |
 
@@ -168,6 +168,14 @@ rhwp 프로젝트가 사용하는 서드파티 라이브러리 및 리소스의 
 | Chrome DevTools Protocol | BSD-3-Clause | E2E 테스트 / 브라우저 자동화 |
 | GitHub Actions | GitHub Terms | CI/CD |
 | npm Trusted Publishing / OIDC | npm Terms | npm 배포 |
+
+---
+
+## 번들 에이전트 스킬
+
+| 프로젝트 | 라이선스 | 포함 범위 | rhwp 위치 |
+|---------|---------|----------|-----------|
+| [epoko77-ai/im-not-ai](https://github.com/epoko77-ai/im-not-ai) v2.3.2 | MIT © 2026 epoko77-ai | 한글 AI 티 분류 체계·처방집·진단 인덱스 원본, quick-rules 를 옮긴 룰북 | `rhwp-agent/skills/humanize-korean/`, `rhwp-agent/humanizer.mjs` |
 
 ---
 

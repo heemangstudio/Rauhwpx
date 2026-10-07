@@ -20,8 +20,18 @@ merely because they execute.
 each call into stages. `npm run e2e:agent-claude-live-bench` runs the real
 `claude` CLI from the sidebar composer and reports per-call latency, model
 requests per turn and whether parallel tool calls overlapped. It also records how
-many paragraphs each turn rewrote or bolded, so fewer requests can be checked
-against the same work. It uses account quota.
+many paragraphs each turn rewrote, bolded or reformatted, so fewer requests can be
+checked against the same work. It uses account quota.
+
+Each turn is split into startup, and per model request: wait before the first
+byte, thinking, tool-argument streaming and text. Failed tool calls are counted,
+because each one costs another model request.
+
+- `--followup="…"` sends a second message in the same chat and reports it separately.
+- `--agent=codex` drives Codex through the same path. It reports turn time, tool
+  calls and failed calls only.
+- `--transcripts=<dir>` keeps the Claude session files, with tool arguments and
+  results, for reading what a failed call sent.
 
 Both start the hub with `RHWP_TOOL_TRACE=1`. The hub then writes one JSONL row
 per tool call (`RHWP_TOOL_TRACE_FILE`, default `<work dir>/tool-trace.jsonl`),

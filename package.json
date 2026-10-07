@@ -1,7 +1,7 @@
 {
   "name": "rauhwpx",
   "productName": "Rauhwpx",
-  "version": "2.0.8",
+  "version": "2.0.10",
   "description": "HWP/HWPX editor with a local AI agent sidebar.",
   "author": "Hataewook",
   "license": "MIT",
@@ -9,7 +9,7 @@
   "desktopName": "rauhwpx.desktop",
   "private": true,
   "engines": {
-    "node": ">=22.18.0"
+    "node": ">=22.19.0"
   },
   "main": "desktop/main.mjs",
   "scripts": {
@@ -20,7 +20,7 @@
     "status": "node rhwp/rhwp-agent/ctl.mjs status",
     "check:docs": "node scripts/check-publish-docs.mjs && node --test scripts/check-publish-docs.test.mjs",
     "dev:desktop": "wait-on http://127.0.0.1:7700 && cross-env RHWP_DEV_URL=http://127.0.0.1:7700 electron .",
-    "build:wasm": "cd rhwp && wasm-pack build --target web",
+    "build:wasm": "node scripts/build-wasm.mjs",
     "build:native": "cd rhwp && cargo build --locked --release --bin rhwp && node ../desktop/stage-native-rhwp.mjs",
     "build:studio:app": "npm --prefix rhwp/rhwp-studio run build",
     "build:studio": "npm run build:wasm && npm run build:studio:app",
@@ -39,7 +39,7 @@
     "audit:production": "node scripts/audit-production.mjs",
     "dev:studio": "npm --prefix rhwp/rhwp-studio run dev",
     "test:cloud": "node --test tests/cloud-interaction-queue.test.mjs tests/seamless-cloud-experience.test.mjs tests/desktop-cloud.test.mjs tests/desktop-cloud-edit-drafts.test.mjs tests/desktop-cloud-continuity-triggers.test.mjs tests/desktop-cloud-conversation-recovery.test.mjs tests/desktop-cloud-display.test.mjs tests/desktop-cloud-protocol.test.mjs tests/desktop-cloud-client-reliability.test.mjs tests/desktop-cloud-connection-reliability.test.mjs tests/desktop-cloud-recovery.test.mjs tests/desktop-cloud-handoff-reliability.test.mjs tests/desktop-cloud-merge-recovery.test.mjs tests/desktop-cloud-provisioner-recovery.test.mjs tests/desktop-provider-auth.test.mjs tests/desktop-app-servers.test.mjs tests/desktop-app-server-live.test.mjs tests/desktop-cloud-broker.test.mjs && npm --prefix cloud test",
-    "check:cloud": "node --check desktop/cloud-*.mjs desktop/fs-replace.mjs && npm --prefix cloud run check",
+    "check:cloud": "node scripts/check-syntax.mjs desktop/cloud-*.mjs desktop/fs-replace.mjs cloud/src/*.mjs cloud/document-runtime/*.mjs cloud/worker/*.mjs cloud/install/*.mjs",
     "check:raucloud-branding": "node scripts/check-raucloud-branding.mjs",
     "package:linux": "electron-builder --linux AppImage deb --publish never",
     "dist:linux": "npm run build:desktop && npm run package:linux --",

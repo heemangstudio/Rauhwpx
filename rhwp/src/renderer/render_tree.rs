@@ -28,33 +28,6 @@ pub const MIDDLE_DOT_RADIUS_EM: f64 = 0.060;
 /// 실측 중앙값 0.3520~0.3559 로 종전 값이 정확해 유지한다.
 pub const MIDDLE_DOT_CY_OFFSET_EM: f64 = 0.35;
 
-pub const REAL_PICTURE_WATERMARK_PAGE_OPACITY: f64 = 0.26;
-pub const REAL_PICTURE_WATERMARK_FILL_OPACITY: f64 = 0.15;
-pub const REAL_PICTURE_WATERMARK_OPACITY: f64 = REAL_PICTURE_WATERMARK_PAGE_OPACITY;
-pub const REAL_PICTURE_WATERMARK_SATURATION: f64 = 0.91646104;
-pub const REAL_PICTURE_WATERMARK_CONTRAST: f64 = 0.93125103;
-pub const REAL_PICTURE_WATERMARK_BRIGHTNESS: f64 = 1.80;
-pub const REAL_PICTURE_WATERMARK_CORRECTION_MATRIX: [[f64; 3]; 3] = [
-    [0.9897169325, 0.1297721480, -0.0666075849],
-    [0.0236280401, 1.0778421442, -0.0471323620],
-    [0.0002888270, -0.0075596780, 1.0728328592],
-];
-pub const REAL_PICTURE_WATERMARK_CORRECTION_BIAS: [f64; 3] =
-    [-0.0504989415, -0.0462952328, -0.0573305296];
-pub const REAL_PICTURE_WATERMARK_CHROMA_GAIN: f64 = 3.0;
-pub const REAL_PICTURE_WATERMARK_WHITE_BLEND: f64 = 0.0;
-pub const REAL_PICTURE_WATERMARK_FILL_CHROMA_GAIN: f64 = 0.42;
-pub const REAL_PICTURE_WATERMARK_FILL_WHITE_BLEND: f64 = 0.16;
-pub const LEGACY_IMAGE_WATERMARK_OPACITY: f64 = 0.17;
-
-pub fn is_real_picture_watermark_tone_preset(
-    effect: ImageEffect,
-    brightness: i8,
-    contrast: i8,
-) -> bool {
-    matches!(effect, ImageEffect::RealPic) && brightness == -50 && contrast == 70
-}
-
 /// 렌더 노드 고유 ID
 pub type NodeId = u32;
 
@@ -547,6 +520,8 @@ pub struct FootnoteMarkerNode {
     pub baseline: f64,
     /// 폰트 패밀리
     pub font_family: String,
+    /// 본문 참조 번호는 해당 글자 모양의 굵기를 이어받는다.
+    pub bold: bool,
     /// 글자 색
     pub color: u32,
     /// 소속 구역/문단 인덱스
@@ -689,10 +664,6 @@ impl PageBackgroundImage {
     /// 경우 워터마크로 판정한다 (한쪽이라도 0 이면 워터마크 아님, effect 무관).
     pub fn is_watermark(&self) -> bool {
         self.brightness != 0 && self.contrast != 0
-    }
-
-    pub fn is_real_picture_watermark_tone_preset(&self) -> bool {
-        is_real_picture_watermark_tone_preset(self.effect, self.brightness, self.contrast)
     }
 }
 
@@ -1159,6 +1130,64 @@ impl PathNode {
     }
 }
 
+/// 그림자 값은 모든 렌더러가 같은 쪽 좌표계에서 사용한다.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageShadow {
+    pub color: String,
+    pub alpha: f64,
+    pub blur_sigma: f64,
+    /// Picture `<hp:sz>` height in points, before the rendering matrix scales it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nominal_height_pt: Option<f64>,
+    pub offset_x: f64,
+    pub offset_y: f64,
+}
+
+impl ImageShadow {
+    pub fn from_picture(picture: &crate::model::image::Picture, dpi: f64) -> Option<Self> {
+        let shadow = picture.effects.shadow.as_ref()?;
+        if shadow.style.as_deref() != Some("OUTSIDE") {
+            return None;
+        }
+        let number = |value: &Option<String>, fallback: f64| {
+            value
+                .as_deref()
+                .and_then(|v| v.parse::<f64>().ok())
+                .filter(|v| v.is_finite())
+                .unwrap_or(fallback)
+        };
+        let alpha = 1.0 - number(&shadow.alpha, 0.0).clamp(0.0, 1.0);
+        if alpha <= 0.0 {
+            return None;
+        }
+        let rgb = shadow.color.as_ref().and_then(|c| c.rgb.as_ref());
+        let channel = |value: Option<&Option<String>>| {
+            value
+                .map(|v| number(v, 0.0).clamp(0.0, 255.0).round() as u8)
+                .unwrap_or(0)
+        };
+        let color = format!(
+            "#{:02X}{:02X}{:02X}",
+            channel(rgb.map(|c| &c.r)),
+            channel(rgb.map(|c| &c.g)),
+            channel(rgb.map(|c| &c.b))
+        );
+        let distance = number(&shadow.distance, 0.0) * dpi / 7200.0;
+        let angle = number(&shadow.direction, 0.0).to_radians();
+        Some(Self {
+            color,
+            alpha,
+            nominal_height_pt: (picture.common.height > 0)
+                .then_some(picture.common.height as f64 / 100.0),
+            // 그림자 흐림 반경의 절반을 가우시안 σ로 정규화한다.
+            blur_sigma: number(&shadow.radius, 0.0).max(0.0) * dpi / 14400.0,
+            offset_x: distance * angle.cos(),
+            offset_y: distance * angle.sin(),
+        })
+    }
+}
+
 /// 이미지 노드
 #[derive(Debug, Clone, Serialize)]
 pub struct ImageNode {
@@ -1196,6 +1225,7 @@ pub struct ImageNode {
     pub contrast: i8,
     /// 그림 개체 전체 불투명도. 1.0=불투명, 0.0=완전 투명.
     pub opacity: f64,
+    pub shadow: Option<ImageShadow>,
     /// 텍스트 흐름 wrap 모드 (Task #516, 다층 레이어 분리용).
     /// `None` 또는 `Some(Square/TopAndBottom/Tight/Through)` 는 본문 layer 에 포함되고,
     /// `Some(BehindText)` / `Some(InFrontOfText)` 는 overlay layer 로 분리 후보.
@@ -1259,10 +1289,6 @@ impl ImageNode {
         self.brightness != 0 && self.contrast != 0
     }
 
-    pub fn is_real_picture_watermark_tone_preset(&self) -> bool {
-        is_real_picture_watermark_tone_preset(self.effect, self.brightness, self.contrast)
-    }
-
     pub fn new(bin_data_id: u16, data: Option<Vec<u8>>) -> Self {
         Self::new_shared(bin_data_id, data.map(Arc::from))
     }
@@ -1284,6 +1310,7 @@ impl ImageNode {
             brightness: 0,
             contrast: 0,
             opacity: 1.0,
+            shadow: None,
             text_wrap: None,
             external_path: None,
             header_footer_ref: None,

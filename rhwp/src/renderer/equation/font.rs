@@ -54,10 +54,58 @@ pub(crate) fn is_legacy_equation_font(name: &str) -> bool {
     name.trim().eq_ignore_ascii_case("HYhwpEQ")
 }
 
+/// 한컴 수식기가 run 안 글립을 포개는 비율 — 자형은 그대로 두고 진행폭만
+/// 이 배율로 좁혀 식자한다(02-eq-01 공식 PDF 실측: 한글 pitch 0.9em 고정,
+/// 숫자 pitch 0.45em = hmtx 0.5×0.9, '%' pitch 0.75em = 0.833×0.9).
+/// 레이아웃 측정과 네이티브 painter가 같은 값을 써야 박스와 잉크가 맞는다.
+pub(crate) const EQUATION_GLYPH_TRACKING: f64 = 0.9;
+
+pub(crate) fn registered_char_advance_em(family: &str, character: char) -> Option<f64> {
+    crate::renderer::runtime_font_metrics::char_em_advance(family, false, false, character).or_else(
+        || {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                crate::renderer::font_paths::custom_face_char_em_advance(
+                    family, false, false, character,
+                )
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                None
+            }
+        },
+    )
+}
+
+/// These modern HY equation characters are absent from HYhwpEQ and Hancom
+/// paints them with the bundled Haansoft Batang face when it is available.
+pub(crate) fn modern_hancom_fallback_advance_em(character: char) -> Option<f64> {
+    if !matches!(character, '□' | '∆' | '′' | '″')
+        || registered_char_advance_em("HYhwpEQ", character).is_some()
+    {
+        return None;
+    }
+    registered_char_advance_em("Haansoft Batang", character)
+}
+
+pub(crate) fn modern_hancom_fallback_run_advance_em(text: &str) -> Option<f64> {
+    let mut characters = text.chars();
+    let character = characters.next()?;
+    if characters.next().is_some() {
+        return None;
+    }
+    modern_hancom_fallback_advance_em(character)
+}
+
 /// HYhwpEQ의 수식 전용 cmap. ASCII 영역은 본문 자형이며, 수식 자형은 PUA에 있다.
 /// 호출자는 실제 서체와 해당 글립의 존재를 먼저 확인해야 한다.
 /// 반환 bool은 남아 있는 합성 기울임이다. 소문자/그리스 문자는 이미 기울어진 자형이다.
 pub(crate) fn legacy_equation_glyph(character: char, italic: bool, modern: bool) -> (char, bool) {
+    // Equation Version 60's DEG command uses the wide HY degree glyph; the
+    // Unicode degree in the same face has a different advance.
+    if modern && character == '°' {
+        return ('\u{e0c8}', false);
+    }
     // rm·함수 이름은 본문 Roman cmap, 수학 이탤릭 변수는 PUA cmap을 쓴다.
     if modern && character.is_ascii_alphabetic() && !italic {
         return (character, false);
@@ -106,6 +154,7 @@ pub(crate) fn legacy_equation_glyph(character: char, italic: bool, modern: bool)
                 '<' => 0xe055,
                 '>' => 0xe056,
                 '?' => 0xe057,
+                '∑' => 0xe067,
                 _ => return (character, italic),
             }
         }
@@ -121,7 +170,7 @@ pub(crate) fn is_greek_variable(text: &str) -> bool {
 /// 소스 PDF의 단일 run 안에서도 숫자와 소수점의 원점이 달라진다.
 pub(crate) fn modern_glyph_baseline_em(character: char, italic: bool) -> f64 {
     if character.is_ascii_digit()
-        || matches!(character, '⋅' | '×')
+        || matches!(character, '⋅' | '×' | '→' | '∞')
         || (italic
             && (character.is_ascii_alphabetic() || is_greek_variable(&character.to_string())))
     {
@@ -191,6 +240,8 @@ mod tests {
         );
         assert_eq!(modern_glyph_baseline_em('2', false), 0.06);
         assert_eq!(modern_glyph_baseline_em('x', true), 0.06);
+        assert_eq!(modern_glyph_baseline_em('→', false), 0.06);
+        assert_eq!(modern_glyph_baseline_em('∞', false), 0.06);
         assert_eq!(modern_glyph_baseline_em('x', false), 0.0);
         assert_eq!(modern_glyph_baseline_em('.', false), 0.0);
         assert_eq!(modern_glyph_baseline_em('+', false), 0.0);
@@ -221,6 +272,9 @@ mod tests {
         assert_eq!(legacy_equation_glyph('L', true, true), ('\u{e00b}', true));
         assert_eq!(legacy_equation_glyph('α', true, true), ('\u{e09d}', false));
         assert_eq!(legacy_equation_glyph('Ω', true, true), ('\u{e09c}', false));
+        assert_eq!(legacy_equation_glyph('∑', false, true), ('\u{e067}', false));
+        assert_eq!(legacy_equation_glyph('°', false, true), ('\u{e0c8}', false));
+        assert_eq!(legacy_equation_glyph('°', false, false), ('°', false));
         assert_eq!(legacy_equation_glyph('α', false, true), ('α', false));
         assert_eq!(legacy_equation_glyph('한', false, true), ('한', false));
     }

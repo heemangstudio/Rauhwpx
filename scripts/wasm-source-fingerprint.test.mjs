@@ -4,8 +4,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
-const script = new URL('./wasm-source-fingerprint.mjs', import.meta.url).pathname;
+const script = fileURLToPath(new URL('./wasm-source-fingerprint.mjs', import.meta.url));
 
 test('WASM cache fingerprint tracks engine inputs and ignores consumer apps', () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'rhwp-wasm-fingerprint-'));

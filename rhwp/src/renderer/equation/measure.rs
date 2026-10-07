@@ -126,7 +126,7 @@ pub(crate) fn measure_css_run(_font: &str, _text: &str) -> Option<RunMetrics> {
 /// (eq-002 실측: `=`→`−` 원점 간격 6.0pt = `=` 잉크 폭 6.02, `(`→`n` 1.9pt).
 /// 배치가 다음 원자 원점을 `앞 잉크 끝 − 이 원자 lsb + 간격`으로 놓으려면
 /// hmtx 합이 아니라 첫/마지막 글립의 잉크 경계가 필요하다.
-#[cfg(all(not(target_arch = "wasm32"), feature = "native-skia"))]
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct LegacyRunMetrics {
     /// 서체 hmtx advance 총합(px) — painter가 run 내부 글립을 놓는 스텝.
@@ -142,22 +142,18 @@ pub(crate) struct LegacyRunMetrics {
 /// skia `get_widths_bounds` 는 스트라이크 패딩(+1px)과 정수 라운딩이 섞여
 /// 소수 pt 정밀도가 필요한 잉크 포개기에는 쓸 수 없다 (eq-002: `=` 참값
 /// [0.67,8.65]px 가 [−1,10] 으로 옴). 서체 표를 직접 파싱하면 결정적이다.
-#[cfg(all(not(target_arch = "wasm32"), feature = "native-skia"))]
+#[cfg(not(target_arch = "wasm32"))]
 struct LegacyTables {
     units_per_em: f64,
     advances: Vec<u16>,
     loca: Vec<u32>,
     glyf: Vec<u8>,
+    /// 유니코드(PUA 포함) → glyph id.
+    cmap: std::collections::HashMap<u32, u16>,
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "native-skia"))]
+#[cfg(not(target_arch = "wasm32"))]
 impl LegacyTables {
-    fn table(typeface: &skia_safe::Typeface, tag: [u8; 4]) -> Option<Vec<u8>> {
-        typeface
-            .copy_table_data(u32::from_be_bytes(tag))
-            .map(|d| d.as_bytes().to_vec())
-    }
-
     fn u16be(d: &[u8], off: usize) -> Option<u16> {
         d.get(off..off + 2)
             .map(|b| u16::from_be_bytes([b[0], b[1]]))
@@ -167,17 +163,25 @@ impl LegacyTables {
         Self::u16be(d, off).map(|v| v as i16)
     }
 
-    fn load(typeface: &skia_safe::Typeface) -> Option<Self> {
-        let head = Self::table(typeface, *b"head")?;
-        let maxp = Self::table(typeface, *b"maxp")?;
-        let hhea = Self::table(typeface, *b"hhea")?;
-        let hmtx = Self::table(typeface, *b"hmtx")?;
-        let loca_raw = Self::table(typeface, *b"loca")?;
-        let glyf = Self::table(typeface, *b"glyf")?;
-        let units_per_em = Self::u16be(&head, 18)? as f64;
-        let loca_long = Self::i16be(&head, 50)? != 0;
-        let num_glyphs = Self::u16be(&maxp, 4)? as usize;
-        let num_metrics = (Self::u16be(&hhea, 34)? as usize).min(num_glyphs);
+    /// 서체 파일 바이트에서 원표를 읽는다. skia 없이도(릴리스 CLI) 같은 값을 얻도록
+    /// 표 해석은 서체 데이터만으로 한다.
+    fn from_font_data(data: &[u8], index: u32) -> Option<Self> {
+        let face = ttf_parser::Face::parse(data, index).ok()?;
+        let raw = face.raw_face();
+        let table = |tag: &[u8; 4]| raw.table(ttf_parser::Tag::from_bytes(tag));
+        let head = table(b"head")?;
+        let maxp = table(b"maxp")?;
+        let hhea = table(b"hhea")?;
+        let hmtx = table(b"hmtx")?;
+        let loca_raw = table(b"loca")?;
+        let glyf = table(b"glyf")?;
+        let units_per_em = Self::u16be(head, 18)? as f64;
+        let loca_long = Self::i16be(head, 50)? != 0;
+        let num_glyphs = Self::u16be(maxp, 4)? as usize;
+        let num_metrics = (Self::u16be(hhea, 34)? as usize).min(num_glyphs);
+        if units_per_em <= 0.0 || num_metrics == 0 {
+            return None;
+        }
         // hmtx: num_metrics 개의 (advance,lsb) 쌍 뒤에 lsb 배열.
         let mut advances = Vec::with_capacity(num_glyphs);
         for g in 0..num_glyphs {
@@ -186,7 +190,7 @@ impl LegacyTables {
             } else {
                 (num_metrics - 1) * 4
             };
-            advances.push(Self::u16be(&hmtx, off)?);
+            advances.push(Self::u16be(hmtx, off)?);
         }
         let mut loca = Vec::with_capacity(num_glyphs + 1);
         for g in 0..=num_glyphs {
@@ -198,19 +202,32 @@ impl LegacyTables {
                     *loca_raw.get(g * 4 + 3)?,
                 ])
             } else {
-                u32::from(Self::u16be(&loca_raw, g * 2)?) * 2
+                u32::from(Self::u16be(loca_raw, g * 2)?) * 2
             };
             loca.push(v);
         }
-        if units_per_em <= 0.0 {
-            return None;
+        let mut cmap = std::collections::HashMap::new();
+        if let Some(table) = face.tables().cmap {
+            for subtable in table.subtables.into_iter().filter(|s| s.is_unicode()) {
+                subtable.codepoints(|code| {
+                    if let Some(gid) = subtable.glyph_index(code) {
+                        cmap.entry(code).or_insert(gid.0);
+                    }
+                });
+            }
         }
         Some(Self {
             units_per_em,
             advances,
             loca,
-            glyf,
+            glyf: glyf.to_vec(),
+            cmap,
         })
+    }
+
+    /// 문자의 glyph id — cmap에 없으면 0(.notdef).
+    fn glyph(&self, character: char) -> u16 {
+        self.cmap.get(&(character as u32)).copied().unwrap_or(0)
     }
 
     fn advance(&self, gid: u16) -> f64 {
@@ -237,14 +254,57 @@ impl LegacyTables {
     }
 }
 
-/// 네이티브 skia painter(draw_text)의 legacy 서체 경로로 run을 실측한다.
+/// 원본 수식 서체(HYhwpEQ)의 원표 — 본문 페인트와 같은 조달 순서로 custom(--font-path)
+/// 등록 face 를 먼저, 없으면 (skia 빌드에서) 시스템 설치 face 를 읽는다.
+#[cfg(not(target_arch = "wasm32"))]
+fn resolve_legacy_tables() -> Option<LegacyTables> {
+    if let Some(tables) =
+        crate::renderer::font_paths::custom_face_source("HYhwpEQ").and_then(|(file, index)| {
+            std::fs::read(file)
+                .ok()
+                .and_then(|bytes| LegacyTables::from_font_data(&bytes, index))
+        })
+    {
+        return Some(tables);
+    }
+    #[cfg(feature = "native-skia")]
+    {
+        use skia_safe::{FontMgr, FontStyle};
+        thread_local! {
+            // 미해소 run 마다 CoreText 시스템 family 목록을 다시 만들면 폰트 서비스 IPC가
+            // 반복된다. custom face 는 나중에 등록될 수 있으므로 그 조회만 매번 재시도한다.
+            static SYSTEM_FONT_SOURCE: (FontMgr, bool) = {
+                let font_mgr = FontMgr::default();
+                let has_legacy_face = font_mgr
+                    .family_names()
+                    .any(|name| name.eq_ignore_ascii_case("HYhwpEQ"));
+                (font_mgr, has_legacy_face)
+            };
+        }
+        // skia::font_lookup 의 system_families 필터와 같은 이유 — 없는 family 를
+        // CoreText 에 넘기면 downloadable font 조회가 대기할 수 있어 선차단한다.
+        SYSTEM_FONT_SOURCE.with(|(font_mgr, has_legacy_face)| {
+            let face = has_legacy_face
+                .then(|| font_mgr.match_family_style("HYhwpEQ", FontStyle::normal()))
+                .flatten()?;
+            let (bytes, index) = face.to_font_data()?;
+            LegacyTables::from_font_data(&bytes, index as u32)
+        })
+    }
+    #[cfg(not(feature = "native-skia"))]
+    {
+        None
+    }
+}
+
+/// 네이티브 painter(skia draw_text·SVG HY 경로)의 legacy 서체 경로로 run을 실측한다.
 ///
 /// painter는 요청 서체가 HYhwpEQ 이고 실제 서체가 PUA cmap 을 가질 때 글자를
 /// PUA 로 옮겨 칠한다(skia/equation_conv.rs). 네이티브에는 canvas 가 없으므로
 /// 같은 typeface·같은 매핑으로 여기서 직접 잰다 — 다른 서체 폭으로 배치하면
 /// 개체 advance 와 내부 간격이 paint 와 어긋난다. 서체가 없거나 글립이 빠지면
 /// None — 호출자는 기존 내장 메트릭/추정 경로로 내려간다.
-#[cfg(all(not(target_arch = "wasm32"), feature = "native-skia"))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn measure_legacy_run_native(
     text: &str,
     font_size: f64,
@@ -252,117 +312,152 @@ pub(crate) fn measure_legacy_run_native(
     bold: bool,
     modern: bool,
 ) -> Option<LegacyRunMetrics> {
-    use skia_safe::{Font, FontMgr, FontStyle, Typeface};
     use std::cell::RefCell;
     use std::collections::HashMap;
 
     thread_local! {
         // 해석 성공분만 캐시 — 미해소(None)는 저장하지 않아 재시도한다.
-        static LEGACY_FACE: RefCell<Option<Option<(Typeface, std::rc::Rc<LegacyTables>)>>> =
+        static LEGACY_FACE: RefCell<Option<std::rc::Rc<LegacyTables>>> =
             const { RefCell::new(None) };
         static RUN_CACHE: RefCell<HashMap<(String, u64, bool, bool, bool), Option<LegacyRunMetrics>>> =
             RefCell::new(HashMap::new());
-        // 미해소 run 마다 CoreText 시스템 family 목록을 다시 만들면 폰트 서비스 IPC가
-        // 반복된다. custom face 는 나중에 등록될 수 있으므로 그 조회만 매번 재시도한다.
-        static SYSTEM_FONT_SOURCE: (FontMgr, bool) = {
-            let font_mgr = FontMgr::default();
-            let has_legacy_face = font_mgr
-                .family_names()
-                .any(|name| name.eq_ignore_ascii_case("HYhwpEQ"));
-            (font_mgr, has_legacy_face)
-        };
     }
     let key = (text.to_string(), font_size.to_bits(), italic, bold, modern);
-    if let Some(hit) = RUN_CACHE.with(|cache| cache.borrow().get(&key).copied()) {
-        return hit;
+    // The Haansoft fallback may be registered after the HY face. Keep its
+    // metrics live so an earlier generic fallback cannot stay cached.
+    let cacheable = !modern
+        || !text
+            .chars()
+            .any(|character| matches!(character, '□' | '∆' | '′' | '″'));
+    if cacheable {
+        if let Some(hit) = RUN_CACHE.with(|cache| cache.borrow().get(&key).copied()) {
+            return hit;
+        }
     }
-    let (typeface, tables) = match LEGACY_FACE.with(|slot| slot.borrow().clone()) {
-        Some(Some((face, tables))) => (face, tables),
+    let tables = match LEGACY_FACE.with(|slot| slot.borrow().clone()) {
+        Some(tables) => tables,
         // 미해소 결과는 캐시하지 않는다 — custom face(--font-path)는 렌더 진입 시
         // 등록돼 첫 측정(페이지네이션) 때는 아직 없을 수 있다.
-        _ => {
-            let resolved = SYSTEM_FONT_SOURCE.with(|(font_mgr, has_legacy_face)| {
-                // 본문 페인트와 같은 조달 순서 — custom(--font-path) 등록 face 를
-                // 시스템 설치와 동일하게 본다. 없으면 시스템으로 내려간다.
-                let face = crate::renderer::font_paths::custom_face_source("HYhwpEQ")
-                    .and_then(|(file, index)| {
-                        std::fs::read(file)
-                            .ok()
-                            .and_then(|bytes| font_mgr.new_from_data(&bytes, Some(index as usize)))
-                    })
-                    .or_else(|| {
-                        // skia::font_lookup 의 system_families 필터와 같은 이유 — 없는
-                        // family 를 CoreText 에 넘기면 downloadable font 조회가 대기할
-                        // 수 있어 선차단한다.
-                        has_legacy_face
-                            .then(|| font_mgr.match_family_style("HYhwpEQ", FontStyle::normal()))
-                            .flatten()
-                    })?;
-                let tables = LegacyTables::load(&face)?;
-                Some((face, std::rc::Rc::new(tables)))
-            })?;
-            LEGACY_FACE.with(|slot| *slot.borrow_mut() = Some(Some(resolved.clone())));
+        None => {
+            let resolved = std::rc::Rc::new(resolve_legacy_tables()?);
+            LEGACY_FACE.with(|slot| *slot.borrow_mut() = Some(resolved.clone()));
             resolved
         }
     };
-    // painter 와 같은 문자→PUA 매핑.
-    let glyphs: String = text
-        .chars()
-        .map(|c| super::font::legacy_equation_glyph(c, italic, modern).0)
-        .collect();
-    if !glyphs
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .all(|c| typeface.unichar_to_glyph(c as i32) != 0)
-    {
-        return None;
-    }
-    let font = Font::new(typeface, font_size as f32);
-    let mut advance = 0.0f64;
+    // painter(equation_conv::draw_text)와 같은 문자→PUA 매핑을 글자 단위로
+    // 적용한다. legacy face가 커버하지 못하는 문자(수식 안 한글)는 painter가
+    // CJK fallback 서체로 자연 윤곽을 칠하되 현대식은 진행폭을 좁혀 잰다 —
+    // 섞인 run을 통째로 거절하면 한글 토큰이 1.0em 격자로 측정돼 식이 커진다.
+    //
+    // 한컴 수식기는 run 안 글립의 자형을 그대로 두고 진행 스텝만
+    // EQUATION_GLYPH_TRACKING(0.9)배로 포갠다 — painter도 같은 비율로 좁혀
+    // 칠한다(02-eq-01 실측: 한글 pitch 0.9em, 숫자 0.45em, '%' 0.75em).
+    let mut pen = 0.0f64;
     let mut ink_left = f64::NAN;
     let mut ink_right = 0.0f64;
-    for (character, gid) in text.chars().zip(font.str_to_glyphs_vec(&glyphs)) {
-        let raw_advance = tables.advance(gid) * font_size;
-        let adv = if modern {
-            super::font::modern_glyph_advance(
-                raw_advance,
-                font_size,
-                super::font::legacy_equation_glyph(character, italic, true).1,
+    for ch in text.chars() {
+        let mapped = super::font::legacy_equation_glyph(ch, italic, modern).0;
+        let gid = tables.glyph(mapped);
+        // 이 글자의 자연 진행폭·잉크 경계(em) — painter가 칠할 서체 기준.
+        let (adv, ink) = if gid > 0 {
+            let raw = tables.advance(gid as u16);
+            // 현대 HY 글립은 힌팅된 advance로 연결한다.
+            let adv = if modern {
+                super::font::modern_glyph_advance(
+                    raw * font_size,
+                    font_size,
+                    super::font::legacy_equation_glyph(ch, italic, true).1,
+                ) / font_size
+            } else {
+                raw
+            };
+            (adv, tables.ink(gid as u16))
+        } else if let Some(advance) = modern
+            .then(|| super::font::modern_hancom_fallback_run_advance_em(text))
+            .flatten()
+        {
+            // The actual Haansoft Batang face is registered and covers this
+            // character. It has a full-em advance, which Hancom tracks at 0.9.
+            (
+                super::font::modern_glyph_advance(advance * font_size, font_size, false)
+                    / font_size,
+                Some((0.0, 0.0, advance, 0.0)),
             )
+        } else if super::layout::is_cjk_char(ch) {
+            // 현대 HY 식의 한글은 fallback face로 칠하더라도 0.9em pitch에 놓인다.
+            // 글립 윤곽은 전각 그대로이고, 바로 아래 modern 경로가 advance를
+            // 다시 줄이지 않으므로 여기서 원본 글립과 같은 힌팅/추적을 적용한다.
+            let advance = if modern {
+                super::font::modern_glyph_advance(font_size, font_size, false) / font_size
+            } else {
+                1.0
+            };
+            (advance, Some((0.0, 0.0, 1.0, 0.0)))
+        } else if super::symbols::is_circled_number(ch) {
+            (1.0, Some((0.0, 0.0, 1.0, 0.0)))
         } else {
-            raw_advance
+            // 그 외 미커버 문자 — painter의 fallback 서체 자연폭 추정치.
+            let adv = super::layout::estimate_text_width(&ch.to_string(), 1.0, italic);
+            (adv, Some((0.0, 0.0, adv, 0.0)))
         };
-        if let Some((x_min, _y_min, x_max, _y_max)) = tables.ink(gid) {
-            let left = advance + x_min * font_size;
+        if let Some((x_min, _y_min, x_max, _y_max)) = ink {
             if ink_left.is_nan() {
-                ink_left = left;
+                ink_left = pen + x_min;
             }
-            ink_right = ink_right.max(advance + x_max * font_size);
+            ink_right = pen + x_max;
         }
-        advance += adv;
+        // 현대 HY advance(modern_glyph_advance)에는 0.9 포개기가 이미 들어 있다.
+        pen += if modern {
+            adv
+        } else {
+            adv * super::font::EQUATION_GLYPH_TRACKING
+        };
     }
+    let advance = pen * font_size;
     if ink_left.is_nan() {
         ink_left = 0.0;
-        ink_right = advance;
+        ink_right = pen;
     }
     let metrics = LegacyRunMetrics {
         advance,
-        ink_right,
-        ink_left,
+        ink_right: ink_right * font_size,
+        ink_left: ink_left * font_size,
     };
     let metrics = (metrics.ink_right.is_finite()
         && metrics.ink_left.is_finite()
         && metrics.advance.is_finite()
         && metrics.advance >= 0.0)
         .then_some(metrics);
-    RUN_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if cache.len() >= 4096 {
-            cache.clear();
-        }
-        cache.insert(key, metrics);
-    });
+    if cacheable {
+        RUN_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if cache.len() >= 4096 {
+                cache.clear();
+            }
+            cache.insert(key, metrics);
+        });
+    }
     metrics
+}
+
+/// 원본 수식 서체의 힌팅·포개기 없는 자연 advance 합(px). 서체가 없으면 None.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn legacy_natural_width(text: &str, font_size: f64) -> Option<f64> {
+    // modern=false 경로는 자연 advance×포개기 비율이므로 비율을 되돌린다.
+    let metrics = measure_legacy_run_native(text, font_size, false, false, false)?;
+    Some(metrics.advance / super::font::EQUATION_GLYPH_TRACKING)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn legacy_natural_width(text: &str, font_size: f64) -> Option<f64> {
+    // 네이티브와 같은 HYhwpEQ PUA cmap의 hmtx를 쓴다. 힌팅·tracking을 거치지
+    // 않으며, 등록된 서체가 없거나 글리프를 지원하지 않으면 기존 폴백을 유지한다.
+    let width_em = text.chars().try_fold(0.0, |width, ch| {
+        let mapped = super::font::legacy_equation_glyph(ch, false, false).0;
+        crate::renderer::runtime_font_metrics::char_em_advance("HYhwpEQ", false, false, mapped)
+            .map(|advance| width + advance)
+    })?;
+    Some(width_em * font_size)
 }
 
 /// Times 계열 이탤릭 자형의 오른쪽 잉크 초과량(em, 천분율). canvas 잉크를 얻을 수

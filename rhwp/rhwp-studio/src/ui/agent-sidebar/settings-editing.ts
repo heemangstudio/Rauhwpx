@@ -17,6 +17,7 @@ import {
   type LocalFontState,
 } from '../../core/local-fonts.ts';
 import { isDesktopFontsSupported } from '../../core/desktop-fonts.ts';
+import { takeHftOutlineChange } from '../../core/hft-glyphs.ts';
 import { canDetectFonts, detectAllFonts, fontDetectionMessage } from '../../core/font-detection.ts';
 import {
   chooseFontFolder,
@@ -413,11 +414,12 @@ export function createEditingSettings(options: {
     try {
       const result = await importLocalFontFiles(selected);
       renderLocalFonts(localFontImportMessage(result));
-      if (result.imported.length > 0) {
+      if (result.imported.length > 0 || (result.hftOutlines?.length ?? 0) > 0) {
         eventBus?.emit('local-fonts-changed', {
           fonts: getLocalFonts({ includeRegistered: true }), source: 'settings-import',
         });
         eventBus?.emit('font-files-imported');
+        if (eventBus) takeHftOutlineChange();
       }
     } catch (error) {
       renderLocalFonts(error instanceof Error ? error.message : String(error));

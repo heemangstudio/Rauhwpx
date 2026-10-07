@@ -1315,8 +1315,8 @@ impl CanvasKitReplayPlanBuilder {
                 PaintOp::TextRun { run, .. } if text_run_selected => {
                     self.record_required_font_family(&run.style.font_family);
                     // 문서 선언 대체 글꼴(substFont)도 프리플라이트에 포함.
-                    if !run.style.font_subst.is_empty() {
-                        self.record_required_font_family(&run.style.font_subst);
+                    if !run.style.effective_font_subst().is_empty() {
+                        self.record_required_font_family(run.style.effective_font_subst());
                     }
                     let display_text = expand_pua_display_text(&run.text);
                     if crate::renderer::contains_old_hangul_jamo(&display_text) {
@@ -3072,6 +3072,7 @@ mod tests {
                 base_font_size: 12.0,
                 baseline: 12.0,
                 font_family: "Test".to_string(),
+                bold: false,
                 color: 0x0000_0000,
                 section_index: 0,
                 para_index: 0,

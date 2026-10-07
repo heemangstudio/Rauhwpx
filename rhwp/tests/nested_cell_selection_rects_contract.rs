@@ -78,6 +78,7 @@ fn nested_cell_selection_rects_match_inner_run_geometry() {
             0,
             inner_cpi as u32,
             sel_len as u32,
+            None,
         )
         .expect("경로 기반 선택 사각형 조회 실패");
     let rects: Value = serde_json::from_str(&rects_json).expect("JSON 파싱 실패");

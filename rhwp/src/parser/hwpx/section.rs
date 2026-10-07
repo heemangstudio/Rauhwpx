@@ -926,7 +926,9 @@ fn parse_paragraph(
             .all(|seg| seg.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY == 0 && seg.line_height > 0)
     {
         for tab in &mut para.tab_extended {
-            tab[5] &= !0x8000;
+            // 저장된 텍스트 줄의 탭 이동량을 보존한다. 편집 후 재조판할 때
+            // 이 마커를 지우고 탭 위치를 다시 계산한다.
+            tab[5] = (tab[5] & !0x8000) | 0x4000;
         }
     }
 
@@ -2529,6 +2531,7 @@ fn parse_picture(
     common.hwp5_gen_shape_attr_bit26 = true;
     let mut shape_attr = ShapeComponentAttr::default();
     let mut crop = CropInfo::default();
+    let mut border_line: Option<ShapeBorderLine> = None;
     let mut padding = crate::model::Padding::default();
     let mut border_x = [0i32; 4];
     let mut border_y = [0i32; 4];
@@ -2803,6 +2806,8 @@ fn parse_picture(
                             }
                         }
                     }
+                    // 그림 테두리 선 (HWP5 SHAPE_PICTURE 의 테두리 색·두께·속성과 같은 정보)
+                    b"lineShape" => border_line = Some(parse_line_shape_attr(ce)),
                     b"imgClip" => {
                         for attr in ce.attributes().flatten() {
                             match attr.key.as_ref() {
@@ -2908,6 +2913,11 @@ fn parse_picture(
     pic.shape_attr = shape_attr;
     pic.href = href;
     pic.crop = crop;
+    if let Some(bl) = border_line {
+        pic.border_color = bl.color;
+        pic.border_width = bl.width;
+        pic.border_attr = bl;
+    }
     pic.padding = padding;
     pic.border_x = border_x;
     pic.border_y = border_y;
@@ -4084,6 +4094,17 @@ fn parse_shape_object(
                     b"drawText" => {
                         let mut tb = TextBox::default();
                         tb.max_width = common.width;
+                        // drawText lastWidth = 텍스트가 조판된 폭. curSz 와 같으면
+                        // 도형 확대 후에도 한컴이 내부 글꼴을 축소하지 않는다
+                        // (shape_layout 의 폰트 스케일 게이트가 사용).
+                        for attr in ce.attributes().flatten() {
+                            if attr.key.as_ref() == b"lastWidth" {
+                                let v = parse_i32(&attr);
+                                if v > 0 {
+                                    tb.max_width = v as u32;
+                                }
+                            }
+                        }
                         parse_draw_text(reader, &mut tb)?;
                         text_box = Some(tb);
                     }
@@ -5027,8 +5048,16 @@ fn parse_ctrl_endnote(
     Ok(Control::Endnote(Box::new(note)))
 }
 
+// 양수 좌표 사이의 0은 저장된 단/쪽 경계다. 모든 후속 좌표가 0인
+// 누락 캐시만 복원하고, 실제 경계가 있는 좌표열은 그대로 보존한다.
 fn normalize_hwpx_note_line_vpos(paragraph: &mut Paragraph) {
-    if paragraph.line_segs.len() <= 1 {
+    if paragraph.line_segs.len() <= 1
+        || paragraph
+            .line_segs
+            .iter()
+            .skip(1)
+            .any(|line| line.vertical_pos != 0)
+    {
         return;
     }
 
@@ -6617,6 +6646,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn note_vpos_normalization_preserves_saved_column_resets() {
+        let make = |positions: &[i32]| Paragraph {
+            line_segs: positions
+                .iter()
+                .map(|&vertical_pos| LineSeg {
+                    vertical_pos,
+                    line_height: 900,
+                    line_spacing: 452,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let mut missing = make(&[0, 0, 0]);
+        normalize_hwpx_note_line_vpos(&mut missing);
+        assert_eq!(
+            missing
+                .line_segs
+                .iter()
+                .map(|s| s.vertical_pos)
+                .collect::<Vec<_>>(),
+            vec![0, 1352, 2704]
+        );
+
+        let mut saved = make(&[6000, 7352, 0, 1352]);
+        normalize_hwpx_note_line_vpos(&mut saved);
+        assert_eq!(
+            saved
+                .line_segs
+                .iter()
+                .map(|s| s.vertical_pos)
+                .collect::<Vec<_>>(),
+            vec![6000, 7352, 0, 1352]
+        );
+    }
+
+    #[test]
     fn hwpx_xml_depth_preflight_accepts_limit_and_rejects_next_level() {
         fn nested_xml(depth: usize) -> String {
             let mut xml = String::with_capacity(depth.saturating_mul(7));
@@ -7332,7 +7398,7 @@ mod tests {
 
     #[test]
     fn stored_text_line_preserves_resolved_inline_tab_distance() {
-        for (flags, expected_marker) in [(393216, 0), (2147876864u32, 0x8000)] {
+        for (flags, expected_marker) in [(393216, 0x4000), (2147876864u32, 0x8000)] {
             let xml = format!(
                 r#"<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
                 xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">

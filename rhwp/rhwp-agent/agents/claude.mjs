@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import { query as queryClaude } from '@anthropic-ai/claude-agent-sdk';
 import {
   mkdirSync,
+  writeFileSync,
   rmSync,
 } from 'node:fs';
 import os from 'node:os';
@@ -126,9 +127,13 @@ export function flushClaudeCredentialMirrors(isolatedHome) {
   return pending.length === 0;
 }
 
-/** Seed only Claude's shared login files into an otherwise isolated home. */
+/**
+ * Seed Claude's portable config into an otherwise isolated home. The login is
+ * never copied: every Claude child receives it through CLAUDE_CODE_OAUTH_TOKEN
+ * or ANTHROPIC_API_KEY, so a stale credential file left by an older build is
+ * removed rather than allowed to shadow it.
+ */
 export function prepareClaudeHome(isolatedHome, {
-  credentialsPath,
   configPath,
 } = {}, deps = {}) {
   const key = path.resolve(isolatedHome);
@@ -140,11 +145,8 @@ export function prepareClaudeHome(isolatedHome, {
   }
   claudeMirrorsByHome.delete(key);
   mkdirSync(isolatedHome, { recursive: true, mode: 0o700 });
+  rmSync(path.join(isolatedHome, '.claude', '.credentials.json'), { force: true });
   const mirrors = [seedClaudeCredential(
-    credentialsPath,
-    path.join(isolatedHome, '.claude', '.credentials.json'),
-    deps,
-  ), seedClaudeCredential(
     configPath,
     path.join(isolatedHome, '.claude.json'),
     deps,
@@ -185,7 +187,27 @@ function claudeProcessEnv(opts, sourceEnv) {
   return env;
 }
 
-export function buildClaudeArgv(opts, sessionId, resume) {
+/**
+ * @param {{ agentsPath?: string | null }} [launch] agentsPath 가 있으면 --agents 에 JSON 대신 그 파일 경로를 넘긴다.
+ *   Windows 명령줄 상한(32,767자)을 서브에이전트 정의가 다 먹지 않게 한다.
+ */
+/**
+ * 서브에이전트 정의를 격리 홈에 파일로 쓴다. 홈이 없거나 쓰기에 실패하면 null — 호출자는 인라인 JSON 으로 돌아간다.
+ * @param {string | null | undefined} isolatedHome
+ */
+export function writeClaudeAgentsFile(isolatedHome) {
+  if (!isolatedHome) return null;
+  const file = path.join(String(isolatedHome), 'rhwp-agents.json');
+  try {
+    mkdirSync(String(isolatedHome), { recursive: true, mode: 0o700 });
+    writeFileSync(file, JSON.stringify(RHWP_SUBAGENTS), { mode: 0o600 });
+    return file;
+  } catch {
+    return null;
+  }
+}
+
+export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null } = {}) {
   const unrestricted = opts.permissionProfile === 'unrestricted';
   const planningRestricted = isPlanningRestricted(opts);
   const interactionMode = providerInteractionMode(opts);
@@ -241,7 +263,7 @@ export function buildClaudeArgv(opts, sessionId, resume) {
     // 서브에이전트 텍스트는 항상 전달받는다 — 사이드바 fleet 카드의 활동 줄이 이걸 쓴다.
     // (도구 호출/결과 전달은 플래그와 무관하게 항상 온다 — CLI 2.1.235 확인.)
     '--forward-subagent-text',
-    '--agents', JSON.stringify(RHWP_SUBAGENTS),
+    '--agents', agentsPath ?? JSON.stringify(RHWP_SUBAGENTS),
     ...(resume ? ['--resume', sessionId] : ['--session-id', sessionId]),
     '--mcp-config', JSON.stringify(mcpConfig),
     '--strict-mcp-config',
@@ -414,6 +436,17 @@ export function createClaudeSession(opts, {
   // 도구 추적(RHWP_TOOL_TRACE=1): 모델이 도구 호출을 만들기 시작/끝낸 시각과 CLI 가 결과를
   // 돌려받은 시각. 같은 메시지 id 의 tool_use 는 모델이 한 번에(병렬로) 낸 호출이다.
   const traceMessageIds = new Map();
+  /** 요청 크기와 캐시 적중을 보는 토큰 수 — 값이 있는 것만 싣는다. */
+  function traceUsage(usage) {
+    if (!usage || typeof usage !== 'object') return {};
+    const out = {};
+    const put = (key, value) => { if (Number.isFinite(value)) out[key] = value; };
+    put('inTok', usage.input_tokens);
+    put('outTok', usage.output_tokens);
+    put('cacheRead', usage.cache_read_input_tokens);
+    put('cacheWrite', usage.cache_creation_input_tokens);
+    return out;
+  }
   function traceClaude(e) {
     const parent = e?.parent_tool_use_id ? String(e.parent_tool_use_id) : null;
     const row = (fields) => writeToolTrace({ kind: 'claude', t: traceNow(), ...(parent ? { parent } : {}), ...fields });
@@ -421,17 +454,29 @@ export function createClaudeSession(opts, {
       const ev = e.event;
       if (ev?.type === 'message_start') {
         traceMessageIds.set(parent, ev.message?.id ?? null);
-        row({ ev: 'message_start', messageId: ev.message?.id ?? null });
+        row({ ev: 'message_start', messageId: ev.message?.id ?? null, ...traceUsage(ev.message?.usage) });
       } else if (ev?.type === 'content_block_start' && ev.content_block?.type === 'tool_use') {
         row({
           ev: 'tool_use_start', messageId: traceMessageIds.get(parent) ?? null, index: ev.index,
           toolUseId: ev.content_block.id, tool: String(ev.content_block.name ?? '').replace(/^mcp__rhwp__/, ''),
         });
+      } else if (ev?.type === 'content_block_start') {
+        row({
+          ev: 'block_start', messageId: traceMessageIds.get(parent) ?? null, index: ev.index,
+          blockType: String(ev.content_block?.type ?? ''),
+        });
       } else if (ev?.type === 'content_block_stop') {
         row({ ev: 'block_stop', messageId: traceMessageIds.get(parent) ?? null, index: ev.index });
       } else if (ev?.type === 'message_delta' && ev.delta?.stop_reason) {
-        row({ ev: 'message_delta', messageId: traceMessageIds.get(parent) ?? null, stopReason: ev.delta.stop_reason });
+        row({
+          ev: 'message_delta', messageId: traceMessageIds.get(parent) ?? null, stopReason: ev.delta.stop_reason,
+          ...traceUsage(ev.usage),
+        });
       }
+      return;
+    }
+    if (e?.type === 'system' && e.subtype === 'init') {
+      row({ ev: 'init', mcp: e.mcp_servers?.find?.((s) => s?.name === 'rhwp')?.status ?? null });
       return;
     }
     if (e?.type === 'assistant' && Array.isArray(e.message?.content)) {
@@ -474,7 +519,7 @@ export function createClaudeSession(opts, {
   const workflowFingerprints = new Map();
 
   function buildArgv(resume) {
-    return buildClaudeArgv(opts, sessionId, resume);
+    return buildClaudeArgv(opts, sessionId, resume, { agentsPath: writeClaudeAgentsFile(opts.isolatedHome) });
   }
 
   function claudeCliLaunch() {
@@ -984,6 +1029,7 @@ export function createClaudeSession(opts, {
         prompt: owner.queue,
         options,
       });
+      writeToolTrace({ kind: 'claude', t: traceNow(), ev: 'spawn', transport: 'sdk', resume });
     } catch (error) {
       owner.active = false;
       if (sdkOwner === owner) sdkOwner = null;
@@ -1112,6 +1158,7 @@ export function createClaudeSession(opts, {
       env: launched.env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+    writeToolTrace({ kind: 'claude', t: traceNow(), ev: 'spawn', transport: 'cli', resume });
     // 기동 중 종료한 자식에 쓰면 EPIPE 가 'error' 로 온다. 리스너가 없으면 허브 전체가
     // 죽는다. 턴 정리는 exit/close 처리가 맡는다.
     proc.stdin?.on('error', (err) => {

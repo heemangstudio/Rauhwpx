@@ -145,8 +145,8 @@ fn split_pieces_do_not_inherit_the_whole_run_display_text() {
     doc.set_file_name("F.hwp");
     doc.create_header_footer_native(0, true, 0)
         .expect("create header");
-    // 표시 확장이 있는 PUA 글자(U+F012B → "(인)")와 필드 마커를 한 런에 둔다.
-    doc.insert_text_in_header_footer_native(0, true, 0, 0, 0, "󰄫Z")
+    // 표시 치환이 있는 PUA 글자(U+F031C → "■")와 필드 마커를 한 런에 둔다.
+    doc.insert_text_in_header_footer_native(0, true, 0, 0, 0, "󰌜Z")
         .expect("header text");
 
     let json = doc.get_page_layer_tree_native(0).expect("layer tree");

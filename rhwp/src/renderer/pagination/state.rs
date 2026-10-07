@@ -44,6 +44,11 @@ pub(super) struct PaginationState {
     /// 레이어 1이 advance_column_or_new_page를 호출 중임을 표시.
     /// 이 플래그가 true이면 레이어 2(check_last_item_overflow)를 스킵하여 이중 이동 방지.
     pub layer1_advancing: bool,
+    /// 이월된 표의 host 텍스트가 현재 쪽에 PartialParagraph 로 pre-emit 된 문단.
+    /// layout 의 표 항목 host 텍스트 렌더 억제용 (typeset.rs 동명 상태와 정합).
+    pub pre_emitted_host_paras: std::collections::HashSet<usize>,
+    /// pre-emit 한 host 텍스트 높이(px).
+    pub pre_emitted_host_heights: std::collections::HashMap<usize, f64>,
 }
 
 impl PaginationState {
@@ -78,6 +83,8 @@ impl PaginationState {
             defense_counts: HashMap::new(),
             overflow_carry: None,
             layer1_advancing: false,
+            pre_emitted_host_paras: std::collections::HashSet::new(),
+            pre_emitted_host_heights: std::collections::HashMap::new(),
         }
     }
 

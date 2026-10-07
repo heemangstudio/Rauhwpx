@@ -24,6 +24,18 @@ export class MenuBar {
   private returnFocus: HTMLElement | null = null;
   private onMenuOpen?: (menuName: string, menuEl: HTMLElement) => void;
 
+  /**
+   * 서브메뉴 포인터 조준 상태. 패널이 CSS :hover 로만 열리면 포인터가
+   * 대각선으로 패널을 향할 때 형제 행(특히 비활성 .md-sub)을 지나는 순간
+   * :hover 가 끊겨 패널이 닫히고 클릭이 허공에 간다. 열린 패널과 기점을
+   * 잇는 회랑(corridor) 안에서는 현재 패널을 유지한다 (safe-triangle).
+   */
+  private aimSub: HTMLElement | null = null;
+  private aimOrigin: { x: number; y: number } | null = null;
+  private aimPanelRect: DOMRect | null = null;
+  private aimDeadline = 0;
+  private static readonly AIM_GRACE_MS = 650;
+
   constructor(
     private container: HTMLElement,
     private eventBus: EventBus,
@@ -39,6 +51,7 @@ export class MenuBar {
     this.setupTitleHover();
     this.setupItemClicks();
     this.setupPointerHighlight();
+    this.setupPointerAim();
     this.setupOutsideClose();
     this.setupKeyboardClose();
   }
@@ -73,6 +86,7 @@ export class MenuBar {
     if (!this.openMenu) {
       this.returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     }
+    this.releaseAim();
     this.openMenu?.classList.remove('open');
     this.openMenu?.querySelector('.menu-title')?.setAttribute('aria-expanded', 'false');
     this.container.querySelectorAll<HTMLElement>('.md-sub-panel').forEach(panel => { panel.style.display = ''; });
@@ -176,6 +190,123 @@ export class MenuBar {
       if (!dropdown.contains(document.activeElement)) return;
       this.openMenu.querySelector<HTMLElement>('.menu-title')?.focus({ preventScroll: true });
     });
+  }
+
+  /**
+   * 서브메뉴 포인터 조준(safe-triangle). 열린 서브 패널을 향해 대각선으로
+   * 움직이는 동안은 형제 행 위를 지나도 패널이 닫히지 않게 한다.
+   * 회랑 밖으로 나가거나 유예 시간이 지나면 즉시 CSS :hover 상태로 복귀한다.
+   */
+  private setupPointerAim(): void {
+    this.container.addEventListener('pointermove', (e) => {
+      if (!this.openMenu || !this.aimSub) return;
+      if (this.insideAimZones(e.clientX, e.clientY)) {
+        this.pinAim();
+        this.aimDeadline = Date.now() + MenuBar.AIM_GRACE_MS;
+      } else {
+        this.releaseAim();
+      }
+    });
+
+    this.container.addEventListener('pointerover', (e) => {
+      if (!this.openMenu) return;
+      const sub = (e.target as HTMLElement).closest<HTMLElement>('.md-sub');
+      if (!sub || sub.classList.contains('disabled')) return;
+      if (!this.openMenu.contains(sub)) return;
+      if (sub === this.aimSub) {
+        this.aimOrigin = { x: e.clientX, y: e.clientY };
+        return;
+      }
+      // 다른 서브 행 — 이미 열린 패널 안의 행이면 곧바로 전환(도착).
+      // 바깥 행이고 회랑 이동 중이면 전환을 보류한다(통과 중).
+      if (this.aimSub && this.aimPanelRect
+        && Date.now() < this.aimDeadline) {
+        const r = this.aimPanelRect;
+        const inPanel = e.clientX >= r.left - 2 && e.clientX <= r.right + 2
+          && e.clientY >= r.top - 2 && e.clientY <= r.bottom + 2;
+        if (!inPanel && this.insideAimCorridor(e.clientX, e.clientY)) {
+          this.pinAim();
+          return;
+        }
+      }
+      this.setAimSub(sub, e.clientX, e.clientY);
+    });
+
+    this.container.addEventListener('pointerout', (e) => {
+      if (!this.openMenu || !this.aimSub) return;
+      const dropdown = this.openMenu.querySelector('.menu-dropdown');
+      const next = e.relatedTarget as Node | null;
+      if (dropdown && next && dropdown.contains(next)) return;
+      this.releaseAim();
+    });
+  }
+
+  private setAimSub(sub: HTMLElement, x: number, y: number): void {
+    this.releaseAim();
+    this.aimSub = sub;
+    this.aimOrigin = { x, y };
+    const panel = sub.querySelector<HTMLElement>('.md-sub-panel');
+    this.aimPanelRect = panel ? panel.getBoundingClientRect() : null;
+    this.aimDeadline = Date.now() + MenuBar.AIM_GRACE_MS;
+  }
+
+  private pinAim(): void {
+    if (!this.openMenu || !this.aimSub) return;
+    this.openMenu.querySelector('.menu-dropdown')?.classList.add('md-aim-lock');
+    // 조준 중인 서브와 그 조상 서브 전체를 고정한다 — 중첩 패널이면
+    // 목표 패널뿐 아니라 그 부모 패널(양쪽을 품은 머리말 패널)도 유지해야
+    // 회랑 동안 형제 패널만 숨기면서 목표 체인을 그대로 둘 수 있다.
+    this.openMenu.querySelectorAll<HTMLElement>('.md-sub').forEach(sub => {
+      const held = sub === this.aimSub || sub.contains(this.aimSub as Node);
+      sub.classList.toggle('md-aim-hold', held);
+    });
+  }
+
+  private releaseAim(): void {
+    this.openMenu?.querySelector('.menu-dropdown')?.classList.remove('md-aim-lock');
+    this.container.querySelectorAll('.md-aim-hold').forEach(el => el.classList.remove('md-aim-hold'));
+    this.aimSub = null;
+    this.aimPanelRect = null;
+    this.aimOrigin = null;
+    this.aimDeadline = 0;
+  }
+
+  /** 서브 행·열린 패널·회랑 어디든 해당하면 조준 유지 구역. */
+  private insideAimZones(x: number, y: number): boolean {
+    if (!this.aimSub || !this.aimPanelRect || !this.aimOrigin) return false;
+    const r = this.aimPanelRect;
+    if (x >= r.left - 2 && x <= r.right + 2 && y >= r.top - 2 && y <= r.bottom + 2) return true;
+    const subRect = this.aimSub.getBoundingClientRect();
+    if (x >= subRect.left && x <= subRect.right && y >= subRect.top && y <= subRect.bottom) return true;
+    return this.insideAimCorridor(x, y);
+  }
+
+  /** 기점→패널 근변 두 코너를 잇는 삼각 회랑 판정 (좌우 플립 모두 대응). */
+  private insideAimCorridor(x: number, y: number): boolean {
+    const o = this.aimOrigin;
+    const r = this.aimPanelRect;
+    const sub = this.aimSub;
+    if (!o || !r || !sub) return false;
+    const subRect = sub.getBoundingClientRect();
+    const opensRight = r.left >= subRect.right - 8;
+    const nearX = opensRight ? r.left : r.right;
+    const mid = { x: nearX, y: (r.top + r.bottom) / 2 };
+    const cross = (
+      a: { x: number; y: number }, b: { x: number; y: number }, p: { x: number; y: number },
+    ) => (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+    const top = { x: nearX, y: r.top };
+    const bottom = { x: nearX, y: r.bottom };
+    const p = { x, y };
+    // 기점에서 패널 쪽으로 진행 중인지 — 역방향이거나 근변을 훨씬 지나치면 회랑이 아니다
+    const toward = opensRight ? x - o.x : o.x - x;
+    const span = Math.abs(nearX - o.x);
+    if (span > 0 && (toward < -30 || toward > span + 60)) return false;
+    // 두 변에 대해 패널 근변 중점과 같은 쪽에 있으면 회랑 안
+    const cTop = cross(o, top, p);
+    const cBot = cross(o, bottom, p);
+    const insideTop = cTop === 0 || Math.sign(cTop) === Math.sign(cross(o, top, mid));
+    const insideBot = cBot === 0 || Math.sign(cBot) === Math.sign(cross(o, bottom, mid));
+    return insideTop && insideBot;
   }
 
   /** 바깥 클릭 → 닫기 */
@@ -365,6 +496,7 @@ export class MenuBar {
 
   /** restoreFocus 를 생략하면 포커스가 메뉴 안에 남아 있을 때만 원래 자리로 돌린다. */
   private closeAll(restoreFocus = this.container.contains(document.activeElement)): void {
+    this.releaseAim();
     this.openMenu?.classList.remove('open');
     this.openMenu?.querySelector('.menu-title')?.setAttribute('aria-expanded', 'false');
     this.container.querySelectorAll<HTMLElement>('.md-sub-panel').forEach(panel => { panel.style.display = ''; });

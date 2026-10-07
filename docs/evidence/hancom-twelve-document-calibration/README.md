@@ -23,4 +23,6 @@ PR preparation rehashed all 23 final source pins, eight frozen WASM package file
 
 The [checkpoint manifest](checkpoint.json) lists accepted document identities, source commits, prior results and private analysis paths. Stop checkpoint `3e201f69` preserves the analysis records separately. The [inline-picture comparison](../hancom-inline-picture-justification/README.md) contains committed visual evidence for the first accepted fix.
 
-The PR preserves the validated checkpoint. A merge check against current main `674159d8` reports conflicts in 23 files after subsequent renderer changes. Those changes must be reconciled and the resulting engine validated before merge. Only this evidence directory was added during PR preparation; the accepted engine source remains unchanged.
+The PR integrates the accepted fixes with main `674159d8`. Resolution covered 23 files and retained main's newer font grids, HFT fallback, inline-object safeguards and parser changes. Integration repairs remove duplicate terminal-space and tracking corrections, preserve cell flow guards, and distinguish Windows baked metrics from macOS registered-face metrics. The original checkpoint measurements above describe the accepted tree; the integrated engine is checked separately below.
+
+Integration validation is in progress. Studio has 2,672 passing tests and two skips. Rust compilation, formatting, publish documentation and website checks pass. The complete Rust suite and fresh WASM/Studio build must pass before merge.

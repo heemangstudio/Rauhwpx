@@ -18,7 +18,9 @@ const NEARBY_DIRECTORY_CAP = 12;
 const NEARBY_FILE_CAP = 8;
 const NEARBY_DIR_ENTRY_CAP = 256;
 const CFB_SIGNATURE = new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
-const UNSUPPORTED_DIRECTORY_SYNC_CODES = new Set(['EINVAL', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP']);
+// Windows refuses fsync on a directory handle with EPERM — same "not
+// implemented" class as EINVAL/ENOSYS, not a storage failure.
+const UNSUPPORTED_DIRECTORY_SYNC_CODES = new Set(['EINVAL', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP', 'EPERM']);
 export const NATIVE_FILE_CONFLICT_CODE = 'NATIVE_FILE_CONFLICT';
 export const NATIVE_FILE_CONFLICT_MESSAGE = 'This document changed on disk after it was opened. Reopen it before saving.';
 export const NATIVE_FILE_ATOMIC_UNSUPPORTED_CODE = 'NATIVE_FILE_ATOMIC_UNSUPPORTED';
@@ -730,13 +732,24 @@ export async function writeNativeFileAtomically(
     if (sourceInfo && platform === 'win32') {
       // Copy only the DACL, after the temp handle is closed. icacls /save
       // reads DACL entries, not owner or SACL.
-      await copyWindowsDacl(
-        filePath,
-        temporaryPath,
-        runCommandImpl,
-        windowsSystemRoot,
-        windowsProcessEnv,
-      );
+      try {
+        await copyWindowsDacl(
+          filePath,
+          temporaryPath,
+          runCommandImpl,
+          windowsSystemRoot,
+          windowsProcessEnv,
+        );
+      } catch (error) {
+        // icacls cannot save the DACL of a source that was deleted or moved
+        // while the copy was prepared; that is the same concurrent change the
+        // rename-aside below would report, not a metadata failure.
+        if (error?.code !== 'NATIVE_FILE_METADATA_COPY_FAILED') throw error;
+        const sourceGone = await statImpl(filePath, { bigint: true })
+          .then(() => false, (statError) => statError?.code === 'ENOENT');
+        if (sourceGone) throw nativeFileConflictError();
+        throw error;
+      }
     }
 
     try {
@@ -1250,8 +1263,19 @@ export class NativeFileHandleRegistry {
   }
 
   async isSameEntry(senderSessionId, firstHandleId, secondHandleId) {
-    const first = this.#entryForSender(senderSessionId, firstHandleId);
-    const second = this.#entryForSender(senderSessionId, secondHandleId);
+    // 창 경계를 넘어 같은 파일인지 판정한다 — 다른 창에 이미 열린 문서를
+    // 다시 열 때 중복 열기 방지가 이 비교에 의존한다. 한쪽 핸들이 다른 창의
+    // 것이어도 경로 일치 여부만 반환하므로 크래시 대신 판정 결과를 준다.
+    // 임의 핸들 탐색을 막기 위해 둘 다 이 창의 핸들이 아니면 기존처럼 거절한다.
+    const first = this.#byId.get(firstHandleId);
+    const second = this.#byId.get(secondHandleId);
+    if (
+      !first
+      || !second
+      || (first.sessionId !== senderSessionId && second.sessionId !== senderSessionId)
+    ) {
+      throw new Error('Native file handle does not belong to this window');
+    }
     return first.ownershipPath === second.ownershipPath;
   }
 

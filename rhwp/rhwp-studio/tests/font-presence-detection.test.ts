@@ -102,7 +102,8 @@ test('웹 대체 별칭 로드 뒤에도 선언 face와 OS/import face의 출처
   let imported = true;
   const available = createDeclaredFontAvailabilityProbe(
     ctx, { get: original.get!, set: original.set! },
-    family => imported && family === 'HY신명조', prefersHcrOverWebProxy,
+    family => imported && family === 'HY신명조',
+    ['HY신명조', '한양신명조', '바탕'], prefersHcrOverWebProxy,
   );
   const host = globalThis as typeof globalThis & Record<string, unknown>;
   const saved = ['document', 'FontFace', 'isDeclaredFontFamilyAvailable', 'isInstalledFontFamilyAvailable'].map(key =>
@@ -153,4 +154,28 @@ test('웹 대체 별칭 로드 뒤에도 선언 face와 OS/import face의 출처
       else delete host[key];
     }
   }
+});
+
+test('대체 웹폰트 CSS 별칭은 원본 face의 설치 여부를 바꾸지 않는다', () => {
+  const ctx = makeProbeContext(['Installed Face']);
+  const original = Object.getOwnPropertyDescriptor(ctx, 'font')!;
+  let webSubstituteLoaded = false;
+  let actualFaceImported = false;
+  const measure = ctx.measureText.bind(ctx);
+  ctx.measureText = text => webSubstituteLoaded && ctx.font.includes('"Missing Face"')
+    ? { width: 10 * text.length + 7 } as TextMetrics
+    : measure(text);
+  const available = createDeclaredFontAvailabilityProbe(
+    ctx,
+    { get: original.get!, set: original.set! },
+    family => actualFaceImported && family === 'Missing Face',
+    ['Missing Face', 'Installed Face'],
+  );
+
+  webSubstituteLoaded = true;
+  assert.equal(isFontFamilyAvailable('Missing Face', ctx), true);
+  assert.equal(available('Missing Face'), false);
+  assert.equal(available('Installed Face'), true);
+  actualFaceImported = true;
+  assert.equal(available('Missing Face'), true);
 });

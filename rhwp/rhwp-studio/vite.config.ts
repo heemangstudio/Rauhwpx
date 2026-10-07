@@ -1,10 +1,12 @@
 import { defineConfig } from 'vite';
 import { resolve, extname, join } from 'path';
 import { readFileSync, readFile } from 'fs';
+import { execSync } from 'node:child_process';
 import { VitePWA } from 'vite-plugin-pwa';
 import { rhwpAgentHubPlugin } from './vite-plugin-agent-hub.mjs';
 import { rhwpPinnedDocumentPlugin } from './vite-plugin-pinned-document.mjs';
 import { rhwpDevFontPackPlugin } from './vite-plugin-dev-font-pack.mjs';
+import { rhwpLocalFontsPlugin } from './vite-plugin-local-fonts.mjs';
 
 const appPackage = JSON.parse(
   readFileSync(resolve(__dirname, '..', '..', 'package.json'), 'utf-8'),
@@ -54,9 +56,19 @@ function wasmDebugSections(file: string): string[] {
 }
 const publicHttpsPort = Number(process.env.RHWP_PUBLIC_HTTPS_PORT ?? 443);
 
+// 제품 정보 다이얼로그가 표시할 빌드 커밋 — git 이 없는 패키징 환경에서는 unknown.
+const appCommit = (() => {
+  try {
+    return execSync('git rev-parse --short=8 HEAD', { cwd: __dirname, encoding: 'utf8' }).trim() || 'unknown';
+  } catch {
+    return 'unknown';
+  }
+})();
+
 export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(appPackage.version),
+    __APP_COMMIT__: JSON.stringify(appCommit),
   },
   resolve: {
     alias: {
@@ -120,6 +132,7 @@ export default defineConfig({
     rhwpAgentHubPlugin(__dirname),
     rhwpPinnedDocumentPlugin(__dirname),
     rhwpDevFontPackPlugin(),
+    rhwpLocalFontsPlugin(__dirname),
     {
       name: 'ignore-subsecond-patch-artifacts',
       handleHotUpdate(context) {

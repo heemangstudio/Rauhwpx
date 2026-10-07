@@ -54,6 +54,16 @@ export function resolveUniqueInstallsDbPath(env = process.env) {
   return path.join(dataDir, 'unique-installs.json');
 }
 
+export function resolveWaitlistDbPath(env = process.env) {
+  if (typeof env.RAU_WAITLIST_DB === 'string' && env.RAU_WAITLIST_DB.trim()) {
+    return env.RAU_WAITLIST_DB.trim();
+  }
+  const dataDir = typeof env.RAU_CREDITS_DATA === 'string' && env.RAU_CREDITS_DATA.trim()
+    ? env.RAU_CREDITS_DATA.trim()
+    : (isRailway(env) ? RAILWAY_DATA_DIR : '.');
+  return path.join(dataDir, 'waitlist.json');
+}
+
 export function resolveUniqueInstallPingKey(env = process.env) {
   const explicit = typeof env.RAU_UNIQUE_INSTALL_PING_KEY === 'string'
     ? env.RAU_UNIQUE_INSTALL_PING_KEY.trim()

@@ -4,6 +4,9 @@
 //! 흰색 배경까지 필터/opacity/multiply 대상이 되어 옅은 사각 영역이 보였다.
 //! 워터마크 JPEG 에 한정해 한컴 PDF 정답지에 가까운 회색 톤 opaque PNG 로
 //! 선보정하고, 이후 런타임 필터를 중복 적용하지 않아야 한다.
+//!
+//! 기준 톤은 한컴 Mac PDF 실측 (평균 234.4, 가시 픽셀 254,868, p10 197, p50 218).
+//! HWP5 의 밝기·대비 바이트 순서를 바로잡아 HWPX 와 같은 70/-50 으로 읽는다.
 
 use base64::Engine;
 use image::GenericImageView;
@@ -149,7 +152,7 @@ fn issue_938_svg_watermark_is_hancom_baked_png() {
         "baked PNG 는 정답 PDF 처럼 opaque 여야 함"
     );
     assert!(
-        (236.0..=244.0).contains(&stats.mean_gray),
+        (232.0..=237.0).contains(&stats.mean_gray),
         "정답 PDF 워터마크 평균 회색값 근처여야 함: {:?}",
         stats
     );
@@ -164,7 +167,7 @@ fn issue_938_svg_watermark_is_hancom_baked_png() {
         stats
     );
     assert!(
-        (232..=244).contains(&stats.visible_p50),
+        (214..=222).contains(&stats.visible_p50),
         "중앙 워터마크 중간 톤이 정답 PDF 근처여야 함: {:?}",
         stats
     );
@@ -192,8 +195,8 @@ fn issue_938_layer_tree_watermark_is_resolved_hancom_baked_png() {
 
     assert_eq!(watermark["mime"], "image/png");
     assert_eq!(watermark["effect"], "grayScale");
-    assert_eq!(watermark["brightness"], -50);
-    assert_eq!(watermark["contrast"], 70);
+    assert_eq!(watermark["brightness"], 70);
+    assert_eq!(watermark["contrast"], -50);
     assert_eq!(
         watermark["bakedWatermark"], true,
         "PageLayerTree image op must carry resolved baked watermark state"
@@ -213,14 +216,14 @@ fn issue_938_layer_tree_watermark_is_resolved_hancom_baked_png() {
     assert_eq!(stats.dims, (728, 729));
     assert_eq!(stats.min_alpha, 255);
     assert_eq!(stats.max_alpha, 255);
-    assert!((236.0..=244.0).contains(&stats.mean_gray), "{:?}", stats);
+    assert!((232.0..=237.0).contains(&stats.mean_gray), "{:?}", stats);
     assert!(
         (230_000..=330_000).contains(&stats.visible_count),
         "{:?}",
         stats
     );
     assert!((190..=210).contains(&stats.visible_p10), "{:?}", stats);
-    assert!((232..=244).contains(&stats.visible_p50), "{:?}", stats);
+    assert!((214..=222).contains(&stats.visible_p50), "{:?}", stats);
 }
 
 #[test]
@@ -269,8 +272,8 @@ fn issue_938_overlay_watermark_is_hancom_baked_png() {
         "Studio overlay 도 baked PNG 데이터를 받아야 함"
     );
     assert_eq!(watermark["effect"], "grayScale");
-    assert_eq!(watermark["brightness"], -50);
-    assert_eq!(watermark["contrast"], 70);
+    assert_eq!(watermark["brightness"], 70);
+    assert_eq!(watermark["contrast"], -50);
     assert_eq!(
         watermark["bakedWatermark"], true,
         "Studio 는 baked 워터마크에 CSS filter/opacity 를 중복 적용하지 않아야 함"
@@ -284,12 +287,12 @@ fn issue_938_overlay_watermark_is_hancom_baked_png() {
     assert_eq!(stats.dims, (728, 729));
     assert_eq!(stats.min_alpha, 255);
     assert_eq!(stats.max_alpha, 255);
-    assert!((236.0..=244.0).contains(&stats.mean_gray), "{:?}", stats);
+    assert!((232.0..=237.0).contains(&stats.mean_gray), "{:?}", stats);
     assert!(
         (230_000..=330_000).contains(&stats.visible_count),
         "{:?}",
         stats
     );
     assert!((190..=210).contains(&stats.visible_p10), "{:?}", stats);
-    assert!((232..=244).contains(&stats.visible_p50), "{:?}", stats);
+    assert!((214..=222).contains(&stats.visible_p50), "{:?}", stats);
 }

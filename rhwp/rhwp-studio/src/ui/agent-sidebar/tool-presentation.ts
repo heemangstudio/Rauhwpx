@@ -5,6 +5,7 @@
  * 좌표는 도구 계약대로 0 기반으로 받아 사람에게는 1 기반(“3문단”, “2쪽”)으로 보인다.
  * 모르는 도구나 rhwp 밖의 도구는 원래 이름과 대표 인자 하나로 떨어진다.
  */
+import { batchItemArgs } from '../../agent/batch-item.ts';
 
 export type ToolCategory = 'edit' | 'read' | 'check' | 'other';
 
@@ -124,22 +125,52 @@ function paraRange(a: Args, startKey: string, endKey: string): string {
   ], ' ');
 }
 
+/** paras 대상 — 구간 하나면 “3–5문단”, 여럿이면 겹침을 합쳐 센 “문단 12개”. */
+function paras(a: Args): string {
+  const list = a['paras'];
+  if (!Array.isArray(list) || list.length === 0) return '';
+  const spans: Array<[number, number]> = [];
+  for (const entry of list) {
+    const first = num(Array.isArray(entry) ? entry[0] : entry);
+    const last = num(Array.isArray(entry) ? entry[1] : entry);
+    if (first === null || last === null || last < first) return '';
+    spans.push([first, last]);
+  }
+  if (spans.length === 1) return paraRange({ ...a, first: spans[0][0], last: spans[0][1] }, 'first', 'last');
+  spans.sort((x, y) => x[0] - y[0]);
+  let total = 0;
+  let covered = -1;
+  for (const [first, last] of spans) {
+    if (last <= covered) continue;
+    total += last - Math.max(first, covered + 1) + 1;
+    covered = last;
+  }
+  const section = num(a['sectionIdx']);
+  return join([
+    section !== null && section > 0 ? `${section + 1}구역` : '',
+    inCell(a) ? '표 안' : '',
+    `문단 ${total}개`,
+  ], ' ');
+}
+
 /** 앵커 표시 — 대상 텍스트와 (삽입이면) 앞/뒤. */
 function anchorText(a: Args, withPosition: boolean): string {
-  const anchor = rec(a['anchor']);
+  // find 와 문자열 앵커는 {text} 의 줄임이고, 옆의 occurrence/position 은 앵커 안쪽과 같은 뜻이다
+  const anchor = typeof a['find'] === 'string' ? { text: a['find'] }
+    : typeof a['anchor'] === 'string' ? { text: a['anchor'] } : rec(a['anchor']);
   const text = str(anchor['text']);
   if (!text) return '';
-  const occurrence = num(anchor['occurrence']);
-  const position = str(anchor['position']);
+  const occurrence = num(anchor['occurrence'] ?? a['occurrence']);
+  const position = str(anchor['position'] ?? a['position']);
   const where = withPosition
     ? position === 'before' ? ' 앞' : position === 'replace' ? ' 자리' : ' 뒤'
     : '';
   return `${quote(text)}${where}${occurrence !== null && occurrence > 1 ? ` (${occurrence}번째)` : ''}`;
 }
 
-/** 편집 위치 — 앵커가 있으면 앵커, 아니면 문단 번호. */
+/** 편집 위치 — 앵커가 있으면 앵커, 아니면 문단 번호(들). */
 function target(a: Args, withPosition = false): string {
-  return anchorText(a, withPosition) || para(a);
+  return anchorText(a, withPosition) || paras(a) || para(a);
 }
 
 function table(a: Args): string {
@@ -367,7 +398,7 @@ const SPECS: Record<string, ToolSpec> = {
   },
   apply_style: {
     category: 'edit', label: '스타일 적용',
-    summary: (a) => join([para(a), a['styleId'] !== undefined ? `스타일 ${String(a['styleId'])}` : '']),
+    summary: (a) => join([paras(a) || para(a), a['styleId'] !== undefined ? `스타일 ${String(a['styleId'])}` : '']),
   },
   apply_list: {
     category: 'edit',
@@ -524,7 +555,8 @@ const SPECS: Record<string, ToolSpec> = {
     },
   },
   present_implementation_plan: { category: 'other', label: '계획 제시', summary: (a) => quote(str(a['title']), 32) },
-  update_plan_progress: { category: 'other', label: '계획 진행 갱신', summary: (a) => str(a['status']) },
+  commit_version: { category: 'other', label: '커밋', summary: (a) => str(a['message']) },
+  update_todos: { category: 'other', label: '할 일 갱신', summary: (a) => Array.isArray(a['todos']) ? `${a['todos'].filter((t: { status?: unknown }) => t?.status === 'completed').length}/${a['todos'].length}` : '' },
   download_file: { category: 'other', label: '파일 내려받기', summary: (a) => str(a['filename']) || host(str(a['url'])) },
   publish_artifact: { category: 'other', label: '파일 내보내기', summary: (a) => str(a['fileName']) },
   publish_cloud_document: { category: 'other', label: 'Cloud 게시' },
@@ -608,7 +640,7 @@ function batchItems(args: Args, key: 'edits' | 'reads'): Array<{ name: string; a
   if (!Array.isArray(list)) return [];
   return list.map((item) => {
     const entry = rec(item);
-    return { name: baseToolName(str(entry['tool'])), args: rec(entry['args']) };
+    return { name: baseToolName(str(entry['tool'])), args: batchItemArgs(entry) ?? {} };
   });
 }
 
@@ -943,10 +975,9 @@ function itemOutcomes(name: string, args: Args, result: Args): ToolItemOutcome[]
   return out;
 }
 
-/** 실패한 apply_edits 의 “edits[3] (…) failed” 에서 몇 번째 항목이 막혔는지 읽는다. */
-function failedItemIndex(message: string): number | null {
-  const match = /edits\[(\d+)\]/.exec(message);
-  return match ? Number(match[1]) : null;
+/** 실패한 apply_edits 의 “edits[0] (…): …; edits[3] (…): …” 에서 막힌 항목 번호를 모두 읽는다. */
+function failedItemIndexes(message: string): number[] {
+  return [...new Set([...message.matchAll(/edits\[(\d+)\]/g)].map((match) => Number(match[1])))];
 }
 
 function refinedLabel(name: string, args: Args, result: Args | null): string | undefined {
@@ -986,17 +1017,17 @@ export function presentToolResult(input: ToolResultInput): ToolOutcomeView {
     const code = error?.code ?? '';
     const message = error?.message ?? '';
     const items = name === 'apply_edits' ? batchItems(args, 'edits') : [];
-    const failedAt = failedItemIndex(message);
+    const failedAt = items.length ? failedItemIndexes(message) : [];
     return {
       ok: false,
       text: join([
         code ? errorText(code) : known ? '실행 오류' : clip(message.split('\n')[0] ?? '', 60) || '실패',
-        failedAt !== null && items.length ? `${failedAt + 1}번째 항목` : '',
+        failedAt.length === 1 ? `${failedAt[0] + 1}번째 항목` : failedAt.length > 1 ? `${failedAt.length}개 항목` : '',
       ]),
       ...(message ? { detail: clip(message, 400) } : {}),
       notices: [],
-      ...(failedAt !== null && items.length
-        ? { items: items.map((_, i) => ({ ok: i !== failedAt, text: i === failedAt ? errorText(code) : '되돌림' })) }
+      ...(failedAt.length
+        ? { items: items.map((_, i) => (failedAt.includes(i) ? { ok: false, text: errorText(code) } : { ok: true, text: '되돌림' })) }
         : {}),
     };
   }

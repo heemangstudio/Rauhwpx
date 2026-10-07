@@ -1,15 +1,14 @@
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { createServer } from 'vite';
 import puppeteer from 'puppeteer-core';
 import { auditScenarios } from '../src/sidebar-preview/audit-scenarios.ts';
+import { findBrowserExecutable } from '../tests/browser-support.ts';
 
 const studio = resolve(import.meta.dirname, '..');
 const artifacts = resolve(import.meta.dirname, 'artifacts');
-const executablePath = [process.env.CHROME_PATH, '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find((path) => path && existsSync(path));
+const executablePath = findBrowserExecutable();
 assert(executablePath, 'Set CHROME_PATH to Chrome/Chromium.');
 await mkdir(artifacts, { recursive: true });
 const server = await createServer({ configFile: resolve(studio, 'vite.sidebar.config.ts'),
@@ -48,8 +47,18 @@ try {
       assert.deepEqual(await page.evaluate(() => window.sidebarPreview.snapshot().changeEvents), ['set-finalized', 'approved']);
       assert.equal(await page.$eval('.ag-root', (node) => node.classList.contains('ag-review-drawer-open')), true);
     }
+    if (scene.params.mode && scene.id.startsWith('mode-')) {
+      const labels = { chat: '채팅', plan: '플랜', agent: '에이전트', full: '전체' };
+      assert.equal(await page.$eval('.ag-mode-btn', (node) => node.textContent), labels[scene.params.mode]);
+    }
+    if (scene.id === 'menu-mode') assert.equal(await page.$$eval('.ag-mode.ag-model-open .ag-mode-item', (nodes) => nodes.length), 4);
+    if (scene.id === 'plan-run-modes') {
+      assert.deepEqual(await page.$$eval('.ag-plan-actions button', (nodes) => nodes.map((node) => node.textContent)),
+        ['수정 요청', '전체 접근으로 실행', '에이전트로 실행']);
+    }
     if (scene.params['cloud-phase']) assert.notEqual(await page.evaluate(() => window.sidebarPreview.cloud.controller.getSnapshot().session.kind), 'idle');
-    if (['chat-empty', 'chat-review', 'chat-changes-full', 'cloud-options', 'cloud-disconnected'].includes(scene.id))
+    if (['chat-empty', 'chat-review', 'chat-changes-full', 'cloud-options', 'cloud-disconnected',
+      'mode-chat', 'mode-plan', 'mode-agent', 'mode-full', 'menu-mode', 'plan-run-modes'].includes(scene.id))
       await page.screenshot({ path: resolve(artifacts, `audit-${scene.id}.png`) });
     console.log(`PASS ${scene.id}`);
   }

@@ -20,7 +20,7 @@ const css = source('../src/styles/editor.css');
 
 test('agent editing lock blocks mutations but leaves view and copy commands available', () => {
   const executed: string[] = [];
-  const definitions = new Map(['edit:copy', 'view:zoom-in', 'format:bold', 'insert:table', 'file:open'].map((id) => [
+  const definitions = new Map(['edit:copy', 'view:zoom-in', 'format:bold', 'insert:table', 'file:open', 'edit:select-all', 'edit:find'].map((id) => [
     id,
     { execute: () => executed.push(id) },
   ]));
@@ -35,6 +35,8 @@ test('agent editing lock blocks mutations but leaves view and copy commands avai
   assert.equal(dispatcher.dispatch('format:bold'), false);
   assert.equal(dispatcher.dispatch('insert:table'), false);
   assert.equal(dispatcher.dispatch('file:open'), false);
+  assert.equal(dispatcher.dispatch('edit:select-all'), false);
+  assert.equal(dispatcher.dispatch('edit:find'), false);
   assert.deepEqual(executed, ['edit:copy', 'view:zoom-in']);
 });
 
@@ -156,7 +158,8 @@ test('planning saves after a user edit notify the hub mid-plan', () => {
 test('entering plan mode unlocks the lease immediately and holds messages until the hub finishes', () => {
   assert.match(bridge, /this\.beginWorkflowSwitch\(workflow\);[\s\S]*type: 'chat-workflow-set'/);
   assert.match(bridge, /this\.workflowSwitchPending = true;[\s\S]*this\.resetWorkflowState\(workflow\)/);
-  assert.match(bridge, /if \(this\.pendingChatStart \|\| this\.workflowSwitchPending \|\| this\.activeAgent === null \|\| this\.queuedMessages\.length > 0\)/);
+  // 연결이 끊긴 동안 보낸 메시지도 큐에 담아 재연결 뒤에 다시 보낸다.
+  assert.match(bridge, /if \(this\.pendingChatStart \|\| this\.workflowSwitchPending \|\| this\.activeAgent === null[\s\S]*this\.state !== 'connected'\)/);
   assert.match(bridge, /if \(this\.workflowSwitchPending \|\| this\.pendingChatStart\) return;/);
   assert.match(bridge, /case 'workflow-changed':[\s\S]*this\.finishWorkflowSwitch\(\);[\s\S]*this\.flushQueuedMessages\(\)/);
   assert.match(bridge, /BACKEND_SWITCH_FAILED[\s\S]*INVALID_WORKFLOW[\s\S]*WORKFLOW_ERROR[\s\S]*this\.revertWorkflowSwitch\(\)/);

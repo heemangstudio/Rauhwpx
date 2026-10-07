@@ -53,6 +53,23 @@ test('every desktop release bundles both cloud runtimes before packaging', () =>
     && desktopWasm < desktopStudio && desktopStudio < desktopPackaging);
 });
 
+test('desktop installers share one Linux-built WASM package', () => {
+  // Windows wasm-opt crashed in Binaryen on engine code that optimizes fine on Linux.
+  const upload = release.jobs.wasm.steps.find((step) => step.uses?.startsWith('actions/upload-artifact@'));
+  assert.equal(upload.with.name, 'release-wasm');
+  assert.match(release.jobs.wasm['runs-on'], /ubuntu/);
+  for (const platform of ['macos', 'windows']) {
+    assert.ok(release.jobs[platform].needs.includes('wasm'), platform);
+    const step = release.jobs[platform].steps.find((item) => item.uses === './.github/actions/package-desktop');
+    assert.equal(step.with['wasm-artifact'], 'release-wasm', platform);
+  }
+  assert.ok(release.jobs.linux.needs.includes('wasm'));
+  const linuxWasm = release.jobs.linux.steps.find((step) => step.uses === './.github/actions/build-wasm');
+  assert.equal(linuxWasm.with.artifact, 'release-wasm');
+  const desktopWasm = desktopPackage.runs.steps.find((step) => step.uses === './.github/actions/build-wasm');
+  assert.equal(desktopWasm.with.artifact, '${{ inputs.wasm-artifact }}');
+});
+
 test('cloud release preserves architecture artifacts, signing and sandbox smoke checks', () => {
   const cloud = release.jobs.cloud;
   assert.deepEqual(cloud.strategy.matrix.include.map((entry) => entry.asset_arch).sort(), ['amd64', 'arm64']);
