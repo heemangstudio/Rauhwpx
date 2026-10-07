@@ -1,0 +1,186 @@
+{
+  "accepted_engine_commit": "2c415886995b219b2209b9e182e6f6401b9d93f8",
+  "accepted_engine_tree": "1fc3ed296834995cade9c066b799f20a310b8aca",
+  "campaign_base_commit": "6148a38a6bf4691e8f7c4b8b588daaf8d5a59aa6",
+  "analysis_stop_checkpoint": "3e201f690725518b3f263c70b0538bf63fc858a9",
+  "accepted_documents": [
+    {
+      "id": "cell-mixed-text",
+      "accepted_at_engine_commit": "9ab405e7",
+      "private_analysis_evidence": "data/targeted-parity/inline-picture-justification"
+    },
+    {
+      "id": "gov-excavation-report",
+      "accepted_at_engine_commit": "6af1dc8b",
+      "private_analysis_evidence": "data/targeted-parity/gov-excavation-reflow/evidence"
+    },
+    {
+      "id": "gov-fire-report",
+      "accepted_at_engine_commit": "1372c052",
+      "private_analysis_evidence": "data/targeted-parity/gov-fire-report/stage15"
+    },
+    {
+      "id": "medicine-plan",
+      "accepted_at_engine_commit": "35e792b9ecf47e29a9bdb5aebdee2f78f30b7a35",
+      "private_analysis_evidence": "data/targeted-parity/candidates/medicine-combined-stage3"
+    },
+    {
+      "id": "birthday-receipt",
+      "accepted_at_engine_commit": "35e792b9ecf47e29a9bdb5aebdee2f78f30b7a35",
+      "private_analysis_evidence": "data/targeted-parity/candidates/medicine-combined-stage3"
+    },
+    {
+      "id": "work-change",
+      "accepted_at_engine_commit": "35e792b9ecf47e29a9bdb5aebdee2f78f30b7a35",
+      "private_analysis_evidence": "data/targeted-parity/candidates/medicine-combined-stage3"
+    },
+    {
+      "id": "water-plan",
+      "accepted_at_engine_commit": "35e792b9ecf47e29a9bdb5aebdee2f78f30b7a35",
+      "private_analysis_evidence": "data/targeted-parity/candidates/medicine-combined-stage3"
+    },
+    {
+      "id": "meal-payment",
+      "accepted_at_engine_commit": "84913972e39e661c382bb8310df4253e308957ac",
+      "private_analysis_evidence": "data/targeted-parity/candidates/meal-refresh-stage1"
+    },
+    {
+      "id": "audit-opinion",
+      "accepted_at_engine_commit": "84913972e39e661c382bb8310df4253e308957ac",
+      "private_analysis_evidence": "data/targeted-parity/candidates/meal-refresh-stage1"
+    },
+    {
+      "id": "training-annotation",
+      "accepted_at_engine_commit": "a3df72b90fb2731c467753c9a9434180bd8988ee",
+      "private_analysis_evidence": "data/targeted-parity/candidates/training-ruby-final"
+    },
+    {
+      "id": "fdi-2024-q1",
+      "accepted_at_engine_commit": "afdaaee978271c7ae1dea98368f814bc17908aa0",
+      "private_analysis_evidence": "data/targeted-parity/candidates/fdi-registered-metrics-stage2"
+    },
+    {
+      "id": "fdi-2024-q2",
+      "accepted_at_engine_commit": "2c415886995b219b2209b9e182e6f6401b9d93f8",
+      "private_analysis_evidence": "data/targeted-parity/candidates/fdi-negative-spacing-stage1v2"
+    }
+  ],
+  "initial_passing_control_documents": 5,
+  "excluded_unaccepted_branch_heads": {
+    "lecturer": "08c7de83b00c49d0abe5a841300a1e7fd9fe0f71",
+    "mock": "ef440d38afeeda4b8c44c5e197c74abbb1e1bf3a"
+  },
+  "prior_validation": {
+    "full_rust": {
+      "status": "PASS independent closed full Rust log audit",
+      "at": "2026-10-06T21:36:01.291454+00:00",
+      "tree": "1fc3ed296834995cade9c066b799f20a310b8aca",
+      "passed": 5361,
+      "failed": 0,
+      "ignored": 68,
+      "result_groups": 425,
+      "cargo_targets": 424,
+      "doc_test_groups": 1,
+      "exit_code": 0,
+      "raw_log_sha256": "70f2f04f04d925cb1edc996942d77736b94d125cb78125d6e211d613fb05545e",
+      "final_manifest_sha256": "55037dc54f42abe0d94be860af825d831d35a92d2340fe59ab9276d542dd3631",
+      "final_manifest_files_verified": 18
+    },
+    "studio": {
+      "passed": 2628,
+      "failed": 0,
+      "skipped": 1,
+      "typescript_exit": 0
+    },
+    "fresh_wasm": {
+      "sha256": "16f391496079f08e8fa0e6f90101046b1369e9a93319f0c2e6a1e8bb3e0e2aba",
+      "build_exit_code": 0,
+      "build_log_sha256": "056d3023737b191222b78e5942cf366f1eb676e99d21b3c09d50b973846f2443"
+    },
+    "native": {
+      "comparison_pages": 38,
+      "source_files_verified": 23,
+      "numeric_rows_verified": 357,
+      "numeric_origins_verified": 2547
+    },
+    "browser": {
+      "capture_count": 152,
+      "document_inputs": 17,
+      "required_font_faces": 14,
+      "modes": [
+        "screen-required",
+        "screen-empty",
+        "print-required",
+        "print-empty"
+      ]
+    },
+    "q2_final_scores": {
+      "native": {
+        "pages": 9,
+        "official_pages": 9,
+        "page_scores": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.02
+        ],
+        "worst_page_pct": 0.02,
+        "worst_band_pct": 0.06
+      },
+      "screen-required": {
+        "worst_page_pct": 0.01,
+        "worst_band_pct": 0.04
+      },
+      "print-required": {
+        "worst_page_pct": 0.01,
+        "worst_band_pct": 0.04
+      }
+    },
+    "regression_qualification": "Eight Q1/Q2 table pages improve or retain native X accuracy with all non-X geometry exact. Fire empty-font desktop discovery variation independently cross-reproduced. Training screen placeholder inherited and exact. Six synthetic controls excluded from authentic count."
+  },
+  "pr_preparation_validation": {
+    "engine_changes": "Unchanged from accepted commit; only this evidence directory was added.",
+    "source_files_rehashed": 23,
+    "frozen_wasm_files_rehashed": 8,
+    "full_rust_raw_log_rehashed": true,
+    "native_or_gui_calibration_restarted": false,
+    "main_commit_checked": "674159d8efb37bc5839f7742a8260190f8568496",
+    "merge_conflict_files": [
+      "rhwp/rhwp-studio/src/core/font-loader.ts",
+      "rhwp/rhwp-studio/src/core/font-presence.ts",
+      "rhwp/rhwp-studio/src/core/wasm-bridge.ts",
+      "rhwp/rhwp-studio/tests/font-presence-detection.test.ts",
+      "rhwp/rhwp-studio/tests/font-substitution.test.ts",
+      "rhwp/rhwp-studio/tests/local-fonts.test.ts",
+      "rhwp/src/document_core/commands/document.rs",
+      "rhwp/src/renderer/composer.rs",
+      "rhwp/src/renderer/composer/line_breaking.rs",
+      "rhwp/src/renderer/composer/tests.rs",
+      "rhwp/src/renderer/height_measurer.rs",
+      "rhwp/src/renderer/layout.rs",
+      "rhwp/src/renderer/layout/paragraph_layout.rs",
+      "rhwp/src/renderer/layout/shape_layout.rs",
+      "rhwp/src/renderer/layout/table_cell_content.rs",
+      "rhwp/src/renderer/layout/table_layout.rs",
+      "rhwp/src/renderer/layout/table_partial.rs",
+      "rhwp/src/renderer/layout/text_measurement.rs",
+      "rhwp/src/renderer/layout/utils.rs",
+      "rhwp/src/renderer/mod.rs",
+      "rhwp/src/renderer/runtime_font_metrics.rs",
+      "rhwp/src/renderer/style_resolver.rs",
+      "rhwp/src/renderer/typeset.rs"
+    ]
+  },
+  "retained_private_analysis_records": [
+    "data/targeted-parity/campaign.json",
+    "data/reconstruction/calibration-stop-20261007/index.json",
+    "data/targeted-parity/candidates/fdi-negative-spacing-stage1v2/root-completion",
+    "data/targeted-parity/candidates/fdi-negative-spacing-stage1v2/root-native",
+    "data/targeted-parity/candidates/fdi-negative-spacing-stage1v2/root-browser"
+  ]
+}
