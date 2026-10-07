@@ -2724,8 +2724,12 @@ pub(super) fn compute_line_extra_spacing(
                 break;
             }
         }
-        // 마지막 가시 글자 뒤 자간은 호출부의 source 문맥 검증을 통과한
-        // plain_distribute_used_width가 이미 뺀다. 여기서는 후행 공백만 제외한다.
+        // Mac의 검증된 일반 문맥은 plain_distribute_used_width가 마지막 자간을 뺀다.
+        // Windows는 호출부 보정이 없으므로 여기서 마지막 가시 글자 뒤 자간을 뺀다.
+        if styles.font_metrics_policy == crate::model::provenance::FontMetricsPolicy::HancomWindows
+        {
+            trailing_width += trailing_letter_spacing;
+        }
         let slack = available_width - (total_text_width - trailing_width);
         let mut gaps = visible_count.saturating_sub(1);
         if slack < 0.0 {
@@ -3214,11 +3218,11 @@ impl LayoutEngine {
             ) {
             let mut space_excess = 0.0;
             let mut trailing_ls = 0.0;
-            'trailing: for &(s, e) in segments.iter().rev() {
-                let mut saw_visible = false;
+            // 앞 세그먼트와는 표가 사이에 있으므로 마지막 텍스트만 검사한다.
+            if let Some(&(s, e)) = segments.last() {
                 for ch_idx in (s..e).rev() {
                     let ch = text_chars[ch_idx];
-                    if matches!(ch, ' ' | '\u{3000}') && !saw_visible {
+                    if matches!(ch, ' ' | '\u{3000}') {
                         let utf16_pos = offsets[ch_idx];
                         let cs_id = para
                             .char_shapes
@@ -3231,28 +3235,25 @@ impl LayoutEngine {
                         let ts = resolved_to_text_style(styles, cs_id, lang);
                         space_excess += estimate_text_width(&ch.to_string(), &ts);
                     } else {
-                        if !saw_visible {
-                            let utf16_pos = offsets[ch_idx];
-                            let cs_id = para
-                                .char_shapes
-                                .iter()
-                                .rev()
-                                .find(|cs| cs.start_pos <= utf16_pos)
-                                .map(|cs| cs.char_shape_id as u32)
-                                .unwrap_or(char_style_id);
-                            let mapped = if crate::renderer::composer::is_wingdings_pua(ch) {
-                                ch
-                            } else {
-                                map_pua_bullet_char(ch)
-                            };
-                            let lang = super::super::style_resolver::detect_lang_category(mapped);
-                            let mut ts = resolved_to_text_style(styles, cs_id, lang);
-                            let spaced = estimate_text_width(&mapped.to_string(), &ts);
-                            ts.letter_spacing = 0.0;
-                            trailing_ls = spaced - estimate_text_width(&mapped.to_string(), &ts);
-                            saw_visible = true;
-                        }
-                        break 'trailing;
+                        let utf16_pos = offsets[ch_idx];
+                        let cs_id = para
+                            .char_shapes
+                            .iter()
+                            .rev()
+                            .find(|cs| cs.start_pos <= utf16_pos)
+                            .map(|cs| cs.char_shape_id as u32)
+                            .unwrap_or(char_style_id);
+                        let mapped = if crate::renderer::composer::is_wingdings_pua(ch) {
+                            ch
+                        } else {
+                            map_pua_bullet_char(ch)
+                        };
+                        let lang = super::super::style_resolver::detect_lang_category(mapped);
+                        let mut ts = resolved_to_text_style(styles, cs_id, lang);
+                        let spaced = estimate_text_width(&mapped.to_string(), &ts);
+                        ts.letter_spacing = 0.0;
+                        trailing_ls = spaced - estimate_text_width(&mapped.to_string(), &ts);
+                        break;
                     }
                 }
             }
@@ -10702,18 +10703,32 @@ mod plain_distribution_load_tests {
     #[test]
     fn loaded_plain_distribution_excludes_only_visible_terminal_tracking() {
         for in_cell in [false, true] {
-            for tracking in [-20, 0, 10] {
-                let (style, _) =
-                    rendered_label(tracking, in_cell, FontMetricsPolicy::HcrDeclared, 0, 0);
-                let positions = compute_char_positions("가나다라", &style);
-                let mut bare = style.clone();
-                bare.letter_spacing = 0.0;
-                bare.extra_char_spacing = 0.0;
-                let last_ink_end = positions[3] + estimate_text_width("라", &bare);
-                assert!(
-                    (last_ink_end - 120.0).abs() < 0.01,
-                    "cell={in_cell} tracking={tracking}: {last_ink_end}"
-                );
+            for policy in [
+                FontMetricsPolicy::HcrDeclared,
+                FontMetricsPolicy::HancomWindows,
+            ] {
+                for tracking in [-20, 0, 10] {
+                    let (style, _) = rendered_label(tracking, in_cell, policy, 0, 0);
+                    let positions = compute_char_positions("가나다라", &style);
+                    let mut bare = style.clone();
+                    bare.letter_spacing = 0.0;
+                    bare.extra_char_spacing = 0.0;
+                    let last_ink_end = positions[3] + estimate_text_width("라", &bare);
+                    assert!(
+                        (last_ink_end - 120.0).abs() < 0.01,
+                        "cell={in_cell} policy={policy:?} tracking={tracking}: {last_ink_end}"
+                    );
+                    if policy == FontMetricsPolicy::HancomWindows {
+                        // 15pt 네 글자의 잉크와 문서 자간을 세 틈에만 넣어 120px에 맞춘다.
+                        let ink_width: f64 = "가나다라"
+                            .chars()
+                            .map(|ch| estimate_text_width(&ch.to_string(), &bare))
+                            .sum();
+                        let authored_tracking = 20.0 * f64::from(tracking) / 100.0;
+                        let expected_gap = (120.0 - ink_width - 3.0 * authored_tracking) / 3.0;
+                        assert!((style.extra_char_spacing - expected_gap).abs() < 0.01);
+                    }
+                }
             }
         }
     }
@@ -10775,7 +10790,11 @@ mod plain_distribution_load_tests {
                     Some(control),
                 )
                 .0;
-                assert!((native.extra_char_spacing - windows.extra_char_spacing).abs() < 0.01);
+                // 지원 밖 Mac 문맥은 -4px 끝 자간을 세 틈에 나눈 기존 차이를 유지한다.
+                assert!(
+                    (native.extra_char_spacing - windows.extra_char_spacing - 4.0 / 3.0).abs()
+                        < 0.01
+                );
             }
         }
     }
@@ -10794,9 +10813,10 @@ mod plain_distribution_load_tests {
         let vertical = rendered_label(-20, false, FontMetricsPolicy::HcrDeclared, 0, 1)
             .0
             .extra_char_spacing;
-        assert!((windows - native - 4.0 / 3.0).abs() < 0.01);
-        assert!((grid - windows).abs() < 0.01);
-        assert!((vertical - windows).abs() < 0.01);
+        assert!((windows - native).abs() < 0.01);
+        // 비격자 일반 Mac의 보정을 지원 밖 격자/세로쓰기까지 넓히지 않는다.
+        assert!((grid - native - 4.0 / 3.0).abs() < 0.01);
+        assert!((vertical - native - 4.0 / 3.0).abs() < 0.01);
     }
 }
 
@@ -11298,7 +11318,7 @@ mod inline_table_terminal_space_alignment_tests {
 
     #[test]
     fn inline_table_alignment_excludes_terminal_spaces_and_keeps_leading_spaces() {
-        let table_x = |trailing: bool, space: &str, alignment| {
+        let table_x = |before: &str, after: &str, alignment, letter_spacing| {
             let table = Table {
                 row_count: 1,
                 col_count: 1,
@@ -11318,9 +11338,21 @@ mod inline_table_terminal_space_alignment_tests {
                 }],
                 ..Default::default()
             };
+            let mut char_offsets = Vec::new();
+            let mut utf16_pos = 0u32;
+            for ch in before.chars() {
+                char_offsets.push(utf16_pos);
+                utf16_pos += ch.len_utf16() as u32;
+            }
+            utf16_pos += 8;
+            for ch in after.chars() {
+                char_offsets.push(utf16_pos);
+                utf16_pos += ch.len_utf16() as u32;
+            }
             let para = Paragraph {
-                text: space.into(),
-                char_offsets: vec![if trailing { 8 } else { 0 }],
+                text: format!("{before}{after}"),
+                char_count: utf16_pos + 1,
+                char_offsets,
                 char_shapes: vec![CharShapeRef::default()],
                 controls: vec![Control::Table(Box::new(table))],
                 line_segs: vec![LineSeg {
@@ -11333,6 +11365,7 @@ mod inline_table_terminal_space_alignment_tests {
             let styles = ResolvedStyleSet {
                 char_styles: vec![ResolvedCharStyle {
                     font_size: 12.0,
+                    letter_spacing,
                     ..Default::default()
                 }],
                 para_styles: vec![ResolvedParaStyle {
@@ -11382,17 +11415,35 @@ mod inline_table_terminal_space_alignment_tests {
         let table_width = hwpunit_to_px(10_000, 96.0);
         for space in [" ", "\u{3000}"] {
             let center = (400.0 - table_width) / 2.0;
-            assert!((table_x(true, space, Alignment::Center) - center).abs() < 0.01);
+            assert!((table_x("", space, Alignment::Center, 0.0) - center).abs() < 0.01);
             assert!(
-                (table_x(false, space, Alignment::Center)
+                (table_x(space, "", Alignment::Center, 0.0)
                     - center
                     - estimate_text_width(space, &style) / 2.0)
                     .abs()
                     < 0.01
             );
             let right = 400.0 - table_width;
-            assert!((table_x(true, space, Alignment::Right) - right).abs() < 0.01);
-            assert!((table_x(false, space, Alignment::Right) - right).abs() < 0.01);
+            assert!((table_x("", space, Alignment::Right, 0.0) - right).abs() < 0.01);
+            assert!((table_x(space, "", Alignment::Right, 0.0) - right).abs() < 0.01);
+            for letter_spacing in [0.0, 1.2, -1.2] {
+                let before = format!("가{space}");
+                let after = space.repeat(2);
+                let tracked_style = crate::renderer::TextStyle {
+                    letter_spacing,
+                    ..style.clone()
+                };
+                let before_width = estimate_text_width(&before, &tracked_style);
+                for alignment in [Alignment::Center, Alignment::Right] {
+                    let expected = match alignment {
+                        Alignment::Center => center + before_width / 2.0,
+                        _ => right,
+                    };
+                    let actual = table_x(&before, &after, alignment, letter_spacing);
+                    assert!((actual - expected).abs() < 0.01,
+                        "space={space:?}, tracking={letter_spacing}, alignment={alignment:?}: {actual} vs {expected}");
+                }
+            }
         }
     }
 }

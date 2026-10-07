@@ -3176,9 +3176,11 @@ impl LayoutEngine {
 
     // 저장 셀 행 끝점은 stale 표 전체 높이로 마지막 행을 늘리지 않는다.
     // 41f428(axis1) → 41a0d4/41aa78 → 41b100/41b7f4: 셀 최소/콘텐츠 끝점 유지.
+    // 전체를 직접 조판한 줄은 구현 태그가 지워져도 한컴 저장 줄이 아니다.
     fn saved_tac_rows_own_height(&self, table: &Table) -> bool {
         let profile = self.profile.get();
         if !profile.hwpx_stored_layout()
+            || profile.own_line_layout()
             || !profile.native_hwpx_cell_margin()
             || profile.session_edited()
             || !table.common.treat_as_char

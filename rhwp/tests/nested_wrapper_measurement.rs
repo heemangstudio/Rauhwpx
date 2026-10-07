@@ -96,17 +96,23 @@ fn local_overlay_uses_occupied_endpoint_instead_of_serial_sum() {
     assert!((h - 100.0).abs() < 0.15, "local endpoint: {h}");
 }
 #[test]
-fn a_second_flow_child_keeps_stack_measurement() {
-    assert!(height(wrapper(false, false, true), false) > 125.0);
+fn saved_para_children_share_the_local_occupied_endpoint() {
+    let h = height(wrapper(false, false, true), false);
+    // Both children have explicit PARA frames; changing wrap mode does not stack them.
+    assert!((h - 100.0).abs() < 0.15, "local endpoint: {h}");
 }
 #[test]
 fn recursive_child_growth_is_not_clamped_to_wrapper_declaration() {
     assert!(height(wrapper(true, true, true), false) > 175.0);
 }
 #[test]
-fn fresh_and_edited_wrappers_keep_existing_measurement() {
+fn fresh_wrappers_stack_but_edited_saved_wrappers_keep_local_endpoints() {
     assert!(height(wrapper(true, false, false), false) > 125.0);
-    assert!(height(wrapper(true, false, true), true) > 125.0);
+    let edited = height(wrapper(true, false, true), true);
+    assert!(
+        (edited - 100.0).abs() < 0.15,
+        "edited saved endpoint: {edited}"
+    );
 }
 
 fn loaded_wrapper(zero_id: bool, duplicate_id: bool) -> rhwp::document_core::DocumentCore {
@@ -196,22 +202,47 @@ fn loaded_overlap_keeps_pagination_and_geometry_after_font_refresh() {
 }
 
 #[test]
-fn refresh_does_not_exempt_preexisting_dirty_or_ambiguous_wrapper_ids() {
+fn refresh_preserves_local_endpoints_and_preexisting_wrapper_invalidation() {
     for (zero, duplicate) in [(true, false), (false, true)] {
         let mut core = loaded_wrapper(zero, duplicate);
         assert_eq!(
             loaded_table(&core).common.instance_id,
             if zero { 0 } else { 1 }
         );
+        let child_ids: Vec<_> = loaded_table(&core).cells[0].paragraphs[0]
+            .controls
+            .iter()
+            .filter_map(|control| match control {
+                Control::Table(table) => Some(table.common.instance_id),
+                _ => None,
+            })
+            .collect();
+        let before = core.get_page_control_layout_native(0).unwrap();
         core.refresh_layout_native();
         assert_eq!(
             core.page_count(),
-            2,
-            "unproven identity keeps legacy measurement"
+            1,
+            "an ambiguous ID does not turn explicit PARA frames into a serial stack"
         );
+        assert!((height(loaded_table(&core).clone(), false) - 100.0).abs() < 0.15);
+        assert_eq!(core.get_page_control_layout_native(0).unwrap(), before);
+        assert_eq!(
+            loaded_table(&core).common.instance_id,
+            if zero { 0 } else { 1 }
+        );
+        let after_ids: Vec<_> = loaded_table(&core).cells[0].paragraphs[0]
+            .controls
+            .iter()
+            .filter_map(|control| match control {
+                Control::Table(table) => Some(table.common.instance_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(after_ids, child_ids);
     }
     for invalidation in 0..3 {
         let mut core = loaded_wrapper(false, false);
+        let before = core.get_page_control_layout_native(0).unwrap();
         let Control::Table(table) = &mut core.document_mut().sections[0].paragraphs[1].controls[0]
         else {
             panic!("loaded wrapper");
@@ -230,9 +261,22 @@ fn refresh_does_not_exempt_preexisting_dirty_or_ambiguous_wrapper_ids() {
         core.refresh_layout_native();
         assert_eq!(
             core.page_count(),
-            2,
-            "nested/cell/resize invalidation is retained"
+            1,
+            "invalidation without geometry changes keeps the occupied endpoint"
         );
+        assert!((height(loaded_table(&core).clone(), false) - 100.0).abs() < 0.15);
+        assert_eq!(core.get_page_control_layout_native(0).unwrap(), before);
+        let table = loaded_table(&core);
+        match invalidation {
+            0 => assert!(table.cells[0].dirty_flag),
+            1 => {
+                let Control::Table(child) = &table.cells[0].paragraphs[0].controls[0] else {
+                    panic!("flow child");
+                };
+                assert!(child.dirty);
+            }
+            _ => assert_eq!(table.local_resize_rows, vec![0]),
+        }
     }
     for vertical_edit in [false, true] {
         let mut core = loaded_wrapper(false, false);
@@ -252,9 +296,25 @@ fn refresh_does_not_exempt_preexisting_dirty_or_ambiguous_wrapper_ids() {
         core.refresh_layout_native();
         assert_eq!(
             core.page_count(),
-            2,
-            "actual dirty owner must not become a refresh exemption"
+            1,
+            "cell property changes do not introduce a serial stack"
         );
+        let table = loaded_table(&core);
+        let expected = if vertical_edit {
+            100.0
+        } else {
+            100.0 + 500.0 / 75.0
+        };
+        assert!((height(table.clone(), false) - expected).abs() < 0.15);
+        if vertical_edit {
+            assert_eq!(
+                table.cells[0].vertical_align,
+                rhwp::model::table::VerticalAlign::Center
+            );
+        } else {
+            assert!(table.cells[0].apply_inner_margin);
+            assert_eq!(table.cells[0].padding.top, 500);
+        }
     }
 }
 

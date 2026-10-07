@@ -516,13 +516,15 @@ fn loaded_zero_width_control_after_overwide_table_keeps_its_font_line() {
         (small_after.y - small_wide_after.y - 1_280.0 / 75.0).abs() < 0.15,
         "small control line must retain its actual rendered advance"
     );
-    let small_tail_boundary = loaded(body_width - 400, Some(12_500), 800);
+    // 저장·합성 줄의 fit은 4px 여유 없이 마지막 줄간격을 제외한다.
+    // 8pt 꼬리의 12080HU와 10pt 꼬리의 12400HU 사이에서 경계를 검증한다.
+    let small_tail_boundary = loaded(body_width - 400, Some(12_300), 800);
     assert_eq!(
         small_tail_boundary.page_count(),
         1,
         "pagination must use the tail's 8pt style, not the first table's 10pt style"
     );
-    let normal_tail_boundary = loaded(body_width - 400, Some(12_500), 1_000);
+    let normal_tail_boundary = loaded(body_width - 400, Some(12_300), 1_000);
     assert_eq!(
         normal_tail_boundary.page_count(),
         2,

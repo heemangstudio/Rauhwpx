@@ -1,4 +1,4 @@
-//! 쪽 번호 기본값은 문서 플랫폼 정책을 따르며 작성된 스타일과 가져온 글자 모양을 구분한다.
+//! 쪽 번호의 공통 기본값은 가져온 글자 모양과 독립적이며 작성된 스타일은 보존한다.
 use rhwp::document_core::DocumentCore;
 use rhwp::model::control::{Control, PageNumberPos};
 use rhwp::model::document::{Document, Section};
@@ -95,19 +95,20 @@ fn footer_style_for_source(
 }
 
 #[test]
-fn missing_page_number_style_uses_mac_preset_without_imported_shape_zero() {
+fn missing_page_number_style_uses_shared_preset_without_imported_shape_zero() {
     for zero_size in [1_000, 2_300] {
         let mac = footer_style(FontMetricsPolicy::HcrDeclared, None, zero_size);
         assert_eq!(mac.font_family, "함초롬돋움");
         assert!((mac.font_size - 40.0 / 3.0).abs() < 1e-6);
         let windows = footer_style(FontMetricsPolicy::HancomWindows, None, zero_size);
-        assert_eq!(windows.font_family, "바탕");
+        // main의 공통 10pt 기본값은 문서 플랫폼과 무관하게 HCR 돋움을 쓴다.
+        assert_eq!(windows.font_family, "함초롬돋움");
         assert_eq!(windows.font_metrics_policy, FontMetricsPolicy::HcrDeclared);
     }
 }
 
 #[test]
-fn authored_page_number_style_and_invalid_reference_preserve_existing_handling() {
+fn authored_page_number_style_is_preserved_and_invalid_reference_uses_shared_preset() {
     for policy in [
         FontMetricsPolicy::HcrDeclared,
         FontMetricsPolicy::HancomWindows,
@@ -117,17 +118,17 @@ fn authored_page_number_style_and_invalid_reference_preserve_existing_handling()
         assert_eq!(explicit.font_size, 24.0);
         assert_eq!(explicit.font_metrics_policy, policy);
         let invalid = footer_style(policy, Some(7), 2_300);
-        assert_eq!(invalid.font_family, "바탕");
+        assert_eq!(invalid.font_family, "함초롬돋움");
         assert_eq!(invalid.font_metrics_policy, FontMetricsPolicy::HcrDeclared);
     }
 }
 
 #[test]
-fn hwp3_page_number_defaults_keep_the_existing_font() {
+fn hwp3_page_number_defaults_use_the_shared_preset() {
     for (format, lineage) in [(SourceFormat::Hwp3, false), (SourceFormat::Hwpx, true)] {
         let style =
             footer_style_for_source(FontMetricsPolicy::HcrDeclared, None, 2_300, format, lineage);
-        assert_eq!(style.font_family, "바탕");
+        assert_eq!(style.font_family, "함초롬돋움");
         assert!((style.font_size - 40.0 / 3.0).abs() < 1e-6);
     }
 }

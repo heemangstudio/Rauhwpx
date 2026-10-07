@@ -144,7 +144,7 @@
     "regression_qualification": "Eight Q1/Q2 table pages improve or retain native X accuracy with all non-X geometry exact. Fire empty-font desktop discovery variation independently cross-reproduced. Training screen placeholder inherited and exact. Six synthetic controls excluded from authentic count."
   },
   "pr_preparation_validation": {
-    "engine_changes": "Unchanged from accepted commit; only this evidence directory was added.",
+    "engine_changes": "At initial PR preparation the accepted engine was unchanged. The main integration and corrections are validated separately below.",
     "source_files_rehashed": 23,
     "frozen_wasm_files_rehashed": 8,
     "full_rust_raw_log_rehashed": true,
@@ -185,13 +185,59 @@
   ],
   "main_integration_validation": {
     "base_commit": "674159d8efb37bc5839f7742a8260190f8568496",
-    "status": "in progress",
+    "status": "PASS local integration checks; current-head GitHub gates required before merge",
     "conflict_files_resolved": 23,
     "studio": {
       "passed": 2672,
       "failed": 0,
       "skipped": 2
     },
-    "native_or_gui_calibration_restarted": false
+    "native_or_gui_calibration_restarted": false,
+    "full_rust": {
+      "passed": 5548,
+      "failed": 0,
+      "ignored": 68,
+      "result_groups": 429,
+      "exit_code": 0,
+      "profile": "release-test",
+      "raw_log_sha256": "0673e48dc52c802559f7ab92afadea6b8da97bd1c68750c799e1bfdb3bb0939d"
+    },
+    "fresh_wasm": {
+      "build_exit_code": 0,
+      "sha256": "65a21ec5ae58dfd2cdcbc623c3233216b9dd38bf98657d89080c6ec430e721da",
+      "build_log_sha256": "34f7e972fe3eacad2c25f288383eb4de35cacfee06734f37fca942237ba28159"
+    },
+    "studio_build": {
+      "typescript_exit_code": 0,
+      "vite_exit_code": 0,
+      "build_log_sha256": "190332273a487a47ef735279fc51cc2c98496dff7b51bf6692706b6807b53922"
+    },
+    "browser": {
+      "table_open_edit_save_reopen": "PASS",
+      "generated_table_marker_save_reopen": "PASS",
+      "generated_table_pages_before": 1,
+      "generated_table_pages_after": 1,
+      "public_control_geometry_unchanged": true,
+      "page_errors": 0
+    },
+    "integration_correction_source_sha256": {
+      "rhwp/src/model/document.rs": "847d9bfa0c63900e722dddd1c2c3495cf8531b43d1a5b7ef1a01b2b423422889",
+      "rhwp/src/parser/hwpx/mod.rs": "5124ba46196d6d1420461f83ca3cc86ae6f123744e3f0e86577ec195da47dd28",
+      "rhwp/src/serializer/hwpx/mod.rs": "899583dc48b26ca98e35e624886d2ebacd6384b0a0bcc0bef5fbefab91d96329",
+      "rhwp/src/renderer/layout/paragraph_layout.rs": "5bb33811fd226e7e467534dcbc8cce6a0a92b41d4f81b002ea57b6d9677f7c22",
+      "rhwp/src/renderer/layout/table_layout.rs": "f258134abaf01e7dfe012393ce5d614f659b8cb01f1a9cd00a801665201047ad"
+    },
+    "private_validation_records": "data/engine-pr/456",
+    "corrections": [
+      "Apply Windows terminal tracking once and preserve guarded macOS distribution.",
+      "Preserve spaces before inline tables while excluding terminal spaces after the last table.",
+      "Exclude own-composed rows from Hancom saved-row authority.",
+      "Preserve own-composed HWPX provenance through repeated save/reopen without changing live line tags."
+    ],
+    "fixture_adaptations": [
+      "Use main PARA occupied endpoints while preserving invalidation flags and geometry.",
+      "Keep main shared page-number preset and explicit authored styles.",
+      "Place the tail-fit boundary between 8pt and 10pt heights without the removed 4px tolerance."
+    ]
   }
 }
