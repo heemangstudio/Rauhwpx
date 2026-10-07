@@ -2238,6 +2238,7 @@ fn test_layout_with_composed_styles() {
         border_styles: Vec::new(),
         numberings: Vec::new(),
         bullets: Vec::new(),
+        ..Default::default()
     };
 
     let page_content = PageContent {
@@ -2366,6 +2367,7 @@ fn test_layout_multi_run_x_position() {
         border_styles: Vec::new(),
         numberings: Vec::new(),
         bullets: Vec::new(),
+        ..Default::default()
     };
 
     let page_content = PageContent {
@@ -2449,6 +2451,7 @@ fn test_resolved_to_text_style() {
         border_styles: Vec::new(),
         numberings: Vec::new(),
         bullets: Vec::new(),
+        ..Default::default()
     };
 
     let ts = resolved_to_text_style(&styles, 0, 0);
@@ -2479,6 +2482,7 @@ fn test_resolved_to_text_style_with_ratio() {
         border_styles: Vec::new(),
         numberings: Vec::new(),
         bullets: Vec::new(),
+        ..Default::default()
     };
 
     let ts = resolved_to_text_style(&styles, 0, 0);

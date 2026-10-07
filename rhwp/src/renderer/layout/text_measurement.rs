@@ -180,12 +180,14 @@ fn declared_family_available(font_family: &str) -> bool {
     if primary.is_empty() {
         return true;
     }
-    if ACTIVE_SHAPING_FONTS.with(|active| {
-        active
-            .borrow()
-            .iter()
-            .any(|font| font.family.eq_ignore_ascii_case(primary))
-    }) {
+    if crate::renderer::runtime_font_metrics::face_available(primary)
+        || ACTIVE_SHAPING_FONTS.with(|active| {
+            active
+                .borrow()
+                .iter()
+                .any(|font| font.family.eq_ignore_ascii_case(primary))
+        })
+    {
         return true;
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -202,27 +204,29 @@ fn declared_family_available(font_family: &str) -> bool {
     }
     #[cfg(target_arch = "wasm32")]
     {
-        use wasm_bindgen::{JsCast, JsValue};
-
-        if let Some(hit) = BROWSER_FONT_AVAIL.with(|cache| cache.borrow().get(primary).copied()) {
-            return hit;
-        }
-        let global = js_sys::global();
-        let available =
-            js_sys::Reflect::get(&global, &JsValue::from_str("isDeclaredFontFamilyAvailable"))
-                .ok()
-                .and_then(|value| value.dyn_into::<js_sys::Function>().ok())
-                .and_then(|probe| probe.call1(&global, &JsValue::from_str(primary)).ok())
-                .and_then(|value| value.as_bool());
-        if let Some(available) = available {
-            BROWSER_FONT_AVAIL.with(|cache| {
-                cache.borrow_mut().insert(primary.to_string(), available);
-            });
-            available
-        } else {
-            true
-        }
+        browser_font_family_available(primary).unwrap_or(true)
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn browser_font_family_available(primary: &str) -> Option<bool> {
+    use wasm_bindgen::{JsCast, JsValue};
+    if let Some(hit) = BROWSER_FONT_AVAIL.with(|cache| cache.borrow().get(primary).copied()) {
+        return Some(hit);
+    }
+    let global = js_sys::global();
+    let available =
+        js_sys::Reflect::get(&global, &JsValue::from_str("isDeclaredFontFamilyAvailable"))
+            .ok()
+            .and_then(|value| value.dyn_into::<js_sys::Function>().ok())
+            .and_then(|probe| probe.call1(&global, &JsValue::from_str(primary)).ok())
+            .and_then(|value| value.as_bool());
+    if let Some(available) = available {
+        BROWSER_FONT_AVAIL.with(|cache| {
+            cache.borrow_mut().insert(primary.to_string(), available);
+        });
+    }
+    available
 }
 
 /// 문서 선언 대체와 HFT 별칭 대체 글꼴의 측정 규칙.
@@ -853,6 +857,29 @@ pub fn extract_tab_leaders_with_extended(
 /// [#2132] 공용 글자-워크 — Embedded/Wasm measurer 의 compute_char_positions 중복 소거.
 /// 폭 산출원(char_px_raw)과 인라인 탭 divergent 경로(inline_tab_x)만 measurer 별 훅.
 /// 나머지(특수문자, 자간 클램프, 공백, 커스텀/기본 탭)는 1벌.
+// macOS 조판은 음수 advance도 유지하고, Windows 경로는 기존 최소 폭을 유지한다.
+fn character_advance(base: f64, c: char, style: &TextStyle, font_size: f64, ratio: f64) -> f64 {
+    let authored = scaled_glyph_advance(base, c, style, font_size, ratio);
+    let word = if c == ' ' {
+        style.extra_word_spacing
+    } else {
+        0.0
+    };
+    let advance = authored + style.extra_char_spacing + word;
+    if style.font_metrics_policy == FontMetricsPolicy::HcrDeclared
+        || (style.native_negative_spacing
+            && style.letter_spacing == 0.0
+            && style.extra_char_spacing < 0.0
+            && advance > 0.0)
+    {
+        advance
+    } else if style.letter_spacing + style.extra_char_spacing < 0.0 {
+        advance.max(base * ratio * 0.5)
+    } else {
+        advance
+    }
+}
+
 fn compute_char_positions_walk(
     text: &str,
     style: &TextStyle,
@@ -902,15 +929,7 @@ fn compute_char_positions_walk(
             return 0.0;
         }
         let char_px = char_px_raw(i, c, &chars, &cluster_len);
-        let mut w =
-            scaled_glyph_advance(char_px, c, style, font_size, ratio) + style.extra_char_spacing;
-        if c == ' ' {
-            w += style.extra_word_spacing;
-        }
-        // 압축 자간은 글자마다 그대로 뺀다. 한컴은 좁은 글자(쉼표·마침표)의 advance 가
-        // 음수가 되어도 클램프하지 않는다 (fdi-press 압축 셀 `(△433.6)`: `.` 뒤 `6` 이
-        // 0.13pt 앞에 놓임). 글자 폭 비례 자간은 −100% 전에는 음수가 되지 않는다.
-        w
+        character_advance(char_px, c, style, font_size, ratio)
     };
 
     let mut tab_char_idx = 0usize; // inline_tabs 인덱스
@@ -1102,15 +1121,7 @@ impl TextMeasurer for EmbeddedTextMeasurer {
                 font_size * 0.5
             };
             let base_w = base_w_raw;
-            let mut w =
-                scaled_glyph_advance(base_w, c, style, font_size, ratio) + style.extra_char_spacing;
-            if c == ' ' {
-                w += style.extra_word_spacing;
-            }
-            // 압축 자간은 글자마다 그대로 뺀다. 한컴은 좁은 글자(쉼표·마침표)의 advance 가
-            // 음수가 되어도 클램프하지 않는다 (fdi-press 압축 셀 `(△433.6)`: `.` 뒤 `6` 이
-            // 0.13pt 앞에 놓임). 글자 폭 비례 자간은 −100% 전에는 음수가 되지 않는다.
-            w
+            character_advance(base_w, c, style, font_size, ratio)
         };
 
         let mut total = 0.0;
@@ -1745,15 +1756,7 @@ impl TextMeasurer for WasmTextMeasurer {
                     )
                 };
             let char_px = char_px_raw;
-            let mut w = scaled_glyph_advance(char_px, c, style, font_size, ratio)
-                + style.extra_char_spacing;
-            if c == ' ' {
-                w += style.extra_word_spacing;
-            }
-            // 압축 자간은 글자마다 그대로 뺀다. 한컴은 좁은 글자(쉼표·마침표)의 advance 가
-            // 음수가 되어도 클램프하지 않는다 (fdi-press 압축 셀 `(△433.6)`: `.` 뒤 `6` 이
-            // 0.13pt 앞에 놓임). 글자 폭 비례 자간은 −100% 전에는 음수가 되지 않는다.
-            w
+            character_advance(char_px, c, style, font_size, ratio)
         };
 
         let mut total = 0.0;
@@ -2094,6 +2097,7 @@ pub(crate) fn resolved_to_text_style(
             inline_tabs: Vec::new(),
             extra_word_spacing: 0.0,
             extra_char_spacing: 0.0,
+            native_negative_spacing: false,
             extra_dash_advance: 0.0,
             outline_type: cs.outline_type,
             shadow_type: cs.shadow_type,
@@ -2746,7 +2750,9 @@ fn custom_font_face_available(name: &str) -> bool {
         crate::renderer::font_paths::custom_font_face_available(name)
     }
     #[cfg(target_arch = "wasm32")]
-    false
+    {
+        browser_font_family_available(name).unwrap_or(false)
+    }
 }
 
 fn custom_face_char_em_advance(name: &str, bold: bool, italic: bool, c: char) -> Option<f64> {
@@ -3120,16 +3126,20 @@ fn measure_char_width_inner(
     // 치환 메트릭은 치환 서체가 실제로 설치돼 있을 때만(그 서체로 그려질 때) 쓴다.
     // 치환 서체도 없으면 페인트는 제네릭 폴백으로 내려가므로 요청 face의 베이크드
     // 정본 폭(돋움체 전각 구두점 등)이 더 가깝다.
-    let metric_name = if policy == FontMetricsPolicy::HcrDeclared && !face_available {
-        let substitutes = crate::renderer::hancom_substitute_faces(primary_name);
-        substitutes
+    let metric_name = if policy == FontMetricsPolicy::HcrDeclared
+        && !face_available
+        && !crate::renderer::runtime_font_metrics::has_face(primary_name, bold, italic)
+    {
+        crate::renderer::hancom_substitute_faces(primary_name)
             .iter()
             .copied()
-            .find(|s| custom_font_face_available(s))
-            // 한컴이 해석하지 못하는 face 는 기본 글꼴(함초롬돋움) 폭이 정본이다 —
-            // 치환 서체 파일이 없어도(wasm 등) 그 내장 메트릭으로 잰다.
+            .find(|s| {
+                custom_font_face_available(s)
+                    || crate::renderer::runtime_font_metrics::has_face(s, bold, italic)
+            })
             .or_else(|| {
-                (substitutes == crate::renderer::HANCOM_DEFAULT_FACES)
+                (crate::renderer::hancom_substitute_faces(primary_name)
+                    == crate::renderer::HANCOM_DEFAULT_FACES)
                     .then_some(crate::renderer::HANCOM_DEFAULT_FACES[0])
             })
             .unwrap_or(primary_name)
@@ -3140,14 +3150,37 @@ fn measure_char_width_inner(
     // 구버전 TTF 기준이라 실폰트와 엇갈린다 (HY헤드라인M '.' 0.208→0.242em 등).
     // 공백은 HWP em/2 문서 규약이 우선이고, cmap 에 없는 글자는 베이크드
     // 경로로 폴백한다.
-    if policy == FontMetricsPolicy::HcrDeclared && face_available && c != ' ' {
-        if let Some(mut em_advance) = custom_face_char_em_advance(primary_name, bold, italic, c) {
-            // 한컴 반각 강제는 문서 규약이라 실폰트에도 동일하게 적용한다 —
-            // 실 hmtx 가 전각이면 구두점/인용부호를 em/2 로 줄인다. 「」는
-            // macOS 한컴이 선언 폭 그대로 조판하므로 여기서는 실 hmtx 를
-            // 그대로 쓴다 (실 hmtx 가 반각 폭이면 그 자체가 정본이다 —
-            // 공식 PDF 실측 「 0.82–1.00em: 35/38-cheongyang, 36-apartment-form).
-            if matches!(c, '\u{2018}'..='\u{2027}')
+    if policy == FontMetricsPolicy::HcrDeclared && c != ' ' {
+        let actual_advance = face_available
+            .then(|| custom_face_char_em_advance(primary_name, bold, italic, c))
+            .flatten()
+            .or_else(|| {
+                // 직접 가져온 파일의 hmtx도 실제 요청 face의 메트릭이다.
+                // 내장 테이블이 글자를 수록해도 구버전 폭으로 되돌리지 않는다.
+                crate::renderer::runtime_font_metrics::char_advance(primary_name, bold, italic, c)
+                    .map(|advance| f64::from(advance.units) / f64::from(advance.em_size))
+            })
+            .or_else(|| {
+                // Canvas가 실제 가져온 한컴 대체 face를 선택한 경우 조판도 같은
+                // 등록 advance를 사용한다. 원본 face의 없는 글자는 기존 폴백을 유지한다.
+                (metric_name != primary_name
+                    && !crate::renderer::runtime_font_metrics::has_face(primary_name, bold, italic))
+                .then(|| {
+                    crate::renderer::runtime_font_metrics::char_advance(
+                        metric_name,
+                        bold,
+                        italic,
+                        c,
+                    )
+                })
+                .flatten()
+                .map(|advance| f64::from(advance.units) / f64::from(advance.em_size))
+            });
+        if let Some(mut em_advance) = actual_advance {
+            // 실제 face의 곡선 큰따옴표와 낫표 advance는 보존한다. 나머지 구두점의
+            // 기존 반각 정책과 내장/미등록 face 경로는 그대로 유지한다.
+            if !matches!(c, '\u{201c}' | '\u{201d}' | '\u{300c}' | '\u{300d}')
+                && (matches!(c, '\u{2018}'..='\u{2027}') || is_halfwidth_cjk_quote(c))
                 && !mac_keeps_fullwidth_punct(c, policy)
                 && em_advance >= 1.0
             {
@@ -3664,15 +3697,7 @@ pub(crate) fn estimate_text_width_unrounded(text: &str, style: &TextStyle) -> f6
             font_size * 0.5
         };
         let base_w = base_w_raw;
-        let mut w =
-            scaled_glyph_advance(base_w, c, style, font_size, ratio) + style.extra_char_spacing;
-        if c == ' ' {
-            w += style.extra_word_spacing;
-        }
-        // 압축 자간은 글자마다 그대로 뺀다. 한컴은 좁은 글자(쉼표·마침표)의 advance 가
-        // 음수가 되어도 클램프하지 않는다 (fdi-press 압축 셀 `(△433.6)`: `.` 뒤 `6` 이
-        // 0.13pt 앞에 놓임). 글자 폭 비례 자간은 −100% 전에는 음수가 되지 않는다.
-        w
+        character_advance(base_w, c, style, font_size, ratio)
     };
 
     let mut total = 0.0;
@@ -5014,6 +5039,54 @@ mod tests {
     }
 
     #[test]
+    fn mac_missing_serif_substitution_respects_available_and_requested_faces() {
+        let bytes: std::sync::Arc<[u8]> = std::sync::Arc::from(
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/fonts/RHWPShapingFixture.ttf"
+            ))
+            .as_slice(),
+        );
+        let face = |family: &str| ResolvedShapingFont {
+            family: family.to_string(),
+            bytes: bytes.clone(),
+            face_index: 0,
+        };
+        let width = |family: &str, policy| {
+            measure_char_width_with_policy(family, false, false, '한', 20.0, policy).unwrap()
+        };
+        let mac = FontMetricsPolicy::HcrDeclared;
+        let windows = FontMetricsPolicy::HancomWindows;
+        let hcr = width("함초롬바탕", mac);
+        let haansoft = width("한컴바탕", mac);
+        let unavailable = width("HY신명조", mac);
+        let legacy = width("HY신명조", windows);
+        {
+            let _scope = enter_resolved_shaping_fonts(vec![face("한컴바탕")]);
+            assert_eq!(width("HY신명조", mac), haansoft);
+        }
+        {
+            let _scope = enter_resolved_shaping_fonts(vec![face("함초롬바탕"), face("한컴바탕")]);
+            for family in ["HY신명조", "한양신명조"] {
+                assert_eq!(width(family, mac), hcr);
+                assert_eq!(
+                    measure_char_width_with_policy(family, false, false, ' ', 20.0, mac),
+                    Some(10.0)
+                );
+            }
+            assert_eq!(width("HY신명조", windows), legacy);
+        }
+        {
+            let _scope = enter_resolved_shaping_fonts(vec![face("HY신명조"), face("함초롬바탕")]);
+            let actual = quantize_hwp_px(
+                custom_face_char_em_advance("HY신명조", false, false, '한').unwrap() * 20.0,
+            );
+            assert_eq!(width("HY신명조", mac), actual);
+        }
+        assert_eq!(width("HY신명조", mac), unavailable);
+    }
+
+    #[test]
     fn embedded_shaping_scope_uses_face_advances_and_restores_after_panic() {
         let bytes = include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -5494,6 +5567,314 @@ mod tests {
     // ── 런타임 폰트 메트릭 (사용자 설치 폰트) ──
 
     #[test]
+    fn registered_actual_face_replaces_covered_baked_width_only_in_mac_policy() {
+        use crate::renderer::runtime_font_metrics as runtime;
+        let bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/ttfs/opensource/NotoSansKR-Regular.ttf"
+        ))
+        .unwrap();
+        let face = ttf_parser::Face::parse(&bytes, 0).unwrap();
+        let family = "Noto Sans KR";
+        assert!(face
+            .names()
+            .into_iter()
+            .any(|name| { name.to_string().as_deref() == Some(family) }));
+        let size = 24.0;
+        let baked = font_metrics_data::find_metric(family, false, false).unwrap();
+        let (character, actual) = ('!'..='~')
+            .find_map(|character| {
+                let glyph = face.glyph_index(character)?;
+                let actual = quantize_hwp_px(
+                    f64::from(face.glyph_hor_advance(glyph)?) * size
+                        / f64::from(face.units_per_em()),
+                );
+                let old = quantize_hwp_px(
+                    f64::from(baked.metric.get_width(character)?) * size
+                        / f64::from(baked.metric.em_size),
+                );
+                ((actual - old).abs() > 0.02).then_some((character, actual))
+            })
+            .expect("가져온 face와 내장 face의 advance가 다른 글자");
+        let measure = |policy, character| {
+            measure_char_width_with_policy(family, false, false, character, size, policy)
+        };
+        runtime::clear();
+        let old_mac = measure(FontMetricsPolicy::HcrDeclared, character);
+        let old_windows = measure(FontMetricsPolicy::HancomWindows, character);
+        runtime::register(&bytes, &[family.to_owned()], false, false).unwrap();
+        assert_eq!(
+            measure(FontMetricsPolicy::HcrDeclared, character),
+            Some(actual)
+        );
+        assert_ne!(Some(actual), old_mac);
+        assert_eq!(
+            measure(FontMetricsPolicy::HancomWindows, character),
+            old_windows
+        );
+        assert_eq!(
+            measure(FontMetricsPolicy::HcrDeclared, ' '),
+            Some(size / 2.0)
+        );
+        runtime::clear();
+        assert_eq!(measure(FontMetricsPolicy::HcrDeclared, character), old_mac);
+    }
+
+    #[test]
+    fn registered_substitute_metrics_preserve_requested_face_precedence() {
+        use crate::renderer::runtime_font_metrics as runtime;
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/ttfs/opensource/");
+        let regular = std::fs::read(format!("{dir}NotoSansKR-Regular.ttf")).unwrap();
+        let light = std::fs::read(format!("{dir}NotoSansKR-ExtraLight.ttf")).unwrap();
+        let size = 24.0;
+        let actual = |bytes: &[u8], c: char| {
+            let face = ttf_parser::Face::parse(bytes, 0).unwrap();
+            let glyph = face.glyph_index(c).unwrap();
+            quantize_hwp_px(
+                f64::from(face.glyph_hor_advance(glyph).unwrap()) * size
+                    / f64::from(face.units_per_em()),
+            )
+        };
+        let measure =
+            |policy, c| measure_char_width_with_policy("바탕", false, false, c, size, policy);
+        runtime::clear();
+        let legacy = measure(FontMetricsPolicy::HcrDeclared, 'W');
+        let windows = measure(FontMetricsPolicy::HancomWindows, 'W');
+        // 공개 fixture의 등록 별칭은 caller가 제공하는 정상 registry 입력이다.
+        // 실제 한컴 face의 별칭/바이트는 별도 native/브라우저 비교로 검증한다.
+        runtime::register(&regular, &["한컴바탕".to_owned()], false, false).unwrap();
+        assert_eq!(
+            measure(FontMetricsPolicy::HcrDeclared, 'W'),
+            Some(actual(&regular, 'W'))
+        );
+        assert_ne!(legacy, Some(actual(&regular, 'W')));
+        assert_eq!(measure(FontMetricsPolicy::HancomWindows, 'W'), windows);
+        runtime::register(&light, &["바탕".to_owned()], false, false).unwrap();
+        assert_ne!(actual(&regular, 'W'), actual(&light, 'W'));
+        assert_eq!(
+            measure(FontMetricsPolicy::HcrDeclared, 'W'),
+            Some(actual(&light, 'W'))
+        );
+        // glyph 부재를 face 부재로 해석하지 않는다.
+        assert!(runtime::has_face("바탕", false, false));
+        assert!(runtime::char_advance("바탕", false, false, '\u{10ffff}').is_none());
+        runtime::clear();
+        runtime::register(&light, &["바탕".to_owned()], false, false).unwrap();
+        assert!(runtime::char_advance("바탕", false, false, '™').is_none());
+        assert_eq!(measure(FontMetricsPolicy::HcrDeclared, '™'), None);
+        runtime::register(&regular, &["한컴바탕".to_owned()], false, false).unwrap();
+        assert!(runtime::char_advance("한컴바탕", false, false, '™').is_some());
+        assert_eq!(
+            measure(FontMetricsPolicy::HcrDeclared, '™'),
+            Some(actual(&regular, '™'))
+        );
+        // 누락 글자의 generic 폴백이 생겨도 원본에 있는 글자는 원본 face를 유지한다.
+        assert_eq!(
+            measure(FontMetricsPolicy::HcrDeclared, 'W'),
+            Some(actual(&light, 'W'))
+        );
+        runtime::clear();
+        assert_eq!(measure(FontMetricsPolicy::HcrDeclared, 'W'), legacy);
+    }
+
+    #[test]
+    fn registered_quote_advances_follow_font_records() {
+        use crate::renderer::runtime_font_metrics as runtime;
+        let mut bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/ttfs/opensource/NotoSansKR-Regular.ttf"
+        ))
+        .unwrap();
+        let face = ttf_parser::Face::parse(&bytes, 0).unwrap();
+        let em = face.units_per_em();
+        let glyphs = ['“', '”'].map(|c| face.glyph_index(c).unwrap().0);
+        let metrics_count = face.tables().hhea.number_of_metrics;
+        let table_count = u16::from_be_bytes(bytes[4..6].try_into().unwrap());
+        let hmtx = (0..usize::from(table_count))
+            .map(|index| 12 + 16 * index)
+            .find(|&offset| &bytes[offset..offset + 4] == b"hmtx")
+            .unwrap();
+        let hmtx_offset = usize::try_from(u32::from_be_bytes(
+            bytes[hmtx + 8..hmtx + 12].try_into().unwrap(),
+        ))
+        .unwrap();
+        // 공개 fixture의 advance 레코드만 바꾸고 일반 face 등록으로 다시 읽는다.
+        for glyph in glyphs {
+            let offset = hmtx_offset + usize::from(glyph.min(metrics_count - 1)) * 4;
+            bytes[offset..offset + 2].copy_from_slice(&em.to_be_bytes());
+        }
+        // 기존 quote glyph에 Unicode 낫표를 연결하는 작은 fixture cmap을 덧붙인다.
+        // glyph 자체와 UPEM에서 유도한 hmtx 외의 폰트 데이터는 변경하지 않는다.
+        let mappings = [
+            ('‘', glyphs[0]),
+            ('’', glyphs[1]),
+            ('“', glyphs[0]),
+            ('”', glyphs[1]),
+            ('「', glyphs[0]),
+            ('」', glyphs[1]),
+        ];
+        let cmap = (0..usize::from(table_count))
+            .map(|index| 12 + 16 * index)
+            .find(|&offset| &bytes[offset..offset + 4] == b"cmap")
+            .unwrap();
+        let mut replacement = Vec::new();
+        for value in [0u16, 1, 0, 4] {
+            replacement.extend_from_slice(&value.to_be_bytes());
+        }
+        replacement.extend_from_slice(&12u32.to_be_bytes());
+        replacement.extend_from_slice(&12u16.to_be_bytes());
+        replacement.extend_from_slice(&0u16.to_be_bytes());
+        for value in [16 + 12 * mappings.len() as u32, 0, mappings.len() as u32] {
+            replacement.extend_from_slice(&value.to_be_bytes());
+        }
+        for (character, glyph) in mappings {
+            replacement.extend_from_slice(&u32::from(character).to_be_bytes());
+            replacement.extend_from_slice(&u32::from(character).to_be_bytes());
+            replacement.extend_from_slice(&u32::from(glyph).to_be_bytes());
+        }
+        let offset = u32::try_from(bytes.len()).unwrap();
+        let length = u32::try_from(replacement.len()).unwrap();
+        bytes[cmap + 8..cmap + 12].copy_from_slice(&offset.to_be_bytes());
+        bytes[cmap + 12..cmap + 16].copy_from_slice(&length.to_be_bytes());
+        bytes.extend_from_slice(&replacement);
+        let family = "Noto Sans KR";
+        let size = 24.0;
+        let measure =
+            |policy, c| measure_char_width_with_policy(family, false, false, c, size, policy);
+        runtime::clear();
+        let windows = ['“', '”'].map(|c| measure(FontMetricsPolicy::HancomWindows, c));
+        let unregistered =
+            ['“', '”', '「', '」'].map(|c| measure(FontMetricsPolicy::HcrDeclared, c));
+        runtime::register(&bytes, &[family.to_owned()], false, false).unwrap();
+        for (index, c) in ['“', '”', '「', '」'].into_iter().enumerate() {
+            assert_eq!(measure(FontMetricsPolicy::HcrDeclared, c), Some(size));
+            if index < windows.len() {
+                assert_eq!(measure(FontMetricsPolicy::HancomWindows, c), windows[index]);
+            }
+        }
+        for c in ['‘', '’'] {
+            assert_eq!(measure(FontMetricsPolicy::HcrDeclared, c), Some(size / 2.0));
+        }
+        runtime::clear();
+        for (index, c) in ['“', '”', '「', '」'].into_iter().enumerate() {
+            assert_eq!(
+                measure(FontMetricsPolicy::HcrDeclared, c),
+                unregistered[index]
+            );
+        }
+    }
+
+    #[test]
+    fn registered_full_em_double_quotes_preserve_face_advances_only_in_mac_policy() {
+        use crate::renderer::runtime_font_metrics as runtime;
+        let path = std::path::Path::new(
+            "/Applications/Hancom Office HWP.app/Contents/Resources/Hnc/Shared/TTF/Hwp/HMKMM.TTF",
+        );
+        let Ok(bytes) = std::fs::read(path) else {
+            // 선택적 한컴 폰트 설치를 요구하지 않는 환경은 기존 공개 face 테스트로 검증한다.
+            return;
+        };
+        let face = ttf_parser::Face::parse(&bytes, 0).unwrap();
+        let family = "휴먼명조";
+        let size = 24.0;
+        let measure =
+            |policy, c| measure_char_width_with_policy(family, false, false, c, size, policy);
+        runtime::clear();
+        let characters = ['“', '”', '"', '‘', '’', '·'];
+        let legacy_mac = characters.map(|c| measure(FontMetricsPolicy::HcrDeclared, c));
+        let legacy_windows = characters.map(|c| measure(FontMetricsPolicy::HancomWindows, c));
+        runtime::register(&bytes, &[family.to_owned()], false, false).unwrap();
+        for c in ['“', '”', '"'] {
+            let glyph = face.glyph_index(c).unwrap();
+            let units = face.glyph_hor_advance(glyph).unwrap();
+            let expected =
+                quantize_hwp_px(f64::from(units) * size / f64::from(face.units_per_em()));
+            if c != '"' {
+                assert!(units >= face.units_per_em());
+                assert!(expected > size / 2.0);
+            }
+            assert_eq!(measure(FontMetricsPolicy::HcrDeclared, c), Some(expected));
+        }
+        for (index, c) in characters.into_iter().enumerate() {
+            assert_eq!(
+                measure(FontMetricsPolicy::HancomWindows, c),
+                legacy_windows[index]
+            );
+            if !matches!(c, '“' | '”' | '"') {
+                let glyph = face.glyph_index(c).unwrap();
+                let em = f64::from(face.glyph_hor_advance(glyph).unwrap())
+                    / f64::from(face.units_per_em());
+                let legacy_em = if matches!(c, '‘' | '’') && em >= 1.0 {
+                    0.5
+                } else {
+                    em
+                };
+                assert_eq!(
+                    measure(FontMetricsPolicy::HcrDeclared, c),
+                    Some(quantize_hwp_px(legacy_em * size)),
+                );
+            }
+        }
+        runtime::clear();
+        for (index, c) in characters.into_iter().enumerate() {
+            assert_eq!(
+                measure(FontMetricsPolicy::HcrDeclared, c),
+                legacy_mac[index]
+            );
+        }
+    }
+
+    #[test]
+    fn registered_corner_quotes_preserve_face_advances_only_in_mac_policy() {
+        use crate::renderer::runtime_font_metrics as runtime;
+        let Ok(bytes) = std::fs::read(
+            "/Applications/Hancom Office HWP.app/Contents/Resources/Hnc/Shared/TTF/Install/GulimChe.TTF",
+        ) else {
+            // 선택적 설치 폰트가 없는 환경도 공개 fixture 등록 테스트를 수행한다.
+            return;
+        };
+        let face = ttf_parser::Face::parse(&bytes, 0).unwrap();
+        let family = "굴림체";
+        let size = 16.0;
+        let measure =
+            |policy, c| measure_char_width_with_policy(family, false, false, c, size, policy);
+        let characters = ['「', '」', '"', '‘', '’'];
+        runtime::clear();
+        let windows = characters.map(|c| measure(FontMetricsPolicy::HancomWindows, c));
+        let unregistered = characters.map(|c| measure(FontMetricsPolicy::HcrDeclared, c));
+        runtime::register(&bytes, &[family.to_owned()], false, false).unwrap();
+        for c in ['「', '」', '"'] {
+            let glyph = face.glyph_index(c).unwrap();
+            let units = face.glyph_hor_advance(glyph).unwrap();
+            let expected =
+                quantize_hwp_px(f64::from(units) * size / f64::from(face.units_per_em()));
+            if c != '"' {
+                assert!(units >= face.units_per_em());
+            }
+            assert_eq!(measure(FontMetricsPolicy::HcrDeclared, c), Some(expected));
+        }
+        for (index, c) in characters.into_iter().enumerate() {
+            assert_eq!(measure(FontMetricsPolicy::HancomWindows, c), windows[index]);
+            if matches!(c, '‘' | '’') {
+                let glyph = face.glyph_index(c).unwrap();
+                let advance = f64::from(face.glyph_hor_advance(glyph).unwrap())
+                    / f64::from(face.units_per_em());
+                assert_eq!(
+                    measure(FontMetricsPolicy::HcrDeclared, c),
+                    Some(quantize_hwp_px(advance.min(0.5) * size))
+                );
+            }
+        }
+        runtime::clear();
+        for (index, c) in characters.into_iter().enumerate() {
+            assert_eq!(
+                measure(FontMetricsPolicy::HcrDeclared, c),
+                unregistered[index]
+            );
+        }
+    }
+
+    #[test]
     fn registered_faces_use_real_advances_for_hcr_layout_and_latin_spaces() {
         use crate::renderer::runtime_font_metrics as runtime;
         let bytes = include_bytes!("../../../ttfs/opensource/NotoSansKR-Regular.ttf");
@@ -5649,10 +6030,21 @@ mod tests {
         );
         assert!(crate::renderer::faux_bold_stroke_width(&bold_style, fs).is_none());
 
-        // 내장 메트릭이 있는 이름은 기존 동작 그대로.
+        // Windows는 내장 폭을 유지하고 macOS는 등록한 face의 실제 폭을 쓴다.
         let baked = w("함초롬돋움", false, 'i');
         runtime::register(&light, &["함초롬돋움".to_string()], false, false).unwrap();
         assert_eq!(w("함초롬돋움", false, 'i'), baked);
+        assert_eq!(
+            measure_char_width_with_policy(
+                "함초롬돋움",
+                false,
+                false,
+                'i',
+                fs,
+                FontMetricsPolicy::HcrDeclared,
+            ),
+            Some(advance_px(&light, 'i', fs))
+        );
 
         assert!(runtime::report_json().contains("\"hits\":"));
         assert!(runtime::register(b"not a font", &aliases, false, false).is_err());

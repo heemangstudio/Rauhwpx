@@ -131,6 +131,7 @@ struct BlockTableContinuationPreparedState {
     native_cellbreak_fragment_spacing_hu: Option<(i32, i32)>,
     saved_residual_split_hu: Option<(i32, i32)>,
     budget_para_start_height: f64,
+    host_has_local_saved_flow: bool,
 }
 
 /// [#2424] 한 continuation iteration이 caller-controlled step에 돌려주는 진행 상태.
@@ -16471,6 +16472,12 @@ impl TypesetEngine {
             // cap 을 정당하게 넘는다 — cap 으로 되감으면 후행 문단이 성장분만큼
             // 안 밀려 쪽 하단을 넘긴다(셀 Enter 재현: 후행 안내 문단 잘림).
             let cap = session_grown_tac_total.map_or(cap, |grown| cap.max(grown));
+            // 합성 쪽번호 제어 줄의 전진은 표줄 한 개의 저장 cap 으로 되감지 않는다.
+            let cap = if crate::renderer::composer::fresh_page_number_tail_line(para) {
+                fmt.total_height
+            } else {
+                cap
+            };
             // [lso-load5] 직접 조판 문서: 같은 문단의 문단 기준 자리차지(비-TAC) 표는
             // 줄 진행과 별개로 문단 시작 + 세로 오프셋 + 바깥 여백 + 높이까지 흐름을
             // 차지한다 (합성 사다리와 같은 max 모델). cap 이 TAC 줄 높이로 되감으면 다음
@@ -17290,6 +17297,11 @@ impl TypesetEngine {
             && table.common.treat_as_char
             && pre_table_end_line == 0
             && total_lines <= 1;
+        // fresh 제어 전용 줄도 표 뒤에서 실제 줄 전진을 소비한다.
+        // 합성 축이 확인된 쪽번호 위치 제어의 별도 줄만 선택한다.
+        let fresh_page_number_tail = crate::renderer::composer::fresh_page_number_tail_line(para)
+            && post_table_start == 1
+            && total_lines == 2;
         // 컨트롤 전용 host: 넘친 TAC 표 뒤의 폭 0 컨트롤(쪽 번호 위치·책갈피 등)이 만든
         // 후행 줄. 한컴은 표 줄 간격 + 그 줄 높이·간격을 문단 흐름에 계상한다.
         let control_only_post_lines = para_is_single_tac_object_control_host(para)
@@ -17297,9 +17309,10 @@ impl TypesetEngine {
             && pre_table_end_line == 0
             && post_table_start > 0
             && total_lines > post_table_start;
-        let has_post_text = (!para.text.is_empty() || control_only_post_lines)
-            && total_lines > post_table_start
-            && !whitespace_only_single_tac_host_line;
+        let has_post_text =
+            (!para.text.is_empty() || control_only_post_lines || fresh_page_number_tail)
+                && total_lines > post_table_start
+                && !whitespace_only_single_tac_host_line;
         let should_add_post_text = is_last_table
             && tac_table_count <= 1
             && has_post_text
@@ -17309,6 +17322,8 @@ impl TypesetEngine {
             let post_height: f64 = fmt.line_advances_sum(post_table_start..total_lines)
                 + if control_only_post_lines {
                     fmt.line_spacings[post_table_start - 1]
+                } else if fresh_page_number_tail {
+                    fmt.line_advance(0) - fmt.line_heights[0]
                 } else {
                     0.0
                 };
@@ -19594,10 +19609,16 @@ impl TypesetEngine {
             let min_content = if first_row_splittable {
                 mt.min_first_line_height_for_row(0, 0.0) + mt.max_padding_for_row(0)
             } else if first_row_force_splittable {
-                // force-split 케이스: 콘텐츠 한 줄 + padding 정도면 분할 가능
-                let pad = mt.max_padding_for_row(0);
-                let line_h = mt.row_heights.first().copied().unwrap_or(0.0).min(20.0);
-                pad + line_h
+                // 단일 줄 셀의 빈 꼬리만 나누므로 모든 셀의 첫 줄은 통째로 들어가야 한다.
+                mt.cells
+                    .iter()
+                    .filter(|cell| cell.row == 0 && cell.row_span == 1)
+                    .map(|cell| {
+                        cell.line_heights.first().copied().unwrap_or(0.0)
+                            + cell.padding_top
+                            + cell.padding_bottom
+                    })
+                    .fold(0.0_f64, f64::max)
             } else {
                 f64::MAX
             };
@@ -19763,8 +19784,29 @@ impl TypesetEngine {
                 seg.vertical_pos
                     > crate::renderer::px_to_hwpunit(st.layout.body_area.height, self.dpi)
             });
+        // 저장 좌표가 쪽 내부 좌표여도 바로 앞 저장 문단의 끝과 정확히
+        // 이어지는 host는 같은 쪽의 텍스트다. 누적 좌표로 재작성되었는지에
+        // 의존하지 않고, 실제 남은 공간 판정은 pre-emit 경로에 맡긴다.
+        let host_has_local_saved_flow = st.profile.native_hwpx_cell_margin()
+            && styles.font_metrics_policy
+                == crate::model::provenance::FontMetricsPolicy::HcrDeclared
+            && para_idx.checked_sub(1).is_some_and(|prev_idx| {
+                let Some(previous) = paragraphs_all.get(prev_idx) else {
+                    return false;
+                };
+                crate::renderer::layout::stored_local_host_precedes_float(
+                    para,
+                    previous,
+                    table,
+                    ctrl_idx,
+                    crate::renderer::px_to_hwpunit(st.layout.body_area.height, self.dpi),
+                ) && st
+                    .current_items
+                    .iter()
+                    .any(|item| page_item_para_index(item) == Some(prev_idx))
+            });
         if st.profile.hwpx_stored_layout()
-            && host_vpos_is_cumulative
+            && (host_vpos_is_cumulative || host_has_local_saved_flow)
             && !table.common.treat_as_char
             && is_para_topbottom_float(&table.common)
             && matches!(
@@ -19804,6 +19846,7 @@ impl TypesetEngine {
             native_cellbreak_fragment_spacing_hu,
             saved_residual_split_hu,
             budget_para_start_height,
+            host_has_local_saved_flow,
         };
         let source = BlockTableContinuationSource {
             para_index: para_idx,
@@ -19984,7 +20027,15 @@ impl TypesetEngine {
                             .get(&para_idx)
                             .copied()
                             .unwrap_or(0.0);
-                        (raw - host_h).max(0.0)
+                        if prepared.host_has_local_saved_flow && host_h > 0.0
+                            && crate::renderer::layout::stored_float_origin_is_in_host_tail_gap(para, table, ctrl_idx)
+                        {
+                            // 저장 개체 원점은 마지막 글줄 뒤 간격 안에도 올 수 있다.
+                            // host advance를 이미 소비했으므로 음수 보정을 보존한다.
+                            raw - host_h
+                        } else {
+                            (raw - host_h).max(0.0)
+                        }
                     } else {
                         0.0
                     }
@@ -23439,6 +23490,117 @@ mod tests {
     }
 
     #[test]
+    fn first_row_picture_moves_to_fresh_page_while_empty_cell_tail_can_split() {
+        let first_table_page = |has_picture, with_short_sibling| {
+            let mut cell_para =
+                make_paragraph_with_height(if has_picture { 25_000 } else { 1_000 });
+            if has_picture {
+                cell_para.controls.push(Control::Picture(Box::new(Picture {
+                    common: CommonObjAttr {
+                        treat_as_char: true,
+                        width: 10_000,
+                        height: 25_000,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })));
+            }
+            let mut cells = vec![Cell {
+                row_span: 1,
+                col_span: 1,
+                width: 30_000,
+                height: 25_000,
+                paragraphs: vec![cell_para],
+                ..Default::default()
+            }];
+            if with_short_sibling {
+                cells.push(Cell {
+                    col: 1,
+                    row_span: 1,
+                    col_span: 1,
+                    width: 30_000,
+                    height: 25_000,
+                    paragraphs: vec![make_paragraph_with_height(1_000)],
+                    ..Default::default()
+                });
+            }
+            let table = Table {
+                row_count: 1,
+                col_count: if with_short_sibling { 2 } else { 1 },
+                page_break: TablePageBreak::RowBreak,
+                common: CommonObjAttr {
+                    flow_with_text: true,
+                    text_wrap: TextWrap::TopAndBottom,
+                    vert_rel_to: VertRelTo::Para,
+                    vertical_offset: 1_000,
+                    width: 30_000,
+                    height: 25_000,
+                    ..Default::default()
+                },
+                cells,
+                ..Default::default()
+            };
+            let paragraphs = vec![
+                make_paragraph_with_height(55_000),
+                Paragraph {
+                    text: "heading".into(),
+                    controls: vec![Control::Table(Box::new(table))],
+                    ..Default::default()
+                },
+            ];
+            let composed: Vec<_> = paragraphs
+                .iter()
+                .map(crate::renderer::composer::compose_paragraph)
+                .collect();
+            let styles = ResolvedStyleSet::default();
+            let page_def = a4_page_def();
+            let col_def = ColumnDef::default();
+            let (_, measured) = Paginator::with_default_dpi().paginate(
+                &paragraphs,
+                &composed,
+                &styles,
+                &page_def,
+                &col_def,
+                0,
+            );
+            let result = TypesetEngine::with_default_dpi().typeset_section(
+                &paragraphs,
+                &composed,
+                &styles,
+                &page_def,
+                &col_def,
+                0,
+                &measured.tables,
+                false,
+                &std::collections::HashSet::new(),
+            );
+            result
+                .pages
+                .iter()
+                .position(|page| {
+                    page.column_contents
+                        .iter()
+                        .flat_map(|col| &col.items)
+                        .any(|item| {
+                            matches!(
+                                item,
+                                PageItem::Table { para_index: 1, .. }
+                                    | PageItem::PartialTable {
+                                        para_index: 1,
+                                        start_row: 0,
+                                        ..
+                                    }
+                            )
+                        })
+                })
+                .expect("table must be placed")
+        };
+        assert_eq!(first_table_page(true, false), 1);
+        assert_eq!(first_table_page(true, true), 1);
+        assert_eq!(first_table_page(false, false), 0);
+    }
+
+    #[test]
     fn consecutive_flowing_tables_start_second_chain_on_fresh_page() {
         fn flowing_table(row_height: u32) -> Table {
             Table {
@@ -24247,6 +24409,7 @@ mod tests {
             native_cellbreak_fragment_spacing_hu: None,
             saved_residual_split_hu: None,
             budget_para_start_height: 0.0,
+            host_has_local_saved_flow: false,
         };
         let flow_layout =
             PageLayoutInfo::from_page_def(&a4_page_def(), &ColumnDef::default(), DEFAULT_DPI);

@@ -1478,7 +1478,8 @@ impl WebCanvasRenderer {
     }
 
     fn render_layer_node(&mut self, node: &LayerNode, inherited_layer: Option<RenderLayerInfo>) {
-        let active_layer = node.layer.or(inherited_layer);
+        let active_layer =
+            crate::paint::replay_order::inherited_replay_layer(node.layer, inherited_layer);
         match &node.kind {
             LayerNodeKind::Group {
                 children,
@@ -2051,6 +2052,45 @@ impl WebCanvasRenderer {
         style: &ShapeStyle,
         gradient: Option<&GradientFillInfo>,
     ) {
+        if let Some(polygons) = gradient
+            .filter(|_| style.shadow.is_none())
+            .and_then(|gradient| {
+                super::gradient_fill::conical_polygons(gradient, BoundingBox::new(x, y, w, h))
+            })
+        {
+            self.ctx.save();
+            self.ctx.set_global_alpha(style.opacity);
+            self.ctx.begin_path();
+            let r = corner_radius.min(w / 2.0).min(h / 2.0).max(0.0);
+            self.ctx.move_to(x + r, y);
+            self.ctx.line_to(x + w - r, y);
+            self.ctx.arc_to(x + w, y, x + w, y + r, r).ok();
+            self.ctx.line_to(x + w, y + h - r);
+            self.ctx.arc_to(x + w, y + h, x + w - r, y + h, r).ok();
+            self.ctx.line_to(x + r, y + h);
+            self.ctx.arc_to(x, y + h, x, y + h - r, r).ok();
+            self.ctx.line_to(x, y + r);
+            self.ctx.arc_to(x, y, x + r, y, r).ok();
+            self.ctx.close_path();
+            self.ctx.clip();
+            for polygon in polygons {
+                self.ctx.begin_path();
+                self.ctx.move_to(polygon.points[0].0, polygon.points[0].1);
+                for &(x, y) in &polygon.points[1..] {
+                    self.ctx.line_to(x, y);
+                }
+                self.ctx.close_path();
+                self.ctx.set_fill_style_str(&color_to_css(polygon.color));
+                self.ctx.fill();
+            }
+            self.ctx.restore();
+            let mut stroke = style.clone();
+            stroke.fill_color = None;
+            stroke.pattern = None;
+            stroke.shadow = None;
+            self.draw_rect_with_gradient(x, y, w, h, corner_radius, &stroke, None);
+            return;
+        }
         let need_opacity = style.opacity < 1.0;
         if need_opacity {
             self.ctx.save();

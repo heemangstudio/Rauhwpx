@@ -432,6 +432,11 @@ fn select_face(
     Some((pick, bold && !faces[pick].bold))
 }
 
+/// 등록 페이스의 존재 여부. 특정 글리프의 cmap 수록 여부와 구분한다.
+pub(crate) fn has_face(primary_name: &str, bold: bool, italic: bool) -> bool {
+    REGISTRY.with(|registry| select_face(&registry.borrow(), primary_name, bold, italic).is_some())
+}
+
 /// 등록된 실제 face 가 있는지 확인한다. 글리프 커버리지와는 별개다.
 pub(crate) fn face_available(primary_name: &str) -> bool {
     REGISTRY.with(|registry| !candidate_indices(&registry.borrow(), primary_name).is_empty())

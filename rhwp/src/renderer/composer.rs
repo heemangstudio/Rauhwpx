@@ -278,6 +278,60 @@ fn synthesize_marker_paragraph(para: &Paragraph) -> Option<Paragraph> {
     Some(synth)
 }
 
+/// 폭을 넘긴 fresh TAC 표 뒤에 생성한 쪽번호 위치 제어 줄을 식별한다.
+pub(crate) fn fresh_page_number_tail_line(para: &Paragraph) -> bool {
+    if !para.text.is_empty()
+        || !super::para_has_no_stored_line_segs(para)
+        || para.line_segs.len() != 2
+        || para.line_segs[0].text_start != 0
+        || para.line_segs[1].line_height <= 0
+        || para.char_shapes.is_empty()
+        || !para.field_ranges.is_empty()
+        || !para.orphan_field_ends.is_empty()
+    {
+        return false;
+    }
+    let mut units = 0u32;
+    let mut table = None;
+    let mut tail_anchor = None;
+    for ctrl in &para.controls {
+        match ctrl {
+            Control::Table(t)
+                if t.common.treat_as_char
+                    && t.cell_spacing == 0
+                    && t.caption.is_none()
+                    && table.is_none()
+                    && tail_anchor.is_none() =>
+            {
+                table = Some(t)
+            }
+            Control::PageNumberPos(_) if table.is_some() && tail_anchor.is_none() => {
+                tail_anchor = Some(units)
+            }
+            Control::SectionDef(_)
+            | Control::ColumnDef(_)
+            | Control::Bookmark(_)
+            | Control::HiddenComment(_) => {}
+            _ => return false,
+        }
+        if !matches!(ctrl, Control::Bookmark(_) | Control::HiddenComment(_)) {
+            units = units.saturating_add(8);
+        }
+    }
+    let Some(table) = table else { return false };
+    let occupied_width = table
+        .get_column_widths()
+        .iter()
+        .map(|&w| i64::from(w))
+        .sum::<i64>()
+        + i64::from(table.outer_margin_left)
+        + i64::from(table.outer_margin_right);
+    para.char_count == units.saturating_add(1)
+        && tail_anchor == Some(para.line_segs[1].text_start)
+        && para.line_segs[0].segment_width > 0
+        && occupied_width > i64::from(para.line_segs[0].segment_width)
+}
+
 /// 문단을 줄별 텍스트 런으로 분할한다.
 pub fn compose_paragraph(para: &Paragraph) -> ComposedParagraph {
     // [Task #991] HWP5 parser 의 inline marker 누락 보정 (rendering 전용)
@@ -285,6 +339,22 @@ pub fn compose_paragraph(para: &Paragraph) -> ComposedParagraph {
     let para = synth_para.as_ref().unwrap_or(para);
 
     let mut lines = compose_lines(para);
+    if fresh_page_number_tail_line(para) {
+        if let Some(line) = lines.get_mut(1) {
+            // 가시 문자 축은 빈 줄이지만 글자 모양은 원래 제어 레코드에서 선택한다.
+            line.runs = vec![ComposedTextRun {
+                text: String::new(),
+                char_style_id: find_active_char_shape(
+                    &para.char_shapes,
+                    para.line_segs[1].text_start,
+                ),
+                lang_index: 0,
+                char_overlap: None,
+                footnote_marker: None,
+                display_text: None,
+            }];
+        }
+    }
     let inline_controls = identify_inline_controls(para);
 
     // treat_as_char 컨트롤의 텍스트 위치와 HWPUNIT 너비 수집
@@ -317,6 +387,7 @@ pub fn compose_paragraph(para: &Paragraph) -> ComposedParagraph {
                     let w = super::equation::occupied_width_hwp(eq);
                     Some((pos, w, i))
                 }
+                Control::Ruby(r) if r.option == 0 => Some((pos, 0, i)),
                 Control::Form(f) => Some((pos, f.occupied_width(), i)),
                 Control::Table(t)
                     if t.common.treat_as_char
@@ -1293,6 +1364,7 @@ fn identify_inline_controls(para: &Paragraph) -> Vec<InlineControl> {
             Control::Shape(shape) if shape.common().treat_as_char => InlineControlType::Shape,
             Control::Picture(pic) if pic.common.treat_as_char => InlineControlType::Shape,
             Control::Equation(eq) if eq.common.treat_as_char => InlineControlType::Shape,
+            Control::Ruby(r) if r.option == 0 => InlineControlType::Other,
             Control::SectionDef(_) | Control::ColumnDef(_) => InlineControlType::Other,
             _ => continue,
         };
@@ -1363,6 +1435,7 @@ fn is_render_inline_control(ctrl: &Control) -> bool {
         Control::Shape(shape) => shape.common().treat_as_char,
         Control::Table(table) => table.common.treat_as_char,
         Control::Equation(eq) => eq.common.treat_as_char,
+        Control::Ruby(r) => r.option == 0,
         Control::Form(_) => true,
         _ => false,
     }
@@ -1370,10 +1443,22 @@ fn is_render_inline_control(ctrl: &Control) -> bool {
 
 fn find_render_inline_control_positions(para: &Paragraph) -> Vec<usize> {
     if para.text.is_empty() && para.char_offsets.is_empty() {
+        // 한 빈 줄에 들어간 덧말은 같은 가시 문자 위치를 공유한다.
+        // 여러 저장/자동 줄의 기존 제어 순번 귀속과 다른 개체 경로는 유지한다.
+        let ruby_single_host = para.line_segs.len() == 1
+            && para.controls.iter().all(|c| {
+                matches!(c,
+                    Control::Ruby(r) if r.option == 0
+                ) || matches!(c, Control::Bookmark(_) | Control::HiddenComment(_))
+            });
         let mut inline_seen = 0usize;
         let mut positions = Vec::with_capacity(para.controls.len());
         for ctrl in &para.controls {
-            positions.push(inline_seen);
+            positions.push(if ruby_single_host && matches!(ctrl, Control::Ruby(_)) {
+                0
+            } else {
+                inline_seen
+            });
             if is_render_inline_control(ctrl) {
                 inline_seen += 1;
             }
@@ -1381,7 +1466,9 @@ fn find_render_inline_control_positions(para: &Paragraph) -> Vec<usize> {
         return positions;
     }
 
-    find_control_text_positions(para)
+    let mut positions = find_control_text_positions(para);
+    super::ruby::project_control_positions(para, &mut positions);
+    positions
 }
 
 /// CharOverlap 컨트롤의 글자를 조합된 텍스트에 올바른 위치로 삽입한다.
@@ -1758,6 +1845,7 @@ pub fn recompose_for_body_width(
     column_inner_width_px: f64,
     styles: &ResolvedStyleSet,
 ) {
+    resolve_ruby_widths(composed, para, styles, column_inner_width_px, true);
     restyle_fallback_runs_by_char_shapes(composed, para);
     recompose_for_cell_width(composed, para, column_inner_width_px, styles);
 }
@@ -2445,6 +2533,7 @@ pub fn recompose_stale_stored_lines_for_body(
         styles,
         first_line_reserve_px,
         false,
+        true,
         body_inner,
     );
 }
@@ -2472,9 +2561,155 @@ pub fn recompose_for_native_hwpx_cell_width(
         cell_inner_width_px,
         styles,
         0.0,
-        para.controls.is_empty(),
+        para.controls
+            .iter()
+            .all(|control| matches!(control, Control::ColumnDef(_) | Control::SectionDef(_))),
+        true,
         None,
     );
+}
+
+/// 저장 줄 없는 공백 구분 TAC 표들이 셀의 한 줄에 함께 들어가는지 확인한다.
+/// 단독 표·실저장 줄·명시 개행·폭 초과는 기존 블록 흐름을 유지한다.
+pub(crate) fn fresh_adjacent_tac_tables_fit(
+    para: &Paragraph,
+    inner_width_px: f64,
+    styles: &ResolvedStyleSet,
+    dpi: f64,
+) -> bool {
+    fresh_tac_table_line_fit(para, inner_width_px, styles, 2, dpi)
+}
+
+/// 합성 한 줄의 점유 높이에 이미 들어간 TAC 표는 다시 가산하지 않는다.
+pub(crate) fn generated_tac_table_line_covers_object(
+    para: &Paragraph,
+    inner_width_px: f64,
+    styles: &ResolvedStyleSet,
+    dpi: f64,
+) -> bool {
+    if para.line_segs.len() != 1 || !fresh_tac_table_line_fit(para, inner_width_px, styles, 1, dpi)
+    {
+        return false;
+    }
+    let occupied_height = para
+        .controls
+        .iter()
+        .filter_map(|control| match control {
+            Control::Table(table) => Some(
+                (table.common.height as i64)
+                    + i64::from(table.outer_margin_top)
+                    + i64::from(table.outer_margin_bottom),
+            ),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+    i64::from(para.line_segs[0].line_height) >= occupied_height
+}
+
+fn fresh_tac_table_line_fit(
+    para: &Paragraph,
+    inner_width_px: f64,
+    styles: &ResolvedStyleSet,
+    minimum_tables: usize,
+    dpi: f64,
+) -> bool {
+    if !crate::renderer::para_has_no_stored_line_segs(para)
+        || para.controls.len() < minimum_tables
+        || !para.text.chars().all(|ch| ch == ' ')
+        || inner_width_px <= 0.0
+    {
+        return false;
+    }
+    let mut occupied_hu = 0i64;
+    for control in &para.controls {
+        let Control::Table(table) = control else {
+            return false;
+        };
+        // 셀 간격이 있는 표의 점유 폭 계산은 기존 경로에 맡긴다.
+        if !table.common.treat_as_char
+            || table.common.height == 0
+            || table.caption.is_some()
+            || table.cell_spacing != 0
+        {
+            return false;
+        }
+        let width = table
+            .get_column_widths()
+            .iter()
+            .map(|&w| i64::from(w))
+            .sum::<i64>();
+        if width <= 0 {
+            return false;
+        }
+        occupied_hu +=
+            width + i64::from(table.outer_margin_left) + i64::from(table.outer_margin_right);
+    }
+    let spacing_px: f64 = para
+        .text
+        .chars()
+        .enumerate()
+        .map(|(i, _)| {
+            let offset = para.char_offsets.get(i).copied().unwrap_or(i as u32);
+            let style_id = para
+                .char_shapes
+                .iter()
+                .rev()
+                .find(|shape| shape.start_pos <= offset)
+                .map(|shape| shape.char_shape_id)
+                .unwrap_or(0);
+            estimate_text_width(" ", &resolved_to_text_style(styles, u32::from(style_id), 0))
+        })
+        .sum();
+    let available = styles
+        .para_styles
+        .get(para.para_shape_id as usize)
+        .map(|style| {
+            inner_width_px
+                - style.margin_left.max(0.0)
+                - style.margin_right.max(0.0)
+                - style.indent.max(0.0)
+        })
+        .unwrap_or(inner_width_px);
+    if crate::renderer::hwpunit_to_px(occupied_hu.min(i64::from(i32::MAX)) as i32, dpi) + spacing_px
+        > available
+    {
+        return false;
+    }
+    let mut fresh = para.clone();
+    fresh.line_segs.clear();
+    reflow_line_segs(&mut fresh, inner_width_px, styles, dpi);
+    fresh.line_segs.len() == 1
+}
+
+fn recompose_fresh_adjacent_tac_tables(
+    para: &Paragraph,
+    inner_width_px: f64,
+    styles: &ResolvedStyleSet,
+    dpi: f64,
+) -> ComposedParagraph {
+    let mut fresh = para.clone();
+    fresh.line_segs.clear();
+    reflow_line_segs(&mut fresh, inner_width_px, styles, dpi);
+    let mut composed = compose_paragraph(&fresh);
+    // 최초 compose의 폭 0/90% 분류 대신 실제 셀 폭에서 검증한 표들을 등록한다.
+    let positions = find_render_inline_control_positions(&fresh);
+    composed.tac_controls = fresh
+        .controls
+        .iter()
+        .enumerate()
+        .filter_map(|(index, control)| {
+            let Control::Table(table) = control else {
+                return None;
+            };
+            Some((
+                *positions.get(index)?,
+                table.get_column_widths().iter().sum::<u32>() as i32,
+                index,
+            ))
+        })
+        .collect();
+    composed
 }
 
 pub fn recompose_for_cell_width_for_source(
@@ -2483,8 +2718,33 @@ pub fn recompose_for_cell_width_for_source(
     cell_inner_width_px: f64,
     styles: &ResolvedStyleSet,
     native_hwpx: bool,
+    line_wrap: crate::model::table::CellLineWrap,
+    cell_text_direction: u8,
+    verified_tac_width: bool,
+    dpi: f64,
 ) {
-    if native_hwpx {
+    if native_hwpx
+        && verified_tac_width
+        && cell_text_direction == 0
+        && line_wrap == crate::model::table::CellLineWrap::Break
+        && fresh_adjacent_tac_tables_fit(para, cell_inner_width_px, styles, dpi)
+    {
+        *composed = recompose_fresh_adjacent_tac_tables(para, cell_inner_width_px, styles, dpi);
+        return;
+    }
+    if line_wrap == crate::model::table::CellLineWrap::Squeeze {
+        // 줄을 폭으로 나누지 않고 음수 자간 압축에 넘긴다. 명시 개행과 저장 줄은 보존한다.
+        recompose_for_cell_width_impl_with_generated(
+            composed,
+            para,
+            cell_inner_width_px,
+            styles,
+            0.0,
+            true,
+            false,
+            None,
+        );
+    } else if native_hwpx {
         recompose_for_native_hwpx_cell_width(composed, para, cell_inner_width_px, styles);
     } else {
         recompose_for_cell_width(composed, para, cell_inner_width_px, styles);
@@ -2505,6 +2765,7 @@ fn recompose_for_cell_width_impl(
         styles,
         first_line_reserve_px,
         false,
+        true,
         None,
     );
 }
@@ -2519,8 +2780,31 @@ fn recompose_for_cell_width_impl_with_generated(
     styles: &ResolvedStyleSet,
     first_line_reserve_px: f64,
     allow_generated_multiline: bool,
+    wrap_at_width: bool,
     body_inner_width: Option<(f64, f64)>,
 ) {
+    let wrap_at_width = wrap_at_width
+        && !styles
+            .para_styles
+            .get(para.para_shape_id as usize)
+            .is_some_and(|ps| ps.line_wrap_squeeze);
+    resolve_ruby_widths(composed, para, styles, cell_inner_width_px, wrap_at_width);
+    // 글자 없는 fresh 덧말의 줄 소유권은 위 폭 분할 결과를 유지한다.
+    // 빈 text run을 일반 문단으로 합치면 두 번째 줄의 제어가 사라진다.
+    if para.text.is_empty()
+        && super::para_has_no_stored_line_segs(para)
+        && cell_inner_width_px > 0.0
+        && para
+            .controls
+            .iter()
+            .any(|c| matches!(c, Control::Ruby(r) if r.option == 0))
+        && para.controls.iter().all(|c| {
+            matches!(c, Control::Ruby(r) if r.option == 0)
+                || matches!(c, Control::Bookmark(_) | Control::HiddenComment(_))
+        })
+    {
+        return;
+    }
     let has_synthetic_line_segs = !para.line_segs.is_empty()
         && para
             .line_segs
@@ -2621,15 +2905,49 @@ fn recompose_for_cell_width_impl_with_generated(
         .get(para.para_shape_id as usize)
         .map(|ps| ps.condense_min_space as f64 / 100.0)
         .unwrap_or(0.0);
-    let squeeze = styles
-        .para_styles
-        .get(para.para_shape_id as usize)
-        .is_some_and(|ps| ps.line_wrap_squeeze);
     // [#2070] 강제 줄바꿈(\n, has_line_break) 경계는 병합·재분할에서 보존한다.
     // 종전에는 전 줄을 한 줄로 합쳐 폭 기준 재분할 → \n 경계 소실로 생성계
     // NO_LS 셀이 과소 (80168 pi=362 조문 표: 한글 11줄 vs 8줄, -58px).
     // \n 으로 닫히는 그룹 단위로 합쳐 각 그룹을 독립 재래핑한다.
-    let src_lines = std::mem::take(&mut composed.lines);
+    let mut src_lines = std::mem::take(&mut composed.lines);
+    if !wrap_at_width {
+        // NO_LS 폴백의 run 안에 남은 개행도 폭에 의존하지 않고 분리한다.
+        src_lines = src_lines
+            .into_iter()
+            .flat_map(|line| {
+                let mut pieces = Vec::new();
+                let mut part = line.clone();
+                part.runs.clear();
+                let mut char_pos = line.char_start;
+                for run in line.runs {
+                    if run.text.is_empty() {
+                        part.runs.push(run);
+                        continue;
+                    }
+                    let segments: Vec<_> = run.text.split('\n').collect();
+                    for (index, text) in segments.iter().enumerate() {
+                        if !text.is_empty() {
+                            let mut fragment = run.clone();
+                            fragment.text = (*text).to_owned();
+                            part.runs.push(fragment);
+                            char_pos += text.chars().count();
+                        }
+                        if index + 1 < segments.len() {
+                            part.has_line_break = true;
+                            pieces.push(part.clone());
+                            char_pos += 1;
+                            part.runs.clear();
+                            part.char_start = char_pos;
+                            part.has_line_break = false;
+                        }
+                    }
+                }
+                // 마지막 개행 뒤의 빈 줄도 실제 작성된 줄 경계다.
+                pieces.push(part);
+                pieces
+            })
+            .collect();
+    }
     let mut groups: Vec<(ComposedLine, bool)> = Vec::new();
     let mut cur: Option<ComposedLine> = None;
     // [#2070] 그룹 경계는 para.text 의 **실제 '\n'** 로만 판정한다.
@@ -2696,7 +3014,7 @@ fn recompose_for_cell_width_impl_with_generated(
             }
             w
         };
-        if squeeze || total_width - trailing_space_w <= g_first + 0.5 {
+        if !wrap_at_width || total_width - trailing_space_w <= g_first + 0.5 {
             composed.lines.push(combined_line);
         } else {
             let mut frags = split_composed_line_by_width(
@@ -2972,6 +3290,8 @@ fn split_composed_line_by_width(
     let mut chars_in_line = 0usize;
     let mut current_run_text = String::new();
     let mut current_run_template: Option<ComposedTextRun> = None;
+    // 긴 어절의 글자 채움 상태는 합성 줄/언어/서식 run 경계를 지나서도 유지한다.
+    let mut oversized_word_continuation = false;
 
     let flush_run =
         |runs: &mut Vec<ComposedTextRun>, text: &mut String, template: &Option<ComposedTextRun>| {
@@ -3168,7 +3488,8 @@ fn split_composed_line_by_width(
                 };
                 let fitting_width = word_width - terminal_space;
                 // 현재 단어가 추가되면 max_width 초과하는지 검사
-                if current_width - space_w * space_condense + fitting_width > limit(&result)
+                if !oversized_word_continuation
+                    && current_width - space_w * space_condense + fitting_width > limit(&result)
                     && (chars_in_line > 0 || !current_run_text.is_empty())
                 {
                     // 현재 줄을 flush 후 새 줄 시작
@@ -3188,13 +3509,17 @@ fn split_composed_line_by_width(
                     hung = false;
                 }
                 // 단어 자체가 max_width 초과 시 글자 단위 break
-                if fitting_width > limit(&result) && current_width == 0.0 {
+                if oversized_word_continuation
+                    || (fitting_width > limit(&result) && current_width == 0.0)
+                {
                     for wch in word.chars() {
                         let wch_str: String = std::iter::once(wch).collect();
                         let wch_width =
                             crate::renderer::layout::estimate_text_width_unrounded(&wch_str, &ts);
                         if current_width - space_w * space_condense + wch_width > limit(&result)
                             && chars_in_line > 0
+                            // 어절 맞춤에서 뺀 마지막 공백은 글자 채움에서도 직전 줄에 둔다.
+                            && !(native_word_flow && wch == ' ')
                         {
                             flush_run(
                                 &mut current_runs,
@@ -3213,6 +3538,9 @@ fn split_composed_line_by_width(
                         }
                         current_run_text.push(wch);
                         current_width += wch_width;
+                        if native_word_flow && wch == ' ' {
+                            space_w += wch_width;
+                        }
                         chars_in_line += 1;
                     }
                 } else {
@@ -3223,6 +3551,7 @@ fn split_composed_line_by_width(
                     chars_in_line += word.chars().count();
                 }
                 word.clear();
+                oversized_word_continuation = false;
             }
         }
         // run 끝에 남은 단어 처리
@@ -3249,8 +3578,9 @@ fn split_composed_line_by_width(
                     }
                 }
             }
-            if current_width - space_w * space_condense + word_width + continuation_width
-                > limit(&result)
+            if !oversized_word_continuation
+                && current_width - space_w * space_condense + word_width + continuation_width
+                    > limit(&result)
                 && (chars_in_line > 0 || !current_run_text.is_empty())
             {
                 flush_run(
@@ -3269,7 +3599,9 @@ fn split_composed_line_by_width(
                 hung = false;
             }
             // 단어 자체가 max_width 초과 시 글자 단위 break
-            if word_width > limit(&result) && current_width == 0.0 {
+            let fill_oversized_word = oversized_word_continuation
+                || (native_word_flow && word_width + continuation_width > limit(&result));
+            if fill_oversized_word || (word_width > limit(&result) && current_width == 0.0) {
                 for wch in word.chars() {
                     let wch_str: String = std::iter::once(wch).collect();
                     let wch_width =
@@ -3301,6 +3633,7 @@ fn split_composed_line_by_width(
                 current_width += word_width;
                 chars_in_line += word.chars().count();
             }
+            oversized_word_continuation = fill_oversized_word && continuation_width > 0.0;
         }
     }
     // 마지막 줄 flush
@@ -4339,3 +4672,32 @@ mod p1_text_reflow_tests {
 }
 #[cfg(test)]
 mod tests;
+
+fn resolve_ruby_widths(
+    composed: &mut ComposedParagraph,
+    para: &Paragraph,
+    styles: &ResolvedStyleSet,
+    width_px: f64,
+    wrap_at_width: bool,
+) {
+    // 글자 없는 덧말 문단도 본문 문자열을 가진 하나의 인라인 제어다.
+    // 실제 저장 줄은 그대로 두고 fresh geometry만 현재 셀/단 폭에서 만든다.
+    if (para.text.is_empty() || wrap_at_width)
+        && super::para_has_no_stored_line_segs(para)
+        && width_px > 0.0
+        && para
+            .controls
+            .iter()
+            .any(|c| matches!(c, Control::Ruby(r) if r.option == 0))
+    {
+        let mut local = para.clone();
+        local.line_segs.clear();
+        line_breaking::reflow_line_segs(&mut local, width_px, styles, 96.0);
+        *composed = compose_paragraph(&local);
+    }
+    for (_, width, ci) in &mut composed.tac_controls {
+        if let Some(ruby) = super::ruby::prepare(para, *ci, styles, 96.0) {
+            *width = super::px_to_hwpunit_round(ruby.main_width, 96.0);
+        }
+    }
+}

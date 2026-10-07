@@ -1,4 +1,6 @@
 import { assertBase64EncodedImageDecodeDimensions } from './canvaskit/image-header.ts';
+import { inheritedReplayLayer } from './canvaskit/replay-plane.ts';
+import type { LayerInfo } from '../core/types';
 
 export interface FlowImageBbox {
   x: number;
@@ -32,7 +34,7 @@ export interface FlowImagePaintOp {
 
 type LayerNodeLike = {
   kind?: unknown;
-  layer?: unknown;
+  layer?: LayerInfo;
   clip?: unknown;
   ops?: unknown;
   children?: unknown;
@@ -88,12 +90,12 @@ export function collectFlowImagePaintOps(
 
   const visit = (
     value: unknown,
-    inheritedLayer: unknown,
+    inheritedLayer: LayerInfo | null,
     inheritedClip: FlowImageBbox | undefined | null,
   ): void => {
     if (!isLayerNode(value) || inheritedClip === null) return;
 
-    const activeLayer = value.layer ?? inheritedLayer;
+    const activeLayer = inheritedReplayLayer(value.layer, inheritedLayer);
     const clip = value.kind === 'clipRect' && isFiniteBbox(value.clip)
       ? intersectBboxes(inheritedClip, value.clip)
       : inheritedClip;

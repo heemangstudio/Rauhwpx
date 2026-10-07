@@ -15,6 +15,10 @@ use super::*;
 /// 마커가 사라져 native HWPX로 취급된다.
 pub const HWP5_ORIGIN_HWPX_MARKER_PATH: &str = "META-INF/rhwp-hwp5-origin";
 
+/// rhwp가 직접 조판한 줄의 출처를 저장하는 HWPX 엔트리 경로.
+/// 저장 줄의 구현 태그를 복원하지 않고 세션의 행 높이 해석을 재로드에서도 유지한다.
+pub const OWN_LINE_LAYOUT_HWPX_MARKER_PATH: &str = "META-INF/rhwp-own-line-layout";
+
 /// 파서가 모델링하지 않는 원시 레코드 (라운드트립 보존용)
 #[derive(Debug, Clone, Default)]
 pub struct RawRecord {

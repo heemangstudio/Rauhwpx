@@ -10,7 +10,7 @@ use super::super::style_resolver::ResolvedStyleSet;
 use super::super::{hwpunit_to_px, ShapeStyle};
 use super::border_rendering::{
     build_row_col_x, collect_cell_borders, collect_zone_borders, render_cell_diagonal,
-    render_edge_borders, render_transparent_borders,
+    render_transparent_borders,
 };
 use super::table_layout::{
     calc_nested_split_rows, effective_margin_left_line,
@@ -572,9 +572,15 @@ impl LayoutEngine {
                         wrap_width,
                         styles,
                         self.profile.get().native_hwpx_cell_margin(),
+                        cell.line_wrap,
+                        cell.text_direction,
+                        true,
+                        self.dpi,
                     );
                     // [#2291] 부실 저장(ls==1·실폭 초과) 재분할 — 가로쓰기 셀 한정.
-                    if cell.text_direction == 0 {
+                    if cell.text_direction == 0
+                        && cell.line_wrap != crate::model::table::CellLineWrap::Squeeze
+                    {
                         crate::renderer::composer::recompose_stored_single_line_if_overflowing(
                             comp,
                             para,
@@ -708,8 +714,14 @@ impl LayoutEngine {
                         &cell.paragraphs,
                         styles,
                     );
-                    let nested_bottom =
-                        self.calc_nested_controls_bottom_height(&cell.paragraphs, styles);
+                    let nested_bottom = self.calc_nested_controls_bottom_height(
+                        &cell.paragraphs,
+                        styles,
+                        (self.profile.get().native_hwpx_cell_margin()
+                            && cell.text_direction == 0
+                            && cell.line_wrap == crate::model::table::CellLineWrap::Break)
+                            .then_some(inner_width),
+                    );
                     vpos_h
                         .max(line_h)
                         .max(nested_bottom)
@@ -727,6 +739,13 @@ impl LayoutEngine {
                     .max(self.calc_cell_wrap_objects_bottom_height(&cell.paragraphs))
                     .max(self.cell_floating_para_objects_bottom(&cell.paragraphs))
                 }
+            };
+
+            let total_content_height = if cell.text_direction == 0 {
+                total_content_height
+                    .max(self.calc_cell_alignment_objects_bottom_height(&cell.paragraphs))
+            } else {
+                total_content_height
             };
 
             // 수직 정렬
@@ -809,6 +828,7 @@ impl LayoutEngine {
                     align_content_height,
                 );
 
+            let content_children_start = cell_node.children.len();
             // 세로쓰기 셀: 별도 레이아웃 경로 (가로 레이아웃 루프 대신)
             if cell.text_direction != 0 {
                 let vert_inner_area = LayoutRect {
@@ -1131,6 +1151,7 @@ impl LayoutEngine {
                                 previous_inline_control_pos = position;
                             }
                         }
+                        let children_start = cell_node.children.len();
                         match ctrl {
                             Control::Picture(pic) => {
                                 if !pic.common.treat_as_char
@@ -1410,6 +1431,7 @@ impl LayoutEngine {
                                         bin_data_content,
                                         clamp_header_negative_para_offset,
                                         table_cell_ctx,
+                                        Some(&cell_context),
                                     );
                                     inline_x += shape_w;
                                 } else {
@@ -1463,6 +1485,7 @@ impl LayoutEngine {
                                         bin_data_content,
                                         clamp_header_negative_para_offset,
                                         table_cell_ctx,
+                                        Some(&cell_context),
                                     );
                                     let is_top_and_bottom_shape = matches!(
                                         shape.common().text_wrap,
@@ -1799,6 +1822,13 @@ impl LayoutEngine {
                             }
                             _ => {}
                         }
+                        Self::layer_cell_control_children(
+                            &mut cell_node,
+                            children_start,
+                            ctrl,
+                            cp_idx,
+                            ctrl_idx,
+                        );
                     }
                     if rendered_top_and_bottom_non_inline {
                         para_y +=
@@ -1926,7 +1956,7 @@ impl LayoutEngine {
                 }
             }
 
-            cell_node.children.sort_by_key(Self::paper_node_sort_key);
+            Self::sort_cell_paint_children(&mut cell_node, content_children_start);
             table_node.children.push(cell_node);
             if let Some(bs) = border_style {
                 table_node.children.extend(render_cell_diagonal(
@@ -2068,7 +2098,28 @@ impl LayoutEngine {
             if host_pre_emitted {
                 raw += stored_float_anchor_offset_px(para, table, control_index, self.dpi);
             }
-            (raw - host_h).max(0.0)
+            let saved_local_tail_gap = self.profile.get().native_hwpx_cell_margin()
+                && styles.font_metrics_policy
+                    == crate::model::provenance::FontMetricsPolicy::HcrDeclared
+                && host_pre_emitted
+                && para_index
+                    .checked_sub(1)
+                    .and_then(|index| paragraphs.get(index))
+                    .is_some_and(|previous| {
+                        super::stored_local_host_precedes_float(
+                            para,
+                            previous,
+                            table,
+                            control_index,
+                            crate::renderer::px_to_hwpunit(col_area.height, self.dpi),
+                        )
+                    })
+                && super::stored_float_origin_is_in_host_tail_gap(para, table, control_index);
+            if saved_local_tail_gap {
+                raw - host_h
+            } else {
+                (raw - host_h).max(0.0)
+            }
         } else {
             0.0
         };
@@ -2813,15 +2864,27 @@ impl LayoutEngine {
         );
 
         // 엣지 기반 테두리 렌더링
-        table_node.children.extend(render_edge_borders(
-            tree,
-            &h_edges,
-            &v_edges,
-            &row_col_x,
-            &grid_row_y,
-            table_x,
-            table_y,
-        ));
+        table_node
+            .children
+            .extend(super::border_rendering::render_edge_borders_with_policy(
+                tree,
+                &h_edges,
+                &v_edges,
+                &row_col_x,
+                &grid_row_y,
+                table_x,
+                table_y,
+                super::border_rendering::mac_print_double_policy(
+                    table,
+                    styles,
+                    self.profile.get().native_hwpx_cell_margin(),
+                    self.dpi,
+                    start_row == 0
+                        && end_row >= row_count
+                        && start_cut.is_empty()
+                        && end_cut.is_empty(),
+                ),
+            ));
         if self.show_transparent_borders.get() {
             table_node.children.extend(render_transparent_borders(
                 tree,

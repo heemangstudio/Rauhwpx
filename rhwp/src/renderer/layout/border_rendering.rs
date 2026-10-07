@@ -322,6 +322,48 @@ pub(crate) fn collect_zone_borders(
 /// 연속된 같은 스타일의 엣지 세그먼트는 하나의 Line으로 병합하여
 /// 이중선/삼중선의 교차점 렌더링을 깔끔하게 처리한다.
 /// row_col_x: 행별 열 누적 위치 (셀별 독립 너비 지원)
+/// 현재 Mac 출력의 실측 600dpi 펜 규칙. 절대 viewport 격자는 그대로 둔다.
+#[derive(Clone, Copy)]
+pub(crate) struct MacPrintDouble {
+    output_dpi: f64,
+    isolated_corners: bool,
+}
+
+pub(crate) fn mac_print_double_policy(
+    table: &Table,
+    styles: &super::super::style_resolver::ResolvedStyleSet,
+    native_hwpx: bool,
+    output_dpi: f64,
+    full_fragment: bool,
+) -> Option<MacPrintDouble> {
+    if !native_hwpx
+        || styles.font_metrics_policy != crate::model::provenance::FontMetricsPolicy::HcrDeclared
+        || !table.cells.iter().all(|cell| cell.text_direction == 0)
+        || !output_dpi.is_finite()
+        || output_dpi <= 0.0
+    {
+        return None;
+    }
+    let isolated_corners = full_fragment
+        && table.row_count == 1
+        && table.col_count == 1
+        && table.cell_spacing == 0
+        && table.cells.len() == 1
+        && table.cells[0].row_span == 1
+        && table.cells[0].col_span == 1
+        && table.cells[0]
+            .border_fill_id
+            .checked_sub(1)
+            .and_then(|id| styles.border_styles.get(id as usize))
+            .is_some_and(|style| {
+                style.diagonal_attr & 0x0fff == 0 && style.center_line == CenterLine::None
+            });
+    Some(MacPrintDouble {
+        output_dpi,
+        isolated_corners,
+    })
+}
+
 pub(crate) fn render_edge_borders(
     tree: &mut PageRenderTree,
     h_edges: &[Vec<Option<BorderLine>>],
@@ -331,6 +373,32 @@ pub(crate) fn render_edge_borders(
     table_x: f64,
     table_y: f64,
 ) -> Vec<RenderNode> {
+    render_edge_borders_with_policy(
+        tree, h_edges, v_edges, row_col_x, row_y, table_x, table_y, None,
+    )
+}
+
+pub(crate) fn render_edge_borders_with_policy(
+    tree: &mut PageRenderTree,
+    h_edges: &[Vec<Option<BorderLine>>],
+    v_edges: &[Vec<Option<BorderLine>>],
+    row_col_x: &[Vec<f64>],
+    row_y: &[f64],
+    table_x: f64,
+    table_y: f64,
+    policy: Option<MacPrintDouble>,
+) -> Vec<RenderNode> {
+    let isolated = policy.is_some_and(|p| p.isolated_corners)
+        && h_edges.len() == 2
+        && h_edges.iter().all(|row| row.len() == 1)
+        && v_edges.len() == 2
+        && v_edges.iter().all(|col| col.len() == 1)
+        && h_edges.iter().chain(v_edges.iter()).flatten().all(|edge| {
+            edge.is_some_and(|border| {
+                border.line_type == BorderLineType::Double
+                    && h_edges[0][0].is_some_and(|first| first.width == border.width)
+            })
+        });
     let mut nodes = Vec::new();
     let row_count = if row_y.len() > 1 { row_y.len() - 1 } else { 0 };
 
@@ -365,7 +433,24 @@ pub(crate) fn render_edge_borders(
                     if let (Some(start), Some(ref sb)) = (seg_start, seg_border) {
                         let y1 = table_y + row_y[start];
                         let y2 = table_y + row_y[ri];
-                        nodes.extend(create_border_line_nodes(tree, &sb, seg_x, y1, seg_x, y2));
+                        nodes.extend(create_border_line_nodes_with_policy(
+                            tree,
+                            &sb,
+                            seg_x,
+                            y1,
+                            seg_x,
+                            y2,
+                            policy,
+                            if isolated {
+                                if ci == 0 {
+                                    2
+                                } else {
+                                    1
+                                }
+                            } else {
+                                0
+                            },
+                        ));
                     }
                     seg_start = Some(ri);
                     seg_border = Some(*border);
@@ -375,7 +460,24 @@ pub(crate) fn render_edge_borders(
                 if let (Some(start), Some(ref sb)) = (seg_start, seg_border) {
                     let y1 = table_y + row_y[start];
                     let y2 = table_y + row_y[ri];
-                    nodes.extend(create_border_line_nodes(tree, &sb, seg_x, y1, seg_x, y2));
+                    nodes.extend(create_border_line_nodes_with_policy(
+                        tree,
+                        &sb,
+                        seg_x,
+                        y1,
+                        seg_x,
+                        y2,
+                        policy,
+                        if isolated {
+                            if ci == 0 {
+                                2
+                            } else {
+                                1
+                            }
+                        } else {
+                            0
+                        },
+                    ));
                 }
                 seg_start = None;
                 seg_border = None;
@@ -384,7 +486,24 @@ pub(crate) fn render_edge_borders(
         if let (Some(start), Some(ref sb)) = (seg_start, seg_border) {
             let y1 = table_y + row_y[start];
             let y2 = table_y + row_y.get(v_col.len()).copied().unwrap_or(row_y[start]);
-            nodes.extend(create_border_line_nodes(tree, &sb, seg_x, y1, seg_x, y2));
+            nodes.extend(create_border_line_nodes_with_policy(
+                tree,
+                &sb,
+                seg_x,
+                y1,
+                seg_x,
+                y2,
+                policy,
+                if isolated {
+                    if ci == 0 {
+                        2
+                    } else {
+                        1
+                    }
+                } else {
+                    0
+                },
+            ));
         }
     }
 
@@ -413,7 +532,24 @@ pub(crate) fn render_edge_borders(
                     if let (Some(start), Some(ref sb)) = (seg_start, seg_border) {
                         let x1 = table_x + ref_cx[start];
                         let x2 = table_x + ref_cx[ci];
-                        nodes.extend(create_border_line_nodes(tree, &sb, x1, y, x2, y));
+                        nodes.extend(create_border_line_nodes_with_policy(
+                            tree,
+                            &sb,
+                            x1,
+                            y,
+                            x2,
+                            y,
+                            policy,
+                            if isolated {
+                                if ri == 0 {
+                                    2
+                                } else {
+                                    1
+                                }
+                            } else {
+                                0
+                            },
+                        ));
                     }
                     seg_start = Some(ci);
                     seg_border = Some(*border);
@@ -422,7 +558,24 @@ pub(crate) fn render_edge_borders(
                 if let (Some(start), Some(ref sb)) = (seg_start, seg_border) {
                     let x1 = table_x + ref_cx[start];
                     let x2 = table_x + ref_cx[ci];
-                    nodes.extend(create_border_line_nodes(tree, &sb, x1, y, x2, y));
+                    nodes.extend(create_border_line_nodes_with_policy(
+                        tree,
+                        &sb,
+                        x1,
+                        y,
+                        x2,
+                        y,
+                        policy,
+                        if isolated {
+                            if ri == 0 {
+                                2
+                            } else {
+                                1
+                            }
+                        } else {
+                            0
+                        },
+                    ));
                 }
                 seg_start = None;
                 seg_border = None;
@@ -432,7 +585,24 @@ pub(crate) fn render_edge_borders(
         if let (Some(start), Some(ref sb)) = (seg_start, seg_border) {
             let x1 = table_x + ref_cx[start];
             let x2 = table_x + ref_cx.get(h_row.len()).copied().unwrap_or(ref_cx[start]);
-            nodes.extend(create_border_line_nodes(tree, &sb, x1, y, x2, y));
+            nodes.extend(create_border_line_nodes_with_policy(
+                tree,
+                &sb,
+                x1,
+                y,
+                x2,
+                y,
+                policy,
+                if isolated {
+                    if ri == 0 {
+                        2
+                    } else {
+                        1
+                    }
+                } else {
+                    0
+                },
+            ));
         }
     }
 
@@ -542,6 +712,65 @@ pub(crate) fn create_border_line_nodes(
     x2: f64,
     y2: f64,
 ) -> Vec<RenderNode> {
+    create_border_line_nodes_with_policy(tree, border, x1, y1, x2, y2, None, 0)
+}
+
+fn create_border_line_nodes_with_policy(
+    tree: &mut PageRenderTree,
+    border: &BorderLine,
+    x1: f64,
+    y1: f64,
+    x2: f64,
+    y2: f64,
+    policy: Option<MacPrintDouble>,
+    endpoint_code: u8,
+) -> Vec<RenderNode> {
+    // 224604의 HU 폭 표와 37cf8의 정수 펜 규칙. 일반 격자의 끝점은
+    // 기존 정책을 유지하며, 닫힌 단일 셀만 424904/4b9814 코드를 적용한다.
+    if border.line_type == BorderLineType::Double {
+        if let Some(policy) = policy {
+            const WIDTH_HU: [i32; 16] = [
+                28, 33, 42, 56, 70, 84, 113, 141, 169, 198, 283, 424, 567, 850, 1134, 1417,
+            ];
+            let horizontal = (y2 - y1).abs() < 0.001 && x2 > x1;
+            let vertical = (x2 - x1).abs() < 0.001 && y2 > y1;
+            if let Some(hu) = WIDTH_HU
+                .get(border.width as usize)
+                .filter(|_| horizontal || vertical)
+            {
+                let mut w = (*hu * 600 + 3600) / 7200;
+                w += [0, -1, 2, 1][(w & 3) as usize];
+                let h = w >> 1;
+                let q = w >> 2;
+                let scale = policy.output_dpi / 600.0;
+                let planes = [-h + (w >> 3), h - 1 - ((q - 1).max(0) >> 1)];
+                let ends = match endpoint_code {
+                    1 => [(h - q, q - h), (-h, h)],
+                    2 => [(-h, h), (h - q, q - h)],
+                    _ => [(0, 0), (0, 0)],
+                };
+                let mut nodes = Vec::with_capacity(2);
+                for (plane, (start, end)) in planes.into_iter().zip(ends) {
+                    let (ax, ay, bx, by) = if horizontal {
+                        (x1 + start as f64 * scale, y1, x2 + end as f64 * scale, y2)
+                    } else {
+                        (x1, y1 + start as f64 * scale, x2, y2 + end as f64 * scale)
+                    };
+                    nodes.extend(create_parallel_lines(
+                        tree,
+                        border.color,
+                        ax,
+                        ay,
+                        bx,
+                        by,
+                        &[(plane as f64 * scale, q as f64 * scale)],
+                        StrokeDash::Solid,
+                    ));
+                }
+                return nodes;
+            }
+        }
+    }
     if border.line_type == BorderLineType::None {
         return vec![];
     }
@@ -1735,5 +1964,168 @@ impl super::LayoutEngine {
             u32::try_from(width).ok().filter(|w| *w > 0)
         };
         wanted.into_iter().map(width_of).collect()
+    }
+}
+
+#[cfg(test)]
+mod mac_print_double_tests {
+    use super::*;
+
+    fn line(node: &RenderNode) -> &LineNode {
+        let RenderNodeType::Line(line) = &node.node_type else {
+            panic!("border line")
+        };
+        line
+    }
+
+    #[test]
+    fn mapped_double_width_steps_keep_the_native_planes_at_each_output_dpi() {
+        for dpi in [96.0, 192.0] {
+            let factor = dpi / 96.0;
+            for (width, stroke, first, second) in [
+                (6, 0.32, -0.48, 0.48),
+                (7, 0.48, -0.80, 0.64),
+                (8, 0.64, -0.96, 0.96),
+            ] {
+                let border = BorderLine {
+                    line_type: BorderLineType::Double,
+                    width,
+                    color: 0,
+                    ..Default::default()
+                };
+                let mut tree = PageRenderTree::new(0, 800.0, 1100.0);
+                let policy = Some(MacPrintDouble {
+                    output_dpi: dpi,
+                    isolated_corners: false,
+                });
+                for vertical in [false, true] {
+                    let (x1, y1, x2, y2) = if vertical {
+                        (20.0, 10.0, 20.0, 110.0)
+                    } else {
+                        (10.0, 20.0, 110.0, 20.0)
+                    };
+                    let nodes = create_border_line_nodes_with_policy(
+                        &mut tree, &border, x1, y1, x2, y2, policy, 0,
+                    );
+                    for (node, plane) in nodes.iter().zip([first, second]) {
+                        let edge = line(node);
+                        assert!((edge.style.width - stroke * factor).abs() < 1e-9);
+                        let displacement = if vertical { edge.x1 - x1 } else { edge.y1 - y1 };
+                        assert!((displacement - plane * factor).abs() < 1e-9);
+                    }
+                }
+            }
+        }
+        let border = BorderLine {
+            line_type: BorderLineType::Double,
+            width: 7,
+            ..Default::default()
+        };
+        let mut tree = PageRenderTree::new(0, 800.0, 1100.0);
+        let legacy = create_border_line_nodes(&mut tree, &border, 10.0, 20.0, 110.0, 20.0);
+        assert!((line(&legacy[0]).style.width - 0.48).abs() < 1e-9);
+        assert!((line(&legacy[1]).y1 - line(&legacy[0]).y1 - 1.42).abs() < 1e-9);
+    }
+
+    #[test]
+    fn isolated_double_corners_extend_outer_paths_and_trim_inner_paths() {
+        let border = BorderLine {
+            line_type: BorderLineType::Double,
+            width: 7,
+            ..Default::default()
+        };
+        let edges = vec![vec![Some(border)], vec![Some(border)]];
+        let mut tree = PageRenderTree::new(0, 800.0, 1100.0);
+        let nodes = render_edge_borders_with_policy(
+            &mut tree,
+            &edges,
+            &edges,
+            &[vec![0.0, 100.0]],
+            &[0.0, 80.0],
+            10.0,
+            20.0,
+            Some(MacPrintDouble {
+                output_dpi: 96.0,
+                isolated_corners: true,
+            }),
+        );
+        assert_eq!(nodes.len(), 8);
+        for (index, x, y) in [
+            (0, 9.2, 19.04),
+            (2, 109.2, 20.48),
+            (4, 9.04, 19.2),
+            (6, 10.48, 99.2),
+        ] {
+            assert!((line(&nodes[index]).x1 - x).abs() < 1e-9);
+            assert!((line(&nodes[index]).y1 - y).abs() < 1e-9);
+        }
+        let cut = render_edge_borders_with_policy(
+            &mut tree,
+            &edges,
+            &edges,
+            &[vec![0.0, 100.0]],
+            &[0.0, 80.0],
+            10.0,
+            20.0,
+            Some(MacPrintDouble {
+                output_dpi: 96.0,
+                isolated_corners: false,
+            }),
+        );
+        assert_eq!(line(&cut[0]).y1, 20.0);
+        assert_eq!(line(&cut[4]).x1, 10.0);
+    }
+
+    #[test]
+    fn double_print_policy_preserves_other_profiles_and_diagonal_topologies() {
+        let mut styles = super::super::super::style_resolver::ResolvedStyleSet::default();
+        styles.border_styles.push(ResolvedBorderStyle::default());
+        let mut table = Table {
+            row_count: 1,
+            col_count: 1,
+            cells: vec![crate::model::table::Cell {
+                row_span: 1,
+                col_span: 1,
+                border_fill_id: 1,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(mac_print_double_policy(&table, &styles, false, 96.0, true).is_none());
+        assert!(
+            mac_print_double_policy(&table, &styles, true, 96.0, true)
+                .unwrap()
+                .isolated_corners
+        );
+        assert!(
+            !mac_print_double_policy(&table, &styles, true, 96.0, false)
+                .unwrap()
+                .isolated_corners
+        );
+        // HWPX는 비활성 대각선에도 SOLID 펜 정보를 저장한다.
+        styles.border_styles[0].diagonal.diagonal_type = 1;
+        assert!(
+            mac_print_double_policy(&table, &styles, true, 96.0, true)
+                .unwrap()
+                .isolated_corners
+        );
+        styles.border_styles[0].diagonal_attr = 1 << 2;
+        assert!(
+            !mac_print_double_policy(&table, &styles, true, 96.0, true)
+                .unwrap()
+                .isolated_corners
+        );
+        styles.border_styles[0].diagonal_attr = 0;
+        styles.border_styles[0].center_line = CenterLine::Horizontal;
+        assert!(
+            !mac_print_double_policy(&table, &styles, true, 96.0, true)
+                .unwrap()
+                .isolated_corners
+        );
+        table.cells[0].text_direction = 1;
+        assert!(mac_print_double_policy(&table, &styles, true, 96.0, true).is_none());
+        table.cells[0].text_direction = 0;
+        styles.font_metrics_policy = crate::model::provenance::FontMetricsPolicy::HancomWindows;
+        assert!(mac_print_double_policy(&table, &styles, true, 96.0, true).is_none());
     }
 }

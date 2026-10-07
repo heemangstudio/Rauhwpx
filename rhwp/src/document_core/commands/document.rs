@@ -3040,11 +3040,107 @@ impl DocumentCore {
                         ))
                     })
                     .collect();
+                // 새 TAC 한 줄의 실제 점유 advance가 양쪽 저장 좌표와 정확히
+                // 이어지면 그 사다리는 이미 유효하다. 전체 재계산으로 저장 좌표까지
+                // 옮기면 뒤의 saved-vpos 보정에서 같은 간격을 다시 소비할 수 있다.
+                let mut coherent_saved = HashSet::new();
+                if layout_profile.native_hwpx_cell_margin()
+                    && styles.font_metrics_policy
+                        == crate::model::provenance::FontMetricsPolicy::HcrDeclared
+                {
+                    let body_height = px_to_hwpunit(
+                        PageLayoutInfo::from_page_def(&page_def, &column_def, dpi)
+                            .body_area
+                            .height,
+                        dpi,
+                    );
+                    for pi in 1..section.paragraphs.len().saturating_sub(1) {
+                        let para = &section.paragraphs[pi];
+                        let [seg] = para.line_segs.as_slice() else {
+                            continue;
+                        };
+                        let [Control::Table(table)] = para.controls.as_slice() else {
+                            continue;
+                        };
+                        if !reflowed_paras.contains(&pi)
+                            || !para.text.is_empty()
+                            || para.char_count != 9
+                            || para.char_shapes.is_empty()
+                            || !para.field_ranges.is_empty()
+                            || !para.orphan_field_ends.is_empty()
+                            || !styles
+                                .para_styles
+                                .get(para.para_shape_id as usize)
+                                .is_some_and(|style| {
+                                    style.line_spacing_type
+                                        == crate::model::style::LineSpacingType::Percent
+                                })
+                            || !table.common.treat_as_char
+                            || table.common.affect_line_spacing
+                            || table.caption.is_some()
+                            || table.cell_spacing != 0
+                            || seg.line_height <= 0
+                            || seg.line_height != seg.text_height
+                            || i64::from(seg.line_height)
+                                < i64::from(table.common.height)
+                                    + i64::from(table.outer_margin_top)
+                                    + i64::from(table.outer_margin_bottom)
+                        {
+                            continue;
+                        }
+                        let (Some((_, previous_end)), Some((next_start, _))) =
+                            (orig_span[pi - 1], orig_span[pi + 1])
+                        else {
+                            continue;
+                        };
+                        let expected_end = i64::from(previous_end)
+                            + i64::from(seg.line_height)
+                            + i64::from(seg.line_spacing);
+                        let next_height = section.paragraphs[pi + 1].line_segs[0].line_height;
+                        let occupied_end = expected_end - i64::from(seg.line_spacing);
+                        let fits_before_reset = next_start == 0
+                            && occupied_end > 0
+                            && occupied_end <= i64::from(body_height)
+                            && expected_end + i64::from(next_height) > i64::from(body_height);
+                        if expected_end != i64::from(next_start) && !fits_before_reset {
+                            continue;
+                        }
+                        let mut left = pi - 1;
+                        coherent_saved.insert(left);
+                        while left > 0
+                            && matches!((orig_span[left - 1], orig_span[left]),
+                                (Some((_, end)), Some((start, _))) if end == start)
+                        {
+                            left -= 1;
+                            coherent_saved.insert(left);
+                        }
+                        let mut right = pi + 1;
+                        coherent_saved.insert(right);
+                        while right + 1 < orig_span.len()
+                            && matches!((orig_span[right], orig_span[right + 1]),
+                                (Some((_, end)), Some((start, _))) if end == start)
+                        {
+                            right += 1;
+                            coherent_saved.insert(right);
+                        }
+                    }
+                }
                 let ladder_trusted =
                     stored_ladder_is_hancom_flow(&section.paragraphs, &orig_span, styles, dpi);
                 // [lso-spacing] 직전 lineseg 보유 문단의 (합성 여부, spacing_after HU).
                 let mut prev_boundary: Option<(bool, f64)> = None;
                 for (pi, para) in section.paragraphs.iter_mut().enumerate() {
+                    if coherent_saved.contains(&pi) {
+                        running_vpos = orig_span[pi].unwrap().1;
+                        prev_stored_last_vpos = para.line_segs.last().unwrap().vertical_pos;
+                        let spacing_after = styles
+                            .para_styles
+                            .get(para.para_shape_id as usize)
+                            .map(|style| style.spacing_after)
+                            .unwrap_or(0.0);
+                        prev_boundary = Some((reflowed_paras.contains(&pi), spacing_after));
+                        continue;
+                    }
                     let was_reflowed = reflowed_paras.contains(&pi);
                     // [#2158] 한컴 흐름 사다리를 저장한 구역(합성 문단은 일부)은 저장 문단의
                     // 쪽-상대 vpos 를 그대로 둔다. 연속 좌표로 덮으면 저장 문단이 쪽 경계를
@@ -4944,12 +5040,90 @@ impl DocumentCore {
         }
     }
 
+    // 새로고침 전에 깨끗했던 유일한 루트 소유자만 기록한다. 중첩/캡션 등에서 같은
+    // ID가 재사용되면 캐시 무효화와 실제 편집을 구별할 수 없으므로 허용하지 않는다.
+    fn clean_root_refresh_tables(&self) -> HashSet<u32> {
+        fn caption(caption: &Option<Caption>, counts: &mut HashMap<u32, usize>) {
+            if let Some(caption) = caption {
+                paragraphs(&caption.paragraphs, counts);
+            }
+        }
+        fn shape(value: &ShapeObject, counts: &mut HashMap<u32, usize>) {
+            if let Some(drawing) = value.drawing() {
+                if let Some(text) = &drawing.text_box {
+                    paragraphs(&text.paragraphs, counts);
+                }
+                caption(&drawing.caption, counts);
+            }
+            match value {
+                ShapeObject::Group(group) => {
+                    caption(&group.caption, counts);
+                    for child in &group.children {
+                        shape(child, counts);
+                    }
+                }
+                ShapeObject::Picture(picture) => caption(&picture.caption, counts),
+                ShapeObject::Chart(chart) => caption(&chart.caption, counts),
+                ShapeObject::Ole(ole) => caption(&ole.caption, counts),
+                _ => {}
+            }
+        }
+        fn paragraphs(paras: &[Paragraph], counts: &mut HashMap<u32, usize>) {
+            for para in paras {
+                for control in &para.controls {
+                    match control {
+                        Control::Table(table) => {
+                            *counts.entry(table.common.instance_id).or_default() += 1;
+                            for cell in &table.cells {
+                                paragraphs(&cell.paragraphs, counts);
+                            }
+                            caption(&table.caption, counts);
+                        }
+                        Control::Shape(value) => shape(value, counts),
+                        Control::Picture(picture) => caption(&picture.caption, counts),
+                        Control::Header(header) => paragraphs(&header.paragraphs, counts),
+                        Control::Footer(footer) => paragraphs(&footer.paragraphs, counts),
+                        Control::Footnote(note) => paragraphs(&note.paragraphs, counts),
+                        Control::Endnote(note) => paragraphs(&note.paragraphs, counts),
+                        Control::HiddenComment(comment) => paragraphs(&comment.paragraphs, counts),
+                        Control::Field(field) => paragraphs(&field.memo_paragraphs, counts),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        if !self.document.layout_profile().native_hwpx_cell_margin() {
+            return HashSet::new();
+        }
+        let mut counts = HashMap::new();
+        for section in &self.document.sections {
+            paragraphs(&section.paragraphs, &mut counts);
+            for master in &section.section_def.master_pages {
+                paragraphs(&master.paragraphs, &mut counts);
+            }
+        }
+        self.document
+            .sections
+            .iter()
+            .flat_map(|section| &section.paragraphs)
+            .flat_map(|para| &para.controls)
+            .filter_map(|control| {
+                let Control::Table(table) = control else {
+                    return None;
+                };
+                let id = table.common.instance_id;
+                (!table.dirty && id > 0 && counts.get(&id) == Some(&1)).then_some(id)
+            })
+            .collect()
+    }
+
     /// 현재 Document IR은 건드리지 않고, 그로부터 파생된 모든 조판 캐시를 다시 만든다.
     ///
     /// 여러 저수준 편집을 연달아 수행하는 호출자는 각 단계의 증분 캐시를 최종 결과로
     /// 노출하면 안 된다. 특히 에이전트 미리보기처럼 split/delete/format을 한 논리
     /// 연산으로 묶는 경로는 이 메서드로 연산 경계에서 단 한 번 권위 조판을 확정한다.
     pub fn refresh_layout_native(&mut self) {
+        let root_refresh_tables = self.clean_root_refresh_tables();
         // 폰트 등록 변화 후 새로고침이 캐시된 폭을 재사용하지 않도록 비운다.
         crate::renderer::layout::clear_measure_caches();
         self.render_normalization.sections.clear();
@@ -4989,7 +5163,7 @@ impl DocumentCore {
         self.para_offset = vec![0; section_count];
         self.invalidate_page_tree_cache();
         self.overflow_links_cache.borrow_mut().clear();
-        self.paginate();
+        self.paginate_with_root_refresh_tables(&root_refresh_tables);
     }
 
     /// 로드에서 합성한 줄만 비우고 같은 폭/간격 규칙으로 다시 계산한다.

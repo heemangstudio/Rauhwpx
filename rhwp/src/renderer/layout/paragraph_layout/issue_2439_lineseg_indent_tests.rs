@@ -99,6 +99,7 @@ fn synthetic_lineseg_indent_tree() -> crate::renderer::render_tree::PageRenderTr
         border_styles: Vec::new(),
         numberings: Vec::new(),
         bullets: Vec::new(),
+        ..Default::default()
     };
     let page_content = PageContent {
         page_index: 0,

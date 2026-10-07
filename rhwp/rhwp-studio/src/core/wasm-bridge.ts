@@ -232,10 +232,10 @@ export interface WebCanvasImageCacheStats {
   htmlImageSourceBytes: number;
 }
 
-import { fontFamilyChainForDisplay } from './font-substitution';
+import { fontFamilyChainForDisplay, prefersHcrOverWebProxy, prefersImportedHancomSubstitute } from './font-substitution';
 import { createEquationFontResolver, createEquationLiteralFontResolver, createEquationTextMeasurer } from './equation-font';
 import { getImportedLocalFontBytes, hasImportedLocalFontFace, resolveLocalFont } from './local-fonts';
-import { createDeclaredFontAvailabilityProbe } from './font-presence';
+import { createDeclaredFontAvailabilityProbe, createRawFontAvailabilityProbe } from './font-presence';
 import { getWebFontSubstituteFamilies } from './font-loader';
 import type { RuntimeFontMetricsApi } from './desktop-fonts.ts';
 import type { FileSystemFileHandleLike } from '@/command/file-system-access';
@@ -286,11 +286,17 @@ export function installDeclaredFontAvailabilityProbe(): void {
   const descriptor = Object.getOwnPropertyDescriptor(CanvasRenderingContext2D.prototype, 'font');
   const context = document.createElement('canvas').getContext('2d');
   if (!descriptor?.get || !descriptor.set || !context) return;
+  // OS 출처를 세션 import와 분리해야 import 해제 후에도 설치됨으로 남지 않는다.
+  host.isInstalledFontFamilyAvailable = createRawFontAvailabilityProbe(
+    context,
+    { get: descriptor.get, set: descriptor.set },
+  );
   host.isDeclaredFontFamilyAvailable = createDeclaredFontAvailabilityProbe(
     context,
     { get: descriptor.get, set: descriptor.set },
     hasImportedLocalFontFace,
     getWebFontSubstituteFamilies(),
+    family => prefersHcrOverWebProxy(family) || prefersImportedHancomSubstitute(family),
   );
 }
 

@@ -90,6 +90,14 @@ test('수식 글꼴의 변수와 숫자는 본문 고딕 fallback으로 치환�
   assert.match(installed, /^"HYhwpEQ", "Times New Roman"/);
 });
 
+test('검증된 HY 신명조 쌍은 HCR 대체 face를 generic serif보다 먼저 유지한다', () => {
+  for (const family of ['HY신명조', '한양신명조']) {
+    const chain = fontFamilyChainForDisplay(family, 0, 0);
+    assert.ok(chain.indexOf('함초롬바탕') < chain.indexOf('serif'));
+    assert.ok(chain.indexOf('HCR Batang') < chain.indexOf('Haansoft Batang'));
+  }
+});
+
 test('Hollyhock는 HFT 원본 이름과 Helvetica 쌍을 유지한다', () => {
   for (const altType of [0, 1, 2]) {
     assert.equal(resolveFont('HCI Hollyhock', altType, 1), 'HCI Hollyhock');

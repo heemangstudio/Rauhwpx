@@ -1309,6 +1309,7 @@ impl LayoutEngine {
                     false,
                     needs_justify,
                     alignment == Alignment::Distribute,
+                    false,
                     body_line.runs.iter().any(|r| r.text.contains('\t')),
                     false,
                     body_line.runs.iter().map(|r| r.text.chars().count()).sum(),

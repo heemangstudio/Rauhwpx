@@ -634,7 +634,8 @@ impl SkiaLayerRenderer {
         fallback_raster_scale: f32,
         strict_resource_failures: bool,
     ) -> LayerRenderResult<()> {
-        let active_layer = node.layer.or(inherited_layer);
+        let active_layer =
+            crate::paint::replay_order::inherited_replay_layer(node.layer, inherited_layer);
         let clip_enabled = output_options.clip_enabled;
         let apply_dash = |paint: &mut Paint, dash: StrokeDash| {
             let base_width = paint.stroke_width().max(1.0);
@@ -1071,6 +1072,37 @@ impl SkiaLayerRenderer {
                                 bbox.width as f32,
                                 bbox.height as f32,
                             );
+                            let fan = rect.gradient.as_deref().and_then(|gradient| {
+                                crate::renderer::gradient_fill::conical_polygons(gradient, *bbox)
+                            });
+                            if let Some(polygons) = &fan {
+                                canvas.save();
+                                let clip = skia_safe::RRect::new_rect_xy(
+                                    sk_rect,
+                                    rect.corner_radius as f32,
+                                    rect.corner_radius as f32,
+                                );
+                                canvas.clip_rrect(clip, None, true);
+                                for polygon in polygons {
+                                    let mut path = PathBuilder::new();
+                                    path.move_to((
+                                        polygon.points[0].0 as f32,
+                                        polygon.points[0].1 as f32,
+                                    ));
+                                    for &(x, y) in &polygon.points[1..] {
+                                        path.line_to((x as f32, y as f32));
+                                    }
+                                    path.close();
+                                    let mut paint = Paint::default();
+                                    paint.set_anti_alias(true);
+                                    paint.set_color(colorref_to_skia(
+                                        polygon.color,
+                                        rect.style.opacity as f32,
+                                    ));
+                                    canvas.draw_path(&path.detach(), &paint);
+                                }
+                                canvas.restore();
+                            }
                             if let Some(fill) = rect
                                 .gradient
                                 .as_deref()
@@ -1097,6 +1129,7 @@ impl SkiaLayerRenderer {
                                         })
                                 })
                                 .or_else(|| make_fill_paint(&rect.style))
+                                .filter(|_| fan.is_none())
                             {
                                 if rect.corner_radius > 0.0 {
                                     canvas.draw_round_rect(
@@ -2706,6 +2739,8 @@ mod tests {
             angle: 0,
             center_x: 0,
             center_y: 0,
+            step: 0,
+            step_center: 0,
             colors: vec![0x00ff0000, 0x000000ff],
             positions: vec![0.0, 1.0],
         };
@@ -2817,6 +2852,8 @@ mod tests {
                 angle: 0,
                 center_x: 50,
                 center_y: 50,
+                step: 0,
+                step_center: 0,
                 colors: vec![0x008fc5a9, 0x00ffffff],
                 positions: vec![0.0, 1.0],
             })),

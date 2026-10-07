@@ -1,7 +1,7 @@
-//! 양쪽 정렬은 글자로 가득 찬 자동 줄바꿈 줄만 늘린다.
+//! 양쪽 정렬은 일반 자동 줄바꿈과 글자처럼 취급 그림 앞의 자동 줄바꿈을 늘린다.
 //!
-//! 강제 줄바꿈(Shift+Enter)으로 끝난 줄과, 다음 글자처럼 취급 그림이 남은 폭에
-//! 들어가지 않아 끝난 줄은 앞쪽 정렬로 둔다. 그림 앞에서 줄을 나눌 때 마침표 같은
+//! 강제 줄바꿈(Shift+Enter)으로 끝난 줄은 앞쪽 정렬로 둔다.
+//! 그림이 남은 폭에 들어가지 않아 줄을 나눌 때 마침표 같은
 //! 줄 머리 금칙 글자가 그림과 함께 다음 줄로 넘어가지 않아야 한다.
 
 use rhwp::document_core::DocumentCore;
@@ -43,7 +43,7 @@ fn text_lines(core: &DocumentCore) -> Vec<(String, f64)> {
 }
 
 #[test]
-fn 강제_줄바꿈과_그림_앞_줄은_양쪽_정렬로_늘리지_않는다() {
+fn 강제_줄바꿈은_늘리지_않고_그림_앞_자동_줄바꿈은_양쪽_정렬한다() {
     let mut core = DocumentCore::new_empty();
     core.create_blank_document_native().unwrap();
     let para_shape = core.document().sections[0].paragraphs[0].para_shape_id as usize;
@@ -109,9 +109,12 @@ fn 강제_줄바꿈과_그림_앞_줄은_양쪽_정렬로_늘리지_않는다() 
         before_picture.0.trim_end().ends_with("형성한다."),
         "마침표가 그림과 함께 넘어갔다: {lines:?}"
     );
-    assert_eq!(
-        before_picture.1, 0.0,
-        "그림이 들어가지 않아 끝난 줄이 늘어났다: {lines:?}"
+    // 같은 편집 순서로 생성한 HWPX를 Mac 한컴 12.30.0(6446)에서 PDF로 확인했다.
+    // 입력 SHA256: 05842cf499af4d6e506edcb657762b7f21ac6e2338b4bc3387a7e01aeca81f10.
+    // 그림 앞 줄은 일반 자동 줄바꿈보다 단어 사이를 더 늘리고 마침표도 유지한다.
+    assert!(
+        before_picture.1 > 0.0,
+        "그림 앞 자동 줄바꿈이 양쪽 정렬되지 않았다: {lines:?}"
     );
 
     // 가득 찬 자동 줄바꿈 줄은 계속 양쪽 정렬된다.
@@ -120,6 +123,14 @@ fn 강제_줄바꿈과_그림_앞_줄은_양쪽_정렬로_늘리지_않는다() 
             .iter()
             .any(|(t, extra)| t.starts_with("가나다") && *extra > 0.0),
         "가득 찬 줄이 양쪽 정렬되지 않았다: {lines:?}"
+    );
+    let ordinary_wrap = lines
+        .iter()
+        .find(|(text, extra)| text.starts_with("가나다") && *extra > 0.0)
+        .expect("일반 자동 줄바꿈 줄");
+    assert!(
+        before_picture.1 > ordinary_wrap.1,
+        "그림 앞 줄의 넓은 단어 간격이 사라졌다: {lines:?}"
     );
 
     // 나눔 정렬은 짧은 줄도 배분한다. 개체 앞 줄에 대한 양쪽 정렬 규칙을 섞지 않는다.

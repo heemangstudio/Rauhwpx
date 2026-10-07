@@ -472,7 +472,7 @@ impl PaintOp {
                 let _ = write!(buf, ",\"borderWidth\":{:.3}", background.border_width);
                 if let Some(gradient) = &background.gradient {
                     buf.push_str(",\"gradient\":");
-                    write_gradient(buf, gradient);
+                    write_gradient(buf, gradient, None);
                 }
                 if let Some(image) = &background.image {
                     // 밝기·대비는 한컴 방식으로 구운 픽셀을 내보낸다 (Studio 는 효과를 따로
@@ -811,7 +811,7 @@ impl PaintOp {
                 write_shape_style(buf, &rect.style);
                 if let Some(gradient) = &rect.gradient {
                     buf.push_str(",\"gradient\":");
-                    write_gradient(buf, gradient);
+                    write_gradient(buf, gradient, Some((*bbox, rect.corner_radius)));
                 }
                 buf.push_str(",\"transform\":");
                 write_transform(buf, rect.transform);
@@ -825,7 +825,7 @@ impl PaintOp {
                 write_shape_style(buf, &ellipse.style);
                 if let Some(gradient) = &ellipse.gradient {
                     buf.push_str(",\"gradient\":");
-                    write_gradient(buf, gradient);
+                    write_gradient(buf, gradient, None);
                 }
                 buf.push_str(",\"transform\":");
                 write_transform(buf, ellipse.transform);
@@ -841,7 +841,7 @@ impl PaintOp {
                 write_shape_style(buf, &path.style);
                 if let Some(gradient) = &path.gradient {
                     buf.push_str(",\"gradient\":");
-                    write_gradient(buf, gradient);
+                    write_gradient(buf, gradient, None);
                 }
                 if let Some((x1, y1, x2, y2)) = path.connector_endpoints {
                     let _ = write!(
@@ -2703,12 +2703,17 @@ fn write_shadow_style(buf: &mut String, shadow: &ShadowStyle) {
     );
 }
 
-fn write_gradient(buf: &mut String, gradient: &GradientFillInfo) {
+fn write_gradient(
+    buf: &mut String,
+    gradient: &GradientFillInfo,
+    rectangle: Option<(BoundingBox, f64)>,
+) {
     buf.push('{');
     let _ = write!(
         buf,
-        "\"gradientType\":{},\"angle\":{},\"centerX\":{},\"centerY\":{},\"colors\":[",
+        "\"gradientType\":{},\"angle\":{},\"centerX\":{},\"centerY\":{},\"step\":{},\"stepCenter\":{},\"colors\":[",
         gradient.gradient_type, gradient.angle, gradient.center_x, gradient.center_y,
+        gradient.step, gradient.step_center,
     );
     for (idx, color) in gradient.colors.iter().enumerate() {
         if idx > 0 {
@@ -2724,7 +2729,35 @@ fn write_gradient(buf: &mut String, gradient: &GradientFillInfo) {
         }
         let _ = write!(buf, "{:.3}", position);
     }
-    buf.push_str("]}");
+    buf.push(']');
+    if let Some((bbox, radius)) = rectangle {
+        if let Some(polygons) = crate::renderer::gradient_fill::conical_polygons(gradient, bbox) {
+            let _ = write!(
+                buf,
+                ",\"conicalClipRadius\":{},\"conicalPolygons\":[",
+                radius
+            );
+            for (index, polygon) in polygons.iter().enumerate() {
+                if index > 0 {
+                    buf.push(',');
+                }
+                let _ = write!(
+                    buf,
+                    "{{\"color\":{},\"points\":[",
+                    json_escape(&color_ref_to_css(polygon.color))
+                );
+                for (index, (x, y)) in polygon.points.iter().enumerate() {
+                    if index > 0 {
+                        buf.push(',');
+                    }
+                    let _ = write!(buf, "[{},{}]", x, y);
+                }
+                buf.push_str("]}");
+            }
+            buf.push(']');
+        }
+    }
+    buf.push('}');
 }
 
 fn write_line_style(buf: &mut String, style: &LineStyle) {
@@ -3168,6 +3201,9 @@ fn write_render_layer_info(buf: &mut String, layer: RenderLayerInfo) {
     );
     if layer.master_page {
         buf.push_str(",\"masterPage\":true");
+    }
+    if layer.local_to_parent {
+        buf.push_str(",\"localToParent\":true");
     }
     buf.push('}');
 }

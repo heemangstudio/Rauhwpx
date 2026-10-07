@@ -75,6 +75,7 @@ import {
   CANVASKIT_REPLAY_PLANES,
   type CanvasKitReplayPlane,
   layerPaintOpReplayPlane,
+  inheritedReplayLayer,
 } from './canvaskit/replay-plane';
 import { isExpectedCanvasKitUnsupportedOp } from './canvaskit/diagnostics';
 import { layerResourceKeyMatches } from './canvaskit/resource-key';
@@ -1046,7 +1047,7 @@ export class CanvasKitLayerRenderer {
     inheritedLayer: LayerInfo | null = null,
     rightOverflowSlop?: number,
   ): void {
-    const activeLayer = node.layer ?? inheritedLayer;
+    const activeLayer = inheritedReplayLayer(node.layer, inheritedLayer);
     if (node.kind === 'group') {
       for (const child of node.children) {
         this.renderNode(canvas, child, profile, replayPlane, activeLayer, rightOverflowSlop);
@@ -1086,7 +1087,7 @@ export class CanvasKitLayerRenderer {
     replayPlane: CanvasKitReplayPlane,
     inheritedLayer: LayerInfo | null,
   ): void {
-    const activeLayer = node.layer ?? inheritedLayer;
+    const activeLayer = inheritedReplayLayer(node.layer, inheritedLayer);
     for (const op of node.ops) {
       if (layerPaintOpReplayPlane(op, activeLayer) !== replayPlane) {
         continue;
@@ -4347,6 +4348,31 @@ export class CanvasKitLayerRenderer {
     opacity: number,
     draw: (paint: SkPaint) => void,
   ): boolean {
+    // Rust가 조판 프레임에서 계산한 같은 유한 부채꼴을 재생한다.
+    if (gradient.conicalPolygons) {
+      canvas.save();
+      const builder = new this.canvasKit.PathBuilder();
+      let clip: Path | null = null;
+      try {
+        const radius = gradient.conicalClipRadius ?? 0;
+        if (radius > 0) builder.addRRect(this.canvasKit.RRectXY(this.rect(bounds), radius, radius));
+        else builder.addRect(this.rect(bounds));
+        clip = builder.detach();
+        canvas.clipPath(clip, this.canvasKit.ClipOp?.Intersect ?? 0, true);
+        for (const polygon of gradient.conicalPolygons) {
+          if (polygon.points.length < 3) continue;
+          const path = this.makeCommandPath([
+            { type: 'moveTo', x: polygon.points[0][0], y: polygon.points[0][1] },
+            ...polygon.points.slice(1).map(([x, y]) => ({ type: 'lineTo' as const, x, y })),
+            { type: 'closePath' },
+          ]);
+          const paint = this.makeFillPaint(polygon.color, opacity);
+          try { canvas.drawPath(path, paint); }
+          finally { path.delete?.(); paint.delete?.(); }
+        }
+      } finally { clip?.delete?.(); builder.delete?.(); canvas.restore(); }
+      return true;
+    }
     const shader = this.makeShapeGradientShader(gradient, bounds, opacity);
     if (!shader) {
       if (gradient.colors.length >= 2

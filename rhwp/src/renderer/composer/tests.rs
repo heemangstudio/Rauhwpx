@@ -4,6 +4,85 @@ use crate::model::paragraph::{CharShapeRef, LineSeg, Paragraph};
 use crate::model::shape::{HorzAlign, HorzRelTo, TextFlow, TextWrap, VertAlign, VertRelTo};
 
 #[test]
+fn squeeze_cell_keeps_wide_text_on_one_line_and_preserves_explicit_newlines() {
+    use crate::model::table::CellLineWrap;
+    use crate::renderer::style_resolver::ResolvedCharStyle;
+    let styles = ResolvedStyleSet {
+        char_styles: vec![ResolvedCharStyle {
+            font_size: 12.0,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    for body in [
+        "가나다라<hp:lineBreak/>마바사아",
+        "가나다라<hp:lineBreak/>",
+        "가나다라<hp:lineBreak/><hp:lineBreak/>마바사아",
+    ] {
+        let xml = format!(
+            r#"<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section"
+            xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+          <hp:p paraPrIDRef="0"><hp:run charPrIDRef="0"><hp:t>{body}</hp:t>
+          </hp:run></hp:p></hs:sec>"#
+        );
+        let section = crate::parser::hwpx::section::parse_hwpx_section(&xml).unwrap();
+        let raw = &section.paragraphs[0];
+        assert!(raw.line_segs.is_empty());
+        let expected: Vec<_> = raw.text.split('\n').collect();
+        for generated_geometry in [false, true] {
+            let mut para = raw.clone();
+            if generated_geometry {
+                reflow_line_segs(&mut para, 25.0, &styles, 96.0);
+            }
+            let mut squeeze = compose_paragraph(&para);
+            recompose_for_cell_width_for_source(
+                &mut squeeze,
+                &para,
+                25.0,
+                &styles,
+                true,
+                CellLineWrap::Squeeze,
+                0,
+                true,
+                crate::renderer::DEFAULT_DPI,
+            );
+            assert_eq!(
+                squeeze.lines.len(),
+                expected.len(),
+                "{body}, generated={generated_geometry}"
+            );
+            let mut start = 0;
+            for (index, (line, text)) in squeeze.lines.iter().zip(&expected).enumerate() {
+                assert_eq!(line.char_start, start);
+                assert_eq!(line.has_line_break, index + 1 < expected.len());
+                assert_eq!(
+                    line.runs
+                        .iter()
+                        .map(|r| r.text.as_str())
+                        .collect::<String>(),
+                    *text
+                );
+                assert!(line.runs.iter().all(|r| r.char_style_id == 0));
+                start += text.chars().count() + 1;
+            }
+            let mut wrapped = compose_paragraph(&para);
+            recompose_for_cell_width_for_source(
+                &mut wrapped,
+                &para,
+                25.0,
+                &styles,
+                true,
+                CellLineWrap::Break,
+                0,
+                true,
+                crate::renderer::DEFAULT_DPI,
+            );
+            assert!(wrapped.lines.len() > squeeze.lines.len());
+        }
+    }
+}
+
+#[test]
 fn squeeze_reflow_keeps_overwide_text_on_one_line() {
     use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle};
 
@@ -181,7 +260,17 @@ fn native_generated_cell_reflow_uses_paragraph_margins_and_positive_indent() {
         ..Default::default()
     };
     let mut native = compose_paragraph(&para);
-    recompose_for_cell_width_for_source(&mut native, &para, 42.0, &styles, true);
+    recompose_for_cell_width_for_source(
+        &mut native,
+        &para,
+        42.0,
+        &styles,
+        true,
+        crate::model::table::CellLineWrap::Break,
+        0,
+        true,
+        crate::renderer::DEFAULT_DPI,
+    );
     assert_eq!(native.lines.len(), 2);
     let first: String = native.lines[0]
         .runs
@@ -190,7 +279,17 @@ fn native_generated_cell_reflow_uses_paragraph_margins_and_positive_indent() {
         .collect();
     assert_eq!(first, "가나");
     let mut legacy = compose_paragraph(&para);
-    recompose_for_cell_width_for_source(&mut legacy, &para, 42.0, &styles, false);
+    recompose_for_cell_width_for_source(
+        &mut legacy,
+        &para,
+        42.0,
+        &styles,
+        false,
+        crate::model::table::CellLineWrap::Break,
+        0,
+        true,
+        crate::renderer::DEFAULT_DPI,
+    );
     assert_eq!(legacy.lines.len(), 1);
 }
 
@@ -200,6 +299,10 @@ fn native_hwpx_rewraps_generated_breaks_but_preserves_authored_breaks() {
         text: "abcdefghij".to_string(),
         char_offsets: (0..10).collect(),
         char_count: 11,
+        controls: vec![
+            Control::ColumnDef(Default::default()),
+            Control::SectionDef(Box::default()),
+        ],
         char_shapes: vec![CharShapeRef::default()],
         line_segs: vec![
             LineSeg {
@@ -221,14 +324,42 @@ fn native_hwpx_rewraps_generated_breaks_but_preserves_authored_breaks() {
     };
     let styles = crate::renderer::style_resolver::ResolvedStyleSet::default();
     let mut generated = compose_paragraph(&para);
-    recompose_for_cell_width_for_source(&mut generated, &para, 2_000.0, &styles, true);
+    recompose_for_cell_width_for_source(
+        &mut generated,
+        &para,
+        2_000.0,
+        &styles,
+        true,
+        crate::model::table::CellLineWrap::Break,
+        0,
+        true,
+        crate::renderer::DEFAULT_DPI,
+    );
     assert_eq!(generated.lines.len(), 1);
+
+    let mut visible_object = para.clone();
+    visible_object
+        .controls
+        .push(Control::Picture(Box::default()));
+    let mut object_composed = compose_paragraph(&visible_object);
+    recompose_for_native_hwpx_cell_width(&mut object_composed, &visible_object, 2_000.0, &styles);
+    assert_eq!(object_composed.lines.len(), 2);
 
     for line in &mut para.line_segs {
         line.tag = LineSeg::TAG_SINGLE_SEGMENT_LINE;
     }
     let mut authored = compose_paragraph(&para);
-    recompose_for_cell_width_for_source(&mut authored, &para, 2_000.0, &styles, true);
+    recompose_for_cell_width_for_source(
+        &mut authored,
+        &para,
+        2_000.0,
+        &styles,
+        true,
+        crate::model::table::CellLineWrap::Break,
+        0,
+        true,
+        crate::renderer::DEFAULT_DPI,
+    );
     assert_eq!(authored.lines.len(), 2);
 }
 
@@ -1793,6 +1924,138 @@ fn native_generated_word_wrap_keeps_word_across_script_and_style_runs() {
         .map(|run| run.text.as_str())
         .collect();
     assert_eq!(restored, para.text);
+
+    // 긴 어절의 글자 채움은 이전 합성 줄이나 글자모양/언어 run 경계에 의존하지 않는다.
+    let mut styles = styles;
+    styles.char_styles.push(styles.char_styles[0].clone());
+    for pieces in [
+        vec![("가나다라마바", 0, 0), ("),", 1, 1)],
+        vec![("가나다라마", 0, 0), ("바", 1, 0), ("),", 1, 1)],
+        vec![
+            ("가나", 0, 0),
+            ("6", 1, 1),
+            ("다라", 0, 0),
+            ("마  바", 1, 0),
+        ],
+    ] {
+        let source = ComposedLine {
+            runs: pieces
+                .into_iter()
+                .map(|(text, char_style_id, lang_index)| ComposedTextRun {
+                    text: text.into(),
+                    char_style_id,
+                    lang_index,
+                    ..Default::default()
+                })
+                .collect(),
+            ..composed.lines[0].clone()
+        };
+        let expected = if source.runs[0].text == "가나" {
+            "가나6다라"
+        } else {
+            "가나다라마바)"
+        };
+        let prefix = ComposedLine {
+            runs: split_runs_by_lang(vec![ComposedTextRun {
+                text: expected.into(),
+                ..Default::default()
+            }]),
+            ..composed.lines[0].clone()
+        };
+        let width = estimate_composed_line_width(&prefix, &styles) + 0.1;
+        let wrapped =
+            split_composed_line_by_width(&source, width, width, &styles, false, 0.0, true);
+        assert_eq!(
+            wrapped[0]
+                .runs
+                .iter()
+                .map(|run| run.text.as_str())
+                .collect::<String>(),
+            expected
+        );
+        let input: String = source.runs.iter().map(|run| run.text.as_str()).collect();
+        let output: String = wrapped
+            .iter()
+            .flat_map(|line| &line.runs)
+            .map(|run| run.text.as_str())
+            .collect();
+        assert_eq!(output, input);
+        let metadata = |runs: &[ComposedTextRun]| {
+            runs.iter()
+                .flat_map(|run| {
+                    run.text
+                        .chars()
+                        .map(move |ch| (ch, run.char_style_id, run.lang_index))
+                })
+                .collect::<Vec<_>>()
+        };
+        let output_runs: Vec<_> = wrapped.iter().flat_map(|line| line.runs.clone()).collect();
+        assert_eq!(metadata(&output_runs), metadata(&source.runs));
+        let mut start = 0;
+        for line in wrapped {
+            assert_eq!(line.char_start, start);
+            start += line
+                .runs
+                .iter()
+                .map(|run| run.text.chars().count())
+                .sum::<usize>();
+        }
+    }
+    // 긴 어절의 마지막 글자가 줄을 정확히 채워도 뒤 공백만 새 줄로 보내지 않는다.
+    let source = ComposedLine {
+        runs: [("가나다라", 0), ("마바", 1), ("사아자차 ", 1), ("카", 1)]
+            .into_iter()
+            .map(|(text, char_style_id)| ComposedTextRun {
+                text: text.into(),
+                char_style_id,
+                ..Default::default()
+            })
+            .collect(),
+        ..composed.lines[0].clone()
+    };
+    let prefix = ComposedLine {
+        runs: vec![ComposedTextRun {
+            text: "가나다라마".into(),
+            ..Default::default()
+        }],
+        ..composed.lines[0].clone()
+    };
+    let width = estimate_composed_line_width(&prefix, &styles);
+    let wrapped = split_composed_line_by_width(&source, width, width, &styles, false, 0.0, true);
+    assert_eq!(
+        wrapped
+            .iter()
+            .map(|line| line
+                .runs
+                .iter()
+                .map(|run| run.text.as_str())
+                .collect::<String>())
+            .collect::<Vec<_>>(),
+        ["가나다라마", "바사아자차 ", "카"]
+    );
+    let source = ComposedLine {
+        runs: [("가나다라", 0), ("마바사 ", 1), ("아자차", 1)]
+            .into_iter()
+            .map(|(text, char_style_id)| ComposedTextRun {
+                text: text.into(),
+                char_style_id,
+                ..Default::default()
+            })
+            .collect(),
+        ..composed.lines[0].clone()
+    };
+    let wrapped = split_composed_line_by_width(&source, width, width, &styles, false, 1.0, true);
+    assert_eq!(
+        wrapped
+            .iter()
+            .map(|line| line
+                .runs
+                .iter()
+                .map(|run| run.text.as_str())
+                .collect::<String>())
+            .collect::<Vec<_>>(),
+        ["가나다라마", "바사 아자차"]
+    );
 }
 
 #[test]

@@ -10,8 +10,8 @@
  *   3. 최종 fallback → generic serif/sans-serif
  */
 
-import { REGISTERED_FONTS } from './font-loader.ts';
-import { getLocalFontLookupGeneration, repairedLocalFontFamily, resolveLocalFont } from './local-fonts.ts';
+import { REGISTERED_FONTS, getDetectedOSFonts, isSubstitutedWebFontRegistered } from './font-loader.ts';
+import { getLocalFontLookupGeneration, hasImportedLocalFontFace, repairedLocalFontFamily, resolveLocalFont } from './local-fonts.ts';
 import { equationFontFamilies } from './equation-font.ts';
 
 // 치환 엔트리: [원본폰트, 원본타입, 대체폰트, 대체타입]
@@ -256,6 +256,12 @@ function systemFallbackFamilies(fontName: string): string[] {
     }
     return [...hftFaces, LAST_RESORT_SANS, 'sans-serif'];
   }
+  // macOS 한컴의 검증된 HY 신명조 쌍은 가져온 HCR face를 제네릭 serif보다 먼저 쓴다.
+  if (fontName.trim() === 'HY신명조' || fontName.trim() === '한양신명조') {
+    const hcr = resolveLocalFont('HCR Batang');
+    return [hcr?.runtimeFamily ?? '함초롬바탕', 'HCR Batang', '한컴바탕', 'Haansoft Batang',
+      'Batang', 'AppleMyungjo', 'Noto Serif KR', 'serif'];
+  }
   // Serif 판별 — 문자 클래스가 아니라 실제 서체명 토큰으로 검사한다.
   // (기존 `[바탕명조궁서]` 는 '서울남산체'·'고딕서체' 처럼 해당 글자가 스치기만 해도
   //  명조로 오분류했다.)
@@ -364,13 +370,54 @@ export function fontFamilyChainForDisplay(
     _displayChainCache.clear();
     _displayChainGeneration = generation;
   }
-  const cacheKey = langId + '\0' + fontName + '\0' + altType;
+  const proxy = prefersHcrOverWebProxy(fontName);
+  const cacheKey = Number(proxy) + '\0' + Number(getDetectedOSFonts().has(fontName))
+    + '\0' + langId + '\0' + fontName + '\0' + altType;
   let chain = _displayChainCache.get(cacheKey);
   if (chain === undefined) {
     chain = buildFontFamilyChainForDisplay(fontName, altType, langId, options);
     _displayChainCache.set(cacheKey, chain);
   }
   return chain;
+}
+
+/** 검증된 HY 쌍의 Noto 웹 별칭은 HCR face보다 앞에 두지 않는다. */
+export function prefersHcrOverWebProxy(family: string): boolean {
+  return /^(HY신명조|한양신명조)$/.test(family)
+    && isSubstitutedWebFontRegistered(family);
+}
+
+/** 엔진 hancom_substitute_faces와 같은 후보 순서. 웹 별칭 대신 실제 가져온 face만 선택한다. */
+function importedHancomSubstitute(fontName: string): string | null {
+  let candidates: readonly string[];
+  switch (fontName.trim()) {
+    case '바탕': case 'Batang': case '바탕체': case 'BatangChe':
+    case '궁서': case 'Gungsuh': case '궁서체': case 'GungsuhChe':
+    case '신명 신명조': case '신명 견명조': case '신명 중명조': case '명조': case '새문명조':
+      candidates = ['한컴바탕', 'Haansoft Batang', '함초롬바탕', 'HCR Batang'];
+      break;
+    case 'HY신명조': case '한양신명조':
+      candidates = ['함초롬바탕', 'HCR Batang', '한컴바탕', 'Haansoft Batang'];
+      break;
+    case '돋움': case 'Dotum': case '돋움체': case 'DotumChe':
+    case '굴림': case 'Gulim': case '굴림체': case 'GulimChe':
+      candidates = ['한컴돋움', 'Haansoft Dotum', '함초롬돋움', 'HCR Dotum'];
+      break;
+    default:
+      return null;
+  }
+  for (const candidate of candidates) {
+    const record = resolveLocalFont(candidate);
+    if (record?.source === 'imported' && record.runtimeFamily && hasImportedLocalFontFace(candidate)) {
+      return record.runtimeFamily;
+    }
+  }
+  return null;
+}
+
+/** 실제 원본 local/OS face가 없고 가져온 한컴 대체 face가 표시 우선권을 갖는 경우. */
+export function prefersImportedHancomSubstitute(fontName: string): boolean {
+  return !resolveLocalFont(fontName) && importedHancomSubstitute(fontName) !== null;
 }
 
 function buildFontFamilyChainForDisplay(
@@ -387,9 +434,12 @@ function buildFontFamilyChainForDisplay(
   const localRecord = options.confirmedLocalFonts === undefined
     ? resolveLocalFont(fontName)
     : null;
+  const nativeSubstitute = !localRecord && options.confirmedLocalFonts === undefined
+    && options.includeUnconfirmedOriginal !== true ? importedHancomSubstitute(fontName) : null;
   const originalAllowed =
     options.includeUnconfirmedOriginal === true ||
-    REGISTERED_FONTS.has(fontName) ||
+    (/^(HY신명조|한양신명조)$/.test(fontName) && getDetectedOSFonts().has(fontName)) ||
+    (REGISTERED_FONTS.has(fontName) && !prefersHcrOverWebProxy(fontName)) ||
     confirmedLocalFontSet.has(fontName.toLocaleLowerCase('en-US'));
 
   if (localRecord) {
@@ -397,6 +447,8 @@ function buildFontFamilyChainForDisplay(
       families,
       localRecord.runtimeFamily ?? repairedLocalFontFamily(localRecord) ?? localRecord.family,
     );
+  } else if (nativeSubstitute) {
+    pushUniqueFontFamily(families, nativeSubstitute);
   } else if (originalAllowed) {
     pushUniqueFontFamily(families, fontName);
   }

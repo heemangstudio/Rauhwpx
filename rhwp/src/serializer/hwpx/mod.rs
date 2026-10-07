@@ -30,7 +30,9 @@ pub mod writer;
 use std::collections::HashSet;
 
 use crate::model::bin_data::BinDataBytes;
-use crate::model::document::{Document, HWP5_ORIGIN_HWPX_MARKER_PATH};
+use crate::model::document::{
+    Document, HWP5_ORIGIN_HWPX_MARKER_PATH, OWN_LINE_LAYOUT_HWPX_MARKER_PATH,
+};
 
 use super::SerializeError;
 use content::BinDataEntry as ContentBinDataEntry;
@@ -198,6 +200,7 @@ pub fn serialize_hwpx(doc: &Document) -> Result<Vec<u8>, SerializeError> {
         "META-INF/container.xml",
         "META-INF/manifest.xml",
         HWP5_ORIGIN_HWPX_MARKER_PATH,
+        OWN_LINE_LAYOUT_HWPX_MARKER_PATH,
     ]
     .into_iter()
     .map(str::to_string)
@@ -256,6 +259,10 @@ pub fn serialize_hwpx(doc: &Document) -> Result<Vec<u8>, SerializeError> {
     // lineSeg 부재/pagination 시멘틱을 HWP5 원본처럼 해석해야 자기정합한다.
     if let Some(marker) = doc.hwpx_aux_entry(HWP5_ORIGIN_HWPX_MARKER_PATH) {
         z.write_deflated(HWP5_ORIGIN_HWPX_MARKER_PATH, marker)?;
+    } else if doc.provenance.own_line_layout {
+        // 세션에서 계산한 줄은 구현 태그 없이 보존하고, 조판 출처만 따로 저장한다.
+        // 보조 엔트리의 오래된 마커 대신 현재 provenance를 기준으로 한 번만 방출한다.
+        z.write_deflated(OWN_LINE_LAYOUT_HWPX_MARKER_PATH, b"1")?;
     }
 
     // 참조 정합성 단언 (Stage 1+)

@@ -2695,17 +2695,22 @@ fn apply_inline_control_metrics_to_text_lines(
     para: &Paragraph,
     line_breaks: &[LineBreakResult],
     line_segs: &mut [LineSeg],
+    styles: &ResolvedStyleSet,
+    dpi: f64,
 ) {
     if line_breaks.is_empty() || line_segs.is_empty() {
         return;
     }
 
-    let positions = para.control_text_positions();
+    let mut positions = para.control_text_positions();
+    crate::renderer::ruby::project_control_positions(para, &mut positions);
     for (control_index, control) in para.controls.iter().enumerate() {
         if matches!(control, Control::Form(_)) {
             continue;
         }
-        let Some(metrics) = inline_control_metrics_hwp(control) else {
+        let Some(metrics) = ruby_control_metrics(para, control_index, styles, dpi)
+            .or_else(|| inline_control_metrics_hwp(control))
+        else {
             continue;
         };
         let position = positions
@@ -2733,6 +2738,173 @@ mod inline_equation_metric_tests {
     use super::*;
     use crate::model::control::Equation;
     use crate::model::shape::CommonObjAttr;
+
+    #[test]
+    fn inline_table_reflow_reserves_outer_vertical_margins() {
+        use crate::model::table::{Cell, Table};
+
+        for (top, bottom) in [(0, 0), (200, 300)] {
+            let table = Table {
+                common: CommonObjAttr {
+                    treat_as_char: true,
+                    width: 6000,
+                    height: 4000,
+                    ..Default::default()
+                },
+                row_count: 1,
+                col_count: 1,
+                outer_margin_top: top,
+                outer_margin_bottom: bottom,
+                cells: vec![Cell {
+                    width: 6000,
+                    height: 4000,
+                    row_span: 1,
+                    col_span: 1,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let mut para = Paragraph {
+                controls: vec![Control::Table(Box::new(table))],
+                ..Default::default()
+            };
+            reflow_line_segs(&mut para, 400.0, &ResolvedStyleSet::default(), 96.0);
+            assert_eq!(para.line_segs.len(), 1);
+            let occupied_height = 4000 + i32::from(top) + i32::from(bottom);
+            assert_eq!(para.line_segs[0].line_height, occupied_height);
+            assert_eq!(
+                para.line_segs[0].baseline_distance,
+                (occupied_height as f64 * 0.85).round() as i32
+            );
+        }
+    }
+
+    #[test]
+    fn fresh_control_only_table_spacing_uses_each_occupied_anchor_style() {
+        use crate::model::table::{Cell, Table};
+        use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle};
+        let table = Table {
+            common: CommonObjAttr {
+                treat_as_char: true,
+                width: 6000,
+                height: 4000,
+                ..Default::default()
+            },
+            row_count: 1,
+            col_count: 1,
+            cells: vec![Cell {
+                width: 6000,
+                height: 4000,
+                row_span: 1,
+                col_span: 1,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let styles = ResolvedStyleSet {
+            char_styles: [40.0 / 3.0, 56.0 / 3.0, 80.0]
+                .into_iter()
+                .map(|font_size| ResolvedCharStyle {
+                    font_size,
+                    ..Default::default()
+                })
+                .collect(),
+            para_styles: vec![ResolvedParaStyle {
+                line_spacing_type: LineSpacingType::Percent,
+                line_spacing: 160.0,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let para = Paragraph {
+            char_count: 25,
+            controls: vec![
+                Control::ColumnDef(Default::default()),
+                Control::Bookmark(Default::default()),
+                Control::Table(Box::new(table.clone())),
+                Control::Table(Box::new(table)),
+            ],
+            char_shapes: vec![
+                CharShapeRef {
+                    start_pos: 0,
+                    char_shape_id: 2,
+                },
+                CharShapeRef {
+                    start_pos: 8,
+                    char_shape_id: 0,
+                },
+                CharShapeRef {
+                    start_pos: 16,
+                    char_shape_id: 1,
+                },
+                CharShapeRef {
+                    start_pos: 24,
+                    char_shape_id: 2,
+                },
+            ],
+            ..Default::default()
+        };
+        let mut shared = para.clone();
+        reflow_line_segs(&mut shared, 200.0, &styles, 96.0);
+        assert_eq!(shared.line_segs.len(), 1);
+        assert_eq!(shared.line_segs[0].line_height, 4000);
+        assert_eq!(shared.line_segs[0].line_spacing, 840);
+        for (size, percent, expected) in [
+            (56.0 / 3.0, 175.0, 1052),
+            (20.0, 190.0, 1352),
+            (20.0, 210.0, 1652),
+        ] {
+            let mut quarter_styles = styles.clone();
+            quarter_styles.char_styles[1].font_size = size;
+            quarter_styles.para_styles[0].line_spacing = percent;
+            let mut quarter = para.clone();
+            reflow_line_segs(&mut quarter, 200.0, &quarter_styles, 96.0);
+            assert_eq!(quarter.line_segs[0].line_spacing, expected);
+        }
+        let mut separate = para.clone();
+        reflow_line_segs(&mut separate, 90.0, &styles, 96.0);
+        assert_eq!(
+            separate
+                .line_segs
+                .iter()
+                .map(|line| line.line_spacing)
+                .collect::<Vec<_>>(),
+            [600, 840]
+        );
+        let mut saved = para.clone();
+        saved.line_segs.push(LineSeg {
+            line_height: 4000,
+            line_spacing: 333,
+            ..Default::default()
+        });
+        reflow_line_segs(&mut saved, 200.0, &styles, 96.0);
+        assert_eq!(saved.line_segs[0].line_spacing, 333);
+        let mut unknown = para.clone();
+        unknown.char_count = 0;
+        reflow_line_segs(&mut unknown, 200.0, &styles, 96.0);
+        // 축이 확정되지 않은 문단은 일반 컨트롤 줄의 최대 글자 모양(80px)을 쓴다.
+        assert_eq!(unknown.line_segs[0].line_spacing, 3600);
+        let mut extended_bookmark = para.clone();
+        extended_bookmark.char_count = 33;
+        reflow_line_segs(&mut extended_bookmark, 200.0, &styles, 96.0);
+        assert_eq!(extended_bookmark.line_segs[0].line_spacing, 3600);
+        let mut fixed_styles = styles.clone();
+        fixed_styles.para_styles[0].line_spacing_type = LineSpacingType::Fixed;
+        fixed_styles.para_styles[0].line_spacing = 70.0;
+        let mut fixed = para.clone();
+        reflow_line_segs(&mut fixed, 200.0, &fixed_styles, 96.0);
+        let mut fixed_unknown = para;
+        fixed_unknown.char_count = 0;
+        reflow_line_segs(&mut fixed_unknown, 200.0, &fixed_styles, 96.0);
+        assert_eq!(
+            fixed.line_segs[0].line_spacing,
+            fixed_unknown.line_segs[0].line_spacing
+        );
+        assert_eq!(
+            fixed.line_segs[0].line_height,
+            fixed_unknown.line_segs[0].line_height
+        );
+    }
 
     #[test]
     fn inline_object_captions_reserve_only_top_and_bottom_extents() {
@@ -2996,7 +3168,13 @@ mod inline_equation_metric_tests {
         };
         let mut line_segs = vec![plain_line.clone(), plain_line.clone()];
 
-        apply_inline_control_metrics_to_text_lines(&para, &line_breaks, &mut line_segs);
+        apply_inline_control_metrics_to_text_lines(
+            &para,
+            &line_breaks,
+            &mut line_segs,
+            &ResolvedStyleSet::default(),
+            96.0,
+        );
 
         assert_eq!(line_segs[0].line_height, plain_line.line_height);
         assert_eq!(line_segs[0].baseline_distance, plain_line.baseline_distance);
@@ -4319,8 +4497,52 @@ fn reflow_line_segs_with_wrap_exclusions(
         let inline_sizes = para
             .controls
             .iter()
-            .map(inline_control_metrics_hwp)
+            .enumerate()
+            .map(|(ci, control)| {
+                ruby_control_metrics(para, ci, styles, dpi)
+                    .or_else(|| inline_control_metrics_hwp(control))
+            })
             .collect::<Vec<_>>();
+        // HWPX 책갈피·숨은 설명은 확장 레코드를 소비하지 않는 메타데이터다.
+        let mut control_units = 0u32;
+        let control_anchors: Vec<u32> = para
+            .controls
+            .iter()
+            .map(|control| {
+                let anchor = control_units;
+                if !matches!(control, Control::Bookmark(_) | Control::HiddenComment(_)) {
+                    control_units = control_units.saturating_add(8);
+                }
+                anchor
+            })
+            .collect();
+        // fresh TAC 표는 확장 제어 축이 확인될 때 점유 개체의 글자 모양으로 간격을 잰다.
+        let use_control_font_basis = ls_type == LineSpacingType::Percent
+            && crate::renderer::para_has_no_stored_line_segs(para)
+            && !para.char_shapes.is_empty()
+            && para.field_ranges.is_empty()
+            && para.orphan_field_ends.is_empty()
+            && para.char_count == control_units.saturating_add(1)
+            && inline_sizes
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| m.is_some())
+                .all(|(ci, _)| {
+                    matches!(&para.controls[ci], Control::Table(table)
+                    if !table.common.affect_line_spacing)
+                        && para
+                            .char_shapes
+                            .iter()
+                            .any(|shape| shape.start_pos <= control_anchors[ci])
+                        && style_font_size(
+                            styles,
+                            find_active_char_shape(&para.char_shapes, control_anchors[ci]),
+                        ) > 0.0
+                });
+        let has_ruby = para
+            .controls
+            .iter()
+            .any(|c| matches!(c, Control::Ruby(r) if r.option == 0));
         if inline_sizes.iter().any(Option::is_some) {
             let max_line_width = seg_width_hwp.max(1);
             // (text_start, 첫 컨트롤, 끝 컨트롤(포함), 최대 기준선, 최대 높이)
@@ -4330,8 +4552,17 @@ fn reflow_line_segs_with_wrap_exclusions(
             let mut line_width = 0i32;
             let mut line_baseline = 0i32;
             let mut line_height = 0i32;
+            let mut line_descent = 0i32;
+            let mut inline_index = 0usize;
 
             for (ci, metrics) in inline_sizes.iter().copied().enumerate() {
+                if metrics.is_none()
+                    && (has_ruby
+                        || (use_control_font_basis
+                            && !matches!(para.controls[ci], Control::PageNumberPos(_))))
+                {
+                    continue;
+                }
                 // 한컴: 글자처럼 취급한 개체가 이미 줄 폭을 넘긴 줄에는 뒤따르는 폭 0
                 // 컨트롤(쪽 번호 위치·책갈피 등)도 남지 못하고 다음 줄로 넘어가 그 글자
                 // 모양 높이의 줄을 하나 더 만든다. 넘치지 않으면 같은 줄에 남는다.
@@ -4340,7 +4571,9 @@ fn reflow_line_segs_with_wrap_exclusions(
                 // 쪽번호 컨트롤 줄 th 100 + 48263 HU 표 줄, 한컴 PDF 표 1.44pt 아래).
                 // 구역/단 정의뿐이면 한 줄로 둔다: 한컴은 저장 줄이 둘이어도 표를 문단
                 // 상단에 그리고 쪽에 담는다 (hcar-001 s1·gov-fire-report 표 위치, 6쪽).
-                let ctrl_line_before = ci > line_first_ctrl
+                let ctrl_line_before = !use_control_font_basis
+                    && !has_ruby
+                    && ci > line_first_ctrl
                     && para.controls[line_first_ctrl..ci]
                         .iter()
                         .any(|c| !matches!(c, Control::SectionDef(_) | Control::ColumnDef(_)));
@@ -4361,16 +4594,29 @@ fn reflow_line_segs_with_wrap_exclusions(
                     ));
                     // 한컴 저장값처럼 줄 시작은 컨트롤의 UTF-16 위치(8ci)다. 쪽 나눔 엔진도
                     // 같은 축으로 개체 줄을 찾는다 (`pagination::control_utf16_position`).
-                    line_start = ci * 8;
+                    line_start = if use_control_font_basis {
+                        control_anchors[ci] as usize
+                    } else if has_ruby {
+                        inline_index
+                    } else {
+                        ci * 8
+                    };
                     line_first_ctrl = ci;
                     line_width = 0;
                     line_baseline = 0;
                     line_height = 0;
+                    line_descent = 0;
                 }
                 if let Some(m) = metrics {
                     line_width += m.width;
                     line_baseline = line_baseline.max(m.baseline);
-                    line_height = line_height.max(m.height);
+                    line_descent = line_descent.max(m.height - m.baseline);
+                    line_height = if has_ruby {
+                        line_baseline.saturating_add(line_descent)
+                    } else {
+                        line_height.max(m.height)
+                    };
+                    inline_index += 1;
                 }
             }
             line_specs.push((
@@ -4385,6 +4631,23 @@ fn reflow_line_segs_with_wrap_exclusions(
             // 줄간격의 글꼴 크기는 그 구간에 걸친 글자 모양의 최댓값이다 (한컴 저장
             // LINE_SEG: 표 줄 줄간격 = 글자 모양 크기 × (비율 − 100%)).
             let line_font_size = |first_ctrl: usize, last_ctrl: usize| -> f64 {
+                if use_control_font_basis {
+                    return (first_ctrl..=last_ctrl)
+                        .filter(|&ci| {
+                            inline_sizes[ci].is_some()
+                                || matches!(para.controls[ci], Control::PageNumberPos(_))
+                        })
+                        .map(|ci| {
+                            style_font_size(
+                                styles,
+                                find_active_char_shape(&para.char_shapes, control_anchors[ci]),
+                            )
+                        })
+                        .fold(0.0, f64::max);
+                }
+                if has_ruby {
+                    return 0.0;
+                }
                 let lo = (first_ctrl as u32).saturating_mul(8);
                 let hi = (last_ctrl as u32 + 1).saturating_mul(8);
                 para.char_shapes
@@ -4413,13 +4676,23 @@ fn reflow_line_segs_with_wrap_exclusions(
                 line_specs.into_iter().enumerate()
             {
                 let start_pos = if line_idx == 0 { 0 } else { start_pos };
-                let mut seg =
-                    make_line_seg(start_pos as u32, line_font_size(first_ctrl, last_ctrl));
+                let font_size = line_font_size(first_ctrl, last_ctrl);
+                let mut seg = make_line_seg(start_pos as u32, font_size);
+                if use_control_font_basis {
+                    // 원본 percent 경로는 1/4 HWPUNIT 기준에서 MulDiv 후 4배한다.
+                    let quarter = i64::from(font_size_to_line_height(font_size, dpi) / 4);
+                    let product = quarter * (ls_value - 100.0) as i64;
+                    let rounded = (product.abs() + 50) / 100 * product.signum();
+                    seg.line_spacing =
+                        (rounded * 4).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+                }
                 if let Some(template) = orig_line_segs
                     .get(line_idx)
                     .or_else(|| orig_line_segs.first())
                 {
-                    seg.line_spacing = template.line_spacing;
+                    if !use_control_font_basis {
+                        seg.line_spacing = template.line_spacing;
+                    }
                     seg.segment_width = if template.segment_width > 0 {
                         template.segment_width
                     } else {
@@ -4507,15 +4780,23 @@ fn reflow_line_segs_with_wrap_exclusions(
     // own_line: 표/그림/도형은 한컴이 전용 줄을 부여하는 블록형 개체로 취급한다
     // (수식은 텍스트 흐름 개체). 블록형 개체 줄에서 넘치는 후행 토큰은 통째로
     // 다음 줄로 본내 한 글자 run 조각남을 피한다 (pr_2219).
-    let control_positions = para.control_text_positions();
+    let mut control_positions = para.control_text_positions();
+    crate::renderer::ruby::project_control_positions(para, &mut control_positions);
     let mut inline_controls: Vec<(usize, i32, bool)> = para
         .controls
         .iter()
         .enumerate()
         .filter(|(_, ctrl)| !matches!(ctrl, Control::Form(_)))
         .filter_map(|(ci, ctrl)| {
-            inline_control_metrics_hwp(ctrl)
-                .map(|m| (ci, m.width, !matches!(ctrl, Control::Equation(_))))
+            ruby_control_metrics(para, ci, styles, dpi)
+                .or_else(|| inline_control_metrics_hwp(ctrl))
+                .map(|m| {
+                    (
+                        ci,
+                        m.width,
+                        !matches!(ctrl, Control::Equation(_) | Control::Ruby(_)),
+                    )
+                })
         })
         .map(|(ci, width, own_line)| {
             let pos = control_positions
@@ -4694,7 +4975,7 @@ fn reflow_line_segs_with_wrap_exclusions(
 
     // Reserve each object's height on its actual line. Applying the largest
     // picture to the first line creates a blank band above wrapped pictures.
-    apply_inline_control_metrics_to_text_lines(para, &line_breaks, &mut new_line_segs);
+    apply_inline_control_metrics_to_text_lines(para, &line_breaks, &mut new_line_segs, styles, dpi);
 
     // 어울림 배제 계획이 있으면 줄별 wrap zone 을 seg 에 기록한다 — 채움(2차
     // fill_lines)과 동일한 결정적 대역 계산이라 텍스트가 기록 폭을 넘지 않는다.
@@ -5127,6 +5408,20 @@ pub(super) fn compute_line_spacing_hwp(
             (min_hwp - line_height_hwp).max(0)
         }
     }
+}
+
+fn ruby_control_metrics(
+    para: &Paragraph,
+    ci: usize,
+    styles: &ResolvedStyleSet,
+    dpi: f64,
+) -> Option<InlineControlMetricsHwp> {
+    let r = super::super::ruby::prepare(para, ci, styles, dpi)?;
+    Some(InlineControlMetricsHwp {
+        width: super::super::px_to_hwpunit_round(r.main_width, dpi),
+        height: r.height_hu,
+        baseline: r.baseline_hu,
+    })
 }
 
 #[cfg(test)]

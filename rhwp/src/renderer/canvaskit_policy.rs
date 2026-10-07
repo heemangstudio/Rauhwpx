@@ -1247,7 +1247,8 @@ impl CanvasKitReplayPlanBuilder {
     ) {
         let mut pending = vec![(root, root_path.to_string(), inherited_layer)];
         while let Some((node, path, inherited_layer)) = pending.pop() {
-            let active_layer = node.layer.or(inherited_layer);
+            let active_layer =
+                crate::paint::replay_order::inherited_replay_layer(node.layer, inherited_layer);
             match &node.kind {
                 LayerNodeKind::Group {
                     children,
@@ -2694,6 +2695,8 @@ mod tests {
                 angle: 0,
                 center_x: 50,
                 center_y: 50,
+                step: 0,
+                step_center: 0,
                 colors: vec![0x0000_0000, 0x00FF_FFFF],
                 positions: vec![0.0, 1.0],
             })),

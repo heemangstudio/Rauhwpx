@@ -20,6 +20,7 @@ pub mod font_metrics_data;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod font_paths;
 pub(crate) mod form_caption;
+pub(crate) mod gradient_fill;
 pub mod height_cursor;
 pub mod height_measurer;
 pub mod hft_glyphs;
@@ -39,6 +40,7 @@ pub mod pdf;
 pub mod pua_oldhangul;
 pub mod render_normalization;
 pub mod render_tree;
+pub(crate) mod ruby;
 pub(crate) mod runtime_font_metrics;
 pub mod scheduler;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-skia"))]
@@ -221,6 +223,10 @@ pub struct TextStyle {
     pub extra_word_spacing: f64,
     /// 배분/나눔 정렬용: 글자당 추가 간격 (px)
     pub extra_char_spacing: f64,
+    /// 검증된 비격자 일반 글자 압축. 문서 자간의 최소 폭 정책은 바꾸지 않는다.
+    #[serde(skip)]
+    #[doc(hidden)]
+    pub native_negative_spacing: bool,
     /// Legacy compatibility spacing retained in serialized styles.
     /// Literal hyphens are ordinary text; real leaders use `tab_leaders`.
     pub extra_dash_advance: f64,
@@ -360,6 +366,7 @@ impl Default for TextStyle {
             inline_tabs: Vec::new(),
             extra_word_spacing: 0.0,
             extra_char_spacing: 0.0,
+            native_negative_spacing: false,
             extra_dash_advance: 0.0,
             outline_type: 0,
             shadow_type: 0,
@@ -757,6 +764,10 @@ pub struct GradientFillInfo {
     pub center_x: i16,
     /// 세로 중심 (%)
     pub center_y: i16,
+    /// 번짐 단계 (HWPX step, 모델 blur)
+    pub step: i16,
+    /// 번짐 중심 (%)
+    pub step_center: u8,
     /// 색상 목록 (ColorRef)
     pub colors: Vec<ColorRef>,
     /// 색상 위치 (0.0~1.0 정규화)
@@ -806,6 +817,8 @@ impl GradientFillInfo {
             angle: g.angle,
             center_x: g.center_x,
             center_y: g.center_y,
+            step: g.blur,
+            step_center: g.step_center,
             colors,
             positions,
         }
@@ -1696,6 +1709,13 @@ fn join_unique_font_families(families: &[String], separator: &str) -> String {
 
 /// 렌더용 체인: 요청 face → base family → HFT/문서 대체 → generic.
 pub fn render_font_family_chain(font_family: &str, font_subst: &str) -> String {
+    // 스타일에 붙은 제네릭 체인보다 검증된 한컴 대체 face를 먼저 선택한다.
+    let primary = style_resolver::primary_font_name(font_family);
+    let font_family = if matches!(primary, "HY신명조" | "한양신명조") {
+        primary
+    } else {
+        font_family
+    };
     let mut families = vec![font_family.to_string()];
     if let Some(base) = base_family_without_weight_suffix(font_family) {
         families.push(format!("'{base}'"));
@@ -1711,6 +1731,13 @@ pub fn render_font_family_chain(font_family: &str, font_subst: &str) -> String {
 
 /// Canvas 2D도 문서 대체 서체와 HFT 우선순위를 같은 규칙으로 해석한다.
 pub fn canvas_font_family_chain(font_family: &str, font_subst: &str) -> String {
+    // 스타일에 붙은 제네릭 체인보다 검증된 한컴 대체 face를 먼저 선택한다.
+    let primary = style_resolver::primary_font_name(font_family);
+    let font_family = if matches!(primary, "HY신명조" | "한양신명조") {
+        primary
+    } else {
+        font_family
+    };
     if font_family.is_empty() {
         return "sans-serif".to_string();
     }
@@ -1872,7 +1899,9 @@ fn hancom_fontmap_faces(font_family: &str) -> &'static [&'static str] {
         // HY신명조 TTF 미설치·문서 대체 미지정 시 Mac 한컴은 HCRBatang을 쓴다.
         // 굴착복구 현황의 한글 0.97em / 하이픈·숫자 0.55em과 PDF 임베드 서체로 확인.
         // 문서가 한컴바탕을 지정한 경우는 font_fallback_families의 앞선 후보가 우선한다.
-        "HY신명조" => &["함초롬바탕", "HCR Batang", "한컴바탕", "Haansoft Batang"],
+        "HY신명조" | "한양신명조" => {
+            &["함초롬바탕", "HCR Batang", "한컴바탕", "Haansoft Batang"]
+        }
         "신명 신명조" | "신명 견명조" | "신명 중명조" | "명조" | "새문명조" => {
             &["한컴바탕", "Haansoft Batang", "함초롬바탕", "HCR Batang"]
         }
@@ -2060,6 +2089,12 @@ pub fn generic_fallback(font_family: &str) -> &'static str {
     }
     if font_family.trim() == "신명 디나루" {
         return "'돋움','한컴돋움','Haansoft Dotum','Malgun Gothic','맑은 고딕','Apple SD Gothic Neo','Noto Sans KR',sans-serif";
+    }
+    // 네이티브 설치 대체 순서와 SVG/Canvas 체인을 맞춘다. 요청 face는 호출자가
+    // 체인 맨 앞에 두므로 실폰트가 있으면 그대로 쓰고, HCR 미설치 시에는 기존
+    // 한컴바탕 및 제네릭 명조 후보로 내려간다.
+    if matches!(font_family.trim(), "HY신명조" | "한양신명조") {
+        return "'함초롬바탕','HCR Batang','한컴바탕','Haansoft Batang','Batang','바탕','Nanum Myeongjo','AppleMyungjo','Noto Serif KR','Noto Serif CJK KR','HCR Batang Ext-B','함초롬바탕 확장B','HCR Batang Ext','함초롬바탕 확장','Source Han Serif K Old Hangul',serif";
     }
     // 한양 HFT → 한컴 TTF 쌍(hft_substitute_faces 와 같은 매핑)을 generic 체인
     // 앞에 둔다. 미설치 환경에선 자연스럽게 다음 후보로 넘어간다.
@@ -2430,6 +2465,38 @@ fn format_hanja_number(n: u16) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mac_missing_serif_substitution_keeps_shared_render_policy() {
+        // 미설치 HY TTF는 HCR, 원명 유지 HFT는 자체 폭과 Haansoft 그리기를 쓴다.
+        for (family, preferred, later) in [
+            ("HY신명조", "HCR Batang", "Haansoft Batang"),
+            ("한양신명조", "Haansoft Batang", "HCR Batang"),
+        ] {
+            let prepared = format!("{family}, Batang, AppleMyungjo, serif");
+            for chain in [
+                super::render_font_family_chain(&prepared, ""),
+                super::canvas_font_family_chain(&prepared, ""),
+            ] {
+                assert!(chain.find("함초롬바탕").unwrap() < chain.find("serif").unwrap());
+                assert!(chain.find(preferred).unwrap() < chain.find(later).unwrap());
+                assert!(
+                    chain.find("HCR Batang").unwrap()
+                        < chain.find("Batang, AppleMyungjo").unwrap_or(usize::MAX)
+                );
+            }
+            assert_eq!(super::hancom_substitute_faces(family)[0], "함초롬바탕");
+            let svg = super::render_font_family_chain(family, "");
+            let canvas = super::canvas_font_family_chain(family, "");
+            for chain in [&svg, &canvas] {
+                assert!(chain.find(family).unwrap() < chain.find("함초롬바탕").unwrap());
+                assert!(chain.find(preferred).unwrap() < chain.find(later).unwrap());
+            }
+        }
+        for family in ["바탕", "궁서", "신명 중명조", "새문명조"] {
+            assert_eq!(super::hancom_substitute_faces(family)[0], "한컴바탕");
+        }
+    }
+
     use super::*;
 
     /// 한컴 Mac PDF 실측 (k-water-rfp 표지 셀): step 26·stepCenter 44 원형은 안쪽 13띠가

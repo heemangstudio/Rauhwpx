@@ -536,6 +536,7 @@ pub struct HeightMeasurer {
     native_hwpx_cell_margin: bool,
     is_hwp3_variant: bool,
     session_edited: bool,
+    root_refresh_tables: std::collections::HashSet<u32>,
     own_line_layout: bool,
     use_hwp3_origin_flow_spacing_before: bool,
     render_normalization:
@@ -550,6 +551,7 @@ impl HeightMeasurer {
             native_hwpx_cell_margin: false,
             is_hwp3_variant: false,
             session_edited: false,
+            root_refresh_tables: std::collections::HashSet::new(),
             own_line_layout: false,
             use_hwp3_origin_flow_spacing_before: false,
             render_normalization: std::sync::Arc::new(
@@ -587,6 +589,36 @@ impl HeightMeasurer {
     pub fn with_native_hwpx_cell_margin(mut self, enabled: bool) -> Self {
         self.native_hwpx_cell_margin = enabled;
         self
+    }
+
+    /// 새로고침 자체가 무효화한 루트 캐시만 허용한다. 자식/셀 편집 상태는 그대로 검사한다.
+    pub(crate) fn with_root_refresh_tables(mut self, ids: &std::collections::HashSet<u32>) -> Self {
+        self.root_refresh_tables = ids.clone();
+        self
+    }
+
+    pub(crate) fn fresh_tac_cell_width_is_verified(
+        &self,
+        cell: &crate::model::table::Cell,
+        table: &Table,
+    ) -> bool {
+        if cell.row_span != 1
+            || cell.col_span != 1
+            || cell.col >= table.col_count
+            || cell.width == 0
+            || cell.width >= 0x8000_0000
+        {
+            return false;
+        }
+        let widths = table.get_column_widths();
+        if widths.get(cell.col as usize).copied() != Some(cell.width) {
+            return false;
+        }
+        table.cells.iter().all(|other| {
+            let overlaps = other.col <= cell.col
+                && usize::from(cell.col) < usize::from(other.col) + usize::from(other.col_span);
+            !overlaps || (other.col_span == 1 && other.width == cell.width)
+        })
     }
 
     fn effective_cell_padding(
@@ -1190,6 +1222,129 @@ impl HeightMeasurer {
             .sum()
     }
 
+    /// 절대 1×1 빈 래퍼의 겹친 자식은 직렬 표 스택이 아니라 셀 로컬 끝점이다.
+    fn absolute_wrapper_content_height(
+        &self,
+        table: &Table,
+        styles: &ResolvedStyleSet,
+        depth: usize,
+        width_scale: f64,
+    ) -> Option<f64> {
+        use crate::model::shape::{HorzAlign, HorzRelTo, SizeCriterion, VertAlign};
+        let clean = |t: &Table, root: bool| {
+            (!t.dirty || (root && self.root_refresh_tables.contains(&t.common.instance_id)))
+                && !t.common.size_protect
+                && t.common.height_criterion == SizeCriterion::Absolute
+                && t.common.width_criterion == SizeCriterion::Absolute
+                && t.caption.is_none()
+                && t.cell_spacing == 0
+                && t.local_resize_rows.is_empty()
+                && t.local_resize_cols.is_empty()
+                && t.local_resize_cell_widths.is_empty()
+                && t.local_resize_cell_heights.is_empty()
+                && t.cells.iter().all(|cell| !cell.dirty_flag)
+        };
+        if !self.native_hwpx_cell_margin
+            || !self.preserve_first_cell_spacing_before
+            || self.session_edited
+            || depth != 0
+            || width_scale != 1.0
+            || !clean(table, true)
+            || table.common.treat_as_char
+            || !table.common.flow_with_text
+            || table.common.text_wrap != TextWrap::TopAndBottom
+            || table.common.vert_rel_to != VertRelTo::Page
+            || table.common.horz_rel_to != HorzRelTo::Column
+            || table.common.width as i32 <= 0
+            || table.common.height as i32 <= 0
+            || !matches!(table.common.vert_align, VertAlign::Top | VertAlign::Bottom)
+            || table.page_break != TablePageBreak::None
+            || table.raw_table_record_attr & 8 != 0
+            || table.row_count != 1
+            || table.col_count != 1
+            || table.cells.len() != 1
+        {
+            return None;
+        }
+        let cell = &table.cells[0];
+        if cell.row != 0
+            || cell.col != 0
+            || cell.row_span != 1
+            || cell.col_span != 1
+            || cell.text_direction != 0
+            || cell.line_wrap != crate::model::table::CellLineWrap::Break
+            || cell.height as i32 <= 0
+            || cell.paragraphs.len() != 1
+        {
+            return None;
+        }
+        let para = &cell.paragraphs[0];
+        if !para.text.trim().is_empty()
+            || para.text.contains(['\r', '\n'])
+            || crate::renderer::para_has_no_stored_line_segs(para)
+            || para.line_segs.len() != 1
+            || para.line_segs[0].vertical_pos != 0
+            || para.line_segs[0].line_height <= 0
+        {
+            return None;
+        }
+        let mut flow_count = 0;
+        let mut overlay_count = 0;
+        let mut endpoint = 0.0f64;
+        for control in &para.controls {
+            let Control::Table(child) = control else {
+                return None;
+            };
+            if !clean(child, false)
+                || child.common.treat_as_char
+                || !child.common.flow_with_text
+                || child.common.vert_rel_to != VertRelTo::Para
+                || child.common.horz_rel_to != HorzRelTo::Para
+                || child.common.width as i32 <= 0
+                || child.common.height as i32 <= 0
+                || (child.common.vertical_offset as i32) < 0
+                || !matches!(
+                    child.common.horz_align,
+                    HorzAlign::Left | HorzAlign::Center | HorzAlign::Right
+                )
+            {
+                return None;
+            }
+            match child.common.text_wrap {
+                TextWrap::TopAndBottom if child.common.vert_align == VertAlign::Top => {
+                    flow_count += 1
+                }
+                TextWrap::BehindText | TextWrap::InFrontOfText
+                    if child.common.vert_align == VertAlign::Top
+                        || (child.common.vert_align == VertAlign::Bottom
+                            && child.common.vertical_offset == 0) =>
+                {
+                    overlay_count += 1
+                }
+                _ => return None,
+            }
+            let measured = self.measure_table_impl(
+                child,
+                0,
+                0,
+                styles,
+                depth + 1,
+                self.render_normalization.nested_table_width_scale(child),
+            );
+            let occupied = measured
+                .total_height
+                .max(hwpunit_to_px(child.common.height as i32, self.dpi))
+                + hwpunit_to_px(child.outer_margin_top as i32, self.dpi)
+                + hwpunit_to_px(child.outer_margin_bottom as i32, self.dpi);
+            if !occupied.is_finite() || occupied <= 0.0 {
+                return None;
+            }
+            endpoint = endpoint
+                .max(occupied + hwpunit_to_px(child.common.vertical_offset as i32, self.dpi));
+        }
+        (flow_count == 1 && overlay_count > 0).then_some(endpoint)
+    }
+
     /// 셀 내 중첩 표가 실제로 차지하는 하단 위치를 계산한다.
     ///
     /// 중첩 표가 있는 문단의 LINE_SEG.line_height는 표의 실제 높이를 담지 못하는
@@ -1202,6 +1357,7 @@ impl HeightMeasurer {
         depth: usize,
         // [#2195] 부모 셀 전폭(px, 스트레치 기준). 0.0 = 미적용.
         _parent_cell_w: f64,
+        shared_inline_width: Option<f64>,
     ) -> f64 {
         if depth >= Self::MAX_NESTED_DEPTH {
             return 0.0;
@@ -1234,7 +1390,15 @@ impl HeightMeasurer {
                 // 같은 줄에 나란히 놓이는 TAC 표는 높이가 겹친다 — 줄별 최댓값만
                 // 세로 범위에 반영한다 (composer::tac_table_ctrls_by_line 참조).
                 let comp = crate::renderer::composer::compose_paragraph(p);
-                let groups = crate::renderer::composer::tac_table_ctrls_by_line(p, &comp);
+                let groups = if shared_inline_width.is_some_and(|width| {
+                    crate::renderer::composer::fresh_adjacent_tac_tables_fit(
+                        p, width, styles, self.dpi,
+                    )
+                }) {
+                    vec![(0..p.controls.len()).collect()]
+                } else {
+                    crate::renderer::composer::tac_table_ctrls_by_line(p, &comp)
+                };
                 let mut grouped = std::collections::HashSet::new();
                 // 반환: (적층 높이 기여분, PARA 기준 프레임의 절대 하단)
                 let table_h = |ctrl: &Control| -> Option<(f64, Option<f64>)> {
@@ -1360,6 +1524,8 @@ impl HeightMeasurer {
         // nested content twice. `cell_controls_height` includes the nested table, while
         // `cell_units` exposes its rows if the wrapper must fragment. Paint may still unwrap it.
 
+        let wrapper_content_height =
+            self.absolute_wrapper_content_height(table, styles, depth, width_scale);
         let row_count = table.row_count as usize;
         let mut row_heights = vec![0.0f64; row_count];
 
@@ -1455,6 +1621,10 @@ impl HeightMeasurer {
                                 wrap_width,
                                 styles,
                                 self.native_hwpx_cell_margin,
+                                cell.line_wrap,
+                                cell.text_direction,
+                                self.fresh_tac_cell_width_is_verified(cell, table),
+                                self.dpi,
                             );
                             let para_style = styles.para_styles.get(p.para_shape_id as usize);
                             let is_last_para = pidx + 1 == cell_para_count;
@@ -1681,8 +1851,20 @@ impl HeightMeasurer {
                     let nested_sum: f64 = cell
                         .paragraphs
                         .iter()
-                        .flat_map(|p| p.controls.iter())
-                        .filter_map(|ctrl| {
+                        .filter(|p| {
+                            !(self.native_hwpx_cell_margin
+                                && self.fresh_tac_cell_width_is_verified(cell, table)
+                                && cell.text_direction == 0
+                                && cell.line_wrap == crate::model::table::CellLineWrap::Break
+                                && crate::renderer::composer::fresh_adjacent_tac_tables_fit(
+                                    p,
+                                    cell_inner_width,
+                                    styles,
+                                    self.dpi,
+                                ))
+                        })
+                        .flat_map(|p| p.controls.iter().map(move |ctrl| (p, ctrl)))
+                        .filter_map(|(p, ctrl)| {
                             if let Control::Table(nested) = ctrl {
                                 // 한글 실효폭은 부모 셀 **전폭**(pad 미차감, 76076
                                 // 근거설명 셀: 유효 ~504px = 부모 w 506.2, inner 492.6
@@ -1700,7 +1882,21 @@ impl HeightMeasurer {
                                 let declared = hwpunit_to_px(nested.common.height as i32, self.dpi);
                                 let om = hwpunit_to_px(nested.outer_margin_top as i32, self.dpi)
                                     + hwpunit_to_px(nested.outer_margin_bottom as i32, self.dpi);
-                                Some(mt.total_height.max(declared) + om)
+                                let occupied = mt.total_height.max(declared) + om;
+                                let covered = if self.native_hwpx_cell_margin
+                                    && self.fresh_tac_cell_width_is_verified(cell, table)
+                                    && cell.text_direction == 0
+                                    && cell.line_wrap == crate::model::table::CellLineWrap::Break
+                                    && crate::renderer::composer::generated_tac_table_line_covers_object(
+                                        p,
+                                        cell_inner_width,
+                                        styles,
+                                        self.dpi,
+                                    )
+                                {
+                                    hwpunit_to_px(p.line_segs[0].line_height, self.dpi)
+                                } else { 0.0 };
+                                Some((occupied - covered).max(0.0))
                             } else {
                                 None
                             }
@@ -1716,12 +1912,19 @@ impl HeightMeasurer {
                         .map(|s| s.vertical_pos + s.line_height)
                         .max()
                         .unwrap_or(0);
-                    let nested_bottom = self.cell_nested_controls_bottom(
-                        &cell.paragraphs,
-                        styles,
-                        depth,
-                        cell_w_px,
-                    );
+                    let nested_bottom = wrapper_content_height.unwrap_or_else(|| {
+                        self.cell_nested_controls_bottom(
+                            &cell.paragraphs,
+                            styles,
+                            depth,
+                            cell_w_px,
+                            (self.native_hwpx_cell_margin
+                                && self.fresh_tac_cell_width_is_verified(cell, table)
+                                && cell.text_direction == 0
+                                && cell.line_wrap == crate::model::table::CellLineWrap::Break)
+                                .then_some(cell_inner_width),
+                        )
+                    });
                     hwpunit_to_px(last_seg_end, self.dpi)
                         .max(text_height)
                         .max(nested_bottom)
@@ -1862,6 +2065,10 @@ impl HeightMeasurer {
                                 wrap_width,
                                 styles,
                                 self.native_hwpx_cell_margin,
+                                cell.line_wrap,
+                                cell.text_direction,
+                                self.fresh_tac_cell_width_is_verified(cell, table),
+                                self.dpi,
                             );
                             comp.lines
                                 .last()
@@ -2066,6 +2273,10 @@ impl HeightMeasurer {
                                 wrap_width,
                                 styles,
                                 self.native_hwpx_cell_margin,
+                                cell.line_wrap,
+                                cell.text_direction,
+                                self.fresh_tac_cell_width_is_verified(cell, table),
+                                self.dpi,
                             );
                             let para_style = styles.para_styles.get(p.para_shape_id as usize);
                             let is_last_para = pidx + 1 == cell_para_count;
@@ -2263,8 +2474,19 @@ impl HeightMeasurer {
                 // controls_height를 별도로 더하면 이중 계산됨
                 // 단, 비-인라인 이미지/도형은 LINE_SEG에 미포함이므로 별도 합산
                 let non_inline_h = self.measure_non_inline_controls_height(&cell.paragraphs);
-                let nested_bottom =
-                    self.cell_nested_controls_bottom(&cell.paragraphs, styles, depth, cell_w_px);
+                let nested_bottom = wrapper_content_height.unwrap_or_else(|| {
+                    self.cell_nested_controls_bottom(
+                        &cell.paragraphs,
+                        styles,
+                        depth,
+                        cell_w_px,
+                        (self.native_hwpx_cell_margin
+                            && self.fresh_tac_cell_width_is_verified(cell, table)
+                            && cell.text_direction == 0
+                            && cell.line_wrap == crate::model::table::CellLineWrap::Break)
+                            .then_some(cell_inner_width),
+                    )
+                });
                 let wrap_bottom = self.cell_wrap_objects_bottom_height(&cell.paragraphs);
                 // [Task #2221] 단일행과 동일 — 중첩/TAC 표의 저장 LINE_SEG 텍스트
                 // 셀은 pad 미가산 (layout 2-b relaxed_pad 미러).
@@ -2392,7 +2614,26 @@ impl HeightMeasurer {
         // 편집으로 셀이 자란 성장분까지 선언높이로 눌러 다른 행의 몫을 잠식한다
         // (셀 Enter 재현: 표가 선언 높이에 고정된 채 행 경계만 위로 밀림).
         // 편집 세션은 실측을 신뢰한다.
+        let has_fresh_shared_table_line = self.native_hwpx_cell_margin
+            && table.cells.iter().any(|cell| {
+                if !self.fresh_tac_cell_width_is_verified(cell, table)
+                    || cell.text_direction != 0
+                    || cell.line_wrap != crate::model::table::CellLineWrap::Break
+                {
+                    return false;
+                }
+                let padding = self.effective_cell_padding(cell, table);
+                let inner = hwpunit_to_px(cell.width as i32, self.dpi) * width_scale
+                    - hwpunit_to_px(i32::from(padding.left) + i32::from(padding.right), self.dpi);
+                cell.paragraphs.iter().any(|para| {
+                    crate::renderer::composer::fresh_adjacent_tac_tables_fit(
+                        para, inner, styles, self.dpi,
+                    )
+                })
+            });
+        // 새로 맞춘 개체 줄의 실측 높이는 저장 시점 표높이로 비례 압축하지 않는다.
         let table_height = if table.common.treat_as_char
+            && !has_fresh_shared_table_line
             && !self.session_edited
             && common_h > 0.0
             && raw_table_height > common_h + shrink_threshold
@@ -2501,7 +2742,37 @@ impl HeightMeasurer {
                     let para_count = cell.paragraphs.len();
 
                     for (pi, p) in cell.paragraphs.iter().enumerate() {
-                        let comp = compose_paragraph(p);
+                        let mut comp = compose_paragraph(p);
+                        let inner_width = (hwpunit_to_px(cell.width as i32, self.dpi)
+                            * width_scale
+                            - hwpunit_to_px(
+                                i32::from(eff_pad.left) + i32::from(eff_pad.right),
+                                self.dpi,
+                            ))
+                        .max(0.0);
+                        if self.native_hwpx_cell_margin
+                            && self.fresh_tac_cell_width_is_verified(cell, table)
+                            && cell.text_direction == 0
+                            && cell.line_wrap == crate::model::table::CellLineWrap::Break
+                            && crate::renderer::composer::fresh_adjacent_tac_tables_fit(
+                                p,
+                                inner_width,
+                                styles,
+                                self.dpi,
+                            )
+                        {
+                            crate::renderer::composer::recompose_for_cell_width_for_source(
+                                &mut comp,
+                                p,
+                                inner_width,
+                                styles,
+                                self.native_hwpx_cell_margin,
+                                cell.line_wrap,
+                                cell.text_direction,
+                                self.fresh_tac_cell_width_is_verified(cell, table),
+                                self.dpi,
+                            );
+                        }
                         let para_style = styles.para_styles.get(p.para_shape_id as usize);
                         let is_last_para = pi + 1 == para_count;
                         // Match cell split measurement. HWPX retains the first
@@ -2670,8 +2941,23 @@ impl HeightMeasurer {
                 } else {
                     0.0
                 };
-                let nested_bottom =
-                    self.cell_nested_controls_bottom(&cell.paragraphs, styles, depth, mc_cell_w);
+                let pad = self.effective_cell_padding(cell, table);
+                let inner_width = (mc_cell_w
+                    - hwpunit_to_px(i32::from(pad.left) + i32::from(pad.right), self.dpi))
+                .max(0.0);
+                let nested_bottom = wrapper_content_height.unwrap_or_else(|| {
+                    self.cell_nested_controls_bottom(
+                        &cell.paragraphs,
+                        styles,
+                        depth,
+                        mc_cell_w,
+                        (self.native_hwpx_cell_margin
+                            && self.fresh_tac_cell_width_is_verified(cell, table)
+                            && cell.text_direction == 0
+                            && cell.line_wrap == crate::model::table::CellLineWrap::Break)
+                            .then_some(inner_width),
+                    )
+                });
                 mc.total_content_height = nested_bottom.max(mc.total_content_height);
             }
         }

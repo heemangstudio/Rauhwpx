@@ -543,6 +543,7 @@ pub(crate) fn parse_hwpx_validated(data: &[u8]) -> Result<Document, HwpxError> {
         "META-INF/container.rdf",
         "META-INF/container.xml",
         "META-INF/manifest.xml",
+        crate::model::document::OWN_LINE_LAYOUT_HWPX_MARKER_PATH,
     ]
     .into_iter()
     .map(str::to_string)
@@ -581,6 +582,11 @@ pub(crate) fn parse_hwpx_validated(data: &[u8]) -> Result<Document, HwpxError> {
     let hwp5_origin_hwpx = hwpx_aux_entries
         .iter()
         .any(|(path, _)| path == crate::model::document::HWP5_ORIGIN_HWPX_MARKER_PATH);
+    // 자체 조판 출처는 현재 버전의 마커만 인정한다. HWP5 원본 해석이 우선한다.
+    let own_line_layout = !hwp5_origin_hwpx
+        && reader
+            .read_file_bytes_limited(crate::model::document::OWN_LINE_LAYOUT_HWPX_MARKER_PATH, 1)
+            .is_ok_and(|bytes| bytes == b"1");
     let margin_units = header::ParagraphMarginUnits::from_package_version(
         hwpx_aux_entries
             .iter()
@@ -818,7 +824,7 @@ pub(crate) fn parse_hwpx_validated(data: &[u8]) -> Result<Document, HwpxError> {
             format: crate::model::provenance::SourceFormat::Hwpx,
             hwp3_lineage: false,
             hwpx_lineage: false,
-            own_line_layout: false,
+            own_line_layout,
         },
     };
 

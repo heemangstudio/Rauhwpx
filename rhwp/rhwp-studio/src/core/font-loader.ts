@@ -200,6 +200,13 @@ export function resolveRegisteredFontFaceIdentity(
   };
 }
 
+/** 등록된 CSS 별칭이 실제 선언 face 대신 다른 파일을 제공하는지 확인한다. */
+export function isSubstitutedWebFontRegistered(family: string): boolean {
+  if (!fontFaceRegistrationMode) return false;
+  const identity = resolveRegisteredFontFaceIdentity(family);
+  return !!identity?.substituted && !detectedOSFonts.has(identity.requestedFamily);
+}
+
 /** 원본 이름으로 다른 실제 서체를 등록하는 CSS 별칭 목록. */
 export function getWebFontSubstituteFamilies(): readonly string[] {
   return FONT_LIST.filter(entry => {
@@ -379,6 +386,8 @@ const OS_FONT_CANDIDATES = [
   // Windows
   '맑은 고딕', 'Malgun Gothic', '바탕', 'Batang', '돋움', 'Dotum',
   '굴림', 'Gulim', '굴림체', 'GulimChe', '바탕체', 'BatangChe', '궁서', 'Gungsuh',
+  // 대체 CSS 별칭 등록 전에 실제 HY face도 보존한다.
+  'HY신명조', '한양신명조',
   // macOS / iOS
   'Apple SD Gothic Neo', 'AppleMyungjo', 'AppleGothic',
   // Android
@@ -392,7 +401,11 @@ function detectOSFonts(): void {
   if (!ctx) return;
   for (const name of OS_FONT_CANDIDATES) {
     try {
-      if (isFontFamilyAvailable(name, ctx)) {
+      // Canvas 표시 체인 치환을 우회한 원본 accessor 프로브를 우선한다.
+      const rawProbe = (globalThis as typeof globalThis & {
+        isInstalledFontFamilyAvailable?: (family: string) => boolean;
+      }).isInstalledFontFamilyAvailable;
+      if (rawProbe ? rawProbe(name) : isFontFamilyAvailable(name, ctx)) {
         detectedOSFonts.add(name);
       }
     } catch { /* 무시 */ }

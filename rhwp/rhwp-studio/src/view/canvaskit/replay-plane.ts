@@ -9,6 +9,22 @@ export const CANVASKIT_REPLAY_PLANES = [
   'inFrontOfText',
 ] as const satisfies readonly CanvasKitReplayPlane[];
 
+/** 셀의 원본 wrap 정보는 유지하고 실제 재생에서는 부모 면을 상속한다. */
+export function inheritedReplayLayer(
+  layer?: LayerInfo | null,
+  inherited?: LayerInfo | null,
+): LayerInfo | null {
+  if (layer && (layer.localToParent || inherited?.localToParent)) {
+    return {
+      ...layer,
+      textWrap: inherited?.textWrap ?? 'square',
+      masterPage: inherited?.masterPage === true,
+      localToParent: true,
+    };
+  }
+  return layer ?? inherited ?? null;
+}
+
 /**
  * 바탕쪽 유래 op 의 replay plane 상한 (#2318).
  *

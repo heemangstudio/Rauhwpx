@@ -68,6 +68,29 @@ pub fn render_layer_replay_plane(layer: Option<RenderLayerInfo>) -> PaintReplayP
     cap_master_page_plane(plane, layer)
 }
 
+/// 셀 개체의 원본 면 정보는 유지하되, 페이지 재생에서는 부모 면을 상속한다.
+/// 내부 이미지의 text_wrap 폴백도 이 면을 벗어나지 않게 한다.
+pub fn inherited_replay_layer(
+    layer: Option<RenderLayerInfo>,
+    inherited: Option<RenderLayerInfo>,
+) -> Option<RenderLayerInfo> {
+    match layer {
+        Some(mut layer)
+            if layer.local_to_parent || inherited.is_some_and(|parent| parent.local_to_parent) =>
+        {
+            layer.text_wrap = Some(
+                inherited
+                    .and_then(|parent| parent.text_wrap)
+                    .unwrap_or(TextWrap::Square),
+            );
+            layer.master_page = inherited.is_some_and(|parent| parent.master_page);
+            layer.local_to_parent = true;
+            Some(layer)
+        }
+        _ => layer.or(inherited),
+    }
+}
+
 /// 바탕쪽 유래 op 의 replay plane 상한 (#2318).
 ///
 /// 한컴 의미론: 바탕쪽 개체의 text_wrap 은 바탕쪽 **내부** 개체 간 순서에만
@@ -96,7 +119,7 @@ fn layer_node_has_replay_plane_with_layer(
     target: PaintReplayPlane,
     inherited_layer: Option<RenderLayerInfo>,
 ) -> bool {
-    let active_layer = node.layer.or(inherited_layer);
+    let active_layer = inherited_replay_layer(node.layer, inherited_layer);
     match &node.kind {
         LayerNodeKind::Group { children, .. } => children
             .iter()
@@ -130,7 +153,7 @@ pub fn flow_static_split_preserves_order(root: &LayerNode) -> bool {
         inherited_layer: Option<RenderLayerInfo>,
         painted: &mut Vec<BoundingBox>,
     ) -> bool {
-        let active_layer = node.layer.or(inherited_layer);
+        let active_layer = inherited_replay_layer(node.layer, inherited_layer);
         match &node.kind {
             LayerNodeKind::Group { children, .. } => children
                 .iter()
