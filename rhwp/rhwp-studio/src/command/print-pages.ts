@@ -174,7 +174,88 @@ export function appendPrintStyle(doc: Document, pages: PrintPage[]): void {
   doc.head.appendChild(style);
 }
 
-export function appendSvgPage(doc: Document, container: HTMLElement, printPage: PrintPage): void {
+/** 글꼴 이름에 대해 이번 세션에 등록된 FontFace의 runtime family를 돌려준다. */
+export type PrintFontResolver = (family: string) => string | null;
+
+const GENERIC_FONT_FAMILIES = new Set([
+  'serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui', 'math',
+]);
+
+function splitCssFontFamilyList(value: string): string[] {
+  const entries: string[] = [];
+  let current = '';
+  let quote: string | null = null;
+  for (const character of value) {
+    if (quote) {
+      current += character;
+      if (character === quote) quote = null;
+    } else if (character === '"' || character === "'") {
+      current += character;
+      quote = character;
+    } else if (character === ',') {
+      entries.push(current.trim());
+      current = '';
+    } else {
+      current += character;
+    }
+  }
+  entries.push(current.trim());
+  return entries.filter(Boolean);
+}
+
+function unquoteCssFamily(entry: string): string {
+  const first = entry[0];
+  return (first === '"' || first === "'") && entry.endsWith(first) ? entry.slice(1, -1) : entry;
+}
+
+/**
+ * SVG의 font-family 목록에서 세션 글꼴(데스크톱·가져온 글꼴)로 등록된 이름 앞에
+ * 그 runtime family를 넣는다. 화면은 runtime family로 그리므로 인쇄 문서도 같은
+ * face를 쓴다. 원래 이름은 fallback으로 남긴다.
+ */
+export function mapCssFontFamilyList(value: string, resolve: PrintFontResolver): string {
+  const entries = splitCssFontFamilyList(value);
+  const present = new Set(entries.map(entry => unquoteCssFamily(entry).toLowerCase()));
+  const mapped: string[] = [];
+  let changed = false;
+  for (const entry of entries) {
+    const family = unquoteCssFamily(entry);
+    const runtime = GENERIC_FONT_FAMILIES.has(family.toLowerCase()) ? null : resolve(family);
+    if (runtime && !present.has(runtime.toLowerCase())) {
+      mapped.push(`'${runtime.replace(/'/g, "\\'")}'`);
+      present.add(runtime.toLowerCase());
+      changed = true;
+    }
+    mapped.push(entry);
+  }
+  return changed ? mapped.join(', ') : value;
+}
+
+function remapSvgFontFamilies(root: Element, resolve: PrintFontResolver): void {
+  const elements = [root, ...Array.from(root.querySelectorAll('[font-family], [style*="font-family"]'))];
+  for (const element of elements) {
+    const attribute = element.getAttribute('font-family');
+    if (attribute) {
+      const next = mapCssFontFamilyList(attribute, resolve);
+      if (next !== attribute) element.setAttribute('font-family', next);
+    }
+    const style = element.getAttribute('style');
+    if (style?.includes('font-family')) {
+      const next = style.replace(
+        /font-family\s*:\s*([^;]+)/g,
+        (_match, list: string) => `font-family: ${mapCssFontFamilyList(list, resolve)}`,
+      );
+      if (next !== style) element.setAttribute('style', next);
+    }
+  }
+}
+
+export function appendSvgPage(
+  doc: Document,
+  container: HTMLElement,
+  printPage: PrintPage,
+  resolveFont?: PrintFontResolver,
+): void {
   const page = doc.createElement('div');
   page.className = `page ${printPage.className}`;
 
@@ -185,6 +266,7 @@ export function appendSvgPage(doc: Document, container: HTMLElement, printPage: 
   }
 
   namespaceSvgIds(parsed.documentElement, printPage.pageName);
+  if (resolveFont) remapSvgFontFamilies(parsed.documentElement, resolveFont);
   page.appendChild(doc.importNode(parsed.documentElement, true));
   container.appendChild(page);
 }

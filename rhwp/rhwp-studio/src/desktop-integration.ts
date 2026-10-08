@@ -131,6 +131,12 @@ export interface RhwpDesktopApi {
   isFullScreen?: () => Promise<boolean>;
   /** 네이티브 인쇄 대화상자를 호출 창의 내용으로 연다 (Electron 데스크톱 전용). */
   printCurrentWindow?: () => Promise<void>;
+  /** PDF 저장 위치를 고른다. 경로 대신 한 번 쓰는 토큰을 돌려준다. */
+  pickPdfExportPath?: (options: { suggestedName: string }) => Promise<{ token: string; fileName: string } | null>;
+  /** 호출 창(숨은 PDF surface)의 내용을 토큰의 위치에 PDF 로 저장한다. */
+  exportPdf?: (token: string) => Promise<{ exportId: string; fileName: string; byteLength: number }>;
+  /** 내보낸 PDF 를 Finder/탐색기에서 보여준다. */
+  revealPdfExport?: (exportId: string) => Promise<void>;
   onFullScreenChange?: (callback: (fullscreen: boolean) => void) => void;
   onOpenFiles?: (callback: (files: NativeFileHandleDescriptor[]) => void) => void;
   onOpenGeneratedDocument?: (callback: (payload: {

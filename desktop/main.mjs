@@ -50,6 +50,7 @@ import {
 import { SerializedStateWriter } from './serialized-state-writer.mjs';
 import { SessionManager } from './session-manager.mjs';
 import { safeSuggestedFilename } from './safe-filename.mjs';
+import { installPdfExport, PDF_EXPORT_FRAME_NAME, pdfExportWindowOptions } from './pdf-export.mjs';
 import {
   STUDIO_URL,
   installStudioProtocol,
@@ -851,10 +852,14 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
     releaseRendererDocuments(session.sessionId, { documentLeases, nativeFiles });
     launchFiles.length = 0;
   });
-  window.webContents.setWindowOpenHandler(({ url }) => {
+  window.webContents.setWindowOpenHandler(({ url, frameName }) => {
     // 인쇄 미리보기 같은 앱 내부 surface는 외부 브라우저가 아니라 네이티브
     // 자식 창으로 연다 — renderer 의 window.open 이 반환하는 창에 문서를 쓰고
     // print() 로 시스템 인쇄 대화상자를 연다.
+    if (isTrustedRendererUrl(url) && frameName === PDF_EXPORT_FRAME_NAME) {
+      // PDF 내보내기 surface는 보이지 않는 창에서 그린 뒤 printToPDF 한다.
+      return { action: 'allow', overrideBrowserWindowOptions: pdfExportWindowOptions(PRELOAD_PATH) };
+    }
     if (isTrustedRendererUrl(url)) {
       return {
         action: 'allow',
@@ -969,6 +974,13 @@ ipcMain.handle('desktop:get-launch-files', (event) => {
 ipcMain.handle('desktop:get-launch-generated-document', (event) => {
   const session = sessionForEvent(event);
   return session.generatedDocument;
+});
+installPdfExport({
+  ipcMain,
+  dialog,
+  shell,
+  BrowserWindow,
+  isTrustedSender: (event) => isTrustedRendererUrl(event.senderFrame?.url || event.sender.getURL()),
 });
 ipcMain.handle('desktop:print', (event) => {
   // 인쇄 미리보기 자식 창처럼 세션에 등록되지 않은 창도 허용하되, 신뢰 origin
