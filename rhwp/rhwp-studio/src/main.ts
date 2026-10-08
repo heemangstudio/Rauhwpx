@@ -1975,7 +1975,6 @@ async function loadFile(
   options: {
     skipUnsavedGuard?: boolean;
     fileHandle?: FileSystemFileHandleLike | null;
-    suppressDialogs?: boolean;
     /** Drag payloads retain a save handle but never receive the exact-picker parser grant. */
     untrustedSource?: boolean;
   } = {},
@@ -1995,7 +1994,6 @@ async function loadFile(
       fileName: selected.name,
       fileHandle: options.fileHandle ?? null,
       skipUnsavedGuard: true,
-      suppressDialogs: options.suppressDialogs,
     });
   } catch (error) {
     await options.fileHandle?.releaseUnusedSaveTarget?.().catch(() => {});

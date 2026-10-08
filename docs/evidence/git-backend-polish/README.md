@@ -27,7 +27,7 @@ node scripts/benchmark-versioning.mjs
 
 Recovery UI evidence: [before](before.png) and [after](after.png), captured from the production sidebar preview in an isolated headless browser.
 
-The full sidebar suite fails at `cloud-stream.check.mjs:13` on both baseline and changed code. The sidebar build and focused Versions browser tests pass.
+The sidebar build and focused Versions browser tests pass.
 
 The complete versioning and portable-history suite passed all 121 tests against rebuilt WASM. It covers recovery across IndexedDB restart and name reuse, interrupted metadata backfill, import validation, maintenance/undo protection, capture reuse, and merge review. TypeScript checks passed.
 

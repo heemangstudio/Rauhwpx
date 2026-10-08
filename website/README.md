@@ -4,4 +4,4 @@ The public site at [heemangstudios.com](https://heemangstudios.com/) lives here.
 
 To preview it locally, run `python3 -m http.server 8000 --directory website` from the repository root and open `http://localhost:8000`. Run `python3 website/check.py` before submitting site changes.
 
-The 체험 신청 form posts emails to the Rau credits service (`POST /v1/waitlist`). Read signups with `curl -H "Authorization: Bearer $RAU_WAITLIST_ADMIN_TOKEN" https://rau-credits-production.up.railway.app/v1/waitlist`.
+The 체험 신청 form posts emails to [site-api](../site-api/README.md) (`POST /v1/waitlist`). Read signups with `curl -H "Authorization: Bearer $RAU_WAITLIST_ADMIN_TOKEN" https://rau-credits-production.up.railway.app/v1/waitlist`.

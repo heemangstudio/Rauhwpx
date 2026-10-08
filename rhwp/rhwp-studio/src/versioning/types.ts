@@ -320,9 +320,9 @@ export class VersionError extends Error {
 }
 
 /** 컨트롤러가 감싼 오류에서도 버전 오류 코드를 꺼낸다. */
-export function versionErrorOf(error: unknown): { code: VersionErrorCode } | null {
+export function versionErrorCode(error: unknown): VersionErrorCode | null {
   for (let current = error, depth = 0; current && depth < 4; depth += 1) {
-    if (current instanceof VersionError) return { code: current.code };
+    if (current instanceof VersionError) return current.code;
     current = current instanceof Error ? current.cause : undefined;
   }
   return null;

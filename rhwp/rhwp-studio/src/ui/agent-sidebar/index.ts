@@ -176,7 +176,7 @@ export interface AgentSidebarDeps {
   moveToLibraryDocument?: (target: {
     documentId: string | null;
     fileName: string | null;
-  }) => Promise<void>;
+  }) => void;
   /** 현재 문서의 로컬 커밋과 브랜치를 관리한다. */
   versionController?: VersionManagerController;
   getAgentUndoEntry?: () => object | null;

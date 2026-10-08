@@ -87,6 +87,7 @@ in headless Chrome and saves sidebar screenshots. See the
 | `rhwp/rhwp-studio/` | Web editor and agent sidebar |
 | `rhwp/rhwp-agent/` | Local WS hub |
 | `desktop/` | Electron shell |
+| `site-api/` | Website beta form and desktop install counter |
 | `rhwp/rhwp-{chrome,firefox,safari,vscode}/` | Viewer extensions |
 | `rhwp/npm/editor/` | Embeddable editor package |
 

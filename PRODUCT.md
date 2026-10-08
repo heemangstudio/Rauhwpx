@@ -55,7 +55,7 @@ An HWP/HWPX editor with agentic features as a first-class part of the product—
 1. **Editor-native AI** — Agentic features must feel like part of the program, not a sidecar chat product.
 2. **User remains the author** — planning stays explicit, autonomous edits stay visible and undoable, and failed atomic work restores the previous document state.
 3. **Real HWP work** — Success is finishing full documents in the formats Korean office work actually uses.
-4. **Local by default** — Document processing stays with the user (browser WASM + localhost agent); do not invent cloud document pipelines.
+4. **On the user's machine** — Document processing stays with the user (browser WASM + localhost agent).
 5. **Smooth collaboration** — System handoffs (agent ↔ document ↔ approval) and UI continuity are both first-class; friction in either breaks the product.
 
 ## Accessibility & Inclusion

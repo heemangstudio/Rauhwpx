@@ -10,7 +10,7 @@
 
 # Sidebar Design Preview
 
-- Use `npm run dev:sidebar` and open `http://127.0.0.1:7715` for sidebar design work and frontend interaction checks. On a fresh checkout, first run `npm --prefix rhwp/rhwp-studio ci`. The preview needs no full application, WASM build, agent hub, or cloud credentials.
+- Use `npm run dev:sidebar` and open `http://127.0.0.1:7715` for sidebar design work and frontend interaction checks. On a fresh checkout, first run `npm --prefix rhwp/rhwp-studio ci`. The preview needs no full application, WASM build, agent hub, or provider credentials.
 - The preview mounts the production sidebar from `rhwp/rhwp-studio/src/ui/agent-sidebar/`. Make shipping UI changes there so the application and preview stay in sync; keep temporary experiments in `src/sidebar-preview/preview.css` or an isolated worktree.
 - Use the preview controls for sample chat, plans, questions, change review, subagents, connection failures, and provider setup. Backend and document-engine actions use local fixtures and placeholders.
 - Maintain the typed mocks in `rhwp/rhwp-studio/src/sidebar-preview/` when service interfaces change. Preserve the independent Vite configuration and frontend-only behavior.
@@ -19,17 +19,16 @@
 
 # Repository
 
-Rauhwpx is a viewer and editor for Korean HWP/HWPX documents: a Rust engine compiled to WebAssembly, a web editor (`rhwp-studio`) with an AI sidebar, a local agent hub (`rhwp-agent`), an Electron desktop app, and Raucloud. The sidebar supports Claude, Codex and Pi through local CLIs, plus Rau credits. The live MCP tool list is `rhwp/rhwp-agent/tools.mjs`; do not hardcode the tool count in prose. Code comments, commit messages and CLI output are largely Korean; follow the convention of the file you edit. Setup and focused checks are in [CONTRIBUTING.md](CONTRIBUTING.md).
+Rauhwpx is a viewer and editor for Korean HWP/HWPX documents: a Rust engine compiled to WebAssembly, a web editor (`rhwp-studio`) with an AI sidebar, a local agent hub (`rhwp-agent`), and an Electron desktop app. The sidebar runs Claude, Codex and Pi through their local CLIs. The live MCP tool list is `rhwp/rhwp-agent/tools.mjs`; do not hardcode the tool count in prose. Code comments, commit messages and CLI output are largely Korean; follow the convention of the file you edit. Setup and focused checks are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 | Path | What lives there |
 | --- | --- |
 | `rhwp/src/` | Rust engine. CLI entry is `rhwp/src/main.rs`; wasm surface is `rhwp/src/wasm_api.rs` |
 | `rhwp/rhwp-studio/` | Studio web editor (TypeScript, no UI framework) |
 | `rhwp/rhwp-agent/` | Local hub, provider adapters, MCP tools |
-| `desktop/` | Electron main process, including every `cloud-*.mjs` desktop client module |
-| `cloud/` | Raucloud worker and control plane: `src/`, `document-runtime/`, `worker/`, `install/` |
-| `rhwp/rau-credits/` | Rau credits and Raucloud broker (Railway service, flat layout, see `RAUCLOUD.md`) |
-| `tests/` | Root Node tests for desktop and Cloud (`desktop-*.test.mjs`, `*cloud*.test.mjs`) |
+| `desktop/` | Electron main process |
+| `site-api/` | Waitlist and install counter behind the product site (Railway service, see its README) |
+| `tests/` | Root Node tests for desktop (`desktop-*.test.mjs`) |
 | `scripts/`, `.github/workflows/` | Build and CI helpers; workflows are the source of truth for CI commands |
 | `website/` | Product site |
 
@@ -80,10 +79,10 @@ Studio `npm test` imports hub modules, so `rhwp/rhwp-agent/node_modules` must ex
 - From the root, `npm start` runs a background hub on 127.0.0.1:5175, `npm stop` stops it, `npm run start:fg` runs it in the foreground. Studio dev does not need it.
 - On Windows every child process needs `windowsHide: true`; use `processTreeSpawnOptions` from `process-tree.mjs`.
 
-## Desktop and Cloud (from the root)
+## Desktop and site API (from the root)
 
-- `npm run test:cloud` runs the root desktop/Cloud tests and `npm --prefix cloud test`.
-- Broker: `npm --prefix rhwp/rau-credits test` (serial).
+- `npm run test:desktop` runs the root desktop tests.
+- Site API: `npm --prefix site-api test`.
 - Testing a packaged app from an agent shell: unset `ELECTRON_RUN_AS_NODE` (`env -u ELECTRON_RUN_AS_NODE`). The first launch of a signed build asks for Keychain access, which a person must approve. Signing and release steps are in [docs/releasing.md](docs/releasing.md).
 
 # Architecture
@@ -163,7 +162,7 @@ Keep PR descriptions detailed but relevant. Do not pad them with boilerplate, re
 # Live App Verification
 
 - For changes to user-visible behavior, exercise the affected flow in a running app before claiming it works. Pair focused regression tests with a fresh live check; a green Node suite or source-text assertion alone is insufficient.
-- Start Studio with `npm run dev:studio` and use the running editor at `http://127.0.0.1:7700`. Use the sidebar preview above for isolated sidebar interactions, but verify document-engine, hub, provider, cloud, and desktop changes in the corresponding real runtime. Clearly label fixture-backed checks.
+- Start Studio with `npm run dev:studio` and use the running editor at `http://127.0.0.1:7700`. Use the sidebar preview above for isolated sidebar interactions, but verify document-engine, hub, provider, and desktop changes in the corresponding real runtime. Clearly label fixture-backed checks.
 - Reproduce the original trigger, perform the user action through the UI, and check the resulting document, persisted state, emitted request, or visible behavior. Check the relevant failure or cancellation path. For save/export changes, reopen the saved output and verify its content.
 - Record the app URL or runtime, scenario, observed result, and relevant screenshot or log in the handoff/PR. If prerequisites or credentials block live verification, state what was blocked and what remains unverified; never substitute a passing mock test for a claim of live success.
 - Prefer bounded waits for observable readiness or state changes over fixed sleeps. Run the smallest relevant checks first; do not rerun broad suites without a new change, failure, or unresolved concern.

@@ -1024,48 +1024,48 @@ export class DocumentVersionController implements VersionManagerController {
   }
 
   async #createShelf(title?: string): Promise<void> {
-      await this.#refreshData(false);
-      await this.#guardMutation(true);
-      const workspace = this.#captureWorkspaceToken();
-      const repository = this.#requireRepository();
-      const branch = this.#requireActiveBranch();
-      const capture = this.#snapshotCache.capture(this.#wasm, this.#getDocumentId(), this.#editorRevision);
-      const head = await this.#requireCommit(branch.target);
-      if (capture.fingerprint === head.contentFingerprint) {
-        throw new VersionError('NO_CHANGES', 'There are no changes to shelf');
-      }
-      const blob = await this.#store.getBlob(head.blobId);
+    await this.#refreshData(false);
+    await this.#guardMutation(true);
+    const workspace = this.#captureWorkspaceToken();
+    const repository = this.#requireRepository();
+    const branch = this.#requireActiveBranch();
+    const capture = this.#snapshotCache.capture(this.#wasm, this.#getDocumentId(), this.#editorRevision);
+    const head = await this.#requireCommit(branch.target);
+    if (capture.fingerprint === head.contentFingerprint) {
+      throw new VersionError('NO_CHANGES', 'There are no changes to shelf');
+    }
+    const blob = await this.#store.getBlob(head.blobId);
+    this.#assertWorkspaceToken(workspace);
+    if (!blob) throw new VersionError('CORRUPT_BLOB', 'Branch head bytes are missing');
+    const handler = this.#requireInputHandler();
+    handler.prepareSnapshotCapacity(2);
+    const result = await this.#store.createShelf({
+      repositoryId: repository.id,
+      baseCommitId: branch.target,
+      branch: branch.name,
+      bytes: capture.bytes,
+      compareSnapshot: capture.compareSnapshot,
+      contentFingerprint: capture.fingerprint,
+      title: title?.trim() || `보관 · ${timestampTitle()}`,
+      expectedRepositoryRevision: repository.revision,
+    });
+    try {
       this.#assertWorkspaceToken(workspace);
-      if (!blob) throw new VersionError('CORRUPT_BLOB', 'Branch head bytes are missing');
-      const handler = this.#requireInputHandler();
-      handler.prepareSnapshotCapacity(2);
-      const result = await this.#store.createShelf({
-        repositoryId: repository.id,
-        baseCommitId: branch.target,
-        branch: branch.name,
-        bytes: capture.bytes,
-        compareSnapshot: capture.compareSnapshot,
-        contentFingerprint: capture.fingerprint,
-        title: title?.trim() || `보관 · ${timestampTitle()}`,
-        expectedRepositoryRevision: repository.revision,
-      });
-      try {
-        this.#assertWorkspaceToken(workspace);
-        handler.replaceContentFromBytes(blob.bytes);
-      } catch (error) {
-        const compensated = await this.#store.deleteShelf({
-          repositoryId: result.repository.id,
-          shelfId: result.shelf.id,
-          expectedRepositoryRevision: result.repository.revision,
-        }).catch(() => result.repository);
-        if (this.#isWorkspaceTokenCurrent(workspace, { editor: false, repository: false })) {
-          this.#repository = compensated;
-        }
-        throw error;
+      handler.replaceContentFromBytes(blob.bytes);
+    } catch (error) {
+      const compensated = await this.#store.deleteShelf({
+        repositoryId: result.repository.id,
+        shelfId: result.shelf.id,
+        expectedRepositoryRevision: result.repository.revision,
+      }).catch(() => result.repository);
+      if (this.#isWorkspaceTokenCurrent(workspace, { editor: false, repository: false })) {
+        this.#repository = compensated;
       }
-      this.#repository = result.repository;
-      this.#setDirtyForFingerprint(head.contentFingerprint, 'version-shelf', head.contentFingerprint);
-      await this.#refreshData(true);
+      throw error;
+    }
+    this.#repository = result.repository;
+    this.#setDirtyForFingerprint(head.contentFingerprint, 'version-shelf', head.contentFingerprint);
+    await this.#refreshData(true);
   }
 
   async applyShelf(id: string, remove: boolean): Promise<void> {

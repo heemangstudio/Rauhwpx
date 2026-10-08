@@ -2201,7 +2201,7 @@ button.ag-skill-copy {
   }
 }
 
-/* 이름 바꾸기는 실행 위치 옆, 제목 오른쪽에 둔다.
+/* 이름 바꾸기는 제목 오른쪽에 둔다.
    버튼 안에 버튼을 넣을 수 없어 형제로 두고 절대 배치한다. */
 .ag-thread-rename {
   position: absolute;

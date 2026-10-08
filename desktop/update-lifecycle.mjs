@@ -2,7 +2,7 @@
 // installer can take over. electron-updater owns the final platform handoff.
 export function createUpdateLifecycle({
   app, updater, nativeUpdater, platform, showMessageBox, openReleases,
-  cleanupTasks, onQuitRequested, onTeardown, isInteractive = () => false, logger = console,
+  cleanup, onQuitRequested, onTeardown, isInteractive = () => false, logger = console,
 }) {
   let downloaded = null;
   let prompt = null;
@@ -95,9 +95,10 @@ export function createUpdateLifecycle({
   }
 
   async function finishQuit() {
-    const results = await Promise.allSettled(cleanupTasks.map((cleanup) => Promise.resolve().then(cleanup)));
-    for (const result of results) {
-      if (result.status === 'rejected') logger.warn('[rauhwpx] quit cleanup failed:', result.reason);
+    try {
+      await cleanup();
+    } catch (error) {
+      logger.warn('[rauhwpx] quit cleanup failed:', error);
     }
     if (!installRequested) {
       app.exit(0);

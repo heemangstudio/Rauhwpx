@@ -107,7 +107,7 @@ try {
     );
     assert(clicked, `Visible ${selector} with text ${text}`);
   }
-  async function openLocal(query = '') {
+  async function openNewChat(query = '') {
     await open(query);
     await page.click('.ag-header .ag-threads-btn');
     await page.waitForSelector('.ag-threads-new', { visible: true });
@@ -115,7 +115,7 @@ try {
     await page.waitForFunction(() => !document.querySelector('.ag-input').disabled);
   }
   async function play(scenario) {
-    await openLocal(`scenario=${scenario}`);
+    await openNewChat(`scenario=${scenario}`);
     await page.click('#play');
     await page.waitForFunction(() =>
       window.sidebarPreview.bridge.isTurnRunning(),
@@ -263,7 +263,7 @@ try {
     await screenshot('tool-activity');
   });
   await step('Chat follows a send and yields to manual scrolling', async () => {
-    await openLocal('scenario=chat&hold=1');
+    await openNewChat('scenario=chat&hold=1');
     await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'no-preference' }]);
     await page.evaluate(() => {
       const messages = document.querySelector('.ag-messages');

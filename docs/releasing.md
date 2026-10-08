@@ -1,52 +1,27 @@
-# Desktop and cloud releases
+# Desktop releases
 
-Tagged releases publish signed and notarized macOS arm64 DMG/ZIP files, an unsigned Windows x64 NSIS installer, and Linux x64/arm64 AppImage and Debian packages. They also publish signed Linux amd64/arm64 cloud runtimes and cloud sandbox images. Windows users can see SmartScreen warnings.
+Tagged releases publish signed and notarized macOS arm64 DMG/ZIP files, an unsigned Windows x64 NSIS installer, and Linux x64/arm64 AppImage and Debian packages. Windows users can see SmartScreen warnings.
 
 ## Tagged release
 
-Set the same release version in the root and `cloud/` package metadata before tagging:
-
-- Update `package.json` and both version fields in `package-lock.json`.
-- Update `cloud/package.json` and both version fields in `cloud/package-lock.json`.
-- Set `RAILWAY_DEFAULT_IMAGE` in both `desktop/cloud-railway.mjs` and `rhwp/rau-credits/cloud-provisioner.mjs` to `ghcr.io/heemangstudio/rauhwpx-cloud:<version>`.
-
-Run `node --test scripts/release-cloud-contracts.test.mjs tests/desktop-app-servers.test.mjs` and `npm run check:docs`, commit the changes, then push the matching `v<version>` tag. The workflow rejects mismatched tags, cloud metadata, or default image versions before building.
+Update the version in `package.json` and both version fields in `package-lock.json`. Run `npm run test:ci` and `npm run check:docs`, commit the changes, then push the matching `v<version>` tag. The workflow rejects a tag that does not match `package.json` before building.
 
 ```sh
 git tag "v$(node -p "require('./package.json').version")"
 git push origin "v$(node -p "require('./package.json').version")"
 ```
 
-[release.yml](../.github/workflows/release.yml) verifies the tagged source and publishes after all desktop and cloud builds succeed. The GitHub release contains installers, update metadata, SHA-256 checksums, signed cloud runtime archives and their bootstrap bundles. Each desktop package bundles both cloud runtime architectures for VPS setup.
+[release.yml](../.github/workflows/release.yml) verifies the tagged source and publishes after all desktop builds succeed. The GitHub release contains installers, update metadata and SHA-256 checksums.
 
-Run the full engine, browser, and agent suites through pull-request CI before merging. Tagged releases run repository and release contract checks, Cloud runtime tests and container smoke tests, and installer verification. They do not repeat the full Rust workspace test build or the application integration suites.
-
-Cloud builds push `<version>-amd64` and `<version>-arm64` image tags to GHCR. After tagged-source verification, the workflow combines those exact tags into the `<version>` and `stable` multi-architecture images. It also retains `stable-amd64` and `stable-arm64` aliases. Both manifests use versioned architecture tags so overlapping releases cannot mix their images. Desktop and hosted provisioning pin the versioned image; `RAUHWpx_RAILWAY_IMAGE` can override it.
-
-## Cloud feature candidates
-
-Use the dedicated image workflow for a feature branch that needs a matching worker before a desktop release. It builds the engine, native extractor, Studio, provider runtime and worker from the requested ref, then runs document-shell and headed display/input proofs before publication.
-
-```sh
-gh workflow run cloud-sandbox-image.yml --ref feat/seamless-cloud-agents \
-  -f image_tag=2.0.3-cloud.1 -f publish_edge=false -f document_shell_only=false
-```
-
-Without `image_tag`, the candidate tag is `sha-<source commit>`. Download the workflow's `cloud-image-<source commit>` artifact for the registry digest, source commit and verification run. Pin an approved broker rollout to the recorded `image@sha256:...` value. The candidate workflow currently builds Linux amd64 for Railway; the tagged release workflow builds both architectures.
-
-The same artifact includes `raucloud-broker-source.tar.gz` and its source-commit/SHA-256 record. The workflow runs broker tests before archiving the tracked source. Deploy that archive with the matching image so an unrelated local edit cannot slip into the broker rollout.
-
-Do not push `v*` or `cloud-sandbox-v*` Git tags for candidate testing. Those triggers promote stable or edge images. A branch dispatch with `publish_edge=false` leaves both shared channels unchanged, and a prerelease desktop version stays out of the stable updater.
-
-For conversation continuity, deploy the compatible broker before changing the worker image or distributing the new desktop. Preserve `SESSION_SECRET`, `DATABASE_URL` and unrelated staged Railway settings. Confirm the new worker advertises `capabilities.conversationRestore` before sending a task. See [the broker continuity and rollback rules](../rhwp/rau-credits/RAUCLOUD.md#conversation-continuity).
+Run the full engine, browser, and agent suites through pull-request CI before merging. Tagged releases run repository and release contract checks and installer verification. They do not repeat the full Rust workspace test build or the application integration suites.
 
 ## Nightly verification
 
-[Nightly verification](../.github/workflows/nightly.yml) runs daily at 03:00 Asia/Seoul (`0 18 * * *` UTC) on Blacksmith and also supports manual verification runs. It runs the Rust workspace tests and audits, builds the WASM engine, and uses that exact build for application, browser, security and Cloud checks. Nightly installer builds and GitHub Release publication are disabled.
+[Nightly verification](../.github/workflows/nightly.yml) runs daily at 03:00 Asia/Seoul (`0 18 * * *` UTC) on Blacksmith and also supports manual verification runs. It runs the Rust workspace tests and audits, builds the WASM engine, and uses that exact build for application, browser and security checks. Nightly installer builds and GitHub Release publication are disabled.
 
 ## Installing desktop updates
 
-The desktop updater installs only after the user chooses **Restart to install** or **Install now**, approves document closure, and the app finishes its service cleanup. The final handoff uses `electron-updater.quitAndInstall()` on macOS, Windows, and AppImage builds. On macOS, this also waits for the native updater to stage the downloaded archive before restarting. Keep `autoInstallOnAppQuit` disabled so ordinary quits cannot start an installer outside this flow.
+The desktop updater installs only after the user chooses **Restart to install** or **Install now**, approves document closure, and the app stops its agent hub. The final handoff uses `electron-updater.quitAndInstall()` on macOS, Windows, and AppImage builds. On macOS, this also waits for the native updater to stage the downloaded archive before restarting. Keep `autoInstallOnAppQuit` disabled so ordinary quits cannot start an installer outside this flow.
 
 Choosing **Later** or canceling document closure preserves the downloaded update. **Check for Updates** offers it again. Debian packages continue to use the system package manager.
 
@@ -62,7 +37,7 @@ Tagged desktop releases use [.github/actions/package-desktop](../.github/actions
 - `APPLE_TEAM_ID`
 - `APPLE_APP_SPECIFIC_PASSWORD`
 
-Missing secrets fail the macOS job. If the environment requires a reviewer, GitHub waits for that approval. Tagged publication requires every desktop and cloud build, so a failed macOS job blocks the release.
+Missing secrets fail the macOS job. If the environment requires a reviewer, GitHub waits for that approval. Tagged publication requires every desktop build, so a failed macOS job blocks the release.
 
 Keep packaged runtime checks, artifact architecture checks, Developer ID verification and notarization validation when changing this workflow. npm production dependency audits block high and critical advisories. Nightly also reports lower-severity findings for maintenance review.
 
@@ -82,4 +57,4 @@ Use `package:win` on Windows. Packaging does not reinstall dependencies or rebui
 
 ## Product and package versions
 
-Desktop, Studio's About dialog, and extension viewer About dialogs display the product version from the root `package.json`. The cloud runtime package and default sandbox image must use that same release version. The PWA and extension names use Rauhwpx. Engine crates, extension manifests and published npm packages keep their own versions and identifiers. Those values control package compatibility and store updates; changing the product version does not automatically bump them. Historical `rhwp` paths and upstream attribution remain intact.
+Desktop, Studio's About dialog, and extension viewer About dialogs display the product version from the root `package.json`. The PWA and extension names use Rauhwpx. Engine crates, extension manifests and published npm packages keep their own versions and identifiers. Those values control package compatibility and store updates; changing the product version does not automatically bump them. Historical `rhwp` paths and upstream attribution remain intact.

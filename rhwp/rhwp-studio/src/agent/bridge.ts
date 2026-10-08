@@ -262,9 +262,9 @@ export interface AgentBridge {
   takeOverConnection(): void;
   /** 예약된 백오프를 취소하고 허브를 띄운 뒤 즉시 다시 연결한다. 이미 연결돼 있으면 무시. 연결 중이어도 소켓을 접고 다시 붙는다. */
   reconnectNow(): Promise<void>;
-  /** 로컬 CLI 설치 상태. refresh=true 면 허브가 새로 프로브한다. */
+  /** CLI 설치 상태. refresh=true 면 허브가 새로 프로브한다. */
   requestProviderStatus(refresh?: boolean): Promise<ProviderStatusMap | null>;
-  /** Available concrete models from the local provider. */
+  /** Available concrete models from the provider. */
   requestModelCatalog(agent: CatalogAgent, refresh?: boolean): Promise<ModelCatalogEntry[] | null>;
   requestAgentSetupStatus(refresh?: boolean): Promise<AgentSetupStatusMap | null>;
   installAgent(agent: AgentName): Promise<AgentSetupStatusMap | null>;
@@ -275,7 +275,7 @@ export interface AgentBridge {
   resizeSetupTerminal(agent: AgentName, authRunId: string, cols: number, rows: number): void;
   submitAgentAuthCode(agent: AgentName, authRunId: string, code: string): void;
   cancelAgentSetup(agent: AgentName, authRunId: string): void;
-  /** 앱에서 연결한 Claude 로그인을 이 기기에서 끊는다. */
+  /** 앱에서 연결한 Claude 로그인을 끊는다. */
   disconnectAgent(agent: AgentName): Promise<AgentSetupStatusMap | null>;
   /** 누적 사용량 요약. 응답이 없으면 null. */
   requestUsage(refresh?: boolean): Promise<UsageSummary | null>;

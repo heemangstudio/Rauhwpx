@@ -35,10 +35,6 @@ const eventBus = new EventBus();
 const versions = createMockVersions(report, params.get('history') === 'branches');
 let documentId: string | null = 'preview-proposal';
 let documentName: string | null = '사업 제안서.hwpx';
-const documentNavigation = {
-  outcome: 'moved' as 'moved' | 'cancelled' | 'failed',
-  calls: [] as Array<{ documentId: string | null; fileName: string | null }>,
-};
 
 if (!params.has('initial-setup'))
   completeInitialSetup({
@@ -64,9 +60,7 @@ const sidebar = initAgentSidebar({
     documentName,
     selectionLabel: null,
   }),
-  moveToLibraryDocument: async (target) => {
-    documentNavigation.calls.push(target);
-    if (documentNavigation.outcome !== 'moved') return;
+  moveToLibraryDocument: (target) => {
     documentId = target.documentId;
     documentName = target.fileName;
     Object.assign(versions.getState(), { documentId, documentName, saved: true });
@@ -180,7 +174,7 @@ sidebar.root.querySelector('.ag-fullscreen-btn')!.addEventListener(
   },
   { capture: true },
 );
-// External destinations are represented locally; never launch an OAuth or billing page.
+// External destinations are represented locally; never launch an OAuth page.
 window.open = () => {
   report('External page placeholder');
   return null;
@@ -214,8 +208,7 @@ if (params.get('page') === 'settings')
 if (params.get('page') === 'versions') sidebar.openVersions();
 
 // Typed hooks for browser checks and custom scenario scripts.
-const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode,
-  documentNavigation, undoState, navigation,
+const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoState, navigation,
   threadStore: { listThreads, getThread, waitForThreadsPersistence } };
 export type SidebarPreview = typeof preview;
 Object.assign(window, { sidebarPreview: preview });

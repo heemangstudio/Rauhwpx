@@ -2,7 +2,8 @@ import { createHmac, randomUUID } from 'node:crypto';
 import { lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
-const UNIQUE_INSTALLS_ORIGIN = 'https://rau-credits-production.up.railway.app';
+/** site-api, deployed as the Railway service `rau-credits`. */
+const SITE_API_ORIGIN = 'https://rau-credits-production.up.railway.app';
 export const UNIQUE_INSTALL_FILE = 'unique-install.json';
 export const UNIQUE_INSTALLS_JSON_PATH = '/v1/unique-installs';
 export const UNIQUE_INSTALLS_PAGE_PATH = '/unique-installs';
@@ -24,11 +25,11 @@ export function uniqueInstallStatePath(userDataDir) {
   return join(String(userDataDir), UNIQUE_INSTALL_FILE);
 }
 
-export function uniqueInstallsPublicUrl(baseUrl = UNIQUE_INSTALLS_ORIGIN) {
+export function uniqueInstallsPublicUrl(baseUrl = SITE_API_ORIGIN) {
   return `${String(baseUrl).replace(/\/$/, '')}${UNIQUE_INSTALLS_PAGE_PATH}`;
 }
 
-export function uniqueInstallsJsonUrl(baseUrl = UNIQUE_INSTALLS_ORIGIN) {
+export function uniqueInstallsJsonUrl(baseUrl = SITE_API_ORIGIN) {
   return `${String(baseUrl).replace(/\/$/, '')}${UNIQUE_INSTALLS_JSON_PATH}`;
 }
 
@@ -260,7 +261,7 @@ export async function reportUniqueInstall({
   appVersion,
   os,
   arch,
-  baseUrl = UNIQUE_INSTALLS_ORIGIN,
+  baseUrl = SITE_API_ORIGIN,
   fetchImpl = globalThis.fetch,
   timeoutMs = REQUEST_TIMEOUT_MS,
   readFileImpl = readFile,

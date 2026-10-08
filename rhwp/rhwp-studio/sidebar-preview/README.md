@@ -23,9 +23,9 @@ Electron, agent hub, or credentials.
 Open **http://127.0.0.1:7715/?audit=1** for a searchable checklist of sidebar
 scenarios and production dialog/menu launchers. The **Scenes** tab covers
 responses, rich Markdown, plan approval, questions, edit review, active subagents,
-connection failures, each provider's setup, Browserbase, preferences, and
-history. **Editor dialogs** opens production file,
-table, field, font, grid, and merge-preparation dialogs with sample values.
+connection failures, each provider's setup, Browserbase, preferences, and history.
+**Editor dialogs** opens production file, table, field, font, grid, and
+merge-preparation dialogs with sample values.
 
 Use **Previous / Next** and the reviewed checkboxes to track the audit. Checkmarks
 persist in the current browser tab. Theme and sidebar width controls stay above
@@ -104,7 +104,7 @@ positions in the live document.
 
 ## Behavior and placeholders
 
-### Live account usage audit
+### Live provider usage audit
 
 Start a development agent hub from this checkout on an unused port, then enable the optional local transport:
 

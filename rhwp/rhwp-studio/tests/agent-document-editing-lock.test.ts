@@ -203,4 +203,3 @@ test('editing frame reflects the active agent and has responsive reduced-motion 
   assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*#agent-editing-frame[\s\S]*animation: none/);
   assert.match(css, /@media \(max-width: 1023px\)[\s\S]*#agent-editing-status/);
 });
-

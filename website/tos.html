@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Cloud 이용약관 | Rauhwpx</title>
-<meta name="description" content="Rauhwpx Cloud 이용약관.">
+<title>이용약관 | Rauhwpx</title>
+<meta name="description" content="Rauhwpx 이용약관.">
 <meta name="theme-color" content="#ececea">
 <link rel="icon" type="image/png" href="assets/rauhwpx-logo.png">
 <link rel="apple-touch-icon" href="assets/rauhwpx-logo.png">
@@ -123,19 +123,6 @@ ol,ul{margin:0;padding:0;list-style:none}
 .art ol{list-style:circled outside;padding-left:1.6em}
 .art ol li+li{margin-top:6px}
 .art ol li::marker{color:var(--ink-3);font-variant-numeric:tabular-nums}
-.art ul.dash li{position:relative;padding-left:1.1em}
-.art ul.dash li::before{content:'';position:absolute;left:0;top:.9em;width:.55em;height:1.5px;background:var(--ink-3)}
-.art ul.dash{margin-top:6px}
-.art b{color:var(--ink);font-weight:650}
-
-/* 제4조 요금표: 괘선 표 */
-.plan-t{width:100%;margin-top:16px;border-collapse:collapse;font-size:15px;font-variant-numeric:tabular-nums}
-.plan-t th,.plan-t td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--rule)}
-.plan-t thead th{font:500 11px/1.3 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--ink-4);border-bottom:1.5px solid var(--ink)}
-.plan-t tbody th{font:700 16px/1.3 var(--serif);letter-spacing:-.02em;color:var(--ink)}
-.plan-t td{color:var(--ink-2)}
-.plan-t tr:last-child th,.plan-t tr:last-child td{border-bottom:0}
-.plan-t .x{color:var(--ink-4)}
 
 /* 부칙과 서명 */
 .sign{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;flex-wrap:wrap;margin-top:44px;padding-top:24px;border-top:1px dashed var(--ink-4)}
@@ -180,8 +167,6 @@ ol,ul{margin:0;padding:0;list-style:none}
   .sheet::before,.punch{display:none}
   .doc-head{grid-template-columns:minmax(0,1fr)}
   .art .no{position:static;display:block;width:auto;text-align:left;margin-bottom:6px}
-  .plan-t{font-size:14px}
-  .plan-t th,.plan-t td{padding:9px 8px}
   @keyframes drop{0%{opacity:0;transform:translateY(-70px) rotate(-2deg)}25%{opacity:1;transform:translateY(-20px) rotate(.6deg)}50%{transform:translateY(2px) scale(1,.994)}75%,100%{opacity:1;transform:none}}
 }
 </style>
@@ -227,18 +212,13 @@ ol,ul{margin:0;padding:0;list-style:none}
       <p class="mono">목차</p>
       <ol>
         <li><a href="#a1"><span>01</span>목적</a></li>
-        <li><a href="#a2"><span>02</span>정의</a></li>
-        <li><a href="#a3"><span>03</span>약관의 게시와 변경</a></li>
-        <li><a href="#a4"><span>04</span>요금제와 세션 시간</a></li>
-        <li><a href="#a5"><span>05</span>결제와 자동 갱신</a></li>
-        <li><a href="#a6"><span>06</span>환불</a></li>
-        <li><a href="#a7"><span>07</span>새 기능 먼저 사용</a></li>
-        <li><a href="#a8"><span>08</span>문서와 데이터</a></li>
-        <li><a href="#a9"><span>09</span>AI 제공자 계정</a></li>
-        <li><a href="#a10"><span>10</span>서비스 변경과 중단</a></li>
-        <li><a href="#a11"><span>11</span>이용 제한과 해지</a></li>
-        <li><a href="#a12"><span>12</span>책임의 제한</a></li>
-        <li><a href="#a13"><span>13</span>준거법과 관할</a></li>
+        <li><a href="#a2"><span>02</span>약관의 게시와 변경</a></li>
+        <li><a href="#a3"><span>03</span>라이선스</a></li>
+        <li><a href="#a4"><span>04</span>문서와 데이터</a></li>
+        <li><a href="#a5"><span>05</span>AI 제공자</a></li>
+        <li><a href="#a6"><span>06</span>서비스 변경과 중단</a></li>
+        <li><a href="#a7"><span>07</span>책임의 제한</a></li>
+        <li><a href="#a8"><span>08</span>준거법과 관할</a></li>
       </ol>
     </nav>
 
@@ -248,11 +228,11 @@ ol,ul{margin:0;padding:0;list-style:none}
 
       <header class="doc-head">
         <div>
-          <p class="mono">Rauhwpx Cloud</p>
-          <h1 id="terms-title" class="charcoal">Cloud 이용약관</h1>
+          <p class="mono">Rauhwpx</p>
+          <h1 id="terms-title" class="charcoal">이용약관</h1>
         </div>
         <dl>
-          <dt>시행일</dt><dd>2026. 9. 25.</dd>
+          <dt>시행일</dt><dd>2026. 10. 8.</dd>
           <dt>버전</dt><dd>1.0</dd>
         </dl>
       </header>
@@ -260,132 +240,69 @@ ol,ul{margin:0;padding:0;list-style:none}
       <section class="art" id="a1" aria-labelledby="h1">
         <span class="no" aria-hidden="true">제1조</span>
         <h2 id="h1">목적</h2>
-        <p>이 약관은 하태욱(이하 “운영자”)가 제공하는 Rauhwpx Cloud(이하 “서비스”)의 이용 조건과 절차, 운영자와 이용자의 권리와 의무를 정합니다.</p>
+        <p>이 약관은 하태욱(이하 “운영자”)가 제공하는 Rauhwpx 앱과 웹사이트(이하 “서비스”)의 이용 조건과 운영자와 이용자의 권리와 의무를 정합니다.</p>
       </section>
 
       <section class="art" id="a2" aria-labelledby="h2">
         <span class="no" aria-hidden="true">제2조</span>
-        <h2 id="h2">정의</h2>
+        <h2 id="h2">약관의 게시와 변경</h2>
         <ol>
-          <li><b>서비스</b>는 Rauhwpx 앱에서 문서와 대화를 원격 작업 공간으로 보내 AI 에이전트가 이어서 작업하게 하는 기능을 말합니다.</li>
-          <li><b>클라우드 세션</b>은 서비스의 원격 작업 공간이 이용자의 요청을 처리하며 실행되는 시간을 말합니다.</li>
-          <li><b>이용자</b>는 이 약관에 동의하고 서비스를 이용하는 사람을 말합니다.</li>
-          <li><b>요금제</b>는 제4조에서 정한 Free와 Cloud를 말합니다.</li>
+          <li>운영자는 이 약관을 웹사이트에 게시합니다.</li>
+          <li>약관을 바꿀 때는 시행 7일 전까지 변경 내용과 시행일을 알립니다. 이용자에게 불리한 변경은 30일 전까지 알립니다.</li>
         </ol>
       </section>
 
       <section class="art" id="a3" aria-labelledby="h3">
         <span class="no" aria-hidden="true">제3조</span>
-        <h2 id="h3">약관의 게시와 변경</h2>
-        <ol>
-          <li>운영자는 이 약관을 웹사이트에 게시합니다.</li>
-          <li>약관을 바꿀 때는 시행 7일 전까지 변경 내용과 시행일을 알립니다. 이용자에게 불리한 변경은 30일 전까지 알립니다.</li>
-          <li>이용자는 바뀐 약관에 동의하지 않으면 시행일 전에 이용을 해지할 수 있습니다.</li>
-        </ol>
+        <h2 id="h3">라이선스</h2>
+        <p>Rauhwpx 앱은 MIT 라이선스로 배포되는 오픈소스 소프트웨어입니다. 앱과 소스 코드의 이용, 수정, 배포에는 MIT 라이선스가 적용됩니다.</p>
       </section>
 
       <section class="art" id="a4" aria-labelledby="h4">
         <span class="no" aria-hidden="true">제4조</span>
-        <h2 id="h4">요금제와 세션 시간</h2>
-        <table class="plan-t">
-          <thead><tr><th scope="col">요금제</th><th scope="col">하루 세션 시간</th><th scope="col">월 요금</th><th scope="col">새 기능 먼저 사용</th></tr></thead>
-          <tbody>
-            <tr><th scope="row">Free</th><td>60분</td><td>0원</td><td class="x">—</td></tr>
-            <tr><th scope="row">Cloud</th><td>5시간</td><td>9,900원</td><td>포함</td></tr>
-          </tbody>
-        </table>
+        <h2 id="h4">문서와 데이터</h2>
         <ol>
-          <li>세션 시간은 매일 0시(한국 시간)에 새로 채워지며, 쓰지 않은 시간은 다음 날로 넘어가지 않습니다.</li>
-          <li>세션 시간은 클라우드 세션이 실행된 시간을 1분 단위로 셉니다. 대기 중이거나 잠든 작업 공간은 세지 않습니다.</li>
-          <li>하루 세션 시간을 모두 쓰면 진행 중인 작업은 안전한 지점에서 멈추고, 결과는 제8조에 따라 보관됩니다.</li>
-          <li>표시된 요금은 부가가치세를 포함한 금액입니다.</li>
+          <li>이용자가 만든 문서와 작업 결과의 권리는 이용자에게 있습니다.</li>
+          <li>앱은 이용자의 컴퓨터에서 문서를 열고 편집하고 저장하며, 문서와 대화를 운영자에게 보내지 않습니다.</li>
+          <li>앱은 설치 수를 세기 위해 처음 실행할 때 무작위 설치 식별값, 앱 버전, 운영체제와 프로세서 종류를 운영자에게 보냅니다.</li>
+          <li>체험 신청으로 받은 이메일은 베타 안내에만 씁니다.</li>
         </ol>
       </section>
 
       <section class="art" id="a5" aria-labelledby="h5">
         <span class="no" aria-hidden="true">제5조</span>
-        <h2 id="h5">결제와 자동 갱신</h2>
+        <h2 id="h5">AI 제공자</h2>
         <ol>
-          <li>Cloud 요금제는 한 달 단위로 미리 결제하며, 해지하지 않으면 매월 같은 날 자동으로 갱신·결제됩니다.</li>
-          <li>이용자는 언제든 해지할 수 있습니다. 해지하면 이미 결제한 기간이 끝날 때까지 Cloud 요금제를 쓰고, 그 뒤에는 Free 요금제로 바뀝니다.</li>
-          <li>요금을 바꿀 때는 적용 30일 전까지 알리며, 바뀐 요금은 그 뒤 첫 갱신부터 적용됩니다.</li>
+          <li>앱은 이용자가 연결한 Claude, Codex, OpenRouter 등 AI 제공자의 계정으로 작업합니다.</li>
+          <li>AI 제공자의 이용료와 이용 한도, 약관은 이용자와 해당 제공자 사이에 적용됩니다.</li>
+          <li>이용자가 보낸 요청과 에이전트가 읽은 문서 내용은 해당 AI 제공자에게 전달되고, 그 처리에는 제공자의 정책이 적용됩니다.</li>
         </ol>
       </section>
 
       <section class="art" id="a6" aria-labelledby="h6">
         <span class="no" aria-hidden="true">제6조</span>
-        <h2 id="h6">환불</h2>
-        <p>결제가 완료된 요금은 환불되지 않습니다. 해지하면 제5조 제2항에 따라 결제한 기간이 끝날 때까지 Cloud 요금제를 쓸 수 있습니다.</p>
+        <h2 id="h6">서비스 변경과 중단</h2>
+        <p>운영자는 앱과 웹사이트의 기능을 바꾸거나 배포를 멈출 수 있습니다. 이미 받은 앱과 공개된 소스 코드는 MIT 라이선스에 따라 계속 쓸 수 있습니다.</p>
       </section>
 
       <section class="art" id="a7" aria-labelledby="h7">
         <span class="no" aria-hidden="true">제7조</span>
-        <h2 id="h7">새 기능 먼저 사용</h2>
-        <p>Cloud 이용자는 정식 출시 전 기능을 먼저 쓸 수 있습니다. 이런 기능은 예고 없이 바뀌거나 빠질 수 있습니다.</p>
-      </section>
-
-      <section class="art" id="a8" aria-labelledby="h8">
-        <span class="no" aria-hidden="true">제8조</span>
-        <h2 id="h8">문서와 데이터</h2>
+        <h2 id="h7">책임의 제한</h2>
         <ol>
-          <li>이용자가 올린 문서와 작업 결과의 권리는 이용자에게 있습니다.</li>
-          <li>서비스는 작업에 필요한 다음 자료를 받아 처리합니다.
-            <ul class="dash">
-              <li>문서 스냅샷과 참고 자료</li>
-              <li>에이전트와의 대화 기록</li>
-              <li>제9조의 AI 제공자 인증 정보</li>
-            </ul>
-          </li>
-          <li>완료된 작업 결과는 암호화해 30일 동안 보관한 뒤 삭제합니다. 이용자가 결과를 내려받아 확인하거나 대화를 끝내면 원격 작업 내용은 그때 삭제합니다.</li>
-          <li>운영자는 이용자의 문서와 대화를 AI 모델 학습에 쓰지 않으며, 법령에 따른 경우를 빼고 제3자에게 제공하지 않습니다.</li>
-        </ol>
-      </section>
-
-      <section class="art" id="a9" aria-labelledby="h9">
-        <span class="no" aria-hidden="true">제9조</span>
-        <h2 id="h9">AI 제공자 계정</h2>
-        <ol>
-          <li>서비스는 이용자가 연결한 Codex, Claude, OpenRouter 등 AI 제공자 계정으로 작업합니다. 인증 정보는 암호화해 보관하고 해당 작업에만 씁니다.</li>
-          <li>AI 제공자의 이용료와 이용 한도, 약관은 이용자와 해당 제공자 사이에 적용되며, 서비스 요금에 포함되지 않습니다.</li>
-          <li>이용자가 보낸 내용은 작업 처리를 위해 해당 AI 제공자에게 전달되고, 그 처리에는 제공자의 정책이 적용됩니다.</li>
-        </ol>
-      </section>
-
-      <section class="art" id="a10" aria-labelledby="h10">
-        <span class="no" aria-hidden="true">제10조</span>
-        <h2 id="h10">서비스 변경과 중단</h2>
-        <ol>
-          <li>운영자는 점검이나 설비 교체를 위해 서비스를 잠시 멈출 수 있으며, 가능한 한 미리 알립니다.</li>
-          <li>서비스를 끝낼 때는 30일 전까지 알립니다.</li>
-        </ol>
-      </section>
-
-      <section class="art" id="a11" aria-labelledby="h11">
-        <span class="no" aria-hidden="true">제11조</span>
-        <h2 id="h11">이용 제한과 해지</h2>
-        <ol>
-          <li>이용자가 법령이나 이 약관을 어기면 운영자는 사유를 알린 뒤 이용을 제한하거나 계약을 해지할 수 있습니다. 긴급한 경우에는 먼저 제한하고 바로 알립니다.</li>
-          <li>이용자는 이의가 있으면 통지를 받은 날부터 7일 이내에 이의를 제기할 수 있습니다.</li>
-        </ol>
-      </section>
-
-      <section class="art" id="a12" aria-labelledby="h12">
-        <span class="no" aria-hidden="true">제12조</span>
-        <h2 id="h12">책임의 제한</h2>
-        <ol>
+          <li>앱은 MIT 라이선스에 따라 있는 그대로 제공됩니다.</li>
           <li>운영자는 천재지변, AI 제공자의 장애 등 운영자가 통제할 수 없는 사유로 생긴 손해에 책임을 지지 않습니다.</li>
           <li>운영자의 고의나 중대한 과실로 생긴 손해에는 이 조항이 적용되지 않습니다.</li>
         </ol>
       </section>
 
-      <section class="art" id="a13" aria-labelledby="h13">
-        <span class="no" aria-hidden="true">제13조</span>
-        <h2 id="h13">준거법과 관할</h2>
+      <section class="art" id="a8" aria-labelledby="h8">
+        <span class="no" aria-hidden="true">제8조</span>
+        <h2 id="h8">준거법과 관할</h2>
         <p>이 약관은 대한민국 법에 따르며, 서비스와 관련한 분쟁은 민사소송법에 따른 관할 법원에서 해결합니다.</p>
       </section>
 
       <footer class="sign">
-        <p>부칙 · 이 약관은 2026년 9월 25일부터 시행합니다.<br>문의 <a href="mailto:heemang12bo@gmail.com">heemang12bo@gmail.com</a></p>
+        <p>부칙 · 이 약관은 2026년 10월 8일부터 시행합니다.<br>문의 <a href="mailto:heemang12bo@gmail.com">heemang12bo@gmail.com</a></p>
         <div class="who">
           <p class="mono">운영자</p>
           <b>하태욱</b>

@@ -804,7 +804,7 @@ test('workflow and every presented plan persist as history without approval auth
 test('same-millisecond thread updates keep the later state newer', (t) => {
   mem.clear();
   t.mock.method(Date, 'now', () => 2000);
-  const thread = createEmptyThread({ agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', docKey: 'restart.hwpx' });
+  const thread = createEmptyThread({ agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', docKey: 'report.hwpx' });
   thread.messages.push({ role: 'user', text: 'Continue the edit.' });
   thread.title = '첫 제목';
   upsertThread(thread);

@@ -14,7 +14,7 @@ function event() {
   return { prevented: false, preventDefault() { this.prevented = true; } };
 }
 
-function fixture({ platform = 'darwin', cleanupTasks, install, interactive = true } = {}) {
+function fixture({ platform = 'darwin', cleanup, install, interactive = true } = {}) {
   const calls = [];
   const dialogs = [];
   const answers = [];
@@ -47,7 +47,7 @@ function fixture({ platform = 'darwin', cleanupTasks, install, interactive = tru
       return Promise.resolve(answers.shift() ?? { response: 1 });
     },
     openReleases: async () => { calls.push('releases'); },
-    cleanupTasks: cleanupTasks ?? [() => calls.push('cleanup')],
+    cleanup: cleanup ?? (() => calls.push('cleanup')),
     onQuitRequested: (value) => { quitRequested = value; },
     onTeardown: () => calls.push('teardown'),
     logger: { warn: (...args) => calls.push(['warning', ...args]) },
@@ -74,7 +74,7 @@ const installs = (f) => f.calls.filter((call) => Array.isArray(call) && call[0] 
 
 test('macOS waits for approval and cleanup, then delegates staging and native restart exactly once', async () => {
   const cleanup = deferred();
-  const f = fixture({ cleanupTasks: [() => cleanup.promise] });
+  const f = fixture({ cleanup: () => cleanup.promise });
   assert.equal(f.updater.autoInstallOnAppQuit, false);
   await f.downloaded();
   assert.equal(f.dialogs[0].buttons[0], 'Restart to install');
@@ -162,20 +162,17 @@ test('ordinary quit after Later performs cleanup and exits without installing', 
   assert.deepEqual(f.calls.slice(-3), ['teardown', 'cleanup', 'exit:0']);
 });
 
-test('cleanup attempts all services, including synchronous errors, before installation', async () => {
-  const done = [];
-  const f = fixture({ cleanupTasks: [
-    () => { throw new Error('font cleanup failed'); },
-    async () => { throw new Error('hub cleanup failed'); },
-    async () => { done.push('hub'); },
-  ] });
-  await f.downloaded();
-  await f.approveClose();
-  await tick();
-  assert.deepEqual(done, ['hub']);
-  assert.equal(installs(f).length, 1);
-  assert.equal(f.calls.filter((call) => Array.isArray(call) && call[0] === 'warning').length, 2);
-});
+for (const failure of ['throw', 'reject']) {
+  test(`a cleanup ${failure} is logged and installation still proceeds`, async () => {
+    const error = new Error('hub cleanup failed');
+    const f = fixture({ cleanup: failure === 'throw' ? () => { throw error; } : async () => { throw error; } });
+    await f.downloaded();
+    await f.approveClose();
+    await tick();
+    assert.equal(installs(f).length, 1);
+    assert.equal(f.calls.filter((call) => Array.isArray(call) && call[0] === 'warning').length, 1);
+  });
+}
 
 test('a download error is visible once across the updater event and rejected promise', async () => {
   const f = fixture();

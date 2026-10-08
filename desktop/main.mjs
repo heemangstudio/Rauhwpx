@@ -587,7 +587,7 @@ const updateLifecycle = createUpdateLifecycle({
   isInteractive: () => manualUpdateCheck || interactiveUpdateDownload,
   showMessageBox: (options) => dialog.showMessageBox(options),
   openReleases: () => shell.openExternal(RELEASES_URL),
-  cleanupTasks: [() => hubOwner.teardown()],
+  cleanup: () => hubOwner.teardown(),
   onQuitRequested: (requested) => { quitRequested = requested; },
   onTeardown: () => { quitting = true; },
 });

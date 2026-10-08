@@ -181,7 +181,8 @@ function spawnIdFromToolResult(result) {
 }
 
 /** Map Pi extension subagent tools onto the unified task-card event stream. */
-export function createPiFleetMapper(onEvent, agent = 'pi') {
+export function createPiFleetMapper(onEvent) {
+  const agent = 'pi';
   const taskIdBySubagent = new Map();
   const callMeta = new Map();
   const running = new Set();
@@ -357,7 +358,7 @@ export function createPiSession(opts, {
   let uncertainTreeCleanup = false;
   /** @type {{ text: string } | null} */
   let queuedTurn = null;
-  const fleet = createPiFleetMapper(onEvent, agent);
+  const fleet = createPiFleetMapper(onEvent);
 
   function endTurn(evt) {
     if (!turnOpen) return;
