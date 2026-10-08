@@ -13,6 +13,7 @@ const safeStorage = {
   async decryptStringAsync(value) {
     return { shouldReEncrypt: false, result: value.toString().replace(/^protected:/, '') };
   },
+  getSelectedStorageBackend() { return 'gnome_libsecret'; },
 };
 
 test('startup removes retired Cloud credentials and files but keeps other secrets and document copies', async (t) => {
