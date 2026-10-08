@@ -293,11 +293,11 @@ test('formatPiExitError redacts key-shaped strings and falls back without stderr
 test('OpenRouter 402 blocks a Pi turn with the empty-credit copy', () => {
   assert.equal(isOpenRouterCreditError('OpenRouter 402 Payment Required'), true);
   assert.equal(
-    formatOpenRouterCreditError('HTTP 402: insufficient credits', 'pi'),
+    formatOpenRouterCreditError('HTTP 402: insufficient credits'),
     'OpenRouter 크레딧이 부족합니다.',
   );
   assert.match(
-    formatPiExitError('402 Payment Required: out of credits', 1, null, '', 'pi'),
+    formatPiExitError('402 Payment Required: out of credits', 1, null, ''),
     /OpenRouter 크레딧이 부족합니다/,
   );
 });
@@ -694,7 +694,7 @@ test('Windows Pi terminal cleanup starts live, drains buffered output, and allow
 
 test('Pi fleet events preserve child terminal status and Pi identity', () => {
   const events = [];
-  const mapper = createPiFleetMapper((event) => events.push(event), 'pi');
+  const mapper = createPiFleetMapper((event) => events.push(event));
   for (const [callId, id, name] of [
     ['spawn-ok', 'sa-1', 'Edit'],
     ['spawn-fail', 'sa-2', 'Research'],

@@ -3,7 +3,7 @@ import './versions.css';
 import { confirmSheet } from './sheet.ts';
 import type { DiffItem } from '../../compare/types.ts';
 import { createIcon } from './icons.ts';
-import { versionErrorOf } from '../../versioning/types.ts';
+import { versionErrorCode } from '../../versioning/types.ts';
 import { showContextMenu } from '../native-context-menu.ts';
 import { createChevron } from '../chevron.ts';
 
@@ -642,7 +642,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
       await action();
     } catch (error) {
       // 사용자가 확인 창에서 취소한 것은 오류로 알리지 않는다.
-      if (versionErrorOf(error)?.code === 'CANCELLED') return;
+      if (versionErrorCode(error) === 'CANCELLED') return;
       const message = error instanceof Error ? error.message : String(error);
       notice.textContent = message;
       notice.hidden = false;

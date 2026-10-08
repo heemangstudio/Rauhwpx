@@ -14,7 +14,7 @@ function event() {
   return { prevented: false, preventDefault() { this.prevented = true; } };
 }
 
-function fixture({ platform = 'darwin', cleanupTasks, stopTransport, install, interactive = true } = {}) {
+function fixture({ platform = 'darwin', cleanup, install, interactive = true } = {}) {
   const calls = [];
   const dialogs = [];
   const answers = [];
@@ -47,8 +47,7 @@ function fixture({ platform = 'darwin', cleanupTasks, stopTransport, install, in
       return Promise.resolve(answers.shift() ?? { response: 1 });
     },
     openReleases: async () => { calls.push('releases'); },
-    cleanupTasks: cleanupTasks ?? [() => calls.push('cleanup')],
-    stopTransport: stopTransport ?? (() => calls.push('transport')),
+    cleanup: cleanup ?? (() => calls.push('cleanup')),
     onQuitRequested: (value) => { quitRequested = value; },
     onTeardown: () => calls.push('teardown'),
     logger: { warn: (...args) => calls.push(['warning', ...args]) },
@@ -56,12 +55,12 @@ function fixture({ platform = 'darwin', cleanupTasks, stopTransport, install, in
   lifecycle.start();
   lifecycle.configureUpdates();
   const session = {
-    cloudTransferPromise: null, cloudTransferIntent: null, allowCloseOnce: false,
+    allowCloseOnce: false,
     window: { close: () => { calls.push('window-close'); windows = 0; app.quit(); } },
   };
   const approveClose = (options = {}) => completeWindowClose({
     session, allowClose: true, cancelQuit: lifecycle.cancelQuit,
-    persistBookmarks: async () => calls.push('bookmarks'), timeoutMs: 50, ...options,
+    persistBookmarks: async () => calls.push('bookmarks'), ...options,
   });
   const downloaded = async (response = 0) => {
     answers.push({ response });
@@ -75,7 +74,7 @@ const installs = (f) => f.calls.filter((call) => Array.isArray(call) && call[0] 
 
 test('macOS waits for approval and cleanup, then delegates staging and native restart exactly once', async () => {
   const cleanup = deferred();
-  const f = fixture({ cleanupTasks: [() => cleanup.promise] });
+  const f = fixture({ cleanup: () => cleanup.promise });
   assert.equal(f.updater.autoInstallOnAppQuit, false);
   await f.downloaded();
   assert.equal(f.dialogs[0].buttons[0], 'Restart to install');
@@ -86,7 +85,7 @@ test('macOS waits for approval and cleanup, then delegates staging and native re
   cleanup.resolve();
   await tick();
   assert.deepEqual(installs(f), [['install', false, true]]);
-  assert.ok(f.calls.indexOf('transport') < f.calls.findIndex(Array.isArray));
+  assert.ok(f.calls.indexOf('cleanup') < f.calls.findIndex(Array.isArray));
   f.app.quit();
   assert.equal(f.calls.includes('native-quit'), false, 'plain quit cannot interrupt Squirrel staging');
   assert.equal(f.calls.some((call) => typeof call === 'string' && call.startsWith('exit:')), false);
@@ -100,23 +99,16 @@ test('macOS waits for approval and cleanup, then delegates staging and native re
 });
 
 for (const platform of ['win32', 'linux']) {
-  test(`${platform} starts the installer only after cloud transfer, bookmarks, and cleanup`, async () => {
+  test(`${platform} starts the installer only after bookmarks and cleanup`, async () => {
     const f = fixture({ platform, install: ({ nativeUpdater, app }) => {
       nativeUpdater.emit('before-quit-for-update');
       app.quit();
     } });
-    const transfer = deferred();
-    f.session.cloudTransferPromise = transfer.promise;
     await f.downloaded();
-    const closing = f.approveClose();
-    await tick();
-    assert.equal(installs(f).length, 0);
-    assert.equal(f.session.allowCloseOnce, false);
-    transfer.resolve();
-    assert.equal(await closing, true);
+    assert.equal(await f.approveClose(), true);
     await tick();
     assert.deepEqual(f.calls.filter((call) => call !== 'quit-request'), [
-      'bookmarks', 'window-close', 'teardown', 'cleanup', 'transport', ['install', false, true], 'native-quit',
+      'bookmarks', 'window-close', 'teardown', 'cleanup', ['install', false, true], 'native-quit',
     ]);
   });
 }
@@ -140,29 +132,18 @@ test('Later and duplicate download events preserve an explicit install retry', a
   assert.equal(installs(f).length, 0);
 });
 
-for (const reason of ['cancel', 'transfer rejection', 'transfer timeout', 'intent cancellation', 'intent timeout', 'bookmark failure']) {
+for (const reason of ['cancel', 'bookmark failure']) {
   test(`${reason} cancels update intent, keeps the window open, and permits a later retry`, async () => {
     const f = fixture();
     await f.downloaded();
-    const options = {};
-    if (reason === 'cancel') options.allowClose = false;
-    if (reason === 'transfer rejection') f.session.cloudTransferPromise = Promise.reject(new Error('transfer failed'));
-    if (reason === 'transfer timeout') { f.session.cloudTransferPromise = deferred().promise; options.timeoutMs = 1; }
-    if (reason.startsWith('intent')) {
-      f.session.cloudTransferIntent = {
-        promise: reason === 'intent timeout' ? deferred().promise : Promise.resolve(false),
-        settled: false, settle: () => {},
-      };
-      options.timeoutMs = 1;
-    }
-    if (reason === 'bookmark failure') options.persistBookmarks = async () => { throw new Error('disk full'); };
+    const options = reason === 'cancel'
+      ? { allowClose: false }
+      : { persistBookmarks: async () => { throw new Error('disk full'); } };
     assert.equal(await f.approveClose(options), false);
     assert.equal(f.session.allowCloseOnce, false);
     assert.equal(f.quitRequested(), false);
     assert.equal(installs(f).length, 0);
     assert.equal(f.lifecycle.hasDownloadedUpdate(), true);
-    f.session.cloudTransferPromise = null;
-    f.session.cloudTransferIntent = null;
     f.answers.push({ response: 0 });
     await f.lifecycle.offerInstall();
     await f.approveClose();
@@ -178,22 +159,20 @@ test('ordinary quit after Later performs cleanup and exits without installing', 
   await f.approveClose();
   await tick();
   assert.equal(installs(f).length, 0);
-  assert.deepEqual(f.calls.slice(-4), ['teardown', 'cleanup', 'transport', 'exit:0']);
+  assert.deepEqual(f.calls.slice(-3), ['teardown', 'cleanup', 'exit:0']);
 });
 
-test('cleanup attempts all services and transport, including synchronous errors, before installation', async () => {
-  const done = [];
-  const f = fixture({ cleanupTasks: [
-    () => { throw new Error('display cleanup failed'); },
-    async () => { done.push('hub'); },
-  ], stopTransport: () => { done.push('transport'); throw new Error('transport cleanup failed'); } });
-  await f.downloaded();
-  await f.approveClose();
-  await tick();
-  assert.deepEqual(done, ['hub', 'transport']);
-  assert.equal(installs(f).length, 1);
-  assert.equal(f.calls.filter((call) => Array.isArray(call) && call[0] === 'warning').length, 2);
-});
+for (const failure of ['throw', 'reject']) {
+  test(`a cleanup ${failure} is logged and installation still proceeds`, async () => {
+    const error = new Error('hub cleanup failed');
+    const f = fixture({ cleanup: failure === 'throw' ? () => { throw error; } : async () => { throw error; } });
+    await f.downloaded();
+    await f.approveClose();
+    await tick();
+    assert.equal(installs(f).length, 1);
+    assert.equal(f.calls.filter((call) => Array.isArray(call) && call[0] === 'warning').length, 1);
+  });
+}
 
 test('a download error is visible once across the updater event and rejected promise', async () => {
   const f = fixture();

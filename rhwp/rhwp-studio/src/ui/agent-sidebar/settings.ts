@@ -10,7 +10,6 @@ import {
   labelForModel,
   modelGroupsForAgent,
   resolveEffortForAgent,
-  resolveModelForAgent,
   type AgentModelGroup,
 } from '../../agent/models.ts';
 import {
@@ -51,8 +50,6 @@ import type {
   AgentInstructionsStatus,
   AgentAuthMethod,
   AgentSetupStatusMap,
-  AccountLoginStart,
-  AccountSessionStatus,
   BrowserbaseCredentialSource,
   BrowserbaseStatus,
   PermissionProfile,
@@ -68,7 +65,6 @@ import type {
 } from '../../agent/types.ts';
 
 type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'replaced';
-type RauAuthFeedback = 'idle' | 'success';
 
 /** 직접 계정 한도를 조회하는 구독 제공자. */
 type PlanAgent = 'claude' | 'codex';
@@ -77,7 +73,6 @@ const PLAN_AGENTS: readonly PlanAgent[] = ['claude', 'codex'];
 
 /** API 키 입력칸 힌트 — 키 접두사가 있는 프로바이더만 형태를 보여준다. */
 const API_KEY_PLACEHOLDER: Record<AgentName, string> = {
-  rau: '',
   claude: 'sk-ant-…',
   codex: 'sk-proj-…',
   pi: 'sk-or-…',
@@ -319,17 +314,6 @@ export interface SettingsPanelDeps {
   openCalibration: () => void;
   /** 현재 대화의 CLI 세션을 다시 시작한다. */
   reconnectSession: () => void;
-  /**
-   * 첫 실행 마법사가 열려 있을 때 로그인/민트 실패·취소를 같은 화면의
-   * BYOK 경로로 넘긴다. 설정 탭만 쓸 때는 없어도 된다.
-   */
-  onAgentSetupAbandoned?: (info: {
-    agent: AgentName;
-    code: string;
-    message: string;
-  }) => void;
-  cloudSettings?: HTMLElement;
-  refreshCloudSettings?: () => void;
   /** 설정 안에 스킬 선반을 붙인다. */
   skillsSettings?: HTMLElement;
   /** 스킬 탭에 들어갈 때 최신 목록을 요청한다. */
@@ -349,7 +333,6 @@ export interface SettingsPanel {
    * 이미 로그인된 프로바이더는 완료 화면만 보여 준다.
    */
   beginAgentConnect(agent: AgentName, options?: { reauth?: boolean }): void;
-  closeAgentSetup(): void;
   handleEvent(ev: SidebarEvent): void;
   dispose(): void;
 }
@@ -362,9 +345,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     applyDefaults,
     openCalibration,
     reconnectSession,
-    onAgentSetupAbandoned,
-    cloudSettings,
-    refreshCloudSettings,
     skillsSettings,
     refreshSkills,
   } = deps;
@@ -377,12 +357,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   const modelCatalogLoading = new Set<PlanAgent>();
   const modelCatalogErrors = new Set<PlanAgent>();
   let connectionState: ConnectionState = bridge.getConnectionState();
-  let accountStatus: AccountSessionStatus | null = null;
-  let accountBusy = false;
-  let accountMessage = '';
-  let accountAuthRunId: string | null = null;
-  let accountAuthUrl: string | null = null;
-  let accountPairingCode: string | null = null;
   let providers: ProviderStatusMap | null = null;
   let usage: UsageSummary | null = null;
   let writingStyle: WritingStyleStatus | null = null;
@@ -423,9 +397,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   let setupCodePending = false;
   /** 브라우저 로그인이 진행 중인 동안 카드에 직접 그릴 인증 주소와 기기 코드. */
   let setupOauthPending = false;
-  let rauOauthFlowInProgress = false;
-  let rauAuthFeedback: RauAuthFeedback = 'idle';
-  let rauAuthFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
   let setupAuthUrl: string | null = null;
   let setupUserCode: string | null = null;
   let setupAuthRunId: string | null = null;
@@ -499,7 +470,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     { id: 'editing', label: '편집' },
     { id: 'ai', label: 'AI' },
     { id: 'skills', label: '스킬' },
-    { id: 'cloud', label: 'Cloud 작업' },
   ];
   for (const destination of destinations) {
     const button = el('button', 'ag-settings-nav-button', destination.label);
@@ -530,53 +500,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     },
   });
   panes.get('editing')?.appendChild(editingSettings.element);
-
-  // ── Rauhwpx 계정 ───────────────────────────────────────
-  // 연결 카드의 한 줄로 선다 — 프로바이더 행과 같은 모양이다.
-  const accountRow = el('div', 'ag-settings-row ag-account-session-row');
-  const accountDot = el('span', 'ag-settings-dot');
-  accountDot.setAttribute('aria-hidden', 'true');
-  const accountText = el('div', 'ag-settings-row-text');
-  const accountName = el('span', 'ag-settings-row-name');
-  const accountIcon = el('span', 'ag-account-brand-icon');
-  accountIcon.setAttribute('aria-hidden', 'true');
-  accountName.append(accountIcon, document.createTextNode('Rauhwpx 계정'));
-  const accountDetail = el('span', 'ag-settings-row-detail', '확인 중…');
-  accountText.append(accountName, accountDetail);
-  const accountAction = el('button', 'ag-settings-btn', '로그인');
-  accountAction.type = 'button';
-  accountRow.append(accountText, accountDot, accountAction);
-
-  const accountLoginBox = el('div', 'ag-agent-login-box ag-account-login-box');
-  accountLoginBox.hidden = true;
-  const accountAuthLink = el('a', 'ag-agent-login-url', '브라우저에서 로그인');
-  accountAuthLink.target = '_blank';
-  accountAuthLink.rel = 'noopener noreferrer';
-  const accountPairing = el('strong', 'ag-agent-login-code-value');
-  const accountCode = createTextField('반환 코드', { autocomplete: 'off' });
-  const accountLoginActions = el('div', 'ag-settings-actions');
-  const accountCodeSubmit = el('button', 'ag-settings-primary', '코드 확인');
-  accountCodeSubmit.type = 'button';
-  const accountLoginCancel = el('button', 'ag-settings-btn', '로그인 취소');
-  accountLoginCancel.type = 'button';
-  accountLoginActions.append(accountCodeSubmit, accountLoginCancel);
-  accountLoginBox.append(accountAuthLink, accountPairing, accountCode.field, accountLoginActions);
-  const accountError = el('p', 'ag-settings-cliproxy-error');
-  accountError.hidden = true;
-  accountError.setAttribute('role', 'status');
-
-  accountAction.addEventListener('click', () => {
-    if (accountStatus?.signedIn) void logoutAccount();
-    else void startAccountLogin();
-  });
-  accountCodeSubmit.addEventListener('click', submitAccountCode);
-  accountCode.input.addEventListener('keydown', (event) => {
-    if (event.key !== 'Enter') return;
-    event.preventDefault();
-    submitAccountCode();
-  });
-  accountCode.input.addEventListener('input', renderAccount);
-  accountLoginCancel.addEventListener('click', cancelAccountLogin);
 
   // ── 1. 연결 ────────────────────────────────────────────
   const connection = createSection('연결');
@@ -841,12 +764,12 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   const setupStatusCard = el('div', 'ag-agent-setup-card');
   const setupAccountRow = el('div', 'ag-agent-setup-row');
   const setupAccountValue = el('span', 'ag-agent-setup-row-value');
-  const setupDoneChange = el('button', 'ag-settings-btn', '로그인 방식 변경');
-  setupDoneChange.type = 'button';
+  const setupChangeAuth = el('button', 'ag-settings-btn', '로그인 방식 변경');
+  setupChangeAuth.type = 'button';
   const setupAccountLogout = el('button', 'ag-settings-btn', '로그아웃');
   setupAccountLogout.type = 'button';
   setupAccountLogout.hidden = true;
-  setupAccountRow.append(el('span', 'ag-agent-setup-row-label', '계정'), setupAccountValue, setupDoneChange, setupAccountLogout);
+  setupAccountRow.append(el('span', 'ag-agent-setup-row-label', '계정'), setupAccountValue, setupChangeAuth, setupAccountLogout);
   const setupVersionRow = el('div', 'ag-agent-setup-row');
   const setupVersionValue = el('span', 'ag-agent-setup-row-value');
   const setupUpdate = el('button', 'ag-settings-btn ag-agent-setup-update', '업데이트');
@@ -940,41 +863,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     setupCodeBox,
   );
 
-  const setupRauAuthFeedback = el('div', 'ag-agent-setup-auth-feedback');
-  setupRauAuthFeedback.hidden = true;
-  setupRauAuthFeedback.setAttribute('role', 'status');
-  setupRauAuthFeedback.setAttribute('aria-live', 'polite');
-  const setupRauAuthFeedbackMark = el('span', 'ag-agent-setup-auth-feedback-mark', '✓');
-  setupRauAuthFeedbackMark.setAttribute('aria-hidden', 'true');
-  const setupRauAuthFeedbackCopy = el('div', 'ag-agent-setup-auth-feedback-copy');
-  setupRauAuthFeedbackCopy.append(
-    el('strong', '', '로그인이 완료되었습니다'),
-    el('span', '', '계정 확인 후 계속'),
-  );
-  setupRauAuthFeedback.append(setupRauAuthFeedbackMark, setupRauAuthFeedbackCopy);
-
-  // Rau 전용 계정 카드 — 로그인한 계정과 체험 크레딧 잔량을 한 장에 보여 준다.
-  const setupAccountPane = el('div', 'ag-agent-setup-account');
-  setupAccountPane.hidden = true;
-  const setupAccountTitle = el('h3', 'ag-agent-setup-section-title', '로그인된 계정');
-  const setupAccountEmail = el('p', 'ag-agent-setup-account-email');
-  const setupAccountRows = el('div', 'ag-agent-setup-account-rows');
-  const setupAccountEmpty = el('p', 'ag-settings-note', '체험 크레딧 소진 · 다른 모델 연결');
-  setupAccountEmpty.hidden = true;
-  setupAccountPane.append(setupAccountTitle, setupAccountEmail, setupAccountRows, setupAccountEmpty);
-
-  // 완료 줄은 Rau 전용(계속·로그아웃). 다른 프로바이더는 닫기(×)로 끝낸다.
-  const setupDonePane = el('div', 'ag-agent-setup-pane ag-agent-setup-done');
-  const setupDoneClose = el('button', 'ag-agent-setup-primary', '완료');
-  setupDoneClose.type = 'button';
-  const setupDoneDisconnect = el('button', 'ag-settings-btn', '로그아웃');
-  setupDoneDisconnect.type = 'button';
-  setupDoneDisconnect.hidden = true;
-  setupDonePane.append(setupDoneDisconnect, setupDoneClose);
-
   setupGeneric.append(
-    setupRauAuthFeedback,
-    setupAccountPane,
     setupStatusCard,
     setupProgress,
     setupProgressLine,
@@ -982,7 +871,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     setupErrorDetail,
     setupInstallPane,
     setupAuthPane,
-    setupDonePane,
   );
   setupDialog.append(setupChrome, setupBody);
   setupOverlay.appendChild(setupDialog);
@@ -1035,16 +923,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     authAttempt += 1;
     setupBusy = false;
     setupCodePending = false;
-    resetRauAuthFeedback();
     clearSetupAuthPrompt();
     renderAgentSetup();
-    if (setupAgent === 'rau') {
-      onAgentSetupAbandoned?.({
-        agent: 'rau',
-        code: 'RAU_LOGIN_CANCELLED',
-        message: 'Rau 로그인 취소됨',
-      });
-    }
   });
   setupCodeSubmit.addEventListener('click', submitSetupAuthCode);
   setupCode.input.addEventListener('keydown', (event) => {
@@ -1057,14 +937,10 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     setupCodeSubmit.disabled = connectionState !== 'connected' || !setupCode.input.value.trim();
   });
   setupClose.addEventListener('click', closeAgentSetup);
-  setupDoneClose.addEventListener('click', closeAgentSetup);
-  setupDoneChange.addEventListener('click', () => {
+  setupChangeAuth.addEventListener('click', () => {
     setupReauth = true;
     setupMessage = '';
     renderAgentSetup();
-  });
-  setupDoneDisconnect.addEventListener('click', () => {
-    void disconnectRau();
   });
   setupAccountLogout.addEventListener('click', () => {
     void disconnectProvider('claude');
@@ -1449,13 +1325,10 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     content.id = `ag-local-usage-${agent}`;
     toggle.setAttribute('aria-controls', content.id);
     const credits = el('div', 'ag-settings-row-detail');
-    const meters = el('div', 'ag-settings-meters');
-    const empty = el('p', 'ag-settings-note', '체험 크레딧 소진 · 다른 모델 연결');
-    empty.hidden = true;
     const session = el('div', 'ag-settings-usage-session');
     const models = el('div', 'ag-settings-usage-models');
     const updated = el('div', 'ag-settings-usage-updated');
-    content.append(credits, meters, empty, session, models, updated);
+    content.append(credits, session, models, updated);
     expanded.append(content);
     toggle.addEventListener('click', () => {
       expanded.hidden = !expanded.hidden;
@@ -1463,7 +1336,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     });
     root.append(row, expanded);
     usageTable.append(root);
-    return { root, session, day, week, models, updated, credits, meters, empty };
+    return { root, session, day, week, models, updated, credits };
   }
 
   const usageBlocks = new Map(PLAN_AGENTS.map(agent => [agent, createUsageRow(agent)]));
@@ -1502,15 +1375,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     const skillsContent = el('div', 'ag-settings-destination-content ag-settings-skills-content');
     skillsContent.appendChild(skillsSettings);
     panes.get('skills')?.appendChild(skillsContent);
-  }
-  if (cloudSettings) {
-    panes.get('cloud')?.appendChild(cloudSettings);
-    // Rauhwpx 계정은 Cloud에만 쓰이므로 Cloud 서버 카드의 한 줄로 둔다.
-    const cloudCard = cloudSettings.querySelector<HTMLElement>('.ag-cloud-settings-card');
-    const usage = cloudCard?.querySelector('.ag-cd-usage');
-    const accountNodes = [accountRow, accountLoginBox, accountError];
-    if (cloudCard && usage) usage.before(...accountNodes);
-    else (cloudCard ?? cloudSettings).append(...accountNodes);
   }
 
   aiApply.addEventListener('click', () => void applyAiDraft());
@@ -1576,7 +1440,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       case 'ai':
         return isAiDirty();
       case 'skills':
-      case 'cloud':
         return false;
       default: {
         const _exhaustive: never = currentDestination;
@@ -1634,22 +1497,12 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     renderDestinationState();
   }
 
-  function persistPrefs(
-    nextPrefs: AgentPrefs,
-    { preserveDraft = false }: { preserveDraft?: boolean } = {},
-  ): ReturnType<typeof trySaveAgentPrefs> {
-    const previousDraft = prefsDraft;
+  function persistPrefs(nextPrefs: AgentPrefs): ReturnType<typeof trySaveAgentPrefs> {
     const result = trySaveAgentPrefs(nextPrefs);
     if (result.ok) {
       prefs = result.value;
       prefsBaseline = clonePrefs(result.value);
-      prefsDraft = preserveDraft
-        ? {
-          ...previousDraft,
-          defaultAgent: result.value.defaultAgent,
-          defaultModel: result.value.defaultModel,
-        }
-        : clonePrefs(result.value);
+      prefsDraft = clonePrefs(result.value);
       applyDefaults(result.value);
     }
     return result;
@@ -1790,7 +1643,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
           cancelAiDraft();
           return true;
         case 'skills':
-        case 'cloud':
           return true;
         default: {
           const _exhaustive: never = currentDestination;
@@ -1804,7 +1656,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       case 'ai':
         return applyAiDraft();
       case 'skills':
-      case 'cloud':
         return true;
       default: {
         const _exhaustive: never = currentDestination;
@@ -1938,7 +1789,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     return withTemplateMutation(() => bridge.deleteTemplate(id));
   }
 
-  /** 설정이 끝나기 전의 pi · rau 는 기본 제공자 후보에서 빠진다. */
+  /** 설정이 끝나기 전의 pi 는 기본 제공자 후보에서 빠진다. */
   function selectableAgents(): readonly AgentName[] {
     return PROVIDER_ORDER.filter((agent) => {
       if (agent === 'pi') return piStatus?.setupComplete === true;
@@ -2070,114 +1921,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     modeField.select.value = prefsDraft.defaultMode;
   }
 
-  function applyAccountLoginStart(started: AccountLoginStart): void {
-    accountAuthRunId = started.authRunId;
-    accountAuthUrl = started.authUrl;
-    accountPairingCode = started.pairingCode;
-    accountBusy = true;
-    if (started.authUrl) maybeOpenAuthUrl(started.authUrl);
-  }
-
-  function renderAccount(): void {
-    const signedIn = accountStatus?.signedIn === true;
-    const authenticating = accountBusy || accountStatus?.authenticating === true;
-    accountDot.dataset.state = signedIn
-      ? 'connected'
-      : accountStatus?.state === 'unknown'
-        ? 'unknown'
-        : 'disconnected';
-    accountDetail.textContent = signedIn
-      ? (accountStatus?.account?.email ?? '로그인됨')
-      : authenticating
-        ? '로그인 확인 중…'
-        : accountStatus?.state === 'unknown'
-          ? '상태 확인 지연'
-          : '로그인되지 않음';
-    accountAction.textContent = signedIn ? '로그아웃' : '로그인';
-    accountAction.disabled = connectionState !== 'connected' || accountBusy
-      || (accountStatus?.authenticating === true
-        && accountStatus.authOwnedByThisSession !== true);
-    const ownsAuthentication = accountBusy || accountStatus?.authOwnedByThisSession === true;
-    accountLoginBox.hidden = !ownsAuthentication || signedIn;
-    accountAuthLink.hidden = !accountAuthUrl;
-    if (accountAuthUrl) accountAuthLink.href = accountAuthUrl;
-    accountPairing.hidden = !accountPairingCode;
-    accountPairing.textContent = accountPairingCode ?? '';
-    accountCodeSubmit.disabled = !accountAuthRunId || !accountCode.input.value.trim();
-    accountLoginCancel.disabled = !accountAuthRunId;
-    accountError.textContent = accountMessage;
-    accountError.hidden = !accountMessage;
-  }
-
-  async function refreshAccount(): Promise<void> {
-    const status = await bridge.requestAccountStatus();
-    if (disposed || !status) return;
-    accountStatus = status;
-    if (!status.authenticating) {
-      accountBusy = false;
-      accountAuthRunId = null;
-      accountAuthUrl = null;
-      accountPairingCode = null;
-    } else if (status.authOwnedByThisSession) {
-      accountBusy = true;
-      accountAuthRunId = status.authRunId ?? accountAuthRunId;
-      accountAuthUrl = status.authUrl ?? accountAuthUrl;
-      accountPairingCode = status.pairingCode ?? accountPairingCode;
-    }
-    renderAccount();
-  }
-
-  async function startAccountLogin(): Promise<void> {
-    if (accountBusy || connectionState !== 'connected') return;
-    accountBusy = true;
-    accountMessage = '';
-    accountCode.input.value = '';
-    renderAccount();
-    const started = await bridge.loginAccount();
-    if (disposed) return;
-    if (!started?.authRunId) {
-      accountBusy = false;
-      if (!accountMessage) accountMessage = '로그인 시작 실패';
-      renderAccount();
-      return;
-    }
-    applyAccountLoginStart(started);
-    renderAccount();
-  }
-
-  function submitAccountCode(): void {
-    const code = accountCode.input.value.trim();
-    if (!accountAuthRunId || !code) return;
-    bridge.submitAccountAuthCode(accountAuthRunId, code);
-    accountCode.input.value = '';
-    accountMessage = '';
-    renderAccount();
-  }
-
-  function cancelAccountLogin(): void {
-    if (accountAuthRunId) bridge.cancelAccountLogin(accountAuthRunId);
-    accountBusy = false;
-    accountAuthRunId = null;
-    accountAuthUrl = null;
-    accountPairingCode = null;
-    accountCode.input.value = '';
-    accountMessage = '';
-    renderAccount();
-  }
-
-  async function logoutAccount(): Promise<void> {
-    if (accountBusy || connectionState !== 'connected') return;
-    accountBusy = true;
-    accountMessage = '';
-    renderAccount();
-    const status = await bridge.logoutAccount();
-    if (disposed) return;
-    accountBusy = false;
-    if (status) accountStatus = status;
-    else if (!accountMessage) accountMessage = '로그아웃 실패';
-    renderAccount();
-  }
-
   function renderConnection(): void {
     hubDot.dataset.state = connectionState;
     hubLabel.textContent = CONN_LABEL[connectionState];
@@ -2187,7 +1930,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     refreshBtn.disabled = !online || connectionRefreshing;
     refreshBtn.setAttribute('aria-busy', String(connectionRefreshing));
     renderProviders();
-    renderAccount();
   }
 
   function browserbaseSourceLabel(source: BrowserbaseCredentialSource): string {
@@ -2297,8 +2039,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       const connected = setup?.connected === true || setup?.setupComplete === true
         || (detected && setup?.authenticated === true);
       const working = setup?.installing === true || setup?.authenticating === true;
-      const identity = setup?.account?.trim()
-        || (setup?.authMethod === 'api-key' && setup.keyTail ? `API 키 ****${setup.keyTail}` : null)
+      const identity = (setup?.authMethod === 'api-key' && setup.keyTail ? `API 키 ****${setup.keyTail}` : null)
         || ((agent === 'claude' || agent === 'codex') ? usage?.limits?.[agent]?.planType : null);
       let label: string;
       let message: string;
@@ -2377,26 +2118,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     setupUserCodeCopy.textContent = '코드 복사';
   }
 
-  function resetRauAuthFeedback(): void {
-    if (rauAuthFeedbackTimer) {
-      clearTimeout(rauAuthFeedbackTimer);
-      rauAuthFeedbackTimer = null;
-    }
-    rauOauthFlowInProgress = false;
-    rauAuthFeedback = 'idle';
-  }
-
-  function showRauAuthSuccess(): void {
-    if (rauAuthFeedbackTimer) clearTimeout(rauAuthFeedbackTimer);
-    rauOauthFlowInProgress = false;
-    rauAuthFeedback = 'success';
-    rauAuthFeedbackTimer = setTimeout(() => {
-      rauAuthFeedbackTimer = null;
-      rauAuthFeedback = 'idle';
-      renderAgentSetup();
-    }, 1800);
-  }
-
   /**
    * 보안 컨텍스트(https·localhost)가 아니면 navigator.clipboard 자체가 없습니다.
    * 원격 http 주소로 스튜디오를 여는 경우가 있어, 임시 textarea 로 한 번 더
@@ -2450,7 +2171,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   }
 
   function supportsTerminalSetup(agent: AgentName | null): agent is AgentName {
-    return agent !== null && !['rau', 'pi'].includes(agent)
+    return agent !== null && agent !== 'pi'
       && setupStatuses?.[agent]?.terminalAuthSupported !== false;
   }
 
@@ -2471,14 +2192,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
 
   async function continueAgentConnect(agent: AgentName, reauth = false): Promise<void> {
     await refreshSetupStatuses();
-    if (agent === 'rau') {
-      if (disposed || setupAgent !== agent) return;
-      renderAgentSetup();
-      if (connectionState !== 'connected') return;
-      if (isAgentLoggedIn(agent)) return;
-      await startSetupAuth('oauth');
-      return;
-    }
     if (agent === 'pi') {
       try {
         const next = await bridge.requestPiStatus();
@@ -2530,7 +2243,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     setupBusy = false;
     setupReauth = false;
     setupCodePending = false;
-    resetRauAuthFeedback();
     clearSetupAuthPrompt();
     resetSetupInstallProgress();
     setupKey.input.value = '';
@@ -2553,7 +2265,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   }
 
   function closeAgentSetup(): void {
-    const dismissingRau = setupOverlay.isConnected && setupAgent === 'rau' && !isAgentLoggedIn('rau');
     if (!setupOverlay.isConnected) return;
     // 창을 닫으면 진행 중인 로그인을 취소한다. 시작 응답 전이면 startSetupAuth 가 받은 뒤 취소한다.
     if (setupAgent) {
@@ -2567,7 +2278,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     authAttempt += 1;
     setupCodePending = false;
     setupBusy = false;
-    resetRauAuthFeedback();
     clearSetupAuthPrompt();
     setupOverlay.classList.remove('ag-open');
     setupOverlay.setAttribute('aria-hidden', 'true');
@@ -2577,13 +2287,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       setupOverlay.remove();
       setupCloseTimer = null;
     }, 180);
-    if (dismissingRau) {
-      onAgentSetupAbandoned?.({
-        agent: 'rau',
-        code: 'RAU_LOGIN_CANCELLED',
-        message: 'Rau 로그인 취소됨',
-      });
-    }
   }
 
   function resetSetupInstallProgress(): void {
@@ -2694,35 +2397,22 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     const status = setupStatuses?.[agent] ?? null;
     const detected = providers?.[agent]?.available === true;
     const available = detected || status?.available === true || status?.installed === true;
-    // Rau 런타임 설치 여부는 로그인 상태가 아니다. 로그아웃 뒤 남은 바이너리 때문에
-    // 연결된 화면으로 돌아가지 않도록 허브가 확인한 키 상태만 신뢰한다.
-    const configured = status?.connected === true || status?.setupComplete === true;
     // OpenCode도 바이너리 감지만으로 실행할 수 없다. API 키나 사용자의
     // `opencode auth login`을 허브가 확인한 뒤에만 완료 화면으로 보낸다.
-    const connected = configured || (available && status?.authenticated === true);
+    const connected = status?.connected === true || status?.setupComplete === true
+      || (available && status?.authenticated === true);
     const showConnected = connected && !setupReauth;
-    const updateVersion = agent !== 'rau' && available && status?.updateRequired ? status.latestVersion : null;
+    const updateVersion = available && status?.updateRequired ? status.latestVersion : null;
     const installing = setupBusy && setupProgressPercent > 0;
     setupKey.input.placeholder = API_KEY_PLACEHOLDER[agent];
     setupAuthHeading.textContent = '로그인 방법';
     setupOauth.hidden = status?.terminalAuthSupported === false;
     const oauthTitle = setupOauth.querySelector('strong');
     const oauthDetail = setupOauth.querySelector('span');
-    if (agent === 'rau') {
-      if (oauthTitle) oauthTitle.textContent = 'Rau로 시작';
-      if (oauthDetail) oauthDetail.textContent = '$5 체험 크레딧';
-      setupInstallPane.hidden = true;
-      setupApiToggle.hidden = true;
-      setupKeyBox.hidden = true;
-      setupAuthPane.hidden = showConnected;
-    } else {
-      if (oauthTitle) oauthTitle.textContent = supportsTerminalSetup(agent) ? '로그인 시작' : '브라우저로 로그인';
-      if (oauthDetail) oauthDetail.textContent = supportsTerminalSetup(agent) ? '이 창에서 계정 연결' : '구독 계정 또는 웹 계정 연결';
-      setupApiToggle.hidden = false;
-      setupInstallPane.hidden = available;
-      setupAuthPane.hidden = !available || showConnected;
-    }
-    setupAuthChoices.hidden = setupOauth.hidden && setupApiToggle.hidden;
+    if (oauthTitle) oauthTitle.textContent = supportsTerminalSetup(agent) ? '로그인 시작' : '브라우저로 로그인';
+    if (oauthDetail) oauthDetail.textContent = supportsTerminalSetup(agent) ? '이 창에서 계정 연결' : '구독 계정 또는 웹 계정 연결';
+    setupInstallPane.hidden = available;
+    setupAuthPane.hidden = !available || showConnected;
 
     // 머리 상태 줄 — 목록의 점 색과 같은 규칙.
     const [stateDot, stateText] = installing
@@ -2731,27 +2421,24 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         ? ['connecting', '로그인 중']
         : connected
           ? updateVersion ? ['replaced', '업데이트 있음'] : ['connected', '연결됨']
-          : agent !== 'rau' && !available ? ['unknown', '설치 필요'] : ['unknown', '로그인 필요'];
+          : !available ? ['unknown', '설치 필요'] : ['unknown', '로그인 필요'];
     setupState.hidden = false;
     setupStateDot.dataset.state = stateDot;
     setupStateText.textContent = stateText;
 
     // 상태 카드: 연결됐으면 계정·버전, 로그인 전이라도 새 버전이 있으면 버전 줄만.
-    setupAccountRow.hidden = agent === 'rau' || !showConnected;
+    setupAccountRow.hidden = !showConnected;
     setupAccountValue.textContent = status?.authMethod === 'api-key' && status.keyTail
       ? `API 키 ····${status.keyTail}`
-      : status?.account
-        ? status.account
-        : status?.authenticated
-          ? agent === 'opencode' ? 'CLI 자격 증명'
-            : status.authSource === 'local' ? '터미널 로그인' : '웹 계정'
-          : 'CLI 로그인';
+      : status?.authenticated
+        ? agent === 'opencode' ? 'CLI 자격 증명'
+          : status.authSource === 'local' ? '터미널 로그인' : '웹 계정'
+        : 'CLI 로그인';
     setupAccountValue.title = setupAccountValue.textContent;
-    setupDoneChange.hidden = agent === 'rau';
-    setupDoneChange.disabled = setupBusy;
+    setupChangeAuth.disabled = setupBusy;
     setupAccountLogout.hidden = agent !== 'claude' || !connected;
     setupAccountLogout.disabled = setupBusy || connectionState !== 'connected';
-    setupVersionRow.hidden = agent === 'rau' || !(updateVersion || (showConnected && status?.version));
+    setupVersionRow.hidden = !(updateVersion || (showConnected && status?.version));
     setupVersionValue.replaceChildren(status?.version ?? '');
     if (updateVersion) {
       setupVersionValue.append(el('span', 'ag-agent-setup-row-note', `새 버전 ${updateVersion}`));
@@ -2761,11 +2448,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     setupUpdate.disabled = setupBusy || connectionState !== 'connected';
     setupStatusCard.hidden = setupAccountRow.hidden && setupVersionRow.hidden;
 
-    setupDonePane.hidden = agent !== 'rau' || !showConnected;
-    setupDonePane.classList.toggle('ag-agent-setup-rau-actions', agent === 'rau' && connected && !setupReauth);
-    setupDoneClose.textContent = agent === 'rau' && rauAuthFeedback === 'success' ? '계속' : '완료';
-    setupDoneDisconnect.hidden = agent !== 'rau' || !connected || setupReauth;
-    setupRauAuthFeedback.hidden = agent !== 'rau' || rauAuthFeedback !== 'success';
     setupError.textContent = setupMessage;
     setupError.hidden = !setupMessage;
     const errorDetail = setupMessage === setupDetailFor ? setupDetail : '';
@@ -2782,10 +2464,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     setupApiToggle.disabled = setupBusy || authBusyElsewhere || connectionState !== 'connected';
     setupKeySubmit.disabled = setupBusy || !setupKey.input.value.trim();
     renderSetupLoginBox();
-    setupCodeBox.hidden = supportsTerminalSetup(agent) || (agent !== 'claude' && agent !== 'rau') || !setupCodePending || !setupBusy;
-    setupCodeNote.textContent = agent === 'rau'
-      ? '브라우저에 표시된 12자리 코드 붙여넣기'
-      : '브라우저에 표시된 인증 코드 붙여넣기';
+    setupCodeBox.hidden = supportsTerminalSetup(agent) || agent !== 'claude' || !setupCodePending || !setupBusy;
     setupCodeSubmit.disabled = connectionState !== 'connected' || !setupCode.input.value.trim();
     restoreSetupFocus();
   }
@@ -2808,9 +2487,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     }
     setupUserCodeRow.hidden = !setupUserCode;
     if (setupUserCode) setupUserCodeValue.textContent = setupUserCode;
-    setupUserCodeCaption.textContent = setupAgent === 'rau'
-      ? '브라우저에 같은 코드가 보이는지 확인합니다.'
-      : '브라우저에서 이 코드를 확인합니다.';
   }
 
   async function refreshSetupStatuses(refresh = false): Promise<void> {
@@ -2862,39 +2538,11 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     renderUsage();
   }
 
-  async function disconnectRau(): Promise<void> {
-    if (setupBusy || connectionState !== 'connected') return;
-    resetRauAuthFeedback();
-    setupBusy = true;
-    setupMessage = '';
-    renderAgentSetup();
-    const statuses = await bridge.disconnectAgent('rau');
-    if (disposed) return;
-    setupBusy = false;
-    if (statuses) {
-      setupStatuses = statuses;
-      if (prefs.defaultAgent === 'rau' && statuses.rau?.setupComplete !== true) {
-        const fallback = selectableAgents()[0] ?? 'claude';
-        persistPrefs({
-          ...prefs,
-          defaultAgent: fallback,
-          defaultModel: resolveModelForAgent(fallback, null),
-        }, { preserveDraft: true });
-      }
-    } else if (!setupMessage) setupMessage = '연결 해제 실패';
-    renderAgentSetup();
-    renderProviders();
-    renderUsage();
-    syncPrefsInputs();
-  }
-
   async function startSetupAuth(method: AgentAuthMethod): Promise<void> {
     if (!setupAgent || setupBusy) return;
     const keyInput = setupAgent === 'pi' ? piKeyInput.input : setupKey.input;
     const key = method === 'api-key' ? keyInput.value.trim() : '';
     if (method === 'api-key' && !key) return;
-    resetRauAuthFeedback();
-    rauOauthFlowInProgress = setupAgent === 'rau' && method === 'oauth';
     setupBusy = true;
     setupMessage = '';
     clearSetupAuthPrompt();
@@ -2916,39 +2564,22 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     if (!started) {
       setupBusy = false;
       setupMessage = '로그인 시작 실패';
-      resetRauAuthFeedback();
       clearSetupAuthPrompt();
       renderAgentSetup();
-      if (setupAgent === 'rau') {
-        onAgentSetupAbandoned?.({
-          agent: 'rau',
-          code: 'RAU_LOGIN_START_FAILED',
-          message: setupMessage,
-        });
-      }
       return;
     }
     if (!started.authRunId) {
       setupBusy = false;
       setupMessage = '로그인 보안 정보 수신 실패 · 다시 시도';
-      resetRauAuthFeedback();
       clearSetupAuthPrompt();
       renderAgentSetup();
-      if (setupAgent === 'rau') {
-        onAgentSetupAbandoned?.({
-          agent: 'rau',
-          code: 'RAU_LOGIN_START_FAILED',
-          message: setupMessage,
-        });
-      }
       return;
     }
     setupAuthRunId = started.authRunId;
     keyInput.value = '';
     // pi 는 인증 주소를 시작 응답에만 실어 보낸다.
     if (method === 'oauth' && started.authUrl) setupAuthUrl = started.authUrl;
-    if (method === 'oauth' && started.pairingCode) setupUserCode = started.pairingCode;
-    if (method === 'oauth' && (setupAgent === 'claude' || setupAgent === 'rau')) {
+    if (method === 'oauth' && setupAgent === 'claude') {
       // claude 는 브라우저 로그인 뒤 표시되는 인증 코드를 CLI 에 넘겨야 로그인이 끝난다.
       setupCodePending = true;
       setupCode.input.value = '';
@@ -2960,7 +2591,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
 
   function submitSetupAuthCode(): void {
     const code = setupCode.input.value.trim();
-    if (!code || !setupAuthRunId || (setupAgent !== 'claude' && setupAgent !== 'rau')
+    if (!code || !setupAuthRunId || setupAgent !== 'claude'
       || connectionState !== 'connected') return;
     bridge.submitAgentAuthCode(setupAgent, setupAuthRunId, code);
     setupCode.input.value = '';
@@ -3640,7 +3271,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
 
   syncPrefsInputs();
   renderModelCatalog();
-  renderAccount();
   renderConnection();
   renderProviders();
   renderAgentInstructions();
@@ -3674,7 +3304,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       renderTemplates();
       renderPi();
       void refreshProviders(false);
-      void refreshAccount();
       void refreshAgentInstructions(false);
       void refreshUsage();
       void refreshPiStatus();
@@ -3683,7 +3312,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       if (connectionState === 'connected') {
         for (const agent of PLAN_AGENTS) void loadModelCatalog(agent);
       }
-      refreshCloudSettings?.();
     },
     close(): void {
       settingsOpen = false;
@@ -3699,7 +3327,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     },
     openAgentSetup,
     beginAgentConnect,
-    closeAgentSetup,
     handleEvent(ev: SidebarEvent): void {
       switch (ev.type) {
         case 'connection':
@@ -3710,9 +3337,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
           renderPi();
           renderTemplates();
           renderAgentInstructions();
-          renderAccount();
           renderBrowserbase();
-          if (ev.state === 'connected' && !accountStatus) void refreshAccount();
           if (ev.state === 'connected' && !agentInstructions) void refreshAgentInstructions(false);
           if (ev.state === 'connected') void refreshBrowserbase();
           if (ev.state === 'connected' && settingsOpen) {
@@ -3725,42 +3350,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
             renderModelCatalog();
             syncPrefsInputs();
           }
-          break;
-        case 'account-status':
-          accountStatus = ev.status;
-          if (!ev.status.authenticating || ev.status.signedIn) {
-            accountBusy = false;
-            accountAuthRunId = null;
-            accountAuthUrl = null;
-            accountPairingCode = null;
-            accountCode.input.value = '';
-          } else if (ev.status.authOwnedByThisSession) {
-            accountBusy = true;
-            accountAuthRunId = ev.status.authRunId ?? accountAuthRunId;
-            accountAuthUrl = ev.status.authUrl ?? accountAuthUrl;
-            accountPairingCode = ev.status.pairingCode ?? accountPairingCode;
-          }
-          renderAccount();
-          break;
-        case 'account-login-progress':
-          if (ev.authRunId && accountAuthRunId && ev.authRunId !== accountAuthRunId) break;
-          accountBusy = true;
-          accountAuthRunId = ev.authRunId ?? accountAuthRunId;
-          accountAuthUrl = ev.authUrl ?? accountAuthUrl;
-          accountPairingCode = ev.pairingCode ?? accountPairingCode;
-          maybeOpenAuthUrl(ev.authUrl);
-          renderAccount();
-          break;
-        case 'account-error':
-          if (ev.authRunId && accountAuthRunId && ev.authRunId !== accountAuthRunId) break;
-          accountMessage = ev.message;
-          if (ev.code !== 'DEVICE_PROOF_INVALID') {
-            accountBusy = false;
-            accountAuthRunId = null;
-            accountAuthUrl = null;
-            accountPairingCode = null;
-          }
-          renderAccount();
           break;
         case 'agent-instructions':
           acceptAgentInstructions(ev.status, ev.changedBy);
@@ -3802,12 +3391,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
           renderProviders();
           break;
         case 'agent-setup-status': {
-          const rauOauthCompleted = setupAgent === 'rau'
-            && rauOauthFlowInProgress
-            && ev.statuses.rau?.setupComplete === true
-            && setupOverlay.getAttribute('aria-hidden') === 'false';
-          const rauWasIncomplete = setupStatuses !== null
-            && setupStatuses.rau?.setupComplete !== true;
           setupStatuses = ev.statuses;
           announceProviderUpdates(ev.statuses);
           const selectedStatus = setupAgent ? ev.statuses[setupAgent] : null;
@@ -3816,12 +3399,11 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
             const resumeTerminal = supportsTerminalSetup(setupAgent) && setupAuthRunId !== selectedStatus.authRunId;
             setupAuthRunId = selectedStatus.authRunId;
             setupBusy = true;
-            setupOauthPending = supportsTerminalSetup(setupAgent) || Boolean(selectedStatus.authUrl || selectedStatus.pairingCode);
+            setupOauthPending = supportsTerminalSetup(setupAgent) || Boolean(selectedStatus.authUrl);
             if (supportsTerminalSetup(setupAgent)) void setupTerminal.open(AGENT_LABEL[setupAgent]);
             if (resumeTerminal) bridge.resumeSetupTerminal(setupAgent, selectedStatus.authRunId);
             setupAuthUrl = selectedStatus.authUrl ?? setupAuthUrl;
-            setupUserCode = selectedStatus.pairingCode ?? setupUserCode;
-            if (setupAgent === 'rau' || setupAgent === 'claude') setupCodePending = true;
+            if (setupAgent === 'claude') setupCodePending = true;
           }
           // 재접속했거나 다른 탭에서 시작한 설치도 끝날 때까지 설치 중으로 보인다.
           const installInFlight = setupAgent !== null && setupAgent !== 'pi'
@@ -3830,13 +3412,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
             setupBusy = true;
             setupMessage = '';
             if (setupProgressPercent <= 0) setSetupInstallProgress(8, 'preparing');
-          }
-          if (rauWasIncomplete && ev.statuses.rau?.setupComplete === true) {
-            persistPrefs({
-              ...prefs,
-              defaultAgent: 'rau',
-              defaultModel: 'z-ai/glm-5.3-flash',
-            }, { preserveDraft: true });
           }
           // 로그인·설치가 아직 진행 중이면 주기 방송이 카드 상태(주소·코드)를 지우지 않는다.
           const inFlight = setupAgent !== null && setupBusy
@@ -3850,7 +3425,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
             setupCodePending = false;
             clearSetupAuthPrompt();
           }
-          if (rauOauthCompleted) showRauAuthSuccess();
           renderProviders();
           renderAgentSetup();
           // 설정을 마친 grok · cursor 는 기록이 없어도 사용량 칸을 연다.
@@ -3878,10 +3452,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
             if (ev.authRunId) setupAuthRunId = ev.authRunId;
             setupBusy = ev.state !== 'done';
             // API 키 검증 중에도 authorizing 이 온다 — 브라우저 로그인 근거가 있을 때만 상자를 연다.
-            if (ev.state === 'authorizing' && (ev.authUrl || ev.userCode || ev.pairingCode)) setupOauthPending = true;
+            if (ev.state === 'authorizing' && (ev.authUrl || ev.userCode)) setupOauthPending = true;
             if (ev.authUrl) setupAuthUrl = ev.authUrl;
-            if (ev.userCode || ev.pairingCode) setupUserCode = ev.userCode ?? ev.pairingCode ?? null;
-            if (ev.agent === 'rau' && ev.state === 'authorizing') setupCodePending = true;
+            if (ev.userCode) setupUserCode = ev.userCode;
             if (ev.state === 'done') clearSetupAuthPrompt();
             maybeOpenAuthUrl(ev.authUrl);
             if (typeof ev.percent === 'number') {
@@ -3893,20 +3466,11 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         case 'agent-setup-error':
           if (!ev.agent || setupAgent === ev.agent) {
             if (ev.authRunId && setupAuthRunId && ev.authRunId !== setupAuthRunId) break;
-            if (ev.code === 'DEVICE_PROOF_INVALID' && setupAgent === 'rau') {
-              setupMessage = ev.message;
-              setupBusy = true;
-              setupCodePending = true;
-              setupCode.input.value = '';
-              renderAgentSetup();
-              break;
-            }
             setupBusy = false;
             setupCodePending = false;
             setupMessage = ev.message;
             setupDetail = ev.detail ?? '';
             setupDetailFor = ev.message;
-            resetRauAuthFeedback();
             clearSetupAuthPrompt();
             resetSetupInstallProgress();
             if (setupAgent === 'pi') piMessage = ev.message;
@@ -4002,10 +3566,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       if (setupCopyResetTimer) {
         clearTimeout(setupCopyResetTimer);
         setupCopyResetTimer = null;
-      }
-      if (rauAuthFeedbackTimer) {
-        clearTimeout(rauAuthFeedbackTimer);
-        rauAuthFeedbackTimer = null;
       }
       if (setupProgressCreepTimer) clearInterval(setupProgressCreepTimer);
       if (piProgressCreepTimer) clearInterval(piProgressCreepTimer);

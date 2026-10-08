@@ -26,8 +26,8 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 const byName = new Map(TOOL_DEFINITIONS.map((d) => [d.name, d]));
 
-test('도구는 정확히 90개, 이름 중복 없음', () => {
-  assert.equal(TOOL_DEFINITIONS.length, 90);
+test('도구는 정확히 88개, 이름 중복 없음', () => {
+  assert.equal(TOOL_DEFINITIONS.length, 88);
   assert.equal(byName.size, TOOL_DEFINITIONS.length, 'duplicate tool names');
 });
 
@@ -143,7 +143,7 @@ test('anchor 내부 필드는 validate 훅이 모양을 고정한다', () => {
 
 test('도구 프로필은 direct 호환성과 planning/implementing 가시성을 지킨다', () => {
   const direct = new Set(filterToolDefinitions('direct').map((definition) => definition.name));
-  assert.equal(direct.size, 78);
+  assert.equal(direct.size, 76);
   assert.equal(byName.get('commit_product_skill')?.category, 'instruction-write');
   assert.equal(byName.get('list_harness_skills')?.category, 'instruction-read');
   assert.ok(direct.has('commit_product_skill'));
@@ -152,7 +152,6 @@ test('도구 프로필은 direct 호환성과 planning/implementing 가시성을
   assert.ok(direct.has('update_agent_instructions'));
   assert.ok(direct.has('materialize_document_snapshot'));
   assert.ok(direct.has('publish_artifact'));
-  assert.ok(direct.has('publish_cloud_document'));
   assert.ok(direct.has('apply_edits'));
   assert.ok(direct.has('insert_text'));
   assert.ok(direct.has('get_engine_edit_capabilities'));
@@ -177,7 +176,6 @@ test('도구 프로필은 direct 호환성과 planning/implementing 가시성을
 
   const planning = new Set(filterToolDefinitions('planning').map((definition) => definition.name));
   assert.ok(planning.has('get_structure'));
-  assert.ok(!planning.has('publish_cloud_document'));
   assert.ok(planning.has('download_file'));
   assert.ok(planning.has('browserbase_act'));
   assert.ok(planning.has('present_implementation_plan'));

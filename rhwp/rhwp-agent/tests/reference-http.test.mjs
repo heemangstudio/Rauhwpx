@@ -82,14 +82,6 @@ test('raw upload/list/search/delete API is bearer-authenticated and CORS-safe', 
   assert.equal(searched.results.length, 1, 'legacy frontend limit query should be accepted');
   assert.equal(searched.results[0].fileId, created.id);
 
-  const exported = await fetch(`${base}/reference-files/${created.id}?scope=chat&scopeId=chat-a`, { headers });
-  assert.equal(exported.status, 200);
-  assert.equal(exported.headers.get('x-content-sha256'), created.sha256);
-  assert.equal(exported.headers.get('access-control-allow-origin'), origin);
-  assert.equal(await exported.text(), '라온 프로젝트 일정과 배포 품질 검증');
-  const wrongScope = await fetch(`${base}/reference-files/${created.id}?scope=chat&scopeId=chat-b`, { headers });
-  assert.equal(wrongScope.status, 404);
-
   const removed = await fetch(`${base}/reference-files/${created.id}?scope=chat&scopeId=chat-a`, { method: 'DELETE', headers });
   assert.equal(removed.status, 200);
   assert.equal((await removed.json()).status, 'deleted');

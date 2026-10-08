@@ -1,8 +1,7 @@
 import { AGENT_MODELS, modelsForAgent } from '../../agent/models.ts';
-import type { AccountSessionStatus, AgentName, AgentSetupStatusMap } from '../../agent/types.ts';
+import type { AgentName, AgentSetupStatusMap } from '../../agent/types.ts';
 
 export const PROVIDER_VENDOR: Record<AgentName, string> = {
-  rau: 'Rau',
   claude: 'Anthropic',
   codex: 'OpenAI',
   pi: 'OpenRouter',
@@ -13,31 +12,6 @@ export const PROVIDER_VENDOR: Record<AgentName, string> = {
 
 /** 기본 프로바이더 — 설정되지 않았을 때 흰 CTA 를 준다. */
 export const SUGGESTED_AGENT: AgentName = 'claude';
-
-/** Rau 로그인/민트가 실패했을 때 같은 화면에서 고를 수 있는 키 연결 모델. */
-export const BYOK_AGENTS = [
-  'claude',
-  'codex',
-  'pi',
-] as const satisfies readonly AgentName[];
-
-export const RAU_FAILURE_FORWARD_COPY = {
-  title: '다른 모델로 계속',
-  body: 'Claude, Codex, Pi 중 하나를 연결합니다.',
-  skip: '편집기로 계속',
-  retry: '다시 시도',
-} as const;
-
-void BYOK_AGENTS;
-
-/** 잘못된 반환 코드는 모달 안에서 다시 입력하면 되므로 마법사 실패 경로로 접지 않는다. */
-export function isByokAgent(agent: AgentName): boolean {
-  return (BYOK_AGENTS as readonly AgentName[]).includes(agent);
-}
-
-export function isRauFirstRunFailure(info: { agent?: AgentName | null; code?: string }): boolean {
-  return false;
-}
 
 export function previewModelLabels(agent: AgentName): string[] {
   if (agent === 'pi') {
@@ -55,49 +29,4 @@ export function isProviderConfigured(
   return setup?.connected === true
     || setup?.setupComplete === true
     || (setup?.available === true && setup?.authenticated === true);
-}
-
-export interface RauSignInFeedback {
-  state: 'idle' | 'pending' | 'signed-in';
-  label: string;
-  ariaLabel: string;
-  title: string;
-}
-
-/** Compatibility shape for account status consumers. */
-export function rauSignInFeedback(
-  account: AccountSessionStatus | null,
-  idleLabel: string,
-  providerConfigured = false,
-): RauSignInFeedback {
-  if (account?.signedIn === true) {
-    if (!providerConfigured) {
-      return {
-        state: 'signed-in',
-        label: 'Rau 연결 마침',
-        ariaLabel: 'Rau 제공자 연결 마침',
-        title: 'Rau 제공자 연결 마침',
-      };
-    }
-    return {
-      state: 'signed-in',
-      label: '로그인됨',
-      ariaLabel: '로그인됨. 다음 단계로 계속',
-      title: '다음 단계로 계속',
-    };
-  }
-  if (account?.authenticating === true || account?.state === 'pending') {
-    return {
-      state: 'pending',
-      label: '로그인 확인 중…',
-      ariaLabel: '로그인 확인 중…',
-      title: '',
-    };
-  }
-  return {
-    state: 'idle',
-    label: idleLabel,
-    ariaLabel: idleLabel,
-    title: '',
-  };
 }

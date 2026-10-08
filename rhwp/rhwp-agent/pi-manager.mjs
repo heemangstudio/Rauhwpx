@@ -48,7 +48,6 @@ export const PI_MODEL_NAME_MAX_CHARS = 256;
 export const PI_API_KEY_MAX_CHARS = API_KEY_MAX_BYTES;
 export const PI_SETTINGS_MAX_BYTES = 64 * 1024;
 const PI_PACKAGE_MANIFEST_MAX_BYTES = 1024 * 1024;
-const PI_ACCOUNT_MAX_CHARS = 320;
 /** OpenRouter 의 reasoning_effort 가 받는 값 — 우리는 이 셋만 노출한다. */
 const EFFORTS = /** @type {const} */ (['low', 'medium', 'high']);
 const DEFAULT_EFFORT = 'medium';
@@ -63,8 +62,7 @@ export const PI_TARBALL_MAX_BYTES = 256 * 1024 * 1024;
 const INSTALL_STDERR_LIMIT_BYTES = 64 * 1024;
 /** 진행 이벤트는 이 간격으로만 내보낸다 — 청크마다 WS 를 두드리지 않는다. */
 const PROGRESS_INTERVAL_MS = 150;
-export const PI_SECRET_ID = 'rhwp.pi.openrouter-api-key';
-const OPENROUTER_SECRET_ID = PI_SECRET_ID;
+const PI_SECRET_ID = 'rhwp.pi.openrouter-api-key';
 const INSTALL_PROGRESS = Object.freeze({
   preparing: 8,
   downloadStart: 12,
@@ -101,7 +99,6 @@ const SKILLS_SOURCE_DIR = path.join(MODULE_DIR, 'pi', 'skills');
  * @property {string|null} version
  * @property {boolean} keyConfigured
  * @property {string|null} keyTail
- * @property {string|null} account
  * @property {PiModelConfig[]} models
  * @property {string|null} defaultModelId
  * @property {boolean} setupComplete
@@ -171,18 +168,6 @@ function keyTailOf(key) {
   return trimmed ? trimmed.slice(-4) : null;
 }
 
-/** 저장된 로그인 계정 — 이메일 형식이 아니면 버린다. */
-function storedAccount(raw) {
-  if (typeof raw !== 'string') return null;
-  const value = raw.trim();
-  return value.length > 0
-    && value.length <= PI_ACCOUNT_MAX_CHARS
-    && value.includes('@')
-    && !/[\x00-\x1f\x7f]/u.test(value)
-    ? value
-    : null;
-}
-
 function normalizedModelId(raw) {
   if (typeof raw !== 'string') return null;
   const value = raw.trim();
@@ -245,17 +230,16 @@ export function defaultPiRoot(env = process.env, platform = process.platform, ho
  * pi CLI 설치본과 그 에이전트 홈(모델·키·스킬)을 관리한다.
  * 설치는 single-flight 이고, 루트가 없어도 status() 는 그냥 미설치로 답한다.
  *
- * @param {{ rootDir?: string, prefixDir?: string, spawnProcess?: typeof spawn, fetchImpl?: typeof fetch,
+ * @param {{ rootDir?: string, spawnProcess?: typeof spawn, fetchImpl?: typeof fetch,
  *           now?: () => number, openRouter?: ReturnType<typeof createOpenRouter>,
  *           npmCommand?: string, nodeCommand?: string, packageSpec?: string, platform?: string,
- *           baseEnv?: NodeJS.ProcessEnv, secretStore?: object, secretId?: string,
+ *           baseEnv?: NodeJS.ProcessEnv, secretStore?: object,
  *           tarballMaxBytes?: number, oauthExchangeTimeoutMs?: number,
  *           replaceFile?: typeof replaceFileAtomically,
  *           writeNodeHostFile?: typeof import('node:fs/promises').writeFile }} [deps]
  */
 export function createPiManager({
   rootDir = defaultPiRoot(),
-  prefixDir: prefixDirOverride = null,
   spawnProcess = spawn,
   fetchImpl = globalThis.fetch,
   now = Date.now,
@@ -266,7 +250,6 @@ export function createPiManager({
   platform = process.platform,
   baseEnv = process.env,
   secretStore = null,
-  secretId = OPENROUTER_SECRET_ID,
   tarballMaxBytes = PI_TARBALL_MAX_BYTES,
   oauthExchangeTimeoutMs = OAUTH_EXCHANGE_TIMEOUT_MS,
   replaceFile = replaceFileAtomically,
@@ -278,8 +261,7 @@ export function createPiManager({
   const oauthTimeoutMs = Number.isSafeInteger(oauthExchangeTimeoutMs) && oauthExchangeTimeoutMs > 0
     ? Math.min(oauthExchangeTimeoutMs, OAUTH_EXCHANGE_TIMEOUT_MS)
     : OAUTH_EXCHANGE_TIMEOUT_MS;
-  const prefixDir = prefixDirOverride ?? path.join(rootDir, 'prefix');
-  const modelCap = MAX_MODELS;
+  const prefixDir = path.join(rootDir, 'prefix');
   const agentDir = path.join(rootDir, 'agent');
   const sessionsDir = path.join(rootDir, 'sessions');
   const configPath = path.join(rootDir, CONFIG_FILE);
@@ -300,8 +282,6 @@ export function createPiManager({
     version: CONFIG_VERSION,
     installedVersion: null,
     keyTail: null,
-    /** Optional account email associated with the OpenRouter key. */
-    account: null,
     models: [],
     defaultModelId: null,
     setupComplete: false,
@@ -419,7 +399,7 @@ export function createPiManager({
       const models = (Array.isArray(raw?.models) ? raw.models : [])
         .map(normalizeStoredModel)
         .filter(Boolean)
-        .slice(0, modelCap);
+        .slice(0, MAX_MODELS);
       const defaultModelId = models.some((model) => model.id === raw?.defaultModelId)
         ? raw.defaultModelId
         : (models[0]?.id ?? null);
@@ -427,7 +407,6 @@ export function createPiManager({
         version: CONFIG_VERSION,
         installedVersion: typeof raw?.installedVersion === 'string' ? raw.installedVersion : null,
         keyTail: typeof raw?.keyTail === 'string' ? raw.keyTail : null,
-        account: storedAccount(raw?.account),
         models,
         defaultModelId,
         setupComplete: false,
@@ -438,15 +417,15 @@ export function createPiManager({
     const legacyKey = await readLegacyStoredKey();
     if (secretStore?.available) {
       try {
-        const stored = await secretStore.get(secretId);
+        const stored = await secretStore.get(PI_SECRET_ID);
         if (stored != null && (!textFitsByteLimit(stored, API_KEY_MAX_BYTES) || !stored.trim())) {
           throw piError('OPENROUTER_KEY_TOO_LARGE', '저장된 OpenRouter 키가 허용된 길이를 넘었어요');
         }
         const storedKey = stored?.trim() || null;
         apiKey = storedKey;
         if (!apiKey && legacyKey) {
-          await secretStore.set(secretId, legacyKey);
-          const migrated = await secretStore.get(secretId);
+          await secretStore.set(PI_SECRET_ID, legacyKey);
+          const migrated = await secretStore.get(PI_SECRET_ID);
           apiKey = textFitsByteLimit(migrated, API_KEY_MAX_BYTES) ? migrated.trim() : null;
           if (apiKey === legacyKey) await writeModelsJson();
         }
@@ -472,7 +451,6 @@ export function createPiManager({
       version: CONFIG_VERSION,
       installedVersion: installedVersion ?? config.installedVersion ?? null,
       keyTail: config.keyTail,
-      account: config.account,
       models: config.models,
       defaultModelId: config.defaultModelId,
       setupComplete: config.setupComplete,
@@ -521,7 +499,7 @@ export function createPiManager({
 
   async function captureVaultSnapshot(previous) {
     if (!secretStore?.available) return;
-    const value = await secretStore.get(secretId);
+    const value = await secretStore.get(PI_SECRET_ID);
     previous.vaultSnapshot = {
       present: value !== null && value !== undefined,
       value,
@@ -530,7 +508,6 @@ export function createPiManager({
 
   async function rollbackSettingsState(previous, {
     restoreSecret = false,
-    restoreFiles = true,
     clearClientCache = false,
   } = {}) {
     apiKey = previous.apiKey;
@@ -543,18 +520,16 @@ export function createPiManager({
           throw new Error('Cannot restore a vault value that was not snapshotted.');
         }
         if (previous.vaultSnapshot.present) {
-          await secretStore.set(secretId, previous.vaultSnapshot.value);
+          await secretStore.set(PI_SECRET_ID, previous.vaultSnapshot.value);
         } else {
-          await secretStore.delete(secretId);
+          await secretStore.delete(PI_SECRET_ID);
         }
       } catch (error) {
         rollbackErrors.push(error);
       }
     }
-    if (restoreFiles) {
-      try { await writeModelsJson(); } catch (error) { rollbackErrors.push(error); }
-      try { await persistConfig(); } catch (error) { rollbackErrors.push(error); }
-    }
+    try { await writeModelsJson(); } catch (error) { rollbackErrors.push(error); }
+    try { await persistConfig(); } catch (error) { rollbackErrors.push(error); }
     if (clearClientCache) {
       try { client.clearCache(); } catch (error) { rollbackErrors.push(error); }
     }
@@ -819,7 +794,6 @@ export function createPiManager({
       version: installedVersion,
       keyConfigured: Boolean(apiKey),
       keyTail: apiKey ? keyTailOf(apiKey) : null,
-      account: config.account,
       models: config.models.map((model) => ({ ...model, pricing: { ...model.pricing } })),
       defaultModelId: config.defaultModelId,
       setupComplete: config.setupComplete,
@@ -1013,9 +987,9 @@ export function createPiManager({
      * OpenRouter 키를 확인하고 OS-backed vault에 저장한다.
      *
      * @param {string} key
-     * @param {{ account?: string|null, signal?: AbortSignal, onCommitted?: () => void }} [opts]
+     * @param {{ signal?: AbortSignal, onCommitted?: () => void }} [opts]
      */
-    async setApiKey(key, { account = null, signal, onCommitted } = {}) {
+    async setApiKey(key, { signal, onCommitted } = {}) {
       if (typeof key !== 'string') {
         throw piError('OPENROUTER_KEY_INVALID', 'OpenRouter 키를 입력하세요');
       }
@@ -1046,7 +1020,7 @@ export function createPiManager({
           if (secretStore?.available) {
             throwIfAuthCancelled(signal);
             commitStarted = true;
-            await secretStore.set(secretId, trimmed);
+            await secretStore.set(PI_SECRET_ID, trimmed);
             throwIfAuthCancelled(signal);
           }
           throwIfAuthCancelled(signal);
@@ -1054,8 +1028,6 @@ export function createPiManager({
           apiKey = trimmed;
           secretStoreError = null;
           config.keyTail = keyTailOf(trimmed);
-          // 계정이 함께 오면 갱신한다. 없으면(API 키 직접 입력) 이전 값을 지운다.
-          config.account = storedAccount(account);
           config.setupComplete = config.models.length > 0;
           throwIfAuthCancelled(signal);
           await writeModelsJson();
@@ -1179,58 +1151,6 @@ export function createPiManager({
         signal?.removeEventListener('abort', onAbort);
         if (oauthFlow === flow) flow.completing = false;
       }
-    },
-
-    /** Clear the local OpenRouter key. */
-    async clearApiKey() {
-      await load();
-      return serialized(async () => {
-        const previous = snapshotSettingsState();
-        // Deletion is reversible only when the precise pre-delete value is known.
-        await captureVaultSnapshot(previous);
-        let vaultTouched = false;
-        let stateMutated = false;
-        let deleteFailureMessage = null;
-        try {
-          if (secretStore?.available) {
-            vaultTouched = true;
-            try {
-              await secretStore.delete(secretId);
-            } catch (error) {
-              deleteFailureMessage = error?.message ?? 'OS 보안 저장소에서 키를 지우지 못했어요.';
-              secretStoreError = deleteFailureMessage;
-              throw piError('SECRET_DELETE_FAILED', deleteFailureMessage);
-            }
-            secretStoreError = null;
-          }
-          stateMutated = true;
-          apiKey = null;
-          config.keyTail = null;
-          config.account = null;
-          config.setupComplete = false;
-          await writeModelsJson();
-          await persistConfig();
-          client.clearCache();
-          return currentStatus();
-        } catch (error) {
-          const rollbackErrors = await rollbackSettingsState(previous, {
-            restoreSecret: vaultTouched,
-            restoreFiles: stateMutated,
-          });
-          // Keep the existing diagnostics for a vault deletion failure after the
-          // credential itself has been restored successfully.
-          if (deleteFailureMessage && rollbackErrors.length === 0) {
-            secretStoreError = deleteFailureMessage;
-          }
-          if (rollbackErrors.length > 0) {
-            throw authRollbackError(
-              error,
-              new AggregateError(rollbackErrors, 'One or more credential rollback steps failed.'),
-            );
-          }
-          throw error;
-        }
-      });
     },
 
     async cancelSetup() {

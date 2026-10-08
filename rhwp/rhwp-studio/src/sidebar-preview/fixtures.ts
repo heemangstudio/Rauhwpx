@@ -24,7 +24,6 @@ export const agents: T.AgentName[] = [
   'grok',
   'cursor',
   'opencode',
-  'rau',
 ];
 export const timestamp = new Date().toISOString();
 export function agentMap<TValue>(
@@ -79,13 +78,6 @@ export function createFixtures() {
       updatedAt: Date.parse(timestamp),
       source: 'estimate',
     })),
-    rau: {
-      balanceUsd: 4.25,
-      totalCreditsUsd: 5,
-      totalUsageUsd: 0.75,
-      checkedAt: Date.parse(timestamp),
-      error: null,
-    },
   };
   const quotaScenario = new URLSearchParams(location.search).get('quota');
   const now = Date.now();
@@ -141,7 +133,6 @@ export function createFixtures() {
   pi.defaultModelId = pi.models[0].id;
   setups.cursor.models = ['auto', 'sonnet-4.6', 'gpt-5.4'];
   setups.opencode.models = ['anthropic/claude-sonnet-4-6', 'openai/gpt-5.4'];
-  setups.rau.account = 'designer@example.test';
   usage.openrouter = {
     balanceUsd: 18.5,
     totalCreditsUsd: 20,
@@ -234,13 +225,6 @@ export function createFixtures() {
     maxChars: 20000,
     scope: 'rauhwpx-app',
   };
-  const account: T.AccountSessionStatus = {
-    state: 'signed-out',
-    signedIn: false,
-    account: null,
-    updatedAt: timestamp,
-    authenticating: false,
-  };
   return {
     providers,
     setups,
@@ -251,7 +235,6 @@ export function createFixtures() {
     writing,
     writingCatalog,
     instructions,
-    account,
   };
 }
 

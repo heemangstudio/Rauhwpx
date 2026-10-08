@@ -166,19 +166,6 @@ test('interrupt fences late requests from the same provider turn before its turn
   assert.equal(executions, 1, 'the fence must not block the next provider turn');
 });
 
-test('idle interruption refuses a tool request that has not yet emitted its UI tool-call event', async () => {
-  let release = () => {};
-  const pending = new Promise<void>((resolve) => { release = resolve; });
-  const { bridge, request } = interruptBridgeFixture(async () => { await pending; return {}; });
-  request(1);
-  const controller = bridge.activeToolRequestControllers.get(1).controller;
-  assert.equal(bridge.interruptIfIdle(), false);
-  assert.equal(controller.signal.aborted, false);
-  release();
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(bridge.interruptIfIdle(), true);
-});
-
 test('plan completion follows the actual edit outcome and exact provider turn', () => {
   function fixture({ pending = false, complete = true, failure = false } = {}) {
     const bridge = Object.create(AgentBridgeImpl.prototype) as any;

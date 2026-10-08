@@ -87,7 +87,7 @@ test('only packaged production launches ping, and they ping once per machine', a
       appVersion: '1.1.0',
       os: 'darwin',
       arch: 'arm64',
-      baseUrl: 'https://credits.rau.test',
+      baseUrl: 'https://site.rau.test',
       fetchImpl,
       randomUUIDImpl: () => INSTALL_ID,
     });
@@ -97,7 +97,7 @@ test('only packaged production launches ping, and they ping once per machine', a
       appVersion: '1.1.0',
       os: 'darwin',
       arch: 'arm64',
-      baseUrl: 'https://credits.rau.test',
+      baseUrl: 'https://site.rau.test',
       fetchImpl,
     });
     const afterUpdate = await reportUniqueInstall({
@@ -106,7 +106,7 @@ test('only packaged production launches ping, and they ping once per machine', a
       appVersion: '1.2.0',
       os: 'darwin',
       arch: 'arm64',
-      baseUrl: 'https://credits.rau.test',
+      baseUrl: 'https://site.rau.test',
       fetchImpl,
     });
 
@@ -360,7 +360,7 @@ test('a directory occupying unique-install.json fails closed without minting a p
       appVersion: '1.1.0',
       os: 'win32',
       arch: 'x64',
-      baseUrl: 'https://credits.rau.test',
+      baseUrl: 'https://site.rau.test',
       fetchImpl,
       randomUUIDImpl: () => INSTALL_ID,
     });
@@ -378,7 +378,7 @@ test('unpackaged and failed pings never increment locally, and a later retry can
       appVersion: '1.1.0',
       os: 'win32',
       arch: 'x64',
-      baseUrl: 'https://credits.rau.test',
+      baseUrl: 'https://site.rau.test',
       fetchImpl,
       randomUUIDImpl: () => INSTALL_ID,
     });
@@ -400,7 +400,7 @@ test('unpackaged and failed pings never increment locally, and a later retry can
       appVersion: '1.1.0',
       os: 'win32',
       arch: 'x64',
-      baseUrl: 'https://credits.rau.test',
+      baseUrl: 'https://site.rau.test',
       fetchImpl: failingFetch,
     });
     assert.equal(failed.uniqueInstalls, 4);
@@ -412,7 +412,7 @@ test('unpackaged and failed pings never increment locally, and a later retry can
       appVersion: '1.1.0',
       os: 'win32',
       arch: 'x64',
-      baseUrl: 'https://credits.rau.test',
+      baseUrl: 'https://site.rau.test',
       fetchImpl,
     });
     assert.equal(recovered.recorded, true);
@@ -420,7 +420,7 @@ test('unpackaged and failed pings never increment locally, and a later retry can
   });
 });
 
-test('the desktop ping talks only to rau-credits unique-installs, never GitHub download_count', async () => {
+test('the desktop ping talks only to the site API unique-installs, never GitHub download_count', async () => {
   await withUserData(async (userDataDir) => {
     const { calls, fetchImpl } = fetchLog();
     await reportUniqueInstall({
@@ -429,23 +429,23 @@ test('the desktop ping talks only to rau-credits unique-installs, never GitHub d
       appVersion: '1.1.0',
       os: 'darwin',
       arch: 'arm64',
-      baseUrl: 'https://credits.rau.test',
+      baseUrl: 'https://site.rau.test',
       fetchImpl,
       randomUUIDImpl: () => INSTALL_ID,
     });
-    assert.ok(calls.every((call) => call.url.startsWith('https://credits.rau.test/v1/unique-installs')));
+    assert.ok(calls.every((call) => call.url.startsWith('https://site.rau.test/v1/unique-installs')));
     assert.equal(calls.some((call) => /github|download_count|latest-mac|blockmap/i.test(call.url)), false);
   });
 });
 
-test('public CEO readout URLs stay on the hosted rau-credits origin', () => {
+test('public CEO readout URLs stay on the hosted site API origin', () => {
   assert.equal(
     uniqueInstallsPublicUrl('https://rau-credits-production.up.railway.app'),
     UNIQUE_INSTALLS_PUBLIC_URL,
   );
   assert.equal(
-    uniqueInstallsJsonUrl('https://credits.rau.test/'),
-    'https://credits.rau.test/v1/unique-installs',
+    uniqueInstallsJsonUrl('https://site.rau.test/'),
+    'https://site.rau.test/v1/unique-installs',
   );
   assert.equal(UNIQUE_INSTALLS_PUBLIC_URL, 'https://rau-credits-production.up.railway.app/unique-installs');
   assert.equal(formatUniqueInstallCount(1234), new Intl.NumberFormat('ko-KR').format(1234));
@@ -457,19 +457,19 @@ test('settings and about read the snapshot through desktop IPC without inventing
   assert.equal(missing.unavailable, undefined);
   const emptyIpc = await loadUniqueInstallSnapshot({
     rhwpDesktop: {
-      getUniqueInstalls: async () => ({ uniqueInstalls: null, publicUrl: 'https://credits.rau.test/unique-installs' }),
+      getUniqueInstalls: async () => ({ uniqueInstalls: null, publicUrl: 'https://site.rau.test/unique-installs' }),
     },
   });
   assert.equal(emptyIpc.uniqueInstalls, null);
   assert.equal(emptyIpc.unavailable, undefined);
-  assert.equal(emptyIpc.publicUrl, 'https://credits.rau.test/unique-installs');
+  assert.equal(emptyIpc.publicUrl, 'https://site.rau.test/unique-installs');
   const live = await loadUniqueInstallSnapshot({
     rhwpDesktop: {
-      getUniqueInstalls: async () => ({ uniqueInstalls: 12, publicUrl: 'https://credits.rau.test/unique-installs' }),
+      getUniqueInstalls: async () => ({ uniqueInstalls: 12, publicUrl: 'https://site.rau.test/unique-installs' }),
     },
   });
   assert.equal(live.uniqueInstalls, 12);
-  assert.equal(live.publicUrl, 'https://credits.rau.test/unique-installs');
+  assert.equal(live.publicUrl, 'https://site.rau.test/unique-installs');
   const failed = await loadUniqueInstallSnapshot({
     rhwpDesktop: {
       getUniqueInstalls: async () => {
@@ -486,7 +486,7 @@ test('the desktop shell pings only after a successful launch and never blocks st
   assert.match(desktopMain, /failedLaunches > 0 && sessions\.windows\(\)\.length === 0/);
   assert.match(
     desktopMain,
-    /resolveUniqueInstallSync\(\);\s*app\.quit\(\);\s*return;\s*\}[\s\S]{0,200}await Promise\.all\(\[hubStartup, cloudReady, staleCleanup\]\);\s*void finishUniqueInstallMetric\(\)/,
+    /resolveUniqueInstallSync\(\);\s*app\.quit\(\);\s*return;\s*\}[\s\S]{0,200}await Promise\.all\(\[hubStartup, staleCleanup\]\);\s*void finishUniqueInstallMetric\(\)/,
   );
   assert.match(desktopMain, /await uniqueInstallSync/);
   assert.match(desktopMain, /unique install ping failed/);

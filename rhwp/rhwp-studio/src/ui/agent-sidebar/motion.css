@@ -53,9 +53,7 @@
   .ag-sheet-layer,
   .ag-sheet-layer *,
   .rhwp-setup-overlay,
-  .rhwp-setup-overlay *,
-  .ag-cloud-setup-overlay,
-  .ag-cloud-setup-overlay * {
+  .rhwp-setup-overlay * {
     /* transition-duration 은 건드리지 않는다 — 기본 transition-property 가
        all 이라 전환이 없던 속성까지 1ms 전환이 생긴다. 전환 시간은 위 토큰이 줄인다. */
     animation-duration: 1ms !important;

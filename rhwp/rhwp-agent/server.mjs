@@ -33,7 +33,6 @@ import { AgentInstructionsStore } from './agent-instructions.mjs';
 import { calibrateWritingStyle } from './style-calibrator.mjs';
 import { buildWritingStyleCatalog, resolveWritingStyleSelection } from './writing-style-catalog.mjs';
 import { filterToolDefinitions, TOOL_DEFINITIONS } from './tools.mjs';
-import { takeEnvironmentScreenshot } from './environment-screenshot.mjs';
 import { resolveRenderSavePath, writeRenderPng } from './render-save.mjs';
 import { replayMissedTurnEnd } from './turn-outcome-replay.mjs';
 import {
@@ -47,7 +46,6 @@ import {
 import { DownloadManager } from './download-manager.mjs';
 import { DocumentSnapshotManager } from './document-snapshot-manager.mjs';
 import { ArtifactStore } from './artifact-store.mjs';
-import { cloudReferenceRoots } from './cloud-reference-roots.mjs';
 import { BrowserbaseFleet, normalizeBrowserbaseOverride, validateBrowserbaseCredentials } from './browserbase-session.mjs';
 import { createProviderHealth } from './provider-health.mjs';
 import { createUsageStore } from './usage-store.mjs';
@@ -64,13 +62,11 @@ import {
   createPiManager,
   defaultPiRoot,
 } from './pi-manager.mjs';
-import { createRauCreditsClient } from './rau-credits-client.mjs';
-import { createAccountSession } from './account-session.mjs';
 import { AuthRunRegistry } from './auth-run-registry.mjs';
 import { createCliSetupManager } from './cli-setup-manager.mjs';
 import { createClaudeModelCatalog } from './claude-model-catalog.mjs';
 import { createCodexModelCatalog, createCodexModelResolver } from './codex-model-routing.mjs';
-import { createOpenRouter, creditBalanceEmpty } from './openrouter.mjs';
+import { createOpenRouter } from './openrouter.mjs';
 import { createIpcSecretStore } from './secret-store.mjs';
 import { handlePiToolDefinitions } from './pi/tool-schema.mjs';
 import { PiSubagentCapabilityRegistry } from './pi/subagent-capabilities.mjs';
@@ -160,7 +156,6 @@ if (PRODUCTION && !process.env.RHWP_WORK_DIR) {
   throw Object.assign(new Error('RHWP_WORK_DIR is required in production'), { code: 'HUB_WORK_DIR_REQUIRED' });
 }
 const WORK_ROOT = path.resolve(process.env.RHWP_WORK_DIR || path.join(os.tmpdir(), `rhwp-agent-work-${process.pid}`));
-const CLOUD_REFERENCE_ROOTS = cloudReferenceRoots(WORK_ROOT);
 const RUNTIME_ROOT = process.env.RHWP_RUNTIME_DIR
   ? path.resolve(process.env.RHWP_RUNTIME_DIR)
   : null;
@@ -252,10 +247,6 @@ if (process.env.RHWP_AGENT_MODE === 'production' && !secretStore.available) {
   });
 }
 const piManager = await createPiManager({ rootDir: PI_ROOT, openRouter, secretStore }).init();
-const accountSession = createAccountSession({
-  secretStore,
-  creditsClient: createRauCreditsClient(),
-});
 const authRuns = new AuthRunRegistry();
 let npmPrefixMutationQueue = Promise.resolve();
 function mutateSharedNpmPrefix(operation) {
@@ -403,7 +394,6 @@ const sessions = new HubSessionRegistry({
       downloadManager.baseDir,
       documentSnapshotManager.baseDir,
       copyLayoutGeneratedRoot,
-      ...CLOUD_REFERENCE_ROOTS,
     ]);
     return {
       sessionId,
@@ -617,7 +607,6 @@ function flushProviderCredentialHomes(homes) {
 /** CLI 설치·인증을 cli-setup-manager 가 관리하는 에이전트들. */
 const CLI_SETUP_AGENTS = ['claude', 'codex'];
 const KNOWN_AGENTS = new Set([...CLI_SETUP_AGENTS, 'pi']);
-const OPENROUTER_AGENTS = new Set(['pi']);
 const AGENT_INSTRUCTION_DRAFT_TTL_MS = 5 * 60 * 1000;
 
 const CLAUDE_MODELS = new Set(['opus', 'fable', 'sonnet', 'haiku']);
@@ -641,17 +630,13 @@ const SESSION_FACTORIES = {
   pi: createPiSession,
 };
 
-function openRouterManager(agent) { return agent === 'pi' ? piManager : null; }
-
-function openRouterStatus(agent) { return agent === 'pi' ? piStatus : null; }
-
 function unknownAgentError(agent) {
   return Object.assign(new Error(`unknown agent: ${String(agent)}`), { code: 'INVALID_REQUEST' });
 }
 
-/** pi/rau 모델은 캐시된 상태에서 찾는다. */
-function piModelConfig(id, agent = 'pi') {
-  return (openRouterStatus(agent)?.models ?? []).find((model) => model.id === id) ?? null;
+/** pi 모델은 캐시된 상태에서 찾는다. */
+function piModelConfig(id) {
+  return piStatus.models.find((model) => model.id === id) ?? null;
 }
 
 async function refreshPiStatus() {
@@ -660,29 +645,23 @@ async function refreshPiStatus() {
 }
 
 
-function openRouterAgentSetupStatus(agent) {
-  const status = openRouterStatus(agent);
-  return {
-    agent,
-    installed: status.installed,
-    available: status.installed,
-    installing: status.installing,
-    version: status.version,
-    authenticated: status.keyConfigured,
-    authMethod: status.keyConfigured ? 'api-key' : null,
-    keyTail: status.keyTail,
-    account: status.account ?? null,
-    authenticating: false,
-    setupComplete: status.setupComplete,
-    connected: status.setupComplete,
-    latestVersion: status.latestVersion ?? null,
-    updateRequired: status.updateRequired === true,
-    error: status.error,
-  };
-}
-
 function piAgentSetupStatus() {
-  return openRouterAgentSetupStatus('pi');
+  return {
+    agent: 'pi',
+    installed: piStatus.installed,
+    available: piStatus.installed,
+    installing: piStatus.installing,
+    version: piStatus.version,
+    authenticated: piStatus.keyConfigured,
+    authMethod: piStatus.keyConfigured ? 'api-key' : null,
+    keyTail: piStatus.keyTail,
+    authenticating: false,
+    setupComplete: piStatus.setupComplete,
+    connected: piStatus.setupComplete,
+    latestVersion: piStatus.latestVersion ?? null,
+    updateRequired: piStatus.updateRequired === true,
+    error: piStatus.error,
+  };
 }
 
 
@@ -870,201 +849,6 @@ async function broadcastFreshAgentSetupStatuses() {
   return statuses;
 }
 
-async function accountStatusForOwner(ownerSessionId = null) {
-  const status = await accountSession.status();
-  return decorateAccountStatus(status, ownerSessionId);
-}
-
-function decorateAccountStatus(status, ownerSessionId = null) {
-  const auth = authRuns.status('account', ownerSessionId);
-  return {
-    ...status,
-    ...auth,
-    authenticating: auth.authenticating,
-  };
-}
-
-async function broadcastAccountStatus() {
-  const status = await accountSession.status();
-  if (typeof process.send === 'function' && process.connected) {
-    process.send({ type: 'rhwp-account-status-changed' }, () => {});
-  }
-  for (const record of sessions.values()) {
-    sendJson(record.studioSocket, {
-      v: 1,
-      type: 'account-status',
-      status: decorateAccountStatus(status, record.sessionId),
-    });
-  }
-}
-
-async function logoutAccount() {
-  try {
-    return await accountSession.logout();
-  } finally {
-    await broadcastFreshAgentSetupStatuses().catch(() => {});
-    await broadcastAccountStatus().catch(() => {});
-  }
-}
-
-function sendAccountRunFrame(run, frame) {
-  const owner = ownerRecordForAuthRun(run);
-  if (!owner) return;
-  sendJson(owner.studioSocket, { v: 1, authRunId: run.runId, ...frame });
-}
-
-function sendAccountRunError(run, error, fallback = 'ACCOUNT_LOGIN_FAILED') {
-  const owner = ownerRecordForAuthRun(run);
-  if (!owner) return;
-  sendJson(owner.studioSocket, {
-    v: 1,
-    type: 'account-error',
-    requestId: run.requestId,
-    authRunId: run.runId,
-    code: error?.code ?? fallback,
-    message: String(error?.message ?? error),
-  });
-}
-
-function beginAccountLogin(record, sock, requestId) {
-  const abort = new AbortController();
-  let rejectProof = null;
-  let authRun;
-  let credentialsCommitted = false;
-  const cancel = () => {
-    abort.abort();
-    rejectProof?.(agentAuthCancelled());
-    rejectProof = null;
-    if (authRun?.accountLoginId) void accountSession.cancelLogin(authRun.accountLoginId);
-  };
-  try {
-    if (authRuns.get('rau')) {
-      throw Object.assign(new Error('진행 중인 Rau 로그인을 먼저 마쳐 주세요.'), {
-        code: 'ACCOUNT_AUTH_BUSY',
-      });
-    }
-    authRun = authRuns.begin({
-      agent: 'account',
-      ownerSessionId: record.sessionId,
-      requestId,
-      method: 'oauth',
-      cancel,
-    });
-  } catch (error) {
-    replyToStudio(record, sock, {
-      v: 1,
-      type: 'account-error',
-      requestId,
-      code: error?.code ?? 'ACCOUNT_LOGIN_FAILED',
-      message: String(error?.message ?? error),
-    });
-    return;
-  }
-
-  const isLiveAuthRun = () => !abort.signal.aborted && authRuns.get('account') === authRun;
-  const commitAuthRun = () => {
-    if (credentialsCommitted) return;
-    if (!isLiveAuthRun() || !authRuns.finish(authRun)) throw agentAuthCancelled();
-    credentialsCommitted = true;
-    authRun.credentialsCommitted = true;
-  };
-  authRun.signal = abort.signal;
-  authRun.commitCredentials = commitAuthRun;
-
-  const progress = (details) => {
-    if (!isLiveAuthRun()) return;
-    const replayableUi = {
-      ...(details.authUrl ? { authUrl: details.authUrl } : {}),
-      ...(details.pairingCode ? { pairingCode: details.pairingCode } : {}),
-      ...(details.expiresAt ? { expiresAt: details.expiresAt } : {}),
-    };
-    authRuns.update(authRun, { phase: 'authorizing', replayableUi });
-    sendAccountRunFrame(authRun, {
-      type: 'account-login-progress',
-      state: 'authorizing',
-      ...replayableUi,
-    });
-  };
-
-  void (async () => {
-    const callbackState = crypto.randomBytes(24).toString('base64url');
-    const login = await accountSession.startLogin({
-      signal: abort.signal,
-      redirectUri: `http://127.0.0.1:${hubPort}/oauth/account/callback`,
-      callbackState,
-      returnMode: 'hybrid',
-      clientVersion: `hub-protocol-${PROTOCOL_VERSION}`,
-    });
-    if (!isLiveAuthRun()) throw agentAuthCancelled();
-    authRun.accountLoginId = login.loginId;
-    authRun.callbackState = callbackState;
-    const authDetails = {
-      authUrl: login.authUrl,
-      pairingCode: login.pairingCode,
-      expiresAt: login.expiresAt,
-    };
-    // Install the callback waiter before exposing the login URL. A browser can
-    // finish an already-authenticated OAuth session immediately, so publishing
-    // first creates a small window where the callback would receive a 409.
-    const waitForProof = () => new Promise((resolve, reject) => {
-      rejectProof = reject;
-      authRun.submitProof = (value) => {
-        rejectProof = null;
-        authRun.submitProof = null;
-        resolve(value);
-      };
-    });
-    let proofPromise = waitForProof();
-    authRuns.update(authRun, { phase: 'authorizing', replayableUi: authDetails });
-    replyToStudio(record, sock, {
-      v: 1,
-      type: 'account-login-started',
-      requestId,
-      authRunId: authRun.runId,
-      ...authDetails,
-    });
-    progress(authDetails);
-
-    let proof = null;
-    while (!proof) {
-      const candidate = await proofPromise;
-      if (!isLiveAuthRun()) throw agentAuthCancelled();
-      authRuns.update(authRun, { phase: 'redeeming' });
-      try {
-        await accountSession.completeLogin(login.loginId, candidate, {
-          signal: abort.signal,
-          onCommitted: commitAuthRun,
-        });
-        proof = candidate;
-      } catch (error) {
-        if (error?.code !== 'DEVICE_PROOF_INVALID') throw error;
-        if (!isLiveAuthRun()) throw agentAuthCancelled();
-        authRuns.update(authRun, { phase: 'authorizing' });
-        sendAccountRunError(authRun, error, 'DEVICE_PROOF_INVALID');
-        progress(authDetails);
-        proofPromise = waitForProof();
-      }
-    }
-  })().then(
-    async () => {
-      authRuns.finish(authRun);
-      await broadcastFreshAgentSetupStatuses().catch(() => {});
-      await broadcastAccountStatus().catch((error) => {
-        log(`account status refresh failed: ${error?.message ?? error}`);
-      });
-    },
-    async (error) => {
-      authRuns.finish(authRun);
-      if (!['AGENT_AUTH_CANCELLED', 'ACCOUNT_LOGIN_CANCELLED'].includes(error?.code)) {
-        sendAccountRunError(authRun, error);
-      }
-      await broadcastAccountStatus().catch((statusError) => {
-        log(`account status refresh failed: ${statusError?.message ?? statusError}`);
-      });
-    },
-  );
-}
-
 function isModelIdentifier(value) {
   return typeof value === 'string' && value.length > 0 && value.length <= 128
     && /^[a-zA-Z0-9][a-zA-Z0-9._:/\[\]-]*$/.test(value)
@@ -1096,11 +880,10 @@ async function modelCatalog(agent, record, { refresh = false } = {}) {
 }
 
 function resolveModel(agent, requested, record = null) {
-  if (OPENROUTER_AGENTS.has(agent)) {
-    const status = openRouterStatus(agent);
-    if (typeof requested === 'string' && piModelConfig(requested, agent)) return requested;
-    if (status.defaultModelId && piModelConfig(status.defaultModelId, agent)) return status.defaultModelId;
-    return status.models[0]?.id ?? null;
+  if (agent === 'pi') {
+    if (typeof requested === 'string' && piModelConfig(requested)) return requested;
+    if (piStatus.defaultModelId && piModelConfig(piStatus.defaultModelId)) return piStatus.defaultModelId;
+    return piStatus.models[0]?.id ?? null;
   }
   const envDefaults = {
     claude: process.env.RHWP_CLAUDE_MODEL,
@@ -1138,12 +921,12 @@ function resolveModel(agent, requested, record = null) {
 }
 
 function resolveEffort(agent, model, requested, record = null) {
-  if (OPENROUTER_AGENTS.has(agent)) {
+  if (agent === 'pi') {
     // 추론을 지원하지 않는 모델은 effort 자체가 없다 — 붙이면 요청이 거부된다.
-    const efforts = piModelConfig(model, agent)?.efforts ?? [];
+    const efforts = piModelConfig(model)?.efforts ?? [];
     if (efforts.length === 0) return null;
     if (typeof requested === 'string' && efforts.includes(requested)) return requested;
-    const preferred = piModelConfig(model, agent)?.defaultEffort;
+    const preferred = piModelConfig(model)?.defaultEffort;
     return efforts.includes(preferred) ? preferred : efforts[0];
   }
   const tables = {
@@ -2313,8 +2096,6 @@ async function launchTemplateJob(record, job) {
     makeTemplateWorkerEventHandler,
     buildCopyLayoutWorkerPrompt,
     piManager,
-    openRouterManager,
-    OPENROUTER_AGENTS,
     piModelConfig,
     SESSION_FACTORIES,
     unknownAgentError
@@ -2928,9 +2709,8 @@ async function startSession(
     // restart. A fixed toolProfile would keep approved plans read-only.
     piBin: piManager.piBin,
     piRoot: piManager.rootDir,
-    openRouterApiKey: openRouterManager(agent)?.apiKey() ?? undefined,
-    agentName: OPENROUTER_AGENTS.has(agent) ? agent : 'pi',
-    reasoning: OPENROUTER_AGENTS.has(agent) ? Boolean(piModelConfig(model, agent)?.reasoning) : false,
+    openRouterApiKey: agent === 'pi' ? piManager.apiKey() ?? undefined : undefined,
+    reasoning: agent === 'pi' ? Boolean(piModelConfig(model)?.reasoning) : false,
   };
   const createBackend = SESSION_FACTORIES[agent];
   if (!createBackend) throw unknownAgentError(agent);
@@ -3312,7 +3092,7 @@ async function handleStudioMessage(record, sock, msg) {
         rejectStart(new Error(`unknown agent: ${String(agent)}`));
         return;
       }
-      // 설정이 끝나지 않은 pi/rau 로는 세션을 열지 않는다 — 살아 있는 세션도 건드리지 않는다.
+      // 설정이 끝나지 않은 pi 로는 세션을 열지 않는다 — 살아 있는 세션도 건드리지 않는다.
       if (agent === 'pi' && !piStatus.setupComplete) {
         sendJson(sock, {
           v: 1, type: 'chat-error', requestId, session: sessionInfo(record), code: 'PI_NOT_CONFIGURED',
@@ -3783,99 +3563,6 @@ async function handleStudioMessage(record, sock, msg) {
         }));
       return;
     }
-    case 'account-status-request': {
-      const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
-      void accountStatusForOwner(record.sessionId)
-        .then((status) => replyToStudio(record, sock, {
-          v: 1, type: 'account-status', requestId, status,
-        }))
-        .catch((error) => replyToStudio(record, sock, {
-          v: 1,
-          type: 'account-error',
-          requestId,
-          code: error?.code ?? 'ACCOUNT_STATUS_FAILED',
-          message: String(error?.message ?? error),
-        }));
-      return;
-    }
-    case 'account-login': {
-      const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
-      beginAccountLogin(record, sock, requestId);
-      return;
-    }
-    case 'account-auth-code': {
-      let authRun;
-      let code;
-      try {
-        code = boundedAgentAuthCode(msg.code);
-        authRun = authRuns.requireOwned({
-          agent: 'account',
-          runId: msg.authRunId,
-          ownerSessionId: record.sessionId,
-        });
-      } catch (error) {
-        replyToStudio(record, sock, {
-          v: 1,
-          type: 'account-error',
-          requestId: msg.requestId ?? null,
-          code: error?.code ?? 'ACCOUNT_AUTH_CODE_INVALID',
-          message: String(error?.message ?? error),
-        });
-        return;
-      }
-      if (typeof authRun.submitProof !== 'function') {
-        sendAccountRunError(authRun, agentAuthCancelled('로그인 코드를 받을 준비가 되지 않았어요.'));
-        return;
-      }
-      authRun.submitProof({ kind: 'manual', code });
-      return;
-    }
-    case 'account-login-cancel': {
-      try {
-        authRuns.cancelOwned({
-          agent: 'account',
-          runId: msg.authRunId,
-          ownerSessionId: record.sessionId,
-          reason: 'user-cancelled',
-        });
-      } catch (error) {
-        replyToStudio(record, sock, {
-          v: 1,
-          type: 'account-error',
-          requestId: msg.requestId ?? null,
-          code: error?.code ?? 'ACCOUNT_CANCEL_FAILED',
-          message: String(error?.message ?? error),
-        });
-      }
-      return;
-    }
-    case 'account-logout': {
-      const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
-      if (authRuns.get('account')) {
-        replyToStudio(record, sock, {
-          v: 1,
-          type: 'account-error',
-          requestId,
-          code: 'ACCOUNT_AUTH_BUSY',
-          message: '진행 중인 계정 로그인을 먼저 마쳐 주세요.',
-        });
-        return;
-      }
-      void logoutAccount()
-        .then(async () => {
-          const status = await accountStatusForOwner(record.sessionId);
-          replyToStudio(record, sock, { v: 1, type: 'account-status', requestId, status });
-          await broadcastAccountStatus();
-        })
-        .catch((error) => replyToStudio(record, sock, {
-          v: 1,
-          type: 'account-error',
-          requestId,
-          code: error?.code ?? 'ACCOUNT_LOGOUT_FAILED',
-          message: String(error?.message ?? error),
-        }));
-      return;
-    }
     case 'agent-setup-status-request': {
       const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
       void agentSetupStatuses(record.sessionId, msg.refresh === true)
@@ -3934,13 +3621,10 @@ async function handleStudioMessage(record, sock, msg) {
         return;
       }
       const abort = new AbortController();
-      let rejectProof = null;
       let authRun;
       let credentialsCommitted = false;
       const cancelProvider = () => {
         abort.abort();
-        rejectProof?.(agentAuthCancelled());
-        rejectProof = null;
         if (agent === 'pi') void piManager.cancelSetup();
         else if (CLI_SETUP_AGENTS.includes(agent)) void cliSetup.cancel(agent);
       };
@@ -3986,7 +3670,6 @@ async function handleStudioMessage(record, sock, msg) {
         const replayableUi = {
           ...(entry.authUrl ? { authUrl: entry.authUrl } : {}),
           ...(entry.userCode ? { userCode: entry.userCode } : {}),
-          ...(entry.pairingCode ? { pairingCode: entry.pairingCode } : {}),
         };
         authRuns.update(authRun, { phase: entry.state ?? entry.phase ?? 'authorizing', replayableUi });
         sendAuthRunFrame(authRun, {
@@ -3995,8 +3678,6 @@ async function handleStudioMessage(record, sock, msg) {
           ...(entry.phase ? { phase: entry.phase } : {}),
           ...(entry.authUrl ? { authUrl: entry.authUrl } : {}),
           ...(entry.userCode ? { userCode: entry.userCode } : {}),
-          ...(entry.pairingCode ? { pairingCode: entry.pairingCode } : {}),
-          ...(entry.expiresAt ? { expiresAt: entry.expiresAt } : {}),
           ...(Number.isFinite(entry.percent) ? { percent: entry.percent } : {}),
           ...(entry.detail ? { detail: entry.detail } : {}),
           ...(entry.activity === true ? { activity: true } : {}),
@@ -4848,10 +4529,10 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
         }
         const generation = record.agentSession.generation;
         void (async () => {
-          // Pi/Rau에는 위임 에이전트 질문 경로가 없어 MCP 프로세스 자체가 루트다.
+          // Pi에는 위임 에이전트 질문 경로가 없어 MCP 프로세스 자체가 루트다.
           // 다른 레거시 전송은 별도 프로바이더 스트림의 정확한 일회용 범위 티켓을
           // 기다린 뒤 소비해, 상속된 환경 변수만으로 루트를 사칭하지 못하게 한다.
-          if (!OPENROUTER_AGENTS.has(sock.agentLabel)) {
+          if (sock.agentLabel !== 'pi') {
             const matchingScopes = await waitForUserQuestionScopes(
               record,
               sock.agentLabel,
@@ -5258,12 +4939,6 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
         void record.downloadManager.download({ sessionId: record.agentSession.chatId, ...args })
           .then(sendResult)
           .catch((error) => sendError(error, 'DOWNLOAD_FAILED'));
-        return;
-      }
-      if (tool === 'environment_screenshot') {
-        void takeEnvironmentScreenshot({ workDir: record.workDir })
-          .then((result) => sendResult(result))
-          .catch((error) => sendError(error, error?.code || 'SCREENSHOT_FAILED'));
         return;
       }
       if (tool === 'publish_artifact') {
@@ -5761,60 +5436,6 @@ const httpServer = http.createServer((req, res) => {
         if (await handleTemplateHttp(req, res, url)) return;
       }
     }
-    if (req.method === 'GET' && url.pathname === '/oauth/account/callback') {
-      const code = url.searchParams.get('code');
-      const state = url.searchParams.get('state');
-      const authRun = authRuns.get('account');
-      if (!authRun || !code || !state || !timingSafeTextEqual(state, authRun.callbackState ?? '')) {
-        res.writeHead(400, {
-          'content-type': 'text/plain; charset=utf-8',
-          'cache-control': 'no-store',
-          'x-content-type-options': 'nosniff',
-        });
-        res.end('Invalid or expired account login callback.');
-        return;
-      }
-      if (typeof authRun.submitProof !== 'function') {
-        res.writeHead(409, { 'cache-control': 'no-store' });
-        res.end();
-        return;
-      }
-      authRun.submitProof({ kind: 'loopback', code });
-      res.writeHead(204, {
-        'cache-control': 'no-store',
-        'referrer-policy': 'no-referrer',
-        'x-content-type-options': 'nosniff',
-      });
-      res.end();
-      return;
-    }
-    if (req.method === 'GET' && url.pathname === '/oauth/rau/callback') {
-      const code = url.searchParams.get('code');
-      const state = url.searchParams.get('state');
-      const authRun = authRuns.get('rau');
-      if (!authRun || !code || !state || !timingSafeTextEqual(state, authRun.callbackState ?? '')) {
-        res.writeHead(400, {
-          'content-type': 'text/plain; charset=utf-8',
-          'cache-control': 'no-store',
-          'x-content-type-options': 'nosniff',
-        });
-        res.end('Invalid or expired Rau login callback.');
-        return;
-      }
-      if (typeof authRun.submitProof !== 'function') {
-        res.writeHead(409, { 'cache-control': 'no-store' });
-        res.end();
-        return;
-      }
-      authRun.submitProof({ kind: 'loopback', code });
-      res.writeHead(204, {
-        'cache-control': 'no-store',
-        'referrer-policy': 'no-referrer',
-        'x-content-type-options': 'nosniff',
-      });
-      res.end();
-      return;
-    }
     if (req.method === 'GET' && url.pathname === '/oauth/openrouter/callback') {
       const code = url.searchParams.get('code');
       const state = url.searchParams.get('state');
@@ -6299,9 +5920,7 @@ httpServer.on('upgrade', (req, socket, head) => {
       for (const authRun of authRuns.forSession(record.sessionId)) {
         sendJson(ws, {
           v: 1,
-          type: authRun.agent === 'account'
-            ? 'account-login-progress'
-            : 'agent-setup-progress',
+          type: 'agent-setup-progress',
           state: 'authorizing',
           replayed: true,
           ...authRun,
@@ -6370,9 +5989,6 @@ httpServer.on('upgrade', (req, socket, head) => {
       void agentSetupStatuses(record.sessionId).then((statuses) => {
         replyToStudio(record, ws, { v: 1, type: 'agent-setup-status', statuses });
       }).catch((e) => log(`agent setup status on connect failed: ${e?.message ?? e}`));
-      void accountStatusForOwner(record.sessionId).then((status) => {
-        replyToStudio(record, ws, { v: 1, type: 'account-status', status });
-      }).catch((error) => log(`account status on connect failed: ${error?.message ?? error}`));
       sendJson(ws, { v: 1, type: 'writing-style-catalog', ...writingStyleCatalog(record) });
       sendJson(ws, { v: 1, type: 'templates-catalog', ...templateStore.list() });
       sendJson(ws, { v: 1, type: 'usage-report', usage: usageSnapshot() });

@@ -1,14 +1,4 @@
 /* Only the preview workbench is styled here. Sidebar styles come from production. */
-.preview-cloud #workspace-stack { position: fixed; inset: 0; }
-.preview-cloud #cloud-workspace { padding-left: 225px; }
-.preview-cloud #preview-controls { width: 180px; }
-#cloud-preview-controls[hidden] { display: none; }
-#cloud-preview-controls label {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-}
 #editor-area {
   position: fixed;
   inset: 0;
@@ -90,7 +80,6 @@
   border-radius: 12px;
   scrollbar-width: thin;
 }
-.preview-audit.preview-cloud #cloud-workspace { padding-left: 328px; }
 .audit-heading { margin: 0; font-size: 19px; letter-spacing: -.02em; }
 .audit-progress { font-variant-numeric: tabular-nums; }
 .audit-search, .audit-pagination a, .audit-pagination span, .audit-dialog-group button,

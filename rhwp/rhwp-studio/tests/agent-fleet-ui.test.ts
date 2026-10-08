@@ -613,8 +613,8 @@ test('편대 도크는 입력기 위 알약과 팝업으로 그려진다', () =>
 test('편대 알약은 흐름에서 자리를 받아 대화와 겹치지 않는다', () => {
   // 알약 한 줄만큼 입력기(질문이 붙어 있으면 질문) 위를 비운다.
   assert.match(css, /\.ag-chat-page:has\(\.ag-fleet-dock:not\(\[hidden\]\)\)\s*\{\s*--ag-fleet-reserve:\s*39px;/);
-  assert.match(css, /\.ag-composer\s*\{[^}]*margin:\s*calc\([^;]*var\(--ag-fleet-reserve, 0px\)\)/s);
-  assert.match(css, /\.ag-user-question:not\(\[data-inactive='true'\]\)\s*\{\s*margin-top:\s*calc\([^;]*var\(--ag-fleet-reserve, 0px\)\)/);
+  assert.match(css, /\.ag-composer\s*\{[^}]*margin:\s*var\(--ag-fleet-reserve, 0px\) 12px 12px;/s);
+  assert.match(css, /\.ag-user-question:not\(\[data-inactive='true'\]\)\s*\{\s*margin-top:\s*var\(--ag-fleet-reserve, 0px\);/);
   // 변경 막대가 긴 대화에서 줄어 토글 줄이 입력기 밑으로 들어가지 않는다.
   const drawerCss = readFileSync(new URL('../src/ui/agent-sidebar/changes-drawer.css', import.meta.url), 'utf8');
   assert.match(drawerCss, /\.ag-compact-changes\s*\{[^}]*flex:\s*0 0 auto;/s);

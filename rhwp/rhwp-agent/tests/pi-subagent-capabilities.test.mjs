@@ -66,9 +66,9 @@ test('editor capabilities inherit the current parent phase without root-only con
   assert.equal(planning.allowedTools.has('browserbase_start'), false);
 });
 
-test('registrations are bound to one Pi or Rau provider turn and revoke synchronously', () => {
+test('registrations are bound to one Pi provider turn and revoke synchronously', () => {
   const registry = new PiSubagentCapabilityRegistry();
-  const session = activeSession({ agent: 'rau' });
+  const session = activeSession();
   const registration = registry.register({
     activeSession: session,
     childId: '550e8400-e29b-41d4-a716-446655440003',
@@ -78,8 +78,8 @@ test('registrations are bound to one Pi or Rau provider turn and revoke synchron
   });
 
   assert.equal(registry.isCurrent(registration, session), true);
-  assert.equal(registry.isCurrent(registration, activeSession({ agent: 'rau', turnId: 'next-turn' })), false);
-  assert.equal(registry.isCurrent(registration, activeSession({ agent: 'pi' })), false);
+  assert.equal(registry.isCurrent(registration, activeSession({ turnId: 'next-turn' })), false);
+  assert.equal(registry.isCurrent(registration, activeSession({ generation: 8 })), false);
   assert.equal(registry.revoke(registration.childId), registration);
   assert.equal(registry.isCurrent(registration, session), false);
   assert.equal(registry.get(registration.childId), null);
@@ -100,7 +100,7 @@ test('re-registering a child id receives a fresh capability resource', () => {
   assert.notEqual(first.resource, second.resource);
 });
 
-test('only active root Pi/Rau turns may register bounded child identities', () => {
+test('only active root Pi turns may register bounded child identities', () => {
   const registry = new PiSubagentCapabilityRegistry();
   assert.throws(() => registry.register({
     activeSession: activeSession({ agent: 'claude' }),
@@ -108,7 +108,7 @@ test('only active root Pi/Rau turns may register bounded child identities', () =
     taskId: 'sa-1',
     role: 'general',
     parentProfile: 'direct',
-  }), /Pi or Rau root turn/);
+  }), /Pi root turn/);
   assert.throws(() => registry.register({
     activeSession: activeSession({ providerTurnStarted: false }),
     childId: '550e8400-e29b-41d4-a716-446655440004',

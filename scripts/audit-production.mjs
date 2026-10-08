@@ -1,10 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-export const PRODUCTION_DIRECTORIES = Object.freeze([
-  '.', 'rhwp/rhwp-agent', 'rhwp/rhwp-studio',
-  'cloud', 'cloud/install/provider-runtime', 'rhwp/rau-credits',
-]);
+export const PRODUCTION_DIRECTORIES = Object.freeze(['.', 'rhwp/rhwp-agent', 'rhwp/rhwp-studio', 'site-api']);
 
 const BLOCKING = new Set(['high', 'critical']);
 

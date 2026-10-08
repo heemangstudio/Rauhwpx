@@ -54,7 +54,6 @@ renderer·paint·Studio·WASM binding 구현은 수정하지 않는다.
 검토 당시 open PR은 #435, #431, #378, #350, #347, #341이었다.
 각 PR의 전체 변경 파일 목록(각각 50/4/10/13/21/12개)을 읽었으며 이번
 form_query.rs / serializer/hwpx/header.rs 및 새 회귀 파일과 겹치는 경로는 없었다.
-Cloud PR #435/#341도 포함해 중복 여부를 확인했다.
 
 ## 검증과 남은 게이트
 

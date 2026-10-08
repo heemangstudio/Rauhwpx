@@ -20,9 +20,9 @@ export function selectChecks(paths) {
       if (/\/tests\/desktop-/.test(file)) enable('sessions');
     } else if (/^desktop\//.test(file)) {
       enable('sessions', 'app');
-    } else if (/^rhwp\/(?:rau-credits|rhwp-shared|rhwp-chrome|rhwp-firefox|rhwp-safari)\//.test(file)) {
+    } else if (/^(?:site-api|rhwp\/(?:rhwp-shared|rhwp-chrome|rhwp-firefox|rhwp-safari))\//.test(file)) {
       enable('app');
-      if (file.startsWith('rhwp/rhwp-shared/') || file === 'rhwp/rau-credits/catalog.mjs') enable('browser');
+      if (file.startsWith('rhwp/rhwp-shared/')) enable('browser');
       // 데스크톱 글꼴 색인이 이 모듈을 쓴다.
       if (file.startsWith('rhwp/rhwp-shared/fonts/')) enable('sessions');
     } else {

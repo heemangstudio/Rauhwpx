@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { createOpenRouter, creditBalanceEmpty } from '../openrouter.mjs';
+import { createOpenRouter } from '../openrouter.mjs';
 
 function jsonResponse(status, body) {
   return new Response(JSON.stringify(body), {
@@ -302,12 +302,11 @@ test('credits for a limited key use /key remaining and skip /credits', async () 
     },
   });
 
-  const credits = await client.credits('sk-child');
+  const credits = await client.credits('sk-limited');
   assert.equal(credits.totalCreditsUsd, 5);
   assert.equal(credits.totalUsageUsd, 1.25);
   assert.equal(credits.balanceUsd, 3.75);
   assert.deepEqual(urls, ['https://openrouter.ai/api/v1/key']);
-  assert.equal(creditBalanceEmpty(credits), false);
 });
 
 test('credits for a limited key without limit_remaining use limit minus usage', async () => {
@@ -319,20 +318,8 @@ test('credits for a limited key without limit_remaining use limit minus usage', 
       return jsonResponse(403, { error: { message: 'Only management keys can perform this operation' } });
     },
   });
-  const credits = await client.credits('sk-child');
+  const credits = await client.credits('sk-limited');
   assert.equal(credits.balanceUsd, 3.75);
-});
-
-test('creditBalanceEmpty ignores fetch-error placeholders', () => {
-  assert.equal(creditBalanceEmpty({
-    balanceUsd: 0,
-    totalCreditsUsd: 0,
-    totalUsageUsd: 0,
-    error: 'OpenRouter 키가 거절됐어요',
-  }), false);
-  assert.equal(creditBalanceEmpty({ balanceUsd: 0 }), true);
-  assert.equal(creditBalanceEmpty({ balanceUsd: 3.75 }), false);
-  assert.equal(creditBalanceEmpty(null), false);
 });
 
 test('credits reject a bad key with OPENROUTER_KEY_INVALID', async () => {

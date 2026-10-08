@@ -106,15 +106,12 @@ jobs:
           - os: macos-15
             runner: blacksmith-6vcpu-macos-15
             architecture: arm64
-            node: 22.23.3
           - os: windows-latest
             runner: blacksmith-2vcpu-windows-2025
             architecture: x64
-            node: 22.23.3
           - os: ubuntu-24.04
             runner: blacksmith-4vcpu-ubuntu-2404
             architecture: x64
-            node: 24
     runs-on: ${{ needs.changes.outputs.app == 'false' && 'blacksmith-2vcpu-ubuntu-2404' || matrix.runner }}
     timeout-minutes: 30
     steps:
@@ -125,15 +122,13 @@ jobs:
       - uses: actions/setup-node@v5
         if: needs.changes.outputs.app != 'false'
         with:
-          node-version: ${{ matrix.node }}
+          node-version: 22.23.3
           cache: npm
           cache-dependency-path: |
             package-lock.json
             rhwp/rhwp-agent/package-lock.json
             rhwp/rhwp-studio/package-lock.json
-            rhwp/rau-credits/package-lock.json
-            cloud/package-lock.json
-            cloud/install/provider-runtime/package-lock.json
+            site-api/package-lock.json
       - name: Assert runner architecture
         if: needs.changes.outputs.app != 'false'
         shell: bash
@@ -144,22 +139,17 @@ jobs:
         if: needs.changes.outputs.app != 'false'
         shell: bash
         run: |
-          for directory in . rhwp/rhwp-agent rhwp/rhwp-studio rhwp/rau-credits; do
+          for directory in . rhwp/rhwp-agent rhwp/rhwp-studio site-api; do
             npm --prefix "$directory" ci --no-audit --no-fund
           done
-          npm --prefix cloud/install/provider-runtime ci --omit=dev --no-audit --no-fund
-          # Cloud 서버 자체는 Node 24에서 실행하며, 다른 플랫폼에서는 lock 감사를 유지한다.
-          if [[ "${{ matrix.node }}" == 24 ]]; then
-            npm --prefix cloud ci --omit=dev --ignore-scripts --no-audit --no-fund
-          fi
       - name: Install the locked Electron Node host
         if: needs.changes.outputs.app != 'false'
         run: node node_modules/electron/install.js
-      - name: Audit all six production dependency locks
+      - name: Audit all production dependency locks
         if: needs.changes.outputs.app != 'false'
         shell: bash
         run: npm run audit:production | tee production-audit.log
-      - name: Verify installed CLIs, embedded parsers, and Electron Node floor
+      - name: Verify bundled npm and Electron Node floor
         if: needs.changes.outputs.app != 'false'
         shell: bash
         run: node scripts/verify-production-dependencies.mjs --electron | tee production-runtime.json
@@ -173,80 +163,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  dependency-containers:
-    name: Production dependency container integration
-    needs: changes
-    if: ${{ !cancelled() }}
-    runs-on: ${{ needs.changes.outputs.app == 'false' && 'blacksmith-2vcpu-ubuntu-2404' || 'blacksmith-4vcpu-ubuntu-2404' }}
-    timeout-minutes: 90
-    env:
-      CARGO_BUILD_JOBS: 2
-      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
-    steps:
-      - uses: actions/checkout@v5
-        if: needs.changes.outputs.app != 'false'
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v5
-        if: needs.changes.outputs.app != 'false'
-        with:
-          node-version: 24
-      - uses: ./.github/actions/setup-rust
-        if: needs.changes.outputs.app != 'false'
-        with:
-          wasm: 'true'
-          cache: package
-      - uses: ./.github/actions/build-wasm
-        if: needs.changes.outputs.app != 'false'
-        with:
-          setup-rust: 'false'
-      - name: Build real cloud runtime assets
-        if: needs.changes.outputs.app != 'false'
-        run: |
-          cargo build --manifest-path rhwp/Cargo.toml --release --locked --bin rhwp
-          npm --prefix rhwp/rhwp-studio ci --no-audit --no-fund
-          sha256sum rhwp/rhwp-agent/vendor/*.tgz > /tmp/agent-vendor.sha256
-          bash cloud/install/build-runtime-assets.sh
-          sha256sum --check /tmp/agent-vendor.sha256
-          cmp rhwp/rhwp-agent/vendor/npm-11.19.2-rau.2.tgz cloud/runtime-assets/rhwp-agent/vendor/npm-11.19.2-rau.2.tgz
-      - name: Build and verify worker and sandbox without publishing
-        if: needs.changes.outputs.app != 'false'
-        run: |
-          command -v podman
-          for target in worker sandbox; do
-            image="rauhwpx-dependency-$target"
-            uid=1000
-            if [[ "$target" == sandbox ]]; then uid=1001; fi
-            podman build --tag "$image" --file "cloud/install/Containerfile.$target" cloud
-            podman run --rm --network=none --user "$uid:$uid" --entrypoint node \
-              --env HOME=/tmp --env PI_SKIP_VERSION_CHECK=1 \
-              --volume "$PWD/scripts/verify-production-dependencies.mjs:/tmp/verify-production-dependencies.mjs:ro" \
-              "$image" /tmp/verify-production-dependencies.mjs \
-              --agent-root /app/rhwp-agent --provider-root /opt/rauhwpx-provider-cli
-            podman run --rm --user "$uid:$uid" --entrypoint bash \
-              --env HOME=/tmp "$image" -lc '
-                set -euo pipefail
-                for directory in /app /app/rhwp-agent /opt/rauhwpx-provider-cli; do
-                  npm --prefix "$directory" audit --omit=dev --audit-level=high
-                done
-              '
-          done
-
   app:
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_USER: rau_test
-          POSTGRES_PASSWORD: rau_test
-          POSTGRES_DB: rau_test
-        ports:
-          - 5432/tcp
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     name: Auth and resource boundary regressions
@@ -260,15 +177,13 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v5
         with:
-          # The cloud workspace requires Node 24; every other package accepts it.
-          node-version: 24
+          node-version: 22.23.3
           cache: npm
           cache-dependency-path: |
             package-lock.json
-            cloud/package-lock.json
             rhwp/rhwp-studio/package-lock.json
             rhwp/rhwp-agent/package-lock.json
-            rhwp/rau-credits/package-lock.json
+            site-api/package-lock.json
       - name: Install dependencies
         run: npm run setup
       - name: Test repository tooling
@@ -277,12 +192,10 @@ jobs:
         run: npm --prefix rhwp/rhwp-agent run typecheck
       - name: Test agent, auth, and resource boundaries
         run: node --test --test-concurrency=1 rhwp/rhwp-agent/tests/*.test.mjs
-      - name: Test hosted authorization service and durable checkpoint storage
-        env:
-          RAU_TEST_POSTGRES_URL: postgresql://rau_test:rau_test@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/rau_test
+      - name: Test install counter and waitlist service
         run: |
-          npm --prefix rhwp/rau-credits ci
-          npm --prefix rhwp/rau-credits test
+          npm --prefix site-api ci
+          npm --prefix site-api test
       - name: Test Studio
         run: npm --prefix rhwp/rhwp-studio test
       - name: Check E2E entry points
@@ -294,13 +207,8 @@ jobs:
           rhwp/rhwp-chrome/sw/fetch-security.test.mjs
           rhwp/rhwp-firefox/sw/fetch-security.test.mjs
           rhwp/rhwp-safari/src/fetch-security.test.mjs
-      - name: Install cloud contract dependencies
-        run: |
-          npm --prefix cloud ci
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends x11-apps bubblewrap
-      - name: Test desktop and sandbox cloud contracts
-        run: npm run test:cloud
+      - name: Test desktop main process
+        run: npm run test:desktop
 
   browser:
     name: Studio browser integration

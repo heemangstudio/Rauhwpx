@@ -285,12 +285,10 @@ test('hub-private paths are readable but never writable across every provider pr
     if (!planning) assert.deepEqual(appPolicy.writableRoots, [baseOpts.rootDir]);
     else assert.equal(appPolicy.type, 'readOnly');
 
-    for (const agentName of ['pi']) {
-      const env = buildPiEnv({ ...profile, piRoot: '/tmp/pi', agentName }, { PATH: '/usr/bin' });
-      assert.equal(env.RHWP_READONLY_ROOTS, privateRoot);
-      assert.equal(env.RHWP_ROOT_DIR, baseOpts.rootDir);
-      assert.equal(env.RHWP_AGENT_NAME, agentName);
-    }
+    const piEnv = buildPiEnv({ ...profile, piRoot: '/tmp/pi' }, { PATH: '/usr/bin' });
+    assert.equal(piEnv.RHWP_READONLY_ROOTS, privateRoot);
+    assert.equal(piEnv.RHWP_ROOT_DIR, baseOpts.rootDir);
+    assert.equal(piEnv.RHWP_AGENT_NAME, 'pi');
   }
 });
 

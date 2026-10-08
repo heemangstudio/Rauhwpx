@@ -45,7 +45,7 @@ function isAgentName(value: unknown): value is AgentName {
   return value === 'claude' || value === 'codex' || value === 'pi';
 }
 
-/** 첫 실행·빈 프로필의 기본 프로바이더. 저장된 Codex/BYOK 선택은 건드리지 않는다. */
+/** 첫 실행·빈 프로필의 기본 프로바이더. 저장된 선택은 건드리지 않는다. */
 export const DEFAULT_CHAT_AGENT: AgentName = 'claude';
 
 /** 저장된 모드. 모드 도입 전 프로필은 안전 → 에이전트, 전체 접근 → 전체로 옮긴다. */
@@ -183,14 +183,9 @@ export function hasExplicitDefaultAgent(storage?: AgentPrefsStorage | null): boo
   }
 }
 
-/**
- * 첫 실행이 끝날 때 쓸 기본 프로바이더.
- * Rau 가 연결됐으면 Rau, 아니면 연결한 BYOK, 아무도 없으면 Rau.
- */
+/** 첫 실행이 끝날 때 쓸 기본 프로바이더 — 처음 연결한 프로바이더, 없으면 기본값. */
 export function firstRunDefaultAgent(configured: readonly AgentName[]): AgentName {
-  if (configured.includes('rau')) return 'rau';
-  const first = configured[0];
-  return first ?? DEFAULT_CHAT_AGENT;
+  return configured[0] ?? DEFAULT_CHAT_AGENT;
 }
 
 /**

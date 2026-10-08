@@ -18,8 +18,7 @@ test('sidebar exposes one agent mode chip without allowing changes during a turn
   assert.match(source, /'ag-approve ag-plan-approve-full', '전체 접근으로 실행'/);
   assert.match(source, /approveActivePlan\(plan\.planId, 'unrestricted', approveFull\)/);
   assert.match(source, /bridge\.approvePlan\(planId, profile\)/);
-  assert.match(source, /disabled: locked/);
-  assert.match(source, /const locked = local \? isControlLocked\(\) \|\| connState !== 'connected'/);
+  assert.match(source, /disabled: isControlLocked\(\) \|\| connState !== 'connected'/);
   assert.match(bridge, /chat-permission-set/);
   assert.match(bridge, /this\.permissionProfile = 'safe'/);
 });

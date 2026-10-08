@@ -2,11 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-const bridge = readFileSync(new URL('../src/agent/bridge.ts', import.meta.url), 'utf8');
 const pending = readFileSync(new URL('../src/agent/pending-edits.ts', import.meta.url), 'utf8');
 
 test('safe profile gates saving on pending review', () => {
-  assert.match(bridge, /permissionProfile: this\.permissionProfile,\n\s+template: readDocumentTemplate/);
   const file = readFileSync(new URL('../src/command/commands/file.ts', import.meta.url), 'utf8');
   assert.match(file, /resolvePendingAgentEditsBeforeSave/);
   assert.match(file, /showPendingAgentEditsDialog/);

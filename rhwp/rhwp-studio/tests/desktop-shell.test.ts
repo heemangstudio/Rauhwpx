@@ -357,7 +357,7 @@ test('bookmark persistence serializes writes and close queues a latest-state flu
   const session = { allowCloseOnce: false, window: { close: () => closed.push('closed') } };
   let canceled = false;
   assert.equal(await completeWindowClose({
-    session, allowClose: true, timeoutMs: 100,
+    session, allowClose: true,
     cancelQuit: () => { canceled = true; },
     persistBookmarks: () => writer.enqueue('failed', { rejectOnError: true }),
   }), false);
@@ -365,7 +365,7 @@ test('bookmark persistence serializes writes and close queues a latest-state flu
   assert.equal(session.allowCloseOnce, false);
   assert.deepEqual(closed, []);
   assert.equal(await completeWindowClose({
-    session, allowClose: true, timeoutMs: 100,
+    session, allowClose: true,
     cancelQuit: () => {},
     persistBookmarks: () => writer.enqueue('retry', { rejectOnError: true }),
   }), true);

@@ -75,13 +75,6 @@ export function defaultSkillDataRoot(env = process.env, platform = process.platf
   return path.join(env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'rhwp', 'skills');
 }
 
-export function defaultRauRoot(env = process.env, platform = process.platform, home = os.homedir()) {
-  if (env.RHWP_RAU_DIR) return path.resolve(env.RHWP_RAU_DIR);
-  if (platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'rhwp', 'rau');
-  if (platform === 'win32') return path.join(env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'rhwp', 'rau');
-  return path.join(env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'rhwp', 'rau');
-}
-
 export function projectSkillMarkdown(markdown, expectedName) {
   if (typeof markdown !== 'string') {
     throw new SkillError('INVALID_SKILL', 'SKILL.md must start with YAML frontmatter');
@@ -1164,7 +1157,6 @@ export class SkillRegistry {
       this.userRoot,
       path.resolve(this.bundledRoot, '..', 'pi', 'skills'),
       path.join(defaultPiRoot(process.env, this.platform, this.home), 'agent'),
-      path.join(defaultRauRoot(process.env, this.platform, this.home), 'agent'),
     ];
   }
 

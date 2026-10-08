@@ -56,8 +56,7 @@ try {
       assert.deepEqual(await page.$$eval('.ag-plan-actions button', (nodes) => nodes.map((node) => node.textContent)),
         ['수정 요청', '전체 접근으로 실행', '에이전트로 실행']);
     }
-    if (scene.params['cloud-phase']) assert.notEqual(await page.evaluate(() => window.sidebarPreview.cloud.controller.getSnapshot().session.kind), 'idle');
-    if (['chat-empty', 'chat-review', 'chat-changes-full', 'cloud-options', 'cloud-disconnected',
+    if (['chat-empty', 'chat-review', 'chat-changes-full',
       'mode-chat', 'mode-plan', 'mode-agent', 'mode-full', 'menu-mode', 'plan-run-modes'].includes(scene.id))
       await page.screenshot({ path: resolve(artifacts, `audit-${scene.id}.png`) });
     console.log(`PASS ${scene.id}`);
@@ -67,12 +66,12 @@ try {
   await page.click('.audit-scene-current input');
   await page.reload({ waitUntil: 'load' });
   await page.waitForSelector('.audit-scene-current input:checked');
-  await page.type('.audit-search', 'quota exhausted');
+  await page.type('.audit-search', 'browserbase failure');
   assert.equal(await page.$$eval('.audit-scene', (nodes) => nodes.length), 1);
   await page.click('.audit-scene-link');
-  await page.waitForFunction(() => new URLSearchParams(location.search).get('auditScene') === 'cloud-exhausted');
+  await page.waitForFunction(() => new URLSearchParams(location.search).get('auditScene') === 'browserbase-error');
   await page.waitForFunction(() => document.body.dataset.auditReady === 'true');
-  assert.equal(await page.evaluate(() => window.sidebarPreview.cloud.controller.getSnapshot().account.quota.remainingMs), 0);
+  assert.equal(await page.evaluate(() => window.sidebarPreview.snapshot().browserbase), 'error');
   await open('audit=1&theme=light');
   const dialogs = await page.$$eval('[data-audit-dialog]', (nodes) => nodes.map((node) => node.dataset.auditDialog));
   for (const dialog of dialogs) {

@@ -68,17 +68,6 @@
   letter-spacing: var(--ag-track-tight);
 }
 
-.rhwp-setup-recovery {
-  margin: -8px 0 0;
-  font-size: var(--ag-fs-body);
-  line-height: var(--ag-lh-secondary);
-  color: var(--n-ink-secondary);
-}
-
-.rhwp-setup-recovery[hidden] {
-  display: none;
-}
-
 .rhwp-setup-providers {
   min-height: 0;
   margin: -3px;
@@ -175,11 +164,6 @@
   mask: url('/icons/provider-codex.png') center / contain no-repeat;
 }
 
-.rhwp-setup-card-logo .ag-provider-icon-mask[data-agent='rau'] {
-  -webkit-mask-image: url('/icons/rau.png');
-  mask-image: url('/icons/rau.png');
-}
-
 .rhwp-setup-card-logo .ag-provider-icon-mask[data-agent='codex'] {
   color: #5b8fd4; /* token-ok */
 }
@@ -249,11 +233,6 @@
 .rhwp-setup-card[data-configured='true'] .rhwp-setup-card-check {
   opacity: 1;
   transform: none;
-}
-
-/* 실패 경로에서는 BYOK 카드만 남긴다. */
-.rhwp-setup-dialog[data-recovery='true'] .rhwp-setup-card:not([data-recovery-option='true']) {
-  display: none;
 }
 
 .rhwp-setup-footer {

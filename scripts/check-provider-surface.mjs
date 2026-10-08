@@ -4,19 +4,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOTS = Object.freeze([
-  'cloud/src',
-  'cloud/install',
   'desktop',
   'rhwp/rhwp-agent/agents',
   'rhwp/rhwp-agent/server.mjs',
   'rhwp/rhwp-agent/style-calibrator.mjs',
   'rhwp/rhwp-agent/cli-setup-manager.mjs',
   'rhwp/rhwp-studio/src/agent',
-  'rhwp/rhwp-studio/src/cloud',
-  'rhwp/rhwp-studio/src/agent',
-]);
-const ALLOWED_BOUNDARY_TESTS = new Set([
-  'tests/desktop-provider-auth.test.mjs',
 ]);
 const ALLOWED_COMPATIBILITY_FILES = new Set([
   'rhwp/rhwp-studio/src/agent/models.ts',
@@ -24,7 +17,7 @@ const ALLOWED_COMPATIBILITY_FILES = new Set([
 ]);
 
 // These are provider identifiers and provider-specific wiring, rather than
-// generic editor cursors or ordinary uses of the Rauhwpx product name.
+// generic editor cursors.
 const FORBIDDEN = Object.freeze([
   /\bgrok\b/i,
   /\bopenCode\b/i,
@@ -35,9 +28,6 @@ const FORBIDDEN = Object.freeze([
   /provider-cursor/i,
   /provider-grok/i,
   /provider-opencode/i,
-  /(?:^|[^a-z])(?:RAU_SECRET_ID|RAU_LOCKED_MODELS|RAU_DEFAULT_MODEL_ID)(?:[^a-z]|$)/,
-  /(?:agentName|agent|provider)\s*[:=]\s*['"]rau['"]/i,
-  /['"]rau['"]\s*:\s*(?:create|new|\{)/i,
 ]);
 
 function trackedFiles({ run = spawnSync } = {}) {
@@ -54,7 +44,6 @@ export function findProviderSurfaceViolations({ run = spawnSync, read = readFile
       violations.push({ file, pattern: 'unsupported provider asset path' });
       continue;
     }
-    if (ALLOWED_BOUNDARY_TESTS.has(file)) continue;
     if (ALLOWED_COMPATIBILITY_FILES.has(file)) continue;
     if (file === 'scripts/check-provider-surface.mjs') continue;
     if (path.basename(file).toLowerCase().startsWith('readme')) continue;

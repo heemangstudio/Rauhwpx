@@ -1,5 +1,5 @@
 /**
- * Pi/Rau document subagents. The root extension owns process lifecycle while
+ * Pi document subagents. The root extension owns process lifecycle while
  * the hub owns every child's document-tool identity and authorization.
  */
 import crypto from 'node:crypto';
@@ -886,7 +886,7 @@ export default async function rhwpPiSubagents(pi: ExtensionAPI): Promise<void> {
   pi.registerTool({
     name: 'subagent_spawn',
     label: 'Spawn Subagent',
-    promptSnippet: 'subagent_spawn: start a Pi/Rau document child (doc-editor, doc-researcher, or general)',
+    promptSnippet: 'subagent_spawn: start a Pi document child (doc-editor, doc-researcher, or general)',
     promptGuidelines: [
       'Delegate only self-contained document tasks and give each child a complete standalone prompt.',
       'Keep working after spawning. Wait only when the result blocks the root task.',
@@ -937,7 +937,7 @@ export default async function rhwpPiSubagents(pi: ExtensionAPI): Promise<void> {
   pi.registerTool({
     name: 'subagent_wait',
     label: 'Wait for Subagents',
-    description: 'Wait for the listed Pi/Rau subagents and return bounded outputs.',
+    description: 'Wait for the listed Pi subagents and return bounded outputs.',
     parameters: schema({
       type: 'object',
       properties: {
@@ -997,7 +997,7 @@ export default async function rhwpPiSubagents(pi: ExtensionAPI): Promise<void> {
   pi.registerTool({
     name: 'subagent_list',
     label: 'List Subagents',
-    description: 'List the subagents created by this root Pi/Rau session.',
+    description: 'List the subagents created by this root Pi session.',
     parameters: schema({ type: 'object', properties: {} }),
     async execute() {
       const records = manager.list();

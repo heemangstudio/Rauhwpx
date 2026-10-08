@@ -57,9 +57,7 @@ for (const agent of ['claude', 'codex', 'pi']) {
       CLI_SETUP_AGENTS: ['codex'],
       makeTemplateWorkerEventHandler: () => () => {},
       buildCopyLayoutWorkerPrompt: (data) => JSON.stringify(data),
-      piManager: { piBin: '/runtime/pi', rootDir: '/runtime/pi-root' },
-      openRouterManager: () => null,
-      OPENROUTER_AGENTS: new Set(),
+      piManager: { piBin: '/runtime/pi', rootDir: '/runtime/pi-root', apiKey: () => null },
       piModelConfig: () => null,
       SESSION_FACTORIES: {
         [agent]: (opts) => {

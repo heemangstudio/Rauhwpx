@@ -1,6 +1,6 @@
 # Regression review implementation
 
-Tracks all 33 reviewed recommendations from the private regression-review Site. Screening flags are heuristics, not a deletion policy. Source guards that protect credentials, approval, cleanup or data loss remain where an equivalent behavioral failure-path check is not yet established.
+Tracks the reviewed recommendations from the private regression-review Site. Screening flags are heuristics, not a deletion policy. Source guards that protect credentials, approval, cleanup or data loss remain where an equivalent behavioral failure-path check is not yet established.
 
 ## Recommendation mapping
 
@@ -23,8 +23,6 @@ Tracks all 33 reviewed recommendations from the private regression-review Site. 
 | R15 | Replace | Mounted version manager tests saved/enabled/blocked prerequisites, comparison invalidation, prompt cancellation and focus. |
 | R16 | Replace | Full editor checks rendered accessibility tree, named controls and active editor input. |
 | R17 | Replace | Full editor intercepts OS print, checks generated SVG, modal closure, cancellation, restored title and unchanged filename/text/dirty state. |
-| R18 | Replace | Production worker launcher extracted and exercised for Claude/Codex/Pi with temporary directories, scoped capabilities and captured backend options. Process cleanup/security guards retained. |
-| R19 | Replace | Unchanged streamed installer runs in private filesystem/PID/network namespaces. Real hashing/extraction/permissions/receipt with controlled network/service boundaries. Untested update/public-HTTPS/development trust guards retained. |
 | R20 | Streamline | Typesetting asserts marks enabled, wrapped geometry, paragraph content/count and merge preservation; screenshots remain evidence. |
 | R21 | Streamline | Deterministic wrapped text and identical-content pagination fixture: applied values, strict downward movement, undo layout and 1-to-4 pages. |
 | R22 | Streamline | 22 inline-prompt settling sleeps replaced by named state waits or paint-cycle completion; real editor scenario passes. |
@@ -47,11 +45,10 @@ Tracks all 33 reviewed recommendations from the private regression-review Site. 
 - `npm --prefix rhwp/rhwp-studio run test:sidebar`, `test:sidebar:skills`, `test:sidebar:skill-editor`: explicitly labeled service fixtures, including transcript follow, geometry, skill import/save/cancel and keyboard behavior.
 - Run the Studio dev server, then `node e2e/{inline-prompt,line-spacing,typesetting,global-shortcut}.test.mjs --mode=headless` individually from the Studio directory. These run against the live editor; provider submission in inline-prompt is a recording boundary.
 - `node e2e/renderer-contract.test.mjs`: architecture/assets and independent production replay, without browser launch.
-- `node --test cloud/tests/install-runtime.test.mjs`: Linux installer sandbox; requires bubblewrap and user namespaces. Other platforms explicitly skip this Linux-only check. Provider/account/service operations are stubs; host filesystem and network are isolated.
 
 ## Live-verification rule
 
-AGENTS.md requires agents changing observable behavior to run the application, exercise a user flow and a failure/cancellation path, and record evidence. Fixtures must be labeled. A regression suite alone is not a live-verification receipt. Native Electron, authenticated model execution and a remote Cloud deployment have not been verified by the browser check.
+AGENTS.md requires agents changing observable behavior to run the application, exercise a user flow and a failure/cancellation path, and record evidence. Fixtures must be labeled. A regression suite alone is not a live-verification receipt. Native Electron and authenticated model execution have not been verified by the browser check.
 
 ## Bugs caught by replacement coverage
 

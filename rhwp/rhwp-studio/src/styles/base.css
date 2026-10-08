@@ -156,7 +156,6 @@
   --shadow-dialog: var(--n-elev-3);
   --shadow-light: var(--n-elev-1);
   --shadow-panel: var(--n-edge-left);
-  --shadow-paper: var(--n-elev-paper);
 
   --overlay-bg: rgba(0, 0, 0, 0.2);
 
@@ -362,7 +361,6 @@
   --shadow-dialog: var(--n-elev-3);
   --shadow-light: var(--n-elev-1);
   --shadow-panel: var(--n-edge-left);
-  --shadow-paper: var(--n-elev-paper);
   --overlay-bg: rgba(0, 0, 0, 0.5);
 
   /* ─── 모던 셸 토큰: 어두운 테마 ─────────────────────
@@ -497,7 +495,7 @@ body {
    않고, 아이콘이 이미지처럼 끌려 나오지 않는다. 대화 본문, 입력,
    diff, 코드·결과 블록, 계획 본문처럼 읽고 복사할 내용만 다시 연다. */
 :is(#studio-header, #status-bar, #ruler-corner, .ag-root, .ag-sheet-layer, .dialog-wrap,
-  .modal-overlay, .cp-overlay, .context-menu, .rhwp-setup-overlay, .ag-cloud-setup-overlay) {
+  .modal-overlay, .cp-overlay, .context-menu, .rhwp-setup-overlay) {
   -webkit-user-select: none;
   user-select: none;
 }
@@ -549,7 +547,6 @@ body.window-inactive ::selection {
 body.window-inactive :is(
   .ag-send:not(.ag-stop), .ag-inline-send, .ag-approve, .ag-hub-retry-btn,
   .ag-settings-primary, .ag-agent-setup-primary, .ag-calibration-primary,
-  .ag-cloud-action.ag-primary, .ag-cloud-setup-button.ag-primary,
   .ag-question-option[data-selected='true'] .ag-question-option-number,
   .ag-skill-toggle[aria-pressed='true'], .ag-settings-toggle-input:checked + .ag-settings-toggle-track,
   .dialog-btn-primary, .dialog-btn-group button.active, .goto-bookmark-item.selected,

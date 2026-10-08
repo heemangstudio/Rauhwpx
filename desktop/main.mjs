@@ -1,7 +1,6 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
-import { readFile, rm } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { rm } from 'node:fs/promises';
 import { basename, dirname, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -14,7 +13,6 @@ import {
   nativeTheme,
   net,
   Notification as ElectronNotification,
-  powerMonitor,
   protocol,
   safeStorage,
   screen,
@@ -59,23 +57,7 @@ import {
   resolveDevelopmentUrl,
 } from './studio-protocol.mjs';
 import { createSecretVault, handleSecretRequest } from './secret-vault.mjs';
-import { CloudClient } from './cloud-client.mjs';
-import { BoatCloud, BoatError, installBoatStatusCadence } from './cloud-boat.mjs';
-import {
-  createRaucloudBrokerProvider,
-  raucloudBrokerUrl,
-} from './cloud-broker.mjs';
-import { CloudCoordinator } from './cloud-coordinator.mjs';
-import { installCloudContinuityTriggers } from './cloud-continuity-triggers.mjs';
-import { CloudDisplayRegistry } from './cloud-display-registry.mjs';
-import { CloudEditDraftStore } from './cloud-edit-drafts.mjs';
-import { CloudHandoffStore } from './cloud-handoff.mjs';
-import { collectProviderAuth as collectImportedProviderAuth } from './cloud-provider-auth.mjs';
-import { CloudProvisioner } from './cloud-provisioner.mjs';
-import { mergeCloudOperationSnapshot } from './cloud-snapshot.mjs';
-import { CloudApiTransport, SshTunnelManager } from './cloud-ssh-tunnel.mjs';
-import { collectProviderAuth } from './provider-auth.mjs';
-import { applyCloudRecovery } from './cloud-result.mjs';
+import { removeRetiredCloudData } from './retired-cloud-data.mjs';
 import { isNewerStableVersion, selectDebAsset } from './update-policy.mjs';
 import { createUpdateLifecycle, completeWindowClose } from './update-lifecycle.mjs';
 import { installAppMenu } from './app-menu.mjs';
@@ -91,8 +73,6 @@ import {
   hasPendingLaunchCleanupSync,
   retainLaunchRootForProcessCleanupSync,
 } from '../rhwp/rhwp-agent/credential-mirror.mjs';
-import { ACCOUNT_SESSION_SECRET_ID, createAccountSession } from '../rhwp/rhwp-agent/account-session.mjs';
-import { createRauCreditsClient, rauCreditsUrl } from '../rhwp/rhwp-agent/rau-credits-client.mjs';
 import {
   launchStoragePaths,
   prepareDevelopmentCaches,
@@ -120,7 +100,6 @@ const launchId = randomUUID();
 const hubToken = createHubToken();
 const devOrigin = devUrl ? new URL(devUrl).origin : null;
 
-const CLOUD_CLOSE_WAIT_MS = 120_000;
 // A hub that dies at every boot stops respawning here; the next window or
 // sidebar request tries again.
 const MAX_HUB_AUTO_RESTARTS = 5;
@@ -406,27 +385,7 @@ class AgentHubOwner {
     const child = spawnHubProcess(launch, {
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
       onMessage: (message, source) => {
-        if (message?.type === 'rhwp-account-status-changed') {
-          if (source === this.#child) {
-            void cloudCoordinator?.refreshAccountStatus().catch(() => {});
-          }
-          return;
-        }
         if (!secretVault) return;
-        // boat credentials stay in the main process; the hub never needs them.
-        if (message?.type === 'rhwp-secret-request' && typeof message.key === 'string'
-          && message.key.startsWith('cloud.boat.')) {
-          if (source.connected) {
-            source.send({
-              type: 'rhwp-secret-response',
-              id: message.id,
-              ok: false,
-              error: 'This secret is not available to the agent hub.',
-              code: 'SECRET_ACCESS_DENIED',
-            });
-          }
-          return;
-        }
         void handleSecretRequest(secretVault, message).then((response) => {
           if (response && source.connected) source.send(response);
         });
@@ -506,22 +465,6 @@ let quitting = false;
 let quitRequested = false;
 let desktopReady = false;
 let secretVault = null;
-let cloudAccountSession = null;
-let cloudCoordinator = null;
-let cloudTransport = null;
-let stopCloudContinuityTriggers = () => {};
-let stopBoatStatusCadence = () => {};
-const cloudDisplayConnections = new CloudDisplayRegistry({
-  openDisplay: (sessionId, listener, options) => requireCloudCoordinator().openDisplay(
-    sessionId,
-    listener,
-    options,
-  ),
-});
-let cloudBroadcastChain = Promise.resolve();
-const CLOUD_BROADCAST_COALESCE_MS = 100;
-let cloudBroadcastTimer = null;
-let cloudBroadcastPending = [];
 const pendingLaunches = [launchRequest({ argv: process.argv, source: 'initial' })];
 const launchStorage = launchStoragePaths({
   tempDir: app.getPath('temp'),
@@ -555,10 +498,6 @@ const systemFonts = createSystemFontService({
   cacheDir: join(app.getPath('userData'), 'fonts'),
   log: (line) => console.log(`[rauhwpx] fonts: ${line}`),
 });
-const cloudEditDraftStore = new CloudEditDraftStore({
-  root: join(app.getPath('userData'), 'cloud', 'edit-drafts'),
-});
-const pendingCloudEditDraftSaves = new Map();
 let uniqueInstallSnapshot = {
   uniqueInstalls: null,
   publicUrl: uniqueInstallsPublicUrl(),
@@ -577,7 +516,6 @@ async function syncUniqueInstallMetric() {
     appVersion: app.getVersion(),
     os: process.platform,
     arch: process.arch,
-    baseUrl: rauCreditsUrl(),
   });
 }
 
@@ -611,229 +549,6 @@ function noteRecentDocument(sessionId, handleId) {
   } catch (error) {
     console.warn('[rauhwpx] recent document update failed:', error);
   }
-}
-
-function normalizeCloudScope(payload = {}) {
-  const threadId = typeof payload.threadId === 'string' && payload.threadId.length <= 256
-    ? payload.threadId
-    : '';
-  const documentId = payload.documentId === null
-    ? null
-    : typeof payload.documentId === 'string' && payload.documentId.length <= 256
-      ? payload.documentId
-      : null;
-  const selectedSessionId = typeof payload.selectedSessionId === 'string'
-    && /^[A-Za-z0-9_-]{1,128}$/.test(payload.selectedSessionId)
-    ? payload.selectedSessionId
-    : null;
-  return { threadId, documentId, selectedSessionId };
-}
-
-function applyCloudSnapshot(session, snapshot) {
-  session.cloudLocked = snapshot?.lease?.owner === 'cloud';
-  session.cloudHandoffId = snapshot?.session?.kind === 'idle' ? null : snapshot?.session?.sessionId ?? null;
-  return snapshot;
-}
-
-async function scopedCloudSnapshot(session, operation = null, { refresh = false } = {}) {
-  // 시작 중의 이벤트 방송이 반쯤 채워진 스냅숏을 보내지 않도록 Cloud 시작을 기다린다.
-  await cloudStartup;
-  const scope = session.cloudScope ?? { threadId: '', documentId: null };
-  const options = {
-    originSessionId: session.sessionId,
-    threadId: scope.threadId,
-    documentId: scope.documentId,
-    selectedSessionId: scope.selectedSessionId,
-  };
-  const scoped = refresh
-    ? await requireCloudCoordinator().refresh(options)
-    : await requireCloudCoordinator().snapshot(options);
-  const snapshot = mergeCloudOperationSnapshot(operation, scoped);
-  return applyCloudSnapshot(session, snapshot);
-}
-
-function cloudEditDraftWindow(sessionId, editSessionId) {
-  return sessions.windows().find((candidate) => {
-    const candidateSession = sessions.sessionForSender(candidate.webContents);
-    return candidateSession.cloudEditDraft?.sessionId === sessionId
-      && candidateSession.cloudEditDraft?.editSessionId === editSessionId;
-  }) ?? null;
-}
-
-async function requestCloudEditDraftSave(window) {
-  const editorSession = sessions.sessionForSender(window.webContents);
-  if (!editorSession.cloudEditDraft) throw new Error('Cloud edit window has no draft identity');
-  const requestId = randomUUID();
-  let timer;
-  const saved = new Promise((resolve, reject) => {
-    pendingCloudEditDraftSaves.set(requestId, {
-      senderId: editorSession.senderId,
-      resolve,
-      reject,
-    });
-    timer = setTimeout(() => {
-      const pending = pendingCloudEditDraftSaves.get(requestId);
-      if (!pending) return;
-      pendingCloudEditDraftSaves.delete(requestId);
-      reject(new Error('Cloud edit draft save timed out'));
-    }, 30_000);
-  });
-  window.webContents.send('cloud:edit-draft-save-requested', { requestId });
-  try {
-    await saved;
-  } finally {
-    clearTimeout(timer);
-    pendingCloudEditDraftSaves.delete(requestId);
-  }
-}
-
-async function broadcastCloudEvent(payload) {
-  await Promise.all(sessions.windows().map(async (window) => {
-    if (window.isDestroyed()) return;
-    const session = sessions.sessionForSender(window.webContents);
-    const snapshot = await scopedCloudSnapshot(session).catch(() => null);
-    if (!snapshot || window.isDestroyed()) return;
-    window.webContents.send('cloud:event', { ...payload, snapshot });
-  }));
-}
-
-const pendingMergeNotifications = new Map();
-let mergeNotificationTimer = null;
-// Held until click or close so the click handler is not garbage-collected.
-const cloudMergeNotifications = new Set();
-// At most one broadcast runs; events that arrive meanwhile join the next batch.
-let cloudBroadcastInFlight = false;
-
-async function openCloudNotification(payload) {
-  const windows = sessions.windows().filter((candidate) => !candidate.isDestroyed());
-  if (!windows.length) return;
-  const target = windows.find((candidate) => {
-    const candidateSession = sessions.sessionForSender(candidate.webContents);
-    return payload.documentId && candidateSession.cloudScope?.documentId === payload.documentId;
-  }) ?? windows[0];
-  const targetSession = sessions.sessionForSender(target.webContents);
-  targetSession.cloudScope = {
-    ...(targetSession.cloudScope ?? { threadId: '', documentId: payload.documentId ?? null }),
-    selectedSessionId: payload.sessionId,
-  };
-  if (target.isMinimized()) target.restore();
-  target.show();
-  target.focus();
-  const snapshot = await scopedCloudSnapshot(targetSession).catch(() => null);
-  if (!snapshot || target.isDestroyed()) return;
-  target.webContents.send('cloud:event', {
-    type: 'notification-open',
-    sessionId: payload.sessionId,
-    operationId: payload.operationId ?? null,
-    snapshot,
-  });
-}
-
-/**
- * A completed Cloud turn has to reach the user while they are in another app.
- * macOS only delivers these for a signed bundle, so this stays best-effort.
- * One turn can finish several merge requests at once, so a burst settles into
- * a single banner on the same cadence as the event broadcast coalescing.
- */
-function notifyCloudMergeReady(payload) {
-  if (payload?.type !== 'merge-prefetch-completed') return;
-  pendingMergeNotifications.set(payload.operationId ?? pendingMergeNotifications.size, payload);
-  if (mergeNotificationTimer) return;
-  mergeNotificationTimer = setTimeout(() => {
-    mergeNotificationTimer = null;
-    const payloads = [...pendingMergeNotifications.values()];
-    pendingMergeNotifications.clear();
-    try {
-      if (!payloads.length || !ElectronNotification.isSupported()) return;
-      const windows = sessions.windows().filter((candidate) => !candidate.isDestroyed());
-      // The sidebar already shows the arriving change while the app has focus.
-      if (!windows.length || windows.some((candidate) => candidate.isFocused())) return;
-      const [first] = payloads;
-      const notification = new ElectronNotification({
-        title: 'Cloud 변경이 준비되었습니다',
-        body: payloads.length > 1
-          ? `${payloads.length}개의 Cloud 변경이 도착했습니다.`
-          : first.fileName
-            ? `${first.fileName}${Number.isSafeInteger(first.turn) ? ` · ${first.turn}턴` : ''}`
-            : '검토할 Cloud 변경이 도착했습니다.',
-      });
-      cloudMergeNotifications.add(notification);
-      const release = () => cloudMergeNotifications.delete(notification);
-      notification.on('click', () => {
-        release();
-        void openCloudNotification(first).catch((error) => {
-          console.warn('[rauhwpx] cloud notification open failed:', error);
-        });
-      });
-      notification.on('close', release);
-      notification.show();
-    } catch (error) {
-      console.warn('[rauhwpx] cloud notification failed:', error);
-    }
-  }, CLOUD_BROADCAST_COALESCE_MS);
-  mergeNotificationTimer.unref?.();
-}
-
-function queueCloudBroadcast(payload) {
-  notifyCloudMergeReady(payload);
-  // Build one snapshot per burst, but never collapse ordered agent deltas.
-  // The renderer reconciles them with the stable timeline at each boundary.
-  // Durable handoffs and operation snapshots can each contain the full timeline.
-  // Renderers reconcile from the per-window snapshot added at broadcast time.
-  const { handoff, snapshot, ...notification } = payload;
-  cloudBroadcastPending.push(notification);
-  scheduleCloudBroadcast();
-}
-
-function scheduleCloudBroadcast() {
-  // A slow broadcast (many windows, a long timeline) must not stack snapshot
-  // rebuilds behind it; the next batch is armed once it settles.
-  if (cloudBroadcastTimer || cloudBroadcastInFlight) return;
-  cloudBroadcastTimer = setTimeout(() => {
-    cloudBroadcastTimer = null;
-    const events = cloudBroadcastPending;
-    cloudBroadcastPending = [];
-    if (!events.length) return;
-    cloudBroadcastInFlight = true;
-    cloudBroadcastChain = broadcastCloudEvent({ type: 'cloud-event-batch', events })
-      .catch((error) => console.warn('[rauhwpx] cloud event broadcast failed:', error))
-      .finally(() => {
-        cloudBroadcastInFlight = false;
-        if (cloudBroadcastPending.length) scheduleCloudBroadcast();
-      });
-  }, CLOUD_BROADCAST_COALESCE_MS);
-  cloudBroadcastTimer.unref?.();
-}
-
-function requireCloudCoordinator() {
-  if (!cloudCoordinator) throw new Error('Cloud service is not ready');
-  return cloudCoordinator;
-}
-
-// 첫 창은 Cloud 시작을 기다리지 않고 뜬다. cloud IPC와 스냅숏은 시작이 끝날 때까지
-// 기다리고, 시작이 실패하면 같은 오류로 거절된다.
-let settleCloudStartup = { resolve: () => {}, reject: () => {} };
-const cloudStartup = new Promise((resolve, reject) => {
-  settleCloudStartup = { resolve, reject };
-});
-cloudStartup.catch(() => {});
-
-function handleCloudIpc(channel, handler) {
-  ipcMain.handle(channel, async (event, ...args) => {
-    await cloudStartup;
-    return handler(event, ...args);
-  });
-}
-
-const RAUCLOUD_DEVICE_SECRET = 'cloud.managed-device-id';
-
-async function raucloudDeviceIdentity() {
-  let id = String(await secretVault.get(RAUCLOUD_DEVICE_SECRET).catch(() => '') ?? '').trim();
-  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/.test(id)) {
-    id = randomUUID();
-    await secretVault.set(RAUCLOUD_DEVICE_SECRET, id);
-  }
-  return { id, name: app.getName() };
 }
 
 async function loadNativeBookmarks() {
@@ -873,14 +588,7 @@ const updateLifecycle = createUpdateLifecycle({
   isInteractive: () => manualUpdateCheck || interactiveUpdateDownload,
   showMessageBox: (options) => dialog.showMessageBox(options),
   openReleases: () => shell.openExternal(RELEASES_URL),
-  cleanupTasks: [
-    () => cloudDisplayConnections.closeAll(),
-    () => stopCloudContinuityTriggers(),
-    () => stopBoatStatusCadence(),
-    () => cloudCoordinator?.stop(),
-    () => hubOwner.teardown(),
-  ],
-  stopTransport: () => cloudTransport?.stop(),
+  cleanup: () => hubOwner.teardown(),
   onQuitRequested: (requested) => { quitRequested = requested; },
   onTeardown: () => { quitting = true; },
 });
@@ -1054,15 +762,10 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
   const windowId = window.id;
   windowFrames.track(window);
   installTextContextMenu({ Menu, webContents: window.webContents, window, isMac });
-  const displayOwnerId = window.webContents.id;
-  const closeDisplayConnection = () => {
-    void cloudDisplayConnections.close(displayOwnerId);
-  };
   const session = sessions.addWindow(window, { source: launch.source, openFiles: [] });
   session.generatedDocument = generatedDocument
     ? { launchDocumentId: randomUUID(), ...generatedDocument }
     : null;
-  session.cloudEditDraft = session.generatedDocument?.cloudEditDraft ?? null;
   session.allowCloseOnce = false;
   session.pendingCloseRequestId = null;
   // The renderer registers its close listener while main.ts evaluates, and an
@@ -1070,11 +773,6 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
   session.rendererLoaded = false;
   session.closeDeferred = false;
   session.rendererLoadFailed = false;
-  session.cloudLocked = false;
-  session.cloudHandoffId = null;
-  session.cloudTransferPromise = null;
-  session.cloudScope = { threadId: '', documentId: null };
-  session.cloudTransferIntent = null;
   const requestRendererClose = () => {
     if (session.pendingCloseRequestId) return;
     session.pendingCloseRequestId = randomUUID();
@@ -1099,12 +797,6 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
     requestRendererClose();
   });
   window.on('closed', () => {
-    for (const [requestId, pending] of pendingCloudEditDraftSaves) {
-      if (pending.senderId !== session.senderId) continue;
-      pendingCloudEditDraftSaves.delete(requestId);
-      pending.reject(new Error('Cloud edit window closed before saving'));
-    }
-    closeDisplayConnection();
     agentAttention.forget(windowId);
     releaseRendererDocuments(session.sessionId, { documentLeases, nativeFiles });
     sessions.removeWindow(window);
@@ -1150,7 +842,6 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
   });
   window.webContents.on('render-process-gone', (_event, details) => {
     console.warn('[rauhwpx] renderer process gone:', details?.reason);
-    closeDisplayConnection();
     // An unanswered close prompt died with the renderer; clear it so the
     // window can close (the close handler skips the prompt for dead renderers).
     session.pendingCloseRequestId = null;
@@ -1160,7 +851,6 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
     releaseRendererDocuments(session.sessionId, { documentLeases, nativeFiles });
     launchFiles.length = 0;
   });
-  window.webContents.once('destroyed', closeDisplayConnection);
   window.webContents.setWindowOpenHandler(({ url }) => {
     // 인쇄 미리보기 같은 앱 내부 surface는 외부 브라우저가 아니라 네이티브
     // 자식 창으로 연다 — renderer 의 window.open 이 반환하는 창에 문서를 쓰고
@@ -1528,531 +1218,6 @@ ipcMain.handle('desktop:document-release', (event) => {
   const session = sessionForEvent(event);
   documentLeases.releaseSession(session.sessionId);
 });
-handleCloudIpc('cloud:get-state', async (event, payload = {}) => {
-  const session = sessionForEvent(event);
-  session.cloudScope = normalizeCloudScope(payload);
-  return scopedCloudSnapshot(session, null, { refresh: true });
-});
-handleCloudIpc('cloud:save-profile', async (event, payload) => {
-  const session = sessionForEvent(event);
-  return scopedCloudSnapshot(session, await requireCloudCoordinator().saveProfile(payload));
-});
-handleCloudIpc('cloud:test-profile', async (event, payload) => {
-  const session = sessionForEvent(event);
-  return scopedCloudSnapshot(session, await requireCloudCoordinator().testProfile(payload));
-});
-handleCloudIpc('cloud:provision', async (event, payload) => {
-  const session = sessionForEvent(event);
-  return scopedCloudSnapshot(session, await requireCloudCoordinator().provision(payload));
-});
-handleCloudIpc('cloud:pair', async (event, payload) => {
-  const session = sessionForEvent(event);
-  return scopedCloudSnapshot(session, await requireCloudCoordinator().pair(payload));
-});
-handleCloudIpc('cloud:select-server-mode', async (event, payload = {}) => {
-  const session = sessionForEvent(event);
-  return scopedCloudSnapshot(session, await requireCloudCoordinator().selectServerMode(payload?.mode));
-});
-handleCloudIpc('cloud:spawn-sandbox', async (event, payload = {}) => {
-  const session = sessionForEvent(event);
-  return scopedCloudSnapshot(session, await requireCloudCoordinator().spawnAppServer({
-    providerId: payload?.providerId ?? null,
-    selectedProvider: payload?.selectedProvider ?? null,
-  }));
-});
-handleCloudIpc('cloud:sandbox-status', async (event) => {
-  const session = sessionForEvent(event);
-  return scopedCloudSnapshot(session, await requireCloudCoordinator().appServerStatus());
-});
-handleCloudIpc('cloud:force-quit-account', async (event) => {
-  const session = sessionForEvent(event);
-  return scopedCloudSnapshot(session, await requireCloudCoordinator().forceQuitAccountCloud());
-});
-handleCloudIpc('cloud:reconnect-link', async (event, payload = {}) => {
-  const session = sessionForEvent(event);
-  // Only a pressed 다시 연결 button sends `explicit`; automatic reconnects never start a stopped boat VM.
-  return scopedCloudSnapshot(session, await requireCloudCoordinator().reconnectCloud({
-    userIntent: payload?.explicit === true,
-  }));
-});
-handleCloudIpc('cloud:restart-service', async (event) => {
-  const session = sessionForEvent(event);
-  return scopedCloudSnapshot(session, await requireCloudCoordinator().restartCloudService());
-});
-handleCloudIpc('cloud:inspect-host-key', async (event) => {
-  sessionForEvent(event);
-  return requireCloudCoordinator().inspectHostKey();
-});
-handleCloudIpc('cloud:trust-host-key', async (event, payload = {}) => {
-  const session = sessionForEvent(event);
-  return scopedCloudSnapshot(session, await requireCloudCoordinator().trustHostKey({
-    fingerprint: typeof payload?.fingerprint === 'string' ? payload.fingerprint : '',
-  }));
-});
-handleCloudIpc('cloud:reimport-logins', async (event, payload = {}) => {
-  const session = sessionForEvent(event);
-  return scopedCloudSnapshot(session, await requireCloudCoordinator().reimportProviderLogins({
-    provider: typeof payload?.provider === 'string' ? payload.provider : null,
-  }));
-});
-handleCloudIpc('cloud:discard-missing-sessions', async (event) => {
-  const session = sessionForEvent(event);
-  return scopedCloudSnapshot(session, await requireCloudCoordinator().discardMissingSessions());
-});
-handleCloudIpc('cloud:recreate-link', async (event) => {
-  const session = sessionForEvent(event);
-  return scopedCloudSnapshot(session, await requireCloudCoordinator().recreateCloud());
-});
-handleCloudIpc('cloud:teardown-sandbox', async (event, payload = {}) => {
-  const session = sessionForEvent(event);
-  return scopedCloudSnapshot(session, await requireCloudCoordinator().teardownAppServer({
-    force: payload?.force === true,
-  }));
-});
-handleCloudIpc('cloud:takeover-sandbox', async (event) => {
-  const session = sessionForEvent(event);
-  return scopedCloudSnapshot(session, await requireCloudCoordinator().takeoverAppServer());
-});
-handleCloudIpc('cloud:account-logout', async (event) => {
-  const session = sessionForEvent(event);
-  return scopedCloudSnapshot(session, await requireCloudCoordinator().logoutRaucloud());
-});
-const BOAT_LINK_KINDS = new Set(['verification', 'checkout', 'api-keys', 'dashboard']);
-
-/**
- * boat 채널은 예외 대신 봉투를 돌려준다. invoke 거절은 메시지만 남기고 code를 잃기 때문에
- * preload가 봉투를 풀어 code와 한국어 메시지를 함께 전달한다.
- */
-function boatIpcFailure(error) {
-  const code = typeof error?.code === 'string' && /^BOAT_[A-Z_]+$/.test(error.code) ? error.code : 'BOAT_UNAVAILABLE';
-  const message = error instanceof BoatError
-    || (typeof error?.message === 'string' && /[가-힣]/.test(error.message))
-    ? error.message
-    : 'boat 요청을 처리하지 못했습니다.';
-  return { code, message };
-}
-
-function handleBoat(channel, run) {
-  ipcMain.handle(channel, async (event, payload) => {
-    const session = sessionForEvent(event);
-    try {
-      await cloudStartup;
-      return { ok: true, value: await run(session, payload && typeof payload === 'object' ? payload : {}) };
-    } catch (error) {
-      console.warn(`[rauhwpx] ${channel} failed:`, error?.code ?? '', error?.detail ?? error?.message ?? error);
-      return { ok: false, error: boatIpcFailure(error) };
-    }
-  });
-}
-
-function boatText(value, maxLength) {
-  const text = typeof value === 'string' ? value.trim() : '';
-  return text.length <= maxLength ? text : '';
-}
-
-handleBoat('cloud:boat-email-start', (_session, payload) => (
-  requireCloudCoordinator().boatStartEmailSignIn({ email: boatText(payload.email, 254) })
-));
-handleBoat('cloud:boat-email-poll', async (session, payload) => {
-  const claimId = boatText(payload.claimId, 64);
-  if (!/^[0-9a-f-]{36}$/i.test(claimId)) return { status: 'expired' };
-  const result = await requireCloudCoordinator().boatPollSignIn({ claimId });
-  return result.status === 'connected'
-    ? { status: 'connected', snapshot: await scopedCloudSnapshot(session, result.snapshot) }
-    : { status: result.status };
-});
-handleBoat('cloud:boat-connect-key', async (session, payload) => (
-  scopedCloudSnapshot(session, await requireCloudCoordinator().boatConnectApiKey({
-    apiKey: boatText(payload.apiKey, 512),
-  }))
-));
-handleBoat('cloud:boat-open-link', (_session, payload) => {
-  const kind = BOAT_LINK_KINDS.has(payload.kind) ? payload.kind : null;
-  if (!kind) throw new BoatError('BOAT_LINK_UNAVAILABLE');
-  return requireCloudCoordinator().boatOpenLink({ kind, claimId: boatText(payload.claimId, 64) || null });
-});
-handleBoat('cloud:boat-setup', async (session, payload) => (
-  scopedCloudSnapshot(session, await requireCloudCoordinator().boatSetup({
-    machine: payload.machine === 'small' ? 'small' : 'default',
-  }))
-));
-handleBoat('cloud:boat-wake', async (session) => (
-  scopedCloudSnapshot(session, await requireCloudCoordinator().boatWake())
-));
-handleBoat('cloud:boat-stop', async (session) => (
-  scopedCloudSnapshot(session, await requireCloudCoordinator().boatStop())
-));
-handleBoat('cloud:boat-refresh', async (session) => (
-  scopedCloudSnapshot(session, await requireCloudCoordinator().boatRefresh())
-));
-handleBoat('cloud:boat-disconnect', async (session, payload) => (
-  scopedCloudSnapshot(session, await requireCloudCoordinator().boatDisconnect({
-    deleteServer: payload.deleteServer === true,
-  }))
-));
-handleCloudIpc('cloud:transfer-intent', async (event, payload = {}) => {
-  const session = sessionForEvent(event);
-  const scope = normalizeCloudScope(payload);
-  session.cloudScope = scope;
-  if (payload.pending === true) {
-    if (!session.cloudTransferIntent) {
-      let settle;
-      const promise = new Promise((resolve) => { settle = resolve; });
-      session.cloudTransferIntent = { ...scope, promise, settle, settled: false };
-    }
-  } else if (session.cloudTransferIntent) {
-    if (!session.cloudTransferIntent.settled) {
-      session.cloudTransferIntent.settled = true;
-      session.cloudTransferIntent.settle(false);
-    }
-    session.cloudTransferIntent = null;
-  }
-  return scopedCloudSnapshot(session);
-});
-handleCloudIpc('cloud:read-reference', async (event, payload = {}) => {
-  sessionForEvent(event);
-  const id = String(payload.id ?? '');
-  const scope = String(payload.scope ?? '');
-  const scopeId = scope === 'global' ? 'global' : String(payload.scopeId ?? '');
-  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) throw new Error('Reference id is invalid');
-  if (!['chat', 'document', 'global'].includes(scope)) throw new Error('Reference scope is invalid');
-  if (!scopeId || scopeId.length > 256 || /[\u0000-\u001f\u007f]/.test(scopeId)) {
-    throw new Error('Reference scope id is invalid');
-  }
-  const context = await sessions.contextForSender(event.sender);
-  const url = new URL(context.hubUrl);
-  url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
-  url.pathname = `/reference-files/${encodeURIComponent(id)}`;
-  url.searchParams.set('scope', scope);
-  url.searchParams.set('scopeId', scopeId);
-  url.searchParams.set('sessionId', context.sessionId);
-  const response = await net.fetch(url.toString(), {
-    headers: { authorization: `Bearer ${context.hubToken}` },
-    cache: 'no-store',
-  });
-  if (!response.ok) throw new Error(`Reference export failed with HTTP ${response.status}`);
-  const declared = Number(response.headers.get('content-length'));
-  if (Number.isFinite(declared) && declared > 128 * 1024 * 1024) {
-    throw new Error('Reference export exceeds 128 MiB');
-  }
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (!bytes.length || bytes.length > 128 * 1024 * 1024) throw new Error('Reference export size is invalid');
-  const expectedDigest = response.headers.get('x-content-sha256');
-  const digest = createHash('sha256').update(bytes).digest('hex');
-  if (!expectedDigest || expectedDigest !== digest) throw new Error('Reference export failed integrity verification');
-  return { bytes: new Uint8Array(bytes), sha256: digest, size: bytes.length };
-});
-handleCloudIpc('cloud:transfer', async (event, payload) => {
-  const session = sessionForEvent(event);
-  session.cloudScope = normalizeCloudScope(payload);
-  if (payload?.permissionProfile !== 'unrestricted') {
-    throw new Error('Cloud agents require Full access');
-  }
-  // Recovery retries are checked against their durable handoff token below;
-  // an accepted retry can return its existing lease without another upload.
-  if (session.cloudLocked && !payload?.document?.restartToken) throw new Error('This document is already owned by a cloud session');
-  if (session.cloudTransferPromise) return scopedCloudSnapshot(session, await session.cloudTransferPromise);
-  const lease = documentLeases.leaseForSession(session.sessionId);
-  const transfer = requireCloudCoordinator().transfer(payload, {
-    originSessionId: session.sessionId,
-    originPath: lease?.canonicalPath ?? null,
-    originDigest: nativeFiles.originDigestForSessionPath(session.sessionId, lease?.canonicalPath),
-  });
-  session.cloudTransferPromise = transfer;
-  try {
-    const snapshot = await transfer;
-    const scoped = await scopedCloudSnapshot(session, snapshot);
-    if (session.cloudTransferIntent && !session.cloudTransferIntent.settled) {
-      session.cloudTransferIntent.settled = true;
-      session.cloudTransferIntent.settle(true);
-    }
-    return scoped;
-  } catch (error) {
-    if (session.cloudTransferIntent && !session.cloudTransferIntent.settled) {
-      session.cloudTransferIntent.settled = true;
-      session.cloudTransferIntent.settle(false);
-    }
-    throw error;
-  } finally {
-    session.cloudTransferPromise = null;
-  }
-});
-handleCloudIpc('cloud:command', async (event, payload) => {
-  const session = sessionForEvent(event);
-  const operation = await requireCloudCoordinator().command(payload);
-  return scopedCloudSnapshot(session, operation);
-});
-handleCloudIpc('cloud:begin-edit', async (event, payload = {}) => {
-  const session = sessionForEvent(event);
-  const sessionId = String(payload?.sessionId ?? '');
-  if (!/^[A-Za-z0-9_-]{8,128}$/.test(sessionId)) throw new Error('Invalid cloud session id');
-  let draft = await cloudEditDraftStore.get(sessionId);
-  let operation = null;
-  if (!draft) {
-    const prepared = await requireCloudCoordinator().prepareEditDraft({ sessionId });
-    draft = await cloudEditDraftStore.save(prepared.draft);
-    operation = prepared.operation ?? null;
-  }
-  const existing = cloudEditDraftWindow(sessionId, draft.editSessionId);
-  if (existing) {
-    if (existing.isMinimized()) existing.restore();
-    existing.show();
-    existing.focus();
-  } else {
-    await createWindow(
-      launchRequest({ source: 'cloud-edit-draft' }),
-      {
-        generatedDocument: {
-          fileName: draft.fileName,
-          bytes: draft.bytes,
-          readOnly: false,
-          cloudEditDraft: {
-            sessionId,
-            editSessionId: draft.editSessionId,
-            boundary: draft.boundary,
-          },
-        },
-      },
-    );
-  }
-  return {
-    snapshot: await scopedCloudSnapshot(session, operation),
-    editDraft: {
-      sessionId,
-      editSessionId: draft.editSessionId,
-      boundary: draft.boundary,
-      fileName: draft.fileName,
-      savedAt: draft.savedAt,
-    },
-  };
-});
-handleCloudIpc('cloud:edit-draft-save', async (event, payload = {}) => {
-  const session = sessionForEvent(event);
-  const identity = session.cloudEditDraft;
-  const requestId = typeof payload?.requestId === 'string' ? payload.requestId : null;
-  const pending = requestId ? pendingCloudEditDraftSaves.get(requestId) : null;
-  try {
-    if (!identity
-      || payload?.sessionId !== identity.sessionId
-      || payload?.editSessionId !== identity.editSessionId
-      || payload?.boundary?.operationId !== identity.boundary?.operationId
-      || payload?.boundary?.revision !== identity.boundary?.revision
-      || payload?.boundary?.writerGeneration !== identity.boundary?.writerGeneration
-      || payload?.boundary?.stateVersion !== identity.boundary?.stateVersion) {
-      throw new Error('Cloud edit draft identity does not match this window');
-    }
-    const saved = await cloudEditDraftStore.save({
-      ...identity,
-      fileName: payload.fileName,
-      bytes: payload.bytes,
-    });
-    if (pending && pending.senderId === session.senderId) pending.resolve(saved);
-    return { savedAt: saved.savedAt, sha256: saved.sha256, size: saved.size };
-  } catch (error) {
-    if (pending && pending.senderId === session.senderId) pending.reject(error);
-    throw error;
-  }
-});
-handleCloudIpc('cloud:continue-edit', async (event, payload = {}) => {
-  const session = sessionForEvent(event);
-  const sessionId = String(payload?.sessionId ?? '');
-  const editSessionId = String(payload?.editSessionId ?? '');
-  if (!/^[A-Za-z0-9_-]{8,128}$/.test(sessionId)
-    || !/^[A-Za-z0-9._:-]{1,160}$/.test(editSessionId)) {
-    throw new Error('Invalid cloud edit identity');
-  }
-  const editorWindow = cloudEditDraftWindow(sessionId, editSessionId);
-  if (editorWindow) await requestCloudEditDraftSave(editorWindow);
-  const draft = await cloudEditDraftStore.get(sessionId);
-  if (!draft || draft.editSessionId !== editSessionId) {
-    throw new Error('Saved Cloud edit draft is unavailable');
-  }
-  const operation = await requireCloudCoordinator().resumeEditedDocument({
-    sessionId,
-    editSessionId,
-    boundary: draft.boundary,
-    bytes: draft.bytes,
-    fileName: draft.fileName,
-    changeSummary: typeof payload?.changeSummary === 'string'
-      ? payload.changeSummary.trim().slice(0, 4000)
-      : '',
-  });
-  await cloudEditDraftStore.remove(sessionId, editSessionId);
-  if (editorWindow && !editorWindow.isDestroyed()) {
-    const editorSession = sessions.sessionForSender(editorWindow.webContents);
-    editorSession.allowCloseOnce = true;
-    editorWindow.close();
-  }
-  return {
-    snapshot: await scopedCloudSnapshot(session, operation),
-    editDraft: null,
-  };
-});
-handleCloudIpc('cloud:dismiss-session', async (event, payload) => {
-  const session = sessionForEvent(event);
-  const operation = await requireCloudCoordinator().dismissSession(payload);
-  return scopedCloudSnapshot(session, operation);
-});
-handleCloudIpc('cloud:complete-takeover', async (event, payload) => {
-  const session = sessionForEvent(event);
-  const operation = await requireCloudCoordinator().completeTakeover(payload);
-  return scopedCloudSnapshot(session, operation);
-});
-handleCloudIpc('cloud:download-result', async (event, payload) => {
-  const session = sessionForEvent(event);
-  const coordinator = requireCloudCoordinator();
-  // Wake before taking the handoff reader: a resumed boat VM may need a new SSH address.
-  await coordinator.wakeBoatForUser({ reason: 'download', sessionId: payload?.sessionId });
-  return coordinator.withActiveHandoff(payload.sessionId, async () => {
-    const result = await coordinator.downloadResult(payload);
-    const handoff = await coordinator.handoffForSession(payload?.sessionId);
-    let conflict = 'none';
-    if (handoff?.originPath && handoff.documentDigest) {
-      try {
-        const current = await readFile(handoff.originPath);
-        if (createHash('sha256').update(current).digest('hex') !== (Object.hasOwn(handoff, 'originDigest') ? handoff.originDigest : handoff.documentDigest)) {
-          conflict = 'external-change';
-        }
-      } catch {
-        conflict = 'external-change';
-      }
-    }
-    const preview = await createWindow(
-      launchRequest({ source: 'cloud-result-preview' }),
-      { generatedDocument: { fileName: result.fileName, bytes: result.bytes, readOnly: true } },
-    );
-    return {
-      ...result,
-      snapshot: await scopedCloudSnapshot(session, result.snapshot),
-      previewOpened: Boolean(preview),
-      conflict,
-    };
-  });
-});
-handleCloudIpc('cloud:prepare-restart-document', async (event, payload) => {
-  const session = sessionForEvent(event);
-  const sessionId = String(payload?.sessionId ?? '');
-  if (!/^[A-Za-z0-9_-]{8,128}$/.test(sessionId)) throw new Error('Invalid cloud session id');
-  return requireCloudCoordinator().prepareRestartDocument({ sessionId }, {
-    originSessionId: session.sessionId,
-    originPath: documentLeases.leaseForSession(session.sessionId)?.canonicalPath ?? null,
-  });
-});
-handleCloudIpc('cloud:download-checkpoint', async (event, payload) => {
-  sessionForEvent(event);
-  const sessionId = String(payload?.sessionId ?? '');
-  if (!/^[A-Za-z0-9_-]{8,128}$/.test(sessionId)) throw new Error('Invalid cloud session id');
-  const operationId = payload?.operationId == null ? null : String(payload.operationId);
-  if (operationId !== null && !/^[A-Za-z0-9._:-]{1,160}$/.test(operationId)) {
-    throw new Error('Invalid cloud checkpoint operation id');
-  }
-  const kind = payload?.kind ?? null;
-  if (kind !== null && kind !== 'turn') throw new Error('Invalid cloud checkpoint kind');
-  try {
-    return {
-      ok: true,
-      value: await requireCloudCoordinator().downloadCheckpoint({
-        sessionId,
-        operationId,
-        ...(kind ? { kind } : {}),
-        explicit: payload?.explicit === true,
-      }),
-    };
-  } catch (error) {
-    // A stopped boat VM answers BOAT_SERVER_STOPPED; the envelope keeps that code across IPC.
-    if (error instanceof BoatError) return { ok: false, error: boatIpcFailure(error) };
-    // A missing checkpoint stays missing until the session changes. The mirror stops asking.
-    const status = Number(error?.status);
-    if (error?.retryable === false && status >= 400 && status < 500 && typeof error?.code === 'string') {
-      return { ok: false, error: { code: error.code, message: 'Cloud 체크포인트를 찾지 못했습니다.', retryable: false } };
-    }
-    throw error;
-  }
-});
-handleCloudIpc('cloud:publish-checkpoint', async (event, payload) => {
-  const session = sessionForEvent(event);
-  const sessionId = String(payload?.sessionId ?? '');
-  if (!/^[A-Za-z0-9_-]{8,128}$/.test(sessionId)) throw new Error('Invalid cloud session id');
-  const operationId = payload?.operationId == null ? null : String(payload.operationId);
-  if (operationId !== null && !/^[A-Za-z0-9._:-]{1,160}$/.test(operationId)) {
-    throw new Error('Invalid cloud checkpoint operation id');
-  }
-  const coordinator = requireCloudCoordinator();
-  await coordinator.wakeBoatForUser({ reason: 'checkpoint' });
-  return coordinator.withActiveHandoff(sessionId, async (handoff) => {
-    const lease = documentLeases.leaseForSession(session.sessionId);
-    if (!handoff || !lease || lease.identity.documentId !== handoff.originDocumentId
-      || lease.canonicalPath !== handoff.originPath) {
-      throw new Error('Open the origin document on its origin device before publishing it');
-    }
-    return coordinator.publishCheckpoint({ sessionId, operationId });
-  });
-});
-handleCloudIpc('cloud:display-open', async (event, payload = {}) => {
-  sessionForEvent(event);
-  const sessionId = String(payload?.sessionId ?? '');
-  if (!/^[A-Za-z0-9_-]{8,128}$/.test(sessionId)) throw new Error('Invalid cloud session id');
-  const sender = event.sender;
-  return cloudDisplayConnections.open(sender.id, sessionId, (displayEvent, connectionId) => {
-    if (!sender.isDestroyed()) sender.send('cloud:display-event', { connectionId, event: displayEvent });
-  });
-});
-handleCloudIpc('cloud:display-close', async (event, payload = {}) => {
-  sessionForEvent(event);
-  const connectionId = typeof payload?.connectionId === 'string' ? payload.connectionId : '';
-  if (!connectionId) return false;
-  return cloudDisplayConnections.close(event.sender.id, connectionId);
-});
-handleCloudIpc('cloud:display-input', async (event, payload = {}) => {
-  sessionForEvent(event);
-  const connectionId = typeof payload?.connectionId === 'string' ? payload.connectionId : '';
-  if (!connectionId) throw new Error('Invalid cloud display connection id');
-  return cloudDisplayConnections.sendInput(event.sender.id, connectionId, payload.event);
-});
-handleCloudIpc('cloud:resolve-result', async (event, payload = {}) => {
-  const session = sessionForEvent(event);
-  const coordinator = requireCloudCoordinator();
-  return coordinator.withActiveHandoff(payload.sessionId, async (handoff) => {
-    if (!handoff?.recoveryPath || !handoff.resultDigest) throw new Error('Verified cloud recovery is unavailable');
-    const action = String(payload.action ?? '');
-    if (action === 'replace') {
-      const lease = documentLeases.leaseForSession(session.sessionId);
-      if (
-        !lease
-        || lease.identity.documentId !== handoff.originDocumentId
-        || lease.canonicalPath !== handoff.originPath
-      ) {
-        throw new Error('Open the origin document on its origin device before replacing it');
-      }
-    }
-    if (action === 'replace' || action === 'keep-both') {
-      const recoveryBytes = await readFile(handoff.recoveryPath);
-      validateNativeDocumentBytes(handoff.originPath || handoff.recoveryPath, recoveryBytes);
-    }
-    const resolution = await applyCloudRecovery({
-      recoveryPath: handoff.recoveryPath,
-      resultDigest: handoff.resultDigest,
-      originalPath: handoff.originPath,
-      originalDigest: Object.hasOwn(handoff, 'originDigest') ? handoff.originDigest : handoff.documentDigest,
-      action,
-      resolutionId: handoff.id,
-    });
-    for (const candidate of sessions.windows()) {
-      const candidateSession = sessions.sessionForSender(candidate.webContents);
-      const lease = documentLeases.leaseForSession(candidateSession.sessionId);
-      if (lease?.identity.documentId === handoff.originDocumentId) candidateSession.cloudLocked = false;
-    }
-    const snapshot = await scopedCloudSnapshot(session, await coordinator.recordResolution(handoff.id, resolution));
-    return {
-      ...resolution,
-      conflict: resolution.conflict ? 'external-change' : 'none',
-      preservedCopyName: resolution.action === 'keep-both' && resolution.path
-        ? basename(resolution.path)
-        : null,
-      snapshot,
-    };
-  });
-});
 ipcMain.handle('window:is-fullscreen', (event) => sessionForEvent(event).window.isFullScreen());
 ipcMain.on('desktop:set-document-state', (event, state) => {
   try {
@@ -2092,7 +1257,6 @@ ipcMain.handle('desktop:close-response', async (event, requestId, allowClose) =>
     allowClose,
     cancelQuit: updateLifecycle.cancelQuit,
     persistBookmarks: () => persistNativeBookmarks({ rejectOnError: true }),
-    timeoutMs: CLOUD_CLOSE_WAIT_MS,
     onError: async (error) => {
       console.warn('[rauhwpx] document close failed:', error);
       await dialog.showMessageBox({
@@ -2173,92 +1337,15 @@ if (!hasSingleInstanceLock) {
       filePath: join(app.getPath('userData'), 'secrets.json'),
       safeStorage,
     });
+    // 2.0.10까지 Cloud·계정 기능이 남긴 자격 증명과 파일을 지운다. 허브의 비밀 요청보다 먼저 큐에 넣는다.
+    void bestEffortStartupCleanup(
+      'retired Cloud data',
+      removeRetiredCloudData({ userDataDir: app.getPath('userData'), vault: secretVault }),
+    );
     // 허브는 비밀 저장소가 생긴 직후 띄워 첫 창과 나란히 준비한다(허브의 비밀 요청은 이 저장소로 간다).
-    // 실패는 아래에서 기다려 예전처럼 알린다.
+    // 실패는 아래에서 기다려 알린다.
     const hubStartup = hubOwner.ensure();
     hubStartup.catch(() => {});
-    cloudAccountSession = createAccountSession({
-      secretStore: secretVault,
-      creditsClient: createRauCreditsClient({
-        baseUrl: raucloudBrokerUrl(),
-        fetchImpl: (...args) => net.fetch(...args),
-        // Per-operation deadlines are owned by the Cloud broker and abort this request.
-        timeoutMs: 4 * 60_000 + 30_000,
-      }),
-    });
-    const knownHostsPath = join(app.getPath('userData'), 'cloud', 'ssh-known-hosts');
-    const boatCloud = new BoatCloud({
-      vault: secretVault,
-      fetchImpl: (...args) => net.fetch(...args),
-      dataDir: join(app.getPath('userData'), 'cloud'),
-      knownHostsPath,
-      openExternal: (url) => shell.openExternal(url),
-    });
-    cloudTransport = new CloudApiTransport({
-      tunnelManager: new SshTunnelManager({ knownHostsPath }),
-    });
-    const cloudClient = new CloudClient({
-      vault: secretVault,
-      // Node fetch keeps session/display streams from exhausting Chromium's
-      // per-origin HTTP/1 connection pool and starving Cloud control requests.
-      transport: cloudTransport,
-    });
-    cloudCoordinator = new CloudCoordinator({
-      client: cloudClient,
-      store: new CloudHandoffStore({
-        filePath: join(app.getPath('userData'), 'cloud', 'handoffs.json'),
-      }),
-      provisioner: new CloudProvisioner({
-        installerPath: unpackedPath(join(__dirname, '..', 'cloud', 'install', 'install.sh')),
-        bootstrapDir: unpackedPath(join(__dirname, '..', 'cloud', 'release')),
-        appVersion: app.getVersion(),
-        knownHostsPath,
-        devUnsignedRuntime: !app.isPackaged && process.env.RAUHWpx_CLOUD_DEV_UNSIGNED === '1',
-      }),
-      recoveryDir: join(app.getPath('userData'), 'cloud', 'recovery'),
-      appServers: [createRaucloudBrokerProvider({
-        authorizeOwnedBackend: (request, options) => (
-          cloudAccountSession.authorizeOwnedBackend(request, options)
-        ),
-        getLocalCacheIdentity: async () => {
-          const token = await secretVault.get(ACCOUNT_SESSION_SECRET_ID);
-          return token ? createHash('sha256').update(`raucloud-merge-cache:${raucloudBrokerUrl()}:${token}`).digest('hex') : null;
-        },
-        getDeviceIdentity: raucloudDeviceIdentity,
-      })],
-      collectProviderAuth: (provider) => collectProviderAuth(provider, {
-        vault: secretVault,
-        homeDir: homedir(),
-      }),
-      collectImportedAuth: (provider) => collectImportedProviderAuth(provider, {
-        homeDir: homedir(),
-        env: process.env,
-        readSecret: (key) => secretVault.get(key),
-        readFileImpl: readFile,
-      }),
-      boat: boatCloud,
-    });
-    cloudCoordinator.on('event', queueCloudBroadcast);
-    // Cloud 시작(계정·프로필 확인, 네트워크 왕복)은 첫 창과 나란히 진행한다.
-    const cloudReady = cloudCoordinator.start().then(() => {
-      // boat status is read only while someone can see it (or setup runs); it never wakes the VM.
-      stopBoatStatusCadence = installBoatStatusCadence({
-        isWanted: () => cloudCoordinator?.boatSetupActive() || sessions.windows().some((window) => (
-          !window.isDestroyed() && window.isVisible() && !window.isMinimized()
-        )),
-        refresh: () => cloudCoordinator?.refreshBoatStatus({ reason: 'cadence' }),
-      });
-      app.on('browser-window-focus', () => {
-        void cloudCoordinator?.refreshBoatStatus({ reason: 'focus' });
-      });
-      stopCloudContinuityTriggers = installCloudContinuityTriggers({
-        powerMonitor,
-        isOnline: () => net.isOnline(),
-        reconcile: (options) => cloudCoordinator?.reconcileContinuity(options),
-        keepWarm: (options) => cloudCoordinator?.prewarmAppServer(options),
-      });
-    });
-    cloudReady.then(settleCloudStartup.resolve, settleCloudStartup.reject);
     configureAutoUpdater();
     await loadNativeBookmarks();
     await windowFrames.load();
@@ -2279,8 +1366,8 @@ if (!hasSingleInstanceLock) {
       app.quit();
       return;
     }
-    // 허브나 Cloud 시작 실패는 창이 뜬 뒤에도 예전처럼 오류 창을 띄우고 종료한다.
-    await Promise.all([hubStartup, cloudReady, staleCleanup]);
+    // 허브 시작 실패는 창이 뜬 뒤에도 오류 창을 띄우고 종료한다.
+    await Promise.all([hubStartup, staleCleanup]);
     void finishUniqueInstallMetric();
     if (app.isPackaged && ['darwin', 'linux'].includes(process.platform)) {
       setTimeout(() => {
@@ -2289,7 +1376,7 @@ if (!hasSingleInstanceLock) {
     }
   }).catch((error) => {
     resolveUniqueInstallSync();
-    // 창이 먼저 뜨므로 시작 중에 종료하면 허브/Cloud 시작이 거절될 수 있다. 그때는 알리지 않는다.
+    // 창이 먼저 뜨므로 시작 중에 종료하면 허브 시작이 거절될 수 있다. 그때는 알리지 않는다.
     if (!quitting) showLaunchError(error);
     app.quit();
   });

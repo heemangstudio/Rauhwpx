@@ -124,7 +124,7 @@ test('허브 URL 은 토큰/프로필/에폭을 인코딩한다', () => {
   const worker = configFor({
     RHWP_AGENT_TOKEN: 'worker-token',
     RHWP_SESSION_ID: 'window-worker',
-    RHWP_AGENT_NAME: 'rau',
+    RHWP_AGENT_NAME: 'pi',
     RHWP_AGENT_ROLE: workerRole,
     RHWP_TOOL_PROFILE: 'copy-layout-worker',
   });
@@ -135,13 +135,13 @@ test('허브 URL 은 토큰/프로필/에폭을 인코딩한다', () => {
   );
   assert.equal(
     hubSocketUrl(worker),
-    `ws://127.0.0.1:5175/mcp?token=worker-token&sessionId=window-worker&agent=rau&role=${encodeURIComponent(workerRole)}&workflow=direct&workerJobId=11111111-1111-4111-8111-111111111111`,
+    `ws://127.0.0.1:5175/mcp?token=worker-token&sessionId=window-worker&agent=pi&role=${encodeURIComponent(workerRole)}&workflow=direct&workerJobId=11111111-1111-4111-8111-111111111111`,
   );
 
   const child = configFor({
     RHWP_AGENT_TOKEN: 'child-token',
     RHWP_SESSION_ID: 'window-child',
-    RHWP_AGENT_NAME: 'rau',
+    RHWP_AGENT_NAME: 'pi',
     RHWP_AGENT_ROLE: 'pi-subagent.550e8400-e29b-41d4-a716-446655440000.doc-researcher',
     RHWP_PI_SUBAGENT_ID: '550e8400-e29b-41d4-a716-446655440000',
     RHWP_PI_PARENT_TASK_ID: 'sa-1',

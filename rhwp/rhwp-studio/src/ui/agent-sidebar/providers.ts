@@ -8,7 +8,6 @@
 import type { AgentName } from '../../agent/types.ts';
 
 export const AGENT_LABEL: Record<AgentName, string> = {
-  rau: 'Rau',
   claude: 'Claude',
   codex: 'Codex',
   pi: 'Pi',

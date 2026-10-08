@@ -9,10 +9,7 @@ import { createMockVersions } from './mock-versions.ts';
 import { showToast } from '../ui/toast.ts';
 import { userSettings } from '../core/user-settings.ts';
 import { completeInitialSetup } from '../ui/initial-setup/state.ts';
-import { createMockCloud } from './mock-cloud.ts';
 import { listThreads, getThread, waitForThreadsPersistence } from '../agent/threads.ts';
-import { createCloudWorkspace } from '../ui/cloud-workspace.ts';
-import { createWorkspaceController } from '../cloud/workspace.ts';
 import { normalizeSettingsDestination } from '../ui/agent-sidebar/settings-contract.ts';
 import { mountAuditNavigator } from './audit-scenarios.ts';
 import { mountAuditDialogs } from './audit-dialogs.ts';
@@ -38,10 +35,6 @@ const eventBus = new EventBus();
 const versions = createMockVersions(report, params.get('history') === 'branches');
 let documentId: string | null = 'preview-proposal';
 let documentName: string | null = '사업 제안서.hwpx';
-const documentNavigation = {
-  outcome: 'moved' as 'moved' | 'cancelled' | 'failed',
-  calls: [] as Array<{ documentId: string | null; fileName: string | null }>,
-};
 
 if (!params.has('initial-setup'))
   completeInitialSetup({
@@ -59,45 +52,15 @@ if (!localStorage.getItem('sidebar-preview-seeded')) {
 }
 applyTheme();
 if (params.get('editor') === '1') mountEditorShell(report, eventBus);
-const cloud = params.get('cloud') === '1' ? createMockCloud({ dashboard: params.get('dashboard') === '1' }) : null;
-mock.bridge.onEvent((event) => {
-  if (event.type === 'account-status' && !event.status.authenticating)
-    cloud?.setAccount(event.status.signedIn, event.status.account?.email ?? null);
-});
-const workspace = cloud ? createWorkspaceController({
-  localRoot: document.getElementById('editor-area')!,
-  cloudWorkspace: createCloudWorkspace({ display: cloud.controller }), cloud: cloud.controller,
-}) : null;
-document.body.classList.toggle('preview-cloud', Boolean(cloud));
 const sidebar = initAgentSidebar({
   bridge: mock.bridge,
   eventBus,
-  ...(cloud && workspace ? {
-    cloudController: cloud.controller, workspace,
-    setCloudDocumentLease: (owned) => {
-      document.documentElement.dataset.cloudLease = owned ? 'cloud' : 'local';
-    },
-    mergeCloudCheckpoint: async (startId, checkpoint) => {
-      cloud.calls.merges.push({ startId, checkpoint });
-      const branchName = `Cloud · ${checkpoint.fileName.replace(/\.[^.]+$/, '')} · ${checkpoint.turn}턴`;
-      if (!versions.getState().branches.some((branch) => branch.name === branchName)) {
-        await versions.createBranch(branchName);
-      }
-      status.value = 'Cloud 변경 병합 미리보기';
-      return true;
-    },
-    prepareCloudTransfer: async (_startId, restart) => restart?.document ?? ({ fileName: documentName!, bytes: new Uint8Array([1, 2, 3]),
-      byteLength: 3, sha256: 'a'.repeat(64) }),
-  } : {}),
   getDocumentContext: () => ({
     documentId,
     documentName,
     selectionLabel: null,
-    sourceFormat: 'hwpx', isNewDocument: false,
   }),
-  moveToLibraryDocument: async (target) => {
-    documentNavigation.calls.push(target);
-    if (documentNavigation.outcome !== 'moved') return;
+  moveToLibraryDocument: (target) => {
     documentId = target.documentId;
     documentName = target.fileName;
     Object.assign(versions.getState(), { documentId, documentName, saved: true });
@@ -128,12 +91,6 @@ const sidebar = initAgentSidebar({
 });
 sidebar.root.querySelector<HTMLButtonElement>('.ag-threads-new')!.click();
 mock.boot();
-const cloudControls = document.querySelector<HTMLElement>('#cloud-preview-controls')!;
-cloudControls.hidden = !cloud;
-document.querySelector('#cloud-disconnect')!.addEventListener('click', () => cloud?.setLink('failed'));
-document.querySelector('#cloud-restore')!.addEventListener('click', () => cloud?.setLink('ready'));
-const holdReconnect = document.querySelector<HTMLInputElement>('#cloud-hold-reconnect')!;
-holdReconnect.addEventListener('change', () => cloud?.blockReconnect(holdReconnect.checked));
 
 const scenarioSelect = document.querySelector<HTMLSelectElement>('#scenario')!;
 for (const name of scenarios)
@@ -217,7 +174,7 @@ sidebar.root.querySelector('.ag-fullscreen-btn')!.addEventListener(
   },
   { capture: true },
 );
-// External destinations are represented locally; never launch an OAuth or billing page.
+// External destinations are represented locally; never launch an OAuth page.
 window.open = () => {
   report('External page placeholder');
   return null;
@@ -236,18 +193,22 @@ document.addEventListener(
 );
 if (params.get('controls') === '0')
   document.querySelector('#preview-controls')!.setAttribute('hidden', '');
+/** Focus mode through the same agent command the native menu sends. */
+async function enterFocusMode(): Promise<void> {
+  window.dispatchEvent(new CustomEvent('rhwp:agent-command', { detail: { command: 'toggle-focus-chat' } }));
+  while (!sidebar.root.classList.contains('ag-fullscreen'))
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+}
 // Open the requested view after the sidebar restores its saved conversation.
 if (params.get('page') === 'settings' || params.get('page') === 'versions')
   await waitForThreadsPersistence();
+if (params.get('fullscreen') === '1') await enterFocusMode();
 if (params.get('page') === 'settings')
   eventBus.emit('settings:open', { destination: normalizeSettingsDestination(params.get('destination')) ?? 'editing' });
-if (params.get('fullscreen') === '1')
-  sidebar.root.querySelector('.ag-settings-page')?.dispatchEvent(new CustomEvent('ag-settings-expand-request', { bubbles: true }));
 if (params.get('page') === 'versions') sidebar.openVersions();
 
 // Typed hooks for browser checks and custom scenario scripts.
-const preview = { ...mock, sidebar, versions, eventBus, cloud, workspace,
-  documentNavigation, undoState, navigation,
+const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoState, navigation,
   threadStore: { listThreads, getThread, waitForThreadsPersistence } };
 export type SidebarPreview = typeof preview;
 Object.assign(window, { sidebarPreview: preview });
@@ -317,8 +278,6 @@ void applyAuditState(preview, params).catch((error: unknown) => {
 });
 window.addEventListener('pagehide', () => {
   sidebar.dispose();
-  workspace?.dispose();
-  cloud?.controller.dispose();
   mock.bridge.dispose();
   versions.dispose?.();
 });

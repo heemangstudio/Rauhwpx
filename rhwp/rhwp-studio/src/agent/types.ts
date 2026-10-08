@@ -16,7 +16,7 @@ import type { CatalogAgent, ModelCatalogEntry } from './models.ts';
 
 export const AGENT_PROTOCOL_VERSION = 5;
 
-export type AgentName = 'claude' | 'codex' | 'pi' | 'grok' | 'cursor' | 'opencode' | 'rau';
+export type AgentName = 'claude' | 'codex' | 'pi' | 'grok' | 'cursor' | 'opencode';
 
 /** 활성 턴에서 파생되는 사용자 편집 잠금 상태. */
 export interface AgentEditingLease {
@@ -489,8 +489,6 @@ export interface AgentSetupStatus {
   /** Claude only: when Anthropic last accepted the active credential (epoch ms). */
   authVerifiedAt?: number | null;
   keyTail: string | null;
-  /** 로그인한 계정 이메일 — hosted account login may provide it. */
-  account?: string | null;
   authenticating: boolean;
   /** Whether this Studio session owns the provider's current authentication run. */
   authOwnedByThisSession?: boolean;
@@ -498,10 +496,8 @@ export interface AgentSetupStatus {
   authRunId?: string;
   authPhase?: string;
   authUrl?: string;
-  pairingCode?: string;
   authExpiresAt?: string;
   setupComplete: boolean;
-  exhausted?: boolean;
   latestVersion: string | null;
   updateRequired: boolean;
   error: string | null;
@@ -514,37 +510,7 @@ export interface AgentSetupAuthStart {
   agent: AgentName;
   authRunId: string;
   authUrl: string | null;
-  pairingCode?: string | null;
   expiresAt?: string | null;
-}
-
-export type AccountSessionState = 'signed-out' | 'signed-in' | 'pending' | 'unknown';
-
-export interface AccountIdentity {
-  email: string | null;
-}
-
-/** Generic Rauhwpx account identity. It never contains the account bearer. */
-export interface AccountSessionStatus {
-  state: AccountSessionState;
-  signedIn: boolean;
-  account: AccountIdentity | null;
-  updatedAt: string;
-  authenticating: boolean;
-  authOwnedByThisSession?: boolean;
-  authRunId?: string;
-  authPhase?: string;
-  authUrl?: string;
-  pairingCode?: string;
-  expiresAt?: string;
-  error?: string;
-}
-
-export interface AccountLoginStart {
-  authRunId: string;
-  authUrl: string | null;
-  pairingCode: string | null;
-  expiresAt: string | null;
 }
 
 /** 요금제 — 한도 계산의 기준이 되므로 프로바이더별로 값이 다르다. */
@@ -650,8 +616,6 @@ export interface UsageSummary {
   balances?: Partial<Record<'openrouter' | 'grok' | 'opencode', RemoteBalance>>;
   /** pi(OpenRouter) 가 설정돼 있을 때만 온다. */
   openrouter?: OpenRouterCredits;
-  /** Legacy account balance retained for migration reads only. */
-  rau?: OpenRouterCredits;
 }
 
 /** pi 사용자가 OpenRouter 카탈로그에서 고른 모델 하나 (최대 3개). */
@@ -687,8 +651,6 @@ export interface PiStatus {
   models: PiModelConfig[];
   defaultModelId: string | null;
   setupComplete: boolean;
-  /** Rau 체험 잔액이 0 일 때 true — 목록에는 남고 전송만 막는다. */
-  exhausted?: boolean;
   latestVersion: string | null;
   updateRequired: boolean;
   error: string | null;
@@ -782,7 +744,6 @@ const USAGE_PLAN_GUARDS: Record<AgentName, (value: unknown) => boolean> = {
   grok: isApiOnlyUsagePlan,
   cursor: isApiOnlyUsagePlan,
   opencode: isApiOnlyUsagePlan,
-  rau: isApiOnlyUsagePlan,
 };
 
 export function isUsagePlanForAgent(agent: AgentName, value: unknown): boolean {
@@ -987,8 +948,6 @@ export type SidebarEvent =
       authUrl?: string;
       /** Device authentication code for CLI login flows. */
       userCode?: string;
-      /** Short code that identifies the hosted account login session. */
-      pairingCode?: string;
       expiresAt?: string;
       activity?: boolean;
       receivedBytes?: number;
@@ -996,17 +955,6 @@ export type SidebarEvent =
     }
   | { type: 'agent-setup-terminal'; agent: AgentName; authRunId: string; data?: string; ready?: boolean; reset?: boolean }
   | { type: 'agent-setup-error'; agent: AgentName | null; authRunId?: string; code: string; message: string; detail?: string }
-  | { type: 'account-status'; status: AccountSessionStatus }
-  | {
-      type: 'account-login-progress';
-      authRunId?: string;
-      state: 'authorizing';
-      authUrl?: string;
-      pairingCode?: string;
-      expiresAt?: string;
-      replayed?: boolean;
-    }
-  | { type: 'account-error'; authRunId?: string; code: string; message: string }
   | { type: 'usage-report'; usage: UsageSummary }
   | { type: 'pi-status'; status: PiStatus }
   | {
@@ -1043,7 +991,6 @@ export interface AgentBridgeDeps {
   canvasView: CanvasView;
   documentState: DocumentDirtyState;
   isReadOnly?: () => boolean;
-  canPublishCloudDocument?: () => boolean;
   /** 전체 모드 에이전트의 버전 커밋 — 사이드바 커밋 버튼과 같은 기록에 남긴다. */
   commitVersion?: (message: string) => Promise<void>;
 }

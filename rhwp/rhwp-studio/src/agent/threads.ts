@@ -35,8 +35,6 @@ interface ThreadMessageBase {
   /** 호출 당시 선택된 아이콘. 이후 skill 설정이 바뀌어도 기록 모양을 유지한다. */
   skillIcon?: ProductSkillIcon;
   messageId?: string;
-  /** Cloud messages stay visible while waiting for the next remote turn boundary. */
-  delivery?: 'queued-cloud' | 'accepted-cloud';
   attachments?: ThreadAttachment[];
   /** 인라인 프롬프트로 보낸 메시지에 붙는 문서 선택 컨텍스트 (표시용). */
   selection?: {
@@ -184,13 +182,6 @@ export interface ChatThread {
   plans?: StructuredPlan[];
   /** Draft state only. Provider authority remains in the live hub session. */
   pendingUserQuestion?: PendingUserQuestionDraftSnapshot;
-  /** Chat execution mode. Existing records default to local. */
-  executionMode?: 'local' | 'cloud';
-  cloudSessionId?: string;
-  cloudStartId?: string;
-  cloudRestartSourceSessionId?: string;
-  cloudRestartSourceStartId?: string;
-  firstMessageDelivery?: 'starting' | 'accepted' | 'failed';
   messages: ThreadMessage[];
 }
 
@@ -759,10 +750,6 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
       || message.skillIcon === 'bot' || message.skillIcon === 'system'
       ? message.skillIcon
       : undefined;
-    const delivery: ThreadMessageBase['delivery'] = message.delivery === 'queued-cloud'
-      || message.delivery === 'accepted-cloud'
-      ? message.delivery
-      : undefined;
     const selection = normalizeStoredSelection(message.selection);
     const metadata = {
       ...(agent ? { agent } : {}),
@@ -771,7 +758,6 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
         : {}),
       ...(skillIcon ? { skillIcon } : {}),
       ...(typeof message.messageId === 'string' ? { messageId: message.messageId } : {}),
-      ...(delivery ? { delivery } : {}),
       ...(attachments?.length ? { attachments } : {}),
       ...(selection ? { selection } : {}),
     };
@@ -863,29 +849,7 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
     ...(latestPlan ? { latestPlan } : {}),
     ...(plans.length ? { plans } : {}),
     ...(pendingUserQuestion && !pendingAlreadyArchived ? { pendingUserQuestion } : {}),
-    ...(thread.executionMode === 'cloud' ? { executionMode: 'cloud' as const } : {}),
-    ...(typeof thread.cloudSessionId === 'string' && thread.cloudSessionId
-      ? { cloudSessionId: thread.cloudSessionId }
-      : {}),
-    ...(typeof thread.cloudRestartSourceSessionId === 'string' && thread.cloudRestartSourceSessionId
-      ? { cloudRestartSourceSessionId: thread.cloudRestartSourceSessionId }
-      : {}),
-    ...(typeof thread.cloudRestartSourceStartId === 'string' && thread.cloudRestartSourceStartId
-      ? { cloudRestartSourceStartId: thread.cloudRestartSourceStartId }
-      : {}),
-    ...(typeof thread.cloudStartId === 'string' && thread.cloudStartId
-      ? { cloudStartId: thread.cloudStartId }
-      : {}),
-    ...(thread.firstMessageDelivery === 'starting'
-      || thread.firstMessageDelivery === 'accepted'
-      || thread.firstMessageDelivery === 'failed'
-      ? { firstMessageDelivery: thread.firstMessageDelivery }
-      : {}),
   };
-}
-
-export function parseChatThread(value: unknown): ChatThread | null {
-  return isStoredChatThread(value) ? normalizeStoredThread(value) : null;
 }
 
 function cloneThread(thread: ChatThread) {

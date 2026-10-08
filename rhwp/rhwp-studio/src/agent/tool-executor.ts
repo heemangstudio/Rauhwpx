@@ -13,7 +13,7 @@ import type { DocumentDirtyState } from '../core/document-dirty-state.ts';
 import type { CellPathEntry, CharProperties, CharShapeRun, ControlLayoutItem, DocumentPosition, LineLayoutItem, ParaProperties, SelectionRect } from '../core/types.ts';
 import type { RevisionTracker } from './revision.ts';
 import type { PendingEditManager } from './pending-edits.ts';
-import type { AgentName, AgentPhase, AgentWorkflow, CellAddr, CharFormatProps, DocRange, DocumentTemplate, ObjectOp, PendingOp, PermissionProfile } from './types.ts';
+import type { AgentName, AgentPhase, AgentWorkflow, CellAddr, CharFormatProps, DocRange, DocumentTemplate, ObjectOp, PendingOp } from './types.ts';
 import { AgentToolError } from './types.ts';
 import { EditJournal, type EditJournalEntry } from './edit-journal.ts';
 import { batchItemArgs } from './batch-item.ts';
@@ -60,7 +60,6 @@ export interface AgentToolExecutorDeps {
   loadTemplateBytes?: (template: DocumentTemplate) => Promise<Uint8Array>;
   getDocumentSourcePath?: () => Promise<string | null>;
   isReadOnly?: () => boolean;
-  canPublishCloudDocument?: () => boolean;
   /** 참조 이미지 잘라내기 — 기본은 브라우저 캔버스 (테스트가 주입한다) */
   cropImage?: ImageCropper;
 }
@@ -326,7 +325,6 @@ interface ParaTargets {
 
 /** Every Studio tool that can create or stage a document mutation. */
 export const DOCUMENT_WRITE_TOOLS: ReadonlySet<string> = new Set([
-  'publish_cloud_document',
   'commit_version',
   'apply_edits',
   'insert_text',
@@ -447,8 +445,6 @@ export interface ToolCapabilityContext {
   /** Server state last synchronized by the Studio bridge. */
   activePhase?: AgentPhase;
   activeCapabilityEpoch?: number | null;
-  /** 현재 채팅의 권한 프로필 — 안전 모드에서는 Cloud 게시를 막는다. */
-  permissionProfile?: PermissionProfile;
   template?: DocumentTemplate;
   /** Exact hub turn/cancellation fence captured for this request. */
   requestIsActive?: () => boolean;
@@ -1055,9 +1051,7 @@ export class AgentToolExecutor {
       }
       // 스테이징 쓰기는 결과에 after 보고(와 요청 시 변경 영역 PNG)를 붙인다 —
       // render 인자는 쓰기를 적용하기 전에 검사하고, 쓰기 직전 상태를 떠 둔다.
-      const staged = isDocumentWriteTool(tool)
-        && tool !== 'publish_cloud_document'
-        && !ENGINE_WRITE_TOOLS.has(tool);
+      const staged = isDocumentWriteTool(tool) && !ENGINE_WRITE_TOOLS.has(tool);
       const render = staged ? optRenderMode(args) : undefined;
       const baseline = staged ? this.captureWriteBaseline() : null;
       if (trace) trace.dispatch0 = toolTraceNow();
@@ -1089,16 +1083,6 @@ export class AgentToolExecutor {
       case 'get_fields': return this.getFields();
       case 'get_document_info': return this.getDocumentInfo(args);
       case 'materialize_document_snapshot': return this.materializeDocumentSnapshot();
-      case 'publish_cloud_document': {
-        this.requireDocLoaded();
-        if (!this.deps.canPublishCloudDocument?.()) {
-          throw new AgentToolError('CLOUD_RUNTIME_REQUIRED', 'Document publication is available only inside a Cloud conversation.');
-        }
-        if (capability?.permissionProfile === 'safe') {
-          throw new AgentToolError('SAFE_MODE_PUBLISH', 'Cloud publication requires the unrestricted permission profile.');
-        }
-        return { revision: this.revision, requested: true, publishAfterSuccessfulTurn: true };
-      }
       case 'find_text': return this.findText(args);
       case 'render_page': return this.renderPage(args);
       case 'get_page_geometry': return this.getPageGeometry(args);

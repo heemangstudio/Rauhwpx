@@ -40,8 +40,6 @@ const CANCEL_TOOL = 'subagent_cancel';
  */
 const ENV_PASSTHROUGH = [
   'PATH', 'HOME', 'SHELL', 'LANG', 'LC_ALL', 'TMPDIR',
-  // Cloud session virtual desktop — only present when the worker started Xvfb.
-  'DISPLAY', 'XAUTHORITY', 'RAUHWpx_SESSION_DISPLAY',
   // Windows 에서 cross-spawn/셸이 요구하는 값들.
   'SystemRoot', 'ComSpec', 'PATHEXT', 'APPDATA', 'LOCALAPPDATA', 'USERPROFILE', 'TEMP', 'TMP',
 ];
@@ -55,7 +53,7 @@ export function isOpenRouterCreditError(text) {
   return CREDIT_ERROR.test(String(text ?? ''));
 }
 
-export function formatOpenRouterCreditError(text, agent = 'pi') {
+export function formatOpenRouterCreditError(text) {
   if (!isOpenRouterCreditError(text)) return null;
   return 'OpenRouter 크레딧이 부족합니다.';
 }
@@ -66,7 +64,6 @@ export function formatOpenRouterCreditError(text, agent = 'pi') {
  *   piRoot?: string,
  *   openRouterApiKey?: string,
  *   reasoning?: boolean,
- *   agentName?: 'pi',
  * }} PiBackendOptions
  *
  * piBin  — pi 실행 파일 경로(`<piRoot>/prefix/node_modules/.bin/pi`).
@@ -184,7 +181,8 @@ function spawnIdFromToolResult(result) {
 }
 
 /** Map Pi extension subagent tools onto the unified task-card event stream. */
-export function createPiFleetMapper(onEvent, agent = 'pi') {
+export function createPiFleetMapper(onEvent) {
+  const agent = 'pi';
   const taskIdBySubagent = new Map();
   const callMeta = new Map();
   const running = new Set();
@@ -282,8 +280,8 @@ export function createPiFleetMapper(onEvent, agent = 'pi') {
  * @param {NodeJS.Signals | null} signal
  * @param {string} token
  */
-export function formatPiExitError(stderrText, code, signal, token, agent = 'pi') {
-  const credit = formatOpenRouterCreditError(stderrText, agent);
+export function formatPiExitError(stderrText, code, signal, token) {
+  const credit = formatOpenRouterCreditError(stderrText);
   if (credit) return credit;
   const clean = redactDiagnosticText(stderrText, [token]);
   const detail = clean
@@ -360,7 +358,7 @@ export function createPiSession(opts, {
   let uncertainTreeCleanup = false;
   /** @type {{ text: string } | null} */
   let queuedTurn = null;
-  const fleet = createPiFleetMapper(onEvent, agent);
+  const fleet = createPiFleetMapper(onEvent);
 
   function endTurn(evt) {
     if (!turnOpen) return;
@@ -409,8 +407,7 @@ export function createPiSession(opts, {
         if (message.stopReason === 'error') {
           // json 모드의 API 오류는 종료 코드 0 으로 끝난다. 이유는 여기에만 있다.
           const detail = String(message.errorMessage ?? 'pi turn failed');
-          turnFailureMessage = formatOpenRouterCreditError(detail, opts.agentName)
-            ?? detail;
+          turnFailureMessage = formatOpenRouterCreditError(detail) ?? detail;
           onEvent({ type: 'error', agent, message: turnFailureMessage });
         }
         return;
@@ -612,7 +609,7 @@ export function createPiSession(opts, {
             onEvent({
               type: 'error',
               agent,
-              message: formatPiExitError(stderrTail, code, signal, opts.token, opts.agentName),
+              message: formatPiExitError(stderrTail, code, signal, opts.token),
             });
             endTurn({ type: 'turn-end', agent, stopReason: 'exited' });
           } else {

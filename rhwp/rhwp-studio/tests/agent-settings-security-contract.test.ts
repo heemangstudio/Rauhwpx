@@ -25,7 +25,6 @@ const readSource = (relativePath: string) => readFileSync(
 const source = readSource('../src/ui/agent-sidebar/index.ts');
 const settings = readSource('../src/ui/agent-sidebar/settings.ts');
 const bridgeSource = readSource('../src/agent/bridge.ts');
-const agentTypesSource = readSource('../src/agent/types.ts');
 const editingSettings = readSource('../src/ui/agent-sidebar/settings-editing.ts');
 const settingsCss = readSource('../src/ui/agent-sidebar/settings.css');
 const css = readSource('../src/ui/agent-sidebar/agent-sidebar.css');
@@ -47,37 +46,6 @@ test('템플릿 설정은 추가·이름 변경·교체·확인 삭제를 제공
   assert.match(settings, /bridge\.replaceTemplate\(id, file\)/);
   assert.match(settings, /await confirmSheet\(remove, `“\$\{template\.name\}” 삭제`, undefined, \{ confirmLabel: '삭제', destructive: true \}\)/);
   assert.match(settings, /bridge\.deleteTemplate\(id\)/);
-});
-
-test('Rauhwpx 계정은 Cloud와 분리된 일반 브릿지와 설정 카드로 로그인한다', () => {
-  const accountTypes = agentTypesSource.slice(
-    agentTypesSource.indexOf('export type AccountSessionState'),
-    agentTypesSource.indexOf('/** 요금제', agentTypesSource.indexOf('export type AccountSessionState')),
-  );
-  const accountCard = settings.slice(
-    settings.indexOf('// ── Rauhwpx 계정'),
-    settings.indexOf('// ── 1. 연결'),
-  );
-
-  assert.match(accountTypes, /'signed-out' \| 'signed-in' \| 'pending' \| 'unknown'/);
-  assert.doesNotMatch(accountTypes, /cloud|quota|allowance/i);
-  assert.match(bridgeSource, /requestAccountStatus\(\): Promise<AccountSessionStatus \| null>/);
-  assert.match(bridgeSource, /loginAccount\(\): Promise<AccountLoginStart \| null>/);
-  assert.match(bridgeSource, /cancelAccountLogin\(authRunId: string\): void/);
-  assert.match(bridgeSource, /logoutAccount\(\): Promise<AccountSessionStatus \| null>/);
-  assert.match(bridgeSource, /function readAccountSessionStatus\([\s\S]+account: signedIn[\s\S]+email:/);
-  assert.match(accountCard, /'Rauhwpx 계정'/);
-  assert.match(accountCard, /'로그인'/);
-  assert.match(accountCard, /'로그인 취소'/);
-  assert.doesNotMatch(accountCard, /cloud|quota|allowance|크레딧|한도/i);
-  // 계정 줄은 AI 연결이 아니라 Cloud 서버 카드 안에 선다.
-  assert.match(settings, /connection\.body\.append\(providerList, hubRow\)/);
-  assert.match(settings, /const accountNodes = \[accountRow, accountLoginBox, accountError\]/);
-  assert.match(settings, /bridge\.requestAccountStatus\(\)/);
-  assert.match(settings, /bridge\.loginAccount\(\)/);
-  assert.match(settings, /bridge\.cancelAccountLogin\(accountAuthRunId\)/);
-  assert.match(settings, /bridge\.logoutAccount\(\)/);
-  assert.match(settings, /case 'account-status':[\s\S]+case 'account-login-progress':[\s\S]+case 'account-error':/);
 });
 
 test('브라우저 로그인은 인증 주소와 기기 코드를 카드 안에 직접 그린다', () => {
@@ -127,7 +95,7 @@ test('브라우저 로그인은 인증 주소와 기기 코드를 카드 안에 
   // 상자는 이 에이전트의 로그인이 진행 중인 동안 선다 — 주소·코드가 아직 없는
   // 시작 직후·키 검사 중에도 대기 문구와 취소 버튼이 보여야 버튼이 멈춰 보이지 않는다.
   assert.match(settings, /const authorizing = setupBusy && setupProgressPercent <= 0 && !supportsTerminalSetup\(setupAgent\);\s*setupLoginBox\.hidden = !authorizing/);
-  assert.match(settings, /if \(ev\.authUrl\) setupAuthUrl = ev\.authUrl;\s*if \(ev\.userCode \|\| ev\.pairingCode\) setupUserCode = ev\.userCode \?\? ev\.pairingCode \?\? null;/);
+  assert.match(settings, /if \(ev\.authUrl\) setupAuthUrl = ev\.authUrl;\s*if \(ev\.userCode\) setupUserCode = ev\.userCode;/);
   assert.match(settings, /if \(method === 'oauth' && started\.authUrl\) setupAuthUrl = started\.authUrl/);
   // 자동 열기 시도는 그대로 남는다.
   assert.match(settings, /maybeOpenAuthUrl\(ev\.authUrl\)/);
@@ -178,18 +146,14 @@ test('앱 전용 지시는 에이전트 변경안을 사용자 승인 전까지 
   assert.match(settingsCss, /\.ag-settings-instructions-proposal/);
 });
 
-test('Rau 로그아웃 뒤 설치된 런타임을 연결 상태로 오인하지 않는다', () => {
+test('설치만 된 런타임을 연결 상태로 오인하지 않는다', () => {
   assert.match(
     settings,
-    /const configured = status\?\.connected === true \|\| status\?\.setupComplete === true;\s*\n[\s\S]*const connected = configured \|\| \(available && status\?\.authenticated === true\)/,
+    /const connected = status\?\.connected === true \|\| status\?\.setupComplete === true\s*\|\| \(available && status\?\.authenticated === true\)/,
   );
   assert.match(settings, /const connected = setup\?\.connected === true \|\| setup\?\.setupComplete === true\s*\|\| \(detected && setup\?\.authenticated === true\)/);
   assert.match(settings, /label = detected \? '로그인 필요' : '연결하기'/);
-  assert.match(settings, /const statuses = await bridge\.disconnectAgent\('rau'\)/);
-  assert.match(settings, /if \(statuses\) setupStatuses = statuses;[\s\S]*renderAgentSetup\(\);/);
-  assert.match(settings, /prefs\.defaultAgent === 'rau'[\s\S]*const fallback = selectableAgents\(\)\[0\][\s\S]*persistPrefs\(\{[\s\S]*\.\.\.prefs,[\s\S]*defaultAgent: fallback,[\s\S]*\}, \{ preserveDraft: true \}\)/);
-  assert.match(settings, /const rauWasIncomplete = setupStatuses !== null[\s\S]*rauWasIncomplete && ev\.statuses\.rau\?\.setupComplete === true/);
-  assert.match(settings, /function persistPrefs[\s\S]*preserveDraft[\s\S]*previousDraft[\s\S]*applyDefaults\(result\.value\)/);
+  assert.match(settings, /const statuses = await bridge\.disconnectAgent\(agent\);[\s\S]*if \(statuses\) setupStatuses = statuses;[\s\S]*renderAgentSetup\(\);/);
 });
 
 test('OpenCode 설정은 허브의 터미널 로그인 지원 여부를 따르고 인증을 확인한다', () => {
@@ -203,14 +167,14 @@ test('OpenCode 설정은 허브의 터미널 로그인 지원 여부를 따르�
   assert.match(bridgeSource, /type: 'agent-setup-status-request', \.\.\.\(refresh \? \{ refresh: true \} : \{\}\)/);
   assert.match(settings, /agent === 'opencode' \? 'CLI 자격 증명'\s*: status\.authSource === 'local' \? '터미널 로그인' : '웹 계정'/);
   // 설치 감지만으로 완료하지 않고 허브가 확인한 인증 상태를 요구한다.
-  assert.match(settings, /const connected = configured \|\| \(available && status\?\.authenticated === true\)/);
+  assert.match(settings, /\|\| \(available && status\?\.authenticated === true\)/);
   assert.match(settings, /label = detected \? '로그인 필요' : '연결하기'/);
   // 터미널 로그인을 지원하지 않는 런타임은 API 키 입력으로 이동한다.
   assert.match(
     settings,
     /async function startPreferredSetupAuth\(agent: AgentName\): Promise<void> \{\s*setupReauth = true;\s*if \(setupStatuses\?\.\[agent\]\?\.terminalAuthSupported === false\) \{\s*setupKeyBox\.hidden = false;\s*renderAgentSetup\(\);\s*setupKey\.input\.focus\(\);\s*return;\s*\}\s*await startSetupAuth\('oauth'\);/,
   );
-  assert.match(settings, /return agent !== null && !\['rau', 'pi'\]\.includes\(agent\)\s*&& setupStatuses\?\.\[agent\]\?\.terminalAuthSupported !== false/);
+  assert.match(settings, /return agent !== null && agent !== 'pi'\s*&& setupStatuses\?\.\[agent\]\?\.terminalAuthSupported !== false/);
   assert.match(settings, /if \(supportsTerminalSetup\(setupAgent\) && method === 'oauth'\) void setupTerminal\.open\(AGENT_LABEL\[setupAgent\]\)/);
   assert.match(settings, /case 'agent-setup-terminal':[\s\S]*if \(setupAuthRunId && ev\.authRunId !== setupAuthRunId\) break;/);
 });

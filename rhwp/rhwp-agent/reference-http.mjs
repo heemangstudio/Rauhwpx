@@ -229,36 +229,6 @@ export function createReferenceHttpHandler({ store, tokens, allowedScopes }) {
         sendJson(res, 200, { status: 'ready', query, results }, origin);
         return true;
       }
-      if (req.method === 'GET' && url.pathname.startsWith('/reference-files/')) {
-        const fileId = decodeURIComponent(url.pathname.slice('/reference-files/'.length));
-        if (!fileId || fileId.length > 128 || /[\u0000-\u001f\u007f/]/.test(fileId)) {
-          const error = new Error('Invalid reference file id');
-          error.code = 'REFERENCE_ID_INVALID';
-          throw error;
-        }
-        const file = await store.readFile({
-          fileId,
-          scope: resolvedScope.scope,
-          scopeId: resolvedScope.scopeId,
-        });
-        const encodedName = encodeURIComponent(file.name);
-        const asciiName = file.name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
-        res.writeHead(200, {
-          'content-type': file.mimeType,
-          'content-length': String(file.bytes.length),
-          'content-disposition': `attachment; filename="${asciiName}"; filename*=UTF-8''${encodedName}`,
-          'cache-control': 'no-store, private',
-          'x-content-type-options': 'nosniff',
-          'x-content-sha256': file.sha256,
-          ...(origin ? {
-            'access-control-allow-origin': origin,
-            'access-control-expose-headers': 'Content-Disposition, Content-Length, X-Content-SHA256',
-            vary: 'Origin',
-          } : {}),
-        });
-        res.end(file.bytes);
-        return true;
-      }
       if (req.method === 'DELETE' && url.pathname.startsWith('/reference-files/')) {
         const fileId = decodeURIComponent(url.pathname.slice('/reference-files/'.length));
         if (!fileId || fileId.length > 128 || /[\u0000-\u001f\u007f/]/.test(fileId)) {

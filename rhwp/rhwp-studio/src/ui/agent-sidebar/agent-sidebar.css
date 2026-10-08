@@ -177,7 +177,6 @@ body.ag-sidebar-resizing {
   --ui-text-placeholder: var(--n-text-placeholder);
   --ui-text-disabled: var(--n-text-disabled);
   --color-text: var(--n-text);
-  --ag-rau: #8d8680;
   --ag-claude: #c4785a;
   --ag-codex: #5b8fd4;
   --ag-pi: #4a9a86;
@@ -188,7 +187,6 @@ body.ag-sidebar-resizing {
   /* 터미널 todo 강조 — 앱 강조색(빨강). */
   --ag-todo-accent: #b8433c;
   --ag-opencode: #a19b98;
-  --ag-rau-wash: rgba(141, 134, 128, 0.10);
   --ag-claude-wash: rgba(196, 120, 90, 0.10);
   --ag-codex-wash: rgba(91, 143, 212, 0.10);
   --ag-pi-wash: rgba(74, 154, 134, 0.10);
@@ -250,10 +248,6 @@ body.ag-sidebar-animating .ag-root {
   width: 12px;
   height: 12px;
   color: inherit;
-}
-
-.ag-root[data-agent='rau'] {
-  --ag-accent: var(--ag-rau);
 }
 
 .ag-root[data-agent='codex'] {
@@ -342,7 +336,6 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   --n-surface-sunken: #050505;
   --n-canvas: #0c0c0c;
   --n-text: #e6e6e6;
-  --ag-rau: #d4cdc4;
   --ag-claude: #d49174;
   --ag-codex: #7aa8e0;
   --ag-pi: #6cc0aa;
@@ -350,7 +343,6 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   --ag-cursor: #a9a5d1;
   --ag-todo-accent: #ef6a62;
   --ag-opencode: #cfcecd;
-  --ag-rau-wash: rgba(212, 205, 196, 0.16);
   --ag-claude-wash: rgba(212, 145, 116, 0.16);
   --ag-codex-wash: rgba(122, 168, 224, 0.16);
   --ag-pi-wash: rgba(108, 192, 170, 0.16);
@@ -1013,12 +1005,12 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   font-weight: inherit;
 }
 
-.ag-mode .ag-mode-item:hover:not(:disabled),
+.ag-mode .ag-mode-item:hover,
 .ag-mode .ag-mode-item:focus-visible {
   background: var(--ag-hover);
 }
 
-.ag-mode .ag-mode-item:active:not(:disabled) {
+.ag-mode .ag-mode-item:active {
   background: var(--ag-selected);
 }
 
@@ -1057,18 +1049,6 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   height: 0.5px;
   margin: 4px 8px;
   background: var(--ag-border-strong);
-}
-
-.ag-mode-item:disabled {
-  color: var(--ag-text-disabled);
-}
-
-.ag-mode-item:disabled .ag-mode-text {
-  opacity: 0.4;
-}
-
-.ag-mode-item:disabled:hover {
-  background: transparent;
 }
 
 .ag-threads-btn:hover {
@@ -2114,8 +2094,7 @@ button.ag-skill-copy {
   outline-color: color-mix(in srgb, var(--ui-row-selected-fg, var(--n-on-accent)) 70%, transparent);
 }
 
-/* 행 안의 보조 표시(실행 위치·연필)도 선택 행 글자색을 따른다. */
-.ag-threads-row.ag-current .ag-thread-mode,
+/* 행 안의 연필도 선택 행 글자색을 따른다. */
 .ag-threads-row.ag-current .ag-thread-rename,
 .ag-threads-row.ag-current .ag-thread-rename:hover {
   color: color-mix(in srgb, var(--ui-row-selected-fg, var(--n-on-accent)) 82%, transparent);
@@ -2136,27 +2115,7 @@ button.ag-skill-copy {
   line-height: 28px;
 }
 
-.ag-thread-mode {
-  position: absolute;
-  top: 50%;
-  right: 36px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 24px;
-  color: var(--ag-text-secondary);
-  opacity: 0;
-  pointer-events: none;
-  transform: translate(4px, -50%);
-  transition: opacity var(--ag-dur-fast) var(--ag-ease-out), transform var(--ag-dur-base) var(--ag-ease-out), color var(--ag-dur-fast) var(--ag-ease-out);
-}
-
-.ag-thread-mode .ag-icon { width: 14px; height: 14px; }
-
-.ag-threads-row:hover .ag-thread-mode,
 .ag-threads-row:hover .ag-thread-rename,
-.ag-threads-item:focus-visible .ag-thread-mode,
 .ag-thread-rename:focus-visible {
   opacity: 1;
   pointer-events: auto;
@@ -2165,8 +2124,8 @@ button.ag-skill-copy {
 
 .ag-threads-row:hover .ag-threads-item-title,
 .ag-threads-item:focus-visible .ag-threads-item-title {
-  -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 72px), transparent calc(100% - 52px));
-  mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 72px), transparent calc(100% - 52px));
+  -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 50px), transparent calc(100% - 30px));
+  mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 50px), transparent calc(100% - 30px));
 }
 
 /* ── 채팅 실행 상태 점 ─────────────────────────────────
@@ -2242,7 +2201,7 @@ button.ag-skill-copy {
   }
 }
 
-/* 이름 바꾸기는 실행 위치 옆, 제목 오른쪽에 둔다.
+/* 이름 바꾸기는 제목 오른쪽에 둔다.
    버튼 안에 버튼을 넣을 수 없어 형제로 두고 절대 배치한다. */
 .ag-thread-rename {
   position: absolute;
@@ -2281,7 +2240,6 @@ button.ag-skill-copy {
 
 @media (prefers-reduced-motion: reduce) {
   .ag-thread-rename,
-  .ag-thread-mode,
   .ag-doc-jump { transition: none; }
 }
 
@@ -2310,10 +2268,6 @@ button.ag-skill-copy {
 .ag-thread-rename-input:focus {
   outline: none;
   box-shadow: 0 0 0 3px var(--ag-claude-wash);
-}
-
-.ag-root[data-agent='rau'] .ag-thread-rename-input:focus {
-  box-shadow: 0 0 0 3px var(--ag-rau-wash);
 }
 
 .ag-root[data-agent='codex'] .ag-thread-rename-input:focus {
@@ -2425,11 +2379,6 @@ button.ag-skill-copy {
   mask: url('/icons/provider-codex.png') center / contain no-repeat;
 }
 
-.ag-provider-icon-mask[data-agent='rau'] {
-  -webkit-mask-image: url('/icons/rau.png');
-  mask-image: url('/icons/rau.png');
-}
-
 /* 단색 글리프는 같은 마스크 계약을 탄다. */
 .ag-provider-icon-mask[data-agent='pi'] {
   -webkit-mask-image: url('/icons/provider-pi.svg');
@@ -2449,10 +2398,6 @@ button.ag-skill-copy {
 .ag-provider-icon-mask[data-agent='opencode'] {
   -webkit-mask-image: url('/icons/provider-opencode.svg');
   mask-image: url('/icons/provider-opencode.svg');
-}
-
-.ag-root[data-agent='rau'] .ag-provider .ag-provider-icon-mask {
-  color: var(--ag-rau);
 }
 
 .ag-root[data-agent='codex'] .ag-provider .ag-provider-icon-mask {
@@ -2719,10 +2664,6 @@ button.ag-skill-copy {
 
 .ag-provider-item .ag-provider-icon-mask {
   color: var(--ag-text);
-}
-
-.ag-provider-item[data-agent='rau'] .ag-provider-icon-mask {
-  color: var(--ag-rau);
 }
 
 .ag-provider-item[data-agent='codex'] .ag-provider-icon-mask {
@@ -3972,7 +3913,6 @@ button.ag-skill-copy {
   scrollbar-gutter: stable;
 }
 
-.ag-review-card.ag-rau,
 .ag-review-card.ag-claude,
 .ag-review-card.ag-codex,
 .ag-review-card.ag-grok,
@@ -4618,7 +4558,6 @@ button.ag-skill-copy {
   to { opacity: 1; transform: none; }
 }
 
-.ag-plan-card.ag-rau,
 .ag-plan-card.ag-claude,
 .ag-plan-card.ag-codex,
 .ag-plan-card.ag-pi,
@@ -5477,11 +5416,6 @@ button.ag-skill-copy {
   display: none;
 }
 
-/* Cloud 문서 전환·병합 줄은 같은 자리에 떠 있다. 그 줄이 보이는 동안 칩은 물러났다가 사라지면 다시 뜬다. */
-.ag-chat-page:has(.ag-cloud-document-controls > :not([hidden])) > .ag-calibration-chip {
-  display: none;
-}
-
 .ag-calibration-chip-open {
   display: inline-flex;
   align-items: center;
@@ -5563,61 +5497,14 @@ button.ag-skill-copy {
 .ag-composer {
   position: relative;
   flex: 0 0 auto;
-  /* Cloud 문서 전환·검토 줄과 편대 알약이 떠 있는 만큼 위를 비워, 그 위의 대화·변경 막대·계획과 겹치지 않는다. */
-  margin: calc(var(--ag-cloud-controls-h, 0px) + var(--ag-fleet-reserve, 0px)) 12px 12px;
+  /* 편대 알약이 떠 있는 만큼 위를 비워, 그 위의 대화·변경 막대·계획과 겹치지 않는다. */
+  margin: var(--ag-fleet-reserve, 0px) 12px 12px;
   padding: 6px 8px 6px 12px;
   border: 1px solid var(--ag-border);
   border-radius: var(--ag-r-composer);
   background: var(--ag-input-bg);
   box-shadow: var(--ag-elev-composer);
   transition: border-color var(--ag-dur-fast) var(--ag-ease-out), box-shadow var(--ag-dur-fast) var(--ag-ease-out), margin-top var(--ag-dur-base) var(--ag-ease-out);
-}
-
-.ag-composer-target-message {
-  margin: 4px 2px 6px;
-  color: var(--ag-text-secondary);
-  font-size: var(--ag-fs-meta);
-  font-weight: var(--ag-fw-medium);
-  line-height: var(--ag-lh-secondary);
-}
-
-.ag-composer-target-message[hidden] {
-  display: none;
-}
-
-.ag-composer-target-message[data-action="open-cloud"] {
-  cursor: pointer;
-}
-
-.ag-composer-target-message[data-action="open-cloud"]:hover {
-  color: var(--ag-text);
-}
-
-.ag-cloud-start-placeholder {
-  color: var(--ag-text-secondary);
-}
-
-.ag-cloud-start-phase {
-  font-size: var(--ag-fs-secondary);
-  line-height: var(--ag-lh-secondary);
-}
-
-.ag-cloud-start-retry,
-.ag-cloud-return-owner {
-  margin-top: 8px;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--ag-text);
-  font: inherit;
-  font-size: var(--ag-fs-secondary);
-  font-weight: var(--ag-fw-medium);
-  cursor: default;
-}
-
-.ag-cloud-start-retry:hover,
-.ag-cloud-return-owner:hover {
-  text-decoration: underline;
 }
 
 /* 입력기 위의 진행 정보는 계획/변경 surface의 높이를 만들지 않는다.
@@ -5627,7 +5514,7 @@ button.ag-skill-copy {
   position: absolute;
   z-index: 3;
   right: 2px;
-  bottom: calc(100% + 5px + var(--ag-attached-h, 0px) + var(--ag-fleet-dock-h, 0px) + var(--ag-cloud-controls-h, 0px) + var(--ag-stack-h, 0px));
+  bottom: calc(100% + 5px + var(--ag-attached-h, 0px) + var(--ag-fleet-dock-h, 0px) + var(--ag-stack-h, 0px));
   left: 2px;
   display: flex;
   min-width: 0;
@@ -6019,7 +5906,6 @@ button.ag-skill-copy {
   pointer-events: none;
 }
 
-.ag-skill-token[data-agent='rau'] { --ag-skill-color: var(--ag-rau); }
 .ag-skill-token[data-agent='codex'] { --ag-skill-color: var(--ag-codex); }
 .ag-skill-token[data-agent='pi'] { --ag-skill-color: var(--ag-pi); }
 .ag-skill-token[data-agent='grok'] { --ag-skill-color: var(--ag-grok); }
@@ -6202,11 +6088,6 @@ button.ag-skill-copy {
 .ag-send .ag-icon {
   width: 16px;
   height: 16px;
-}
-
-.ag-send.ag-send-cloud .ag-icon {
-  width: 20px;
-  height: 20px;
 }
 
 .ag-send:hover:not(:disabled, .ag-send-idle) {
@@ -7120,50 +7001,6 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   font-weight: var(--ag-fw-medium);
 }
 
-.ag-workspace-mode-switch {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 2px;
-  padding: 2px;
-  border: 0;
-  border-radius: var(--ag-r-row);
-  background: var(--ag-hover);
-}
-
-.ag-workspace-mode-switch[hidden] {
-  display: none;
-}
-
-.ag-workspace-mode-option {
-  min-height: 28px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: var(--ag-r-chip);
-  background: transparent;
-  color: var(--ag-text-secondary);
-  font: inherit;
-  font-size: var(--ag-fs-secondary);
-  font-weight: var(--ag-fw-medium);
-  cursor: default;
-  transition: var(--ag-transition-color);
-}
-
-.ag-workspace-mode-option:hover {
-  color: var(--ag-text);
-}
-
-.ag-workspace-mode-option[aria-pressed='true'] {
-  background: var(--ag-raised);
-  color: var(--ag-text);
-  box-shadow: var(--n-elev-1);
-}
-
-.ag-workspace-mode-option:focus-visible {
-  outline: var(--ag-focus-ring);
-  outline-offset: var(--ag-focus-offset);
-}
-
 .ag-workspace-agent-context {
   display: none;
 }
@@ -7273,7 +7110,6 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   outline-color: var(--focus-ring);
 }
 
-.ag-fullscreen .ag-threads-row.ag-current .ag-thread-mode,
 .ag-fullscreen .ag-threads-row.ag-current .ag-thread-rename {
   color: var(--ag-text-tertiary);
 }
@@ -7326,18 +7162,6 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   color: var(--ag-text);
   font-size: var(--ag-fs-secondary);
   font-weight: var(--ag-fw-strong);
-}
-
-.ag-thread-popover-mode {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  color: var(--ag-text-muted);
-}
-
-.ag-thread-popover-mode .ag-icon {
-  width: 14px;
-  height: 14px;
 }
 
 .ag-thread-popover-age {
@@ -7585,7 +7409,6 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   box-shadow: none;
 }
 
-.ag-fullscreen .ag-review-card.ag-rau,
 .ag-fullscreen .ag-review-card.ag-claude,
 .ag-fullscreen .ag-review-card.ag-codex,
 .ag-fullscreen .ag-review-card.ag-grok,
@@ -8666,7 +8489,6 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   display: none;
 }
 
-.ag-fleet.ag-rau { --ag-accent: var(--ag-rau); }
 .ag-fleet.ag-claude { --ag-accent: var(--ag-claude); }
 .ag-fleet.ag-codex { --ag-accent: var(--ag-codex); }
 .ag-fleet.ag-pi { --ag-accent: var(--ag-pi); }
@@ -8752,9 +8574,9 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   border-bottom: 0;
 }
 
-/* 질문이 입력기에 붙어 있으면 위 여백(Cloud 줄·편대 알약 자리)은 질문 위에 잡힌다. */
+/* 질문이 입력기에 붙어 있으면 위 여백(편대 알약 자리)은 질문 위에 잡힌다. */
 .ag-user-question:not([data-inactive='true']) {
-  margin-top: calc(var(--ag-cloud-controls-h, 0px) + var(--ag-fleet-reserve, 0px));
+  margin-top: var(--ag-fleet-reserve, 0px);
 }
 
 .ag-user-question:not([data-inactive='true']) + .ag-composer {
@@ -9074,163 +8896,6 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
     transition-duration: .01ms !important;
     animation-duration: .01ms !important;
   }
-}
-
-.ag-document-view-switch[hidden] { display: none; }
-
-.ag-cloud-document-controls {
-  position: absolute;
-  right: 0;
-  bottom: calc(100% + 8px + var(--ag-attached-h, 0px) + var(--ag-fleet-dock-h, 0px));
-  left: 0;
-  z-index: 4;
-  display: flex;
-  align-items: center;
-  /* 보는 문서는 왼쪽, 가져올 변경은 오른쪽. 좁으면 검토 단추가 다음 줄로 내려가 이름을 자르지 않는다. */
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 6px;
-  pointer-events: none;
-}
-
-.ag-cloud-document-controls > .ag-cloud-merge-button {
-  margin-left: auto;
-  min-width: 0;
-}
-
-.ag-cloud-document-controls:not(:has(> :not([hidden]))) {
-  display: none;
-}
-
-.ag-cloud-document-controls > :not([hidden]) {
-  pointer-events: auto;
-  background: var(--ag-raised);
-  border: 0;
-  border-radius: var(--ag-r-row);
-  box-shadow: var(--ag-elev-popover);
-  animation: ag-cloud-control-in var(--ag-dur-base) var(--ag-ease-out) both;
-}
-
-@keyframes ag-cloud-control-in {
-  from { opacity: 0; transform: translateY(4px); }
-}
-
-.ag-cloud-document-controls .ag-workspace-mode-option {
-  min-height: 28px;
-}
-
-/* 검토할 변경이 오면 강조색으로 불러 세우고, 작업 중에는 조용히 기다린다. 긴 브랜치 이름은 줄임표로 접는다. */
-.ag-cloud-document-controls .ag-cloud-merge-button {
-  min-height: 32px;
-  max-width: 100%;
-  overflow: hidden;
-  padding: 6px 14px;
-  border-color: transparent;
-  background: var(--ag-primary-bg);
-  color: var(--ag-primary-fg);
-  font: inherit;
-  font-size: var(--ag-fs-secondary);
-  font-weight: var(--ag-fw-medium);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: default;
-  transition: var(--ag-transition-color);
-}
-
-.ag-cloud-document-controls .ag-cloud-merge-button:hover:not(:disabled) {
-  background: var(--ag-primary-bg-hover);
-}
-
-.ag-cloud-document-controls .ag-cloud-merge-button:active:not(:disabled) {
-  background: var(--ag-primary-bg-pressed);
-}
-
-.ag-cloud-document-controls .ag-cloud-merge-button:disabled {
-  border-color: transparent;
-  background: var(--ag-raised);
-  color: var(--ag-text-secondary);
-  font-weight: var(--ag-fw-regular);
-  cursor: default;
-}
-
-.ag-cloud-document-controls .ag-cloud-merge-button:focus-visible {
-  outline: var(--ag-focus-ring);
-  outline-offset: var(--ag-focus-offset);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .ag-cloud-document-controls > :not([hidden]) { animation: none; }
-}
-
-/* 새 대화의 실행 위치 선택과 시작한 대화의 위치 표시. */
-.ag-execution-location {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 2px;
-  border: 0;
-  border-radius: var(--ag-r-row);
-  background: var(--ag-hover);
-}
-.ag-root .ag-execution-location .ag-execution-location-option {
-  display: inline-flex;
-  width: auto;
-  height: 28px;
-  flex: 0 0 auto;
-  white-space: nowrap;
-  gap: 6px;
-  padding: 0 10px;
-  font: inherit;
-  font-size: var(--ag-fs-secondary);
-  border-radius: var(--ag-r-chip);
-}
-.ag-execution-location .ag-execution-location-option[aria-pressed='true'] {
-  color: var(--ag-text);
-  background: var(--ag-raised);
-  box-shadow: var(--n-elev-1);
-}
-.ag-execution-location[data-started='true'] {
-  padding: 0;
-  border: 0;
-  background: transparent;
-}
-.ag-root .ag-execution-location[data-started='true'] .ag-execution-location-option {
-  width: 28px;
-  height: 28px;
-  padding: 0;
-}
-.ag-root .ag-execution-location .ag-execution-location-option[hidden],
-.ag-execution-location span[hidden] { display: none; }
-.ag-execution-location-option:disabled { opacity: 0.4; }
-
-/* 좁은 사이드바에서는 Local·Cloud 글자를 거두고 아이콘만 남겨, 머리줄의 다른 단추가 잘리지 않게 한다. */
-.ag-header {
-  container: ag-header / inline-size;
-}
-
-@container ag-header (max-width: 360px) {
-  .ag-root .ag-execution-location .ag-execution-location-option {
-    width: 28px;
-    padding: 0;
-    justify-content: center;
-  }
-
-  .ag-execution-location .ag-execution-location-option span {
-    display: none;
-  }
-}
-
-
-.ag-provider-item:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.ag-provider-item[data-unavailable-reason]::after {
-  content: attr(data-unavailable-reason);
-  margin-left: auto;
-  font-size: var(--ag-fs-meta);
-  font-weight: 400;
-  color: var(--ag-text-secondary);
 }
 
 /* 승인 직후 나타나는 되돌리기 버튼은 한 번만 살짝 떠오르며 자리를 알린다. */
