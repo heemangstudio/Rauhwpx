@@ -700,6 +700,7 @@ fn extract_latin_ranges(char_widths: &HashMap<u32, u16>) -> Vec<LatinRange> {
         (0x00A0, 0x00FF),   // Latin-1 Supplement
         (0x0370, 0x03FF),   // Greek and Coptic
         (0x2000, 0x206F),   // General Punctuation
+        (0x2100, 0x214F),   // Letterlike Symbols (℃ ℓ № ™ 등)
         (0x2200, 0x22FF),   // Mathematical Operators
         (0x25A0, 0x25FF),   // Geometric Shapes, including white bullet
         (0x3000, 0x303F),   // CJK Symbols and Punctuation
