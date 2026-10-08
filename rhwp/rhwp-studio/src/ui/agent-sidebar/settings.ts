@@ -3424,6 +3424,11 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
             setupReauth = false;
             setupCodePending = false;
             clearSetupAuthPrompt();
+            // 재접속한 탭이나 다른 탭에는 완료 프레임이 오지 않는다. 방송된 상태로 막대를 끝낸다.
+            if (setupProgressPercent > 0 && setupProgressPercent < 100) {
+              if (selectedStatus?.installed && !selectedStatus.updateRequired) setSetupInstallProgress(100, 'done');
+              else resetSetupInstallProgress();
+            }
           }
           renderProviders();
           renderAgentSetup();
@@ -3459,6 +3464,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
             maybeOpenAuthUrl(ev.authUrl);
             if (typeof ev.percent === 'number') {
               setSetupInstallProgress(ev.percent, ev.phase ?? ev.state);
+            } else if (setupProgressPercent > 0) {
+              // CLI 설치는 단계만 알린다. 단계로 막대를 옮기고 끝나면 100% 까지 채운다.
+              setSetupInstallProgress(ev.state === 'done' ? 100 : setupProgressPercent, ev.phase ?? ev.state);
             }
             renderAgentSetup();
           }

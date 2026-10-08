@@ -351,7 +351,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
         agent: provider,
         state: 'installing',
         phase: 'installing',
-        percent: 30,
+        activity: true,
       });
       await new Promise<void>((resolve) => later(resolve, 600));
       Object.assign(data.setups[provider], {
@@ -365,8 +365,6 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
         type: 'agent-setup-progress',
         agent: provider,
         state: 'done',
-        phase: 'done',
-        percent: 100,
       });
       setupChanged();
       return data.setups;

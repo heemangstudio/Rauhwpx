@@ -676,6 +676,18 @@ try {
       await page.waitForSelector(
         '.ag-agent-setup-overlay[aria-hidden="false"]',
       );
+      // Hub install frames carry no percent, and login starts right after the
+      // install and clears the bar, so record every label text before clicking.
+      await page.evaluate(() => {
+        const texts = (window.setupProgressTexts = []);
+        new MutationObserver((records) => {
+          for (const record of records) {
+            for (const node of record.addedNodes) texts.push(node.textContent);
+          }
+        }).observe(document.querySelector('.ag-agent-setup-progress-label'), {
+          childList: true,
+        });
+      });
       await clickText('.ag-agent-setup-primary', '설치하고 계속');
       await page.waitForFunction(
         async () =>
@@ -683,6 +695,16 @@ try {
             .installed,
       );
       await page.waitForSelector('.ag-setup-terminal .xterm-helper-textarea');
+      const progressTexts = await page.evaluate(() => window.setupProgressTexts);
+      assert.ok(
+        progressTexts.some((text) => text.endsWith('· 100%')),
+        `install progress never reached 100%: ${progressTexts.slice(-5).join(' | ')}`,
+      );
+      await page.waitForFunction(
+        () =>
+          document.querySelector('.ag-agent-setup-progress').hidden &&
+          document.querySelector('.ag-agent-setup-progress-label').hidden,
+      );
       await page.focus('.ag-setup-terminal .xterm-helper-textarea');
       await page.keyboard.press('Enter');
       await page.keyboard.press('Enter');
