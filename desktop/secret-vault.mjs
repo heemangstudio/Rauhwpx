@@ -379,6 +379,23 @@ export function createSecretVault({
         return { next: current, value: true };
       });
     },
+    /**
+     * Drops retired entries without decrypting anything, so it never needs the
+     * OS keyring, and rewrites the file only when one of the keys is present.
+     */
+    async purge(keys) {
+      const ids = keys.map(assertKey);
+      return enqueue(async () => {
+        await load();
+        if (corruptError) throw corruptError;
+        const present = ids.filter((id) => Object.hasOwn(entries, id));
+        if (present.length === 0) return false;
+        const next = { ...entries };
+        for (const id of present) delete next[id];
+        await persist(next);
+        return true;
+      });
+    },
     async reset() {
       return enqueue(async () => {
         await assertAvailable();
