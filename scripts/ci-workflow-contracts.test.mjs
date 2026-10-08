@@ -1,9 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
 import yaml from 'js-yaml';
 import { changedPaths, selectChecks } from './ci-changes.mjs';
 
@@ -23,6 +21,7 @@ for (const [description, files, expected] of [
   ['desktop shell', ['desktop/main.mjs'], ['app', 'sessions']],
   ['agent hub source', ['rhwp/rhwp-agent/server.mjs'], ['app', 'sessions']],
   ['shared package', ['rhwp/rhwp-shared/package.json'], ['app', 'browser']],
+  ['site service', ['site-api/server.mjs'], ['app']],
   ['Studio unit tests', ['rhwp/rhwp-studio/tests/save.test.ts'], ['app', 'browser']],
   ['desktop session tests', ['rhwp/rhwp-studio/tests/desktop-shell.test.ts'], ['app', 'browser', 'sessions']],
   ['installer packaging', ['build/entitlements.plist'], []],
@@ -84,7 +83,31 @@ test('tagged releases depend on verification within the same workflow run', () =
     const checkout = release.jobs[platform].steps.find((step) => step.uses?.startsWith('actions/checkout@'));
     assert.equal(checkout.with.ref, '${{ github.sha }}', `release packages the verified commit on ${platform}`);
   }
-  assert.ok(ancestors(release, 'publish').has('verification'));
+  const publish = ancestors(release, 'publish');
+  for (const dependency of ['verification', 'macos', 'windows', 'linux']) assert.ok(publish.has(dependency), dependency);
+  const publication = release.jobs.publish.steps.map((step) => step.run ?? '').join('\n');
+  for (const pattern of ['*.dmg', '*.zip', '*.exe', '*.AppImage', '*.deb', 'SHA256SUMS.txt']) {
+    assert.ok(publication.includes(pattern), pattern);
+  }
+});
+
+test('desktop installers share one Linux-built WASM package', () => {
+  // Windows wasm-opt crashed in Binaryen on engine code that optimizes fine on Linux.
+  const release = workflows['release.yml'];
+  const desktopPackage = readYaml('.github/actions/package-desktop/action.yml');
+  const upload = release.jobs.wasm.steps.find((step) => step.uses?.startsWith('actions/upload-artifact@'));
+  assert.equal(upload.with.name, 'release-wasm');
+  assert.match(release.jobs.wasm['runs-on'], /ubuntu/);
+  for (const platform of ['macos', 'windows']) {
+    assert.ok(release.jobs[platform].needs.includes('wasm'), platform);
+    const step = release.jobs[platform].steps.find((item) => item.uses === './.github/actions/package-desktop');
+    assert.equal(step.with['wasm-artifact'], 'release-wasm', platform);
+  }
+  assert.ok(release.jobs.linux.needs.includes('wasm'));
+  const linuxWasm = release.jobs.linux.steps.find((step) => step.uses === './.github/actions/build-wasm');
+  assert.equal(linuxWasm.with.artifact, 'release-wasm');
+  const desktopWasm = desktopPackage.runs.steps.find((step) => step.uses === './.github/actions/build-wasm');
+  assert.equal(desktopWasm.with.artifact, '${{ inputs.wasm-artifact }}');
 });
 
 test('nightly runs verification daily without building or publishing installers', () => {
@@ -137,25 +160,19 @@ test('cached pinned audit tool avoids rebuilds and incorrect tools still reinsta
   assert.match(broken.stderr, /Unexpected cargo-audit version/);
 });
 
-test('PR checks retain Cloud contracts and nightly keeps the browser handoff', () => {
+test('PR checks run desktop main-process tests and nightly keeps the sidebar check', () => {
   const appSteps = workflows['checks.yml'].jobs.app.steps;
-  assert.equal(appSteps.find((step) => step.uses?.startsWith('actions/setup-node@')).with['node-version'], 24);
-  assert.ok(appSteps.some((step) => step.run?.includes('npm run test:cloud')));
+  assert.ok(appSteps.some((step) => step.run?.includes('npm run test:desktop')));
   const nightlyCommands = workflows['nightly.yml'].jobs.app.steps.map((step) => step.run ?? '').join('\n');
-  assert.match(nightlyCommands, /e2e:cloud-onboarding/);
-  assert.match(nightlyCommands, /e2e:cloud-workspace/);
-  assert.match(nightlyCommands, /e2e:cloud-display/);
   assert.match(nightlyCommands, /npm run test:sidebar/);
 });
 
-test('production verification audits every lock and exercises actual providers on supported hosts', () => {
+test('production verification audits every lock and checks the bundled runtime on supported hosts', () => {
   const job = workflows['checks.yml'].jobs['production-dependencies'];
-  assert.deepEqual(job.strategy.matrix.include.map((entry) => entry.node), ['22.23.3', '22.23.3', 24]);
   const commands = job.steps.map((step) => step.run ?? '').join('\n');
-  for (const directory of ['rhwp/rhwp-agent', 'rhwp/rhwp-studio', 'rhwp/rau-credits', 'cloud/install/provider-runtime']) {
+  for (const directory of ['rhwp/rhwp-agent', 'rhwp/rhwp-studio', 'site-api']) {
     assert.ok(commands.includes(directory), directory);
   }
-  assert.match(commands, /npm --prefix cloud ci/);
   assert.match(commands, /npm run audit:production/);
   assert.match(commands, /node node_modules\/electron\/install\.js/);
   const installIndex = job.steps.findIndex((step) => step.run?.includes('node node_modules/electron/install.js'));
@@ -203,36 +220,20 @@ test('production dependency download cache keys cover all locks without replacin
   assert.equal(setup.with.cache, 'npm');
   assert.deepEqual(setup.with['cache-dependency-path'].trim().split('\n'), [
     'package-lock.json', 'rhwp/rhwp-agent/package-lock.json', 'rhwp/rhwp-studio/package-lock.json',
-    'rhwp/rau-credits/package-lock.json', 'cloud/package-lock.json', 'cloud/install/provider-runtime/package-lock.json',
+    'site-api/package-lock.json',
   ]);
   const installs = job.steps.find((step) => step.name === 'Install actual packaged dependencies');
   assert.equal(installs.if, "needs.changes.outputs.app != 'false'");
   assert.match(installs.run, /ci --no-audit --no-fund/);
 });
 
-test('dependency container verification cannot publish and checks both runtime users offline', () => {
-  const job = workflows['checks.yml'].jobs['dependency-containers'];
-  const commands = job.steps.map((step) => step.run ?? '').join('\n');
-  assert.match(commands, /for target in worker sandbox/);
-  assert.match(commands, /uid=1000/);
-  assert.match(commands, /uid=1001/);
-  assert.match(commands, /--network=none --user "\$uid:\$uid" --entrypoint node/);
-  assert.match(commands, /audit --omit=dev --audit-level=high/);
-  assert.match(commands, /sha256sum --check/);
-  assert.doesNotMatch(commands, /podman (?:push|login)|docker (?:push|login)|secrets\.|gh release|deploy/);
-});
-
-test('only release, image publishing, and GitHub Pages receive write permissions', () => {
+test('only release publication and GitHub Pages receive write permissions', () => {
   for (const [filename, workflow] of Object.entries(workflows)) {
     assert.deepEqual(workflow.permissions, { contents: 'read' }, filename);
     for (const [id, job] of Object.entries(workflow.jobs)) {
       for (const [scope, access] of Object.entries(job.permissions ?? {})) {
         if (access === 'write') {
-          const allowed = scope === 'contents' && id === 'publish'
-            || scope === 'packages' && (
-              filename === 'cloud-sandbox-image.yml' && id === 'publish'
-              || filename === 'release.yml' && ['cloud', 'cloud-image'].includes(id)
-            ) || filename === 'release.yml' && id === 'cloud' && scope === 'id-token'
+          const allowed = filename === 'release.yml' && id === 'publish' && scope === 'contents'
             || filename === 'pages.yml' && id === 'deploy' && (scope === 'pages' || scope === 'id-token');
           assert.ok(allowed, `${filename}/${id}/${scope}`);
         }
@@ -245,136 +246,6 @@ test('only release, image publishing, and GitHub Pages receive write permissions
     }
   }
 });
-
-test('cloud image publication requires real headed display and input verification', () => {
-  for (const steps of [workflows['cloud-sandbox-image.yml'].jobs.publish.steps, workflows['release.yml'].jobs.cloud.steps]) {
-    const proofIndex = steps.findIndex((step) => step.run?.includes('RAUHWpx_XVFB_CAPTURE_PROOF=1'));
-    const publishIndex = steps.findIndex((step) => step.run?.includes('podman push'));
-    assert.ok(proofIndex >= 0 && proofIndex < publishIndex);
-    assert.match(steps[proofIndex].run, /--user 1001:1001/);
-    assert.match(steps[proofIndex].run, /--test \/app\/tests\/xvfb-studio-capture-proof\.test\.mjs/);
-  }
-});
-
-test('cloud candidates include tested broker source from the same commit', () => {
-  const steps = workflows['cloud-sandbox-image.yml'].jobs.publish.steps;
-  const broker = steps.findIndex((step) => step.name === 'Verify and archive matching broker source');
-  const publish = steps.findIndex((step) => step.run?.includes('podman push'));
-  assert.ok(broker >= 0 && broker < publish);
-  assert.match(steps[broker].run, /npm --prefix rhwp\/rau-credits test/);
-  assert.match(steps[broker].run, /git archive "\$GITHUB_SHA:rhwp\/rau-credits"/);
-  assert.match(steps[broker].run, /sha256sum raucloud-broker-source\.tar\.gz/);
-  const upload = steps.find((step) => step.uses?.startsWith('actions/upload-artifact@'));
-  for (const name of ['cloud-image.json', 'raucloud-broker-source.tar.gz', 'raucloud-broker-source.json']) {
-    assert.ok(upload.with.path.includes(name), name);
-  }
-});
-
-for (const scenario of [
-  { name: 'feature candidate', requested: '', edge: false, refType: 'branch', refName: 'feat/cloud' },
-  { name: 'named candidate', requested: 'cloud-review-1', edge: false, refType: 'branch', refName: 'feat/cloud' },
-  { name: 'explicit edge promotion', requested: 'cloud-review-2', edge: true, refType: 'branch', refName: 'feat/cloud' },
-  { name: 'cloud release tag', requested: '', edge: false, refType: 'tag', refName: 'cloud-sandbox-v2.1.0' },
-]) {
-  test(`cloud image publication records the verified digest for ${scenario.name}`, { skip: process.platform === 'win32' }, (t) => {
-    const directory = mkdtempSync(path.join(tmpdir(), 'cloud-image-publication-'));
-    t.after(() => rmSync(directory, { recursive: true, force: true }));
-    const callsPath = path.join(directory, 'calls');
-    const commit = 'a'.repeat(40);
-    const digest = 'd'.repeat(64);
-    const run = workflows['cloud-sandbox-image.yml'].jobs.publish.steps
-      .find((step) => step.name === 'Publish candidate and optional edge images').run;
-    const result = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', `
-      podman() {
-        printf '%s\\n' "$*" >> "$RAU_IMAGE_TEST_CALLS"
-        if [[ "$1" == login ]]; then read -r ignored || true; fi
-        if [[ "$1" == push && "$2" == --digestfile ]]; then
-          printf 'sha256:%s\\n' "$RAU_IMAGE_TEST_DIGEST" > "$3"
-        fi
-      }
-      ${run}
-    `], { encoding: 'utf8', timeout: 5_000, cwd: directory, env: {
-      ...process.env, RAU_IMAGE_TEST_CALLS: callsPath, RAU_IMAGE_TEST_DIGEST: digest,
-      GHCR_TOKEN: 'test-token', GITHUB_ACTOR: 'test-user', GITHUB_REPOSITORY_OWNER: 'TestOrg',
-      GITHUB_REPOSITORY: 'TestOrg/Rauhwpx', GITHUB_SHA: commit, GITHUB_RUN_ID: '42',
-      GITHUB_REF_TYPE: scenario.refType, GITHUB_REF_NAME: scenario.refName,
-      GITHUB_STEP_SUMMARY: path.join(directory, 'summary'), REQUESTED_TAG: scenario.requested,
-      PUBLISH_EDGE: String(scenario.edge),
-    } });
-    assert.ifError(result.error);
-    assert.equal(result.status, 0, result.stderr);
-    const tag = scenario.refType === 'tag' ? '2.1.0' : scenario.requested || `sha-${commit}`;
-    const image = 'ghcr.io/testorg/rauhwpx-cloud';
-    assert.deepEqual(JSON.parse(readFileSync(path.join(directory, 'cloud-image.json'), 'utf8')), {
-      image: `${image}@sha256:${digest}`, tag, commit,
-      run: 'https://github.com/TestOrg/Rauhwpx/actions/runs/42',
-    });
-    const calls = readFileSync(callsPath, 'utf8');
-    assert.ok(calls.includes(`push --digestfile cloud-image-digest.txt ${image}:${tag}`));
-    assert.equal(calls.includes(`push ${image}:edge\n`), scenario.edge || scenario.refType === 'tag');
-    assert.equal(calls.includes(`${image}:stable`), false);
-    assert.equal(calls.includes('test-token'), false);
-  });
-}
-
-test('candidate publication rejects shared and malformed tags before registry login', { skip: process.platform === 'win32' }, () => {
-  const run = workflows['cloud-sandbox-image.yml'].jobs.publish.steps
-    .find((step) => step.name === 'Publish candidate and optional edge images').run;
-  for (const requested of ['edge', 'stable', 'invalid/tag']) {
-    const result = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', `podman() { echo 'UNEXPECTED_REGISTRY_ACCESS'; }; ${run}`], {
-      encoding: 'utf8', timeout: 5_000, env: {
-        ...process.env, REQUESTED_TAG: requested, GITHUB_REPOSITORY_OWNER: 'test',
-        GITHUB_REF_TYPE: 'branch', GITHUB_REF_NAME: 'feat/cloud',
-      },
-    });
-    assert.ifError(result.error);
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /Invalid candidate image tag/);
-    assert.equal(result.stdout.includes('UNEXPECTED_REGISTRY_ACCESS'), false);
-  }
-});
-
-for (const ready of [true, false]) {
-  test(`cloud image startup ${ready ? 'waits for initialization after HTTP becomes healthy' : 'fails when initialization never finishes'}`, {
-    skip: process.platform === 'win32',
-  }, (t) => {
-    const directory = mkdtempSync(path.join(tmpdir(), 'cloud-image-startup-'));
-    t.after(() => rmSync(directory, { recursive: true, force: true }));
-    const counter = path.join(directory, 'log-reads');
-    writeFileSync(counter, '0');
-    const run = workflows['cloud-sandbox-image.yml'].jobs.publish.steps
-      .find((step) => step.name === 'Build and smoke-test sandbox image').run;
-    const startup = run.slice(run.indexOf('healthy=0'));
-    // Run the actual workflow loop against a server whose HTTP listener opens
-    // before provider probing and scheduler initialization finish.
-    const result = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', `
-      curl() { return 0; }
-      sleep() { return 0; }
-      podman() {
-        case "$1" in
-          logs)
-            local count
-            read -r count < "$RAU_IMAGE_PROBE_COUNT_FILE" || true
-            count=$((count + 1))
-            printf '%s\\n' "$count" > "$RAU_IMAGE_PROBE_COUNT_FILE"
-            if [[ "$RAU_IMAGE_PROBE_READY" == 1 && "$count" -ge 3 ]]; then
-              printf '%s\\n' '{"event":"cloud.started"}'
-            fi
-            ;;
-          inspect) printf '%s\\n' true ;;
-          *) return 2 ;;
-        esac
-      }
-      sandbox_id=fixture
-      ${startup}
-    `], { encoding: 'utf8', timeout: 5_000, env: {
-      ...process.env, RAU_IMAGE_PROBE_COUNT_FILE: counter, RAU_IMAGE_PROBE_READY: ready ? '1' : '0',
-    } });
-    assert.ifError(result.error);
-    assert.equal(result.status, ready ? 0 : 1, result.stderr);
-    assert.ok(Number(readFileSync(counter, 'utf8')) >= (ready ? 3 : 60));
-  });
-}
 
 test('third-party Rust toolchain and installer actions are immutable', () => {
   const actions = ['setup-rust', 'package-desktop'].map((name) => readYaml(`.github/actions/${name}/action.yml`));

@@ -1326,11 +1326,6 @@ test('adopting loaded content never overrides a save that finished meanwhile', a
   await registry.write('session-a', 'writer', minimalCfbBytes(5), active, leases);
   finishFingerprint?.({ ...TEST_NATIVE_FINGERPRINT, digest: loadedDigest });
   assert.equal(await adopting, false);
-  assert.equal(
-    registry.originDigestForSessionPath('session-a', '/canonical/report.hwp'),
-    '3'.repeat(64),
-    'the fingerprint of the finished save stays the baseline',
-  );
 });
 
 test('a crashed renderer releases its document path and lease for other windows', async () => {

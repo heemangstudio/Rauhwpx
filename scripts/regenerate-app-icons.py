@@ -16,7 +16,7 @@ LOGO_DIR = ROOT / "rhwp" / "assets" / "logo"
 BUILD_DIR = ROOT / "build"
 STUDIO_PUBLIC = ROOT / "rhwp" / "rhwp-studio" / "public"
 VSCODE_ICON = ROOT / "rhwp" / "rhwp-vscode" / "media" / "icon.png"
-CREDITS_ICON = ROOT / "rhwp" / "rau-credits" / "public" / "rau.png"
+SITE_API_ICON = ROOT / "site-api" / "public" / "rau.png"
 PNG_SIZES = (16, 32, 128, 256, 300, 512, 1024)
 ICO_SIZES = (16, 32, 48, 64, 128, 256)
 ICNS_SIZES = (16, 32, 64, 128, 256, 512, 1024)
@@ -182,12 +182,12 @@ def write_ui_copies(master: Image.Image) -> None:
         print(f"wrote {dest}")
     rau = strokes_on_transparent(master, 128)
     rau.save(studio_icons / "rau.png", format="PNG", optimize=True)
-    rau.save(CREDITS_ICON, format="PNG", optimize=True)
+    rau.save(SITE_API_ICON, format="PNG", optimize=True)
     master.resize((128, 128), Image.Resampling.LANCZOS).save(
         VSCODE_ICON, format="PNG", optimize=True
     )
     print(f"wrote {studio_icons / 'rau.png'}")
-    print(f"wrote {CREDITS_ICON}")
+    print(f"wrote {SITE_API_ICON}")
     print(f"wrote {VSCODE_ICON}")
 
 

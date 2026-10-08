@@ -18,7 +18,7 @@ export async function checkSetupTerminal(page, origin) {
     await page.keyboard.press('Enter');
     await page.waitForFunction(() => document.querySelector('.ag-setup-terminal').textContent.includes('브라우저에서'));
     await page.keyboard.press('Enter');
-    // 완료 줄은 Rau 전용이다. 다른 프로바이더는 연결 상태 카드로 로그인을 마친다.
+    // 로그인을 마치면 연결 상태 카드가 계정과 버전을 보여 준다.
     await page.waitForSelector('.ag-agent-setup-card:not([hidden])', { visible: true });
     assert.equal(await page.$eval('.ag-setup-terminal', el => el.hidden), true);
     // Re-enter login, cancel it, and use the key fallback.

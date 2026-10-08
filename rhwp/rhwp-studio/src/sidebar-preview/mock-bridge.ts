@@ -112,7 +112,6 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
   if (liveUsage) {
     delete data.usage.limits;
     delete data.usage.balances;
-    delete data.usage.rau;
     delete data.usage.openrouter;
     for (const provider of Object.values(data.usage.providers)) {
       provider.updatedAt = null;
@@ -239,23 +238,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       setupComplete: true,
     });
     setupChanged();
-    if (provider === 'rau') {
-      Object.assign(data.account, { state: 'signed-in', signedIn: true,
-        account: { email: 'designer@example.test' }, authenticating: false });
-      emit({ type: 'account-status', status: data.account });
-    }
     report(`${provider}: connected to a local sample account`);
-  };
-  const signIn = () => {
-    authenticate('rau');
-    Object.assign(data.account, {
-      state: 'signed-in',
-      signedIn: true,
-      account: { email: 'designer@example.test' },
-      authenticating: false,
-    });
-    emit({ type: 'account-status', status: data.account });
-    report('Sample account connected');
   };
   const completeQuestion = (outcome: T.UserQuestionOutcome) => {
     if (!question) return;
@@ -326,7 +309,6 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       return models;
     },
     requestAgentSetupStatus: async () => data.setups,
-    requestAccountStatus: async () => data.account,
     requestBrowserbaseStatus: async () => {
       if (browserbaseState === 'error') {
         emit({ type: 'browserbase-error', requestId: 'preview-browserbase-status', code: 'preview-unavailable', message: '미리보기 원격 브라우저 연결을 확인하지 못했어요.' });
@@ -361,45 +343,6 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       emit({ type: 'browserbase-status', status });
       return status;
     },
-    loginAccount: async () => {
-      const authRunId = crypto.randomUUID();
-      Object.assign(data.account, {
-        authenticating: true,
-        state: 'pending',
-        authRunId,
-      });
-      emit({ type: 'account-status', status: data.account });
-      later(() => {
-        if (data.account.authenticating) signIn();
-      }, 800);
-      return {
-        authRunId,
-        authUrl: 'https://accounts.example.invalid/preview',
-        pairingCode: 'PREVIEW',
-        expiresAt: null,
-      };
-    },
-    submitAccountAuthCode: () => signIn(),
-    cancelAccountLogin: () => {
-      Object.assign(data.account, {
-        state: 'signed-out',
-        authenticating: false,
-      });
-      emit({ type: 'account-status', status: data.account });
-    },
-    logoutAccount: async () => {
-      Object.assign(data.setups.rau, { connected: false, authenticated: false,
-        authenticating: false, setupComplete: false });
-      setupChanged();
-      Object.assign(data.account, {
-        state: 'signed-out',
-        signedIn: false,
-        account: null,
-        authenticating: false,
-      });
-      emit({ type: 'account-status', status: data.account });
-      return data.account;
-    },
     installAgent: async (provider) => {
       data.setups[provider].installing = true;
       setupChanged();
@@ -429,7 +372,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       return data.setups;
     },
     authenticateAgent: async (provider, method) => {
-      if (!['rau', 'pi'].includes(provider) && method === 'oauth') {
+      if (provider !== 'pi' && method === 'oauth') {
         terminalRun = { id: crypto.randomUUID(), agent: provider, step: 0, choice: 0 };
         const id = terminalRun.id;
         Object.assign(data.setups[provider], { authenticating: true, authOwnedByThisSession: true, authRunId: id, authMethod: method });
@@ -454,7 +397,6 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
         agent: provider,
         authRunId: crypto.randomUUID(),
         authUrl: null,
-        pairingCode: 'PREVIEW',
       };
     },
     resumeSetupTerminal: (agent, authRunId) => {
@@ -489,7 +431,6 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       setupChanged();
     },
     disconnectAgent: async (provider) => {
-      if (provider === 'rau') await bridge.logoutAccount();
       if (provider === 'pi') {
         data.pi.keyConfigured = false;
         data.pi.setupComplete = false;
@@ -942,13 +883,6 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
           file.scope === scope &&
           (scope === 'global' || file.scopeId === scopeId),
       ),
-    downloadReference: async (file) => {
-      const reference = references.find((item) =>
-        item.id === file.id && item.scope === file.scope && item.scopeId === file.scopeId,
-      );
-      if (!reference) throw new Error('미리보기 참고자료를 찾을 수 없습니다.');
-      return new TextEncoder().encode(`${reference.name}의 샘플 참고자료입니다.`);
-    },
     searchReferences: async (query, scope, scopeId) =>
       references
         .filter(
@@ -1284,11 +1218,6 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
         });
         finish();
       }),
-    interruptIfIdle: () => {
-      if (!running) return false;
-      bridge.interrupt();
-      return true;
-    },
     interrupt: () => {
       generation++;
       completeQuestion({ status: 'cancelled', reason: 'user-stop' });
@@ -1416,7 +1345,6 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       pendingChanges: changes.length,
       changeEvents: [...changeEvents],
       references: references.length,
-      account: data.account.state,
       browserbase: browserbaseState,
     }),
   };

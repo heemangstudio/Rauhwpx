@@ -31,8 +31,8 @@ function capabilityError(code, message) {
 }
 
 function requireActivePiTurn(activeSession) {
-  if (!activeSession || !['pi', 'rau'].includes(activeSession.agent)) {
-    throw capabilityError('PI_SUBAGENT_ROOT_REQUIRED', 'A Pi or Rau root turn is required');
+  if (activeSession?.agent !== 'pi') {
+    throw capabilityError('PI_SUBAGENT_ROOT_REQUIRED', 'A Pi root turn is required');
   }
   if (activeSession.providerRole !== 'chat' || !activeSession.providerCapabilityResource) {
     throw capabilityError('PI_SUBAGENT_ROOT_REQUIRED', 'A root provider capability is required');

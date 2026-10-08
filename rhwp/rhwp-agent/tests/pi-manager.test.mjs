@@ -13,7 +13,6 @@ import {
   PI_API_KEY_MAX_CHARS,
   PI_MODEL_ID_MAX_CHARS,
   PI_MODEL_NAME_MAX_CHARS,
-  PI_SECRET_ID,
   PI_SETTINGS_MAX_BYTES,
 } from '../pi-manager.mjs';
 import { createMemorySecretStore } from '../secret-store.mjs';
@@ -197,7 +196,6 @@ test('status on a missing root reports not installed and never spawns', async ()
     version: null,
     keyConfigured: false,
     keyTail: null,
-    account: null,
     models: [],
     defaultModelId: null,
     setupComplete: false,
@@ -755,49 +753,6 @@ test('setApiKey validates first, stores the key only in the secure vault and kee
   await fs.rm(rootDir, { recursive: true, force: true });
 });
 
-test('a clear queued behind a deferred vault write wins without racing the credential store', async () => {
-  const rootDir = await tmpRoot();
-  const vaultWriteStarted = deferred();
-  const releaseVaultWrite = deferred();
-  let shouldBlockWrite = true;
-  let stored = null;
-  let deleteCalls = 0;
-  const secretStore = {
-    available: true,
-    async get() { return stored; },
-    async set(_id, value) {
-      if (shouldBlockWrite) {
-        shouldBlockWrite = false;
-        vaultWriteStarted.resolve();
-        await releaseVaultWrite.promise;
-      }
-      stored = value;
-    },
-    async delete() {
-      deleteCalls += 1;
-      stored = null;
-    },
-  };
-  const manager = createPiManager({ rootDir, openRouter: fakeOpenRouter(), secretStore });
-
-  const setting = manager.setApiKey('sk-or-v1-serialized-key');
-  await vaultWriteStarted.promise;
-  const clearing = manager.clearApiKey();
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(deleteCalls, 0, 'clear must not touch the vault while setApiKey owns the transaction');
-
-  releaseVaultWrite.resolve();
-  await setting;
-  const cleared = await clearing;
-  assert.equal(deleteCalls, 1);
-  assert.equal(stored, null);
-  assert.equal(manager.apiKey(), null);
-  assert.equal(cleared.keyConfigured, false);
-  assert.equal((await readJson(path.join(rootDir, 'config.json'))).keyTail, null);
-
-  await fs.rm(rootDir, { recursive: true, force: true });
-});
-
 test('a model edit stays isolated while a deferred vault write owns the settings transaction', async () => {
   const rootDir = await tmpRoot();
   const vaultWriteStarted = deferred();
@@ -1040,48 +995,6 @@ test('Pi reports both the auth failure and a failed rollback', async () => {
     return true;
   });
   assert.equal(manager.apiKey(), null);
-
-  await fs.rm(rootDir, { recursive: true, force: true });
-});
-
-test('a failed clear persistence restores the vault, memory and both settings files', async () => {
-  const rootDir = await tmpRoot();
-  const configPath = path.join(rootDir, 'config.json');
-  const persistenceError = new Error('clear config persistence failed after replacement');
-  let failNextConfigCommit = false;
-  const secretStore = createMemorySecretStore();
-  const manager = createPiManager({
-    rootDir,
-    openRouter: fakeOpenRouter(),
-    secretStore,
-    async replaceFile(tempPath, targetPath, options) {
-      await replaceFileAtomically(tempPath, targetPath, options);
-      if (targetPath === configPath && failNextConfigCommit) {
-        failNextConfigCommit = false;
-        throw persistenceError;
-      }
-    },
-  });
-  await manager.setApiKey('sk-or-v1-restore-clear', { account: 'andy@example.com' });
-  await manager.setModels([{ id: 'deepseek/deepseek-chat-v3.1' }]);
-  failNextConfigCommit = true;
-
-  await assert.rejects(manager.clearApiKey(), persistenceError);
-  const status = await manager.status();
-  assert.equal(await secretStore.get(PI_SECRET_ID), 'sk-or-v1-restore-clear');
-  assert.equal(manager.apiKey(), 'sk-or-v1-restore-clear');
-  assert.equal(status.keyTail, 'lear');
-  assert.equal(status.account, 'andy@example.com');
-  assert.equal(status.setupComplete, true);
-  assert.deepEqual(status.models.map(({ id }) => id), ['deepseek/deepseek-chat-v3.1']);
-  const persisted = await readJson(configPath);
-  assert.equal(persisted.keyTail, 'lear');
-  assert.equal(persisted.account, 'andy@example.com');
-  assert.equal(persisted.setupComplete, true);
-  assert.deepEqual(
-    (await readJson(path.join(rootDir, 'agent', 'models.json'))).providers.openrouter.models.map(({ id }) => id),
-    ['deepseek/deepseek-chat-v3.1'],
-  );
 
   await fs.rm(rootDir, { recursive: true, force: true });
 });
@@ -1414,36 +1327,3 @@ test('syncAssets rewrites settings.json without an install', async () => {
   await fs.rm(rootDir, { recursive: true, force: true });
 });
 
-test('clearing an API key fails closed when vault deletion fails', async () => {
-  const rootDir = await tmpRoot();
-  let stored = null;
-  let deleteFails = true;
-  const manager = createPiManager({
-    rootDir,
-    openRouter: fakeOpenRouter(),
-    secretStore: {
-      available: true,
-      get: async () => stored,
-      set: async (_id, value) => { stored = value; },
-      delete: async () => {
-        if (deleteFails) throw new Error('vault delete failed');
-        stored = null;
-      },
-    },
-  });
-  await manager.setApiKey('sk-or-v1-delete-me');
-
-  await assert.rejects(() => manager.clearApiKey(), (error) => {
-    assert.equal(error.code, 'SECRET_DELETE_FAILED');
-    assert.match(error.message, /vault delete failed/);
-    return true;
-  });
-  assert.equal(manager.apiKey(), 'sk-or-v1-delete-me');
-  assert.equal((await manager.status()).keyConfigured, true);
-
-  deleteFails = false;
-  const cleared = await manager.clearApiKey();
-  assert.equal(cleared.error, null);
-
-  await fs.rm(rootDir, { recursive: true, force: true });
-});

@@ -5,18 +5,18 @@ import { AuthRunRegistry } from '../auth-run-registry.mjs';
 test('one authentication run per provider is owned by its initiating session', () => {
   const registry = new AuthRunRegistry();
   const run = registry.begin({
-    agent: 'rau', ownerSessionId: 'window-a', requestId: 'request-a', method: 'oauth',
+    agent: 'pi', ownerSessionId: 'window-a', requestId: 'request-a', method: 'oauth',
   });
 
   assert.throws(
-    () => registry.begin({ agent: 'rau', ownerSessionId: 'window-b', method: 'oauth' }),
+    () => registry.begin({ agent: 'pi', ownerSessionId: 'window-b', method: 'oauth' }),
     { code: 'AGENT_AUTH_BUSY' },
   );
   assert.equal(registry.requireOwned({
-    agent: 'rau', runId: run.runId, ownerSessionId: 'window-a',
+    agent: 'pi', runId: run.runId, ownerSessionId: 'window-a',
   }), run);
   assert.throws(
-    () => registry.requireOwned({ agent: 'rau', runId: run.runId, ownerSessionId: 'window-b' }),
+    () => registry.requireOwned({ agent: 'pi', runId: run.runId, ownerSessionId: 'window-b' }),
     { code: 'AGENT_AUTH_NOT_OWNER' },
   );
 });
@@ -24,21 +24,21 @@ test('one authentication run per provider is owned by its initiating session', (
 test('owner reconnect can recover replayable authentication UI', () => {
   const registry = new AuthRunRegistry();
   const run = registry.begin({
-    agent: 'rau', ownerSessionId: 'window-a', method: 'oauth',
+    agent: 'pi', ownerSessionId: 'window-a', method: 'oauth',
     replayableUi: { authUrl: 'https://example.test/login' },
   });
-  registry.update(run, { phase: 'authorizing', replayableUi: { pairingCode: 'ABCD-EFGH-IJKL' } });
+  registry.update(run, { phase: 'authorizing', replayableUi: { userCode: 'ABCD-EFGH' } });
 
   const [snapshot] = registry.forSession('window-a');
   assert.deepEqual(snapshot, {
     authRunId: run.runId,
-    agent: 'rau',
+    agent: 'pi',
     method: 'oauth',
     phase: 'authorizing',
     createdAt: snapshot.createdAt,
     expiresAt: snapshot.expiresAt,
     authUrl: 'https://example.test/login',
-    pairingCode: 'ABCD-EFGH-IJKL',
+    userCode: 'ABCD-EFGH',
   });
   assert.equal(typeof snapshot.createdAt, 'string');
   assert.equal(typeof snapshot.expiresAt, 'string');
@@ -49,13 +49,13 @@ test('closing an owner session revokes its runs and calls cancellation', () => {
   const reasons = [];
   const registry = new AuthRunRegistry();
   registry.begin({
-    agent: 'rau', ownerSessionId: 'window-a', method: 'oauth', cancel: (reason) => reasons.push(reason),
+    agent: 'codex', ownerSessionId: 'window-a', method: 'oauth', cancel: (reason) => reasons.push(reason),
   });
   registry.begin({ agent: 'pi', ownerSessionId: 'window-b', method: 'oauth' });
 
   assert.equal(registry.cancelForSession('window-a').length, 1);
   assert.deepEqual(reasons, ['owner-session-closed']);
-  assert.equal(registry.get('rau'), null);
+  assert.equal(registry.get('codex'), null);
   assert.ok(registry.get('pi'));
 });
 
@@ -64,13 +64,13 @@ test('expired runs are cancelled and no longer block a provider', () => {
   const reasons = [];
   const registry = new AuthRunRegistry({ now: () => clock, ttlMs: 50 });
   registry.begin({
-    agent: 'rau', ownerSessionId: 'window-a', method: 'oauth', cancel: (reason) => reasons.push(reason),
+    agent: 'pi', ownerSessionId: 'window-a', method: 'oauth', cancel: (reason) => reasons.push(reason),
   });
   clock += 51;
 
-  assert.equal(registry.get('rau'), null);
+  assert.equal(registry.get('pi'), null);
   assert.deepEqual(reasons, ['expired']);
-  assert.doesNotThrow(() => registry.begin({ agent: 'rau', ownerSessionId: 'window-b', method: 'oauth' }));
+  assert.doesNotThrow(() => registry.begin({ agent: 'pi', ownerSessionId: 'window-b', method: 'oauth' }));
 });
 
 test('an authentication run expires without a later registry call', () => {
@@ -93,7 +93,7 @@ test('an authentication run expires without a later registry call', () => {
     },
   });
   const run = registry.begin({
-    agent: 'rau',
+    agent: 'pi',
     ownerSessionId: 'window-a',
     method: 'oauth',
     cancel: (reason) => reasons.push(reason),

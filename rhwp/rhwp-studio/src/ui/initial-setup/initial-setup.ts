@@ -10,24 +10,19 @@ import {
   applyFirstRunDefaultAgent,
 } from '../../agent/agent-prefs.ts';
 import type {
-  AccountSessionStatus,
   AgentName,
   AgentSetupStatusMap,
   SidebarEvent,
 } from '../../agent/types.ts';
 import { AGENT_LABEL, createProviderIcon, PROVIDER_ORDER } from '../agent-sidebar/providers.ts';
 import {
-  isByokAgent,
   isProviderConfigured,
-  isRauFirstRunFailure,
   PROVIDER_VENDOR,
-  RAU_FAILURE_FORWARD_COPY,
   SUGGESTED_AGENT,
 } from './catalog.ts';
 import {
   completeInitialSetup,
   loadInitialSetup,
-  shouldForceRauFailurePreview,
   shouldShowInitialSetup,
   type InitialSetupRecord,
   type InitialSetupStorage,
@@ -59,9 +54,6 @@ function checkMark(): SVGSVGElement {
 export interface InitialSetupDeps {
   openAgentSetup: (agent: AgentName) => void;
   beginAgentConnect?: (agent: AgentName) => void;
-  /** 실패 경로에서 설정 모달을 닫아 카드가 다시 보이게 한다. */
-  closeAgentSetup?: () => void;
-  requestAccountStatus?: () => Promise<AccountSessionStatus | null>;
   /** 예전 2단계 흐름의 보정 창 열기. 카드는 더 이상 쓰지 않는다. */
   openCalibration?: (options?: { elevate?: boolean }) => void;
   storage?: InitialSetupStorage | null;
@@ -73,24 +65,14 @@ export interface InitialSetupUi {
   close(): void;
   handleEvent(event: SidebarEvent): void;
   notifyCalibrationClosed(completed: boolean): void;
-  notifySetupAbandoned(info: { agent?: AgentName | null; code?: string; message?: string }): void;
   dispose(): void;
 }
 
 export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
-  const {
-    openAgentSetup,
-    beginAgentConnect,
-    closeAgentSetup,
-    requestAccountStatus,
-    storage,
-  } = deps;
+  const { openAgentSetup, beginAgentConnect, storage } = deps;
   let disposed = false;
   let record: InitialSetupRecord = loadInitialSetup(storage);
   let setupStatuses: AgentSetupStatusMap | null = null;
-  let rauFailureActive = false;
-  /** closeAgentSetup 이 abandoned 로 다시 들어오면 모달을 닫지 않는다. 재시도 실패는 다시 닫는다. */
-  let closingSetupForRecovery = false;
   let lastFocus: HTMLElement | null = null;
 
   const overlay = el('div', 'rhwp-setup-overlay');
@@ -104,11 +86,6 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   const title = el('h1', 'rhwp-setup-title', SETUP_TITLE);
   title.id = 'rhwp-setup-title';
 
-  const recovery = el('p', 'rhwp-setup-recovery', RAU_FAILURE_FORWARD_COPY.body);
-  recovery.hidden = true;
-  recovery.setAttribute('role', 'status');
-  recovery.setAttribute('aria-live', 'polite');
-
   const providersPanel = el('div', 'rhwp-setup-providers');
   const grid = el('div', 'rhwp-setup-grid');
   grid.setAttribute('role', 'list');
@@ -119,7 +96,6 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     card.setAttribute('role', 'listitem');
     card.dataset.agent = agent;
     card.dataset.suggested = agent === SUGGESTED_AGENT ? 'true' : 'false';
-    if (isByokAgent(agent)) card.dataset.byok = 'true';
     const action = el('button', 'rhwp-setup-card-action');
     action.type = 'button';
     const logo = el('span', 'rhwp-setup-card-logo');
@@ -143,7 +119,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   primary.type = 'button';
   footer.append(primary);
 
-  dialog.append(title, recovery, providersPanel, footer);
+  dialog.append(title, providersPanel, footer);
   overlay.appendChild(dialog);
 
   function configuredAgents(): AgentName[] {
@@ -155,15 +131,11 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   }
 
   function renderCards(): void {
-    dialog.dataset.recovery = rauFailureActive ? 'true' : 'false';
-    recovery.hidden = !rauFailureActive;
-    title.textContent = rauFailureActive ? RAU_FAILURE_FORWARD_COPY.title : SETUP_TITLE;
     for (const agent of PROVIDER_ORDER) {
       const card = cards.get(agent);
       if (!card) continue;
       const configured = isProviderConfigured(agent, setupStatuses);
       card.root.dataset.configured = configured ? 'true' : 'false';
-      card.root.dataset.recoveryOption = rauFailureActive && isByokAgent(agent) ? 'true' : 'false';
       card.action.setAttribute(
         'aria-label',
         configured ? `${AGENT_LABEL[agent]} 연결됨` : `${AGENT_LABEL[agent]} 연결`,
@@ -171,9 +143,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     }
     const ready = configuredCount() > 0;
     dialog.dataset.ready = ready ? 'true' : 'false';
-    primary.textContent = ready
-      ? '계속'
-      : rauFailureActive ? RAU_FAILURE_FORWARD_COPY.skip : '나중에';
+    primary.textContent = ready ? '계속' : '나중에';
   }
 
   function finish(partial: Pick<InitialSetupRecord, 'providerStep' | 'calibrationStep'>): void {
@@ -190,21 +160,6 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     });
   }
 
-  function enterRauFailureRecovery(): void {
-    if (disposed || !overlay.isConnected) return;
-    rauFailureActive = true;
-    if (!closingSetupForRecovery) {
-      closingSetupForRecovery = true;
-      try {
-        closeAgentSetup?.();
-      } finally {
-        closingSetupForRecovery = false;
-      }
-    }
-    renderCards();
-    window.requestAnimationFrame(() => primary.focus());
-  }
-
   primary.addEventListener('click', skipToEditor);
 
   function onKeyDown(event: KeyboardEvent): void {
@@ -219,13 +174,11 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     lastFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     document.body.appendChild(overlay);
     overlay.setAttribute('aria-hidden', 'false');
-    if (shouldForceRauFailurePreview()) rauFailureActive = true;
     renderCards();
     requestAnimationFrame(() => {
       overlay.classList.add('rhwp-setup-open');
       cards.get(PROVIDER_ORDER[0])?.action.focus({ preventScroll: true });
     });
-    if (requestAccountStatus) void requestAccountStatus();
   }
 
   function close(): void {
@@ -243,21 +196,12 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     open,
     close,
     handleEvent(event: SidebarEvent): void {
-      if (disposed) return;
-      if (event.type === 'agent-setup-error') {
-        if (isRauFirstRunFailure(event)) enterRauFailureRecovery();
-        return;
-      }
-      if (event.type !== 'agent-setup-status') return;
+      if (disposed || event.type !== 'agent-setup-status') return;
       setupStatuses = event.statuses;
       renderCards();
     },
     notifyCalibrationClosed(): void {
       // 카드에는 보정 단계가 없다. 사이드바 칩이 결과를 기록한다.
-    },
-    notifySetupAbandoned(info: { agent?: AgentName | null; code?: string; message?: string }): void {
-      if (disposed) return;
-      if (isRauFirstRunFailure(info)) enterRauFailureRecovery();
     },
     dispose(): void {
       disposed = true;

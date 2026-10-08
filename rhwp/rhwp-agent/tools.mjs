@@ -490,7 +490,6 @@ export const TOOL_CATEGORIES = Object.freeze([
   'background-control',
   'background-worker',
   'browser',
-  'environment',
 ]);
 
 /**
@@ -500,11 +499,11 @@ export const TOOL_CATEGORIES = Object.freeze([
  * destructive 로 표시하지 않는다. 그렇게 표시하면 Codex 안전 모드
  * (`workspace-write` + `approval_policy=never`)가 문서 편집 도구를 거절한다.
  *
- * @param {'instruction-read'|'instruction-write'|'document-read'|'document-write'|'reference-read'|'template-read'|'download-write'|'artifact-write'|'user-interaction'|'planning-control'|'plan-progress'|'background-control'|'background-worker'|'browser'|'environment'} category
+ * @param {'instruction-read'|'instruction-write'|'document-read'|'document-write'|'reference-read'|'template-read'|'download-write'|'artifact-write'|'user-interaction'|'planning-control'|'plan-progress'|'background-control'|'background-worker'|'browser'} category
  */
 export function toolAnnotations(category) {
   return {
-    readOnlyHint: category === 'instruction-read' || category === 'document-read' || category === 'reference-read' || category === 'template-read' || category === 'environment',
+    readOnlyHint: category === 'instruction-read' || category === 'document-read' || category === 'reference-read' || category === 'template-read',
     destructiveHint: category === 'download-write',
     openWorldHint: category === 'browser' || category === 'download-write',
   };
@@ -782,11 +781,6 @@ const BASE_TOOL_DEFINITIONS = [
   {
     name: 'materialize_document_snapshot',
     description: `Write the open document to this chat's hub-owned read-only storage for workflows needing a local path (sourcePath null or dirty); returns path, format, size, checksum, revision, digest. Does not require the user to save; never modifies the document or its source.`,
-    shape: {},
-  },
-  {
-    name: 'publish_cloud_document',
-    description: 'Cloud workers only: announce the finished Cloud document so the user can merge it into their local branch after this turn; the original file is not overwritten.',
     shape: {},
   },
   {
@@ -1278,11 +1272,6 @@ const BASE_TOOL_DEFINITIONS = [
     validate: validateInsertImage,
   },
   {
-    name: 'environment_screenshot',
-    description: 'Capture the cloud session\'s virtual desktop (Xvfb) to a PNG in the session work directory; returns imagePath (for insert_image) + image block. ENVIRONMENT_DISPLAY_UNAVAILABLE without DISPLAY.',
-    shape: {},
-  },
-  {
     name: 'insert_equation',
     description: `Insert an inline equation at charOffset. preview_equation on the same script reports warnings first (syntax guide there). Take fontSizePt from surrounding get_char_format. ${WRITE_POINTER}`,
     shape: {
@@ -1707,7 +1696,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
 ];
 
-/** @type {Readonly<Record<string, 'instruction-read'|'instruction-write'|'document-read'|'document-write'|'reference-read'|'template-read'|'download-write'|'artifact-write'|'user-interaction'|'planning-control'|'plan-progress'|'background-control'|'background-worker'|'browser'|'environment'>>} */
+/** @type {Readonly<Record<string, 'instruction-read'|'instruction-write'|'document-read'|'document-write'|'reference-read'|'template-read'|'download-write'|'artifact-write'|'user-interaction'|'planning-control'|'plan-progress'|'background-control'|'background-worker'|'browser'>>} */
 export const TOOL_CLASSIFICATIONS = Object.freeze({
   read_agent_instructions: 'instruction-read',
   update_agent_instructions: 'instruction-write',
@@ -1732,7 +1721,6 @@ export const TOOL_CLASSIFICATIONS = Object.freeze({
   get_fields: 'document-read',
   get_document_info: 'document-read',
   materialize_document_snapshot: 'document-read',
-  publish_cloud_document: 'document-write',
   commit_version: 'document-write',
   find_text: 'document-read',
   render_page: 'document-read',
@@ -1765,7 +1753,6 @@ export const TOOL_CLASSIFICATIONS = Object.freeze({
   list_numberings: 'document-read',
   apply_style: 'document-write',
   insert_image: 'document-write',
-  environment_screenshot: 'environment',
   insert_equation: 'document-write',
   edit_object: 'document-write',
   insert_shape: 'document-write',
@@ -1808,11 +1795,11 @@ export const TOOL_DEFINITIONS = Object.freeze(BASE_TOOL_DEFINITIONS.map((definit
 }));
 
 export const TOOL_PROFILES = Object.freeze({
-  direct: Object.freeze(['instruction-read', 'instruction-write', 'document-read', 'document-write', 'reference-read', 'template-read', 'artifact-write', 'user-interaction', 'background-control', 'environment']),
-  planning: Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'download-write', 'user-interaction', 'planning-control', 'browser', 'environment']),
-  question: Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'download-write', 'user-interaction', 'browser', 'environment']),
-  'awaiting-approval': Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'download-write', 'user-interaction', 'planning-control', 'browser', 'environment']),
-  implementing: Object.freeze(['instruction-read', 'instruction-write', 'document-read', 'document-write', 'reference-read', 'template-read', 'download-write', 'artifact-write', 'user-interaction', 'plan-progress', 'browser', 'background-control', 'environment']),
+  direct: Object.freeze(['instruction-read', 'instruction-write', 'document-read', 'document-write', 'reference-read', 'template-read', 'artifact-write', 'user-interaction', 'background-control']),
+  planning: Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'download-write', 'user-interaction', 'planning-control', 'browser']),
+  question: Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'download-write', 'user-interaction', 'browser']),
+  'awaiting-approval': Object.freeze(['instruction-read', 'document-read', 'reference-read', 'template-read', 'download-write', 'user-interaction', 'planning-control', 'browser']),
+  implementing: Object.freeze(['instruction-read', 'instruction-write', 'document-read', 'document-write', 'reference-read', 'template-read', 'download-write', 'artifact-write', 'user-interaction', 'plan-progress', 'browser', 'background-control']),
   'copy-layout-worker': Object.freeze([
     'read_product_skill',
     'get_document_info',

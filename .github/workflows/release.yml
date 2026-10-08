@@ -38,24 +38,6 @@ jobs:
             exit 1
           fi
 
-      - name: Require matching cloud release metadata
-        run: |
-          node --input-type=module <<'NODE'
-          import assert from 'node:assert/strict';
-          import { readFileSync } from 'node:fs';
-          import { RAILWAY_DEFAULT_IMAGE } from './desktop/cloud-railway.mjs';
-          import { RAILWAY_DEFAULT_IMAGE as HOSTED_RAILWAY_DEFAULT_IMAGE } from './rhwp/rau-credits/cloud-provisioner.mjs';
-          const read = (path) => JSON.parse(readFileSync(path, 'utf8'));
-          const version = read('package.json').version;
-          const cloud = read('cloud/package.json');
-          const lock = read('cloud/package-lock.json');
-          assert.equal(cloud.version, version, 'Cloud and desktop release versions must match');
-          assert.equal(lock.version, version, 'Cloud lockfile version must match');
-          assert.equal(lock.packages[''].version, version, 'Cloud lockfile root version must match');
-          assert.equal(RAILWAY_DEFAULT_IMAGE, `ghcr.io/heemangstudio/rauhwpx-cloud:${version}`);
-          assert.equal(HOSTED_RAILWAY_DEFAULT_IMAGE, RAILWAY_DEFAULT_IMAGE, 'Hosted and desktop cloud images must match');
-          NODE
-
       - name: Audit high and critical production advisories
         run: node scripts/audit-production.mjs
 
@@ -83,7 +65,7 @@ jobs:
         run: npm ci
 
       # The pull request verifies application behavior. The release additionally
-      # checks its packaging contracts; cloud and desktop jobs verify built assets.
+      # checks its packaging contracts; desktop jobs verify built assets.
       - name: Check release tooling and packaging contracts
         run: npm run test:ci
 
@@ -116,8 +98,8 @@ jobs:
 
   macos:
     name: Build macOS installers
-    # Bundle the verified cloud runtimes while tagged-source verification runs.
-    needs: [preflight, cloud, wasm]
+    # Package while tagged-source verification runs.
+    needs: [preflight, wasm]
     runs-on: blacksmith-6vcpu-macos-15
     timeout-minutes: 120
     environment: macos-release
@@ -126,12 +108,6 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ github.sha }}
-      - name: Download bundled VPS runtimes
-        uses: actions/download-artifact@v4
-        with:
-          pattern: cloud-dist-*
-          path: cloud/release
-          merge-multiple: true
       - uses: ./.github/actions/package-desktop
         with:
           platform: macos
@@ -146,7 +122,7 @@ jobs:
 
   windows:
     name: Build Windows installers
-    needs: [preflight, cloud, wasm]
+    needs: [preflight, wasm]
     runs-on: blacksmith-4vcpu-windows-2025
     timeout-minutes: 120
     steps:
@@ -154,12 +130,6 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ github.sha }}
-      - name: Download bundled VPS runtimes
-        uses: actions/download-artifact@v4
-        with:
-          pattern: cloud-dist-*
-          path: cloud/release
-          merge-multiple: true
       - uses: ./.github/actions/package-desktop
         with:
           platform: windows
@@ -168,7 +138,7 @@ jobs:
 
   linux:
     name: Build Linux installers (${{ matrix.arch }})
-    needs: [preflight, cloud, wasm]
+    needs: [preflight, wasm]
     strategy:
       fail-fast: false
       matrix:
@@ -207,13 +177,6 @@ jobs:
           npm ci
           npm --prefix rhwp/rhwp-studio ci
           npm --prefix rhwp/rhwp-agent ci --omit=dev
-
-      - name: Download bundled VPS runtimes
-        uses: actions/download-artifact@v4
-        with:
-          pattern: cloud-dist-*
-          path: cloud/release
-          merge-multiple: true
 
       - name: Build native reference extractor
         run: npm run build:native
@@ -254,166 +217,9 @@ jobs:
             release/*.deb
             release/latest-linux*.yml
 
-  cloud:
-    name: Build signed VPS runtime (${{ matrix.asset_arch }})
-    needs: preflight
-    permissions:
-      contents: read
-      id-token: write
-      packages: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: blacksmith-4vcpu-ubuntu-2404
-            machine_arch: x86_64
-            asset_arch: amd64
-          - runner: blacksmith-4vcpu-ubuntu-2404-arm
-            machine_arch: aarch64
-            asset_arch: arm64
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
-
-    steps:
-      - name: Check out tagged source
-        uses: actions/checkout@v5
-        with:
-          persist-credentials: false
-          ref: ${{ github.sha }}
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: |
-            cloud/package-lock.json
-            cloud/install/provider-runtime/package-lock.json
-            rhwp/rhwp-studio/package-lock.json
-
-      - uses: ./.github/actions/setup-rust
-        with:
-          wasm: 'true'
-          cache: cloud-release
-
-      - uses: ./.github/actions/build-wasm
-        with:
-          setup-rust: 'false'
-
-      - name: Build native reference extractor
-        working-directory: rhwp
-        run: cargo build --release --locked --bin rhwp
-
-      - name: Install locked cloud and Studio dependencies
-        run: |
-          npm --prefix cloud ci
-          npm --prefix rhwp/rhwp-studio ci
-
-      - name: Build dedicated headless Studio runtime
-        run: bash cloud/install/build-runtime-assets.sh
-
-      - name: Install live display test dependency
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends x11-apps bubblewrap
-
-      - name: Verify cloud runtime
-        run: npm --prefix cloud test
-
-      - name: Build and smoke-test worker image
-        run: |
-          podman build --tag rauhwpx-cloud-worker-release --file cloud/install/Containerfile.worker cloud
-          podman run --rm --user 1000:1000 --entrypoint node \
-            rauhwpx-cloud-worker-release /app/document-runtime/smoke.mjs
-
-      # 앱 제공 샌드박스 이미지는 컨트롤 플레인과 워커를 한 컨테이너에서 돌린다.
-      - name: Build and smoke-test app sandbox image
-        run: |
-          podman build --tag rauhwpx-cloud-sandbox-release --file cloud/install/Containerfile.sandbox cloud
-          podman run --rm --entrypoint node rauhwpx-cloud-sandbox-release \
-            --input-type=module -e 'import { parseConfig } from "/app/src/config.mjs";
-          const config = parseConfig(process.env);
-          if (config.runner !== "local") throw new Error("sandbox image must use the local runner");
-          if (config.workerUid !== 1001) throw new Error("sandbox image must drop workers to uid 1001");
-          console.log(JSON.stringify({ runner: config.runner, workerUid: config.workerUid }));'
-          podman run --rm --user 1001:1001 \
-            --env HOME=/tmp --env RAUHWpx_XVFB_CAPTURE_PROOF=1 \
-            --volume "$PWD/cloud/tests:/app/tests:ro" \
-            --entrypoint node rauhwpx-cloud-sandbox-release \
-            --test /app/tests/xvfb-studio-capture-proof.test.mjs
-
-      - name: Publish app sandbox architecture image
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ASSET_ARCH: ${{ matrix.asset_arch }}
-        run: |
-          set -euo pipefail
-          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/rauhwpx-cloud"
-          printf '%s' "$GHCR_TOKEN" | podman login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-          release_version="${GITHUB_REF_NAME#v}"
-          podman tag rauhwpx-cloud-sandbox-release "$image:$release_version-$ASSET_ARCH"
-          podman push "$image:$release_version-$ASSET_ARCH"
-          podman tag rauhwpx-cloud-sandbox-release "$image:stable-$ASSET_ARCH"
-          podman push "$image:stable-$ASSET_ARCH"
-
-      - name: Install Cosign
-        uses: sigstore/cosign-installer@v3
-
-      - name: Build and sign cloud runtime
-        run: bash cloud/install/package-release.sh "${{ matrix.machine_arch }}" release
-
-      - name: Verify cloud release assets
-        env:
-          ASSET_ARCH: ${{ matrix.asset_arch }}
-        run: |
-          set -euo pipefail
-          asset="release/rauhwpx-cloud-linux-${ASSET_ARCH}.tar.gz"
-          test -s "$asset"
-          test -s "$asset.sha256"
-          test -s "$asset.sigstore.json"
-          (cd release && sha256sum --check "$(basename "$asset").sha256")
-          cosign verify-blob "$asset" \
-            --bundle "$asset.sigstore.json" \
-            --certificate-identity-regexp '^https://github\.com/heemangstudio/Rauhwpx/\.github/workflows/release\.yml@refs/tags/' \
-            --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'
-
-      - name: Upload cloud runtime
-        uses: actions/upload-artifact@v4
-        with:
-          name: cloud-dist-${{ matrix.asset_arch }}
-          if-no-files-found: error
-          path: |
-            release/rauhwpx-cloud-linux-${{ matrix.asset_arch }}.tar.gz
-            release/rauhwpx-cloud-linux-${{ matrix.asset_arch }}.tar.gz.sha256
-            release/rauhwpx-cloud-linux-${{ matrix.asset_arch }}.tar.gz.sigstore.json
-            release/rauhwpx-cloud-bootstrap-linux-${{ matrix.asset_arch }}.tar.gz
-
-  cloud-image:
-    name: Publish multi-architecture cloud sandbox image
-    needs: [verification, cloud]
-    runs-on: blacksmith-2vcpu-ubuntu-2404
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Publish versioned and stable manifests
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/rauhwpx-cloud"
-          printf '%s' "$GHCR_TOKEN" | podman login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-          release_version="${GITHUB_REF_NAME#v}"
-          podman manifest create "$image:$release_version"
-          podman manifest add "$image:$release_version" "docker://$image:$release_version-amd64"
-          podman manifest add "$image:$release_version" "docker://$image:$release_version-arm64"
-          podman manifest push --all "$image:$release_version" "docker://$image:$release_version"
-          podman manifest push --all "$image:$release_version" "docker://$image:stable"
-
   publish:
     name: Publish GitHub Release
-    needs: [verification, macos, windows, linux, cloud, cloud-image]
+    needs: [verification, macos, windows, linux]
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 15
     permissions:
@@ -436,7 +242,7 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           cd release
-          checksum_inputs=(./*.dmg ./*.zip ./*.exe ./*.AppImage ./*.deb ./*.tar.gz)
+          checksum_inputs=(./*.dmg ./*.zip ./*.exe ./*.AppImage ./*.deb)
           if [ "${#checksum_inputs[@]}" -eq 0 ]; then
             echo "No release artifacts were downloaded" >&2
             exit 1
@@ -454,9 +260,6 @@ jobs:
             release/*.exe
             release/*.AppImage
             release/*.deb
-            release/*.tar.gz
-            release/*.tar.gz.sha256
-            release/*.tar.gz.sigstore.json
             release/*.blockmap
             release/latest*.yml
             release/SHA256SUMS.txt

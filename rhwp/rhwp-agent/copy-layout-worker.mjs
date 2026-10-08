@@ -20,8 +20,6 @@ export async function launchCopyLayoutWorker(record, job, dependencies) {
     makeTemplateWorkerEventHandler,
     buildCopyLayoutWorkerPrompt,
     piManager,
-    openRouterManager,
-    OPENROUTER_AGENTS,
     piModelConfig,
     SESSION_FACTORIES,
     unknownAgentError,
@@ -100,11 +98,8 @@ export async function launchCopyLayoutWorker(record, job, dependencies) {
     }),
     piBin: piManager.piBin,
     piRoot: piManager.rootDir,
-    openRouterApiKey: openRouterManager(job.agent)?.apiKey() ?? undefined,
-    agentName: OPENROUTER_AGENTS.has(job.agent) ? job.agent : 'pi',
-    reasoning: OPENROUTER_AGENTS.has(job.agent)
-      ? Boolean(piModelConfig(job.model, job.agent)?.reasoning)
-      : false,
+    openRouterApiKey: job.agent === 'pi' ? piManager.apiKey() ?? undefined : undefined,
+    reasoning: job.agent === 'pi' ? Boolean(piModelConfig(job.model)?.reasoning) : false,
   };
   const createBackend = SESSION_FACTORIES[job.agent];
   if (!createBackend) throw unknownAgentError(job.agent);

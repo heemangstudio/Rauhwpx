@@ -19,8 +19,6 @@ const MODE_DETAIL: Readonly<Record<AgentMode, string>> = {
 export interface ModeMenuState {
   mode: AgentMode;
   disabled: boolean;
-  /** 지금 실행 위치에서 고를 수 없는 모드와 그 이유 (예: Cloud 의 에이전트). */
-  unavailable?: ReadonlyMap<AgentMode, string>;
   /** 칩 툴팁. 비어 있으면 모드 이름만 쓴다. */
   hint?: string;
 }
@@ -74,7 +72,6 @@ export function createModeMenu(onSelect: (mode: AgentMode) => void): ModeMenu {
     text.append(name, detail);
     item.append(text, createIcon('check', 'ag-mode-check'));
     item.addEventListener('click', () => {
-      if (item.disabled) return;
       setOpen(false);
       trigger.focus();
       onSelect(mode);
@@ -94,8 +91,8 @@ export function createModeMenu(onSelect: (mode: AgentMode) => void): ModeMenu {
   let current: AgentMode = 'agent';
   let open = false;
 
-  function enabledItems(): HTMLButtonElement[] {
-    return AGENT_MODES.map((mode) => items.get(mode)!).filter((item) => !item.disabled);
+  function menuItems(): HTMLButtonElement[] {
+    return AGENT_MODES.map((mode) => items.get(mode)!);
   }
 
   function setOpen(next: boolean): void {
@@ -120,20 +117,20 @@ export function createModeMenu(onSelect: (mode: AgentMode) => void): ModeMenu {
   trigger.addEventListener('click', (event) => {
     event.stopPropagation();
     setOpen(!open);
-    if (open) (items.get(current) && !items.get(current)!.disabled ? items.get(current)! : enabledItems()[0])?.focus();
+    if (open) items.get(current)?.focus();
   });
   trigger.addEventListener('keydown', (event) => {
     if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
       event.preventDefault();
       setOpen(true);
-      (items.get(current) ?? enabledItems()[0])?.focus();
+      items.get(current)?.focus();
     } else if (event.key === 'Escape' && open) {
       event.preventDefault();
       setOpen(false);
     }
   });
   menu.addEventListener('keydown', (event) => {
-    const list = enabledItems();
+    const list = menuItems();
     const index = list.indexOf(document.activeElement as HTMLButtonElement);
     if (event.key === 'Escape') {
       event.preventDefault();
@@ -166,10 +163,6 @@ export function createModeMenu(onSelect: (mode: AgentMode) => void): ModeMenu {
     trigger.title = state.hint || label;
     root.dataset.mode = state.mode;
     for (const [mode, item] of items) {
-      const reason = state.unavailable?.get(mode);
-      item.disabled = reason !== undefined;
-      item.setAttribute('aria-disabled', String(reason !== undefined));
-      item.title = reason ?? '';
       item.setAttribute('aria-checked', String(mode === state.mode));
       item.classList.toggle('ag-active', mode === state.mode);
     }

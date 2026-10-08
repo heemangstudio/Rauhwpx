@@ -458,22 +458,6 @@ test('persisted Pi chats remain available after reload', () => {
   assert.equal(getThread('pi-thread')?.agent, 'pi');
 });
 
-test('persisted Rau chats are dropped because rau is not a live agent', () => {
-  mem.clear();
-  storage.setItem('rhwp-agent-threads', JSON.stringify([{
-    id: 'rau-thread',
-    title: 'Rau 대화',
-    titleRequested: false,
-    createdAt: 1,
-    updatedAt: 2,
-    agent: 'rau',
-    model: 'rau-trial',
-    effort: 'medium',
-    messages: [{ role: 'assistant', text: '체험 답변', agent: 'rau' }],
-  }]));
-  assert.equal(getThread('rau-thread'), null);
-});
-
 test('persisted OpenCode chats are dropped because opencode is not a live agent', () => {
   mem.clear();
   storage.setItem('rhwp-agent-threads', JSON.stringify([{
@@ -817,17 +801,17 @@ test('workflow and every presented plan persist as history without approval auth
 });
 
 
-test('same-millisecond thread updates keep the later restart state newer', (t) => {
+test('same-millisecond thread updates keep the later state newer', (t) => {
   mem.clear();
   t.mock.method(Date, 'now', () => 2000);
   const thread = createEmptyThread({ agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', docKey: 'restart.hwpx' });
-  thread.messages.push({ role: 'user', text: 'Continue the archived edit.' });
-  thread.cloudRestartSourceSessionId = 'old-session';
+  thread.messages.push({ role: 'user', text: 'Continue the edit.' });
+  thread.title = '첫 제목';
   upsertThread(thread);
-  const prepared = getThread(thread.id)!;
-  delete thread.cloudRestartSourceSessionId;
+  const first = getThread(thread.id)!;
+  thread.title = '바뀐 제목';
   upsertThread(thread);
-  const accepted = getThread(thread.id)!;
-  assert.ok(accepted.updatedAt > prepared.updatedAt);
-  assert.equal(accepted.cloudRestartSourceSessionId, undefined);
+  const second = getThread(thread.id)!;
+  assert.ok(second.updatedAt > first.updatedAt);
+  assert.equal(second.title, '바뀐 제목');
 });

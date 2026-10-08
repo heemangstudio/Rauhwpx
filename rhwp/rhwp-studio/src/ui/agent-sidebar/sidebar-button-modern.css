@@ -29,12 +29,6 @@
   border-radius: var(--ag-r-row);
 }
 
-.ag-root .ag-cloud-btn {
-  width: auto;
-  flex-basis: auto;
-  padding-inline: 10px;
-}
-
 .ag-root :is(
   .ag-mode-btn,
   .ag-skills-btn,

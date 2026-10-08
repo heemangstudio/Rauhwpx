@@ -12,20 +12,7 @@ import type {
   FileSystemWritableFileStreamLike,
   SaveFilePickerOptionsLike,
 } from './command/file-system-access.ts';
-import type { AgentName } from './agent/types.ts';
 import { FALLBACK_DOCUMENT_FILE_NAME } from './core/document-names.ts';
-import type {
-  CloudCommandRequest,
-  CloudDisplayEvent,
-  CloudDisplayInputEvent,
-  CloudProfileDraft,
-  CloudResultAction,
-  CloudServerMode,
-  CloudSessionScope,
-  CloudTransferIntentRequest,
-  CloudTransferRequest,
-  CloudTransferReference,
-} from './cloud/types.ts';
 import {
   EXACT_LOCAL_DOCUMENT_MAX_BYTES,
   MIB,
@@ -79,7 +66,6 @@ export interface RhwpDesktopApi {
     fileName: string;
     bytes: Uint8Array;
     readOnly?: boolean;
-    cloudEditDraft?: CloudEditDraftIdentity;
   } | null>;
   openGeneratedDocumentWindow?: (payload: {
     fileName: string;
@@ -152,54 +138,7 @@ export interface RhwpDesktopApi {
     fileName: string;
     bytes: Uint8Array;
     readOnly?: boolean;
-    cloudEditDraft?: CloudEditDraftIdentity;
   }) => void) => void;
-  /** Cloud methods are optional so the browser build and older desktop preloads stay usable. */
-  cloudGetState?: (payload: CloudSessionScope) => Promise<unknown>;
-  cloudSaveProfile?: (payload: { profile: CloudProfileDraft }) => Promise<unknown>;
-  cloudTestProfile?: (payload: { profile?: CloudProfileDraft }) => Promise<unknown>;
-  cloudProvision?: (payload: {
-    installChannel: 'stable' | 'prerelease';
-    profile?: CloudProfileDraft;
-  }) => Promise<unknown>;
-  cloudPair?: (payload: { code: string; profile?: CloudProfileDraft }) => Promise<unknown>;
-  cloudSelectServerMode?: (payload: { mode: CloudServerMode }) => Promise<unknown>;
-  cloudSpawnSandbox?: (payload: { providerId?: string; selectedProvider?: AgentName }) => Promise<unknown>;
-  cloudSandboxStatus?: () => Promise<unknown>;
-  cloudTeardownSandbox?: (payload: { force?: boolean }) => Promise<unknown>;
-  cloudForceQuitAccount?: () => Promise<unknown>;
-  cloudReconnectLink?: (payload?: { explicit?: boolean }) => Promise<unknown>;
-  cloudRecreateLink?: () => Promise<unknown>;
-  /** Checkpoints the prior controller and explicitly transfers the account-global worker lease. */
-  cloudTakeoverSandbox?: () => Promise<unknown>;
-  /** Blocks new Raucloud input, checkpoints the controlling turn, then releases the worker. */
-  cloudAccountLogout?: () => Promise<unknown>;
-  cloudTransfer?: (payload: CloudTransferRequest) => Promise<unknown>;
-  cloudSetTransferIntent?: (payload: CloudTransferIntentRequest) => Promise<unknown>;
-  cloudReadReference?: (payload: Pick<CloudTransferReference, 'id' | 'scope' | 'scopeId'>) => Promise<unknown>;
-  cloudCommand?: (payload: CloudCommandRequest) => Promise<unknown>;
-  cloudDismissSession?: (payload: { sessionId: string }) => Promise<unknown>;
-  cloudCompleteTakeover?: (payload: { sessionId: string; operationId: string }) => Promise<unknown>;
-  cloudDownloadResult?: (payload: { sessionId: string }) => Promise<unknown>;
-  cloudDownloadCheckpoint?: (payload: { sessionId: string; operationId?: string; kind?: 'turn'; explicit?: boolean }) => Promise<unknown>;
-  cloudPrepareRestartDocument?: (payload: { sessionId: string }) => Promise<unknown>;
-  cloudOpenDisplay?: (payload: { sessionId: string }) => Promise<unknown>;
-  cloudCloseDisplay?: (payload: { connectionId: string }) => Promise<unknown>;
-  cloudDisplayInput?: (payload: { connectionId: string; event: CloudDisplayInputEvent }) => Promise<unknown>;
-  cloudResolveResult?: (payload: { sessionId: string; action: CloudResultAction }) => Promise<unknown>;
-  cloudBeginEdit?: (payload: { sessionId: string }) => Promise<unknown>;
-  cloudContinueEdit?: (payload: {
-    sessionId: string;
-    editSessionId: string;
-    changeSummary?: string;
-  }) => Promise<unknown>;
-  cloudPersistEditDraft?: (payload: CloudEditDraftSave) => Promise<unknown>;
-  onCloudEditDraftSaveRequested?: (callback: (request: { requestId: string }) => void) => (() => void) | void;
-  onCloudEvent?: (callback: (event: unknown) => void) => (() => void) | void;
-  onCloudDisplayEvent?: (callback: (event: {
-    connectionId: string;
-    event: CloudDisplayEvent;
-  }) => void) => (() => void) | void;
   onEditCommand?: (callback: (command: string) => void) => void;
   onPastePlainText?: (callback: (text: string) => void) => void;
   /** 시스템·사용자·한컴 오피스 글꼴 색인. 권한 요청 없이 이미 설치된 글꼴만 다룬다. */
@@ -218,18 +157,6 @@ export interface RhwpDesktopApi {
 export type NativeContextMenuItem =
   | { id: string; label: string; enabled?: boolean; checked?: boolean; danger?: boolean }
   | { type: 'separator' };
-
-export interface CloudEditDraftIdentity {
-  sessionId: string;
-  editSessionId: string;
-  boundary: { operationId: string; revision: number; writerGeneration: number; stateVersion: number };
-}
-
-export interface CloudEditDraftSave extends CloudEditDraftIdentity {
-  bytes: Uint8Array;
-  fileName: string;
-  requestId?: string;
-}
 
 export interface DesktopHost {
   rhwpDesktop?: RhwpDesktopApi;
@@ -993,7 +920,6 @@ export function installDesktopGeneratedDocumentHandling(
     bytes: Uint8Array;
     fileName: string;
     readOnly: boolean;
-    cloudEditDraft?: CloudEditDraftIdentity;
   }) => void,
   win?: DesktopHost,
 ) {
@@ -1005,7 +931,6 @@ export function installDesktopGeneratedDocumentHandling(
     bytes?: Uint8Array;
     fileName?: string;
     readOnly?: boolean;
-    cloudEditDraft?: CloudEditDraftIdentity;
   } | null) => {
     const launchDocumentId = typeof payload?.launchDocumentId === 'string'
       ? payload.launchDocumentId
@@ -1018,7 +943,6 @@ export function installDesktopGeneratedDocumentHandling(
       bytes,
       fileName,
       readOnly: payload?.readOnly === true,
-      ...(payload?.cloudEditDraft ? { cloudEditDraft: payload.cloudEditDraft } : {}),
     });
   };
   api.onOpenGeneratedDocument(receive);
@@ -1026,26 +950,6 @@ export function installDesktopGeneratedDocumentHandling(
     console.warn('[rhwp-desktop] 생성 문서 시작 데이터 조회 실패:', error);
   });
   return true;
-}
-
-export async function persistDesktopCloudEditDraft(
-  payload: CloudEditDraftSave,
-  win?: DesktopHost,
-): Promise<void> {
-  const api = desktopHost(win)?.rhwpDesktop;
-  if (!api?.cloudPersistEditDraft) throw new Error('Cloud draft persistence is unavailable');
-  await api.cloudPersistEditDraft(payload);
-}
-
-export function installDesktopCloudEditDraftSaveHandling(
-  save: (requestId: string) => void | Promise<void>,
-  win?: DesktopHost,
-): () => void {
-  const api = desktopHost(win)?.rhwpDesktop;
-  const unsubscribe = api?.onCloudEditDraftSaveRequested?.(({ requestId }) => {
-    void Promise.resolve(save(requestId));
-  });
-  return typeof unsubscribe === 'function' ? unsubscribe : () => {};
 }
 
 export function installDesktopEditCommandHandling(

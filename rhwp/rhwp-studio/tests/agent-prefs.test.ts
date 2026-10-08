@@ -222,8 +222,8 @@ test('결과형 저장 API는 쓰기 실패를 호출자에게 남긴다', () =>
   if (!result.ok) assert.match(result.error, /quota/);
 });
 
-test('저장된 rau/grok/cursor/opencode 는 라이브 기본값으로 접힌다', () => {
-  for (const agent of ['rau', 'grok', 'cursor', 'opencode'] as const) {
+test('저장된 grok/cursor/opencode 는 라이브 기본값으로 접힌다', () => {
+  for (const agent of ['grok', 'cursor', 'opencode'] as const) {
     const prefs = normalizeAgentPrefs({
       defaultAgent: agent,
       defaultModel: 'composer-1',
@@ -268,7 +268,7 @@ test('첫 실행을 마친 빈 프로필은 Claude 가 기본값이 된다', () 
   assert.equal(loadAgentPrefs(storage).defaultAgent, 'claude');
 });
 
-test('첫 실행에서 BYOK 만 연결하면 그 프로바이더가 기본값이 된다', () => {
+test('첫 실행에서 연결한 첫 프로바이더가 기본값이 된다', () => {
   const storage = makeStorage();
   assert.equal(firstRunDefaultAgent(['codex', 'claude']), 'codex');
   const seeded = applyFirstRunDefaultAgent(['codex'], storage);

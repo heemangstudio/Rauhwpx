@@ -4,47 +4,16 @@ export type MergePreparation =
   | { kind: 'cancel' | 'stash' | 'commit' }
   | { kind: 'branch'; name: string };
 
-/** 병합해 들어올 쪽. Cloud 경로에서는 브랜치·커밋 용어 대신 편집과 버전으로 말한다. */
-export interface MergePreparationIncoming {
-  name: string;
-  cloud: boolean;
-}
-
-interface PreparationCopy {
-  title: string;
-  lead: string;
-  stash: [string, string];
-  commit: [string, string];
-  branch: [string, string];
-}
-
-function preparationCopy(currentBranch: string, incoming?: MergePreparationIncoming): PreparationCopy {
-  if (incoming?.cloud) {
-    const name = incoming.name.replace(/^Cloud /, '');
-    return {
-      title: '검토 전에 내 편집 보관',
-      lead: `${name} 변경을 검토하기 전에 아직 버전에 남기지 않은 편집을 둘 곳을 고르세요.`,
-      stash: ['잠시 보관', '반영이 끝나면 다시 적용할 수 있습니다.'],
-      commit: ['함께 검토', `${currentBranch}에 먼저 남기고 Cloud 변경과 나란히 검토합니다.`],
-      branch: ['새 브랜치로 옮기기', '내 편집은 새 브랜치에 남고, 문서는 마지막 버전으로 돌아갑니다.'],
-    };
-  }
-  return {
-    title: '병합 전 내 변경 보관',
-    lead: '아직 커밋하지 않은 변경이 있습니다. 보관 방법을 선택하세요.',
-    stash: ['잠시 보관 (stash)', '병합한 뒤 보관한 변경을 다시 적용할 수 있습니다.'],
-    commit: ['현재 브랜치에 커밋', `${currentBranch}에 커밋하고 충돌을 검토합니다.`],
-    branch: ['새 브랜치에 커밋', '내 변경은 새 브랜치에 남고, 문서는 마지막 커밋으로 돌아간 뒤 병합합니다.'],
-  };
-}
-
 /** Native modal keeps keyboard focus and document input inside this decision. */
-export function prepareUncommittedMerge(
-  currentBranch: string,
-  incoming?: MergePreparationIncoming,
-): Promise<MergePreparation> {
+export function prepareUncommittedMerge(currentBranch: string): Promise<MergePreparation> {
   return new Promise((resolve) => {
-    const copy = preparationCopy(currentBranch, incoming);
+    const copy = {
+      title: '병합 전 내 변경 보관',
+      lead: '아직 커밋하지 않은 변경이 있습니다. 보관 방법을 선택하세요.',
+      stash: ['잠시 보관 (stash)', '병합한 뒤 보관한 변경을 다시 적용할 수 있습니다.'],
+      commit: ['현재 브랜치에 커밋', `${currentBranch}에 커밋하고 충돌을 검토합니다.`],
+      branch: ['새 브랜치에 커밋', '내 변경은 새 브랜치에 남고, 문서는 마지막 커밋으로 돌아간 뒤 병합합니다.'],
+    };
     const dialog = document.createElement('dialog');
     dialog.className = 'version-merge-preparation';
     dialog.setAttribute('aria-labelledby', 'version-merge-preparation-title');

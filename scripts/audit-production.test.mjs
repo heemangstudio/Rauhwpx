@@ -24,7 +24,7 @@ function audit(reports) {
   return { status, visited };
 }
 
-for (const affected of ['cloud', 'cloud/install/provider-runtime', 'rhwp/rau-credits']) {
+for (const affected of ['rhwp/rhwp-studio', 'site-api']) {
   test(`production audit fails when ${affected} has a blocking advisory`, () => {
     const { status, visited } = audit({ [affected]: report(undici('node_modules/undici', advisory('GHSA-new'))) });
     assert.equal(status, 1);
@@ -37,11 +37,11 @@ test('production audit follows transitive findings to their advisory', () => {
     ...undici('node_modules/pi/node_modules/undici', advisory('GHSA-new')),
     pi: { name: 'pi', severity: 'high', via: ['undici'], nodes: ['node_modules/pi'] },
   };
-  assert.equal(audit({ cloud: report(vulnerabilities) }).status, 1);
+  assert.equal(audit({ 'rhwp/rhwp-agent': report(vulnerabilities) }).status, 1);
 });
 
 test('production audit ignores moderate advisories', () => {
-  assert.equal(audit({ cloud: report(undici('node_modules/undici', advisory('GHSA-new', 'moderate'))) }).status, 0);
+  assert.equal(audit({ 'rhwp/rhwp-agent': report(undici('node_modules/undici', advisory('GHSA-new', 'moderate'))) }).status, 0);
 });
 
 test('production audit blocks advisories in bundled npm dependencies too', () => {
@@ -49,7 +49,6 @@ test('production audit blocks advisories in bundled npm dependencies too', () =>
   assert.equal(audit({ 'rhwp/rhwp-agent': report(undici(bundled, advisory('GHSA-rfgv-xxqx-mfg5'))) }).status, 1);
   assert.equal(audit({ 'rhwp/rhwp-agent': report(undici(bundled, advisory('GHSA-new'))) }).status, 1);
   assert.equal(audit({ 'rhwp/rhwp-agent': report(undici('node_modules/undici', advisory('GHSA-rfgv-xxqx-mfg5'))) }).status, 1);
-  assert.equal(audit({ cloud: report(undici(bundled, advisory('GHSA-rfgv-xxqx-mfg5'))) }).status, 1);
 });
 
 test('production audit fails when npm returns no report', () => {

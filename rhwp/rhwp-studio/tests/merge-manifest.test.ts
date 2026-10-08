@@ -46,7 +46,7 @@ test('a merge preserves shared paragraph identities for subsequent branch edits'
   ];
   const base = buildMergeManifest(repository, commitId('base'), snapshot, 1, [], seeds('base'));
   const current = buildMergeManifest(repository, commitId('current'), snapshot, 2, [base], seeds('local'));
-  const incoming = buildMergeManifest(repository, commitId('incoming'), snapshot, 3, [base], seeds('cloud'));
+  const incoming = buildMergeManifest(repository, commitId('incoming'), snapshot, 3, [base], seeds('incoming'));
   const merged = buildMergeManifest(repository, commitId('merged'), snapshot, 4, [current, incoming], seeds('both'));
   const next = buildMergeManifest(repository, commitId('next'), snapshot, 5, [merged], seeds('next-local'));
   assert.deepEqual(merged.entries.map((entry) => entry.identity), base.entries.map((entry) => entry.identity));

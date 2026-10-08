@@ -2,7 +2,7 @@
 // installer can take over. electron-updater owns the final platform handoff.
 export function createUpdateLifecycle({
   app, updater, nativeUpdater, platform, showMessageBox, openReleases,
-  cleanupTasks, stopTransport, onQuitRequested, onTeardown, isInteractive = () => false, logger = console,
+  cleanupTasks, onQuitRequested, onTeardown, isInteractive = () => false, logger = console,
 }) {
   let downloaded = null;
   let prompt = null;
@@ -99,11 +99,6 @@ export function createUpdateLifecycle({
     for (const result of results) {
       if (result.status === 'rejected') logger.warn('[rauhwpx] quit cleanup failed:', result.reason);
     }
-    try {
-      await stopTransport();
-    } catch (error) {
-      logger.warn('[rauhwpx] cloud transport cleanup failed:', error);
-    }
     if (!installRequested) {
       app.exit(0);
       return;
@@ -142,41 +137,14 @@ export function createUpdateLifecycle({
   return { start, configureUpdates, cancelQuit, offerInstall, reportError, hasDownloadedUpdate: () => downloaded !== null };
 }
 
-// A renderer has approved Save/Discard. Cloud ownership and bookmark writes
-// must also finish before this window can close or an update can install.
-export async function completeWindowClose({ session, allowClose, cancelQuit, persistBookmarks, timeoutMs, onError = () => {} }) {
+// A renderer has approved Save/Discard. Bookmark writes must finish before
+// this window can close or an update can install.
+export async function completeWindowClose({ session, allowClose, cancelQuit, persistBookmarks, onError = () => {} }) {
   if (!allowClose) {
     cancelQuit();
     return false;
   }
-  let timer;
   try {
-    if (session.cloudTransferPromise) {
-      await Promise.race([
-        session.cloudTransferPromise,
-        new Promise((_, reject) => {
-          timer = setTimeout(() => reject(new Error('Cloud transfer close wait timed out')), timeoutMs);
-        }),
-      ]).finally(() => clearTimeout(timer));
-    }
-    const intent = session.cloudTransferIntent;
-    if (intent) {
-      const completed = await Promise.race([
-        intent.promise,
-        new Promise((resolve) => {
-          timer = setTimeout(() => resolve(false), timeoutMs);
-        }),
-      ]).finally(() => clearTimeout(timer));
-      if (!completed) {
-        if (session.cloudTransferIntent === intent && !intent.settled) {
-          intent.settled = true;
-          intent.settle(false);
-          session.cloudTransferIntent = null;
-        }
-        cancelQuit();
-        return false;
-      }
-    }
     await persistBookmarks();
     session.allowCloseOnce = true;
     session.window.close();
@@ -185,7 +153,5 @@ export async function completeWindowClose({ session, allowClose, cancelQuit, per
     cancelQuit();
     await onError(error);
     return false;
-  } finally {
-    clearTimeout(timer);
   }
 }

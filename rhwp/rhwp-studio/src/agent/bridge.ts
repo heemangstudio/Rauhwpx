@@ -55,8 +55,6 @@ import type {
   AgentEditingLease,
   AgentName,
   AgentAuthMethod,
-  AccountLoginStart,
-  AccountSessionStatus,
   AgentSetupAuthStart,
   AgentSetupStatus,
   AgentSetupStatusMap,
@@ -197,13 +195,6 @@ function readSkillCommitOutcome(value: unknown): SkillCommitOutcome | null {
   return null;
 }
 
-async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const copy = new Uint8Array(bytes.byteLength);
-  copy.set(bytes);
-  const digest = await crypto.subtle.digest('SHA-256', copy.buffer);
-  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
-}
-
 export function providerTurnEndMatches(
   activeTurnId: string | null,
   eventTurnId: string | null,
@@ -276,11 +267,6 @@ export interface AgentBridge {
   /** Available concrete models from the local provider. */
   requestModelCatalog(agent: CatalogAgent, refresh?: boolean): Promise<ModelCatalogEntry[] | null>;
   requestAgentSetupStatus(refresh?: boolean): Promise<AgentSetupStatusMap | null>;
-  requestAccountStatus(): Promise<AccountSessionStatus | null>;
-  loginAccount(): Promise<AccountLoginStart | null>;
-  submitAccountAuthCode(authRunId: string, code: string): void;
-  cancelAccountLogin(authRunId: string): void;
-  logoutAccount(): Promise<AccountSessionStatus | null>;
   installAgent(agent: AgentName): Promise<AgentSetupStatusMap | null>;
   authenticateAgent(agent: AgentName, method: AgentAuthMethod, key?: string): Promise<AgentSetupAuthStart | null>;
   /** 브라우저 로그인 뒤 받은 인증 코드를 진행 중인 CLI 로그인에 전달한다. */
@@ -289,7 +275,7 @@ export interface AgentBridge {
   resizeSetupTerminal(agent: AgentName, authRunId: string, cols: number, rows: number): void;
   submitAgentAuthCode(agent: AgentName, authRunId: string, code: string): void;
   cancelAgentSetup(agent: AgentName, authRunId: string): void;
-  /** 이 기기의 Rau 키만 지운다. 호스티드 $5 키는 서버에 남는다. */
+  /** 앱에서 연결한 Claude 로그인을 이 기기에서 끊는다. */
   disconnectAgent(agent: AgentName): Promise<AgentSetupStatusMap | null>;
   /** 누적 사용량 요약. 응답이 없으면 null. */
   requestUsage(refresh?: boolean): Promise<UsageSummary | null>;
@@ -348,7 +334,6 @@ export interface AgentBridge {
   /** 참고자료 원본은 HTTP로 스트리밍하고, 브라우저에는 메타데이터만 돌려준다. */
   uploadReference(scope: ReferenceScope, scopeId: string, file: File): Promise<ReferenceFile>;
   listReferences(scope: ReferenceScope, scopeId: string): Promise<ReferenceFile[]>;
-  downloadReference(file: Pick<ReferenceFile, 'id' | 'scope' | 'scopeId'>): Promise<Uint8Array>;
   searchReferences(query: string, scope: ReferenceScope, scopeId: string, limit?: number): Promise<ReferenceSearchHit[]>;
   deleteReference(file: Pick<ReferenceFile, 'id' | 'scope' | 'scopeId'>): Promise<void>;
   setWorkflow(workflow: AgentWorkflow): void;
@@ -379,7 +364,6 @@ export interface AgentBridge {
   /** 현재 막힌 프로바이더 요청에 답한다. 재연결 재시도에도 같은 응답 ID를 쓴다. */
   answerUserQuestion(interactionId: string, answers: Record<string, UserQuestionAnswer>): string;
   interrupt(): void;
-  interruptIfIdle(): boolean;
   onEvent(cb: (e: SidebarEvent) => void): () => void;
   dispose(): void;
 }
@@ -898,16 +882,13 @@ function readAgentSetupStatus(value: unknown, agent: AgentName): AgentSetupStatu
       ? src['authVerifiedAt']
       : null,
     keyTail: typeof src['keyTail'] === 'string' ? src['keyTail'] : null,
-    account: typeof src['account'] === 'string' ? src['account'] : null,
     authenticating: src['authenticating'] === true,
     authOwnedByThisSession: src['authOwnedByThisSession'] === true,
     ...(typeof src['authRunId'] === 'string' ? { authRunId: src['authRunId'] } : {}),
     ...(typeof src['authPhase'] === 'string' ? { authPhase: src['authPhase'] } : {}),
     ...(typeof src['authUrl'] === 'string' ? { authUrl: src['authUrl'] } : {}),
-    ...(typeof src['pairingCode'] === 'string' ? { pairingCode: src['pairingCode'] } : {}),
     ...(typeof src['expiresAt'] === 'string' ? { authExpiresAt: src['expiresAt'] } : {}),
     setupComplete: src['setupComplete'] === true,
-    ...(src['exhausted'] === true ? { exhausted: true } : {}),
     latestVersion: typeof src['latestVersion'] === 'string' ? src['latestVersion'] : null,
     updateRequired: src['updateRequired'] === true,
     error: typeof src['error'] === 'string' ? src['error'] : null,
@@ -921,36 +902,6 @@ function readAgentSetupStatuses(value: unknown): AgentSetupStatusMap {
     codex: readAgentSetupStatus(src['codex'], 'codex'),
     pi: readAgentSetupStatus(src['pi'], 'pi'),
   } as AgentSetupStatusMap;
-}
-
-function readAccountSessionStatus(value: unknown): AccountSessionStatus {
-  const src = (value ?? {}) as Record<string, unknown>;
-  const rawAccount = src['account'];
-  const account = rawAccount && typeof rawAccount === 'object' && !Array.isArray(rawAccount)
-    ? rawAccount as Record<string, unknown>
-    : null;
-  const state = src['state'] === 'signed-in'
-    || src['state'] === 'pending'
-    || src['state'] === 'unknown'
-    ? src['state']
-    : 'signed-out';
-  const signedIn = state === 'signed-in' && src['signedIn'] === true;
-  return {
-    state: signedIn ? 'signed-in' : state === 'signed-in' ? 'signed-out' : state,
-    signedIn,
-    account: signedIn
-      ? { email: typeof account?.['email'] === 'string' ? account['email'] : null }
-      : null,
-    updatedAt: typeof src['updatedAt'] === 'string' ? src['updatedAt'] : new Date(0).toISOString(),
-    authenticating: src['authenticating'] === true,
-    authOwnedByThisSession: src['authOwnedByThisSession'] === true,
-    ...(typeof src['authRunId'] === 'string' ? { authRunId: src['authRunId'] } : {}),
-    ...(typeof src['authPhase'] === 'string' ? { authPhase: src['authPhase'] } : {}),
-    ...(typeof src['authUrl'] === 'string' ? { authUrl: src['authUrl'] } : {}),
-    ...(typeof src['pairingCode'] === 'string' ? { pairingCode: src['pairingCode'] } : {}),
-    ...(typeof src['expiresAt'] === 'string' ? { expiresAt: src['expiresAt'] } : {}),
-    ...(typeof src['error'] === 'string' ? { error: src['error'] } : {}),
-  };
 }
 
 function readUsageWindow(value: unknown): UsageWindow {
@@ -1174,7 +1125,6 @@ function readPiStatus(value: unknown): PiStatus {
     models: readPiModels(src['models']),
     defaultModelId: typeof src['defaultModelId'] === 'string' ? src['defaultModelId'] : null,
     setupComplete: src['setupComplete'] === true,
-    ...(src['exhausted'] === true ? { exhausted: true } : {}),
     latestVersion: typeof src['latestVersion'] === 'string' ? src['latestVersion'] : null,
     updateRequired: src['updateRequired'] === true,
     error: typeof src['error'] === 'string' ? src['error'] : null,
@@ -1436,7 +1386,6 @@ export class AgentBridgeImpl implements AgentBridge {
       loadTemplateBytes: (template) => this.downloadTemplateBytes(template),
       getDocumentSourcePath: () => getNativeFileSourcePath(deps.wasm.currentFileHandle),
       isReadOnly: deps.isReadOnly,
-      canPublishCloudDocument: deps.canPublishCloudDocument,
     });
     this.turnSnapshots = new TurnSnapshots({
       read: (args) => this.executor.structureSnapshot(args),
@@ -2621,7 +2570,6 @@ export class AgentBridgeImpl implements AgentBridge {
             agent,
             authRunId: typeof msg.authRunId === 'string' ? msg.authRunId : '',
             authUrl: typeof msg.authUrl === 'string' ? msg.authUrl : null,
-            pairingCode: typeof msg.pairingCode === 'string' ? msg.pairingCode : null,
             expiresAt: typeof msg.expiresAt === 'string' ? msg.expiresAt : null,
           } satisfies AgentSetupAuthStart : null);
         }
@@ -2654,7 +2602,6 @@ export class AgentBridgeImpl implements AgentBridge {
           ...(typeof msg.detail === 'string' ? { detail: msg.detail } : {}),
           ...(typeof msg.authUrl === 'string' ? { authUrl: msg.authUrl } : {}),
           ...(typeof msg.userCode === 'string' ? { userCode: msg.userCode } : {}),
-          ...(typeof msg.pairingCode === 'string' ? { pairingCode: msg.pairingCode } : {}),
           ...(typeof msg.expiresAt === 'string' ? { expiresAt: msg.expiresAt } : {}),
           ...(msg.activity === true ? { activity: true } : {}),
           ...(typeof msg.receivedBytes === 'number' ? { receivedBytes: msg.receivedBytes } : {}),
@@ -2671,45 +2618,6 @@ export class AgentBridgeImpl implements AgentBridge {
           code: typeof msg.code === 'string' ? msg.code : 'AGENT_SETUP_FAILED',
           message: typeof msg.message === 'string' ? msg.message : 'Agent setup failed',
           ...(typeof msg.detail === 'string' && msg.detail ? { detail: msg.detail } : {}),
-        });
-        break;
-      }
-      case 'account-status': {
-        const status = readAccountSessionStatus(msg.status);
-        if (typeof msg.requestId === 'string') this.requests.settle(msg.requestId, status);
-        this.emit({ type: 'account-status', status });
-        break;
-      }
-      case 'account-login-started': {
-        if (typeof msg.requestId === 'string') {
-          this.requests.settle(msg.requestId, {
-            authRunId: typeof msg.authRunId === 'string' ? msg.authRunId : '',
-            authUrl: typeof msg.authUrl === 'string' ? msg.authUrl : null,
-            pairingCode: typeof msg.pairingCode === 'string' ? msg.pairingCode : null,
-            expiresAt: typeof msg.expiresAt === 'string' ? msg.expiresAt : null,
-          } satisfies AccountLoginStart);
-        }
-        break;
-      }
-      case 'account-login-progress': {
-        this.emit({
-          type: 'account-login-progress',
-          ...(typeof msg.authRunId === 'string' ? { authRunId: msg.authRunId } : {}),
-          state: 'authorizing',
-          ...(typeof msg.authUrl === 'string' ? { authUrl: msg.authUrl } : {}),
-          ...(typeof msg.pairingCode === 'string' ? { pairingCode: msg.pairingCode } : {}),
-          ...(typeof msg.expiresAt === 'string' ? { expiresAt: msg.expiresAt } : {}),
-          ...(msg.replayed === true ? { replayed: true } : {}),
-        });
-        break;
-      }
-      case 'account-error': {
-        if (typeof msg.requestId === 'string') this.requests.settle(msg.requestId, null);
-        this.emit({
-          type: 'account-error',
-          ...(typeof msg.authRunId === 'string' ? { authRunId: msg.authRunId } : {}),
-          code: typeof msg.code === 'string' ? msg.code : 'ACCOUNT_SESSION_FAILED',
-          message: typeof msg.message === 'string' ? msg.message : 'Account request failed',
         });
         break;
       }
@@ -3054,7 +2962,6 @@ export class AgentBridgeImpl implements AgentBridge {
         capabilityEpoch: msg.capabilityEpoch,
         activePhase: this.phase,
         activeCapabilityEpoch: this.capabilityEpoch,
-        permissionProfile: this.permissionProfile,
         template: readDocumentTemplate(msg.template) ?? undefined,
         requestIsActive,
         ...(trace ? { trace } : {}),
@@ -3655,20 +3562,6 @@ export class AgentBridgeImpl implements AgentBridge {
       : [];
   }
 
-  async downloadReference(file: Pick<ReferenceFile, 'id' | 'scope' | 'scopeId'>): Promise<Uint8Array> {
-    const response = await fetch(this.referenceUrl(`/reference-files/${encodeURIComponent(file.id)}`, {
-      scope: file.scope,
-      scopeId: file.scopeId,
-    }), { headers: { Authorization: `Bearer ${this.token}` } });
-    if (!response.ok) throw new Error(`참고자료 ${file.id}를 읽지 못했습니다.`);
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    const expected = response.headers.get('x-content-sha256') ?? '';
-    if (!expected || expected !== await sha256Hex(bytes)) {
-      throw new Error(`참고자료 ${file.id} 무결성 검증에 실패했습니다.`);
-    }
-    return bytes;
-  }
-
   async searchReferences(
     query: string,
     scope: ReferenceScope,
@@ -3853,12 +3746,6 @@ export class AgentBridgeImpl implements AgentBridge {
     return responseId;
   }
 
-  interruptIfIdle(): boolean {
-    if (!this.turnRunning || this.activeToolRequests > 0) return false;
-    this.interrupt();
-    return true;
-  }
-
   interrupt(): void {
     // Fence requests already in transit before the hub acknowledges the stop.
     this.interruptedProviderTurnId = this.activeProviderTurnId;
@@ -3922,35 +3809,6 @@ export class AgentBridgeImpl implements AgentBridge {
       'agent-setup-status',
       30_000,
     );
-  }
-
-  requestAccountStatus(): Promise<AccountSessionStatus | null> {
-    return this.request<AccountSessionStatus>(
-      { type: 'account-status-request' },
-      'account-status',
-      30_000,
-    );
-  }
-
-  loginAccount(): Promise<AccountLoginStart | null> {
-    return this.request<AccountLoginStart>({ type: 'account-login' }, 'account-login', 30_000);
-  }
-
-  submitAccountAuthCode(authRunId: string, code: string): void {
-    this.sendJson({
-      v: AGENT_PROTOCOL_VERSION,
-      type: 'account-auth-code',
-      authRunId,
-      code,
-    });
-  }
-
-  cancelAccountLogin(authRunId: string): void {
-    this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'account-login-cancel', authRunId });
-  }
-
-  logoutAccount(): Promise<AccountSessionStatus | null> {
-    return this.request<AccountSessionStatus>({ type: 'account-logout' }, 'account-logout', 30_000);
   }
 
   installAgent(agent: AgentName): Promise<AgentSetupStatusMap | null> {

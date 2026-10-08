@@ -149,12 +149,7 @@ export function buildCodexArgv(opts, threadId) {
   ];
   const common = [
     '--json', '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules',
-    '--disable', 'apps',
-    // Cloud sessions with a ready SessionDisplay may drive the virtual desktop.
-    // Desktop and title/calibrator jobs keep computer use off.
-    ...(sessionDisplayReady(opts)
-      ? []
-      : ['--disable', 'browser_use', '--disable', 'computer_use']),
+    '--disable', 'apps', '--disable', 'browser_use', '--disable', 'computer_use',
     ...(opts.toolProfile === 'copy-layout-worker'
       ? ['--disable', 'image_generation']
       : ['--enable', 'image_generation']),
@@ -175,10 +170,6 @@ export function buildCodexArgv(opts, threadId) {
   return threadId
     ? ['exec', 'resume', ...common, threadId, '-']
     : ['exec', ...common, '-C', opts.rootDir, '-'];
-}
-
-export function sessionDisplayReady(opts = {}, env = process.env) {
-  return (opts.sessionDisplay ?? env.RAUHWpx_SESSION_DISPLAY) === 'ready';
 }
 
 /**

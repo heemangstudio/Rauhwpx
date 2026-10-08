@@ -369,7 +369,6 @@ const SPECS: Record<string, ToolSpec> = {
   render_page: { category: 'check', label: '쪽 그림 보기', summary: (a) => join([page(a), a['regionMm'] ? '일부' : '']) },
   verify_changes: { category: 'check', label: '변경 확인', summary: (a) => a['includeImage'] === true ? '그림 포함' : '' },
   preview_equation: { category: 'check', label: '수식 미리보기', summary: (a) => quote(str(a['script']), 32) },
-  environment_screenshot: { category: 'check', label: '화면 캡처' },
 
   // 문서 편집
   apply_edits: {
@@ -559,7 +558,6 @@ const SPECS: Record<string, ToolSpec> = {
   update_todos: { category: 'other', label: '할 일 갱신', summary: (a) => Array.isArray(a['todos']) ? `${a['todos'].filter((t: { status?: unknown }) => t?.status === 'completed').length}/${a['todos'].length}` : '' },
   download_file: { category: 'other', label: '파일 내려받기', summary: (a) => str(a['filename']) || host(str(a['url'])) },
   publish_artifact: { category: 'other', label: '파일 내보내기', summary: (a) => str(a['fileName']) },
-  publish_cloud_document: { category: 'other', label: 'Cloud 게시' },
   delegate_copy_layout: { category: 'other', label: '레이아웃 복제 맡기기', summary: (a) => str(a['documentName']) },
   update_copy_layout_job: { category: 'other', label: '복제 작업 갱신', summary: (a) => str(a['phase']) },
   run_copy_layout_helper: { category: 'other', label: '복제 도우미 실행', summary: (a) => str(a['action']) },

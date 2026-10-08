@@ -2,8 +2,7 @@ import { createHmac, randomUUID } from 'node:crypto';
 import { lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
-import { rauCreditsUrl } from '../rhwp/rhwp-agent/rau-credits-client.mjs';
-
+const UNIQUE_INSTALLS_ORIGIN = 'https://rau-credits-production.up.railway.app';
 export const UNIQUE_INSTALL_FILE = 'unique-install.json';
 export const UNIQUE_INSTALLS_JSON_PATH = '/v1/unique-installs';
 export const UNIQUE_INSTALLS_PAGE_PATH = '/unique-installs';
@@ -11,7 +10,7 @@ const INSTALL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{
 const REQUEST_TIMEOUT_MS = 8_000;
 const WINDOWS_LOCK_CODES = new Set(['EPERM', 'EBUSY', 'ENOTEMPTY', 'EACCES']);
 const WINDOWS_LOCK_RETRY_MS = [50, 100, 200, 400, 800];
-/** Must match rhwp/rau-credits/unique-installs.mjs DEFAULT_UNIQUE_INSTALL_PING_KEY. */
+/** Must match site-api/unique-installs.mjs DEFAULT_UNIQUE_INSTALL_PING_KEY. */
 export const DEFAULT_UNIQUE_INSTALL_PING_KEY = 'rau.unique-install.v1.desktop-first-launch';
 
 export function createUniqueInstallProof(ping, key = DEFAULT_UNIQUE_INSTALL_PING_KEY) {
@@ -25,11 +24,11 @@ export function uniqueInstallStatePath(userDataDir) {
   return join(String(userDataDir), UNIQUE_INSTALL_FILE);
 }
 
-export function uniqueInstallsPublicUrl(baseUrl = rauCreditsUrl()) {
+export function uniqueInstallsPublicUrl(baseUrl = UNIQUE_INSTALLS_ORIGIN) {
   return `${String(baseUrl).replace(/\/$/, '')}${UNIQUE_INSTALLS_PAGE_PATH}`;
 }
 
-export function uniqueInstallsJsonUrl(baseUrl = rauCreditsUrl()) {
+export function uniqueInstallsJsonUrl(baseUrl = UNIQUE_INSTALLS_ORIGIN) {
   return `${String(baseUrl).replace(/\/$/, '')}${UNIQUE_INSTALLS_JSON_PATH}`;
 }
 
@@ -261,7 +260,7 @@ export async function reportUniqueInstall({
   appVersion,
   os,
   arch,
-  baseUrl = rauCreditsUrl(),
+  baseUrl = UNIQUE_INSTALLS_ORIGIN,
   fetchImpl = globalThis.fetch,
   timeoutMs = REQUEST_TIMEOUT_MS,
   readFileImpl = readFile,

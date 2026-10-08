@@ -19,7 +19,6 @@ import { MergeCompletionCoordinator } from './completion-coordinator.ts';
 import { buildManualConflictEditor } from './manual-conflict-editor.ts';
 import { formatMergeValue, mergeErrorMessage, mergeTokenLabel } from './merge-labels.ts';
 import { MergeResolverState } from './resolver-state.ts';
-import { isLegacyCloudBranchName } from '../versioning/cloud-branch-name.ts';
 import './merge-resolver.css';
 
 const PREVIEW_ROLES: MergePreviewRole[] = ['base', 'current', 'incoming', 'result'];
@@ -222,8 +221,7 @@ export class MergeResolverWindow {
     const headingWrap = element('div', 'merge-resolver-heading');
     const heading = element('h1', '', '변경 검토');
     heading.id = 'merge-resolver-title';
-    const direction = element('p', 'merge-direction', isLegacyCloudBranchName(options.sourceBranch)
-      ? 'Cloud 문서 → 현재 문서' : `${options.sourceBranch} → ${options.currentBranch}`);
+    const direction = element('p', 'merge-direction', `${options.sourceBranch} → ${options.currentBranch}`);
     headingWrap.append(heading, direction);
     const headerActions = element('div', 'merge-resolver-header-actions');
     const applyAll = element('button', 'merge-secondary-button', '모두 수락');
@@ -368,8 +366,7 @@ export class MergeResolverWindow {
     this.titleInput = document.createElement('input');
     this.titleInput.className = 'merge-title-input';
     this.titleInput.maxLength = 200;
-    this.titleInput.value = this.options!.sourceBranch.startsWith('Cloud ')
-      ? 'Cloud 변경 적용' : this.options!.title ?? `${this.options!.sourceBranch} 변경 적용`;
+    this.titleInput.value = this.options!.title ?? `${this.options!.sourceBranch} 변경 적용`;
     titleLabel.appendChild(this.titleInput);
     mergeMeta.appendChild(titleLabel);
     if (this.options!.analysis.analysisVersion < 2 && (this.options!.mode === 'fast-forward' || this.options!.mode === 'explicit-checkpoint')) {

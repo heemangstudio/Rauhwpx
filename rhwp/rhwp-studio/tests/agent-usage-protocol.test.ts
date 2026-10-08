@@ -123,7 +123,6 @@ test('프로바이더 상태·사용량 정규화는 라이브 프로바이더�
   assert.doesNotMatch(bridge, /grok: readProviderHealth/);
   assert.doesNotMatch(bridge, /cursor: readProviderHealth/);
   assert.doesNotMatch(bridge, /opencode: readProviderHealth/);
-  assert.doesNotMatch(bridge, /rau: readProviderHealth/);
   assert.match(bridge, /pi: typeof plans\['pi'\] === 'string' \? plans\['pi'\] : 'api'/);
   assert.match(types, /export type ApiOnlyUsagePlan = 'api';/);
   assert.match(types, /plans: Record<AgentName, string>;/);
@@ -131,7 +130,7 @@ test('프로바이더 상태·사용량 정규화는 라이브 프로바이더�
 });
 
 test('pi 모델 목록은 pi-status를 타고 레지스트리로 들어간다', () => {
-  assert.match(types, /export type AgentName = 'claude' \| 'codex' \| 'pi' \| 'grok' \| 'cursor' \| 'opencode' \| 'rau';/);
+  assert.match(types, /export type AgentName = 'claude' \| 'codex' \| 'pi' \| 'grok' \| 'cursor' \| 'opencode';/);
   assert.match(types, /models\?: readonly string\[\];/);
   assert.match(bridge, /setPiModels as setPiModelRegistry/);
   assert.doesNotMatch(bridge, /setCursorModels as setCursorModelRegistry/);

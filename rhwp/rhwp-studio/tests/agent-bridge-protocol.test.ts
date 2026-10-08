@@ -224,7 +224,6 @@ test('executor: document-write helper covers every mutating tool', () => {
     'insert_shape',
     'insert_text',
     'prepare_engine_edit_session',
-    'publish_cloud_document',
     'replace_all',
     'replace_range',
     'set_bookmark',
@@ -238,7 +237,6 @@ test('executor: document-write helper covers every mutating tool', () => {
     'template_insert_block',
   ]);
   assert.equal(isDocumentWriteTool('insert_text'), true);
-  assert.equal(isDocumentWriteTool('publish_cloud_document'), true);
   assert.equal(isDocumentWriteTool('get_structure'), false);
 });
 

@@ -18,9 +18,6 @@ const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp', '.gif'] as const;
 const ACCEPTED_FILES = ACCEPTED_EXTENSIONS.join(',');
 const MAX_FILES_PER_PICK = 10;
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
-const MAX_CLOUD_DOCUMENT_BYTES = 25 * 1024 * 1024;
-const MAX_CLOUD_DRAFT_BYTES = 100 * 1024 * 1024;
-const MAX_CLOUD_DRAFT_FILES = 20;
 const SEARCH_DEBOUNCE_MS = 240;
 
 const SCOPE_LABEL: Record<ReferenceScope, string> = {
@@ -68,7 +65,7 @@ export interface ReferenceLibraryOptions {
   bridge: SidebarBridge;
   getContext(): ReferenceLibraryContext;
   onOpenChange?(open: boolean): void;
-  onDraftStateChange?(change: 'content' | 'status' | 'context'): void;
+  onDraftStateChange?(): void;
   onFileDeleted?(fileId: string): void;
 }
 
@@ -80,13 +77,11 @@ export interface ReferenceLibraryUi {
   isOpen(): boolean;
   setOpen(open: boolean, scope?: ReferenceScope): void;
   setConnectionState(state: ReturnType<SidebarBridge['getConnectionState']>): void;
-  setDraftMode(mode: 'local' | 'cloud'): void;
   contextChanged(): void;
   snapshotDraftFiles(): File[];
   hasDrafts(): boolean;
   hasBlockingDrafts(): boolean;
   takeReadyDrafts(): StagedReference[];
-  takeReadyCloudDrafts(): Promise<Array<StagedReference & { bytes: Uint8Array }>>;
   discardDrafts(): void;
   stageDraftFiles(files: File[]): void;
   stageInlineFiles(files: File[], signal?: AbortSignal): Promise<StagedReference[]>;
@@ -145,7 +140,6 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
   let open = false;
   let activeScope: ReferenceScope = 'chat';
   let connectionState = bridge.getConnectionState();
-  let draftMode: 'local' | 'cloud' = 'local';
   let disposed = false;
   let contextRevision = 0;
   let requestRevision = 0;
@@ -269,7 +263,7 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
     const documentTab = tabButtons.get('document')!;
     documentTab.disabled = !context.documentId;
     documentTab.title = context.documentId ? '' : '문서를 열면 문서별 참고자료를 추가할 수 있습니다.';
-    quickAddButton.disabled = (!connected && draftMode !== 'cloud') || !context.threadId;
+    quickAddButton.disabled = !connected || !context.threadId;
     add.disabled = !connected || targetFor(activeScope, context) === null;
     if (!connected) add.title = '에이전트 서버가 연결되면 파일을 추가할 수 있습니다.';
     else add.removeAttribute('title');
@@ -477,28 +471,22 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
     }
   }
 
-  function validateFiles(files: File[], cloudDraft = false): File[] {
+  function validateFiles(files: File[]): File[] {
     showError();
     if (files.length > MAX_FILES_PER_PICK) {
       showError(`한 번에 최대 ${MAX_FILES_PER_PICK}개까지 추가할 수 있습니다.`);
     }
     const accepted: File[] = [];
-    let draftBytes = cloudDraft ? draftUploads.reduce((sum, chip) => sum + chip.file.size, 0) : 0;
     for (const file of files.slice(0, MAX_FILES_PER_PICK)) {
       const extension = extensionOf(file.name);
       if (!(ACCEPTED_EXTENSIONS as readonly string[]).includes(extension)) {
         showError(`${file.name}: 지원하지 않는 파일 형식입니다.`);
       } else if (file.size === 0) {
         showError(`${file.name}: 빈 파일은 추가할 수 없습니다.`);
-      } else if (file.size > (cloudDraft && !isImageFile(file) ? MAX_CLOUD_DOCUMENT_BYTES : MAX_FILE_BYTES)) {
-        showError(`${file.name}: 파일 하나는 ${cloudDraft && !isImageFile(file) ? 25 : 20} MB 이하여야 합니다.`);
-      } else if (cloudDraft && draftUploads.length + accepted.length >= MAX_CLOUD_DRAFT_FILES) {
-        showError(`Cloud 메시지에는 파일을 최대 ${MAX_CLOUD_DRAFT_FILES}개까지 첨부할 수 있습니다.`);
-      } else if (cloudDraft && draftBytes + file.size > MAX_CLOUD_DRAFT_BYTES) {
-        showError('Cloud 메시지의 첨부 파일은 합계 100 MB 이하여야 합니다.');
+      } else if (file.size > MAX_FILE_BYTES) {
+        showError(`${file.name}: 파일 하나는 20 MB 이하여야 합니다.`);
       } else {
         accepted.push(file);
-        draftBytes += file.size;
       }
     }
     return accepted;
@@ -512,7 +500,6 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
     remove: HTMLButtonElement;
     target: ScopeTarget | null;
     staged: StagedReference | null;
-    stagedOnHub: boolean;
     revision: number;
     uploadState: 'uploading' | 'ready' | 'error';
     cancelled: boolean;
@@ -553,7 +540,7 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
       visual.alt = '';
     }
     const chip: UploadChip = {
-      file, root, state, retry, remove, target: null, staged: null, stagedOnHub: false,
+      file, root, state, retry, remove, target: null, staged: null,
       revision: 0, uploadState: 'uploading', cancelled: false, previewUrl,
     };
     remove.addEventListener('click', () => {
@@ -562,10 +549,10 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
       if (index >= 0) draftUploads.splice(index, 1);
       if (draftUploads.length === 0) showDraftError();
       releaseChip(chip);
-      if (chip.stagedOnHub && chip.staged && chip.target) {
+      if (chip.staged && chip.target) {
         void bridge.discardStagedReference(chip.target.scopeId, chip.staged.id).catch(() => undefined);
       }
-      options.onDraftStateChange?.('content');
+      options.onDraftStateChange?.();
     });
     retry.addEventListener('click', async () => {
       if (!chip.target) return;
@@ -592,42 +579,32 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
     );
     quickUploads.appendChild(root);
     draftUploads.push(chip);
-    options.onDraftStateChange?.('content');
+    options.onDraftStateChange?.();
     return chip;
   }
 
   async function stageOne(chip: UploadChip): Promise<void> {
     if (!chip.target) throw new Error('현재 채팅에 파일을 첨부할 수 없습니다.');
     const revision = ++chip.revision;
-    if (chip.stagedOnHub && chip.staged) {
+    if (chip.staged) {
       void bridge.discardStagedReference(chip.target.scopeId, chip.staged.id).catch(() => undefined);
     }
     chip.uploadState = 'uploading';
     chip.cancelled = false;
     chip.staged = null;
-    chip.stagedOnHub = false;
     chip.root.classList.remove('ag-ready', 'ag-error');
     chip.root.removeAttribute('title');
     chip.state.textContent = '업로드 중';
     chip.retry.hidden = true;
     chip.remove.hidden = !chip.previewUrl;
-    options.onDraftStateChange?.('status');
+    options.onDraftStateChange?.();
     try {
-      const onHub = draftMode === 'local';
-      const staged: StagedReference = onHub
-        ? await bridge.stageReference(chip.target.scopeId, chip.file)
-        : {
-            id: globalThis.crypto?.randomUUID?.() ?? `cloud-stage-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-            scope: 'chat', scopeId: chip.target.scopeId,
-            name: chip.file.name, mimeType: chip.file.type || 'application/octet-stream',
-            size: chip.file.size, status: 'ready', createdAt: new Date().toISOString(), expiresAt: '',
-          };
+      const staged = await bridge.stageReference(chip.target.scopeId, chip.file);
       if (chip.cancelled || chip.revision !== revision) {
-        if (onHub) await bridge.discardStagedReference(chip.target.scopeId, staged.id).catch(() => undefined);
+        await bridge.discardStagedReference(chip.target.scopeId, staged.id).catch(() => undefined);
         return;
       }
       chip.staged = staged;
-      chip.stagedOnHub = onHub;
       chip.uploadState = 'ready';
       chip.root.classList.add('ag-ready');
       chip.state.textContent = '준비됨';
@@ -643,7 +620,7 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
       chip.remove.hidden = false;
       throw caught;
     } finally {
-      if (chip.revision === revision) options.onDraftStateChange?.('status');
+      if (chip.revision === revision) options.onDraftStateChange?.();
     }
   }
 
@@ -679,8 +656,8 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
 
   function stageFiles(files: File[]): void {
     const target = targetFor('chat', options.getContext());
-    if (!target || (draftMode === 'local' && connectionState !== 'connected')) return;
-    const accepted = validateFiles(files, draftMode === 'cloud');
+    if (!target || connectionState !== 'connected') return;
+    const accepted = validateFiles(files);
     showDraftError(error.textContent ?? '');
     for (const file of accepted) {
       const chip = pendingChip(file);
@@ -727,49 +704,30 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
   }
 
   function openPicker(target: ScopeTarget | null, draft = false): void {
-    if (!target || (connectionState !== 'connected' && (!draft || draftMode !== 'cloud'))) return;
+    if (!target || connectionState !== 'connected') return;
     pickerTarget = target;
     pickerDraft = draft;
     fileInput.click();
   }
 
-  function discardDrafts(change: 'content' | 'context' = 'content'): void {
+  function discardDrafts(): void {
     showDraftError();
     for (const chip of draftUploads.splice(0)) {
       chip.cancelled = true;
       releaseChip(chip);
-      if (chip.stagedOnHub && chip.staged && chip.target) {
+      if (chip.staged && chip.target) {
         void bridge.discardStagedReference(chip.target.scopeId, chip.staged.id).catch(() => undefined);
       }
     }
-    options.onDraftStateChange?.(change);
+    options.onDraftStateChange?.();
   }
 
   function takeReadyDrafts(): StagedReference[] {
     if (draftUploads.some((chip) => chip.uploadState !== 'ready' || !chip.staged)) return [];
     const batch = draftUploads.splice(0);
     for (const chip of batch) releaseChip(chip);
-    options.onDraftStateChange?.('content');
+    options.onDraftStateChange?.();
     return batch.map((chip) => chip.staged!);
-  }
-
-  async function takeReadyCloudDrafts(): Promise<Array<StagedReference & { bytes: Uint8Array }>> {
-    if (draftUploads.some((chip) => chip.uploadState !== 'ready' || !chip.staged)) return [];
-    const batch = [...draftUploads];
-    const bytes = await Promise.all(batch.map(async (chip) => new Uint8Array(await chip.file.arrayBuffer())));
-    if (draftUploads.length !== batch.length || batch.some((chip, index) =>
-      draftUploads[index] !== chip || chip.uploadState !== 'ready' || !chip.staged)) {
-      throw new Error('첨부 파일이 변경되었습니다. 다시 보내 주세요.');
-    }
-    draftUploads.splice(0, batch.length);
-    for (const chip of batch) {
-      releaseChip(chip);
-      if (chip.stagedOnHub && chip.staged && chip.target) {
-        void bridge.discardStagedReference(chip.target.scopeId, chip.staged.id).catch(() => undefined);
-      }
-    }
-    options.onDraftStateChange?.('content');
-    return batch.map((chip, index) => ({ ...chip.staged!, bytes: bytes[index] }));
   }
 
   async function openFile(fileId: string): Promise<void> {
@@ -887,19 +845,11 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
       if (state === 'connected') void refreshCounts();
       else if (open) status.textContent = '에이전트 서버 연결을 기다리는 중입니다.';
     },
-    setDraftMode(mode): void {
-      if (draftMode === mode) return;
-      draftMode = mode;
-      updateAvailability();
-      for (const chip of draftUploads) {
-        if (chip.target) void stageOne(chip).catch(() => undefined);
-      }
-    },
     contextChanged(): void {
       contextRevision++;
       requestRevision++;
       countRevision++;
-      discardDrafts('context');
+      discardDrafts();
       filesByScope.clear();
       if (activeScope === 'document' && !options.getContext().documentId) activeScope = 'chat';
       updateTabs();
@@ -910,7 +860,6 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
     hasDrafts: () => draftUploads.length > 0,
     hasBlockingDrafts: () => draftUploads.some((chip) => chip.uploadState !== 'ready'),
     takeReadyDrafts,
-    takeReadyCloudDrafts,
     discardDrafts,
     stageDraftFiles: stageFiles,
     stageInlineFiles,

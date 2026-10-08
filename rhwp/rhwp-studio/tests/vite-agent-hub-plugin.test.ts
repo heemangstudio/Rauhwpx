@@ -162,7 +162,6 @@ test('owned Vite hub starts without Electron and retains production request chec
     VITE_RHWP_AGENT_URL: undefined,
     RHWP_AGENT_PORT: '0',
     RHWP_PI_DIR: join(root, 'pi'),
-    RHWP_RAU_DIR: join(root, 'rau'),
     RHWP_WRITING_STYLE_DIR: join(root, 'writing-style'),
     RHWP_AGENT_INSTRUCTIONS_DIR: join(root, 'instructions'),
     RHWP_TEMPLATES_DIR: join(root, 'templates'),

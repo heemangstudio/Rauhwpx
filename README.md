@@ -157,7 +157,7 @@ npm --prefix rhwp/rhwp-agent test
 | [`rhwp/rhwp-studio/`](rhwp/rhwp-studio/) | TypeScript 편집기와 AI 사이드바 |
 | [`rhwp/rhwp-agent/`](rhwp/rhwp-agent/) | 로컬 허브. AI 연결, 인증, MCP 도구 |
 | [`desktop/`](desktop/) | Electron 셸 |
-| [`rhwp/rau-credits/`](rhwp/rau-credits/) | Rau 계정과 크레딧 연동 |
+| [`site-api/`](site-api/) | 웹사이트 체험 신청과 데스크톱 설치 집계 |
 | `rhwp/rhwp-{chrome,firefox,safari,vscode}/` | 뷰어 확장 |
 
 AI가 문서를 고칠 때는 허브가 MCP 도구 호출을 편집기로 넘기고, 편집기가 열린 문서에 적용합니다. 모든 읽기는 `revision`을 돌려주고 모든 쓰기는 그 값을 요구하므로, 그사이 문서가 바뀌었다면 쓰기가 거절됩니다. 도구 목록은 [`rhwp/rhwp-agent/tools.mjs`](rhwp/rhwp-agent/tools.mjs)에 있습니다.

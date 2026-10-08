@@ -17,10 +17,6 @@
   border-radius: 1px;
 }
 
-.ag-pending-rect.ag-rau {
-  --ag-pending-ink: 141, 134, 128;
-}
-
 .ag-pending-rect.ag-claude {
   --ag-pending-ink: 168, 79, 49;
 }
@@ -111,10 +107,6 @@
   z-index: 7;
   pointer-events: none;
   color: rgba(var(--ag-pending-ink, 168, 79, 49), 0.62);
-}
-
-.ag-pending-enter.ag-rau {
-  --ag-pending-ink: 141, 134, 128;
 }
 
 .ag-pending-enter.ag-claude {
