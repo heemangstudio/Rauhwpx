@@ -92,7 +92,7 @@ export interface CloudDesktopApi {
   cloudDownloadResult?: (payload: { sessionId: string }) => Promise<unknown>;
   /** explicit 은 사용자가 누른 동작이다. 데스크톱은 이때만 쉬던 boat VM 을 깨운다. 예전 데스크톱은 무시한다. */
   cloudDownloadCheckpoint?: (payload: {
-    sessionId: string; operationId?: string; kind?: 'turn'; explicit?: boolean;
+    sessionId: string; operationId?: string; kind?: 'operation' | 'turn'; explicit?: boolean;
   }) => Promise<unknown>;
   cloudPrepareRestartDocument?: (payload: { sessionId: string }) => Promise<unknown>;
   cloudPublishCheckpoint?: (payload: { sessionId: string; operationId?: string }) => Promise<unknown>;
@@ -161,7 +161,7 @@ export interface CloudController {
   downloadCheckpoint(
     sessionId: string,
     operationId?: string,
-    kind?: 'turn',
+    kind?: 'operation' | 'turn',
     options?: { explicit?: boolean },
   ): Promise<CloudCheckpointPayload>;
   prepareRestartDocument(sessionId: string): Promise<CloudDocumentPayload>;
@@ -450,6 +450,7 @@ function parseSessionBase(state: Record<string, unknown>): CloudSessionBase | nu
     ...(typeof state.configurationPending === 'boolean' ? { configurationPending: state.configurationPending } : {}),
     ...(typeof state.configurationEditable === 'boolean' ? { configurationEditable: state.configurationEditable } : {}),
     ...(strictIso(state.handoffAcceptedAt) ? { handoffAcceptedAt: strictIso(state.handoffAcceptedAt)! } : {}),
+    ...(strictIso(state.lastSavedAt) ? { lastSavedAt: strictIso(state.lastSavedAt)! } : {}),
     sessionId,
     version,
     threadId,
@@ -858,15 +859,15 @@ export function parseCloudSnapshot(value: unknown): CloudSnapshot | null {
     const item = record(value);
     if (!item || ['sessionId', 'documentId', 'threadId', 'cloudStartId', 'operationId', 'fileName']
       .some((key) => typeof item[key] !== 'string' || !string(item[key]).trim())
-      || item.kind !== 'turn' || !/^[a-f0-9]{64}$/.test(string(item.sha256))
+      || (item.kind !== 'operation' && item.kind !== 'turn') || !/^[a-f0-9]{64}$/.test(string(item.sha256))
       || !Number.isSafeInteger(item.revision) || Number(item.revision) < 1
-      || !Number.isSafeInteger(item.turn) || Number(item.turn) < 1
+      || !Number.isSafeInteger(item.turn) || Number(item.turn) < (item.kind === 'turn' ? 1 : 0)
       || !Number.isSafeInteger(item.size) || Number(item.size) < 1
       || (item.localAvailable !== undefined && typeof item.localAvailable !== 'boolean')) return null;
     return { sessionId: string(item.sessionId), documentId: string(item.documentId),
       threadId: string(item.threadId), cloudStartId: string(item.cloudStartId),
       operationId: string(item.operationId), revision: Number(item.revision), turn: Number(item.turn),
-      kind: 'turn' as const, fileName: string(item.fileName), sha256: string(item.sha256), size: Number(item.size),
+      kind: item.kind as 'operation' | 'turn', fileName: string(item.fileName), sha256: string(item.sha256), size: Number(item.size),
       ...(typeof item.localAvailable === 'boolean' ? { localAvailable: item.localAvailable } : {}) };
   });
   if (parsedMergeRequests.some((item) => !item)) return null;

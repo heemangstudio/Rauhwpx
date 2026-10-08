@@ -1122,6 +1122,49 @@ export class SessionStore {
     return requested;
   }
 
+  /** Give an idle managed room's worker slot to a queued document. */
+  yieldIdleRoomForQueue() {
+    let event = null;
+    const yielded = transaction(this.database, () => {
+      const row = this.database.prepare(`
+        SELECT active.* FROM sessions active
+        WHERE active.protocol_version = ? AND active.room_status = 'active'
+          AND active.status = 'running' AND active.execution_phase = 'idle'
+          AND active.current_turn_id IS NULL AND active.current_wait_id IS NULL
+          AND active.sleep_requested_at IS NULL AND active.redirect_requested_at IS NULL
+          AND active.pause_requested_at IS NULL AND active.takeover_requested_at IS NULL
+          AND active.end_requested_at IS NULL AND active.finishing_at IS NULL
+          AND active.configuration_restart_requested_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM session_messages message
+            WHERE message.session_id = active.id AND message.status IN ('queued', 'delivered'))
+          AND NOT EXISTS (SELECT 1 FROM session_turns turn
+            WHERE turn.session_id = active.id AND turn.status = 'queued')
+          AND EXISTS (SELECT 1 FROM sessions waiting
+            WHERE waiting.status = 'queued'
+              AND waiting.client_document_id IS NOT active.client_document_id)
+        ORDER BY active.updated_at LIMIT 1
+      `).get(ROOM_PROTOCOL_VERSION);
+      if (!row) return null;
+      const now = this.now();
+      const reason = { code: 'QUEUE_YIELD', message: 'Saved while another Cloud document runs' };
+      this.database.prepare(`
+        UPDATE sessions SET status = 'suspended', execution_phase = 'idle',
+          state_version = state_version + 1, suspended_reason = ?,
+          expires_at = ?, started_at = NULL, sandbox_id = NULL,
+          worker_token_hash = NULL, worker_heartbeat_at = NULL, updated_at = ?
+        WHERE id = ? AND status = 'running' AND execution_phase = 'idle'
+      `).run(JSON.stringify(reason), now + SUSPENDED_RETENTION_MS, now, row.id);
+      this.database.prepare('DELETE FROM session_runtime_leases WHERE session_id = ?').run(row.id);
+      event = this.#appendEventInTransaction(row.id, 'session.suspended', {
+        status: 'suspended', reason, safeBoundary: true,
+      });
+      return { sessionId: row.id, sandboxId: row.sandbox_id };
+    });
+    if (event) this.#notify(event);
+    if (yielded) this.#invalidateRuntime(yielded.sessionId);
+    return yielded;
+  }
+
   beginTurn(sessionId, { turnNumber, messageId = null, mode = 'direct' }) {
     if (!Number.isSafeInteger(turnNumber) || turnNumber < 1 || turnNumber > 1_000_000
       || !['direct', 'plan', 'question'].includes(mode)

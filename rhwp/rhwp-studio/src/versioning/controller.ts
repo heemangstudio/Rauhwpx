@@ -509,7 +509,8 @@ export class DocumentVersionController implements VersionManagerController {
       if (!this.#repository) throw new VersionError('CLOUD_START_MISSING', '이 기기에 Cloud 시작 기록이 없습니다.');
       let workspace = this.#captureWorkspaceToken();
       const repository = this.#requireRepository();
-      if (checkpoint.documentId !== workspace.documentId || checkpoint.kind !== 'turn'
+      if (checkpoint.documentId !== workspace.documentId
+        || !(checkpoint.kind === 'turn' || checkpoint.kind === 'operation' && options.reviewSavedOperation === true)
         || !Number.isSafeInteger(checkpoint.revision) || checkpoint.revision < 1) {
         throw new Error('이 문서의 완료된 Cloud 작업만 병합할 수 있습니다.');
       }
@@ -543,7 +544,7 @@ export class DocumentVersionController implements VersionManagerController {
         const legacy = await this.#store.getCommit(legacyId);
         if (legacy?.blobId === blobId) existing = legacy;
       }
-      // Cloud 턴은 문서 전체라 새 턴이 옛 턴을 담는다. 새 턴이 이미 반영됐으면 옛 신호는 끝난 일이다.
+      // Cloud 체크포인트는 문서 전체라 새 저장본이 옛 저장본을 담는다.
       const superseded = async (head: CommitId) => {
         const relation = await this.#store.getMergeRelation(repository.id, active.target, head);
         this.#assertWorkspaceToken(workspace);
@@ -569,7 +570,8 @@ export class DocumentVersionController implements VersionManagerController {
         }
         const capture = await this.#captureIncoming(checkpoint.bytes, checkpoint.fileName);
         this.#assertWorkspaceToken(workspace);
-        await this.#appendBranchSnapshot(source, capture, `Cloud · ${checkpoint.turn}턴`, 'agent', id);
+        await this.#appendBranchSnapshot(source, capture,
+          checkpoint.kind === 'operation' ? 'Cloud · 작업 중 저장본' : `Cloud · ${checkpoint.turn}턴`, 'agent', id);
       }
       const latest = await this.#store.getBranch(repository.id, source.name);
       const relation = await this.#store.getMergeRelation(repository.id, this.#requireActiveBranch().target, latest!.target);

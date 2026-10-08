@@ -17,7 +17,7 @@ import {
   parseUploadInit,
 } from './protocol.mjs';
 import { streamSessionEvents } from './session-event-stream.mjs';
-import { archiveTurnBoundary } from './raucloud-merge-request.mjs';
+import { archiveDocumentBoundary } from './raucloud-merge-request.mjs';
 import { SERVICE_VERSION } from './version.mjs';
 import { parseProviderCredentialBody } from './provider-credentials.mjs';
 import {
@@ -436,7 +436,10 @@ export function createCloudHttpHandler({
           return;
         }
         if (request.method === 'GET' && action === '/manifest') {
-          json(response, 200, sessionStore.workerManifest(sessionId));
+          json(response, 200, {
+            ...sessionStore.workerManifest(sessionId),
+            railwayManaged: raucloudLease?.enabled === true,
+          });
           return;
         }
         if (request.method === 'GET' && action === '/credentials') {
@@ -504,7 +507,7 @@ export function createCloudHttpHandler({
               size: body.timeline?.size,
             },
           }, {
-            beforeCommit: (boundary) => archiveTurnBoundary({
+            beforeCommit: (boundary) => archiveDocumentBoundary({
               lease: raucloudLease, sessionStore, blobStore, sessionId, boundary,
             }),
           });

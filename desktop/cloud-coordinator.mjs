@@ -375,6 +375,7 @@ const HOST_KEY_CODES = new Set(['SSH_HOST_KEY_CHANGED', 'BOAT_HOST_KEY_UNVERIFIE
 const SERVER_FAILURE_CODES = new Set(['CLOUD_SERVER_DEGRADED', 'CLOUD_SERVICE_DOWN', 'CLOUD_PROTOCOL_INCOMPATIBLE']);
 /** 서버가 제공자 로그인 문제로 멈춘 작업. 이어 가기 전에 이 Mac 의 로그인을 다시 보낸다. */
 const PROVIDER_AUTH_CODES = new Set(['PROVIDER_AUTH_EXPIRED', 'AUTH_REQUIRED']);
+const RAILWAY_RESTORED_CODES = new Set(['WORKER_REPLACED', 'WORKER_REPLACED_UNCERTAIN']);
 const PROVIDER_LABELS = Object.freeze({ claude: 'Claude', codex: 'Codex', pi: 'Pi' });
 
 export function classifyLinkFailure(error) {
@@ -528,6 +529,7 @@ export class CloudCoordinator extends EventEmitter {
   #raucloudStatus = null;
   #mergeRecovery;
   #conversationRecovery;
+  #conversationSaveRefreshAt = 0;
   #conversationRestores = new Map();
   #queuedMessageRetries = new Map();
   #continuityPromise = null;
@@ -601,7 +603,7 @@ export class CloudCoordinator extends EventEmitter {
       store, recoveryDir, provider: () => this.#managedAccountProvider(),
     });
     this.#conversationRecovery = new CloudConversationRecovery({
-      store, provider: () => this.#managedAccountProvider(),
+      store, recoveryDir, provider: () => this.#managedAccountProvider(),
     });
     this.#collectProviderAuth = typeof collectProviderAuth === 'function' ? collectProviderAuth : null;
     this.#collectImportedAuth = typeof collectImportedAuth === 'function' ? collectImportedAuth : null;
@@ -662,6 +664,7 @@ export class CloudCoordinator extends EventEmitter {
   async refreshAccountStatus() {
     this.#mergeRecovery.reset();
     this.#conversationRecovery.reset();
+    this.#conversationSaveRefreshAt = 0;
     // A read started before the account changed may still report the old identity.
     // Finish it before forcing a new read, so it cannot overwrite the fresh result.
     await this.#accountStatusPromise;
@@ -755,8 +758,10 @@ export class CloudCoordinator extends EventEmitter {
     this.#stopped = true;
     this.#stopController.abort(transferError('Cloud coordinator is stopped', 'COORDINATOR_STOPPED'));
     const mergePrefetch = this.#mergeRecovery.prefetchInflight;
+    const conversationPrefetch = this.#conversationRecovery.prefetchInflight;
     this.#mergeRecovery.reset();
     this.#conversationRecovery.reset();
+    this.#conversationSaveRefreshAt = 0;
     this.#cancelConnectionWork();
     this.#disarmLinkWatchdog();
     const pending = [
@@ -775,6 +780,7 @@ export class CloudCoordinator extends EventEmitter {
       this.#prewarmPromise,
       this.#accountStatusPromise,
       mergePrefetch,
+      conversationPrefetch,
       this.#continuityPromise,
       this.#boatSetupPromise,
       this.#boatWakePromise,
@@ -1079,6 +1085,9 @@ export class CloudCoordinator extends EventEmitter {
     void this.#refreshAccountStatus();
     void this.#refreshMergeRequests();
     const profile = await this.#client.loadProfile().catch(() => null);
+    if (profile?.mode === 'app-hosted' && profile.sandbox?.providerId === 'raucloud') {
+      void this.#refreshConversationSaves();
+    }
     const paired = profile ? await this.#client.isPaired().catch(() => false) : false;
     // An unreadable store stays unloaded and untouched, and every later read tries
     // it again. Snapshots show no handoffs meanwhile instead of failing Cloud IPC.
@@ -1144,13 +1153,16 @@ export class CloudCoordinator extends EventEmitter {
       ? remote
       : null;
     const now = new Date().toISOString();
+    const railwaySaves = profile?.mode === 'app-hosted' && profile.sandbox?.providerId === 'raucloud'
+      ? new Map(this.#conversationRecovery.conversations.map((saved) => [saved.sessionId, saved.createdAt]))
+      : new Map();
     const publicSessionsById = new Map();
     for (const session of this.#remoteSessions.values()) {
-      const publicSession = this.#publicRemoteSession(session);
+      const publicSession = this.#publicRemoteSession(session, railwaySaves.get(session.id ?? session.sessionId));
       if (publicSession.kind !== 'idle') publicSessionsById.set(publicSession.sessionId, publicSession);
     }
     for (const record of visibleRecords) {
-      const publicSession = this.#publicSession(record);
+      const publicSession = this.#publicSession(record, railwaySaves.get(record.cloudSessionId));
       if (publicSession.kind !== 'idle') publicSessionsById.set(publicSession.sessionId, publicSession);
     }
     const connection = profileConnection ?? (paired ? 'ready' : 'unknown');
@@ -1225,7 +1237,9 @@ export class CloudCoordinator extends EventEmitter {
                   acquiredAt: asIso(unscopedLeaseRemote.startedAt, now),
                 }
               : { owner: 'local' },
-      session: selected ? this.#publicSession(selected) : this.#publicRemoteSession(remote),
+      session: selected
+        ? this.#publicSession(selected, railwaySaves.get(selected.cloudSessionId))
+        : this.#publicRemoteSession(remote, railwaySaves.get(remote?.id ?? remote?.sessionId)),
       sessions: [...publicSessionsById.values()],
       mergeRequests: this.#mergeRecovery.requests,
       queuedMessages: (selected?.queuedMessages ?? []).map((message) => ({
@@ -1744,6 +1758,7 @@ export class CloudCoordinator extends EventEmitter {
           type: 'merge-prefetch-completed',
           sessionId: request.sessionId,
           operationId: request.operationId,
+          kind: request.kind,
           documentId: request.documentId,
           fileName: request.fileName,
           turn: request.turn,
@@ -1764,6 +1779,42 @@ export class CloudCoordinator extends EventEmitter {
         this.#emit({ type: 'merge-recovery-error', error: error.message });
       }
     }
+  }
+
+  async #refreshConversationSaves() {
+    if (this.#stopped || Date.now() - this.#conversationSaveRefreshAt < 15_000) return;
+    this.#conversationSaveRefreshAt = Date.now();
+    const profileEpoch = this.#profileEpoch;
+    const previous = JSON.stringify(this.#conversationRecovery.conversations);
+    try {
+      await this.#conversationRecovery.refresh({
+        assertCurrent: () => this.#assertProfileEpoch(profileEpoch),
+      });
+      if (previous !== JSON.stringify(this.#conversationRecovery.conversations)) {
+        this.#emit({ type: 'conversation-saves-updated' });
+      }
+    } catch (error) {
+      this.#conversationSaveRefreshAt = 0;
+      if (error?.name !== 'AbortError' && error?.code !== 'PROFILE_CHANGED') {
+        this.#emit({ type: 'conversation-save-refresh-deferred', error: error.message });
+      }
+    }
+  }
+
+  #prefetchConversationTimelines(profileEpoch = this.#profileEpoch) {
+    void this.#conversationRecovery.prefetchTimelines({
+      assertCurrent: () => this.#assertProfileEpoch(profileEpoch),
+      onDownloaded: (saved) => this.#emit({
+        type: 'conversation-save-ready', sessionId: saved.sessionId, lastSavedAt: saved.createdAt,
+      }),
+      onFailure: (saved, error) => this.#emit({
+        type: 'conversation-save-deferred', sessionId: saved.sessionId, error: error.message,
+      }),
+    }).catch((error) => {
+      if (error?.name !== 'AbortError' && error?.code !== 'PROFILE_CHANGED') {
+        this.#emit({ type: 'conversation-save-deferred', error: error.message });
+      }
+    });
   }
 
   async #retryQueuedMessages(record, profileEpoch = this.#profileEpoch) {
@@ -1995,6 +2046,7 @@ export class CloudCoordinator extends EventEmitter {
           return this.snapshot();
         }
         if (status?.lifecycle === 'idle') {
+          this.#abortSessionWatchers();
           const live = (await this.#store.list()).filter((record) => (
             record.cloudSessionId
             && ['queued', 'running', 'suspended'].includes(record.state)
@@ -2004,17 +2056,29 @@ export class CloudCoordinator extends EventEmitter {
           let recoverable = [];
           try {
             recoverable = await this.#conversationRecovery.refresh();
+            this.#prefetchConversationTimelines();
           } catch (error) {
             this.#emit({ type: 'continuity-check-deferred', reason, error: error.message });
             return this.snapshot();
           }
-          const pending = live.find((record) => recoverable.some((entry) => (
-            entry.sessionId === record.cloudSessionId
-            && conversationSnapshotRestorable(entry)
-            && entry.pendingWork === true
-          )));
-          if (pending) {
-            return this.spawnAppServer({ selectedProvider: pending.provider });
+          for (const record of live) {
+            const saved = recoverable.find((entry) => (
+              entry.sessionId === record.cloudSessionId && conversationSnapshotRestorable(entry)
+            ));
+            if (!saved) continue;
+            if (record.state === 'suspended' && profile.sandbox?.providerId !== 'raucloud') continue;
+            const suspendedCode = saved.pendingWork ? 'WORKER_REPLACED_UNCERTAIN' : 'WORKER_REPLACED';
+            if (record.state === 'suspended' && record.suspendedCode === suspendedCode
+              && record.lastSavedAt === saved.createdAt) continue;
+            const patch = {
+              suspendedCode,
+              statusMessage: saved.pendingWork
+                ? 'The Railway worker stopped. Review the saved work before resuming.'
+                : 'The Railway conversation is saved and ready to resume.',
+              lastSavedAt: saved.createdAt,
+            };
+            if (record.state === 'suspended') await this.#store.patch(record.id, patch);
+            else await this.#store.transition(record.id, 'suspended', patch);
           }
           return this.snapshot();
         }
@@ -3304,14 +3368,25 @@ export class CloudCoordinator extends EventEmitter {
 
   async command(input) {
     await this.#wakeBoatForUser('command');
+    let commandInput = input;
     if (input?.command === 'resume' || input?.command === 'retry') {
-      await this.#reseedBeforeResume(input.sessionId);
+      const restoredWorker = await this.#ensureConversationWorker(input.sessionId);
+      if (restoredWorker) {
+        // Importing a saved conversation advances its version. Rebase only
+        // this explicit Resume onto that restore receipt; an ordinary stale
+        // command must still fail its expected-version check.
+        const restored = await this.handoffForSession(input.sessionId);
+        if (Number.isSafeInteger(restored?.serverVersion)) {
+          commandInput = { ...input, expectedVersion: restored.serverVersion };
+        }
+      }
+      await this.#reseedBeforeResume(input.sessionId, { restoredWorker });
     }
     if (input?.command === 'queue-message' || input?.command === 'redirect') {
       await this.#ensureConversationWorker(input.sessionId);
     }
     try {
-      return await this.#withProfileOperation((profileEpoch) => this.#command(input, profileEpoch));
+      return await this.#withProfileOperation((profileEpoch) => this.#command(commandInput, profileEpoch));
     } catch (error) {
       // 서버에 없는 작업을 끝내려는 요청이다. 남은 로컬 기록만 지우면 대화가 끝난다.
       if ((input?.command === 'end' || input?.command === 'cancel')
@@ -3323,13 +3398,19 @@ export class CloudCoordinator extends EventEmitter {
   }
 
   /** 제공자 로그인 문제로 멈춘 작업은 이어 가기 전에 이 Mac 의 로그인을 다시 보낸다. */
-  async #reseedBeforeResume(sessionId) {
-    const records = await this.#store.list().catch(() => []);
-    const record = records.find((entry) => entry.cloudSessionId === sessionId || entry.id === sessionId);
+  async #reseedBeforeResume(sessionId, { restoredWorker = false } = {}) {
+    const [profile, record] = await Promise.all([
+      this.#client.loadProfile().catch(() => null),
+      this.handoffForSession(sessionId).catch(() => null),
+    ]);
     const remote = this.#remoteSessions.get(sessionId);
-    const code = record?.suspendedCode ?? remote?.suspendedReason?.code ?? null;
+    const code = remote?.suspendedReason?.code ?? record?.suspendedCode ?? null;
     const provider = record?.provider ?? remote?.provider ?? null;
-    if (!PROVIDER_AUTH_CODES.has(code) || !CLOUD_PROVIDERS.includes(provider)) return;
+    const restoredRailway = profile?.mode === 'app-hosted'
+      && profile.sandbox?.providerId === 'raucloud'
+      && (restoredWorker || RAILWAY_RESTORED_CODES.has(code));
+    if ((!PROVIDER_AUTH_CODES.has(code) && !restoredRailway)
+      || !CLOUD_PROVIDERS.includes(provider)) return;
     await this.#importProviderLoginsOrThrow([provider]);
   }
 
@@ -3480,17 +3561,17 @@ export class CloudCoordinator extends EventEmitter {
       this.#client.loadProfile().catch(() => null),
       this.handoffForSession(sessionId),
     ]);
-    if (profile?.mode !== 'app-hosted' || !handoff?.cloudSessionId) return;
+    if (profile?.mode !== 'app-hosted' || !handoff?.cloudSessionId) return false;
     const provider = this.#sandboxProvider(profile.sandbox);
-    if (!provider) return;
+    if (!provider) return false;
     let status;
     try {
       status = await provider.status(profile.sandbox);
     } catch {
-      return;
+      return false;
     }
-    if (status?.lifecycle !== 'idle') return;
-    const snapshots = await this.#conversationRecovery.refresh({ sessionId: handoff.cloudSessionId });
+    if (status?.lifecycle !== 'idle') return false;
+    const snapshots = await this.#conversationRecovery.refresh();
     const restorable = snapshots.find((snapshot) => (
       snapshot.sessionId === handoff.cloudSessionId && conversationSnapshotRestorable(snapshot)
     ));
@@ -3498,6 +3579,7 @@ export class CloudCoordinator extends EventEmitter {
       throw transferError('The saved Cloud conversation is no longer available.', 'CONVERSATION_SNAPSHOT_NOT_FOUND');
     }
     await this.spawnAppServer({ selectedProvider: handoff.provider });
+    return true;
   }
 
   async #command({ sessionId, command, expectedVersion, payload = {}, message, messageId, attachments = [] }, profileEpoch) {
@@ -3912,10 +3994,29 @@ export class CloudCoordinator extends EventEmitter {
         () => this.#assertProfileEpoch(profileEpoch));
       if (recovered) return recovered;
     }
-    const [checkpoint, handoff] = await Promise.all([
-      this.#client.downloadCheckpoint(sessionId, { operationId, ...(kind ? { kind } : {}) }),
-      this.#handoffForSession(sessionId, profileEpoch),
-    ]);
+    let checkpoint;
+    let handoff;
+    try {
+      [checkpoint, handoff] = await Promise.all([
+        this.#client.downloadCheckpoint(sessionId, { operationId, ...(kind ? { kind } : {}) }),
+        this.#handoffForSession(sessionId, profileEpoch),
+      ]);
+    } catch (error) {
+      // A stopped Railway worker cannot serve its checkpoint. The account
+      // archive has the same digest-verified document at the safe boundary.
+      await this.#mergeRecovery.refresh({ force: true,
+        assertCurrent: () => this.#assertProfileEpoch(profileEpoch) }).catch(() => {});
+      const archived = operationId
+        ? this.#mergeRecovery.requests.find((request) => request.sessionId === sessionId
+          && request.operationId === operationId && (!kind || request.kind === kind))
+        : this.#mergeRecovery.latest(sessionId, kind === 'turn' ? 'turn' : 'operation');
+      if (archived) {
+        const recovered = await this.#mergeRecovery.download(sessionId, archived.operationId,
+          () => this.#assertProfileEpoch(profileEpoch));
+        if (recovered) return recovered;
+      }
+      throw error;
+    }
     this.#assertProfileEpoch(profileEpoch);
     return {
       sessionId,
@@ -6211,7 +6312,7 @@ export class CloudCoordinator extends EventEmitter {
     return 'working';
   }
 
-  #publicRemoteSession(session) {
+  #publicRemoteSession(session, lastSavedAt = null) {
     if (!session) return { kind: 'idle' };
     const base = {
       ...(session.configurationSupported && session.executionConfig ? {
@@ -6224,6 +6325,7 @@ export class CloudCoordinator extends EventEmitter {
       threadId: session.clientContext?.threadId ?? 'remote-cloud-thread',
       documentId: session.clientContext?.documentId ?? null,
       documentName: session.originDocument?.name ?? 'Cloud document',
+      ...(lastSavedAt ? { lastSavedAt } : {}),
     };
     const state = cloudState(session.status);
     if (session.takeoverReady) return {
@@ -6287,7 +6389,7 @@ export class CloudCoordinator extends EventEmitter {
     };
   }
 
-  #publicSession(record) {
+  #publicSession(record, lastSavedAt = null) {
     if (!record) return { kind: 'idle' };
     const base = {
       ...(record.configurationSupported && record.executionConfig ? {
@@ -6301,6 +6403,7 @@ export class CloudCoordinator extends EventEmitter {
       documentId: record.originDocumentId || null,
       documentName: record.documentName,
       ...(record.handoffAcceptedAt ? { handoffAcceptedAt: record.handoffAcceptedAt } : {}),
+      ...(lastSavedAt || record.lastSavedAt ? { lastSavedAt: lastSavedAt ?? record.lastSavedAt } : {}),
     };
     if (record.takeoverReady) return {
       ...base,

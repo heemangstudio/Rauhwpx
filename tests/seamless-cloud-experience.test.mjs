@@ -135,7 +135,13 @@ async function fixture(t) {
     const services = { auth, blobStore, sessionStore, identity,
       config: { basePath: '/rauhwpx-cloud', maxRunningSessions: 2, maxQueuedSessions: 20, browserOrigins: [] },
       logger: { error() {} }, vault: { list: () => [], get: () => null }, raucloudLease: lease,
-      conversationBackup: durable ? backup : null };
+      conversationBackup: durable ? backup : null,
+      applyProviderAuth: async (provider, credentials) => {
+        assert.equal(provider, 'codex');
+        assert.equal(credentials.secrets.OPENAI_API_KEY, 'integration-login');
+        sessionStore.setProviderStatus(provider, { available: true, authenticated: true, version: '1' });
+        return { imported: true };
+      } };
     const server = http.createServer(createCloudHttpHandler(services));
     const controlServer = http.createServer(createCloudHttpHandler(services, { workerOnly: true }));
     const base = await listen(server);
@@ -190,7 +196,8 @@ async function fixture(t) {
       status: async () => ({ lifecycle: 'idle', status: 'idle' }), teardown() {},
       accountStatus: async () => ({ signedIn: true }), getLocalCacheIdentity: async () => 'integration-account',
       ...overrides };
-    const value = new CloudCoordinator({ client, store: localStore, recoveryDir, appServers: [provider] });
+    const value = new CloudCoordinator({ client, store: localStore, recoveryDir, appServers: [provider],
+      collectImportedAuth: async () => ({ secrets: { OPENAI_API_KEY: 'integration-login' }, files: {} }) });
     coordinators.push(value);
     return value;
   }
@@ -249,6 +256,8 @@ test('send acknowledgment survives laptop closure, worker replacement and repeat
   assert.equal(conversations[0].sessionId, SESSION_ID);
   assert.ok(Number.isFinite(Date.parse(conversations[0].expiresAt)));
   await returned.reconcileContinuity({ reason: 'wake' });
+  assert.equal(allocated, 0, 'returning must not restart interrupted work');
+  await returned.command({ sessionId: SESSION_ID, command: 'resume', expectedVersion: (await f.store.get(SESSION_ID)).serverVersion });
   assert.equal(allocated, 1);
   assert.equal(second.sessionStore.getSessionRow(SESSION_ID).status, 'queued');
   assert.equal((await f.store.get(SESSION_ID)).destination.endpoint, second.endpoint);
@@ -331,10 +340,54 @@ test('a queued progress event cannot replace the durable follow-up receipt', asy
     },
   });
   await returned.reconcileContinuity({ reason: 'wake' });
+  assert.equal(second, undefined, 'wake must wait for explicit Resume');
+  await returned.command({ sessionId: SESSION_ID, command: 'resume', expectedVersion: (await f.store.get(SESSION_ID)).serverVersion });
   await returned.command(followup);
   assert.equal(second.database.prepare('SELECT COUNT(*) AS n FROM session_messages WHERE id = ?')
     .get(followup.messageId).n, 1);
   assert.equal((await f.store.get(SESSION_ID)).queuedMessages.find((entry) => entry.id === followup.messageId).retryPending, false);
+});
+
+test('unfinished document and chat recover without a worker or automatic Resume', async (t) => {
+  const f = await fixture(t);
+  const worker = await f.launchWorker();
+  const client = await worker.client();
+  const laptop = f.coordinator(client);
+  await laptop.transfer(transferPayload(), { originSessionId: 'local-1' });
+  await laptop.stop();
+  const execution = worker.executionClient();
+  await execution.beginTurn({ turnNumber: 1, mode: 'direct' });
+  const result = Buffer.from('document edited during the unfinished turn');
+  const timeline = transferPayload().timeline;
+  timeline.thread.messages.push({ role: 'assistant', kind: 'progress', cloudDraft: true,
+    text: 'The first edit is saved. I am still working.' });
+  const resultPath = path.join(f.root, 'draft.hwpx');
+  const timelinePath = path.join(f.root, 'draft-timeline.json');
+  await writeFile(resultPath, result);
+  await writeFile(timelinePath, JSON.stringify(timeline));
+  const document = await execution.upload(resultPath, { name: 'document.hwpx', kind: 'document' });
+  const chat = await execution.upload(timelinePath, { name: 'timeline.json', kind: 'timeline' });
+  await execution.commitBoundary({ operationId: 'draft-save', turnNumber: 1, revision: 2, kind: 'operation',
+    checkpoint: { blobId: document.id, size: result.length },
+    timeline: { blobId: chat.id, size: Buffer.byteLength(JSON.stringify(timeline)) } });
+  await worker.stop();
+  await f.state.mutate((data) => { data.raucloud.accounts = {}; data.raucloud.runs = {}; });
+  const returned = f.coordinator(client);
+  await returned.reconcileContinuity({ reason: 'wake' });
+  assert.equal(f.spawnAttempts(), 0);
+  const saved = await eventually(() => returned.snapshot({ selectedSessionId: SESSION_ID }),
+    (snapshot) => snapshot.timeline?.thread?.messages?.some(message => message.cloudDraft), 'latest saved chat did not recover');
+  assert.equal(saved.session.kind, 'suspended');
+  assert.ok(saved.session.lastSavedAt);
+  assert.equal(saved.mergeRequests[0].kind, 'operation');
+  const downloaded = await returned.downloadCheckpoint({ sessionId: SESSION_ID, operationId: 'draft-save', kind: 'operation' });
+  assert.deepEqual(Buffer.from(downloaded.bytes), result);
+  assert.equal(f.spawnAttempts(), 0, 'reviewing an unfinished save must not start an agent');
+  await returned.stop();
+  f.setBrokerOffline(true);
+  const offline = f.coordinator(client, new CloudHandoffStore({ filePath: f.handoffPath }));
+  const reopened = await offline.snapshot({ selectedSessionId: SESSION_ID });
+  assert.equal(reopened.timeline.thread.messages.at(-1).text, timeline.thread.messages.at(-1).text);
 });
 
 test('returning downloads completed work in the background and reopening offline serves verified local bytes', async (t) => {

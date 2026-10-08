@@ -6,6 +6,8 @@ import { createStudioHarness, isProviderAuthFailure, PROVIDER_AUTH_EXPIRED_MESSA
 import { composeTurnPrompt, readTimeline, TimelineRecorder } from './timeline.mjs';
 
 const MAX_TIMELINE_BYTES = 100 * 1024 * 1024;
+const RAILWAY_DOCUMENT_CHECK_MS = 2_000;
+const RAILWAY_CHAT_SAVE_MS = 10_000;
 
 function runtimeError(code, message, cause) {
   return Object.assign(new Error(message, cause ? { cause } : undefined), { code });
@@ -73,8 +75,8 @@ function assertLocalResource(resource, kind) {
   return resource;
 }
 
-async function uploadTimeline(client, timelinePath, recorder) {
-  await writeJsonAtomic(timelinePath, recorder.export());
+async function uploadTimeline(client, timelinePath, recorder, railwayManaged = false) {
+  await writeJsonAtomic(timelinePath, recorder.export({ includeDraft: railwayManaged }));
   return client.upload(timelinePath, { name: 'timeline.json', kind: 'timeline' });
 }
 
@@ -205,6 +207,7 @@ export async function runSession({
     }));
   const timeline = readTimeline(await readJsonBounded(timelineResource.filename), manifest);
   const recorder = new TimelineRecorder(timeline);
+  const railwayManaged = manifest.railwayManaged === true;
   const liveEvents = eventForwarder(client);
   const timelinePath = path.join(workspace, 'timeline.json');
   const deadline = Date.now() + Math.max(60_000, Number(manifest.limits?.maxDurationSeconds) * 1_000 || 8 * 60 * 60 * 1_000);
@@ -217,7 +220,10 @@ export async function runSession({
   let activeWorkflow = ['plan', 'question'].includes(manifest.executionConfig?.workflow) ? manifest.executionConfig.workflow : 'direct';
   let latestCheckpoint = null;
   let savedDocumentRevision = null;
+  let timelineVersion = 0;
+  let savedTimelineVersion = 0;
   let lastAutosaveCheck = 0;
+  let lastBoundaryCommitAt = 0;
   let saveChain = Promise.resolve();
   let harness;
   let studioUnavailable = false;
@@ -226,37 +232,50 @@ export async function runSession({
     await onStudioUnavailable();
     studioUnavailable = true;
   };
-  const saveBoundary = (kind, boundaryTurn = Math.max(0, turnNumber), force = false) => {
+  const saveBoundary = (kind, boundaryTurn = Math.max(0, turnNumber), force = false, preserveDocument = false) => {
     const save = saveChain.then(async () => {
       if (!harness) return latestCheckpoint?.boundary ?? stableRecovery;
       const currentRevision = await harness.documentRevision?.();
-      if (!force && Number.isSafeInteger(currentRevision) && currentRevision === savedDocumentRevision) {
+      const documentUnchanged = Number.isSafeInteger(currentRevision) && currentRevision === savedDocumentRevision;
+      if (!force && documentUnchanged && (!railwayManaged || timelineVersion === savedTimelineVersion)) {
         return latestCheckpoint?.boundary ?? stableRecovery;
       }
-      const checkpoint = await stableCheckpoint({
-        client, harness, workspace, format: fileType.format, extension: fileType.extension,
-        turnNumber: boundaryTurn, revision: ++revision, kind,
-        previousDigest: force ? null : latestCheckpoint?.receipt.sha256 ?? stableRecovery?.blobId,
-      });
-      if (checkpoint.unchanged) {
-        revision -= 1;
-        savedDocumentRevision = checkpoint.receipt.documentRevision ?? currentRevision ?? null;
+      const stableSize = !latestCheckpoint && stableRecovery ? (await fs.stat(stableRecovery.filename)).size : null;
+      const previous = latestCheckpoint ?? (stableRecovery ? {
+        checkpointPath: stableRecovery.filename,
+        receipt: { sha256: stableRecovery.blobId, size: stableSize },
+        uploaded: { id: stableRecovery.blobId, size: stableSize },
+      } : null);
+      let checkpoint = previous;
+      if ((!preserveDocument && (force || !documentUnchanged)) || !previous) {
+        const exported = await stableCheckpoint({
+          client, harness, workspace, format: fileType.format, extension: fileType.extension,
+          turnNumber: boundaryTurn, revision: revision + 1, kind,
+          previousDigest: force ? null : previous?.receipt.sha256,
+        });
+        if (!exported.unchanged) checkpoint = exported;
+        else savedDocumentRevision = exported.receipt.documentRevision ?? currentRevision ?? null;
+      }
+      if (checkpoint === previous && !force && (!railwayManaged || timelineVersion === savedTimelineVersion)) {
         return latestCheckpoint?.boundary ?? stableRecovery;
       }
-      const timelineUpload = await uploadTimeline(client, timelinePath, recorder);
+      revision += 1;
+      const timelineUpload = await uploadTimeline(client, timelinePath, recorder, railwayManaged);
       const boundary = await commitStableBoundary({
         client, checkpoint, timeline: timelineUpload, turnNumber: boundaryTurn, revision, kind,
       });
       latestCheckpoint = { ...checkpoint, boundary };
       savedDocumentRevision = checkpoint.receipt.documentRevision ?? currentRevision ?? null;
+      savedTimelineVersion = timelineVersion;
+      lastBoundaryCommitAt = Date.now();
       return boundary;
     });
     saveChain = save.catch(() => {});
     return save;
   };
-  const flushWorkspace = async (boundaryTurn) => {
+  const flushWorkspace = async (boundaryTurn, preserveDocument = false) => {
     await clearStudioReadiness();
-    return saveBoundary('operation', boundaryTurn);
+    return saveBoundary('operation', boundaryTurn, false, preserveDocument);
   };
   let assertRuntimeHealthy = async () => {};
   await client.event('runtime.started', {
@@ -331,8 +350,13 @@ export async function runSession({
       await client.takeoverAck();
       return { takenOver: true, timelinePath };
     };
-    const acknowledgePause = async (boundaryTurn) => {
-      await flushWorkspace(boundaryTurn);
+    const acknowledgePause = async (boundaryTurn, interruptedTurn = false) => {
+      if (railwayManaged && interruptedTurn) {
+        await clearStudioReadiness();
+        await saveBoundary('operation', boundaryTurn, false, true);
+      } else {
+        await flushWorkspace(boundaryTurn);
+      }
       if (typeof client.pauseAck !== 'function') {
         throw runtimeError('PAUSE_PROTOCOL_UNAVAILABLE', 'Worker pause acknowledgement is unavailable');
       }
@@ -357,6 +381,14 @@ export async function runSession({
         return { sleepCancelled: true };
       }
       return { sleeping: true, timelinePath };
+    };
+    const suspendInterruptedTurn = async (boundaryTurn) => {
+      await clearStudioReadiness();
+      // Interrupting a provider can discard its uncommitted Studio preview.
+      // Preserve the last durable document while committing the newer chat.
+      await saveBoundary('operation', boundaryTurn, false, true);
+      await client.suspend('LEASE_ENDED', 'Cloud lease ended after saving the document');
+      return { suspended: true, timelinePath };
     };
     const claimFinish = async () => {
       if (shouldStop()) {
@@ -408,7 +440,8 @@ export async function runSession({
       return current;
     };
     const publishRecovery = async (sourceFilename) => {
-      if (path.resolve(timelineResource.filename) !== path.resolve(timelinePath)) {
+      if (path.resolve(timelineResource.filename) !== path.resolve(timelinePath)
+        && (!railwayManaged || !(await fs.stat(timelinePath).catch(() => null)))) {
         await fs.copyFile(timelineResource.filename, timelinePath);
       }
       await fs.chmod(timelinePath, 0o600);
@@ -458,6 +491,7 @@ export async function runSession({
       onEvent: async (event) => {
         if (event?.type?.startsWith?.('environment.')) recorder.recordEnvironmentEvent(event);
         recorder.consume(event);
+        timelineVersion += 1;
         liveEvents.enqueue(event);
       },
     });
@@ -530,6 +564,7 @@ export async function runSession({
         await harness.setWorkflow?.(activeWorkflow);
         await materializeAttachments(message);
         recorder.acceptUserMessage(content, { messageId: message.id ?? null, initial: message.initial === true });
+        timelineVersion += 1;
         if (manifest.persistent && typeof client.beginTurn === 'function') {
           try {
             await client.beginTurn({
@@ -549,7 +584,9 @@ export async function runSession({
           }
         }
         await client.event('turn.dispatched', { turnNumber: nextTurnNumber, messageId: message.id ?? null });
-        const checkpointBoundary = (kind) => saveBoundary(kind, nextTurnNumber, kind === 'turn');
+        const checkpointBoundary = (kind, preserveDocument = false) => saveBoundary(
+          kind, nextTurnNumber, kind === 'turn', preserveDocument,
+        );
         const runProvider = (resume = null) => harness.runTurn(
           resume ? '' : composeTurnPrompt(content, references, manifest.resumeContext),
           {
@@ -562,9 +599,19 @@ export async function runSession({
               if (event?.tool === 'publish_cloud_document') publishAfterTurn = true;
               return checkpointBoundary('operation');
             },
+            onIdleBoundary: railwayManaged && manifest.persistent === true ? async ({ beforeInterrupt = false } = {}) => {
+              if (shouldStop()) return;
+              const now = Date.now();
+              if (!beforeInterrupt && now - lastAutosaveCheck < RAILWAY_DOCUMENT_CHECK_MS) return;
+              lastAutosaveCheck = now;
+              const currentRevision = await harness.documentRevision?.();
+              if (!beforeInterrupt && currentRevision === savedDocumentRevision && now - lastBoundaryCommitAt < RAILWAY_CHAT_SAVE_MS) return;
+              await checkpointBoundary('operation');
+            } : null,
           },
         );
         let outcome = await runProvider();
+        if (railwayManaged && shouldStop()) return await suspendInterruptedTurn(nextTurnNumber);
         let stopped = outcome?.stopped === true;
         while (outcome?.wait) {
           if (typeof client.createWait !== 'function' || typeof client.wait !== 'function') {
@@ -640,6 +687,7 @@ export async function runSession({
             throw runtimeError('WAIT_RESOLUTION_INVALID', 'Durable wait returned an unsupported resolution');
           }
         }
+        if (railwayManaged && shouldStop()) return await suspendInterruptedTurn(nextTurnNumber);
         stopped ||= outcome?.stopped === true;
         const redirected = outcome?.redirected === true;
         if (outcome?.errorMessage
@@ -654,17 +702,18 @@ export async function runSession({
           // Pause preserves the unfinished message. A terminal turn boundary
           // would mark it completed during recovery and abandon it on Resume.
           if (control.pauseRequested && !control.takeoverRequested && !control.endRequested) {
-            return await acknowledgePause(nextTurnNumber);
+            return await acknowledgePause(nextTurnNumber, true);
           }
         }
         turnNumber = nextTurnNumber;
-        const boundary = await checkpointBoundary('turn');
+        const interruptedPreview = railwayManaged && (stopped || redirected);
+        const boundary = await checkpointBoundary('turn', interruptedPreview);
         if (shouldStop()) {
-          await flushWorkspace();
+          await flushWorkspace(undefined, interruptedPreview);
           await client.suspend('LEASE_ENDED', 'Cloud lease ended after saving the document');
           return { suspended: true, timelinePath };
         }
-        if (turnNumber >= maxTurns) await flushWorkspace();
+        if (turnNumber >= maxTurns) await flushWorkspace(undefined, interruptedPreview);
         if (publishAfterTurn && !redirected && !stopped) {
           await client.event('document.publish_requested', {
             operationId: boundary.operationId,
@@ -678,6 +727,13 @@ export async function runSession({
         }, { retry: manifest.persistent === true });
         if (completed?.status === 'suspended') {
           return { suspended: true, timelinePath };
+        }
+        if (interruptedPreview) {
+          if (typeof harness.reloadDocument !== 'function') {
+            throw runtimeError('DOCUMENT_RELOAD_UNAVAILABLE', 'Cloud Studio cannot reopen an interrupted document checkpoint');
+          }
+          await harness.reloadDocument(latestCheckpoint.checkpointPath);
+          savedDocumentRevision = await harness.documentRevision?.() ?? null;
         }
         const control = typeof client.control === 'function' ? await client.control() : {};
         if (control?.takeoverRequested === true) {
@@ -717,7 +773,7 @@ export async function runSession({
         revision: ++revision,
         kind: 'turn',
       });
-      const timelineUpload = await uploadTimeline(client, timelinePath, recorder);
+      const timelineUpload = await uploadTimeline(client, timelinePath, recorder, railwayManaged);
       const boundary = await commitStableBoundary({
         client,
         checkpoint: latestCheckpoint,

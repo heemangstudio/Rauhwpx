@@ -42,6 +42,7 @@
 .ag-cd-task-status[data-state='working']::before { background: var(--ag-run, var(--ui-warning-border)); }
 .ag-cd-task-status[data-state='ready']::before { background: var(--ag-ok, var(--n-ink)); }
 .ag-cd-task-status[data-state='attention']::before { background: var(--ag-err, var(--ui-danger)); }
+.ag-cd-saved { color: var(--n-ink-tertiary); font-size: var(--ag-fs-secondary); font-variant-numeric: var(--ag-numeric); }
 .ag-cd-empty { padding: 16px var(--ag-set-inset, 16px); color: var(--n-ink-secondary); font-size: var(--ag-fs-secondary); }
 
 @container (max-width: 350px) {

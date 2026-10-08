@@ -102,12 +102,16 @@ test('accepted queue restores on a new worker with the same command receipts and
   assert.equal(Object.hasOwn(snapshot, 'devices'), false);
   const second = await fixture(t, broker.lease);
   const restored = await second.backup.restore(second.device, 'session-1');
-  assert.equal(restored.session.status, 'queued');
+  assert.equal(restored.session.status, 'suspended');
+  assert.equal(restored.session.suspendedReason.code, 'WORKER_REPLACED');
+  assert.equal(second.sessionStore.claimNextSession(), null);
   assert.equal(restored.sourceEventSeq, snapshot.session.next_event_seq - 1);
   assert.equal(restored.restoredEventSeq, restored.sourceEventSeq + 1);
   assert.equal(second.sessionStore.getSessionRow('session-1').origin_device_id, second.device.id);
   assert.deepEqual(second.sessionStore.executeCommand(second.device, 'session-1', command), accepted);
   assert.equal(second.database.prepare('SELECT COUNT(*) AS count FROM session_messages').get().count, 1);
+  second.command('session.resume', { expectedVersion: restored.session.stateVersion });
+  assert.equal(second.sessionStore.getSession('session-1').status, 'queued');
   const repeated = await second.backup.restore(second.device, 'session-1');
   assert.equal(repeated.session.id, restored.session.id);
   assert.equal(repeated.sourceEventSeq, restored.sourceEventSeq);
@@ -352,7 +356,8 @@ test('an imported restore remains unacknowledged until its pending snapshot is d
   await assert.rejects(second.backup.restore(second.device, 'session-1'));
   broker.setOffline(false);
   const receipt = await second.backup.restore(second.device, 'session-1');
-  assert.equal(receipt.session.status, 'queued');
+  assert.equal(receipt.session.status, 'suspended');
+  assert.equal(receipt.session.suspendedReason.code, 'WORKER_REPLACED');
   assert.equal(second.database.prepare("SELECT COUNT(*) AS count FROM session_events WHERE type = 'session.restored'").get().count, 1);
   assert.equal(second.database.prepare('SELECT COUNT(*) AS count FROM conversation_backup_pending').get().count, 0);
 });

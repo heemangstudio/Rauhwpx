@@ -1889,6 +1889,11 @@ export function creditsRequestListener(service, {
         send(200, await service.listCloudConversations(bearerToken(req), url.searchParams.get('sessionId'), url.pathname.includes('/internal/')));
         return;
       }
+      const savedConversationChunk = url.pathname.match(/^\/v1\/cloud\/(conversations|conversation-resources)\/([^/]+)\/chunks\/(\d+)$/);
+      if (req.method === 'GET' && savedConversationChunk) {
+        send(200, await service.downloadCloudConversationChunk(bearerToken(req), savedConversationChunk[2], Number(savedConversationChunk[3]), savedConversationChunk[1] === 'conversation-resources', false));
+        return;
+      }
       const conversationChunk = url.pathname.match(/^\/v1\/internal\/cloud\/(conversations|conversation-resources)\/([^/]+)\/chunks\/(\d+)$/);
       if (req.method === 'GET' && conversationChunk) {
         send(200, await service.downloadCloudConversationChunk(bearerToken(req), conversationChunk[2], Number(conversationChunk[3]), conversationChunk[1] === 'conversation-resources'));

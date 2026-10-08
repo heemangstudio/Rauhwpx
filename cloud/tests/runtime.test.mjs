@@ -14,6 +14,7 @@ import { databasePragmas, openDatabase } from '../src/database.mjs';
 import { DisplayFrameStore } from '../src/display-frame-store.mjs';
 import { parseCommand, parseSessionCreate, parseUploadInit } from '../src/protocol.mjs';
 import { createCloudRuntime } from '../src/runtime.mjs';
+import { Scheduler } from '../src/scheduler.mjs';
 import { SessionStore } from '../src/session-store.mjs';
 import { runSession } from '../document-runtime/run.mjs';
 
@@ -1126,6 +1127,50 @@ async function idleRoomFixture(t, sessionId) {
   sessions.claimFinish(sessionId);
   return { ...state, clock, origin };
 }
+
+test('managed worker yields an idle saved room so another document can run', async (t) => {
+  const firstId = 'session_queue_yield_first';
+  const secondId = 'session_queue_yield_second';
+  const { sessions, blobs, origin } = await idleRoomFixture(t, firstId);
+  const document = await upload(blobs, origin.device.id, Buffer.from('second document'));
+  const created = sessions.createSession(origin.device, parseSessionCreate({
+    sessionId: secondId, provider: 'codex', goal: 'Edit another document', persistent: true,
+    clientContext: { threadId: 'thread-second', documentId: 'document-second' },
+    originDocument: { blobId: document.id, name: 'second.hwpx', size: document.size },
+  }));
+  sessions.executeCommand(origin.device, secondId, parseCommand({
+    commandId: 'activate_queue_yield_second', type: 'session.activate',
+    payload: { expectedVersion: created.stateVersion },
+  }));
+  sessions.attachSandbox(firstId, 'sandbox-first');
+  const stopped = [];
+  const started = [];
+  const runner = {
+    maxRunningSessions: 1,
+    list: async () => [{ sandboxId: 'sandbox-first', sessionId: firstId, running: true }],
+    stop: async (sandboxId) => { stopped.push(sandboxId); },
+    start: async (session) => { started.push(session.id); return `sandbox-${session.id}`; },
+  };
+  const ordinary = new Scheduler(sessions, runner, { maxRunningSessions: 1 });
+  await ordinary.tick();
+  assert.equal(sessions.getSession(firstId).status, 'running');
+  assert.deepEqual(started, [], 'non-managed hosts retain their idle room');
+  const managed = new Scheduler(sessions, runner, {
+    maxRunningSessions: 1, yieldIdleRoomsForQueue: true,
+  });
+  await managed.tick();
+  assert.deepEqual(stopped, ['sandbox-first']);
+  assert.deepEqual(started, [secondId]);
+  const saved = sessions.getSession(firstId);
+  assert.equal(saved.status, 'suspended');
+  assert.equal(saved.suspendedReason.code, 'QUEUE_YIELD');
+  assert.equal(sessions.getSession(secondId).status, 'running');
+  sessions.executeCommand(origin.device, firstId, parseCommand({
+    commandId: 'resume_queue_yield_first', type: 'session.resume',
+    payload: { expectedVersion: saved.stateVersion },
+  }));
+  assert.equal(sessions.getSession(firstId).status, 'queued');
+});
 
 test('presence from a connection that died without closing expires so the room can still sleep', async (t) => {
   const sessionId = 'session_stale_presence';
