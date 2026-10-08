@@ -1,4 +1,9 @@
 //! Read-only character counts from the document model, independent of pagination.
+//!
+//! The rules follow Hancom's status bar count: every character of the text stream counts,
+//! spaces and tabs included, one per code point. Line breaks, auto numbers, objects and
+//! master pages do not count. Each field adds its end marker, and an empty click-here field
+//! adds the guide text it shows.
 
 use super::super::DocumentCore;
 use crate::document_core::helpers::{
@@ -6,31 +11,80 @@ use crate::document_core::helpers::{
     logical_to_text_offset,
 };
 use crate::error::HwpError;
-use crate::model::control::Control;
-use crate::model::paragraph::Paragraph;
+use crate::model::control::{Control, Field};
+use crate::model::paragraph::{FieldRange, Paragraph};
 use crate::model::shape::ShapeObject;
-use unicode_segmentation::UnicodeSegmentation;
+use std::ops::RangeBounds;
 
-fn invisible(ch: char) -> bool {
-    ch.is_whitespace()
-        || ch.is_control()
-        || matches!(
-            ch,
-            '\u{200b}'
-                | '\u{200c}'
-                | '\u{200d}'
-                | '\u{2060}'
-                | '\u{fe0e}'
-                | '\u{fe0f}'
-                | '\u{feff}'
-                | '\u{fffc}'
-        )
+/// Line breaks and object markers (`U+FFFC`) are layout, not characters.
+fn is_counted(ch: char) -> bool {
+    ch == '\t' || !(ch.is_control() || ch == '\u{fffc}')
 }
 
-pub(crate) fn written_characters(text: &str) -> usize {
-    text.graphemes(true)
-        .filter(|cluster| cluster.chars().any(|ch| !invisible(ch)))
+/// Text indices of the placeholder spaces auto numbers keep in the text, one per number.
+///
+/// A parsed placeholder spans a whole control slot (8 UTF-16 units) in `char_offsets`. HWP3
+/// files and edits can leave other spans, so any numbers left over take the earliest spaces.
+fn number_placeholders(paragraph: &Paragraph) -> Vec<usize> {
+    let numbers = paragraph
+        .controls
+        .iter()
+        .filter(|control| matches!(control, Control::AutoNumber(_)))
+        .count();
+    if numbers == 0 {
+        return Vec::new();
+    }
+    let offsets = &paragraph.char_offsets;
+    let text_end = paragraph.char_count.saturating_sub(1);
+    let spans_slot = |index: usize| {
+        offsets.get(index).is_some_and(|&start| {
+            let next = offsets.get(index + 1).copied().unwrap_or(text_end);
+            let span = next.saturating_sub(start);
+            span >= 8 && span % 8 == 0
+        })
+    };
+    let (mut placeholders, others): (Vec<usize>, Vec<usize>) = paragraph
+        .text
+        .chars()
+        .enumerate()
+        .filter(|&(_, ch)| ch == ' ')
+        .map(|(index, _)| index)
+        .partition(|&index| spans_slot(index));
+    placeholders.truncate(numbers);
+    let missing = numbers - placeholders.len();
+    placeholders.extend(others.into_iter().take(missing));
+    placeholders
+}
+
+/// Counts the paragraph text in `range` (char indices).
+fn count_text(paragraph: &Paragraph, range: impl RangeBounds<usize>) -> usize {
+    let placeholders = number_placeholders(paragraph);
+    paragraph
+        .text
+        .chars()
+        .enumerate()
+        .filter(|&(index, ch)| {
+            range.contains(&index) && is_counted(ch) && !placeholders.contains(&index)
+        })
         .count()
+}
+
+fn field_range(paragraph: &Paragraph, control_index: usize) -> Option<&FieldRange> {
+    paragraph
+        .field_ranges
+        .iter()
+        .find(|range| range.control_idx == control_index)
+}
+
+fn count_field(paragraph: &Paragraph, control_index: usize, field: &Field) -> usize {
+    let empty = field_range(paragraph, control_index)
+        .is_some_and(|range| range.start_char_idx == range.end_char_idx);
+    let guide = if empty {
+        field.guide_text().map_or(0, |guide| guide.chars().count())
+    } else {
+        0
+    };
+    1 + guide
 }
 
 fn count_shape(shape: &ShapeObject) -> usize {
@@ -59,7 +113,7 @@ fn count_shape(shape: &ShapeObject) -> usize {
     count
 }
 
-fn count_control(control: &Control) -> usize {
+fn count_control(paragraph: &Paragraph, control_index: usize, control: &Control) -> usize {
     match control {
         Control::Table(table) => {
             let cells: usize = table
@@ -82,7 +136,8 @@ fn count_control(control: &Control) -> usize {
         Control::Footer(footer) => count_paragraphs(&footer.paragraphs),
         Control::Footnote(note) => count_paragraphs(&note.paragraphs),
         Control::Endnote(note) => count_paragraphs(&note.paragraphs),
-        // Hidden comments, equation source, field commands and alt text are not document prose.
+        Control::Field(field) => count_field(paragraph, control_index, field),
+        // Hidden comments, equations, ruby and overlapped characters are not counted.
         _ => 0,
     }
 }
@@ -91,8 +146,13 @@ fn count_paragraphs(paragraphs: &[Paragraph]) -> usize {
     paragraphs
         .iter()
         .map(|paragraph| {
-            written_characters(&paragraph.text)
-                + paragraph.controls.iter().map(count_control).sum::<usize>()
+            count_text(paragraph, ..)
+                + paragraph
+                    .controls
+                    .iter()
+                    .enumerate()
+                    .map(|(index, control)| count_control(paragraph, index, control))
+                    .sum::<usize>()
         })
         .sum()
 }
@@ -105,40 +165,30 @@ fn count_paragraph_range(paragraph: &Paragraph, from: usize, to: usize) -> Resul
     }
     let text_start = logical_to_text_offset(paragraph, from).0;
     let text_end = logical_to_text_offset(paragraph, to).0;
-    let selected: String = paragraph
-        .text
-        .chars()
-        .skip(text_start)
-        .take(text_end.saturating_sub(text_start))
-        .collect();
-    let mut count = written_characters(&selected);
-    for (control, logical_pos) in paragraph
+    let mut count = count_text(paragraph, text_start..text_end);
+    for (index, (control, logical_pos)) in paragraph
         .controls
         .iter()
         .zip(find_logical_control_positions(paragraph))
+        .enumerate()
     {
-        if logical_pos >= from && logical_pos < to {
-            count += count_control(control);
+        // A field's extra character is its end marker, so the selection has to reach it.
+        let field_ends_after = matches!(control, Control::Field(_))
+            && field_range(paragraph, index).is_some_and(|range| range.end_char_idx > text_end);
+        if logical_pos >= from && logical_pos < to && !field_ends_after {
+            count += count_control(paragraph, index, control);
         }
     }
     Ok(count)
 }
 
 impl DocumentCore {
-    /// Every authored text scope, counted once in the source model (including nested tables).
+    /// Every text scope Hancom counts, once each (nested tables included, master pages not).
     pub fn get_document_character_count(&self) -> usize {
         self.document
             .sections
             .iter()
-            .map(|section| {
-                count_paragraphs(&section.paragraphs)
-                    + section
-                        .section_def
-                        .master_pages
-                        .iter()
-                        .map(|page| count_paragraphs(&page.paragraphs))
-                        .sum::<usize>()
-            })
+            .map(|section| count_paragraphs(&section.paragraphs))
             .sum()
     }
 
@@ -286,14 +336,77 @@ impl DocumentCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::control::FieldType;
     use crate::model::document::{Document, Section};
     use crate::model::shape::CommonObjAttr;
     use crate::model::table::{Cell, Table};
 
     #[test]
-    fn korean_blocks_emoji_and_whitespace() {
-        assert_eq!(written_characters("한글 한 👩‍💻\n"), 4);
-        assert_eq!(written_characters("\u{0002}\u{fffc}\u{200b}"), 0);
+    fn counts_spaces_and_tabs_but_not_breaks_or_number_placeholders() {
+        let body = Paragraph {
+            text: "한글 한\t\u{1f469}\u{200d}\u{1f4bb}\n\u{fffc}".into(),
+            ..Default::default()
+        };
+        assert_eq!(count_text(&body, ..), 8);
+        // The auto number keeps the first space of a footnote paragraph as its slot.
+        let note = Paragraph {
+            text: "  각주".into(),
+            char_offsets: vec![0, 8, 9, 10],
+            char_count: 12,
+            controls: vec![Control::AutoNumber(Default::default())],
+            ..Default::default()
+        };
+        assert_eq!(count_text(&note, ..), 3);
+        // HWP3 stores the same placeholder one unit wide.
+        let hwp3_note = Paragraph {
+            char_offsets: vec![0, 1, 2, 3],
+            char_count: 5,
+            ..note
+        };
+        assert_eq!(count_text(&hwp3_note, ..), 3);
+    }
+
+    #[test]
+    fn fields_add_their_end_marker_and_empty_click_here_adds_its_guide() {
+        let click_here = Field {
+            field_type: FieldType::ClickHere,
+            command: Field::build_clickhere_command("입력", ""),
+            ..Default::default()
+        };
+        let hyperlink = Field {
+            field_type: FieldType::Hyperlink,
+            ..Default::default()
+        };
+        // "가", an empty click-here field, then a link over "나다".
+        let paragraph = Paragraph {
+            text: "가나다".into(),
+            char_offsets: vec![0, 25, 26],
+            char_count: 36,
+            controls: vec![Control::Field(click_here), Control::Field(hyperlink)],
+            field_ranges: vec![
+                FieldRange {
+                    start_char_idx: 1,
+                    end_char_idx: 1,
+                    control_idx: 0,
+                    ..Default::default()
+                },
+                FieldRange {
+                    start_char_idx: 1,
+                    end_char_idx: 3,
+                    control_idx: 1,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            count_paragraphs(std::slice::from_ref(&paragraph)),
+            3 + (1 + 2) + 1
+        );
+        // The link's end marker only counts once the selection reaches it.
+        let length = logical_paragraph_length(&paragraph);
+        assert_eq!(count_paragraph_range(&paragraph, 0, length).unwrap(), 7);
+        assert_eq!(count_paragraph_range(&paragraph, 0, length - 1).unwrap(), 5);
     }
 
     #[test]
