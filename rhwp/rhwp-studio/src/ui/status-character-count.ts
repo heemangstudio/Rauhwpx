@@ -28,17 +28,11 @@ export interface StatusCharacterCount {
   scope: 'document' | 'selection' | 'cell';
 }
 
-const segmenter = typeof Intl.Segmenter === 'function'
-  ? new Intl.Segmenter('ko', { granularity: 'grapheme' })
-  : null;
-
-/** Counts written characters, including punctuation; spaces and control markers are excluded. */
-export function countWrittenCharacters(text: string): number {
-  const clusters = segmenter ? Array.from(segmenter.segment(text), item => item.segment) : Array.from(text);
+/** Counts like Hancom's status bar: one per code point, spaces and tabs included; line breaks and object markers excluded. */
+export function countCharacters(text: string): number {
   let count = 0;
-  for (const cluster of clusters) {
-    if (!Array.from(cluster).some(char => !/[\s\p{Cc}\p{Cf}\uFE0E\uFE0F\uFFFC]/u.test(char))) continue;
-    count++;
+  for (const char of text) {
+    if (char === '\t' || !/[\p{Cc}\uFFFC]/u.test(char)) count++;
   }
   return count;
 }
@@ -117,7 +111,7 @@ export class StatusCharacterCounter {
     }
     const auxiliarySelection = input.getAuxiliaryTextSelection?.();
     if (auxiliarySelection !== null && auxiliarySelection !== undefined) {
-      return { current: countWrittenCharacters(auxiliarySelection), total: this.total, scope: 'selection' };
+      return { current: countCharacters(auxiliarySelection), total: this.total, scope: 'selection' };
     }
     const selectedCells = countSelectedCells(wasm, input);
     if (selectedCells !== null) return { current: selectedCells, total: this.total, scope: 'selection' };
