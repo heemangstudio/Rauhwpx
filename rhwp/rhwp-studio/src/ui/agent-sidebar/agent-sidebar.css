@@ -1894,16 +1894,12 @@ button.ag-skill-copy {
   cursor: default;
 }
 
-.ag-threads-new::before {
-  content: '+';
+.ag-threads-new-icon {
   position: absolute;
   left: 7px;
   width: 14px;
+  height: 14px;
   color: var(--ag-text-secondary);
-  font-size: 16px;
-  font-weight: 400;
-  line-height: 1;
-  text-align: center;
 }
 
 .ag-threads-new:hover {
@@ -6610,9 +6606,32 @@ html.ag-fs-vt-exit::view-transition-new(root) {
   background: var(--ag-bg);
   color: var(--ag-text);
   user-select: none;
+  transition: grid-template-columns var(--ag-dur-base) var(--ag-motion-out);
 }
 
-/* 레일 면은 막대까지 한 장으로 이어진다 — 선 없이 톤으로만 나뉜다.
+/* 레일이 접히면 첫 칸은 토글까지만 남아 제목이 토글 바로 뒤로 온다. */
+.ag-fullscreen.ag-rail-collapsed .ag-workspace-bar {
+  grid-template-columns:
+    calc(var(--ag-workspace-lead-inset) + 32px) minmax(280px, 1fr) minmax(230px, auto);
+}
+
+.ag-fullscreen .ag-workspace-leading {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.ag-fullscreen .ag-workspace-title,
+.ag-fullscreen .ag-workspace-document-context {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.ag-fullscreen .ag-workspace-trailing {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+/* 레일 면은 막대까지 한 장으로 이어지고, 대화 면과는 헤어라인 하나로 나뉜다.
    폭은 격자 칸과 같은 시간축으로 접힌다. */
 .ag-fullscreen .ag-workspace-bar::before {
   content: '';
@@ -6621,6 +6640,7 @@ html.ag-fs-vt-exit::view-transition-new(root) {
   z-index: -1;
   width: var(--ag-rail-w, 264px);
   background: var(--ag-rail-bg);
+  box-shadow: inset -1px 0 0 var(--ag-border);
   transition: width var(--ag-dur-base) var(--ag-motion-out);
   pointer-events: none;
 }
@@ -6630,8 +6650,15 @@ html.ag-fs-vt-exit::view-transition-new(root) {
   width: 0;
 }
 
+.ag-fullscreen.ag-col-resizing .ag-workspace-bar,
 .ag-fullscreen.ag-col-resizing .ag-workspace-bar::before {
   transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-fullscreen .ag-workspace-bar {
+    transition: none;
+  }
 }
 
 /* 집중 모드 bar 가 y=0 의 메뉴바 자리를 대신한다. 높이를 창 타이틀바와
@@ -6639,14 +6666,11 @@ html.ag-fs-vt-exit::view-transition-new(root) {
    빈 면은 모두 창 드래그, 조작 가능한 자식만 no-drag 로 뺀다. */
 html.desktop-mac .ag-fullscreen {
   --ag-workspace-bar-h: var(--desktop-titlebar-height, 38px);
+  --ag-workspace-lead-inset: calc(10px + var(--desktop-traffic-light-inset, 78px));
 }
 
 html.desktop-mac .ag-fullscreen .ag-workspace-bar {
   -webkit-app-region: drag;
-}
-
-html.desktop-mac .ag-fullscreen .ag-workspace-leading {
-  padding-left: calc(10px + var(--desktop-traffic-light-inset, 78px));
 }
 
 html.desktop-mac .ag-fullscreen .ag-workspace-title {
@@ -6674,9 +6698,11 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   align-items: center;
 }
 
+/* 오른쪽 여백은 제목 줄이 맡는다 — 레일을 접었을 때 토글과 제목 사이가
+   벌어지지 않는다. */
 .ag-workspace-leading {
   gap: 8px;
-  padding: 0 12px;
+  padding: 0 0 0 var(--ag-workspace-lead-inset, 12px);
 }
 
 .ag-workspace-trailing {
@@ -6752,6 +6778,14 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   --ag-rail-bg: var(--ag-bg-2);
   --ag-column-w: 768px;
   --ag-column-gutter: 24px;
+  /* 막대 왼쪽 끝에서 레일 토글까지. macOS 셸에서는 신호등 자리를 더한다. */
+  --ag-workspace-lead-inset: 12px;
+}
+
+/* 어두운 테마의 레일은 macOS 사이드바처럼 대화 면보다 반 단 떠 있다.
+   가라앉은 검정 면은 창 가장자리와 구분되지 않는다. */
+:root[data-theme-effective='dark'] .ag-fullscreen {
+  --ag-rail-bg: color-mix(in oklab, var(--ag-bg) 50%, var(--ag-raised));
 }
 
 /* Focus-mode environment: persistent context, not an auto-dismissing menu. */
@@ -6962,33 +6996,43 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   transform: rotate(-90deg);
 }
 
+/* 채팅 이름 / 문서 이름 — 한 줄. 칸 폭을 다 받아야 문서 이름의 상한(%)이
+   칸 기준으로 잡힌다. 자리가 모자라면 문서 이름이 먼저 줄어든다. */
 .ag-workspace-document-context {
   display: flex;
+  align-items: baseline;
+  align-self: center;
+  gap: 7px;
   min-width: 0;
-  flex-direction: column;
-  gap: 1px;
-  padding-left: 2px;
+  max-width: 100%;
+  padding: 0 12px 0 14px;
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-tight);
 }
 
-.ag-workspace-document-name,
-.ag-workspace-selection-context {
+.ag-workspace-chat-title,
+.ag-workspace-document-name {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.ag-workspace-document-name {
+.ag-workspace-chat-title {
+  flex: 0 1 auto;
   color: var(--ag-text);
-  font-size: var(--ag-fs-body);
-  letter-spacing: var(--ag-track-tight);
-  font-weight: var(--ag-fw-strong);
-  line-height: var(--ag-lh-tight);
+  font-weight: var(--ag-fw-medium);
 }
 
-.ag-workspace-selection-context {
+.ag-workspace-title-sep {
+  flex: 0 0 auto;
+  color: var(--ag-text-tertiary);
+}
+
+.ag-workspace-document-name {
+  flex: 0 2 auto;
+  max-width: 45%;
   color: var(--ag-text-secondary);
-  font-size: var(--ag-fs-meta);
-  line-height: var(--ag-lh-tight);
 }
 
 .ag-workspace-title {
@@ -7031,47 +7075,56 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   grid-row: 2;
 }
 
-/* 레일은 조용한 사이드바다 — 선 없이 톤으로 나뉘고, 새 채팅이 맨 위에
-   행 하나로 선다. 제목 '채팅'은 레일 자체가 말하므로 숨긴다. */
+/* 레일은 조용한 사이드바다 — 톤과 오른쪽 헤어라인으로 대화 면과 나뉘고,
+   새 채팅 버튼이 맨 위에 선다. 제목 '채팅'은 레일 자체가 말하므로 숨긴다. */
 .ag-fullscreen .ag-threads-page {
   grid-column: 1;
   gap: 4px;
-  padding: 8px 8px 16px;
+  padding: 10px 8px 16px;
   border-right: 0;
   background: var(--ag-rail-bg);
+  box-shadow: inset -1px 0 0 var(--ag-border);
 }
 
 .ag-fullscreen .ag-threads-header {
   display: none;
 }
 
+/* 레일 면 위에 한 단 올린 버튼. 아이콘은 그룹 아이콘 열에, 글자는
+   채팅 제목·그룹 이름과 같은 30px 시작선에 둔다(테두리 1px 포함). */
 .ag-fullscreen .ag-threads-new {
-  min-height: 36px;
-  /* 채팅 제목(30px)·그룹 이름과 같은 글자 시작선. */
-  padding: 0 10px 0 30px;
-  border: 0;
+  min-height: 34px;
+  gap: 6px;
+  padding: 0 10px 0 9px;
+  border: 1px solid var(--ag-border);
   border-radius: var(--ag-r-row);
-  background: transparent;
+  background: var(--ag-raised);
   box-shadow: none;
   font-size: var(--ag-fs-secondary);
   font-weight: var(--ag-fw-medium);
   transition: var(--ag-transition-color);
 }
 
-.ag-fullscreen .ag-threads-new::before {
-  left: 8px;
-  width: 16px;
-  color: var(--ag-text);
-  font-size: 18px;
+.ag-fullscreen .ag-threads-new-icon {
+  position: static;
+  flex: 0 0 auto;
 }
 
 .ag-fullscreen .ag-threads-new:hover {
-  background: var(--ag-hover);
+  background: color-mix(in oklab, var(--ag-raised), var(--ag-text) 5%);
 }
 
 .ag-fullscreen .ag-threads-new:active {
-  background: var(--ag-pressed);
+  background: color-mix(in oklab, var(--ag-raised), var(--ag-text) 9%);
   transition-duration: 0s;
+}
+
+/* 빈 목록은 채팅 제목이 설 자리(30px 시작선)에 조용한 한 줄로 남는다. */
+.ag-fullscreen .ag-threads-empty {
+  padding: 6px 10px 6px 30px;
+  color: var(--ag-text-tertiary);
+  font-size: var(--ag-fs-secondary);
+  text-align: left;
 }
 
 .ag-fullscreen .ag-threads-list {
@@ -7440,8 +7493,10 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
     grid-template-rows: var(--ag-workspace-bar-h, 48px) minmax(0, 1fr);
   }
 
-  .ag-fullscreen .ag-workspace-bar {
-    grid-template-columns: minmax(190px, 1fr) auto minmax(150px, 1fr);
+  /* 레일이 덮개로 뜨는 폭에서는 제목 줄이 늘 토글 바로 뒤에 선다. */
+  .ag-fullscreen .ag-workspace-bar,
+  .ag-fullscreen.ag-rail-collapsed .ag-workspace-bar {
+    grid-template-columns: auto minmax(0, 1fr) auto;
   }
 
   .ag-fullscreen .ag-chat-page,
@@ -7462,17 +7517,12 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 }
 
 @media (max-width: 680px) {
-  .ag-fullscreen .ag-workspace-bar {
-    grid-template-columns: minmax(0, 1fr) auto auto;
-  }
-
-  .ag-workspace-selection-context,
   .ag-workspace-exit-label {
     display: none;
   }
 
-  .ag-workspace-leading {
-    padding-inline: 8px;
+  .ag-fullscreen {
+    --ag-workspace-lead-inset: 8px;
   }
 
   .ag-workspace-exit-btn {

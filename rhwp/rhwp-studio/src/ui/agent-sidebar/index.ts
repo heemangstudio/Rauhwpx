@@ -1573,7 +1573,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     selectionContext.textContent = context?.selectionLabel || '선택 없음';
     workspaceDocumentName.textContent = currentDocumentName;
     workspaceDocumentName.title = context?.documentName || '';
-    workspaceSelectionContext.textContent = context?.selectionLabel || '선택 없음';
     updateEnvironmentFilename(currentDocumentName);
     const nextKey = context?.documentName ?? null;
     const nextDocumentId = context?.documentId ?? null;
@@ -1781,11 +1780,22 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   workspaceSettingsBack.title = '대화로 돌아가기';
   workspaceSettingsBack.appendChild(createIcon('close'));
 
+  // 제목 줄 — 채팅 이름과 문서 이름을 한 줄에 나란히 둔다. 레일이 열려 있으면
+  // 대화 면의 왼쪽 끝에, 접히면 레일 토글 바로 뒤에 선다.
   const workspaceDocumentContext = el('div', 'ag-workspace-document-context');
+  const workspaceChatTitle = el('span', 'ag-workspace-chat-title', '새 채팅');
+  const workspaceTitleSeparator = el('span', 'ag-workspace-title-sep', '/');
+  workspaceTitleSeparator.setAttribute('aria-hidden', 'true');
   const workspaceDocumentName = el('span', 'ag-workspace-document-name', '문서 없음');
-  const workspaceSelectionContext = el('span', 'ag-workspace-selection-context', '선택 없음');
-  workspaceDocumentContext.append(workspaceDocumentName, workspaceSelectionContext);
-  workspaceLeading.append(workspaceSettingsBack, workspaceThreadsBtn, workspaceDocumentContext);
+  workspaceDocumentContext.append(workspaceChatTitle, workspaceTitleSeparator, workspaceDocumentName);
+  workspaceLeading.append(workspaceSettingsBack, workspaceThreadsBtn);
+
+  function updateWorkspaceChatTitle(): void {
+    const title = currentThread.title || '새 채팅';
+    workspaceChatTitle.textContent = title;
+    workspaceChatTitle.title = title;
+  }
+  updateWorkspaceChatTitle();
 
   // 대화 화면에서는 제목을 비운다 — 대화 위에 '대화'라고 적는 것은 정보가 없다.
   const workspaceTitle = el('div', 'ag-workspace-title');
@@ -1883,7 +1893,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   workspaceSettingsBtn.title = '설정';
   workspaceSettingsBtn.appendChild(createIcon('gear'));
   workspaceTrailing.append(workspaceAgentContext, environmentWrap, workspaceSettingsBtn, workspaceExitBtn);
-  workspaceBar.append(workspaceLeading, workspaceTitle, workspaceTrailing);
+  workspaceBar.append(workspaceLeading, workspaceTitle, workspaceDocumentContext, workspaceTrailing);
 
   const applyHancomGitVisibility = (enabled: boolean): void => {
     versionsBtn.hidden = !enabled;
@@ -2654,6 +2664,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   threadsHeader.append(threadsTitle, threadsClose);
   const threadsNew = el('button', 'ag-threads-new', '새 채팅');
   threadsNew.type = 'button';
+  threadsNew.prepend(createIcon('insert', 'ag-threads-new-icon'));
   const threadsList = el('ul', 'ag-threads-list');
   // 스크롤하면 hover 카드가 행에서 떨어져 남는다 — 바로 걷어낸다.
   threadsList.addEventListener('scroll', () => hideThreadPopover(), { passive: true });
@@ -4448,12 +4459,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     else delete currentThread.plans;
     if (currentThread.messages.length === 0) {
       removeThread(currentThread.id);
+      updateWorkspaceChatTitle();
       return;
     }
     if (!currentThread.title || currentThread.title === '새 채팅') {
       currentThread.title = fallbackTitle(currentThread.messages);
     }
     upsertThread(currentThread);
+    updateWorkspaceChatTitle();
   }
 
   function recordUserMessage(
@@ -5064,6 +5077,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       if (next && thread.id === currentThread.id) {
         currentThread.title = next.title;
         currentThread.titlePinned = true;
+        updateWorkspaceChatTitle();
       }
       rebuildThreadsList();
     };
@@ -5518,6 +5532,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       threadWorkflows.delete(previousThreadId);
     }
     currentThread = nextThread;
+    updateWorkspaceChatTitle();
     selectTemplate(null);
     bridge.stopChat();
     referenceLibrary.contextChanged();
@@ -5556,6 +5571,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       messages: loaded.messages.map((m) => ({ ...m })),
       titleRequested: Boolean(loaded.titleRequested),
     };
+    updateWorkspaceChatTitle();
     referenceLibrary.contextChanged();
     input.value = '';
     applyThreadMeta(currentThread);
@@ -7065,6 +7081,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
           setThreadTitle(e.threadId, title);
           if (e.threadId === currentThread.id) {
             currentThread.title = title;
+            updateWorkspaceChatTitle();
           }
         } else if (e.threadId === currentThread.id) {
           currentThread.title = fallbackTitle(currentThread.messages);
