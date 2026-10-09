@@ -921,6 +921,8 @@ export function createPiManager({
     await writeModelsJson();
     if (migrated) await persistConfig();
     try {
+      // 허브가 소유한 폴더라 원본을 그대로 비춘다 — 저장소에서 지운 스킬이 남지 않게 먼저 비운다.
+      await fs.rm(skillsDir, { recursive: true, force: true });
       await fs.cp(SKILLS_SOURCE_DIR, skillsDir, { recursive: true, force: true });
     } catch (error) {
       // 스킬 디렉터리는 아직 없을 수 있다 — 없으면 그냥 넘어간다.
