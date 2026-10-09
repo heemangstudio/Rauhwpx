@@ -13,7 +13,8 @@ export type ProjectOpenOutcome =
   | { readonly kind: 'permission-denied' }
   | { readonly kind: 'cancelled' }
   | { readonly kind: 'not-this-file' }
-  | { readonly kind: 'not-found' };
+  | { readonly kind: 'not-found' }
+  | { readonly kind: 'never-saved' };
 
 export interface NativeProbe {
   readonly probeId: string;
@@ -56,6 +57,10 @@ export async function openProjectFile(
   const remembered = await tryRemembered(claim, deps);
   if (remembered) return remembered;
 
+  // 디스크에 있던 적이 없는 문서(저장하지 않은 새 문서 등)는 찾을 위치도, 고른 파일과 맞춰 볼
+  // 내용도 없다. 파일 선택 창을 띄우지 않는다.
+  if (!claim.recentId && !claim.knownDigest && !claim.liveHandle) return { kind: 'never-saved' };
+
   const nearby = await tryNearby(claim, deps);
   if (nearby) return nearby;
 
@@ -93,7 +98,9 @@ async function tryLiveHandle(
     if (handle.identityKind !== 'native-path' && claim.recentId) {
       await deps.forgetRecent?.(claim.recentId);
       deps.toast?.(`"${claim.displayName}" 파일을 찾을 수 없어 목록에서 제거했습니다.`, 3500);
-    } else {
+    } else if (!(error instanceof DOMException && error.name === 'NotFoundError')) {
+      // 닫은 문서·지난 실행의 네이티브 핸들은 NotFoundError 로 온다. 기억해 둔 위치로 다시 여는
+      // 평범한 경로이므로 경고하지 않는다.
       console.warn('[project-file] 라이브 핸들 읽기 실패:', error);
     }
     return null;

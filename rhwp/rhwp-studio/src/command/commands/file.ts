@@ -83,6 +83,26 @@ import {
   PORTABLE_HISTORY_MIME_TYPE,
 } from '@/versioning/portable-bundle';
 
+/**
+ * 문서 열기를 요청하고 다 열릴 때까지 기다린다. 기다리지 않으면 호출부가 "아직 열리지 않음"을
+ * 실패로 보고 되돌린 사이에 열기가 끝나, 엉뚱한 문서 세션에 문서가 들어간다.
+ */
+function openDocumentBytesAndWait(
+  services: CommandServices,
+  payload: Record<string, unknown>,
+): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const requestId = `open-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    const off = services.eventBus.on('open-document-bytes:done', (done) => {
+      const result = done as { requestId?: string; ok?: boolean } | undefined;
+      if (result?.requestId !== requestId) return;
+      off();
+      resolve(result.ok === true);
+    });
+    services.eventBus.emit('open-document-bytes', { ...payload, requestId });
+  });
+}
+
 async function openFileViaPicker(services: CommandServices): Promise<void> {
   let handle: FileSystemFileHandleLike | null | undefined;
   try {
@@ -112,7 +132,7 @@ async function openFileViaPicker(services: CommandServices): Promise<void> {
 
     const { bytes, name } = selected;
     handle = selected.handle;
-    services.eventBus.emit('open-document-bytes', {
+    await openDocumentBytesAndWait(services, {
       bytes,
       fileName: name,
       fileHandle: handle,
@@ -135,7 +155,7 @@ async function importLegacyHistoryFolder(services: CommandServices): Promise<voi
 
     if (handle) {
       const { bytes, name } = await readFileFromHandle(handle);
-      services.eventBus.emit('open-document-bytes', {
+      await openDocumentBytesAndWait(services, {
         bytes,
         fileName: name,
         fileHandle: handle,
@@ -174,7 +194,7 @@ async function importLegacyHistoryFolder(services: CommandServices): Promise<voi
     if (bytes.byteLength !== historyFile.size) {
       throw new Error('읽는 동안 이전 기록 파일이 변경되었습니다.');
     }
-    services.eventBus.emit('open-document-bytes', {
+    await openDocumentBytesAndWait(services, {
       bytes,
       fileName: directory.name,
       skipUnsavedGuard: true,
@@ -300,6 +320,7 @@ function completeHandleSave(
   result: SaveDocumentResult,
   reason: 'save' | 'save-as',
   revision: number,
+  savedDigest: string | null,
 ): void {
   if (sourceFormat === 'hml') markConvertedHmlSaveHandle(result.handle);
   const previousFileHandle = services.wasm.currentFileHandle;
@@ -322,7 +343,19 @@ function completeHandleSave(
       previousFileHandle,
       fileName: result.fileName,
       sourceFormat: savedFormat,
+      // 파일에 실제로 쓴 내용의 digest. 최근 문서·북마크가 지금 파일을 알아보게 한다.
+      savedDigest,
     });
+  }
+}
+
+/** 저장한 바이트의 digest. 계산하지 못해도 저장은 이미 끝났으므로 null 로 넘긴다. */
+async function savedBlobDigest(blob: Blob): Promise<string | null> {
+  try {
+    return documentSourceDigest(new Uint8Array(await blob.arrayBuffer()));
+  } catch (error) {
+    console.warn('[save] 저장한 내용의 digest 를 계산하지 못했습니다:', error);
+    return null;
   }
 }
 
@@ -383,7 +416,7 @@ async function saveAsFormat(services: CommandServices, format: SaveFormat): Prom
     );
     if (result === 'cancelled') return 'cancelled';
     if (result.method !== 'fallback') {
-      completeHandleSave(services, sourceFormat, format, result, 'save-as', revision);
+      completeHandleSave(services, sourceFormat, format, result, 'save-as', revision, await savedBlobDigest(blob));
       return 'saved';
     }
     const downloadName = await promptFallbackName(saveName, format);
@@ -562,7 +595,9 @@ async function runSaveCurrentDocument(services: CommandServices): Promise<SaveCu
     );
     if (result === 'cancelled') return 'cancelled';
     if (result.method !== 'fallback') {
-      completeHandleSave(services, sourceFormat, target.format, result, 'save', revision);
+      completeHandleSave(
+        services, sourceFormat, target.format, result, 'save', revision, await savedBlobDigest(blob),
+      );
       return 'saved';
     }
     const downloadName = await fallbackNameForCurrentSave(services, target);
@@ -625,22 +660,15 @@ function projectFileDeps(
     readHandle: readFileFromHandle,
     digestOf: documentSourceDigest,
     // 문서가 다 열린 뒤에 돌아온다. 호출부가 결과 문서를 바로 다룰 수 있어야 한다.
-    loadBound: (bytes, name, handle, documentId) => new Promise<void>((resolve) => {
-      const requestId = `library-open-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-      const off = services.eventBus.on('open-document-bytes:done', (payload) => {
-        if ((payload as { requestId?: string } | undefined)?.requestId !== requestId) return;
-        off();
-        resolve();
-      });
-      services.eventBus.emit('open-document-bytes', {
+    loadBound: async (bytes, name, handle, documentId) => {
+      await openDocumentBytesAndWait(services, {
         bytes,
         fileName: name,
         fileHandle: handle,
         ...(skipUnsavedGuard ? { skipUnsavedGuard: true } : {}),
         grant: { kind: 'verified', documentId },
-        requestId,
       });
-    }),
+    },
     pickForProject: async (displayName) => {
       const desktop = await pickDesktopNativeProjectFile({
         suggestedName: displayName,

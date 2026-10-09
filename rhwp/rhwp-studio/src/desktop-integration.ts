@@ -624,6 +624,10 @@ function validNativeDescriptor(value: unknown): value is NativeFileHandleDescrip
 
 function checkedNativeFileReadResult(value: unknown): NativeFileReadResult {
   if (!value || typeof value !== 'object') throw new Error('Native file read returned an invalid result');
+  // 이미 놓은 핸들(닫은 문서·지난 실행의 최근 문서). 호출부는 기억해 둔 위치로 다시 연다.
+  if ((value as { stale?: unknown }).stale === true) {
+    throw new DOMException('파일을 더 이상 이 핸들로 읽을 수 없습니다.', 'NotFoundError');
+  }
   const result = value as Partial<NativeFileReadResult>;
   if (
     typeof result.name !== 'string'

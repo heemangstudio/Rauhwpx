@@ -131,5 +131,8 @@ export async function moveToLibraryDocument(
   const opened = await deps.openProjectFile(claim);
   if (opened.kind === 'opened') return 'moved';
   if (opened.kind === 'cancelled') return 'cancelled';
+  if (opened.kind === 'never-saved') {
+    deps.toast(`"${claim.displayName}" 문서는 저장된 적이 없어 다시 열 수 없습니다.`);
+  }
   return 'failed';
 }

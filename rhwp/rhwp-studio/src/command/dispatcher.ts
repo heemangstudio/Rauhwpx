@@ -34,10 +34,16 @@ const READ_ONLY_ALLOWED_IDS = new Set([
   'file:print',
 ]);
 
-/** 에이전트가 문서를 잡은 동안에는 새 선택도 만들 수 없다. */
+/**
+ * 에이전트가 문서를 잡은 동안에는 새 선택도 만들 수 없다. 다른 문서를 열거나 만드는 일은
+ * 지금 문서를 건드리지 않는다 — 에이전트가 일하는 문서는 뒤에 남고 새 문서는 따로 열린다.
+ */
 const AGENT_LOCK_ALLOWED_IDS = new Set([
   'edit:copy',
   'file:print',
+  'file:new-doc',
+  'file:open',
+  'file:open-recent',
 ]);
 
 function isBlockedByDocumentEditLock(commandId: string, ctx: EditorContext): boolean {
