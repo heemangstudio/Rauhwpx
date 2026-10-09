@@ -599,9 +599,7 @@ mod tests {
     #[test]
     fn roundtrip_one_blank_sample_passes() {
         let sample = Path::new("samples/hwpx/blank_hwpx.hwpx");
-        if !sample.exists() {
-            return; // 샘플 미존재 환경에서는 건너뜀
-        }
+        assert!(sample.exists(), "테스트 입력 파일 없음: {:?}", sample);
         let tmp = std::env::temp_dir().join("rhwp_task1315_test_blank.rt.hwpx");
         let row = roundtrip_one(sample, "blank_hwpx.hwpx", &tmp, false);
         assert_eq!(row.status(), "PASS", "error={}", row.error);

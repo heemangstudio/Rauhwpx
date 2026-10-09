@@ -736,9 +736,7 @@ mod tests {
     fn bindata_fingerprint_preserved_on_roundtrip() {
         // 이미지 포함 소형 샘플이 있으면 C2 보존을 확인한다.
         let sample = Path::new("samples/basic/interview.hwp");
-        if !sample.exists() {
-            return;
-        }
+        assert!(sample.exists(), "테스트 입력 파일 없음: {:?}", sample);
         let bytes = fs::read(sample).unwrap();
         let fp = bindata_fingerprint(&bytes);
         assert!(fp.is_some(), "CFB BinData 지문 추출 실패");
@@ -749,9 +747,7 @@ mod tests {
     fn collect_hwp5_files_excludes_hwpx() {
         // samples 폴더가 있으면 .hwpx 가 섞이지 않는지 확인.
         let root = Path::new("samples");
-        if !root.exists() {
-            return;
-        }
+        assert!(root.exists(), "테스트 입력 파일 없음: {:?}", root);
         let files = collect_hwp5_files(root).unwrap();
         assert!(
             files

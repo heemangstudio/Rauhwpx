@@ -19,7 +19,7 @@
   fixture 의 정답지가 아니다. fixture 는 rhwp 시맨틱(None 표 행 미분할 + 선언높이
   신뢰) 회귀 핀으로만 사용하고, 한글 정합의 권위 검증은 아래 실문서로 수행한다.
 - 검증: `rhwp dump-pages samples/task2097/none_table_declared_fits.hwpx` /
-  `cargo test --test issue_2097_none_table_declared_fits`
+  `cargo test --test it page_count_pins`
 
 ## rowbreak_midpage_declared_fits.hwpx (합성 — 중간-쪽 RowBreak 선언-fit 핀)
 - 출처: `samples/task2105/rowbreak_table_declared_fits.hwpx` 에 HEAD 문단을 추가해
@@ -35,7 +35,7 @@
   재조판 PDF 는 정답지가 아니며, rhwp 시맨틱 회귀 핀으로만 사용한다. 한글 정합의
   권위 검증은 아래 실문서(3080901)로 수행한다.
 - 검증: `rhwp dump-pages samples/task2097/rowbreak_midpage_declared_fits.hwpx` /
-  `cargo test --test issue_2097_rowbreak_midpage_declared_fits`
+  `cargo test --test it page_count_pins`
 
 ## 1730000_selection_report.hwp (실문서 — 한글 정합 권위 검증)
 - 출처: hwpdocs 코퍼스 `prism_downloads/새만금개발청/1730000-201800001_D0150013-1-000_
@@ -47,7 +47,7 @@
   수정 후(선언높이 신뢰) **1쪽 = 한글 1쪽**.
 - 기준 PDF: `pdf/task2097/1730000_selection_report-2022.pdf`
   (한글 2022 COM, Print 액션 1-up 강제 출력 1쪽 = 편집기 PageCount 1 정합).
-- 검증: `cargo test --test issue_2097_1730000_real_doc_pin`
+- 검증: `cargo test --test it page_count_pins::issue_2097_selection_report_1730000`
 
 ## 3248363_upmu_bunjang.hwpx / 21217935_simsa_jipyo.hwp / 18095317_eogu_geumji.hwp (실문서 — 블록 밴드 필 핀)
 
@@ -61,7 +61,7 @@
   필) 후 3248363 5→**4쪽**, 21217935 11→**8쪽**, 18095317 22→**21쪽** (모두 한글
   2022 COM PageCount 실측 일치, 3248363 은 쪽 2/3 경계 내용의 한글 PDF 글자 단위
   정합 확인).
-- 검증: `cargo test --test issue_2097_band_fill`
+- 검증: `cargo test --test it page_count_pins`
 
 ## 75544_pii_bunseok.hwpx (실문서 — protected 블록 밴드 필 핀)
 
@@ -75,7 +75,7 @@
   (67쪽). 한글 PDF/COM 실측은 쪽 2 하단에 rows 8..9 수용(밴드 필) 후 표를 쪽 3
   에서 종료, **66쪽**. 수정(기각 경계 전체로 오프셋 컷 재시도 확장) 후 67→**66쪽**,
   PI↔페이지 630문단 전수 한글 COM 일치 (커밋 사본 기준 COM PageCount 66 재확증).
-- 검증: `cargo test --test issue_2097_band_fill`
+- 검증: `cargo test --test it page_count_pins`
 
 ## 3023771_wichokjang.hwpx (실문서 — 쪽나눔=None 표 fresh-쪽 초과 통째 배치 핀)
 
@@ -90,7 +90,7 @@
   본문 하단 아래 물리 슬랙(용지 경계)을 넘는 미관측 극단은 기존 분할 폴백 유지.
   수정 후 6→**2쪽** (커밋 사본 기준 한글 2022 COM PageCount 2 재확증), rhwp
   렌더 하단 좌표 1068~1079px 로 한글과 정합.
-- 검증: `cargo test --test issue_2097_band_fill`
+- 검증: `cargo test --test it page_count_pins`
 
 ## 17809123_jawonbongsa.hwpx (실문서 — 나란히 TopAndBottom float union 예약 핀)
 
@@ -107,7 +107,7 @@
   union span 으로 예약. 겹치는 2번째+ float 은 증분만 가산(세로 스택=비겹침
   float 은 종전대로 합산, 단일 float 은 union=extra 라 동작 불변). 수정 후 2→**1쪽**
   (커밋 사본 COM PageCount 1 재확증), PI↔페이지 전수 일치.
-- 검증: `cargo test --test issue_2097_band_fill`
+- 검증: `cargo test --test it page_count_pins`
 
 ## 3080901_pii_ledger.hwp (실문서 — 중간-쪽 RowBreak 한글 정합 권위 검증)
 - 출처: hwpdocs 코퍼스 `admrul_downloads/지식재산처/3080901_[별지 2] 개인정보의
@@ -120,4 +120,4 @@
   신뢰) **1쪽 = 한글 1쪽**.
 - 기준 PDF: `pdf/task2097/3080901_pii_ledger-2022.pdf`
   (한글 2022 COM, Print 액션 1-up 강제 출력 1쪽 = 편집기 PageCount 1 정합).
-- 검증: `cargo test --test issue_2097_3080901_real_doc_pin`
+- 검증: `cargo test --test it page_count_pins::issue_2097_pii_ledger_3080901`

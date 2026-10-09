@@ -44,6 +44,14 @@ jobs:
         if: ${{ !cancelled() }}
         working-directory: rhwp
         run: cargo test --locked --workspace --doc
+      - name: Test corpus roundtrip sweeps
+        if: ${{ !cancelled() }}
+        working-directory: rhwp
+        run: cargo test --locked --profile release-test --test sweeps
+      - name: Test Skia PNG and PDF rendering
+        if: ${{ !cancelled() }}
+        working-directory: rhwp
+        run: cargo test --locked --features native-skia --test it
 
   cargo-audit:
     name: Cargo audit
