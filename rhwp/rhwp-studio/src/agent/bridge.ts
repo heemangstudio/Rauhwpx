@@ -95,11 +95,8 @@ import type {
   StructuredPlan,
   PendingEditsChangeEvent,
   UsageModelBreakdown,
-  UsageSource,
   UsageSummary,
   UsageWindow,
-  CliproxyAccount,
-  CliproxyStatus,
   WritingStyleLanguage,
   WritingStyleCatalog,
   WritingStyleCatalogModel,
@@ -304,10 +301,6 @@ export interface AgentBridge {
   consumeCodexReset(idempotencyKey: string, accountKey: string): Promise<CodexResetResult>;
   /** 요금제를 바꾸고 갱신된 요약을 돌려받는다. */
   setUsagePlan(agent: AgentName, plan: string): Promise<UsageSummary | null>;
-  /** CLIProxyAPI 관리 API 에 연결해 공식 요금제 사용량을 받는다. */
-  connectCliproxy(url: string, key: string): Promise<UsageSummary | null>;
-  /** 저장된 CLIProxyAPI 연결을 끊는다. */
-  disconnectCliproxy(): Promise<UsageSummary | null>;
   /** pi 하네스(설치 · 키 · 모델) 설정 상태. */
   requestPiStatus(): Promise<PiStatus | null>;
   /** pi coding agent 설치. 진행 상황은 pi-setup-progress 이벤트로 온다. */
@@ -997,51 +990,6 @@ function readUsageWindow(value: unknown): UsageWindow {
   };
 }
 
-function readUsageSource(value: unknown): UsageSource {
-  return value === 'cliproxy' ? 'cliproxy' : 'estimate';
-}
-
-function readCliproxyWindow(value: unknown): { percent: number | null; resetsAt: number | null } {
-  const src = (value ?? {}) as Record<string, unknown>;
-  return {
-    percent: nullableNum(src['percent']),
-    resetsAt: nullableNum(src['resetsAt']),
-  };
-}
-
-function readCliproxyAccounts(value: unknown): CliproxyAccount[] {
-  if (!Array.isArray(value)) return [];
-  const out: CliproxyAccount[] = [];
-  for (const raw of value) {
-    if (!raw || typeof raw !== 'object') continue;
-    const src = raw as Record<string, unknown>;
-    const agent = src['agent'] === 'codex' ? 'codex' : src['agent'] === 'claude' ? 'claude' : null;
-    if (!agent) continue;
-    out.push({
-      agent,
-      name: typeof src['name'] === 'string' && src['name'] ? src['name'] : 'unknown',
-      email: typeof src['email'] === 'string' ? src['email'] : null,
-      planType: typeof src['planType'] === 'string' ? src['planType'] : null,
-      session: readCliproxyWindow(src['session']),
-      week: readCliproxyWindow(src['week']),
-      error: typeof src['error'] === 'string' ? src['error'] : null,
-    });
-  }
-  return out;
-}
-
-function readCliproxyStatus(value: unknown): CliproxyStatus {
-  const src = (value ?? {}) as Record<string, unknown>;
-  return {
-    configured: src['configured'] === true,
-    connected: src['connected'] === true,
-    url: typeof src['url'] === 'string' && src['url'] ? src['url'] : null,
-    error: typeof src['error'] === 'string' ? src['error'] : null,
-    checkedAt: nullableNum(src['checkedAt']),
-    accounts: readCliproxyAccounts(src['accounts']),
-  };
-}
-
 const MAX_USAGE_MODEL_ENTRIES = 512;
 const MAX_USAGE_MODEL_NAME_CHARS = 256;
 
@@ -1083,7 +1031,6 @@ function readProviderUsage(value: unknown): ProviderUsage {
       week: nullableNum(limit['week']),
     },
     updatedAt: nullableNum(src['updatedAt']),
-    source: readUsageSource(src['source']),
   };
 }
 
@@ -1116,7 +1063,6 @@ function readUsageSummary(value: unknown): UsageSummary | null {
       codex: readProviderUsage(providers['codex']),
       pi: readProviderUsage(providers['pi']),
     },
-    cliproxy: readCliproxyStatus(src['cliproxy']),
     ...(src['limits'] && typeof src['limits'] === 'object' ? {
       limits: {
         claude: readProviderQuota((src['limits'] as Record<string, unknown>)['claude']),
@@ -4071,14 +4017,6 @@ export class AgentBridgeImpl implements AgentBridge {
 
   setUsagePlan(agent: AgentName, plan: string): Promise<UsageSummary | null> {
     return this.request<UsageSummary>({ type: 'usage-plan-set', agent, plan }, 'usage-plan');
-  }
-
-  connectCliproxy(url: string, key: string): Promise<UsageSummary | null> {
-    return this.request<UsageSummary>({ type: 'cliproxy-connect', url, key }, 'cliproxy-connect', 20_000);
-  }
-
-  disconnectCliproxy(): Promise<UsageSummary | null> {
-    return this.request<UsageSummary>({ type: 'cliproxy-disconnect' }, 'cliproxy-disconnect');
   }
 
   requestPiStatus(): Promise<PiStatus | null> {

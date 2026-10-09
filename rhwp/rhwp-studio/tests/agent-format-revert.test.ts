@@ -7,7 +7,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { requireWasmPackage } from './browser-support.ts';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -196,10 +196,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const pkgWasm = join(here, '..', '..', 'pkg', 'rhwp_bg.wasm');
 
 test('실제 WASM: 앞 세 글자만 굵은 문단의 bold:false 거절과 승인 후 undo 가 원래 모양이다', (t) => {
-  if (!existsSync(pkgWasm)) {
-    t.skip('rhwp/pkg 의 WASM 빌드가 필요하다 (wasm-pack build --target web)');
-    return;
-  }
+  requireWasmPackage(dirname(pkgWasm));
   const result = spawnSync(process.execPath, [
     '--no-warnings',
     '--import', pathToFileURL(join(here, 'support', 'ts-transform-hooks.mjs')).href,

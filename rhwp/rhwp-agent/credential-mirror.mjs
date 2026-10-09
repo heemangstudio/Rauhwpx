@@ -628,8 +628,3 @@ export function prepareCredentialMirrorSync(source, target, {
   return handle;
 }
 
-export function flushCredentialMirrorsSync(handles, options = {}) {
-  return (Array.isArray(handles) ? handles : [handles])
-    .filter(Boolean)
-    .map((handle) => flushCredentialMirrorSync(handle, options));
-}

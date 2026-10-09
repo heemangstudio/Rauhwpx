@@ -1,9 +1,8 @@
-// pi 확장의 순수 로직 계약 테스트 — 팩토리(default export)는 WS/HTTP 를 쓰므로 건드리지 않는다.
+// pi 확장의 순수 로직 계약 테스트 — 팩토리(default export)의 허브 호출 경로는 pi-extension-hub-client.test.mjs 가 본다.
 // node 22.18+ / 26 은 .ts 를 그대로 임포트할 수 있고(타입 스트리핑), 이 모듈의 값 임포트는
 // node 내장 모듈뿐이라 의존성 설치 없이 로드된다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { link, mkdir, mkdtemp, realpath, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import os from 'node:os';
@@ -188,11 +187,6 @@ test('tool-call 프레임은 v5 계약을 쓴다', () => {
     RHWP_CAPABILITY_EPOCH: '4',
   }));
   assert.equal(withEpoch.capabilityEpoch, '4');
-});
-
-test('Pi user questions have no ordinary 180 second timeout', () => {
-  const source = readFileSync(new URL('../pi/extension/rhwp.ts', import.meta.url), 'utf8');
-  assert.match(source, /tool === 'ask_user_question'\s*\? null\s*:\s*setTimeout/);
 });
 
 test('허브 프레임 해석 — 성공/실패/프로토콜 오류/쓰레기', () => {
@@ -417,11 +411,6 @@ test('safe insert_image는 직접 및 symlink/junction workspace 탈출을 readF
     );
   }
   assert.equal(reads, 0);
-});
-
-test('insert_image 실행 경로는 확장 권한 정책을 생략하지 않는다', () => {
-  const source = readFileSync(new URL('../pi/extension/rhwp.ts', import.meta.url), 'utf8');
-  assert.match(source, /prepareInsertImageArgs\(args, readFile, config\)/);
 });
 
 // ─── 단계/권한 가드 ───

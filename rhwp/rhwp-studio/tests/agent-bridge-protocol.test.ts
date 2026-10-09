@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { registerHooks } from 'node:module';
 
 // bridge.ts 는 오버레이 css 를 함께 들여온다 — node 테스트에서는 빈 모듈로 대체한다.
@@ -647,17 +646,18 @@ test('executor: wasm throw("문서가 로드되지 않았습니다") → DOC_NOT
   await expectToolError(ex.execute('get_text_range', { sectionIdx: 0, paraIdx: 0 }, 'claude'), 'DOC_NOT_LOADED');
 });
 
-// ─── agent-setup-progress 프레임 (소스 계약) ────────────────
+// ─── agent-setup-progress 프레임 (실제 브리지) ──────────────
 
-test('브리지: agent-setup-progress 의 userCode 를 그대로 사이드바로 넘긴다', () => {
-  const bridgeSource = readFileSync(new URL('../src/agent/bridge.ts', import.meta.url), 'utf8');
-  const typesSource = readFileSync(new URL('../src/agent/types.ts', import.meta.url), 'utf8');
-  assert.match(
-    bridgeSource,
-    /\.\.\.\(typeof msg\.userCode === 'string' \? \{ userCode: msg\.userCode \} : \{\}\)/,
-  );
+test('브리지: agent-setup-progress 의 userCode 를 그대로 사이드바로 넘긴다', async () => {
+  const { AgentBridgeImpl } = await import('../src/agent/bridge.ts');
+  const events: any[] = [];
+  const bridge = Object.create(AgentBridgeImpl.prototype) as any;
+  bridge.listeners = new Set([(e: unknown) => { events.push(e); }]);
+  bridge.handleMessage({ type: 'agent-setup-progress', agent: 'codex', state: 'authorizing', userCode: 'ABCD-1234' });
+  bridge.handleMessage({ type: 'agent-setup-progress', agent: 'codex', state: 'authorizing', userCode: 42 });
+  assert.equal(events[0].userCode, 'ABCD-1234');
   // 문자열이 아닌 값은 아예 실리지 않는다 — 필드는 선택 사항으로 남는다.
-  assert.match(typesSource, /type: 'agent-setup-progress';[\s\S]*userCode\?: string;/);
+  assert.equal('userCode' in events[1], false);
 });
 
 // ─── chat-start 맥락 · 압축 프레임 ───────────────────────

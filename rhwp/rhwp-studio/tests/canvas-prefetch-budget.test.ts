@@ -1,16 +1,16 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { stripTypeScriptTypes } from 'node:module';
-import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+import test, { type TestContext } from 'node:test';
+
+import { createTestModuleServer } from './support/module-server.ts';
 
 // 실제 예약/취소 메서드를 가짜 clock으로 실행한다. WASM/GPU 속도와 무관한 작업 예산 계약.
-const source = readFileSync(new URL('../src/view/canvas-view.ts', import.meta.url), 'utf8');
-const start = source.indexOf('  private schedulePrefetchPages(');
-const end = source.indexOf('  /** 렌더된 페이지 하나의', start);
-assert.ok(start >= 0 && end > start);
-const methods = stripTypeScriptTypes(`class Prefetch {\n${source.slice(start, end)}\n}`);
+const studioRoot = fileURLToPath(new URL('../', import.meta.url));
+const vite = await createTestModuleServer(studioRoot);
+const { CanvasView } = await vite.ssrLoadModule('/src/view/canvas-view.ts') as typeof import('../src/view/canvas-view.ts');
+test.after(() => vite.close());
 
-function fixture() {
+function fixture(t: TestContext) {
   const idle = new Map<number, () => void>();
   const timers = new Map<number, () => void>();
   const renders: number[] = [];
@@ -22,10 +22,17 @@ function fixture() {
     cancelIdleCallback(id: number) { idle.delete(id); },
     setTimeout(callback: () => void) { timers.set(++id, callback); return id; },
   };
-  const Prefetch = new Function('window', 'performance', 'clearTimeout', `${methods}\nreturn Prefetch;`)(
-    window, { now: () => now }, (id: number) => timers.delete(id),
-  );
-  const view = Object.assign(new Prefetch(), {
+  const g = globalThis as Record<string, unknown>;
+  const saved = { window: g.window, performance: g.performance, clearTimeout: g.clearTimeout };
+  g.window = window;
+  Object.defineProperty(globalThis, 'performance', { value: { now: () => now }, configurable: true, writable: true });
+  g.clearTimeout = (id: number) => timers.delete(id);
+  t.after(() => {
+    g.window = saved.window;
+    Object.defineProperty(globalThis, 'performance', { value: saved.performance, configurable: true, writable: true });
+    g.clearTimeout = saved.clearTimeout;
+  });
+  const view = Object.assign(Object.create(CanvasView.prototype), {
     pendingPrefetchPages: new Set<number>(), deferredPrefetchTask: null,
     disposed: false, lastMutationTime: -Infinity,
     canvasPool: { has: (page: number) => active.has(page) },
@@ -38,8 +45,8 @@ function fixture() {
     idleFrame: () => run(idle), timer: () => run(timers) };
 }
 
-test('offscreen work renders at most one page per idle callback', () => {
-  const f = fixture();
+test('offscreen work renders at most one page per idle callback', (t) => {
+  const f = fixture(t);
   f.view.schedulePrefetchPages([1, 2, 3, 4]);
   f.idleFrame();
   assert.deepEqual(f.renders, [1]);
@@ -48,8 +55,8 @@ test('offscreen work renders at most one page per idle callback', () => {
   assert.deepEqual(f.renders, [1, 2]);
 });
 
-test('a continuous edit burst defers prefetch until editing is quiet', () => {
-  const f = fixture();
+test('a continuous edit burst defers prefetch until editing is quiet', (t) => {
+  const f = fixture(t);
   f.view.lastMutationTime = 0;
   f.view.schedulePrefetchPages([1, 2]);
   f.idleFrame();
@@ -65,8 +72,8 @@ test('a continuous edit burst defers prefetch until editing is quiet', () => {
   assert.deepEqual(f.renders, [1, 2]);
 });
 
-test('scroll replacement drops obsolete queued pages and cancellation stops resumed work', () => {
-  const f = fixture();
+test('scroll replacement drops obsolete queued pages and cancellation stops resumed work', (t) => {
+  const f = fixture(t);
   f.view.schedulePrefetchPages([1, 2, 3]);
   f.view.schedulePrefetchPages([8, 9]);
   f.idleFrame();

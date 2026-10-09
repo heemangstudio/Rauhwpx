@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 
 import {
   HWP_DOCUMENT_ACCEPT,
@@ -497,15 +496,6 @@ test('save picker가 출력 포맷과 다른 확장자를 반환하면 쓰기 �
 
   assert.equal(invalidHandle.writable.writes.length, 0);
   assert.equal(invalidHandle.writable.closed, false);
-});
-
-test('save ownership/write errors do not silently become downloads', () => {
-  const commands = readFileSync(new URL('../src/command/commands/file.ts', import.meta.url), 'utf8');
-  assert.doesNotMatch(commands, /File System Access API 실패, 폴백/);
-  assert.match(
-    commands,
-    /if \(isUserCancelError\(error\)\) return 'cancelled';\s+throw error;/,
-  );
 });
 
 test('write failure aborts the browser swap stream', async () => {

@@ -513,12 +513,6 @@ export interface AgentSetupAuthStart {
   expiresAt?: string | null;
 }
 
-/** 요금제 — 한도 계산의 기준이 되므로 프로바이더별로 값이 다르다. */
-export type ClaudeUsagePlan = 'pro' | 'max5x' | 'max20x' | 'api';
-export type CodexUsagePlan = 'plus' | 'pro' | 'api';
-export type ApiOnlyUsagePlan = 'api';
-export type UsagePlan = ClaudeUsagePlan | CodexUsagePlan | ApiOnlyUsagePlan;
-
 /** 한 창(세션 5시간 / 오늘 / 주간)의 누적치. percent 는 한도가 없으면 null. */
 export interface UsageWindow {
   turns: number;
@@ -529,35 +523,13 @@ export interface UsageWindow {
   weightedTokens: number;
   /** 0–100 (초과 가능, 소수 첫째 자리). 한도가 없으면 null. */
   percent: number | null;
-  /** epoch ms — CLIProxyAPI 가 알려 준 창 리셋 시각. */
+  /** epoch ms — 창 리셋 시각. */
   resetsAt?: number | null;
 }
 
-/** 5시간·주간 막대의 출처. cliproxy 는 공식 요금제 %, estimate 는 로컬 추정치. */
-export type UsageSource = 'estimate' | 'cliproxy';
-
-export interface CliproxyWindow {
+export interface QuotaWindow {
   percent: number | null;
   resetsAt: number | null;
-}
-
-export interface CliproxyAccount {
-  agent: AgentName;
-  name: string;
-  email: string | null;
-  planType: string | null;
-  session: CliproxyWindow;
-  week: CliproxyWindow;
-  error: string | null;
-}
-
-export interface CliproxyStatus {
-  configured: boolean;
-  connected: boolean;
-  url: string | null;
-  error: string | null;
-  checkedAt: number | null;
-  accounts: CliproxyAccount[];
 }
 
 export interface UsageModelBreakdown {
@@ -577,13 +549,12 @@ export interface ProviderUsage {
   limit: { session5h: number | null; week: number | null };
   /** epoch ms — 마지막으로 사용량이 기록된 시각. */
   updatedAt: number | null;
-  source?: UsageSource;
 }
 
 export interface ProviderQuota {
   status: 'ok' | 'unavailable' | 'error';
-  session: CliproxyWindow;
-  week: CliproxyWindow;
+  session: QuotaWindow;
+  week: QuotaWindow;
   updatedAt: number | null;
   error: string | null;
   accountKey: string | null;
@@ -611,7 +582,6 @@ export interface RemoteBalance {
 export interface UsageSummary {
   plans: Record<AgentName, string>;
   providers: Record<AgentName, ProviderUsage>;
-  cliproxy?: CliproxyStatus;
   limits?: { claude: ProviderQuota; codex: ProviderQuota };
   balances?: Partial<Record<'openrouter' | 'grok' | 'opencode', RemoteBalance>>;
   /** pi(OpenRouter) 가 설정돼 있을 때만 온다. */
@@ -722,32 +692,6 @@ export interface CheckpointTitleResult {
   title: string;
   provider: CheckpointTitleProvider;
   model: string;
-}
-
-export function isClaudeUsagePlan(value: unknown): value is ClaudeUsagePlan {
-  return value === 'pro' || value === 'max5x' || value === 'max20x' || value === 'api';
-}
-
-export function isCodexUsagePlan(value: unknown): value is CodexUsagePlan {
-  return value === 'plus' || value === 'pro' || value === 'api';
-}
-
-export function isApiOnlyUsagePlan(value: unknown): value is ApiOnlyUsagePlan {
-  return value === 'api';
-}
-
-/** 프로바이더마다 허용 요금제가 다르다 — 표로 갈라 새 프로바이더가 조용히 섞이지 않게 한다. */
-const USAGE_PLAN_GUARDS: Record<AgentName, (value: unknown) => boolean> = {
-  claude: isClaudeUsagePlan,
-  codex: isCodexUsagePlan,
-  pi: isApiOnlyUsagePlan,
-  grok: isApiOnlyUsagePlan,
-  cursor: isApiOnlyUsagePlan,
-  opencode: isApiOnlyUsagePlan,
-};
-
-export function isUsagePlanForAgent(agent: AgentName, value: unknown): boolean {
-  return USAGE_PLAN_GUARDS[agent](value);
 }
 
 export type ProductSkillIcon =

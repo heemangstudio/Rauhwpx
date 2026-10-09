@@ -24,6 +24,7 @@ import { toolDefinitionChars } from '../tool-telemetry.mjs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { EDIT_OBJECT_ARG_KEYS } from '../../rhwp-studio/src/agent/object-edit-args.ts';
 
 const byName = new Map(TOOL_DEFINITIONS.map((d) => [d.name, d]));
 
@@ -53,9 +54,6 @@ test('document-write annotations stay non-destructive so safe mode can edit', ()
   assert.deepEqual(toolAnnotations('artifact-write'), {
     readOnlyHint: false, destructiveHint: false, openWorldHint: false,
   });
-  const mcpStdio = readFileSync(fileURLToPath(new URL('../mcp-stdio.mjs', import.meta.url)), 'utf8');
-  assert.match(mcpStdio, /annotations: toolAnnotations\(def\.category\)/);
-  assert.doesNotMatch(mcpStdio, /destructiveHint:\s*true/);
 });
 
 test('nested table paths are accepted on staged cell text tools', () => {
@@ -700,11 +698,6 @@ test('cell 을 받는 도구와 모든 문서 쓰기 도구는 공유 규칙을 
   }
 });
 
-test('MCP 서버 instructions 가 공유 규칙을 싣는다', () => {
-  const mcpStdio = readFileSync(fileURLToPath(new URL('../mcp-stdio.mjs', import.meta.url)), 'utf8');
-  assert.match(mcpStdio, /new McpServer\(\{ name: 'rhwp', version: '[^']+' \}, \{ instructions: RHWP_TOOL_RULES \}\)/);
-});
-
 test('수식 문법 안내는 preview_equation 에만 있다', () => {
   assert.match(byName.get('preview_equation').description, /NOT LaTeX/);
   assert.doesNotMatch(byName.get('insert_equation').description, /NOT LaTeX/);
@@ -1043,9 +1036,7 @@ test('도구 스키마는 $ref 없이 펼쳐진다 (Codex/Pi 가 $ref 를 못 �
 
 test('edit_object 편집 인자는 스튜디오 계획 함수가 읽는 키와 같다', () => {
   // 허브 스키마에만 있는 키는 스튜디오가 조용히 무시한다 — 두 목록을 함께 고친다.
-  const src = readFileSync(fileURLToPath(new URL('../../rhwp-studio/src/agent/object-edit-args.ts', import.meta.url)), 'utf8');
-  const list = /export const EDIT_OBJECT_ARG_KEYS = \[([^\]]*)\]/.exec(src)?.[1] ?? '';
-  const studio = [...list.matchAll(/'([A-Za-z]+)'/g)].map((m) => m[1]).sort();
+  const studio = [...EDIT_OBJECT_ARG_KEYS].sort();
   const address = ['expectedRevision', 'render', 'sectionIdx', 'paraIdx', 'controlIdx', 'cell', 'cellPath', 'delete'];
   const hub = Object.keys(byName.get('edit_object').shape).filter((key) => !address.includes(key)).sort();
   assert.deepEqual(hub, studio);

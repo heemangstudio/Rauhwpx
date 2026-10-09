@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 
 import {
   fileNameForFormat,
@@ -149,13 +148,6 @@ test('이름 없는 HWPX·모름은 HWPX, 이름 없는 열린 HWP는 HWP를 유
     forceSaveAs: false,
     suggestedName: 'opened-from-url.hwp',
   });
-});
-
-test('Save As 기본과 메뉴 라벨은 HWPX를 기본으로, HWP 5.0을 명시 선택으로 둔다', () => {
-  const src = readFileSync(new URL('../src/command/commands/file.ts', import.meta.url), 'utf8');
-  assert.match(src, /async function chooseSaveAsFormat[\s\S]*return resolveSaveTarget\(/);
-  assert.match(src, /label: 'HWPX로 저장'/);
-  assert.match(src, /label: 'HWP 5.0으로 저장'/);
 });
 
 test('inferExportFormat은 명시 선택·확장자·새 문서 기본을 이 순서로 적용한다', () => {

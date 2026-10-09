@@ -5,7 +5,7 @@
  * Pi 문서 안내) 대신 쓴다. 그 뒤에는 Pi 가 스킬 목록과 작업 디렉터리 절만 붙인다.
  *
  * Claude/Codex 브리프(agents/backend.mjs)와 따로 둔다. Pi 는 약한 모델로도 돌아가므로
- * 문서 편집 흐름을 예시와 함께 구체적으로 적는다 — 실측(e2e/agent-live-suite.mjs)에서
+ * 문서 편집 흐름을 예시와 함께 구체적으로 적는다 — 실측(rhwp/rhwp-studio/bench/agent-live-suite.mjs)에서
  * 모델이 반복해 틀린 계약(빈 replace, occurrence 번호, 셀 주소, paras 범위, 목록)을
  * 예시 항목으로 보여 준다. 편집하기 쉽게 절마다 텍스트 블록 하나를 둔다.
  *

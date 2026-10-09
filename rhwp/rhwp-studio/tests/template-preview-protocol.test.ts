@@ -1,50 +1,72 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import test from 'node:test';
+import test, { after, before } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { CommandDispatcher } from '../src/command/dispatcher.ts';
 import { EventBus } from '../src/core/event-bus.ts';
 import { AgentToolExecutor } from '../src/agent/tool-executor.ts';
+import { createTestModuleServer } from './support/module-server.ts';
 
-const bridge = readFileSync(new URL('../src/agent/bridge.ts', import.meta.url), 'utf8');
-const sidebar = readFileSync(new URL('../src/ui/agent-sidebar/index.ts', import.meta.url), 'utf8');
-const desktopIntegration = readFileSync(new URL('../src/desktop-integration.ts', import.meta.url), 'utf8');
-const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
-const input = readFileSync(new URL('../src/engine/input-handler.ts', import.meta.url), 'utf8');
-const textInput = readFileSync(new URL('../src/engine/input-handler-text.ts', import.meta.url), 'utf8');
-const keyboardInput = readFileSync(new URL('../src/engine/input-handler-keyboard.ts', import.meta.url), 'utf8');
-const dispatcher = readFileSync(new URL('../src/command/dispatcher.ts', import.meta.url), 'utf8');
-const toolExecutor = readFileSync(new URL('../src/agent/tool-executor.ts', import.meta.url), 'utf8');
-const css = readFileSync(new URL('../src/ui/agent-sidebar/agent-sidebar.css', import.meta.url), 'utf8');
+const rootDir = fileURLToPath(new URL('..', import.meta.url));
+let vite: Awaited<ReturnType<typeof createTestModuleServer>>;
+let inputHandlerProto: any;
 
-test('template artifact opens read-only only after its main-chat card is clicked', () => {
-  assert.doesNotMatch(bridge, /template-preview-ready/);
-  assert.doesNotMatch(bridge, /template-preview-opened/);
-  assert.match(desktopIntegration, /templatePreview'\) === '1' \? \{ readOnly: true \}/);
-  assert.match(sidebar, /const card = el\('span', 'ag-md-artifact-card'\)/);
-  assert.match(sidebar, /openPublishedDocumentInNewWindow\(artifact, undefined, \{ readOnly: artifact\.readOnly === true \}\)/);
-  assert.match(css, /\.ag-md-artifact-card\s*\{[^}]*display:\s*flex;[^}]*border:/s);
-  assert.match(css, /\.ag-md-artifact-open\s*\{[^}]*flex:\s*1 1 auto;/s);
+before(async () => {
+  vite = await createTestModuleServer(rootDir);
+  inputHandlerProto = (await vite.ssrLoadModule('/src/engine/input-handler.ts')).InputHandler.prototype;
 });
 
-test('template preview state blocks command, direct input, snapshot, and formatting mutations', () => {
-  assert.match(main, /documentReadOnly = new URLSearchParams[\s\S]*templatePreview/);
-  assert.match(main, /isEditable: !documentReadOnly/);
-  assert.match(main, /inputHandler\.setReadOnly\(documentReadOnly\)/);
-  assert.match(input, /executeOperation\(desc:[\s\S]*if \(this\.readOnly\) return/);
-  assert.match(input, /executeAppliedSnapshot[\s\S]*This template preview is read-only/);
-  assert.match(input, /format-char'[\s\S]*this\.readOnly/);
-  assert.match(textInput, /this\.readOnly \|\| this\.userEditingLocked \|\| this\.agentTemplateLocked/);
-  assert.match(textInput, /onInput[\s\S]*if \(this\.readOnly \|\| this\.userEditingLocked\)/);
-  assert.match(keyboardInput, /onKeyDown[\s\S]*if \(this\.readOnly \|\| this\.userEditingLocked\)/);
-  assert.match(keyboardInput, /onCut[\s\S]*if \(this\.readOnly \|\| this\.userEditingLocked\)/);
-  assert.match(keyboardInput, /onPaste[\s\S]*if \(this\.readOnly \|\| this\.userEditingLocked\)/);
-  assert.match(dispatcher, /isBlockedByDocumentEditLock/);
-  assert.match(toolExecutor, /isDocumentWriteTool\(tool\) && this\.deps\.isReadOnly\?\.\(\)/);
-  assert.match(toolExecutor, /READ_ONLY_TEMPLATE_PREVIEW/);
+after(async () => {
+  await vite?.close();
 });
 
+/** 건드리면 바로 실패하는 문서 서비스. 읽기 전용 게이트가 먼저 막았는지 본다. */
+function untouchable(name: string): any {
+  return new Proxy({}, {
+    get: (_target, key) => {
+      throw new Error(`read-only preview touched ${name}.${String(key)}`);
+    },
+  });
+}
+
+test('read-only preview input handler blocks operations, snapshots, typing, keys, cut and paste', () => {
+  let textareaResets = 0;
+  const handler: any = Object.create(inputHandlerProto);
+  Object.assign(handler, {
+    active: true,
+    readOnly: true,
+    userEditingLocked: false,
+    cursor: untouchable('cursor'),
+    wasm: untouchable('wasm'),
+    history: untouchable('history'),
+    imeSession: untouchable('imeSession'),
+    resetTextareaBuffer: () => { textareaResets += 1; },
+  });
+  let prevented = 0;
+  const event = (extra: Record<string, unknown> = {}) => ({
+    preventDefault: () => { prevented += 1; },
+    key: 'Backspace',
+    code: 'Backspace',
+    ...extra,
+  });
+
+  handler.executeOperation({ kind: 'command', command: untouchable('command') });
+  assert.throws(() => handler.executeAppliedSnapshot('replace', () => 1), /template preview is read-only/);
+  handler.onInput({ inputType: 'insertText', data: '가', isComposing: false });
+  handler.onKeyDown(event());
+  handler.onKeyDown(event({ key: 'v', code: 'KeyV', ctrlKey: true }));
+  handler.onCut(event());
+  handler.onPaste(event({ clipboardData: untouchable('clipboardData') }));
+  assert.equal(prevented, 4);
+  assert.ok(textareaResets >= 3, 'typed text must not stay queued for a later edit');
+});
+
+
+// 남은 소스 가드: 템플릿 블록 전송은 실제 템플릿 문서·네이티브 importer 를 거쳐야 해서
+// 단위 테스트로 재현하기 어렵다. URL 플래그 배선은 main-entry-guards.test.ts 가 지킨다.
 test('template block insertion transfers exact source bytes through the native importer', () => {
+  const toolExecutor = readFileSync(new URL('../src/agent/tool-executor.ts', import.meta.url), 'utf8');
   const insertBlock = toolExecutor.match(
     /private async templateInsertBlock[\s\S]*?\n  dispose\(\): void/,
   )?.[0];
