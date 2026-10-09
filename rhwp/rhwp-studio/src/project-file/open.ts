@@ -14,7 +14,7 @@ export type ProjectOpenOutcome =
   | { readonly kind: 'cancelled' }
   | { readonly kind: 'not-this-file' }
   | { readonly kind: 'not-found' }
-  | { readonly kind: 'never-saved' };
+  | { readonly kind: 'untraceable' };
 
 export interface NativeProbe {
   readonly probeId: string;
@@ -57,9 +57,9 @@ export async function openProjectFile(
   const remembered = await tryRemembered(claim, deps);
   if (remembered) return remembered;
 
-  // 디스크에 있던 적이 없는 문서(저장하지 않은 새 문서 등)는 찾을 위치도, 고른 파일과 맞춰 볼
-  // 내용도 없다. 파일 선택 창을 띄우지 않는다.
-  if (!claim.recentId && !claim.knownDigest && !claim.liveHandle) return { kind: 'never-saved' };
+  // 기억한 위치가 없고 최근 문서 기록(내용 digest·핸들)도 없다 — 저장한 적 없는 새 문서이거나
+  // 기록이 지워진 문서다. 고른 파일을 이 문서와 맞춰 볼 근거가 없으니 파일 선택 창을 띄우지 않는다.
+  if (!claim.recentId && !claim.knownDigest && !claim.liveHandle) return { kind: 'untraceable' };
 
   const nearby = await tryNearby(claim, deps);
   if (nearby) return nearby;

@@ -236,7 +236,8 @@ export interface ChatHistoryEntry {
 }
 
 /** 문서 세션을 화면에 붙이고 떼는 호스트 전용 수명 주기 — 사이드바는 쓰지 않는다. */
-type AgentBridgeHostLifecycle = 'attachView' | 'detachView' | 'isViewAttached' | 'isBusy' | 'onBusyChange';
+type AgentBridgeHostLifecycle = 'attachView' | 'detachView' | 'isViewAttached' | 'isBusy' | 'onBusyChange'
+  | 'holdsDocumentWrites';
 
 /** Frontend consumers only need the pending-edit review surface. */
 export type SidebarBridge = Omit<AgentBridge, 'pendingEdits' | AgentBridgeHostLifecycle> & {
@@ -276,6 +277,11 @@ export interface AgentBridge {
   isBusy(): boolean;
   /** isBusy 가 바뀌면 부른다. 알림은 마이크로태스크로 모아 한 번만 보낸다. */
   onBusyChange(cb: (busy: boolean) => void): () => void;
+  /**
+   * 이 채팅이 문서를 고칠 수 있는 상태로 일하는지 — 검토 대기 변경이 있거나, 채팅 모드가 아닌
+   * 워크플로로 일하는 중. 채팅 시작을 기다리는 동안에는 요청한 워크플로를 본다.
+   */
+  holdsDocumentWrites(): boolean;
   getPermissionProfile(): PermissionProfile;
   getServiceTier(): ServiceTier;
   getWorkflowState(): AgentWorkflowState;
@@ -1507,6 +1513,15 @@ export class AgentBridgeImpl implements AgentBridge {
       || this.pendingUserQuestion !== null
       || (this.workflow === 'plan' && (this.phase === 'awaiting-approval' || this.phase === 'switching'))
       || this.pendingEdits.hasPending();
+  }
+
+  holdsDocumentWrites(): boolean {
+    if (this.disposed) return false;
+    if (this.pendingEdits.getChangeSets().some((set) => set.ops.length > 0)) return true;
+    if (!this.isBusy()) return false;
+    // stopChat 직후 채팅 시작 전에는 workflow 가 기본값(direct)이다. 요청한 워크플로로 판단한다.
+    const workflow = this.pendingChatStart?.workflow ?? this.workflow;
+    return workflow !== 'question';
   }
 
   onBusyChange(cb: (busy: boolean) => void): () => void {
