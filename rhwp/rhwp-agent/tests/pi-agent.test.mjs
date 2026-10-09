@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import test from 'node:test';
+import test, { after } from 'node:test';
 
 import {
   buildPiArgv,
@@ -13,6 +15,12 @@ import {
   isOpenRouterCreditError,
 } from '../agents/pi.mjs';
 import { RHWP_TOOL_RULES } from '../tool-rules.mjs';
+import { availableReadOnlyBuiltins } from '../agents/pi-prompt.mjs';
+
+// rg/fd 가 있는 가짜 PATH — grep/find 선언은 실행 파일을 찾을 수 있을 때만 붙는다.
+const SEARCH_BIN_DIR = mkdtempSync(path.join(os.tmpdir(), 'rhwp-pi-search-bin-'));
+for (const name of ['rg', 'fd']) writeFileSync(path.join(SEARCH_BIN_DIR, name), '');
+after(() => rmSync(SEARCH_BIN_DIR, { recursive: true, force: true }));
 
 const baseOpts = {
   rootDir: '/tmp/rhwp',
@@ -396,6 +404,7 @@ test('argv carries the model, thinking level, session and system brief', () => {
 });
 
 test('every mode adds the read-only search built-ins without replacing the default set', () => {
+  const searchEnv = { PATH: SEARCH_BIN_DIR };
   for (const mode of [
     { workflow: 'direct', permissionProfile: 'safe' },
     { workflow: 'direct', permissionProfile: 'unrestricted' },
@@ -404,13 +413,33 @@ test('every mode adds the read-only search built-ins without replacing the defau
     { workflow: 'plan', phase: 'implementing' },
     { toolProfile: 'copy-layout-worker' },
   ]) {
-    const argv = buildPiArgv({ ...baseOpts, ...mode }, 'sess-1', {});
+    const argv = buildPiArgv({ ...baseOpts, ...mode }, 'sess-1', searchEnv);
     // `+이름` 만 쓰는 형식이어야 확장 도구가 살아남는다 (이름만 나열하면 허용 목록이 된다).
     const tools = argv[argv.indexOf('--tools') + 1].split(',');
     assert.ok(tools.every((entry) => entry.startsWith('+')), JSON.stringify(mode));
     assert.deepEqual(tools.filter((entry) => ['+grep', '+find', '+ls'].includes(entry)).length, 3);
     assert.equal(tools.includes('+tool_search'), false);
   }
+});
+
+test('grep and find are declared only when pi can run rg and fd', () => {
+  const files = new Set([
+    path.join('/pi', 'agent', 'bin', 'rg'),
+    path.join('/usr', 'bin', 'fdfind'),
+  ]);
+  const exists = (file) => files.has(file);
+  assert.deepEqual(
+    availableReadOnlyBuiltins({ pathEnv: '/usr/bin', binDir: path.join('/pi', 'agent', 'bin'), exists, platform: 'darwin' }),
+    ['grep', 'find', 'ls'],
+  );
+  assert.deepEqual(availableReadOnlyBuiltins({ pathEnv: '/usr/bin', exists, platform: 'darwin' }), ['find', 'ls']);
+  assert.deepEqual(availableReadOnlyBuiltins({ pathEnv: '', exists: () => false, platform: 'darwin' }), ['ls']);
+  assert.deepEqual(
+    availableReadOnlyBuiltins({ pathEnv: 'C:\\tools', exists: (file) => file === 'C:\\tools\\rg.exe', platform: 'win32' }),
+    ['grep', 'ls'],
+  );
+  const bare = buildPiArgv(baseOpts, 'sess-1', { PATH: '' });
+  assert.equal(bare[bare.indexOf('--tools') + 1], '+ls');
 });
 
 test('the core loadout enables tool_search and reaches the extension through the env', () => {

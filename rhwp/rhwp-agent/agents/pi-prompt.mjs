@@ -13,6 +13,9 @@
  *   에이전트 = direct + safe · 전체 = direct + unrestricted
  *   실행 = plan implementing (safe 또는 unrestricted)
  */
+import { existsSync } from 'node:fs';
+import path from 'node:path';
+
 import { HUMANIZE_KOREAN_RULES } from '../humanizer.mjs';
 import { RHWP_TOOL_RULES } from '../tool-rules.mjs';
 import {
@@ -38,7 +41,7 @@ export const PI_PREAMBLE = `You are the document agent inside Rauhwpx, a desktop
 export const PI_HARNESS_SECTION = `# How your tool calls run
 - Each model request takes time. Plan the whole job first, then finish it in as few requests as you can.
 - Tool calls in one message run at the same time when they are all reads, so put every independent read in one message. A message that contains a write runs its calls one at a time, in order.
-- read, grep, find and ls read workspace files. They never see or change the live document: the document is read and changed only through the rhwp tools.
+- The built-in file tools work on workspace files. They never see or change the live document: the document is read and changed only through the rhwp tools.
 - When the job is done, reply to the user in a sentence or two: what you changed, or the answer.`;
 
 /** 라이브 문서·참조 파일·앱 AGENTS.md 환경. */
@@ -153,7 +156,7 @@ Do only the assigned task. Use expectedRevision on every document write and batc
 export const PI_CHILD_HARNESS_SECTION = `# How your tool calls run
 - Each model request takes time. Plan your task first, then finish it in as few requests as you can.
 - Tool calls in one message run at the same time when they are all reads, so put every independent read in one message. A message that contains a write runs its calls one at a time, in order.
-- read, grep, find and ls read workspace files. They never see or change the live document: the document is read and changed only through the rhwp tools.`;
+- The built-in file tools work on workspace files. They never see or change the live document: the document is read and changed only through the rhwp tools.`;
 
 /** 자식이 할 수 없는 일. */
 export const PI_CHILD_LIMITS_SECTION = `# Limits
@@ -211,6 +214,39 @@ export function piChildSystemPromptFor(role, opts = {}) {
 export const PI_READ_ONLY_BUILTINS = Object.freeze(['grep', 'find', 'ls']);
 
 /**
+ * grep/find 는 rg/fd 를 실행한다. pi 는 PATH 나 `<agentDir>/bin` 에서 찾고, 없으면 내려받는데
+ * PI_OFFLINE=1 이라 받지 않는다 — 그러면 호출마다 오류로 모델 요청 하나를 버린다. 그래서 실행
+ * 파일을 찾을 수 있을 때만 선언한다 (pi tools-manager getToolPath 와 같은 이름·위치). ls 는 순수 node 다.
+ */
+const SEARCH_BINARIES = Object.freeze({ grep: ['rg'], find: ['fd', 'fdfind'] });
+
+/**
+ * @param {{ pathEnv?: string, binDir?: string | null, platform?: NodeJS.Platform, exists?: (file: string) => boolean }} [options]
+ * @returns {string[]}
+ */
+export function availableReadOnlyBuiltins({
+  pathEnv = process.env.PATH ?? '',
+  binDir = null,
+  platform = process.platform,
+  exists = existsSync,
+} = {}) {
+  const pathApi = platform === 'win32' ? path.win32 : path.posix;
+  const dirs = [binDir, ...String(pathEnv).split(platform === 'win32' ? ';' : ':')].filter(Boolean);
+  const suffixes = platform === 'win32' ? ['.exe', '.cmd', ''] : [''];
+  const resolvable = (names) => names.some((name) => dirs.some((dir) => suffixes.some((suffix) => {
+    try {
+      return exists(pathApi.join(/** @type {string} */ (dir), `${name}${suffix}`));
+    } catch {
+      return false;
+    }
+  })));
+  return PI_READ_ONLY_BUILTINS.filter((name) => {
+    const binaries = /** @type {Record<string, string[]>} */ (SEARCH_BINARIES)[name];
+    return !binaries || resolvable(binaries);
+  });
+}
+
+/**
  * RHWP_PI_LOADOUT 값을 정규화한다. core = 핵심 도구만 바로 노출하고 나머지는 tool_search 로
  * 불러오게 하는 실험 모드, full(기본) = 프로필의 모든 도구를 바로 노출한다.
  * @param {unknown} value
@@ -225,8 +261,9 @@ export function normalizePiLoadout(value) {
  * 그대로 남고 이름만 더해진다. 이름만 나열하면 허용 목록이 되어 확장 도구(rhwp 도구,
  * subagent_*)까지 빠진다 — 실제 바이너리로 확인했다. 제외는 `--exclude-tools` 가 맡는다.
  * @param {'core'|'full'} loadout
+ * @param {readonly string[]} [builtins] 선언할 읽기 전용 내장 도구 (availableReadOnlyBuiltins)
  */
-export function piToolSelection(loadout = 'full') {
-  const names = [...PI_READ_ONLY_BUILTINS, ...(loadout === 'core' ? ['tool_search'] : [])];
+export function piToolSelection(loadout = 'full', builtins = PI_READ_ONLY_BUILTINS) {
+  const names = [...builtins, ...(loadout === 'core' ? ['tool_search'] : [])];
   return names.map((name) => `+${name}`).join(',');
 }

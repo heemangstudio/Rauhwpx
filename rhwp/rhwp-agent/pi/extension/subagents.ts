@@ -14,6 +14,8 @@ import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-a
 
 import { redactDiagnosticText } from '../../agents/backend.mjs';
 import {
+  PI_READ_ONLY_BUILTINS,
+  availableReadOnlyBuiltins,
   normalizePiLoadout,
   piChildSystemPromptFor,
   piToolSelection,
@@ -116,6 +118,8 @@ export function buildChildArgv(opts: {
   loadout?: string | null;
   /** pi-manager 가 동기화한 rhwp 스킬 디렉터리. 없으면 스킬 없이 뜬다. */
   skillsDir?: string | null;
+  /** 선언할 읽기 전용 내장 도구 (rg/fd 를 찾을 수 있을 때만 grep/find). */
+  builtins?: readonly string[];
 }): string[] {
   const modelId = String(opts.model ?? '').replace(/^openrouter\//, '');
   const argv = ['--mode', 'json', '--model', `openrouter/${modelId}`];
@@ -132,7 +136,7 @@ export function buildChildArgv(opts: {
     '--no-context-files',
     '--no-skills',
     ...(opts.skillsDir ? ['--skill', opts.skillsDir] : []),
-    '--tools', piToolSelection(normalizePiLoadout(opts.loadout)),
+    '--tools', piToolSelection(normalizePiLoadout(opts.loadout), opts.builtins ?? PI_READ_ONLY_BUILTINS),
     '--exclude-tools', childExcludeTools(opts.planningRestricted, opts.role),
     prompt,
   );
@@ -493,6 +497,10 @@ export function createSubagentManager(opts: {
       mode: childModeFromEnv(env),
       loadout: env.RHWP_PI_LOADOUT ?? null,
       skillsDir: env.PI_CODING_AGENT_DIR ? path.join(env.PI_CODING_AGENT_DIR, 'skills') : null,
+      builtins: availableReadOnlyBuiltins({
+        pathEnv: env.PATH ?? '',
+        binDir: env.PI_CODING_AGENT_DIR ? path.join(env.PI_CODING_AGENT_DIR, 'bin') : null,
+      }),
     });
     let revokeInFlight: Promise<void> | null = null;
     let revoked = false;

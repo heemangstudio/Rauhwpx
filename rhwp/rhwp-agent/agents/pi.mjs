@@ -14,7 +14,12 @@ import {
   truncate,
   validateExecutionMode,
 } from './backend.mjs';
-import { normalizePiLoadout, piSystemPromptFor, piToolSelection } from './pi-prompt.mjs';
+import {
+  availableReadOnlyBuiltins,
+  normalizePiLoadout,
+  piSystemPromptFor,
+  piToolSelection,
+} from './pi-prompt.mjs';
 import { applyManagedCliLaunch } from '../npm-cli-launch.mjs';
 import {
   PROCESS_TREE_CLEANUP_OUTCOME,
@@ -112,7 +117,10 @@ export function buildPiArgv(opts, sessionId, env = process.env) {
     // pi-manager 가 동기화한 rhwp 스킬만 명시적으로 싣는다.
     '--no-skills',
     '--skill', path.join(piRoot, 'agent', 'skills'),
-    '--tools', piToolSelection(piLoadoutFor(opts, env)),
+    '--tools', piToolSelection(piLoadoutFor(opts, env), availableReadOnlyBuiltins({
+      pathEnv: env.PATH ?? '',
+      binDir: path.join(piRoot, 'agent', 'bin'),
+    })),
   );
   // Safe Pi has no OS write sandbox. Never expose its general shell: even
   // a hub-private sibling path is writable by the same OS user. Background

@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 
 import { buildPiArgv, buildPiEnv } from '../agents/pi.mjs';
-import { PI_PREAMBLE } from '../agents/pi-prompt.mjs';
+import { PI_PREAMBLE, availableReadOnlyBuiltins } from '../agents/pi-prompt.mjs';
 import { defaultPiRoot } from '../pi-manager.mjs';
 import { piToolDefinitions } from '../pi/tool-schema.mjs';
 
@@ -208,7 +208,8 @@ async function checkEditingTurn() {
     assert.ok(textOf(system).startsWith(PI_PREAMBLE), 'the provider sees the rhwp preamble first');
     assert.doesNotMatch(textOf(system), /expert coding assistant|Pi documentation/);
     const toolNames = first.body.tools.map((tool) => tool.function.name);
-    for (const name of ['grep', 'find', 'ls', 'read', 'apply_edits', 'subagent_spawn']) assert.ok(toolNames.includes(name), name);
+    const searchTools = availableReadOnlyBuiltins({ pathEnv: process.env.PATH ?? '' });
+    for (const name of [...searchTools, 'read', 'apply_edits', 'subagent_spawn']) assert.ok(toolNames.includes(name), name);
     assert.equal(toolNames.includes('bash'), false, 'safe mode has no shell');
 
     const reads = hub.calls.filter((call) => ['get_structure', 'find_text', 'render_page'].includes(call.tool));
