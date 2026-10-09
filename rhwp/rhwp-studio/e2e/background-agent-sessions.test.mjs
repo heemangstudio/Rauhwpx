@@ -23,6 +23,7 @@ const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const HUB_TOKEN = 'background-sessions-e2e';
 const DOC_A = 'para-001.hwp';
 const DOC_B = 'text-align-2.hwp';
+const DOC_C = 'form-02.hwp';
 const MARKER = '[화면 밖 에이전트 편집]';
 
 async function availablePort(start) {
@@ -307,6 +308,48 @@ try {
     assert(railStatus === 'working', `The first document's chat shows as working in the list (${railStatus})`);
     await delay(900);
     await screenshot(page, 'bg-sessions-3-rail-shows-working');
+
+    // 3b. 다른 문서를 여는 중에 A 의 채팅을 눌러도 열기가 A 에 닿지 않는다.
+    const aDocumentId = await page.evaluate(() => window.__documentSessions.list()[0].documentId);
+    const raced = await page.evaluate(async ({ fileName, url, doc }) => {
+      const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
+      const requestId = `e2e-race-${Date.now()}`;
+      const done = new Promise((resolve) => {
+        const off = window.__eventBus.on('open-document-bytes:done', (payload) => {
+          if (payload?.requestId !== requestId) return;
+          off();
+          resolve(payload);
+        });
+      });
+      window.__eventBus.emit('open-document-bytes', { bytes, fileName, requestId });
+      [...document.querySelectorAll('.ag-threads-item')]
+        .find((item) => item.querySelector('.ag-threads-item-doc')?.textContent?.includes(doc.replace('.hwp', '')))
+        ?.click();
+      return done;
+    }, { fileName: DOC_C, url: sampleFetchPath(DOC_C), doc: DOC_A });
+    assert(raced.ok === true, 'The racing open finished');
+    await delay(1500);
+    const afterRace = await page.evaluate((marker) => {
+      const sessions = window.__documentSessions.list();
+      const a = sessions.find((session) => session.wasm.fileName === 'para-001.hwp');
+      return {
+        files: sessions.map((session) => session.wasm.fileName),
+        attached: window.__wasm.fileName,
+        aDocumentId: a?.documentId ?? null,
+        aMarkers: a ? a.wasm.getTextRange(0, 0, 0, 200).split(marker).length - 1 : -1,
+        aRunning: a?.bridge?.isTurnRunning?.() ?? false,
+      };
+    }, MARKER);
+    assert(afterRace.aDocumentId === aDocumentId && afterRace.aMarkers === 1 && afterRace.aRunning,
+      `The busy document is untouched by the racing open (${JSON.stringify(afterRace)})`);
+    assert(afterRace.files.length === 2 && afterRace.files.includes(DOC_C),
+      `The idle document was replaced in place, with no stray session (${JSON.stringify(afterRace.files)})`);
+    if (!(await page.$('.ag-threads-item'))) {
+      await page.evaluate(() => document.querySelector('.ag-threads-btn')?.click());
+    }
+    await page.waitForFunction((doc) => [...document.querySelectorAll('.ag-threads-item')]
+      .some((row) => row.querySelector('.ag-threads-item-doc')?.textContent?.includes(doc.replace('.hwp', ''))),
+    { timeout: 10_000 }, DOC_A);
     await page.evaluate((doc) => {
       const row = [...document.querySelectorAll('.ag-threads-item')]
         .find((item) => item.querySelector('.ag-threads-item-doc')?.textContent?.includes(doc.replace('.hwp', '')));

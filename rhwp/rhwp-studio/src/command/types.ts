@@ -117,6 +117,8 @@ export interface CommandServices {
    * 미리보기로 문서에 이미 반영돼 있으므로, 저장 전에 수락/거절을 결정해야 한다.
    * 에이전트 브리지가 없거나 대기 편집이 없으면 null.
    */
+  /** 지금 문서에서 에이전트가 일하는 중이라 새 문서를 따로 연다면 true (지금 문서를 바꾸지 않는다) */
+  opensDocumentsInNewSession?: () => boolean;
   getPendingAgentEdits?: () => {
     opCount: number;
     approveAll: () => boolean;
