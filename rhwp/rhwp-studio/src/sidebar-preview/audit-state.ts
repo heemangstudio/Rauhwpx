@@ -24,7 +24,7 @@ function select(id: string, value: string): void {
   control.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
-/** 입력기의 모드 칩으로 모드를 고른다. 확인 시트(전체 접근·원격 브라우저)는 승인한다. */
+/** 입력기의 모드 칩으로 모드를 고른다. 전체 접근 확인 시트는 승인한다. */
 async function chooseMode(mode: 'chat' | 'plan' | 'agent' | 'full'): Promise<void> {
   const chip = () => document.querySelector<HTMLElement>('.ag-mode');
   await until(() => chip()?.dataset.mode && !document.querySelector<HTMLButtonElement>('.ag-mode-btn')?.disabled, 'mode chip');
