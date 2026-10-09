@@ -102,11 +102,14 @@ async function seedOtherDocumentGroup(page) {
 }
 
 async function clickMoveToOtherDocument(page) {
+  // 다른 문서의 채팅을 누르면 지금 문서를 정리하고 그 문서로 옮겨 간다.
+  const row = `.ag-threads-item[data-thread-id="thread-${TARGET_DOCUMENT_ID}"]`;
   await page.waitForFunction(
-    () => document.querySelector('.ag-doc-jump') !== null,
+    (selector) => document.querySelector(selector) !== null,
     { timeout: 10000 },
+    row,
   );
-  await page.evaluate(() => document.querySelector('.ag-doc-jump').click());
+  await page.evaluate((selector) => document.querySelector(selector).click(), row);
   // 저장·열기 시도가 끝날 때까지 기다린다.
   await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 2500)));
 }

@@ -35,5 +35,21 @@ if (url.searchParams.get('reset') === '1') {
   url.searchParams.delete('reset');
   history.replaceState(null, '', url);
 }
+// `chats=sample` restores the sample chats on every load. They go through the
+// thread store's legacy localStorage import, the only path that keeps their
+// past timestamps, so they must be written before the store hydrates on import.
+if (url.searchParams.get('chats') === 'sample') {
+  const { sampleChats } = await import('./fixtures.ts');
+  const key = 'rhwp-agent-threads';
+  const seeded = sampleChats(Date.now());
+  const ids = new Set(seeded.map((thread) => thread.id));
+  let pending: unknown[] = [];
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(key) ?? '[]');
+    if (Array.isArray(parsed)) pending = parsed;
+  } catch { /* Unreadable legacy data is replaced by the samples. */ }
+  const kept = pending.filter((row) => !ids.has(String((row as { id?: unknown } | null)?.id)));
+  localStorage.setItem(key, JSON.stringify([...kept, ...seeded]));
+}
 await import('./main.ts');
 export {};

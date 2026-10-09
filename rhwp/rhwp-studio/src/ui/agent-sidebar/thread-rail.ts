@@ -1,8 +1,8 @@
 /**
  * 채팅 레일 머리의 도구 줄 — 검색 · 문서 필터 · 문서 열기 · 새 채팅.
  *
- * 문서 필터는 도구 줄 아래로 떨어지는 작은 팝오버이고, 문서 열기는 레일 위에
- * 뜨는 팔레트다. 둘 다 검색 칸 하나와 화살표로 오가는 목록 하나로 이루어진다.
+ * 문서 필터와 문서 열기는 도구 줄 아래로 떨어지는 같은 모양의 팝오버다.
+ * 둘 다 검색 칸 하나와 화살표로 오가는 목록 하나로 이루어진다.
  * 채팅을 거르고 문서를 실제로 여는 일은 사이드바가 콜백에서 맡는다.
  */
 import './thread-rail.css';
@@ -138,7 +138,7 @@ export function createThreadsToolbar(options: ThreadsToolbarOptions): ThreadsToo
   };
 }
 
-// ── 떠 있는 면(팝오버·팔레트) ─────────────────────────────
+// ── 떠 있는 면 ─────────────────────────────────────────
 
 interface FloatingSurface {
   close(restoreFocus?: boolean): void;
@@ -146,9 +146,13 @@ interface FloatingSurface {
 
 let openSurface: FloatingSurface | null = null;
 
-/** 지금 떠 있는 필터·팔레트를 닫는다(레일이 접히거나 화면이 바뀔 때). */
+/** 지금 떠 있는 팝오버를 닫는다(레일이 접히거나 화면이 바뀔 때). */
 export function closeThreadRailSurfaces(): void {
   openSurface?.close(false);
+}
+
+export function threadRailSurfaceOpen(): boolean {
+  return openSurface !== null;
 }
 
 /**
@@ -167,7 +171,6 @@ function mountSurface(
   host: HTMLElement,
   surface: HTMLElement,
   trigger: HTMLElement,
-  extra: HTMLElement[] = [],
 ): FloatingSurface {
   openSurface?.close(false);
   let closed = false;
@@ -185,13 +188,11 @@ function mountSurface(
       document.removeEventListener('pointerdown', onPointerDown, true);
       window.removeEventListener('resize', onResize);
       surface.remove();
-      for (const node of extra) node.remove();
       trigger.setAttribute('aria-expanded', 'false');
       if (openSurface === handle) openSurface = null;
       if (restoreFocus && hadFocus) trigger.focus({ preventScroll: true });
     },
   };
-  for (const node of extra) host.appendChild(node);
   host.appendChild(surface);
   trigger.setAttribute('aria-expanded', 'true');
   document.addEventListener('pointerdown', onPointerDown, true);
@@ -205,7 +206,6 @@ function mountSurface(
 interface ListOption {
   id: string;
   label: string;
-  detail?: string;
   icon: SidebarIconName;
   /** 문서 없이 시작한 채팅처럼 점선으로 그리는 아이콘 */
   missingIcon?: boolean;
@@ -272,9 +272,7 @@ function createSearchList(config: {
   const render = (): void => {
     const query = searchKey(input.value);
     const activeId = visible[active]?.id;
-    visible = all.filter((option) => option.pinned || !query
-      || searchKey(option.label).includes(query)
-      || (option.detail ? searchKey(option.detail).includes(query) : false));
+    visible = all.filter((option) => option.pinned || !query || searchKey(option.label).includes(query));
     rows = [];
     list.replaceChildren();
     let section: string | undefined;
@@ -289,12 +287,9 @@ function createSearchList(config: {
       row.setAttribute('aria-selected', option.checked ? 'true' : 'false');
       const icon = createIcon(option.icon, 'ag-rail-option-icon');
       if (option.missingIcon) icon.classList.add('ag-doc-missing');
-      const text = el('span', 'ag-rail-option-text');
       const label = el('span', 'ag-rail-option-label', option.label);
       label.title = option.label;
-      text.appendChild(label);
-      if (option.detail) text.appendChild(el('span', 'ag-rail-option-detail', option.detail));
-      row.append(icon, text);
+      row.append(icon, label);
       if (option.trail) row.appendChild(el('span', 'ag-rail-option-trail', option.trail));
       if (option.checked) row.appendChild(createIcon('check', 'ag-rail-option-check'));
       if (option.onMenu) {
@@ -326,7 +321,9 @@ function createSearchList(config: {
       rows.push(row);
       list.appendChild(row);
     });
-    if (visible.length === 0) list.appendChild(el('div', 'ag-rail-empty', config.emptyText));
+    if (query && !visible.some((option) => !option.pinned)) {
+      list.appendChild(el('div', 'ag-rail-empty', config.emptyText));
+    }
     const keep = activeId ? visible.findIndex((option) => option.id === activeId) : -1;
     setActive(keep >= 0 ? keep : Math.max(0, visible.findIndex((option) => option.checked)), false);
   };
@@ -374,7 +371,28 @@ function createSearchList(config: {
   };
 }
 
-// ── 문서 필터 팝오버 ───────────────────────────────────
+// ── 도구 줄 아래로 떨어지는 팝오버 ──────────────────────
+
+/** 도구 줄 왼쪽 끝에 맞춰 트리거 아래에 세운다. */
+function placeUnderToolbar(
+  surface: HTMLElement,
+  host: HTMLElement,
+  trigger: HTMLElement,
+  alignTo: HTMLElement,
+): void {
+  const origin = fixedOrigin(host);
+  const align = alignTo.getBoundingClientRect();
+  const anchor = trigger.getBoundingClientRect();
+  const width = Math.max(240, Math.min(320, align.width));
+  const left = Math.max(8, Math.min(align.left, window.innerWidth - width - 8));
+  const top = anchor.bottom + 6;
+  surface.style.width = `${width}px`;
+  surface.style.left = `${left - origin.x}px`;
+  surface.style.top = `${top - origin.y}px`;
+  surface.style.maxHeight = `${Math.max(180, Math.min(420, window.innerHeight - top - 12))}px`;
+}
+
+// ── 문서 필터 ─────────────────────────────────────────
 
 export interface DocumentFilterOption {
   key: string;
@@ -393,18 +411,15 @@ export function showDocumentFilter(config: {
   alignTo: HTMLElement;
   selectedKey: string | null;
   documents: DocumentFilterOption[];
-  /** 나중에 도착하는 문서(최근 문서) — 오면 목록 뒤에 붙는다. */
-  more?: Promise<DocumentFilterOption[]>;
   onSelect(key: string | null): void;
   onDocumentMenu?(option: DocumentFilterOption, anchor: { x: number; y: number }): void;
 }): void {
   const surface = el('div', 'ag-rail-popover');
   surface.setAttribute('role', 'dialog');
   surface.setAttribute('aria-label', '문서별로 보기');
-  let documents = config.documents;
   const handle = mountSurface(config.host, surface, config.trigger);
   const searchList = createSearchList({
-    placeholder: '문서 검색…',
+    placeholder: '문서 검색',
     label: '문서',
     emptyText: '일치하는 문서가 없습니다',
     onChoose(id) {
@@ -414,8 +429,7 @@ export function showDocumentFilter(config: {
     onEscape: () => handle.close(),
   });
   surface.append(searchList.field, searchList.list);
-
-  const options = (): ListOption[] => [
+  searchList.setOptions([
     {
       id: ALL_DOCUMENTS,
       label: '모든 문서',
@@ -423,12 +437,12 @@ export function showDocumentFilter(config: {
       checked: config.selectedKey === null,
       pinned: true,
     },
-    ...documents.map((doc): ListOption => ({
+    ...config.documents.map((doc): ListOption => ({
       id: doc.key,
       label: doc.label,
       icon: 'document',
       missingIcon: doc.missing,
-      trail: doc.chatCount > 0 ? String(doc.chatCount) : undefined,
+      trail: String(doc.chatCount),
       checked: config.selectedKey === doc.key,
       onMenu: config.onDocumentMenu
         ? (anchor) => {
@@ -437,31 +451,12 @@ export function showDocumentFilter(config: {
           }
         : undefined,
     })),
-  ];
-  searchList.setOptions(options());
-
-  // 도구 줄 왼쪽 끝에 맞춰 아래로 떨어진다.
-  const origin = fixedOrigin(config.host);
-  const align = config.alignTo.getBoundingClientRect();
-  const trigger = config.trigger.getBoundingClientRect();
-  const width = Math.max(248, Math.min(320, align.width));
-  const left = Math.max(8, Math.min(align.left, window.innerWidth - width - 8));
-  const top = trigger.bottom + 6;
-  surface.style.width = `${width}px`;
-  surface.style.left = `${left - origin.x}px`;
-  surface.style.top = `${top - origin.y}px`;
-  surface.style.maxHeight = `${Math.max(180, Math.min(440, window.innerHeight - top - 12))}px`;
+  ]);
+  placeUnderToolbar(surface, config.host, config.trigger, config.alignTo);
   searchList.input.focus({ preventScroll: true });
-
-  void config.more?.then((extra) => {
-    if (!surface.isConnected || extra.length === 0) return;
-    const known = new Set(documents.map((doc) => doc.key));
-    documents = [...documents, ...extra.filter((doc) => !known.has(doc.key))];
-    searchList.setOptions(options());
-  }).catch(() => { /* 최근 문서는 없어도 된다 */ });
 }
 
-// ── 문서 열기 팔레트 ───────────────────────────────────
+// ── 문서 열기 ─────────────────────────────────────────
 
 export interface PaletteRecentDocument {
   documentId: string;
@@ -473,91 +468,66 @@ export interface PaletteRecentDocument {
 const NEW_DOCUMENT = '__new__';
 const OPEN_FILE = '__open__';
 
-function formatOpenedAge(ts: number): string {
-  const diff = Date.now() - ts;
+/** 짧은 경과 표시 — 목록 끝에 붙는 "3분" "6시간" "2일". */
+export function formatShortAge(ts: number, now = Date.now()): string {
+  const diff = Math.max(0, now - ts);
   const minute = 60_000;
   const hour = 3_600_000;
   const day = 86_400_000;
   if (diff < minute) return '방금';
-  if (diff < hour) return `${Math.floor(diff / minute)}분 전`;
-  if (diff < day) return `${Math.floor(diff / hour)}시간 전`;
-  if (diff < day * 7) return `${Math.floor(diff / day)}일 전`;
-  if (diff < day * 30) return `${Math.floor(diff / (day * 7))}주 전`;
-  return `${Math.floor(diff / (day * 30))}개월 전`;
-}
-
-function keyHint(keys: string[], label: string): HTMLElement {
-  const hint = el('span', 'ag-rail-hint');
-  for (const key of keys) hint.appendChild(el('kbd', 'ag-rail-kbd', key));
-  hint.appendChild(el('span', 'ag-rail-hint-label', label));
-  return hint;
+  if (diff < hour) return `${Math.floor(diff / minute)}분`;
+  if (diff < day) return `${Math.floor(diff / hour)}시간`;
+  if (diff < day * 7) return `${Math.floor(diff / day)}일`;
+  if (diff < day * 30) return `${Math.floor(diff / (day * 7))}주`;
+  if (diff < day * 365) return `${Math.floor(diff / (day * 30))}개월`;
+  return `${Math.floor(diff / (day * 365))}년`;
 }
 
 export function showDocumentPalette(config: {
   host: HTMLElement;
   trigger: HTMLElement;
+  alignTo: HTMLElement;
   recents: Promise<PaletteRecentDocument[]>;
-  onCreate(): void;
-  onOpenFile(): void;
-  onOpenRecent(document: PaletteRecentDocument): void;
+  /** 빠진 동작은 줄을 만들지 않는다. */
+  onCreate?: () => void;
+  onOpenFile?: () => void;
+  onOpenRecent?: (document: PaletteRecentDocument) => void;
 }): void {
-  const scrim = el('div', 'ag-rail-scrim');
-  const surface = el('div', 'ag-rail-palette');
+  const surface = el('div', 'ag-rail-popover');
   surface.setAttribute('role', 'dialog');
-  surface.setAttribute('aria-modal', 'true');
   surface.setAttribute('aria-label', '문서 열기');
   let recents: PaletteRecentDocument[] = [];
-  const handle = mountSurface(config.host, surface, config.trigger, [scrim]);
-  scrim.addEventListener('pointerdown', () => handle.close());
+  const handle = mountSurface(config.host, surface, config.trigger);
   const searchList = createSearchList({
-    placeholder: '문서 검색…',
+    placeholder: '문서 검색',
     label: '문서 열기',
     emptyText: '일치하는 문서가 없습니다',
     onChoose(id) {
       handle.close(false);
-      if (id === NEW_DOCUMENT) config.onCreate();
-      else if (id === OPEN_FILE) config.onOpenFile();
+      if (id === NEW_DOCUMENT) config.onCreate?.();
+      else if (id === OPEN_FILE) config.onOpenFile?.();
       else {
         const target = recents.find((doc) => doc.documentId === id);
-        if (target) config.onOpenRecent(target);
+        if (target) config.onOpenRecent?.(target);
       }
     },
     onEscape: () => handle.close(),
   });
-  const foot = el('div', 'ag-rail-palette-foot');
-  foot.append(
-    keyHint(['↑', '↓'], '이동'),
-    keyHint(['Enter'], '열기'),
-    keyHint(['Esc'], '닫기'),
-  );
-  surface.append(searchList.field, searchList.list, foot);
+  surface.append(searchList.field, searchList.list);
 
   const options = (): ListOption[] => [
-    { id: NEW_DOCUMENT, label: '새 문서', detail: '빈 문서로 시작합니다', icon: 'documentAdd', section: '열기' },
-    { id: OPEN_FILE, label: '파일 열기…', detail: '컴퓨터에서 문서를 고릅니다', icon: 'external', section: '열기' },
-    ...recents.map((doc): ListOption => ({
+    ...(config.onCreate ? [{ id: NEW_DOCUMENT, label: '새 문서', icon: 'documentAdd', pinned: true } as const] : []),
+    ...(config.onOpenFile ? [{ id: OPEN_FILE, label: '파일 열기…', icon: 'external', pinned: true } as const] : []),
+    ...(config.onOpenRecent ? recents : []).map((doc): ListOption => ({
       id: doc.documentId,
       label: doc.fileName,
-      detail: `${doc.sourceFormat.toUpperCase()} · ${formatOpenedAge(doc.openedAt)}`,
       icon: 'document',
+      trail: formatShortAge(doc.openedAt),
       section: '최근 문서',
     })),
   ];
   searchList.setOptions(options());
-
-  // 사이드바(또는 집중 모드 화면) 가운데 위쪽에 선다.
-  const origin = fixedOrigin(config.host);
-  const area = config.host.getBoundingClientRect();
-  const width = Math.min(560, area.width - 24);
-  const top = area.top + Math.min(96, Math.max(48, area.height * 0.12));
-  surface.style.width = `${width}px`;
-  surface.style.left = `${area.left + (area.width - width) / 2 - origin.x}px`;
-  surface.style.top = `${top - origin.y}px`;
-  surface.style.maxHeight = `${Math.max(220, Math.min(520, area.bottom - top - 24))}px`;
-  scrim.style.left = `${area.left - origin.x}px`;
-  scrim.style.top = `${area.top - origin.y}px`;
-  scrim.style.width = `${area.width}px`;
-  scrim.style.height = `${area.height}px`;
+  placeUnderToolbar(surface, config.host, config.trigger, config.alignTo);
   searchList.input.focus({ preventScroll: true });
 
   void config.recents.then((list) => {

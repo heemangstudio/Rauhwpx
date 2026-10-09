@@ -658,10 +658,12 @@ function projectFileDeps(
   };
 }
 
+/** commitCurrent 를 넘기면 저장한 뒤 대상 문서를 열기 전에 버전 기록 커밋을 남긴다. */
 export async function runLibraryMove(
   services: CommandServices,
   target: LibraryDocumentTarget,
   getActiveDocumentId: () => string | null,
+  commitCurrent?: () => Promise<void>,
 ): Promise<LibraryMoveResult> {
   return moveToLibraryDocument(target, {
     getCurrent: () => ({
@@ -679,7 +681,8 @@ export async function runLibraryMove(
     })),
     openViaPicker: () => openFileViaPicker(services),
     toast: (message) => showToast({ message, durationMs: 3500 }),
-  });
+    commitCurrent,
+  }, { commit: commitCurrent !== undefined });
 }
 
 function setupPrintDocument(

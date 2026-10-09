@@ -810,6 +810,34 @@ try {
     assert.deepEqual(await page.$$eval('.ag-llm-item', (rows) => rows.map((row) => row.dataset.model)),
       ['claude-opus-4-6', 'claude-sonnet-4-6']);
   });
+  await step('Chat rail lists every document and follows a chat to its document', async () => {
+    await open('chats=sample');
+    await page.click('.ag-header .ag-threads-btn');
+    await page.waitForSelector('.ag-root.ag-threads-open .ag-threads-item');
+    // Chats from every document share one list, newest conversation first.
+    const rows = await page.$$eval('.ag-threads-item', (items) => items.map((item) => ({
+      id: item.dataset.threadId,
+      doc: item.querySelector('.ag-threads-item-doc').textContent,
+      when: item.querySelector('.ag-threads-item-when').textContent,
+    })));
+    assert.equal(rows[0].id, 'preview-chat-schedule');
+    assert.match(rows[0].when, /작업 중/);
+    assert(new Set(rows.map((row) => row.doc)).size >= 3, 'One list holds chats from several documents');
+    await page.click('.ag-threads-doc-filter');
+    await page.waitForSelector('.ag-rail-popover [role="option"]');
+    await clickText('.ag-rail-option-label', '회의록.hwpx');
+    await page.waitForFunction(() => [...document.querySelectorAll('.ag-threads-item-doc')]
+      .every((doc) => doc.textContent === '회의록.hwpx'));
+    await page.click('.ag-threads-filter-clear');
+    // A chat from another document commits this one, opens that document and continues there.
+    await page.click('.ag-threads-item[data-thread-id="preview-chat-totals"]');
+    await page.waitForFunction(() => document.querySelector('#preview-status').value.includes('Committed'));
+    await page.waitForFunction(() => document.querySelector('#document').value === 'budget');
+    await page.waitForFunction(() => document.querySelector('.ag-msg-user')?.textContent.includes('분기별 예산 표'));
+    assert(!(await page.$eval('.ag-composer', (element) => element.classList.contains('ag-readonly'))));
+    await page.click('.ag-header .ag-threads-btn');
+    assert.equal(await page.$eval('.ag-threads-item.ag-active', (element) => element.dataset.threadId), 'preview-chat-totals');
+  });
   await step(
     'Document context, reset, clean canvas, and backend isolation',
     async () => {

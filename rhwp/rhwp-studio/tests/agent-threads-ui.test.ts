@@ -101,8 +101,3 @@ test('changing files ends the open chat and starts a fresh chat for the next fil
     /function startNewChat[\s\S]*persistCurrentThread\(\);[\s\S]*createEmptyThread\(\{[\s\S]*documentId: currentDocumentId[\s\S]*bridge\.stopChat\(\);[\s\S]*startCurrentBridgeChat\(true\)/,
   );
 });
-
-test('explorer current badge uses unique filename fallback after document switch', () => {
-  assert.match(source, /explorerGroupIsCurrent\(group, currentDocumentId, currentDocKey, groups\)/);
-  assert.match(source, /if \(isCurrentDoc\) groupBtn\.append\(el\('span', 'ag-threads-group-badge', '현재'\)\)/);
-});
