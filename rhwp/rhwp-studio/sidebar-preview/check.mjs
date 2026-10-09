@@ -11,6 +11,7 @@ import { checkFleetPreview } from './fleet.check.mjs';
 import { checkChangesPreview } from './changes.check.mjs';
 import { checkPlanPreview } from './plan.check.mjs';
 import { checkContextPreview } from './context.check.mjs';
+import { checkSessionsPreview } from './sessions.check.mjs';
 import { browserLaunchArgs, findBrowserExecutable } from '../tests/browser-support.ts';
 
 const studio = resolve(import.meta.dirname, '..');
@@ -1010,6 +1011,8 @@ try {
     }
     assert.deepEqual(await sections(), []);
   });
+  await step('Background document sessions keep their agent while another sidebar is shown',
+    () => checkSessionsPreview(page, origin));
   await step(
     'Document context, reset, clean canvas, and backend isolation',
     async () => {

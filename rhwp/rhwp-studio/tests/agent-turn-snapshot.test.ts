@@ -204,7 +204,7 @@ function realExecutor(body: string[]) {
   const h = makeEnv(body);
   const executor = new AgentToolExecutor({
     wasm: h.wasm as never,
-    inputHandler: { getCursorPosition: () => ({ sectionIndex: 0, paragraphIndex: 0, charOffset: 0 }), getSelection: () => null } as never,
+    editor: { getCursorPosition: () => ({ sectionIndex: 0, paragraphIndex: 0, charOffset: 0 }), getSelection: () => null } as never,
     documentState: { isDirty: () => false } as never,
     revision: h.revision,
     pending: h.pending,

@@ -141,18 +141,25 @@ export function createThreadsToolbar(options: ThreadsToolbarOptions): ThreadsToo
 // ── 떠 있는 면 ─────────────────────────────────────────
 
 interface FloatingSurface {
+  /** 팝오버를 띄운 사이드바 루트 */
+  readonly host: HTMLElement;
   close(restoreFocus?: boolean): void;
 }
 
 let openSurface: FloatingSurface | null = null;
 
-/** 지금 떠 있는 팝오버를 닫는다(레일이 접히거나 화면이 바뀔 때). */
-export function closeThreadRailSurfaces(): void {
+/**
+ * 지금 떠 있는 팝오버를 닫는다(레일이 접히거나 화면이 바뀔 때). host 를 주면
+ * 그 사이드바가 띄운 팝오버만 닫는다 — 문서마다 사이드바가 따로 있어서,
+ * 뒤에 내려가 있는 사이드바가 보이는 사이드바의 팝오버를 닫지 않게 한다.
+ */
+export function closeThreadRailSurfaces(host?: HTMLElement): void {
+  if (host && openSurface?.host !== host) return;
   openSurface?.close(false);
 }
 
-export function threadRailSurfaceOpen(): boolean {
-  return openSurface !== null;
+export function threadRailSurfaceOpen(host?: HTMLElement): boolean {
+  return openSurface !== null && (!host || openSurface.host === host);
 }
 
 /**
@@ -181,6 +188,7 @@ function mountSurface(
   };
   const onResize = () => handle.close(false);
   const handle: FloatingSurface = {
+    host,
     close(restoreFocus = true) {
       if (closed) return;
       closed = true;

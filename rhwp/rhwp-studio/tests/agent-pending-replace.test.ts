@@ -240,8 +240,7 @@ function makeManager(initial: FakePara[], inputHandlerExtras: Record<string, unk
   const mgr = new PendingEditManager({
     wasm: fake.wasm as never,
     eventBus,
-    inputHandler: inputHandler as never,
-    canvasView: {} as never,
+    editor: inputHandler as never,
     overlay: overlay as never,
   });
   const events: string[] = [];

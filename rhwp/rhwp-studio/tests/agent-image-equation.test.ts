@@ -179,13 +179,12 @@ function makeEnv() {
   const pending = new PendingEditManager({
     wasm: wasm as never,
     eventBus: bus,
-    inputHandler: inputHandler as never,
-    canvasView: {} as never,
+    editor: inputHandler as never,
     overlay: { setOps: () => {}, clear: () => {} } as never,
   });
   const executor = new AgentToolExecutor({
     wasm: wasm as never,
-    inputHandler: inputHandler as never,
+    editor: inputHandler as never,
     documentState: { isDirty: () => false } as never,
     revision,
     pending,

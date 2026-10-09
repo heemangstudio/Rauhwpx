@@ -11,7 +11,9 @@ import type { EventBus } from '../core/event-bus.ts';
 import type { InputHandler } from '../engine/input-handler.ts';
 import type { CanvasView } from '../view/canvas-view.ts';
 import type { DocumentDirtyState } from '../core/document-dirty-state.ts';
-import type { CellPathEntry, CharShapeRun } from '../core/types.ts';
+import type { CellPathEntry, CharShapeRun, DocumentPosition } from '../core/types.ts';
+import type { OperationDescriptor } from '../engine/command.ts';
+import type { RendererSessionContext } from '../desktop-integration.ts';
 import type { CatalogAgent, ModelCatalogEntry } from './models.ts';
 
 export const AGENT_PROTOCOL_VERSION = 5;
@@ -994,15 +996,47 @@ export type SidebarEvent =
   | { type: 'agent'; event: AgentStreamEvent }
   | { type: 'hub-error'; code: string; message: string };
 
+/** 에이전트에게 보여 줄 사용자 커서·선택 (InputHandler.getUserSelectionContext 와 같은 모양). */
+export interface AgentUserSelectionContext {
+  cursor: DocumentPosition;
+  selection: { start: DocumentPosition; end: DocumentPosition } | null;
+}
+
+/**
+ * 에이전트 문서 작업이 쓰는 편집기 — 대기 편집 승인의 히스토리 기록, 커서 읽기, 스냅샷 예산.
+ * 화면에 붙은 문서는 InputHandler 가, 뒤에서 도는 문서는 세션 히스토리를 쥔 헤드리스 호스트가 맡는다.
+ */
+export interface AgentEditorHost {
+  getCursorPosition(): DocumentPosition;
+  executeOperation(desc: OperationDescriptor): void;
+  prepareSnapshotCapacity?(additionalIds: number): void;
+  retainExternalSnapshot?(count?: number): void;
+  releaseExternalSnapshot?(count?: number): void;
+  /** 화면에 보이는 사용자 커서·선택. 보이는 편집기가 없으면 null. */
+  getUserSelectionContext?(): AgentUserSelectionContext | null;
+}
+
+/** 문서가 화면에 붙어 있을 때의 편집기와 캔버스 — 오버레이·편집 위치 따라가기·편집 잠금이 쓴다. */
+export interface AgentViewHost {
+  inputHandler: InputHandler;
+  canvasView: CanvasView;
+}
+
+/**
+ * wasm·eventBus·documentState 는 이 브리지가 맡은 문서 세션 자신의 것이다 — 화면 문서를
+ * 따라 바뀌는 페이지 facade 를 넘기면 문서 전환이 문서 교체로 보여 대기 편집이 버려진다.
+ */
 export interface AgentBridgeDeps {
   wasm: WasmBridge;
   eventBus: EventBus;
-  inputHandler: InputHandler;
-  canvasView: CanvasView;
   documentState: DocumentDirtyState;
   isReadOnly?: () => boolean;
   /** 전체 모드 에이전트의 버전 커밋 — 사이드바 커밋 버튼과 같은 기록에 남긴다. */
   commitVersion?: (message: string) => Promise<void>;
+  /** 문서 작업용 편집기. view 가 있으면 view.inputHandler 를 쓴다. */
+  editor: AgentEditorHost;
+  /** 화면에 붙은 편집기·캔버스. null 이면 화면 밖(백그라운드)에서 시작한다. */
+  view?: AgentViewHost | null;
 }
 
 export interface AgentBridgeOptions {
@@ -1013,6 +1047,11 @@ export interface AgentBridgeOptions {
   templateToken?: string;
   launchId?: string;
   sessionId?: string;
+  /**
+   * 허브 세션 구성 공급자. 있으면 첫 연결과 모든 재연결이 기본 페이지 세션(또는 개발용
+   * 대체값) 대신 이 값을 쓴다 — 한 페이지에서 문서마다 다른 허브 세션을 쥘 때 넘긴다.
+   */
+  resolveSessionContext?: () => Promise<RendererSessionContext | null>;
 }
 
 export interface DocPoint {

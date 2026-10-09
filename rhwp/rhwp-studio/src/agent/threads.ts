@@ -1827,15 +1827,21 @@ export function removeThread(id: string): void {
 
 /**
  * 채팅 기록 삭제 — 문서 파일은 그대로 두고, 그 문서에 속한 채팅을 모두
- * 지운다. 지운 채팅 ID 목록을 돌려준다.
+ * 지운다. keep 이 참인 채팅(다른 세션에서 아직 일하는 채팅 등)은 남긴다.
+ * 지운 채팅 ID 목록을 돌려준다.
  */
-export function forgetDocumentThreads(documentId: string | null, docKey: string | null): string[] {
+export function forgetDocumentThreads(
+  documentId: string | null,
+  docKey: string | null,
+  keep?: (thread: ChatThread) => boolean,
+): string[] {
   // 소속 판정은 documentGroupKey 와 같은 규칙이다 — ID가 있으면 ID로,
   // 없으면 파일명으로만 묶인 레거시 채팅을 지운다.
   const removed = loadAll()
     .filter((thread) => (documentId
       ? thread.documentId === documentId
       : !thread.documentId && (thread.docKey ?? '') === (docKey ?? '')))
+    .filter((thread) => !keep?.(thread))
     .map((thread) => thread.id);
   for (const id of removed) removeThread(id);
   return removed;
