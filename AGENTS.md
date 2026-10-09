@@ -55,7 +55,8 @@ Studio `npm test` imports hub modules, so `rhwp/rhwp-agent/node_modules` must ex
 ## Rust engine (from `rhwp/`)
 
 - Toolchain is pinned by `rust-toolchain.toml` and includes `wasm32-unknown-unknown`.
-- Build `cargo build`; tests `cargo test`; one file `cargo test --test <file_stem>`; one function `cargo test --test <file_stem> <fn>`. Integration tests in `tests/` are mostly named `issue_NNNN_*` / `pr_NNNN_*` and load fixtures from `samples/`.
+- Build `cargo build`; tests `cargo test` (unit tests + the single `it` integration binary); one module `cargo test --test it <module>`; one function `cargo test --test it <module>::<fn>`. Integration tests are modules in `tests/it/` (register each in `tests/it/main.rs`), mostly named `issue_NNNN_*` / `pr_NNNN_*`, and load fixtures from `samples/`; shared helpers live in `tests/it/common.rs`, Hancom page-count pins in `tests/it/page_count_pins.rs`.
+- Corpus roundtrip sweeps and tests over ~20 s in debug live in `tests/sweeps/` (`test = false`, skipped by `cargo test`): `cargo test --profile release-test --test sweeps`. Skia PNG/PDF tests compile only with `cargo test --features native-skia --test it`.
 - Faster optimized build for render comparisons: `cargo build --profile release-test --features native-skia --bin rhwp` (release without LTO).
 - Lint and format from `rhwp/`: `cargo clippy`, `cargo fmt` (max_width 100). `Cargo.toml` deliberately allows many structural lints pending a phased refactor; do not fix or tighten them in unrelated changes.
 - WASM: `wasm-pack build --target web` (wasm-pack 0.15.0), or `npm run build:wasm` from the root.

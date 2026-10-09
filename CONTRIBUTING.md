@@ -38,16 +38,17 @@ npm run desktop
 
 ### Rust 엔진
 
-`rhwp/`에서 실행합니다. 전체 테스트를 돌리기 전에 바꾼 기능을 검증하는 테스트 파일이나 함수로 범위를 좁힐 수 있습니다.
+`rhwp/`에서 실행합니다. 통합 테스트는 `tests/it/` 아래 모듈로 묶인 바이너리 하나(`it`)이고, 필터로 모듈이나 함수를 고릅니다.
 
 ```sh
-cargo test --locked --test <test_file_stem>
-cargo test --locked --test <test_file_stem> <test_function>
+cargo test --locked                                  # 단위 테스트 + it
+cargo test --locked --test it <module>               # 예: issue_2743
+cargo test --locked --test it <module>::<function>
 cargo fmt --check
-cargo clippy --locked
+cargo clippy --locked --tests
 ```
 
-`tests/`의 실제 이름을 사용하세요. 전체 엔진 검증 명령은 [.github/workflows/nightly.yml](.github/workflows/nightly.yml)에 있습니다. WASM을 다시 빌드하려면 저장소 루트에서 `npm run build:wasm`을 실행하세요.
+말뭉치 라운드트립 sweep 과 느린 테스트는 `tests/sweeps/`에 있고 기본 `cargo test`에서 빠집니다. `cargo test --locked --profile release-test --test sweeps`로 실행하세요. PNG/PDF 래스터 테스트는 `cargo test --locked --features native-skia --test it`에서만 컴파일됩니다. 전체 엔진 검증 명령은 [.github/workflows/nightly.yml](.github/workflows/nightly.yml)에 있습니다. WASM을 다시 빌드하려면 저장소 루트에서 `npm run build:wasm`을 실행하세요.
 
 ### Studio와 에이전트
 
