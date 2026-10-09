@@ -892,6 +892,41 @@ export type CompactionTrigger = 'auto' | 'manual';
 /** manual = chat-compact 지원, auto-only = 프로바이더가 스스로만 압축, none = 압축 없음. */
 export type CompactionSupport = 'manual' | 'auto-only' | 'none';
 
+/**
+ * chat-start 대화 항목 종류. question = 에이전트가 사용자에게 물은 질문, answer = 사용자의 답,
+ * tools/tasks = 한 묶음의 도구·하위 에이전트 요약, interrupted = 끝나지 못한 턴.
+ */
+export type ChatHistoryKind =
+  | 'message'
+  | 'question'
+  | 'answer'
+  | 'plan'
+  | 'tools'
+  | 'tasks'
+  | 'progress'
+  | 'error'
+  | 'interrupted';
+
+/** chat-start 의 history / handoffHistory 항목. */
+export interface ChatHistoryEntry {
+  role: 'user' | 'assistant';
+  text: string;
+  /** 없으면 'message'. */
+  kind?: ChatHistoryKind;
+  /** 이 항목을 만든 프로바이더. 사용자 항목은 그 메시지를 받은 프로바이더. */
+  agent?: AgentName;
+  /** 있으면 안정적인 id (messageId, activityId, planId, taskGroupId, interactionId). */
+  id?: string;
+}
+
+/** chat-start 에 싣는 프로바이더 맥락 창 정보. 허브가 넘겨줄 대화 예산을 정한다. */
+export interface ProviderContextUsage {
+  /** 재개할 네이티브 세션이 마지막으로 차지한 토큰. 커서를 보낼 때만 싣는다. */
+  usedTokens?: number;
+  /** 이 프로바이더의 마지막으로 알려진 맥락 창 크기. */
+  maxTokens?: number;
+}
+
 export type SidebarEvent =
   | {
       type: 'connection';

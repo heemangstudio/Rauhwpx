@@ -21,6 +21,13 @@ import {
 } from './agents/codex.mjs';
 import { canResumePiSession, createPiSession } from './agents/pi.mjs';
 import { canResumeCodexThread } from './agents/codex-app-server.mjs';
+import {
+  handoffBudget,
+  handoffTokenCap,
+  normalizeChatHistory,
+  prepareHandoff,
+  resolveContextWindow,
+} from './chat-handoff.mjs';
 import { generateChatTitle } from './agents/title.mjs';
 import {
   CHECKPOINT_TITLE_OVERALL_TIMEOUT_MS,
@@ -424,6 +431,8 @@ const sessions = new HubSessionRegistry({
       nextHubId: 1,
       sessionGeneration: 0,
       missedTurnEnd: null,
+      // 기록 전달이 불확실해진 네이티브 세션 (`${agent}:${sessionId}`) — 다시 이어 받지 않는다.
+      untrustedNativeSessions: new Set(),
       styleCalibration: null,
       pendingInstructionDraft: null,
       auxiliaryProcesses: new Set(),
@@ -2396,27 +2405,38 @@ function makeBackendEventHandler(record, generation) {
     }
     const studioEvent = providerTurnId
       ? { ...evt, turnId: providerTurnId }
-      : evt;
+      : { ...evt };
     if (evt.type === 'turn-start') record.missedTurnEnd = null;
     if (evt.type === 'turn-end') {
       const succeeded = providerTurnSucceeded(evt);
       const compactionTurn = Boolean(activeSession.manualCompaction);
+      delete studioEvent.handoffUncertain;
       sendCompactionEvents(record, settleCompactionAtTurnEnd(activeSession, succeeded, evt), providerTurnId);
+      // 압축 턴은 기록을 싣지도, 비우지도 않는다 — 다음 보통 턴이 그대로 전한다.
+      const delivery = compactionTurn ? null : activeSession.handoffDelivery;
+      if (!compactionTurn) activeSession.handoffDelivery = null;
       if (succeeded) {
         activeSession.nativeTurnSucceeded = true;
         // 공급자가 기록을 받아 저장했다 — 이제야 부트스트랩 기록을 비운다.
         if (!compactionTurn) {
           activeSession.bootstrapHistory = [];
           activeSession.fallbackHistory = [];
+          activeSession.replaceSessionPending = false;
         }
         const providerSessionId = activeSession.backend.getSessionId?.();
         if (typeof providerSessionId === 'string' && providerSessionId) studioEvent.providerSessionId = providerSessionId;
       }
-      if (evt.resumeLost) {
+      if (evt.resumeLost || activeSession.reportResumeLost) {
         studioEvent.resumeLost = true;
+        activeSession.reportResumeLost = false;
         activeSession.resumed = false;
         // 이 턴이 실패했다면 다음 턴은 전체 기록으로 새 세션을 연다.
         if (!succeeded) activeSession.bootstrapHistory = activeSession.fallbackHistory;
+      }
+      // 기록을 실은 턴이 성공하지 못했고 공급자가 그 턴을 받았을 수 있다 → 전달 불확실.
+      const carried = delivery && (delivery.primary || (evt.resumeLost && delivery.fallback));
+      if (!succeeded && carried && (activeSession.providerTurnStarted || evt.handoffUncertain === true)) {
+        markHandoffUncertain(record, activeSession, delivery, evt.stopReason);
       }
       settleAgentTurn(record, activeSession, evt);
       // 서브에이전트 브라우저는 턴과 함께 끝난다 — 메인 브라우저만 다음 턴까지 산다.
@@ -2536,38 +2556,67 @@ function resolveWorkflow(value) {
   throw workflowError('INVALID_WORKFLOW', `Unknown workflow: ${String(value)}`);
 }
 
-const CHAT_HISTORY_MAX_MESSAGES = 40;
-const CHAT_HISTORY_MAX_ENTRY_CHARS = 8_000;
-const CHAT_HISTORY_MAX_TOTAL_CHARS = 32_000;
-
-function normalizeChatHistory(value) {
-  if (!Array.isArray(value)) return [];
-  const history = [];
-  let remaining = CHAT_HISTORY_MAX_TOTAL_CHARS;
-  for (const entry of value.slice(-CHAT_HISTORY_MAX_MESSAGES).reverse()) {
-    if (!entry || (entry.role !== 'user' && entry.role !== 'assistant')) continue;
-    const text = typeof entry.text === 'string' ? entry.text.trim().slice(0, CHAT_HISTORY_MAX_ENTRY_CHARS) : '';
-    if (!text || remaining <= 0) continue;
-    const bounded = text.slice(-remaining);
-    history.unshift({ role: entry.role, text: bounded });
-    remaining -= bounded.length;
-  }
-  return history;
+/**
+ * 이번 턴에 실을 기록을 예산에 맞춰 고른다. 예산은 보낼 프롬프트(기록 제외)를 뺀 값이다.
+ * usedTokens 는 이어 받은 네이티브 세션이 이미 차지한 양이고, 새 세션이면 0 이다.
+ */
+function prepareTurnHandoff(activeSession, history, plainText, usedTokens) {
+  if (!Array.isArray(history) || history.length === 0) return null;
+  return prepareHandoff(history, handoffBudget({
+    cap: handoffTokenCap(process.env),
+    window: activeSession.contextWindow,
+    usedTokens,
+    userText: plainText,
+  }));
 }
 
 /**
  * 공급자가 아직 보지 못한 대화를 프롬프트 앞에 붙인다. 기록은 여기서 비우지 않는다 —
  * 턴이 성공적으로 끝났을 때만 비운다 (실패한 첫 턴 뒤에도 다음 턴이 같은 기록을 싣는다).
  */
-function addReopenedChatHistory(history, prompt) {
-  if (!Array.isArray(history) || history.length === 0) return prompt;
-  const block = [
-    '<reopened_chat_history trust="conversation-transcript">',
-    JSON.stringify(history),
-    'Continue this conversation consistently. The final user request follows after this transcript.',
-    '</reopened_chat_history>',
-  ].join('\n');
-  return `${block}\n\n${prompt}`;
+function handoffPromptText(delivery, turnPrompt) {
+  return addAgentInstructionsContext(delivery ? `${delivery.block}\n\n${turnPrompt}` : turnPrompt);
+}
+
+/** Codex 가 네이티브로 주입할 조각. 인라인으로 보내는 공급자는 무시한다. */
+function handoffPayload(delivery, plainText) {
+  return delivery ? { header: delivery.header, entries: delivery.entries, plainText } : undefined;
+}
+
+/** Studio 가 알려 준 맥락 창 크기·사용량으로 기록 예산의 기준을 정한다. */
+function applyHandoffContext(session, { model, providerContextUsage, resumed }) {
+  const usage = providerContextUsage && typeof providerContextUsage === 'object' ? providerContextUsage : {};
+  session.contextWindow = resolveContextWindow(session.agent, {
+    modelContextLength: session.agent === 'pi' ? piModelConfig(model)?.contextLength : undefined,
+    reportedMaxTokens: usage.maxTokens,
+  });
+  const used = Number(usage.usedTokens);
+  session.resumedUsedTokens = resumed && Number.isFinite(used) && used > 0 ? used : 0;
+}
+
+/**
+ * 기록을 실은 턴이 성공하지 못했는데 공급자가 그 턴을 받았을 수 있다. 그 네이티브 세션은
+ * 기록을 받았는지 알 수 없으므로 다시 이어 받지 않고, 다음 턴은 새 세션에 전체 기록을 보낸다.
+ * 실패한 요청은 이전 세션이 일부만 봤을 수 있어 전체 기록 끝에 덧붙인다.
+ */
+function markHandoffUncertain(record, activeSession, delivery, stopReason) {
+  const nativeId = activeSession.backend.getSessionId?.();
+  if (typeof nativeId === 'string' && nativeId) record.untrustedNativeSessions.add(`${activeSession.agent}:${nativeId}`);
+  activeSession.replaceSessionPending = true;
+  const userText = typeof delivery.userText === 'string' ? delivery.userText.trim() : '';
+  if (userText) {
+    activeSession.fallbackHistory = normalizeChatHistory([
+      ...activeSession.fallbackHistory,
+      { role: 'user', text: userText, agent: activeSession.agent },
+      {
+        role: 'assistant',
+        kind: 'interrupted',
+        agent: activeSession.agent,
+        text: stopReason === 'interrupted' ? 'Turn interrupted before completion.' : 'Turn failed before completion.',
+      },
+    ]);
+  }
+  activeSession.bootstrapHistory = activeSession.fallbackHistory;
 }
 
 function referenceScopes(activeSession) {
@@ -2700,19 +2749,41 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
           addEditReportContext(record, activeSession, addReferenceContext(activeSession, msg.text, prompt, messageAttachments)),
         ),
       );
+      // 기록 예산은 기록을 뺀 이번 프롬프트를 기준으로 턴마다 계산한다.
+      const plainText = addAgentInstructionsContext(turnPrompt);
+      const replaceSession = activeSession.replaceSessionPending === true;
+      const resumedNative = activeSession.resumed && !replaceSession;
+      // 새 세션(재개 실패·세션 교체)에는 전체 기록을 쓰고 사용량은 0 으로 본다.
+      const full = prepareTurnHandoff(activeSession, activeSession.fallbackHistory, plainText, 0);
+      const primary = replaceSession
+        ? full
+        : prepareTurnHandoff(
+          activeSession,
+          activeSession.bootstrapHistory,
+          plainText,
+          resumedNative ? (activeSession.contextUsage?.usedTokens ?? activeSession.resumedUsedTokens ?? 0) : 0,
+        );
       // 재개한 세션이 공급자 저장소에서 사라졌으면 백엔드가 이 글로 바꿔 새 세션을 연다.
-      const resumeFallbackText = activeSession.resumed && !activeSession.nativeTurnSucceeded
-        ? addAgentInstructionsContext(addReopenedChatHistory(activeSession.fallbackHistory, turnPrompt))
-        : undefined;
-      activeSession.backend.sendUserMessage(
-        addAgentInstructionsContext(addReopenedChatHistory(activeSession.bootstrapHistory, turnPrompt)),
-        resumeFallbackText ? { resumeFallbackText } : undefined,
-      );
+      const withResumeFallback = resumedNative && !activeSession.nativeTurnSucceeded;
+      const options = {
+        ...(primary ? { handoff: handoffPayload(primary, plainText) } : {}),
+        ...(withResumeFallback ? { resumeFallbackText: handoffPromptText(full, turnPrompt) } : {}),
+        ...(withResumeFallback && full ? { resumeFallbackHandoff: handoffPayload(full, plainText) } : {}),
+        ...(replaceSession ? { replaceSession: true } : {}),
+      };
+      // 기록을 실은 턴은 성공으로 끝날 때까지 전달 대기다 (turn-end 에서 판정한다).
+      activeSession.handoffDelivery = {
+        primary: Boolean(primary) || replaceSession,
+        fallback: withResumeFallback && Boolean(full),
+        userText: typeof msg.text === 'string' ? msg.text : '',
+      };
+      activeSession.backend.sendUserMessage(handoffPromptText(primary, turnPrompt), options);
     })
     .catch((e) => {
       // A stale rejection belongs to the settled turn. It must not idle or
       // report an error against a newer turn on this same backend session.
       if (!providerTurnIsCurrent(record, providerTurn)) return;
+      activeSession.handoffDelivery = null;
       failPendingProviderCallsForTurn(record, activeSession, providerTurn.turnId);
       activeSession.status = 'idle';
       activeSession.turnId = null;
@@ -2803,7 +2874,8 @@ function startManualCompaction(record, sock, msg) {
     reject('COMPACTION_UNSUPPORTED', 'This provider does not support manual compaction.');
     return;
   }
-  if (!activeSession.resumed && !activeSession.nativeTurnSucceeded) {
+  // 교체가 예정된 세션은 버려질 세션이라 압축할 맥락이 없다.
+  if ((!activeSession.resumed && !activeSession.nativeTurnSucceeded) || activeSession.replaceSessionPending) {
     reject('NOTHING_TO_COMPACT', 'This conversation has no provider context to compact yet.');
     return;
   }
@@ -2853,7 +2925,7 @@ async function startSession(
   requestedHistory,
   force = false,
   requestedServiceTier,
-  { providerSessionId = null, handoffHistory = null } = {},
+  { providerSessionId = null, handoffHistory = null, providerContextUsage = null } = {},
 ) {
   if (record.processCleanupUncertain === true) throw agentProcessCleanupUncertain();
   await ensureBootWork();
@@ -2890,9 +2962,19 @@ async function startSession(
     if (!currentSession.nativeTurnSucceeded && currentSession.status !== 'running' && Array.isArray(requestedHistory)) {
       const fullHistory = normalizeChatHistory(requestedHistory);
       currentSession.fallbackHistory = fullHistory;
-      currentSession.bootstrapHistory = currentSession.resumed && Array.isArray(handoffHistory)
+      // 교체가 예정된 세션은 새 세션으로 가므로 delta 가 아니라 전체 기록을 쓴다.
+      currentSession.bootstrapHistory = currentSession.resumed && !currentSession.replaceSessionPending
+        && Array.isArray(handoffHistory)
         ? normalizeChatHistory(handoffHistory)
         : fullHistory;
+    }
+    if (currentSession.status !== 'running') {
+      applyHandoffContext(currentSession, {
+        model,
+        providerContextUsage,
+        resumed: currentSession.resumed && !currentSession.replaceSessionPending
+          && typeof providerSessionId === 'string' && providerSessionId === currentSession.backend.getSessionId?.(),
+      });
     }
     return currentSession;
   }
@@ -2969,7 +3051,10 @@ async function startSession(
   // 없으면 전체 기록으로 새로 시작한다. 전체 기록은 턴 시점 재개 실패에 대비해 늘 들고 있다.
   const fullHistory = normalizeChatHistory(requestedHistory);
   let resumeSessionId = null;
-  if (typeof providerSessionId === 'string' && providerSessionId) {
+  // 기록 전달이 불확실했던 세션은 이어 받지 않는다. 첫 turn-end 가 resumeLost 로 커서를 지우게 한다.
+  const untrustedCursor = typeof providerSessionId === 'string' && providerSessionId !== ''
+    && record.untrustedNativeSessions.has(`${agent}:${providerSessionId}`);
+  if (typeof providerSessionId === 'string' && providerSessionId && !untrustedCursor) {
     const probe = SESSION_RESUME_PROBES[agent];
     const exists = await Promise.resolve(probe?.(opts, providerSessionId)).catch((error) => {
       log(`resume probe failed (${agent}): ${error?.message ?? error}`);
@@ -3010,6 +3095,11 @@ async function startSession(
     nativeTurnSucceeded: false,
     bootstrapHistory: resumed ? normalizeChatHistory(handoffHistory) : fullHistory,
     fallbackHistory: fullHistory,
+    contextWindow: undefined,
+    resumedUsedTokens: 0,
+    handoffDelivery: null,
+    replaceSessionPending: false,
+    reportResumeLost: untrustedCursor,
     contextUsage: resumed && continuing && currentSession.agent === agent ? currentSession.contextUsage ?? null : null,
     compaction: null,
     manualCompaction: null,
@@ -3019,6 +3109,7 @@ async function startSession(
     pendingTransitions: 0,
     releaseReferenceScopes: referenceStore.retainScopes(sessionReferenceScopes),
   };
+  applyHandoffContext(record.agentSession, { model, providerContextUsage, resumed });
   try {
     if (workflow === 'plan') {
       requireWorkflowSwitchBackend(record.agentSession);
@@ -3389,10 +3480,13 @@ async function handleStudioMessage(record, sock, msg) {
           {
             providerSessionId: typeof msg.providerSessionId === 'string' ? msg.providerSessionId : null,
             handoffHistory: Array.isArray(msg.handoffHistory) ? msg.handoffHistory : null,
+            providerContextUsage: msg.providerContextUsage && typeof msg.providerContextUsage === 'object'
+              ? msg.providerContextUsage
+              : null,
           },
         );
-        const resumedCursor = s.resumed === true || (typeof msg.providerSessionId === 'string'
-          && msg.providerSessionId !== '' && msg.providerSessionId === s.backend.getSessionId?.());
+        const resumedCursor = !s.replaceSessionPending && (s.resumed === true || (typeof msg.providerSessionId === 'string'
+          && msg.providerSessionId !== '' && msg.providerSessionId === s.backend.getSessionId?.()));
         sendJson(sock, {
           v: 1,
           type: 'chat-started',

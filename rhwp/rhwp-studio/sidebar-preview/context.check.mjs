@@ -59,6 +59,6 @@ export async function checkContextPreview(page, origin, artifacts) {
   await page.waitForFunction(() => window.sidebarPreview.snapshot().lastChatStart?.agent === 'claude');
   const back = await page.evaluate(() => window.sidebarPreview.snapshot().lastChatStart);
   assert.match(back.providerSessionId, /^preview-claude-/);
-  assert.equal(back.handoff, 2, 'Codex 차례의 사용자 메시지와 답변');
+  assert.equal(back.handoff, 3, 'Codex 차례의 사용자 메시지, 도구 요약, 답변');
   assert.equal(await markerCount('handoff'), 1);
 }

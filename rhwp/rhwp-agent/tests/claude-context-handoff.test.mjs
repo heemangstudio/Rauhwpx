@@ -194,3 +194,33 @@ test('canResume finds the session transcript under the isolated Claude config', 
   assert.equal(await canResumeClaudeSession({ isolatedHome: home }, '22222222-2222-4222-8222-222222222222'), false);
   assert.equal(await canResumeClaudeSession({ isolatedHome: home }, '../escape'), false);
 });
+
+test('replaceSession stops the resumed process and sends the full transcript on a fresh session id', async () => {
+  const { session, events, children } = startSession({ resumeSessionId: SID });
+  session.sendUserMessage('hello');
+  await waitUntil(() => children.length === 1);
+  children[0].emitJson(
+    { type: 'system', subtype: 'init', session_id: SID, model: 'claude-haiku-5-5' },
+    { type: 'result', subtype: 'success', is_error: false, stop_reason: 'end_turn', result: 'ok', modelUsage: MODEL_USAGE },
+  );
+  await waitUntil(() => events.some((event) => event.type === 'turn-end'));
+  events.length = 0;
+
+  session.sendUserMessage('full transcript', { replaceSession: true });
+  await waitUntil(() => children.length === 2, 'no fresh process for the replaced session');
+  assert.ok(children[0].signalCode, 'the resumed process was not stopped');
+  const fresh = children[1];
+  assert.equal(fresh.argv.includes('--resume'), false);
+  const freshId = fresh.argv[fresh.argv.indexOf('--session-id') + 1];
+  assert.notEqual(freshId, SID);
+  assert.deepEqual(fresh.prompt(), ['full transcript']);
+  fresh.emitJson(
+    { type: 'system', subtype: 'init', session_id: freshId, model: 'claude-haiku-5-5' },
+    { type: 'result', subtype: 'success', is_error: false, stop_reason: 'end_turn', result: 'ok', modelUsage: MODEL_USAGE },
+  );
+  await waitUntil(() => events.some((event) => event.type === 'turn-end'));
+  const end = events.find((event) => event.type === 'turn-end');
+  assert.equal(end.resumeLost, true);
+  assert.equal(session.getSessionId(), freshId);
+  await session.dispose();
+});

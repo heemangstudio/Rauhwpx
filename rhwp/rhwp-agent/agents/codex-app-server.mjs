@@ -26,6 +26,7 @@ import {
   terminateProcessTree,
 } from '../process-tree.mjs';
 import { applyManagedCliLaunch } from '../npm-cli-launch.mjs';
+import { codexHistoryItems } from '../chat-handoff.mjs';
 
 const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol';
 const DEFAULT_MODE_FEATURE = 'default_mode_request_user_input';
@@ -341,6 +342,15 @@ function toolInfo(item) {
   return null;
 }
 
+/**
+ * 앱 서버가 메서드를 모른다는 거절. JSON-RPC 표준은 -32601 이지만 codex 0.162 앱 서버는 요청 enum
+ * 역직렬화에서 -32600 "Invalid request: unknown variant `<method>`, expected one of …" 를 낸다.
+ */
+function isUnknownMethodError(error, method) {
+  if (error?.code === -32601) return true;
+  return error?.code === -32600 && String(error?.message ?? '').includes(`unknown variant \`${method}\``);
+}
+
 /** 스레드 롤아웃(`<codexHome>/sessions/YYYY/MM/DD/rollout-…-<threadId>.jsonl`)이 남아 있는지 본다. */
 export async function canResumeCodexThread(opts, threadId) {
   if (!isSafeSessionId(threadId)) return false;
@@ -396,14 +406,25 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
   } = dependencies;
   // 재개가 사라진 턴의 turn-end 에 resumeLost 를 싣는다 — turn-end 를 내는 곳이 여럿이라 여기서 한 번에.
   let turnResumeLost = false;
+  // 이번 턴에 thread/inject_items 를 보냈다 — 턴이 끝나지 못하면 스레드가 기록을 받았는지 알 수 없다.
+  let turnHistoryInjected = false;
   const onEvent = (event) => {
-    if (event?.type === 'turn-end' && turnResumeLost) {
-      turnResumeLost = false;
-      opts.onEvent({ ...event, resumeLost: true });
+    if (event?.type !== 'turn-end') {
+      opts.onEvent(event);
       return;
     }
-    opts.onEvent(event);
+    const lost = turnResumeLost;
+    const uncertain = turnHistoryInjected && (event.stopReason !== 'completed' || Boolean(event.errorMessage));
+    turnResumeLost = false;
+    turnHistoryInjected = false;
+    opts.onEvent({
+      ...event,
+      ...(lost ? { resumeLost: true } : {}),
+      ...(uncertain ? { handoffUncertain: true } : {}),
+    });
   };
+  // 앱 서버가 thread/inject_items 를 모르면(-32601) 이 세션 동안은 인라인 기록을 보낸다.
+  let historyInjectSupported = true;
   /** @type {import('node:child_process').ChildProcess | null} */
   let proc = null;
   /** @type {CodexJsonRpcConnection | null} */
@@ -1070,7 +1091,29 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     fallback.sendUserMessage(text);
   }
 
-  async function startTurn(text, attempt, resumeFallbackText = null) {
+  /**
+   * 기록을 네이티브 항목으로 넣는다. true = 주입됨(기록 없는 프롬프트를 보낸다), false = 앱 서버가
+   * 메서드를 모른다(인라인으로 보낸다). 그 밖의 오류는 스레드 상태가 불확실하므로 던진다.
+   */
+  async function injectHistory(connection, handoff) {
+    if (!historyInjectSupported) return false;
+    turnHistoryInjected = true;
+    try {
+      await connection.request('thread/inject_items', { threadId, items: codexHistoryItems(handoff) });
+      return true;
+    } catch (error) {
+      // 이 세션에서는 다시 주입하지 않는다 — 모호한 실패 뒤의 교체 턴도 인라인으로 보내야 매 턴 같은
+      // 오류로 막히지 않는다.
+      historyInjectSupported = false;
+      if (!isUnknownMethodError(error, 'thread/inject_items')) throw error;
+      // 모르는 메서드는 요청을 해석하는 단계에서 거절되어 스레드를 건드리지 않는다.
+      turnHistoryInjected = false;
+      process.stderr.write('[codex-app-server] thread/inject_items unsupported; sending history inline\n');
+      return false;
+    }
+  }
+
+  async function startTurn(text, attempt, { resumeFallbackText = null, handoff = null, resumeFallbackHandoff = null } = {}) {
     const stale = () => disposed || attempt !== turnAttempt;
     let connection;
     try {
@@ -1102,7 +1145,31 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
       starting = false;
       return;
     }
-    if (takeResumeLost() && resumeFallbackText) text = resumeFallbackText;
+    let history = handoff;
+    if (takeResumeLost() && resumeFallbackText) {
+      text = resumeFallbackText;
+      history = resumeFallbackHandoff;
+    }
+    if (history && Array.isArray(history.entries) && history.entries.length > 0 && typeof history.plainText === 'string') {
+      let injected;
+      try {
+        injected = await injectHistory(connection, history);
+      } catch (error) {
+        if (stale()) return;
+        starting = false;
+        const cleaned = await stopConnection();
+        const message = `Codex could not add the earlier conversation: ${safeMessage(error)}${cleaned ? '' : ' Process-tree cleanup could not be confirmed.'}`;
+        onEvent({ type: 'error', agent: 'codex', message });
+        onEvent({ type: 'turn-end', agent: 'codex', stopReason: 'failed', errorMessage: message });
+        return;
+      }
+      if (stale()) return;
+      if (interruptRequested) {
+        starting = false;
+        return;
+      }
+      if (injected) text = history.plainText;
+    }
 
     const turnGeneration = generation;
     pendingTurnStart = { connection, generation: turnGeneration };
@@ -1218,17 +1285,31 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     canResume(id) {
       return canResumeCodexThread(opts, id);
     },
-    sendUserMessage(text, { resumeFallbackText } = {}) {
+    sendUserMessage(text, { resumeFallbackText, handoff, resumeFallbackHandoff, replaceSession } = {}) {
       if (disposed) return;
       if (fallback) {
-        fallback.sendUserMessage(text);
+        // legacy exec 는 기록을 인라인으로만 받는다.
+        fallback.sendUserMessage(text, replaceSession ? { replaceSession: true } : undefined);
         return;
       }
       if (starting || turnOpen) throw new Error('A Codex turn is already running');
       starting = true;
       interruptRequested = false;
       turnKind = 'message';
-      void startTurn(text, ++turnAttempt, resumeFallbackText ?? null);
+      turnHistoryInjected = false;
+      if (replaceSession) {
+        // 허브가 이 스레드를 믿지 않는다 — 새 스레드를 열고 turn-end 에 resumeLost 를 싣는다.
+        threadId = null;
+        resumeUnverified = false;
+        resumeLostPending = true;
+        attachedGeneration = 0;
+        lastContextTokens = null;
+      }
+      void startTurn(text, ++turnAttempt, {
+        resumeFallbackText: resumeFallbackText ?? null,
+        handoff: handoff ?? null,
+        resumeFallbackHandoff: resumeFallbackHandoff ?? null,
+      });
     },
     compact() {
       if (disposed) return;
@@ -1237,6 +1318,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
       starting = true;
       interruptRequested = false;
       turnKind = 'compact';
+      turnHistoryInjected = false;
       void startCompaction(++turnAttempt);
     },
     async setPermissionProfile(profile) {

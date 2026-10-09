@@ -682,7 +682,13 @@ export function createPiSession(opts, {
       turnFailureMessage = null;
       onEvent({ type: 'turn-start', agent });
 
-      if (resumeUnverified) {
+      if (options.replaceSession) {
+        // 허브가 이 세션의 기록 전달을 믿지 않는다 — 새 세션 id 로 전체 기록을 보낸다.
+        resumeUnverified = false;
+        turnResumeLost = true;
+        sessionId = crypto.randomUUID();
+        lastContextTokens = null;
+      } else if (resumeUnverified) {
         resumeUnverified = false;
         if (!findPiSessionFileSync(opts, sessionId)) {
           // 이어 쓸 파일이 사라졌다. Pi 는 같은 id 로 빈 세션을 만들 뿐이라 여기서 알아챈다.

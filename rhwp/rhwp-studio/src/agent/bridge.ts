@@ -49,6 +49,8 @@ import {
 } from '../core/document-input-limits.ts';
 import type {
   AgentBridgeDeps,
+  ChatHistoryEntry,
+  ProviderContextUsage,
   AgentBridgeOptions,
   AgentInstructionsDraft,
   AgentInstructionsStatus,
@@ -229,10 +231,11 @@ export function turnEndDisposition(
   };
 }
 
-export interface ChatHistoryEntry {
-  role: 'user' | 'assistant';
-  text: string;
-}
+export type { ChatHistoryEntry };
+
+/** 이 페이지 로드의 영수증 id 꼬리. requestSeq 는 새로고침마다 0 에서 다시 센다. */
+const RECEIPT_SUFFIX = globalThis.crypto?.randomUUID?.().slice(0, 8)
+  ?? Math.random().toString(36).slice(2, 10);
 
 /** chat-start 에 싣는 대화 맥락. 보내는 순간의 스레드에서 새로 만든다. */
 export interface ChatStartContext {
@@ -242,6 +245,8 @@ export interface ChatStartContext {
   providerSessionId?: string;
   /** 재개에 성공했을 때만 쓰는, 이 프로바이더가 아직 못 본 메시지. */
   handoffHistory?: ChatHistoryEntry[];
+  /** 허브가 넘겨줄 대화 예산을 정할 때 쓰는 맥락 창 정보. */
+  providerContextUsage?: ProviderContextUsage;
 }
 
 export type ChatStartContextProvider = (request: { agent: AgentName; threadId: string }) => ChatStartContext | null;
@@ -1427,6 +1432,7 @@ export class AgentBridgeImpl implements AgentBridge {
     history: ChatHistoryEntry[];
     providerSessionId?: string;
     handoffHistory?: ChatHistoryEntry[];
+    providerContextUsage?: ProviderContextUsage;
     force?: boolean;
   } | null = null;
   private chatStartContextProvider: ChatStartContextProvider | null = null;
@@ -3397,7 +3403,10 @@ export class AgentBridgeImpl implements AgentBridge {
     signal?: AbortSignal,
   ): Promise<string | null> {
     const context = this.referenceContext();
-    const messageId = stagedReferenceIds.length > 0 || requireReceipt ? `message-${++this.requestSeq}` : undefined;
+    // 영수증 id 는 채팅 메시지의 messageId 로도 저장돼 워터마크가 된다 — 새로고침 뒤에도 겹치지 않게 한다.
+    const messageId = stagedReferenceIds.length > 0 || requireReceipt
+      ? `message-${++this.requestSeq}-${RECEIPT_SUFFIX}`
+      : undefined;
     return new Promise((resolve) => {
       if (signal?.aborted) {
         resolve(null);
@@ -3466,6 +3475,8 @@ export class AgentBridgeImpl implements AgentBridge {
         delete pending.providerSessionId;
         delete pending.handoffHistory;
       }
+      if (context.providerContextUsage) pending.providerContextUsage = { ...context.providerContextUsage };
+      else delete pending.providerContextUsage;
     }
     this.chatStartSent = this.sendJson({
       v: AGENT_PROTOCOL_VERSION,

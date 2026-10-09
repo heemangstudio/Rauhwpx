@@ -86,9 +86,12 @@ import {
   setThreadTitle,
   addCompactionMarker,
   addHandoffMarker,
+  captureTurnWatermark,
+  createThreadMessageId,
   forgetProviderSession,
   providerStartContext,
   rememberProviderSession,
+  setTurnOutcome,
   pendingUserQuestionMatchesInteraction,
   subscribeThreadChanges,
   waitForThreadsPersistence,
@@ -97,6 +100,7 @@ import {
   type ChatThread,
   type DocumentThreadGroup,
   type ThreadMessage,
+  type ThreadTurnOutcome,
   type ThreadMarkerMessage,
   type ThreadAttachment,
   type ThreadTaskRecord,
@@ -726,6 +730,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   // 환경 패널의 `변경 사항` 행을 눌렀을 때만 열린다.
   const turnChanges = new TurnChanges();
   let turnOwnerThreadId: string | null = null;
+  /** 이번 턴이 성공하면 커서 워터마크가 될 사용자 메시지. 수동 압축 턴은 잡지 않는다. */
+  let turnWatermark: { threadId: string; agent: AgentName; messageId: string } | null = null;
   let workingDiff: DiffItem[] = [];
   let compactChangesOpen = false;
   let changesRefreshTimer: ReturnType<typeof setTimeout> | undefined;
@@ -4618,7 +4624,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       ...(skillName && skillIcon ? { skillIcon } : {}),
       ...(attachments.length ? { attachments } : {}),
       ...(selection ? { selection } : {}),
-      ...(messageId ? { messageId } : {}),
+      messageId: messageId ?? createThreadMessageId(),
     };
     currentThread.messages.push(message);
     currentThread.updatedAt = Date.now();
@@ -6210,8 +6216,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     });
   }
 
-  function systemMessage(text: string): void {
-    currentThread.messages.push({ role: 'system', text, agent: selectedAgent });
+  function systemMessage(text: string, severity?: 'error'): void {
+    currentThread.messages.push({ role: 'system', text, agent: selectedAgent, ...(severity ? { severity } : {}) });
     persistCurrentThread();
     withAutoScroll(() => appendConversation(el('div', 'ag-msg ag-msg-system ag-msg-enter', text)));
   }
@@ -6781,6 +6787,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     switch (event.type) {
       case 'turn-start':
         turnOwnerThreadId = currentThread.id;
+        captureTurnStartWatermark(event.agent);
         turnChanges.begin(currentThread.id);
         rebuildReview();
         // 이전 턴이 비정상 종료돼 남긴 실행 상태를 먼저 닫는다.
@@ -6910,7 +6917,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
         suppressedSpawnCalls.clear();
         fleetView.sweep();
         sweepTasksTranscript();
-        if (event.errorMessage && event.errorMessage !== lastCompactionFailure) systemMessage(event.errorMessage);
+        if (event.errorMessage && event.errorMessage !== lastCompactionFailure) systemMessage(event.errorMessage, 'error');
         lastCompactionFailure = null;
         noteProviderAuthFailure(event.agent, event.errorMessage);
         const completed =
@@ -6936,7 +6943,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
         break;
       }
       case 'error':
-        systemMessage(event.message);
+        systemMessage(event.message, 'error');
         noteProviderAuthFailure(event.agent, event.message);
         break;
       case 'context-usage':
@@ -6965,12 +6972,42 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     if (stored && mutate(stored)) upsertThread(stored);
   }
 
+  /** 턴을 시작한 사용자 메시지를 잡아 둔다. 수동 압축 턴은 대화를 옮기지 않는다. */
+  function captureTurnStartWatermark(agent: AgentName): void {
+    turnWatermark = null;
+    if (activeCompaction?.trigger === 'manual') return;
+    const captured = captureTurnWatermark(currentThread, agent, undeliveredMessages);
+    if (!captured) return;
+    if (captured.assigned) persistCurrentThread();
+    turnWatermark = { threadId: currentThread.id, agent, messageId: captured.messageId };
+  }
+
+  function turnEndOutcome(event: Extract<AgentStreamEvent, { type: 'turn-end' }>): ThreadTurnOutcome | null {
+    if (event.providerSessionId) return null;
+    if (event.stopReason === 'interrupted') return 'interrupted';
+    if (event.errorMessage || event.stopReason === 'failed' || event.stopReason === 'exited'
+      || event.stopReason === 'error') return 'failed';
+    return null;
+  }
+
+  /**
+   * 성공한 턴은 커서와 워터마크(그 턴의 사용자 메시지)를 남기고, 끝나지 못한 턴은 그 메시지에
+   * 결과를 남긴다. 실패한 턴은 워터마크를 옮기지 않으므로 다음 넘겨주기에 다시 간다.
+   */
   function applyTurnEndCursor(event: Extract<AgentStreamEvent, { type: 'turn-end' }>): void {
-    if (!event.resumeLost && !event.providerSessionId) return;
+    const watermark = turnWatermark?.agent === event.agent ? turnWatermark : null;
+    turnWatermark = null;
+    if (!event.resumeLost && !event.providerSessionId && !watermark) return;
+    const outcome = turnEndOutcome(event);
     updateEventThread((thread) => {
       let changed = false;
+      const seenThroughMessageId = watermark?.threadId === thread.id ? watermark.messageId : undefined;
+      if (seenThroughMessageId) changed = setTurnOutcome(thread, seenThroughMessageId, outcome) || changed;
       if (event.resumeLost) changed = forgetProviderSession(thread, event.agent) || changed;
-      if (event.providerSessionId) changed = rememberProviderSession(thread, event.agent, event.providerSessionId) || changed;
+      if (event.providerSessionId) {
+        changed = rememberProviderSession(thread, event.agent, event.providerSessionId, Date.now(), seenThroughMessageId)
+          || changed;
+      }
       return changed;
     });
   }
@@ -7419,7 +7456,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
           renderMessagesFromThread(currentThread);
           updateComposer();
         }
-        systemMessage(`오류 (${e.code}): ${e.message}`);
+        systemMessage(`오류 (${e.code}): ${e.message}`, 'error');
         if (e.code === 'AGENT_SPAWN_FAILED') appendSpawnRetryAction();
         workflowTransitionPending = false;
         planActionPending = false;

@@ -53,7 +53,7 @@ export function redactDiagnosticText(value, secrets = []) {
  *   | { type: 'usage';        agent: AgentName; model: string|null; usage: UsageTokens; costUsd?: number }
  *   | { type: 'context-usage'; agent: AgentName; usedTokens: number; maxTokens?: number; autoCompact?: boolean }
  *   | { type: 'compaction';   agent: AgentName; compactionId: string; phase: 'started'|'completed'|'failed'; trigger: 'auto'|'manual'; beforeTokens?: number; afterTokens?: number; message?: string }
- *   | { type: 'turn-end';     agent: AgentName; stopReason?: string; errorMessage?: string; resumeLost?: true }
+ *   | { type: 'turn-end';     agent: AgentName; stopReason?: string; errorMessage?: string; resumeLost?: true; handoffUncertain?: true }
  *   | { type: 'error';        agent: AgentName; message: string }
  * )} UnifiedAgentEvent
  *
@@ -118,12 +118,25 @@ export function redactDiagnosticText(value, secrets = []) {
  * @property {(request: ProviderUserQuestionRequest, signal: AbortSignal) => Promise<UserQuestionOutcome>} [requestUserInput]
  * @property {(evt: UnifiedAgentEvent) => void} onEvent
  *
+ * @typedef {Object} ContextHandoff 이전 대화를 네이티브 항목으로 넣을 수 있는 공급자(Codex app-server)용 조각.
+ * @property {string} header 범위 안내와 맺음 문구 (첫 user 항목).
+ * @property {{ role: 'user'|'assistant', text: string }[]} entries 이름표가 붙은 기록 항목 (시간순).
+ * @property {string} plainText 기록을 뺀 프롬프트. 주입에 성공하면 이 글을 보낸다.
+ *
+ * @typedef {Object} SendUserMessageOptions
+ * @property {string} [resumeFallbackText] 네이티브 재개가 이 턴에 실패하면 대신 보낼 글 (전체 대화 기록을 담은 프롬프트).
+ *   그 턴의 turn-end 에는 resumeLost: true 가 실린다.
+ * @property {ContextHandoff} [handoff] text 에 인라인으로 붙은 기록과 같은 선택. 인라인 공급자는 무시한다.
+ * @property {ContextHandoff} [resumeFallbackHandoff] resumeFallbackText 에 붙은 전체 기록.
+ * @property {boolean} [replaceSession] 지금의 네이티브 세션을 버리고 새 세션에 text 를 보낸다
+ *   (허브가 기록 전달을 확신하지 못한 세션). 그 턴의 turn-end 에는 resumeLost: true 가 실린다.
+ *   기록 주입이 모호하게 실패하면 turn-end 에 handoffUncertain: true 를 싣는다.
+ *
  * @typedef {Object} AgentSession
  * @property {AgentName} agent
  * @property {() => string | null} getSessionId
- * @property {(text: string, options?: { resumeFallbackText?: string }) => void} sendUserMessage
- *   resumeFallbackText: 네이티브 재개가 이 턴에 실패하면 대신 보낼 글 (전체 대화 기록을 담은 프롬프트).
- *   그 턴의 turn-end 에는 resumeLost: true 가 실린다.
+ * @property {(text: string, options?: SendUserMessageOptions) => void} sendUserMessage
+ *   text 는 기록을 인라인으로 붙인 전체 프롬프트다.
  * @property {'manual'|'auto-only'|'none'} compactionSupport
  * @property {(sessionId: string) => Promise<boolean>} canResume 네이티브 저장소에 세션이 남아 있는지 디스크로 확인한다.
  * @property {() => void} [compact] 수동 맥락 압축을 한 턴으로 돌린다 (compactionSupport === 'manual' 일 때만).

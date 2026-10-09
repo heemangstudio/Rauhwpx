@@ -456,7 +456,7 @@ export function createClaudeSession(opts, {
   const streamedSubagents = new Set();
   let disposed = false;
   let restartReady = Promise.resolve();
-  /** @type {{ text: string } | null} */
+  /** @type {{ text: string, retryText?: string, kind?: string, replaceSession?: boolean } | null} */
   let queuedTurn = null;
   let stderrTail = '';
   // Only root chat sessions with a host callback enter the bidirectional SDK
@@ -1560,6 +1560,11 @@ export function createClaudeSession(opts, {
     turnRetryText = entry.retryText;
     turnResumeLost = false;
     turnResumeRetried = false;
+    if (entry.replaceSession) {
+      // 허브가 이 세션의 기록 전달을 믿지 않는다 — 새 세션 ID 로 전체 기록을 보내고 resumeLost 를 싣는다.
+      forgetLostResume();
+      turnResumeRetried = true;
+    }
     activeCompaction = null;
     sawRootTextDelta = false;
     streamedSubagents.clear();
@@ -1577,6 +1582,8 @@ export function createClaudeSession(opts, {
     if (uncertainTreeCleanup) {
       throw new Error('Claude process-tree cleanup remains unconfirmed; start a new isolated session');
     }
+    // 세션 교체: 지금의 자식/SDK 쿼리를 내리고 그 정리가 끝난 뒤에 새 세션으로 시작한다.
+    if (entry.replaceSession) restartForConfigChange();
     queuedTurn = entry;
     void Promise.all([restartReady, sdkShutdownReady]).then(async ([, sdkCleaned]) => {
       if (queuedTurn !== entry || disposed) return;
@@ -1622,11 +1629,12 @@ export function createClaudeSession(opts, {
     canResume(id) {
       return canResumeClaudeSession(opts, id);
     },
-    sendUserMessage(text, { resumeFallbackText } = {}) {
+    sendUserMessage(text, { resumeFallbackText, replaceSession } = {}) {
       queueTurn({
         kind: 'message',
         text,
         retryText: typeof resumeFallbackText === 'string' && resumeFallbackText ? resumeFallbackText : text,
+        replaceSession: replaceSession === true,
       });
     },
     /** 수동 압축: 슬래시 명령을 켠 스폰에 "/compact" 를 한 턴으로 보낸다. */

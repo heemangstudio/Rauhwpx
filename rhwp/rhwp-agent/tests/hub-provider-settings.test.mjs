@@ -44,6 +44,8 @@ const home = process.env.CODEX_HOME;
 const send = (frame) => process.stdout.write(JSON.stringify(frame) + '\\n');
 let thread = null;
 let buffer = '';
+// 이 프로세스(=한 턴)에 thread/inject_items 로 들어온 글. 응답 본문에 실어 테스트가 본다.
+const injected = [];
 const usage = (threadId, turnId, last) => {
   const b = (n) => ({ totalTokens: n, inputTokens: n, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 });
   send({ method: 'thread/tokenUsage/updated', params: { threadId, turnId, tokenUsage: { total: b(last), last: b(last), modelContextWindow: 258400 } } });
@@ -75,11 +77,16 @@ function handle(frame) {
     thread = frame.params.threadId;
     return reply({ thread: { id: thread } });
   }
+  if (frame.method === 'thread/inject_items') {
+    for (const item of frame.params.items) injected.push(item.role + ':' + item.content[0].text);
+    return reply({});
+  }
   if (frame.method === 'turn/start') {
     const turn = 'turn-' + Date.now();
     send({ method: 'turn/started', params: { threadId: thread, turn: { id: turn, status: 'inProgress' } } });
     reply({ turn: { id: turn, status: 'inProgress' } });
-    send({ method: 'item/agentMessage/delta', params: { threadId: thread, turnId: turn, delta: 'ok' } });
+    const delta = JSON.stringify({ input: frame.params.input[0].text, injected });
+    send({ method: 'item/agentMessage/delta', params: { threadId: thread, turnId: turn, delta } });
     usage(thread, turn, 17780);
     send({ method: 'turn/completed', params: { threadId: thread, turn: { id: turn, status: 'completed' } } });
     return;
@@ -91,6 +98,7 @@ function handle(frame) {
     reply({});
     const turn = 'compact-' + count;
     send({ method: 'turn/started', params: { threadId: thread, turn: { id: turn, status: 'inProgress' } } });
+    send({ method: 'item/agentMessage/delta', params: { threadId: thread, turnId: turn, delta: JSON.stringify({ compact: true, injected }) } });
     send({ method: 'item/started', params: { threadId: thread, turnId: turn, item: { type: 'contextCompaction', id: 'item-' + count } } });
     if (count === 1) send({ method: 'turn/completed', params: { threadId: thread, turn: { id: turn, status: 'completed' } } });
     return;
@@ -110,7 +118,8 @@ async function fixture(t, { holdStartupDelayMs = 0, fakeCodex = false } = {}) {
     models: [
       { id: 'test/reasoning', name: 'Reasoning', reasoning: true, efforts: ['low', 'medium', 'high'], defaultEffort: 'medium' },
       { id: 'test/plain', name: 'Plain', reasoning: false, efforts: [], defaultEffort: null },
-    ].map((model) => ({ ...model, contextLength: 8192, supportsImages: false, pricing: { prompt: 0, completion: 0 } })),
+    // 기록 예산은 모델 맥락 창에서 나온다 — 작은 창(8k)이면 기록이 한 줄도 들어가지 못한다.
+    ].map((model) => ({ ...model, contextLength: 200_000, supportsImages: false, pricing: { prompt: 0, completion: 0 } })),
   }));
   mkdirSync(path.join(piRoot, 'agent'), { recursive: true });
   writeFileSync(path.join(piRoot, 'agent/models.json'), JSON.stringify({ providers: { openrouter: { apiKey: 'fixture-key' } } }));
@@ -226,7 +235,7 @@ test('live hub applies model/effort/provider changes after a turn and preserves 
   assert.equal(effort.effort, 'high');
   const reply = await turn('What word did I ask you to remember?');
   assert.equal(reply.effort, 'high');
-  assert.match(reply.prompt, /reopened_chat_history/);
+  assert.match(reply.prompt, /<chat_history /);
   assert.match(reply.prompt, /orchard/);
   const plain = await start({ model: 'test/plain', effort: '', history });
   assert.equal(plain.effort, null);
@@ -336,7 +345,7 @@ test('a provider resumes its native session with only unseen messages and falls 
   const resumed = await turnWithEnd('Which word?');
   assert.equal(resumed.reply.session, cursor);
   assert.equal(resumed.reply.existed, true);
-  assert.doesNotMatch(resumed.reply.prompt, /reopened_chat_history/);
+  assert.doesNotMatch(resumed.reply.prompt, /<chat_history /);
   assert.equal(resumed.end.providerSessionId, cursor);
 
   // 다른 공급자를 거쳐 돌아오면 그 사이의 메시지만 받는다.
@@ -436,4 +445,98 @@ test('manual compaction is single-flight, completes without a native signal and 
     .map((frame) => frame.event);
   assert.deepEqual(failed.map(({ phase, compactionId }) => [phase, compactionId]), [['failed', second.compactionId]]);
   assert.match(failed[0].message, /중단/);
+});
+
+const PI_HISTORY = [
+  { role: 'user', text: 'Remember the word orchard.', agent: 'pi' },
+  { role: 'assistant', text: 'orchard', agent: 'pi' },
+];
+const CODEX_TURNS = [
+  { role: 'user', text: 'The project codename is PLUM-314.', agent: 'codex' },
+  { role: 'assistant', text: 'Noted.', agent: 'codex' },
+];
+
+test('a resumed session that may have half-received its handoff is replaced and never resumed again', { timeout: 60_000 }, async (t) => {
+  const { start, turnWithEnd } = await fixture(t);
+  await start();
+  const cursor = (await turnWithEnd('Remember the word orchard.')).end.providerSessionId;
+  const history = [...PI_HISTORY, ...CODEX_TURNS];
+  const resumed = await start({ effort: 'high', history, providerSessionId: cursor, handoffHistory: CODEX_TURNS });
+  assert.equal(resumed.resumed, true);
+
+  // 기록을 실은 턴이 공급자에서 시작된 뒤 실패했다 → 이 세션이 기록을 받았는지 알 수 없다.
+  const failed = await turnWithEnd('FAIL');
+  assert.equal(failed.end.stopReason, 'failed');
+  assert.equal(failed.end.handoffUncertain, undefined);
+
+  // 다음 턴은 새 세션에 전체 기록(실패한 요청 포함)을 보내고 옛 커서를 지우게 한다.
+  const replaced = await turnWithEnd('Which codename?');
+  assert.notEqual(replaced.reply.session, cursor);
+  assert.equal(replaced.reply.existed, false);
+  assert.match(replaced.reply.prompt, /orchard[\s\S]*PLUM-314[\s\S]*FAIL[\s\S]*Turn failed before completion/);
+  assert.equal(replaced.end.resumeLost, true);
+  assert.equal(replaced.end.providerSessionId, replaced.reply.session);
+
+  // 다른 탭이나 재연결이 옛 커서를 다시 보내도 이어 받지 않는다.
+  const again = await start({ effort: 'low', history, providerSessionId: cursor, handoffHistory: [] });
+  assert.equal(again.resumed, false);
+  const fresh = await turnWithEnd('Which word?');
+  assert.notEqual(fresh.reply.session, cursor);
+  assert.match(fresh.reply.prompt, /orchard[\s\S]*PLUM-314/);
+  assert.equal(fresh.end.resumeLost, true);
+
+  // 새 커서는 그대로 이어 받는다.
+  const next = await start({ effort: 'medium', history, providerSessionId: replaced.end.providerSessionId, handoffHistory: [] });
+  assert.equal(next.resumed, true);
+});
+
+test('the handoff budget counts the resumed session usage but not for a fresh session', { timeout: 60_000 }, async (t) => {
+  const { start, turnWithEnd } = await fixture(t);
+  await start();
+  const cursor = (await turnWithEnd('Remember the word orchard.')).end.providerSessionId;
+  const history = [...PI_HISTORY, ...CODEX_TURNS];
+  // 200k 창에서 150k 를 이미 쓴 세션에는 여유분(50k)을 남기면 기록이 들어갈 자리가 없다.
+  const full = { usedTokens: 150_000, maxTokens: 200_000 };
+  assert.equal((await start({ effort: 'high', history, providerSessionId: cursor, handoffHistory: CODEX_TURNS, providerContextUsage: full })).resumed, true);
+  assert.doesNotMatch((await turnWithEnd('Continue.')).reply.prompt, /PLUM-314/);
+  // 같은 사용량이 와도 새 세션은 비어 있으므로 전체 기록이 들어간다.
+  assert.equal((await start({ effort: 'low', history, providerContextUsage: full })).resumed, false);
+  assert.match((await turnWithEnd('Continue.')).reply.prompt, /orchard[\s\S]*PLUM-314/);
+});
+
+test('Codex gets the handoff as native items on the next ordinary turn, never during manual compaction', { timeout: 60_000 }, async (t) => {
+  const { studio, start } = await fixture(t, { fakeCodex: true });
+  const codexTurn = async (text) => {
+    studio.send({ type: 'chat-user-message', text, threadId: 'thread-settings', documentId: 'document-settings' });
+    const delta = await studio.next((frame) => frame.type === 'agent-event' && frame.event.type === 'text-delta');
+    const end = await studio.next((frame) => frame.type === 'agent-event' && frame.event.type === 'turn-end');
+    return { reply: JSON.parse(delta.event.text), end: end.event };
+  };
+  const codex = { agent: 'codex', model: 'gpt-5.6-luna' };
+  await start({ ...codex, effort: 'low' });
+  const first = await codexTurn('hello');
+  assert.equal(first.end.providerSessionId, 'thread-fake');
+  const resumed = await start({
+    ...codex, effort: 'high', history: [...PI_HISTORY, ...CODEX_TURNS], providerSessionId: 'thread-fake', handoffHistory: PI_HISTORY,
+  });
+  assert.equal(resumed.resumed, true);
+
+  // 압축 턴은 기록을 싣지도, 비우지도 않는다.
+  studio.send({ type: 'chat-compact', requestId: 'compact', threadId: 'thread-settings' });
+  assert.equal((await studio.next((frame) => frame.requestId === 'compact')).type, 'chat-compact-accepted');
+  const compactDelta = await studio.next((frame) => frame.type === 'agent-event' && frame.event.type === 'text-delta');
+  assert.deepEqual(JSON.parse(compactDelta.event.text), { compact: true, injected: [] });
+  const compactEnd = await studio.next((frame) => frame.type === 'agent-event' && frame.event.type === 'turn-end');
+  assert.equal(compactEnd.event.stopReason, 'completed');
+
+  const delivered = await codexTurn('Which word?');
+  assert.equal(delivered.reply.injected.length, 3);
+  assert.match(delivered.reply.injected[0], /^user:Context handoff: 2 of 2 earlier chat entries included/);
+  assert.equal(delivered.reply.injected[1], 'user:[user · Pi]\nRemember the word orchard.');
+  assert.equal(delivered.reply.injected[2], 'assistant:[assistant · Pi]\norchard');
+  assert.doesNotMatch(delivered.reply.input, /orchard|chat_history/);
+  assert.match(delivered.reply.input, /Which word\?/);
+
+  // 성공한 턴이 기록을 전했으므로 다음 턴에는 다시 넣지 않는다.
+  assert.deepEqual((await codexTurn('And now?')).reply.injected, []);
 });

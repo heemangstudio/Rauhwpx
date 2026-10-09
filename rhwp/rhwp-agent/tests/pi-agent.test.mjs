@@ -933,3 +933,24 @@ test('a Pi resume cursor reuses the session file and falls back to the full tran
   lost.spawns[0].proc.exit(0);
   assert.deepEqual(lost.events.at(-1), { type: 'turn-end', agent: 'pi', stopReason: 'completed', resumeLost: true });
 });
+
+test('replaceSession opens a fresh Pi session for the full transcript and reports the old cursor lost', async (t) => {
+  const piRoot = mkdtempSync(path.join(os.tmpdir(), 'rhwp-pi-replace-'));
+  t.after(() => rmSync(piRoot, { recursive: true, force: true }));
+  const rootDir = path.join(piRoot, 'work');
+  fs.mkdirSync(path.join(piRoot, 'sessions'), { recursive: true });
+  writeFileSync(
+    path.join(piRoot, 'sessions', '2026-10-09T00-00-00-000Z_kept-2.jsonl'),
+    `${JSON.stringify({ type: 'session', version: 3, id: 'kept-2', cwd: rootDir })}\n`,
+  );
+  const { session, spawns, events } = startSession({ piRoot, rootDir, resumeSessionId: 'kept-2' });
+  session.sendUserMessage('full transcript', { replaceSession: true, resumeFallbackText: 'unused' });
+  const argv = spawns[0].argv;
+  const fresh = argv[argv.indexOf('--session-id') + 1];
+  assert.notEqual(fresh, 'kept-2');
+  assert.equal(session.getSessionId(), fresh);
+  assert.deepEqual(spawns[0].proc.stdin.chunks, ['full transcript']);
+  spawns[0].proc.emitJson({ type: 'agent_settled' });
+  spawns[0].proc.exit(0);
+  assert.deepEqual(events.at(-1), { type: 'turn-end', agent: 'pi', stopReason: 'completed', resumeLost: true });
+});

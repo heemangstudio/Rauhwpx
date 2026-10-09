@@ -228,7 +228,7 @@ export function createLegacyCodexSession(opts, {
   let suppressChildOutput = () => {};
   const pendingTreeCleanups = new Set();
   let uncertainTreeCleanup = false;
-  /** @type {{ text: string } | null} */
+  /** @type {{ text: string, options?: { replaceSession?: boolean } } | null} */
   let queuedTurn = null;
   /**
    * 이번 턴의 롤아웃 워처. codex --json 에는 자식 에이전트 활동이 한 줄도 오지
@@ -249,10 +249,15 @@ export function createLegacyCodexSession(opts, {
     }
   }
 
+  // 허브가 세션 교체를 요청한 턴 — 새 스레드로 시작하고 turn-end 에 resumeLost 를 싣는다.
+  let turnResumeLost = false;
+
   function endTurn(evt) {
     if (!turnOpen) return;
     turnOpen = false;
-    onEvent(evt);
+    const lost = turnResumeLost;
+    turnResumeLost = false;
+    onEvent(lost ? { ...evt, resumeLost: true } : evt);
   }
 
   function makeHandler() {
@@ -425,7 +430,7 @@ export function createLegacyCodexSession(opts, {
     canResume(id) {
       return canResumeCodexThread(opts, id);
     },
-    sendUserMessage(text) {
+    sendUserMessage(text, options = {}) {
       if (disposed) return;
       if (turnOpen || queuedTurn) throw new Error('Codex already has a turn in progress');
       if (uncertainTreeCleanup) {
@@ -441,7 +446,7 @@ export function createLegacyCodexSession(opts, {
         return;
       }
       if (child) {
-        const queued = { text };
+        const queued = { text, options };
         queuedTurn = queued;
         const ownership = childExitPromise;
         void stopChild('queue');
@@ -450,7 +455,7 @@ export function createLegacyCodexSession(opts, {
           queuedTurn = null;
           if (disposed) return;
           if (cleaned && !child) {
-            session.sendUserMessage(queued.text);
+            session.sendUserMessage(queued.text, queued.options);
             return;
           }
           turnOpen = true;
@@ -483,6 +488,10 @@ export function createLegacyCodexSession(opts, {
       turnOpen = true;
       turnCompleted = false;
       turnFailureMessage = null;
+      if (options?.replaceSession) {
+        threadId = null;
+        turnResumeLost = true;
+      }
       onEvent({ type: 'turn-start', agent: 'codex' });
 
       // 프롬프트는 positional 인자가 아니라 stdin('-')으로 전달한다: '-' 로 시작하는

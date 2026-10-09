@@ -719,6 +719,36 @@ test('bridge: an implicit restart after a hub restart rebuilds history and curso
   await sent;
 });
 
+test('bridge: chat-start carries the provider window and resumed-session usage computed at send time', () => {
+  const thread = sampleThread();
+  thread.messages[0]!.messageId = 'msg-first';
+  const { bridge, starts } = contextBridge({ state: 'connecting', activeAgent: null });
+  bridge.setChatStartContextProvider(({ agent }: { agent: 'claude' }) => providerStartContext(thread, agent));
+  bridge.startChat('claude', undefined, undefined, false, 'safe', 'direct', 'thread-1', 'doc-1', 'a.hwpx');
+  // 보내기 전에 성공한 턴이 끝나 커서와 사용량이 생겼다 — 보내는 순간의 값이 실린다.
+  thread.contextUsage = { agent: 'claude', usedTokens: 64_000, maxTokens: 200_000, updatedAt: 1 };
+  rememberProviderSession(thread, 'claude', 'claude-native', 1, 'msg-first');
+  bridge.state = 'connected';
+  bridge.sendPendingChatStart();
+  assert.equal(starts()[0].providerSessionId, 'claude-native');
+  assert.deepEqual(starts()[0].providerContextUsage, { usedTokens: 64_000, maxTokens: 200_000 });
+  assert.deepEqual(starts()[0].handoffHistory, []);
+});
+
+test('bridge: message receipt ids do not repeat after a page reload', async () => {
+  const reloaded = await import('../src/agent/bridge.ts?reload');
+  const receipts: string[] = [];
+  for (const Impl of [AgentBridgeImpl, reloaded.AgentBridgeImpl]) {
+    const { bridge, frames } = contextBridge();
+    Object.setPrototypeOf(bridge, Impl.prototype);
+    receipts.push(await bridge.sendUserMessage('첨부와 함께', undefined, [], true));
+    assert.equal(frames.at(-1).messageId, receipts.at(-1));
+  }
+  assert.match(receipts[0]!, /^message-1-/);
+  assert.match(receipts[1]!, /^message-1-/);
+  assert.notEqual(receipts[0], receipts[1]);
+});
+
 test('bridge: a start remembered while offline is rebuilt when the socket finally sends it', () => {
   const thread = sampleThread();
   const { bridge, starts } = contextBridge({ state: 'connecting', activeAgent: null });
