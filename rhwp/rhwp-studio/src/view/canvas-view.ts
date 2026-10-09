@@ -8,7 +8,13 @@ import { PageRenderer, type PageRenderContext, type PageRenderResult } from './p
 import { MAX_ZOOM, MIN_ZOOM, ViewportManager } from './viewport-manager';
 import { CoordinateSystem } from './coordinate-system';
 import type { CanvasKitRenderDiagnostics } from './canvaskit-renderer';
-import { clampRenderScale, regionRenderScale, type RenderBackend } from './render-backend';
+import {
+  MAX_CANVASKIT_RENDER_PIXELS,
+  MAX_RENDER_PIXELS,
+  clampRenderScale,
+  regionRenderScale,
+  type RenderBackend,
+} from './render-backend';
 import { PageDetailLayers, planPageDetail, type PageDetailPlan } from './page-detail';
 import {
   RendererSession,
@@ -76,6 +82,7 @@ export class CanvasView {
   /** 마지막으로 발행한 current-page-changed 의 `쪽|전체 쪽 수` */
   private lastCurrentPageKey = '';
   private headerFooterEditState: HeaderFooterModeState | null = null;
+  private stopHeaderFooterPictureWait: (() => void) | null = null;
   private gridOverlaysByPage = new Map<number, HTMLElement[]>();
   private pageDetails: PageDetailLayers;
   private pageDetailTimer: ReturnType<typeof setTimeout> | null = null;
@@ -123,15 +130,15 @@ export class CanvasView {
     this.viewportManager.attachTo(container);
     this.unsubscribers.push(this.watchDevicePixelRatio(), this.watchCanvasContextRestore());
     // trap 뒤에는 어떤 예약 작업도 엔진을 부를 수 없다. 대기 중인 이미지 재렌더·선렌더·검증
-    // 타이머가 마지막으로 그린 쪽을 지우지 않도록 모두 끊는다.
+    // 타이머가 마지막으로 그린 쪽을 지우지 않도록 모두 끊는다. 다시 그릴 수 없는 detail 층은
+    // 지워 쪽 canvas 하나의 상태만 보여 준다.
     this.unsubscribers.push(onEngineTrap(() => {
       this.pageRenderer.cancelAll();
       this.cancelPendingPrefetch();
       this.cancelTextEditStaticLayerVerification();
       this.cancelAutoRendererReselection();
+      this.clearPageDetails();
     }));
-    // trap 뒤에는 detail 층을 다시 그릴 수 없다. 쪽 canvas 만 남겨 하나의 상태를 보여 준다.
-    this.unsubscribers.push(onEngineTrap(() => this.clearPageDetails()));
 
     this.unsubscribers.push(
       eventBus.on('viewport-scroll', () => {
@@ -591,7 +598,7 @@ export class CanvasView {
         const previewCanvas = document.createElement('canvas');
         previewCanvas.className = 'hf-edit-preview-canvas';
         try {
-          this.wasm.renderHeaderFooterEditPreviewRegionToCanvas(
+          const pendingPictures = this.wasm.renderHeaderFooterEditPreviewRegionToCanvas(
             pageIdx,
             state.sectionIdx,
             state.mode === 'header',
@@ -600,6 +607,7 @@ export class CanvasView {
             scale,
             region,
           );
+          if (pendingPictures > 0) this.repaintHeaderFooterPreviewAfterDecode();
           const cssPerDevice = zoom / scale;
           previewCanvas.style.left = `${region.x * cssPerDevice}px`;
           previewCanvas.style.top = `${region.y * cssPerDevice}px`;
@@ -642,6 +650,16 @@ export class CanvasView {
         const pageIdx = Number(element.dataset.rhwpHfEditPage);
         if (!desiredPages.has(pageIdx)) discardHeaderFooterEditOverlay(element);
       });
+  }
+
+  /** preview 를 그릴 때 디코드 중이던 그림이 모두 끝나면 overlay 를 다시 그린다. */
+  private repaintHeaderFooterPreviewAfterDecode(): void {
+    this.stopHeaderFooterPictureWait ??= this.wasm.onPictureDecoded((pendingDecodes) => {
+      if (pendingDecodes > 0) return;
+      this.stopHeaderFooterPictureWait?.();
+      this.stopHeaderFooterPictureWait = null;
+      if (!this.disposed && !engineTrap()) this.renderHeaderFooterEditOverlays(true);
+    });
   }
 
   private removeHeaderFooterEditOverlays(): void {
@@ -755,8 +773,12 @@ export class CanvasView {
       console.error(`[CanvasView] 페이지 ${pageIdx} 정보가 없습니다`);
       return false;
     }
-    // iOS/WebKit과 GPU surface가 감당하기 어려운 물리 픽셀 수를 중앙 정책으로 제한한다.
-    const renderScale = clampRenderScale(pageInfo, zoom * rawDpr);
+    // 물리 픽셀 수를 백엔드별 상한으로 묶는다. Canvas2D 는 상한을 넘는 배율에서 page-detail 층이
+    // 보이는 영역만 원래 배율로 덧그린다.
+    const maxPixels = this.pageRenderer.getBackend() === 'canvaskit'
+      ? MAX_CANVASKIT_RENDER_PIXELS
+      : MAX_RENDER_PIXELS;
+    const renderScale = clampRenderScale(pageInfo, zoom * rawDpr, maxPixels);
     const dpr = renderScale / (zoom > 0 ? zoom : 1);
 
     // Canvas를 DOM에 추가하고 위치를 설정한다
@@ -1340,7 +1362,7 @@ export class CanvasView {
   private releaseAllRenderedPages(): void {
     // pool 로 돌아가는 canvas 를 붙잡은 지연 재렌더가 남지 않게 먼저 모두 끊는다.
     this.pageRenderer.cancelAll();
-    this.pageRenderer.resetImageRetryState();
+    this.pageRenderer.resetPageCaches();
     this.pageRenderer.removeAllPageLayers(this.scrollContent);
     this.removeHeaderFooterEditOverlays();
     this.removeAllGridOverlays();
@@ -1535,6 +1557,7 @@ export class CanvasView {
     this.cancelAutoRendererReselection();
     this.reset();
     this.pageRenderer.dispose();
+    this.stopHeaderFooterPictureWait?.();
     this.rendererSession.dispose();
     this.viewportManager.detach();
     for (const unsub of this.unsubscribers) {

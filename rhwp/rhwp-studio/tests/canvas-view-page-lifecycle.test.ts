@@ -60,7 +60,7 @@ test('canvas 를 pool 로 돌려주는 모든 경로가 대기 작업을 먼저 
 test('엔진 trap 뒤에는 예약된 쪽 작업이 엔진을 부르지 않는다', () => {
   assert.match(
     source,
-    /onEngineTrap\(\(\) => \{\s*this\.pageRenderer\.cancelAll\(\);\s*this\.cancelPendingPrefetch\(\);\s*this\.cancelTextEditStaticLayerVerification\(\);\s*this\.cancelAutoRendererReselection\(\);\s*\}\)/,
+    /onEngineTrap\(\(\) => \{\s*this\.pageRenderer\.cancelAll\(\);\s*this\.cancelPendingPrefetch\(\);\s*this\.cancelTextEditStaticLayerVerification\(\);\s*this\.cancelAutoRendererReselection\(\);\s*this\.clearPageDetails\(\);\s*\}\)/,
   );
   // 눈금자도 스크롤 프레임마다 pageCount/getPageInfo 를 부른다. 크기 동기(비트맵 지우기) 전에 멈춘다.
   const update = methodBody(rulerSource, '  update(): void {');

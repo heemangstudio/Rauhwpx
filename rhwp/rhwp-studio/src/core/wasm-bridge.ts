@@ -3846,7 +3846,10 @@ export class WasmBridge {
     ));
   }
 
-  /** HF 대표 편집 preview 의 일부 영역만 그린다. 영역 좌표는 renderPageRegionToCanvas 와 같다. */
+  /**
+   * HF 대표 편집 preview 의 일부 영역만 그린다. 영역 좌표는 renderPageRegionToCanvas 와 같다.
+   * 디코드를 기다리는 그림 수를 돌려준다.
+   */
   renderHeaderFooterEditPreviewRegionToCanvas(
     pageNum: number,
     sectionIdx: number,
@@ -3855,9 +3858,9 @@ export class WasmBridge {
     canvas: HTMLCanvasElement,
     scale: number,
     region: CanvasDeviceRect,
-  ): void {
+  ): number {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
-    this.doc.renderHeaderFooterEditPreviewRegionToCanvas(
+    return Number(this.doc.renderHeaderFooterEditPreviewRegionToCanvas(
       pageNum,
       sectionIdx,
       isHeader,
@@ -3868,7 +3871,7 @@ export class WasmBridge {
       region.y,
       region.width,
       region.height,
-    );
+    )) || 0;
   }
 
   deleteHeaderFooter(sectionIdx: number, isHeader: boolean, applyTo: number): void {

@@ -659,26 +659,6 @@ export class PageRenderer {
     ).forEach(discardPageLayer);
   }
 
-  /**
-   * 페이지를 본문 layer (flow) 만 Canvas 에 렌더링한다 (Task #516, Stage 5.2).
-   * BehindText / InFrontOfText plane 은 제외 — overlay canvas 로 별도 표시.
-   */
-  renderPageFlow(
-    pageIdx: number,
-    canvas: HTMLCanvasElement,
-    scale: number,
-    pageInfo?: PageInfo,
-  ): void {
-    if (pageInfo) this.pageInfoByPage.set(pageIdx, pageInfo);
-    this.renderPendingPictures = 0;
-    this.renderLayer(pageIdx, canvas, scale, 'flow');
-    this.drawMarginGuides(pageIdx, canvas, scale);
-    this.scheduleReRender(pageIdx, canvas, scale, this.renderPendingPictures, {
-      reuseStaticFlow: false,
-      reuseStaticOverlay: true,
-    });
-  }
-
   private shouldSplitStaticFlow(layers: LayerPlaneSummary): boolean {
     return (
       !layers.hasBehind &&
@@ -1074,7 +1054,7 @@ export class PageRenderer {
     this.pictureProgressTimer = null;
   }
 
-  resetImageRetryState(): void {
+  resetPageCaches(): void {
     this.layerSummaryCache.clear();
     this.canvaskitDiagnosticsByPage.clear();
     this.pageInfoByPage.clear();

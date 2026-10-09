@@ -24,7 +24,8 @@ use web_sys::{
 const PICTURE_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 const PICTURE_MAX_ENTRIES: usize = 256;
 /// 이 시간 안에 그린 그림은 예산을 넘어도 내보내지 않는다. 한 화면에 필요한 그림이 예산보다
-/// 크면 디코드 → 내보냄 → 재요청이 끝없이 돌기 때문이다. 넘친 몫은 이 시간이 지난 뒤 정리한다.
+/// 크면 디코드 → 내보냄 → 재요청이 끝없이 돌기 때문이다. 넘친 몫은 다음 디코드가 들어올 때
+/// 정리한다. 쉬는 동안 정리하면 편집하던 쪽의 그림이 다음 입력에서 비었다가 다시 나타난다.
 const RECENT_USE_MS: f64 = 1000.0;
 /// 디코드 폭탄 방어. 헤더가 이보다 큰 그림은 디코드하지 않는다.
 const MAX_SOURCE_PIXELS: f64 = 100_000_000.0;
@@ -94,7 +95,6 @@ struct PictureCache {
     entries: HashMap<u64, Entry>,
     total_bytes: usize,
     in_flight: usize,
-    trim_scheduled: bool,
 }
 
 impl PictureCache {
@@ -105,13 +105,13 @@ impl PictureCache {
         }
     }
 
-    /// 예산 안으로 줄인다. 최근에 그린 그림만 남아 줄일 수 없으면 true.
-    fn trim(&mut self, now: f64) -> bool {
+    /// 예산 안으로 줄인다. 최근에 그린 그림만 남으면 넘친 채로 둔다.
+    fn trim(&mut self, now: f64) {
         loop {
             let over_bytes = self.total_bytes > PICTURE_BUDGET_BYTES;
             let over_entries = self.entries.len() > PICTURE_MAX_ENTRIES;
             if !over_bytes && !over_entries {
-                return false;
+                return;
             }
             let victim = self
                 .entries
@@ -124,7 +124,7 @@ impl PictureCache {
                 .min_by(|a, b| a.1.last_used.total_cmp(&b.1.last_used))
                 .map(|(key, _)| *key);
             let Some(key) = victim else {
-                return true;
+                return;
             };
             if let Some(mut entry) = self.entries.remove(&key) {
                 self.release(&mut entry);
@@ -422,14 +422,14 @@ async fn decode(input: DecodeInput) -> Result<ImageBitmap, JsValue> {
 
 fn settle(key: u64, level: i32, result: Result<ImageBitmap, JsValue>) {
     let now = now_ms();
-    let (pending, schedule_trim) = CACHE.with(|cache| {
+    let pending = CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         cache.in_flight = cache.in_flight.saturating_sub(1);
         let Some(mut entry) = cache.entries.remove(&key) else {
             if let Ok(bitmap) = &result {
                 bitmap.close();
             }
-            return (cache.in_flight, false);
+            return cache.in_flight;
         };
         if entry.pending == Some(level) {
             entry.pending = None;
@@ -458,41 +458,10 @@ fn settle(key: u64, level: i32, result: Result<ImageBitmap, JsValue>) {
             Err(_) => entry.failed_from = entry.failed_from.min(level),
         }
         cache.entries.insert(key, entry);
-        let still_over = cache.trim(now);
-        let schedule = still_over && !cache.trim_scheduled;
-        if schedule {
-            cache.trim_scheduled = true;
-        }
-        (cache.in_flight, schedule)
+        cache.trim(now);
+        cache.in_flight
     });
-    if schedule_trim {
-        schedule_deferred_trim();
-    }
     notify(pending);
-}
-
-fn schedule_deferred_trim() {
-    let Some(window) = web_sys::window() else {
-        return;
-    };
-    let callback = Closure::once_into_js(|| {
-        let reschedule = CACHE.with(|cache| {
-            let mut cache = cache.borrow_mut();
-            cache.trim_scheduled = false;
-            let still_over = cache.trim(now_ms());
-            if still_over {
-                cache.trim_scheduled = true;
-            }
-            still_over
-        });
-        if reschedule {
-            schedule_deferred_trim();
-        }
-    });
-    let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-        callback.unchecked_ref(),
-        RECENT_USE_MS as i32,
-    );
 }
 
 fn notify(pending: usize) {

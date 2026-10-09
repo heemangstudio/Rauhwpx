@@ -959,47 +959,11 @@ impl HwpDocument {
         Ok(renderer.pending_pictures())
     }
 
-    /// 구역 첫 페이지에 요청한 머리말/꼬리말 정의를 가상 투영해 Canvas 2D로 렌더링한다.
+    /// 구역 첫 페이지에 요청한 머리말/꼬리말 정의를 가상 투영해 Canvas 2D로 영역만 렌더링한다.
     ///
-    /// 일반 page tree cache와 pagination active target은 바꾸지 않는다. Studio는 결과 canvas를
-    /// 머리말/꼬리말 밴드에만 clip해 편집 중 비인쇄 overlay로 사용한다.
-    #[cfg(target_arch = "wasm32")]
-    #[wasm_bindgen(js_name = renderHeaderFooterEditPreviewToCanvas)]
-    pub fn render_header_footer_edit_preview_to_canvas(
-        &self,
-        page_num: u32,
-        section_idx: u32,
-        is_header: bool,
-        apply_to: u8,
-        canvas: &HtmlCanvasElement,
-        scale: f64,
-    ) -> Result<u32, JsValue> {
-        use crate::renderer::web_canvas::WebCanvasRenderer;
-
-        let tree = self
-            .build_header_footer_edit_preview_tree(
-                page_num,
-                section_idx as usize,
-                is_header,
-                apply_to,
-            )
-            .map_err(JsValue::from)?;
-        let scale = normalize_canvas_scale(tree.root.bbox.width, tree.root.bbox.height, scale)
-            .map_err(JsValue::from_str)?;
-
-        canvas.set_width(scaled_canvas_extent(tree.root.bbox.width, scale));
-        canvas.set_height(scaled_canvas_extent(tree.root.bbox.height, scale));
-
-        let mut renderer = WebCanvasRenderer::new(canvas)?;
-        renderer.show_paragraph_marks = self.show_paragraph_marks;
-        renderer.show_control_codes = self.show_control_codes;
-        renderer.set_scale(scale);
-        renderer.render_tree(&tree);
-        Ok(renderer.pending_pictures())
-    }
-
-    /// `renderHeaderFooterEditPreviewToCanvas` 의 영역 판. Studio 는 머리말/꼬리말 밴드만
-    /// 덮는 canvas 를 화면 배율 그대로 그린다. 영역 좌표는 `renderPageRegionToCanvas` 와 같다.
+    /// 일반 page tree cache와 pagination active target은 바꾸지 않는다. Studio 는 머리말/꼬리말
+    /// 밴드만 덮는 canvas 를 화면 배율 그대로 그려 편집 중 비인쇄 overlay 로 쓴다. 영역 좌표는
+    /// `renderPageRegionToCanvas` 와 같다.
     #[cfg(target_arch = "wasm32")]
     #[wasm_bindgen(js_name = renderHeaderFooterEditPreviewRegionToCanvas)]
     #[allow(clippy::too_many_arguments)]

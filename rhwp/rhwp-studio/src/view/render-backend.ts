@@ -164,13 +164,19 @@ export const MAX_CANVAS_DIMENSION = 16_384;
  * 장치 해상도 그대로 그리고, 그 위 배율은 보이는 영역만 page-detail 층이 원래 배율로 덧그린다.
  */
 export const MAX_RENDER_PIXELS = 16_777_216;
+/** page-detail 층이 없는 CanvasKit 의 상한. iOS/WebKit 과 GPU surface 가 감당할 물리 픽셀 수다. */
+export const MAX_CANVASKIT_RENDER_PIXELS = 67_108_864;
 
 /**
  * 쪽 canvas 물리 배율을 정한다. 엔진이 요청 배율을 [0.25, 12]와 한 변 16384px로 다시
  * 자르므로 여기서 같은 규칙을 먼저 적용해, CanvasView 가 쓰는 dpr(= 배율 / zoom)이
  * 실제 비트맵과 늘 맞게 한다. 결과는 엔진 정규화를 다시 거쳐도 바뀌지 않는다.
  */
-export function clampRenderScale(pageInfo: PageInfo, requestedScale: number): number {
+export function clampRenderScale(
+  pageInfo: PageInfo,
+  requestedScale: number,
+  maxPixels = MAX_RENDER_PIXELS,
+): number {
   const requested = Number.isFinite(requestedScale) && requestedScale > 0 ? requestedScale : 1;
   let scale = Math.min(MAX_RENDER_SCALE, Math.max(MIN_RENDER_SCALE, requested));
   const { width, height } = pageInfo;
@@ -178,7 +184,7 @@ export function clampRenderScale(pageInfo: PageInfo, requestedScale: number): nu
     return scale;
   }
   // 면적 한도는 배율을 낮추기만 한다 (1배 미만으로는 내리지 않는다).
-  scale = Math.min(scale, Math.max(1, Math.sqrt(MAX_RENDER_PIXELS / (width * height))));
+  scale = Math.min(scale, Math.max(1, Math.sqrt(maxPixels / (width * height))));
   return Math.min(scale, MAX_CANVAS_DIMENSION / width, MAX_CANVAS_DIMENSION / height);
 }
 
