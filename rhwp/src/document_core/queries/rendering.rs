@@ -1872,9 +1872,9 @@ impl DocumentCore {
                                     }
                                 }
                             }
-                            // OLE/차트 미리보기 등은 RawSvg 로 emit 되며 web_canvas 의 draw_image
-                            // 경로(IMAGE_CACHE 비동기 디코드)를 그대로 탄다. scheduleReRender 재시도
-                            // 발화를 위해 별도 rawSvgCount 로 노출한다.
+                            // OLE/차트 미리보기 등은 RawSvg 로 emit 되며 web_canvas 그림 캐시의
+                            // 비동기 디코드를 탄다. Studio 가 본문 정적 층을 나눌 때 그림과 함께
+                            // 세도록 별도 rawSvgCount 로 노출한다.
                             PaintOp::RawSvg { .. } => {
                                 *raw_svg_count += 1;
                                 if plane == PaintReplayPlane::Flow {

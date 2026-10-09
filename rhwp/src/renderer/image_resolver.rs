@@ -26,9 +26,13 @@ use crate::renderer::render_tree::ImageNode;
 /// 제한한다.
 const MAX_MEMO_BYTES: usize = 16 * 1024 * 1024;
 
-/// 항목 수 상한. 변환하지 않는 색 사진은 결과가 `None` 이라 바이트를 전혀 차지하지 않아
-/// 바이트 예산만으로는 영영 밀려나지 않는다. 조회가 선형 탐색이라 항목 수도 묶는다.
-const MAX_MEMO_ENTRIES: usize = 64;
+/// 항목 수 상한. 조회가 선형 탐색이라 항목 수도 묶는다. 긴 문서를 한 번 훑는 동안
+/// 변환 결과(BMP·회색 JPEG 의 PNG)가 밀려나 원본 전체를 다시 디코드하지 않을 만큼은 둔다.
+const MAX_MEMO_ENTRIES: usize = 256;
+
+/// 변환하지 않는 그림(`None`) 키 상한. 색 사진은 회색 판정에 원본 전체를 디코드하므로
+/// 한 번 본 사진을 다시 디코드하지 않게 결과 항목보다 훨씬 많이 기억한다 (키 8 byte).
+const MAX_MEMO_MISSES: usize = 4096;
 
 /// 변환 종류. 같은 바이트라도 어떤 변환을 거쳤느냐에 따라 결과가 다르다.
 #[derive(Clone, Copy, Hash)]
@@ -48,28 +52,45 @@ enum Conversion {
 #[derive(Default)]
 struct ConversionMemo {
     /// (키, 결과) — 접근 순서대로, 최근 것이 뒤.
-    entries: Vec<(u64, Option<Arc<[u8]>>)>,
+    entries: Vec<(u64, Arc<[u8]>)>,
     /// 지금 들고 있는 결과 바이트 합.
     bytes: usize,
+    /// 결과가 `None` 인 키 — 들어온 순서대로.
+    misses: std::collections::VecDeque<u64>,
+    miss_set: std::collections::HashSet<u64>,
 }
 
 impl ConversionMemo {
     fn get(&mut self, key: u64) -> Option<Option<Arc<[u8]>>> {
+        if self.miss_set.contains(&key) {
+            return Some(None);
+        }
         let idx = self.entries.iter().position(|(k, _)| *k == key)?;
         let entry = self.entries.remove(idx);
         let hit = entry.1.clone();
         self.entries.push(entry);
-        Some(hit)
+        Some(Some(hit))
     }
 
     fn insert(&mut self, key: u64, value: Option<Arc<[u8]>>) {
-        let size = value.as_ref().map_or(0, |data| data.len());
+        let Some(value) = value else {
+            if self.miss_set.insert(key) {
+                self.misses.push_back(key);
+                if self.misses.len() > MAX_MEMO_MISSES {
+                    if let Some(oldest) = self.misses.pop_front() {
+                        self.miss_set.remove(&oldest);
+                    }
+                }
+            }
+            return;
+        };
+        let size = value.len();
         if size > MAX_MEMO_BYTES {
             return;
         }
         while self.bytes + size > MAX_MEMO_BYTES || self.entries.len() >= MAX_MEMO_ENTRIES {
             let (_, evicted) = self.entries.remove(0);
-            self.bytes -= evicted.as_ref().map_or(0, |data| data.len());
+            self.bytes -= evicted.len();
         }
         self.bytes += size;
         self.entries.push((key, value));
@@ -249,8 +270,8 @@ fn grayscale_jpeg_bytes_to_png_bytes_uncached(data: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
 
-    let mut img = decode_image_with_format_limited(data, ImageFormat::Jpeg)?.to_rgba8();
-    if img.width() == 0 || img.height() == 0 {
+    let decoded = decode_image_with_format_limited(data, ImageFormat::Jpeg)?;
+    if decoded.width() == 0 || decoded.height() == 0 {
         return None;
     }
 
@@ -260,16 +281,29 @@ fn grayscale_jpeg_bytes_to_png_bytes_uncached(data: &[u8]) -> Option<Vec<u8>> {
         || data
             .windows(b"Adobe_CM".len())
             .any(|chunk| chunk == b"Adobe_CM");
-    let is_gray = img.pixels().all(|px| {
-        let [r, g, b, _] = px.0;
+    let is_gray_rgb = |[r, g, b]: [u8; 3]| {
         let min = r.min(g).min(b);
         let max = r.max(g).max(b);
         max.saturating_sub(min) <= 2
+    };
+    let is_luma_plane_rgb = |[_, g, b]: [u8; 3]| g.abs_diff(128) <= 2 && b.abs_diff(128) <= 2;
+    // 대부분인 컬러 사진은 디코드 버퍼에서 바로 걸러 RGBA 사본(원본 크기 ×4)을 만들지 않는다.
+    // WASM 선형 메모리는 줄지 않으므로 큰 사진 하나의 사본이 그대로 남는다.
+    if let Some(rgb) = decoded.as_rgb8() {
+        let is_gray = rgb.pixels().all(|px| is_gray_rgb(px.0));
+        if !is_gray && !(has_photoshop_profile && rgb.pixels().all(|px| is_luma_plane_rgb(px.0))) {
+            return None;
+        }
+    }
+    let mut img = decoded.into_rgba8();
+    let is_gray = img.pixels().all(|px| {
+        let [r, g, b, _] = px.0;
+        is_gray_rgb([r, g, b])
     });
     let is_luma_plane_gray = has_photoshop_profile
         && img.pixels().all(|px| {
-            let [_, g, b, _] = px.0;
-            g.abs_diff(128) <= 2 && b.abs_diff(128) <= 2
+            let [r, g, b, _] = px.0;
+            is_luma_plane_rgb([r, g, b])
         });
     if is_luma_plane_gray {
         for px in img.pixels_mut() {
@@ -550,7 +584,7 @@ mod tests {
     use super::{
         bmp_bytes_to_png_bytes, grayscale_jpeg_bytes_to_png_bytes,
         hancom_adjusted_picture_png_bytes, resolve_image_payload, ConversionMemo, CONVERSIONS_RUN,
-        MAX_MEMO_BYTES, MAX_MEMO_ENTRIES,
+        MAX_MEMO_BYTES, MAX_MEMO_MISSES,
     };
     use crate::model::image::ImageEffect;
     use crate::paint::ResolvedImageKind;
@@ -717,17 +751,22 @@ mod tests {
         assert!(memo.get(7).is_some(), "가장 최근 항목은 남아 있다");
     }
 
-    /// 결과가 `None` 인 항목은 바이트를 차지하지 않으므로 항목 수로 묶는다.
+    /// 결과가 `None` 인 키는 바이트를 차지하지 않으므로 키 수로 묶는다.
     #[test]
-    fn memo_bounds_entry_count_even_when_results_are_empty() {
+    fn memo_bounds_miss_count() {
         let mut memo = ConversionMemo::default();
-        for key in 0..(MAX_MEMO_ENTRIES as u64 * 2) {
+        for key in 0..(MAX_MEMO_MISSES as u64 * 2) {
             memo.insert(key, None);
         }
 
         assert_eq!(memo.bytes, 0);
-        assert!(memo.entries.len() <= MAX_MEMO_ENTRIES);
-        assert!(memo.get(0).is_none(), "가장 오래된 항목은 밀려나 있다");
+        assert_eq!(memo.misses.len(), MAX_MEMO_MISSES);
+        assert_eq!(memo.miss_set.len(), MAX_MEMO_MISSES);
+        assert!(memo.get(0).is_none(), "가장 오래된 키는 밀려나 있다");
+        assert!(matches!(
+            memo.get(MAX_MEMO_MISSES as u64 * 2 - 1),
+            Some(None)
+        ));
     }
 
     #[test]

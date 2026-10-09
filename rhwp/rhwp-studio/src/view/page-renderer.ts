@@ -2,8 +2,6 @@ import type { WasmBridge } from '@/core/wasm-bridge';
 import type { LayerRenderProfile, PageInfo } from '@/core/types';
 import { inheritedReplayLayer, layerPaintOpReplayPlane } from './canvaskit/replay-plane';
 import type { CanvasKitLayerRenderer, CanvasKitRenderDiagnostics } from './canvaskit-renderer';
-import { collectLayerImagePrefetch } from './raw-svg-prefetch';
-import { ImagePrefetcher } from './image-prefetch';
 import {
   collectFlowImagePaintOps,
   isDomDisplayableFlowImage,
@@ -18,7 +16,7 @@ interface LayerPlaneSummary {
   hasBehind: boolean;
   hasFront: boolean;
   imageCount: number;
-  rawSvgCount: number;  // OLE/차트 rawSvg op 수 — 비동기 디코드 재렌더 트리거용(image 와 의미 분리, #1456)
+  rawSvgCount: number;  // OLE/차트 rawSvg op 수 (image 와 의미 분리, #1456)
   flowImageCount: number;
   flowRawSvgCount: number;
   flowStaticCount: number;
@@ -44,7 +42,6 @@ type OverlayLayerKind = 'background' | 'behind' | 'front';
 type StaticCanvasLayerKind = OverlayLayerKind | 'flow-static';
 
 interface ReRenderPolicy {
-  retrySignature: string;
   reuseStaticFlow: boolean;
   reuseStaticOverlay: boolean;
 }
@@ -54,20 +51,12 @@ interface LayerSummaryCacheEntry {
   summary: LayerPlaneSummary;
 }
 
-interface ReRenderJob {
-  prefetchAbort: AbortController;
-  fallbackTimer: ReturnType<typeof setTimeout>;
-  earlyRawSvgTimers: ReturnType<typeof setTimeout>[];
-  completed: boolean;
-}
-
-/**
- * 쪽별 지연 재렌더 상태. 같은 key(그림 수·서명)는 한 번만 끝까지 다시 그리면 된다.
- * settled 는 재렌더가 실제로 끝났을 때만 true — 디코드 도중 취소된 key 는 다시 걸어야 한다.
- */
-interface ImageRetryState {
-  key: string;
-  settled: boolean;
+/** 엔진이 그림 디코드를 기다리며 그린 쪽. 디코드가 끝나면 이 상태로 다시 그린다. */
+interface PictureRepaintJob {
+  canvas: HTMLCanvasElement;
+  renderScale: number;
+  policy: ReRenderPolicy;
+  fallbackTimer: ReturnType<typeof setTimeout> | null;
 }
 
 interface AppliedOverlays {
@@ -76,18 +65,19 @@ interface AppliedOverlays {
   domFlowImages: boolean;
 }
 
-type LayerImagePrefetchResult = 'decoded' | 'none' | 'wait';
-
+/** 엔진 디코드 알림을 놓쳐도 이 시간 뒤 한 번은 다시 그린다. */
 const IMAGE_RE_RENDER_FALLBACK_DELAY_MS = 1500;
-// 순수 SVG 차트/OLE는 prefetch 대상 data URL이 없을 수 있다. 첫 paint가 시작한
-// 이미지 decode를 빠르게 반영하되, 일반 이미지처럼 전역 반복 재렌더는 피한다.
-const RAW_SVG_EARLY_RE_RENDER_DELAYS_MS = [0, 32, 96, 240] as const;
+/** 디코드가 이어지는 동안에도 끝난 그림을 이 간격으로 보여 준다. */
+const PICTURE_PROGRESS_REPAINT_MS = 120;
 const HWP_UNITS_PER_CSS_PIXEL = 75;
 
 export class PageRenderer {
-  private readonly imagePrefetcher = new ImagePrefetcher();
-  private reRenderJobs = new Map<number, ReRenderJob>();
-  private imageRetryStates = new Map<number, ImageRetryState>();
+  private pictureJobs = new Map<number, PictureRepaintJob>();
+  private stopPictureListener: (() => void) | null = null;
+  private pictureFlushFrame: number | null = null;
+  private pictureProgressTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 지금 그리는 쪽에서 엔진이 디코드를 기다리는 그림 수 */
+  private renderPendingPictures = 0;
   private layerSummaryCache = new Map<number, LayerSummaryCacheEntry>();
   private canvaskitDiagnosticsByPage = new Map<number, CanvasKitRenderDiagnostics>();
   private pageInfoByPage = new Map<number, PageInfo>();
@@ -146,6 +136,7 @@ export class PageRenderer {
       return { needsTextEditStaticLayerVerification: false, renderedCanvas };
     }
 
+    this.renderPendingPictures = 0;
     const layers = this.getLayerPlaneSummary(pageIdx, canvas, renderScale, context);
     const preferStaticFlow = this.shouldSplitStaticFlow(layers);
     let reuseStaticFlow = this.renderFlowCanvas(pageIdx, canvas, renderScale, preferStaticFlow);
@@ -179,30 +170,16 @@ export class PageRenderer {
       this.flowSplitSupported = false;
       canvas.parentElement && this.removeOverlayLayer(canvas.parentElement, pageIdx, 'flow-static');
       reuseStaticFlow = false;
-      this.wasm.renderPageToCanvasFiltered(pageIdx, canvas, renderScale, 'flow', this.renderProfile);
+      this.renderPendingPictures = 0;
+      this.renderLayer(pageIdx, canvas, renderScale, 'flow');
       this.drawMarginGuides(pageIdx, canvas, renderScale);
       overlays = this.applyOverlays(pageIdx, canvas, renderScale, dpr, context, layers, false, []);
     }
     this.rememberLayerPlaneSummary(pageIdx, canvas, renderScale, layers);
-    const summary = overlays.layers;
-    // rawSvg(차트/OLE)도 web_canvas draw_image 비동기 디코드 경로를 타므로
-    // image 와 함께 재렌더 트리거 카운트에 합산한다(#1456). DOM `<img>` 가 맡은 본문
-    // 그림만 빼고, canvas 가 그리는 앞/뒤 층 그림은 계속 센다.
-    const canvasImageCount = overlays.domFlowImages
-      ? Math.max(0, summary.imageCount - summary.flowImageCount)
-      : summary.imageCount;
-    this.scheduleReRender(
-      pageIdx,
-      canvas,
-      renderScale,
-      canvasImageCount + summary.rawSvgCount,
-      summary.rawSvgCount,
-      {
-        retrySignature: summary.signature,
-        reuseStaticFlow,
-        reuseStaticOverlay: context.reason === 'text-edit' && context.allowStaticOverlayReuse === true,
-      },
-    );
+    this.scheduleReRender(pageIdx, canvas, renderScale, this.renderPendingPictures, {
+      reuseStaticFlow,
+      reuseStaticOverlay: context.reason === 'text-edit' && context.allowStaticOverlayReuse === true,
+    });
     return {
       needsTextEditStaticLayerVerification:
         context.reason === 'text-edit' &&
@@ -278,14 +255,12 @@ export class PageRenderer {
       const renderedCanvas = this.canvaskitRenderer.renderPage(tree, canvas, renderScale, pageInfo);
       this.canvaskitDiagnosticsByPage.set(pageIdx, this.canvaskitRenderer.diagnostics());
       this.cancelReRender(pageIdx);
-      this.imageRetryStates.delete(pageIdx);
       return renderedCanvas;
     } catch (error) {
       this.canvaskitRenderer.recordRenderFailure(error, !renderStarted);
       this.canvaskitDiagnosticsByPage.set(pageIdx, this.canvaskitRenderer.diagnostics());
       console.error(`[PageRenderer] CanvasKit 페이지 렌더링 실패 (page=${pageIdx}):`, error);
       this.cancelReRender(pageIdx);
-      this.imageRetryStates.delete(pageIdx);
       if (!renderStarted) throw error;
       const replacement = parent && canvasChildIndex >= 0
         ? parent.children.item(canvasChildIndex)
@@ -355,8 +330,7 @@ export class PageRenderer {
       } else {
         this.removeFlowImageLayer(parent, pageIdx);
         // RawSvg 차트/OLE, 그리고 브라우저 `<img>` 가 못 그리는 그림(WMF, 한도 초과 raster)은
-        // 엔진 flow-static canvas 로 그린다. 첫 Canvas2D 렌더가 이미지 디코드를 시작해야 지연
-        // 재렌더에서 보인다.
+        // 엔진 flow-static canvas 로 그린다. 첫 Canvas2D 렌더가 디코드를 걸고, 끝나면 다시 그린다.
         const flowStatic = this.createOrReuseFilteredCanvasLayer(
           pageIdx,
           canvas,
@@ -571,15 +545,7 @@ export class PageRenderer {
     // this is explicit. A front layer with an opaque page background hides all
     // lower background/behind layers.
     layer.style.background = 'transparent';
-    if (renderImmediately) {
-      this.wasm.renderPageToCanvasFiltered(
-        pageIdx,
-        layer,
-        renderScale,
-        layerKind,
-        this.renderProfile,
-      );
-    }
+    if (renderImmediately) this.renderLayer(pageIdx, layer, renderScale, layerKind);
     return layer;
   }
 
@@ -673,12 +639,12 @@ export class PageRenderer {
     pageInfo?: PageInfo,
   ): void {
     if (pageInfo) this.pageInfoByPage.set(pageIdx, pageInfo);
-    this.wasm.renderPageToCanvasFiltered(pageIdx, canvas, scale, 'flow', this.renderProfile);
+    this.renderPendingPictures = 0;
+    this.renderLayer(pageIdx, canvas, scale, 'flow');
     this.drawMarginGuides(pageIdx, canvas, scale);
-    this.scheduleReRender(pageIdx, canvas, scale, 0, 0, {
-      retrySignature: 'flow-only',
+    this.scheduleReRender(pageIdx, canvas, scale, this.renderPendingPictures, {
       reuseStaticFlow: false,
-      reuseStaticOverlay: false,
+      reuseStaticOverlay: true,
     });
   }
 
@@ -716,23 +682,17 @@ export class PageRenderer {
     preferStaticFlow: boolean,
   ): boolean {
     if (!preferStaticFlow) {
-      this.wasm.renderPageToCanvasFiltered(pageIdx, canvas, renderScale, 'flow', this.renderProfile);
+      this.renderLayer(pageIdx, canvas, renderScale, 'flow');
       return false;
     }
     try {
-      this.wasm.renderPageToCanvasFiltered(
-        pageIdx,
-        canvas,
-        renderScale,
-        'flow-dynamic',
-        this.renderProfile,
-      );
+      this.renderLayer(pageIdx, canvas, renderScale, 'flow-dynamic');
       this.flowSplitSupported = true;
       return true;
     } catch (error) {
       this.flowSplitSupported = false;
       console.warn('[PageRenderer] flow-dynamic 렌더 미지원, 기존 flow 렌더로 fallback:', error);
-      this.wasm.renderPageToCanvasFiltered(pageIdx, canvas, renderScale, 'flow', this.renderProfile);
+      this.renderLayer(pageIdx, canvas, renderScale, 'flow');
       return false;
     }
   }
@@ -900,118 +860,103 @@ export class PageRenderer {
     ctx.restore();
   }
 
+  /** 엔진 Canvas2D 렌더. 디코드를 기다리는 그림 수를 지금 그리는 쪽의 합계에 더한다. */
+  private renderLayer(
+    pageIdx: number,
+    canvas: HTMLCanvasElement,
+    renderScale: number,
+    layerKind: StaticCanvasLayerKind | 'flow' | 'flow-dynamic',
+  ): void {
+    const pending = this.wasm.renderPageToCanvasFiltered(
+      pageIdx,
+      canvas,
+      renderScale,
+      layerKind,
+      this.renderProfile,
+    );
+    this.renderPendingPictures += Number(pending) || 0;
+  }
+
   /**
-   * 비동기 이미지 로드 대응: data URL 이미지가 첫 렌더링 시
-   * 아직 디코딩되지 않았을 수 있으므로 점진적 재렌더링한다.
-   *
-   * decode 완료 후 한 번 다시 그린다. 미리 디코드할 수 없는 그림은 fallback 시점에
-   * 한 번만 다시 그려 이미지 누락 안전망을 유지하고, 비동기 그림이 없으면 다시 그리지 않는다.
+   * 엔진은 그림을 비동기로 디코드한다. 디코드를 기다리느라 빼거나 작은 단계로 그린 그림이
+   * 있으면 엔진의 디코드 완료 알림을 받아 그 쪽을 다시 그린다. 알림을 놓쳐도 fallback 시점에
+   * 한 번은 다시 그린다.
    */
   private scheduleReRender(
     pageIdx: number,
     canvas: HTMLCanvasElement,
     renderScale: number,
-    imageCount: number,
-    rawSvgCount: number,
+    pendingPictures: number,
     policy: ReRenderPolicy,
   ): void {
-    if (imageCount <= 0) {
+    const previous = this.pictureJobs.get(pageIdx);
+    // 다시 쓴 정적 층은 이번에 그리지 않았다. 그 층이 기다리던 그림은 이전 작업이 계속 맡는다.
+    const carried = previous !== undefined && policy.reuseStaticOverlay;
+    if (pendingPictures <= 0 && !carried) {
       this.cancelReRender(pageIdx);
-      this.imageRetryStates.delete(pageIdx);
       return;
     }
-    const retryKey = `${imageCount}:${rawSvgCount}:${policy.retrySignature}`;
-    const previous = this.imageRetryStates.get(pageIdx);
-    if (previous?.key === retryKey) {
-      // 같은 내용은 이미 다시 그렸거나 진행 중인 작업이 맡고 있다.
-      if (previous.settled || this.reRenderJobs.has(pageIdx)) return;
-      // 디코드 도중 취소된 같은 내용(편집·새로고침·스크롤)은 그림이 아직 비어 있을 수 있다.
-      // 트리를 다시 읽고 디코드를 새로 거는 대신 fallback 한 번만 다시 건다 — 에이전트
-      // 연속 편집마다 수 MB 트리를 다시 읽지 않는다.
-      this.startReRenderJob(pageIdx, canvas, renderScale, policy, previous, {
-        rawSvgCount: 0,
-        prefetch: false,
-      });
-      return;
-    }
+    if (previous?.fallbackTimer) clearTimeout(previous.fallbackTimer);
+    const job: PictureRepaintJob = {
+      canvas,
+      renderScale,
+      policy: carried ? { ...policy, reuseStaticOverlay: previous.policy.reuseStaticOverlay } : policy,
+      fallbackTimer: null,
+    };
+    job.fallbackTimer = setTimeout(() => {
+      job.fallbackTimer = null;
+      this.repaintPictures(pageIdx, job);
+    }, IMAGE_RE_RENDER_FALLBACK_DELAY_MS);
+    this.pictureJobs.set(pageIdx, job);
+    this.stopPictureListener ??= this.wasm.onPictureDecoded?.(
+      (pendingDecodes) => this.onPictureDecoded(pendingDecodes),
+    ) ?? null;
+  }
 
-    this.cancelReRender(pageIdx);
-    const state: ImageRetryState = { key: retryKey, settled: false };
-    this.imageRetryStates.set(pageIdx, state);
-    this.startReRenderJob(pageIdx, canvas, renderScale, policy, state, {
-      rawSvgCount,
-      prefetch: true,
+  private onPictureDecoded(pendingDecodes: number): void {
+    if (this.pictureJobs.size === 0) return;
+    if (pendingDecodes === 0) {
+      if (this.pictureProgressTimer !== null) clearTimeout(this.pictureProgressTimer);
+      this.pictureProgressTimer = null;
+      this.requestPictureFlush();
+    } else if (this.pictureProgressTimer === null) {
+      this.pictureProgressTimer = setTimeout(() => {
+        this.pictureProgressTimer = null;
+        this.requestPictureFlush();
+      }, PICTURE_PROGRESS_REPAINT_MS);
+    }
+  }
+
+  private requestPictureFlush(): void {
+    if (this.pictureFlushFrame !== null) return;
+    this.pictureFlushFrame = requestAnimationFrame(() => {
+      this.pictureFlushFrame = null;
+      for (const [pageIdx, job] of [...this.pictureJobs]) this.repaintPictures(pageIdx, job);
     });
   }
 
-  private startReRenderJob(
-    pageIdx: number,
-    canvas: HTMLCanvasElement,
-    renderScale: number,
-    policy: ReRenderPolicy,
-    state: ImageRetryState,
-    options: { rawSvgCount: number; prefetch: boolean },
-  ): void {
-    const job: ReRenderJob = {
-      prefetchAbort: new AbortController(),
-      fallbackTimer: 0 as unknown as ReturnType<typeof setTimeout>,
-      earlyRawSvgTimers: [],
-      completed: false,
-    };
-    const isCurrent = () => !job.completed && this.reRenderJobs.get(pageIdx) === job;
-    /** 작업을 끝낸다. 이 key 는 다시 그릴 필요가 없다. */
-    const settle = (): boolean => {
-      if (!isCurrent()) return false;
-      job.completed = true;
-      job.prefetchAbort.abort();
-      clearTimeout(job.fallbackTimer);
-      for (const timer of job.earlyRawSvgTimers) clearTimeout(timer);
-      this.reRenderJobs.delete(pageIdx);
-      state.settled = true;
-      return true;
-    };
-    const finish = () => {
-      // trap 한 엔진으로 다시 그리면 마지막으로 그린 쪽만 지운다. 작업은 onEngineTrap 이 끊는다.
-      if (engineTrap() || !settle()) return;
-      if (canvas.parentElement) this.reRenderPageCanvases(pageIdx, canvas, renderScale, policy);
-    };
-    job.fallbackTimer = setTimeout(finish, IMAGE_RE_RENDER_FALLBACK_DELAY_MS);
-    this.reRenderJobs.set(pageIdx, job);
-    if (!options.prefetch) return;
-
-    if (options.rawSvgCount > 0) {
-      for (const delay of RAW_SVG_EARLY_RE_RENDER_DELAYS_MS) {
-        const timer = setTimeout(() => {
-          if (!isCurrent() || engineTrap()) return;
-          if (canvas.parentElement) {
-            this.reRenderPageCanvases(pageIdx, canvas, renderScale, policy);
-          }
-        }, delay);
-        job.earlyRawSvgTimers.push(timer);
-      }
+  private repaintPictures(pageIdx: number, job: PictureRepaintJob): void {
+    if (this.pictureJobs.get(pageIdx) !== job) return;
+    // trap 한 엔진으로 다시 그리면 마지막으로 그린 쪽만 지운다.
+    if (engineTrap() || !job.canvas.isConnected) {
+      this.cancelReRender(pageIdx);
+      return;
     }
-
-    // 자체 prefetch로 실제 decode를 마친 경우에만 fallback보다 먼저 다시 그린다.
-    queueMicrotask(() => {
-      if (!isCurrent()) return;
-      this.prefetchLayerImages(pageIdx, job.prefetchAbort.signal)
-        .then((result) => {
-          if (result === 'decoded') finish();
-          // 첫 paint 가 이미 완전하다 — fallback 재렌더도 필요 없다.
-          else if (result === 'none') settle();
-        })
-        .catch(() => {});
-    });
+    const pending = this.reRenderPageCanvases(pageIdx, job.canvas, job.renderScale, job.policy);
+    if (pending > 0 && this.pictureJobs.get(pageIdx) === job) return;
+    if (this.pictureJobs.get(pageIdx) === job) this.cancelReRender(pageIdx);
   }
 
+  /** 쪽의 엔진 canvas 층을 다시 그리고, 아직 디코드를 기다리는 그림 수를 돌려준다. */
   private reRenderPageCanvases(
     pageIdx: number,
     flowCanvas: HTMLCanvasElement,
     renderScale: number,
     policy: ReRenderPolicy,
-  ): void {
+  ): number {
     const parent = flowCanvas.parentElement;
-    if (!parent || engineTrap()) return;
+    if (!parent || engineTrap()) return 0;
+    this.renderPendingPictures = 0;
 
     // canvas 크기는 엔진이 렌더에 성공한 뒤 스스로 맞춘다. 여기서 먼저 width 를 대입하면
     // 실패한 호출(trap 등)이 멀쩡한 층을 빈 비트맵으로 남긴다.
@@ -1021,16 +966,10 @@ export class PageRenderer {
         const flowStatic = this.findOverlayLayer(parent, pageIdx, 'flow-static');
         if (flowStatic) {
           try {
-            this.wasm.renderPageToCanvasFiltered(
-              pageIdx,
-              flowStatic,
-              renderScale,
-              'flow-static',
-              this.renderProfile,
-            );
+            this.renderLayer(pageIdx, flowStatic, renderScale, 'flow-static');
             renderedStaticFlow = true;
           } catch (error) {
-            if (reportEngineTrap(error)) return;
+            if (reportEngineTrap(error)) return 0;
             this.flowSplitSupported = false;
             flowStatic.remove();
             console.warn('[PageRenderer] flow-static 지연 재렌더 실패, 기존 flow 재렌더로 fallback:', error);
@@ -1043,89 +982,47 @@ export class PageRenderer {
       }
 
       if (!renderedStaticFlow) {
-        this.wasm.renderPageToCanvasFiltered(
-          pageIdx,
-          flowCanvas,
-          renderScale,
-          'flow',
-          this.renderProfile,
-        );
+        this.renderLayer(pageIdx, flowCanvas, renderScale, 'flow');
         this.drawMarginGuides(pageIdx, flowCanvas, renderScale);
       }
 
-      if (policy.reuseStaticOverlay) return;
+      if (policy.reuseStaticOverlay) return this.renderPendingPictures;
 
       parent.querySelectorAll<HTMLCanvasElement>(
         `[data-rhwp-overlay-page="${pageIdx}"][data-rhwp-layer-kind]`,
       ).forEach((layerCanvas) => {
         const kind = layerCanvas.dataset.rhwpLayerKind;
         if (kind === 'background' || kind === 'behind' || kind === 'front') {
-          this.wasm.renderPageToCanvasFiltered(
-            pageIdx,
-            layerCanvas,
-            renderScale,
-            kind,
-            this.renderProfile,
-          );
+          this.renderLayer(pageIdx, layerCanvas, renderScale, kind);
         }
       });
+      return this.renderPendingPictures;
     } catch (error) {
-      if (reportEngineTrap(error)) return;
-      // 타이머에서 도는 보조 재렌더라 받을 호출자가 없다. 다음 편집/스크롤 렌더가 다시 그린다.
+      if (reportEngineTrap(error)) return 0;
+      // 알림·타이머에서 도는 보조 재렌더라 받을 호출자가 없다. 다음 편집/스크롤 렌더가 다시 그린다.
       console.error(`[PageRenderer] 페이지 ${pageIdx} 지연 재렌더 실패:`, error);
+      return 0;
     }
   }
 
-  /**
-   * 페이지의 image base64 데이터를
-   * 자체 prefetch 하여 모든 이미지가 브라우저에 디코드 완료될 때까지 대기.
-   * Task #1154 — IMAGE_CACHE 의 비동기 디코드 누락 안전망.
-   */
-  private async prefetchLayerImages(
-    pageIdx: number,
-    signal: AbortSignal,
-  ): Promise<LayerImagePrefetchResult> {
-    if (signal.aborted) return 'wait';
-    let plan: ReturnType<typeof collectLayerImagePrefetch>;
-    try {
-      // 트리 JSON 의 op 는 bbox 가 mime 앞에 온다 — 정규식이 아니라 구조를 따라 읽는다.
-      plan = collectLayerImagePrefetch(JSON.parse(this.wasm.getPageLayerTree(pageIdx)));
-    } catch {
-      // 트리를 못 읽으면 무엇이 비었는지 모른다. 조기/fallback 타이머에 맡긴다.
-      return 'wait';
-    }
-    // 미리 디코드할 URL 을 못 모은 비동기 그림(WMF, 한도 초과 등)과 순수 rawSvg 는
-    // upstream 의 조기 재렌더 + fallback 경로를 그대로 쓴다.
-    if (plan.kind !== 'decoded') return plan.kind;
-    await this.imagePrefetcher.prefetch(plan.urls, signal);
-    return signal.aborted ? 'wait' : 'decoded';
-  }
-
-  /**
-   * 특정 페이지의 지연 재렌더링을 취소한다. retry key 는 settled=false 로 남아, 같은 내용을
-   * 다시 그릴 때 fallback 재렌더를 다시 건다.
-   */
+  /** 특정 페이지의 지연 재렌더링을 취소한다. */
   cancelReRender(pageIdx: number): void {
-    const job = this.reRenderJobs.get(pageIdx);
-    if (job) {
-      job.completed = true;
-      job.prefetchAbort.abort();
-      clearTimeout(job.fallbackTimer);
-      for (const timer of job.earlyRawSvgTimers) clearTimeout(timer);
-      this.reRenderJobs.delete(pageIdx);
-    }
+    const job = this.pictureJobs.get(pageIdx);
+    if (!job) return;
+    if (job.fallbackTimer) clearTimeout(job.fallbackTimer);
+    this.pictureJobs.delete(pageIdx);
   }
 
   /** 모든 지연 재렌더링을 취소한다 */
   cancelAll(): void {
-    // 모든 요청을 먼저 취소해 다른 오래된 페이지의 대기 디코드를 시작하지 않는다.
-    for (const job of this.reRenderJobs.values()) job.completed = true;
-    this.imagePrefetcher.cancelAll();
-    for (const pageIdx of this.reRenderJobs.keys()) this.cancelReRender(pageIdx);
+    for (const pageIdx of [...this.pictureJobs.keys()]) this.cancelReRender(pageIdx);
+    if (this.pictureFlushFrame !== null) cancelAnimationFrame(this.pictureFlushFrame);
+    this.pictureFlushFrame = null;
+    if (this.pictureProgressTimer !== null) clearTimeout(this.pictureProgressTimer);
+    this.pictureProgressTimer = null;
   }
 
   resetImageRetryState(): void {
-    this.imageRetryStates.clear();
     this.layerSummaryCache.clear();
     this.canvaskitDiagnosticsByPage.clear();
     this.pageInfoByPage.clear();
@@ -1133,6 +1030,8 @@ export class PageRenderer {
 
   dispose(): void {
     this.cancelAll();
+    this.stopPictureListener?.();
+    this.stopPictureListener = null;
     this.layerSummaryCache.clear();
     this.canvaskitDiagnosticsByPage.clear();
     this.pageInfoByPage.clear();
@@ -1177,8 +1076,7 @@ function collectLayerPlaneSummary(
           summary.flowImageCount += 1;
         }
       } else if (op.type === 'rawSvg') {
-        // 차트/OLE 미리보기. web_canvas draw_image 비동기 디코드 경로를 타므로
-        // image 와 동일하게 재렌더 트리거 대상에 포함한다(#1456).
+        // 차트/OLE 미리보기(#1456). 본문 정적 층 분리 판단에 image 와 함께 센다.
         summary.rawSvgCount += 1;
         if (plane === 'flow') {
           summary.flowRawSvgCount += 1;

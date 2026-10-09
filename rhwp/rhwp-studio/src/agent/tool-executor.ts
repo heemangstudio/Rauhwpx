@@ -3766,8 +3766,7 @@ export class AgentToolExecutor {
       throw new AgentToolError('INVALID_ARGS', 'scale must be a number (clamped to 0.5..3)');
     }
     const scale = Math.min(3, Math.max(0.5, typeof rawScale === 'number' ? rawScale : 1.25));
-    // 래스터화는 동기(wasm 렌더) — blob 변환만 비동기다
-    let canvas = this.renderPageToCanvasElement(pageIndex, scale);
+    let canvas = await this.renderPageToCanvasElement(pageIndex, scale);
     let regionOut: { x: number; y: number; width: number; height: number } | undefined;
     if (region) {
       // mm → 캔버스 px (쪽 px × scale). 쪽 밖은 잘라낸다.
@@ -3924,10 +3923,13 @@ export class AgentToolExecutor {
     );
   }
 
-  /** 페이지를 캔버스에 그린다 — wasm 이 캔버스 크기를 페이지 크기 × scale 로 설정한다 */
-  private renderPageToCanvasElement(pageIndex: number, scale: number): HTMLCanvasElement | OffscreenCanvas {
+  /**
+   * 페이지를 캔버스에 그린다 — wasm 이 캔버스 크기를 페이지 크기 × scale 로 설정한다.
+   * 그림은 비동기로 디코드되므로 다 그릴 때까지 기다린다.
+   */
+  private async renderPageToCanvasElement(pageIndex: number, scale: number): Promise<HTMLCanvasElement | OffscreenCanvas> {
     const canvas = this.createRenderCanvas();
-    this.deps.wasm.renderPageToCanvas(pageIndex, canvas as unknown as HTMLCanvasElement, scale);
+    await this.deps.wasm.renderPageToCanvasWithPictures(pageIndex, canvas as unknown as HTMLCanvasElement, scale);
     return canvas;
   }
 
@@ -4356,7 +4358,7 @@ export class AgentToolExecutor {
         ?? 0;
       try {
         // 모든 op 이 이미 문서에 적용돼 있으므로 지금 상태를 그대로 그리면 승인 후 모습이다.
-        const canvas = this.renderPageToCanvasElement(page, 2);
+        const canvas = await this.renderPageToCanvasElement(page, 2);
         const png = await canvasToPngBase64(canvas);
         result['image'] = { data: png.data, mimeType: 'image/png' };
         result['imagePageIndex'] = page;
@@ -4829,12 +4831,11 @@ export class AgentToolExecutor {
     const plan = planStack(regions);
     const s = plan.scale;
     const rendered = new Map<number, HTMLCanvasElement | OffscreenCanvas>();
+    for (const r of plan.regions) {
+      if (!rendered.has(r.pageIndex)) rendered.set(r.pageIndex, await this.renderPageToCanvasElement(r.pageIndex, s));
+    }
     const pieces = plan.regions.map((r) => {
-      let src = rendered.get(r.pageIndex);
-      if (!src) {
-        src = this.renderPageToCanvasElement(r.pageIndex, s);
-        rendered.set(r.pageIndex, src);
-      }
+      const src = rendered.get(r.pageIndex)!;
       const sx = Math.max(0, Math.floor(r.x * s));
       const sy = Math.max(0, Math.floor(r.y * s));
       const sw = Math.max(1, Math.min(src.width - sx, Math.ceil(r.width * s)));

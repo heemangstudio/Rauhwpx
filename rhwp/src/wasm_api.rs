@@ -181,7 +181,7 @@ fn render_page_to_canvas_filtered_with_profile_impl(
     scale: f64,
     layer_kind: &str,
     profile: &str,
-) -> Result<(), JsValue> {
+) -> Result<u32, JsValue> {
     use crate::model::shape::TextWrap;
     use crate::paint::RenderProfile;
     use crate::renderer::layer_renderer::LayerRenderer;
@@ -220,7 +220,7 @@ fn render_page_to_canvas_filtered_with_profile_impl(
     renderer.set_scale(scale);
     renderer.set_layer_filter(filter);
     renderer.render_page(&tree).map_err(JsValue::from)?;
-    Ok(())
+    Ok(renderer.pending_pictures())
 }
 
 fn get_page_layer_tree_with_profile_impl(
@@ -852,6 +852,8 @@ impl HwpDocument {
     ///
     /// WASM 환경에서만 사용 가능하다. Canvas 크기는 페이지 크기 × scale로 설정된다.
     /// scale이 0 이하이면 1.0으로 처리한다 (하위호환).
+    /// 반환값은 디코드를 기다리느라 빠진 그림 수다. 0 이 아니면 디코드 뒤 다시 그려야 한다
+    /// (`setWebCanvasPictureListener`).
     #[cfg(target_arch = "wasm32")]
     #[wasm_bindgen(js_name = renderPageToCanvas)]
     pub fn render_page_to_canvas(
@@ -859,7 +861,7 @@ impl HwpDocument {
         page_num: u32,
         canvas: &HtmlCanvasElement,
         scale: f64,
-    ) -> Result<(), JsValue> {
+    ) -> Result<u32, JsValue> {
         use crate::renderer::layer_renderer::LayerRenderer;
         use crate::renderer::web_canvas::WebCanvasRenderer;
 
@@ -879,7 +881,7 @@ impl HwpDocument {
         renderer.show_control_codes = self.show_control_codes;
         renderer.set_scale(scale);
         renderer.render_page(&tree).map_err(JsValue::from)?;
-        Ok(())
+        Ok(renderer.pending_pictures())
     }
 
     /// 구역 첫 페이지에 요청한 머리말/꼬리말 정의를 가상 투영해 Canvas 2D로 렌더링한다.
@@ -896,7 +898,7 @@ impl HwpDocument {
         apply_to: u8,
         canvas: &HtmlCanvasElement,
         scale: f64,
-    ) -> Result<(), JsValue> {
+    ) -> Result<u32, JsValue> {
         use crate::renderer::web_canvas::WebCanvasRenderer;
 
         let tree = self
@@ -918,7 +920,7 @@ impl HwpDocument {
         renderer.show_control_codes = self.show_control_codes;
         renderer.set_scale(scale);
         renderer.render_tree(&tree);
-        Ok(())
+        Ok(renderer.pending_pictures())
     }
 
     /// 다층 레이어 필터를 적용한 Canvas 렌더링 (Task #516, Stage 5.2).
@@ -933,6 +935,7 @@ impl HwpDocument {
     /// - `"front"` → InFrontOfText overlay layer
     ///
     /// 본문 Canvas 와 overlay 컨테이너를 분리하는 다층 layer 아키텍처에서 사용.
+    /// 반환값은 `renderPageToCanvas` 와 같이 디코드를 기다리는 그림 수다.
     #[cfg(target_arch = "wasm32")]
     #[wasm_bindgen(js_name = renderPageToCanvasFiltered)]
     pub fn render_page_to_canvas_filtered(
@@ -941,7 +944,7 @@ impl HwpDocument {
         canvas: &HtmlCanvasElement,
         scale: f64,
         layer_kind: &str,
-    ) -> Result<(), JsValue> {
+    ) -> Result<u32, JsValue> {
         self.render_page_to_canvas_filtered_with_profile(
             page_num, canvas, scale, layer_kind, "screen",
         )
@@ -956,7 +959,7 @@ impl HwpDocument {
         scale: f64,
         layer_kind: &str,
         profile: &str,
-    ) -> Result<(), JsValue> {
+    ) -> Result<u32, JsValue> {
         #[cfg(feature = "subsecond-dev")]
         {
             let mut hot =
@@ -972,7 +975,7 @@ impl HwpDocument {
     #[cfg(target_arch = "wasm32")]
     #[wasm_bindgen(js_name = getWebCanvasImageCacheStats)]
     pub fn get_web_canvas_image_cache_stats(&self) -> String {
-        crate::renderer::web_canvas::image_cache_stats_json()
+        crate::renderer::web_picture_cache::image_cache_stats_json()
     }
 
     /// 특정 페이지를 기존 PageRenderTree 경로로 Canvas 2D에 직접 렌더링한다.
@@ -983,7 +986,7 @@ impl HwpDocument {
         page_num: u32,
         canvas: &HtmlCanvasElement,
         scale: f64,
-    ) -> Result<(), JsValue> {
+    ) -> Result<u32, JsValue> {
         use crate::renderer::web_canvas::WebCanvasRenderer;
 
         let tree = self
@@ -1002,7 +1005,7 @@ impl HwpDocument {
         renderer.show_control_codes = self.show_control_codes;
         renderer.set_scale(scale);
         renderer.render_tree(&tree);
-        Ok(())
+        Ok(renderer.pending_pictures())
     }
 
     /// 페이지 렌더 트리를 JSON 문자열로 반환한다.

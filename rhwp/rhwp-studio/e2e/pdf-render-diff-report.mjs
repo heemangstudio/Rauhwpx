@@ -699,7 +699,7 @@ runTest('PDF export visual diff report', async ({ page }) => {
         if (compatibilityReady) {
           try {
             result.reportStage = 'browser-capture';
-            const reference = await page.evaluate((args) => {
+            const reference = await page.evaluate(async (args) => {
               const doc = window.__wasm?.doc;
               if (!doc) throw new Error('window.__wasm.doc is not available');
               if (typeof doc.renderPageToCanvas !== 'function') {
@@ -707,7 +707,11 @@ runTest('PDF export visual diff report', async ({ page }) => {
               }
 
               const canvas = document.createElement('canvas');
-              doc.renderPageToCanvas(args.pageIndex, canvas, args.scale);
+              // 그림은 비동기로 디코드된다. 다 그릴 때까지 다시 그린다.
+              for (let attempt = 0; attempt < 100; attempt++) {
+                if (!(doc.renderPageToCanvas(args.pageIndex, canvas, args.scale) > 0)) break;
+                await new Promise((resolve) => setTimeout(resolve, 50));
+              }
               return {
                 width: canvas.width,
                 height: canvas.height,

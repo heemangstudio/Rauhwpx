@@ -968,6 +968,7 @@ dependencies = [
  "unicode-width",
  "usvg 0.45.1",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "web-sys",
  "web-time",
