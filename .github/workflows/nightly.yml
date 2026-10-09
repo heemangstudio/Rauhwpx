@@ -120,6 +120,8 @@ jobs:
             site-api/package-lock.json
       - name: Install dependencies
         run: npm run setup
+      # Studio unit tests run edit history and save checks on the real engine.
+      - uses: ./.github/actions/build-wasm
       - name: Test Studio
         run: |
           npm --prefix rhwp/rhwp-studio test

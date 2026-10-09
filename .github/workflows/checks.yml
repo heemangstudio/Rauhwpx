@@ -100,6 +100,9 @@ jobs:
       - name: Install dependencies
         if: contains(needs.changes.outputs.app, 'studio') || contains(needs.changes.outputs.app, 'hub') || contains(needs.changes.outputs.app, 'desktop')
         run: npm run setup
+      # Studio unit tests run edit history and save checks on the real engine.
+      - uses: ./.github/actions/build-wasm
+        if: contains(needs.changes.outputs.app, 'studio')
       - name: Test Studio
         if: contains(needs.changes.outputs.app, 'studio')
         run: |
