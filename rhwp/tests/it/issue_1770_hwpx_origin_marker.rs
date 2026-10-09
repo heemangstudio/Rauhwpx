@@ -12,17 +12,11 @@
 //! 한컴 2022 오라클: 마커 포함 convert-HWP 열림 정상 + 4쪽
 //! (`output/poc/task1770_oracle`, 열림 계약 게이트로 확인).
 
+use crate::common::load_doc as load;
 use std::fs;
 use std::path::Path;
 
 const SAMPLE: &str = "samples/issue1770_rowsplit_tolerance.hwpx";
-
-fn load(path: &str) -> rhwp::wasm_api::HwpDocument {
-    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
-    let bytes = fs::read(&p).unwrap_or_else(|e| panic!("read {path}: {e}"));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes)
-        .unwrap_or_else(|e| panic!("parse {path}: {e:?}"))
-}
 
 /// 변환-HWP 재파스가 HWPX 원본과 같은 쪽수로 pagination 된다 (자기정합).
 #[test]

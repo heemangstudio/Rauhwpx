@@ -8,23 +8,14 @@
 //!   = issue1510 구조에서 float 표 offset 을 모두 작은 양수로 narrow
 //!     (A=+200, B=+500, C=+800 HWPUNIT) — 표 top 이 제목 라인과 겹치는 multi-positive 케이스.
 
+use crate::common::load_doc;
 use rhwp::renderer::render_tree::{RenderNode, RenderNodeType};
-use std::fs;
-use std::path::Path;
 
 const HWPX_SAMPLE: &str = "samples/issue1549_multipositive_float_tables.hwpx";
 const EMPTY_HOST_SAMPLE: &str = "samples/issue1549_empty_host_float_clamp.hwpx";
 const TARGET_PI: usize = 0;
 const TITLE_NEEDLE: &str = "MULTI POSITIVE TITLE";
 const TARGET_TABLES: [usize; 3] = [2, 3, 4];
-
-fn load_doc(sample: &str) -> rhwp::wasm_api::HwpDocument {
-    let repo_root = env!("CARGO_MANIFEST_DIR");
-    let hwp_path = Path::new(repo_root).join(sample);
-    let bytes = fs::read(&hwp_path).unwrap_or_else(|e| panic!("read {}: {}", sample, e));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes)
-        .unwrap_or_else(|e| panic!("parse {}: {}", sample, e))
-}
 
 fn find_table_bbox(root: &RenderNode, target_ci: usize) -> Option<(f64, f64)> {
     if let RenderNodeType::Table(table) = &root.node_type {

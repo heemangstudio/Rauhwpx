@@ -12,22 +12,13 @@
 //!     후행 표(ci=3) offset 을 음수(-4411 HU = u32 4294962885)로 바꿔, 빈-host
 //!     정렬이 배열 순서 [2,3,4] 를 배치 [3,2,4] 로 역전시키는 케이스.
 
+use crate::common::load_doc;
 use rhwp::renderer::render_tree::{RenderNode, RenderNodeType};
-use std::fs;
-use std::path::Path;
 
 const SAMPLE: &str = "samples/issue1639_empty_host_negative_offset_float.hwpx";
 const POSITIVE_SAMPLE: &str = "samples/issue1639_empty_host_positive_only_float.hwpx";
 const TARGET_PI: usize = 0;
 const TARGET_TABLES: [usize; 3] = [2, 3, 4];
-
-fn load_doc(sample: &str) -> rhwp::wasm_api::HwpDocument {
-    let repo_root = env!("CARGO_MANIFEST_DIR");
-    let hwp_path = Path::new(repo_root).join(sample);
-    let bytes = fs::read(&hwp_path).unwrap_or_else(|e| panic!("read {}: {}", sample, e));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes)
-        .unwrap_or_else(|e| panic!("parse {}: {}", sample, e))
-}
 
 fn collect_table_order(root: &RenderNode, out: &mut Vec<usize>) {
     if let RenderNodeType::Table(table) = &root.node_type {

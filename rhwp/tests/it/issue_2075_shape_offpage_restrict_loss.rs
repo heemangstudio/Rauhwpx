@@ -43,9 +43,7 @@ fn collect_rects(node: &RenderNode, out: &mut Vec<Rect>) {
 }
 
 fn load() -> DocumentCore {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(SAMPLE);
-    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    DocumentCore::from_bytes(&bytes).unwrap_or_else(|e| panic!("load {SAMPLE}: {e}"))
+    crate::common::load_core(SAMPLE)
 }
 
 fn set_shape(core: &mut DocumentCore, json: &str) {

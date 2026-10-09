@@ -6,8 +6,8 @@
 //! 종료 코드는 #2707 계약(0/1/2)을 따른다.
 #![cfg(not(target_arch = "wasm32"))]
 
+use crate::common::{describe, parse_json, run};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
 
 /// 누름틀 11개(회사명/작성자/부서명/전화번호/이메일/제목/목차1×5).
 const SAMPLE: &str = "samples/field-01.hwp";
@@ -25,31 +25,6 @@ fn temp_out(tag: &str) -> PathBuf {
             .expect("system clock")
             .as_nanos()
     ))
-}
-
-fn run(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_rhwp"))
-        .args(args)
-        .output()
-        .expect("rhwp 실행 실패")
-}
-
-fn describe(args: &[&str], output: &Output) -> String {
-    format!(
-        "명령: rhwp {}\nstdout:\n{}\nstderr:\n{}",
-        args.join(" "),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
-}
-
-fn parse_json(args: &[&str], output: &Output) -> serde_json::Value {
-    serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
-        panic!(
-            "stdout 이 순수 JSON 이 아닙니다 ({e}).\n{}",
-            describe(args, output)
-        )
-    })
 }
 
 #[test]

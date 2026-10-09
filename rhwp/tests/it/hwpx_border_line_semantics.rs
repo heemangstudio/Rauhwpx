@@ -19,7 +19,10 @@ fn assert_border_types(doc: &HwpDocument) {
 
 #[test]
 fn hancom_hwpx_border_names_keep_their_hwp5_meaning() {
-    let doc = HwpDocument::from_bytes(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/rendering-fidelity/01-table-border-styles.hwpx")))
+    let doc = HwpDocument::from_bytes(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/rendering-fidelity/01-table-border-styles.hwpx"
+    )))
     .unwrap();
     assert_border_types(&doc);
     let hwp = doc.export_hwp_native().unwrap();

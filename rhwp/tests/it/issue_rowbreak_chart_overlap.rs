@@ -4,6 +4,7 @@
 //! preceding `<민간 SaaS 연계공통기반 운영체계>` title line. Otherwise the chart
 //! border and image are painted under that title text.
 
+use crate::common::load_doc;
 use rhwp::renderer::render_tree::{BoundingBox, RenderNode, RenderNodeType};
 use std::fs;
 use std::path::Path;
@@ -11,14 +12,6 @@ use std::path::Path;
 const SAMPLE: &str = "samples/rowbreak-problem-pages.hwpx";
 const HWP_SAMPLE: &str = "samples/rowbreak-problem-pages.hwp";
 const PAGE_INDEX: u32 = 1;
-
-fn load_doc(sample: &str) -> rhwp::wasm_api::HwpDocument {
-    let repo_root = env!("CARGO_MANIFEST_DIR");
-    let sample_path = Path::new(repo_root).join(sample);
-    let bytes = fs::read(&sample_path).unwrap_or_else(|e| panic!("read {sample}: {e}"));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes)
-        .unwrap_or_else(|e| panic!("parse {sample}: {e:?}"))
-}
 
 fn find_table_bbox(root: &RenderNode, target_pi: usize, target_ci: usize) -> Option<BoundingBox> {
     if let RenderNodeType::Table(t) = &root.node_type {

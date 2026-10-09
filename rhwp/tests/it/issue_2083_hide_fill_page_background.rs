@@ -8,7 +8,6 @@
 //! 투명/검정이 아니라 불투명 흰 종이로 렌더되는지 검증한다.
 //!
 //! 표본 `samples/issue2083_hide_fill_page.hwpx` 4쪽(idx 3)이 `hide_fill=true` 페이지.
-#![cfg(feature = "native-skia")]
 
 use rhwp::document_core::DocumentCore;
 use std::fs;

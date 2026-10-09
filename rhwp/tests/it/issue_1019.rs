@@ -3,16 +3,8 @@
 //! 한컴 Mac PDF 실측: 밝기 70·대비 -50 워터마크는 채널마다 `floor(0.5·v + 197)` 로 구운
 //! 픽셀을 반투명 없이 그린다. 그래서 구운 PNG 의 불투명 픽셀은 모두 197 이상이다.
 
-use std::path::Path;
-
+use crate::common::load_doc;
 use base64::Engine;
-use rhwp::wasm_api::HwpDocument;
-
-fn load_doc(rel_path: &str) -> HwpDocument {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel_path);
-    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    HwpDocument::from_bytes(&bytes).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
-}
 
 fn svg_png_images(svg: &str) -> Vec<image::RgbaImage> {
     let mut images = Vec::new();

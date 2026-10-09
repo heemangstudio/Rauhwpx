@@ -8,22 +8,13 @@
 //! 내려가야 한다(겹침 금지). 수정 전에는 B 가 A 영역 안(y≈376, A=[362,437])에
 //! 그려져 텍스트가 겹쳤다.
 
+use crate::common::load_doc;
 use rhwp::renderer::render_tree::{RenderNode, RenderNodeType};
-use rhwp::wasm_api::HwpDocument;
-use std::fs;
-use std::path::Path;
 
 const SAMPLE: &str = "samples/hwpx/issue1535_coanchored_float_exclusion.hwpx";
 const TARGET_PI: usize = 0;
 const TABLE_A: usize = 2;
 const TABLE_B: usize = 3;
-
-fn load_doc(sample: &str) -> HwpDocument {
-    let repo_root = env!("CARGO_MANIFEST_DIR");
-    let path = Path::new(repo_root).join(sample);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", sample, e));
-    HwpDocument::from_bytes(&bytes).unwrap_or_else(|e| panic!("parse {}: {}", sample, e))
-}
 
 fn find_table_bbox(root: &RenderNode, target_ci: usize) -> Option<(f64, f64)> {
     if let RenderNodeType::Table(table) = &root.node_type {

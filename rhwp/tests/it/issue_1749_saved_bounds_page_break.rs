@@ -9,20 +9,11 @@
 //! - 저장 lineseg 근거: pi=25(vpos=134764)와 pi=26(vpos=137484)은 한 줄(2720HU) 간격
 //!   연속 배치 = 한글은 pi=26 을 2쪽 마지막 줄로 인코딩.
 
-use std::fs;
-use std::path::Path;
-
+use crate::common::load_doc as load_sample;
 use rhwp::model::control::Control;
 
 const HWPX_SAMPLE: &str = "samples/task1749/saved_bounds_cumulative_page_break.hwpx";
 const HWP_SAMPLE: &str = "samples/task1749/saved_bounds_cumulative_page_break.hwp";
-
-fn load_sample(sample: &str) -> rhwp::wasm_api::HwpDocument {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(sample);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", sample, e));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes)
-        .unwrap_or_else(|e| panic!("parse {}: {}", sample, e))
-}
 
 fn load_doc() -> rhwp::wasm_api::HwpDocument {
     load_sample(HWPX_SAMPLE)

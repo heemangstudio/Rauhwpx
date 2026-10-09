@@ -1,11 +1,5 @@
-use std::path::Path;
-
+use crate::common::read_sample;
 use rhwp::wasm_api::HwpDocument;
-
-fn read_sample(rel: &str) -> Vec<u8> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-    std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e))
-}
 
 fn json_number(json: &str, key: &str) -> f64 {
     let pattern = format!("\"{}\":", key);

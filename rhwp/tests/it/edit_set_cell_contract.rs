@@ -7,8 +7,8 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
 
+use crate::common::{describe, parse_json, run};
 use rhwp::document_core::queries::table_extract::extract_tables;
 use rhwp::model::control::Control;
 use rhwp::model::style::CharShape;
@@ -30,31 +30,6 @@ fn temp_out(tag: &str) -> PathBuf {
             .expect("system clock")
             .as_nanos()
     ))
-}
-
-fn run(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_rhwp"))
-        .args(args)
-        .output()
-        .expect("rhwp 실행 실패")
-}
-
-fn describe(args: &[&str], output: &Output) -> String {
-    format!(
-        "명령: rhwp {}\nstdout:\n{}\nstderr:\n{}",
-        args.join(" "),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
-}
-
-fn parse_json(args: &[&str], output: &Output) -> serde_json::Value {
-    serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
-        panic!(
-            "stdout 이 순수 JSON 이 아닙니다 ({e}).\n{}",
-            describe(args, output)
-        )
-    })
 }
 
 fn tables_of(path: &Path) -> serde_json::Value {

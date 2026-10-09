@@ -10,12 +10,8 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+use crate::common::{read_sample as sample_bytes, rhwp_bin};
 use rhwp::parser::{detect_format, parse_document, FileFormat};
-
-fn sample_bytes(rel: &str) -> Vec<u8> {
-    let repo_root = env!("CARGO_MANIFEST_DIR");
-    fs::read(Path::new(repo_root).join(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"))
-}
 
 /// 제품 로드 경로 핀: 세 포맷 모두 파일명/확장자와 무관하게 내용으로 감지·파싱된다.
 #[test]
@@ -96,10 +92,4 @@ fn issue_1914_roundtrip_gates_classify_masqueraded_files_as_format_skip() {
         "hwp5-roundtrip HWP3 실체: FORMAT_SKIP+실체 안내여야 함 (종전 오도성 IR_DIFF, #1892): {text}"
     );
     assert!(ok, "FORMAT_SKIP 은 하드 실패가 아님 (exit 0): {text}");
-}
-
-/// [#3289] 아카이브 실행 시 컴파일타임 경로는 빌드 러너 전용이므로,
-/// nextest가 런타임에 재매핑해 주입하는 CARGO_BIN_EXE_rhwp를 우선한다.
-fn rhwp_bin() -> String {
-    std::env::var("CARGO_BIN_EXE_rhwp").unwrap_or_else(|_| env!("CARGO_BIN_EXE_rhwp").to_string())
 }

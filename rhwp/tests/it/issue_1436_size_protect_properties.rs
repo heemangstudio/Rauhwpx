@@ -1,3 +1,4 @@
+use crate::common::read_sample as read_fixture;
 use rhwp::document_core::DocumentCore;
 use rhwp::model::control::Control;
 use rhwp::model::document::Document;
@@ -6,11 +7,6 @@ use rhwp::model::shape::CommonObjAttr;
 const SIZE_PROTECT_BIT: u32 = 1 << 20;
 const TARGET_PICTURE_PATH: &str = r#"[{"controlIdx":2,"cellIdx":2,"cellParaIdx":0}]"#;
 const TARGET_SHAPE_PATH: &str = r#"[{"controlIdx":2,"cellIdx":5,"cellParaIdx":0}]"#;
-
-fn read_fixture(path: &str) -> Vec<u8> {
-    std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
-        .unwrap_or_else(|e| panic!("read {path}: {e}"))
-}
 
 fn load_picture_sample() -> DocumentCore {
     DocumentCore::from_bytes(&read_fixture("samples/ta-pic-001-r-쪽영역안제한.hwp"))

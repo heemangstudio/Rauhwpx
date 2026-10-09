@@ -1,5 +1,6 @@
 //! Issue #1116: HWP3→HWP5 sample16 목차 leader 및 p3 문단 vpos 정합 가드.
 
+use crate::common::load_doc;
 use std::fs;
 use std::path::Path;
 
@@ -11,14 +12,6 @@ fn render_svg(rel_path: &str, page_idx: u32) -> String {
         .unwrap_or_else(|e| panic!("parse {rel_path}: {e:?}"));
     doc.render_page_svg_native(page_idx)
         .unwrap_or_else(|e| panic!("render {rel_path} page {page_idx}: {e:?}"))
-}
-
-fn load_doc(rel_path: &str) -> rhwp::wasm_api::HwpDocument {
-    let repo_root = env!("CARGO_MANIFEST_DIR");
-    let path = Path::new(repo_root).join(rel_path);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {rel_path}: {e}"));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes)
-        .unwrap_or_else(|e| panic!("parse {rel_path}: {e:?}"))
 }
 
 fn extract_dotted_horizontal_lines(svg: &str) -> Vec<(f64, f64, f64)> {

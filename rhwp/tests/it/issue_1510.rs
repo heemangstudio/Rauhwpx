@@ -2,22 +2,13 @@
 //! TopAndBottom floating 표가 여러 개 있을 때, vertical_offset 정렬/누적으로
 //! 페이지가 늘어나거나 표 순서가 뒤집히는 회귀를 막는다.
 
+use crate::common::load_doc;
 use rhwp::renderer::render_tree::{RenderNode, RenderNodeType};
-use std::fs;
-use std::path::Path;
 
 const HWP_SAMPLE: &str = "samples/issue1510_coanchored_float_tables.hwp";
 const HWPX_SAMPLE: &str = "samples/issue1510_coanchored_float_tables.hwpx";
 const TARGET_PI: usize = 0;
 const TARGET_TABLES: [usize; 3] = [2, 3, 4];
-
-fn load_doc(sample: &str) -> rhwp::wasm_api::HwpDocument {
-    let repo_root = env!("CARGO_MANIFEST_DIR");
-    let hwp_path = Path::new(repo_root).join(sample);
-    let bytes = fs::read(&hwp_path).unwrap_or_else(|e| panic!("read {}: {}", sample, e));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes)
-        .unwrap_or_else(|e| panic!("parse {}: {}", sample, e))
-}
 
 fn collect_table_order(root: &RenderNode, out: &mut Vec<usize>) {
     if let RenderNodeType::Table(table) = &root.node_type {

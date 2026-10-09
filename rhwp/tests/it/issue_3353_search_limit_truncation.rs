@@ -5,8 +5,8 @@
 //! "정확히 N건"과 "N건만 표시(실제 그 이상)"를 구별할 수 있어야 한다.
 #![cfg(not(target_arch = "wasm32"))]
 
+use crate::common::{describe, run};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
 
 /// search_json_contract.rs 와 같은 샘플·검색어 — 매치가 여러 건 실재한다.
 const SAMPLE: &str = "samples/hwp3-sample.hwp";
@@ -14,26 +14,6 @@ const QUERY: &str = "의";
 
 fn sample(rel: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(rel)
-}
-
-fn rhwp_bin() -> String {
-    std::env::var("CARGO_BIN_EXE_rhwp").unwrap_or_else(|_| env!("CARGO_BIN_EXE_rhwp").to_string())
-}
-
-fn run(args: &[&str]) -> Output {
-    Command::new(rhwp_bin())
-        .args(args)
-        .output()
-        .expect("rhwp 실행 실패")
-}
-
-fn describe(args: &[&str], output: &Output) -> String {
-    format!(
-        "명령: rhwp {}\nstdout:\n{}\nstderr:\n{}",
-        args.join(" "),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
 }
 
 fn search_json(extra: &[&str]) -> serde_json::Value {

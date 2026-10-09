@@ -16,23 +16,14 @@
 //!     문서 전체 53쪽.
 //!   수정 후: 본체가 캡션과 같은 쪽에서 분할 시작 → 52쪽.
 
+use crate::common::load_doc;
 use rhwp::renderer::render_tree::{RenderNode, RenderNodeType};
-use std::fs;
-use std::path::Path;
 
 const SAMPLE: &str = "samples/issue1853_caption_precedes_body_split.hwpx";
 const ANCHOR_PI: usize = 371;
 const CAPTION_CI: usize = 0; // tac=true 캡션 상자 (선행)
 const BODY_CI: usize = 1; // 자리차지 본체 표 (분할 대상)
 const EXPECTED_PAGES: u32 = 52;
-
-fn load_doc(sample: &str) -> rhwp::wasm_api::HwpDocument {
-    let repo_root = env!("CARGO_MANIFEST_DIR");
-    let hwp_path = Path::new(repo_root).join(sample);
-    let bytes = fs::read(&hwp_path).unwrap_or_else(|e| panic!("read {}: {}", sample, e));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes)
-        .unwrap_or_else(|e| panic!("parse {}: {}", sample, e))
-}
 
 fn has_table(root: &RenderNode, pi: usize, ci: usize) -> bool {
     if let RenderNodeType::Table(table) = &root.node_type {

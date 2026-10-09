@@ -1,7 +1,6 @@
-use std::fs;
 use std::io::{Cursor, Read};
-use std::path::Path;
 
+use crate::common::read_sample as sample_bytes;
 use rhwp::model::shape::{ChartShape, ChartType, DataSeries};
 use rhwp::ole_chart::{
     chart_shape_to_ir, render_ole_chart_svg_body, render_ole_chart_svg_fragment, OleChart,
@@ -18,11 +17,6 @@ const NATIVE_FAMILY_STEMS: &[&str] = &[
     "분산형/직선및표식이있는분산형",
     "기타/시가고가저가종가",
 ];
-
-fn sample_bytes(relative: &str) -> Vec<u8> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
-    fs::read(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
-}
 
 fn render_page0(bytes: &[u8]) -> String {
     let mut document = rhwp::wasm_api::HwpDocument::from_bytes(bytes).expect("parse chart fixture");
@@ -86,17 +80,26 @@ fn native_hwpx_chart_passthrough_save_is_render_stable() {
 fn added_ooxml_family_fixtures_render_without_fallbacks() {
     let fixtures: &[(&str, OoxmlChartType, &str)] = &[
         (
-            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/p1_charts/area.xml")),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/p1_charts/area.xml"
+            )),
             OoxmlChartType::Area,
             "hwp-chart-area-series",
         ),
         (
-            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/p1_charts/doughnut.xml")),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/p1_charts/doughnut.xml"
+            )),
             OoxmlChartType::Doughnut,
             "hwp-chart-doughnut-hole",
         ),
         (
-            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/p1_charts/radar.xml")),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/p1_charts/radar.xml"
+            )),
             OoxmlChartType::Radar,
             "hwp-chart-radar-series",
         ),
@@ -146,7 +149,11 @@ fn area_grouping_is_preserved_and_percent_stacks_render_as_bands() {
 
 #[test]
 fn point_data_label_overrides_are_not_promoted_to_the_whole_plot() {
-    let xml = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/p1_charts/area.xml")).replace(
+    let xml = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/p1_charts/area.xml"
+    ))
+    .replace(
         "<c:showVal val=\"1\"/>",
         "<c:dLbl><c:idx val=\"0\"/><c:showVal val=\"1\"/></c:dLbl>",
     );

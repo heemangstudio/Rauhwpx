@@ -18,22 +18,13 @@
 //!   수정 전(clean): 표 B 가 page0 에서 행 분할(rows 0..1) + 빈 page = 3 페이지.
 //!   수정 후: 표 B 통째 page1 + 말미 빈 문단 흡수 = 2 페이지.
 
+use crate::common::load_doc;
 use rhwp::renderer::render_tree::{RenderNode, RenderNodeType};
-use std::fs;
-use std::path::Path;
 
 const SAMPLE: &str = "samples/issue1663_coanchored_float_orphan.hwpx";
 const TARGET_PI: usize = 0;
 const TABLE_A_CI: usize = 2;
 const TABLE_B_CI: usize = 3;
-
-fn load_doc(sample: &str) -> rhwp::wasm_api::HwpDocument {
-    let repo_root = env!("CARGO_MANIFEST_DIR");
-    let hwp_path = Path::new(repo_root).join(sample);
-    let bytes = fs::read(&hwp_path).unwrap_or_else(|e| panic!("read {}: {}", sample, e));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes)
-        .unwrap_or_else(|e| panic!("parse {}: {}", sample, e))
-}
 
 fn has_table(root: &RenderNode, control_index: usize) -> bool {
     if let RenderNodeType::Table(table) = &root.node_type {

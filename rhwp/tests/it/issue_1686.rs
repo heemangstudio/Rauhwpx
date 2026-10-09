@@ -5,10 +5,9 @@
 //! `[응시자격요건 고려사항]` 표가 함께 있다. 한컴 2020 PDF 기준 page 3은
 //! 직위별 요건 표 continuation 뒤에 0.28 `다. 우대요건...` 섹션이 와야 한다.
 
+use crate::common::load_doc;
 use rhwp::renderer::render_tree::{RenderNode, RenderNodeType};
 use rhwp::wasm_api::HwpDocument;
-use std::fs;
-use std::path::Path;
 
 const TARGET_PAGE: u32 = 2;
 const PAGE_4: u32 = 3;
@@ -18,13 +17,6 @@ const DEFERRED_TABLE_HEADING: &str = "[응시자격요건고려사항]";
 const EXPECTED_PAGE_COUNT: u32 = 35;
 const PAGE5_FIRST_CAREER_LINE: &str = "동일기간에경력이중복될경우유리한경력1개만인정함";
 const FOLLOWUP_NOTICE: &str = "임용예정직위,응시자격요건및우대요건등관련사항은";
-
-fn load_doc(sample: &str) -> HwpDocument {
-    let repo_root = env!("CARGO_MANIFEST_DIR");
-    let path = Path::new(repo_root).join(sample);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", sample, e));
-    HwpDocument::from_bytes(&bytes).unwrap_or_else(|e| panic!("parse {}: {}", sample, e))
-}
 
 fn collect_page_text(node: &RenderNode, out: &mut String) {
     if let RenderNodeType::TextRun(run) = &node.node_type {

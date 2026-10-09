@@ -6,8 +6,8 @@
 //! 본 테스트가 다루지 않는다 — `tests/issue_1638_convert_verify_gate.rs` 참조.
 #![cfg(not(target_arch = "wasm32"))]
 
+use crate::common::{assert_code, describe};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
 
 /// 파싱까지 성공하는 실제 샘플 (페이지 범위 초과·쓰기 실패 경로 검증용).
 const SAMPLE: &str = "samples/hwp3-sample.hwp";
@@ -36,33 +36,6 @@ fn unique_temp_path(label: &str) -> PathBuf {
         "rhwp-exit-codes-{label}-{}-{nonce}",
         std::process::id()
     ))
-}
-
-fn run(args: &[&str]) -> Output {
-    Command::new(rhwp_bin())
-        .args(args)
-        .output()
-        .expect("rhwp 실행 실패")
-}
-
-fn describe(args: &[&str], output: &Output) -> String {
-    format!(
-        "명령: rhwp {}\nstdout:\n{}\nstderr:\n{}",
-        args.join(" "),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
-}
-
-fn assert_code(args: &[&str], expected: i32) -> Output {
-    let output = run(args);
-    assert_eq!(
-        output.status.code(),
-        Some(expected),
-        "종료 코드 {expected} 를 기대했다\n{}",
-        describe(args, &output)
-    );
-    output
 }
 
 // --- 2: 사용법 오류 -------------------------------------------------------
@@ -238,10 +211,4 @@ fn export_png_without_native_skia_reports_usage_error() {
         "왜 못 쓰는지 알려야 한다\n{}",
         describe(&args, &output)
     );
-}
-
-/// [#3289] 아카이브 실행 시 컴파일타임 경로는 빌드 러너 전용이므로,
-/// nextest가 런타임에 재매핑해 주입하는 CARGO_BIN_EXE_rhwp를 우선한다.
-fn rhwp_bin() -> String {
-    std::env::var("CARGO_BIN_EXE_rhwp").unwrap_or_else(|_| env!("CARGO_BIN_EXE_rhwp").to_string())
 }

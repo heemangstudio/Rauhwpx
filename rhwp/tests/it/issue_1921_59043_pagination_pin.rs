@@ -9,16 +9,7 @@
 //! shared cell-cut normalization, wrapper ownership, saved rewind, column-tail packing을
 //! 정합한 뒤 37쪽과 핵심 표 fragment 경계를 함께 고정한다.
 
-use std::fs;
-use std::path::Path;
-
-fn load(rel: &str) -> rhwp::wasm_api::HwpDocument {
-    let repo_root = env!("CARGO_MANIFEST_DIR");
-    let path = Path::new(repo_root).join(rel);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes)
-        .unwrap_or_else(|e| panic!("parse {}: {:?}", rel, e))
-}
+use crate::common::load_doc as load;
 
 #[test]
 fn regulatory_59043_page_count_pin() {

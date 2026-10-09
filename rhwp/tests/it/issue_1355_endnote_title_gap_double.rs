@@ -13,14 +13,7 @@
 //! 가드: p18(0-idx 17) 좌측 컬럼 첫 미주 제목(문30)의 baseline y 가 이중계상 시의
 //! 위치(+약 26px)로 회귀하지 않는지 절대 bound 로 추적.
 
-use std::fs;
-use std::path::Path;
-
-fn load_doc(rel: &str) -> rhwp::wasm_api::HwpDocument {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", rel, e));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes).expect("parse")
-}
+use crate::common::load_doc;
 
 /// 페이지 SVG 에서 좌측 컬럼(x < x_max)의 '문' 글자 text baseline y 들을 오름차순 반환.
 fn left_column_question_title_ys(svg: &str, x_max: f64) -> Vec<f64> {

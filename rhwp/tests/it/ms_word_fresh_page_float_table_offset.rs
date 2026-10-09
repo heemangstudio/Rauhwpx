@@ -23,9 +23,7 @@ const SAMPLE: &str = "samples/ms_word_fresh_page_float_table_offset.hwpx";
 const SECOND_TABLE_PARA: usize = 3;
 
 fn load() -> DocumentCore {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(SAMPLE);
-    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("재현체 {}: {e}", path.display()));
-    DocumentCore::from_bytes(&bytes).unwrap_or_else(|e| panic!("로드 {SAMPLE}: {e}"))
+    crate::common::load_core(SAMPLE)
 }
 
 fn body_top(node: &RenderNode) -> Option<f64> {

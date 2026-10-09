@@ -1,5 +1,6 @@
 #![cfg(not(target_arch = "wasm32"))]
 
+use crate::common::rhwp_bin;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -61,10 +62,4 @@ fn direct_backend_reports_missing_native_skia_feature() {
     assert!(String::from_utf8_lossy(&output.stderr)
         .contains("direct PDF backend requires a build with the native-skia feature"));
     assert!(!output_path.exists());
-}
-
-/// [#3289] 아카이브 실행 시 컴파일타임 경로는 빌드 러너 전용이므로,
-/// nextest가 런타임에 재매핑해 주입하는 CARGO_BIN_EXE_rhwp를 우선한다.
-fn rhwp_bin() -> String {
-    std::env::var("CARGO_BIN_EXE_rhwp").unwrap_or_else(|_| env!("CARGO_BIN_EXE_rhwp").to_string())
 }

@@ -4,12 +4,8 @@
 //! 종료 코드 1 + 무엇이 왜 틀렸는지 알리는 오류로 즉시 실패한다. 출력 파일은 만들지 않는다.
 #![cfg(not(target_arch = "wasm32"))]
 
+use crate::common::{describe, run};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-
-fn rhwp_bin() -> String {
-    std::env::var("CARGO_BIN_EXE_rhwp").unwrap_or_else(|_| env!("CARGO_BIN_EXE_rhwp").to_string())
-}
 
 fn unique_temp_dir(label: &str) -> PathBuf {
     let nonce = std::time::SystemTime::now()
@@ -20,22 +16,6 @@ fn unique_temp_dir(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!("rhwp-3358-{label}-{}-{nonce}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("임시 폴더");
     dir
-}
-
-fn run(args: &[&str]) -> Output {
-    Command::new(rhwp_bin())
-        .args(args)
-        .output()
-        .expect("rhwp 실행 실패")
-}
-
-fn describe(args: &[&str], output: &Output) -> String {
-    format!(
-        "명령: rhwp {}\nstdout:\n{}\nstderr:\n{}",
-        args.join(" "),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
 }
 
 /// 관찰된 실제 사고 형태(boxed 에 text) — 종전에는 exit 0 + 빈 박스로 내용이 유실됐다.

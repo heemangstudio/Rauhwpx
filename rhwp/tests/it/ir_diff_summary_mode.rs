@@ -3,6 +3,7 @@
 //! ir-diff 의 출력을 카테고리별 카운트 (요약) 또는 N 라인으로 제한 (truncation)
 //! 가능한지 점검. 회귀 시 광범위 회귀 검증의 효율 떨어짐.
 
+use crate::common::rhwp_bin;
 use std::process::Command;
 
 #[test]
@@ -116,10 +117,4 @@ fn no_flags_preserves_full_output() {
         !stdout.contains("이하 생략"),
         "기본 모드에서는 truncation 출력이 없어야 함"
     );
-}
-
-/// [#3289] 아카이브 실행 시 컴파일타임 경로는 빌드 러너 전용이므로,
-/// nextest가 런타임에 재매핑해 주입하는 CARGO_BIN_EXE_rhwp를 우선한다.
-fn rhwp_bin() -> String {
-    std::env::var("CARGO_BIN_EXE_rhwp").unwrap_or_else(|_| env!("CARGO_BIN_EXE_rhwp").to_string())
 }

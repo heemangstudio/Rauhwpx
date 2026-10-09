@@ -62,10 +62,7 @@ fn collect_images(node: &RenderNode, out: &mut Vec<ImageRender>) {
 }
 
 fn load_core() -> DocumentCore {
-    let repo_root = env!("CARGO_MANIFEST_DIR");
-    let path = std::path::Path::new(repo_root).join(SAMPLE);
-    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    DocumentCore::from_bytes(&bytes).unwrap_or_else(|e| panic!("load {SAMPLE}: {e}"))
+    crate::common::load_core(SAMPLE)
 }
 
 /// 본문 첫 텍스트 문단에 그림을 삽입하고 (para_idx, control_idx) 반환.

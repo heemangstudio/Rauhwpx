@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
+use crate::common::rhwp_bin;
 use rhwp::document_core::DocumentCore;
 use rhwp::parser::{detect_format, FileFormat};
 
@@ -150,8 +151,11 @@ fn help_lists_hml_for_supported_document_commands() {
 
 #[test]
 fn export_hml_flags_preserve_edit_reparse_and_raw_fragment() {
-    let mut core = DocumentCore::from_bytes(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/formatting_table.hml")))
-        .expect("load lawful HML");
+    let mut core = DocumentCore::from_bytes(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/hml/formatting_table.hml"
+    )))
+    .expect("load lawful HML");
     let (section_index, paragraph_index) = first_non_empty_paragraph(&core);
     core.insert_text_native(section_index, paragraph_index, 0, "S3_EDIT_")
         .expect("apply public edit");
@@ -207,8 +211,11 @@ fn export_hml_refusals_are_nonzero_structured_and_write_nothing() {
         );
     }
 
-    let fixture = std::str::from_utf8(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/formatting_table.hml")))
-        .expect("fixture is UTF-8");
+    let fixture = std::str::from_utf8(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/hml/formatting_table.hml"
+    )))
+    .expect("fixture is UTF-8");
     let lossy_bytes = fixture.replacen("Type=\"None\"", "Type=\"Dash\"", 1);
     let lossy_input = unique_temp_dir("cli_lossy_input").with_extension("hml");
     let lossy_output = unique_temp_dir("cli_lossy_output").with_extension("hml");
@@ -234,7 +241,10 @@ fn export_hml_refusals_are_nonzero_structured_and_write_nothing() {
 #[test]
 fn export_hml_never_overwrites_its_input() {
     let input = unique_temp_dir("cli_same_path").with_extension("hml");
-    let original = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/formatting_table.hml"));
+    let original = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/hml/formatting_table.hml"
+    ));
     std::fs::write(&input, original).expect("write HML input");
 
     let output = run_export_hml(&input, &input, "-o");
@@ -251,7 +261,10 @@ fn export_hml_never_overwrites_its_input() {
 fn export_hml_never_overwrites_a_hard_link_to_its_input() {
     let input = unique_temp_dir("cli_hard_link_input").with_extension("hml");
     let output = unique_temp_dir("cli_hard_link_output").with_extension("hml");
-    let original = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/formatting_table.hml"));
+    let original = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/hml/formatting_table.hml"
+    ));
     std::fs::write(&input, original).expect("write HML input");
     std::fs::hard_link(&input, &output).expect("create hard-link output alias");
 
@@ -369,10 +382,4 @@ fn dump_svg_and_pdf_commands_accept_hml() {
     assert!(pdf.status.success(), "PDF command failed");
     let pdf_bytes = std::fs::read(&pdf_path).expect("PDF output");
     assert!(pdf_bytes.starts_with(b"%PDF-"), "invalid PDF output");
-}
-
-/// [#3289] 아카이브 실행 시 컴파일타임 경로는 빌드 러너 전용이므로,
-/// nextest가 런타임에 재매핑해 주입하는 CARGO_BIN_EXE_rhwp를 우선한다.
-fn rhwp_bin() -> String {
-    std::env::var("CARGO_BIN_EXE_rhwp").unwrap_or_else(|_| env!("CARGO_BIN_EXE_rhwp").to_string())
 }

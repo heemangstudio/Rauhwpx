@@ -10,8 +10,6 @@
 
 use rhwp::renderer::render_tree::{RenderNode, RenderNodeType};
 use std::collections::BTreeSet;
-use std::fs;
-use std::path::Path;
 
 const SAMPLE: &str = "samples/issue-986-receipt.hwp";
 const TARGET_PI: usize = 0;
@@ -36,11 +34,7 @@ impl TableBBox {
 }
 
 fn load_doc() -> rhwp::wasm_api::HwpDocument {
-    let repo_root = env!("CARGO_MANIFEST_DIR");
-    let hwp_path = Path::new(repo_root).join(SAMPLE);
-    let bytes = fs::read(&hwp_path).unwrap_or_else(|e| panic!("read {}: {}", SAMPLE, e));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes)
-        .unwrap_or_else(|e| panic!("parse {}: {}", SAMPLE, e))
+    crate::common::load_doc(SAMPLE)
 }
 
 fn collect_table_bboxes(

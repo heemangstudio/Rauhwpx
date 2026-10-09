@@ -13,9 +13,7 @@
 //!   4) 직렬화기의 탭 "데이터 없음" 마커([0,...,0,0x0009])를 파서가 tab_extended
 //!      로 실어 레이아웃이 ext[0]=0 을 탭 결과 위치로 해석 → 탭 무폭화.
 
-use std::fs;
-use std::path::Path;
-
+use crate::common::read_sample;
 use rhwp::diagnostics::render_geom_diff::{roundtrip_geom, Via};
 use rhwp::model::control::Control;
 use rhwp::model::shape::{ShapeObject, SizeCriterion};
@@ -24,12 +22,6 @@ use rhwp::serializer::serialize_document;
 
 const SAMPLE_GROUP: &str = "samples/issue1892_hwp3_drawing_group_roundtrip.hwp";
 const SAMPLE_TAB: &str = "samples/issue1892_hwp3_tab_roundtrip.hwp";
-
-fn read_sample(rel: &str) -> Vec<u8> {
-    let repo_root = env!("CARGO_MANIFEST_DIR");
-    let path = Path::new(repo_root).join(rel);
-    fs::read(&path).unwrap_or_else(|e| panic!("read {rel}: {e}"))
-}
 
 fn assert_roundtrip_render_self_consistent(rel: &str) {
     let data = read_sample(rel);

@@ -1,9 +1,8 @@
 //! Issue #493: 셀 보호, 셀 필드 이름, 양식 모드 편집 가능 속성 회귀 가드.
 
-use std::fs;
 use std::io::Read;
-use std::path::Path;
 
+use crate::common::read_sample as sample_bytes;
 use rhwp::model::control::Control;
 use rhwp::model::document::Document;
 use rhwp::parser::hwpx::parse_hwpx;
@@ -16,11 +15,6 @@ struct TablePos {
     section: usize,
     para: usize,
     control: usize,
-}
-
-fn sample_bytes(rel: &str) -> Vec<u8> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-    fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e))
 }
 
 fn find_first_table(doc: &Document) -> TablePos {

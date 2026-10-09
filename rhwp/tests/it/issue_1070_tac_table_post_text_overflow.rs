@@ -13,14 +13,7 @@
 //! 수정: `treat_as_char && total_lines > pre_end + 1` 일 때 표줄을 post-text 에서 제외
 //! (HWP5 `pre_end.max(1)` 와 정합, 단일줄 TAC 표는 불변).
 
-use std::fs;
-use std::path::Path;
-
-fn load_doc(rel: &str) -> rhwp::wasm_api::HwpDocument {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", rel, e));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes).expect("parse")
-}
+use crate::common::load_doc;
 
 /// SVG 의 `height="..."` 속성값(물리 페이지 높이 px).
 fn svg_height(svg: &str) -> f64 {

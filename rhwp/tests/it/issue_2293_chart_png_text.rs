@@ -10,7 +10,6 @@
 //! 검증: 차트 PNG 의 제목·축 라벨 영역에 잉크가 존재해야 한다 (수정 전
 //! FAILED). 환경별 폰트 차이를 허용하기 위해 잉크 존재만 단언하고 특정
 //! 글리프 픽셀 비교는 하지 않는다. #2292 표적(기하)과 축 분리.
-#![cfg(feature = "native-skia")]
 
 use rhwp::document_core::DocumentCore;
 use rhwp::renderer::render_tree::{RenderNode, RenderNodeType};

@@ -17,15 +17,10 @@
 //! 작업지시자 한컴 한글 2020 시각 판정 통과: "output/poc/issue_1061/repro_stage1.hwp 도
 //! 본문이 잘 보입니다".
 
+use crate::common::load_doc as load;
 use rhwp::model::control::Control;
 use std::fs;
 use std::path::Path;
-
-fn load(rel: &str) -> rhwp::wasm_api::HwpDocument {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", rel, e));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes).expect("parse")
-}
 
 /// HWPX 출처 math-001.hwpx 의 수식이 어댑터 통한 저장 후 attr bit 27 보강 + 정답지 정합.
 #[test]

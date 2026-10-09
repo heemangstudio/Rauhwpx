@@ -5,10 +5,10 @@
 //! follow the renderer's bin_data_id index-first lookup semantics rather than
 //! assuming `BinDataContent.id == bin_data_id`.
 
+use crate::common::load_doc;
 use rhwp::model::bin_data::BinDataContent;
 use rhwp::wasm_api::HwpDocument;
 use serde::Deserialize;
-use std::path::Path;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -19,12 +19,6 @@ struct ExternalImageReference {
     basename: String,
     extension: String,
     loaded: bool,
-}
-
-fn load_doc(rel_path: &str) -> HwpDocument {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel_path);
-    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
-    HwpDocument::from_bytes(&bytes).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
 }
 
 fn external_image_refs(doc: &HwpDocument) -> Vec<ExternalImageReference> {

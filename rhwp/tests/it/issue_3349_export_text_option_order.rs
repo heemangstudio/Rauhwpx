@@ -5,14 +5,11 @@
 //! "알 수 없는 옵션: 0" 으로 죽었다.
 #![cfg(not(target_arch = "wasm32"))]
 
+use crate::common::{describe, rhwp_bin};
 use std::process::{Command, Output};
 
 /// 파싱까지 성공하는 실제 샘플 (cli_json_contract.rs 와 동일).
 const SAMPLE: &str = "samples/hwp3-sample.hwp";
-
-fn rhwp_bin() -> String {
-    std::env::var("CARGO_BIN_EXE_rhwp").unwrap_or_else(|_| env!("CARGO_BIN_EXE_rhwp").to_string())
-}
 
 fn run(args: &[&str]) -> Output {
     Command::new(rhwp_bin())
@@ -20,15 +17,6 @@ fn run(args: &[&str]) -> Output {
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
         .expect("rhwp 실행 실패")
-}
-
-fn describe(args: &[&str], output: &Output) -> String {
-    format!(
-        "명령: rhwp {}\nstdout:\n{}\nstderr:\n{}",
-        args.join(" "),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
 }
 
 fn stdout_json(args: &[&str]) -> serde_json::Value {

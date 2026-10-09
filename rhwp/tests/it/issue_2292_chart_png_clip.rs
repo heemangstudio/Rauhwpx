@@ -11,7 +11,6 @@
 //! 검증: 차트 bbox 의 좌측 1/3(축 라벨)·상단 1/3(제목/플롯 상단)에 잉크가
 //! 존재해야 한다. 수정 전에는 viewBox(0,0) 클리핑 + bbox 재배치 이중
 //! 오프셋으로 잉크가 우하단 스트립에만 몰려 둘 다 공백(FAILED 실증).
-#![cfg(feature = "native-skia")]
 
 use rhwp::document_core::DocumentCore;
 use rhwp::renderer::render_tree::{RenderNode, RenderNodeType};

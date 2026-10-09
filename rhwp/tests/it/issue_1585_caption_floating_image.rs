@@ -5,9 +5,6 @@
 //! including the HWPX case where a caption-local logo is stored in a nested
 //! table caption.
 
-use std::fs;
-use std::path::Path;
-
 use rhwp::model::control::Control;
 use rhwp::model::paragraph::Paragraph;
 use rhwp::model::shape::{
@@ -156,10 +153,7 @@ fn collect_caption_images(node: &RenderNode, out: &mut Vec<(u16, Option<TextWrap
 }
 
 fn load_doc() -> HwpDocument {
-    let repo_root = env!("CARGO_MANIFEST_DIR");
-    let path = Path::new(repo_root).join(SAMPLE);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", SAMPLE, e));
-    HwpDocument::from_bytes(&bytes).unwrap_or_else(|e| panic!("parse {}: {}", SAMPLE, e))
+    crate::common::load_doc(SAMPLE)
 }
 
 #[test]

@@ -12,14 +12,7 @@
 //!
 //! pi=674 표가 걸치는 페이지(0-based global index): 65(첫 조각), 66(연속).
 
-use std::fs;
-use std::path::Path;
-
-fn load_doc(rel: &str) -> rhwp::wasm_api::HwpDocument {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", rel, e));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes).expect("parse")
-}
+use crate::common::load_doc;
 
 fn svg_height(svg: &str) -> f64 {
     let i = svg.find("height=\"").expect("svg height attr") + "height=\"".len();

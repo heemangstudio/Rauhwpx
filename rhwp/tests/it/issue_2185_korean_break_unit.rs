@@ -4,10 +4,9 @@
 //! 다시 계산되어 문단 모양이 바뀌던 문제를 고정한다. HWP/HWPX 모두 Studio와 같은
 //! 지연 페이지네이션 입력 경로를 거친 뒤 원본 형식으로 저장·재로드한다.
 
-use std::fs;
-use std::path::Path;
 use std::time::Instant;
 
+use crate::common::load_doc as load_sample;
 use rhwp::document_core::DocumentCore;
 use rhwp::model::control::Control;
 use rhwp::model::paragraph::Paragraph;
@@ -47,12 +46,6 @@ impl SampleFormat {
             Self::Hwpx => FileFormat::Hwpx,
         }
     }
-}
-
-fn load_sample(relative_path: &str) -> HwpDocument {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative_path);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {relative_path}: {e}"));
-    HwpDocument::from_bytes(&bytes).unwrap_or_else(|e| panic!("parse {relative_path}: {e}"))
 }
 
 fn cell_paragraphs(core: &DocumentCore) -> &[Paragraph] {

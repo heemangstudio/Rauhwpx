@@ -1,5 +1,4 @@
-#![cfg(all(not(target_arch = "wasm32"), feature = "native-skia"))]
-
+use crate::common::rhwp_bin;
 use rhwp::error::HwpError;
 use rhwp::renderer::pdf::DirectPdfExportOptions;
 use rhwp::wasm_api::HwpDocument;
@@ -155,10 +154,4 @@ fn export_pdf_cli_rejects_backend_specific_option_mismatches() {
     assert!(String::from_utf8_lossy(&svg_with_direct_option.stderr)
         .contains("direct PDF backend에서만"));
     assert!(!compatibility_output_path.exists());
-}
-
-/// [#3289] 아카이브 실행 시 컴파일타임 경로는 빌드 러너 전용이므로,
-/// nextest가 런타임에 재매핑해 주입하는 CARGO_BIN_EXE_rhwp를 우선한다.
-fn rhwp_bin() -> String {
-    std::env::var("CARGO_BIN_EXE_rhwp").unwrap_or_else(|_| env!("CARGO_BIN_EXE_rhwp").to_string())
 }

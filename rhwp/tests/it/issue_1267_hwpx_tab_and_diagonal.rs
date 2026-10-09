@@ -15,7 +15,10 @@ use rhwp::serializer::serialize_hwpx;
 /// 수정 후: para.tab_extended[i] 에서 width(ext[0]), leader(ext[2]&ff), type(ext[2]>>8) 복원.
 #[test]
 fn issue_1267_tab_width_leader_type_preserved_after_hwpx_roundtrip() {
-    let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hwpx/ref/ref_mixed.hwpx"));
+    let bytes = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/hwpx/ref/ref_mixed.hwpx"
+    ));
     let doc1 = parse_hwpx(bytes).expect("원본 HWPX 파싱 실패");
 
     // 원본 tab_extended 수집
@@ -66,7 +69,10 @@ fn issue_1267_tab_width_leader_type_preserved_after_hwpx_roundtrip() {
 /// 탭 여러 개가 있을 때 각각의 width/leader/type 이 독립적으로 보존되는지 확인한다.
 #[test]
 fn issue_1267_multiple_tabs_each_value_preserved() {
-    let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hwpx/ref/ref_mixed.hwpx"));
+    let bytes = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/hwpx/ref/ref_mixed.hwpx"
+    ));
     let doc1 = parse_hwpx(bytes).expect("원본 HWPX 파싱 실패");
 
     let out = serialize_hwpx(&doc1).expect("HWPX 직렬화 실패");

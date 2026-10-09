@@ -3,18 +3,9 @@
 //! 첨부/참조 문서는 하나의 이슈 범위에서 다룬다. 이 테스트는 자동 판정 가능한
 //! 페이지 수와 FSC HWP/HWPX 흐름 동기화를 먼저 고정한다.
 
+use crate::common::load_doc;
 use rhwp::renderer::render_tree::{BoundingBox, RenderNode, RenderNodeType};
-use rhwp::wasm_api::HwpDocument;
 use std::collections::BTreeMap;
-use std::fs;
-use std::path::Path;
-
-fn load_doc(rel_path: &str) -> HwpDocument {
-    let repo_root = env!("CARGO_MANIFEST_DIR");
-    let path = Path::new(repo_root).join(rel_path);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {rel_path}: {e}"));
-    HwpDocument::from_bytes(&bytes).unwrap_or_else(|e| panic!("parse {rel_path}: {e:?}"))
-}
 
 fn has_table(root: &RenderNode, para_index: usize, control_index: usize) -> bool {
     let mut stack = vec![root];

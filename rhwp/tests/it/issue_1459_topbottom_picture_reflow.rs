@@ -1,5 +1,6 @@
 //! Issue #1459: 같은 문단의 TAC 그림과 자리차지 그림 혼합 배치.
 
+use crate::common::read_sample as load_fixture_bytes;
 use rhwp::document_core::DocumentCore;
 use rhwp::model::control::Control;
 use rhwp::model::shape::TextWrap;
@@ -38,12 +39,6 @@ fn collect_images(node: &RenderNode, out: &mut Vec<ImageRender>) {
 fn load_fixture(path: &str) -> DocumentCore {
     let bytes = load_fixture_bytes(path);
     DocumentCore::from_bytes(&bytes).unwrap_or_else(|e| panic!("load {path}: {e}"))
-}
-
-fn load_fixture_bytes(path: &str) -> Vec<u8> {
-    let repo_root = env!("CARGO_MANIFEST_DIR");
-    let path = std::path::Path::new(repo_root).join(path);
-    std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
 fn parse_json(label: &str, json: &str) -> Value {

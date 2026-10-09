@@ -8,7 +8,10 @@ use rhwp::model::style::{Alignment, CharShape, Font, ParaShape};
 use rhwp::model::table::{Cell, CellLineWrap, Table};
 use rhwp::renderer::render_tree::{RenderNode, RenderNodeType, TextRunNode};
 
-const FONT: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/ttfs/opensource/NotoSansKR-Regular.ttf"));
+const FONT: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/ttfs/opensource/NotoSansKR-Regular.ttf"
+));
 
 #[derive(Default)]
 struct Context {

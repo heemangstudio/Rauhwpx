@@ -14,8 +14,6 @@
 
 use rhwp::renderer::render_tree::RenderNode;
 use rhwp::renderer::render_tree::RenderNodeType;
-use std::fs;
-use std::path::Path;
 
 const SAMPLE: &str = "samples/table_scattered_header_rowbreak.hwp";
 /// p6/p7 (0-based 페이지 인덱스). p6 rows=100..140 end_cut=[1,2], p7 start_cut=[1,2].
@@ -23,11 +21,7 @@ const CUT_PAGE: u32 = 5;
 const CONT_PAGE: u32 = 6;
 
 fn load_doc() -> rhwp::wasm_api::HwpDocument {
-    let repo_root = env!("CARGO_MANIFEST_DIR");
-    let sample_path = Path::new(repo_root).join(SAMPLE);
-    let bytes = fs::read(&sample_path).unwrap_or_else(|e| panic!("read {SAMPLE}: {e}"));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes)
-        .unwrap_or_else(|e| panic!("parse {SAMPLE}: {e:?}"))
+    crate::common::load_doc(SAMPLE)
 }
 
 /// 모든 TableCell 하위 TextLine 이 셀 bbox 하단을 넘지 않는지 수집.

@@ -5,6 +5,7 @@
 //! 종료 코드는 [#2707] 계약(0/1/2)을 그대로 따른다.
 #![cfg(not(target_arch = "wasm32"))]
 
+use crate::common::{describe, rhwp_bin, run};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -14,13 +15,6 @@ const SAMPLE: &str = "samples/hwp3-sample.hwp";
 
 fn sample_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(SAMPLE)
-}
-
-fn run(args: &[&str]) -> Output {
-    Command::new(rhwp_bin())
-        .args(args)
-        .output()
-        .expect("rhwp 실행 실패")
 }
 
 /// stdin 으로 파일 목록을 흘려 넣는 batch 실행 헬퍼.
@@ -39,15 +33,6 @@ fn run_with_stdin(args: &[&str], stdin_body: &str) -> Output {
         .write_all(stdin_body.as_bytes())
         .expect("stdin 쓰기 실패");
     child.wait_with_output().expect("rhwp 종료 대기 실패")
-}
-
-fn describe(args: &[&str], output: &Output) -> String {
-    format!(
-        "명령: rhwp {}\nstdout:\n{}\nstderr:\n{}",
-        args.join(" "),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
 }
 
 fn parse_stdout_json(args: &[&str], output: &Output) -> serde_json::Value {
@@ -627,10 +612,4 @@ fn batch_unknown_subcommand_is_usage_error() {
         "{}",
         describe(&args, &output)
     );
-}
-
-/// [#3289] 아카이브 실행 시 컴파일타임 경로는 빌드 러너 전용이므로,
-/// nextest가 런타임에 재매핑해 주입하는 CARGO_BIN_EXE_rhwp를 우선한다.
-fn rhwp_bin() -> String {
-    std::env::var("CARGO_BIN_EXE_rhwp").unwrap_or_else(|_| env!("CARGO_BIN_EXE_rhwp").to_string())
 }

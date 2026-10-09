@@ -5,18 +5,14 @@
 //! 산출물까지 만들고 exit 0 으로 끝났다.
 #![cfg(not(target_arch = "wasm32"))]
 
+use crate::common::{describe, run};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
 
 /// PrvImage 를 실제로 가진 HWP5 샘플.
 const SAMPLE: &str = "samples/2022년 국립국어원 업무계획.hwp";
 
 fn sample_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(SAMPLE)
-}
-
-fn rhwp_bin() -> String {
-    std::env::var("CARGO_BIN_EXE_rhwp").unwrap_or_else(|_| env!("CARGO_BIN_EXE_rhwp").to_string())
 }
 
 fn unique_temp_dir(label: &str) -> PathBuf {
@@ -28,22 +24,6 @@ fn unique_temp_dir(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!("rhwp-3366-{label}-{}-{nonce}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("임시 폴더");
     dir
-}
-
-fn run(args: &[&str]) -> Output {
-    Command::new(rhwp_bin())
-        .args(args)
-        .output()
-        .expect("rhwp 실행 실패")
-}
-
-fn describe(args: &[&str], output: &Output) -> String {
-    format!(
-        "명령: rhwp {}\nstdout:\n{}\nstderr:\n{}",
-        args.join(" "),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
 }
 
 /// 종전 최악 사례 — 오타 옵션을 무시하고 산출물을 만들며 exit 0 이었다.

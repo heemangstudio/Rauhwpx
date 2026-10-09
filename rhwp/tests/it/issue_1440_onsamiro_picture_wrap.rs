@@ -1,13 +1,12 @@
 //! Issue #1440: 온새미로 35쪽 그림 어울림 본문 줄이 그림 영역을 침범하는 회귀 방지.
 
+use crate::common::read_sample as read_fixture;
 use rhwp::model::control::Control;
 use rhwp::model::paragraph::Paragraph;
 use rhwp::model::shape::{ShapeObject, TextWrap};
 use rhwp::model::style::BorderLineType;
 use rhwp::renderer::render_tree::{BoundingBox, RenderNode, RenderNodeType};
 use rhwp::renderer::StrokeDash;
-use std::fs;
-use std::path::Path;
 
 const SAMPLES: &[&str] = &[
     "samples/[2027] 온새미로 1 본교재.hwp",
@@ -17,11 +16,6 @@ const TARGET_PAGE: u32 = 34; // 35쪽, 0-based
 const TARGET_PARA: usize = 8;
 const BOX_PAGE: u32 = 5; // 6쪽, 0-based
 const BOX_PARA: usize = 32;
-
-fn read_fixture(path: &str) -> Vec<u8> {
-    fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
-        .unwrap_or_else(|e| panic!("read {path}: {e}"))
-}
 
 fn collect_nodes<'a>(node: &'a RenderNode, out: &mut Vec<&'a RenderNode>) {
     out.push(node);

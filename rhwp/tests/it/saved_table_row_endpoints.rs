@@ -14,7 +14,10 @@ fn loaded_table(
     fixed: bool,
     protected: bool,
 ) -> DocumentCore {
-    let seed = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hwpx/ref/ref_empty.hwpx"));
+    let seed = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/hwpx/ref/ref_empty.hwpx"
+    ));
     let mut core = DocumentCore::from_bytes(seed).unwrap();
     let mut doc = core.document().clone();
     let mut cells = Vec::new();

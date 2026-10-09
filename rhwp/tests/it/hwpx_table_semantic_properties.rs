@@ -1,6 +1,3 @@
-use std::fs;
-use std::path::Path;
-
 use rhwp::model::control::Control;
 use rhwp::model::table::Table;
 use rhwp::wasm_api::HwpDocument;
@@ -10,9 +7,7 @@ const SAMPLE: &str = "samples/task1772/table_outer_margin_common_sync.hwpx";
 type TablePos = (usize, usize, usize);
 
 fn load() -> HwpDocument {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(SAMPLE);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {SAMPLE}: {e}"));
-    HwpDocument::from_bytes(&bytes).unwrap_or_else(|e| panic!("parse {SAMPLE}: {e:?}"))
+    crate::common::load_doc(SAMPLE)
 }
 
 fn table_positions(doc: &HwpDocument) -> Vec<TablePos> {

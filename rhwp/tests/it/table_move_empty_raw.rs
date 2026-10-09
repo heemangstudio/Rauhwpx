@@ -5,9 +5,7 @@
 //! `move_table_offset` 이 빈 raw 를 12바이트까지 `push(0)` 하면 그 합성이 끊기고
 //! width/height/바깥여백이 저장에서 사라진다.
 
-use std::fs;
-use std::path::Path;
-
+use crate::common::load_doc as load;
 use rhwp::model::control::Control;
 use rhwp::model::table::Table;
 use rhwp::wasm_api::HwpDocument;
@@ -17,12 +15,6 @@ const HWPX_SAMPLE: &str = "samples/task1772/table_outer_margin_common_sync.hwpx"
 const POPULATED_RAW_HWP: &str = "samples/calc-cell.hwp";
 
 type TablePos = (usize, usize, usize);
-
-fn load(sample: &str) -> HwpDocument {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(sample);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {sample}: {e}"));
-    HwpDocument::from_bytes(&bytes).unwrap_or_else(|e| panic!("parse {sample}: {e:?}"))
-}
 
 fn first_table_pos(doc: &HwpDocument) -> TablePos {
     for (si, section) in doc.document().sections.iter().enumerate() {

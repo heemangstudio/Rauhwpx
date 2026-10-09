@@ -43,7 +43,11 @@ fn count_totals(doc: &HwpDocument) -> usize {
 
 #[test]
 fn english_exam_preserves_total_page_fields_in_both_formats() {
-    let doc = HwpDocument::from_bytes(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/exam_eng.hwp"))).unwrap();
+    let doc = HwpDocument::from_bytes(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/exam_eng.hwp"
+    )))
+    .unwrap();
     assert_eq!(doc.page_count(), 8);
     let count = count_totals(&doc);
     assert!(

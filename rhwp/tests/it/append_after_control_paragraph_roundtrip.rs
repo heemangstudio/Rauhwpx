@@ -1,13 +1,11 @@
-//! Full-cycle cloud edit regressions found against `samples/exam_math.hwp`.
+//! Full-cycle agent edit regressions found against `samples/exam_math.hwp`.
 //!
 //! The document has two details that make a leading-newline edit unsafe:
 //! - section 2 ends with a text-empty paragraph that owns a picture control;
 //! - its last-page master page is stored after the body stream with `ext_flags=0x0004`.
 //!
-//! A cloud agent must append a real paragraph, leaving the control-only paragraph intact,
+//! An agent must append a real paragraph, leaving the control-only paragraph intact,
 //! and the HWP5 rebuild path must keep the trailing master page through export/reparse.
-
-use std::path::Path;
 
 use rhwp::document_core::DocumentCore;
 use rhwp::model::control::Control;
@@ -27,9 +25,7 @@ struct PictureSignature {
 }
 
 fn load_sample() -> DocumentCore {
-    let bytes = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(SAMPLE))
-        .expect("read exam_math.hwp fixture");
-    DocumentCore::from_bytes(&bytes).expect("parse exam_math.hwp fixture")
+    crate::common::load_core(SAMPLE)
 }
 
 fn direct_picture_signature(paragraph: &Paragraph) -> PictureSignature {

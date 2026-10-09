@@ -5,8 +5,8 @@
 //! 그 정합성을 계약으로 고정한다. 종료 코드는 #2707 계약(0/1/2)을 따른다.
 #![cfg(not(target_arch = "wasm32"))]
 
+use crate::common::{describe, parse_json, run};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
 
 const SAMPLE: &str = "samples/hwp3-sample.hwp";
 /// 표를 가진 문서 — 표 셀 안의 매치 좌표 검증용.
@@ -16,31 +16,6 @@ const SAMPLE_TEXTBOX: &str = "samples/table-in-tbox.hwp";
 
 fn sample(rel: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(rel)
-}
-
-fn run(args: &[&str]) -> Output {
-    Command::new(rhwp_bin())
-        .args(args)
-        .output()
-        .expect("rhwp 실행 실패")
-}
-
-fn describe(args: &[&str], output: &Output) -> String {
-    format!(
-        "명령: rhwp {}\nstdout:\n{}\nstderr:\n{}",
-        args.join(" "),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
-}
-
-fn parse_json(args: &[&str], output: &Output) -> serde_json::Value {
-    serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
-        panic!(
-            "stdout 이 순수 JSON 이 아닙니다 ({e}).\n{}",
-            describe(args, output)
-        )
-    })
 }
 
 /// 샘플에 실재하는 검색어. `export-text --json` 같은 미머지 기능에 의존하지 않도록
@@ -278,10 +253,4 @@ fn search_missing_query_exit_usage() {
         "{}",
         describe(&args, &output)
     );
-}
-
-/// [#3289] 아카이브 실행 시 컴파일타임 경로는 빌드 러너 전용이므로,
-/// nextest가 런타임에 재매핑해 주입하는 CARGO_BIN_EXE_rhwp를 우선한다.
-fn rhwp_bin() -> String {
-    std::env::var("CARGO_BIN_EXE_rhwp").unwrap_or_else(|_| env!("CARGO_BIN_EXE_rhwp").to_string())
 }

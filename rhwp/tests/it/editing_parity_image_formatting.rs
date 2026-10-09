@@ -252,8 +252,14 @@ fn assert_format_history_with_mixed_runs(
     }
 }
 
-const BODY: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/editing_parity/mac-hancom-12.30.0-independent/body-mixed-text/edited.hwpx"));
-const CELL: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/editing_parity/mac-hancom-12.30.0-independent/cell-mixed-text/edited.hwpx"));
+const BODY: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/editing_parity/mac-hancom-12.30.0-independent/body-mixed-text/edited.hwpx"
+));
+const CELL: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/editing_parity/mac-hancom-12.30.0-independent/cell-mixed-text/edited.hwpx"
+));
 
 #[test]
 fn body_underline_across_picture_history_and_reopens() {

@@ -15,14 +15,7 @@
 //! vpos delta(px) 로 누적. 시드 = 본문 last bottom(body→endnote 전환 정합); 단 advance 시 None.
 //! #1062 안전 floor(fmt.height_for_fit) 유지.
 
-use std::fs;
-use std::path::Path;
-
-fn load_doc(rel: &str) -> rhwp::wasm_api::HwpDocument {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", rel, e));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes).expect("parse")
-}
+use crate::common::load_doc;
 
 /// 전 페이지 max overflow px 합산. typeset 다단 미주 드리프트 회귀 시 수백 px.
 fn doc_total_overflow_px(rel: &str) -> f64 {

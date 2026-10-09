@@ -9,6 +9,7 @@
 //! - page-fitting float B cannot fit the remainder and is deferred whole to page 2;
 //! - `AFTER FLOAT` must resume below B's exclusion, never inside B.
 
+use crate::common::load_doc;
 use rhwp::model::control::Control;
 use rhwp::model::paragraph::LineSeg;
 use rhwp::model::provenance::{SourceFormat, SourceProvenance};
@@ -16,8 +17,6 @@ use rhwp::model::table::TablePageBreak;
 use rhwp::renderer::render_tree::{RenderNode, RenderNodeType};
 use rhwp::renderer::{hwpunit_to_px, DEFAULT_DPI};
 use rhwp::wasm_api::HwpDocument;
-use std::fs;
-use std::path::Path;
 
 const SAMPLE: &str = "samples/hwpx/issue2439_page_local_float_exclusion.hwpx";
 const ZERO_OFFSET_STACK_SAMPLE: &str =
@@ -26,12 +25,6 @@ const POSITIVE_EMPTY_HOST_SAMPLE: &str = "samples/issue1549_empty_host_float_cla
 const HOST_PI: usize = 1;
 const TABLE_A_CI: usize = 0;
 const TABLE_B_CI: usize = 1;
-
-fn load_doc(sample: &str) -> HwpDocument {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(sample);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    HwpDocument::from_bytes(&bytes).unwrap_or_else(|e| panic!("parse {sample}: {e}"))
-}
 
 fn load_with_native_hwp5_provenance(sample: &str) -> HwpDocument {
     let mut doc = load_doc(sample);

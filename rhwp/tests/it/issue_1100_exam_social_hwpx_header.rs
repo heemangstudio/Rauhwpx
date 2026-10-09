@@ -4,14 +4,7 @@
 //! 한컴 편집기는 머리말 문맥에서 `vertRelTo=PARA`, `vertAlign=TOP`, `vertOffset=-13.00mm`
 //! 글상자를 위로 올리지 않고 0 offset처럼 배치한다.
 
-use std::fs;
-use std::path::Path;
-
-fn load_doc(rel: &str) -> rhwp::wasm_api::HwpDocument {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", rel, e));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes).expect("parse")
-}
+use crate::common::load_doc;
 
 fn attr_value<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
     let needle = format!("{name}=\"");

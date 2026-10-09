@@ -5,8 +5,8 @@
 //! 편집 가능 여부·위치. 종료 코드는 #2707 계약(0/1/2)을 따른다.
 #![cfg(not(target_arch = "wasm32"))]
 
+use crate::common::{describe, run};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
 
 /// 누름틀 11개(본문 + 글상자 + 표 셀 혼합).
 const SAMPLE_FIELDS: &str = "samples/field-01.hwp";
@@ -17,22 +17,6 @@ const SAMPLE_NONE: &str = "samples/hwp3-sample.hwp";
 
 fn sample(rel: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(rel)
-}
-
-fn run(args: &[&str]) -> Output {
-    Command::new(rhwp_bin())
-        .args(args)
-        .output()
-        .expect("rhwp 실행 실패")
-}
-
-fn describe(args: &[&str], output: &Output) -> String {
-    format!(
-        "명령: rhwp {}\nstdout:\n{}\nstderr:\n{}",
-        args.join(" "),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
 }
 
 fn run_json(rel: &str) -> serde_json::Value {
@@ -176,10 +160,4 @@ fn fields_usage_error_exit_two() {
         "{}",
         describe(&args, &output)
     );
-}
-
-/// [#3289] 아카이브 실행 시 컴파일타임 경로는 빌드 러너 전용이므로,
-/// nextest가 런타임에 재매핑해 주입하는 CARGO_BIN_EXE_rhwp를 우선한다.
-fn rhwp_bin() -> String {
-    std::env::var("CARGO_BIN_EXE_rhwp").unwrap_or_else(|_| env!("CARGO_BIN_EXE_rhwp").to_string())
 }

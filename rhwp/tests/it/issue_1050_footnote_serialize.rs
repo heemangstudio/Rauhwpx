@@ -21,14 +21,7 @@
 //!   - `visual_text` 조립: `\u{0012}` → `char_offsets.push(pos) + text.push(' ') + pos += 8`
 //! - `src/serializer/body_text.rs::serialize_para_text` — AutoNumber placeholder 검출 분기
 
-use std::fs;
-use std::path::Path;
-
-fn load(rel: &str) -> rhwp::wasm_api::HwpDocument {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", rel, e));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes).expect("parse")
-}
+use crate::common::load_doc as load;
 
 fn page_svg(doc: &rhwp::wasm_api::HwpDocument, page: u32) -> String {
     doc.render_page_svg_native(page).expect("render_page_svg")

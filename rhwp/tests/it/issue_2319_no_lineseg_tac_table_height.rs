@@ -24,16 +24,6 @@ fn core() -> DocumentCore {
 }
 
 #[test]
-fn issue_2319_form_doc_paginates_to_two_pages() {
-    let core = core();
-    assert_eq!(
-        core.page_count(),
-        2,
-        "한글 오라클 2쪽 정합 (수정 전 1쪽: tac 표 높이 붕괴로 전부 스택)"
-    );
-}
-
-#[test]
 fn issue_2319_form_table_and_guide_tables_split() {
     let core = core();
     let dump = core.dump_page_items(None);

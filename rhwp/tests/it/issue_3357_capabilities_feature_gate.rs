@@ -6,18 +6,7 @@
 //! 돌려도 통과하도록 실측 대조로 작성한다.
 #![cfg(not(target_arch = "wasm32"))]
 
-use std::process::{Command, Output};
-
-fn rhwp_bin() -> String {
-    std::env::var("CARGO_BIN_EXE_rhwp").unwrap_or_else(|_| env!("CARGO_BIN_EXE_rhwp").to_string())
-}
-
-fn run(args: &[&str]) -> Output {
-    Command::new(rhwp_bin())
-        .args(args)
-        .output()
-        .expect("rhwp 실행 실패")
-}
+use crate::common::run;
 
 fn capabilities() -> serde_json::Value {
     let output = run(&["capabilities"]);

@@ -5,8 +5,8 @@
 //! 계약이 없다. 종료 코드는 #2707 계약을 따른다.
 #![cfg(not(target_arch = "wasm32"))]
 
+use crate::common::{describe, run};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
 
 const SAMPLE: &str = "samples/hwp3-sample.hwp";
 
@@ -23,22 +23,6 @@ fn temp_dir(tag: &str) -> PathBuf {
             .expect("system clock")
             .as_nanos()
     ))
-}
-
-fn run(args: &[&str]) -> Output {
-    Command::new(rhwp_bin())
-        .args(args)
-        .output()
-        .expect("rhwp 실행 실패")
-}
-
-fn describe(args: &[&str], output: &Output) -> String {
-    format!(
-        "명령: rhwp {}\nstdout:\n{}\nstderr:\n{}",
-        args.join(" "),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
 }
 
 #[test]
@@ -178,10 +162,4 @@ fn export_svg_json_write_failure_exit_runtime_silent_stdout() {
         describe(&args, &output)
     );
     let _ = std::fs::remove_file(&out);
-}
-
-/// [#3289] 아카이브 실행 시 컴파일타임 경로는 빌드 러너 전용이므로,
-/// nextest가 런타임에 재매핑해 주입하는 CARGO_BIN_EXE_rhwp를 우선한다.
-fn rhwp_bin() -> String {
-    std::env::var("CARGO_BIN_EXE_rhwp").unwrap_or_else(|_| env!("CARGO_BIN_EXE_rhwp").to_string())
 }

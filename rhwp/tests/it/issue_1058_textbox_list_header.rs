@@ -23,14 +23,7 @@
 //! - 일반 문단 글머리표 없음 (Stage 14)
 //! - 부작용 없음 (Stage 15)
 
-use std::fs;
-use std::path::Path;
-
-fn load(rel: &str) -> rhwp::wasm_api::HwpDocument {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", rel, e));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes).expect("parse")
-}
+use crate::common::load_doc as load;
 
 /// CFB stream BodyText/Section0 의 LIST_HEADER 레코드 모두 추출 (tag=72).
 fn collect_list_header_sizes(hwp_bytes: &[u8]) -> Vec<(u16, usize)> {

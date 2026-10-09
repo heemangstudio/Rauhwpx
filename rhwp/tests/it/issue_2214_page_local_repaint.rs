@@ -2,9 +2,7 @@
 //!
 //! scoped layout-cache coherence와 cell-flow mutation result를 고정한다.
 
-use std::fs;
-use std::path::Path;
-
+use crate::common::load_doc as load_sample;
 use rhwp::document_core::DocumentCore;
 use rhwp::model::control::Control;
 use rhwp::model::paragraph::Paragraph;
@@ -26,12 +24,6 @@ const INSERT_OFFSET: usize = 130;
 struct CellEditResult {
     char_offset: usize,
     cell_flow_changed: bool,
-}
-
-fn load_sample(relative_path: &str) -> HwpDocument {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative_path);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {relative_path}: {e}"));
-    HwpDocument::from_bytes(&bytes).unwrap_or_else(|e| panic!("parse {relative_path}: {e}"))
 }
 
 fn target_paragraph(core: &DocumentCore) -> &Paragraph {

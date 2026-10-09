@@ -6,8 +6,9 @@
 //! 종료 코드는 #2707 계약(0/1/2)을 따른다.
 #![cfg(not(target_arch = "wasm32"))]
 
+use crate::common::{describe, run};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 /// 19행×9열, 셀 131개. 가로 병합(colSpan=3)과 세로 병합(rowSpan=3)을 모두 가진다.
 const SAMPLE_MERGED: &str = "samples/table-001.hwp";
@@ -19,22 +20,6 @@ const SAMPLE_CONTAINER: &str = "samples/basic/treatise sample.hwp";
 
 fn sample(rel: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(rel)
-}
-
-fn run(args: &[&str]) -> Output {
-    Command::new(rhwp_bin())
-        .args(args)
-        .output()
-        .expect("rhwp 실행 실패")
-}
-
-fn describe(args: &[&str], output: &Output) -> String {
-    format!(
-        "명령: rhwp {}\nstdout:\n{}\nstderr:\n{}",
-        args.join(" "),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
 }
 
 fn parse_stdout_json(args: &[&str], output: &Output) -> serde_json::Value {
@@ -283,10 +268,4 @@ fn export_tables_multiple_files_exit_usage() {
         "사용법 오류에서 stdout 은 비어야 합니다.\n{}",
         describe(&args, &output)
     );
-}
-
-/// [#3289] 아카이브 실행 시 컴파일타임 경로는 빌드 러너 전용이므로,
-/// nextest가 런타임에 재매핑해 주입하는 CARGO_BIN_EXE_rhwp를 우선한다.
-fn rhwp_bin() -> String {
-    std::env::var("CARGO_BIN_EXE_rhwp").unwrap_or_else(|_| env!("CARGO_BIN_EXE_rhwp").to_string())
 }

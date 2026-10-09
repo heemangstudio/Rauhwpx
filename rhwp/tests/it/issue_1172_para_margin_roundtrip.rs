@@ -12,14 +12,7 @@
 //! 검증: getParaPropertiesAt 의 marginLeft(px) 가 10pt 에 해당하는 px(13.33 @96dpi)인지.
 //! frontend 는 이 px 를 pxToPt(px*72/96) 로 pt 표시하므로 13.33px → 10.0pt.
 
-use std::fs;
-use std::path::Path;
-
-fn load(rel: &str) -> rhwp::wasm_api::HwpDocument {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", rel, e));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes).expect("parse")
-}
+use crate::common::load_doc as load;
 
 fn para_prop_number(
     doc: &rhwp::wasm_api::HwpDocument,

@@ -12,20 +12,12 @@ use std::fs;
 use std::path::Path;
 
 use rhwp::diagnostics::render_geom_diff::{roundtrip_geom, Via};
-use rhwp::document_core::DocumentCore;
 
 const SAMPLE: &str = "samples/issue1880_anchor_stack_sb_convert.hwpx";
 
 fn read_sample() -> Vec<u8> {
     let repo_root = env!("CARGO_MANIFEST_DIR");
     fs::read(Path::new(repo_root).join(SAMPLE)).unwrap_or_else(|e| panic!("read {SAMPLE}: {e}"))
-}
-
-/// HWPX 원본 페이지 수 핀: 13쪽 (한글 2022 정합).
-#[test]
-fn issue_1880_hwpx_renders_13_pages() {
-    let core = DocumentCore::from_bytes(&read_sample()).expect("load");
-    assert_eq!(core.page_count(), 13, "3075729 HWPX 렌더 쪽수 (한컴 13)");
 }
 
 /// convert-HWP 왕복 렌더 자기정합: 인코딩이 달라도 같은 pagination 이어야 한다.

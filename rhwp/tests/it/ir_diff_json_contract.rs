@@ -5,8 +5,9 @@
 //! 기본(텍스트) 모드의 정상 비교는 차이가 있어도 exit 0 을 유지한다(기존 소비자 보호).
 #![cfg(not(target_arch = "wasm32"))]
 
+use crate::common::{describe, run};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 const SAMPLE_A: &str = "samples/hwp3-sample.hwp";
 const SAMPLE_B: &str = "samples/SO-SUEOP.hwp";
@@ -31,22 +32,6 @@ fn assert_envelope_invariants(v: &serde_json::Value) {
 
 fn sample(rel: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(rel)
-}
-
-fn run(args: &[&str]) -> Output {
-    Command::new(rhwp_bin())
-        .args(args)
-        .output()
-        .expect("rhwp 실행 실패")
-}
-
-fn describe(args: &[&str], output: &Output) -> String {
-    format!(
-        "명령: rhwp {}\nstdout:\n{}\nstderr:\n{}",
-        args.join(" "),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
 }
 
 fn parse_stdout_json(args: &[&str], output: &Output) -> serde_json::Value {
@@ -247,10 +232,4 @@ fn ir_diff_default_mode_diff_found_still_exit_zero() {
         "기본 출력 형식이 바뀌면 안 됩니다.\n{}",
         describe(&args, &output)
     );
-}
-
-/// [#3289] 아카이브 실행 시 컴파일타임 경로는 빌드 러너 전용이므로,
-/// nextest가 런타임에 재매핑해 주입하는 CARGO_BIN_EXE_rhwp를 우선한다.
-fn rhwp_bin() -> String {
-    std::env::var("CARGO_BIN_EXE_rhwp").unwrap_or_else(|_| env!("CARGO_BIN_EXE_rhwp").to_string())
 }

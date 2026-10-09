@@ -1,14 +1,10 @@
+use crate::common::read_sample as read_fixture;
 use rhwp::document_core::DocumentCore;
 use rhwp::model::control::Control;
 use rhwp::model::document::Document;
 use rhwp::model::image::Picture;
 use rhwp::model::shape::ShapeObject;
 use rhwp::parser::parse_document;
-
-fn read_fixture(path: &str) -> Vec<u8> {
-    std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
-        .unwrap_or_else(|e| panic!("read {path}: {e}"))
-}
 
 fn read_f64(raw: &[u8], offset: usize) -> f64 {
     f64::from_le_bytes(

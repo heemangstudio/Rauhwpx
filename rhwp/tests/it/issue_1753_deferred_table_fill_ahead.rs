@@ -7,16 +7,10 @@
 //!   pi=53("2) 보정계수")을 9쪽 하단에 선행 채움(fill-before-deferred-float).
 //! - 수정 전 rhwp: 표 fragment 뒤 11쪽으로 밀림.
 
-use std::fs;
-use std::path::Path;
-
 const SAMPLE: &str = "samples/task1753/deferred_takeplace_fill_ahead.hwpx";
 
 fn load_doc() -> rhwp::wasm_api::HwpDocument {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(SAMPLE);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", SAMPLE, e));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes)
-        .unwrap_or_else(|e| panic!("parse {}: {}", SAMPLE, e))
+    crate::common::load_doc(SAMPLE)
 }
 
 #[test]

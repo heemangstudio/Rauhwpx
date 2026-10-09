@@ -49,8 +49,11 @@ fn caption(direction: CaptionDirection) -> Caption {
 }
 
 fn fixture(direction: CaptionDirection) -> DocumentCore {
-    let mut core =
-        DocumentCore::from_bytes(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hwpx/para-001.hwpx"))).unwrap();
+    let mut core = DocumentCore::from_bytes(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/hwpx/para-001.hwpx"
+    )))
+    .unwrap();
     let mut doc = core.document().clone();
     doc.sections.truncate(1);
     doc.sections[0].paragraphs.truncate(1);
@@ -149,8 +152,11 @@ fn body_only_section(template: &Section, body: &str) -> Section {
 }
 
 fn synthesized_footer_core(shift: bool) -> (DocumentCore, usize) {
-    let mut core =
-        DocumentCore::from_bytes(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hwpx/para-001.hwpx"))).unwrap();
+    let mut core = DocumentCore::from_bytes(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/hwpx/para-001.hwpx"
+    )))
+    .unwrap();
     let mut doc = core.document().clone();
     doc.sections.truncate(1);
     doc.sections[0].section_def.hide_footer = false;

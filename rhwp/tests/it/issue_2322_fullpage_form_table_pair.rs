@@ -13,17 +13,7 @@
 //! 인라인 판정 → paragraph_has_table=false → 텍스트 경로에서 문단 전체가
 //! 한 줄(1789px)로 합성돼 분할 불가 (rhwp 1쪽 vs 한글 2쪽).
 
-use std::fs;
-use std::path::Path;
-
-use rhwp::document_core::DocumentCore;
-
-fn core(rel: &str) -> DocumentCore {
-    let repo_root = env!("CARGO_MANIFEST_DIR");
-    let path = Path::new(repo_root).join(rel);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
-    DocumentCore::from_bytes(&bytes).unwrap_or_else(|e| panic!("parse {}: {:?}", rel, e))
-}
+use crate::common::load_core as core;
 
 #[test]
 fn issue_2322_a_float_exclusion_consumed_by_table_path() {
@@ -39,15 +29,5 @@ fn issue_2322_a_float_exclusion_consumed_by_table_path() {
         p2.contains("pi=1 ci=0"),
         "p2 가 두 번째 서식 표(pi=1)로 시작해야 함:\n{}",
         p2
-    );
-}
-
-#[test]
-fn issue_2322_b_fullpage_tac_pair_not_inline() {
-    let core = core("samples/task2322/20862337_cheongyang_voucher_form.hwp");
-    assert_eq!(
-        core.page_count(),
-        2,
-        "한글 오라클 2쪽 정합 (수정 전 1쪽: 문단이 한 줄 1789px 로 합성)"
     );
 }

@@ -12,6 +12,7 @@
 use std::fs;
 use std::path::Path;
 
+use crate::common::read_sample as read_rel;
 use rhwp::diagnostics::render_geom_diff::{roundtrip_geom, Via};
 use rhwp::document_core::DocumentCore;
 use rhwp::model::bin_data::BinDataType;
@@ -37,11 +38,6 @@ const HWP5_ORIGIN_SAMPLES: &[(&str, u32)] = &[
 fn read_sample() -> Vec<u8> {
     let repo_root = env!("CARGO_MANIFEST_DIR");
     fs::read(Path::new(repo_root).join(SAMPLE)).unwrap_or_else(|e| panic!("read {SAMPLE}: {e}"))
-}
-
-fn read_rel(path: &str) -> Vec<u8> {
-    let repo_root = env!("CARGO_MANIFEST_DIR");
-    fs::read(Path::new(repo_root).join(path)).unwrap_or_else(|e| panic!("read {path}: {e}"))
 }
 
 /// 렌더 자기정합: pic 드롭 없이 왕복해야 한다 (종전 STRUCT 167px).

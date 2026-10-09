@@ -10,22 +10,13 @@
 //! 영역을 침범하면 틀을 다음 쪽으로 이월)는 `issue_1611_footer_page_bottom_pagination`
 //! 이 담당한다. 두 테스트가 함께 배타 예약(과소)과 flow 소비(과대)의 양쪽을 잠근다.
 
+use crate::common::load_doc;
 use rhwp::renderer::render_tree::{RenderNode, RenderNodeType};
-use std::fs;
-use std::path::Path;
 
 const GWANAK: &str =
     "samples/hwpx/opengov/36389312_결재문서본문_특정소방대상물 화재발생 알림(화재번호 2026-177).hwpx";
 const PC_SHUTDOWN: &str =
     "samples/hwpx/opengov/36398366_결재문서본문_PC 셧다운 제외 및 초과근무 인정 요청(데이터전략과).hwpx";
-
-fn load_doc(sample: &str) -> rhwp::wasm_api::HwpDocument {
-    let repo_root = env!("CARGO_MANIFEST_DIR");
-    let path = Path::new(repo_root).join(sample);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {sample}: {e}"));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes)
-        .unwrap_or_else(|e| panic!("parse {sample}: {e:?}"))
-}
 
 /// 한글 정답 1쪽 — 하단 고정 틀 2개(247px+357px)가 flow 소비되면 2쪽으로 over-pagination.
 #[test]

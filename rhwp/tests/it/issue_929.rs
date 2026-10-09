@@ -7,14 +7,7 @@
 //!
 //! 정정: spec §10.5 정합 처리 — 추가 6 bytes 읽고 i += 3 (총 4 hchar 차지).
 
-use std::fs;
-use std::path::Path;
-
-fn read_sample(rel: &str) -> Vec<u8> {
-    let root = env!("CARGO_MANIFEST_DIR");
-    let path = Path::new(root).join(rel);
-    fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", rel, e))
-}
+use crate::common::read_sample;
 
 #[test]
 fn issue_929_hwp3_sample19_parses_ok() {

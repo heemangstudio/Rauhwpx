@@ -4,16 +4,9 @@
 //! ``으로 보이는 PUA 코드포인트다. 공개 폰트 환경에서도 아래아가 보이도록
 //! 렌더 경로에서는 KS X 1026-1 자모 시퀀스 `ᄒᆞᆫ`으로 확장해야 한다.
 
+use crate::common::read_sample;
 use rhwp::renderer::composer::expand_pua_render_text;
 use rhwp::wasm_api::HwpDocument;
-use std::fs;
-use std::path::Path;
-
-fn read_sample(rel: &str) -> Vec<u8> {
-    let repo_root = env!("CARGO_MANIFEST_DIR");
-    let path = Path::new(repo_root).join(rel);
-    fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e))
-}
 
 fn render_sample_page(rel: &str, page: u32) -> String {
     let bytes = read_sample(rel);

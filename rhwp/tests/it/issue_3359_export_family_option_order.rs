@@ -7,17 +7,13 @@
 //! 가능하므로 여기서는 다루지 않는다.
 #![cfg(not(target_arch = "wasm32"))]
 
+use crate::common::{assert_code, describe, run};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
 
 const SAMPLE: &str = "samples/hwp3-sample.hwp";
 
 fn sample_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(SAMPLE)
-}
-
-fn rhwp_bin() -> String {
-    std::env::var("CARGO_BIN_EXE_rhwp").unwrap_or_else(|_| env!("CARGO_BIN_EXE_rhwp").to_string())
 }
 
 fn unique_temp_path(label: &str) -> PathBuf {
@@ -26,33 +22,6 @@ fn unique_temp_path(label: &str) -> PathBuf {
         .expect("system clock")
         .as_nanos();
     std::env::temp_dir().join(format!("rhwp-3359-{label}-{}-{nonce}", std::process::id()))
-}
-
-fn run(args: &[&str]) -> Output {
-    Command::new(rhwp_bin())
-        .args(args)
-        .output()
-        .expect("rhwp 실행 실패")
-}
-
-fn describe(args: &[&str], output: &Output) -> String {
-    format!(
-        "명령: rhwp {}\nstdout:\n{}\nstderr:\n{}",
-        args.join(" "),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
-}
-
-fn assert_code(args: &[&str], expected: i32) -> Output {
-    let output = run(args);
-    assert_eq!(
-        output.status.code(),
-        Some(expected),
-        "{}",
-        describe(args, &output)
-    );
-    output
 }
 
 /// 버그 재현 형태 그대로 — 옵션 전부가 파일 앞에 와도 산출물이 나온다.

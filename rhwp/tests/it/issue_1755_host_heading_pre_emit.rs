@@ -7,16 +7,10 @@
 //! - 수정 후: typeset 이 이월 직전 PartialParagraph{51, 0..1} 로 9쪽에 pre-emit 하고
 //!   layout 은 pre_emitted_host_paras 신호로 fragment 쪽 host 렌더를 억제한다.
 
-use std::fs;
-use std::path::Path;
-
 const SAMPLE: &str = "samples/task1753/deferred_takeplace_fill_ahead.hwpx";
 
 fn load_doc() -> rhwp::wasm_api::HwpDocument {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(SAMPLE);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", SAMPLE, e));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes)
-        .unwrap_or_else(|e| panic!("parse {}: {}", SAMPLE, e))
+    crate::common::load_doc(SAMPLE)
 }
 
 #[test]

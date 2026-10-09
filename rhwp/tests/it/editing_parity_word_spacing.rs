@@ -176,7 +176,10 @@ fn assert_short_and_forced_lines_keep_natural_spacing(in_cell: bool) {
                 parent,
                 FIRST.chars().count() + 1,
                 &path,
-                include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/editing_parity/mac-hancom-12.30.0-xml14/grid.png")),
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/tests/fixtures/editing_parity/mac-hancom-12.30.0-xml14/grid.png"
+                )),
                 18000,
                 9000,
                 240,

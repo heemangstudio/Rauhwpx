@@ -5,16 +5,9 @@
 //! TextRun 이다. 문단 끝 Enter 로 생성된 빈 list 문단에서도 offset 0 caret 은
 //! marker 시작점이 아니라 marker 뒤 본문 시작점에 있어야 한다.
 
-use std::path::Path;
-
+use crate::common::load_doc;
 use rhwp::wasm_api::HwpDocument;
 use serde_json::Value;
-
-fn load_doc(rel: &str) -> HwpDocument {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
-    HwpDocument::from_bytes(&bytes).unwrap_or_else(|e| panic!("parse {rel}: {e:?}"))
-}
 
 fn cursor_x(doc: &HwpDocument, para: usize, offset: usize) -> f64 {
     let json = doc

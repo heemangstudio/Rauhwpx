@@ -21,17 +21,12 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use std::io::{Read, Write};
-use std::path::Path;
 
+use crate::common::read_sample as read_repo;
 use rhwp::document_core::DocumentCore;
 
 const EQ_OLE_SAMPLE: &str = "samples/issue5725/2921145_equation_ole.hwpx";
 const NATIVE_EQ_SAMPLE: &str = "samples/equation-lim.hwp";
-
-fn read_repo(rel: &str) -> Vec<u8> {
-    std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(rel))
-        .unwrap_or_else(|e| panic!("read {rel}: {e}"))
-}
 
 fn hwpx_with_body_level_ole_equation() -> Vec<u8> {
     let template = read_repo(EQ_OLE_SAMPLE);

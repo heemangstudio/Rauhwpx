@@ -4,6 +4,7 @@
 //! 같은 코드로 읽는다. 입력 순서 보존·부분 실패 exit 1 은 기존 batch 규약 그대로다.
 #![cfg(not(target_arch = "wasm32"))]
 
+use crate::common::describe;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -33,15 +34,6 @@ fn run_with_stdin(args: &[&str], stdin_body: &str) -> Output {
         .write_all(stdin_body.as_bytes())
         .expect("stdin 쓰기 실패");
     child.wait_with_output().expect("rhwp 종료 대기 실패")
-}
-
-fn describe(args: &[&str], output: &Output) -> String {
-    format!(
-        "명령: rhwp {}\nstdout:\n{}\nstderr:\n{}",
-        args.join(" "),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
 }
 
 fn ndjson(args: &[&str], output: &Output) -> Vec<serde_json::Value> {

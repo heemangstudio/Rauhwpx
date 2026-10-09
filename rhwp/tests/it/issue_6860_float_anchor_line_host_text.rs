@@ -1,6 +1,7 @@
 //! [Issue #6860]
 #![cfg(not(target_arch = "wasm32"))]
 
+use crate::common::read_sample as read;
 use rhwp::renderer::render_tree::{RenderNode, RenderNodeType};
 use rhwp::wasm_api::HwpDocument;
 
@@ -10,12 +11,6 @@ const CONTROL_SAMPLE: &str = "samples/issue5584/float_host_title_above_table.hwp
 
 const HOST_LINE_1: &str = "도로조명계산";
 const HOST_LINE_2: &str = "국제적으로";
-
-fn read(rel: &str) -> Vec<u8> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-    std::fs::read(&path)
-        .unwrap_or_else(|error| panic!("fixture 를 읽을 수 없다 ({}): {error}", path.display()))
-}
 
 fn document(rel: &str) -> HwpDocument {
     HwpDocument::from_bytes(&read(rel)).expect("문서 로드")

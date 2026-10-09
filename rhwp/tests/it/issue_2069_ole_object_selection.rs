@@ -4,22 +4,13 @@
 //! 렌더 트리는 OLE preview를 RawSvg로 만들지만, 원본 control 좌표를 잃으면 Studio가
 //! 클릭 선택/개체 속성 진입을 할 수 없고 빈 문단 커서 rect도 찾지 못한다.
 
-use std::fs;
-use std::path::Path;
-
-use rhwp::document_core::DocumentCore;
+use crate::common::load_core;
 use rhwp::model::control::Control;
 use rhwp::model::paragraph::{ColumnBreakType, NumberingRestart, ParaMeta};
 use rhwp::model::shape::{ShapeObject, TextWrap};
 use rhwp::renderer::hwpunit_to_px;
 use rhwp::renderer::render_tree::{RenderNode, RenderNodeType};
 use serde_json::Value;
-
-fn load_core(rel: &str) -> DocumentCore {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", rel, e));
-    DocumentCore::from_bytes(&bytes).unwrap_or_else(|e| panic!("parse {}: {:?}", rel, e))
-}
 
 fn assert_ole_layout_and_caret(rel: &str) {
     let core = load_core(rel);

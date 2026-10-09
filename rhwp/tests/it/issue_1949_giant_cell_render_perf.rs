@@ -16,14 +16,7 @@
 //! (3) 거대 셀이 걸친 중간 페이지의 비어있지 않은 SVG 를 확인한다. 캐시가 없으면
 //! 이 테스트는 사실상 완료 불가(수백 초) → CI 에서 폭증 회귀를 드러낸다.
 
-use std::fs;
-use std::path::Path;
-
-fn load_doc(rel: &str) -> rhwp::wasm_api::HwpDocument {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", rel, e));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes).expect("parse")
-}
+use crate::common::load_doc;
 
 #[test]
 fn giant_cell_rowbreak_table_renders_all_pages_without_blowup() {

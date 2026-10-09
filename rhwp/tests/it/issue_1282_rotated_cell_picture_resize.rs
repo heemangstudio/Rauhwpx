@@ -1,3 +1,4 @@
+use crate::common::read_sample as read_fixture;
 use rhwp::document_core::DocumentCore;
 use rhwp::model::control::Control;
 use rhwp::model::document::Document;
@@ -8,11 +9,6 @@ use rhwp::renderer::composer::compose_paragraph;
 use rhwp::renderer::height_measurer::HeightMeasurer;
 use rhwp::renderer::style_resolver::resolve_styles_with_variant;
 use rhwp::renderer::{hwpunit_to_px, DEFAULT_DPI};
-
-fn read_fixture(path: &str) -> Vec<u8> {
-    std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
-        .unwrap_or_else(|e| panic!("read {path}: {e}"))
-}
 
 fn target_table(doc: &Document) -> &Table {
     match &doc.sections[0].paragraphs[0].controls[2] {

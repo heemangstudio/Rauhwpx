@@ -1,6 +1,9 @@
 use rhwp::renderer::render_tree::{BoundingBox, RenderNode, RenderNodeType};
 
-const SAMPLE: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/formatting_table.hml"));
+const SAMPLE: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/samples/hml/formatting_table.hml"
+));
 const PARAGRAPH_INDEX: usize = 1;
 const CONTROL_INDEX: usize = 0;
 const GEOMETRY_TOLERANCE: f64 = 1.0;

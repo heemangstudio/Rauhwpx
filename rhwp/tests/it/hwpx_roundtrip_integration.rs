@@ -14,7 +14,10 @@ use rhwp::serializer::hwpx::roundtrip::roundtrip_ir_diff;
 
 #[test]
 fn stage0_blank_hwpx_roundtrip() {
-    let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hwpx/blank_hwpx.hwpx"));
+    let bytes = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/hwpx/blank_hwpx.hwpx"
+    ));
     let diff = roundtrip_ir_diff(bytes).expect("roundtrip must succeed");
     assert!(
         diff.is_empty(),
@@ -28,7 +31,10 @@ fn stage0_blank_hwpx_roundtrip() {
 
 #[test]
 fn stage1_ref_empty_roundtrip() {
-    let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hwpx/ref/ref_empty.hwpx"));
+    let bytes = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/hwpx/ref/ref_empty.hwpx"
+    ));
     let diff = roundtrip_ir_diff(bytes).expect("ref_empty roundtrip");
     assert!(
         diff.is_empty(),
@@ -39,7 +45,10 @@ fn stage1_ref_empty_roundtrip() {
 
 #[test]
 fn stage1_ref_text_roundtrip() {
-    let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hwpx/ref/ref_text.hwpx"));
+    let bytes = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/hwpx/ref/ref_text.hwpx"
+    ));
     let diff = roundtrip_ir_diff(bytes).expect("ref_text roundtrip");
     assert!(
         diff.is_empty(),
@@ -55,7 +64,10 @@ fn stage1_ref_text_roundtrip() {
 
 #[test]
 fn stage1_ref_mixed_header_level_regression_probe() {
-    let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hwpx/ref/ref_mixed.hwpx"));
+    let bytes = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/hwpx/ref/ref_mixed.hwpx"
+    ));
     let diff = roundtrip_ir_diff(bytes).expect("ref_mixed roundtrip");
     // 현재 Stage 1 에서는 IrDiff 0 이어야 함 — section 문단 수도 뼈대 비교 대상
     // 문제가 있으면 panic. 추후 Stage 2에서 run 비교가 추가되며 조건 강화.
@@ -72,7 +84,10 @@ fn stage1_ref_mixed_header_level_regression_probe() {
 
 #[test]
 fn stage5_ref_table_smoke() {
-    let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hwpx/ref/ref_table.hwpx"));
+    let bytes = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/hwpx/ref/ref_table.hwpx"
+    ));
     let diff = roundtrip_ir_diff(bytes).expect("ref_table roundtrip");
     if !diff.is_empty() {
         eprintln!("ref_table.hwpx diffs: {:#?}", diff);
@@ -88,21 +103,30 @@ fn stage5_ref_table_smoke() {
 
 #[test]
 fn stage5_form_002_smoke() {
-    let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hwpx/form-002.hwpx"));
+    let bytes = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/hwpx/form-002.hwpx"
+    ));
     // 양식 컨트롤이 있는 문서. IR 라운드트립이 파싱·직렬화 크래시 없이 돌아가는지만 확인.
     let _ = roundtrip_ir_diff(bytes).expect("form-002 roundtrip must not crash");
 }
 
 #[test]
 fn stage5_large_real_doc_2025_q1_smoke() {
-    let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hwpx/2025년 1분기 해외직접투자 보도자료f.hwpx"));
+    let bytes = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/hwpx/2025년 1분기 해외직접투자 보도자료f.hwpx"
+    ));
     // 표·그림·다문단 혼합 실문서. 파싱·직렬화 크래시 없이 돌아가는지 확인.
     let _ = roundtrip_ir_diff(bytes).expect("2025 1분기 large doc roundtrip must not crash");
 }
 
 #[test]
 fn stage5_large_real_doc_2025_q2_smoke() {
-    let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hwpx/2025년 2분기 해외직접투자 (최종).hwpx"));
+    let bytes = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/hwpx/2025년 2분기 해외직접투자 (최종).hwpx"
+    ));
     let _ = roundtrip_ir_diff(bytes).expect("2025 2분기 large doc roundtrip must not crash");
 }
 
@@ -115,7 +139,10 @@ fn stage5_table_control_preserved_on_roundtrip() {
     use rhwp::parser::hwpx::parse_hwpx;
     use rhwp::serializer::hwpx::serialize_hwpx;
 
-    let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/표-텍스트.hwpx"));
+    let bytes = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/표-텍스트.hwpx"
+    ));
     let doc1 = parse_hwpx(bytes).expect("parse 표-텍스트");
 
     let orig_tables: usize = doc1
@@ -150,7 +177,10 @@ fn stage5_picture_bindata_preserved_on_roundtrip() {
     use rhwp::parser::hwpx::parse_hwpx;
     use rhwp::serializer::hwpx::serialize_hwpx;
 
-    let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/tac-img-02.hwpx"));
+    let bytes = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/tac-img-02.hwpx"
+    ));
     let doc1 = parse_hwpx(bytes).expect("parse tac-img-02");
 
     let orig_pics: usize = doc1
@@ -211,7 +241,10 @@ fn stage5_large_doc_table_count_preserved() {
     use rhwp::parser::hwpx::parse_hwpx;
     use rhwp::serializer::hwpx::serialize_hwpx;
 
-    let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hwpx/2025년 1분기 해외직접투자 보도자료f.hwpx"));
+    let bytes = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/hwpx/2025년 1분기 해외직접투자 보도자료f.hwpx"
+    ));
     let doc1 = parse_hwpx(bytes).expect("parse");
 
     let orig_tables: usize = doc1
@@ -249,7 +282,10 @@ fn task177_lineseg_preserved_on_roundtrip_ref_text() {
     use rhwp::parser::hwpx::parse_hwpx;
     use rhwp::serializer::hwpx::serialize_hwpx;
 
-    let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hwpx/ref/ref_text.hwpx"));
+    let bytes = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/hwpx/ref/ref_text.hwpx"
+    ));
     let doc1 = parse_hwpx(bytes).expect("parse ref_text");
     let out = serialize_hwpx(&doc1).expect("serialize");
     let doc2 = parse_hwpx(&out).expect("reparse");
@@ -311,7 +347,10 @@ fn task177_lineseg_preserved_on_roundtrip_ref_mixed() {
     use rhwp::parser::hwpx::parse_hwpx;
     use rhwp::serializer::hwpx::serialize_hwpx;
 
-    let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hwpx/ref/ref_mixed.hwpx"));
+    let bytes = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/hwpx/ref/ref_mixed.hwpx"
+    ));
     let doc1 = parse_hwpx(bytes).expect("parse ref_mixed");
     let out = serialize_hwpx(&doc1).expect("serialize");
     let doc2 = parse_hwpx(&out).expect("reparse");
@@ -335,7 +374,10 @@ fn task177_linebreak_preserved_on_roundtrip_ref_mixed() {
     use rhwp::parser::hwpx::parse_hwpx;
     use rhwp::serializer::hwpx::serialize_hwpx;
 
-    let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hwpx/ref/ref_mixed.hwpx"));
+    let bytes = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/hwpx/ref/ref_mixed.hwpx"
+    ));
     let doc1 = parse_hwpx(bytes).expect("parse ref_mixed");
     let out = serialize_hwpx(&doc1).expect("serialize");
     let doc2 = parse_hwpx(&out).expect("reparse");
@@ -377,7 +419,10 @@ fn task177_hwpx_02_regression() {
     use rhwp::parser::hwpx::parse_hwpx;
     use rhwp::serializer::hwpx::serialize_hwpx;
 
-    let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hwpx/hwpx-02.hwpx"));
+    let bytes = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/hwpx/hwpx-02.hwpx"
+    ));
     let doc1 = parse_hwpx(bytes).expect("parse hwpx-02");
     let out = serialize_hwpx(&doc1).expect("serialize hwpx-02");
     let doc2 = parse_hwpx(&out).expect("reparse hwpx-02");
@@ -425,7 +470,10 @@ fn para_ids_unique_across_body_and_table() {
     use std::collections::HashSet;
     use std::io::Read;
 
-    let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hwpx/basic-table-01.hwpx"));
+    let bytes = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/hwpx/basic-table-01.hwpx"
+    ));
     let doc = parse_hwpx(bytes).expect("parse");
     let zip_bytes = serialize_hwpx(&doc).expect("serialize");
 
@@ -528,7 +576,10 @@ fn page_hiding_and_page_num_preserved_on_roundtrip() {
     use rhwp::serializer::hwpx::serialize_hwpx;
 
     // 정부 보도자료: pageHiding + pageNum 다수 포함.
-    let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hwpx/2025년 1분기 해외직접투자 보도자료f.hwpx"));
+    let bytes = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/hwpx/2025년 1분기 해외직접투자 보도자료f.hwpx"
+    ));
     let d1 = parse_hwpx(bytes).expect("parse");
     let (ph1, pn1) = (page_hides(&d1), page_nums(&d1));
     assert!(!ph1.is_empty(), "fixture must contain pageHiding");
@@ -547,7 +598,10 @@ fn new_num_preserved_on_roundtrip() {
     use rhwp::serializer::hwpx::serialize_hwpx;
 
     // aift: newNum 포함.
-    let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hwpx/aift.hwpx"));
+    let bytes = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/hwpx/aift.hwpx"
+    ));
     let d1 = parse_hwpx(bytes).expect("parse aift");
     let nn1 = new_nums(&d1);
     assert!(!nn1.is_empty(), "aift must contain newNum");
@@ -590,7 +644,10 @@ fn header_footer_preserved_on_roundtrip() {
     use rhwp::parser::hwpx::parse_hwpx;
     use rhwp::serializer::hwpx::serialize_hwpx;
 
-    let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hwpx/143E433F503322BD33.hwpx"));
+    let bytes = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/hwpx/143E433F503322BD33.hwpx"
+    ));
     let d1 = parse_hwpx(bytes).expect("parse");
     let (h1, f1) = headers_footers(&d1);
     assert!(
@@ -629,7 +686,10 @@ fn auto_num_preserved_on_roundtrip() {
     use rhwp::serializer::hwpx::serialize_hwpx;
 
     // eq-002: 본문에 autoNum 컨트롤 포함.
-    let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hwpx/eq-002.hwpx"));
+    let bytes = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/samples/hwpx/eq-002.hwpx"
+    ));
     let d1 = parse_hwpx(bytes).expect("parse");
     let an1 = auto_nums(&d1);
     assert!(!an1.is_empty(), "fixture must contain autoNum");

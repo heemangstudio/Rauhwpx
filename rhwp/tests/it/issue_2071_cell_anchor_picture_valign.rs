@@ -13,6 +13,7 @@
 //!   CENTER = content_top + (content_h − img_h + vertOffset)/2
 //!   BOTTOM = content_bottom − img_h − vertOffset
 
+use crate::common::load_core as load;
 use rhwp::document_core::DocumentCore;
 use rhwp::renderer::render_tree::{RenderNode, RenderNodeType};
 
@@ -36,12 +37,6 @@ fn collect(node: &RenderNode, out: &mut Vec<Img>) {
     for c in &node.children {
         collect(c, out);
     }
-}
-
-fn load(name: &str) -> DocumentCore {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(name);
-    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    DocumentCore::from_bytes(&bytes).unwrap_or_else(|e| panic!("load {name}: {e}"))
 }
 
 /// 오른쪽 셀(x>374)의 작은 그림(폭 ~304px)을 페이지 0 렌더트리에서 찾는다.

@@ -4,6 +4,7 @@
 //! must invalidate cached page trees when image bytes become available after the
 //! tree has already been built.
 
+use crate::common::{load_doc, read_sample};
 use rhwp::model::bin_data::BinDataContent;
 use rhwp::wasm_api::HwpDocument;
 use serde::Deserialize;
@@ -32,17 +33,6 @@ const SAMPLE10_EXTERNAL_IMAGES: &[(u16, &str, &str, &str)] = &[
     (2, "rdb02.gif", "gif", "samples/rdb02.gif"),
     (3, "s1.jpg", "jpg", "samples/s1.jpg"),
 ];
-
-fn load_doc(rel_path: &str) -> HwpDocument {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel_path);
-    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
-    HwpDocument::from_bytes(&bytes).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
-}
-
-fn read_sample(rel_path: &str) -> Vec<u8> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel_path);
-    std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e))
-}
 
 fn external_image_refs(doc: &HwpDocument) -> Vec<ExternalImageReference> {
     let json = doc.get_external_image_references();

@@ -6,6 +6,7 @@
 use std::fs;
 use std::path::Path;
 
+use crate::common::load_core as load_sample;
 use rhwp::document_core::queries::field_query::{FieldInfo, FieldLocation, NestedEntry};
 use rhwp::document_core::DocumentCore;
 use rhwp::model::control::{Control, FieldType};
@@ -15,12 +16,6 @@ use rhwp::model::paragraph::{LineSeg, Paragraph};
 enum LineSegRoundtrip {
     Persist,
     RecomputeSyntheticHwpx,
-}
-
-fn load_sample(relative: &str) -> DocumentCore {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
-    DocumentCore::from_bytes(&bytes).unwrap_or_else(|e| panic!("parse {}: {e:?}", path.display()))
 }
 
 fn field_named(core: &DocumentCore, name: &str) -> FieldInfo {

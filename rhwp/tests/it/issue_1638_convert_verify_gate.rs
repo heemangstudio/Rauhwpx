@@ -3,6 +3,7 @@
 //! `hwp2hwpx` 신규 명령을 만들지 않고 현재 CLI 표면(`export-hwpx`, `convert`)에
 //! `--verify` / `--verify-pages`를 붙이는지 확인한다.
 
+use crate::common::rhwp_bin;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -82,10 +83,4 @@ fn convert_verify_and_verify_pages_pass_for_hwp_source() {
     assert!(stdout.contains("검증 통과(--verify): IR 차이 없음"));
 
     let _ = fs::remove_file(out);
-}
-
-/// [#3289] 아카이브 실행 시 컴파일타임 경로는 빌드 러너 전용이므로,
-/// nextest가 런타임에 재매핑해 주입하는 CARGO_BIN_EXE_rhwp를 우선한다.
-fn rhwp_bin() -> String {
-    std::env::var("CARGO_BIN_EXE_rhwp").unwrap_or_else(|_| env!("CARGO_BIN_EXE_rhwp").to_string())
 }

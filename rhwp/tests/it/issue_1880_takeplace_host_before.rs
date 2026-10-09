@@ -15,16 +15,8 @@
 //!   확인서")이 **p13**(한컴이 원본 HWPX·convert-HWP 모두 p13 렌더, 이슈 #1880
 //!   표). 수정 전 convert-HWP 렌더만 p12 로 어긋났다.
 
+use crate::common::load_doc as load;
 use std::collections::BTreeMap;
-use std::fs;
-use std::path::Path;
-
-fn load(path: &str) -> rhwp::wasm_api::HwpDocument {
-    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
-    let bytes = fs::read(&p).unwrap_or_else(|e| panic!("read {path}: {e}"));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes)
-        .unwrap_or_else(|e| panic!("parse {path}: {e:?}"))
-}
 
 /// dump-pages 출력에서 `(section, pi) → global page index` 매핑을 뽑는다.
 /// 같은 (section, pi) 가 여러 페이지에 걸치면(분할 표) 첫 등장 페이지를 취한다.

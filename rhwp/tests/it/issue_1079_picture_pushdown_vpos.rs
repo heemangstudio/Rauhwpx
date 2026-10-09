@@ -8,14 +8,7 @@
 //! 정정: gap_before(그림 para 줄 앞 빈 공간) ≥ 그림 높이이면 파일 vpos 가 이미 그림을 반영한
 //! 것 → typeset pushdown 생략 + 렌더는 그림을 그 gap 안에 그리고 추가 진행 생략.
 
-use std::fs;
-use std::path::Path;
-
-fn load_doc(rel: &str) -> rhwp::wasm_api::HwpDocument {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", rel, e));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes).expect("parse")
-}
+use crate::common::load_doc;
 
 fn svg_height(svg: &str) -> f64 {
     let i = svg.find("height=\"").expect("svg height") + "height=\"".len();

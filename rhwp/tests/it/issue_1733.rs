@@ -5,20 +5,10 @@
 //! 정답 242쪽과 맞는다. 이 핀은 그 정합을 유지하고, 다시 241/243 쪽으로
 //! 흔들리면 #2559 밴드 회수 또는 과다분할 회귀다.
 
-use rhwp::wasm_api::HwpDocument;
-use std::fs;
-use std::path::Path;
+use crate::common::load_doc;
 
 const HANCOM_PDF_PAGE_COUNT: u32 = 242;
 const CURRENT_PAGE_COUNT_PIN: u32 = 242;
-
-fn load_doc(sample: &str) -> HwpDocument {
-    let repo_root = env!("CARGO_MANIFEST_DIR");
-    let path = Path::new(repo_root).join(sample);
-    let bytes = fs::read(&path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
-    HwpDocument::from_bytes(&bytes)
-        .unwrap_or_else(|err| panic!("parse {}: {err:?}", path.display()))
-}
 
 fn assert_current_page_count_pin(sample: &str) {
     let doc = load_doc(sample);

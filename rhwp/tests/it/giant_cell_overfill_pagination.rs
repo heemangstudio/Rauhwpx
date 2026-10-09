@@ -7,9 +7,7 @@
 //! fixture carries the same authored empty line boxes after the terminal note, so it must follow
 //! the HWPX fragment chain page for page.
 
-use std::fs;
-use std::path::Path;
-
+use crate::common::load_doc;
 use rhwp::renderer::render_tree::{BoundingBox, RenderNode, RenderNodeType};
 
 const HEADER_TEXT: &str = "가능한 고장배제";
@@ -24,13 +22,6 @@ const OFFICIAL_HEADER_BBOX_PX: BoundingBox = BoundingBox {
 };
 const OFFICIAL_BBOX_EDGE_TOLERANCE_PX: f64 = 6.0;
 const REPEATED_BBOX_EDGE_TOLERANCE_PX: f64 = 0.25;
-
-fn load_doc(rel: &str) -> rhwp::wasm_api::HwpDocument {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-    let bytes = fs::read(&path).unwrap_or_else(|error| panic!("read {rel}: {error}"));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes)
-        .unwrap_or_else(|error| panic!("parse {rel}: {error}"))
-}
 
 fn intersect(a: BoundingBox, b: BoundingBox) -> Option<BoundingBox> {
     let left = a.x.max(b.x);

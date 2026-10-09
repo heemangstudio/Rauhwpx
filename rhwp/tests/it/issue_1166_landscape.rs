@@ -7,14 +7,7 @@
 //! width/height 는 HWP 바이너리와 동일하게 짧은변=width/긴변=height 로 저장되고,
 //! landscape=true 일 때 렌더러가 swap 한다.
 
-use std::fs;
-use std::path::Path;
-
-fn load(rel: &str) -> rhwp::wasm_api::HwpDocument {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", rel, e));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes).expect("parse")
-}
+use crate::common::load_doc as load;
 
 fn page_def_landscape(doc: &rhwp::wasm_api::HwpDocument) -> bool {
     let json = doc.get_page_def_native(0).expect("page def");

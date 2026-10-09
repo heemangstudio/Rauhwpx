@@ -8,16 +8,10 @@
 //!   선언 → 행 확장 +7px (한글 find_tables 는 142.1px = 선언 유지).
 //! - 수정 후: trailing 제외 콘텐츠+pad 가 선언 안이므로 선언높이로 clamp → 142.2px.
 
-use std::fs;
-use std::path::Path;
-
 const SAMPLE: &str = "samples/task1763/cell_trailing_ls_expand.hwp";
 
 fn load_doc() -> rhwp::wasm_api::HwpDocument {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(SAMPLE);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", SAMPLE, e));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes)
-        .unwrap_or_else(|e| panic!("parse {}: {}", SAMPLE, e))
+    crate::common::load_doc(SAMPLE)
 }
 
 fn find_row0_cell_height(node: &serde_json::Value) -> Option<f64> {

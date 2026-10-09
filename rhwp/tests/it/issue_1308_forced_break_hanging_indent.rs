@@ -10,19 +10,13 @@
 use std::fs;
 use std::path::Path;
 
+use crate::common::load_doc as load_wasm_document;
 use serde_json::Value;
 
 fn parse_document(rel: &str) -> rhwp::model::document::Document {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
     let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", rel, e));
     rhwp::parser::parse_document(&bytes).unwrap_or_else(|e| panic!("parse {}: {e:?}", rel))
-}
-
-fn load_wasm_document(rel: &str) -> rhwp::wasm_api::HwpDocument {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", rel, e));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes)
-        .unwrap_or_else(|e| panic!("parse {}: {e:?}", rel))
 }
 
 fn render_svg(rel: &str) -> String {

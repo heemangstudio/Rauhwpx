@@ -11,6 +11,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use crate::common::rhwp_bin;
 use rhwp::doclang::{convert, ConvertOptions};
 
 /// `samples/` 아래 상대 경로의 절대 경로.
@@ -170,10 +171,4 @@ fn export_doclang_never_overwrites_a_hard_link_to_its_input() {
         std::fs::read(&input).expect("read unchanged input"),
         original
     );
-}
-
-/// [#3289] 아카이브 실행 시 컴파일타임 경로는 빌드 러너 전용이므로,
-/// nextest가 런타임에 재매핑해 주입하는 CARGO_BIN_EXE_rhwp를 우선한다.
-fn rhwp_bin() -> String {
-    std::env::var("CARGO_BIN_EXE_rhwp").unwrap_or_else(|_| env!("CARGO_BIN_EXE_rhwp").to_string())
 }

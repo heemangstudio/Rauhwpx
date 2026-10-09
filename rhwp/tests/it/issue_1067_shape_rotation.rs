@@ -16,16 +16,10 @@
 //!
 //! 작업지시자 시각 판정 통과 (Stage 1+2+3): "정답지 이미지 정합".
 
+use crate::common::read_sample;
 use rhwp::model::control::Control;
 use rhwp::model::shape::ShapeObject;
 use rhwp::parser::parse_document;
-use std::fs;
-use std::path::Path;
-
-fn read_sample(rel: &str) -> Vec<u8> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-    fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", rel, e))
-}
 
 fn control_kind(ctrl: &Control) -> &'static str {
     match ctrl {

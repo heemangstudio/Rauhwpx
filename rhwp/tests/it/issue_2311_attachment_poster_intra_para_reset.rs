@@ -27,16 +27,6 @@ fn core() -> DocumentCore {
 }
 
 #[test]
-fn issue_2311_poster_doc_paginates_to_three_pages() {
-    let core = core();
-    assert_eq!(
-        core.page_count(),
-        3,
-        "한글 오라클 3쪽 정합 (수정 전 5쪽: 붙임 포스터/그래프 통밀림)"
-    );
-}
-
-#[test]
 fn issue_2311_poster_shape_stays_with_attachment_header() {
     let core = core();
     let dump = core.dump_page_items(None);

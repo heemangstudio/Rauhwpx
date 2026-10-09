@@ -5,16 +5,7 @@
 //! 32x2 RowBreak table. The first fragment can fit rows 0..16, but keeping a
 //! tiny slice of row 16 overflows the page and should be deferred to page 38.
 
-use std::fs;
-use std::path::Path;
-
-fn load_doc(rel_path: &str) -> rhwp::wasm_api::HwpDocument {
-    let repo_root = env!("CARGO_MANIFEST_DIR");
-    let path = Path::new(repo_root).join(rel_path);
-    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {rel_path}: {e}"));
-    rhwp::wasm_api::HwpDocument::from_bytes(&bytes)
-        .unwrap_or_else(|e| panic!("parse {rel_path}: {e:?}"))
-}
+use crate::common::load_doc;
 
 fn page_dump(rel_path: &str, page_idx: u32) -> String {
     let doc = load_doc(rel_path);
