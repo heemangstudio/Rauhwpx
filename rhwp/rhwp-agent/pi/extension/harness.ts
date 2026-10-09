@@ -402,6 +402,7 @@ export const SETTLE_NOTES = Object.freeze({
   warnings: (tool: string, warnings: string[]) =>
     `- The last successful write (${tool}) reported layout warnings: ${warnings.join(' | ')}`,
   noSummary: '- You changed the document, but no reply was written for the user.',
+  footer: 'Fix what one more call can fix, then reply to the user; if it cannot be fixed, say what is left in your reply.',
 });
 
 export interface TurnWriteState {
@@ -481,7 +482,7 @@ export function settleNoteFor(
     lines.push(SETTLE_NOTES.warnings(state.lastSuccessfulWrite.tool, state.lastSuccessfulWrite.warnings));
   }
   if (!state.finalHasText) lines.push(SETTLE_NOTES.noSummary);
-  return lines.length > 0 ? [SETTLE_NOTES.header, ...lines].join('\n') : null;
+  return lines.length > 0 ? [SETTLE_NOTES.header, ...lines, SETTLE_NOTES.footer].join('\n') : null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

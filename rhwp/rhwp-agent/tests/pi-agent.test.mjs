@@ -394,7 +394,7 @@ test('argv carries the model, thinking level, session and system brief', () => {
   ]);
   assert.equal(argv[argv.indexOf('--session-dir') + 1], path.join('/pi', 'sessions'));
   assert.equal(argv[argv.indexOf('--session-id') + 1], 'sess-1');
-  assert.match(argv[argv.indexOf('--system-prompt') + 1], /rhwp MCP tools/);
+  assert.match(argv[argv.indexOf('--system-prompt') + 1], /^You are the document agent inside Rauhwpx/);
   assert.ok(argv.includes('--no-context-files'));
   assert.equal(argv[argv.indexOf('--exclude-tools') + 1], 'bash');
   assert.equal(argv.includes('--append-system-prompt'), false);
@@ -499,11 +499,11 @@ test('planning phases exclude the built-in write and shell tools', () => {
   for (const phase of ['planning', 'awaiting-approval', 'switching']) {
     const argv = buildPiArgv({ ...baseOpts, workflow: 'plan', phase }, 'sess-1');
     assert.equal(argv[argv.indexOf('--exclude-tools') + 1], 'bash,edit,write', phase);
-    assert.match(argv[argv.indexOf('--system-prompt') + 1], /플랜 \(plan\) mode|implementation mode/);
+    assert.match(argv[argv.indexOf('--system-prompt') + 1], /Mode: 플랜 \(plan\)/);
   }
   const implementing = buildPiArgv({ ...baseOpts, workflow: 'plan', phase: 'implementing' }, 'x');
   assert.equal(implementing[implementing.indexOf('--exclude-tools') + 1], 'bash');
-  assert.match(implementing[implementing.indexOf('--system-prompt') + 1], /implementation mode/);
+  assert.match(implementing[implementing.indexOf('--system-prompt') + 1], /Mode: plan implementation/);
 
   const unrestricted = buildPiArgv({
     ...baseOpts,
