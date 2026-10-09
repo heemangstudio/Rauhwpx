@@ -1,0 +1,228 @@
+import { defineConfig } from 'vite';
+import { resolve, extname, join } from 'path';
+import { readFileSync, readFile } from 'fs';
+import { execSync } from 'node:child_process';
+import { VitePWA } from 'vite-plugin-pwa';
+import { rhwpAgentHubPlugin } from './vite-plugin-agent-hub.mjs';
+import { rhwpPinnedDocumentPlugin } from './vite-plugin-pinned-document.mjs';
+import { rhwpDevFontPackPlugin } from './vite-plugin-dev-font-pack.mjs';
+import { rhwpLocalFontsPlugin } from './vite-plugin-local-fonts.mjs';
+
+const appPackage = JSON.parse(
+  readFileSync(resolve(__dirname, '..', '..', 'package.json'), 'utf-8'),
+);
+const subsecondWasmDir = resolve(
+  __dirname,
+  '..',
+  'target',
+  'rhwp-subsecond-vite',
+);
+const useSubsecondWasm = process.env.RHWP_SUBSECOND === '1';
+
+// 원격 접속(serve-remote): RHWP_PUBLIC_HOST 가 있으면 tailscale serve TLS 프록시 뒤에서
+// 동작한다. 바인딩은 그대로 127.0.0.1 — Host 허용과 HMR 되돌이 연결만 공개 주소로 맞춘다.
+// clientPort 가 없으면 HMR 웹소켓이 로컬 포트로 붙으려다 조용히 실패한다.
+const publicHost = process.env.RHWP_PUBLIC_HOST;
+
+// wasm 섹션 머리만 훑어 디버그 흔적(name/.debug_* 커스텀 섹션)을 찾는다.
+// `wasm-pack build --dev` 결과가 ../pkg 에 남아 있으면 dist 에 3배 크기의 엔진이 실린다.
+function wasmDebugSections(file: string): string[] {
+  const bytes = readFileSync(file);
+  const found: string[] = [];
+  let offset = 8;
+  const leb = () => {
+    let result = 0;
+    let shift = 0;
+    let byte = 0;
+    do {
+      byte = bytes[offset++];
+      result += (byte & 0x7f) * 2 ** shift;
+      shift += 7;
+    } while (byte & 0x80);
+    return result;
+  };
+  while (offset < bytes.length) {
+    const id = bytes[offset++];
+    const size = leb();
+    const end = offset + size;
+    if (id === 0) {
+      const nameLength = leb();
+      const name = bytes.subarray(offset, offset + nameLength).toString();
+      if (name === 'name' || name.startsWith('.debug')) found.push(name);
+    }
+    offset = end;
+  }
+  return found;
+}
+const publicHttpsPort = Number(process.env.RHWP_PUBLIC_HTTPS_PORT ?? 443);
+
+// 제품 정보 다이얼로그가 표시할 빌드 커밋 — git 이 없는 패키징 환경에서는 unknown.
+const appCommit = (() => {
+  try {
+    return execSync('git rev-parse --short=8 HEAD', { cwd: __dirname, encoding: 'utf8' }).trim() || 'unknown';
+  } catch {
+    return 'unknown';
+  }
+})();
+
+export default defineConfig({
+  define: {
+    __APP_VERSION__: JSON.stringify(appPackage.version),
+    __APP_COMMIT__: JSON.stringify(appCommit),
+  },
+  resolve: {
+    alias: {
+      '@': resolve(__dirname, 'src'),
+      '@wasm/rhwp.js': useSubsecondWasm
+        ? resolve(subsecondWasmDir, 'rhwp-subsecond.js')
+        : resolve(__dirname, '..', 'pkg', 'rhwp.js'),
+      '@wasm': resolve(__dirname, '..', 'pkg'),
+    },
+  },
+  server: {
+    host: '127.0.0.1',
+    port: 7700,
+    ...(publicHost
+      ? {
+        allowedHosts: [publicHost],
+        hmr: { protocol: 'wss', host: publicHost, clientPort: publicHttpsPort },
+      }
+      : {}),
+    proxy: useSubsecondWasm ? {
+      '/_dioxus': {
+        target: 'http://127.0.0.1:7711',
+        ws: true,
+      },
+      '/wasm': {
+        target: 'http://127.0.0.1:7711',
+      },
+    } : undefined,
+    fs: {
+      // Allow the editor and fixture assets used by linked-image development checks.
+      allow: [
+        __dirname,
+        resolve(__dirname, '..', 'pkg'),
+        subsecondWasmDir,
+        resolve(__dirname, '..', 'samples'),
+        resolve(__dirname, '..', 'npm', 'editor'),
+      ],
+    },
+    watch: {
+      ignored: ['**/librhwp-subsecond-patch-*.wasm'],
+    },
+  },
+  plugins: [
+    {
+      name: 'warn-debug-wasm',
+      apply: 'build',
+      buildStart() {
+        if (useSubsecondWasm) return;
+        const wasm = resolve(__dirname, '..', 'pkg', 'rhwp_bg.wasm');
+        let sections: string[] = [];
+        try {
+          sections = wasmDebugSections(wasm);
+        } catch {
+          return;
+        }
+        if (sections.length > 0) {
+          this.warn(`../pkg/rhwp_bg.wasm is a debug build (${sections.join(', ')}). Run \`npm run build:wasm\` at the repo root for the release engine.`);
+        }
+      },
+    },
+    rhwpAgentHubPlugin(__dirname),
+    rhwpPinnedDocumentPlugin(__dirname),
+    rhwpDevFontPackPlugin(),
+    rhwpLocalFontsPlugin(__dirname),
+    {
+      name: 'ignore-subsecond-patch-artifacts',
+      handleHotUpdate(context) {
+        if (/librhwp-subsecond-patch-\d+\.wasm$/.test(context.file)) {
+          return [];
+        }
+      },
+    },
+    // Serve linked fixture images at /samples/ for wasm-bridge.ts.
+    {
+      name: 'serve-samples-dir',
+      configureServer(server) {
+        const samplesDir = resolve(__dirname, '..', 'samples');
+        server.middlewares.use('/samples', (req, res, next) => {
+          if (!req.url) return next();
+          // URL decode + sanitize (path traversal 차단)
+          const reqPath = decodeURIComponent(req.url.split('?')[0]);
+          const relPath = reqPath.replace(/^\/+/, '');
+          if (relPath.includes('..')) { res.statusCode = 403; return res.end(); }
+          const full = join(samplesDir, relPath);
+          if (!full.startsWith(samplesDir)) { res.statusCode = 403; return res.end(); }
+          readFile(full, (err: NodeJS.ErrnoException | null, data: Buffer) => {
+            if (err) { res.statusCode = 404; return res.end(); }
+            const ext = extname(full).toLowerCase();
+            const mime: Record<string, string> = {
+              '.gif': 'image/gif', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+              '.png': 'image/png', '.bmp': 'image/bmp', '.webp': 'image/webp',
+            };
+            res.setHeader('Content-Type', mime[ext] ?? 'application/octet-stream');
+            // The image dialog displays the resolved local path supplied by this dev server.
+            res.setHeader('X-File-Path', encodeURI(full));
+            res.setHeader('Access-Control-Expose-Headers', 'X-File-Path');
+            res.end(data);
+          });
+        });
+      },
+    },
+    VitePWA({
+      registerType: 'autoUpdate',
+      injectRegister: false,
+      includeAssets: ['favicon.ico', 'icons/*.png'],
+      manifest: {
+        name: 'Rauhwpx',
+        short_name: 'Rauhwpx',
+        description: 'Rauhwpx HWP/HWPX/HML 문서 편집기',
+        lang: 'ko',
+        theme_color: '#2b6cb0',
+        background_color: '#ffffff',
+        display: 'standalone',
+        start_url: '/rhwp/',
+        scope: '/rhwp/',
+        file_handlers: [
+          {
+            action: '/rhwp/',
+            accept: {
+              'application/x-hwp': ['.hwp'],
+              'application/hwp+zip': ['.hwpx'],
+              'application/xml': ['.hml'],
+              'text/xml': ['.hml'],
+              'application/vnd.rauhwpx.history': ['.rhwpx'],
+            },
+          },
+        ],
+        icons: [
+          { src: 'icons/icon-128.png', sizes: '128x128', type: 'image/png' },
+          { src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png' },
+          { src: 'icons/icon-256.png', sizes: '256x256', type: 'image/png' },
+          { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png' },
+          { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
+        ],
+      },
+      workbox: {
+        // WASM (~12 MB) is kept out of precache to avoid blocking SW installation;
+        // CacheFirst at runtime still gives offline access after the first load.
+        globPatterns: ['**/*.{js,css,html,png,svg,ico,woff,woff2,ttf,otf}'],
+        maximumFileSizeToCacheInBytes: 20 * 1024 * 1024,
+        runtimeCaching: [
+          {
+            urlPattern: /\.wasm$/,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'wasm-cache',
+              expiration: { maxEntries: 5, maxAgeSeconds: 30 * 24 * 60 * 60 },
+            },
+          },
+        ],
+      },
+      devOptions: {
+        enabled: false,
+      },
+    }),
+  ],
+});

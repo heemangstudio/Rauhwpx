@@ -1,0 +1,410 @@
+import { createHmac, randomUUID } from 'node:crypto';
+import { lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+
+/** site-api, deployed as the Railway service `rau-credits`. */
+const SITE_API_ORIGIN = 'https://rau-credits-production.up.railway.app';
+export const UNIQUE_INSTALL_FILE = 'unique-install.json';
+export const UNIQUE_INSTALLS_JSON_PATH = '/v1/unique-installs';
+export const UNIQUE_INSTALLS_PAGE_PATH = '/unique-installs';
+const INSTALL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const REQUEST_TIMEOUT_MS = 8_000;
+const WINDOWS_LOCK_CODES = new Set(['EPERM', 'EBUSY', 'ENOTEMPTY', 'EACCES']);
+const WINDOWS_LOCK_RETRY_MS = [50, 100, 200, 400, 800];
+/** Must match site-api/unique-installs.mjs DEFAULT_UNIQUE_INSTALL_PING_KEY. */
+export const DEFAULT_UNIQUE_INSTALL_PING_KEY = 'rau.unique-install.v1.desktop-first-launch';
+
+export function createUniqueInstallProof(ping, key = DEFAULT_UNIQUE_INSTALL_PING_KEY) {
+  return createHmac('sha256', String(key)).update(
+    `${ping.installId}\n${ping.appVersion}\n${ping.os}\n${ping.arch}`,
+    'utf8',
+  ).digest('hex');
+}
+
+export function uniqueInstallStatePath(userDataDir) {
+  return join(String(userDataDir), UNIQUE_INSTALL_FILE);
+}
+
+export function uniqueInstallsPublicUrl(baseUrl = SITE_API_ORIGIN) {
+  return `${String(baseUrl).replace(/\/$/, '')}${UNIQUE_INSTALLS_PAGE_PATH}`;
+}
+
+export function uniqueInstallsJsonUrl(baseUrl = SITE_API_ORIGIN) {
+  return `${String(baseUrl).replace(/\/$/, '')}${UNIQUE_INSTALLS_JSON_PATH}`;
+}
+
+export function shouldPingUniqueInstall({ packaged = false, devUrl = null } = {}) {
+  return packaged === true && !devUrl;
+}
+
+function emptySnapshot(baseUrl) {
+  return {
+    uniqueInstalls: null,
+    publicUrl: uniqueInstallsPublicUrl(baseUrl),
+    recorded: false,
+  };
+}
+
+function parsedState(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const installId = typeof raw.installId === 'string' ? raw.installId.trim().toLowerCase() : '';
+  if (!INSTALL_ID_RE.test(installId)) return null;
+  return {
+    installId,
+    recorded: raw.recorded === true,
+    recordedAt: typeof raw.recordedAt === 'string' ? raw.recordedAt : null,
+  };
+}
+
+async function retryWindows(operation, platform) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (platform !== 'win32' || !WINDOWS_LOCK_CODES.has(error?.code)
+        || attempt >= WINDOWS_LOCK_RETRY_MS.length) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, WINDOWS_LOCK_RETRY_MS[attempt]));
+    }
+  }
+}
+
+function typeStatImpl(lstatImpl, statImpl) {
+  return lstatImpl ?? statImpl ?? lstat;
+}
+
+async function lstatOrMissing(lstatImpl, filePath) {
+  try {
+    return await lstatImpl(filePath);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+function directoryReplaceError(targetPath) {
+  const error = new Error(`Refusing to replace directory ${targetPath}`);
+  error.code = 'EISDIR';
+  return error;
+}
+
+function rollbackFailedError(error, rollbackError, previous, tempPath) {
+  const failure = new AggregateError(
+    [error, rollbackError],
+    `Windows unique-install replacement failed; the previous value remains at ${previous}`,
+  );
+  failure.code = 'FILE_REPLACE_ROLLBACK_FAILED';
+  failure.backupPath = previous;
+  failure.tempPath = tempPath;
+  return failure;
+}
+
+async function removeUniqueInstallBackup(previous, { rmImpl, lstatImpl, platform }) {
+  const info = await lstatOrMissing(lstatImpl, previous);
+  if (info?.isDirectory()) throw directoryReplaceError(previous);
+  await retryWindows(() => rmImpl(previous, { force: true }), platform);
+}
+
+/** Windows cannot rename over an existing file. */
+async function replaceUniqueInstallFile(temp, filePath, {
+  renameImpl,
+  rmImpl,
+  lstatImpl,
+  platform,
+}) {
+  if (platform !== 'win32') {
+    await renameImpl(temp, filePath);
+    return;
+  }
+  const live = await lstatOrMissing(lstatImpl, filePath);
+  if (live?.isDirectory()) throw directoryReplaceError(filePath);
+  if (live && !live.isFile()) {
+    throw Object.assign(new Error('unique install state is not a file'), {
+      code: 'UNIQUE_INSTALL_STATE_UNREADABLE',
+    });
+  }
+  const previous = `${filePath}.previous-write`;
+  await removeUniqueInstallBackup(previous, { rmImpl, lstatImpl, platform });
+  let moved = false;
+  try {
+    await retryWindows(() => renameImpl(filePath, previous), platform);
+    moved = true;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  try {
+    if (moved && (await lstatOrMissing(lstatImpl, previous))?.isDirectory()) {
+      throw directoryReplaceError(filePath);
+    }
+    await retryWindows(() => renameImpl(temp, filePath), platform);
+  } catch (error) {
+    if (moved) {
+      try {
+        await retryWindows(() => renameImpl(previous, filePath), platform);
+      } catch (restoreError) {
+        throw rollbackFailedError(error, restoreError, previous, temp);
+      }
+    }
+    throw error;
+  }
+  if (moved) {
+    await removeUniqueInstallBackup(previous, { rmImpl, lstatImpl, platform }).catch(() => {});
+  }
+}
+
+export async function loadOrCreateUniqueInstallState(filePath, {
+  readFileImpl = readFile,
+  mkdirImpl = mkdir,
+  writeFileImpl = writeFile,
+  renameImpl = rename,
+  rmImpl = rm,
+  statImpl,
+  lstatImpl,
+  randomUUIDImpl = randomUUID,
+  platform = process.platform,
+} = {}) {
+  try {
+    const parsed = parsedState(JSON.parse(await readFileImpl(filePath, 'utf8')));
+    if (parsed) return parsed;
+    throw Object.assign(new Error('unique install state is unreadable'), {
+      code: 'UNIQUE_INSTALL_STATE_UNREADABLE',
+    });
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      // A missing file is the first launch on this userData path.
+    } else if (error?.code === 'UNIQUE_INSTALL_STATE_UNREADABLE') {
+      throw error;
+    } else {
+      throw Object.assign(new Error('unique install state is unreadable'), {
+        code: 'UNIQUE_INSTALL_STATE_UNREADABLE',
+        cause: error,
+      });
+    }
+  }
+  const created = {
+    installId: randomUUIDImpl(),
+    recorded: false,
+    recordedAt: null,
+  };
+  await writeUniqueInstallState(filePath, created, {
+    mkdirImpl,
+    writeFileImpl,
+    renameImpl,
+    rmImpl,
+    statImpl,
+    lstatImpl,
+    platform,
+  });
+  return created;
+}
+
+export async function writeUniqueInstallState(filePath, state, {
+  mkdirImpl = mkdir,
+  writeFileImpl = writeFile,
+  renameImpl = rename,
+  rmImpl = rm,
+  statImpl,
+  lstatImpl,
+  platform = process.platform,
+} = {}) {
+  const directory = dirname(filePath);
+  await mkdirImpl(directory, { recursive: true });
+  const temp = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
+  try {
+    await writeFileImpl(temp, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+    await replaceUniqueInstallFile(temp, filePath, {
+      renameImpl,
+      rmImpl,
+      lstatImpl: typeStatImpl(lstatImpl, statImpl),
+      platform,
+    });
+  } catch (error) {
+    if (error?.code !== 'EISDIR' && error?.code !== 'FILE_REPLACE_ROLLBACK_FAILED') {
+      await rmImpl(temp, { force: true }).catch(() => {});
+    }
+    throw error;
+  }
+}
+
+async function readJson(fetchImpl, url, init, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetchImpl(url, { ...init, signal: controller.signal });
+    const body = await response.json().catch(() => ({}));
+    return { ok: response.ok, status: response.status, body };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function snapshotFromBody(body, baseUrl, recorded) {
+  const uniqueInstalls = Number.isSafeInteger(body?.uniqueInstalls) && body.uniqueInstalls >= 0
+    ? body.uniqueInstalls
+    : null;
+  return {
+    uniqueInstalls,
+    publicUrl: uniqueInstallsPublicUrl(baseUrl),
+    recorded,
+  };
+}
+
+/**
+ * First successful packaged launch pings once per machine. Fail closed: the
+ * caller must ignore rejection and still finish launching the app.
+ */
+export async function reportUniqueInstall({
+  userDataDir,
+  packaged = false,
+  devUrl = null,
+  appVersion,
+  os,
+  arch,
+  baseUrl = SITE_API_ORIGIN,
+  fetchImpl = globalThis.fetch,
+  timeoutMs = REQUEST_TIMEOUT_MS,
+  readFileImpl = readFile,
+  mkdirImpl = mkdir,
+  writeFileImpl = writeFile,
+  renameImpl = rename,
+  rmImpl = rm,
+  statImpl,
+  lstatImpl,
+  randomUUIDImpl = randomUUID,
+  now = Date.now,
+  platform = process.platform,
+} = {}) {
+  const origin = String(baseUrl).replace(/\/$/, '');
+  const snapshot = emptySnapshot(origin);
+  try {
+    return await reportUniqueInstallInner({
+      userDataDir,
+      packaged,
+      devUrl,
+      appVersion,
+      os,
+      arch,
+      origin,
+      snapshot,
+      fetchImpl,
+      timeoutMs,
+      readFileImpl,
+      mkdirImpl,
+      writeFileImpl,
+      renameImpl,
+      rmImpl,
+      statImpl,
+      lstatImpl,
+      randomUUIDImpl,
+      now,
+      platform,
+    });
+  } catch {
+    return snapshot;
+  }
+}
+
+async function reportUniqueInstallInner({
+  userDataDir,
+  packaged,
+  devUrl,
+  appVersion,
+  os,
+  arch,
+  origin,
+  snapshot,
+  fetchImpl,
+  timeoutMs,
+  readFileImpl,
+  mkdirImpl,
+  writeFileImpl,
+  renameImpl,
+  rmImpl,
+  statImpl,
+  lstatImpl,
+  randomUUIDImpl,
+  now,
+  platform,
+}) {
+  if (!shouldPingUniqueInstall({ packaged, devUrl })) return snapshot;
+
+  let state = null;
+  try {
+    state = await loadOrCreateUniqueInstallState(uniqueInstallStatePath(userDataDir), {
+      readFileImpl,
+      mkdirImpl,
+      writeFileImpl,
+      renameImpl,
+      rmImpl,
+      statImpl,
+      lstatImpl,
+      randomUUIDImpl,
+      platform,
+    });
+  } catch (error) {
+    if (error?.code !== 'UNIQUE_INSTALL_STATE_UNREADABLE') throw error;
+  }
+
+  try {
+    const read = await readJson(
+      fetchImpl,
+      uniqueInstallsJsonUrl(origin),
+      { method: 'GET', headers: { Accept: 'application/json' } },
+      timeoutMs,
+    );
+    if (read.ok) Object.assign(snapshot, snapshotFromBody(read.body, origin, state?.recorded === true));
+  } catch {
+    // Display is best-effort. Launch must not wait on a healthy counter.
+  }
+
+  if (!state || state.recorded) {
+    snapshot.recorded = state?.recorded === true;
+    return snapshot;
+  }
+
+  try {
+    const posted = await readJson(
+      fetchImpl,
+      uniqueInstallsJsonUrl(origin),
+      {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          installId: state.installId,
+          appVersion,
+          os,
+          arch,
+          proof: createUniqueInstallProof({
+            installId: state.installId,
+            appVersion,
+            os,
+            arch,
+          }),
+        }),
+      },
+      timeoutMs,
+    );
+    if (!posted.ok) return snapshot;
+    const recorded = {
+      installId: state.installId,
+      recorded: true,
+      recordedAt: new Date(now()).toISOString(),
+    };
+    await writeUniqueInstallState(uniqueInstallStatePath(userDataDir), recorded, {
+      mkdirImpl,
+      writeFileImpl,
+      renameImpl,
+      rmImpl,
+      statImpl,
+      lstatImpl,
+      platform,
+    });
+    return snapshotFromBody(posted.body, origin, true);
+  } catch {
+    return snapshot;
+  }
+}

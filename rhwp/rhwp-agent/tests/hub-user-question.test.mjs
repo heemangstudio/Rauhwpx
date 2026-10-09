@@ -1,0 +1,702 @@
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createInterface } from 'node:readline';
+import test from 'node:test';
+import WebSocket from 'ws';
+
+import { ALIVE_PI_FIXTURE_SOURCE, writeFakeCliBin } from './fake-cli-bin.mjs';
+
+const TOKEN = 'hub-user-question-test-token';
+const LAUNCH_ID = 'hub-user-question-test-launch';
+
+function waitForLine(stream, predicate, timeoutMs = 20_000) {
+  return new Promise((resolve, reject) => {
+    const lines = createInterface({ input: stream });
+    const timer = setTimeout(() => {
+      lines.close();
+      reject(new Error('Timed out waiting for process output'));
+    }, timeoutMs);
+    lines.on('line', (line) => {
+      if (!predicate(line)) return;
+      clearTimeout(timer);
+      lines.close();
+      resolve(line);
+    });
+  });
+}
+
+async function waitForPath(filePath, timeoutMs = 20_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!existsSync(filePath)) {
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for path: ${filePath}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+async function registerSession(port, sessionId) {
+  const registration = await fetch(
+    `http://127.0.0.1:${port}/sessions/${encodeURIComponent(sessionId)}`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${TOKEN}`,
+        'X-Rhwp-Launch-Id': LAUNCH_ID,
+      },
+    },
+  );
+  assert.equal(registration.status, 200);
+  return registration.json();
+}
+
+async function openClient(url) {
+  const parsedUrl = new URL(url);
+  const sessionId = parsedUrl.searchParams.get('sessionId');
+  if (sessionId) await registerSession(parsedUrl.port, sessionId);
+  const socket = new WebSocket(url);
+  const buffered = [];
+  const waiters = [];
+  socket.on('message', (data) => {
+    let frame;
+    try { frame = JSON.parse(data.toString()); } catch { return; }
+    const index = waiters.findIndex((waiter) => waiter.predicate(frame));
+    if (index < 0) {
+      buffered.push(frame);
+      return;
+    }
+    const [waiter] = waiters.splice(index, 1);
+    clearTimeout(waiter.timer);
+    waiter.resolve(frame);
+  });
+  await once(socket, 'open');
+  return {
+    socket,
+    next(predicate, timeoutMs = 10_000) {
+      const index = buffered.findIndex(predicate);
+      if (index >= 0) return Promise.resolve(buffered.splice(index, 1)[0]);
+      return new Promise((resolve, reject) => {
+        const timeoutError = new Error('Timed out waiting for websocket frame');
+        const waiter = { predicate, resolve, timer: null };
+        waiter.timer = setTimeout(() => {
+          const current = waiters.indexOf(waiter);
+          if (current >= 0) waiters.splice(current, 1);
+          timeoutError.message += `; buffered=${JSON.stringify(buffered)}`;
+          reject(timeoutError);
+        }, timeoutMs);
+        waiters.push(waiter);
+      });
+    },
+  };
+}
+
+function rejectedUpgrade(url) {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(url);
+    socket.once('unexpected-response', (_request, response) => {
+      response.resume();
+      resolve(response.statusCode);
+    });
+    socket.once('open', () => reject(new Error('WebSocket upgrade unexpectedly succeeded')));
+    socket.once('error', reject);
+  });
+}
+
+function sendFrame(client, frame) {
+  client.socket.send(JSON.stringify({ v: 5, ...frame }));
+}
+
+async function closeClient(client) {
+  if (!client || client.socket.readyState === WebSocket.CLOSED) return;
+  const closed = once(client.socket, 'close');
+  client.socket.close();
+  await closed;
+}
+
+function prepareFakePi(root, fixtureSource = ALIVE_PI_FIXTURE_SOURCE) {
+  const packageDir = path.join(root, 'prefix', 'node_modules', '@earendil-works', 'pi-coding-agent');
+  const binDir = path.join(root, 'prefix', 'node_modules', '.bin');
+  mkdirSync(packageDir, { recursive: true });
+  mkdirSync(binDir, { recursive: true });
+  writeFileSync(path.join(packageDir, 'package.json'), JSON.stringify({ version: '0.0.0-test' }));
+  writeFileSync(path.join(root, 'config.json'), JSON.stringify({
+    version: 1,
+    installedVersion: '0.0.0-test',
+    models: [{
+      id: 'mock-model', name: 'Mock model', reasoning: false, supportsImages: false,
+      efforts: [], defaultEffort: null, contextLength: 8_192,
+      pricing: { prompt: 0, completion: 0 },
+    }],
+    defaultModelId: 'mock-model',
+  }));
+  const agentDir = path.join(root, 'agent');
+  mkdirSync(agentDir, { recursive: true });
+  writeFileSync(path.join(agentDir, 'models.json'), JSON.stringify({
+    providers: { openrouter: { apiKey: 'test-placeholder-key' } },
+  }));
+  writeFakeCliBin(binDir, 'pi', fixtureSource);
+}
+
+async function startHub(t, { fakePi = false, controlledCompletion = false } = {}) {
+  const workRoot = mkdtempSync(path.join(os.tmpdir(), 'rhwp-hub-user-question-'));
+  const piRoot = path.join(workRoot, 'pi');
+  const completePi = path.join(workRoot, 'complete-pi');
+  if (fakePi) prepareFakePi(piRoot, controlledCompletion ? `
+    if (process.argv.includes('--version')) { console.log('0.0.0-test'); process.exit(0); }
+    const timer = setInterval(() => {
+      if (!require('node:fs').existsSync(${JSON.stringify(completePi)})) return;
+      clearInterval(timer);
+      require('node:fs').unlinkSync(${JSON.stringify(completePi)});
+      console.log(JSON.stringify({ type: 'agent_settled' }));
+    }, 20);
+  ` : ALIVE_PI_FIXTURE_SOURCE);
+  const testPath = process.env.PATH;
+  const child = spawn(process.execPath, ['server.mjs'], {
+    cwd: new URL('..', import.meta.url),
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      RHWP_AGENT_PORT: '0',
+      RHWP_AGENT_TOKEN: TOKEN,
+      RHWP_LAUNCH_ID: LAUNCH_ID,
+      RHWP_WORK_DIR: workRoot,
+      RHWP_TEMPLATES_DIR: path.join(workRoot, 'templates'),
+      ...(fakePi ? { RHWP_PI_DIR: piRoot } : {}),
+      PATH: testPath,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stderr = '';
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  t.after(async () => {
+    if (child.exitCode === null) child.kill('SIGTERM');
+    if (child.exitCode === null) await once(child, 'exit');
+    rmSync(workRoot, { recursive: true, force: true });
+  });
+  const readyLine = await waitForLine(child.stdout, (line) => line.startsWith('RHWP_HUB_READY '));
+  const ready = JSON.parse(readyLine.slice('RHWP_HUB_READY '.length));
+  return {
+    port: ready.port,
+    completePi: () => writeFileSync(completePi, ''),
+    stderr: () => stderr,
+  };
+}
+
+function questionArgs() {
+  return {
+    questions: [{
+      id: 'format',
+      header: 'Format',
+      question: 'Which format should I use?',
+      options: [
+        { label: 'Brief', description: 'Keep it compact.' },
+        { label: 'Detailed', description: 'Include supporting detail.' },
+      ],
+    }],
+  };
+}
+
+function implementationPlanArgs() {
+  return {
+    goal: 'Implement the requested mode synchronization',
+    title: 'Mode synchronization plan',
+    summary: 'Keep the provider and UI on the same authoritative phase.',
+    assumptions: [],
+    decisions: ['Use the hub transition as the authority'],
+    steps: [{ title: 'Switch mode', details: 'Apply the confirmed provider mode.' }],
+    files: [],
+    validation: ['Verify the implementation phase event'],
+    risks: [],
+    exclusions: [],
+  };
+}
+
+async function startRunningChat(studio, agent = 'claude') {
+  sendFrame(studio, {
+    type: 'chat-start',
+    agent,
+    threadId: 'thread-question',
+    documentId: 'document-question',
+  });
+  const started = await studio.next((frame) => frame.type === 'chat-started');
+  sendFrame(studio, {
+    type: 'chat-user-message',
+    threadId: started.threadId,
+    documentId: started.documentId,
+    text: 'Wait while a tool asks me one question.',
+  });
+  await studio.next(
+    (frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start',
+  );
+  return started;
+}
+
+test('an explicit unknown workflow is rejected instead of opening Direct mode', { timeout: 40_000 }, async (t) => {
+  const { port } = await startHub(t);
+  const studio = await openClient(`ws://127.0.0.1:${port}/studio?token=${TOKEN}&sessionId=invalid-workflow&instance=page-1`);
+  t.after(() => closeClient(studio));
+  await studio.next((frame) => frame.type === 'welcome');
+
+  sendFrame(studio, {
+    type: 'chat-start',
+    agent: 'claude',
+    workflow: 'surprise-mode',
+    threadId: 'thread-invalid-workflow',
+    documentId: 'document-invalid-workflow',
+  });
+  const error = await studio.next((frame) => frame.type === 'chat-error');
+  assert.equal(error.code, 'INVALID_WORKFLOW');
+  assert.match(error.message, /Unknown workflow: surprise-mode/);
+});
+
+test('plan discussion retains review, revisions check freshness, and execution reports real progress', { timeout: 40_000 }, async (t) => {
+  const { port } = await startHub(t, { fakePi: true });
+  const sessionId = 'typed-plan-approval';
+  const studio = await openClient(`ws://127.0.0.1:${port}/studio?token=${TOKEN}&sessionId=${sessionId}&instance=page-1`);
+  t.after(() => closeClient(studio));
+  await studio.next((frame) => frame.type === 'welcome');
+  sendFrame(studio, {
+    type: 'chat-start',
+    agent: 'pi',
+    workflow: 'plan',
+    threadId: 'thread-typed-plan-approval',
+    documentId: 'document-typed-plan-approval',
+  });
+  const started = await studio.next((frame) => frame.type === 'chat-started');
+  assert.equal(started.workflow, 'plan');
+  assert.equal(started.phase, 'planning');
+
+  sendFrame(studio, {
+    type: 'chat-user-message',
+    threadId: started.threadId,
+    documentId: started.documentId,
+    text: 'Prepare the implementation plan.',
+  });
+  await studio.next(
+    (frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start',
+  );
+
+  const mcp = await openClient(`ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=${sessionId}&agent=pi&role=chat`);
+  t.after(() => closeClient(mcp));
+  sendFrame(mcp, {
+    type: 'tool-call',
+    id: 31,
+    tool: 'present_implementation_plan',
+    args: implementationPlanArgs(),
+    workflow: 'plan',
+    capabilityEpoch: started.capabilityEpoch,
+  });
+  const ready = await studio.next((frame) => frame.type === 'plan-ready');
+  const planResult = await mcp.next((frame) => frame.type === 'tool-result' && frame.id === 31);
+  assert.equal(planResult.ok, true);
+  assert.equal(ready.phase, 'awaiting-approval');
+
+  // A Studio frame cannot forge the internal document-save transition lock
+  // and revise a plan while the provider turn that presented it is active.
+  sendFrame(studio, {
+    type: 'plan-request-changes',
+    planId: ready.planId,
+    feedback: 'This must wait until the current turn settles.',
+    sessionStatusOverride: 'idle',
+  });
+  const busy = await studio.next(
+    (frame) => frame.type === 'chat-error' && frame.code === 'AGENT_BUSY',
+  );
+  assert.match(busy.message, /agent is idle/i);
+
+  sendFrame(studio, { type: 'chat-interrupt' });
+  await studio.next(
+    (frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end',
+  );
+
+  sendFrame(studio, {
+    type: 'chat-user-message', threadId: started.threadId, documentId: started.documentId,
+    text: 'Why did you choose this approach?',
+  });
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
+  const discussion = await openClient(`ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=${sessionId}&agent=pi&role=chat`);
+  t.after(() => closeClient(discussion));
+  sendFrame(discussion, { type: 'tool-call', id: 32, tool: 'get_structure', args: {}, workflow: 'plan', capabilityEpoch: ready.capabilityEpoch });
+  const read = await studio.next((frame) => frame.type === 'tool-request' && frame.tool === 'get_structure');
+  assert.equal(read.phase, 'awaiting-approval', 'ordinary discussion must preserve the reviewable plan');
+  sendFrame(studio, { type: 'tool-response', id: read.id, ok: true, result: { revision: 4, paragraphs: [] } });
+  assert.equal((await discussion.next((frame) => frame.type === 'tool-result' && frame.id === 32)).ok, true);
+  sendFrame(discussion, { type: 'tool-call', id: 33, tool: 'present_implementation_plan', args: {
+    ...implementationPlanArgs(), changeSummary: 'Clarified the document target.',
+    sources: [{ title: 'Attached research', fileId: 'reference-1', chunkId: 'chunk-2' }],
+  }, workflow: 'plan', capabilityEpoch: ready.capabilityEpoch });
+  const revised = await studio.next((frame) => frame.type === 'plan-ready' && frame.planId !== ready.planId);
+  assert.equal(revised.plan.revision, 2);
+  assert.equal(revised.plan.previousPlanId, ready.planId);
+  assert.equal(revised.plan.documentRevision, 4);
+  assert.equal(revised.plan.sources[0].chunkId, 'chunk-2');
+  assert.equal((await discussion.next((frame) => frame.type === 'tool-result' && frame.id === 33)).ok, true);
+  sendFrame(studio, { type: 'chat-interrupt' });
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
+  sendFrame(studio, { type: 'plan-approve', planId: revised.planId, documentRevision: 5 });
+  await studio.next((frame) => frame.type === 'chat-error' && frame.code === 'STALE_PLAN_DOCUMENT');
+
+  sendFrame(studio, {
+    type: 'chat-user-message',
+    threadId: started.threadId,
+    documentId: started.documentId,
+    text: 'implement the plan',
+    documentRevision: 4,
+  });
+  const approved = await studio.next((frame) => frame.type === 'plan-approved');
+  const implementing = await studio.next((frame) => frame.type === 'implementation-started');
+  assert.equal(approved.planId, revised.planId);
+  assert.equal(approved.phase, 'switching');
+  assert.equal(implementing.planId, revised.planId);
+  assert.equal(implementing.phase, 'implementing');
+  assert.equal(implementing.latestPlan.execution.steps[0].status, 'pending');
+  const turn = await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
+  const executor = await openClient(`ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=${sessionId}&agent=pi&role=chat`);
+  t.after(() => closeClient(executor));
+  sendFrame(executor, { type: 'tool-call', id: 34, tool: 'update_todos', args: {
+    planId: revised.planId, todos: [{ id: 'step-1', content: 'Check the target paragraph', status: 'in-progress', note: 'Checking the target paragraph.' }],
+  }, workflow: 'plan', capabilityEpoch: implementing.capabilityEpoch });
+  const progress = await studio.next((frame) => frame.type === 'plan-progress' && frame.latestPlan?.execution?.steps[0]?.status === 'in-progress');
+  assert.equal(progress.latestPlan.execution.status, 'running');
+  assert.equal((await executor.next((frame) => frame.type === 'tool-result' && frame.id === 34)).ok, true);
+  sendFrame(studio, { type: 'chat-interrupt' });
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
+  await studio.next((frame) => frame.type === 'plan-progress' && frame.latestPlan?.execution?.status === 'interrupted');
+  sendFrame(studio, { type: 'chat-plan-execution-result', planId: revised.planId, turnId: turn.event.turnId, status: 'completed' });
+  await studio.next((frame) => frame.type === 'chat-error' && frame.code === 'PLAN_EXECUTION_FAILED');
+});
+
+test('reconnect restores plan progress and prior review rejection survives a queued follow-up', { timeout: 40_000 }, async (t) => {
+  const { port, completePi } = await startHub(t, { fakePi: true, controlledCompletion: true });
+  const studioUrl = `ws://127.0.0.1:${port}/studio?token=${TOKEN}&sessionId=plan-reconnect&instance=plan-page`;
+  const mcpUrl = `ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=plan-reconnect&agent=pi&role=chat`;
+  const studio = await openClient(studioUrl);
+  await studio.next((frame) => frame.type === 'welcome');
+  sendFrame(studio, { type: 'chat-start', agent: 'pi', workflow: 'plan', threadId: 'plan-thread', documentId: 'plan-doc' });
+  const started = await studio.next((frame) => frame.type === 'chat-started');
+  sendFrame(studio, { type: 'chat-user-message', text: 'Draft the plan.', threadId: 'plan-thread', documentId: 'plan-doc' });
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
+  const planner = await openClient(mcpUrl);
+  t.after(() => closeClient(planner));
+  sendFrame(planner, { type: 'tool-call', id: 1, tool: 'present_implementation_plan', args: implementationPlanArgs(),
+    workflow: 'plan', capabilityEpoch: started.capabilityEpoch });
+  const ready = await studio.next((frame) => frame.type === 'plan-ready');
+  await planner.next((frame) => frame.type === 'tool-result' && frame.id === 1);
+  sendFrame(studio, { type: 'chat-interrupt' });
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
+  // 승인 시 고른 실행 권한: 잘못된 값은 승인 자체를 거절하고, 올바른 값은 구현 전환 전에 적용된다.
+  sendFrame(studio, { type: 'plan-approve', planId: ready.planId, permissionProfile: 'everything' });
+  await studio.next((frame) => frame.type === 'chat-error' && frame.code === 'INVALID_PERMISSION_PROFILE');
+  sendFrame(studio, { type: 'chat-plan-approve', planId: ready.planId, permissionProfile: 'unrestricted' });
+  const approvalFrames = [];
+  do {
+    approvalFrames.push(await studio.next((frame) => ['plan-approved', 'chat-permission-changed', 'implementation-started'].includes(frame.type)));
+  } while (approvalFrames.at(-1).type !== 'implementation-started');
+  assert.deepEqual(approvalFrames.map((frame) => frame.type), ['plan-approved', 'chat-permission-changed', 'implementation-started']);
+  assert.equal(approvalFrames[1].permissionProfile, 'unrestricted');
+  const implementing = approvalFrames[2];
+  await studio.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
+  const executor = await openClient(mcpUrl);
+  t.after(() => closeClient(executor));
+  await closeClient(studio);
+  sendFrame(executor, { type: 'tool-call', id: 2, tool: 'update_todos',
+    args: { planId: ready.planId, todos: [{ id: 'step-1', content: 'Replace the paragraph', status: 'completed' }] },
+    workflow: 'plan', capabilityEpoch: implementing.capabilityEpoch });
+  assert.equal((await executor.next((frame) => frame.type === 'tool-result' && frame.id === 2)).ok, true);
+  const settled = once(executor.socket, 'close');
+  completePi();
+  await settled;
+
+  const reconnected = await openClient(studioUrl);
+  t.after(() => closeClient(reconnected));
+  const frames = [];
+  do { frames.push(await reconnected.next(() => true)); } while (frames.at(-1).type !== 'welcome');
+  const progressIndex = frames.findIndex((frame) => frame.type === 'plan-progress');
+  const endIndex = frames.findIndex((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
+  assert.ok(progressIndex >= 0 && endIndex > progressIndex, 'authoritative progress must precede terminal replay');
+  assert.equal(frames[progressIndex].latestPlan.execution.status, 'awaiting-review');
+  assert.equal(frames[progressIndex].latestPlan.execution.steps[0].status, 'completed');
+  assert.equal(frames[endIndex].event.stopReason, 'completed');
+  const reviewedTurnId = frames[endIndex].event.turnId;
+  sendFrame(reconnected, { type: 'chat-plan-execution-result', planId: ready.planId,
+    turnId: reviewedTurnId, status: 'awaiting-review' });
+  await reconnected.next((frame) => frame.type === 'plan-progress' && frame.latestPlan.execution.status === 'awaiting-review');
+
+  // Studio's editing lease remains idle until turn-start. A user can reject
+  // the previous turn's edits just after dispatching this follow-up message.
+  sendFrame(reconnected, { type: 'chat-user-message', text: 'Explain the changes.', threadId: 'plan-thread', documentId: 'plan-doc' });
+  sendFrame(reconnected, { type: 'chat-plan-execution-result', planId: ready.planId,
+    turnId: reviewedTurnId, status: 'blocked' });
+  const blocked = await reconnected.next((frame) => frame.type === 'plan-progress' && frame.latestPlan.execution.status === 'blocked');
+  assert.equal(blocked.latestPlan.execution.steps[0].status, 'pending');
+  const followup = await reconnected.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-start');
+  completePi();
+  await reconnected.next((frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end');
+  const followupResult = await reconnected.next((frame) => frame.type === 'plan-progress' && frame.latestPlan.execution.status === 'blocked');
+  assert.equal(followupResult.latestPlan.execution.steps[0].status, 'pending', 'discussion cannot restore rolled-back work');
+  sendFrame(reconnected, { type: 'chat-plan-execution-result', planId: ready.planId,
+    turnId: followup.event.turnId, status: 'completed' });
+  await reconnected.next((frame) => frame.type === 'chat-error' && frame.code === 'PLAN_EXECUTION_FAILED');
+});
+
+test('direct MCP questions survive Studio reload and settle atomically', { timeout: 40_000 }, async (t) => {
+  const { port, stderr } = await startHub(t, { fakePi: true });
+  const studioUrl = `ws://127.0.0.1:${port}/studio?token=${TOKEN}&sessionId=question-session`;
+  const studio = await openClient(`${studioUrl}&instance=page-1`);
+  await studio.next((frame) => frame.type === 'welcome');
+  await startRunningChat(studio, 'pi');
+
+  const mcp = await openClient(`ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=question-session&agent=pi&role=chat`);
+  t.after(() => closeClient(mcp));
+  sendFrame(mcp, {
+    type: 'tool-call', id: 17, tool: 'ask_user_question', args: questionArgs(), workflow: 'direct',
+  });
+  const requested = await studio.next((frame) => frame.type === 'user-question-requested');
+  assert.equal(requested.interaction.source, 'mcp');
+  assert.equal(requested.interaction.questions[0].options[1].id, 'option-2');
+
+  const busyMcp = await openClient(`ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=question-session&agent=pi&role=chat`);
+  t.after(() => closeClient(busyMcp));
+  sendFrame(busyMcp, {
+    type: 'tool-call', id: 18, tool: 'ask_user_question', args: {
+      questions: [{
+        id: 'tone', header: 'Tone', question: 'Which tone?',
+        options: [
+          { label: 'Neutral', description: 'Use a neutral tone.' },
+          { label: 'Warm', description: 'Use a warm tone.' },
+        ],
+      }],
+    }, workflow: 'direct',
+  });
+  const busy = await busyMcp.next((frame) => frame.type === 'tool-result' && frame.id === 18);
+  assert.equal(busy.ok, false);
+  assert.equal(busy.error.code, 'INTERACTION_ALREADY_PENDING');
+
+  await closeClient(studio);
+  const reloaded = await openClient(`${studioUrl}&instance=page-2`);
+  t.after(() => closeClient(reloaded));
+  const welcome = await reloaded.next((frame) => frame.type === 'welcome');
+  assert.equal(welcome.session.pendingUserQuestion.interactionId, requested.interaction.interactionId);
+  const replay = await reloaded.next((frame) => frame.type === 'user-question-requested');
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.interaction.interactionId, requested.interaction.interactionId);
+
+  sendFrame(reloaded, {
+    type: 'user-question-answer',
+    interactionId: requested.interaction.interactionId,
+    responseId: 'response-invalid',
+    answers: { format: { selectedOptionIds: ['unknown'] } },
+  });
+  const invalid = await reloaded.next((frame) => frame.type === 'user-question-answer-result' && frame.responseId === 'response-invalid');
+  assert.equal(invalid.ok, false);
+  assert.equal(invalid.code, 'INVALID_USER_QUESTION_ANSWER');
+
+  const answer = {
+    type: 'user-question-answer',
+    interactionId: requested.interaction.interactionId,
+    responseId: 'response-valid',
+    answers: { format: { selectedOptionIds: ['option-2'] } },
+  };
+  sendFrame(reloaded, answer);
+  const acknowledged = await reloaded.next((frame) => frame.type === 'user-question-answer-result' && frame.responseId === 'response-valid');
+  const resolved = await reloaded.next((frame) => frame.type === 'user-question-resolved');
+  const toolResult = await mcp.next((frame) => frame.type === 'tool-result' && frame.id === 17);
+  assert.equal(acknowledged.ok, true);
+  assert.deepEqual(resolved.outcome, {
+    status: 'answered',
+    answers: { format: { selectedOptionIds: ['option-2'] } },
+  });
+  assert.deepEqual(toolResult, {
+    v: 5,
+    type: 'tool-result',
+    id: 17,
+    ok: true,
+    result: {
+      status: 'answered',
+      answers: { format: { selected: ['Detailed'] } },
+    },
+  });
+
+  sendFrame(reloaded, answer);
+  const replayedReceipt = await reloaded.next((frame) => frame.type === 'user-question-answer-result' && frame.responseId === 'response-valid');
+  assert.deepEqual(replayedReceipt, acknowledged);
+  assert.doesNotMatch(stderr(), /response-valid|option-2/);
+});
+
+test('provider MCP writes are bound to one exact running turn', { timeout: 40_000 }, async (t) => {
+  const { port, stderr } = await startHub(t, { fakePi: true });
+  const sessionId = 'mcp-turn-ownership';
+  const studio = await openClient(
+    `ws://127.0.0.1:${port}/studio?token=${TOKEN}&sessionId=${sessionId}&instance=page-1`,
+  );
+  t.after(() => closeClient(studio));
+  await studio.next((frame) => frame.type === 'welcome');
+  const started = await startRunningChat(studio, 'pi');
+  const mcp = await openClient(
+    `ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=${sessionId}&agent=pi&role=chat`,
+  );
+  t.after(() => closeClient(mcp));
+  const writeArgs = {
+    expectedRevision: 0,
+    sectionIdx: 0,
+    paraIdx: 0,
+    charOffset: 0,
+    text: 'must stay inside the owning turn',
+  };
+
+  sendFrame(mcp, {
+    type: 'tool-call', id: 61, tool: 'insert_text', args: writeArgs,
+    workflow: 'direct', capabilityEpoch: started.capabilityEpoch,
+  });
+  const forwarded = await studio.next(
+    (frame) => frame.type === 'tool-request' && frame.tool === 'insert_text',
+  );
+  assert.equal(forwarded.turnBound, true);
+  assert.equal(typeof forwarded.providerTurnId, 'string');
+  const mcpClosed = once(mcp.socket, 'close');
+  sendFrame(studio, { type: 'chat-interrupt' });
+  const cancelled = await studio.next(
+    (frame) => frame.type === 'tool-request-cancel' && frame.id === forwarded.id,
+  );
+  assert.equal(cancelled.providerTurnId, forwarded.providerTurnId);
+  const invalidated = await mcp.next(
+    (frame) => frame.type === 'tool-result' && frame.id === 61,
+  );
+  assert.equal(invalidated.ok, false, stderr());
+  assert.equal(invalidated.error.code, 'NO_ACTIVE_TURN');
+  const [closeCode] = await mcpClosed;
+  assert.equal(closeCode, 4003, 'the settled turn permanently retires its MCP socket');
+
+  // A late Studio response cannot be rebound to the settled or a future turn.
+  sendFrame(studio, {
+    type: 'tool-response', id: forwarded.id, ok: true, result: { revision: 1 },
+  });
+  await assert.rejects(
+    mcp.next((frame) => frame.type === 'tool-result' && frame.id === 61, 300),
+    /Timed out waiting for websocket frame/,
+  );
+
+  const idleMcp = await openClient(
+    `ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=${sessionId}&agent=pi&role=chat`,
+  );
+  const [idleCloseCode] = await once(idleMcp.socket, 'close');
+  assert.equal(idleCloseCode, 4003, 'a socket opened between turns is never eligible later');
+  await assert.rejects(
+    studio.next((frame) => frame.type === 'tool-request' && frame.tool === 'insert_text', 300),
+    /Timed out waiting for websocket frame/,
+  );
+});
+
+test('URL provider and parent-task spoofing cannot bypass root question correlation', { timeout: 40_000 }, async (t) => {
+  const { port } = await startHub(t, { fakePi: true });
+  const studio = await openClient(`ws://127.0.0.1:${port}/studio?token=${TOKEN}&sessionId=question-loss&instance=page-1`);
+  t.after(() => closeClient(studio));
+  await studio.next((frame) => frame.type === 'welcome');
+  await startRunningChat(studio, 'pi');
+
+  const subagent = await openClient(`ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=question-loss&agent=pi&role=chat`);
+  sendFrame(subagent, {
+    type: 'tool-call', id: 20, tool: 'ask_user_question', args: questionArgs(),
+    workflow: 'direct', parentTaskId: 'child-task',
+  });
+  const rejected = await subagent.next((frame) => frame.type === 'tool-result' && frame.id === 20);
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.error.code, 'ROOT_INTERACTION_REQUIRED');
+  await closeClient(subagent);
+
+  assert.equal(
+    await rejectedUpgrade(`ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=question-loss&agent=codex&role=chat`),
+    401,
+  );
+});
+
+test('a legitimate Pi root question expires on disconnect or a missing Studio', { timeout: 40_000 }, async (t) => {
+  const { port } = await startHub(t, { fakePi: true });
+  const sessionId = 'question-pi-disconnect';
+  const studio = await openClient(`ws://127.0.0.1:${port}/studio?token=${TOKEN}&sessionId=${sessionId}&instance=page-1`);
+  await studio.next((frame) => frame.type === 'welcome');
+  await startRunningChat(studio, 'pi');
+  const registration = await registerSession(port, sessionId);
+
+  const mcp = await openClient(`ws://127.0.0.1:${port}/mcp?token=${registration.capabilities.mcp}&sessionId=${sessionId}&agent=pi&role=chat`);
+  sendFrame(mcp, {
+    type: 'tool-call', id: 22, tool: 'ask_user_question', args: questionArgs(), workflow: 'direct',
+  });
+  const requested = await studio.next((frame) => frame.type === 'user-question-requested');
+  await closeClient(mcp);
+  const resolved = await studio.next((frame) => (
+    frame.type === 'user-question-resolved'
+      && frame.interactionId === requested.interaction.interactionId
+  ));
+  assert.deepEqual(resolved.outcome, { status: 'expired', reason: 'provider-disconnected' });
+
+  await closeClient(studio);
+  const disconnected = await openClient(`ws://127.0.0.1:${port}/mcp?token=${registration.capabilities.mcp}&sessionId=${sessionId}&agent=pi&role=chat`);
+  t.after(() => closeClient(disconnected));
+  sendFrame(disconnected, {
+    type: 'tool-call', id: 23, tool: 'ask_user_question', args: questionArgs(), workflow: 'direct',
+  });
+  const unavailable = await disconnected.next((frame) => frame.type === 'tool-result' && frame.id === 23);
+  assert.equal(unavailable.ok, false);
+  assert.equal(unavailable.error.code, 'NO_STUDIO');
+});
+
+for (const stopType of ['chat-interrupt', 'chat-stop']) {
+  test(`${stopType} cancels an active question`, { timeout: 40_000 }, async (t) => {
+    const { port } = await startHub(t, { fakePi: true });
+    const sessionId = `question-${stopType}`;
+    const studio = await openClient(`ws://127.0.0.1:${port}/studio?token=${TOKEN}&sessionId=${sessionId}&instance=page-1`);
+    t.after(() => closeClient(studio));
+    await studio.next((frame) => frame.type === 'welcome');
+    await startRunningChat(studio, 'pi');
+
+    const mcp = await openClient(`ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=${sessionId}&agent=pi&role=chat`);
+    t.after(() => closeClient(mcp));
+    sendFrame(mcp, {
+      type: 'tool-call', id: 31, tool: 'ask_user_question', args: questionArgs(), workflow: 'direct',
+    });
+    const requested = await studio.next((frame) => frame.type === 'user-question-requested');
+    sendFrame(studio, { type: stopType });
+
+    const resolved = await studio.next((frame) => (
+      frame.type === 'user-question-resolved'
+        && frame.interactionId === requested.interaction.interactionId
+    ));
+    const toolResult = await mcp.next((frame) => frame.type === 'tool-result' && frame.id === 31);
+    assert.deepEqual(resolved.outcome, { status: 'cancelled', reason: 'user-stop' });
+    assert.equal(toolResult.ok, false);
+    assert.equal(toolResult.error.code, 'USER_QUESTION_CANCELLED');
+  });
+}
+
+test('hub shutdown expires an active question before closing transports', { timeout: 40_000 }, async (t) => {
+  const { port } = await startHub(t, { fakePi: true });
+  const sessionId = 'question-hub-shutdown';
+  const studio = await openClient(`ws://127.0.0.1:${port}/studio?token=${TOKEN}&sessionId=${sessionId}&instance=page-1`);
+  await studio.next((frame) => frame.type === 'welcome');
+  await startRunningChat(studio, 'pi');
+
+  const mcp = await openClient(`ws://127.0.0.1:${port}/mcp?token=${TOKEN}&sessionId=${sessionId}&agent=pi&role=chat`);
+  sendFrame(mcp, {
+    type: 'tool-call', id: 41, tool: 'ask_user_question', args: questionArgs(), workflow: 'direct',
+  });
+  const requested = await studio.next((frame) => frame.type === 'user-question-requested');
+  const response = await fetch(`http://127.0.0.1:${port}/shutdown`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${TOKEN}`,
+      'x-rhwp-launch-id': 'hub-user-question-test-launch',
+    },
+  });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).status, 'prepared');
+
+  const resolved = await studio.next((frame) => (
+    frame.type === 'user-question-resolved'
+      && frame.interactionId === requested.interaction.interactionId
+  ));
+  assert.deepEqual(resolved.outcome, { status: 'expired', reason: 'hub-restarted' });
+  await Promise.allSettled([closeClient(studio), closeClient(mcp)]);
+});

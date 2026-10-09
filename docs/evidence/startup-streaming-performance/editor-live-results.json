@@ -1,0 +1,8 @@
+{
+  "runtime": "Studio http://127.0.0.1:7700",
+  "scenario": "Open File menu, create document, type using native keyboard events, undo, redo",
+  "typed": "Performance check",
+  "undo": "",
+  "redo": "Performance check",
+  "errors": []
+}

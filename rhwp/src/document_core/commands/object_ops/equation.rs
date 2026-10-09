@@ -1,0 +1,1648 @@
+//! 수식 native 명령 (object_ops 분할, #1904).
+
+use super::MIN_SHAPE_SIZE;
+use crate::document_core::helpers::{get_textbox_from_shape, get_textbox_from_shape_mut};
+use crate::document_core::DocumentCore;
+use crate::error::HwpError;
+use crate::model::control::Control;
+use crate::model::event::DocumentEvent;
+use crate::model::paragraph::Paragraph;
+use crate::model::shape::{common_obj_offsets, ShapeObject};
+
+/// [#7105] 수식 편집 명령이 대상이 수식이 아닐 때 낼 오류.
+///
+/// 한/글 5.x·97 계열이 `hwpeq5X.ocx` 로 저장한 수식은 native `$eqed` 컨트롤이 아니라
+/// **OLE 개체**(`Control::Shape(ShapeObject::Ole)`)다. 스크립트는 `Contents` 에서 읽을 수
+/// 있지만 되쓰는 경로가 없다 — 편집분은 native 수식으로 옮긴 뒤에만 고친다.
+fn not_an_equation_error(ctrl: &Control) -> HwpError {
+    if let Control::Shape(shape) = ctrl {
+        if matches!(shape.as_ref(), ShapeObject::Ole(_)) {
+            return HwpError::RenderError(
+                "지정된 컨트롤은 OLE 개체입니다 — 한/글 5.x·97 계열이 저장한 수식을 포함해 \
+                 OLE 개체는 먼저 native 수식으로 변환해야 내용을 편집할 수 있습니다(#7105). \
+                 개체 삭제·이동은 도형 명령(delete-control · delete-shape)을 쓰십시오."
+                    .to_string(),
+            );
+        }
+    }
+    HwpError::RenderError("지정된 컨트롤이 수식이 아닙니다".to_string())
+}
+
+impl DocumentCore {
+    /// 레거시 `hwpeq5X` OLE 수식을 native equation으로 승격한다.
+    ///
+    /// 같은 문단·컨트롤 슬롯에서 `Control::Shape(Ole)` 를 `Control::Equation` 으로
+    /// 교체한다. 인라인 문자 위치와 뒤 컨트롤 인덱스는 변하지 않는다.
+    pub fn promote_ole_equation_native(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+    ) -> Result<String, HwpError> {
+        use crate::model::control::Equation;
+        use crate::parser::tags::CTRL_EQUATION;
+
+        let (mut common, bin_data_id) = {
+            let section = self.document.sections.get(section_idx).ok_or_else(|| {
+                HwpError::RenderError(format!("구역 인덱스 {} 범위 초과", section_idx))
+            })?;
+            let paragraph = section.paragraphs.get(parent_para_idx).ok_or_else(|| {
+                HwpError::RenderError(format!("문단 인덱스 {} 범위 초과", parent_para_idx))
+            })?;
+            let control = paragraph.controls.get(control_idx).ok_or_else(|| {
+                HwpError::RenderError(format!("컨트롤 인덱스 {} 범위 초과", control_idx))
+            })?;
+            let Control::Shape(shape) = control else {
+                return Err(HwpError::RenderError(
+                    "지정된 컨트롤이 OLE 수식이 아닙니다".to_string(),
+                ));
+            };
+            let ShapeObject::Ole(ole) = shape.as_ref() else {
+                return Err(HwpError::RenderError(
+                    "지정된 컨트롤이 OLE 수식이 아닙니다".to_string(),
+                ));
+            };
+            (ole.common.clone(), ole.bin_data_id)
+        };
+
+        let ole_bytes = crate::renderer::layout::find_bin_data(
+            &self.document.bin_data_content,
+            u16::try_from(bin_data_id).map_err(|_| {
+                HwpError::RenderError("OLE BinData 참조가 허용 범위를 벗어났습니다".to_string())
+            })?,
+        )
+        .and_then(|content| {
+            content
+                .data
+                .load_limited(crate::parser::limits::MAX_BINARY_BYTES)
+        })
+        .ok_or_else(|| HwpError::RenderError("OLE 수식 BinData를 읽을 수 없습니다".to_string()))?;
+        let legacy_script = crate::parser::ole_container::parse_ole_container(&ole_bytes)
+            .and_then(|container| container.raw_contents)
+            .and_then(|contents| {
+                crate::parser::ole_container::parse_equation_contents_script(&contents)
+            })
+            .ok_or_else(|| {
+                HwpError::RenderError(
+                    "지정된 OLE 개체는 편집 가능한 한/글 수식이 아닙니다".to_string(),
+                )
+            })?;
+        let script = if crate::renderer::equation::legacy_hwpeq::has_tab_command(&legacy_script) {
+            crate::renderer::equation::legacy_hwpeq::normalize(&legacy_script).ok_or_else(|| {
+                HwpError::RenderError(
+                    "레거시 수식 스크립트를 현행 문법으로 변환할 수 없습니다".to_string(),
+                )
+            })?
+        } else {
+            legacy_script
+        };
+
+        let (_, base_height) = crate::renderer::equation::intrinsic_size_hwp(&script, 1000);
+        let font_size = if base_height > 0 && common.height > 0 {
+            ((u64::from(common.height) * 1000) / u64::from(base_height)).clamp(200, 40_000) as u32
+        } else {
+            1000
+        };
+        let (_, natural_height, natural_baseline) =
+            crate::renderer::equation::intrinsic_metrics_hwp_with_font(
+                &script, font_size, "HYhwpEQ",
+            );
+        let baseline = ((natural_baseline as f64 / natural_height.max(1) as f64) * 100.0)
+            .round()
+            .clamp(1.0, 100.0) as i16;
+        common.ctrl_id = CTRL_EQUATION;
+        if common.description.is_empty() {
+            common.description = "레거시 OLE 수식에서 변환한 수식입니다.".to_string();
+        }
+        let equation = Equation {
+            common,
+            script: script.clone(),
+            font_size,
+            color: 0,
+            baseline,
+            version_info: "Equation Version 60".to_string(),
+            font_name: "HYhwpEQ".to_string(),
+            ..Default::default()
+        };
+
+        let section = &mut self.document.sections[section_idx];
+        let paragraph = &mut section.paragraphs[parent_para_idx];
+        while paragraph.ctrl_data_records.len() < paragraph.controls.len() {
+            paragraph.ctrl_data_records.push(None);
+        }
+        paragraph.controls[control_idx] = Control::Equation(Box::new(equation));
+        if control_idx < paragraph.ctrl_data_records.len() {
+            paragraph.ctrl_data_records[control_idx] = None;
+        }
+        section.raw_stream = None;
+        // 이벤트를 쌓지 않으므로 스냅샷 복원이 바뀐 문단을 재사용하지 않게 표시한다.
+        self.event_log
+            .mark_paragraph_changed(section_idx, parent_para_idx);
+        self.reflow_paragraph(section_idx, parent_para_idx);
+        self.recompose_section(section_idx);
+        self.paginate_if_needed();
+        self.invalidate_page_tree_cache();
+
+        Ok(format!(
+            "{{\"ok\":true,\"paraIdx\":{},\"controlIdx\":{},\"script\":\"{}\"}}",
+            parent_para_idx,
+            control_idx,
+            crate::document_core::helpers::json_escape(&script),
+        ))
+    }
+
+    fn equation_ref_by_path(
+        &self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        path: &[(usize, usize, usize)],
+        inner_control_idx: usize,
+    ) -> Result<&crate::model::control::Equation, HwpError> {
+        match self
+            .resolve_paragraph_by_path(section_idx, parent_para_idx, path)?
+            .controls
+            .get(inner_control_idx)
+        {
+            Some(Control::Equation(eq)) => Ok(eq),
+            Some(_) => Err(HwpError::RenderError(
+                "지정된 컨트롤이 수식이 아닙니다".to_string(),
+            )),
+            None => Err(HwpError::RenderError(format!(
+                "셀 컨트롤 인덱스 {} 범위 초과",
+                inner_control_idx
+            ))),
+        }
+    }
+
+    fn equation_mut_by_path(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        path: &[(usize, usize, usize)],
+        inner_control_idx: usize,
+    ) -> Result<&mut crate::model::control::Equation, HwpError> {
+        let section = self.document.sections.get_mut(section_idx).ok_or_else(|| {
+            HwpError::RenderError(format!("구역 인덱스 {} 범위 초과", section_idx))
+        })?;
+        match Self::resolve_cell_paragraph_mut(section, parent_para_idx, path)?
+            .controls
+            .get_mut(inner_control_idx)
+        {
+            Some(Control::Equation(eq)) => Ok(eq),
+            Some(_) => Err(HwpError::RenderError(
+                "지정된 컨트롤이 수식이 아닙니다".to_string(),
+            )),
+            None => Err(HwpError::RenderError(format!(
+                "셀 컨트롤 인덱스 {} 범위 초과",
+                inner_control_idx
+            ))),
+        }
+    }
+
+    fn finish_equation_edit_by_path(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        path: &[(usize, usize, usize)],
+    ) {
+        let cell_para_idx = path.last().expect("validated cell path").2;
+        self.reflow_cell_paragraph_by_path(section_idx, parent_para_idx, path, cell_para_idx);
+        self.recalculate_cell_paragraph_vpos_by_path(
+            section_idx,
+            parent_para_idx,
+            path,
+            cell_para_idx,
+            None,
+        );
+        let outer_control_idx = path[0].0;
+        self.mark_cell_control_dirty(section_idx, parent_para_idx, outer_control_idx);
+        self.document.sections[section_idx].raw_stream = None;
+        self.mark_section_dirty(section_idx);
+        self.paginate_if_needed();
+        self.event_log.push(DocumentEvent::CellTextChanged {
+            section: section_idx,
+            para: parent_para_idx,
+            ctrl: outer_control_idx,
+            cell: path[0].1,
+        });
+    }
+
+    pub fn get_equation_properties_by_path_native(
+        &self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        cell_path_json: &str,
+        inner_control_idx: usize,
+    ) -> Result<String, HwpError> {
+        let path = Self::parse_cell_path_json(cell_path_json)?;
+        Ok(Self::equation_properties_json(self.equation_ref_by_path(
+            section_idx,
+            parent_para_idx,
+            &path,
+            inner_control_idx,
+        )?))
+    }
+
+    pub fn set_equation_properties_by_path_native(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        cell_path_json: &str,
+        inner_control_idx: usize,
+        props_json: &str,
+    ) -> Result<String, HwpError> {
+        let path = Self::parse_cell_path_json(cell_path_json)?;
+        let dpi = self.dpi;
+        Self::apply_equation_properties(
+            self.equation_mut_by_path(section_idx, parent_para_idx, &path, inner_control_idx)?,
+            dpi,
+            props_json,
+        );
+        self.finish_equation_edit_by_path(section_idx, parent_para_idx, &path);
+        Ok(crate::document_core::helpers::json_ok())
+    }
+
+    /// 수식 컨트롤의 속성을 조회한다 (네이티브).
+    /// 표 셀 내 또는 본문의 수식 컨트롤을 찾아 불변 참조를 반환한다.
+    fn find_equation_ref(
+        &self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+        cell_idx: Option<usize>,
+        cell_para_idx: Option<usize>,
+        inner_control_idx: Option<usize>,
+    ) -> Result<&crate::model::control::Equation, HwpError> {
+        let section = self.document.sections.get(section_idx).ok_or_else(|| {
+            HwpError::RenderError(format!("구역 인덱스 {} 범위 초과", section_idx))
+        })?;
+
+        let ctrl = if let (Some(ci), Some(cpi)) = (cell_idx, cell_para_idx) {
+            // 표 셀 내 수식
+            let para = section.paragraphs.get(parent_para_idx).ok_or_else(|| {
+                HwpError::RenderError(format!("문단 인덱스 {} 범위 초과", parent_para_idx))
+            })?;
+            let table = match para.controls.get(control_idx) {
+                Some(Control::Table(t)) => t,
+                _ => {
+                    return Err(HwpError::RenderError(
+                        "지정된 컨트롤이 표가 아닙니다".to_string(),
+                    ))
+                }
+            };
+            let cell = table
+                .cells
+                .get(ci)
+                .ok_or_else(|| HwpError::RenderError(format!("셀 인덱스 {} 범위 초과", ci)))?;
+            let cell_para = cell.paragraphs.get(cpi).ok_or_else(|| {
+                HwpError::RenderError(format!("셀 문단 인덱스 {} 범위 초과", cpi))
+            })?;
+            if let Some(inner_idx) = inner_control_idx {
+                cell_para.controls.get(inner_idx).ok_or_else(|| {
+                    HwpError::RenderError(format!("셀 컨트롤 인덱스 {} 범위 초과", inner_idx))
+                })?
+            } else {
+                cell_para
+                    .controls
+                    .iter()
+                    .find(|c| matches!(c, Control::Equation(_)))
+                    .ok_or_else(|| {
+                        HwpError::RenderError("셀 문단에 수식 컨트롤이 없습니다".to_string())
+                    })?
+            }
+        } else {
+            // 본문 수식
+            let para = section.paragraphs.get(parent_para_idx).ok_or_else(|| {
+                HwpError::RenderError(format!("문단 인덱스 {} 범위 초과", parent_para_idx))
+            })?;
+            para.controls.get(control_idx).ok_or_else(|| {
+                HwpError::RenderError(format!("컨트롤 인덱스 {} 범위 초과", control_idx))
+            })?
+        };
+
+        match ctrl {
+            Control::Equation(e) => Ok(e),
+            other => Err(not_an_equation_error(other)),
+        }
+    }
+    /// 표 셀 내 또는 본문의 수식 컨트롤을 찾아 가변 참조를 반환한다.
+    fn find_equation_mut(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+        cell_idx: Option<usize>,
+        cell_para_idx: Option<usize>,
+        inner_control_idx: Option<usize>,
+    ) -> Result<&mut crate::model::control::Equation, HwpError> {
+        let section = self.document.sections.get_mut(section_idx).ok_or_else(|| {
+            HwpError::RenderError(format!("구역 인덱스 {} 범위 초과", section_idx))
+        })?;
+
+        let ctrl = if let (Some(ci), Some(cpi)) = (cell_idx, cell_para_idx) {
+            // 표 셀 내 수식
+            let para = section.paragraphs.get_mut(parent_para_idx).ok_or_else(|| {
+                HwpError::RenderError(format!("문단 인덱스 {} 범위 초과", parent_para_idx))
+            })?;
+            let table = match para.controls.get_mut(control_idx) {
+                Some(Control::Table(t)) => t,
+                _ => {
+                    return Err(HwpError::RenderError(
+                        "지정된 컨트롤이 표가 아닙니다".to_string(),
+                    ))
+                }
+            };
+            let cell = table
+                .cells
+                .get_mut(ci)
+                .ok_or_else(|| HwpError::RenderError(format!("셀 인덱스 {} 범위 초과", ci)))?;
+            let cell_para = cell.paragraphs.get_mut(cpi).ok_or_else(|| {
+                HwpError::RenderError(format!("셀 문단 인덱스 {} 범위 초과", cpi))
+            })?;
+            if let Some(inner_idx) = inner_control_idx {
+                cell_para.controls.get_mut(inner_idx).ok_or_else(|| {
+                    HwpError::RenderError(format!("셀 컨트롤 인덱스 {} 범위 초과", inner_idx))
+                })?
+            } else {
+                cell_para
+                    .controls
+                    .iter_mut()
+                    .find(|c| matches!(c, Control::Equation(_)))
+                    .ok_or_else(|| {
+                        HwpError::RenderError("셀 문단에 수식 컨트롤이 없습니다".to_string())
+                    })?
+            }
+        } else {
+            // 본문 수식
+            let para = section.paragraphs.get_mut(parent_para_idx).ok_or_else(|| {
+                HwpError::RenderError(format!("문단 인덱스 {} 범위 초과", parent_para_idx))
+            })?;
+            para.controls.get_mut(control_idx).ok_or_else(|| {
+                HwpError::RenderError(format!("컨트롤 인덱스 {} 범위 초과", control_idx))
+            })?
+        };
+
+        match ctrl {
+            Control::Equation(e) => Ok(e),
+            other => Err(not_an_equation_error(other)),
+        }
+    }
+    pub(crate) fn equation_properties_json(eq: &crate::model::control::Equation) -> String {
+        let common_json = Self::common_obj_attr_to_json(&eq.common);
+        let script_escaped = crate::document_core::helpers::json_escape(&eq.script);
+        let font_name_escaped = crate::document_core::helpers::json_escape(&eq.font_name);
+
+        format!(
+            concat!(
+                "{{{},\"script\":\"{}\",\"fontSize\":{},\"color\":{},",
+                "\"baseline\":{},\"fontName\":\"{}\",",
+                "\"hasCaption\":false,\"captionDirection\":\"None\",",
+                "\"captionWidth\":0,\"captionSpacing\":0}}"
+            ),
+            common_json, script_escaped, eq.font_size, eq.color, eq.baseline, font_name_escaped,
+        )
+    }
+    pub(crate) fn apply_equation_properties(
+        eq: &mut crate::model::control::Equation,
+        _dpi: f64,
+        props_json: &str,
+    ) {
+        use crate::document_core::helpers::{json_i32, json_str, json_u32};
+
+        if let Some(s) = json_str(props_json, "script") {
+            eq.script = s;
+        }
+        if let Some(fs) = json_u32(props_json, "fontSize") {
+            eq.font_size = fs;
+        }
+        if let Some(c) = json_u32(props_json, "color") {
+            eq.color = c;
+        }
+        if let Some(bl) = json_i32(props_json, "baseline") {
+            eq.baseline = bl as i16;
+        }
+        if let Some(fn_) = json_str(props_json, "fontName") {
+            eq.font_name = fn_;
+        }
+        Self::apply_common_obj_attr_from_json(&mut eq.common, props_json);
+
+        let (width, height, baseline) =
+            crate::renderer::equation::intrinsic_metrics_hwp_with_version(
+                &eq.script,
+                eq.font_size,
+                &eq.font_name,
+                &eq.version_info,
+            );
+        eq.common.width = width;
+        eq.common.height = height;
+        if json_i32(props_json, "baseline").is_none() && height > 0 {
+            eq.baseline = ((baseline as f64 / height as f64) * 100.0)
+                .round()
+                .clamp(1.0, 100.0) as i16;
+        }
+
+        // raw_ctrl_data 무효화: serialize_equation_control 은 raw_ctrl_data 가 비어있지 않으면
+        // 원본 CTRL_HEADER 바이트를 그대로 방출한다. 편집한 eq.common(크기/위치/treat_as_char)이
+        // .hwp 저장에 반영되도록 원본 passthrough 를 비운다(table_ops 셀 편집 가드, adapt_equation
+        // 의 hwpx→hwp 변환과 동형). EQEDIT 자식 레코드(script/font)는 IR 로 재생성되므로 무관.
+        eq.raw_ctrl_data.clear();
+    }
+    pub fn get_equation_properties_native(
+        &self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+        cell_idx: Option<usize>,
+        cell_para_idx: Option<usize>,
+    ) -> Result<String, HwpError> {
+        self.get_equation_properties_at_native(
+            section_idx,
+            parent_para_idx,
+            control_idx,
+            cell_idx,
+            cell_para_idx,
+            None,
+        )
+    }
+
+    pub fn get_equation_properties_at_native(
+        &self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+        cell_idx: Option<usize>,
+        cell_para_idx: Option<usize>,
+        inner_control_idx: Option<usize>,
+    ) -> Result<String, HwpError> {
+        let eq = self.find_equation_ref(
+            section_idx,
+            parent_para_idx,
+            control_idx,
+            cell_idx,
+            cell_para_idx,
+            inner_control_idx,
+        )?;
+
+        Ok(Self::equation_properties_json(eq))
+    }
+    /// 수식 컨트롤의 속성을 변경한다 (네이티브).
+    pub fn set_equation_properties_native(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+        cell_idx: Option<usize>,
+        cell_para_idx: Option<usize>,
+        props_json: &str,
+    ) -> Result<String, HwpError> {
+        self.set_equation_properties_at_native(
+            section_idx,
+            parent_para_idx,
+            control_idx,
+            cell_idx,
+            cell_para_idx,
+            None,
+            props_json,
+        )
+    }
+
+    pub fn set_equation_properties_at_native(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+        cell_idx: Option<usize>,
+        cell_para_idx: Option<usize>,
+        inner_control_idx: Option<usize>,
+        props_json: &str,
+    ) -> Result<String, HwpError> {
+        let dpi = self.dpi;
+        let eq = self.find_equation_mut(
+            section_idx,
+            parent_para_idx,
+            control_idx,
+            cell_idx,
+            cell_para_idx,
+            inner_control_idx,
+        )?;
+        Self::apply_equation_properties(eq, dpi, props_json);
+
+        // 표 셀 내 수식인 경우 표 dirty 플래그 설정
+        if cell_idx.is_some() {
+            if let Some(Control::Table(t)) = self.document.sections[section_idx].paragraphs
+                [parent_para_idx]
+                .controls
+                .get_mut(control_idx)
+            {
+                t.dirty = true;
+            }
+        }
+
+        // 재조판
+        let section = &mut self.document.sections[section_idx];
+        section.raw_stream = None;
+        // 이벤트를 쌓지 않으므로 수식을 담은 본문 문단의 revision 을 올린다.
+        self.event_log
+            .mark_paragraph_changed(section_idx, parent_para_idx);
+        self.recompose_section(section_idx);
+        self.paginate_if_needed();
+
+        Ok(crate::document_core::helpers::json_ok())
+    }
+    /// 수식 스크립트를 SVG로 렌더링하여 반환한다 (미리보기 전용).
+    /// 반환: JSON 문자열
+    /// `{"svg":string,"widthPx":number,"heightPx":number,"baselinePx":number,"warnings":string[]}`
+    /// (px 은 self.dpi 기준, 기본 96dpi). warnings 는 파서가 수집한 검증 경고
+    /// (미지 LaTeX 명령어, 괄호 불일치, 빈 그룹, 중첩 깊이 초과)로 비어 있으면 유효한 스크립트다.
+    pub fn render_equation_preview_native(
+        &self,
+        script: &str,
+        font_size_hwpunit: u32,
+        color: u32,
+    ) -> Result<String, HwpError> {
+        self.render_equation_preview_with_font_native(script, font_size_hwpunit, color, None)
+    }
+
+    pub fn render_equation_preview_with_font_native(
+        &self,
+        script: &str,
+        font_size_hwpunit: u32,
+        color: u32,
+        font_name: Option<&str>,
+    ) -> Result<String, HwpError> {
+        use crate::renderer::equation::layout::EqLayout;
+        use crate::renderer::equation::parser::EqParser;
+        use crate::renderer::equation::svg_render::{
+            eq_color_to_svg, render_equation_svg_with_font,
+        };
+        use crate::renderer::equation::tokenizer::tokenize;
+
+        let font_size_px = crate::renderer::hwpunit_to_px(font_size_hwpunit as i32, self.dpi);
+        let tokens = tokenize(script);
+        let mut parser = EqParser::new(tokens);
+        let ast = parser.parse();
+        let (canonical_script_json, canonical_error_json) =
+            match crate::renderer::equation::canonical::to_hwp_script(&ast) {
+                Ok(canonical) => (
+                    format!(
+                        "\"{}\"",
+                        crate::document_core::helpers::json_escape(&canonical)
+                    ),
+                    "null".to_string(),
+                ),
+                Err(error) => (
+                    "null".to_string(),
+                    format!(
+                        "\"{}\"",
+                        crate::document_core::helpers::json_escape(&format!("{error:?}"))
+                    ),
+                ),
+            };
+        let layout_box = EqLayout::with_font(font_size_px, font_name.unwrap_or("")).layout(&ast);
+        let color_str = eq_color_to_svg(color);
+        let svg_fragment =
+            render_equation_svg_with_font(&layout_box, &color_str, font_size_px, font_name);
+
+        let w = layout_box.width;
+        let h = layout_box.height;
+        let svg = format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {:.2} {:.2}\" width=\"{:.2}\" height=\"{:.2}\">{}</svg>",
+            w, h, w, h, svg_fragment,
+        );
+        let warnings_json = parser
+            .warnings()
+            .iter()
+            .map(|w| format!("\"{}\"", crate::document_core::helpers::json_escape(w)))
+            .collect::<Vec<_>>()
+            .join(",");
+        let diagnostics_json = parser
+            .warnings()
+            .iter()
+            .map(|warning| {
+                let (code, severity) = if warning.contains("알 수 없는") {
+                    ("unknown-command", "warning")
+                } else if warning.contains("빈 그룹") {
+                    ("empty-group", "warning")
+                } else if warning.contains("깊이") {
+                    ("depth-limit", "error")
+                } else {
+                    ("unbalanced-structure", "error")
+                };
+                format!(
+                    "{{\"code\":\"{}\",\"severity\":\"{}\",\"message\":\"{}\"}}",
+                    code,
+                    severity,
+                    crate::document_core::helpers::json_escape(warning)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        Ok(format!(
+            "{{\"svg\":\"{}\",\"widthPx\":{:.2},\"heightPx\":{:.2},\"baselinePx\":{:.2},\"warnings\":[{}],\"diagnostics\":[{}],\"canonicalScript\":{},\"canonicalError\":{}}}",
+            crate::document_core::helpers::json_escape(&svg),
+            w,
+            h,
+            layout_box.baseline,
+            warnings_json,
+            diagnostics_json,
+            canonical_script_json,
+            canonical_error_json,
+        ))
+    }
+    /// 표 셀 문단에서 **지정 인덱스**의 수식 스크립트를 조회한다 (드리프트 프로브용).
+    /// `find_equation_ref` 셀 경로는 첫 번째 수식만 찾으므로, 한 셀 문단에 수식이
+    /// 여럿일 때 특정 수식을 읽으려면 이 API 를 쓴다.
+    /// 반환: JSON `{"ok":true,"script":"..."}`
+    pub fn get_equation_script_in_cell_at(
+        &self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+        cell_idx: usize,
+        cell_para_idx: usize,
+        eq_control_idx: usize,
+    ) -> Result<String, HwpError> {
+        let section = self.document.sections.get(section_idx).ok_or_else(|| {
+            HwpError::RenderError(format!("구역 인덱스 {} 범위 초과", section_idx))
+        })?;
+        let para = section.paragraphs.get(parent_para_idx).ok_or_else(|| {
+            HwpError::RenderError(format!("문단 인덱스 {} 범위 초과", parent_para_idx))
+        })?;
+        let table = match para.controls.get(control_idx) {
+            Some(Control::Table(t)) => t,
+            _ => {
+                return Err(HwpError::RenderError(
+                    "지정된 컨트롤이 표가 아닙니다".to_string(),
+                ))
+            }
+        };
+        let cell = table
+            .cells
+            .get(cell_idx)
+            .ok_or_else(|| HwpError::RenderError(format!("셀 인덱스 {} 범위 초과", cell_idx)))?;
+        let cell_para = cell.paragraphs.get(cell_para_idx).ok_or_else(|| {
+            HwpError::RenderError(format!("셀 문단 인덱스 {} 범위 초과", cell_para_idx))
+        })?;
+        match cell_para.controls.get(eq_control_idx) {
+            Some(Control::Equation(eq)) => Ok(format!(
+                "{{\"ok\":true,\"script\":\"{}\"}}",
+                crate::document_core::helpers::json_escape(&eq.script)
+            )),
+            Some(other) => Err(not_an_equation_error(other)),
+            None => Err(HwpError::RenderError(format!(
+                "컨트롤 인덱스 {} 범위 초과",
+                eq_control_idx
+            ))),
+        }
+    }
+
+    /// 인라인 수식 컨트롤 제거의 모델 변이 부분: 컨트롤 뒤 문자 오프셋을 8칸 되돌리고
+    /// 컨트롤·ctrl_data 레코드를 제거하며 char_count 를 8 감소시킨다.
+    /// 본문(`delete_equation_control_native`)과 셀 경로가 공유한다.
+    fn remove_equation_control_and_shift(para: &mut Paragraph, control_idx: usize) {
+        let text_chars: Vec<char> = para.text.chars().collect();
+        let mut ci = 0usize;
+        let mut prev_end: u32 = 0;
+        let mut gap_start: Option<u32> = None;
+        'outer: for i in 0..text_chars.len() {
+            let offset = if i < para.char_offsets.len() {
+                para.char_offsets[i]
+            } else {
+                prev_end
+            };
+            while prev_end + 8 <= offset && ci < para.controls.len() {
+                if ci == control_idx {
+                    gap_start = Some(prev_end);
+                    break 'outer;
+                }
+                ci += 1;
+                prev_end += 8;
+            }
+            let char_size: u32 = if text_chars[i] == '\t' {
+                8
+            } else if text_chars[i].len_utf16() == 2 {
+                2
+            } else {
+                1
+            };
+            prev_end = offset + char_size;
+        }
+        if gap_start.is_none() {
+            while ci < para.controls.len() {
+                if ci == control_idx {
+                    gap_start = Some(prev_end);
+                    break;
+                }
+                ci += 1;
+                prev_end += 8;
+            }
+        }
+
+        if let Some(gs) = gap_start {
+            let threshold = gs + 8;
+            for offset in para.char_offsets.iter_mut() {
+                if *offset >= threshold {
+                    *offset -= 8;
+                }
+            }
+            // char_shapes/range_tags 도 char_offsets 와 함께 되돌린다 — 삽입 경로
+            // (shift_for_inline_control_insert)와 대칭되는 삭제측 시프트가 없으면
+            // 삭제 지점 이후 글자모양 run·range_tag 경계가 텍스트와 어긋난다
+            // (footnote_ops 의 삭제 경로와 동형; 문단 시작 pos 0 run 은 고정 유지).
+            for cs in &mut para.char_shapes {
+                if cs.start_pos > gs {
+                    cs.start_pos = cs.start_pos.saturating_sub(8);
+                }
+            }
+            for rt in &mut para.range_tags {
+                if rt.start >= gs {
+                    rt.start = rt.start.saturating_sub(8);
+                }
+                if rt.end >= gs {
+                    rt.end = rt.end.saturating_sub(8);
+                }
+            }
+        }
+
+        para.controls.remove(control_idx);
+        if control_idx < para.ctrl_data_records.len() {
+            para.ctrl_data_records.remove(control_idx);
+        }
+        if para.char_count >= 8 {
+            para.char_count -= 8;
+        }
+    }
+
+    /// 수식(Equation) 컨트롤을 문단에서 삭제한다.
+    pub fn delete_equation_control_native(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+    ) -> Result<String, HwpError> {
+        if section_idx >= self.document.sections.len() {
+            return Err(HwpError::RenderError(format!(
+                "구역 인덱스 {} 범위 초과",
+                section_idx
+            )));
+        }
+        let section = &mut self.document.sections[section_idx];
+        if parent_para_idx >= section.paragraphs.len() {
+            return Err(HwpError::RenderError(format!(
+                "문단 인덱스 {} 범위 초과",
+                parent_para_idx
+            )));
+        }
+        let para = &mut section.paragraphs[parent_para_idx];
+        if control_idx >= para.controls.len() {
+            return Err(HwpError::RenderError(format!(
+                "컨트롤 인덱스 {} 범위 초과",
+                control_idx
+            )));
+        }
+        if !matches!(&para.controls[control_idx], Control::Equation(_)) {
+            return Err(not_an_equation_error(&para.controls[control_idx]));
+        }
+
+        Self::remove_equation_control_and_shift(para, control_idx);
+
+        Self::reflow_paragraph_line_segs_after_control_delete(para, &self.styles, self.dpi);
+        section.raw_stream = None;
+        self.recompose_section(section_idx);
+        self.paginate_if_needed();
+
+        self.event_log.push(DocumentEvent::PictureDeleted {
+            section: section_idx,
+            para: parent_para_idx,
+            ctrl: control_idx,
+        });
+        Ok("{\"ok\":true}".to_string())
+    }
+
+    // ─── 각주 삽입/삭제 API ──────────────────────────────
+    /// 본문 문단에 수식을 삽입한다 (표 셀/글상자 내부는 미지원).
+    /// 커서 위치에 수식 컨트롤을 추가한다.
+    /// 반환: JSON `{"ok":true, "paraIdx":N, "controlIdx":N}`
+    pub fn insert_equation_native(
+        &mut self,
+        section_idx: usize,
+        para_idx: usize,
+        char_offset: usize,
+        script: &str,
+        font_size: u32,
+        color: u32,
+    ) -> Result<String, HwpError> {
+        use crate::model::control::Equation;
+        use crate::model::shape::CommonObjAttr;
+        use crate::parser::tags::CTRL_EQUATION;
+
+        if section_idx >= self.document.sections.len() {
+            return Err(HwpError::RenderError(format!(
+                "구역 인덱스 {} 범위 초과",
+                section_idx
+            )));
+        }
+        if para_idx >= self.document.sections[section_idx].paragraphs.len() {
+            return Err(HwpError::RenderError(format!(
+                "문단 인덱스 {} 범위 초과",
+                para_idx
+            )));
+        }
+
+        let (width, height, baseline_hwp) =
+            crate::renderer::equation::intrinsic_metrics_hwp_with_font(
+                script, font_size, "HYhwpEQ",
+            );
+        // HWPX baseLine 은 높이 대비 백분율(스키마 기본값 85) — 레이아웃 기준선 비율로 채운다.
+        // 기존엔 ..Default::default() 로 0 이 남아 직렬화 시 baseLine="0" 이 방출됐다.
+        let baseline = if height > 0 {
+            ((baseline_hwp as f64 / height as f64) * 100.0)
+                .round()
+                .clamp(0.0, 100.0) as i16
+        } else {
+            85
+        };
+        let equation = Equation {
+            common: CommonObjAttr {
+                ctrl_id: CTRL_EQUATION,
+                treat_as_char: true,
+                width,
+                height,
+                ..Default::default()
+            },
+            script: script.to_string(),
+            font_size,
+            color,
+            baseline,
+            font_name: "HYhwpEQ".to_string(),
+            ..Default::default()
+        };
+
+        self.document.sections[section_idx].raw_stream = None;
+        let paragraph = &mut self.document.sections[section_idx].paragraphs[para_idx];
+
+        let insert_idx = {
+            let positions = crate::document_core::helpers::find_control_text_positions(paragraph);
+            let mut idx = paragraph.controls.len();
+            for (i, &pos) in positions.iter().enumerate() {
+                if pos > char_offset {
+                    idx = i;
+                    break;
+                }
+            }
+            idx
+        };
+
+        // HWPX 로드 문서는 ctrl_data_records 가 controls 보다 짧을 수 있다(비동기 상태).
+        // 그대로 insert 하면 out-of-bounds panic 이므로 먼저 길이를 맞춘다
+        // (converters/hwpx_to_hwp.rs 의 패딩과 동형).
+        if paragraph.ctrl_data_records.len() < paragraph.controls.len() {
+            paragraph
+                .ctrl_data_records
+                .resize_with(paragraph.controls.len(), || None);
+        }
+        paragraph
+            .controls
+            .insert(insert_idx, Control::Equation(Box::new(equation)));
+        paragraph.ctrl_data_records.insert(insert_idx, None);
+
+        paragraph.shift_for_inline_control_insert(char_offset);
+        paragraph.char_count += 8;
+        paragraph.control_mask |= 1u32 << 11;
+        paragraph.has_para_text = true;
+
+        // 본문 문단 리플로우
+        {
+            use crate::renderer::composer::reflow_line_segs;
+            use crate::renderer::hwpunit_to_px;
+            let page_def = &self.document.sections[section_idx].section_def.page_def;
+            let text_width =
+                page_def.width as i32 - page_def.margin_left as i32 - page_def.margin_right as i32;
+            let available_width = hwpunit_to_px(text_width, self.dpi);
+            let para_style = self.styles.para_styles.get(
+                self.document.sections[section_idx].paragraphs[para_idx].para_shape_id as usize,
+            );
+            let margin_left = para_style.map(|s| s.margin_left).unwrap_or(0.0);
+            let margin_right = para_style.map(|s| s.margin_right).unwrap_or(0.0);
+            let final_width = (available_width - margin_left - margin_right).max(0.0);
+            let body_para = &mut self.document.sections[section_idx].paragraphs[para_idx];
+            reflow_line_segs(body_para, final_width, &self.styles, self.dpi);
+        }
+
+        self.recompose_section(section_idx);
+        self.paginate_if_needed();
+        self.invalidate_page_tree_cache();
+
+        self.event_log.push(DocumentEvent::PictureInserted {
+            section: section_idx,
+            para: para_idx,
+        });
+        Ok(format!(
+            "{{\"ok\":true,\"paraIdx\":{},\"controlIdx\":{}}}",
+            para_idx, insert_idx
+        ))
+    }
+
+    /// 셀 문단 변이 후 재조판 경로 — `replace_text_in_cell_native_impl`(즉시 페이지네이션)
+    /// 과 동일한 순서를 따른다: 부모 컨트롤 dirty → 셀 폭 리플로우 → vpos 재계산 →
+    /// cell_units 캐시 무효화 → render normalization path dirty → raw stream 무효화 →
+    /// 페이지네이션 → CellTextChanged 이벤트.
+    fn reflow_cell_after_equation_edit(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+        cell_idx: usize,
+        cell_para_idx: usize,
+        local_contribution_before: bool,
+    ) -> Result<(), HwpError> {
+        self.mark_cell_control_dirty(section_idx, parent_para_idx, control_idx);
+        self.reflow_cell_paragraph(
+            section_idx,
+            parent_para_idx,
+            control_idx,
+            cell_idx,
+            cell_para_idx,
+        );
+        self.recalculate_cell_paragraph_vpos_native(
+            section_idx,
+            parent_para_idx,
+            control_idx,
+            cell_idx,
+            cell_para_idx,
+            None,
+        );
+
+        let local_contribution_after = self
+            .get_cell_paragraph_ref(
+                section_idx,
+                parent_para_idx,
+                control_idx,
+                cell_idx,
+                cell_para_idx,
+            )
+            .map(
+                crate::renderer::layout::LayoutEngine::paragraph_contributes_to_table_nested_text_flag,
+            )
+            .ok_or_else(|| {
+                HwpError::RenderError("편집 뒤 셀 문단을 다시 찾을 수 없습니다".to_string())
+            })?;
+
+        // Table의 일반 cell만 pointer-key layout cache의 owner다 (표 캡션 sentinel 제외).
+        if cell_idx != crate::document_core::TABLE_CAPTION_CELL_SENTINEL {
+            let control = &self.document.sections[section_idx].paragraphs[parent_para_idx].controls
+                [control_idx];
+            if let Control::Table(table) = control {
+                if let Some(edited_cell) = table.cells.get(cell_idx) {
+                    self.layout_engine.invalidate_cell_units_after_text_edit(
+                        edited_cell,
+                        table,
+                        local_contribution_before,
+                        local_contribution_after,
+                    );
+                }
+            }
+        }
+
+        let has_compat_projection = self
+            .render_normalization
+            .sections
+            .get(section_idx)
+            .is_some_and(|section| section.is_some());
+        self.mark_render_normalization_path_dirty(
+            section_idx,
+            parent_para_idx,
+            control_idx,
+            cell_idx,
+            cell_para_idx,
+        )?;
+        self.document.sections[section_idx].raw_stream = None;
+        if has_compat_projection {
+            self.invalidate_render_normalization_section(section_idx);
+        }
+        self.mark_section_pagination_dirty(section_idx);
+        self.invalidate_page_tree_cache_from(0);
+        self.paginate_if_needed();
+
+        self.event_log.push(DocumentEvent::CellTextChanged {
+            section: section_idx,
+            para: parent_para_idx,
+            ctrl: control_idx,
+            cell: cell_idx,
+        });
+        Ok(())
+    }
+
+    /// 표 셀 문단에 수식을 삽입한다.
+    /// 컨트롤 조립은 `insert_equation_native`(본문)와, 변이 후 재조판은
+    /// `insert_text_in_cell_native`(즉시 페이지네이션)와 동형이다.
+    /// 반환: JSON `{"ok":true, "cellParaIdx":N, "controlIdx":N}` — controlIdx 는 셀 문단
+    /// controls 내 수식 인덱스.
+    pub fn insert_equation_in_cell_native(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+        cell_idx: usize,
+        cell_para_idx: usize,
+        char_offset: usize,
+        script: &str,
+        font_size: u32,
+        color: u32,
+    ) -> Result<String, HwpError> {
+        use crate::model::control::Equation;
+        use crate::model::shape::CommonObjAttr;
+        use crate::parser::tags::CTRL_EQUATION;
+
+        let (width, height, baseline_hwp) =
+            crate::renderer::equation::intrinsic_metrics_hwp_with_font(
+                script, font_size, "HYhwpEQ",
+            );
+        // HWPX baseLine 은 높이 대비 백분율(스키마 기본값 85) — 본문 삽입 경로와 동일하게
+        // 레이아웃 기준선 비율로 채운다 (기존엔 Default 0 방출).
+        let baseline = if height > 0 {
+            ((baseline_hwp as f64 / height as f64) * 100.0)
+                .round()
+                .clamp(0.0, 100.0) as i16
+        } else {
+            85
+        };
+        let equation = Equation {
+            common: CommonObjAttr {
+                ctrl_id: CTRL_EQUATION,
+                treat_as_char: true,
+                width,
+                height,
+                ..Default::default()
+            },
+            script: script.to_string(),
+            font_size,
+            color,
+            baseline,
+            font_name: "HYhwpEQ".to_string(),
+            ..Default::default()
+        };
+
+        // 셀 문단 접근 검증 및 컨트롤 삽입
+        let cell_para = self.get_cell_paragraph_mut(
+            section_idx,
+            parent_para_idx,
+            control_idx,
+            cell_idx,
+            cell_para_idx,
+        )?;
+        let local_contribution_before =
+            crate::renderer::layout::LayoutEngine::paragraph_contributes_to_table_nested_text_flag(
+                cell_para,
+            );
+
+        let insert_idx = {
+            let positions = crate::document_core::helpers::find_control_text_positions(cell_para);
+            let mut idx = cell_para.controls.len();
+            for (i, &pos) in positions.iter().enumerate() {
+                if pos > char_offset {
+                    idx = i;
+                    break;
+                }
+            }
+            idx
+        };
+
+        // HWPX 로드 문서는 ctrl_data_records 가 controls 보다 짧을 수 있다(비동기 상태).
+        // 그대로 insert 하면 out-of-bounds panic 이므로 먼저 길이를 맞춘다
+        // (converters/hwpx_to_hwp.rs 의 패딩과 동형).
+        if cell_para.ctrl_data_records.len() < cell_para.controls.len() {
+            cell_para
+                .ctrl_data_records
+                .resize_with(cell_para.controls.len(), || None);
+        }
+        cell_para
+            .controls
+            .insert(insert_idx, Control::Equation(Box::new(equation)));
+        cell_para.ctrl_data_records.insert(insert_idx, None);
+
+        cell_para.shift_for_inline_control_insert(char_offset);
+        cell_para.char_count += 8;
+        cell_para.control_mask |= 1u32 << 11;
+        cell_para.has_para_text = true;
+
+        self.reflow_cell_after_equation_edit(
+            section_idx,
+            parent_para_idx,
+            control_idx,
+            cell_idx,
+            cell_para_idx,
+            local_contribution_before,
+        )?;
+
+        Ok(format!(
+            "{{\"ok\":true,\"cellParaIdx\":{},\"controlIdx\":{}}}",
+            cell_para_idx, insert_idx
+        ))
+    }
+
+    /// 중첩 표 셀 문단에 수식을 삽입한다. `cell_path_json`의 마지막 엔트리가
+    /// 실제 삽입 대상 문단을 가리키며 반환 controlIdx도 그 문단 기준이다.
+    pub fn insert_equation_in_cell_by_path_native(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        cell_path_json: &str,
+        char_offset: usize,
+        script: &str,
+        font_size: u32,
+        color: u32,
+    ) -> Result<String, HwpError> {
+        use crate::model::control::Equation;
+        use crate::model::shape::CommonObjAttr;
+        use crate::parser::tags::CTRL_EQUATION;
+
+        let path = Self::parse_cell_path_json(cell_path_json)?;
+        if path.len() == 1 {
+            let (control_idx, cell_idx, cell_para_idx) = path[0];
+            return self.insert_equation_in_cell_native(
+                section_idx,
+                parent_para_idx,
+                control_idx,
+                cell_idx,
+                cell_para_idx,
+                char_offset,
+                script,
+                font_size,
+                color,
+            );
+        }
+
+        let (width, height, baseline_hwp) =
+            crate::renderer::equation::intrinsic_metrics_hwp_with_font(
+                script, font_size, "HYhwpEQ",
+            );
+        let baseline = if height > 0 {
+            ((baseline_hwp as f64 / height as f64) * 100.0)
+                .round()
+                .clamp(0.0, 100.0) as i16
+        } else {
+            85
+        };
+        let equation = Equation {
+            common: CommonObjAttr {
+                ctrl_id: CTRL_EQUATION,
+                treat_as_char: true,
+                width,
+                height,
+                ..Default::default()
+            },
+            script: script.to_string(),
+            font_size,
+            color,
+            baseline,
+            font_name: "HYhwpEQ".to_string(),
+            ..Default::default()
+        };
+        let insert_idx = {
+            let section = self.document.sections.get_mut(section_idx).ok_or_else(|| {
+                HwpError::RenderError(format!("구역 인덱스 {} 범위 초과", section_idx))
+            })?;
+            let paragraph = Self::resolve_cell_paragraph_mut(section, parent_para_idx, &path)?;
+            let positions = crate::document_core::helpers::find_control_text_positions(paragraph);
+            let insert_idx = positions
+                .iter()
+                .position(|&position| position > char_offset)
+                .unwrap_or(paragraph.controls.len());
+            if paragraph.ctrl_data_records.len() < paragraph.controls.len() {
+                paragraph
+                    .ctrl_data_records
+                    .resize_with(paragraph.controls.len(), || None);
+            }
+            paragraph
+                .controls
+                .insert(insert_idx, Control::Equation(Box::new(equation)));
+            paragraph.ctrl_data_records.insert(insert_idx, None);
+            paragraph.shift_for_inline_control_insert(char_offset);
+            paragraph.char_count += 8;
+            paragraph.control_mask |= 1u32 << 11;
+            paragraph.has_para_text = true;
+            insert_idx
+        };
+        self.finish_equation_edit_by_path(section_idx, parent_para_idx, &path);
+        Ok(format!(
+            "{{\"ok\":true,\"cellParaIdx\":{},\"controlIdx\":{}}}",
+            path.last().unwrap().2,
+            insert_idx
+        ))
+    }
+
+    /// 표 셀 문단에서 수식(Equation) 컨트롤을 삭제한다.
+    /// 모델 변이는 `delete_equation_control_native`(본문)와, 변이 후 재조판은
+    /// `insert_equation_in_cell_native`와 동일한 셀 경로를 공유한다.
+    pub fn delete_equation_control_in_cell_native(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+        cell_idx: usize,
+        cell_para_idx: usize,
+        eq_control_idx: usize,
+    ) -> Result<String, HwpError> {
+        let cell_para = self.get_cell_paragraph_mut(
+            section_idx,
+            parent_para_idx,
+            control_idx,
+            cell_idx,
+            cell_para_idx,
+        )?;
+        if eq_control_idx >= cell_para.controls.len() {
+            return Err(HwpError::RenderError(format!(
+                "컨트롤 인덱스 {} 범위 초과",
+                eq_control_idx
+            )));
+        }
+        if !matches!(&cell_para.controls[eq_control_idx], Control::Equation(_)) {
+            return Err(not_an_equation_error(&cell_para.controls[eq_control_idx]));
+        }
+        let local_contribution_before =
+            crate::renderer::layout::LayoutEngine::paragraph_contributes_to_table_nested_text_flag(
+                cell_para,
+            );
+
+        Self::remove_equation_control_and_shift(cell_para, eq_control_idx);
+
+        self.reflow_cell_after_equation_edit(
+            section_idx,
+            parent_para_idx,
+            control_idx,
+            cell_idx,
+            cell_para_idx,
+            local_contribution_before,
+        )?;
+
+        Ok(crate::document_core::helpers::json_ok())
+    }
+
+    pub fn delete_equation_control_in_cell_by_path_native(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        cell_path_json: &str,
+        eq_control_idx: usize,
+    ) -> Result<String, HwpError> {
+        let path = Self::parse_cell_path_json(cell_path_json)?;
+        if path.len() == 1 {
+            let (control_idx, cell_idx, cell_para_idx) = path[0];
+            return self.delete_equation_control_in_cell_native(
+                section_idx,
+                parent_para_idx,
+                control_idx,
+                cell_idx,
+                cell_para_idx,
+                eq_control_idx,
+            );
+        }
+        {
+            let section = self.document.sections.get_mut(section_idx).ok_or_else(|| {
+                HwpError::RenderError(format!("구역 인덱스 {} 범위 초과", section_idx))
+            })?;
+            let paragraph = Self::resolve_cell_paragraph_mut(section, parent_para_idx, &path)?;
+            match paragraph.controls.get(eq_control_idx) {
+                Some(Control::Equation(_)) => {}
+                Some(_) => {
+                    return Err(HwpError::RenderError(
+                        "지정된 컨트롤이 수식이 아닙니다".to_string(),
+                    ))
+                }
+                None => {
+                    return Err(HwpError::RenderError(format!(
+                        "컨트롤 인덱스 {} 범위 초과",
+                        eq_control_idx
+                    )))
+                }
+            }
+            Self::remove_equation_control_and_shift(paragraph, eq_control_idx);
+        }
+        self.finish_equation_edit_by_path(section_idx, parent_para_idx, &path);
+        Ok(crate::document_core::helpers::json_ok())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::document_core::DocumentCore;
+    use crate::model::control::{Control, Equation};
+    use crate::model::document::{Document, Section, SectionDef};
+    use crate::model::page::PageDef;
+    use crate::model::paragraph::Paragraph;
+
+    fn make_test_core() -> DocumentCore {
+        let mut doc = Document::default();
+        doc.sections.push(Section {
+            section_def: SectionDef {
+                page_def: PageDef {
+                    width: 59528,
+                    height: 84188,
+                    margin_left: 8504,
+                    margin_right: 8504,
+                    margin_top: 5668,
+                    margin_bottom: 4252,
+                    margin_header: 4252,
+                    margin_footer: 4252,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            paragraphs: vec![Paragraph::default()],
+            raw_stream: None,
+            raw_provenance: None,
+        });
+        let mut core = DocumentCore::new_empty();
+        // set_document이 composed/styles/pagination 벡터를 일관되게 초기화한다.
+        core.set_document(doc);
+        core
+    }
+
+    /// .hwp 저장 시 serialize_equation_control 은 raw_ctrl_data 가 비어있지 않으면 원본
+    /// CTRL_HEADER 를 그대로 방출한다. 속성 편집 후 raw_ctrl_data 가 비워지지 않으면
+    /// 크기/위치 편집이 저장에서 원복된다.
+    #[test]
+    fn apply_equation_properties_clears_raw_ctrl_data() {
+        let mut eq = Equation {
+            script: "1 over 2".to_string(),
+            font_size: 1000,
+            raw_ctrl_data: vec![0xAB; 16],
+            ..Default::default()
+        };
+        DocumentCore::apply_equation_properties(&mut eq, 96.0, r#"{"width":5000,"height":4000}"#);
+        assert!(
+            eq.raw_ctrl_data.is_empty(),
+            "apply_equation_properties 후 raw_ctrl_data 가 비워져야 편집이 .hwp 저장에 반영된다"
+        );
+    }
+
+    /// 미리보기는 bare SVG 가 아니라
+    /// `{"svg",...,"widthPx","heightPx","baselinePx","warnings"}` JSON 계약을 반환해야 한다.
+    #[test]
+    fn render_equation_preview_returns_json_contract() {
+        let core = make_test_core();
+        let json = core
+            .render_equation_preview_native("1 over 2", 1000, 0)
+            .expect("preview");
+        // TS 소비자가 JSON.parse 로 바로 쓸 수 있는 유효한 JSON 이어야 한다
+        let v: serde_json::Value = serde_json::from_str(&json).expect("유효한 JSON 이어야 함");
+        let svg = v["svg"].as_str().expect("svg: string");
+        assert!(svg.starts_with("<svg"), "svg 키는 SVG 마크업: {json}");
+        assert!(v["widthPx"].as_f64().expect("widthPx: number") > 0.0);
+        assert!(v["heightPx"].as_f64().expect("heightPx: number") > 0.0);
+        assert!(v["baselinePx"].as_f64().expect("baselinePx: number") > 0.0);
+        assert_eq!(
+            v["warnings"].as_array().expect("warnings: array").len(),
+            0,
+            "정상 스크립트는 경고가 비어 있어야 함: {json}"
+        );
+
+        // 미지 LaTeX 명령어는 warnings 로 수집된다 (검증 게이트가 소비)
+        let warned = core
+            .render_equation_preview_native(r"\unknowncmd x", 1000, 0)
+            .expect("preview");
+        let w: serde_json::Value = serde_json::from_str(&warned).expect("유효한 JSON 이어야 함");
+        let warnings = w["warnings"].as_array().expect("warnings: array");
+        assert!(
+            warnings
+                .iter()
+                .any(|m| m.as_str().unwrap_or("").contains("알 수 없는 수식 명령어")),
+            "미지 명령어 경고가 수집되어야 함: {warned}"
+        );
+        assert_eq!(w["diagnostics"][0]["code"], "unknown-command");
+        assert_eq!(w["diagnostics"][0]["severity"], "warning");
+
+        let invalid = core
+            .render_equation_preview_native("{ x", 1000, 0)
+            .expect("invalid preview remains renderable");
+        let invalid: serde_json::Value = serde_json::from_str(&invalid).expect("diagnostic JSON");
+        assert_eq!(invalid["diagnostics"][0]["code"], "unbalanced-structure");
+        assert_eq!(invalid["diagnostics"][0]["severity"], "error");
+
+        let latex = core
+            .render_equation_preview_native(r"\frac{1}{2}", 1000, 0)
+            .expect("LaTeX preview");
+        let latex: serde_json::Value = serde_json::from_str(&latex).expect("canonical JSON");
+        assert_eq!(latex["canonicalScript"], "{1} over {2}");
+        assert!(latex["canonicalError"].is_null());
+
+        let unsupported = core
+            .render_equation_preview_native(r"\mathbb{R}", 1000, 0)
+            .expect("unsupported LaTeX remains previewable");
+        let unsupported: serde_json::Value =
+            serde_json::from_str(&unsupported).expect("canonical error JSON");
+        assert!(unsupported["canonicalScript"].is_null());
+        assert!(unsupported["canonicalError"]
+            .as_str()
+            .is_some_and(|message| message.contains("UnsupportedFontStyle")));
+    }
+
+    /// 삽입 시 Equation.baseline 이 HWPX baseLine 백분율(기본 85)로 채워져야 한다.
+    /// 기존엔 Default 0 으로 남아 직렬화 시 baseLine="0" 이 방출됐다.
+    #[test]
+    fn insert_equation_sets_baseline_percent() {
+        let mut core = make_test_core();
+        let res = core
+            .insert_equation_native(0, 0, 0, "1 over 2", 1000, 0)
+            .expect("insert");
+        assert!(res.contains("\"ok\":true"), "삽입 실패: {res}");
+        let para = &core.document.sections[0].paragraphs[0];
+        let eq = para
+            .controls
+            .iter()
+            .find_map(|c| match c {
+                Control::Equation(e) => Some(e),
+                _ => None,
+            })
+            .expect("수식 컨트롤이 삽입되어야 함");
+        assert!(
+            eq.baseline > 0 && eq.baseline <= 100,
+            "baseline 은 1~100 백분율이어야 함 (기존 0 방출 회귀 방지): {}",
+            eq.baseline
+        );
+        assert_eq!(eq.version_info, "Equation Version 60");
+        assert_eq!(eq.font_name, "HYhwpEQ");
+        assert_eq!(eq.font_size, 1000);
+    }
+
+    #[test]
+    fn inline_picture_and_equation_at_same_offset_do_not_overlap() {
+        let mut core = make_test_core();
+        let image = include_bytes!(
+            "../../../../tests/fixtures/editing_parity/mac-hancom-12.30.0-xml14/grid.png"
+        );
+        let picture: serde_json::Value = serde_json::from_str(
+            &core
+                .insert_picture_with_placement_native(
+                    0,
+                    0,
+                    0,
+                    &[],
+                    image,
+                    12000,
+                    8000,
+                    240,
+                    120,
+                    "png",
+                    "inline image",
+                    None,
+                    None,
+                    true,
+                )
+                .expect("insert inline picture"),
+        )
+        .unwrap();
+        let equation: serde_json::Value = serde_json::from_str(
+            &core
+                .insert_equation_native(0, 0, 0, "x over y", 1200, 0)
+                .expect("insert equation"),
+        )
+        .unwrap();
+        let picture_bbox: serde_json::Value = serde_json::from_str(
+            &core
+                .get_object_bbox_native(
+                    "image",
+                    0,
+                    0,
+                    picture["controlIdx"].as_u64().unwrap() as usize,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .expect("render picture"),
+        )
+        .unwrap();
+        let equation_bbox: serde_json::Value = serde_json::from_str(
+            &core
+                .get_object_bbox_native(
+                    "equation",
+                    0,
+                    0,
+                    equation["controlIdx"].as_u64().unwrap() as usize,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .expect("render equation"),
+        )
+        .unwrap();
+        let px = picture_bbox["x"].as_f64().unwrap();
+        let py = picture_bbox["y"].as_f64().unwrap();
+        let pw = picture_bbox["width"].as_f64().unwrap();
+        let ph = picture_bbox["height"].as_f64().unwrap();
+        let ex = equation_bbox["x"].as_f64().unwrap();
+        let ey = equation_bbox["y"].as_f64().unwrap();
+        let ew = equation_bbox["width"].as_f64().unwrap();
+        let eh = equation_bbox["height"].as_f64().unwrap();
+        assert!(
+            ex >= px + pw || px >= ex + ew || ey >= py + ph || py >= ey + eh,
+            "inline controls overlap: picture={picture_bbox}, equation={equation_bbox}"
+        );
+    }
+
+    #[test]
+    fn nested_cell_equations_use_exact_path_and_control_index() {
+        use crate::model::table::{Cell, Table};
+
+        let mut core = make_test_core();
+        let inner_table = Table {
+            cells: vec![Cell {
+                paragraphs: vec![Paragraph::default()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut outer_cell_para = Paragraph::default();
+        outer_cell_para
+            .controls
+            .push(Control::Table(Box::new(inner_table)));
+        let outer_table = Table {
+            cells: vec![Cell {
+                paragraphs: vec![outer_cell_para],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        core.document.sections[0].paragraphs[0]
+            .controls
+            .push(Control::Table(Box::new(outer_table)));
+        let path = r#"[{"controlIndex":0,"cellIndex":0,"cellParaIndex":0},{"controlIndex":0,"cellIndex":0,"cellParaIndex":0}]"#;
+
+        let first = core
+            .insert_equation_in_cell_by_path_native(0, 0, path, 0, "a", 1000, 0)
+            .expect("first nested equation");
+        let second = core
+            .insert_equation_in_cell_by_path_native(0, 0, path, 8, "b", 1000, 0)
+            .expect("second nested equation");
+        assert!(first.contains("\"controlIdx\":0"));
+        assert!(second.contains("\"controlIdx\":1"));
+
+        core.set_equation_properties_by_path_native(0, 0, path, 1, r#"{"script":"b over 2"}"#)
+            .expect("update exact second equation");
+        assert!(core
+            .get_equation_properties_by_path_native(0, 0, path, 0)
+            .unwrap()
+            .contains("\"script\":\"a\""));
+        assert!(core
+            .get_equation_properties_by_path_native(0, 0, path, 1)
+            .unwrap()
+            .contains("\"script\":\"b over 2\""));
+
+        let before_failed_edit = core
+            .get_equation_properties_by_path_native(0, 0, path, 1)
+            .unwrap();
+        assert!(core
+            .set_equation_properties_by_path_native(
+                0,
+                0,
+                r#"[{"controlIndex":99,"cellIndex":0,"cellParaIndex":0}]"#,
+                1,
+                r#"{"script":"wrong"}"#,
+            )
+            .is_err());
+        assert_eq!(
+            core.get_equation_properties_by_path_native(0, 0, path, 1)
+                .unwrap(),
+            before_failed_edit,
+            "invalid path must not partially mutate the target equation"
+        );
+
+        core.delete_equation_control_in_cell_by_path_native(0, 0, path, 1)
+            .expect("delete exact second equation");
+        assert!(core
+            .get_equation_properties_by_path_native(0, 0, path, 0)
+            .unwrap()
+            .contains("\"script\":\"a\""));
+        assert!(core
+            .get_equation_properties_by_path_native(0, 0, path, 1)
+            .is_err());
+
+        let saved = core.export_hwp_native().expect("save nested equation");
+        let reopened = DocumentCore::from_bytes(&saved).expect("reopen nested equation");
+        let body = &reopened.document.sections[0].paragraphs[0];
+        let reopened_outer_idx = body
+            .controls
+            .iter()
+            .position(|control| matches!(control, Control::Table(_)))
+            .expect("outer table after reopen");
+        let Control::Table(reopened_outer) = &body.controls[reopened_outer_idx] else {
+            unreachable!()
+        };
+        let reopened_inner_idx = reopened_outer.cells[0].paragraphs[0]
+            .controls
+            .iter()
+            .position(|control| matches!(control, Control::Table(_)))
+            .expect("inner table after reopen");
+        let reopened_path = format!(
+            r#"[{{"controlIndex":{},"cellIndex":0,"cellParaIndex":0}},{{"controlIndex":{},"cellIndex":0,"cellParaIndex":0}}]"#,
+            reopened_outer_idx, reopened_inner_idx
+        );
+        assert!(reopened
+            .get_equation_properties_by_path_native(0, 0, &reopened_path, 0)
+            .expect("read nested equation after reopen")
+            .contains("\"script\":\"a\""));
+    }
+}

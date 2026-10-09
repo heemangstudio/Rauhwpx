@@ -1,0 +1,684 @@
+{
+  "normal": "Production callbacks at combined HEAD 540c6443: imported raw-face hmtx may precede baked/runtime metrics.",
+  "alternate": "Diagnostic only: after real importLocalFontFiles and before open, set globalThis.getImportedFontMetricsBytes = () => null and globalThis.hasImportedFontMetricsFace = () => false; runtime registration and Canvas2D painting remain active.",
+  "controls": "Fresh browser context per document, 200 dpi Canvas2D, same font manifest and official PDFs, all hook identities asserted before import, no HMR edits during capture.",
+  "visual_sheets": [
+    "studio-ab-contact-01.png",
+    "studio-ab-contact-02.png",
+    "studio-ab-contact-03.png",
+    "studio-ab-contact-04.png",
+    "studio-ab-contact-05.png",
+    "studio-ab-contact-06.png"
+  ],
+  "documents": {
+    "el-school-001": {
+      "pages": 1,
+      "visual_classification": "Both closely match Hancom; alternate changes glyph raster and scores 0.01 point worse.",
+      "normal": {
+        "hancom_worst_pct": 0.85,
+        "hancom_error_px": 2680,
+        "hancom_ink_px": 315482,
+        "changed_pixels_vs_374": 0
+      },
+      "alternate": {
+        "hancom_worst_pct": 0.86,
+        "hancom_error_px": 2673,
+        "hancom_ink_px": 310397,
+        "changed_pixels_vs_374": 69077
+      },
+      "per_page": [
+        {
+          "page": 1,
+          "normal": {
+            "hancom_pct": 0.85,
+            "hancom_error_px": 2680,
+            "changed_pixels_vs_374": 0
+          },
+          "alternate": {
+            "hancom_pct": 0.86,
+            "hancom_error_px": 2673,
+            "changed_pixels_vs_374": 69077
+          }
+        }
+      ]
+    },
+    "hy-001": {
+      "pages": 2,
+      "visual_classification": "Glyph pixels differ between policies; both round to a 0.00% Hancom mismatch.",
+      "normal": {
+        "hancom_worst_pct": 0.0,
+        "hancom_error_px": 8,
+        "hancom_ink_px": 278844,
+        "changed_pixels_vs_374": 0
+      },
+      "alternate": {
+        "hancom_worst_pct": 0.0,
+        "hancom_error_px": 8,
+        "hancom_ink_px": 283335,
+        "changed_pixels_vs_374": 38477
+      },
+      "per_page": [
+        {
+          "page": 1,
+          "normal": {
+            "hancom_pct": 0.0,
+            "hancom_error_px": 6,
+            "changed_pixels_vs_374": 0
+          },
+          "alternate": {
+            "hancom_pct": 0.0,
+            "hancom_error_px": 6,
+            "changed_pixels_vs_374": 31013
+          }
+        },
+        {
+          "page": 2,
+          "normal": {
+            "hancom_pct": 0.0,
+            "hancom_error_px": 2,
+            "changed_pixels_vs_374": 0
+          },
+          "alternate": {
+            "hancom_pct": 0.0,
+            "hancom_error_px": 2,
+            "changed_pixels_vs_374": 7464
+          }
+        }
+      ]
+    },
+    "tb-org-02": {
+      "pages": 1,
+      "visual_classification": "Pixel-identical policy results and Hancom match.",
+      "normal": {
+        "hancom_worst_pct": 0.0,
+        "hancom_error_px": 0,
+        "hancom_ink_px": 64610,
+        "changed_pixels_vs_374": 0
+      },
+      "alternate": {
+        "hancom_worst_pct": 0.0,
+        "hancom_error_px": 0,
+        "hancom_ink_px": 64610,
+        "changed_pixels_vs_374": 0
+      },
+      "per_page": [
+        {
+          "page": 1,
+          "normal": {
+            "hancom_pct": 0.0,
+            "hancom_error_px": 0,
+            "changed_pixels_vs_374": 0
+          },
+          "alternate": {
+            "hancom_pct": 0.0,
+            "hancom_error_px": 0,
+            "changed_pixels_vs_374": 0
+          }
+        }
+      ]
+    },
+    "eq-002": {
+      "pages": 1,
+      "visual_classification": "Visually indistinguishable; alternate changes only minor equation pixels.",
+      "normal": {
+        "hancom_worst_pct": 0.91,
+        "hancom_error_px": 132,
+        "hancom_ink_px": 14552,
+        "changed_pixels_vs_374": 0
+      },
+      "alternate": {
+        "hancom_worst_pct": 0.9,
+        "hancom_error_px": 133,
+        "hancom_ink_px": 14697,
+        "changed_pixels_vs_374": 2117
+      },
+      "per_page": [
+        {
+          "page": 1,
+          "normal": {
+            "hancom_pct": 0.91,
+            "hancom_error_px": 132,
+            "changed_pixels_vs_374": 0
+          },
+          "alternate": {
+            "hancom_pct": 0.9,
+            "hancom_error_px": 133,
+            "changed_pixels_vs_374": 2117
+          }
+        }
+      ]
+    },
+    "exam-kor-1p": {
+      "pages": 1,
+      "visual_classification": "Alternate slightly widens text and worsens a close Hancom match.",
+      "normal": {
+        "hancom_worst_pct": 1.13,
+        "hancom_error_px": 6910,
+        "hancom_ink_px": 611867,
+        "changed_pixels_vs_374": 0
+      },
+      "alternate": {
+        "hancom_worst_pct": 1.48,
+        "hancom_error_px": 9308,
+        "hancom_ink_px": 629634,
+        "changed_pixels_vs_374": 445081
+      },
+      "per_page": [
+        {
+          "page": 1,
+          "normal": {
+            "hancom_pct": 1.13,
+            "hancom_error_px": 6910,
+            "changed_pixels_vs_374": 0
+          },
+          "alternate": {
+            "hancom_pct": 1.48,
+            "hancom_error_px": 9308,
+            "changed_pixels_vs_374": 445081
+          }
+        }
+      ]
+    },
+    "footnote-01": {
+      "pages": 6,
+      "visual_classification": "Glyph pixels differ between policies; both retain a 0.75% worst-page Hancom mismatch.",
+      "normal": {
+        "hancom_worst_pct": 0.75,
+        "hancom_error_px": 2726,
+        "hancom_ink_px": 550555,
+        "changed_pixels_vs_374": 12873
+      },
+      "alternate": {
+        "hancom_worst_pct": 0.75,
+        "hancom_error_px": 2729,
+        "hancom_ink_px": 553037,
+        "changed_pixels_vs_374": 104648
+      },
+      "per_page": [
+        {
+          "page": 1,
+          "normal": {
+            "hancom_pct": 0.73,
+            "hancom_error_px": 1256,
+            "changed_pixels_vs_374": 0
+          },
+          "alternate": {
+            "hancom_pct": 0.73,
+            "hancom_error_px": 1258,
+            "changed_pixels_vs_374": 26495
+          }
+        },
+        {
+          "page": 2,
+          "normal": {
+            "hancom_pct": 0.75,
+            "hancom_error_px": 1313,
+            "changed_pixels_vs_374": 0
+          },
+          "alternate": {
+            "hancom_pct": 0.75,
+            "hancom_error_px": 1313,
+            "changed_pixels_vs_374": 35588
+          }
+        },
+        {
+          "page": 3,
+          "normal": {
+            "hancom_pct": 0.08,
+            "hancom_error_px": 127,
+            "changed_pixels_vs_374": 0
+          },
+          "alternate": {
+            "hancom_pct": 0.08,
+            "hancom_error_px": 128,
+            "changed_pixels_vs_374": 27089
+          }
+        },
+        {
+          "page": 4,
+          "normal": {
+            "hancom_pct": 0.19,
+            "hancom_error_px": 30,
+            "changed_pixels_vs_374": 0
+          },
+          "alternate": {
+            "hancom_pct": 0.19,
+            "hancom_error_px": 30,
+            "changed_pixels_vs_374": 2603
+          }
+        },
+        {
+          "page": 5,
+          "normal": {
+            "hancom_pct": 0.0,
+            "hancom_error_px": 0,
+            "changed_pixels_vs_374": 12873
+          },
+          "alternate": {
+            "hancom_pct": 0.0,
+            "hancom_error_px": 0,
+            "changed_pixels_vs_374": 12873
+          }
+        },
+        {
+          "page": 6,
+          "normal": {
+            "hancom_pct": 0.0,
+            "hancom_error_px": 0,
+            "changed_pixels_vs_374": 0
+          },
+          "alternate": {
+            "hancom_pct": 0.0,
+            "hancom_error_px": 0,
+            "changed_pixels_vs_374": 0
+          }
+        }
+      ]
+    },
+    "hwpx-h-01": {
+      "pages": 9,
+      "visual_classification": "Alternate widens bold text and shifts some line wraps; normal is closer.",
+      "normal": {
+        "hancom_worst_pct": 0.59,
+        "hancom_error_px": 2694,
+        "hancom_ink_px": 2648555,
+        "changed_pixels_vs_374": 87540
+      },
+      "alternate": {
+        "hancom_worst_pct": 3.61,
+        "hancom_error_px": 18202,
+        "hancom_ink_px": 2670100,
+        "changed_pixels_vs_374": 277395
+      },
+      "per_page": [
+        {
+          "page": 1,
+          "normal": {
+            "hancom_pct": 0.59,
+            "hancom_error_px": 2601,
+            "changed_pixels_vs_374": 0
+          },
+          "alternate": {
+            "hancom_pct": 3.61,
+            "hancom_error_px": 16598,
+            "changed_pixels_vs_374": 151137
+          }
+        },
+        {
+          "page": 2,
+          "normal": {
+            "hancom_pct": 0.01,
+            "hancom_error_px": 21,
+            "changed_pixels_vs_374": 0
+          },
+          "alternate": {
+            "hancom_pct": 0.02,
+            "hancom_error_px": 43,
+            "changed_pixels_vs_374": 17363
+          }
+        },
+        {
+          "page": 3,
+          "normal": {
+            "hancom_pct": 0.0,
+            "hancom_error_px": 1,
+            "changed_pixels_vs_374": 9761
+          },
+          "alternate": {
+            "hancom_pct": 0.41,
+            "hancom_error_px": 1490,
+            "changed_pixels_vs_374": 23431
+          }
+        },
+        {
+          "page": 4,
+          "normal": {
+            "hancom_pct": 0.0,
+            "hancom_error_px": 1,
+            "changed_pixels_vs_374": 8185
+          },
+          "alternate": {
+            "hancom_pct": 0.0,
+            "hancom_error_px": 1,
+            "changed_pixels_vs_374": 9956
+          }
+        },
+        {
+          "page": 5,
+          "normal": {
+            "hancom_pct": 0.0,
+            "hancom_error_px": 1,
+            "changed_pixels_vs_374": 7884
+          },
+          "alternate": {
+            "hancom_pct": 0.0,
+            "hancom_error_px": 1,
+            "changed_pixels_vs_374": 7884
+          }
+        },
+        {
+          "page": 6,
+          "normal": {
+            "hancom_pct": 0.0,
+            "hancom_error_px": 1,
+            "changed_pixels_vs_374": 9661
+          },
+          "alternate": {
+            "hancom_pct": 0.0,
+            "hancom_error_px": 1,
+            "changed_pixels_vs_374": 11551
+          }
+        },
+        {
+          "page": 7,
+          "normal": {
+            "hancom_pct": 0.02,
+            "hancom_error_px": 49,
+            "changed_pixels_vs_374": 8185
+          },
+          "alternate": {
+            "hancom_pct": 0.02,
+            "hancom_error_px": 49,
+            "changed_pixels_vs_374": 9956
+          }
+        },
+        {
+          "page": 8,
+          "normal": {
+            "hancom_pct": 0.0,
+            "hancom_error_px": 1,
+            "changed_pixels_vs_374": 7884
+          },
+          "alternate": {
+            "hancom_pct": 0.0,
+            "hancom_error_px": 1,
+            "changed_pixels_vs_374": 7884
+          }
+        },
+        {
+          "page": 9,
+          "normal": {
+            "hancom_pct": 0.01,
+            "hancom_error_px": 18,
+            "changed_pixels_vs_374": 35980
+          },
+          "alternate": {
+            "hancom_pct": 0.01,
+            "hancom_error_px": 18,
+            "changed_pixels_vs_374": 38233
+          }
+        }
+      ]
+    },
+    "landscape-001": {
+      "pages": 1,
+      "visual_classification": "Pixel-identical policy results and Hancom match.",
+      "normal": {
+        "hancom_worst_pct": 0.0,
+        "hancom_error_px": 2,
+        "hancom_ink_px": 41114,
+        "changed_pixels_vs_374": 0
+      },
+      "alternate": {
+        "hancom_worst_pct": 0.0,
+        "hancom_error_px": 2,
+        "hancom_ink_px": 41114,
+        "changed_pixels_vs_374": 0
+      },
+      "per_page": [
+        {
+          "page": 1,
+          "normal": {
+            "hancom_pct": 0.0,
+            "hancom_error_px": 2,
+            "changed_pixels_vs_374": 0
+          },
+          "alternate": {
+            "hancom_pct": 0.0,
+            "hancom_error_px": 2,
+            "changed_pixels_vs_374": 0
+          }
+        }
+      ]
+    },
+    "random-01-issue_241": {
+      "pages": 1,
+      "visual_classification": "Pixel-identical policy results; inherited layout discrepancy.",
+      "normal": {
+        "hancom_worst_pct": 13.27,
+        "hancom_error_px": 17389,
+        "hancom_ink_px": 131029,
+        "changed_pixels_vs_374": 0
+      },
+      "alternate": {
+        "hancom_worst_pct": 13.27,
+        "hancom_error_px": 17389,
+        "hancom_ink_px": 131029,
+        "changed_pixels_vs_374": 0
+      },
+      "per_page": [
+        {
+          "page": 1,
+          "normal": {
+            "hancom_pct": 13.27,
+            "hancom_error_px": 17389,
+            "changed_pixels_vs_374": 0
+          },
+          "alternate": {
+            "hancom_pct": 13.27,
+            "hancom_error_px": 17389,
+            "changed_pixels_vs_374": 0
+          }
+        }
+      ]
+    },
+    "random-02": {
+      "pages": 1,
+      "visual_classification": "Alternate modestly improves a large inherited layout discrepancy.",
+      "normal": {
+        "hancom_worst_pct": 61.15,
+        "hancom_error_px": 271892,
+        "hancom_ink_px": 444662,
+        "changed_pixels_vs_374": 0
+      },
+      "alternate": {
+        "hancom_worst_pct": 59.98,
+        "hancom_error_px": 264768,
+        "hancom_ink_px": 441461,
+        "changed_pixels_vs_374": 115418
+      },
+      "per_page": [
+        {
+          "page": 1,
+          "normal": {
+            "hancom_pct": 61.15,
+            "hancom_error_px": 271892,
+            "changed_pixels_vs_374": 0
+          },
+          "alternate": {
+            "hancom_pct": 59.98,
+            "hancom_error_px": 264768,
+            "changed_pixels_vs_374": 115418
+          }
+        }
+      ]
+    },
+    "random-03-exam_math_8": {
+      "pages": 1,
+      "visual_classification": "Minor pixel and score change; large inherited equation/layout discrepancy remains.",
+      "normal": {
+        "hancom_worst_pct": 42.01,
+        "hancom_error_px": 11423,
+        "hancom_ink_px": 27190,
+        "changed_pixels_vs_374": 0
+      },
+      "alternate": {
+        "hancom_worst_pct": 41.72,
+        "hancom_error_px": 11574,
+        "hancom_ink_px": 27741,
+        "changed_pixels_vs_374": 12685
+      },
+      "per_page": [
+        {
+          "page": 1,
+          "normal": {
+            "hancom_pct": 42.01,
+            "hancom_error_px": 11423,
+            "changed_pixels_vs_374": 0
+          },
+          "alternate": {
+            "hancom_pct": 41.72,
+            "hancom_error_px": 11574,
+            "changed_pixels_vs_374": 12685
+          }
+        }
+      ]
+    },
+    "random-04": {
+      "pages": 4,
+      "visual_classification": "Alternate closely matches Hancom table rows and text positions on pages 1-3; page 4 remains limited by pagination/content break.",
+      "normal": {
+        "hancom_worst_pct": 34.64,
+        "hancom_error_px": 195921,
+        "hancom_ink_px": 837849,
+        "changed_pixels_vs_374": 0
+      },
+      "alternate": {
+        "hancom_worst_pct": 32.19,
+        "hancom_error_px": 77129,
+        "hancom_ink_px": 751641,
+        "changed_pixels_vs_374": 824450
+      },
+      "per_page": [
+        {
+          "page": 1,
+          "normal": {
+            "hancom_pct": 25.1,
+            "hancom_error_px": 70806,
+            "changed_pixels_vs_374": 0
+          },
+          "alternate": {
+            "hancom_pct": 9.17,
+            "hancom_error_px": 24083,
+            "changed_pixels_vs_374": 277444
+          }
+        },
+        {
+          "page": 2,
+          "normal": {
+            "hancom_pct": 16.74,
+            "hancom_error_px": 29377,
+            "changed_pixels_vs_374": 0
+          },
+          "alternate": {
+            "hancom_pct": 0.16,
+            "hancom_error_px": 238,
+            "changed_pixels_vs_374": 174278
+          }
+        },
+        {
+          "page": 3,
+          "normal": {
+            "hancom_pct": 18.89,
+            "hancom_error_px": 43127,
+            "changed_pixels_vs_374": 0
+          },
+          "alternate": {
+            "hancom_pct": 2.79,
+            "hancom_error_px": 5429,
+            "changed_pixels_vs_374": 235820
+          }
+        },
+        {
+          "page": 4,
+          "normal": {
+            "hancom_pct": 34.64,
+            "hancom_error_px": 52611,
+            "changed_pixels_vs_374": 0
+          },
+          "alternate": {
+            "hancom_pct": 32.19,
+            "hancom_error_px": 47379,
+            "changed_pixels_vs_374": 136908
+          }
+        }
+      ]
+    },
+    "random-05-text-align-2": {
+      "pages": 1,
+      "visual_classification": "Pixel-identical policy results; inherited layout discrepancy.",
+      "normal": {
+        "hancom_worst_pct": 6.75,
+        "hancom_error_px": 12338,
+        "hancom_ink_px": 182879,
+        "changed_pixels_vs_374": 0
+      },
+      "alternate": {
+        "hancom_worst_pct": 6.75,
+        "hancom_error_px": 12338,
+        "hancom_ink_px": 182879,
+        "changed_pixels_vs_374": 0
+      },
+      "per_page": [
+        {
+          "page": 1,
+          "normal": {
+            "hancom_pct": 6.75,
+            "hancom_error_px": 12338,
+            "changed_pixels_vs_374": 0
+          },
+          "alternate": {
+            "hancom_pct": 6.75,
+            "hancom_error_px": 12338,
+            "changed_pixels_vs_374": 0
+          }
+        }
+      ]
+    },
+    "random-06-pua-test": {
+      "pages": 1,
+      "visual_classification": "Minor PUA glyph changes with mixed score and ink impact.",
+      "normal": {
+        "hancom_worst_pct": 4.55,
+        "hancom_error_px": 4414,
+        "hancom_ink_px": 96957,
+        "changed_pixels_vs_374": 0
+      },
+      "alternate": {
+        "hancom_worst_pct": 4.61,
+        "hancom_error_px": 4269,
+        "hancom_ink_px": 92534,
+        "changed_pixels_vs_374": 45277
+      },
+      "per_page": [
+        {
+          "page": 1,
+          "normal": {
+            "hancom_pct": 4.55,
+            "hancom_error_px": 4414,
+            "changed_pixels_vs_374": 0
+          },
+          "alternate": {
+            "hancom_pct": 4.61,
+            "hancom_error_px": 4269,
+            "changed_pixels_vs_374": 45277
+          }
+        }
+      ]
+    }
+  },
+  "aggregate": {
+    "normal": {
+      "pages": 31,
+      "error_px": 528529,
+      "ink_px": 6246145,
+      "ink_weighted_hancom_mismatch_pct": 8.4617
+    },
+    "alternate": {
+      "pages": 31,
+      "error_px": 420522,
+      "ink_px": 6194209,
+      "ink_weighted_hancom_mismatch_pct": 6.789
+    }
+  }
+}

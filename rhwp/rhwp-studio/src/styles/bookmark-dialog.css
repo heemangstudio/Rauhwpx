@@ -1,0 +1,182 @@
+/* ================================================================
+   책갈피 대화상자
+   ================================================================ */
+.bm-dialog {
+  width: 360px;
+}
+
+.bm-body {
+  padding: 10px 14px;
+}
+
+.bm-label {
+  font-size: var(--font-size-base);
+  color: var(--color-text);
+  margin-bottom: 3px;
+}
+
+.bm-row {
+  margin-bottom: 8px;
+}
+
+.bm-name-input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 3px 6px;
+  font-size: var(--font-size-base);
+  border: 1px solid var(--ui-border-strong);
+  background: var(--color-surface);
+  color: var(--color-text);
+  margin-top: 3px;
+}
+
+/* 중간 영역: 목록 + 버튼 */
+.bm-mid {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.bm-list-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.bm-list-header {
+  display: flex;
+  border: 1px solid var(--ui-border-strong);
+  border-bottom: none;
+  background: var(--color-accent-bg);
+  padding: 2px 6px;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+}
+
+.bm-list-hcol {
+  flex: 1;
+}
+
+.bm-list-hcol-type {
+  flex: 0 0 50px;
+  text-align: center;
+}
+
+.bm-list {
+  border: 1px solid var(--ui-border-strong);
+  background: var(--color-surface);
+  height: 160px;
+  overflow-y: auto;
+  font-size: var(--font-size-base);
+}
+
+.bm-item {
+  display: flex;
+  padding: 3px 6px;
+  cursor: default;
+}
+
+.bm-item:hover {
+  background: var(--ui-selected);
+}
+
+.bm-item.selected {
+  background: var(--ui-selected);
+  font-weight: 600;
+}
+
+.bm-item-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bm-item-type {
+  flex: 0 0 50px;
+  text-align: center;
+  color: var(--color-text-muted);
+}
+
+.bm-empty {
+  padding: 10px;
+  color: var(--color-text-hint);
+  font-size: var(--font-size-sm);
+  white-space: pre-line;
+  line-height: 1.5;
+}
+
+.bm-status {
+  font-size: var(--font-size-sm);
+  min-height: 16px;
+  margin-top: 2px;
+}
+
+/* 버튼 컬럼 */
+.bm-btn-col {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.bm-btn-col .dialog-btn {
+  min-width: 70px;
+}
+
+/* 아이콘 버튼 행 */
+.bm-icon-row {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.bm-icon-btn {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--ui-border-strong);
+  background: var(--color-surface-raised);
+  cursor: default;
+  font-size: var(--font-size-lg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+}
+
+.bm-icon-btn:hover {
+  background: var(--ui-hover-strong);
+}
+
+/* 정렬 기준 행 */
+.bm-sort-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0 2px;
+  border-top: 1px solid var(--ui-border-light);
+}
+
+.bm-radio {
+  font-size: var(--font-size-base);
+  cursor: default;
+}
+
+.modal-overlay .bm-dialog { width: min(440px, calc(100vw - 24px)); }
+.bm-body { padding: 16px 20px; }
+.bm-row { margin-bottom: 14px; }
+.bm-label { margin-bottom: 6px; color: var(--ui-text-secondary); font-weight: 600; }
+.bm-name-input { min-height: 36px; padding: 7px 10px; margin-top: 6px; border-color: var(--ui-border-strong); border-radius: 6px; background: var(--ui-surface-raised); color: var(--ui-text); }
+.bm-mid { gap: 12px; }
+.bm-list-header { padding: 7px 10px; border-color: var(--ui-border); border-radius: 8px 8px 0 0; background: var(--ui-surface-muted); }
+.bm-list { height: 180px; border-color: var(--ui-border); border-radius: 0 0 8px 8px; background: var(--ui-surface-raised); }
+.bm-item { min-height: 32px; align-items: center; padding: 6px 10px; }
+.bm-item:hover { background: var(--ui-hover); }
+.bm-btn-col { gap: 6px; }
+.bm-icon-btn { width: 32px; height: 32px; border-color: var(--ui-border); background: var(--ui-surface-raised); color: var(--ui-text); }
+.bm-icon-btn:hover { background: var(--ui-hover); }
+.bm-sort-row { border-top-color: var(--ui-border); }
+.bm-dialog :is(button, input, select):focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+@media (max-width: 480px) { .bm-body { padding: 12px; } .bm-mid { flex-direction: column; } .bm-btn-col { flex-direction: row; flex-wrap: wrap; } .bm-btn-col .dialog-btn { flex: 1; } }

@@ -1,0 +1,651 @@
+/* ─── 변경 사항 drawer ─────────────────────────────────
+   카드 대신 톤과 여백으로 나눈다. 기본 동작(커밋)은 잉크로 채우고,
+   초록·빨강은 diff 에만 쓴다. 모션은 motion.css 토큰을 따른다. */
+
+.ag-changes-overlay {
+  --chg-fast: var(--ag-dur-fast);
+  --chg-base: var(--ag-dur-base);
+  --chg-ease: var(--ag-ease-out);
+  --chg-radius: var(--ag-r-row);
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  color: var(--ag-text);
+  background: transparent;
+}
+
+.ag-changes-overlay[hidden],
+.ag-changes-overlay [hidden] {
+  display: none !important;
+}
+
+/* The narrow sidebar reuses the same working diff and commit form. */
+.ag-compact-changes {
+  display: flex;
+  /* 긴 대화에서 대화 영역과 나누어 줄어들면 40px 토글 줄이 상자 밖으로 넘쳐 입력기와 겹친다. */
+  flex: 0 0 auto;
+  min-height: 0;
+  flex-direction: column;
+  border-top: 0;
+  background: var(--ag-bg);
+}
+
+.ag-compact-changes[hidden],
+.ag-compact-changes [hidden] { display: none !important; }
+
+.ag-compact-changes-toggle {
+  display: flex;
+  flex: 0 0 40px;
+  align-items: center;
+  gap: 8px;
+  width: calc(100% - 16px);
+  padding: 0 10px;
+  border: 0;
+  color: var(--ag-text-secondary);
+  background: transparent;
+  font: inherit;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
+  text-align: left;
+  cursor: default;
+  margin: 0 8px;
+  border-radius: var(--ag-r-row);
+  transition: var(--ag-transition-color);
+}
+
+.ag-compact-changes-toggle:hover,
+.ag-compact-changes-toggle:focus-visible { color: var(--ag-text); background: var(--ag-hover); }
+.ag-compact-changes-toggle .ag-icon { width: 14px; height: 14px; }
+.ag-compact-changes-count { margin-left: auto; color: var(--ag-text-secondary); font-variant-numeric: tabular-nums; }
+.ag-compact-changes-chevron { color: var(--ag-text-secondary); transform: rotate(-90deg); }
+.ag-compact-changes.ag-open .ag-compact-changes-chevron { transform: none; }
+
+.ag-compact-changes-content {
+  min-height: 0;
+  max-height: min(48dvh, 480px);
+  overflow-y: auto;
+  padding: 0 12px 12px;
+  overscroll-behavior: contain;
+}
+
+.ag-compact-changes-content .ag-changes-section { padding: 8px 0 0; }
+.ag-compact-changes-content .ag-changes-section-head { display: none; }
+.ag-compact-changes button { font-family: inherit; cursor: default; }
+
+.ag-changes-drawer {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  font-family: inherit;
+}
+
+.ag-changes-overlay button,
+.ag-changes-review-slot button,
+.ag-changes-item button {
+  font: inherit;
+  cursor: default;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.ag-changes-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 20px 48px;
+  scrollbar-gutter: stable;
+}
+
+/* ── 섹션 ── */
+
+.ag-changes-section { padding: 20px 0 8px; }
+.ag-changes-section + .ag-changes-section { margin-top: 8px; border-top: 1px solid var(--ag-border); }
+
+/* 승인 후 검토 목록이 비면 섹션까지 닫는다. */
+.ag-changes-latest:has(.ag-changes-review-slot > .ag-review:empty),
+.ag-changes-latest:has(.ag-changes-review-slot:empty) { display: none; }
+.ag-changes-latest:has(.ag-changes-review-slot > .ag-review:empty) + .ag-changes-section,
+.ag-changes-latest:has(.ag-changes-review-slot:empty) + .ag-changes-section { border-top: 0; margin-top: 0; }
+
+.ag-changes-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-height: 20px;
+  margin-bottom: 12px;
+}
+
+.ag-changes-section-title {
+  margin: 0;
+  color: var(--ag-text);
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-strong);
+  letter-spacing: 0;
+}
+
+.ag-changes-section-count {
+  display: inline-flex;
+  gap: 8px;
+  margin-left: auto;
+  font-size: var(--ag-fs-mono);
+  font-variant-numeric: var(--ag-numeric);
+  font-family: var(--ag-mono);
+}
+
+.ag-changes-add { color: var(--ag-ok); }
+.ag-changes-del { color: var(--ag-err); }
+.ag-changes-obj { color: var(--ag-text-secondary); }
+
+/* ── 이번 턴 (적용된 에이전트 편집 / 검토 대기) ── */
+
+.ag-fullscreen .ag-review-column .ag-changes-review-slot .ag-review {
+  display: flex;
+  flex: none;
+  width: 100%;
+  max-height: none;
+  overflow: visible;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.ag-fullscreen .ag-review-column .ag-changes-review-slot .ag-review-summary {
+  max-height: none;
+  overflow: visible;
+}
+
+.ag-changes-review-slot .ag-review-card,
+.ag-fullscreen .ag-changes-review-slot .ag-review-card {
+  border-radius: var(--ag-r-card);
+  background: var(--ag-raised);
+}
+
+.ag-changes-review-slot .ag-review-title {
+  align-items: center;
+  min-height: 44px;
+  box-sizing: border-box;
+  padding: 6px 8px 6px 14px;
+  border-bottom: 0;
+  background: transparent;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-strong);
+}
+
+.ag-changes-review-slot .ag-review-title-text { flex: 0 1 auto; }
+
+.ag-changes-review-slot .ag-changes-group-heading { padding-inline: 14px; }
+
+/* ── diff 항목 ── */
+
+.ag-changes-diff-list,
+.ag-changes-commit-diff,
+.ag-changes-history-list {
+  display: grid;
+  gap: 10px;
+}
+
+.ag-changes-diff-list { transition: opacity var(--chg-base) var(--chg-ease); }
+.ag-changes-diff-list.ag-changes-stale { opacity: .6; }
+
+.ag-changes-group-heading {
+  margin: 10px 0 0;
+  padding: 0 2px;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-meta);
+  font-weight: var(--ag-fw-medium);
+}
+
+.ag-changes-group-heading:first-child { margin-top: 0; }
+
+/* 머리줄 없이 diff 줄 묶음 자체가 한 항목이다. 줄끼리는 1px 로 붙이고
+   바깥 모서리만 둥글게 해서 한 덩어리로 읽히게 한다. */
+.ag-changes-item {
+  position: relative;
+  min-width: 0;
+}
+
+/* 검토 카드 안에서는 헤어라인으로 항목을 나눈다. */
+.ag-review-card .ag-changes-item {
+  padding: 8px 10px;
+  border-top: 0;
+}
+
+.ag-changes-text-button.ag-changes-go {
+  position: absolute;
+  z-index: 1;
+  top: 3px;
+  right: 3px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  color: var(--ag-text-secondary);
+  background: var(--ag-raised);
+  opacity: 0;
+  transition: var(--ag-transition-color);
+  box-shadow: var(--n-elev-1);
+}
+
+.ag-review-card .ag-changes-text-button.ag-changes-go { top: 11px; right: 11px; }
+
+.ag-changes-item:hover .ag-changes-go,
+.ag-changes-go:focus-visible { opacity: 1; }
+.ag-changes-go:hover:not(:disabled) { color: var(--ag-text); }
+.ag-changes-go .ag-icon { width: 13px; height: 13px; }
+
+@media (hover: none) {
+  .ag-changes-go { opacity: 1; }
+}
+
+.ag-changes-lines {
+  display: grid;
+  gap: 1px;
+  overflow: hidden;
+  border-radius: var(--ag-r-inner);
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-body);
+}
+
+.ag-changes-line {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: start;
+  position: relative;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ag-changes-line-add { background: var(--ag-diff-add); }
+.ag-changes-line-del { background: var(--ag-diff-del); }
+.ag-changes-line-neutral { color: var(--ag-text-secondary); background: var(--ag-hover); }
+
+/* 첫 줄 오른쪽에 이동 버튼 자리를 남긴다. */
+.ag-changes-item:has(> .ag-changes-go) .ag-changes-line:first-child .ag-changes-line-content { margin-right: 32px; }
+
+.ag-changes-sign {
+  padding-top: 5px;
+  color: var(--ag-text-secondary);
+  font-family: var(--ag-mono);
+  font-size: var(--ag-fs-mono);
+  line-height: 1.6;
+  text-align: center;
+  user-select: none;
+}
+
+.ag-changes-line-add .ag-changes-sign { color: var(--ag-ok); }
+.ag-changes-line-del .ag-changes-sign { color: var(--ag-err); }
+
+.ag-changes-line-content {
+  min-width: 0;
+  /* 여백은 margin 으로 둔다. padding 이면 잘린 7번째 줄이 그 안에 비친다. */
+  margin: 5px 10px 5px 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 6;
+  overflow: hidden;
+}
+
+.ag-changes-line.ag-expanded .ag-changes-line-content {
+  display: block;
+  overflow: visible;
+}
+
+.ag-changes-word-change { border-radius: var(--ag-r-code); }
+.ag-changes-line-add .ag-changes-word-change { background: color-mix(in srgb, var(--ag-ok) 20%, transparent); }
+.ag-changes-line-del .ag-changes-word-change {
+  background: color-mix(in srgb, var(--ag-err) 16%, transparent);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--ag-err) 55%, transparent);
+}
+
+.ag-changes-empty-text { color: var(--ag-text-secondary); }
+
+.ag-changes-expand {
+  grid-column: 2;
+  justify-self: start;
+  margin: -2px 0 5px;
+  padding: 1px 0;
+  border: 0;
+  color: var(--ag-text-secondary);
+  background: transparent;
+  font-size: var(--ag-fs-meta);
+  font-weight: var(--ag-fw-medium);
+  transition: var(--ag-transition-color);
+}
+
+.ag-changes-expand:hover { color: var(--ag-text); }
+
+/* ── 빈 상태·알림 ── */
+
+.ag-changes-notice {
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary);
+}
+
+.ag-changes-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 2px;
+}
+
+.ag-changes-done { color: var(--ag-text-secondary); }
+
+.ag-changes-empty-icon {
+  width: 16px;
+  height: 16px;
+  padding: 3px;
+  border-radius: var(--ag-r-pill);
+  color: var(--ag-ok);
+  background: color-mix(in oklab, var(--ag-ok) 12%, transparent);
+  box-sizing: border-box;
+}
+
+.ag-changes-error { color: var(--ag-err); }
+.ag-changes-notice .ag-changes-text-button { margin-left: auto; }
+
+.ag-changes-text-button {
+  padding: 2px 0;
+  border: 0;
+  color: var(--ag-text);
+  background: transparent;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
+  text-decoration: underline;
+  text-decoration-color: var(--ag-border-strong);
+  text-underline-offset: 3px;
+}
+
+/* ── 커밋 입력 ── */
+
+.ag-changes-working-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.ag-changes-composer {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  min-width: 0;
+  height: 40px;
+  box-sizing: border-box;
+  padding: 0 4px 0 14px;
+  border: 1px solid var(--ag-border);
+  border-radius: var(--ag-r-card);
+  background: var(--ag-input-bg);
+  transition: border-color var(--chg-fast) var(--chg-ease), box-shadow var(--chg-fast) var(--chg-ease);
+  box-shadow: var(--n-elev-1);
+}
+
+.ag-changes-composer:focus-within {
+  border-color: var(--ag-border-strong);
+  box-shadow: var(--n-elev-1);
+}
+
+.ag-changes-message {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  color: var(--ag-text);
+  background: transparent;
+  font: inherit;
+  font-size: var(--ag-fs-body);
+  letter-spacing: var(--ag-track-tight);
+}
+
+.ag-changes-message::placeholder { color: var(--n-text-placeholder); }
+
+.ag-changes-primary,
+.ag-changes-secondary,
+.ag-changes-danger,
+.ag-changes-danger-solid {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 0;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
+  transition: var(--ag-transition-color);
+}
+
+
+.ag-changes-primary {
+  height: 32px;
+  padding: 0 14px;
+  border-radius: var(--ag-r-row);
+  color: var(--ag-primary-fg);
+  background: var(--ag-primary-bg);
+}
+
+.ag-changes-primary:hover:not(:disabled) { background: var(--ag-primary-bg-hover); }
+
+.ag-changes-secondary {
+  height: 32px;
+  padding: 0 14px;
+  border-radius: var(--ag-r-row);
+  color: var(--ag-text);
+  background: var(--ag-hover);
+}
+
+.ag-changes-secondary:hover:not(:disabled) { background: var(--ag-selected); }
+
+.ag-changes-danger {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border-radius: var(--ag-r-card);
+  color: var(--ag-text-secondary);
+  background: transparent;
+  transition: var(--ag-transition-color);
+}
+
+.ag-changes-danger .ag-icon { width: 14px; height: 14px; }
+
+.ag-changes-danger:hover:not(:disabled) {
+  color: var(--ag-err);
+  background: color-mix(in oklab, var(--ag-err) 8%, transparent);
+}
+
+.ag-changes-confirm {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 12px;
+  height: 40px;
+  box-sizing: border-box;
+  padding: 0 4px 0 14px;
+  border: 0;
+  border-radius: var(--ag-r-card);
+  background: color-mix(in oklab, var(--ag-err) 8%, transparent);
+  font-size: var(--ag-fs-secondary);
+  animation: ag-changes-enter var(--chg-base) var(--chg-ease);
+}
+
+.ag-changes-confirm span { margin-right: auto; }
+.ag-changes-confirm .ag-changes-text-button { color: var(--ag-text-secondary); }
+
+.ag-changes-danger-solid {
+  height: 32px;
+  padding: 0 14px;
+  border-radius: var(--ag-r-row);
+  color: var(--ag-primary-fg);
+  background: var(--ag-err);
+}
+
+/* ── 커밋 기록 (타임라인) ── */
+
+.ag-changes-history-list { gap: 0; }
+
+.ag-changes-commit { position: relative; }
+
+/* 점과 점을 잇는 세로선. 첫 점 위, 마지막 점 아래로는 넘기지 않는다. */
+.ag-changes-commit::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 14px;
+  width: 1px;
+  background: var(--ag-border);
+}
+
+.ag-changes-commit:first-child::before { top: 22px; }
+.ag-changes-commit:last-child::before { bottom: auto; height: 22px; }
+.ag-changes-commit:only-child::before { display: none; }
+
+.ag-changes-commit-toggle {
+  position: relative;
+  display: grid;
+  grid-template-columns: 17px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 10px 10px 6px;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  color: var(--ag-text);
+  background: transparent;
+  text-align: left;
+  transition: var(--ag-transition-color);
+}
+
+.ag-changes-commit-toggle:hover { background: var(--ag-hover); }
+.ag-changes-commit.ag-open > .ag-changes-commit-toggle { background: var(--ag-hover); }
+.ag-changes-commit.ag-open > .ag-changes-commit-toggle:hover { background: var(--ag-selected); }
+
+.ag-changes-commit-dot {
+  justify-self: center;
+  width: 9px;
+  height: 9px;
+  margin-top: 5px;
+  box-sizing: border-box;
+  border: 1.5px solid var(--ag-text-tertiary);
+  border-radius: var(--ag-r-pill);
+  background: var(--ag-bg);
+  transition: transform var(--chg-base) var(--chg-ease);
+}
+
+.ag-changes-commit:first-child .ag-changes-commit-dot {
+  border-color: var(--ag-text);
+  background: var(--ag-text);
+}
+
+.ag-changes-commit-copy { display: grid; gap: 3px; min-width: 0; }
+
+.ag-changes-commit-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
+  line-height: var(--ag-lh-secondary);
+  overflow-wrap: anywhere;
+}
+
+.ag-changes-commit.ag-open .ag-changes-commit-title { display: block; }
+
+.ag-changes-commit-meta {
+  display: flex;
+  gap: 8px;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-meta);
+}
+
+.ag-changes-commit-hash { font-family: var(--ag-mono); font-size: var(--ag-fs-mono); }
+
+.ag-changes-commit-stats {
+  display: inline-flex;
+  gap: 6px;
+  padding-top: 2px;
+  font-size: var(--ag-fs-mono);
+  font-variant-numeric: var(--ag-numeric);
+  font-family: var(--ag-mono);
+}
+
+/* 통계를 계산하는 동안 자리만 잡아 두는 얇은 막대. */
+.ag-changes-commit-stats.ag-pending::before {
+  content: '';
+  width: 34px;
+  height: 7px;
+  margin-top: 5px;
+  border-radius: var(--ag-r-pill);
+  background: var(--ag-border);
+  animation: ag-changes-pulse 1.2s ease-in-out infinite;
+}
+
+.ag-changes-commit-detail {
+  display: grid;
+  gap: 8px;
+  padding: 10px 0 14px 33px;
+}
+
+.ag-changes-commit-detail.ag-enter { animation: ag-changes-enter var(--chg-base) var(--chg-ease); }
+.ag-changes-commit-detail > .ag-changes-secondary { justify-self: start; }
+
+/* 방금 만든 커밋: 점이 한 번 튀고 행이 잠깐 밝아진다. */
+.ag-changes-commit-new > .ag-changes-commit-toggle { animation: ag-changes-flash 1.4s var(--chg-ease); }
+.ag-changes-commit-new .ag-changes-commit-dot { animation: ag-changes-pop 520ms var(--ag-spring, var(--chg-ease)); }
+
+@keyframes ag-changes-enter {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes ag-changes-flash {
+  from { background: var(--ag-selected); }
+  to { background: transparent; }
+}
+
+@keyframes ag-changes-pop {
+  0% { transform: scale(.4); }
+  60% { transform: scale(1.35); }
+  100% { transform: scale(1); }
+}
+
+@keyframes ag-changes-pulse {
+  50% { opacity: .45; }
+}
+
+/* ── 공통 상태 ── */
+
+.ag-changes-overlay button:disabled,
+.ag-changes-overlay input:disabled,
+.ag-compact-changes button:disabled,
+.ag-compact-changes input:disabled,
+.ag-changes-review-slot button:disabled { opacity: .45; cursor: default; }
+
+.ag-changes-overlay button:focus-visible,
+.ag-compact-changes button:focus-visible,
+.ag-compact-changes input:focus-visible,
+.ag-changes-item button:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-changes-commit-detail.ag-enter,
+  .ag-changes-confirm,
+  .ag-changes-commit-new > .ag-changes-commit-toggle,
+  .ag-changes-commit-new .ag-changes-commit-dot,
+  .ag-changes-commit-stats.ag-pending::before { animation: none; }
+}
+
+@media (max-width: 700px) {
+  .ag-changes-body { padding: 4px 14px 36px; }
+}

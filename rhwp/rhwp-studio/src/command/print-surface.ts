@@ -1,0 +1,291 @@
+const DEFAULT_PRINT_SURFACE_PATH = 'print.html';
+const DEFAULT_PRINT_SURFACE_TIMEOUT_MS = 10_000;
+const PRINT_FRAME_ID = 'rhwp-print-surface';
+
+export interface PrintDocumentSurface {
+  readonly window: Window;
+  readonly document: Document;
+}
+
+export interface PrintSurface extends PrintDocumentSurface {
+  readonly frame: HTMLIFrameElement;
+  dispose(): void;
+}
+
+export interface PrintPreviewSurface extends PrintDocumentSurface {
+  close(): void;
+}
+
+export interface PrintSurfaceOptions {
+  hostDocument?: Document;
+  surfacePath?: string;
+  timeoutMs?: number;
+}
+
+export interface PrintPreviewSurfaceOptions {
+  hostWindow?: Window;
+  surfacePath?: string;
+  timeoutMs?: number;
+  /** window.open 대상 이름. 데스크톱은 PDF 내보내기 이름을 숨은 창으로 연다. */
+  frameName?: string;
+}
+
+export class PrintPreviewBlockedError extends Error {
+  constructor() {
+    super('인쇄 미리보기 팝업이 차단되었습니다.');
+    this.name = 'PrintPreviewBlockedError';
+  }
+}
+
+export function resolvePrintSurfaceUrl(
+  baseUrl: string,
+  surfacePath = DEFAULT_PRINT_SURFACE_PATH,
+): string {
+  return new URL(surfacePath, baseUrl).href;
+}
+
+export async function createPrintSurface(
+  options: PrintSurfaceOptions = {},
+): Promise<PrintSurface> {
+  const hostDocument = options.hostDocument ?? document;
+  const hostWindow = hostDocument.defaultView;
+  if (!hostWindow || !hostDocument.body) {
+    throw new Error('인쇄 surface를 만들 수 없습니다.');
+  }
+
+  hostDocument.getElementById(PRINT_FRAME_ID)?.remove();
+
+  const frame = hostDocument.createElement('iframe');
+  frame.id = PRINT_FRAME_ID;
+  frame.title = '인쇄 문서';
+  frame.setAttribute('aria-hidden', 'true');
+  frame.style.position = 'fixed';
+  frame.style.inset = '0';
+  frame.style.width = '100vw';
+  frame.style.height = '100vh';
+  frame.style.border = '0';
+  frame.style.opacity = '0';
+  frame.style.pointerEvents = 'none';
+  frame.style.zIndex = '-1';
+
+  const surfaceUrl = resolvePrintSurfaceUrl(
+    hostDocument.baseURI,
+    options.surfacePath ?? DEFAULT_PRINT_SURFACE_PATH,
+  );
+  const timeoutMs = options.timeoutMs ?? DEFAULT_PRINT_SURFACE_TIMEOUT_MS;
+
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      hostWindow.clearTimeout(timeoutId);
+      frame.removeEventListener('load', onLoad);
+      frame.removeEventListener('error', onError);
+      if (error) reject(error);
+      else resolve();
+    };
+    const onLoad = () => finish();
+    const onError = () => finish(new Error('인쇄 surface를 불러오지 못했습니다.'));
+    const timeoutId = hostWindow.setTimeout(
+      () => finish(new Error('인쇄 surface 준비 시간이 초과되었습니다.')),
+      timeoutMs,
+    );
+
+    frame.addEventListener('load', onLoad);
+    frame.addEventListener('error', onError);
+    frame.src = surfaceUrl;
+    hostDocument.body.appendChild(frame);
+  }).catch((error) => {
+    frame.remove();
+    throw error;
+  });
+
+  const printWindow = frame.contentWindow;
+  const printDocument = frame.contentDocument;
+  if (!printWindow || !printDocument) {
+    frame.remove();
+    throw new Error('same-origin 인쇄 surface에 접근할 수 없습니다.');
+  }
+  if (printWindow.location.origin !== hostWindow.location.origin) {
+    frame.remove();
+    throw new Error('인쇄 surface의 origin이 Studio와 다릅니다.');
+  }
+
+  let disposed = false;
+  return {
+    frame,
+    window: printWindow,
+    document: printDocument,
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      frame.remove();
+    },
+  };
+}
+
+/**
+ * 사용자 클릭의 동기 구간에서 same-origin 인쇄 미리보기 창을 먼저 확보한다.
+ * 함수가 Promise를 반환하지만 window.open 자체는 첫 await 전에 즉시 실행된다.
+ */
+export function createPrintPreviewSurface(
+  options: PrintPreviewSurfaceOptions = {},
+): Promise<PrintPreviewSurface> {
+  const hostWindow = options.hostWindow ?? window;
+  const surfaceUrl = resolvePrintSurfaceUrl(
+    hostWindow.document.baseURI,
+    options.surfacePath ?? DEFAULT_PRINT_SURFACE_PATH,
+  );
+  const timeoutMs = options.timeoutMs ?? DEFAULT_PRINT_SURFACE_TIMEOUT_MS;
+  const previewWindow = hostWindow.open(surfaceUrl, options.frameName ?? '_blank');
+  if (!previewWindow) {
+    return Promise.reject(new PrintPreviewBlockedError());
+  }
+
+  return new Promise<PrintPreviewSurface>((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      hostWindow.clearTimeout(timeoutId);
+      previewWindow.removeEventListener('load', onLoad);
+
+      if (error) {
+        previewWindow.close();
+        reject(error);
+        return;
+      }
+
+      try {
+        const previewDocument = previewWindow.document;
+        if (previewWindow.location.origin !== hostWindow.location.origin) {
+          throw new Error('인쇄 미리보기 창의 origin이 Studio와 다릅니다.');
+        }
+        resolve({
+          window: previewWindow,
+          document: previewDocument,
+          close() {
+            if (!previewWindow.closed) previewWindow.close();
+          },
+        });
+      } catch (error) {
+        previewWindow.close();
+        reject(error);
+      }
+    };
+    const onLoad = () => finish();
+    const timeoutId = hostWindow.setTimeout(
+      () => finish(new Error('인쇄 미리보기 준비 시간이 초과되었습니다.')),
+      timeoutMs,
+    );
+
+    previewWindow.addEventListener('load', onLoad);
+    if (
+      previewWindow.location.href === surfaceUrl
+      && previewWindow.document.readyState === 'complete'
+    ) {
+      hostWindow.queueMicrotask(onLoad);
+    }
+  });
+}
+
+/** 사용자가 준비 중인 인쇄 미리보기 창을 닫았다. 오류가 아니라 취소로 다룬다. */
+export class PrintSurfaceClosedError extends Error {
+  constructor() {
+    super('인쇄 미리보기 창이 닫혔습니다.');
+    this.name = 'PrintSurfaceClosedError';
+  }
+}
+
+export interface PrintSurfaceReadyOptions {
+  /** document.fonts.ready 를 기다리는 최대 시간 */
+  fontTimeoutMs?: number;
+  /** requestAnimationFrame 한 번을 기다리는 최대 시간 */
+  frameTimeoutMs?: number;
+}
+
+const DEFAULT_FONT_READY_TIMEOUT_MS = 10_000;
+const DEFAULT_FRAME_TIMEOUT_MS = 1_000;
+const CLOSED_POLL_INTERVAL_MS = 100;
+
+export function assertPrintSurfaceOpen(windowLike: Pick<Window, 'closed'>): void {
+  if (windowLike.closed) throw new PrintSurfaceClosedError();
+}
+
+/**
+ * 창이 열려 있는 동안 step 을 기다린다. 닫힌 창의 문서는 fully active 가 아니어서
+ * rAF 콜백과 fonts.ready 가 오지 않을 수 있다. 창이 닫히면 PrintSurfaceClosedError,
+ * 제한 시간이 지나면 그대로 진행한다 (백그라운드 탭의 rAF 정지 대비).
+ */
+function waitWhileOpen(
+  windowLike: Window,
+  step: () => Promise<unknown>,
+  timeoutMs: number,
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearInterval(poll);
+      if (error) reject(error);
+      else resolve();
+    };
+    const timer = setTimeout(() => finish(), timeoutMs);
+    const poll = setInterval(() => {
+      if (windowLike.closed) finish(new PrintSurfaceClosedError());
+    }, CLOSED_POLL_INTERVAL_MS);
+    try {
+      step().then(() => finish(), () => finish());
+    } catch {
+      finish();
+    }
+  }).then(() => assertPrintSurfaceOpen(windowLike));
+}
+
+export async function waitForPrintSurfaceReady(
+  surface: PrintDocumentSurface,
+  options: PrintSurfaceReadyOptions = {},
+): Promise<void> {
+  const fontTimeoutMs = options.fontTimeoutMs ?? DEFAULT_FONT_READY_TIMEOUT_MS;
+  const frameTimeoutMs = options.frameTimeoutMs ?? DEFAULT_FRAME_TIMEOUT_MS;
+  const nextFrame = () => new Promise<void>((resolve) => {
+    surface.window.requestAnimationFrame(() => resolve());
+  });
+
+  assertPrintSurfaceOpen(surface.window);
+  const fontSet = surface.document.fonts;
+  if (fontSet) {
+    await waitWhileOpen(surface.window, () => fontSet.ready, fontTimeoutMs);
+  }
+
+  await waitWhileOpen(surface.window, nextFrame, frameTimeoutMs);
+  await waitWhileOpen(surface.window, nextFrame, frameTimeoutMs);
+
+  // 인쇄 호출 직전에 style/layout 계산을 완료시킨다.
+  void surface.document.documentElement.getBoundingClientRect();
+}
+
+/**
+ * Studio가 등록한 글꼴(번들 웹 글꼴, 가져온 로컬 글꼴, 데스크톱 시스템 글꼴)을
+ * 인쇄 문서에도 등록한다. 인쇄 문서는 별도 문서라 이 글꼴을 보지 못해, 수식의
+ * HyhwpEQ PUA 글리프 같은 문자가 대체 글꼴 없이 빈 상자로 찍혔다.
+ */
+export function mirrorDocumentFonts(source: Document, target: Document): number {
+  const sourceFonts = source.fonts;
+  const targetFonts = target.fonts;
+  if (!sourceFonts || !targetFonts || sourceFonts === targetFonts) return 0;
+  let mirrored = 0;
+  sourceFonts.forEach((face) => {
+    if (face.status === 'error') return;
+    try {
+      targetFonts.add(face);
+      mirrored += 1;
+    } catch (error) {
+      console.warn(`[print] 글꼴을 인쇄 문서에 등록하지 못했습니다 (${face.family}):`, error);
+    }
+  });
+  return mirrored;
+}

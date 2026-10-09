@@ -1,0 +1,1603 @@
+/**
+ * 에이전트 객체 연산 (Phase 2: 표 생성/구조 변경, 문단 서식, 스타일, 폰트) 테스트.
+ *
+ * executor → 실제 PendingEditManager → 가짜 wasm 통합 경로로
+ * apply / reject(역연산) / approve(미리보기 채택) / 가드 / 좌표 이동을 검증한다.
+ */
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { EventBus } from '../src/core/event-bus.ts';
+import { RevisionTracker } from '../src/agent/revision.ts';
+import { AgentToolExecutor, mmToHu } from '../src/agent/tool-executor.ts';
+import { PendingEditManager } from '../src/agent/pending-edits.ts';
+import { AgentToolError } from '../src/agent/types.ts';
+
+interface FakeTable {
+  paraIdx: number;
+  controlIdx: number;
+  rows: number;
+  cols: number;
+  /** flat cellIdx → 셀 문단 텍스트 배열 */
+  cells: string[][];
+  cellProps: Array<Record<string, unknown>>;
+  tableProps: Record<string, unknown>;
+}
+
+function makeEnv(sourcePath: string | null = null) {
+  const body = ['Title', 'Second paragraph with text', ''];
+  const bodyParaShapes = [10, 11, 12];
+  const tables: FakeTable[] = [];
+  const calls: Array<{ m: string; a: unknown[] }> = [];
+  const fonts = ['바탕'];
+  const record = (m: string, ...a: unknown[]) => { calls.push({ m, a }); };
+  const okJson = (extra: Record<string, unknown> = {}) => JSON.stringify({ ok: true, ...extra });
+
+  const findTable = (para: number, ctrl: number): FakeTable => {
+    const t = tables.find((x) => x.paraIdx === para && x.controlIdx === ctrl);
+    if (!t) throw new Error(`표 없음 @${para}/${ctrl}`);
+    return t;
+  };
+
+  // 서식 읽기가 돌려줄 가변 속성 — 테스트가 호출 전에 덮어쓴다
+  const paraProps: Record<string, unknown> = {};
+  const charProps: Record<string, unknown> = { fontFamily: '바탕' };
+
+  /** 가짜 중첩 경로 해석 — 첫 세그먼트로 표/셀을 찾고 마지막 세그먼트의 cellParaIndex 를 문단으로 쓴다 */
+  const resolveCellPath = (para: number, pathJson: string) => {
+    const path = JSON.parse(pathJson) as Array<{ controlIndex: number; cellIndex: number; cellParaIndex: number }>;
+    if (path.length === 0) throw new Error('빈 경로');
+    const head = path[0];
+    const t = findTable(para, head.controlIndex);
+    if (head.cellIndex < 0 || head.cellIndex >= t.cells.length) throw new Error('path 범위 밖');
+    return { t, cell: head.cellIndex, para: path[path.length - 1].cellParaIndex };
+  };
+
+  const wasm = {
+    // ─ 본문 ─
+    getSectionCount: () => 1,
+    getParagraphCount: () => body.length,
+    getParagraphLength: (_s: number, p: number) => body[p].length,
+    getTextRange: (_s: number, p: number, off: number, cnt: number) => body[p].slice(off, off + cnt),
+    insertText: (_s: number, p: number, off: number, t: string) => {
+      body[p] = body[p].slice(0, off) + t + body[p].slice(off);
+      return okJson();
+    },
+    splitParagraph: (_s: number, p: number, off: number) => {
+      const cur = body[p];
+      body.splice(p, 1, cur.slice(0, off), cur.slice(off));
+      bodyParaShapes.splice(p, 1, bodyParaShapes[p], bodyParaShapes[p]);
+      for (const t of tables) if (t.paraIdx > p) t.paraIdx += 1;
+      return okJson();
+    },
+    splitParagraphLogical(this: any, s: number, p: number, off: number) {
+      return this.splitParagraph(s, p, off);
+    },
+    deleteRange: (_s: number, sp: number, so: number, ep: number, eo: number) => {
+      const removed = ep - sp;
+      body.splice(sp, ep - sp + 1, body[sp].slice(0, so) + body[ep].slice(eo));
+      bodyParaShapes.splice(sp + 1, removed);
+      for (const t of tables) if (t.paraIdx > ep) t.paraIdx -= removed;
+      return { ok: true };
+    },
+    get pageCount() { return 1; },
+    getPageControlLayout: () => ({
+      controls: tables.map((t) => ({ type: 'table', secIdx: 0, paraIdx: t.paraIdx, controlIdx: t.controlIdx, x: 0, y: 0, w: 10, h: 10 })),
+    }),
+    // ─ 표 ─
+    createTableEx: (opts: {
+      sectionIdx: number; paraIdx: number; charOffset: number;
+      rowCount: number; colCount: number; treatAsChar?: boolean; colWidths?: number[];
+    }) => {
+      record('createTableEx', opts);
+      if (opts.treatAsChar !== true) throw new Error('테스트는 treatAsChar 경로만 허용');
+      const controlIdx = tables.filter((t) => t.paraIdx === opts.paraIdx).length;
+      tables.push({
+        paraIdx: opts.paraIdx, controlIdx,
+        rows: opts.rowCount, cols: opts.colCount,
+        cells: Array.from({ length: opts.rowCount * opts.colCount }, () => ['']),
+        cellProps: Array.from({ length: opts.rowCount * opts.colCount }, () => ({})),
+        tableProps: {},
+      });
+      return { ok: true, paraIdx: opts.paraIdx, controlIdx };
+    },
+    deleteTableControl: (_s: number, para: number, ctrl: number) => {
+      record('deleteTableControl', para, ctrl);
+      const i = tables.findIndex((t) => t.paraIdx === para && t.controlIdx === ctrl);
+      if (i < 0) return { ok: false };
+      tables.splice(i, 1);
+      return { ok: true };
+    },
+    getTableDimensions: (_s: number, para: number, ctrl: number) => {
+      const t = findTable(para, ctrl);
+      return { rowCount: t.rows, colCount: t.cols, cellCount: t.cells.length };
+    },
+    getTableProperties: (_s: number, para: number, ctrl: number) => ({
+      cellSpacing: 0, paddingLeft: 0, paddingRight: 0, paddingTop: 0, paddingBottom: 0,
+      pageBreak: 0, repeatHeader: false, tableWidth: 42520, tableHeight: 5000,
+      outerLeft: 0, outerRight: 0, outerTop: 0, outerBottom: 0,
+      treatAsChar: true, textWrap: 'TopAndBottom', vertRelTo: 'Para', vertAlign: 'Top',
+      horzRelTo: 'Column', horzAlign: 'Left', vertOffset: 0, horzOffset: 0,
+      restrictInPage: true, allowOverlap: false, keepWithAnchor: true, hasCaption: false,
+      ...findTable(para, ctrl).tableProps,
+    }),
+    getCellProperties: (_s: number, para: number, ctrl: number, cell: number) => ({
+      width: 21260, height: 2500, paddingLeft: 0, paddingRight: 0, paddingTop: 0, paddingBottom: 0,
+      applyInnerMargin: false, verticalAlign: 0, textDirection: 0, isHeader: false,
+      cellProtect: false, editableInForm: false, fieldName: '',
+      ...findTable(para, ctrl).cellProps[cell],
+    }),
+    getCellInfo: (_s: number, para: number, ctrl: number, idx: number) => {
+      const t = findTable(para, ctrl);
+      return { row: Math.floor(idx / t.cols), col: idx % t.cols, rowSpan: 1, colSpan: 1 };
+    },
+    getCellParagraphCount: (_s: number, para: number, ctrl: number, cell: number) =>
+      findTable(para, ctrl).cells[cell].length,
+    getCellParagraphLength: (_s: number, para: number, ctrl: number, cell: number, cp: number) =>
+      findTable(para, ctrl).cells[cell][cp].length,
+    getTextInCell: (_s: number, para: number, ctrl: number, cell: number, cp: number, off: number, cnt: number) =>
+      findTable(para, ctrl).cells[cell][cp].slice(off, off + cnt),
+    insertTextInCell: (_s: number, para: number, ctrl: number, cell: number, cp: number, off: number, t: string) => {
+      const ft = findTable(para, ctrl);
+      ft.cells[cell][cp] = ft.cells[cell][cp].slice(0, off) + t + ft.cells[cell][cp].slice(off);
+      return okJson({ charOffset: off + t.length });
+    },
+    splitParagraphInCell: (_s: number, para: number, ctrl: number, cell: number, cp: number, off: number) => {
+      const ft = findTable(para, ctrl);
+      const cur = ft.cells[cell][cp];
+      ft.cells[cell].splice(cp, 1, cur.slice(0, off), cur.slice(off));
+      return okJson();
+    },
+    splitParagraphInCellLogical(this: any, s: number, para: number, ctrl: number, cell: number, cp: number, off: number) {
+      return this.splitParagraphInCell(s, para, ctrl, cell, cp, off);
+    },
+    deleteRangeInCell: (_s: number, para: number, ctrl: number, cell: number, sp: number, so: number, ep: number, eo: number) => {
+      const ft = findTable(para, ctrl);
+      ft.cells[cell].splice(sp, ep - sp + 1, ft.cells[cell][sp].slice(0, so) + ft.cells[cell][ep].slice(eo));
+      return { ok: true, paraIdx: sp, charOffset: so };
+    },
+    setCellProperties: (_s: number, para: number, ctrl: number, cell: number, props: Record<string, unknown>) => {
+      record('setCellProperties', para, ctrl, cell, props);
+      Object.assign(findTable(para, ctrl).cellProps[cell], props);
+      return { ok: true };
+    },
+    setTableProperties: (_s: number, para: number, ctrl: number, props: Record<string, unknown>) => {
+      record('setTableProperties', para, ctrl, props);
+      Object.assign(findTable(para, ctrl).tableProps, props);
+      return { ok: true };
+    },
+    // 표 bbox / 쪽 정보 — get_table_layout 용 (px, 96dpi 페이지 좌표)
+    getTableBBox: (_s: number, para: number, ctrl: number) => {
+      findTable(para, ctrl);
+      return { pageIndex: 0, x: 96, y: 96, width: 400, height: 1200 };
+    },
+    getTableBBoxAtPage: () => { throw new Error('그 쪽에는 표 조각이 없습니다'); },
+    getPageInfo: (page: number) => ({
+      pageIndex: page, width: 794, height: 1123, sectionIndex: 0,
+      marginLeft: 96, marginRight: 96, marginTop: 76, marginBottom: 60,
+      marginHeader: 20, marginFooter: 20,
+    }),
+    setTableColumnWidths: (_s: number, para: number, ctrl: number, widths: number[]) => {
+      record('setTableColumnWidths', para, ctrl, widths);
+      const t = findTable(para, ctrl);
+      return { ok: true, colCount: t.cols, tableWidth: widths.reduce((sum, w) => sum + w, 0) };
+    },
+    fitTableToPage: (_s: number, para: number, ctrl: number) => {
+      record('fitTableToPage', para, ctrl);
+      return { ok: true, colCount: findTable(para, ctrl).cols, tableWidth: 42520 };
+    },
+    setCellZoneProperties: (
+      _s: number, para: number, ctrl: number,
+      range: Record<string, number>, props: Record<string, unknown>,
+    ) => {
+      record('setCellZoneProperties', para, ctrl, range, props);
+      return { ok: true, borderFillId: 7 };
+    },
+    evaluateTableFormulaEx: (options: Record<string, unknown>) => {
+      record('evaluateTableFormulaEx', options);
+      return { ok: true, value: 300, display: '300' };
+    },
+    setTableCaptionText: (_s: number, para: number, ctrl: number, text: string, withNumber: boolean) => {
+      record('setTableCaptionText', para, ctrl, text, withNumber);
+      return { ok: true, captionText: withNumber ? `표 1 ${text}` : text };
+    },
+    applyCharFormatInCell: (_s: number, para: number, ctrl: number, cell: number, cp: number, so: number, eo: number, json: string) => {
+      record('applyCharFormatInCell', para, ctrl, cell, cp, so, eo, json);
+      return okJson();
+    },
+    insertTableRow: (_s: number, para: number, ctrl: number, rowIdx: number, below: boolean) => {
+      record('insertTableRow', rowIdx, below);
+      const t = findTable(para, ctrl);
+      const at = (below ? rowIdx + 1 : rowIdx) * t.cols;
+      t.cells.splice(at, 0, ...Array.from({ length: t.cols }, () => ['']));
+      t.cellProps.splice(at, 0, ...Array.from({ length: t.cols }, () => ({})));
+      t.rows += 1;
+      return { ok: true, rowCount: t.rows, colCount: t.cols };
+    },
+    deleteTableRow: (_s: number, para: number, ctrl: number, rowIdx: number) => {
+      record('deleteTableRow', rowIdx);
+      const t = findTable(para, ctrl);
+      t.cells.splice(rowIdx * t.cols, t.cols);
+      t.cellProps.splice(rowIdx * t.cols, t.cols);
+      t.rows -= 1;
+      return { ok: true, rowCount: t.rows, colCount: t.cols };
+    },
+    insertTableColumn: (_s: number, para: number, ctrl: number, colIdx: number, right: boolean) => {
+      record('insertTableColumn', colIdx, right);
+      const t = findTable(para, ctrl);
+      const at = right ? colIdx + 1 : colIdx;
+      for (let r = t.rows - 1; r >= 0; r--) {
+        t.cells.splice(r * t.cols + at, 0, ['']);
+        t.cellProps.splice(r * t.cols + at, 0, {});
+      }
+      t.cols += 1;
+      return { ok: true, rowCount: t.rows, colCount: t.cols };
+    },
+    deleteTableColumn: (_s: number, para: number, ctrl: number, colIdx: number) => {
+      record('deleteTableColumn', colIdx);
+      const t = findTable(para, ctrl);
+      for (let r = t.rows - 1; r >= 0; r--) {
+        t.cells.splice(r * t.cols + colIdx, 1);
+        t.cellProps.splice(r * t.cols + colIdx, 1);
+      }
+      t.cols -= 1;
+      return { ok: true, rowCount: t.rows, colCount: t.cols };
+    },
+    mergeTableCells: (_s: number, para: number, ctrl: number, sr: number, sc: number, er: number, ec: number) => {
+      record('mergeTableCells', sr, sc, er, ec);
+      return { ok: true, cellCount: findTable(para, ctrl).cells.length };
+    },
+    splitTableCellInto: (_s: number, para: number, ctrl: number, row: number, col: number, nRows: number, nCols: number, equal: boolean, mergeFirst: boolean) => {
+      record('splitTableCellInto', row, col, nRows, nCols, equal, mergeFirst);
+      return { ok: true, cellCount: findTable(para, ctrl).cells.length + nRows * nCols - 1 };
+    },
+    // ─ 문단 서식/스타일 ─
+    getParaPropertiesAt: (_s: number, p: number) => ({ paraShapeId: bodyParaShapes[p], alignment: 'left', ...paraProps }),
+    applyParaFormat: (_s: number, p: number, json: string) => {
+      record('applyParaFormat', p, json);
+      bodyParaShapes[p] = 99;
+      return okJson();
+    },
+    setParaShapeId: (_s: number, p: number, id: number) => {
+      record('setParaShapeId', p, id);
+      bodyParaShapes[p] = id;
+      return okJson();
+    },
+    getCellParaPropertiesAt: () => ({ paraShapeId: 55 }),
+    applyParaFormatInCell: (...a: unknown[]) => { record('applyParaFormatInCell', ...a); return okJson(); },
+    setCellParaShapeId: (...a: unknown[]) => { record('setCellParaShapeId', ...a); return okJson(); },
+    // ─ 중첩 셀 경로 — head 세그먼트로 표를 찾고 마지막 세그먼트의 문단 인덱스를 쓴다
+    // (테스트 표는 1단밖에 없어 path[0] 만 실제로 해석한다)
+    getCellParagraphCountByPath: (_s: number, para: number, pathJson: string) =>
+      resolveCellPath(para, pathJson).t.cells[resolveCellPath(para, pathJson).cell].length,
+    getCellParagraphLengthByPath: (_s: number, para: number, pathJson: string) => {
+      const r = resolveCellPath(para, pathJson);
+      return r.t.cells[r.cell][r.para].length;
+    },
+    getTextInCellByPath: (_s: number, para: number, pathJson: string, off: number, cnt: number) => {
+      const r = resolveCellPath(para, pathJson);
+      return r.t.cells[r.cell][r.para].slice(off, off + cnt);
+    },
+    getCellParaPropertiesAtByPath: (_s: number, para: number, pathJson: string) => {
+      record('getCellParaPropertiesAtByPath', pathJson);
+      return { paraShapeId: 55 };
+    },
+    applyParaFormatInCellByPath: (_s: number, para: number, pathJson: string, json: string) => {
+      record('applyParaFormatInCellByPath', pathJson, json);
+      return okJson();
+    },
+    setCellParaShapeIdByPath: (...a: unknown[]) => { record('setCellParaShapeIdByPath', ...a); return okJson(); },
+    getCellCharPropertiesAtByPath: (_s: number, para: number, pathJson: string, off: number) => {
+      record('getCellCharPropertiesAtByPath', pathJson, off);
+      return charProps;
+    },
+    applyCharFormatInCellByPath: (_s: number, para: number, pathJson: string, so: number, eo: number, json: string) => {
+      record('applyCharFormatInCellByPath', pathJson, so, eo, json);
+      return okJson();
+    },
+    getStyleList: () => [
+      { id: 0, name: '바탕글', englishName: 'Normal', type: 0, nextStyleId: 0, paraShapeId: 1, charShapeId: 1 },
+      { id: 3, name: '개요 1', englishName: 'Outline 1', type: 0, nextStyleId: 3, paraShapeId: 5, charShapeId: 5 },
+    ],
+    applyStyle: (...a: unknown[]) => { record('applyStyle', ...a); return { ok: true }; },
+    applyCellStyle: (...a: unknown[]) => { record('applyCellStyle', ...a); return { ok: true }; },
+    // ─ 폰트/글자 서식 ─
+    findOrCreateFontId: (name: string) => {
+      let i = fonts.indexOf(name);
+      if (i < 0) { fonts.push(name); i = fonts.length - 1; }
+      return i;
+    },
+    getCharPropertiesAt: () => charProps,
+    getCellCharPropertiesAt: () => charProps,
+    applyCharFormat: (...a: unknown[]) => { record('applyCharFormat', ...a); return okJson(); },
+    // ─ 셀 수식 ─
+    renderEquationPreview: (script: string) =>
+      JSON.stringify({
+        svg: `<svg xmlns="http://www.w3.org/2000/svg"><text>${script}</text></svg>`,
+        widthPx: 40, heightPx: 20, baselinePx: 15, warnings: [],
+      }),
+    insertEquationInCell: (_s: number, para: number, ctrl: number, cell: number, cp: number, _off: number, script: string) => {
+      record('insertEquationInCell', para, ctrl, cell, cp, script);
+      const ft = findTable(para, ctrl);
+      (ft as unknown as { eqs?: Map<string, string> }).eqs ??= new Map();
+      (ft as unknown as { eqs: Map<string, string> }).eqs.set(`${cell}:${cp}`, script);
+      return { ok: true, cellParaIdx: cp, controlIdx: 0 };
+    },
+    deleteEquationControlInCell: (_s: number, para: number, ctrl: number, cell: number, cp: number) => {
+      record('deleteEquationControlInCell', para, ctrl, cell, cp);
+      const ft = findTable(para, ctrl) as unknown as { eqs?: Map<string, string> };
+      if (!ft.eqs?.delete(`${cell}:${cp}`)) return { ok: false };
+      return { ok: true };
+    },
+    getEquationProperties: (_s: number, para: number, ctrl: number, cell?: number, cp?: number) => {
+      const ft = findTable(para, ctrl) as unknown as { eqs?: Map<string, string> };
+      const script = ft.eqs?.get(`${cell ?? -1}:${cp ?? -1}`);
+      if (script === undefined) throw new Error('수식 없음');
+      return { script, fontSize: 1000, color: 0, baseline: 0, fontName: '' };
+    },
+    getFontList: () => fonts.map((name, id) => ({ lang: 0, id, name })),
+    // ─ 기타 ─
+    setFieldValueByName: () => ({ ok: true }),
+    getSourceFormat: () => 'hwpx',
+    exportHwpx: () => new Uint8Array([0x50, 0x4b, 0x03, 0x04, 1, 2, 3]),
+    exportHwp: () => new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]),
+    get documentDigest() { return 'blake3:obj-test'; },
+    getFieldList: () => [],
+    renderPageSvg: () => '<svg/>',
+    getSelectionRects: () => [],
+    getSelectionRectsInCell: () => [],
+    getDocumentInfo: () => ({
+      version: '5.0', sectionCount: 1, pageCount: 1, encrypted: false,
+      fallbackFont: '바탕', fontsUsed: fonts.slice(),
+    }),
+  };
+
+  let snapshotId = 0;
+  const snapshots = new Map<number, {
+    body: string[];
+    bodyParaShapes: number[];
+    tables: FakeTable[];
+    fonts: string[];
+  }>();
+  Object.assign(wasm, {
+    saveSnapshot: () => {
+      const id = ++snapshotId;
+      snapshots.set(id, {
+        body: structuredClone(body),
+        bodyParaShapes: structuredClone(bodyParaShapes),
+        tables: structuredClone(tables),
+        fonts: structuredClone(fonts),
+      });
+      return id;
+    },
+    restoreSnapshot: (id: number) => {
+      const saved = snapshots.get(id)!;
+      body.splice(0, body.length, ...structuredClone(saved.body));
+      bodyParaShapes.splice(0, bodyParaShapes.length, ...structuredClone(saved.bodyParaShapes));
+      tables.splice(0, tables.length, ...structuredClone(saved.tables));
+      fonts.splice(0, fonts.length, ...structuredClone(saved.fonts));
+    },
+    discardSnapshot: (id: number) => { snapshots.delete(id); },
+  });
+
+  // 문단 보관본 — 엔진 captureParagraph 계약: 문단 하나(텍스트·모양·그 문단의 표)를 통째로 되돌린다
+  let captureId = 0;
+  const captures = new Map<number, { body: string; shape: number; tables: FakeTable[] }>();
+  const paragraphState = (p: number) => ({
+    body: body[p], shape: bodyParaShapes[p], tables: structuredClone(tables.filter((t) => t.paraIdx === p)),
+  });
+  Object.assign(wasm, {
+    captureParagraph: (_s: number, p: number) => {
+      record('captureParagraph', p);
+      captures.set(++captureId, paragraphState(p));
+      return captureId;
+    },
+    restoreCapturedParagraph: (id: number, _s: number, p: number) => {
+      record('restoreCapturedParagraph', p);
+      const saved = captures.get(id)!;
+      body[p] = saved.body;
+      bodyParaShapes[p] = saved.shape;
+      const others = tables.filter((t) => t.paraIdx !== p);
+      tables.splice(0, tables.length, ...others,
+        ...structuredClone(saved.tables).map((t) => ({ ...t, paraIdx: p })));
+    },
+    discardParagraphCapture: (id: number) => { captures.delete(id); },
+    getParagraphContentDigest: (_s: number, p: number) => JSON.stringify(paragraphState(p)),
+  });
+
+  const bus = new EventBus();
+  const revision = new RevisionTracker(bus);
+  let externalSnapshotIds = 0;
+  const inputHandler = {
+    executeOperation: (op: { operation?: (w: unknown) => unknown }) => { op.operation?.(wasm); },
+    getCursorPosition: () => ({ sectionIndex: 0, paragraphIndex: 0, charOffset: 0 }),
+    getSelection: () => null,
+    prepareSnapshotCapacity: () => {},
+    retainExternalSnapshot: () => { externalSnapshotIds++; },
+    releaseExternalSnapshot: () => { externalSnapshotIds--; },
+  };
+  const pending = new PendingEditManager({
+    wasm: wasm as never,
+    eventBus: bus,
+    inputHandler: inputHandler as never,
+    canvasView: {} as never,
+    overlay: { setOps: () => {}, clear: () => {} } as never,
+  });
+  const executor = new AgentToolExecutor({
+    wasm: wasm as never,
+    inputHandler: inputHandler as never,
+    documentState: { isDirty: () => false } as never,
+    revision,
+    pending,
+    getDocumentSourcePath: async () => sourcePath,
+  });
+  const call = (tool: string, args: Record<string, unknown> = {}) =>
+    executor.execute(tool, { expectedRevision: revision.revision, ...args }, 'claude');
+  return { executor, pending, revision, call, body, tables, calls, bus, wasm, snapshots, captures,
+    paraProps, charProps, getExternalSnapshotCount: () => externalSnapshotIds };
+}
+
+async function expectErr(p: Promise<unknown>, code: string): Promise<AgentToolError> {
+  try {
+    await p;
+  } catch (e) {
+    assert.ok(e instanceof AgentToolError, `AgentToolError 기대, 실제: ${e}`);
+    assert.equal(e.code, code);
+    return e;
+  }
+  assert.fail(`${code} 오류를 기대했지만 성공함`);
+}
+
+// ─── create_table ───────────────────────────────────────────
+
+test('create_table: cells 로 rows/cols 유도 + 벌크 채움 + 헤더 행', async () => {
+  const { call, tables, calls } = makeEnv();
+  const r = (await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0,
+    cells: [['이름', '값'], ['알파', '1'], ['베타', '2']],
+    headerRow: true, headerFill: '#EEF1F5',
+  })) as { table: { paraIdx: number; controlIdx: number; rowCount: number; colCount: number } };
+  assert.equal(r.table.rowCount, 3);
+  assert.equal(r.table.colCount, 2);
+  const t = tables[0];
+  assert.equal(t.cells[0][0], '이름');
+  assert.equal(t.cells[5][0], '2');
+  assert.equal(t.cellProps[0]['isHeader'], true);
+  assert.equal(t.cellProps[0]['fillColor'], '#EEF1F5');
+  assert.equal(t.tableProps['repeatHeader'], true);
+  assert.ok(calls.some((c) => c.m === 'applyCharFormatInCell')); // 헤더 볼드
+  // treatAsChar 경로 강제 (blocker 해결 확인)
+  const create = calls.find((c) => c.m === 'createTableEx')!.a[0] as { treatAsChar?: boolean };
+  assert.equal(create.treatAsChar, true);
+});
+
+test('create_table: cells 가 rows/cols 를 초과하면 행 번호를 짚어 INVALID_ARGS', async () => {
+  const { call } = makeEnv();
+  await expectErr(call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, rows: 1, cols: 2,
+    cells: [['a', 'b'], ['c', 'd']],
+  }), 'INVALID_ARGS');
+  await expectErr(call('create_table', { sectionIdx: 0, paraIdx: 2, charOffset: 0 }), 'INVALID_ARGS');
+});
+
+test('create_table → reject: deleteTableControl 로 표가 사라진다', async () => {
+  const { call, pending, tables } = makeEnv();
+  const r = (await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['x']],
+  })) as { changeSetId: string };
+  assert.equal(tables.length, 1);
+  pending.reject(r.changeSetId);
+  assert.equal(tables.length, 0);
+});
+
+test('create_table → approve: 미리보기 표를 재생성 없이 확정한다', async () => {
+  const { call, pending, tables, calls } = makeEnv();
+  const r = (await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['A', 'B']], headerRow: false,
+  })) as { changeSetId: string };
+  pending.approve(r.changeSetId);
+  assert.equal(tables.length, 1);
+  assert.equal(tables[0].cells[0][0], 'A');
+  assert.equal(calls.filter((entry) => entry.m === 'createTableEx').length, 1);
+  assert.equal(pending.hasPending(), false);
+});
+
+// ─── edit_table ─────────────────────────────────────────────
+
+test('edit_table insert_row: 즉시 적용, reject 시 원상복구', async () => {
+  const { call, pending, tables } = makeEnv();
+  await call('create_table', { sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['a'], ['b']] });
+  const t = tables[0];
+  const r = (await call('edit_table', {
+    sectionIdx: 0, paraIdx: t.paraIdx, controlIdx: t.controlIdx, op: 'insert_row', rowIdx: 0,
+  })) as { changeSetId: string; rowCount: number };
+  assert.equal(r.rowCount, 3);
+  assert.equal(t.rows, 3);
+  pending.reject(r.changeSetId);
+  assert.equal(tables.length, 0); // 같은 change-set 의 createTable 도 함께 reject 된다
+});
+
+test('edit_table delete_row: 즉시 적용되고 새 크기를 돌려주며, reject 는 문단 보관본으로 되돌린다', async () => {
+  const { call, pending, tables, calls, captures } = makeEnv();
+  const c = (await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['a'], ['b'], ['c']],
+  })) as { changeSetId: string; table: { paraIdx: number; controlIdx: number } };
+  pending.approve(c.changeSetId);
+  const t = tables[0];
+  const del = (await call('edit_table', {
+    sectionIdx: 0, paraIdx: t.paraIdx, controlIdx: t.controlIdx, op: 'delete_row', rowIdx: 1,
+  })) as { changeSetId: string; rowCount: number; colCount: number; cellCount: number };
+  assert.deepEqual([del.rowCount, del.colCount, del.cellCount], [2, 1, 2]);
+  assert.equal(tables[0].rows, 2);
+  assert.ok(calls.some((x) => x.m === 'deleteTableRow'));
+  // 표는 잠기지 않는다 — 새 좌표(행 1 = 옛 행 2)로 바로 편집한다
+  await call('insert_text', {
+    sectionIdx: 0, paraIdx: 0, charOffset: 0, text: 'X',
+    cell: { paraIdx: t.paraIdx, controlIdx: t.controlIdx, cellIdx: 1 },
+  });
+  assert.equal(tables[0].cells[1][0], 'Xc');
+  calls.length = 0;
+  pending.reject(del.changeSetId);
+  assert.equal(tables[0].rows, 3);
+  assert.deepEqual(tables[0].cells.map((cell) => cell[0]), ['a', 'b', 'c']);
+  assert.ok(calls.some((x) => x.m === 'restoreCapturedParagraph'));
+  assert.equal(captures.size, 0, '보관본은 set 이 끝나면 해제된다');
+});
+
+test('edit_table delete_row → approve: 미리보기를 그대로 확정하고 표를 다시 만들지 않는다', async () => {
+  const { call, pending, tables, calls } = makeEnv();
+  const c = (await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['a'], ['b'], ['c']],
+  })) as { changeSetId: string };
+  pending.approve(c.changeSetId);
+  const t = tables[0];
+  const del = (await call('edit_table', {
+    sectionIdx: 0, paraIdx: t.paraIdx, controlIdx: t.controlIdx, op: 'delete_row', rowIdx: 1,
+  })) as { changeSetId: string };
+  calls.length = 0;
+  assert.equal(pending.approve(del.changeSetId), true);
+  assert.equal(tables[0].rows, 2);
+  assert.ok(!calls.some((x) => x.m === 'deleteTableRow'), '승인은 op 을 다시 실행하지 않는다');
+  assert.equal(pending.hasPending(), false);
+});
+
+test('구조 op 뒤에도 같은 표의 셀을 바로 편집한다 (열 삭제·병합)', async () => {
+  const { call, pending, tables } = makeEnv();
+  const c = (await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['a', 'b'], ['c', 'd']],
+  })) as { changeSetId: string };
+  pending.approve(c.changeSetId);
+  const t = tables[0];
+  const at = { sectionIdx: 0, paraIdx: t.paraIdx, controlIdx: t.controlIdx };
+  const col = (await call('edit_table', { ...at, op: 'delete_col', colIdx: 1 })) as { colCount: number };
+  assert.equal(col.colCount, 1);
+  await call('insert_text', {
+    sectionIdx: 0, paraIdx: 0, charOffset: 0, text: 'X',
+    cell: { paraIdx: t.paraIdx, controlIdx: t.controlIdx, cellIdx: 1 },
+  });
+  assert.equal(tables[0].cells[1][0], 'Xc');
+  await call('edit_table', { ...at, op: 'merge_cells', startRow: 0, startCol: 0, endRow: 1, endCol: 0 });
+  await call('insert_text', {
+    sectionIdx: 0, paraIdx: 0, charOffset: 0, text: 'Y',
+    cell: { paraIdx: t.paraIdx, controlIdx: t.controlIdx, cellIdx: 0 },
+  });
+  assert.equal(tables[0].cells[0][0], 'Ya');
+});
+
+test('delete_table: 즉시 삭제되고 reject 는 표를 되살린다', async () => {
+  const { call, pending, tables, calls } = makeEnv();
+  const c = (await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['a', 'b'], ['c', 'd']],
+  })) as { changeSetId: string; table: { paraIdx: number; controlIdx: number } };
+  pending.approve(c.changeSetId);
+  calls.length = 0;
+  const t = tables[0];
+  const del = (await call('delete_table', {
+    sectionIdx: 0, paraIdx: t.paraIdx, controlIdx: t.controlIdx,
+  })) as { changeSetId: string; deleted: { paraIdx: number; controlIdx: number } };
+  assert.deepEqual(del.deleted, { sectionIdx: 0, paraIdx: t.paraIdx, controlIdx: t.controlIdx });
+  assert.equal(tables.length, 0);
+  assert.ok(calls.some((x) => x.m === 'deleteTableControl'));
+  pending.reject(del.changeSetId);
+  assert.equal(tables.length, 1);
+  assert.deepEqual(tables[0].cells.map((cell) => cell[0]), ['a', 'b', 'c', 'd']);
+});
+
+test('delete_table 앞에서 채운 셀 편집도 reject 하면 함께 되돌아간다 (검증 보류)', async () => {
+  const { call, pending, tables } = makeEnv();
+  const c = (await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['a', 'b']],
+  })) as { changeSetId: string };
+  pending.approve(c.changeSetId);
+  const t = tables[0];
+  const fill = (await call('insert_text', {
+    sectionIdx: 0, paraIdx: 0, charOffset: 1, text: '!',
+    cell: { paraIdx: t.paraIdx, controlIdx: t.controlIdx, cellIdx: 0 },
+  })) as { changeSetId: string };
+  await call('delete_table', { sectionIdx: 0, paraIdx: t.paraIdx, controlIdx: t.controlIdx });
+  assert.equal(tables.length, 0);
+  pending.reject(fill.changeSetId);
+  assert.equal(tables.length, 1);
+  assert.equal(tables[0].cells[0][0], 'a', '표 삭제를 되돌린 뒤 셀 삽입도 되돌린다');
+});
+
+test('행 삽입 앞뒤로 같은 셀 번호에 쓴 텍스트도 reject 가 모두 되돌린다 (되돌린 op 은 기대값에서 뺀다)', async () => {
+  const { call, pending, tables } = makeEnv();
+  const c = (await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['a', 'b'], ['c', 'd']],
+  })) as { changeSetId: string };
+  pending.approve(c.changeSetId);
+  const t = tables[0];
+  const cell = { paraIdx: t.paraIdx, controlIdx: t.controlIdx, cellIdx: 0 };
+  const events: string[] = [];
+  pending.onChange((e) => { if (e.type === 'invalidated') events.push(e.reason); });
+  const first = (await call('insert_text', { sectionIdx: 0, paraIdx: 0, charOffset: 0, text: 'q', cell })) as { changeSetId: string };
+  await call('edit_table', { sectionIdx: 0, paraIdx: t.paraIdx, controlIdx: t.controlIdx, op: 'insert_row', rowIdx: 0, below: false });
+  await call('insert_text', { sectionIdx: 0, paraIdx: 0, charOffset: 0, text: 'm', cell });
+  assert.deepEqual(tables[0].cells.map((p) => p[0]), ['m', '', 'qa', 'b', 'c', 'd']);
+  pending.reject(first.changeSetId);
+  assert.deepEqual(tables[0].cells.map((p) => p[0]), ['a', 'b', 'c', 'd']);
+  assert.deepEqual(events, [], '아무 편집도 문서에 남지 않는다');
+});
+
+test('구조 op 이 셀 번호를 바꾸면 앞선 pending 셀 편집 주소가 따라가고 승인 뒤 거절도 옮겨 간 셀에서 되돌린다', async () => {
+  const { call, pending, tables } = makeEnv();
+  const c = (await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['a', 'b', 'c'], ['d', 'e', 'f']],
+  })) as { changeSetId: string };
+  pending.approve(c.changeSetId);
+  const t = tables[0];
+  const at = { sectionIdx: 0, paraIdx: t.paraIdx, controlIdx: t.controlIdx };
+  pending.beginTurn('claude');
+  await call('insert_text', { sectionIdx: 0, paraIdx: 0, charOffset: 0, text: 'X', cell: { ...at, cellIdx: 5 } });
+  await call('insert_text', { sectionIdx: 0, paraIdx: 0, charOffset: 0, text: 'Y', cell: { ...at, cellIdx: 1 } });
+  pending.endTurn('review');
+  const [first] = pending.getChangeSets();
+  pending.beginTurn('claude');
+  await call('edit_table', { ...at, op: 'delete_row', rowIdx: 0 });
+  pending.endTurn('review');
+  assert.deepEqual(tables[0].cells.map((p) => p[0]), ['d', 'e', 'Xf']);
+  const [x, y] = first.ops;
+  assert.equal(x.kind === 'insert' && x.range.cell?.cellIdx, 2, '셀 5 는 행 삭제 뒤 셀 2 다');
+  assert.ok(y.kind === 'insert' && y.range.cell!.cellIdx < 0, '지워진 셀의 편집은 어떤 셀도 가리키지 않는다');
+  // 행 삭제를 승인한 뒤 앞 set 을 거절하면 X 는 옮겨 간 셀에서 되돌아간다
+  assert.equal(pending.approve(pending.getChangeSets()[1].id), true);
+  pending.reject(first.id);
+  assert.deepEqual(tables[0].cells.map((p) => p[0]), ['d', 'e', 'f']);
+});
+
+test('같은 턴에서 셀을 채운 뒤 행을 넣으면 미리보기 주소가 따라가고 reject 는 모두 되돌린다', async () => {
+  const { call, pending, tables } = makeEnv();
+  const c = (await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['a', 'b'], ['c', 'd']],
+  })) as { changeSetId: string };
+  pending.approve(c.changeSetId);
+  const t = tables[0];
+  const at = { sectionIdx: 0, paraIdx: t.paraIdx, controlIdx: t.controlIdx };
+  const fill = (await call('insert_text', {
+    sectionIdx: 0, paraIdx: 0, charOffset: 1, text: '!', cell: { ...at, cellIdx: 3 },
+  })) as { changeSetId: string };
+  await call('edit_table', { ...at, op: 'insert_col', colIdx: 0, right: false });
+  const [insert] = pending.getChangeSets()[0].ops;
+  assert.equal(insert.kind === 'insert' && insert.range.cell?.cellIdx, 5);
+  assert.equal(tables[0].cells[5][0], 'd!');
+  pending.reject(fill.changeSetId);
+  assert.deepEqual(tables[0].cells.map((p) => p[0]), ['a', 'b', 'c', 'd']);
+});
+
+test('delete_table → approve: 삭제를 그대로 확정한다', async () => {
+  const { call, pending, tables, calls } = makeEnv();
+  const c = (await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['a']],
+  })) as { changeSetId: string; table: { paraIdx: number; controlIdx: number } };
+  pending.approve(c.changeSetId);
+  const t = tables[0];
+  const del = (await call('delete_table', {
+    sectionIdx: 0, paraIdx: t.paraIdx, controlIdx: t.controlIdx,
+  })) as { changeSetId: string };
+  calls.length = 0;
+  assert.equal(pending.approve(del.changeSetId), true);
+  assert.equal(tables.length, 0);
+  assert.ok(!calls.some((x) => x.m === 'deleteTableControl'));
+});
+
+test('delete_table: 없는 표 주소·누락 인자는 INVALID_ARGS', async () => {
+  const { call } = makeEnv();
+  await expectErr(call('delete_table', {
+    sectionIdx: 0, paraIdx: 0, controlIdx: 0,
+  }), 'INVALID_ARGS');
+  await expectErr(call('delete_table', {
+    sectionIdx: 0, paraIdx: 2,
+  }), 'INVALID_ARGS');
+});
+
+test('edit_table merge_cells: 인자 검증과 즉시 실행', async () => {
+  const { call, pending, tables, calls } = makeEnv();
+  const c = (await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['a', 'b'], ['c', 'd']],
+  })) as { changeSetId: string };
+  pending.approve(c.changeSetId);
+  const t = tables[0];
+  await expectErr(call('edit_table', {
+    sectionIdx: 0, paraIdx: t.paraIdx, controlIdx: t.controlIdx,
+    op: 'merge_cells', startRow: 0, startCol: 0, endRow: 0, endCol: 0,
+  }), 'INVALID_ARGS');
+  const m = (await call('edit_table', {
+    sectionIdx: 0, paraIdx: t.paraIdx, controlIdx: t.controlIdx,
+    op: 'merge_cells', startRow: 0, startCol: 0, endRow: 0, endCol: 1,
+  })) as { changeSetId: string; cellCount: number };
+  assert.ok(calls.some((x) => x.m === 'mergeTableCells'));
+  assert.equal(typeof m.cellCount, 'number');
+  calls.length = 0;
+  pending.approve(m.changeSetId);
+  assert.ok(!calls.some((x) => x.m === 'mergeTableCells'), '승인은 병합을 다시 실행하지 않는다');
+});
+
+test('get_table_properties + set_table_props: 표 개체를 가로 가운데로 배치한다', async () => {
+  const { call, pending, tables, calls } = makeEnv();
+  const created = (await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['a', 'b']],
+  })) as { changeSetId: string };
+  pending.approve(created.changeSetId);
+  const t = tables[0];
+
+  const before = (await call('get_table_properties', {
+    sectionIdx: 0, paraIdx: t.paraIdx, controlIdx: t.controlIdx,
+  })) as { table: { positionMode: string; horizontal?: { align: string }; sizeMm: { width: number } } };
+  assert.equal(before.table.positionMode, 'inline');
+  // 기본 응답은 글자처럼 취급하는 표의 개체 배치 필드를 생략한다. full:true 는 전부 싣는다.
+  assert.equal(before.table.horizontal, undefined);
+  assert.ok(Math.abs(before.table.sizeMm.width - 150) < 0.1);
+  const beforeFull = (await call('get_table_properties', {
+    sectionIdx: 0, paraIdx: t.paraIdx, controlIdx: t.controlIdx, full: true,
+  })) as { table: { horizontal: { align: string }; repeatHeader: boolean } };
+  assert.equal(beforeFull.table.horizontal.align, 'left');
+  assert.equal(beforeFull.table.repeatHeader, false);
+
+  const edit = (await call('set_table_props', {
+    sectionIdx: 0, paraIdx: t.paraIdx, controlIdx: t.controlIdx,
+    tableProps: { horizontalAlign: 'center' },
+  })) as { changeSetId: string };
+  const apply = calls.find((entry) => entry.m === 'setTableProperties')!;
+  pending.approve(edit.changeSetId);
+  assert.deepEqual(apply.a[2], {
+    horzAlign: 'Center', treatAsChar: false, horzRelTo: 'Column', horzOffset: 0,
+  });
+
+  const after = (await call('get_table_properties', {
+    sectionIdx: 0, paraIdx: t.paraIdx, controlIdx: t.controlIdx,
+  })) as { table: { positionMode: string; horizontal: { align: string; relativeTo: string; offsetMm: number } } };
+  assert.equal(after.table.positionMode, 'floating');
+  assert.deepEqual(after.table.horizontal, { align: 'center', relativeTo: 'column' });
+});
+
+test('legacy edit_table set_table_props props still apply and ignore a null horizontal alignment', async () => {
+  const { call, pending, tables, calls } = makeEnv();
+  const created = (await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['a']],
+  })) as { changeSetId: string };
+  pending.approve(created.changeSetId);
+  const table = tables[0];
+  const edit = (await call('edit_table', {
+    sectionIdx: 0, paraIdx: table.paraIdx, controlIdx: table.controlIdx,
+    op: 'set_table_props', props: { horizontalAlign: null, repeatHeader: true },
+  })) as { changeSetId: string };
+  pending.approve(edit.changeSetId);
+  const props = calls.find((entry) => entry.m === 'setTableProperties')!.a[2] as Record<string, unknown>;
+
+  assert.deepEqual(props, { repeatHeader: true });
+});
+
+test('set_table_props exposes pagination, wrapping, margins, overlap and captions', async () => {
+  const { call, pending, tables, calls } = makeEnv();
+  const created = (await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['a']],
+  })) as { changeSetId: string };
+  pending.approve(created.changeSetId);
+  const t = tables[0];
+  const edit = (await call('set_table_props', {
+    sectionIdx: 0, paraIdx: t.paraIdx, controlIdx: t.controlIdx,
+    tableProps: {
+      pageBreak: 'row', repeatHeader: true, cellSpacingMm: 1.5,
+      cellPaddingMm: { left: 2, right: 2, top: 1, bottom: 1 },
+      outerMarginMm: { left: 3, right: 3 }, textWrap: 'topAndBottom',
+      verticalRelativeTo: 'paragraph', verticalAlign: 'top', verticalOffsetMm: 4,
+      restrictInPage: true, allowOverlap: false, keepWithAnchor: true,
+      captionEnabled: true, captionDirection: 'bottom', captionSpacingMm: 2,
+    },
+  })) as { changeSetId: string };
+  pending.approve(edit.changeSetId);
+  const props = calls.find((entry) => entry.m === 'setTableProperties')!.a[2] as Record<string, unknown>;
+  assert.equal(props['pageBreak'], 2);
+  assert.equal(props['repeatHeader'], true);
+  assert.equal(props['cellSpacing'], mmToHu(1.5));
+  assert.equal(props['paddingLeft'], mmToHu(2));
+  assert.equal(props['paddingTop'], mmToHu(1));
+  assert.equal(props['outerLeft'], mmToHu(3));
+  assert.equal(props['textWrap'], 'TopAndBottom');
+  assert.equal(props['vertRelTo'], 'Para');
+  assert.equal(props['vertAlign'], 'Top');
+  assert.equal(props['vertOffset'], mmToHu(4));
+  assert.equal(props['treatAsChar'], false);
+  assert.equal(props['restrictInPage'], true);
+  assert.equal(props['allowOverlap'], false);
+  assert.equal(props['keepWithAnchor'], true);
+  assert.equal(props['hasCaption'], true);
+  assert.equal(props['captionDirection'], 3);
+  assert.equal(props['captionSpacing'], mmToHu(2));
+});
+
+test('set_cell_props exposes padding, direction, protection, form field and readback', async () => {
+  const { call, pending, tables, calls } = makeEnv();
+  const created = (await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['value']],
+  })) as { changeSetId: string };
+  pending.approve(created.changeSetId);
+  const t = tables[0];
+  const edit = (await call('set_cell_props', {
+    sectionIdx: 0, paraIdx: t.paraIdx, controlIdx: t.controlIdx, cellIdx: 0,
+    cellProps: {
+      paddingMm: { left: 2, top: 1 }, textDirection: 'vertical', protected: true,
+      editableInForm: true, fieldName: 'amount', verticalAlign: 'center',
+    },
+  })) as { changeSetId: string };
+  pending.approve(edit.changeSetId);
+  const apply = calls.find((entry) => entry.m === 'setCellProperties')!;
+  const props = apply.a[3] as Record<string, unknown>;
+  assert.equal(props['paddingLeft'], mmToHu(2));
+  assert.equal(props['paddingTop'], mmToHu(1));
+  assert.equal(props['applyInnerMargin'], true);
+  assert.equal(props['textDirection'], 1);
+  assert.equal(props['cellProtect'], true);
+  assert.equal(props['editableInForm'], true);
+  assert.equal(props['fieldName'], 'amount');
+  assert.equal(props['verticalAlign'], 1);
+
+  const read = (await call('get_table_properties', {
+    sectionIdx: 0, paraIdx: t.paraIdx, controlIdx: t.controlIdx, cellIdx: 0,
+  })) as { cell: { paddingMm: { left: number; top: number }; textDirection: string; protected: boolean; fieldName: string } };
+  assert.equal(read.cell.paddingMm.left, 2);
+  assert.equal(read.cell.paddingMm.top, 1);
+  assert.equal(read.cell.textDirection, 'vertical');
+  assert.equal(read.cell.protected, true);
+  assert.equal(read.cell.fieldName, 'amount');
+});
+
+test('표 op 5종은 호출 즉시 각 브리지 메서드로 나가고 승인은 다시 실행하지 않는다', async () => {
+  const { call, pending, tables, calls } = makeEnv();
+  const created = (await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['a', 'b'], ['1', '2']],
+  })) as { changeSetId: string };
+  pending.approve(created.changeSetId);
+  const t = tables[0];
+  const at = { sectionIdx: 0, paraIdx: t.paraIdx, controlIdx: t.controlIdx };
+
+  const widths = (await call('edit_table', { ...at, op: 'set_column_widths', columnWidthsMm: [60, 90] })) as { changeSetId: string };
+  const fit = (await call('edit_table', { ...at, op: 'fit_to_page' })) as { changeSetId: string };
+  const zone = (await call('set_zone_borders', {
+    ...at,
+    startCell: { row: 0, col: 0 }, endCell: { row: 1, col: 1 },
+    borderTop: { type: 1, width: 2, color: '#112233' }, fillColor: '#EEEEEE', centerLine: 'CROSS',
+  })) as { changeSetId: string };
+  const formula = (await call('edit_table', {
+    ...at, op: 'apply_formula', row: 1, col: 1, formula: '=SUM(A1:A2)',
+    format: { decimalPlaces: 0, thousandsSeparator: true, suffix: '원' },
+  })) as { changeSetId: string };
+  const caption = (await call('edit_table', { ...at, op: 'set_caption', text: '분기별 매출' })) as { changeSetId: string };
+
+  // 호출 즉시 실행된다 — 모두 같은 턴 set 이라 한 번의 승인이 그대로 채택한다.
+  for (const method of ['setTableColumnWidths', 'fitTableToPage', 'setCellZoneProperties', 'evaluateTableFormulaEx', 'setTableCaptionText']) {
+    assert.equal(calls.filter((entry) => entry.m === method).length, 1, `${method} 가 호출 시점에 한 번 실행돼야 한다`);
+  }
+  assert.deepEqual(new Set([widths, fit, zone, formula, caption].map((set) => set.changeSetId)).size, 1);
+  pending.approve(widths.changeSetId);
+  for (const method of ['setTableColumnWidths', 'fitTableToPage', 'setCellZoneProperties', 'evaluateTableFormulaEx', 'setTableCaptionText']) {
+    assert.equal(calls.filter((entry) => entry.m === method).length, 1, `${method} 가 승인 때 다시 실행됐다`);
+  }
+
+  assert.deepEqual(calls.find((entry) => entry.m === 'setTableColumnWidths')!.a[2], [mmToHu(60), mmToHu(90)]);
+  assert.ok(calls.some((entry) => entry.m === 'fitTableToPage'));
+  const zoneCall = calls.find((entry) => entry.m === 'setCellZoneProperties')!;
+  assert.deepEqual(zoneCall.a[2], { startRow: 0, startCol: 0, endRow: 1, endCol: 1 });
+  assert.deepEqual(zoneCall.a[3], {
+    borderTop: { type: 1, width: 2, color: '#112233' },
+    fillType: 'solid', fillColor: '#EEEEEE', centerLine: 'CROSS',
+  });
+  assert.deepEqual(calls.find((entry) => entry.m === 'evaluateTableFormulaEx')!.a[0], {
+    sectionIdx: 0, parentParaIdx: t.paraIdx, controlIdx: t.controlIdx,
+    targetRow: 1, targetCol: 1, formula: '=SUM(A1:A2)', writeResult: true,
+    decimalPlaces: 0, thousandsSeparator: true, suffix: '원',
+  });
+  assert.deepEqual(calls.find((entry) => entry.m === 'setTableCaptionText')!.a.slice(2), ['분기별 매출', true]);
+});
+
+test('get_table_layout: 쪽별 조각과 본문 넘침을 읽고 아무것도 바꾸지 않는다', async () => {
+  const { call, pending, tables, calls } = makeEnv();
+  const created = (await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['a', 'b']],
+  })) as { changeSetId: string };
+  pending.approve(created.changeSetId);
+  const t = tables[0];
+  const before = calls.length;
+
+  const layout = (await call('get_table_layout', { paraIdx: t.paraIdx, controlIdx: t.controlIdx })) as {
+    revision: number;
+    fragments: Array<{ pageIndex: number; yMm: number; heightMm: number; overflowsBodyBottom: boolean }>;
+    bodyAreaMm: { heightMm: number };
+    overflowsBody: boolean; overflowsBodyWidth: boolean;
+    pageBreak: number; pageBreakName: string; repeatHeader: boolean;
+  };
+
+  assert.equal(layout.fragments.length, 1);
+  assert.equal(layout.fragments[0].pageIndex, 0);
+  assert.equal(layout.fragments[0].overflowsBodyBottom, true);
+  assert.equal(layout.overflowsBody, true);
+  assert.equal(layout.overflowsBodyWidth, false);
+  assert.equal(layout.pageBreak, 0);
+  assert.equal(layout.pageBreakName, 'none');
+  assert.equal(layout.repeatHeader, false);
+  assert.ok(layout.bodyAreaMm.heightMm > 0);
+  assert.equal(typeof layout.revision, 'number');
+  assert.equal(calls.length, before, '읽기 도구가 문서를 변경했다');
+});
+
+test('신규 표 op 의 인자 검증: 열 수 불일치·범위 역전·빈 zone 속성', async () => {
+  const { call, pending, tables } = makeEnv();
+  const created = (await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['a', 'b']],
+  })) as { changeSetId: string };
+  pending.approve(created.changeSetId);
+  const t = tables[0];
+  const at = { sectionIdx: 0, paraIdx: t.paraIdx, controlIdx: t.controlIdx };
+
+  await expectErr(call('edit_table', { ...at, op: 'set_column_widths', columnWidthsMm: [60] }), 'INVALID_ARGS');
+  await expectErr(call('set_zone_borders', {
+    ...at, startCell: { row: 0, col: 1 }, endCell: { row: 0, col: 0 },
+    fillColor: '#FFFFFF',
+  }), 'INVALID_ARGS');
+  await expectErr(call('set_zone_borders', {
+    ...at, startCell: { row: 0, col: 0 }, endCell: { row: 0, col: 1 },
+  }), 'INVALID_ARGS');
+  // 모르는 속성 키는 올바른 키 목록을 담아 거절한다 (apply_edits 경로는 허브 스키마를 거치지 않는다).
+  const unknownTable = await expectErr(call('set_table_props', { ...at, tableProps: { align: 'center' } }), 'INVALID_ARGS');
+  assert.match(unknownTable.message, /Unsupported tableProps keys: align\. Valid keys: .*horizontalAlign/);
+  const unknownCell = await expectErr(call('set_cell_props', { ...at, cellIdx: 0, cellProps: { color: '#FFFFFF' } }), 'INVALID_ARGS');
+  assert.match(unknownCell.message, /Unsupported cellProps keys: color\. Valid keys: .*fillColor/);
+  await expectErr(call('edit_table', { ...at, op: 'apply_formula', row: 5, col: 0, formula: '=SUM(A1)' }), 'INVALID_ARGS');
+});
+
+test('edit_table split_cell rejects covered coordinates inside a merged cell', async () => {
+  const { call, pending, tables, wasm } = makeEnv();
+  const created = (await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['merged', '']],
+  })) as { changeSetId: string };
+  pending.approve(created.changeSetId);
+  const t = tables[0];
+  wasm.getCellInfo = () => ({ row: 0, col: 0, rowSpan: 1, colSpan: 2 });
+  const error = await expectErr(call('edit_table', {
+    sectionIdx: 0, paraIdx: t.paraIdx, controlIdx: t.controlIdx,
+    op: 'split_cell', rowIdx: 0, colIdx: 1, splitRows: 1, splitCols: 2,
+  }), 'INVALID_ARGS');
+  assert.match(error.message, /covered coordinates/);
+});
+
+test('edit_table split_cell runs immediately and reject restores the cell', async () => {
+  const { call, pending, tables, calls } = makeEnv();
+  const created = (await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['wide']],
+  })) as { changeSetId: string };
+  pending.approve(created.changeSetId);
+  const t = tables[0];
+  const split = (await call('edit_table', {
+    sectionIdx: 0, paraIdx: t.paraIdx, controlIdx: t.controlIdx,
+    op: 'split_cell', rowIdx: 0, colIdx: 0, splitRows: 2, splitCols: 3,
+  })) as { changeSetId: string };
+  const apply = calls.find((entry) => entry.m === 'splitTableCellInto')!;
+  assert.deepEqual(apply.a, [0, 0, 2, 3, true, false]);
+  calls.length = 0;
+  pending.reject(split.changeSetId);
+  assert.ok(calls.some((entry) => entry.m === 'restoreCapturedParagraph'));
+});
+
+test('edit_table split_cell fails on the tool call when the engine rejects the split', async () => {
+  const { call, pending, tables, wasm, captures } = makeEnv();
+  const created = (await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['wide']],
+  })) as { changeSetId: string };
+  pending.approve(created.changeSetId);
+  const table = tables[0];
+  wasm.splitTableCellInto = () => ({ ok: false, cellCount: 1 });
+  await expectErr(call('edit_table', {
+    sectionIdx: 0, paraIdx: table.paraIdx, controlIdx: table.controlIdx,
+    op: 'split_cell', rowIdx: 0, colIdx: 0, splitRows: 2, splitCols: 2,
+  }), 'RPC_ERROR');
+  assert.equal(pending.hasPending(), false, '실패한 op 은 등록되지 않는다');
+  assert.equal(captures.size, 0, '실패한 op 의 보관본은 바로 해제된다');
+});
+
+// ─── apply_para_format / apply_style ────────────────────────
+
+test('apply_para_format: pt→HWPUNIT 변환 적용, reject 는 setParaShapeId 복원', async () => {
+  const { call, pending, calls } = makeEnv();
+  const r = (await call('apply_para_format', {
+    sectionIdx: 0, paraIdx: 0, alignment: 'center', spaceBeforePt: 6, lineSpacingPercent: 160,
+  })) as { changeSetId: string };
+  const apply = calls.find((x) => x.m === 'applyParaFormat')!;
+  const json = JSON.parse(apply.a[1] as string) as Record<string, unknown>;
+  assert.equal(json['alignment'], 'center');
+  assert.equal(json['spacingBefore'], 600);
+  assert.equal(json['lineSpacing'], 160);
+  assert.equal(json['lineSpacingType'], 'Percent');
+  pending.reject(r.changeSetId);
+  const restore = calls.find((x) => x.m === 'setParaShapeId')!;
+  assert.deepEqual(restore.a, [0, 10]); // 이전 para_shape_id 복원
+});
+
+test('apply_style: 즉시 적용, reject 는 문단 보관본으로 복원 + 존재하지 않는 styleId 거부', async () => {
+  const { call, pending, calls } = makeEnv();
+  await expectErr(call('apply_style', { sectionIdx: 0, paraIdx: 0, styleId: 77 }), 'INVALID_ARGS');
+  const r = (await call('apply_style', { sectionIdx: 0, paraIdx: 0, styleId: 3 })) as { changeSetId: string };
+  const apply = calls.find((x) => x.m === 'applyStyle')!;
+  assert.deepEqual(apply.a, [0, 0, 3]);
+  pending.reject(r.changeSetId);
+  assert.deepEqual(calls.find((x) => x.m === 'restoreCapturedParagraph')!.a, [0]);
+});
+
+test('list_styles 는 스타일 목록을 반환한다', async () => {
+  const { call } = makeEnv();
+  const r = (await call('list_styles')) as { styles: Array<{ id: number; name: string }> };
+  assert.equal(r.styles.length, 2);
+  assert.equal(r.styles[1].name, '개요 1');
+});
+
+// ─── 폰트 ───────────────────────────────────────────────────
+
+test('apply_char_format fontFamily: fontId 해석 + 역서식은 이전 폰트 id', async () => {
+  const { call, pending, calls } = makeEnv();
+  const r = (await call('apply_char_format', {
+    sectionIdx: 0, paraIdx: 0, startOffset: 0, endOffset: 5, fontFamily: '맑은 고딕',
+  })) as { changeSetId: string };
+  const apply = calls.find((x) => x.m === 'applyCharFormat')!;
+  const json = JSON.parse(apply.a[4] as string) as { fontId?: number };
+  assert.equal(json.fontId, 1); // '맑은 고딕' 이 새로 등록된 id
+  calls.length = 0;
+  pending.reject(r.changeSetId);
+  const inverse = calls.find((x) => x.m === 'applyCharFormat')!;
+  const invJson = JSON.parse(inverse.a[4] as string) as { fontId?: number };
+  assert.equal(invJson.fontId, 0); // 이전 폰트('바탕') id
+});
+
+test('get_document_info 에 fontsUsed 가 실린다', async () => {
+  const { call } = makeEnv();
+  const r = (await call('get_document_info')) as { fontsUsed: string[]; fallbackFont: string };
+  assert.deepEqual(r.fontsUsed, ['바탕']);
+  assert.equal(r.fallbackFont, '바탕');
+});
+
+test('get_document_info returns the exact active desktop source path without searching', async () => {
+  const { call } = makeEnv('/Users/test/A/보고서.hwp');
+  const r = (await call('get_document_info')) as { sourcePath: string | null };
+  assert.equal(r.sourcePath, '/Users/test/A/보고서.hwp');
+
+  const browser = makeEnv();
+  const browserInfo = (await browser.call('get_document_info')) as { sourcePath: string | null };
+  assert.equal(browserInfo.sourcePath, null);
+});
+
+test('materialize_document_snapshot exports the live browser document without a source path', async () => {
+  const { call } = makeEnv();
+  const r = (await call('materialize_document_snapshot')) as {
+    sourceFormat: string;
+    byteLength: number;
+    dataBase64: string;
+    dirty: boolean;
+  };
+  assert.equal(r.sourceFormat, 'hwpx');
+  assert.equal(r.byteLength, 7);
+  assert.deepEqual(
+    new Uint8Array(Buffer.from(r.dataBase64, 'base64')),
+    new Uint8Array([0x50, 0x4b, 0x03, 0x04, 1, 2, 3]),
+  );
+  assert.equal(r.dirty, false);
+});
+
+test('materialize_document_snapshot exports HWPX for untitled new documents even when source is HWP', async () => {
+  const { call, wasm } = makeEnv();
+  Object.assign(wasm, {
+    fileName: '새 문서.hwpx',
+    getSourceFormat: () => 'hwp',
+  });
+  const r = (await call('materialize_document_snapshot')) as { sourceFormat: string };
+  assert.equal(r.sourceFormat, 'hwpx');
+});
+
+test('materialize_document_snapshot keeps binary HWP for an opened .hwp file', async () => {
+  const { call, wasm } = makeEnv();
+  Object.assign(wasm, {
+    fileName: '보고서.hwp',
+    getSourceFormat: () => 'hwp',
+  });
+  const r = (await call('materialize_document_snapshot')) as { sourceFormat: string };
+  assert.equal(r.sourceFormat, 'hwp');
+});
+
+// ─── 좌표 이동 ──────────────────────────────────────────────
+
+test('본문 멀티라인 삽입이 표 앞이면 객체 앵커 paraIdx 가 이동하고 reject 도 정확하다', async () => {
+  const { call, pending, tables } = makeEnv();
+  const c = (await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['x']],
+  })) as { changeSetId: string };
+  // 표(문단 2) 앞의 문단 0 에 문단 추가 삽입 → fake wasm 이 표 paraIdx 를 3으로 옮긴다
+  await call('insert_text', { sectionIdx: 0, paraIdx: 0, charOffset: 5, text: 'a\nb' });
+  assert.equal(tables[0].paraIdx, 3);
+  const sets = pending.getChangeSets();
+  const objOp = sets.flatMap((s) => s.ops).find((o) => o.kind === 'object')!;
+  assert.equal((objOp as { obj: { anchor?: { paraIdx: number } } }).obj.anchor?.paraIdx, 3);
+  pending.reject(c.changeSetId); // 이동한 앵커 기준으로 삭제 성공해야 한다
+  assert.equal(tables.length, 0);
+});
+
+// ─── 셀 수식 (Phase 4 Rust 배치 연동) ───────────────────────
+
+test('insert_equation: cell 인자로 셀 문단에 삽입하고 reject 시 셀 수식이 제거된다', async () => {
+  const { call, pending, tables, calls } = makeEnv();
+  const c = (await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['합계']],
+  })) as { changeSetId: string };
+  pending.approve(c.changeSetId);
+  const t = tables[0];
+  const cellAddr = { paraIdx: t.paraIdx, controlIdx: t.controlIdx, cellIdx: 0 };
+  const r = (await call('insert_equation', {
+    sectionIdx: 0, paraIdx: 0, charOffset: 0, cell: cellAddr,
+    script: 'sum _{k=1} ^{n} k',
+  })) as { changeSetId: string };
+  const ins = calls.find((x) => x.m === 'insertEquationInCell')!;
+  assert.deepEqual(ins.a.slice(0, 4), [t.paraIdx, t.controlIdx, 0, 0]);
+  pending.reject(r.changeSetId);
+  assert.equal((tables[0] as FakeTable & { eqs?: Map<string, string> }).eqs?.get('0:0'), undefined);
+});
+
+test('rejecting an equation preserves later user edits and other pending sets', async () => {
+  for (const laterEdit of ['user', 'agent'] as const) {
+    const { call, pending, tables, body, calls, bus } = makeEnv();
+    const created = await call('create_table', {
+      sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['합계']],
+    }) as { changeSetId: string };
+    pending.approve(created.changeSetId);
+    const table = tables[0];
+    const equation = await call('insert_equation', {
+      sectionIdx: 0, paraIdx: 0, charOffset: 0,
+      cell: { paraIdx: table.paraIdx, controlIdx: table.controlIdx, cellIdx: 0 }, script: 'x over y',
+    }) as { changeSetId: string };
+    pending.endTurn('review');
+    if (laterEdit === 'user') {
+      body[0] = 'User text';
+      bus.emit('document-mutated', 'input-handler-edit');
+    } else {
+      pending.beginTurn('claude');
+      await call('insert_text', { sectionIdx: 0, paraIdx: 0, charOffset: 0, text: 'Agent ' });
+      pending.endTurn('review');
+    }
+    const expected = body[0];
+    pending.reject(equation.changeSetId);
+    assert.equal(body[0], expected, `${laterEdit} text survives rejecting an earlier object`);
+    assert.ok(calls.some(call => call.m === 'deleteEquationControlInCell'), 'uses the local inverse');
+    assert.equal((tables[0] as FakeTable & { eqs?: Map<string, string> }).eqs?.get('0:0'), undefined);
+  }
+});
+
+test('equation preview snapshots are released after reject, approve, and disposal', async () => {
+  for (const finish of ['reject', 'approve', 'dispose'] as const) {
+    const { call, pending, tables, snapshots, getExternalSnapshotCount } = makeEnv();
+    const created = await call('create_table', {
+      sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['합계']],
+    }) as { changeSetId: string };
+    pending.approve(created.changeSetId);
+    const table = tables[0];
+    const beforeHeld = getExternalSnapshotCount();
+    const equation = await call('insert_equation', {
+      sectionIdx: 0, paraIdx: 0, charOffset: 0,
+      cell: { paraIdx: table.paraIdx, controlIdx: table.controlIdx, cellIdx: 0 },
+      script: 'x over y',
+    }) as { changeSetId: string };
+    pending.endTurn('review');
+    const set = pending.getChangeSets().find(candidate => candidate.id === equation.changeSetId)!;
+    const op = set.ops.find(candidate => candidate.kind === 'object')!;
+    assert.equal(op.kind, 'object');
+    const previewId = op.snapshotId!;
+    assert.ok(snapshots.has(previewId), `${finish}: preview snapshot is retained`);
+    assert.equal(getExternalSnapshotCount(), beforeHeld + 1);
+
+    if (finish === 'dispose') pending.dispose();
+    else pending[finish](equation.changeSetId);
+
+    assert.equal(snapshots.has(previewId), false, `${finish}: preview snapshot is discarded`);
+    assert.equal(getExternalSnapshotCount(), beforeHeld, `${finish}: external snapshot count is released`);
+  }
+});
+
+test('rejecting an earlier set cannot return through a later equation snapshot', async () => {
+  const { call, pending, body, tables } = makeEnv();
+  const created = await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['합계']],
+  }) as { changeSetId: string };
+  pending.approve(created.changeSetId);
+  const first = await call('insert_text', {
+    sectionIdx: 0, paraIdx: 0, charOffset: 0, text: 'Earlier ',
+  }) as { changeSetId: string };
+  pending.endTurn('review');
+  const table = tables[0];
+  const later = await call('insert_equation', {
+    sectionIdx: 0, paraIdx: 0, charOffset: 0,
+    cell: { paraIdx: table.paraIdx, controlIdx: table.controlIdx, cellIdx: 0 }, script: 'x over y',
+  }) as { changeSetId: string };
+  pending.endTurn('review');
+
+  pending.reject(first.changeSetId);
+  assert.equal(body[0], 'Title');
+  pending.reject(later.changeSetId);
+  assert.equal(body[0], 'Title');
+});
+
+test('one set can still restore its own object snapshots in reverse order', async () => {
+  const { call, pending, tables, calls } = makeEnv();
+  const created = await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['A', 'B']],
+  }) as { changeSetId: string };
+  pending.approve(created.changeSetId);
+  const table = tables[0];
+  const first = await call('insert_equation', {
+    sectionIdx: 0, paraIdx: 0, charOffset: 0,
+    cell: { paraIdx: table.paraIdx, controlIdx: table.controlIdx, cellIdx: 0 }, script: 'a over b',
+  }) as { changeSetId: string };
+  const second = await call('insert_equation', {
+    sectionIdx: 0, paraIdx: 0, charOffset: 0,
+    cell: { paraIdx: table.paraIdx, controlIdx: table.controlIdx, cellIdx: 1 }, script: 'c over d',
+  }) as { changeSetId: string };
+  assert.equal(first.changeSetId, second.changeSetId);
+  pending.endTurn('review');
+
+  pending.reject(first.changeSetId);
+  assert.equal((tables[0] as FakeTable & { eqs?: Map<string, string> }).eqs?.size ?? 0, 0);
+  assert.equal(calls.filter(call => call.m === 'deleteEquationControlInCell').length, 0);
+});
+
+test('rejecting a later replacement cannot return an earlier rejected set', async () => {
+  const { call, pending, body } = makeEnv();
+  const first = await call('insert_text', {
+    sectionIdx: 0, paraIdx: 0, charOffset: 0, text: 'Earlier ',
+  }) as { changeSetId: string };
+  pending.endTurn('review');
+  const later = pending.replaceText({
+    sectionIdx: 0, startParaIdx: 1, startCharOffset: 0,
+    endParaIdx: 1, endCharOffset: 6,
+  }, 'Latest', 'claude');
+  pending.endTurn('review');
+
+  pending.reject(first.changeSetId);
+  assert.equal(body[0], 'Title');
+  pending.reject(later.changeSetId);
+  assert.equal(body[0], 'Title');
+  assert.equal(body[1], 'Second paragraph with text');
+});
+
+test('rejecting a later equation keeps an earlier approved marked change', async () => {
+  const { call, pending, tables } = makeEnv();
+  const created = await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['합계']],
+  }) as { changeSetId: string };
+  pending.approve(created.changeSetId);
+  const table = tables[0];
+  const first = pending.addObjectOp('claude', {
+    type: 'setCellProps', sectionIdx: 0, tableParaIdx: table.paraIdx,
+    controlIdx: table.controlIdx, cellIdx: 0, props: { reviewMarker: 'approved' },
+    dims: { rowCount: table.rows, colCount: table.cols },
+  });
+  pending.endTurn('review');
+  const later = await call('insert_equation', {
+    sectionIdx: 0, paraIdx: 0, charOffset: 0,
+    cell: { paraIdx: table.paraIdx, controlIdx: table.controlIdx, cellIdx: 0 }, script: 'x over y',
+  }) as { changeSetId: string };
+  pending.endTurn('review');
+
+  assert.equal(pending.approve(first.changeSetId), true);
+  assert.equal(tables[0].cellProps[0].reviewMarker, 'approved');
+  pending.reject(later.changeSetId);
+  assert.equal(tables[0].cellProps[0].reviewMarker, 'approved');
+});
+
+test('get_document_info 는 등록 폰트 개수만 싣고 fontQuery 로 물은 폰트만 찾아 준다', async () => {
+  const { call } = makeEnv();
+  const plain = (await call('get_document_info')) as Record<string, unknown>;
+  assert.equal(plain['registeredFontCount'], 1);
+  assert.equal(plain['registeredFonts'], undefined);
+  assert.equal(plain['fontMatches'], undefined);
+  const r = (await call('get_document_info', { fontQuery: ['바', '탕', '맑은 고딕'] })) as { fontMatches: Record<string, string[]> };
+  assert.deepEqual(r.fontMatches, { '바': ['바탕'], '탕': ['바탕'], '맑은 고딕': [] });
+});
+
+// ─── 리뷰 확정 결함 회귀 테스트 ─────────────────────────────
+
+test('같은 표에 insert_row 두 번 → reject 가 둘 다 되돌린다 (형제 dims 갱신)', async () => {
+  const { call, pending, tables } = makeEnv();
+  const c = (await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['a'], ['b'], ['c'], ['d']],
+  })) as { changeSetId: string };
+  pending.approve(c.changeSetId);
+  const t = tables[0];
+  assert.equal(t.rows, 4);
+  const r1 = (await call('edit_table', {
+    sectionIdx: 0, paraIdx: t.paraIdx, controlIdx: t.controlIdx, op: 'insert_row', rowIdx: 1,
+  })) as { changeSetId: string };
+  // 표는 잠기지 않는다 — 같은 표의 두 번째 구조 편집이 바로 통과한다
+  const r2 = (await call('edit_table', {
+    sectionIdx: 0, paraIdx: t.paraIdx, controlIdx: t.controlIdx, op: 'insert_row', rowIdx: 2,
+  })) as { changeSetId: string; rowCount: number };
+  assert.equal(r2.rowCount, 6);
+  assert.equal(tables[0].rows, 6);
+  pending.reject(r1.changeSetId); // 두 op 은 같은 change-set 에 있다
+  assert.equal(tables[0].rows, 4); // 둘 다 되돌아감 — 이전에는 첫 op 이 드리프트로 오판·잔류했다
+});
+
+test('pending 표에 사용자가 입력하면 reject 는 표를 지우지 않고 남긴다 (내용 지문)', async () => {
+  const { call, pending, tables } = makeEnv();
+  const c = (await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['원본']],
+  })) as { changeSetId: string };
+  // 사용자가 승인 전 셀에 직접 타이핑 (에이전트 op 이 아님)
+  tables[0].cells[0][0] = '원본 + 사용자 입력';
+  pending.reject(c.changeSetId);
+  assert.equal(tables.length, 1); // 표(와 사용자 내용)가 보존된다
+  assert.equal(tables[0].cells[0][0], '원본 + 사용자 입력');
+});
+
+test('create_table + 같은 턴 셀 텍스트 op → reject 가 표를 정상 삭제한다 (에이전트 셀 op 은 지문 제외)', async () => {
+  const { call, pending, tables } = makeEnv();
+  const c = (await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['머리', '']],
+  })) as { changeSetId: string };
+  const t = tables[0];
+  await call('insert_text', {
+    sectionIdx: 0, paraIdx: 0, charOffset: 0, text: '추가',
+    cell: { paraIdx: t.paraIdx, controlIdx: t.controlIdx, cellIdx: 1 },
+  });
+  assert.equal(t.cells[1][0], '추가');
+  pending.reject(c.changeSetId);
+  assert.equal(tables.length, 0); // 에이전트 자신의 셀 편집은 드리프트가 아니다
+});
+
+// ─── P4.1 타이포그래피 패스스루 ────────────────────────────
+
+test('apply_char_format: 장평/자간 스칼라는 7개 언어 슬롯으로 확장된다', async () => {
+  const { call, calls } = makeEnv();
+  await call('apply_char_format', {
+    sectionIdx: 0, paraIdx: 0, startOffset: 0, endOffset: 5,
+    widthPercent: 90, letterSpacingPercent: -5,
+  });
+  const json = JSON.parse(calls.find((x) => x.m === 'applyCharFormat')!.a[4] as string) as Record<string, unknown>;
+  assert.deepEqual(json['ratios'], [90, 90, 90, 90, 90, 90, 90]);
+  assert.deepEqual(json['spacings'], [-5, -5, -5, -5, -5, -5, -5]);
+});
+
+test('apply_char_format: 7-배열은 슬롯별 값으로 통과하고 다른 길이/범위는 거부된다', async () => {
+  const { call, calls } = makeEnv();
+  await call('apply_char_format', {
+    sectionIdx: 0, paraIdx: 0, startOffset: 0, endOffset: 5,
+    widthPercent: [80, 90, 100, 100, 100, 100, 100],
+    letterSpacingPercent: [0, 0, 0, 0, 0, 0, -10],
+  });
+  const json = JSON.parse(calls.find((x) => x.m === 'applyCharFormat')!.a[4] as string) as Record<string, unknown>;
+  assert.deepEqual(json['ratios'], [80, 90, 100, 100, 100, 100, 100]);
+  assert.deepEqual(json['spacings'], [0, 0, 0, 0, 0, 0, -10]);
+  for (const bad of [
+    { widthPercent: [90, 90] },
+    { widthPercent: 20 },
+    { widthPercent: 250 },
+    { letterSpacingPercent: 99 },
+    { letterSpacingPercent: [0, 0, 0, 0, 0, 0] },
+  ]) {
+    await expectErr(call('apply_char_format', {
+      sectionIdx: 0, paraIdx: 0, startOffset: 0, endOffset: 5, ...bad,
+    }), 'INVALID_ARGS');
+  }
+});
+
+test('apply_char_format: reject 역서식에 이전 ratios/spacings 가 실린다', async () => {
+  const { call, pending, calls, charProps } = makeEnv();
+  charProps['ratios'] = [80, 80, 80, 80, 80, 80, 80];
+  charProps['spacings'] = [5, 5, 5, 5, 5, 5, 5];
+  const r = (await call('apply_char_format', {
+    sectionIdx: 0, paraIdx: 0, startOffset: 0, endOffset: 5, widthPercent: 90,
+  })) as { changeSetId: string };
+  calls.length = 0;
+  pending.reject(r.changeSetId);
+  const inverse = calls.find((x) => x.m === 'applyCharFormat')!;
+  const invJson = JSON.parse(inverse.a[4] as string) as Record<string, unknown>;
+  assert.deepEqual(invJson['ratios'], [80, 80, 80, 80, 80, 80, 80]);
+  assert.equal(invJson['spacings'], undefined); // 자간은 바꾸지 않았으므로 역서식에 없다
+});
+
+test('get_char_format: 동일 슬롯은 스칼라, 다른 슬롯은 배열, 장평 100/자간 0 은 생략', async () => {
+  const { call, charProps } = makeEnv();
+  charProps['fontSize'] = 1100;
+  charProps['ratios'] = [90, 90, 90, 90, 90, 90, 90];
+  charProps['spacings'] = [0, 0, 0, 0, 0, 0, -5];
+  const r = (await call('get_char_format', { sectionIdx: 0, paraIdx: 0, charOffset: 1 })) as Record<string, unknown>;
+  assert.equal(r['widthPercent'], 90);
+  assert.deepEqual(r['letterSpacingPercent'], [0, 0, 0, 0, 0, 0, -5]);
+  charProps['ratios'] = [100, 100, 100, 100, 100, 100, 100];
+  charProps['spacings'] = [0, 0, 0, 0, 0, 0, 0];
+  const plain = (await call('get_char_format', { sectionIdx: 0, paraIdx: 0, charOffset: 1 })) as Record<string, unknown>;
+  assert.equal(plain['widthPercent'], undefined);
+  assert.equal(plain['letterSpacingPercent'], undefined);
+  const full = (await call('get_char_format', { sectionIdx: 0, paraIdx: 0, charOffset: 1, full: true })) as Record<string, unknown>;
+  assert.equal(full['widthPercent'], 100);
+  assert.equal(full['letterSpacingPercent'], 0);
+});
+
+test('apply_para_format: lineSpacingType+lineSpacingPt 는 enum 과 2x HWPUNIT 으로 변환된다', async () => {
+  const { call, calls } = makeEnv();
+  await call('apply_para_format', {
+    sectionIdx: 0, paraIdx: 0, lineSpacingType: 'fixed', lineSpacingPt: 12,
+  });
+  let json = JSON.parse(calls.find((x) => x.m === 'applyParaFormat')!.a[1] as string) as Record<string, unknown>;
+  assert.equal(json['lineSpacingType'], 'Fixed');
+  assert.equal(json['lineSpacing'], 2400); // 12pt × 200 (비율형 2x HWPUNIT)
+
+  calls.length = 0;
+  await call('apply_para_format', {
+    sectionIdx: 0, paraIdx: 0, lineSpacingType: 'atLeast', lineSpacingPt: 9,
+  });
+  json = JSON.parse(calls.find((x) => x.m === 'applyParaFormat')!.a[1] as string) as Record<string, unknown>;
+  assert.equal(json['lineSpacingType'], 'Minimum');
+  assert.equal(json['lineSpacing'], 1800);
+
+  await expectErr(call('apply_para_format', {
+    sectionIdx: 0, paraIdx: 0, lineSpacingType: 'spaceOnly',
+  }), 'INVALID_ARGS'); // pt 없음
+  await expectErr(call('apply_para_format', {
+    sectionIdx: 0, paraIdx: 0, lineSpacingPt: 12,
+  }), 'INVALID_ARGS'); // type 없음
+  await expectErr(call('apply_para_format', {
+    sectionIdx: 0, paraIdx: 0, lineSpacingType: 'fixed', lineSpacingPt: 12, lineSpacingPercent: 160,
+  }), 'INVALID_ARGS'); // 두 형태 동시 지정
+  await expectErr(call('apply_para_format', {
+    sectionIdx: 0, paraIdx: 0, lineSpacingType: 'stretch',
+  }), 'INVALID_ARGS');
+});
+
+test('apply_para_format: tabStops 는 mm→2x HWPUNIT, type 문자열→코드로 변환된다', async () => {
+  const { call, calls } = makeEnv();
+  await call('apply_para_format', {
+    sectionIdx: 0, paraIdx: 0,
+    tabStops: [{ positionMm: 50, type: 'right' }, { positionMm: 25.4, fill: 2 }],
+  });
+  const json = JSON.parse(calls.find((x) => x.m === 'applyParaFormat')!.a[1] as string) as Record<string, unknown>;
+  assert.deepEqual(json['tabStops'], [
+    { position: mmToHu(50) * 2, type: 1, fill: 0 },
+    { position: mmToHu(25.4) * 2, type: 0, fill: 2 },
+  ]);
+
+  calls.length = 0;
+  await call('apply_para_format', { sectionIdx: 0, paraIdx: 0, tabStops: [] });
+  const cleared = JSON.parse(calls.find((x) => x.m === 'applyParaFormat')!.a[1] as string) as Record<string, unknown>;
+  assert.deepEqual(cleared['tabStops'], []);
+
+  await expectErr(call('apply_para_format', {
+    sectionIdx: 0, paraIdx: 0, tabStops: [{ positionMm: -5 }],
+  }), 'INVALID_ARGS');
+  await expectErr(call('apply_para_format', {
+    sectionIdx: 0, paraIdx: 0, tabStops: [{ positionMm: 10, type: 'middle' }],
+  }), 'INVALID_ARGS');
+});
+
+test('apply_para_format: borders/borderSpacingMm/koreanBreakUnit — 지정하지 않은 변은 보존한다', async () => {
+  const { call, calls, paraProps } = makeEnv();
+  paraProps['borderLeft'] = { type: 1, width: 6, color: '#FF0000' }; // 기존 왼쪽 테두리 (0.7mm)
+  paraProps['borderSpacing'] = [100, 200, 300, 400];
+  await call('apply_para_format', {
+    sectionIdx: 0, paraIdx: 0,
+    borders: { top: { type: 1, widthMm: 1.0, color: '#0000FF' } },
+    borderSpacingMm: { top: 2 },
+    koreanBreakUnit: 'char',
+  });
+  const json = JSON.parse(calls.find((x) => x.m === 'applyParaFormat')!.a[1] as string) as Record<string, unknown>;
+  assert.deepEqual(json['borderTop'], { type: 1, width: 10, color: '#0000FF' }); // 1.0mm → 인덱스 10
+  assert.deepEqual(json['borderLeft'], { type: 1, width: 6, color: '#FF0000' }); // 미지정 변은 현재값 유지
+  assert.equal(json['borderRight'], undefined); // 기존에도 없음
+  assert.deepEqual(json['borderSpacing'], [100, 200, mmToHu(2), 400]);
+  assert.equal(json['koreanBreakUnit'], 1);
+
+  // widthMm 스냅 + type 0 제거
+  calls.length = 0;
+  await call('apply_para_format', {
+    sectionIdx: 0, paraIdx: 0,
+    borders: { bottom: { type: 2, widthMm: 0.9, color: '#00FF00' }, left: { type: 0 } },
+  });
+  const json2 = JSON.parse(calls.find((x) => x.m === 'applyParaFormat')!.a[1] as string) as Record<string, unknown>;
+  assert.deepEqual(json2['borderBottom'], { type: 2, width: 10, color: '#00FF00' }); // 0.9 → 1.0mm 스냅
+  assert.deepEqual(json2['borderLeft'], { type: 0, width: 0, color: '#000000' }); // type 0 은 테두리 제거
+
+  for (const bad of [
+    { borders: { top: { type: 1, color: '#000000' } } },           // widthMm 없음
+    { borders: { top: { type: 1, widthMm: 1, color: 'blue' } } },   // 잘못된 색
+    { borders: { middle: { type: 1, widthMm: 1, color: '#000000' } } },
+    { borders: { top: { type: 99, widthMm: 1, color: '#000000' } } },
+    { koreanBreakUnit: 'syllable' },
+    { borderSpacingMm: { left: 'wide' } },
+  ]) {
+    await expectErr(call('apply_para_format', { sectionIdx: 0, paraIdx: 0, ...bad }), 'INVALID_ARGS');
+  }
+});
+
+test('get_para_format: 줄간격/탭/테두리/줄나눔 읽기 — 기본값은 생략한다', async () => {
+  const { call, paraProps } = makeEnv();
+  paraProps['lineSpacingType'] = 'Fixed';
+  paraProps['lineSpacing'] = 18; // px
+  paraProps['tabStops'] = [{ position: mmToHu(40) * 2, type: 2, fill: 1 }];
+  paraProps['borderTop'] = { type: 1, width: 10, color: '#123456' };
+  paraProps['borderLeft'] = { type: 0, width: 0, color: '#000000' };
+  paraProps['borderSpacing'] = [0, 0, mmToHu(1), 0];
+  paraProps['koreanBreakUnit'] = 1;
+  const r = (await call('get_para_format', { sectionIdx: 0, paraIdx: 0 })) as Record<string, unknown>;
+  assert.equal(r['lineSpacingType'], 'fixed');
+  assert.equal(r['lineSpacingPt'], 13.5); // 18px × 72/96
+  assert.equal(r['lineSpacingPercent'], undefined);
+  assert.deepEqual(r['tabStops'], [{ positionMm: 40, type: 'center', fill: 1 }]);
+  assert.deepEqual(r['borders'], { top: { type: 1, widthMm: 1, color: '#123456' } }); // type-0 left 는 생략
+  assert.deepEqual(r['borderSpacingMm'], { top: 1 });
+  assert.equal(r['koreanBreakUnit'], 'char');
+
+  // 기본 문단 — 새 필드 전부 생략
+  const plainEnv = makeEnv();
+  const plain = (await plainEnv.call('get_para_format', { sectionIdx: 0, paraIdx: 1 })) as Record<string, unknown>;
+  assert.equal(plain['lineSpacingType'], undefined);
+  assert.equal(plain['tabStops'], undefined);
+  assert.equal(plain['borders'], undefined);
+  assert.equal(plain['borderSpacingMm'], undefined);
+  assert.equal(plain['koreanBreakUnit'], undefined);
+  // full:true 는 기본값도 싣는다
+  const full = (await plainEnv.call('get_para_format', { sectionIdx: 0, paraIdx: 1, full: true })) as Record<string, unknown>;
+  assert.equal(full['lineSpacingType'], 'percent');
+  assert.equal(full['koreanBreakUnit'], 'word');
+  assert.deepEqual(full['tabStops'], []);
+});
+
+test('apply_para_format + get_para_format: cellPath 중첩 셀은 ByPath wasm 경로를 쓴다', async () => {
+  const { call, calls, pending } = makeEnv();
+  const c = (await call('create_table', {
+    sectionIdx: 0, paraIdx: 2, charOffset: 0, cells: [['x']],
+  })) as { table: { paraIdx: number; controlIdx: number } };
+  const cell = { paraIdx: c.table.paraIdx, controlIdx: c.table.controlIdx, cellIdx: 0 };
+  const cellPath = [{ controlIndex: c.table.controlIdx, cellIndex: 0, cellParaIndex: 0 }];
+
+  const r = (await call('apply_para_format', {
+    sectionIdx: 0, paraIdx: 0, cell, cellPath, alignment: 'right',
+  })) as { changeSetId: string };
+  const apply = calls.find((x) => x.m === 'applyParaFormatInCellByPath')!;
+  const pathJson = JSON.parse(apply.a[0] as string) as Array<Record<string, number>>;
+  assert.equal(pathJson[0].controlIndex, c.table.controlIdx);
+  assert.equal(pathJson[0].cellIndex, 0);
+  assert.equal(pathJson[0].cellParaIndex, 0); // 활성 문단 인덱스로 교체됐다
+  assert.ok(!calls.some((x) => x.m === 'applyParaFormatInCell'));
+
+  // 읽기도 ByPath
+  calls.length = 0;
+  await call('get_para_format', { sectionIdx: 0, paraIdx: 0, cell, cellPath });
+  assert.ok(calls.some((x) => x.m === 'getCellParaPropertiesAtByPath'));
+
+  // cellPath 의 첫 세그먼트는 cell 주소와 일치해야 한다
+  await expectErr(call('get_para_format', {
+    sectionIdx: 0, paraIdx: 0, cell,
+    cellPath: [{ controlIndex: 99, cellIndex: 0, cellParaIndex: 0 }],
+  }), 'INVALID_ARGS');
+  // cell 없이 cellPath 만 — 거부
+  await expectErr(call('get_para_format', {
+    sectionIdx: 0, paraIdx: 0, cellPath,
+  }), 'INVALID_ARGS');
+
+  // reject 는 setCellParaShapeIdByPath 로 복원한다 (같은 change-set 이라 표까지 되돌아가므로 마지막에 둔다)
+  calls.length = 0;
+  pending.reject(r.changeSetId);
+  assert.ok(calls.some((x) => x.m === 'setCellParaShapeIdByPath'));
+});

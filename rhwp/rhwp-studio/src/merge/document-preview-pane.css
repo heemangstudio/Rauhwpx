@@ -1,0 +1,118 @@
+.document-preview-pane {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.document-preview-pane .merge-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--merge-panel, var(--color-surface-raised, #f5f5f5));
+}
+
+.document-preview-pane .merge-preview-head h3 { margin: 0; font-size: 12px; }
+
+.merge-preview-page-navigation {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--merge-muted, var(--color-text-muted, #666));
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.merge-preview-page-navigation input {
+  width: 30px;
+  padding: 2px 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text, inherit);
+  font: inherit;
+  text-align: center;
+  appearance: textfield;
+  transition: border-color 140ms ease-out, background-color 140ms ease-out;
+}
+.merge-preview-page-navigation input::-webkit-inner-spin-button,
+.merge-preview-page-navigation input::-webkit-outer-spin-button { margin: 0; appearance: none; }
+.merge-preview-page-navigation input:hover,
+.merge-preview-page-navigation input:focus {
+  border-color: var(--merge-border, var(--ui-border-subtle, #ccc));
+  background: var(--merge-surface, var(--color-surface, #fff));
+}
+.merge-preview-page-navigation span { padding-right: 4px; }
+
+.document-preview-pane .merge-preview-status {
+  min-height: 20px;
+  padding: 2px 8px;
+  overflow: hidden;
+  color: var(--merge-muted, var(--color-text-muted, #666));
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.document-preview-pane .merge-preview-status[data-state="error"] { color: var(--ui-danger, #b91c1c); }
+
+/* 병합 창에서는 쪽 정보가 탭 줄에 있으므로 상태는 불러오기와 오류일 때만 보인다. */
+.merge-preview-pane .merge-preview-status {
+  position: absolute;
+  z-index: 1;
+  top: 14px;
+  left: 50%;
+  max-width: calc(100% - 48px);
+  min-height: 0;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--merge-surface, #fff) 88%, transparent);
+  box-shadow: 0 1px 4px #0000001a;
+  pointer-events: none;
+  transform: translateX(-50%);
+  animation: merge-preview-status-in 180ms ease-out;
+}
+.merge-preview-pane .merge-preview-status:empty,
+.merge-preview-pane .merge-preview-status[data-state="ready"] {
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  clip-path: inset(50%);
+  overflow: hidden;
+  animation: none;
+}
+
+@keyframes merge-preview-status-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.document-preview-pane .merge-preview-canvas-wrap {
+  position: relative;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px;
+  background: var(--doc-workspace, #d4d7dc);
+}
+.merge-preview-pane { grid-template-rows: minmax(0, 1fr); }
+.merge-preview-pane .merge-preview-canvas-wrap { padding: 20px 24px; }
+.document-preview-pane .merge-preview-canvas {
+  display: block;
+  margin: 0 auto;
+  background: var(--doc-paper, #fff);
+  box-shadow: 0 1px 5px var(--doc-shadow, #0003);
+}
+.document-preview-pane .merge-preview-marker {
+  position: absolute;
+  border: 2px solid #dc2626;
+  border-radius: 2px;
+  background: #ef444433;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .merge-preview-pane .merge-preview-status { animation: none; }
+  .merge-preview-page-navigation input { transition: none; }
+}

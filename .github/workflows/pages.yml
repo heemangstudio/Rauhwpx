@@ -1,0 +1,57 @@
+name: Deploy website to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - website/**
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    steps:
+      - name: Check out website source
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Check local links and assets
+        run: python3 website/check.py
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: check
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    steps:
+      - name: Check out website source
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload website artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: website
+
+      - name: Deploy website
+        id: deployment
+        uses: actions/deploy-pages@v4

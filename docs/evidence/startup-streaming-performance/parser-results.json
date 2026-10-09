@@ -1,0 +1,58 @@
+{
+  "environment": "macOS Node v26.7.0",
+  "method": "7 alternating warmed runs, 96-character updates, baseline full parser/filter/JSON serialization versus cached tail parser and serialization. Both use uncached full-source fence filtering as a conservative bound; no DOM.",
+  "results": [
+    {
+      "name": "korean",
+      "chars": 39080,
+      "updates": 408,
+      "beforeRunsMs": [
+        160.803625,
+        98.62183299999992,
+        86.55841700000008,
+        85.30737499999998,
+        89.15387499999997,
+        93.83716599999991,
+        83.17887499999983
+      ],
+      "afterRunsMs": [
+        27.877415999999982,
+        22.372249999999894,
+        33.82624999999996,
+        31.18145800000002,
+        31.848915999999917,
+        34.855583000000024,
+        33.94466699999998
+      ],
+      "beforeMedianMs": 89.15387499999997,
+      "afterMedianMs": 31.848915999999917,
+      "speedup": 2.7992750208515793
+    },
+    {
+      "name": "mixed",
+      "chars": 20670,
+      "updates": 216,
+      "beforeRunsMs": [
+        69.25062500000013,
+        94.13654199999996,
+        117.83600000000001,
+        61.86854100000005,
+        63.122208999999884,
+        65.66029099999992,
+        73.70308399999999
+      ],
+      "afterRunsMs": [
+        28.00999999999999,
+        28.639374999999973,
+        15.250333000000182,
+        17.139290999999957,
+        15.732792000000018,
+        17.35633299999995,
+        15.538250000000062
+      ],
+      "beforeMedianMs": 69.25062500000013,
+      "afterMedianMs": 17.139290999999957,
+      "speedup": 4.040460308422344
+    }
+  ]
+}

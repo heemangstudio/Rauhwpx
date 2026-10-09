@@ -1,0 +1,775 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { registerHooks } from 'node:module';
+
+// bridge.ts 는 오버레이 css 를 함께 들여온다 — node 테스트에서는 빈 모듈로 대체한다.
+registerHooks({
+  load(url, context, nextLoad) {
+    if (/\.css$/.test(url)) return { format: 'module', source: 'export default {};', shortCircuit: true };
+    return nextLoad(url, context);
+  },
+});
+import { EventBus } from '../src/core/event-bus.ts';
+import { RevisionTracker, timeSeededRevision } from '../src/agent/revision.ts';
+import {
+  AgentToolExecutor,
+  DOCUMENT_WRITE_TOOLS,
+  assertToolRequestActive,
+  isDocumentWriteTool,
+} from '../src/agent/tool-executor.ts';
+import { AgentToolError } from '../src/agent/types.ts';
+
+function microtask(): Promise<void> {
+  return Promise.resolve();
+}
+
+test('RevisionTracker: 1에서 시작, 이벤트당 동기 bump', () => {
+  const bus = new EventBus();
+  const tracker = new RevisionTracker(bus);
+  assert.equal(tracker.revision, 1);
+  bus.emit('document-mutated', 'test');
+  assert.equal(tracker.revision, 2);
+  tracker.dispose();
+});
+
+test('RevisionTracker: 같은 틱의 동반 이벤트는 dedupe', async () => {
+  const bus = new EventBus();
+  const tracker = new RevisionTracker(bus);
+  bus.emit('document-mutated', 'agent-pending-edit');
+  bus.emit('document-changed');
+  bus.emit('document-dirty-changed');
+  assert.equal(tracker.revision, 2);
+  await microtask();
+  bus.emit('document-changed');
+  assert.equal(tracker.revision, 3);
+  tracker.dispose();
+});
+
+test('RevisionTracker: dispose 후에는 bump하지 않음', () => {
+  const bus = new EventBus();
+  const tracker = new RevisionTracker(bus);
+  tracker.dispose();
+  bus.emit('document-mutated');
+  assert.equal(tracker.revision, 1);
+});
+
+test('RevisionTracker: 저장(dirty→false)은 bump하지 않고, dirty→true는 bump한다', async () => {
+  const bus = new EventBus();
+  const tracker = new RevisionTracker(bus);
+  for (const reason of ['save', 'save-as', 'host-save', 'save-with-history', 'pinned-save']) {
+    bus.emit('document-dirty-changed', { dirty: false, reason });
+    assert.equal(tracker.revision, 1, `${reason} 는 bump 하지 않는다`);
+    await microtask();
+  }
+  bus.emit('document-dirty-changed', { dirty: true, reason: 'edit' });
+  assert.equal(tracker.revision, 2);
+  tracker.dispose();
+});
+
+test('RevisionTracker: 문서 로드/교체(dirty→false, 저장 아님)는 반드시 bump한다', async () => {
+  // 로드 경로는 document-mutated/changed 를 발행하지 않는다 — 이 전이가 유일한
+  // 신호이므로 놓치면 이전 문서의 expectedRevision 이 새 문서에 통과한다.
+  const bus = new EventBus();
+  const tracker = new RevisionTracker(bus);
+  bus.emit('document-dirty-changed', { dirty: false, reason: 'document-initialized' });
+  assert.equal(tracker.revision, 2);
+  await microtask();
+  // 이유가 없는 미지의 false 전이도 안전하게 bump 한다
+  bus.emit('document-dirty-changed', { dirty: false });
+  assert.equal(tracker.revision, 3);
+  tracker.dispose();
+});
+
+test('RevisionTracker: 문서 인스턴스가 바뀌면 dirty 전이 없이도 bump 하고, 같은 틱의 쓰기 bump 도 흡수하지 않는다', async () => {
+  // 깨끗한 A → 깨끗한 B 전환은 어떤 revision 이벤트도 내지 않는다 — 인스턴스 번호만 바뀐다.
+  const bus = new EventBus();
+  let instance = 1;
+  const tracker = new RevisionTracker(bus, { documentInstance: () => instance });
+  bus.emit('document-mutated', 'test');
+  await microtask();
+  const onA = tracker.revision;
+  instance = 2;
+  assert.equal(tracker.revision, onA + 1, '다른 문서는 다른 revision 이다');
+  assert.equal(tracker.revision, onA + 1, '같은 인스턴스를 다시 읽어도 더 오르지 않는다');
+  // 인스턴스 bump 는 dedupe 창을 열지 않는다 — 같은 틱의 새 문서 첫 쓰기도 revision 을 올린다.
+  bus.emit('document-mutated', 'agent-pending-edit');
+  assert.equal(tracker.revision, onA + 2);
+  tracker.dispose();
+});
+
+test('RevisionTracker: initialRevision 을 시작값으로 쓰고, 시각 기반 시작값은 새로고침마다 커진다', () => {
+  const bus = new EventBus();
+  const tracker = new RevisionTracker(bus, { initialRevision: 5_000 });
+  assert.equal(tracker.revision, 5_000);
+  bus.emit('document-changed');
+  assert.equal(tracker.revision, 5_001);
+  tracker.dispose();
+  const before = timeSeededRevision(Date.UTC(2026, 8, 29, 12, 0, 0));
+  const after = timeSeededRevision(Date.UTC(2026, 8, 29, 12, 0, 1));
+  assert.ok(Number.isSafeInteger(before) && before > 1);
+  assert.equal(after - before, 100, '1초에 100 — 이전 페이지가 초당 100번 넘게 bump 하지 않으면 범위가 겹치지 않는다');
+});
+
+// ─── AgentToolExecutor (stub deps) ──────────────────────────
+
+function makeExecutor(paragraphs: string[][] = [['hello world', 'second para']]) {
+  const bus = new EventBus();
+  const revision = new RevisionTracker(bus);
+  const calls: Array<{ method: string; args: unknown[] }> = [];
+  const wasm = {
+    getSectionCount: () => paragraphs.length,
+    getParagraphCount: (sec: number) => paragraphs[sec].length,
+    getParagraphLength: (sec: number, para: number) => paragraphs[sec][para].length,
+    getTextRange: (sec: number, para: number, off: number, count: number) =>
+      paragraphs[sec][para].slice(off, off + count),
+    get pageCount() { return 3; },
+    getSourceFormat: () => 'hwp',
+    get documentDigest() { return 'blake3:test'; },
+    getFieldList: () => [],
+    copySelection: () => '{"ok":true}',
+    renderPageSvg: (_page: number) => '<svg/>',
+  };
+  const pending = {
+    insertText: (agent: string, addr: { sectionIdx: number; paraIdx: number; charOffset: number }, text: string) => {
+      calls.push({ method: 'insertText', args: [agent, addr, text] });
+      bus.emit('document-mutated', 'agent-pending-edit');
+      bus.emit('document-changed');
+      return {
+        changeSetId: 'cs-1',
+        insertedRange: {
+          sectionIdx: addr.sectionIdx,
+          startParaIdx: addr.paraIdx,
+          startCharOffset: addr.charOffset,
+          endParaIdx: addr.paraIdx,
+          endCharOffset: addr.charOffset + text.length,
+        },
+      };
+    },
+    replaceText: (range: { sectionIdx: number; startParaIdx: number; startCharOffset: number }, text: string, agent: string) => {
+      calls.push({ method: 'replaceText', args: [range, text, agent] });
+      bus.emit('document-mutated', 'agent-pending-edit');
+      bus.emit('document-changed');
+      return {
+        changeSetId: 'cs-1',
+        deletedText: 'marked',
+        insertedRange: {
+          sectionIdx: range.sectionIdx,
+          startParaIdx: range.startParaIdx,
+          startCharOffset: range.startCharOffset,
+          endParaIdx: range.startParaIdx,
+          endCharOffset: range.startCharOffset + text.length,
+        },
+      };
+    },
+    applyCharFormat: (agent: string, range: unknown, format: unknown) => {
+      calls.push({ method: 'applyCharFormat', args: [agent, range, format] });
+      bus.emit('document-mutated', 'agent-pending-edit');
+      return { changeSetId: 'cs-1' };
+    },
+    setFieldValue: (agent: string, name: string, value: string) => {
+      calls.push({ method: 'setFieldValue', args: [agent, name, value] });
+      bus.emit('document-mutated', 'agent-pending-edit');
+      return { changeSetId: 'cs-1', fieldId: 7, oldValue: 'old', newValue: value };
+    },
+    hasTemplateMutation: () => false,
+    runAtomicBatch: <T,>(fn: () => T): T => {
+      calls.push({ method: 'runAtomicBatch', args: [] });
+      return fn();
+    },
+  };
+  const inputHandler = {
+    getCursorPosition: () => ({ sectionIndex: 0, paragraphIndex: 0, charOffset: 0 }),
+    getSelection: () => null,
+  };
+  const documentState = { isDirty: () => false };
+  const executor = new AgentToolExecutor({
+    wasm: wasm as any,
+    inputHandler: inputHandler as any,
+    documentState: documentState as any,
+    revision,
+    pending: pending as any,
+  });
+  return { executor, calls, bus, revision, wasm, pending };
+}
+
+async function expectToolError(p: Promise<unknown>, code: string): Promise<AgentToolError> {
+  try {
+    await p;
+  } catch (e) {
+    assert.ok(e instanceof AgentToolError, `AgentToolError 기대, 실제: ${e}`);
+    assert.equal(e.code, code);
+    return e;
+  }
+  assert.fail(`${code} 오류를 기대했지만 성공함`);
+}
+
+test('executor: 알 수 없는 툴 → UNKNOWN_TOOL', async () => {
+  const { executor } = makeExecutor();
+  await expectToolError(executor.execute('bogus_tool', {}, 'claude'), 'UNKNOWN_TOOL');
+});
+
+test('executor: document-write helper covers every mutating tool', () => {
+  assert.deepEqual([...DOCUMENT_WRITE_TOOLS].sort(), [
+    'apply_char_format',
+    'apply_edits',
+    'apply_engine_edits',
+    'apply_list',
+    'apply_para_format',
+    'apply_style',
+    'commit_version',
+    'create_table',
+    'delete_range',
+    'delete_table',
+    'edit_footnote',
+    'edit_header_footer',
+    'edit_object',
+    'edit_table',
+    'insert_chart',
+    'insert_equation',
+    'insert_footnote',
+    'insert_image',
+    'insert_page_break',
+    'insert_shape',
+    'insert_text',
+    'prepare_engine_edit_session',
+    'replace_all',
+    'replace_range',
+    'set_bookmark',
+    'set_cell_props',
+    'set_field_value',
+    'set_page_layout',
+    'set_table_props',
+    'set_zone_borders',
+    'template_apply_paragraph_format',
+    'template_apply_section_layout',
+    'template_insert_block',
+  ]);
+  assert.equal(isDocumentWriteTool('insert_text'), true);
+  assert.equal(isDocumentWriteTool('get_structure'), false);
+});
+
+test('executor: planning and unknown phases reject every write before mutation', async () => {
+  const { executor, calls } = makeExecutor();
+  for (const tool of DOCUMENT_WRITE_TOOLS) {
+    await expectToolError(executor.execute(tool, {}, 'claude', {
+      workflow: 'plan',
+      phase: 'planning',
+      capabilityEpoch: 4,
+      activePhase: 'planning',
+      activeCapabilityEpoch: 4,
+    }), 'PLAN_MODE_READ_ONLY');
+  }
+  await expectToolError(executor.execute('insert_text', {}, 'claude', {
+    workflow: 'plan',
+    phase: 'future-phase',
+    capabilityEpoch: 4,
+    activePhase: 'implementing',
+    activeCapabilityEpoch: 4,
+  }), 'PLAN_MODE_READ_ONLY');
+  assert.deepEqual(calls, []);
+});
+
+test('executor: question mode rejects every write before mutation', async () => {
+  const { executor, calls } = makeExecutor();
+  await expectToolError(executor.execute('insert_text', {}, 'claude', {
+    workflow: 'question',
+    phase: 'questioning',
+    capabilityEpoch: 4,
+    activePhase: 'questioning',
+    activeCapabilityEpoch: 4,
+  }), 'QUESTION_MODE_READ_ONLY');
+  assert.deepEqual(calls, []);
+});
+
+test('executor: implementing requires the current capability epoch', async () => {
+  const { executor, calls } = makeExecutor();
+  await expectToolError(executor.execute('insert_text', {
+    expectedRevision: 1, sectionIdx: 0, paraIdx: 0, charOffset: 0, text: 'x',
+  }, 'claude', {
+    workflow: 'plan',
+    phase: 'implementing',
+    capabilityEpoch: 3,
+    activePhase: 'implementing',
+    activeCapabilityEpoch: 4,
+  }), 'STALE_CAPABILITY_EPOCH');
+  await expectToolError(executor.execute('insert_text', {
+    expectedRevision: 1, sectionIdx: 0, paraIdx: 0, charOffset: 0, text: 'x',
+  }, 'claude', {
+    workflow: 'plan',
+    phase: 'implementing',
+    activePhase: 'implementing',
+    activeCapabilityEpoch: 4,
+  }), 'STALE_CAPABILITY_EPOCH');
+  assert.deepEqual(calls, []);
+});
+
+test('executor: a settled provider turn is rejected before a document write', async () => {
+  const { executor, calls } = makeExecutor();
+  await expectToolError(executor.execute('insert_text', {
+    expectedRevision: 1, sectionIdx: 0, paraIdx: 0, charOffset: 0, text: 'late',
+  }, 'claude', {
+    workflow: 'direct',
+    requestIsActive: () => false,
+  }), 'NO_ACTIVE_TURN');
+  assert.deepEqual(calls, []);
+  assert.throws(
+    () => assertToolRequestActive({ workflow: 'direct', requestIsActive: () => false }),
+    (error: unknown) => error instanceof AgentToolError && error.code === 'NO_ACTIVE_TURN',
+  );
+});
+
+test('executor: engine session setup and semantic writes share one turn in either profile', async () => {
+  const { executor } = makeExecutor();
+  executor.beginTurn();
+  const safe = { workflow: 'direct' as const, permissionProfile: 'safe' as const };
+  await executor.execute('prepare_engine_edit_session', {
+    expectedRevision: 1,
+    method: 'copySelection',
+    args: [0, 0, 0, 0, 1],
+  }, 'claude', safe);
+  await executor.execute('insert_text', {
+    expectedRevision: 1, sectionIdx: 0, paraIdx: 0, charOffset: 0, text: 'x',
+  }, 'claude', safe);
+  await executor.execute('prepare_engine_edit_session', {
+    expectedRevision: 2,
+    method: 'copySelection',
+    args: [0, 0, 0, 0, 1],
+  }, 'claude', safe);
+});
+
+test('executor: planning reads and authorized implementation writes remain available', async () => {
+  const { executor, calls } = makeExecutor();
+  const structure = await executor.execute('get_structure', {}, 'claude', {
+    workflow: 'plan',
+    phase: 'planning',
+    activePhase: 'planning',
+  }) as { revision: number };
+  assert.equal(structure.revision, 1);
+
+  await executor.execute('insert_text', {
+    expectedRevision: 1, sectionIdx: 0, paraIdx: 0, charOffset: 0, text: 'x',
+  }, 'claude', {
+    workflow: 'plan',
+    phase: 'implementing',
+    capabilityEpoch: 8,
+    activePhase: 'implementing',
+    activeCapabilityEpoch: 8,
+  });
+  assert.equal(calls[0]?.method, 'insertText');
+});
+
+test('executor: structural template previews block ordinary document writes', async () => {
+  const { executor, pending, calls } = makeExecutor();
+  pending.hasTemplateMutation = () => true;
+  await expectToolError(executor.execute('insert_text', {
+    expectedRevision: 1, sectionIdx: 0, paraIdx: 0, charOffset: 0, text: 'x',
+  }, 'claude'), 'TEMPLATE_PENDING_CONFLICT');
+  assert.deepEqual(calls, []);
+});
+
+test('executor: get_structure format:json 은 revision/미리보기를 예전 모양 그대로 반환', async () => {
+  const { executor } = makeExecutor([['hello world', 'second para']]);
+  const r = (await executor.execute('get_structure', { format: 'json' }, 'claude')) as any;
+  assert.equal(r.revision, 1);
+  assert.equal(r.sectionCount, 1);
+  assert.equal(r.pageCount, 3);
+  assert.equal(r.truncated, false);
+  assert.equal(r.sections[0].paragraphs[0].text, 'hello world');
+});
+
+test('executor: get_structure 기본은 머리 줄 + 범례 + 문단 줄 텍스트이고 빈 문단 연속을 접는다', async () => {
+  const { executor } = makeExecutor([['hello world', '', '', '', 'tail\ttab']]);
+  const r = (await executor.execute('get_structure', { maxPreviewChars: 8 }, 'claude')) as any;
+  assert.equal(r.revision, 1);
+  assert.equal(r.pageCount, 3);
+  assert.equal(r.truncated, false);
+  assert.equal(r.sections, undefined);
+  const lines = (r.mcpContent[0].text as string).split('\n');
+  assert.equal(lines[0], 'revision 1 · 3 pages · 1 section');
+  assert.match(lines[1], /^Lines: /);
+  assert.deepEqual(lines.slice(2), [
+    's0 · 5 paragraphs',
+    's0 p0 (11) hello wo…',
+    's0 p1-p3 empty',
+    's0 p4 (8) tail⇥tab',
+  ]);
+});
+
+test('executor: get_structure maxParagraphs로 잘림', async () => {
+  const { executor } = makeExecutor([['a', 'b', 'c']]);
+  const r = (await executor.execute('get_structure', { maxParagraphs: 2, format: 'json' }, 'claude')) as any;
+  assert.equal(r.truncated, true);
+  assert.equal(r.sections[0].paragraphs.length, 2);
+  const text = (await executor.execute('get_structure', { maxParagraphs: 2 }, 'claude')) as any;
+  assert.equal(text.truncated, true);
+  assert.match(text.mcpContent[0].text.split('\n')[0], /TRUNCATED/);
+});
+
+test('executor: get_text_range는 count를 clamp', async () => {
+  const { executor } = makeExecutor([['hello world']]);
+  const r = (await executor.execute(
+    'get_text_range',
+    { sectionIdx: 0, paraIdx: 0, charOffset: 6, count: 999 },
+    'claude',
+  )) as any;
+  assert.equal(r.text, 'world');
+  assert.equal(r.paraLength, 11);
+});
+
+test('executor: 주소 범위 밖 → INVALID_ARGS', async () => {
+  const { executor } = makeExecutor([['hello']]);
+  await expectToolError(
+    executor.execute('get_text_range', { sectionIdx: 0, paraIdx: 5 }, 'claude'),
+    'INVALID_ARGS',
+  );
+  await expectToolError(
+    executor.execute('get_text_range', { sectionIdx: 0, paraIdx: 0, charOffset: 6 }, 'claude'),
+    'INVALID_ARGS',
+  );
+});
+
+test('executor: find_text가 대소문자 무시 매치 + context 반환', async () => {
+  const { executor } = makeExecutor([['Hello World', 'world war world']]);
+  const r = (await executor.execute('find_text', { query: 'WORLD' }, 'claude')) as any;
+  assert.equal(r.matches.length, 3);
+  assert.deepEqual(
+    r.matches.map((m: any) => [m.paraIdx, m.charOffset]),
+    [[0, 6], [1, 0], [1, 10]],
+  );
+  assert.equal(r.truncated, false);
+});
+
+test('executor: write 툴은 expectedRevision 필수', async () => {
+  const { executor } = makeExecutor();
+  await expectToolError(
+    executor.execute('insert_text', { sectionIdx: 0, paraIdx: 0, charOffset: 0, text: 'x' }, 'claude'),
+    'INVALID_ARGS',
+  );
+});
+
+test('executor: revision 불일치 → REVISION_MISMATCH (actionable 메시지)', async () => {
+  const { executor } = makeExecutor();
+  const err = await expectToolError(
+    executor.execute('insert_text', { expectedRevision: 99, sectionIdx: 0, paraIdx: 0, charOffset: 0, text: 'x' }, 'claude'),
+    'REVISION_MISMATCH',
+  );
+  assert.match(err.message, /revision 1/);
+  assert.match(err.message, /expected 99/);
+  // 자기 유발 불일치는 재조회 없이 현재 revision 으로 바로 재시도할 수 있어야 한다
+  assert.match(err.message, /expectedRevision=1/);
+  assert.match(err.message, /get_text_range/);
+});
+
+test('executor: insert_text는 pending에 위임하고 새 revision을 반환', async () => {
+  const { executor, calls } = makeExecutor([['hello world']]);
+  const r = (await executor.execute(
+    'insert_text',
+    { expectedRevision: 1, sectionIdx: 0, paraIdx: 0, charOffset: 5, text: ' brave' },
+    'codex',
+  )) as any;
+  assert.equal(calls[0].method, 'insertText');
+  assert.equal(calls[0].args[0], 'codex');
+  assert.equal(r.changeSetId, 'cs-1');
+  assert.equal(r.revision, 2); // 뮤테이션 이벤트가 동기 bump → 응답은 새 revision
+  assert.deepEqual(r.insertedRange, {
+    startParaIdx: 0, startCharOffset: 5, endParaIdx: 0, endCharOffset: 11,
+  });
+  // 스테이징 규칙은 공유 규칙에 한 번만 있다 — 결과마다 반복하지 않는다.
+  assert.equal(r.note, undefined);
+});
+
+test('executor: delete_range 빈 범위 → INVALID_ARGS', async () => {
+  const { executor } = makeExecutor([['hello world']]);
+  await expectToolError(
+    executor.execute('delete_range', {
+      expectedRevision: 1, sectionIdx: 0,
+      startParaIdx: 0, startCharOffset: 3, endParaIdx: 0, endCharOffset: 3,
+    }, 'claude'),
+    'INVALID_ARGS',
+  );
+});
+
+test('executor: replace_range = 원자적 pending.replaceText 위임', async () => {
+  const { executor, calls } = makeExecutor([['hello world']]);
+  const r = (await executor.execute('replace_range', {
+    expectedRevision: 1, sectionIdx: 0,
+    startParaIdx: 0, startCharOffset: 0, endParaIdx: 0, endCharOffset: 5, text: 'goodbye',
+  }, 'claude')) as any;
+  // 삭제 + 삽입 두 op 조합이 아니라 단일 원자적 op 이다
+  assert.deepEqual(calls.map((c) => c.method), ['replaceText']);
+  assert.deepEqual(calls[0].args[0], {
+    sectionIdx: 0, startParaIdx: 0, startCharOffset: 0, endParaIdx: 0, endCharOffset: 5,
+  });
+  assert.equal(calls[0].args[1], 'goodbye');
+  assert.equal(calls[0].args[2], 'claude');
+  assert.equal(r.changeSetId, 'cs-1');
+  assert.deepEqual(r.insertedRange, {
+    startParaIdx: 0, startCharOffset: 0, endParaIdx: 0, endCharOffset: 7,
+  });
+  assert.equal(r.revision, 2);
+  assert.equal(typeof r.postEdit, 'string');
+});
+
+test('executor: apply_edits 는 revision 검사 한 번으로 항목들을 원자 배치로 순차 적용한다', async () => {
+  const { executor, calls } = makeExecutor([['hello world', 'second para']]);
+  const r = (await executor.execute('apply_edits', {
+    expectedRevision: 1,
+    edits: [
+      { tool: 'insert_text', args: { sectionIdx: 0, paraIdx: 0, charOffset: 5, text: ' brave' } },
+      {
+        tool: 'replace_range',
+        args: { sectionIdx: 0, startParaIdx: 1, startCharOffset: 0, endParaIdx: 1, endCharOffset: 6, text: 'third' },
+      },
+    ],
+  }, 'claude')) as any;
+  assert.deepEqual(calls.map((c) => c.method), ['runAtomicBatch', 'insertText', 'replaceText']);
+  assert.equal(r.applied, 2);
+  assert.equal(r.results.length, 2);
+  assert.equal(r.results[0].tool, 'insert_text');
+  assert.equal(r.results[1].tool, 'replace_range');
+  // 항목별 revision/note 는 제거된다 — 최상위 값만 유효
+  assert.equal(r.results[0].revision, undefined);
+  assert.equal(r.results[0].note, undefined);
+  assert.equal(r.note, undefined);
+  // 같은 change set 이면 changeSetId 는 최상위에 한 번만 싣는다
+  assert.equal(r.changeSetId, 'cs-1');
+  assert.equal(r.results[0].changeSetId, undefined);
+  assert.ok(Number.isInteger(r.revision) && r.revision > 1);
+  assert.ok(r.results[0].insertedRange);
+});
+
+test('executor: apply_edits 허용 목록 밖 tool / 잘못된 edits → INVALID_ARGS', async () => {
+  const { executor } = makeExecutor([['hello world']]);
+  await expectToolError(
+    executor.execute('apply_edits', {
+      expectedRevision: 1,
+      edits: [{ tool: 'apply_engine_edits', args: { operations: [] } }],
+    }, 'claude'),
+    'INVALID_ARGS',
+  );
+  await expectToolError(
+    executor.execute('apply_edits', { expectedRevision: 1, edits: [] }, 'claude'),
+    'INVALID_ARGS',
+  );
+});
+
+test('executor: apply_edits 항목 실패는 실패 인덱스를 담아 배치 전체 에러가 된다', async () => {
+  const { executor } = makeExecutor([['hello world']]);
+  const err = await expectToolError(
+    executor.execute('apply_edits', {
+      expectedRevision: 1,
+      edits: [
+        { tool: 'insert_text', args: { sectionIdx: 0, paraIdx: 0, charOffset: 0, text: 'ok ' } },
+        // 빈 범위 → INVALID_ARGS
+        {
+          tool: 'replace_range',
+          args: { sectionIdx: 0, startParaIdx: 0, startCharOffset: 3, endParaIdx: 0, endCharOffset: 3, text: 'x' },
+        },
+      ],
+    }, 'claude'),
+    'INVALID_ARGS',
+  );
+  assert.match(err.message, /edits\[1\] \(replace_range\)/);
+  assert.match(err.message, /rolled back/);
+});
+
+test('executor: apply_char_format은 서식 키 1개 이상 필요, fontSizePt → pt*100', async () => {
+  const { executor, calls } = makeExecutor([['hello world']]);
+  await expectToolError(
+    executor.execute('apply_char_format', {
+      expectedRevision: 1, sectionIdx: 0, paraIdx: 0, startOffset: 0, endOffset: 5,
+    }, 'claude'),
+    'INVALID_ARGS',
+  );
+  const r = (await executor.execute('apply_char_format', {
+    expectedRevision: 1, sectionIdx: 0, paraIdx: 0, startOffset: 0, endOffset: 5,
+    bold: true, fontSizePt: 12.5, textColor: '#FF0000',
+  }, 'claude')) as any;
+  assert.equal(r.applied, true);
+  assert.deepEqual(calls[0].args[2], { bold: true, fontSize: 1250, textColor: '#FF0000' });
+});
+
+test('executor: apply_char_format 잘못된 textColor → INVALID_ARGS', async () => {
+  const { executor } = makeExecutor([['hello world']]);
+  await expectToolError(
+    executor.execute('apply_char_format', {
+      expectedRevision: 1, sectionIdx: 0, paraIdx: 0, startOffset: 0, endOffset: 5, textColor: 'red',
+    }, 'claude'),
+    'INVALID_ARGS',
+  );
+});
+
+test('executor: set_field_value 응답 형태', async () => {
+  const { executor } = makeExecutor();
+  const r = (await executor.execute('set_field_value', {
+    expectedRevision: 1, name: 'title', value: 'New Title',
+  }, 'claude')) as any;
+  assert.equal(r.fieldId, 7);
+  assert.equal(r.oldValue, 'old');
+  assert.equal(r.newValue, 'New Title');
+  assert.equal(r.revision, 2);
+});
+
+test('executor: render_page 범위 검증 + RESULT_TOO_LARGE 대신 정상 SVG', async () => {
+  const { executor } = makeExecutor();
+  const r = (await executor.execute('render_page', { pageIndex: 0, format: 'svg' }, 'claude')) as any;
+  assert.equal(r.svg, '<svg/>');
+  await expectToolError(executor.execute('render_page', { pageIndex: 3 }, 'claude'), 'INVALID_ARGS');
+});
+
+test('executor: get_table_properties reports DOC_NOT_LOADED before table lookup', async () => {
+  const { executor, wasm } = makeExecutor();
+  let tableLookupCalled = false;
+  wasm.getSectionCount = () => 0;
+  (wasm as any).getTableDimensions = () => { tableLookupCalled = true; throw new Error('unexpected'); };
+
+  await expectToolError(executor.execute('get_table_properties', {
+    sectionIdx: 0, paraIdx: 0, controlIdx: 0,
+  }, 'claude'), 'DOC_NOT_LOADED');
+  assert.equal(tableLookupCalled, false);
+});
+
+test('executor: wasm throw("문서가 로드되지 않았습니다") → DOC_NOT_LOADED', async () => {
+  const bus = new EventBus();
+  const revision = new RevisionTracker(bus);
+  const throwingWasm = {
+    getSectionCount: () => 1,
+    getParagraphCount: () => { throw new Error('문서가 로드되지 않았습니다'); },
+  };
+  const ex = new AgentToolExecutor({
+    wasm: throwingWasm as any,
+    inputHandler: {} as any,
+    documentState: {} as any,
+    revision,
+    pending: {} as any,
+  });
+  await expectToolError(ex.execute('get_text_range', { sectionIdx: 0, paraIdx: 0 }, 'claude'), 'DOC_NOT_LOADED');
+});
+
+// ─── agent-setup-progress 프레임 (소스 계약) ────────────────
+
+test('브리지: agent-setup-progress 의 userCode 를 그대로 사이드바로 넘긴다', () => {
+  const bridgeSource = readFileSync(new URL('../src/agent/bridge.ts', import.meta.url), 'utf8');
+  const typesSource = readFileSync(new URL('../src/agent/types.ts', import.meta.url), 'utf8');
+  assert.match(
+    bridgeSource,
+    /\.\.\.\(typeof msg\.userCode === 'string' \? \{ userCode: msg\.userCode \} : \{\}\)/,
+  );
+  // 문자열이 아닌 값은 아예 실리지 않는다 — 필드는 선택 사항으로 남는다.
+  assert.match(typesSource, /type: 'agent-setup-progress';[\s\S]*userCode\?: string;/);
+});
+
+// ─── chat-start 맥락 · 압축 프레임 ───────────────────────
+
+const { AgentBridgeImpl } = await import('../src/agent/bridge.ts');
+const { PendingRequestRegistry } = await import('../src/agent/pending-requests.ts');
+const { providerStartContext, rememberProviderSession, createEmptyThread } = await import('../src/agent/threads.ts');
+
+function contextBridge(overrides: Record<string, unknown> = {}) {
+  const bridge = Object.create(AgentBridgeImpl.prototype) as any;
+  const frames: any[] = [];
+  const events: any[] = [];
+  Object.assign(bridge, {
+    state: 'connected', requestSeq: 0, pendingChatStart: null, chatStartSent: false,
+    activeAgent: 'claude', selectedAgent: 'claude', selectedModel: null, selectedEffort: null,
+    editingAgent: 'claude', permissionProfile: 'safe', serviceTier: 'standard',
+    workflow: 'direct', phase: 'direct', threadId: 'thread-1', documentId: 'doc-1', documentName: 'a.hwpx',
+    activeTemplateId: null, revision: { revision: 7 }, chatHistory: [], queuedMessages: [],
+    workflowSwitchPending: false, turnRunning: false, pendingTurnOpen: false, pendingUserQuestion: null,
+    requests: new PendingRequestRegistry(),
+    sendJson: (frame: unknown) => { frames.push(structuredClone(frame)); return true; },
+    emit: (event: unknown) => events.push(event),
+    syncEditingLease() {}, finishWorkflowSwitch() {}, syncWorkflowState() {}, clearPendingQuestionCancellation() {},
+    notifyPlanningDocumentSaved() {},
+    workflowState: () => ({ workflow: 'direct', phase: 'direct', capabilityEpoch: 1, latestPlan: null }),
+    ...overrides,
+  });
+  return { bridge, frames, events, starts: () => frames.filter((frame) => frame.type === 'chat-start') };
+}
+
+function sampleThread() {
+  const thread = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high' });
+  thread.id = 'thread-1';
+  thread.messages.push({ role: 'user', text: '첫 질문', agent: 'claude' }, { role: 'assistant', text: '첫 답', agent: 'claude' });
+  return thread;
+}
+
+test('bridge: an implicit restart after a hub restart rebuilds history and cursor from the current thread', async () => {
+  const thread = sampleThread();
+  const { bridge, starts } = contextBridge();
+  bridge.setChatStartContextProvider(({ agent }: { agent: 'claude' }) => providerStartContext(thread, agent));
+  bridge.startChat('claude', undefined, undefined, false, 'safe', 'direct', 'thread-1', 'doc-1', 'a.hwpx', [
+    { role: 'user', text: 'stale' },
+  ]);
+  assert.deepEqual(starts()[0].history.map((entry: { text: string }) => entry.text), ['첫 질문', '첫 답']);
+  assert.equal('providerSessionId' in starts()[0], false);
+  bridge.handleMessage({ type: 'chat-started', requestId: starts()[0].requestId, agent: 'claude', threadId: 'thread-1' });
+
+  // 그 뒤 Codex 가 한 차례 답했고 Claude 는 성공한 턴의 커서를 얻었다. 허브가 다시 시작해 세션이 없다.
+  rememberProviderSession(thread, 'claude', 'claude-native');
+  thread.messages.push({ role: 'user', text: 'Codex 에게', agent: 'codex' }, { role: 'assistant', text: 'Codex 답', agent: 'codex' });
+  bridge.activeAgent = null;
+  const sent = bridge.sendUserMessage('이어서');
+  const restart = starts()[1];
+  assert.equal(restart.providerSessionId, 'claude-native');
+  assert.deepEqual(restart.handoffHistory.map((entry: { text: string }) => entry.text), ['Codex 에게', 'Codex 답']);
+  assert.deepEqual(restart.history.map((entry: { text: string }) => entry.text), ['첫 질문', '첫 답', 'Codex 에게', 'Codex 답']);
+  bridge.handleMessage({ type: 'chat-started', requestId: restart.requestId, agent: 'claude', threadId: 'thread-1', resumed: true, compaction: 'manual' });
+  await sent;
+});
+
+test('bridge: a start remembered while offline is rebuilt when the socket finally sends it', () => {
+  const thread = sampleThread();
+  const { bridge, starts } = contextBridge({ state: 'connecting', activeAgent: null });
+  bridge.setChatStartContextProvider(({ agent }: { agent: 'claude' }) => providerStartContext(thread, agent));
+  void bridge.sendUserMessage('연결되면');
+  assert.equal(starts().length, 0);
+  thread.messages.push({ role: 'assistant', text: '다른 탭에서 끝난 답', agent: 'claude' });
+  bridge.state = 'connected';
+  bridge.sendPendingChatStart();
+  assert.equal(starts()[0].history.at(-1).text, '다른 탭에서 끝난 답');
+});
+
+test('bridge: chat-started forwards resume and compaction support to the sidebar', () => {
+  const { bridge, events } = contextBridge();
+  bridge.handleMessage({ type: 'chat-started', agent: 'codex', threadId: 'thread-1', resumed: true, compaction: 'auto-only' });
+  bridge.handleMessage({ type: 'chat-started', agent: 'codex', threadId: 'thread-1', compaction: 'sometimes' });
+  const started = events.filter((event) => event.type === 'chat-started');
+  assert.equal(started[0].resumed, true);
+  assert.equal(started[0].compaction, 'auto-only');
+  assert.equal('compaction' in started[1], false, '모르는 값은 싣지 않는다 (= 압축 없음)');
+});
+
+test('bridge: chat-compact resolves on accept and on rejection without touching the session', async () => {
+  const { bridge, frames, events } = contextBridge();
+  const accepted = bridge.compactChat();
+  const frame = frames.at(-1);
+  assert.deepEqual({ type: frame.type, threadId: frame.threadId }, { type: 'chat-compact', threadId: 'thread-1' });
+  bridge.handleMessage({ type: 'chat-compact-accepted', requestId: frame.requestId, compactionId: 'cmp-1' });
+  assert.deepEqual(await accepted, { ok: true, compactionId: 'cmp-1' });
+
+  const rejected = bridge.compactChat();
+  bridge.handleMessage({ type: 'chat-error', requestId: frames.at(-1).requestId, code: 'NOTHING_TO_COMPACT', message: 'nothing yet' });
+  assert.deepEqual(await rejected, { ok: false, code: 'NOTHING_TO_COMPACT', message: 'nothing yet' });
+  assert.equal(bridge.activeAgent, 'claude');
+  assert.equal(events.some((event) => event.type === 'hub-error'), false);
+
+  bridge.activeAgent = null;
+  assert.equal((await bridge.compactChat()).code, 'NO_SESSION');
+});
+
+test('bridge: context events are validated and a finished compaction re-sends the document next turn', () => {
+  let resets = 0;
+  const { bridge, events } = contextBridge({ turnSnapshots: { reset: () => { resets += 1; }, noteSubagentActivity() {} } });
+  const agentEvents = () => events.filter((event) => event.type === 'agent').map((event) => event.event);
+  bridge.handleMessage({ type: 'agent-event', event: { type: 'context-usage', agent: 'claude', usedTokens: 'many' } });
+  bridge.handleMessage({ type: 'agent-event', event: { type: 'context-usage', agent: 'claude', usedTokens: 120_400.4, maxTokens: 200_000 } });
+  bridge.handleMessage({ type: 'agent-event', event: { type: 'compaction', agent: 'claude', compactionId: '', phase: 'completed', trigger: 'auto' } });
+  bridge.handleMessage({ type: 'agent-event', event: { type: 'compaction', agent: 'claude', compactionId: 'a-1', phase: 'completed', trigger: 'auto', beforeTokens: 180_000, afterTokens: 40_000 } });
+  assert.deepEqual(agentEvents(), [
+    { type: 'context-usage', agent: 'claude', usedTokens: 120_400, maxTokens: 200_000 },
+    { type: 'compaction', agent: 'claude', compactionId: 'a-1', phase: 'completed', trigger: 'auto', beforeTokens: 180_000, afterTokens: 40_000 },
+  ]);
+  assert.equal(resets, 1);
+});

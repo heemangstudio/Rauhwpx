@@ -1,0 +1,222 @@
+/* 인라인 프롬프트 — 선택 끝의 칩과 즉석 입력 상자. #scroll-content 안에 산다. */
+
+.ag-inline-layer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 12;
+}
+
+/* display 지정이 hidden 속성을 이기지 않도록 명시적으로 끈다. */
+.ag-inline-chip[hidden],
+.ag-inline-box[hidden],
+body:not(.ag-sidebar-open) .ag-inline-chip,
+body:not(.ag-sidebar-open) .ag-inline-box {
+  display: none;
+}
+
+.ag-inline-chip {
+  position: absolute;
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border: 1px solid var(--ui-border-strong);
+  border-radius: var(--ag-r-chip);
+  background: var(--ui-surface-raised);
+  color: var(--ui-text-secondary);
+  font-family: var(--font-family-ui);
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: default;
+  box-shadow: var(--shadow-light, 0 2px 8px rgba(0, 0, 0, 0.12));
+  animation: ag-inline-in 140ms ease-out;
+}
+
+.ag-inline-chip:hover {
+  color: var(--ui-text);
+  border-color: var(--accent-primary);
+}
+
+.ag-inline-chip:focus-visible,
+.ag-inline-permission:focus-visible,
+.ag-inline-send:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.ag-inline-chip svg {
+  width: 12px;
+  height: 12px;
+  color: var(--accent-primary);
+}
+
+.ag-inline-box {
+  position: absolute;
+  pointer-events: auto;
+  width: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--ui-border-strong);
+  border-radius: var(--radius-lg, 10px);
+  background: var(--ui-surface-raised);
+  box-shadow: var(--shadow-dialog, 0 8px 24px rgba(0, 0, 0, 0.18));
+  animation: ag-inline-in 140ms ease-out;
+}
+
+.ag-inline-input {
+  resize: none;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--ui-text);
+  font-family: var(--font-family-ui);
+  font-size: 12px;
+  line-height: 1.5;
+  max-height: 96px;
+}
+
+.ag-inline-selection-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.ag-inline-selection-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 5px 2px 7px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ag-r-chip);
+  color: var(--ui-text-secondary);
+  font-family: var(--font-family-ui);
+  font-size: 10px;
+  max-width: 210px;
+}
+
+.ag-inline-selection-item img {
+  width: 22px;
+  height: 18px;
+  margin-left: -4px;
+  border-radius: 4px;
+  object-fit: cover;
+}
+
+.ag-inline-selection-item-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-inline-selection-item button {
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 12px;
+  cursor: default;
+}
+
+.ag-inline-selection-item button:hover {
+  background: var(--ui-hover);
+  color: var(--ui-text);
+}
+
+.ag-inline-input::placeholder {
+  color: var(--ui-text-placeholder);
+}
+
+.ag-inline-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ag-inline-permission {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ag-r-chip);
+  background: transparent;
+  color: var(--ui-text-secondary);
+  font-family: var(--font-family-ui);
+  font-size: 11px;
+  cursor: default;
+}
+
+.ag-inline-permission:hover:not(:disabled) {
+  background: var(--ui-hover);
+  color: var(--ui-text);
+}
+
+/* 채팅·플랜 모드는 표시만 한다 — 바꾸는 곳은 사이드바 모드 칩이다. */
+.ag-inline-permission:disabled {
+  opacity: 0.72;
+}
+
+.ag-inline-permission.ag-inline-unrestricted {
+  border-color: var(--ui-danger);
+  background: var(--ui-danger-soft);
+  color: var(--ui-danger);
+  font-weight: 700;
+}
+
+.ag-inline-error {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--ui-danger);
+  font-family: var(--font-family-ui);
+  font-size: 11px;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ag-inline-send {
+  flex: 0 0 auto;
+  padding: 3px 12px;
+  border: none;
+  border-radius: var(--radius-md, 6px);
+  background: var(--accent-primary);
+  color: var(--ui-text-on-accent);
+  font-family: var(--font-family-ui);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: default;
+}
+
+.ag-inline-send:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+@keyframes ag-inline-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-inline-chip,
+  .ag-inline-box {
+    animation: none;
+  }
+}

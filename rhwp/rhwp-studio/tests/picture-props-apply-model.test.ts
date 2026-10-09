@@ -1,0 +1,954 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { codeOnly, functionBodyFrom } from './support/source-guard.ts';
+import type { CellPathLike, PictureProperties, ShapeProperties } from '../src/core/types.ts';
+import {
+  buildPicturePropsPatch,
+  colorRefToHex,
+  displayedMm,
+  displayedScale,
+  fillPatternOption,
+  resolvePicturePropsApplyTarget,
+  type PicturePropsApplyForm,
+  type PicturePropsObjectType,
+  type PicturePropsPatch,
+  type PicturePropsApplyTarget,
+  type PicturePropsApplyTargetContext,
+} from '../src/ui/picture-props-apply-model.ts';
+
+function pictureProps(overrides: Partial<PictureProperties> = {}): PictureProperties {
+  return {
+    width: 2835,
+    height: 5669,
+    treatAsChar: false,
+    vertRelTo: 'Page',
+    vertAlign: 'Top',
+    horzRelTo: 'Column',
+    horzAlign: 'Left',
+    vertOffset: 567,
+    horzOffset: 283,
+    textWrap: 'Square',
+    restrictInPage: true,
+    allowOverlap: false,
+    sizeProtect: false,
+    brightness: 0,
+    contrast: 0,
+    effect: 'RealPic',
+    transparency: 0,
+    description: 'description',
+    rotationAngle: 0,
+    horzFlip: false,
+    vertFlip: false,
+    originalWidth: 1000,
+    originalHeight: 800,
+    cropLeft: 0,
+    cropTop: 0,
+    cropRight: 0,
+    cropBottom: 0,
+    paddingLeft: 0,
+    paddingTop: 0,
+    paddingRight: 0,
+    paddingBottom: 0,
+    outerMarginLeft: 0,
+    outerMarginTop: 0,
+    outerMarginRight: 0,
+    outerMarginBottom: 0,
+    borderColor: 0,
+    borderWidth: 0,
+    hasCaption: false,
+    captionDirection: 'Bottom',
+    captionVertAlign: 'Top',
+    captionWidth: 0,
+    captionSpacing: 0,
+    captionMaxWidth: 0,
+    captionIncludeMargin: false,
+    ...overrides,
+  };
+}
+
+function shapeProps(overrides: Partial<ShapeProperties> = {}): ShapeProperties {
+  return {
+    width: 2835,
+    height: 5669,
+    treatAsChar: false,
+    vertRelTo: 'Page',
+    vertAlign: 'Top',
+    horzRelTo: 'Column',
+    horzAlign: 'Left',
+    vertOffset: 567,
+    horzOffset: 283,
+    textWrap: 'Square',
+    sizeProtect: false,
+    description: 'description',
+    ...overrides,
+  };
+}
+
+function applyForm(): PicturePropsApplyForm {
+  return {
+    common: {
+      sizeProtect: false,
+      width: '10',
+      height: '20',
+      treatAsChar: false,
+      textWrap: 'Square',
+      horzRelTo: 'Column',
+      horzAlign: 'Left',
+      horzOffset: '1',
+      vertRelTo: 'Page',
+      vertAlign: 'Top',
+      vertOffset: '2',
+      restrictInPage: true,
+      allowOverlap: false,
+      description: 'description',
+    },
+    transform: {},
+    outerMargin: {},
+    caption: {
+      present: false,
+      activeIndex: -1,
+      size: '',
+      gap: '',
+      includeMargin: false,
+    },
+    line: {},
+    shapeTextBox: {},
+    shapeCorner: {
+      customChecked: false,
+      activeIndex: -1,
+    },
+    shapeFill: {},
+    shapeShadow: {
+      present: false,
+      activeIndex: -1,
+      color: '',
+      offsetX: '',
+      offsetY: '',
+    },
+    image: {
+      effectControlsPresent: false,
+    },
+  };
+}
+
+interface PatchFixture {
+  name: string;
+  objectType: PicturePropsObjectType;
+  props?: PictureProperties;
+  shapeProps?: ShapeProperties | null;
+  update?: (form: PicturePropsApplyForm, props: PictureProperties, shape: ShapeProperties | null) => void;
+  expected: PicturePropsPatch;
+}
+
+const fixtures: PatchFixture[] = [
+  {
+    name: 'defensive image snapshot with no optional controls produces an empty patch',
+    objectType: 'image',
+    expected: {},
+  },
+  {
+    name: 'common size, placement, flags, and description use current conversions and defaults',
+    objectType: 'image',
+    update(form) {
+      Object.assign(form.common, {
+        width: '12.5',
+        height: '20.00',
+        textWrap: 'Tight',
+        horzRelTo: 'Page',
+        horzAlign: 'Center',
+        horzOffset: '3',
+        vertRelTo: 'Para',
+        vertAlign: 'Bottom',
+        vertOffset: '4',
+        restrictInPage: false,
+        allowOverlap: true,
+        description: 'changed',
+      });
+    },
+    expected: {
+      width: 3543,
+      textWrap: 'Tight',
+      horzRelTo: 'Page',
+      horzAlign: 'Center',
+      horzOffset: 850,
+      vertRelTo: 'Para',
+      vertAlign: 'Bottom',
+      vertOffset: 1134,
+      restrictInPage: false,
+      allowOverlap: true,
+      description: 'changed',
+    },
+  },
+  {
+    name: 'size protection suppresses common size and image scale updates',
+    objectType: 'image',
+    update(form) {
+      form.common.sizeProtect = true;
+      form.common.width = '99';
+      form.image.scale = { x: '50', y: '50' };
+    },
+    expected: { sizeProtect: true },
+  },
+  {
+    name: 'TakePlace forces TopAndBottom and omits horzRelTo',
+    objectType: 'image',
+    update(form) {
+      form.common.textWrap = 'Through';
+      form.common.horzRelTo = 'TakePlace';
+    },
+    expected: { textWrap: 'TopAndBottom' },
+  },
+  {
+    name: 'treat-as-character skips all placement fields',
+    objectType: 'image',
+    update(form) {
+      Object.assign(form.common, {
+        treatAsChar: true,
+        textWrap: 'Tight',
+        horzRelTo: 'Page',
+        horzAlign: 'Right',
+        horzOffset: '9',
+        vertRelTo: 'Para',
+        vertAlign: 'Bottom',
+        vertOffset: '9',
+        restrictInPage: false,
+        allowOverlap: true,
+      });
+    },
+    expected: { treatAsChar: true },
+  },
+  {
+    name: 'disabled transform controls preserve their properties',
+    objectType: 'image',
+    update(form) {
+      form.transform = {
+        rotation: { value: '45', disabled: true },
+        horzFlip: { value: true, disabled: true },
+        vertFlip: { value: true, disabled: true },
+      };
+    },
+    expected: {},
+  },
+  {
+    name: 'enabled image transform controls create changed-only fields',
+    objectType: 'image',
+    update(form) {
+      form.transform = {
+        rotation: { value: '45', disabled: false },
+        horzFlip: { value: true, disabled: false },
+        vertFlip: { value: false, disabled: false },
+      };
+    },
+    expected: { rotationAngle: 45, horzFlip: true },
+  },
+  {
+    name: 'OLE keeps margin, caption, and line scope without arrow fields',
+    objectType: 'ole',
+    shapeProps: shapeProps(),
+    update(form) {
+      form.outerMargin = { left: '1', top: '2', right: '3', bottom: '4' };
+      form.caption = {
+        present: true,
+        activeIndex: 3,
+        size: '5',
+        gap: '6',
+        includeMargin: true,
+      };
+      form.line = {
+        color: '#112233',
+        width: '1',
+        type: '2',
+        end: '1',
+        arrowStart: '3',
+        arrowEnd: '4',
+      };
+    },
+    expected: {
+      outerMarginLeft: 283,
+      outerMarginRight: 850,
+      outerMarginTop: 567,
+      outerMarginBottom: 1134,
+      hasCaption: true,
+      captionDirection: 'Left',
+      captionVertAlign: 'Center',
+      captionWidth: 1417,
+      captionSpacing: 1701,
+      captionIncludeMargin: true,
+      borderColor: 3351057,
+      borderWidth: 283,
+      lineType: 2,
+      lineEndShape: 1,
+    },
+  },
+  {
+    name: 'absent textbox and fill controls leave those properties untouched',
+    objectType: 'line',
+    shapeProps: shapeProps({
+      tbMarginLeft: 10,
+      tbMarginRight: 20,
+      tbMarginTop: 30,
+      tbMarginBottom: 40,
+      tbVerticalAlign: 'Bottom',
+      fillType: 'solid',
+      roundRate: 20,
+    }),
+    update(form) {
+      form.shapeCorner = { customChecked: true, customValue: '20', activeIndex: -1 };
+    },
+    expected: {},
+  },
+  {
+    name: 'an unchanged disabled shadow sends nothing',
+    objectType: 'shape',
+    shapeProps: shapeProps(),
+    update(form) {
+      form.shapeShadow = {
+        present: true,
+        activeIndex: 0,
+        color: '#000000',
+        offsetX: '0',
+        offsetY: '0',
+      };
+    },
+    expected: {},
+  },
+  {
+    name: 'line snapshot preserves detached shape controls from a reused dialog instance',
+    objectType: 'line',
+    shapeProps: shapeProps(),
+    update(form) {
+      form.shapeTextBox = {
+        marginLeft: '1',
+        marginTop: '2',
+        marginRight: '3',
+        marginBottom: '4',
+        verticalAlign: 'Bottom',
+      };
+      form.shapeCorner = {
+        customChecked: true,
+        customValue: '35',
+        activeIndex: 0,
+      };
+      form.shapeFill = {
+        solidChecked: true,
+        solidColors: { face: '#010203', pattern: '#040506' },
+        patternType: 'dline1',
+        transparency: '10',
+      };
+    },
+    expected: {
+      tbMarginLeft: 283,
+      tbMarginRight: 850,
+      tbMarginTop: 567,
+      tbMarginBottom: 1134,
+      tbVerticalAlign: 'Bottom',
+      roundRate: 35,
+      fillType: 'solid',
+      fillBgColor: 197121,
+      fillPatColor: 394500,
+      fillPatType: 3,
+      fillAlpha: 26,
+    },
+  },
+  {
+    name: 'non-OLE line controls include arrow and size fields',
+    objectType: 'shape',
+    shapeProps: shapeProps(),
+    update(form) {
+      form.line = {
+        type: '0',
+        end: '2',
+        arrowStart: '1',
+        arrowEnd: '2',
+        arrowStartSize: '3',
+        arrowEndSize: '4',
+      };
+    },
+    expected: {
+      lineType: 0,
+      lineEndShape: 2,
+      arrowStart: 1,
+      arrowEnd: 2,
+      arrowStartSize: 3,
+      arrowEndSize: 4,
+    },
+  },
+  {
+    name: 'switching to a solid fill sends the displayed colors, pattern, and alpha',
+    objectType: 'shape',
+    shapeProps: shapeProps(),
+    update(form) {
+      form.shapeFill = {
+        solidChecked: true,
+        gradientChecked: false,
+        solidColors: { face: '#ff0000', pattern: '#00ff00' },
+        patternType: 'none',
+        transparency: '50',
+      };
+    },
+    expected: {
+      fillType: 'solid',
+      fillBgColor: 255,
+      fillPatColor: 65280,
+      fillPatType: -1,
+      fillAlpha: 128,
+    },
+  },
+  {
+    name: 'an existing gradient sends only edited gradient fields and keeps its type',
+    objectType: 'group',
+    shapeProps: shapeProps({ fillType: 'gradient' }),
+    update(form) {
+      form.shapeFill = {
+        gradientChecked: true,
+        gradientType: '0',
+        gradientAngle: '-15',
+        gradientCenterX: '25',
+        gradientCenterY: '0',
+        gradientBlur: '8',
+        transparency: '20',
+      };
+    },
+    expected: {
+      gradientAngle: -15,
+      gradientCenterX: 25,
+      gradientBlur: 8,
+      fillAlpha: 51,
+    },
+  },
+  {
+    name: 'turning a shadow off sends only the shadow type',
+    objectType: 'shape',
+    shapeProps: shapeProps({ shadowType: 2, shadowOffsetX: 283, shadowOffsetY: 283 } as Partial<ShapeProperties>),
+    update(form) {
+      form.shapeShadow = {
+        present: true,
+        activeIndex: 0,
+        color: '#123456',
+        offsetX: '3',
+        offsetY: '4',
+      };
+    },
+    expected: { shadowType: 0 },
+  },
+  {
+    name: 'enabling a shadow sends its color and converted offsets',
+    objectType: 'shape',
+    shapeProps: shapeProps(),
+    update(form) {
+      form.shapeShadow = {
+        present: true,
+        activeIndex: 2,
+        color: '#123456',
+        offsetX: '-1',
+        offsetY: '2',
+      };
+    },
+    expected: {
+      shadowType: 2,
+      shadowColor: 5649426,
+      shadowOffsetX: -283,
+      shadowOffsetY: 567,
+    },
+  },
+  {
+    name: 'choosing the center cell removes an existing caption without detail fields',
+    objectType: 'image',
+    props: pictureProps({ hasCaption: true, captionDirection: 'Bottom', captionWidth: 8504, captionSpacing: 850 }),
+    update(form) {
+      form.caption = {
+        present: true,
+        activeIndex: 4,
+        size: '5',
+        gap: '6',
+        includeMargin: true,
+      };
+    },
+    expected: { hasCaption: false },
+  },
+  {
+    name: 'typed width and height win over the scale fields',
+    objectType: 'image',
+    update(form) {
+      form.common.width = '99';
+      form.common.height = '99';
+      form.image.scale = { x: '50', y: '25' };
+    },
+    expected: { width: 28063, height: 28063 },
+  },
+  {
+    name: 'an edited scale resizes when the size fields are untouched',
+    objectType: 'image',
+    update(form) {
+      form.image.scale = { x: '50', y: '25' };
+    },
+    expected: { width: 500, height: 200 },
+  },
+  {
+    name: 'non-positive width/height input is ignored instead of collapsing the object',
+    objectType: 'image',
+    update(form) {
+      form.common.width = '-50';
+      form.common.height = '0';
+    },
+    expected: {},
+  },
+  {
+    name: 'an emptied width field does not write a zero width',
+    objectType: 'image',
+    update(form) {
+      form.common.width = '';
+      form.common.height = 'abc';
+    },
+    expected: {},
+  },
+  {
+    name: 'image geometry, effects, border, and clamped transparency preserve field policy',
+    objectType: 'image',
+    update(form) {
+      form.line = { color: '#abcdef', width: '0.5' };
+      form.image = {
+        crop: { left: '1', top: '2', right: '3', bottom: '4' },
+        padding: { left: '4', top: '3', right: '2', bottom: '1' },
+        effectControlsPresent: true,
+        selectedEffect: 'GrayScale',
+        brightness: '-20',
+        contrast: '15',
+        transparency: '150',
+      };
+    },
+    expected: {
+      borderColor: 15715755,
+      borderWidth: 142,
+      cropLeft: 283,
+      cropTop: 567,
+      cropRight: 850,
+      cropBottom: 1134,
+      paddingLeft: 1134,
+      paddingTop: 850,
+      paddingRight: 567,
+      paddingBottom: 283,
+      effect: 'GrayScale',
+      brightness: -20,
+      contrast: 15,
+      transparency: 100,
+    },
+  },
+  {
+    name: 'Original picture effect normalizes to existing RealPic without a diff',
+    objectType: 'image',
+    update(form) {
+      form.image.effectControlsPresent = true;
+      form.image.selectedEffect = 'Original';
+    },
+    expected: {},
+  },
+  {
+    name: 'negative crop and padding inputs clamp to zero',
+    objectType: 'image',
+    props: pictureProps({
+      cropLeft: 100,
+      cropTop: 100,
+      cropRight: 100,
+      cropBottom: 100,
+      paddingLeft: 100,
+      paddingTop: 100,
+      paddingRight: 100,
+      paddingBottom: 100,
+    }),
+    update(form) {
+      form.image = {
+        crop: { left: '-1', top: '-2', right: '-3', bottom: '-4' },
+        padding: { left: '-4', top: '-3', right: '-2', bottom: '-1' },
+      };
+    },
+    expected: {
+      cropLeft: 0,
+      cropTop: 0,
+      cropRight: 0,
+      cropBottom: 0,
+      paddingLeft: 0,
+      paddingTop: 0,
+      paddingRight: 0,
+      paddingBottom: 0,
+    },
+  },
+  {
+    name: 'image brightness and contrast clamp to the -100..100 HTML input range',
+    objectType: 'image',
+    update(form) {
+      form.image = { brightness: '250', contrast: '-999' };
+    },
+    expected: { brightness: 100, contrast: -100 },
+  },
+  {
+    name: 'image scale clamps to the 1..1000 HTML input range',
+    objectType: 'image',
+    update(form) {
+      form.image.scale = { x: '5000', y: '-10' };
+    },
+    expected: { width: 10000, height: 8 },
+  },
+];
+
+for (const fixture of fixtures) {
+  test(fixture.name, () => {
+    const shape = fixture.shapeProps === undefined ? null : fixture.shapeProps;
+    const props = fixture.props ?? (
+      shape ? shape as unknown as PictureProperties : pictureProps()
+    );
+    const form = applyForm();
+    fixture.update?.(form, props, shape);
+
+    assert.deepEqual(
+      buildPicturePropsPatch(fixture.objectType, props, shape, form),
+      fixture.expected,
+    );
+  });
+}
+
+interface TargetFixture {
+  name: string;
+  objectType: PicturePropsObjectType;
+  context: PicturePropsApplyTargetContext;
+  expected: PicturePropsApplyTarget;
+}
+
+const cellPath: CellPathLike = [];
+const location = { sec: 1, para: 2, ci: 3, innerControlIdx: 4 };
+const headerFooter = { outerParaIdx: 5, outerControlIdx: 6 };
+
+const targetFixtures: TargetFixture[] = [
+  {
+    name: 'shape in a table cell resolves to cell-shape',
+    objectType: 'shape',
+    context: { ...location, cellPath },
+    expected: { kind: 'cell-shape', sec: 1, para: 2, cellPath, innerControlIdx: 4 },
+  },
+  {
+    name: 'OLE in the body resolves through the shape body setter',
+    objectType: 'ole',
+    context: location,
+    expected: { kind: 'body-shape', sec: 1, para: 2, ci: 3 },
+  },
+  {
+    name: 'header-footer image preserves the five lookup indexes',
+    objectType: 'image',
+    context: { ...location, headerFooter },
+    expected: {
+      kind: 'header-footer-picture',
+      sec: 1,
+      outerParaIdx: 5,
+      outerControlIdx: 6,
+      para: 2,
+      ci: 3,
+    },
+  },
+  {
+    name: 'image in a table cell resolves to cell-picture',
+    objectType: 'image',
+    context: { ...location, cellPath },
+    expected: { kind: 'cell-picture', sec: 1, para: 2, cellPath, innerControlIdx: 4 },
+  },
+  {
+    name: 'body image resolves to body-picture',
+    objectType: 'image',
+    context: location,
+    expected: { kind: 'body-picture', sec: 1, para: 2, ci: 3 },
+  },
+  {
+    name: 'header-footer marker takes priority over an image cell path',
+    objectType: 'image',
+    context: { ...location, headerFooter, cellPath },
+    expected: {
+      kind: 'header-footer-picture',
+      sec: 1,
+      outerParaIdx: 5,
+      outerControlIdx: 6,
+      para: 2,
+      ci: 3,
+    },
+  },
+];
+
+for (const fixture of targetFixtures) {
+  test(fixture.name, () => {
+    const actual = resolvePicturePropsApplyTarget(fixture.objectType, fixture.context);
+    assert.deepEqual(actual, fixture.expected);
+    if (actual.kind === 'cell-shape' || actual.kind === 'cell-picture') {
+      assert.equal(actual.cellPath, cellPath, 'cell path identity must be preserved');
+    }
+  });
+}
+
+// [#6769] 다이얼로그가 오프셋을 mm 2자리로 보여주고 되돌려 쓰면 저장 단위가 사라진다.
+// 8554 HWPUNIT 은 "30.18" 로 보이고 되돌리면 8555, -1 HWPUNIT 은 "-0.00" 으로 보이고
+// 되돌리면 0 이라, 종전 판정(되돌린 값 vs 모델 값)은 **사용자가 아무것도 안 고쳐도**
+// 변경으로 보고 패치에 실었다. 한글 2024 는 같은 조작에서 값을 그대로 둔다(#6769 실측 —
+// 설정만 누르고 저장한 파일이 원본과 필드 동일).
+
+const studioSource = (rel: string) => codeOnly(readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8'));
+
+test('[#6769] 건드리지 않은 위치 오프셋은 패치에 실리지 않는다', () => {
+  // group-box.hwp 의 가로선 실측값.
+  const props = pictureProps({ horzOffset: 8554, vertOffset: 16620 });
+  const form = applyForm();
+  form.common.horzOffset = '30.18';
+  form.common.vertOffset = '58.63';
+
+  const patch = buildPicturePropsPatch('shape', props, shapeProps(), form);
+
+  assert.equal('horzOffset' in patch, false, '표시값 그대로 돌아온 가로 오프셋은 무변경이다');
+  assert.equal('vertOffset' in patch, false, '표시값 그대로 돌아온 세로 오프셋은 무변경이다');
+});
+
+test('[#6769] 실제로 고친 오프셋은 그대로 실린다', () => {
+  const props = pictureProps({ horzOffset: 8554, vertOffset: 16620 });
+  const form = applyForm();
+  form.common.horzOffset = '40.00';
+  form.common.vertOffset = '58.63';
+
+  const patch = buildPicturePropsPatch('shape', props, shapeProps(), form);
+
+  assert.equal(patch.horzOffset, Math.round(40 * (7200 / 25.4)), '고친 값은 보낸다');
+  assert.equal('vertOffset' in patch, false, '안 고친 칸은 함께 실리지 않는다');
+});
+
+test('[#6769] 오프셋 판정은 크기의 0 클램프를 물려받지 않는다', () => {
+  // 크기는 `Math.max(0, ...)` 로 음수를 막지만 오프셋에 음수는 정당하다.
+  // 클램프를 함께 복사하면 왼쪽/위쪽으로 나간 개체를 0 으로 끌어당긴다.
+  const body = functionBodyFrom(studioSource('src/ui/picture-props-apply-model.ts'), 'function addChangedOffset');
+  assert.match(body, /untouchedMm\(raw, current\)/, '판정은 표시값 소유자(untouchedMm)를 쓴다');
+  assert.doesNotMatch(body, /Math\.max\(/, '오프셋에 0 클램프를 두지 않는다');
+});
+
+test('[#6769] 다이얼로그가 오프셋 칸을 공용 서식으로 채운다', () => {
+  // `untouchedMm` 은 입력값을 **표시값과 견줘** 판정한다. 다이얼로그가 칸을 채우는 서식과
+  // apply-model 의 서식이 갈라지면 판정이 늘 "바뀌었다"가 된다.
+  const dialog = studioSource('src/ui/picture-props-dialog.ts');
+  assert.match(dialog, /this\.horzOffsetInput\.value = displayedMm\(this\.props\.horzOffset\);/,
+    '가로 오프셋 칸을 공용 서식으로 채우지 않는다');
+  assert.match(dialog, /this\.vertOffsetInput\.value = displayedMm\(this\.props\.vertOffset\);/,
+    '세로 오프셋 칸을 공용 서식으로 채우지 않는다');
+});
+
+for (const objectType of ['image', 'shape', 'line', 'group', 'ole'] as const) {
+  test(`[#6769] ${objectType}: 표시 정밀도에서 음의 0이 된 위치는 그대로 보존한다`, () => {
+    const props = pictureProps({ horzOffset: -1, vertOffset: -1 });
+    const form = applyForm();
+    form.common.horzOffset = '-0.00';
+    form.common.vertOffset = '0.00';
+
+    const patch = buildPicturePropsPatch(objectType, props, shapeProps(), form);
+
+    assert.equal('horzOffset' in patch, false, '음의 0을 재입력해도 원본 -1을 보존한다');
+    assert.equal('vertOffset' in patch, false, '같은 표시 정밀도의 양의 0도 무변경이다');
+  });
+
+  test(`[#6769] ${objectType}: 실제 음수 위치 편집은 클램프 없이 전달한다`, () => {
+    const props = pictureProps({ horzOffset: -1, vertOffset: -365 });
+    const form = applyForm();
+    form.common.horzOffset = '-40.00';
+    form.common.vertOffset = '-1.29';
+
+    const patch = buildPicturePropsPatch(objectType, props, shapeProps(), form);
+
+    assert.equal(patch.horzOffset, Math.round(-40 * (7200 / 25.4)));
+    assert.equal('vertOffset' in patch, false, '바꾸지 않은 음수 세로 위치는 보존한다');
+  });
+}
+
+// 채우기·그림자·크기 칸을 대화상자가 채우는 그대로 재현한다(picture-props-dialog populateFromProps).
+function populatedShapeForm(props: ShapeProperties & Record<string, number | string | undefined>): PicturePropsApplyForm {
+  const form = applyForm();
+  form.common.width = displayedMm(props.width);
+  form.common.height = displayedMm(props.height);
+  form.common.horzOffset = displayedMm(props.horzOffset);
+  form.common.vertOffset = displayedMm(props.vertOffset);
+  const fillType = props.fillType ?? 'none';
+  form.shapeFill = {
+    solidChecked: fillType === 'solid',
+    gradientChecked: fillType === 'gradient',
+    solidColors: {
+      face: props.fillBgColor === undefined ? '#ffffff' : colorRefToHex(props.fillBgColor),
+      pattern: props.fillPatColor === undefined ? '#000000' : colorRefToHex(props.fillPatColor),
+    },
+    patternType: fillPatternOption(props.fillPatType),
+    gradientType: 'linear',
+    gradientAngle: String(props.gradientAngle ?? 0),
+    gradientCenterX: String(props.gradientCenterX ?? 0),
+    gradientCenterY: String(props.gradientCenterY ?? 0),
+    gradientBlur: String(props.gradientBlur ?? 0),
+    transparency: String(Math.round((props.fillAlpha ?? 0) * 100 / 255)),
+  };
+  const shadowType = Number(props.shadowType ?? 0);
+  form.shapeShadow = {
+    present: true,
+    activeIndex: shadowType,
+    color: colorRefToHex(Number(props.shadowColor ?? 0xb2b2b2)),
+    offsetX: (Number(props.shadowOffsetX ?? 0) / (7200 / 25.4)).toFixed(1),
+    offsetY: (Number(props.shadowOffsetY ?? 0) / (7200 / 25.4)).toFixed(1),
+  };
+  return form;
+}
+
+test('untouched hatch pattern, alpha, and shadow survive a description-only edit', () => {
+  const props = shapeProps({
+    width: 14001,
+    height: 9999,
+    fillType: 'solid',
+    fillBgColor: 0x00ccbbaa,
+    fillPatColor: 0x00112233,
+    fillPatType: 3,
+    fillAlpha: 100,
+    shadowType: 1,
+    shadowColor: 0x00808080,
+    shadowOffsetX: 283,
+    shadowOffsetY: -142,
+  } as Partial<ShapeProperties>);
+  const form = populatedShapeForm(props as ShapeProperties & Record<string, number>);
+  form.common.description = 'edited';
+
+  assert.deepEqual(buildPicturePropsPatch('shape', props as unknown as PictureProperties, props, form), {
+    description: 'edited',
+  });
+});
+
+test('an untouched radial gradient keeps its gradient type', () => {
+  const props = shapeProps({
+    fillType: 'gradient',
+    gradientType: 2,
+    gradientAngle: 30,
+    gradientCenterX: 50,
+    gradientCenterY: 40,
+    gradientBlur: 10,
+    fillAlpha: 0,
+  });
+  const form = populatedShapeForm(props as ShapeProperties & Record<string, number>);
+  form.common.description = 'edited';
+
+  assert.deepEqual(buildPicturePropsPatch('shape', props as unknown as PictureProperties, props, form), {
+    description: 'edited',
+  });
+});
+
+test('hatch options round-trip through the model 1-6 codes', () => {
+  assert.equal(fillPatternOption(-1), 'none');
+  assert.equal(fillPatternOption(0), 'none');
+  assert.equal(fillPatternOption(1), 'hline');
+  assert.equal(fillPatternOption(2), 'vline');
+  assert.equal(fillPatternOption(3), 'dline1');
+  assert.equal(fillPatternOption(4), 'dline2');
+  const props = shapeProps({ fillType: 'solid', fillBgColor: 0xffffff, fillPatColor: 0, fillPatType: 0 });
+  const form = populatedShapeForm(props as ShapeProperties & Record<string, number>);
+  form.shapeFill.patternType = 'hline';
+  assert.deepEqual(buildPicturePropsPatch('shape', props as unknown as PictureProperties, props, form), {
+    fillPatType: 1,
+  });
+});
+
+test('a picked hatch pattern maps to the engine pattern code', () => {
+  const props = shapeProps({ fillType: 'solid', fillBgColor: 0xffffff, fillPatColor: 0, fillPatType: -1 });
+  const form = populatedShapeForm(props as ShapeProperties & Record<string, number>);
+  form.shapeFill.patternType = 'cross';
+
+  assert.deepEqual(buildPicturePropsPatch('shape', props as unknown as PictureProperties, props, form), {
+    fillPatType: 5,
+  });
+});
+
+test('a pattern code the dialog cannot show is preserved until the user picks one', () => {
+  const props = shapeProps({ fillType: 'solid', fillBgColor: 0xffffff, fillPatColor: 0, fillPatType: 6 });
+  const form = populatedShapeForm(props as ShapeProperties & Record<string, number>);
+  assert.equal(form.shapeFill.patternType, '', 'unknown codes populate as an empty selection');
+
+  assert.deepEqual(buildPicturePropsPatch('shape', props as unknown as PictureProperties, props, form), {});
+});
+
+test('untouched size, margin, border, crop, padding, and caption fields never drift', () => {
+  const HWP_PER_MM = 7200 / 25.4;
+  let checked = 0;
+  for (let size = 1000; size <= 60000; size += 37) {
+    const side = Math.round(size / 13);
+    const props = pictureProps({
+      width: size,
+      height: size + 7,
+      originalWidth: size * 3 + 1,
+      originalHeight: size * 2 + 5,
+      outerMarginLeft: side,
+      outerMarginTop: side + 1,
+      outerMarginRight: side + 2,
+      outerMarginBottom: side + 3,
+      borderWidth: side % 500,
+      cropLeft: side,
+      cropTop: side + 4,
+      cropRight: side + 5,
+      cropBottom: side + 6,
+      paddingLeft: side + 7,
+      paddingTop: side + 8,
+      paddingRight: side + 9,
+      paddingBottom: side + 10,
+      hasCaption: true,
+      captionDirection: 'Left',
+      captionVertAlign: 'Center',
+      captionWidth: size % 20000,
+      captionSpacing: side,
+      captionIncludeMargin: true,
+    });
+    const form = applyForm();
+    form.common.width = displayedMm(props.width);
+    form.common.height = displayedMm(props.height);
+    form.common.horzOffset = displayedMm(props.horzOffset);
+    form.common.vertOffset = displayedMm(props.vertOffset);
+    form.outerMargin = {
+      left: displayedMm(props.outerMarginLeft),
+      top: displayedMm(props.outerMarginTop),
+      right: displayedMm(props.outerMarginRight),
+      bottom: displayedMm(props.outerMarginBottom),
+    };
+    form.caption = {
+      present: true,
+      activeIndex: 3,
+      size: displayedMm(props.captionWidth),
+      gap: displayedMm(props.captionSpacing),
+      includeMargin: true,
+    };
+    form.line = { color: colorRefToHex(props.borderColor), width: displayedMm(props.borderWidth) };
+    form.image = {
+      scale: {
+        x: displayedScale(props.width, props.originalWidth),
+        y: displayedScale(props.height, props.originalHeight),
+      },
+      crop: {
+        left: displayedMm(props.cropLeft), top: displayedMm(props.cropTop),
+        right: displayedMm(props.cropRight), bottom: displayedMm(props.cropBottom),
+      },
+      padding: {
+        left: displayedMm(props.paddingLeft), top: displayedMm(props.paddingTop),
+        right: displayedMm(props.paddingRight), bottom: displayedMm(props.paddingBottom),
+      },
+      effectControlsPresent: false,
+    };
+    assert.deepEqual(buildPicturePropsPatch('image', props, null, form), {}, `size ${size}`);
+    checked++;
+  }
+  assert.ok(checked > 1000);
+  // 표시값을 되돌린 값이 원본과 다른 경우가 실제로 섞여 있어야 이 검사가 의미 있다.
+  assert.notEqual(Math.round(Number(displayedMm(14001)) * HWP_PER_MM), 14001);
+});
+
+test('a typed width is applied as typed even though the scale field still shows the old ratio', () => {
+  const props = pictureProps({ width: 14001, height: 9001, originalWidth: 7000, originalHeight: 4500 });
+  const form = applyForm();
+  form.common.width = '50.00';
+  form.common.height = displayedMm(props.height);
+  form.image.scale = {
+    x: displayedScale(props.width, props.originalWidth),
+    y: displayedScale(props.height, props.originalHeight),
+  };
+
+  assert.deepEqual(buildPicturePropsPatch('image', props, null, form), {
+    width: Math.round(50 * (7200 / 25.4)),
+  });
+});

@@ -1,0 +1,118 @@
+/* ── /커맨드 팔레트 ─────────────────────────────────── */
+/* 에이전트 시트·팝오버와 같은 면: 팝오버 높이, 시트 모서리, 잉크 선택 행. */
+
+.cp-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  /* 배경 클릭으로 닫기 전용 — 반투명하지 않음 */
+  background: transparent;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 80px;
+}
+
+.cp-panel {
+  background: var(--ui-surface);
+  border: 1px solid var(--n-ink-hairline);
+  border-radius: var(--ag-r-sheet);
+  box-shadow: var(--ag-elev-popover);
+  width: 520px;
+  max-width: calc(100vw - 32px);
+  max-height: 440px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  font-family: var(--ag-font);
+}
+
+/* 입력 영역 */
+.cp-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 52px;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--n-ink-hairline);
+  background: transparent;
+}
+
+.cp-slash {
+  font-size: var(--ag-fs-title);
+  font-weight: var(--ag-fw-medium);
+  color: var(--n-ink-tertiary);
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.cp-input {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: var(--ag-fs-title);
+  letter-spacing: var(--ag-track-tight);
+  color: var(--color-text);
+  padding: 0;
+  min-width: 0;
+}
+
+.cp-input::placeholder {
+  color: var(--n-ink-secondary);
+}
+
+/* 결과 목록 */
+.cp-list {
+  overflow-y: auto;
+  max-height: 380px;
+  padding: 6px 0;
+}
+
+.cp-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 36px;
+  padding: 0 12px;
+  cursor: default;
+  gap: 12px;
+  border-radius: var(--ag-r-row);
+  margin: 0 6px;
+}
+
+.cp-item:hover,
+.cp-item--selected {
+  background: var(--n-ink-fill-selected);
+}
+
+.cp-item-label {
+  font-size: var(--ag-fs-body);
+  letter-spacing: var(--ag-track-tight);
+  color: var(--color-text);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cp-item-shortcut {
+  font-size: var(--ag-fs-mono);
+  font-variant-numeric: var(--ag-numeric);
+  color: var(--n-ink-secondary);
+  background: var(--n-ink-fill-hover);
+  border: 0;
+  border-radius: var(--ag-r-chip);
+  padding: 2px 8px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  font-family: var(--font-family-mono);
+}
+
+.cp-empty {
+  padding: 20px 16px;
+  font-size: var(--ag-fs-body);
+  color: var(--n-ink-secondary);
+  text-align: center;
+}

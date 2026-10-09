@@ -1,0 +1,63 @@
+# Product
+
+<!-- impeccable:product-schema 1 -->
+
+## Platform
+
+web
+
+## Users
+
+Primary users are Korean office workers who already work in HWP/HWPX and are tired of AI tools that cannot operate inside Hancom Hangul. Their job is to produce and revise full documents with AI help without leaving the document editor.
+
+## Product Purpose
+
+Rauhwpx is an independent open-source HWP/HWPX viewer/editor with agentic features built into the editing experience. Success means users can create full documents with AI and collaborate smoothly—both in the system (local agent ↔ open document) and in the UI (the AI feels like part of the program, not a bolted-on chat pane). New documents and exports default to HWPX for Korean office attachments; binary HWP 5.0 remains an explicit save choice.
+
+## Positioning
+
+An HWP/HWPX editor with agentic features as a first-class part of the product—not an external AI tool that cannot touch Hangul documents, and not a generic chat overlay on a viewer. Documents are edited through a real document engine (Rust → WASM); the AI makes visible, undoable changes against the live open document, while planning approval and editor undo keep the user in control.
+
+## Operating Context
+
+- Users open HWP/HWPX (and related formats) in `rhwp-studio` in the browser (PWA) or the Rauhwpx desktop app.
+- The desktop app runs as one Electron process with multiple document windows. Every window owns an isolated agent session while settings, recent documents, skills, references, and provider credentials remain user-wide.
+- A local Node hub (`rhwp-agent`) bridges Claude, Codex, and Pi to Studio through session-scoped WebSocket and MCP routing.
+- AI writes run autonomously with editor undo history: semantic edits use a live staged preview and commit on successful turn completion; raw engine batches are atomic and restore the prior snapshot on failure.
+- A separate planning workflow can research with web, subagents, Browserbase, and chat-scoped downloads while local files and the live document remain read-only. The agent presents a structured plan; only an explicit `Approve & execute` action unlocks implementation.
+- Everything document-related runs locally in the browser WASM engine; the agent hub is a thin localhost router with no document logic.
+- Adjacent surfaces exist (browser extensions, VS Code viewer, embeddable npm editor, CLI) but the primary product experience for this record is the studio editor + AI sidebar.
+
+## Capabilities and Constraints
+
+- Parse/edit/render Korean HWP ecosystem formats (HWP 5.0, HWPX, HML; HWP3 read); serialize with roundtrip fidelity as a core concern.
+- MCP tools use body-text addresses (`sectionIdx` / `paraIdx` / `charOffset`, 0-based) and a revision contract (`expectedRevision` / `REVISION_MISMATCH`).
+- Planning remains user-approved before implementation. Once implementation starts, document mutations execute autonomously, preserve revision checks, and remain undoable.
+- Independent of Hancom; “한글,” “한컴,” “HWP,” and “HWPX” are Hancom trademarks—do not imply affiliation, sponsorship, or approval.
+- UI and product language are Korean-first where the studio already is (`lang="ko"`).
+- Open: exact collaboration model beyond single-user AI review (multi-user co-editing, sharing) is desired as success direction but not fully specified yet.
+
+## Brand Commitments
+
+- Product name: **Rauhwpx**. Engine/studio/hub directories remain under `rhwp/` for historical layout only.
+- Do not present this product as edwardkim/rhwp or as a Hancom product.
+- Voice: practical document-work tool; AI should feel native to the editor, not like a separate SaaS chat product.
+
+## Evidence on Hand
+
+- Engine, studio, and agent implementations under `rhwp/`.
+- Large real-document fixture set under `rhwp/samples/` (~430 HWP/HWPX files for fidelity/regression).
+- Logo assets under `rhwp/assets/logo/`.
+- Do not fabricate testimonials, customer logos, Hancom endorsement, or fidelity benchmarks not in the repo.
+
+## Product Principles
+
+1. **Editor-native AI** — Agentic features must feel like part of the program, not a sidecar chat product.
+2. **User remains the author** — planning stays explicit, autonomous edits stay visible and undoable, and failed atomic work restores the previous document state.
+3. **Real HWP work** — Success is finishing full documents in the formats Korean office work actually uses.
+4. **On the user's machine** — Document processing stays with the user (browser WASM + localhost agent).
+5. **Smooth collaboration** — System handoffs (agent ↔ document ↔ approval) and UI continuity are both first-class; friction in either breaks the product.
+
+## Accessibility & Inclusion
+
+Korean is the primary UI and document language. Preserve existing studio a11y patterns (labeled controls, live regions, reduced-motion support in the agent sidebar). No separate WCAG target was committed beyond keeping those behaviors intact.

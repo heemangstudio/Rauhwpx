@@ -1,0 +1,293 @@
+import { assertBase64EncodedImageDecodeDimensions } from './canvaskit/image-header.ts';
+import { inheritedReplayLayer } from './canvaskit/replay-plane.ts';
+import type { LayerInfo } from '../core/types';
+
+export interface FlowImageBbox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface FlowImageCrop {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+export interface FlowImagePaintOp {
+  bbox: FlowImageBbox;
+  mime: string;
+  base64: string;
+  crop: FlowImageCrop | null;
+  originalSizeHu: [number, number] | null;
+  rotation: number;
+  horzFlip: boolean;
+  vertFlip: boolean;
+  // 그림 효과(회색조/흑백/밝기/명암)를 DOM <img> 에 적용할 CSS filter. 없으면 null.
+  // web_canvas.rs render_image 의 compose_image_filter 와 동일 산출.
+  filter: string | null;
+  // DOM 정적 그림도 원래 PageLayerTree의 clip 계보를 유지해야 한다.
+  clip: FlowImageBbox | null;
+}
+
+type LayerNodeLike = {
+  kind?: unknown;
+  layer?: LayerInfo;
+  clip?: unknown;
+  ops?: unknown;
+  children?: unknown;
+  child?: unknown;
+};
+
+type LayerPaintOpLike = {
+  type?: unknown;
+  bbox?: unknown;
+  mime?: unknown;
+  base64?: unknown;
+  crop?: unknown;
+  originalSizeHu?: unknown;
+  effect?: unknown;
+  brightness?: unknown;
+  contrast?: unknown;
+  bakedWatermark?: unknown;
+  transform?: {
+    rotation?: unknown;
+    horzFlip?: unknown;
+    vertFlip?: unknown;
+  };
+};
+
+/**
+ * 그림 효과(ImageEffect)+밝기/명암을 DOM <img> 용 CSS filter 문자열로 변환한다.
+ * `src/renderer/web_canvas.rs::compose_image_filter` 와 동일한 산출을 유지해
+ * WASM canvas 경로와 DOM flow-image 경로의 렌더 결과가 일치하도록 한다.
+ * 워터마크로 baked 된 픽셀(bakedWatermark)은 효과가 이미 적용돼 있으므로 제외한다.
+ */
+export function composeImageFilter(op: LayerPaintOpLike): string | null {
+  if (op.bakedWatermark === true) return null;
+  const parts: string[] = [];
+  const effect = typeof op.effect === 'string' ? op.effect : 'realPic';
+  if (effect === 'grayScale' || effect === 'pattern8x8') {
+    parts.push('grayscale(100%)');
+  } else if (effect === 'blackWhite') {
+    parts.push('grayscale(100%)');
+    parts.push('contrast(1000%)');
+  }
+  const brightness = finiteNumber(op.brightness);
+  const contrast = finiteNumber(op.contrast);
+  if (brightness !== 0) parts.push(`brightness(${((100 + brightness) / 100).toFixed(4)})`);
+  if (contrast !== 0) parts.push(`contrast(${((100 + contrast) / 100).toFixed(4)})`);
+  return parts.length > 0 ? parts.join(' ') : null;
+}
+
+export function collectFlowImagePaintOps(
+  root: unknown,
+  isFlowImage: (op: LayerPaintOpLike, layer: unknown) => boolean,
+): FlowImagePaintOp[] {
+  const images: FlowImagePaintOp[] = [];
+
+  const visit = (
+    value: unknown,
+    inheritedLayer: LayerInfo | null,
+    inheritedClip: FlowImageBbox | undefined | null,
+  ): void => {
+    if (!isLayerNode(value) || inheritedClip === null) return;
+
+    const activeLayer = inheritedReplayLayer(value.layer, inheritedLayer);
+    const clip = value.kind === 'clipRect' && isFiniteBbox(value.clip)
+      ? intersectBboxes(inheritedClip, value.clip)
+      : inheritedClip;
+    if (clip === null) return;
+
+    if (Array.isArray(value.ops)) {
+      for (const op of value.ops) {
+        if (!isLayerPaintOp(op) || !isFlowImage(op, activeLayer)) continue;
+        if (
+          typeof op.mime !== 'string' ||
+          typeof op.base64 !== 'string' ||
+          !isFiniteBbox(op.bbox)
+        ) {
+          continue;
+        }
+        images.push({
+          bbox: op.bbox,
+          mime: op.mime,
+          base64: op.base64,
+          crop: isFiniteCrop(op.crop) ? op.crop : null,
+          originalSizeHu: isPositiveSizeTuple(op.originalSizeHu) ? op.originalSizeHu : null,
+          rotation: finiteNumber(op.transform?.rotation),
+          horzFlip: op.transform?.horzFlip === true,
+          vertFlip: op.transform?.vertFlip === true,
+          filter: composeImageFilter(op),
+          clip: clip ?? null,
+        });
+      }
+    }
+
+    if (Array.isArray(value.children)) {
+      for (const child of value.children) {
+        visit(child, activeLayer, clip);
+      }
+    }
+    if (value.child !== undefined) {
+      visit(value.child, activeLayer, clip);
+    }
+  };
+
+  visit(root, null, undefined);
+  return images;
+}
+
+/** 브라우저 `<img>` 가 직접 그릴 수 있는 형식. WMF 등은 엔진 canvas 의 변환 경로로만 그려진다. */
+const DOM_DISPLAYABLE_IMAGE_MIMES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'image/bmp',
+  'image/svg+xml',
+]);
+
+/**
+ * flow 그림을 DOM `<img>` 층에 맡겨도 되는지. 형식을 브라우저가 모르거나 디코드 한도를 넘으면
+ * `<img>` 로는 보이지 않으므로, 쪽 전체를 엔진 flow-static canvas 로 그려야 한다.
+ */
+export function isDomDisplayableFlowImage(image: Pick<FlowImagePaintOp, 'mime' | 'base64'>): boolean {
+  if (!DOM_DISPLAYABLE_IMAGE_MIMES.has(image.mime)) return false;
+  try {
+    assertBase64EncodedImageDecodeDimensions(image.base64, '문서 그림');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function visibleFlowImageBbox(image: FlowImagePaintOp): FlowImageBbox | null {
+  return image.clip === null ? image.bbox : intersectBboxes(image.bbox, image.clip);
+}
+
+/** DOM flow-image 의 clip wrapper 배치 계획. needsWrapper 가 false 면 wrapper 없이 붙인다. */
+export interface FlowImageClipPlan {
+  host: FlowImageBbox;
+  needsWrapper: boolean;
+}
+
+/**
+ * 회전한 프레임이 실제로 덮는 축 정렬 영역(AABB)을 구한다.
+ * web_canvas.rs::open_shape_transform 과 같이 bbox 중심을 기준으로 회전하므로
+ * 폭/높이는 |w·cosθ| + |h·sinθ| / |w·sinθ| + |h·cosθ| 가 되고 중심은 그대로다.
+ */
+export function rotatedFrameExtent(bbox: FlowImageBbox, rotationDeg: number): FlowImageBbox {
+  const radians = (finiteNumber(rotationDeg) * Math.PI) / 180;
+  const cos = Math.abs(Math.cos(radians));
+  const sin = Math.abs(Math.sin(radians));
+  const width = bbox.width * cos + bbox.height * sin;
+  const height = bbox.width * sin + bbox.height * cos;
+  const centerX = bbox.x + bbox.width / 2;
+  const centerY = bbox.y + bbox.height / 2;
+  return { x: centerX - width / 2, y: centerY - height / 2, width, height };
+}
+
+/**
+ * flow 그림 하나를 어떤 상자에 잘라 넣을지 결정한다.
+ *
+ * 회전이 없으면 기존 동작 그대로 — clip 이 그림을 실제로 깎을 때만 wrapper 를 둔다.
+ * 회전이 있으면 그림 자신의 미회전 bbox 가 아니라 회전 후 AABB 를 clip 과 교차시킨다.
+ * bbox 로 자르면 회전으로 bbox 밖으로 나간 모서리가 잘려 canvas/PDF 경로와 갈라진다.
+ * 교차 결과가 없으면 null — 그림 전체가 clip 밖이라 그리지 않는다.
+ */
+export function planFlowImageClip(image: FlowImagePaintOp): FlowImageClipPlan | null {
+  if (image.rotation === 0 || !Number.isFinite(image.rotation)) {
+    const visible = visibleFlowImageBbox(image);
+    if (visible === null) return null;
+    return { host: visible, needsWrapper: image.clip !== null && !sameBbox(visible, image.bbox) };
+  }
+
+  const extent = rotatedFrameExtent(image.bbox, image.rotation);
+  if (image.clip === null || containsBbox(image.clip, extent)) {
+    return { host: extent, needsWrapper: false };
+  }
+  const host = intersectBboxes(image.clip, extent);
+  if (host === null) return null;
+  return { host, needsWrapper: true };
+}
+
+/** outer 가 inner 를 모두 품는지. 회전 AABB 는 무리수라 부동소수 오차를 허용한다. */
+function containsBbox(outer: FlowImageBbox, inner: FlowImageBbox): boolean {
+  const epsilon = 1e-6;
+  return (
+    inner.x >= outer.x - epsilon &&
+    inner.y >= outer.y - epsilon &&
+    inner.x + inner.width <= outer.x + outer.width + epsilon &&
+    inner.y + inner.height <= outer.y + outer.height + epsilon
+  );
+}
+
+function sameBbox(first: FlowImageBbox, second: FlowImageBbox): boolean {
+  return (
+    first.x === second.x &&
+    first.y === second.y &&
+    first.width === second.width &&
+    first.height === second.height
+  );
+}
+
+function isLayerNode(value: unknown): value is LayerNodeLike {
+  return value !== null && typeof value === 'object';
+}
+
+function isLayerPaintOp(value: unknown): value is LayerPaintOpLike {
+  return value !== null && typeof value === 'object';
+}
+
+function isPositiveSizeTuple(value: unknown): value is [number, number] {
+  return Array.isArray(value)
+    && value.length === 2
+    && value.every((entry) => typeof entry === 'number' && Number.isFinite(entry) && entry > 0);
+}
+
+function intersectBboxes(
+  first: FlowImageBbox | undefined,
+  second: FlowImageBbox,
+): FlowImageBbox | null {
+  if (first === undefined) return second;
+  const left = Math.max(first.x, second.x);
+  const top = Math.max(first.y, second.y);
+  const right = Math.min(first.x + first.width, second.x + second.width);
+  const bottom = Math.min(first.y + first.height, second.y + second.height);
+  if (right <= left || bottom <= top) return null;
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+function isFiniteBbox(value: unknown): value is FlowImageBbox {
+  if (value === null || typeof value !== 'object') return false;
+  const bbox = value as Partial<FlowImageBbox>;
+  return (
+    Number.isFinite(bbox.x) &&
+    Number.isFinite(bbox.y) &&
+    Number.isFinite(bbox.width) &&
+    Number.isFinite(bbox.height) &&
+    (bbox.width ?? 0) > 0 &&
+    (bbox.height ?? 0) > 0
+  );
+}
+
+function isFiniteCrop(value: unknown): value is FlowImageCrop {
+  if (value === null || typeof value !== 'object') return false;
+  const crop = value as Partial<FlowImageCrop>;
+  return (
+    Number.isFinite(crop.left) &&
+    Number.isFinite(crop.top) &&
+    Number.isFinite(crop.right) &&
+    Number.isFinite(crop.bottom) &&
+    (crop.right ?? 0) > (crop.left ?? 0) &&
+    (crop.bottom ?? 0) > (crop.top ?? 0)
+  );
+}
+
+function finiteNumber(value: unknown): number {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+}

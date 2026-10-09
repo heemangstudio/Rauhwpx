@@ -1,0 +1,789 @@
+//! 문서 핵심 도메인 모델
+//!
+//! HWP 문서의 도메인 상태와 로직을 캡슐화한다.
+//! WASM/PyO3/MCP 등 어떤 어댑터에서도 독립적으로 사용할 수 있다.
+
+pub(crate) mod helpers;
+pub(crate) use helpers::*;
+
+pub mod builders;
+mod commands;
+
+/// 설정 시(`=1`) 로드 단계에서 저장 LINE_SEG 를 모두 버리고 누락 경로로 조판한다
+/// (`rhwp lineseg-oracle` 강제 재조판 계측용).
+pub const IGNORE_STORED_LINESEGS_ENV: &str = "RHWP_IGNORE_STORED_LINESEGS";
+mod equation_fonts;
+pub(crate) use commands::caret_edit::CaretParagraph;
+pub mod converters;
+pub(crate) mod html_table_import;
+/// 한글 클립보드 문서모델(hwpjson) → HWPX 변환
+pub mod hwpjson;
+pub mod hyperlink;
+pub mod queries;
+pub mod table_calc;
+pub mod validation;
+
+use crate::model::control::Control;
+use crate::model::document::{Document, Section};
+use crate::model::event::DocumentEvent;
+use crate::model::header_footer::HeaderFooterApply;
+use crate::model::paragraph::Paragraph;
+use crate::model::table::TableTransposeData;
+use crate::renderer::composer::ComposedParagraph;
+use crate::renderer::height_measurer::{MeasuredSection, MeasuredTable};
+use crate::renderer::layout::LayoutEngine;
+use crate::renderer::pagination::PaginationResult;
+use crate::renderer::render_normalization::{RenderNormalizationOverlay, RenderPath};
+use crate::renderer::render_tree::PageRenderTree;
+use crate::renderer::style_resolver::ResolvedStyleSet;
+use crate::renderer::typeset::ResumableTablePaginationJob;
+use crate::renderer::DEFAULT_DPI;
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
+
+const MAX_BATCH_EVENTS: usize = 65_536;
+
+/// 기본 폰트 fallback 경로
+pub const DEFAULT_FALLBACK_FONT: &str = "/usr/share/fonts/truetype/nanum/NanumGothic.ttf";
+pub(crate) const TABLE_CAPTION_CELL_SENTINEL: usize = 65_534;
+
+/// Studio/WASM의 `applyTo` 숫자를 core 열거형으로 변환한다.
+///
+/// 공개 API의 기존 호환 규칙대로 1=짝수, 2=홀수, 나머지는 양쪽이다.
+pub(crate) fn header_footer_apply_from_u8(value: u8) -> HeaderFooterApply {
+    match value {
+        1 => HeaderFooterApply::Even,
+        2 => HeaderFooterApply::Odd,
+        _ => HeaderFooterApply::Both,
+    }
+}
+
+/// core 열거형을 Studio/WASM의 `applyTo` 숫자로 변환한다.
+pub(crate) fn header_footer_apply_to_u8(value: HeaderFooterApply) -> u8 {
+    match value {
+        HeaderFooterApply::Both => 0,
+        HeaderFooterApply::Even => 1,
+        HeaderFooterApply::Odd => 2,
+    }
+}
+
+/// 내부 클립보드 데이터
+pub(crate) struct ClipboardData {
+    /// 복사된 문단들 (서식 정보 포함)
+    pub(crate) paragraphs: Vec<Paragraph>,
+    /// 플레인 텍스트
+    pub(crate) plain_text: String,
+}
+
+/// 표 셀 행/열 바꿈 전용 내부 버퍼
+pub(crate) struct TableTransposeClipboard {
+    pub(crate) data: TableTransposeData,
+}
+
+/// [#2424] deferred cell edit가 이후 pagination job에 넘기는 최소 target descriptor.
+///
+/// resumable engine이 붙기 전까지 실제 flush는 기존 동기 `paginate()`를 사용하며,
+/// 성공한 pagination은 이 descriptor를 소비한다.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DeferredPaginationDescriptor {
+    pub(crate) revision: u64,
+    pub(crate) section_index: usize,
+    pub(crate) para_index: usize,
+    pub(crate) control_index: usize,
+    pub(crate) cell_index: usize,
+    pub(crate) cell_para_index: usize,
+    pub(crate) cell_flow_changed: bool,
+    /// 기존 pagination에서 target table의 첫 fragment가 있던 global page.
+    /// 실제 최초 changed fragment는 synchronous oracle 비교 뒤 더 좁힌다.
+    pub(crate) target_first_page: Option<u32>,
+    pub(crate) table_structure_fingerprint: u64,
+}
+
+/// [#2424] pending pagination job이 descriptor 좌표를 다시 조회한 결과.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeferredPaginationTargetStatus {
+    Current,
+    Superseded,
+    TargetMissing,
+    StructureChanged,
+}
+
+pub(crate) struct PendingPaginationJob {
+    pub(crate) descriptor: DeferredPaginationDescriptor,
+    pub(crate) renderer_job: ResumableTablePaginationJob,
+    pub(crate) measured: MeasuredSection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeferredPaginationJobState {
+    None,
+    Pending,
+    Complete,
+    Fallback,
+    Stale,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeferredPaginationStepResult {
+    pub state: DeferredPaginationJobState,
+    pub revision: u64,
+    pub fragments_processed: usize,
+    pub page_count: u32,
+}
+
+pub(crate) struct RenderNormalizedSection {
+    pub(crate) source_revision: u64,
+    /// Body spacing depends on neighboring paragraphs, so single-paragraph
+    /// refresh must recalculate this projection for the whole section.
+    pub(crate) body_spacing_projected: bool,
+    pub(crate) paragraphs: Arc<Vec<Paragraph>>,
+    pub(crate) composed: Arc<Vec<ComposedParagraph>>,
+}
+
+#[derive(Default)]
+pub(crate) struct RenderNormalizationState {
+    pub(crate) document_epoch: u64,
+    pub(crate) section_revisions: Vec<u64>,
+    pub(crate) sections: Vec<Option<RenderNormalizedSection>>,
+    pub(crate) path_revisions: HashMap<RenderPath, u64>,
+    pub(crate) overlay: Arc<RenderNormalizationOverlay>,
+}
+
+#[derive(Default)]
+pub(crate) struct DocumentEventLog {
+    events: Vec<DocumentEvent>,
+    dropped_events: usize,
+    section_revisions: Vec<u64>,
+    paragraph_sequence_revisions: Vec<u64>,
+    paragraph_revisions: Vec<Vec<u64>>,
+    next_revision: u64,
+}
+
+impl DocumentEventLog {
+    fn push(&mut self, event: DocumentEvent) {
+        let section_idx = event.section_index();
+        let paragraph_idx = event.paragraph_index();
+        let revision = self.next_revision();
+        Self::set_revision(&mut self.section_revisions, section_idx, revision);
+        if event.may_change_paragraph_sequence() {
+            Self::set_revision(
+                &mut self.paragraph_sequence_revisions,
+                section_idx,
+                revision,
+            );
+        } else {
+            if self.paragraph_revisions.len() <= section_idx {
+                self.paragraph_revisions
+                    .resize_with(section_idx + 1, Vec::new);
+            }
+            Self::set_revision(
+                &mut self.paragraph_revisions[section_idx],
+                paragraph_idx,
+                revision,
+            );
+        }
+        // Keep the public event-log API useful outside batch mode without
+        // allowing a long-lived document to retain an unbounded command log.
+        if self.events.len() < MAX_BATCH_EVENTS {
+            self.events.push(event);
+        } else {
+            self.dropped_events = self.dropped_events.saturating_add(1);
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        // batch 이벤트 소비는 문서 상태를 바꾸지 않으므로 snapshot revision은 유지한다.
+        self.events.clear();
+        // A pathological batch may grow this buffer to the hard cap. Do not
+        // pin that allocation for the lifetime of an otherwise idle document.
+        if self.events.capacity() > 1024 {
+            self.events.shrink_to(1024);
+        }
+        self.dropped_events = 0;
+    }
+
+    fn begin_capture(&mut self) {
+        self.clear();
+    }
+
+    fn dropped_events(&self) -> usize {
+        self.dropped_events
+    }
+
+    fn mark_section_changed(&mut self, section_idx: usize) {
+        let revision = self.next_revision();
+        Self::set_revision(&mut self.section_revisions, section_idx, revision);
+    }
+
+    /// 문단 IR이 바뀌었는데 이벤트를 따로 쌓지 않는 경로용.
+    /// 구역·문단 revision을 같이 올려서 스냅샷 복원이 현재 문단을 재사용하지 않게 한다.
+    fn mark_paragraph_changed(&mut self, section_idx: usize, paragraph_idx: usize) {
+        let revision = self.next_revision();
+        Self::set_revision(&mut self.section_revisions, section_idx, revision);
+        if self.paragraph_revisions.len() <= section_idx {
+            self.paragraph_revisions
+                .resize_with(section_idx + 1, Vec::new);
+        }
+        Self::set_revision(
+            &mut self.paragraph_revisions[section_idx],
+            paragraph_idx,
+            revision,
+        );
+    }
+
+    /// 문단 수가 바뀌었는데 순서 변경 이벤트(ParagraphMerged 등)를 쌓지 않는 경로용.
+    /// 문단 revision 은 인덱스 기준이라 문단 수가 바뀌면 다른 문단을 가리키므로,
+    /// 순서 revision 을 올려 스냅샷이 인덱스로 문단을 공유·재사용하지 않게 한다.
+    fn mark_paragraph_sequence_changed(&mut self, section_idx: usize) {
+        let revision = self.next_revision();
+        Self::set_revision(&mut self.section_revisions, section_idx, revision);
+        Self::set_revision(
+            &mut self.paragraph_sequence_revisions,
+            section_idx,
+            revision,
+        );
+    }
+
+    fn mark_all_sections_changed(&mut self, section_count: usize) {
+        for section_idx in 0..section_count {
+            let revision = self.next_revision();
+            Self::set_revision(&mut self.section_revisions, section_idx, revision);
+            Self::set_revision(
+                &mut self.paragraph_sequence_revisions,
+                section_idx,
+                revision,
+            );
+        }
+    }
+
+    fn next_revision(&mut self) -> u64 {
+        self.next_revision = self.next_revision.wrapping_add(1).max(1);
+        self.next_revision
+    }
+
+    fn set_revision(revisions: &mut Vec<u64>, index: usize, revision: u64) {
+        if revisions.len() <= index {
+            revisions.resize(index + 1, 0);
+        }
+        revisions[index] = revision;
+    }
+
+    fn section_revisions(&self, section_count: usize) -> Vec<u64> {
+        let mut revisions = self.section_revisions.clone();
+        revisions.resize(section_count, 0);
+        revisions.truncate(section_count);
+        revisions
+    }
+
+    fn paragraph_sequence_revision(&self, section_idx: usize) -> u64 {
+        self.paragraph_sequence_revisions
+            .get(section_idx)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    fn paragraph_revisions(&self, section_idx: usize, paragraph_count: usize) -> Vec<u64> {
+        let mut revisions = self
+            .paragraph_revisions
+            .get(section_idx)
+            .cloned()
+            .unwrap_or_default();
+        revisions.resize(paragraph_count, 0);
+        revisions.truncate(paragraph_count);
+        revisions
+    }
+
+    fn restore_snapshot_revisions(
+        &mut self,
+        section_revisions: &[u64],
+        paragraph_sequence_revisions: &[u64],
+        paragraph_revisions: &[Vec<u64>],
+    ) {
+        self.section_revisions.clear();
+        self.section_revisions.extend_from_slice(section_revisions);
+        self.paragraph_sequence_revisions.clear();
+        self.paragraph_sequence_revisions
+            .extend_from_slice(paragraph_sequence_revisions);
+        self.paragraph_revisions.clear();
+        self.paragraph_revisions
+            .extend_from_slice(paragraph_revisions);
+    }
+}
+
+impl std::ops::Deref for DocumentEventLog {
+    type Target = [DocumentEvent];
+
+    fn deref(&self) -> &Self::Target {
+        &self.events
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct SnapshotParagraph {
+    pub(crate) revision: u64,
+    pub(crate) paragraph: Arc<Paragraph>,
+}
+
+#[derive(Clone)]
+pub(crate) struct SnapshotSection {
+    pub(crate) revision: u64,
+    pub(crate) paragraph_sequence_revision: u64,
+    // 원시 바이트와 문단은 아래의 공유 필드에서 보관한다.
+    pub(crate) section_shell: Section,
+    pub(crate) raw_stream: Option<Arc<Vec<u8>>>,
+    pub(crate) paragraphs: Vec<SnapshotParagraph>,
+}
+
+#[derive(Clone)]
+pub(crate) struct DocumentSnapshot {
+    // 보존용 스트림과 미리보기 이미지 바이트는 셸에서 제외한다.
+    pub(crate) document_shell: Document,
+    pub(crate) extra_streams: Arc<Vec<(String, Vec<u8>)>>,
+    pub(crate) hwpx_aux_entries: Arc<Vec<(String, Vec<u8>)>>,
+    pub(crate) preview_image: Option<Arc<Vec<u8>>>,
+    pub(crate) sections: Vec<SnapshotSection>,
+}
+
+/// HWP 문서 핵심 도메인 모델
+///
+/// 문서 데이터, 레이아웃 상태, 설정, 캐시를 포함한다.
+/// WASM 바인딩 없이 순수 Rust 타입만 사용한다.
+pub struct DocumentCore {
+    /// IR 문서
+    pub(crate) document: Document,
+    /// 페이지 분할 결과
+    pub(crate) pagination: Vec<PaginationResult>,
+    /// 해소된 스타일 세트
+    pub(crate) styles: ResolvedStyleSet,
+    /// 구역별 구성된 문단 목록
+    pub(crate) composed: Vec<Vec<ComposedParagraph>>,
+    /// [#2308] source IR로부터 재생성되는 revision 기반 render normalization state.
+    /// #2004 immutable compatibility projection과 #2195 sparse width overlay를 소유하며,
+    /// **원본 `document`는 무손상**이고 deferred edit은 projection을 직접 mirror하지 않는다.
+    pub(crate) render_normalization: RenderNormalizationState,
+    /// DPI
+    pub(crate) dpi: f64,
+    /// 대체 폰트 경로
+    pub(crate) fallback_font: String,
+    /// 레이아웃 엔진 (자동 번호 카운터 포함)
+    pub(crate) layout_engine: LayoutEngine,
+    /// 내부 클립보드
+    pub(crate) clipboard: Option<ClipboardData>,
+    /// 표 셀 행/열 바꿈 복사 버퍼
+    pub(crate) table_transpose_clipboard: Option<TableTransposeClipboard>,
+    /// [Task #1161] 떠 있는 개체(treat_as_char=false) 반복 붙여넣기 cascade 카운터.
+    /// 새 컨트롤 복사 시 0 으로 리셋, 붙여넣기마다 +1 하여 위치 오프셋 누적(한컴 정합).
+    pub(crate) paste_cascade_count: u32,
+    /// 문단부호(¶) 표시 여부
+    pub(crate) show_paragraph_marks: bool,
+    /// 조판부호 표시 여부 (개체 마커 [표]/[그림] 등, 문단부호 포함)
+    pub(crate) show_control_codes: bool,
+    /// 투명선 표시 여부
+    pub(crate) show_transparent_borders: bool,
+    /// 잘림 보기 (body/셀 클리핑 활성화 여부)
+    pub(crate) clip_enabled: bool,
+    /// 디버그 오버레이 표시 여부 (문단/표 경계 + pi/ci 라벨)
+    pub(crate) debug_overlay: bool,
+    /// LINE_SEG vpos-reset 강제 분리 적용 여부 (페이지네이션 옵션)
+    pub(crate) respect_vpos_reset: bool,
+    /// 구역별 표 측정 데이터 (페이지네이션 결과 보존)
+    pub(crate) measured_tables: Vec<Vec<MeasuredTable>>,
+    /// 구역별 dirty 플래그 (true = 재페이지네이션 필요)
+    pub(crate) dirty_sections: Vec<bool>,
+    /// 구역별 측정 캐시 (증분 측정용)
+    pub(crate) measured_sections: Vec<MeasuredSection>,
+    /// 구역별 문단 dirty 비트맵.
+    /// None = 전체 dirty (초기 로드 또는 전체 재구성 시).
+    /// Some(vec) = vec[para_idx] = true이면 해당 문단만 재측정.
+    pub(crate) dirty_paragraphs: Vec<Option<Vec<bool>>>,
+    /// 구역별 문단→단 인덱스 매핑 (페이지네이션에서 결정)
+    /// para_column_map[section_idx][para_idx] = column_index
+    pub(crate) para_column_map: Vec<Vec<u16>>,
+    /// [#2424] 마지막 deferred cell edit revision. 새 edit가 기존 pagination job을 대체한다.
+    pub(crate) deferred_pagination_revision: u64,
+    /// [#2424] 아직 full pagination에 반영되지 않은 target descriptor.
+    pub(crate) deferred_pagination_descriptor: Option<DeferredPaginationDescriptor>,
+    /// [#2424] 공개 pagination과 분리된 shadow continuation job.
+    pub(crate) pending_pagination_job: Option<PendingPaginationJob>,
+    /// 페이지별 렌더 트리 캐시 (지연 구축, 부분 무효화)
+    pub(crate) page_tree_cache: RefCell<Vec<Option<std::sync::Arc<PageRenderTree>>>>,
+    /// 페이지 렌더 캐시 LRU 순서 (쪽, 트리가 쥔 그림 바이트). 앞이 가장 오래된 페이지다.
+    pub(crate) page_tree_cache_order: RefCell<VecDeque<(usize, usize)>>,
+    /// 머리말/꼬리말 대표 편집 트리 캐시 (마지막 target 한 건만 재사용).
+    pub(crate) header_footer_preview_tree_cache:
+        RefCell<Option<((u32, usize, bool, u8), PageRenderTree)>>,
+    /// [Task #2222] 페이지 레이어 트리 JSON 캐시 — (출력옵션 지문, 직렬화 결과).
+    /// 이미지 base64 인라인으로 페이지당 1MB 급이라 재직렬화(실측 15ms/회)가
+    /// 렌더 자체와 맞먹는다. 편집 무효화는 page_tree_cache 와 동일 지점에서.
+    pub(crate) layer_tree_json_cache: RefCell<Vec<Vec<(u8, String)>>>,
+    /// Batch 모드 플래그 — true이면 paginate() 스킵
+    pub(crate) batch_mode: bool,
+    /// 이벤트 로그 (Command 실행 시 누적)
+    pub(crate) event_log: DocumentEventLog,
+    /// 글상자 오버플로우 연결 캐시 (섹션별, 지연 계산)
+    pub(crate) overflow_links_cache:
+        RefCell<HashMap<usize, Vec<queries::doc_tree_nav::OverflowLink>>>,
+    /// Undo/Redo용 Document 스냅샷 저장소 (ID → 구역 공유 불변 Document 상태)
+    pub(crate) snapshot_store: Vec<(u32, Arc<DocumentSnapshot>)>,
+    /// 다음 스냅샷 ID
+    pub(crate) next_snapshot_id: u32,
+    /// [#6806] 그림 크기 변경의 원본 변환 상태. 문서/이미지 전체는 복제하지 않는다.
+    /// 스냅샷과 달리 코어가 자동 축출하지 않는다 — TS 히스토리의 discard 계약 참조.
+    pub(crate) picture_transform_store: Vec<(
+        u32,
+        commands::picture_transform_journal::PictureTransformCapture,
+    )>,
+    pub(crate) next_picture_transform_id: u32,
+    /// 에이전트 대기 편집의 문단 보관본 (ID → 적용 직전 본문 문단). 자동 축출 없음 —
+    /// TS PendingEditManager 가 discard 로 수명을 끝낸다.
+    pub(crate) paragraph_capture_store: Vec<(u32, crate::model::paragraph::Paragraph)>,
+    pub(crate) next_paragraph_capture_id: u32,
+    /// 머리말/꼬리말 감추기: (global_page_index, is_header) 조합
+    pub(crate) hidden_header_footer: std::collections::HashSet<(u32, bool)>,
+    /// 파일 이름 (머리말/꼬리말 필드 치환용)
+    pub(crate) file_name: String,
+    /// 현재 활성 필드 위치 (커서가 진입한 누름틀 — 안내문 렌더링 스킵용)
+    /// (section_idx, para_idx, field_control_idx)
+    pub(crate) active_field: Option<ActiveFieldInfo>,
+    /// 다음 캐럿 텍스트 삽입 한 번을 이 인라인 개체 **뒤**에 둔다.
+    ///
+    /// 논리 오프셋 wasm 래퍼만 설정하고 삽입 네이티브가 `take()` 한다. 텍스트 오프셋으로는
+    /// 같은 위치의 개체 앞/뒤를 구분할 수 없어 공개 네이티브 시그니처 대신 여기로 전달한다.
+    pub(crate) caret_insert_after_control: Option<usize>,
+    /// 구역별 문단 인덱스 오프셋 (삽입=+N, 삭제=-N, 페이지네이션 수렴 감지용)
+    /// paginate() 후 리셋.
+    pub(crate) para_offset: Vec<i32>,
+    /// 원본 파일 형식 — 저장 시 형식 분기용
+    pub(crate) source_format: crate::parser::FileFormat,
+    /// HML 입력에서만 유지되는 버전·인코딩·손실 진단.
+    pub(crate) hml_metadata: Option<crate::parser::HmlImportMetadata>,
+    /// HWPX 비표준 감지 등 문서 검증 경고.
+    /// `from_bytes` 에서 자동 생성되며, 사용자 고지·선택적 reflow 에 사용 (#177).
+    pub(crate) validation_report: validation::ValidationReport,
+}
+
+/// `DocumentCore` 는 스레드 경계 너머로 소유될 수 있어야 한다 — native 소비자(MCP 서버,
+/// 워커 풀)가 `Mutex<DocumentCore>` 를 다른 스레드로 보낸다. 내부 캐시 어딘가에 `Rc` 나
+/// 다른 `!Send` 타입이 들어오면 이 단언이 컴파일 타임에 깨진다.
+/// 내부 가변성(`Cell`/`RefCell`)은 `!Sync` 만 만들 뿐 `Send` 는 유지하므로 여기서 의도대로 통과한다.
+#[cfg(not(target_arch = "wasm32"))]
+const _: () = {
+    const fn assert_send<T: Send>() {}
+    assert_send::<DocumentCore>();
+};
+
+impl DocumentCore {
+    /// 구역에서 지정한 머리말/꼬리말 정의의 원본 control 위치를 찾는다.
+    ///
+    /// 편집 command와 대표 페이지 renderer가 반드시 이 resolver를 공유해야 한다
+    /// (#6453). 먼저 발견된 동일 종류·적용 범위 control이 canonical target이다.
+    pub(crate) fn find_header_footer_control(
+        &self,
+        section_idx: usize,
+        is_header: bool,
+        apply_to: HeaderFooterApply,
+    ) -> Option<(usize, usize)> {
+        let section = self.document.sections.get(section_idx)?;
+        for (para_index, para) in section.paragraphs.iter().enumerate() {
+            for (control_index, control) in para.controls.iter().enumerate() {
+                let matches = match control {
+                    Control::Header(header) => is_header && header.apply_to == apply_to,
+                    Control::Footer(footer) => !is_header && footer.apply_to == apply_to,
+                    _ => false,
+                };
+                if matches {
+                    return Some((para_index, control_index));
+                }
+            }
+        }
+        None
+    }
+}
+
+/// 활성 필드 위치 정보
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActiveFieldInfo {
+    pub section_idx: usize,
+    pub para_idx: usize,
+    /// field_ranges의 control_idx (controls[] 내 Field 컨트롤 인덱스)
+    pub control_idx: usize,
+    /// 셀 내부 필드인 경우의 전체 경로
+    /// 단일 표: vec![(parent_para_idx, ctrl, cell)]
+    /// 중첩 표: vec![(outer_ctrl, outer_cell, ..), (inner_ctrl, inner_cell, ..)]
+    /// parent_para_idx는 별도 필드에 포함하지 않고 첫 번째 요소의 context로 사용
+    pub cell_path: Option<Vec<(usize, usize, usize)>>, // Vec<(parent_para_idx_or_ctrl, ctrl_or_cell, cell_or_para)>
+}
+
+impl DocumentCore {
+    /// 총 페이지 수를 반환한다.
+    pub fn page_count(&self) -> u32 {
+        self.pagination
+            .iter()
+            .map(|pr| pr.pages.len() as u32)
+            .sum::<u32>()
+            .max(1)
+    }
+
+    /// 문서 정보를 JSON 문자열로 반환한다.
+    pub fn get_document_info(&self) -> String {
+        use crate::renderer::style_resolver::resolve_font_substitution;
+
+        let mut fonts = std::collections::BTreeSet::new();
+        for (lang_idx, lang_fonts) in self.document.doc_info.font_faces.iter().enumerate() {
+            for font in lang_fonts {
+                let resolved = resolve_font_substitution(&font.name, font.alt_type, lang_idx)
+                    .unwrap_or(&font.name);
+                fonts.insert(resolved.to_string());
+                if let Some(substitute) = font
+                    .subst_font
+                    .as_ref()
+                    .map(|subst| subst.face.as_str())
+                    .filter(|name| !name.is_empty())
+                    .or_else(|| font.alt_name.as_deref().filter(|name| !name.is_empty()))
+                {
+                    fonts.insert(substitute.to_string());
+                }
+            }
+        }
+        equation_fonts::collect(&self.document, &mut fonts);
+        let fonts_json: Vec<String> = fonts
+            .iter()
+            .map(|f| {
+                // 폰트 이름의 특수문자를 JSON 이스케이프 처리
+                let escaped: String = f
+                    .chars()
+                    .flat_map(|c| match c {
+                        '"' => vec!['\\', '"'],
+                        '\\' => vec!['\\', '\\'],
+                        '\n' => vec!['\\', 'n'],
+                        '\r' => vec!['\\', 'r'],
+                        '\t' => vec!['\\', 't'],
+                        c if c < '\x20' => vec![],
+                        c => vec![c],
+                    })
+                    .collect();
+                format!("\"{}\"", escaped)
+            })
+            .collect();
+
+        let escaped_fallback: String = self
+            .fallback_font
+            .chars()
+            .flat_map(|c| match c {
+                '"' => vec!['\\', '"'],
+                '\\' => vec!['\\', '\\'],
+                c => vec![c],
+            })
+            .collect();
+        format!(
+            "{{\"version\":\"{}.{}.{}.{}\",\"sectionCount\":{},\"pageCount\":{},\"encrypted\":{},\"hwp3Variant\":{},\"fallbackFont\":\"{}\",\"fontsUsed\":[{}]}}",
+            self.document.header.version.major,
+            self.document.header.version.minor,
+            self.document.header.version.build,
+            self.document.header.version.revision,
+            self.document.sections.len(),
+            self.page_count(),
+            self.document.header.encrypted,
+            self.document.layout_profile().hwp3_layout(),
+            escaped_fallback,
+            fonts_json.join(","),
+        )
+    }
+
+    /// 등록된 글꼴 목록을 JSON 배열로 반환한다.
+    ///
+    /// 반환: `[{"lang":<슬롯 0~6>,"id":<슬롯 내 인덱스>,"name":"<등록 이름>"}]`
+    ///
+    /// `get_document_info`와 달리 대체 글꼴 해소(resolve_font_substitution)를 하지 않고
+    /// 등록된 원본 이름을 그대로 돌려준다 — `find_or_create_font_id`가 원본 이름으로
+    /// 매칭하므로 에이전트가 이 목록의 이름을 그대로 되돌려 써야 한다.
+    pub fn get_font_list(&self) -> String {
+        let mut entries = Vec::new();
+        for (lang_idx, lang_fonts) in self.document.doc_info.font_faces.iter().enumerate() {
+            for (font_idx, font) in lang_fonts.iter().enumerate() {
+                entries.push(format!(
+                    "{{\"lang\":{},\"id\":{},\"name\":\"{}\"}}",
+                    lang_idx,
+                    font_idx,
+                    helpers::json_escape(&font.name)
+                ));
+            }
+        }
+        format!("[{}]", entries.join(","))
+    }
+
+    /// 이벤트 로그를 JSON 배열로 직렬화한다.
+    pub fn serialize_event_log(&self) -> String {
+        crate::model::event::serialize_event_log_bounded(
+            &self.event_log,
+            self.event_log.dropped_events(),
+        )
+    }
+
+    /// 이벤트를 쌓지 않는 경로가 본문 문단 `para_idx` 의 IR(문단 트리 안쪽 포함)을
+    /// 바꿨음을 revision 에 남긴다.
+    ///
+    /// 빠뜨리면 스냅샷이 직전 스냅샷의 문단을 공유하고, 복원이 현재 문단을 그대로
+    /// 재사용해 undo/redo 가 바뀐 IR 을 되돌리지 못한다.
+    pub(crate) fn mark_body_paragraph_changed(&mut self, section_idx: usize, para_idx: usize) {
+        self.event_log.mark_paragraph_changed(section_idx, para_idx);
+    }
+
+    /// 현재 문서의 스타일을 해소한다. 로드 때와 같은 HWP3 변형 보정을 쓴다.
+    ///
+    /// `resolve_styles` 는 변형 보정을 끄므로, 편집 뒤 재해소에 쓰면 HWP3 변환본의
+    /// 문단 여백·간격이 로드 때와 달라져 편집 한 번에 쪽 수가 바뀐다.
+    pub(crate) fn resolve_document_styles(&self) -> ResolvedStyleSet {
+        crate::renderer::style_resolver::resolve_styles_with_variant(
+            &self.document.doc_info,
+            self.dpi,
+            self.document.layout_profile().hwp3_layout(),
+        )
+    }
+
+    /// DPI를 설정하고 스타일을 재해소한 후 재페이지네이션한다.
+    pub fn set_dpi(&mut self, dpi: f64) {
+        self.dpi = dpi;
+        self.styles = self.resolve_document_styles();
+        self.paginate();
+    }
+
+    /// 빈 문서를 생성한다 (테스트/미리보기용).
+    pub fn new_empty() -> Self {
+        DocumentCore {
+            document: Document::default(),
+            pagination: Vec::new(),
+            styles: ResolvedStyleSet::default(),
+            composed: Vec::new(),
+            render_normalization: RenderNormalizationState::default(),
+            dpi: DEFAULT_DPI,
+            fallback_font: DEFAULT_FALLBACK_FONT.to_string(),
+            layout_engine: LayoutEngine::new(DEFAULT_DPI),
+            clipboard: None,
+            table_transpose_clipboard: None,
+            paste_cascade_count: 0,
+            show_paragraph_marks: false,
+            show_control_codes: false,
+            show_transparent_borders: false,
+            clip_enabled: true,
+            debug_overlay: false,
+            respect_vpos_reset: false,
+            measured_tables: Vec::new(),
+            dirty_sections: Vec::new(),
+            measured_sections: Vec::new(),
+            dirty_paragraphs: Vec::new(),
+            para_column_map: Vec::new(),
+            deferred_pagination_revision: 0,
+            deferred_pagination_descriptor: None,
+            pending_pagination_job: None,
+            page_tree_cache: RefCell::new(Vec::new()),
+            page_tree_cache_order: RefCell::new(VecDeque::new()),
+            header_footer_preview_tree_cache: RefCell::new(None),
+            layer_tree_json_cache: RefCell::new(Vec::new()),
+            batch_mode: false,
+            event_log: DocumentEventLog::default(),
+            overflow_links_cache: RefCell::new(HashMap::new()),
+            snapshot_store: Vec::new(),
+            next_snapshot_id: 0,
+            picture_transform_store: Vec::new(),
+            next_picture_transform_id: 0,
+            paragraph_capture_store: Vec::new(),
+            next_paragraph_capture_id: 0,
+            hidden_header_footer: std::collections::HashSet::new(),
+            file_name: String::new(),
+            active_field: None,
+            caret_insert_after_control: None,
+            para_offset: Vec::new(),
+            source_format: crate::parser::FileFormat::Hwp,
+            hml_metadata: None,
+            validation_report: validation::ValidationReport::new(),
+        }
+    }
+
+    /// HML 열기 메타데이터. 다른 입력 포맷은 `None`이다.
+    pub fn hml_metadata(&self) -> Option<&crate::parser::HmlImportMetadata> {
+        self.hml_metadata.as_ref()
+    }
+
+    /// 문서 검증 리포트에 대한 참조를 반환한다.
+    ///
+    /// `from_bytes` 시점에 HWPX 비표준 lineseg 감지가 수행되며, 경고가 있으면
+    /// 사용자에게 고지되어야 한다. 자동 reflow 는 적용되지 않고 사용자가
+    /// 명시적으로 `reflow_linesegs_on_demand()` 를 호출해야 보정된다.
+    pub fn validation_report(&self) -> &validation::ValidationReport {
+        &self.validation_report
+    }
+}
+
+#[cfg(test)]
+mod event_log_tests {
+    use super::*;
+
+    #[test]
+    fn document_info_discovers_declared_substitute_faces() {
+        use crate::model::style::{Font, SubstFont};
+        let mut core = DocumentCore::new_empty();
+        core.document.doc_info.font_faces = vec![vec![
+            Font {
+                name: "Missing source face".into(),
+                subst_font: Some(SubstFont {
+                    face: "한컴바탕".into(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            Font {
+                name: "Missing legacy face".into(),
+                alt_name: Some("함초롬바탕".into()),
+                ..Default::default()
+            },
+        ]];
+        let info: serde_json::Value = serde_json::from_str(&core.get_document_info()).unwrap();
+        let fonts = info["fontsUsed"].as_array().unwrap();
+        assert!(fonts.iter().any(|name| name == "한컴바탕"));
+        assert!(fonts.iter().any(|name| name == "함초롬바탕"));
+    }
+
+    fn event(offset: usize) -> DocumentEvent {
+        DocumentEvent::TextInserted {
+            section: 0,
+            para: 0,
+            offset,
+            len: 1,
+        }
+    }
+
+    #[test]
+    fn events_outside_a_batch_remain_available_through_the_bounded_public_log() {
+        let mut log = DocumentEventLog::default();
+        log.push(event(0));
+
+        assert!(matches!(
+            log.as_ref(),
+            [DocumentEvent::TextInserted { offset: 0, .. }]
+        ));
+        assert_eq!(log.dropped_events(), 0);
+        assert!(log.section_revisions(1)[0] > 0);
+        assert!(log.paragraph_revisions(0, 1)[0] > 0);
+    }
+
+    #[test]
+    fn batch_event_payloads_are_capped_and_report_the_omitted_tail() {
+        let mut log = DocumentEventLog::default();
+        log.begin_capture();
+        for offset in 0..=MAX_BATCH_EVENTS {
+            log.push(event(offset));
+        }
+
+        assert_eq!(log.len(), MAX_BATCH_EVENTS);
+        assert_eq!(log.dropped_events(), 1);
+        let json = crate::model::event::serialize_event_log_bounded(&log, log.dropped_events());
+        assert!(json.contains(r#""truncated":true"#));
+        assert!(json.contains(r#""droppedEventCount":1"#));
+        assert_eq!(
+            log.paragraph_revisions(0, 1)[0],
+            (MAX_BATCH_EVENTS + 1) as u64
+        );
+    }
+}

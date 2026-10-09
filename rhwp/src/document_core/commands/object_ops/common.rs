@@ -1,0 +1,565 @@
+//! 공통 개체 속성/헬퍼 + 새 번호 (object_ops 분할, #1904).
+
+use crate::document_core::helpers::{get_textbox_from_shape, get_textbox_from_shape_mut};
+use crate::document_core::DocumentCore;
+use crate::error::HwpError;
+use crate::model::control::Control;
+use crate::model::event::DocumentEvent;
+use crate::model::paragraph::Paragraph;
+use crate::model::shape::{common_obj_offsets, ShapeObject};
+
+/// [#6806] 변환 파생 상태(`raw_rendering`)의 무효화 판정용 지문.
+///
+/// 직렬화기는 `raw_rendering` 이 비어 있을 때만 변환 행렬을 새로 만든다. 그러므로
+/// setter 가 값 변화 없이 raw 를 비우면 한컴 원본 행렬이 rhwp 재생성본으로 바뀌고,
+/// 속성 bag 에는 원본 바이트가 없으므로 되돌릴 길이 없다. 종전의 "변환 키가 JSON 에
+/// 등장하는가" 판정은 게터가 낸 봉지를 그대로 되먹여도 원본을 지웠다 — 그 키들이
+/// 실제로 쓰는 IR 필드를 지문으로 떠서 **값 변화**로 판정한다. 그림·도형 경로가 공용으로
+/// 쓴다 — 둘이 갈라지면 같은 결함이 한쪽에만 남는다.
+pub(crate) fn shape_transform_fingerprint(
+    common: &crate::model::shape::CommonObjAttr,
+    attr: &crate::model::shape::ShapeComponentAttr,
+) -> (u32, u32, u32, u32, u32, u32, i16, bool, bool) {
+    (
+        common.width,
+        common.height,
+        common.horizontal_offset,
+        common.vertical_offset,
+        attr.current_width,
+        attr.current_height,
+        attr.rotation_angle,
+        attr.horz_flip,
+        attr.vert_flip,
+    )
+}
+
+impl DocumentCore {
+    const COMMON_OBJ_ATTR_KNOWN_MASK: u32 = 0x01
+        | (0x03 << 3)
+        | (0x07 << 5)
+        | (0x03 << 8)
+        | (0x07 << 10)
+        | (1 << 13)
+        | (1 << 14)
+        | (0x07 << 15)
+        | (0x03 << 18)
+        | (1 << 20)
+        | (0x07 << 21)
+        | (0x03 << 24)
+        | (1 << 26)
+        | (1 << 28);
+    pub(crate) fn sync_common_obj_attr_known_bits(c: &mut crate::model::shape::CommonObjAttr) {
+        let packed =
+            crate::document_core::converters::common_obj_attr_writer::pack_common_attr_bits(c);
+        c.attr = (c.attr & !Self::COMMON_OBJ_ATTR_KNOWN_MASK)
+            | (packed & Self::COMMON_OBJ_ATTR_KNOWN_MASK);
+    }
+    pub(crate) fn is_structure_only_empty_paragraph(para: &Paragraph) -> bool {
+        para.text.is_empty()
+            && !para.controls.is_empty()
+            && para
+                .controls
+                .iter()
+                .all(|ctrl| matches!(ctrl, Control::SectionDef(_) | Control::ColumnDef(_)))
+    }
+    /// 인라인 컨트롤이 차지하는 8 code unit 갭의 시작 UTF-16 위치를 찾는다.
+    ///
+    /// char_offsets 의 컨트롤 갭 점프를 순회하며 control_idx 번째 갭을 찾고,
+    /// 텍스트 뒤에 몰린 컨트롤은 스트림 끝 순서로 배정한다. 유효한 control_idx
+    /// 에서는 항상 발견되며, 실패 시 스트림 끝을 반환한다.
+    pub(crate) fn find_inline_control_gap_start(para: &Paragraph, control_idx: usize) -> u32 {
+        let text_chars: Vec<char> = para.text.chars().collect();
+        let mut ci = 0usize;
+        let mut prev_end: u32 = 0;
+        for i in 0..text_chars.len() {
+            let offset = if i < para.char_offsets.len() {
+                para.char_offsets[i]
+            } else {
+                prev_end
+            };
+            while prev_end + 8 <= offset && ci < para.controls.len() {
+                if ci == control_idx {
+                    return prev_end;
+                }
+                ci += 1;
+                prev_end += 8;
+            }
+            let char_size: u32 = if text_chars[i] == '\t' {
+                8
+            } else if text_chars[i].len_utf16() == 2 {
+                2
+            } else {
+                1
+            };
+            prev_end = offset + char_size;
+        }
+        while ci < para.controls.len() {
+            if ci == control_idx {
+                return prev_end;
+            }
+            ci += 1;
+            prev_end += 8;
+        }
+        prev_end
+    }
+
+    /// 인라인 컨트롤을 문단에서 제거하고 뒤쪽 char_offsets 를 당긴다.
+    ///
+    /// `remove_inline_control_with_metadata` 의 char_offsets 절반이다. 글자 모양·영역
+    /// 태그·필드 참조는 옮기지 않으므로 직접 부르지 말고 그 함수를 쓴다.
+    /// 반환값은 제거된 갭의 시작 UTF-16 위치다.
+    fn remove_inline_control_and_shift(para: &mut Paragraph, control_idx: usize) -> u32 {
+        let gap_start = Self::find_inline_control_gap_start(para, control_idx);
+
+        // char_offsets 조정
+        let threshold = gap_start + 8;
+        for offset in para.char_offsets.iter_mut() {
+            if *offset >= threshold {
+                *offset -= 8;
+            }
+        }
+
+        // 컨트롤 및 ctrl_data_record 제거
+        para.controls.remove(control_idx);
+        if control_idx < para.ctrl_data_records.len() {
+            para.ctrl_data_records.remove(control_idx);
+        }
+
+        // char_count 갱신
+        if para.char_count >= 8 {
+            para.char_count -= 8;
+        }
+
+        gap_start
+    }
+
+    /// 인라인 컨트롤을 지우고 글자 모양·영역 태그·필드 범위의 컨트롤 참조까지 맞춘다.
+    ///
+    /// `remove_inline_control_and_shift` 는 char_offsets 만 당긴다. 개체가 사라진 뒤에도
+    /// 문단이 남는 경로(개체 이동의 원본, 범위 삭제)는 이 함수로 메타데이터를 함께 옮긴다.
+    pub(crate) fn remove_inline_control_with_metadata(
+        para: &mut Paragraph,
+        control_idx: usize,
+    ) -> u32 {
+        let gap = Self::remove_inline_control_and_shift(para, control_idx);
+        // 글자 모양과 영역 태그도 삭제한 8 UTF-16 유닛만큼 이동한다.
+        let remove_gap = |pos: u32| {
+            if pos > gap {
+                pos.saturating_sub(8).max(gap)
+            } else {
+                pos
+            }
+        };
+        for shape in &mut para.char_shapes {
+            shape.start_pos = remove_gap(shape.start_pos);
+        }
+        for tag in &mut para.range_tags {
+            tag.start = remove_gap(tag.start);
+            tag.end = remove_gap(tag.end);
+        }
+        for field in &mut para.field_ranges {
+            if field.control_idx > control_idx {
+                field.control_idx -= 1;
+            }
+        }
+        gap
+    }
+
+    /// 컨트롤을 `idx` 에 끼우고 ctrl_data_records 에도 같은 자리에 빈 슬롯을 끼운다.
+    ///
+    /// HWPX 파서는 ctrl_data_records 를 채우지 않으므로 controls 보다 짧을 수 있다.
+    /// 그대로 insert 하면 범위 초과 panic(wasm 에서는 인스턴스 전체가 멈춘다)이므로
+    /// 먼저 controls 길이만큼 채워 인덱스를 맞춘다.
+    pub(crate) fn insert_control_with_data_slot(
+        para: &mut Paragraph,
+        idx: usize,
+        control: Control,
+    ) {
+        if para.ctrl_data_records.len() < para.controls.len() {
+            para.ctrl_data_records
+                .resize_with(para.controls.len(), || None);
+        }
+        para.controls.insert(idx, control);
+        para.ctrl_data_records.insert(idx, None);
+    }
+
+    /// 문단 맨 앞(텍스트 위치 0)에 모인 구역·단 정의 컨트롤 바로 뒤 인덱스.
+    ///
+    /// 감추기·단 정의처럼 문단 머리에 새로 넣는 컨트롤의 자리다. 구역 정의는 구역 첫
+    /// 문단의 첫 컨트롤로 남고, 텍스트 뒤 인라인 개체의 자리는 건드리지 않는다.
+    pub(crate) fn leading_structural_control_end(para: &Paragraph) -> usize {
+        let positions = para.control_text_positions();
+        para.controls
+            .iter()
+            .enumerate()
+            .position(|(i, ctrl)| {
+                positions.get(i).is_none_or(|&pos| pos > 0)
+                    || !matches!(ctrl, Control::SectionDef(_) | Control::ColumnDef(_))
+            })
+            .unwrap_or(para.controls.len())
+    }
+
+    /// 컨트롤 삭제 후 문단의 line_segs를 재계산한다.
+    ///
+    /// 그림/도형 삭제 시 문단의 line_segs에 컨트롤 높이가 그대로 남아,
+    /// 레이아웃이 갱신되지 않는 문제를 방지한다.
+    pub(crate) fn reflow_paragraph_line_segs_after_control_delete(
+        para: &mut Paragraph,
+        styles: &crate::renderer::style_resolver::ResolvedStyleSet,
+        dpi: f64,
+    ) {
+        // 남은 컨트롤 중 가장 큰 높이 계산
+        let max_remaining_ctrl_height = para
+            .controls
+            .iter()
+            .map(|ctrl| match ctrl {
+                Control::Picture(pic) => pic.common.height as i32,
+                Control::Shape(shape) => shape.common().height as i32,
+                Control::Equation(eq) => eq.common.height as i32,
+                _ => 0,
+            })
+            .max()
+            .unwrap_or(0);
+
+        if max_remaining_ctrl_height > 0 {
+            // 아직 컨트롤이 남아있으면 가장 큰 컨트롤 높이로 설정
+            if let Some(ls) = para.line_segs.first_mut() {
+                ls.line_height = max_remaining_ctrl_height;
+                ls.text_height = max_remaining_ctrl_height;
+                ls.baseline_distance = (max_remaining_ctrl_height * 850) / 1000;
+            }
+        } else if para.text.is_empty() {
+            // 텍스트도 컨트롤도 없음 → 기본 텍스트 높이로 리셋
+            if let Some(ls) = para.line_segs.first_mut() {
+                ls.line_height = 1000;
+                ls.text_height = 1000;
+                ls.baseline_distance = 850;
+                ls.line_spacing = 600;
+            }
+        } else {
+            // 텍스트가 있으면 reflow_line_segs로 재계산
+            let seg_width = para.line_segs.first().map(|s| s.segment_width).unwrap_or(0);
+            let available_width_px = crate::renderer::hwpunit_to_px(seg_width, dpi);
+            crate::renderer::composer::reflow_line_segs(para, available_width_px, styles, dpi);
+        }
+    }
+    /// CommonObjAttr → JSON 문자열 (Shape/Picture 공용 속성)
+    pub(crate) fn common_obj_attr_to_json(c: &crate::model::shape::CommonObjAttr) -> String {
+        let vert_rel = match c.vert_rel_to {
+            crate::model::shape::VertRelTo::Paper => "Paper",
+            crate::model::shape::VertRelTo::Page => "Page",
+            crate::model::shape::VertRelTo::Para => "Para",
+        };
+        let vert_align = match c.vert_align {
+            crate::model::shape::VertAlign::Top => "Top",
+            crate::model::shape::VertAlign::Center => "Center",
+            crate::model::shape::VertAlign::Bottom => "Bottom",
+            crate::model::shape::VertAlign::Inside => "Inside",
+            crate::model::shape::VertAlign::Outside => "Outside",
+        };
+        let horz_rel = match c.horz_rel_to {
+            crate::model::shape::HorzRelTo::Paper => "Paper",
+            crate::model::shape::HorzRelTo::Page => "Page",
+            crate::model::shape::HorzRelTo::Column => "Column",
+            crate::model::shape::HorzRelTo::Para => "Para",
+        };
+        let horz_align = match c.horz_align {
+            crate::model::shape::HorzAlign::Left => "Left",
+            crate::model::shape::HorzAlign::Center => "Center",
+            crate::model::shape::HorzAlign::Right => "Right",
+            crate::model::shape::HorzAlign::Inside => "Inside",
+            crate::model::shape::HorzAlign::Outside => "Outside",
+        };
+        let text_wrap = match c.text_wrap {
+            crate::model::shape::TextWrap::Square => "Square",
+            crate::model::shape::TextWrap::Tight => "Tight",
+            crate::model::shape::TextWrap::Through => "Through",
+            crate::model::shape::TextWrap::TopAndBottom => "TopAndBottom",
+            crate::model::shape::TextWrap::BehindText => "BehindText",
+            crate::model::shape::TextWrap::InFrontOfText => "InFrontOfText",
+        };
+        let desc_escaped = crate::document_core::helpers::json_escape(&c.description);
+        format!(
+            "\"width\":{},\"height\":{},\"treatAsChar\":{},\
+             \"vertRelTo\":\"{}\",\"vertAlign\":\"{}\",\
+             \"horzRelTo\":\"{}\",\"horzAlign\":\"{}\",\
+             \"vertOffset\":{},\"horzOffset\":{},\
+             \"textWrap\":\"{}\",\"restrictInPage\":{},\"allowOverlap\":{},\"sizeProtect\":{},\
+             \"zOrder\":{},\"instanceId\":{},\
+             \"outerMarginLeft\":{},\"outerMarginTop\":{},\
+             \"outerMarginRight\":{},\"outerMarginBottom\":{},\
+             \"description\":\"{}\"",
+            c.width,
+            c.height,
+            c.treat_as_char,
+            vert_rel,
+            vert_align,
+            horz_rel,
+            horz_align,
+            c.vertical_offset,
+            c.horizontal_offset,
+            text_wrap,
+            c.flow_with_text,
+            c.allow_overlap,
+            c.size_protect,
+            c.z_order,
+            c.instance_id,
+            c.margin.left,
+            c.margin.top,
+            c.margin.right,
+            c.margin.bottom,
+            desc_escaped,
+        )
+    }
+    /// JSON → CommonObjAttr 필드 업데이트 (Shape/Picture 공용)
+    pub(crate) fn apply_common_obj_attr_from_json(
+        c: &mut crate::model::shape::CommonObjAttr,
+        props_json: &str,
+    ) {
+        use crate::document_core::helpers::{json_bool, json_i16, json_str, json_u32};
+
+        // [#6806] 퇴화값 0 만 최소 크기로 올린다 — 한컴 문서에는 200 미만 치수가 정당하게 있다.
+        if let Some(w) = json_u32(props_json, "width") {
+            c.width = super::clamp_degenerate_size(w);
+        }
+        if let Some(h) = json_u32(props_json, "height") {
+            c.height = super::clamp_degenerate_size(h);
+        }
+        if let Some(tac) = json_bool(props_json, "treatAsChar") {
+            c.treat_as_char = tac;
+            if tac {
+                c.attr |= 0x01;
+            } else {
+                c.attr &= !0x01;
+            }
+        }
+        if let Some(v) = json_str(props_json, "vertRelTo") {
+            c.vert_rel_to = match v.as_str() {
+                "Paper" => crate::model::shape::VertRelTo::Paper,
+                "Page" => crate::model::shape::VertRelTo::Page,
+                "Para" => crate::model::shape::VertRelTo::Para,
+                _ => c.vert_rel_to,
+            };
+        }
+        if let Some(v) = json_str(props_json, "horzRelTo") {
+            c.horz_rel_to = match v.as_str() {
+                "Paper" => crate::model::shape::HorzRelTo::Paper,
+                "Page" => crate::model::shape::HorzRelTo::Page,
+                "Column" => crate::model::shape::HorzRelTo::Column,
+                "Para" => crate::model::shape::HorzRelTo::Para,
+                _ => c.horz_rel_to,
+            };
+        }
+        if let Some(v) = json_str(props_json, "vertAlign") {
+            c.vert_align = match v.as_str() {
+                "Top" => crate::model::shape::VertAlign::Top,
+                "Center" => crate::model::shape::VertAlign::Center,
+                "Bottom" => crate::model::shape::VertAlign::Bottom,
+                _ => c.vert_align,
+            };
+        }
+        if let Some(v) = json_str(props_json, "horzAlign") {
+            c.horz_align = match v.as_str() {
+                "Left" => crate::model::shape::HorzAlign::Left,
+                "Center" => crate::model::shape::HorzAlign::Center,
+                "Right" => crate::model::shape::HorzAlign::Right,
+                _ => c.horz_align,
+            };
+        }
+        if let Some(v) = json_str(props_json, "textWrap") {
+            c.text_wrap = match v.as_str() {
+                "Square" => crate::model::shape::TextWrap::Square,
+                "Tight" => crate::model::shape::TextWrap::Tight,
+                "Through" => crate::model::shape::TextWrap::Through,
+                "TopAndBottom" => crate::model::shape::TextWrap::TopAndBottom,
+                "BehindText" => crate::model::shape::TextWrap::BehindText,
+                "InFrontOfText" => crate::model::shape::TextWrap::InFrontOfText,
+                _ => c.text_wrap,
+            };
+        }
+        // [#6806] 「쪽 영역 안으로 제한」과 「서로 겹침 허용」은 독립이다 — 한컴은 둘을 동시에 켜서
+        // 저장한다(corpus 그림 70·도형 12·표 39건). 종전의 "제한이면 겹침 해제" 결합은 파싱 경로에는
+        // 없고 setter 에만 있어, 같은 봉지를 되먹이는 것만으로 겹침 허용이 꺼졌다.
+        if let Some(v) = json_bool(props_json, "restrictInPage") {
+            c.flow_with_text = v;
+            if v {
+                c.attr |= 1 << 13;
+            } else {
+                c.attr &= !(1 << 13);
+            }
+        }
+        if let Some(v) = json_bool(props_json, "allowOverlap") {
+            c.allow_overlap = v;
+            if v {
+                c.attr |= 1 << 14;
+            } else {
+                c.attr &= !(1 << 14);
+            }
+        }
+        if let Some(v) = json_bool(props_json, "sizeProtect") {
+            c.size_protect = v;
+            if v {
+                c.attr |= 1 << 20;
+            } else {
+                c.attr &= !(1 << 20);
+            }
+        }
+        if let Some(v) = json_u32(props_json, "vertOffset") {
+            c.vertical_offset = v;
+        }
+        if let Some(v) = json_u32(props_json, "horzOffset") {
+            c.horizontal_offset = v;
+        }
+        if let Some(v) = json_str(props_json, "description") {
+            c.description = v;
+        }
+        if let Some(v) = json_i16(props_json, "outerMarginLeft") {
+            c.margin.left = v;
+        }
+        if let Some(v) = json_i16(props_json, "outerMarginTop") {
+            c.margin.top = v;
+        }
+        if let Some(v) = json_i16(props_json, "outerMarginRight") {
+            c.margin.right = v;
+        }
+        if let Some(v) = json_i16(props_json, "outerMarginBottom") {
+            c.margin.bottom = v;
+        }
+        Self::sync_common_obj_attr_known_bits(c);
+    }
+    /// 직선 끝점 이동: 글로벌 좌표(HWPUNIT)로 시작/끝점을 직접 설정
+    pub fn move_line_endpoint_native(
+        &mut self,
+        section_idx: usize,
+        para_idx: usize,
+        control_idx: usize,
+        start_x: i32,
+        start_y: i32,
+        end_x: i32,
+        end_y: i32,
+    ) -> Result<String, HwpError> {
+        let section = self
+            .document
+            .sections
+            .get_mut(section_idx)
+            .ok_or_else(|| HwpError::RenderError("구역 범위 초과".to_string()))?;
+        let para = section
+            .paragraphs
+            .get_mut(para_idx)
+            .ok_or_else(|| HwpError::RenderError("문단 범위 초과".to_string()))?;
+        let ctrl = para
+            .controls
+            .get_mut(control_idx)
+            .ok_or_else(|| HwpError::RenderError("컨트롤 범위 초과".to_string()))?;
+        let line = match ctrl {
+            Control::Shape(ref mut s) => match s.as_mut() {
+                ShapeObject::Line(ref mut l) => l,
+                _ => return Err(HwpError::RenderError("직선이 아닙니다".to_string())),
+            },
+            _ => return Err(HwpError::RenderError("Shape이 아닙니다".to_string())),
+        };
+
+        let min_x = start_x.min(end_x);
+        let min_y = start_y.min(end_y);
+        let w = (start_x - end_x).abs().max(1);
+        let h = (start_y - end_y).abs().max(0);
+
+        line.common.horizontal_offset = min_x as u32;
+        line.common.vertical_offset = min_y as u32;
+        line.common.width = w as u32;
+        line.common.height = h.max(1) as u32;
+        line.start.x = start_x - min_x;
+        line.start.y = start_y - min_y;
+        line.end.x = end_x - min_x;
+        line.end.y = end_y - min_y;
+
+        line.drawing.shape_attr.current_width = w as u32;
+        line.drawing.shape_attr.original_width = w as u32;
+        line.drawing.shape_attr.current_height = h.max(1) as u32;
+        line.drawing.shape_attr.original_height = h.max(1) as u32;
+        line.drawing.shape_attr.rotation_center.x = w / 2;
+        line.drawing.shape_attr.rotation_center.y = h / 2;
+        line.drawing.shape_attr.raw_rendering = Vec::new();
+
+        section.raw_stream = None;
+        // 이벤트를 쌓지 않으므로 스냅샷 복원이 바뀐 문단을 재사용하지 않게 표시한다.
+        self.event_log.mark_paragraph_changed(section_idx, para_idx);
+        self.recompose_section(section_idx);
+        self.paginate_if_needed();
+        self.update_connectors_in_section(section_idx);
+
+        Ok("{\"ok\":true}".to_string())
+    }
+    pub(crate) fn first_char_or_nul(value: &str) -> char {
+        value.chars().next().unwrap_or('\0')
+    }
+    pub(crate) fn hwpunit16_from_json(json: &str, key: &str) -> Option<i16> {
+        crate::document_core::helpers::json_i32(json, key)
+            .map(|v| v.clamp(i16::MIN as i32, i16::MAX as i32) as i16)
+    }
+}
+
+impl crate::document_core::DocumentCore {
+    pub fn insert_new_number_native(
+        &mut self,
+        section_idx: usize,
+        para_idx: usize,
+        char_offset: usize,
+        start_num: u16,
+    ) -> Result<String, crate::error::HwpError> {
+        use crate::error::HwpError;
+        use crate::model::control::{AutoNumberType, Control, NewNumber};
+
+        if section_idx >= self.document.sections.len() {
+            return Err(HwpError::RenderError(format!(
+                "구역 인덱스 {} 범위 초과",
+                section_idx
+            )));
+        }
+        if para_idx >= self.document.sections[section_idx].paragraphs.len() {
+            return Err(HwpError::RenderError(format!(
+                "문단 인덱스 {} 범위 초과",
+                para_idx
+            )));
+        }
+
+        let new_number = NewNumber {
+            number_type: AutoNumberType::Page,
+            number: start_num,
+        };
+
+        self.document.sections[section_idx].raw_stream = None;
+        let paragraph = &mut self.document.sections[section_idx].paragraphs[para_idx];
+
+        let insert_idx = {
+            let positions = crate::document_core::helpers::find_control_text_positions(paragraph);
+            let mut idx = paragraph.controls.len();
+            for (i, &pos) in positions.iter().enumerate() {
+                if pos > char_offset {
+                    idx = i;
+                    break;
+                }
+            }
+            idx
+        };
+
+        Self::insert_control_with_data_slot(paragraph, insert_idx, Control::NewNumber(new_number));
+
+        paragraph.shift_for_inline_control_insert(char_offset);
+        paragraph.char_count += 8;
+        paragraph.control_mask |= 1u32 << 0x0012;
+        paragraph.has_para_text = true;
+        // 이벤트를 쌓지 않으므로 스냅샷 복원이 바뀐 문단을 재사용하지 않게 표시한다.
+        self.event_log.mark_paragraph_changed(section_idx, para_idx);
+
+        self.reflow_paragraph(section_idx, para_idx);
+        self.recompose_section(section_idx);
+        self.paginate_if_needed();
+        self.invalidate_page_tree_cache();
+
+        Ok(crate::document_core::helpers::json_ok_with(&format!(
+            "\"controlIdx\":{}",
+            insert_idx
+        )))
+    }
+}

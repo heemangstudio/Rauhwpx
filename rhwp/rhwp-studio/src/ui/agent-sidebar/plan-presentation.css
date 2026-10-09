@@ -1,0 +1,110 @@
+/* 계획서 표현만 덮어쓴다. 접기·스크롤·실행 상태는 기존 컴포넌트가 담당한다.
+   날것의 한 장: 카드 그림자·채움 없이 사이드바 바닥 위에 선 하나로 선다.
+   여백은 촘촘하게, 위계는 글자 크기와 고정폭 메타로만 만든다. */
+.ag-plan-card {
+  --plan-line: var(--ag-border);
+  --plan-wash: var(--ag-hover);
+  padding: 10px 2px 8px;
+  border: 0;
+  border-top: 1px solid var(--ag-border-strong);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.ag-plan-head {
+  padding: 0 0 8px;
+  border-bottom: 0;
+}
+
+.ag-plan-kicker-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.ag-plan-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-strong);
+  line-height: var(--ag-lh-tight);
+  letter-spacing: -0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-plan-phase {
+  flex: 0 0 auto;
+  padding: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--ag-text-tertiary);
+  font-family: var(--ag-mono);
+  font-size: var(--ag-fs-mono);
+  line-height: inherit;
+}
+
+.ag-plan-body {
+  padding: 4px 0 8px;
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary);
+}
+.ag-plan-steps { margin: 0; }
+
+/* 참고 자료: 맨 아래 한 줄 알약. */
+.ag-plan-sources {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 10px;
+}
+
+.ag-plan-sources-label {
+  margin-right: 2px;
+  color: var(--ag-text-tertiary);
+  font-family: var(--ag-mono);
+  font-size: var(--ag-fs-mono);
+}
+
+.ag-plan-source-pill {
+  max-width: 180px;
+  overflow: hidden;
+  padding: 1px 8px;
+  border-radius: var(--ag-r-pill);
+  background: var(--ag-hover);
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-meta);
+  line-height: 18px;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+a.ag-plan-source-pill:hover {
+  background: var(--ag-selected);
+  color: var(--ag-text);
+}
+
+.ag-plan-footer { padding: 8px 0 0; border-top: 1px solid var(--plan-line); }
+.ag-plan-actions { flex-wrap: wrap; gap: 6px; }
+.ag-plan-actions button {
+  min-height: 28px;
+  padding: 0 12px;
+  border-radius: 4px;
+  font-size: var(--ag-fs-meta);
+  font-weight: var(--ag-fw-medium);
+  transition: var(--ag-transition-color);
+}
+.ag-plan-minimize { transition: var(--ag-transition-color); }
+@media (pointer: coarse) {
+  .ag-plan-actions button,
+  .ag-plan-minimize { min-height: 44px; }
+  .ag-plan-minimize { min-width: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ag-plan-card *, .ag-plan-card *::before, .ag-plan-card *::after { transition: none; }
+}

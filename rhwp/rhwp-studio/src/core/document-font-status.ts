@@ -1,0 +1,192 @@
+import { REGISTERED_FONTS, resolveRegisteredFontFaceIdentity } from './font-loader.ts';
+import { resolveFont } from './font-substitution.ts';
+import { isSystemFontIndexComplete } from './desktop-fonts.ts';
+import {
+  getDetectedLocalFonts,
+  getLocalFontDetectionMethod,
+  getLocalFontState,
+  resolveLocalFont,
+  type LocalFontDetectionSource,
+} from './local-fonts.ts';
+
+export type DocumentFontAvailability =
+  | 'available'
+  | 'needs-local-check'
+  | 'web-substitute'
+  | 'missing';
+
+export type DocumentFontSource = 'local' | 'web' | 'generic' | 'unknown';
+
+export interface DocumentFontStatusItem {
+  fontName: string;
+  status: DocumentFontAvailability;
+  source: DocumentFontSource;
+  substituteFont: string | null;
+  loadedFace: string | null;
+}
+
+export interface DocumentFontStatusSummary {
+  available: number;
+  needsLocalCheck: number;
+  webSubstitute: number;
+  missing: number;
+}
+
+export interface DocumentFontStatusReport {
+  fonts: DocumentFontStatusItem[];
+  summary: DocumentFontStatusSummary;
+  total: number;
+  localSupported: boolean;
+  localSnapshotLoaded: boolean;
+  localSnapshotStored: boolean;
+  localSnapshotComplete: boolean;
+  localSnapshotSource: LocalFontDetectionSource | null;
+  localCheckedFonts: string[];
+  detectionMethod: LocalFontDetectionSource | null;
+  shouldPromptLocalAccess: boolean;
+}
+
+export interface AnalyzeDocumentFontsOptions {
+  localFonts?: string[];
+  localSupported?: boolean;
+  localSnapshotLoaded?: boolean;
+  localSnapshotStored?: boolean;
+  localSnapshotComplete?: boolean;
+  localSnapshotSource?: LocalFontDetectionSource | null;
+  localCheckedFonts?: string[];
+  detectionMethod?: LocalFontDetectionSource | null;
+  /**
+   * 데스크톱 글꼴 색인을 이미 받았는지. 색인은 설치 글꼴 전체를 다루므로
+   * 연결되지 않은 글꼴을 브라우저 로컬 글꼴 감지로 다시 확인하지 않는다.
+   */
+  desktopIndexComplete?: boolean;
+}
+
+const GENERIC_FONTS = new Set(['serif', 'sans-serif', 'monospace']);
+
+function normalizeDocumentFonts(fonts: readonly string[] | undefined): string[] {
+  const seen = new Set<string>();
+  for (const font of fonts ?? []) {
+    const name = font.trim();
+    if (name) seen.add(name);
+  }
+  return Array.from(seen).sort((a, b) => a.localeCompare(b, 'ko'));
+}
+
+function resolveWebSubstitute(fontName: string): string | null {
+  if (REGISTERED_FONTS.has(fontName)) return fontName;
+
+  const resolved = resolveFont(fontName, 0, 0);
+  if (resolved && resolved !== fontName && REGISTERED_FONTS.has(resolved)) {
+    return resolved;
+  }
+  return null;
+}
+
+export function analyzeDocumentFonts(
+  docFonts: readonly string[] | undefined,
+  options: AnalyzeDocumentFontsOptions = {},
+): DocumentFontStatusReport {
+  const localState = getLocalFontState();
+  const localFonts = options.localFonts ?? getDetectedLocalFonts();
+  const localSet = new Set(localFonts);
+  const localSupported = options.localSupported ?? localState.supported;
+  const localSnapshotLoaded = options.localSnapshotLoaded ?? localState.loaded;
+  const localSnapshotStored = options.localSnapshotStored ?? localState.stored;
+  const localSnapshotComplete = options.localSnapshotComplete
+    ?? (options.localSnapshotStored !== undefined ? options.localSnapshotStored : localState.complete);
+  const localSnapshotSource = options.localSnapshotSource ?? localState.source;
+  const localCheckedFonts = options.localCheckedFonts ?? localState.checkedFamilies;
+  const localCheckedSet = new Set(localCheckedFonts);
+  const detectionMethod = options.detectionMethod ?? getLocalFontDetectionMethod();
+  const desktopIndexComplete = options.desktopIndexComplete ?? isSystemFontIndexComplete();
+
+  const summary: DocumentFontStatusSummary = {
+    available: 0,
+    needsLocalCheck: 0,
+    webSubstitute: 0,
+    missing: 0,
+  };
+
+  const fonts = normalizeDocumentFonts(docFonts).map((fontName): DocumentFontStatusItem => {
+    const localRecord = options.localFonts === undefined ? resolveLocalFont(fontName) : null;
+    if (localSet.has(fontName) || localRecord) {
+      summary.available++;
+      return { fontName, status: 'available', source: 'local', substituteFont: null, loadedFace: fontName };
+    }
+
+    if (GENERIC_FONTS.has(fontName)) {
+      summary.available++;
+      return { fontName, status: 'available', source: 'generic', substituteFont: null, loadedFace: fontName };
+    }
+
+    const registeredFace = resolveRegisteredFontFaceIdentity(fontName);
+    if (registeredFace) {
+      if (registeredFace.substituted) {
+        summary.webSubstitute++;
+        return {
+          fontName,
+          status: 'web-substitute',
+          source: 'web',
+          substituteFont: registeredFace.loadedFamily,
+          loadedFace: registeredFace.loadedFamily,
+        };
+      }
+      summary.available++;
+      return { fontName, status: 'available', source: 'web', substituteFont: null, loadedFace: registeredFace.loadedFamily };
+    }
+
+    const substituteFont = resolveWebSubstitute(fontName);
+
+    const needsLocalCheck = localSupported
+      && !desktopIndexComplete
+      && (!localSnapshotStored || (!localSnapshotComplete && !localCheckedSet.has(fontName)));
+
+    if (needsLocalCheck) {
+      summary.needsLocalCheck++;
+      return {
+        fontName,
+        status: 'needs-local-check',
+        source: 'unknown',
+        substituteFont,
+        loadedFace: substituteFont
+          ? resolveRegisteredFontFaceIdentity(substituteFont)?.loadedFamily ?? substituteFont
+          : null,
+      };
+    }
+
+    if (substituteFont) {
+      summary.webSubstitute++;
+      return {
+        fontName,
+        status: 'web-substitute',
+        source: 'web',
+        substituteFont,
+        loadedFace: resolveRegisteredFontFaceIdentity(substituteFont)?.loadedFamily ?? substituteFont,
+      };
+    }
+
+    summary.missing++;
+    return { fontName, status: 'missing', source: 'unknown', substituteFont: null, loadedFace: null };
+  });
+
+  const shouldPromptLocalAccess = localSupported && summary.needsLocalCheck > 0;
+
+  return {
+    fonts,
+    summary,
+    total: fonts.length,
+    localSupported,
+    localSnapshotLoaded,
+    localSnapshotStored,
+    localSnapshotComplete,
+    localSnapshotSource,
+    localCheckedFonts,
+    detectionMethod,
+    shouldPromptLocalAccess,
+  };
+}
+
+export function shouldPromptLocalFontAccess(report: DocumentFontStatusReport): boolean {
+  return report.shouldPromptLocalAccess;
+}

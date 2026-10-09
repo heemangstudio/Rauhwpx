@@ -1,0 +1,120 @@
+/**
+ * IndexedDB 연결/작업이 무응답일 때 호출부를 붙잡지 않기 위한 제한.
+ * Electron+PWA SW 할당량 정리나 FileSystemFileHandle 직렬화가 멈추면
+ * open/put 이 onsuccess 없이 남는 경우가 있다.
+ */
+export const IDB_OPEN_TIMEOUT_MS = 1_500;
+export const IDB_OPERATION_TIMEOUT_MS = 2_500;
+
+export function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+export interface OpenIndexedDatabaseOptions {
+  timeoutMs?: number;
+  indexedDB?: IDBFactory;
+}
+
+/** 차단·무응답이면 null. 호출 쪽이 메모리 폴백을 쓴다. */
+export function openIndexedDatabase(
+  name: string,
+  version: number,
+  upgrade: (db: IDBDatabase, event: IDBVersionChangeEvent) => void,
+  options: OpenIndexedDatabaseOptions = {},
+): Promise<IDBDatabase | null> {
+  const factory = options.indexedDB
+    ?? (typeof indexedDB !== 'undefined' ? indexedDB : undefined);
+  if (!factory) return Promise.resolve(null);
+  const timeoutMs = options.timeoutMs ?? IDB_OPEN_TIMEOUT_MS;
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (db: IDBDatabase | null) => {
+      if (settled) {
+        try {
+          db?.close();
+        } catch {
+          /* noop */
+        }
+        return;
+      }
+      settled = true;
+      resolve(db);
+    };
+
+    const timer = setTimeout(() => finish(null), timeoutMs);
+    try {
+      const req = factory.open(name, version);
+      req.onerror = () => {
+        clearTimeout(timer);
+        finish(null);
+      };
+      req.onsuccess = () => {
+        clearTimeout(timer);
+        finish(req.result);
+      };
+      req.onblocked = () => {
+        // 다른 연결이 닫히면 onsuccess가 올 수 있으므로 타임아웃까지 기다린다.
+      };
+      req.onupgradeneeded = (event) => {
+        upgrade(req.result, event);
+      };
+    } catch {
+      clearTimeout(timer);
+      finish(null);
+    }
+  });
+}
+
+/**
+ * 연결을 열어 작업을 실행하고 닫는다. 연결 실패면 조용히 폴백, 작업 실패·지연이면
+ * 경고 후 폴백. 폴백은 원인 오류를 받아 다시 던질 수 있다.
+ */
+export async function withDatabase<T>(
+  open: () => Promise<IDBDatabase | null>,
+  label: string,
+  operation: (db: IDBDatabase) => Promise<T>,
+  fallback: (error?: unknown) => Promise<T>,
+  options: { timeoutMs?: number } = {},
+): Promise<T> {
+  const db = await open();
+  if (!db) return fallback();
+  try {
+    return await withTimeout(operation(db), options.timeoutMs ?? IDB_OPERATION_TIMEOUT_MS, label);
+  } catch (error) {
+    console.warn(`[${label}] IndexedDB 작업 실패, 폴백:`, error);
+    return fallback(error);
+  } finally {
+    db.close();
+  }
+}
+
+export function transactionDone(tx: IDBTransaction): Promise<void> {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    // 명시적 abort() 는 tx.error 가 null 이다. 호출부가 원인을 알 수 있게 Error 로 거부한다.
+    tx.onerror = () => reject(tx.error ?? new Error('IndexedDB transaction failed'));
+    tx.onabort = () => reject(tx.error ?? new Error('IndexedDB transaction aborted'));
+  });
+}
+
+export function requestResult<T>(request: IDBRequest<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}

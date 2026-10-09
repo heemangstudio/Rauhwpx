@@ -1,0 +1,753 @@
+/**
+ * 에이전트 표 셀 텍스트 읽기/편집 (cell 주소 지원) 테스트.
+ *
+ * - AgentToolExecutor: get_structure 의 tables[], find_text 의 셀 매치,
+ *   get_text_range / write 툴의 cell 인자 검증·라우팅
+ * - PendingEditManager: 셀 내부 insert/delete/format 의 적용·reject·approve
+ */
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { EventBus } from '../src/core/event-bus.ts';
+import { RevisionTracker } from '../src/agent/revision.ts';
+import { AgentToolExecutor } from '../src/agent/tool-executor.ts';
+import { PendingEditManager } from '../src/agent/pending-edits.ts';
+import { AgentToolError } from '../src/agent/types.ts';
+import type { CellAddr } from '../src/agent/types.ts';
+
+// 표 하나(2x2, paraIdx 1 / controlIdx 0)를 가진 가짜 wasm 문서.
+// cells[cellIdx] = 셀 내부 문단 텍스트 배열.
+function makeCellWasm() {
+  const body = ['Intro', '', 'Outro'];
+  const cells: string[][] = [['Name'], ['Value'], ['foo'], ['bar', 'baz']];
+  const calls: string[] = [];
+  const okJson = (extra: Record<string, unknown> = {}) => JSON.stringify({ ok: true, ...extra });
+  const wasm = {
+    getSectionCount: () => 1,
+    getParagraphCount: (_s: number) => body.length,
+    getParagraphLength: (_s: number, p: number) => body[p].length,
+    getTextRange: (_s: number, p: number, off: number, cnt: number) => body[p].slice(off, off + cnt),
+    insertText: (_s: number, p: number, off: number, t: string) => {
+      body[p] = body[p].slice(0, off) + t + body[p].slice(off);
+      return okJson({ charOffset: off + t.length });
+    },
+    splitParagraph: (_s: number, p: number, off: number) => {
+      const cur = body[p];
+      body.splice(p, 1, cur.slice(0, off), cur.slice(off));
+      return okJson();
+    },
+    splitParagraphLogical: (_s: number, p: number, off: number) => {
+      calls.push('splitParagraphLogical');
+      const cur = body[p];
+      body.splice(p, 1, cur.slice(0, off), cur.slice(off));
+      return okJson();
+    },
+    deleteRange: (_s: number, sp: number, so: number, ep: number, eo: number) => {
+      const first = body[sp].slice(0, so);
+      const tail = body[ep].slice(eo);
+      body.splice(sp, ep - sp + 1, first + tail);
+      return { ok: true };
+    },
+    get pageCount() { return 1; },
+    getPageControlLayout: (_pg: number) => ({
+      controls: [{ type: 'table', secIdx: 0, paraIdx: 1, controlIdx: 0, x: 0, y: 0, w: 100, h: 50 }],
+    }),
+    getTableDimensions: (_s: number, para: number, ctrl: number) => {
+      if (para !== 1 || ctrl !== 0) throw new Error('표 컨트롤이 없습니다');
+      return { rowCount: 2, colCount: 2, cellCount: 4 };
+    },
+    getCellInfo: (_s: number, _p: number, _c: number, idx: number) => ({
+      row: Math.floor(idx / 2), col: idx % 2, rowSpan: 1, colSpan: 1,
+    }),
+    getCellParagraphCount: (_s: number, _p: number, _c: number, cell: number) => cells[cell].length,
+    getCellParagraphLength: (_s: number, _p: number, _c: number, cell: number, cp: number) => cells[cell][cp].length,
+    getTextInCell: (_s: number, _p: number, _c: number, cell: number, cp: number, off: number, cnt: number) =>
+      cells[cell][cp].slice(off, off + cnt),
+    insertTextInCell: (_s: number, _p: number, _c: number, cell: number, cp: number, off: number, t: string) => {
+      calls.push('insertTextInCell');
+      cells[cell][cp] = cells[cell][cp].slice(0, off) + t + cells[cell][cp].slice(off);
+      return okJson({ charOffset: off + t.length });
+    },
+    splitParagraphInCell: (_s: number, _p: number, _c: number, cell: number, cp: number, off: number) => {
+      calls.push('splitParagraphInCell');
+      const cur = cells[cell][cp];
+      cells[cell].splice(cp, 1, cur.slice(0, off), cur.slice(off));
+      return okJson({ cellParaIndex: cp + 1, charOffset: 0 });
+    },
+    splitParagraphInCellLogical: (_s: number, _p: number, _c: number, cell: number, cp: number, off: number) => {
+      calls.push('splitParagraphInCellLogical');
+      const cur = cells[cell][cp];
+      cells[cell].splice(cp, 1, cur.slice(0, off), cur.slice(off));
+      return okJson({ cellParaIndex: cp + 1, charOffset: 0 });
+    },
+    deleteRangeInCell: (
+      _s: number, _p: number, _c: number, cell: number,
+      sp: number, so: number, ep: number, eo: number,
+    ) => {
+      calls.push('deleteRangeInCell');
+      const first = cells[cell][sp].slice(0, so);
+      const tail = cells[cell][ep].slice(eo);
+      cells[cell].splice(sp, ep - sp + 1, first + tail);
+      return { ok: true, paraIdx: sp, charOffset: so };
+    },
+    applyCharFormatInCell: (
+      _s: number, _p: number, _c: number, _cell: number,
+      _cp: number, _so: number, _eo: number, _json: string,
+    ) => {
+      calls.push('applyCharFormatInCell');
+      return okJson();
+    },
+    // 중첩 표 탐침 — nestedTableParas 에 등록한 (cellIdx, cellParaIdx) 만 표를 품는다.
+    // 경로 키 이름은 Rust parse_cell_path 와 같은 controlIndex/cellIndex/cellParaIndex.
+    nestedTableParas: new Set<string>(),
+    getTableDimensionsByPath(this: any, _s: number, para: number, pathJson: string) {
+      const path = JSON.parse(pathJson) as Array<{ controlIndex: number; cellIndex: number; cellParaIndex: number }>;
+      const host = path[path.length - 2];
+      const leaf = path[path.length - 1];
+      if (para !== 1 || !host || leaf.controlIndex !== 0
+        || !this.nestedTableParas.has(`${host.cellIndex}:${host.cellParaIndex}`)) {
+        throw new Error('경로에 표가 없습니다');
+      }
+      return { rowCount: 1, colCount: 1, cellCount: 1 };
+    },
+    // 엔진 질의 — 본문(빈 컨테이너)이면 문단 범위의 최상위 표를, 컨테이너 셀이면 그 문단 범위에서
+    // nestedTableParas 에 등록된 문단의 표(컨트롤 0)를 돌려준다.
+    getTableControlsInSelection(
+      this: any, sec: number, para: number,
+      container: Array<{ controlIndex: number; cellIndex: number; cellParaIndex: number }>,
+      startPara: number, _so: number, endPara: number,
+    ) {
+      if (container.length === 0) {
+        return startPara <= 1 && endPara >= 1 ? [{ sec, ppi: 1, ci: 0, cellPath: undefined }] : [];
+      }
+      const host = container[container.length - 1];
+      if (para !== 1) return [];
+      const refs: unknown[] = [];
+      for (let p = startPara; p <= endPara; p++) {
+        if (!this.nestedTableParas.has(`${host.cellIndex}:${p}`)) continue;
+        refs.push({
+          sec, ppi: para, ci: container[0].controlIndex,
+          cellPath: [...container.slice(0, -1), { ...host, cellParaIndex: p }, { controlIndex: 0, cellIndex: 0, cellParaIndex: 0 }],
+        });
+      }
+      return refs;
+    },
+    getCellCharPropertiesAt: () => ({}),
+    getCellParaPropertiesAt: () => ({ pageBreakBefore: false }),
+    applyParaFormatInCell: () => okJson(),
+    getCharPropertiesAt: () => ({}),
+    getParaPropertiesAt: () => ({ pageBreakBefore: false }),
+    applyParaFormat: () => okJson(),
+    applyCharFormat: () => okJson(),
+    setFieldValueByName: () => ({ ok: true }),
+    getSourceFormat: () => 'hwpx',
+    get documentDigest() { return 'blake3:cell-test'; },
+    getFieldList: () => [],
+    renderPageSvg: (_pg: number) => '<svg/>',
+    getSelectionRects: () => [],
+    getSelectionRectsInCell: () => [],
+    refreshLayout: () => {},
+  };
+  return { wasm, body, cells, calls };
+}
+
+const CELL_FOO: CellAddr = { paraIdx: 1, controlIdx: 0, cellIdx: 2 }; // 'foo'
+const CELL_BARBAZ: CellAddr = { paraIdx: 1, controlIdx: 0, cellIdx: 3 }; // ['bar','baz']
+
+// ─── AgentToolExecutor ──────────────────────────────────────
+
+function makeExecutor(cursor?: Record<string, unknown>) {
+  const { wasm, body, cells, calls } = makeCellWasm();
+  const bus = new EventBus();
+  const revision = new RevisionTracker(bus);
+  const pendingCalls: Array<{ method: string; args: unknown[] }> = [];
+  const pending = {
+    insertText: (agent: string, addr: unknown, text: string) => {
+      pendingCalls.push({ method: 'insertText', args: [agent, addr, text] });
+      const a = addr as { sectionIdx: number; paraIdx: number; charOffset: number; cell?: CellAddr };
+      return {
+        changeSetId: 'cs-1',
+        insertedRange: {
+          sectionIdx: a.sectionIdx, cell: a.cell,
+          startParaIdx: a.paraIdx, startCharOffset: a.charOffset,
+          endParaIdx: a.paraIdx, endCharOffset: a.charOffset + text.length,
+        },
+      };
+    },
+    replaceText: (range: { sectionIdx: number; startParaIdx: number; startCharOffset: number; cell?: CellAddr }, text: string, agent: string) => {
+      pendingCalls.push({ method: 'replaceText', args: [range, text, agent] });
+      return {
+        changeSetId: 'cs-1',
+        deletedText: '',
+        insertedRange: {
+          sectionIdx: range.sectionIdx, cell: range.cell,
+          startParaIdx: range.startParaIdx, startCharOffset: range.startCharOffset,
+          endParaIdx: range.startParaIdx, endCharOffset: range.startCharOffset + text.length,
+        },
+      };
+    },
+    applyCharFormat: (agent: string, range: unknown, format: unknown) => {
+      pendingCalls.push({ method: 'applyCharFormat', args: [agent, range, format] });
+      return { changeSetId: 'cs-1' };
+    },
+    setFieldValue: () => ({ changeSetId: 'cs-1', fieldId: 1, oldValue: '', newValue: '' }),
+    hasTemplateMutation: () => false,
+  };
+  const inputHandler = {
+    getUserSelectionContext: () => ({
+      cursor: cursor ?? { sectionIndex: 0, paragraphIndex: 0, charOffset: 0 },
+      selection: null,
+    }),
+  };
+  const executor = new AgentToolExecutor({
+    wasm: wasm as never,
+    inputHandler: inputHandler as never,
+    documentState: { isDirty: () => false } as never,
+    revision,
+    pending: pending as never,
+  });
+  return { executor, pending, pendingCalls, body, cells, calls, wasm };
+}
+
+async function expectToolError(p: Promise<unknown>, code: string): Promise<void> {
+  try {
+    await p;
+  } catch (e) {
+    assert.ok(e instanceof AgentToolError, `AgentToolError 기대, 실제: ${e}`);
+    assert.equal(e.code, code);
+    return;
+  }
+  assert.fail(`${code} 오류를 기대했지만 성공함`);
+}
+
+test('get_structure: 표는 앵커 문단 뒤에 cellIdx 그리드로 실리고 스팬·셀 문단·중첩 표를 표시한다', async () => {
+  const { executor, wasm } = makeExecutor();
+  // 셀 1 이 두 행에 걸친(rowSpan 2) 표로 바꾸고, 셀 2 의 빈 둘째 문단에 중첩 표를 둔다.
+  Object.assign(wasm, {
+    getTableDimensions: () => ({ rowCount: 2, colCount: 2, cellCount: 3 }),
+    getCellInfo: (_s: number, _p: number, _c: number, idx: number) => (
+      [{ row: 0, col: 0, rowSpan: 1, colSpan: 1 }, { row: 0, col: 1, rowSpan: 2, colSpan: 1 }, { row: 1, col: 0, rowSpan: 1, colSpan: 1 }][idx]
+    ),
+  });
+  const cells = [['Name'], ['Value'], ['foo', '']];
+  Object.assign(wasm, {
+    getCellParagraphCount: (_s: number, _p: number, _c: number, cell: number) => cells[cell].length,
+    getCellParagraphLength: (_s: number, _p: number, _c: number, cell: number, cp: number) => cells[cell][cp].length,
+    getTextInCell: (_s: number, _p: number, _c: number, cell: number, cp: number, off: number, cnt: number) =>
+      cells[cell][cp].slice(off, off + cnt),
+  });
+  wasm.nestedTableParas.add('2:1');
+  const r = (await executor.execute('get_structure', {}, 'claude')) as { mcpContent: Array<{ text: string }> };
+  const lines = r.mcpContent[0].text.split('\n').slice(2);
+  assert.deepEqual(lines, [
+    's0 · 3 paragraphs',
+    's0 p0 (5) Intro',
+    's0 p1 (0)',
+    '  table s0 p1 c0 2x2',
+    '  r0 [0] Name | [1 rs2] Value',
+    '  r1 [2] foo⏎⊞',
+    's0 p2 (5) Outro',
+  ]);
+});
+
+test('get_structure format:json: 섹션에 tables[] 로 셀 주소와 셀 텍스트가 실린다', async () => {
+  const { executor } = makeExecutor();
+  const r = (await executor.execute('get_structure', { format: 'json' }, 'claude')) as {
+    sections: Array<{ tables?: Array<Record<string, unknown>> }>;
+  };
+  const tables = r.sections[0].tables;
+  assert.ok(tables && tables.length === 1);
+  const t = tables[0] as {
+    paraIdx: number; controlIdx: number; rowCount: number; colCount: number; cellCount: number;
+    cells: Array<{ cellIdx: number; row: number; col: number; paragraphs: Array<{ text: string }> }>;
+  };
+  assert.equal(t.paraIdx, 1);
+  assert.equal(t.controlIdx, 0);
+  assert.equal(t.rowCount, 2);
+  assert.equal(t.cellCount, 4);
+  assert.equal(t.cells[2].paragraphs[0].text, 'foo');
+  assert.equal(t.cells[3].paragraphs[1].text, 'baz');
+  assert.equal(t.cells[3].row, 1);
+  assert.equal(t.cells[3].col, 1);
+});
+
+test('find_text: 셀 내부 매치는 cell 주소를 포함한다', async () => {
+  const { executor } = makeExecutor();
+  const r = (await executor.execute('find_text', { query: 'baz' }, 'claude')) as {
+    matches: Array<{ sectionIdx: number; paraIdx: number; charOffset: number; cell?: CellAddr }>;
+  };
+  assert.equal(r.matches.length, 1);
+  const m = r.matches[0];
+  assert.deepEqual(m.cell, CELL_BARBAZ);
+  assert.equal(m.paraIdx, 1); // 셀 내부 문단 인덱스
+  assert.equal(m.charOffset, 0);
+});
+
+test('find_text: 중첩 표 매치는 최외곽 cell 과 전체 cellPath 를 반환한다', async () => {
+  const { executor, wasm } = makeExecutor();
+  wasm.nestedTableParas.add('2:0');
+  const nestedCells = [['nested target']];
+  Object.assign(wasm, {
+    getCellParagraphCountByPath: (_s: number, _p: number, pathJson: string) => {
+      const path = JSON.parse(pathJson) as Array<{ cellIndex: number }>;
+      return nestedCells[path[path.length - 1].cellIndex].length;
+    },
+    getCellParagraphLengthByPath: (_s: number, _p: number, pathJson: string) => {
+      const path = JSON.parse(pathJson) as Array<{ cellIndex: number; cellParaIndex: number }>;
+      const target = path[path.length - 1];
+      return nestedCells[target.cellIndex][target.cellParaIndex].length;
+    },
+    getTextInCellByPath: (_s: number, _p: number, pathJson: string, off: number, count: number) => {
+      const path = JSON.parse(pathJson) as Array<{ cellIndex: number; cellParaIndex: number }>;
+      const target = path[path.length - 1];
+      return nestedCells[target.cellIndex][target.cellParaIndex].slice(off, off + count);
+    },
+  });
+  const result = await executor.execute('find_text', { query: 'target' }, 'claude') as {
+    matches: Array<{ cell?: CellAddr; cellPath?: Array<{ controlIndex: number; cellIndex: number; cellParaIndex: number }>; paraIdx: number; charOffset: number }>;
+  };
+  assert.equal(result.matches.length, 1);
+  const match = result.matches[0];
+  const path = [
+    { controlIndex: 0, cellIndex: 2, cellParaIndex: 0 },
+    { controlIndex: 0, cellIndex: 0, cellParaIndex: 0 },
+  ];
+  assert.deepEqual(match.cell, CELL_FOO);
+  assert.deepEqual(match.cellPath, path);
+  assert.equal(match.paraIdx, 0);
+  assert.equal(match.charOffset, 7);
+});
+
+test('find_text: 본문 매치에는 cell 이 없다', async () => {
+  const { executor } = makeExecutor();
+  const r = (await executor.execute('find_text', { query: 'Intro' }, 'claude')) as {
+    matches: Array<{ cell?: CellAddr }>;
+  };
+  assert.equal(r.matches.length, 1);
+  assert.equal(r.matches[0].cell, undefined);
+});
+
+test('get_text_range: cell 인자로 셀 문단을 읽는다', async () => {
+  const { executor } = makeExecutor();
+  const r = (await executor.execute(
+    'get_text_range',
+    { sectionIdx: 0, paraIdx: 0, cell: CELL_FOO },
+    'claude',
+  )) as { text: string; paraLength: number };
+  assert.equal(r.text, 'foo');
+  assert.equal(r.paraLength, 3);
+});
+
+test('insert_text: cell 인자가 pending 으로 전달된다', async () => {
+  const { executor, pendingCalls } = makeExecutor();
+  await executor.execute(
+    'insert_text',
+    { expectedRevision: 1, sectionIdx: 0, paraIdx: 0, charOffset: 3, cell: CELL_FOO, text: 'X' },
+    'claude',
+  );
+  assert.equal(pendingCalls.length, 1);
+  const addr = pendingCalls[0].args[1] as { cell?: CellAddr };
+  assert.deepEqual(addr.cell, CELL_FOO);
+});
+
+test('replace_range: 원자적 replaceText op 에 cell 이 그대로 전달된다', async () => {
+  const { executor, pendingCalls } = makeExecutor();
+  await executor.execute(
+    'replace_range',
+    {
+      expectedRevision: 1, sectionIdx: 0, cell: CELL_FOO,
+      startParaIdx: 0, startCharOffset: 0, endParaIdx: 0, endCharOffset: 3, text: 'new',
+    },
+    'claude',
+  );
+  // 삭제 + 삽입 두 op 조합이 아니라 단일 원자적 op 이다
+  assert.equal(pendingCalls.length, 1);
+  assert.equal(pendingCalls[0].method, 'replaceText');
+  const range = pendingCalls[0].args[0] as { cell?: CellAddr };
+  assert.deepEqual(range.cell, CELL_FOO);
+});
+
+// ─── 중첩 표 보호 (delete_range / replace_range) ─────────────
+
+test('delete_range: 셀 범위가 중첩 표를 품은 사이 문단을 지우면 NESTED_TABLE_IN_RANGE', async () => {
+  const { executor, pendingCalls, cells, wasm } = makeExecutor();
+  cells[3].push('qux');                     // ['bar','baz','qux']
+  wasm.nestedTableParas.add('3:1');         // 사이 문단 1 이 중첩 표를 품는다
+  await expectToolError(
+    executor.execute('delete_range', {
+      expectedRevision: 1, sectionIdx: 0, cell: CELL_BARBAZ,
+      startParaIdx: 0, startCharOffset: 0, endParaIdx: 2, endCharOffset: 3,
+    }, 'claude'),
+    'NESTED_TABLE_IN_RANGE',
+  );
+  assert.equal(pendingCalls.length, 0, '가드에 걸리면 pending 에 도달하지 않아야 한다');
+});
+
+test('replace_range: 중첩 표를 품은 사이 문단을 지나면 NESTED_TABLE_IN_RANGE', async () => {
+  const { executor, pendingCalls, cells, wasm } = makeExecutor();
+  cells[3].push('qux');
+  wasm.nestedTableParas.add('3:1');
+  await expectToolError(
+    executor.execute('replace_range', {
+      expectedRevision: 1, sectionIdx: 0, cell: CELL_BARBAZ,
+      startParaIdx: 0, startCharOffset: 0, endParaIdx: 2, endCharOffset: 3, text: 'new',
+    }, 'claude'),
+    'NESTED_TABLE_IN_RANGE',
+  );
+  assert.equal(pendingCalls.length, 0);
+});
+
+test('delete_range: 중첩 표가 경계 문단에만 있으면 통과한다 (병합되어 살아남는다)', async () => {
+  const { executor, pendingCalls, cells, wasm } = makeExecutor();
+  cells[3].push('qux');
+  wasm.nestedTableParas.add('3:0');
+  wasm.nestedTableParas.add('3:2');
+  await executor.execute('delete_range', {
+    expectedRevision: 1, sectionIdx: 0, cell: CELL_BARBAZ,
+    startParaIdx: 0, startCharOffset: 1, endParaIdx: 2, endCharOffset: 2,
+  }, 'claude');
+  assert.equal(pendingCalls.length, 1);
+});
+
+test('delete_range: 한 문단 안의 셀 삭제는 중첩 표 탐침과 무관하게 동작한다', async () => {
+  const { executor, pendingCalls, wasm } = makeExecutor();
+  wasm.nestedTableParas.add('2:0');
+  const r = (await executor.execute('delete_range', {
+    expectedRevision: 1, sectionIdx: 0, cell: CELL_FOO,
+    startParaIdx: 0, startCharOffset: 0, endParaIdx: 0, endCharOffset: 3,
+  }, 'claude')) as Record<string, unknown>;
+  assert.equal(pendingCalls.length, 1);
+  assert.equal(r['deletedTables'], undefined);
+});
+
+test('delete_range: 본문 범위가 표를 삼키면 편집 전에 막는다', async () => {
+  const { executor, pendingCalls } = makeExecutor();
+  await expectToolError(executor.execute('delete_range', {
+    expectedRevision: 1, sectionIdx: 0,
+    startParaIdx: 0, startCharOffset: 0, endParaIdx: 2, endCharOffset: 0,
+  }, 'claude'), 'TABLE_IN_BODY_RANGE');
+  assert.equal(pendingCalls.length, 0);
+});
+
+test('replace_range: 본문 범위가 표를 삼키면 편집 전에 막는다', async () => {
+  const { executor, pendingCalls } = makeExecutor();
+  await expectToolError(executor.execute('replace_range', {
+    expectedRevision: 1, sectionIdx: 0,
+    startParaIdx: 0, startCharOffset: 0, endParaIdx: 2, endCharOffset: 0,
+    text: 'replacement',
+  }, 'claude'), 'TABLE_IN_BODY_RANGE');
+  assert.equal(pendingCalls.length, 0);
+});
+
+test('delete_range: 표 앞에서 끝나는 본문 범위는 허용한다', async () => {
+  const { executor, pendingCalls } = makeExecutor();
+  await executor.execute('delete_range', {
+    expectedRevision: 1, sectionIdx: 0,
+    startParaIdx: 0, startCharOffset: 0, endParaIdx: 1, endCharOffset: 0,
+  }, 'claude');
+  assert.equal(pendingCalls.length, 1);
+});
+
+test('cell 검증: 표가 없는 문단/범위 밖 cellIdx/범위 밖 오프셋 → INVALID_ARGS', async () => {
+  const { executor } = makeExecutor();
+  await expectToolError(
+    executor.execute('get_text_range', {
+      sectionIdx: 0, paraIdx: 0, cell: { paraIdx: 0, controlIdx: 0, cellIdx: 0 },
+    }, 'claude'),
+    'INVALID_ARGS',
+  );
+  await expectToolError(
+    executor.execute('get_text_range', {
+      sectionIdx: 0, paraIdx: 0, cell: { paraIdx: 1, controlIdx: 0, cellIdx: 9 },
+    }, 'claude'),
+    'INVALID_ARGS',
+  );
+  await expectToolError(
+    executor.execute('get_text_range', {
+      sectionIdx: 0, paraIdx: 0, charOffset: 4, cell: CELL_FOO,
+    }, 'claude'),
+    'INVALID_ARGS',
+  );
+});
+
+// ─── PendingEditManager (셀 내부 편집 수명주기) ──────────────
+
+function makeManager() {
+  const { wasm, body, cells, calls } = makeCellWasm();
+  let snapshotId = 0;
+  const snapshots = new Map<number, { body: string[]; cells: string[][] }>();
+  Object.assign(wasm, {
+    saveSnapshot: () => {
+      const id = ++snapshotId;
+      snapshots.set(id, { body: structuredClone(body), cells: structuredClone(cells) });
+      return id;
+    },
+    restoreSnapshot: (id: number) => {
+      const saved = snapshots.get(id)!;
+      body.splice(0, body.length, ...structuredClone(saved.body));
+      cells.splice(0, cells.length, ...structuredClone(saved.cells));
+    },
+    discardSnapshot: (id: number) => { snapshots.delete(id); },
+  });
+  const eventBus = new EventBus();
+  const inputHandler = {
+    executeOperation: (op: { operation?: (w: unknown) => unknown }) => { op.operation?.(wasm); },
+    getCursorPosition: () => ({ sectionIndex: 0, paragraphIndex: 0, charOffset: 0 }),
+  };
+  const overlay = { setOps: () => {}, clear: () => {} };
+  const mgr = new PendingEditManager({
+    wasm: wasm as never,
+    eventBus,
+    inputHandler: inputHandler as never,
+    canvasView: {} as never,
+    overlay: overlay as never,
+  });
+  return { mgr, body, cells, calls };
+}
+
+test('pending: 셀 삽입은 insertTextInCell 로 적용되고 reject 시 되돌아간다', () => {
+  const { mgr, cells, calls } = makeManager();
+  const r = mgr.insertText('claude', { sectionIdx: 0, paraIdx: 0, charOffset: 3, cell: CELL_FOO }, 'X');
+  assert.ok(calls.includes('insertTextInCell'));
+  assert.equal(cells[2][0], 'fooX');
+  assert.deepEqual(r.insertedRange.cell, CELL_FOO);
+  mgr.reject(r.changeSetId);
+  assert.ok(calls.includes('deleteRangeInCell'));
+  assert.equal(cells[2][0], 'foo');
+});
+
+test('pending: 셀 멀티라인 삽입은 splitParagraphInCellLogical 을 쓰고 reject 시 복원된다', () => {
+  const { mgr, cells, calls } = makeManager();
+  const r = mgr.insertText('claude', { sectionIdx: 0, paraIdx: 0, charOffset: 3, cell: CELL_BARBAZ }, 'A\nB');
+  assert.ok(calls.includes('splitParagraphInCellLogical'));
+  assert.ok(!calls.includes('splitParagraphInCell'), '에이전트 다줄 삽입은 Enter 분할을 쓰지 않는다');
+  assert.deepEqual(cells[3], ['barA', 'B', 'baz']);
+  assert.equal(r.insertedRange.endParaIdx, 1);
+  assert.equal(r.insertedRange.endCharOffset, 1);
+  mgr.reject(r.changeSetId);
+  assert.deepEqual(cells[3], ['bar', 'baz']);
+});
+
+test('pending: 셀 삽입 approve 는 미리보기 텍스트를 재삽입 없이 확정한다', () => {
+  const { mgr, cells, calls } = makeManager();
+  const r = mgr.insertText('claude', { sectionIdx: 0, paraIdx: 0, charOffset: 0, cell: CELL_FOO }, 'Y');
+  assert.equal(cells[2][0], 'Yfoo');
+  assert.equal(calls.filter((call) => call === 'insertTextInCell').length, 1);
+  mgr.approve(r.changeSetId);
+  assert.equal(cells[2][0], 'Yfoo');
+  assert.equal(calls.filter((call) => call === 'insertTextInCell').length, 1);
+  assert.equal(mgr.hasPending(), false);
+});
+
+test('pending: 셀 서식은 applyCharFormatInCell 로 적용된다', () => {
+  const { mgr, calls } = makeManager();
+  const r = mgr.applyCharFormat('claude', {
+    sectionIdx: 0, cell: CELL_FOO,
+    startParaIdx: 0, startCharOffset: 0, endParaIdx: 0, endCharOffset: 3,
+  }, { bold: true });
+  assert.equal(calls.filter((call) => call === 'applyCharFormatInCell').length, 1);
+  mgr.approve(r.changeSetId);
+  assert.equal(mgr.hasPending(), false);
+});
+
+test('pending: 본문 문단 추가 삽입이 표 앞이면 셀 op 의 부모 문단 인덱스가 이동한다', () => {
+  const { mgr, cells } = makeManager();
+  const cellOp = mgr.insertText('claude', { sectionIdx: 0, paraIdx: 0, charOffset: 3, cell: CELL_FOO }, 'Z');
+  // 표(paraIdx 1) 앞의 본문 문단 0 에 멀티라인 삽입 → 문단 1개 추가
+  mgr.insertText('claude', { sectionIdx: 0, paraIdx: 0, charOffset: 5 }, 'a\nb');
+  const sets = mgr.getChangeSets();
+  const op = sets.flatMap((s) => s.ops).find(
+    (o) => (o.kind === 'insert') && o.range.cell !== undefined,
+  )!;
+  assert.equal(op.range.cell!.paraIdx, 2); // 1 → 2 로 이동
+  // reject 는 이동한 주소 기준으로도 성공해야 한다
+  mgr.reject(cellOp.changeSetId);
+  assert.equal(cells[2][0], 'foo');
+});
+
+// ─── get_selection: 중첩 표 좌표 축 혼용 방지 ─────────────────
+
+test('get_selection: 1중첩(깊이 1) 셀은 기존대로 write 가능한 cell 주소를 준다', async () => {
+  const { executor } = makeExecutor({
+    sectionIndex: 0, paragraphIndex: 1, charOffset: 2,
+    parentParaIndex: 1, controlIndex: 0, cellIndex: 2, cellParaIndex: 0,
+    cellPath: [{ parentParaIndex: 1, controlIndex: 0, cellIndex: 2, cellParaIndex: 0 }],
+  });
+  const r = (await executor.execute('get_selection', {}, 'claude')) as {
+    cursor: { cell?: unknown; paraIdx: number; charOffset: number; nested?: boolean };
+    nested?: boolean;
+  };
+  assert.deepEqual(r.cursor.cell, { paraIdx: 1, controlIdx: 0, cellIdx: 2 });
+  assert.equal(r.cursor.paraIdx, 0);
+  assert.equal(r.cursor.charOffset, 2);
+  assert.equal(r.cursor.nested, undefined);
+  assert.equal(r.nested, undefined);
+});
+
+test('get_selection: 중첩 표(깊이 2)에서 cell 과 cellPath 를 함께 준다', async () => {
+  const path = [
+    { parentParaIndex: 1, controlIndex: 0, cellIndex: 2, cellParaIndex: 0 },
+    { parentParaIndex: 0, controlIndex: 0, cellIndex: 3, cellParaIndex: 1 },
+  ];
+  const { executor } = makeExecutor({
+    sectionIndex: 0, paragraphIndex: 1, charOffset: 4,
+    parentParaIndex: 1, controlIndex: 0, cellIndex: 2, cellParaIndex: 0,
+    cellPath: path,
+  });
+  const r = (await executor.execute('get_selection', {}, 'claude')) as {
+    cursor: { cell?: unknown; paraIdx: number; charOffset: number; nested?: boolean; cellPath?: unknown };
+    nested?: boolean; note?: string;
+  };
+  assert.deepEqual(r.cursor.cell, CELL_FOO); // 최외곽 셀 주소
+  assert.equal(r.cursor.nested, true);
+  assert.equal(r.cursor.paraIdx, 1); // 최내곽 셀 문단
+  assert.equal(r.cursor.charOffset, 4);
+  assert.deepEqual(r.cursor.cellPath, path);
+  assert.equal(r.nested, true);
+  assert.ok(r.note && r.note.includes('copy both cell and cellPath'));
+});
+
+// ─── 안전 프로필: 중첩 표 셀의 staged 텍스트 편집 ──────────────
+
+function makeNestedSafeHarness() {
+  const { wasm, body, cells } = makeCellWasm();
+  const nested = ['inner'];
+  const cellPath = [
+    { parentParaIndex: 1, controlIndex: 0, cellIndex: 2, cellParaIndex: 0 },
+    { parentParaIndex: 0, controlIndex: 0, cellIndex: 0, cellParaIndex: 0 },
+  ];
+  wasm.nestedTableParas.add('2:0');
+  const calls: string[] = [];
+  const okJson = (extra: Record<string, unknown> = {}) => JSON.stringify({ ok: true, ...extra });
+  const pathPara = (json: string) => {
+    const path = JSON.parse(json) as Array<{ cellParaIndex: number }>;
+    assert.equal(path.length, 2, 'nested cell path must reach the inner table');
+    return path[1].cellParaIndex;
+  };
+  let snapshotId = 0;
+  const snapshots = new Map<number, { body: string[]; cells: string[][]; nested: string[] }>();
+  Object.assign(wasm, {
+    getCellParagraphCountByPath: () => nested.length,
+    getCellParagraphLengthByPath: (_s: number, _p: number, json: string) => nested[pathPara(json)].length,
+    getTextInCellByPath: (_s: number, _p: number, json: string, off: number, count: number) =>
+      nested[pathPara(json)].slice(off, off + count),
+    insertTextInCellByPath: (_s: number, _p: number, json: string, off: number, value: string) => {
+      calls.push('insertTextInCellByPath');
+      const p = pathPara(json);
+      nested[p] = nested[p].slice(0, off) + value + nested[p].slice(off);
+      return okJson({ charOffset: off + value.length });
+    },
+    deleteRangeInCellByPath: (_s: number, _p: number, json: string, sp: number, so: number, ep: number, eo: number) => {
+      calls.push('deleteRangeInCellByPath');
+      nested.splice(sp, ep - sp + 1, nested[sp].slice(0, so) + nested[ep].slice(eo));
+      return okJson({ paraIdx: sp, charOffset: so });
+    },
+    getCellCharPropertiesAtByPath: () => ({}),
+    getCellParaPropertiesAtByPath: () => ({ pageBreakBefore: false }),
+    applyCharFormatInCellByPath: () => {
+      calls.push('applyCharFormatInCellByPath');
+      return okJson();
+    },
+    saveSnapshot: () => {
+      const id = ++snapshotId;
+      snapshots.set(id, { body: structuredClone(body), cells: structuredClone(cells), nested: structuredClone(nested) });
+      return id;
+    },
+    restoreSnapshot: (id: number) => {
+      const saved = snapshots.get(id)!;
+      body.splice(0, body.length, ...structuredClone(saved.body));
+      cells.splice(0, cells.length, ...structuredClone(saved.cells));
+      nested.splice(0, nested.length, ...structuredClone(saved.nested));
+    },
+    discardSnapshot: (id: number) => { snapshots.delete(id); },
+  });
+  const eventBus = new EventBus();
+  const inputHandler = {
+    executeOperation: (op: { operation?: (w: unknown) => unknown }) => { op.operation?.(wasm); },
+    getCursorPosition: () => ({ sectionIndex: 0, paragraphIndex: 1, charOffset: 0 }),
+    getSelection: () => null,
+  };
+  const pending = new PendingEditManager({
+    wasm: wasm as never, eventBus, inputHandler: inputHandler as never,
+    canvasView: {} as never, overlay: { setOps: () => {}, clear: () => {} } as never,
+  });
+  const revision = new RevisionTracker(eventBus);
+  const executor = new AgentToolExecutor({
+    wasm: wasm as never, inputHandler: inputHandler as never,
+    documentState: { isDirty: () => false } as never, revision, pending,
+  });
+  const safe = { permissionProfile: 'safe' as const, workflow: 'direct' as const };
+  return { executor, pending, revision, safe, body, cells, nested, cellPath, calls };
+}
+
+test('safe mode insert_text stages text inside a nested table cell', async () => {
+  const h = makeNestedSafeHarness();
+  const result = await h.executor.execute('insert_text', {
+    expectedRevision: h.revision.revision, sectionIdx: 0,
+    cell: CELL_FOO, cellPath: h.cellPath, paraIdx: 0, charOffset: 2, text: 'X',
+  }, 'claude', h.safe) as { changeSetId: string };
+  assert.equal(h.nested[0], 'inXner');
+  assert.equal(h.cells[2][0], 'foo', 'outer host cell must survive');
+  assert.equal(h.cells[3][0], 'bar', 'sibling cell must survive');
+  assert.equal(h.body[1], '', 'outer table paragraph must survive');
+  assert.ok(h.calls.includes('insertTextInCellByPath'));
+  assert.equal(h.pending.hasPending(), true);
+  h.pending.reject(result.changeSetId);
+  assert.equal(h.nested[0], 'inner');
+});
+
+test('nested cellPath reads the inner cell and rejects a mismatched outer address', async () => {
+  const h = makeNestedSafeHarness();
+  const read = await h.executor.execute('get_text_range', {
+    sectionIdx: 0, cell: CELL_FOO, cellPath: h.cellPath, paraIdx: 0,
+  }, 'claude', h.safe) as { text: string };
+  assert.equal(read.text, 'inner');
+  await expectToolError(h.executor.execute('insert_text', {
+    expectedRevision: h.revision.revision, sectionIdx: 0,
+    cell: CELL_BARBAZ, cellPath: h.cellPath, paraIdx: 0, charOffset: 0, text: 'bad',
+  }, 'claude', h.safe), 'INVALID_ARGS');
+  assert.equal(h.nested[0], 'inner');
+  assert.equal(h.cells[3][0], 'bar');
+});
+
+test('safe mode replace_range stages and rejects text inside a nested table cell', async () => {
+  const h = makeNestedSafeHarness();
+  const result = await h.executor.execute('replace_range', {
+    expectedRevision: h.revision.revision, sectionIdx: 0, cell: CELL_FOO, cellPath: h.cellPath,
+    startParaIdx: 0, startCharOffset: 0, endParaIdx: 0, endCharOffset: 3, text: 'upd',
+  }, 'claude', h.safe) as { changeSetId: string };
+  assert.equal(h.nested[0], 'upder');
+  assert.equal(h.cells[2][0], 'foo');
+  assert.equal(h.cells[3][0], 'bar');
+  assert.equal(h.body[1], '');
+  assert.ok(h.calls.includes('deleteRangeInCellByPath'));
+  assert.equal(h.pending.hasPending(), true);
+  h.pending.reject(result.changeSetId);
+  assert.equal(h.nested[0], 'inner');
+});
+
+test('safe mode apply_char_format targets a nested table cell', async () => {
+  const h = makeNestedSafeHarness();
+  const result = await h.executor.execute('apply_char_format', {
+    expectedRevision: h.revision.revision, sectionIdx: 0,
+    cell: CELL_FOO, cellPath: h.cellPath, paraIdx: 0,
+    startOffset: 0, endOffset: 5, bold: true,
+  }, 'claude', h.safe) as { changeSetId: string };
+  assert.ok(h.calls.includes('applyCharFormatInCellByPath'));
+  assert.equal(h.pending.hasPending(), true);
+  h.pending.reject(result.changeSetId);
+  assert.equal(h.nested[0], 'inner');
+});
+
+test('pending: 셀 안에서 자신의 앞선 삽입을 다시 교체해도 reject 가 원문을 정확히 복원한다', () => {
+  const { mgr, cells } = makeManager();
+  mgr.beginTurn('claude');
+  mgr.insertText('claude', { sectionIdx: 0, paraIdx: 0, charOffset: 3, cell: CELL_FOO }, '에이전트');
+  const at = (s: number, e: number) => ({
+    sectionIdx: 0, startParaIdx: 0, startCharOffset: s, endParaIdx: 0, endCharOffset: e, cell: CELL_FOO,
+  });
+  mgr.replaceText(at(3, 5), '교체', 'claude');
+  mgr.replaceText(at(1, 4), 'X', 'claude');
+  assert.equal(cells[2][0], 'fX체전트');
+  mgr.reject(mgr.getChangeSets()[0].id);
+  assert.equal(cells[2][0], 'foo');
+});

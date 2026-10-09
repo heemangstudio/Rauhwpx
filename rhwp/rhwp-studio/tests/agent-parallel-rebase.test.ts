@@ -1,0 +1,430 @@
+/**
+ * 병렬 서브에이전트 편집 리베이스 — 편집 저널(EditJournal) 계약 검증.
+ *
+ * 서로 다른 문단 범위를 편집하는 형제 에이전트의 stale expectedRevision 쓰기는
+ * 좌표만 이동해 통과하고, 같은 문단을 건드리면(overlap) 또는 저널에 없는
+ * revision bump 가 끼면(gap: 사용자 편집 등) REVISION_MISMATCH 로 떨어져야 한다.
+ * PendingEditManager / AgentToolExecutor / RevisionTracker 는 실제 구현을 쓴다.
+ */
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { EventBus } from '../src/core/event-bus.ts';
+import { PendingEditManager } from '../src/agent/pending-edits.ts';
+import { AgentToolExecutor } from '../src/agent/tool-executor.ts';
+import { RevisionTracker } from '../src/agent/revision.ts';
+import { AgentToolError } from '../src/agent/types.ts';
+import { EditJournal } from '../src/agent/edit-journal.ts';
+
+interface FakePara { chars: string[]; tables?: number }
+const paraOf = (t: string): FakePara => ({ chars: [...t] });
+
+/** tables: 문단 번호 → 그 문단의 표 컨트롤 수 */
+function makeHarness(initial: string[], tables: Record<number, number> = {}) {
+  let body: FakePara[] = initial.map(paraOf);
+  for (const [para, count] of Object.entries(tables)) body[Number(para)].tables = count;
+  let snapshotId = 0;
+  const snapshots = new Map<number, FakePara[]>();
+  const clone = (b: FakePara[]): FakePara[] => b.map((p) => ({ chars: [...p.chars], tables: p.tables }));
+  const requireTable = (p: number, c: number): void => {
+    if (c >= (body[p]?.tables ?? 0)) throw new Error('no table');
+  };
+  const okJson = (extra: Record<string, unknown> = {}) => JSON.stringify({ ok: true, ...extra });
+
+  const wasm = {
+    getSectionCount: () => 1,
+    getParagraphCount: (_s: number) => body.length,
+    getParagraphLength: (_s: number, p: number) => body[p].chars.length,
+    getTextRange: (_s: number, p: number, off: number, cnt: number) => body[p].chars.slice(off, off + cnt).join(''),
+    insertText: (_s: number, p: number, off: number, t: string) => {
+      body[p].chars.splice(off, 0, ...t);
+      return okJson({ charOffset: off + [...t].length });
+    },
+    splitParagraph: (_s: number, p: number, off: number) => {
+      const cur = body[p];
+      body.splice(p, 1, { chars: cur.chars.slice(0, off) }, { chars: cur.chars.slice(off) });
+      return okJson();
+    },
+    splitParagraphLogical(this: { splitParagraph(s: number, p: number, off: number): string }, s: number, p: number, off: number) {
+      return this.splitParagraph(s, p, off);
+    },
+    deleteRange: (_s: number, sp: number, so: number, ep: number, eo: number) => {
+      const merged = { chars: [...body[sp].chars.slice(0, so), ...body[ep].chars.slice(eo)] };
+      body.splice(sp, ep - sp + 1, merged);
+      return { ok: true };
+    },
+    getCharPropertiesAt: () => ({ charShapeId: 0 }),
+    setCharShapeId: () => okJson(),
+    applyCharFormat: () => okJson(),
+    getParaPropertiesAt: () => ({ paraShapeId: 1 }),
+    setParaShapeId: () => okJson(),
+    saveSnapshot: () => { const id = ++snapshotId; snapshots.set(id, clone(body)); return id; },
+    restoreSnapshot: (id: number) => { body = clone(snapshots.get(id)!); },
+    discardSnapshot: (id: number) => { snapshots.delete(id); },
+    getSourceFormat: () => 'hwpx',
+    getTableDimensions: (_s: number, p: number, c: number) => {
+      requireTable(p, c);
+      return { rowCount: 2, colCount: 2, cellCount: 4 };
+    },
+    deleteTableControl: (_s: number, p: number, c: number) => {
+      requireTable(p, c);
+      body[p].tables! -= 1;
+      return { ok: true };
+    },
+    // 필드는 저널을 남기지 않는 쓰기 — 값만 흉내 낸다
+    setFieldValueByName: (_name: string, value: string) => ({ ok: true, fieldId: 1, oldValue: '', newValue: value }),
+  };
+
+  const eventBus = new EventBus();
+  const inputHandler = {
+    getCursorPosition: () => ({ sectionIndex: 0, paragraphIndex: 0, charOffset: 0 }),
+    getSelection: () => null,
+    // 실제 InputHandler 처럼 히스토리 기록(승인) 뒤 새로 고침 이벤트를 낸다.
+    executeOperation: (desc: { kind?: string }) => {
+      if (desc?.kind === 'record') eventBus.emit('document-changed');
+    },
+    prepareSnapshotCapacity: () => {},
+  };
+  const overlay = { setOps: () => {}, clear: () => {} };
+  const pending = new PendingEditManager({
+    wasm: wasm as never, eventBus, inputHandler: inputHandler as never,
+    canvasView: {} as never, overlay: overlay as never,
+    contentNeutral: (run) => executor.coverContentNeutral(run),
+  });
+  const revision = new RevisionTracker(eventBus);
+  const executor = new AgentToolExecutor({
+    wasm: wasm as never, inputHandler: inputHandler as never,
+    documentState: { isDirty: () => false } as never,
+    revision, pending,
+  });
+  return {
+    executor, pending, eventBus,
+    revision: () => revision.revision,
+    text: (p: number) => body[p].chars.join(''),
+    paraCount: () => body.length,
+    tableCount: (p: number) => body[p].tables ?? 0,
+  };
+}
+
+async function exec(h: ReturnType<typeof makeHarness>, tool: string, args: Record<string, unknown>) {
+  return await h.executor.execute(tool, args, 'claude') as Record<string, unknown>;
+}
+
+// ─── EditJournal 단위 계약 ─────────────────────────────────
+
+test('journal: 서로소 범위는 이동량을 누적하고, 겹침/공백은 실패 사유를 구분한다', () => {
+  const journal = new EditJournal();
+  journal.record(10, 11, { sectionIdx: 0, paraStart: 1, paraEnd: 1, paraDelta: 2 });
+  journal.record(11, 12, { sectionIdx: 0, paraStart: 9, paraEnd: 9, paraDelta: 0 });
+
+  // 대상(5..6)보다 앞의 +2 만 반영, 뒤(9)는 무시
+  assert.deepEqual(journal.rebase(10, 12, 0, 5, 6), { ok: true, shift: 2 });
+  // 다른 섹션 편집은 영향 없음
+  journal.record(12, 13, { sectionIdx: 1, paraStart: 0, paraEnd: 0, paraDelta: 5 });
+  assert.deepEqual(journal.rebase(10, 13, 0, 5, 6), { ok: true, shift: 2 });
+  // 겹침
+  assert.deepEqual(journal.rebase(10, 12, 0, 1, 3), { ok: false, shift: 0, reason: 'overlap' });
+  // 기록 없는 revision 이 끼면 gap
+  assert.deepEqual(journal.rebase(9, 12, 0, 5, 6), { ok: false, shift: 0, reason: 'gap' });
+});
+
+test('journal: 대상 범위는 엔트리를 rev 순서로 통과하며 점진 이동한다', () => {
+  const journal = new EditJournal();
+  // rev 11: 문단 0 에 +1 → 이후 좌표계에서 원래 문단 3 은 4
+  journal.record(10, 11, { sectionIdx: 0, paraStart: 0, paraEnd: 0, paraDelta: 1 });
+  // rev 12: (이동 후 좌표) 문단 4 를 편집 — 원래 3 을 노리던 쓰기와 겹쳐야 한다
+  journal.record(11, 12, { sectionIdx: 0, paraStart: 4, paraEnd: 4, paraDelta: 0 });
+  assert.deepEqual(journal.rebase(10, 12, 0, 3, 3), { ok: false, shift: 0, reason: 'overlap' });
+});
+
+test('journal: coverNoop 은 내용 불변 bump 로 커버리지를 잇고 이동·델타는 만들지 않는다', () => {
+  const journal = new EditJournal();
+  journal.record(10, 11, { sectionIdx: 0, paraStart: 1, paraEnd: 1, paraDelta: 1 });
+  journal.coverNoop(11, 13);
+  assert.equal(journal.covers(10, 13), true);
+  assert.deepEqual(journal.rebase(11, 13, 0, 0, 5), { ok: true, shift: 0 });
+  assert.deepEqual(journal.rebase(10, 13, 0, 5, 6), { ok: true, shift: 1 });
+  assert.equal(journal.diff(11, 13, () => 10)!.size, 0);
+});
+
+// ─── 실행기 통합: 병렬 형제 에이전트 시나리오 ─────────────────────
+
+test('rebase: 앞 문단의 삽입(+1)이 뒤 문단을 노린 stale 쓰기를 이동시킨다', async () => {
+  const h = makeHarness(['제목', '본문 하나', '본문 둘', '결론']);
+  const shared = h.revision(); // 두 에이전트가 같은 revision 을 읽었다
+
+  // 에이전트 A: 문단 0 에 개행 포함 삽입 → 문단 수 +1
+  const a = await exec(h, 'insert_text', {
+    expectedRevision: shared, sectionIdx: 0, paraIdx: 0, charOffset: 2, text: '!\n부제',
+  });
+  assert.equal(h.paraCount(), 5);
+
+  // 에이전트 B: 원래 좌표(문단 2 = '본문 둘')로 stale 쓰기 — 자동 리베이스되어야 한다
+  const b = await exec(h, 'replace_range', {
+    expectedRevision: shared, sectionIdx: 0,
+    startParaIdx: 2, startCharOffset: 0, endParaIdx: 2, endCharOffset: 4,
+    text: '고친 둘',
+  });
+  assert.equal(b['rebasedParaShift'], 1);
+  assert.equal(h.text(3), '고친 둘'); // '본문 둘'(원래 2번)은 이제 3번
+  assert.equal(h.text(1), '부제');
+  assert.ok((b['revision'] as number) > (a['revision'] as number) - 1);
+});
+
+test('rebase: 앞 범위 삭제(-1)는 뒤 문단 좌표를 당긴다', async () => {
+  const h = makeHarness(['가', '나', '다', '라']);
+  const shared = h.revision();
+
+  await exec(h, 'delete_range', {
+    expectedRevision: shared, sectionIdx: 0,
+    startParaIdx: 0, startCharOffset: 0, endParaIdx: 1, endCharOffset: 1,
+  });
+  assert.equal(h.paraCount(), 3);
+
+  const b = await exec(h, 'insert_text', {
+    expectedRevision: shared, sectionIdx: 0, paraIdx: 3, charOffset: 1, text: '!',
+  });
+  assert.equal(b['rebasedParaShift'], -1);
+  assert.equal(h.text(2), '라!');
+});
+
+test('rebase: 같은 문단을 노리면 REVISION_MISMATCH (동시 편집 충돌 메시지)', async () => {
+  const h = makeHarness(['하나', '둘']);
+  const shared = h.revision();
+
+  await exec(h, 'insert_text', {
+    expectedRevision: shared, sectionIdx: 0, paraIdx: 1, charOffset: 0, text: 'A',
+  });
+  await assert.rejects(
+    () => exec(h, 'replace_range', {
+      expectedRevision: shared, sectionIdx: 0,
+      startParaIdx: 1, startCharOffset: 0, endParaIdx: 1, endCharOffset: 1, text: 'B',
+    }),
+    (e: unknown) => e instanceof AgentToolError
+      && e.code === 'REVISION_MISMATCH'
+      && /concurrent edit touched/.test(e.message),
+  );
+});
+
+test('rebase: 저널에 없는 bump(사용자 편집)가 끼면 리베이스하지 않는다', async () => {
+  const h = makeHarness(['하나', '둘', '셋']);
+  const shared = h.revision();
+
+  // 사용자 편집 — 실행기 저널에 기록되지 않는 revision bump
+  h.eventBus.emit('document-mutated', { reason: 'user-typing' } as never);
+  await new Promise((resolve) => setTimeout(resolve, 0)); // microtask dedupe 창 종료
+
+  await assert.rejects(
+    () => exec(h, 'insert_text', {
+      expectedRevision: shared, sectionIdx: 0, paraIdx: 2, charOffset: 0, text: 'X',
+    }),
+    (e: unknown) => e instanceof AgentToolError
+      && e.code === 'REVISION_MISMATCH'
+      && !/concurrent edit touched/.test(e.message),
+  );
+});
+
+test('rebase: 서식(char format)도 서로소 문단이면 통과하고 저널에 남는다', async () => {
+  const h = makeHarness(['머리말', '본문입니다', '꼬리말']);
+  const shared = h.revision();
+
+  await exec(h, 'insert_text', {
+    expectedRevision: shared, sectionIdx: 0, paraIdx: 0, charOffset: 0, text: '표지\n',
+  });
+  const fmt = await exec(h, 'apply_char_format', {
+    expectedRevision: shared, sectionIdx: 0, paraIdx: 1, startOffset: 0, endOffset: 3, bold: true,
+  });
+  assert.equal(fmt['rebasedParaShift'], 1);
+  assert.equal(fmt['applied'], true);
+
+  // 서식이 남긴 저널 위로 세 번째 에이전트의 stale 쓰기도 이어진다
+  const c = await exec(h, 'insert_text', {
+    expectedRevision: shared, sectionIdx: 0, paraIdx: 2, charOffset: 3, text: '!',
+  });
+  assert.equal(c['rebasedParaShift'], 1);
+  assert.equal(h.text(3), '꼬리말!');
+});
+
+test('rebase: 정확히 일치하는 revision 은 이동 없이 기존 경로 그대로다', async () => {
+  const h = makeHarness(['하나']);
+  const r = await exec(h, 'insert_text', {
+    expectedRevision: h.revision(), sectionIdx: 0, paraIdx: 0, charOffset: 2, text: '!',
+  });
+  assert.equal(r['rebasedParaShift'], undefined);
+  assert.equal(h.text(0), '하나!');
+});
+
+test('rebase: 미래 revision 을 주장하면 즉시 REVISION_MISMATCH', async () => {
+  const h = makeHarness(['하나']);
+  await assert.rejects(
+    () => exec(h, 'insert_text', {
+      expectedRevision: h.revision() + 7, sectionIdx: 0, paraIdx: 0, charOffset: 0, text: 'X',
+    }),
+    (e: unknown) => e instanceof AgentToolError && e.code === 'REVISION_MISMATCH',
+  );
+});
+
+test('rebase: 즉시 적용되는 표 삭제도 저널에 남아 다른 문단의 stale 쓰기가 통과한다', async () => {
+  const h = makeHarness(['제목', '표 문단', '본문', '결론'], { 1: 1 });
+  const shared = h.revision();
+
+  // 형제 에이전트 A: 표 삭제 — 호출 즉시 문서에서 사라진다
+  await exec(h, 'delete_table', { expectedRevision: shared, sectionIdx: 0, paraIdx: 1, controlIdx: 0 });
+  assert.equal(h.tableCount(1), 0);
+
+  // 에이전트 B: 다른 문단의 stale 쓰기는 저널 공백 없이 그대로 통과한다
+  await exec(h, 'insert_text', { expectedRevision: shared, sectionIdx: 0, paraIdx: 2, charOffset: 2, text: '!' });
+  assert.equal(h.text(2), '본문!');
+
+  // 표가 있던 문단을 노린 stale 쓰기는 충돌로 떨어진다
+  await assert.rejects(
+    () => exec(h, 'insert_text', { expectedRevision: shared, sectionIdx: 0, paraIdx: 1, charOffset: 0, text: 'X' }),
+    (e: unknown) => e instanceof AgentToolError && e.code === 'REVISION_MISMATCH'
+      && /concurrent edit touched/.test(e.message),
+  );
+});
+
+test('rebase: stale apply_edits 도 형제의 서로소 쓰기를 넘어 항목마다 리베이스된다', async () => {
+  const h = makeHarness(['제목', '본문 하나', '본문 둘', '결론']);
+  const shared = h.revision();
+  await exec(h, 'insert_text', { expectedRevision: shared, sectionIdx: 0, paraIdx: 0, charOffset: 2, text: '!\n부제' });
+  const b = await exec(h, 'apply_edits', {
+    expectedRevision: shared,
+    edits: [
+      { tool: 'insert_text', args: { sectionIdx: 0, paraIdx: 2, charOffset: 0, text: '>' } },
+      { tool: 'insert_text', args: { sectionIdx: 0, paraIdx: 3, charOffset: 0, text: '<' } },
+    ],
+  });
+  assert.equal(b['applied'], 2);
+  assert.equal(h.text(3), '>본문 둘');
+  assert.equal(h.text(4), '<결론');
+  // 배치 뒤에도 저널이 이어져 다음 stale 쓰기가 리베이스된다
+  const c = await exec(h, 'insert_text', { expectedRevision: shared, sectionIdx: 0, paraIdx: 1, charOffset: 0, text: '#' });
+  assert.equal(c['rebasedParaShift'], 1);
+  assert.equal(h.text(2), '#본문 하나');
+});
+
+test('rebase: stale apply_edits 가 겹치거나 앞 항목이 문단 수를 바꾼 폭 안의 형제 편집을 만나면 통째로 거절된다', async () => {
+  const h = makeHarness(['가', '나', '다', '라', '마']);
+  const shared = h.revision();
+  await exec(h, 'insert_text', { expectedRevision: shared, sectionIdx: 0, paraIdx: 3, charOffset: 1, text: '!' });
+  const before = [0, 1, 2, 3, 4].map((p) => h.text(p));
+  // 첫 항목이 문단 1 뒤에 문단을 하나 더해, 둘째 항목의 문단 4 는 옛 좌표 3 — 형제가 고친 문단이다
+  await assert.rejects(exec(h, 'apply_edits', {
+    expectedRevision: shared,
+    edits: [
+      { tool: 'insert_text', args: { sectionIdx: 0, paraIdx: 1, charOffset: 1, text: '\n새' } },
+      { tool: 'insert_text', args: { sectionIdx: 0, paraIdx: 4, charOffset: 0, text: '>' } },
+    ],
+  }), (e: unknown) => e instanceof AgentToolError && e.code === 'REVISION_MISMATCH');
+  assert.deepEqual([0, 1, 2, 3, 4].map((p) => h.text(p)), before, '배치 전체가 되돌아간다');
+});
+
+test('rebase: stale 앵커 쓰기의 within.paraRange 도 형제 편집만큼 옮겨 찾는다', async () => {
+  const h = makeHarness(['합계', '가', '나', '합계', '다']);
+  const shared = h.revision();
+  await exec(h, 'insert_text', { expectedRevision: shared, sectionIdx: 0, paraIdx: 1, charOffset: 1, text: '\n추가' });
+  // 옛 좌표 [3, 4] 의 '합계' — 형제가 앞에 문단을 더했으므로 지금은 [4, 5]
+  await exec(h, 'insert_text', {
+    expectedRevision: shared, text: '!', anchor: { text: '합계', within: { sectionIdx: 0, paraRange: [3, 4] } },
+  });
+  assert.equal(h.text(0), '합계');
+  assert.equal(h.text(4), '합계!');
+  // 형제 편집과 겹치는 범위는 엉뚱한 곳을 찾지 않고 거절된다
+  await assert.rejects(exec(h, 'insert_text', {
+    expectedRevision: shared, text: '?', anchor: { text: '가', within: { sectionIdx: 0, paraRange: [1, 2] } },
+  }), (e: unknown) => e instanceof AgentToolError && e.code === 'REVISION_MISMATCH');
+});
+
+test('rebase: 저널을 남기지 않는 항목이 섞인 apply_edits 는 구간을 기록하지 않아 뒤 stale 쓰기가 리베이스되지 않는다', async () => {
+  const h = makeHarness(['가', '나', '다']);
+  const shared = h.revision();
+  await exec(h, 'apply_edits', {
+    expectedRevision: shared,
+    edits: [
+      { tool: 'insert_text', args: { sectionIdx: 0, paraIdx: 0, charOffset: 1, text: '!' } },
+      { tool: 'set_field_value', args: { name: '이름', value: '홍길동' } },
+    ],
+  });
+  await assert.rejects(exec(h, 'insert_text', { expectedRevision: shared, sectionIdx: 0, paraIdx: 2, charOffset: 0, text: '>' }),
+    (e: unknown) => e instanceof AgentToolError && e.code === 'REVISION_MISMATCH');
+});
+
+test('rebase: 실패해 롤백된 apply_edits 의 bump 는 저널에 남아 배치 전 revision 의 재시도가 통과한다', async () => {
+  const h = makeHarness(['가', '나', '다']);
+  const before = h.revision();
+  await assert.rejects(exec(h, 'apply_edits', {
+    expectedRevision: before,
+    edits: [
+      { tool: 'insert_text', args: { sectionIdx: 0, paraIdx: 0, charOffset: 1, text: '!' } },
+      { tool: 'insert_text', args: { sectionIdx: 0, paraIdx: 9, charOffset: 0, text: '>' } },
+    ],
+  }), (e: unknown) => e instanceof AgentToolError && e.code === 'INVALID_ARGS');
+  assert.equal(h.text(0), '가', '배치 전체가 되돌아간다');
+  assert.ok(h.revision() > before, '롤백의 동기화 이벤트는 revision 을 올린다');
+  const delta = await exec(h, 'get_structure', { sinceRevision: before, format: 'json' });
+  assert.deepEqual(delta['changes'], []);
+  assert.deepEqual(delta['indexShifts'], []);
+  const retry = await exec(h, 'apply_edits', {
+    expectedRevision: before,
+    edits: [{ tool: 'insert_text', args: { sectionIdx: 0, paraIdx: 0, charOffset: 1, text: '!' } }],
+  });
+  assert.equal(retry['applied'], 1);
+  assert.equal(h.text(0), '가!');
+});
+
+// ─── 승인(턴 끝 자동 커밋)은 내용 불변 ─────────────────────
+
+test('journal: 내용 불변 기록만 낀 구간은 읽은 그대로의 문서로 본다', () => {
+  const journal = new EditJournal();
+  journal.coverNoop(10, 12);
+  assert.equal(journal.contentUnchanged(10, 12), true);
+  assert.equal(journal.contentUnchanged(12, 12), true);
+  journal.record(12, 13, { sectionIdx: 0, paraStart: 0, paraEnd: 0, paraDelta: 0 });
+  assert.equal(journal.contentUnchanged(10, 13), false, '실제 편집이 끼면 아니다');
+  assert.equal(journal.contentUnchanged(9, 12), false, '기록 없는 bump 가 끼면 아니다');
+  assert.equal(journal.contentUnchanged(13, 12), false);
+});
+
+test('commit: 턴 끝 자동 승인 뒤에도 직전 턴의 revision 으로 다음 쓰기가 통과한다', async () => {
+  const h = makeHarness(['가나다', '라마바', '사아자']);
+  const first = await exec(h, 'insert_text', { expectedRevision: h.revision(), sectionIdx: 0, paraIdx: 0, charOffset: 3, text: '!' });
+  const known = first['revision'] as number;
+  h.pending.endTurn('commit');
+  assert.ok(h.revision() > known, '승인의 새로 고침 이벤트는 revision 을 올린다');
+  assert.equal(h.text(0), '가나다!', '승인은 문서 내용을 바꾸지 않는다');
+
+  // 다음 턴: 다시 읽지 않고 직전 결과의 revision 으로 쓴다 — 앵커, 좌표, 저널 없는 도구 모두.
+  await exec(h, 'apply_char_format', { expectedRevision: known, anchor: { text: '라마바' }, bold: true });
+  await exec(h, 'insert_text', { expectedRevision: known, sectionIdx: 0, paraIdx: 2, charOffset: 0, text: '>' });
+  assert.equal(h.text(2), '>사아자');
+});
+
+test('commit: 승인 직후의 저널 없는 쓰기도 통과하고, 사용자 편집이 끼면 거절된다', async () => {
+  const h = makeHarness(['가나다', '라마바']);
+  const first = await exec(h, 'insert_text', { expectedRevision: h.revision(), sectionIdx: 0, paraIdx: 0, charOffset: 0, text: '!' });
+  const known = first['revision'] as number;
+  h.pending.endTurn('commit');
+  const field = await exec(h, 'set_field_value', { expectedRevision: known, name: '이름', value: '홍길동' });
+  assert.equal(typeof field['revision'], 'number');
+
+  const afterField = field['revision'] as number;
+  h.pending.endTurn('commit');
+  await Promise.resolve(); // 같은 틱의 이벤트는 승인 bump 에 흡수된다 — 사용자 편집은 다음 틱이다
+  h.eventBus.emit('document-changed'); // 사용자 편집
+  await assert.rejects(exec(h, 'set_field_value', { expectedRevision: afterField, name: '이름', value: '김' }),
+    (e: unknown) => e instanceof AgentToolError && e.code === 'REVISION_MISMATCH');
+  await assert.rejects(exec(h, 'insert_text', { expectedRevision: afterField, sectionIdx: 0, paraIdx: 1, charOffset: 0, text: '>' }),
+    (e: unknown) => e instanceof AgentToolError && e.code === 'REVISION_MISMATCH');
+});
+
+test('commit: 실패한 승인의 bump 는 내용 불변으로 남기지 않는다', () => {
+  const h = makeHarness(['가나다']);
+  const before = h.revision();
+  const kept = h.executor.coverContentNeutral(() => {
+    h.eventBus.emit('document-changed');
+    return false;
+  });
+  assert.equal(kept, false);
+  assert.ok(h.revision() > before);
+  assert.equal(h.executor.documentUnchangedSince(before), false);
+});

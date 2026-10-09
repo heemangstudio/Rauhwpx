@@ -1,0 +1,90 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import { buildWritingStyleCatalog, resolveWritingStyleSelection } from '../writing-style-catalog.mjs';
+
+const health = {
+  codex: { available: false, error: 'Codex is not connected.' },
+  claude: { available: true, error: null },
+  pi: { available: true, error: null },
+};
+
+const piStatus = {
+  setupComplete: true,
+  defaultModelId: 'openai/gpt-5.4',
+  models: [
+    {
+      id: 'openai/gpt-5.4', name: 'GPT-5.4', efforts: ['low', 'medium', 'high'], defaultEffort: 'medium',
+      pricing: { prompt: 1, completion: 2 }, contextLength: 100_000,
+    },
+  ],
+};
+
+test('catalog exposes Codex, Claude, and only the Pi models the user configured', () => {
+  const catalog = buildWritingStyleCatalog({ health, piStatus });
+  assert.deepEqual(catalog.providers.map((provider) => provider.id), ['codex', 'claude', 'pi']);
+  assert.equal(catalog.providers.find((provider) => provider.id === 'codex').available, false);
+  assert.deepEqual(catalog.providers.find((provider) => provider.id === 'pi').models.map((model) => model.id), ['openai/gpt-5.4']);
+  assert.deepEqual(catalog.defaultSelection, { agent: 'claude', model: 'sonnet', effort: 'high' });
+});
+test('Astra calibration selection survives catalog reload with max effort', () => {
+  const selection = { agent: 'codex', model: 'astra', effort: 'max' };
+  const options = { health: { codex: { available: true } } };
+  assert.deepEqual(resolveWritingStyleSelection(selection, options), selection);
+  assert.deepEqual(buildWritingStyleCatalog({ ...options, currentSelection: selection }).defaultSelection, selection);
+});
+
+test('new Codex and Claude models resolve for calibration', () => {
+  for (const selection of [
+    { agent: 'codex', model: 'sol', effort: 'max' },
+    { agent: 'codex', model: 'luna', effort: 'high' },
+    { agent: 'claude', model: 'opus', effort: 'medium' },
+    { agent: 'claude', model: 'fable', effort: 'high' },
+  ]) {
+    assert.deepEqual(resolveWritingStyleSelection(selection), selection);
+  }
+});
+
+test('old model IDs keep their lineup in calibration', () => {
+  assert.deepEqual(
+    resolveWritingStyleSelection({ agent: 'codex', model: 'gpt-5.6-sol', effort: 'high' }),
+    { agent: 'codex', model: 'sol', effort: 'high' },
+  );
+  assert.deepEqual(
+    resolveWritingStyleSelection({ agent: 'claude', model: 'claude-opus-5-5', effort: 'medium' }),
+    { agent: 'claude', model: 'opus', effort: 'medium' },
+  );
+});
+
+test('live provider catalogs retain exact model IDs for calibration', () => {
+  const options = {
+    codexModels: [
+      { id: 'gpt-5.5', label: 'GPT-5.5', supportedEfforts: ['low', 'medium', 'high'] },
+      { id: 'gpt-6-sol', label: 'GPT-6 Sol', supportedEfforts: ['low', 'medium', 'high', 'max'] },
+    ],
+    claudeModels: [{ id: 'claude-sonnet-5', label: 'Claude Sonnet 5' }],
+  };
+  assert.deepEqual(
+    buildWritingStyleCatalog(options).providers.find((provider) => provider.id === 'codex').models.map((model) => model.id),
+    ['gpt-5.5', 'gpt-6-sol'],
+  );
+  assert.deepEqual(resolveWritingStyleSelection({ agent: 'codex', model: 'gpt-5.5', effort: 'high' }, options),
+    { agent: 'codex', model: 'gpt-5.5', effort: 'high' });
+  assert.deepEqual(resolveWritingStyleSelection({ agent: 'claude', model: 'claude-sonnet-5', effort: 'high' }, options),
+    { agent: 'claude', model: 'claude-sonnet-5', effort: 'high' });
+});
+
+test('calibration selection rejects unavailable providers and stale models without fallback', () => {
+  assert.throws(
+    () => resolveWritingStyleSelection({ agent: 'codex', model: 'gpt-5.6-sol' }, { health, piStatus }),
+    (error) => error?.code === 'PROVIDER_UNAVAILABLE',
+  );
+  assert.throws(
+    () => resolveWritingStyleSelection({ agent: 'pi', model: 'not/configured' }, { health, piStatus }),
+    (error) => error?.code === 'MODEL_UNAVAILABLE',
+  );
+  assert.deepEqual(
+    resolveWritingStyleSelection({ agent: 'pi', model: 'openai/gpt-5.4', effort: 'high' }, { health, piStatus }),
+    { agent: 'pi', model: 'openai/gpt-5.4', effort: 'high' },
+  );
+});

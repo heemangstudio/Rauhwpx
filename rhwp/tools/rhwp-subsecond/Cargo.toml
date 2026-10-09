@@ -1,0 +1,13 @@
+[package]
+name = "rhwp-subsecond"
+version = "0.0.0"
+edition = "2021"
+publish = false
+build = "build.rs"
+
+[features]
+subsecond-dev = ["rhwp/subsecond-dev"]
+
+[dependencies]
+# main.rs가 subsecond_dev를 항상 호출하므로 workspace `cargo test`에서도 feature가 켜져야 한다.
+rhwp = { path = "../..", features = ["subsecond-dev"] }

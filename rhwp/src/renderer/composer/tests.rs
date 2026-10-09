@@ -1,0 +1,2192 @@
+use super::*;
+use crate::model::control::Control;
+use crate::model::paragraph::{CharShapeRef, LineSeg, Paragraph};
+use crate::model::shape::{HorzAlign, HorzRelTo, TextFlow, TextWrap, VertAlign, VertRelTo};
+
+#[test]
+fn squeeze_cell_keeps_wide_text_on_one_line_and_preserves_explicit_newlines() {
+    use crate::model::table::CellLineWrap;
+    use crate::renderer::style_resolver::ResolvedCharStyle;
+    let styles = ResolvedStyleSet {
+        char_styles: vec![ResolvedCharStyle {
+            font_size: 12.0,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    for body in [
+        "가나다라<hp:lineBreak/>마바사아",
+        "가나다라<hp:lineBreak/>",
+        "가나다라<hp:lineBreak/><hp:lineBreak/>마바사아",
+    ] {
+        let xml = format!(
+            r#"<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section"
+            xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+          <hp:p paraPrIDRef="0"><hp:run charPrIDRef="0"><hp:t>{body}</hp:t>
+          </hp:run></hp:p></hs:sec>"#
+        );
+        let section = crate::parser::hwpx::section::parse_hwpx_section(&xml).unwrap();
+        let raw = &section.paragraphs[0];
+        assert!(raw.line_segs.is_empty());
+        let expected: Vec<_> = raw.text.split('\n').collect();
+        for generated_geometry in [false, true] {
+            let mut para = raw.clone();
+            if generated_geometry {
+                reflow_line_segs(&mut para, 25.0, &styles, 96.0);
+            }
+            let mut squeeze = compose_paragraph(&para);
+            recompose_for_cell_width_for_source(
+                &mut squeeze,
+                &para,
+                25.0,
+                &styles,
+                true,
+                CellLineWrap::Squeeze,
+                0,
+                true,
+                crate::renderer::DEFAULT_DPI,
+            );
+            assert_eq!(
+                squeeze.lines.len(),
+                expected.len(),
+                "{body}, generated={generated_geometry}"
+            );
+            let mut start = 0;
+            for (index, (line, text)) in squeeze.lines.iter().zip(&expected).enumerate() {
+                assert_eq!(line.char_start, start);
+                assert_eq!(line.has_line_break, index + 1 < expected.len());
+                assert_eq!(
+                    line.runs
+                        .iter()
+                        .map(|r| r.text.as_str())
+                        .collect::<String>(),
+                    *text
+                );
+                assert!(line.runs.iter().all(|r| r.char_style_id == 0));
+                start += text.chars().count() + 1;
+            }
+            let mut wrapped = compose_paragraph(&para);
+            recompose_for_cell_width_for_source(
+                &mut wrapped,
+                &para,
+                25.0,
+                &styles,
+                true,
+                CellLineWrap::Break,
+                0,
+                true,
+                crate::renderer::DEFAULT_DPI,
+            );
+            assert!(wrapped.lines.len() > squeeze.lines.len());
+        }
+    }
+}
+
+#[test]
+fn squeeze_reflow_keeps_overwide_text_on_one_line() {
+    use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle};
+
+    // macOS 한컴 탐침의 두 글꼴과 폭: 저장 줄 없이 열어도 전부 한 줄이다.
+    for family in ["맑은 고딕", "함초롬바탕"] {
+        let mut styles = ResolvedStyleSet {
+            char_styles: vec![ResolvedCharStyle {
+                font_family: family.into(),
+                font_families: vec![family.into(); 7],
+                font_size: 16.0,
+                ..Default::default()
+            }],
+            para_styles: vec![ResolvedParaStyle {
+                line_wrap_squeeze: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        for width_pt in [160.0, 141.0, 130.0, 117.6, 100.0, 80.0, 60.0] {
+            let text = "･건강진단 비용지원(연중)";
+            let mut para = Paragraph {
+                text: text.into(),
+                char_offsets: (0..text.chars().count() as u32).collect(),
+                char_shapes: vec![CharShapeRef::default()],
+                ..Default::default()
+            };
+            let width = width_pt / 0.75;
+            reflow_line_segs(&mut para, width, &styles, 96.0);
+            assert_eq!(para.line_segs.len(), 1, "{family}, {width_pt}pt");
+            assert_eq!(para.line_segs[0].segment_width, (width_pt * 100.0) as i32);
+            let composed = compose_paragraph(&para);
+            assert!(!stored_lines_stale_for_body(
+                &composed, &para, width, &styles
+            ));
+
+            // 압축 설정이 없으면 같은 폭에서 일반 줄바꿈한다.
+            if width_pt == 60.0 {
+                styles.para_styles[0].line_wrap_squeeze = false;
+                assert!(stored_lines_stale_for_body(
+                    &composed, &para, width, &styles
+                ));
+                reflow_line_segs(&mut para, width, &styles, 96.0);
+                assert!(para.line_segs.len() > 1);
+            }
+        }
+    }
+}
+
+#[test]
+fn squeeze_saved_lines_still_invalidate_substituted_numbering_fonts() {
+    use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle};
+
+    let styles = ResolvedStyleSet {
+        char_styles: vec![ResolvedCharStyle {
+            font_family: "Missing Squeeze Test Font".into(),
+            font_families: vec!["Missing Squeeze Test Font".into(); 7],
+            font_metrics_policy: crate::model::provenance::FontMetricsPolicy::HcrDeclared,
+            font_size: 16.0,
+            ..Default::default()
+        }],
+        para_styles: vec![ResolvedParaStyle {
+            line_wrap_squeeze: true,
+            head_type: crate::model::style::HeadType::Number,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut para = Paragraph {
+        text: "번호 문단의 대체 글꼴".into(),
+        ..Default::default()
+    };
+    reflow_line_segs(&mut para, 80.0, &styles, 96.0);
+    assert!(stored_line_segs_structurally_coherent(&para));
+    let mut composed = compose_paragraph(&para);
+    assert!(stored_lines_stale_for_body(&composed, &para, 80.0, &styles));
+    recompose_stale_stored_lines_for_body(&mut composed, &para, 80.0, &styles);
+    assert_eq!(composed.lines.len(), 1);
+}
+
+#[test]
+fn squeeze_reflow_preserves_explicit_empty_lines_and_run_heights() {
+    use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle};
+
+    let styles = ResolvedStyleSet {
+        char_styles: [16.0, 24.0]
+            .map(|font_size| ResolvedCharStyle {
+                font_size,
+                ..Default::default()
+            })
+            .to_vec(),
+        para_styles: vec![ResolvedParaStyle {
+            line_wrap_squeeze: true,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut para = Paragraph {
+        text: "가나\t다\n\n라\n".into(),
+        char_offsets: (0..8).collect(),
+        char_shapes: vec![
+            CharShapeRef::default(),
+            CharShapeRef {
+                start_pos: 6,
+                char_shape_id: 1,
+            },
+            CharShapeRef {
+                start_pos: 7,
+                char_shape_id: 0,
+            },
+        ],
+        ..Default::default()
+    };
+    reflow_line_segs(&mut para, 20.0, &styles, 96.0);
+    assert_eq!(
+        para.line_segs
+            .iter()
+            .map(|s| s.text_start)
+            .collect::<Vec<_>>(),
+        [0, 5, 6, 8]
+    );
+    assert_eq!(
+        para.line_segs
+            .iter()
+            .map(|s| s.line_height)
+            .collect::<Vec<_>>(),
+        [1200, 1200, 1800, 1200]
+    );
+    assert!(para.line_segs.iter().all(|s| s.segment_width == 1500));
+
+    // 줄나눔 자료의 구조 오류는 SQUEEZE에서도 계속 재배치 대상이다.
+    para.line_segs[1].text_start = 99;
+    let composed = compose_paragraph(&para);
+    assert!(stored_lines_stale_for_body(&composed, &para, 20.0, &styles));
+}
+
+#[test]
+fn reflow_discards_saved_hwpx_tab_distance_marker() {
+    let mut para = Paragraph {
+        text: "A\tB".into(),
+        char_offsets: (0..3).collect(),
+        char_shapes: vec![CharShapeRef::default()],
+        tab_extended: vec![[600, 0, 0x0200, 0, 0, 0x4003, 9]],
+        ..Default::default()
+    };
+    reflow_line_segs(&mut para, 200.0, &ResolvedStyleSet::default(), 96.0);
+    assert_eq!(para.tab_extended[0][5], 3);
+}
+
+#[test]
+fn native_generated_cell_reflow_uses_paragraph_margins_and_positive_indent() {
+    use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle};
+    let para = Paragraph {
+        text: "가나다라".into(),
+        char_offsets: (0..4).collect(),
+        char_shapes: vec![CharShapeRef::default()],
+        line_segs: vec![LineSeg {
+            line_height: 1_000,
+            tag: LineSeg::TAG_IMPLEMENTATION_PROPERTY,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let styles = ResolvedStyleSet {
+        char_styles: vec![ResolvedCharStyle {
+            font_size: 10.0,
+            ..Default::default()
+        }],
+        para_styles: vec![ResolvedParaStyle {
+            margin_left: 4.0,
+            margin_right: 4.0,
+            indent: 10.0,
+            korean_break_unit: 1,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut native = compose_paragraph(&para);
+    recompose_for_cell_width_for_source(
+        &mut native,
+        &para,
+        42.0,
+        &styles,
+        true,
+        crate::model::table::CellLineWrap::Break,
+        0,
+        true,
+        crate::renderer::DEFAULT_DPI,
+    );
+    assert_eq!(native.lines.len(), 2);
+    let first: String = native.lines[0]
+        .runs
+        .iter()
+        .map(|r| r.text.as_str())
+        .collect();
+    assert_eq!(first, "가나");
+    let mut legacy = compose_paragraph(&para);
+    recompose_for_cell_width_for_source(
+        &mut legacy,
+        &para,
+        42.0,
+        &styles,
+        false,
+        crate::model::table::CellLineWrap::Break,
+        0,
+        true,
+        crate::renderer::DEFAULT_DPI,
+    );
+    assert_eq!(legacy.lines.len(), 1);
+}
+
+#[test]
+fn native_hwpx_rewraps_generated_breaks_but_preserves_authored_breaks() {
+    let mut para = Paragraph {
+        text: "abcdefghij".to_string(),
+        char_offsets: (0..10).collect(),
+        char_count: 11,
+        controls: vec![
+            Control::ColumnDef(Default::default()),
+            Control::SectionDef(Box::default()),
+        ],
+        char_shapes: vec![CharShapeRef::default()],
+        line_segs: vec![
+            LineSeg {
+                text_start: 0,
+                line_height: 1_000,
+                line_spacing: 350,
+                tag: LineSeg::TAG_IMPLEMENTATION_PROPERTY,
+                ..Default::default()
+            },
+            LineSeg {
+                text_start: 5,
+                line_height: 1_000,
+                line_spacing: 350,
+                tag: LineSeg::TAG_IMPLEMENTATION_PROPERTY,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let styles = crate::renderer::style_resolver::ResolvedStyleSet::default();
+    let mut generated = compose_paragraph(&para);
+    recompose_for_cell_width_for_source(
+        &mut generated,
+        &para,
+        2_000.0,
+        &styles,
+        true,
+        crate::model::table::CellLineWrap::Break,
+        0,
+        true,
+        crate::renderer::DEFAULT_DPI,
+    );
+    assert_eq!(generated.lines.len(), 1);
+
+    let mut visible_object = para.clone();
+    visible_object
+        .controls
+        .push(Control::Picture(Box::default()));
+    let mut object_composed = compose_paragraph(&visible_object);
+    recompose_for_native_hwpx_cell_width(&mut object_composed, &visible_object, 2_000.0, &styles);
+    assert_eq!(object_composed.lines.len(), 2);
+
+    for line in &mut para.line_segs {
+        line.tag = LineSeg::TAG_SINGLE_SEGMENT_LINE;
+    }
+    let mut authored = compose_paragraph(&para);
+    recompose_for_cell_width_for_source(
+        &mut authored,
+        &para,
+        2_000.0,
+        &styles,
+        true,
+        crate::model::table::CellLineWrap::Break,
+        0,
+        true,
+        crate::renderer::DEFAULT_DPI,
+    );
+    assert_eq!(authored.lines.len(), 2);
+}
+
+#[test]
+fn inline_picture_slot_includes_outer_margins_without_changing_saved_widths() {
+    let mut picture = crate::model::image::Picture::default();
+    picture.common.treat_as_char = true;
+    picture.common.width = 3_000;
+    picture.common.height = 3_000;
+    picture.common.margin.left = 375;
+    picture.common.margin.right = 375;
+    let source = Paragraph {
+        controls: vec![
+            Control::Picture(Box::new(picture.clone())),
+            Control::Picture(Box::new(picture)),
+        ],
+        line_segs: vec![LineSeg {
+            segment_width: 6_750,
+            line_height: 3_000,
+            baseline_distance: 2_550,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let composed = compose_paragraph(&source);
+    assert_eq!(composed.tac_controls.len(), 2);
+    assert!(composed
+        .tac_controls
+        .iter()
+        .all(|(_, width, _)| *width == 3_750));
+    assert_eq!(source.line_segs[0].segment_width, 6_750);
+    assert!(source.controls.iter().all(|control| matches!(
+        control,
+        Control::Picture(pic) if pic.common.width == 3_000
+    )));
+
+    let mut edited = source.clone();
+    reflow_line_segs(
+        &mut edited,
+        90.0,
+        &crate::renderer::style_resolver::ResolvedStyleSet::default(),
+        96.0,
+    );
+    assert_eq!(edited.line_segs.len(), 2, "two 50 px slots need two lines");
+    assert_eq!(source.line_segs[0].segment_width, 6_750);
+}
+
+/// [#2632] `recompose_for_body_width` 는 `recompose_for_cell_width` 의 superset
+/// (`restyle_fallback_runs_by_char_shapes` 를 추가로 적용)이다. line_segs 가
+/// 없는(NO_LS) 본문 문단에서 글자모양이 섞여 있으면, compose_lines fallback 이
+/// 만든 단일 run 을 body 래퍼만 char shape 별로 재분할한다.
+/// HeightMeasurer(측정)가 cell 래퍼를 쓰던 종전엔 이 재분할이 빠져
+/// typeset/render 와 다른 값으로 측정됐다 — 그 근본 메커니즘을 여기서 고정한다.
+#[test]
+fn body_recompose_splits_fallback_run_by_char_shapes_but_cell_recompose_does_not() {
+    let para = Paragraph {
+        text: "abcdefghij".to_string(),
+        char_offsets: (0..10).collect(),
+        char_count: 11,
+        char_shapes: vec![
+            CharShapeRef {
+                start_pos: 0,
+                char_shape_id: 0,
+            },
+            CharShapeRef {
+                start_pos: 5,
+                char_shape_id: 1,
+            },
+        ],
+        // line_segs 가 비어 있어 compose_lines 의 CHARS_PER_LINE fallback 경로를 탄다.
+        ..Default::default()
+    };
+    let styles = crate::renderer::style_resolver::ResolvedStyleSet::default();
+    // 문단 폭 안에 다 들어가도록 충분히 넓게 잡아 줄바꿈 자체는 문제되지 않게 한다.
+    let inner_width_px = 2000.0;
+
+    let mut cell_variant = compose_paragraph(&para);
+    recompose_for_cell_width(&mut cell_variant, &para, inner_width_px, &styles);
+    let cell_run_ids: Vec<u32> = cell_variant.lines[0]
+        .runs
+        .iter()
+        .map(|r| r.char_style_id)
+        .collect();
+
+    let mut body_variant = compose_paragraph(&para);
+    recompose_for_body_width(&mut body_variant, &para, inner_width_px, &styles);
+    let body_run_ids: Vec<u32> = body_variant.lines[0]
+        .runs
+        .iter()
+        .map(|r| r.char_style_id)
+        .collect();
+
+    assert_eq!(
+        cell_run_ids,
+        vec![0],
+        "cell 래퍼는 재분할하지 않아 fallback 단일 run(스타일 0)이 그대로 남아야 함"
+    );
+    assert_eq!(
+        body_run_ids,
+        vec![0, 1],
+        "body 래퍼는 restyle_fallback_runs_by_char_shapes 로 재분할해 두 글자모양이 드러나야 함"
+    );
+}
+
+/// 단일 줄, 단일 스타일 문단
+#[test]
+fn test_compose_single_line_single_style() {
+    let para = Paragraph {
+        text: "안녕하세요".to_string(),
+        char_offsets: vec![0, 1, 2, 3, 4],
+        char_count: 6, // 5 chars + 1 (paragraph end)
+        char_shapes: vec![CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 3,
+        }],
+        line_segs: vec![LineSeg {
+            text_start: 0,
+            line_height: 800,
+            baseline_distance: 640,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let composed = compose_paragraph(&para);
+    assert_eq!(composed.lines.len(), 1);
+    assert_eq!(composed.lines[0].runs.len(), 1);
+    assert_eq!(composed.lines[0].runs[0].text, "안녕하세요");
+    assert_eq!(composed.lines[0].runs[0].char_style_id, 3);
+}
+
+/// 단일 줄, 다중 스타일
+#[test]
+fn test_compose_single_line_multi_style() {
+    let para = Paragraph {
+        text: "ABCDE".to_string(),
+        char_offsets: vec![0, 1, 2, 3, 4],
+        char_count: 6,
+        char_shapes: vec![
+            CharShapeRef {
+                start_pos: 0,
+                char_shape_id: 1,
+            },
+            CharShapeRef {
+                start_pos: 3,
+                char_shape_id: 2,
+            },
+        ],
+        line_segs: vec![LineSeg {
+            text_start: 0,
+            line_height: 400,
+            baseline_distance: 320,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let composed = compose_paragraph(&para);
+    assert_eq!(composed.lines.len(), 1);
+    assert_eq!(composed.lines[0].runs.len(), 2);
+    assert_eq!(composed.lines[0].runs[0].text, "ABC");
+    assert_eq!(composed.lines[0].runs[0].char_style_id, 1);
+    assert_eq!(composed.lines[0].runs[1].text, "DE");
+    assert_eq!(composed.lines[0].runs[1].char_style_id, 2);
+}
+
+/// 다중 줄 문단
+#[test]
+fn test_compose_multi_line() {
+    let para = Paragraph {
+        text: "첫줄텍스트두번째줄".to_string(),
+        char_offsets: vec![0, 1, 2, 3, 4, 5, 6, 7, 8],
+        char_count: 10,
+        char_shapes: vec![CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 5,
+        }],
+        line_segs: vec![
+            LineSeg {
+                text_start: 0,
+                line_height: 400,
+                baseline_distance: 320,
+                ..Default::default()
+            },
+            LineSeg {
+                text_start: 5,
+                line_height: 400,
+                baseline_distance: 320,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+
+    let composed = compose_paragraph(&para);
+    assert_eq!(composed.lines.len(), 2);
+    assert_eq!(composed.lines[0].runs[0].text, "첫줄텍스트");
+    assert_eq!(composed.lines[1].runs[0].text, "두번째줄");
+}
+
+/// 단일 LINE_SEG 안의 Shift+Enter 강제 줄바꿈도 실제 visual line 으로 분리한다.
+#[test]
+fn test_compose_internal_forced_line_break_splits_visual_lines() {
+    let para = Paragraph {
+        text: "가나\n다라".to_string(),
+        char_offsets: vec![0, 1, 2, 3, 4],
+        char_count: 6,
+        char_shapes: vec![CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 7,
+        }],
+        line_segs: vec![LineSeg {
+            text_start: 0,
+            line_height: 400,
+            baseline_distance: 320,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let composed = compose_paragraph(&para);
+    assert_eq!(composed.lines.len(), 2);
+    assert_eq!(composed.lines[0].runs[0].text, "가나");
+    assert!(composed.lines[0].has_line_break);
+    assert_eq!(composed.lines[0].char_start, 0);
+    assert_eq!(composed.lines[1].runs[0].text, "다라");
+    assert!(!composed.lines[1].has_line_break);
+    assert_eq!(composed.lines[1].char_start, 3);
+}
+
+/// 끝의 Shift+Enter는 줄바꿈 표시 줄만 만들고 빈 후속 줄을 중복 생성하지 않는다.
+#[test]
+fn test_compose_trailing_forced_line_break_keeps_single_marked_line() {
+    let para = Paragraph {
+        text: "가나\n".to_string(),
+        char_offsets: vec![0, 1, 2],
+        char_count: 4,
+        char_shapes: vec![CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 7,
+        }],
+        line_segs: vec![LineSeg {
+            text_start: 0,
+            line_height: 400,
+            baseline_distance: 320,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let composed = compose_paragraph(&para);
+    assert_eq!(composed.lines.len(), 1);
+    assert_eq!(composed.lines[0].runs[0].text, "가나");
+    assert!(composed.lines[0].has_line_break);
+    assert_eq!(composed.lines[0].char_start, 0);
+}
+
+/// TAC 표 문단의 Shift+Enter 분할은 문자 인덱스로 자른다. 한글 앞 텍스트에서
+/// 바이트 오프셋을 쓰면 '\n' 이 앞 줄 run 에 섞이고 표 줄 char_start 가 밀린다.
+#[test]
+fn test_compose_tac_table_forced_line_break_uses_char_index() {
+    use crate::model::table::Table;
+
+    let mut table = Table::default();
+    table.common.treat_as_char = true;
+    let para = Paragraph {
+        text: "표 제목\n".to_string(),
+        char_offsets: vec![0, 1, 2, 3, 4],
+        char_count: 14,
+        char_shapes: vec![CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 3,
+        }],
+        controls: vec![Control::Table(Box::new(table))],
+        line_segs: vec![
+            LineSeg {
+                text_start: 0,
+                line_height: 400,
+                baseline_distance: 320,
+                ..Default::default()
+            },
+            LineSeg {
+                text_start: 5,
+                line_height: 2000,
+                baseline_distance: 1600,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+
+    let composed = compose_paragraph(&para);
+    let pre: String = composed.lines[0]
+        .runs
+        .iter()
+        .map(|r| r.text.as_str())
+        .collect();
+    assert_eq!(pre, "표 제목");
+    assert!(composed.lines[0].has_line_break);
+    assert_eq!(composed.lines[0].char_start, 0);
+    assert!(composed.lines[1].runs.is_empty());
+    assert_eq!(composed.lines[1].char_start, 5);
+}
+
+/// 다중 줄 + 다중 스타일 (줄 경계에서 스타일 변경)
+#[test]
+fn test_compose_multi_line_multi_style() {
+    let para = Paragraph {
+        text: "AAABBBCCCC".to_string(),
+        char_offsets: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        char_count: 11,
+        char_shapes: vec![
+            CharShapeRef {
+                start_pos: 0,
+                char_shape_id: 1,
+            },
+            CharShapeRef {
+                start_pos: 3,
+                char_shape_id: 2,
+            },
+            CharShapeRef {
+                start_pos: 6,
+                char_shape_id: 3,
+            },
+        ],
+        line_segs: vec![
+            LineSeg {
+                text_start: 0,
+                line_height: 400,
+                baseline_distance: 320,
+                ..Default::default()
+            },
+            LineSeg {
+                text_start: 6,
+                line_height: 400,
+                baseline_distance: 320,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+
+    let composed = compose_paragraph(&para);
+    assert_eq!(composed.lines.len(), 2);
+
+    // 첫 줄: "AAA" (style 1) + "BBB" (style 2)
+    assert_eq!(composed.lines[0].runs.len(), 2);
+    assert_eq!(composed.lines[0].runs[0].text, "AAA");
+    assert_eq!(composed.lines[0].runs[0].char_style_id, 1);
+    assert_eq!(composed.lines[0].runs[1].text, "BBB");
+    assert_eq!(composed.lines[0].runs[1].char_style_id, 2);
+
+    // 두번째 줄: "CCCC" (style 3)
+    assert_eq!(composed.lines[1].runs.len(), 1);
+    assert_eq!(composed.lines[1].runs[0].text, "CCCC");
+    assert_eq!(composed.lines[1].runs[0].char_style_id, 3);
+}
+
+/// 빈 문단
+#[test]
+fn test_compose_empty_paragraph() {
+    let para = Paragraph::default();
+    let composed = compose_paragraph(&para);
+    assert!(composed.lines.is_empty());
+    assert!(composed.inline_controls.is_empty());
+}
+
+/// table-vpos-01 page 5의 10/11/12 마커는 CharOverlap 하나에 두 개의
+/// HWP PUA 구성 글자가 들어온다. 텍스트 흐름과 캐럿 이동은 한 글자 폭이어야 한다.
+#[test]
+fn test_char_overlap_multi_component_is_single_advance() {
+    let chars = vec!['\u{F02BA}', '\u{F02C3}'];
+    assert_eq!(decode_pua_overlap_number(&chars), None);
+    assert_eq!(char_overlap_advance_units(&chars), 1);
+}
+
+/// LineSeg 없는 텍스트 문단
+#[test]
+fn test_compose_no_line_segs() {
+    let para = Paragraph {
+        text: "텍스트만 있음".to_string(),
+        char_shapes: vec![CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 7,
+        }],
+        ..Default::default()
+    };
+
+    let composed = compose_paragraph(&para);
+    assert_eq!(composed.lines.len(), 1);
+    assert_eq!(composed.lines[0].runs[0].text, "텍스트만 있음");
+    assert_eq!(composed.lines[0].runs[0].char_style_id, 7);
+}
+
+/// 확장 컨트롤 문자로 인한 위치 격차
+#[test]
+fn test_compose_with_ctrl_char_gap() {
+    // 원본 UTF-16: [ctrl 8units][A][B][C]
+    // text = "ABC"
+    // char_offsets = [8, 9, 10]
+    // LineSeg.text_start = 0 (첫 줄은 처음부터)
+    let para = Paragraph {
+        text: "ABC".to_string(),
+        char_offsets: vec![8, 9, 10],
+        char_count: 12,
+        char_shapes: vec![CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 1,
+        }],
+        line_segs: vec![LineSeg {
+            text_start: 0,
+            line_height: 400,
+            baseline_distance: 320,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let composed = compose_paragraph(&para);
+    assert_eq!(composed.lines.len(), 1);
+    assert_eq!(composed.lines[0].runs[0].text, "ABC");
+    assert_eq!(composed.lines[0].runs[0].char_style_id, 1);
+}
+
+/// 인라인 컨트롤 식별
+#[test]
+fn test_identify_inline_controls_table() {
+    use crate::model::table::Table;
+
+    let mut table = Table::default();
+    table.common.treat_as_char = true;
+    let para = Paragraph {
+        text: "표 앞 텍스트".to_string(),
+        controls: vec![Control::Table(Box::new(table))],
+        ..Default::default()
+    };
+
+    let composed = compose_paragraph(&para);
+    assert_eq!(composed.inline_controls.len(), 1);
+    assert_eq!(
+        composed.inline_controls[0].control_type,
+        InlineControlType::Table
+    );
+    assert_eq!(composed.inline_controls[0].control_index, 0);
+}
+
+/// UTF-16 위치 → 텍스트 인덱스 변환
+#[test]
+fn test_utf16_range_to_text_range() {
+    let offsets = vec![0u32, 1, 2, 8, 9, 10]; // 위치 3~7은 확장 컨트롤
+
+    let (s, e) = utf16_range_to_text_range(&offsets, 0, 3, 6);
+    assert_eq!(s, 0);
+    assert_eq!(e, 3); // offsets[3]=8 >= 3 이므로 인덱스 3
+
+    let (s, e) = utf16_range_to_text_range(&offsets, 8, 11, 6);
+    assert_eq!(s, 3);
+    assert_eq!(e, 6);
+}
+
+/// 오프셋 없는 경우 1:1 매핑
+#[test]
+fn test_utf16_range_no_offsets() {
+    let (s, e) = utf16_range_to_text_range(&[], 0, 5, 10);
+    assert_eq!(s, 0);
+    assert_eq!(e, 5);
+}
+
+#[test]
+fn test_compose_decreasing_lineseg_text_start_uses_empty_range() {
+    let para = Paragraph {
+        text: "ABCDE".to_string(),
+        char_offsets: vec![0, 1, 2, 3, 4],
+        char_count: 6,
+        char_shapes: vec![CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 1,
+        }],
+        line_segs: vec![
+            LineSeg {
+                text_start: 4,
+                line_height: 400,
+                baseline_distance: 320,
+                ..Default::default()
+            },
+            LineSeg {
+                text_start: 0,
+                line_height: 400,
+                baseline_distance: 320,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+
+    let composed = compose_paragraph(&para);
+    assert_eq!(composed.lines.len(), 2);
+    assert!(composed.lines[0].runs.is_empty());
+    assert_eq!(composed.lines[0].char_start, 4);
+    assert_eq!(composed.lines[1].runs[0].text, "ABCDE");
+}
+
+/// find_active_char_shape 테스트
+#[test]
+fn test_find_active_char_shape() {
+    let shapes = vec![
+        CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 1,
+        },
+        CharShapeRef {
+            start_pos: 10,
+            char_shape_id: 2,
+        },
+        CharShapeRef {
+            start_pos: 20,
+            char_shape_id: 3,
+        },
+    ];
+
+    assert_eq!(find_active_char_shape(&shapes, 0), 1);
+    assert_eq!(find_active_char_shape(&shapes, 5), 1);
+    assert_eq!(find_active_char_shape(&shapes, 10), 2);
+    assert_eq!(find_active_char_shape(&shapes, 15), 2);
+    assert_eq!(find_active_char_shape(&shapes, 25), 3);
+}
+
+// === reflow_line_segs 테스트 ===
+
+fn make_styles_with_font_size(font_size: f64) -> ResolvedStyleSet {
+    use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle, ResolvedStyleSet};
+    ResolvedStyleSet {
+        hwp3_variant: false,
+        char_styles: vec![ResolvedCharStyle {
+            font_size,
+            ratio: 1.0,
+            ..Default::default()
+        }],
+        para_styles: vec![ResolvedParaStyle::default()],
+        ..Default::default()
+    }
+}
+
+/// 짧은 텍스트 → 1줄
+#[test]
+fn test_reflow_short_text_single_line() {
+    let styles = make_styles_with_font_size(16.0);
+    let mut para = Paragraph {
+        text: "안녕".to_string(),
+        char_offsets: vec![0, 1],
+        char_count: 3,
+        char_shapes: vec![CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 0,
+        }],
+        line_segs: vec![LineSeg {
+            text_start: 0,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    // 컬럼 너비 500px → "안녕" (16*2=32px) 충분히 들어감
+    reflow_line_segs(&mut para, 500.0, &styles, 96.0);
+    assert_eq!(para.line_segs.len(), 1);
+    assert_eq!(para.line_segs[0].text_start, 0);
+}
+
+/// 긴 텍스트 → 2줄 이상
+#[test]
+fn test_reflow_long_text_multi_line() {
+    let styles = make_styles_with_font_size(16.0);
+    // CJK 10글자: 각 16px → 총 160px
+    let mut para = Paragraph {
+        text: "가나다라마바사아자차".to_string(),
+        char_offsets: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        char_count: 11,
+        char_shapes: vec![CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 0,
+        }],
+        line_segs: vec![LineSeg {
+            text_start: 0,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    // 컬럼 너비 80px → 16px * 5글자 = 80px → 5글자씩 2줄
+    reflow_line_segs(&mut para, 80.0, &styles, 96.0);
+    assert_eq!(para.line_segs.len(), 2);
+    assert_eq!(para.line_segs[0].text_start, 0);
+    assert_eq!(para.line_segs[1].text_start, 5); // 6번째 글자부터 2번째 줄
+}
+
+/// 빈 텍스트 → 기본 LineSeg 1개
+#[test]
+fn test_reflow_empty_text() {
+    let styles = make_styles_with_font_size(16.0);
+    let mut para = Paragraph::default();
+
+    reflow_line_segs(&mut para, 500.0, &styles, 96.0);
+    assert_eq!(para.line_segs.len(), 1);
+    assert_eq!(para.line_segs[0].text_start, 0);
+}
+
+/// 라틴 문자 리플로우 (0.5 * font_size)
+#[test]
+fn test_reflow_latin_text() {
+    let styles = make_styles_with_font_size(16.0);
+    // 라틴 10글자: 각 8px → 총 80px
+    let mut para = Paragraph {
+        text: "ABCDEFGHIJ".to_string(),
+        char_offsets: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        char_count: 11,
+        char_shapes: vec![CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 0,
+        }],
+        line_segs: vec![LineSeg {
+            text_start: 0,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    // 컬럼 너비 40px → 8px * 5글자 = 40px → 5글자씩 2줄
+    reflow_line_segs(&mut para, 40.0, &styles, 96.0);
+    assert_eq!(para.line_segs.len(), 2);
+    assert_eq!(para.line_segs[0].text_start, 0);
+    assert_eq!(para.line_segs[1].text_start, 5);
+}
+
+// === reflow 어울림 wrap zone 재생성 테스트 (PR #17) ===
+// 편집 재배치가 같은 문단의 비-TAC 어울림 개체 옆으로 줄을 좁혀
+// column_start/segment_width 를 저장 wrap zone 과 같은 형태로 기록하는지 검증.
+
+/// 어울림 그림이 있는 20자 CJK 문단 (컬럼 200px, 그림 100px 폭)
+fn make_wrap_para(text_wrap: TextWrap, horz_align: HorzAlign, height_hwp: u32) -> Paragraph {
+    let mut picture = crate::model::image::Picture::default();
+    picture.common.treat_as_char = false;
+    picture.common.text_wrap = text_wrap;
+    picture.common.text_flow = TextFlow::BothSides;
+    picture.common.horz_rel_to = HorzRelTo::Column;
+    picture.common.horz_align = horz_align;
+    picture.common.vert_rel_to = VertRelTo::Para;
+    picture.common.vert_align = VertAlign::Top;
+    picture.common.width = 7500; // 100px @96dpi
+    picture.common.height = height_hwp;
+    Paragraph {
+        text: "가나다라마바사아자차가나다라마바사아자차".to_string(),
+        // 첫 offset 의 gap 8 = 확장 컨트롤 1개가 문단 선두(위치 0)에 앵커
+        // (control_text_positions 의 gap 분석 계약).
+        char_offsets: (0..20).map(|i| i + 8).collect(),
+        char_count: 21,
+        char_shapes: vec![CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 0,
+        }],
+        line_segs: vec![LineSeg {
+            text_start: 0,
+            ..Default::default()
+        }],
+        controls: vec![Control::Picture(Box::new(picture))],
+        ..Default::default()
+    }
+}
+
+/// 좌측 어울림 그림 옆에서 모든 줄이 우측 구간으로 좁혀진다.
+#[test]
+fn reflow_wraps_lines_beside_left_square_picture() {
+    let styles = make_styles_with_font_size(16.0);
+    // 그림 높이 19200HU(≈256px) — 전 줄이 wrap zone 안.
+    let mut para = make_wrap_para(TextWrap::Square, HorzAlign::Left, 19200);
+    reflow_line_segs(&mut para, 200.0, &styles, 96.0);
+
+    // 전폭(200px)이면 12자/줄 → 2줄. 100px 로 좁혀지면 6자/줄 → 4줄.
+    assert!(
+        para.line_segs.len() >= 3,
+        "어울림 폭 축소로 줄 수가 늘어야 함: {}줄",
+        para.line_segs.len()
+    );
+    for (i, seg) in para.line_segs.iter().enumerate() {
+        assert!(
+            seg.column_start >= 7000,
+            "줄 {i}: 좌측 그림(100px=7500HU)을 비껴 시작해야 함, column_start={}",
+            seg.column_start
+        );
+        assert!(
+            seg.segment_width <= 8000,
+            "줄 {i}: 우측 구간 폭(≈100px)으로 좁혀져야 함, segment_width={}",
+            seg.segment_width
+        );
+    }
+}
+
+/// 그림 높이 아래의 줄은 전폭으로 복귀한다.
+#[test]
+fn reflow_returns_to_full_width_below_picture() {
+    let styles = make_styles_with_font_size(16.0);
+    // 줄 전진량 = lh 1200 + spacing 720 = 1920HU. 그림 높이 3800HU ≈ 두 줄 대역.
+    let mut para = make_wrap_para(TextWrap::Square, HorzAlign::Left, 3800);
+    reflow_line_segs(&mut para, 200.0, &styles, 96.0);
+
+    assert!(para.line_segs.len() >= 3, "줄 수: {}", para.line_segs.len());
+    assert!(
+        para.line_segs[0].column_start >= 7000,
+        "첫 줄은 좁혀져야 함: cs={}",
+        para.line_segs[0].column_start
+    );
+    let last = para.line_segs.last().unwrap();
+    assert_eq!(last.column_start, 0, "그림 아래 줄은 단 좌측에서 시작");
+    assert!(
+        last.segment_width >= 14000,
+        "그림 아래 줄은 전폭(200px=15000HU) 복귀: sw={}",
+        last.segment_width
+    );
+}
+
+/// 우측 정렬 그림이면 좌측 구간을 쓴다 (column_start 0 유지, 폭만 축소).
+#[test]
+fn reflow_keeps_left_interval_for_right_anchored_picture() {
+    let styles = make_styles_with_font_size(16.0);
+    let mut para = make_wrap_para(TextWrap::Square, HorzAlign::Right, 19200);
+    reflow_line_segs(&mut para, 200.0, &styles, 96.0);
+
+    for (i, seg) in para.line_segs.iter().enumerate() {
+        assert_eq!(seg.column_start, 0, "줄 {i}: 좌측 구간 시작이어야 함");
+        assert!(
+            seg.segment_width <= 8000,
+            "줄 {i}: 좌측 구간 폭으로 좁혀져야 함, segment_width={}",
+            seg.segment_width
+        );
+    }
+}
+
+/// 쪽/용지 가로 기준 개체는 문단-로컬로 위치를 알 수 없어 계획에서 제외한다
+/// (잘못된 배제보다 전폭 유지가 안전 — greptile P1).
+#[test]
+fn reflow_skips_page_and_paper_horz_relative_floats() {
+    let styles = make_styles_with_font_size(16.0);
+    for rel in [HorzRelTo::Page, HorzRelTo::Paper] {
+        let mut para = make_wrap_para(TextWrap::Square, HorzAlign::Left, 19200);
+        if let Control::Picture(pic) = &mut para.controls[0] {
+            pic.common.horz_rel_to = rel;
+        }
+        reflow_line_segs(&mut para, 200.0, &styles, 96.0);
+        assert_eq!(para.line_segs.len(), 2, "{rel:?}: 전폭 유지 → 2줄");
+        for seg in &para.line_segs {
+            assert_eq!(seg.column_start, 0, "{rel:?}: wrap zone 미기록");
+            assert_eq!(seg.segment_width, 15000, "{rel:?}: 전폭 200px=15000HU");
+        }
+    }
+}
+
+/// 글 뒤로(BehindText)/글자처럼 취급 개체는 줄 폭에 영향을 주지 않는다.
+#[test]
+fn reflow_ignores_behind_text_and_tac_objects() {
+    let styles = make_styles_with_font_size(16.0);
+    let mut para = make_wrap_para(TextWrap::BehindText, HorzAlign::Left, 19200);
+    reflow_line_segs(&mut para, 200.0, &styles, 96.0);
+    assert_eq!(para.line_segs.len(), 2, "전폭 12자/줄 → 2줄이어야 함");
+    for seg in &para.line_segs {
+        assert_eq!(seg.column_start, 0);
+        assert_eq!(seg.segment_width, 15000, "전폭 200px=15000HU 유지");
+    }
+
+    let mut tac = make_wrap_para(TextWrap::Square, HorzAlign::Left, 19200);
+    if let Control::Picture(pic) = &mut tac.controls[0] {
+        pic.common.treat_as_char = true;
+    }
+    reflow_line_segs(&mut tac, 200.0, &styles, 96.0);
+    for seg in &tac.line_segs {
+        assert_eq!(seg.column_start, 0, "TAC 개체는 wrap zone 을 만들지 않음");
+    }
+}
+
+/// line_height가 올바르게 설정되는지 검증
+#[test]
+fn test_reflow_line_height() {
+    let styles = make_styles_with_font_size(16.0);
+    let mut para = Paragraph {
+        text: "가".to_string(),
+        char_offsets: vec![0],
+        char_count: 2,
+        char_shapes: vec![CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 0,
+        }],
+        line_segs: vec![LineSeg {
+            text_start: 0,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    reflow_line_segs(&mut para, 500.0, &styles, 96.0);
+    assert_eq!(para.line_segs.len(), 1);
+    // line_height = px_to_hwpunit(16.0, 96) = (16.0 * 7200 / 96) = 1200
+    // HWP LineSeg.line_height = 폰트 크기 (실증: 10pt→1000, 12pt→1200)
+    assert_eq!(para.line_segs[0].line_height, 1200);
+}
+
+// ===== split_runs_by_lang 테스트 =====
+
+/// 한영 혼합 텍스트가 언어별로 분할되는지 검증
+#[test]
+fn test_split_runs_by_lang_korean_english() {
+    let runs = vec![ComposedTextRun {
+        text: "안녕Hello세계".to_string(),
+        char_style_id: 0,
+        lang_index: 0,
+        char_overlap: None,
+        footnote_marker: None,
+        display_text: None,
+    }];
+    let result = split_runs_by_lang(runs);
+    assert_eq!(result.len(), 3);
+    assert_eq!(result[0].text, "안녕");
+    assert_eq!(result[0].lang_index, 0); // 한국어
+    assert_eq!(result[1].text, "Hello");
+    assert_eq!(result[1].lang_index, 1); // 영어
+    assert_eq!(result[2].text, "세계");
+    assert_eq!(result[2].lang_index, 0); // 한국어
+}
+
+/// 단일 언어 텍스트는 분할 없음
+#[test]
+fn test_split_runs_by_lang_no_split() {
+    let runs = vec![ComposedTextRun {
+        text: "안녕하세요".to_string(),
+        char_style_id: 0,
+        lang_index: 0,
+        char_overlap: None,
+        footnote_marker: None,
+        display_text: None,
+    }];
+    let result = split_runs_by_lang(runs);
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].text, "안녕하세요");
+    assert_eq!(result[0].lang_index, 0);
+}
+
+/// 한글에 닿는 공백은 양쪽 모두 한글 폭을 유지한다.
+#[test]
+fn test_split_runs_by_lang_space_at_korean_boundaries() {
+    let runs = vec![ComposedTextRun {
+        text: "안녕 Hello 세계".to_string(),
+        char_style_id: 0,
+        lang_index: 0,
+        char_overlap: None,
+        footnote_marker: None,
+        display_text: None,
+    }];
+    let result = split_runs_by_lang(runs);
+    assert_eq!(result.len(), 3);
+    assert_eq!(result[0].text, "안녕 ");
+    assert_eq!(result[0].lang_index, 0); // 한국어
+    assert_eq!(result[1].text, "Hello");
+    assert_eq!(result[1].lang_index, 1); // 공백 + 영어
+    assert_eq!(result[2].text, " 세계");
+    assert_eq!(result[2].lang_index, 0); // 한국어
+}
+
+/// 빈 텍스트 run은 그대로 유지
+#[test]
+fn test_split_runs_by_lang_empty() {
+    let runs = vec![ComposedTextRun {
+        text: "".to_string(),
+        char_style_id: 0,
+        lang_index: 0,
+        char_overlap: None,
+        footnote_marker: None,
+        display_text: None,
+    }];
+    let result = split_runs_by_lang(runs);
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].text, "");
+}
+
+/// 영어만 있는 텍스트
+#[test]
+fn test_split_runs_by_lang_english_only() {
+    let runs = vec![ComposedTextRun {
+        text: "Hello World".to_string(),
+        char_style_id: 0,
+        lang_index: 0,
+        char_overlap: None,
+        footnote_marker: None,
+        display_text: None,
+    }];
+    let result = split_runs_by_lang(runs);
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].text, "Hello World");
+    assert_eq!(result[0].lang_index, 1); // 영어
+}
+
+/// is_lang_neutral 검증
+#[test]
+fn test_is_lang_neutral() {
+    assert!(is_lang_neutral(' '));
+    // 구두점은 영문 글꼴 슬롯 (한컴 PDF 실측) — 앞 글자의 언어를 따르지 않는다
+    assert!(!is_lang_neutral('.'));
+    assert!(!is_lang_neutral(','));
+    assert!(!is_lang_neutral('('));
+    // 줄 나눔 단어 경계에서는 여전히 중립
+    assert!(is_word_break_neutral('.'));
+    assert!(is_word_break_neutral('('));
+    assert!(!is_word_break_neutral('\u{2018}'));
+    assert!(!is_lang_neutral('A'));
+    assert!(!is_lang_neutral('가'));
+    assert!(!is_lang_neutral('漢'));
+}
+
+/// 언어 인식 리플로우: 한국어+영어 혼합 문단
+#[test]
+fn test_reflow_lang_aware_mixed() {
+    use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle, ResolvedStyleSet};
+
+    let styles = ResolvedStyleSet {
+        hwp3_variant: false,
+        char_styles: vec![ResolvedCharStyle {
+            font_family: "함초롬돋움".to_string(),
+            font_families: vec![
+                "함초롬돋움".to_string(), // 한국어
+                "Arial".to_string(),      // 영어
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+            ],
+            font_size: 16.0,
+            ratio: 1.0,
+            ratios: vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+            letter_spacing: 0.0,
+            letter_spacings: vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            ..Default::default()
+        }],
+        para_styles: vec![ResolvedParaStyle::default()],
+        ..Default::default()
+    };
+
+    // 한영 혼합 텍스트 (충분히 좁은 너비 → 여러 줄)
+    let mut para = Paragraph {
+        text: "가나다ABC".to_string(),
+        char_offsets: vec![0, 1, 2, 3, 4, 5],
+        char_count: 7,
+        char_shapes: vec![CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 0,
+        }],
+        line_segs: vec![LineSeg {
+            text_start: 0,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    // 너비 충분 → 1줄
+    reflow_line_segs(&mut para, 500.0, &styles, 96.0);
+    assert_eq!(para.line_segs.len(), 1);
+
+    // 너비 부족 → 여러 줄 (언어별 폰트 적용 확인)
+    reflow_line_segs(&mut para, 30.0, &styles, 96.0);
+    assert!(
+        para.line_segs.len() > 1,
+        "좁은 너비에서 줄 바꿈이 발생해야 함"
+    );
+}
+
+/// estimate_composed_line_width 기본 테스트
+#[test]
+fn test_estimate_composed_line_width() {
+    let styles = make_styles_with_font_size(16.0);
+
+    let line = ComposedLine {
+        runs: vec![ComposedTextRun {
+            text: "가나다".to_string(),
+            char_style_id: 0,
+            lang_index: 0,
+            char_overlap: None,
+            footnote_marker: None,
+            display_text: None,
+        }],
+        line_height: 400,
+        baseline_distance: 320,
+        segment_width: 0,
+        column_start: 0,
+        line_spacing: 0,
+        has_line_break: false,
+        char_start: 0,
+    };
+
+    let width = estimate_composed_line_width(&line, &styles);
+    assert!(width > 0.0, "폭이 0보다 커야 함");
+}
+
+// === 줄 나눔 엔진 테스트 ===
+
+/// 한국어 어절 줄 바꿈: 공백에서 줄 바꿈
+#[test]
+fn test_reflow_korean_eojeol_wrap() {
+    let styles = make_styles_with_font_size(16.0);
+    // "안녕하세요 반갑습니다" — 5글자 + 공백 + 5글자
+    // 각 16px, 공백 8px → 총 5*16 + 8 + 5*16 = 168px
+    let mut para = Paragraph {
+        text: "안녕하세요 반갑습니다".to_string(),
+        char_offsets: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        char_count: 12,
+        char_shapes: vec![CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 0,
+        }],
+        line_segs: vec![LineSeg {
+            text_start: 0,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    // 너비 100px → "안녕하세요" (80px) + " " (8px) = 88px 들어감
+    // "반갑습니다" (80px) → 2번째 줄
+    reflow_line_segs(&mut para, 100.0, &styles, 96.0);
+    assert_eq!(para.line_segs.len(), 2, "어절 경계에서 줄 바꿈");
+    assert_eq!(para.line_segs[0].text_start, 0);
+    // 두 번째 줄은 공백 다음 글자부터 (char_offset 6)
+    assert_eq!(para.line_segs[1].text_start, 6);
+}
+
+/// 한글 줄 나눔 단위 계약: 0=어절, 1=글자
+#[test]
+fn test_reflow_korean_break_unit_contract() {
+    let mut word_styles = make_styles_with_font_size(16.0);
+    word_styles.para_styles[0].korean_break_unit = 0;
+
+    let mut char_styles = make_styles_with_font_size(16.0);
+    char_styles.para_styles[0].korean_break_unit = 1;
+
+    let make_para = || Paragraph {
+        text: "가나 다라".to_string(),
+        char_offsets: vec![0, 1, 2, 3, 4],
+        char_count: 6,
+        char_shapes: vec![CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 0,
+        }],
+        line_segs: vec![LineSeg {
+            text_start: 0,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let mut word_para = make_para();
+    reflow_line_segs(&mut word_para, 60.0, &word_styles, 96.0);
+
+    let mut char_para = make_para();
+    reflow_line_segs(&mut char_para, 60.0, &char_styles, 96.0);
+
+    let word_starts: Vec<u32> = word_para
+        .line_segs
+        .iter()
+        .map(|seg| seg.text_start)
+        .collect();
+    let char_starts: Vec<u32> = char_para
+        .line_segs
+        .iter()
+        .map(|seg| seg.text_start)
+        .collect();
+
+    assert_eq!(word_starts, vec![0, 3], "어절 모드는 공백 뒤에서 줄바꿈");
+    assert_eq!(char_starts, vec![0, 4], "글자 모드는 다음 어절 일부를 채움");
+}
+
+/// 영어 단어 줄 바꿈: 공백에서 줄 바꿈
+#[test]
+fn test_reflow_english_word_wrap() {
+    let styles = make_styles_with_font_size(16.0);
+    // "Hello World" — 각 8px (Latin=0.5*16), 공백 8px
+    // "Hello" (40px) + " " (8px) + "World" (40px) = 88px
+    let mut para = Paragraph {
+        text: "Hello World".to_string(),
+        char_offsets: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        char_count: 12,
+        char_shapes: vec![CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 0,
+        }],
+        line_segs: vec![LineSeg {
+            text_start: 0,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    // 너비 60px → "Hello" (40px) + " " (8px) = 48px 들어감
+    // "World" (40px) → 2번째 줄
+    reflow_line_segs(&mut para, 60.0, &styles, 96.0);
+    assert_eq!(para.line_segs.len(), 2, "단어 경계에서 줄 바꿈");
+    assert_eq!(para.line_segs[0].text_start, 0);
+    assert_eq!(para.line_segs[1].text_start, 6); // "World" 시작
+}
+
+#[test]
+fn test_reflow_condense_shrinks_measured_space_width() {
+    let mut styles = make_styles_with_font_size(10.0);
+    styles.para_styles[0].condense_min_space = 20;
+
+    let mut para = Paragraph {
+        text: "A B ABCDEF".to_string(),
+        char_offsets: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        char_count: 10,
+        char_shapes: vec![CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 0,
+        }],
+        line_segs: vec![LineSeg {
+            text_start: 0,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    // 폭은 측정값에서 잡는다 (글자 폭은 1/1800인치 격자로 양자화된다). condense=20 은
+    // 공백마다 20% 를 줄일 수 있다 — 그 절반만큼 좁은 줄에도 한 줄로 들어가야 한다.
+    let chars: Vec<char> = para.text.chars().collect();
+    let tokens = tokenize_paragraph(&chars, &para.char_offsets, &para.char_shapes, &styles, 0, 0);
+    let (mut natural, mut spaces) = (0.0, 0.0);
+    for t in &tokens {
+        match t {
+            BreakToken::Text { width, .. } => natural += width,
+            BreakToken::Space { width, .. } => {
+                natural += width;
+                spaces += width;
+            }
+            _ => {}
+        }
+    }
+    let width = natural - spaces * 0.2 * 0.5;
+    let mut plain = para.clone();
+    reflow_line_segs(&mut para, width, &styles, 96.0);
+    assert_eq!(para.line_segs.len(), 1);
+    styles.para_styles[0].condense_min_space = 0;
+    reflow_line_segs(&mut plain, width, &styles, 96.0);
+    assert_eq!(plain.line_segs.len(), 2, "공백 압축 없이는 넘친다");
+}
+
+/// 강제 줄 바꿈: \n에서 즉시 줄 바꿈
+#[test]
+fn test_reflow_forced_line_break() {
+    let styles = make_styles_with_font_size(16.0);
+    let mut para = Paragraph {
+        text: "가나\n다라".to_string(),
+        char_offsets: vec![0, 1, 2, 3, 4],
+        char_count: 6,
+        char_shapes: vec![CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 0,
+        }],
+        line_segs: vec![LineSeg {
+            text_start: 0,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    reflow_line_segs(&mut para, 500.0, &styles, 96.0);
+    assert_eq!(para.line_segs.len(), 2, "\\n에서 강제 줄 바꿈");
+    assert_eq!(para.line_segs[0].text_start, 0);
+    assert_eq!(para.line_segs[1].text_start, 3); // \n 다음
+}
+
+/// 금칙 처리: 줄 머리/꼬리 금칙 검증
+#[test]
+fn test_geumchik_functions() {
+    // 줄 머리 금칙: 줄 시작에 올 수 없는 문자
+    assert!(is_line_start_forbidden(')'));
+    assert!(is_line_start_forbidden('.'));
+    assert!(is_line_start_forbidden(','));
+    assert!(is_line_start_forbidden('!'));
+    assert!(is_line_start_forbidden('%'));
+    assert!(!is_line_start_forbidden('가'));
+    assert!(!is_line_start_forbidden('A'));
+
+    // 줄 꼬리 금칙: 줄 끝에 올 수 없는 문자
+    assert!(is_line_end_forbidden('('));
+    assert!(is_line_end_forbidden('['));
+    assert!(is_line_end_forbidden('$'));
+    assert!(is_line_end_forbidden('\u{20A9}')); // ₩
+    assert!(!is_line_end_forbidden('가'));
+    assert!(!is_line_end_forbidden('A'));
+}
+
+/// 토크나이저: 한국어 어절 토큰화
+#[test]
+fn test_tokenize_korean_eojeol() {
+    let styles = make_styles_with_font_size(16.0);
+    let text: Vec<char> = "가나 다라".chars().collect();
+    let offsets: Vec<u32> = (0..text.len() as u32).collect();
+    let shapes = vec![CharShapeRef {
+        start_pos: 0,
+        char_shape_id: 0,
+    }];
+
+    // [#2185] bit7=0 = 어절 단위 (한컴 통제 실측 3중 확증 — 종전 ==1 역해석 정정)
+    let tokens = tokenize_paragraph(&text, &offsets, &shapes, &styles, 0, 0);
+    // "가나" (Text) + " " (Space) + "다라" (Text) = 3 tokens
+    assert_eq!(tokens.len(), 3);
+    assert!(matches!(
+        tokens[0],
+        BreakToken::Text {
+            start_idx: 0,
+            end_idx: 2,
+            ..
+        }
+    ));
+    assert!(matches!(tokens[1], BreakToken::Space { idx: 2, .. }));
+    assert!(matches!(
+        tokens[2],
+        BreakToken::Text {
+            start_idx: 3,
+            end_idx: 5,
+            ..
+        }
+    ));
+}
+
+/// 토크나이저: 한국어 글자 단위 토큰화
+#[test]
+fn test_tokenize_korean_character_unit() {
+    let styles = make_styles_with_font_size(16.0);
+    let text: Vec<char> = "가나".chars().collect();
+    let offsets: Vec<u32> = (0..text.len() as u32).collect();
+    let shapes = vec![CharShapeRef {
+        start_pos: 0,
+        char_shape_id: 0,
+    }];
+
+    let tokens = tokenize_paragraph(&text, &offsets, &shapes, &styles, 0, 1);
+    assert_eq!(tokens.len(), 2);
+    assert!(matches!(
+        tokens[0],
+        BreakToken::Text {
+            start_idx: 0,
+            end_idx: 1,
+            ..
+        }
+    ));
+    assert!(matches!(
+        tokens[1],
+        BreakToken::Text {
+            start_idx: 1,
+            end_idx: 2,
+            ..
+        }
+    ));
+}
+
+/// 토크나이저: 영어 단어 토큰화
+#[test]
+fn test_tokenize_english_words() {
+    let styles = make_styles_with_font_size(16.0);
+    let text: Vec<char> = "AB CD".chars().collect();
+    let offsets: Vec<u32> = (0..text.len() as u32).collect();
+    let shapes = vec![CharShapeRef {
+        start_pos: 0,
+        char_shape_id: 0,
+    }];
+
+    let tokens = tokenize_paragraph(&text, &offsets, &shapes, &styles, 0, 0);
+    // "AB" (Text) + " " (Space) + "CD" (Text) = 3 tokens
+    assert_eq!(tokens.len(), 3);
+    assert!(matches!(
+        tokens[0],
+        BreakToken::Text {
+            start_idx: 0,
+            end_idx: 2,
+            ..
+        }
+    ));
+    assert!(matches!(tokens[1], BreakToken::Space { idx: 2, .. }));
+    assert!(matches!(
+        tokens[2],
+        BreakToken::Text {
+            start_idx: 3,
+            end_idx: 5,
+            ..
+        }
+    ));
+}
+
+/// 토크나이저: 줄 바꿈 토큰
+#[test]
+fn test_tokenize_line_break() {
+    let styles = make_styles_with_font_size(16.0);
+    let text: Vec<char> = "가\n나".chars().collect();
+    let offsets: Vec<u32> = (0..text.len() as u32).collect();
+    let shapes = vec![CharShapeRef {
+        start_pos: 0,
+        char_shape_id: 0,
+    }];
+
+    let tokens = tokenize_paragraph(&text, &offsets, &shapes, &styles, 0, 0);
+    assert_eq!(tokens.len(), 3);
+    assert!(matches!(tokens[1], BreakToken::LineBreak { idx: 1, .. }));
+}
+
+// ─── Task #555: PUA 옛한글 → 자모 변환 후 폰트 매트릭스 ───
+
+/// Task #555 RED: `effective_text_for_metrics` 가 `display_text` 가 있을 때
+/// 자모 시퀀스를 반환해야 한다 (현재 STUB 은 `text` 반환 → RED).
+///
+/// PUA 옛한글 char (예: U+F861 책괄호) 가 `display_text` 에 자모 시퀀스 ("《")
+/// 로 변환되어 있는 경우, 폰트 매트릭스 측정 (estimate_text_width 등) 은
+/// 자모 시퀀스 기준으로 수행되어야 함.
+#[test]
+fn test_555_effective_text_for_metrics_uses_display_text_when_present() {
+    let run = ComposedTextRun {
+        text: "\u{F861}".to_string(), // PUA 책괄호 (1 char)
+        char_style_id: 0,
+        lang_index: 0,
+        char_overlap: None,
+        footnote_marker: None,
+        display_text: Some("《".to_string()), // 변환된 자모 (1 char in this case)
+    };
+    let effective = super::effective_text_for_metrics(&run);
+    assert_eq!(
+        effective, "《",
+        "PUA 옛한글 변환 후 폰트 매트릭스는 display_text (자모 시퀀스) 기준이어야 함. \
+         현재 STUB 은 text (PUA 1글자) 반환 → 자모 시퀀스 폭과 불일치."
+    );
+}
+
+/// Task #555 RED: 옛한글 합자 PUA char 의 4-자모 시퀀스 변환 케이스.
+///
+/// 예: "" (옛한글 합자, 1 PUA char) → "ᄃᆞᄫᆡ" (4 jamo chars).
+/// 폰트 매트릭스는 4 char 폭으로 측정되어야 함.
+#[test]
+fn test_555_effective_text_for_metrics_multi_jamo_cluster() {
+    let run = ComposedTextRun {
+        text: "\u{F8E0}".to_string(), // PUA 옛한글 합자 (가상 codepoint, 1 char)
+        char_style_id: 0,
+        lang_index: 0,
+        char_overlap: None,
+        footnote_marker: None,
+        display_text: Some("ᄃᆞᄫᆡ".to_string()), // 4 jamo chars
+    };
+    let effective = super::effective_text_for_metrics(&run);
+    assert_eq!(
+        effective.chars().count(),
+        4,
+        "옛한글 합자 PUA → 4-jamo 시퀀스 변환 시 폰트 매트릭스 char count 도 4 이어야 함."
+    );
+    assert_eq!(effective, "ᄃᆞᄫᆡ");
+}
+
+/// Task #555 GREEN: `display_text` 가 None 이면 `text` 그대로 반환 (비-PUA fallback).
+///
+/// 비-PUA 텍스트는 `display_text=None` 이므로 본 함수는 `text` 를 그대로 반환.
+/// 회귀 가드 — 옵션 A 적용 후에도 비-PUA 영역 동작 동일.
+#[test]
+fn test_555_effective_text_for_metrics_no_display_text_falls_back_to_text() {
+    let run = ComposedTextRun {
+        text: "한글".to_string(),
+        char_style_id: 0,
+        lang_index: 0,
+        char_overlap: None,
+        footnote_marker: None,
+        display_text: None,
+    };
+    let effective = super::effective_text_for_metrics(&run);
+    assert_eq!(
+        effective, "한글",
+        "display_text=None 인 경우 text 그대로 반환. 비-PUA fallback 회귀 가드."
+    );
+}
+
+/// Issue #677: U+F081C HWP TAC filler 는 시각 폭 0으로 측정되어야 한다.
+///
+/// filler 원문이 display_text 로 치환되면 `text_measurement` 의 0폭 분기를
+/// 우회하여 복학원서 접수증 블록이 우측으로 밀린다.
+#[test]
+fn test_677_effective_text_for_metrics_preserves_f081c_filler() {
+    let run = ComposedTextRun {
+        text: "\u{F081C}\u{F081C}".to_string(),
+        char_style_id: 0,
+        lang_index: 0,
+        char_overlap: None,
+        footnote_marker: None,
+        display_text: Some("□□".to_string()),
+    };
+    let effective = super::effective_text_for_metrics(&run);
+    assert_eq!(
+        effective, "\u{F081C}\u{F081C}",
+        "U+F081C filler 는 0폭 측정 규칙을 유지하기 위해 원문으로 측정해야 함."
+    );
+}
+
+/// 방점(U+302E/U+302F)은 유니코드 결합문자라 유효 base 없이(줄 시작/공백 뒤)
+/// 셰이핑되면 dotted-circle(U+25CC) placeholder 아티팩트가 생긴다. 렌더 확장
+/// 경로에서 spacing 가운데 점으로 치환해 한컴 정합을 맞춘다. (Task #1735)
+#[test]
+fn test_expand_tone_marks_to_spacing_dot() {
+    // U+302E HANGUL SINGLE DOT TONE MARK → · (U+00B7 MIDDLE DOT)
+    let out = expand_pua_render_text("\u{302E} 각");
+    assert!(!out.contains('\u{302E}'), "원본 방점이 남으면 안 됨");
+    assert!(!out.contains('\u{25CC}'), "dotted-circle 아티팩트 금지");
+    assert_eq!(out, "\u{00B7} 각", "선두 방점은 가운데 점으로 치환");
+
+    // U+302F HANGUL DOUBLE DOT TONE MARK → ⁚ (U+205A TWO DOT PUNCTUATION)
+    let out2 = expand_pua_render_text("\u{302F}가");
+    assert_eq!(out2, "\u{205A}가", "쌍방점은 세로 두 점으로 치환");
+}
+
+#[test]
+fn test_expand_hancom_relationship_line_pua_to_box_drawing() {
+    // [macOS 정합] 본문 표시 문자열은 원문 PUA 를 유지한다 (Task #826 폭 정정:
+    // 치환 문자로 바꾸면 요청 서체의 실측 advance 가 반영돼 28-agritech-review
+    // 의 0.485em 선문자가 1em 으로 벌어진다). 공개 폰트 환경(글리프 부재)에서는
+    // paint 단계 pua_missing_glyph_substitute 가 box drawing 으로 대체한다 —
+    // 두부가 아닌 box drawing 표시라는 핀 의도는 그대로다.
+    let out = expand_pua_render_text("\u{F0811}\u{F0817}\u{F081A}");
+    assert_eq!(out, "\u{F0811}\u{F0817}\u{F081A}", "본문 텍스트는 PUA 유지");
+    assert_eq!(pua_missing_glyph_substitute('\u{F0811}'), Some('┌'));
+    assert_eq!(pua_missing_glyph_substitute('\u{F0817}'), Some('└'));
+    assert_eq!(pua_missing_glyph_substitute('\u{F081A}'), Some('─'));
+}
+
+/// [#2244] KBU=1(글자 단위) 줄바꿈에서 행두 금칙 문자 retraction —
+/// 새 줄이 마침표로 시작하지 않도록 직전 글자를 함께 이월한다.
+/// 한컴 2024 저장 오라클: "…하여 적용한 | 다.111…" (LINE_SEG [...,128] —
+/// '다'(128) 앞에서 분리, '.'(129) 고립 금지).
+#[test]
+fn test_kbu1_line_start_forbidden_retraction() {
+    let styles = make_styles_with_font_size(16.0);
+    let line = ComposedLine {
+        runs: vec![ComposedTextRun {
+            text: "적용한다.111111".to_string(),
+            char_style_id: 0,
+            lang_index: 0,
+            char_overlap: None,
+            footnote_marker: None,
+            display_text: None,
+        }],
+        line_height: 400,
+        baseline_distance: 320,
+        segment_width: 0,
+        column_start: 0,
+        line_spacing: 0,
+        has_line_break: false,
+        char_start: 0,
+    };
+    // 한글 4자(64px)는 들어가고 '.'에서 초과하는 폭 → 수정 전엔 둘째 줄이
+    // "."로 시작 ("적용한다 | .111111"), 수정 후엔 '다' 동반 이월.
+    let frags = split_composed_line_by_width(&line, 68.0, 68.0, &styles, true, 0.0, false);
+    assert!(
+        frags.len() >= 2,
+        "두 줄 이상으로 분할되어야 함: {:?}",
+        frags.len()
+    );
+    let line2_text: String = frags[1].runs.iter().map(|r| r.text.as_str()).collect();
+    assert!(
+        !line2_text.starts_with('.'),
+        "새 줄이 행두 금칙 '.'로 시작하면 안 됨 (한컴: 직전 글자 동반 이월): {:?}",
+        line2_text
+    );
+    assert!(
+        line2_text.starts_with("다."),
+        "한컴 오라클 정합: 둘째 줄은 '다.'로 시작해야 함: {:?}",
+        line2_text
+    );
+    // char_start 정합: 둘째 줄 시작 = '다' 위치(3)
+    assert_eq!(
+        frags[1].char_start, 3,
+        "retraction 후 char_start 는 '다' 위치"
+    );
+}
+
+#[test]
+fn neutral_style_runs_keep_script_context() {
+    let runs = ["Word", " ", "가", " ", ",", " ", "2"]
+        .into_iter()
+        .enumerate()
+        .map(|(id, text)| ComposedTextRun {
+            text: text.to_string(),
+            char_style_id: id as u32,
+            ..Default::default()
+        })
+        .collect();
+    let split = split_runs_by_lang(runs);
+    assert_eq!(
+        split.iter().map(|run| run.lang_index).collect::<Vec<_>>(),
+        vec![1, 0, 0, 0, 1, 1, 1]
+    );
+}
+
+#[test]
+fn native_generated_word_wrap_hangs_terminal_space_without_moving_the_word() {
+    use crate::renderer::style_resolver::ResolvedCharStyle;
+    let para = Paragraph {
+        text: "가 나 다".into(),
+        ..Default::default()
+    };
+    let styles = ResolvedStyleSet {
+        char_styles: vec![ResolvedCharStyle {
+            font_size: 10.0,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let composed = compose_paragraph(&para);
+    let frags =
+        split_composed_line_by_width(&composed.lines[0], 26.0, 26.0, &styles, false, 0.0, true);
+    assert_eq!(frags.len(), 2);
+    assert_eq!(
+        frags[0]
+            .runs
+            .iter()
+            .map(|r| r.text.as_str())
+            .collect::<String>(),
+        "가 나 "
+    );
+    assert_eq!(frags[1].char_start, 4);
+}
+
+#[test]
+fn native_generated_word_wrap_keeps_word_across_script_and_style_runs() {
+    use crate::renderer::style_resolver::ResolvedCharStyle;
+    let styles = ResolvedStyleSet {
+        char_styles: vec![ResolvedCharStyle {
+            font_size: 10.0,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let para = Paragraph {
+        text: "가 AB나.".into(),
+        ..Default::default()
+    };
+    let composed = compose_paragraph(&para);
+    let frags =
+        split_composed_line_by_width(&composed.lines[0], 35.0, 35.0, &styles, false, 0.0, true);
+    assert_eq!(frags.len(), 2);
+    let texts: Vec<String> = frags
+        .iter()
+        .map(|line| line.runs.iter().map(|r| r.text.as_str()).collect())
+        .collect();
+    assert_eq!(texts, ["가 ", "AB나."]);
+    assert_eq!(frags[1].char_start, 2);
+    assert!(frags[1].runs.len() > 1);
+    let narrow =
+        split_composed_line_by_width(&composed.lines[0], 15.0, 15.0, &styles, false, 0.0, true);
+    assert!(
+        narrow.len() > 2,
+        "an oversized multilingual word can still wrap"
+    );
+    let restored: String = narrow
+        .iter()
+        .flat_map(|line| &line.runs)
+        .map(|run| run.text.as_str())
+        .collect();
+    assert_eq!(restored, para.text);
+
+    // 긴 어절의 글자 채움은 이전 합성 줄이나 글자모양/언어 run 경계에 의존하지 않는다.
+    let mut styles = styles;
+    styles.char_styles.push(styles.char_styles[0].clone());
+    for pieces in [
+        vec![("가나다라마바", 0, 0), ("),", 1, 1)],
+        vec![("가나다라마", 0, 0), ("바", 1, 0), ("),", 1, 1)],
+        vec![
+            ("가나", 0, 0),
+            ("6", 1, 1),
+            ("다라", 0, 0),
+            ("마  바", 1, 0),
+        ],
+    ] {
+        let source = ComposedLine {
+            runs: pieces
+                .into_iter()
+                .map(|(text, char_style_id, lang_index)| ComposedTextRun {
+                    text: text.into(),
+                    char_style_id,
+                    lang_index,
+                    ..Default::default()
+                })
+                .collect(),
+            ..composed.lines[0].clone()
+        };
+        let expected = if source.runs[0].text == "가나" {
+            "가나6다라"
+        } else {
+            "가나다라마바)"
+        };
+        let prefix = ComposedLine {
+            runs: split_runs_by_lang(vec![ComposedTextRun {
+                text: expected.into(),
+                ..Default::default()
+            }]),
+            ..composed.lines[0].clone()
+        };
+        let width = estimate_composed_line_width(&prefix, &styles) + 0.1;
+        let wrapped =
+            split_composed_line_by_width(&source, width, width, &styles, false, 0.0, true);
+        assert_eq!(
+            wrapped[0]
+                .runs
+                .iter()
+                .map(|run| run.text.as_str())
+                .collect::<String>(),
+            expected
+        );
+        let input: String = source.runs.iter().map(|run| run.text.as_str()).collect();
+        let output: String = wrapped
+            .iter()
+            .flat_map(|line| &line.runs)
+            .map(|run| run.text.as_str())
+            .collect();
+        assert_eq!(output, input);
+        let metadata = |runs: &[ComposedTextRun]| {
+            runs.iter()
+                .flat_map(|run| {
+                    run.text
+                        .chars()
+                        .map(move |ch| (ch, run.char_style_id, run.lang_index))
+                })
+                .collect::<Vec<_>>()
+        };
+        let output_runs: Vec<_> = wrapped.iter().flat_map(|line| line.runs.clone()).collect();
+        assert_eq!(metadata(&output_runs), metadata(&source.runs));
+        let mut start = 0;
+        for line in wrapped {
+            assert_eq!(line.char_start, start);
+            start += line
+                .runs
+                .iter()
+                .map(|run| run.text.chars().count())
+                .sum::<usize>();
+        }
+    }
+    // 긴 어절의 마지막 글자가 줄을 정확히 채워도 뒤 공백만 새 줄로 보내지 않는다.
+    let source = ComposedLine {
+        runs: [("가나다라", 0), ("마바", 1), ("사아자차 ", 1), ("카", 1)]
+            .into_iter()
+            .map(|(text, char_style_id)| ComposedTextRun {
+                text: text.into(),
+                char_style_id,
+                ..Default::default()
+            })
+            .collect(),
+        ..composed.lines[0].clone()
+    };
+    let prefix = ComposedLine {
+        runs: vec![ComposedTextRun {
+            text: "가나다라마".into(),
+            ..Default::default()
+        }],
+        ..composed.lines[0].clone()
+    };
+    let width = estimate_composed_line_width(&prefix, &styles);
+    let wrapped = split_composed_line_by_width(&source, width, width, &styles, false, 0.0, true);
+    assert_eq!(
+        wrapped
+            .iter()
+            .map(|line| line
+                .runs
+                .iter()
+                .map(|run| run.text.as_str())
+                .collect::<String>())
+            .collect::<Vec<_>>(),
+        ["가나다라마", "바사아자차 ", "카"]
+    );
+    let source = ComposedLine {
+        runs: [("가나다라", 0), ("마바사 ", 1), ("아자차", 1)]
+            .into_iter()
+            .map(|(text, char_style_id)| ComposedTextRun {
+                text: text.into(),
+                char_style_id,
+                ..Default::default()
+            })
+            .collect(),
+        ..composed.lines[0].clone()
+    };
+    let wrapped = split_composed_line_by_width(&source, width, width, &styles, false, 1.0, true);
+    assert_eq!(
+        wrapped
+            .iter()
+            .map(|line| line
+                .runs
+                .iter()
+                .map(|run| run.text.as_str())
+                .collect::<String>())
+            .collect::<Vec<_>>(),
+        ["가나다라마", "바사 아자차"]
+    );
+}
+
+#[test]
+fn script_numerals_keep_glyph_slots_but_bound_half_em_spaces() {
+    for numeral in ['¹', '²', '³', '⁰', '⁴', '⁹', '₀', '₄', '₉'] {
+        // 별도 글자모양 run에서도 첨자 숫자 뒤 공백의 문맥을 이어간다.
+        let split = split_runs_by_lang(vec![
+            ComposedTextRun {
+                text: format!("R{numeral}"),
+                ..Default::default()
+            },
+            ComposedTextRun {
+                text: " 0".into(),
+                char_style_id: 1,
+                ..Default::default()
+            },
+        ]);
+        let chars: Vec<_> = split
+            .iter()
+            .flat_map(|run| run.text.chars().map(move |ch| (ch, run.lang_index)))
+            .collect();
+        assert_eq!(
+            chars,
+            vec![
+                ('R', 1),
+                (numeral, detect_lang_category(numeral)),
+                (' ', 0),
+                ('0', 1)
+            ]
+        );
+    }
+    for text in ["R2 0", "R, 0", "(R) 0", "A. B"] {
+        let split = split_runs_by_lang(vec![ComposedTextRun {
+            text: text.into(),
+            ..Default::default()
+        }]);
+        assert!(split.iter().all(|run| run.lang_index == 1), "{text}");
+    }
+}
+
+#[test]
+fn greek_unit_keeps_latin_space_before_symbol_face_letters() {
+    let split = split_runs_by_lang(vec![ComposedTextRun {
+        text: "12 μg/m³, 글 34 μg/m³.".into(),
+        ..Default::default()
+    }]);
+    let chars: Vec<_> = split
+        .iter()
+        .flat_map(|run| run.text.chars().map(move |ch| (ch, run.lang_index)))
+        .collect();
+    assert_eq!(
+        chars.iter().map(|(ch, _)| *ch).collect::<String>(),
+        "12 μg/m³, 글 34 μg/m³."
+    );
+    let spaces: Vec<_> = chars
+        .iter()
+        .filter(|(ch, _)| *ch == ' ')
+        .map(|(_, lang)| *lang)
+        .collect();
+    assert_eq!(spaces, [1, 0, 0, 1]);
+    assert!(chars
+        .iter()
+        .filter(|(ch, _)| *ch == 'μ')
+        .all(|(_, lang)| *lang == 5));
+
+    // A non-letter symbol still takes its own slot; punctuation remains Latin.
+    for (text, expected_space) in [("10 →", 5), ("10, 32", 1), ("10 Ω", 1)] {
+        let split = split_runs_by_lang(vec![ComposedTextRun {
+            text: text.into(),
+            ..Default::default()
+        }]);
+        let spaces: Vec<_> = split
+            .iter()
+            .flat_map(|run| {
+                run.text
+                    .chars()
+                    .filter(|ch| *ch == ' ')
+                    .map(move |_| run.lang_index)
+            })
+            .collect();
+        assert_eq!(spaces[0], expected_space, "{text}");
+    }
+}
+
+#[test]
+fn generated_reflow_recovers_space_context_across_prior_line_breaks() {
+    let para = Paragraph {
+        text: "가, 나\tB".into(),
+        char_offsets: (0..6).collect(),
+        char_count: 7,
+        char_shapes: vec![
+            CharShapeRef::default(),
+            CharShapeRef {
+                start_pos: 3,
+                char_shape_id: 1,
+            },
+        ],
+        line_segs: [0, 3]
+            .into_iter()
+            .map(|text_start| LineSeg {
+                text_start,
+                line_height: 1_000,
+                tag: LineSeg::TAG_IMPLEMENTATION_PROPERTY,
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let mut composed = compose_paragraph(&para);
+    assert_eq!(composed.lines[0].runs.last().unwrap().lang_index, 1);
+    recompose_for_native_hwpx_cell_width(
+        &mut composed,
+        &para,
+        2_000.0,
+        &ResolvedStyleSet::default(),
+    );
+    assert_eq!(composed.lines.len(), 1);
+    assert_eq!(composed.lines[0].char_start, 0);
+    let chars: Vec<_> = composed.lines[0]
+        .runs
+        .iter()
+        .flat_map(|run| {
+            run.text
+                .chars()
+                .map(move |ch| (ch, run.lang_index, run.char_style_id))
+        })
+        .collect();
+    assert_eq!(
+        chars.iter().map(|&(ch, _, _)| ch).collect::<String>(),
+        para.text
+    );
+    assert_eq!(chars[2], (' ', 0, 0));
+    assert!(chars[3..].iter().all(|&(_, _, style)| style == 1));
+}

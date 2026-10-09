@@ -1,0 +1,204 @@
+# Sidebar design preview
+
+The preview mounts `initAgentSidebar` from the application, including its CSS,
+icons, fonts, menus, overlays, settings, and interaction handlers. There is no
+second sidebar implementation to keep synchronized.
+
+## Start
+
+From the repository root, using Node 22.18 or newer:
+
+```sh
+npm --prefix rhwp/rhwp-studio ci  # first run only
+npm run dev:sidebar
+```
+
+Open **http://127.0.0.1:7715**. Vite reloads when the imported sidebar or its styles
+change. The server binds to localhost and reserves this port so the preview's
+browser storage stays separate from Studio. It requires no Rust build, WASM,
+Electron, agent hub, or credentials.
+
+## Live UI audit
+
+Open **http://127.0.0.1:7715/?audit=1** for a searchable checklist of sidebar
+scenarios and production dialog/menu launchers. The **Scenes** tab covers
+responses, rich Markdown, plan approval, questions, edit review, active subagents,
+connection failures, each provider's setup, Browserbase, preferences, and history.
+**Editor dialogs** opens production file, table, field, font, grid, and
+merge-preparation dialogs with sample values.
+
+Use **Previous / Next** and the reviewed checkboxes to track the audit. Checkmarks
+persist in the current browser tab. Theme and sidebar width controls stay above
+the navigation. Scene links preserve both values. **Fixture controls** exposes
+manual playback and service controls. Active-turn fixtures stay running until
+you press Stop.
+
+The document canvas, ribbon, engine-dependent formatting/object dialogs, and
+native file pickers are reviewed in the running Electron app. Changes to the
+shared production components appear in both the app and this preview. Dialog
+callbacks in this preview only report sample results.
+
+If another worktree already owns port 7715, leave it running and use a separate
+port: `npm --prefix rhwp/rhwp-studio run dev:sidebar -- --port 7716`, then open
+`http://127.0.0.1:7716/?audit=1`. Each port has separate browser storage.
+
+Run `npm run test:sidebar:audit` to open every named scene and dialog in a fresh
+headless browser, check navigation/checklist persistence, and verify that no
+external service or WASM requests occur. Representative screenshots are saved
+under `sidebar-preview/artifacts/audit-*.png`.
+
+The left controls belong to the preview. The right panel is the production
+sidebar, starting at its normal 480px width. Drag its left edge to resize it;
+the application's width limits and compact composer behavior still apply.
+The focus-mode button shows a placeholder because this preview covers the sidebar;
+`fullscreen=1` opens focus mode through the native menu's agent command instead.
+
+## Useful URLs
+
+Open **http://127.0.0.1:7715/?editor=1** to review the whole editor shell with
+the production header, menus, toolbars, status bar, and sidebar. The production
+menu and command palette controllers use fixture commands, so their keyboard and
+focus behavior can be reviewed without the document engine. The page carries an
+explicit fixture label; document rendering and command actions are samples.
+Add `&theme=dark` or `&width=360`
+for layout review at other settings. Fixture controls are hidden in this mode.
+
+| URL suffix | Opens |
+| --- | --- |
+| `?scenario=plan` | Next submitted message produces an approval plan |
+| `?scenario=question` | A question with selectable and free-text answers |
+| `?scenario=review` | Streaming reply followed by accept/reject changes |
+| `?scenario=fleet` | Tool activity and a subagent task |
+| `?scenario=error` | A failed turn |
+| `?scenario=compaction` | A turn with an automatic context compaction divider |
+| `?context=92` | Start the context meter at 92% (any 1–100) |
+| `?page=settings` | Production settings panel |
+| `?page=settings&fullscreen=1` | Settings inside the full-screen focus workspace |
+| `?page=versions` | Production version graph |
+| `?page=versions&history=branches` | Branching and merging history with colored graph lanes |
+| `?services=setup&page=settings` | Uninstalled/unconfigured service fixtures |
+| `?page=settings&quota=error` | Provider quota errors and unknown health bars in AI |
+| `?page=settings&quota=empty` | Exhausted Codex quota and zero banked resets |
+| `?page=settings&quota=refresh-error` | Manual refresh fails once, then succeeds on retry |
+| `?initial-setup=1` | Production first-run setup wizard |
+| `?theme=dark&width=360` | Dark theme and narrow sidebar |
+| `?controls=0` | Hide preview controls for clean captures |
+| `?reset=1` | Clear preview storage before mounting |
+
+Parameters can be combined. Select **Next reply**, then type a message or press
+**Play sample conversation**. Connection and service controls expose disconnected,
+reconnecting, replaced-session, and setup screens without waiting for real failures.
+
+## Changes drawer
+
+Open `?audit=1&auditScene=chat-changes-full` to inspect an applied full-access turn,
+uncommitted paragraphs, table/image changes, and expandable commit history in the
+production fullscreen drawer. The safe-mode change review scene keeps the same
+paragraph diff rows with accept/reject actions. The drawer defaults to 560px and
+retains its resize handle.
+
+The full-access fixture emits the same finalized-then-approved lifecycle as the
+editor. Browser checks cover commit, confirmed discard, top-entry undo, navigation,
+long paragraphs, editing locks, stale document responses, and light/dark widths.
+Latest-turn content is held in memory per thread; commits remain in the version
+store. Historical diffs open the comparison view rather than using old paragraph
+positions in the live document.
+
+## Behavior and placeholders
+
+### Live provider usage audit
+
+Start a development agent hub from this checkout on an unused port, then enable the optional local transport:
+
+```sh
+RHWP_AGENT_PORT=5178 npm start
+RHWP_SIDEBAR_LIVE_HUB=http://127.0.0.1:5178 npm run dev:sidebar
+```
+
+Open `http://127.0.0.1:7715/?page=settings&usage=live` and select **AI**. Usage, token history, and banked reset actions use the real hub; chat, document, and provider setup controls remain fixtures. Confirming a banked reset spends a real reset. The default URL continues to use samples. If the hub uses a custom development token, set `RHWP_SIDEBAR_HUB_TOKEN` on the preview server; hub credentials stay server-side.
+
+The optional transport accepts only same-origin usage reads and Codex reset requests on loopback. It registers its own hub session and deletes that session when the preview server closes.
+
+| Surface | Preview behavior |
+| --- | --- |
+| Chat | Real composer, provider/model/effort pickers, permissions, streaming Markdown, stop, tool details, question responses, and thread library |
+| Plans and changes | Real approval/revision controls, pending change cards, accept/reject, and full-access behavior; document content is simulated |
+| Skills | Search, edit files, create/validate/save/delete, enable/disable, and generated sample drafts |
+| Templates | Upload metadata, rename, replace, delete, and select via `/templates`; document parsing is simulated |
+| References | File picker/drop/paste UI, staged message attachments, scoped lists, filename search, and deletion; extraction returns sample metadata/snippets |
+| Settings | Real editing preferences, draft/apply/cancel, themes, model defaults, app instructions, and sample writing-style calibration |
+| Connections | Provider install/login, direct quota health bars, manual refresh, Codex banked reset confirmation, and model catalogs; provider credentials are never used by mocks |
+| Versions | Graph, commit titles, checkpoints, restore/adopt metadata, branches, tags, shelves, and sample merges |
+| External/document actions | Local notice for browser pages, linked documents, full-workspace focus mode, and document comparisons |
+
+Service fixtures are in memory and reset on reload. The production preference and
+thread stores persist on the preview's origin. **Reset preview data** clears those
+stores too; close other preview tabs first. Real application data is on its own
+origin and is unaffected.
+
+## Edit and extend
+
+- Edit `src/ui/agent-sidebar/` for designs intended to ship. Its production code is
+  imported directly; changes appear here and in the app.
+- For exploratory work, use an isolated Git branch/worktree. Make temporary style
+  experiments in `src/sidebar-preview/preview.css` when they should remain preview-only.
+- Add sample content in `src/sidebar-preview/fixtures.ts` and service behavior in
+  `mock-bridge.ts` or `mock-versions.ts`. Keep application selectors/markup out of mocks.
+- The mocks implement `SidebarBridge` and `VersionManagerController`. Changes to
+  those interfaces must be reflected in the fixtures; avoid `any`, cast-throughs,
+  or a catch-all proxy that would conceal an unimplemented service method.
+- `window.sidebarPreview` exposes the typed bridge, version controller, event bus,
+  scenario selector, and state snapshot for focused browser experiments.
+
+`vite.sidebar.config.ts` is independent of the application's Vite config. Keep it
+free of the agent-hub and PWA plugins and imports of the application entry point.
+The shared desktop module's optional PWA import resolves to a preview-only no-op.
+
+The version graph uses compact rows. Dates appear on hover or keyboard focus;
+selecting a commit keeps its details and restore actions below the scrolling list.
+The branch buttons switch the active branch, and new preview commits update the
+same graph layout used by the application.
+
+For LAN or Tailscale access, bind the preview explicitly:
+
+```sh
+npm --prefix rhwp/rhwp-studio run dev:sidebar -- --host 0.0.0.0
+```
+
+Open the host's IP address on port 7715. The preview bootstrap supports HTTP
+origins where the browser does not expose `crypto.randomUUID()`.
+
+## Verification
+
+```sh
+npm run test:sidebar
+npm run build:sidebar
+node rhwp/rhwp-studio/sidebar-preview/editor-shell.check.mjs
+```
+
+The browser check starts its own Vite server on an ephemeral port and launches a
+fresh headless Chrome profile. It exercises the primary panels and mutations,
+checks request isolation, and writes **sidebar-only PNGs** to
+`sidebar-preview/artifacts/` (Git-ignored). Set `CHROME_PATH` if Chrome/Chromium is
+not installed in a standard macOS/Linux location; this also supports Windows paths.
+It does not connect to or control your normal browser.
+
+The static build goes to `rhwp/rhwp-studio/dist-sidebar/`, separately from the
+application build. For the repository-wide TypeScript check, run Studio's normal
+`tsc` command after generating the application's WASM declarations. A checkout
+without `rhwp/pkg/rhwp.d.ts` reports existing missing-WASM type errors even though
+the sidebar preview runs and builds independently.
+
+For a design review, also inspect keyboard focus, scroll behavior with long
+content, and popovers at the sidebar width you plan to ship. Backend correctness
+and document-renderer behavior remain covered by their application tests.
+
+
+### OpenCode login terminal
+
+Open the **OpenCode login terminal** audit scene to review the expanding login panel. The preview uses local terminal output: press Enter twice to finish the sample login, or cancel and choose API-key entry. The app uses the same UI with an owned PTY running `opencode auth login`; completion refreshes provider status automatically. Restart the desktop app after updating the hub to test the real login.
+
+The terminal supports keyboard input, paste, resizing, browser links, cancellation, and restoration after a connection interruption. Raw terminal output is kept only in the owning login's memory, with bounded buffers. Credentials are staged and published through the existing authentication transaction after successful validation.
+
+
+New Claude, Codex, Grok, Cursor, and OpenCode installs continue into the embedded login terminal. The hub advertises platform support; every provider including Claude on macOS can complete its login there, because Claude Code writes the staged profile's `.credentials.json` and a Keychain-only login is read back into it. Pi keeps its OpenRouter browser login. Provider connection status still refreshes automatically after login, and API-key entry remains available as a fallback.

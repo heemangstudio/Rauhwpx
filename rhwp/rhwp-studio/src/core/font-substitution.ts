@@ -1,0 +1,467 @@
+/**
+ * 폰트 치환 모듈 — web/font_substitution.js를 TypeScript로 포팅
+ *
+ * webhwp의 g_SubstFonts 치환 테이블 기반.
+ * HWP 문서에서 사용하는 폰트 이름을 웹에서 렌더링 가능한 폰트로 변환한다.
+ *
+ * 3계층 해소:
+ *   1. @font-face 등록 폰트 → 그대로 사용
+ *   2. g_SubstFonts 치환 체인 → 등록된 폰트까지 체인 추적
+ *   3. 최종 fallback → generic serif/sans-serif
+ */
+
+import { REGISTERED_FONTS, getDetectedOSFonts, isSubstitutedWebFontRegistered } from './font-loader.ts';
+import { getLocalFontLookupGeneration, hasImportedLocalFontFace, repairedLocalFontFamily, resolveLocalFont } from './local-fonts.ts';
+import { equationFontFamilies } from './equation-font.ts';
+
+// 치환 엔트리: [원본폰트, 원본타입, 대체폰트, 대체타입]
+// 타입: 1=TTF, 2=HFT
+type SubstEntry = [string, number, string, number];
+
+// 언어별 치환 테이블 (0=한국어, 1=영어, 2=중국어, 3=일본어, 4=기타, 5=기호, 6=사용자)
+const SUBST_TABLES: SubstEntry[][] = [
+  // === Lang 0: 한국어 ===
+  [
+    ['휴먼명조',2,'휴먼명조',1],['휴먼명조',1,'HY신명조',1],
+    ['한양중고딕',2,'HY중고딕',1],['한양신명조',2,'HY신명조',1],
+    ['명조',2,'HY견명조',1],['신명 태고딕',2,'HY중고딕',1],
+    ['한양견명조',2,'HY견명조',1],['신명 태명조',2,'HY신명조',1],
+    ['신명 견고딕',2,'HY견고딕',1],['신명 견명조',2,'HY견명조',1],
+    ['신명 태그래픽',2,'HY그래픽',1],['신명 중고딕',2,'HY중고딕',1],
+    ['태 가는 헤드라인T',2,'HY헤드라인M',1],['양재 튼튼B',2,'양재튼튼체B',1],
+    ['태 가는 헤드라인D',2,'HY헤드라인M',1],['한양견고딕',2,'HY견고딕',1],
+    ['Gulim',1,'굴림',1],['HYHeadLine Medium',1,'HY헤드라인M',1],
+    ['Malgun Gothic',1,'맑은 고딕',1],
+    ['한컴바탕',1,'함초롬바탕',1],['한컴돋움',1,'함초롬돋움',1],
+    ['새바탕',1,'한컴바탕',1],['새돋움',1,'한컴돋움',1],
+    ['바탕',1,'새바탕',1],['돋움',1,'새돋움',1],
+    ['새굴림',1,'돋움',1],['굴림',1,'새굴림',1],
+    ['새궁서',1,'바탕',1],
+    ['궁서',1,'새궁서',1],
+    ['백묵 굴림',1,'굴림',1],['백묵 돋움',1,'돋움',1],
+    ['백묵 바탕',1,'바탕',1],['백묵 헤드라인',1,'돋움',1],
+    ['가는안상수체',1,'함초롬돋움',1],['중간안상수체',1,'함초롬돋움',1],
+    ['굵은안상수체',1,'함초롬돋움',1],['HY그래픽M',1,'HY그래픽',1],
+    ['명조',2,'바탕',1],['고딕',2,'돋움',1],
+    ['샘물',2,'고딕',2],['필기',2,'명조',2],['시스템',2,'고딕',2],
+    ['HY둥근고딕',2,'시스템',2],['옛한글',2,'명조',2],
+    ['가는공한',2,'명조',2],['중간공한',2,'명조',2],['굵은공한',2,'명조',2],
+    ['가는한',2,'샘물',2],['중간한',2,'샘물',2],['굵은한',2,'샘물',2],
+    ['휴먼명조',2,'옛한글',2],['휴먼고딕',2,'고딕',2],
+    ['가는안상수체',2,'가는한',2],['중간안상수체',2,'중간한',2],['굵은안상수체',2,'굵은한',2],
+    ['휴먼가는샘체',2,'가는한',2],['휴먼중간샘체',2,'중간한',2],['휴먼굵은샘체',2,'굵은한',2],
+    ['휴먼가는팸체',2,'휴먼가는샘체',2],['휴먼중간팸체',2,'휴먼중간샘체',2],['휴먼굵은팸체',2,'휴먼굵은샘체',2],
+    ['휴먼옛체',2,'휴먼고딕',2],
+    ['한양신명조',2,'휴먼명조',2],['한양견명조',2,'휴먼명조',2],
+    ['한양중고딕',2,'휴먼고딕',2],['한양견고딕',2,'휴먼고딕',2],
+    ['한양그래픽',2,'굴림',1],['한양궁서',2,'궁서',1],
+    ['문화바탕',2,'휴먼명조',2],['문화바탕제목',2,'휴먼명조',2],
+    ['문화돋움',2,'휴먼고딕',2],['문화돋움제목',2,'휴먼고딕',2],
+    ['문화쓰기',2,'휴먼명조',2],['문화쓰기흘림',2,'휴먼명조',2],
+    ['펜흘림',2,'휴먼명조',2],['복숭아',2,'휴먼중간팸체',2],
+    ['옥수수',2,'휴먼옛체',2],['오이',2,'필기',2],['가지',2,'필기',2],
+    ['강낭콩',2,'한양그래픽',2],['딸기',2,'휴먼옛체',2],['타이프',2,'굵은공한',2],
+    ['태 나무',2,'휴먼고딕',2],
+    ['태 헤드라인D',2,'신명 견명조',2],['태 가는 헤드라인D',2,'태 헤드라인D',2],
+    ['태 헤드라인T',2,'신명 견고딕',2],['태 가는 헤드라인T',2,'태 헤드라인T',2],
+    ['양재 다운명조M',2,'휴먼명조',2],['양재 본목각M',2,'옥수수',2],
+    ['양재 소슬',2,'태 나무',2],['양재 튼튼B',2,'태 가는 헤드라인T',2],
+    ['양재 참숯B',2,'한양견고딕',2],['양재 둘기',2,'가지',2],
+    ['양재 매화',2,'옥수수',2],['양재 샤넬',2,'태 나무',2],
+    ['양재 와당',2,'양재 참숯B',2],['양재 이니셜',2,'양재 참숯B',2],
+    ['신명 세명조',2,'휴먼명조',2],['신명 신명조',2,'휴먼명조',2],
+    ['신명 신신명조',2,'휴먼명조',2],['신명 중명조',2,'휴먼명조',2],
+    ['신명 태명조',2,'휴먼명조',2],['신명 견명조',2,'휴먼명조',2],
+    ['신명 신문명조',2,'휴먼명조',2],['신명 순명조',2,'휴먼명조',2],
+    ['신명 세고딕',2,'휴먼고딕',2],['신명 중고딕',2,'휴먼고딕',2],
+    ['신명 태고딕',2,'휴먼고딕',2],['신명 견고딕',2,'휴먼고딕',2],
+    ['신명 세나루',2,'휴먼고딕',2],['신명 디나루',2,'휴먼고딕',2],
+    ['신명 신그래픽',2,'한양그래픽',2],['신명 태그래픽',2,'한양그래픽',2],
+    ['신명 궁서',2,'한양궁서',2],['SPOQAHANSANS',1,'SpoqaHanSans',1],
+  ],
+  // === Lang 1: 영어 ===
+  [
+    ['한양중고딕',2,'HY중고딕',1],['한양신명조',2,'HY신명조',1],
+    ['명조',2,'HY견명조',1],['HCI Poppy',2,'Palatino Linotype',1],
+    ['신명 태고딕',2,'HY중고딕',1],['산세리프',2,'Calibri',1],
+    ['한양견명조',2,'HY견명조',1],['신명 태명조',2,'HY신명조',1],
+    ['신명 견고딕',2,'HY견고딕',1],['신명 견명조',2,'HY견명조',1],
+    ['신명 태그래픽',2,'HY그래픽',1],['신명 중고딕',2,'HY중고딕',1],
+    ['양재 튼튼B',2,'양재튼튼체B',1],['한양견고딕',2,'HY견고딕',1],
+    ['Gulim',1,'굴림',1],['HYHeadLine Medium',1,'HY헤드라인M',1],
+    ['Malgun Gothic',1,'맑은 고딕',1],
+    ['Tahoma',1,'함초롬돋움',1],['MS Sans Serif',1,'함초롬돋움',1],
+    ['Times New Roman',1,'함초롬바탕',1],
+    ['한컴바탕',1,'함초롬바탕',1],['한컴돋움',1,'함초롬돋움',1],
+    ['새바탕',1,'한컴바탕',1],['새돋움',1,'한컴돋움',1],
+    ['바탕',1,'새바탕',1],['돋움',1,'새돋움',1],
+    ['새굴림',1,'돋움',1],['굴림',1,'새굴림',1],
+    ['새궁서',1,'바탕',1],['궁서',1,'새궁서',1],
+    ['백묵 굴림',1,'굴림',1],['백묵 돋움',1,'돋움',1],
+    ['백묵 바탕',1,'바탕',1],['백묵 헤드라인',1,'돋움',1],
+    ['HY그래픽M',1,'HY그래픽',1],
+    ['명조',2,'바탕',1],['고딕',2,'돋움',1],
+    ['산세리프',2,'고딕',2],['필기',2,'명조',2],
+    ['한양신명조',2,'명조',2],['한양중고딕',2,'고딕',2],
+    ['시스템',2,'한양중고딕',2],['HY둥근고딕',2,'시스템',2],
+    ['한양견명조',2,'한양신명조',2],['한양견고딕',2,'한양중고딕',2],
+    ['한양그래픽',2,'굴림',1],['한양궁서',2,'궁서',1],
+    ['SPOQAHANSANS',1,'SpoqaHanSans',1],
+  ],
+  // === Lang 2: 중국어 (축약) ===
+  [
+    ['한양중고딕',2,'HY중고딕',1],['한양신명조',2,'HY신명조',1],
+    ['명조',2,'HY견명조',1],['신명 태고딕',2,'HY중고딕',1],
+    ['Gulim',1,'굴림',1],['Malgun Gothic',1,'맑은 고딕',1],
+    ['한컴바탕',1,'함초롬바탕',1],['한컴돋움',1,'함초롬돋움',1],
+    ['새바탕',1,'한컴바탕',1],['새돋움',1,'한컴돋움',1],
+    ['바탕',1,'새바탕',1],['돋움',1,'새돋움',1],
+    ['새굴림',1,'돋움',1],['굴림',1,'새굴림',1],
+    ['새궁서',1,'바탕',1],['궁서',1,'새궁서',1],
+    ['명조',2,'바탕',1],['한양신명조',2,'명조',2],['한양중고딕',2,'돋움',1],
+    ['SPOQAHANSANS',1,'SpoqaHanSans',1],
+  ],
+  // === Lang 3: 일본어 (축약) ===
+  [
+    ['한양중고딕',2,'HY중고딕',1],['한양신명조',2,'HY신명조',1],
+    ['명조',2,'HY견명조',1],['신명 태고딕',2,'HY중고딕',1],
+    ['Gulim',1,'굴림',1],['Malgun Gothic',1,'맑은 고딕',1],
+    ['한컴바탕',1,'함초롬바탕',1],['한컴돋움',1,'함초롬돋움',1],
+    ['새바탕',1,'한컴바탕',1],['새돋움',1,'한컴돋움',1],
+    ['바탕',1,'새바탕',1],['돋움',1,'새돋움',1],
+    ['새굴림',1,'돋움',1],['굴림',1,'새굴림',1],
+    ['새궁서',1,'바탕',1],['궁서',1,'새궁서',1],
+    ['명조',2,'바탕',1],['고딕',2,'돋움',1],
+    ['한양신명조',2,'명조',2],['한양중고딕',2,'고딕',2],
+    ['시스템',2,'굴림',1],['SPOQAHANSANS',1,'SpoqaHanSans',1],
+  ],
+  // === Lang 4: 기타 ===
+  [
+    ['한양신명조',2,'HY신명조',1],['명조',2,'HY견명조',1],
+    ['Gulim',1,'굴림',1],['Malgun Gothic',1,'맑은 고딕',1],
+    ['한컴바탕',1,'함초롬바탕',1],['한컴돋움',1,'함초롬돋움',1],
+    ['새바탕',1,'한컴바탕',1],['새돋움',1,'한컴돋움',1],
+    ['바탕',1,'새바탕',1],['돋움',1,'새돋움',1],
+    ['새굴림',1,'돋움',1],['굴림',1,'새굴림',1],
+    ['새궁서',1,'바탕',1],['궁서',1,'새궁서',1],
+    ['명조',2,'바탕',1],['한양신명조',2,'명조',2],
+    ['SPOQAHANSANS',1,'SpoqaHanSans',1],
+  ],
+  // === Lang 5: 기호 ===
+  [
+    ['한양중고딕',2,'HY중고딕',1],['한양신명조',2,'HY신명조',1],
+    ['명조',2,'HY견명조',1],['신명 견고딕',2,'HY견고딕',1],
+    ['신명 견명조',2,'HY견명조',1],['신명 태그래픽',2,'HY그래픽',1],
+    ['Gulim',1,'굴림',1],['HYHeadLine Medium',1,'HY헤드라인M',1],
+    ['Malgun Gothic',1,'맑은 고딕',1],
+    ['한컴바탕',1,'함초롬바탕',1],['한컴돋움',1,'함초롬돋움',1],
+    ['새바탕',1,'한컴바탕',1],['새돋움',1,'한컴돋움',1],
+    ['바탕',1,'새바탕',1],['돋움',1,'새돋움',1],
+    ['새굴림',1,'돋움',1],['굴림',1,'새굴림',1],
+    ['새궁서',1,'바탕',1],['궁서',1,'새궁서',1],
+    ['명조',2,'바탕',1],['시스템',2,'명조',2],
+    ['한양신명조',2,'명조',2],['한양중고딕',2,'한양신명조',2],
+    ['SPOQAHANSANS',1,'SpoqaHanSans',1],
+  ],
+  // === Lang 6: 사용자 ===
+  [
+    ['한양신명조',2,'HY신명조',1],['명조',2,'HY견명조',1],
+    ['Gulimche',1,'굴림체',1],['Gulim',1,'굴림',1],
+    ['Malgun Gothic',1,'맑은 고딕',1],
+    ['함초롬돋움',1,'함초롬바탕',1],
+    ['한컴바탕',1,'함초롬바탕',1],['한컴돋움',1,'함초롬돋움',1],
+    ['새바탕',1,'한컴바탕',1],['새돋움',1,'한컴돋움',1],
+    ['바탕',1,'새바탕',1],['돋움',1,'새돋움',1],
+    ['새굴림',1,'돋움',1],['굴림',1,'새굴림',1],
+    ['새궁서',1,'바탕',1],['궁서',1,'새궁서',1],
+    ['명조',2,'바탕',1],['한글 풀어쓰기',2,'명조',2],
+    ['SPOQAHANSANS',1,'SpoqaHanSans',1],
+  ],
+];
+
+// 언어별 치환 해시맵 (초기화 시 1회 빌드)
+const _substMaps = SUBST_TABLES.map(langTable => {
+  const map = new Map<string, { face: string; type: number }>();
+  for (const [srcName, srcType, dstName, dstType] of langTable) {
+    const key = srcName + '\0' + srcType;
+    if (!map.has(key)) {
+      map.set(key, { face: dstName, type: dstType });
+    }
+  }
+  return map;
+});
+
+// 해소 결과 캐시
+const _resolveCache = new Map<string, string>();
+const GENERIC_FONTS = new Set(['serif', 'sans-serif', 'monospace']);
+
+interface FontFamilyChainOptions {
+  /** 감지 승인 후 확인된 로컬 글꼴 목록. 미지정 시 저장된 감지 결과를 사용한다. */
+  confirmedLocalFonts?: readonly string[];
+  /** 테스트/레거시 용도: 감지 전 원본 글꼴명을 강제로 포함한다. */
+  includeUnconfirmedOriginal?: boolean;
+}
+
+function quoteCssFontFamily(fontName: string): string {
+  return `"${fontName.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+function formatCssFontFamilies(families: string[]): string {
+  return families
+    .map(name => GENERIC_FONTS.has(name) ? name : quoteCssFontFamily(name))
+    .join(', ');
+}
+
+function pushUniqueFontFamily(families: string[], fontName: string): void {
+  const name = fontName.trim();
+  if (!name) return;
+  const key = name.toLocaleLowerCase('en-US');
+  if (families.some(existing => existing.toLocaleLowerCase('en-US') === key)) return;
+  families.push(name);
+}
+
+// 최종 웹폰트 fallback — 브라우저는 font-family 목록 안에서만 글리프 대체를 찾으므로
+// OS 에 일본어·키릴 폰트가 없는 환경(Windows Server 등)에서도 번들된 나눔 서체가
+// 가나·키릴·그리스·한자를 커버한다. generic 앞에만 둔다.
+const LAST_RESORT_SANS = '나눔고딕';
+const LAST_RESORT_SERIF = '나눔명조';
+
+const HFT_SUBSTITUTE_FACES = new Map<string, readonly string[]>([
+  ['HCI Poppy', ['Palatino', 'Palatino Linotype', 'Book Antiqua']],
+  ['HCI Hollyhock', ['Helvetica', 'Arial']],
+]);
+
+function systemFallbackFamilies(fontName: string): string[] {
+  if (GENERIC_FONTS.has(fontName)) return [fontName];
+  // 수식 글꼴을 일반 미등록 서체로 처리하면 Canvas font 치환이 엔진의
+  // 수식 fallback 앞에 sans-serif를 넣어 변수와 숫자까지 고딕으로 바꾼다.
+  if (/^(hyhwpeq|latin modern math|stix two (text|math)|cambria math)$/i.test(fontName.trim())) {
+    return equationFontFamilies(fontName).slice(1);
+  }
+  // 고정폭 '명조' (바탕체) — 고정폭보다 명조 계열 보존이 우선이다.
+  // 고딕 고정폭(D2Coding)으로 떨어뜨리면 serif→sans 로 계열이 뒤집힌다.
+  if (/바탕체|batangche/i.test(fontName)) {
+    return ['BatangChe', 'Batang', 'AppleMyungjo', 'Noto Serif KR', LAST_RESORT_SERIF, 'serif'];
+  }
+  // 고정폭 '고딕' (굴림체/코딩 서체)
+  if (/굴림체|gulimche|coding|courier/i.test(fontName)) {
+    return ['GulimChe', 'D2Coding', 'Noto Sans Mono', '나눔고딕코딩', 'monospace'];
+  }
+  // 한컴 HFT 영문 글꼴: 엔진 `hft_substitute_faces` 와 같은 설치 서체를 먼저 찾는다.
+  // HCI Poppy 는 Palatino 복제라 macOS Palatino → Windows Palatino Linotype 순이다.
+  const hftFaces = HFT_SUBSTITUTE_FACES.get(fontName.trim());
+  if (hftFaces) {
+    if (fontName.trim() === 'HCI Poppy') {
+      return [...hftFaces, 'Batang', 'AppleMyungjo', 'Noto Serif KR', LAST_RESORT_SERIF, 'serif'];
+    }
+    return [...hftFaces, LAST_RESORT_SANS, 'sans-serif'];
+  }
+  // macOS 한컴의 검증된 HY 신명조 쌍은 가져온 HCR face를 제네릭 serif보다 먼저 쓴다.
+  if (fontName.trim() === 'HY신명조' || fontName.trim() === '한양신명조') {
+    const hcr = resolveLocalFont('HCR Batang');
+    return [hcr?.runtimeFamily ?? '함초롬바탕', 'HCR Batang', '한컴바탕', 'Haansoft Batang',
+      'Batang', 'AppleMyungjo', 'Noto Serif KR', 'serif'];
+  }
+  // Serif 판별 — 문자 클래스가 아니라 실제 서체명 토큰으로 검사한다.
+  // (기존 `[바탕명조궁서]` 는 '서울남산체'·'고딕서체' 처럼 해당 글자가 스치기만 해도
+  //  명조로 오분류했다.)
+  if (/바탕|명조|궁서|hymjre|times|palatino|georgia|batang|gungsuh|myungjo|myeongjo|serif/i.test(fontName)) {
+    return ['Batang', 'AppleMyungjo', 'Noto Serif KR', LAST_RESORT_SERIF, 'serif'];
+  }
+  // Sans-serif (기본)
+  // Hancom uses HCR Dotum when a requested sans face lacks a glyph (for
+  // example, Malgun's geometric symbols or MDotum's Latin subset). Imported
+  // HCR faces share a runtime CSS family across regular and bold weights.
+  const hcr = resolveLocalFont('HCR Dotum');
+  return [hcr?.runtimeFamily ?? '함초롬돋움', 'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans KR', 'Pretendard', LAST_RESORT_SANS, 'sans-serif'];
+}
+
+/**
+ * 폰트 이름을 웹에서 렌더링 가능한 폰트로 치환한다.
+ *
+ * @param fontName HWP 문서의 폰트 이름
+ * @param altType 폰트 타입 (0=알수없음, 1=TTF, 2=HFT)
+ * @param langId 언어 카테고리 (0=한국어, 1=영어, ..., 6=사용자)
+ * @returns 치환된 폰트 이름
+ */
+export function resolveFont(fontName: string, altType: number, langId: number): string {
+  if (!fontName) return fontName;
+  if (REGISTERED_FONTS.has(fontName)) return fontName;
+
+  const cacheKey = langId + '\0' + fontName + '\0' + altType;
+  const cached = _resolveCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
+  const langIdx = (langId >= 0 && langId <= 6) ? langId : 0;
+  const substMap = _substMaps[langIdx];
+
+  let name = fontName;
+  let type = altType || 0;
+
+  // altType=0이면 TTF(1) 시도, 실패하면 HFT(2) 시도
+  if (type === 0) {
+    if (substMap.has(name + '\x001')) {
+      type = 1;
+    } else if (substMap.has(name + '\x002')) {
+      type = 2;
+    } else {
+      _resolveCache.set(cacheKey, fontName);
+      return fontName;
+    }
+  }
+
+  // 체인 추적 (최대 15단계)
+  const visited = new Set<string>();
+  for (let i = 0; i < 15; i++) {
+    if (REGISTERED_FONTS.has(name)) break;
+
+    const key = name + '\0' + type;
+    if (visited.has(key)) break;
+    visited.add(key);
+
+    const subst = substMap.get(key);
+    if (!subst) break;
+
+    name = subst.face;
+    type = subst.type;
+  }
+
+  _resolveCache.set(cacheKey, name);
+  return name;
+}
+
+/**
+ * CSS font-family 문자열에 전 플랫폼 fallback 체인을 추가한다.
+ * Windows → macOS/iOS → Android → 오픈소스 → generic
+ */
+export function fontFamilyWithFallback(fontName: string): string {
+  if (GENERIC_FONTS.has(fontName)) {
+    return fontName;
+  }
+  return formatCssFontFamilies([fontName, ...systemFallbackFamilies(fontName)]);
+}
+
+/** 기본 옵션 체인 캐시. Canvas font setter 가 텍스트 run 마다 부르므로 로컬 글꼴 조회 세대 단위로 재사용한다. */
+const _displayChainCache = new Map<string, string>();
+let _displayChainGeneration = -1;
+
+/**
+ * 문서 원본 글꼴명을 보존하면서 표시/측정용 CSS font-family chain을 만든다.
+ *
+ * 순서:
+ *   1. rhwp 웹폰트 또는 감지 승인 후 확인된 로컬 글꼴의 canonical CSS family
+ *   2. rhwp 웹 대체 글꼴명(resolveFont 결과)
+ *   3. OS/system fallback
+ *   4. generic fallback
+ */
+export function fontFamilyChainForDisplay(
+  fontName: string,
+  altType = 0,
+  langId = 0,
+  options: FontFamilyChainOptions = {},
+): string {
+  if (!fontName || GENERIC_FONTS.has(fontName)) return fontName;
+
+  const cacheable = options.confirmedLocalFonts === undefined
+    && options.includeUnconfirmedOriginal === undefined;
+  if (!cacheable) return buildFontFamilyChainForDisplay(fontName, altType, langId, options);
+  const generation = getLocalFontLookupGeneration();
+  if (generation !== _displayChainGeneration) {
+    _displayChainCache.clear();
+    _displayChainGeneration = generation;
+  }
+  const proxy = prefersHcrOverWebProxy(fontName);
+  const cacheKey = Number(proxy) + '\0' + Number(getDetectedOSFonts().has(fontName))
+    + '\0' + langId + '\0' + fontName + '\0' + altType;
+  let chain = _displayChainCache.get(cacheKey);
+  if (chain === undefined) {
+    chain = buildFontFamilyChainForDisplay(fontName, altType, langId, options);
+    _displayChainCache.set(cacheKey, chain);
+  }
+  return chain;
+}
+
+/** 검증된 HY 쌍의 Noto 웹 별칭은 HCR face보다 앞에 두지 않는다. */
+export function prefersHcrOverWebProxy(family: string): boolean {
+  return /^(HY신명조|한양신명조)$/.test(family)
+    && isSubstitutedWebFontRegistered(family);
+}
+
+/** 엔진 hancom_substitute_faces와 같은 후보 순서. 웹 별칭 대신 실제 가져온 face만 선택한다. */
+function importedHancomSubstitute(fontName: string): string | null {
+  let candidates: readonly string[];
+  switch (fontName.trim()) {
+    case '바탕': case 'Batang': case '바탕체': case 'BatangChe':
+    case '궁서': case 'Gungsuh': case '궁서체': case 'GungsuhChe':
+    case '신명 신명조': case '신명 견명조': case '신명 중명조': case '명조': case '새문명조':
+      candidates = ['한컴바탕', 'Haansoft Batang', '함초롬바탕', 'HCR Batang'];
+      break;
+    case 'HY신명조': case '한양신명조':
+      candidates = ['함초롬바탕', 'HCR Batang', '한컴바탕', 'Haansoft Batang'];
+      break;
+    case '돋움': case 'Dotum': case '돋움체': case 'DotumChe':
+    case '굴림': case 'Gulim': case '굴림체': case 'GulimChe':
+      candidates = ['한컴돋움', 'Haansoft Dotum', '함초롬돋움', 'HCR Dotum'];
+      break;
+    default:
+      return null;
+  }
+  for (const candidate of candidates) {
+    const record = resolveLocalFont(candidate);
+    if (record?.source === 'imported' && record.runtimeFamily && hasImportedLocalFontFace(candidate)) {
+      return record.runtimeFamily;
+    }
+  }
+  return null;
+}
+
+/** 실제 원본 local/OS face가 없고 가져온 한컴 대체 face가 표시 우선권을 갖는 경우. */
+export function prefersImportedHancomSubstitute(fontName: string): boolean {
+  return !resolveLocalFont(fontName) && importedHancomSubstitute(fontName) !== null;
+}
+
+function buildFontFamilyChainForDisplay(
+  fontName: string,
+  altType: number,
+  langId: number,
+  options: FontFamilyChainOptions,
+): string {
+  const families: string[] = [];
+  const confirmedLocalFonts = options.confirmedLocalFonts ?? [];
+  const confirmedLocalFontSet = new Set(
+    confirmedLocalFonts.map(name => name.toLocaleLowerCase('en-US')),
+  );
+  const localRecord = options.confirmedLocalFonts === undefined
+    ? resolveLocalFont(fontName)
+    : null;
+  const nativeSubstitute = !localRecord && options.confirmedLocalFonts === undefined
+    && options.includeUnconfirmedOriginal !== true ? importedHancomSubstitute(fontName) : null;
+  const originalAllowed =
+    options.includeUnconfirmedOriginal === true ||
+    (/^(HY신명조|한양신명조)$/.test(fontName) && getDetectedOSFonts().has(fontName)) ||
+    (REGISTERED_FONTS.has(fontName) && !prefersHcrOverWebProxy(fontName)) ||
+    confirmedLocalFontSet.has(fontName.toLocaleLowerCase('en-US'));
+
+  if (localRecord) {
+    pushUniqueFontFamily(
+      families,
+      localRecord.runtimeFamily ?? repairedLocalFontFamily(localRecord) ?? localRecord.family,
+    );
+  } else if (nativeSubstitute) {
+    pushUniqueFontFamily(families, nativeSubstitute);
+  } else if (originalAllowed) {
+    pushUniqueFontFamily(families, fontName);
+  }
+
+  const resolved = resolveFont(fontName, altType, langId);
+  if (resolved && resolved !== fontName) {
+    pushUniqueFontFamily(families, resolved);
+  }
+
+  const fallbackBase = resolved && resolved !== fontName ? resolved : fontName;
+  for (const fallback of systemFallbackFamilies(fallbackBase)) {
+    pushUniqueFontFamily(families, fallback);
+  }
+
+  return formatCssFontFamilies(families);
+}

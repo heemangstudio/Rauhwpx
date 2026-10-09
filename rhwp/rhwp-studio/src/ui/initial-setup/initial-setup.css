@@ -1,0 +1,294 @@
+/* 첫 실행 카드 — 편집기 위에 뜨는 작은 카드 하나. 색은 앱 중성 램프를 따른다. */
+
+.rhwp-setup-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  padding: 24px;
+  scrollbar-width: none;
+  background: var(--overlay-bg);
+  color: var(--n-ink);
+  font-family: var(--ag-font);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--ag-dur-slow) var(--ag-ease-out);
+}
+
+.rhwp-setup-overlay::-webkit-scrollbar {
+  display: none;
+}
+
+.rhwp-setup-overlay.rhwp-setup-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.rhwp-setup-dialog {
+  box-sizing: border-box;
+  width: min(420px, 100%);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 24px;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  overflow-anchor: none;
+  scroll-behavior: smooth;
+  scrollbar-width: none;
+  border: 1px solid var(--n-ink-hairline);
+  border-radius: var(--ag-r-sheet);
+  background: var(--n-surface);
+  box-shadow: var(--ag-elev-sheet);
+  outline: none;
+  opacity: 0;
+  transform: translateY(12px) scale(0.98);
+  transition:
+    opacity var(--ag-dur-base) var(--ag-ease-out),
+    transform var(--ag-dur-slow) var(--ag-spring);
+}
+
+.rhwp-setup-dialog::-webkit-scrollbar {
+  display: none;
+}
+
+.rhwp-setup-open .rhwp-setup-dialog {
+  opacity: 1;
+  transform: none;
+}
+
+.rhwp-setup-title {
+  margin: 0;
+  font-size: var(--ag-fs-title);
+  font-weight: var(--ag-fw-strong);
+  line-height: var(--ag-lh-tight);
+  letter-spacing: var(--ag-track-tight);
+}
+
+.rhwp-setup-providers {
+  min-height: 0;
+  margin: -3px;
+  padding: 3px;
+  overflow: auto;
+  scrollbar-width: none;
+}
+
+.rhwp-setup-providers::-webkit-scrollbar {
+  display: none;
+}
+
+.rhwp-setup-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+@media (max-width: 380px) {
+  .rhwp-setup-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.rhwp-setup-card {
+  min-width: 0;
+  animation: rhwp-setup-card-in var(--ag-dur-slow) var(--ag-spring) both;
+}
+
+.rhwp-setup-card:nth-child(2) { animation-delay: 40ms; }
+.rhwp-setup-card:nth-child(3) { animation-delay: 80ms; }
+
+@keyframes rhwp-setup-card-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+.rhwp-setup-card-action {
+  position: relative;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  width: 100%;
+  padding: 16px 8px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--ag-r-card);
+  background: var(--n-ink-fill-soft);
+  color: inherit;
+  font: inherit;
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.rhwp-setup-card-action:hover {
+  background: var(--n-ink-fill-hover);
+}
+
+.rhwp-setup-card-action:active {
+  background: var(--n-ink-fill-pressed);
+  transition: none;
+}
+
+.rhwp-setup-card-action:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+.rhwp-setup-card[data-configured='true'] .rhwp-setup-card-action {
+  border-color: var(--n-ink);
+  background: var(--n-surface);
+}
+
+.rhwp-setup-card-logo {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  margin-bottom: 8px;
+  color: var(--n-ink);
+}
+
+.rhwp-setup-card-logo .ag-provider-icon {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+}
+
+/* 사이드바 밖에서도 공용 글리프가 같은 파일을 쓰게 마스크를 여기서 다시 건다. */
+.rhwp-setup-card-logo .ag-provider-icon-mask {
+  background-color: currentColor;
+  -webkit-mask: url('/icons/provider-codex.png') center / contain no-repeat;
+  mask: url('/icons/provider-codex.png') center / contain no-repeat;
+}
+
+.rhwp-setup-card-logo .ag-provider-icon-mask[data-agent='codex'] {
+  color: #5b8fd4; /* token-ok */
+}
+
+.rhwp-setup-card-logo .ag-provider-icon-mask[data-agent='pi'] {
+  color: #4a9a86; /* token-ok */
+  -webkit-mask-image: url('/icons/provider-pi.svg');
+  mask-image: url('/icons/provider-pi.svg');
+}
+
+.rhwp-setup-card-logo .ag-provider-icon-mask[data-agent='grok'] {
+  -webkit-mask-image: url('/icons/provider-grok.svg');
+  mask-image: url('/icons/provider-grok.svg');
+}
+
+.rhwp-setup-card-logo .ag-provider-icon-mask[data-agent='cursor'] {
+  -webkit-mask-image: url('/icons/provider-cursor.svg');
+  mask-image: url('/icons/provider-cursor.svg');
+}
+
+.rhwp-setup-card-logo .ag-provider-icon-mask[data-agent='opencode'] {
+  -webkit-mask-image: url('/icons/provider-opencode.svg');
+  mask-image: url('/icons/provider-opencode.svg');
+}
+
+.rhwp-setup-card-name {
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-medium);
+  letter-spacing: var(--ag-track-tight);
+  line-height: var(--ag-lh-tight);
+}
+
+.rhwp-setup-card-vendor {
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-tight);
+  color: var(--n-ink-secondary);
+}
+
+.rhwp-setup-card-check {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
+  opacity: 0;
+  transform: scale(0.5);
+  transition:
+    opacity var(--ag-dur-fast) var(--ag-ease-out),
+    transform var(--ag-dur-base) var(--ag-spring);
+}
+
+.rhwp-setup-card-check svg {
+  width: 11px;
+  height: 11px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.rhwp-setup-card[data-configured='true'] .rhwp-setup-card-check {
+  opacity: 1;
+  transform: none;
+}
+
+.rhwp-setup-footer {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+}
+
+.rhwp-setup-primary {
+  flex: 1 1 auto;
+  height: 40px;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: var(--n-ink-fill-hover);
+  color: var(--n-ink);
+  font: inherit;
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-medium);
+  letter-spacing: var(--ag-track-tight);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.rhwp-setup-primary:hover {
+  background: var(--n-ink-fill-pressed);
+}
+
+.rhwp-setup-primary:active {
+  background: var(--n-ink-hairline-strong);
+  transition: none;
+}
+
+.rhwp-setup-primary:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+.rhwp-setup-dialog[data-ready='true'] .rhwp-setup-primary {
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
+}
+
+.rhwp-setup-dialog[data-ready='true'] .rhwp-setup-primary:hover {
+  background: var(--ag-primary-bg-hover);
+}
+
+.rhwp-setup-dialog[data-ready='true'] .rhwp-setup-primary:active {
+  background: var(--ag-primary-bg-pressed);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rhwp-setup-overlay,
+  .rhwp-setup-dialog,
+  .rhwp-setup-card,
+  .rhwp-setup-card-check {
+    animation: none;
+    transition: none;
+  }
+}

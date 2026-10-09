@@ -1,0 +1,3 @@
+# Windows 체크아웃에서도 텍스트 파일을 LF 로 유지한다.
+# 바이트 보존이 필요한 픽스처 예외는 rhwp/.gitattributes 에 있다.
+* text=auto eol=lf

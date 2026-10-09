@@ -1,0 +1,22 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+
+const pending = readFileSync(new URL('../src/agent/pending-edits.ts', import.meta.url), 'utf8');
+
+test('safe profile gates saving on pending review', () => {
+  const file = readFileSync(new URL('../src/command/commands/file.ts', import.meta.url), 'utf8');
+  assert.match(file, /resolvePendingAgentEditsBeforeSave/);
+  assert.match(file, /showPendingAgentEditsDialog/);
+});
+
+test('raw snapshot failures preserve history and post-commit refresh cannot trigger a retry', () => {
+  const input = readFileSync(new URL('../src/engine/input-handler.ts', import.meta.url), 'utf8');
+  assert.match(input, /if \(this\.editMode === 'form'\)[\s\S]*if \(!this\.history\.hasSnapshotCapacity\(2\)\)/);
+  assert.doesNotMatch(
+    input.match(/executeAppliedSnapshot[\s\S]*?\n  \}/)?.[0] ?? '',
+    /prepareSnapshotCapacity/,
+  );
+  assert.match(input, /History recording is the commit point/);
+  assert.match(input, /committed autonomous edit refresh failed/);
+});

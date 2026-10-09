@@ -1,0 +1,3776 @@
+//! 한컴 수식 스크립트 재귀 하강 파서
+//!
+//! 토큰 리스트를 AST(EqNode)로 변환한다.
+
+use super::ast::*;
+use super::symbols::{
+    self, is_big_operator, is_function, is_structure_command, lookup_function, lookup_symbol,
+    FontStyleKind, DECORATIONS, FONT_STYLES,
+};
+use super::tokenizer::{tokenize, Token, TokenType};
+
+/// 파서 재귀(중첩) 한도 — 비정상적으로 깊게 중첩된 스크립트(최대 8000자)가
+/// WASM 스택 오버플로를 일으키지 않도록 제한한다. 한도 초과 시 경고를 수집하고
+/// 해당 노드를 Empty 로 대체한다 (레이아웃 재귀 깊이도 AST 깊이에 의해 제한됨).
+pub(crate) const MAX_PARSE_DEPTH: usize = 64;
+
+/// 수식 파서
+pub struct EqParser {
+    tokens: Vec<Token>,
+    pos: usize,
+    /// 파싱 중 수집한 검증 경고 (미지 명령어, 괄호 불일치, 빈 그룹, 깊이 초과).
+    /// 파싱 자체는 기존과 동일하게 관대하게(tolerant) 진행하고, 경고는
+    /// 미리보기 검증 게이트(renderEquationPreview)가 소비한다.
+    warnings: Vec<String>,
+    /// 현재 재귀 깊이 (parse_element / parse_single_or_group 진입 시 증가)
+    depth: usize,
+    /// 깊이 초과 경고를 이미 냈는지 (중복 경고 방지)
+    depth_warned: bool,
+    /// HWP의 rm/it 선언은 중괄호를 넘어 다음 선언까지 뒤따르는 원자에 적용된다.
+    font_declaration: Option<FontStyleKind>,
+    /// 닫는 경계 앞 선언은 다음 실제 원자까지 간격 경계를 전달한다.
+    pending_font_declaration: Option<FontStyleKind>,
+}
+
+impl EqParser {
+    pub fn new(tokens: Vec<Token>) -> Self {
+        Self {
+            tokens,
+            pos: 0,
+            warnings: Vec::new(),
+            depth: 0,
+            depth_warned: false,
+            font_declaration: None,
+            pending_font_declaration: None,
+        }
+    }
+
+    /// 파싱 중 수집된 검증 경고 목록
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
+    /// 깊이 초과 경고 (한 번만 기록)
+    fn warn_depth_exceeded(&mut self) {
+        if !self.depth_warned {
+            self.depth_warned = true;
+            self.warnings.push(format!(
+                "수식 중첩 깊이가 한도({MAX_PARSE_DEPTH})를 초과했습니다"
+            ));
+        }
+    }
+
+    fn current(&self) -> Option<&Token> {
+        self.tokens.get(self.pos).filter(|t| t.ty != TokenType::Eof)
+    }
+
+    fn current_type(&self) -> TokenType {
+        self.tokens
+            .get(self.pos)
+            .map(|t| t.ty)
+            .unwrap_or(TokenType::Eof)
+    }
+
+    fn current_value(&self) -> &str {
+        self.tokens
+            .get(self.pos)
+            .map(|t| t.value.as_str())
+            .unwrap_or("")
+    }
+
+    fn at_end(&self) -> bool {
+        self.pos >= self.tokens.len() || self.current_type() == TokenType::Eof
+    }
+
+    fn advance(&mut self) -> Option<&Token> {
+        if self.at_end() {
+            return None;
+        }
+        let tok = &self.tokens[self.pos];
+        self.pos += 1;
+        Some(tok)
+    }
+
+    fn expect(&mut self, ty: TokenType) -> bool {
+        if self.current_type() == ty {
+            self.pos += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 명령어 대소문자 무시 비교
+    fn cmd_eq(val: &str, target: &str) -> bool {
+        val.eq_ignore_ascii_case(target)
+    }
+
+    /// 최상위 레벨에서 OVER가 있는지 확인 (괄호/LEFT-RIGHT 내부 제외)
+    fn has_toplevel_over(tokens: &[Token]) -> bool {
+        let mut brace_depth = 0i32;
+        let mut lr_depth = 0i32;
+        for t in tokens {
+            match t.ty {
+                TokenType::LBrace => brace_depth += 1,
+                TokenType::RBrace => brace_depth -= 1,
+                TokenType::Command => {
+                    if Self::cmd_eq(&t.value, "LEFT") {
+                        lr_depth += 1;
+                    } else if Self::cmd_eq(&t.value, "RIGHT") {
+                        lr_depth -= 1;
+                    } else if Self::cmd_eq(&t.value, "OVER") && brace_depth == 0 && lr_depth == 0 {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// 수식 전체 파싱 (엔트리 포인트)
+    pub fn parse(&mut self) -> EqNode {
+        let mut parts = vec![self.parse_expression()];
+        loop {
+            // An unmatched `}` can appear in otherwise usable HWP equation text.
+            // A nested group consumes its own closing brace; only a brace left at
+            // the top level reaches here. Skip it and retain the trailing equation.
+            if self.current_type() == TokenType::RBrace {
+                self.warnings
+                    .push("짝 없는 닫는 괄호가 있습니다".to_string());
+                self.pos += 1;
+                parts.push(self.parse_expression());
+                continue;
+            }
+            // LEFT와 RIGHT가 서로 다른 수식 개체에 있을 수 있다. 짝 없는 RIGHT도
+            // 앞 식의 오른쪽 구분 기호를 그린다 (`0<alpha<1 over 2 RIGHT )`).
+            if self.current_type() == TokenType::Command
+                && Self::cmd_eq(self.current_value(), "RIGHT")
+            {
+                self.pos += 1;
+                let right = self.read_bracket_char();
+                let body = EqNode::Row(std::mem::take(&mut parts)).simplify();
+                parts.push(EqNode::Paren {
+                    left: String::new(),
+                    right,
+                    body: Box::new(body),
+                });
+                if !self.at_end() {
+                    parts.push(self.parse_expression());
+                }
+                continue;
+            }
+            break;
+        }
+        // 최상위 parse_expression 은 RBrace/RIGHT 에서 중단한다 — 최상위에서
+        // 토큰이 남았다면 짝 없는 닫는 괄호가 있다는 뜻 (기존엔 조용히 유실됨).
+        if !self.at_end() {
+            self.warnings
+                .push("짝 없는 닫는 괄호가 있습니다".to_string());
+        }
+        EqNode::Row(parts).simplify()
+    }
+
+    /// OVER/ATOP 중위 연산자 처리. 현재 토큰이 OVER/ATOP 이면 children 의 마지막 요소를
+    /// pop 하여 분수/atop 으로 결합한다. 처리했으면 true, 아니면 false.
+    /// CASES/PILE/EQALIGN 등 row-collecting 파서가 분수를 인식하지 못하는 결함(#505)을
+    /// 방지하기 위해 모든 token-collecting 루프에서 호출한다.
+    fn try_consume_infix_over_atop(&mut self, children: &mut Vec<EqNode>) -> bool {
+        if self.current_type() != TokenType::Command {
+            return false;
+        }
+        let val = self.current_value();
+        let is_over = Self::cmd_eq(val, "OVER");
+        let is_atop = Self::cmd_eq(val, "ATOP");
+        let is_lsub = Self::cmd_eq(val, "LSUB");
+        let is_lsup = Self::cmd_eq(val, "LSUP");
+        if (is_lsub || is_lsup) && !children.is_empty() {
+            // `C LSUB {3} _{1}` = ₃C₁: 앞 요소의 왼쪽에 첨자를 단다 (한컴 중위 표기).
+            // 이어지는 오른쪽 첨자는 같은 앞 요소에 붙는다.
+            self.pos += 1;
+            let script = self.parse_single_or_group();
+            let base = children.pop().unwrap_or(EqNode::Empty);
+            let base = self.try_parse_scripts(base);
+            let left = if is_lsub {
+                EqNode::Subscript {
+                    base: Box::new(EqNode::Empty),
+                    sub: Box::new(script),
+                }
+            } else {
+                EqNode::Superscript {
+                    base: Box::new(EqNode::Empty),
+                    sup: Box::new(script),
+                }
+            };
+            children.push(EqNode::Row(vec![left, base]));
+            return true;
+        }
+        if !is_over && !is_atop {
+            return false;
+        }
+        self.pos += 1;
+        let top = children.pop().unwrap_or(EqNode::Empty);
+        let bottom = self.parse_element();
+        children.push(if is_atop {
+            EqNode::Atop {
+                top: Box::new(top),
+                bottom: Box::new(bottom),
+            }
+        } else {
+            EqNode::Fraction {
+                numer: Box::new(top),
+                denom: Box::new(bottom),
+            }
+        });
+        true
+    }
+
+    /// 표현식 파싱 (중단 조건 없이 끝까지)
+    /// OVER/ATOP을 중위 연산자로 처리: 바로 앞/뒤 요소를 위아래로 배치
+    fn parse_expression(&mut self) -> EqNode {
+        let mut children = Vec::new();
+        while !self.at_end() {
+            // 그룹 종료 또는 RIGHT 만나면 중단
+            if self.current_type() == TokenType::RBrace {
+                break;
+            }
+            if self.current_type() == TokenType::Command
+                && Self::cmd_eq(self.current_value(), "RIGHT")
+            {
+                break;
+            }
+            // OVER/ATOP 중위 연산자: 직전/직후 요소를 위아래로 결합
+            if self.try_consume_infix_over_atop(&mut children) {
+                continue;
+            }
+            children.push(self.parse_element());
+        }
+        EqNode::Row(children).simplify()
+    }
+
+    /// 단일 요소 파싱 (재귀 깊이 가드 포함)
+    fn parse_element(&mut self) -> EqNode {
+        if self.at_end() {
+            return EqNode::Empty;
+        }
+        if self.depth >= MAX_PARSE_DEPTH {
+            // 깊이 초과: 모든 수집 루프의 진행을 보장하기 위해 토큰 하나를
+            // 소비하고 빈 노드를 반환한다 (무한 루프/스택 오버플로 방지).
+            self.warn_depth_exceeded();
+            self.pos += 1;
+            return EqNode::Empty;
+        }
+        self.depth += 1;
+        let declaration = self.font_declaration;
+        let pending = self.pending_font_declaration.take();
+        let explicit_group = self.current_type() == TokenType::LBrace;
+        let mut node = self.parse_element_inner();
+        // 공백 없이 이어진 문자/숫자는 하나의 피연산자다. 토크나이저가 ASCII와
+        // Unicode 경계에서 나누어도 dΔx, 10a^3 전체가 OVER의 분자가 되어야 한다.
+        // 명시적 그룹은 피연산자 경계다. `{2}a`의 a는 분모 밖에 있어야 한다.
+        if !explicit_group && Self::is_literal_operand(&node) {
+            let mut parts = vec![node];
+            while self.current().is_some_and(|token| {
+                if token.space_before {
+                    return false;
+                }
+                match token.ty {
+                    TokenType::Number => true,
+                    TokenType::Text => token.value.chars().all(char::is_alphabetic),
+                    TokenType::Command => {
+                        let name = token.value.as_str();
+                        let lower = name.to_ascii_lowercase();
+                        !is_structure_command(name)
+                            && !is_structure_command(&name.to_ascii_uppercase())
+                            && !is_function(name)
+                            && !FONT_STYLES.contains_key(lower.as_str())
+                            && !DECORATIONS.contains_key(lower.as_str())
+                            && lookup_symbol(name).map_or(true, |symbol| {
+                                symbol.chars().all(|c| matches!(c, '\u{0391}'..='\u{03c9}'))
+                            })
+                    }
+                    _ => false,
+                }
+            }) {
+                parts.push(self.parse_element_inner());
+            }
+            node = EqNode::Row(parts).simplify();
+        }
+        let operator_base = match &node {
+            EqNode::SubSup { base, .. }
+            | EqNode::Superscript { base, .. }
+            | EqNode::Subscript { base, .. } => base.as_ref(),
+            _ => &node,
+        };
+        let limit_operand = matches!(operator_base, EqNode::Limit { .. });
+        let takes_grouped_operand = limit_operand
+            || matches!(operator_base, EqNode::MathSymbol(symbol)
+                if matches!(symbol.as_str(), "∫" | "∬" | "∭" | "∮" | "∯" | "∰"));
+        if takes_grouped_operand && self.current_type() == TokenType::LBrace {
+            let mut parts = vec![self.parse_element()];
+            // `lim {분자} over {분모}`의 극한 기호는 분자 밖에 남는다.
+            while limit_operand && self.try_consume_infix_over_atop(&mut parts) {}
+            let body = EqNode::Row(parts).simplify();
+            if !matches!(body, EqNode::Empty) {
+                node = EqNode::Row(vec![node, EqNode::OperatorBody(Box::new(body))]);
+            }
+        }
+        self.depth -= 1;
+        self.finish_font_element(node, declaration, pending)
+    }
+
+    fn finish_font_element(
+        &mut self,
+        node: EqNode,
+        declaration: Option<FontStyleKind>,
+        pending: Option<FontStyleKind>,
+    ) -> EqNode {
+        if let Some(style) = pending {
+            if matches!(node, EqNode::Empty | EqNode::Space(_) | EqNode::Newline) {
+                self.pending_font_declaration.get_or_insert(style);
+            } else {
+                let body = match node {
+                    EqNode::FontStyle { style: inner, body } if inner == style => *body,
+                    other => other,
+                };
+                return EqNode::FontDeclaration {
+                    style,
+                    body: Box::new(body),
+                };
+            }
+        }
+        Self::apply_font_declaration(node, declaration)
+    }
+
+    fn apply_font_declaration(node: EqNode, declaration: Option<FontStyleKind>) -> EqNode {
+        match declaration {
+            Some(style) if !matches!(node, EqNode::Empty) => {
+                if matches!(&node, EqNode::FontStyle { style: inner, .. } if *inner == style)
+                    || matches!(&node, EqNode::FontDeclaration { .. })
+                {
+                    node
+                } else {
+                    EqNode::FontStyle {
+                        style,
+                        body: Box::new(node),
+                    }
+                }
+            }
+            _ => node,
+        }
+    }
+
+    fn is_literal_operand(node: &EqNode) -> bool {
+        match node {
+            EqNode::Text(text) => text.chars().all(char::is_alphabetic),
+            EqNode::Number(_) => true,
+            EqNode::MathSymbol(text) => text.chars().all(|c| matches!(c, '\u{0391}'..='\u{03c9}')),
+            EqNode::Superscript { base, .. }
+            | EqNode::Subscript { base, .. }
+            | EqNode::SubSup { base, .. }
+            | EqNode::FontStyle { body: base, .. } => Self::is_literal_operand(base),
+            _ => false,
+        }
+    }
+
+    /// 단일 요소 파싱
+    fn parse_element_inner(&mut self) -> EqNode {
+        if self.at_end() {
+            return EqNode::Empty;
+        }
+
+        let ty = self.current_type();
+        let val = self.current_value().to_string();
+
+        match ty {
+            TokenType::Command => {
+                let from_latex = self.tokens.get(self.pos).is_some_and(|t| t.from_latex);
+                self.pos += 1;
+                // 구조 명령어(sqrt, matrix, cases, …) 전체에도 뒤따르는 ^/_ 첨자를
+                // 결합한다. 내부에서 이미 try_parse_scripts 를 거친 노드(기호/함수/
+                // LEFT 등)는 첨자가 소비돼 있으므로 바깥 호출은 no-op 이다.
+                let node = self.parse_command(&val, from_latex);
+                self.try_parse_scripts(node)
+            }
+            TokenType::Number => {
+                self.pos += 1;
+                self.try_parse_scripts(EqNode::Number(val))
+            }
+            TokenType::Symbol => {
+                self.pos += 1;
+                // -> 는 →로 변환
+                if val == "->" {
+                    EqNode::MathSymbol("→".to_string())
+                } else {
+                    EqNode::Symbol(val)
+                }
+            }
+            TokenType::Text => {
+                self.pos += 1;
+                self.try_parse_scripts(EqNode::Text(val))
+            }
+            TokenType::Quoted => {
+                self.pos += 1;
+                self.try_parse_scripts(EqNode::Quoted(val))
+            }
+            TokenType::Whitespace => {
+                self.pos += 1;
+                match val.as_str() {
+                    "~" => EqNode::Space(SpaceKind::Normal),
+                    "`" => EqNode::Space(SpaceKind::Thin),
+                    "#" => EqNode::Newline,
+                    "&" => EqNode::Space(SpaceKind::Tab),
+                    _ => EqNode::Empty,
+                }
+            }
+            TokenType::LBrace => {
+                let group = self.parse_group();
+                self.try_parse_scripts(group)
+            }
+            TokenType::LParen => {
+                // 괄호 primary를 먼저 균형 있게 소비한 뒤 postfix 첨자를 결합한다.
+                // 내부 괄호에 첨자가 없어도 재귀적으로 소비해야 `(f(x))^5`의 안쪽 `)`가
+                // 바깥 그룹을 조기에 닫지 않는다. 첨자가 없는 괄호는 기존 Symbol 흐름으로
+                // 평탄화해 렌더링 호환성을 유지한다.
+                self.parse_parenthesized_primary()
+            }
+            TokenType::RParen | TokenType::LBracket | TokenType::RBracket => {
+                self.pos += 1;
+                EqNode::Symbol(val)
+            }
+            TokenType::Subscript | TokenType::Superscript => {
+                // 베이스 없는 첨자 (예: _{y} x)
+                self.try_parse_scripts(EqNode::Empty)
+            }
+            _ => {
+                self.pos += 1;
+                EqNode::Empty
+            }
+        }
+    }
+
+    /// 명령어 처리
+    /// `from_latex`: 백슬래시 명령어(`\foo`)에서 온 토큰이면 true — 미지 명령어
+    /// 경고는 이 경우에만 발생한다 (베어워드는 변수 식별자와 구분 불가).
+    fn parse_command(&mut self, cmd: &str, from_latex: bool) -> EqNode {
+        let cmd_upper = cmd.to_ascii_uppercase();
+        let cu = cmd_upper.as_str();
+        // [#1204] hwpeq 명령은 대소문자 무시 — DECORATIONS/FONT_STYLES 는 소문자 키이므로
+        // 1차 lookup 실패 시 소문자 fallback (`RM`/`BAR` 등 대문자 변형이 leak 되지 않도록).
+        let cmd_lower = cmd.to_ascii_lowercase();
+
+        // OVER/ATOP은 parse_expression에서 처리됨 (단독 발생 시)
+        if cu == "OVER" {
+            return EqNode::Empty;
+        }
+
+        if cu == "ATOP" {
+            return EqNode::Empty;
+        }
+
+        // LaTeX 분수: \frac{a}{b}, \dfrac{a}{b}, \tfrac{a}{b}
+        if matches!(cu, "FRAC" | "DFRAC" | "TFRAC") {
+            return self.parse_latex_fraction();
+        }
+
+        // LaTeX \text/\operatorname의 로만체 인자는 HWP 선언과 별도 범위다.
+        // 토크나이저가 일반 공백을 건너뛰므로 명시 공백은 ~로 입력한다.
+        if matches!(cu, "TEXT" | "OPERATORNAME") {
+            let declaration = self.font_declaration.take();
+            let body = self.parse_single_or_group();
+            self.font_declaration = declaration;
+            return EqNode::FontStyle {
+                style: FontStyleKind::Roman,
+                body: Box::new(body),
+            };
+        }
+
+        // LaTeX \phantom{...} — 보이지 않는 공간 (레이아웃 정렬용)
+        if matches!(cu, "PHANTOM" | "VPHANTOM" | "HPHANTOM") {
+            self.parse_single_or_group();
+            return EqNode::Text(" ".to_string());
+        }
+
+        // LaTeX spacing: \quad, \qquad, \,, \:, \;, \!
+        if matches!(
+            cu,
+            "QUAD" | "QQUAD" | "THINSPACE" | "MEDSPACE" | "THICKSPACE" | "NEGSPACE" | "ENSPACE"
+        ) {
+            let space = lookup_symbol(cu).unwrap_or(" ");
+            return EqNode::Text(space.to_string());
+        }
+
+        // LaTeX \overset{over}{base}, \underset{under}{base}, \stackrel{over}{base}
+        if matches!(cu, "OVERSET" | "STACKREL") {
+            let over = self.parse_single_or_group();
+            let base = self.parse_single_or_group();
+            return EqNode::Superscript {
+                base: Box::new(base),
+                sup: Box::new(over),
+            };
+        }
+        if cu == "UNDERSET" {
+            let under = self.parse_single_or_group();
+            let base = self.parse_single_or_group();
+            return EqNode::Subscript {
+                base: Box::new(base),
+                sub: Box::new(under),
+            };
+        }
+
+        // LaTeX \begin{env}...\end{env}
+        if cu == "BEGIN" {
+            return self.parse_latex_environment();
+        }
+        if cu == "END" {
+            self.skip_brace_arg();
+            return EqNode::Empty;
+        }
+
+        // 제곱근
+        if cu == "SQRT" || cu == "ROOT" {
+            return self.parse_sqrt();
+        }
+
+        // 적분 기호 — nolimits: 큰 기호 + 일반 첨자 (BigOp이 아닌 MathSymbol로 처리)
+        if matches!(
+            cu,
+            "INT"
+                | "INTEGRAL"
+                | "SMALLINT"
+                | "DINT"
+                | "TINT"
+                | "OINT"
+                | "SMALLOINT"
+                | "ODINT"
+                | "OTINT"
+        ) {
+            let symbol = lookup_symbol(cu)
+                .or_else(|| lookup_symbol(cmd))
+                .unwrap_or("∫")
+                .to_string();
+            let node = EqNode::MathSymbol(symbol);
+            return self.try_parse_scripts(node);
+        }
+
+        // SMALLPROD/SMCOPROD는 본문 크기의 곱 기호다. 큰 연산자(1.5em)로
+        // 만들면 뒤따르는 독립 아래첨자가 기호에서 한 글자 폭만큼 밀린다.
+        if matches!(cu, "SMALLPROD" | "SMCOPROD") {
+            let symbol = lookup_symbol(cu).unwrap_or("∏").to_string();
+            return self.try_parse_scripts(EqNode::MathSymbol(symbol));
+        }
+
+        // 큰 연산자 (∑, ∏ 등) — limits: 기호 위/아래 중앙
+        if is_big_operator(cu) {
+            let symbol = lookup_symbol(cu).unwrap_or("?").to_string();
+            return self.parse_big_op(symbol);
+        }
+        // 원본 대소문자로도 확인 (대소문자 구분 명령어)
+        if is_big_operator(cmd) {
+            let symbol = lookup_symbol(cmd).unwrap_or("?").to_string();
+            return self.parse_big_op(symbol);
+        }
+
+        // 극한 (대소문자 구분)
+        if cmd == "lim" || cmd == "Lim" {
+            return self.parse_limit(cmd == "Lim");
+        }
+
+        // 행렬
+        if matches!(cu, "MATRIX" | "PMATRIX" | "BMATRIX" | "DMATRIX") {
+            let style = match cu {
+                "PMATRIX" => MatrixStyle::Paren,
+                "BMATRIX" => MatrixStyle::Bracket,
+                "DMATRIX" => MatrixStyle::Vert,
+                _ => MatrixStyle::Plain,
+            };
+            return self.parse_matrix(style);
+        }
+
+        // 조건식
+        if cu == "CASES" {
+            return self.parse_cases();
+        }
+
+        // 칸 맞춤 정렬
+        if cu == "EQALIGN" {
+            return self.parse_eqalign();
+        }
+
+        // 세로 쌓기
+        if matches!(cu, "PILE" | "LPILE" | "RPILE") {
+            let align = match cu {
+                "LPILE" => PileAlign::Left,
+                "RPILE" => PileAlign::Right,
+                _ => PileAlign::Center,
+            };
+            return self.parse_pile(align);
+        }
+
+        // LEFT-RIGHT 괄호
+        if cu == "LEFT" {
+            // ★ KeepGong fix: 구분기호 그룹(left|...right| 등) 뒤 첨자(^/_)를 그룹 전체에 부착.
+            //   기존엔 try_parse_scripts 를 안 거쳐 |x|^3 의 ^3 가 base 없는 고아 첨자가 됐다.
+            let node = self.parse_left_right();
+            return self.try_parse_scripts(node);
+        }
+
+        if cu == "RIGHT" {
+            return EqNode::Empty;
+        }
+
+        // REL / BUILDREL
+        if cu == "REL" || cu == "BUILDREL" {
+            let is_buildrel = cu == "BUILDREL";
+            // 화살표 기호 읽기 (다음 요소를 파싱하여 화살표로 사용)
+            let arrow_node = self.parse_element();
+            let arrow = match &arrow_node {
+                EqNode::MathSymbol(s) => s.clone(),
+                EqNode::Symbol(s) => s.clone(),
+                EqNode::Text(s) => s.clone(),
+                _ => "→".to_string(),
+            };
+            // {위 내용}
+            let over = self.parse_single_or_group();
+            // {아래 내용} (REL만)
+            let under = if !is_buildrel {
+                Some(Box::new(self.parse_single_or_group()))
+            } else {
+                None
+            };
+            return EqNode::Rel {
+                arrow,
+                over: Box::new(over),
+                under,
+            };
+        }
+
+        // LONGDIV: LONGDIV {제수}{몫}{피제수#나머지...}
+        if cu == "LONGDIV" {
+            let divisor = self.parse_single_or_group();
+            let quotient = self.parse_single_or_group();
+            let body = self.parse_single_or_group();
+            // 간이 표현: 몫 위에 줄, 제수)피제수 형태
+            return EqNode::Row(vec![
+                quotient,
+                EqNode::Symbol("÷".to_string()),
+                divisor,
+                EqNode::Symbol("=".to_string()),
+                body,
+            ]);
+        }
+
+        // LADDER / SLADDER: 사다리꼴 레이아웃 → Matrix로 fallback
+        if cu == "LADDER" || cu == "SLADDER" {
+            return self.parse_matrix(MatrixStyle::Plain);
+        }
+
+        // BENZENE: 벤젠 분자 구조 → 텍스트 placeholder
+        if cu == "BENZENE" {
+            return EqNode::MathSymbol("⌬".to_string());
+        }
+
+        // BIGG: 크기 확대 (현재 크기 변경 무시, 내부 요소만 반환)
+        if cu == "BIGG" {
+            let inner = self.parse_element();
+            return inner;
+        }
+
+        // CHOOSE / BINOM
+        if cu == "CHOOSE" {
+            // n CHOOSE r → 이전 요소와 다음 요소를 조합으로
+            let body = self.parse_single_or_group();
+            return EqNode::Paren {
+                left: "(".to_string(),
+                right: ")".to_string(),
+                body: Box::new(EqNode::Atop {
+                    top: Box::new(EqNode::Empty), // 이전 요소는 상위에서 처리
+                    bottom: Box::new(body),
+                }),
+            };
+        }
+
+        if cu == "BINOM" {
+            let top = self.parse_single_or_group();
+            let bottom = self.parse_single_or_group();
+            return EqNode::Paren {
+                left: "(".to_string(),
+                right: ")".to_string(),
+                body: Box::new(EqNode::Atop {
+                    top: Box::new(top),
+                    bottom: Box::new(bottom),
+                }),
+            };
+        }
+
+        // 색상
+        if cu == "COLOR" {
+            return self.parse_color();
+        }
+
+        // 왼쪽 첨자
+        if cu == "LSUB" || cu == "LSUP" {
+            let script = self.parse_single_or_group();
+            let body = self.parse_single_or_group();
+            if cu == "LSUB" {
+                return EqNode::Subscript {
+                    base: Box::new(body),
+                    sub: Box::new(script),
+                };
+            } else {
+                return EqNode::Superscript {
+                    base: Box::new(body),
+                    sup: Box::new(script),
+                };
+            }
+        }
+
+        // SUP/SUB 동의어
+        if cu == "SUP" {
+            let body = self.parse_single_or_group();
+            return self.try_parse_scripts(body);
+        }
+        if cu == "SUB" {
+            let body = self.parse_single_or_group();
+            return self.try_parse_scripts(body);
+        }
+
+        // 글자 장식
+        if let Some(&deco) = DECORATIONS
+            .get(cmd)
+            .or_else(|| DECORATIONS.get(cmd_lower.as_str()))
+        {
+            let body = self.parse_single_or_group();
+            return EqNode::Decoration {
+                kind: deco,
+                body: Box::new(body),
+            };
+        }
+
+        // 글꼴 스타일
+        if let Some(&style) = FONT_STYLES
+            .get(cmd)
+            .or_else(|| FONT_STYLES.get(cmd_lower.as_str()))
+        {
+            if !from_latex && matches!(cmd_lower.as_str(), "rm" | "it") {
+                self.font_declaration = Some(style);
+                // 닫는 경계와 뒤따르는 연산자를 선언의 인자로 삼지 않는다.
+                if self.at_end()
+                    || self.current_type() == TokenType::RBrace
+                    || (self.current_type() == TokenType::Command
+                        && matches!(
+                            self.current_value().to_ascii_uppercase().as_str(),
+                            "RIGHT" | "OVER" | "ATOP"
+                        ))
+                {
+                    self.pending_font_declaration = Some(style);
+                    return EqNode::Empty;
+                }
+                let body = self.parse_element();
+                // 첫 피연산자에 상속 선언이 이미 적용됐으므로 중복 래퍼를 제거한다.
+                let body = match body {
+                    EqNode::FontStyle { style: inner, body } if inner == style => *body,
+                    other => other,
+                };
+                return EqNode::FontDeclaration {
+                    style,
+                    body: Box::new(body),
+                };
+            }
+            // LaTeX의 \mathrm{...} 등은 인자 범위에만 적용된다. 외부 HWP 선언이
+            // 내부의 명시적 스타일보다 우선하지 않도록 인자를 독립적으로 파싱한다.
+            let saved_declaration = self.font_declaration.take();
+            let body = self.parse_single_or_group();
+            self.font_declaration = saved_declaration;
+            return EqNode::FontStyle {
+                style,
+                body: Box::new(body),
+            };
+        }
+
+        // Unicode 기호 매핑 — 함수보다 우선 (hwpeq inf=∞ vs LaTeX \inf=infimum 충돌 방지)
+        if let Some(symbol) = lookup_symbol(cmd) {
+            let node = EqNode::MathSymbol(symbol.to_string());
+            return self.try_parse_scripts(node);
+        }
+
+        // 함수 (sin, cos, log 등)
+        if is_function(cmd) {
+            let func_name = lookup_function(cmd).unwrap_or(cmd).to_string();
+            // 함수 뒤 `` ` ``는 간격으로 남는다 (한컴 probe `sin `A`: n→A 1.44pt 더 넓다).
+            let node = EqNode::Function(func_name);
+            return self.try_parse_scripts(node);
+        }
+
+        // 알 수 없는 명령어 → 텍스트로 처리
+        // LaTeX 스타일(\cmd) 미지 명령어만 경고한다 — hwpeq 베어워드는 일반 변수
+        // 식별자(x, mc 등)와 구분할 수 없어 경고하면 모든 스크립트가 오탐이 된다.
+        if from_latex {
+            self.warnings
+                .push(format!("알 수 없는 수식 명령어: \\{cmd}"));
+        }
+        let node = EqNode::Text(cmd.to_string());
+        self.try_parse_scripts(node)
+    }
+
+    /// 중괄호 그룹 파싱: {...}
+    /// 그룹 내의 OVER는 parse_expression의 중위 연산자 처리로 자동 처리된다.
+    fn parse_group(&mut self) -> EqNode {
+        if !self.expect(TokenType::LBrace) {
+            return self.parse_element();
+        }
+
+        let mut children = Vec::new();
+        while !self.at_end() {
+            if self.current_type() == TokenType::RBrace {
+                break;
+            }
+            // OVER/ATOP 중위 연산자: 그룹 내에서도 동일하게 처리
+            if self.try_consume_infix_over_atop(&mut children) {
+                continue;
+            }
+            children.push(self.parse_element());
+        }
+
+        // 닫는 괄호 건너뛰기 — EOF 까지 닫는 괄호가 없었으면 경고
+        // (기존과 동일하게 관대하게 파싱하되 검증 게이트용 경고만 남긴다)
+        if !self.expect(TokenType::RBrace) {
+            self.warnings
+                .push("닫는 중괄호 '}' 가 없습니다".to_string());
+        }
+        if children.is_empty() {
+            self.warnings.push("빈 그룹 '{}' 입니다".to_string());
+        }
+
+        EqNode::Row(children).simplify()
+    }
+
+    /// 매칭되는 닫는 괄호 위치 찾기
+    fn find_matching_brace(&self, start: usize) -> usize {
+        let mut depth = 1i32;
+        let mut pos = start;
+        while pos < self.tokens.len() {
+            match self.tokens[pos].ty {
+                TokenType::LBrace => depth += 1,
+                TokenType::RBrace => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return pos;
+                    }
+                }
+                _ => {}
+            }
+            pos += 1;
+        }
+        self.tokens.len()
+    }
+
+    /// 소괄호 primary를 재귀적으로 파싱하고 뒤따르는 첨자를 결합한다.
+    ///
+    /// 첨자가 없는 소괄호는 종전처럼 일반 Symbol 행으로 돌려 렌더링을 보존한다.
+    /// 첨자가 있으면 균형 있게 소비한 전체 괄호를 하나의 Paren base로 사용한다.
+    fn parse_parenthesized_primary(&mut self) -> EqNode {
+        debug_assert_eq!(self.current_type(), TokenType::LParen);
+        self.pos += 1;
+        let mut items = Vec::new();
+        while !self.at_end() && self.current_type() != TokenType::RParen {
+            // 짝 없는 `(` 는 그룹 경계(`}`)나 RIGHT 를 넘어가지 않는다.
+            // `LEFT. (… RIGHT )` 에서 `)` 는 RIGHT 의 구분 기호다.
+            if self.current_type() == TokenType::RBrace
+                || (self.current_type() == TokenType::Command
+                    && Self::cmd_eq(self.current_value(), "RIGHT"))
+            {
+                break;
+            }
+            if self.try_consume_infix_over_atop(&mut items) {
+                continue;
+            }
+            items.push(self.parse_element());
+        }
+
+        let closed = self.expect(TokenType::RParen);
+        if !closed {
+            self.warnings
+                .push("닫는 소괄호 ')' 가 없습니다".to_string());
+        }
+
+        let has_postfix = self.script_postfix_follows();
+        if has_postfix {
+            let group = EqNode::Paren {
+                left: "(".to_string(),
+                right: ")".to_string(),
+                body: Box::new(EqNode::Row(items).simplify()),
+            };
+            self.try_parse_scripts(group)
+        } else {
+            let mut plain = Vec::with_capacity(items.len() + 2);
+            plain.push(EqNode::Symbol("(".to_string()));
+            plain.extend(items);
+            if closed {
+                plain.push(EqNode::Symbol(")".to_string()));
+            }
+            EqNode::Row(plain).simplify()
+        }
+    }
+
+    /// 현재 위치에서 `^`/`_` postfix가 시작되는지 확인한다.
+    /// 한컴의 thin-space 표기(`) 뒤 첨자도 try_parse_scripts와 같은 규칙으로 본다.
+    fn script_postfix_follows(&self) -> bool {
+        matches!(
+            self.tokens[self.pos..]
+                .iter()
+                .skip_while(|token| token.ty == TokenType::Whitespace && token.value == "`")
+                .next()
+                .map(|token| token.ty),
+            Some(TokenType::Subscript) | Some(TokenType::Superscript)
+        )
+    }
+
+    /// 단일 토큰 또는 그룹 파싱 (첨자/인자용) — 재귀 깊이 가드 포함
+    fn parse_single_or_group(&mut self) -> EqNode {
+        if self.at_end() {
+            return EqNode::Empty;
+        }
+        if self.depth >= MAX_PARSE_DEPTH {
+            // 깊이 초과: RBrace(그룹 종료 마커)는 소비하지 않는 기존 계약을 유지하고,
+            // 그 외 토큰은 하나 소비하여 진행을 보장한다.
+            self.warn_depth_exceeded();
+            if self.current_type() != TokenType::RBrace {
+                self.pos += 1;
+            }
+            return EqNode::Empty;
+        }
+        self.depth += 1;
+        let declaration = self.font_declaration;
+        let pending = self.pending_font_declaration.take();
+        let node = self.parse_single_or_group_inner();
+        self.depth -= 1;
+        self.finish_font_element(node, declaration, pending)
+    }
+
+    /// 단일 토큰 또는 그룹 파싱 (첨자/인자용)
+    fn parse_single_or_group_inner(&mut self) -> EqNode {
+        if self.at_end() {
+            return EqNode::Empty;
+        }
+
+        // RBrace는 그룹 종료 마커 — 소비하지 않고 빈 노드 반환
+        if self.current_type() == TokenType::RBrace {
+            return EqNode::Empty;
+        }
+
+        if self.current_type() == TokenType::LBrace {
+            return self.parse_group();
+        }
+
+        // 단일 토큰
+        let ty = self.current_type();
+        let val = self.current_value().to_string();
+        let from_latex = self.tokens.get(self.pos).is_some_and(|t| t.from_latex);
+        self.pos += 1;
+
+        match ty {
+            TokenType::Command => {
+                if let Some(symbol) = lookup_symbol(&val) {
+                    EqNode::MathSymbol(symbol.to_string())
+                } else if is_function(&val) {
+                    EqNode::Function(lookup_function(&val).unwrap_or(&val).to_string())
+                } else if !from_latex
+                    && !is_structure_command(&val.to_ascii_uppercase())
+                    && !FONT_STYLES.contains_key(val.to_ascii_lowercase().as_str())
+                    && !DECORATIONS.contains_key(val.to_ascii_lowercase().as_str())
+                {
+                    // 무브레이스 첨자의 변수는 한 토큰이다. i가 다음 ^2까지
+                    // 소비하면 x_i^2가 x_(i^2)로 바뀌어 동시 첨자를 잃는다.
+                    EqNode::Text(val)
+                } else {
+                    // [#1204-B] decoration/구조 명령(bar, sqrt 등)도 단일 인자/body 로
+                    // 올 수 있다 (`rm bar {...}`). parse_command 로 위임 — 미지 명령은
+                    // parse_command 의 fall-through 가 Text 로 처리하므로 안전.
+                    self.parse_command(&val, from_latex)
+                }
+            }
+            TokenType::Number => EqNode::Number(val),
+            TokenType::Text => EqNode::Text(val),
+            TokenType::Quoted => EqNode::Quoted(val),
+            TokenType::Symbol => EqNode::Symbol(val),
+            _ => EqNode::Text(val),
+        }
+    }
+
+    /// 현재 토큰이 "공백 없이 붙은 관계연산자"인지 (#1304).
+    /// HWP 무브레이스 하한 operand 의 연결 구분자 — `sum_k=1`, `lim_x->0`, `1<=k`.
+    /// 관계연산자 앞에 공백이 있으면(`x^2 = 4`) false 를 돌려 묶지 않는다.
+    fn is_tight_relational(&self) -> bool {
+        match self.tokens.get(self.pos) {
+            Some(t) => {
+                t.ty == TokenType::Symbol
+                    && !t.space_before
+                    && matches!(
+                        t.value.as_str(),
+                        "=" | "<" | ">" | "<=" | ">=" | "!=" | "==" | "->"
+                    )
+            }
+            None => false,
+        }
+    }
+
+    /// 무브레이스 아래첨자/하한 operand 파싱 (#1304).
+    /// `원자 (공백없는 관계연산자 원자)*` 패턴으로 하나의 operand 를 묶는다.
+    /// `sum_k=1 ^6` 의 하한이 `k=1` 전체가 되도록 한다.
+    /// 위첨자(`^`)에는 적용하지 않는다 — `x^2=4` 류 위첨자 등식 보호.
+    fn parse_script_operand(&mut self) -> EqNode {
+        // A closing brace is an explicit operand boundary even when `=` is
+        // tight against it: `x_{2}=5^2` must leave `=5^2` outside the subscript.
+        let explicit_group = self.current_type() == TokenType::LBrace;
+        let first = self.parse_single_or_group();
+        if explicit_group || !self.is_tight_relational() {
+            return first;
+        }
+        let mut items = vec![first];
+        while self.is_tight_relational() {
+            let sym = self.current_value().to_string();
+            self.pos += 1;
+            // `->` 는 화살표 기호로 변환 (parse_element 와 동일)
+            if sym == "->" {
+                items.push(EqNode::MathSymbol("→".to_string()));
+            } else {
+                items.push(EqNode::Symbol(sym));
+            }
+            items.push(self.parse_single_or_group());
+        }
+        EqNode::Row(items).simplify()
+    }
+
+    /// 공백 없는 위첨자 식의 다음 원자. `r^2n-1`의 `n`처럼 곱셈을
+    /// 생략한 원자는 위첨자 안에 남지만 관계연산자와 명시적 그룹 경계는 넘지 않는다.
+    fn is_tight_superscript_atom(&self, pos: usize) -> bool {
+        self.tokens.get(pos).is_some_and(|token| {
+            !token.space_before
+                && matches!(
+                    token.ty,
+                    TokenType::Command | TokenType::Number | TokenType::Text | TokenType::Quoted
+                )
+                && (token.ty != TokenType::Command
+                    || !is_structure_command(&token.value.to_ascii_uppercase()))
+        })
+    }
+
+    /// 한컴의 무브레이스 위첨자는 공백 없는 가감식 전체를 피연산자로 쓴다.
+    /// `r^n-1 +1`에서는 공백 앞에서 끝나고, `{n-1}`은 명시적 경계다.
+    fn parse_superscript_operand(&mut self) -> EqNode {
+        let explicit_group = self.current_type() == TokenType::LBrace;
+        let first = self.parse_single_or_group();
+        if explicit_group {
+            return first;
+        }
+
+        let mut items = vec![first];
+        loop {
+            if self.is_tight_superscript_atom(self.pos) {
+                items.push(self.parse_single_or_group());
+                continue;
+            }
+            let Some(operator) = self.tokens.get(self.pos) else {
+                break;
+            };
+            if operator.ty != TokenType::Symbol
+                || operator.space_before
+                || !matches!(operator.value.as_str(), "+" | "-")
+                || !self.is_tight_superscript_atom(self.pos + 1)
+            {
+                break;
+            }
+            items.push(EqNode::Symbol(operator.value.clone()));
+            self.pos += 1;
+            items.push(self.parse_single_or_group());
+        }
+        EqNode::Row(items).simplify()
+    }
+
+    /// 첨자(subscript/superscript) 파싱 시도
+    /// 한컴 수식에서 함수/기호 뒤에 Thin 공백(`)이 오고 첨자가 따라오는 패턴이 일반적이므로,
+    /// Thin 공백 뒤에 첨자가 있으면 공백을 건너뛰고 첨자를 파싱한다.
+    fn try_parse_scripts(&mut self, base: EqNode) -> EqNode {
+        let attach = |base, sub: Option<EqNode>, sup: Option<EqNode>| match (sub, sup) {
+            (Some(sub), Some(sup)) => EqNode::SubSup {
+                base: Box::new(base),
+                sub: Box::new(sub),
+                sup: Box::new(sup),
+            },
+            (Some(sub), None) => EqNode::Subscript {
+                base: Box::new(base),
+                sub: Box::new(sub),
+            },
+            (None, Some(sup)) => EqNode::Superscript {
+                base: Box::new(base),
+                sup: Box::new(sup),
+            },
+            (None, None) => base,
+        };
+        let mut result = base;
+        let mut sub = None;
+        let mut sup = None;
+
+        loop {
+            if self.at_end() {
+                break;
+            }
+            // HWP font declarations between a nucleus and its script style
+            // the following script; they do not make the script a new atom.
+            // `rm C it rm _{it r rm}` is the saved combinatorial form.
+            if let (Some(first), Some(second), Some(script)) = (
+                self.tokens.get(self.pos),
+                self.tokens.get(self.pos + 1),
+                self.tokens.get(self.pos + 2),
+            ) {
+                if first.ty == TokenType::Command
+                    && second.ty == TokenType::Command
+                    && !first.from_latex
+                    && !second.from_latex
+                    && Self::cmd_eq(&first.value, "it")
+                    && Self::cmd_eq(&second.value, "rm")
+                    && matches!(script.ty, TokenType::Subscript | TokenType::Superscript)
+                {
+                    self.pos += 2;
+                    self.font_declaration = Some(FontStyleKind::Roman);
+                }
+            }
+            // 명시한 thin 공백은 첨자 앞에서도 실제 폭이다. 이미 읽은 첨자 뒤의
+            // 공백은 그 첨자를 닫으므로 x_1`^2의 두 첨자는 같은 칸에 겹치지 않는다.
+            let mut after_spaces = self.pos;
+            while self
+                .tokens
+                .get(after_spaces)
+                .is_some_and(|token| token.ty == TokenType::Whitespace && token.value == "`")
+            {
+                after_spaces += 1;
+            }
+            if after_spaces > self.pos
+                && self.tokens.get(after_spaces).is_some_and(|token| {
+                    matches!(token.ty, TokenType::Subscript | TokenType::Superscript)
+                })
+            {
+                result = attach(result, sub.take(), sup.take());
+                let mut spaced = vec![result];
+                spaced.extend((self.pos..after_spaces).map(|_| EqNode::Space(SpaceKind::Thin)));
+                result = EqNode::Row(spaced).simplify();
+                self.pos = after_spaces;
+            }
+            let ty = self.current_type();
+            if ty == TokenType::Subscript && sub.is_none() {
+                self.pos += 1;
+                sub = Some(self.parse_script_operand());
+            } else if ty == TokenType::Superscript && sup.is_none() {
+                self.pos += 1;
+                sup = Some(self.parse_superscript_operand());
+            } else {
+                break;
+            }
+        }
+
+        attach(result, sub, sup)
+    }
+
+    /// 분수 파싱: 최상위 OVER 기준으로 분자/분모 분리
+    /// LEFT-RIGHT 내부의 OVER는 무시하고 최상위 레벨의 OVER만 분수 분기점으로 사용한다.
+    fn parse_fraction(&mut self) -> EqNode {
+        // 최상위 OVER 위치를 먼저 찾는다 (brace_depth==0 && lr_depth==0)
+        let toplevel_over_pos = {
+            let mut brace_depth = 0i32;
+            let mut lr_depth = 0i32;
+            let mut found = None;
+            for i in self.pos..self.tokens.len() {
+                let t = &self.tokens[i];
+                match t.ty {
+                    TokenType::LBrace => brace_depth += 1,
+                    TokenType::RBrace => brace_depth -= 1,
+                    TokenType::Command => {
+                        if Self::cmd_eq(&t.value, "LEFT") {
+                            lr_depth += 1;
+                        } else if Self::cmd_eq(&t.value, "RIGHT") {
+                            lr_depth -= 1;
+                        } else if Self::cmd_eq(&t.value, "OVER")
+                            && brace_depth == 0
+                            && lr_depth == 0
+                        {
+                            found = Some(i);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            found
+        };
+
+        let over_pos = match toplevel_over_pos {
+            Some(p) => p,
+            None => return self.parse_expression(), // fallback
+        };
+
+        // OVER 앞의 모든 요소를 파싱
+        let mut before_nodes = Vec::new();
+        while self.pos < over_pos && !self.at_end() {
+            before_nodes.push(self.parse_element());
+        }
+        // OVER 건너뛰기
+        if self.current_type() == TokenType::Command && Self::cmd_eq(self.current_value(), "OVER") {
+            self.pos += 1;
+        }
+
+        // 분자: OVER 바로 앞의 마지막 요소 (그룹 또는 단일 요소)
+        let (pre_nodes, numer) = if before_nodes.len() > 1 {
+            let numer = before_nodes.pop().unwrap();
+            (before_nodes, numer)
+        } else {
+            (Vec::new(), EqNode::Row(before_nodes).simplify())
+        };
+
+        // 분모: OVER 바로 뒤의 첫 번째 요소 (그룹 또는 단일 요소)
+        let denom = if !self.at_end() {
+            self.parse_element()
+        } else {
+            EqNode::Empty
+        };
+
+        // 분수 뒤 나머지 요소
+        let mut after_nodes = Vec::new();
+        while !self.at_end() {
+            if self.current_type() == TokenType::RBrace {
+                break;
+            }
+            if self.current_type() == TokenType::Command
+                && Self::cmd_eq(self.current_value(), "RIGHT")
+            {
+                break;
+            }
+            after_nodes.push(self.parse_element());
+        }
+
+        let fraction = EqNode::Fraction {
+            numer: Box::new(numer),
+            denom: Box::new(denom),
+        };
+
+        // 앞/뒤 요소와 분수를 Row로 조립
+        if pre_nodes.is_empty() && after_nodes.is_empty() {
+            fraction
+        } else {
+            let mut all = pre_nodes;
+            all.push(fraction);
+            all.extend(after_nodes);
+            EqNode::Row(all).simplify()
+        }
+    }
+
+    /// RBrace까지 분수 파싱
+    fn parse_fraction_until_rbrace(&mut self) -> EqNode {
+        let mut numer_nodes = Vec::new();
+        while !self.at_end() {
+            if self.current_type() == TokenType::RBrace {
+                break;
+            }
+            if self.current_type() == TokenType::Command
+                && (Self::cmd_eq(self.current_value(), "OVER"))
+            {
+                self.pos += 1;
+                break;
+            }
+            numer_nodes.push(self.parse_element());
+        }
+
+        let mut denom_nodes = Vec::new();
+        while !self.at_end() {
+            if self.current_type() == TokenType::RBrace {
+                break;
+            }
+            denom_nodes.push(self.parse_element());
+        }
+
+        EqNode::Fraction {
+            numer: Box::new(EqNode::Row(numer_nodes).simplify()),
+            denom: Box::new(EqNode::Row(denom_nodes).simplify()),
+        }
+    }
+
+    /// 제곱근 파싱: SQRT x, SQRT(n) of x
+    fn parse_sqrt(&mut self) -> EqNode {
+        // LaTeX \sqrt[n]{x} 패턴
+        if self.current_type() == TokenType::LBracket {
+            self.pos += 1; // [
+            let mut index_nodes = Vec::new();
+            while !self.at_end() && self.current_type() != TokenType::RBracket {
+                index_nodes.push(self.parse_element());
+            }
+            self.expect(TokenType::RBracket);
+
+            let body = self.parse_single_or_group();
+            return EqNode::Sqrt {
+                index: Some(Box::new(EqNode::Row(index_nodes).simplify())),
+                body: Box::new(body),
+            };
+        }
+
+        // SQRT(n) of x 패턴 확인 — 소괄호
+        if self.current_type() == TokenType::LParen {
+            self.pos += 1; // (
+            let mut index_nodes = Vec::new();
+            while !self.at_end() && self.current_type() != TokenType::RParen {
+                index_nodes.push(self.parse_element());
+            }
+            self.expect(TokenType::RParen); // )
+
+            // 'of' 키워드 건너뛰기
+            if self.current_type() == TokenType::Command
+                && self.current_value().eq_ignore_ascii_case("of")
+            {
+                self.pos += 1;
+            }
+
+            let body = self.parse_single_or_group();
+            return EqNode::Sqrt {
+                index: Some(Box::new(EqNode::Row(index_nodes).simplify())),
+                body: Box::new(body),
+            };
+        }
+
+        // SQRT {n} of {x} 패턴 확인 — 중괄호 + of
+        if self.current_type() == TokenType::LBrace {
+            // 먼저 {n} 뒤에 'of'가 있는지 미리 확인
+            let saved_pos = self.pos;
+            let brace_end = self.find_matching_brace(self.pos + 1);
+            let after_brace = brace_end + 1;
+            let has_of = after_brace < self.tokens.len()
+                && self.tokens[after_brace].ty == TokenType::Command
+                && self.tokens[after_brace].value.eq_ignore_ascii_case("of");
+
+            if has_of {
+                // {n} 파싱
+                let index = self.parse_group();
+                // 'of' 건너뛰기
+                if self.current_type() == TokenType::Command
+                    && self.current_value().eq_ignore_ascii_case("of")
+                {
+                    self.pos += 1;
+                }
+                let body = self.parse_single_or_group();
+                return EqNode::Sqrt {
+                    index: Some(Box::new(index)),
+                    body: Box::new(body),
+                };
+            }
+            // of가 없으면 되돌리고 일반 제곱근으로 처리
+            self.pos = saved_pos;
+        }
+
+        // 일반 제곱근
+        let body = self.parse_single_or_group();
+        EqNode::Sqrt {
+            index: None,
+            body: Box::new(body),
+        }
+    }
+
+    /// LaTeX 분수 파싱: \frac{numer}{denom}
+    fn parse_latex_fraction(&mut self) -> EqNode {
+        let numer = self.parse_single_or_group();
+        let denom = self.parse_single_or_group();
+        EqNode::Fraction {
+            numer: Box::new(numer),
+            denom: Box::new(denom),
+        }
+    }
+
+    /// \begin{env}...\end{env} 환경 파싱
+    fn parse_latex_environment(&mut self) -> EqNode {
+        let env_name = self.read_brace_arg();
+        let env_upper = env_name.to_ascii_uppercase();
+
+        match env_upper.as_str() {
+            "PMATRIX" => self.parse_latex_env_matrix(MatrixStyle::Paren, &env_name),
+            "BMATRIX" => self.parse_latex_env_matrix(MatrixStyle::Bracket, &env_name),
+            "VMATRIX" => self.parse_latex_env_matrix(MatrixStyle::Vert, &env_name),
+            "BVMATRIX" => self.parse_latex_env_matrix(MatrixStyle::Vert, &env_name),
+            "SMALLMATRIX" => self.parse_latex_env_matrix(MatrixStyle::Plain, &env_name),
+            "MATRIX" | "ARRAY" => self.parse_latex_env_matrix(MatrixStyle::Plain, &env_name),
+            "CASES" => self.parse_latex_env_cases(&env_name),
+            "ALIGNED" | "ALIGN" | "EQNARRAY" | "SPLIT" | "GATHER" | "GATHERED" => {
+                self.parse_latex_env_eqalign(&env_name)
+            }
+            _ => EqNode::Empty,
+        }
+    }
+
+    /// {env_name} 읽기 — 중괄호 안의 텍스트를 반환
+    fn read_brace_arg(&mut self) -> String {
+        if self.current_type() != TokenType::LBrace {
+            return String::new();
+        }
+        self.pos += 1;
+        let mut name = String::new();
+        while !self.at_end() && self.current_type() != TokenType::RBrace {
+            name.push_str(self.current_value());
+            self.pos += 1;
+        }
+        self.expect(TokenType::RBrace);
+        name
+    }
+
+    /// \end{env} 의 {env} 인자를 소비하고 건너뛰기
+    fn skip_brace_arg(&mut self) {
+        if self.current_type() == TokenType::LBrace {
+            self.pos += 1;
+            while !self.at_end() && self.current_type() != TokenType::RBrace {
+                self.pos += 1;
+            }
+            self.expect(TokenType::RBrace);
+        }
+    }
+
+    /// \end{env} 도달 여부 확인
+    fn at_latex_env_end(&self, env_name: &str) -> bool {
+        if self.current_type() != TokenType::Command {
+            return false;
+        }
+        let val = self.current_value();
+        if !val.eq_ignore_ascii_case("end") {
+            return false;
+        }
+        let next = self.pos + 1;
+        if next >= self.tokens.len() || self.tokens[next].ty != TokenType::LBrace {
+            return false;
+        }
+        let mut i = next + 1;
+        let mut name = String::new();
+        while i < self.tokens.len() && self.tokens[i].ty != TokenType::RBrace {
+            name.push_str(&self.tokens[i].value);
+            i += 1;
+        }
+        name.eq_ignore_ascii_case(env_name)
+    }
+
+    /// \end{env}를 소비 (command + {env_name})
+    fn consume_latex_env_end(&mut self) {
+        if self.current_type() == TokenType::Command
+            && self.current_value().eq_ignore_ascii_case("end")
+        {
+            self.pos += 1;
+            self.skip_brace_arg();
+        }
+    }
+
+    /// LaTeX matrix 환경 파싱: \begin{pmatrix} a & b \\ c & d \end{pmatrix}
+    fn parse_latex_env_matrix(&mut self, style: MatrixStyle, env_name: &str) -> EqNode {
+        let mut rows: Vec<Vec<EqNode>> = vec![vec![]];
+        let mut current_cell = Vec::new();
+
+        while !self.at_end() && !self.at_latex_env_end(env_name) {
+            if self.current_type() == TokenType::Whitespace && self.current_value() == "#" {
+                self.pos += 1;
+                if let Some(last_row) = rows.last_mut() {
+                    last_row.push(EqNode::Row(current_cell).simplify());
+                }
+                current_cell = Vec::new();
+                rows.push(vec![]);
+            } else if self.current_type() == TokenType::Whitespace && self.current_value() == "&" {
+                if let Some(last_row) = rows.last_mut() {
+                    last_row.push(EqNode::Row(current_cell).simplify());
+                }
+                current_cell = Vec::new();
+                self.pos += 1;
+            } else if self.try_consume_infix_over_atop(&mut current_cell) {
+                continue;
+            } else {
+                current_cell.push(self.parse_element());
+            }
+        }
+
+        if !current_cell.is_empty() || rows.last().map_or(false, |r| !r.is_empty()) {
+            if let Some(last_row) = rows.last_mut() {
+                last_row.push(EqNode::Row(current_cell).simplify());
+            }
+        }
+        // 빈 마지막 행 제거 (후행 \\ 대응)
+        if rows.last().map_or(false, |r| r.is_empty()) {
+            rows.pop();
+        }
+
+        self.consume_latex_env_end();
+        EqNode::Matrix { rows, style }
+    }
+
+    /// LaTeX cases 환경 파싱: \begin{cases} expr & cond \\ ... \end{cases}
+    fn parse_latex_env_cases(&mut self, env_name: &str) -> EqNode {
+        let mut case_rows = Vec::new();
+        let mut current_row = Vec::new();
+
+        while !self.at_end() && !self.at_latex_env_end(env_name) {
+            if self.current_type() == TokenType::Whitespace && self.current_value() == "#" {
+                self.pos += 1;
+                case_rows.push(EqNode::Row(current_row).simplify());
+                current_row = Vec::new();
+            } else if self.current_type() == TokenType::Whitespace && self.current_value() == "&" {
+                current_row.push(EqNode::Space(SpaceKind::Tab));
+                self.pos += 1;
+            } else if self.try_consume_infix_over_atop(&mut current_row) {
+                continue;
+            } else {
+                current_row.push(self.parse_element());
+            }
+        }
+
+        if !current_row.is_empty() {
+            case_rows.push(EqNode::Row(current_row).simplify());
+        }
+
+        self.consume_latex_env_end();
+        EqNode::Cases { rows: case_rows }
+    }
+
+    /// LaTeX aligned/align 환경 파싱
+    fn parse_latex_env_eqalign(&mut self, env_name: &str) -> EqNode {
+        let mut eq_rows: Vec<(EqNode, EqNode)> = Vec::new();
+        let mut current_left = Vec::new();
+        let mut current_right: Option<Vec<EqNode>> = None;
+
+        while !self.at_end() && !self.at_latex_env_end(env_name) {
+            if self.current_type() == TokenType::Whitespace && self.current_value() == "#" {
+                self.pos += 1;
+                let left = EqNode::Row(current_left).simplify();
+                let right = current_right
+                    .map(|r| EqNode::Row(r).simplify())
+                    .unwrap_or(EqNode::Empty);
+                eq_rows.push((left, right));
+                current_left = Vec::new();
+                current_right = None;
+            } else if self.current_type() == TokenType::Whitespace && self.current_value() == "&" {
+                if current_right.is_none() {
+                    current_right = Some(Vec::new());
+                }
+                self.pos += 1;
+            } else {
+                let consumed = if let Some(ref mut right) = current_right {
+                    self.try_consume_infix_over_atop(right)
+                } else {
+                    self.try_consume_infix_over_atop(&mut current_left)
+                };
+                if consumed {
+                    continue;
+                }
+                if let Some(ref mut right) = current_right {
+                    right.push(self.parse_element());
+                } else {
+                    current_left.push(self.parse_element());
+                }
+            }
+        }
+
+        if !current_left.is_empty() || current_right.is_some() {
+            let left = EqNode::Row(current_left).simplify();
+            let right = current_right
+                .map(|r| EqNode::Row(r).simplify())
+                .unwrap_or(EqNode::Empty);
+            eq_rows.push((left, right));
+        }
+
+        self.consume_latex_env_end();
+        EqNode::EqAlign { rows: eq_rows }
+    }
+
+    /// 큰 연산자 파싱 (적분, 합 등) — 첨자 포함
+    fn parse_big_op(&mut self, symbol: String) -> EqNode {
+        let mut sub = None;
+        let mut sup = None;
+
+        // 첨자 파싱
+        loop {
+            if self.at_end() {
+                break;
+            }
+            if self.current_type() == TokenType::Subscript && sub.is_none() {
+                self.pos += 1;
+                sub = Some(Box::new(self.parse_script_operand()));
+            } else if self.current_type() == TokenType::Superscript && sup.is_none() {
+                self.pos += 1;
+                sup = Some(Box::new(self.parse_single_or_group()));
+            } else {
+                break;
+            }
+        }
+
+        EqNode::BigOp { symbol, sub, sup }
+    }
+
+    /// 극한 파싱
+    fn parse_limit(&mut self, is_upper: bool) -> EqNode {
+        let mut sub = None;
+
+        if self.current_type() == TokenType::Subscript {
+            self.pos += 1;
+            let explicit_group = self.current_type() == TokenType::LBrace;
+            let mut operand = self.parse_script_operand();
+            // 한쪽 극한의 부호는 공백 앞에서 하한을 닫는다 (`lim_t->0+ g(t)`).
+            // 명시 그룹과 본문에 띄어 쓴 부호는 이 경계를 넘지 않는다.
+            let one_sided = !explicit_group
+                && matches!(&operand, EqNode::Row(nodes)
+                    if nodes.iter().any(|node| matches!(node, EqNode::MathSymbol(s) if s == "→")))
+                && self.tokens.get(self.pos).is_some_and(|token| {
+                    token.ty == TokenType::Symbol
+                        && !token.space_before
+                        && matches!(token.value.as_str(), "+" | "-")
+                })
+                && self.tokens.get(self.pos + 1).map_or(true, |token| {
+                    token.space_before
+                        || matches!(
+                            token.ty,
+                            TokenType::RBrace | TokenType::Whitespace | TokenType::Eof
+                        )
+                });
+            if one_sided {
+                if let EqNode::Row(nodes) = &mut operand {
+                    nodes.push(EqNode::Symbol(self.current_value().to_string()));
+                }
+                self.pos += 1;
+            }
+            sub = Some(Box::new(operand));
+        }
+
+        EqNode::Limit { is_upper, sub }
+    }
+
+    /// 행렬 파싱: MATRIX{a & b # c & d}
+    fn parse_matrix(&mut self, style: MatrixStyle) -> EqNode {
+        if !self.expect(TokenType::LBrace) {
+            return EqNode::Empty;
+        }
+
+        let end = self.find_matching_brace(self.pos);
+        let mut rows: Vec<Vec<EqNode>> = vec![vec![]];
+        let mut current_cell = Vec::new();
+
+        while self.pos < end && !self.at_end() {
+            if self.current_type() == TokenType::RBrace {
+                break;
+            }
+            if self.current_type() == TokenType::Whitespace && self.current_value() == "#" {
+                // 새 행
+                if let Some(last_row) = rows.last_mut() {
+                    last_row.push(EqNode::Row(current_cell).simplify());
+                }
+                current_cell = Vec::new();
+                rows.push(vec![]);
+                self.pos += 1;
+            } else if self.current_type() == TokenType::Whitespace && self.current_value() == "&" {
+                // 새 셀
+                if let Some(last_row) = rows.last_mut() {
+                    last_row.push(EqNode::Row(current_cell).simplify());
+                }
+                current_cell = Vec::new();
+                self.pos += 1;
+            } else if self.try_consume_infix_over_atop(&mut current_cell) {
+                // OVER/ATOP 중위 처리 (#505)
+                continue;
+            } else {
+                current_cell.push(self.parse_element());
+            }
+        }
+
+        // 마지막 셀 추가
+        if !current_cell.is_empty() || rows.last().map_or(false, |r| !r.is_empty()) {
+            if let Some(last_row) = rows.last_mut() {
+                last_row.push(EqNode::Row(current_cell).simplify());
+            }
+        }
+
+        self.expect(TokenType::RBrace);
+
+        EqNode::Matrix { rows, style }
+    }
+
+    /// 조건식 파싱: CASES{...}
+    fn parse_cases(&mut self) -> EqNode {
+        if !self.expect(TokenType::LBrace) {
+            return EqNode::Empty;
+        }
+
+        let end = self.find_matching_brace(self.pos);
+        let mut rows = Vec::new();
+        let mut current_row = Vec::new();
+
+        while self.pos < end && !self.at_end() {
+            if self.current_type() == TokenType::RBrace {
+                break;
+            }
+            if self.current_type() == TokenType::Whitespace && self.current_value() == "#" {
+                rows.push(EqNode::Row(current_row).simplify());
+                current_row = Vec::new();
+                self.pos += 1;
+            } else if self.current_type() == TokenType::Whitespace && self.current_value() == "&" {
+                // && (연속 &): 큰 탭 공간으로 조건 부분 분리
+                let mut amp_count = 0;
+                while self.pos < end
+                    && self.current_type() == TokenType::Whitespace
+                    && self.current_value() == "&"
+                {
+                    amp_count += 1;
+                    self.pos += 1;
+                }
+                for _ in 0..amp_count {
+                    current_row.push(EqNode::Space(super::ast::SpaceKind::Tab));
+                }
+            } else if self.try_consume_infix_over_atop(&mut current_row) {
+                // OVER/ATOP 중위 처리 (#505)
+                continue;
+            } else {
+                current_row.push(self.parse_element());
+            }
+        }
+
+        if !current_row.is_empty() {
+            rows.push(EqNode::Row(current_row).simplify());
+        }
+
+        self.expect(TokenType::RBrace);
+
+        EqNode::Cases { rows }
+    }
+
+    /// 세로 쌓기 파싱
+    fn parse_pile(&mut self, align: PileAlign) -> EqNode {
+        if !self.expect(TokenType::LBrace) {
+            return EqNode::Empty;
+        }
+
+        let end = self.find_matching_brace(self.pos);
+        let mut rows = Vec::new();
+        let mut current_row = Vec::new();
+
+        while self.pos < end && !self.at_end() {
+            if self.current_type() == TokenType::RBrace {
+                break;
+            }
+            if self.current_type() == TokenType::Whitespace && self.current_value() == "#" {
+                rows.push(EqNode::Row(current_row).simplify());
+                current_row = Vec::new();
+                self.pos += 1;
+            } else if self.try_consume_infix_over_atop(&mut current_row) {
+                // OVER/ATOP 중위 처리 (#505)
+                continue;
+            } else {
+                current_row.push(self.parse_element());
+            }
+        }
+
+        // 마지막 `#`도 빈 행 하나를 만든다. PILE의 행 수는 둘러싼
+        // LEFT/RIGHT 괄호 높이에 쓰인다.
+        if !current_row.is_empty() || !rows.is_empty() {
+            rows.push(EqNode::Row(current_row).simplify());
+        }
+
+        self.expect(TokenType::RBrace);
+
+        EqNode::Pile { rows, align }
+    }
+
+    /// EQALIGN 파싱: EQALIGN{row1_left & row1_right # row2_left & row2_right}
+    fn parse_eqalign(&mut self) -> EqNode {
+        if !self.expect(TokenType::LBrace) {
+            return EqNode::Empty;
+        }
+
+        let end = self.find_matching_brace(self.pos);
+        let mut rows: Vec<(EqNode, EqNode)> = Vec::new();
+        let mut current_left = Vec::new();
+        let mut current_right: Option<Vec<EqNode>> = None;
+        // `#` 뒤가 비어도 빈 행이다 (math-001 `eqalign{``5x+a#}`: 한컴이 한 줄을 비운다).
+        let mut after_separator = false;
+
+        while self.pos < end && !self.at_end() {
+            if self.current_type() == TokenType::RBrace {
+                break;
+            }
+            if self.current_type() == TokenType::Whitespace && self.current_value() == "#" {
+                // 새 행: 현재 행 완료
+                let left = EqNode::Row(current_left).simplify();
+                let right = current_right
+                    .map(|r| EqNode::Row(r).simplify())
+                    .unwrap_or(EqNode::Empty);
+                rows.push((left, right));
+                current_left = Vec::new();
+                current_right = None;
+                after_separator = true;
+                self.pos += 1;
+            } else if self.current_type() == TokenType::Whitespace && self.current_value() == "&" {
+                // & 구분: 왼쪽→오른쪽 전환
+                // 연속 &&: 큰 탭 공간 (조건 부분 분리용)
+                let mut amp_count = 0;
+                while self.pos < end
+                    && self.current_type() == TokenType::Whitespace
+                    && self.current_value() == "&"
+                {
+                    amp_count += 1;
+                    self.pos += 1;
+                }
+                if current_right.is_none() {
+                    current_right = Some(Vec::new());
+                    // 연속 && 이면 큰 탭 공간 삽입
+                    if amp_count >= 2 {
+                        if let Some(ref mut right) = current_right {
+                            right.push(EqNode::Space(super::ast::SpaceKind::Tab));
+                        }
+                    }
+                } else if let Some(ref mut right) = current_right {
+                    // 이미 오른쪽: 추가 & → 탭 공간
+                    for _ in 0..amp_count {
+                        right.push(EqNode::Space(super::ast::SpaceKind::Tab));
+                    }
+                }
+            } else {
+                // OVER/ATOP 중위 처리 (#505) — 활성 측(right 우선) 의 children 에 적용
+                let consumed = if let Some(ref mut right) = current_right {
+                    self.try_consume_infix_over_atop(right)
+                } else {
+                    self.try_consume_infix_over_atop(&mut current_left)
+                };
+                if consumed {
+                    continue;
+                }
+                if let Some(ref mut right) = current_right {
+                    right.push(self.parse_element());
+                } else {
+                    current_left.push(self.parse_element());
+                }
+            }
+        }
+
+        // 마지막 행 추가
+        if !current_left.is_empty() || current_right.is_some() || after_separator {
+            let left = EqNode::Row(current_left).simplify();
+            let right = current_right
+                .map(|r| EqNode::Row(r).simplify())
+                .unwrap_or(EqNode::Empty);
+            rows.push((left, right));
+        }
+
+        self.expect(TokenType::RBrace);
+
+        EqNode::EqAlign { rows }
+    }
+
+    /// LEFT-RIGHT 괄호 파싱
+    /// 내부의 OVER는 parse_expression의 중위 연산자 처리로 자동 처리된다.
+    fn parse_left_right(&mut self) -> EqNode {
+        // LEFT 다음 괄호 문자 읽기
+        let left = self.read_bracket_char();
+
+        // RIGHT까지의 내용을 parse_expression으로 파싱
+        // parse_expression은 RIGHT를 만나면 자동 중단하고, OVER도 중위 연산자로 처리
+        let body = self.parse_expression();
+
+        // RIGHT 건너뛰기
+        if self.current_type() == TokenType::Command && Self::cmd_eq(self.current_value(), "RIGHT")
+        {
+            self.pos += 1;
+        }
+
+        // RIGHT 다음 괄호 문자 읽기
+        let right = self.read_bracket_char();
+
+        EqNode::Paren {
+            left,
+            right,
+            body: Box::new(body),
+        }
+    }
+
+    /// 괄호 문자 읽기 (LEFT/RIGHT 뒤)
+    fn read_bracket_char(&mut self) -> String {
+        if self.at_end() {
+            return String::new();
+        }
+
+        let ty = self.current_type();
+        let val = self.current_value().to_string();
+
+        match ty {
+            TokenType::LParen
+            | TokenType::RParen
+            | TokenType::LBracket
+            | TokenType::RBracket
+            | TokenType::LBrace
+            | TokenType::RBrace => {
+                self.pos += 1;
+                val
+            }
+            TokenType::Symbol if val == "|" || val == "." => {
+                self.pos += 1;
+                if val == "." {
+                    String::new() // . = 괄호 생략
+                } else {
+                    val
+                }
+            }
+            TokenType::Command => {
+                // LBRACE, RBRACE 등 명령어
+                if let Some(sym) = lookup_symbol(&val) {
+                    self.pos += 1;
+                    sym.to_string()
+                } else {
+                    String::new()
+                }
+            }
+            _ => String::new(),
+        }
+    }
+
+    /// RIGHT 위치 찾기 (LEFT-RIGHT 쌍 고려)
+    fn find_right_pos(&self) -> usize {
+        let mut depth = 1i32;
+        let mut pos = self.pos;
+        while pos < self.tokens.len() {
+            let t = &self.tokens[pos];
+            if t.ty == TokenType::Command {
+                if Self::cmd_eq(&t.value, "LEFT") {
+                    depth += 1;
+                } else if Self::cmd_eq(&t.value, "RIGHT") {
+                    depth -= 1;
+                    if depth == 0 {
+                        return pos;
+                    }
+                }
+            }
+            pos += 1;
+        }
+        self.tokens.len()
+    }
+
+    /// 범위 내 분수 파싱
+    /// OVER 앞/뒤에 중괄호 그룹이 있으면 해당 그룹만 분자/분모로 사용하고
+    /// 나머지는 분수 바깥 요소로 처리한다.
+    fn parse_fraction_in_range(&mut self, end: usize) -> EqNode {
+        // OVER 앞의 모든 요소를 파싱
+        let mut before_nodes = Vec::new();
+        while self.pos < end && !self.at_end() {
+            if self.current_type() == TokenType::Command
+                && Self::cmd_eq(self.current_value(), "OVER")
+            {
+                self.pos += 1;
+                break;
+            }
+            before_nodes.push(self.parse_element());
+        }
+
+        // 분자: OVER 바로 앞의 마지막 요소 (또는 그룹)
+        // 나머지 앞 요소들은 분수 앞에 배치
+        let (pre_nodes, numer) = if before_nodes.len() > 1 {
+            let numer = before_nodes.pop().unwrap();
+            (before_nodes, numer)
+        } else {
+            (Vec::new(), EqNode::Row(before_nodes).simplify())
+        };
+
+        // 분모: OVER 바로 뒤의 첫 번째 요소 (또는 그룹)
+        let denom = if self.pos < end && !self.at_end() {
+            self.parse_element()
+        } else {
+            EqNode::Empty
+        };
+
+        // 분수 뒤 나머지 요소
+        let mut after_nodes = Vec::new();
+        while self.pos < end && !self.at_end() {
+            if self.current_type() == TokenType::Command
+                && Self::cmd_eq(self.current_value(), "RIGHT")
+            {
+                break;
+            }
+            after_nodes.push(self.parse_element());
+        }
+
+        let fraction = EqNode::Fraction {
+            numer: Box::new(numer),
+            denom: Box::new(denom),
+        };
+
+        // 앞/뒤 요소와 분수를 Row로 조립
+        if pre_nodes.is_empty() && after_nodes.is_empty() {
+            fraction
+        } else {
+            let mut all = pre_nodes;
+            all.push(fraction);
+            all.extend(after_nodes);
+            EqNode::Row(all).simplify()
+        }
+    }
+
+    /// COLOR{R,G,B}{body} 파싱
+    fn parse_color(&mut self) -> EqNode {
+        if !self.expect(TokenType::LBrace) {
+            return EqNode::Empty;
+        }
+
+        // R, G, B 값 읽기
+        let mut rgb = [0u8; 3];
+        for i in 0..3 {
+            if self.current_type() == TokenType::Number {
+                rgb[i] = self.current_value().parse().unwrap_or(0);
+                self.pos += 1;
+            }
+            // 콤마 건너뛰기
+            if self.current_type() == TokenType::Symbol && self.current_value() == "," {
+                self.pos += 1;
+            }
+        }
+        self.expect(TokenType::RBrace);
+
+        let body = self.parse_single_or_group();
+
+        EqNode::Color {
+            r: rgb[0],
+            g: rgb[1],
+            b: rgb[2],
+            body: Box::new(body),
+        }
+    }
+}
+
+/// 수식 스크립트를 AST로 파싱
+pub fn parse(script: &str) -> EqNode {
+    let tokens = tokenize(script);
+    let mut parser = EqParser::new(tokens);
+    parser.parse()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::symbols::{DecoKind, FontStyleKind};
+    use super::*;
+
+    #[test]
+    fn logical_words_keep_upright_function_semantics() {
+        for word in ["or", "and"] {
+            assert_eq!(parse(word), EqNode::Function(word.to_string()));
+            for style in ["it", "rm"] {
+                let EqNode::FontDeclaration { body, .. } = parse(&format!("{style} {word}")) else {
+                    panic!("expected font declaration");
+                };
+                assert_eq!(*body, EqNode::Function(word.to_string()));
+            }
+        }
+        for identifier in ["origin", "order", "android", "andrew"] {
+            assert_eq!(parse(identifier), EqNode::Text(identifier.to_string()));
+        }
+    }
+
+    #[test]
+    fn unmatched_right_keeps_the_closing_delimiter_and_preceding_fraction() {
+        let EqNode::Paren { left, right, body } = parse("0 < alpha < 1 over 2 RIGHT )") else {
+            panic!("expected the right-only delimiter");
+        };
+        assert!(left.is_empty());
+        assert_eq!(right, ")");
+        assert!(matches!(
+            body.as_ref(),
+            EqNode::Row(parts) if parts.iter().any(|part| matches!(part, EqNode::Fraction { .. }))
+        ));
+
+        let EqNode::Row(parts) = parse("x RIGHT ) y") else {
+            panic!("expected trailing content after the delimiter");
+        };
+        assert!(matches!(parts.first(), Some(EqNode::Paren { right, .. }) if right == ")"));
+        assert!(matches!(parts.last(), Some(EqNode::Text(y)) if y == "y"));
+    }
+
+    #[test]
+    fn grouped_fraction_denominator_excludes_following_variable() {
+        let EqNode::Paren { body, .. } = parse("LEFT ( 3 ,~ - { 27} over {2 }a+ 2k RIGHT )") else {
+            panic!("expected parenthesized interval");
+        };
+        let EqNode::Row(parts) = body.as_ref() else {
+            panic!("expected interval row");
+        };
+        let fraction_pos = parts
+            .iter()
+            .position(|part| matches!(part, EqNode::Fraction { .. }))
+            .expect("fraction in interval");
+        assert!(matches!(
+            (&parts[fraction_pos], &parts[fraction_pos + 1]),
+            (EqNode::Fraction { numer, denom }, EqNode::Text(a))
+                if matches!(numer.as_ref(), EqNode::Number(n) if n == "27")
+                    && matches!(denom.as_ref(), EqNode::Number(n) if n == "2")
+                    && a == "a"
+        ));
+
+        let EqNode::Fraction { denom, .. } = parse("27 over 2a") else {
+            panic!("ungrouped adjacent atoms should remain one denominator");
+        };
+        assert!(matches!(denom.as_ref(), EqNode::Row(parts) if parts.len() == 2));
+    }
+
+    #[test]
+    fn unmatched_closing_brace_preserves_trailing_equation() {
+        let script = "(e^{beta } -4) (e^beta} +5)=0";
+        let ast = format!("{:?}", parse(script));
+        assert!(ast.contains("Number(\"5\")"), "trailing factor lost: {ast}");
+        assert!(ast.contains("Number(\"0\")"), "equality lost: {ast}");
+        assert!(parse_warnings(script)
+            .iter()
+            .any(|warning| warning.contains("짝 없는 닫는 괄호")));
+    }
+
+    #[test]
+    fn bare_not_equals_decorates_the_equals_operand() {
+        let ast = parse("a `not= `0");
+        let EqNode::Row(parts) = ast else {
+            panic!("expected equation row")
+        };
+        assert!(parts.iter().any(|part| matches!(part,
+            EqNode::Decoration { kind: DecoKind::StrikeThrough, body }
+                if matches!(body.as_ref(), EqNode::Symbol(s) if s == "="))));
+    }
+
+    /// [PR #1226] LEFT-RIGHT 구분기호 그룹 뒤 첨자(^/_)가 그룹 전체에 결합돼야 한다.
+    /// 기존엔 LEFT 분기가 try_parse_scripts 를 안 거쳐 `|x|^3` 의 ^3 가 base 없는
+    /// orphan Superscript{base:Empty} 가 됐다(3 이 superscript 높이로 안 올라감).
+    #[test]
+    fn left_right_group_binds_trailing_script() {
+        // |x|^3 → Superscript{ base: Paren, sup: 3 } (orphan 아님)
+        let ast = parse("left | x right | ^3");
+        let s = format!("{:?}", ast);
+        assert!(
+            s.contains("Superscript") && s.contains("Paren") && !s.contains("base: Empty"),
+            "|x|^3 의 ^3 가 Paren 그룹에 결합돼야 함(orphan 금지): {s}"
+        );
+
+        // |x|_3 → Subscript{ base: Paren, sub: 3 }
+        let sub = format!("{:?}", parse("left | x right | _3"));
+        assert!(
+            sub.contains("Subscript") && sub.contains("Paren") && !sub.contains("base: Empty"),
+            "|x|_3 의 _3 가 Paren 그룹에 결합돼야 함: {sub}"
+        );
+
+        // 회귀 가드: x^2 는 영향 없음
+        let x2 = format!("{:?}", parse("x^2"));
+        assert!(x2.contains("Superscript"), "x^2 정상: {x2}");
+    }
+
+    #[test]
+    fn adjacent_literal_atoms_remain_one_fraction_operand() {
+        let EqNode::Fraction { numer, denom } = parse("dΔx over 2a") else {
+            panic!("expected fraction");
+        };
+        assert!(matches!(*numer, EqNode::Row(ref parts) if parts.len() == 3));
+        assert!(matches!(*denom, EqNode::Row(ref parts) if parts.len() == 2));
+        let EqNode::Fraction { numer, .. } = parse("10a^3 over b^2") else {
+            panic!("expected fraction");
+        };
+        assert!(matches!(*numer, EqNode::Row(ref parts)
+            if matches!(parts.as_slice(), [EqNode::Number(_), EqNode::Superscript { .. }])));
+        // 공백, 연산자, 명시적 그룹은 기존 operand 경계를 유지한다.
+        for script in ["d x over L", "d+ x over L", "d{x} over L"] {
+            let EqNode::Row(parts) = parse(script) else {
+                panic!("expected row: {script}")
+            };
+            assert!(matches!(parts.last(), Some(EqNode::Fraction { numer, .. })
+                if matches!(numer.as_ref(), EqNode::Text(text) if text == "x")));
+        }
+    }
+
+    #[test]
+    fn test_simple_fraction() {
+        let ast = parse("1 over 2");
+        match &ast {
+            EqNode::Fraction { numer, denom } => {
+                assert!(matches!(numer.as_ref(), EqNode::Number(n) if n == "1"));
+                assert!(matches!(denom.as_ref(), EqNode::Number(n) if n == "2"));
+            }
+            _ => panic!("Expected Fraction, got {:?}", ast),
+        }
+    }
+
+    #[test]
+    fn test_task1122_over_followed_by_number_parses_as_fraction() {
+        for (script, expected_numer, expected_denom) in [
+            ("11 over20", "11", "20"),
+            ("3 over5", "3", "5"),
+            ("7 OVER10", "7", "10"),
+            ("{8} over {13}", "8", "13"),
+        ] {
+            let ast = parse(script);
+            match &ast {
+                EqNode::Fraction { numer, denom } => {
+                    assert!(
+                        matches!(numer.as_ref(), EqNode::Number(n) if n == expected_numer),
+                        "unexpected numerator for {script:?}: {ast:?}"
+                    );
+                    assert!(
+                        matches!(denom.as_ref(), EqNode::Number(n) if n == expected_denom),
+                        "unexpected denominator for {script:?}: {ast:?}"
+                    );
+                }
+                _ => panic!("Expected Fraction for {script:?}, got {:?}", ast),
+            }
+        }
+    }
+
+    #[test]
+    fn test_task1122_over_prefix_non_numeric_identifiers_parse_as_text() {
+        let ast = parse("overlap");
+        assert!(matches!(ast, EqNode::Text(ref t) if t == "overlap"));
+
+        let ast = parse(r"\overline{AB}");
+        assert!(
+            matches!(
+                ast,
+                EqNode::Decoration {
+                    kind: DecoKind::Overline,
+                    ..
+                }
+            ),
+            r"Expected Decoration(Overline), got {:?}",
+            ast
+        );
+    }
+
+    #[test]
+    fn test_atop() {
+        let ast = parse("a atop b");
+        match &ast {
+            EqNode::Atop { top, bottom } => {
+                assert!(matches!(top.as_ref(), EqNode::Text(t) if t == "a"));
+                assert!(matches!(bottom.as_ref(), EqNode::Text(t) if t == "b"));
+            }
+            _ => panic!("Expected Atop, got {:?}", ast),
+        }
+    }
+
+    #[test]
+    fn test_superscript() {
+        let ast = parse("E=mc^2");
+        // E = mc^2 → Row([Text("E"), Symbol("="), Superscript(Text("mc"), Number("2"))])
+        match &ast {
+            EqNode::Row(children) => {
+                assert!(children.len() >= 3);
+                assert!(matches!(&children[2], EqNode::Superscript { .. }));
+            }
+            _ => panic!("Expected Row, got {:?}", ast),
+        }
+    }
+
+    #[test]
+    fn test_sqrt() {
+        let ast = parse("SQRT x");
+        match &ast {
+            EqNode::Sqrt { index, body } => {
+                assert!(index.is_none());
+                assert!(matches!(body.as_ref(), EqNode::Text(t) if t == "x"));
+            }
+            _ => panic!("Expected Sqrt, got {:?}", ast),
+        }
+    }
+
+    #[test]
+    fn test_sqrt_with_index() {
+        let ast = parse("SQRT(3) of x");
+        match &ast {
+            EqNode::Sqrt { index, body } => {
+                assert!(index.is_some());
+                assert!(matches!(body.as_ref(), EqNode::Text(t) if t == "x"));
+            }
+            _ => panic!("Expected Sqrt with index, got {:?}", ast),
+        }
+    }
+
+    #[test]
+    fn test_greek() {
+        let ast = parse("alpha + beta");
+        match &ast {
+            EqNode::Row(children) => {
+                assert!(matches!(&children[0], EqNode::MathSymbol(s) if s == "α"));
+                assert!(matches!(&children[1], EqNode::Symbol(s) if s == "+"));
+                assert!(matches!(&children[2], EqNode::MathSymbol(s) if s == "β"));
+            }
+            _ => panic!("Expected Row, got {:?}", ast),
+        }
+    }
+
+    #[test]
+    fn test_integral() {
+        // 적분은 nolimits: MathSymbol + SubSup (일반 첨자)
+        let ast = parse("INT_0^{inf}");
+        match &ast {
+            EqNode::SubSup { base, sub, sup } => {
+                assert!(matches!(base.as_ref(), EqNode::MathSymbol(s) if s == "∫"));
+            }
+            _ => panic!("Expected SubSup, got {:?}", ast),
+        }
+        let grouped = parse("int_0^2 {g(x)dx}=2");
+        let EqNode::Row(nodes) = grouped else {
+            panic!("integral equation row")
+        };
+        assert_eq!(nodes[1], EqNode::OperatorBody(Box::new(parse("g(x)dx"))));
+        assert_eq!(nodes[2], EqNode::Symbol("=".into()));
+        let EqNode::Row(plain) = parse("int_0^2 x=2") else {
+            panic!("plain integral row")
+        };
+        assert_eq!(plain[1], EqNode::Text("x".into()));
+    }
+
+    #[test]
+    fn one_sided_bare_limits_keep_the_sign_in_the_subscript() {
+        for sign in ["+", "-"] {
+            for suffix in [" g(x)", "", "~g(x)"] {
+                let bare = parse(&format!("lim_x->0{sign}{suffix}"));
+                let grouped = parse(&format!("lim_{{x->0{sign}}}{suffix}"));
+                assert_eq!(bare, grouped);
+                let canonical = super::super::canonical::to_hwp_script(&bare).unwrap();
+                assert_eq!(parse(&canonical), bare);
+            }
+            let spaced = parse(&format!("lim_x->0 {sign} g(x)"));
+            assert_eq!(spaced, parse(&format!("lim_{{x->0}} {sign} g(x)")));
+            assert_eq!(
+                parse(&format!("lim_{{x->0}}{sign}g(x)")),
+                parse(&format!("lim_{{x->0}} {sign} g(x)"))
+            );
+        }
+    }
+
+    #[test]
+    fn limit_operand_groups_preserve_canonical_boundaries() {
+        for body in ["S", "S^2", "S_n"] {
+            let ast = parse(&format!("lim_{{n->inf}} {{{body}}}=1"));
+            let EqNode::Row(nodes) = &ast else {
+                panic!("expected limit equation row");
+            };
+            assert!(matches!(nodes[0], EqNode::Limit { .. }));
+            assert_eq!(nodes[1], EqNode::OperatorBody(Box::new(parse(body))));
+            assert_eq!(nodes[2], EqNode::Symbol("=".into()));
+            let canonical = super::super::canonical::to_hwp_script(&ast).unwrap();
+            assert_eq!(parse(&canonical), ast);
+        }
+        for script in ["lim_0 S_{n}=1", "sum_0^n {S_n}=1", "sin {S_n}=1"] {
+            let EqNode::Row(nodes) = parse(script) else {
+                panic!("expected operator row");
+            };
+            assert!(!nodes
+                .iter()
+                .any(|node| matches!(node, EqNode::OperatorBody(_))));
+        }
+        for (operator, body) in [("over", parse("a over b")), ("atop", parse("a atop b"))] {
+            let ast = parse(&format!("lim_0 {{a}} {operator} {{b}}=1"));
+            let EqNode::Row(nodes) = &ast else {
+                panic!("expected limit equation row");
+            };
+            assert!(matches!(nodes[0], EqNode::Limit { .. }));
+            assert_eq!(nodes[1], EqNode::OperatorBody(Box::new(body)));
+            let canonical = super::super::canonical::to_hwp_script(&ast).unwrap();
+            assert_eq!(parse(&canonical), ast);
+        }
+    }
+
+    #[test]
+    fn test_sum() {
+        let ast = parse("SUM_{i=0}^n");
+        match &ast {
+            EqNode::BigOp { symbol, sub, sup } => {
+                assert_eq!(symbol, "∑");
+                assert!(sub.is_some());
+                assert!(sup.is_some());
+            }
+            _ => panic!("Expected BigOp, got {:?}", ast),
+        }
+    }
+
+    #[test]
+    fn test_limit() {
+        let ast = parse("lim_{x->0}");
+        match &ast {
+            EqNode::Limit { is_upper, sub } => {
+                assert!(!is_upper);
+                assert!(sub.is_some());
+            }
+            _ => panic!("Expected Limit, got {:?}", ast),
+        }
+    }
+
+    #[test]
+    fn test_matrix() {
+        let ast = parse("matrix{a & b # c & d}");
+        match &ast {
+            EqNode::Matrix { rows, style } => {
+                assert_eq!(*style, MatrixStyle::Plain);
+                assert_eq!(rows.len(), 2);
+                assert_eq!(rows[0].len(), 2);
+                assert_eq!(rows[1].len(), 2);
+            }
+            _ => panic!("Expected Matrix, got {:?}", ast),
+        }
+    }
+
+    #[test]
+    fn test_left_right() {
+        let ast = parse("LEFT ( a over b RIGHT )");
+        match &ast {
+            EqNode::Paren { left, right, body } => {
+                assert_eq!(left, "(");
+                assert_eq!(right, ")");
+                assert!(matches!(body.as_ref(), EqNode::Fraction { .. }));
+            }
+            _ => panic!("Expected Paren, got {:?}", ast),
+        }
+    }
+
+    #[test]
+    fn test_decoration() {
+        let ast = parse("hat x");
+        match &ast {
+            EqNode::Decoration { kind, body } => {
+                assert_eq!(*kind, DecoKind::Hat);
+                assert!(matches!(body.as_ref(), EqNode::Text(t) if t == "x"));
+            }
+            _ => panic!("Expected Decoration, got {:?}", ast),
+        }
+    }
+
+    #[test]
+    fn unbraced_variable_subscript_does_not_consume_following_superscript() {
+        assert_eq!(parse("x_i^2"), parse("x_{i}^{2}"));
+        assert!(matches!(parse("x_i^2"), EqNode::SubSup { .. }));
+        assert!(matches!(parse("x_{i^2}"), EqNode::Subscript { .. }));
+    }
+
+    #[test]
+    fn font_declarations_between_c_and_subscript_keep_the_attachment() {
+        fn is_c(node: &EqNode) -> bool {
+            match node {
+                EqNode::Text(text) => text == "C",
+                EqNode::FontStyle { body, .. } | EqNode::FontDeclaration { body, .. } => is_c(body),
+                _ => false,
+            }
+        }
+        fn attached_to_c(node: &EqNode) -> bool {
+            match node {
+                EqNode::Subscript { base, .. } => is_c(base),
+                EqNode::FontStyle { body, .. } | EqNode::FontDeclaration { body, .. } => {
+                    attached_to_c(body)
+                }
+                EqNode::Row(children) => children.iter().any(attached_to_c),
+                _ => false,
+            }
+        }
+
+        assert!(attached_to_c(&parse("rm C it rm _{it r rm}")));
+        assert!(attached_to_c(&parse("rm C_3")));
+        assert!(!attached_to_c(&parse("rm C it rm x")));
+    }
+
+    #[test]
+    fn hwp_font_declarations_persist_across_groups_until_next_declaration() {
+        fn letters(node: &EqNode, italic: bool, out: &mut Vec<(String, bool)>) {
+            match node {
+                EqNode::FontStyle { style, body } | EqNode::FontDeclaration { style, body } => {
+                    letters(
+                        body,
+                        match style {
+                            FontStyleKind::Roman => false,
+                            FontStyleKind::Italic => true,
+                            _ => italic,
+                        },
+                        out,
+                    )
+                }
+                EqNode::Text(text) | EqNode::Quoted(text) => out.push((text.clone(), italic)),
+                EqNode::Row(nodes) => {
+                    for node in nodes {
+                        letters(node, italic, out);
+                    }
+                }
+                EqNode::Fraction { numer, denom } => {
+                    letters(numer, italic, out);
+                    letters(denom, italic, out);
+                }
+                _ => {}
+            }
+        }
+        for (script, expected) in [
+            (
+                "rm A B it C D",
+                vec![("A", false), ("B", false), ("C", true), ("D", true)],
+            ),
+            ("rm {A} B", vec![("A", false), ("B", false)]),
+            ("{rm A} B", vec![("A", false), ("B", false)]),
+            (r"it \text{B} C", vec![("B", false), ("C", true)]),
+            (r"it \operatorname{B} C", vec![("B", false), ("C", true)]),
+            (
+                r#"rm A: ~ "PM" it T rm RH"#,
+                vec![("A", false), ("PM", false), ("T", true), ("RH", false)],
+            ),
+            (
+                r"rm A \mathit{B} C",
+                vec![("A", false), ("B", true), ("C", false)],
+            ),
+            (
+                "{rm A} over {B} C",
+                vec![("A", false), ("B", false), ("C", false)],
+            ),
+        ] {
+            let ast = parse(script);
+            let mut actual = Vec::new();
+            letters(&ast, true, &mut actual);
+            let expected: Vec<_> = expected
+                .into_iter()
+                .map(|(s, i)| (s.to_string(), i))
+                .collect();
+            assert_eq!(actual, expected, "{script}: {ast:?}");
+            let canonical = super::super::canonical::to_hwp_script(&ast).unwrap();
+            let mut roundtrip = Vec::new();
+            letters(&parse(&canonical), true, &mut roundtrip);
+            assert_eq!(roundtrip, expected, "canonical {canonical}");
+        }
+        // 뒤의 항을 분모에 흡수하지 않으며 그룹 종료 선언은 닫는 괄호를 소비하지 않는다.
+        let ast = parse("rm A over B C");
+        assert!(
+            matches!(ast, EqNode::Row(ref nodes) if matches!(nodes.first(), Some(EqNode::Fraction { .. })) && nodes.len() == 2)
+        );
+        assert!(EqParser::new(tokenize("{A rm} B")).parse() != EqNode::Empty);
+    }
+
+    #[test]
+    fn test_font_style() {
+        let ast = parse("rm abc");
+        match &ast {
+            EqNode::FontDeclaration { style, body } => {
+                assert_eq!(*style, FontStyleKind::Roman);
+            }
+            _ => panic!("Expected FontDeclaration, got {:?}", ast),
+        }
+    }
+
+    // [#1204-B] 글꼴 명령(rm) body 로 온 decoration(bar)이 Text 로 leak 되지 않고
+    // Decoration 으로 파싱되어야 한다.
+    #[test]
+    fn test_font_style_body_decoration_not_leaked() {
+        let ast = parse("rm bar {F prime F}");
+        let s = format!("{:?}", ast);
+        assert!(
+            s.contains("Decoration"),
+            "bar 가 Decoration 으로 파싱돼야 함: {s}"
+        );
+        assert!(
+            !s.contains(r#"Text("bar")"#),
+            "bar 가 텍스트로 leak 되면 안 됨: {s}"
+        );
+    }
+
+    // [#1204] 대문자 글꼴/장식 명령(RM/BAR)도 대소문자 무시로 인식 (leak 방지).
+    #[test]
+    fn test_uppercase_font_and_deco_commands() {
+        let s = format!("{:?}", parse("RM {vec{EC}}"));
+        assert!(!s.contains(r#"Text("RM")"#), "RM 이 leak 되면 안 됨: {s}");
+        assert!(
+            s.contains("FontStyle"),
+            "RM 이 FontStyle 로 인식돼야 함: {s}"
+        );
+        let s2 = format!("{:?}", parse("BAR {AB}"));
+        assert!(
+            s2.contains("Decoration"),
+            "BAR 가 Decoration 으로 인식돼야 함: {s2}"
+        );
+    }
+
+    // [#1204-A] root3 (분리 후 root + 3) 이 Sqrt 로 파싱되어야 한다.
+    #[test]
+    fn test_root_glued_digit_parses_as_sqrt() {
+        let ast = parse("root3 y");
+        let s = format!("{:?}", ast);
+        assert!(s.contains("Sqrt"), "root3 이 Sqrt 로 파싱돼야 함: {s}");
+        assert!(
+            !s.contains(r#"Text("root3")"#),
+            "root3 이 텍스트로 leak 되면 안 됨: {s}"
+        );
+    }
+
+    #[test]
+    fn glued_single_letter_root_parses_as_square_root() {
+        for operand in ["x", "n", "a"] {
+            let script = format!("x root{operand}");
+            let rendered = format!("{:?}", parse(&script));
+            assert!(rendered.contains("Sqrt"), "{script}: {rendered}");
+            assert!(
+                !rendered.contains(&format!("root{operand}")),
+                "{script}: {rendered}"
+            );
+        }
+    }
+
+    // ── 검증 경고 / 재귀 깊이 한도 (미리보기 검증 게이트용) ─────────────
+
+    /// 파싱 후 수집된 경고를 반환하는 헬퍼
+    fn parse_warnings(script: &str) -> Vec<String> {
+        let mut parser = EqParser::new(tokenize(script));
+        parser.parse();
+        parser.warnings().to_vec()
+    }
+
+    /// 미지 LaTeX 명령어(`\foo`)는 텍스트로 관대하게 처리하되 경고를 남긴다.
+    #[test]
+    fn warns_on_unknown_latex_command() {
+        let w = parse_warnings(r"\unknowncmd x");
+        assert!(
+            w.iter().any(|m| m.contains("\\unknowncmd")),
+            "미지 LaTeX 명령어 경고가 있어야 함: {w:?}"
+        );
+        // 베어워드 변수 식별자(x, mc)는 경고하지 않는다 (오탐 방지)
+        let w2 = parse_warnings("E=mc^2");
+        assert!(w2.is_empty(), "일반 식별자에는 경고가 없어야 함: {w2:?}");
+    }
+
+    /// 괄호 불일치(열린 채 종료 / 짝 없는 닫힘)는 경고로 수집된다.
+    #[test]
+    fn warns_on_unbalanced_braces() {
+        let w = parse_warnings("{1 over 2");
+        assert!(
+            w.iter().any(|m| m.contains("닫는 중괄호")),
+            "닫히지 않은 그룹 경고가 있어야 함: {w:?}"
+        );
+        let w2 = parse_warnings("1 over 2}");
+        assert!(
+            w2.iter().any(|m| m.contains("짝 없는 닫는 괄호")),
+            "짝 없는 닫는 괄호 경고가 있어야 함: {w2:?}"
+        );
+    }
+
+    /// 빈 그룹 `{}` 도 경고로 수집된다.
+    #[test]
+    fn warns_on_empty_group() {
+        let w = parse_warnings("x^{}");
+        assert!(
+            w.iter().any(|m| m.contains("빈 그룹")),
+            "빈 그룹 경고가 있어야 함: {w:?}"
+        );
+    }
+
+    /// 비정상적으로 깊게 중첩된 스크립트(8000자 한도 내 최악)는 스택 오버플로
+    /// 없이 깊이 초과 경고로 수집되어야 한다.
+    #[test]
+    fn depth_cap_produces_warning_not_crash() {
+        let script = format!("{}{}", "{".repeat(3900), "}".repeat(3900));
+        let w = parse_warnings(&script);
+        assert!(
+            w.iter().any(|m| m.contains("중첩 깊이")),
+            "중첩 깊이 초과 경고가 있어야 함: {w:?}"
+        );
+        // 중첩 장식(`hat hat hat ...`)처럼 중괄호 없는 재귀도 막혀야 한다
+        let w2 = parse_warnings(&"hat ".repeat(3000));
+        assert!(
+            w2.iter().any(|m| m.contains("중첩 깊이")),
+            "중괄호 없는 재귀도 깊이 초과 경고가 있어야 함: {w2:?}"
+        );
+    }
+
+    #[test]
+    fn test_cases() {
+        let ast = parse("CASES{ 1 & x>0 # -1 & x<0 }");
+        match &ast {
+            EqNode::Cases { rows } => {
+                assert_eq!(rows.len(), 2);
+            }
+            _ => panic!("Expected Cases, got {:?}", ast),
+        }
+    }
+
+    #[test]
+    fn test_sample_eq01_script() {
+        // samples/eq-01.hwp의 첫 번째 수식
+        let script =
+            "평점=입찰가격평가~배점한도 TIMES  LEFT ( {최저입찰가격} over {해당입찰가격} RIGHT )";
+        let ast = parse(script);
+        // 파싱 실패 없이 AST 생성되면 성공
+        match &ast {
+            EqNode::Row(children) => {
+                assert!(children.len() > 1);
+                // TIMES, LEFT-RIGHT 구조 확인
+                let has_paren = children.iter().any(|c| matches!(c, EqNode::Paren { .. }));
+                assert!(has_paren, "Should contain Paren node");
+            }
+            _ => {} // 단일 노드도 허용
+        }
+    }
+
+    #[test]
+    fn test_cos_fraction_with_left_right() {
+        // cos`left({pi} over {2}+theta right)=`-{1} over {5}`
+        // OVER는 바로 앞/뒤 그룹만 분수로 만든다:
+        //   LEFT-RIGHT 안: {pi} over {2} → Fraction{π,2}, +θ는 분수 밖
+        //   최상위: {1} over {5} → Fraction{1,5}, cos(...)=-는 분수 밖
+        let script = " cos ` left({ pi} over {2}+ theta  right)=`-{1} over {5}`";
+        let ast = parse(script);
+        eprintln!("AST: {:#?}", ast);
+        // 최상위는 Row: [cos, Paren{π/2+θ}, =, -, Fraction{1,5}]
+        let ast_str = format!("{:?}", ast);
+        assert!(ast_str.contains("cos"), "cos가 있어야 함");
+        assert!(ast_str.contains("Paren"), "Paren이 있어야 함");
+        // Fraction{1,5}가 독립적으로 존재해야 함
+        assert!(
+            ast_str.contains("Fraction { numer: Number(\"1\"), denom: Number(\"5\")"),
+            "Fraction{{1,5}}가 있어야 함: {}",
+            ast_str
+        );
+    }
+
+    #[test]
+    fn test_latex_frac() {
+        let ast = parse(r"\frac{1}{2}");
+        match &ast {
+            EqNode::Fraction { numer, denom } => {
+                assert!(matches!(numer.as_ref(), EqNode::Number(n) if n == "1"));
+                assert!(matches!(denom.as_ref(), EqNode::Number(n) if n == "2"));
+            }
+            _ => panic!("Expected Fraction, got {:?}", ast),
+        }
+    }
+
+    #[test]
+    fn test_latex_quadratic_slice() {
+        let ast = parse(r"x=\frac{-b \pm \sqrt{b^2}}{2a}");
+        let ast_str = format!("{:?}", ast);
+        assert!(
+            ast_str.contains("Fraction"),
+            "Fraction이 있어야 함: {}",
+            ast_str
+        );
+        assert!(
+            ast_str.contains("MathSymbol(\"±\")"),
+            "± 기호가 있어야 함: {}",
+            ast_str
+        );
+        assert!(ast_str.contains("Sqrt"), "Sqrt가 있어야 함: {}", ast_str);
+    }
+
+    #[test]
+    fn test_latex_sqrt_with_bracket_index() {
+        let ast = parse(r"\sqrt[3]{x}");
+        match &ast {
+            EqNode::Sqrt { index, body } => {
+                assert!(index.is_some(), "sqrt index가 있어야 함");
+                assert!(matches!(body.as_ref(), EqNode::Text(t) if t == "x"));
+            }
+            _ => panic!("Expected indexed Sqrt, got {:?}", ast),
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn lsub_is_infix_left_subscript_of_previous_element() {
+    // 한컴 `C LSUB {3} _{1}` = ₃C₁ — 왼쪽 첨자는 앞 요소에 붙고 오른쪽 첨자도 유지된다.
+    let ast = format!("{:?}", parse("C LSUB {3} _{1}"));
+    assert!(
+        ast.starts_with(
+            "Row([Subscript { base: Empty, sub: Number(\"3\") }, Subscript { base: Text(\"C\")"
+        ),
+        "{ast}"
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn unmatched_paren_stops_at_right_delimiter() {
+    // `LEFT. ( … RIGHT )`: `)` 는 RIGHT 의 구분 기호이므로 안쪽 `(` 가 가져가면
+    // 안 된다. 가져가면 cases 의 `#` 행 구분까지 한 괄호 몸체로 삼켜진다.
+    let ast = format!("{:?}", parse("{cases{a&LEFT. (b RIGHT )#c&(d)}}"));
+    assert!(ast.contains("right: \")\""), "RIGHT ) 로 닫혀야 함: {ast}");
+    assert!(
+        !ast.contains("right: \"}\""),
+        "cases 끝 }} 까지 삼키면 안 됨: {ast}"
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn test_lim_fraction() {
+    let script = " lim _{h ``rarrow`` 0} {f left(2+h  right)-f left(2  right)} over {h}`";
+    let ast = parse(script);
+    eprintln!("LIM AST: {:#?}", ast);
+    let ast_str = format!("{:?}", ast);
+    // lim_{h→0} 가 있어야 함
+    assert!(ast_str.contains("Limit"), "Limit가 있어야 함: {}", ast_str);
+    // Fraction이 있어야 함
+    assert!(
+        ast_str.contains("Fraction"),
+        "Fraction이 있어야 함: {}",
+        ast_str
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn test_bar_rm_it() {
+    let script = "bar {{rm{AB}} it }< bar {{rm{AC}} it }`";
+    let ast = parse(script);
+    eprintln!("BAR AST: {:#?}", ast);
+    let ast_str = format!("{:?}", ast);
+    assert!(ast_str.contains("Decoration"), "Decoration이 있어야 함");
+    // }} 가 텍스트로 나오면 안 됨
+    assert!(
+        !ast_str.contains(r#"Text("}")"#),
+        "brace가 텍스트로 나오면 안 됨"
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn test_cases_double_amp() {
+    let script = "{cases{eqalign{``x^{3}#}&&eqalign{~LEFT(x LEQ 0 RIGHT)#}#``f LEFT(x RIGHT)&&~LEFT(x>0 RIGHT)}}";
+    let ast = parse(script);
+    eprintln!("CASES AST: {:#?}", ast);
+    let s = format!("{:?}", ast);
+    assert!(s.contains("Tab"), "Tab이 있어야 함: {}", s);
+}
+
+#[cfg(test)]
+#[test]
+fn test_rm_p_left() {
+    let script = "{rm{P}} it  left(A``|` B` right)";
+    let ast = parse(script);
+    eprintln!("RM_P AST: {:#?}", ast);
+    let s = format!("{:?}", ast);
+    assert!(s.contains("Paren"), "Paren이 있어야 함: {}", s);
+}
+
+// LaTeX 명령어 호환 확장 테스트 (#143 2차)
+
+#[cfg(test)]
+mod latex_compat_tests {
+    use super::symbols::{DecoKind, FontStyleKind};
+    use super::*;
+
+    #[test]
+    fn test_latex_dfrac_tfrac() {
+        for cmd in [r"\dfrac{1}{2}", r"\tfrac{1}{2}"] {
+            let ast = parse(cmd);
+            assert!(
+                matches!(&ast, EqNode::Fraction { .. }),
+                "{cmd}: Expected Fraction, got {:?}",
+                ast
+            );
+        }
+    }
+
+    #[test]
+    fn test_latex_mathrm() {
+        let ast = parse(r"\mathrm{kg}");
+        assert!(
+            matches!(
+                &ast,
+                EqNode::FontStyle {
+                    style: FontStyleKind::Roman,
+                    ..
+                }
+            ),
+            r"Expected FontStyle(Roman) for \mathrm, got {:?}",
+            ast
+        );
+    }
+
+    #[test]
+    fn test_latex_mathbf() {
+        let ast = parse(r"\mathbf{F}");
+        assert!(
+            matches!(
+                &ast,
+                EqNode::FontStyle {
+                    style: FontStyleKind::Bold,
+                    ..
+                }
+            ),
+            r"Expected FontStyle(Bold) for \mathbf, got {:?}",
+            ast
+        );
+    }
+
+    #[test]
+    fn test_latex_mathbb() {
+        let ast = parse(r"\mathbb{R}");
+        assert!(
+            matches!(
+                &ast,
+                EqNode::FontStyle {
+                    style: FontStyleKind::Blackboard,
+                    ..
+                }
+            ),
+            r"Expected FontStyle(Blackboard) for \mathbb, got {:?}",
+            ast
+        );
+    }
+
+    #[test]
+    fn test_latex_mathcal() {
+        let ast = parse(r"\mathcal{L}");
+        assert!(
+            matches!(
+                &ast,
+                EqNode::FontStyle {
+                    style: FontStyleKind::Calligraphy,
+                    ..
+                }
+            ),
+            r"Expected FontStyle(Calligraphy) for \mathcal, got {:?}",
+            ast
+        );
+    }
+
+    #[test]
+    fn test_latex_mathfrak_mathsf_mathtt() {
+        let ast = parse(r"\mathfrak{g}");
+        assert!(matches!(
+            &ast,
+            EqNode::FontStyle {
+                style: FontStyleKind::Fraktur,
+                ..
+            }
+        ));
+
+        let ast = parse(r"\mathsf{AB}");
+        assert!(matches!(
+            &ast,
+            EqNode::FontStyle {
+                style: FontStyleKind::SansSerif,
+                ..
+            }
+        ));
+
+        let ast = parse(r"\mathtt{code}");
+        assert!(matches!(
+            &ast,
+            EqNode::FontStyle {
+                style: FontStyleKind::Monospace,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_latex_text() {
+        let ast = parse(r"\text{if }");
+        assert!(
+            matches!(
+                &ast,
+                EqNode::FontStyle {
+                    style: FontStyleKind::Roman,
+                    ..
+                }
+            ),
+            r"Expected FontStyle(Roman) for \text, got {:?}",
+            ast
+        );
+    }
+
+    #[test]
+    fn test_latex_overline_lowercase() {
+        let ast = parse(r"\overline{AB}");
+        assert!(
+            matches!(
+                &ast,
+                EqNode::Decoration {
+                    kind: DecoKind::Overline,
+                    ..
+                }
+            ),
+            r"Expected Decoration(Overline) for \overline, got {:?}",
+            ast
+        );
+    }
+
+    #[test]
+    fn test_latex_underline_lowercase() {
+        let ast = parse(r"\underline{x}");
+        assert!(
+            matches!(
+                &ast,
+                EqNode::Decoration {
+                    kind: DecoKind::Underline,
+                    ..
+                }
+            ),
+            r"Expected Decoration(Underline) for \underline, got {:?}",
+            ast
+        );
+    }
+
+    #[test]
+    fn test_latex_widehat_widetilde() {
+        let ast = parse(r"\widehat{ABC}");
+        assert!(matches!(
+            &ast,
+            EqNode::Decoration {
+                kind: DecoKind::Hat,
+                ..
+            }
+        ));
+
+        let ast = parse(r"\widetilde{x}");
+        assert!(matches!(
+            &ast,
+            EqNode::Decoration {
+                kind: DecoKind::Tilde,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_latex_overrightarrow() {
+        let ast = parse(r"\overrightarrow{AB}");
+        assert!(matches!(
+            &ast,
+            EqNode::Decoration {
+                kind: DecoKind::Vec,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_latex_not_lowercase() {
+        let ast = parse(r"\not{=}");
+        assert!(
+            matches!(
+                &ast,
+                EqNode::Decoration {
+                    kind: DecoKind::StrikeThrough,
+                    ..
+                }
+            ),
+            r"Expected Decoration(StrikeThrough) for \not, got {:?}",
+            ast
+        );
+    }
+
+    #[test]
+    fn test_latex_quadratic_formula() {
+        let ast = parse(r"x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}");
+        let s = format!("{:?}", ast);
+        assert!(s.contains("Fraction"), "분수 있어야 함");
+        assert!(s.contains("Sqrt"), "제곱근 있어야 함");
+        assert!(s.contains("±"), "± 기호 있어야 함");
+    }
+
+    #[test]
+    fn test_latex_binom() {
+        let ast = parse(r"\binom{n}{k}");
+        assert!(
+            matches!(&ast, EqNode::Paren { left, right, .. } if left == "(" && right == ")"),
+            r"Expected Paren for \binom, got {:?}",
+            ast
+        );
+    }
+
+    #[test]
+    fn test_hwpeq_not_regressed() {
+        assert!(matches!(parse("1 over 2"), EqNode::Fraction { .. }));
+        assert!(matches!(parse("SQRT x"), EqNode::Sqrt { .. }));
+        assert!(matches!(parse("SUM_{i=0}^n"), EqNode::BigOp { .. }));
+        assert!(matches!(
+            parse("rm abc"),
+            EqNode::FontDeclaration {
+                style: FontStyleKind::Roman,
+                ..
+            }
+        ));
+        assert!(matches!(parse("hat x"), EqNode::Decoration { .. }));
+        assert!(matches!(
+            parse("OVERLINE{abc}"),
+            EqNode::Decoration {
+                kind: DecoKind::Overline,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_latex_begin_pmatrix() {
+        let ast = parse(r"\begin{pmatrix} a & b \\ c & d \end{pmatrix}");
+        match &ast {
+            EqNode::Matrix { rows, style } => {
+                assert_eq!(*style, super::super::ast::MatrixStyle::Paren);
+                assert_eq!(rows.len(), 2);
+                assert_eq!(rows[0].len(), 2);
+                assert_eq!(rows[1].len(), 2);
+            }
+            _ => panic!("Expected Matrix(Paren), got {:?}", ast),
+        }
+    }
+
+    #[test]
+    fn test_latex_begin_bmatrix() {
+        let ast = parse(r"\begin{bmatrix} 1 & 0 \\ 0 & 1 \end{bmatrix}");
+        match &ast {
+            EqNode::Matrix { rows, style } => {
+                assert_eq!(*style, super::super::ast::MatrixStyle::Bracket);
+                assert_eq!(rows.len(), 2);
+            }
+            _ => panic!("Expected Matrix(Bracket), got {:?}", ast),
+        }
+    }
+
+    #[test]
+    fn test_latex_begin_cases() {
+        let ast = parse(r"\begin{cases} x & x > 0 \\ -x & x \leq 0 \end{cases}");
+        match &ast {
+            EqNode::Cases { rows } => {
+                assert_eq!(rows.len(), 2);
+            }
+            _ => panic!("Expected Cases, got {:?}", ast),
+        }
+    }
+
+    #[test]
+    fn test_latex_begin_aligned() {
+        let ast = parse(r"\begin{aligned} a &= b + c \\ d &= e \end{aligned}");
+        match &ast {
+            EqNode::EqAlign { rows } => {
+                assert_eq!(rows.len(), 2);
+            }
+            _ => panic!("Expected EqAlign, got {:?}", ast),
+        }
+    }
+
+    #[test]
+    fn test_latex_backslash_backslash_tokenizes_as_newline() {
+        use super::super::tokenizer::{tokenize, TokenType};
+        let tokens = tokenize(r"a \\ b");
+        let types: Vec<_> = tokens.iter().map(|t| t.ty).collect();
+        assert!(
+            types.contains(&TokenType::Whitespace),
+            "\\\\는 Whitespace(#)로 토큰화돼야 함: {:?}",
+            tokens
+        );
+    }
+
+    #[test]
+    fn test_latex_operatorname() {
+        let ast = parse(r"\operatorname{argmax}");
+        match &ast {
+            EqNode::FontStyle { style, body } => {
+                assert_eq!(*style, FontStyleKind::Roman);
+                assert!(format!("{:?}", body).contains("argmax"));
+            }
+            _ => panic!(
+                r"Expected FontStyle(Roman) for \operatorname, got {:?}",
+                ast
+            ),
+        }
+    }
+
+    #[test]
+    fn test_latex_spacing_quad() {
+        let ast = parse(r"a \quad b");
+        let s = format!("{:?}", ast);
+        assert!(
+            s.contains("Text") || s.contains("Symbol"),
+            r"\quad should produce a text node: {}",
+            s
+        );
+    }
+
+    #[test]
+    fn test_latex_thin_space() {
+        use super::super::tokenizer::{tokenize, TokenType};
+        let tokens = tokenize(r"a \, b");
+        let has_cmd = tokens
+            .iter()
+            .any(|t| t.ty == TokenType::Command && t.value == "THINSPACE");
+        assert!(has_cmd, r"\, should tokenize as THINSPACE: {:?}", tokens);
+    }
+
+    #[test]
+    fn test_latex_rightarrow() {
+        let ast = parse(r"\rightarrow");
+        match &ast {
+            EqNode::MathSymbol(s) => assert_eq!(s, "→"),
+            _ => panic!(r"Expected → for \rightarrow, got {:?}", ast),
+        }
+    }
+
+    #[test]
+    fn test_latex_implies() {
+        let ast = parse(r"\implies");
+        match &ast {
+            EqNode::MathSymbol(s) => assert_eq!(s, "⇒"),
+            _ => panic!(r"Expected ⇒ for \implies, got {:?}", ast),
+        }
+    }
+
+    #[test]
+    fn test_latex_infty() {
+        let ast = parse(r"\infty");
+        match &ast {
+            EqNode::MathSymbol(s) => assert_eq!(s, "∞"),
+            _ => panic!(r"Expected ∞ for \infty, got {:?}", ast),
+        }
+    }
+
+    #[test]
+    fn test_latex_nabla() {
+        let ast = parse(r"\nabla");
+        match &ast {
+            EqNode::MathSymbol(s) => assert_eq!(s, "∇"),
+            _ => panic!(r"Expected ∇ for \nabla, got {:?}", ast),
+        }
+    }
+
+    #[test]
+    fn test_latex_leq_geq() {
+        let ast = parse(r"a \leq b \geq c");
+        let s = format!("{:?}", ast);
+        assert!(
+            s.contains("≤") && s.contains("≥"),
+            r"\leq \geq should produce ≤ ≥: {}",
+            s
+        );
+    }
+
+    #[test]
+    fn test_latex_phantom() {
+        let ast = parse(r"\phantom{x}");
+        assert!(
+            !matches!(ast, EqNode::Empty),
+            r"\phantom should produce a space node, not Empty: {:?}",
+            ast
+        );
+    }
+
+    #[test]
+    fn test_latex_overset() {
+        let ast = parse(r"\overset{n}{=}");
+        match &ast {
+            EqNode::Superscript { base, sup } => {
+                assert!(format!("{:?}", base).contains("="));
+                assert!(format!("{:?}", sup).contains("n"));
+            }
+            _ => panic!(r"Expected Superscript for \overset, got {:?}", ast),
+        }
+    }
+
+    #[test]
+    fn test_latex_underset() {
+        let ast = parse(r"\underset{x}{y}");
+        match &ast {
+            EqNode::Subscript { base, sub } => {
+                assert!(format!("{:?}", base).contains("y"));
+                assert!(format!("{:?}", sub).contains("x"));
+            }
+            _ => panic!(r"Expected Subscript for \underset, got {:?}", ast),
+        }
+    }
+
+    #[test]
+    fn test_latex_stackrel() {
+        let ast = parse(r"\stackrel{def}{=}");
+        match &ast {
+            EqNode::Superscript { sup, .. } => {
+                let s = format!("{:?}", sup);
+                assert!(
+                    s.contains("def"),
+                    r"\stackrel sup should contain 'def': {}",
+                    s
+                );
+            }
+            _ => panic!(r"Expected Superscript for \stackrel, got {:?}", ast),
+        }
+    }
+
+    #[test]
+    fn test_latex_begin_array() {
+        let ast = parse(r"\begin{array} a & b \\ c & d \end{array}");
+        match &ast {
+            EqNode::Matrix { rows, .. } => {
+                assert_eq!(rows.len(), 2);
+                assert_eq!(rows[0].len(), 2);
+            }
+            _ => panic!(r"Expected Matrix for \begin{{array}}, got {:?}", ast),
+        }
+    }
+
+    #[test]
+    fn test_latex_begin_smallmatrix() {
+        let ast = parse(r"\begin{smallmatrix} 1 & 0 \\ 0 & 1 \end{smallmatrix}");
+        match &ast {
+            EqNode::Matrix { rows, .. } => {
+                assert_eq!(rows.len(), 2);
+            }
+            _ => panic!(r"Expected Matrix for \begin{{smallmatrix}}, got {:?}", ast),
+        }
+    }
+
+    #[test]
+    fn test_latex_begin_split() {
+        let ast = parse(r"\begin{split} a &= b \\ c &= d \end{split}");
+        match &ast {
+            EqNode::EqAlign { rows } => {
+                assert_eq!(rows.len(), 2);
+            }
+            _ => panic!(r"Expected EqAlign for \begin{{split}}, got {:?}", ast),
+        }
+    }
+
+    #[test]
+    fn test_latex_escaped_braces() {
+        use super::super::tokenizer::{tokenize, TokenType};
+        let tokens = tokenize(r"\left\{ x \right\}");
+        let types: Vec<_> = tokens.iter().map(|t| t.ty).collect();
+        assert!(
+            types.contains(&TokenType::LBrace),
+            r"\{{ should tokenize as LBrace: {:?}",
+            tokens
+        );
+    }
+
+    #[test]
+    fn test_latex_langle_rangle() {
+        let ast = parse(r"\left\langle x \right\rangle");
+        match &ast {
+            EqNode::Paren { left, right, .. } => {
+                assert_eq!(left, "⟨");
+                assert_eq!(right, "⟩");
+            }
+            _ => panic!(r"Expected Paren for \langle, got {:?}", ast),
+        }
+    }
+
+    #[test]
+    fn test_hwpeq_inf_remains_symbol() {
+        let ast = parse("lim _{n→inf}");
+        fn has_infinity(node: &EqNode) -> bool {
+            match node {
+                EqNode::MathSymbol(s) if s == "∞" => true,
+                EqNode::Row(ch) => ch.iter().any(has_infinity),
+                EqNode::Subscript { base, sub } => has_infinity(base) || has_infinity(sub),
+                EqNode::Superscript { base, sup } => has_infinity(base) || has_infinity(sup),
+                EqNode::Limit { sub, .. } => sub.as_ref().map_or(false, |s| has_infinity(s)),
+                _ => false,
+            }
+        }
+        assert!(
+            has_infinity(&ast),
+            "hwpeq 'inf' must produce ∞, not function text: {:?}",
+            ast
+        );
+    }
+
+    #[test]
+    fn test_hwpeq_deg_remains_symbol() {
+        let ast = parse("90 deg");
+        fn contains_degree(node: &EqNode) -> bool {
+            match node {
+                EqNode::MathSymbol(s) if s == "°" => true,
+                EqNode::Row(children) => children.iter().any(contains_degree),
+                _ => false,
+            }
+        }
+        assert!(
+            contains_degree(&ast),
+            "hwpeq 'deg' must produce °, not function text: {:?}",
+            ast
+        );
+    }
+
+    // ── #1304: 무브레이스 첨자 공백 구분 ────────────────────────────────
+
+    /// 트리에서 첫 BigOp 노드를 찾는다.
+    fn find_big_op(node: &EqNode) -> Option<&EqNode> {
+        match node {
+            EqNode::BigOp { .. } => Some(node),
+            EqNode::Row(children) => children.iter().find_map(find_big_op),
+            _ => None,
+        }
+    }
+
+    /// `sum_k=1 ^6` (브레이스 없음, 공백 구분) → ∑ 하한 `k=1` 전체, 상한 `6`.
+    /// 기존엔 하한이 `k` 하나로 잘리고 `=1` 이 본문으로, `^6` 이 `1` 의 위첨자로 깨졌다.
+    #[test]
+    fn task1304_unbraced_sum_lower_limit_full() {
+        let ast = parse("sum_k=1 ^6 (k+1)^2");
+        let big = find_big_op(&ast).expect("BigOp(∑) 가 있어야 함");
+        let (sub, sup) = match big {
+            EqNode::BigOp { symbol, sub, sup } => {
+                assert_eq!(symbol, "∑");
+                (sub.as_ref(), sup.as_ref())
+            }
+            _ => unreachable!(),
+        };
+        // 하한 = Row[k, =, 1]
+        let sub = sub.expect("하한(sub)이 있어야 함");
+        match sub.as_ref() {
+            EqNode::Row(items) => {
+                let dbg = format!("{:?}", items);
+                assert!(
+                    items.len() == 3
+                        && matches!(&items[0], EqNode::Text(t) if t == "k")
+                        && matches!(&items[1], EqNode::Symbol(s) if s == "=")
+                        && matches!(&items[2], EqNode::Number(n) if n == "1"),
+                    "하한은 k=1 전체여야 함: {dbg}"
+                );
+            }
+            other => panic!("하한이 Row[k,=,1] 여야 함, got {:?}", other),
+        }
+        // 상한 = 6
+        let sup = sup.expect("상한(sup)이 있어야 함");
+        assert!(
+            matches!(sup.as_ref(), EqNode::Number(n) if n == "6"),
+            "상한은 6 이어야 함: {:?}",
+            sup
+        );
+    }
+
+    #[test]
+    fn braced_subscript_stops_before_a_tight_relation() {
+        let ast = parse("x_{2}=5^2=25");
+        let EqNode::Row(items) = ast else {
+            panic!("expected expression row");
+        };
+        assert_eq!(
+            items.len(),
+            5,
+            "the equality must stay outside the subscript"
+        );
+        assert!(matches!(&items[0], EqNode::Subscript { base, sub }
+            if matches!(base.as_ref(), EqNode::Text(x) if x == "x")
+                && matches!(sub.as_ref(), EqNode::Number(two) if two == "2")));
+        assert!(matches!(&items[1], EqNode::Symbol(eq) if eq == "="));
+        assert!(matches!(&items[2], EqNode::Superscript { base, sup }
+            if matches!(base.as_ref(), EqNode::Number(five) if five == "5")
+                && matches!(sup.as_ref(), EqNode::Number(two) if two == "2")));
+        assert!(matches!(&items[3], EqNode::Symbol(eq) if eq == "="));
+        assert!(matches!(&items[4], EqNode::Number(n) if n == "25"));
+    }
+
+    #[test]
+    fn small_product_uses_body_size_while_product_keeps_limits() {
+        let small = parse("SMALLPROD");
+        assert!(matches!(small, EqNode::MathSymbol(ref symbol) if symbol == "∏"));
+        let large = parse("PROD_{i=1}^{n}");
+        assert!(matches!(large, EqNode::BigOp { ref symbol, .. } if symbol == "∏"));
+    }
+
+    /// `lim_x->0` (공백 없음) → 극한 하한 `x->0` 전체 (x → 0).
+    #[test]
+    fn task1304_unbraced_lim_lower_limit_full() {
+        let ast = parse("lim_x->0 f(x)");
+        fn find_limit(node: &EqNode) -> Option<&EqNode> {
+            match node {
+                EqNode::Limit { .. } => Some(node),
+                EqNode::Row(children) => children.iter().find_map(find_limit),
+                _ => None,
+            }
+        }
+        let lim = find_limit(&ast).expect("Limit 노드가 있어야 함");
+        let sub = match lim {
+            EqNode::Limit { sub, .. } => sub.as_ref().expect("하한이 있어야 함"),
+            _ => unreachable!(),
+        };
+        match sub.as_ref() {
+            EqNode::Row(items) => assert!(
+                items.len() == 3
+                    && matches!(&items[0], EqNode::Text(t) if t == "x")
+                    && matches!(&items[1], EqNode::MathSymbol(s) if s == "→")
+                    && matches!(&items[2], EqNode::Number(n) if n == "0"),
+                "극한 하한은 x→0 전체여야 함: {:?}",
+                items
+            ),
+            other => panic!("극한 하한이 Row[x,→,0] 여야 함, got {:?}", other),
+        }
+    }
+
+    /// 회귀: 브레이스 표기 `sum _{k=1} ^{6}` 는 기존대로 정상.
+    #[test]
+    fn task1304_braced_sum_unchanged() {
+        let ast = parse("sum _{k=1} ^{6}");
+        let big = find_big_op(&ast).expect("BigOp(∑)");
+        if let EqNode::BigOp { sub, sup, .. } = big {
+            let sub_dbg = format!("{:?}", sub);
+            assert!(
+                sub_dbg.contains("\"k\"") && sub_dbg.contains("\"=\"") && sub_dbg.contains("\"1\""),
+                "브레이스 하한도 k=1 전체: {sub_dbg}"
+            );
+            assert!(
+                matches!(sup.as_deref(), Some(EqNode::Number(n)) if n == "6"),
+                "상한 6: {:?}",
+                sup
+            );
+        }
+    }
+
+    /// 회귀: 공백 있는 등식 `x^2 = 4` 는 위첨자에 `=4` 가 흡수되면 안 된다 (sup=2).
+    #[test]
+    fn task1304_spaced_equation_not_merged() {
+        let ast = parse("x^2 = 4");
+        // 위첨자는 2 하나, 이후 = 4 는 본문(Row)에 남아야 한다.
+        let dbg = format!("{:?}", ast);
+        // Superscript{ base: x, sup: 2 } 형태가 존재하고, sup 안에 '=' 가 없어야 함.
+        fn sup_has_no_equals(node: &EqNode) -> bool {
+            match node {
+                EqNode::Superscript { sup, .. } => !format!("{:?}", sup).contains("\"=\""),
+                EqNode::Row(children) => children.iter().all(sup_has_no_equals),
+                _ => true,
+            }
+        }
+        assert!(
+            sup_has_no_equals(&ast),
+            "x^2 = 4 의 위첨자에 =4 가 흡수되면 안 됨: {dbg}"
+        );
+        assert!(dbg.contains("Superscript"), "x^2 위첨자 유지: {dbg}");
+    }
+
+    /// 회귀: 인접 식별자 `a_n b` 는 하한이 `n` 하나여야 한다 (b 흡수 금지).
+    #[test]
+    fn task1304_adjacent_identifier_not_merged() {
+        let ast = parse("a_n b");
+        let dbg = format!("{:?}", ast);
+        fn first_subscript_sub<'a>(node: &'a EqNode) -> Option<&'a EqNode> {
+            match node {
+                EqNode::Subscript { sub, .. } => Some(sub.as_ref()),
+                EqNode::Row(children) => children.iter().find_map(first_subscript_sub),
+                _ => None,
+            }
+        }
+        let sub = first_subscript_sub(&ast).expect("Subscript 가 있어야 함");
+        assert!(
+            matches!(sub, EqNode::Text(t) if t == "n"),
+            "a_n b 의 하한은 n 하나여야 함 (b 흡수 금지): {dbg}"
+        );
+    }
+
+    /// 회귀: 산술 `a_n+1` 의 하한은 `n` 하나 (관계연산자 아님 → 미병합).
+    #[test]
+    fn task1304_arithmetic_subscript_not_merged() {
+        let ast = parse("a_n+1");
+        fn first_subscript_sub<'a>(node: &'a EqNode) -> Option<&'a EqNode> {
+            match node {
+                EqNode::Subscript { sub, .. } => Some(sub.as_ref()),
+                EqNode::Row(children) => children.iter().find_map(first_subscript_sub),
+                _ => None,
+            }
+        }
+        let sub = first_subscript_sub(&ast).expect("Subscript");
+        assert!(
+            matches!(sub, EqNode::Text(t) if t == "n"),
+            "a_n+1 의 하한은 n 하나여야 함: {:?}",
+            sub
+        );
+    }
+
+    // ── #1305: 괄호 그룹 뒤 위첨자 ─────────────────────────────────────
+
+    fn find_superscript(node: &EqNode) -> Option<&EqNode> {
+        match node {
+            EqNode::Superscript { .. } => Some(node),
+            EqNode::Row(children) => children.iter().find_map(find_superscript),
+            _ => None,
+        }
+    }
+    fn find_subscript(node: &EqNode) -> Option<&EqNode> {
+        match node {
+            EqNode::Subscript { .. } => Some(node),
+            EqNode::Row(children) => children.iter().find_map(find_subscript),
+            _ => None,
+        }
+    }
+    fn contains_paren(node: &EqNode) -> bool {
+        match node {
+            EqNode::Paren { .. } => true,
+            EqNode::Row(children) => children.iter().any(contains_paren),
+            _ => false,
+        }
+    }
+
+    /// `(k+1)^2` → 위첨자가 Paren 그룹에 결합 (base 가 비지 않은 Superscript).
+    #[test]
+    fn task1305_paren_superscript_binds_to_group() {
+        let ast = parse("(k+1)^2");
+        let sup = find_superscript(&ast).expect("Superscript 가 있어야 함");
+        match sup {
+            EqNode::Superscript { base, sup } => {
+                assert!(
+                    matches!(base.as_ref(), EqNode::Paren { .. }),
+                    "위첨자 base 가 Paren 그룹이어야 함(orphan Empty 금지): {:?}",
+                    base
+                );
+                assert!(
+                    matches!(sup.as_ref(), EqNode::Number(n) if n == "2"),
+                    "지수는 2: {:?}",
+                    sup
+                );
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// 중첩된 일반 괄호도 바깥 scripted primary 안에서 균형 있게 소비해야 한다.
+    #[test]
+    fn nested_paren_superscript_binds_to_complete_outer_group() {
+        for (script, exponent) in [
+            ("(f(x))^{5}", "5"),
+            ("(g(f(x)))^3", "3"),
+            ("(f(x))`^7", "7"),
+        ] {
+            let ast = parse(script);
+            let sup = find_superscript(&ast).expect("Superscript 가 있어야 함");
+            match sup {
+                EqNode::Superscript { base, sup } => {
+                    if script.contains('`') {
+                        assert_eq!(
+                            base.as_ref(),
+                            &EqNode::Row(vec![
+                                EqNode::Paren {
+                                    left: "(".into(),
+                                    right: ")".into(),
+                                    body: Box::new(parse("f(x)")),
+                                },
+                                EqNode::Space(SpaceKind::Thin),
+                            ]),
+                            "중첩 괄호 전체와 명시적 공백이 보존되어야 함: {ast:?}"
+                        );
+                    } else {
+                        assert!(
+                            matches!(base.as_ref(), EqNode::Paren { .. }),
+                            "중첩 괄호 전체가 위첨자 base 여야 함: {ast:?}"
+                        );
+                    }
+                    assert!(
+                        matches!(sup.as_ref(), EqNode::Number(n) if n == exponent),
+                        "지수가 보존되어야 함: {ast:?}"
+                    );
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                !format!("{ast:?}").contains("base: Empty"),
+                "중첩 괄호 첨자가 orphan 이면 안 됨: {ast:?}"
+            );
+        }
+    }
+
+    /// `(k+1)_i` → 아래첨자도 Paren 그룹에 결합.
+    #[test]
+    fn task1305_paren_subscript_binds_to_group() {
+        let ast = parse("(k+1)_i");
+        let sub = find_subscript(&ast).expect("Subscript 가 있어야 함");
+        if let EqNode::Subscript { base, .. } = sub {
+            assert!(
+                matches!(base.as_ref(), EqNode::Paren { .. }),
+                "아래첨자 base 가 Paren 그룹이어야 함: {:?}",
+                base
+            );
+        }
+    }
+
+    #[test]
+    fn nested_paren_subscript_binds_to_complete_outer_group() {
+        let ast = parse("(g(f(x)))_i");
+        let sub = find_subscript(&ast).expect("Subscript 가 있어야 함");
+        match sub {
+            EqNode::Subscript { base, sub } => {
+                assert!(
+                    matches!(base.as_ref(), EqNode::Paren { .. }),
+                    "중첩 괄호 전체가 아래첨자 base 여야 함: {ast:?}"
+                );
+                assert!(matches!(sub.as_ref(), EqNode::Text(value) if value == "i"));
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// 회귀: 첨자 없는 일반 괄호는 Paren 그룹으로 묶이지 않는다 (느슨한 Symbol 유지).
+    #[test]
+    fn task1305_plain_paren_not_grouped() {
+        let ast = parse("(k+1)");
+        assert!(
+            !contains_paren(&ast),
+            "첨자 없는 괄호는 Paren 노드를 만들지 않아야 함: {:?}",
+            ast
+        );
+        // a(b) 같은 함수꼴도 영향 없음
+        let ast2 = parse("a(b)");
+        assert!(!contains_paren(&ast2), "a(b) 도 Paren 미생성: {:?}", ast2);
+    }
+
+    /// 회귀: 숫자 base 위첨자 `7^2`, LEFT-RIGHT 그룹 첨자(#1226)는 정상 유지.
+    #[test]
+    fn task1305_regression_number_and_leftright_scripts() {
+        let n = format!("{:?}", parse("7^2"));
+        assert!(n.contains("Superscript"), "7^2 정상: {n}");
+        let lr = format!("{:?}", parse("left ( x right ) ^2"));
+        assert!(
+            lr.contains("Superscript") && lr.contains("Paren") && !lr.contains("base: Empty"),
+            "left(x)right^2 결합 정상: {lr}"
+        );
+    }
+
+    #[test]
+    fn pile_keeps_a_trailing_blank_row_for_delimiter_height() {
+        for (script, expected) in [("pile{#}", 2), ("pile{a#}", 2), ("pile{a##}", 3)] {
+            let ast = parse(script);
+            let EqNode::Pile { rows, .. } = ast else {
+                panic!("expected pile for {script}");
+            };
+            assert_eq!(rows.len(), expected, "{script}");
+            assert!(matches!(rows.last(), Some(EqNode::Empty)));
+        }
+    }
+
+    #[test]
+    fn unbraced_superscript_consumes_tight_addition_but_stops_at_a_boundary() {
+        fn exponent(script: &str) -> EqNode {
+            let ast = parse(script);
+            match find_superscript(&ast).expect("superscript") {
+                EqNode::Superscript { sup, .. } => sup.as_ref().clone(),
+                EqNode::SubSup { sup, .. } => sup.as_ref().clone(),
+                _ => unreachable!(),
+            }
+        }
+
+        assert!(matches!(
+            exponent("x^n-1+1"),
+            EqNode::Row(parts) if matches!(parts.as_slice(), [
+                EqNode::Text(n), EqNode::Symbol(minus), EqNode::Number(one),
+                EqNode::Symbol(plus), EqNode::Number(last)
+            ] if n == "n" && minus == "-" && one == "1" && plus == "+" && last == "1")
+        ));
+        assert!(matches!(
+            exponent("x^2n-1+1"),
+            EqNode::Row(parts) if matches!(parts.as_slice(), [
+                EqNode::Number(two), EqNode::Text(n), EqNode::Symbol(minus),
+                EqNode::Number(one), EqNode::Symbol(plus), EqNode::Number(last)
+            ] if two == "2" && n == "n" && minus == "-" && one == "1" && plus == "+" && last == "1")
+        ));
+        assert!(matches!(
+            exponent("x^2-3x+1"),
+            EqNode::Row(parts) if parts.len() == 6
+        ));
+
+        let spaced = parse("x^n-1 +1");
+        assert!(matches!(
+            find_superscript(&spaced),
+            Some(EqNode::Superscript { sup, .. }) if matches!(sup.as_ref(), EqNode::Row(parts) if parts.len() == 3)
+        ));
+        assert!(matches!(
+            spaced,
+            EqNode::Row(parts) if parts.iter().any(|part| matches!(part, EqNode::Symbol(plus) if plus == "+"))
+        ));
+
+        let braced = parse("x^{n-1}+1");
+        assert!(matches!(
+            braced,
+            EqNode::Row(parts) if parts.iter().any(|part| matches!(part, EqNode::Symbol(plus) if plus == "+"))
+        ));
+        let relation = parse("x^2=4");
+        assert!(matches!(
+            relation,
+            EqNode::Row(parts) if parts.iter().any(|part| matches!(part, EqNode::Symbol(eq) if eq == "="))
+        ));
+    }
+}

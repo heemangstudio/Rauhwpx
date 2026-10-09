@@ -1,0 +1,97 @@
+/* Flat, compact button geometry shared by the agent sidebar and focus workspace.
+   This file loads after the component styles so the visual system can be removed
+   as one unit without changing button markup or behavior. */
+.ag-root {
+  --ag-button-radius: var(--ag-r-row);
+  --ag-button-radius-compact: var(--ag-r-row);
+  --ag-button-height: 32px;
+  --ag-button-height-compact: 28px;
+}
+
+/* 기본 모서리는 명시도 0 으로만 준다 — 컴포넌트가 정한 모서리가 이긴다.
+   눌림 피드백은 base.css 의 공용 --ui-pressed 덧칠이 맡는다. */
+:where(.ag-root) :where(button, [role='button']) {
+  border-radius: var(--ag-button-radius);
+}
+
+/* 도구 모음 아이콘 버튼은 32px 히트 영역에 16px 아이콘. */
+.ag-root :is(
+  .ag-header-icon-btn,
+  .ag-threads-close,
+  .ag-workspace-icon-btn,
+  .ag-reference-quick-add,
+  .ag-reference-remove,
+  .ag-references-close
+) {
+  width: var(--ag-button-height);
+  height: var(--ag-button-height);
+  flex-basis: var(--ag-button-height);
+  border-radius: var(--ag-r-row);
+}
+
+.ag-root :is(
+  .ag-mode-btn,
+  .ag-skills-btn,
+  .ag-takeover-btn,
+  .ag-hub-retry-btn,
+  .ag-settings-btn,
+  .ag-references-btn,
+  .ag-reference-add
+) {
+  min-height: var(--ag-button-height-compact);
+  height: var(--ag-button-height-compact);
+  padding-inline: 10px;
+  border-radius: var(--ag-button-radius-compact);
+  box-shadow: none;
+}
+
+.ag-root .ag-settings-btn {
+  border-color: transparent;
+  background: transparent;
+}
+
+.ag-root .ag-settings-primary {
+  min-height: var(--ag-button-height);
+  height: var(--ag-button-height);
+  padding-inline: 14px;
+  border-radius: var(--ag-r-row);
+  box-shadow: none;
+}
+
+.ag-root .ag-settings-nav {
+  gap: 2px;
+}
+
+.ag-root .ag-settings-nav-button {
+  min-height: 34px;
+  padding-inline: 10px;
+  border-radius: var(--ag-button-radius);
+  font-weight: var(--ag-fw-medium);
+}
+
+.ag-root .ag-settings-nav-button.ag-active {
+  border-color: transparent;
+  background: var(--ag-selected);
+}
+
+.ag-root .ag-send {
+  width: var(--ag-button-height);
+  height: var(--ag-button-height);
+  border-radius: var(--ag-r-pill);
+  box-shadow: none;
+}
+
+.ag-root :is(
+  .ag-threads-new,
+  .ag-workspace-exit-btn
+) {
+  border-radius: var(--ag-button-radius);
+  box-shadow: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .ag-root button,
+  .ag-root [role='button'] {
+    transition-duration: var(--ag-dur-fast);
+  }
+}

@@ -1,0 +1,94 @@
+{
+  "native": {
+    "command": "cargo test --profile release-test --features native-skia --no-fail-fast",
+    "snapshot": "7372895d481b53c471c2d61db67216422be5e663",
+    "result_groups": 415,
+    "passed": 5136,
+    "failed": 5,
+    "ignored": 66,
+    "inherited_failures": [
+      "sample16_hwp5_2022_page3_latin_font_matches_legacy_hancom_mapping",
+      "issue_1139_endnote_equation_cursor_rects_do_not_rewind_to_line_start",
+      "issue_1256_2022_sep_page10_question12_keeps_between_notes_gap",
+      "issue_1549_multi_positive_float_host_title_renders_above_tables",
+      "visible_host_title_still_pushes_its_float_table_down"
+    ],
+    "semantic_native_changes_after_suite": false
+  },
+  "studio_unit": {
+    "passed": 2461,
+    "failed": 0,
+    "skipped": 1
+  },
+  "studio_typescript": {
+    "passed": true
+  },
+  "hub": {
+    "passed": 1050,
+    "failed": 0
+  },
+  "live_editing": {
+    "staged_tools": 54,
+    "reject_approve_undo_parity": true
+  },
+  "logs": {
+    "native-full.log": {
+      "bytes": 542888,
+      "sha256": "80f29b41d9fcd108c2c4478af6d98906a4369a163e3656f21770351b5e36ba33"
+    },
+    "native-build.log": {
+      "bytes": 137,
+      "sha256": "9361ed6159946872482dec4a5c160124c70ffca85c8cf1e2d41f12dcb7a906d0"
+    },
+    "studio-unit-final.log": {
+      "bytes": 239565,
+      "sha256": "e41c3f83a48ecfd20a01b067d91275e64596e0e669bec44b68d6c705706ca2d3"
+    },
+    "studio-tsc-final.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "hub-tests.log": {
+      "bytes": 92369,
+      "sha256": "47684eb9eb3b84c373ec7c5041046696fed11314db5e5841086ecc68dc7269bb"
+    },
+    "agent-live-parity.log": {
+      "bytes": 273,
+      "sha256": "b59f4fc35073b758040a412fd801a4003cc5d0311ff9680220e6520319096a31"
+    },
+    "followup-font-tests.log": {
+      "bytes": 3764,
+      "sha256": "4f0f066eb3bd3cfbcc0c5eddc8ed57e1584276bc99f3f0f3c4949c44a6b12824"
+    },
+    "followup-studio-tsc.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "followup-atlas-node-check.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "atlas-smoke.log": {
+      "bytes": 36,
+      "sha256": "2d57c450c78599b8ae740c6b733873d8e6c862202b2e5feeb1b85e2a53060b58"
+    },
+    "wasm-production-build.log": {
+      "bytes": 436,
+      "sha256": "b3f9599696e2a1c256308b7969e103f2fbcc39a1bb412e19b253e4ccace93598"
+    }
+  },
+  "final_followup": {
+    "source_commit": "71a81e1c706d82ef22b7d6653ee46fd1c24ef57d",
+    "focused_font_tests": {
+      "passed": 26,
+      "failed": 0
+    },
+    "typescript_passed": true,
+    "atlas_node_check_passed": true,
+    "atlas_live_smoke": {
+      "pages": 1,
+      "font_imports": 4,
+      "font_rejections": 0
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "family": "신명 디나루",
+  "before": {
+    "source": "imported",
+    "generation": 1,
+    "bytes": 646568,
+    "has": true,
+    "runtimeFamily": "rhwp-imported-1"
+  },
+  "desktop": {
+    "ok": true,
+    "source": "imported"
+  },
+  "after": {
+    "source": "imported",
+    "generation": 1,
+    "bytes": 646568,
+    "has": true,
+    "runtimeFamily": "rhwp-imported-1"
+  }
+}

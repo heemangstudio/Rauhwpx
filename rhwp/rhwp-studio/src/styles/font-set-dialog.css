@@ -1,0 +1,42 @@
+/* 대표 글꼴 편집 대화상자 (fse-) */
+
+.fse-body {
+  min-height: 200px;
+}
+
+.fse-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+}
+
+.fse-label {
+  width: 90px;
+  flex-shrink: 0;
+  font-size: var(--font-size-md);
+  text-align: right;
+}
+
+.fse-name-input {
+  flex: 1;
+}
+
+.fse-select {
+  flex: 1;
+  font-size: var(--font-size-md);
+}
+
+.fse-sep {
+  border: none;
+  border-top: 1px solid var(--ui-border-light);
+  margin: 8px 0;
+}
+
+.fse-body { min-height: 0; display: grid; gap: 4px; }
+.fse-row { min-height: 38px; gap: 12px; padding: 3px 0; }
+.fse-label { width: 96px; text-align: left; color: var(--ui-text-secondary); font-weight: 600; }
+.fse-name-input, .fse-select { min-width: 0; min-height: 34px; border-color: var(--ui-border-strong); border-radius: 6px; background: var(--ui-surface-raised); color: var(--ui-text); }
+.fse-sep { border-top-color: var(--ui-border); margin: 8px 0; }
+.fse-body :is(input, select):focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+@media (max-width: 480px) { .fse-row { flex-wrap: wrap; gap: 4px; } .fse-label { width: 100%; } }

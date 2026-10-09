@@ -1,0 +1,452 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import type { CompareDocumentSnapshot } from '../src/compare/types.ts';
+import {
+  createPortableHistoryArchive,
+  createPortableHistoryBundle,
+  openPortableHistoryBundle,
+  PORTABLE_HISTORY_MAX_BYTES,
+  PORTABLE_HISTORY_MAX_COMPARE_SNAPSHOT_BYTES,
+  PORTABLE_HISTORY_MAX_OBJECTS,
+  PORTABLE_HISTORY_MAX_REPOSITORY_RECORDS,
+  PortableHistoryError,
+} from '../src/versioning/portable-bundle.ts';
+import { UNTRUSTED_DOCUMENT_MAX_BYTES } from '../src/core/document-input-limits.ts';
+import { fingerprintBytes, hashBytes } from '../src/versioning/hash.ts';
+import { VersionGraphStore } from '../src/versioning/store.ts';
+import {
+  branchName,
+  documentId,
+  mergeDraftId,
+  tagName,
+  VersionError,
+} from '../src/versioning/types.ts';
+
+function bytes(value: number): Uint8Array {
+  return new Uint8Array([0x50, 0x4b, value, value + 1, value + 2]);
+}
+
+function compareSnapshot(label: string): CompareDocumentSnapshot {
+  return {
+    meta: { name: label, sectionCount: 1, pageCount: 1 },
+    paragraphs: [{
+      section: 0,
+      paragraph: 0,
+      sectionPage: 1,
+      globalIndex: 0,
+      stableId: `paragraph-${label}`,
+      text: label,
+      normalizedText: label,
+      controlCount: 0,
+      signature: `signature-${label}`,
+      isAnchorCandidate: true,
+    }],
+    controls: [],
+  };
+}
+
+function payload(value: number, title: string) {
+  const content = bytes(value);
+  return {
+    bytes: content,
+    compareSnapshot: compareSnapshot(title),
+    contentFingerprint: fingerprintBytes(content),
+    title,
+    titleRevision: 0,
+    titleOrigin: 'manual' as const,
+    author: { kind: 'user' as const, label: 'Tester' },
+    stats: { added: 1, removed: 0, modified: 0 },
+    createdAt: value,
+  };
+}
+
+async function historyFixture() {
+  const store = new VersionGraphStore({ indexedDB: null });
+  const initial = payload(1, 'Initial');
+  const created = await store.createRepository({
+    documentId: documentId('portable-document'),
+    lastSavedFingerprint: initial.contentFingerprint,
+    enabledAt: 1,
+    initial,
+  });
+  const branch = await store.createBranch({
+    repositoryId: created.repository.id,
+    name: branchName('review'),
+    target: created.commit.id,
+    expectedRepositoryRevision: created.repository.revision,
+  });
+  const checkpoint = await store.createCheckpoint({
+    repositoryId: created.repository.id,
+    branch: branch.branch.name,
+    expectedRepositoryRevision: branch.repository.revision,
+    expectedBranchRevision: branch.branch.revision,
+    expectedHead: branch.branch.target,
+    reason: 'export',
+    ...payload(8, 'Review head'),
+  });
+  const tagged = await store.createTag({
+    repositoryId: created.repository.id,
+    name: tagName('shared'),
+    target: checkpoint.commit.id,
+    expectedRepositoryRevision: checkpoint.repository.revision,
+  });
+  const shelf = await store.createShelf({
+    repositoryId: created.repository.id,
+    baseCommitId: checkpoint.commit.id,
+    branch: checkpoint.branch.name,
+    expectedRepositoryRevision: tagged.repository.revision,
+    title: 'Unfinished alternative',
+    ...payload(11, 'Shelf content'),
+  });
+  const assetBytes = new Uint8Array([23, 24, 25]);
+  const assetId = hashBytes(assetBytes);
+  const draft = await store.putMergeDraft({
+    expectedUpdatedAt: null,
+    draft: {
+      id: mergeDraftId('portable-draft'),
+      repositoryId: created.repository.id,
+      targetBranch: checkpoint.branch.name,
+      sourceBranch: created.branch.name,
+      baseCommitIds: [created.commit.id],
+      currentHead: checkpoint.commit.id,
+      sourceHead: created.commit.id,
+      targetBranchRevision: checkpoint.branch.revision,
+      sourceBranchRevision: created.branch.revision,
+      targetBranchGeneration: checkpoint.branch.generation,
+      sourceBranchGeneration: created.branch.generation,
+      mode: 'diverged',
+      analysisVersion: 1,
+      conflicts: [],
+      resolutions: {},
+      automaticResult: { kind: 'document', children: [] },
+      manualAssetBlobIds: [assetId],
+      history: [],
+      historyIndex: 0,
+      createdAt: 12,
+      updatedAt: 12,
+    },
+    assetBlobs: [{ id: assetId, byteLength: assetBytes.byteLength, bytes: assetBytes }],
+  });
+  const snapshot = await store.exportRepositorySnapshot(created.repository.id);
+  return { store, snapshot, head: checkpoint.commit, shelf: shelf.shelf, draft, assetId };
+}
+
+test('portable history round trip restores commits, refs, shelves, manifests, drafts, and assets', async () => {
+  const fixture = await historyFixture();
+  const bytes = createPortableHistoryBundle({
+    documentFileName: 'report.hwpx',
+    sourceFormat: 'hwpx',
+    activeBranch: branchName('review'),
+    currentBlobId: fixture.head.blobId,
+    snapshot: fixture.snapshot,
+    createdAt: 123,
+  });
+  const opened = openPortableHistoryBundle(bytes);
+  assert.equal(opened.documentFileName, 'report.hwpx');
+  assert.equal(opened.activeBranch, 'review');
+  assert.equal(opened.currentBlobId, fixture.head.blobId);
+  assert.deepEqual(opened.currentDocumentBytes, fixture.snapshot.blobs.find(
+    (blob) => blob.id === fixture.head.blobId,
+  )?.bytes);
+  const openedCurrentBlob = opened.snapshot.blobs.find((blob) => blob.id === fixture.head.blobId);
+  assert.equal(opened.currentDocumentBytes, openedCurrentBlob?.bytes);
+  assert.equal(opened.currentDocumentBytes.buffer, bytes.buffer);
+  for (const blob of opened.snapshot.blobs) {
+    assert.equal(blob.bytes.buffer, bytes.buffer, 'blob payloads must remain archive views until import');
+  }
+  assert.equal(opened.snapshot.commits.length, 2);
+  assert.equal(opened.snapshot.refs.filter((ref) => ref.kind === 'branch').length, 2);
+  assert.equal(opened.snapshot.refs.filter((ref) => ref.kind === 'tag').length, 1);
+  assert.equal(opened.snapshot.shelves[0]?.id, fixture.shelf.id);
+  assert.equal(opened.snapshot.mergeManifests.length, 2);
+  assert.equal(opened.snapshot.mergeDrafts[0]?.id, fixture.draft.id);
+  assert.ok(opened.snapshot.blobs.some((blob) => blob.id === fixture.assetId));
+
+  const archive = createPortableHistoryArchive({
+    documentFileName: 'report.hwpx',
+    sourceFormat: 'hwpx',
+    activeBranch: branchName('review'),
+    currentBlobId: fixture.head.blobId,
+    snapshot: fixture.snapshot,
+    createdAt: 123,
+  });
+  assert.equal(archive.fileName, 'report.rhwpx');
+  assert.deepEqual(archive.bytes, bytes);
+
+  const renamed = createPortableHistoryArchive({
+    documentFileName: 'report.rhwpx',
+    sourceFormat: 'hwpx',
+    activeBranch: branchName('review'),
+    currentBlobId: fixture.head.blobId,
+    snapshot: fixture.snapshot,
+    createdAt: 123,
+  });
+  assert.equal(renamed.fileName, 'report.rhwpx');
+  assert.deepEqual(renamed.bytes, bytes);
+
+  const destination = new VersionGraphStore({ indexedDB: null });
+  const imported = await destination.importRepositorySnapshot(opened.snapshot);
+  assert.equal(imported.imported, true);
+  assert.equal((await destination.listCommits(imported.repository.id)).length, 2);
+  assert.equal((await destination.listRefs(imported.repository.id)).length, 3);
+  assert.equal((await destination.listShelves(imported.repository.id)).length, 1);
+  assert.equal((await destination.listMergeDrafts(imported.repository.id)).length, 1);
+  assert.deepEqual((await destination.getBlob(fixture.head.blobId))?.bytes, opened.currentDocumentBytes);
+
+  const repeated = await destination.importRepositorySnapshot(opened.snapshot);
+  assert.equal(repeated.imported, false, 'opening an identical local bundle must be idempotent');
+
+  await destination.removeImportedRepository(
+    imported.repository.id,
+    imported.repository.documentId,
+    imported.repository.revision,
+  );
+  assert.equal(await destination.getRepository(imported.repository.id), null);
+  assert.equal(await destination.getBlob(fixture.assetId), null);
+});
+
+test('portable histories use the bounded untrusted-document memory envelope', () => {
+  assert.equal(PORTABLE_HISTORY_MAX_BYTES, 128 * 1024 * 1024);
+  assert.equal(PORTABLE_HISTORY_MAX_BYTES, UNTRUSTED_DOCUMENT_MAX_BYTES);
+});
+
+test('portable history rejects an excessive object table before hashing or copying payloads', async () => {
+  const fixture = await historyFixture();
+  const repeated = fixture.snapshot.blobs[0]!;
+  const oversizedSnapshot = {
+    ...fixture.snapshot,
+    blobs: Array.from({ length: PORTABLE_HISTORY_MAX_OBJECTS + 1 }, () => repeated),
+    compareSnapshots: [],
+  };
+
+  assert.throws(
+    () => createPortableHistoryBundle({
+      documentFileName: 'report.hwpx',
+      sourceFormat: 'hwpx',
+      activeBranch: branchName('review'),
+      currentBlobId: fixture.head.blobId,
+      snapshot: oversizedSnapshot,
+    }),
+    /too many objects/,
+  );
+});
+
+test('portable history rejects oversized repository arrays before cloning or sorting them', async () => {
+  const fixture = await historyFixture();
+  const bundle = createPortableHistoryBundle({
+    documentFileName: 'report.hwpx',
+    sourceFormat: 'hwpx',
+    activeBranch: branchName('review'),
+    currentBlobId: fixture.head.blobId,
+    snapshot: fixture.snapshot,
+  });
+  const magicLength = new TextEncoder().encode('RAUHWPX-HISTORY\0').byteLength;
+  const oldManifestLength = new DataView(bundle.buffer, bundle.byteOffset, bundle.byteLength)
+    .getUint32(magicLength, true);
+  const oldPayloadOffset = magicLength + 4 + oldManifestLength;
+  const manifest = JSON.parse(new TextDecoder().decode(
+    bundle.subarray(magicLength + 4, oldPayloadOffset),
+  ));
+  manifest.repository.commits = Array.from(
+    { length: PORTABLE_HISTORY_MAX_REPOSITORY_RECORDS + 1 },
+    () => null,
+  );
+  const encodedManifest = new TextEncoder().encode(JSON.stringify(manifest));
+  const hostile = new Uint8Array(magicLength + 4 + encodedManifest.byteLength + bundle.byteLength - oldPayloadOffset);
+  hostile.set(bundle.subarray(0, magicLength), 0);
+  new DataView(hostile.buffer).setUint32(magicLength, encodedManifest.byteLength, true);
+  hostile.set(encodedManifest, magicLength + 4);
+  hostile.set(bundle.subarray(oldPayloadOffset), magicLength + 4 + encodedManifest.byteLength);
+
+  assert.throws(
+    () => openPortableHistoryBundle(hostile),
+    /too many repository records/,
+  );
+});
+
+test('portable history rejects oversized comparison snapshots before serializing them', async () => {
+  const fixture = await historyFixture();
+  const oversizedSnapshot = {
+    ...fixture.snapshot,
+    compareSnapshots: fixture.snapshot.compareSnapshots.map((stored, index) => (
+      index === 0
+        ? { ...stored, byteLength: PORTABLE_HISTORY_MAX_COMPARE_SNAPSHOT_BYTES + 1 }
+        : stored
+    )),
+  };
+
+  assert.throws(
+    () => createPortableHistoryBundle({
+      documentFileName: 'report.hwpx',
+      sourceFormat: 'hwpx',
+      activeBranch: branchName('review'),
+      currentBlobId: fixture.head.blobId,
+      snapshot: oversizedSnapshot,
+    }),
+    /16 MiB limit/,
+  );
+
+  const bundle = createPortableHistoryBundle({
+    documentFileName: 'report.hwpx',
+    sourceFormat: 'hwpx',
+    activeBranch: branchName('review'),
+    currentBlobId: fixture.head.blobId,
+    snapshot: fixture.snapshot,
+  });
+  const magicLength = new TextEncoder().encode('RAUHWPX-HISTORY\0').byteLength;
+  const oldManifestLength = new DataView(bundle.buffer, bundle.byteOffset, bundle.byteLength)
+    .getUint32(magicLength, true);
+  const oldPayloadOffset = magicLength + 4 + oldManifestLength;
+  const manifest = JSON.parse(new TextDecoder().decode(
+    bundle.subarray(magicLength + 4, oldPayloadOffset),
+  ));
+  const descriptor = manifest.objects.find((object: { kind?: string }) => object.kind === 'compare-snapshot');
+  if (!descriptor) throw new Error('fixture comparison snapshot descriptor is missing');
+  descriptor.byteLength = PORTABLE_HISTORY_MAX_COMPARE_SNAPSHOT_BYTES + 1;
+  const encodedManifest = new TextEncoder().encode(JSON.stringify(manifest));
+  const oldPayload = bundle.subarray(oldPayloadOffset);
+  const hostilePayloadLength = Math.max(
+    oldPayload.byteLength,
+    descriptor.offset + descriptor.byteLength,
+  );
+  const hostile = new Uint8Array(magicLength + 4 + encodedManifest.byteLength + hostilePayloadLength);
+  hostile.set(bundle.subarray(0, magicLength), 0);
+  new DataView(hostile.buffer).setUint32(magicLength, encodedManifest.byteLength, true);
+  hostile.set(encodedManifest, magicLength + 4);
+  hostile.set(oldPayload, magicLength + 4 + encodedManifest.byteLength);
+
+  assert.throws(() => openPortableHistoryBundle(hostile), /16 MiB limit/);
+});
+
+test('portable history detects payload tampering and truncation before import', async () => {
+  const fixture = await historyFixture();
+  const bundle = createPortableHistoryBundle({
+    documentFileName: 'report.hwpx',
+    sourceFormat: 'hwpx',
+    activeBranch: branchName('review'),
+    currentBlobId: fixture.head.blobId,
+    snapshot: fixture.snapshot,
+  });
+  const tampered = new Uint8Array(bundle);
+  tampered[tampered.length - 1] ^= 0xff;
+  assert.throws(() => openPortableHistoryBundle(tampered), PortableHistoryError);
+  assert.throws(() => openPortableHistoryBundle(bundle.subarray(0, bundle.length - 1)), PortableHistoryError);
+});
+
+test('import rejects a same-ID repository whose local history has diverged', async () => {
+  const fixture = await historyFixture();
+  const destination = new VersionGraphStore({ indexedDB: null });
+  await destination.importRepositorySnapshot(fixture.snapshot);
+  await destination.updateCommitTitle({
+    repositoryId: fixture.snapshot.repository.id,
+    commitId: fixture.head.id,
+    expectedTitleRevision: fixture.head.titleRevision,
+    title: 'Local-only title',
+    titleRevision: fixture.head.titleRevision,
+    titleOrigin: 'manual',
+  });
+  await assert.rejects(
+    destination.importRepositorySnapshot(fixture.snapshot),
+    (error) => error instanceof VersionError && error.code === 'REPOSITORY_EXISTS',
+  );
+});
+
+test('import rejects a cyclic commit graph even when document objects are intact', async () => {
+  const fixture = await historyFixture();
+  const cyclic = structuredClone(fixture.snapshot);
+  const head = cyclic.commits.find((commit) => commit.id === fixture.head.id)!;
+  const index = cyclic.commits.indexOf(head);
+  cyclic.commits[index] = { ...head, parents: [head.id] };
+  const destination = new VersionGraphStore({ indexedDB: null });
+  await assert.rejects(destination.importRepositorySnapshot(cyclic), /violates commit order/);
+  assert.equal(await destination.getRepository(fixture.snapshot.repository.id), null);
+});
+
+test('import distinguishes malformed parents and permits an independent root', async () => {
+  const fixture = await historyFixture();
+  const root = fixture.snapshot.commits.find((commit) => commit.parents.length === 0)!;
+  const head = fixture.snapshot.commits.find((commit) => commit.id === fixture.head.id)!;
+  const malformed = structuredClone(fixture.snapshot);
+  malformed.commits[malformed.commits.findIndex((commit) => commit.id === head.id)] = {
+    ...head,
+    parents: [root.id, root.id],
+  };
+  await assert.rejects(
+    new VersionGraphStore({ indexedDB: null }).importRepositorySnapshot(malformed),
+    (error) => error instanceof VersionError && error.code === 'VERSION_STORE_FAILED'
+      && /invalid parents/.test(error.message),
+  );
+
+  const independent = structuredClone(fixture.snapshot);
+  independent.commits[independent.commits.findIndex((commit) => commit.id === head.id)] = {
+    ...head,
+    parents: [],
+  };
+  const imported = await new VersionGraphStore({ indexedDB: null }).importRepositorySnapshot(independent);
+  assert.equal(imported.imported, true);
+});
+
+test('import checks merge manifest ownership before storing the graph', async () => {
+  const fixture = await historyFixture();
+  const malformed = structuredClone(fixture.snapshot);
+  const head = malformed.commits.find((commit) => commit.id === fixture.head.id)!;
+  const root = malformed.commits.find((commit) => commit.id !== head.id)!;
+  malformed.commits[malformed.commits.indexOf(head)] = { ...head, mergeManifestId: root.mergeManifestId };
+  await assert.rejects(
+    new VersionGraphStore({ indexedDB: null }).importRepositorySnapshot(malformed),
+    (error) => error instanceof VersionError && error.code === 'CORRUPT_BLOB'
+      && /invalid merge manifest/.test(error.message),
+  );
+});
+
+test('import rejects non-finite repository revision and ordinal metadata', async () => {
+  const fixture = await historyFixture();
+  for (const metadata of [
+    { revision: Number.POSITIVE_INFINITY },
+    { nextOrdinal: Number.NaN },
+  ]) {
+    const malformed = structuredClone(fixture.snapshot);
+    malformed.repository = { ...malformed.repository, ...metadata };
+    await assert.rejects(
+      new VersionGraphStore({ indexedDB: null }).importRepositorySnapshot(malformed),
+      /repository metadata is invalid/,
+    );
+  }
+});
+
+test('lazy manifest upgrades preserve descendants and later collect detached analyses', async () => {
+  const fixture = await historyFixture();
+  const legacy = structuredClone(fixture.snapshot);
+  const root = legacy.commits.find((commit) => commit.parents.length === 0)!;
+  const head = legacy.commits.find((commit) => commit.id === fixture.head.id)!;
+  const rootManifest = legacy.mergeManifests.find((manifest) => manifest.commitId === root.id)!;
+  const headManifest = legacy.mergeManifests.find((manifest) => manifest.commitId === head.id)!;
+  const legacyId = `legacy-${rootManifest.id}` as typeof rootManifest.id;
+  rootManifest.id = legacyId;
+  rootManifest.analysisVersion = 0;
+  root.mergeManifestId = legacyId;
+  const legacyHeadId = `legacy-${headManifest.id}` as typeof headManifest.id;
+  headManifest.id = legacyHeadId;
+  head.mergeManifestId = legacyHeadId;
+  headManifest.parentManifestIds = [legacyId];
+  const store = new VersionGraphStore({ indexedDB: null });
+  await store.importRepositorySnapshot(legacy);
+  const refreshedRoot = await store.ensureMergeManifest(legacy.repository.id, root.id);
+  assert.notEqual(refreshedRoot.id, legacyId);
+  const intermediate = await store.exportRepositorySnapshot(legacy.repository.id);
+  assert.ok(intermediate.mergeManifests.some((manifest) => manifest.id === legacyId));
+  await new VersionGraphStore({ indexedDB: null }).importRepositorySnapshot(intermediate);
+
+  await store.ensureMergeManifest(legacy.repository.id, head.id);
+  const repository = (await store.getRepository(legacy.repository.id))!;
+  const firstPass = await store.collectGarbage(repository.id, repository.revision, { limit: 1 });
+  assert.equal(firstPass.hasMore, true);
+  await new VersionGraphStore({ indexedDB: null }).importRepositorySnapshot(
+    await store.exportRepositorySnapshot(repository.id),
+  );
+  await store.collectGarbage(repository.id, firstPass.repository.revision, { limit: 10 });
+  const cleaned = await store.exportRepositorySnapshot(repository.id);
+  assert.ok(!cleaned.mergeManifests.some((manifest) => manifest.id === legacyId));
+  await new VersionGraphStore({ indexedDB: null }).importRepositorySnapshot(cleaned);
+});

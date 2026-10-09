@@ -1,0 +1,23 @@
+{
+  "//": "Checks the shared backend event/lifecycle contract and the supported ACP adapter with its local imports. Other provider SDKs and server.mjs are outside this JSDoc boundary.",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": true,
+    "skipLibCheck": true,
+    "target": "es2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": [
+      "node"
+    ],
+    "strict": true,
+    "noImplicitAny": false,
+    "useUnknownInCatchVariables": false
+  },
+  "include": [
+    "agents/backend.mjs",
+    "agents/acp-session.mjs",
+    "agents/provider-user-input.mjs"
+  ]
+}

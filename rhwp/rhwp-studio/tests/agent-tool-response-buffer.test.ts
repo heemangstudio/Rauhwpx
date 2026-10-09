@@ -1,0 +1,232 @@
+// 끊긴 사이에 끝난 tool-response 를 붙잡아 두는 버퍼와, 브리지가 그것을 물린 자리를 고정한다.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { registerHooks } from 'node:module';
+
+// bridge.ts 는 오버레이 css 를 함께 들여온다 — node 테스트에서는 빈 모듈로 대체한다.
+registerHooks({
+  load(url, context, nextLoad) {
+    if (/\.css$/.test(url)) return { format: 'module', source: 'export default {};', shortCircuit: true };
+    return nextLoad(url, context);
+  },
+});
+
+const { AgentBridgeImpl, ToolResponseBuffer, providerTurnEndMatches } = await import('../src/agent/bridge.ts');
+const { assertToolRequestActive } = await import('../src/agent/tool-executor.ts');
+const bridgeSource = readFileSync(new URL('../src/agent/bridge.ts', import.meta.url), 'utf8');
+
+test('ToolResponseBuffer: 담은 순서대로 흘려보내고 비운다', () => {
+  const buffer = new ToolResponseBuffer();
+  buffer.push({ id: 1 });
+  buffer.push({ id: 2 });
+  assert.equal(buffer.size, 2);
+  assert.deepEqual(buffer.drain(), [{ id: 1 }, { id: 2 }]);
+  assert.equal(buffer.size, 0);
+  assert.deepEqual(buffer.drain(), []);
+});
+
+test('ToolResponseBuffer: 한계를 넘으면 가장 오래된 것부터 버린다', () => {
+  const buffer = new ToolResponseBuffer(2);
+  buffer.push({ id: 1 });
+  buffer.push({ id: 2 });
+  buffer.push({ id: 3 });
+  assert.equal(buffer.size, 2);
+  assert.deepEqual(buffer.drain(), [{ id: 2 }, { id: 3 }]);
+});
+
+test('ToolResponseBuffer: 보관 기한이 지난 프레임은 흘리지 않는다', () => {
+  const buffer = new ToolResponseBuffer(8, 30_000);
+  buffer.push({ id: 1 }, 0);
+  buffer.push({ id: 2 }, 20_000);
+  assert.deepEqual(buffer.drain(31_000), [{ id: 2 }]);
+});
+
+test('ToolResponseBuffer: clear 는 남은 프레임을 모두 버린다', () => {
+  const buffer = new ToolResponseBuffer();
+  buffer.push({ id: 1 });
+  buffer.clear();
+  assert.equal(buffer.size, 0);
+});
+
+test('a delayed old turn-end cannot settle a newer identified turn', () => {
+  assert.equal(providerTurnEndMatches('turn-new', 'turn-old'), false);
+  assert.equal(providerTurnEndMatches('turn-new', null), false);
+  assert.equal(providerTurnEndMatches('turn-new', 'turn-new'), true);
+  assert.equal(providerTurnEndMatches(null, null), true);
+  assert.equal(providerTurnEndMatches(null, 'turn-replayed'), true);
+});
+
+test('turn cancellation releases the editing lease before deferred tools settle', async () => {
+  let releaseDeferredTools = () => {};
+  const deferredTools = new Promise<void>((resolve) => { releaseDeferredTools = resolve; });
+  const responses: unknown[] = [];
+  let lateMutations = 0;
+  const bridge = Object.create(AgentBridgeImpl.prototype) as any;
+  Object.assign(bridge, {
+    activeProviderTurnId: 'turn-active',
+    turnRunning: true,
+    editingAgent: 'pi',
+    activeToolRequests: 0,
+    activeToolRequestControllers: new Map(), inFlightWrites: new Set(), versionCommitInFlight: null,
+    editingLease: { active: false, agent: 'pi' },
+    editingLeaseListeners: new Set(),
+    pendingUserQuestionId: null,
+    workflow: 'direct',
+    phase: 'direct',
+    capabilityEpoch: null,
+    permissionProfile: 'safe',
+    activeAgent: 'pi',
+    turnHadError: false,
+    pendingTurnOpen: false,
+    listeners: new Set(),
+    executor: {
+      async execute(tool: string, _args: unknown, _agent: string, capability: any) {
+        await deferredTools;
+        if (tool === 'deferred_mutator') {
+          assertToolRequestActive(capability);
+          lateMutations += 1;
+        }
+        return { tool };
+      },
+    },
+  });
+  bridge.sendToolResponse = (frame: unknown) => { responses.push(frame); };
+
+  for (const [id, tool] of [[1, 'deferred_mutator'], [2, 'deferred_result']] as const) {
+    bridge.handleToolRequest({
+      id,
+      tool,
+      args: {},
+      agent: 'pi',
+      workflow: 'direct',
+      providerTurnId: 'turn-active',
+      turnBound: true,
+    });
+  }
+  assert.equal(bridge.getEditingLease().active, true);
+  assert.equal(bridge.activeToolRequests, 2);
+
+  bridge.handleAgentEvent({
+    type: 'turn-end',
+    agent: 'pi',
+    turnId: 'turn-active',
+    stopReason: 'interrupted',
+  });
+  assert.equal(bridge.getEditingLease().active, false);
+  assert.equal(bridge.activeToolRequests, 0);
+  assert.equal(bridge.activeToolRequestControllers.size, 0);
+
+  releaseDeferredTools();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(lateMutations, 0);
+  assert.deepEqual(responses, []);
+  assert.equal(bridge.activeToolRequests, 0);
+});
+
+test('브리지는 전송 실패한 tool-response 를 버퍼에 넣고 재연결 때 흘려보낸다', () => {
+  assert.match(bridgeSource, /private sendToolResponse\(frame: unknown\): void \{\s*if \(this\.sendJson\(frame\)\) return;\s*this\.toolResponses\.push\(frame\);/);
+  assert.match(bridgeSource, /this\.setState\('connected'\);[\s\S]{0,200}this\.flushToolResponses\(\);/);
+  assert.doesNotMatch(bridgeSource, /this\.sendJson\(\{ v: AGENT_PROTOCOL_VERSION, type: 'tool-response'/);
+});
+
+test('스튜디오 소켓 URL 은 페이지 인스턴스 id 를 함께 보낸다', () => {
+  assert.match(bridgeSource, /&instance=\$\{encodeURIComponent\(STUDIO_INSTANCE_ID\)\}/);
+  assert.match(bridgeSource, /const STUDIO_INSTANCE_ID = /);
+});
+
+function interruptBridgeFixture(execute: (...args: any[]) => Promise<unknown> = async () => ({})) {
+  const bridge = Object.create(AgentBridgeImpl.prototype) as any;
+  const responses: any[] = [];
+  Object.assign(bridge, {
+    activeProviderTurnId: 'turn-active', turnRunning: true,
+    activeToolRequests: 0, activeToolRequestControllers: new Map(), inFlightWrites: new Set(), versionCommitInFlight: null,
+    pendingUserQuestion: null, pendingQuestionCancellation: null,
+    workflow: 'direct', phase: 'direct', activeAgent: 'codex',
+    executor: { execute }, syncEditingLease: () => {},
+    sendJson: () => true, sendToolResponse: (response: unknown) => { responses.push(response); },
+  });
+  const request = (id: number, turnId = 'turn-active') => bridge.handleToolRequest({
+    id, tool: 'insert_text', args: {}, agent: 'codex', providerTurnId: turnId,
+  });
+  return { bridge, request, responses };
+}
+
+test('interrupt fences late requests from the same provider turn before its turn-end arrives', async () => {
+  let executions = 0;
+  const { bridge, request, responses } = interruptBridgeFixture(async () => { executions++; return {}; });
+  bridge.interrupt();
+  request(1);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(executions, 0);
+  assert.equal(responses[0].error.code, 'NO_ACTIVE_TURN');
+  bridge.activeProviderTurnId = 'turn-next';
+  request(2, 'turn-next');
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(executions, 1, 'the fence must not block the next provider turn');
+});
+
+test('plan completion follows the actual edit outcome and exact provider turn', () => {
+  function fixture({ pending = false, complete = true, failure = false } = {}) {
+    const bridge = Object.create(AgentBridgeImpl.prototype) as any;
+    const frames: any[] = [];
+    let sets: any[] = [];
+    Object.assign(bridge, {
+      phase: 'implementing', workflow: 'plan', activeProviderTurnId: null,
+      latestPlan: { planId: 'plan-1', execution: { status: 'running', steps: [{ stepId: 'step-1', status: complete ? 'completed' : 'in-progress' }] } },
+      planReview: null, planExecutionTurn: null, pendingTurnOpen: false,
+      activeToolRequestControllers: new Map(), inFlightWrites: new Set(), versionCommitInFlight: null, permissionProfile: pending ? 'safe' : 'unrestricted',
+      pendingEdits: { getChangeSets: () => sets }, syncEditingLease: () => {}, emit: () => {},
+      beginPendingTurn: () => { bridge.pendingTurnOpen = true; },
+      endPendingTurn: () => {
+        bridge.pendingTurnOpen = false;
+        if (failure) throw new Error('commit failed');
+        sets = pending ? [{ id: 'edits-1', ops: [{}] }] : [];
+      },
+      sendJson: (frame: unknown) => { frames.push(frame); return true; },
+    });
+    bridge.handleAgentEvent({ type: 'turn-start', agent: 'claude', turnId: 'turn-1' });
+    return { bridge, frames };
+  }
+  const safe = fixture({ pending: true });
+  const initialTracking = safe.bridge.planExecutionTurn;
+  safe.bridge.beginPlanExecutionTurn();
+  assert.equal(safe.bridge.planExecutionTurn, initialTracking, 'reconnect preserves an observed turn baseline');
+  safe.bridge.handleAgentEvent({ type: 'turn-end', agent: 'claude', turnId: 'old-turn', stopReason: 'success' });
+  assert.equal(safe.frames.length, 0);
+  safe.bridge.handleAgentEvent({ type: 'turn-end', agent: 'claude', turnId: 'turn-1', stopReason: 'success' });
+  assert.equal(safe.frames.at(-1).status, 'awaiting-review');
+  safe.bridge.handlePlanEditChange({ type: 'approved', changeSetId: 'unrelated' });
+  assert.equal(safe.frames.length, 1);
+  safe.bridge.handlePlanEditChange({ type: 'approved', changeSetId: 'edits-1' });
+  assert.equal(safe.frames.at(-1).status, 'completed');
+
+  const rejected = fixture({ pending: true });
+  rejected.bridge.handleAgentEvent({ type: 'turn-end', agent: 'claude', turnId: 'turn-1', stopReason: 'end_turn' });
+  rejected.bridge.handlePlanEditChange({ type: 'invalidated', changeSetId: 'edits-1', reason: 'text drift' });
+  rejected.bridge.handlePlanEditChange({ type: 'approved', changeSetId: 'edits-1' });
+  assert.equal(rejected.frames.at(-1).status, 'blocked');
+
+  const partial = fixture({ pending: true, complete: false });
+  partial.bridge.handleAgentEvent({ type: 'turn-end', agent: 'claude', turnId: 'turn-1', stopReason: 'success' });
+  partial.bridge.handlePlanEditChange({ type: 'approved', changeSetId: 'edits-1' });
+  assert.equal(partial.frames.at(-1).status, 'blocked', 'accepting partial edits cannot complete the plan');
+
+  const reconnect = fixture({ pending: true });
+  reconnect.bridge.planExecutionTurn = null;
+  reconnect.bridge.beginPlanExecutionTurn();
+  reconnect.bridge.handleAgentEvent({ type: 'turn-end', agent: 'claude', turnId: 'turn-1', stopReason: 'success' });
+  assert.equal(reconnect.frames.at(-1).status, 'awaiting-review', 'a running reconnect restores checklist settlement');
+  reconnect.bridge.handlePlanEditChange({ type: 'approved', changeSetId: 'edits-1' });
+  assert.equal(reconnect.frames.at(-1).status, 'completed');
+
+  for (const [options, stopReason, status] of [
+    [{}, 'completed', 'completed'],
+    [{ complete: false }, 'completed', 'blocked'],
+    [{}, 'interrupted', 'interrupted'],
+  ] as const) {
+    const { bridge, frames } = fixture(options);
+    bridge.handleAgentEvent({ type: 'turn-end', agent: 'codex', turnId: 'turn-1', stopReason });
+    assert.equal(frames.at(-1).status, status);
+  }
+});
