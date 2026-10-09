@@ -67,7 +67,7 @@ try {
       const page = await context.newPage();
       // 네이티브 대화상자는 페이지를 멈춘다. 흐름이 기대하지 않은 대화상자는 실패로 남긴다.
       page.on('dialog', (dialog) => {
-        error ??= new Error(`unexpected ${dialog.type()} dialog: ${dialog.message()}`);
+        error ??= Object.assign(new Error(), { stack: `unexpected ${dialog.type()} dialog: ${dialog.message()}` });
         void dialog.dismiss();
       });
       await page.setViewport({ width: 1280, height: 900 });

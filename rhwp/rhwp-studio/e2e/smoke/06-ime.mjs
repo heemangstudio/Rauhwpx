@@ -3,7 +3,7 @@ import { clickPage, newDocument, shortcut, waitFor } from './lib.mjs';
 const textIs = (page, label, expected) => waitFor(page, `${label} → ${JSON.stringify(expected)}`,
   (value) => window.__wasm.getTextRange(0, 0, 0, 100) === value, expected);
 
-/** Chrome 한글 IME 처럼 확정한 음절을 textarea 값에 남긴 채 다음 음절을 조합한다. */
+/** 한글 IME 처럼 확정한 음절을 textarea 값에 남긴 채 다음 음절을 조합한다. */
 function composeSyllables(page, syllables) {
   return page.evaluate((list) => {
     const textarea = window.__inputHandler.textarea;
@@ -17,6 +17,8 @@ function composeSyllables(page, syllables) {
         textarea.dispatchEvent(new InputEvent('input', { bubbles: true, data: step, inputType: 'insertCompositionText', isComposing: true }));
       }
       textarea.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: final }));
+      // 일부 IME 는 확정 뒤 같은 글자의 input 을 한 번 더 보낸다. 두 번 들어가면 안 된다.
+      textarea.dispatchEvent(new InputEvent('input', { bubbles: true, data: final, inputType: 'insertText', isComposing: false }));
       prefix += final;
     }
   }, syllables);
