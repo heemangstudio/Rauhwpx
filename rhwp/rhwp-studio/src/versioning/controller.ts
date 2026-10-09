@@ -434,7 +434,13 @@ export class DocumentVersionController implements VersionManagerController {
       this.#requestGeneratedTitle(result.commit, analysis.titleSummary);
   }
 
-  async checkpoint(message?: string): Promise<void> {
+  /**
+   * 명시적 커밋. agentTurn 은 전체 모드 에이전트가 자기 턴 안에서 부르는 commit_version 이다 —
+   * 그 호출은 언제나 진행 중인 턴 안에 있으므로 '응답 중' 가드만 건너뛰고, 저장·병합·검토 대기·
+   * 작업 공간 가드는 그대로 둔다. 쓰기 도구와의 순서는 브리지가 맞춘다(진행 중인 쓰기를 기다리고,
+   * 커밋하는 동안 새 쓰기를 붙잡는다).
+   */
+  async checkpoint(message?: string, options: { agentTurn?: boolean } = {}): Promise<void> {
     const requestedDocumentId = this.#getDocumentId();
     const requestedEditorRevision = this.#editorRevision;
     const requestedRepositoryId = this.#repository?.id;
@@ -455,7 +461,7 @@ export class DocumentVersionController implements VersionManagerController {
       if (!requestIsCurrent()) {
         throw new VersionError('STALE_WORKSPACE', 'The workspace changed before checkpoint started');
       }
-      await this.#guardMutation();
+      await this.#guardMutation(false, options.agentTurn === true);
       if (!requestIsCurrent()) {
         throw new VersionError('STALE_WORKSPACE', 'The workspace changed before checkpoint started');
       }
@@ -1284,13 +1290,13 @@ export class DocumentVersionController implements VersionManagerController {
     }
   }
 
-  async #guardMutation(resolvePending = false): Promise<void> {
+  async #guardMutation(resolvePending = false, fromAgentTurn = false): Promise<void> {
     this.#guardSaved();
     if (this.#mergeResolverActive) {
       throw new VersionError('MERGE_IN_PROGRESS', '열린 변경 검토를 먼저 마치거나 닫으세요.');
     }
     const documentAtStart = this.#getDocumentId();
-    if (this.#agentBridge.isTurnRunning()) {
+    if (!fromAgentTurn && this.#agentBridge.isTurnRunning()) {
       throw new VersionError('ACTIVE_AGENT_TURN', '에이전트 응답이 끝난 뒤 다시 시도하세요.');
     }
     if (!this.#agentBridge.pendingEdits.hasPending()) return;

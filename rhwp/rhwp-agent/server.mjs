@@ -32,7 +32,7 @@ import { WritingStyleStore, assertWritingStyleAppendCompatible } from './writing
 import { AgentInstructionsStore } from './agent-instructions.mjs';
 import { calibrateWritingStyle } from './style-calibrator.mjs';
 import { buildWritingStyleCatalog, resolveWritingStyleSelection } from './writing-style-catalog.mjs';
-import { filterToolDefinitions, TOOL_DEFINITIONS } from './tools.mjs';
+import { assertCellArgsPlacement, filterToolDefinitions, TOOL_DEFINITIONS } from './tools.mjs';
 import { resolveRenderSavePath, writeRenderPng } from './render-save.mjs';
 import { replayMissedTurnEnd } from './turn-outcome-replay.mjs';
 import {
@@ -246,7 +246,9 @@ if (process.env.RHWP_AGENT_MODE === 'production' && !secretStore.available) {
     code: 'HUB_SECRET_BROKER_REQUIRED',
   });
 }
-const piManager = await createPiManager({ rootDir: PI_ROOT, openRouter, secretStore }).init();
+const piManager = await createPiManager({
+  rootDir: PI_ROOT, openRouter, secretStore, routingSort: process.env.RHWP_PI_ROUTING_SORT,
+}).init();
 const authRuns = new AuthRunRegistry();
 let npmPrefixMutationQueue = Promise.resolve();
 function mutateSharedNpmPrefix(operation) {
@@ -306,7 +308,7 @@ let openRouterCreditsKey = null;
 
 /**
  * 준비 줄 뒤로 미룬 기동 작업: Claude 자격 증명 위치(Keychain), CLI 상태(--version),
- * pi 확장/스킬 동기화(fs.cp). 한 번만 돌고 실패해도 거절하지 않는다. 세션 시작처럼
+ * Pi 홈 설정 동기화. 한 번만 돌고 실패해도 거절하지 않는다. 세션 시작처럼
  * 결과에 기대는 경로는 이 약속을 기다린다.
  */
 let bootWorkPromise = null;
@@ -318,7 +320,7 @@ function ensureBootWork() {
     ...['claude', 'codex'].map((agent) => cliSetup.status(agent).then((status) => {
       if (cliSetupStatus[agent] === provisionalCliSetup[agent]) cliSetupStatus[agent] = status;
     }).catch((error) => log(`${agent} setup status failed: ${error?.message ?? error}`))),
-    // 저장소가 갱신되면 확장/스킬도 따라와야 한다 — 실패해도 허브는 그대로 뜬다.
+    // Pi 홈 설정을 다시 쓰고 예전 허브가 남긴 사본을 치운다 — 실패해도 허브는 그대로 뜬다.
     piStatus.installed
       ? piManager.syncAssets().catch((error) => log(`pi asset sync failed: ${error?.message ?? error}`))
       : null,
@@ -4453,6 +4455,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
       }
       let args;
       try {
+        assertCellArgsPlacement(tool, msg.args);
         args = toolArgSchema(tool, definition).parse(msg.args ?? {});
         definition.validate?.(args);
         if ((tool === 'present_implementation_plan' || tool === 'update_todos')
@@ -6079,6 +6082,7 @@ httpServer.on('error', (err) => {
   process.exitCode = 1;
 });
 
+const PI_SETTINGS_FLUSH_TIMEOUT_MS = 3_000;
 let shutdownPreparationPromise = null;
 let shutdownPromise = null;
 let launchCleanupRetentionRequired = false;
@@ -6176,6 +6180,11 @@ function prepareShutdown(signal) {
       (record) => disposeRecord(record, 'hub shutdown'),
     );
     if (!cleanupProven) retainUncertainProcessCleanup(WORK_ROOT);
+    // 기동 동기화가 models.json 을 쓰는 도중에 process.exit 가 오면 `.tmp-*` 사본(키 포함 가능)이 남는다.
+    await Promise.race([
+      piManager.close().catch((error) => log(`pi settings flush failed: ${error?.message ?? error}`)),
+      new Promise((resolve) => setTimeout(resolve, PI_SETTINGS_FLUSH_TIMEOUT_MS).unref()),
+    ]);
     for (const wss of [studioWss, mcpWss]) {
       for (const sock of wss.clients) {
         try { sock.close(1001, 'server shutting down'); } catch {}

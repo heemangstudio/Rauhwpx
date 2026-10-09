@@ -1207,6 +1207,38 @@ function isPiSetupState(value: unknown): value is 'preparing' | 'downloading' | 
     || value === 'configuring' || value === 'verifying' || value === 'done';
 }
 
+/**
+ * commit_version 실패를 에이전트가 다음 행동을 고를 수 있는 오류로 바꾼다. 버전 컨트롤러 오류는
+ * 큐를 지나며 cause 에 VersionError 를 싣는다. 사용자가 풀어야 하는 상태는 재시도하지 말라고 적는다.
+ */
+function commitVersionError(e: unknown): AgentToolError {
+  const message = e instanceof Error ? e.message : String(e);
+  const codeOf = (value: unknown) => (value && typeof value === 'object' && typeof (value as { code?: unknown }).code === 'string'
+    ? (value as { code: string }).code
+    : null);
+  const code = codeOf(e) ?? codeOf(e instanceof Error ? e.cause : null);
+  switch (code) {
+    case 'SAVE_REQUIRED':
+      return new AgentToolError(
+        'SAVE_REQUIRED',
+        'The document has never been saved, so it has no version history yet. Do not retry: your edits are in the document; tell the user to save it first, then a commit can be made.',
+      );
+    case 'VERSIONING_DISABLED':
+      return new AgentToolError(
+        'VERSIONING_DISABLED',
+        'Version history is off for this document. Do not retry: your edits are in the document; tell the user to turn on version history if they want a commit.',
+      );
+    case 'PENDING_AGENT_REVIEW':
+    case 'MERGE_IN_PROGRESS':
+      return new AgentToolError(
+        code,
+        `The user has to finish an open review before a commit can be made (${message}). Do not retry in this turn; mention it to the user.`,
+      );
+    default:
+      return new AgentToolError('COMMIT_FAILED', message);
+  }
+}
+
 export class AgentBridgeImpl implements AgentBridge {
   readonly pendingEdits: PendingEditManager;
 
@@ -1224,6 +1256,10 @@ export class AgentBridgeImpl implements AgentBridge {
   private httpBaseUrl = '';
   private readonly options?: AgentBridgeOptions;
   private readonly versionCommit?: (message: string) => Promise<void>;
+  /** 실행 중인 문서 쓰기 도구 호출 — 버전 커밋은 이들이 끝난 문서를 담는다. */
+  private readonly inFlightWrites = new Set<Promise<unknown>>();
+  /** 진행 중인 commit_version — 그동안 들어온 쓰기 도구는 커밋이 끝난 뒤에 실행한다. */
+  private versionCommitInFlight: Promise<void> | null = null;
   private ws: WebSocket | null = null;
   private state: ConnectionState = 'disconnected';
   /** 지금까지 실패한 연결 시도 수. 허브의 welcome 을 받으면 0 으로 돌아간다. */
@@ -1845,12 +1881,25 @@ export class AgentBridgeImpl implements AgentBridge {
     if (!this.versionCommit) {
       throw new AgentToolError('VERSIONING_UNAVAILABLE', 'Version history is not available for this document.');
     }
-    // 열린 직접 반영 set 이 있으면 먼저 확정해 커밋에 빠짐없이 담는다.
-    this.pendingEdits.commitOpen();
+    const versionCommit = this.versionCommit;
+    const previous = this.versionCommitInFlight;
+    // 먼저 시작한 쓰기(비동기 insert_image 등)가 끝나야 반쯤 적용된 문서를 담지 않는다. 목록은
+    // 지금 떠야 한다 — 이 커밋을 기다리는 뒤 쓰기까지 기다리면 서로 기다리다 멈춘다.
+    const earlierWrites = [...this.inFlightWrites];
+    const commit = (async () => {
+      await previous?.catch(() => undefined);
+      await Promise.allSettled(earlierWrites);
+      // 열린 직접 반영 set 이 있으면 먼저 확정해 커밋에 빠짐없이 담는다.
+      this.pendingEdits.commitOpen();
+      await versionCommit(message);
+    })();
+    this.versionCommitInFlight = commit;
     try {
-      await this.versionCommit(message);
+      await commit;
     } catch (e) {
-      throw new AgentToolError('COMMIT_FAILED', e instanceof Error ? e.message : String(e));
+      throw commitVersionError(e);
+    } finally {
+      if (this.versionCommitInFlight === commit) this.versionCommitInFlight = null;
     }
     return { committed: true, message };
   }
@@ -2955,7 +3004,7 @@ export class AgentBridgeImpl implements AgentBridge {
     this.syncEditingLease();
     // 턴 시작을 놓친 쓰기도 전체 모드에서는 미리보기 표시 없이 바로 확정된다.
     if (isDocumentWriteTool(tool) && this.writesApplyDirectly()) this.pendingEdits.setDirectApply(true);
-    const run = tool === 'commit_version' ? this.commitVersion(args) : this.executor
+    const execute = () => (tool === 'commit_version' ? this.commitVersion(args) : this.executor
       .execute(tool, args, agent, {
         workflow: this.workflow,
         phase: msg.phase,
@@ -2965,7 +3014,18 @@ export class AgentBridgeImpl implements AgentBridge {
         template: readDocumentTemplate(msg.template) ?? undefined,
         requestIsActive,
         ...(trace ? { trace } : {}),
-      });
+      }));
+    // 버전 커밋과 쓰기는 서로 섞이지 않는다 — 커밋 중에 온 쓰기는 커밋이 끝난 뒤에 돈다.
+    const write = isDocumentWriteTool(tool) && tool !== 'commit_version';
+    const commitGate = write ? this.versionCommitInFlight : null;
+    const run: Promise<unknown> = commitGate
+      ? commitGate.then(execute, execute)
+      : execute();
+    if (write) {
+      this.inFlightWrites.add(run);
+      const settled = () => { this.inFlightWrites.delete(run); };
+      run.then(settled, settled);
+    }
     void run
       .then(
         (result) => { this.commitDirectWrite(tool); return result; },

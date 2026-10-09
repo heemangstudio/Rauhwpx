@@ -393,6 +393,30 @@ function invalidArgs(message) {
   return err;
 }
 
+// cell 을 받는 텍스트·서식 도구. 표 좌표를 cell 없이 최상위에 두면 strict 스키마가 "Unrecognized key" 로만
+// 거절한다 — 고친 호출 꼴을 대신 알려 준다 (스튜디오 tool-executor 의 assertCellArgsPlacement 와 같은 문구).
+const CELL_ADDRESSED_TOOLS = new Set([
+  'insert_text', 'delete_range', 'replace_range', 'apply_char_format', 'apply_para_format', 'get_text_range',
+]);
+
+export function assertCellArgsPlacement(tool, args) {
+  if (!CELL_ADDRESSED_TOOLS.has(tool) || !args || typeof args !== 'object') return;
+  const given = (key) => args[key] !== undefined && args[key] !== null;
+  if (given('cell')) return;
+  const stray = ['controlIdx', 'cellIdx', 'cellParaIdx'].filter(given);
+  if (stray.length === 0) return;
+  const show = (key, fallback) => (typeof args[key] === 'number' ? String(args[key]) : fallback);
+  const tablePara = given('paraIdx') ? show('paraIdx', 'P') : show('startParaIdx', 'P');
+  const cell = `cell:{paraIdx:${tablePara},controlIdx:${show('controlIdx', '0')},cellIdx:${show('cellIdx', 'N')}}`;
+  const inner = show('cellParaIdx', '0');
+  const paraKeys = tool === 'delete_range' || tool === 'replace_range' ? 'startParaIdx/endParaIdx' : 'paraIdx';
+  throw invalidArgs(
+    `${tool} got top-level ${stray.join('/')} without cell, which would edit the table's host paragraph instead of the cell. `
+      + `Put the cell address in ${cell} (paraIdx = the table's body paragraph from its get_structure line) `
+      + `and set ${paraKeys} to the paragraph inside the cell (${inner}), e.g. {${cell}, ${paraKeys.split('/')[0]}:${inner}, …}.`,
+  );
+}
+
 /**
  * 스튜디오 결과를 MCP content 블록으로 변환한다.
  * result.image 가 { data(base64), mimeType } 모양이면 image 블록을 먼저 남고
@@ -916,7 +940,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'insert_text',
-    description: `Insert text at charOffset, or before/after the text matched by find (position, default after). "\\n" splits paragraphs. ${WRITE_POINTER}`,
+    description: `Insert text at charOffset (omitted: paragraph end), or before/after the text matched by find (position, default after). "\\n" splits paragraphs. ${WRITE_POINTER}`,
     shape: {
       expectedRevision: z.number().int(),
       render: renderParam(),
@@ -929,7 +953,8 @@ const BASE_TOOL_DEFINITIONS = [
       cell: cellParam(),
       cellPath: cellPathParam(),
     },
-    validate: (args) => validateAnchorTool('insert_text', args, ['sectionIdx', 'paraIdx', 'charOffset']),
+    // charOffset 이 없으면 스튜디오가 문단 끝에 덧붙인다.
+    validate: (args) => validateAnchorTool('insert_text', args, ['sectionIdx', 'paraIdx']),
   },
   {
     name: 'template_apply_section_layout',
@@ -999,7 +1024,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'replace_range',
-    description: `Replace the text matched by find, or a coordinate range, with text. Keeps formatting; prefer it over delete_range + insert_text. ${WRITE_POINTER}`,
+    description: `Replace the text matched by find, or a coordinate range, with text ("" deletes). Keeps formatting; prefer it over delete_range + insert_text. ${WRITE_POINTER}`,
     shape: {
       expectedRevision: z.number().int(),
       render: renderParam(),
@@ -1202,7 +1227,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'apply_list',
-    description: `Make startParaIdx..endParaIdx a REAL HWP list: renderer-generated numbers with a hanging indent. Never type literal '1.' or '가.' to fake a list. format: '1.' for 1,2,3 or '가.'/'ㄱ.' for 가,나,다 (level 2 defaults to 가,나,다). bulletChar (e.g. '•') makes a bullet list instead. ${WRITE_POINTER}`,
+    description: `Make startParaIdx..endParaIdx a REAL HWP list: renderer-generated numbers with a hanging indent. Never type literal '1.' or '가.' to fake a list. format: '1.' for 1,2,3 or '가.'/'ㄱ.' for 가,나,다 (level 2 defaults to 가,나,다). bulletChar (e.g. '•') makes a bullet list instead. stripMarkers:true removes typed markers ('가. ', '1) ', '- '). ${WRITE_POINTER}`,
     shape: {
       expectedRevision: z.number().int(),
       render: renderParam(),
@@ -1213,6 +1238,7 @@ const BASE_TOOL_DEFINITIONS = [
       level: z.number().int().max(6).default(0).optional(),
       startNumber: z.number().int().optional(),
       bulletChar: z.string().optional(),
+      stripMarkers: z.boolean().optional(),
     },
     validate: validateApplyList,
   },

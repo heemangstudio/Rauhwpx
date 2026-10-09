@@ -12,6 +12,7 @@ import { pathToFileURL } from 'node:url';
 import {
   PATH_GUARDED_TOOLS,
   PLANNING_BLOCKED_TOOLS,
+  SEARCH_TOOLS,
   TOOL_DEFINITIONS_MAX_BYTES,
   decodeHubFrame,
   encodeToolCallFrame,
@@ -496,9 +497,18 @@ test('safe 프로필은 캐논 경로를 도구에 넘기고 workspace 밖은 �
   assert.equal((await guardToolCall(
     { toolName: 'edit', input: { path: 'missing.txt' } }, safe, workspace,
   ))?.block, true);
-  assert.equal(await guardToolCall(
-    { toolName: 'grep', input: { path: '/etc' } }, safe, workspace,
-  ), undefined);
+  // grep/find/ls 는 read 와 같은 경계를 지킨다. path 를 생략하면 cwd 를 캐논 경로로 채운다.
+  assert.equal((await guardToolCall(
+    { toolName: 'grep', input: { pattern: 'x', path: path.dirname(outsideFile) } }, safe, workspace,
+  ))?.block, true);
+  for (const toolName of SEARCH_TOOLS) {
+    const omitted = { toolName, input: { pattern: '*' } };
+    assert.equal(await guardToolCall(omitted, safe, workspace), undefined, toolName);
+    assert.equal(omitted.input.path, await realpath(workspace), toolName);
+    assert.equal((await guardToolCall(
+      { toolName, input: { pattern: '*' } }, safe, path.dirname(outsideFile),
+    ))?.block, true, `${toolName} from a cwd outside the roots`);
+  }
 
   const unrestricted = configFor({ RHWP_PERMISSION_PROFILE: 'unrestricted' });
   assert.equal(

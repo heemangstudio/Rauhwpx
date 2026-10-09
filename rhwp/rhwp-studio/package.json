@@ -27,6 +27,7 @@
     "e2e:agent-tool-bench": "node e2e/agent-tool-bench.mjs --mode=headless",
     "e2e:agent-tool-concurrency-bench": "node e2e/agent-tool-concurrency-bench.mjs --mode=headless",
     "e2e:agent-claude-live-bench": "node e2e/agent-claude-live-bench.mjs --mode=headless",
+    "e2e:agent-live-suite": "node e2e/agent-live-suite.mjs --mode=headless",
     "e2e:typing-latency-bench": "node e2e/typing-latency-bench.mjs --mode=headless",
     "e2e:typing-page-spanning": "node e2e/typing-page-spanning-paragraph.test.mjs --mode=headless",
     "e2e:reference-files": "node e2e/reference-files-flow.test.mjs --mode=headless",

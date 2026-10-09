@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import fs, { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import test from 'node:test';
+import test, { after } from 'node:test';
 
 import {
   buildPiArgv,
@@ -12,6 +14,13 @@ import {
   formatPiExitError,
   isOpenRouterCreditError,
 } from '../agents/pi.mjs';
+import { RHWP_TOOL_RULES } from '../tool-rules.mjs';
+import { availableReadOnlyBuiltins } from '../agents/pi-prompt.mjs';
+
+// rg/fd 가 있는 가짜 PATH — grep/find 선언은 실행 파일을 찾을 수 있을 때만 붙는다.
+const SEARCH_BIN_DIR = mkdtempSync(path.join(os.tmpdir(), 'rhwp-pi-search-bin-'));
+for (const name of ['rg', 'fd']) writeFileSync(path.join(SEARCH_BIN_DIR, name), '');
+after(() => rmSync(SEARCH_BIN_DIR, { recursive: true, force: true }));
 
 const baseOpts = {
   rootDir: '/tmp/rhwp',
@@ -385,9 +394,102 @@ test('argv carries the model, thinking level, session and system brief', () => {
   ]);
   assert.equal(argv[argv.indexOf('--session-dir') + 1], path.join('/pi', 'sessions'));
   assert.equal(argv[argv.indexOf('--session-id') + 1], 'sess-1');
-  assert.match(argv[argv.indexOf('--append-system-prompt') + 1], /rhwp MCP tools/);
-  assert.ok(argv.includes('--no-context-files'));
+  assert.match(argv[argv.indexOf('--system-prompt') + 1], /^You are the document agent inside Rauhwpx/);
   assert.equal(argv[argv.indexOf('--exclude-tools') + 1], 'bash');
+  assert.equal(argv.includes('--append-system-prompt'), false);
+});
+
+test('argv loads only the extensions and skills shipped with the app', () => {
+  const argv = buildPiArgv({ ...baseOpts, workflow: 'direct', phase: 'implementing' }, 'sess-1');
+  for (const flag of ['--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes',
+    '--no-context-files', '--no-approve']) {
+    assert.ok(argv.includes(flag), flag);
+  }
+  const agentPackage = path.resolve(import.meta.dirname, '..');
+  const extensions = argv.flatMap((arg, index) => (arg === '-e' ? [argv[index + 1]] : []));
+  assert.deepEqual(extensions.map((file) => path.relative(agentPackage, file)), [
+    path.join('pi', 'extension', 'rhwp.ts'),
+    path.join('pi', 'extension', 'subagents.ts'),
+  ]);
+  const skills = argv.flatMap((arg, index) => (arg === '--skill' ? [argv[index + 1]] : []));
+  assert.deepEqual(skills, [path.join(agentPackage, 'pi', 'skills')]);
+  for (const file of [...extensions, ...skills]) assert.ok(fs.existsSync(file), file);
+  // Pi 홈(설정이 들어 있는 사용자 데이터 폴더)에서는 아무 리소스도 싣지 않는다.
+  assert.equal(argv.some((arg) => arg.startsWith(path.join('/pi', 'agent'))), false);
+});
+
+test('every mode adds the read-only search built-ins without replacing the default set', () => {
+  const searchEnv = { PATH: SEARCH_BIN_DIR };
+  for (const mode of [
+    { workflow: 'direct', permissionProfile: 'safe' },
+    { workflow: 'direct', permissionProfile: 'unrestricted' },
+    { workflow: 'question', phase: 'questioning' },
+    { workflow: 'plan', phase: 'planning' },
+    { workflow: 'plan', phase: 'implementing' },
+    { toolProfile: 'copy-layout-worker' },
+  ]) {
+    const argv = buildPiArgv({ ...baseOpts, ...mode }, 'sess-1', searchEnv);
+    // `+이름` 만 쓰는 형식이어야 확장 도구가 살아남는다 (이름만 나열하면 허용 목록이 된다).
+    const tools = argv[argv.indexOf('--tools') + 1].split(',');
+    assert.ok(tools.every((entry) => entry.startsWith('+')), JSON.stringify(mode));
+    assert.deepEqual(tools.filter((entry) => ['+grep', '+find', '+ls'].includes(entry)).length, 3);
+  }
+});
+
+test('grep and find are declared only when pi can run rg and fd', () => {
+  const files = new Set([
+    path.join('/pi', 'agent', 'bin', 'rg'),
+    path.join('/usr', 'bin', 'fdfind'),
+  ]);
+  const exists = (file) => files.has(file);
+  assert.deepEqual(
+    availableReadOnlyBuiltins({ pathEnv: '/usr/bin', binDir: path.join('/pi', 'agent', 'bin'), exists, platform: 'darwin' }),
+    ['grep', 'find', 'ls'],
+  );
+  assert.deepEqual(availableReadOnlyBuiltins({ pathEnv: '/usr/bin', exists, platform: 'darwin' }), ['find', 'ls']);
+  assert.deepEqual(availableReadOnlyBuiltins({ pathEnv: '', exists: () => false, platform: 'darwin' }), ['ls']);
+  assert.deepEqual(
+    availableReadOnlyBuiltins({ pathEnv: 'C:\\tools', exists: (file) => file === 'C:\\tools\\rg.exe', platform: 'win32' }),
+    ['grep', 'ls'],
+  );
+  const bare = buildPiArgv(baseOpts, 'sess-1', { PATH: '' });
+  assert.equal(bare[bare.indexOf('--tools') + 1], '+ls');
+});
+
+test('a spawn reads its system prompt from a session file instead of the command line', () => {
+  const piRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'rhwp-pi-prompt-'));
+  try {
+    fs.mkdirSync(path.join(piRoot, 'sessions'));
+    const { session, spawns } = startSession({ piRoot, permissionProfile: 'unrestricted' });
+    session.sendUserMessage('edit');
+    const value = spawns[0].argv[spawns[0].argv.indexOf('--system-prompt') + 1];
+    assert.equal(path.dirname(value), path.join(piRoot, 'sessions'));
+    assert.match(fs.readFileSync(value, 'utf8'), /^You are the document agent inside Rauhwpx[\s\S]*Mode: 전체/);
+    session.dispose();
+  } finally {
+    fs.rmSync(piRoot, { recursive: true, force: true });
+  }
+});
+
+test('the system prompt follows the mode and an explicit override replaces it', () => {
+  const promptOf = (opts) => {
+    const argv = buildPiArgv({ ...baseOpts, ...opts }, 'sess-1', {});
+    return argv[argv.indexOf('--system-prompt') + 1];
+  };
+  const prompts = [
+    promptOf({ workflow: 'question', phase: 'questioning' }),
+    promptOf({ workflow: 'plan', phase: 'planning' }),
+    promptOf({ workflow: 'direct', permissionProfile: 'safe' }),
+    promptOf({ workflow: 'direct', permissionProfile: 'unrestricted' }),
+    promptOf({ workflow: 'plan', phase: 'implementing', permissionProfile: 'safe' }),
+    promptOf({ workflow: 'plan', phase: 'implementing', permissionProfile: 'unrestricted' }),
+  ];
+  assert.equal(new Set(prompts).size, prompts.length);
+  for (const prompt of prompts) {
+    assert.doesNotMatch(prompt, /expert coding assistant/);
+    assert.ok(prompt.includes(RHWP_TOOL_RULES));
+  }
+  assert.equal(promptOf({ systemPromptOverride: 'AUTONOMOUS TEMPLATE WORKER' }), 'AUTONOMOUS TEMPLATE WORKER');
 });
 
 test('argv omits thinking for non-reasoning models and never doubles the provider prefix', () => {
@@ -405,7 +507,7 @@ test('pi gets its own subagent fleet instructions', () => {
     { workflow: 'plan', phase: 'implementing' },
   ]) {
     const argv = buildPiArgv({ ...baseOpts, ...mode }, 'sess-1');
-    const brief = argv[argv.indexOf('--append-system-prompt') + 1];
+    const brief = argv[argv.indexOf('--system-prompt') + 1];
     assert.doesNotMatch(brief, /Workflow tool/, mode.phase);
     assert.match(brief, /subagent_spawn/, mode.phase);
     assert.match(brief, /role=doc-editor/, mode.phase);
@@ -418,11 +520,11 @@ test('planning phases exclude the built-in write and shell tools', () => {
   for (const phase of ['planning', 'awaiting-approval', 'switching']) {
     const argv = buildPiArgv({ ...baseOpts, workflow: 'plan', phase }, 'sess-1');
     assert.equal(argv[argv.indexOf('--exclude-tools') + 1], 'bash,edit,write', phase);
-    assert.match(argv[argv.indexOf('--append-system-prompt') + 1], /플랜 \(plan\) mode|implementation mode/);
+    assert.match(argv[argv.indexOf('--system-prompt') + 1], /Mode: 플랜 \(plan\)/);
   }
   const implementing = buildPiArgv({ ...baseOpts, workflow: 'plan', phase: 'implementing' }, 'x');
   assert.equal(implementing[implementing.indexOf('--exclude-tools') + 1], 'bash');
-  assert.match(implementing[implementing.indexOf('--append-system-prompt') + 1], /implementation mode/);
+  assert.match(implementing[implementing.indexOf('--system-prompt') + 1], /Mode: plan implementation/);
 
   const unrestricted = buildPiArgv({
     ...baseOpts,
@@ -448,6 +550,7 @@ test('the child env is built from scratch without ambient provider keys', () => 
   assert.deepEqual(env.PATH, '/usr/bin');
   assert.equal(env.PI_CODING_AGENT_DIR, path.join('/pi', 'agent'));
   assert.equal(env.PI_OFFLINE, '1');
+  assert.equal(env.PI_TELEMETRY, '0');
   assert.equal(env.HOME, '/tmp/rhwp isolated home');
   assert.equal(env.USERPROFILE, '/tmp/rhwp isolated home');
   assert.equal(env.RHWP_SESSION_ID, 'studio-thread-pi');
