@@ -940,7 +940,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'insert_text',
-    description: `Insert text at charOffset, or before/after the text matched by find (position, default after). "\\n" splits paragraphs. ${WRITE_POINTER}`,
+    description: `Insert text at charOffset (omitted: paragraph end), or before/after the text matched by find (position, default after). "\\n" splits paragraphs. ${WRITE_POINTER}`,
     shape: {
       expectedRevision: z.number().int(),
       render: renderParam(),
@@ -953,7 +953,8 @@ const BASE_TOOL_DEFINITIONS = [
       cell: cellParam(),
       cellPath: cellPathParam(),
     },
-    validate: (args) => validateAnchorTool('insert_text', args, ['sectionIdx', 'paraIdx', 'charOffset']),
+    // charOffset 이 없으면 스튜디오가 문단 끝에 덧붙인다.
+    validate: (args) => validateAnchorTool('insert_text', args, ['sectionIdx', 'paraIdx']),
   },
   {
     name: 'template_apply_section_layout',

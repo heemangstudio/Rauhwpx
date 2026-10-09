@@ -276,7 +276,8 @@ interface ResolvedAnchor {
 const RANGE_COORD_KEYS = ['sectionIdx', 'startParaIdx', 'startCharOffset', 'endParaIdx', 'endCharOffset'] as const;
 /** 앵커 없이 부를 때 도구별로 필요한 좌표 — 누락 오류가 이 목록을 통째로 알려준다. */
 const WRITE_COORD_KEYS: Record<string, readonly string[]> = {
-  insert_text: ['sectionIdx', 'paraIdx', 'charOffset'],
+  // insert_text 의 charOffset 은 빠지면 그 문단 끝이다 (새 표 칸을 채울 때 모델이 흔히 생략한다).
+  insert_text: ['sectionIdx', 'paraIdx'],
   delete_range: RANGE_COORD_KEYS,
   replace_range: RANGE_COORD_KEYS,
   apply_char_format: ['sectionIdx', 'paraIdx', 'startOffset', 'endOffset'],
@@ -5453,11 +5454,13 @@ export class AgentToolExecutor {
     const coords = this.coordArgs('insert_text', args);
     const sectionIdx = reqInt(coords, 'sectionIdx');
     let paraIdx = reqInt(coords, 'paraIdx');
-    const charOffset = reqInt(coords, 'charOffset');
+    const givenOffset = optIndex(coords, 'charOffset');
     const cell = optCell(args);
     const shift = this.requireRevisionRebasable(args, sectionIdx, cell ? cell.paraIdx : paraIdx, cell ? cell.paraIdx : paraIdx);
     if (cell) cell.paraIdx += shift;
     else paraIdx += shift;
+    // charOffset 이 없으면 문단(본문·셀) 끝에 덧붙인다 — validateAddress 가 문단 길이를 돌려준다.
+    const charOffset = givenOffset ?? this.validateAddress(sectionIdx, paraIdx, undefined, cell);
     return this.insertTextAt(args, agent, sectionIdx, paraIdx, charOffset, cell, shift, null);
   }
 

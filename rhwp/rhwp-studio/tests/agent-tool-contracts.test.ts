@@ -143,3 +143,25 @@ test('apply_list stripMarkers works as an apply_edits item and as one undo step 
   h.recorded[0].undo(h.wasm);
   assert.deepEqual(h.body, ['가. 사과', '나. 배', '맺음말']);
 });
+
+test('insert_text without charOffset or find appends at the end of the addressed paragraph, body or cell', async () => {
+  const h = makeEnv(['머리', '', '꼬리']);
+  addTable(h, 1, [['이름', '']]);
+  const cells = () => h.tables[0].cells;
+  await h.call('insert_text', { paraIdx: 0, text: '말' });
+  assert.equal(h.body[0], '머리말');
+  await h.call('insert_text', { cell: { paraIdx: 1, controlIdx: 0, cellIdx: 1 }, paraIdx: 0, text: '2.1 sec' });
+  assert.deepEqual(cells()[1], ['2.1 sec']);
+
+  await h.call('apply_edits', {
+    edits: [
+      { tool: 'insert_text', cell: { paraIdx: 1, controlIdx: 0, cellIdx: 0 }, paraIdx: 0, text: ' 칸' },
+      { tool: 'insert_text', sectionIdx: 0, paraIdx: 2, text: ' 끝' },
+    ],
+  });
+  assert.deepEqual(cells()[0], ['이름 칸']);
+  assert.equal(h.body[2], '꼬리 끝');
+
+  // position 은 매치를 기준으로 하므로 find 없이는 여전히 오류다.
+  await expectErr(h.call('insert_text', { paraIdx: 0, position: 'after', text: 'x' }), 'INVALID_ARGS');
+});

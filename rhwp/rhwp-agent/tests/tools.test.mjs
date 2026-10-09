@@ -88,8 +88,11 @@ test('앵커 도구는 anchor 인자를 받고 좌표를 선택 필드로 둔다
   // 앵커가 없으면 좌표가 필요하다 — 오류가 그 도구의 좌표 전체를 알려 준다.
   assert.throws(
     () => byName.get('insert_text').validate({ text: 'x' }),
-    /insert_text needs sectionIdx, paraIdx, charOffset — or find \(missing paraIdx, charOffset\)/,
+    /insert_text needs sectionIdx, paraIdx — or find \(missing paraIdx\)/,
   );
+  // charOffset 이 없으면 문단 끝에 덧붙인다 — position 은 여전히 find 가 있어야 한다.
+  assert.doesNotThrow(() => byName.get('insert_text').validate({ cell: { paraIdx: 7, controlIdx: 0, cellIdx: 9 }, paraIdx: 0, text: 'x' }));
+  assert.throws(() => byName.get('insert_text').validate({ paraIdx: 0, position: 'after', text: 'x' }), /position refines a text match/);
   assert.throws(
     () => byName.get('delete_range').validate({ startParaIdx: 1 }),
     /delete_range needs sectionIdx, startParaIdx, startCharOffset, endParaIdx, endCharOffset — or find \(missing startCharOffset, endCharOffset\)/,
