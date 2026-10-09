@@ -19,11 +19,16 @@ import {
   pendingUserQuestionMatchesInteraction,
   providerStartContext,
   rememberProviderSession,
+  orderPinnedThreads,
+  pinThread,
+  placeThread,
   serializeThreadMessagesForProviderHistory,
   setThreadTitle,
   setTurnOutcome,
   subscribeThreadChanges,
+  threadListKey,
   threadMatchesDocument,
+  unpinThread,
   upsertThread,
 } from '../src/agent/threads.ts';
 import type { ChatThread, ThreadMessage, ThreadToolRecord } from '../src/agent/threads.ts';
@@ -654,6 +659,114 @@ test('chat list follows conversation activity across documents, not opening a ch
   } finally {
     Date.now = realNow;
   }
+});
+
+test('pinned chats hold their dragged order, survive stale saves and keep activity order', () => {
+  mem.clear();
+  const realNow = Date.now;
+  let clock = 1_000;
+  Date.now = () => clock;
+  try {
+    const mk = (text: string) => {
+      const t = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high' });
+      t.messages.push({ role: 'user', text });
+      upsertThread(t);
+      clock += 1_000;
+      return t.id;
+    };
+    const a = mk('a');
+    const b = mk('b');
+    const c = mk('c');
+    const pinnedIds = () => orderPinnedThreads(listThreads()).map((t) => t.id);
+    const staleA = getThread(a)!;
+
+    // 새로 고정한 채팅은 맨 위, 끌어 놓으면 이웃 사이로 간다.
+    pinThread(a);
+    pinThread(c);
+    assert.deepEqual(pinnedIds(), [c, a]);
+    pinThread(c, { after: a });
+    assert.deepEqual(pinnedIds(), [a, c]);
+    pinThread(b, { before: c });
+    assert.deepEqual(pinnedIds(), [a, b, c]);
+
+    // 고정은 대화 활동이 아니다.
+    assert.deepEqual(listThreads().map((t) => t.id), [c, b, a]);
+
+    // 고정 전에 열어 둔 사본을 저장해도 고정이 풀리지 않는다.
+    upsertThread(staleA);
+    assert.deepEqual(pinnedIds(), [a, b, c]);
+
+    unpinThread(b);
+    assert.deepEqual(pinnedIds(), [a, c]);
+    assert.equal(getThread(b)!.pinOrder, undefined);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test('a dragged chat keeps its spot through new messages while undragged chats follow activity', () => {
+  mem.clear();
+  const realNow = Date.now;
+  let clock = 1_000_000;
+  Date.now = () => clock;
+  try {
+    const mk = (text: string) => {
+      const t = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high' });
+      t.messages.push({ role: 'user', text });
+      upsertThread(t);
+      clock += 1_000;
+      return t.id;
+    };
+    const a = mk('a');
+    const b = mk('b');
+    const c = mk('c');
+    const rail = () => listThreads()
+      .filter((t) => t.pinOrder === undefined)
+      .sort((x, y) => threadListKey(y) - threadListKey(x))
+      .map((t) => t.id);
+    assert.deepEqual(rail(), [c, b, a]);
+
+    // 맨 위 채팅을 맨 아래로 끌어 놓는다.
+    placeThread(c, { after: a, before: null });
+    assert.deepEqual(rail(), [b, a, c]);
+
+    // 새 대화가 와도 끌어 놓은 자리에 남는다.
+    const moved = getThread(c)!;
+    moved.messages.push({ role: 'user', text: '이어서' });
+    upsertThread(moved);
+    clock += 1_000;
+    assert.deepEqual(rail(), [b, a, c]);
+
+    // 끌지 않은 채팅은 대화가 오면 위로 올라온다.
+    const busy = getThread(a)!;
+    busy.messages.push({ role: 'user', text: '이어서' });
+    upsertThread(busy);
+    clock += 1_000;
+    assert.deepEqual(rail(), [a, b, c]);
+
+    // 고정한 채팅을 아래 목록에 놓으면 고정이 풀리고 그 자리에 선다.
+    pinThread(b);
+    placeThread(b, { after: c, before: null });
+    assert.equal(getThread(b)!.pinOrder, undefined);
+    assert.deepEqual(rail(), [a, c, b]);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test('pinned chats are kept when the chat cap drops the oldest chats', () => {
+  mem.clear();
+  const mk = (text: string) => {
+    const t = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high' });
+    t.messages.push({ role: 'user', text });
+    upsertThread(t);
+    return t.id;
+  };
+  const oldest = mk('가장 오래된 채팅');
+  pinThread(oldest);
+  for (let i = 0; i < 45; i += 1) mk(`채팅 ${i}`);
+  assert.equal(listThreads().length, 40);
+  assert.equal(getThread(oldest)?.pinOrder, 0);
 });
 
 test('forgetDocumentThreads removes only that document\'s chats', () => {

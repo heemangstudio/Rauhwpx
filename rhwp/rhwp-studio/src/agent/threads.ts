@@ -192,6 +192,11 @@ export interface ChatThread {
   titleRequested: boolean;
   /** 사용자가 직접 붙인 이름 — 이후 자동 제목이 덮어쓰지 않는다 */
   titlePinned?: boolean;
+  /** 목록 맨 위 고정 구역에서의 자리 — 작을수록 위. 없으면 고정하지 않은 채팅이다. */
+  pinOrder?: number;
+  /** 아래 목록에 끌어 놓은 자리. 대화 활동 시각과 같은 축이라 끌지 않은 채팅과 함께
+   *  정렬되고, 새 대화가 와도 그대로 남는다. 없으면 마지막 대화 활동 자리다. */
+  listOrder?: number;
   createdAt: number;
   /** 저장 시계 — 탭 사이 충돌 판정에 쓰여 저장할 때마다 앞으로 간다. */
   updatedAt: number;
@@ -269,7 +274,7 @@ export function threadMatchesDocument(
   return !thread.documentId && !documentId && threadName === null && activeName === null;
 }
 
-type StoredChatThread = Omit<ChatThread, 'workflow' | 'latestPlan' | 'plans' | 'docKey' | 'documentId' | 'activeTemplateId' | 'pendingUserQuestion' | 'providerSessions' | 'contextUsage'> & {
+type StoredChatThread = Omit<ChatThread, 'workflow' | 'latestPlan' | 'plans' | 'docKey' | 'documentId' | 'activeTemplateId' | 'pendingUserQuestion' | 'providerSessions' | 'contextUsage' | 'pinOrder' | 'listOrder'> & {
   providerSessions?: unknown;
   contextUsage?: unknown;
   workflow?: unknown;
@@ -279,6 +284,8 @@ type StoredChatThread = Omit<ChatThread, 'workflow' | 'latestPlan' | 'plans' | '
   documentId?: unknown;
   activeTemplateId?: unknown;
   pendingUserQuestion?: unknown;
+  pinOrder?: unknown;
+  listOrder?: unknown;
 };
 
 type ThreadPersistenceChange =
@@ -329,10 +336,18 @@ function readLegacyThreads() {
   }
 }
 
+/** 한도를 넘을 때 남길 순서 — 고정한 채팅이 먼저, 그다음 최근에 저장한 채팅. */
+function retentionOrder(
+  a: { updatedAt: number; pinOrder?: unknown },
+  b: { updatedAt: number; pinOrder?: unknown },
+): number {
+  return Number(b.pinOrder !== undefined) - Number(a.pinOrder !== undefined) || b.updatedAt - a.updatedAt;
+}
+
 function saveLegacyThreads(threads: ChatThread[]) {
   if (!canUseStorage()) return;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(threads.slice(0, MAX_THREADS)));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify([...threads].sort(retentionOrder).slice(0, MAX_THREADS)));
   } catch (err) {
     console.warn('[threads] localStorage 저장 실패:', err);
   }
@@ -828,6 +843,8 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
     pendingUserQuestion: storedPendingUserQuestion,
     providerSessions: storedProviderSessions,
     contextUsage: storedContextUsage,
+    pinOrder: storedPinOrder,
+    listOrder: storedListOrder,
     ...rest
   } = thread;
   const messages = rest.messages.flatMap((raw): ThreadMessage[] => {
@@ -965,6 +982,8 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
     docKey: typeof storedDocKey === 'string' && storedDocKey ? storedDocKey : null,
     documentId: typeof storedDocumentId === 'string' && storedDocumentId ? storedDocumentId : null,
     activeTemplateId: typeof storedActiveTemplateId === 'string' && storedActiveTemplateId ? storedActiveTemplateId : null,
+    ...(typeof storedPinOrder === 'number' && Number.isFinite(storedPinOrder) ? { pinOrder: storedPinOrder } : {}),
+    ...(typeof storedListOrder === 'number' && Number.isFinite(storedListOrder) ? { listOrder: storedListOrder } : {}),
     ...(latestPlan ? { latestPlan } : {}),
     ...(plans.length ? { plans } : {}),
     ...(pendingUserQuestion && !pendingAlreadyArchived ? { pendingUserQuestion } : {}),
@@ -1101,7 +1120,7 @@ function queueMutation(operation: () => Promise<string[]>, fallback: () => void)
 }
 
 function trimCache() {
-  const sorted = [...cache.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+  const sorted = [...cache.values()].sort(retentionOrder);
   for (const thread of sorted.slice(MAX_THREADS)) cache.delete(thread.id);
 }
 
@@ -1121,7 +1140,7 @@ function persistUpsert(thread: ChatThread) {
       const rows = await requestResult(store.getAll() as IDBRequest<StoredChatThread[]>);
       removed = rows
         .filter(isStoredChatThread)
-        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .sort(retentionOrder)
         .slice(MAX_THREADS)
         .map((row) => row.id);
       for (const id of removed) store.delete(id);
@@ -1764,8 +1783,14 @@ export function upsertThread(thread: ChatThread): void {
   const lastActivityAt = previous && activityStamp(previous) === activityStamp({ ...thread, messages })
     ? threadActivityAt(previous)
     : updatedAt;
+  // 목록 자리(고정·끌어 놓은 자리)는 저장소가 쥔다 — 열어 둔 채팅의 낡은 사본이
+  // 저장되면서 사용자가 옮긴 자리를 되돌리지 않는다.
+  const { pinOrder: _callerPinOrder, listOrder: _callerListOrder, ...rest } = thread;
+  const placement = previous ?? thread;
   const capped: ChatThread = {
-    ...thread,
+    ...rest,
+    ...(placement.pinOrder !== undefined ? { pinOrder: placement.pinOrder } : {}),
+    ...(placement.listOrder !== undefined ? { listOrder: placement.listOrder } : {}),
     messages,
     updatedAt,
     lastActivityAt,
@@ -1839,17 +1864,102 @@ export function renameThread(id: string, title: string): ChatThread | null {
   const cleaned = title.trim().replace(/\s+/g, ' ');
   if (!cleaned) return current;
   const next = { ...current, title: cleaned.slice(0, 48), titlePinned: true };
+  replaceStoredThread(next);
+  return next;
+}
+
+/** 고정한 채팅만 고정 구역의 순서대로. 같은 자리는 최근 대화가 먼저다. */
+export function orderPinnedThreads<T extends Pick<ChatThread, 'pinOrder' | 'updatedAt' | 'lastActivityAt'>>(
+  threads: readonly T[],
+): T[] {
+  return threads
+    .filter((thread) => thread.pinOrder !== undefined)
+    .sort((a, b) => a.pinOrder! - b.pinOrder! || threadActivityAt(b) - threadActivityAt(a));
+}
+
+/** 고정 구역을 정확히 이 순서로 만든다. 자리가 바뀐 채팅만 다시 저장한다. */
+function setPinnedOrder(ids: readonly string[]): void {
+  const order = new Map([...new Set(ids)].map((id, index) => [id, index]));
+  const now = Date.now();
+  for (const thread of loadAll()) {
+    const pinOrder = order.get(thread.id);
+    if (thread.pinOrder === pinOrder) continue;
+    const { pinOrder: _previous, ...rest } = thread;
+    // 고정은 대화 활동이 아니다 — 활동 시각은 두고, 탭 사이에서 이기도록 저장 시계만 앞으로 보낸다.
+    replaceStoredThread({
+      ...rest,
+      updatedAt: Math.max(now, thread.updatedAt + 1),
+      lastActivityAt: threadActivityAt(thread),
+      ...(pinOrder !== undefined ? { pinOrder } : {}),
+    });
+  }
+}
+
+/**
+ * 채팅을 고정 구역의 한 자리에 놓는다 — before 앞, 없으면 after 뒤,
+ * 둘 다 없으면 맨 위. 이미 고정한 채팅이면 자리만 옮긴다.
+ */
+export function pinThread(id: string, place: { before?: string | null; after?: string | null } = {}): void {
+  const order = orderPinnedThreads(loadAll()).map((thread) => thread.id).filter((pinned) => pinned !== id);
+  const before = place.before ? order.indexOf(place.before) : -1;
+  const after = place.after ? order.indexOf(place.after) : -1;
+  order.splice(before >= 0 ? before : after >= 0 ? after + 1 : 0, 0, id);
+  setPinnedOrder(order);
+}
+
+export function unpinThread(id: string): void {
+  setPinnedOrder(orderPinnedThreads(loadAll()).map((thread) => thread.id).filter((pinned) => pinned !== id));
+}
+
+/** 아래 목록의 순서 기준 — 큰 값이 위. 끌어 놓은 자리가 있으면 그 자리다. */
+export function threadListKey(thread: Pick<ChatThread, 'listOrder' | 'updatedAt' | 'lastActivityAt'>): number {
+  return thread.listOrder ?? threadActivityAt(thread);
+}
+
+/**
+ * 채팅을 아래 목록의 두 이웃 사이에 놓는다 — after 는 바로 위, before 는 바로 아래 채팅.
+ * 고정한 채팅이면 고정을 풀고 그 자리에 놓는다. 맨 위에 놓으면 지금 대화한 채팅과 같다.
+ */
+export function placeThread(id: string, place: { before?: string | null; after?: string | null }): void {
+  const all = loadAll();
+  const thread = all.find((item) => item.id === id);
+  if (!thread) return;
+  const key = (neighborId: string | null | undefined) => {
+    const neighbor = neighborId ? all.find((item) => item.id === neighborId) : undefined;
+    return neighbor ? threadListKey(neighbor) : null;
+  };
+  const above = key(place.after);
+  const below = key(place.before);
+  const current = threadListKey(thread);
+  const listOrder = above !== null && below !== null
+    ? (above + below) / 2
+    : below !== null
+      ? Math.max(Date.now(), below + 1)
+      : above !== null
+        ? above - 60_000
+        : current;
+  if (thread.pinOrder === undefined && thread.listOrder === listOrder) return;
+  const { pinOrder: _pinned, ...rest } = thread;
+  replaceStoredThread({
+    ...rest,
+    updatedAt: Math.max(Date.now(), thread.updatedAt + 1),
+    lastActivityAt: threadActivityAt(thread),
+    listOrder,
+  });
+}
+
+/** 대화 내용이 아닌 속성(이름·고정)만 바뀐 채팅을 그대로 저장한다. */
+function replaceStoredThread(next: ChatThread): void {
   if (idbAvailable()) {
-    cache.set(id, cloneThread(next));
+    cache.set(next.id, cloneThread(next));
     publish({ type: 'upsert', thread: cloneThread(next) });
     persistUpsert(next);
-  } else {
-    const all = readLegacyThreads();
-    const index = all.findIndex((thread) => thread.id === id);
-    if (index >= 0) {
-      all[index] = next;
-      saveFallbackMutation(all);
-    }
+    return;
   }
-  return next;
+  const all = readLegacyThreads();
+  const index = all.findIndex((thread) => thread.id === next.id);
+  if (index >= 0) {
+    all[index] = next;
+    saveFallbackMutation(all);
+  }
 }
