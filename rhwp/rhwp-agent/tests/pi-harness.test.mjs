@@ -168,6 +168,16 @@ test('the settle check asks once more for failed writes, warnings or a missing s
   warned.finalHasText = true;
   assert.match(settleNoteFor(warned, enabled), /runs past the page body/);
 
+  // 문단을 넣으면 뒤 문단이 다음 쪽으로 밀린다 — 정상 재배치는 다시 돌릴 이유가 아니다.
+  const reflowed = createTurnWriteState();
+  recordWriteOutcome(reflowed, {
+    tool: 'apply_edits',
+    ok: true,
+    result: { after: { warnings: ['s0 p10-12 moved from page 0 to 1', '59 more paragraph(s) after the edit changed page'] } },
+  });
+  reflowed.finalHasText = true;
+  assert.equal(settleNoteFor(reflowed, enabled), null);
+
   const silent = createTurnWriteState();
   recordWriteOutcome(silent, { tool: 'apply_edits', ok: true, result: { after: { warnings: [] } } });
   silent.finalHasText = false;

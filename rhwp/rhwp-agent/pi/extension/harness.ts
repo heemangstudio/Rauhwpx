@@ -429,12 +429,20 @@ export function createTurnWriteState(): TurnWriteState {
   };
 }
 
-/** 쓰기 결과의 after.warnings. 문자열이 아닌 항목은 버린다. */
+/**
+ * 쪽 이동 알림 (studio write-report.ts movedRunWarnings). 문단을 넣거나 지우면 뒤 문단이
+ * 다음 쪽으로 밀리는 것이 정상이라 결함이 아니다 — 마무리 점검이 이것으로 다시 돌면
+ * 모델이 쓸데없이 간격을 고치고 사용자에게 두 번째 답을 쓴다 (실측).
+ */
+const REFLOW_NOTICE = /moved from page \d+ to \d+$|more paragraph\(s\) after the edit changed page$/;
+
+/** 쓰기 결과의 after.warnings 중 결함만 (표 넘침 등). 쪽 이동 알림과 문자열이 아닌 항목은 버린다. */
 export function afterWarnings(result: unknown): string[] {
   const after = isPlainObject(result) ? result.after : null;
   const warnings = isPlainObject(after) ? after.warnings : null;
   return Array.isArray(warnings)
-    ? warnings.filter((warning): warning is string => typeof warning === 'string' && warning.trim().length > 0)
+    ? warnings.filter((warning): warning is string => typeof warning === 'string'
+      && warning.trim().length > 0 && !REFLOW_NOTICE.test(warning.trim()))
     : [];
 }
 
