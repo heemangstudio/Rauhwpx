@@ -71,10 +71,8 @@ test('past chats on the active file reopen as writable and adopt stable document
   assert.match(source, /currentThread\.documentId = currentDocumentId \?\? currentThread\.documentId/);
   assert.match(source, /currentThread\.docKey = currentDocKey \?\? currentThread\.docKey/);
   assert.match(source, /persistCurrentThread\(\);\s*exitReadOnlyMode\(\);[\s\S]*if \(liveQuestion\)[\s\S]*startCurrentBridgeChat\(true\)/);
-  assert.match(source, /const history = serializeThreadMessagesForProviderHistory\(currentThread\.messages\)/);
+  assert.match(source, /const \{ history \} = providerStartContext\(currentThread, selectedAgent, undeliveredMessages\)/);
   assert.match(source, /currentThread\.id, currentThread\.documentId, currentThread\.docKey, history/);
-  assert.match(serverSource, /bootstrapHistory: normalizeChatHistory\(requestedHistory\)/);
-  assert.match(serverSource, /addReopenedChatHistory\(\s*activeSession,/);
 });
 
 test('rapid past-chat switches cannot activate a stale provider session', () => {

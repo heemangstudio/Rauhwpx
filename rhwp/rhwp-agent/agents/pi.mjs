@@ -14,6 +14,7 @@ import {
   redactDiagnosticText,
   truncate,
   validateExecutionMode,
+  isSafeSessionId,
 } from './backend.mjs';
 import {
   availableReadOnlyBuiltins,
@@ -339,6 +340,63 @@ export function formatPiExitError(stderrText, code, signal, token) {
  * @param {any} raw
  * @returns {{ usage: import('./backend.mjs').UsageTokens, costUsd: number } | null}
  */
+/**
+ * `--session-id` 로 이어 쓸 세션 파일(`<piRoot>/sessions/<시각>_<id>.jsonl`)을 찾는다. Pi 1.1.0 은
+ * --session-dir 아래에서 헤더의 cwd 가 같은 파일만 연다 (없으면 같은 id 로 빈 세션을 새로 만든다).
+ *
+ * @returns {string | null}
+ */
+export function findPiSessionFileSync(opts, sessionId) {
+  if (!opts.piRoot || !isSafeSessionId(sessionId)) return null;
+  const dir = path.join(opts.piRoot, 'sessions');
+  let names;
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return null;
+  }
+  // Pi 는 process.cwd()(실경로)와 비교한다 — /var → /private/var 같은 링크를 풀어 둔다.
+  const cwds = new Set([path.resolve(String(opts.rootDir ?? ''))]);
+  try { cwds.add(fs.realpathSync(String(opts.rootDir ?? ''))); } catch {}
+  for (const name of names) {
+    if (!name.endsWith(`_${sessionId}.jsonl`)) continue;
+    const file = path.join(dir, name);
+    let fd;
+    try {
+      fd = fs.openSync(file, 'r');
+      const buffer = Buffer.alloc(16 * 1024);
+      const bytes = fs.readSync(fd, buffer, 0, buffer.length, 0);
+      const header = JSON.parse(buffer.subarray(0, bytes).toString('utf8').split('\n')[0]);
+      if (header?.type === 'session' && header.id === sessionId
+        && typeof header.cwd === 'string' && cwds.has(path.resolve(header.cwd))) return file;
+    } catch {
+      // 읽지 못한 파일은 재개 대상이 아니다.
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
+    }
+  }
+  return null;
+}
+
+export async function canResumePiSession(opts, sessionId) {
+  return findPiSessionFileSync(opts, sessionId) !== null;
+}
+
+/** Pi 가 맥락 크기로 세는 값 — 마지막 호출의 totalTokens, 없으면 네 칸의 합. */
+function piContextTokens(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const total = Number(raw.totalTokens);
+  if (Number.isFinite(total) && total > 0) return Math.round(total);
+  const sum = ['input', 'output', 'cacheRead', 'cacheWrite']
+    .reduce((acc, key) => acc + (Number(raw[key]) > 0 ? Number(raw[key]) : 0), 0);
+  return sum > 0 ? Math.round(sum) : null;
+}
+
+function finitePiTokens(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? Math.round(n) : undefined;
+}
+
 function normalizePiUsage(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const count = (value) => {
@@ -377,7 +435,14 @@ export function createPiSession(opts, {
 
   // pi 세션 id 는 우리가 발급한다. 첫 스폰은 세션 파일을 만들고(“creating a new
   // session” 경고가 stderr 에 찍힌다) 이후 스폰은 같은 파일을 이어 쓴다.
-  let sessionId = crypto.randomUUID();
+  // 재개 커서로 시작하면 그 파일을 이어 쓴다 — 첫 스폰 직전에 파일이 남아 있는지 다시 본다.
+  let sessionId = isSafeSessionId(opts.resumeSessionId) ? opts.resumeSessionId : crypto.randomUUID();
+  let resumeUnverified = sessionId === opts.resumeSessionId;
+  let turnResumeLost = false;
+  let lastContextTokens = null;
+  let compactionSeq = 0;
+  /** @type {{ compactionId: string, trigger: 'auto'|'manual', beforeTokens?: number } | null} */
+  let activeCompaction = null;
   /** @type {import('node:child_process').ChildProcess | null} */
   let child = null;
   let turnOpen = false;
@@ -399,8 +464,35 @@ export function createPiSession(opts, {
   function endTurn(evt) {
     if (!turnOpen) return;
     turnOpen = false;
+    activeCompaction = null;
     fleet.finalize(evt?.stopReason === 'failed' ? 'failed' : 'stopped');
-    onEvent(evt);
+    const lost = turnResumeLost;
+    turnResumeLost = false;
+    onEvent(lost ? { ...evt, resumeLost: true } : evt);
+  }
+
+  function emitContextUsage() {
+    if (lastContextTokens === null) return;
+    const window = Number(opts.contextWindow);
+    onEvent({
+      type: 'context-usage',
+      agent,
+      usedTokens: lastContextTokens,
+      ...(Number.isFinite(window) && window > 0 ? { maxTokens: Math.round(window) } : {}),
+      autoCompact: true,
+    });
+  }
+
+  function compactionEvent(compaction, phase, extra = {}) {
+    return {
+      type: 'compaction',
+      agent,
+      compactionId: compaction.compactionId,
+      phase,
+      trigger: compaction.trigger,
+      ...(compaction.beforeTokens !== undefined ? { beforeTokens: compaction.beforeTokens } : {}),
+      ...extra,
+    };
   }
 
   function makeHandler() {
@@ -427,9 +519,47 @@ export function createPiSession(opts, {
         }
         return;
       }
+      if (type === 'compaction_start') {
+        // reason: manual | threshold | overflow (Pi 1.1.0 json.md).
+        activeCompaction = {
+          compactionId: `pi:${sessionId}:${Date.now().toString(36)}:${++compactionSeq}`,
+          trigger: e.reason === 'manual' ? 'manual' : 'auto',
+          ...(lastContextTokens !== null ? { beforeTokens: lastContextTokens } : {}),
+        };
+        onEvent(compactionEvent(activeCompaction, 'started'));
+        return;
+      }
+      if (type === 'compaction_end') {
+        const compaction = activeCompaction ?? {
+          compactionId: `pi:${sessionId}:${Date.now().toString(36)}:${++compactionSeq}`,
+          trigger: e.reason === 'manual' ? 'manual' : 'auto',
+        };
+        activeCompaction = null;
+        const result = e.result;
+        if (result && !e.aborted) {
+          const beforeTokens = finitePiTokens(result.tokensBefore) ?? compaction.beforeTokens;
+          const afterTokens = finitePiTokens(result.estimatedTokensAfter);
+          onEvent(compactionEvent({ ...compaction, beforeTokens }, 'completed', {
+            ...(afterTokens !== undefined ? { afterTokens } : {}),
+          }));
+          if (afterTokens !== undefined) {
+            lastContextTokens = afterTokens;
+            emitContextUsage();
+          }
+        } else {
+          const message = e.aborted ? 'Compaction was aborted' : String(e.errorMessage ?? 'Compaction failed');
+          onEvent(compactionEvent(compaction, 'failed', { message: truncate(message, 500) }));
+        }
+        return;
+      }
       if (type === 'message_end') {
         const message = e.message ?? {};
         if (message.role !== 'assistant') return;
+        const contextTokens = piContextTokens(message.usage);
+        if (contextTokens !== null) {
+          lastContextTokens = contextTokens;
+          emitContextUsage();
+        }
         const usage = normalizePiUsage(message.usage);
         if (usage) {
           onEvent({
@@ -492,7 +622,12 @@ export function createPiSession(opts, {
     getSessionId() {
       return sessionId;
     },
-    sendUserMessage(text) {
+    // json 모드는 /compact 를 처리하지 않는다 (대화형 전용 명령). 자동 압축은 compaction_* 로 보인다.
+    compactionSupport: 'auto-only',
+    canResume(id) {
+      return canResumePiSession(opts, id);
+    },
+    sendUserMessage(text, options = {}) {
       if (disposed) return;
       if (turnOpen || queuedTurn) throw new Error('Pi already has a turn in progress');
       if (uncertainTreeCleanup) {
@@ -508,7 +643,7 @@ export function createPiSession(opts, {
         return;
       }
       if (child) {
-        const queued = { text };
+        const queued = { text, options };
         queuedTurn = queued;
         const ownership = childExitPromise;
         void stopChild('queue');
@@ -517,7 +652,7 @@ export function createPiSession(opts, {
           queuedTurn = null;
           if (disposed) return;
           if (cleaned && !child) {
-            session.sendUserMessage(queued.text);
+            session.sendUserMessage(queued.text, queued.options);
             return;
           }
           turnOpen = true;
@@ -546,6 +681,25 @@ export function createPiSession(opts, {
       turnCompleted = false;
       turnFailureMessage = null;
       onEvent({ type: 'turn-start', agent });
+
+      if (options.replaceSession) {
+        // 허브가 이 세션의 기록 전달을 믿지 않는다 — 새 세션 id 로 전체 기록을 보낸다.
+        resumeUnverified = false;
+        turnResumeLost = true;
+        sessionId = crypto.randomUUID();
+        lastContextTokens = null;
+      } else if (resumeUnverified) {
+        resumeUnverified = false;
+        if (!findPiSessionFileSync(opts, sessionId)) {
+          // 이어 쓸 파일이 사라졌다. Pi 는 같은 id 로 빈 세션을 만들 뿐이라 여기서 알아챈다.
+          turnResumeLost = true;
+          sessionId = crypto.randomUUID();
+          lastContextTokens = null;
+          if (typeof options.resumeFallbackText === 'string' && options.resumeFallbackText) {
+            text = options.resumeFallbackText;
+          }
+        }
+      }
 
       if (!opts.model) {
         onEvent({ type: 'error', agent, message: 'Pi 모델이 선택되지 않았습니다.' });

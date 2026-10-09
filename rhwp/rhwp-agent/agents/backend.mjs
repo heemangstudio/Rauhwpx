@@ -1,3 +1,4 @@
+import { promises as fsp } from 'node:fs';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import {
@@ -50,7 +51,9 @@ export function redactDiagnosticText(value, secrets = []) {
  *   | { type: 'task-progress';agent: AgentName; taskId: string; activity?: string; lastTool?: string; usage?: TaskUsage; phases?: TaskPhase[]; members?: TaskMember[]; phaseIndex?: number }
  *   | { type: 'task-end';     agent: AgentName; taskId: string; status: 'completed'|'failed'|'stopped'; summary?: string; usage?: TaskUsage }
  *   | { type: 'usage';        agent: AgentName; model: string|null; usage: UsageTokens; costUsd?: number }
- *   | { type: 'turn-end';     agent: AgentName; stopReason?: string; errorMessage?: string }
+ *   | { type: 'context-usage'; agent: AgentName; usedTokens: number; maxTokens?: number; autoCompact?: boolean }
+ *   | { type: 'compaction';   agent: AgentName; compactionId: string; phase: 'started'|'completed'|'failed'; trigger: 'auto'|'manual'; beforeTokens?: number; afterTokens?: number; message?: string }
+ *   | { type: 'turn-end';     agent: AgentName; stopReason?: string; errorMessage?: string; resumeLost?: true; handoffUncertain?: true }
  *   | { type: 'error';        agent: AgentName; message: string }
  * )} UnifiedAgentEvent
  *
@@ -106,6 +109,8 @@ export function redactDiagnosticText(value, secrets = []) {
  * @property {Record<string, string>} [providerEnv]
  * @property {string} [model]
  * @property {string} [effort]
+ * @property {string} [resumeSessionId] 이어 받을 네이티브 세션 커서. 허브가 canResume 으로 확인한 값만 넘긴다.
+ * @property {number} [contextWindow] 공급자가 알려 주지 않을 때 쓰는 모델 맥락 창 크기 (pi).
  * @property {'standard'|'fast'} [serviceTier]
  * @property {string} [toolProfile]
  * @property {string} [agentRole]
@@ -113,10 +118,28 @@ export function redactDiagnosticText(value, secrets = []) {
  * @property {(request: ProviderUserQuestionRequest, signal: AbortSignal) => Promise<UserQuestionOutcome>} [requestUserInput]
  * @property {(evt: UnifiedAgentEvent) => void} onEvent
  *
+ * @typedef {Object} ContextHandoff 이전 대화를 네이티브 항목으로 넣을 수 있는 공급자(Codex app-server)용 조각.
+ * @property {string} header 범위 안내와 맺음 문구 (첫 user 항목).
+ * @property {{ role: 'user'|'assistant', text: string }[]} entries 이름표가 붙은 기록 항목 (시간순).
+ * @property {string} plainText 기록을 뺀 프롬프트. 주입에 성공하면 이 글을 보낸다.
+ *
+ * @typedef {Object} SendUserMessageOptions
+ * @property {string} [resumeFallbackText] 네이티브 재개가 이 턴에 실패하면 대신 보낼 글 (전체 대화 기록을 담은 프롬프트).
+ *   그 턴의 turn-end 에는 resumeLost: true 가 실린다.
+ * @property {ContextHandoff} [handoff] text 에 인라인으로 붙은 기록과 같은 선택. 인라인 공급자는 무시한다.
+ * @property {ContextHandoff} [resumeFallbackHandoff] resumeFallbackText 에 붙은 전체 기록.
+ * @property {boolean} [replaceSession] 지금의 네이티브 세션을 버리고 새 세션에 text 를 보낸다
+ *   (허브가 기록 전달을 확신하지 못한 세션). 그 턴의 turn-end 에는 resumeLost: true 가 실린다.
+ *   기록 주입이 모호하게 실패하면 turn-end 에 handoffUncertain: true 를 싣는다.
+ *
  * @typedef {Object} AgentSession
  * @property {AgentName} agent
  * @property {() => string | null} getSessionId
- * @property {(text: string) => void} sendUserMessage
+ * @property {(text: string, options?: SendUserMessageOptions) => void} sendUserMessage
+ *   text 는 기록을 인라인으로 붙인 전체 프롬프트다.
+ * @property {'manual'|'auto-only'|'none'} compactionSupport
+ * @property {(sessionId: string) => Promise<boolean>} canResume 네이티브 저장소에 세션이 남아 있는지 디스크로 확인한다.
+ * @property {() => void} [compact] 수동 맥락 압축을 한 턴으로 돌린다 (compactionSupport === 'manual' 일 때만).
  * @property {(profile: 'safe'|'unrestricted') => void|Promise<void>} setPermissionProfile
  * @property {(mode: {workflow: 'direct'|'plan'|'question'; phase: 'planning'|'questioning'|'awaiting-approval'|'switching'|'implementing'; capabilityEpoch: string|number}) => Promise<void>} setExecutionMode
  * @property {() => void} interrupt
@@ -135,6 +158,47 @@ export function redactDiagnosticText(value, secrets = []) {
  *   | {status:'expired',reason:'provider-disconnected'|'hub-restarted'|'request-invalidated'}
  * )} UserQuestionOutcome
  */
+
+/**
+ * 네이티브 세션 저장소에서 이름 조건에 맞는 파일을 찾는다. 깊이와 항목 수를 묶어 둔
+ * 값싼 디스크 확인이다 — 못 찾거나 읽지 못하면 null.
+ *
+ * @param {string} root
+ * @param {(name: string) => boolean} matches
+ * @param {{ maxDepth?: number, maxEntries?: number }} [limits]
+ * @returns {Promise<string | null>}
+ */
+export async function findSessionFile(root, matches, { maxDepth = 4, maxEntries = 50_000 } = {}) {
+  if (!root) return null;
+  let budget = maxEntries;
+  const walk = async (dir, depth) => {
+    let entries;
+    try {
+      entries = await fsp.readdir(dir, { withFileTypes: true });
+    } catch {
+      return null;
+    }
+    const subdirs = [];
+    for (const entry of entries) {
+      if (--budget < 0) return null;
+      if (entry.isFile() && matches(entry.name)) return path.join(dir, entry.name);
+      if (entry.isDirectory()) subdirs.push(entry.name);
+    }
+    if (depth >= maxDepth) return null;
+    // 최신 날짜 폴더가 이름순으로 뒤에 온다 — 거기부터 본다.
+    for (const name of subdirs.sort().reverse()) {
+      const found = await walk(path.join(dir, name), depth + 1);
+      if (found || budget < 0) return found;
+    }
+    return null;
+  };
+  return walk(root, 0);
+}
+
+/** 세션 커서는 파일 이름에 그대로 들어간다 — 경로 문자가 섞인 값은 받지 않는다. */
+export function isSafeSessionId(value) {
+  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
+}
 
 /**
  * Returns a chunk consumer that accumulates buffered data, splits it on

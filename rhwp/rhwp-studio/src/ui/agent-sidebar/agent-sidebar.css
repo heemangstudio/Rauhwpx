@@ -3167,6 +3167,40 @@ button.ag-skill-copy {
   line-height: var(--ag-lh-secondary);
 }
 
+/* 대화 흐름의 구분선 — 프로바이더 전환·맥락 압축. 선 · 아이콘 · 이름 · 선. */
+.ag-marker {
+  display: flex;
+  align-self: stretch;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--ag-text-tertiary);
+  font-size: var(--ag-fs-meta);
+  line-height: var(--ag-lh-tight);
+  font-variant-numeric: var(--ag-numeric);
+  white-space: nowrap;
+  animation: ag-step-arrive var(--ag-dur-base) var(--ag-ease-out) both;
+}
+
+.ag-marker-line {
+  flex: 1 1 0;
+  min-width: 16px;
+  height: 1px;
+  background: var(--ag-border);
+}
+
+.ag-marker .ag-marker-icon {
+  width: 12px;
+  height: 12px;
+  color: var(--ag-text-tertiary);
+}
+
+.ag-marker-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ─── 진행 타임라인 + 접힌 도구 호출 ────────────────── */
 
 .ag-progress-step {
@@ -4243,6 +4277,189 @@ button.ag-skill-copy {
   align-items: center;
   gap: 4px;
   min-width: 0;
+}
+
+/* 맥락 창 사용량. 사용량을 알기 전에는 자리를 차지하지 않는다. */
+.ag-context {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.ag-context[hidden] {
+  display: none;
+}
+
+.ag-context-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: transparent;
+  color: var(--ag-text-secondary);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-context-btn:hover,
+.ag-context-open .ag-context-btn {
+  background: var(--ag-hover);
+  color: var(--ag-text);
+}
+
+.ag-context-btn:active {
+  background: var(--ag-pressed);
+  transition: none;
+}
+
+.ag-context-btn:focus-visible,
+.ag-context-compact:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+.ag-context-ring {
+  display: block;
+  width: 14px;
+  height: 14px;
+  transform: rotate(-90deg);
+}
+
+.ag-context-ring circle {
+  fill: none;
+  stroke-width: 2.25;
+}
+
+.ag-context-ring-track {
+  stroke: var(--ag-border-strong);
+}
+
+.ag-context-ring-value {
+  stroke: currentColor;
+  stroke-dasharray: 0 100;
+  transition: stroke-dasharray var(--ag-dur-slow) var(--ag-ease-out);
+}
+
+.ag-context[data-level='high'] .ag-context-btn,
+.ag-context[data-level='high'] .ag-context-percent {
+  color: var(--ag-err);
+}
+
+.ag-context-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 196px;
+  padding: 12px;
+  border-radius: var(--ag-r-sheet);
+  background: var(--ag-raised);
+  box-shadow: var(--ag-elev-popover), inset 0 0 0 1px var(--ag-border-strong);
+  transform-origin: bottom right;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: scale(0.96);
+  transition:
+    opacity var(--ag-dur-fast) var(--ag-ease-out),
+    transform var(--ag-dur-exit) var(--ag-ease-out),
+    visibility 0s linear var(--ag-dur-exit);
+}
+
+.ag-context-open .ag-context-popover {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: none;
+  transition:
+    opacity var(--ag-dur-fast) var(--ag-ease-out),
+    transform var(--ag-dur-base) var(--ag-spring),
+    visibility 0s linear 0s;
+}
+
+.ag-context-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-variant-numeric: var(--ag-numeric);
+}
+
+.ag-context-percent {
+  color: var(--ag-text);
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-strong);
+  line-height: var(--ag-lh-tight);
+}
+
+.ag-context-count {
+  margin-left: auto;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-meta);
+}
+
+.ag-context-bar {
+  height: 4px;
+  overflow: hidden;
+  border-radius: var(--ag-r-pill);
+  background: var(--ag-hover);
+}
+
+.ag-context-bar[hidden] {
+  display: none;
+}
+
+.ag-context-bar-fill {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--ag-text-secondary);
+  transition: width var(--ag-dur-slow) var(--ag-ease-out);
+}
+
+.ag-context[data-level='high'] .ag-context-bar-fill {
+  background: var(--ag-err);
+}
+
+.ag-context-compact {
+  height: 28px;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: var(--ag-hover);
+  color: var(--ag-text);
+  font: inherit;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-context-compact:hover:not([aria-disabled='true']) {
+  background: var(--ag-selected);
+}
+
+.ag-context-compact:active:not([aria-disabled='true']) {
+  background: var(--ag-pressed);
+  transition: none;
+}
+
+.ag-context-compact[aria-disabled='true'] {
+  color: var(--ag-text-disabled);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-context-popover,
+  .ag-context-open .ag-context-popover {
+    transform: none;
+  }
 }
 
 /* 플랜의 진행 단계(승인 대기·전환·실행)만 보이는 읽기 전용 상태다. 모드는 옆 칩이 말한다. */

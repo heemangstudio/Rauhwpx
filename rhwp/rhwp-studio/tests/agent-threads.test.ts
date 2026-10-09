@@ -3,7 +3,10 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
+  addCompactionMarker,
+  addHandoffMarker,
   archivePendingUserQuestion,
+  captureTurnWatermark,
   clearPendingUserQuestion,
   createPendingUserQuestionDraftSnapshot,
   createEmptyThread,
@@ -15,15 +18,21 @@ import {
   explorerGroupIsCurrent,
   listThreads,
   listThreadsByDocument,
+  forgetProviderSession,
   pendingUserQuestionMatchesInteraction,
+  providerStartContext,
   recordDocumentOpened,
+  rememberProviderSession,
   serializeThreadMessagesForProviderHistory,
   setThreadTitle,
+  setTurnOutcome,
   subscribeThreadChanges,
   threadMatchesDocument,
   upsertThread,
 } from '../src/agent/threads.ts';
+import type { ChatThread, ThreadMessage, ThreadToolRecord } from '../src/agent/threads.ts';
 import type {
+  AgentName,
   StructuredPlan,
   UserQuestionInteraction,
   UserQuestionOutcome,
@@ -414,13 +423,16 @@ test('user-question provider history is deterministic and follows question optio
   const second = serializeThreadMessagesForProviderHistory(messages);
 
   assert.deepEqual(first, second);
-  assert.equal(first.length, 3);
+  assert.deepEqual(first.map((entry) => [entry.role, entry.kind]), [
+    ['user', 'message'], ['assistant', 'progress'], ['assistant', 'question'], ['user', 'answer'],
+  ]);
   assert.equal(first[0]?.text, '/report-format Prepare the report.');
-  assert.match(first[1]?.text ?? '', /^<user_question_request>/);
-  assert.match(first[2]?.text ?? '', /^<user_question_response>/);
-  assert.ok((first[2]?.text ?? '').indexOf('"id":"table"')
-    < (first[2]?.text ?? '').indexOf('"id":"list"'));
-  assert.match(first[2]?.text ?? '', /Keep captions\./);
+  assert.match(first[2]?.text ?? '', /^<user_question_request>/);
+  assert.match(first[3]?.text ?? '', /^<user_question_response>/);
+  assert.deepEqual([first[3]?.agent, first[3]?.id], ['codex', interaction.interactionId]);
+  assert.ok((first[3]?.text ?? '').indexOf('"id":"table"')
+    < (first[3]?.text ?? '').indexOf('"id":"list"'));
+  assert.match(first[3]?.text ?? '', /Keep captions\./);
 });
 
 test('user-question history counts toward the existing 200-message persistence cap', () => {
@@ -814,4 +826,315 @@ test('same-millisecond thread updates keep the later state newer', (t) => {
   const second = getThread(thread.id)!;
   assert.ok(second.updatedAt > first.updatedAt);
   assert.equal(second.title, '바뀐 제목');
+});
+
+// ─── 프로바이더 넘겨받기 · 압축 ─────────────────────────
+
+function mixedProviderThread() {
+  const thread = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high' });
+  thread.messages.push(
+    { role: 'user', text: '표를 정리해줘', agent: 'claude' },
+    { role: 'assistant', text: '표를 정리했습니다.', agent: 'claude' },
+  );
+  addHandoffMarker(thread, 'codex');
+  thread.messages.push(
+    { role: 'user', text: '제목을 다듬어줘', agent: 'codex' },
+    { role: 'system', text: 'MCP 서버 연결 실패: timeout', agent: 'codex' },
+    { role: 'assistant', text: '제목을 다듬었습니다.', agent: 'codex' },
+  );
+  return thread;
+}
+
+test('a legacy cursor without a watermark resumes after the provider\'s own last message', () => {
+  const thread = mixedProviderThread();
+  rememberProviderSession(thread, 'claude', 'claude-native-1', 10);
+  const context = providerStartContext(thread, 'claude');
+  assert.equal(context.providerSessionId, 'claude-native-1');
+  assert.deepEqual(context.handoffHistory, [
+    { role: 'user', kind: 'message', text: '제목을 다듬어줘', agent: 'codex' },
+    { role: 'assistant', kind: 'message', text: '제목을 다듬었습니다.', agent: 'codex' },
+  ]);
+  // 재개에 실패하면 허브가 쓰는 전체 대화 — 구분선과 시스템 줄은 프로바이더에게 가지 않는다.
+  assert.deepEqual(context.history.map((entry) => entry.text),
+    ['표를 정리해줘', '표를 정리했습니다.', '제목을 다듬어줘', '제목을 다듬었습니다.']);
+});
+
+test('a provider without a cursor, or whose messages are gone, gets the full transcript only', () => {
+  const thread = mixedProviderThread();
+  assert.deepEqual(Object.keys(providerStartContext(thread, 'codex')), ['history']);
+  // 커서는 있지만 이 대화에 Pi 의 메시지가 없다 — 다른 채팅의 세션일 수 있으므로 보내지 않는다.
+  rememberProviderSession(thread, 'pi', 'pi-native');
+  assert.deepEqual(Object.keys(providerStartContext(thread, 'pi')), ['history']);
+  rememberProviderSession(thread, 'codex', 'codex-native');
+  assert.deepEqual(providerStartContext(thread, 'codex').handoffHistory, []);
+  forgetProviderSession(thread, 'codex');
+  assert.equal(providerStartContext(thread, 'codex').providerSessionId, undefined);
+});
+
+test('undelivered messages are left out of the start context so the queued send is not duplicated', () => {
+  const thread = mixedProviderThread();
+  rememberProviderSession(thread, 'codex', 'codex-native');
+  const queued = { role: 'user' as const, text: '다음 쪽도', agent: 'codex' as const };
+  thread.messages.push(queued);
+  const context = providerStartContext(thread, 'codex', new Set([queued]));
+  assert.deepEqual(context.handoffHistory, []);
+  assert.equal(context.history.at(-1)?.text, '제목을 다듬었습니다.');
+});
+
+test('handoff markers appear only when the next message goes to a different provider', () => {
+  const thread = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high' });
+  assert.equal(addHandoffMarker(thread, 'codex'), null, '빈 채팅에는 남기지 않는다');
+  thread.messages.push({ role: 'user', text: 'a', agent: 'claude' }, { role: 'system', text: '알림', agent: 'codex' });
+  assert.equal(addHandoffMarker(thread, 'claude'), null, '시스템 줄은 프로바이더 참여로 치지 않는다');
+  const marker = addHandoffMarker(thread, 'codex');
+  assert.deepEqual(marker && { from: marker.marker === 'handoff' && marker.from, to: marker.marker === 'handoff' && marker.to },
+    { from: 'claude', to: 'codex' });
+});
+
+test('compaction markers are idempotent by compaction id', () => {
+  const thread = mixedProviderThread();
+  const first = addCompactionMarker(thread, { compactionId: 'c-1', trigger: 'auto', beforeTokens: 182_000, afterTokens: 41_000 });
+  assert.ok(first);
+  assert.equal(addCompactionMarker(thread, { compactionId: 'c-1', trigger: 'auto' }), null);
+  assert.ok(addCompactionMarker(thread, { compactionId: 'c-2', trigger: 'manual' }));
+  assert.equal(thread.messages.filter((message) => message.kind === 'marker' && message.marker === 'compaction').length, 2);
+});
+
+test('markers, provider cursors, and context usage survive persistence and the message cap', () => {
+  mem.clear();
+  const thread = mixedProviderThread();
+  for (let index = 0; index < 195; index += 1) thread.messages.push({ role: 'user', text: `m-${index}`, agent: 'codex' });
+  addCompactionMarker(thread, { compactionId: 'c-9', trigger: 'manual', beforeTokens: 150_000, afterTokens: 30_000 });
+  rememberProviderSession(thread, 'claude', 'claude-native', 5);
+  thread.contextUsage = { agent: 'codex', usedTokens: 30_000, maxTokens: 258_000, updatedAt: 6 };
+  upsertThread(thread);
+  const restored = getThread(thread.id)!;
+  assert.equal(restored.messages.length, 200);
+  assert.deepEqual(restored.messages.at(-1), {
+    role: 'system', kind: 'marker', marker: 'compaction', compactionId: 'c-9', trigger: 'manual',
+    text: '', beforeTokens: 150_000, afterTokens: 30_000,
+  });
+  assert.deepEqual(restored.providerSessions, { claude: { sessionId: 'claude-native', updatedAt: 5 } });
+  assert.deepEqual(restored.contextUsage, { agent: 'codex', usedTokens: 30_000, maxTokens: 258_000, updatedAt: 6 });
+  // 앞쪽 Claude 메시지는 잘려 나갔다 — 커서가 남아 있어도 전체 대화로 시작한다.
+  assert.equal(providerStartContext(restored, 'claude').providerSessionId, undefined);
+});
+
+test('malformed stored markers and cursors are dropped instead of crashing the thread', () => {
+  mem.clear();
+  storage.setItem('rhwp-agent-threads', JSON.stringify([{
+    id: 'stored-markers', title: 't', titleRequested: true, createdAt: 1, updatedAt: 2,
+    agent: 'claude', model: 'sonnet', effort: 'high',
+    providerSessions: { claude: { sessionId: '' }, codex: { sessionId: 'ok', updatedAt: 3 }, nope: { sessionId: 'x' } },
+    contextUsage: { agent: 'claude', usedTokens: -1 },
+    messages: [
+      { role: 'user', text: 'hi', agent: 'claude' },
+      { role: 'system', kind: 'marker', marker: 'handoff', from: 'claude', to: 'opencode', text: '' },
+      { role: 'assistant', kind: 'marker', marker: 'compaction', compactionId: 'x', trigger: 'auto', text: '' },
+      { role: 'system', kind: 'marker', marker: 'handoff', from: 'claude', to: 'codex', text: '' },
+    ],
+  }]));
+  const restored = getThread('stored-markers')!;
+  assert.deepEqual(restored.messages.map((message) => message.kind ?? message.role), ['user', 'marker']);
+  assert.deepEqual(restored.providerSessions, { codex: { sessionId: 'ok', updatedAt: 3 } });
+  assert.equal(restored.contextUsage, undefined);
+});
+
+// ─── 워터마크 넘겨받기 · 풍부한 대화 항목 ───────────────
+
+/** 사이드바 흐름 그대로: 메시지 기록 → turn-start 워터마크 → 출력 → turn-end. */
+function runTurn(
+  thread: ChatThread,
+  agent: AgentName,
+  userText: string,
+  output: ThreadMessage[],
+  end: { sessionId: string } | { outcome: 'interrupted' | 'failed' },
+) {
+  thread.messages.push({ role: 'user', text: userText, agent, messageId: `msg-${thread.messages.length}` });
+  const captured = captureTurnWatermark(thread, agent);
+  thread.messages.push(...output);
+  if ('sessionId' in end) {
+    setTurnOutcome(thread, captured!.messageId, null);
+    rememberProviderSession(thread, agent, end.sessionId, 1, captured?.messageId);
+  } else {
+    setTurnOutcome(thread, captured!.messageId, end.outcome);
+  }
+}
+
+test('claude → codex → claude: the resumed provider gets only what it missed, without its own output', () => {
+  const thread = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high' });
+  runTurn(thread, 'claude', '표를 정리해줘', [
+    { role: 'assistant', kind: 'progress', text: '표를 읽습니다.', agent: 'claude' },
+    { role: 'assistant', kind: 'activity', activityId: 'a-1', status: 'completed', startedAt: 0, completedAt: 1, tools: [], agent: 'claude' },
+    { role: 'assistant', text: '표를 정리했습니다.', agent: 'claude' },
+  ], { sessionId: 'claude-1' });
+  addHandoffMarker(thread, 'codex');
+  runTurn(thread, 'codex', '제목을 다듬어줘', [
+    { role: 'assistant', text: '제목을 다듬었습니다.', agent: 'codex' },
+  ], { sessionId: 'codex-1' });
+  addHandoffMarker(thread, 'claude');
+
+  const back = providerStartContext(thread, 'claude');
+  assert.equal(back.providerSessionId, 'claude-1');
+  assert.deepEqual(back.handoffHistory?.map((entry) => [entry.role, entry.agent, entry.text]), [
+    ['user', 'codex', '제목을 다듬어줘'],
+    ['assistant', 'codex', '제목을 다듬었습니다.'],
+  ]);
+  // Codex 는 자기 답 뒤로 넘어온 것이 없다 — 구분선은 건너뛴다.
+  assert.deepEqual(providerStartContext(thread, 'codex').handoffHistory, []);
+});
+
+test('a failed turn leaves the watermark behind, so its message and partial output are sent again', () => {
+  const thread = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high' });
+  runTurn(thread, 'claude', '첫 요청', [{ role: 'assistant', text: '첫 답', agent: 'claude' }], { sessionId: 'claude-1' });
+  runTurn(thread, 'claude', '둘째 요청', [
+    { role: 'assistant', kind: 'progress', text: '둘째를 읽는 중', agent: 'claude' },
+    { role: 'system', text: '오류: overloaded', agent: 'claude', severity: 'error' },
+    { role: 'system', text: '모드를 바꿨습니다', agent: 'claude' },
+  ], { outcome: 'failed' });
+  assert.equal(thread.providerSessions?.claude?.seenThroughMessageId, 'msg-0');
+
+  const context = providerStartContext(thread, 'claude');
+  assert.equal(context.providerSessionId, 'claude-1');
+  assert.deepEqual(context.handoffHistory?.map((entry) => [entry.kind, entry.text]), [
+    ['message', '둘째 요청'],
+    ['progress', '둘째를 읽는 중'],
+    ['error', '오류: overloaded'],
+    ['interrupted', 'Turn failed before completion.'],
+  ]);
+
+  // 다시 보내 성공하면 표시가 지워지고 워터마크가 그 메시지로 옮겨 간다.
+  const retried = captureTurnWatermark(thread, 'claude')!;
+  assert.equal(retried.messageId, 'msg-2');
+  setTurnOutcome(thread, retried.messageId, null);
+  rememberProviderSession(thread, 'claude', 'claude-1', 2, retried.messageId);
+  thread.messages.push({ role: 'assistant', text: '둘째 답', agent: 'claude' });
+  assert.deepEqual(providerStartContext(thread, 'claude').handoffHistory, []);
+  assert.equal(providerStartContext(thread, 'codex').history.some((entry) => entry.kind === 'interrupted'), false);
+});
+
+test('an interrupted turn is reported after that turn, before the next request', () => {
+  const thread = createEmptyThread({ agent: 'codex', model: 'gpt-5.6-sol', effort: 'high' });
+  runTurn(thread, 'codex', 'a', [{ role: 'assistant', kind: 'progress', text: '진행', agent: 'codex' }], { outcome: 'interrupted' });
+  runTurn(thread, 'codex', 'b', [{ role: 'assistant', text: '답', agent: 'codex' }], { sessionId: 'codex-1' });
+  assert.deepEqual(providerStartContext(thread, 'claude').history.map((entry) => entry.kind), [
+    'message', 'progress', 'interrupted', 'message', 'message',
+  ]);
+});
+
+test('turn-start capture skips queued messages and other providers, and ids legacy messages', () => {
+  const thread = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high' });
+  const legacy: ThreadMessage = { role: 'user', text: '예전 메시지', agent: 'claude' };
+  const queued: ThreadMessage = { role: 'user', text: '대기 중', agent: 'claude', messageId: 'msg-queued' };
+  thread.messages.push(legacy, { role: 'user', text: 'Codex 에게', agent: 'codex', messageId: 'msg-codex' }, queued);
+  const captured = captureTurnWatermark(thread, 'claude', new Set([queued]));
+  assert.equal(captured?.assigned, true);
+  assert.match(captured?.messageId ?? '', /^msg-/);
+  assert.equal(legacy.messageId, captured?.messageId);
+  assert.equal(captureTurnWatermark(thread, 'pi'), null);
+});
+
+test('a turn without a captured message keeps the watermark only on the same native session', () => {
+  const thread = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high' });
+  runTurn(thread, 'claude', '요청', [{ role: 'assistant', text: '답', agent: 'claude' }], { sessionId: 'claude-1' });
+  // 수동 압축 턴: 같은 세션, 워터마크 없음 → 그대로.
+  rememberProviderSession(thread, 'claude', 'claude-1', 2);
+  assert.equal(thread.providerSessions?.claude?.seenThroughMessageId, 'msg-0');
+  // 다른 세션이 생겼는데 어떤 메시지까지 봤는지 모른다 → 예전 규칙(자기 마지막 메시지 뒤)으로.
+  rememberProviderSession(thread, 'claude', 'claude-2', 3);
+  assert.equal(thread.providerSessions?.claude?.seenThroughMessageId, undefined);
+  assert.equal(providerStartContext(thread, 'claude').providerSessionId, 'claude-2');
+});
+
+test('the start context carries the provider window and, with a cursor, the resumed session usage', () => {
+  const thread = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high' });
+  thread.contextUsage = { agent: 'claude', usedTokens: 90_000, maxTokens: 200_000, updatedAt: 1 };
+  assert.deepEqual(providerStartContext(thread, 'claude').providerContextUsage, { maxTokens: 200_000 });
+  assert.equal(providerStartContext(thread, 'codex').providerContextUsage, undefined);
+  runTurn(thread, 'claude', '요청', [{ role: 'assistant', text: '답', agent: 'claude' }], { sessionId: 'claude-1' });
+  assert.deepEqual(providerStartContext(thread, 'claude').providerContextUsage, { usedTokens: 90_000, maxTokens: 200_000 });
+  // 다른 프로바이더의 사용량은 이 세션의 사용량이 아니다 — 창 크기만 커서에서 이어 간다.
+  thread.contextUsage = { agent: 'codex', usedTokens: 10_000, maxTokens: 258_400, updatedAt: 2 };
+  rememberProviderSession(thread, 'claude', 'claude-1', 3, 'msg-0');
+  assert.deepEqual(providerStartContext(thread, 'claude').providerContextUsage, { maxTokens: 200_000 });
+});
+
+test('tools, tasks, plans and errors become bounded labeled entries; notices and markers do not', () => {
+  const plan: StructuredPlan = {
+    planId: 'plan-9', title: '보고서 정리', goal: '읽기 쉬운 보고서', summary: '제목을 맞춘다.',
+    assumptions: [], decisions: [], steps: [{ title: '제목 통일' }], files: [], validation: [],
+    risks: [], exclusions: [], createdAt: '2026-10-09T00:00:00.000Z', epoch: 1,
+  };
+  const tool = (index: number, overrides: Partial<ThreadToolRecord> = {}): ThreadToolRecord => ({
+    callId: `call-${index}`, tool: 'mcp__rhwp__replace_text', argsJson: '{}', status: 'completed',
+    resultPreview: `원본 결과 ${index} ${'가'.repeat(400)}`, elapsedMs: 5, ...overrides,
+  });
+  const thread = createEmptyThread({ agent: 'codex', model: 'gpt-5.6-sol', effort: 'high' });
+  thread.plans = [plan];
+  thread.messages.push(
+    { role: 'user', text: '정리해줘', agent: 'codex', messageId: 'msg-1' },
+    { role: 'assistant', kind: 'plan', planId: 'plan-9', text: '보고서 정리', agent: 'codex' },
+    {
+      role: 'assistant', kind: 'activity', activityId: 'act-1', status: 'stopped', startedAt: 0, completedAt: 1, agent: 'codex',
+      tools: [
+        tool(0, { outcome: { ok: true, text: '3곳 바꿈', notices: [] } }),
+        tool(1, { status: 'failed', resultPreview: 'REVISION_MISMATCH' }),
+        ...Array.from({ length: 18 }, (_, index) => tool(index + 2)),
+      ],
+    },
+    {
+      role: 'assistant', kind: 'tasks', taskGroupId: 'tg-1', status: 'completed', agent: 'codex',
+      tasks: [{
+        taskId: 't-1', taskKind: 'agent', title: '표 검토', role: 'reviewer', workflowName: '', status: 'completed',
+        activity: '', summary: '표 3개 확인', totalTokens: null, toolUses: null, durationMs: null, tools: [],
+      }],
+    },
+    { role: 'system', text: '계획 카드를 만드는 중', agent: 'codex' },
+    { role: 'system', text: '오류 (AGENT_SPAWN_FAILED): codex', agent: 'codex', severity: 'error' },
+  );
+  addCompactionMarker(thread, { compactionId: 'c-1', trigger: 'auto' });
+
+  const entries = providerStartContext(thread, 'claude').history;
+  assert.deepEqual(entries.map((entry) => [entry.kind, entry.id]), [
+    ['message', 'msg-1'], ['plan', 'plan-9'], ['tools', 'act-1'], ['tasks', 'tg-1'], ['error', undefined],
+  ]);
+  assert.match(entries[1]!.text, /^# 보고서 정리\n\n읽기 쉬운 보고서\n\n[\s\S]*제목 통일/);
+
+  const lines = entries[2]!.text.split('\n');
+  assert.ok(entries[2]!.text.length <= 2_000);
+  assert.equal(lines[0], 'replace_text · ok · 3곳 바꿈', '저장된 결과 줄이 미리보기보다 앞선다');
+  assert.equal(lines[1], 'replace_text · failed · REVISION_MISMATCH');
+  const shown = lines.filter((line) => line.startsWith('replace_text'));
+  assert.ok(shown.length <= 12);
+  assert.ok(shown.every((line) => line.length <= 'replace_text · ok · '.length + 160));
+  assert.equal(lines.at(-2), `(+${20 - shown.length} more)`);
+  assert.equal(lines.at(-1), 'interrupted');
+  assert.equal(entries[3]!.text, '표 검토 · completed · 표 3개 확인');
+});
+
+test('watermarks, turn outcomes and error tags survive persistence; a trimmed watermark falls back to full history', () => {
+  mem.clear();
+  const thread = createEmptyThread({ agent: 'claude', model: 'sonnet', effort: 'high' });
+  thread.contextUsage = { agent: 'claude', usedTokens: 50_000, maxTokens: 200_000, updatedAt: 1 };
+  runTurn(thread, 'claude', '처음', [{ role: 'assistant', text: '답', agent: 'claude' }], { sessionId: 'claude-1' });
+  runTurn(thread, 'claude', '두 번째', [{ role: 'system', text: 'boom', agent: 'claude', severity: 'error' }], { outcome: 'interrupted' });
+  upsertThread(thread);
+  const restored = getThread(thread.id)!;
+  assert.deepEqual(restored.providerSessions?.claude, {
+    sessionId: 'claude-1', updatedAt: 1, seenThroughMessageId: 'msg-0', usedTokens: 50_000, maxTokens: 200_000,
+  });
+  assert.equal(restored.messages[2]?.turnOutcome, 'interrupted');
+  assert.equal(restored.messages[3]?.severity, 'error');
+  assert.deepEqual(providerStartContext(restored, 'claude').handoffHistory?.map((entry) => entry.kind),
+    ['message', 'error', 'interrupted']);
+
+  // 200개 상한이 워터마크 메시지를 잘라 내면 커서를 쓰지 않는다.
+  for (let index = 0; index < 200; index += 1) restored.messages.push({ role: 'user', text: `m-${index}`, agent: 'codex' });
+  upsertThread(restored);
+  const trimmed = getThread(thread.id)!;
+  const context = providerStartContext(trimmed, 'claude');
+  assert.equal(context.providerSessionId, undefined);
+  assert.equal(context.handoffHistory, undefined);
+  assert.equal(context.history.length, 200);
+  assert.deepEqual(context.providerContextUsage, { maxTokens: 200_000 });
 });

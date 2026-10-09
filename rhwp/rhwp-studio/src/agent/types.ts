@@ -862,8 +862,70 @@ export type AgentStreamEvent =
   | { type: 'task-start'; agent: AgentName; taskId: string; callId?: string; title: string; role?: string; taskKind: 'agent' | 'workflow'; workflowName?: string; /** Owning turn may end while this real process keeps running. */ background?: boolean }
   | { type: 'task-progress'; agent: AgentName; taskId: string; activity?: string; lastTool?: string; usage?: AgentTaskUsage; phases?: AgentTaskPhase[]; members?: AgentTaskMember[]; /** Current task-level phase when there is no child member row. */ phaseIndex?: number }
   | { type: 'task-end'; agent: AgentName; taskId: string; status: 'completed' | 'failed' | 'stopped'; summary?: string; usage?: AgentTaskUsage }
-  | { type: 'turn-end'; agent: AgentName; stopReason?: string; errorMessage?: string; turnId?: string }
-  | { type: 'error'; agent: AgentName; message: string };
+  | {
+      type: 'turn-end';
+      agent: AgentName;
+      stopReason?: string;
+      errorMessage?: string;
+      turnId?: string;
+      /** 성공한 턴에만 실린다. 이 채팅에서 이 프로바이더를 다시 열 때 쓰는 네이티브 세션 커서. */
+      providerSessionId?: string;
+      /** 이번 턴에 네이티브 재개가 실패했다. 이 프로바이더의 커서를 버린다. */
+      resumeLost?: true;
+    }
+  | { type: 'error'; agent: AgentName; message: string }
+  /** 마지막 모델 호출이 끝났을 때 맥락 창을 차지한 토큰 수. 누적 과금량이 아니다. */
+  | { type: 'context-usage'; agent: AgentName; usedTokens: number; maxTokens?: number; autoCompact?: boolean }
+  | {
+      type: 'compaction';
+      agent: AgentName;
+      /** 압축 한 번에 하나. 같은 id 가 다시 와도 한 번만 반영한다. */
+      compactionId: string;
+      phase: 'started' | 'completed' | 'failed';
+      trigger: CompactionTrigger;
+      beforeTokens?: number;
+      afterTokens?: number;
+      message?: string;
+    };
+
+export type CompactionTrigger = 'auto' | 'manual';
+/** manual = chat-compact 지원, auto-only = 프로바이더가 스스로만 압축, none = 압축 없음. */
+export type CompactionSupport = 'manual' | 'auto-only' | 'none';
+
+/**
+ * chat-start 대화 항목 종류. question = 에이전트가 사용자에게 물은 질문, answer = 사용자의 답,
+ * tools/tasks = 한 묶음의 도구·하위 에이전트 요약, interrupted = 끝나지 못한 턴.
+ */
+export type ChatHistoryKind =
+  | 'message'
+  | 'question'
+  | 'answer'
+  | 'plan'
+  | 'tools'
+  | 'tasks'
+  | 'progress'
+  | 'error'
+  | 'interrupted';
+
+/** chat-start 의 history / handoffHistory 항목. */
+export interface ChatHistoryEntry {
+  role: 'user' | 'assistant';
+  text: string;
+  /** 없으면 'message'. */
+  kind?: ChatHistoryKind;
+  /** 이 항목을 만든 프로바이더. 사용자 항목은 그 메시지를 받은 프로바이더. */
+  agent?: AgentName;
+  /** 있으면 안정적인 id (messageId, activityId, planId, taskGroupId, interactionId). */
+  id?: string;
+}
+
+/** chat-start 에 싣는 프로바이더 맥락 창 정보. 허브가 넘겨줄 대화 예산을 정한다. */
+export interface ProviderContextUsage {
+  /** 재개할 네이티브 세션이 마지막으로 차지한 토큰. 커서를 보낼 때만 싣는다. */
+  usedTokens?: number;
+  /** 이 프로바이더의 마지막으로 알려진 맥락 창 크기. */
+  maxTokens?: number;
+}
 
 export type SidebarEvent =
   | {
@@ -889,6 +951,10 @@ export type SidebarEvent =
       phase: AgentPhase;
       capabilityEpoch: number | null;
       latestPlan: StructuredPlan | null;
+      /** 허브가 Studio 가 보낸 네이티브 커서로 세션을 이었다. */
+      resumed?: boolean;
+      /** 이 세션의 압축 지원. 모르는 허브면 빠진다(= none). */
+      compaction?: CompactionSupport;
     }
   | { type: 'chat-stopped' }
   | { type: 'user-question-requested'; interaction: UserQuestionInteraction; replayed?: boolean }

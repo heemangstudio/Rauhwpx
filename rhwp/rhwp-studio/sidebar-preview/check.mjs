@@ -10,6 +10,7 @@ import { checkSetupTerminal } from './setup-terminal.check.mjs';
 import { checkFleetPreview } from './fleet.check.mjs';
 import { checkChangesPreview } from './changes.check.mjs';
 import { checkPlanPreview } from './plan.check.mjs';
+import { checkContextPreview } from './context.check.mjs';
 import { browserLaunchArgs, findBrowserExecutable } from '../tests/browser-support.ts';
 
 const studio = resolve(import.meta.dirname, '..');
@@ -407,6 +408,7 @@ try {
     await page.evaluate(() => window.sidebarPreview.setServices(false));
     assert.deepEqual(await visible(), []);
   });
+  await step('Context meter, compaction, and provider handoff', () => checkContextPreview(page, origin, artifacts));
   await step('Compact live subagent previews', () => checkFleetPreview(page, origin));
   await step('Full-screen changes, history, commit, discard, and review',
     () => checkChangesPreview(page, origin, artifacts));
