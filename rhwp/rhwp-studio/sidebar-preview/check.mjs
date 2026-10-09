@@ -130,6 +130,12 @@ try {
           document.querySelector('.ag-msg-user'),
       );
   }
+  // 커밋 전 변경이 있으면 버전 창은 변경 탭으로 열린다. 그래프 도구는 그래프 탭에 있다.
+  async function showVersionGraph() {
+    await page.click('.ag-versions-tab[data-tab="history"]');
+    await page.waitForSelector('.ag-versions-tab[data-tab="history"][aria-selected="true"]');
+    await page.waitForSelector('.ag-version-row', { visible: true });
+  }
   async function step(name, run) {
     try {
       await run();
@@ -701,6 +707,7 @@ try {
     async () => {
       await open('page=versions');
       await page.waitForSelector('.ag-root.ag-versions-open');
+      await showVersionGraph();
       await screenshot('versions');
       await page.click('[aria-label="새 커밋 만들기"]');
       await page.waitForSelector('.ag-version-prompt-input', { visible: true });
@@ -734,6 +741,7 @@ try {
   );
   await step('Branch commits keep their graph lane and move the branch label', async () => {
     await open('page=versions&history=branches&theme=dark&width=480');
+    await showVersionGraph();
     await screenshot('versions-dark');
     assert.equal(await page.$$eval('.ag-version-meta, .ag-version-time', (items) => items.length), 0);
     const initialRowHeight = await page.$eval('.ag-version-row', (row) => row.getBoundingClientRect().height);
@@ -742,6 +750,11 @@ try {
     assert.match(await page.$eval('.ag-version-date-tooltip', (tip) => tip.textContent), /월/);
     assert.equal(await page.$eval('.ag-version-row', (row) => row.getBoundingClientRect().height), initialRowHeight);
     await screenshot('versions-date-hover');
+    // 요소 스크린샷이 창 크기 변경을 일으켜 날짜 풍선을 닫는다. 다시 띄운 뒤 Escape 를 본다.
+    await page.mouse.move(0, 0);
+    await page.waitForFunction(() => !document.querySelector('.ag-version-date-tooltip').classList.contains('ag-visible'));
+    await page.hover('.ag-version-row');
+    await page.waitForSelector('.ag-version-date-tooltip.ag-visible', { visible: true });
     await page.focus('.ag-version-row');
     await page.keyboard.press('Escape');
     await page.waitForFunction(() => !document.querySelector('.ag-version-date-tooltip').classList.contains('ag-visible'));
