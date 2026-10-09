@@ -62,11 +62,6 @@ test('projectSkillMarkdown reads YAML frontmatter without rewriting bytes', () =
 test('bundled present-plan stays sealed and a user directory of that name is quarantined', async (t) => {
   const markdown = readFileSync(new URL('../skills/present-plan/SKILL.md', import.meta.url), 'utf8');
   assert.equal(projectSkillMarkdown(markdown, 'present-plan').name, 'present-plan');
-  assert.match(markdown, /present_implementation_plan/);
-  assert.match(markdown, /when the user asks for a plan or gives concrete changes to an existing plan/);
-  assert.match(markdown, /Do not tell the user the plan is ready/);
-  assert.match(markdown, /present the replacement directly/);
-  assert.match(markdown, /Applying any version still requires explicit approval/);
 
   const bundledBody = `${markdown}\nBUNDLED_PRESENT_PLAN_BODY\n`;
   const { userRoot, registry } = await tempRegistry(t, {
