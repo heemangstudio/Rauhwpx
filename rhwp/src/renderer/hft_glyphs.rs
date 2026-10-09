@@ -110,6 +110,16 @@ struct BankLayout {
     end: usize,
     has_bbox: bool,
     hanyang: bool,
+    /// 한글 은행 옆 요소의 낱자모 글리프 (조합형 코드 표 순서).
+    jamo: Option<JamoTable>,
+}
+
+/// 조합 중 단독 자모(ㄱ..ㅎ, ㅏ..ㅣ)는 2350자 음절 표 밖의 별도 요소에 있다.
+struct JamoTable {
+    codes: Vec<u16>,
+    table: usize,
+    end: usize,
+    has_bbox: bool,
 }
 
 struct Bank {
@@ -421,6 +431,22 @@ fn bank_layout<R: std::io::Read + std::io::Seek>(reader: &mut R) -> Option<(Stri
         // 기존 평문 은행의 선택과 좌표는 바꾸지 않는다.
         let outline = read_at::<40, _>(reader, at)?;
         let (_, kind, units, count) = classify(&head, &outline)?;
+        let jamo = if kind == BankKind::Hangul {
+            let distance = u32_at(&outline, 0)?;
+            let record_end = if distance == 0 {
+                file_end
+            } else {
+                at.checked_add(distance)?.min(file_end)
+            };
+            jamo_table(
+                reader,
+                at.checked_add(usize::from(u16_at(&outline, 10)?))?,
+                usize::from(u16_at(&outline, 8)?),
+                record_end,
+            )
+        } else {
+            None
+        };
         let table = at.checked_add(if matches!(kind, BankKind::Latin { .. }) {
             36
         } else {
@@ -439,6 +465,7 @@ fn bank_layout<R: std::io::Read + std::io::Seek>(reader: &mut R) -> Option<(Stri
                 end: file_end,
                 has_bbox: matches!(kind, BankKind::Latin { .. }),
                 hanyang: false,
+                jamo,
             },
         ));
     }
@@ -522,6 +549,9 @@ fn bank_layout<R: std::io::Read + std::io::Seek>(reader: &mut R) -> Option<(Stri
                     if table.checked_add(count.checked_mul(4)?)? > element_end {
                         return None;
                     }
+                    let jamo = (kind == BankKind::Hangul)
+                        .then(|| jamo_table(reader, at.checked_add(rel)?, elements, end))
+                        .flatten();
                     return Some((
                         family,
                         BankLayout {
@@ -532,6 +562,7 @@ fn bank_layout<R: std::io::Read + std::io::Seek>(reader: &mut R) -> Option<(Stri
                             end: element_end,
                             has_bbox: flags & 0x10 == 0,
                             hanyang: true,
+                            jamo,
                         },
                     ));
                 }
@@ -543,10 +574,82 @@ fn bank_layout<R: std::io::Read + std::io::Seek>(reader: &mut R) -> Option<(Stri
     None
 }
 
+/// 같은 레코드의 요소 중 낱자모 요소를 찾는다: 조합형 코드 표(블록 머리 4바이트 +
+/// 코드당 2바이트) 뒤에 글리프 오프셋 표가 온다. 구조가 어긋나면 낱자모 없이 둔다.
+fn jamo_table<R: std::io::Read + std::io::Seek>(
+    reader: &mut R,
+    mut element_at: usize,
+    elements: usize,
+    record_end: usize,
+) -> Option<JamoTable> {
+    for element_index in 0..elements {
+        let element = read_at::<22, _>(reader, element_at)?;
+        let distance = u32_at(&element, 0)?;
+        let element_end = if distance == 0 && element_index + 1 == elements {
+            record_end
+        } else {
+            element_at.checked_add(distance)?
+        };
+        let data_at = element_at.checked_add(22)?;
+        if element_end < data_at || element_end > record_end {
+            return None;
+        }
+        let flags = u16_at(&element, 4)?;
+        let first = u16_at(&element, 6)?;
+        let last = u16_at(&element, 8)?;
+        let count = usize::from(u16_at(&element, 10)?);
+        if flags & 0xf == 1 && (first, last) == (0x8000, 0xffff) && (1..=94).contains(&count) {
+            let block = u32_at(&read_at::<4, _>(reader, data_at)?, 0)?;
+            let block_len = 4 + 2 * count;
+            let table = data_at.checked_add(block_len)?;
+            if block & 0x8000_0000 == 0
+                && block & 0xffff == block_len
+                && table.checked_add(count * 4)? <= element_end
+            {
+                reader
+                    .seek(std::io::SeekFrom::Start(data_at as u64 + 4))
+                    .ok()?;
+                let mut raw = vec![0u8; count * 2];
+                reader.read_exact(&mut raw).ok()?;
+                return Some(JamoTable {
+                    codes: raw
+                        .chunks_exact(2)
+                        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                        .collect(),
+                    table,
+                    end: element_end,
+                    has_bbox: flags & 0x10 == 0,
+                });
+            }
+        }
+        element_at = element_end;
+    }
+    None
+}
+
+/// 단독 자모 → 채움 자모를 넣은 조합형 코드. 호환 자모와 첫가끝 자모를 함께 받는다.
+fn johab_jamo(ch: char) -> Option<u16> {
+    const JUNG: [u16; 21] = [
+        3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 18, 19, 20, 21, 22, 23, 26, 27, 28, 29,
+    ];
+    const INITIAL: &str = "ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ";
+    const FINAL: &str = "ㄱㄲㄳㄴㄵㄶㄷㄹㄺㄻㄼㄽㄾㄿㅀㅁㅂㅄㅅㅆㅇㅈㅊㅋㅌㅍㅎ";
+    let initial = |consonant: char| INITIAL.chars().position(|c| c == consonant);
+    let code = ch as u32;
+    let (cho, jung) = match code {
+        0x314f..=0x3163 => (1, JUNG[(code - 0x314f) as usize]),
+        0x1161..=0x1175 => (1, JUNG[(code - 0x1161) as usize]),
+        0x1100..=0x1112 => (code as usize - 0x1100 + 2, 2),
+        0x11a8..=0x11c2 => (initial(FINAL.chars().nth(code as usize - 0x11a8)?)? + 2, 2),
+        _ => (initial(ch)? + 2, 2),
+    };
+    Some(0x8000 | (cho as u16) << 10 | jung << 5 | 1)
+}
+
 impl Bank {
     fn parse(data: Arc<[u8]>) -> Option<(String, Bank)> {
         let (family, layout) = bank_layout(&mut std::io::Cursor::new(&*data))?;
-        let bank = Bank { data, layout };
+        let mut bank = Bank { data, layout };
         // 한양은 모든 슬롯을 검증하여 잘못된 암호·잘린 명령열을 은행 등록 전에 거절한다.
         let count = bank.layout.count;
         let step = if bank.layout.hanyang {
@@ -562,24 +665,62 @@ impl Bank {
                 None => return None,
             }
         }
+        let jamo_count = bank.layout.jamo.as_ref().map_or(0, |jamo| jamo.codes.len());
+        if (0..jamo_count).any(|index| bank.jamo_record(index).is_none()) {
+            bank.layout.jamo = None;
+        }
         (decoded > 0).then_some((family, bank))
+    }
+
+    /// 글자의 윤곽선: 본 표를 먼저 보고, 한글 은행이면 낱자모 요소로 이어간다.
+    fn commands(&self, ch: char) -> Option<Vec<HftPathCmd>> {
+        if let Some(index) = self.index_of(ch) {
+            return self.record(index)?;
+        }
+        let jamo = self.layout.jamo.as_ref()?;
+        let code = johab_jamo(ch)?;
+        let index = jamo.codes.iter().position(|&c| c == code)?;
+        self.jamo_record(index)?
     }
 
     /// 글리프 기록을 해석한다. 바깥 None = 손상, 안쪽 None = 잉크 없음.
     fn record(&self, index: usize) -> Option<Option<Vec<HftPathCmd>>> {
+        let layout = &self.layout;
+        self.record_in(
+            layout.table,
+            layout.count,
+            layout.end,
+            layout.has_bbox,
+            index,
+        )
+    }
+
+    fn jamo_record(&self, index: usize) -> Option<Option<Vec<HftPathCmd>>> {
+        let jamo = self.layout.jamo.as_ref()?;
+        self.record_in(jamo.table, jamo.codes.len(), jamo.end, jamo.has_bbox, index)
+    }
+
+    fn record_in(
+        &self,
+        table: usize,
+        count: usize,
+        end: usize,
+        has_bbox: bool,
+        index: usize,
+    ) -> Option<Option<Vec<HftPathCmd>>> {
         let data = &self.data;
         let layout = &self.layout;
-        if index >= layout.count {
+        if index >= count {
             return None;
         }
-        let offset = u32_at(data, layout.table.checked_add(index.checked_mul(4)?)?)?;
+        let offset = u32_at(data, table.checked_add(index.checked_mul(4)?)?)?;
         if layout.hanyang && offset == 0 {
             return Some(None);
         }
-        let start = layout.table.checked_add(offset)?;
-        let header = if layout.has_bbox { 10 } else { 2 };
+        let start = table.checked_add(offset)?;
+        let header = if has_bbox { 10 } else { 2 };
         let body_at = start.checked_add(header)?;
-        if body_at > layout.end || (layout.hanyang && start < layout.table + layout.count * 4) {
+        if body_at > end || (layout.hanyang && start < table + count * 4) {
             return None;
         }
         let length_at = body_at - 2;
@@ -588,7 +729,7 @@ impl Bank {
             return Some(None);
         }
         let body_end = body_at.checked_add(length)?;
-        if body_end > layout.end {
+        if body_end > end {
             return None;
         }
         let body = data.get(body_at..body_end)?;
@@ -957,8 +1098,7 @@ pub fn hft_glyph(family: &str, ch: char) -> Option<Arc<HftGlyph>> {
             .flatten()
             .find_map(|slot| {
                 let bank = slot.bank()?;
-                let index = bank.index_of(ch)?;
-                let commands = bank.record(index)??;
+                let commands = bank.commands(ch)?;
                 Some(Arc::new(HftGlyph {
                     units_per_em: f32::from(bank.layout.units),
                     commands,
@@ -1285,6 +1425,32 @@ mod tests {
         assert_eq!(ks_index('힝', 0xB0), Some(2349));
         assert_eq!(ks_index('伽', 0xCA), Some(0));
         assert_eq!(ks_index('a', 0xB0), None);
+    }
+
+    #[test]
+    fn isolated_jamo_map_to_johab_fill_codes() {
+        assert_eq!(johab_jamo('ㅎ'), Some(0xd041));
+        assert_eq!(johab_jamo('\u{1112}'), Some(0xd041));
+        assert_eq!(johab_jamo('ㅏ'), Some(0x8461));
+        assert_eq!(johab_jamo('\u{11a8}'), Some(0x8841));
+        assert_eq!(johab_jamo('ㄳ'), None);
+        assert_eq!(johab_jamo('하'), None);
+    }
+
+    /// 한컴이 설치된 PC 에서만: 조합 중 단독 자모도 음절과 같은 디나루 은행에서 그린다.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn installed_hancom_hft_draws_isolated_jamo_when_present() {
+        let file = std::path::PathBuf::from(
+            "/Applications/Hancom Office HWP.app/Contents/Resources/Hnc/Shared/Fonts/TEDNRHG.HFT",
+        );
+        if !file.is_file() {
+            return;
+        }
+        register_hft_sources(&[file]);
+        for ch in ['ㅎ', 'ㅏ', '\u{1112}', '하', '한'] {
+            assert!(hft_glyph("신명 디나루", ch).is_some(), "{ch}");
+        }
     }
 
     /// 한컴이 설치된 PC 에서만: 신명 신그래픽 '사' 윤곽선이 해석된다.
