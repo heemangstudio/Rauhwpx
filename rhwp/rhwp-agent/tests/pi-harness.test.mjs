@@ -3,7 +3,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  PI_CORE_TOOLS,
   SETTLE_CHECK_MAX_CONTINUATIONS,
   coerceToSchema,
   createTurnWriteState,
@@ -18,11 +17,9 @@ import {
   stripStaleToolImages,
   textAnchorKind,
   toolExecutionModeFor,
-  toolExposureFor,
 } from '../pi/extension/harness.ts';
 import { liveDocumentBlock } from '../reference-session.mjs';
 import { piToolDefinitions } from '../pi/tool-schema.mjs';
-import { TOOL_PROFILES, filterToolDefinitions } from '../tools.mjs';
 
 const DEFINITIONS = piToolDefinitions('direct');
 const SCHEMAS = new Map(DEFINITIONS.map((def) => [def.name, def.inputSchema]));
@@ -253,20 +250,11 @@ test('context hygiene drops images the model already saw and keeps tool-call pai
   assert.equal(stripStaleToolImages(next), null);
 });
 
-test('reads run in parallel, everything else in order, and the core loadout keeps essentials direct', () => {
+test('reads run in parallel, everything else in order', () => {
   for (const def of DEFINITIONS) {
     const expected = ['document-read', 'reference-read', 'template-read', 'instruction-read'].includes(def.category)
       ? 'parallel'
       : 'sequential';
     assert.equal(toolExecutionModeFor(def.category), expected, def.name);
-  }
-  const known = new Set(filterToolDefinitions('all').map((def) => def.name));
-  for (const name of PI_CORE_TOOLS.names) assert.ok(known.has(name), `core tool ${name} exists`);
-  for (const profile of Object.keys(TOOL_PROFILES)) {
-    for (const def of piToolDefinitions(profile)) {
-      assert.equal(toolExposureFor(def, 'full'), 'direct');
-      const core = PI_CORE_TOOLS.names.includes(def.name) || PI_CORE_TOOLS.categories.includes(def.category);
-      assert.equal(toolExposureFor(def, 'core'), core ? 'direct' : 'deferred', `${profile}:${def.name}`);
-    }
   }
 });

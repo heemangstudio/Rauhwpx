@@ -34,7 +34,6 @@ import {
   stripStaleToolImages,
   toolAnnotationsFor,
   toolExecutionModeFor,
-  toolExposureFor,
 } from './harness.ts';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -61,8 +60,6 @@ export interface PiExtensionConfig {
   permissionProfile: string;
   rootDir: string;
   readOnlyRoots: string[];
-  /** RHWP_PI_LOADOUT — core 면 핵심 밖 도구를 deferred 로 등록한다. */
-  loadout: 'core' | 'full';
 }
 
 /** 허브 GET /pi/tool-definitions 응답 한 건. */
@@ -146,7 +143,6 @@ export function readExtensionConfig(
     permissionProfile: env.RHWP_PERMISSION_PROFILE ?? 'safe',
     rootDir: env.RHWP_ROOT_DIR ?? cwd,
     readOnlyRoots: (env.RHWP_READONLY_ROOTS ?? '').split(path.delimiter).filter(Boolean),
-    loadout: String(env.RHWP_PI_LOADOUT ?? '').trim().toLowerCase() === 'core' ? 'core' : 'full',
   };
 }
 
@@ -994,7 +990,6 @@ export default async function rhwpPiExtension(pi: ExtensionAPI): Promise<void> {
       parameters: toParameterSchema(def.inputSchema, unsafe),
       executionMode: toolExecutionModeFor(def.category),
       annotations: toolAnnotationsFor(def.category),
-      exposure: toolExposureFor(def, config.loadout),
       prepareArguments(raw: unknown) {
         const repaired = repairToolArguments(def.name, raw, schema, schemas);
         if (!fillsRevision) return repaired as any;
@@ -1045,5 +1040,5 @@ export default async function rhwpPiExtension(pi: ExtensionAPI): Promise<void> {
   }
 
   log(`registered ${definitions.length} rhwp tools (profile=${config.toolProfile}, `
-    + `workflow=${config.workflow}, phase=${config.phase}, loadout=${config.loadout})`);
+    + `workflow=${config.workflow}, phase=${config.phase})`);
 }

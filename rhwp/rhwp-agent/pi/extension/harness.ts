@@ -45,51 +45,6 @@ export function toolAnnotationsFor(category: string | undefined): {
   };
 }
 
-/**
- * RHWP_PI_LOADOUT=core 에서 바로 노출하는 도구. 나머지는 deferred 로 등록되어 Pi 내장
- * tool_search 로 불러온다. 허브는 노출과 무관하게 프로필로 모든 호출을 인가한다.
- */
-export const PI_CORE_TOOLS = Object.freeze({
-  names: Object.freeze([
-    // 문서 읽기
-    'get_structure',
-    'read_batch',
-    'find_text',
-    'get_selection',
-    'render_page',
-    'get_page_geometry',
-    'verify_changes',
-    // 문서 쓰기
-    'apply_edits',
-    'replace_all',
-    'insert_image',
-    'edit_table',
-    'create_table',
-    'insert_shape',
-    'edit_object',
-    'commit_version',
-  ]),
-  /** 프로필에 들어 있으면 늘 바로 노출하는 분류. */
-  categories: Object.freeze([
-    'user-interaction',
-    'planning-control',
-    'plan-progress',
-    'reference-read',
-    'instruction-read',
-    'instruction-write',
-  ]),
-});
-
-export function toolExposureFor(
-  def: { name: string; category?: string },
-  loadout: string,
-): 'direct' | 'deferred' {
-  if (loadout !== 'core') return 'direct';
-  if (PI_CORE_TOOLS.names.includes(def.name)) return 'direct';
-  if (typeof def.category === 'string' && PI_CORE_TOOLS.categories.includes(def.category)) return 'direct';
-  return 'deferred';
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // 인자 복구 — 약한 모델의 흔한 실수를 스키마를 근거로만 고친다
 // ─────────────────────────────────────────────────────────────────────────────

@@ -73,10 +73,6 @@ export const PI_RECOVERY_SECTION = `# When a call fails
 - The harness fills a missing expectedRevision with the latest revision you have seen and may retry a stale one once when that is safe; a "note:" line in the result says so.
 - A call that failed the same way twice will fail again; tell the user what blocked you instead.`;
 
-/** RHWP_PI_LOADOUT=core 일 때만 붙는다 — 목록에 없는 rhwp 도구를 불러오는 법. */
-export const PI_CORE_LOADOUT_SECTION = `# Loading more tools
-Only the core rhwp tools are listed. When a task needs another rhwp tool (for example table or cell properties, styles, lists, footnotes, headers and footers, page layout, equations, charts, bookmarks, fields, raw engine edits), call tool_search with a few words describing it; the tools it finds can be called from your next message. Several needs fit in one tool_search query.`;
-
 /** 모든 문서 도구가 공유하는 규칙. */
 export const PI_TOOL_RULES_SECTION = RHWP_TOOL_RULES;
 
@@ -181,7 +177,6 @@ export function piSystemPromptFor(opts = {}) {
   return [
     PI_PREAMBLE,
     PI_HARNESS_SECTION,
-    ...(normalizePiLoadout(/** @type {any} */ (opts).piLoadout) === 'core' ? [PI_CORE_LOADOUT_SECTION] : []),
     PI_ENVIRONMENT_SECTION,
     MODE_SECTIONS[mode](),
     ...(writable ? [PI_EDITING_SECTION, PI_RECOVERY_SECTION, parallelWorkBriefFor('pi')] : []),
@@ -235,7 +230,7 @@ export function piChildModeSection(mode) {
  * Pi 서브에이전트의 시스템 프롬프트.
  *
  * @param {string} role doc-editor | doc-researcher | general
- * @param {{ workflow?: string, phase?: string, permissionProfile?: string, piLoadout?: string }} [opts]
+ * @param {{ workflow?: string, phase?: string, permissionProfile?: string }} [opts]
  * @returns {string}
  */
 export function piChildSystemPromptFor(role, opts = {}) {
@@ -253,7 +248,6 @@ export function piChildSystemPromptFor(role, opts = {}) {
     PI_CHILD_LIMITS_SECTION,
     piChildModeSection(mode),
     PI_CHILD_HARNESS_SECTION,
-    ...(normalizePiLoadout(/** @type {any} */ (opts).piLoadout) === 'core' ? [PI_CORE_LOADOUT_SECTION] : []),
     // 편집 역할은 루트와 같은 편집 흐름·복구 절을 받는다 (읽기 전용 단계 제외).
     ...(roleKey !== 'doc-researcher' && WRITABLE_MODES.has(mode) ? [PI_EDITING_SECTION, PI_RECOVERY_SECTION] : []),
     PI_TOOL_RULES_SECTION,
@@ -264,7 +258,7 @@ export function piChildSystemPromptFor(role, opts = {}) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 내장 도구 선택과 로드아웃
+// 내장 도구 선택
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** 모든 모드에 더하는 읽기 전용 내장 도구. safe 에서는 확장이 read 처럼 경로를 검사한다. */
@@ -304,23 +298,11 @@ export function availableReadOnlyBuiltins({
 }
 
 /**
- * RHWP_PI_LOADOUT 값을 정규화한다. core = 핵심 도구만 바로 노출하고 나머지는 tool_search 로
- * 불러오게 하는 실험 모드, full(기본) = 프로필의 모든 도구를 바로 노출한다.
- * @param {unknown} value
- * @returns {'core'|'full'}
- */
-export function normalizePiLoadout(value) {
-  return String(value ?? '').trim().toLowerCase() === 'core' ? 'core' : 'full';
-}
-
-/**
  * `--tools` 값. pi 1.1.0 에서 `+이름` 만 나열하면 기본 선택(read,bash,edit,write)과 확장 도구가
  * 그대로 남고 이름만 더해진다. 이름만 나열하면 허용 목록이 되어 확장 도구(rhwp 도구,
  * subagent_*)까지 빠진다 — 실제 바이너리로 확인했다. 제외는 `--exclude-tools` 가 맡는다.
- * @param {'core'|'full'} loadout
  * @param {readonly string[]} [builtins] 선언할 읽기 전용 내장 도구 (availableReadOnlyBuiltins)
  */
-export function piToolSelection(loadout = 'full', builtins = PI_READ_ONLY_BUILTINS) {
-  const names = [...builtins, ...(loadout === 'core' ? ['tool_search'] : [])];
-  return names.map((name) => `+${name}`).join(',');
+export function piToolSelection(builtins = PI_READ_ONLY_BUILTINS) {
+  return builtins.map((name) => `+${name}`).join(',');
 }

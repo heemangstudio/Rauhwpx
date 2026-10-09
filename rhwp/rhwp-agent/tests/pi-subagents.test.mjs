@@ -78,10 +78,10 @@ test('child argv carries a Pi-owned prompt for its role and mode plus the rhwp s
   for (const prompt of [editorSafe, researcher, planning]) assert.ok(prompt.includes(RHWP_TOOL_RULES));
   assert.doesNotMatch(editorSafe, /expert coding assistant/);
 
-  const argv = buildChildArgv({ ...base, role: 'general', skillsDir: '/pi/agent/skills', loadout: 'core' });
+  const argv = buildChildArgv({ ...base, role: 'general', skillsDir: '/pi/agent/skills' });
   assert.ok(argv.includes('--no-skills'));
   assert.equal(argv[argv.indexOf('--skill') + 1], '/pi/agent/skills');
-  assert.deepEqual(argv[argv.indexOf('--tools') + 1].split(','), ['+grep', '+find', '+ls', '+tool_search']);
+  assert.deepEqual(argv[argv.indexOf('--tools') + 1].split(','), ['+grep', '+find', '+ls']);
   assert.equal(argv.at(-1), 'Edit p3-p9.');
   assert.equal(buildChildArgv({ ...base, role: 'general' }).includes('--skill'), false);
 });

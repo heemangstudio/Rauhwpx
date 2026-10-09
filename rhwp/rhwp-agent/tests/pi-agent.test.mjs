@@ -418,7 +418,6 @@ test('every mode adds the read-only search built-ins without replacing the defau
     const tools = argv[argv.indexOf('--tools') + 1].split(',');
     assert.ok(tools.every((entry) => entry.startsWith('+')), JSON.stringify(mode));
     assert.deepEqual(tools.filter((entry) => ['+grep', '+find', '+ls'].includes(entry)).length, 3);
-    assert.equal(tools.includes('+tool_search'), false);
   }
 });
 
@@ -440,14 +439,6 @@ test('grep and find are declared only when pi can run rg and fd', () => {
   );
   const bare = buildPiArgv(baseOpts, 'sess-1', { PATH: '' });
   assert.equal(bare[bare.indexOf('--tools') + 1], '+ls');
-});
-
-test('the core loadout enables tool_search and reaches the extension through the env', () => {
-  const argv = buildPiArgv(baseOpts, 'sess-1', { RHWP_PI_LOADOUT: 'core' });
-  assert.ok(argv[argv.indexOf('--tools') + 1].split(',').includes('+tool_search'));
-  assert.equal(buildPiEnv(baseOpts, { RHWP_PI_LOADOUT: 'core' }).RHWP_PI_LOADOUT, 'core');
-  assert.equal(buildPiEnv(baseOpts, { RHWP_PI_LOADOUT: 'bogus' }).RHWP_PI_LOADOUT, 'full');
-  assert.equal(buildPiEnv({ ...baseOpts, piLoadout: 'core' }, {}).RHWP_PI_LOADOUT, 'core');
 });
 
 test('a spawn reads its system prompt from a session file instead of the command line', () => {

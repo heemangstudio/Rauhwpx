@@ -6,8 +6,7 @@
 //
 // 확인하는 것: provider 가 받는 시스템 프롬프트가 rhwp 것인지, 읽기 호출은 겹쳐 돌고 쓰기는
 // 차례로 도는지, 빠진 expectedRevision 채우기와 stale 앵커 쓰기 재시도, 마무리 점검 메모가
-// 다음 요청에 실리는지, 이미 본 이미지가 빠지는지, RHWP_PI_LOADOUT=core 에서 tool_search 가
-// deferred 도구를 불러오는지, 시작부터 첫 provider 요청까지 걸린 시간.
+// 다음 요청에 실리는지, 이미 본 이미지가 빠지는지, 시작부터 첫 provider 요청까지 걸린 시간.
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -244,32 +243,6 @@ async function checkEditingTurn() {
   }
 }
 
-// ─── 시나리오 2: core 로드아웃 + tool_search ─────────────────────────────────
-
-async function checkCoreLoadout() {
-  const hub = await startHub(async () => ({ ok: true, result: { revision: 1 } }));
-  const provider = await startProvider([
-    { calls: [{ name: 'tool_search', args: { query: 'page layout margins orientation' } }] },
-    { text: '여백 도구를 찾았습니다.' },
-  ]);
-  try {
-    const run = await runPi({ providerPort: provider.port, hubPort: hub.port, prompt: '여백을 바꿔 줘', env: { RHWP_PI_LOADOUT: 'core' } });
-    assert.equal(run.code, 0, run.stderr);
-    const [first, second] = provider.requests;
-    const names = (request) => request.body.tools.map((tool) => tool.function.name);
-    assert.ok(names(first).includes('tool_search'));
-    assert.ok(names(first).includes('apply_edits'));
-    assert.equal(names(first).includes('set_page_layout'), false, 'non-core tools start deferred');
-    assert.ok(names(second).includes('set_page_layout'), 'tool_search loads the deferred tool');
-    assert.ok(names(first).length < piToolDefinitions('direct').length, 'core loadout declares fewer tools');
-    return { coreTools: names(first).length, fullTools: piToolDefinitions('direct').length };
-  } finally {
-    provider.server.close();
-    hub.wss.close();
-    hub.server.close();
-  }
-}
-
 if (!existsSync(PI_BIN)) {
   console.log(`pi binary not found at ${PI_BIN}; set RHWP_PI_CHECK_BIN`);
   process.exit(2);
@@ -277,6 +250,4 @@ if (!existsSync(PI_BIN)) {
 const started = Date.now();
 const editing = await checkEditingTurn();
 console.log(`ok editing turn (first provider request ${editing.firstRequestMs} ms after spawn)`);
-const core = await checkCoreLoadout();
-console.log(`ok core loadout (${core.coreTools} tools declared vs ${core.fullTools} rhwp tools in the full profile)`);
 console.log(`pi harness check passed in ${Date.now() - started} ms`);

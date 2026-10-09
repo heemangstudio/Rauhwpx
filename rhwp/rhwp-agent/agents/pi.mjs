@@ -17,7 +17,6 @@ import {
 } from './backend.mjs';
 import {
   availableReadOnlyBuiltins,
-  normalizePiLoadout,
   piSystemPromptFor,
   piToolSelection,
 } from './pi-prompt.mjs';
@@ -86,20 +85,11 @@ function toolProfileFor(opts) {
 }
 
 /**
- * 이 실행의 로드아웃. opts.piLoadout 이 env(RHWP_PI_LOADOUT)보다 먼저다.
- * @param {PiBackendOptions & { piLoadout?: string }} opts
- * @param {NodeJS.ProcessEnv} [env]
- */
-export function piLoadoutFor(opts, env = process.env) {
-  return normalizePiLoadout(opts?.piLoadout ?? env.RHWP_PI_LOADOUT);
-}
-
-/**
  * pi CLI 인자를 만든다. 프롬프트는 argv가 아니라 stdin으로 전달한다.
  *
- * @param {PiBackendOptions & { piLoadout?: string }} opts
+ * @param {PiBackendOptions} opts
  * @param {string} sessionId
- * @param {NodeJS.ProcessEnv} [env] RHWP_PI_LOADOUT 을 읽는 환경
+ * @param {NodeJS.ProcessEnv} [env] PATH 를 읽는 환경
  * @param {{ systemPromptPath?: string | null }} [options] 시스템 프롬프트를 담은 파일. pi 는
  *   --system-prompt 값이 있는 파일 경로면 그 내용을 읽는다 — 긴 프롬프트가 명령줄 한계를 쓰지 않게 한다.
  */
@@ -113,14 +103,14 @@ export function buildPiArgv(opts, sessionId, env = process.env, { systemPromptPa
     '--session-dir', path.join(piRoot, 'sessions'),
     '--session-id', sessionId,
     // Pi 의 코딩 어시스턴트 기본 프롬프트(도구 목록·규칙·Pi 문서 절)를 통째로 대체한다.
-    '--system-prompt', systemPromptPath ?? piSystemPromptFor({ ...opts, piLoadout: piLoadoutFor(opts, env) }),
+    '--system-prompt', systemPromptPath ?? piSystemPromptFor(opts),
     // 워크스페이스의 CLAUDE.md/AGENTS.md 를 끌어오지 않는다.
     '--no-context-files',
     // ~/.agents/skills 같은 사용자 전역 스킬은 문서 에이전트와 무관한 프롬프트 잡음이다.
     // pi-manager 가 동기화한 rhwp 스킬만 명시적으로 싣는다.
     '--no-skills',
     '--skill', path.join(piRoot, 'agent', 'skills'),
-    '--tools', piToolSelection(piLoadoutFor(opts, env), availableReadOnlyBuiltins({
+    '--tools', piToolSelection(availableReadOnlyBuiltins({
       pathEnv: env.PATH ?? '',
       binDir: path.join(piRoot, 'agent', 'bin'),
     })),
@@ -149,7 +139,7 @@ export function writeSystemPromptFile(opts, sessionId) {
     const dir = path.join(opts.piRoot, 'sessions');
     if (!fs.statSync(dir).isDirectory()) return null;
     const file = path.join(dir, `${sessionId}.system-prompt.md`);
-    fs.writeFileSync(file, piSystemPromptFor({ ...opts, piLoadout: piLoadoutFor(opts) }), { mode: 0o600 });
+    fs.writeFileSync(file, piSystemPromptFor(opts), { mode: 0o600 });
     return file;
   } catch {
     return null;
@@ -195,7 +185,6 @@ export function buildPiEnv(opts, sourceEnv = process.env) {
     ...(opts.effort ? { RHWP_PI_EFFORT: String(opts.effort) } : {}),
     ...(opts.reasoning ? { RHWP_PI_REASONING: '1' } : {}),
     RHWP_PI_SESSION_DIR: path.join(piRoot, 'sessions'),
-    RHWP_PI_LOADOUT: piLoadoutFor(opts, sourceEnv),
     ...mcpCapabilityEnv(opts),
   };
 }

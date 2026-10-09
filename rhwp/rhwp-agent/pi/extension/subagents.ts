@@ -16,7 +16,6 @@ import { redactDiagnosticText } from '../../agents/backend.mjs';
 import {
   PI_READ_ONLY_BUILTINS,
   availableReadOnlyBuiltins,
-  normalizePiLoadout,
   piChildSystemPromptFor,
   piToolSelection,
 } from '../../agents/pi-prompt.mjs';
@@ -78,7 +77,6 @@ export interface ChildMode {
   workflow?: string;
   phase?: string;
   permissionProfile?: string;
-  piLoadout?: string;
 }
 
 export function normalizeRole(value: unknown): SubagentRole {
@@ -115,7 +113,6 @@ export function buildChildArgv(opts: {
   planningRestricted: boolean;
   /** 부모의 워크플로·단계·권한 — 자식 프롬프트의 모드 경계를 정한다. */
   mode?: ChildMode;
-  loadout?: string | null;
   /** pi-manager 가 동기화한 rhwp 스킬 디렉터리. 없으면 스킬 없이 뜬다. */
   skillsDir?: string | null;
   /** 선언할 읽기 전용 내장 도구 (rg/fd 를 찾을 수 있을 때만 grep/find). */
@@ -132,11 +129,11 @@ export function buildChildArgv(opts: {
     '--session-dir', opts.sessionDir,
     '--session-id', opts.sessionId,
     // 루트와 같이 Pi 기본 코딩 프롬프트를 대체한다 (agents/pi.mjs buildPiArgv 참고).
-    '--system-prompt', childSystemPrompt(opts.role, { ...mode, piLoadout: normalizePiLoadout(opts.loadout) }),
+    '--system-prompt', childSystemPrompt(opts.role, mode),
     '--no-context-files',
     '--no-skills',
     ...(opts.skillsDir ? ['--skill', opts.skillsDir] : []),
-    '--tools', piToolSelection(normalizePiLoadout(opts.loadout), opts.builtins ?? PI_READ_ONLY_BUILTINS),
+    '--tools', piToolSelection(opts.builtins ?? PI_READ_ONLY_BUILTINS),
     '--exclude-tools', childExcludeTools(opts.planningRestricted, opts.role),
     prompt,
   );
@@ -189,7 +186,7 @@ function resolveWorkingDirectory(root: string, requested = '.'): string {
   return candidate;
 }
 
-function childModeFromEnv(env: Record<string, string | undefined>): Omit<Required<ChildMode>, 'piLoadout'> {
+function childModeFromEnv(env: Record<string, string | undefined>): Required<ChildMode> {
   const workflow = env.RHWP_AGENT_WORKFLOW ?? env.RHWP_WORKFLOW ?? 'direct';
   const phase = env.RHWP_AGENT_PHASE ?? env.RHWP_PLAN_PHASE
     ?? (workflow === 'plan' ? 'planning' : workflow === 'question' ? 'questioning' : 'implementing');
@@ -495,7 +492,6 @@ export function createSubagentManager(opts: {
       role,
       planningRestricted: planningRestrictedFromEnv(env),
       mode: childModeFromEnv(env),
-      loadout: env.RHWP_PI_LOADOUT ?? null,
       skillsDir: env.PI_CODING_AGENT_DIR ? path.join(env.PI_CODING_AGENT_DIR, 'skills') : null,
       builtins: availableReadOnlyBuiltins({
         pathEnv: env.PATH ?? '',
