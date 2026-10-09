@@ -61,19 +61,15 @@ export function canMoveToLibraryDocument(target: LibraryDocumentTarget): boolean
 
 const MAX_SAVE_ATTEMPTS = 3;
 
-export async function moveToLibraryDocument(
-  target: LibraryDocumentTarget,
-  deps: MoveToLibraryDocumentDeps,
+/**
+ * 현재 문서를 떠나기 전에 바뀐 내용을 저장하고, 원하면 버전 기록에 커밋한다.
+ * 다른 문서로 옮기거나 열린 다른 문서 세션으로 넘어갈 때 함께 쓴다.
+ */
+export async function saveAndCommitBeforeLeaving(
+  deps: Pick<MoveToLibraryDocumentDeps, 'getCurrent' | 'saveCurrent' | 'toast' | 'commitCurrent'>,
   options: MoveToLibraryDocumentOptions = {},
-): Promise<LibraryMoveResult> {
-  if (!canMoveToLibraryDocument(target)) {
-    deps.toast('이동할 문서를 찾을 수 없습니다.');
-    return 'failed';
-  }
-
+): Promise<'ok' | 'cancelled' | 'failed'> {
   const current = deps.getCurrent();
-  if (isSameLibraryDocument(current, target)) return 'same';
-
   // 바뀐 내용이 있을 때만 저장한다. 깨끗한 문서를 저장하면 원본 파일이 엔진이 다시 만든
   // 바이트로 덮어써져, 이동할 때마다 서식이 조금씩 무너진다.
   // 저장하는 동안 들어온 편집도 대상 문서를 열면 사라지므로, 깨끗해질 때까지 다시 저장한다.
@@ -94,6 +90,25 @@ export async function moveToLibraryDocument(
       deps.toast('버전 기록에 커밋하지 못했습니다.');
     }
   }
+
+  return 'ok';
+}
+
+export async function moveToLibraryDocument(
+  target: LibraryDocumentTarget,
+  deps: MoveToLibraryDocumentDeps,
+  options: MoveToLibraryDocumentOptions = {},
+): Promise<LibraryMoveResult> {
+  if (!canMoveToLibraryDocument(target)) {
+    deps.toast('이동할 문서를 찾을 수 없습니다.');
+    return 'failed';
+  }
+
+  const current = deps.getCurrent();
+  if (isSameLibraryDocument(current, target)) return 'same';
+
+  const left = await saveAndCommitBeforeLeaving(deps, options);
+  if (left !== 'ok') return left;
 
   if (!target.documentId) {
     deps.toast(

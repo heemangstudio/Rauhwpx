@@ -50,6 +50,8 @@ import {
 import type {
   AgentBridgeDeps,
   AgentBridgeOptions,
+  AgentEditorHost,
+  AgentViewHost,
   AgentInstructionsDraft,
   AgentInstructionsStatus,
   AgentEditingLease,
@@ -233,8 +235,11 @@ export interface ChatHistoryEntry {
   text: string;
 }
 
+/** 문서 세션을 화면에 붙이고 떼는 호스트 전용 수명 주기 — 사이드바는 쓰지 않는다. */
+type AgentBridgeHostLifecycle = 'attachView' | 'detachView' | 'isViewAttached' | 'isBusy' | 'onBusyChange';
+
 /** Frontend consumers only need the pending-edit review surface. */
-export type SidebarBridge = Omit<AgentBridge, 'pendingEdits'> & {
+export type SidebarBridge = Omit<AgentBridge, 'pendingEdits' | AgentBridgeHostLifecycle> & {
   readonly pendingEdits: Pick<PendingEditManager, 'getChangeSets' | 'onChange' | 'approve' | 'reject'>;
 };
 
@@ -253,8 +258,24 @@ export interface AgentBridge {
   getActiveAgent(): AgentName | null;
   isTurnRunning(): boolean;
   getPendingUserQuestion(): UserQuestionInteraction | null;
+  /** 화면에 붙은 동안의 편집 잠금. 화면 밖 문서는 언제나 비활성 잠금을 내건다. */
   getEditingLease(): AgentEditingLease;
   onEditingLeaseChange(cb: (lease: AgentEditingLease) => void): () => void;
+  /**
+   * 문서를 화면 편집기에 붙인다. 문서 작업이 view.inputHandler 로 옮겨 가고, 오버레이가
+   * 지금의 대기 편집을 다시 그리며, 편집 위치 따라가기와 편집 잠금이 되살아난다.
+   */
+  attachView(view: AgentViewHost): void;
+  /**
+   * 문서를 화면에서 뗀다. 문서 작업은 editor(헤드리스 호스트)로 옮겨 가고 오버레이·편집 위치
+   * 따라가기·편집 잠금은 멈춘다. 소켓·턴·도구 실행·대기 편집·계획·대기열은 그대로 돈다.
+   */
+  detachView(editor: AgentEditorHost): void;
+  isViewAttached(): boolean;
+  /** 턴 진행, 사용자 메시지 대기, 질문 대기, 계획 승인 대기, 검토 대기 편집 중 하나라도 있으면 true. */
+  isBusy(): boolean;
+  /** isBusy 가 바뀌면 부른다. 알림은 마이크로태스크로 모아 한 번만 보낸다. */
+  onBusyChange(cb: (busy: boolean) => void): () => void;
   getPermissionProfile(): PermissionProfile;
   getServiceTier(): ServiceTier;
   getWorkflowState(): AgentWorkflowState;
@@ -365,6 +386,7 @@ export interface AgentBridge {
   answerUserQuestion(interactionId: string, answers: Record<string, UserQuestionAnswer>): string;
   interrupt(): void;
   onEvent(cb: (e: SidebarEvent) => void): () => void;
+  /** 채팅을 멈추고 소켓을 닫고 리스너·구독을 모두 걷는다. 다시 쓸 수 없다. */
   dispose(): void;
 }
 
@@ -1211,6 +1233,11 @@ export class AgentBridgeImpl implements AgentBridge {
   readonly pendingEdits: PendingEditManager;
 
   private revision: RevisionTracker;
+  /** 문서 작업용 편집기 — 화면에 붙어 있으면 view.inputHandler, 아니면 헤드리스 호스트. */
+  private editor: AgentEditorHost;
+  private view: AgentViewHost | null;
+  /** 하위 구성요소에 넘기는 전달자. 붙이기·떼기가 구성요소를 다시 만들지 않고 반영된다. */
+  private readonly editorHost: AgentEditorHost;
   private overlay: PendingOverlayRenderer;
   private editFollow: AgentEditFollow;
   private pendingChangeUnsub: (() => void) | null = null;
@@ -1290,8 +1317,19 @@ export class AgentBridgeImpl implements AgentBridge {
     providerTurnId: string | null;
     releaseEditingLease: () => void;
   }>();
+  /** 리스너에게 알린 잠금 — 화면 밖에서는 언제나 비활성이다. */
   private editingLease: AgentEditingLease = { active: false, agent: 'codex' };
+  /** 이 문서의 턴에서 파생된 잠금. 화면에 붙어 있을 때만 그대로 알린다. */
+  private documentEditingLease: AgentEditingLease = { active: false, agent: 'codex' };
   private editingLeaseListeners = new Set<(lease: AgentEditingLease) => void>();
+  /** 보낸 사용자 메시지가 아직 turn-start 로 이어지지 않았다 — 그 사이의 세션도 일하는 중이다. */
+  private messageAwaitingTurn = false;
+  /** 바쁨 상태 구독 — 첫 구독 때 만든다. 구독자가 없으면 상태를 계산하지 않는다. */
+  private busyWatch: {
+    listeners: Set<(busy: boolean) => void>;
+    busy: boolean;
+    queued: boolean;
+  } | null = null;
   /** 구상 중 사용자 편집이 있었고, 저장 알림을 아직 보내지 않았다. */
   private userEditedSincePlanningNotify = false;
   private documentNotifyUnsubs: Array<() => void> = [];
@@ -1341,6 +1379,17 @@ export class AgentBridgeImpl implements AgentBridge {
 
   constructor(deps: AgentBridgeDeps, opts?: AgentBridgeOptions) {
     this.versionCommit = deps.commitVersion;
+    this.view = deps.view ?? null;
+    this.editor = this.view?.inputHandler ?? deps.editor;
+    this.editorHost = {
+      getCursorPosition: () => this.editor.getCursorPosition(),
+      executeOperation: (desc) => this.editor.executeOperation(desc),
+      prepareSnapshotCapacity: (additionalIds) => this.editor.prepareSnapshotCapacity?.(additionalIds),
+      retainExternalSnapshot: (count) => this.editor.retainExternalSnapshot?.(count),
+      releaseExternalSnapshot: (count) => this.editor.releaseExternalSnapshot?.(count),
+      // 사용자가 보고 있는 문서만 커서·선택이 있다.
+      getUserSelectionContext: () => (this.view ? this.editor.getUserSelectionContext?.() ?? null : null),
+    };
     // revision 은 문서 인스턴스에 묶고, 페이지 로드마다 다른 값에서 시작한다 — 다른 문서나
     // 새로고침 이전 페이지에서 든 expectedRevision 이 우연히 맞아 엉뚱한 문서에 쓰이지 않게 한다.
     this.revision = new RevisionTracker(deps.eventBus, {
@@ -1348,21 +1397,20 @@ export class AgentBridgeImpl implements AgentBridge {
       initialRevision: timeSeededRevision(),
     });
     this.overlay = new PendingOverlayRenderer({
-      getCaretPosition: () => deps.inputHandler.getCursorPosition(),
-      canvasView: deps.canvasView,
+      getCaretPosition: () => (this.view ? this.editor.getCursorPosition() : null),
+      canvasView: this.view?.canvasView ?? null,
       wasm: deps.wasm,
       eventBus: deps.eventBus,
     });
     this.pendingEdits = new PendingEditManager({
       wasm: deps.wasm,
       eventBus: deps.eventBus,
-      inputHandler: deps.inputHandler,
-      canvasView: deps.canvasView,
+      editor: this.editorHost,
       overlay: this.overlay,
       contentNeutral: (run) => this.executor.coverContentNeutral(run),
     });
     this.editFollow = new AgentEditFollow({
-      canvasView: deps.canvasView,
+      canvasView: this.view?.canvasView ?? null,
       wasm: deps.wasm,
       eventBus: deps.eventBus,
     });
@@ -1376,10 +1424,11 @@ export class AgentBridgeImpl implements AgentBridge {
       const note = editReportNote(e);
       if (note) this.queueEditReport(note);
       this.handlePlanEditChange(e);
+      this.scheduleBusyCheck();
     });
     this.executor = new AgentToolExecutor({
       wasm: deps.wasm,
-      inputHandler: deps.inputHandler,
+      editor: this.editorHost,
       documentState: deps.documentState,
       revision: this.revision,
       pending: this.pendingEdits,
@@ -1419,6 +1468,78 @@ export class AgentBridgeImpl implements AgentBridge {
     return { documentId: this.documentId, revision: this.revision.revision };
   }
 
+  // ─── view attachment ──────────────────────────────────────
+
+  attachView(view: AgentViewHost): void {
+    if (this.disposed) return;
+    this.view = view;
+    this.editor = view.inputHandler;
+    this.overlay.setCanvasView(view.canvasView);
+    this.editFollow.setCanvasView(view.canvasView);
+    // 편집기는 그동안 다른 문서의 잠금 상태를 들고 있었다 — 이 문서의 상태로 다시 맞춘다.
+    this.pendingEdits.republishTemplateLock();
+    this.publishEditingLease(true);
+  }
+
+  detachView(editor: AgentEditorHost): void {
+    if (this.disposed) return;
+    this.view = null;
+    this.editor = editor;
+    this.editFollow.setCanvasView(null);
+    this.overlay.setCanvasView(null);
+    // 화면 밖 문서의 턴이 보이는 편집기를 잠그지 않게 비활성 잠금을 알린다.
+    this.publishEditingLease();
+  }
+
+  isViewAttached(): boolean {
+    return this.view !== null;
+  }
+
+  // ─── busy ─────────────────────────────────────────────────
+
+  isBusy(): boolean {
+    if (this.disposed) return false;
+    return this.turnRunning
+      || this.activeToolRequests > 0
+      || this.messageAwaitingTurn
+      // 채팅 시작·재연결·모드 전환을 기다리는 사용자 메시지
+      || this.queuedMessages.length > 0
+      || this.pendingUserQuestion !== null
+      || (this.workflow === 'plan' && (this.phase === 'awaiting-approval' || this.phase === 'switching'))
+      || this.pendingEdits.hasPending();
+  }
+
+  onBusyChange(cb: (busy: boolean) => void): () => void {
+    const watch = this.busyWatch ??= { listeners: new Set(), busy: this.isBusy(), queued: false };
+    watch.listeners.add(cb);
+    return () => {
+      watch.listeners.delete(cb);
+    };
+  }
+
+  /**
+   * 바쁨 상태를 다시 계산해 바뀌었으면 알린다. 한 프레임 처리 중의 중간 상태(턴 종료 직후
+   * 검토 대기 set 이 생기기 전 등)를 흘리지 않고, 리스너가 브리지를 정리해도 처리 중인
+   * 핸들러가 깨지지 않도록 마이크로태스크로 미룬다.
+   */
+  private scheduleBusyCheck(): void {
+    const watch = this.busyWatch;
+    if (!watch || watch.queued || this.disposed) return;
+    watch.queued = true;
+    queueMicrotask(() => {
+      watch.queued = false;
+      if (this.disposed || this.busyWatch !== watch) return;
+      const busy = this.isBusy();
+      if (busy === watch.busy) return;
+      watch.busy = busy;
+      for (const listener of [...watch.listeners]) {
+        try { listener(busy); } catch (error) {
+          console.warn('[AgentBridge] 작업 상태 리스너 오류:', error);
+        }
+      }
+    });
+  }
+
   private async initializeConnection() {
     const seq = this.reconnectSeq;
     await this.requestHubLaunch();
@@ -1441,15 +1562,29 @@ export class AgentBridgeImpl implements AgentBridge {
     this.scheduleReconnect();
   }
 
+  /** 호스트가 세션 구성을 주면 그것을, 아니면 페이지 기본 세션(개발 모드 대체값 포함)을 쓴다. */
+  private async loadSessionContext(): Promise<RendererSessionContext | null> {
+    const resolve = this.options?.resolveSessionContext;
+    if (!resolve) {
+      return resolveRendererSessionContext(undefined, {
+        hubUrl: this.options?.url,
+        hubToken: this.options?.token,
+        referenceToken: this.options?.referenceToken,
+        templateToken: this.options?.templateToken,
+        launchId: this.options?.launchId,
+        sessionId: this.options?.sessionId,
+      });
+    }
+    try {
+      return await resolve();
+    } catch (error) {
+      console.warn('[AgentBridge] 세션 구성 조회 실패:', error);
+      return null;
+    }
+  }
+
   private async refreshSessionContext() {
-    const context = await resolveRendererSessionContext(undefined, {
-      hubUrl: this.options?.url,
-      hubToken: this.options?.token,
-      referenceToken: this.options?.referenceToken,
-      templateToken: this.options?.templateToken,
-      launchId: this.options?.launchId,
-      sessionId: this.options?.sessionId,
-    });
+    const context = await this.loadSessionContext();
     if (this.disposed) return false;
     if (!context) {
       this.setState('disconnected');
@@ -1922,7 +2057,7 @@ export class AgentBridgeImpl implements AgentBridge {
   }
 
   private syncEditingLease(): void {
-    const next = deriveAgentEditingLease({
+    this.documentEditingLease = deriveAgentEditingLease({
       turnRunning: this.turnRunning,
       activeToolRequests: this.activeToolRequests,
       agent: this.editingAgent,
@@ -1930,9 +2065,26 @@ export class AgentBridgeImpl implements AgentBridge {
       phase: this.phase,
       waitingForUser: this.pendingUserQuestionId !== null,
     });
-    if (next.active === this.editingLease.active
-      && next.agent === this.editingLease.agent
-      && next.waitingForUser === this.editingLease.waitingForUser) return;
+    this.publishEditingLease();
+    this.scheduleBusyCheck();
+  }
+
+  /** 화면에 붙은 동안만 이 문서의 잠금을 내건다. 화면 밖 문서의 턴이 보이는 편집기를 잠그면 안 된다. */
+  private visibleEditingLease(): AgentEditingLease {
+    const lease = this.documentEditingLease;
+    return this.view !== null
+      ? { ...lease }
+      : { active: false, agent: lease.agent };
+  }
+
+  /** 바뀐 잠금만 알린다. force 는 화면에 다시 붙을 때처럼 편집기 상태를 이 문서 기준으로 덮어쓸 때. */
+  private publishEditingLease(force = false): void {
+    const next = this.visibleEditingLease();
+    const last = this.editingLease;
+    if (!force
+      && next.active === last.active
+      && next.agent === last.agent
+      && next.waitingForUser === last.waitingForUser) return;
     this.editingLease = next;
     for (const listener of this.editingLeaseListeners) {
       try { listener({ ...next }); } catch (error) {
@@ -2083,6 +2235,8 @@ export class AgentBridgeImpl implements AgentBridge {
         // 스레드만 복원된 유휴 상태는 그대로 두고, 살아 있다고 믿던 채팅만 아래에서 정리한다 —
         // 그러지 않으면 turnRunning·편집 잠금이 새 허브가 보내지 않을 turn-end 를 영영 기다린다.
         if (!session && this.threadId && !this.chatLiveLocally()) return;
+        // 스냅샷이 권위 있는 답이다 — 끊기기 전 보낸 메시지의 턴은 status 로 이어진다.
+        this.messageAwaitingTurn = false;
         const wasRunning = this.turnRunning;
         const lostAgent = this.activeAgent ?? this.editingAgent;
         let hubLostTurn = false;
@@ -2719,6 +2873,8 @@ export class AgentBridgeImpl implements AgentBridge {
         // 거절된 메시지의 문서 스냅샷은 프로바이더에 닿지 않았다.
         this.turnSnapshots?.reset();
         if (typeof msg.requestId === 'string' && msg.requestId !== this.pendingChatStart?.requestId) break;
+        // 요청 ID 없는 오류는 보낸 메시지의 거절이다 — 턴으로 이어지지 않는다.
+        this.messageAwaitingTurn = false;
         if (this.pendingChatStart && msg.session && isAgentName(msg.session.agent)) {
           // Validation/busy rejection leaves the previous provider alive.
           for (const message of this.queuedMessages) message.resolve(null);
@@ -2829,6 +2985,7 @@ export class AgentBridgeImpl implements AgentBridge {
       case 'turn-start':
         this.turnSnapshots?.beginTurn();
         this.turnRunning = true;
+        this.messageAwaitingTurn = false;
         this.activeProviderTurnId = typeof event.turnId === 'string' ? event.turnId : null;
         this.editingAgent = event.agent;
         this.turnHadError = false;
@@ -2844,6 +3001,7 @@ export class AgentBridgeImpl implements AgentBridge {
         const eventTurnId = typeof event.turnId === 'string' ? event.turnId : null;
         if (!providerTurnEndMatches(this.activeProviderTurnId, eventTurnId)) return;
         this.turnRunning = false;
+        this.messageAwaitingTurn = false;
         this.activeProviderTurnId = null;
         this.abortProviderToolRequests(eventTurnId ?? undefined);
         const disposition = turnEndDisposition(event, this.permissionProfile, this.turnHadError);
@@ -3144,6 +3302,7 @@ export class AgentBridgeImpl implements AgentBridge {
     this.queuedMessages = [];
     this.turnSnapshots?.reset();
     this.pendingChatStart = null;
+    this.messageAwaitingTurn = false;
     this.chatHistory = [];
     this.activeAgent = null;
     const pendingQuestion = this.pendingUserQuestion;
@@ -3227,6 +3386,7 @@ export class AgentBridgeImpl implements AgentBridge {
         const index = this.queuedMessages.indexOf(message);
         if (index < 0) return;
         this.queuedMessages.splice(index, 1);
+        this.scheduleBusyCheck();
         settle(null);
       };
       const settle = (result: string | null): void => {
@@ -3240,6 +3400,7 @@ export class AgentBridgeImpl implements AgentBridge {
       if (this.pendingChatStart || this.workflowSwitchPending || this.activeAgent === null
         || this.queuedMessages.length > 0 || this.state !== 'connected') {
         this.queuedMessages.push(message);
+        this.scheduleBusyCheck();
         if (this.activeAgent === null) {
           // 연결 중에도 시작 대기를 남겨 재접속이 첫 메시지를 다시 보낼 수 있게 한다.
           this.rememberPendingChatStart();
@@ -3298,6 +3459,10 @@ export class AgentBridgeImpl implements AgentBridge {
     });
     // 계획 승인 대기 중의 메시지는 허브가 승인으로 처리하면 스냅샷이 프로바이더에 닿지 않는다 — 본 것으로 치지 않는다.
     if (sent && built && this.phase !== 'awaiting-approval') this.turnSnapshots.markSent(built);
+    if (sent) {
+      this.messageAwaitingTurn = true;
+      this.scheduleBusyCheck();
+    }
     message.resolve(sent ? (message.messageId ?? null) : null);
   }
 
@@ -3325,6 +3490,7 @@ export class AgentBridgeImpl implements AgentBridge {
     const queued = this.queuedMessages;
     this.queuedMessages = [];
     for (const message of queued) this.dispatchUserMessage(message);
+    this.scheduleBusyCheck();
   }
 
   private referenceContext(): ReferenceScopeContext {
@@ -3958,11 +4124,23 @@ export class AgentBridgeImpl implements AgentBridge {
         console.warn('[AgentBridge] 이벤트 리스너 오류:', err);
       }
     }
+    // 사이드바에 알리는 상태 변화는 대개 바쁨 상태도 바꾼다 (턴·질문·계획·채팅 시작).
+    this.scheduleBusyCheck();
   }
 
   dispose(): void {
     if (this.disposed) return;
+    // 이 세션의 프로바이더도 함께 내린다 — 소켓만 닫으면 허브가 재접속을 기다리며 붙들고 있다.
+    if (this.state === 'connected'
+      && (this.activeAgent !== null || this.pendingChatStart !== null || this.turnRunning)) {
+      this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'chat-stop' });
+    }
     this.disposed = true;
+    this.busyWatch = null;
+    for (const message of this.queuedMessages) message.resolve(null);
+    this.queuedMessages = [];
+    this.pendingChatStart = null;
+    this.messageAwaitingTurn = false;
     this.turnRunning = false;
     this.activeProviderTurnId = null;
     this.abortActiveToolRequests();

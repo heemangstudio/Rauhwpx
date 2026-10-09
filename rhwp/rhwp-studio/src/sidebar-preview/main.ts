@@ -1,7 +1,7 @@
 import './browser-compat.ts';
 import '../style.css';
 import './preview.css';
-import { initAgentSidebar } from '../ui/agent-sidebar/index.ts';
+import { initAgentSidebar, type AgentSidebarHandle } from '../ui/agent-sidebar/index.ts';
 import { EventBus } from '../core/event-bus.ts';
 import { applyTheme, setThemeMode } from '../core/theme.ts';
 import { createMockBridge, scenarios, type Scenario } from './mock-bridge.ts';
@@ -83,6 +83,68 @@ if (!localStorage.getItem('sidebar-preview-seeded')) {
 }
 applyTheme();
 if (params.get('editor') === '1') mountEditorShell(report, eventBus);
+
+/** Swap the document of the primary session, as the editor's move does. */
+async function moveDocument(
+  target: { documentId: string | null; fileName: string | null },
+  options?: { commit?: boolean },
+): Promise<LibraryMoveResult> {
+  if (!target.documentId && !target.fileName) return 'failed';
+  if (target.documentId ? target.documentId === documentId : target.fileName === documentName)
+    return 'same';
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  if (options?.commit && documentId) report(`Committed "${documentName}" to version history (sample)`);
+  if (!target.documentId) {
+    report(`File picker placeholder for "${target.fileName}"`);
+    return 'moved';
+  }
+  // As in the editor, the move resolves before the opened file swaps in.
+  const id = target.documentId;
+  const name = target.fileName
+    ?? recentDocuments.find((row) => row.documentId === id)?.fileName ?? null;
+  setTimeout(() => showMockDocument(id, name), 100);
+  return 'moved';
+}
+
+/*
+ * `sessions=2` adds a second live document (회의록) whose sidebar waits off-screen
+ * with its own mock agent, like the editor's background document sessions. Opening
+ * a chat of a live document attaches that session instead of reopening the file.
+ */
+const multiSession = params.get('sessions') === '2';
+const BACKGROUND_DOCUMENT = { documentId: 'preview-notes', documentName: '회의록.hwpx' };
+interface PreviewSession {
+  sidebar: AgentSidebarHandle;
+  mock: ReturnType<typeof createMockBridge>;
+  documentId: () => string | null;
+}
+const sessions: PreviewSession[] = [];
+let attachedSession = 0;
+
+function attachSession(index: number): void {
+  if (index === attachedSession || !sessions[index]) return;
+  sessions[attachedSession]!.sidebar.deactivate();
+  attachedSession = index;
+  sessions[index]!.sidebar.activate();
+}
+
+async function openThreadDocument(
+  thread: { id: string; documentId: string | null; docKey: string | null },
+): Promise<LibraryMoveResult> {
+  const owner = thread.documentId
+    ? sessions.findIndex((session) => session.documentId() === thread.documentId)
+    : -1;
+  if (owner >= 0) {
+    attachSession(owner);
+    sessions[owner]!.sidebar.openThreadById(thread.id);
+    return 'moved';
+  }
+  // No live session holds the document: the primary session opens it, as an idle editor session does.
+  attachSession(0);
+  sessions[0]!.sidebar.followThreadOnNextDocument(thread.id);
+  return moveDocument({ documentId: thread.documentId, fileName: thread.docKey }, { commit: true });
+}
+
 const sidebar = initAgentSidebar({
   bridge: mock.bridge,
   eventBus,
@@ -91,23 +153,8 @@ const sidebar = initAgentSidebar({
     documentName,
     selectionLabel: null,
   }),
-  moveToLibraryDocument: async (target, options): Promise<LibraryMoveResult> => {
-    if (!target.documentId && !target.fileName) return 'failed';
-    if (target.documentId ? target.documentId === documentId : target.fileName === documentName)
-      return 'same';
-    await new Promise((resolve) => setTimeout(resolve, 150));
-    if (options?.commit && documentId) report(`Committed "${documentName}" to version history (sample)`);
-    if (!target.documentId) {
-      report(`File picker placeholder for "${target.fileName}"`);
-      return 'moved';
-    }
-    // As in the editor, the move resolves before the opened file swaps in.
-    const id = target.documentId;
-    const name = target.fileName
-      ?? recentDocuments.find((row) => row.documentId === id)?.fileName ?? null;
-    setTimeout(() => showMockDocument(id, name), 100);
-    return 'moved';
-  },
+  moveToLibraryDocument: moveDocument,
+  openThreadDocument: multiSession ? openThreadDocument : undefined,
   createDocument: () => {
     createdDocuments += 1;
     showMockDocument(`preview-new-${createdDocuments}`, `새 문서 ${createdDocuments}.hwpx`);
@@ -138,6 +185,25 @@ const sidebar = initAgentSidebar({
 });
 sidebar.root.querySelector<HTMLButtonElement>('.ag-threads-new')!.click();
 mock.boot();
+sessions.push({ sidebar, mock, documentId: () => documentId });
+if (multiSession) {
+  const backgroundMock = createMockBridge(report);
+  backgroundMock.setScenario('chat');
+  const backgroundSidebar = initAgentSidebar({
+    bridge: backgroundMock.bridge,
+    eventBus: new EventBus(),
+    startActive: false,
+    getDocumentContext: () => ({ ...BACKGROUND_DOCUMENT, selectionLabel: null }),
+    moveToLibraryDocument: (target, options) => {
+      attachSession(0);
+      return moveDocument(target, options);
+    },
+    listRecentDocuments: async () => recentDocuments.map((row) => ({ ...row })),
+    openThreadDocument,
+  });
+  backgroundMock.boot();
+  sessions.push({ sidebar: backgroundSidebar, mock: backgroundMock, documentId: () => BACKGROUND_DOCUMENT.documentId });
+}
 if (params.get('chats') === 'sample') {
   markChatWorking(SAMPLE_WORKING_CHAT_ID);
   markChatFinished(SAMPLE_FINISHED_CHAT_ID);
@@ -209,14 +275,16 @@ document.querySelector('#reset')!.addEventListener('click', () => {
   location.replace(url);
 });
 // Keep the production focus button visible while staying within the sidebar-only scope.
-sidebar.root.querySelector('.ag-fullscreen-btn')!.addEventListener(
-  'click',
-  (event) => {
-    event.stopImmediatePropagation();
-    report('Focus mode opens the full workspace in the application.');
-  },
-  { capture: true },
-);
+for (const session of sessions) {
+  session.sidebar.root.querySelector('.ag-fullscreen-btn')!.addEventListener(
+    'click',
+    (event) => {
+      event.stopImmediatePropagation();
+      report('Focus mode opens the full workspace in the application.');
+    },
+    { capture: true },
+  );
+}
 // External destinations are represented locally; never launch an OAuth page.
 window.open = () => {
   report('External page placeholder');
@@ -252,6 +320,7 @@ if (params.get('page') === 'versions') sidebar.openVersions();
 
 // Typed hooks for browser checks and custom scenario scripts.
 const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoState, navigation,
+  sessions, attachSession,
   threadStore: { listThreads, getThread, waitForThreadsPersistence } };
 export type SidebarPreview = typeof preview;
 Object.assign(window, { sidebarPreview: preview });
@@ -320,7 +389,9 @@ void applyAuditState(preview, params).catch((error: unknown) => {
   document.body.dataset.auditReady = 'error';
 });
 window.addEventListener('pagehide', () => {
-  sidebar.dispose();
-  mock.bridge.dispose();
+  for (const session of sessions) {
+    session.sidebar.dispose();
+    session.mock.bridge.dispose();
+  }
   versions.dispose?.();
 });

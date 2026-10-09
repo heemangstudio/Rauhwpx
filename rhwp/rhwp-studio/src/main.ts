@@ -2,7 +2,8 @@ import { WasmBridge, installDeclaredFontAvailabilityProbe, type PreparedWasmDocu
 import { installDocumentTitle } from '@/ui/document-title';
 import { FALLBACK_DOCUMENT_FILE_NAME } from '@/core/document-names';
 import type { DocumentInfo } from '@/core/types';
-import { EventBus } from '@/core/event-bus';
+import { AttachableEventBus } from '@/core/event-bus';
+import { createAttachableFacade } from '@/core/attachable-facade';
 import { assertRemoteDocumentBytes } from '@/core/document-signature';
 import { consumeExactLocalFileRead } from '@/core/local-file-grant';
 import {
@@ -43,6 +44,7 @@ import {
   confirmSaveBeforeReplacingDocument,
   fileCommands,
   runLibraryMove,
+  runSaveBeforeLeaving,
   saveCurrentDocument,
 } from '@/command/commands/file';
 import { editCommands, openClassicDocumentHistory } from '@/command/commands/edit';
@@ -74,8 +76,10 @@ import { showToast } from '@/ui/toast';
 import { resolveDocumentPreflight, type DocumentPreflightIdentity, type OpenDocumentBytesEvent, type VerifiedDocumentGrant } from '@/recent/document-preflight';
 import { addRecentDoc, listRecentDocs } from '@/recent/recent-store';
 import { showDropConfirmDialog } from '@/ui/drop-confirm-dialog';
+import { showConfirm } from '@/ui/confirm-dialog';
+import type { LibraryDocumentTarget, LibraryMoveResult } from '@/library/move-to-document';
 import { initRhwpDev } from '@/core/rhwp-dev';
-import { DocumentDirtyState } from '@/core/document-dirty-state';
+import type { DocumentDirtyState } from '@/core/document-dirty-state';
 import {
   applyTheme,
   getEffectiveTheme,
@@ -121,7 +125,7 @@ import {
   repairLocalFontFacesFor, resolveLocalFont, setActiveDocumentFonts,
 } from '@/core/local-fonts';
 import { userSettings, type EditorScalarSettings } from '@/core/user-settings';
-import { AutosaveManager, type AutosaveScheduleSettings, type AutosaveStatus } from '@/recovery/autosave-manager';
+import type { AutosaveManager, AutosaveScheduleSettings, AutosaveStatus } from '@/recovery/autosave-manager';
 import {
   clearRecoverableAutosaveDrafts,
   defaultAutosaveLocks,
@@ -130,7 +134,14 @@ import {
   markAutosaveDraftsOffered,
   type AutosaveDraftSummary,
 } from '@/recovery/autosave-store';
-import { HostSaveTracker } from '@/recovery/host-save';
+import type { HostSaveTracker } from '@/recovery/host-save';
+import {
+  MAX_LIVE_DOCUMENT_SESSIONS,
+  createDocumentSessionCore,
+  createDocumentSessionSlotId,
+  isDocumentSessionBusy,
+  type DocumentSession,
+} from './document-session.ts';
 import { offerAutosaveRecovery, restoreAutosaveDraft } from '@/recovery/recovery-flow';
 import { showAutosaveRecoveryDialog } from '@/recovery/recovery-ui';
 import { isPinnedDocumentEnabled, startPinnedDocument } from '@/recovery/pinned-document';
@@ -173,11 +184,13 @@ import {
   pickDesktopNativeOpenFile,
   pickDesktopNativeSaveFile,
   releaseDesktopDocument,
+  createAgentHubSession,
+  type AgentHubSessionLease,
   releaseReplacedNativeFileHandle,
   rememberNativeDocument,
   reserveDesktopDocument,
 } from '@/desktop-integration';
-import { initAgentBridge, type AgentBridge } from './agent/bridge.ts';
+import { initAgentBridge } from './agent/bridge.ts';
 import { initAgentSidebar } from './ui/agent-sidebar/index.ts';
 import { showEditingSettingsFallback } from './ui/agent-sidebar/settings-editing-fallback.ts';
 import { AGENT_LABEL } from './ui/agent-sidebar/providers.ts';
@@ -206,28 +219,48 @@ import {
   objectAddressScope,
 } from '@/core/object-address';
 
-const wasm = new WasmBridge();
-installDocumentTitle(wasm);
-const eventBus = new EventBus();
-const documentState = new DocumentDirtyState(eventBus);
-documentState.installBeforeUnload(window);
 const rendererSessionContextPromise = getRendererSessionContext();
+
+// ─── 문서 세션 ─────────────────────────────
+// 열린 문서마다 세션 하나. 화면은 attachedSession 하나에만 붙고, 아래 퍼사드는 그 세션을 가리킨다.
+// 에이전트가 일하는 문서는 화면에서 떨어져도 세션째 살아 있어 작업을 이어 간다.
+function createSessionCore(slotId?: string): DocumentSession {
+  return createDocumentSessionCore({
+    slotId,
+    isReadOnly: () => documentReadOnly,
+    autosave: {
+      schedule: autosaveScheduleFromUserSettings(),
+      locks: defaultAutosaveLocks(),
+      onStatus: (session, status) => {
+        if (session === attachedSession) handleAutosaveStatus(status);
+      },
+      owner: rendererSessionContextPromise,
+    },
+    onDirtyChanged: () => desktopDocumentStateUpdate?.(),
+  });
+}
+
+let desktopDocumentStateUpdate: (() => void) | null = null;
+const firstSession = createSessionCore();
+firstSession.usesDefaultHub = true;
+const liveSessions: DocumentSession[] = [firstSession];
+let attachedSession: DocumentSession = firstSession;
+
+const wasmFacade = createAttachableFacade<WasmBridge>(firstSession.wasm, {
+  stickyKeys: ['onFileNameChanged', 'onExternalImagesInjected'],
+});
+const wasm = wasmFacade.facade;
+installDocumentTitle(wasm);
+const eventBus = new AttachableEventBus(firstSession.bus);
+const documentStateFacade = createAttachableFacade<DocumentDirtyState>(firstSession.documentState);
+const documentState = documentStateFacade.facade;
 let disposeAgentSidebar = (): void => {};
-const autosaveManager = new AutosaveManager({
-  exportBytes: () => wasm.exportHwp(),
-  schedule: autosaveScheduleFromUserSettings(),
-  onStatus: handleAutosaveStatus,
-  locks: defaultAutosaveLocks(),
-});
-void rendererSessionContextPromise.then((context) => {
-  if (context) {
-    autosaveManager.setOwner({ launchId: context.launchId, sessionId: context.sessionId });
-  }
-});
-autosaveManager.connect(eventBus);
+const autosaveFacade = createAttachableFacade<AutosaveManager>(firstSession.autosave);
+const autosaveManager = autosaveFacade.facade;
 onEngineTrap(() => {
-  // 멈춘 엔진이 아직 읽기는 받아 줄 때 지금 상태를 복구본으로 남긴다.
-  void autosaveManager.flushNow('engine-trap');
+  // 멈춘 엔진이 아직 읽기는 받아 줄 때 지금 상태를 복구본으로 남긴다. 엔진 메모리는 모든 문서가
+  // 함께 쓰므로 열린 문서 전부를 남긴다.
+  for (const session of liveSessions) void session.autosave.flushNow('engine-trap');
   showToast({
     message: '문서 엔진이 멈춰 편집을 중단했습니다.\n사본을 저장한 뒤 앱을 다시 여세요.',
     durationMs: 0,
@@ -237,7 +270,7 @@ onEngineTrap(() => {
 window.addEventListener('pagehide', (event) => {
   if (!event.persisted) {
     disposeAgentSidebar();
-    autosaveManager.dispose();
+    for (const session of liveSessions) session.autosave.dispose();
   }
 });
 initThemeSync((effective, mode) => {
@@ -271,19 +304,8 @@ function saveTrappedDocumentCopy(): void {
  * 호스트가 내보내기 바이트의 영속화(업로드/핸드오프)를 마친 뒤 호출한다.
  * 마지막 RPC export 이후 편집이 있으면 dirty 와 복구용 draft 를 남긴다.
  */
-const hostSave = new HostSaveTracker({
-  documentState,
-  setFileName: (fileName) => { wasm.fileName = fileName; },
-  emitSaved: () => {
-    eventBus.emit('document-context-changed');
-    eventBus.emit('document-saved', {
-      reason: 'host-save',
-      fileName: wasm.fileName,
-      sourceFormat: wasm.getSourceFormat(),
-    });
-  },
-  discardDraft: (reason) => autosaveManager.discardCurrentDraft(reason),
-});
+const hostSaveFacade = createAttachableFacade<HostSaveTracker>(firstSession.hostSave);
+const hostSave = hostSaveFacade.facade;
 
 async function completeHostSave(fileName?: string): Promise<{ ok: true; wasDirty: boolean }> {
   return hostSave.complete(fileName);
@@ -320,11 +342,6 @@ let rendererRuntimeRequest: EmbedRendererRuntimeRequestV1 | null = null;
 let renderBackendFallbackReason: RenderBackendFallbackReason | null = null;
 let rendererInitializationError: string | null = null;
 let rendererInitialized = false;
-/**
- * 현재 편집 세션의 논리 문서 ID. 파일명/Save As 대상과 분리되어 문서가 열린
- * 동안 유지되고, 재열기 시 recent-store가 handle/digest로 이전 ID를 복원한다.
- */
-let activeDocumentId: string | null = null;
 
 class DocumentOwnedElsewhereError extends Error {
   constructor() {
@@ -428,9 +445,6 @@ function setAgentEditingLease(lease: AgentEditingLease): void {
   eventBus.emit('command-state-changed');
 }
 
-/** 렌더러 초기화 후에 생성되는 에이전트 브리지 — 저장 가드가 대기 편집을 조회한다. */
-let agentBridgeRef: AgentBridge | null = null;
-let versionControllerRef: DocumentVersionController | null = null;
 let agentSidebarReady = false;
 
 eventBus.on('settings:open', (payload) => {
@@ -457,12 +471,12 @@ const commandServices: CommandServices = {
   pickSaveHandle: pickDesktopNativeSaveFile,
   validateSaveHandle: reserveSaveHandleForWrite,
   createPortableHistoryBundle: async () => {
-    if (!versionControllerRef) throw new Error('버전 기록 서비스를 사용할 수 없습니다.');
-    return versionControllerRef.createPortableHistoryBundle();
+    if (!attachedSession.versions) throw new Error('버전 기록 서비스를 사용할 수 없습니다.');
+    return attachedSession.versions.createPortableHistoryBundle();
   },
   setEditMode,
   getPendingAgentEdits: () => {
-    const pending = agentBridgeRef?.pendingEdits;
+    const pending = attachedSession.bridge?.pendingEdits;
     if (!pending || !pending.hasPending()) return null;
     const sets = () => pending.getChangeSets().filter((set) => set.ops.length > 0);
     return {
@@ -474,8 +488,11 @@ const commandServices: CommandServices = {
 };
 
 installDesktopCloseHandling(async () => {
+  if (!await confirmCloseWithBackgroundSessions()) return false;
   const allowClose = await canReplaceCurrentDocument();
-  if (allowClose) documentState.permitNextUnload();
+  if (allowClose) {
+    for (const session of liveSessions) session.documentState.permitNextUnload();
+  }
   return allowClose;
 });
 
@@ -720,12 +737,14 @@ function handleFontFolderState(state: FontFolderState): void {
  * 브라우저에서 로컬 에이전트 허브가 내주는 설치 글꼴을 쓴다. 폴더 선택·권한 요청이 필요 없다.
  * 데스크톱 preload나 연결한 글꼴 폴더가 있으면 그쪽이 먼저다.
  */
-function installHubFonts(bridge: AgentBridge): void {
+/** 허브 글꼴 색인은 창 하나에 하나다. 지금 붙은 세션의 브리지부터, 없으면 연결된 아무 브리지로 연다. */
+function installHubFonts(): void {
   if (isDesktopFontsSupported()) return;
-  setHubFontHost(createHubFontHost({ access: () => bridge.getHubFontAccess() }));
-  bridge.onEvent((event) => {
-    if (event.type === 'connection' && event.state === 'connected') connectPendingDocumentFonts();
-  });
+  setHubFontHost(createHubFontHost({
+    access: () => attachedSession.bridge?.getHubFontAccess()
+      ?? liveSessions.map((session) => session.bridge?.getHubFontAccess() ?? null).find(Boolean)
+      ?? null,
+  }));
 }
 
 /** 글꼴 색인 host가 새로 준비되면 열린 문서에서 아직 시도하지 않은 글꼴을 연결한다. */
@@ -887,12 +906,14 @@ async function initialize(): Promise<void> {
   installDesktopWindowChrome();
   installDesktopDocumentState({
     subscribe: (update) => {
+      desktopDocumentStateUpdate = update;
       for (const name of ['document-context-changed', 'document-dirty-changed', 'document-saved']) {
         eventBus.on(name, update);
       }
     },
     hasDocument: () => wasm.hasLoadedDocument(),
-    isDirty: () => documentState.isDirty(),
+    // 창의 편집됨 표시는 뒤에 열려 있는 문서의 저장하지 않은 변경도 친다.
+    isDirty: () => liveSessions.some((session) => session.documentState.isDirty()),
   });
   editorStyleOverflow = new EditorStyleOverflow(document.getElementById('style-bar')!);
   const msg = sbMessage();
@@ -1193,104 +1214,30 @@ async function initialize(): Promise<void> {
       (window as any).__renderProfile = renderProfile;
     }
 
-    // AI 페어 에디팅: rhwp-agent 허브 브리지 + 사이드바 (Phase 1)
+    // AI 페어 에디팅: 문서 세션마다 허브 브리지 + 버전 기록 + 사이드바를 둔다.
     // 선택(opt-in) 기능이므로 여기서 실패해도 렌더러 초기화를 실패로 만들지 않는다.
     try {
-      const agentBridge = initAgentBridge({
-        wasm,
-        eventBus,
-        inputHandler,
-        canvasView,
-        documentState,
-        isReadOnly: () => documentReadOnly,
-        commitVersion: async (message) => {
-          if (!versionControllerRef) throw new Error('Version history is not ready yet.');
-          await versionControllerRef.checkpoint(message);
-        },
-      });
-      agentBridgeRef = agentBridge;
-      installHubFonts(agentBridge);
-      agentBridge.onEditingLeaseChange(setAgentEditingLease);
-      installDesktopAgentAttention({
-        onEvent: (cb) => agentBridge.onEvent(cb),
-        onPendingChange: (cb) => agentBridge.pendingEdits.onChange(cb),
-        pendingReviewCount: () => agentBridge.pendingEdits.getChangeSets()
-          .filter((set) => set.ops.length > 0).length,
-        documentTitle: () => (wasm.hasLoadedDocument() ? wasm.fileName : ''),
-      });
-      const versionController = new DocumentVersionController({
-        wasm,
-        eventBus,
-        documentState,
-        getInputHandler: () => inputHandler,
-        getDocumentId: () => activeDocumentId,
-        agentBridge,
-        autoEnable: () => userSettings.getUseHancomGit(),
-      });
-      versionControllerRef = versionController;
-      const agentSidebar = initAgentSidebar({
-        bridge: agentBridge,
-        eventBus,
-        editorSettingsRuntime: {
-          preview: applyEditorSettingsPreview,
-          committed: commitEditorSettingsRuntime,
-        },
-        versionController,
-        getAgentUndoEntry: () => inputHandler?.getAgentUndoEntry() ?? null,
-        undoAgentTurn: (entry) => inputHandler?.undoAgentTurn(entry) ?? false,
-        navigateToChange: (position, anchor) => {
-          if (!inputHandler) return;
-          if (anchor && position.cellIndex === undefined) {
-            position = { ...position, cursorRect: { ...anchor } };
-          }
-          inputHandler.moveCursorTo(position);
-        },
-        openClassicVersionControl: () => openClassicDocumentHistory(commandServices),
-        getDocumentContext: () => {
-          const documentName = wasm.pageCount > 0 ? wasm.fileName : null;
-          let selectionLabel: string | null = null;
-          if (inputHandler?.getSelectedPictureRef()) {
-            selectionLabel = '개체 선택됨';
-          } else if (inputHandler?.hasSelection()) {
-            selectionLabel = '텍스트 선택됨';
-          }
-          return {
-            documentId: activeDocumentId,
-            documentName,
-            selectionLabel,
-            pageCount: wasm.pageCount,
-          };
-        },
-        moveToLibraryDocument: (target, options) => runLibraryMove(
-          commandServices,
-          target,
-          () => activeDocumentId,
-          options?.commit ? () => commitBeforeLibraryMove(versionController) : undefined,
-        ),
-        createDocument: () => { dispatcher.dispatch('file:new-doc'); },
-        openDocumentFile: () => { dispatcher.dispatch('file:open'); },
-        listRecentDocuments: async () => (await listRecentDocs())
-          .slice(0, 20)
-          .map(({ documentId, fileName, sourceFormat, openedAt }) => (
-            { documentId, fileName, sourceFormat, openedAt }
-          )),
-      });
+      installSessionAgent(firstSession);
+      installHubFonts();
       disposeAgentSidebar = () => {
-        agentSidebar.dispose();
+        for (const session of liveSessions) session.sidebar?.dispose();
         disposeAgentSidebar = () => {};
       };
       agentSidebarReady = true;
-      initInlinePrompt({
-        wasm,
-        eventBus,
-        inputHandler,
-        canvasView,
-        bridge: agentBridge,
-        submit: agentSidebar.sendInlinePrompt,
-      });
+      reinstallInlinePrompt();
       if (import.meta.env.DEV) {
-        (window as any).__agentBridge = agentBridge;
-        (window as any).__versionController = versionController;
+        Object.defineProperty(window, '__agentBridge', {
+          configurable: true,
+          get: () => attachedSession.bridge,
+        });
+        Object.defineProperty(window, '__versionController', {
+          configurable: true,
+          get: () => attachedSession.versions,
+        });
+        (window as any).__documentSessions = {
+          list: () => [...liveSessions],
+          attached: () => attachedSession,
+        };
       }
     } catch (agentError) {
       console.error('[main] 에이전트 사이드바 초기화 실패 (기능 비활성화):', agentError);
@@ -1302,6 +1249,392 @@ async function initialize(): Promise<void> {
     msg.textContent = `초기화 실패: ${error}`;
     console.error('[main] 초기화 실패:', error);
   }
+}
+
+// ─── 문서 세션 전환 ─────────────────────────────
+
+/** 문서 세션에 에이전트 브리지·버전 기록·사이드바를 단다. 화면에 붙은 세션이면 바로 보인다. */
+function installSessionAgent(session: DocumentSession): void {
+  if (!inputHandler || !canvasView) throw new Error('편집기가 아직 준비되지 않았습니다.');
+  const editor = inputHandler;
+  const view = { inputHandler: editor, canvasView };
+  const isAttached = () => attachedSession === session;
+  const attached = isAttached();
+  const bridge = initAgentBridge({
+    wasm: session.wasm,
+    eventBus: session.bus,
+    documentState: session.documentState,
+    editor: attached ? editor : session.editorHost,
+    view: attached ? view : null,
+    isReadOnly: () => documentReadOnly,
+    commitVersion: async (message) => {
+      if (!session.versions) throw new Error('Version history is not ready yet.');
+      await session.versions.checkpoint(message);
+    },
+  }, session.hubSession ? { resolveSessionContext: session.hubSession.resolveContext } : undefined);
+  session.bridge = bridge;
+  session.disposers.push(
+    bridge.onEditingLeaseChange((lease) => {
+      session.agentLease = lease;
+      if (isAttached()) setAgentEditingLease(lease);
+    }),
+    bridge.onEvent((event) => {
+      if (event.type === 'connection' && event.state === 'connected' && isAttached()) {
+        connectPendingDocumentFonts();
+      }
+    }),
+    installDesktopAgentAttention({
+      onEvent: (cb) => bridge.onEvent(cb),
+      onPendingChange: (cb) => bridge.pendingEdits.onChange(cb),
+      pendingReviewCount: totalPendingReviewCount,
+      documentTitle: () => (session.wasm.hasLoadedDocument() ? session.wasm.fileName : ''),
+    }),
+  );
+  const versions = new DocumentVersionController({
+    wasm: session.wasm,
+    eventBus: session.bus,
+    documentState: session.documentState,
+    getInputHandler: () => (isAttached() ? editor : null),
+    getDocumentId: () => session.documentId,
+    agentBridge: bridge,
+    autoEnable: () => userSettings.getUseHancomGit(),
+  });
+  session.versions = versions;
+  session.sidebar = initAgentSidebar({
+    bridge,
+    eventBus: session.bus,
+    startActive: attached,
+    editorSettingsRuntime: {
+      preview: applyEditorSettingsPreview,
+      committed: commitEditorSettingsRuntime,
+    },
+    versionController: versions,
+    getAgentUndoEntry: () => (isAttached() ? editor.getAgentUndoEntry() : null),
+    undoAgentTurn: (entry) => (isAttached() ? editor.undoAgentTurn(entry) : false),
+    navigateToChange: (position, anchor) => {
+      if (!isAttached()) return;
+      if (anchor && position.cellIndex === undefined) {
+        position = { ...position, cursorRect: { ...anchor } };
+      }
+      editor.moveCursorTo(position);
+    },
+    openClassicVersionControl: () => openClassicDocumentHistory(commandServices),
+    getDocumentContext: () => {
+      const doc = session.wasm;
+      const documentName = doc.pageCount > 0 ? doc.fileName : null;
+      let selectionLabel: string | null = null;
+      if (isAttached() && editor.getSelectedPictureRef()) {
+        selectionLabel = '개체 선택됨';
+      } else if (isAttached() && editor.hasSelection()) {
+        selectionLabel = '텍스트 선택됨';
+      }
+      return {
+        documentId: session.documentId,
+        documentName,
+        selectionLabel,
+        pageCount: doc.pageCount,
+      };
+    },
+    moveToLibraryDocument: (target, options) => moveFromSession(session, target, options),
+    openThreadDocument: (thread) => moveFromSession(
+      session,
+      { documentId: thread.documentId, fileName: thread.docKey },
+      { commit: true, threadId: thread.id },
+    ),
+    createDocument: () => { dispatcher.dispatch('file:new-doc'); },
+    openDocumentFile: () => { dispatcher.dispatch('file:open'); },
+    listRecentDocuments: async () => (await listRecentDocs())
+      .slice(0, 20)
+      .map(({ documentId, fileName, sourceFormat, openedAt }) => (
+        { documentId, fileName, sourceFormat, openedAt }
+      )),
+  });
+}
+
+let inlinePrompt: { dispose(): void } | null = null;
+
+/** 문서 위 인라인 프롬프트는 화면에 붙은 세션의 에이전트에 보낸다. */
+function reinstallInlinePrompt(): void {
+  inlinePrompt?.dispose();
+  inlinePrompt = null;
+  const session = attachedSession;
+  if (!session.bridge || !session.sidebar || !inputHandler || !canvasView) return;
+  inlinePrompt = initInlinePrompt({
+    wasm: session.wasm,
+    eventBus: session.bus,
+    inputHandler,
+    canvasView,
+    bridge: session.bridge,
+    submit: session.sidebar.sendInlinePrompt,
+  });
+}
+
+/** 창 전체에서 검토를 기다리는 변경 묶음 수 (Dock 배지) */
+function totalPendingReviewCount(): number {
+  return liveSessions.reduce((sum, session) => sum + (session.bridge?.pendingEdits.getChangeSets()
+    .filter((set) => set.ops.length > 0).length ?? 0), 0);
+}
+
+function liveSessionForDocument(documentId: string | null | undefined): DocumentSession | null {
+  if (!documentId) return null;
+  return liveSessions.find((session) => (
+    session.documentId === documentId && session.wasm.hasLoadedDocument()
+  )) ?? null;
+}
+
+/** 열려는 문서가 이미 이 창의 다른 세션에 살아 있다. 다시 읽지 않고 그 세션으로 넘어간다. */
+class DocumentLiveInSessionError extends Error {
+  constructor(readonly session: DocumentSession) {
+    super('이미 열려 있는 문서입니다.');
+    this.name = 'DocumentLiveInSessionError';
+  }
+}
+
+let sessionSwitchChain: Promise<void> = Promise.resolve();
+
+/** 화면을 다른 문서 세션에 붙인다. 전환은 한 번에 하나씩 한다. */
+function attachSession(next: DocumentSession): Promise<void> {
+  const run = sessionSwitchChain.then(() => attachSessionNow(next));
+  sessionSwitchChain = run.catch(() => {});
+  return run;
+}
+
+async function attachSessionNow(next: DocumentSession): Promise<void> {
+  const previous = attachedSession;
+  if (previous === next || !liveSessions.includes(next) || !inputHandler || !canvasView) return;
+
+  // 1. 지금 세션을 화면에서 뗀다. 에이전트는 편집기 대역으로 계속 쓴다.
+  previous.viewState = previous.wasm.hasLoadedDocument() ? canvasView.captureViewState() : null;
+  previous.editMode = editMode;
+  Object.assign(previous.editorState, inputHandler.detachDocumentState());
+  previous.bridge?.detachView(previous.editorHost);
+  previous.sidebar?.deactivate();
+  inlinePrompt?.dispose();
+  inlinePrompt = null;
+
+  // 2. 페이지 퍼사드를 다음 세션으로 돌린다.
+  attachedSession = next;
+  wasmFacade.retarget(next.wasm);
+  eventBus.retarget(next.bus);
+  documentStateFacade.retarget(next.documentState);
+  autosaveFacade.retarget(next.autosave);
+  hostSaveFacade.retarget(next.hostSave);
+
+  // 3. 화면을 다음 문서로 다시 그린다. 문서를 다시 읽지 않는다.
+  canvasView.prepareDocumentLoad();
+  const hasDocument = next.wasm.hasLoadedDocument();
+  let fontsUsed: string[] | undefined;
+  if (hasDocument) {
+    const info = next.wasm.getDocumentInfo();
+    fontsUsed = info.fontsUsed;
+    setActiveDocumentFonts(fontsUsed ?? []);
+    applyTextMarkSettingsTo(next.wasm);
+    // 이 문서가 뒤에 있는 동안 등록된 글꼴이 있으면 조판이 낡았다.
+    next.wasm.refreshLayout();
+    totalSections = info.sectionCount ?? 1;
+    await canvasView.loadDocument(next.viewState);
+  }
+  inputHandler.attachDocumentState(next.editorState);
+  inputHandler.setReadOnly(documentReadOnly);
+  if (next.editMode !== editMode) setEditMode(next.editMode);
+  if (hasDocument) {
+    inputHandler.activateWithCaretPosition(next.editorState.cursor);
+    prepareCanvasKitLocalFonts(fontsUsed);
+    toolbar?.initFontDropdown(fontsUsed);
+    toolbar?.initStyleDropdown();
+    const emptyState = document.getElementById('document-empty-state');
+    if (emptyState) {
+      emptyState.hidden = true;
+      emptyState.setAttribute('aria-hidden', 'true');
+    }
+  }
+  next.bridge?.attachView({ inputHandler, canvasView });
+  setAgentEditingLease(next.agentLease);
+  next.sidebar?.activate();
+  reinstallInlinePrompt();
+
+  // 4. 문서 상태를 쓰는 화면 요소를 새 문서로 맞춘다. 세션 버스로는 내지 않는다.
+  wasm.onFileNameChanged?.(wasm.fileName);
+  statusSectionIndex = 0;
+  sbSection().textContent = `구역: 1 / ${totalSections}`;
+  schedulePaperStatus();
+  scheduleCharacterStatus(true);
+  updateFontStatusButton();
+  eventBus.emitPage('document-context-changed');
+  eventBus.emitPage('document-dirty-changed', {
+    dirty: next.documentState.isDirty(),
+    reason: 'document-session-attached',
+  });
+  eventBus.emitPage('command-state-changed');
+  desktopDocumentStateUpdate?.();
+}
+
+/** 새 문서 세션을 만든다. 에이전트는 따로 받은 허브 세션으로 붙는다. */
+async function createLiveSession(): Promise<DocumentSession | null> {
+  if (liveSessions.length >= MAX_LIVE_DOCUMENT_SESSIONS) {
+    showToast({
+      message: `한 창에서 문서는 ${MAX_LIVE_DOCUMENT_SESSIONS}개까지 함께 열 수 있습니다. 작업이 끝난 문서를 확인한 뒤 다시 여세요.`,
+      durationMs: 4500,
+    });
+    return null;
+  }
+  const usesDefaultHub = !liveSessions.some((session) => session.usesDefaultHub);
+  let hubSession: AgentHubSessionLease | null = null;
+  if (!usesDefaultHub) {
+    hubSession = await createAgentHubSession();
+    if (!hubSession) {
+      showToast({ message: '이 환경에서는 여러 문서에서 에이전트를 함께 실행할 수 없습니다.', durationMs: 4500 });
+      return null;
+    }
+  }
+  const session = createSessionCore(createDocumentSessionSlotId());
+  session.usesDefaultHub = usesDefaultHub;
+  session.hubSession = hubSession;
+  liveSessions.push(session);
+  try {
+    installSessionAgent(session);
+  } catch (error) {
+    console.error('[sessions] 새 문서 세션의 에이전트를 준비하지 못했습니다:', error);
+    await disposeSession(session);
+    return null;
+  }
+  return session;
+}
+
+/** 화면에 붙어 있지 않은 세션을 닫는다. 엔진 문서와 허브 세션, 문서 점유를 모두 놓는다. */
+async function disposeSession(session: DocumentSession): Promise<void> {
+  if (session === attachedSession) return;
+  const index = liveSessions.indexOf(session);
+  if (index < 0) return;
+  liveSessions.splice(index, 1);
+  for (const dispose of session.disposers.splice(0)) {
+    try { dispose(); } catch (error) { console.warn('[sessions] 세션 정리 실패:', error); }
+  }
+  session.sidebar?.dispose();
+  session.bridge?.dispose();
+  session.versions?.dispose();
+  session.editorHost.dispose();
+  session.sidebar = null;
+  session.bridge = null;
+  session.versions = null;
+  await session.autosave.endDocument({ discardDraft: true, reason: 'document-session-closed' })
+    .catch(() => {});
+  session.autosave.dispose();
+  await releaseReplacedNativeFileHandle(session.wasm.currentFileHandle, null)
+    .catch((error) => console.warn('[desktop] 닫은 문서의 네이티브 파일 핸들 해제 실패:', error));
+  await releaseDesktopDocument(undefined, session.slotId).catch(() => {});
+  if (session.wasm.hasLoadedDocument()) session.wasm.releaseDocument();
+  // 공급자 프로세스가 끝날 때까지 기다리므로 화면을 막지 않는다.
+  void session.hubSession?.release();
+  desktopDocumentStateUpdate?.();
+}
+
+/**
+ * 지금 문서를 뒤에 둔 채 새 세션에서 문서를 연다. 열지 못하면 원래 세션으로 돌아간다.
+ * 세션을 만들 수 없으면 null.
+ */
+async function openInNewSession<T>(
+  setup: (session: DocumentSession) => void,
+  open: () => Promise<T>,
+): Promise<{ result: T; loaded: boolean } | null> {
+  const previous = attachedSession;
+  const fresh = await createLiveSession();
+  if (!fresh) return null;
+  setup(fresh);
+  let loaded = false;
+  try {
+    await attachSession(fresh);
+    const result = await open();
+    loaded = fresh.wasm.hasLoadedDocument();
+    return { result, loaded };
+  } finally {
+    if (!loaded) {
+      if (attachedSession === fresh && liveSessions.includes(previous)) await attachSession(previous);
+      await disposeSession(fresh);
+    }
+  }
+}
+
+/**
+ * 이미 열려 있는 세션으로 넘어간다. 에이전트가 일하지 않는 지금 문서는 저장하고 닫는다.
+ * 에이전트가 일하는 문서는 뒤에 남아 작업을 이어 간다.
+ */
+async function switchToLiveSession(
+  live: DocumentSession,
+  options: { saveCurrent?: boolean; commitCurrent?: () => Promise<void> } = {},
+): Promise<'ok' | 'cancelled' | 'failed'> {
+  const current = attachedSession;
+  if (current === live) return 'ok';
+  const closeCurrent = !isDocumentSessionBusy(current);
+  if (closeCurrent && options.saveCurrent && current.wasm.hasLoadedDocument()) {
+    const left = await runSaveBeforeLeaving(
+      commandServices,
+      () => current.documentId,
+      options.commitCurrent,
+    );
+    if (left !== 'ok') return left;
+  }
+  await attachSession(live);
+  if (closeCurrent) await disposeSession(current);
+  return 'ok';
+}
+
+/**
+ * 사이드바에서 다른 문서(또는 그 문서의 채팅)로 옮겨 간다.
+ * - 그 문서가 이미 열려 있으면 그 세션으로 넘어간다.
+ * - 지금 문서에서 에이전트가 일하는 중이면 지금 문서를 뒤에 두고 새 세션에서 연다.
+ * - 아니면 지금처럼 저장·커밋하고 같은 세션에서 문서를 바꾼다.
+ */
+async function moveFromSession(
+  session: DocumentSession,
+  target: LibraryDocumentTarget,
+  options: { commit?: boolean; threadId?: string } = {},
+): Promise<LibraryMoveResult> {
+  if (session !== attachedSession) return 'cancelled';
+  const versions = session.versions;
+  const commitCurrent = options.commit && versions
+    ? () => commitBeforeLibraryMove(versions)
+    : undefined;
+  const live = liveSessionForDocument(target.documentId);
+  if (live === session) return 'same';
+  if (live) {
+    const switched = await switchToLiveSession(live, { saveCurrent: true, commitCurrent });
+    if (switched !== 'ok') return switched;
+    if (options.threadId) live.sidebar?.openThreadById(options.threadId);
+    return 'moved';
+  }
+  if (isDocumentSessionBusy(session)) {
+    const outcome = await openInNewSession(
+      (fresh) => {
+        if (options.threadId) fresh.sidebar?.followThreadOnNextDocument(options.threadId);
+      },
+      () => runLibraryMove(commandServices, target, () => attachedSession.documentId),
+    );
+    if (!outcome) return 'cancelled';
+    if (!outcome.loaded) return outcome.result === 'moved' ? 'failed' : outcome.result;
+    return outcome.result;
+  }
+  if (options.threadId) session.sidebar?.followThreadOnNextDocument(options.threadId);
+  return runLibraryMove(commandServices, target, () => attachedSession.documentId, commitCurrent);
+}
+
+/** 창을 닫기 전에, 뒤에서 에이전트가 일하거나 저장하지 않은 문서가 있으면 묻는다. */
+async function confirmCloseWithBackgroundSessions(): Promise<boolean> {
+  const background = liveSessions.filter((session) => (
+    session !== attachedSession
+    && session.wasm.hasLoadedDocument()
+    && (isDocumentSessionBusy(session) || session.documentState.isDirty())
+  ));
+  if (background.length === 0) return true;
+  const names = background.map((session) => `"${session.wasm.fileName}"`).join(', ');
+  const confirmed = await showConfirm(
+    '다른 문서에서 작업 중입니다',
+    `${names}\n창을 닫으면 에이전트가 멈춥니다. 저장하지 않은 변경은 자동 저장본으로 복구할 수 있습니다.`,
+  );
+  if (!confirmed) return false;
+  await Promise.all(background.map((session) => session.autosave.flushNow('window-close')
+    .catch(() => {})));
+  return true;
 }
 
 /** 다른 문서로 옮기기 전에 커밋하지 않은 변경을 버전 기록에 남긴다. */
@@ -1591,14 +1924,13 @@ function setupEventListeners(): void {
     document.getElementById('sb-mode')!.textContent = (insertMode as boolean) ? '삽입' : '수정';
   });
 
-  eventBus.on('document-mutated', (reason) => {
-    documentState.markDirty(typeof reason === 'string' ? reason : 'document-mutated');
+  // 더티 표시는 문서 세션이 직접 한다 (createDocumentSessionCore).
+  eventBus.on('document-mutated', () => {
     schedulePaperStatus();
     scheduleCharacterRecount();
   });
 
-  eventBus.on('document-changed', (reason) => {
-    documentState.markDirty(typeof reason === 'string' ? reason : 'document-changed');
+  eventBus.on('document-changed', () => {
     schedulePaperStatus();
     scheduleCharacterRecount();
     scheduleDesktopFontSync();
@@ -1625,7 +1957,7 @@ function setupEventListeners(): void {
       fileName: string;
       sourceFormat: string;
     };
-    const documentId = activeDocumentId;
+    const documentId = attachedSession.documentId;
     const sourceDigest = wasm.documentDigest;
     if (!documentId || !sourceDigest) {
       void releaseReplacedNativeFileHandle(saved.previousFileHandle, saved.fileHandle)
@@ -1822,6 +2154,14 @@ function commitEditorSettingsRuntime(settings: EditorScalarSettings): void {
   eventBus.emit('command-state-changed');
 }
 
+/** 문서마다 따로 가진 보기 설정(조판 부호·문단 부호·잘라 보기)을 사용자 설정에 맞춘다. */
+function applyTextMarkSettingsTo(target: WasmBridge): void {
+  const settings = userSettings.getEditorScalarSettings();
+  target.setShowControlCodes(settings.view.showControlCodes);
+  target.setShowParagraphMarks(settings.view.showParagraphMarks);
+  target.setClipEnabled(!settings.view.clipView);
+}
+
 /** 문서 초기화 공통 시퀀스 (loadFile, createNewDocument 양쪽에서 사용) */
 function applySavedTextMarkSettings(): void {
   applyEditorSettingsPreview(userSettings.getEditorScalarSettings());
@@ -1925,7 +2265,7 @@ async function initializeDocument(
     // #2527: 자동 보정을 하지 않으므로 로드 직후 문서는 항상 clean.
     documentState.markClean('document-initialized');
     try {
-      await versionControllerRef?.documentLoaded();
+      await attachedSession.versions?.documentLoaded();
     } catch (error) {
       console.warn('[Hancom Git] Could not initialize document history', error);
       showToast({ message: '문서는 열렸지만 버전 기록을 준비하지 못했습니다.', durationMs: 4500 });
@@ -2057,7 +2397,9 @@ async function reserveDocumentOpen(
   const identity = skipRecent
     ? { ...resolved, documentId: createActiveDocumentId(), useSourceDigest: false }
     : resolved;
-  const reservationId = await reserveDesktopDocument(identity, fileHandle);
+  const live = liveSessionForDocument(identity.documentId);
+  if (live && live !== attachedSession) throw new DocumentLiveInSessionError(live);
+  const reservationId = await reserveDesktopDocument(identity, fileHandle, undefined, attachedSession.slotId);
   if (reservationId === null) throw new DocumentOwnedElsewhereError();
   return { identity, reservationId };
 }
@@ -2066,8 +2408,8 @@ async function reserveSaveHandleForWrite(
   handle: FileSystemFileHandleLike,
 ): Promise<((saved: boolean) => Promise<void>) | void> {
   const currentHandle = wasm.currentFileHandle;
-  const currentIdentity = activeDocumentId
-    ? { documentId: activeDocumentId, sourceDigest: wasm.documentDigest, useSourceDigest: false }
+  const currentIdentity = attachedSession.documentId
+    ? { documentId: attachedSession.documentId, sourceDigest: wasm.documentDigest, useSourceDigest: false }
     : null;
   if (handle === currentHandle) {
     if (currentIdentity) bindNativeFileHandleIdentity(handle, currentIdentity);
@@ -2087,12 +2429,13 @@ async function reserveSaveHandleForWrite(
   if (handle.identityKind === 'native-path') {
     if (!currentIdentity) throw new Error('Active document identity is unavailable');
     bindNativeFileHandleIdentity(handle, currentIdentity);
-    const reservationId = await reserveDesktopDocument(currentIdentity, handle);
+    const slotId = attachedSession.slotId;
+    const reservationId = await reserveDesktopDocument(currentIdentity, handle, undefined, slotId);
     if (reservationId === null) throw new DocumentOwnedElsewhereError();
     if (!reservationId) return;
     return async (saved) => {
-      if (saved) await commitDesktopDocument(reservationId);
-      else await cancelDesktopDocument(reservationId);
+      if (saved) await commitDesktopDocument(reservationId, undefined, slotId);
+      else await cancelDesktopDocument(reservationId, undefined, slotId);
     };
   }
 
@@ -2103,12 +2446,13 @@ async function reserveSaveHandleForWrite(
     '저장 대상 문서',
   );
   const identity = await resolveDocumentPreflight(targetBytes, handle, await listRecentDocs());
-  if (identity.documentId === activeDocumentId) return;
+  if (identity.documentId === attachedSession.documentId) return;
 
-  const reservationId = await reserveDesktopDocument(identity, handle);
+  const slotId = attachedSession.slotId;
+  const reservationId = await reserveDesktopDocument(identity, handle, undefined, slotId);
   if (reservationId === null) throw new DocumentOwnedElsewhereError();
   if (!reservationId) return;
-  return () => cancelDesktopDocument(reservationId);
+  return () => cancelDesktopDocument(reservationId, undefined, slotId);
 }
 
 async function loadBytes(
@@ -2147,19 +2491,19 @@ async function loadBytes(
       : consumeExactLocalFileRead(data, fileHandle)
         ? wasm.loadTrustedLocalFileOnce(data, fileName)
         : wasm.loadDocument(data, fileName);
-    await commitDesktopDocument(ownership.reservationId);
+    await commitDesktopDocument(ownership.reservationId, undefined, attachedSession.slotId);
     fileHandle?.adoptSaveTarget?.();
   } catch (error) {
-    await cancelDesktopDocument(ownership.reservationId).catch(() => {});
-    activeDocumentId = null;
+    await cancelDesktopDocument(ownership.reservationId, undefined, attachedSession.slotId).catch(() => {});
+    attachedSession.documentId = null;
     eventBus.emit('document-context-changed');
-    await releaseDesktopDocument().catch(() => {});
+    await releaseDesktopDocument(undefined, attachedSession.slotId).catch(() => {});
     await releaseReplacedNativeFileHandle(previousFileHandle, null).catch(() => {});
     await autosaveManager.endDocument({ discardDraft: true, reason: 'failed-document-replacement' })
       .catch(() => {});
     throw error;
   }
-  activeDocumentId = ownership.identity.documentId;
+  attachedSession.documentId = ownership.identity.documentId;
   bindNativeFileHandleIdentity(fileHandle, ownership.identity);
   await rememberNativeDocument(
     ownership.identity.documentId,
@@ -2392,14 +2736,15 @@ async function createNewDocument(): Promise<boolean> {
   const msg = sbMessage();
   const previousFileHandle = wasm.currentFileHandle;
   const identity = { documentId: createActiveDocumentId(), sourceDigest: null };
-  const reservationId = await reserveDesktopDocument(identity, null);
+  const slotId = attachedSession.slotId;
+  const reservationId = await reserveDesktopDocument(identity, null, undefined, slotId);
   if (reservationId === null) throw new DocumentOwnedElsewhereError();
   try {
     msg.textContent = '새 문서 생성 중...';
     inputHandler?.deactivate();
     const docInfo = wasm.createNewDocument();
-    await commitDesktopDocument(reservationId);
-    activeDocumentId = identity.documentId;
+    await commitDesktopDocument(reservationId, undefined, slotId);
+    attachedSession.documentId = identity.documentId;
     hostSave.reset();
     await releaseReplacedNativeFileHandle(previousFileHandle, wasm.currentFileHandle)
       .catch((error) => console.warn('[desktop] 새 문서 전환 핸들 해제 실패:', error));
@@ -2411,10 +2756,10 @@ async function createNewDocument(): Promise<boolean> {
     await initializeDocument(docInfo);
     return true;
   } catch (error) {
-    await cancelDesktopDocument(reservationId).catch(() => {});
-    activeDocumentId = null;
+    await cancelDesktopDocument(reservationId, undefined, slotId).catch(() => {});
+    attachedSession.documentId = null;
     eventBus.emit('document-context-changed');
-    await releaseDesktopDocument().catch(() => {});
+    await releaseDesktopDocument(undefined, slotId).catch(() => {});
     await releaseReplacedNativeFileHandle(previousFileHandle, null).catch(() => {});
     await autosaveManager.endDocument({ discardDraft: true, reason: 'failed-new-document' })
       .catch(() => {});
@@ -2432,11 +2777,35 @@ async function canReplaceCurrentDocument(skipUnsavedGuard?: boolean): Promise<bo
   const allowed = skipUnsavedGuard === true
     || await confirmSaveBeforeReplacingDocument(commandServices);
   if (!allowed) return false;
-  await versionControllerRef?.whenIdle();
+  await attachedSession.versions?.whenIdle();
   return true;
 }
 
-async function openDocumentBytes(data: OpenDocumentBytesEvent) {
+/** 에이전트가 일하는 중이면 지금 문서를 뒤에 두고 새 세션에서 연다. */
+function shouldOpenInNewSession(): boolean {
+  return attachedSession.wasm.hasLoadedDocument() && isDocumentSessionBusy(attachedSession);
+}
+
+async function openDocumentBytes(data: OpenDocumentBytesEvent): Promise<boolean> {
+  try {
+    if (shouldOpenInNewSession()) {
+      const outcome = await openInNewSession(() => {}, () => openDocumentBytesInAttachedSession(data));
+      if (!outcome) {
+        await data.fileHandle?.releaseUnusedSaveTarget?.().catch(() => {});
+        return false;
+      }
+      return outcome.loaded && outcome.result;
+    }
+    return await openDocumentBytesInAttachedSession(data);
+  } catch (error) {
+    if (!(error instanceof DocumentLiveInSessionError)) throw error;
+    // 이미 이 창에 열려 있는 문서다. 다시 읽지 않고 그 문서로 넘어간다.
+    await data.fileHandle?.releaseUnusedSaveTarget?.().catch(() => {});
+    return (await switchToLiveSession(error.session)) === 'ok';
+  }
+}
+
+async function openDocumentBytesInAttachedSession(data: OpenDocumentBytesEvent): Promise<boolean> {
   if (!await canReplaceCurrentDocument(data.skipUnsavedGuard)) {
     await data.fileHandle?.releaseUnusedSaveTarget?.().catch(() => {});
     return false;
@@ -2478,7 +2847,7 @@ async function openDocumentBytes(data: OpenDocumentBytesEvent) {
           },
         );
         persistActiveBranch(bundle.snapshot.repository.documentId, bundle.activeBranch);
-        await versionControllerRef?.refresh().catch((error) => {
+        await attachedSession.versions?.refresh().catch((error) => {
           console.warn('[versioning] 가져온 기록 새로고침 실패:', error);
         });
       } catch (error) {
@@ -2519,6 +2888,12 @@ eventBus.on('create-new-document', (payload) => {
       if (options?.requestId) eventBus.emit('create-new-document:done', { requestId: options.requestId, ok, error });
     };
     try {
+      if (shouldOpenInNewSession()) {
+        const outcome = await openInNewSession(() => {}, () => createNewDocument());
+        const ok = Boolean(outcome?.loaded && outcome.result);
+        notify(ok, ok ? undefined : '문서 생성이 취소되었습니다.');
+        return;
+      }
       if (!await canReplaceCurrentDocument(options?.skipUnsavedGuard)) {
         notify(false, '문서 생성이 취소되었습니다.');
         return;

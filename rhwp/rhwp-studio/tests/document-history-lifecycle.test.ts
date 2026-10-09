@@ -16,22 +16,21 @@ test('document replacement and close wait for the current version operation queu
     /async whenIdle\(\): Promise<void> \{[\s\S]*?pending = this\.#operation;[\s\S]*?await pending;[\s\S]*?while \(pending !== this\.#operation\)/,
     'the idle observer includes work added while settling',
   );
-  assert.match(main, /let versionControllerRef: DocumentVersionController \| null = null/);
-  assert.match(main, /versionControllerRef = versionController/);
+  assert.match(main, /session\.versions = versions/);
   assert.match(
     main,
-    /const allowed = skipUnsavedGuard[\s\S]*?if \(!allowed\) return false;\s*await versionControllerRef\?\.whenIdle\(\);\s*return true;/,
+    /const allowed = skipUnsavedGuard[\s\S]*?if \(!allowed\) return false;\s*await attachedSession\.versions\?\.whenIdle\(\);\s*return true;/,
   );
 });
 
 test('failed document replacement clears and republishes document context', () => {
   assert.match(
     main,
-    /async function loadBytes[\s\S]*?docInfo =[\s\S]*?consumeExactLocalFileRead[\s\S]*?wasm\.loadDocument[\s\S]*?catch \(error\) \{[\s\S]*?activeDocumentId = null;\s*eventBus\.emit\('document-context-changed'\)/,
+    /async function loadBytes[\s\S]*?docInfo =[\s\S]*?consumeExactLocalFileRead[\s\S]*?wasm\.loadDocument[\s\S]*?catch \(error\) \{[\s\S]*?attachedSession\.documentId = null;\s*eventBus\.emit\('document-context-changed'\)/,
   );
   assert.match(
     main,
-    /async function createNewDocument[\s\S]*?catch \(error\) \{[\s\S]*?activeDocumentId = null;\s*eventBus\.emit\('document-context-changed'\)/,
+    /async function createNewDocument[\s\S]*?catch \(error\) \{[\s\S]*?attachedSession\.documentId = null;\s*eventBus\.emit\('document-context-changed'\)/,
   );
   assert.match(
     controller,

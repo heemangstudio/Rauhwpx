@@ -29,12 +29,11 @@ function makeManager() {
   return new PendingEditManager({
     wasm: wasm as never,
     eventBus: new EventBus(),
-    inputHandler: {
+    editor: {
       getCursorPosition: () => ({ sectionIndex: 0, paragraphIndex: 0, charOffset: 0 }),
       executeOperation: () => {},
       prepareSnapshotCapacity: () => {},
     } as never,
-    canvasView: {} as never,
     overlay: { setOps: () => {}, clear: () => {} } as never,
   });
 }

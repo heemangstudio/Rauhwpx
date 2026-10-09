@@ -76,7 +76,7 @@ test('WasmBridge load and replacement populate external images with a document g
   const population = bridge.slice(populationStart, populationEnd);
 
   assert.match(load, /populateExternalImagesFromDevServer\(nextDoc, this\.documentGeneration\)/);
-  assert.match(replacement, /const generation = \+\+this\.documentGeneration/);
+  assert.match(replacement, /this\.documentGeneration = nextDocumentGeneration\(\);\s*const generation = this\.documentGeneration;/);
   assert.match(replacement, /populateExternalImagesFromDevServer\(doc, generation\)/);
   assert.match(population, /this\.doc !== doc \|\| this\.documentGeneration !== generation/);
   assert.match(
@@ -86,7 +86,7 @@ test('WasmBridge load and replacement populate external images with a document g
   assert.doesNotMatch(population, /res\.arrayBuffer\(\)/);
   assert.match(population, /doc\.injectExternalImage\(/);
   assert.doesNotMatch(population, /this\.doc\.injectExternalImage\(/);
-  assert.match(bridge, /restoreSnapshot\(id: number\): void \{[\s\S]*?const generation = \+\+this\.documentGeneration;[\s\S]*?populateExternalImagesFromDevServer\(doc, generation\)/);
+  assert.match(bridge, /restoreSnapshot\(id: number\): void \{[\s\S]*?this\.documentGeneration = nextDocumentGeneration\(\);\s*const generation = this\.documentGeneration;[\s\S]*?populateExternalImagesFromDevServer\(doc, generation\)/);
 });
 
 test('WasmBridge exposes a separate trusted-local constructor path', () => {

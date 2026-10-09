@@ -75,7 +75,7 @@ test('read-only dispatcher permits view/copy but rejects document and file mutat
 test('read-only agent executor rejects mutation tools before touching document services', async () => {
   const executor = new AgentToolExecutor({
     wasm: {} as any,
-    inputHandler: {} as any,
+    editor: {} as any,
     documentState: {} as any,
     revision: {} as any,
     pending: {} as any,

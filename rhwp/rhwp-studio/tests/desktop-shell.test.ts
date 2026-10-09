@@ -286,7 +286,8 @@ test('packaged Studio uses a secure path-safe standard scheme', () => {
 
 test('desktop close and native-file IPC contracts stay sender-owned', () => {
   const preload = readFileSync(new URL('../../../desktop/preload.cjs', import.meta.url), 'utf8');
-  assert.match(desktopMain, /closeHubSession\(\{[\s\S]*?port: hub\.port,[\s\S]*?token: hubToken,[\s\S]*?launchId,[\s\S]*?sessionId: session\.sessionId/);
+  assert.match(desktopMain, /closeHubSession\(\{ port: hub\.port, token: hubToken, launchId, sessionId \}\)/);
+  assert.match(desktopMain, /window\.on\('closed'[\s\S]*?void closeOwnedHubSession\(session\.sessionId\);/);
   for (const channel of [
     'desktop:pick-native-open-file',
     'desktop:pick-legacy-history-folder',

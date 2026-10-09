@@ -181,9 +181,12 @@ test('user input gates remain separate from autonomous agent mutation paths', ()
 test('document replacement and active pointer gestures respect the lease boundary', () => {
   assert.match(main, /canReplaceCurrentDocument[\s\S]*if \(agentEditingLease\.active\)/);
   assert.match(main, /loadFile[\s\S]*canReplaceCurrentDocument\(options\.skipUnsavedGuard\)/);
-  assert.match(input, /setUserEditingLocked[\s\S]*_mouse\.onMouseUp\.call\(this, new MouseEvent/);
-  assert.match(input, /setUserEditingLocked[\s\S]*this\.cancelImagePlacement\(\)[\s\S]*this\.cancelTextboxPlacement\(\)[\s\S]*this\.cancelPolygonDrawing\(\)/);
-  assert.match(input, /setUserEditingLocked[\s\S]*this\.cancelFormOverlayEdit\?\.\(\)[\s\S]*revertCompositionPreview/);
+  const lockMethod = input.match(/setUserEditingLocked\(locked: boolean\): void \{[\s\S]*?\n  \}/)?.[0] ?? '';
+  const finishPointer = input.match(/private finishPointerInteractions\(\): void \{[\s\S]*?\n  \}/)?.[0] ?? '';
+  assert.match(lockMethod, /this\.finishPointerInteractions\(\);\s*_text\.revertCompositionPreview/);
+  assert.match(finishPointer, /_mouse\.onMouseUp\.call\(this, new MouseEvent/);
+  assert.match(finishPointer, /this\.cancelImagePlacement\(\)[\s\S]*this\.cancelTextboxPlacement\(\)[\s\S]*this\.cancelPolygonDrawing\(\)/);
+  assert.match(finishPointer, /this\.cancelFormOverlayEdit\?\.\(\)/);
   assert.doesNotMatch(input.match(/setUserEditingLocked[\s\S]*?\n  \}/)?.[0] ?? '', /this\.textarea\.focus\(\)/);
   assert.match(main, /addEventListener\('drop'[\s\S]*if \(agentEditingLease\.active\)[\s\S]*에이전트가 편집을 마친 뒤 파일을 놓을 수 있습니다/);
   assert.match(sidebar, /approve\.disabled = editingLeaseActive;[\s\S]*if \(bridge\.getEditingLease\(\)\.active\) return;[\s\S]*pendingEdits\.approve/);

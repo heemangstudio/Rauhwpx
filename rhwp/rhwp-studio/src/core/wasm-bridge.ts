@@ -380,6 +380,24 @@ class PreparedWasmDocumentState implements PreparedWasmDocument {
   }
 }
 
+/**
+ * 문서 세대·인스턴스 번호는 페이지의 모든 WasmBridge 가 한 카운터를 나눠 쓴다. 화면이 퍼사드로
+ * 다른 세션의 브리지에 붙어도 번호가 겹치지 않아, "같은 문서인가" 비교가 브리지를 넘나들어도
+ * 맞는다.
+ */
+let lastDocumentGeneration = 0;
+let lastDocumentInstance = 0;
+
+function nextDocumentGeneration(): number {
+  lastDocumentGeneration += 1;
+  return lastDocumentGeneration;
+}
+
+function nextDocumentInstance(): number {
+  lastDocumentInstance += 1;
+  return lastDocumentInstance;
+}
+
 export class WasmBridge {
   private doc: HwpDocument | null = null;
   private _documentGeneration = 0;
@@ -393,8 +411,9 @@ export class WasmBridge {
    * 문서 인스턴스 번호 — 문서를 내리거나 다른 문서를 들일 때만 오른다. documentGeneration 과
    * 달리 스냅샷 복원·내용 교체로는 오르지 않아, 에이전트 revision 과 대기 편집이 "같은 문서"를
    * 판별하는 기준이 된다 (대기 편집은 스테이징·승인·거절마다 스냅샷을 복원한다).
+   * 페이지 전체에서 유일하므로 문서를 들이지 않은 브리지끼리도 번호가 다르다.
    */
-  private _documentInstance = 0;
+  private _documentInstance = nextDocumentInstance();
   get documentInstance(): number {
     return this._documentInstance;
   }
@@ -513,8 +532,8 @@ export class WasmBridge {
    * 비교 상세 창 등 보조 WasmBridge 인스턴스에서 반복 로드 시 메모리 누수를 줄이기 위해 사용한다.
    */
   releaseDocument(): void {
-    this.documentGeneration++;
-    this._documentInstance++;
+    this.documentGeneration = nextDocumentGeneration();
+    this._documentInstance = nextDocumentInstance();
     if (this.doc) {
       try {
         this.doc.free();
@@ -570,8 +589,8 @@ export class WasmBridge {
       throw new Error('Prepared document was not created by this WASM bridge');
     }
     const next = prepared.take();
-    this.documentGeneration++;
-    this._documentInstance++;
+    this.documentGeneration = nextDocumentGeneration();
+    this._documentInstance = nextDocumentInstance();
     if (this.doc) {
       try {
         this.doc.free();
@@ -652,7 +671,8 @@ export class WasmBridge {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     const doc = this.doc;
     const raw = doc.replaceContentFromBytes(data);
-    const generation = ++this.documentGeneration;
+    this.documentGeneration = nextDocumentGeneration();
+    const generation = this.documentGeneration;
     this.ensureParagraphStableIds();
     void this.populateExternalImagesFromDevServer(doc, generation);
     return JSON.parse(raw) as DocumentInfo;
@@ -3541,7 +3561,8 @@ export class WasmBridge {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     const doc = this.doc;
     doc.restoreSnapshot(id);
-    const generation = ++this.documentGeneration;
+    this.documentGeneration = nextDocumentGeneration();
+    const generation = this.documentGeneration;
     void this.populateExternalImagesFromDevServer(doc, generation);
   }
 

@@ -71,8 +71,10 @@ import {
 } from '@/desktop-integration';
 import {
   moveToLibraryDocument,
+  saveAndCommitBeforeLeaving,
   type LibraryDocumentTarget,
   type LibraryMoveResult,
+  type MoveToLibraryDocumentDeps,
 } from '@/library/move-to-document';
 import {
   isPortableHistoryFileName,
@@ -614,15 +616,23 @@ function projectFileDeps(
     ensurePermission: ensureReadPermission,
     readHandle: readFileFromHandle,
     digestOf: documentSourceDigest,
-    loadBound: async (bytes, name, handle, documentId) => {
+    // 문서가 다 열린 뒤에 돌아온다. 호출부가 결과 문서를 바로 다룰 수 있어야 한다.
+    loadBound: (bytes, name, handle, documentId) => new Promise<void>((resolve) => {
+      const requestId = `library-open-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+      const off = services.eventBus.on('open-document-bytes:done', (payload) => {
+        if ((payload as { requestId?: string } | undefined)?.requestId !== requestId) return;
+        off();
+        resolve();
+      });
       services.eventBus.emit('open-document-bytes', {
         bytes,
         fileName: name,
         fileHandle: handle,
         ...(skipUnsavedGuard ? { skipUnsavedGuard: true } : {}),
         grant: { kind: 'verified', documentId },
+        requestId,
       });
-    },
+    }),
     pickForProject: async (displayName) => {
       const desktop = await pickDesktopNativeProjectFile({
         suggestedName: displayName,
@@ -658,14 +668,12 @@ function projectFileDeps(
   };
 }
 
-/** commitCurrent 를 넘기면 저장한 뒤 대상 문서를 열기 전에 버전 기록 커밋을 남긴다. */
-export async function runLibraryMove(
+function libraryMoveDeps(
   services: CommandServices,
-  target: LibraryDocumentTarget,
   getActiveDocumentId: () => string | null,
   commitCurrent?: () => Promise<void>,
-): Promise<LibraryMoveResult> {
-  return moveToLibraryDocument(target, {
+): MoveToLibraryDocumentDeps {
+  return {
     getCurrent: () => ({
       documentId: getActiveDocumentId(),
       fileName: services.getContext().hasDocument ? services.wasm.fileName : null,
@@ -682,7 +690,33 @@ export async function runLibraryMove(
     openViaPicker: () => openFileViaPicker(services),
     toast: (message) => showToast({ message, durationMs: 3500 }),
     commitCurrent,
-  }, { commit: commitCurrent !== undefined });
+  };
+}
+
+/** commitCurrent 를 넘기면 저장한 뒤 대상 문서를 열기 전에 버전 기록 커밋을 남긴다. */
+export async function runLibraryMove(
+  services: CommandServices,
+  target: LibraryDocumentTarget,
+  getActiveDocumentId: () => string | null,
+  commitCurrent?: () => Promise<void>,
+): Promise<LibraryMoveResult> {
+  return moveToLibraryDocument(
+    target,
+    libraryMoveDeps(services, getActiveDocumentId, commitCurrent),
+    { commit: commitCurrent !== undefined },
+  );
+}
+
+/** 이미 열린 다른 문서 세션으로 넘어가기 전에 현재 문서를 저장하고 커밋한다. */
+export function runSaveBeforeLeaving(
+  services: CommandServices,
+  getActiveDocumentId: () => string | null,
+  commitCurrent?: () => Promise<void>,
+): Promise<'ok' | 'cancelled' | 'failed'> {
+  return saveAndCommitBeforeLeaving(
+    libraryMoveDeps(services, getActiveDocumentId, commitCurrent),
+    { commit: commitCurrent !== undefined },
+  );
 }
 
 function setupPrintDocument(

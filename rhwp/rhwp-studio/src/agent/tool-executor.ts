@@ -8,12 +8,11 @@
  */
 import type { WasmBridge } from '../core/wasm-bridge.ts';
 import { engineTrap, reportEngineTrap } from '../core/engine-trap.ts';
-import type { InputHandler } from '../engine/input-handler.ts';
 import type { DocumentDirtyState } from '../core/document-dirty-state.ts';
 import type { CellPathEntry, CharProperties, CharShapeRun, ControlLayoutItem, DocumentPosition, LineLayoutItem, ParaProperties, SelectionRect } from '../core/types.ts';
 import type { RevisionTracker } from './revision.ts';
 import type { PendingEditManager } from './pending-edits.ts';
-import type { AgentName, AgentPhase, AgentWorkflow, CellAddr, CharFormatProps, DocRange, DocumentTemplate, ObjectOp, PendingOp } from './types.ts';
+import type { AgentEditorHost, AgentName, AgentPhase, AgentWorkflow, CellAddr, CharFormatProps, DocRange, DocumentTemplate, ObjectOp, PendingOp } from './types.ts';
 import { AgentToolError } from './types.ts';
 import { EditJournal, type EditJournalEntry } from './edit-journal.ts';
 import { batchItemArgs } from './batch-item.ts';
@@ -53,7 +52,8 @@ import {
 
 export interface AgentToolExecutorDeps {
   wasm: WasmBridge;
-  inputHandler: InputHandler;
+  /** 사용자 커서·선택을 읽는 편집기. 문서가 화면에 없으면 선택 문맥이 null 이다. */
+  editor: AgentEditorHost;
   documentState: DocumentDirtyState;
   revision: RevisionTracker;
   pending: PendingEditManager;
@@ -2631,8 +2631,18 @@ export class AgentToolExecutor {
 
   private getSelection(): unknown {
     this.requireDocLoaded();
-    const { inputHandler, wasm } = this.deps;
-    const { cursor, selection: sel } = inputHandler.getUserSelectionContext();
+    const { editor, wasm } = this.deps;
+    const context = editor.getUserSelectionContext?.() ?? null;
+    if (!context) {
+      // 화면 밖에서 도는 문서 — 사용자가 이 문서를 보고 있지 않으니 커서도 선택도 없다.
+      return {
+        revision: this.revision,
+        hasSelection: false,
+        visible: false,
+        note: 'This document is not open in the editor, so the user has no cursor or selection in it. Locate text with get_structure or find_text instead.',
+      };
+    }
+    const { cursor, selection: sel } = context;
     // 커서/선택의 charOffset 은 논리 오프셋(텍스트 문자 + 앞선 인라인 컨트롤 1개당 +1)이다.
     // 다른 툴은 텍스트 오프셋을 쓰므로 본문·셀 문단 모두 텍스트 오프셋으로 변환해 반환한다.
     interface SelPoint {

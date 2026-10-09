@@ -367,7 +367,8 @@ export function createUserQuestionController(options: UserQuestionControllerOpti
   }
 
   function handleNumberKey(event: KeyboardEvent): void {
-    if (!interaction || !visible || submitting || isEditable(event.target)) return;
+    // 화면에서 내려간 다른 문서의 사이드바는 문서에서 떨어져 있다 — 그 질문은 숫자 키를 받지 않는다.
+    if (!interaction || !visible || submitting || !root.isConnected || isEditable(event.target)) return;
     const digit = Number(event.key);
     if (!Number.isInteger(digit) || digit < 1 || digit > 9) return;
     const question = currentQuestion();

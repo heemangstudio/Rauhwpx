@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import {
   bindNativeFileHandleIdentity,
   captureDesktopNativeDroppedFile,
+  createAgentHubSession,
   createNativeFileHandle,
   ensureDesktopAgentHub,
   getNativeFileHandleVerifiedDocumentId,
@@ -98,6 +99,62 @@ test('dev ensure path cancels an unread non-ok body', async () => {
 
   assert.equal(await requestDevAgentHub(async () => response), false);
   assert.equal(cancelled, true);
+});
+
+test('extra hub sessions resolve their own context and close once', async () => {
+  const context = (sessionId: string) => ({
+    launchId: 'launch-1',
+    sessionId,
+    hubUrl: 'ws://127.0.0.1:1',
+    hubToken: `${sessionId}:studio`,
+    referenceToken: `${sessionId}:reference`,
+    templateToken: `${sessionId}:template`,
+  });
+  const calls: string[] = [];
+  const lease = await createAgentHubSession({
+    rhwpDesktop: {
+      getSessionContext: async () => context('window'),
+      createAgentSession: async () => ({ sessionId: 'extra-1' }),
+      getAgentSessionContext: async (sessionId) => {
+        calls.push(`context:${sessionId}`);
+        return context(sessionId);
+      },
+      releaseAgentSession: async (sessionId) => {
+        calls.push(`release:${sessionId}`);
+        return true;
+      },
+    },
+  });
+  assert.equal(lease?.sessionId, 'extra-1');
+  assert.equal((await lease!.resolveContext())?.hubToken, 'extra-1:studio');
+  await Promise.all([lease!.release(), lease!.release()]);
+  assert.equal(await lease!.resolveContext(), null);
+  assert.deepEqual(calls, ['context:extra-1', 'release:extra-1']);
+
+  // A preload without the extra-session IPC and a plain web build cannot host one.
+  assert.equal(await createAgentHubSession({
+    rhwpDesktop: { getSessionContext: async () => context('window') },
+  }), null);
+  assert.equal(await createAgentHubSession({}, { dev: false }), null);
+
+  const requests: string[] = [];
+  const devLease = await createAgentHubSession({}, {
+    dev: true,
+    fetchImpl: async (url) => {
+      requests.push(String(url));
+      const sessionId = new URL(String(url), 'http://127.0.0.1').searchParams.get('sessionId')!;
+      return new Response(JSON.stringify({ ready: true, ...context(sessionId) }));
+    },
+  });
+  const devContext = await devLease!.resolveContext();
+  assert.equal(devContext?.sessionId, devLease!.sessionId);
+  assert.equal(devContext?.hubToken, `${devLease!.sessionId}:studio`);
+  await devLease!.release();
+  const encoded = encodeURIComponent(devLease!.sessionId);
+  assert.deepEqual(requests, [
+    `/__rhwp/ensure-agent-hub?sessionId=${encoded}`,
+    `/__rhwp/release-agent-hub-session?sessionId=${encoded}`,
+  ]);
 });
 
 test('browser hub identity is stable across reloads but scoped to its tab storage', () => {

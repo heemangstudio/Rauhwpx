@@ -80,8 +80,8 @@ test('문서 높이가 줄면 새 끝 좌표로 쪽 창을 계산한다', () => 
     /clampScrollToContent\(\s*this\.virtualScroll\.getTotalWidth\(\),\s*this\.virtualScroll\.getTotalHeight\(\),\s*\)/,
   );
 
-  const load = methodBody(source, '  async loadDocument(): Promise<void> {');
-  assert.match(load, /this\.viewportManager\.setScrollTop\(0\);\s*this\.updateVisiblePages\(\);/);
+  const load = methodBody(source, '  async loadDocument(restore?: CanvasViewState | null): Promise<void> {');
+  assert.match(load, /this\.viewportManager\.setScrollTop\(0\);\s*\}\s*this\.updateVisiblePages\(\);/);
   assert.doesNotMatch(load, /this\.container\.scrollTop\s*=/,
     '직접 대입하면 캐시 좌표가 이전 문서 위치로 남는다');
 });

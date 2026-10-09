@@ -481,6 +481,18 @@ const {
   legacyWorkRoot,
 } = launchStorage;
 const hubOwner = new AgentHubOwner({ runtimeDir, workDir });
+
+// 멈추거나 죽은 허브는 세션을 스스로 정리한다. 그 포트로 소유자 토큰을 보내지 않는다.
+async function closeOwnedHubSession(sessionId) {
+  const hub = hubOwner.context();
+  if (!hub) return;
+  try {
+    await closeHubSession({ port: hub.port, token: hubToken, launchId, sessionId });
+  } catch (error) {
+    if (error?.status !== 404) console.warn('[rauhwpx] hub session close failed:', error);
+  }
+}
+
 const sessions = new SessionManager({
   launchId,
   getHubContext: async () => (await hubOwner.ensure()).context,
@@ -490,6 +502,7 @@ const sessions = new SessionManager({
     launchId,
     sessionId,
   }),
+  closeHubSession: closeOwnedHubSession,
 });
 const documentLeases = new DocumentLeaseManager();
 const nativeFiles = new NativeFileHandleRegistry();
@@ -799,20 +812,12 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
   window.on('closed', () => {
     agentAttention.forget(windowId);
     releaseRendererDocuments(session.sessionId, { documentLeases, nativeFiles });
+    // 창의 추가 에이전트 세션도 함께 허브에서 닫힌다.
     sessions.removeWindow(window);
     if (quitRequested) setImmediate(() => {
       if (quitRequested && !quitting) app.quit();
     });
-    // 멈추거나 죽은 허브는 세션을 스스로 정리한다. 그 포트로 소유자 토큰을 보내지 않는다.
-    const hub = hubOwner.context();
-    if (hub) void closeHubSession({
-      port: hub.port,
-      token: hubToken,
-      launchId,
-      sessionId: session.sessionId,
-    }).catch((error) => {
-      if (error?.status !== 404) console.warn('[rauhwpx] hub session close failed:', error);
-    });
+    void closeOwnedHubSession(session.sessionId);
   });
   const launchFiles = [];
   try {
@@ -850,6 +855,14 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
     // a reload does not resend handles that no longer exist.
     releaseRendererDocuments(session.sessionId, { documentLeases, nativeFiles });
     launchFiles.length = 0;
+    // Agents of the dead page's background documents cannot be reached again.
+    sessions.releaseAgentSessions(window);
+  });
+  // A reloaded page knows only its window session and reopens the default
+  // document itself. Background documents and their agents died with the old page.
+  window.webContents.on('did-navigate', () => {
+    sessions.releaseAgentSessions(window);
+    documentLeases.releaseSession(session.sessionId, { keepDefaultSlot: true });
   });
   window.webContents.setWindowOpenHandler(({ url }) => {
     // 인쇄 미리보기 같은 앱 내부 surface는 외부 브라우저가 아니라 네이티브
@@ -949,9 +962,18 @@ ipcMain.handle('desktop:get-unique-installs', async (event) => {
   await uniqueInstallSync;
   return uniqueInstallSnapshot;
 });
-ipcMain.handle('desktop:get-session-context', (event) => {
+ipcMain.handle('desktop:get-session-context', (event, agentSessionId = null) => {
   sessionForEvent(event);
-  return sessions.contextForSender(event.sender);
+  return sessions.contextForSender(event.sender, agentSessionId);
+});
+ipcMain.handle('desktop:agent-session-create', (event) => {
+  sessionForEvent(event);
+  if (quitting) throw new Error('Rauhwpx is quitting');
+  return { sessionId: sessions.addAgentSession(event.sender) };
+});
+ipcMain.handle('desktop:agent-session-release', (event, agentSessionId) => {
+  sessionForEvent(event);
+  return sessions.releaseAgentSession(event.sender, agentSessionId);
 });
 ipcMain.handle('desktop:fonts-list', (event, options = {}) => {
   sessionForEvent(event);
@@ -1189,15 +1211,17 @@ ipcMain.handle('desktop:verify-native-pick', (event, documentId, handleId) => {
   if (typeof handleId !== 'string' || !handleId) return false;
   return nativeFiles.verifyPick(session.sessionId, documentId, handleId);
 });
-ipcMain.handle('desktop:document-reserve', (event, identity, nativeHandleId) => {
+ipcMain.handle('desktop:document-reserve', (event, identity, nativeHandleId, slotId) => {
   const session = sessionForEvent(event);
   const canonicalPath = nativeHandleId
     ? nativeFiles.pathForSender(session.sessionId, nativeHandleId)
     : null;
-  const result = documentLeases.reserve(session.sessionId, identity, canonicalPath);
+  const result = documentLeases.reserve(session.sessionId, identity, canonicalPath, slotId);
   if (!result.ok) {
+    // Another slot of this window holds the document; the renderer resolves that itself.
+    if (result.ownerSessionId === session.sessionId) return { ok: false, reason: 'owned' };
     sessions.focusSession(result.ownerSessionId);
-    if (nativeHandleId && !documentLeases.leaseForSession(session.sessionId)) {
+    if (nativeHandleId && !documentLeases.hasLease(session.sessionId)) {
       setImmediate(() => {
         if (!session.window.isDestroyed()) session.window.destroy();
       });
@@ -1206,17 +1230,17 @@ ipcMain.handle('desktop:document-reserve', (event, identity, nativeHandleId) => 
   }
   return result;
 });
-ipcMain.handle('desktop:document-commit', (event, reservationId) => {
+ipcMain.handle('desktop:document-commit', (event, reservationId, slotId) => {
   const session = sessionForEvent(event);
-  documentLeases.commit(session.sessionId, reservationId);
+  documentLeases.commit(session.sessionId, reservationId, slotId);
 });
-ipcMain.handle('desktop:document-cancel', (event, reservationId) => {
+ipcMain.handle('desktop:document-cancel', (event, reservationId, slotId) => {
   const session = sessionForEvent(event);
-  documentLeases.cancel(session.sessionId, reservationId);
+  documentLeases.cancel(session.sessionId, reservationId, slotId);
 });
-ipcMain.handle('desktop:document-release', (event) => {
+ipcMain.handle('desktop:document-release', (event, slotId) => {
   const session = sessionForEvent(event);
-  documentLeases.releaseSession(session.sessionId);
+  documentLeases.releaseSlot(session.sessionId, slotId);
 });
 ipcMain.handle('window:is-fullscreen', (event) => sessionForEvent(event).window.isFullScreen());
 ipcMain.on('desktop:set-document-state', (event, state) => {

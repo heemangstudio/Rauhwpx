@@ -188,11 +188,11 @@ test('handle-backed Save/Save As만 active document identity를 recent-store에 
   );
   assert.match(
     main,
-    /moveToLibraryDocument: (?:async )?\(target(?:, options)?\) => [\s\S]*?runLibraryMove\(\s*commandServices,\s*target,\s*\(\) => activeDocumentId\b/,
+    /runLibraryMove\(commandServices, target, \(\) => attachedSession\.documentId\b/,
   );
   assert.match(
     main,
-    /eventBus\.on\('document-file-handle-saved',[\s\S]*?documentId = activeDocumentId;[\s\S]*?rememberNativeDocument\(documentId, saved\.fileHandle[\s\S]*?addRecentDoc\(\{[\s\S]*?handle: saved\.fileHandle/,
+    /eventBus\.on\('document-file-handle-saved',[\s\S]*?documentId = attachedSession\.documentId;[\s\S]*?rememberNativeDocument\(documentId, saved\.fileHandle[\s\S]*?addRecentDoc\(\{[\s\S]*?handle: saved\.fileHandle/,
   );
   assert.match(main, /captureDesktopNativeDroppedFile\(file\)/);
   assert.match(main, /grant: data\.grant/);

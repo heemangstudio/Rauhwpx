@@ -2,6 +2,16 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('rhwpDesktop', {
   getSessionContext: () => ipcRenderer.invoke('desktop:get-session-context'),
+  // 백그라운드 문서의 에이전트용 추가 허브 세션. 만든 창만 문맥을 받고 해제할 수 있다.
+  createAgentSession: () => ipcRenderer.invoke('desktop:agent-session-create'),
+  getAgentSessionContext: (agentSessionId) => ipcRenderer.invoke(
+    'desktop:get-session-context',
+    String(agentSessionId),
+  ),
+  releaseAgentSession: (agentSessionId) => ipcRenderer.invoke(
+    'desktop:agent-session-release',
+    agentSessionId,
+  ),
   getUniqueInstalls: () => ipcRenderer.invoke('desktop:get-unique-installs'),
   getLaunchFiles: () => ipcRenderer.invoke('desktop:get-launch-files'),
   getLaunchGeneratedDocument: () => ipcRenderer.invoke('desktop:get-launch-generated-document'),
@@ -65,14 +75,23 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     documentId,
     handleId,
   ),
-  reserveDocument: (identity, nativeHandleId) => ipcRenderer.invoke(
+  reserveDocument: (identity, nativeHandleId, slotId) => ipcRenderer.invoke(
     'desktop:document-reserve',
     identity,
     nativeHandleId,
+    slotId,
   ),
-  commitDocument: (reservationId) => ipcRenderer.invoke('desktop:document-commit', reservationId),
-  cancelDocument: (reservationId) => ipcRenderer.invoke('desktop:document-cancel', reservationId),
-  releaseDocument: () => ipcRenderer.invoke('desktop:document-release'),
+  commitDocument: (reservationId, slotId) => ipcRenderer.invoke(
+    'desktop:document-commit',
+    reservationId,
+    slotId,
+  ),
+  cancelDocument: (reservationId, slotId) => ipcRenderer.invoke(
+    'desktop:document-cancel',
+    reservationId,
+    slotId,
+  ),
+  releaseDocument: (slotId) => ipcRenderer.invoke('desktop:document-release', slotId),
   listSystemFonts: (options) => ipcRenderer.invoke('desktop:fonts-list', options),
   readSystemFont: (id) => ipcRenderer.invoke('desktop:fonts-read', id),
   ensureAgentHub: () => ipcRenderer.invoke('agent-hub:ensure'),

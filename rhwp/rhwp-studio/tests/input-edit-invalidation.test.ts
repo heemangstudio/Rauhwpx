@@ -241,10 +241,18 @@ test('document pagination은 120ms idle과 명시 boundary에서 flush된다', (
 
 test('문서 전환은 deferred·IME·iOS 입력 세션 상태를 격리한다', () => {
   const inputHandlerSource = readFileSync(new URL('../src/engine/input-handler.ts', import.meta.url), 'utf8');
-  const deactivateStart = inputHandlerSource.indexOf('deactivate(): void {');
-  const disposeStart = inputHandlerSource.indexOf('dispose(): void {', deactivateStart);
-  assert.ok(deactivateStart >= 0 && disposeStart > deactivateStart);
-  const deactivateSource = inputHandlerSource.slice(deactivateStart, disposeStart);
+  // deactivate 와 그것이 맡기는 정리 메서드만 본다 (세션 detach 는 살아 있는 문서라 조합을 확정한다).
+  const body = (signature: string): string => {
+    const start = inputHandlerSource.indexOf(signature);
+    assert.ok(start >= 0, `${signature} 를 찾지 못했다`);
+    return inputHandlerSource.slice(start, inputHandlerSource.indexOf('\n  }\n', start) + 4);
+  };
+  const deactivateSource = [
+    body('  deactivate(): void {'),
+    body('  private releaseDocumentView(): void {'),
+    body('  private resetInputSessionState(): void {'),
+  ].join('\n');
+  assert.match(deactivateSource, /this\.releaseDocumentView\(\);\s*this\.history\.clear\(this\.wasm\);/);
 
   assert.doesNotMatch(deactivateSource, /onCompositionEnd/,
     '이미 교체된 문서에 이전 문서의 preedit을 확정하면 안 된다');
