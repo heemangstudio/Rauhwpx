@@ -9,6 +9,7 @@ import { REGISTERED_FONTS } from './font-loader.ts';
 import { convertHftToOpenType } from './hft-font.ts';
 import { isHftBytes, registerHftOutlines } from './hft-glyphs.ts';
 import { normalizeMalformedCmapSentinels, repairUnderstatedCompositeBounds } from './sfnt-repair.ts';
+import { sfntMetricsSubset } from './sfnt-subset.ts';
 
 /** queryLocalFonts 반환 타입 (DOM 표준 미포함) */
 interface FontData {
@@ -169,6 +170,8 @@ interface SessionFontFaceEntry {
   record: LocalFontRecord;
   /** 가져온 파일만 보관한다. 데스크톱 face는 null이고 필요할 때 다시 읽는다. */
   bytes: ArrayBuffer | null;
+  /** 수식 literal 측정이 동기로 읽는 데스크톱 face의 메트릭 표 사본 */
+  literalBytes: ArrayBuffer | null;
   byteLength: number;
   face: FontFace;
 }
@@ -771,13 +774,14 @@ export async function registerLocalFontFace(
     }
     document.fonts.add(face);
     if (latest) document.fonts.delete(latest.face);
+    // 수식 PUA 측정은 HY 수식 서체의 cmap/glyf를 동기로 읽는다. 이 서체와 HFT 변환본만
+    // 사본을 유지하고 일반 데스크톱 face는 FontFace에 맡긴다.
+    const keepBytes = options.source !== 'desktop' || convertedFromHft
+      || normalizeFontAlias(record.family) === 'hyhwpeq';
     importedFontFaces.set(faceKey, {
       record,
-      // 수식의 PUA와 literal 측정은 cmap/glyf를 동기로 읽는다. 이 서체들과
-      // HFT 변환본만 사본을 유지하고 일반 데스크톱 face는 FontFace에 맡긴다.
-      bytes: options.source === 'desktop' && !convertedFromHft
-        && !['hyhwpeq', 'hcr batang', 'batang', 'times new roman'].includes(normalizeFontAlias(record.family))
-        ? null : bytes,
+      bytes: keepBytes ? bytes : null,
+      literalBytes: keepBytes ? null : equationLiteralBytes(record.family, bytes),
       byteLength: budgetBytes,
       face,
     });
@@ -789,6 +793,15 @@ export async function registerLocalFontFace(
   } catch (error) {
     return { ok: false, reason: 'load-failed', error: errorMessage(error) };
   }
+}
+
+/**
+ * 수식 literal 측정(createEquationLiteralFontResolver)은 cmap·maxp·head·hhea만 동기로 읽으므로
+ * 이 서체들은 메트릭 표만 남긴 사본을 둔다.
+ */
+function equationLiteralBytes(family: string, bytes: ArrayBuffer): ArrayBuffer | null {
+  if (!['hcr batang', 'batang', 'times new roman'].includes(normalizeFontAlias(family))) return null;
+  return sfntMetricsSubset(bytes).slice().buffer;
 }
 
 /** 이번 세션에 등록된 face(가져온 파일·데스크톱 글꼴)만 찾는다. 설치 목록 snapshot은 보지 않는다. */
@@ -1522,7 +1535,8 @@ export function getImportedLocalFontBytes(
       return distance(a) - distance(b);
     })[0]
     : record;
-  return importedFontFaces.get(localFontFaceKey(selected))?.bytes?.slice(0) ?? null;
+  const entry = importedFontFaces.get(localFontFaceKey(selected));
+  return (entry?.bytes ?? entry?.literalBytes)?.slice(0) ?? null;
 }
 
 /** 가져온 face가 실제로 등록됐는지 바이트 복사 없이 확인한다. */

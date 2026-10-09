@@ -42,6 +42,7 @@ import {
 } from './local-fonts.ts';
 import { hftWasmApiGeneration, registerHftOutlines } from './hft-glyphs.ts';
 import { isLegacyEquationFont } from './equation-font.ts';
+import { sfntMetricsSubset } from './sfnt-subset.ts';
 
 // ─── preload 계약 ─────────────────────────────────────────────
 
@@ -896,7 +897,7 @@ function registerFaceMetrics(
   const merged = pendingMetricAliases(faceKey, aliases);
   if (!merged) return { status: 'unchanged' };
   try {
-    const raw = api.register(new Uint8Array(bytes), JSON.stringify(Array.from(merged)), bold, italic);
+    const raw = api.register(sfntMetricsSubset(bytes), JSON.stringify(Array.from(merged)), bold, italic);
     const detail = safeJson(raw);
     const registered = !!(detail && typeof detail === 'object' && (detail as { registered?: unknown }).registered === true);
     if (registered) metricAliasesByFace.set(faceKey, merged);

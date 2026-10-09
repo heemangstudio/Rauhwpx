@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import {
   clearStoredLocalFonts,
@@ -26,6 +27,7 @@ import {
   type LocalFontSnapshot,
 } from '../src/core/local-fonts.ts';
 import { analyzeDocumentFonts } from '../src/core/document-font-status.ts';
+import { createEquationLiteralFontResolver } from '../src/core/equation-font.ts';
 import { fontFamilyChainForDisplay, prefersImportedHancomSubstitute } from '../src/core/font-substitution.ts';
 import { setHftWasmApi, takeHftOutlineChange } from '../src/core/hft-glyphs.ts';
 
@@ -430,27 +432,36 @@ test('글꼴 파일 일부가 실패해도 정상 face와 굵기를 보존하고
   }
 });
 
-test('데스크톱 수식 서체는 동기 측정용 바이트를 보존하고 일반 서체는 사본을 버린다', async () => {
+test('데스크톱 수식 서체는 동기 측정에 필요한 바이트만 보존하고 일반 서체는 사본을 버린다', async () => {
   const g = globalThis as TestGlobals & { FontFace?: unknown };
   const originalDocument = g.document;
   const originalFontFace = g.FontFace;
   resetLocalFontsForTests();
   g.FontFace = class { async load() { return this; } };
   g.document = { fonts: { add() {}, delete() { return true; } } };
+  const fixture = readFileSync(new URL('../../tests/fixtures/fonts/RHWPShapingFixture.ttf', import.meta.url));
+  const source = () => fixture.buffer.slice(fixture.byteOffset, fixture.byteOffset + fixture.byteLength);
   try {
     for (const family of ['HyhwpEQ', 'HCR Batang', 'Batang', 'Times New Roman', 'Noto Sans KR']) {
-      const bytes = createSfntWithNameRecords([
-        { nameId: 1, value: family }, { nameId: 2, value: 'Regular' },
-        { nameId: 4, value: family }, { nameId: 6, value: family.replaceAll(' ', '') },
-      ]);
-      const result = await registerLocalFontFace(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), {
-        source: 'desktop', fileName: `${family}.ttf`,
+      const result = await registerLocalFontFace(source(), {
+        source: 'desktop',
+        fileName: `${family}.ttf`,
+        names: { family, fullName: family, postscriptName: family.replaceAll(' ', ''), style: 'Regular', aliases: [family] },
       });
       assert.ok(result.ok);
       assert.equal(hasImportedLocalFontFace(family), true, 'loaded FontFace availability survives disposal of its JS byte copy');
       const retained = getImportedLocalFontBytes(family);
-      if (family === 'Noto Sans KR') assert.equal(retained, null);
-      else assert.deepEqual(new Uint8Array(retained!), bytes);
+      if (family === 'Noto Sans KR') {
+        assert.equal(retained, null);
+      } else if (family === 'HyhwpEQ') {
+        assert.deepEqual(new Uint8Array(retained!), new Uint8Array(fixture), 'PUA ink metrics read glyf from the full face');
+      } else {
+        assert.ok(retained!.byteLength < fixture.byteLength, 'literal faces keep only the tables the measurer reads');
+        const fromCopy = createEquationLiteralFontResolver(resolveLocalFont, getImportedLocalFontBytes);
+        const fromFile = createEquationLiteralFontResolver(resolveLocalFont, source);
+        for (const text of ['A', 'ió', 'é', '가']) assert.deepEqual(fromCopy(text), fromFile(text), text);
+        assert.ok(fromCopy('A'), 'covered literal resolves to the desktop face');
+      }
     }
   } finally {
     resetLocalFontsForTests();
