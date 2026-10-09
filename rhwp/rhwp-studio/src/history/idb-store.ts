@@ -2,6 +2,7 @@
  * 문서 이력 — IndexedDB + 메모리 폴백.
  * - 신규: IR 스냅샷 JSON(`CompareDocumentSnapshot`)으로 stable_id 보존.
  * - 레거시: HWP 바이트만 있던 항목은 비교 시 `compareDocuments`(alignment)로 폴백.
+ * - 메모리 폴백은 IndexedDB 를 못 연 세션에서만 쓴다. JSON 문자열로 두고 열 때 파싱한다.
  */
 
 import type { CompareDocumentSnapshot } from '@/compare/types';
@@ -18,6 +19,8 @@ const DB_VER = 1;
 const META = 'historyMeta';
 const BLOBS = 'historyBlobs';
 const MAX_SNAPSHOTS = 24;
+/** 메모리 폴백 스냅샷의 UTF-8 합계 상한. 가장 최근 스냅샷 하나는 크기와 무관하게 남긴다. */
+const MAX_MEMORY_SNAPSHOT_BYTES = 32 * 1024 * 1024;
 /** IR 스냅샷 JSON 은 수 MB 가 될 수 있어 일반 IndexedDB 작업보다 넉넉히 기다린다. */
 const SNAPSHOT_WRITE_TIMEOUT_MS = 15_000;
 
@@ -25,8 +28,7 @@ type MetaRow = DocHistoryEntryMeta;
 
 type MemEntry = {
   meta: MetaRow;
-  irSnapshot?: CompareDocumentSnapshot;
-  legacyBytes?: Uint8Array;
+  snapshotJson: string;
 };
 
 const memory = new Map<string, MemEntry>();
@@ -85,11 +87,7 @@ type BlobRow = { id: string; snapshotJson?: string; data?: ArrayBuffer };
 
 export async function getHistoryPayload(id: string): Promise<HistoryPayload | null> {
   const mem = memory.get(id);
-  if (mem) {
-    if (mem.irSnapshot) return { kind: 'ir', snapshot: mem.irSnapshot };
-    if (mem.legacyBytes) return { kind: 'legacy', bytes: mem.legacyBytes };
-    return null;
-  }
+  if (mem) return { kind: 'ir', snapshot: JSON.parse(mem.snapshotJson) as CompareDocumentSnapshot };
   return withDb(
     async (db) => {
       const v = await requestResult(
@@ -197,18 +195,23 @@ export async function saveHistoryIrSnapshot(
       // IndexedDB 는 열렸는데 기록이 실패·지연됐다. 메모리에만 두고 성공으로 알리면
       // 목록에도 없고 새로고침하면 사라지므로 실패를 그대로 알린다.
       if (error !== undefined) throw error;
-      while (memory.size >= MAX_SNAPSHOTS) {
-        const oldest = [...memory.entries()].sort((a, b) => a[1].meta.createdAt - b[1].meta.createdAt)[0];
-        if (oldest) memory.delete(oldest[0]);
-      }
-      memory.set(id, {
-        meta,
-        irSnapshot: JSON.parse(json) as CompareDocumentSnapshot,
-      });
+      memory.set(id, { meta, snapshotJson: json });
+      pruneMemorySnapshots();
       return meta;
     },
     { timeoutMs: SNAPSHOT_WRITE_TIMEOUT_MS },
   );
+}
+
+function pruneMemorySnapshots(): void {
+  let totalBytes = 0;
+  for (const entry of memory.values()) totalBytes += entry.meta.byteLength;
+  // Map 은 삽입 순서를 지키므로 앞쪽이 가장 오래된 스냅샷이다.
+  for (const [id, entry] of memory) {
+    if (memory.size <= 1 || (memory.size <= MAX_SNAPSHOTS && totalBytes <= MAX_MEMORY_SNAPSHOT_BYTES)) break;
+    memory.delete(id);
+    totalBytes -= entry.meta.byteLength;
+  }
 }
 
 export async function deleteHistorySnapshot(id: string): Promise<void> {
