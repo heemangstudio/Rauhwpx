@@ -9,7 +9,6 @@
 //! HWP5 의 밝기·대비 바이트 순서를 바로잡아 HWPX 와 같은 70/-50 으로 읽는다.
 
 use base64::Engine;
-use image::GenericImageView;
 use serde_json::Value;
 
 fn decode_data_uri(uri: &str) -> Option<(&str, Vec<u8>)> {

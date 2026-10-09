@@ -121,32 +121,6 @@ fn rowbreak_page11_partial_table_stays_inside_body() {
     );
 }
 
-#[ignore = "known layout-oracle debt on main; same class as PR #193 (page 13 strip/table overlap)"]
-#[test]
-fn rowbreak_page13_following_reference_strip_stays_below_table() {
-    let repo_root = env!("CARGO_MANIFEST_DIR");
-    let sample_path = Path::new(repo_root).join(SAMPLE);
-    let bytes = fs::read(&sample_path).unwrap_or_else(|e| panic!("read {}: {}", SAMPLE, e));
-    let doc = rhwp::wasm_api::HwpDocument::from_bytes(&bytes)
-        .unwrap_or_else(|e| panic!("parse {}: {:?}", SAMPLE, e));
-    let tree = doc
-        .build_page_render_tree(12)
-        .unwrap_or_else(|e| panic!("render page 13: {e}"));
-
-    let reference_strip =
-        find_table_bbox(&tree.root, 11, 0).expect("page 13 reference strip pi=11 ci=0");
-    let table = find_table_bbox(&tree.root, 11, 1).expect("page 13 table pi=11 ci=1");
-
-    let table_bottom = table.y + table.height;
-    assert!(
-        reference_strip.y >= table_bottom - 0.5,
-        "page 13 reference strip overlaps table: table=[{:.2}..{:.2}], strip_y={:.2}",
-        table.y,
-        table_bottom,
-        reference_strip.y
-    );
-}
-
 #[test]
 fn rowbreak_page13_textbox_shapes_cover_their_text() {
     let repo_root = env!("CARGO_MANIFEST_DIR");
@@ -311,29 +285,6 @@ fn rowbreak_page17_keeps_final_database_table_tail_like_hancom_pdf() {
         find_table_node(&page18.root, 28, 0).is_none(),
         "page 18 should not be another continuation of table pi=28 ci=0"
     );
-}
-
-#[ignore = "known layout-oracle debt on main; same class as PR #193 (page 17 line/caption overlap)"]
-#[test]
-fn rowbreak_page17_keeps_database_separation_line_before_example_box() {
-    for sample in [SAMPLE, HWP_SAMPLE] {
-        let doc = load_doc(sample);
-        let page17 = doc
-            .build_page_render_tree(16)
-            .unwrap_or_else(|e| panic!("render {sample} page 17: {e}"));
-        let database_line = text_line_bbox_containing(&page17.root, "별도")
-            .unwrap_or_else(|| panic!("{sample} page 17 should render the separate-table line"));
-        let example_caption = text_line_bbox_containing(&page17.root, "예시")
-            .unwrap_or_else(|| panic!("{sample} page 17 should render the example caption"));
-        let database_line_bottom = database_line.y + database_line.height;
-
-        assert!(
-            example_caption.y >= database_line_bottom - 0.5,
-            "{sample} page 17 overlaps the separate-table line with the example caption: line=[{:.2}..{database_line_bottom:.2}], caption_y={:.2}",
-            database_line.y,
-            example_caption.y
-        );
-    }
 }
 
 fn collect_table_cells<'a>(

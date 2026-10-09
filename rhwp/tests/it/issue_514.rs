@@ -68,15 +68,3 @@ fn issue_514_watermark_jpeg_converted_by_issue_938() {
         "복학원서 워터마크 JPEG 는 #938 전처리로 baked PNG 로 emit 되어야 함"
     );
 }
-
-#[test]
-fn issue_514_pcx_to_png_conversion_unit() {
-    // 직접 변환 함수 단위 검증 (svg.rs::pcx_bytes_to_png_bytes 가 pub(crate) 라
-    // 외부 접근 불가하므로, HWP 파일 단계에서 종합 검증으로 충분).
-    //
-    // 본 테스트는 `pcx_bytes_to_png_bytes` 가 paletted PCX (BIN0001.PCX) 를
-    // 변환할 수 있는지 확인하는 종합 테스트와 중복. issue_514_pcx_logo_converted_to_png
-    // 가 이미 변환 결과를 검증하므로 별도 단위 테스트는 생략.
-    //
-    // 추후 RGB PCX fixture 추가 시 단위 테스트 신설 권장.
-}

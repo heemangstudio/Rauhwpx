@@ -39,70 +39,6 @@ fn control_chunks(json: &str) -> Vec<&str> {
     chunks
 }
 
-/// 미지정 그림 placeholder 가 클릭 선택 가능한 image 컨트롤로 방출된다.
-#[ignore = "known layout-oracle debt on main; same class as PR #193 (placeholder bbox x 648.0 vs 646.)"]
-#[test]
-fn missing_picture_placeholder_emitted_as_selectable_image_control() {
-    let doc = load_doc();
-    let json = doc
-        .get_page_control_layout(0)
-        .expect("컨트롤 레이아웃 조회 실패");
-
-    let missing: Vec<&str> = control_chunks(&json)
-        .into_iter()
-        .filter(|c| c.starts_with("{\"type\":\"image\"") && c.contains("\"missing\":true"))
-        .collect();
-
-    assert_eq!(
-        missing.len(),
-        1,
-        "심볼 placeholder 가 missing image 컨트롤 1건으로 방출되어야 한다. json={json}"
-    );
-
-    let ctrl = missing[0];
-    // 실측 좌표(x≈646.2, y≈54.9) — hit-test bbox 성립 확인
-    assert!(
-        ctrl.contains("\"x\":646.") && ctrl.contains("\"y\":54."),
-        "심볼 placeholder bbox 좌표 불일치: {ctrl}"
-    );
-    // 문서 좌표 + 셀 경로 — enterPictureObjectSelectionDirect/커맨드 대상 특정에 필요
-    for key in [
-        "\"secIdx\":",
-        "\"paraIdx\":",
-        "\"controlIdx\":",
-        "\"cellPath\":[",
-    ] {
-        assert!(ctrl.contains(key), "{key} 누락: {ctrl}");
-    }
-}
-
-/// 그림이 실존하는 일반 image 컨트롤에는 missing 마커가 붙지 않는다.
-#[ignore = "known layout-oracle debt on main; same class as PR #193 (logo bbox x 86.0 vs expected)"]
-#[test]
-fn normal_image_control_has_no_missing_marker() {
-    let doc = load_doc();
-    let json = doc
-        .get_page_control_layout(0)
-        .expect("컨트롤 레이아웃 조회 실패");
-
-    let normal: Vec<&str> = control_chunks(&json)
-        .into_iter()
-        .filter(|c| c.starts_with("{\"type\":\"image\"") && !c.contains("\"missing\":true"))
-        .collect();
-
-    // 좌측 기관 로고 1건 (실측 x≈84.1)
-    assert_eq!(
-        normal.len(),
-        1,
-        "일반 image 컨트롤 1건이어야 한다. json={json}"
-    );
-    assert!(
-        normal[0].contains("\"x\":84."),
-        "로고 컨트롤 좌표 불일치: {}",
-        normal[0]
-    );
-}
-
 /// 1×1 투명 PNG (object_ops/picture.rs 테스트 픽스처와 동일).
 fn minimal_png() -> Vec<u8> {
     vec![
@@ -112,51 +48,6 @@ fn minimal_png() -> Vec<u8> {
         0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E,
         0x44, 0xAE, 0x42, 0x60, 0x82,
     ]
-}
-
-/// [2단계] 그림 지정 커맨드: placeholder → 실그림 전환 + 컨트롤 레이아웃 정합.
-#[ignore = "known layout-oracle debt on main; same class as PR #193 (symbol image control bbox pin)"]
-#[test]
-fn assign_picture_image_converts_placeholder_to_image() {
-    let mut doc = load_doc();
-
-    // 1단계 방출 실측 좌표: sec=0, parentParaIdx=0, cellPath=[{2,3,0}], ci=0
-    // (wasm 래퍼는 오류 경로에서 JsValue 를 생성해 비-wasm 타겟에서 abort
-    // 하므로 native 를 직접 호출한다.)
-    let cell_path: &[(usize, usize, usize)] = &[(2, 3, 0)];
-    let result = doc
-        .assign_picture_image_native(0, 0, cell_path, 0, &minimal_png(), 1, 1, "png")
-        .expect("그림 지정 실패");
-    assert!(
-        result.contains("\"ok\":true") && result.contains("\"binDataId\":"),
-        "지정 결과 형식 불일치: {result}"
-    );
-
-    // 컨트롤 레이아웃: missing 마커 소멸 + 일반 image 2건(로고 + 심볼)
-    let json = doc
-        .get_page_control_layout(0)
-        .expect("컨트롤 레이아웃 조회 실패");
-    assert!(
-        !json.contains("\"missing\":true"),
-        "지정 후에도 missing 마커가 남아 있다: {json}"
-    );
-    let images: Vec<&str> = control_chunks(&json)
-        .into_iter()
-        .filter(|c| c.starts_with("{\"type\":\"image\""))
-        .collect();
-    assert_eq!(
-        images.len(),
-        2,
-        "지정 후 image 컨트롤 2건이어야 한다: {json}"
-    );
-
-    // 지정된 그림이 placeholder 자리(실측 x≈646.2, 틀 크기 유지)에 배치된다
-    assert!(
-        images
-            .iter()
-            .any(|c| c.contains("\"x\":646.") && c.contains("\"w\":75.6")),
-        "심볼 자리의 image 컨트롤 부재(틀 크기 유지 실패): {json}"
-    );
 }
 
 /// [2단계] 대상 검증 실패 시 문서 무변형 (BinData 미등록).

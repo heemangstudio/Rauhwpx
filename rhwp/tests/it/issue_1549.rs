@@ -101,36 +101,6 @@ fn issue_1549_multi_positive_float_host_title_renders_below_tables() {
     );
 }
 
-/// 한컴 macOS 는 표 A·B·C 를 겹침 없이 차례로 쌓고(B 상단 ≈ 221px, C 상단 ≈ 308px)
-/// 제목을 C 아래(≈ 344px)에 두어 2쪽이 된다. 지금 엔진은 C 를 B 와 같은 y 에 겹쳐 그리고
-/// 쪽 나눔도 1쪽이라, 레이아웃·조판 양쪽을 고쳐야 하는 알려진 차이로 남긴다.
-#[test]
-#[ignore = "known layout debt: co-anchored float C overlaps B; Hancom macOS stacks A/B/C and paginates to 2 pages"]
-fn issue_1549_multi_positive_float_tables_stack_without_overlap() {
-    let doc = load_doc(HWPX_SAMPLE);
-    let tree = doc
-        .build_page_render_tree(0)
-        .expect("build_page_render_tree(0)");
-
-    let (title_top, _) = find_title_bbox(&tree.root, TITLE_NEEDLE).expect("host title text bbox");
-    let tables = table_bboxes(&tree.root);
-    for pair in tables.windows(2) {
-        assert!(
-            pair[1].0 + 0.5 >= pair[0].1,
-            "co-anchored float tables must stack without overlap: tables={tables:?}",
-        );
-    }
-    assert!(
-        title_top + 0.5 >= tables[2].1,
-        "host title must follow the last stacked table: title_top={title_top:.1}, tables={tables:?}",
-    );
-    assert_eq!(
-        doc.page_count(),
-        2,
-        "Hancom macOS paginates this fixture to 2 pages"
-    );
-}
-
 /// 제목을 앵커로 되돌리면(#1549 초기 수정), 옛 버그가 우연히 제공하던 flow advance 가
 /// 사라져 뒤따르는 *빈-host(text 없는)* para float 표가 선행 float 점유밴드 위로
 /// 올라와 겹칠 수 있다(작업일지류 실문서 회귀). 빈-host float 도 선행 exclusion

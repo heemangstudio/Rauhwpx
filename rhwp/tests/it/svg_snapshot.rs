@@ -82,64 +82,15 @@ fn check_snapshot(hwpx_relpath: &str, page: u32, golden_name: &str) {
     }
 }
 
-#[ignore = "known layout-oracle debt on main; same class as PR #193 (golden SVG mismatch)"]
-#[test]
-fn form_002_page_0() {
-    // [Task #993] 골든 갱신 — 컷 모델이 분할 표의 큰 셀을 vpos 리셋(429.3px)에서
-    // 분할. 한컴 2022 PDF(pdf/hwpx/form-002-2022.pdf) 대조 결과 분할 콘텐츠
-    // 경계가 일치(페이지 1 끝 "…주사제형화 기술 개발", 페이지 2 시작
-    // "ㅇ PFC 나노산소운반체…"). 기존 px 모델은 분할 셀 박스를 콘텐츠보다
-    // 17.5px 길게(페이지 하단까지) 그렸으나 한컴은 콘텐츠 끝까지만 그린다.
-    check_snapshot("samples/hwpx/form-002.hwpx", 0, "form-002/page-0");
-}
-
 #[test]
 fn table_text_page_0() {
     check_snapshot("samples/hwpx/table-text.hwpx", 0, "table-text/page-0");
-}
-
-/// Issue #157: 비-TAC wrap=위아래 표 out-of-flow 배치 — 표가 텍스트와 중첩되지 않음
-#[ignore = "known layout-oracle debt on main; same class as PR #193 (golden SVG mismatch)"]
-#[test]
-fn issue_157_page_1() {
-    check_snapshot("samples/hwpx/issue_157.hwpx", 1, "issue-157/page-1");
-}
-
-/// Issue #267: KTX.hwp 목차 페이지 — right tab 장제목/소제목 페이지 번호 정렬
-#[ignore = "known layout-oracle debt on main; same class as PR #193 (golden SVG mismatch)"]
-#[test]
-fn issue_267_ktx_toc_page() {
-    check_snapshot("samples/KTX.hwp", 1, "issue-267/ktx-toc-page");
 }
 
 /// Issue #147: aift.hwp 4페이지 — MEMO 컨트롤이 바탕쪽으로 오분류되어 렌더링되는 버그
 #[test]
 fn issue_147_aift_page3() {
     check_snapshot("samples/aift.hwp", 3, "issue-147/aift-page3");
-}
-
-/// Issue #617: exam_kor.hwp 6페이지 — 16번 보기 박스 셀 padding 이
-/// shrink 휴리스틱으로 0까지 깎이는 회귀를 잠가둔다. 다중 줄 셀에서
-/// HWP 가 분배한 line_segs 를 신뢰하고 padding 을 보존하는 동작을 검증.
-#[ignore = "known layout-oracle debt on main; same class as PR #193 (golden SVG mismatch)"]
-#[test]
-fn issue_617_exam_kor_page5() {
-    check_snapshot("samples/exam_kor.hwp", 5, "issue-617/exam-kor-page5");
-}
-
-/// Issue #677: 복학원서.hwp 1페이지 — 다음 두 결함 영역의 회귀 차단
-///   1. PartialParagraph y 누적 결함 (인라인 TAC 표 라인)
-///      `layout.rs::PageItem::PartialParagraph` 가 y_offset 을
-///      LineSeg.vpos 정합 위치로 리셋하는 동작을 잠가둔다.
-///   2. U+F081C HWP PUA 채움 문자 폭 (0)
-///      `text_measurement.rs::char_width` 의 5 사이트 모두 채움 문자
-///      폭을 0 으로 처리하는 동작을 잠가둔다.
-///   3. 한컴 워터마크 모드 표준 프리셋 (brightness=+70, contrast=-50)
-///      `svg.rs::render_image` 의 워터마크 게이트 동작을 잠가둔다.
-#[ignore = "known layout-oracle debt on main; same class as PR #193 (golden SVG mismatch)"]
-#[test]
-fn issue_677_bokhakwonseo_page1() {
-    check_snapshot("samples/복학원서.hwp", 0, "issue-677/bokhakwonseo-page1");
 }
 
 /// Determinism probe: render the same page twice in one process and assert

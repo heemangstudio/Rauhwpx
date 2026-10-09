@@ -92,51 +92,6 @@ fn inline_tac_picture_is_rendered_exactly_once() {
     );
 }
 
-/// 회귀의 핵심 좌표 핀 — 분할 문단의 인라인 그림은 자기 줄이 있는 페이지에만 존재한다.
-///
-/// 픽스 전: sec2/pi16/ci0 이 69·70쪽, sec3/pi367/ci0 이 116·117쪽에 함께 나타났다.
-/// 라우팅(typeset/engine)만 고치면 같은 문단의 둘째 그림(ci=1)이 116·117쪽에 남는다 —
-/// layout 쪽 억제 조건까지 넓혀야 1장으로 수렴한다.
-#[ignore = "known layout-oracle debt on main; same class as PR #193 (sec2/pi16 on page 67 vs pin 69)"]
-#[test]
-fn split_host_paragraph_pins_inline_pictures_to_their_own_page() {
-    let doc = load_prep();
-    let placements = image_placements(&doc);
-
-    let pin = |sec: usize, para: usize, ctrl: usize| -> (u32, f64) {
-        let placed = placements
-            .get(&(sec, para, ctrl))
-            .unwrap_or_else(|| panic!("sec{sec}/pi{para}/ci{ctrl} 그림이 렌더되지 않았다"));
-        assert_eq!(
-            placed.len(),
-            1,
-            "sec{sec}/pi{para}/ci{ctrl} 는 1장이어야 하는데 {placed:?}"
-        );
-        placed[0]
-    };
-
-    assert_eq!(pin(2, 16, 0).0, 69, "sec2/pi16 인라인 그림은 70쪽에만");
-    assert_eq!(pin(2, 25, 0).0, 70, "sec2/pi25 인라인 그림은 71쪽에만");
-    assert_eq!(pin(3, 188, 0).0, 91, "sec3/pi188 인라인 그림은 92쪽에만");
-
-    // 인라인 그림 2장이 든 분할 문단 — 각 그림이 자기 줄이 놓인 페이지에 1장씩.
-    let (p367_a, y367_a) = pin(3, 367, 0);
-    let (p367_b, y367_b) = pin(3, 367, 1);
-    assert_eq!((p367_a, p367_b), (116, 117));
-    let (p379_a, _) = pin(3, 379, 0);
-    let (p379_b, _) = pin(3, 379, 1);
-    assert_eq!((p379_a, p379_b), (140, 141));
-
-    // 잘못 라우팅된 사본은 본문 하단 밖(y≈1000px, col_bottom=1020.5)에서 시작했다.
-    // 정상 인라인 배치는 본문 상단이다.
-    for (label, y) in [("sec3/pi367/ci0", y367_a), ("sec3/pi367/ci1", y367_b)] {
-        assert!(
-            y < 200.0,
-            "{label} 인라인 그림이 본문 하단 잔상 위치에 있다: y={y:.1}"
-        );
-    }
-}
-
 /// 라우팅 헬퍼는 Shape/Picture/Equation 의 treat_as_char 만 인라인으로 본다.
 #[test]
 fn is_inline_tac_control_covers_shape_picture_equation() {

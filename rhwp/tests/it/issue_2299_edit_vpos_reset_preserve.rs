@@ -238,16 +238,12 @@ fn edit_above_tac_host_does_not_pin_follower() {
         "samples/tac-verify/scenario-a-before.hwp",
         "samples/test-image.hwp",
     ] {
-        let Ok(bytes) = std::fs::read(sample) else {
-            continue;
-        };
-        let Ok(mut doc) = HwpDocument::from_bytes(&bytes) else {
-            continue;
-        };
+        let bytes = std::fs::read(sample).unwrap_or_else(|e| panic!("read {sample}: {e}"));
+        let mut doc =
+            HwpDocument::from_bytes(&bytes).unwrap_or_else(|e| panic!("parse {sample}: {e:?}"));
         let pages_before = doc.page_count();
-        if doc.insert_text_native(0, 0, 0, "X").is_err() {
-            continue;
-        }
+        doc.insert_text_native(0, 0, 0, "X")
+            .unwrap_or_else(|e| panic!("insert {sample}: {e:?}"));
         assert_no_mid_freeze(&doc, sample);
         assert_eq!(
             doc.page_count(),
