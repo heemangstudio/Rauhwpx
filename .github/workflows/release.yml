@@ -198,12 +198,12 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${EXPECTED_ARCH}" = arm64 ]; then
-            test -f release/Hamaeditor-*-arm64.AppImage
-            test -f release/Hamaeditor-*-arm64.deb
+            test -f release/HamaEditor-*-arm64.AppImage
+            test -f release/HamaEditor-*-arm64.deb
             test -f release/latest-linux-arm64.yml
           else
-            test -f release/Hamaeditor-*-x86_64.AppImage
-            test -f release/Hamaeditor-*-amd64.deb
+            test -f release/HamaEditor-*-x86_64.AppImage
+            test -f release/HamaEditor-*-amd64.deb
             test -f release/latest-linux.yml
           fi
 
@@ -268,4 +268,4 @@ jobs:
             "${artifacts[@]}" \
             --verify-tag \
             --generate-notes \
-            --title "Hamaeditor ${GITHUB_REF_NAME}"
+            --title "HamaEditor ${GITHUB_REF_NAME}"

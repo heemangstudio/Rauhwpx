@@ -397,7 +397,7 @@ test('argv carries the model, thinking level, session and system brief', () => {
   ]);
   assert.equal(argv[argv.indexOf('--session-dir') + 1], path.join('/pi', 'sessions'));
   assert.equal(argv[argv.indexOf('--session-id') + 1], 'sess-1');
-  assert.match(argv[argv.indexOf('--system-prompt') + 1], /^You are the document agent inside Hamaeditor/);
+  assert.match(argv[argv.indexOf('--system-prompt') + 1], /^You are the document agent inside HamaEditor/);
   assert.equal(argv[argv.indexOf('--exclude-tools') + 1], 'bash');
   assert.equal(argv.includes('--append-system-prompt'), false);
 });
@@ -467,7 +467,7 @@ test('a spawn reads its system prompt from a session file instead of the command
     session.sendUserMessage('edit');
     const value = spawns[0].argv[spawns[0].argv.indexOf('--system-prompt') + 1];
     assert.equal(path.dirname(value), path.join(piRoot, 'sessions'));
-    assert.match(fs.readFileSync(value, 'utf8'), /^You are the document agent inside Hamaeditor[\s\S]*Mode: 전체/);
+    assert.match(fs.readFileSync(value, 'utf8'), /^You are the document agent inside HamaEditor[\s\S]*Mode: 전체/);
     session.dispose();
   } finally {
     fs.rmSync(piRoot, { recursive: true, force: true });

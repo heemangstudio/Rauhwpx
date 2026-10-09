@@ -1,5 +1,5 @@
 // 컨텍스트 메뉴 관리
-// - HWP/HWPX 링크 우클릭 → "Hamaeditor로 열기"
+// - HWP/HWPX 링크 우클릭 → "HamaEditor로 열기"
 
 import { openViewer } from './viewer-launcher.js';
 

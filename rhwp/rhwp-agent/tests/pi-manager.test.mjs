@@ -427,7 +427,7 @@ test('concurrent installs share a single npm run', async () => {
 test('Windows Pi npm install exposes node for native postinstall under Electron', async () => {
   const rootDir = await tmpRoot();
   const prefixDir = path.join(rootDir, 'prefix');
-  const electron = path.join(rootDir, 'Hamaeditor.exe');
+  const electron = path.join(rootDir, 'HamaEditor.exe');
   const { spawns, spawnProcess } = fakeSpawner(installer(prefixDir));
   const manager = createPiManager({
     rootDir,
@@ -446,7 +446,7 @@ test('Windows Pi npm install exposes node for native postinstall under Electron'
   assert.equal(spawns[0].options.env.npm_node_execpath, electron);
   assert.equal(spawns[0].options.env.PATH.startsWith(path.join(rootDir, 'node-host')), true);
   assert.equal(
-    await fs.readFile(path.join(rootDir, 'node-host', 'node.cmd'), 'utf8').then((body) => body.includes('Hamaeditor.exe')),
+    await fs.readFile(path.join(rootDir, 'node-host', 'node.cmd'), 'utf8').then((body) => body.includes('HamaEditor.exe')),
     true,
   );
 
@@ -463,7 +463,7 @@ test('Windows Pi cancel during node-host setup does not start npm', async () => 
     rootDir,
     spawnProcess,
     platform: 'win32',
-    nodeCommand: path.join(rootDir, 'Hamaeditor.exe'),
+    nodeCommand: path.join(rootDir, 'HamaEditor.exe'),
     baseEnv: { PATH: 'C:\\Windows\\System32' },
     openRouter: fakeOpenRouter(),
     fetchImpl: offlineFetch,

@@ -61,15 +61,15 @@ function lyingLstatFs(target, overrides = {}) {
 }
 
 test('the bundled npm launcher uses the current Node-compatible executable', () => {
-  const launch = bundledNpmLaunch({ nodeCommand: 'Hamaeditor.exe' });
-  assert.equal(launch.command, 'Hamaeditor.exe');
+  const launch = bundledNpmLaunch({ nodeCommand: 'HamaEditor.exe' });
+  assert.equal(launch.command, 'HamaEditor.exe');
   assert.match(launch.leadingArgs[0], /npm[/\\]bin[/\\]npm-cli\.js$/);
 });
 
 test('Windows Electron hosts get a node.cmd shim and npm_node_execpath', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-node-host-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const electron = path.join(root, 'Hamaeditor.exe');
+  const electron = path.join(root, 'HamaEditor.exe');
   assert.equal(isNodeBinary(electron), false);
   assert.equal(nodeHostNeedsShim('win32', electron), true);
   assert.equal(nodeHostShimFileName('win32'), 'node.cmd');
@@ -77,7 +77,7 @@ test('Windows Electron hosts get a node.cmd shim and npm_node_execpath', async (
   assert.equal(path.basename(shim), 'node.cmd');
   const body = await fs.readFile(shim, 'utf8');
   assert.match(body, /ELECTRON_RUN_AS_NODE=1/);
-  assert.match(body, /Hamaeditor\.exe/);
+  assert.match(body, /HamaEditor\.exe/);
   const env = applyNodeHostEnv({ PATH: 'C:\\Windows\\System32' }, {
     nodeCommand: electron, shimDir: root, platform: 'win32',
   });
@@ -88,7 +88,7 @@ test('Windows Electron hosts get a node.cmd shim and npm_node_execpath', async (
 
 test('a real Node host on Unix does not need a PATH shim', () => {
   assert.equal(nodeHostNeedsShim('darwin', '/usr/bin/node'), false);
-  assert.equal(nodeHostNeedsShim('darwin', '/Applications/Hamaeditor.app/Contents/MacOS/Hamaeditor'), true);
+  assert.equal(nodeHostNeedsShim('darwin', '/Applications/HamaEditor.app/Contents/MacOS/HamaEditor'), true);
 });
 
 test('a failed node-host write is retried on the next ensure', async (t) => {
@@ -97,7 +97,7 @@ test('a failed node-host write is retried on the next ensure', async (t) => {
   let attempts = 0;
   const ensure = createNodeHost({
     rootDir: root,
-    nodeCommand: path.join(root, 'Hamaeditor.exe'),
+    nodeCommand: path.join(root, 'HamaEditor.exe'),
     platform: 'win32',
     writeFile: async (file, body) => {
       attempts += 1;

@@ -307,7 +307,7 @@ test('Windows Python discovery prefers a configured or packaged interpreter', as
   const checked = [];
   const result = await resolvePythonInvocation({
     platform: 'win32',
-    executablePath: 'C:\\Program Files\\Hamaeditor\\Hamaeditor.exe',
+    executablePath: 'C:\\Program Files\\HamaEditor\\HamaEditor.exe',
     sourceEnv: {
       RHWP_BUNDLED_PYTHON: configured,
       PATH: 'C:\\Windows;C:\\Python',

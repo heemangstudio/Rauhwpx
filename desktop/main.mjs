@@ -127,7 +127,7 @@ function sessionForEvent(event) {
   return sessions.sessionForSender(event.sender);
 }
 
-app.setName('Hamaeditor');
+app.setName('HamaEditor');
 if (!app.isPackaged) {
   const developmentUserData = process.env.RHWP_DESKTOP_USER_DATA
     ? resolve(process.env.RHWP_DESKTOP_USER_DATA)
@@ -600,7 +600,7 @@ let updateCheckPromise = null;
 async function showUpToDate() {
   await dialog.showMessageBox({
     type: 'info',
-    message: 'Hamaeditor is up to date',
+    message: 'HamaEditor is up to date',
     detail: `Version ${app.getVersion()} is the latest release.`,
     buttons: ['OK'],
   });
@@ -627,7 +627,7 @@ async function checkForDebUpdates({ manual }) {
   const asset = selectDebAsset(release?.assets, process.arch);
   const { response: choice } = await dialog.showMessageBox({
     type: 'info',
-    message: `Hamaeditor ${String(release.tag_name).replace(/^v/i, '')} is available`,
+    message: `HamaEditor ${String(release.tag_name).replace(/^v/i, '')} is available`,
     detail: `You are running version ${app.getVersion()}. Download the signed Debian package and install it with your system package manager.`,
     buttons: ['Open download page', 'Cancel'],
     defaultId: 0,
@@ -653,7 +653,7 @@ function configureAutoUpdater() {
     if (autoUpdater.autoDownload || (!manualUpdateCheck && !linuxDeb)) return;
     void dialog.showMessageBox({
       type: 'info',
-      message: `Hamaeditor ${info?.version ?? ''} is available`,
+      message: `HamaEditor ${info?.version ?? ''} is available`,
       detail: linuxDeb
         ? `You are running version ${app.getVersion()}. Download the signed Debian package from Releases.`
         : `You are running version ${app.getVersion()}. Download the installer now?`,
@@ -743,7 +743,7 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
     : null;
   const window = new BrowserWindow({
     ...(restoredFrame ? restoredFrame.bounds : { ...cascadedWindowPosition(), width: 1440, height: 920 }),
-    title: 'Hamaeditor',
+    title: 'HamaEditor',
     minWidth: 900,
     minHeight: 640,
     show: false,
@@ -869,7 +869,7 @@ async function createWindow(launch = launchRequest(), { generatedDocument = null
           minWidth: 480,
           minHeight: 360,
           autoHideMenuBar: true,
-          title: 'Hamaeditor',
+          title: 'HamaEditor',
           webPreferences: {
             preload: PRELOAD_PATH,
             contextIsolation: true,
@@ -946,7 +946,7 @@ function queueLaunch(request) {
 }
 
 function showLaunchError(error) {
-  dialog.showErrorBox('Hamaeditor could not open', error instanceof Error ? error.message : String(error));
+  dialog.showErrorBox('HamaEditor could not open', error instanceof Error ? error.message : String(error));
 }
 
 ipcMain.handle('desktop:get-unique-installs', async (event) => {
@@ -1037,7 +1037,7 @@ ipcMain.handle('desktop:pick-native-open-file', async (event, options = {}) => {
   }
   const picked = await dialog.showOpenDialog(window, {
     ...(defaultPath ? { defaultPath } : {}),
-    filters: [{ name: 'HWP/HWPX/HML documents and Hamaeditor history', extensions: ['hwp', 'hwpx', 'hml', 'rhwpx'] }],
+    filters: [{ name: 'HWP/HWPX/HML documents and HamaEditor history', extensions: ['hwp', 'hwpx', 'hml', 'rhwpx'] }],
     properties: ['openFile'],
   });
   if (picked.canceled || !picked.filePaths[0]) return null;
@@ -1054,7 +1054,7 @@ ipcMain.handle('desktop:pick-legacy-history-folder', async (event) => {
   const window = BrowserWindow.fromWebContents(event.sender);
   if (!window) throw new Error('Legacy history import sender window is unavailable');
   const picked = await dialog.showOpenDialog(window, {
-    title: 'Import legacy Hamaeditor history folder',
+    title: 'Import legacy HamaEditor history folder',
     properties: ['openDirectory'],
   });
   if (picked.canceled || !picked.filePaths[0]) return null;
@@ -1102,7 +1102,7 @@ ipcMain.handle('desktop:pick-native-save-file', async (event, options = {}) => {
   const picked = await dialog.showSaveDialog(window, {
     defaultPath: suggestedStem,
     filters: [{
-      name: extension === 'rhwpx' ? 'Hamaeditor history archive' : `${extension.toUpperCase()} document`,
+      name: extension === 'rhwpx' ? 'HamaEditor history archive' : `${extension.toUpperCase()} document`,
       extensions: [extension],
     }],
     properties: ['showOverwriteConfirmation', 'createDirectory'],
@@ -1273,7 +1273,7 @@ ipcMain.handle('desktop:close-response', async (event, requestId, allowClose) =>
       console.warn('[hamaeditor] document close failed:', error);
       await dialog.showMessageBox({
         type: 'warning',
-        message: 'Hamaeditor could not close the document',
+        message: 'HamaEditor could not close the document',
         detail: error?.message ?? String(error),
         buttons: ['OK'],
       });

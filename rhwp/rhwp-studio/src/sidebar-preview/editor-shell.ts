@@ -18,7 +18,7 @@ export function mountEditorShell(report: (message: string) => void, eventBus: Ev
   if (!header || !footer || !editor) throw new Error('Production editor shell markup is missing');
 
   document.body.classList.add('preview-editor');
-  document.title = 'Editor shell preview · Hamaeditor';
+  document.title = 'Editor shell preview · HamaEditor';
   const visibleTitle = header.querySelector<HTMLElement>('#editor-document-title');
   if (visibleTitle) {
     visibleTitle.textContent = '사업 제안서.hwpx';

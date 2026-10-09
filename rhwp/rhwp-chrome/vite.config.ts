@@ -7,7 +7,7 @@ const currentDir = import.meta.dirname;
 // rhwp-studio를 Chrome 확장용으로 빌드
 // 산출물: rhwp-chrome/dist/ → viewer.html + JS/CSS + WASM + 폰트
 
-// Display the Hamaeditor product version; the extension manifest keeps its own package version.
+// Display the HamaEditor product version; the extension manifest keeps its own package version.
 const appPackage = JSON.parse(
   readFileSync(resolve(currentDir, '..', '..', 'package.json'), 'utf-8'),
 );

@@ -115,8 +115,8 @@ test('Deb update discovery compares stable versions and selects the native archi
   assert.equal(isNewerStableVersion('v0.1.11', '0.1.11'), false);
   assert.equal(isNewerStableVersion('v0.2.0-beta.1', '0.1.11'), false);
   const assets = [
-    { name: 'Hamaeditor-0.2.0-amd64.deb', browser_download_url: 'https://github.com/example/amd64' },
-    { name: 'Hamaeditor-0.2.0-arm64.deb', browser_download_url: 'https://github.com/example/arm64' },
+    { name: 'HamaEditor-0.2.0-amd64.deb', browser_download_url: 'https://github.com/example/amd64' },
+    { name: 'HamaEditor-0.2.0-arm64.deb', browser_download_url: 'https://github.com/example/arm64' },
   ];
   assert.equal(selectDebAsset(assets, 'x64')?.name, assets[0].name);
   assert.equal(selectDebAsset(assets, 'arm64')?.name, assets[1].name);

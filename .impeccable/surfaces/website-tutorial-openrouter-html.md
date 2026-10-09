@@ -8,11 +8,11 @@ related_targets: []
 # OpenRouter connection tutorial
 
 - Scope: `website/tutorial-openrouter.html`; Read mode.
-- Audience: Korean Hamaeditor users who need a funded OpenRouter account before they can use Pi.
-- Job: understand the complete setup route without losing their place between OpenRouter and Hamaeditor.
-- Primary action: fund OpenRouter first, return to Hamaeditor, then complete Pi authentication through `OpenRouter OAuth`.
+- Audience: Korean HamaEditor users who need a funded OpenRouter account before they can use Pi.
+- Job: understand the complete setup route without losing their place between OpenRouter and HamaEditor.
+- Primary action: fund OpenRouter first, return to HamaEditor, then complete Pi authentication through `OpenRouter OAuth`.
 - Direction: an eight-step sequential instruction ledger (grounded structure 3; seed `71cb648b`) in the established cream-paper and carbon-ink public website world.
-- Memorable moment: a full-width dark handoff marks the exact change from OpenRouter funding to Hamaeditor authentication.
+- Memorable moment: a full-width dark handoff marks the exact change from OpenRouter funding to HamaEditor authentication.
 - Review disposition: PASS — ship.
 
 ## Required proof
@@ -28,6 +28,6 @@ related_targets: []
 
 - The first viewport pairs the large Korean title and two clear actions with a compact two-part route summary.
 - Precise rules, restrained numbered circles, and large browser captures make the tutorial read like annotated printed proof. Screenshots remain attached to their instructions rather than becoming a detached gallery.
-- The route stays linear: OpenRouter signup and funding occupy steps 1–6, the dark handoff sends readers back to Hamaeditor, and Pi OAuth closes steps 7–8.
+- The route stays linear: OpenRouter signup and funding occupy steps 1–6, the dark handoff sends readers back to HamaEditor, and Pi OAuth closes steps 7–8.
 - On narrow screens, each screenshot preserves its desktop proof scale inside a keyboard-focusable horizontal-scroll region. Captions explicitly announce the behavior, and every proof retains a separate `크게 보기` link.
 - Keep the established cream paper, carbon ink, Korean-first copy, sticky masthead, and restrained motion. Do not replace the ledger with generic help-center cards, crop away named controls, or fabricate UI beyond the supplied captures.

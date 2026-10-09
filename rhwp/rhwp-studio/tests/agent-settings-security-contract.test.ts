@@ -135,7 +135,7 @@ test('AI 기본 설정은 Apply 전까지 초안이고 성공 후 사이드바�
 
 test('앱 전용 지시는 에이전트 변경안을 사용자 승인 전까지 분리한다', () => {
   assert.match(settings, /createSection\('지시'\)/);
-  assert.doesNotMatch(settings, /Hamaeditor 채팅에만 적용됩니다/);
+  assert.doesNotMatch(settings, /HamaEditor 채팅에만 적용됩니다/);
   assert.match(settings, /agent-instructions-draft/);
   assert.match(settings, /bridge\.confirmAgentInstructionsDraft\(draft\)/);
   assert.match(settings, /bridge\.rejectAgentInstructionsDraft\(draft\)/);

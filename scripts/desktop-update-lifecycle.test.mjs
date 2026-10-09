@@ -201,7 +201,7 @@ for (const failure of ['throw', 'reject', 'native error']) {
     await tick();
     assert.equal(f.dialogs.length, 2);
     assert.match(f.dialogs[1].message, /could not install/);
-    assert.match(f.dialogs[1].detail, /Restart Hamaeditor/);
+    assert.match(f.dialogs[1].detail, /Restart HamaEditor/);
     assert.ok(f.calls.includes('exit:1'));
     await f.lifecycle.offerInstall();
     f.app.quit();

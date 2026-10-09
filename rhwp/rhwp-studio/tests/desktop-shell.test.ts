@@ -190,7 +190,7 @@ test('SessionManager removal remains safe after webContents destruction', () => 
 test('launch routing accepts only supported document paths', () => {
   const workDir = path.resolve('/work');
   assert.deepEqual(documentPathsFromArgv([
-    '/Applications/Hamaeditor',
+    '/Applications/HamaEditor',
     '--flag',
     'draft.HWPX',
     'shared.rhwpx',
@@ -487,10 +487,10 @@ test('launch roots are isolated by the canonical userData profile', () => {
   const launchId = '2257ce8b-6e52-4fec-889e-c6ba489226f8';
   const first = launchStoragePaths({
     tempDir: 'C:\\Temp',
-    userDataDir: 'C:\\Users\\Rau\\AppData\\Roaming\\Hamaeditor',
+    userDataDir: 'C:\\Users\\Rau\\AppData\\Roaming\\HamaEditor',
     launchId,
     platform: 'win32',
-    realpathImpl: () => 'C:\\Users\\Rau\\AppData\\Roaming\\Hamaeditor',
+    realpathImpl: () => 'C:\\Users\\Rau\\AppData\\Roaming\\HamaEditor',
   });
   const sameProfile = launchStoragePaths({
     tempDir: 'C:\\Temp',
@@ -1005,7 +1005,7 @@ test('desktop package registers supported document associations without bundling
   );
   assert.deepEqual(hangulAssociation?.ext, ['hwp', 'hwpx', 'hml']);
   assert.deepEqual(historyAssociation?.ext, ['rhwpx']);
-  assert.equal(historyAssociation?.name, 'Hamaeditor history archive');
+  assert.equal(historyAssociation?.name, 'HamaEditor history archive');
   assert.notEqual(historyAssociation?.name, 'Hangul document');
   assert.equal(historyAssociation?.isPackage, undefined);
   assert.match(desktopMain, /desktop:pick-legacy-history-folder/);
@@ -1014,7 +1014,7 @@ test('desktop package registers supported document associations without bundling
   assert.doesNotMatch(desktopMain, /\['openFile', 'openDirectory'\]/);
   assert.doesNotMatch(desktopMain, /writePortableHistoryFolder\(/);
   assert.doesNotMatch(desktopMain, /desktop:(?:save-portable-history-file|native-file-write-portable-history)/);
-  assert.match(desktopMain, /Hamaeditor history archive/);
+  assert.match(desktopMain, /HamaEditor history archive/);
   assert.ok(rootPackage.build.asarUnpack.includes('rhwp/rhwp-agent/**'));
   assert.ok(rootPackage.build.files.every((entry: string) => !/runtime|launch-work/.test(entry)));
 });

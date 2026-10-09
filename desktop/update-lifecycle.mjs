@@ -31,8 +31,8 @@ export function createUpdateLifecycle({
       try {
         const { response } = await showMessageBox({
           type: 'warning',
-          message: failedInstall ? 'Hamaeditor could not install the update' : 'Hamaeditor could not update',
-          detail: `${error?.message ?? String(error)}${failedInstall ? '\nRestart Hamaeditor to try again, or download the latest release.' : '\nChoose Check for Updates to try again.'}`,
+          message: failedInstall ? 'HamaEditor could not install the update' : 'HamaEditor could not update',
+          detail: `${error?.message ?? String(error)}${failedInstall ? '\nRestart HamaEditor to try again, or download the latest release.' : '\nChoose Check for Updates to try again.'}`,
           buttons: ['Open releases page', failedInstall ? 'Quit' : 'OK'],
           defaultId: 1,
           cancelId: 1,
@@ -58,10 +58,10 @@ export function createUpdateLifecycle({
       try {
         const { response } = await showMessageBox({
           type: 'info',
-          message: `Hamaeditor ${downloaded.version ?? ''} is ready to install`,
+          message: `HamaEditor ${downloaded.version ?? ''} is ready to install`,
           detail: platform === 'win32'
             ? 'Your documents will close before the installer opens. Windows may ask you to confirm the installer. Choose Check for Updates to install later.'
-            : 'Hamaeditor will restart after your documents close. Choose Check for Updates to install later.',
+            : 'HamaEditor will restart after your documents close. Choose Check for Updates to install later.',
           buttons: [platform === 'win32' ? 'Install now' : 'Restart to install', 'Later'],
           defaultId: 1,
           cancelId: 1,

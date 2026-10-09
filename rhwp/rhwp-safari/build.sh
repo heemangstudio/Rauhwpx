@@ -53,11 +53,11 @@ sed -i '' '/<script src="\/dev-tools-inject.js"><\/script>/d' "$DIST/viewer.html
 # viewer.html의 type="module", crossorigin, 절대 경로는 원본 유지
 
 # 5. Xcode 프로젝트 (최초 생성 시에만, 서명 설정 보존)
-if [ ! -d "$SCRIPT_DIR/Hamaeditor/Hamaeditor.xcodeproj" ]; then
+if [ ! -d "$SCRIPT_DIR/HamaEditor/HamaEditor.xcodeproj" ]; then
   echo "[5/6] Xcode 프로젝트 생성 (최초)..."
   xcrun safari-web-extension-converter "$DIST" \
     --project-location "$SCRIPT_DIR" \
-    --app-name "Hamaeditor" \
+    --app-name "HamaEditor" \
     --bundle-identifier com.edwardkim.rhwp-safari \
     --no-open --no-prompt
 else
@@ -66,9 +66,9 @@ fi
 
 # 6. macOS 빌드
 echo "[6/6] macOS 빌드..."
-cd "$SCRIPT_DIR/Hamaeditor"
-xcodebuild -scheme "Hamaeditor (macOS)" -configuration Debug build | tail -3
+cd "$SCRIPT_DIR/HamaEditor"
+xcodebuild -scheme "HamaEditor (macOS)" -configuration Debug build | tail -3
 
 echo ""
 echo "=== 빌드 완료 ==="
-echo "앱 실행: open \"\$(find ~/dev/xbuild -name 'Hamaeditor.app' -path '*/Debug/*' | head -1)\""
+echo "앱 실행: open \"\$(find ~/dev/xbuild -name 'HamaEditor.app' -path '*/Debug/*' | head -1)\""

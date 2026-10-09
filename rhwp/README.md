@@ -1,6 +1,6 @@
-# Hamaeditor engine and editor
+# HamaEditor engine and editor
 
-This directory contains the Rust HWP/HWPX engine, the Studio web editor and the local agent hub. The product landing page is the [repository README](../README.md). Hamaeditor is a fork of [Edward Kim's rhwp](https://github.com/edwardkim/rhwp); the crate and directory names retain that history.
+This directory contains the Rust HWP/HWPX engine, the Studio web editor and the local agent hub. The product landing page is the [repository README](../README.md). HamaEditor is a fork of [Edward Kim's rhwp](https://github.com/edwardkim/rhwp); the crate and directory names retain that history.
 
 The engine parses, lays out, renders and edits documents. Studio runs the engine through WebAssembly. The native CLI supports document inspection, conversion and export. Real-document regressions live in `samples/` and `tests/`.
 

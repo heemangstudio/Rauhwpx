@@ -154,7 +154,7 @@ export class AgentAttention {
     try {
       if (!this.#Notification.isSupported()) return;
       const notification = new this.#Notification({
-        title: typeof title === 'string' && title ? title.slice(0, 200) : 'Hamaeditor',
+        title: typeof title === 'string' && title ? title.slice(0, 200) : 'HamaEditor',
         body: typeof body === 'string' ? body.slice(0, 200) : '',
         silent: false,
       });

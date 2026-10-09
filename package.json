@@ -1,6 +1,6 @@
 {
   "name": "hamaeditor",
-  "productName": "Hamaeditor",
+  "productName": "HamaEditor",
   "version": "2.0.11",
   "description": "HWP/HWPX editor with a local AI agent sidebar.",
   "author": "Hataewook",
@@ -64,8 +64,8 @@
   },
   "build": {
     "appId": "com.hataewook.hamaeditor",
-    "productName": "Hamaeditor",
-    "artifactName": "Hamaeditor-${version}-${arch}.${ext}",
+    "productName": "HamaEditor",
+    "artifactName": "HamaEditor-${version}-${arch}.${ext}",
     "asar": true,
     "files": [
       "desktop/**/*",
@@ -110,8 +110,8 @@
         "ext": [
           "rhwpx"
         ],
-        "name": "Hamaeditor history archive",
-        "description": "Hamaeditor history archive",
+        "name": "HamaEditor history archive",
+        "description": "HamaEditor history archive",
         "role": "Editor"
       }
     ],
@@ -154,7 +154,7 @@
             "CFBundleTypeExtensions": [
               "rhwpx"
             ],
-            "CFBundleTypeName": "Hamaeditor history archive",
+            "CFBundleTypeName": "HamaEditor history archive",
             "CFBundleTypeRole": "Editor",
             "LSHandlerRank": "Default",
             "LSItemContentTypes": [
@@ -181,7 +181,7 @@
               "public.content",
               "public.data"
             ],
-            "UTTypeDescription": "Hamaeditor history archive",
+            "UTTypeDescription": "HamaEditor history archive",
             "UTTypeIdentifier": "com.hataewook.hamaeditor.history-bundle",
             "UTTypeTagSpecification": {
               "public.filename-extension": [
@@ -229,12 +229,12 @@
       "synopsis": "HWP and HWPX document editor",
       "description": "Open, edit, and save Hangul HWP, HWPX, and HML documents with an integrated agent sidebar.",
       "executableName": "hamaeditor",
-      "maintainer": "Hamaeditor maintainers <noreply@github.com>",
+      "maintainer": "HamaEditor maintainers <noreply@github.com>",
       "vendor": "ghandhitechnology",
       "syncDesktopName": true,
       "desktop": {
         "entry": {
-          "StartupWMClass": "Hamaeditor",
+          "StartupWMClass": "HamaEditor",
           "X-GNOME-UsesNotifications": "true"
         }
       }
@@ -263,7 +263,7 @@
       "allowToChangeInstallationDirectory": true
     },
     "dmg": {
-      "title": "Hamaeditor",
+      "title": "HamaEditor",
       "backgroundColor": "#f5f5f7",
       "window": {
         "width": 540,

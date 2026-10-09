@@ -2,7 +2,7 @@
   <img src="rhwp/assets/logo/logo-256.png" alt="" width="96" />
 </p>
 
-<h1 align="center">Hamaeditor</h1>
+<h1 align="center">HamaEditor</h1>
 
 <p align="center">
   AI가 직접 고치는 한글 문서 편집기

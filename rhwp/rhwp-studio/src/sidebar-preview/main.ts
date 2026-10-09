@@ -20,7 +20,7 @@ const params = new URLSearchParams(location.search);
 if (params.get('usage') === 'live') {
   const description = document.querySelector('#preview-controls > p');
   if (description) description.textContent = 'Live account usage. Sample chat and documents.';
-  document.title = 'Live usage audit · Hamaeditor';
+  document.title = 'Live usage audit · HamaEditor';
 }
 const status = document.querySelector<HTMLOutputElement>('#preview-status')!;
 const report = (message: string) => {

@@ -1,8 +1,8 @@
-# Hamaeditor for Visual Studio Code
+# HamaEditor for Visual Studio Code
 
 VSCode에서 HWP/HWPX 문서를 바로 열어볼 수 있는 확장 프로그램입니다.
 
-[Hamaeditor](https://github.com/ghandhitechnology/Rauhwpx) 포크의 WebAssembly 엔진으로 한컴오피스 한글 문서를 VS Code 안에서 엽니다. 마켓플레이스 등록명은 여전히 rhwp입니다.
+[HamaEditor](https://github.com/ghandhitechnology/Rauhwpx) 포크의 WebAssembly 엔진으로 한컴오피스 한글 문서를 VS Code 안에서 엽니다. 마켓플레이스 등록명은 여전히 rhwp입니다.
 
 ## 기능
 
@@ -33,7 +33,7 @@ VSCode에서 HWP/HWPX 문서를 바로 열어볼 수 있는 확장 프로그램�
 
 1. 확장을 설치합니다.
 2. VSCode에서 `.hwp` 또는 `.hwpx` 파일을 엽니다.
-3. 문서가 자동으로 Hamaeditor에서 렌더링됩니다.
+3. 문서가 자동으로 HamaEditor에서 렌더링됩니다.
 4. 스크롤하여 페이지를 탐색합니다.
 5. Ctrl+마우스 휠 또는 하단 상태 표시줄의 +/- 버튼으로 줌을 조절합니다.
 

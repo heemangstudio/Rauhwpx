@@ -336,7 +336,7 @@ function parseManifest(bytes: Uint8Array): { manifest: PortableHistoryManifest; 
     throw new PortableHistoryError('The history bundle is empty or exceeds the 128 MiB limit');
   }
   if (!bytesEqual(bytes.subarray(0, MAGIC.byteLength), MAGIC)) {
-    throw new PortableHistoryError('This is not a Hamaeditor history bundle');
+    throw new PortableHistoryError('This is not a HamaEditor history bundle');
   }
   const length = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
     .getUint32(MAGIC.byteLength, true);

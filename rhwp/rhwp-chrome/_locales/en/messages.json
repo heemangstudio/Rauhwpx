@@ -1,18 +1,18 @@
 {
   "extName": {
-    "message": "Hamaeditor - HWP Document Viewer & Editor"
+    "message": "HamaEditor - HWP Document Viewer & Editor"
   },
   "extDescription": {
     "message": "Open and edit HWP/HWPX files directly in your browser. No installation, no ads, free."
   },
   "actionTitle": {
-    "message": "Hamaeditor - HWP Viewer"
+    "message": "HamaEditor - HWP Viewer"
   },
   "contextMenuOpen": {
-    "message": "Open with Hamaeditor"
+    "message": "Open with HamaEditor"
   },
   "badgeTooltip": {
-    "message": "Open with Hamaeditor"
+    "message": "Open with HamaEditor"
   },
   "badgeTooltipWithInfo": {
     "message": "$TITLE$ ($PAGES$ pages) $SIZE$",
@@ -23,7 +23,7 @@
     }
   },
   "optionsTitle": {
-    "message": "Hamaeditor Settings"
+    "message": "HamaEditor Settings"
   },
   "optionsAutoOpen": {
     "message": "Automatically open HWP/HWPX files in viewer when downloaded"

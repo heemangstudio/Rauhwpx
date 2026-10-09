@@ -220,7 +220,7 @@ export interface TemplateCatalog {
   templates: DocumentTemplate[];
 }
 
-/** Hamaeditor가 별도 보관하고 이 앱의 채팅에만 주입하는 AGENTS.md. */
+/** HamaEditor가 별도 보관하고 이 앱의 채팅에만 주입하는 AGENTS.md. */
 export interface AgentInstructionsStatus {
   fileName: 'AGENTS.md';
   content: string;

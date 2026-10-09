@@ -8,13 +8,13 @@ import { smokePackagedAgentHub, smokePackagedSetupTerminal } from './packaged-ag
 
 const releaseDir = resolve(process.argv[2] ?? 'release');
 const resourcesDir = process.platform === 'darwin'
-  ? join(releaseDir, 'mac-arm64', 'Hamaeditor.app', 'Contents', 'Resources')
+  ? join(releaseDir, 'mac-arm64', 'HamaEditor.app', 'Contents', 'Resources')
   : join(releaseDir, 'win-unpacked', 'resources');
 const unpackedAgent = join(resourcesDir, 'app.asar.unpacked', 'rhwp', 'rhwp-agent');
 const extractor = join(resourcesDir, 'bin', process.platform === 'win32' ? 'rhwp.exe' : 'rhwp');
 const desktopExecutable = process.platform === 'darwin'
-  ? join(releaseDir, 'mac-arm64', 'Hamaeditor.app', 'Contents', 'MacOS', 'Hamaeditor')
-  : join(releaseDir, 'win-unpacked', 'Hamaeditor.exe');
+  ? join(releaseDir, 'mac-arm64', 'HamaEditor.app', 'Contents', 'MacOS', 'HamaEditor')
+  : join(releaseDir, 'win-unpacked', 'HamaEditor.exe');
 
 const archive = join(resourcesDir, 'app.asar');
 const required = [

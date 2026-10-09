@@ -25,7 +25,7 @@ export function pdfExportWindowOptions(preloadPath) {
     skipTaskbar: true,
     width: 1120,
     height: 820,
-    title: 'Hamaeditor',
+    title: 'HamaEditor',
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,
