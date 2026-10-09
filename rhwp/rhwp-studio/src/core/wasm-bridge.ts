@@ -9,7 +9,7 @@ import type { HyperlinkTarget, HyperlinkContext } from './hyperlink';
 import * as wasmExports from '@wasm/rhwp.js';
 import { blake3 } from '@noble/hashes/blake3.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
-import type { DocumentInfo, PageInfo, PageDef, SectionDef, PageBorderFillSettings, EndnoteShapeSettings, NoteEditInfo, CursorRect, HitTestResult, BodyFootnoteMarkerHit, FootnoteAtCursorResult, DeleteFootnoteResult, LineInfo, TableDimensions, CellInfo, TableCellTarget, CellBbox, CellProperties, TableProperties, DocumentPosition, MoveVerticalResult, SelectionRect, CharProperties, ParaProperties, CellPathEntry, CellPathLike, NavContextEntry, FieldInfoResult, BookmarkInfo, LayerRenderProfile, PageLayerTree, CanvasKitDocumentPreflight } from './types';
+import type { DocumentInfo, PageInfo, PageDef, SectionDef, PageBorderFillSettings, EndnoteShapeSettings, NoteEditInfo, CursorRect, HitTestResult, BodyFootnoteMarkerHit, FootnoteAtCursorResult, DeleteFootnoteResult, LineInfo, TableDimensions, CellInfo, TableCellTarget, CellBbox, CellProperties, TableProperties, DocumentPosition, MoveVerticalResult, SelectionRect, CharProperties, ParaProperties, CellPathEntry, CellPathLike, NavContextEntry, FieldInfoResult, BookmarkInfo, LayerRenderProfile, PageLayerTree, CanvasKitDocumentPreflight, CanvasDeviceRect } from './types';
 import { parseCanvasKitDocumentPreflight } from './canvaskit-document-preflight';
 import { DEFAULT_FONT_METRICS_POLICY } from './font-metrics-policy';
 import {
@@ -1137,6 +1137,29 @@ export class WasmBridge {
     }
     // 구버전 WASM(public/rhwp.js 등): 레이어 필터 API 없음 → 전체 캔버스 렌더로 폴백
     return Number(this.doc.renderPageToCanvas(pageNum, canvas, scale)) || 0;
+  }
+
+  /** 쪽 일부 영역 렌더를 지원하는 WASM 인가. 구버전이면 page-detail 층을 쓰지 않는다. */
+  get supportsPageRegionRender(): boolean {
+    return typeof this.doc?.renderPageRegionToCanvas === 'function';
+  }
+
+  /**
+   * 쪽의 일부 영역만 그린다. `region` 은 `scale` 을 적용한 쪽 좌표계의 장치 픽셀이며,
+   * 엔진이 쪽 범위 안으로 잘라 canvas 크기를 영역 크기로 맞춘다. 디코드를 기다리는 그림 수를 돌려준다.
+   */
+  renderPageRegionToCanvas(
+    pageNum: number,
+    canvas: HTMLCanvasElement,
+    scale: number,
+    region: CanvasDeviceRect,
+    layerKind: 'all' | 'background' | 'flow' | 'flow-dynamic' | 'flow-static' | 'behind' | 'front',
+    profile: LayerRenderProfile = 'screen',
+  ): number {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return Number(this.doc.renderPageRegionToCanvas(
+      pageNum, canvas, scale, region.x, region.y, region.width, region.height, layerKind, profile,
+    )) || 0;
   }
 
   /**
@@ -3823,35 +3846,28 @@ export class WasmBridge {
     ));
   }
 
-  renderHeaderFooterEditPreviewToCanvas(
+  /** HF 대표 편집 preview 의 일부 영역만 그린다. 영역 좌표는 renderPageRegionToCanvas 와 같다. */
+  renderHeaderFooterEditPreviewRegionToCanvas(
     pageNum: number,
     sectionIdx: number,
     isHeader: boolean,
     applyTo: number,
     canvas: HTMLCanvasElement,
     scale: number,
+    region: CanvasDeviceRect,
   ): void {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
-    const doc = this.doc as unknown as {
-      renderHeaderFooterEditPreviewToCanvas?: (
-        pageNum: number,
-        sectionIdx: number,
-        isHeader: boolean,
-        applyTo: number,
-        canvas: HTMLCanvasElement,
-        scale: number,
-      ) => void;
-    };
-    if (typeof doc.renderHeaderFooterEditPreviewToCanvas !== 'function') {
-      throw new Error('현재 WASM은 HF 대표 편집 preview 렌더링을 지원하지 않습니다');
-    }
-    doc.renderHeaderFooterEditPreviewToCanvas(
+    this.doc.renderHeaderFooterEditPreviewRegionToCanvas(
       pageNum,
       sectionIdx,
       isHeader,
       applyTo,
       canvas,
       scale,
+      region.x,
+      region.y,
+      region.width,
+      region.height,
     );
   }
 

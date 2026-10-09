@@ -1,5 +1,5 @@
 import type { WasmBridge } from '@/core/wasm-bridge';
-import type { LayerRenderProfile, PageInfo } from '@/core/types';
+import type { CanvasDeviceRect, LayerRenderProfile, PageInfo } from '@/core/types';
 import { inheritedReplayLayer, layerPaintOpReplayPlane } from './canvaskit/replay-plane';
 import type { CanvasKitLayerRenderer, CanvasKitRenderDiagnostics } from './canvaskit-renderer';
 import {
@@ -78,10 +78,13 @@ export class PageRenderer {
   private pictureProgressTimer: ReturnType<typeof setTimeout> | null = null;
   /** 지금 그리는 쪽에서 엔진이 디코드를 기다리는 그림 수 */
   private renderPendingPictures = 0;
+  /** detail 영역을 그릴 때 디코드를 기다리던 그림이 있는 쪽 */
+  private detailPicturePages = new Set<number>();
   private layerSummaryCache = new Map<number, LayerSummaryCacheEntry>();
   private canvaskitDiagnosticsByPage = new Map<number, CanvasKitRenderDiagnostics>();
   private pageInfoByPage = new Map<number, PageInfo>();
   private flowSplitSupported: boolean | null = null;
+  private pageRepaintListener: ((pageIdx: number) => void) | null = null;
 
   constructor(
     private wasm: WasmBridge,
@@ -190,6 +193,33 @@ export class PageRenderer {
 
   getBackend(): RenderBackend {
     return this.backend;
+  }
+
+  /** 지연 그림 재렌더가 쪽 canvas 를 다시 그린 뒤 알린다. page-detail 층이 따라 그린다. */
+  setPageRepaintListener(listener: ((pageIdx: number) => void) | null): void {
+    this.pageRepaintListener = listener;
+  }
+
+  /**
+   * 쪽의 모든 층을 합친 모습을 일부 영역만 그린다 (Canvas2D, 편집 여백 표시 포함). 디코드를
+   * 기다리는 그림이 있으면 디코드가 끝날 때 쪽 다시 그리기 알림으로 detail 층을 다시 그리게 한다.
+   */
+  renderPageRegion(
+    pageIdx: number,
+    canvas: HTMLCanvasElement,
+    scale: number,
+    region: CanvasDeviceRect,
+  ): void {
+    const pending = this.wasm.renderPageRegionToCanvas(
+      pageIdx, canvas, scale, region, 'all', this.renderProfile,
+    );
+    this.drawMarginGuides(pageIdx, canvas, scale, region.x, region.y);
+    if (pending > 0) {
+      this.detailPicturePages.add(pageIdx);
+      this.listenForPictures();
+    } else {
+      this.detailPicturePages.delete(pageIdx);
+    }
   }
 
   getCanvasKitRenderDiagnostics(pageIdx: number): CanvasKitRenderDiagnostics | null {
@@ -515,7 +545,7 @@ export class PageRenderer {
       return reusableLayer;
     }
 
-    reusableLayer?.remove();
+    if (reusableLayer) discardPageLayer(reusableLayer);
     const layer = this.createFilteredCanvasLayer(
       pageIdx,
       sourceCanvas,
@@ -574,7 +604,7 @@ export class PageRenderer {
       `[data-rhwp-overlay="background-${pageIdx}"],` +
       `[data-rhwp-overlay="behind-${pageIdx}"],` +
       `[data-rhwp-overlay="front-${pageIdx}"]`,
-    ).forEach((el) => el.remove());
+    ).forEach(discardPageLayer);
   }
 
   private findOverlayLayer(
@@ -588,7 +618,8 @@ export class PageRenderer {
   }
 
   private removeOverlayLayer(parent: HTMLElement, pageIdx: number, layerKind: StaticCanvasLayerKind): void {
-    this.findOverlayLayer(parent, pageIdx, layerKind)?.remove();
+    const layer = this.findOverlayLayer(parent, pageIdx, layerKind);
+    if (layer) discardPageLayer(layer);
   }
 
   private findFlowImageLayer(parent: HTMLElement | null, pageIdx: number): HTMLElement | null {
@@ -625,7 +656,7 @@ export class PageRenderer {
       '[data-rhwp-overlay^="background-"],' +
       '[data-rhwp-overlay^="behind-"],' +
       '[data-rhwp-overlay^="front-"]',
-    ).forEach((el) => el.remove());
+    ).forEach(discardPageLayer);
   }
 
   /**
@@ -814,8 +845,17 @@ export class PageRenderer {
     return summary;
   }
 
-  /** 편집 용지 여백 가이드라인을 캔버스에 그린다 (4모서리 L자 표시) */
-  private drawMarginGuides(pageIdx: number, canvas: HTMLCanvasElement, scale: number): void {
+  /**
+   * 편집 용지 여백 가이드라인을 캔버스에 그린다 (4모서리 L자 표시). `originX`·`originY` 는
+   * 쪽 일부 영역 canvas 의 원점(배율 적용 쪽 좌표의 장치 픽셀)이다.
+   */
+  private drawMarginGuides(
+    pageIdx: number,
+    canvas: HTMLCanvasElement,
+    scale: number,
+    originX = 0,
+    originY = 0,
+  ): void {
     const pageInfo = this.pageInfoByPage.get(pageIdx) ?? this.wasm.getPageInfo(pageIdx);
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
@@ -831,7 +871,7 @@ export class PageRenderer {
 
     ctx.save();
     // WASM 렌더링 후 ctx transform 상태가 불확실하므로 명시적으로 설정
-    ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    ctx.setTransform(scale, 0, 0, scale, -originX, -originY);
     ctx.strokeStyle = '#C0C0C0';
     ctx.lineWidth = 0.3;
     ctx.beginPath();
@@ -908,13 +948,17 @@ export class PageRenderer {
       this.repaintPictures(pageIdx, job);
     }, IMAGE_RE_RENDER_FALLBACK_DELAY_MS);
     this.pictureJobs.set(pageIdx, job);
+    this.listenForPictures();
+  }
+
+  private listenForPictures(): void {
     this.stopPictureListener ??= this.wasm.onPictureDecoded?.(
       (pendingDecodes) => this.onPictureDecoded(pendingDecodes),
     ) ?? null;
   }
 
   private onPictureDecoded(pendingDecodes: number): void {
-    if (this.pictureJobs.size === 0) return;
+    if (this.pictureJobs.size === 0 && this.detailPicturePages.size === 0) return;
     if (pendingDecodes === 0) {
       if (this.pictureProgressTimer !== null) clearTimeout(this.pictureProgressTimer);
       this.pictureProgressTimer = null;
@@ -932,6 +976,9 @@ export class PageRenderer {
     this.pictureFlushFrame = requestAnimationFrame(() => {
       this.pictureFlushFrame = null;
       for (const [pageIdx, job] of [...this.pictureJobs]) this.repaintPictures(pageIdx, job);
+      const detailPages = [...this.detailPicturePages];
+      this.detailPicturePages.clear();
+      for (const pageIdx of detailPages) this.pageRepaintListener?.(pageIdx);
     });
   }
 
@@ -971,7 +1018,7 @@ export class PageRenderer {
           } catch (error) {
             if (reportEngineTrap(error)) return 0;
             this.flowSplitSupported = false;
-            flowStatic.remove();
+            discardPageLayer(flowStatic);
             console.warn('[PageRenderer] flow-static 지연 재렌더 실패, 기존 flow 재렌더로 fallback:', error);
           }
         } else if (this.findFlowImageLayer(parent, pageIdx)) {
@@ -986,7 +1033,10 @@ export class PageRenderer {
         this.drawMarginGuides(pageIdx, flowCanvas, renderScale);
       }
 
-      if (policy.reuseStaticOverlay) return this.renderPendingPictures;
+      if (policy.reuseStaticOverlay) {
+        this.pageRepaintListener?.(pageIdx);
+        return this.renderPendingPictures;
+      }
 
       parent.querySelectorAll<HTMLCanvasElement>(
         `[data-rhwp-overlay-page="${pageIdx}"][data-rhwp-layer-kind]`,
@@ -996,6 +1046,7 @@ export class PageRenderer {
           this.renderLayer(pageIdx, layerCanvas, renderScale, kind);
         }
       });
+      this.pageRepaintListener?.(pageIdx);
       return this.renderPendingPictures;
     } catch (error) {
       if (reportEngineTrap(error)) return 0;
@@ -1016,6 +1067,7 @@ export class PageRenderer {
   /** 모든 지연 재렌더링을 취소한다 */
   cancelAll(): void {
     for (const pageIdx of [...this.pictureJobs.keys()]) this.cancelReRender(pageIdx);
+    this.detailPicturePages.clear();
     if (this.pictureFlushFrame !== null) cancelAnimationFrame(this.pictureFlushFrame);
     this.pictureFlushFrame = null;
     if (this.pictureProgressTimer !== null) clearTimeout(this.pictureProgressTimer);
@@ -1037,6 +1089,15 @@ export class PageRenderer {
     this.pageInfoByPage.clear();
     this.canvaskitRenderer = null;
   }
+}
+
+/** 쪽 층을 떼어 낸다. canvas 는 크기를 0으로 비워 GC 전에도 backing store 를 돌려준다. */
+function discardPageLayer(layer: Element): void {
+  if (layer instanceof HTMLCanvasElement) {
+    layer.width = 0;
+    layer.height = 0;
+  }
+  layer.remove();
 }
 
 function emptyLayerPlaneSummary(): LayerPlaneSummary {

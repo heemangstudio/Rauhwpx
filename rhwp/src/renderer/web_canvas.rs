@@ -369,6 +369,8 @@ pub struct WebCanvasRenderer {
     pub show_control_codes: bool,
     /// 줌 스케일 (1.0 = 100%)
     scale: f64,
+    /// 쪽 일부만 그릴 때 canvas 왼쪽 위가 놓이는 배율 적용 쪽 좌표 (정수 장치 픽셀).
+    device_origin: (f64, f64),
     /// 다층 레이어 필터 (Task #516, 기본 All 은 기존 동작 보존)
     pub layer_filter: LayerFilter,
     /// BehindText plane 을 별도 canvas layer 로 합성할 때 flow Canvas 의 페이지 배경을
@@ -411,6 +413,7 @@ impl WebCanvasRenderer {
             show_paragraph_marks: false,
             show_control_codes: false,
             scale: 1.0,
+            device_origin: (0.0, 0.0),
             layer_filter: LayerFilter::All,
             transparent_page_background: false,
             active_replay_plane: None,
@@ -429,6 +432,12 @@ impl WebCanvasRenderer {
     /// 줌 스케일 설정 (1.0 = 100%, 2.0 = 200%)
     pub fn set_scale(&mut self, scale: f64) {
         self.scale = scale;
+    }
+
+    /// canvas 가 배율 적용 쪽의 (x, y) 장치 픽셀부터 그리게 한다. 정수 픽셀이어야
+    /// 머리카락선 픽셀 맞춤(`pixel_aligned_hairline`)이 쪽 전체 렌더와 같은 픽셀에 떨어진다.
+    pub fn set_device_origin(&mut self, x: f64, y: f64) {
+        self.device_origin = (x, y);
     }
 
     /// 다층 레이어 필터 설정 (Task #516, Stage 5.2)
@@ -2730,6 +2739,10 @@ impl Renderer for WebCanvasRenderer {
     fn begin_page(&mut self, width: f64, height: f64) {
         self.width = width;
         self.height = height;
+        let (origin_x, origin_y) = self.device_origin;
+        if origin_x != 0.0 || origin_y != 0.0 {
+            let _ = self.ctx.translate(-origin_x, -origin_y);
+        }
         // 줌 스케일 적용: 렌더트리 좌표(문서 단위)를 캔버스 해상도에 맞게 확대
         if self.scale != 1.0 {
             let _ = self.ctx.scale(self.scale, self.scale);

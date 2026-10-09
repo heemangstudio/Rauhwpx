@@ -203,7 +203,10 @@ export class VirtualScroll {
     return this.getPageWindow(scrollY, viewportHeight, scrollX, viewportWidth).visible;
   }
 
-  /** visible 페이지와 인접 prefetch 행을 한 번의 행 탐색으로 계산한다. */
+  /**
+   * visible 페이지와 앞뒤 한 쪽씩의 prefetch 를 한 번의 행 탐색으로 계산한다. 그리드
+   * 모드에서도 행 전체가 아니라 한 쪽만 미리 그려 쪽 canvas 수를 화면 근처로 묶는다.
+   */
   getPageWindow(
     scrollY: number,
     viewportHeight: number,
@@ -215,8 +218,6 @@ export class VirtualScroll {
     const vpLeft = scrollX;
     const vpRight = viewportWidth > 0 ? scrollX + viewportWidth : Infinity;
     const visible: number[] = [];
-    let firstVisibleRow = -1;
-    let lastVisibleRow = -1;
 
     for (
       let row = this.findFirstVisibleRow(vpTop);
@@ -225,7 +226,6 @@ export class VirtualScroll {
     ) {
       const rowFirst = this.rowFirstPages[row];
       const rowEnd = this.rowFirstPages[row + 1] ?? this.pageCount;
-      let rowVisible = false;
       for (let page = rowFirst; page < rowEnd; page++) {
         const pageTop = this.pageOffsets[page];
         const pageLeft = this.getPageLeftResolved(page, this.totalWidth);
@@ -237,36 +237,21 @@ export class VirtualScroll {
           && pageRight > vpLeft
         ) {
           visible.push(page);
-          rowVisible = true;
         }
       }
-      if (rowVisible) {
-        if (firstVisibleRow < 0) firstVisibleRow = row;
-        lastVisibleRow = row;
-      }
     }
 
-    if (firstVisibleRow < 0) return { visible, prefetch: [] };
+    if (visible.length === 0) return { visible, prefetch: [] };
 
-    if (this.horizontalMode) {
-      const prefetch = new Set(visible);
-      if (visible.length > 0) {
-        const first = visible[0];
-        const last = visible[visible.length - 1];
-        if (first > 0) prefetch.add(first - 1);
-        if (last + 1 < this.pageCount) prefetch.add(last + 1);
-      }
-      return { visible, prefetch: Array.from(prefetch).sort((a, b) => a - b) };
-    }
-
-    const prefetch: number[] = [];
-    this.appendRowPages(prefetch, firstVisibleRow - 1);
-    prefetch.push(...visible);
-    this.appendRowPages(prefetch, lastVisibleRow + 1);
-    return { visible, prefetch };
+    const prefetch = new Set(visible);
+    const first = visible[0];
+    const last = visible[visible.length - 1];
+    if (first > 0) prefetch.add(first - 1);
+    if (last + 1 < this.pageCount) prefetch.add(last + 1);
+    return { visible, prefetch: Array.from(prefetch).sort((a, b) => a - b) };
   }
 
-  /** 프리페치 대상 페이지 (visible 범위 ± 1행) */
+  /** 프리페치 대상 페이지 (visible 범위 ± 1쪽) */
   getPrefetchPages(
     scrollY: number,
     viewportHeight: number,
@@ -302,13 +287,6 @@ export class VirtualScroll {
       }
     }
     return Math.max(0, low - 1);
-  }
-
-  private appendRowPages(target: number[], row: number): void {
-    if (row < 0 || row >= this.rowFirstPages.length) return;
-    const first = this.rowFirstPages[row];
-    const end = this.rowFirstPages[row + 1] ?? this.pageCount;
-    for (let page = first; page < end; page++) target.push(page);
   }
 
   /** 특정 문서 Y 좌표가 속하는 페이지 인덱스를 반환한다 */

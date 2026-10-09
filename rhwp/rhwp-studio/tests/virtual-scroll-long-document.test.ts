@@ -48,7 +48,7 @@ test('row-indexed lookup matches page scans for variable heights in single-colum
   }
 });
 
-test('grid page windows keep exact visibility and prefetch adjacent complete rows', () => {
+test('grid page windows keep exact visibility and prefetch one adjacent page each side', () => {
   const source = Array.from({ length: 15 }, (_, index) => ({
     width: 800,
     height: index % 3 === 0 ? 1000 : 500,
@@ -65,13 +65,7 @@ test('grid page windows keep exact visibility and prefetch adjacent complete row
   assert.equal(scroll.getRowFirstPageAtY(y), secondRow);
   assert.equal(scroll.getPageAtY(y), secondRow + columns - 1);
 
-  const expectedPrefetch = [
-    ...Array.from({ length: columns }, (_, index) => index),
-    ...window.visible,
-    ...Array.from(
-      { length: Math.min(columns, source.length - secondRow - columns) },
-      (_, index) => secondRow + columns + index,
-    ),
-  ];
-  assert.deepEqual(window.prefetch, expectedPrefetch);
+  const first = window.visible[0];
+  const last = window.visible[window.visible.length - 1];
+  assert.deepEqual(window.prefetch, [first - 1, ...window.visible, last + 1]);
 });
