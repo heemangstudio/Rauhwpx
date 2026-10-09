@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import {
   AGENT_EDIT_SESSION_METHODS,
   EDITOR_ROUTED_MUTATING_METHODS,
@@ -8,7 +7,11 @@ import {
   MUTATING_METHODS,
 } from '../src/core/mutation-method-registry.ts';
 
-const rust = readFileSync(new URL('../../src/wasm_api.rs', import.meta.url), 'utf8');
+import { HwpDocument } from '../../pkg/rhwp.js';
+
+// 빌드된 wasm 패키지가 실제로 내보내는 문서 메서드 목록이다.
+const engineMethods = Object.getOwnPropertyNames(HwpDocument.prototype)
+  .filter((name) => name !== 'constructor');
 const agentMethods = new Set([...MUTATING_METHODS, ...AGENT_EDIT_SESSION_METHODS]);
 const excludedBridgeMethods = new Set(EXCLUDED_NON_DOCUMENT);
 const editorRoutedMethods = new Set(EDITOR_ROUTED_MUTATING_METHODS);
@@ -41,9 +44,8 @@ const NON_EDIT_EXPORTS = new Set([
 ]);
 
 test('every mutation-like Rust export has an agent edit path or explicit non-edit classification', () => {
-  const exports = [...rust.matchAll(/#\[wasm_bindgen\(js_name\s*=\s*([A-Za-z0-9_]+)\)\]/g)]
-    .map((match) => match[1])
-    .filter((name) => MUTATING_EXPORT_VERB.test(name));
+  const exports = engineMethods.filter((name) => MUTATING_EXPORT_VERB.test(name));
+  assert.ok(exports.length > 50, 'the wasm package must expose the document editing API');
 
   const uncovered = exports.filter((name) => {
     if (agentMethods.has(name) || editorRoutedMethods.has(name)

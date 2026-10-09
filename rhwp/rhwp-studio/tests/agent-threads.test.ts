@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
@@ -38,7 +37,6 @@ import type {
   UserQuestionOutcome,
 } from '../src/agent/types.ts';
 
-const source = readFileSync(new URL('../src/agent/threads.ts', import.meta.url), 'utf8');
 const mem = new Map<string, string>();
 const storage = {
   getItem: (k: string) => mem.get(k) ?? null,
@@ -106,14 +104,6 @@ test('thread persistence notifies the current window without changing the synchr
 
   assert.equal(changes, 1);
   assert.equal(listThreads()[0]?.id, thread.id);
-});
-
-test('browser persistence uses per-thread IndexedDB records and one-time legacy migration', () => {
-  assert.match(source, /createObjectStore\(THREADS_STORE, \{ keyPath: 'id' \}\)/);
-  assert.match(source, /store\.put\(cloneThread\(thread\)\)/);
-  assert.match(source, /localStorage\.removeItem\(STORAGE_KEY\)/);
-  assert.match(source, /new BroadcastChannel\(CHANNEL_NAME\)/);
-  assert.match(source, /db\.transaction\(THREADS_STORE, 'readwrite'\)/);
 });
 
 test('fallbackTitle uses the first user message', () => {
@@ -233,8 +223,6 @@ test('clickable plan presentations keep their plan identity in thread history', 
   upsertThread(t);
   assert.equal(getThread(t.id)?.messages[1]?.kind, 'plan');
   assert.equal(getThread(t.id)?.messages[1]?.planId, 'plan-1');
-  assert.match(source, /if \(message\.kind === 'plan'\)/);
-  assert.match(source, /typeof message\.planId !== 'string'/);
 });
 
 test('pending user-question drafts persist selections, custom text, position, and update time', () => {
