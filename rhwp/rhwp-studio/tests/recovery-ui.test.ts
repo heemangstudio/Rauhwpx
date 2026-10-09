@@ -5,19 +5,7 @@ import {
   describeDraft,
   formatDraftSavedAt,
   formatDraftSize,
-  recoveryFileName,
 } from '../src/recovery/recovery-format.ts';
-
-test('recoveryFileName은 원본을 덮어쓰지 않는 복구본 이름을 만든다', () => {
-  assert.equal(recoveryFileName('sample.hwp'), 'sample 복구본.hwp');
-  assert.equal(recoveryFileName('sample.hwpx'), 'sample 복구본.hwp');
-  assert.equal(recoveryFileName('sample.hwpx'), 'sample 복구본.hwp');
-  assert.equal(recoveryFileName('sample.hml'), 'sample 복구본.hwp');
-  assert.equal(recoveryFileName('새 문서.hwp'), '새 문서 복구본.hwp');
-  assert.equal(recoveryFileName('새 문서.hwpx'), '새 문서 복구본.hwp');
-  assert.equal(recoveryFileName('memo'), 'memo 복구본.hwp');
-  assert.equal(recoveryFileName(''), '문서 복구본.hwp');
-});
 
 test('formatDraftSize는 복구 후보 크기를 읽기 좋은 단위로 표시한다', () => {
   assert.equal(formatDraftSize(512), '512 B');
@@ -34,7 +22,6 @@ test('describeDraft는 저장 시각, 크기, 출처 포맷을 포함한다', ()
     sourceFormat: 'hwp',
     savedAt,
     byteLength: 2048,
-    data: new Uint8Array([1]),
   });
 
   assert.match(text, /HWP/);
@@ -42,30 +29,14 @@ test('describeDraft는 저장 시각, 크기, 출처 포맷을 포함한다', ()
   assert.notEqual(formatDraftSavedAt(savedAt), '저장 시각 알 수 없음');
 });
 
-test('describeDraft는 HML 출처 draft가 HWP 복구본으로 열림을 표시한다', () => {
-  const text = describeDraft({
-    id: 'd3',
-    fileName: '문서.hml',
-    sourceFormat: 'hml',
-    savedAt: 1,
-    byteLength: 2048,
-    data: new Uint8Array([1]),
-  });
-
-  assert.match(text, /HML/);
-  assert.match(text, /HWP 복구본/);
-});
-
-test('describeDraft는 HWPX 출처 draft가 HWP 복구본으로 열림을 표시한다', () => {
-  const text = describeDraft({
-    id: 'd2',
-    fileName: '문서.hwpx',
-    sourceFormat: 'hwpx',
-    savedAt: 1,
-    byteLength: 1024,
-    data: new Uint8Array([1]),
-  });
-
-  assert.match(text, /HWPX/);
-  assert.match(text, /HWP 복구본/);
+test('예전 HWPX·HML draft 만 HWP 로 열린다고 표시한다', () => {
+  for (const sourceFormat of ['hwpx', 'hml']) {
+    const legacy = describeDraft({ id: 'old', fileName: `문서.${sourceFormat}`, sourceFormat, savedAt: 1, byteLength: 1024 });
+    assert.match(legacy, /→ HWP/);
+    const linked = describeDraft({
+      id: 'new', fileName: `문서.${sourceFormat}`, sourceFormat, savedAt: 1, byteLength: 1024,
+      documentId: 'doc', dataFormat: sourceFormat as 'hwpx' | 'hml',
+    });
+    assert.doesNotMatch(linked, /→/);
+  }
 });

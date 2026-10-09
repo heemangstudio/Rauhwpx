@@ -68,6 +68,38 @@ export async function openProjectFile(
   return pickForProject(claim, deps);
 }
 
+export type ProjectFileLocation =
+  | {
+    readonly kind: 'found';
+    readonly bytes: Uint8Array;
+    readonly name: string;
+    readonly handle: FileSystemFileHandleLike;
+  }
+  | { readonly kind: 'missing' }
+  | { readonly kind: 'permission-denied' }
+  | { readonly kind: 'owned-elsewhere' };
+
+/**
+ * 파일 선택 창 없이 프로젝트 문서의 원본 파일을 찾아 바이트만 읽는다. 문서를 열지는 않으며,
+ * 찾은 핸들의 사용 여부는 호출자가 정한다(쓰지 않으면 releaseUnusedSaveTarget 으로 푼다).
+ */
+export async function locateProjectFile(
+  claim: ProjectFileClaim,
+  deps: Omit<ProjectFileDeps, 'loadBound' | 'pickForProject'>,
+): Promise<ProjectFileLocation> {
+  let found: Extract<ProjectFileLocation, { kind: 'found' }> | null = null;
+  const outcome = await openProjectFile(claim, {
+    ...deps,
+    loadBound: async (bytes, name, handle) => {
+      found = { kind: 'found', bytes, name, handle };
+    },
+  });
+  if (outcome.kind === 'opened' && found) return found;
+  if (outcome.kind === 'owned-elsewhere') return { kind: 'owned-elsewhere' };
+  if (outcome.kind === 'permission-denied') return { kind: 'permission-denied' };
+  return { kind: 'missing' };
+}
+
 async function tryLiveHandle(
   claim: ProjectFileClaim,
   deps: ProjectFileDeps,
