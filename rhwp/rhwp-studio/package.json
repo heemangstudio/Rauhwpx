@@ -15,7 +15,7 @@
     "preview": "vite preview",
     "lint:css-tokens": "node scripts/check-css-tokens.mjs",
     "test": "npm run generate:agent-edit-capabilities && node scripts/run-tests.mjs unit",
-    "e2e": "node e2e/text-flow.test.mjs",
+    "e2e:smoke": "node e2e/smoke/run.mjs",
     "e2e:agent-edit-loop": "node e2e/agent-edit-loop.test.mjs --mode=headless",
     "e2e:user-question": "node e2e/user-question-flow.test.mjs --mode=headless",
     "e2e:subagent-fleet": "node e2e/subagent-fleet.test.mjs --mode=headless",
