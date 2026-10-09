@@ -160,8 +160,7 @@ export function isDocumentSessionBusy(session: DocumentSession): boolean {
 
 /** 이 채팅이 문서를 고칠 수 있는 상태로 일하고 있다 — 같은 문서의 다른 채팅은 채팅 모드만 쓴다. */
 export function chatHoldsDocumentWrites(chat: ChatSession): boolean {
-  if (chat.bridge.pendingEdits.getChangeSets().some((set) => set.ops.length > 0)) return true;
-  return chat.bridge.isBusy() && chat.bridge.getWorkflowState().workflow !== 'question';
+  return chat.bridge.holdsDocumentWrites();
 }
 
 /** 문서의 편집 잠금은 그 문서를 잡은 채팅의 것이다. 없으면 보이는 채팅의 (꺼진) 잠금. */

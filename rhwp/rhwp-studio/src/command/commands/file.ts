@@ -106,8 +106,10 @@ function openDocumentBytesAndWait(
 async function openFileViaPicker(services: CommandServices): Promise<void> {
   let handle: FileSystemFileHandleLike | null | undefined;
   try {
-    // 에이전트가 일하는 문서는 바꾸지 않고 뒤에 남기므로 저장을 묻지 않는다.
-    if (!services.opensDocumentsInNewSession?.()) {
+    // 에이전트가 일하는 문서는 바꾸지 않고 뒤에 남기므로 지금은 저장을 묻지 않는다. 묻지 않았다면
+    // 파일을 고르는 사이 에이전트가 끝나 지금 문서를 바꾸게 될 때 그 자리에서 다시 묻는다.
+    const askedToSave = !services.opensDocumentsInNewSession?.();
+    if (askedToSave) {
       const canReplace = await confirmSaveBeforeReplacingDocument(services);
       if (!canReplace) return;
     }
@@ -124,7 +126,8 @@ async function openFileViaPicker(services: CommandServices): Promise<void> {
     if (selected === undefined) {
       const fileInput = document.getElementById('file-input') as HTMLInputElement | null;
       if (fileInput) {
-        fileInput.dataset.skipUnsavedGuard = 'true';
+        if (askedToSave) fileInput.dataset.skipUnsavedGuard = 'true';
+        else delete fileInput.dataset.skipUnsavedGuard;
         fileInput.click();
       }
       return;
@@ -136,7 +139,7 @@ async function openFileViaPicker(services: CommandServices): Promise<void> {
       bytes,
       fileName: name,
       fileHandle: handle,
-      skipUnsavedGuard: true,
+      skipUnsavedGuard: askedToSave,
     });
   } catch (err) {
     await handle?.releaseUnusedSaveTarget?.().catch(() => {});
@@ -149,7 +152,8 @@ async function openFileViaPicker(services: CommandServices): Promise<void> {
 async function importLegacyHistoryFolder(services: CommandServices): Promise<void> {
   let handle: FileSystemFileHandleLike | null | undefined;
   try {
-    if (!services.opensDocumentsInNewSession?.() && !await confirmSaveBeforeReplacingDocument(services)) return;
+    const askedToSave = !services.opensDocumentsInNewSession?.();
+    if (askedToSave && !await confirmSaveBeforeReplacingDocument(services)) return;
     handle = await pickDesktopLegacyHistoryFolder();
     if (handle === null) return;
 
@@ -159,7 +163,7 @@ async function importLegacyHistoryFolder(services: CommandServices): Promise<voi
         bytes,
         fileName: name,
         fileHandle: handle,
-        skipUnsavedGuard: true,
+        skipUnsavedGuard: askedToSave,
       });
       return;
     }
@@ -197,7 +201,7 @@ async function importLegacyHistoryFolder(services: CommandServices): Promise<voi
     await openDocumentBytesAndWait(services, {
       bytes,
       fileName: directory.name,
-      skipUnsavedGuard: true,
+      skipUnsavedGuard: askedToSave,
     });
   } catch (error) {
     await handle?.releaseUnusedSaveTarget?.().catch(() => {});

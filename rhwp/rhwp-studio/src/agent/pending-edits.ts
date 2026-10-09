@@ -1518,6 +1518,11 @@ export class PendingEditManager {
    * 템플릿 잠금 상태를 변화 없이도 다시 알린다. 문서가 화면에 다시 붙으면 편집기는 그동안
    * 다른 문서의 잠금 상태를 들고 있으므로, 이 문서의 상태로 맞춰야 한다.
    */
+  /** 검토를 기다리는 템플릿 교체가 있어 편집기를 잠가야 하는지 */
+  isTemplateLocked(): boolean {
+    return this.hasTemplateMutation();
+  }
+
   republishTemplateLock(): void {
     this.templateLocked = this.hasTemplateMutation();
     this.deps.eventBus.emit('agent-template-lock-changed', this.templateLocked);
