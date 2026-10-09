@@ -1226,7 +1226,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'apply_list',
-    description: `Make startParaIdx..endParaIdx a REAL HWP list: renderer-generated numbers with a hanging indent. Never type literal '1.' or '가.' to fake a list. format: '1.' for 1,2,3 or '가.'/'ㄱ.' for 가,나,다 (level 2 defaults to 가,나,다). bulletChar (e.g. '•') makes a bullet list instead. ${WRITE_POINTER}`,
+    description: `Make startParaIdx..endParaIdx a REAL HWP list: renderer-generated numbers with a hanging indent. Never type literal '1.' or '가.' to fake a list. format: '1.' for 1,2,3 or '가.'/'ㄱ.' for 가,나,다 (level 2 defaults to 가,나,다). bulletChar (e.g. '•') makes a bullet list instead. stripMarkers:true removes typed markers ('가. ', '1) ', '- '). ${WRITE_POINTER}`,
     shape: {
       expectedRevision: z.number().int(),
       render: renderParam(),
@@ -1237,6 +1237,7 @@ const BASE_TOOL_DEFINITIONS = [
       level: z.number().int().max(6).default(0).optional(),
       startNumber: z.number().int().optional(),
       bulletChar: z.string().optional(),
+      stripMarkers: z.boolean().optional(),
     },
     validate: validateApplyList,
   },

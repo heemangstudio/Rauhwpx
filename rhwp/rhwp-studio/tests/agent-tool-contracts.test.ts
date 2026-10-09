@@ -10,6 +10,22 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addTable, expectErr, makeEnv } from './agent-test-env.ts';
 
+/** apply_list 가 쓰는 번호 정의 API 를 덧붙인 환경 */
+function listEnv(body: string[]) {
+  const numberings: Array<{ id: number; levelFormats: string[]; numberFormats: number[]; startNumber: number }> = [];
+  return makeEnv(body, (wasm) => {
+    Object.assign(wasm, {
+      getNumberingList: () => numberings,
+      createNumbering: (json: string) => {
+        const id = numberings.length + 1;
+        numberings.push({ id, ...JSON.parse(json) });
+        return id;
+      },
+      ensureDefaultBullet: () => 100,
+    });
+  });
+}
+
 test('replace_range text "" deletes the range, alone and inside apply_edits, and reject restores it', async () => {
   const h = makeEnv(['첫 문장입니다. 지울 부분 남는 부분', '둘째 문단']);
   const r = await h.call('replace_range', {
@@ -81,4 +97,49 @@ test('an occurrence past the matches left by earlier batch items says those item
   // 단독 호출의 오류에는 배치 설명이 붙지 않는다.
   const single = await expectErr(h.call('replace_range', { find: '회사', occurrence: 3, text: 'x' }), 'INVALID_ARGS');
   assert.doesNotMatch(single.message, /Earlier items/);
+});
+
+test('apply_list stripMarkers removes typed markers only at paragraph starts, in one change set that reject restores', async () => {
+  const original = ['가. 첫째', '1) 둘째', '(1)셋째', '① 넷째', '  • 다섯째', '- 여섯째', '1.5배 성장', '-5도 유지', '본문'];
+  const h = listEnv(original);
+  const r = await h.call('apply_list', {
+    sectionIdx: 0, startParaIdx: 0, endParaIdx: 7, format: '1.', stripMarkers: true,
+  });
+  assert.equal(r['strippedMarkers'], 6);
+  assert.deepEqual(h.body, ['첫째', '둘째', '셋째', '넷째', '다섯째', '여섯째', '1.5배 성장', '-5도 유지', '본문']);
+  const sets = h.pending.getChangeSets().filter((set) => set.ops.length > 0);
+  assert.equal(sets.length, 1);
+  assert.equal(sets[0].id, r['changeSetId']);
+  h.pending.reject(String(r['changeSetId']));
+  assert.deepEqual(h.body, original);
+
+  // 표지가 없는 목록은 아무것도 지우지 않는다.
+  const plain = await h.call('apply_list', {
+    sectionIdx: 0, startParaIdx: 6, endParaIdx: 8, format: '1.', stripMarkers: true,
+  });
+  assert.equal(plain['strippedMarkers'], 0);
+  assert.deepEqual(h.body, original);
+});
+
+test('apply_list stripMarkers works as an apply_edits item and as one undo step in 전체 mode', async () => {
+  const h = listEnv(['가. 사과', '나. 배', '맺음말']);
+  const batch = await h.call('apply_edits', {
+    edits: [
+      { tool: 'apply_list', sectionIdx: 0, startParaIdx: 0, endParaIdx: 1, format: '가.', stripMarkers: true },
+      { tool: 'replace_range', find: '맺음말', text: '끝' },
+    ],
+  });
+  const [list] = batch['results'] as Array<Record<string, unknown>>;
+  assert.equal(list['strippedMarkers'], 2);
+  assert.deepEqual(h.body, ['사과', '배', '끝']);
+  h.pending.reject(String(batch['changeSetId']));
+  assert.deepEqual(h.body, ['가. 사과', '나. 배', '맺음말']);
+
+  h.pending.setDirectApply(true);
+  await h.call('apply_list', { sectionIdx: 0, startParaIdx: 0, endParaIdx: 1, format: '가.', stripMarkers: true });
+  h.pending.commitOpen();
+  assert.deepEqual(h.body, ['사과', '배', '맺음말']);
+  assert.equal(h.recorded.length, 1, '표지 지우기와 목록 서식이 한 undo 단계다');
+  h.recorded[0].undo(h.wasm);
+  assert.deepEqual(h.body, ['가. 사과', '나. 배', '맺음말']);
 });

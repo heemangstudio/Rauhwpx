@@ -680,6 +680,23 @@ const LIST_FORMAT_MAP: Record<string, { code: number; pattern: (level: number) =
   'ㄱ.': { code: LIST_NUM_FMT.HANGUL_JAMO, pattern: (l) => `^${l + 1}.` },
 };
 
+/**
+ * 손으로 친 목록 표지 — apply_list stripMarkers 가 문단 맨 앞(들여쓴 공백 포함)에서만 지운다.
+ * 번호·글자 표지와 글머리 기호는 뒤에 공백이 있어야 한다(1.5 · -5도 같은 본문은 남긴다).
+ * 괄호 번호와 원문자는 붙여 써도 표지로 본다.
+ */
+const LIST_MARKER_SPACE = '[ \\t\\u00A0\\u3000]';
+const LIST_MARKER_LABEL = '(?:\\d{1,3}|[가나다라마바사아자차카타파하]|[ㄱㄴㄷㄹㅁㅂㅅㅇㅈㅊㅋㅌㅍㅎ]|[a-zA-Z]|[ivxIVX]{1,4})';
+const TYPED_LIST_MARKER_RE = new RegExp(
+  `^${LIST_MARKER_SPACE}*(?:`
+  + `${LIST_MARKER_LABEL}[.)]${LIST_MARKER_SPACE}+`
+  + `|\\(${LIST_MARKER_LABEL}\\)${LIST_MARKER_SPACE}*`
+  + `|[\\u2460-\\u2473\\u3260-\\u327B]${LIST_MARKER_SPACE}*`
+  + `|[•·ㆍ∙◦‣▪▫■□●○◆◇▶▷►➢➤*\\-–—]${LIST_MARKER_SPACE}+`
+  + ')',
+  'u',
+);
+
 // 미지정 레벨의 기본 7수준 패턴 — 한컴 기본 "1. 가. 1) 가) (1) (가) ①" (numbering-dialog PRESETS[1]과 동일)
 const LIST_DEFAULT_LEVEL_FORMATS = ['^1.', '^2.', '^3)', '^4)', '(^5)', '(^6)', '^7'];
 const LIST_DEFAULT_NUMBER_FORMATS: number[] = [
@@ -6754,6 +6771,10 @@ export class AgentToolExecutor {
     if (startNumber !== undefined && startNumber < 1) {
       throw new AgentToolError('INVALID_ARGS', 'startNumber must be >= 1');
     }
+    const stripMarkers = args['stripMarkers'];
+    if (stripMarkers !== undefined && stripMarkers !== null && typeof stripMarkers !== 'boolean') {
+      throw new AgentToolError('INVALID_ARGS', 'stripMarkers must be a boolean');
+    }
     const { wasm } = this.deps;
 
     let headType: 'Number' | 'Bullet';
@@ -6809,8 +6830,23 @@ export class AgentToolExecutor {
     // 문단마다 전체 재조판이 돌지 않도록 배치로 묶는다 — 조판/이벤트/오버레이는
     // 구간 종료 시 한 번씩, 중간 실패 시 문단 일부만 적용된 상태가 남지 않는다.
     let changeSetId = '';
+    let stripped = 0;
     const revBefore = this.revision;
     this.runAtomicCovered((opts) => this.deps.pending.runAtomicBatch(() => {
+      // 손으로 친 표지를 같은 배치에서 지운다 — 목록 서식과 한 change set·한 undo 단계가 되고,
+      // 거절하면 스냅샷이 지운 표지까지 되살린다.
+      if (stripMarkers === true) {
+        for (let p = startParaIdx; p <= endParaIdx; p++) {
+          const len = wasm.getParagraphLength(sectionIdx, p);
+          const head = len > 0 ? wasm.getTextRange(sectionIdx, p, 0, Math.min(len, 16)) : '';
+          const marker = TYPED_LIST_MARKER_RE.exec(head);
+          if (!marker) continue;
+          changeSetId = this.deps.pending.replaceText({
+            sectionIdx, startParaIdx: p, startCharOffset: 0, endParaIdx: p, endCharOffset: marker[0].length,
+          }, '', agent).changeSetId;
+          stripped++;
+        }
+      }
       for (let p = startParaIdx; p <= endParaIdx; p++) {
         const obj: ObjectOp = {
           type: 'paraFormat', sectionIdx, paraIdx: p,
@@ -6827,6 +6863,7 @@ export class AgentToolExecutor {
       changeSetId,
       numberingId,
       paragraphs: endParaIdx - startParaIdx + 1,
+      ...(stripMarkers === true ? { strippedMarkers: stripped } : {}),
     };
   }
 
