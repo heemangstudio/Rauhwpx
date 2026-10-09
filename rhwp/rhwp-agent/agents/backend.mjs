@@ -494,8 +494,6 @@ ${TABLE_BULLET}
 ${OBJECT_BULLET}${parallelWorkSectionFor(agentName)}`;
 }
 
-export const DIRECT_SYSTEM_BRIEF = directSystemBrief('unrestricted');
-
 export const PLANNING_SYSTEM_BRIEF = `You are in 플랜 (plan) mode: research the task and work out an implementation plan with the user. This mode is read-only: the local filesystem and live document cannot be changed here, whatever the permission profile, and subagents are planning-only. The read-only workspace, web, subagent, and rhwp MCP capabilities available from the current provider are open. Remote files go through the rhwp download_file MCP tool instead of being written locally.
 
 The user can keep editing the live document during planning. A save injects a live-document notification so you can re-read current state; it is application state, not a request to implement or draft a plan.
@@ -521,11 +519,6 @@ ${ENGINE_BULLET}
 ${TABLE_BULLET}
 ${OBJECT_BULLET}${parallelWorkSectionFor(agentName)}`;
 }
-
-export const IMPLEMENTATION_SYSTEM_BRIEF = implementationSystemBrief('unrestricted');
-
-/** The legacy direct-mode prompt remains exported for existing integrations. */
-export const SYSTEM_BRIEF = `${SHARED_SYSTEM_BRIEF}\n\n${INSTRUCTION_WRITE_BRIEF}\n\n${DIRECT_SYSTEM_BRIEF}\n\n${RHWP_TOOL_RULES}`;
 
 const WORKFLOWS = new Set(['direct', 'plan', 'question']);
 const PHASES = new Set(['planning', 'questioning', 'awaiting-approval', 'switching', 'implementing']);
