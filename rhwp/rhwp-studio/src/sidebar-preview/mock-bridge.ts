@@ -142,7 +142,11 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
   const chatStarts: Array<{ threadId: string; workflow: T.AgentWorkflow; permissionProfile: T.PermissionProfile }> = [];
   let messagesSent = 0;
   const sentMentions: string[][] = [];
-  const projects = createPreviewProjects({ homeAccess: new URLSearchParams(location.search).get('home') === '1' });
+  const projectParams = new URLSearchParams(location.search);
+  const projects = createPreviewProjects({
+    homeAccess: projectParams.get('home') === '1',
+    graphNodes: Number(projectParams.get('graphNodes')) || 0,
+  });
   let interrupts = 0;
   let threadId = '';
   let scenario: Scenario = 'chat';

@@ -656,6 +656,150 @@
   color: var(--ag-text);
 }
 
+.ag-pgraph-canvas.ag-dragging { cursor: grabbing; }
+
+.ag-pgraph-forces-toggle.ag-active {
+  background: var(--ag-selected);
+  color: var(--ag-text);
+}
+
+.ag-pgraph-forces {
+  position: absolute;
+  top: 44px;
+  right: 16px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 216px;
+  padding: 12px;
+  border: 1px solid var(--ag-border);
+  border-radius: var(--ag-r-card);
+  background: var(--ag-raised);
+  box-shadow: var(--ag-elev-popover);
+  transform-origin: top right;
+  animation: ag-pgraph-pop-in var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+.ag-pgraph-forces[hidden],
+.ag-pgraph-menu[hidden] { display: none; }
+
+@keyframes ag-pgraph-pop-in {
+  from { opacity: 0; transform: translateY(-3px); }
+}
+
+.ag-pgraph-force {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-meta);
+}
+
+/* 슬라이더: 캡슐 트랙에 잉크 채움, 흰 손잡이. 채움 비율은 --ag-pgraph-range(0..1). */
+.ag-pgraph-range {
+  --ag-pgraph-thumb: 14px;
+  width: 100%;
+  height: var(--ag-pgraph-thumb);
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.ag-pgraph-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: var(--ag-r-pill);
+  background: linear-gradient(to right,
+    var(--ag-primary-bg) calc(var(--ag-pgraph-range, 0.5) * 100%),
+    var(--ag-selected) calc(var(--ag-pgraph-range, 0.5) * 100%));
+}
+
+.ag-pgraph-range::-moz-range-track {
+  height: 4px;
+  border-radius: var(--ag-r-pill);
+  background: var(--ag-selected);
+}
+
+.ag-pgraph-range::-moz-range-progress {
+  height: 4px;
+  border-radius: var(--ag-r-pill);
+  background: var(--ag-primary-bg);
+}
+
+.ag-pgraph-range::-webkit-slider-thumb {
+  width: var(--ag-pgraph-thumb);
+  height: var(--ag-pgraph-thumb);
+  margin-top: -5px;
+  border: 0;
+  border-radius: var(--ag-r-pill);
+  background: #ffffff;
+  box-shadow: 0 0 0 1px var(--ag-border-strong), var(--n-elev-1);
+  -webkit-appearance: none;
+  transition: transform var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+.ag-pgraph-range::-moz-range-thumb {
+  width: var(--ag-pgraph-thumb);
+  height: var(--ag-pgraph-thumb);
+  border: 0;
+  border-radius: var(--ag-r-pill);
+  background: #ffffff;
+  box-shadow: 0 0 0 1px var(--ag-border-strong), var(--n-elev-1);
+}
+
+.ag-pgraph-range:active::-webkit-slider-thumb { transform: scale(1.12); }
+.ag-pgraph-range:focus-visible { outline: none; }
+.ag-pgraph-range:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px var(--ag-focus-ring-color); }
+
+.ag-pgraph-forces-reset,
+.ag-pgraph-menu-item {
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: transparent;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-meta);
+  text-align: left;
+  transition: var(--ag-transition-color);
+}
+
+.ag-pgraph-forces-reset {
+  align-self: flex-end;
+  margin: -2px -4px -4px 0;
+}
+
+.ag-pgraph-forces-reset:hover,
+.ag-pgraph-menu-item:hover,
+.ag-pgraph-menu-item:focus-visible {
+  background: var(--ag-hover);
+  color: var(--ag-text);
+  outline: none;
+}
+
+.ag-pgraph-menu {
+  position: absolute;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  min-width: 112px;
+  padding: 4px;
+  border: 1px solid var(--ag-border);
+  border-radius: var(--ag-r-card);
+  background: var(--ag-raised);
+  box-shadow: var(--ag-elev-popover);
+  animation: ag-pgraph-pop-in var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+.ag-pgraph-menu-item { color: var(--ag-text); }
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-pgraph-forces,
+  .ag-pgraph-menu { animation: none; }
+}
+
 .ag-pgraph-legend {
   position: absolute;
   bottom: 12px;

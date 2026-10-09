@@ -56,7 +56,7 @@ export const auditScenarios: readonly AuditScenario[] = [
   scene('settings-project', 'Settings', 'Project preferences', 'Inspect the librarian model, import rules, board defaults, and storage rows.', { page: 'settings', destination: 'project' }),
   scene('settings-expanded', 'Settings', 'Full-screen settings', 'Inspect navigation, content width, and the return control.', { page: 'settings', destination: 'editing', fullscreen: '1' }),
   scene('project-board', 'Research project', 'Project board', 'Drag cards between columns, use Alt+arrows, rename and add columns.', { project: 'board' }),
-  scene('project-graph', 'Research project', 'Project graph', 'Hover to highlight neighbors, drag to pin, wheel to zoom, switch column/tag colors.', { project: 'graph' }),
+  scene('project-graph', 'Research project', 'Project graph', 'Hover to highlight neighbors, drag a node to pull its neighbors, right-click to pin, wheel to zoom, tune forces.', { project: 'graph' }),
   scene('project-files', 'Research project', 'Project files', 'Filter by kind and tag, rename inline, and move a selection to the trash.', { project: 'files' }),
   scene('clip-board', 'Research project', 'Region clips on the board', 'Inspect clip thumbnails cut from a scanned PDF at the top of 수집함.', { project: 'board' }),
   scene('clip-preview', 'Research project', 'Region clip in the preview', 'Inspect the outlined region on the scan, then use 영역 to drag a new one; drag or resize the outline, Esc cancels.', { project: 'board', item: 'rq7m3kd' }),

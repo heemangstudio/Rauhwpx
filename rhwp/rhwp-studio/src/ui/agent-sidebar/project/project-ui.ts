@@ -60,6 +60,7 @@ const PATHS = {
   upload: 'M6 8.6V2.8M3.6 5.2 6 2.8l2.4 2.4M2.6 9.6h6.8',
   pencil: 'M2.1 9.9l.7-2.5 5-5 1.9 1.9-5 5zM7.1 3.1 9 5M2.8 7.4l1.9 1.9',
   clip: 'M3.6 1.8v6.6h6.6M1.8 3.6h6.6v6.6',
+  sliders: 'M2.2 4h7.6M2.2 8h7.6M4.4 2.6v2.8M7.6 6.6v2.8',
 } as const;
 
 export type ProjectIconName = keyof typeof PATHS;

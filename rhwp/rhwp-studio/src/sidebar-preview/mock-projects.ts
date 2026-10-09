@@ -107,12 +107,16 @@ const MEMBERS = [
   { documentId: 'preview-notes', nodeId: 'dr2s3t', name: '회의록.hwpx' },
 ];
 
-const LINK_PAIRS: Array<[string, string, string?]> = [
+const LINK_PAIRS: Array<[string, string, string?, string?]> = [
   ['na3e4h', 'fa2k7q', '인용'], ['na3e4h', 'fd5p6s', '인용'], ['na3e4h', 'nd6h7k'], ['nb4f5i', 'fd5p6s'], ['nb4f5i', 'fe6q7t'],
   ['nb4f5i', 'fr7d2g'], ['nb4f5i', 'fn3z4c'], ['nc5g6j', 'fl7x2a', '인용'], ['nc5g6j', 'fh3t4w'], ['nd6h7k', 'ff7r2u', '인용'],
   ['nd6h7k', 'fq6c7f'], ['nd6h7k', 'fb3m2x'], ['fb3m2x', 'fc4n5r', '근거'], ['fg2s3v', 'fb3m2x'], ['fk6w7z', 'fb3m2x'],
   ['dq7r2s', 'na3e4h'], ['dq7r2s', 'fb3m2x', '인용'], ['dq7r2s', 'fa2k7q', '인용'], ['dq7r2s', 'nd6h7k'], ['dr2s3t', 'nc5g6j'],
   ['ne7i2l', 'na3e4h'], ['ng3k4n', 'nb4f5i'], ['fm2y3b', 'fa2k7q'], ['nf2j3m', 'fa2k7q', '반박'], ['nf2j3m', 'ff7r2u'],
+  // 실태조사와 기본계획은 여러 조각이 거듭 인용되어 연결이 굵다.
+  ['na3e4h', 'fa2k7q', undefined, 'c12'], ['na3e4h', 'fa2k7q', undefined, 'c31'], ['nd6h7k', 'fa2k7q', undefined, 'p88'],
+  ['nd6h7k', 'fa2k7q', undefined, 'p91'], ['nc5g6j', 'fa2k7q', undefined, 'c40'], ['nd6h7k', 'fb3m2x', undefined, 'c7'],
+  ['nd6h7k', 'fb3m2x', undefined, 'c9'], ['nb4f5i', 'fd5p6s', undefined, 'p12'], ['nb4f5i', 'fd5p6s', undefined, 'p20'],
 ];
 
 export function sampleProject(now = Date.now()): ProjectSnapshot {
@@ -170,12 +174,13 @@ export function sampleProject(now = Date.now()): ProjectSnapshot {
     };
     items.push(note);
   });
-  const links: ProjectLink[] = LINK_PAIRS.map(([from, to, label], index) => ({
+  const links: ProjectLink[] = LINK_PAIRS.map(([from, to, label, anchor], index) => ({
     id: `l${String(index).padStart(2, '0')}a2b3c4d`.slice(0, 9),
     from,
     to,
     origin: from.startsWith('n') ? 'note' : 'explicit',
     ...(label ? { label } : {}),
+    ...(anchor ? { toAnchor: anchor } : {}),
     ...(from.startsWith('n') ? { noteId: from } : {}),
   }));
   return {
@@ -204,6 +209,53 @@ export function sampleProject(now = Date.now()): ProjectSnapshot {
     librarian: { state: 'running', queued: 2, running: 1 },
     usage: { files: FILES.length, bytes: FILES.reduce((sum, seed) => sum + (seed.size ?? 100_000), 0) },
   };
+}
+
+/**
+ * 그래프 성능 확인용(`?graphNodes=2000`): 결정적인 무작위로 항목을 더한다. 노트는 여러 항목을
+ * 인용하고, 파일은 먼저 생긴 항목에 우선 연결(선호 연결)해 실제처럼 허브가 생긴다.
+ */
+export function withSyntheticGraph(project: ProjectSnapshot, count: number): ProjectSnapshot {
+  if (!(count > 0)) return project;
+  let seed = 7;
+  const random = () => {
+    seed = (seed * 16807) % 2147483647;
+    return seed / 2147483647;
+  };
+  const base32 = 'abcdefghijklmnopqrstuvwxyz234567';
+  const id = (prefix: string, index: number) => {
+    let value = index + 1;
+    let text = '';
+    for (let digit = 0; digit < 6; digit++) {
+      text += base32[value % 32];
+      value = Math.floor(value / 32);
+    }
+    return prefix + text;
+  };
+  const items: ProjectItem[] = [];
+  const links: ProjectLink[] = [];
+  const pool = project.items.map((item) => item.id);
+  const tags = project.tags.map((tag) => tag.name);
+  const template = project.items.find((item): item is ProjectFileItem => item.kind === 'file')!;
+  const note = project.items.find((item): item is ProjectNoteItem => item.kind === 'note')!;
+  for (let index = 0; index < count; index++) {
+    const isNote = random() < 0.12;
+    const itemId = id(isNote ? 'n' : 'f', index);
+    const itemTags = random() < 0.6 ? [tags[Math.floor(random() * tags.length)]] : [];
+    const column = project.columns[Math.floor(random() * project.columns.length)].id;
+    const title = isNote ? `메모 ${index + 1}` : `자료 ${index + 1}.pdf`;
+    items.push(isNote
+      ? { ...note, id: itemId, title, column, tags: itemTags, pinned: false, order: 1000 + index }
+      : { ...template, id: itemId, title, column, tags: itemTags, pinned: false, order: 1000 + index, fileId: `ref-${itemId}` });
+    const targets = isNote ? 2 + Math.floor(random() * 6) : random() < 0.8 ? 1 : 0;
+    for (let link = 0; link < targets; link++) {
+      // 선호 연결: 앞쪽 항목일수록 자주 고른다.
+      const target = pool[Math.floor(pool.length * random() ** 2.2)];
+      links.push({ id: `l${id('', index).slice(0, 5)}${link}x9`, from: itemId, to: target, origin: isNote ? 'note' : 'explicit', ...(isNote ? { noteId: itemId } : {}) });
+    }
+    pool.push(itemId);
+  }
+  return { ...project, items: [...project.items, ...items], links: [...project.links, ...links] };
 }
 
 function sampleActivity(now: number): ProjectActivityEntry[] {
@@ -259,7 +311,7 @@ export interface PreviewProjects extends ProjectClient {
   setHomeAccess(enabled: boolean): void;
 }
 
-export function createPreviewProjects(options: { homeAccess?: boolean; latencyMs?: number } = {}): PreviewProjects {
+export function createPreviewProjects(options: { homeAccess?: boolean; latencyMs?: number; graphNodes?: number } = {}): PreviewProjects {
   const latency = options.latencyMs ?? 120;
   const now = Date.now();
   let project = sampleProject(now);
@@ -274,6 +326,7 @@ export function createPreviewProjects(options: { homeAccess?: boolean; latencyMs
     links: [...project.links, ...citations.links],
     tags: [...project.tags, ...citations.tags.filter((tag) => !project.tags.some((known) => known.name === tag.name))],
   };
+  project = withSyntheticGraph(project, options.graphNodes ?? 0);
   let trashed: ProjectItem[] = [
     { ...project.items.find((item) => item.id === 'fp5b6e')!, id: 'fs2t4u', title: '중복 — 콜센터 매뉴얼 사본.hwp', trashedAt: now - 26 * HOUR },
     { ...project.items.find((item) => item.id === 'ne7i2l')!, id: 'nt3u5v', title: '지난 목차', trashedAt: now - 3 * 24 * HOUR },
