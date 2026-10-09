@@ -241,7 +241,7 @@ test('portable history rejects oversized repository arrays before cloning or sor
     currentBlobId: fixture.head.blobId,
     snapshot: fixture.snapshot,
   });
-  const magicLength = new TextEncoder().encode('RAUHWPX-HISTORY\0').byteLength;
+  const magicLength = new TextEncoder().encode('HAMAEDITOR-HISTORY\0').byteLength;
   const oldManifestLength = new DataView(bundle.buffer, bundle.byteOffset, bundle.byteLength)
     .getUint32(magicLength, true);
   const oldPayloadOffset = magicLength + 4 + oldManifestLength;
@@ -294,7 +294,7 @@ test('portable history rejects oversized comparison snapshots before serializing
     currentBlobId: fixture.head.blobId,
     snapshot: fixture.snapshot,
   });
-  const magicLength = new TextEncoder().encode('RAUHWPX-HISTORY\0').byteLength;
+  const magicLength = new TextEncoder().encode('HAMAEDITOR-HISTORY\0').byteLength;
   const oldManifestLength = new DataView(bundle.buffer, bundle.byteOffset, bundle.byteLength)
     .getUint32(magicLength, true);
   const oldPayloadOffset = magicLength + 4 + oldManifestLength;

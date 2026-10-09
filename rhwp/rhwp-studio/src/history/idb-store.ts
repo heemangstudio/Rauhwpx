@@ -14,7 +14,7 @@ import {
 } from '../core/idb-open.ts';
 import type { DocHistoryEntryMeta } from './types';
 
-const DB_NAME = 'rhwpStudioDocHistory';
+const DB_NAME = 'hamaeditorDocHistory';
 const DB_VER = 1;
 const META = 'historyMeta';
 const BLOBS = 'historyBlobs';

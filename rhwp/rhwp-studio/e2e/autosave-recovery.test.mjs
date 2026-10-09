@@ -24,7 +24,7 @@ function sampleUrl(filename) {
 
 async function clearAutosaveDb(page) {
   await page.evaluate(async () => {
-    const req = indexedDB.deleteDatabase('rhwpStudioAutosave');
+    const req = indexedDB.deleteDatabase('hamaeditorAutosave');
     await new Promise((resolve) => {
       req.onsuccess = req.onerror = req.onblocked = () => resolve();
     });
@@ -33,7 +33,7 @@ async function clearAutosaveDb(page) {
 
 async function putDraft(page, draft) {
   await page.evaluate(async (input) => {
-    const req = indexedDB.open('rhwpStudioAutosave');
+    const req = indexedDB.open('hamaeditorAutosave');
     const db = await new Promise((resolve, reject) => {
       req.onupgradeneeded = () => {
         const nextDb = req.result;
@@ -66,7 +66,7 @@ async function putDraft(page, draft) {
 /** 복구한 창이 같은 id 로 다시 기록했으면 lock 소유 표시(ownerInstanceId)가 붙는다. */
 async function draftAdoptedByLivePage(page, id) {
   return await page.evaluate(async (draftId) => {
-    const req = indexedDB.open('rhwpStudioAutosave');
+    const req = indexedDB.open('hamaeditorAutosave');
     const db = await new Promise((resolve, reject) => {
       req.onupgradeneeded = () => {
         const nextDb = req.result;

@@ -74,7 +74,7 @@ export const PI_TARBALL_MAX_BYTES = 256 * 1024 * 1024;
 const INSTALL_STDERR_LIMIT_BYTES = 64 * 1024;
 /** 진행 이벤트는 이 간격으로만 내보낸다 — 청크마다 WS 를 두드리지 않는다. */
 const PROGRESS_INTERVAL_MS = 150;
-const PI_SECRET_ID = 'rhwp.pi.openrouter-api-key';
+const PI_SECRET_ID = 'hamaeditor.pi.openrouter-api-key';
 const INSTALL_PROGRESS = Object.freeze({
   preparing: 8,
   downloadStart: 12,
@@ -267,11 +267,11 @@ function thinkingLevelMap() {
 export function defaultPiRoot(env = process.env, platform = process.platform, home = os.homedir()) {
   const platformPath = platform === 'win32' ? path.win32 : path.posix;
   if (env.RHWP_PI_DIR) return platformPath.resolve(env.RHWP_PI_DIR);
-  if (platform === 'darwin') return platformPath.join(home, 'Library', 'Application Support', 'rhwp', 'pi');
+  if (platform === 'darwin') return platformPath.join(home, 'Library', 'Application Support', 'hamaeditor', 'pi');
   if (platform === 'win32') {
-    return platformPath.join(env.APPDATA || platformPath.join(home, 'AppData', 'Roaming'), 'rhwp', 'pi');
+    return platformPath.join(env.APPDATA || platformPath.join(home, 'AppData', 'Roaming'), 'hamaeditor', 'pi');
   }
-  return platformPath.join(env.XDG_DATA_HOME || platformPath.join(home, '.local', 'share'), 'rhwp', 'pi');
+  return platformPath.join(env.XDG_DATA_HOME || platformPath.join(home, '.local', 'share'), 'hamaeditor', 'pi');
 }
 
 /**

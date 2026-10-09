@@ -60,7 +60,7 @@ test('website signups are stored once, readable only with the admin token, and n
     });
     assert.deepEqual(notified, [[
       'https://api.telegram.org/botbot-token/sendMessage',
-      { chat_id: '42', text: 'Rauhwpx 체험 신청: Andy@Example.com' },
+      { chat_id: '42', text: 'HamaEditor 체험 신청: Andy@Example.com' },
     ]]);
   } finally {
     await server.close();

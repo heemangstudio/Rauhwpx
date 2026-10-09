@@ -31,9 +31,9 @@ const MAX_SOURCE_TOTAL_BYTES = 50 * 1024 * 1024;
 
 export function defaultWritingStyleRoot(env = process.env, platform = process.platform, home = os.homedir()) {
   if (env.RHWP_WRITING_STYLE_DIR) return path.resolve(env.RHWP_WRITING_STYLE_DIR);
-  if (platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'rhwp', 'writing-style');
-  if (platform === 'win32') return path.join(env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'rhwp', 'writing-style');
-  return path.join(env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'rhwp', 'writing-style');
+  if (platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'hamaeditor', 'writing-style');
+  if (platform === 'win32') return path.join(env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'hamaeditor', 'writing-style');
+  return path.join(env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'hamaeditor', 'writing-style');
 }
 
 async function readJson(file, fallback, { maxBytes, label, platform }) {

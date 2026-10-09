@@ -67,7 +67,7 @@ test('HWP_DOCUMENT_ACCEPT는 넓은 binary MIME을 등록하지 않는다', () =
     'application/hwp+zip': ['.hwpx'],
     'application/xml': ['.hml'],
     'text/xml': ['.hml'],
-    'application/vnd.rauhwpx.history': ['.rhwpx'],
+    'application/vnd.hamaeditor.history': ['.rhwpx'],
   });
   assert.equal(Object.hasOwn(HWP_DOCUMENT_ACCEPT, 'application/octet-stream'), false);
   assert.equal(Object.hasOwn(HWP_DOCUMENT_ACCEPT, '*/*'), false);

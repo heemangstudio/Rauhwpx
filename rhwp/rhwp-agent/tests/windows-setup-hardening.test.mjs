@@ -61,15 +61,15 @@ function lyingLstatFs(target, overrides = {}) {
 }
 
 test('the bundled npm launcher uses the current Node-compatible executable', () => {
-  const launch = bundledNpmLaunch({ nodeCommand: 'Rauhwpx.exe' });
-  assert.equal(launch.command, 'Rauhwpx.exe');
+  const launch = bundledNpmLaunch({ nodeCommand: 'HamaEditor.exe' });
+  assert.equal(launch.command, 'HamaEditor.exe');
   assert.match(launch.leadingArgs[0], /npm[/\\]bin[/\\]npm-cli\.js$/);
 });
 
 test('Windows Electron hosts get a node.cmd shim and npm_node_execpath', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-node-host-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const electron = path.join(root, 'Rauhwpx.exe');
+  const electron = path.join(root, 'HamaEditor.exe');
   assert.equal(isNodeBinary(electron), false);
   assert.equal(nodeHostNeedsShim('win32', electron), true);
   assert.equal(nodeHostShimFileName('win32'), 'node.cmd');
@@ -77,7 +77,7 @@ test('Windows Electron hosts get a node.cmd shim and npm_node_execpath', async (
   assert.equal(path.basename(shim), 'node.cmd');
   const body = await fs.readFile(shim, 'utf8');
   assert.match(body, /ELECTRON_RUN_AS_NODE=1/);
-  assert.match(body, /Rauhwpx\.exe/);
+  assert.match(body, /HamaEditor\.exe/);
   const env = applyNodeHostEnv({ PATH: 'C:\\Windows\\System32' }, {
     nodeCommand: electron, shimDir: root, platform: 'win32',
   });
@@ -88,7 +88,7 @@ test('Windows Electron hosts get a node.cmd shim and npm_node_execpath', async (
 
 test('a real Node host on Unix does not need a PATH shim', () => {
   assert.equal(nodeHostNeedsShim('darwin', '/usr/bin/node'), false);
-  assert.equal(nodeHostNeedsShim('darwin', '/Applications/Rauhwpx.app/Contents/MacOS/Rauhwpx'), true);
+  assert.equal(nodeHostNeedsShim('darwin', '/Applications/HamaEditor.app/Contents/MacOS/HamaEditor'), true);
 });
 
 test('a failed node-host write is retried on the next ensure', async (t) => {
@@ -97,7 +97,7 @@ test('a failed node-host write is retried on the next ensure', async (t) => {
   let attempts = 0;
   const ensure = createNodeHost({
     rootDir: root,
-    nodeCommand: path.join(root, 'Rauhwpx.exe'),
+    nodeCommand: path.join(root, 'HamaEditor.exe'),
     platform: 'win32',
     writeFile: async (file, body) => {
       attempts += 1;
@@ -425,11 +425,11 @@ test('the desktop vault persists ciphertext and serves IPC requests', async () =
   };
   const vault = createSecretVault({ filePath, safeStorage, platform: 'win32' });
   const response = await handleSecretRequest(vault, {
-    type: 'rhwp-secret-request', id: '1', operation: 'set', key: 'rhwp.test', value: 'sk-secret',
+    type: 'rhwp-secret-request', id: '1', operation: 'set', key: 'hamaeditor.test', value: 'sk-secret',
   });
   assert.equal(response.ok, true);
-  await vault.set('rhwp.test', 'sk-secret-rotated');
-  assert.equal(await vault.get('rhwp.test'), 'sk-secret-rotated');
+  await vault.set('hamaeditor.test', 'sk-secret-rotated');
+  assert.equal(await vault.get('hamaeditor.test'), 'sk-secret-rotated');
   assert.doesNotMatch(await fs.readFile(filePath, 'utf8'), /sk-secret-rotated/);
   await fs.rm(root, { recursive: true, force: true });
 });
@@ -476,7 +476,7 @@ test('a locked stale Windows vault backup does not invalidate the committed prim
   const filePath = path.join(root, 'secrets.json');
   const previous = `${filePath}.previous-write`;
   const encoded = Buffer.from('protected:committed-secret').toString('base64');
-  const body = JSON.stringify({ version: 1, secrets: { 'rhwp.test': encoded } });
+  const body = JSON.stringify({ version: 1, secrets: { 'hamaeditor.test': encoded } });
   await fs.writeFile(filePath, body);
   await fs.writeFile(previous, body);
   const safeStorage = {
@@ -498,7 +498,7 @@ test('a locked stale Windows vault backup does not invalidate the committed prim
     },
   });
 
-  assert.equal(await vault.get('rhwp.test'), 'committed-secret');
+  assert.equal(await vault.get('hamaeditor.test'), 'committed-secret');
   assert.equal((await fs.stat(previous)).isFile(), true);
   await fs.rm(root, { recursive: true, force: true });
 });
@@ -515,19 +515,19 @@ test('Windows vault replacement refuses to move a directory target aside', async
     },
   };
   const vault = createSecretVault({ filePath, safeStorage, platform: 'win32' });
-  await vault.set('rhwp.test', 'first');
+  await vault.set('hamaeditor.test', 'first');
   await fs.rm(filePath);
   await fs.mkdir(filePath);
   await fs.writeFile(path.join(filePath, 'inside.txt'), 'keep');
 
-  await assert.rejects(() => vault.set('rhwp.test', 'second'), { code: 'EISDIR' });
+  await assert.rejects(() => vault.set('hamaeditor.test', 'second'), { code: 'EISDIR' });
   assert.equal(await fs.readFile(path.join(filePath, 'inside.txt'), 'utf8'), 'keep');
   await assert.rejects(fs.access(`${filePath}.previous-write`), { code: 'ENOENT' });
   const temps = (await fs.readdir(root)).filter((name) => name.startsWith('secrets.json.tmp-'));
   assert.equal(temps.length, 1);
   const pending = JSON.parse(await fs.readFile(path.join(root, temps[0]), 'utf8'));
   assert.equal(pending.version, 1);
-  assert.equal(typeof pending.secrets['rhwp.test'], 'string');
+  assert.equal(typeof pending.secrets['hamaeditor.test'], 'string');
 });
 
 test('Windows vault replacement recovery does not publish over a restored directory backup', async (t) => {
@@ -543,12 +543,12 @@ test('Windows vault replacement recovery does not publish over a restored direct
     },
   };
   const vault = createSecretVault({ filePath, safeStorage, platform: 'win32' });
-  await vault.set('rhwp.test', 'first');
+  await vault.set('hamaeditor.test', 'first');
   await fs.rm(filePath);
   await fs.mkdir(previous);
   await fs.writeFile(path.join(previous, 'inside.txt'), 'keep');
 
-  await assert.rejects(() => vault.set('rhwp.test', 'second'), { code: 'EISDIR' });
+  await assert.rejects(() => vault.set('hamaeditor.test', 'second'), { code: 'EISDIR' });
   assert.equal(await fs.readFile(path.join(filePath, 'inside.txt'), 'utf8'), 'keep');
   await assert.rejects(fs.access(previous), { code: 'ENOENT' });
   const temps = (await fs.readdir(root)).filter((name) => name.startsWith('secrets.json.tmp-'));
@@ -572,12 +572,12 @@ test('Windows vault replacement restores a directory that appears between lstat 
       rm: rmFileOnly,
     },
   });
-  await vault.set('rhwp.test', 'first');
+  await vault.set('hamaeditor.test', 'first');
   await fs.rm(filePath);
   await fs.mkdir(filePath);
   await fs.writeFile(path.join(filePath, 'inside.txt'), 'keep');
 
-  await assert.rejects(() => vault.set('rhwp.test', 'second'), { code: 'EISDIR' });
+  await assert.rejects(() => vault.set('hamaeditor.test', 'second'), { code: 'EISDIR' });
   assert.equal(await fs.readFile(path.join(filePath, 'inside.txt'), 'utf8'), 'keep');
   await assert.rejects(fs.access(previous), { code: 'ENOENT' });
   assert.equal((await pendingVaultTemps(root)).length, 1);
@@ -603,13 +603,13 @@ test('Windows vault replacement leaves a raced directory stranded when restore f
       rm: rmFileOnly,
     },
   });
-  await vault.set('rhwp.test', 'first');
+  await vault.set('hamaeditor.test', 'first');
   await fs.rm(filePath);
   await fs.mkdir(filePath);
   await fs.writeFile(path.join(filePath, 'inside.txt'), 'keep');
 
   await assert.rejects(
-    () => vault.set('rhwp.test', 'second'),
+    () => vault.set('hamaeditor.test', 'second'),
     (error) => error.code === 'FILE_REPLACE_ROLLBACK_FAILED'
       && error.backupPath === previous
       && typeof error.tempPath === 'string'
@@ -631,12 +631,12 @@ test('Windows vault replacement does not recursively delete a leftover directory
     platform: 'win32',
     fileOperations: { rm: rmFileOnly },
   });
-  await vault.set('rhwp.test', 'first');
+  await vault.set('hamaeditor.test', 'first');
   const committed = await fs.readFile(filePath, 'utf8');
   await fs.mkdir(previous);
   await fs.writeFile(path.join(previous, 'inside.txt'), 'keep');
 
-  await assert.rejects(() => vault.set('rhwp.test', 'second'), { code: 'EISDIR' });
+  await assert.rejects(() => vault.set('hamaeditor.test', 'second'), { code: 'EISDIR' });
   assert.equal(await fs.readFile(filePath, 'utf8'), committed);
   assert.equal(await fs.readFile(path.join(previous, 'inside.txt'), 'utf8'), 'keep');
 });
@@ -664,10 +664,10 @@ test('Windows vault replacement restores the target when post-aside lstat fails'
       rm: rmFileOnly,
     },
   });
-  await vault.set('rhwp.test', 'first');
+  await vault.set('hamaeditor.test', 'first');
   const committed = await fs.readFile(filePath, 'utf8');
 
-  await assert.rejects(() => vault.set('rhwp.test', 'second'), { code: 'EIO' });
+  await assert.rejects(() => vault.set('hamaeditor.test', 'second'), { code: 'EIO' });
   assert.equal(await fs.readFile(filePath, 'utf8'), committed);
   await assert.rejects(fs.access(previous), { code: 'ENOENT' });
   assert.equal((await pendingVaultTemps(root)).length, 0);
@@ -680,7 +680,7 @@ test('the Windows vault recovers a validated previous-write after an interrupted
   const encoded = Buffer.from('protected:recovered-secret').toString('base64');
   await fs.writeFile(previous, JSON.stringify({
     version: 1,
-    secrets: { 'rhwp.test': encoded },
+    secrets: { 'hamaeditor.test': encoded },
   }));
   const safeStorage = {
     async isAsyncEncryptionAvailable() { return true; },
@@ -691,7 +691,7 @@ test('the Windows vault recovers a validated previous-write after an interrupted
   };
 
   const vault = createSecretVault({ filePath, safeStorage, platform: 'win32' });
-  assert.equal(await vault.get('rhwp.test'), 'recovered-secret');
+  assert.equal(await vault.get('hamaeditor.test'), 'recovered-secret');
   assert.equal((await fs.stat(filePath)).isFile(), true);
   await assert.rejects(fs.access(previous), { code: 'ENOENT' });
   await fs.rm(root, { recursive: true, force: true });
@@ -703,7 +703,7 @@ test('vault reset is serialized after an in-flight read and re-encryption', asyn
   const encoded = Buffer.from('protected:old-secret').toString('base64');
   await fs.writeFile(filePath, JSON.stringify({
     version: 1,
-    secrets: { 'rhwp.test': encoded },
+    secrets: { 'hamaeditor.test': encoded },
   }));
   let releaseDecrypt;
   let markDecryptStarted;
@@ -723,13 +723,13 @@ test('vault reset is serialized after an in-flight read and re-encryption', asyn
   };
   const vault = createSecretVault({ filePath, safeStorage, platform: 'win32' });
 
-  const reading = vault.get('rhwp.test');
+  const reading = vault.get('hamaeditor.test');
   await decryptStarted;
   const resetting = vault.reset();
   releaseDecrypt();
   assert.equal(await reading, 'old-secret');
   await resetting;
-  assert.equal(await vault.get('rhwp.test'), null);
+  assert.equal(await vault.get('hamaeditor.test'), null);
   assert.equal((await fs.readdir(root)).some((name) => name.startsWith('secrets.json.reset-')), true);
   await fs.rm(root, { recursive: true, force: true });
 });
@@ -747,13 +747,13 @@ test('a corrupt desktop vault fails closed until an explicit quarantining reset'
   };
   const vault = createSecretVault({ filePath, safeStorage, platform: 'win32' });
 
-  await assert.rejects(() => vault.get('rhwp.test'), { code: 'SECRET_VAULT_CORRUPT' });
-  await assert.rejects(() => vault.set('rhwp.test', 'must-not-overwrite'), { code: 'SECRET_VAULT_CORRUPT' });
+  await assert.rejects(() => vault.get('hamaeditor.test'), { code: 'SECRET_VAULT_CORRUPT' });
+  await assert.rejects(() => vault.set('hamaeditor.test', 'must-not-overwrite'), { code: 'SECRET_VAULT_CORRUPT' });
   assert.equal(await fs.readFile(filePath, 'utf8'), '{not-json');
 
   await vault.reset();
-  await vault.set('rhwp.test', 'fresh-secret');
-  assert.equal(await vault.get('rhwp.test'), 'fresh-secret');
+  await vault.set('hamaeditor.test', 'fresh-secret');
+  assert.equal(await vault.get('hamaeditor.test'), 'fresh-secret');
   assert.equal((await fs.readdir(root)).some((name) => name.startsWith('secrets.json.reset-')), true);
   await fs.rm(root, { recursive: true, force: true });
 });
@@ -770,22 +770,22 @@ test('a transient vault read failure is retried instead of latching as corruptio
     await fs.rm(root, { recursive: true, force: true });
   });
   await createSecretVault({ filePath, safeStorage: vaultSafeStorage(), platform: 'darwin' })
-    .set('rhwp.test', 'kept-secret');
+    .set('hamaeditor.test', 'kept-secret');
 
   const vault = createSecretVault({ filePath, safeStorage: vaultSafeStorage(), platform: 'darwin' });
   await fs.chmod(filePath, 0o000);
-  await assert.rejects(() => vault.get('rhwp.test'), { code: 'SECRET_VAULT_UNAVAILABLE' });
-  await assert.rejects(() => vault.set('rhwp.other', 'value'), { code: 'SECRET_VAULT_UNAVAILABLE' });
+  await assert.rejects(() => vault.get('hamaeditor.test'), { code: 'SECRET_VAULT_UNAVAILABLE' });
+  await assert.rejects(() => vault.set('hamaeditor.other', 'value'), { code: 'SECRET_VAULT_UNAVAILABLE' });
   await fs.chmod(filePath, 0o600);
-  assert.equal(await vault.get('rhwp.test'), 'kept-secret');
-  await vault.set('rhwp.other', 'value');
-  assert.equal(await vault.get('rhwp.test'), 'kept-secret');
+  assert.equal(await vault.get('hamaeditor.test'), 'kept-secret');
+  await vault.set('hamaeditor.other', 'value');
+  assert.equal(await vault.get('hamaeditor.test'), 'kept-secret');
 
   // Malformed content still fails closed on every call.
   await fs.writeFile(filePath, '{not-json');
   const corrupt = createSecretVault({ filePath, safeStorage: vaultSafeStorage(), platform: 'darwin' });
-  await assert.rejects(() => corrupt.get('rhwp.test'), { code: 'SECRET_VAULT_CORRUPT' });
-  await assert.rejects(() => corrupt.get('rhwp.test'), { code: 'SECRET_VAULT_CORRUPT' });
+  await assert.rejects(() => corrupt.get('hamaeditor.test'), { code: 'SECRET_VAULT_CORRUPT' });
+  await assert.rejects(() => corrupt.get('hamaeditor.test'), { code: 'SECRET_VAULT_CORRUPT' });
 });
 
 test('a failed optional re-encryption still returns the decrypted secret', async (t) => {
@@ -794,7 +794,7 @@ test('a failed optional re-encryption still returns the decrypted secret', async
   const filePath = path.join(root, 'secrets.json');
   const original = JSON.stringify({
     version: 1,
-    secrets: { 'rhwp.test': Buffer.from('protected:old-key-secret').toString('base64') },
+    secrets: { 'hamaeditor.test': Buffer.from('protected:old-key-secret').toString('base64') },
   });
   await fs.writeFile(filePath, original);
   const warn = t.mock.method(console, 'warn', () => {});
@@ -812,8 +812,8 @@ test('a failed optional re-encryption still returns the decrypted secret', async
     },
   });
 
-  assert.equal(await vault.get('rhwp.test'), 'old-key-secret');
-  assert.equal(await vault.get('rhwp.test'), 'old-key-secret');
+  assert.equal(await vault.get('hamaeditor.test'), 'old-key-secret');
+  assert.equal(await vault.get('hamaeditor.test'), 'old-key-secret');
   assert.equal(warn.mock.callCount(), 2);
   assert.equal(await fs.readFile(filePath, 'utf8'), original);
   assert.deepEqual(await pendingVaultTemps(root), []);
@@ -829,14 +829,14 @@ test('the desktop vault rejects oversized files and plaintext secrets before all
   };
   const vault = createSecretVault({ filePath, safeStorage, platform: 'win32' });
   await assert.rejects(
-    () => vault.set('rhwp.test', 'x'.repeat((64 * 1024) + 1)),
+    () => vault.set('hamaeditor.test', 'x'.repeat((64 * 1024) + 1)),
     /64 KiB/,
   );
 
   await fs.writeFile(filePath, 'x');
   await fs.truncate(filePath, (8 * 1024 * 1024) + 1);
   const oversizedVault = createSecretVault({ filePath, safeStorage, platform: 'win32' });
-  await assert.rejects(() => oversizedVault.get('rhwp.test'), { code: 'SECRET_VAULT_CORRUPT' });
+  await assert.rejects(() => oversizedVault.get('hamaeditor.test'), { code: 'SECRET_VAULT_CORRUPT' });
   await fs.rm(root, { recursive: true, force: true });
 });
 
@@ -850,6 +850,6 @@ test('the hub secret client correlates IPC responses without writing locally', a
     }));
   };
   const store = createIpcSecretStore({ processRef });
-  assert.equal(await store.set('rhwp.test', 'secret'), 'secret');
-  assert.equal(await store.get('rhwp.test'), 'stored');
+  assert.equal(await store.set('hamaeditor.test', 'secret'), 'secret');
+  assert.equal(await store.get('hamaeditor.test'), 'stored');
 });

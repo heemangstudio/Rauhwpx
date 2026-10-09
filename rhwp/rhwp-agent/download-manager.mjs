@@ -274,7 +274,7 @@ export class DownloadManager {
     if (options.writableRoot && pathsOverlap(options.rootDir, options.writableRoot)) {
       throw new Error('DownloadManager storage must not overlap the provider-writable root');
     }
-    this.agentDir = path.resolve(options.rootDir, '.rhwp-agent');
+    this.agentDir = path.resolve(options.rootDir, '.hamaeditor-agent');
     this.baseDir = path.resolve(this.agentDir, 'downloads');
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;

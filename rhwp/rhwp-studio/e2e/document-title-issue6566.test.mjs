@@ -28,7 +28,7 @@ async function fileCommand(page, command) {
 }
 
 runTest('문서 파일명과 창 제목 (#6566)', async ({ page }) => {
-  await expectTitle(page, 'Rauhwpx');
+  await expectTitle(page, 'HamaEditor');
 
   const failedInitial = await page.evaluate(() => {
     try { window.__wasm.loadDocument(new Uint8Array([1, 2, 3]), '손상.hwp'); }
@@ -36,7 +36,7 @@ runTest('문서 파일명과 창 제목 (#6566)', async ({ page }) => {
     return false;
   });
   assert(failedInitial, '손상 파일 로드 실패를 실제 WASM에서 확인');
-  await expectTitle(page, 'Rauhwpx');
+  await expectTitle(page, 'HamaEditor');
 
   const opened = await page.evaluate(async () => {
     const response = await fetch('/samples/para-001.hwp');
@@ -57,7 +57,7 @@ runTest('문서 파일명과 창 제목 (#6566)', async ({ page }) => {
     return done;
   });
   assert(opened.ok, '실제 열기 경로 성공');
-  await expectTitle(page, '검토 <원본> & 001.hwp - Rauhwpx');
+  await expectTitle(page, '검토 <원본> & 001.hwp - HamaEditor');
 
   const failedNameKeptOutOfTitle = await page.evaluate(() => {
     try { window.__wasm.loadDocument(new Uint8Array([1, 2, 3]), '실패.hwp'); }
@@ -88,7 +88,7 @@ runTest('문서 파일명과 창 제목 (#6566)', async ({ page }) => {
     return done;
   });
   assert(reopened.ok, '실패 후 재오픈 성공');
-  await expectTitle(page, '검토 <원본> & 001.hwp - Rauhwpx');
+  await expectTitle(page, '검토 <원본> & 001.hwp - HamaEditor');
 
   await page.evaluate(async () => {
     const { WasmBridge } = await import('/src/core/wasm-bridge.ts');
@@ -98,7 +98,7 @@ runTest('문서 파일명과 창 제목 (#6566)', async ({ page }) => {
     auxiliary.fileName = '비교 전용.hwp';
     auxiliary.releaseDocument();
   });
-  await expectTitle(page, '검토 <원본> & 001.hwp - Rauhwpx');
+  await expectTitle(page, '검토 <원본> & 001.hwp - HamaEditor');
 
   await page.evaluate(() => {
     window.__titleSaveWritten = false;
@@ -111,11 +111,11 @@ runTest('문서 파일명과 창 제목 (#6566)', async ({ page }) => {
     });
   });
   await fileCommand(page, 'file:save-as-hwpx');
-  await expectTitle(page, '다른 이름.hwpx - Rauhwpx');
+  await expectTitle(page, '다른 이름.hwpx - HamaEditor');
   assert(await page.evaluate(() => window.__titleSaveWritten), '다른 이름 저장이 실제 바이트를 씀');
   await page.evaluate(() => window.rhwpStudio.notifySaved('호스트 저장.hwp'));
-  await expectTitle(page, '호스트 저장.hwp - Rauhwpx');
+  await expectTitle(page, '호스트 저장.hwp - HamaEditor');
 
   await createNewDocument(page);
-  await expectTitle(page, '새 문서.hwpx - Rauhwpx');
+  await expectTitle(page, '새 문서.hwpx - HamaEditor');
 });

@@ -102,7 +102,7 @@ function fakeOpenRouter({ valid = true, catalog = CATALOG } = {}) {
     async validateKey(key) {
       calls.validate.push(key);
       return valid
-        ? { valid: true, label: 'rhwp', limit: 10, usage: 1, isFreeTier: false }
+        ? { valid: true, label: 'hamaeditor', limit: 10, usage: 1, isFreeTier: false }
         : { valid: false, label: null, limit: null, usage: null, isFreeTier: false };
     },
     async catalog() {
@@ -182,13 +182,13 @@ test('RHWP_PI_DIR overrides the per-platform app data root', () => {
   assert.equal(defaultPiRoot({ RHWP_PI_DIR: '/tmp/pi-here' }), path.resolve('/tmp/pi-here'));
   assert.equal(
     defaultPiRoot({}, 'darwin', '/Users/tester'),
-    '/Users/tester/Library/Application Support/rhwp/pi',
+    '/Users/tester/Library/Application Support/hamaeditor/pi',
   );
   assert.equal(
     defaultPiRoot({ APPDATA: 'C:\\data' }, 'win32', 'C:\\Users\\t'),
-    path.win32.join('C:\\data', 'rhwp', 'pi'),
+    path.win32.join('C:\\data', 'hamaeditor', 'pi'),
   );
-  assert.equal(defaultPiRoot({}, 'linux', '/home/t'), '/home/t/.local/share/rhwp/pi');
+  assert.equal(defaultPiRoot({}, 'linux', '/home/t'), '/home/t/.local/share/hamaeditor/pi');
 });
 
 test('status on a missing root reports not installed and never spawns', async () => {
@@ -263,7 +263,7 @@ test('OpenRouter OAuth rejects streamed key responses above 64 KiB', async () =>
     manager.completeOAuth('code', started.state),
     (error) => error.code === 'OPENROUTER_OAUTH_RESPONSE_TOO_LARGE',
   );
-  assert.equal(await secretStore.get('rhwp.pi.openrouter-api-key'), null);
+  assert.equal(await secretStore.get('hamaeditor.pi.openrouter-api-key'), null);
   await fs.rm(rootDir, { recursive: true, force: true });
 });
 
@@ -305,7 +305,7 @@ test('OpenRouter OAuth cannot commit after cancel or owner-session close during 
       // Even a transport that ignores abort and returns later remains fenced.
       releaseExchange();
       await new Promise((resolve) => setImmediate(resolve));
-      assert.equal(await secretStore.get('rhwp.pi.openrouter-api-key'), null);
+      assert.equal(await secretStore.get('hamaeditor.pi.openrouter-api-key'), null);
       assert.equal(manager.apiKey(), null);
       await fs.rm(rootDir, { recursive: true, force: true });
     });
@@ -348,7 +348,7 @@ test('OpenRouter OAuth cannot commit after its exchange timeout', async () => {
   releaseExchange();
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(openRouter.calls.validate, []);
-  assert.equal(await secretStore.get('rhwp.pi.openrouter-api-key'), null);
+  assert.equal(await secretStore.get('hamaeditor.pi.openrouter-api-key'), null);
   assert.equal(manager.apiKey(), null);
   await fs.rm(rootDir, { recursive: true, force: true });
 });
@@ -427,7 +427,7 @@ test('concurrent installs share a single npm run', async () => {
 test('Windows Pi npm install exposes node for native postinstall under Electron', async () => {
   const rootDir = await tmpRoot();
   const prefixDir = path.join(rootDir, 'prefix');
-  const electron = path.join(rootDir, 'Rauhwpx.exe');
+  const electron = path.join(rootDir, 'HamaEditor.exe');
   const { spawns, spawnProcess } = fakeSpawner(installer(prefixDir));
   const manager = createPiManager({
     rootDir,
@@ -446,7 +446,7 @@ test('Windows Pi npm install exposes node for native postinstall under Electron'
   assert.equal(spawns[0].options.env.npm_node_execpath, electron);
   assert.equal(spawns[0].options.env.PATH.startsWith(path.join(rootDir, 'node-host')), true);
   assert.equal(
-    await fs.readFile(path.join(rootDir, 'node-host', 'node.cmd'), 'utf8').then((body) => body.includes('Rauhwpx.exe')),
+    await fs.readFile(path.join(rootDir, 'node-host', 'node.cmd'), 'utf8').then((body) => body.includes('HamaEditor.exe')),
     true,
   );
 
@@ -463,7 +463,7 @@ test('Windows Pi cancel during node-host setup does not start npm', async () => 
     rootDir,
     spawnProcess,
     platform: 'win32',
-    nodeCommand: path.join(rootDir, 'Rauhwpx.exe'),
+    nodeCommand: path.join(rootDir, 'HamaEditor.exe'),
     baseEnv: { PATH: 'C:\\Windows\\System32' },
     openRouter: fakeOpenRouter(),
     fetchImpl: offlineFetch,
@@ -769,7 +769,7 @@ test('setApiKey validates first, stores the key only in the secure vault and kee
 
   const models = await readJson(path.join(rootDir, 'agent', 'models.json'));
   assert.equal(models.providers.openrouter.apiKey, undefined);
-  assert.equal(await secretStore.get('rhwp.pi.openrouter-api-key'), 'sk-or-v1-secret-abcd');
+  assert.equal(await secretStore.get('hamaeditor.pi.openrouter-api-key'), 'sk-or-v1-secret-abcd');
   assert.equal(models.providers.openrouter.baseUrl, 'https://openrouter.ai/api/v1');
   assert.equal(models.providers.openrouter.api, 'openai-completions');
   const modelsStat = await fs.stat(path.join(rootDir, 'agent', 'models.json'));
@@ -861,7 +861,7 @@ test('cancelling during delayed Pi key validation cannot commit the cancelled ke
     openRouter.calls.validate.push(key);
     markValidationStarted();
     await validationGate;
-    return { valid: true, label: 'rhwp', limit: 10, usage: 1, isFreeTier: false };
+    return { valid: true, label: 'hamaeditor', limit: 10, usage: 1, isFreeTier: false };
   };
   const manager = createPiManager({
     rootDir,
@@ -881,7 +881,7 @@ test('cancelling during delayed Pi key validation cannot commit the cancelled ke
     return true;
   });
   assert.equal(manager.apiKey(), null);
-  assert.equal(await secretStore.get('rhwp.pi.openrouter-api-key'), null);
+  assert.equal(await secretStore.get('hamaeditor.pi.openrouter-api-key'), null);
   await assert.rejects(fs.stat(path.join(rootDir, 'agent', 'models.json')));
   await assert.rejects(fs.stat(path.join(rootDir, 'config.json')));
 
@@ -1312,7 +1312,7 @@ test('a legacy models.json key migrates to the secure vault and is scrubbed', as
   }).init();
 
   assert.equal(manager.apiKey(), 'sk-or-v1-legacy');
-  assert.equal(await secretStore.get('rhwp.pi.openrouter-api-key'), 'sk-or-v1-legacy');
+  assert.equal(await secretStore.get('hamaeditor.pi.openrouter-api-key'), 'sk-or-v1-legacy');
   assert.equal((await readJson(modelsPath)).providers.openrouter.apiKey, undefined);
 
   await fs.rm(rootDir, { recursive: true, force: true });

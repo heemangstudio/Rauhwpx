@@ -18,7 +18,7 @@ export function createIpcSecretStore({ processRef = process, timeoutMs = 10_000 
 
   function request(operation, key, value) {
     if (!available) {
-      return Promise.reject(Object.assign(new Error('Secure secret storage requires the Rauhwpx desktop app.'), {
+      return Promise.reject(Object.assign(new Error('Secure secret storage requires the HamaEditor desktop app.'), {
         code: 'SECRET_STORE_UNAVAILABLE',
       }));
     }

@@ -4,7 +4,7 @@
  * 설정 탭·문체 보정과 별개인 한 칸. 한 번 끝내거나 건너뛰면
  * 다음 실행부터는 뜨지 않는다. 미리보기는 `?initial-setup=1`.
  */
-export const INITIAL_SETUP_STORAGE_KEY = 'rhwp-initial-setup';
+export const INITIAL_SETUP_STORAGE_KEY = 'hamaeditor-initial-setup';
 
 export type InitialSetupStepState = 'pending' | 'configured' | 'skipped' | 'done';
 

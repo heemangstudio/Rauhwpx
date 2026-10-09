@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { normalizeAppSettings, userSettings } from '../src/core/user-settings.ts';
 
-test('개체 속성 비율 유지 설정은 rhwp-settings에 저장된다', () => {
+test('개체 속성 비율 유지 설정은 hamaeditor-settings에 저장된다', () => {
   const originalStorage = (globalThis as { localStorage?: Storage }).localStorage;
   const store = new Map<string, string>();
   const mockStorage = {
@@ -31,19 +31,19 @@ test('개체 속성 비율 유지 설정은 rhwp-settings에 저장된다', () =
   try {
     userSettings.setPicturePropsKeepRatio(false);
     assert.equal(userSettings.getPicturePropsKeepRatio(), false);
-    let stored = JSON.parse(store.get('rhwp-settings') ?? '{}');
+    let stored = JSON.parse(store.get('hamaeditor-settings') ?? '{}');
     assert.equal(stored.dialog.picturePropsKeepRatio, false);
 
     userSettings.setPicturePropsKeepRatio(true);
     assert.equal(userSettings.getPicturePropsKeepRatio(), true);
-    stored = JSON.parse(store.get('rhwp-settings') ?? '{}');
+    stored = JSON.parse(store.get('hamaeditor-settings') ?? '{}');
     assert.equal(stored.dialog.picturePropsKeepRatio, true);
   } finally {
     (globalThis as { localStorage?: Storage }).localStorage = originalStorage;
   }
 });
 
-test('PDF 저장 안내 표시 설정은 rhwp-settings에 저장되고 다시 켤 수 있다', () => {
+test('PDF 저장 안내 표시 설정은 hamaeditor-settings에 저장되고 다시 켤 수 있다', () => {
   const originalStorage = (globalThis as { localStorage?: Storage }).localStorage;
   const store = new Map<string, string>();
   const mockStorage = {
@@ -71,12 +71,12 @@ test('PDF 저장 안내 표시 설정은 rhwp-settings에 저장되고 다시 �
   try {
     userSettings.setShowPdfPrintGuidance(false);
     assert.equal(userSettings.getShowPdfPrintGuidance(), false);
-    let stored = JSON.parse(store.get('rhwp-settings') ?? '{}');
+    let stored = JSON.parse(store.get('hamaeditor-settings') ?? '{}');
     assert.equal(stored.dialog.showPdfPrintGuidance, false);
 
     userSettings.setShowPdfPrintGuidance(true);
     assert.equal(userSettings.getShowPdfPrintGuidance(), true);
-    stored = JSON.parse(store.get('rhwp-settings') ?? '{}');
+    stored = JSON.parse(store.get('hamaeditor-settings') ?? '{}');
     assert.equal(stored.dialog.showPdfPrintGuidance, true);
   } finally {
     userSettings.setShowPdfPrintGuidance(true);
@@ -84,7 +84,7 @@ test('PDF 저장 안내 표시 설정은 rhwp-settings에 저장되고 다시 �
   }
 });
 
-test('문단부호 표시 설정은 rhwp-settings에 저장된다', () => {
+test('문단부호 표시 설정은 hamaeditor-settings에 저장된다', () => {
   const originalStorage = (globalThis as { localStorage?: Storage }).localStorage;
   const store = new Map<string, string>();
   const mockStorage = {
@@ -112,17 +112,17 @@ test('문단부호 표시 설정은 rhwp-settings에 저장된다', () => {
   try {
     userSettings.setShowParagraphMarks(true);
     assert.equal(userSettings.getViewSettings().showParagraphMarks, true);
-    let stored = JSON.parse(store.get('rhwp-settings') ?? '{}');
+    let stored = JSON.parse(store.get('hamaeditor-settings') ?? '{}');
     assert.equal(stored.view.showParagraphMarks, true);
 
     userSettings.setShowControlCodes(true);
     assert.equal(userSettings.getViewSettings().showControlCodes, true);
-    stored = JSON.parse(store.get('rhwp-settings') ?? '{}');
+    stored = JSON.parse(store.get('hamaeditor-settings') ?? '{}');
     assert.equal(stored.view.showControlCodes, true);
 
     userSettings.setShowParagraphMarks(false);
     assert.equal(userSettings.getViewSettings().showParagraphMarks, false);
-    stored = JSON.parse(store.get('rhwp-settings') ?? '{}');
+    stored = JSON.parse(store.get('hamaeditor-settings') ?? '{}');
     assert.equal(stored.view.showParagraphMarks, false);
   } finally {
     userSettings.setShowControlCodes(false);
@@ -131,7 +131,7 @@ test('문단부호 표시 설정은 rhwp-settings에 저장된다', () => {
   }
 });
 
-test('짤림보기(clipView) 설정은 rhwp-settings에 저장되고 기본값은 켜짐이다', () => {
+test('짤림보기(clipView) 설정은 hamaeditor-settings에 저장되고 기본값은 켜짐이다', () => {
   const originalStorage = (globalThis as { localStorage?: Storage }).localStorage;
   const store = new Map<string, string>();
   const mockStorage = {
@@ -162,12 +162,12 @@ test('짤림보기(clipView) 설정은 rhwp-settings에 저장되고 기본값�
 
     userSettings.setClipView(false);
     assert.equal(userSettings.getViewSettings().clipView, false);
-    let stored = JSON.parse(store.get('rhwp-settings') ?? '{}');
+    let stored = JSON.parse(store.get('hamaeditor-settings') ?? '{}');
     assert.equal(stored.view.clipView, false);
 
     userSettings.setClipView(true);
     assert.equal(userSettings.getViewSettings().clipView, true);
-    stored = JSON.parse(store.get('rhwp-settings') ?? '{}');
+    stored = JSON.parse(store.get('hamaeditor-settings') ?? '{}');
     assert.equal(stored.view.clipView, true);
   } finally {
     userSettings.setClipView(true);
@@ -175,7 +175,7 @@ test('짤림보기(clipView) 설정은 rhwp-settings에 저장되고 기본값�
   }
 });
 
-test('한컴용 Git 설정은 기본으로 꺼져 있고 rhwp-settings에 저장된다', () => {
+test('한컴용 Git 설정은 기본으로 꺼져 있고 hamaeditor-settings에 저장된다', () => {
   const originalStorage = (globalThis as { localStorage?: Storage }).localStorage;
   const store = new Map<string, string>();
   const mockStorage = {
@@ -195,7 +195,7 @@ test('한컴용 Git 설정은 기본으로 꺼져 있고 rhwp-settings에 저장
     userSettings.setUseHancomGit(false);
     assert.equal(userSettings.getUseHancomGit(), false);
     assert.deepEqual(changes, [false]);
-    const stored = JSON.parse(store.get('rhwp-settings') ?? '{}');
+    const stored = JSON.parse(store.get('hamaeditor-settings') ?? '{}');
     assert.equal(stored.versionControl.useHancomGit, false);
   } finally {
     unsubscribe();
@@ -204,7 +204,7 @@ test('한컴용 Git 설정은 기본으로 꺼져 있고 rhwp-settings에 저장
   }
 });
 
-test('복구용 자동저장 설정은 rhwp-settings에 저장된다', () => {
+test('복구용 자동저장 설정은 hamaeditor-settings에 저장된다', () => {
   const originalStorage = (globalThis as { localStorage?: Storage }).localStorage;
   const store = new Map<string, string>();
   const mockStorage = {
@@ -243,7 +243,7 @@ test('복구용 자동저장 설정은 rhwp-settings에 저장된다', () => {
     assert.equal(settings.idleSaveEnabled, true);
     assert.equal(settings.idleDelaySeconds, 45);
 
-    const stored = JSON.parse(store.get('rhwp-settings') ?? '{}');
+    const stored = JSON.parse(store.get('hamaeditor-settings') ?? '{}');
     assert.deepEqual(stored.autosave, {
       recoveryEnabled: false,
       recoveryIntervalMinutes: 30,

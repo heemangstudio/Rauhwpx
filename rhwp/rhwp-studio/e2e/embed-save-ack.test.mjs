@@ -34,11 +34,11 @@ runTest('Task #2660 호스트 저장 완료 통지 (notifySaved)', async ({ page
     document.body.appendChild(host);
 
     const clearDb = () => new Promise((resolveClear) => {
-      const req = indexedDB.deleteDatabase('rhwpStudioAutosave');
+      const req = indexedDB.deleteDatabase('hamaeditorAutosave');
       req.onsuccess = req.onerror = req.onblocked = () => resolveClear();
     });
     const listDraftIds = async () => {
-      const req = indexedDB.open('rhwpStudioAutosave');
+      const req = indexedDB.open('hamaeditorAutosave');
       const db = await new Promise((resolveDb, rejectDb) => {
         req.onupgradeneeded = () => {
           if (!req.result.objectStoreNames.contains('drafts')) {
@@ -155,7 +155,7 @@ runTest('Task #2660 호스트 저장 완료 통지 (notifySaved)', async ({ page
 
   const partB = await page.evaluate(async () => {
     const listDraftIds = async () => {
-      const req = indexedDB.open('rhwpStudioAutosave');
+      const req = indexedDB.open('hamaeditorAutosave');
       const db = await new Promise((resolveDb, rejectDb) => {
         req.onupgradeneeded = () => {
           if (!req.result.objectStoreNames.contains('drafts')) {

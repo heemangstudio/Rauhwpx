@@ -10,8 +10,8 @@
 
 export type ChatRunStatus = 'working' | 'finished' | 'needs-input';
 
-const STORAGE_KEY = 'rhwp-agent-chat-status';
-const CHANNEL_NAME = 'rhwp-agent-chat-status';
+const STORAGE_KEY = 'hamaeditor-agent-chat-status';
+const CHANNEL_NAME = 'hamaeditor-agent-chat-status';
 /** 작업 신호는 심장박동이 이 시간 넘게 끊기면(탭 크래시 등) 무효다. */
 const WORKING_STALE_MS = 25_000;
 const HEARTBEAT_MS = 10_000;

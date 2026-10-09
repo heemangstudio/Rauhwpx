@@ -819,7 +819,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
 
   async function negotiate(connection, { featureForced = false } = {}) {
     await connection.request('initialize', {
-      clientInfo: { name: 'rhwp-studio', title: 'Rau Studio', version: '4' },
+      clientInfo: { name: 'rhwp-studio', title: 'HamaEditor', version: '4' },
       capabilities: {
         experimentalApi: true,
         requestAttestation: false,

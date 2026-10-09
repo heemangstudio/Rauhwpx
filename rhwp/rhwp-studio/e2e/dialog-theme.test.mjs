@@ -39,7 +39,7 @@ function isVisibleLightText(value) {
 
 async function setDarkTheme(page) {
   await page.evaluate(() => {
-    localStorage.removeItem('rhwp-settings');
+    localStorage.removeItem('hamaeditor-settings');
     window.__theme?.setThemeMode?.('dark');
   });
   await delay();

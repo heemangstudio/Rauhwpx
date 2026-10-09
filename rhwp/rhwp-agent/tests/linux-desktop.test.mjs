@@ -57,7 +57,7 @@ test('Linux packages cover AppImage and deb on x64 and arm64', () => {
   assert.equal(rootPackage.license, 'MIT');
   assert.match(rootPackage.homepage ?? '', /^https:\/\//);
   assert.match(rootPackage.build?.linux?.maintainer ?? '', /<[^>]+@[^>]+>/);
-  assert.equal(rootPackage.desktopName, 'rauhwpx.desktop');
+  assert.equal(rootPackage.desktopName, 'hamaeditor.desktop');
   assert.match(rootPackage.scripts?.['package:linux:x64'] ?? '', /--x64/);
   assert.match(rootPackage.scripts?.['package:linux:arm64'] ?? '', /--arm64/);
   assert.match(rootPackage.scripts?.['dist:linux:x64'] ?? '', /package:linux:x64/);
@@ -115,8 +115,8 @@ test('Deb update discovery compares stable versions and selects the native archi
   assert.equal(isNewerStableVersion('v0.1.11', '0.1.11'), false);
   assert.equal(isNewerStableVersion('v0.2.0-beta.1', '0.1.11'), false);
   const assets = [
-    { name: 'Rauhwpx-0.2.0-amd64.deb', browser_download_url: 'https://github.com/example/amd64' },
-    { name: 'Rauhwpx-0.2.0-arm64.deb', browser_download_url: 'https://github.com/example/arm64' },
+    { name: 'HamaEditor-0.2.0-amd64.deb', browser_download_url: 'https://github.com/example/amd64' },
+    { name: 'HamaEditor-0.2.0-arm64.deb', browser_download_url: 'https://github.com/example/arm64' },
   ];
   assert.equal(selectDebAsset(assets, 'x64')?.name, assets[0].name);
   assert.equal(selectDebAsset(assets, 'arm64')?.name, assets[1].name);
@@ -132,7 +132,7 @@ test('Linux secret vault rejects plaintext and unknown storage backends', async 
         platform: 'linux',
       });
       await assert.rejects(
-        () => vault.set('rhwp.test', 'secret'),
+        () => vault.set('hamaeditor.test', 'secret'),
         /Secret Service or KWallet system keyring/,
       );
     }
@@ -153,8 +153,8 @@ test('Linux secret vault accepts secure keyrings and locks down persisted cipher
         safeStorage: fakeSafeStorage(backend),
         platform: 'linux',
       });
-      await vault.set('rhwp.test', `secret-${backend}`);
-      assert.equal(await vault.get('rhwp.test'), `secret-${backend}`);
+      await vault.set('hamaeditor.test', `secret-${backend}`);
+      assert.equal(await vault.get('hamaeditor.test'), `secret-${backend}`);
       assert.doesNotMatch(await fs.readFile(filePath, 'utf8'), new RegExp(`secret-${backend}`));
       if (process.platform !== 'win32') {
         assert.equal((await fs.stat(directory)).mode & 0o777, 0o700);

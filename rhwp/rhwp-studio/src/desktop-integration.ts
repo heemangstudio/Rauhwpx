@@ -254,7 +254,7 @@ const nativeHandleMetadata = new WeakMap<FileSystemFileHandleLike, {
   readonly legacyPortableHistoryFolder: boolean;
 }>();
 const browserLaunchId = createSessionId('launch');
-const BROWSER_SESSION_ID_KEY = 'rhwp-renderer-session-id-v1';
+const BROWSER_SESSION_ID_KEY = 'hamaeditor-renderer-session-id-v1';
 
 /** A browser tab must reclaim the same hub session after reload. sessionStorage
  * is tab-scoped, survives reload, and does not make unrelated tabs contend for
@@ -1082,7 +1082,7 @@ export function installDesktopAgentAttention(
       syncCount();
       if (succeeded) {
         api.notifyAgentTurnFinished?.({
-          title: source.documentTitle() || 'Rauhwpx',
+          title: source.documentTitle() || 'HamaEditor',
           body: lastCount > 0 ? '검토할 변경이 있습니다' : '작업 완료',
         });
       }

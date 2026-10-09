@@ -8,7 +8,7 @@ import { retryWindows } from './fs-replace.mjs';
 
 const SUPPORTED_EXTENSIONS = new Set(['.hwp', '.hwpx', '.hml', '.rhwpx']);
 const PORTABLE_HISTORY_INNER_FILE = 'history';
-const PORTABLE_HISTORY_MAGIC = new TextEncoder().encode('RAUHWPX-HISTORY\0');
+const PORTABLE_HISTORY_MAGIC = new TextEncoder().encode('HAMAEDITOR-HISTORY\0');
 const PORTABLE_HISTORY_PREFIX_LENGTH = PORTABLE_HISTORY_MAGIC.byteLength + 4;
 export const MAX_NATIVE_DOCUMENT_BYTES = 512 * 1024 * 1024;
 export const MAX_PORTABLE_HISTORY_BYTES = 128 * 1024 * 1024;
@@ -28,7 +28,7 @@ export const NATIVE_FILE_ATOMIC_UNSUPPORTED_MESSAGE = 'This filesystem cannot sa
 export const NATIVE_FILE_RECOVERY_REQUIRED_CODE = 'NATIVE_FILE_RECOVERY_REQUIRED';
 export const NATIVE_FILE_WRITE_BUSY_CODE = 'NATIVE_FILE_WRITE_BUSY';
 
-const WINDOWS_ICACLS_DACL_SUFFIX = '.rauhwpx-dacl';
+const WINDOWS_ICACLS_DACL_SUFFIX = '.hamaeditor-dacl';
 
 function startsWithBytes(bytes, signature) {
   return signature.every((value, index) => bytes[index] === value);
@@ -69,7 +69,7 @@ function nativeFileRecoveryRequiredError(original, backupPath, restoreErrors) {
 function nativeRecoveryPath(filePath) {
   const extension = extname(filePath);
   const stem = extension ? filePath.slice(0, -extension.length) : filePath;
-  return `${stem}.rauhwpx-recovery-${process.pid}-${randomUUID()}${extension}`;
+  return `${stem}.hamaeditor-recovery-${process.pid}-${randomUUID()}${extension}`;
 }
 
 function statValue(info, key, fallbackKey = null) {
@@ -310,8 +310,8 @@ export function readIcaclsSavedDacl(buffer) {
 const WINDOWS_SET_DACL_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
   '$security = [System.Security.AccessControl.FileSecurity]::new()',
-  "$security.SetSecurityDescriptorSddlForm($env:RAUHWPX_DACL_SDDL, 'Access')",
-  '[System.IO.File]::SetAccessControl($env:RAUHWPX_DACL_TARGET, $security)',
+  "$security.SetSecurityDescriptorSddlForm($env:HAMAEDITOR_DACL_SDDL, 'Access')",
+  '[System.IO.File]::SetAccessControl($env:HAMAEDITOR_DACL_TARGET, $security)',
 ].join('; ');
 // CLR startup stalls without these, even with -NoProfile. PATH and
 // PSModulePath stay pinned so a user-writable entry cannot load a module.
@@ -373,8 +373,8 @@ async function copyWindowsDacl(
     const powershellEnv = {
       ...env,
       PSModulePath: win32.join(powershellHome, 'Modules'),
-      RAUHWPX_DACL_SDDL: sourceDacl,
-      RAUHWPX_DACL_TARGET: temporaryPath,
+      HAMAEDITOR_DACL_SDDL: sourceDacl,
+      HAMAEDITOR_DACL_TARGET: temporaryPath,
     };
     for (const key of WINDOWS_POWERSHELL_ENV_KEYS) {
       const value = sourceEnv?.[key];
@@ -529,7 +529,7 @@ function hasValidPortableHistoryLayout(bytes, manifestLength) {
   if (
     !manifest
     || typeof manifest !== 'object'
-    || manifest.format !== 'rauhwpx-history'
+    || manifest.format !== 'hamaeditor-history'
     || manifest.version !== 1
     || !manifest.document
     || typeof manifest.document !== 'object'
@@ -680,11 +680,11 @@ export async function writeNativeFileAtomically(
     logger = console,
   } = {},
 ) {
-  const temporaryPath = `${filePath}.rauhwpx-${process.pid}-${randomUUID()}.tmp`;
+  const temporaryPath = `${filePath}.hamaeditor-${process.pid}-${randomUUID()}.tmp`;
   // Keep the real document extension so a recovery copy left by a power loss
   // remains visible and openable in the platform file picker.
   const backupPath = nativeRecoveryPath(filePath);
-  const linkProbePath = `${filePath}.rauhwpx-${process.pid}-${randomUUID()}.link-probe`;
+  const linkProbePath = `${filePath}.hamaeditor-${process.pid}-${randomUUID()}.link-probe`;
   let temporaryFile;
   let backupMoved = false;
   let linkProbeCreated = false;

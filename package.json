@@ -1,12 +1,12 @@
 {
-  "name": "rauhwpx",
-  "productName": "Rauhwpx",
-  "version": "2.0.10",
+  "name": "hamaeditor",
+  "productName": "HamaEditor",
+  "version": "2.0.11",
   "description": "HWP/HWPX editor with a local AI agent sidebar.",
   "author": "Hataewook",
   "license": "MIT",
   "homepage": "https://github.com/heemangstudio/Rauhwpx",
-  "desktopName": "rauhwpx.desktop",
+  "desktopName": "hamaeditor.desktop",
   "private": true,
   "engines": {
     "node": ">=22.19.0"
@@ -63,9 +63,9 @@
     "wait-on": "^9.1.0"
   },
   "build": {
-    "appId": "com.hataewook.rauhwpx",
-    "productName": "Rauhwpx",
-    "artifactName": "Rauhwpx-${version}-${arch}.${ext}",
+    "appId": "com.hataewook.hamaeditor",
+    "productName": "HamaEditor",
+    "artifactName": "HamaEditor-${version}-${arch}.${ext}",
     "asar": true,
     "files": [
       "desktop/**/*",
@@ -110,8 +110,8 @@
         "ext": [
           "rhwpx"
         ],
-        "name": "Rauhwpx history archive",
-        "description": "Rauhwpx history archive",
+        "name": "HamaEditor history archive",
+        "description": "HamaEditor history archive",
         "role": "Editor"
       }
     ],
@@ -147,18 +147,18 @@
             "CFBundleTypeRole": "Editor",
             "LSHandlerRank": "Default",
             "LSItemContentTypes": [
-              "com.hataewook.rauhwpx.hwpx-document"
+              "com.hataewook.hamaeditor.hwpx-document"
             ]
           },
           {
             "CFBundleTypeExtensions": [
               "rhwpx"
             ],
-            "CFBundleTypeName": "RauHWPX history archive",
+            "CFBundleTypeName": "HamaEditor history archive",
             "CFBundleTypeRole": "Editor",
             "LSHandlerRank": "Default",
             "LSItemContentTypes": [
-              "com.hataewook.rauhwpx.history-bundle"
+              "com.hataewook.hamaeditor.history-bundle"
             ]
           }
         ],
@@ -169,7 +169,7 @@
               "public.data"
             ],
             "UTTypeDescription": "HWPX document",
-            "UTTypeIdentifier": "com.hataewook.rauhwpx.hwpx-document",
+            "UTTypeIdentifier": "com.hataewook.hamaeditor.hwpx-document",
             "UTTypeTagSpecification": {
               "public.filename-extension": [
                 "hwpx"
@@ -181,8 +181,8 @@
               "public.content",
               "public.data"
             ],
-            "UTTypeDescription": "RauHWPX history archive",
-            "UTTypeIdentifier": "com.hataewook.rauhwpx.history-bundle",
+            "UTTypeDescription": "HamaEditor history archive",
+            "UTTypeIdentifier": "com.hataewook.hamaeditor.history-bundle",
             "UTTypeTagSpecification": {
               "public.filename-extension": [
                 "rhwpx"
@@ -228,19 +228,19 @@
       "category": "Office",
       "synopsis": "HWP and HWPX document editor",
       "description": "Open, edit, and save Hangul HWP, HWPX, and HML documents with an integrated agent sidebar.",
-      "executableName": "rauhwpx",
-      "maintainer": "Rauhwpx maintainers <noreply@github.com>",
+      "executableName": "hamaeditor",
+      "maintainer": "HamaEditor maintainers <noreply@github.com>",
       "vendor": "ghandhitechnology",
       "syncDesktopName": true,
       "desktop": {
         "entry": {
-          "StartupWMClass": "Rauhwpx",
+          "StartupWMClass": "HamaEditor",
           "X-GNOME-UsesNotifications": "true"
         }
       }
     },
     "deb": {
-      "packageName": "rauhwpx",
+      "packageName": "hamaeditor",
       "packageCategory": "editors",
       "depends": [
         "libgtk-3-0 | libgtk-3-0t64",
@@ -263,7 +263,7 @@
       "allowToChangeInstallationDirectory": true
     },
     "dmg": {
-      "title": "Rauhwpx",
+      "title": "HamaEditor",
       "backgroundColor": "#f5f5f7",
       "window": {
         "width": 540,

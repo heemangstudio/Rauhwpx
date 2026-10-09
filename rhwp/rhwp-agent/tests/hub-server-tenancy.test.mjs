@@ -225,7 +225,7 @@ test('two active provider turns route overlapping MCP ids only to their owning S
   const alphaToken = alphaCapabilities.studio;
   const betaToken = betaCapabilities.studio;
   const httpBase = `http://127.0.0.1:${ready.port}`;
-  const studioOrigin = 'rauhwpx://app';
+  const studioOrigin = 'hamaeditor://app';
   assert.equal(
     await rejectedUpgrade(`${wsBase}/studio?token=${TOKEN}&sessionId=originless`),
     403,
@@ -255,8 +255,8 @@ test('two active provider turns route overlapping MCP ids only to their owning S
   sendFrame(alpha, { type: 'agent-instructions-request', requestId: 'instructions-read-1' });
   const initialInstructions = (await instructionsRead).status;
   assert.equal(initialInstructions.fileName, 'AGENTS.md');
-  assert.equal(initialInstructions.scope, 'rauhwpx-app');
-  assert.match(initialInstructions.content, /Rauhwpx 안에서만 적용됩니다/);
+  assert.equal(initialInstructions.scope, 'hamaeditor-app');
+  assert.match(initialInstructions.content, /HamaEditor 안에서만 적용됩니다/);
 
   const instructionsSaved = waitForMessage(alpha, (msg) => (
     msg.type === 'agent-instructions' && msg.requestId === 'instructions-save-1'
@@ -776,7 +776,7 @@ test('owner watchdog has an absolute deadline even while an orphan socket stays 
   });
   const opened = await openSocket(
     `ws://127.0.0.1:${ready.port}/studio?token=${capabilities.studio}&sessionId=orphan-deadline`,
-    { origin: 'rauhwpx://app' },
+    { origin: 'hamaeditor://app' },
   );
   socket = opened.socket;
   await opened.firstMessage;

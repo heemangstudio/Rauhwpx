@@ -436,7 +436,7 @@ async function saveWithHistory(services: CommandServices): Promise<SaveCurrentDo
           excludeAcceptAllOption: true,
           suggestedName: archive.fileName,
           types: [{
-            description: 'RauHWPX 기록 파일',
+            description: 'HamaEditor 기록 파일',
             accept: { [PORTABLE_HISTORY_MIME_TYPE]: ['.rhwpx'] },
           }],
         });

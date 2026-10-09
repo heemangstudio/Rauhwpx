@@ -92,7 +92,7 @@ async function writeOwner(directory: string, pid: number, createdAtMs: number, o
 }
 
 async function prepareLegacyLaunch(t: { after: (fn: () => Promise<void>) => void }) {
-  const root = await mkdtemp(path.join(tmpdir(), 'rauhwpx-legacy-marker-'));
+  const root = await mkdtemp(path.join(tmpdir(), 'hamaeditor-legacy-marker-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const directory = path.join(root, LEGACY_LAUNCH_ID);
   await mkdir(directory);
@@ -190,7 +190,7 @@ test('SessionManager removal remains safe after webContents destruction', () => 
 test('launch routing accepts only supported document paths', () => {
   const workDir = path.resolve('/work');
   assert.deepEqual(documentPathsFromArgv([
-    '/Applications/Rauhwpx',
+    '/Applications/HamaEditor',
     '--flag',
     'draft.HWPX',
     'shared.rhwpx',
@@ -243,22 +243,22 @@ test('desktop packages register as an HWPX editor with the operating system', ()
   const macInfo = rootPackage.build.mac.extendInfo;
   const hwpxType = macInfo.CFBundleDocumentTypes.find((type: {
     LSItemContentTypes?: string[];
-  }) => type.LSItemContentTypes?.includes('com.hataewook.rauhwpx.hwpx-document'));
+  }) => type.LSItemContentTypes?.includes('com.hataewook.hamaeditor.hwpx-document'));
   assert.equal(hwpxType?.CFBundleTypeRole, 'Editor');
   assert.equal(hwpxType?.LSHandlerRank, 'Default');
 
   const exportedHwpxType = macInfo.UTExportedTypeDeclarations.find((type: {
     UTTypeIdentifier?: string;
-  }) => type.UTTypeIdentifier === 'com.hataewook.rauhwpx.hwpx-document');
+  }) => type.UTTypeIdentifier === 'com.hataewook.hamaeditor.hwpx-document');
   assert.deepEqual(exportedHwpxType?.UTTypeTagSpecification['public.filename-extension'], ['hwpx']);
   const exportedHistoryType = macInfo.UTExportedTypeDeclarations.find((type: {
     UTTypeIdentifier?: string;
-  }) => type.UTTypeIdentifier === 'com.hataewook.rauhwpx.history-bundle');
+  }) => type.UTTypeIdentifier === 'com.hataewook.hamaeditor.history-bundle');
   assert.deepEqual(exportedHistoryType?.UTTypeTagSpecification['public.filename-extension'], ['rhwpx']);
   assert.deepEqual(exportedHistoryType?.UTTypeConformsTo, ['public.content', 'public.data']);
   const historyDocumentType = macInfo.CFBundleDocumentTypes.find((type: {
     LSItemContentTypes?: string[];
-  }) => type.LSItemContentTypes?.includes('com.hataewook.rauhwpx.history-bundle'));
+  }) => type.LSItemContentTypes?.includes('com.hataewook.hamaeditor.history-bundle'));
   assert.equal(historyDocumentType?.LSTypeIsPackage, undefined);
   assert.doesNotMatch(JSON.stringify(macInfo), /com\.apple\.package/);
 
@@ -270,7 +270,7 @@ test('desktop packages register as an HWPX editor with the operating system', ()
 });
 
 test('packaged Studio uses a secure path-safe standard scheme', () => {
-  assert.equal(STUDIO_URL, 'rauhwpx://app/index.html');
+  assert.equal(STUDIO_URL, 'hamaeditor://app/index.html');
   assert.equal(
     resolveStudioAsset('/app/dist', '/assets/app.js'),
     path.resolve('/app/dist/assets/app.js'),
@@ -487,17 +487,17 @@ test('launch roots are isolated by the canonical userData profile', () => {
   const launchId = '2257ce8b-6e52-4fec-889e-c6ba489226f8';
   const first = launchStoragePaths({
     tempDir: 'C:\\Temp',
-    userDataDir: 'C:\\Users\\Rau\\AppData\\Roaming\\Rauhwpx',
+    userDataDir: 'C:\\Users\\Rau\\AppData\\Roaming\\HamaEditor',
     launchId,
     platform: 'win32',
-    realpathImpl: () => 'C:\\Users\\Rau\\AppData\\Roaming\\Rauhwpx',
+    realpathImpl: () => 'C:\\Users\\Rau\\AppData\\Roaming\\HamaEditor',
   });
   const sameProfile = launchStoragePaths({
     tempDir: 'C:\\Temp',
-    userDataDir: 'c:\\users\\rau\\appdata\\roaming\\rauhwpx',
+    userDataDir: 'c:\\users\\rau\\appdata\\roaming\\hamaeditor',
     launchId,
     platform: 'win32',
-    realpathImpl: () => 'c:\\users\\rau\\appdata\\roaming\\rauhwpx',
+    realpathImpl: () => 'c:\\users\\rau\\appdata\\roaming\\hamaeditor',
   });
   const otherProfile = launchStoragePaths({
     tempDir: 'C:\\Temp',
@@ -567,7 +567,7 @@ test('startup cleanup requires an old owner record and a confirmed dead PID', as
 });
 
 test('startup cleanup bounds launch enumeration and retains oversized metadata', async (t) => {
-  const root = await mkdtemp(path.join(tmpdir(), 'rauhwpx-bounded-cleanup-'));
+  const root = await mkdtemp(path.join(tmpdir(), 'hamaeditor-bounded-cleanup-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const oversizedOwner = '2848f76b-9d57-4d81-8410-4023c59cb403';
   const oversizedMarker = 'f98c7e94-d89a-4d9c-b549-41bf4b230468';
@@ -622,7 +622,7 @@ test('startup cleanup bounds launch enumeration and retains oversized metadata',
 });
 
 test('legacy cleanup marks an old unowned launch and removes it only after an uptime reset', async (t) => {
-  const root = await mkdtemp(path.join(tmpdir(), 'rauhwpx-legacy-cleanup-'));
+  const root = await mkdtemp(path.join(tmpdir(), 'hamaeditor-legacy-cleanup-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const stale = '2848f76b-9d57-4d81-8410-4023c59cb403';
   const directory = path.join(root, stale);
@@ -657,7 +657,7 @@ test('legacy cleanup marks an old unowned launch and removes it only after an up
 });
 
 test('legacy cleanup keeps a metadata-less launch across the same boot', async (t) => {
-  const root = await mkdtemp(path.join(tmpdir(), 'rauhwpx-legacy-live-'));
+  const root = await mkdtemp(path.join(tmpdir(), 'hamaeditor-legacy-live-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const stale = '2848f76b-9d57-4d81-8410-4023c59cb403';
   const directory = path.join(root, stale);
@@ -705,7 +705,7 @@ test('cleanup retains a dead launch until credential copyback settles', async ()
 
 test('uncertain process cleanup is retained until a reboot proves descendants dead', async (t) => {
   assert.equal(LAUNCH_CLEANUP_RETENTION_FILE, LEGACY_CLEANUP_MARKER_FILE);
-  const root = await mkdtemp(path.join(tmpdir(), 'rauhwpx-process-cleanup-'));
+  const root = await mkdtemp(path.join(tmpdir(), 'hamaeditor-process-cleanup-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const stale = '2848f76b-9d57-4d81-8410-4023c59cb403';
   const profileId = '1234567890abcdef1234';
@@ -771,7 +771,7 @@ test('owner metadata is written before cleanup begins', async () => {
 });
 
 test('win32 marker publish retries a locked rename then succeeds', async (t) => {
-  const ownerRoot = await mkdtemp(path.join(tmpdir(), 'rauhwpx-owner-retry-'));
+  const ownerRoot = await mkdtemp(path.join(tmpdir(), 'hamaeditor-owner-retry-'));
   t.after(() => rm(ownerRoot, { recursive: true, force: true }));
   await writeOwner(ownerRoot, 11, 1_000, {
     renameImpl: lockedOp(rename, { failTimes: 1 }),
@@ -795,7 +795,7 @@ test('win32 marker publish retries a locked rename then succeeds', async (t) => 
 });
 
 test('win32 marker publish overwrites an existing marker', async (t) => {
-  const ownerRoot = await mkdtemp(path.join(tmpdir(), 'rauhwpx-owner-overwrite-'));
+  const ownerRoot = await mkdtemp(path.join(tmpdir(), 'hamaeditor-owner-overwrite-'));
   t.after(() => rm(ownerRoot, { recursive: true, force: true }));
   await writeOwner(ownerRoot, 11, 1_000);
   await writeOwner(ownerRoot, 22, 2_000, {
@@ -825,7 +825,7 @@ test('win32 marker publish overwrites an existing marker', async (t) => {
 });
 
 test('win32 marker publish keeps the previous marker when replacement rename fails', async (t) => {
-  const ownerRoot = await mkdtemp(path.join(tmpdir(), 'rauhwpx-owner-restore-'));
+  const ownerRoot = await mkdtemp(path.join(tmpdir(), 'hamaeditor-owner-restore-'));
   t.after(() => rm(ownerRoot, { recursive: true, force: true }));
   await writeOwner(ownerRoot, 11, 1_000);
   const ownerPath = path.join(ownerRoot, LAUNCH_OWNER_FILE);
@@ -853,7 +853,7 @@ test('win32 marker publish keeps the previous marker when replacement rename fai
 });
 
 test('win32 marker publish surfaces a lock that outlasts the delay budget', async (t) => {
-  const ownerRoot = await mkdtemp(path.join(tmpdir(), 'rauhwpx-owner-locked-'));
+  const ownerRoot = await mkdtemp(path.join(tmpdir(), 'hamaeditor-owner-locked-'));
   t.after(() => rm(ownerRoot, { recursive: true, force: true }));
   await assert.rejects(
     writeOwner(ownerRoot, 11, 1_000, {
@@ -878,7 +878,7 @@ test('win32 marker publish surfaces a lock that outlasts the delay budget', asyn
 });
 
 test('unix marker publish does not retry a locked rename', async (t) => {
-  const ownerRoot = await mkdtemp(path.join(tmpdir(), 'rauhwpx-owner-unix-lock-'));
+  const ownerRoot = await mkdtemp(path.join(tmpdir(), 'hamaeditor-owner-unix-lock-'));
   t.after(() => rm(ownerRoot, { recursive: true, force: true }));
   await assert.rejects(
     writeOwner(ownerRoot, 11, 1_000, {
@@ -904,7 +904,7 @@ test('unix marker publish does not retry a locked rename', async (t) => {
 
 test('win32 launch-directory cleanup retries a locked recursive rm then succeeds', async (t) => {
   for (const code of WINDOWS_LOCK_CODES) {
-    const stale = await prepareOwnedStaleLaunch(t, `rauhwpx-stale-rm-${code.toLowerCase()}-`);
+    const stale = await prepareOwnedStaleLaunch(t, `hamaeditor-stale-rm-${code.toLowerCase()}-`);
     assert.deepEqual(await removeStaleLaunchDirectories(stale.root, '', {
       expectedProfileId: stale.profileId,
       minimumAgeMs: 0,
@@ -918,7 +918,7 @@ test('win32 launch-directory cleanup retries a locked recursive rm then succeeds
 
     const ownedLegacy = await prepareOwnedStaleLaunch(
       t,
-      `rauhwpx-legacy-owned-rm-${code.toLowerCase()}-`,
+      `hamaeditor-legacy-owned-rm-${code.toLowerCase()}-`,
     );
     assert.deepEqual(await removeLegacyLaunchDirectories(ownedLegacy.root, '', {
       minimumAgeMs: 0,
@@ -948,7 +948,7 @@ test('win32 launch-directory cleanup retries a locked recursive rm then succeeds
 });
 
 test('unix launch-directory cleanup does not retry a locked recursive rm', async (t) => {
-  const stale = await prepareOwnedStaleLaunch(t, 'rauhwpx-stale-rm-unix-');
+  const stale = await prepareOwnedStaleLaunch(t, 'hamaeditor-stale-rm-unix-');
   await assert.rejects(
     removeStaleLaunchDirectories(stale.root, '', {
       expectedProfileId: stale.profileId,
@@ -963,7 +963,7 @@ test('unix launch-directory cleanup does not retry a locked recursive rm', async
   );
   assert.equal((await stat(stale.directory)).isDirectory(), true);
 
-  const ownedLegacy = await prepareOwnedStaleLaunch(t, 'rauhwpx-legacy-owned-rm-unix-');
+  const ownedLegacy = await prepareOwnedStaleLaunch(t, 'hamaeditor-legacy-owned-rm-unix-');
   await assert.rejects(
     removeLegacyLaunchDirectories(ownedLegacy.root, '', {
       minimumAgeMs: 0,
@@ -1005,7 +1005,7 @@ test('desktop package registers supported document associations without bundling
   );
   assert.deepEqual(hangulAssociation?.ext, ['hwp', 'hwpx', 'hml']);
   assert.deepEqual(historyAssociation?.ext, ['rhwpx']);
-  assert.equal(historyAssociation?.name, 'Rauhwpx history archive');
+  assert.equal(historyAssociation?.name, 'HamaEditor history archive');
   assert.notEqual(historyAssociation?.name, 'Hangul document');
   assert.equal(historyAssociation?.isPackage, undefined);
   assert.match(desktopMain, /desktop:pick-legacy-history-folder/);
@@ -1014,7 +1014,7 @@ test('desktop package registers supported document associations without bundling
   assert.doesNotMatch(desktopMain, /\['openFile', 'openDirectory'\]/);
   assert.doesNotMatch(desktopMain, /writePortableHistoryFolder\(/);
   assert.doesNotMatch(desktopMain, /desktop:(?:save-portable-history-file|native-file-write-portable-history)/);
-  assert.match(desktopMain, /RauHWPX history archive/);
+  assert.match(desktopMain, /HamaEditor history archive/);
   assert.ok(rootPackage.build.asarUnpack.includes('rhwp/rhwp-agent/**'));
   assert.ok(rootPackage.build.files.every((entry: string) => !/runtime|launch-work/.test(entry)));
 });

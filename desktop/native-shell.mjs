@@ -55,7 +55,7 @@ export class WindowFrameStore {
     this.#screen = screen;
     this.#writer = new SerializedStateWriter({
       write: (snapshot) => writeAtomically(filePath, Buffer.from(snapshot, 'utf8')),
-      onError: (error) => console.warn('[rauhwpx] window frame persist failed:', error),
+      onError: (error) => console.warn('[hamaeditor] window frame persist failed:', error),
     });
   }
 
@@ -65,7 +65,7 @@ export class WindowFrameStore {
       const bounds = normalizeBounds(parsed?.bounds);
       this.#state = bounds ? { bounds, zoomed: parsed.zoomed === true } : null;
     } catch (error) {
-      if (error?.code !== 'ENOENT') console.warn('[rauhwpx] window frame state unreadable:', error);
+      if (error?.code !== 'ENOENT') console.warn('[hamaeditor] window frame state unreadable:', error);
       this.#state = null;
     }
   }
@@ -154,7 +154,7 @@ export class AgentAttention {
     try {
       if (!this.#Notification.isSupported()) return;
       const notification = new this.#Notification({
-        title: typeof title === 'string' && title ? title.slice(0, 200) : 'Rauhwpx',
+        title: typeof title === 'string' && title ? title.slice(0, 200) : 'HamaEditor',
         body: typeof body === 'string' ? body.slice(0, 200) : '',
         silent: false,
       });
@@ -171,7 +171,7 @@ export class AgentAttention {
       notification.on('close', release);
       notification.show();
     } catch (error) {
-      console.warn('[rauhwpx] agent notification failed:', error);
+      console.warn('[hamaeditor] agent notification failed:', error);
     }
   }
 

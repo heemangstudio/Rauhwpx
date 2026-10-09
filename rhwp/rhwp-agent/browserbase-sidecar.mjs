@@ -82,7 +82,7 @@ export function supportsStagehandNode(version = process.versions.node) {
 
 export function createBrowserbaseMcpServer({ runtime = new BrowserbaseSidecarRuntime() } = {}) {
   const server = new McpServer({
-    name: 'Rauhwpx Browserbase sidecar',
+    name: 'HamaEditor Browserbase sidecar',
     version: '1.0.0',
   });
   for (const definition of BROWSERBASE_TOOL_DEFINITIONS) {

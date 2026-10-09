@@ -96,7 +96,7 @@ test('in-app Claude login stores a setup-token that every Claude child receives'
   assert.equal(status.authenticated, true);
   assert.equal(status.authSource, 'app');
   assert.equal(typeof status.authVerifiedAt, 'number');
-  assert.equal(await secretStore.get('rhwp.claude.oauth-token'), TOKEN);
+  assert.equal(await secretStore.get('hamaeditor.claude.oauth-token'), TOKEN);
   const env = manager.envFor('claude');
   assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, TOKEN);
   for (const key of CLAUDE_AUTH_ENV_KEYS.filter((key) => key !== 'CLAUDE_CODE_OAUTH_TOKEN')) {
@@ -127,7 +127,7 @@ test('a login that prints no token fails without storing anything', async (t) =>
       && !/account on hold/.test(error.message)
       && /account on hold/.test(error.detail ?? ''),
   );
-  assert.equal(await secretStore.get('rhwp.claude.oauth-token'), null);
+  assert.equal(await secretStore.get('hamaeditor.claude.oauth-token'), null);
   assert.equal((await manager.status('claude')).authenticated, false);
 });
 
@@ -165,7 +165,7 @@ test('Windows logins redirect the profile and secure storage into the run folder
 test('a rejected credential falls through to the next working source', async (t) => {
   const rootDir = await tmpRoot(t, 'verify');
   const secretStore = createMemorySecretStore();
-  await secretStore.set('rhwp.claude.oauth-token', TOKEN);
+  await secretStore.set('hamaeditor.claude.oauth-token', TOKEN);
   const localToken = 'sk-ant-oat01-terminal-login-access';
   const verdicts = new Map([[TOKEN, 'invalid'], [localToken, 'valid']]);
   let online = true;
@@ -187,7 +187,7 @@ test('a rejected credential falls through to the next working source', async (t)
 
   online = true;
   assert.equal(await manager.verifyAuth('claude', { force: true }), 'valid', 'the terminal login is checked right after');
-  assert.equal(await secretStore.get('rhwp.claude.oauth-token'), null);
+  assert.equal(await secretStore.get('hamaeditor.claude.oauth-token'), null);
   const status = await manager.status('claude');
   assert.equal(status.authSource, 'local');
   assert.equal(typeof status.authVerifiedAt, 'number');
@@ -212,7 +212,7 @@ test('a terminal login about to expire is not handed to new sessions', async (t)
 test('logging out forgets app credentials and stops reusing the terminal login', async (t) => {
   const rootDir = await tmpRoot(t, 'logout');
   const secretStore = createMemorySecretStore();
-  await secretStore.set('rhwp.claude.oauth-token', TOKEN);
+  await secretStore.set('hamaeditor.claude.oauth-token', TOKEN);
   const readClaudeLogin = async () => ({
     source: 'file',
     text: JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-terminal', expiresAt: Date.now() + 3_600_000 } }),
@@ -221,7 +221,7 @@ test('logging out forgets app credentials and stops reusing the terminal login',
   await manager.init();
   const status = await manager.disconnect('claude');
   assert.equal(status.authenticated, false);
-  assert.equal(await secretStore.get('rhwp.claude.oauth-token'), null);
+  assert.equal(await secretStore.get('hamaeditor.claude.oauth-token'), null);
   assert.equal(manager.envFor('claude').CLAUDE_CODE_OAUTH_TOKEN, undefined);
 
   const reloaded = createCliSetupManager({ rootDir, secretStore, readClaudeLogin });

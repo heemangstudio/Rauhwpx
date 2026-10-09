@@ -435,7 +435,7 @@
     // 풋터 바 — 카드 전체 클릭 영역 암시
     const footer = document.createElement('div');
     footer.className = 'rhwp-hover-action';
-    const footerLabel = createEl('span', 'rhwp-hover-action-label', '▶\u2002rhwp로 열기');
+    const footerLabel = createEl('span', 'rhwp-hover-action-label', '▶\u2002HamaEditor로 열기');
     const footerArrow = createEl('span', 'rhwp-hover-action-arrow', '→');
     footer.appendChild(footerLabel);
     footer.appendChild(footerArrow);

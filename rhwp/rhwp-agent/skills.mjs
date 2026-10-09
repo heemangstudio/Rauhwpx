@@ -33,7 +33,7 @@ const DESCRIPTION_LINE_LIMIT = 1_000;
 const RESERVED_NAMES = new Set(['skills', 'skill-create', 'skill-edit', 'skill-delete']);
 const SEALED_NAME = 'present-plan';
 const CODEX_IMAGE_SKILL_NAME = 'document-image-generation';
-const APP_ORIGIN_FILE = '.rhwp-origin.json';
+const APP_ORIGIN_FILE = '.hamaeditor-origin.json';
 const SKILL_ICONS = new Set([
   'pencil', 'bot', 'system', 'sparkles', 'book', 'target', 'chart', 'lightbulb',
   'calendar', 'code', 'check', 'heart', 'bolt', 'shield',
@@ -70,9 +70,9 @@ export class SkillError extends Error {
 
 export function defaultSkillDataRoot(env = process.env, platform = process.platform, home = os.homedir()) {
   if (env.RHWP_SKILLS_DIR) return path.resolve(env.RHWP_SKILLS_DIR);
-  if (platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'rhwp', 'skills');
-  if (platform === 'win32') return path.join(env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'rhwp', 'skills');
-  return path.join(env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'rhwp', 'skills');
+  if (platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'hamaeditor', 'skills');
+  if (platform === 'win32') return path.join(env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'hamaeditor', 'skills');
+  return path.join(env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'hamaeditor', 'skills');
 }
 
 export function projectSkillMarkdown(markdown, expectedName) {
@@ -600,7 +600,7 @@ export class SkillRegistry {
       }
     }
     // Codex native image generation is available in both exec and app-server.
-    // Load Rau's document insertion instructions without requiring a slash command.
+    // Load HamaEditor's document insertion instructions without requiring a slash command.
     if (agent === 'codex' && explicitName !== CODEX_IMAGE_SKILL_NAME) {
       const imageSkill = enabled.find((row) => row.name === CODEX_IMAGE_SKILL_NAME && row.kind === 'skill');
       if (imageSkill) {

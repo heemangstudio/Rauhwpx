@@ -130,7 +130,7 @@ test('message attachment staging rejects document and global scopes', async (t) 
 
 test('the exact packaged origin is CORS-echoed', async (t) => {
   const { base } = await fixture(t);
-  const origin = 'rauhwpx://app';
+  const origin = 'hamaeditor://app';
   const response = await fetch(`${base}/reference-files?scope=global`, {
     headers: { Authorization: 'Bearer test-secret', Origin: origin },
   });
@@ -166,7 +166,7 @@ test('non-loopback browser origins are denied with a top-level error message', a
   assert.equal(body.message, body.error.message);
 
   const lookalike = await fetch(`${base}/reference-files?scope=global`, {
-    headers: { Authorization: 'Bearer test-secret', Origin: 'rauhwpx://app.evil' },
+    headers: { Authorization: 'Bearer test-secret', Origin: 'hamaeditor://app.evil' },
   });
   assert.equal(lookalike.status, 403);
 });

@@ -371,7 +371,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   let currentDestination: SettingsDestination = 'editing';
   let lastDestination: SettingsDestination = 'editing';
   try {
-    const storedDestination = sessionStorage.getItem('rhwp-settings-destination');
+    const storedDestination = sessionStorage.getItem('hamaeditor-settings-destination');
     const normalized = normalizeSettingsDestination(storedDestination);
     if (normalized) {
       currentDestination = normalized;
@@ -1479,7 +1479,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     currentDestination = destination;
     lastDestination = destination;
     try {
-      sessionStorage.setItem('rhwp-settings-destination', destination);
+      sessionStorage.setItem('hamaeditor-settings-destination', destination);
     } catch {
       // 세션 저장소가 막혀도 설정 탐색은 계속 동작한다.
     }

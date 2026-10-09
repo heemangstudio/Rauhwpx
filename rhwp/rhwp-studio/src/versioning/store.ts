@@ -46,7 +46,7 @@ import {
   type VersionTitle,
 } from './types.ts';
 
-export const VERSION_DATABASE_NAME = 'rhwpStudioVersionGraph';
+export const VERSION_DATABASE_NAME = 'hamaeditorVersionGraph';
 export const VERSION_DATABASE_VERSION = 3;
 
 const RECOVERY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;

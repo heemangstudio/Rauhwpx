@@ -387,7 +387,7 @@ test('drafts carry the page instance only once its owner lock is held', async ()
 
   await manager.beginDocument({ fileName: 'locked.hwp', sourceFormat: 'hwp' });
   await manager.flushNow('typing');
-  assert.deepEqual(requested, ['rhwp-autosave-owner:page-1']);
+  assert.deepEqual(requested, ['hamaeditor-autosave-owner:page-1']);
   assert.equal(saved[0]?.ownerInstanceId, 'page-1');
   assert.equal(released, false, 'the lock is held for the page lifetime');
   manager.dispose();

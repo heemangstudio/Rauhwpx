@@ -2,7 +2,7 @@
  * 문서 비교 디버그 (밀림 / ID / 폴백 원인 추적).
  *
  * 켜는 방법(택일):
- * - `localStorage.setItem('rhwp:compareDebug', '1')` 후 페이지 새로고침
+ * - `localStorage.setItem('hamaeditor:compareDebug', '1')` 후 페이지 새로고침
  * - URL에 `?compareDebug=1`
  * - 콘솔에서 `globalThis.__RHWP_COMPARE_DEBUG__ = true`
  */
@@ -14,7 +14,7 @@ export function isCompareDebugEnabled(): boolean {
     }
     if (typeof window !== 'undefined') {
       if (new URLSearchParams(window.location.search).get('compareDebug') === '1') return true;
-      if (window.localStorage?.getItem('rhwp:compareDebug') === '1') return true;
+      if (window.localStorage?.getItem('hamaeditor:compareDebug') === '1') return true;
     }
   } catch {
     /* localStorage 접근 불가 */
