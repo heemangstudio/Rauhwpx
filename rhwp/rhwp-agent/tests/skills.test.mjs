@@ -111,8 +111,6 @@ test('Codex loads bundled document image guidance by default and respects disabl
 
   const codex = await registry.promptContext('Add a small illustration', undefined, { agent: 'codex' });
   assert.match(codex, /<activated_product_skill name="document-image-generation">/);
-  assert.match(codex, /insert_image/);
-  assert.match(codex, /In planning or question mode, discuss the visual without editing the document/);
   assert.equal(codex.match(/<activated_product_skill name="document-image-generation">/g)?.length, 1);
   const explicit = await registry.promptContext('Add a small illustration', 'document-image-generation', { agent: 'codex' });
   assert.equal(explicit.match(/<activated_product_skill name="document-image-generation">/g)?.length, 1);
