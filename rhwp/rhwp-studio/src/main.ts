@@ -245,7 +245,7 @@ initThemeSync((effective, mode) => {
 });
 initWindowActivity();
 // 2.0.10까지 Cloud 채팅 초안(첨부 바이트 포함)을 담던 DB를 지운다. 없으면 아무 일도 하지 않는다.
-try { indexedDB.deleteDatabase('rhwpCloudChatDrafts'); } catch { /* 저장소 접근 불가 */ }
+try { indexedDB.deleteDatabase('hamaeditorCloudChatDrafts'); } catch { /* 저장소 접근 불가 */ }
 
 /** 엔진 trap 뒤 저장 명령은 승인·조판 같은 쓰기를 거치므로, 읽기만으로 사본을 내려받는다. */
 function saveTrappedDocumentCopy(): void {

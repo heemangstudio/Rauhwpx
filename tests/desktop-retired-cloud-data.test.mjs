@@ -17,7 +17,7 @@ const safeStorage = {
 };
 
 test('startup removes retired Cloud credentials and files but keeps other secrets and document copies', async (t) => {
-  const userDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rauhwpx-retired-cloud-'));
+  const userDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'hamaeditor-retired-cloud-'));
   t.after(() => fs.rm(userDataDir, { recursive: true, force: true }));
   const filePath = path.join(userDataDir, 'secrets.json');
   const seed = createSecretVault({ filePath, safeStorage });
@@ -55,7 +55,7 @@ test('startup removes retired Cloud credentials and files but keeps other secret
 });
 
 test('startup removes the whole Cloud folder when it holds no document copies', async (t) => {
-  const userDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rauhwpx-retired-cloud-'));
+  const userDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'hamaeditor-retired-cloud-'));
   t.after(() => fs.rm(userDataDir, { recursive: true, force: true }));
   await fs.mkdir(path.join(userDataDir, 'cloud', 'boat'), { recursive: true });
   await fs.writeFile(path.join(userDataDir, 'cloud', 'boat', 'id_ed25519'), 'private key');

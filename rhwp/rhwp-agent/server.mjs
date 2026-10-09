@@ -400,7 +400,7 @@ const sessions = new HubSessionRegistry({
       rootDir: hubStorageDir,
       writableRoot: workDir,
     });
-    const copyLayoutGeneratedRoot = path.join(hubStorageDir, '.rhwp-agent', 'copy-layout-generated');
+    const copyLayoutGeneratedRoot = path.join(hubStorageDir, '.hamaeditor-agent', 'copy-layout-generated');
     const hubReadOnlyRoots = Object.freeze([
       downloadManager.baseDir,
       documentSnapshotManager.baseDir,

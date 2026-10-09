@@ -129,6 +129,7 @@ def write_ui_copies(master: Image.Image) -> None:
     shutil.copy2(LOGO_DIR / "logo-1024.png", ROOT / "rhwp/rhwp-logo.png")
     rau = strokes_on_transparent(master, 128)
     rau.save(studio_icons / "rau.png", format="PNG", optimize=True)
+    rau.save(ROOT / "site-api/public/rau.png", format="PNG", optimize=True)
     master.resize((128, 128), Image.Resampling.NEAREST).save(
         VSCODE_ICON, format="PNG", optimize=True
     )
