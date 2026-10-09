@@ -10,6 +10,13 @@ import { showToast } from '../ui/toast.ts';
 import { userSettings } from '../core/user-settings.ts';
 import { completeInitialSetup } from '../ui/initial-setup/state.ts';
 import { listThreads, getThread, waitForThreadsPersistence } from '../agent/threads.ts';
+import { markChatFinished, markChatWorking } from '../agent/chat-status.ts';
+import type { LibraryMoveResult } from '../library/move-to-document.ts';
+import {
+  SAMPLE_FINISHED_CHAT_ID,
+  SAMPLE_WORKING_CHAT_ID,
+  sampleRecentDocuments,
+} from './fixtures.ts';
 import { normalizeSettingsDestination } from '../ui/agent-sidebar/settings-contract.ts';
 import { mountAuditNavigator } from './audit-scenarios.ts';
 import { mountAuditDialogs } from './audit-dialogs.ts';
@@ -35,6 +42,30 @@ const eventBus = new EventBus();
 const versions = createMockVersions(report, params.get('history') === 'branches');
 let documentId: string | null = 'preview-proposal';
 let documentName: string | null = '사업 제안서.hwpx';
+const recentDocuments = sampleRecentDocuments(Date.now());
+let createdDocuments = 0;
+const documentSelect = document.querySelector<HTMLSelectElement>('#document')!;
+
+/** Swap the mock document and announce it with the editor's document events. */
+function showMockDocument(id: string | null, name: string | null): void {
+  documentId = id;
+  documentName = name;
+  Object.assign(versions.getState(), { documentId, documentName, saved: !!documentId });
+  const value = id ? id.replace(/^preview-/, '') : 'empty';
+  if (id && name && ![...documentSelect.options].some((option) => option.value === value))
+    documentSelect.add(new Option(name, value), documentSelect.options.length - 1);
+  documentSelect.value = value;
+  if (id && name) {
+    const index = recentDocuments.findIndex((row) => row.documentId === id);
+    const [row] = index >= 0 ? recentDocuments.splice(index, 1) : [{
+      documentId: id, fileName: name, sourceFormat: name.split('.').pop() ?? 'hwpx', openedAt: 0,
+    }];
+    recentDocuments.unshift({ ...row, fileName: name, openedAt: Date.now() });
+  }
+  void versions.refresh();
+  eventBus.emit('document-swapped');
+  eventBus.emit('document-context-changed');
+}
 
 if (!params.has('initial-setup'))
   completeInitialSetup({
@@ -60,13 +91,29 @@ const sidebar = initAgentSidebar({
     documentName,
     selectionLabel: null,
   }),
-  moveToLibraryDocument: (target) => {
-    documentId = target.documentId;
-    documentName = target.fileName;
-    Object.assign(versions.getState(), { documentId, documentName, saved: true });
-    eventBus.emit('document-context-changed');
-    void versions.refresh();
+  moveToLibraryDocument: async (target, options): Promise<LibraryMoveResult> => {
+    if (!target.documentId && !target.fileName) return 'failed';
+    if (target.documentId ? target.documentId === documentId : target.fileName === documentName)
+      return 'same';
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    if (options?.commit && documentId) report(`Committed "${documentName}" to version history (sample)`);
+    if (!target.documentId) {
+      report(`File picker placeholder for "${target.fileName}"`);
+      return 'moved';
+    }
+    // As in the editor, the move resolves before the opened file swaps in.
+    const id = target.documentId;
+    const name = target.fileName
+      ?? recentDocuments.find((row) => row.documentId === id)?.fileName ?? null;
+    setTimeout(() => showMockDocument(id, name), 100);
+    return 'moved';
   },
+  createDocument: () => {
+    createdDocuments += 1;
+    showMockDocument(`preview-new-${createdDocuments}`, `새 문서 ${createdDocuments}.hwpx`);
+  },
+  openDocumentFile: () => report('File picker placeholder'),
+  listRecentDocuments: async () => recentDocuments.map((row) => ({ ...row })),
   versionController: versions,
   getAgentUndoEntry: () => undoState.entry,
   undoAgentTurn: (entry) => {
@@ -91,6 +138,10 @@ const sidebar = initAgentSidebar({
 });
 sidebar.root.querySelector<HTMLButtonElement>('.ag-threads-new')!.click();
 mock.boot();
+if (params.get('chats') === 'sample') {
+  markChatWorking(SAMPLE_WORKING_CHAT_ID);
+  markChatFinished(SAMPLE_FINISHED_CHAT_ID);
+}
 
 const scenarioSelect = document.querySelector<HTMLSelectElement>('#scenario')!;
 for (const name of scenarios)
@@ -138,21 +189,13 @@ theme.value = userSettings.getThemeSettings().mode;
 theme.addEventListener('change', () =>
   setThemeMode(theme.value as 'light' | 'dark' | 'system'),
 );
-document
-  .querySelector<HTMLSelectElement>('#document')!
-  .addEventListener('change', (event) => {
-    const select = event.target as HTMLSelectElement;
-    documentId = select.value === 'empty' ? null : `preview-${select.value}`;
-    documentName =
-      select.value === 'empty' ? null : select.selectedOptions[0].text;
-    Object.assign(versions.getState(), {
-      documentId,
-      documentName,
-      saved: !!documentId,
-    });
-    void versions.refresh();
-    eventBus.emit('document-context-changed');
-  });
+documentSelect.addEventListener('change', () => {
+  const empty = documentSelect.value === 'empty';
+  showMockDocument(
+    empty ? null : `preview-${documentSelect.value}`,
+    empty ? null : documentSelect.selectedOptions[0].text,
+  );
+});
 document
   .querySelector('#settings')!
   .addEventListener('click', () =>

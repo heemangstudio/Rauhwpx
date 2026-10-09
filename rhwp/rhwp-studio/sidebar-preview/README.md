@@ -84,6 +84,7 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?theme=dark&width=360` | Dark theme and narrow sidebar |
 | `?controls=0` | Hide preview controls for clean captures |
 | `?reset=1` | Clear preview storage before mounting |
+| `?chats=sample` | Restore sample chats across three documents and no document, one running and one finished |
 
 Parameters can be combined. Select **Next reply**, then type a message or press
 **Play sample conversation**. Connection and service controls expose disconnected,

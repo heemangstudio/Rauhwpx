@@ -189,6 +189,7 @@ import {
   isPortableHistoryBytes,
   isPortableHistoryFileName,
   openPortableHistoryBundle,
+  versionErrorCode,
 } from './versioning/index.ts';
 import type { AgentEditingLease } from './agent/types.ts';
 import type { EmbedRendererRuntimeRequestV1 } from '@/embed/rpc-router';
@@ -1260,9 +1261,19 @@ async function initialize(): Promise<void> {
             pageCount: wasm.pageCount,
           };
         },
-        moveToLibraryDocument: async (target) => {
-          await runLibraryMove(commandServices, target, () => activeDocumentId);
-        },
+        moveToLibraryDocument: (target, options) => runLibraryMove(
+          commandServices,
+          target,
+          () => activeDocumentId,
+          options?.commit ? () => commitBeforeLibraryMove(versionController) : undefined,
+        ),
+        createDocument: () => { dispatcher.dispatch('file:new-doc'); },
+        openDocumentFile: () => { dispatcher.dispatch('file:open'); },
+        listRecentDocuments: async () => (await listRecentDocs())
+          .slice(0, 20)
+          .map(({ documentId, fileName, sourceFormat, openedAt }) => (
+            { documentId, fileName, sourceFormat, openedAt }
+          )),
       });
       disposeAgentSidebar = () => {
         agentSidebar.dispose();
@@ -1290,6 +1301,24 @@ async function initialize(): Promise<void> {
     rendererInitializationError = error instanceof Error ? error.message : String(error);
     msg.textContent = `초기화 실패: ${error}`;
     console.error('[main] 초기화 실패:', error);
+  }
+}
+
+/** 다른 문서로 옮기기 전에 커밋하지 않은 변경을 버전 기록에 남긴다. */
+async function commitBeforeLibraryMove(versions: DocumentVersionController): Promise<void> {
+  // 방금 끝난 저장이 버전 기록의 저장 지점을 고치는 중이다. 그 뒤에 커밋해야
+  // 저장소 판이 어긋나 커밋이 STALE_WORKSPACE 로 조용히 빠지지 않는다.
+  await versions.whenIdle();
+  const state = versions.getState();
+  if (!state.enabled || !state.dirty || state.mutationBlockedReason) return;
+  try {
+    // 메시지 없이 커밋한다. 메시지가 있으면 내용이 같을 때 커밋 대신 태그가 생긴다.
+    await versions.checkpoint();
+  } catch (error) {
+    const code = versionErrorCode(error);
+    if (code === 'NO_CHANGES' || code === 'STALE_WORKSPACE' || code === 'VERSIONING_DISABLED') return;
+    console.warn('[main] 문서를 옮기기 전 버전 기록 커밋 실패:', error);
+    throw error;
   }
 }
 

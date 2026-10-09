@@ -269,21 +269,6 @@ export function threadMatchesDocument(
   return !thread.documentId && !documentId && threadName === null && activeName === null;
 }
 
-export function explorerGroupIsCurrent(
-  group: Pick<ChatThread, 'documentId' | 'docKey'>,
-  documentId: string | null,
-  docKey: string | null,
-  groups: readonly Pick<ChatThread, 'documentId' | 'docKey'>[],
-): boolean {
-  if (group.documentId) return Boolean(documentId && group.documentId === documentId);
-  if (threadMatchesDocument(group, documentId, docKey)) return true;
-  if (groups.some((item) => threadMatchesDocument(item, documentId, docKey))) return false;
-  const groupName = normalizedDocumentName(group.docKey);
-  const activeName = normalizedDocumentName(docKey);
-  if (!groupName || !activeName || groupName !== activeName) return false;
-  return groups.filter((item) => normalizedDocumentName(item.docKey) === activeName).length === 1;
-}
-
 type StoredChatThread = Omit<ChatThread, 'workflow' | 'latestPlan' | 'plans' | 'docKey' | 'documentId' | 'activeTemplateId' | 'pendingUserQuestion' | 'providerSessions' | 'contextUsage'> & {
   providerSessions?: unknown;
   contextUsage?: unknown;
@@ -1754,85 +1739,9 @@ export function listThreads(): ChatThread[] {
     .sort((a, b) => threadActivityAt(b) - threadActivityAt(a));
 }
 
-export interface DocumentThreadGroup {
-  /** 논리 문서 ID. 레거시 채팅은 파일명만 있어 null 일 수 있다. */
-  documentId: string | null;
-  docKey: string | null;
-  threads: ChatThread[];
-}
-
 /** 문서 묶음 키 — ID가 있으면 ID로, 없으면 파일명으로 묶인 레거시 채팅이다. */
 export function documentGroupKey(thread: Pick<ChatThread, 'documentId' | 'docKey'>): string {
   return thread.documentId ? `id:${thread.documentId}` : `name:${thread.docKey ?? ''}`;
-}
-
-/* 문서 그룹 순서는 '마지막으로 연 문서' 순이다 — 옛 채팅을 다시 열어도
-   문서를 다시 열기 전에는 그룹 자리가 바뀌지 않는다. */
-const DOC_ORDER_KEY = 'rhwp-agent-doc-order';
-const DOC_ORDER_MAX = 200;
-
-function readDocOrder(): string[] {
-  if (!canUseStorage()) return [];
-  try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(DOC_ORDER_KEY) ?? '[]');
-    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [];
-  } catch {
-    return [];
-  }
-}
-
-/** 문서를 열 때마다 부른다 — 그 문서 그룹이 맨 위로 올라와 고정된다. */
-export function recordDocumentOpened(documentId: string | null, docKey: string | null): void {
-  // 파일명 키도 함께 적는다 — documentId 없이 저장된 레거시 그룹까지 따라온다.
-  const keys = [
-    ...(documentId ? [`id:${documentId}`] : []),
-    ...(docKey ? [`name:${docKey}`] : []),
-  ];
-  if (keys.length === 0 || !canUseStorage()) return;
-  const order = [...keys, ...readDocOrder().filter((k) => !keys.includes(k))];
-  try {
-    localStorage.setItem(DOC_ORDER_KEY, JSON.stringify(order.slice(0, DOC_ORDER_MAX)));
-  } catch {
-    /* ignore quota / private mode */
-  }
-}
-
-/**
- * 문서별 채팅 묶음 — 그룹 순서는 문서를 마지막으로 연 순서(recordDocumentOpened)를
- * 따르고, 아직 기록이 없는 그룹은 가장 최근에 움직인 채팅 순서로 그 뒤에 이어진다.
- * 그룹 안은 최신순이다(listThreads 정렬을 그대로 물려받는다).
- * 같은 파일명이라도 documentId 가 다르면 다른 문서로 나눈다.
- */
-export function listThreadsByDocument(): DocumentThreadGroup[] {
-  const groups = new Map<string, ChatThread[]>();
-  const meta = new Map<string, { documentId: string | null; docKey: string | null }>();
-  for (const thread of listThreads()) {
-    const key = documentGroupKey(thread);
-    const bucket = groups.get(key);
-    if (bucket) {
-      bucket.push(thread);
-    } else {
-      groups.set(key, [thread]);
-      meta.set(key, { documentId: thread.documentId, docKey: thread.docKey });
-    }
-    const info = meta.get(key);
-    if (info && !info.docKey && thread.docKey) info.docKey = thread.docKey;
-  }
-  const rank = new Map(readDocOrder().map((key, i) => [key, i] as const));
-  const UNRANKED = Number.MAX_SAFE_INTEGER;
-  const groupRank = (documentId: string | null, docKey: string | null): number => {
-    const byId = documentId ? rank.get(`id:${documentId}`) : undefined;
-    const byName = docKey ? rank.get(`name:${docKey}`) : undefined;
-    return Math.min(byId ?? UNRANKED, byName ?? UNRANKED);
-  };
-  return [...groups.entries()]
-    .map(([key, threads]) => ({
-      documentId: meta.get(key)?.documentId ?? null,
-      docKey: meta.get(key)?.docKey ?? null,
-      threads,
-    }))
-    // 안정 정렬이라 기록 없는 그룹끼리는 최근 활동 순서를 그대로 지킨다.
-    .sort((a, b) => groupRank(a.documentId, a.docKey) - groupRank(b.documentId, b.docKey));
 }
 
 export function getThread(id: string): ChatThread | null {
@@ -1892,12 +1801,11 @@ export function removeThread(id: string): void {
 }
 
 /**
- * 문서 보관 — 문서 파일은 그대로 두고, 그 문서 그룹에 속한 채팅을 모두
- * 지운다. 문서 열람 순서 기록도 함께 지워 탐색기가 문서를 더는 기억하지
- * 않는다. 지운 채팅 ID 목록을 돌려준다.
+ * 채팅 기록 삭제 — 문서 파일은 그대로 두고, 그 문서에 속한 채팅을 모두
+ * 지운다. 지운 채팅 ID 목록을 돌려준다.
  */
 export function forgetDocumentThreads(documentId: string | null, docKey: string | null): string[] {
-  // 그룹 소속 판정은 documentGroupKey 와 같은 규칙이다 — ID가 있으면 ID로,
+  // 소속 판정은 documentGroupKey 와 같은 규칙이다 — ID가 있으면 ID로,
   // 없으면 파일명으로만 묶인 레거시 채팅을 지운다.
   const removed = loadAll()
     .filter((thread) => (documentId
@@ -1905,20 +1813,6 @@ export function forgetDocumentThreads(documentId: string | null, docKey: string 
       : !thread.documentId && (thread.docKey ?? '') === (docKey ?? '')))
     .map((thread) => thread.id);
   for (const id of removed) removeThread(id);
-
-  if (canUseStorage()) {
-    const drop = new Set<string>();
-    if (documentId) drop.add(`id:${documentId}`);
-    // 같은 파일명을 쓰는 다른 그룹이 남아 있으면 이름 키는 그 그룹 몫으로 남긴다.
-    if (docKey && !loadAll().some((thread) => thread.docKey === docKey)) drop.add(`name:${docKey}`);
-    if (drop.size) {
-      try {
-        localStorage.setItem(DOC_ORDER_KEY, JSON.stringify(readDocOrder().filter((key) => !drop.has(key))));
-      } catch {
-        /* ignore quota / private mode */
-      }
-    }
-  }
   return removed;
 }
 

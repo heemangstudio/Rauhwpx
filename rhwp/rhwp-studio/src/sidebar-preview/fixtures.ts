@@ -1,4 +1,5 @@
 import type * as T from '../agent/types.ts';
+import type { ChatThread } from '../agent/threads.ts';
 import { defaultModelForAgent, labelForModel } from '../agent/models.ts';
 
 export type BrowserbaseFixtureState = 'connected' | 'setup' | 'error';
@@ -275,4 +276,79 @@ export function samplePlan(revision = 1, previousPlanId?: string): T.StructuredP
     createdAt: timestamp,
     epoch: 1,
   };
+}
+
+export interface SampleDocument {
+  documentId: string;
+  fileName: string;
+  sourceFormat: string;
+  openedAt: number;
+}
+
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+
+/** Recent documents for the open-document palette, newest first. */
+export function sampleRecentDocuments(now: number): SampleDocument[] {
+  return [
+    { documentId: 'preview-proposal', fileName: '사업 제안서.hwpx', sourceFormat: 'hwpx', openedAt: now - MINUTE },
+    { documentId: 'preview-notes', fileName: '회의록.hwpx', sourceFormat: 'hwpx', openedAt: now - 40 * MINUTE },
+    { documentId: 'preview-budget', fileName: '2027 예산 계획.hwp', sourceFormat: 'hwp', openedAt: now - 3 * HOUR },
+    { documentId: 'preview-contract', fileName: '용역 계약서.hwp', sourceFormat: 'hwp', openedAt: now - 2 * DAY },
+    { documentId: 'preview-report', fileName: '연간 활동 보고서.hwpx', sourceFormat: 'hwpx', openedAt: now - 9 * DAY },
+  ];
+}
+
+/** Seeded chat that `chats=sample` shows as running. */
+export const SAMPLE_WORKING_CHAT_ID = 'preview-chat-schedule';
+/** Seeded chat that `chats=sample` shows as finished but unread. */
+export const SAMPLE_FINISHED_CHAT_ID = 'preview-chat-minutes';
+
+/**
+ * Chats across several documents and providers for the activity-ordered list.
+ * Timestamps are relative to `now`, so the list always shows fresh, varied ages.
+ */
+export function sampleChats(now: number): ChatThread[] {
+  const proposal = { documentId: 'preview-proposal', docKey: '사업 제안서.hwpx' };
+  const notes = { documentId: 'preview-notes', docKey: '회의록.hwpx' };
+  const budget = { documentId: 'preview-budget', docKey: '2027 예산 계획.hwp' };
+  const none = { documentId: null, docKey: null };
+  const rows: Array<[string, string, T.AgentName, typeof proposal | typeof none, number, string, string | null]> = [
+    [SAMPLE_WORKING_CHAT_ID, '추진 일정 표 정리', 'claude', proposal, 2 * MINUTE,
+      '추진 일정 표의 날짜를 분기별로 정리해 주세요.', null],
+    [SAMPLE_FINISHED_CHAT_ID, '회의 결정 사항 요약', 'codex', notes, 14 * MINUTE,
+      '오늘 회의에서 정한 사항만 다섯 줄로 요약해 주세요.', '결정 사항 다섯 가지를 문서 첫머리에 요약했습니다.'],
+    ['preview-chat-overview', '사업 개요 첫 문단 다듬기', 'claude', proposal, HOUR,
+      '사업 개요 첫 문단을 목적이 먼저 보이게 고쳐 주세요.', '첫 문장에 사업 목적을 두고 배경 설명은 뒤로 옮겼습니다.'],
+    ['preview-chat-totals', '분기별 예산 표 합계 확인', 'pi', budget, 3 * HOUR,
+      '분기별 예산 표의 합계가 맞는지 확인해 주세요.', '3분기 소계가 120만 원 적게 계산되어 있었습니다. 표를 고쳤습니다.'],
+    ['preview-chat-press', '보도자료 초안 아이디어', 'codex', none, 26 * HOUR,
+      '신제품 출시 보도자료 제목 후보를 몇 개 제안해 주세요.', '제목 후보 다섯 개와 부제를 정리했습니다.'],
+    ['preview-chat-attendees', '참석자 명단 표 만들기', 'pi', notes, 3 * DAY,
+      '참석자 명단을 소속별 표로 만들어 주세요.', '소속, 이름, 직책 세 열로 표를 만들었습니다.'],
+    ['preview-chat-wording', '예산 항목 설명 문장 통일', 'claude', budget, 8 * DAY,
+      '예산 항목 설명을 같은 문체로 맞춰 주세요.', '모든 항목 설명을 "~합니다" 문체로 통일했습니다.'],
+  ];
+  return rows.map(([id, title, agent, document, age, request, reply]) => {
+    const activityAt = now - age;
+    const messages: ChatThread['messages'] = [{ role: 'user', text: request }];
+    if (reply) messages.push({ role: 'assistant', text: reply, agent });
+    return {
+      id,
+      title,
+      titleRequested: true,
+      createdAt: activityAt - 5 * MINUTE,
+      updatedAt: activityAt,
+      lastActivityAt: activityAt,
+      agent,
+      model: agent === 'pi' ? 'anthropic/claude-sonnet-4.6' : defaultModelForAgent(agent),
+      effort: 'medium',
+      serviceTier: 'standard',
+      workflow: 'direct',
+      ...document,
+      activeTemplateId: null,
+      messages,
+    };
+  });
 }

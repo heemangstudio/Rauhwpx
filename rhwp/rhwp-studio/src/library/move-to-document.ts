@@ -25,6 +25,13 @@ export interface MoveToLibraryDocumentDeps {
   openProjectFile: (claim: ProjectFileClaim) => Promise<ProjectOpenOutcome>;
   openViaPicker: () => Promise<void>;
   toast: (message: string) => void;
+  /** 현재 문서의 커밋하지 않은 변경을 버전 기록에 커밋한다. 남길 것이 없으면 조용히 끝낸다. */
+  commitCurrent?: () => Promise<void>;
+}
+
+export interface MoveToLibraryDocumentOptions {
+  /** 저장한 뒤 대상 문서를 열기 전에 현재 문서를 버전 기록에 커밋한다. */
+  commit?: boolean;
 }
 
 export function isSameLibraryDocument(
@@ -57,6 +64,7 @@ const MAX_SAVE_ATTEMPTS = 3;
 export async function moveToLibraryDocument(
   target: LibraryDocumentTarget,
   deps: MoveToLibraryDocumentDeps,
+  options: MoveToLibraryDocumentOptions = {},
 ): Promise<LibraryMoveResult> {
   if (!canMoveToLibraryDocument(target)) {
     deps.toast('이동할 문서를 찾을 수 없습니다.');
@@ -75,6 +83,15 @@ export async function moveToLibraryDocument(
     if (saved !== 'saved') {
       deps.toast('현재 문서를 저장하지 못해 이동하지 않았습니다.');
       return 'failed';
+    }
+  }
+
+  // 작업은 저장으로 이미 지켰으므로 커밋에 실패해도 이동은 계속한다.
+  if (options.commit && current.hasDocument && deps.commitCurrent) {
+    try {
+      await deps.commitCurrent();
+    } catch {
+      deps.toast('버전 기록에 커밋하지 못했습니다.');
     }
   }
 

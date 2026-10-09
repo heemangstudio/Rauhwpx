@@ -79,8 +79,7 @@ import {
   documentGroupKey,
   forgetDocumentThreads,
   listThreads,
-  listThreadsByDocument,
-  recordDocumentOpened,
+  threadActivityAt,
   removeThread,
   renameThread,
   setThreadTitle,
@@ -124,9 +123,11 @@ import { createInkRing, createIcon, createStopIcon } from './icons.ts';
 import {
   closeThreadRailSurfaces,
   createThreadsToolbar,
+  threadRailSurfaceOpen,
   searchKey,
   showDocumentFilter,
   showDocumentPalette,
+  formatShortAge,
   type DocumentFilterOption,
 } from './thread-rail.ts';
 import type { LibraryMoveResult } from '../../library/move-to-document.ts';
@@ -195,17 +196,17 @@ export interface AgentSidebarDeps {
   };
   /**
    * 다른 문서로 옮겨 간다 — 바뀐 내용이 있으면 저장한 뒤 대상 문서를 연다.
-   * checkpointMessage 가 있으면 떠나기 전에 버전 기록 체크포인트를 남긴다
+   * commit 이면 떠나기 전에 버전 기록에 커밋한다
    * (버전 기록이 켜져 있고 커밋하지 않은 변경이 있을 때만).
    */
   moveToLibraryDocument?: (
     target: { documentId: string | null; fileName: string | null },
-    options?: { checkpointMessage?: string },
+    options?: { commit?: boolean },
   ) => Promise<LibraryMoveResult>;
-  /** 문서 열기 팔레트의 "새 문서"·"파일 열기…" — 편집기의 같은 명령을 부른다. */
+  /** 문서 열기의 "새 문서"·"파일 열기…" — 편집기의 같은 명령을 부른다. */
   createDocument?: () => void;
   openDocumentFile?: () => void;
-  /** 문서 열기 팔레트와 문서 필터가 보여 줄 최근 문서. */
+  /** 문서 열기가 보여 줄 최근 문서. */
   listRecentDocuments?: () => Promise<Array<{
     documentId: string;
     fileName: string;
@@ -712,9 +713,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   let committedEditorInsetPx = 0;
   let resizeMoveRaf: number | null = null;
   let resizeMoveX = 0;
-  // ── 문서별 채팅 격리 ──────────────────────────────────
-  // 채팅은 만들어질 때의 문서(docKey)에 묶인다. 문서가 바뀌면 새 채팅을
-  // 자동으로 시작하고, 다른 문서의 채팅은 읽기 전용으로만 열린다.
+  // ── 문서별 채팅 ──────────────────────────────────────
+  // 채팅은 만들어질 때의 문서에 묶인다. 문서가 바뀌면 새 채팅을 시작하고,
+  // 다른 문서의 채팅을 열면 그 문서로 옮겨 가서 잇는다.
   let currentDocKey: string | null = getDocumentContext?.().documentName ?? null;
   let currentDocumentId: string | null = getDocumentContext?.().documentId ?? null;
   /** 읽기 전용으로 열람 중인 다른 문서 채팅의 문서 라벨 (null = 정상 모드). */
@@ -1645,11 +1646,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
 
   /**
    * 문서가 바뀌면 현재 채팅을 끝내고 새 문서용 채팅을 연다. 메시지가
-   * 있는 채팅은 원래 문서 그룹에 남고, 빈 채팅은 저장되지 않은 채 사라진다.
+   * 있는 채팅은 원래 문서에 남고, 빈 채팅은 저장되지 않은 채 사라진다.
    */
   function handleDocumentSwitch(nextKey: string | null, nextDocumentId: string | null): void {
-    // 문서를 연 순간만 그룹 순서가 움직인다 — 옛 채팅 열람은 순서를 건드리지 않는다.
-    recordDocumentOpened(nextDocumentId, nextKey);
     const sameIdentity = Boolean(
       nextDocumentId && currentDocumentId && nextDocumentId === currentDocumentId,
     );
@@ -1670,7 +1669,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     }
     currentDocKey = nextKey;
     currentDocumentId = nextDocumentId;
-    startNewChat({ silent: true });
+    // 채팅을 따라 옮겨 온 문서면 그 채팅을 잇고, 아니면 새 채팅을 연다.
+    const followed = pendingThreadSwitch ? getThread(pendingThreadSwitch.threadId) : null;
+    pendingThreadSwitch = null;
+    if (followed && threadMatchesDocument(followed, nextDocumentId, nextKey)) {
+      openThread(followed.id);
+    } else {
+      startNewChat({ silent: true });
+    }
     rebuildThreadsList();
   }
 
@@ -2834,13 +2840,24 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   threadsClose.title = '채팅으로 돌아가기';
   threadsClose.appendChild(createColumnIcon());
   threadsHeader.append(threadsTitle, threadsClose);
-  const threadsNew = el('button', 'ag-threads-new', '새 채팅');
-  threadsNew.type = 'button';
-  threadsNew.prepend(createIcon('insert', 'ag-threads-new-icon'));
+  const threadsToolbar = createThreadsToolbar({
+    onQueryChange(query) {
+      threadQuery = query;
+      rebuildThreadsList();
+    },
+    onOpenFilter: () => openDocumentFilter(),
+    onOpenDocuments: () => openDocumentPalette(),
+    onNewChat: () => startNewChat(),
+    onClearFilter() {
+      setThreadDocFilter(null);
+    },
+    onEnterList() {
+      threadNavItems()[0]?.focus();
+    },
+  });
   const threadsList = el('ul', 'ag-threads-list');
-  // 스크롤하면 hover 카드가 행에서 떨어져 남는다 — 바로 걷어낸다.
-  threadsList.addEventListener('scroll', () => hideThreadPopover(), { passive: true });
-  threadsPage.append(threadsHeader, threadsNew, threadsList);
+  threadsList.setAttribute('aria-label', '채팅');
+  threadsPage.append(threadsHeader, threadsToolbar.root, threadsToolbar.filterChip, threadsList);
 
   const skillsPage = el('div', 'ag-skills-page');
   skillsPage.id = 'ag-skills-panel';
@@ -3284,6 +3301,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     root.classList.toggle('ag-compact-rail-hover-open', compact && compactRailHoverOpen);
     root.classList.toggle('ag-rail-collapsed', fullscreen && !expanded);
     if (!fullscreen) return;
+    if (!expanded) closeThreadRailSurfaces();
     threadsBtn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
     threadsBtn.title = expanded ? '채팅 목록 접기' : '채팅 목록 열기';
     threadsBtn.setAttribute('aria-label', threadsBtn.title);
@@ -3370,7 +3388,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     if (compactThreadsRailOpen) {
       rebuildThreadsList();
       if (opts?.focus !== false) {
-        window.requestAnimationFrame(() => threadsNew.focus({ preventScroll: true }));
+        window.requestAnimationFrame(() => threadsToolbar.search.focus({ preventScroll: true }));
       }
     }
   }
@@ -3380,7 +3398,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     clearCompactRailHoverClose();
     compactRailHoverCloseTimer = window.setTimeout(() => {
       compactRailHoverCloseTimer = null;
-      if (!compactRailHoverOpen || threadsPage.contains(document.activeElement)) return;
+      // 문서 필터·문서 열기 팝오버는 레일 밖에 떠 있어도 레일의 일부다.
+      if (!compactRailHoverOpen || threadsPage.contains(document.activeElement) || threadRailSurfaceOpen()) return;
       setCompactThreadsRailOpen(false);
     }, 100);
   }
@@ -3727,7 +3746,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       return;
     }
     fullscreen = on;
-    hideThreadPopover();
+    closeThreadRailSurfaces();
     // 두 모드의 쉬는 모양이 달라서, 화면 전환은 펼친 입력기로 시작한다.
     composerRest.setResting(false);
 
@@ -5142,104 +5161,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     bridge.setActiveTemplate(activeTemplate?.id ?? thread.activeTemplateId);
   }
 
-  /** 목록 행의 계기 표시 — 에이전트 · 날짜 시각 · 메시지 수. 자릿수를 맞춘다. */
-  function formatRelativeAge(ts: number): string {
-    const diff = Date.now() - ts;
-    const minute = 60_000;
-    const hour = 3_600_000;
-    const day = 86_400_000;
-    if (diff < minute) return '방금';
-    if (diff < hour) return `${Math.floor(diff / minute)}분 전`;
-    if (diff < day) return `${Math.floor(diff / hour)}시간 전`;
-    if (diff < day * 7) return `${Math.floor(diff / day)}일 전`;
-    if (diff < day * 30) return `${Math.floor(diff / (day * 7))}주 전`;
-    return `${Math.floor(diff / (day * 30))}개월 전`;
-  }
-
-  /* 전체 화면 레일 전용 hover 카드 — 행은 제목만 남기고 문서·에이전트·시각은
-     여기서 보여준다. 사이드바 패널에서는 뜨지 않는다(fullscreen 게이트).
-     행 사이를 훑을 때는 카드를 없앴다 다시 만들지 않고 내용만 갈아끼운 채
-     위치를 CSS transition 으로 미끄러뜨린다. */
-  let threadPopover: HTMLElement | null = null;
-  let threadPopoverTimer: number | null = null;
-  let threadPopoverHideTimer: number | null = null;
-
-  function clearThreadPopoverTimers(): void {
-    if (threadPopoverTimer !== null) {
-      window.clearTimeout(threadPopoverTimer);
-      threadPopoverTimer = null;
-    }
-    if (threadPopoverHideTimer !== null) {
-      window.clearTimeout(threadPopoverHideTimer);
-      threadPopoverHideTimer = null;
-    }
-  }
-
-  function hideThreadPopover(): void {
-    clearThreadPopoverTimers();
-    threadPopover?.remove();
-    threadPopover = null;
-  }
-
-  /** 행을 떠날 때는 잠깐 기다린다 — 옆 행으로 옮겨 가는 중이면 카드가 살아남는다. */
-  function scheduleHideThreadPopover(): void {
-    clearThreadPopoverTimers();
-    threadPopoverHideTimer = window.setTimeout(() => {
-      threadPopoverHideTimer = null;
-      hideThreadPopover();
-    }, 120);
-  }
-
-  function scheduleThreadPopover(thread: ChatThread, row: HTMLElement): void {
-    if (!fullscreen) return;
-    clearThreadPopoverTimers();
-    // 이미 떠 있으면 거의 즉시 옮겨 가고, 처음엔 잠깐 뜸을 들인다.
-    const delay = threadPopover ? 60 : 320;
-    threadPopoverTimer = window.setTimeout(() => {
-      threadPopoverTimer = null;
-      showThreadPopover(thread, row);
-    }, delay);
-  }
-
-  function showThreadPopover(thread: ChatThread, row: HTMLElement): void {
-    if (!fullscreen || !row.isConnected) return;
-    const head = el('div', 'ag-thread-popover-head');
-    head.append(
-      el('span', 'ag-thread-popover-title', thread.title || '새 채팅'),
-      el('span', 'ag-thread-popover-age', formatRelativeAge(thread.updatedAt)),
-    );
-    const docRow = el('div', 'ag-thread-popover-row');
-    docRow.append(
-      createIcon('document'),
-      el('span', 'ag-thread-popover-text', docGroupLabel(thread.docKey)),
-    );
-    const agentRow = el('div', 'ag-thread-popover-row');
-    agentRow.append(
-      createProviderIcon(thread.agent),
-      el(
-        'span',
-        'ag-thread-popover-text',
-        `${AGENT_LABEL[thread.agent]} · ${labelForModel(thread.agent, thread.model)}`,
-      ),
-    );
-
-    const fresh = threadPopover === null;
-    const card = threadPopover ?? el('div', 'ag-thread-popover');
-    card.replaceChildren(head, docRow, agentRow);
-    if (fresh) {
-      card.setAttribute('aria-hidden', 'true');
-      root.appendChild(card);
-      threadPopover = card;
-    }
-
-    const rect = row.getBoundingClientRect();
-    const size = card.getBoundingClientRect();
-    const left = Math.min(rect.right + 10, window.innerWidth - size.width - 8);
-    const top = Math.max(8, Math.min(rect.top - 4, window.innerHeight - size.height - 8));
-    card.style.left = `${left}px`;
-    card.style.top = `${top}px`;
-  }
-
   /**
    * 이름 바꾸기 — 행 자리에서 바로 편집한다. Enter 확정 / Esc 취소 /
    * 포커스 이탈 시 확정. 확정된 이름은 고정되어 자동 제목이 덮지 않는다.
@@ -5295,10 +5216,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   }
 
   /**
-   * 문서 보관 — 문서 파일은 남기고 그 문서의 채팅 기록을 모두 지운다.
+   * 채팅 기록 삭제 — 문서 파일은 남기고 그 문서의 채팅을 모두 지운다.
    * 지금 열려 있는 채팅이 그 문서 소속이면 먼저 새 채팅으로 빠져나온다.
    */
-  async function archiveDocumentGroup(group: DocumentThreadGroup): Promise<void> {
+  async function archiveDocumentGroup(group: Pick<ChatThread, 'documentId' | 'docKey'>): Promise<void> {
     const confirmed = await confirmSheet(root, '채팅 기록 삭제', '이 문서의 채팅을 모두 지웁니다. 문서는 그대로 둡니다.', { confirmLabel: '삭제', destructive: true });
     if (!confirmed) return;
     const currentInGroup = group.documentId
@@ -5312,20 +5233,51 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       threadWorkflows.delete(id);
       clearChatStatus(id);
     }
-    docGroupToggles.delete(group.documentId ?? group.docKey ?? '');
     rebuildThreadsList();
   }
 
-  /** 실행 상태 점 — 노란 불(작업 중)·초록 점(완료)·빨간 점(승인 대기). */
-  function buildStatusDot(status: ChatRunStatus, extraClass?: string): HTMLElement {
-    const dot = el('span', `ag-thread-status ag-thread-status-${status}${extraClass ? ` ${extraClass}` : ''}`);
-    dot.title = status === 'working' ? '작업 중' : status === 'needs-input' ? '입력 대기' : '완료';
+  /** 실행 상태 점 — 노란 불(작업 중)·초록 점(완료)·빨간 점(승인 대기).
+      작업 중·입력 대기는 옆 글자가 말하므로 완료 점만 이름을 갖는다. */
+  function buildStatusDot(status: ChatRunStatus): HTMLElement {
+    const dot = el('span', `ag-thread-status ag-thread-status-${status}`);
+    if (status === 'finished') dot.title = '완료';
+    else dot.setAttribute('aria-hidden', 'true');
     return dot;
+  }
+
+  /** "작업 중 2분"의 경과 부분. 1분이 안 되면 비운다. */
+  function formatWorkingElapsed(since: number, now: number): string {
+    const minutes = Math.floor((now - since) / 60_000);
+    if (minutes < 1) return '';
+    if (minutes < 60) return `${minutes}분`;
+    return `${Math.floor(minutes / 60)}시간`;
+  }
+
+  /** 행 오른쪽 위 — 실행 중이면 점과 짧은 상태, 아니면 마지막 대화 이후 경과. */
+  function fillThreadWhen(when: HTMLElement, thread: ChatThread, now = Date.now()): void {
+    const status = getChatStatus(thread.id);
+    when.dataset.status = status ?? '';
+    let label: string;
+    if (status === 'working') {
+      const since = getChatWorkingSince(thread.id);
+      const elapsed = since ? formatWorkingElapsed(since, now) : '';
+      label = elapsed ? `작업 중 ${elapsed}` : '작업 중';
+    } else if (status === 'needs-input') {
+      label = '입력 대기';
+    } else {
+      label = formatShortAge(threadActivityAt(thread), now);
+    }
+    when.replaceChildren(
+      ...(status ? [buildStatusDot(status)] : []),
+      el('span', 'ag-threads-item-when-label', label),
+    );
   }
 
   /** 행 버튼 → 채팅. 키보드 삭제가 버튼에서 채팅을 되찾는다. */
   const threadRowTargets = new WeakMap<HTMLElement, { thread: ChatThread; row: HTMLElement }>();
   const threadsPlatformKind = detectPlatformKind();
+  /** 문서를 옮겨 가는 동안 가라앉혀 보여 줄 채팅. */
+  let openingThreadId: string | null = null;
 
   function findThreadRow(id: string): HTMLElement | null {
     for (const item of threadsList.querySelectorAll<HTMLElement>('.ag-threads-item')) {
@@ -5341,7 +5293,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     return { x: rect.left + 12, y: rect.bottom };
   }
 
-  /** 채팅 하나를 지운다 — 문서 보관과 같은 정리를 한 채팅에만 한다. */
+  /** 채팅 하나를 지운다 — 채팅 기록 삭제와 같은 정리를 한 채팅에만 한다. */
   async function deleteThreadWithConfirm(thread: ChatThread): Promise<boolean> {
     if (getChatStatus(thread.id) === 'working') return false;
     const confirmed = await confirmSheet(root, '채팅 삭제', `"${thread.title || '새 채팅'}" 채팅을 지웁니다.`, { confirmLabel: '삭제', destructive: true });
@@ -5357,7 +5309,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   }
 
   async function openThreadMenu(thread: ChatThread, anchor: { x: number; y: number }): Promise<void> {
-    hideThreadPopover();
     const choice = await showContextMenu([
       { id: 'open', label: '열기', enabled: thread.id !== currentThread.id },
       { id: 'rename', label: '이름 바꾸기' },
@@ -5375,24 +5326,46 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     }
   }
 
+  /**
+   * 채팅 한 줄 — 위에는 제목과 상태(또는 경과), 아래에는 문서와 에이전트.
+   * 문서 아이콘이 점선이면 문서 없이 시작한 채팅이다.
+   */
   function buildThreadRow(thread: ChatThread): HTMLElement {
     const li = el('li', 'ag-threads-row');
-    if (thread.id === currentThread.id) li.classList.add('ag-current');
+    const isCurrent = thread.id === currentThread.id;
+    const opening = thread.id === openingThreadId;
+    if (isCurrent) li.classList.add('ag-current');
+    if (opening) li.classList.add('ag-opening');
 
     const btn = el('button', 'ag-threads-item');
     btn.type = 'button';
     btn.dataset.threadId = thread.id;
     btn.tabIndex = -1;
-    if (thread.id === currentThread.id) btn.classList.add('ag-active');
-    // 상태 점은 제목 들여쓰기 여백에 겹쳐 앉는다 — 행 배치는 그대로다.
-    const status = getChatStatus(thread.id);
-    if (status) btn.appendChild(buildStatusDot(status, 'ag-row-status'));
-    btn.appendChild(el('span', 'ag-threads-item-title', thread.title || '새 채팅'));
+    if (isCurrent) {
+      btn.classList.add('ag-active');
+      btn.setAttribute('aria-current', 'true');
+    }
+    if (opening) btn.setAttribute('aria-busy', 'true');
+
+    const top = el('span', 'ag-threads-item-top');
+    const when = el('span', 'ag-threads-item-when');
+    fillThreadWhen(when, thread);
+    top.append(el('span', 'ag-threads-item-title', thread.title || '새 채팅'), when);
+
+    const meta = el('span', 'ag-threads-item-meta');
+    const docIcon = createIcon('document', 'ag-threads-item-doc-icon');
+    if (!thread.documentId && !thread.docKey) docIcon.classList.add('ag-doc-missing');
+    const docName = el('span', 'ag-threads-item-doc');
+    setMiddleTruncatedText(docName, docGroupLabel(thread.docKey));
+    const agent = el('span', 'ag-threads-item-agent');
+    agent.title = `${AGENT_LABEL[thread.agent]} · ${labelForModel(thread.agent, thread.model)}`;
+    agent.append(createProviderIcon(thread.agent), el('span', 'ag-sr-only', AGENT_LABEL[thread.agent]));
+    meta.append(docIcon, docName, agent);
+
+    btn.append(top, meta);
     // 두 번 누르기로는 열지 않는다 — 첫 클릭이 이미 대화를 열어버리므로
     // 이름 바꾸기는 연필 버튼과 우클릭 메뉴로 들어간다.
     btn.addEventListener('click', () => openThread(thread.id));
-    btn.addEventListener('mouseenter', () => scheduleThreadPopover(thread, li));
-    btn.addEventListener('mouseleave', scheduleHideThreadPopover);
     threadRowTargets.set(btn, { thread, row: li });
 
     const rename = el('button', 'ag-thread-rename');
@@ -5418,9 +5391,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     return li;
   }
 
-  /** 행과 그룹 머리를 한 줄로 — 화살표 키가 이 순서로 오간다. */
   function threadNavItems(): HTMLElement[] {
-    return Array.from(threadsList.querySelectorAll<HTMLElement>('.ag-threads-group-btn, .ag-threads-item'));
+    return Array.from(threadsList.querySelectorAll<HTMLElement>('.ag-threads-item'));
   }
 
   /** Tab 정지점은 목록 안에 하나만 둔다(roving tabindex). */
@@ -5436,9 +5408,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
 
   function threadNavKey(item: Element | null): string | null {
     if (!(item instanceof HTMLElement) || !threadsList.contains(item)) return null;
-    if (item.dataset.threadId) return `t:${item.dataset.threadId}`;
-    if (item.dataset.groupKey !== undefined) return `g:${item.dataset.groupKey}`;
-    return null;
+    return item.dataset.threadId ?? null;
   }
 
   function isThreadDeleteKey(e: KeyboardEvent): boolean {
@@ -5449,14 +5419,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
 
   threadsList.addEventListener('focusin', (event) => {
     const target = event.target;
-    if (target instanceof HTMLElement && target.matches('.ag-threads-group-btn, .ag-threads-item')) {
+    if (target instanceof HTMLElement && target.matches('.ag-threads-item')) {
       syncThreadsRoving(target);
     }
   });
 
   threadsList.addEventListener('keydown', (e) => {
     const target = e.target;
-    if (!(target instanceof HTMLElement) || !target.matches('.ag-threads-group-btn, .ag-threads-item')) return;
+    if (!(target instanceof HTMLElement) || !target.matches('.ag-threads-item')) return;
     const items = threadNavItems();
     const index = items.indexOf(target);
     if (isThreadDeleteKey(e)) {
@@ -5473,7 +5443,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     let next: HTMLElement | undefined;
     if (e.key === 'ArrowDown') next = items[index + 1];
-    else if (e.key === 'ArrowUp') next = items[index - 1];
+    else if (e.key === 'ArrowUp') next = index === 0 ? threadsToolbar.search : items[index - 1];
     else if (e.key === 'Home') next = items[0];
     else if (e.key === 'End') next = items[items.length - 1];
     else return;
@@ -5481,142 +5451,181 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     next?.focus();
   });
 
-  /** 문서 그룹 접힘 상태의 상태 점 — 사용자를 기다리는 빨강, 작업 중, 완료 순이다. */
-  function syncGroupRollup(groupBtn: HTMLElement, group: DocumentThreadGroup, expanded: boolean): void {
-    groupBtn.querySelector('.ag-group-status')?.remove();
-    // 펼친 그룹은 행마다 점이 보이므로 그룹 줄에는 올리지 않는다.
-    if (expanded) return;
-    const statuses = group.threads.map((thread) => getChatStatus(thread.id));
-    const rollup = statuses.includes('needs-input')
-      ? 'needs-input' as const
-      : statuses.includes('working')
-        ? 'working' as const
-        : statuses.includes('finished') ? 'finished' as const : null;
-    if (rollup) groupBtn.append(buildStatusDot(rollup, 'ag-group-status'));
-  }
-
   /**
-   * 문서별 그룹 목록 — 현재 문서 그룹이 맨 위에 펼쳐져 있고,
-   * 다른 문서 그룹은 접힌 채로 최근 활동순으로 이어진다.
-   * 그룹 머리 클릭 → 접기/펼치기, 우클릭 → "이동"·"문서 보관" 메뉴.
+   * 채팅 목록 — 문서와 상관없이 마지막 대화 활동 순으로 한 줄로 선다.
+   * 검색어는 제목과 문서 이름에서 찾고, 문서 필터는 한 문서의 채팅만 남긴다.
    */
   function rebuildThreadsList(): void {
-    hideThreadPopover();
     // 다시 그려도 키보드 포커스는 같은 행에 남는다.
     const focusedKey = threadNavKey(document.activeElement);
     threadsList.replaceChildren();
-    const groups = listThreadsByDocument();
-    if (groups.length === 0) {
-      threadsList.appendChild(el('li', 'ag-threads-empty', '이전 채팅이 없습니다'));
+    const all = listThreads();
+    const filter = threadDocFilter;
+    if (filter && !all.some((thread) => documentGroupKey(thread) === filter.key)) {
+      setThreadDocFilter(null, { rebuild: false });
+    }
+    const query = searchKey(threadQuery);
+    const visible = all.filter((thread) => (
+      (!threadDocFilter || documentGroupKey(thread) === threadDocFilter.key)
+      && (!query
+        || searchKey(thread.title || '새 채팅').includes(query)
+        || searchKey(docGroupLabel(thread.docKey)).includes(query))
+    ));
+    if (visible.length === 0) {
+      threadsList.appendChild(el(
+        'li',
+        'ag-threads-empty',
+        all.length === 0 ? '이전 채팅이 없습니다' : '일치하는 채팅이 없습니다',
+      ));
       return;
     }
-    const currentIdx = groups.findIndex((group) => (
-      explorerGroupIsCurrent(group, currentDocumentId, currentDocKey, groups)
-    ));
-    if (currentIdx > 0) groups.unshift(groups.splice(currentIdx, 1)[0]!);
-
-    for (const group of groups) {
-      const toggleKey = group.documentId ?? group.docKey ?? '';
-      const isCurrentDoc = explorerGroupIsCurrent(group, currentDocumentId, currentDocKey, groups);
-      const initiallyExpanded = docGroupToggles.get(toggleKey) ?? isCurrentDoc;
-      const canMove = Boolean(group.documentId || group.docKey);
-
-      const groupLi = el('li', 'ag-threads-group');
-      if (isCurrentDoc) groupLi.classList.add('ag-current-doc');
-      const groupBtn = el('button', 'ag-threads-group-btn');
-      groupBtn.type = 'button';
-      groupBtn.tabIndex = -1;
-      groupBtn.dataset.groupKey = toggleKey;
-      groupBtn.setAttribute('aria-expanded', initiallyExpanded ? 'true' : 'false');
-      if (canMove) groupBtn.dataset.libraryDoc = 'true';
-      const paper = createIcon('document', 'ag-threads-group-icon');
-      const name = el('span', 'ag-threads-group-name');
-      setMiddleTruncatedText(name, docGroupLabel(group.docKey));
-      groupBtn.append(paper, name);
-      if (isCurrentDoc) groupBtn.append(el('span', 'ag-threads-group-badge', '현재'));
-      syncGroupRollup(groupBtn, group, initiallyExpanded);
-
-      const buildRows = (cascade: boolean): HTMLElement[] => group.threads.map((thread, i) => {
-        const row = buildThreadRow(thread);
-        if (!isCurrentDoc) row.classList.add('ag-foreign');
-        if (cascade) {
-          row.classList.add('ag-row-enter');
-          row.style.animationDelay = `${Math.min(i, 8) * 22}ms`;
-        }
-        return row;
-      });
-      let rows: HTMLElement[] = [];
-
-      // 목록 전체를 다시 그리지 않고 이 그룹의 행만 넣고 뺀다 — 포커스와
-      // 스크롤이 그대로 남는다.
-      const toggleGroup = (): void => {
-        const expanded = !(docGroupToggles.get(toggleKey) ?? isCurrentDoc);
-        docGroupToggles.set(toggleKey, expanded);
-        hideThreadPopover();
-        groupBtn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-        syncGroupRollup(groupBtn, group, expanded);
-        for (const row of rows) row.remove();
-        // 펼칠 때만 행이 차례로 미끄러져 들어온다 — 접을 때는 즉시.
-        rows = expanded ? buildRows(true) : [];
-        groupLi.after(...rows);
-        syncThreadsRoving();
-      };
-      groupBtn.addEventListener('click', toggleGroup);
-      if (canMove) {
-        groupBtn.addEventListener('contextmenu', (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          void (async () => {
-            const choice = await showContextMenu([
-              { id: 'move', label: '이동', enabled: !isCurrentDoc },
-              { type: 'separator' },
-              { id: 'archive', label: '문서 보관', danger: true },
-            ], contextMenuAnchor(event, groupBtn));
-            if (choice === 'move') {
-              persistCurrentThread();
-              moveToLibraryDocument?.({
-                documentId: group.documentId,
-                fileName: group.docKey,
-              });
-            } else if (choice === 'archive') {
-              void archiveDocumentGroup(group);
-            }
-          })();
-        });
-      }
-      groupLi.appendChild(groupBtn);
-      // 문서로 건너뛰기 — 연필과 같은 문법으로 오른쪽에 겹쳐 hover 에서 드러난다.
-      // 지금 보고 있는 문서에는 필요 없으니 아예 만들지 않는다.
-      if (canMove && !isCurrentDoc) {
-        groupLi.classList.add('ag-has-jump');
-        const jump = el('button', 'ag-doc-jump');
-        jump.type = 'button';
-        jump.tabIndex = -1;
-        jump.setAttribute('aria-label', `${docGroupLabel(group.docKey)} 문서로 이동`);
-        jump.title = '현재 문서를 저장하고 이 문서로 이동합니다';
-        jump.appendChild(createIcon('external'));
-        jump.addEventListener('click', (e) => {
-          e.stopPropagation();
-          persistCurrentThread();
-          moveToLibraryDocument?.({
-            documentId: group.documentId,
-            fileName: group.docKey,
-          });
-        });
-        groupLi.appendChild(jump);
-      }
-      threadsList.appendChild(groupLi);
-
-      if (!initiallyExpanded) continue;
-      rows = buildRows(false);
-      threadsList.append(...rows);
-    }
-
+    threadsList.append(...visible.map(buildThreadRow));
     const restore = focusedKey
       ? threadNavItems().find((item) => threadNavKey(item) === focusedKey) ?? null
       : null;
     syncThreadsRoving(restore);
     restore?.focus({ preventScroll: true });
+  }
+
+  function setThreadDocFilter(
+    filter: { key: string; label: string; missing: boolean } | null,
+    opts?: { rebuild?: boolean },
+  ): void {
+    threadDocFilter = filter;
+    threadsToolbar.setFilter(filter);
+    if (opts?.rebuild !== false) rebuildThreadsList();
+  }
+
+  /** 채팅이 있는 문서 — 현재 문서가 맨 위, 나머지는 마지막 대화 순. */
+  function documentFilterOptions(): Array<DocumentFilterOption & { sample: ChatThread }> {
+    const byKey = new Map<string, DocumentFilterOption & { sample: ChatThread }>();
+    for (const thread of listThreads()) {
+      const key = documentGroupKey(thread);
+      const entry = byKey.get(key);
+      if (entry) {
+        entry.chatCount += 1;
+        if (!entry.sample.docKey && thread.docKey) {
+          entry.sample = thread;
+          entry.label = docGroupLabel(thread.docKey);
+        }
+        continue;
+      }
+      byKey.set(key, {
+        key,
+        label: docGroupLabel(thread.docKey),
+        missing: !thread.documentId && !thread.docKey,
+        chatCount: 1,
+        sample: thread,
+      });
+    }
+    const options = [...byKey.values()];
+    const current = options.findIndex((option) => (
+      threadMatchesDocument(option.sample, currentDocumentId, currentDocKey)
+    ));
+    if (current > 0) options.unshift(options.splice(current, 1)[0]!);
+    return options;
+  }
+
+  function openDocumentFilter(): void {
+    if (threadsToolbar.filterButton.getAttribute('aria-expanded') === 'true') {
+      closeThreadRailSurfaces();
+      return;
+    }
+    const documents = documentFilterOptions();
+    showDocumentFilter({
+      host: root,
+      trigger: threadsToolbar.filterButton,
+      alignTo: threadsToolbar.root,
+      selectedKey: threadDocFilter?.key ?? null,
+      documents,
+      onSelect(key) {
+        const option = key ? documents.find((doc) => doc.key === key) : null;
+        setThreadDocFilter(option ? { key: option.key, label: option.label, missing: option.missing } : null);
+      },
+      onDocumentMenu(option, anchor) {
+        const sample = documents.find((doc) => doc.key === option.key)?.sample;
+        if (sample) void openDocumentMenu(sample, anchor);
+      },
+    });
+  }
+
+  async function openDocumentMenu(sample: ChatThread, anchor: { x: number; y: number }): Promise<void> {
+    const isCurrent = threadMatchesDocument(sample, currentDocumentId, currentDocKey);
+    const choice = await showContextMenu([
+      { id: 'open', label: '문서 열기', enabled: !isCurrent && canFollowThreadDocument(sample) },
+      { type: 'separator' },
+      { id: 'archive', label: '채팅 기록 삭제', danger: true },
+    ], anchor);
+    if (choice === 'open') {
+      void moveToDocument({ documentId: sample.documentId, fileName: sample.docKey });
+    } else if (choice === 'archive') {
+      void archiveDocumentGroup(sample);
+    }
+  }
+
+  function openDocumentPalette(): void {
+    if (threadsToolbar.openButton.getAttribute('aria-expanded') === 'true') {
+      closeThreadRailSurfaces();
+      return;
+    }
+    showDocumentPalette({
+      host: root,
+      trigger: threadsToolbar.openButton,
+      alignTo: threadsToolbar.root,
+      recents: (listRecentDocuments?.() ?? Promise.resolve([]))
+        .then((docs) => docs.filter((doc) => doc.documentId !== currentDocumentId)),
+      onCreate: createDocument,
+      onOpenFile: openDocumentFile,
+      onOpenRecent: moveToLibraryDocument
+        ? (doc) => void moveToDocument({ documentId: doc.documentId, fileName: doc.fileName })
+        : undefined,
+    });
+  }
+
+  /**
+   * 레일에서 다른 문서로 옮겨 간다. 지금 문서에서 도는 에이전트는 먼저 멈추고,
+   * 저장과 버전 기록 커밋은 편집기가 맡는다.
+   */
+  async function moveToDocument(
+    target: { documentId: string | null; fileName: string | null },
+  ): Promise<LibraryMoveResult> {
+    if (!moveToLibraryDocument) return 'failed';
+    if (bridge.isTurnRunning()) bridge.interrupt();
+    flushAssistantBuffer();
+    persistCurrentThread();
+    try {
+      return await moveToLibraryDocument(target, { commit: true });
+    } catch (error) {
+      console.warn('[agent-sidebar] 문서 이동 실패:', error);
+      return 'failed';
+    }
+  }
+
+  function canFollowThreadDocument(thread: Pick<ChatThread, 'documentId' | 'docKey'>): boolean {
+    return Boolean(moveToLibraryDocument && (thread.documentId || thread.docKey));
+  }
+
+  /**
+   * 다른 문서의 채팅을 연다 — 지금 문서를 저장·커밋하고 그 문서를 연다.
+   * 문서가 바뀌는 순간 handleDocumentSwitch 가 이 채팅을 잇는다.
+   */
+  async function followThreadToDocument(thread: ChatThread): Promise<void> {
+    pendingThreadSwitch = { threadId: thread.id };
+    openingThreadId = thread.id;
+    rebuildThreadsList();
+    const result = await moveToDocument({ documentId: thread.documentId, fileName: thread.docKey });
+    if (openingThreadId === thread.id) {
+      openingThreadId = null;
+      if (threadsListVisible()) rebuildThreadsList();
+    }
+    // 문서가 바뀌며 이미 이 채팅이 열렸거나, 그사이 다른 채팅을 골랐다.
+    if (pendingThreadSwitch?.threadId !== thread.id) return;
+    // 문서가 아직 바뀌기 전이면 바뀌는 순간 handleDocumentSwitch 가 잇는다.
+    if (result === 'moved' && !threadMatchesDocument(thread, currentDocumentId, currentDocKey)) return;
+    pendingThreadSwitch = null;
+    if (result === 'moved' || result === 'same') openThread(thread.id);
+    // 문서를 열 수 없으면 기록만이라도 읽게 한다.
+    else if (result === 'failed') openThread(thread.id, { viewOnly: true });
   }
 
   function setThreadsPanelOpen(open: boolean): void {
@@ -5645,7 +5654,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     chatPage.setAttribute('aria-hidden', open ? 'true' : 'false');
     if (open) {
       rebuildThreadsList();
-      threadsNew.focus();
+      threadsToolbar.search.focus({ preventScroll: true });
+    } else {
+      closeThreadRailSurfaces();
     }
   }
 
@@ -5686,6 +5697,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   }
 
   function startNewChat(opts?: { silent?: boolean }): void {
+    if (!opts?.silent) pendingThreadSwitch = null;
     rememberThreadComposerDraft();
     setComposerSkill(null);
     if (bridge.isTurnRunning()) bridge.interrupt();
@@ -5726,7 +5738,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     input.focus();
   }
 
-  function openThread(id: string): void {
+  function openThread(id: string, opts?: { viewOnly?: boolean }): void {
     // 채팅을 열어 보면 완료 점은 걷힌다. 다른 탭에서 아직 일하는 채팅의
     // 노란 불은 그 탭의 것이므로 여기서 지우지 않는다.
     if (getChatStatus(id) === 'finished') clearChatStatus(id);
@@ -5738,6 +5750,20 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     // before the drawer can bind it. Treat that snapshot as live too, so
     // opening its persisted thread never stops the still-blocked provider.
     const liveQuestion = questionController.interaction() ?? bridge.getPendingUserQuestion();
+    const target = getThread(id);
+    if (!target) return;
+    // 다른 문서의 채팅은 그 문서로 옮겨 가서 잇는다. 에이전트가 답을
+    // 기다리는 동안에는 문서를 떠나지 않고 읽기 전용으로 연다.
+    if (
+      !opts?.viewOnly
+      && !liveQuestion
+      && !threadMatchesDocument(target, currentDocumentId, currentDocKey)
+      && canFollowThreadDocument(target)
+    ) {
+      void followThreadToDocument(target);
+      return;
+    }
+    pendingThreadSwitch = null;
     if (!liveQuestion && turnRunning) bridge.interrupt();
     flushAssistantBuffer();
     persistCurrentThread();
@@ -5815,7 +5841,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     setThreadsPanelOpen(false);
     threadsBtn.focus();
   });
-  threadsNew.addEventListener('click', () => startNewChat());
   threadsPage.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       // 전체 화면 레일에서는 문서 Esc 핸들러가 모드를 접도록 넘긴다.
@@ -8303,6 +8328,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   const unsubChatStatus = subscribeChatStatus(() => {
     if (threadsListVisible()) rebuildThreadsList();
   });
+  /* "작업 중 2분"과 경과 표시는 목록이 보이는 동안 30초마다 고친다. */
+  const threadClock = window.setInterval(() => {
+    if (!threadsListVisible()) return;
+    const now = Date.now();
+    for (const item of threadNavItems()) {
+      const entry = threadRowTargets.get(item);
+      const when = item.querySelector<HTMLElement>('.ag-threads-item-when');
+      if (entry && when) fillThreadWhen(when, entry.thread, now);
+    }
+  }, 30_000);
   void bridge.listTemplates().then((catalog) => {
     templateCatalog = catalog;
     activeTemplate = currentThread.activeTemplateId
@@ -8483,6 +8518,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       unsubBridge();
       unsubThreads();
       unsubChatStatus();
+      window.clearInterval(threadClock);
+      closeThreadRailSurfaces();
       unsubPending();
       unsubEditingLease();
       clearTimeout(changesRefreshTimer);
