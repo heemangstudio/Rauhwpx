@@ -529,35 +529,13 @@ export interface UsageWindow {
   weightedTokens: number;
   /** 0–100 (초과 가능, 소수 첫째 자리). 한도가 없으면 null. */
   percent: number | null;
-  /** epoch ms — CLIProxyAPI 가 알려 준 창 리셋 시각. */
+  /** epoch ms — 창 리셋 시각. */
   resetsAt?: number | null;
 }
 
-/** 5시간·주간 막대의 출처. cliproxy 는 공식 요금제 %, estimate 는 로컬 추정치. */
-export type UsageSource = 'estimate' | 'cliproxy';
-
-export interface CliproxyWindow {
+export interface QuotaWindow {
   percent: number | null;
   resetsAt: number | null;
-}
-
-export interface CliproxyAccount {
-  agent: AgentName;
-  name: string;
-  email: string | null;
-  planType: string | null;
-  session: CliproxyWindow;
-  week: CliproxyWindow;
-  error: string | null;
-}
-
-export interface CliproxyStatus {
-  configured: boolean;
-  connected: boolean;
-  url: string | null;
-  error: string | null;
-  checkedAt: number | null;
-  accounts: CliproxyAccount[];
 }
 
 export interface UsageModelBreakdown {
@@ -577,13 +555,12 @@ export interface ProviderUsage {
   limit: { session5h: number | null; week: number | null };
   /** epoch ms — 마지막으로 사용량이 기록된 시각. */
   updatedAt: number | null;
-  source?: UsageSource;
 }
 
 export interface ProviderQuota {
   status: 'ok' | 'unavailable' | 'error';
-  session: CliproxyWindow;
-  week: CliproxyWindow;
+  session: QuotaWindow;
+  week: QuotaWindow;
   updatedAt: number | null;
   error: string | null;
   accountKey: string | null;
@@ -611,7 +588,6 @@ export interface RemoteBalance {
 export interface UsageSummary {
   plans: Record<AgentName, string>;
   providers: Record<AgentName, ProviderUsage>;
-  cliproxy?: CliproxyStatus;
   limits?: { claude: ProviderQuota; codex: ProviderQuota };
   balances?: Partial<Record<'openrouter' | 'grok' | 'opencode', RemoteBalance>>;
   /** pi(OpenRouter) 가 설정돼 있을 때만 온다. */

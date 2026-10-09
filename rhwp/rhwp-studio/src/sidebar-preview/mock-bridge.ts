@@ -501,22 +501,6 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       data.usage.plans[provider] = plan;
       return data.usage;
     },
-    connectCliproxy: async () => {
-      data.usage.cliproxy = {
-        configured: true,
-        connected: true,
-        url: 'https://usage.example.test',
-        error: null,
-        checkedAt: Date.now(),
-        accounts: [],
-      };
-      report('Sample usage account connected');
-      return data.usage;
-    },
-    disconnectCliproxy: async () => {
-      delete data.usage.cliproxy;
-      return data.usage;
-    },
     requestPiStatus: async () => data.pi,
     installPi: async () => {
       await bridge.installAgent('pi');
