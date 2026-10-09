@@ -44,6 +44,12 @@ function spawn(command, argv, options) {
 }
 
 const PI_PACKAGE = '@earendil-works/pi-coding-agent';
+/**
+ * 하니스(시스템 프롬프트 파일, prepareArguments, agent_before_settle, maxTokens=0, 도구별
+ * executionMode)를 맞춰 잰 Pi 버전. 설치와 자동 업데이트 모두 이 버전으로 수렴한다 —
+ * 더 새 버전이 깔려 있어도 되돌린다. 올릴 때는 하니스 점검과 라이브 벤치를 다시 돌린다.
+ */
+export const PI_VERSION = '1.1.0';
 const CONFIG_FILE = 'config.json';
 const CONFIG_VERSION = 1;
 const MAX_MODELS = 3;
@@ -112,8 +118,8 @@ const STALE_TEMP_MS = 60_000;
  * @property {PiModelConfig[]} models
  * @property {string|null} defaultModelId
  * @property {boolean} setupComplete
- * @property {string|null} latestVersion
- * @property {boolean} updateRequired
+ * @property {string|null} latestVersion 고정 버전(PI_VERSION). 레지스트리에서 확인한 뒤에만 채운다
+ * @property {boolean} updateRequired 설치본이 고정 버전과 다르다
  * @property {string|null} error
  */
 
@@ -315,6 +321,8 @@ export function createPiManager({
   const settingsPath = path.join(agentDir, 'settings.json');
   /** 예전 허브가 번들 스킬을 복사해 두던 곳. 지금은 번들에서 바로 싣고 이 사본은 지운다. */
   const legacySkillsDir = path.join(agentDir, 'skills');
+  /** 정확한 버전이 박힌 스펙이면 그대로, 아니면 고정 버전을 붙여 npm 폴백도 같은 버전을 깐다. */
+  const installSpec = packageSpec.lastIndexOf('@') > 0 ? packageSpec : `${packageSpec}@${PI_VERSION}`;
   const piBin = path.join(prefixDir, 'node_modules', '.bin', platform === 'win32' ? 'pi.cmd' : 'pi');
   const packageJsonPath = (basePrefix = prefixDir) => path.join(
     basePrefix, 'node_modules', ...packageSpec.split('/'), 'package.json',
@@ -619,12 +627,12 @@ export function createPiManager({
   }
 
   /**
-   * 레지스트리에서 최신 타르볼 주소와 무결성 해시를 알아낸다.
+   * 레지스트리에서 고정 버전(PI_VERSION)의 타르볼 주소와 무결성 해시를 알아낸다.
    * 버전이 박힌 스펙이면 npm 에 그대로 맡기려고 null 을 돌려준다.
    */
   async function resolveDist() {
     if (packageSpec.lastIndexOf('@') > 0) return null;
-    const dist = await fetchLatestPackage(fetchImpl, packageSpec, REGISTRY_TIMEOUT_MS);
+    const dist = await fetchLatestPackage(fetchImpl, packageSpec, REGISTRY_TIMEOUT_MS, PI_VERSION);
     if (!dist.tarball) throw new Error('registry: tarball 주소가 없어요');
     return dist;
   }
@@ -756,7 +764,7 @@ export function createPiManager({
       'install', '--prefix', targetPrefix, '--no-fund', '--no-audit',
       // 폴백(npm 이 직접 내려받는) 경로에서는 http 로그가 활동 신호가 된다.
       localTarball ? '--loglevel=error' : '--loglevel=http',
-      localTarball ?? packageSpec,
+      localTarball ?? installSpec,
     ];
     const launched = applyManagedCliLaunch(npmLaunch.command, [...npmLaunch.leadingArgs, ...argv], {
       platform, nodeCommand, env: baseEnv, shimDir,
@@ -993,7 +1001,7 @@ export function createPiManager({
     },
 
     /**
-     * pi CLI 를 설치하고 Pi 홈 설정을 쓴다. 동시에 부르면 하나만 돈다.
+     * 고정 버전 pi CLI 를 설치하고 Pi 홈 설정을 쓴다. 동시에 부르면 하나만 돈다.
      *
      * @param {(progress: { state: string, detail?: string, percent?: number,
      *   receivedBytes?: number, totalBytes?: number|null, activity?: boolean }) => void} [onProgress]
@@ -1070,7 +1078,7 @@ export function createPiManager({
       }
     },
 
-    /** 앱 관리 Pi CLI 를 확인하고, 실패해도 현재 prefix 는 그대로 둔다. */
+    /** 설치된 Pi 가 PI_VERSION 과 다르면 그 버전으로 바꾼다. 실패해도 현재 prefix 는 그대로 둔다. */
     async automaticUpdate({ canActivate = () => true } = {}) {
       await load();
       if (!installedVersion) return currentStatus();

@@ -14,6 +14,7 @@ import {
   PI_MODEL_ID_MAX_CHARS,
   PI_MODEL_NAME_MAX_CHARS,
   PI_SETTINGS_MAX_BYTES,
+  PI_VERSION,
 } from '../pi-manager.mjs';
 import { createMemorySecretStore } from '../secret-store.mjs';
 
@@ -48,7 +49,7 @@ function fakeSpawner(onSpawn) {
 }
 
 /** 설치 성공을 흉내 낸다: 패키지 package.json 을 심고 0으로 끝낸다. */
-function installer(prefixDir, version = '0.84.3') {
+function installer(prefixDir, version = PI_VERSION) {
   return async (proc) => {
     const dir = path.join(prefixDir, 'node_modules', ...PI_PACKAGE.split('/'));
     await fs.mkdir(dir, { recursive: true });
@@ -125,11 +126,11 @@ async function offlineFetch() {
 }
 
 /** 레지스트리 메타 + 타르볼 스트림을 흉내 내는 fetch. */
-function fakeRegistryFetch({ chunks, integrity = null, contentLength = null, version = '0.84.3' }) {
+function fakeRegistryFetch({ chunks, integrity = null, contentLength = null, version = PI_VERSION }) {
   const calls = [];
   const fetchImpl = async (url) => {
     calls.push(String(url));
-    if (String(url).endsWith('/latest')) {
+    if (String(url).endsWith(`/${PI_VERSION}`)) {
       return {
         ok: true,
         json: async () => ({
@@ -368,17 +369,17 @@ test('install runs npm with a prefix, reports progress and syncs assets', async 
   // 레지스트리에 못 닿으면 npm 이 직접 받고, http 로그가 활동 신호가 된다.
   assert.match(spawns[0].argv[0], /npm[/\\]bin[/\\]npm-cli\.js$/);
   assert.deepEqual(spawns[0].argv.slice(1), [
-    'install', '--prefix', prefixDir, '--no-fund', '--no-audit', '--loglevel=http', PI_PACKAGE,
+    'install', '--prefix', prefixDir, '--no-fund', '--no-audit', '--loglevel=http', `${PI_PACKAGE}@${PI_VERSION}`,
   ]);
   assert.deepEqual(progress.map((event) => event.state), [
     'preparing', 'downloading', 'installing', 'installing', 'configuring', 'verifying', 'done',
   ]);
   assert.equal(progress[3].activity, true, 'npm 출력이 활동 신호로 흘러나온다');
   assert.deepEqual(progress.map((event) => event.percent), [8, 12, 64, 65.5, 92, 97, 100]);
-  assert.equal(progress.at(-1).detail, '0.84.3');
+  assert.equal(progress.at(-1).detail, PI_VERSION);
 
   assert.equal(status.installed, true);
-  assert.equal(status.version, '0.84.3');
+  assert.equal(status.version, PI_VERSION);
   assert.equal(status.installing, false);
   assert.equal(status.setupComplete, false, '키와 모델이 아직 없다');
   assert.equal(
@@ -395,7 +396,7 @@ test('install runs npm with a prefix, reports progress and syncs assets', async 
   await fs.stat(path.join(rootDir, 'sessions'));
   const config = await readJson(path.join(rootDir, 'config.json'));
   assert.equal(config.version, 1);
-  assert.equal(config.installedVersion, '0.84.3');
+  assert.equal(config.installedVersion, PI_VERSION);
 
   await fs.rm(rootDir, { recursive: true, force: true });
 });
@@ -417,7 +418,7 @@ test('concurrent installs share a single npm run', async () => {
 
   assert.equal(spawns.length, 1);
   assert.deepEqual(a, b);
-  assert.equal(a.version, '0.84.3');
+  assert.equal(a.version, PI_VERSION);
   assert.ok(second.includes('done'), '뒤늦게 붙은 호출도 진행 상황을 받는다');
 
   await fs.rm(rootDir, { recursive: true, force: true });
@@ -552,6 +553,37 @@ test('a failing npm install raises PI_INSTALL_FAILED with the stderr tail', asyn
   await fs.rm(rootDir, { recursive: true, force: true });
 });
 
+test('automatic Pi update converges on the pinned version and replaces a newer install', async () => {
+  const rootDir = await tmpRoot();
+  const prefixDir = path.join(rootDir, 'prefix');
+  const writePackage = async (prefix, version) => {
+    const dir = path.join(prefix, 'node_modules', ...PI_PACKAGE.split('/'));
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'package.json'), JSON.stringify({ name: PI_PACKAGE, version }));
+  };
+  await writePackage(prefixDir, '9.0.0');
+  const chunks = [Buffer.alloc(12, 5)];
+  const { calls, fetchImpl } = fakeRegistryFetch({ chunks, integrity: sha512Integrity(chunks), contentLength: 12 });
+  const { spawnProcess } = fakeSpawner(async (proc, argv) => {
+    await writePackage(argv[argv.indexOf('--prefix') + 1], PI_VERSION);
+    proc.emit('close', 0, null);
+  });
+  const manager = await createPiManager({
+    rootDir, spawnProcess, openRouter: fakeOpenRouter(), fetchImpl,
+  }).init();
+
+  const status = await manager.automaticUpdate();
+  assert.equal(calls[0], `https://registry.npmjs.org/@earendil-works%2Fpi-coding-agent/${PI_VERSION}`);
+  assert.equal(status.version, PI_VERSION);
+  assert.equal(status.latestVersion, PI_VERSION);
+  assert.equal(status.updateRequired, false);
+  const again = await manager.automaticUpdate();
+  assert.equal(again.version, PI_VERSION);
+  assert.equal(calls.filter((url) => url.endsWith('.tgz')).length, 1, 'the pinned install is not downloaded again');
+
+  await fs.rm(rootDir, { recursive: true, force: true });
+});
+
 test('automatic Pi update failure is silent and leaves the working harness active', async () => {
   const rootDir = await tmpRoot();
   const prefixDir = path.join(rootDir, 'prefix');
@@ -559,14 +591,13 @@ test('automatic Pi update failure is silent and leaves the working harness activ
   await fs.mkdir(packageDir, { recursive: true });
   await fs.writeFile(
     path.join(packageDir, 'package.json'),
-    JSON.stringify({ name: PI_PACKAGE, version: '0.84.3' }),
+    JSON.stringify({ name: PI_PACKAGE, version: '1.0.0' }),
   );
   const chunks = [Buffer.alloc(12, 4)];
   const { fetchImpl } = fakeRegistryFetch({
     chunks,
     integrity: sha512Integrity(chunks),
     contentLength: 12,
-    version: '0.84.4',
   });
   const { spawnProcess } = fakeSpawner(async (proc) => {
     proc.stderr.emit('data', 'npm install failed\n');
@@ -577,11 +608,11 @@ test('automatic Pi update failure is silent and leaves the working harness activ
   }).init();
 
   const status = await manager.automaticUpdate();
-  assert.equal(status.version, '0.84.3');
-  assert.equal(status.latestVersion, '0.84.4');
+  assert.equal(status.version, '1.0.0');
+  assert.equal(status.latestVersion, PI_VERSION);
   assert.equal(status.updateRequired, true);
   assert.equal(status.error, null);
-  assert.equal(JSON.parse(await fs.readFile(path.join(packageDir, 'package.json'), 'utf8')).version, '0.84.3');
+  assert.equal(JSON.parse(await fs.readFile(path.join(packageDir, 'package.json'), 'utf8')).version, '1.0.0');
   assert.deepEqual((await fs.readdir(rootDir)).filter((name) => name.includes('.update-')), []);
 
   await fs.rm(rootDir, { recursive: true, force: true });
@@ -645,11 +676,11 @@ test('a rejected deterministic tarball cancels its unread body before npm fallba
   const prefixDir = path.join(rootDir, 'prefix');
   let cancelled = false;
   const fetchImpl = async (url) => {
-    if (String(url).endsWith('/latest')) {
+    if (String(url).endsWith(`/${PI_VERSION}`)) {
       return {
         ok: true,
         json: async () => ({
-          version: '0.84.3',
+          version: PI_VERSION,
           dist: {
             tarball: 'https://registry.npmjs.org/pi/-/pi-0.84.3.tgz',
             integrity: sha512Integrity([Buffer.from('unused')]),
@@ -669,7 +700,7 @@ test('a rejected deterministic tarball cancels its unread body before npm fallba
   await manager.install();
   assert.equal(cancelled, true);
   assert.equal(spawns.length, 1);
-  assert.equal(spawns[0].argv.at(-1), PI_PACKAGE);
+  assert.equal(spawns[0].argv.at(-1), `${PI_PACKAGE}@${PI_VERSION}`);
   await fs.rm(rootDir, { recursive: true, force: true });
 });
 
