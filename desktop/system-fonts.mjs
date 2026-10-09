@@ -18,11 +18,13 @@ import {
   decodeHancomText,
   decodeNameRecord,
   extractCollectionFace as extractCollectionFaceBytes,
+  faceOffsets,
   parseFontSource,
   parseHancomFontList,
   parseNameTable,
   parseSfntFaces,
   pathKey,
+  readTableDirectory,
 } from '../rhwp/rhwp-shared/fonts/font-index-core.mjs';
 
 export { SYSTEM_FONT_INDEX_VERSION, decodeHancomText, decodeNameRecord, parseHancomFontList, parseNameTable, parseSfntFaces };
@@ -72,8 +74,6 @@ export async function extractCollectionFace(input, faceIndex, options) {
 // (허브에서 문서 세 개에 수백 MiB) 고정 크기 조각으로 읽어 흘려보낸다.
 
 const STREAM_CHUNK = 256 * 1024;
-const TTCF = 0x74746366;
-const SFNT_VERSIONS = new Set([0x00010000, 0x4f54544f /* OTTO */, 0x74727565 /* true */]);
 
 function pad4(length) {
   return (length + 3) & ~3;
@@ -104,32 +104,12 @@ async function planCollectionFace(file, faceIndex) {
   const handle = await fs.open(file.path, 'r');
   try {
     const source = fileSource(handle, file.size);
-    const top = await source.read(0, 12);
-    if (top.readUInt32BE(0) !== TTCF) throw new Error('not a font collection');
-    const numFonts = top.readUInt32BE(8);
-    if (numFonts === 0 || numFonts > 1024) throw new Error(`implausible collection size ${numFonts}`);
-    const offsets = await source.read(12, numFonts * 4);
-    if (!Number.isInteger(faceIndex) || faceIndex < 0 || faceIndex >= numFonts) {
-      throw new Error(`face index ${faceIndex} out of range (0..${numFonts - 1})`);
+    const { collection, offsets } = await faceOffsets(source);
+    if (!collection) throw new Error('not a font collection');
+    if (!Number.isInteger(faceIndex) || faceIndex < 0 || faceIndex >= offsets.length) {
+      throw new Error(`face index ${faceIndex} out of range (0..${offsets.length - 1})`);
     }
-    const faceOffset = offsets.readUInt32BE(faceIndex * 4);
-    const directory = await source.read(faceOffset, 12);
-    const sfntVersion = directory.readUInt32BE(0);
-    if (!SFNT_VERSIONS.has(sfntVersion)) {
-      throw new Error(`unsupported sfnt version 0x${sfntVersion.toString(16)} at ${faceOffset}`);
-    }
-    const declared = directory.readUInt16BE(4);
-    if (declared === 0 || declared > 512) throw new Error(`implausible table count ${declared}`);
-    const records = await source.read(faceOffset + 12, declared * 16);
-    const byTag = new Map();
-    for (let i = 0; i < declared; i += 1) {
-      const base = i * 16;
-      const tag = records.toString('latin1', base, base + 4);
-      const offset = records.readUInt32BE(base + 8);
-      const length = records.readUInt32BE(base + 12);
-      if (offset + length > file.size) throw new Error(`table ${tag} exceeds file size`);
-      byTag.set(tag, { tag, offset, length });
-    }
+    const { sfntVersion, tables: byTag } = await readTableDirectory(source, offsets[faceIndex]);
     const tables = [...byTag.values()]
       .filter((table) => table.tag !== 'DSIG')
       .sort((a, b) => (a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0));

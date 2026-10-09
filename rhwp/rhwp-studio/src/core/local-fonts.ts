@@ -674,7 +674,7 @@ export function prepareSessionFontBytes(
   }
 }
 
-const DESKTOP_BOUNDS_REPAIR_KEY = 'rhwp-desktop-font-bounds-repair';
+const DESKTOP_BOUNDS_REPAIR_KEY = 'rhwp-desktop-font-bounds-repair-v1';
 const DESKTOP_BOUNDS_REPAIR_LIMIT = 4096;
 /** 데스크톱 face id(경로·크기·수정 시각에서 나온다) → 합성 글리프 bbox 복구 필요 여부 */
 let desktopBoundsRepair: Map<string, boolean> | null = null;
