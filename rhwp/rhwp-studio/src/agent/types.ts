@@ -513,12 +513,6 @@ export interface AgentSetupAuthStart {
   expiresAt?: string | null;
 }
 
-/** 요금제 — 한도 계산의 기준이 되므로 프로바이더별로 값이 다르다. */
-export type ClaudeUsagePlan = 'pro' | 'max5x' | 'max20x' | 'api';
-export type CodexUsagePlan = 'plus' | 'pro' | 'api';
-export type ApiOnlyUsagePlan = 'api';
-export type UsagePlan = ClaudeUsagePlan | CodexUsagePlan | ApiOnlyUsagePlan;
-
 /** 한 창(세션 5시간 / 오늘 / 주간)의 누적치. percent 는 한도가 없으면 null. */
 export interface UsageWindow {
   turns: number;
@@ -698,32 +692,6 @@ export interface CheckpointTitleResult {
   title: string;
   provider: CheckpointTitleProvider;
   model: string;
-}
-
-export function isClaudeUsagePlan(value: unknown): value is ClaudeUsagePlan {
-  return value === 'pro' || value === 'max5x' || value === 'max20x' || value === 'api';
-}
-
-export function isCodexUsagePlan(value: unknown): value is CodexUsagePlan {
-  return value === 'plus' || value === 'pro' || value === 'api';
-}
-
-export function isApiOnlyUsagePlan(value: unknown): value is ApiOnlyUsagePlan {
-  return value === 'api';
-}
-
-/** 프로바이더마다 허용 요금제가 다르다 — 표로 갈라 새 프로바이더가 조용히 섞이지 않게 한다. */
-const USAGE_PLAN_GUARDS: Record<AgentName, (value: unknown) => boolean> = {
-  claude: isClaudeUsagePlan,
-  codex: isCodexUsagePlan,
-  pi: isApiOnlyUsagePlan,
-  grok: isApiOnlyUsagePlan,
-  cursor: isApiOnlyUsagePlan,
-  opencode: isApiOnlyUsagePlan,
-};
-
-export function isUsagePlanForAgent(agent: AgentName, value: unknown): boolean {
-  return USAGE_PLAN_GUARDS[agent](value);
 }
 
 export type ProductSkillIcon =
