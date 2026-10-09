@@ -330,6 +330,7 @@ mod issue_table_vpos_01_page5_cell_hit_test;
 mod lenient_cfb_path_lookup;
 mod markdown_inline_images;
 mod markdown_nested_tables;
+mod merge_cells_save_roundtrip;
 mod mixed_nested_table_rows;
 mod move_inline_picture;
 mod ms_word_fresh_page_float_table_offset;
