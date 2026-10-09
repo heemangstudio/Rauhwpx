@@ -19,10 +19,14 @@ interface ChatMarkdownState {
   tokens: MarkdownTokenCache;
   fenceLine: number;
   openFence: string | null;
+  /** 수식 표기를 이미 찾아본 앞부분 길이. 이어 붙은 끝만 다시 본다. */
+  mathScanned: number;
 }
 const markdownSourceByTarget = new WeakMap<HTMLElement, ChatMarkdownState>();
 /** target 의 최상위 자식 순서대로, 각 노드를 만든 블록의 직렬화 키. */
 const blockKeysByTarget = new WeakMap<HTMLElement, string[]>();
+/** target 의 본문 블록 노드. 매 프레임 자식을 훑지 않도록 키와 함께 둔다. */
+const blockNodesByTarget = new WeakMap<HTMLElement, HTMLElement[]>();
 const keyByBlock = new WeakMap<Block, string>();
 
 export interface ChatMarkdownOptions {
@@ -30,6 +34,8 @@ export interface ChatMarkdownOptions {
   streaming?: boolean;
   /** 새로 붙은 블록에 등장 애니메이션을 준다. */
   animate?: boolean;
+  /** 새로 만들거나 바꾼 최상위 블록마다 한 번 부른다. 수식 모듈이 늦게 와 다시 그릴 때도 부른다. */
+  decorate?: (node: HTMLElement) => void;
 }
 
 /**
@@ -86,6 +92,13 @@ function mayContainMath(source: string) {
   return /\$|\\[([]|[₩￦][([]/u.test(source);
 }
 
+/** 끝의 공백 꼬리에 빈 줄이 있는지. /\n[ \t]*\n\s*$/u 와 같지만 답변 전체 대신 꼬리만 본다. */
+function endsWithBlankLine(source: string): boolean {
+  let start = source.length;
+  while (start > 0 && /\s/u.test(source[start - 1]!)) start -= 1;
+  return /\n[ \t]*\n/u.test(source.slice(start));
+}
+
 const RE_FENCE_MARK = /^ {0,3}(```|~~~)/u;
 
 /** 여는 펜스와 같은 종류의 줄로만 닫는다. 다른 종류의 펜스 줄은 코드 본문이다. */
@@ -123,7 +136,7 @@ export function stableStreamingBlocks(
 ): Block[] {
   if (blocks.length === 0) return [];
   const last = blocks[blocks.length - 1]!;
-  const lastClosed = closedFences && /\n[ \t]*\n\s*$/u.test(source);
+  const lastClosed = closedFences && endsWithBlankLine(source);
   if (lastClosed) return [...blocks];
   const stable = blocks.slice(0, -1);
   if (last.kind === 'list' && last.items.length > 1) {
@@ -186,8 +199,40 @@ function wrapCodeBlock(pre: HTMLElement, lang: string, code: string): HTMLElemen
 
 /** 본문 블록만 고른다. 복사 버튼처럼 답변에 덧붙인 요소는 맞추기 대상이 아니다. */
 function blockNodesOf(target: HTMLElement): HTMLElement[] {
+  // 지난번 노드가 처음과 끝 모두 그대로 붙어 있으면 다시 훑지 않는다.
+  const cached = blockNodesByTarget.get(target);
+  if (cached?.length && cached[0]!.parentNode === target && cached[cached.length - 1]!.parentNode === target) {
+    return cached;
+  }
   return Array.from(target.children).filter((node): node is HTMLElement =>
     node instanceof HTMLElement && node.hasAttribute('data-md-block'));
+}
+
+interface EnteringMotion {
+  duration: number;
+  easing: string;
+}
+/** 등장 모션 토큰. 블록마다 계산 스타일을 읽지 않도록 한 번 읽어 두고, 동작 줄이기가 바뀌면 다시 읽는다. */
+let enteringMotion: EnteringMotion | null | undefined;
+let enteringMotionWatched = false;
+
+function readEnteringMotion(): EnteringMotion | null {
+  if (enteringMotion !== undefined) return enteringMotion;
+  const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+  if (reduced && !enteringMotionWatched) {
+    enteringMotionWatched = true;
+    reduced.addEventListener?.('change', () => { enteringMotion = undefined; });
+  }
+  const root = getComputedStyle(document.documentElement);
+  const token = root.getPropertyValue('--ag-dur-base');
+  const duration = parseCssTimeMs(token, 220);
+  const motion = duration < 20 || reduced?.matches ? null : {
+    duration,
+    easing: root.getPropertyValue('--ag-ease-out').trim() || 'cubic-bezier(0.22, 1, 0.36, 1)',
+  };
+  // 스타일시트가 아직 붙지 않았으면 다음 블록에서 다시 읽는다.
+  if (token.trim()) enteringMotion = motion;
+  return motion;
 }
 
 /** 클래스를 남기지 않는 애니메이션이라 다음 비교에서 노드가 달라 보이지 않는다. */
@@ -196,14 +241,11 @@ function blockNodesOf(target: HTMLElement): HTMLElement[] {
  * 걸지 않는다 — 1ms 애니메이션도 첫 프레임을 opacity 0 으로 그려 한 번 깜빡인다.
  */
 function markEntering(node: Element): void {
-  const root = getComputedStyle(document.documentElement);
-  const duration = parseCssTimeMs(root.getPropertyValue('--ag-dur-base'), 220);
-  if (duration < 20) return;
-  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
-  const easing = root.getPropertyValue('--ag-ease-out').trim() || 'cubic-bezier(0.22, 1, 0.36, 1)';
+  const motion = readEnteringMotion();
+  if (!motion) return;
   node.animate(
     [{ opacity: 0, transform: 'translateY(3px)' }, { opacity: 1, transform: 'none' }],
-    { duration, easing },
+    motion,
   );
 }
 
@@ -242,11 +284,12 @@ const CHAT_MARKDOWN_OPTIONS: MarkdownRenderOptions = {
  */
 export function renderChatMarkdown(target: HTMLElement, source: string, opts: ChatMarkdownOptions = {}) {
   const state = markdownSourceByTarget.get(target) ?? {
-    source: '', opts, tokens: new MarkdownTokenCache(), fenceLine: 0, openFence: null,
+    source: '', opts, tokens: new MarkdownTokenCache(), fenceLine: 0, openFence: null, mathScanned: 0,
   };
   if (!source.startsWith(state.source)) {
     state.fenceLine = 0;
     state.openFence = null;
+    state.mathScanned = 0;
   }
   state.source = source;
   state.opts = opts;
@@ -281,6 +324,7 @@ export function renderChatMarkdown(target: HTMLElement, source: string, opts: Ch
       && existing.getAttribute('start') === node.getAttribute('start')
     ) {
       reconcileList(existing, node, animate);
+      opts.decorate?.(existing);
       return;
     }
     if (existing) {
@@ -293,11 +337,18 @@ export function renderChatMarkdown(target: HTMLElement, source: string, opts: Ch
       nodes.push(node);
     }
     if (animate) markEntering(node);
+    opts.decorate?.(node);
   });
   while (nodes.length > keys.length) nodes.pop()?.remove();
   blockKeysByTarget.set(target, keys);
-  if (!katexModule && mayContainMath(source)) {
-    pendingMathTargets.add(target);
-    void loadKatex();
+  blockNodesByTarget.set(target, nodes);
+  if (!katexModule) {
+    // 수식 표기는 두 글자를 넘지 않는다 — 지난번 끝 한 글자부터 이어 본다.
+    const from = Math.max(0, state.mathScanned - 1);
+    state.mathScanned = source.length;
+    if (mayContainMath(from > 0 ? source.slice(from) : source)) {
+      pendingMathTargets.add(target);
+      void loadKatex();
+    }
   }
 }

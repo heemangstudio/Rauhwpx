@@ -339,18 +339,25 @@ function tokenizeLines(
   return blocks;
 }
 
-/** 완성된 앞부분은 재사용하고, 이어 쓰기로 달라질 수 있는 끝부분만 다시 읽는다. */
+/**
+ * 완성된 앞부분은 재사용하고, 이어 쓰기로 달라질 수 있는 끝부분만 다시 읽는다.
+ * 돌려준 배열은 다음 tokenize 호출 전까지만 유효하다 — 앞부분을 매번 복사하지 않는다.
+ */
 export class MarkdownTokenCache {
   private source = '';
-  private prefix: Block[] = [];
+  /** 앞 prefixLength 개는 확정된 블록, 그 뒤는 지난번에 다시 읽은 끝부분. */
+  private blocks: Block[] = [];
+  private prefixLength = 0;
   private tailLine = 0;
   private tailChar = 0;
 
   tokenize(source: string): Block[] {
     if (!source.startsWith(this.source)) {
-      this.prefix = [];
+      this.prefixLength = 0;
       this.tailLine = 0;
       this.tailChar = 0;
+    } else if (source.length === this.source.length && this.blocks.length > 0) {
+      return this.blocks;
     }
     this.source = source;
     const starts: number[] = [];
@@ -358,17 +365,19 @@ export class MarkdownTokenCache {
     const tail = tokenizeLines(
       normalize(source, this.tailChar, this.tailLine),
       0,
-      MD_LIMITS.maxBlocks - this.prefix.length,
+      MD_LIMITS.maxBlocks - this.prefixLength,
       (line) => starts.push(line),
       (line) => { pendingMath = Math.min(pendingMath, line); },
     );
-    const blocks = [...this.prefix, ...tail];
+    const blocks = this.blocks;
+    blocks.length = this.prefixLength;
+    for (const block of tail) blocks.push(block);
     // 마지막 줄이 목록 항목·표 구분자로 완성되면 직전 블록과 합쳐질 수 있다.
     let retained = Math.max(0, tail.length - 2);
     // 닫는 구분자가 늦게 오면 앞의 일반 문단들도 하나의 수식으로 바뀔 수 있다.
     while (retained > 0 && starts[retained]! > pendingMath) retained -= 1;
     if (retained > 0) {
-      this.prefix.push(...tail.slice(0, retained));
+      this.prefixLength += retained;
       const retainedLines = starts[retained]!;
       const breaks = /\r\n?|\n/gu;
       breaks.lastIndex = this.tailChar;

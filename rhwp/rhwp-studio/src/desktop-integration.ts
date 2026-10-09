@@ -800,8 +800,11 @@ export function isLegacyPortableHistoryFolderHandle(
 
 /** 파일 이름 바꾸기를 데스크톱이 거절했다. reason 은 exists·open·saving·invalid·extension. */
 export class NativeRenameRefusedError extends Error {
-  constructor(readonly reason: string) {
+  readonly reason: string;
+
+  constructor(reason: string) {
     super(`Native rename refused: ${reason}`);
+    this.reason = reason;
     this.name = 'NativeRenameRefusedError';
   }
 }

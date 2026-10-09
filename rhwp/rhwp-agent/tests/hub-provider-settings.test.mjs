@@ -171,8 +171,9 @@ test('busy and invalid provider changes leave the active turn intact', { timeout
   // turn-start precedes spawning the CLI. Prove both startup rejection and
   // rejection against an actually running process, not merely hub status.
   const ready = await studio.next((frame) => frame.type === 'agent-event'
-    && (frame.event.type === 'turn-end' || frame.event.type === 'error' || frame.event.text === 'HOLD_READY'));
-  assert.equal(ready.event.text, 'HOLD_READY', `HOLD fixture failed to start: ${JSON.stringify(ready)} ${diagnostic()}`);
+    && (frame.event.type === 'turn-end' || frame.event.type === 'error' || frame.event.text?.startsWith('HOLD_READY')));
+  // 허브는 잇따른 텍스트 조각을 한 프레임으로 모은다 — 첫 하트비트가 붙어 올 수 있다.
+  assert.match(ready.event.text ?? '', /^HOLD_READY/, `HOLD fixture failed to start: ${JSON.stringify(ready)} ${diagnostic()}`);
   const runningBusy = await start({ effort: 'high' });
   assert.equal(runningBusy.code, 'AGENT_BUSY');
   assert.equal(runningBusy.session.turnId, active.event.turnId);
