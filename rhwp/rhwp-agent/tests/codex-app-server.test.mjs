@@ -14,6 +14,7 @@ import {
   CodexJsonRpcConnection,
   buildCodexAppServerArgv,
 } from '../agents/codex-app-server.mjs';
+import { systemBriefFor } from '../agents/backend.mjs';
 import { createCodexSession } from '../agents/codex.mjs';
 
 class FakeStream extends EventEmitter {
@@ -331,7 +332,7 @@ test('direct mode negotiates native input and answers the original app-server re
   assert.deepEqual(turn.params.collaborationMode.settings, {
     model: 'test-model',
     reasoning_effort: 'high',
-    developer_instructions: null,
+    developer_instructions: systemBriefFor(h.opts, 'codex'),
   });
   assert.equal(turn.params.input[0].text, 'Build it');
   assert.equal(h.session.getSessionId(), 'thread-native');
@@ -621,7 +622,7 @@ test('planning mode remains native without the default-mode feature', async (t) 
   assert.deepEqual(turn.params.collaborationMode.settings, {
     model: 'test-model',
     reasoning_effort: 'high',
-    developer_instructions: null,
+    developer_instructions: systemBriefFor(h.opts, 'codex'),
   });
   assert.equal(h.spawns[0].process.frames.some((frame) => frame.method === 'collaborationMode/list'), true);
   assert.equal(h.spawns[0].process.frames.some((frame) => frame.method === 'experimentalFeature/enablement/set'), false);
@@ -856,6 +857,33 @@ test('Stop while the thread is resuming settles the turn exactly once', async (t
     ['interrupted'],
   );
   assert.equal(h.events.some((event) => event.type === 'error'), false);
+  await h.session.dispose();
+});
+
+test('a resumed chat receives the current editing instructions after switching to full access', async (t) => {
+  const h = harness(t, { workflow: 'question', phase: 'questioning' });
+  h.session.sendUserMessage('Discuss an edit');
+  await settle();
+  const first = h.spawns[0].process;
+  const firstTurn = first.frames.find((frame) => frame.method === 'turn/start');
+  assert.match(firstTurn.params.collaborationMode.settings.developer_instructions, /You are in 채팅/);
+  first.send({ method: 'turn/completed', params: {
+    threadId: 'thread-native', turn: { id: 'turn-native', status: 'completed' },
+  } });
+  await settle();
+  await h.session.setPermissionProfile('unrestricted');
+  await h.session.setExecutionMode({ workflow: 'direct', phase: 'implementing', capabilityEpoch: 2 });
+  h.session.sendUserMessage('Apply the edit');
+  await settle(24);
+  const resumed = h.spawns.at(-1).process;
+  assert.ok(resumed.frames.some((frame) => frame.method === 'thread/resume'));
+  const turn = resumed.frames.find((frame) => frame.method === 'turn/start');
+  assert.equal(turn.params.threadId, 'thread-native');
+  assert.equal(turn.params.sandboxPolicy.type, 'dangerFullAccess');
+  assert.match(turn.params.collaborationMode.settings.developer_instructions, /You are in 전체/);
+  assert.doesNotMatch(turn.params.collaborationMode.settings.developer_instructions, /You are in 채팅/);
+  h.session.interrupt();
+  await settle();
   await h.session.dispose();
 });
 
