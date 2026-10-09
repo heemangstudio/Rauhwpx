@@ -162,7 +162,7 @@ test('chat threads migrate from localStorage into IndexedDB and survive a reload
   const page = await harness();
   try {
     await page.evaluate(() => {
-      localStorage.setItem('rhwp-agent-threads', JSON.stringify([{
+      localStorage.setItem('hamaeditor-agent-threads', JSON.stringify([{
         id: 'legacy-thread', title: '예전 채팅', createdAt: 1, updatedAt: 2,
         agent: 'claude', model: 'sonnet', effort: 'high',
         messages: [{ role: 'user', text: '표 제목을 고쳐줘' }],
@@ -178,7 +178,7 @@ test('chat threads migrate from localStorage into IndexedDB and survive a reload
       return {
         ids: threads.listThreads().map((thread) => thread.id),
         freshId: fresh.id,
-        legacyKeyLeft: localStorage.getItem('rhwp-agent-threads') !== null,
+        legacyKeyLeft: localStorage.getItem('hamaeditor-agent-threads') !== null,
       };
     });
     assert.ok(migrated.ids.includes('legacy-thread'));
