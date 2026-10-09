@@ -34,6 +34,8 @@ export interface DiffItemSummary {
 type DiffPiece = { text: string; changed: boolean };
 type DiffParts = { before: DiffPiece[]; after: DiffPiece[] };
 const expandedLines = new Set<string>();
+/** 입력이 멎은 뒤 '커밋 전' 목록을 다시 맞추는 늦은 갱신. 다른 갱신이 먼저 돌면 취소된다. */
+const QUIET_REFRESH_MS = 3_000;
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, content?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -553,11 +555,16 @@ export function createChangesDrawer(options: ChangesDrawerOptions): ChangesDrawe
   let animateDetail = false;
   let flashCommitId: string | null = null;
   let currentDocumentId = controller?.getState().documentId ?? null;
+  // dirty 는 편집으로 바뀐다. 편집 갱신은 사이드바가 문서 크기에 맞춰 늦춰 부르므로 dirty 만 바뀌면 바로 비교하지 않는다.
   const stateSignature = (state: VersionManagerState): string =>
-    [state.documentId, state.saved, state.enabled, state.dirty, state.activeBranch,
+    [state.documentId, state.saved, state.enabled, state.activeBranch,
       state.branches.find((branch) => branch.isActive)?.headId,
       state.commits.slice(0, 12).map((commit) => `${commit.id}:${commit.title}`).join(',')].join('|');
   let stateKey = controller ? stateSignature(controller.getState()) : '';
+  let stateDirty = controller?.getState().dirty ?? false;
+  let refreshRun: { documentId: string | null; done: Promise<void> } | null = null;
+  let refreshQueued = false;
+  let quietRefreshTimer: ReturnType<typeof setTimeout> | undefined;
   const commitCache = new Map<string, Promise<DiffItem[]>>();
   const commitSummaries = new Map<string, DiffItemSummary>();
   const commitFailures = new Set<string>();
@@ -789,7 +796,39 @@ export function createChangesDrawer(options: ChangesDrawerOptions): ChangesDrawe
     }
   }
 
-  async function refresh(): Promise<void> {
+  /** 같은 문서를 비교하는 동안 들어온 요청은 하나로 모아 끝난 뒤 한 번만 다시 비교한다. */
+  function refresh(): Promise<void> {
+    clearTimeout(quietRefreshTimer);
+    quietRefreshTimer = undefined;
+    const documentId = controller?.getState().documentId ?? null;
+    if (refreshRun?.documentId === documentId) {
+      refreshQueued = true;
+      return refreshRun.done;
+    }
+    const run: { documentId: string | null; done: Promise<void> } = { documentId, done: Promise.resolve() };
+    refreshRun = run;
+    refreshQueued = false;
+    run.done = (async () => {
+      do {
+        refreshQueued = false;
+        await refreshWorking();
+      } while (refreshQueued && !disposed && refreshRun === run);
+    })().finally(() => {
+      if (refreshRun === run) refreshRun = null;
+    });
+    return run.done;
+  }
+
+  /** 상태가 바뀔 때마다 미뤄, 편집이 멎은 뒤 한 번만 비교한다. */
+  function refreshWhenQuiet(): void {
+    clearTimeout(quietRefreshTimer);
+    quietRefreshTimer = setTimeout(() => {
+      quietRefreshTimer = undefined;
+      void refresh();
+    }, QUIET_REFRESH_MS);
+  }
+
+  async function refreshWorking(): Promise<void> {
     const request = ++serial;
     const state = controller?.getState();
     const documentId = state?.documentId ?? null;
@@ -812,12 +851,17 @@ export function createChangesDrawer(options: ChangesDrawerOptions): ChangesDrawe
       options.onWorkingDiff?.(items);
     } catch (error) {
       if (disposed || request !== serial || controller.getState().documentId !== documentId) return;
+      // 비교하는 동안 편집이 끼었거나, 문서 교체 뒤 repository 갱신이 끝나기 전이면
+      // STALE_WORKSPACE 가 일시적으로 나온다. 입력이 멎으면 다시 비교하므로 지금 목록을 둔다
+      // (문서 교체는 onState 가 이미 비웠다).
+      if (versionErrorCode(error) === 'STALE_WORKSPACE') {
+        workingError = null;
+        refreshWhenQuiet();
+        return;
+      }
       workingItems = [];
       options.onWorkingDiff?.([]);
-      // 문서 교체 동안 repository 갱신이 끝나기 전엔 STALE_WORKSPACE 가 일시적으로
-      // 나온다 — 곧 새 state refresh 가 다시 채우므로 오류 표시 없이 비워 둔다.
-      workingError = versionErrorCode(error) === 'STALE_WORKSPACE' ? null
-        : error instanceof Error ? error.message : String(error);
+      workingError = error instanceof Error ? error.message : String(error);
     } finally {
       if (!disposed && request === serial) {
         loading = false;
@@ -843,6 +887,8 @@ export function createChangesDrawer(options: ChangesDrawerOptions): ChangesDrawe
       expandedLines.clear();
       options.onWorkingDiff?.([]);
     }
+    const dirtyChanged = state.dirty !== stateDirty;
+    stateDirty = state.dirty;
     if (nextKey !== stateKey) {
       stateKey = nextKey;
       statsGeneration += 1;
@@ -850,6 +896,8 @@ export function createChangesDrawer(options: ChangesDrawerOptions): ChangesDrawe
       void refresh();
     } else {
       refreshEditingState();
+      if (dirtyChanged) renderWorking();
+      if (dirtyChanged || quietRefreshTimer !== undefined) refreshWhenQuiet();
     }
   }
 
@@ -918,6 +966,7 @@ export function createChangesDrawer(options: ChangesDrawerOptions): ChangesDrawe
     dispose() {
       if (disposed) return;
       disposed = true;
+      clearTimeout(quietRefreshTimer);
       serial += 1;
       commitSerial += 1;
       statsGeneration += 1;

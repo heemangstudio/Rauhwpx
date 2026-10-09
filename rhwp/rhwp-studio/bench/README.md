@@ -13,6 +13,7 @@ Benches marked *dev server* need `npm run dev` running and `VITE_URL` pointing a
 - `npm run bench:typeset-line-width`: typeset line-width measurement cost (`--label=`).
 - `npm run bench:long-document-image-cache`: picture cache on a long picture document (*dev server*).
 - `npm run bench:canvaskit-image-cache`: CanvasKit picture cache budget (*dev server*).
+- `npm run bench:app-memory`: app and agent-process memory with documents and idle chats, using a fake Claude CLI (`--runs=`, `--output=`).
 - `npm run bench:agent-overlay`: pending-edit overlay renderer against a baseline commit, with power samples on macOS.
 
 The live benches start the hub with `RHWP_TOOL_TRACE=1`, which writes one JSONL row per tool call (`RHWP_TOOL_TRACE_FILE`, default `<work dir>/tool-trace.jsonl`). For Pi, the live benches link the installed Pi (`~/Library/Application Support/rhwp/pi/prefix` or `RHWP_BENCH_PI_SOURCE`) and read the OpenRouter key from `OPENROUTER_API_KEY` or `~/.env`.

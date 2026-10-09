@@ -19,6 +19,7 @@ import {
   flushCodexCredentialMirror,
   prepareCodexHome,
 } from './agents/codex.mjs';
+import { IDLE_PROCESS_RELEASE_MS } from './agents/backend.mjs';
 import { canResumePiSession, createPiSession } from './agents/pi.mjs';
 import { canResumeCodexThread } from './agents/codex-app-server.mjs';
 import {
@@ -210,6 +211,10 @@ const ORPHAN_HARD_SHUTDOWN_MS = Number.isSafeInteger(configuredOrphanHardShutdow
   && configuredOrphanHardShutdownMs >= 100
   ? Math.max(configuredOrphanHardShutdownMs, ORPHAN_IDLE_SHUTDOWN_MS)
   : 30 * 60 * 1000;
+const configuredAgentIdleMs = Number(process.env.RHWP_AGENT_IDLE_MS);
+const AGENT_IDLE_RELEASE_MS = Number.isSafeInteger(configuredAgentIdleMs) && configuredAgentIdleMs >= 100
+  ? configuredAgentIdleMs
+  : IDLE_PROCESS_RELEASE_MS;
 const toolDefinitionsByName = new Map(TOOL_DEFINITIONS.map((definition) => [definition.name, definition]));
 const copyLayoutWorkerTools = new Set(
   filterToolDefinitions('copy-layout-worker').map((definition) => definition.name),
@@ -3064,6 +3069,7 @@ async function startSession(
       signal,
     }),
     agentRole: providerRole,
+    idleReleaseMs: AGENT_IDLE_RELEASE_MS,
     workflow,
     phase: workflow === 'direct' ? 'implementing' : planning.phase,
     capabilityEpoch: planning.capabilityEpoch,

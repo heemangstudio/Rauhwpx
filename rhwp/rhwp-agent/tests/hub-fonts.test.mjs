@@ -28,10 +28,16 @@ async function withServer(handlerOptions, run) {
 
 const fakeService = () => ({
   list: async () => ({ version: 1, faces: [{ id: FACE_ID, families: ['함초롬바탕'] }], hancomFaceMap: [] }),
-  readFace: async (id) => {
+  openFace: async (id) => {
     if (id === 'ffffffffffffffff') throw new Error(`stale: font file changed (${id})`);
     if (id !== FACE_ID) throw new Error(`unknown font id ${id}`);
-    return new Uint8Array([0, 1, 0, 0, 42]);
+    return {
+      size: 5,
+      async* chunks() {
+        yield new Uint8Array([0, 1, 0]);
+        yield new Uint8Array([0, 42]);
+      },
+    };
   },
 });
 

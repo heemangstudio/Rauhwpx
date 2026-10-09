@@ -82,6 +82,8 @@ const NESTED_TABLE_PROBE_CONTROLS = 4;
 const CELL_SELECTION_END_OFFSET = 0x7fffffff;
 
 const MAX_SVG_BYTES = 800_000;
+/** 템플릿 문서는 마지막 템플릿 도구 뒤 이만큼 쉬면 내려놓고, 다음 템플릿 도구가 다시 읽는다. */
+export const TEMPLATE_IDLE_RELEASE_MS = 60_000;
 // WebSocket text frames cap at 100 MiB. Base64 expands by 4/3, so 64 MiB
 // leaves room for the protocol envelope while still covering normal HWP/HWPX files.
 const MAX_DOCUMENT_SNAPSHOT_BYTES = 64 * 1024 * 1024;
@@ -1032,6 +1034,8 @@ export class AgentToolExecutor {
   private templateBytes: Uint8Array | null = null;
   private templateKey: string | null = null;
   private templateInspectionKey: string | null = null;
+  private templateUses = 0;
+  private templateIdleTimer: ReturnType<typeof setTimeout> | null = null;
   private documentInspectionRevision: number | null = null;
   /** get_structure 서식 태그의 본문 기준 글자 크기 (HWPUNIT) — structureMemoKey 마다 다시 표본을 뜬다. */
   private structureBodySizeMemo: { key: string; size: number | null } | null = null;
@@ -1142,16 +1146,16 @@ export class AgentToolExecutor {
       case 'get_engine_edit_capabilities': return this.getEngineEditCapabilities(args);
       case 'list_numberings': return this.listNumberings();
       case 'verify_changes': return this.verifyChanges(args, agent);
-      case 'template_get_structure': return this.templateGetStructure(args, capability);
-      case 'template_get_text_range': return this.templateRead('get_text_range', args, capability);
-      case 'template_get_para_format': return this.templateRead('get_para_format', args, capability);
-      case 'template_get_char_format': return this.templateRead('get_char_format', args, capability);
-      case 'template_list_styles': return this.templateRead('list_styles', args, capability);
-      case 'template_get_page_layout': return this.templateGetPageLayout(args, capability);
-      case 'template_render_page': return this.templateRead('render_page', args, capability);
-      case 'template_apply_section_layout': return this.templateApplySectionLayout(args, agent, capability);
-      case 'template_apply_paragraph_format': return this.templateApplyParagraphFormat(args, agent, capability);
-      case 'template_insert_block': return this.templateInsertBlock(args, agent, capability);
+      case 'template_get_structure': return this.holdTemplate(() => this.templateGetStructure(args, capability));
+      case 'template_get_text_range': return this.holdTemplate(() => this.templateRead('get_text_range', args, capability));
+      case 'template_get_para_format': return this.holdTemplate(() => this.templateRead('get_para_format', args, capability));
+      case 'template_get_char_format': return this.holdTemplate(() => this.templateRead('get_char_format', args, capability));
+      case 'template_list_styles': return this.holdTemplate(() => this.templateRead('list_styles', args, capability));
+      case 'template_get_page_layout': return this.holdTemplate(() => this.templateGetPageLayout(args, capability));
+      case 'template_render_page': return this.holdTemplate(() => this.templateRead('render_page', args, capability));
+      case 'template_apply_section_layout': return this.holdTemplate(() => this.templateApplySectionLayout(args, agent, capability));
+      case 'template_apply_paragraph_format': return this.holdTemplate(() => this.templateApplyParagraphFormat(args, agent, capability));
+      case 'template_insert_block': return this.holdTemplate(() => this.templateInsertBlock(args, agent, capability));
       case 'apply_edits': return this.applyEdits(args, agent);
       case 'read_batch': return this.readBatch(args, agent, capability);
       case 'insert_text': return this.insertText(args, agent);
@@ -4951,6 +4955,31 @@ export class AgentToolExecutor {
     return template;
   }
 
+  /** 템플릿 도구 하나를 감싼다. 도구가 도는 동안에는 템플릿 문서를 내려놓지 않는다. */
+  private async holdTemplate<T>(use: () => Promise<T>): Promise<T> {
+    this.templateUses += 1;
+    if (this.templateIdleTimer !== null) clearTimeout(this.templateIdleTimer);
+    this.templateIdleTimer = null;
+    try {
+      return await use();
+    } finally {
+      this.templateUses -= 1;
+      if (this.templateUses === 0 && this.templateWasm) {
+        this.templateIdleTimer = setTimeout(() => this.releaseTemplate(), TEMPLATE_IDLE_RELEASE_MS);
+      }
+    }
+  }
+
+  /** 템플릿 엔진과 원본 바이트를 놓는다. 읽기 확인(templateInspectionKey)은 같은 revision 이면 그대로 유효하다. */
+  private releaseTemplate(): void {
+    if (this.templateIdleTimer !== null) clearTimeout(this.templateIdleTimer);
+    this.templateIdleTimer = null;
+    this.templateWasm?.releaseDocument();
+    this.templateWasm = null;
+    this.templateBytes = null;
+    this.templateKey = null;
+  }
+
   private async ensureTemplate(capability?: ToolCapabilityContext): Promise<{ template: DocumentTemplate; wasm: WasmBridge; bytes: Uint8Array }> {
     const template = this.requireTemplate(capability);
     const loadTemplateBytes = this.deps.loadTemplateBytes;
@@ -5223,10 +5252,7 @@ export class AgentToolExecutor {
   }
 
   dispose(): void {
-    this.templateWasm?.releaseDocument();
-    this.templateWasm = null;
-    this.templateBytes = null;
-    this.templateKey = null;
+    this.releaseTemplate();
     this.templateInspectionKey = null;
     this.documentInspectionRevision = null;
   }

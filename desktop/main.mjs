@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { basename, dirname, extname, join, sep } from 'node:path';
@@ -59,6 +59,7 @@ import {
   installStudioProtocol,
   registerStudioScheme,
   resolveDevelopmentUrl,
+  systemFontBaseUrl,
 } from './studio-protocol.mjs';
 import { INTERNAL_APP_NAME, PRODUCT_NAME } from './app-identity.mjs';
 import { resolveProfileDirectories } from './profile-continuity.mjs';
@@ -525,6 +526,7 @@ const systemFonts = createSystemFontService({
   cacheDir: join(app.getPath('userData'), 'fonts'),
   log: (line) => console.log(`[hamaeditor] fonts: ${line}`),
 });
+const systemFontKey = randomBytes(32).toString('hex');
 let uniqueInstallSnapshot = {
   uniqueInstalls: null,
   publicUrl: uniqueInstallsPublicUrl(),
@@ -1026,9 +1028,9 @@ ipcMain.handle('desktop:fonts-list', (event, options = {}) => {
   if (process.env.RHWP_SYSTEM_FONTS === 'off') throw new Error('System font discovery is disabled');
   return systemFonts.list({ refresh: options?.refresh === true });
 });
-ipcMain.handle('desktop:fonts-read', (event, id) => {
+ipcMain.handle('desktop:fonts-base', (event) => {
   sessionForEvent(event);
-  return systemFonts.readFace(id);
+  return systemFontBaseUrl(systemFontKey);
 });
 ipcMain.handle('desktop:get-launch-files', (event) => {
   const session = sessionForEvent(event);
@@ -1470,7 +1472,12 @@ if (!hasSingleInstanceLock) {
     await loadNativeBookmarks();
     await windowFrames.load();
     installMenu();
-    if (!devUrl) installStudioProtocol({ protocol, net, root: studioDist() });
+    installStudioProtocol({
+      protocol,
+      net,
+      root: devUrl ? null : studioDist(),
+      systemFonts: { fonts: systemFonts, key: systemFontKey, allowOrigin: devOrigin },
+    });
     desktopReady = true;
     const launches = pendingLaunches.splice(0);
     let failedLaunches = 0;

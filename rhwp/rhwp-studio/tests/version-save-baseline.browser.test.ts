@@ -153,3 +153,68 @@ test('edits made while a save was writing are never recorded as the saved baseli
     await page.close();
   }
 });
+
+test('enabling history after unsaved edits records the saved content, not the edits', { timeout: 30_000 }, async () => {
+  assert.ok(browser);
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${baseUrl}/tests/fixtures/version-store-idb.html`);
+    const result = await page.evaluate(async () => {
+      const [{ WasmBridge }, { EventBus }, { DocumentDirtyState }, versions, { DocumentVersionController }, snapshots] = await Promise.all([
+        import('/src/core/wasm-bridge.ts'),
+        import('/src/core/event-bus.ts'),
+        import('/src/core/document-dirty-state.ts'),
+        import('/src/versioning/index.ts'),
+        import('/src/versioning/controller.ts'),
+        import('/src/versioning/snapshot.ts'),
+      ]);
+      const bytes = new Uint8Array(await (await fetch('/samples/shift-return.hwp')).arrayBuffer());
+      const wasm = new WasmBridge();
+      await wasm.initialize();
+      wasm.loadDocument(bytes, 'shift-return.hwp');
+      const savedFingerprint = snapshots.fingerprintVersionContent(wasm);
+      const savedText = wasm.getTextRange(0, 0, 0, 200);
+      const eventBus = new EventBus();
+      const dirty = new DocumentDirtyState(eventBus);
+      const store = new versions.VersionGraphStore({ indexedDB: null });
+      const controller = new DocumentVersionController({
+        store, wasm, eventBus, documentState: dirty,
+        getInputHandler: () => null,
+        getDocumentId: () => 'enable-after-edit',
+        agentBridge: {
+          pendingEdits: { hasPending: () => false, onChange: () => () => undefined },
+          onEvent: () => () => undefined,
+          isTurnRunning: () => false,
+          getEditingLease: () => ({ active: false, agent: 'codex' as const }),
+          requestCheckpointTitle: async () => null,
+        },
+      });
+      try {
+        await controller.documentLoaded();
+        wasm.insertText(0, 0, 0, 'UNSAVED ');
+        dirty.markDirty('typing');
+        eventBus.emit('document-mutated');
+        await controller.enable();
+        const head = await store.getCommit(controller.getState().commits[0]!.id);
+        const snapshot = head ? await store.getCompareSnapshot(head.compareSnapshotId) : null;
+        return {
+          headIsSaved: head?.contentFingerprint === savedFingerprint,
+          snapshotText: snapshot?.snapshot.paragraphs[0]?.text ?? null,
+          savedText,
+          liveText: wasm.getTextRange(0, 0, 0, 200),
+          dirty: controller.getState().dirty,
+        };
+      } finally {
+        controller.dispose();
+        await store.close();
+        wasm.releaseDocument();
+      }
+    });
+    assert.equal(result.headIsSaved, true);
+    assert.equal(result.snapshotText, result.savedText);
+    assert.ok(result.liveText.startsWith('UNSAVED '));
+    assert.equal(result.dirty, true);
+  } finally {
+    await page.close();
+  }
+});

@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  IDLE_PROCESS_RELEASE_MS,
   isPlanningRestricted,
   mcpCapabilityEnv,
   mcpRuntimeFor,
@@ -441,6 +442,10 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
   let threadId = isSafeSessionId(opts.resumeSessionId) ? opts.resumeSessionId : null;
   // 재개 커서로 받은 스레드는 처음 붙을 때까지 확인되지 않았다 — 붙지 못하면 새 스레드로 간다.
   let resumeUnverified = Boolean(threadId);
+  // Codex writes a thread's rollout only once a turn starts. A thread opened
+  // for Plan readiness alone cannot be resumed by a fresh app-server.
+  // A resume cursor is recorded only after a turn, so it has a rollout.
+  let threadHasTurns = Boolean(threadId);
   let resumeLostPending = false;
   /** @type {'message'|'compact'} */
   let turnKind = 'message';
@@ -476,6 +481,8 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
   /** @type {any} */
   let rolloutWatcher = null;
   const questionControllers = new Map();
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let idleReleaseTimer = null;
 
   function safeMessage(error, max = 1200) {
     return truncate(redactDiagnosticText(error?.message ?? error, [opts.token]), max);
@@ -591,6 +598,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     pendingTurnStart = null;
     starting = false;
     turnOpen = true;
+    threadHasTurns = true;
     onEvent({ type: 'turn-start', agent: 'codex' });
     const codexHome = opts.codexHome ?? process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex');
     rolloutWatcher = createRolloutWatcher?.({
@@ -981,7 +989,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
   async function attachThread(connection) {
     if (attachedGeneration === generation) return;
     let result;
-    if (threadId) {
+    if (threadId && threadHasTurns) {
       try {
         result = await connection.request('thread/resume', {
           threadId,
@@ -1000,6 +1008,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
         resumeUnverified = false;
         resumeLostPending = true;
         threadId = null;
+        threadHasTurns = false;
         lastContextTokens = null;
       }
     }
@@ -1050,6 +1059,24 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     attachedGeneration = 0;
     expectedShutdown = false;
     return cleaned;
+  }
+
+  function cancelIdleRelease() {
+    if (idleReleaseTimer) clearTimeout(idleReleaseTimer);
+    idleReleaseTimer = null;
+  }
+
+  // Plan readiness keeps a warm app-server between turns. Release it after a
+  // quiet period; the next turn resumes the same thread in a fresh process.
+  function scheduleIdleRelease() {
+    cancelIdleRelease();
+    idleReleaseTimer = setTimeout(() => {
+      idleReleaseTimer = null;
+      if (disposed || starting || turnOpen) return;
+      const priorRestart = restartPromise;
+      restartPromise = priorRestart.then(() => (starting || turnOpen ? true : stopConnection()));
+    }, opts.idleReleaseMs ?? IDLE_PROCESS_RELEASE_MS);
+    idleReleaseTimer.unref?.();
   }
 
   async function switchToLegacy(text, error, attempt) {
@@ -1293,6 +1320,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
         return;
       }
       if (starting || turnOpen) throw new Error('A Codex turn is already running');
+      cancelIdleRelease();
       starting = true;
       interruptRequested = false;
       turnKind = 'message';
@@ -1300,6 +1328,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
       if (replaceSession) {
         // 허브가 이 스레드를 믿지 않는다 — 새 스레드를 열고 turn-end 에 resumeLost 를 싣는다.
         threadId = null;
+        threadHasTurns = false;
         resumeUnverified = false;
         resumeLostPending = true;
         attachedGeneration = 0;
@@ -1315,6 +1344,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
       if (disposed) return;
       if (fallback) throw new Error('Codex legacy exec cannot compact on request');
       if (starting || turnOpen) throw new Error('A Codex turn is already running');
+      cancelIdleRelease();
       starting = true;
       interruptRequested = false;
       turnKind = 'compact';
@@ -1325,6 +1355,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
       if (fallback) return fallback.setPermissionProfile(profile);
       if (starting || turnOpen) throw new Error('Permission profile can only change between turns');
       if (profile !== 'safe' && profile !== 'unrestricted') throw new Error(`Unknown permission profile: ${profile}`);
+      cancelIdleRelease();
       const previous = opts.permissionProfile;
       opts.permissionProfile = profile;
       try {
@@ -1337,6 +1368,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
         if (providerInteractionMode(opts) === 'plan') {
           const connection = await ensureConnection();
           await attachThread(connection);
+          scheduleIdleRelease();
         }
       } catch (error) {
         opts.permissionProfile = previous;
@@ -1354,6 +1386,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
         }
         return fallback.setExecutionMode(mode);
       }
+      cancelIdleRelease();
       const previous = {
         workflow: opts.workflow,
         phase: opts.phase,
@@ -1374,6 +1407,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
         if (providerInteractionMode(opts) === 'plan') {
           const connection = await ensureConnection();
           await attachThread(connection);
+          scheduleIdleRelease();
         }
       } catch (error) {
         opts.workflow = previous.workflow;
@@ -1407,6 +1441,7 @@ export function createCodexAppServerSession(opts, dependencies = {}) {
     },
     async dispose() {
       disposed = true;
+      cancelIdleRelease();
       starting = false;
       turnOpen = false;
       abortQuestions(Object.assign(new Error('Codex session disposed'), { code: 'PROVIDER_DISCONNECTED' }));

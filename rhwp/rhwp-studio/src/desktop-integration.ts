@@ -172,8 +172,8 @@ export interface RhwpDesktopApi {
   onPastePlainText?: (callback: (text: string) => void) => void;
   /** 시스템·사용자·한컴 오피스 글꼴 색인. 권한 요청 없이 이미 설치된 글꼴만 다룬다. */
   listSystemFonts?: (options?: { refresh?: boolean }) => Promise<SystemFontIndex>;
-  /** TTC face는 단독 SFNT로 추출해 돌려준다. 파일이 바뀌었으면 'stale' 오류를 던진다. */
-  readSystemFont?: (id: string) => Promise<Uint8Array>;
+  /** face 주소의 앞부분. TTC face는 단독 SFNT로 추출되고, 파일이 바뀌었으면 409로 응답한다. */
+  systemFontBaseUrl?: () => Promise<string>;
   /** macOS 프록시 아이콘과 미저장 점. 경로는 메인이 핸들로 찾는다. */
   setDocumentState?: (state: { edited: boolean }) => void;
   notifyAgentTurnFinished?: (payload: { title: string; body: string }) => void;

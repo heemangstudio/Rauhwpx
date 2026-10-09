@@ -31,6 +31,7 @@
     "bench:long-document-image-cache": "node bench/long-document-image-cache.mjs",
     "bench:canvaskit-image-cache": "node bench/canvaskit-image-cache-budget.mjs",
     "bench:agent-overlay": "node bench/agent-overlay-performance.mjs",
+    "bench:app-memory": "node bench/app-memory-bench.mjs",
     "test:browser": "node scripts/run-tests.mjs browser",
     "dev:sidebar": "vite --config vite.sidebar.config.ts",
     "build:sidebar": "vite build --config vite.sidebar.config.ts",
