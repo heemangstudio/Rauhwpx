@@ -6652,10 +6652,9 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   --ag-rail-bg: color-mix(in oklab, var(--ag-bg) 50%, var(--ag-raised));
 }
 
-/* Focus-mode environment: persistent context, not an auto-dismissing menu. */
+/* 환경 패널은 대화면 위에 겹쳐 열린다. */
 .ag-fullscreen {
   --ag-environment-panel-width: clamp(260px, 36vw, 360px);
-  --ag-environment-lane-width: calc(var(--ag-environment-panel-width) + 24px);
 }
 
 .ag-environment-panel {
@@ -6963,10 +6962,6 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   padding-inline-end: 0;
   background: var(--ag-bg);
   transition: padding-inline-end var(--ag-dur-slow) var(--ag-motion-out);
-}
-
-.ag-fullscreen.ag-environment-open:not(.ag-detail-drawer-open) .ag-chat-page {
-  padding-inline-end: var(--ag-environment-lane-width);
 }
 
 /* 스크롤은 대화면 전체 폭이 맡고(휠·스크롤바가 창 가장자리에서 동작),
@@ -7400,10 +7395,6 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   pointer-events: auto;
   transform: translateX(0);
   transition-delay: 0s;
-}
-
-.ag-fullscreen.ag-workspace-compact.ag-environment-open:not(.ag-detail-drawer-open) .ag-chat-page {
-  padding-inline-end: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {
