@@ -152,6 +152,7 @@ function harness(t, {
   responder = appServerResponder(),
   requestUserInput = async () => ({ status: 'cancelled', reason: 'user-stop' }),
   terminateProcess = (process) => process.kill('SIGTERM'),
+  idleReleaseMs,
 } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'rhwp-codex-app-server-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -171,6 +172,7 @@ function harness(t, {
     capabilityEpoch: 1,
     agentRole: 'chat',
     requestUserInput,
+    idleReleaseMs,
     onEvent: (event) => events.push(event),
   };
   const session = createCodexSession(opts, {
@@ -1036,6 +1038,73 @@ test('a Plan permission change re-proves native Plan before resolving', async (t
   assert.ok(readinessMethods.includes('collaborationMode/list'));
   assert.ok(readinessMethods.includes('thread/resume'));
   assert.equal(readinessMethods.includes('turn/start'), false);
+  await h.session.dispose();
+});
+
+test('an idle Plan readiness app-server is released and the next turn resumes its thread', async (t) => {
+  const h = harness(t, { workflow: 'plan', phase: 'planning', idleReleaseMs: 30 });
+  h.session.sendUserMessage('First plan turn');
+  await settle();
+  h.spawns[0].process.send({
+    method: 'turn/completed',
+    params: { threadId: 'thread-native', turn: { id: 'turn-native', status: 'completed' } },
+  });
+  await settle();
+  await h.session.setPermissionProfile('unrestricted');
+  const warm = h.spawns[1].process;
+  assert.equal(warm.signalCode, null);
+  const eventsBeforeRelease = h.events.length;
+
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  await settle();
+  assert.equal(warm.signalCode, 'SIGTERM', 'idle readiness process is stopped');
+  assert.equal(h.events.length, eventsBeforeRelease, 'release is silent to the hub');
+  assert.equal(h.session.getSessionId(), 'thread-native');
+
+  h.session.sendUserMessage('Plan next');
+  await settle(24);
+  assert.equal(h.spawns.length, 3);
+  const methods = h.spawns[2].process.frames.map((frame) => frame.method);
+  assert.ok(methods.includes('thread/resume'));
+  assert.equal(methods.includes('thread/start'), false);
+  const turn = h.spawns[2].process.frames.find((frame) => frame.method === 'turn/start');
+  assert.equal(turn.params.threadId, 'thread-native');
+  assert.equal(turn.params.collaborationMode.mode, 'plan');
+  assert.equal(turn.params.sandboxPolicy.type, 'readOnly');
+
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  await settle();
+  assert.equal(h.spawns[2].process.signalCode, null, 'an open turn is never released');
+  h.session.interrupt();
+  await settle();
+  await h.session.dispose();
+});
+
+test('a message racing an idle release still starts its turn', async (t) => {
+  const h = harness(t, {
+    workflow: 'plan',
+    phase: 'planning',
+    idleReleaseMs: 20,
+    terminateProcess: (process) => new Promise((resolve) => {
+      setTimeout(() => resolve(process.kill('SIGTERM')), 40);
+    }),
+  });
+  await h.session.setExecutionMode({ workflow: 'plan', phase: 'planning', capabilityEpoch: 2 });
+  assert.equal(h.spawns.length, 1);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  h.session.sendUserMessage('Arrives during release');
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  await settle(24);
+  assert.equal(h.spawns[0].process.signalCode, 'SIGTERM');
+  assert.equal(h.spawns.length, 2);
+  const methods = h.spawns[1].process.frames.map((frame) => frame.method);
+  assert.ok(methods.includes('thread/start'), 'a readiness thread without turns has no rollout to resume');
+  assert.equal(methods.includes('thread/resume'), false);
+  const turn = h.spawns[1].process.frames.find((frame) => frame.method === 'turn/start');
+  assert.equal(turn?.params.input[0].text, 'Arrives during release');
+  assert.equal(h.events.filter((event) => event.type === 'turn-start').length, 1);
+  h.session.interrupt();
+  await settle();
   await h.session.dispose();
 });
 

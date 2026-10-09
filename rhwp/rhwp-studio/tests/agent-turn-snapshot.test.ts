@@ -246,7 +246,7 @@ test('실제 실행기: 본문은 get_structure 도구 결과 그대로이고, �
   assert.ok(textOf(fresh) && fresh.snapshot.revision === h.revision.revision);
 });
 
-test('스냅샷 읽기는 템플릿 매핑 게이트를 열지 않는다 — 템플릿 이식에는 에이전트 자신의 읽기가 필요하다', async () => {
+test('스냅샷 읽기는 템플릿 매핑 게이트를 열지 않는다 — 템플릿 이식에는 에이전트 자신의 읽기가 필요하다', async (t) => {
   const { h, executor, snapshots } = realExecutor(['본문 문단']);
   const template = {
     id: 'tpl-1', name: '양식', originalName: '양식.hwpx', format: 'hwpx', size: 1, pageCount: 1, sectionCount: 1,
@@ -254,8 +254,9 @@ test('스냅샷 읽기는 템플릿 매핑 게이트를 열지 않는다 — 템
   } as const;
   // 템플릿 쪽은 이미 읽은 것으로 둔다 — 게이트에 남은 조건은 문서 읽기뿐이다.
   Object.assign(executor as unknown as Record<string, unknown>, {
-    templateWasm: h.wasm, templateBytes: new Uint8Array(), templateKey: 'tpl-1:1', templateInspectionKey: 'tpl-1:1',
+    templateWasm: { releaseDocument() {} }, templateBytes: new Uint8Array(), templateKey: 'tpl-1:1', templateInspectionKey: 'tpl-1:1',
   });
+  t.after(() => executor.dispose());
   const apply = () => executor.execute('template_apply_section_layout', {
     expectedRevision: h.revision.revision, templateRevision: 1, mappings: [],
   }, 'claude', { workflow: 'direct', template });

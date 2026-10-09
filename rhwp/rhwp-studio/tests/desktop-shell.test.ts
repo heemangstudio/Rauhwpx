@@ -277,7 +277,7 @@ test('packaged Studio uses a secure path-safe standard scheme', () => {
   );
   assert.equal(resolveStudioAsset('/app/dist', '/../secrets.txt'), null);
   assert.equal(resolveStudioAsset('/app/dist', '/%E0%A4%A'), null);
-  assert.match(desktopMain, /if \(!devUrl\) installStudioProtocol/);
+  assert.match(desktopMain, /root: devUrl \? null : studioDist\(\)/);
   assert.match(desktopMain, /window\.loadURL\(devUrl \|\| STUDIO_URL\)/);
   assert.match(desktopMain, /\['will-navigate', 'will-redirect'\]/);
   assert.match(desktopMain, /function sessionForEvent\(event\)[\s\S]*Untrusted renderer IPC sender/);
