@@ -35,6 +35,7 @@ import { buildWritingStyleCatalog, resolveWritingStyleSelection } from './writin
 import { filterToolDefinitions, TOOL_DEFINITIONS } from './tools.mjs';
 import { resolveRenderSavePath, writeRenderPng } from './render-save.mjs';
 import { replayMissedTurnEnd } from './turn-outcome-replay.mjs';
+import { createStudioFrameCoalescer } from './studio-frame-coalescer.mjs';
 import {
   PlanningState,
   authorizeToolCall,
@@ -1031,7 +1032,7 @@ function log(msg) {
   process.stderr.write(`[rhwp-agent] ${msg}\n`);
 }
 
-function sendJson(sock, obj) {
+function writeJson(sock, obj) {
   if (!sock || sock.readyState !== sock.OPEN) return false;
   try {
     sock.send(JSON.stringify(obj?.v === 1 ? { ...obj, v: PROTOCOL_VERSION } : obj));
@@ -1042,8 +1043,18 @@ function sendJson(sock, obj) {
   }
 }
 
+/** 토큰마다 WS 프레임을 보내지 않도록 스트리밍 이벤트를 소켓별로 잠깐 모은다. */
+const studioFrames = createStudioFrameCoalescer({ write: writeJson });
+
+/** 모아 둔 스트리밍 프레임을 먼저 보낸 뒤 보낸다 — 프레임 순서가 그대로 유지된다. */
+function sendJson(sock, obj) {
+  if (sock) studioFrames.flush(sock);
+  return writeJson(sock, obj);
+}
+
 /** 이미 직렬화한 프레임을 보낸다 — 크기를 먼저 재야 하는 도구 결과용. */
 function sendRaw(sock, frame) {
+  if (sock) studioFrames.flush(sock);
   if (!sock || sock.readyState !== sock.OPEN) return false;
   try {
     sock.send(frame);
@@ -2041,7 +2052,10 @@ function makeTemplateWorkerEventHandler(record, job) {
     if (event.type === 'session-info' && event.sessionId) job.providerSessionId = event.sessionId;
     if (event.type === 'text-delta' && event.text?.trim()) {
       job.activity = event.text.replace(/\s+/g, ' ').trim().slice(-500);
-      sendTemplateJobEvent(record, taskProgressForJob(job, job.activity));
+      // 근황 스냅샷은 토큰마다 바뀐다 — 같은 창 안에서는 마지막 것만 보낸다.
+      studioFrames.pushProgress(record.studioSocket, {
+        v: 1, type: 'agent-event', event: taskProgressForJob(job, job.activity),
+      });
       return;
     }
     if (event.type === 'tool-call') {
@@ -2253,7 +2267,7 @@ function makeBackendEventHandler(record, generation) {
       // 서브에이전트 브라우저는 턴과 함께 끝난다 — 메인 브라우저만 다음 턴까지 산다.
       record.browserbaseSession.cleanupExtras('turn ended');
     }
-    const delivered = sendJson(record.studioSocket, { v: 1, type: 'agent-event', event: studioEvent });
+    const delivered = sendAgentEvent(record, studioEvent);
     if (evt.type === 'turn-end' && !delivered) record.missedTurnEnd = studioEvent;
     if (evt.type === 'turn-end') {
       record.userQuestionResponseReceipts.clear();
@@ -2263,6 +2277,14 @@ function makeBackendEventHandler(record, generation) {
     if (evt.type === 'turn-end') drainTemplateCompletion(record);
     if (evt.type === 'turn-end') drainPlanningDocumentSaved(record);
   };
+}
+
+/** 턴 끝이 아닌 이벤트는 그대로 보내고, text-delta 만 소켓별로 모은다. */
+function sendAgentEvent(record, event) {
+  const frame = { v: 1, type: 'agent-event', event };
+  return event.type === 'text-delta'
+    ? studioFrames.pushTextDelta(record.studioSocket, frame)
+    : sendJson(record.studioSocket, frame);
 }
 
 function disposeSession(record) {
@@ -5881,6 +5903,7 @@ httpServer.on('upgrade', (req, socket, head) => {
       record.studioInstanceId = instanceId;
       clearStudioReattachGrace(record);
       if (replacing) {
+        studioFrames.flush(record.studioSocket);
         try { record.studioSocket.close(4000, 'replaced'); } catch {}
       }
       if (!instanceId || instanceId !== previousInstanceId) {
@@ -5895,6 +5918,7 @@ httpServer.on('upgrade', (req, socket, head) => {
       // 소켓이 닫혔다고 곧바로 인플라이트 호출을 접지 않는다 — 스튜디오는 보통 250ms 안에
       // 같은 세션으로 돌아온다. 대신 유예 타이머를 걸어 돌아오지 않는 경우만 실패시킨다.
       ws.on('close', () => {
+        studioFrames.discard(ws);
         if (record.studioSocket === ws) {
           record.studioSocket = null;
           record.pendingReferenceMessage = null;
@@ -6126,6 +6150,7 @@ async function disposeRecord(record, reason) {
     }
   }
   for (const sock of [record.studioSocket, ...record.mcpSockets]) {
+    if (sock) studioFrames.flush(sock);
     try { sock?.close(1001, reason); } catch {}
   }
   record.mcpSockets.clear();

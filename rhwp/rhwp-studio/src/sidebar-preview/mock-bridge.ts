@@ -1338,6 +1338,8 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       scenario = value;
     },
     setHold: (value: boolean) => { holdReply = value; },
+    /** Delivers one provider event as the hub would, e.g. a token-by-token answer for benches. */
+    streamEvent: stream,
     boot: () => {
       setPiModels(data.pi.models);
       emit({ type: 'pi-status', status: data.pi });
