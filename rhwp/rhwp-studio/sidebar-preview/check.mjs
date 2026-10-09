@@ -146,6 +146,36 @@ try {
     }
   }
   await step('Fullscreen provider chip follows the composer column', () => checkChipAlignment(page, origin));
+  await step('Empty focus chat centers the composer and sends it to the bottom', async () => {
+    await open('fullscreen=1');
+    const startNewChat = async () => {
+      await page.click('.ag-threads-new');
+      await page.waitForFunction(() => !document.querySelector('.ag-input').disabled);
+    };
+    await startNewChat();
+    const layout = () => page.evaluate(() => {
+      const chat = document.querySelector('.ag-chat-page').getBoundingClientRect();
+      const composer = document.querySelector('.ag-composer').getBoundingClientRect();
+      const greeting = document.querySelector('.ag-focus-greeting');
+      return {
+        gapBelow: Math.round(chat.bottom - composer.bottom),
+        greeting: greeting.checkVisibility() ? greeting.textContent : '',
+      };
+    });
+    const centered = await layout();
+    assert(centered.gapBelow > 200, `centered composer leaves ${centered.gapBelow}px below`);
+    assert(centered.greeting.includes('사업 제안서'), `greeting shows the document: ${centered.greeting}`);
+    await page.type('.ag-input', '요약해 줘');
+    await page.click('.ag-send');
+    await page.waitForSelector('.ag-msg-user');
+    await page.waitForFunction(() =>
+      document.querySelector('.ag-composer').getAnimations().every((tween) => tween.playState !== 'running'));
+    const sent = await layout();
+    assert(sent.gapBelow < 40, `sent composer leaves ${sent.gapBelow}px below`);
+    assert.equal(sent.greeting, '');
+    await startNewChat();
+    assert((await layout()).gapBelow > 200, 'a new chat centers the composer again');
+  });
   await step(
     'Production shell, light/dark themes, resize and collapse',
     async () => {
