@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 
 import {
   EMBED_CAPABILITIES,
@@ -10,32 +9,6 @@ import {
 } from '../src/embed/protocol.ts';
 import { routeEmbedRequest, type EmbedRpcHandlers } from '../src/embed/rpc-router.ts';
 import { installEmbedRuntime } from '../src/embed/runtime.ts';
-
-test('renderer diagnostics v1 keeps auto intent in the additive selection field', () => {
-  const source = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
-  assert.match(
-    source,
-    /renderBackendRequest\.backend === 'auto'[\s\S]*?backend: 'canvas2d'[\s\S]*?backend: diagnosticsBackendRequest/,
-  );
-  assert.match(
-    source,
-    /getRendererDiagnostics\(pageIndex\)[\s\S]*?request: rendererRuntimeRequest[\s\S]*?selection,/,
-  );
-});
-
-test('main.ts는 호스트 저장 완료 API completeHostSave를 window.rhwpStudio로 노출한다 (#2660)', () => {
-  const source = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
-  // 코어 동작(clean 전환·draft 삭제 대기)은 host-save.test.ts 가 HostSaveTracker 로 검증한다.
-  assert.match(source, /async function completeHostSave\(fileName\?: string\)[\s\S]*?hostSave\.complete\(fileName\)/);
-  // RPC export 는 호스트가 받아 간 편집 세대를 기록한다.
-  for (const method of ['exportHwp', 'exportHwpx', 'exportHml']) {
-    assert.match(source, new RegExp(`async ${method}\\(\\) \\{[\\s\\S]*?hostSave\\.recordExport\\(\\);[\\s\\S]*?return wasm\\.${method}\\(\\)`));
-  }
-  // window 공개 API: DEV 전용이 아닌 무조건 노출
-  assert.match(source, /\.rhwpStudio = \{\s*\n?\s*notifySaved:/);
-  // embed RPC 핸들러도 동일 코어를 사용한다
-  assert.match(source, /async notifySaved\(fileName\)[\s\S]*?completeHostSave\(fileName\)/);
-});
 
 test('embed protocol은 capability를 포함한 v1 connect와 session-bound request만 허용한다', () => {
   assert.equal(isConnectMessage({

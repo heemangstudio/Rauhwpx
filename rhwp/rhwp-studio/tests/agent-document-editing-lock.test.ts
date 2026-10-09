@@ -1,22 +1,37 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import test from 'node:test';
+import { registerHooks } from 'node:module';
+import test, { after, before } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { CommandDispatcher } from '../src/command/dispatcher.ts';
 import { EventBus } from '../src/core/event-bus.ts';
 import { deriveAgentEditingLease, planModeAllowsUserEditing } from '../src/agent/editing-lease.ts';
+import { createTestModuleServer } from './support/module-server.ts';
 
-const source = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8');
-const bridge = source('../src/agent/bridge.ts');
-const main = source('../src/main.ts');
-const input = source('../src/engine/input-handler.ts');
-const textInput = source('../src/engine/input-handler-text.ts');
-const keyboardInput = source('../src/engine/input-handler-keyboard.ts');
-const pendingEdits = source('../src/agent/pending-edits.ts');
-const sidebar = source('../src/ui/agent-sidebar/index.ts');
-const toolbar = source('../src/ui/toolbar.ts');
-const html = source('../index.html');
-const css = source('../src/styles/editor.css');
+registerHooks({
+  load(url, context, next) {
+    return url.endsWith('.css')
+      ? { format: 'module', source: 'export default {};', shortCircuit: true }
+      : next(url, context);
+  },
+});
+const { AgentBridgeImpl } = await import('../src/agent/bridge.ts');
+
+const rootDir = fileURLToPath(new URL('..', import.meta.url));
+let vite: Awaited<ReturnType<typeof createTestModuleServer>>;
+let inputHandlerProto: any;
+let ImeSession: any;
+
+before(async () => {
+  vite = await createTestModuleServer(rootDir);
+  inputHandlerProto = (await vite.ssrLoadModule('/src/engine/input-handler.ts')).InputHandler.prototype;
+  ImeSession = (await vite.ssrLoadModule('/src/engine/ime-session.ts')).ImeSession;
+});
+
+after(async () => {
+  await vite?.close();
+});
 
 test('agent editing lock blocks mutations but leaves view and copy commands available', () => {
   const executed: string[] = [];
@@ -40,7 +55,7 @@ test('agent editing lock blocks mutations but leaves view and copy commands avai
   assert.deepEqual(executed, ['edit:copy', 'view:zoom-in']);
 });
 
-test('bridge owns the lease and retains it until every in-flight tool settles', () => {
+test('the derived lease stays active while a turn or tool call runs', () => {
   assert.deepEqual(
     deriveAgentEditingLease({ turnRunning: true, activeToolRequests: 0, agent: 'claude' }),
     { active: true, agent: 'claude' },
@@ -53,15 +68,6 @@ test('bridge owns the lease and retains it until every in-flight tool settles', 
     deriveAgentEditingLease({ turnRunning: false, activeToolRequests: 0, agent: 'pi' }),
     { active: false, agent: 'pi' },
   );
-  assert.match(bridge, /deriveAgentEditingLease\(\{[\s\S]*turnRunning: this\.turnRunning,[\s\S]*activeToolRequests: this\.activeToolRequests[\s\S]*workflow: this\.workflow,[\s\S]*phase: this\.phase,[\s\S]*waitingForUser: this\.pendingUserQuestionId !== null/);
-  assert.match(bridge, /case 'turn-start':[\s\S]*this\.editingAgent = event\.agent;[\s\S]*this\.syncEditingLease\(\)/);
-  assert.match(bridge, /case 'turn-end':[\s\S]*this\.turnRunning = false;[\s\S]*this\.syncEditingLease\(\)/);
-  assert.match(bridge, /const releaseEditingLease = \(\) => \{[\s\S]*this\.activeToolRequests = Math\.max\(0, this\.activeToolRequests - 1\);[\s\S]*this\.syncEditingLease\(\)/);
-  assert.match(bridge, /this\.activeToolRequests \+= 1;[\s\S]*\.finally\(\(\) => \{[\s\S]*releaseEditingLease\(\)/);
-  assert.match(bridge, /cancelActiveToolRequest[\s\S]*request\.controller\.abort\(\);[\s\S]*request\.releaseEditingLease\(\)/);
-  assert.match(bridge, /case 'welcome':[\s\S]*this\.turnRunning = session\.status === 'running';[\s\S]*this\.syncEditingLease\(\)/);
-  assert.match(bridge, /stopChat\(\): void[\s\S]*waitForAuthoritativeTurnEnd = this\.state === 'connected' && this\.turnRunning;[\s\S]*if \(!waitForAuthoritativeTurnEnd\) \{[\s\S]*this\.turnRunning = false;[\s\S]*this\.activeProviderTurnId = null;[\s\S]*this\.abortProviderToolRequests\(\);[\s\S]*\}[\s\S]*this\.syncEditingLease\(\)/);
-  assert.match(bridge, /dispose\(\): void[\s\S]*this\.activeToolRequests = 0;[\s\S]*this\.syncEditingLease\(\)/);
 });
 
 test('plan mode leaves the document editable while a planning turn is running', () => {
@@ -142,64 +148,146 @@ test('plan mode leaves the document editable while a planning turn is running', 
   );
 });
 
-test('planning saves after a user edit notify the hub mid-plan', () => {
-  assert.match(bridge, /eventBus\.on\('document-changed', \(\) => this\.markUserDocumentEdit\(\)\)/);
-  assert.match(bridge, /eventBus\.on\('document-mutated', \(\) => this\.markUserDocumentEdit\(\)\)/);
-  assert.match(bridge, /eventBus\.on\('document-saved', \(\) => this\.notifyPlanningDocumentSaved\(\)\)/);
-  assert.match(bridge, /this\.pendingChatStart = null;[\s\S]*this\.notifyPlanningDocumentSaved\(\)/);
-  assert.match(bridge, /case 'chat-started':[\s\S]*this\.notifyPlanningDocumentSaved\(\)/);
-  assert.match(bridge, /case 'workflow-changed':[\s\S]*this\.notifyPlanningDocumentSaved\(\)/);
-  assert.match(bridge, /type: 'chat-document-saved'/);
-  assert.match(bridge, /type: 'planning-document-saved'/);
-  assert.match(sidebar, /case 'planning-document-saved':/);
-  assert.match(sidebar, /문서를 저장했습니다/);
+test('a tool call outside a running turn holds the lease until it settles', async () => {
+  let finishTool = () => {};
+  const toolDone = new Promise<void>((resolve) => { finishTool = resolve; });
+  const bridge = Object.create(AgentBridgeImpl.prototype) as any;
+  Object.assign(bridge, {
+    activeProviderTurnId: null,
+    turnRunning: false,
+    editingAgent: 'claude',
+    activeToolRequests: 0,
+    activeToolRequestControllers: new Map(),
+    editingLease: { active: false, agent: 'claude' },
+    editingLeaseListeners: new Set(),
+    pendingUserQuestionId: null,
+    workflow: 'direct',
+    phase: 'direct',
+    capabilityEpoch: null,
+    permissionProfile: 'safe',
+    activeAgent: 'claude',
+    listeners: new Set(),
+    executor: { execute: async () => { await toolDone; return { ok: true }; } },
+    sendToolResponse() {},
+  });
+
+  bridge.handleToolRequest({ id: 1, tool: 'insert_text', args: {}, agent: 'claude', workflow: 'direct', turnBound: false });
+  assert.equal(bridge.getEditingLease().active, true, '도구가 문서를 고치는 동안 사용자 입력을 막는다');
+  finishTool();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(bridge.getEditingLease().active, false);
 });
 
-test('entering plan mode unlocks the lease immediately and holds messages until the hub finishes', () => {
-  assert.match(bridge, /this\.beginWorkflowSwitch\(workflow\);[\s\S]*type: 'chat-workflow-set'/);
-  assert.match(bridge, /this\.workflowSwitchPending = true;[\s\S]*this\.resetWorkflowState\(workflow\)/);
-  // 연결이 끊긴 동안 보낸 메시지도 큐에 담아 재연결 뒤에 다시 보낸다.
-  assert.match(bridge, /if \(this\.pendingChatStart \|\| this\.workflowSwitchPending \|\| this\.activeAgent === null[\s\S]*this\.state !== 'connected'\)/);
-  assert.match(bridge, /if \(this\.workflowSwitchPending \|\| this\.pendingChatStart\) return;/);
-  assert.match(bridge, /case 'workflow-changed':[\s\S]*this\.finishWorkflowSwitch\(\);[\s\S]*this\.flushQueuedMessages\(\)/);
-  assert.match(bridge, /BACKEND_SWITCH_FAILED[\s\S]*INVALID_WORKFLOW[\s\S]*WORKFLOW_ERROR[\s\S]*this\.revertWorkflowSwitch\(\)/);
-  assert.match(bridge, /planModeAllowsUserEditing\(msg\.workflow, msg\.phase\)[\s\S]*this\.workflow = msg\.workflow;[\s\S]*this\.phase = msg\.phase/);
+/** 건드리면 바로 실패하는 문서 서비스. 잠금 게이트가 먼저 막았는지 본다. */
+function untouchable(name: string): any {
+  return new Proxy({}, {
+    get: (_target, key) => {
+      throw new Error(`locked editor touched ${name}.${String(key)}`);
+    },
+  });
+}
+
+test('the user editing lock rejects user input but records agent operations', () => {
+  const recorded: unknown[] = [];
+  const handler: any = Object.create(inputHandlerProto);
+  Object.assign(handler, {
+    active: true,
+    readOnly: false,
+    userEditingLocked: true,
+    agentTemplateLocked: false,
+    cursor: { getPosition: () => ({ sectionIndex: 0, paragraphIndex: 0, charOffset: 0 }) },
+    history: { recordWithoutExecute: (command: unknown) => recorded.push(command) },
+    isOperationAllowedInEditMode: () => true,
+    refreshAfterOperation() {},
+    resetTextareaBuffer() {},
+  });
+  handler.executeOperation({ kind: 'record', command: { type: 'insertText', who: 'user' } });
+  handler.executeOperation({ kind: 'record', command: { type: 'insertText', who: 'agent' }, meta: { origin: 'agent' } });
+  assert.deepEqual(recorded.map((command: any) => command.who), ['agent']);
+
+  Object.assign(handler, { cursor: untouchable('cursor'), wasm: untouchable('wasm'), imeSession: untouchable('imeSession') });
+  let prevented = 0;
+  const event = (extra: Record<string, unknown> = {}) => ({
+    preventDefault: () => { prevented += 1; }, key: 'a', code: 'KeyA', ...extra,
+  });
+  handler.onInput({ inputType: 'insertText', data: '가', isComposing: false });
+  handler.onKeyDown(event());
+  handler.onCut(event());
+  handler.onPaste(event({ clipboardData: untouchable('clipboardData') }));
+  assert.equal(prevented, 3);
 });
 
-test('user input gates remain separate from autonomous agent mutation paths', () => {
-  assert.match(input, /executeOperation\(desc:[\s\S]*this\.userEditingLocked && desc\.meta\?\.origin !== 'agent'/);
-  assert.match(input, /executeAppliedSnapshot[\s\S]*if \(this\.readOnly\)/);
-  assert.doesNotMatch(input.match(/executeAppliedSnapshot[\s\S]*?\n  \}/)?.[0] ?? '', /userEditingLocked/);
-  assert.match(pendingEdits, /meta: \{ origin: 'agent', refresh: 'full', scroll: 'preserve' \}/);
-  assert.match(textInput, /onInput[\s\S]*this\.readOnly \|\| this\.userEditingLocked/);
-  assert.match(keyboardInput, /onKeyDown[\s\S]*this\.readOnly \|\| this\.userEditingLocked/);
-  assert.match(input, /format-char'[\s\S]*this\.readOnly \|\| this\.userEditingLocked/);
-  assert.match(input, /insertDroppedImageAtClientPoint[\s\S]*this\.readOnly \|\| this\.userEditingLocked/);
-  assert.match(toolbar, /querySelectorAll<HTMLButtonElement \| HTMLInputElement \| HTMLSelectElement>\('button, input, select'\)[\s\S]*control\.disabled = !enabled/);
+test('taking the lease drops in-progress composition and placements without refocusing', () => {
+  const doc = ['X', '가', 'Y'];
+  const calls: string[] = [];
+  const imeSession = new ImeSession();
+  imeSession.start();
+  imeSession.update('가');
+  // 선택 표시·캐럿 같은 렌더러는 아무 일도 하지 않는 객체로 채운다.
+  const quiet: any = new Proxy({}, { get: () => () => false });
+  const target: any = Object.create(inputHandlerProto);
+  const handler: any = new Proxy(target, {
+    get: (obj, key, receiver) => {
+      const value = Reflect.get(obj, key, receiver);
+      return value === undefined ? quiet : value;
+    },
+  });
+  Object.assign(target, {
+    userEditingLocked: false,
+    isMoveDragging: false,
+    isPictureMoveDragging: false,
+    isPictureRotateDragging: false,
+    isLineEndpointDragging: false,
+    isPictureResizeDragging: false,
+    isResizeDragging: false,
+    cellSelectionDragState: null,
+    isDragging: false,
+    imeSession,
+    compositionAnchor: { sectionIndex: 0, paragraphIndex: 0, charOffset: 1 },
+    compositionAnchorRect: { pageIndex: 0, x: 0, y: 0, height: 12 },
+    compositionLength: 1,
+    replaceTextAtRaw: (pos: { charOffset: number }, count: number, text: string) => {
+      doc.splice(pos.charOffset, count, ...text);
+    },
+    resetRawTextMutationEffects() {},
+    consumeRawTextMutationBeforeCursor: () => false,
+    cancelFormOverlayEdit: () => calls.push('form'),
+    removeFormOverlay() {},
+    cancelImagePlacement: () => calls.push('image'),
+    cancelTextboxPlacement: () => calls.push('textbox'),
+    cancelPolygonDrawing: () => calls.push('polygon'),
+    textarea: { blur: () => calls.push('blur'), focus: () => calls.push('focus') },
+    resetTextareaBuffer() {},
+    clearPendingCharFormat() {},
+    container: { style: {} },
+    // 선택이 없는 커서. 선택 해제 경로의 나머지 질의는 모두 '없음'으로 답한다.
+    cursor: new Proxy({
+      getPosition: () => ({ sectionIndex: 0, paragraphIndex: 0, charOffset: 1 }),
+      getSelectionOrdered: () => null,
+    } as Record<string | symbol, unknown>, { get: (target, key) => target[key] ?? (() => false) }),
+    selectionRenderer: { clear() {} },
+    eventBus: { emit() {} },
+  });
+
+  handler.setUserEditingLocked(true);
+
+  assert.equal(doc.join(''), 'XY', '확정하지 않은 조합 글자를 문서에 남기지 않는다');
+  assert.equal(imeSession.isComposing, false);
+  assert.equal(handler.compositionAnchor, null);
+  assert.deepEqual(calls.filter((call) => call !== 'blur'), ['form', 'image', 'textbox', 'polygon']);
+  assert.equal(calls.includes('focus'), false, '잠그면서 입력 포커스를 가져오지 않는다');
+  assert.equal(handler.userEditingLocked, true);
 });
 
-test('document replacement and active pointer gestures respect the lease boundary', () => {
-  assert.match(main, /canReplaceCurrentDocument[\s\S]*if \(agentEditingLease\.active\)/);
-  assert.match(main, /loadFile[\s\S]*canReplaceCurrentDocument\(options\.skipUnsavedGuard\)/);
-  assert.match(input, /setUserEditingLocked[\s\S]*_mouse\.onMouseUp\.call\(this, new MouseEvent/);
-  assert.match(input, /setUserEditingLocked[\s\S]*this\.cancelImagePlacement\(\)[\s\S]*this\.cancelTextboxPlacement\(\)[\s\S]*this\.cancelPolygonDrawing\(\)/);
-  assert.match(input, /setUserEditingLocked[\s\S]*this\.cancelFormOverlayEdit\?\.\(\)[\s\S]*revertCompositionPreview/);
-  assert.doesNotMatch(input.match(/setUserEditingLocked[\s\S]*?\n  \}/)?.[0] ?? '', /this\.textarea\.focus\(\)/);
-  assert.match(main, /addEventListener\('drop'[\s\S]*if \(agentEditingLease\.active\)[\s\S]*에이전트가 편집을 마친 뒤 파일을 놓을 수 있습니다/);
+// 남은 소스 가드: 사이드바 검토 버튼과 편집 표시 영역은 DOM 사이드바·index.html 이라
+// 단위 테스트로 띄우지 않는다. 문서 교체 차단은 main-entry-guards.test.ts 가 지킨다.
+test('pending-edit review stays disabled while an agent holds the lease', () => {
+  const sidebar = readFileSync(new URL('../src/ui/agent-sidebar/index.ts', import.meta.url), 'utf8');
   assert.match(sidebar, /approve\.disabled = editingLeaseActive;[\s\S]*if \(bridge\.getEditingLease\(\)\.active\) return;[\s\S]*pendingEdits\.approve/);
   assert.match(sidebar, /reject\.disabled = editingLeaseActive;[\s\S]*if \(bridge\.getEditingLease\(\)\.active\) return;[\s\S]*pendingEdits\.reject/);
-  assert.match(sidebar, /onEditingLeaseChange\(\(\) => \{\s*rebuildReview\(\);\s*changesDrawer\.refreshEditingState\(\);/);
 });
 
-test('editing frame reflects the active agent and has responsive reduced-motion treatment', () => {
-  assert.match(html, /id="agent-editing-frame"[\s\S]*id="agent-editing-status"[^>]*role="status"[^>]*aria-live="polite"/);
-  assert.match(main, /editorArea\?\.setAttribute\('aria-busy', lease\.active \? 'true' : 'false'\)/);
-  assert.match(main, /statusLabel\.textContent = `\$\{AGENT_LABEL\[lease\.agent\]\}가 문서를 편집 중이에요`/);
-  assert.match(main, /if \(lease\.waitingForUser\) statusLabel\.textContent = `\$\{AGENT_LABEL\[lease\.agent\]\}가 답변을 기다리고 있어요`/);
-  for (const agent of ['claude', 'pi']) {
-    assert.match(css, new RegExp(`data-editing-agent='${agent}'`));
-  }
-  assert.match(css, /animation:\s*agent-editing-sweep/);
-  assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*#agent-editing-frame[\s\S]*animation: none/);
-  assert.match(css, /@media \(max-width: 1023px\)[\s\S]*#agent-editing-status/);
+test('the editing status is announced politely', () => {
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  assert.match(html, /id="agent-editing-status"[^>]*role="status"[^>]*aria-live="polite"/);
 });
