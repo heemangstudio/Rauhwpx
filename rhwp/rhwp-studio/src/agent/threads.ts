@@ -1874,6 +1874,14 @@ export function renameThread(id: string, title: string): ChatThread | null {
   return next;
 }
 
+/** 문서 이름이 바뀌면 그 문서의 채팅들에 보이는 문서 이름도 바꾼다. 목록 자리는 그대로다. */
+export function renameThreadsDocument(documentId: string, docKey: string): void {
+  for (const thread of listThreads()) {
+    if (thread.documentId !== documentId || thread.docKey === docKey) continue;
+    replaceStoredThread({ ...thread, docKey });
+  }
+}
+
 /** 고정한 채팅만 고정 구역의 순서대로. 같은 자리는 최근 대화가 먼저다. */
 export function orderPinnedThreads<T extends Pick<ChatThread, 'pinOrder' | 'updatedAt' | 'lastActivityAt'>>(
   threads: readonly T[],

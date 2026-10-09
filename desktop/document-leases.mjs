@@ -169,6 +169,23 @@ export class DocumentLeaseManager {
     throw new Error('The native save target is owned by another document');
   }
 
+  /** 창이 쥔 문서 파일의 이름이 바뀌었다. 그 경로로 잡은 점유를 새 경로로 옮긴다. */
+  renamePath(sessionId, previousPath, nextPath) {
+    if (previousPath === nextPath) return true;
+    const previousKey = `path:${previousPath}`;
+    const nextKey = `path:${nextPath}`;
+    const claim = this.#claimsByKey.get(previousKey);
+    if (!claim || claim.sessionId !== sessionId) return false;
+    const other = this.#claimsByKey.get(nextKey);
+    if (other && other !== claim) throw new Error('The renamed path is already owned');
+    this.#claimsByKey.delete(previousKey);
+    this.#claimsByKey.set(nextKey, claim);
+    claim.canonicalPath = nextPath;
+    claim.keys = claim.keys.map((key) => (key === previousKey ? nextKey : key));
+    claim.claimedKeys = claim.claimedKeys.map((key) => (key === previousKey ? nextKey : key));
+    return true;
+  }
+
   leaseForSession(sessionId, slotId = DEFAULT_DOCUMENT_SLOT) {
     return this.#leasesBySession.get(sessionId)?.get(normalizeDocumentSlotId(slotId)) ?? null;
   }

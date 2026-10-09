@@ -1142,6 +1142,79 @@ export class NativeFileHandleRegistry {
     return { ok: true, descriptor: this.#descriptor(entry), created: true };
   }
 
+  /**
+   * 이 창이 연 문서 파일의 이름을 같은 폴더 안에서 바꾼다. 확장자는 바꾸지 않고, 이미 있는 이름이나
+   * 다른 창이 쥔 경로는 거절한다. 핸들 id 는 그대로 두고 경로·이름·북마크를 새 경로로 옮긴다.
+   */
+  async renameHandle(sessionId, handleId, nextName) {
+    const entry = this.#entryForSender(sessionId, handleId);
+    const refuse = (reason, message) => Object.assign(new Error(message), { renameRefusal: reason });
+    if (entry.legacyPortableHistoryFolder) throw refuse('invalid', 'Legacy RHWPX folders cannot be renamed');
+    if (entry.activeWrites > 0) throw refuse('saving', 'The document is being saved; try again in a moment');
+    const name = typeof nextName === 'string' ? nextName.trim() : '';
+    if (
+      !name
+      || name !== basename(name)
+      || name.startsWith('.')
+      || name.length > 255
+      // eslint-disable-next-line no-control-regex
+      || /[\\/:*?"<>|\u0000-\u001f]/.test(name)
+    ) {
+      throw refuse('invalid', 'Invalid file name');
+    }
+    if (extname(name).toLowerCase() !== extname(entry.canonicalPath).toLowerCase()) {
+      throw refuse('extension', 'The file extension cannot change');
+    }
+    const previousPath = entry.canonicalPath;
+    const previousOwnershipPath = entry.ownershipPath;
+    const target = join(dirname(previousPath), name);
+    validateNativeDocumentPath(target);
+    if (basename(previousPath) === name) {
+      return {
+        descriptor: this.#descriptor(entry),
+        previousPath,
+        canonicalPath: previousPath,
+        previousOwnershipPath,
+        ownershipPath: previousOwnershipPath,
+      };
+    }
+    const targetOwnership = this.#ownershipKey(target);
+    // 대소문자만 다른 이름은 같은 파일이다 (대소문자를 가리지 않는 볼륨).
+    if (targetOwnership !== entry.ownershipPath) {
+      if (this.#byPath.has(targetOwnership)) throw refuse('open', 'A file with that name is already open');
+      let exists = true;
+      try {
+        await this.#stat(target);
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+        exists = false;
+      }
+      if (exists) throw refuse('exists', 'A file with that name already exists');
+    }
+    await rename(previousPath, target);
+    const canonicalPath = await this.#canonicalize(target);
+    this.#byPath.delete(entry.ownershipPath);
+    entry.canonicalPath = canonicalPath;
+    entry.ownershipPath = this.#ownershipKey(canonicalPath);
+    entry.name = name;
+    this.#byPath.set(entry.ownershipPath, entry);
+    // 이름을 바꾸면 파일 상태 시각이 바뀐다. 다음 저장이 바깥 수정으로 오해하지 않게 다시 잰다.
+    entry.diskFingerprint = await this.#fingerprint(canonicalPath);
+    entry.fingerprintEpoch += 1;
+    for (const bookmark of this.#bookmarks.values()) {
+      if (this.#ownershipKey(bookmark.path) === this.#ownershipKey(previousPath)) {
+        bookmark.path = canonicalPath;
+      }
+    }
+    return {
+      descriptor: this.#descriptor(entry),
+      previousPath,
+      canonicalPath,
+      previousOwnershipPath,
+      ownershipPath: entry.ownershipPath,
+    };
+  }
+
   async createSaveTarget(sessionId, filePath) {
     return this.create(sessionId, filePath, { allowMissing: true });
   }

@@ -6481,6 +6481,11 @@ html.desktop-mac .ag-fullscreen .ag-workspace-title {
   height: 100%;
 }
 
+/* 두 번 눌러 이름을 바꾸는 글자는 창 끌기에서 빼야 더블클릭이 창 확대로 가지 않는다. */
+html.desktop-mac .ag-fullscreen .ag-workspace-bar .ag-renamable {
+  -webkit-app-region: no-drag;
+}
+
 html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   button,
   a,
@@ -6507,6 +6512,61 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 .ag-workspace-leading {
   gap: 8px;
   padding: 0 0 0 var(--ag-workspace-lead-inset, 12px);
+}
+
+/* 레일 머리의 워드마크. 레일 면 위에만 서고 남는 폭을 넘으면 통째로 빠진다 —
+   빈 첫 칸(::before) 뒤에서 줄바꿈된 lockup 이 높이 밖으로 밀려난다.
+   no-drag 가 아니므로 이 위를 끌어도 창이 움직인다. */
+.ag-workspace-brand {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  min-width: 0;
+  height: 20px;
+  /* 오른쪽 여백까지 들어가야 보인다 — 레일 경계에 붙지 않는다. */
+  margin: 0 12px 0 2px;
+  overflow: hidden;
+  color: var(--ag-text);
+  transition:
+    opacity var(--ag-dur-base) var(--ag-ease-out),
+    visibility 0s;
+}
+
+.ag-workspace-brand::before {
+  content: '';
+  width: 0;
+  height: 100%;
+}
+
+.ag-workspace-brand-lockup {
+  display: flex;
+  height: 100%;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.ag-workspace-brand .ag-workspace-brand-mark {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+}
+
+/* 마크의 가는 선에 맞춰 글자는 medium 에 둔다. */
+.ag-workspace-brand-name {
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-medium);
+  line-height: 1;
+  letter-spacing: var(--ag-track-tight);
+}
+
+/* 레일이 접히면 칸이 줄어드는 동안 먼저 사라진다. */
+.ag-fullscreen.ag-rail-collapsed .ag-workspace-brand {
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity var(--ag-dur-fast) var(--ag-ease-out),
+    visibility 0s linear var(--ag-dur-fast);
 }
 
 .ag-workspace-trailing {
@@ -7163,6 +7223,11 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
   }
 
   .ag-workspace-agent-context {
+    display: none;
+  }
+
+  /* 레일이 덮개로 뜨는 폭에서는 첫 칸이 내용 폭이라 워드마크가 제목을 민다. */
+  .ag-workspace-brand {
     display: none;
   }
 }

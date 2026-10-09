@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
   },
   pickNativeSaveFile: (options) => ipcRenderer.invoke('desktop:pick-native-save-file', options),
   releaseNativeFile: (handleId) => ipcRenderer.invoke('desktop:release-native-file', handleId),
+  renameNativeFile: (handleId, nextName) => ipcRenderer.invoke('desktop:rename-native-file', handleId, nextName),
   readNativeFile: (handleId) => ipcRenderer.invoke('desktop:native-file-read', handleId),
   getNativeFileSourcePath: (handleId) => ipcRenderer.invoke(
     'desktop:native-file-source-path',
