@@ -1034,6 +1034,9 @@ export class AgentToolExecutor {
   // 한 번으로 묶으므로 항목별 기록을 여기 모았다가 배치이 끝난 revision 에 전부
   // 귀속시킨다 (안 모으면 배치이 델타/리베이스 커버리지 구멍으로 보인다).
   private journalBatch: EditJournalEntry[] | null = null;
+  // apply_edits 진행 상황 — 지금 몇 번째 항목인지와 앞 항목들이 지우거나 바꾼 원문. 앞 항목이 매치를
+  // 먹어 occurrence 가 넘친 경우 오류가 그 사실과 먹은 항목을 짚는다.
+  private batchProgress: { index: number; tool: string; removals: Array<{ index: number; tool: string; text: string }> } | null = null;
   // verify_changes 증분 커서 — `${agent}:${changeSetId}` 별로 이번 턴에 이미 보고한 op id.
   private verifiedOpIds = new Map<string, Set<string>>();
 
@@ -3332,7 +3335,7 @@ export class AgentToolExecutor {
       }
       throw new AgentToolError(
         'INVALID_ARGS',
-        `${via} ${JSON.stringify(this.truncateForMessage(text))} matched nothing in the document — check the exact wording with find_text`,
+        `${via} ${JSON.stringify(this.truncateForMessage(text))} matched nothing in the document — check the exact wording with find_text${this.batchMatchNote(text, 0)}`,
       );
     }
     // 스캔이 cap 에 닿기 전에 멈췄다면(중첩 표 탐침 예산) 뒤쪽을 보지 못했다 — 매치가 하나뿐이어도
@@ -3348,7 +3351,7 @@ export class AgentToolExecutor {
       if (occurrence > matches.length) {
         throw new AgentToolError(
           'INVALID_ARGS',
-          `${key('occurrence')} ${occurrence} but only ${matches.length} match(es) for ${JSON.stringify(this.truncateForMessage(text))}: ${this.anchorCandidates(matches)}`,
+          `${key('occurrence')} ${occurrence} but only ${matches.length} match(es) for ${JSON.stringify(this.truncateForMessage(text))}: ${this.anchorCandidates(matches)}${this.batchMatchNote(text, matches.length)}`,
         );
       }
       picked = matches[occurrence - 1];
@@ -3505,6 +3508,27 @@ export class AgentToolExecutor {
 
   private truncateForMessage(text: string): string {
     return text.length > 60 ? `${text.slice(0, 60)}…` : text;
+  }
+
+  /** apply_edits 항목이 지우거나 덮어쓴 원문을 남긴다 — 뒤 항목의 occurrence 오류 설명용. */
+  private noteBatchRemoval(text: string): void {
+    const progress = this.batchProgress;
+    if (progress && text) progress.removals.push({ index: progress.index, tool: progress.tool, text });
+  }
+
+  /**
+   * apply_edits 둘째 항목부터의 앵커 매치 오류에 붙이는 설명. 항목은 바뀌어 가는 문서에서 차례로
+   * 돌므로 occurrence 는 앞 항목이 남긴 텍스트 기준이다 — 원문 기준으로 센 번호가 넘친 경우다.
+   */
+  private batchMatchNote(text: string, remaining: number): string {
+    const progress = this.batchProgress;
+    if (!progress || progress.index === 0) return '';
+    const consumers = [...new Set(progress.removals
+      .filter((removal) => removal.index < progress.index && removal.text.includes(text))
+      .map((removal) => `edits[${removal.index}]${removal.tool ? ` (${removal.tool})` : ''}`))];
+    return `. Earlier items in this apply_edits batch already changed the text, and occurrence counts matches in the text they left`
+      + ` (${remaining} remain${consumers.length > 0 ? `; ${consumers.join(', ')} already rewrote a match` : ''})`
+      + ' — number occurrences against the text after those items, or match a longer unique phrase';
   }
 
   /** 앵커 해석된 주소를 write 결과에 그대로 싣는다 (anchor 필드). */
@@ -5215,11 +5239,15 @@ export class AgentToolExecutor {
     // 않는다 — 일부만 기록하면 구간이 "정밀 기록됨"으로 보여 그 변경이 델타·리베이스에서 빠진다.
     let unjournaled = false;
     this.journalBatch = buffered;
+    const progress: NonNullable<AgentToolExecutor['batchProgress']> = { index: 0, tool: '', removals: [] };
+    this.batchProgress = progress;
     try {
       this.runAtomicCovered((opts) => this.deps.pending.runAtomicBatch(() => {
         rawEdits.forEach((raw: unknown, index) => {
           const named = raw !== null && typeof raw === 'object' ? (raw as Record<string, unknown>)['tool'] : null;
           const tool = typeof named === 'string' ? named : null;
+          progress.index = index;
+          progress.tool = tool ?? '';
           const journaledBefore = buffered.length;
           try {
             const edit = this.batchEdit(raw);
@@ -5245,6 +5273,7 @@ export class AgentToolExecutor {
       }, opts));
     } finally {
       this.journalBatch = null;
+      this.batchProgress = null;
     }
     if (!unjournaled) {
       for (const entry of buffered) {
@@ -5565,6 +5594,7 @@ export class AgentToolExecutor {
     // 앵커/팝오버와 사이드바 카드로 검토하고, 거절 시 스냅샷으로 복원된다.
     const revBefore = this.revision;
     const r = this.deps.pending.replaceText(range, '', agent);
+    this.noteBatchRemoval(r.deletedText);
     this.recordJournal(
       revBefore, range.sectionIdx,
       range.cell ? range.cell.paraIdx : range.startParaIdx,
@@ -5613,6 +5643,7 @@ export class AgentToolExecutor {
     // 원자적 교체 (삭제 마크 + 끝 삽입 2-op 조합 폐기) — 서식 보존 + 스냅샷 기반 되돌림
     const revBefore = this.revision;
     const r = this.deps.pending.replaceText(range, text, agent);
+    this.noteBatchRemoval(r.deletedText);
     this.recordJournal(
       revBefore, range.sectionIdx,
       range.cell ? range.cell.paraIdx : range.startParaIdx,

@@ -64,3 +64,21 @@ test('top-level controlIdx/cellIdx without cell is rejected with the corrected c
   await h.call('insert_text', { cell: { paraIdx: 1, controlIdx: 0, cellIdx: 1 }, paraIdx: 0, charOffset: 0, text: '42 ' });
   assert.deepEqual(cells()[1], ['42 값']);
 });
+
+test('an occurrence past the matches left by earlier batch items says those items changed the text', async () => {
+  const h = makeEnv(['회사 규정과 회사 문화']);
+  const err = await expectErr(h.call('apply_edits', {
+    edits: [
+      { tool: 'replace_range', find: '회사', occurrence: 1, text: '기업' },
+      { tool: 'replace_range', find: '회사', occurrence: 2, text: '조직' },
+    ],
+  }), 'INVALID_ARGS');
+  assert.match(err.message, /edits\[1\] \(replace_range\): occurrence 2 but only 1 match\(es\) for "회사"/);
+  assert.match(err.message, /Earlier items in this apply_edits batch already changed the text/);
+  assert.match(err.message, /1 remain; edits\[0\] \(replace_range\) already rewrote a match/);
+  assert.deepEqual(h.body, ['회사 규정과 회사 문화'], 'occurrence 의미는 그대로 — 배치는 통째로 되돌아간다');
+
+  // 단독 호출의 오류에는 배치 설명이 붙지 않는다.
+  const single = await expectErr(h.call('replace_range', { find: '회사', occurrence: 3, text: 'x' }), 'INVALID_ARGS');
+  assert.doesNotMatch(single.message, /Earlier items/);
+});
