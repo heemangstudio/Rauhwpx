@@ -8904,10 +8904,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       renderAssistantMessage(hiddenStream, assistantBubbleSources.get(hiddenStream) ?? '', { streaming: true });
     }
     restoreScrollPositions();
-    finishReplayedAnimations();
     if (threadsListVisible()) rebuildThreadsList();
     updateDocumentContext();
     readChatModeLock();
+    finishReplayedAnimations();
   }
 
   function deactivate(): void {
