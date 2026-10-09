@@ -188,7 +188,7 @@ test('document replacement and active pointer gestures respect the lease boundar
   assert.match(finishPointer, /this\.cancelImagePlacement\(\)[\s\S]*this\.cancelTextboxPlacement\(\)[\s\S]*this\.cancelPolygonDrawing\(\)/);
   assert.match(finishPointer, /this\.cancelFormOverlayEdit\?\.\(\)/);
   assert.doesNotMatch(input.match(/setUserEditingLocked[\s\S]*?\n  \}/)?.[0] ?? '', /this\.textarea\.focus\(\)/);
-  assert.match(main, /addEventListener\('drop'[\s\S]*if \(agentEditingLease\.active\)[\s\S]*에이전트가 편집을 마친 뒤 파일을 놓을 수 있습니다/);
+  assert.match(main, /addEventListener\('drop'[\s\S]*if \(agentEditingLease\.active && !\(isDoc && shouldOpenInNewSession\(\)\)\)[\s\S]*에이전트가 편집을 마친 뒤 파일을 놓을 수 있습니다/);
   assert.match(sidebar, /approve\.disabled = editingLeaseActive;[\s\S]*if \(bridge\.getEditingLease\(\)\.active\) return;[\s\S]*pendingEdits\.approve/);
   assert.match(sidebar, /reject\.disabled = editingLeaseActive;[\s\S]*if \(bridge\.getEditingLease\(\)\.active\) return;[\s\S]*pendingEdits\.reject/);
   assert.match(sidebar, /onEditingLeaseChange\(\(\) => \{\s*rebuildReview\(\);\s*changesDrawer\.refreshEditingState\(\);/);
