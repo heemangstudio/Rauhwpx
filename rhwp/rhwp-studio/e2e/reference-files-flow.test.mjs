@@ -14,6 +14,8 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
+import { prepareFakePi, seedFakePiPrefs } from './fake-pi.mjs';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const studioRoot = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(studioRoot, '..');
@@ -141,6 +143,7 @@ const viteUrl = `http://127.0.0.1:${vitePort}`;
 const referenceRoot = fs.mkdtempSync(
   path.join(os.tmpdir(), 'rhwp-reference-e2e-'),
 );
+const piRoot = prepareFakePi('rhwp-reference-pi-');
 const logRoot = path.join(repoRoot, 'target');
 let hub;
 let vite;
@@ -155,6 +158,7 @@ try {
       RHWP_AGENT_PORT: String(hubPort),
       RHWP_AGENT_TOKEN: hubToken,
       RHWP_REFERENCES_DIR: referenceRoot,
+      RHWP_PI_DIR: piRoot,
     },
     path.join(logRoot, 'reference-files-e2e-hub.log'),
   );
@@ -186,6 +190,10 @@ try {
   const { runTest, assert, createNewDocument, screenshot } =
     await import('./helpers.mjs');
   await runTest('참고자료 업로드·검색·범위 격리', async ({ page }) => {
+    // 새 채팅은 첫 메시지를 보낼 때 사이드바의 선택으로 시작한다. 가짜 Pi 를 기본으로 두고
+    // 다시 불러 오면, 두 번째 채팅의 첫 메시지가 실제 CLI 를 띄우지 않고 이 Pi 로 간다.
+    await seedFakePiPrefs(page);
+    await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForFunction(
       () => window.__agentBridge?.getConnectionState?.() === 'connected',
     );
@@ -301,11 +309,16 @@ try {
     await page.evaluate(() =>
       document.querySelector('.ag-threads-new')?.click(),
     );
+    // 새 채팅은 초안이다. 첫 메시지를 보내야 허브 채팅이 새 채팅 ID 로 열리고, 그때부터
+    // 이 채팅의 참고자료 범위가 정해진다. 집중 모드로 들어가는 전환이 끝난 뒤에 보낸다.
+    await page.waitForFunction(
+      () => !document.documentElement.classList.contains('ag-fs-vt'),
+    );
+    await page.type('.ag-input', 'second chat');
+    await page.click('.ag-send');
     await page.waitForFunction(
       (previous) =>
-        document
-          .querySelector('.ag-threads-page')
-          ?.getAttribute('aria-hidden') === 'true' &&
+        window.__agentBridge.getActiveAgent() === 'pi' &&
         window.__agentBridge.threadId !== previous,
       {},
       firstThreadId,
@@ -377,6 +390,7 @@ try {
   await stop(vite);
   await stop(hub);
   fs.rmSync(referenceRoot, { recursive: true, force: true });
+  fs.rmSync(piRoot, { recursive: true, force: true });
 }
 
 if (failed) process.exitCode = 1;
