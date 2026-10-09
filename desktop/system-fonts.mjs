@@ -679,19 +679,7 @@ export function createSystemFontService(options = {}) {
     return { size: plan ? plan.size : file.size, chunks };
   }
 
-  async function readFace(id) {
-    const { size, chunks } = await openFace(id);
-    // IPC 직렬화는 뷰가 아니라 ArrayBuffer 전체를 복사하므로 공유 풀이 아닌 단독 버퍼에 모은다.
-    const bytes = new Uint8Array(size);
-    let cursor = 0;
-    for await (const chunk of chunks()) {
-      bytes.set(chunk, cursor);
-      cursor += chunk.length;
-    }
-    return bytes;
-  }
-
-  return { list, readFace, openFace };
+  return { list, openFace };
 }
 
 function staleError(id, detail) {

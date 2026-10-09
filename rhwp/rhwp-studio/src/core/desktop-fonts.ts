@@ -21,7 +21,6 @@
  * 사본이 한컴 오피스가 실제로 그리고 재는 판본이라 조판 동등성에 가장 가깝다.
  */
 import {
-  LOCAL_FONT_BYTE_READ_CONCURRENCY,
   LOCAL_FONT_MAX_FACES_PER_DOCUMENT,
   addSessionLocalFontAliases,
   getDetectedLocalFontRecords,
@@ -84,7 +83,8 @@ export interface SystemFontIndex {
 
 export interface DesktopFontHostApi {
   listSystemFonts?: (options?: { refresh?: boolean }) => Promise<SystemFontIndex>;
-  readSystemFont?: (id: string) => Promise<Uint8Array>;
+  /** face 주소의 앞부분. face id를 붙여 fetch하면 main 프로세스가 파일을 조각으로 흘려보낸다. */
+  systemFontBaseUrl?: () => Promise<string>;
 }
 
 export type SystemFontHostKind = 'desktop' | 'browser-folder' | 'hub' | 'combined';
@@ -632,6 +632,8 @@ export function setHubFontHost(host: SystemFontHost | null): void {
   const before = getSystemFontHost();
   hubHost = host;
   if (getSystemFontHost() !== before) resetHostState();
+  // 첫 문서를 열기 전에 색인을 받아 둔다. 허브가 아직 준비되지 않았으면 문서를 열 때 다시 받는다.
+  if (host) void loadDesktopFontIndex().catch(() => {});
 }
 
 function resetHostState(): void {
@@ -655,9 +657,7 @@ export function getSystemFontHost(): SystemFontHost | null {
   const members: Array<[string, SystemFontHost]> = [];
   if (explicitHost) members.push(['f', explicitHost]);
   const api = desktopHost();
-  if (typeof api?.listSystemFonts === 'function' && typeof api.readSystemFont === 'function') {
-    members.push(['d', desktopHostAdapter(api)]);
-  }
+  if (api && isDesktopFontApi(api)) members.push(['d', desktopHostAdapter(api)]);
   if (hubHost) members.push(['h', hubHost]);
   if (members.length <= 1) return members[0]?.[1] ?? null;
   return combinedHostFor(members);
@@ -725,6 +725,10 @@ export function createCombinedFontHost(members: ReadonlyArray<readonly [string, 
 
 const desktopAdapters = new WeakMap<DesktopFontHostApi, SystemFontHost>();
 
+function isDesktopFontApi(api: DesktopFontHostApi): boolean {
+  return typeof api.listSystemFonts === 'function' && typeof api.systemFontBaseUrl === 'function';
+}
+
 function desktopHostAdapter(api: DesktopFontHostApi): SystemFontHost {
   let adapter = desktopAdapters.get(api);
   if (!adapter) {
@@ -732,11 +736,28 @@ function desktopHostAdapter(api: DesktopFontHostApi): SystemFontHost {
       kind: 'desktop',
       coversSystem: true,
       list: (options) => api.listSystemFonts!(options?.refresh ? { refresh: true } : undefined),
-      read: (id) => api.readSystemFont!(id),
+      read: streamedFaceReader(api.systemFontBaseUrl!),
     };
     desktopAdapters.set(api, adapter);
   }
   return adapter;
+}
+
+/** main 프로세스가 face를 통째로 IPC로 복사하지 않고 앱 프로토콜로 흘려보낸 바이트를 받는다. */
+function streamedFaceReader(baseUrl: () => Promise<string>): (id: string) => Promise<ArrayBuffer> {
+  let base: Promise<string> | null = null;
+  return async (id) => {
+    base ??= baseUrl().catch((error: unknown) => {
+      base = null;
+      throw error;
+    });
+    const response = await fetch(`${await base}${encodeURIComponent(id)}`, { cache: 'no-store' });
+    if (!response.ok) {
+      // 409는 색인 뒤 파일이 바뀐 경우다. 'stale'로 알려 다음 준비 때 색인을 다시 받게 한다.
+      throw new Error(response.status === 409 ? `stale: desktop font ${id}` : `desktop font ${id}: HTTP ${response.status}`);
+    }
+    return response.arrayBuffer();
+  };
 }
 
 /** 등록된 face는 JS에 바이트를 남기지 않으므로 CanvasKit·메트릭 재등록은 host에서 다시 읽는다. */
@@ -765,7 +786,7 @@ function desktopHost(): DesktopFontHostApi | null {
 /** 데스크톱 preload가 글꼴 색인 API를 제공하는지 */
 export function isDesktopFontsSupported(): boolean {
   const host = desktopHost();
-  return typeof host?.listSystemFonts === 'function' && typeof host.readSystemFont === 'function';
+  return !!host && isDesktopFontApi(host);
 }
 
 /** 데스크톱 색인이나 연결된 글꼴 폴더가 있는지 */
@@ -1017,6 +1038,36 @@ function fileName(path: string): string {
   return path.split(/[\\/]/).pop() ?? path;
 }
 
+/** 등록 차례를 기다리며 미리 읽어 둘 face 수와 바이트. 등록(CPU)이 읽기를 기다리지 않을 만큼만 둔다. */
+const FACE_READ_AHEAD = 8;
+const FACE_READ_AHEAD_BYTES = 96 * 1024 * 1024;
+
+/**
+ * 읽어 두고 아직 등록하지 않은 바이트 한도. 차례대로만 허락해 앞 face가 뒤 face에 밀려
+ * 등록 순서가 막히지 않게 한다. 비어 있으면 한도보다 큰 face도 받는다.
+ */
+function readAheadBudget(limit: number): { acquire(bytes: number): Promise<void>; release(bytes: number): void } {
+  let used = 0;
+  let tail: Promise<void> = Promise.resolve();
+  let wake: (() => void) | null = null;
+  return {
+    acquire(bytes) {
+      const turn = tail.then(async () => {
+        while (used > 0 && used + bytes > limit) await new Promise<void>((resolve) => { wake = resolve; });
+        used += bytes;
+      });
+      tail = turn;
+      return turn;
+    },
+    release(bytes) {
+      used -= bytes;
+      const resume = wake;
+      wake = null;
+      resume?.();
+    },
+  };
+}
+
 async function runPool<T>(items: readonly T[], concurrency: number, work: (item: T) => Promise<void>): Promise<void> {
   let next = 0;
   const worker = async (): Promise<void> => {
@@ -1122,6 +1173,10 @@ export async function prepareDesktopFontsForDocument(
     lastRequested = uniqueFontNames([...lastRequested, ...names]);
   }
   const indexedAt = now();
+  // HFT 윤곽선 은행은 face 등록과 무관하므로 face 읽기와 나란히 읽는다.
+  const hftOutlines = registerDesktopHftOutlines(names).catch((error) => {
+    console.warn('[HFT] 한컴 HFT 윤곽선 연결 실패:', error);
+  });
 
   const items = new Map<string, DesktopFontReportItem>();
   const plans = new Map<string, GroupPlan>();
@@ -1220,11 +1275,14 @@ export async function prepareDesktopFontsForDocument(
     if (metrics.detail !== undefined) entry.report.metricsDetail = metrics.detail;
   };
 
-  await runPool(jobs, LOCAL_FONT_BYTE_READ_CONCURRENCY, async ({ plan, entry, order }) => {
+  const budget = readAheadBudget(FACE_READ_AHEAD_BYTES);
+  await runPool(jobs, FACE_READ_AHEAD, async ({ plan, entry, order }) => {
     plan.startedAt ||= now();
     const bold = entry.slot === 'bold' || entry.slot === 'bold-italic';
     const italic = entry.slot === 'italic' || entry.slot === 'bold-italic';
     const isRegistered = () => getSessionLocalFontFace(entry.faceKey) !== null;
+    const reserved = entry.face.size;
+    await budget.acquire(reserved);
     try {
       let bytes: ArrayBuffer | null = null;
       let readError: unknown = null;
@@ -1285,6 +1343,7 @@ export async function prepareDesktopFontsForDocument(
       // 파일이 바뀌었으면 다음 요청에서 색인을 새로 받는다.
       if (/stale/i.test(message)) indexStale = true;
     } finally {
+      budget.release(reserved);
       turns[order]!.release();
       plan.finishedAt = now();
       done += 1;
@@ -1335,9 +1394,7 @@ export async function prepareDesktopFontsForDocument(
   };
   lastReport = report;
   installDebugHandle();
-  await registerDesktopHftOutlines(names).catch((error) => {
-    console.warn('[HFT] 한컴 HFT 윤곽선 연결 실패:', error);
-  });
+  await hftOutlines;
   return report;
 }
 
@@ -1607,27 +1664,39 @@ async function registerDesktopHftOutlines(fontsUsed: readonly string[]): Promise
   }
   const index = await loadDesktopFontIndex();
   const wanted = new Set(uniqueFontNames(fontsUsed).map(name => name.trim()));
-  let registered = 0;
+  const fresh: Array<Promise<boolean>> = [];
+  const known: Array<Promise<boolean>> = [];
+  // 은행 파일은 작고 여럿이라 한꺼번에 읽고, 엔진 등록은 색인 순서대로 한다.
+  let previous: Promise<unknown> = Promise.resolve();
   for (const face of index.faces) {
     if (face.format !== 'hft') continue;
     if (![...face.families, ...face.koreanNames].some(name => wanted.has(name.trim()))) continue;
-    let read = hftOutlineFaceReads.get(face.id);
-    if (!read) {
-      read = readDesktopFace(host, face.id)
-        .then(bytes => registerHftOutlines(bytes))
-        .catch((error) => {
-          console.warn(`[HFT] ${face.path} 를 읽지 못했습니다:`, error);
-          return false;
-        });
-      hftOutlineFaceReads.set(face.id, read);
-      void read.then(ok => {
-        if (!ok && hftOutlineFaceReads.get(face.id) === read) hftOutlineFaceReads.delete(face.id);
-      });
-      if (await read) registered += 1;
-    } else {
-      await read;
+    const pending = hftOutlineFaceReads.get(face.id);
+    if (pending) {
+      known.push(pending);
+      previous = Promise.all([previous, pending]);
+      continue;
     }
+    const bytes = readDesktopFace(host, face.id);
+    bytes.catch(() => {});
+    const read = previous
+      .then(() => bytes)
+      .then(source => registerHftOutlines(source))
+      .catch((error) => {
+        console.warn(`[HFT] ${face.path} 를 읽지 못했습니다:`, error);
+        return false;
+      });
+    hftOutlineFaceReads.set(face.id, read);
+    void read.then(ok => {
+      if (!ok && hftOutlineFaceReads.get(face.id) === read) hftOutlineFaceReads.delete(face.id);
+    });
+    fresh.push(read);
+    previous = read;
   }
+  const [registered] = await Promise.all([
+    Promise.all(fresh).then(results => results.filter(Boolean).length),
+    Promise.all(known),
+  ]);
   return registered;
 }
 

@@ -8,6 +8,8 @@
  * 참고자료와 같은 세션 capability(REFERENCE)와 로컬 Studio origin만 받는다. 색인에 있는
  * face id만 읽으며 임의 경로는 받지 않는다.
  */
+import os from 'node:os';
+import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 
 import { isAllowedStudioOrigin } from './reference-http.mjs';
@@ -133,10 +135,22 @@ export function createFontHttpHandler({ authenticate, loadService = loadDesktopF
   };
 }
 
+/** 허브를 다시 띄울 때 글꼴 파일을 모두 다시 파싱하지 않도록 파일별 파싱 결과를 사용자 폴더에 둔다. */
+export function defaultFontCacheDir(env = process.env, platform = process.platform, home = os.homedir()) {
+  const platformPath = platform === 'win32' ? path.win32 : path.posix;
+  if (env.RHWP_FONT_CACHE_DIR) return platformPath.resolve(env.RHWP_FONT_CACHE_DIR);
+  if (platform === 'darwin') return platformPath.join(home, 'Library', 'Application Support', 'rhwp', 'fonts');
+  if (platform === 'win32') {
+    return platformPath.join(env.APPDATA || platformPath.join(home, 'AppData', 'Roaming'), 'rhwp', 'fonts');
+  }
+  return platformPath.join(env.XDG_DATA_HOME || platformPath.join(home, '.local', 'share'), 'rhwp', 'fonts');
+}
+
 /** 저장소나 데스크톱 패키지 안에서만 색인기가 있다. 없으면 503으로 알린다. */
 async function loadDesktopFontService() {
   const { createSystemFontService } = await import(new URL('../../desktop/system-fonts.mjs', import.meta.url).href);
   return createSystemFontService({
+    cacheDir: defaultFontCacheDir(),
     log: (line) => console.log(`[rhwp-agent] fonts: ${line}`),
   });
 }

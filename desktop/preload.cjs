@@ -94,7 +94,7 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
   ),
   releaseDocument: (slotId) => ipcRenderer.invoke('desktop:document-release', slotId),
   listSystemFonts: (options) => ipcRenderer.invoke('desktop:fonts-list', options),
-  readSystemFont: (id) => ipcRenderer.invoke('desktop:fonts-read', id),
+  systemFontBaseUrl: () => ipcRenderer.invoke('desktop:fonts-base'),
   ensureAgentHub: () => ipcRenderer.invoke('agent-hub:ensure'),
   respondToCloseRequest: (requestId, allowClose) => (
     ipcRenderer.invoke('desktop:close-response', requestId, allowClose)
