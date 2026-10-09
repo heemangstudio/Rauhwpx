@@ -11,8 +11,6 @@ const ZOOM_SETTLE_EPSILON = 0.001;
 const ZOOM_SMOOTHING_TIME_MS = 16;
 const WHEEL_ZOOM_SENSITIVITY = 0.00625;
 const MAX_WHEEL_DELTA_PX = 120;
-/** 이 시간 안에 이어지는 휠 이벤트는 같은 제스처로 보고 축 잠금을 유지한다. */
-const WHEEL_GESTURE_GAP_MS = 250;
 
 export class ViewportManager {
   private scrollY = 0;
@@ -28,10 +26,6 @@ export class ViewportManager {
   private zoomAnimating = false;
   private zoomTarget = 1.0;
   private zoomAnchor: ZoomAnchor = CENTER_ZOOM_ANCHOR;
-  /** 현재 휠 제스처의 잠긴 축 ('v' 세로 / 'h' 가로) */
-  private wheelAxis: 'v' | 'h' = 'v';
-  /** null = 아직 휠 이벤트 없음 — 첫 이벤트는 timeStamp 와 무관하게 새 제스처다. */
-  private lastWheelTime: number | null = null;
   private onScrollBound: () => void;
   private onWheelBound: (e: WheelEvent) => void;
   private onZoomAnimationFrameBound: (timestamp: number) => void;
@@ -88,28 +82,17 @@ export class ViewportManager {
     });
   }
 
-  /** Ctrl+휠: 브라우저 줌 대신 문서 줌. 일반 휠은 제스처 단위로 축을 잠근다. */
+  /** Ctrl+휠: 브라우저 줌 대신 문서 줌. 일반 휠은 두 축을 함께 이동한다. */
   private onWheel(e: WheelEvent): void {
     const deltaX = this.wheelDeltaPixels(e.deltaX, e.deltaMode);
     const deltaY = this.wheelDeltaPixels(e.deltaY, e.deltaMode);
 
     if (!e.ctrlKey && !e.metaKey) {
-      // 가로 스크롤이 없는 문서는 축 잠금이 의미가 없으므로 preventDefault 없이
-      // 바로 돌려보내 브라우저 네이티브(컴포지터) 스크롤에 맡긴다.
+      // 확대된 문서는 트랙패드의 두 축을 함께 반영해 대각선으로 이동한다.
       if (this.container && !e.shiftKey && this.isHorizontallyScrollable()) {
-        // 트랙패드 스크롤은 세로 의도여도 가로 성분이 섞인다. 제스처가 시작될 때
-        // 우세한 축을 잠가, 세로 스크롤 중 문서가 옆으로 미끄러지지 않게 한다.
-        const now = e.timeStamp || performance.now();
-        if (this.lastWheelTime === null || now - this.lastWheelTime >= WHEEL_GESTURE_GAP_MS) {
-          this.wheelAxis = Math.abs(deltaY) >= Math.abs(deltaX) ? 'v' : 'h';
-        }
-        this.lastWheelTime = now;
         e.preventDefault();
-        if (this.wheelAxis === 'v') {
-          if (deltaY !== 0) this.setScrollTop(this.container.scrollTop + deltaY);
-        } else if (deltaX !== 0) {
-          this.setScrollLeft(this.container.scrollLeft + deltaX);
-        }
+        if (deltaY !== 0) this.setScrollTop(this.container.scrollTop + deltaY);
+        if (deltaX !== 0) this.setScrollLeft(this.container.scrollLeft + deltaX);
       }
       return;
     }
