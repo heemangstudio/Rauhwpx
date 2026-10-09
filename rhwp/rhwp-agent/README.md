@@ -108,6 +108,8 @@ npm run typecheck:acp
 
 `typecheck:acp` checks the shared backend contract. Install Studio dependencies first.
 
+`node scripts/pi-harness-check.mjs` runs the installed Pi binary against a local stub model and a fake hub, with no network. It checks the Pi system prompt, parallel reads, serialized writes, revision fill and retry, the finish check, image pruning, and the core loadout (`RHWP_PI_CHECK_BIN` picks another binary).
+
 ## Files
 
 | File | Role |
