@@ -3983,7 +3983,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
     fullscreen = on;
     // 집중 화면은 늘 환경 패널을 닫은 채로 연다. 열고 싶으면 머리말의 토글로 연다.
-    if (on) environmentPanelOpen = false;
+    if (on) {
+      environmentPanelOpen = false;
+      threadsRailCollapsed = true;
+      compactThreadsRailOpen = false;
+    }
     closeThreadRailSurfaces(root);
     // 두 모드의 쉬는 모양이 달라서, 화면 전환은 펼친 입력기로 시작한다.
     composerRest.setResting(false);
