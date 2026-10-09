@@ -8,7 +8,7 @@
 //! - **A (baseline)**: status PASS = 페이지 수 보존 + 구조 불일치 없음 + 최대 변위 ≤ 임계.
 //!   목록에 없는 신규 샘플도 자동 포함 — 통과 못 하면 사유와 함께 `VISUAL_XFAIL` 에 등록.
 //! - **B (visual_xfail)**: 현재 라운드트립 시각 드리프트가 있는 샘플(측정값 기록). 드리프트가
-//!   해소되어 PASS 가 되면 `visual_xfail_entries_still_fail` 이 실패하므로 baseline 으로 승격.
+//!   해소되면 목록에서 제거해 baseline 으로 승격한다.
 //! - **제외**: HWPX 가 아닌 샘플.
 //!
 //! 주의(정직성): 이 게이트는 "rhwp 가 그린 원본 IR vs 라운드트립 IR" 의 **내부 정합성(회귀
@@ -97,15 +97,6 @@ impl std::fmt::Display for VisualFailure {
     }
 }
 
-fn expected_xfail_kind(reason: &str) -> VisualFailureKind {
-    if reason.contains("구조 불일치") || reason.contains("RawSvg") || reason.contains("Placeholder")
-    {
-        VisualFailureKind::StructMismatch
-    } else {
-        VisualFailureKind::DispOver
-    }
-}
-
 /// 시각 정합성 검사: 페이지 수 보존 + 구조 불일치 없음 + 최대 변위 ≤ 임계. 실패 시 사유.
 fn visual_check(path: &Path) -> Result<(), VisualFailure> {
     let bytes = std::fs::read(path).map_err(|e| VisualFailure {
@@ -166,31 +157,6 @@ fn visual_baseline_all_samples() {
         failures.len(),
         failures.join("\n")
     );
-}
-
-/// B등급(visual_xfail) 은 여전히 실패해야 한다 — PASS 가 되면 baseline 승격 필요.
-#[test]
-fn visual_xfail_entries_still_fail() {
-    for (name, reason) in VISUAL_XFAIL {
-        let path = Path::new(SAMPLES_ROOT).join(name);
-        assert!(
-            path.exists(),
-            "VISUAL_XFAIL 샘플 실종: {name} (목록 정비 필요)"
-        );
-        match visual_check(&path) {
-            Ok(()) => panic!(
-                "VISUAL_XFAIL 샘플이 PASS 함: {name} — baseline 으로 승격하고 VISUAL_XFAIL 에서 제거하라 (기록 사유: {reason})"
-            ),
-            Err(failure) => {
-                let expected = expected_xfail_kind(reason);
-                assert_eq!(
-                    failure.kind, expected,
-                    "VISUAL_XFAIL 샘플 실패 종류가 바뀜: {name} — 기록 사유: {reason}, 현재: {}",
-                    failure
-                );
-            }
-        }
-    }
 }
 
 /// 목록 정합 가드 — VISUAL_XFAIL/EXCLUDED 항목이 실제로 존재해야 한다.

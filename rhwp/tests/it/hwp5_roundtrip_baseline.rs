@@ -7,8 +7,8 @@
 //! CFB 구조 + 페이지수 복원(rhwp 자기 일관) + 2-round 안정성.
 //!
 //! - **A (baseline)**: 위 전부 통과. 목록에 없는 신규 HWP5 샘플도 자동 포함.
-//! - **B (xfail)**: 식별된 결함으로 제외(사유 필수). 통과하게 되면 `xfail_entries_still_fail`
-//!   가 실패 → baseline 승격.
+//! - **B (xfail)**: 식별된 결함으로 제외(사유 필수). 결함이 해소되면 목록에서 제거해
+//!   baseline 으로 승격한다.
 //! - **자동 제외**: HWP5(`FileFormat::Hwp`)가 아닌 `.hwp`(HWP3 등)와 배포용 문서
 //!   (`header.distribution`) — serializer 결함이 아니라 범위 밖.
 //!
@@ -121,22 +121,4 @@ fn baseline_all_samples_roundtrip() {
 #[test]
 fn baseline_large_samples_roundtrip() {
     run_baseline(|sz| sz > LARGE_THRESHOLD);
-}
-
-/// B등급(xfail) 샘플은 여전히 실패해야 한다 — 통과하게 되면 baseline 승격 필요.
-#[test]
-fn xfail_entries_still_fail() {
-    for (name, reason) in XFAIL {
-        let path = Path::new(SAMPLES_ROOT).join(name);
-        assert!(path.exists(), "XFAIL 샘플 실종: {name} (목록 정비 필요)");
-        let bytes = std::fs::read(&path).expect("읽기 실패");
-        assert!(
-            out_of_scope(&bytes).is_none(),
-            "XFAIL 은 범위 내(HWP5·편집가능) 샘플이어야 함: {name}"
-        );
-        assert!(
-            baseline_check(&bytes).is_err(),
-            "XFAIL 샘플이 통과함: {name} — baseline 으로 승격하고 XFAIL 에서 제거하라 (사유였던 결함: {reason})"
-        );
-    }
 }

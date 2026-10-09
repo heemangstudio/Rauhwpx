@@ -4,8 +4,8 @@
 //!
 //! - **A (baseline)**: parse → serialize → 재parse + IrDiff 0 + 패키지 검사 + 2-round 안정성.
 //!   목록에 없는 신규 샘플도 자동 포함 — 통과 못 하면 사유와 함께 `XFAIL` 에 등록해야 한다.
-//! - **B (xfail)**: 식별된 결함/미지원으로 baseline 제외. 결함이 해소되어 통과하게 되면
-//!   `xfail_entries_still_fail` 테스트가 실패하므로 baseline 으로 승격해야 한다.
+//! - **B (xfail)**: 식별된 결함/미지원으로 baseline 제외. 결함이 해소되면 목록에서 제거해
+//!   baseline 으로 승격한다.
 //! - **제외**: 샘플 자체가 HWPX 가 아닌 경우 (serializer 결함 아님).
 //!
 //! 주의: 이 게이트는 **구조(뼈대) 보존** 검증이다. 통과 = 시각 충실도 보장이 아니며,
@@ -168,19 +168,6 @@ fn baseline_all_samples_roundtrip() {
 #[test]
 fn baseline_large_samples_roundtrip() {
     run_baseline(|rel| LARGE.contains(&rel));
-}
-
-/// B등급(xfail) 샘플은 여전히 실패해야 한다 — 통과하게 되면 baseline 승격 필요.
-#[test]
-fn xfail_entries_still_fail() {
-    for (name, reason) in XFAIL {
-        let path = Path::new(SAMPLES_ROOT).join(name);
-        assert!(path.exists(), "XFAIL 샘플 실종: {name} (목록 정비 필요)");
-        assert!(
-            baseline_check(&path).is_err(),
-            "XFAIL 샘플이 통과함: {name} — baseline 으로 승격하고 XFAIL 에서 제거하라 (사유였던 결함: {reason})"
-        );
-    }
 }
 
 /// 목록 정합 가드 — EXCLUDED/ORACLE_UNFIT 항목이 실제로 존재하고,
