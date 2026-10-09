@@ -59,7 +59,12 @@ import { showToast } from '@/ui/toast';
 import { clearRecentDocs, listRecentDocs, removeRecentDoc } from '@/recent/recent-store';
 import { documentSourceDigest } from '@/recent/document-preflight';
 import { claimForRecentDoc } from '@/project-file/claim';
-import { openProjectFile, type ProjectFileDeps } from '@/project-file/open';
+import {
+  locateProjectFile,
+  openProjectFile,
+  type ProjectFileDeps,
+  type ProjectFileLocation,
+} from '@/project-file/open';
 import type { ProjectFileClaim } from '@/project-file/identity';
 import {
   claimNativeProbe,
@@ -331,7 +336,7 @@ function completeHandleSave(
   result: SaveDocumentResult,
   reason: 'save' | 'save-as',
   revision: number,
-  savedDigest: string | null,
+  saved: SavedFileContent | null,
 ): void {
   if (sourceFormat === 'hml') markConvertedHmlSaveHandle(result.handle);
   const previousFileHandle = services.wasm.currentFileHandle;
@@ -355,15 +360,23 @@ function completeHandleSave(
       fileName: result.fileName,
       sourceFormat: savedFormat,
       // 파일에 실제로 쓴 내용의 digest. 최근 문서·북마크가 지금 파일을 알아보게 한다.
-      savedDigest,
+      savedDigest: saved?.digest ?? null,
+      // 자동 저장은 이 바이트를 새 복구 기준으로 삼는다.
+      savedBytes: saved?.bytes ?? null,
     });
   }
 }
 
-/** 저장한 바이트의 digest. 계산하지 못해도 저장은 이미 끝났으므로 null 로 넘긴다. */
-async function savedBlobDigest(blob: Blob): Promise<string | null> {
+interface SavedFileContent {
+  bytes: Uint8Array;
+  digest: string;
+}
+
+/** 저장한 바이트와 digest. 읽지 못해도 저장은 이미 끝났으므로 null 로 넘긴다. */
+async function savedBlobContent(blob: Blob): Promise<SavedFileContent | null> {
   try {
-    return documentSourceDigest(new Uint8Array(await blob.arrayBuffer()));
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    return { bytes, digest: documentSourceDigest(bytes) };
   } catch (error) {
     console.warn('[save] 저장한 내용의 digest 를 계산하지 못했습니다:', error);
     return null;
@@ -436,7 +449,7 @@ async function saveAsFormat(services: CommandServices, format: SaveFormat): Prom
     if (result === 'cancelled') return 'cancelled';
     if (result.method !== 'fallback') {
       if (managed) return 'saved';
-      completeHandleSave(services, sourceFormat, format, result, 'save-as', revision, await savedBlobDigest(blob));
+      completeHandleSave(services, sourceFormat, format, result, 'save-as', revision, await savedBlobContent(blob));
       return 'saved';
     }
     const downloadName = await promptFallbackName(saveName, format);
@@ -484,7 +497,9 @@ async function saveWithHistory(services: CommandServices): Promise<SaveCurrentDo
       && isPortableHistoryFileName(currentHandle.name)
     ) {
       await writeBlobToHandle(currentHandle, historyBlob, services.validateSaveHandle);
-      completePortableHistorySave(services, currentHandle, currentHandle.name, revision);
+      completePortableHistorySave(
+        services, currentHandle, currentHandle.name, revision, (await savedBlobContent(historyBlob))?.bytes ?? null,
+      );
       return 'saved';
     }
 
@@ -513,7 +528,11 @@ async function saveWithHistory(services: CommandServices): Promise<SaveCurrentDo
         throw new Error('.rhwpx 확장자를 가진 기록 파일을 선택해야 합니다.');
       }
       await writeBlobToHandle(targetHandle, historyBlob, services.validateSaveHandle, !managed);
-      if (!managed) completePortableHistorySave(services, targetHandle, targetHandle.name, revision);
+      if (!managed) {
+        completePortableHistorySave(
+          services, targetHandle, targetHandle.name, revision, (await savedBlobContent(historyBlob))?.bytes ?? null,
+        );
+      }
       return 'saved';
     }
 
@@ -531,6 +550,7 @@ function completePortableHistorySave(
   handle: FileSystemFileHandleLike,
   fileName: string,
   revision: number,
+  savedBytes: Uint8Array | null,
 ): void {
   const previousFileHandle = services.wasm.currentFileHandle;
   services.wasm.currentFileHandle = handle;
@@ -547,6 +567,7 @@ function completePortableHistorySave(
     previousFileHandle,
     fileName,
     sourceFormat: services.wasm.getSourceFormat(),
+    savedBytes,
   });
   showToast({ message: '문서와 전체 버전 기록을 저장했습니다.', durationMs: 3000 });
 }
@@ -634,7 +655,7 @@ async function runSaveCurrentDocument(services: CommandServices): Promise<SaveCu
     if (result === 'cancelled') return 'cancelled';
     if (result.method !== 'fallback') {
       completeHandleSave(
-        services, sourceFormat, target.format, result, 'save', revision, await savedBlobDigest(blob),
+        services, sourceFormat, target.format, result, 'save', revision, await savedBlobContent(blob),
       );
       return 'saved';
     }
@@ -688,15 +709,38 @@ export async function confirmSaveBeforeReplacingDocument(
   }
 }
 
+/** 파일을 찾고 읽는 데만 쓰는 의존성. 문서를 열거나 사용자에게 묻지 않는다. */
+function projectFileLookupDeps(
+  claim: ProjectFileClaim,
+): Omit<ProjectFileDeps, 'loadBound' | 'pickForProject' | 'forgetRecent' | 'toast'> {
+  return {
+    ensurePermission: ensureReadPermission,
+    readHandle: readFileFromHandle,
+    digestOf: documentSourceDigest,
+    reopenRemembered: (documentId) => restoreNativeDocument(documentId),
+    searchNearby: async (query) => searchNearbyNativeDocuments(query.documentId, {
+      basenameHint: query.basenameHint,
+    }),
+    readProbe: async (probeId) => {
+      const read = await readNativeProbe(probeId);
+      if (!read) throw new Error('Native probe expired');
+      return read;
+    },
+    claimProbe: (probeId) => claimNativeProbe(probeId),
+    locationOf: async (handle, documentId) => {
+      if (!isDesktopApp()) return 'unknown';
+      return await verifyNativePick(documentId, handle) ? 'remembered' : 'not-remembered';
+    },
+  };
+}
+
 function projectFileDeps(
   services: CommandServices,
   claim: ProjectFileClaim,
   { skipUnsavedGuard = false } = {},
 ): ProjectFileDeps {
   return {
-    ensurePermission: ensureReadPermission,
-    readHandle: readFileFromHandle,
-    digestOf: documentSourceDigest,
+    ...projectFileLookupDeps(claim),
     // 문서가 다 열린 뒤에 돌아온다. 호출부가 결과 문서를 바로 다룰 수 있어야 한다.
     loadBound: async (bytes, name, handle, documentId) => {
       await openDocumentBytesAndWait(services, {
@@ -725,21 +769,12 @@ function projectFileDeps(
     },
     forgetRecent: removeRecentDoc,
     toast: (message, durationMs) => showToast({ message, durationMs }),
-    reopenRemembered: (documentId) => restoreNativeDocument(documentId),
-    searchNearby: async (query) => searchNearbyNativeDocuments(query.documentId, {
-      basenameHint: query.basenameHint,
-    }),
-    readProbe: async (probeId) => {
-      const read = await readNativeProbe(probeId);
-      if (!read) throw new Error('Native probe expired');
-      return read;
-    },
-    claimProbe: (probeId) => claimNativeProbe(probeId),
-    locationOf: async (handle, documentId) => {
-      if (!isDesktopApp()) return 'unknown';
-      return await verifyNativePick(documentId, handle) ? 'remembered' : 'not-remembered';
-    },
   };
+}
+
+/** 자동 저장본을 복구할 때 원본 파일을 찾는다. 파일 선택 창은 띄우지 않고 최근 목록도 바꾸지 않는다. */
+export function locateRecoveryOriginal(claim: ProjectFileClaim): Promise<ProjectFileLocation> {
+  return locateProjectFile(claim, projectFileLookupDeps(claim));
 }
 
 function libraryMoveDeps(

@@ -1,3 +1,4 @@
+import type { FileSystemFileHandleLike } from '@/command/file-system-access';
 import type { DirtyStateChange } from '@/core/document-dirty-state';
 import type { EventBus } from '@/core/event-bus';
 import {
@@ -7,7 +8,9 @@ import {
   releaseAutosaveSession,
   saveAutosaveDraft,
   touchAutosaveSession,
+  type AutosaveDataFormat,
   type AutosaveDraft,
+  type AutosaveDraftBase,
   type AutosaveLockManagerLike,
   type AutosaveOwner,
 } from './autosave-store.ts';
@@ -16,10 +19,25 @@ export interface AutosaveDocumentMeta {
   fileName: string;
   sourceFormat: string;
   draftId?: string;
+  documentId?: string | null;
+}
+
+/** 저장할 때마다 읽는 현재 문서 정보. 다른 이름으로 저장한 뒤에도 draft 가 최신 이름을 따른다. */
+export interface AutosaveLiveDocument {
+  documentId: string | null;
+  fileName: string;
+  fileHandle: FileSystemFileHandleLike | null;
+}
+
+/** 이 창이 마지막으로 열거나 저장한 파일 바이트. 복구할 때 디스크 변경 판단과 병합 기준이 된다. */
+export interface AutosaveBaseInput {
+  bytes: Uint8Array;
+  digest: string;
+  mergeable: boolean;
 }
 
 export interface AutosaveStoreLike {
-  saveDraft(draft: AutosaveDraft): Promise<void>;
+  saveDraft(draft: AutosaveDraft, base?: AutosaveDraftBase): Promise<void>;
   deleteDraft(id: string): Promise<void>;
   touchSession?(owner: AutosaveOwner, heartbeatAt: number): Promise<void>;
   releaseSession?(sessionId: string): Promise<void>;
@@ -38,7 +56,8 @@ export type AutosaveStatus =
   | { state: 'error'; reason: string; error: unknown };
 
 export interface AutosaveManagerOptions {
-  exportBytes: () => Uint8Array;
+  exportDraft: () => { bytes: Uint8Array; format: AutosaveDataFormat };
+  liveDocument?: () => AutosaveLiveDocument | null;
   debounceMs?: number;
   minSaveIntervalMs?: number;
   schedule?: Partial<AutosaveScheduleSettings>;
@@ -64,6 +83,10 @@ interface CurrentDocument {
   draftId: string;
   fileName: string;
   sourceFormat: string;
+  documentId: string | null;
+  base: AutosaveBaseInput | null;
+  /** base 를 draftBases 에 기록했으면 true. 다음 저장부터는 base 를 다시 쓰지 않는다. */
+  basePersisted: boolean;
 }
 
 const DEFAULT_IDLE_DELAY_MS = 10_000;
@@ -79,7 +102,8 @@ function reasonText(reason: unknown, fallback: string): string {
 }
 
 export class AutosaveManager {
-  private readonly exportBytes: () => Uint8Array;
+  private readonly exportDraft: () => { bytes: Uint8Array; format: AutosaveDataFormat };
+  private readonly liveDocument?: () => AutosaveLiveDocument | null;
   private readonly now: () => number;
   private readonly idFactory: () => string;
   private readonly store: AutosaveStoreLike;
@@ -111,7 +135,8 @@ export class AutosaveManager {
   private readonly maxRetryDelayMs: number;
 
   constructor(options: AutosaveManagerOptions) {
-    this.exportBytes = options.exportBytes;
+    this.exportDraft = options.exportDraft;
+    this.liveDocument = options.liveDocument;
     this.scheduleSettings = normalizeSchedule({
       recoveryEnabled: true,
       recoveryIntervalMs: options.minSaveIntervalMs ?? DEFAULT_RECOVERY_INTERVAL_MS,
@@ -122,7 +147,7 @@ export class AutosaveManager {
     this.now = options.now ?? (() => Date.now());
     this.idFactory = options.idFactory ?? createAutosaveDraftId;
     this.store = options.store ?? {
-      saveDraft: saveAutosaveDraft,
+      saveDraft: (draft, base) => saveAutosaveDraft(draft, base ? { base } : {}),
       deleteDraft: deleteAutosaveDraft,
       touchSession: touchAutosaveSession,
       releaseSession: releaseAutosaveSession,
@@ -183,7 +208,10 @@ export class AutosaveManager {
     };
   }
 
-  async beginDocument(meta: AutosaveDocumentMeta, options: { discardPreviousDraft?: boolean } = {}): Promise<string> {
+  async beginDocument(
+    meta: AutosaveDocumentMeta,
+    options: { discardPreviousDraft?: boolean; base?: AutosaveBaseInput | null } = {},
+  ): Promise<string> {
     const previousDraftId = this.current?.draftId ?? null;
     this.cancelTimers();
     this.pendingReason = null;
@@ -193,6 +221,9 @@ export class AutosaveManager {
       draftId: meta.draftId ?? this.idFactory(),
       fileName: meta.fileName,
       sourceFormat: meta.sourceFormat,
+      documentId: meta.documentId ?? null,
+      base: options.base ?? null,
+      basePersisted: false,
     };
 
     if (options.discardPreviousDraft && previousDraftId && previousDraftId !== this.current.draftId) {
@@ -203,6 +234,22 @@ export class AutosaveManager {
 
   getCurrentDraftId(): string | null {
     return this.current?.draftId ?? null;
+  }
+
+  /**
+   * 파일에 저장한 바이트를 새 기준으로 삼는다. 저장하는 동안 들어온 편집으로 문서가 아직
+   * dirty 면 남은 draft 가 옛 기준을 가리키지 않도록 바로 다시 기록한다.
+   */
+  async rebase(
+    base: AutosaveBaseInput,
+    options: { draftId?: string | null; dirty: boolean },
+  ): Promise<void> {
+    const current = this.current;
+    if (!current) return;
+    if (options.draftId !== undefined && options.draftId !== current.draftId) return;
+    current.base = base;
+    current.basePersisted = false;
+    if (options.dirty) await this.flushNow('rebased');
   }
 
   updateSchedule(settings: Partial<AutosaveScheduleSettings>): void {
@@ -258,16 +305,31 @@ export class AutosaveManager {
     const generationAtStart = this.discardGeneration;
     try {
       await this.waitForInstanceLock();
-      const bytes = this.exportBytes();
+      const { bytes, format } = this.exportDraft();
+      const live = this.liveDocument?.() ?? null;
+      const fileName = live?.fileName || current.fileName;
+      const documentId = live ? live.documentId : current.documentId;
+      const fileHandle = live?.fileHandle ?? null;
+      const base = current.base;
+      const writeBase = base && !current.basePersisted ? base : null;
       const savedAt = this.now();
       if (this.owner) await this.heartbeat(savedAt);
       await this.store.saveDraft({
         id: current.draftId,
-        fileName: current.fileName,
+        fileName,
         sourceFormat: current.sourceFormat,
         savedAt,
         byteLength: bytes.byteLength,
         data: new Uint8Array(bytes),
+        dataFormat: format,
+        ...(documentId ? { documentId } : {}),
+        ...(base ? {
+          base: { digest: base.digest, byteLength: base.bytes.byteLength, mergeable: base.mergeable },
+        } : {}),
+        ...(fileHandle ? {
+          fileHandle,
+          handleKind: fileHandle.identityKind === 'native-path' ? 'native-path' as const : 'browser' as const,
+        } : {}),
         dirtyReason: reason,
         ...(this.owner ? {
           ownerLaunchId: this.owner.launchId,
@@ -276,15 +338,17 @@ export class AutosaveManager {
           // lock 을 실제로 잡았을 때만 기록한다. 잡지 못한 페이지의 draft 는 heartbeat 규칙을 따른다.
           ...(this.instanceLockHeld ? { ownerInstanceId: this.instanceId } : {}),
         } : {}),
-      });
+      }, writeBase ? { digest: writeBase.digest, byteLength: writeBase.bytes.byteLength, data: writeBase.bytes } : undefined);
       if (this.discardGeneration !== generationAtStart) {
         // 저장 진행 중 discard가 끼어듦 — 방금 저장으로 부활한 draft를 재삭제한다
         await this.deleteDraft(current.draftId, 'discarded-during-save');
         return;
       }
+      // 저장 중 rebase 로 기준이 바뀌었으면 다음 저장에서 새 기준을 기록한다.
+      if (writeBase && current.base === writeBase) current.basePersisted = true;
       this.lastSavedAt = savedAt;
       this.retryAttempt = 0;
-      this.logger.debug?.(`[autosave] draft saved: ${current.fileName} (${bytes.byteLength} bytes)`);
+      this.logger.debug?.(`[autosave] draft saved: ${fileName} (${bytes.byteLength} bytes)`);
       this.onStatus?.({ state: 'saved', reason, byteLength: bytes.byteLength });
     } catch (error) {
       this.logger.warn('[autosave] draft save failed:', error);
@@ -309,6 +373,8 @@ export class AutosaveManager {
     this.pendingReason = null;
     this.lastSavedAt = 0;
     this.retryAttempt = 0;
+    // draft 와 함께 기준 바이트도 지워진다. 다음 draft 는 기준을 다시 기록해야 한다.
+    if (this.current) this.current.basePersisted = false;
     const draftId = this.current?.draftId;
     if (!draftId) return;
     await this.deleteDraft(draftId, reason);

@@ -18,6 +18,9 @@ import {
   type AutosaveStatus,
 } from '@/recovery/autosave-manager';
 import { HostSaveTracker } from '@/recovery/host-save';
+import { exportDraftContent } from '@/versioning/snapshot';
+import { isPortableHistoryFileName } from '@/versioning/portable-bundle';
+import { documentSourceDigest } from '@/recent/document-preflight';
 import type { AgentBridge } from '@/agent/bridge';
 import type { AgentEditingLease } from '@/agent/types';
 import type { DocumentVersionController } from '@/versioning/controller';
@@ -103,7 +106,13 @@ export function createDocumentSessionCore(options: DocumentSessionCoreOptions): 
     bus,
     documentState,
     autosave: new AutosaveManager({
-      exportBytes: () => wasm.exportHwp(),
+      // 버전 기록과 같은 형식(저장 대상 형식)으로 남긴다. 복구할 때 원본에 그대로 다시 연결한다.
+      exportDraft: () => exportDraftContent(wasm),
+      liveDocument: () => ({
+        documentId: session.documentId,
+        fileName: wasm.fileName,
+        fileHandle: wasm.currentFileHandle,
+      }),
       schedule: options.autosave.schedule,
       onStatus: (status) => options.autosave.onStatus(session, status),
       locks: options.autosave.locks,
@@ -155,6 +164,20 @@ export function createDocumentSessionCore(options: DocumentSessionCoreOptions): 
       documentState.markDirty(typeof reason === 'string' ? reason : 'document-changed');
     }),
     bus.on('document-dirty-changed', () => options.onDirtyChanged?.(session)),
+    // 방금 파일에 쓴 바이트가 자동 저장의 새 기준이다. 복구할 때 이 바이트로 디스크 변경을 판단한다.
+    // 저장하는 동안 들어온 편집으로 아직 dirty 면 draft 를 새 기준으로 바로 다시 쓴다.
+    bus.on('document-file-handle-saved', (payload) => {
+      const saved = payload as { fileName: string; savedBytes?: Uint8Array | null; savedDigest?: string | null };
+      if (!saved.savedBytes) return;
+      void session.autosave.rebase(
+        {
+          bytes: saved.savedBytes,
+          digest: saved.savedDigest ?? documentSourceDigest(saved.savedBytes),
+          mergeable: !isPortableHistoryFileName(saved.fileName),
+        },
+        { draftId: session.autosave.getCurrentDraftId(), dirty: documentState.isDirty() },
+      ).catch((error) => console.warn('[autosave] 저장 기준 갱신 실패:', error));
+    }),
   );
   return session;
 }
