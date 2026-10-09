@@ -269,9 +269,9 @@ function collaborationMode(opts) {
       model: opts.model ?? DEFAULT_CODEX_MODEL,
       reasoning_effort: opts.effort ?? null,
       // 주변 app-server v2 프로토콜은 camelCase지만 Collaboration-mode Settings는
-      // 의도적으로 snake_case를 쓴다. `null`은 Codex 내장 Default/Plan 지침을
-      // 선택하며, Rau 전용 브리프는 이미 thread developerInstructions로 공급한다.
-      developer_instructions: null,
+      // 의도적으로 snake_case를 쓴다. resume은 기존 스레드 지시를 유지할 수
+      // 있으므로 현재 모드 브리프를 매 턴 개발자 지시로 갱신한다.
+      developer_instructions: systemBriefFor(opts, 'codex'),
     },
   };
 }
