@@ -7,6 +7,7 @@ use rhwp::document_core::DocumentCore;
 use rhwp::model::style::UnderlineType;
 
 const HTML_PASTE_MAX_BYTES: usize = 2_000_000;
+const HTML_PASTE_MAX_TOTAL_BYTES: usize = 32_000_000;
 const FLUSH_LINE_CHAR_CAP: usize = 4_000;
 
 fn paste_html(html: &str) -> DocumentCore {
@@ -144,15 +145,27 @@ fn oversized_markup_paste_falls_back_to_capped_paragraphs() {
 }
 
 #[test]
-fn html_paste_enforces_absolute_input_ceiling_besides_markup_len() {
-    let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/document_core/commands/html_import.rs"));
+fn oversized_data_uri_payload_paste_falls_back_to_plain_text() {
+    // data: 페이로드는 마크업 길이 상한에서 빠지므로, 전체 입력 상한(32MB)만이 이 붙여넣기를
+    // 평문 폴백으로 돌린다. 상한이 사라지면 태그 트리를 파싱해 굵게 서식이 살아난다.
+    let payload = "A".repeat(HTML_PASTE_MAX_TOTAL_BYTES);
+    let html = format!("<p><strong>굵게</strong></p><img src=\"data:image/png;base64,{payload}\">");
+    let core = paste_html(&html);
+    let text: String = paragraphs(&core)
+        .iter()
+        .map(|paragraph| paragraph.text.as_str())
+        .collect();
+
+    assert_eq!(text, "굵게");
     assert!(
-        src.contains("HTML_PASTE_MAX_TOTAL_BYTES"),
-        "data: 페이로드를 포함한 절대 상한이 있어야 한다"
-    );
-    assert!(
-        src.contains("html.len() > Self::HTML_PASTE_MAX_TOTAL_BYTES"),
-        "마크업 길이와 별개로 html.len() 을 검사해야 한다"
+        paragraphs(&core)
+            .iter()
+            .all(|paragraph| paragraph.char_shapes.iter().all(|run| !core
+                .document()
+                .doc_info
+                .char_shapes[run.char_shape_id as usize]
+                .bold)),
+        "전체 입력 상한을 넘은 HTML 은 서식 파싱 없이 평문으로 붙여넣어야 한다"
     );
 }
 

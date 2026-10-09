@@ -260,7 +260,7 @@ mod issue_2527_empty_lineseg_reflow;
 mod issue_2559_footnote_footer_band;
 mod issue_258_clickhere_form_mode;
 mod issue_2722_table_grid_alloc;
-mod issue_2724_passthrough_invalidation_guard;
+mod issue_2724_edits_survive_hwp5_save;
 mod issue_2727_equation_line_mode;
 mod issue_2740_para_text_space_growth;
 mod issue_2743_hml_resource_id_limit;
