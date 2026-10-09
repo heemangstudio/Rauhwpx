@@ -101,7 +101,7 @@ function startHub(onCall) {
 
 // ─── pi 실행 ─────────────────────────────────────────────────────────────────
 
-async function runPi({ providerPort, hubPort, prompt, opts = {}, env = {} }) {
+async function runPi({ providerPort, hubPort, prompt, opts = {} }) {
   const piRoot = await mkdtemp(path.join(os.tmpdir(), 'rhwp-pi-check-'));
   const agentDir = path.join(piRoot, 'agent');
   const work = path.join(piRoot, 'work');
@@ -140,7 +140,7 @@ async function runPi({ providerPort, hubPort, prompt, opts = {}, env = {} }) {
     onEvent() {},
     ...opts,
   };
-  const sourceEnv = { ...process.env, ...env };
+  const sourceEnv = { ...process.env };
   const argv = buildPiArgv(backendOpts, `check-${Date.now()}`, sourceEnv);
   const childEnv = buildPiEnv(backendOpts, sourceEnv);
   const started = Date.now();
@@ -163,7 +163,7 @@ const textOf = (message) => (typeof message.content === 'string'
   : (message.content ?? []).map((part) => part.text ?? '').join(''));
 const overlaps = (a, b) => a.start < b.end && b.start < a.end;
 
-// ─── 시나리오 1: 에이전트 모드 편집 턴 ───────────────────────────────────────
+// ─── 에이전트 모드 편집 턴 ───────────────────────────────────────
 
 async function checkEditingTurn() {
   let mismatchSent = false;
