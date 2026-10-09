@@ -52,7 +52,9 @@ const PI_PACKAGE_MANIFEST_MAX_BYTES = 1024 * 1024;
 const EFFORTS = /** @type {const} */ (['low', 'medium', 'high']);
 const DEFAULT_EFFORT = 'medium';
 const DEFAULT_CONTEXT_WINDOW = 128_000;
-const DEFAULT_MAX_TOKENS = 8_192;
+/** OpenRouter 제공자 라우팅 정렬. off 면 provider 필드를 아예 보내지 않는다. */
+const ROUTING_SORTS = new Set(['latency', 'throughput', 'price', 'off']);
+const DEFAULT_ROUTING_SORT = 'throughput';
 const STDERR_TAIL_LIMIT = 1_200;
 const INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
 const REGISTRY_TIMEOUT_MS = 10_000;
@@ -89,7 +91,11 @@ const SKILLS_SOURCE_DIR = path.join(MODULE_DIR, 'pi', 'skills');
  * @property {string[]} efforts
  * @property {string|null} defaultEffort
  * @property {number|null} contextLength
- * @property {{ prompt: number, completion: number }} pricing
+ * @property {number|null} [maxOutputTokens] 카탈로그의 출력 토큰 상한. null 은 카탈로그에 값이 없다는 뜻이다
+ * @property {{ prompt: number, completion: number, cacheRead?: number }} pricing
+ *
+ * maxOutputTokens 와 pricing.cacheRead 는 예전 config.json 에 없던 필드다. 필드가 아예 없으면
+ * (메모리에서도 키 없음) 아직 카탈로그로 채우지 못한 것이고, syncAssets 가 다시 시도한다.
  */
 
 /**
@@ -161,6 +167,38 @@ function appendUtf8Tail(current, chunk, maxBytes) {
 /** 토큰 1개당 USD → 100만 토큰당 USD. 부동소수 찌꺼기는 6자리에서 자른다. */
 function perMillion(price) {
   return Math.round(Number(price) * 1e12) / 1e6;
+}
+
+function positiveInteger(value) {
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+function nonNegativePrice(value) {
+  const price = Number(value);
+  return Number.isFinite(price) && price >= 0 ? price : 0;
+}
+
+/** 카탈로그의 출력 상한. 컨텍스트 창을 알면 그보다 크게 잡지 않는다. 모르면 null. */
+function outputCeiling(maxCompletionTokens, contextLength) {
+  const ceiling = positiveInteger(maxCompletionTokens);
+  const context = positiveInteger(contextLength);
+  return ceiling !== null && context !== null ? Math.min(ceiling, context) : ceiling;
+}
+
+/** 예전 config.json 에서 읽어 카탈로그 필드가 아직 비어 있는 모델. */
+function needsCatalogFields(model) {
+  return model.maxOutputTokens === undefined || model.pricing.cacheRead === undefined;
+}
+
+/**
+ * RHWP_PI_ROUTING_SORT 값을 정리한다. 모르는 값이나 빈 값은 throughput 으로 본다.
+ *
+ * @param {unknown} raw
+ * @returns {string} latency | throughput | price | off
+ */
+export function normalizePiRoutingSort(raw) {
+  const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  return ROUTING_SORTS.has(value) ? value : DEFAULT_ROUTING_SORT;
 }
 
 function keyTailOf(key) {
@@ -236,7 +274,9 @@ export function defaultPiRoot(env = process.env, platform = process.platform, ho
  *           baseEnv?: NodeJS.ProcessEnv, secretStore?: object,
  *           tarballMaxBytes?: number, oauthExchangeTimeoutMs?: number,
  *           replaceFile?: typeof replaceFileAtomically,
- *           writeNodeHostFile?: typeof import('node:fs/promises').writeFile }} [deps]
+ *           writeNodeHostFile?: typeof import('node:fs/promises').writeFile,
+ *           routingSort?: string }} [deps]
+ *   routingSort: OpenRouter 제공자 정렬 (latency|throughput|price|off). 기본 throughput
  */
 export function createPiManager({
   rootDir = defaultPiRoot(),
@@ -254,7 +294,9 @@ export function createPiManager({
   oauthExchangeTimeoutMs = OAUTH_EXCHANGE_TIMEOUT_MS,
   replaceFile = replaceFileAtomically,
   writeNodeHostFile,
+  routingSort = DEFAULT_ROUTING_SORT,
 } = {}) {
+  const providerSort = normalizePiRoutingSort(routingSort);
   const tarballLimitBytes = Number.isSafeInteger(tarballMaxBytes) && tarballMaxBytes > 0
     ? Math.min(tarballMaxBytes, PI_TARBALL_MAX_BYTES)
     : PI_TARBALL_MAX_BYTES;
@@ -345,6 +387,8 @@ export function createPiManager({
       ? raw.defaultEffort
       : (efforts.length > 0 ? DEFAULT_EFFORT : null);
     const contextLength = Number(raw.contextLength);
+    // 필드가 없으면 키도 두지 않는다 — 아직 이관하지 않았다는 표시다 (PiModelConfig 참고).
+    const cacheRead = raw?.pricing?.cacheRead;
     return {
       id,
       name,
@@ -353,9 +397,13 @@ export function createPiManager({
       efforts,
       defaultEffort,
       contextLength: Number.isFinite(contextLength) && contextLength > 0 ? Math.round(contextLength) : null,
+      ...(raw.maxOutputTokens === undefined
+        ? {}
+        : { maxOutputTokens: positiveInteger(raw.maxOutputTokens) }),
       pricing: {
         prompt: Number(raw?.pricing?.prompt) || 0,
         completion: Number(raw?.pricing?.completion) || 0,
+        ...(cacheRead === undefined ? {} : { cacheRead: nonNegativePrice(cacheRead) }),
       },
     };
   }
@@ -460,25 +508,41 @@ export function createPiManager({
 
   /** agent/models.json에는 비밀이 아닌 모델 설정만 쓴다. */
   async function writeModelsJson() {
-    const provider = {
-      baseUrl: 'https://openrouter.ai/api/v1',
-      api: 'openai-completions',
-      models: config.models.map((model) => ({
+    /** @type {Array<[string, { maxTokens: 0 }]>} */
+    const unlimited = [];
+    const models = config.models.map((model) => {
+      const maxTokens = positiveInteger(model.maxOutputTokens);
+      // 상한을 모르는 모델은 출력 토큰 필드를 아예 보내지 않게 한다. pi 는 models[] 정의의
+      // maxTokens <= 0 을 거부하고, 빠진 maxTokens 는 16384 로 채운다. modelOverrides 의
+      // maxTokens 0 만 검증 없이 들어가 max_tokens/max_completion_tokens 를 생략시킨다.
+      if (maxTokens === null) unlimited.push([model.id, { maxTokens: 0 }]);
+      return {
         id: model.id,
         name: model.name,
         reasoning: model.reasoning,
         input: model.supportsImages ? ['text', 'image'] : ['text'],
         contextWindow: model.contextLength ?? DEFAULT_CONTEXT_WINDOW,
-        maxTokens: DEFAULT_MAX_TOKENS,
+        ...(maxTokens === null ? {} : { maxTokens }),
         ...(model.reasoning ? { thinkingLevelMap: thinkingLevelMap() } : {}),
+        // pi 는 이 값을 요청의 provider 필드로 그대로 보낸다.
+        ...(providerSort === 'off'
+          ? {}
+          : { compat: { openRouterRouting: { require_parameters: true, sort: providerSort } } }),
         cost: {
           // OpenRouter 는 토큰 1개당 USD, pi 는 100만 토큰당 USD 를 쓴다.
           input: perMillion(model.pricing.prompt),
           output: perMillion(model.pricing.completion),
-          cacheRead: 0,
+          cacheRead: perMillion(model.pricing.cacheRead ?? 0),
           cacheWrite: 0,
         },
-      })),
+      };
+    });
+    const provider = {
+      baseUrl: 'https://openrouter.ai/api/v1',
+      api: 'openai-completions',
+      models,
+      // fromEntries 는 '__proto__' 같은 id 도 평범한 키로 만든다.
+      ...(unlimited.length > 0 ? { modelOverrides: Object.fromEntries(unlimited) } : {}),
     };
     // Vault가 없거나 현재 열리지 않으면 legacy 키를 보존한다. transport가
     // available이라고 광고하는 것만으로 유일한 사용 가능 복사본을 지우면 안 된다.
@@ -803,7 +867,47 @@ export function createPiManager({
     };
   }
 
-  async function syncAssets() {
+  /**
+   * 예전 config.json 모델에 빠진 필드가 있을 때만 카탈로그를 받는다. 오프라인이거나 실패하면
+   * null — 아는 값만으로 models.json 을 쓰고, 다음 동기화에서 다시 시도한다.
+   */
+  async function catalogForMigration() {
+    if (!config.models.some(needsCatalogFields)) return null;
+    try {
+      const catalog = await client.catalog(false, apiKey);
+      return Array.isArray(catalog) ? catalog : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** 카탈로그에서 같은 id 를 찾아 빠진 필드만 채운다. 바뀐 게 있으면 true. */
+  function enrichStoredModels(catalog) {
+    if (!catalog) return false;
+    const byId = new Map(catalog.flatMap((entry) => {
+      const id = normalizedModelId(entry?.id);
+      return id ? [[id, entry]] : [];
+    }));
+    let changed = false;
+    config.models = config.models.map((model) => {
+      const entry = needsCatalogFields(model) ? byId.get(model.id) : null;
+      if (!entry) return model;
+      changed = true;
+      return {
+        ...model,
+        maxOutputTokens: model.maxOutputTokens === undefined
+          ? outputCeiling(entry.maxCompletionTokens, model.contextLength)
+          : model.maxOutputTokens,
+        pricing: {
+          ...model.pricing,
+          cacheRead: model.pricing.cacheRead ?? nonNegativePrice(entry.pricing?.cacheRead),
+        },
+      };
+    });
+    return changed;
+  }
+
+  async function syncAssets(migrationCatalog = null) {
     await fs.mkdir(agentDir, { recursive: true });
     await fs.mkdir(sessionsDir, { recursive: true });
     await writeAtomic(settingsPath, `${JSON.stringify({
@@ -812,8 +916,10 @@ export function createPiManager({
       enableInstallTelemetry: false,
       extensions: [EXTENSION_PATH, SUBAGENT_EXTENSION_PATH],
     }, null, 2)}\n`);
+    const migrated = enrichStoredModels(migrationCatalog);
     // Rebuild the provider file on every startup so settings stay in sync.
     await writeModelsJson();
+    if (migrated) await persistConfig();
     try {
       await fs.cp(SKILLS_SOURCE_DIR, skillsDir, { recursive: true, force: true });
     } catch (error) {
@@ -976,10 +1082,14 @@ export function createPiManager({
       return currentStatus();
     },
 
-    /** 확장 경로가 담긴 settings.json 을 쓰고 저장소 스킬을 pi 홈으로 복사한다. */
+    /**
+     * 확장 경로가 담긴 settings.json 과 models.json 을 쓰고 저장소 스킬을 pi 홈으로 복사한다.
+     * 예전 설정이면 카탈로그로 빠진 모델 필드를 채운다. 네트워크는 쓰기 큐 밖에서 기다린다.
+     */
     async syncAssets() {
       await load();
-      await serialized(() => syncAssets());
+      const migrationCatalog = await catalogForMigration();
+      await serialized(() => syncAssets(migrationCatalog));
       return currentStatus();
     },
 
@@ -1220,7 +1330,12 @@ export function createPiManager({
           efforts,
           defaultEffort,
           contextLength: entry.contextLength,
-          pricing: { ...entry.pricing },
+          maxOutputTokens: outputCeiling(entry.maxCompletionTokens, entry.contextLength),
+          pricing: {
+            prompt: entry.pricing.prompt,
+            completion: entry.pricing.completion,
+            cacheRead: nonNegativePrice(entry.pricing.cacheRead),
+          },
         });
       }
       return serialized(async () => {

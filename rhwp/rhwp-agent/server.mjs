@@ -246,7 +246,9 @@ if (process.env.RHWP_AGENT_MODE === 'production' && !secretStore.available) {
     code: 'HUB_SECRET_BROKER_REQUIRED',
   });
 }
-const piManager = await createPiManager({ rootDir: PI_ROOT, openRouter, secretStore }).init();
+const piManager = await createPiManager({
+  rootDir: PI_ROOT, openRouter, secretStore, routingSort: process.env.RHWP_PI_ROUTING_SORT,
+}).init();
 const authRuns = new AuthRunRegistry();
 let npmPrefixMutationQueue = Promise.resolve();
 function mutateSharedNpmPrefix(operation) {

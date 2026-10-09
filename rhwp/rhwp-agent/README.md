@@ -80,6 +80,7 @@ Browserbase credentials come from the variables below or from Studio **Settings 
 | `RHWP_SKILLS_DIR` | OS application-data directory | Product skill directory |
 | `RHWP_USAGE_DIR` | OS application-data directory | Token-usage log directory |
 | `RHWP_REFERENCES_DIR` | OS application-data directory | Reference file store |
+| `RHWP_PI_ROUTING_SORT` | `throughput` | OpenRouter provider sort for Pi: `throughput`, `latency`, `price`, or `off` (no provider routing preferences). Pi's `models.json` is rewritten at hub start, so restart the hub after changing it |
 | `BROWSERBASE_API_KEY` | — | Browserbase API key |
 | `BROWSERBASE_PROJECT_ID` | — | Browserbase project id |
 | `GEMINI_API_KEY` | — | Gemini key for the Browserbase sidecar |
