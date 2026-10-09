@@ -16,7 +16,7 @@ test('document replacement and close wait for the current version operation queu
     /async whenIdle\(\): Promise<void> \{[\s\S]*?pending = this\.#operation;[\s\S]*?await pending;[\s\S]*?while \(pending !== this\.#operation\)/,
     'the idle observer includes work added while settling',
   );
-  assert.match(main, /session\.versions = versions/);
+  assert.match(main, /session\.versions = new DocumentVersionController\(/);
   assert.match(
     main,
     /const allowed = skipUnsavedGuard[\s\S]*?if \(!allowed\) return false;\s*await attachedSession\.versions\?\.whenIdle\(\);\s*return true;/,

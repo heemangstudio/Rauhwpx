@@ -235,6 +235,22 @@ export interface AgentSidebarDeps {
   openThreadDocument?: (
     thread: { id: string; documentId: string | null; docKey: string | null },
   ) => Promise<LibraryMoveResult>;
+  /**
+   * 새 채팅과 같은 문서의 다른 채팅 열기를 편집기에 먼저 맡긴다. 사이드바는 묻기 전에
+   * 지금 채팅을 저장하고, 도는 작업은 멈추지 않는다. 'handled' 면 편집기가 다른 채팅
+   * 창을 보이고 이 사이드바를 내렸다. 'local' 이면 이 사이드바가 직접 연다.
+   */
+  openChat?: (
+    request: { kind: 'new' } | { kind: 'thread'; threadId: string },
+  ) => Promise<'handled' | 'local'>;
+  /**
+   * 같은 문서의 다른 채팅이 문서를 고치는 동안 get() 이 이유를 돌려준다. 그동안 이
+   * 채팅은 채팅 모드로만 보내고, 이유는 막힌 모드의 짧은 툴팁이 된다.
+   */
+  chatModeLock?: {
+    get(): { reason: string } | null;
+    subscribe(listener: () => void): () => void;
+  };
 }
 
 export interface AgentSidebarHandle {
@@ -250,6 +266,13 @@ export interface AgentSidebarHandle {
   openThreadById(threadId: string): void;
   /** 이 세션에 다음으로 열리는 문서가 그 채팅의 문서면 그 채팅을 잇는다. */
   followThreadOnNextDocument(threadId: string): void;
+  /**
+   * 새 채팅 초안을 집중 모드로 연다. 첫 메시지를 보내기 전까지 스레드도 허브 채팅도
+   * 만들지 않는다 — 편집기가 새로 띄운 채팅 창에서 부른다.
+   */
+  startDraftChat(): void;
+  /** 이 사이드바가 보이는 채팅. 초안이거나 비어 있으면 null. */
+  currentThreadId(): string | null;
   dispose(): void;
 }
 
@@ -635,6 +658,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     versionController,
     openClassicVersionControl,
     openThreadDocument,
+    openChat,
+    chatModeLock,
   } = deps;
 
   /**
@@ -770,6 +795,24 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     docKey: currentDocKey,
     documentId: currentDocumentId,
   });
+  /**
+   * 아직 보내지 않은 채팅 — 스레드를 저장하지 않고 브리지 채팅도 이 스레드로 열지 않는다.
+   * 처음 뜬 빈 채팅과 새 채팅 초안이 여기에 든다. 첫 메시지를 보낼 때 채팅을 연다.
+   */
+  let draftChat = true;
+  /** 초안을 버리면 돌아갈 채팅 — 새 채팅을 누르기 전에 보던 채팅이다. */
+  let draftReturnThreadId: string | null = null;
+  /** 이 사이드바가 브리지 채팅을 마지막으로 연 스레드. 멈추면 null. */
+  let bridgeThreadId: string | null = null;
+  /** 사용자나 편집기가 채팅을 고른 뒤에는 시작 때의 마지막 채팅 복원이 덮어쓰지 않는다. */
+  let chatChosen = false;
+  /** 같은 문서의 다른 채팅이 편집 중이면 그 이유 — 이 채팅은 채팅 모드만 쓴다. */
+  let chatModeLockReason: string | null = null;
+  /** 잠금 때문에 채팅 모드로 옮기려 했던 채팅 — 허브가 거절해도 같은 채팅에서 되풀이하지 않는다. */
+  let chatModeLockForcedThreadId: string | null = null;
+  let chatModeLockCheckQueued = false;
+  /** 초안의 첫 메시지로 입력기가 잠깐 잠기면, 채팅이 열린 뒤 입력기에 초점을 돌려준다. */
+  let refocusInputOnChatStart = false;
   const threadComposerDrafts = new Map<string, { text: string; files: File[] }>();
   let assistantBuffer = '';
   let assistantRenderFrame: number | null = null;
@@ -833,8 +876,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const threadWorkflows = new Map<string, AgentWorkflow>();
 
   function startCurrentBridgeChat(force = false): void {
+    // 초안은 첫 메시지를 보낼 때 연다 — 그 전의 선택은 이 사이드바에만 남는다.
+    if (draftChat) return;
     // 새 채팅·스레드 전환(force)만 입력기를 잠근다. 모델/추론 강도만 바꿀 때는
     // 같은 대화를 다시 열 뿐이라 입력칸·피커가 비활성으로 깜빡이지 않게 둔다.
+    bridgeThreadId = currentThread.id;
     bridge.setServiceTier(selectedServiceTier);
     if (force) chatStartPendingThreadId = currentThread.id;
     const history = serializeThreadMessagesForProviderHistory(currentThread.messages);
@@ -2776,7 +2822,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     },
     onOpenFilter: () => openDocumentFilter(),
     onOpenDocuments: () => openDocumentPalette(),
-    onNewChat: () => startNewChat(),
+    onNewChat: () => requestNewChat(),
     onClearFilter() {
       setThreadDocFilter(null);
     },
@@ -3631,6 +3677,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     fullscreenIcon = nextIcon;
 
     if (!on) {
+      // 집중 모드를 닫으면 보내지 않은 초안은 버리고 앞 채팅으로 돌아간다.
+      discardDraft();
       restoreSidebarLayout();
       setConfigPanelOpen(false);
       measure();
@@ -3741,7 +3789,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     modeMenu.update({
       mode: currentMode(),
       disabled: isControlLocked() || connState !== 'connected',
-      hint: planRun ? '승인한 계획을 실행 중' : '',
+      hint: planRun ? '승인한 계획을 실행 중' : (chatModeLockReason ?? ''),
+      chatOnlyReason: chatModeLockReason,
     });
     refreshSidebarWidthMin();
   }
@@ -3751,6 +3800,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    * (허브가 같은 전환 큐에서 순서대로 처리한다). 전체로 들어갈 때만 확인 시트를 띄운다.
    */
   async function requestMode(next: AgentMode): Promise<boolean> {
+    if (modeBlockedByLock(next)) return false;
     if (modeNeedsConfirmation(next)) {
       const confirmed = await confirmSheet(modeMenu.trigger, '전체 접근', '승인 없이 편집하고 파일에 접근합니다.', { confirmLabel: '켜기' });
       if (!confirmed) return false;
@@ -3764,10 +3814,23 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       && permissionProfile !== 'unrestricted';
   }
 
+  /** 같은 문서의 다른 채팅이 편집하는 동안에는 채팅 말고는 고를 수 없다 — 칩이 이유를 보인다. */
+  function modeBlockedByLock(next: AgentMode): boolean {
+    if (chatModeLockReason === null || next === 'chat') return false;
+    updateModeChip();
+    return true;
+  }
+
   /** 확인이 끝난 모드 전환. 전환을 시작했거나 이미 그 모드면 true. */
   function switchMode(next: AgentMode): boolean {
     const target = agentModeTarget(next);
+    if (modeBlockedByLock(next)) return false;
     if (next === currentMode()) {
+      input.focus();
+      return true;
+    }
+    if (draftChat) {
+      setDraftMode(next);
       input.focus();
       return true;
     }
@@ -3782,6 +3845,70 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (target.permissionProfile !== permissionProfile) sendPermissionProfile(target.permissionProfile);
     input.focus();
     return true;
+  }
+
+  /** 초안의 모드 — 허브 채팅이 아직 없으므로 첫 메시지를 보낼 때 이 모드로 연다. */
+  function setDraftMode(next: AgentMode): void {
+    const target = agentModeTarget(next);
+    permissionProfile = target.permissionProfile;
+    applyWorkflow(target.workflow);
+  }
+
+  /** 열린 채팅을 조용히 채팅 모드로 옮긴다. 결과는 workflow-changed 로 온다. */
+  function forceChatWorkflow(): void {
+    const target = agentModeTarget('chat');
+    if (chatWorkflow !== target.workflow) {
+      workflowTransitionPending = true;
+      bridge.setWorkflow(target.workflow);
+    }
+    if (permissionProfile !== target.permissionProfile) sendPermissionProfile(target.permissionProfile);
+    updateComposer();
+  }
+
+  /** 편집기가 알려 준 잠금을 다시 읽는다. 풀려도 모드는 그대로 둔다. */
+  function readChatModeLock(): void {
+    let lock: { reason: string } | null = null;
+    try {
+      lock = chatModeLock?.get() ?? null;
+    } catch (error) {
+      console.warn('[agent-sidebar] 채팅 모드 잠금을 읽지 못했습니다:', error);
+    }
+    const reason = lock ? lock.reason : null;
+    if (reason !== chatModeLockReason) {
+      chatModeLockReason = reason;
+      // 잠금이 새로 걸리면 그 상태에서 한 번 더 옮겨 본다.
+      chatModeLockForcedThreadId = null;
+      if (!slashMenu.hidden) rebuildSlashMenu();
+      updateModeChip();
+    }
+    enforceChatModeLock();
+  }
+
+  /** 상태가 가라앉은 뒤 한 번만 확인한다 — 입력기를 갱신할 때마다 부른다. */
+  function scheduleChatModeLockCheck(): void {
+    if (chatModeLockReason === null || chatModeLockCheckQueued) return;
+    chatModeLockCheckQueued = true;
+    queueMicrotask(() => {
+      chatModeLockCheckQueued = false;
+      enforceChatModeLock();
+    });
+  }
+
+  /**
+   * 잠겨 있는데 채팅 모드가 아니면 채팅 모드로 옮긴다. 이 채팅의 턴이 돌거나 전환 중이면
+   * 끝난 뒤 입력기 갱신이 다시 부른다.
+   */
+  function enforceChatModeLock(): void {
+    if (chatModeLockReason === null || root.dataset.disposed === 'true') return;
+    if (currentMode() === 'chat') return;
+    if (draftChat) {
+      setDraftMode('chat');
+      return;
+    }
+    if (readOnlyDocLabel !== null || turnRunning || isControlLocked() || connState !== 'connected') return;
+    if (chatModeLockForcedThreadId === currentThread.id) return;
+    chatModeLockForcedThreadId = currentThread.id;
+    forceChatWorkflow();
   }
 
   function sendPermissionProfile(profile: PermissionProfile): void {
@@ -4009,7 +4136,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     selectedServiceTier = next;
     currentThread.serviceTier = next;
     persistCurrentThread();
-    if (bridge.getActiveAgent() === 'codex') bridge.setServiceTier(next);
+    if (!draftChat && bridge.getActiveAgent() === 'codex') bridge.setServiceTier(next);
     systemMessage(next === 'fast'
       ? 'Codex Fast를 켰습니다. 다음 턴부터 우선 처리됩니다.'
       : 'Codex Fast를 껐습니다.');
@@ -4117,7 +4244,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     activeTemplate = template;
     currentThread.activeTemplateId = template?.id ?? null;
     renderActiveTemplate();
-    if (sync) bridge.setActiveTemplate(template?.id ?? null);
+    // 초안의 템플릿은 첫 메시지를 보낼 때 브리지에 넘긴다.
+    if (sync && !draftChat) bridge.setActiveTemplate(template?.id ?? null);
     persistCurrentThread();
   }
 
@@ -4186,7 +4314,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         skillName: skill.name,
         skillIcon: skill.icon,
       }));
-    slashOptions = [...base, ...product].filter((option) => option.label.slice(1).toLowerCase().includes(query));
+    // 다른 채팅이 편집하는 동안에는 채팅 말고 다른 모드 명령을 보이지 않는다.
+    const offered = chatModeLockReason === null
+      ? base
+      : base.filter((option) => !option.mode || option.mode === 'chat');
+    slashOptions = [...offered, ...product].filter((option) => option.label.slice(1).toLowerCase().includes(query));
     slashIndex = Math.min(slashIndex, Math.max(0, slashOptions.length - 1));
     renderSlashRows();
   }
@@ -4336,6 +4468,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         : '첨부 파일 확인 필요';
     }
     if (!activeComposerSkill && text.startsWith('//')) text = text.slice(1);
+    // 잠긴 채팅은 계획 수정 요청도 채팅 모드의 질문으로 보낸다.
+    if (chatModeLockReason !== null && currentMode() !== 'chat') revisionPlanId = null;
     if (revisionPlanId && !referenceLibrary.hasDrafts() && !activeComposerSkill && text) {
       const planId = revisionPlanId;
       if (!planApprovable || activePlan?.planId !== planId) {
@@ -4452,6 +4586,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (threadsPanelOpen) setThreadsPanelOpen(false);
     if (skillsPanelOpen) setSkillsPanelOpen(false);
     if (settingsPanelOpen) setSettingsPanelOpen(false);
+    prepareChatForSend();
     const messageText = activeTemplate && !skillNameForMessage
         ? `/templates ${activeTemplate.name}${text ? ` ${text}` : ''}`
         : text;
@@ -4602,6 +4737,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     else delete currentThread.latestPlan;
     if (planHistory.length > 0) currentThread.plans = [...planHistory];
     else delete currentThread.plans;
+    // 보내지 않은 초안은 안내 문구가 붙어도 남기지 않는다.
+    if (draftChat) {
+      updateWorkspaceChatTitle();
+      return;
+    }
     if (currentThread.messages.length === 0) {
       removeThread(currentThread.id);
       updateWorkspaceChatTitle();
@@ -5276,7 +5416,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       { id: 'delete', label: '삭제', danger: true, enabled: getChatStatus(thread.id) !== 'working' },
     ], anchor);
     if (choice === 'open') {
-      openThread(thread.id);
+      requestOpenThread(thread.id);
     } else if (choice === 'pin') {
       toggleThreadPin(thread);
     } else if (choice === 'rename') {
@@ -5328,7 +5468,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     btn.append(top, meta);
     // 두 번 누르기로는 열지 않는다 — 첫 클릭이 이미 대화를 열어버리므로
     // 이름 바꾸기는 연필 버튼과 우클릭 메뉴로 들어간다.
-    btn.addEventListener('click', () => openThread(thread.id));
+    btn.addEventListener('click', () => requestOpenThread(thread.id));
     threadRowTargets.set(btn, { thread, row: li });
 
     const rename = el('button', 'ag-thread-rename');
@@ -5618,17 +5758,79 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
   }
 
+  /**
+   * 편집기에 채팅을 맡기기 전에 지금 채팅을 저장한다. 도는 턴의 답변 버퍼는 끊지 않는다 —
+   * 끊으면 이어서 흐르는 답변이 말풍선 두 개로 갈라진다. 턴이 끝나면 그대로 저장된다.
+   */
+  function saveBeforeHandOff(): void {
+    if (!turnRunning) flushAssistantBuffer();
+    persistCurrentThread();
+  }
+
   /** 다른 문서의 채팅을 편집기에 맡긴다 — 지금 채팅은 저장만 하고 멈추지 않는다. */
   async function handThreadToHost(thread: ChatThread): Promise<LibraryMoveResult> {
     if (!openThreadDocument) return 'failed';
-    flushAssistantBuffer();
-    persistCurrentThread();
+    saveBeforeHandOff();
     try {
       return await openThreadDocument({ id: thread.id, documentId: thread.documentId, docKey: thread.docKey });
     } catch (error) {
       console.warn('[agent-sidebar] 채팅 문서 열기 실패:', error);
       return 'failed';
     }
+  }
+
+  /** 마지막으로 편집기에 물은 채팅 열기 — 그 뒤에 다른 것을 고르면 앞선 답은 버린다. */
+  let openChatTicket = 0;
+
+  /**
+   * 새 채팅·같은 문서의 다른 채팅을 편집기에 먼저 묻는다. 이 사이드바가 열어야 하면 true.
+   * 지금 채팅은 저장만 하고 도는 작업은 멈추지 않는다 — 바쁘면 편집기가 다른 채팅 창을 띄운다.
+   */
+  async function askHostToOpenChat(
+    request: { kind: 'new' } | { kind: 'thread'; threadId: string },
+  ): Promise<boolean> {
+    if (!openChat) return true;
+    saveBeforeHandOff();
+    const ticket = ++openChatTicket;
+    let result: 'handled' | 'local';
+    try {
+      result = await openChat(request);
+    } catch (error) {
+      console.warn('[agent-sidebar] 채팅 열기 실패:', error);
+      return false;
+    }
+    if (ticket !== openChatTicket || root.dataset.disposed === 'true') return false;
+    return result === 'local';
+  }
+
+  /** 새 채팅 진입점 — 사용자가 새 채팅을 고르는 곳은 모두 이리 온다. */
+  function requestNewChat(): void {
+    chatChosen = true;
+    if (!openChat) {
+      startNewChat();
+      return;
+    }
+    void askHostToOpenChat({ kind: 'new' }).then((local) => {
+      if (local) startNewChat();
+    });
+  }
+
+  /** 레일·메뉴·키보드로 채팅을 고른다. 이 문서의 다른 채팅은 편집기에 먼저 묻는다. */
+  function requestOpenThread(id: string): void {
+    chatChosen = true;
+    const target = getThread(id);
+    if (
+      !openChat
+      || !target
+      || id === currentThread.id
+      || !threadMatchesDocument(target, currentDocumentId, currentDocKey)
+    ) {
+      openThread(id);
+      return;
+    }
+    void askHostToOpenChat({ kind: 'thread', threadId: id }).then((local) => {
+      if (local) openThread(id);
+    });
   }
 
   function canFollowThreadDocument(thread: Pick<ChatThread, 'documentId' | 'docKey'>): boolean {
@@ -5734,15 +5936,30 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     updateComposer();
   }
 
+  /**
+   * 새 채팅. 사용자가 고른 새 채팅은 초안이다 — 집중 모드에 인사와 입력기만 띄우고, 첫
+   * 메시지를 보낼 때 스레드를 저장하고 브리지 채팅을 연다. 앞 채팅은 저장된 그대로 두고
+   * 브리지도 아직 멈추지 않는다. silent 는 문서 전환·삭제처럼 지금 채팅을 대신 세울 때로,
+   * 빈 채팅의 브리지 채팅을 곧바로 연다.
+   */
   function startNewChat(opts?: { silent?: boolean }): void {
+    const draft = !opts?.silent;
     if (!opts?.silent) pendingThreadSwitch = null;
     rememberThreadComposerDraft();
     setComposerSkill(null);
+    // 초안은 앞 채팅을 멈추지 않는다. 다만 편집기가 바쁜 채팅을 따로 띄우지 않으면
+    // (openChat 없음) 예전처럼 도는 턴과 질문을 끝내 초안 화면에 흘러들지 않게 한다.
+    const stopPrevious = bridge.isTurnRunning() || bridge.getPendingUserQuestion() !== null;
     if (bridge.isTurnRunning()) bridge.interrupt();
     flushAssistantBuffer();
     const previousThreadId = currentThread.id;
-    const previousThreadWasEmpty = currentThread.messages.length === 0;
+    const previousWasDraft = draftChat;
+    const previousThreadWasEmpty = previousWasDraft || currentThread.messages.length === 0;
+    const returnThreadId = previousWasDraft
+      ? draftReturnThreadId
+      : (previousThreadWasEmpty ? null : previousThreadId);
     persistCurrentThread();
+    if (previousWasDraft) threadComposerDrafts.delete(previousThreadId);
     input.value = '';
     referenceLibrary.discardDrafts();
     resizeComposerInput();
@@ -5766,14 +5983,62 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       threadWorkflows.delete(previousThreadId);
     }
     currentThread = nextThread;
+    draftChat = draft;
+    draftReturnThreadId = draft ? returnThreadId : null;
     updateWorkspaceChatTitle();
+    if (draft) {
+      chatStartPendingThreadId = null;
+      selectTemplate(null, false);
+      if (stopPrevious) {
+        bridgeThreadId = null;
+        bridge.stopChat();
+      }
+      referenceLibrary.contextChanged();
+      enforceChatModeLock();
+      updateComposer();
+      setThreadsPanelOpen(false);
+      // 초안마다 새 인사를 고른다 — 이미 집중 모드여도 빈 채팅 배치를 다시 세운다.
+      syncFocusGreeting();
+      setFullscreen(true, { then: () => input.focus({ preventScroll: true }) });
+      return;
+    }
     selectTemplate(null);
     bridge.stopChat();
     referenceLibrary.contextChanged();
     startCurrentBridgeChat(true);
-    if (opts?.silent) return;
-    setThreadsPanelOpen(false);
-    input.focus();
+  }
+
+  /**
+   * 보내지 않은 초안을 조용히 버린다. 초안 전에 보던 채팅이 있으면 그리로 돌아가고,
+   * 없으면 빈 채팅으로 남는다 — 어느 쪽이든 저장되는 것은 없다.
+   */
+  function discardDraft(): void {
+    if (!draftChat) return;
+    const returnThreadId = draftReturnThreadId;
+    draftReturnThreadId = null;
+    if (!returnThreadId || !getThread(returnThreadId)) return;
+    openThread(returnThreadId, { routed: true });
+  }
+
+  /**
+   * 보내기 직전에 부른다. 잠긴 채팅은 채팅 모드로 옮기고, 초안이면 브리지 채팅을 고른
+   * 선택으로 연다. 브리지는 시작·전환이 끝날 때까지 메시지를 붙잡아 한 번만 보낸다.
+   */
+  function prepareChatForSend(): void {
+    if (chatModeLockReason !== null && currentMode() !== 'chat') {
+      if (draftChat) setDraftMode('chat');
+      else if (!workflowTransitionPending) forceChatWorkflow();
+    }
+    if (!draftChat) return;
+    draftChat = false;
+    draftReturnThreadId = null;
+    chatChosen = true;
+    refocusInputOnChatStart = active && document.activeElement === input;
+    // 앞 채팅의 허브 세션을 닫고 이 스레드로 새로 연다.
+    bridgeThreadId = null;
+    bridge.stopChat();
+    bridge.setActiveTemplate(activeTemplate?.id ?? null);
+    startCurrentBridgeChat(true);
   }
 
   /**
@@ -5808,13 +6073,18 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       return;
     }
     pendingThreadSwitch = null;
-    if (!liveQuestion && turnRunning) bridge.interrupt();
+    // 초안을 버리고 브리지가 아직 들고 있는 앞 채팅으로 돌아가면 다시 열지 않고 잇는다.
+    const resume = draftChat && !liveQuestion && bridgeThreadId === id && bridge.getActiveAgent() !== null;
+    if (!resume && !liveQuestion && turnRunning) bridge.interrupt();
     flushAssistantBuffer();
     persistCurrentThread();
     const loaded = getThread(id);
     if (!loaded) return;
     rememberThreadComposerDraft();
+    if (draftChat) threadComposerDrafts.delete(currentThread.id);
     setComposerSkill(null);
+    draftChat = false;
+    draftReturnThreadId = null;
     threadWorkflows.set(id, loaded.workflow);
     planArchives.set(id, loaded.plans?.length
       ? loaded.plans
@@ -5830,7 +6100,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     input.value = '';
     applyThreadMeta(currentThread);
     renderMessagesFromThread(currentThread);
-    if (!liveQuestion) bridge.stopChat();
+    if (!liveQuestion && !resume) {
+      bridgeThreadId = null;
+      bridge.stopChat();
+    }
     const matchesCurrentDocument = threadMatchesDocument(
       loaded,
       currentDocumentId,
@@ -5858,6 +6131,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     exitReadOnlyMode();
     restoreThreadComposerDraft();
     if (liveQuestion) {
+      setThreadsPanelOpen(false);
+      return;
+    }
+    if (resume) {
+      // 브리지가 이 채팅을 그대로 들고 있다 — 모드와 계획만 브리지에 맞춘다.
+      permissionProfile = bridge.getPermissionProfile();
+      syncPlanningFromBridge();
+      updateComposer();
       setThreadsPanelOpen(false);
       return;
     }
@@ -6070,6 +6351,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     // 누르기 전까지는 그대로 두고 이어서 고를 수 있게.
     if (selectionLocked && chatStartPendingThreadId === null) setConfigPanelOpen(false);
     updateWorkflowControl();
+    scheduleChatModeLockCheck();
   }
 
   function conversationTail(): HTMLElement {
@@ -7167,6 +7449,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         // 새 채팅(welcome)·재시작 시 작업 방식과 계획 단계를 서버와 다시 맞춘다.
         syncPlanningFromBridge();
         persistCurrentThread();
+        if (refocusInputOnChatStart) {
+          refocusInputOnChatStart = false;
+          if (active && !input.disabled) input.focus({ preventScroll: true });
+        }
         const liveQuestion = bridge.getPendingUserQuestion();
         if (liveQuestion?.threadId === currentThread.id) {
           const stored = currentThread.pendingUserQuestion
@@ -7252,7 +7538,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         if (currentThread.activeTemplateId && !selected) {
           currentThread.activeTemplateId = null;
           activeTemplate = null;
-          bridge.setActiveTemplate(null);
+          if (!draftChat) bridge.setActiveTemplate(null);
           if (e.change?.type === 'deleted') {
             systemMessage(`“${e.change.template.name}” 템플릿을 사용할 수 없어 이 채팅에서 해제했습니다.`);
           }
@@ -7756,7 +8042,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    * 전체(편집 바로 반영). 전체로 실행할 때는 모드 칩과 같은 확인 시트를 거친다.
    */
   async function approveActivePlan(planId: string, profile: PermissionProfile, anchor?: HTMLElement): Promise<void> {
-    const canApprove = (): boolean => planApprovable && !planActionPending
+    const canApprove = (): boolean => planApprovable && !planActionPending && chatModeLockReason === null
       && planningPhase === 'awaiting-approval' && !turnRunning && activePlan?.planId === planId;
     if (!canApprove()) return;
     if (profile === 'unrestricted' && permissionProfile !== 'unrestricted') {
@@ -8214,14 +8500,22 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   updateDocumentContext();
   // 재시작 뒤 현재 문서의 마지막 채팅을 복원한다. 이전 세션 대화가 기록에 남아 있으면
   // 비어 보이는 새 채팅 대신 그 스레드를 연다 — openThread 가 스냅샷/세션 재시작을 처리한다.
-  void waitForThreadsPersistence().then(() => {
-    if (root.dataset.disposed === 'true' || restoringLiveQuestion) return;
+  function restoreLastChat(): void {
+    if (root.dataset.disposed === 'true' || restoringLiveQuestion || chatChosen) return;
     if (currentThread.messages.length > 0) return;
     const restored = listThreads()
       .find((thread) => threadMatchesDocument(thread, currentDocumentId, currentDocKey));
     if (restored && restored.id !== currentThread.id) openThread(restored.id);
+  }
+  void waitForThreadsPersistence().then(() => {
+    // 화면 밖에서 만든 채팅 창은 편집기가 곧바로 초안이나 채팅을 고른다 — 한 박자 미뤄 그 선택을 덮지 않는다.
+    if (deps.startActive === false) window.setTimeout(restoreLastChat, 0);
+    else restoreLastChat();
   });
   rebuildReview();
+  // 같은 문서의 다른 채팅이 편집하는 동안 이 채팅은 채팅 모드만 쓴다.
+  const unsubChatModeLock = chatModeLock?.subscribe(() => readChatModeLock()) ?? (() => {});
+  readChatModeLock();
 
   /**
    * 인라인 프롬프트(문서 선택 위 입력 상자)에서 온 지시를 채팅으로 보낸다.
@@ -8271,6 +8565,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }));
     let messageId: string | null;
     try {
+      prepareChatForSend();
       messageId = await bridge.sendUserMessage(
         `${submission.selection.contextBlock}\n\n${prompt}`,
         undefined,
@@ -8418,10 +8713,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     finishReplayedAnimations();
     if (threadsListVisible()) rebuildThreadsList();
     updateDocumentContext();
+    readChatModeLock();
   }
 
   function deactivate(): void {
     if (!active || root.dataset.disposed === 'true') return;
+    // 다른 채팅이나 문서로 떠나면 보내지 않은 초안은 버린다.
+    discardDraft();
     // 끌기·여닫기·교차 페이드는 끝 상태로 정리한다. 일시 클래스는 아직 붙어 있을 때 거둔다.
     endSidebarResize();
     endColumnResize();
@@ -8456,8 +8754,17 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     isActive: () => active,
     openThreadById(threadId: string): void {
       if (root.dataset.disposed === 'true') return;
+      chatChosen = true;
       if (pendingThreadSwitch?.threadId === threadId) pendingThreadSwitch = null;
       openThread(threadId, { routed: true });
+    },
+    startDraftChat(): void {
+      if (root.dataset.disposed === 'true') return;
+      chatChosen = true;
+      startNewChat();
+    },
+    currentThreadId(): string | null {
+      return draftChat || currentThread.messages.length === 0 ? null : currentThread.id;
     },
     followThreadOnNextDocument(threadId: string): void {
       if (root.dataset.disposed === 'true') return;
@@ -8472,6 +8779,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       reviewImageUrls.clear();
       threadComposerDrafts.clear();
       questionController.dispose();
+      unsubChatModeLock();
       unsubBridge();
       unsubThreads();
       unsubChatStatus();

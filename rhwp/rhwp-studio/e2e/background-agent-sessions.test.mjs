@@ -134,7 +134,7 @@ function connectProvider(hubPort, token, sessionId) {
   return {
     ws,
     opened,
-    call(tool, args) {
+    call(tool, args, context = {}) {
       const id = nextId++;
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
@@ -142,7 +142,7 @@ function connectProvider(hubPort, token, sessionId) {
           reject(new Error(`provider call timed out: ${tool}`));
         }, 30_000);
         inflight.set(id, { resolve, timer });
-        ws.send(JSON.stringify({ v: 5, type: 'tool-call', id, tool, args }));
+        ws.send(JSON.stringify({ v: 5, type: 'tool-call', id, tool, args, ...context }));
       });
     },
   };
@@ -228,18 +228,20 @@ try {
       }
     });
     page.on('pageerror', (error) => console.log(`  [browser:pageerror] ${error.message}`));
+    // 새 채팅은 첫 메시지를 보낼 때 사이드바의 선택으로 시작한다. 가짜 Pi 를 기본으로 둔다.
+    await page.evaluate(() => localStorage.setItem('rhwp-agent-prefs', JSON.stringify({
+      defaultAgent: 'pi', defaultModel: 'mock-model', defaultEffort: '', defaultMode: 'agent',
+    })));
+    await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => window.__agentBridge?.getConnectionState?.() === 'connected', { timeout: 20_000 });
 
     // 1. 문서 A 를 열고 그 문서에서 에이전트 턴을 연다.
     await openSample(page, DOC_A);
-    await page.evaluate(() => document.querySelector('.ag-threads-new')?.click());
-    await page.evaluate(() => window.__agentBridge.startChat(
-      'pi', 'mock-model', undefined, false, 'safe', 'direct',
-    ));
-    await page.waitForFunction(() => window.__agentBridge?.getActiveAgent?.() === 'pi', { timeout: 20_000 });
+    await delay(800);
     await page.type('.ag-input', 'A 문서 첫 문단 앞에 표시를 넣어 주세요.');
     await page.click('.ag-send');
-    await page.waitForFunction(() => window.__agentBridge?.isTurnRunning?.() === true, { timeout: 10_000 });
+    await page.waitForFunction(() => window.__agentBridge?.isTurnRunning?.() === true
+      && window.__agentBridge.getActiveAgent() === 'pi', { timeout: 20_000 });
     const before = await hubSessions(hubPort);
     assert(before.sessions.length === 1, 'One hub session serves the first document');
     const sessionA = before.sessions[0].sessionId;
@@ -390,6 +392,103 @@ try {
     await page.evaluate(() => window.__inputHandler.performUndo());
     const undone = await page.evaluate((marker) => window.__wasm.getTextRange(0, 0, 0, 200).includes(marker), MARKER);
     assert(!undone, 'Undo on the returned document removes the agent edit');
+
+    // 5b. 같은 문서에서 새 채팅을 눌러도 일하는 에이전트는 멈추지 않는다. 새 채팅은 포커스 화면의
+    //     초안으로 열리고, 첫 메시지를 보낼 때까지 채팅이 생기지 않으며, 채팅 모드만 쓸 수 있다.
+    const threadsBefore = await page.evaluate(async () => {
+      const { listThreads } = await import('/src/agent/threads.ts');
+      return listThreads().length;
+    });
+    await page.evaluate(() => document.querySelector('.ag-threads-new')?.click());
+    await page.waitForFunction(() => window.__documentSessions.attached().chats.length === 2
+      && window.__documentSessions.attached().activeChat === window.__documentSessions.attached().chats[1],
+    { timeout: 15_000 });
+    await delay(600);
+    const draft = await page.evaluate(async () => {
+      const { listThreads } = await import('/src/agent/threads.ts');
+      const doc = window.__documentSessions.attached();
+      return {
+        writerRunning: doc.chats[0].bridge.isTurnRunning(),
+        focusMode: document.body.classList.contains('ag-fullscreen-open'),
+        threads: listThreads().length,
+        draftThread: doc.chats[1].sidebar.currentThreadId(),
+        draftHasChat: doc.chats[1].bridge.getActiveAgent() !== null,
+      };
+    });
+    assert(draft.writerRunning, 'New chat leaves the running agent working');
+    assert(draft.focusMode, 'New chat opens the focus view');
+    assert(draft.threads === threadsBefore && draft.draftThread === null && !draft.draftHasChat,
+      `The draft is only UI until the first message (${JSON.stringify(draft)})`);
+    await delay(900);
+    await screenshot(page, 'bg-sessions-5-parallel-draft');
+
+    await page.type('.ag-input', 'A 문서의 첫 문단을 요약해 주세요.');
+    await page.click('.ag-send');
+    await page.waitForFunction(() => {
+      const chat = window.__documentSessions.attached().chats[1];
+      return chat.bridge.isTurnRunning() && chat.bridge.getActiveAgent() === 'pi';
+    }, { timeout: 20_000 });
+    const parallel = await page.evaluate(async () => {
+      const { listThreads } = await import('/src/agent/threads.ts');
+      const doc = window.__documentSessions.attached();
+      return {
+        workflow: doc.chats[1].bridge.getWorkflowState().workflow,
+        writerRunning: doc.chats[0].bridge.isTurnRunning(),
+        threads: listThreads().length,
+        readerSession: doc.chats[1].hubSession?.sessionId ?? null,
+      };
+    });
+    assert(parallel.workflow === 'question', `The parallel chat runs in chat mode only (${parallel.workflow})`);
+    assert(parallel.writerRunning, 'Both agents run at once');
+    assert(parallel.threads === threadsBefore + 1, 'The first message created exactly one chat');
+
+    // 격리: 채팅 모드 에이전트는 문서를 고칠 수 없고, 편집하는 에이전트는 계속 고칠 수 있다.
+    const readerCapabilities = await registerHubSession({
+      port: hubPort, token: HUB_TOKEN, launchId: before.launchId, sessionId: parallel.readerSession,
+    });
+    const reader = connectProvider(hubPort, readerCapabilities.mcp, parallel.readerSession);
+    await reader.opened;
+    // 읽기 전용 채팅의 공급자는 실제 MCP 심처럼 지금 워크플로의 epoch 를 함께 보낸다.
+    const readerState = await page.evaluate(() => window.__documentSessions.attached().chats[1].bridge.getWorkflowState());
+    const readerContext = { workflow: readerState.workflow, capabilityEpoch: readerState.capabilityEpoch };
+    const readerInfo = await reader.call('get_document_info', {}, readerContext);
+    assert(readerInfo.ok === true, `The chat-mode agent can read the shared document (${JSON.stringify(readerInfo.error ?? null).slice(0, 300)})`);
+    const readerWrite = await reader.call('insert_text', {
+      expectedRevision: readerInfo.result.revision, sectionIdx: 0, paraIdx: 0, charOffset: 0, text: '[읽기 전용 채팅]',
+    }, readerContext);
+    assert(readerWrite.ok !== true, `The chat-mode agent cannot write (${JSON.stringify(readerWrite.error ?? null).slice(0, 160)})`);
+    reader.ws.close();
+    const writerInfo = await provider.call('get_document_info', {});
+    const writerWrite = await provider.call('insert_text', {
+      expectedRevision: writerInfo.result.revision, sectionIdx: 0, paraIdx: 0, charOffset: 0, text: '[편집 채팅]',
+    });
+    assert(writerWrite.ok === true, `The editing agent still writes while the chat runs (${JSON.stringify(writerWrite.error ?? null)})`);
+    const shownText = await page.evaluate(() => window.__wasm.getTextRange(0, 0, 0, 200));
+    assert(shownText.includes('[편집 채팅]') && !shownText.includes('[읽기 전용 채팅]'), 'Only the editing agent changed the document');
+
+    // 레일에서 편집 채팅을 누르면 그 채팅이 보이고, 두 채팅 모두 계속 돈다.
+    await page.evaluate(() => {
+      const writerThread = window.__documentSessions.attached().chats[0].sidebar.currentThreadId();
+      document.querySelector(`.ag-threads-item[data-thread-id="${writerThread}"]`)?.click();
+    });
+    await page.waitForFunction(() => window.__documentSessions.attached().activeChat
+      === window.__documentSessions.attached().chats[0], { timeout: 10_000 });
+    const both = await page.evaluate(() => window.__documentSessions.attached().chats.map((chat) => chat.bridge.isTurnRunning()));
+    assert(both.length === 2 && both.every(Boolean), `Switching chats stops neither agent (${JSON.stringify(both)})`);
+    await delay(900);
+    await screenshot(page, 'bg-sessions-6-back-to-writer');
+
+    // 6. 에이전트가 일하는 동안에도 메뉴의 새 문서가 막히지 않고 따로 열린다.
+    assert(await page.evaluate(() => window.__agentBridge.isTurnRunning()), 'The agent is still working before the menu command');
+    await page.evaluate(() => window.__dispatcher.dispatch('file:new-doc'));
+    await page.waitForFunction(() => window.__documentSessions.list().length === 2
+      && window.__documentSessions.attached().wasm.hasLoadedDocument()
+      && window.__documentSessions.attached() !== window.__documentSessions.list()[0], { timeout: 20_000 });
+    const created = await page.evaluate(() => ({
+      aRunning: window.__documentSessions.list()[0].chats.every((chat) => chat.bridge.isTurnRunning()),
+      shownIsNew: window.__wasm.fileName !== 'para-001.hwp',
+    }));
+    assert(created.aRunning && created.shownIsNew, 'New Document opens beside the working agent instead of being blocked');
   });
 } finally {
   provider?.ws.close();

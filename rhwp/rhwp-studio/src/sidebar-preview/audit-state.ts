@@ -42,15 +42,16 @@ async function chooseMode(mode: 'chat' | 'plan' | 'agent' | 'full'): Promise<voi
 
 /** Prepare fixtures through the same controls used in the shipping sidebar. */
 export async function applyAuditState(preview: SidebarPreview, params: URLSearchParams): Promise<void> {
-  if (params.get('permission') === 'unrestricted') {
-    // 저장된 대화를 다시 열면 채팅이 그 대화의 권한으로 새로 시작된다. 그 뒤에 권한을 건다.
-    await preview.threadStore.waitForThreadsPersistence();
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-    await until(() => !document.querySelector<HTMLTextAreaElement>('.ag-input')?.disabled, 'composer');
-    preview.bridge.setPermissionProfile('unrestricted');
-  }
+  // 저장된 대화를 다시 열면 채팅이 그 대화의 모드와 권한으로 새로 시작된다. 장면은 그 뒤에 준비한다.
+  await preview.threadStore.waitForThreadsPersistence();
+  await new Promise((resolve) => requestAnimationFrame(resolve));
   const mode = params.get('mode');
-  if (mode === 'chat' || mode === 'plan' || mode === 'agent' || mode === 'full') await chooseMode(mode);
+  const choosesMode = mode === 'chat' || mode === 'plan' || mode === 'agent' || mode === 'full';
+  if (params.get('permission') === 'unrestricted' || choosesMode) {
+    await until(() => !document.querySelector<HTMLTextAreaElement>('.ag-input')?.disabled, 'composer');
+  }
+  if (params.get('permission') === 'unrestricted') preview.bridge.setPermissionProfile('unrestricted');
+  if (choosesMode) await chooseMode(mode);
   const browserbase = params.get('browserbase');
   if (browserbase === 'ready' || browserbase === 'setup' || browserbase === 'error')
     preview.setBrowserbaseState(browserbase === 'ready' ? 'connected' : browserbase);

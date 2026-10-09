@@ -25,10 +25,28 @@ import type { AgentHubSessionLease, RendererSessionContext } from '@/desktop-int
 import type { EditorEditMode } from '@/command/types';
 import type { initAgentSidebar } from '@/ui/agent-sidebar/index';
 
-/** 한 창에 동시에 열어 둘 수 있는 문서 수. 문서마다 엔진 메모리와 에이전트 프로세스를 쓴다. */
-export const MAX_LIVE_DOCUMENT_SESSIONS = 6;
+/**
+ * 한 창에서 동시에 살아 있을 수 있는 채팅(에이전트) 수. 채팅마다 허브 세션과 공급자 프로세스를 쓰고,
+ * 문서는 채팅을 하나 이상 가지므로 열린 문서 수도 이 안에 든다.
+ */
+export const MAX_PARALLEL_CHATS = 6;
 
 export type DocumentSessionSidebar = ReturnType<typeof initAgentSidebar>;
+
+/**
+ * 문서 하나에 붙은 채팅 하나 — 자기 브리지·허브 세션·사이드바를 가진다. 한 문서에서 여러 채팅이
+ * 함께 돌 수 있고, 문서를 고칠 수 있는 채팅은 한 번에 하나다 (나머지는 채팅 모드만).
+ */
+export interface ChatSession {
+  readonly id: string;
+  readonly document: DocumentSession;
+  readonly bridge: AgentBridge;
+  readonly sidebar: DocumentSessionSidebar;
+  /** 창의 기본 허브 세션을 쓰면 null, 따로 받은 허브 세션이면 그 임대 */
+  readonly hubSession: AgentHubSessionLease | null;
+  agentLease: AgentEditingLease;
+  readonly disposers: Array<() => void>;
+}
 
 export interface DocumentSession {
   /** 데스크톱 문서 점유 슬롯. 첫 세션은 기본 슬롯(undefined)을 쓴다. */
@@ -45,13 +63,13 @@ export interface DocumentSession {
   viewState: CanvasViewState | null;
   documentId: string | null;
   editMode: EditorEditMode;
-  agentLease: AgentEditingLease;
-  bridge: AgentBridge | null;
-  sidebar: DocumentSessionSidebar | null;
+  /** 이 문서의 채팅들. 화면에는 activeChat 의 사이드바만 보인다. */
+  readonly chats: ChatSession[];
+  activeChat: ChatSession | null;
+  /** 지금 보이는 채팅의 브리지·사이드바 (activeChat 의 것) */
+  readonly bridge: AgentBridge | null;
+  readonly sidebar: DocumentSessionSidebar | null;
   versions: DocumentVersionController | null;
-  /** 창의 기본 허브 세션을 쓰면 null, 따로 받은 허브 세션이면 그 임대 */
-  hubSession: AgentHubSessionLease | null;
-  usesDefaultHub: boolean;
   readonly disposers: Array<() => void>;
 }
 
@@ -109,12 +127,11 @@ export function createDocumentSessionCore(options: DocumentSessionCoreOptions): 
     viewState: null,
     documentId: null,
     editMode: 'normal',
-    agentLease: { active: false, agent: 'codex' },
-    bridge: null,
-    sidebar: null,
+    chats: [],
+    activeChat: null,
+    get bridge() { return session.activeChat?.bridge ?? null; },
+    get sidebar() { return session.activeChat?.sidebar ?? null; },
     versions: null,
-    hubSession: null,
-    usesDefaultHub: false,
     disposers,
   };
 
@@ -136,8 +153,22 @@ export function createDocumentSessionCore(options: DocumentSessionCoreOptions): 
   return session;
 }
 
+/** 이 문서의 채팅 중 하나라도 일하고 있다 (화면에서 떼어 둬야 한다). */
 export function isDocumentSessionBusy(session: DocumentSession): boolean {
-  return session.bridge?.isBusy() ?? false;
+  return session.chats.some((chat) => chat.bridge.isBusy());
+}
+
+/** 이 채팅이 문서를 고칠 수 있는 상태로 일하고 있다 — 같은 문서의 다른 채팅은 채팅 모드만 쓴다. */
+export function chatHoldsDocumentWrites(chat: ChatSession): boolean {
+  if (chat.bridge.pendingEdits.getChangeSets().some((set) => set.ops.length > 0)) return true;
+  return chat.bridge.isBusy() && chat.bridge.getWorkflowState().workflow !== 'question';
+}
+
+/** 문서의 편집 잠금은 그 문서를 잡은 채팅의 것이다. 없으면 보이는 채팅의 (꺼진) 잠금. */
+export function documentEditingLease(session: DocumentSession): AgentEditingLease {
+  return session.chats.find((chat) => chat.agentLease.active)?.agentLease
+    ?? session.activeChat?.agentLease
+    ?? { active: false, agent: 'codex' };
 }
 
 export function createDocumentSessionSlotId(): string {

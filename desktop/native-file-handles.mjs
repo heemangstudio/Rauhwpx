@@ -1019,6 +1019,17 @@ export async function canonicalNativePath(
   return platform === 'win32' ? win32.normalize(resolved) : normalize(resolved);
 }
 
+/**
+ * 이미 놓았거나 이번 실행에서 만든 적 없는 핸들. 닫은 문서나 지난 실행의 최근 문서가 들고 있는
+ * 옛 핸들이 흔히 이렇다. 다른 창이 쥔 핸들과 달리 접근 위반이 아니라 "더는 없음"이다.
+ */
+export class StaleNativeHandleError extends Error {
+  constructor() {
+    super('Native file handle is no longer available');
+    this.name = 'StaleNativeHandleError';
+  }
+}
+
 export class NativeFileHandleRegistry {
   #byId = new Map();
   #byPath = new Map();
@@ -1260,17 +1271,17 @@ export class NativeFileHandleRegistry {
     // 임의 핸들 탐색을 막기 위해 둘 다 이 창의 핸들이 아니면 기존처럼 거절한다.
     const first = this.#byId.get(firstHandleId);
     const second = this.#byId.get(secondHandleId);
-    if (
-      !first
-      || !second
-      || (first.sessionId !== senderSessionId && second.sessionId !== senderSessionId)
-    ) {
+    // 놓은 핸들은 살아 있는 어떤 파일과도 같은 항목이 아니다 (최근 문서의 옛 핸들과 비교할 때).
+    if (!first || !second) return false;
+    if (first.sessionId !== senderSessionId && second.sessionId !== senderSessionId) {
       throw new Error('Native file handle does not belong to this window');
     }
     return first.ownershipPath === second.ownershipPath;
   }
 
   rememberDocument(documentId, senderSessionId, handleId, digest) {
+    // 이미 놓은 핸들은 북마크를 바꾸지 않는다. 마지막으로 기억한 위치를 그대로 둔다.
+    if (!this.#byId.has(handleId)) return this.#bookmarks.get(documentId)?.path ?? null;
     const entry = this.#entryForSender(senderSessionId, handleId);
     const previous = this.#bookmarks.get(documentId);
     if (
@@ -1385,6 +1396,8 @@ export class NativeFileHandleRegistry {
   }
 
   releaseHandle(sessionId, handleId) {
+    // 놓기는 여러 번 해도 된다. 문서를 닫는 경로가 겹쳐도 이미 놓은 핸들은 조용히 넘어간다.
+    if (!this.#byId.has(handleId)) return;
     const entry = this.#entryForSender(sessionId, handleId);
     if (entry.activeWrites > 0) {
       entry.releaseRequested = true;
@@ -1516,7 +1529,8 @@ export class NativeFileHandleRegistry {
 
   #entryForSender(senderSessionId, handleId) {
     const entry = this.#byId.get(handleId);
-    if (!entry || entry.sessionId !== senderSessionId) {
+    if (!entry) throw new StaleNativeHandleError();
+    if (entry.sessionId !== senderSessionId) {
       throw new Error('Native file handle does not belong to this window');
     }
     return entry;

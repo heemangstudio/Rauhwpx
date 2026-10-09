@@ -11,6 +11,7 @@ import { checkFleetPreview } from './fleet.check.mjs';
 import { checkChangesPreview } from './changes.check.mjs';
 import { checkPlanPreview } from './plan.check.mjs';
 import { checkSessionsPreview } from './sessions.check.mjs';
+import { checkDraftChat, checkNewChatWhileRunning, checkChatModeLock } from './parallel-chats.check.mjs';
 import { browserLaunchArgs, findBrowserExecutable } from '../tests/browser-support.ts';
 
 const studio = resolve(import.meta.dirname, '..');
@@ -108,12 +109,9 @@ try {
     );
     assert(clicked, `Visible ${selector} with text ${text}`);
   }
+  // New chat opens a focus-mode draft, so sidebar checks start from an empty store instead.
   async function openNewChat(query = '') {
-    await open(query);
-    await page.click('.ag-header .ag-threads-btn');
-    await page.waitForSelector('.ag-threads-new', { visible: true });
-    await page.click('.ag-threads-new');
-    await page.waitForFunction(() => !document.querySelector('.ag-input').disabled);
+    await open(query ? `reset=1&${query}` : 'reset=1');
   }
   async function play(scenario) {
     await openNewChat(`scenario=${scenario}`);
@@ -998,6 +996,11 @@ try {
   });
   await step('Background document sessions keep their agent while another sidebar is shown',
     () => checkSessionsPreview(page, origin));
+  await step('A new chat draft creates no chat until its first send', () => checkDraftChat(page, origin));
+  await step('A new chat while the agent runs opens another chat without interrupting',
+    () => checkNewChatWhileRunning(page, origin));
+  await step('A chat locked by another chat\'s edits only picks and sends in 채팅',
+    () => checkChatModeLock(page));
   await step(
     'Document context, reset, clean canvas, and backend isolation',
     async () => {

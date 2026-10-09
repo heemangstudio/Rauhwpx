@@ -1014,6 +1014,13 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   background: var(--ag-selected);
 }
 
+/* 같은 문서의 다른 채팅이 편집하는 동안 막힌 모드 — 툴팁이 이유를 말한다. */
+.ag-mode .ag-mode-item:disabled {
+  cursor: default;
+  background: transparent;
+  opacity: 0.42;
+}
+
 .ag-mode-text {
   display: flex;
   flex: 1 1 auto;
