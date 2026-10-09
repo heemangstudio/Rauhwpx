@@ -206,6 +206,20 @@ test('locked fields and disabled actions are never overwritten', async () => {
   assert.deepEqual(open.applied[0].ops.map((op) => op.op), ['rename', 'summary']);
 });
 
+test('auto picks Haiku 5.5, then Luna, then DeepSeek through OpenRouter, by what is connected', () => {
+  const routes = (ready) => librarianCandidates({ provider: 'auto' }, {
+    readiness: {
+      claude: { ready: ready.includes('claude'), model: 'claude-sonnet-5' },
+      codex: { ready: ready.includes('codex'), model: 'gpt-6-sol' },
+      pi: { ready: ready.includes('pi'), model: 'qwen/qwen3-max' },
+    },
+  }).filter((candidate) => candidate.ready).map(({ provider, model, effort }) => `${provider}/${model}/${effort}`);
+  assert.deepEqual(routes(['claude', 'codex', 'pi'])[0], 'claude/claude-haiku-5-5/high');
+  assert.deepEqual(routes(['codex', 'pi'])[0], 'codex/gpt-6-luna/xhigh');
+  assert.deepEqual(routes(['pi']), ['pi/deepseek/deepseek-v4.1-flash/max']);
+  assert.deepEqual(routes([]), []);
+});
+
 test('the model chosen in project settings is the one that runs, with fallback to other ready routes', async () => {
   const readiness = {
     codex: { ready: true, model: 'luna' },

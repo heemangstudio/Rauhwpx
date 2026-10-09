@@ -17,6 +17,12 @@ const MAX_ATTEMPTS = 2;
 const MAX_PROCESSING_DEFERRALS = 60;
 const FALLBACK_ORDER = ['codex', 'pi', 'claude'];
 const PROVIDERS = new Set(FALLBACK_ORDER);
+/** 자동: 연결된 공급자 중 이 순서의 첫 경로를 쓴다. Claude 가 없으면 Codex, 둘 다 없으면 OpenRouter 키로 Pi. */
+export const LIBRARIAN_AUTO_ROUTES = Object.freeze([
+  Object.freeze({ provider: 'claude', model: 'claude-haiku-5-5', effort: 'high' }),
+  Object.freeze({ provider: 'codex', model: 'gpt-6-luna', effort: 'xhigh' }),
+  Object.freeze({ provider: 'pi', model: 'deepseek/deepseek-v4.1-flash', effort: 'max' }),
+]);
 const MAX_TITLE_CHARS = 120;
 const FAILED_MESSAGE = '정리 결과를 받지 못했습니다.';
 
@@ -45,7 +51,7 @@ function librarianSettings(settings) {
   const concurrency = Number(raw.concurrency);
   return {
     enabled: raw.enabled !== false,
-    provider: raw.provider === 'chat' || PROVIDERS.has(raw.provider) ? raw.provider : 'chat',
+    provider: raw.provider === 'auto' || raw.provider === 'chat' || PROVIDERS.has(raw.provider) ? raw.provider : 'auto',
     model: typeof raw.model === 'string' && raw.model ? raw.model : null,
     effort: typeof raw.effort === 'string' && raw.effort ? raw.effort : null,
     actions: {
@@ -203,6 +209,9 @@ export function librarianCandidates(config, routeInfo) {
         : {}),
     };
   };
+  if (config.provider === 'auto') {
+    return LIBRARIAN_AUTO_ROUTES.map(({ provider, model, effort }) => route(provider, { model, effort }));
+  }
   const first = config.provider === 'chat'
     ? (PROVIDERS.has(routeInfo?.chatProvider) ? route(routeInfo.chatProvider) : null)
     : route(config.provider, { model: config.model ?? undefined, effort: config.effort ?? undefined });
@@ -457,7 +466,8 @@ export function createProjectLibrarian({
           signal: controller.signal,
           tempPrefix: 'rhwp-librarian-',
           label: 'Librarian',
-          maxTokens: 4_096,
+          // OpenRouter 는 추론 토큰도 max_tokens 에 센다. 최대 추론에서 JSON 이 잘리지 않게 넉넉히 둔다.
+          maxTokens: 32_768,
           maxOutputBytes: 512 * 1024,
           acceptOutput: (value) => parseLibrarianOutput(value) !== null,
         },

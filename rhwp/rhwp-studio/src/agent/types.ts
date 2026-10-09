@@ -1763,7 +1763,7 @@ export interface ProjectNote {
 }
 
 export type ProjectLibrarianAction = 'pause' | 'resume' | 'retry';
-export type ProjectLibrarianProvider = 'chat' | 'claude' | 'codex' | 'pi';
+export type ProjectLibrarianProvider = 'auto' | 'chat' | 'claude' | 'codex' | 'pi';
 export type ProjectSummarySize = 'small' | 'medium' | 'large';
 export type ProjectTrashDays = 7 | 30 | 90;
 

@@ -389,6 +389,7 @@ export async function runProvider(provider, model, prompt, timeoutMs, deps) {
         maxTokens: deps.maxTokens ?? 128,
         temperature: deps.temperature ?? 0.2,
         timeout: timeoutMs,
+        ...(deps.cliEffort ? { reasoningEffort: deps.cliEffort } : {}),
       });
     } catch {
       return null;

@@ -147,6 +147,7 @@ function clone(settings: ProjectSettings): ProjectSettings {
 }
 
 const PROVIDERS: ReadonlyArray<{ id: ProjectLibrarianProvider; label: string }> = [
+  { id: 'auto', label: '자동' },
   { id: 'chat', label: '채팅과 같은 공급자' },
   { id: 'claude', label: AGENT_LABEL.claude },
   { id: 'codex', label: AGENT_LABEL.codex },
@@ -370,7 +371,7 @@ export function createProjectSettingsPane(deps: ProjectSettingsPaneDeps): Projec
 
   function catalogAgent(): 'claude' | 'codex' | 'pi' | null {
     const value = draft.librarian.provider;
-    return value === 'chat' ? null : value;
+    return value === 'auto' || value === 'chat' ? null : value;
   }
 
   function renderModel(): void {
@@ -537,7 +538,7 @@ export function createProjectSettingsPane(deps: ProjectSettingsPaneDeps): Projec
   provider.select.addEventListener('change', () => {
     const value = provider.select.value as ProjectLibrarianProvider;
     draft.librarian.provider = value;
-    if (value === 'chat') {
+    if (value === 'auto' || value === 'chat') {
       draft.librarian.model = null;
       draft.librarian.effort = null;
     } else {

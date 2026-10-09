@@ -407,16 +407,17 @@ export function createOpenRouter({
      * 비스트리밍 한 번 호출 — 제목 생성·스킬 초안·문체 분석 폴백에 쓴다.
      *
      * @param {{ key: string, model: string, messages: Array<object>, maxTokens?: number,
-     *           temperature?: number, timeout?: number }} opts
+     *           temperature?: number, timeout?: number, reasoningEffort?: string }} opts
      * @returns {Promise<string>} 어시스턴트 텍스트
      */
-    async chat({ key, model, messages, maxTokens, temperature, timeout = CHAT_TIMEOUT_MS }) {
+    async chat({ key, model, messages, maxTokens, temperature, timeout = CHAT_TIMEOUT_MS, reasoningEffort }) {
       const trimmed = String(key ?? '').trim();
       if (!trimmed) throw openRouterError('OPENROUTER_KEY_MISSING', 'OpenRouter 키가 없어요');
       if (!model) throw openRouterError('OPENROUTER_MODEL_MISSING', '모델이 지정되지 않았어요');
       const body = { model, messages, stream: false };
       if (Number.isFinite(maxTokens)) body.max_tokens = Math.round(maxTokens);
       if (Number.isFinite(temperature)) body.temperature = temperature;
+      if (typeof reasoningEffort === 'string' && reasoningEffort) body.reasoning = { effort: reasoningEffort };
       const result = await request('/chat/completions', {
         method: 'POST', key: trimmed, body, timeout,
       });

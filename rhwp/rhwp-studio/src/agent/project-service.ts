@@ -299,7 +299,7 @@ export function defaultProjectSettings(): ProjectSettings {
     version: 1,
     librarian: {
       enabled: true,
-      provider: 'chat',
+      provider: 'auto',
       model: null,
       effort: null,
       actions: { rename: true, classify: true, link: true },
@@ -325,7 +325,7 @@ export function normalizeProjectSettings(raw: unknown): ProjectSettings {
   const ingest = isRecord(body.ingest) ? body.ingest : {};
   const agent = isRecord(body.agent) ? body.agent : {};
   const board = isRecord(body.board) ? body.board : {};
-  const provider = ['chat', 'claude', 'codex', 'pi'].includes(librarian.provider as string)
+  const provider = ['auto', 'chat', 'claude', 'codex', 'pi'].includes(librarian.provider as string)
     ? librarian.provider as ProjectSettings['librarian']['provider']
     : defaults.librarian.provider;
   const concurrency = Math.round(Number(librarian.concurrency));
@@ -337,8 +337,8 @@ export function normalizeProjectSettings(raw: unknown): ProjectSettings {
     librarian: {
       enabled: typeof librarian.enabled === 'boolean' ? librarian.enabled : defaults.librarian.enabled,
       provider,
-      model: provider !== 'chat' && typeof librarian.model === 'string' && librarian.model ? librarian.model : null,
-      effort: provider !== 'chat' && typeof librarian.effort === 'string' && librarian.effort ? librarian.effort : null,
+      model: provider !== 'auto' && provider !== 'chat' && typeof librarian.model === 'string' && librarian.model ? librarian.model : null,
+      effort: provider !== 'auto' && provider !== 'chat' && typeof librarian.effort === 'string' && librarian.effort ? librarian.effort : null,
       actions: {
         rename: typeof actions.rename === 'boolean' ? actions.rename : true,
         classify: typeof actions.classify === 'boolean' ? actions.classify : true,

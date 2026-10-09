@@ -11,7 +11,7 @@ import { replaceFileAtomically } from './harness-update.mjs';
  */
 
 export const PROJECT_SETTINGS_VERSION = 1;
-export const LIBRARIAN_PROVIDERS = Object.freeze(['chat', 'claude', 'codex', 'pi']);
+export const LIBRARIAN_PROVIDERS = Object.freeze(['auto', 'chat', 'claude', 'codex', 'pi']);
 export const SUMMARY_SIZES = Object.freeze(['small', 'medium', 'large']);
 export const TRASH_DAYS = Object.freeze([7, 30, 90]);
 const MAX_FILE_TYPES = 64;
@@ -23,7 +23,7 @@ export const DEFAULT_PROJECT_SETTINGS = Object.freeze({
   version: PROJECT_SETTINGS_VERSION,
   librarian: Object.freeze({
     enabled: true,
-    provider: 'chat',
+    provider: 'auto',
     model: null,
     effort: null,
     actions: Object.freeze({ rename: true, classify: true, link: true }),
@@ -111,8 +111,8 @@ export function normalizeProjectSettings(raw, { strict = false } = {}) {
     },
     concurrency: pick('librarian.concurrency', librarianRaw.concurrency, (v) => [1, 2, 3, 4].includes(v), defaults.librarian.concurrency, 'concurrency must be 1-4'),
   };
-  // 공급자를 고르면 모델 선택은 그 공급자 것이어야 한다 — 채팅과 같은 공급자면 모델·노력은 비운다.
-  if (librarian.provider === 'chat') {
+  // 공급자를 고르면 모델 선택은 그 공급자 것이어야 한다 — 자동이나 채팅과 같은 공급자면 모델·노력은 비운다.
+  if (librarian.provider === 'auto' || librarian.provider === 'chat') {
     librarian.model = null;
     librarian.effort = null;
   }
