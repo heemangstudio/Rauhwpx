@@ -21,4 +21,4 @@ interactions. Do not lock CSS measurements, comment markers, source ordering, or
 the number of call sites. Existing source guards for security, edit history, and
 data-loss regressions should be replaced with behavioral coverage before removal.
 
-The separate [E2E scripts](../e2e/README.md) exercise the running application.
+Run `npm run e2e:smoke` for the [smoke suite](../e2e/README.md), eight user flows against the real editor and hub. Perf tools live in [bench](../bench/README.md).
