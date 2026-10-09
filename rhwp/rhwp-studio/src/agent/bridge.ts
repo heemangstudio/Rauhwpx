@@ -3097,6 +3097,11 @@ export class AgentBridgeImpl implements AgentBridge {
       || ('parentTaskId' in event && event.parentTaskId)) {
       this.turnSnapshots?.noteSubagentActivity();
     }
+    // 텍스트 조각은 턴·편집 잠금·바쁨 상태를 바꾸지 않는다. 토큰마다 다시 셈하지 않고 넘기기만 한다.
+    if (event.type === 'text-delta') {
+      this.notifyListeners({ type: 'agent', event });
+      return;
+    }
     switch (event.type) {
       case 'turn-start':
         this.turnSnapshots?.beginTurn();
@@ -4273,6 +4278,12 @@ export class AgentBridgeImpl implements AgentBridge {
   }
 
   private emit(e: SidebarEvent): void {
+    this.notifyListeners(e);
+    // 사이드바에 알리는 상태 변화는 대개 바쁨 상태도 바꾼다 (턴·질문·계획·채팅 시작).
+    this.scheduleBusyCheck();
+  }
+
+  private notifyListeners(e: SidebarEvent): void {
     for (const cb of this.listeners) {
       try {
         cb(e);
@@ -4280,8 +4291,6 @@ export class AgentBridgeImpl implements AgentBridge {
         console.warn('[AgentBridge] 이벤트 리스너 오류:', err);
       }
     }
-    // 사이드바에 알리는 상태 변화는 대개 바쁨 상태도 바꾼다 (턴·질문·계획·채팅 시작).
-    this.scheduleBusyCheck();
   }
 
   dispose(): void {

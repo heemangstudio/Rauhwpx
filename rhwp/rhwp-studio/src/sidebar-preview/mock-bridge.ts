@@ -1397,6 +1397,8 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
     setHold: (value: boolean) => { holdReply = value; },
     /** 허브가 같은 이벤트를 다시 보내는 경우(재전송·중복)를 흉내 낸다. */
     emitAgentEvent: (event: T.AgentStreamEvent) => stream(event),
+    /** Delivers one provider event as the hub would, e.g. a token-by-token answer for benches. */
+    streamEvent: stream,
     boot: () => {
       setPiModels(data.pi.models);
       emit({ type: 'pi-status', status: data.pi });
