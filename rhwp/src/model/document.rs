@@ -208,6 +208,9 @@ pub struct DocInfo {
     pub do_not_align_last_forbidden: bool,
     /// HWPX 호환성: 고정 줄 간격의 80% 지점에 기준선을 배치한다.
     pub adjust_baseline_in_fixed_line_spacing: bool,
+    /// HWPX 호환성(`applyNextspacingOfLastPara`): 셀의 마지막 문단도 줄 간격과
+    /// 문단 아래 간격을 셀 높이에 남긴다.
+    pub apply_next_spacing_of_last_para: bool,
     /// HWPX `<hh:head version="X.Y">` 의 HWPML 스키마 버전. 문서별로 다르므로
     /// (1.2~1.5 등) 원본 값을 보존해 직렬화 때 그대로 재방출한다.
     /// 원본 HWPX가 없으면 None → serializer가 "1.2" 폴백.

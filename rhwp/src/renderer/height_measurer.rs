@@ -210,6 +210,12 @@ pub(crate) fn hwpx_structural_cell_tail(
     let Some(last) = para.line_segs.last() else {
         return 0;
     };
+    // `applyNextspacingOfLastPara`: 셀의 마지막 문단도 줄 간격과 문단 아래 간격을
+    // 셀 높이에 남긴다 (MS Word 호환 보고서, 한컴 macOS PDF: 135% 줄 간격 + 아래
+    // 150HU 문단으로 끝나는 행이 이 간격만큼 10px 높다).
+    if styles.apply_next_spacing_of_last_para && last.line_spacing > 0 {
+        return last.line_spacing;
+    }
     if !para.controls.is_empty() {
         return 0;
     }

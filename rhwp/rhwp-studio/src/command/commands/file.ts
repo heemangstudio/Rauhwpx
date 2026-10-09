@@ -26,12 +26,15 @@ import {
   pdfPrintTitle,
   printProgressText,
   printReadyText,
+  type PrintFontResolver,
   type PrintIntent,
   type PrintPage,
 } from '@/command/print-pages';
+import { hasImportedLocalFontFace, resolveSessionLocalFont } from '@/core/local-fonts';
 import {
   createPrintPreviewSurface,
   createPrintSurface,
+  mirrorDocumentFonts,
   PrintPreviewBlockedError,
   PrintSurfaceClosedError,
   waitForPrintSurfaceReady,
@@ -68,6 +71,8 @@ import {
   restoreNativeDocument,
   searchNearbyNativeDocuments,
   verifyNativePick,
+  type DesktopHost,
+  type RhwpDesktopApi,
 } from '@/desktop-integration';
 import {
   moveToLibraryDocument,
@@ -707,9 +712,23 @@ function setupPrintDocument(
   if (previewWindow) {
     appendPrintPreviewBar(doc, previewWindow, fileName, printPages.length);
   }
+  const resolveFont = createPrintFontResolver();
   for (const printPage of printPages) {
-    appendSvgPage(doc, doc.body, printPage);
+    appendSvgPage(doc, doc.body, printPage, resolveFont);
   }
+  mirrorDocumentFonts(document, doc);
+}
+
+/** 화면이 쓰는 세션 글꼴 face(예: 수식 HyhwpEQ)를 인쇄 SVG도 쓰게 한다. */
+function createPrintFontResolver(): PrintFontResolver {
+  const cache = new Map<string, string | null>();
+  return (family) => {
+    if (!cache.has(family)) {
+      const record = resolveSessionLocalFont(family);
+      cache.set(family, record?.runtimeFamily && hasImportedLocalFontFace(family) ? record.runtimeFamily : null);
+    }
+    return cache.get(family) ?? null;
+  };
 }
 
 function appendPrintPreviewBar(
@@ -879,6 +898,81 @@ async function runPdfPrint(services: CommandServices): Promise<void> {
       document.title = originalDocumentTitle;
     }
     surface?.dispose();
+    printJobActive = false;
+    if (restoreStatus && statusEl) statusEl.textContent = originalStatus;
+  }
+}
+
+/** PDF 내보내기 숨은 창의 이름. desktop/pdf-export.mjs 의 PDF_EXPORT_FRAME_NAME 과 같다. */
+const PDF_EXPORT_FRAME_NAME = 'rhwp-pdf-export';
+
+type DesktopPdfExportApi = RhwpDesktopApi & Required<Pick<RhwpDesktopApi, 'pickPdfExportPath'>>;
+
+function desktopPdfExportApi(): DesktopPdfExportApi | null {
+  const api = (window as unknown as DesktopHost).rhwpDesktop;
+  if (typeof api?.pickPdfExportPath !== 'function') return null;
+  return api as DesktopPdfExportApi;
+}
+
+/**
+ * 데스크톱 앱의 PDF 직접 내보내기. 저장 위치를 고른 뒤 숨은 창에 쪽을 그리고
+ * Electron printToPDF 로 바로 파일을 쓴다. 인쇄 대화상자를 거치지 않는다.
+ */
+async function runDesktopPdfExport(
+  services: CommandServices,
+  desktop: DesktopPdfExportApi,
+): Promise<void> {
+  if (!beginPrintJob()) return;
+
+  const wasm = services.wasm;
+  const statusEl = document.getElementById('sb-message');
+  const originalStatus = statusEl?.textContent || '';
+  let surface: PrintPreviewSurface | null = null;
+  let restoreStatus = true;
+
+  try {
+    flushDeferredPaginationBeforeExplicitOutput(services, 'export-pdf');
+    const pageCount = wasm.pageCount;
+    if (pageCount === 0) return;
+
+    const target = await desktop.pickPdfExportPath({
+      suggestedName: `${pdfPrintTitle(wasm.fileName)}.pdf`,
+    });
+    if (!target) return;
+
+    if (statusEl) statusEl.textContent = printProgressText('pdf', 0, pageCount);
+    surface = await createPrintPreviewSurface({ frameName: PDF_EXPORT_FRAME_NAME });
+    const exportWindow = surface.window;
+    const printPages = await preparePrintPages(services, 'pdf', (current, total) => {
+      if (statusEl) statusEl.textContent = printProgressText('pdf', current, total);
+    }, () => exportWindow.closed);
+
+    setupPrintDocument(surface.document, wasm.fileName, printPages);
+    await waitForPrintSurfaceReady(surface);
+
+    const exportPdf = (exportWindow as unknown as DesktopHost).rhwpDesktop?.exportPdf;
+    if (typeof exportPdf !== 'function') {
+      throw new Error('PDF 내보내기 창을 준비하지 못했습니다.');
+    }
+    const result = await exportPdf(target.token);
+    console.info(`[file:print-to-pdf] PDF 내보내기 완료 (pages=${pageCount}, file=${result.fileName})`);
+    const reveal = desktop.revealPdfExport;
+    showToast({
+      message: `PDF로 내보냈습니다: ${result.fileName}`,
+      durationMs: 6000,
+      action: typeof reveal === 'function'
+        ? { label: '폴더에서 보기', onClick: () => void reveal(result.exportId) }
+        : undefined,
+    });
+  } catch (err) {
+    if (err instanceof PrintSurfaceClosedError) return;
+    restoreStatus = false;
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[file:print-to-pdf]', msg);
+    if (statusEl) statusEl.textContent = `PDF 내보내기 실패: ${msg}`;
+    showToast({ message: `PDF 내보내기에 실패했습니다: ${msg}`, durationMs: 5000 });
+  } finally {
+    surface?.close();
     printJobActive = false;
     if (restoreStatus && statusEl) statusEl.textContent = originalStatus;
   }
@@ -1059,10 +1153,12 @@ export const fileCommands: CommandDef[] = [
   },
   {
     id: 'file:print-to-pdf',
-    label: 'PDF로 저장…',
+    label: 'PDF로 내보내기…',
     canExecute: (ctx) => ctx.hasDocument,
     async execute(services) {
-      await runPdfPrint(services);
+      const desktop = desktopPdfExportApi();
+      if (desktop) await runDesktopPdfExport(services, desktop);
+      else await runPdfPrint(services);
     },
   },
   {

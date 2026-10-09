@@ -3844,6 +3844,7 @@ impl DocumentCore {
                     hidden_empty_paras: std::collections::HashSet::new(),
                     pre_emitted_host_paras: std::collections::HashSet::new(),
                     pre_emitted_host_heights: std::collections::HashMap::new(),
+                    fresh_page_float_tables: std::collections::HashSet::new(),
                     endnotes: Vec::new(),
                     endnote_paragraphs: Vec::new(),
                     endnote_para_sources: Vec::new(),
@@ -4085,6 +4086,7 @@ impl DocumentCore {
                 hidden_empty_paras: std::collections::HashSet::new(),
                 pre_emitted_host_paras: std::collections::HashSet::new(),
                 pre_emitted_host_heights: std::collections::HashMap::new(),
+                fresh_page_float_tables: std::collections::HashSet::new(),
                 endnotes: Vec::new(),
                 endnote_paragraphs: Vec::new(),
                 endnote_para_sources: Vec::new(),
@@ -6218,6 +6220,8 @@ impl DocumentCore {
             // [#2015] pre-emit host 높이 → layout vert_offset 이중계상 보정.
             self.layout_engine
                 .set_pre_emitted_host_heights(&pr.pre_emitted_host_heights);
+            self.layout_engine
+                .set_fresh_page_float_tables(&pr.fresh_page_float_tables);
             self.layout_engine
                 .set_endnote_para_sources(paragraphs.len(), &pr.endnote_para_sources);
             // 섹션 미주 모양의 정규화 여백 전달 → HeightCursor min-gap 및 renderer overflow 판정.

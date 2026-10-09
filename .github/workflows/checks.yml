@@ -94,6 +94,7 @@ jobs:
           rhwp/rhwp-studio/tests/desktop-agent-hub.test.ts
           rhwp/rhwp-studio/tests/desktop-shell.test.ts
           tests/desktop-system-fonts.test.mjs
+          tests/desktop-pdf-export.test.mjs
 
   production-dependencies:
     name: Production dependencies (${{ matrix.os }})

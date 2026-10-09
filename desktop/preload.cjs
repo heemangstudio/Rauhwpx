@@ -103,6 +103,13 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
   isFullScreen: () => ipcRenderer.invoke('window:is-fullscreen'),
   // 네이티브 인쇄 대화상자를 호출 창의 내용으로 연다 (인쇄 미리보기 자식 창).
   printCurrentWindow: () => ipcRenderer.invoke('desktop:print'),
+  // PDF 내보내기: 저장 위치는 main 이 고르고 renderer 는 불투명 토큰만 받는다.
+  pickPdfExportPath: (options) => ipcRenderer.invoke('desktop:pick-pdf-export-path', {
+    suggestedName: String(options?.suggestedName ?? ''),
+  }),
+  // 숨은 PDF surface 창이 자기 내용을 PDF 로 저장한다.
+  exportPdf: (token) => ipcRenderer.invoke('desktop:export-pdf', String(token ?? '')),
+  revealPdfExport: (exportId) => ipcRenderer.invoke('desktop:reveal-pdf-export', String(exportId ?? '')),
   onFullScreenChange: (callback) => {
     ipcRenderer.on('window:fullscreen-changed', (_event, fullscreen) => {
       callback(Boolean(fullscreen));
