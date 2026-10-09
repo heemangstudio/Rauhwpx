@@ -3588,17 +3588,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function dismissCompactDrawers(target: Node): void {
+    const environmentOwnFocus = environmentPanel.contains(target) || environmentToggle.contains(target);
+    if (environmentPanelOpen && !environmentOwnFocus) {
+      setEnvironmentPanelOpen(false, { persist: false });
+    }
     if (!isCompactWorkspace()) return;
 
     const threadsOwnFocus = threadsPage.contains(target)
       || workspaceThreadsBtn.contains(target)
       || threadsBtn.contains(target);
     if (compactThreadsRailOpen && !threadsOwnFocus) setCompactThreadsRailOpen(false);
-
-    const environmentOwnFocus = environmentPanel.contains(target) || environmentToggle.contains(target);
-    if (environmentPanelOpen && !environmentOwnFocus) {
-      setEnvironmentPanelOpen(false, { persist: false });
-    }
 
     const detailOwnFocus = reviewColumn.contains(target) || planColumn.contains(target);
     if (root.classList.contains('ag-detail-drawer-open') && !detailOwnFocus) {
