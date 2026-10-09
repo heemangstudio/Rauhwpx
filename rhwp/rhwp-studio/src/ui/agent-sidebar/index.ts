@@ -3613,7 +3613,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const onCompactDrawerFocusIn = (event: FocusEvent) => {
     if (active) dismissCompactDrawers(event.target as Node);
   };
-  document.addEventListener('pointerdown', onCompactDrawerPointerDown);
+  document.addEventListener('pointerdown', onCompactDrawerPointerDown, true);
   document.addEventListener('focusin', onCompactDrawerFocusIn);
 
   function syncComposerOverlay(): void {
@@ -9032,7 +9032,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       root.removeEventListener('pointermove', onCompactRailPointerMove);
       root.removeEventListener('pointerleave', onCompactRailPointerExit);
       document.removeEventListener('pointerdown', onDocPointerDown);
-      document.removeEventListener('pointerdown', onCompactDrawerPointerDown);
+      document.removeEventListener('pointerdown', onCompactDrawerPointerDown, true);
       document.removeEventListener('focusin', onCompactDrawerFocusIn);
       document.removeEventListener('keydown', onDocKeyDown);
       window.removeEventListener('keydown', onAgentShortcutKeyDown, true);
