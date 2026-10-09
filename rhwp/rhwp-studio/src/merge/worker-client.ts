@@ -48,6 +48,9 @@ interface WorkerLike {
 
 export type MergeWorkerFactory = () => WorkerLike;
 
+/** Requests carry every input, so an idle worker can go and a fresh one can serve the next call. */
+const IDLE_TERMINATE_MS = 30_000;
+
 interface Pending<T> {
   operation: MergeWorkerOperation;
   startedAt: number;
@@ -136,11 +139,13 @@ function budgetAnalysis(base: unknown, current: unknown, incoming: unknown): Mer
 }
 
 export class MergeWorkerClient {
-  private worker: WorkerLike;
+  private worker: WorkerLike | null = null;
+  private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private sequence = 0;
   private readonly pending = new Map<number, Pending<unknown>>();
   private readonly uncertainVirtualBases = new WeakSet<object>();
   private readonly factory: MergeWorkerFactory;
+  private readonly idleTerminateMs: number;
   private readonly onMessageBound: (event: MessageEvent<MergeWorkerResponse>) => void;
   private readonly onErrorBound: (event: ErrorEvent) => void;
   private readonly onMessageErrorBound: () => void;
@@ -149,14 +154,14 @@ export class MergeWorkerClient {
   constructor(factory: MergeWorkerFactory = () => new Worker(
     new URL('./merge.worker.ts', import.meta.url),
     { type: 'module', name: 'rhwp-structural-merge' },
-  )) {
+  ), idleTerminateMs = IDLE_TERMINATE_MS) {
     this.factory = factory;
+    this.idleTerminateMs = idleTerminateMs;
     this.onMessageBound = (event) => this.onMessage(event.data);
     this.onErrorBound = (event) => this.restartWorker(
       event.error ?? new Error(event.message || 'The merge worker failed.'),
     );
     this.onMessageErrorBound = () => this.restartWorker(new Error('The merge worker returned an unreadable message.'));
-    this.worker = this.createWorker();
   }
 
   analyze(
@@ -264,16 +269,40 @@ export class MergeWorkerClient {
       pending.reject(new DOMException('The merge worker was disposed.', 'AbortError'));
     }
     this.pending.clear();
-    this.removeWorkerListeners(this.worker);
-    this.worker.terminate();
+    this.terminateWorker();
   }
 
-  private createWorker(): WorkerLike {
+  private acquireWorker(): WorkerLike {
+    this.clearIdleTimer();
+    if (this.worker) return this.worker;
     const worker = this.factory();
     worker.addEventListener('message', this.onMessageBound);
     worker.addEventListener('error', this.onErrorBound);
     worker.addEventListener('messageerror', this.onMessageErrorBound);
+    this.worker = worker;
     return worker;
+  }
+
+  private terminateWorker(): void {
+    this.clearIdleTimer();
+    if (!this.worker) return;
+    this.removeWorkerListeners(this.worker);
+    this.worker.terminate();
+    this.worker = null;
+  }
+
+  private clearIdleTimer(): void {
+    if (this.idleTimer === null) return;
+    clearTimeout(this.idleTimer);
+    this.idleTimer = null;
+  }
+
+  private scheduleIdleTerminate(): void {
+    if (!this.worker || this.pending.size > 0 || this.idleTimer !== null) return;
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null;
+      if (this.pending.size === 0) this.terminateWorker();
+    }, this.idleTerminateMs);
   }
 
   private removeWorkerListeners(worker: WorkerLike): void {
@@ -297,6 +326,7 @@ export class MergeWorkerClient {
     const operation = request.operation;
     const startedAt = performance.now();
     return new Promise<T>((resolve, reject) => {
+      const worker = this.acquireWorker();
       const report = (phase: string, percent?: number): void => options.onProgress?.({
         operation,
         phase,
@@ -327,7 +357,7 @@ export class MergeWorkerClient {
       }
       this.pending.set(id, pending as Pending<unknown>);
       report('queued', 0);
-      this.worker.postMessage({ ...request, id } as MergeWorkerRequest);
+      worker.postMessage({ ...request, id } as MergeWorkerRequest);
     });
   }
 
@@ -381,17 +411,13 @@ export class MergeWorkerClient {
     this.restartWorker(new Error('A concurrent merge request was cancelled after the soft budget was exceeded.'));
   }
 
-  private restartWorker(reason?: unknown): void {
-    this.removeWorkerListeners(this.worker);
-    this.worker.terminate();
-    if (reason !== undefined) {
-      for (const [id, pending] of this.pending) {
-        this.pending.delete(id);
-        this.finishTimers(pending);
-        pending.reject(reason);
-      }
+  private restartWorker(reason: unknown): void {
+    this.terminateWorker();
+    for (const [id, pending] of this.pending) {
+      this.pending.delete(id);
+      this.finishTimers(pending);
+      pending.reject(reason);
     }
-    if (!this.disposed) this.worker = this.createWorker();
   }
 
   private settle(id: number, action: () => void): void {
@@ -400,6 +426,7 @@ export class MergeWorkerClient {
     this.pending.delete(id);
     this.finishTimers(pending);
     action();
+    this.scheduleIdleTerminate();
   }
 
   private finishTimers(pending: Pending<unknown>): void {

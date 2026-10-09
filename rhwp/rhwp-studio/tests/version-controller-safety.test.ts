@@ -123,7 +123,7 @@ test('loadMore releases loading and file saves preserve the uncommitted working 
   assert.match(loadMore, /finally \{/);
   assert.match(loadMore, /this\.#state\.loading = false/);
   const constructor = method('constructor(deps:', 'getState()');
-  assert.match(constructor, /this\.#snapshotCache\.capture\(this\.#wasm, this\.#getDocumentId\(\), this\.#editorRevision\)/);
+  assert.match(constructor, /this\.#snapshotCache\.content\(this\.#wasm, this\.#getDocumentId\(\), this\.#editorRevision\)/);
   assert.match(constructor, /id !== this\.#getDocumentId\(\)/);
   assert.match(constructor, /this\.#store\.markSaved\(/);
   assert.doesNotMatch(constructor, /#createCheckpoint\(/);

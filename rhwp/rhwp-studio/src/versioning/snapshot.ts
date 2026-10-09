@@ -18,45 +18,78 @@ export const VERSION_COMPARE_OPTIONS: CompareOptions = {
   },
 };
 
-export interface CapturedVersionSnapshot {
+export interface VersionContent {
   bytes: Uint8Array;
   fingerprint: ContentFingerprint;
+}
+
+export interface CapturedVersionSnapshot extends VersionContent {
   compareSnapshot: CompareDocumentSnapshot;
 }
+
+/** 쓰이지 않은 내보내기 바이트와 비교 스냅샷을 내려놓기까지의 시간. 지문은 남는다. */
+const CACHE_RELEASE_MS = 30_000;
 
 /** One editor revision owns one export, shared by dirty checks and checkpoints. */
 export class VersionSnapshotCache {
   #key: string | null = null;
-  #content: { bytes: Uint8Array; fingerprint: ContentFingerprint } | null = null;
+  #fingerprint: ContentFingerprint | null = null;
+  #content: VersionContent | null = null;
   #snapshot: CapturedVersionSnapshot | null = null;
+  #releaseTimer: ReturnType<typeof setTimeout> | null = null;
 
   clear(): void {
     this.#key = null;
+    this.#fingerprint = null;
+    this.#release();
+  }
+
+  invalidateUnless(fingerprint: string): void {
+    if (this.#fingerprint !== fingerprint) this.clear();
+  }
+
+  #release(): void {
+    if (this.#releaseTimer !== null) clearTimeout(this.#releaseTimer);
+    this.#releaseTimer = null;
     this.#content = null;
     this.#snapshot = null;
   }
 
-  invalidateUnless(fingerprint: string): void {
-    if (this.#content?.fingerprint !== fingerprint) this.clear();
+  #scheduleRelease(): void {
+    if (this.#releaseTimer !== null) clearTimeout(this.#releaseTimer);
+    this.#releaseTimer = setTimeout(() => {
+      this.#releaseTimer = null;
+      this.#content = null;
+      this.#snapshot = null;
+    }, CACHE_RELEASE_MS);
+    (this.#releaseTimer as { unref?: () => void }).unref?.();
   }
 
-  #getContent(wasm: WasmBridge, documentId: string | null, revision: number) {
+  #select(wasm: WasmBridge, documentId: string | null, revision: number): void {
     const key = JSON.stringify([documentId, revision, currentSaveFormat(wasm), wasm.fileName, wasm.getSourceFormat()]);
-    if (this.#key !== key || !this.#content) {
+    if (this.#key === key) return;
+    this.clear();
+    this.#key = key;
+  }
+
+  content(wasm: WasmBridge, documentId: string | null, revision: number): VersionContent {
+    this.#select(wasm, documentId, revision);
+    if (!this.#content) {
       const bytes = exportVersionContent(wasm);
       this.#content = { bytes, fingerprint: fingerprintBytes(bytes) };
-      this.#key = key;
-      this.#snapshot = null;
+      this.#fingerprint = this.#content.fingerprint;
     }
+    this.#scheduleRelease();
     return this.#content;
   }
 
   fingerprint(wasm: WasmBridge, documentId: string | null, revision: number): ContentFingerprint {
-    return this.#getContent(wasm, documentId, revision).fingerprint;
+    this.#select(wasm, documentId, revision);
+    return this.#fingerprint ?? this.content(wasm, documentId, revision).fingerprint;
   }
 
   capture(wasm: WasmBridge, documentId: string | null, revision: number): CapturedVersionSnapshot {
-    const content = this.#getContent(wasm, documentId, revision);
+    const content = this.content(wasm, documentId, revision);
     // 실시간 캡처(로드/저장 직후 베이스라인·더티 추적)는 강제 전체 재조판을 건너뛴다.
     // 대형 문서에서 한 번의 재조판이 입력을 수 분간 멈추게 하며, 백그라운드에서
     // 진행 중인 지연 조판을 통째로 무효화한다.
