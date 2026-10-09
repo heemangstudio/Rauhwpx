@@ -69,6 +69,7 @@ export function referenceScopesForSession(activeSession) {
   return scopesForReferenceSession({
     threadId: activeSession?.threadId,
     documentId: activeSession?.documentId,
+    projectId: activeSession?.projectId,
   });
 }
 

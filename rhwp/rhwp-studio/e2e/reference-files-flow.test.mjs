@@ -1,10 +1,10 @@
 /**
- * E2E: reference-file upload/search and scope isolation through the real Studio UI and hub.
+ * E2E: reference-file upload/search and project isolation through the real Studio UI and hub.
  *
- * Starts an isolated hub and Vite instance, uploads chat/document/global text files through
- * the browser file input, searches extracted contents, starts a second chat, and confirms
- * through the hub-local MCP tools that chat references do not leak while document/global
- * references remain available.
+ * Starts an isolated hub and Vite instance. A composer attachment and a 프로젝트-tab upload land
+ * in the document's research project, a 공용 upload lands in global storage. A second chat on
+ * the same document shares that project by design; a chat on another document gets its own
+ * project and does not see the first document's files, while global files stay available.
  */
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -103,33 +103,6 @@ async function stageQuickFile(page, { name, content }) {
   await chooseFile(page, { name, content });
 }
 
-async function waitForCount(page, expected) {
-  try {
-    await page.waitForFunction(
-      (value) =>
-        document.querySelector('.ag-references-count')?.textContent ===
-        String(value),
-      { timeout: 10_000 },
-      expected,
-    );
-  } catch (error) {
-    const state = await page.evaluate(() => ({
-      count: document.querySelector('.ag-references-count')?.textContent,
-      status: document.querySelector('.ag-reference-status')?.textContent,
-      error: document.querySelector('.ag-reference-error')?.textContent,
-      activeScope: document
-        .querySelector('.ag-reference-tab[aria-selected="true"]')
-        ?.getAttribute('data-scope'),
-      documentDisabled: document
-        .querySelector('.ag-reference-tab[data-scope="document"]')
-        ?.hasAttribute('disabled'),
-    }));
-    throw new Error(
-      `Reference count did not reach ${expected}: ${JSON.stringify(state)}; ${error.message}`,
-    );
-  }
-}
-
 if (!process.env.CHROME_PATH && !process.env.PUPPETEER_EXECUTABLE_PATH) {
   const chrome = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
   if (fs.existsSync(chrome)) process.env.CHROME_PATH = chrome;
@@ -142,6 +115,14 @@ const vitePort = await availablePort(Number(process.env.VITE_PORT || 7741));
 const viteUrl = `http://127.0.0.1:${vitePort}`;
 const referenceRoot = fs.mkdtempSync(
   path.join(os.tmpdir(), 'rhwp-reference-e2e-'),
+);
+const projectsRoot = fs.mkdtempSync(
+  path.join(os.tmpdir(), 'rhwp-projects-e2e-'),
+);
+// 정리 도우미는 끈다 — 이 테스트는 파일이 어느 프로젝트에 들어가는지만 본다.
+fs.writeFileSync(
+  path.join(projectsRoot, 'settings.json'),
+  JSON.stringify({ version: 1, librarian: { enabled: false } }),
 );
 const piRoot = prepareFakePi('rhwp-reference-pi-');
 const logRoot = path.join(repoRoot, 'target');
@@ -158,6 +139,7 @@ try {
       RHWP_AGENT_PORT: String(hubPort),
       RHWP_AGENT_TOKEN: hubToken,
       RHWP_REFERENCES_DIR: referenceRoot,
+      RHWP_PROJECTS_DIR: projectsRoot,
       RHWP_PI_DIR: piRoot,
     },
     path.join(logRoot, 'reference-files-e2e-hub.log'),
@@ -189,37 +171,24 @@ try {
   process.env.VITE_URL = viteUrl;
   const { runTest, assert, createNewDocument, screenshot } =
     await import('./helpers.mjs');
-  await runTest('참고자료 업로드·검색·범위 격리', async ({ page }) => {
+  const { openSample } = await import('./agent-bench-harness.mjs');
+  await runTest('프로젝트·공용 자료 업로드와 문서 사이 격리', async ({ page }) => {
     // 새 채팅은 첫 메시지를 보낼 때 사이드바의 선택으로 시작한다. 가짜 Pi 를 기본으로 두고
-    // 다시 불러 오면, 두 번째 채팅의 첫 메시지가 실제 CLI 를 띄우지 않고 이 Pi 로 간다.
+    // 다시 불러 오면, 첫 메시지가 실제 CLI 를 띄우지 않고 이 Pi 로 간다.
     await seedFakePiPrefs(page);
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForFunction(
       () => window.__agentBridge?.getConnectionState?.() === 'connected',
     );
     await createNewDocument(page);
-    await page.waitForFunction(() => {
-      const tab = document.querySelector(
-        '.ag-reference-tab[data-scope="document"]',
-      );
-      return tab instanceof HTMLButtonElement && !tab.disabled;
-    });
 
+    // 지운 초안 첨부는 어디에도 쌓이지 않는다.
     await page.type('.ag-input', 'draft message');
     await stageQuickFile(page, {
       name: 'discarded-draft.txt',
-      content: 'THIS_DRAFT_MUST_NOT_REACH_THE_REFERENCE_STACK',
+      content: 'THIS_DRAFT_MUST_NOT_REACH_THE_PROJECT',
     });
     await page.waitForSelector('.ag-reference-upload-chip.ag-ready');
-    const beforeErase = await page.evaluate(async () => ({
-      drafts: document.querySelectorAll('.ag-reference-upload-chip').length,
-      references: (
-        await window.__agentBridge.listReferences(
-          'chat',
-          window.__agentBridge.threadId,
-        )
-      ).length,
-    }));
     await page.evaluate(() => {
       const input = document.querySelector('.ag-input');
       if (!(input instanceof HTMLTextAreaElement))
@@ -227,159 +196,135 @@ try {
       input.value = '';
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
-    const retainedDrafts = await page.$$eval(
-      '.ag-reference-upload-chip.ag-ready',
-      (chips) => chips.length,
-    );
-    const afterErase = await page.evaluate(
-      async () =>
-        (
-          await window.__agentBridge.listReferences(
-            'chat',
-            window.__agentBridge.threadId,
-          )
-        ).length,
-    );
     assert(
-      beforeErase.drafts === 1 &&
-        beforeErase.references === 0 &&
-        retainedDrafts === 1 &&
-        afterErase === 0,
-      'clearing text preserves the attachment draft without indexing it',
+      (await page.$$eval('.ag-reference-upload-chip.ag-ready', (chips) => chips.length)) === 1,
+      'clearing text preserves the attachment draft',
     );
     await page.click('button[aria-label="discarded-draft.txt 첨부 취소"]');
     await page.waitForFunction(
       () => document.querySelectorAll('.ag-reference-upload-chip').length === 0,
     );
-    assert(
-      (
-        await page.evaluate(async () =>
-          window.__agentBridge.listReferences(
-            'chat',
-            window.__agentBridge.threadId,
-          ),
-        )
-      ).length === 0,
-      'explicit attachment cancellation leaves the reference stack unchanged',
-    );
 
-    await uploadFile(page, {
-      scope: 'chat',
-      name: 'chat-secret.txt',
-      content: 'CHAT_ONLY_MARKER private launch checklist for the first chat.',
+    // 첫 채팅: 입력기 첨부와 함께 보내면 파일이 이 문서의 프로젝트로 들어간다.
+    await stageQuickFile(page, {
+      name: 'chat-notes.txt',
+      content: 'CHAT_MARKER launch checklist attached in the first chat.',
     });
-    await waitForCount(page, 1);
+    await page.waitForSelector('.ag-reference-upload-chip.ag-ready');
+    await page.type('.ag-input', 'first chat');
+    await page.click('.ag-send');
+    const firstProjectId = await page.waitForFunction(
+      (name) => {
+        const project = window.__agentBridge.projects.store.get();
+        return project?.items.some((item) => item.kind === 'file' && item.originalName === name)
+          ? project.id
+          : null;
+      },
+      { timeout: 20_000 },
+      'chat-notes.txt',
+    ).then((handle) => handle.jsonValue());
 
-    await page.type('.ag-reference-search', 'CHAT_ONLY_MARKER');
-    await page.waitForFunction(() =>
-      document
-        .querySelector('.ag-reference-search-snippet')
-        ?.textContent?.includes('CHAT_ONLY_MARKER'),
-    );
-    assert(
-      await page.$eval('.ag-reference-search-snippet', (el) =>
-        el.textContent.includes('CHAT_ONLY_MARKER'),
-      ),
-      'chat-scoped file uploads and content search returns its indexed excerpt',
+    // 프로젝트 탭의 파일 추가는 같은 프로젝트로, 공용 탭은 모든 문서가 보는 자리로 간다.
+    await uploadFile(page, {
+      scope: 'project',
+      name: 'project-guide.txt',
+      content: 'PROJECT_MARKER instructions for this document project.',
+    });
+    await page.waitForFunction(
+      (name) => window.__agentBridge.projects.store.get()?.items
+        .some((item) => item.kind === 'file' && item.originalName === name),
+      { timeout: 15_000 },
+      'project-guide.txt',
     );
     await page.click('.ag-references-close');
-
-    await uploadFile(page, {
-      scope: 'document',
-      name: 'document-guide.txt',
-      content:
-        'DOCUMENT_MARKER instructions shared by chats attached to this document.',
-    });
-    await waitForCount(page, 2);
-    await page.click('.ag-references-close');
-
     await uploadFile(page, {
       scope: 'global',
       name: 'global-glossary.txt',
       content: 'GLOBAL_MARKER background glossary available in every chat.',
     });
-    await waitForCount(page, 3);
+    await page.waitForFunction(
+      async () => (await window.__agentBridge.listReferences('global', 'global'))
+        .some((file) => file.name === 'global-glossary.txt'),
+      { timeout: 15_000 },
+    );
+    await page.type('.ag-reference-search', 'GLOBAL_MARKER');
+    await page.waitForFunction(() =>
+      document.querySelector('.ag-reference-search-snippet')?.textContent?.includes('GLOBAL_MARKER'),
+    );
     await page.click('.ag-references-close');
 
-    const firstThreadId = await page.evaluate(
-      () => window.__agentBridge.threadId,
+    const projectNames = async () => page.evaluate(async () => {
+      const project = await window.__agentBridge.projects.service.current();
+      return {
+        id: project?.id ?? null,
+        names: (project?.items ?? [])
+          .filter((item) => item.kind === 'file')
+          .map((item) => item.originalName)
+          .sort(),
+      };
+    });
+    const first = await projectNames();
+    assert(
+      first.id === firstProjectId
+        && JSON.stringify(first.names) === JSON.stringify(['chat-notes.txt', 'project-guide.txt']),
+      `the first chat's project holds the chat attachment and the project upload only (${JSON.stringify(first)})`,
     );
+
+    // 같은 문서의 두 번째 채팅은 같은 프로젝트를 본다.
+    const firstThreadId = await page.evaluate(() => window.__agentBridge.threadId);
     await page.click('button[aria-label="채팅 목록"]');
     await page.waitForSelector('.ag-threads-page[aria-hidden="false"]');
-    await page.evaluate(() =>
-      document.querySelector('.ag-threads-new')?.click(),
-    );
-    // 새 채팅은 초안이다. 첫 메시지를 보내야 허브 채팅이 새 채팅 ID 로 열리고, 그때부터
-    // 이 채팅의 참고자료 범위가 정해진다. 집중 모드로 들어가는 전환이 끝난 뒤에 보낸다.
-    await page.waitForFunction(
-      () => !document.documentElement.classList.contains('ag-fs-vt'),
-    );
+    await page.evaluate(() => document.querySelector('.ag-threads-new')?.click());
+    await page.waitForFunction(() => !document.documentElement.classList.contains('ag-fs-vt'));
     await page.type('.ag-input', 'second chat');
     await page.click('.ag-send');
     await page.waitForFunction(
-      (previous) =>
-        window.__agentBridge.getActiveAgent() === 'pi' &&
-        window.__agentBridge.threadId !== previous,
-      {},
+      (previous) => window.__agentBridge.getActiveAgent() === 'pi'
+        && window.__agentBridge.threadId !== previous,
+      { timeout: 20_000 },
       firstThreadId,
     );
-    const scopeState = await page.evaluate(async () => ({
-      threadId: window.__agentBridge.threadId,
-      documentId: window.__agentBridge.documentId,
-      chatFiles: (
-        await window.__agentBridge.listReferences(
-          'chat',
-          window.__agentBridge.threadId,
-        )
-      ).map((file) => file.name),
-      documentFiles: (
-        await window.__agentBridge.listReferences(
-          'document',
-          window.__agentBridge.documentId,
-        )
-      ).map((file) => file.name),
-      globalFiles: (
-        await window.__agentBridge.listReferences('global', 'global')
-      ).map((file) => file.name),
-    }));
-    console.log(`  [scope] ${JSON.stringify(scopeState)}`);
-    await waitForCount(page, 2);
+    const sameDocument = await projectNames();
+    assert(
+      sameDocument.id === firstProjectId && sameDocument.names.includes('chat-notes.txt'),
+      `a second chat on the same document shares its project (${JSON.stringify(sameDocument)})`,
+    );
 
-    assert(
-      scopeState.chatFiles.length === 0,
-      `old chat content is absent from the new chat (${scopeState.chatFiles.join(', ') || 'none'})`,
+    // 다른 문서의 채팅은 그 문서의 프로젝트를 받는다 — 앞 문서의 자료는 보이지 않는다.
+    await openSample(page, 'text-align-2.hwp');
+    await page.waitForFunction(
+      () => window.__documentSessions.list().length === 2
+        && window.__agentBridge?.getConnectionState?.() === 'connected',
+      { timeout: 15_000 },
     );
-    assert(
-      JSON.stringify(scopeState.documentFiles) ===
-        JSON.stringify(['document-guide.txt']) &&
-        JSON.stringify(scopeState.globalFiles) ===
-          JSON.stringify(['global-glossary.txt']),
-      'new chat retains document and global reference manifests',
+    await page.waitForFunction(() => {
+      const input = document.querySelector('.ag-input');
+      return input instanceof HTMLTextAreaElement && !input.disabled;
+    }, { timeout: 15_000 });
+    await page.type('.ag-input', 'other document chat');
+    await page.click('.ag-send');
+    await page.waitForFunction(
+      (previous) => {
+        const project = window.__agentBridge.projects.store.get();
+        return Boolean(project && project.id !== previous);
+      },
+      { timeout: 20_000 },
+      firstProjectId,
     );
-    const retrieval = await page.evaluate(async () => ({
-      chat: await window.__agentBridge.searchReferences(
-        'CHAT_ONLY_MARKER',
-        'chat',
-        window.__agentBridge.threadId,
-      ),
-      document: await window.__agentBridge.searchReferences(
-        'DOCUMENT_MARKER',
-        'document',
-        window.__agentBridge.documentId,
-      ),
-      global: await window.__agentBridge.searchReferences(
-        'GLOBAL_MARKER',
-        'global',
-        'global',
-      ),
+    const otherDocument = await projectNames();
+    const otherSearch = await page.evaluate(async () => ({
+      global: (await window.__agentBridge.listReferences('global', 'global')).map((file) => file.name),
     }));
+    console.log(`  [scope] ${JSON.stringify({ first, sameDocument, otherDocument, otherSearch })}`);
     assert(
-      retrieval.chat.length === 0,
-      'old chat content is absent from new-chat retrieval',
+      otherDocument.id !== firstProjectId
+        && !otherDocument.names.includes('chat-notes.txt')
+        && !otherDocument.names.includes('project-guide.txt'),
+      `a chat on another document does not see the first document's project files (${JSON.stringify(otherDocument)})`,
     );
     assert(
-      retrieval.document.length === 1 && retrieval.global.length === 1,
-      'document/global content remains searchable in the new chat',
+      otherSearch.global.includes('global-glossary.txt'),
+      'global files stay available from the other document',
     );
     await screenshot(page, 'reference-files-scopes');
   });
@@ -390,6 +335,7 @@ try {
   await stop(vite);
   await stop(hub);
   fs.rmSync(referenceRoot, { recursive: true, force: true });
+  fs.rmSync(projectsRoot, { recursive: true, force: true });
   fs.rmSync(piRoot, { recursive: true, force: true });
 }
 

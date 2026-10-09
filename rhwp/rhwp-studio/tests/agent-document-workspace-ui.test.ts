@@ -26,7 +26,7 @@ test('changes drawer exposes synchronized accessible state', () => {
   assert.doesNotMatch(source, /handle\.addEventListener\('pointermove', onColumnResizePointerMove\)/);
   assert.match(source, /reviewColumnClose\.setAttribute\('aria-label', '검토 닫기'\)/);
   assert.match(source, /reviewColumnClose\.addEventListener\('click', \(\) => \{[\s\S]*?setReviewColCollapsed\(true\);[\s\S]*?environmentToggle\.focus\(\)/);
-  assert.match(source, /if \(root\.classList\.contains\('ag-detail-drawer-open'\)\) \{/);
+  assert.match(source, /if \(root\.classList\.contains\('ag-detail-drawer-open'\) \|\| root\.classList\.contains\('ag-project-drawer-open'\)\) \{/);
 });
 
 test('the same review node returns to its inline sidebar position after focus mode', () => {

@@ -26,16 +26,24 @@ test('composer exposes chat-scoped quick add and a separate reference library pa
   assert.match(css, /\.ag-references-open \.ag-references-page/);
 });
 
-test('library uses real, inert tabpanels for chat, document, and global scopes', () => {
-  assert.match(library, /\['chat', 'document', 'global'\] as const/);
+test('library uses real, inert tabpanels for the project and shared scopes', () => {
+  assert.match(library, /\{ id: 'project', label: '프로젝트' \}/);
+  assert.match(library, /\{ id: 'global', label: '공용' \}/);
   assert.match(library, /tabs\.setAttribute\('role', 'tablist'\)/);
   assert.match(library, /tab\.setAttribute\('role', 'tab'\)/);
   assert.match(library, /panel\.setAttribute\('role', 'tabpanel'\)/);
   assert.match(library, /page\.append\(header, tabs, \.\.\.tabPanels\.values\(\), fileInput\)/);
-  assert.match(library, /tabPanels\.get\(activeScope\)!\.append\(toolbar, scopeHint, status, error, results, dropHint\)/);
   assert.match(library, /panel\.inert = !active/);
-  assert.match(library, /documentTab\.disabled = !context\.documentId/);
   assert.match(css, /\.ag-reference-tabpanel\[hidden\] \{ display: none; \}/);
+});
+
+test('project tab groups items by board column and opens the project column', () => {
+  assert.match(library, /for \(const column of project\.columns\)/);
+  assert.match(library, /columnItems\(project, column\.id\)/);
+  assert.match(library, /'프로젝트 열기'/);
+  assert.match(library, /options\.openProject\(itemId \? \{ itemId \} : undefined\)/);
+  assert.match(library, /new CustomEvent\('ag-project-open', \{ bubbles: true, detail: \{ itemId \} \}\)/);
+  assert.match(library, /client\.service\.uploadFile\(projectId, file\)/);
 });
 
 test('library searches backend content and exposes loading/error/keyboard semantics', () => {
@@ -64,7 +72,6 @@ test('a reconstructed question never probes a transient thread reference scope',
   assert.match(library, /bridge\.getActiveAgent\(\) === null/);
   assert.match(library, /bridge\.getPendingUserQuestion\(\)/);
   assert.match(library, /pendingQuestion\.threadId === target\.scopeId/);
-  assert.match(library, /\.filter\(isAuthorizedSessionTarget\)/);
 });
 
 test('composer attachments upload into removable staging drafts before their message is sent', () => {

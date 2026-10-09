@@ -139,6 +139,7 @@ async function startHub(t, { seed } = {}) {
       RHWP_AGENT_TOKEN: TOKEN,
       RHWP_LAUNCH_ID: LAUNCH_ID,
       RHWP_WORK_DIR: workRoot,
+      RHWP_PROJECTS_DIR: path.join(workRoot, 'projects'),
       RHWP_TEMPLATES_DIR: path.join(workRoot, 'templates'),
       RHWP_AGENT_INSTRUCTIONS_DIR: path.join(workRoot, 'agent-instructions'),
       RHWP_PI_DIR: piRoot,

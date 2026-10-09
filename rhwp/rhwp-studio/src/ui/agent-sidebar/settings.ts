@@ -27,6 +27,8 @@ import {
 import { createIcon } from './icons.ts';
 import { createProviderQuota } from './provider-quota.ts';
 import { createEditingSettings } from './settings-editing.ts';
+import { createProjectSettingsPane } from './settings-project.ts';
+import { projectClientOf, type ProjectService } from '../../agent/project-service.ts';
 import { userSettings } from '../../core/user-settings.ts';
 import {
   normalizeSettingsDestination,
@@ -318,6 +320,8 @@ export interface SettingsPanelDeps {
   skillsSettings?: HTMLElement;
   /** 스킬 탭에 들어갈 때 최신 목록을 요청한다. */
   refreshSkills?: () => void;
+  /** 설정 → 프로젝트가 쓰는 허브 서비스. 없으면 bridge.projects 를 찾는다. */
+  projectSettings?: ProjectService | null;
 }
 
 export interface SettingsPanel {
@@ -347,6 +351,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     reconnectSession,
     skillsSettings,
     refreshSkills,
+    projectSettings,
   } = deps;
 
   let disposed = false;
@@ -470,6 +475,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     { id: 'editing', label: '편집' },
     { id: 'ai', label: 'AI' },
     { id: 'skills', label: '스킬' },
+    { id: 'project', label: '프로젝트' },
   ];
   for (const destination of destinations) {
     const button = el('button', 'ag-settings-nav-button', destination.label);
@@ -500,6 +506,14 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     },
   });
   panes.get('editing')?.appendChild(editingSettings.element);
+  const projectPane = createProjectSettingsPane({
+    service: () => projectSettings ?? projectClientOf(bridge)?.service ?? null,
+    isConnected: () => connectionState === 'connected',
+    onDirtyChange: () => {
+      if (shellReady) renderDestinationState();
+    },
+  });
+  panes.get('project')?.appendChild(projectPane.element);
 
   // ── 1. 연결 ────────────────────────────────────────────
   const connection = createSection('연결');
@@ -1441,6 +1455,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         return isAiDirty();
       case 'skills':
         return false;
+      case 'project':
+        return projectPane.isDirty();
       default: {
         const _exhaustive: never = currentDestination;
         return _exhaustive;
@@ -1486,6 +1502,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     renderDestinationState();
     syncUsagePolling();
     if (destination === 'skills') refreshSkills?.();
+    if (destination === 'project') projectPane.open();
     panes.get(destination)?.scrollTo({ top: 0 });
   }
 
@@ -1644,6 +1661,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
           return true;
         case 'skills':
           return true;
+        case 'project':
+          projectPane.cancel();
+          return true;
         default: {
           const _exhaustive: never = currentDestination;
           return _exhaustive;
@@ -1657,6 +1677,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         return applyAiDraft();
       case 'skills':
         return true;
+      case 'project':
+        return projectPane.apply();
       default: {
         const _exhaustive: never = currentDestination;
         return _exhaustive;
@@ -3290,6 +3312,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         prefsDraft = clonePrefs(prefs);
       }
       connectionState = bridge.getConnectionState();
+      projectPane.setConnected(connectionState === 'connected');
       editingSettings.open();
       if (destination) selectDestination(destination);
       else selectDestination(lastDestination);
@@ -3318,12 +3341,13 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       syncUsagePolling();
       if (editingSettings.isDirty()) editingSettings.cancel();
       if (isAiDirty()) cancelAiDraft();
+      if (projectPane.isDirty()) projectPane.cancel();
       closeAgentSetup();
       finishTemplateName(null);
     },
     requestClose: resolveDirtyExit,
     isDirty(): boolean {
-      return editingSettings.isDirty() || isAiDirty();
+      return editingSettings.isDirty() || isAiDirty() || projectPane.isDirty();
     },
     openAgentSetup,
     beginAgentConnect,
@@ -3332,6 +3356,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         case 'connection':
           connectionState = ev.state;
           setupTerminal.setOnline(ev.state === 'connected');
+          projectPane.setConnected(ev.state === 'connected');
           renderConnection();
           renderProviders();
           renderPi();
@@ -3558,6 +3583,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       if (supportsTerminalSetup(setupAgent) && setupAuthRunId) bridge.cancelAgentSetup(setupAgent, setupAuthRunId);
       if (setupCloseTimer) clearTimeout(setupCloseTimer);
       setupTerminal.dispose();
+      projectPane.dispose();
       disposed = true;
       settingsOpen = false;
       syncUsagePolling();

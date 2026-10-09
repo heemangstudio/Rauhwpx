@@ -11,6 +11,7 @@ import { loadAgentPrefs } from '../agent/agent-prefs.ts';
 import { createFixtures, samplePlan, timestamp, agents } from './fixtures.ts';
 import { requestLiveUsage, consumeLiveCodexReset } from './live-usage.ts';
 import { createBrowserbaseFixture, type BrowserbaseFixtureState } from './fixtures.ts';
+import { createPreviewProjects } from './mock-projects.ts';
 
 export const scenarios = [
   'chat',
@@ -140,6 +141,8 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
   /** 브라우저 검사가 읽는 호출 기록. */
   const chatStarts: Array<{ threadId: string; workflow: T.AgentWorkflow; permissionProfile: T.PermissionProfile }> = [];
   let messagesSent = 0;
+  const sentMentions: string[][] = [];
+  const projects = createPreviewProjects({ homeAccess: new URLSearchParams(location.search).get('home') === '1' });
   let interrupts = 0;
   let threadId = '';
   let scenario: Scenario = 'chat';
@@ -256,6 +259,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
     question = null;
   };
   const bridge: SidebarBridge = {
+    projects,
     pendingEdits: {
       getChangeSets: () => changes,
       onChange: (listener) => {
@@ -601,8 +605,9 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
         }),
       ),
     requestCheckpointTitle: async () => null,
-    sendUserMessage: async (_text, _skill, referenceIds = []) => {
+    sendUserMessage: async (_text, _skill, referenceIds = [], _receipt, _signal, mentions = []) => {
       messagesSent += 1;
+      sentMentions.push([...mentions]);
       const messageId = crypto.randomUUID();
       const turnGeneration = ++generation;
       const reply =
@@ -1338,6 +1343,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       scenario = value;
     },
     setHold: (value: boolean) => { holdReply = value; },
+    projects,
     /** Delivers one provider event as the hub would, e.g. a token-by-token answer for benches. */
     streamEvent: stream,
     boot: () => {
@@ -1351,6 +1357,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
     snapshot: () => ({
       chatStarts: chatStarts.map((start) => ({ ...start })),
       messagesSent,
+      sentMentions: sentMentions.map((ids) => [...ids]),
       interrupts,
       scenario,
       connection,

@@ -1,19 +1,6 @@
-import crypto from 'node:crypto';
-import { promises as fs } from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-
-import spawn from 'cross-spawn';
 import { z } from 'zod';
 
-import { applyManagedCliLaunch } from '../npm-cli-launch.mjs';
-import {
-  isolatedProcessEnv,
-  PROCESS_TREE_CLEANUP_OUTCOME,
-  processTreeSpawnOptions,
-  terminateAndWaitForProcessTreeExitOutcome,
-  terminateProcessTree,
-} from '../process-tree.mjs';
+import { buildOneShotCliSpec, extractOneShotText, runOneShot } from './one-shot-llm.mjs';
 
 export const CHECKPOINT_TITLE_MAX_ITEMS = 12;
 export const CHECKPOINT_TITLE_MAX_SUMMARY_BYTES = 4 * 1024;
@@ -21,7 +8,6 @@ export const CHECKPOINT_TITLE_MAX_CHARS = 72;
 export const CHECKPOINT_TITLE_PROVIDER_TIMEOUT_MS = 12_000;
 export const CHECKPOINT_TITLE_OVERALL_TIMEOUT_MS = 40_000;
 
-const MAX_CLI_OUTPUT_BYTES = 64 * 1024;
 const CHANGE_KINDS = ['added', 'removed', 'modified'];
 const PROVIDER_ORDER = ['codex', 'pi', 'claude'];
 const CODEX_MIN_REMAINING_PERCENT = 5;
@@ -181,474 +167,54 @@ export function buildCheckpointTitlePrompt(input) {
 export function buildCheckpointTitleCliSpec(provider, {
   command,
   model,
-  promptFilePath,
-  sessionId = crypto.randomUUID(),
 } = {}) {
   if (provider === 'codex') {
-    return {
-      provider,
-      command: command ?? 'codex',
-      argv: [
-        'exec', '--json', '--ephemeral', '--skip-git-repo-check',
-        '--ignore-user-config', '--ignore-rules',
-        '--disable', 'apps', '--disable', 'browser_use', '--disable', 'computer_use',
-        '--disable', 'image_generation', '--disable', 'multi_agent', '--disable', 'plugins',
-        '--disable', 'skill_search', '--disable', 'shell_tool', '--disable', 'unified_exec',
-        '--disable', 'code_mode_host', '--disable', 'standalone_web_search',
-        '--disable', 'view_image', '--disable', 'shell_snapshot', '--sandbox', 'read-only',
-        '-m', model ?? 'gpt-6-luna', '-c', 'model_reasoning_effort="low"', '-',
-      ],
-      stdin: true,
-    };
+    return buildOneShotCliSpec('codex', { command, model, effort: 'low' });
   }
   if (provider === 'claude') {
-    return {
-      provider,
-      command: command ?? 'claude',
-      argv: [
-        '-p', '--output-format', 'json', '--setting-sources', '',
-        '--disable-slash-commands', '--tools', '', '--permission-mode', 'dontAsk',
-        '--model', CHECKPOINT_TITLE_CLAUDE_MODEL, '--effort', 'max',
-      ],
-      stdin: true,
-    };
+    return buildOneShotCliSpec('claude', { command, model: CHECKPOINT_TITLE_CLAUDE_MODEL, effort: 'max' });
   }
   throw new Error(`Unsupported checkpoint-title CLI provider: ${String(provider)}`);
 }
 
-function textFromEvent(event) {
-  if (!event || typeof event !== 'object') return null;
-  if (event.is_error === true) return null;
-  if (typeof event.result === 'string') return event.result;
-  if (event.type === 'item.completed' && event.item?.type === 'agent_message') {
-    return String(event.item.text ?? event.item.message ?? '');
-  }
-  if (event.type === 'assistant' && Array.isArray(event.message?.content)) {
-    return event.message.content
-      .filter((block) => block?.type === 'text' && typeof block.text === 'string')
-      .map((block) => block.text)
-      .join('');
-  }
-  return null;
-}
-
-export function extractCheckpointTitleText(stdout) {
-  const text = String(stdout ?? '').trim();
-  if (!text) return null;
-  try {
-    const direct = textFromEvent(JSON.parse(text));
-    if (direct !== null) return direct;
-  } catch {}
-
-  let last = null;
-  for (const line of text.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    try {
-      const candidate = textFromEvent(JSON.parse(line));
-      if (candidate !== null) last = candidate;
-    } catch {}
-  }
-  return last;
-}
-
-function hasTerminalCheckpointOutput(provider, stdout) {
-  for (const line of String(stdout).split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    try {
-      const event = JSON.parse(line);
-      if (event?.type === 'result' || event?.is_error === true || event?.type === 'turn.failed') {
-        return true;
-      }
-      if (provider === 'codex'
-        && event?.type === 'item.completed'
-        && event.item?.type === 'agent_message') return true;
-    } catch {}
-  }
-  return false;
-}
-
-function runCli(spec, prompt, timeoutMs, {
-  env,
-  cwd,
-  signal,
-  spawnProcess = spawn,
-  terminateProcess = terminateProcessTree,
-  cleanupProcessOutcome,
-  onCleanupUncertain = () => {},
-  platform,
-  nodeCommand,
-} = {}) {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    let finalizing = false;
-    let stdout = '';
-    let outputExceeded = false;
-    let child;
-    let timer = null;
-    let stopping = false;
-    let cleanupPromise = null;
-    let abort = () => {};
-
-    const finish = (value) => {
-      if (settled) return;
-      settled = true;
-      if (timer) clearTimeout(timer);
-      signal?.removeEventListener?.('abort', abort);
-      resolve(value);
-    };
-    const fail = (error) => {
-      if (settled) return;
-      settled = true;
-      if (timer) clearTimeout(timer);
-      signal?.removeEventListener?.('abort', abort);
-      reject(error);
-    };
-    const finishAfterCleanup = (value, { allowUnavailable = false } = {}) => {
-      if (settled || finalizing) return;
-      finalizing = true;
-      if (timer) clearTimeout(timer);
-      if (!child) {
-        finish(value);
-        return;
-      }
-      if (!cleanupPromise) {
-        cleanupPromise = (typeof cleanupProcessOutcome === 'function'
-          ? Promise.resolve(cleanupProcessOutcome(child))
-          : terminateAndWaitForProcessTreeExitOutcome(child, { terminateProcess }))
-          .catch(() => PROCESS_TREE_CLEANUP_OUTCOME.FAILED);
-      }
-      void cleanupPromise.then((outcome) => {
-        if (allowUnavailable
-          && value !== null
-          && outcome === PROCESS_TREE_CLEANUP_OUTCOME.UNAVAILABLE) {
-          onCleanupUncertain();
-          finish(value);
-          return;
-        }
-        if (outcome !== PROCESS_TREE_CLEANUP_OUTCOME.PROVEN) {
-          const error = new Error('Checkpoint-title process-tree cleanup could not be confirmed');
-          error.processCleanupUncertain = true;
-          fail(error);
-          return;
-        }
-        finish(value);
-      });
-    };
-    const stop = () => {
-      if (!child || stopping) return;
-      stopping = true;
-      finishAfterCleanup(null);
-    };
-    abort = () => {
-      stop();
-    };
-
-    try {
-      const launched = applyManagedCliLaunch(spec.command, spec.argv, {
-        platform,
-        nodeCommand,
-        env,
-      });
-      child = spawnProcess(launched.command, launched.argv, {
-        ...processTreeSpawnOptions(),
-        shell: false,
-        ...(cwd ? { cwd } : {}),
-        env: launched.env,
-        stdio: [spec.stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
-      });
-    } catch {
-      finish(null);
-      return;
-    }
-
-    child.stdout?.setEncoding?.('utf8');
-    child.stdout?.on?.('data', (chunk) => {
-      if (outputExceeded) return;
-      stdout += String(chunk);
-      if (Buffer.byteLength(stdout, 'utf8') > MAX_CLI_OUTPUT_BYTES) {
-        outputExceeded = true;
-        stop();
-        return;
-      }
-      if (typeof cleanupProcessOutcome === 'function'
-        && hasTerminalCheckpointOutput(spec.provider, stdout)) {
-        finishAfterCleanup(extractCheckpointTitleText(stdout));
-      }
-    });
-    child.stdout?.on?.('error', () => {});
-    child.stderr?.on?.('data', () => {});
-    child.stderr?.on?.('error', () => {});
-    child.on?.('error', () => {
-      if (child.pid) stop();
-      else finish(null);
-    });
-    child.on?.('close', (code) => {
-      if (stopping || outputExceeded) {
-        finishAfterCleanup(null);
-        return;
-      }
-      const value = code === 0 ? extractCheckpointTitleText(stdout) : null;
-      finishAfterCleanup(value, {
-        allowUnavailable: code === 0 && cleanCheckpointTitle(value) !== null,
-      });
-    });
-
-    timer = setTimeout(abort, timeoutMs);
-    signal?.addEventListener?.('abort', abort, { once: true });
-    if (signal?.aborted) {
-      abort();
-      return;
-    }
-
-    if (spec.stdin) {
-      child.stdin?.on?.('error', abort);
-      try { child.stdin?.end?.(prompt); }
-      catch { abort(); }
-    }
-  });
-}
-
-async function prepareCliWorkspace(provider, prompt, deps) {
-  const makeTemp = deps.mkdtemp ?? ((prefix) => fs.mkdtemp(prefix));
-  const tempRoot = await makeTemp(path.join(os.tmpdir(), 'rhwp-checkpoint-title-'));
-  try {
-    let promptFilePath;
-    return {
-      tempRoot,
-      spec: buildCheckpointTitleCliSpec(provider, {
-        command: deps.commands?.[provider],
-        model: deps.cliModel ?? deps.readiness?.[provider]?.model,
-        promptFilePath,
-      }),
-      // Claude's env owns HOME: macOS keeps the real one so the CLI can reach its Keychain login.
-      env: isolatedProcessEnv(
-        {
-          isolatedHome: provider === 'claude' ? undefined : deps.isolatedHome,
-          sessionId: deps.sessionId,
-        },
-        deps.providerEnvs?.[provider],
-      ),
-    };
-  } catch (error) {
-    await fs.rm(tempRoot, { recursive: true, force: true }).catch(() => {});
-    throw error;
-  }
-}
-
-async function prepareCliWorkspaceBounded(provider, prompt, timeoutMs, deps) {
-  if (timeoutMs <= 0 || deps.signal?.aborted) return null;
-  const stopped = Symbol('stopped');
-  let timer;
-  let detachExternal = () => {};
-  let stop;
-  const aborted = new Promise((resolve) => {
-    stop = () => resolve(stopped);
-    timer = setTimeout(stop, timeoutMs);
-    if (deps.signal) {
-      deps.signal.addEventListener('abort', stop, { once: true });
-      detachExternal = () => deps.signal.removeEventListener('abort', stop);
-      if (deps.signal.aborted) stop();
-    }
-  });
-  if (deps.signal?.aborted) {
-    clearTimeout(timer);
-    detachExternal();
-    return null;
-  }
-
-  const running = prepareCliWorkspace(provider, prompt, deps);
-  try {
-    const workspace = await Promise.race([running, aborted]);
-    if (workspace !== stopped) return workspace;
-    void running.then(disposeCliWorkspace, () => {});
-    return null;
-  } finally {
-    clearTimeout(timer);
-    detachExternal();
-  }
-}
-
-async function runPreparedCli(workspace, prompt, timeoutMs, deps) {
-  let cleanupUncertain = false;
-  try {
-    return await runCli(workspace.spec, prompt, timeoutMs, {
-      cwd: workspace.tempRoot,
-      signal: deps.signal,
-      spawnProcess: deps.spawnProcess,
-      terminateProcess: deps.terminateProcess,
-      cleanupProcessOutcome: deps.cleanupProcessOutcome,
-      env: workspace.env,
-      platform: deps.platform,
-      nodeCommand: deps.nodeCommand,
-      onCleanupUncertain: () => { cleanupUncertain = true; },
-    });
-  } catch (error) {
-    cleanupUncertain ||= error?.processCleanupUncertain === true;
-    throw error;
-  } finally {
-    if (!cleanupUncertain) await disposeCliWorkspace(workspace);
-  }
-}
-
-async function disposeCliWorkspace(workspace) {
-  if (!workspace?.tempRoot) return;
-  workspace.disposePromise ??= fs
-    .rm(workspace.tempRoot, { recursive: true, force: true })
-    .catch(() => {});
-  await workspace.disposePromise;
-}
-
-async function runProvider(provider, model, prompt, timeoutMs, deps) {
-  if (deps.signal?.aborted) return null;
-  if (deps.runProvider) {
-    return deps.runProvider({ provider, model, prompt, timeoutMs, signal: deps.signal });
-  }
-  if (provider === 'pi') {
-    try {
-      return await deps.openRouter.chat({
-        key: deps.piManager.apiKey(),
-        model,
-        messages: [{ role: 'user', content: prompt }],
-        maxTokens: 128,
-        temperature: 0.2,
-        timeout: timeoutMs,
-      });
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
-async function boundedAttempt(operation, timeoutMs, externalSignal) {
-  const controller = new AbortController();
-  const stopped = Symbol('stopped');
-  const cleanupGraceMs = Math.min(100, Math.max(1, Math.floor(timeoutMs / 3)));
-  const executionTimeoutMs = Math.max(1, timeoutMs - cleanupGraceMs);
-  let timer = null;
-  let detachExternal = () => {};
-  let stopAttempt;
-  const aborted = new Promise((resolve) => {
-    const stop = () => {
-      controller.abort();
-      resolve(stopped);
-    };
-    stopAttempt = stop;
-    timer = setTimeout(stop, executionTimeoutMs);
-    if (externalSignal) {
-      externalSignal.addEventListener('abort', stop, { once: true });
-      detachExternal = () => externalSignal.removeEventListener('abort', stop);
-      if (externalSignal.aborted) stop();
-    }
-  });
-  const running = Promise.resolve().then(() => operation(controller.signal)).catch(() => null);
-  try {
-    const first = await Promise.race([running, aborted]);
-    if (first !== stopped) return first;
-    let cleanupTimer = null;
-    try {
-      return await Promise.race([
-        running,
-        new Promise((resolve) => { cleanupTimer = setTimeout(() => resolve(null), cleanupGraceMs); }),
-      ]);
-    } finally {
-      if (cleanupTimer) clearTimeout(cleanupTimer);
-    }
-  } finally {
-    if (timer) clearTimeout(timer);
-    detachExternal();
-    stopAttempt?.();
-  }
-}
-
-async function runTimedProvider(provider, model, prompt, timeoutMs, overallDeadline, deps) {
-  if (deps.runProvider || provider === 'pi') {
-    return boundedAttempt(
-      (signal) => runProvider(provider, model, prompt, timeoutMs, { ...deps, signal }),
-      timeoutMs,
-      deps.signal,
-    );
-  }
-
-  let workspace;
-  try {
-    workspace = await prepareCliWorkspaceBounded(
-      provider,
-      prompt,
-      overallDeadline - Date.now(),
-      deps,
-    );
-  } catch {
-    return null;
-  }
-  if (!workspace) return null;
-  if (deps.signal?.aborted) {
-    await disposeCliWorkspace(workspace);
-    return null;
-  }
-  const remaining = overallDeadline - Date.now();
-  if (remaining <= 0) {
-    await disposeCliWorkspace(workspace);
-    return null;
-  }
-  const runTimeoutMs = Math.max(1, Math.min(timeoutMs, remaining));
-  try {
-    return await runPreparedCli(workspace, prompt, runTimeoutMs, deps);
-  } catch (error) {
-    if (error?.processCleanupUncertain === true) throw error;
-    return null;
-  }
-}
+export const extractCheckpointTitleText = extractOneShotText;
 
 /** Generate opportunistically. Every unavailable, invalid, failed, or timed-out route falls through. */
 export async function generateCheckpointTitle(raw, deps = {}) {
   const input = normalizeCheckpointTitleRequest(raw);
   if (!input) return null;
   const prompt = buildCheckpointTitlePrompt(input);
-  const startedAt = Date.now();
-  const overallTimeoutMs = deps.overallTimeoutMs ?? CHECKPOINT_TITLE_OVERALL_TIMEOUT_MS;
-  const providerTimeoutMs = deps.providerTimeoutMs ?? CHECKPOINT_TITLE_PROVIDER_TIMEOUT_MS;
-  const overallDeadline = startedAt + overallTimeoutMs;
-
-  for (const provider of PROVIDER_ORDER) {
-    if (deps.signal?.aborted) break;
+  const candidates = PROVIDER_ORDER.map((provider) => {
     const route = deps.readiness?.[provider];
-    if (route?.ready !== true || typeof route.model !== 'string' || !route.model) continue;
-    if (overallDeadline - Date.now() <= 0) break;
-    let model = route.model;
-    const resolveModel = provider === 'codex' ? deps.resolveCodexTitleModel
-      : provider === 'pi' ? deps.resolvePiTitleModel : null;
-    if (resolveModel) {
-      try { model = await resolveModel(); }
-      catch { continue; }
-      if (!model || deps.signal?.aborted) continue;
-    }
-    const remaining = overallDeadline - Date.now();
-    if (remaining <= 0) break;
-    const timeoutMs = Math.max(1, Math.min(providerTimeoutMs, remaining));
-    let output;
-    try {
-      output = await runTimedProvider(
-        provider,
-        model,
-        prompt,
-        timeoutMs,
-        overallDeadline,
-        { ...deps, cliModel: model },
-      );
-    } catch (error) {
-      if (error?.processCleanupUncertain === true) return null;
-      throw error;
-    }
-    const title = cleanCheckpointTitle(output);
-    if (!title) continue;
     return {
-      commitId: input.commitId,
-      titleRevision: input.titleRevision,
-      title,
       provider,
-      model,
+      ready: route?.ready === true,
+      model: route?.model,
+      resolveModel: provider === 'codex' ? deps.resolveCodexTitleModel
+        : provider === 'pi' ? deps.resolvePiTitleModel : undefined,
     };
-  }
-  return null;
+  });
+  const result = await runOneShot({
+    prompt,
+    candidates,
+    parse: cleanCheckpointTitle,
+    overallTimeoutMs: deps.overallTimeoutMs ?? CHECKPOINT_TITLE_OVERALL_TIMEOUT_MS,
+    providerTimeoutMs: deps.providerTimeoutMs ?? CHECKPOINT_TITLE_PROVIDER_TIMEOUT_MS,
+    deps: {
+      ...deps,
+      buildSpec: buildCheckpointTitleCliSpec,
+      tempPrefix: 'rhwp-checkpoint-title-',
+      acceptOutput: (value) => cleanCheckpointTitle(value) !== null,
+      label: 'Checkpoint-title',
+      maxTokens: 128,
+    },
+  });
+  if (!result) return null;
+  return {
+    commitId: input.commitId,
+    titleRevision: input.titleRevision,
+    title: result.value,
+    provider: result.provider,
+    model: result.model,
+  };
 }

@@ -22,6 +22,9 @@ const CHILD_DOCUMENT_CATEGORIES = new Set([
   'document-write',
   'reference-read',
   'template-read',
+  'project-read',
+  'project-write',
+  'project-ingest',
 ]);
 
 function capabilityError(code, message) {

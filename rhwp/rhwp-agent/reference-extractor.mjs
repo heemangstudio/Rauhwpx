@@ -4,7 +4,8 @@ import path from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { StringDecoder } from 'node:string_decoder';
-import { createInflateRaw } from 'node:zlib';
+import { createRequire } from 'node:module';
+import { createInflateRaw, inflateRawSync } from 'node:zlib';
 
 import { IMAGE_REFERENCE_EXTENSIONS } from './reference-image.mjs';
 import {
@@ -14,7 +15,7 @@ import {
 } from './process-tree.mjs';
 
 export const MAX_EXTRACTED_CHARS = 5_000_000;
-const MAX_REFERENCE_SOURCE_BYTES = 25 * 1024 * 1024;
+export const MAX_REFERENCE_SOURCE_BYTES = 100 * 1024 * 1024;
 export const MAX_PDF_PAGES = 2_000;
 export const MAX_DOCX_ZIP_ENTRIES = 4_096;
 export const MAX_DOCX_EXPANDED_BYTES = 128 * 1024 * 1024;
@@ -24,9 +25,33 @@ const TEXT_EXTENSIONS = new Set([
   '.txt', '.md', '.markdown', '.csv', '.tsv', '.json', '.xml', '.html', '.htm',
 ]);
 
+const OOXML_KINDS = Object.freeze({
+  '.docx': { label: 'DOCX', main: 'word/document.xml' },
+  '.pptx': { label: 'PPTX', main: 'ppt/presentation.xml' },
+  '.xlsx': { label: 'XLSX', main: 'xl/workbook.xml' },
+});
+
 export const SUPPORTED_REFERENCE_EXTENSIONS = Object.freeze([
-  ...TEXT_EXTENSIONS, '.pdf', '.docx', ...HWP_EXTENSIONS, ...IMAGE_REFERENCE_EXTENSIONS,
+  ...TEXT_EXTENSIONS, '.pdf', '.docx', '.pptx', '.xlsx', ...HWP_EXTENSIONS, ...IMAGE_REFERENCE_EXTENSIONS,
 ]);
+
+let pdfjsAssetDirs;
+/** pdfjs-dist의 CMap·표준 글꼴 폴더. CID 한글 PDF는 이 자료 없이 텍스트가 비어 나옵니다. */
+export function pdfjsAssetOptions() {
+  if (!pdfjsAssetDirs) {
+    try {
+      const root = path.dirname(createRequire(import.meta.url).resolve('pdfjs-dist/package.json'));
+      pdfjsAssetDirs = {
+        cMapUrl: `${path.join(root, 'cmaps')}${path.sep}`,
+        cMapPacked: true,
+        standardFontDataUrl: `${path.join(root, 'standard_fonts')}${path.sep}`,
+      };
+    } catch {
+      pdfjsAssetDirs = {};
+    }
+  }
+  return pdfjsAssetDirs;
+}
 
 export class ReferenceExtractionError extends Error {
   constructor(code, message) {
@@ -252,6 +277,92 @@ function pdfLimitError(name, what) {
   );
 }
 
+/**
+ * Version of the PDF item join below. Search objects extracted by an older join
+ * keep the old spacing until they are re-extracted.
+ */
+export const EXTRACTOR_TEXT_VERSION = 2;
+
+// Studio's passage-locate.ts mirrors these rules so chunk offsets map onto TextLayer spans.
+// tests/fixtures/pdf-join-cases.json pins both copies to the same output.
+const PDF_SAME_LINE_FACTOR = 0.5;
+const PDF_WORD_GAP_FACTOR = 0.2;
+const PDF_SAME_AXIS_COS = 0.985;
+
+function pdfItemGeometry(item) {
+  const t = item?.transform;
+  if (!Array.isArray(t) || t.length < 6 || !t.slice(0, 6).every(Number.isFinite)) return null;
+  const vertical = item.dir === 'ttb';
+  const axis = vertical ? Math.hypot(t[2], t[3]) : Math.hypot(t[0], t[1]);
+  if (!(axis > 0)) return null;
+  const ux = vertical ? -t[2] / axis : t[0] / axis;
+  const uy = vertical ? -t[3] / axis : t[1] / axis;
+  const size = (vertical ? Math.hypot(t[0], t[1]) : Math.hypot(t[2], t[3]))
+    || Number(vertical ? item.width : item.height);
+  if (!(size > 0)) return null;
+  const advance = Number(vertical ? item.height : item.width);
+  return { x: t[4], y: t[5], ux, uy, size, advance: advance > 0 ? advance : 0 };
+}
+
+function pdfGeometrySeparator(a, b) {
+  if (!a || !b) return ' ';
+  const size = Math.max(a.size, b.size);
+  if (a.ux * b.ux + a.uy * b.uy < PDF_SAME_AXIS_COS) return '\n';
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  if (Math.abs(dy * a.ux - dx * a.uy) > PDF_SAME_LINE_FACTOR * size) return '\n';
+  const along = dx * a.ux + dy * a.uy;
+  let gap = 0;
+  if (along >= a.advance) gap = along - a.advance;
+  else if (along + b.advance <= 0) gap = -(along + b.advance);
+  return gap > PDF_WORD_GAP_FACTOR * size ? ' ' : '';
+}
+
+/**
+ * Joins pdfjs text items the way they sit on the page. Returns a function that takes each
+ * item in order and gives the separator to put before its `str`, or null when the item adds
+ * no text. Whitespace-only items only mark a word gap; `hasEOL` or a baseline change gives
+ * '\n'; a gap wider than 0.2 em on the same line gives ' '; touching items join with ''.
+ * Items without a usable transform fall back to ' '.
+ */
+export function createPdfTextJoiner() {
+  let prev = null;
+  let pendingBreak = false;
+  let pendingSpace = false;
+  return (item) => {
+    const str = typeof item?.str === 'string' ? item.str : '';
+    if (!str.trim()) {
+      if (prev) {
+        if (str) pendingSpace = true;
+        if (item?.hasEOL) pendingBreak = true;
+      }
+      return null;
+    }
+    const geometry = pdfItemGeometry(item);
+    let separator = '';
+    if (prev) {
+      separator = pendingBreak ? '\n' : pdfGeometrySeparator(prev.geometry, geometry);
+      if (separator === '' && pendingSpace) separator = ' ';
+      if (separator === ' ' && (/\s$/u.test(prev.str) || /^\s/u.test(str))) separator = '';
+    }
+    prev = { geometry, str };
+    pendingBreak = Boolean(item.hasEOL);
+    pendingSpace = false;
+    return separator;
+  };
+}
+
+/** Joins one page of pdfjs text items. */
+export function joinPdfTextItems(items) {
+  const join = createPdfTextJoiner();
+  let out = '';
+  for (const item of items ?? []) {
+    const separator = join(item);
+    if (separator !== null) out += separator + item.str;
+  }
+  return out;
+}
+
 /** Page-by-page PDF collection with limits applied before strings are joined. */
 export async function collectPdfPages(document, name, {
   maxPages = MAX_PDF_PAGES,
@@ -266,16 +377,16 @@ export async function collectPdfPages(document, name, {
   for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
     const page = await document.getPage(pageNumber);
     const parts = [];
+    const join = createPdfTextJoiner();
     let reader = null;
     const appendItems = (items) => {
       for (const item of items ?? []) {
-        const text = typeof item?.str === 'string' ? item.str : '';
-        if (!text) continue;
-        const extra = text.length + (parts.length > 0 ? 1 : 0);
+        const separator = join(item);
+        if (separator === null) continue;
+        const extra = separator.length + item.str.length;
         if (totalChars + extra > maxChars) throw pdfLimitError(name, 'characters');
-        if (parts.length > 0) totalChars += 1;
-        totalChars += text.length;
-        parts.push(text);
+        totalChars += extra;
+        parts.push(separator, item.str);
       }
     };
     try {
@@ -293,7 +404,7 @@ export async function collectPdfPages(document, name, {
         if (totalChars + 3 > maxChars) throw pdfLimitError(name, 'characters');
         totalChars += 3;
       }
-      pages.push({ page: pageNumber, text: parts.join(' ') });
+      pages.push({ page: pageNumber, text: parts.join('') });
     } catch (error) {
       try { await reader?.cancel?.(error); } catch {}
       throw error;
@@ -317,7 +428,12 @@ async function extractPdf(bytes, name) {
   }
   let document;
   try {
-    document = await pdfjs.getDocument({ data: new Uint8Array(bytes), disableWorker: true }).promise;
+    document = await pdfjs.getDocument({
+      data: new Uint8Array(bytes),
+      disableWorker: true,
+      isEvalSupported: false,
+      ...pdfjsAssetOptions(),
+    }).promise;
     const pages = await collectPdfPages(document, name);
     return { text: pages.map((page) => page.text).join('\n\f\n'), pages };
   } catch (error) {
@@ -372,15 +488,15 @@ function safeDocxMemberName(entryName, encodedLength) {
   return segments.length > 0 && segments.every((segment) => segment && segment !== '.' && segment !== '..');
 }
 
-function docxExpansionLimitDetail(maxExpandedBytes) {
+function docxExpansionLimitDetail(maxExpandedBytes, label = 'DOCX') {
   const mib = maxExpandedBytes / (1024 * 1024);
   const formatted = Number.isInteger(mib)
     ? `${mib.toLocaleString('en-US')} MiB`
     : `${maxExpandedBytes.toLocaleString('en-US')} bytes`;
-  return `expands beyond the ${formatted} DOCX limit`;
+  return `expands beyond the ${formatted} ${label} limit`;
 }
 
-function inspectDocxArchive(source, name, maxExpandedBytes) {
+function inspectDocxArchive(source, name, maxExpandedBytes, kind = OOXML_KINDS['.docx']) {
   if (!Number.isSafeInteger(maxExpandedBytes) || maxExpandedBytes < 1
     || maxExpandedBytes > MAX_DOCX_EXPANDED_BYTES) {
     throw new TypeError(`maxExpandedBytes must be between 1 and ${MAX_DOCX_EXPANDED_BYTES}`);
@@ -463,7 +579,7 @@ function inspectDocxArchive(source, name, maxExpandedBytes) {
     }
     names.add(entryName);
     hasContentTypes ||= entryName === '[Content_Types].xml';
-    hasDocumentXml ||= entryName === 'word/document.xml';
+    hasDocumentXml ||= entryName === kind.main;
 
     let uncompressed = bytes.readUInt32LE(cursor + 24);
     let compressed = bytes.readUInt32LE(cursor + 20);
@@ -480,11 +596,11 @@ function inspectDocxArchive(source, name, maxExpandedBytes) {
     if (compressed === 0xffffffff) compressed = zip64.compressed;
     if (localOffset === 0xffffffff) localOffset = zip64.localOffset;
     if (![uncompressed, compressed, localOffset].every(Number.isSafeInteger)) {
-      throw archiveError('REFERENCE_ARCHIVE_TOO_LARGE', name, docxExpansionLimitDetail(maxExpandedBytes));
+      throw archiveError('REFERENCE_ARCHIVE_TOO_LARGE', name, docxExpansionLimitDetail(maxExpandedBytes, kind.label));
     }
     expandedBytes += uncompressed;
     if (!Number.isSafeInteger(expandedBytes) || expandedBytes > maxExpandedBytes) {
-      throw archiveError('REFERENCE_ARCHIVE_TOO_LARGE', name, docxExpansionLimitDetail(maxExpandedBytes));
+      throw archiveError('REFERENCE_ARCHIVE_TOO_LARGE', name, docxExpansionLimitDetail(maxExpandedBytes, kind.label));
     }
     members.push({
       name: entryName,
@@ -500,7 +616,7 @@ function inspectDocxArchive(source, name, maxExpandedBytes) {
     throw archiveError('REFERENCE_EXTRACTION_FAILED', name, 'has inconsistent ZIP directory metadata');
   }
   if (!hasContentTypes || !hasDocumentXml) {
-    throw archiveError('REFERENCE_TYPE_MISMATCH', name, 'is a ZIP file but not a DOCX document');
+    throw archiveError('REFERENCE_TYPE_MISMATCH', name, `is a ZIP file but not a ${kind.label} document`);
   }
   return { bytes, entries: totalEntries, expandedBytes, centralOffset, members };
 }
@@ -547,6 +663,7 @@ async function countInflatedEntry(
   memberName,
   maxEntryBytes,
   maxExpandedBytes,
+  label = 'DOCX',
 ) {
   let actualBytes = 0;
   const counter = new Writable({
@@ -555,7 +672,7 @@ async function countInflatedEntry(
         callback(archiveError(
           'REFERENCE_ARCHIVE_TOO_LARGE',
           documentName,
-          docxExpansionLimitDetail(maxExpandedBytes),
+          docxExpansionLimitDetail(maxExpandedBytes, label),
         ));
         return;
       }
@@ -580,7 +697,15 @@ async function countInflatedEntry(
 export async function validateDocxExpandedBytes(source, name = 'document.docx', {
   maxExpandedBytes = MAX_DOCX_EXPANDED_BYTES,
 } = {}) {
-  const inspected = inspectDocxArchive(source, name, maxExpandedBytes);
+  const { entries, expandedBytes } = await validateOoxmlArchive(source, name, {
+    maxExpandedBytes,
+    kind: OOXML_KINDS['.docx'],
+  });
+  return { entries, expandedBytes };
+}
+
+async function validateOoxmlArchive(source, name, { maxExpandedBytes = MAX_DOCX_EXPANDED_BYTES, kind }) {
+  const inspected = inspectDocxArchive(source, name, maxExpandedBytes, kind);
   const resolvedMembers = inspected.members.map((member) => ({
     member,
     ...resolveDocxMemberData(inspected, member, name),
@@ -598,7 +723,7 @@ export async function validateDocxExpandedBytes(source, name = 'document.docx', 
     if (member.compressionMethod === 0) {
       actual = compressed.length;
       if (actual > remaining) {
-        throw archiveError('REFERENCE_ARCHIVE_TOO_LARGE', name, docxExpansionLimitDetail(maxExpandedBytes));
+        throw archiveError('REFERENCE_ARCHIVE_TOO_LARGE', name, docxExpansionLimitDetail(maxExpandedBytes, kind.label));
       }
     } else {
       actual = await countInflatedEntry(
@@ -607,6 +732,7 @@ export async function validateDocxExpandedBytes(source, name = 'document.docx', 
         member.name,
         remaining,
         maxExpandedBytes,
+        kind.label,
       );
     }
     actualExpandedBytes += actual;
@@ -618,7 +744,178 @@ export async function validateDocxExpandedBytes(source, name = 'document.docx', 
       );
     }
   }
-  return { entries: inspected.entries, expandedBytes: actualExpandedBytes };
+  return { entries: inspected.entries, expandedBytes: actualExpandedBytes, resolvedMembers };
+}
+
+/** 검증을 마친 OOXML 묶음에서 이름으로 XML 멤버를 읽습니다. 선언된 크기를 넘으면 실패합니다. */
+function ooxmlReader(resolvedMembers, documentName) {
+  const byName = new Map(resolvedMembers.map((entry) => [entry.member.name, entry]));
+  return {
+    has: (memberName) => byName.has(memberName),
+    names: () => [...byName.keys()],
+    read(memberName) {
+      const entry = byName.get(memberName);
+      if (!entry) return null;
+      const { member, compressed } = entry;
+      let raw;
+      try {
+        raw = member.compressionMethod === 0
+          ? compressed
+          : inflateRawSync(compressed, { maxOutputLength: Math.max(1, member.declaredUncompressedSize) });
+      } catch {
+        throw archiveError('REFERENCE_EXTRACTION_FAILED', documentName, `contains invalid compressed data for ${JSON.stringify(memberName)}`);
+      }
+      try {
+        return new TextDecoder('utf-8', { fatal: true }).decode(raw).replace(/^\uFEFF/, '');
+      } catch {
+        throw archiveError('REFERENCE_EXTRACTION_FAILED', documentName, `has non-UTF-8 XML in ${JSON.stringify(memberName)}`);
+      }
+    },
+  };
+}
+
+function xmlText(value) {
+  return decodeHtmlEntities(String(value ?? '').replace(/<[^>]+>/g, ''));
+}
+
+function xmlAttribute(tag, attribute) {
+  const match = tag.match(new RegExp(`\\s${attribute}\\s*=\\s*("([^"]*)"|'([^']*)')`));
+  return match ? decodeHtmlEntities(match[2] ?? match[3] ?? '') : null;
+}
+
+/** `_rels/*.rels`의 관계 Id → 대상 멤버 경로. 대상은 기준 폴더 기준으로 정규화합니다. */
+function readRelationships(reader, relsName, baseDir) {
+  const xml = reader.read(relsName);
+  const targets = new Map();
+  if (!xml) return targets;
+  for (const tag of xml.match(/<Relationship\b[^>]*>/g) ?? []) {
+    const id = xmlAttribute(tag, 'Id');
+    const target = xmlAttribute(tag, 'Target');
+    if (!id || !target || xmlAttribute(tag, 'TargetMode') === 'External') continue;
+    const resolved = target.startsWith('/')
+      ? target.slice(1)
+      : path.posix.normalize(path.posix.join(baseDir, target));
+    if (!resolved.startsWith('../')) targets.set(id, resolved);
+  }
+  return targets;
+}
+
+function numericMemberOrder(names, pattern) {
+  return names
+    .map((memberName) => ({ memberName, match: memberName.match(pattern) }))
+    .filter((entry) => entry.match)
+    .sort((a, b) => Number(a.match[1]) - Number(b.match[1]))
+    .map((entry) => entry.memberName);
+}
+
+function ooxmlCharBudget(name) {
+  let total = 0;
+  return (text) => {
+    total += text.length + 3;
+    if (total > MAX_EXTRACTED_CHARS) throw textLimitError(name);
+    return text;
+  };
+}
+
+async function openOoxml(bytes, name, extension) {
+  const kind = OOXML_KINDS[extension];
+  if (bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) {
+    throw new ReferenceExtractionError('REFERENCE_TYPE_MISMATCH', `${name} does not have a valid ${kind.label} signature`);
+  }
+  const { resolvedMembers } = await validateOoxmlArchive(bytes, name, { kind });
+  return ooxmlReader(resolvedMembers, name);
+}
+
+/** PPTX: 슬라이드 하나가 한 쪽입니다. 슬라이드 순서는 presentation.xml의 sldIdLst를 따릅니다. */
+async function extractPptx(bytes, name) {
+  const reader = await openOoxml(bytes, name, '.pptx');
+  const rels = readRelationships(reader, 'ppt/_rels/presentation.xml.rels', 'ppt');
+  const presentation = reader.read('ppt/presentation.xml') ?? '';
+  const ordered = [];
+  for (const tag of presentation.match(/<p:sldId\b[^>]*>/g) ?? []) {
+    const target = rels.get(xmlAttribute(tag, 'r:id') ?? '');
+    if (target && reader.has(target) && !ordered.includes(target)) ordered.push(target);
+  }
+  const slides = ordered.length > 0
+    ? ordered
+    : numericMemberOrder(reader.names(), /^ppt\/slides\/slide(\d+)\.xml$/);
+  const budget = ooxmlCharBudget(name);
+  const pages = slides.map((slideName, index) => {
+    const xml = reader.read(slideName) ?? '';
+    const paragraphs = [];
+    for (const paragraph of xml.match(/<a:p(?:\s[^>]*)?(?<!\/)>[\s\S]*?<\/a:p>/g) ?? []) {
+      const runs = paragraph.match(/<a:t(?:\s[^>]*)?(?<!\/)>[\s\S]*?<\/a:t>|<a:br\b[^>]*\/>/g) ?? [];
+      const line = runs.map((run) => (run.startsWith('<a:br') ? '\n' : xmlText(run))).join('').trim();
+      if (line) paragraphs.push(line);
+    }
+    return { page: index + 1, text: budget(paragraphs.join('\n')) };
+  });
+  return { text: pages.map((page) => page.text).join('\n\f\n'), pages };
+}
+
+const XLSX_MAX_COLUMNS = 256;
+
+function xlsxColumnIndex(reference) {
+  const letters = String(reference ?? '').match(/^[A-Z]+/i)?.[0]?.toUpperCase();
+  if (!letters) return null;
+  let index = 0;
+  for (const letter of letters) index = index * 26 + (letter.charCodeAt(0) - 64);
+  return index - 1;
+}
+
+function xlsxCellText(value) {
+  return value.replace(/[\t\r\n]+/g, ' ').trim();
+}
+
+/** XLSX: 시트 하나가 한 쪽이고, 행은 탭으로 칸을 나눈 한 줄입니다. */
+async function extractXlsx(bytes, name) {
+  const reader = await openOoxml(bytes, name, '.xlsx');
+  const sharedXml = reader.read('xl/sharedStrings.xml') ?? '';
+  const shared = (sharedXml.match(/<si(?:\s[^>]*)?(?<!\/)>[\s\S]*?<\/si>/g) ?? []).map((item) => {
+    const visible = item.replace(/<rPh(?:\s[^>]*)?(?<!\/)>[\s\S]*?<\/rPh>/g, '');
+    return (visible.match(/<t(?:\s[^>]*)?(?<!\/)>[\s\S]*?<\/t>/g) ?? []).map(xmlText).join('');
+  });
+  const rels = readRelationships(reader, 'xl/_rels/workbook.xml.rels', 'xl');
+  const workbook = reader.read('xl/workbook.xml') ?? '';
+  const sheets = [];
+  for (const tag of workbook.match(/<sheet\b[^>]*>/g) ?? []) {
+    const target = rels.get(xmlAttribute(tag, 'r:id') ?? '');
+    if (target && reader.has(target)) sheets.push({ title: xmlAttribute(tag, 'name') ?? '', member: target });
+  }
+  if (sheets.length === 0) {
+    for (const member of numericMemberOrder(reader.names(), /^xl\/worksheets\/sheet(\d+)\.xml$/)) {
+      sheets.push({ title: '', member });
+    }
+  }
+  const budget = ooxmlCharBudget(name);
+  const pages = sheets.map((sheet, index) => {
+    const xml = reader.read(sheet.member) ?? '';
+    const lines = sheet.title ? [`# ${sheet.title}`] : [];
+    for (const row of xml.match(/<row(?:\s[^>]*)?(?<!\/)>[\s\S]*?<\/row>/g) ?? []) {
+      const cells = [];
+      let nextColumn = 0;
+      for (const cell of row.match(/<c(?:\s[^>]*)?\/>|<c(?:\s[^>]*)?(?<!\/)>[\s\S]*?<\/c>/g) ?? []) {
+        const open = cell.match(/^<c\b[^>]*>/)[0];
+        const column = xlsxColumnIndex(xmlAttribute(open, 'r')) ?? nextColumn;
+        nextColumn = column + 1;
+        if (column >= XLSX_MAX_COLUMNS) continue;
+        const type = xmlAttribute(open, 't');
+        const raw = cell.match(/<v(?:\s[^>]*)?(?<!\/)>([\s\S]*?)<\/v>/)?.[1];
+        let value = '';
+        if (type === 's') value = shared[Number(raw)] ?? '';
+        else if (type === 'inlineStr') {
+          value = (cell.match(/<t(?:\s[^>]*)?(?<!\/)>[\s\S]*?<\/t>/g) ?? []).map(xmlText).join('');
+        } else if (type === 'b') value = raw === '1' ? 'TRUE' : raw === '0' ? 'FALSE' : '';
+        else if (raw !== undefined) value = xmlText(raw);
+        value = xlsxCellText(value);
+        if (value) cells[column] = value;
+      }
+      if (cells.length === 0) continue;
+      lines.push(Array.from(cells, (value) => value ?? '').join('\t'));
+    }
+    return { page: index + 1, text: budget(lines.join('\n')) };
+  });
+  return { text: pages.map((page) => page.text).join('\n\f\n'), pages };
 }
 
 async function extractDocx(bytes, name) {
@@ -833,6 +1130,12 @@ export async function extractReferenceText({ bytes, filePath, name, mimeType, pr
   } else if (extension === '.docx') {
     const source = await boundedReferenceSource(bytes, filePath, name);
     result = await extractDocx(source, name);
+  } else if (extension === '.pptx') {
+    const source = await boundedReferenceSource(bytes, filePath, name);
+    result = await extractPptx(source, name);
+  } else if (extension === '.xlsx') {
+    const source = await boundedReferenceSource(bytes, filePath, name);
+    result = await extractXlsx(source, name);
   } else if (HWP_EXTENSIONS.has(extension)) {
     result = await extractHwp(filePath, name, projectRoot);
   } else {

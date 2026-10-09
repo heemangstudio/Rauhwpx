@@ -274,9 +274,19 @@ export class PlanningState {
 
 /**
  * Hub-side gate. MCP visibility is advisory; every call is checked here.
- * @param {{category: string, tool: string, workflow: 'direct'|'plan'|'question', phase: string|null, expectedEpoch: number, receivedEpoch: unknown}} input
+ * 연구 프로젝트 쓰기는 문서 쓰기가 아니라 모든 모드에서 열려 있다. 설정에서 채팅의 프로젝트 변경을
+ * 끄면(chatMayEdit=false) 질문 워크플로에서만 project-write·project-ingest 를 막는다.
+ * find_home_files 는 데스크톱에서 홈 폴더 검색이 켜졌을 때만 허용한다(homeSearch).
+ * @param {{category: string, tool: string, workflow: 'direct'|'plan'|'question', phase: string|null, expectedEpoch: number, receivedEpoch: unknown, chatMayEdit?: boolean, homeSearch?: boolean}} input
  */
 export function authorizeToolCall(input) {
+  if (input.tool === 'find_home_files' && input.homeSearch !== true) {
+    throw workflowError('HOME_SEARCH_DISABLED', 'Home folder search is off or unavailable outside the desktop app');
+  }
+  if (input.workflow === 'question' && input.chatMayEdit === false
+    && (input.category === 'project-write' || input.category === 'project-ingest')) {
+    throw workflowError('PROJECT_CHAT_EDIT_DISABLED', 'Project changes from chat mode are turned off in Settings');
+  }
   const received = input.receivedEpoch === undefined || input.receivedEpoch === null || input.receivedEpoch === ''
     ? null
     : Number(input.receivedEpoch);

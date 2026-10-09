@@ -9,6 +9,9 @@ import type {
   StagedReference,
 } from '../../agent/types.ts';
 import { createIcon } from './icons.ts';
+import { columnItems, projectClientOf, type ProjectClient } from '../../agent/project-service.ts';
+import type { ProjectItem, ProjectSnapshot } from '../../agent/types.ts';
+import { columnColor, itemIconName, itemMeta, itemOrganizing, projectIcon } from './project/project-ui.ts';
 
 const ACCEPTED_EXTENSIONS = [
   '.txt', '.md', '.markdown', '.csv', '.tsv', '.json', '.xml', '.html', '.htm',
@@ -23,8 +26,15 @@ const SEARCH_DEBOUNCE_MS = 240;
 const SCOPE_LABEL: Record<ReferenceScope, string> = {
   chat: '이 채팅',
   document: '이 문서',
-  global: '모든 채팅',
+  global: '공용',
 };
+
+/** 자료 창의 두 탭: 지금 문서의 프로젝트, 모든 프로젝트가 함께 쓰는 공용 자료. */
+type LibraryTab = 'project' | 'global';
+const LIBRARY_TABS: ReadonlyArray<{ id: LibraryTab; label: string }> = [
+  { id: 'project', label: '프로젝트' },
+  { id: 'global', label: '공용' },
+];
 
 const STATUS_LABEL: Record<ReferenceFile['status'], string> = {
   uploading: '업로드 중',
@@ -67,6 +77,13 @@ export interface ReferenceLibraryOptions {
   onOpenChange?(open: boolean): void;
   onDraftStateChange?(): void;
   onFileDeleted?(fileId: string): void;
+  /** 현재 프로젝트. 없으면 bridge.projects 를 찾는다. */
+  projects?: ProjectClient | null;
+  /**
+   * 집중 보기의 프로젝트 칸을 연다. 없으면 페이지에서 `ag-project-open` 이벤트
+   * (detail: { itemId?: string })를 올려 보낸다.
+   */
+  openProject?(options?: { itemId?: string }): void;
 }
 
 export interface ReferenceLibraryUi {
@@ -138,7 +155,7 @@ export async function stageInlineReferences(
 export function createReferenceLibrary(options: ReferenceLibraryOptions): ReferenceLibraryUi {
   const { bridge } = options;
   let open = false;
-  let activeScope: ReferenceScope = 'chat';
+  let activeScope: LibraryTab = 'project';
   let connectionState = bridge.getConnectionState();
   let disposed = false;
   let contextRevision = 0;
@@ -147,8 +164,11 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
   let searchTimer: number | null = null;
   let pickerTarget: ScopeTarget | null = null;
   let pickerDraft = false;
+  let pickerProject = false;
   let lastFocus: HTMLElement | null = null;
   const filesByScope = new Map<ReferenceScope, ReferenceFile[]>();
+  const projectClient = (): ProjectClient | null => options.projects ?? projectClientOf(bridge);
+  let projectQuery = '';
   const draftUploads: UploadChip[] = [];
 
   const trigger = el('button', 'ag-references-btn');
@@ -207,10 +227,10 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
   const tabs = el('div', 'ag-reference-tabs');
   tabs.setAttribute('role', 'tablist');
   tabs.setAttribute('aria-label', '참고자료 범위');
-  const tabButtons = new Map<ReferenceScope, HTMLButtonElement>();
-  const tabPanels = new Map<ReferenceScope, HTMLElement>();
-  for (const scope of ['chat', 'document', 'global'] as const) {
-    const tab = el('button', 'ag-reference-tab', SCOPE_LABEL[scope]);
+  const tabButtons = new Map<LibraryTab, HTMLButtonElement>();
+  const tabPanels = new Map<LibraryTab, HTMLElement>();
+  for (const { id: scope, label } of LIBRARY_TABS) {
+    const tab = el('button', 'ag-reference-tab', label);
     tab.type = 'button';
     tab.id = `ag-reference-tab-${scope}`;
     tab.dataset.scope = scope;
@@ -241,7 +261,12 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
   search.setAttribute('aria-label', '참고자료 내용 검색');
   toolbar.append(add, search);
 
-  const scopeHint = el('p', 'ag-reference-scope-hint');
+  const projectHead = el('div', 'ag-reference-project-head');
+  const projectName = el('strong', 'ag-reference-project-name');
+  const openProjectButton = el('button', 'ag-reference-open-project', '프로젝트 열기');
+  openProjectButton.type = 'button';
+  openProjectButton.prepend(projectIcon('board'));
+  projectHead.append(projectName, openProjectButton);
   const status = el('div', 'ag-reference-status');
   status.setAttribute('role', 'status');
   status.setAttribute('aria-live', 'polite');
@@ -249,7 +274,6 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
   error.setAttribute('role', 'alert');
   error.hidden = true;
   const results = el('div', 'ag-reference-results');
-  const dropHint = el('p', 'ag-reference-drop-hint', '여기에 파일을 놓아 추가할 수도 있습니다.');
   page.append(header, tabs, ...tabPanels.values(), fileInput);
 
   function showError(message = ''): void {
@@ -257,26 +281,22 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
     error.hidden = !message;
   }
 
+  function currentProject(): ProjectSnapshot | null {
+    return projectClient()?.store.get() ?? null;
+  }
+
   function updateAvailability(): void {
     const context = options.getContext();
     const connected = connectionState === 'connected';
-    const documentTab = tabButtons.get('document')!;
-    documentTab.disabled = !context.documentId;
-    documentTab.title = context.documentId ? '' : '문서를 열면 문서별 참고자료를 추가할 수 있습니다.';
     quickAddButton.disabled = !connected || !context.threadId;
-    add.disabled = !connected || targetFor(activeScope, context) === null;
-    if (!connected) add.title = '에이전트 서버가 연결되면 파일을 추가할 수 있습니다.';
+    add.disabled = !connected || (activeScope === 'project' && !currentProject());
+    if (!connected) add.title = '에이전트 서버 연결 대기';
     else add.removeAttribute('title');
-    scopeHint.hidden = activeScope === 'chat';
-    if (activeScope === 'document' && !context.documentId) {
-      scopeHint.textContent = '문서를 열면 추가할 수 있습니다.';
-    } else if (activeScope === 'document') {
-      scopeHint.textContent = `${context.documentName ?? '현재 문서'}의 모든 채팅에서 사용합니다.`;
-    } else if (activeScope === 'global') {
-      scopeHint.textContent = '모든 문서와 모든 채팅에서 항상 검색합니다.';
-    } else {
-      scopeHint.textContent = '';
-    }
+    search.placeholder = activeScope === 'project' ? '이름·태그 검색' : '파일 내용 검색';
+    search.setAttribute('aria-label', activeScope === 'project' ? '프로젝트 자료 이름 검색' : '공용 자료 내용 검색');
+    const project = currentProject();
+    projectName.textContent = project?.name || '프로젝트';
+    openProjectButton.disabled = !project;
   }
 
   function updateTabs(): void {
@@ -291,20 +311,76 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
     }
     // 범위마다 실제 tabpanel을 유지하고, 공유 목록 UI만 현재 패널로 옮긴다.
     // aria-controls가 존재하지 않는 노드를 가리키거나 패널 밖 콘텐츠를 제어하지 않게 한다.
-    tabPanels.get(activeScope)!.append(toolbar, scopeHint, status, error, results, dropHint);
+    const panel = tabPanels.get(activeScope)!;
+    if (activeScope === 'project') panel.append(projectHead, toolbar, status, error, results);
+    else panel.append(toolbar, status, error, results);
     updateAvailability();
   }
 
-  function selectScope(scope: ReferenceScope): void {
-    if (scope === 'document' && !options.getContext().documentId) return;
+  function selectScope(scope: LibraryTab): void {
     activeScope = scope;
+    projectQuery = '';
     search.value = '';
     updateTabs();
     void refreshActiveScope();
   }
 
   function scopeTarget(): ScopeTarget | null {
-    return targetFor(activeScope, options.getContext());
+    return activeScope === 'global' ? { scope: 'global', scopeId: 'global' } : null;
+  }
+
+  function requestProject(itemId?: string): void {
+    if (options.openProject) options.openProject(itemId ? { itemId } : undefined);
+    else page.dispatchEvent(new CustomEvent('ag-project-open', { bubbles: true, detail: { itemId } }));
+  }
+
+  /** 프로젝트 자료를 보드 열 순서로 묶어 그린다. */
+  function renderProject(): void {
+    const project = currentProject();
+    results.replaceChildren();
+    updateAvailability();
+    if (!project) {
+      status.textContent = projectClient() ? '프로젝트를 불러오는 중…' : '';
+      results.appendChild(el('p', 'ag-reference-empty', '연결된 프로젝트가 없습니다.'));
+      return;
+    }
+    const needle = projectQuery.trim().normalize('NFC').toLocaleLowerCase('ko-KR');
+    const matches = (item: ProjectItem) => !needle || [item.title, ...item.tags]
+      .join(' ').normalize('NFC').toLocaleLowerCase('ko-KR').includes(needle);
+    let shown = 0;
+    for (const column of project.columns) {
+      const items = columnItems(project, column.id).filter(matches);
+      if (!items.length) continue;
+      shown += items.length;
+      const group = el('section', 'ag-reference-group');
+      const heading = el('h3', 'ag-reference-group-title');
+      const dot = el('span', 'ag-reference-group-dot');
+      dot.style.setProperty('--ag-pcol-color', columnColor(project, column.id));
+      heading.append(dot, el('span', '', column.name), el('span', 'ag-reference-group-count', String(items.length)));
+      const list = el('ul', 'ag-reference-file-list');
+      for (const item of items) {
+        const row = el('li', 'ag-reference-file ag-reference-project-item');
+        row.dataset.referenceId = item.kind === 'file' ? item.fileId : item.id;
+        row.dataset.item = item.id;
+        const open = el('button', 'ag-reference-item-open');
+        open.type = 'button';
+        const copy = el('span', 'ag-reference-file-copy');
+        const name = el('strong', 'ag-reference-file-name', item.title);
+        name.title = item.title;
+        const meta = el('span', 'ag-reference-file-meta', itemOrganizing(item) ? `${itemMeta(item)} · 정리 중` : itemMeta(item));
+        copy.append(name, meta);
+        open.append(projectIcon(itemIconName(item)), copy);
+        open.addEventListener('click', () => requestProject(item.id));
+        row.append(open);
+        list.appendChild(row);
+      }
+      group.append(heading, list);
+      results.appendChild(group);
+    }
+    if (!shown) {
+      results.appendChild(el('p', 'ag-reference-empty', needle ? '검색 결과가 없습니다.' : '추가된 자료가 없습니다.'));
+    }
+    status.textContent = needle ? `${shown}개 일치` : `${shown}개 자료`;
   }
 
   function renderFiles(files: ReferenceFile[]): void {
@@ -387,6 +463,12 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
   }
 
   async function refreshActiveScope(): Promise<void> {
+    if (activeScope === 'project') {
+      ++requestRevision;
+      showError();
+      renderProject();
+      return;
+    }
     const target = scopeTarget();
     const revision = ++requestRevision;
     showError();
@@ -405,7 +487,7 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
     }
     if (connectionState !== 'connected') {
       status.textContent = '에이전트 서버 연결을 기다리는 중입니다.';
-      renderFiles(filesByScope.get(activeScope) ?? []);
+      renderFiles(filesByScope.get('global') ?? []);
       return;
     }
     status.textContent = '참고자료 불러오는 중…';
@@ -417,7 +499,7 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
       status.textContent = `${files.length}개 참고자료`;
     } catch (caught) {
       if (disposed || revision !== requestRevision) return;
-      renderFiles(filesByScope.get(activeScope) ?? []);
+      renderFiles(filesByScope.get('global') ?? []);
       showError(errorMessage(caught));
       status.textContent = '참고자료를 불러오지 못했습니다.';
     }
@@ -426,11 +508,7 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
   async function refreshCounts(): Promise<void> {
     if (connectionState !== 'connected') return;
     const revision = ++countRevision;
-    const context = options.getContext();
-    const targets = (['chat', 'document', 'global'] as const)
-      .map((scope) => targetFor(scope, context))
-      .filter((target): target is ScopeTarget => target !== null)
-      .filter(isAuthorizedSessionTarget);
+    const targets: ScopeTarget[] = [{ scope: 'global', scopeId: 'global' }];
     const settled = await Promise.allSettled(
       targets.map(async (target) => ({
         scope: target.scope,
@@ -438,7 +516,7 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
       })),
     );
     if (disposed || revision !== countRevision) return;
-    let total = 0;
+    let total = currentProject()?.items.filter((item) => !item.trashedAt).length ?? 0;
     for (const result of settled) {
       if (result.status !== 'fulfilled') continue;
       filesByScope.set(result.value.scope, result.value.files);
@@ -449,6 +527,11 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
   }
 
   async function runSearch(): Promise<void> {
+    if (activeScope === 'project') {
+      projectQuery = search.value;
+      renderProject();
+      return;
+    }
     const query = search.value.trim();
     if (!query) {
       await refreshActiveScope();
@@ -703,6 +786,25 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
     await Promise.all([refreshCounts(), open ? refreshActiveScope() : Promise.resolve()]);
   }
 
+  async function uploadProjectFiles(files: File[]): Promise<void> {
+    const client = projectClient();
+    const projectId = client?.store.projectId();
+    if (!client || !projectId) return;
+    const accepted = validateFiles(files);
+    if (accepted.length === 0) return;
+    status.textContent = `${accepted.length}개 파일 업로드 중…`;
+    const settled = await Promise.allSettled(accepted.map((file) => client.service.uploadFile(projectId, file)));
+    const failed = settled.filter((entry): entry is PromiseRejectedResult => entry.status === 'rejected');
+    if (failed.length) {
+      showError(`${failed.length}개 파일 추가 실패 · ${errorMessage(failed[0].reason)}`);
+      status.textContent = `${settled.length - failed.length}개 추가, ${failed.length}개 실패`;
+    } else {
+      status.textContent = `${settled.length}개 자료를 추가했습니다.`;
+    }
+    await client.store.refresh().catch(() => null);
+    await refreshCounts();
+  }
+
   function openPicker(target: ScopeTarget | null, draft = false): void {
     if (!target || connectionState !== 'connected') return;
     pickerTarget = target;
@@ -731,7 +833,8 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
   }
 
   async function openFile(fileId: string): Promise<void> {
-    setOpen(true, 'chat');
+    const inProject = currentProject()?.items.some((item) => item.kind === 'file' && item.fileId === fileId) ?? false;
+    setOpen(true, inProject ? 'chat' : 'global');
     await refreshActiveScope();
     const item = results.querySelector<HTMLElement>(`[data-reference-id="${CSS.escape(fileId)}"]`);
     item?.scrollIntoView({ block: 'nearest' });
@@ -740,10 +843,9 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
     window.setTimeout(() => item?.classList.remove('ag-reference-file-focused'), 1400);
   }
 
-  function setOpen(next: boolean, scope: ReferenceScope = activeScope): void {
+  function setOpen(next: boolean, scope?: ReferenceScope): void {
     if (disposed) return;
-    if (next && scope === 'document' && !options.getContext().documentId) scope = 'chat';
-    activeScope = scope;
+    if (scope) activeScope = scope === 'global' ? 'global' : 'project';
     open = next;
     page.setAttribute('aria-hidden', next ? 'false' : 'true');
     page.inert = !next;
@@ -768,15 +870,29 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
   quickAddButton.addEventListener('click', () => {
     openPicker(targetFor('chat', options.getContext()), true);
   });
-  add.addEventListener('click', () => openPicker(scopeTarget()));
+  add.addEventListener('click', () => {
+    if (activeScope === 'project') {
+      if (!currentProject() || connectionState !== 'connected') return;
+      pickerTarget = null;
+      pickerDraft = false;
+      pickerProject = true;
+      fileInput.click();
+      return;
+    }
+    openPicker(scopeTarget());
+  });
+  openProjectButton.addEventListener('click', () => requestProject());
   fileInput.addEventListener('change', () => {
     const selected = [...(fileInput.files ?? [])];
     const target = pickerTarget;
     const draft = pickerDraft;
+    const toProject = pickerProject;
     pickerTarget = null;
     pickerDraft = false;
+    pickerProject = false;
     fileInput.value = '';
     if (draft) stageFiles(selected);
+    else if (toProject) void uploadProjectFiles(selected);
     else if (target) void uploadFiles(selected, target);
   });
   search.addEventListener('input', () => {
@@ -788,8 +904,7 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
   });
   tabs.addEventListener('keydown', (event) => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-    const available = (['chat', 'document', 'global'] as const)
-      .filter((scope) => !tabButtons.get(scope)!.disabled);
+    const available = LIBRARY_TABS.map((tab) => tab.id);
     const current = available.indexOf(activeScope);
     const next = event.key === 'Home'
       ? available[0]
@@ -809,7 +924,7 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
   });
   for (const type of ['dragenter', 'dragover']) {
     page.addEventListener(type, (event) => {
-      if (!open || !scopeTarget()) return;
+      if (!open || (!scopeTarget() && !currentProject())) return;
       event.preventDefault();
       event.stopPropagation();
       page.classList.add('ag-dragging');
@@ -824,13 +939,29 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
   }
   page.addEventListener('drop', (event) => {
     const target = scopeTarget();
-    if (target && connectionState === 'connected') {
+    if (activeScope === 'project' && connectionState === 'connected') {
+      void uploadProjectFiles([...(event.dataTransfer?.files ?? [])]);
+    } else if (target && connectionState === 'connected') {
       void uploadFiles([...(event.dataTransfer?.files ?? [])], target);
     }
   });
 
   updateTabs();
   void refreshCounts();
+  let unsubscribeProject: (() => void) | null = null;
+  let subscribedClient: ProjectClient | null = null;
+  function watchProject(): void {
+    const client = projectClient();
+    if (client === subscribedClient) return;
+    unsubscribeProject?.();
+    subscribedClient = client;
+    unsubscribeProject = client?.store.subscribe(() => {
+      if (open && activeScope === 'project') renderProject();
+      else updateAvailability();
+      void refreshCounts();
+    }) ?? null;
+  }
+  watchProject();
 
   return {
     page,
@@ -841,6 +972,7 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
     setOpen,
     setConnectionState(state): void {
       connectionState = state;
+      watchProject();
       updateAvailability();
       if (state === 'connected') void refreshCounts();
       else if (open) status.textContent = '에이전트 서버 연결을 기다리는 중입니다.';
@@ -851,7 +983,7 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
       countRevision++;
       discardDrafts();
       filesByScope.clear();
-      if (activeScope === 'document' && !options.getContext().documentId) activeScope = 'chat';
+      watchProject();
       updateTabs();
       void refreshCounts();
       if (open) void refreshActiveScope();
@@ -874,6 +1006,7 @@ export function createReferenceLibrary(options: ReferenceLibraryOptions): Refere
       disposed = true;
       requestRevision++;
       countRevision++;
+      unsubscribeProject?.();
       if (searchTimer !== null) window.clearTimeout(searchTimer);
       discardDrafts();
       page.remove();

@@ -141,7 +141,7 @@
 
 .ag-reference-tabs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   padding: 3px;
   border: 0;
   border-radius: var(--ag-r-row);
@@ -574,4 +574,104 @@
 @keyframes ag-attachment-fade-in {
   from { opacity: 0; }
   to { opacity: 1; }
+}
+
+/* ── 프로젝트 탭: 보드 열 순서로 묶은 짧은 목록 ── */
+
+.ag-reference-project-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+}
+
+.ag-reference-project-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ag-text);
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-strong);
+  letter-spacing: var(--ag-track-tight);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-reference-open-project {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: var(--n-ink-fill-hover);
+  color: var(--ag-text);
+  font: inherit;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-reference-open-project:hover:not(:disabled) { background: var(--n-ink-fill-pressed); }
+.ag-reference-open-project:disabled { opacity: 0.5; }
+.ag-reference-open-project:focus-visible { outline: var(--ag-focus-ring); outline-offset: var(--ag-focus-offset); }
+
+.ag-reference-group + .ag-reference-group { margin-top: 6px; }
+
+.ag-reference-group-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 12px 0 2px;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-meta);
+  font-weight: var(--ag-fw-medium);
+}
+
+.ag-reference-group-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--ag-r-pill);
+  background: var(--ag-pcol-color, var(--ag-text-muted));
+}
+
+.ag-reference-group-count {
+  color: var(--ag-text-muted);
+  font-weight: var(--ag-fw-regular);
+  font-variant-numeric: var(--ag-numeric);
+}
+
+.ag-reference-file.ag-reference-project-item {
+  display: block;
+  min-height: 0;
+}
+
+.ag-reference-item-open {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-height: 46px;
+  padding: 6px 4px;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: transparent;
+  color: var(--ag-text-secondary);
+  font: inherit;
+  text-align: left;
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-reference-item-open:hover { background: var(--ag-hover); }
+.ag-reference-item-open:focus-visible { outline: var(--ag-focus-ring); outline-offset: -2px; }
+
+.ag-reference-item-open .ag-icon {
+  width: 14px;
+  height: 14px;
+  color: var(--ag-text-muted);
 }

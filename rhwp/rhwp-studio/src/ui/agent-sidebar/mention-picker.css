@@ -1,0 +1,49 @@
+/* @ 멘션 목록 — 슬래시 메뉴(.ag-slash-menu / .ag-slash-option)의 모양을 그대로 쓰고
+   종류 아이콘 · 제목 · 열 이름 세 칸만 맞춘다. */
+.ag-slash-option.ag-mention-option {
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.ag-mention-option .ag-slash-name {
+  overflow: hidden;
+  font-weight: var(--ag-fw-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-mention-option .ag-slash-name,
+.ag-mention-option .ag-slash-detail {
+  line-height: var(--ag-lh-tight);
+}
+
+.ag-mention-option .ag-slash-detail {
+  max-width: 120px;
+}
+
+.ag-mention-icon {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  color: var(--ag-text-secondary);
+}
+
+.ag-mention-icon .ag-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.ag-mention-option.ag-active .ag-mention-icon {
+  color: var(--ag-text);
+}
+
+/* 사용자 말풍선·첨부 줄의 멘션 칩은 첨부 알약과 같은 면을 쓴다. */
+.ag-mention-pill {
+  cursor: pointer;
+}
+
+.ag-mention-pill .ag-icon {
+  color: var(--ag-text-secondary);
+}

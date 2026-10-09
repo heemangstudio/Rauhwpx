@@ -1,0 +1,336 @@
+{
+  "description": "Shared wikilink grammar cases. Hub project-links.mjs parseWikilinks and Studio wikilinks.ts parseWikilinks must both return exactly `expect` for `text`. Append cases; do not change existing ones without updating both implementations.",
+  "cases": [
+    {
+      "name": "bare file id",
+      "text": "see [[fabc234]] here",
+      "expect": [
+        {
+          "start": 4,
+          "end": 15,
+          "id": "fabc234",
+          "anchor": null,
+          "label": null
+        }
+      ]
+    },
+    {
+      "name": "note and document ids",
+      "text": "[[nqwerty]] and [[d234567]]",
+      "expect": [
+        {
+          "start": 0,
+          "end": 11,
+          "id": "nqwerty",
+          "anchor": null,
+          "label": null
+        },
+        {
+          "start": 16,
+          "end": 27,
+          "id": "d234567",
+          "anchor": null,
+          "label": null
+        }
+      ]
+    },
+    {
+      "name": "label",
+      "text": "[[fabc234|지침 문서]]",
+      "expect": [
+        {
+          "start": 0,
+          "end": 17,
+          "id": "fabc234",
+          "anchor": null,
+          "label": "지침 문서"
+        }
+      ]
+    },
+    {
+      "name": "chunk anchor",
+      "text": "[[fabc234#c12]]",
+      "expect": [
+        {
+          "start": 0,
+          "end": 15,
+          "id": "fabc234",
+          "anchor": {
+            "kind": "chunk",
+            "n": 12
+          },
+          "label": null
+        }
+      ]
+    },
+    {
+      "name": "chunk anchor with quote",
+      "text": "근거는 [[fabc234#c0|예산은 3억 원으로]] 입니다",
+      "expect": [
+        {
+          "start": 4,
+          "end": 29,
+          "id": "fabc234",
+          "anchor": {
+            "kind": "chunk",
+            "n": 0
+          },
+          "label": "예산은 3억 원으로"
+        }
+      ]
+    },
+    {
+      "name": "page anchor with label",
+      "text": "[[fabc234#p4|4쪽 표]]",
+      "expect": [
+        {
+          "start": 0,
+          "end": 19,
+          "id": "fabc234",
+          "anchor": {
+            "kind": "page",
+            "n": 4
+          },
+          "label": "4쪽 표"
+        }
+      ]
+    },
+    {
+      "name": "label is trimmed",
+      "text": "[[fabc234#c3|  여백  ]]",
+      "expect": [
+        {
+          "start": 0,
+          "end": 21,
+          "id": "fabc234",
+          "anchor": {
+            "kind": "chunk",
+            "n": 3
+          },
+          "label": "여백"
+        }
+      ]
+    },
+    {
+      "name": "blank label is null",
+      "text": "[[fabc234|   ]]",
+      "expect": [
+        {
+          "start": 0,
+          "end": 15,
+          "id": "fabc234",
+          "anchor": null,
+          "label": null
+        }
+      ]
+    },
+    {
+      "name": "uppercase id rejected",
+      "text": "[[FABC234]]",
+      "expect": []
+    },
+    {
+      "name": "wrong prefix rejected",
+      "text": "[[xabc234]] [[fabc23]] [[fabc2345]] [[fabc018]]",
+      "expect": []
+    },
+    {
+      "name": "spaces inside rejected",
+      "text": "[[ fabc234 ]]",
+      "expect": []
+    },
+    {
+      "name": "unknown anchor rejected",
+      "text": "[[fabc234#x1]] [[fabc234#c]] [[fabc234#c1234567]]",
+      "expect": []
+    },
+    {
+      "name": "inline code skipped",
+      "text": "`[[fabc234]]` and [[fdef234]]",
+      "expect": [
+        {
+          "start": 18,
+          "end": 29,
+          "id": "fdef234",
+          "anchor": null,
+          "label": null
+        }
+      ]
+    },
+    {
+      "name": "double backtick code skipped",
+      "text": "``a ` [[fabc234]]`` [[fdef234]]",
+      "expect": [
+        {
+          "start": 20,
+          "end": 31,
+          "id": "fdef234",
+          "anchor": null,
+          "label": null
+        }
+      ]
+    },
+    {
+      "name": "unclosed backtick is literal",
+      "text": "a ` b [[fabc234]]",
+      "expect": [
+        {
+          "start": 6,
+          "end": 17,
+          "id": "fabc234",
+          "anchor": null,
+          "label": null
+        }
+      ]
+    },
+    {
+      "name": "fenced code skipped",
+      "text": "[[fabc234]]\n```\n[[fdef234]]\n```\n[[fghi234]]",
+      "expect": [
+        {
+          "start": 0,
+          "end": 11,
+          "id": "fabc234",
+          "anchor": null,
+          "label": null
+        },
+        {
+          "start": 32,
+          "end": 43,
+          "id": "fghi234",
+          "anchor": null,
+          "label": null
+        }
+      ]
+    },
+    {
+      "name": "tilde fence closes only with tildes",
+      "text": "~~~\n```\n[[fabc234]]\n~~~\n[[fdef234]]",
+      "expect": [
+        {
+          "start": 24,
+          "end": 35,
+          "id": "fdef234",
+          "anchor": null,
+          "label": null
+        }
+      ]
+    },
+    {
+      "name": "unclosed fence hides rest",
+      "text": "x\n```\n[[fabc234]]",
+      "expect": []
+    },
+    {
+      "name": "escaped opener rejected",
+      "text": "\\[[fabc234]] \\\\[[fdef234]]",
+      "expect": [
+        {
+          "start": 15,
+          "end": 26,
+          "id": "fdef234",
+          "anchor": null,
+          "label": null
+        }
+      ]
+    },
+    {
+      "name": "label over 80 chars rejected",
+      "text": "[[fabc234#c1|가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가]]",
+      "expect": []
+    },
+    {
+      "name": "label of exactly 80 chars",
+      "text": "[[fabc234#c1|가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가]]",
+      "expect": [
+        {
+          "start": 0,
+          "end": 95,
+          "id": "fabc234",
+          "anchor": {
+            "kind": "chunk",
+            "n": 1
+          },
+          "label": "가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가"
+        }
+      ]
+    },
+    {
+      "name": "newline in label rejected",
+      "text": "[[fabc234|a\nb]]",
+      "expect": []
+    },
+    {
+      "name": "bracket in label rejected",
+      "text": "[[fabc234|a]b]] [[fabc234|a[b]]",
+      "expect": []
+    },
+    {
+      "name": "unterminated at tail",
+      "text": "답변 [[fabc234#c4|부분 인용",
+      "expect": []
+    },
+    {
+      "name": "adjacent links",
+      "text": "[[fabc234]][[fdef234#p2]]",
+      "expect": [
+        {
+          "start": 0,
+          "end": 11,
+          "id": "fabc234",
+          "anchor": null,
+          "label": null
+        },
+        {
+          "start": 11,
+          "end": 25,
+          "id": "fdef234",
+          "anchor": {
+            "kind": "page",
+            "n": 2
+          },
+          "label": null
+        }
+      ]
+    },
+    {
+      "name": "triple bracket keeps inner link",
+      "text": "[[[fabc234]]]",
+      "expect": [
+        {
+          "start": 1,
+          "end": 12,
+          "id": "fabc234",
+          "anchor": null,
+          "label": null
+        }
+      ]
+    },
+    {
+      "name": "inside emphasis",
+      "text": "**[[fabc234|굵게]]**",
+      "expect": [
+        {
+          "start": 2,
+          "end": 16,
+          "id": "fabc234",
+          "anchor": null,
+          "label": "굵게"
+        }
+      ]
+    },
+    {
+      "name": "code span does not cross blank line",
+      "text": "`a\n\n[[fabc234]] b`",
+      "expect": [
+        {
+          "start": 4,
+          "end": 15,
+          "id": "fabc234",
+          "anchor": null,
+          "label": null
+        }
+      ]
+    }
+  ]
+}

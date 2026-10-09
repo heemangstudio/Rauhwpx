@@ -191,6 +191,8 @@ export async function smokePackagedAgentHub({ executable, agentDir, timeoutMs = 
         RHWP_WORK_DIR: path.join(workRoot, 'work'),
         RHWP_RUNTIME_DIR: path.join(workRoot, 'runtime'),
         RHWP_AGENT_INSTRUCTIONS_DIR: path.join(workRoot, 'agent-instructions'),
+        RHWP_REFERENCES_DIR: path.join(workRoot, 'references'),
+        RHWP_PROJECTS_DIR: path.join(workRoot, 'projects'),
       },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     });

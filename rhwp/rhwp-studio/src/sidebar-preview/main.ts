@@ -22,6 +22,8 @@ import { mountAuditNavigator } from './audit-scenarios.ts';
 import { mountAuditDialogs } from './audit-dialogs.ts';
 import { applyAuditState } from './audit-state.ts';
 import { mountEditorShell } from './editor-shell.ts';
+import { createProjectScene } from './project-scene.ts';
+import { mountCitationScenes } from './mock-citations.ts';
 
 const params = new URLSearchParams(location.search);
 if (params.get('usage') === 'live') {
@@ -37,6 +39,7 @@ const report = (message: string) => {
 const undoState = { entry: null as object | null, calls: 0 };
 const navigation = { calls: [] as Array<{ sectionIndex: number; paragraphIndex: number; charOffset: number }> };
 const mock = createMockBridge(report, () => { undoState.entry = {}; });
+const previewProjects = mock.projects;
 if (params.get('services') === 'setup') mock.setServices(false);
 const eventBus = new EventBus();
 const versions = createMockVersions(report, params.get('history') === 'branches');
@@ -291,6 +294,7 @@ const sidebar = initAgentSidebar({
   },
 });
 mock.boot();
+const projectScene = createProjectScene(sidebar);
 sessions.push({ sidebar, mock, documentId: () => documentId });
 chats.push({ sidebar, mock });
 if (parallelChats) watchChatModeLock(chats[0]!);
@@ -428,6 +432,11 @@ if (params.get('fullscreen') === '1') await enterFocusMode();
 if (params.get('page') === 'settings')
   eventBus.emit('settings:open', { destination: normalizeSettingsDestination(params.get('destination')) ?? 'editing' });
 if (params.get('page') === 'versions') sidebar.openVersions();
+const projectTab = params.get('project');
+if (projectTab === 'board' || projectTab === 'graph' || projectTab === 'files') {
+  await waitForThreadsPersistence();
+  await projectScene.open({ tab: projectTab, itemId: params.get('item') ?? undefined });
+}
 
 /** `parallel=locked`: the first chat edits with a held reply, then a new chat opens beside it. */
 async function openLockedParallelScene(): Promise<void> {
@@ -454,7 +463,7 @@ if (parallel === 'locked') await openLockedParallelScene();
 
 // Typed hooks for browser checks and custom scenario scripts.
 const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoState, navigation,
-  sessions, attachSession, chats, showChat, openChatCalls,
+  sessions, attachSession, chats, showChat, openChatCalls, projects: previewProjects, projectScene,
   threadStore: { listThreads, getThread, waitForThreadsPersistence } };
 export type SidebarPreview = typeof preview;
 Object.assign(window, { sidebarPreview: preview });
@@ -518,6 +527,9 @@ if (params.get('audit') === '1') {
   viewControls.append(widthLabel);
   controls.prepend(viewControls, tabs);
 }
+void mountCitationScenes(preview, params).catch((error: unknown) => {
+  status.value = error instanceof Error ? error.message : 'Citation scene could not be prepared';
+});
 void applyAuditState(preview, params).catch((error: unknown) => {
   status.value = error instanceof Error ? error.message : 'Preview state could not be prepared';
   document.body.dataset.auditReady = 'error';

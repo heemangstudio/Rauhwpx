@@ -12,7 +12,7 @@ import {
   resolveReferenceImageArgs,
 } from '../reference-tools.mjs';
 
-test('hub-local MCP list/search/read tools enforce active session scopes', async (t) => {
+test('hub-local MCP search/read tools enforce active session scopes', async (t) => {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-reference-tools-'));
   t.after(() => fs.rm(parent, { recursive: true, force: true }));
   const store = await new ReferenceStore({ root: path.join(parent, 'refs') }).init();
@@ -23,10 +23,6 @@ test('hub-local MCP list/search/read tools enforce active session scopes', async
     scope: 'chat', scopeId: 'chat-b', name: 'hidden.txt', bytes: Buffer.from('다른 채팅 비밀'),
   });
   const session = { threadId: 'chat-a', documentId: 'doc-a' };
-
-  const listed = await executeReferenceTool({ tool: 'list_reference_files', args: {}, store, session });
-  assert.equal(listed.handled, true);
-  assert.deepEqual(listed.result.files.map((file) => file.id), [visible.id]);
 
   const searched = await executeReferenceTool({
     tool: 'search_reference_files', args: { query: '출시 일정', maxResults: 2 }, store, session,

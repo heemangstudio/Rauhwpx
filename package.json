@@ -138,6 +138,9 @@
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
       "extendInfo": {
+        "NSDocumentsFolderUsageDescription": "문서 폴더의 파일을 찾아 프로젝트 자료로 가져옵니다.",
+        "NSDesktopFolderUsageDescription": "데스크톱의 파일을 찾아 프로젝트 자료로 가져옵니다.",
+        "NSDownloadsFolderUsageDescription": "다운로드 폴더의 파일을 찾아 프로젝트 자료로 가져옵니다.",
         "CFBundleDocumentTypes": [
           {
             "CFBundleTypeExtensions": [

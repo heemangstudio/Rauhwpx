@@ -1564,3 +1564,242 @@ export type PendingEditsChangeEvent =
       /** 거절/무효화로 되돌리지 못해 문서에 남은 op 인가 (승인은 false — 전부 반영됨) */
       leftInDocument?: boolean;
     };
+
+// ── 연구 프로젝트 ──────────────────────────────────────────
+// 허브 project-store 의 스냅샷·편집 연산·설정과 같은 모양이다 (/tmp/rp/CONTRACT.md).
+
+export type ProjectActorKind = 'user' | 'agent' | 'librarian';
+
+export interface ProjectActor {
+  kind: ProjectActorKind;
+  threadId?: string;
+  agent?: string;
+}
+
+export interface ProjectColumn {
+  id: string;
+  name: string;
+}
+
+export interface ProjectTag {
+  name: string;
+  /** CSS hex 색. */
+  color: string;
+}
+
+export interface ProjectMember {
+  documentId: string;
+  /** 그래프에서 이 문서를 가리키는 `d…` 노드 id. */
+  nodeId: string;
+  name: string;
+}
+
+export type ProjectLibrarianState = 'idle' | 'running' | 'paused';
+export type ProjectItemLibrarianStatus = 'queued' | 'running' | 'done' | 'failed' | 'skipped';
+
+export interface ProjectItemBase {
+  id: string;
+  kind: 'file' | 'note';
+  title: string;
+  column: string | null;
+  order: number;
+  tags: string[];
+  pinned: boolean;
+  summary: string;
+  createdAt: number;
+  updatedAt: number;
+  addedBy: ProjectActor;
+  trashedAt?: number;
+}
+
+export type ProjectFileKind = 'text' | 'pdf' | 'docx' | 'hwp' | 'pptx' | 'xlsx' | 'html' | 'image' | 'other';
+export type ProjectFileSourceKind = 'upload' | 'chat-attachment' | 'web' | 'home' | 'text' | 'workspace' | 'migrated';
+
+export interface ProjectFileItem extends ProjectItemBase {
+  kind: 'file';
+  /** ReferenceStore 파일 id. */
+  fileId: string;
+  scope: 'project' | 'global';
+  originalName: string;
+  mimeType: string;
+  size: number;
+  fileKind: ProjectFileKind;
+  status: 'processing' | 'ready' | 'failed';
+  chunkCount: number;
+  pageCount?: number;
+  source: {
+    kind: ProjectFileSourceKind;
+    url?: string;
+    finalUrl?: string;
+    homePath?: string;
+    threadId?: string;
+  };
+  librarian: { status: ProjectItemLibrarianStatus; error?: string };
+  locked: { title?: true; column?: true; tags?: true };
+}
+
+export interface ProjectNoteItem extends ProjectItemBase {
+  kind: 'note';
+  bytes: number;
+}
+
+export type ProjectItem = ProjectFileItem | ProjectNoteItem;
+
+export interface ProjectLink {
+  id: string;
+  /** 항목 id 또는 문서 노드 id. */
+  from: string;
+  to: string;
+  /** `c12`(조각) 또는 `p4`(쪽). */
+  fromAnchor?: string;
+  toAnchor?: string;
+  label?: string;
+  origin: 'explicit' | 'note';
+  noteId?: string;
+}
+
+export interface ProjectSnapshot {
+  id: string;
+  name: string;
+  goal: string;
+  implicit: boolean;
+  /** 변경이 반영될 때마다 오른다. */
+  revision: number;
+  /** 보드 순서대로. */
+  columns: ProjectColumn[];
+  tags: ProjectTag[];
+  members: ProjectMember[];
+  /** 휴지통 항목은 ?trash=1 일 때만 들어 있다. */
+  items: ProjectItem[];
+  links: ProjectLink[];
+  graph: { pinned: Record<string, [number, number]> };
+  librarian: { state: ProjectLibrarianState; queued: number; running: number };
+  usage: { files: number; bytes: number };
+}
+
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  implicit: boolean;
+  members: ProjectMember[];
+  usage: { files: number; bytes: number };
+  updatedAt: number;
+}
+
+/** project_edit 도구와 POST /projects/:pid/ops 가 함께 쓰는 평평한 연산. */
+export type ProjectOp =
+  | { op: 'rename'; id: string; name: string }
+  | { op: 'tag'; id: string; tags: string[]; mode?: 'set' | 'add' | 'remove' }
+  | { op: 'move'; id: string; column: string; index?: number }
+  | { op: 'pin'; id: string; pinned: boolean }
+  | { op: 'link'; from: string; to: string; label?: string; fromAnchor?: string; toAnchor?: string }
+  | { op: 'unlink'; id: string }
+  | { op: 'note'; id?: string; name?: string; body: string; mode?: 'replace' | 'append'; column?: string; tags?: string[] }
+  | { op: 'columns'; columns: Array<{ id?: string; name: string }> }
+  | { op: 'goal'; body: string }
+  | { op: 'trash'; id: string }
+  | { op: 'restore'; id: string }
+  | { op: 'graph-pin'; id: string; x: number; y: number }
+  | { op: 'graph-unpin'; id: string };
+
+export interface ProjectOpsResult {
+  revision: number;
+  applied: number;
+  /** 연산 순번 → 새로 만든 id. */
+  created: Record<number, string>;
+  unresolvedLinks: string[];
+}
+
+export interface ProjectActivityEntry {
+  id: string;
+  at: number;
+  actor: ProjectActor;
+  /** 짧은 한국어 요약. */
+  summary: string;
+  ops: ProjectOp[];
+  inverse: ProjectOp[];
+}
+
+export interface ProjectUndoResult {
+  revision: number;
+  applied: number;
+  /** 그 뒤에 값이 바뀌어 되돌리지 않은 연산 수. */
+  skipped: number;
+}
+
+export interface ProjectChunk {
+  chunkId: string;
+  page: number | null;
+  start: number;
+  end: number;
+  text: string;
+}
+
+export interface ProjectFileText {
+  page: number | null;
+  text: string;
+  chunks: Array<{ id: string; start: number; end: number }>;
+}
+
+export interface ProjectNote {
+  id: string;
+  title: string;
+  body: string;
+}
+
+export type ProjectLibrarianAction = 'pause' | 'resume' | 'retry';
+export type ProjectLibrarianProvider = 'chat' | 'claude' | 'codex' | 'pi';
+export type ProjectSummarySize = 'small' | 'medium' | 'large';
+export type ProjectTrashDays = 7 | 30 | 90;
+
+export interface ProjectSettings {
+  version: 1;
+  librarian: {
+    enabled: boolean;
+    provider: ProjectLibrarianProvider;
+    model: string | null;
+    effort: string | null;
+    actions: { rename: boolean; classify: boolean; link: boolean };
+    concurrency: 1 | 2 | 3 | 4;
+  };
+  ingest: {
+    homeSearch: boolean;
+    /** 점 없는 확장자. */
+    fileTypes: string[];
+    /** `~/…` 형태. */
+    excludedFolders: string[];
+    /** 1..100 */
+    maxFileMb: number;
+  };
+  agent: { chatMayEdit: boolean; summarySize: ProjectSummarySize };
+  board: { defaultColumns: string[]; trashDays: ProjectTrashDays };
+}
+
+export interface ProjectCapabilities {
+  homeAccess: boolean;
+  platform: string;
+}
+
+export interface ProjectSettingsPayload {
+  settings: ProjectSettings;
+  capabilities: ProjectCapabilities;
+}
+
+export interface ProjectLibrarianItemStatus {
+  id: string;
+  status: ProjectItemLibrarianStatus;
+  error?: string;
+}
+
+/** 허브 → 스튜디오 프로젝트 이벤트. 통합 단계에서 SidebarEvent 에 합친다. */
+export type ProjectSidebarEvent =
+  | { type: 'project-bound'; projectId: string; project: ProjectSnapshot }
+  | { type: 'project-changed'; projectId: string; revision: number; project: ProjectSnapshot }
+  | {
+      type: 'project-librarian-status';
+      projectId: string;
+      state: ProjectLibrarianState;
+      queued: number;
+      running: number;
+      items: ProjectLibrarianItemStatus[];
+    };

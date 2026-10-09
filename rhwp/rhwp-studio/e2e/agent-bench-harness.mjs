@@ -121,6 +121,9 @@ export async function startHub({ hubPort, token, fixtureRoot, env = {}, logName 
       RHWP_WORK_DIR: fixtureRoot,
       RHWP_AGENT_INSTRUCTIONS_DIR: path.join(fixtureRoot, 'instructions'),
       RHWP_TEMPLATES_DIR: path.join(fixtureRoot, 'templates'),
+      // 참고 자료·프로젝트는 부팅 때 옮겨 쓰인다 — 앱 데이터 대신 늘 고정 폴더 안에 둔다.
+      RHWP_REFERENCES_DIR: path.join(fixtureRoot, 'references'),
+      RHWP_PROJECTS_DIR: path.join(fixtureRoot, 'projects'),
       ...env,
     },
     path.join(repoRoot, 'target', logName),

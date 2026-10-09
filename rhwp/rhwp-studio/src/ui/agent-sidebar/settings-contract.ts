@@ -1,6 +1,6 @@
 import type { EditorScalarSettings } from '../../core/user-settings.ts';
 
-export const SETTINGS_DESTINATIONS = ['editing', 'ai', 'skills'] as const;
+export const SETTINGS_DESTINATIONS = ['editing', 'ai', 'skills', 'project'] as const;
 export type SettingsDestination = (typeof SETTINGS_DESTINATIONS)[number];
 
 /** 이전 설정 링크와 세션 값에서 사용하던 연결 탭 이름. */

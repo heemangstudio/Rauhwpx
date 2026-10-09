@@ -36,6 +36,8 @@ interface ThreadMessageBase {
   skillIcon?: ProductSkillIcon;
   messageId?: string;
   attachments?: ThreadAttachment[];
+  /** 입력기에서 @ 로 고른 프로젝트 항목. 제목은 보낸 때의 이름이다. */
+  mentions?: ThreadMention[];
   /** 인라인 프롬프트로 보낸 메시지에 붙는 문서 선택 컨텍스트 (표시용). */
   selection?: {
     label: string;
@@ -44,6 +46,11 @@ interface ThreadMessageBase {
     documentId?: string | null;
     revision?: number;
   };
+}
+
+export interface ThreadMention {
+  id: string;
+  title: string;
 }
 
 export interface ThreadToolRecord {
@@ -751,6 +758,15 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
         }];
       })
       : undefined;
+    const mentions = Array.isArray(message.mentions)
+      ? message.mentions.flatMap((item): ThreadMention[] => {
+        if (!item || typeof item !== 'object') return [];
+        const mention = item as Record<string, unknown>;
+        return typeof mention.id === 'string' && typeof mention.title === 'string'
+          ? [{ id: mention.id, title: mention.title }]
+          : [];
+      })
+      : undefined;
     const agent = parseAgentName(message.agent);
     const skillIcon: ProductSkillIcon | undefined = message.skillIcon === 'pencil'
       || message.skillIcon === 'bot' || message.skillIcon === 'system'
@@ -765,6 +781,7 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
       ...(skillIcon ? { skillIcon } : {}),
       ...(typeof message.messageId === 'string' ? { messageId: message.messageId } : {}),
       ...(attachments?.length ? { attachments } : {}),
+      ...(mentions?.length ? { mentions } : {}),
       ...(selection ? { selection } : {}),
     };
     if (message.kind === 'user-question') {

@@ -44,7 +44,7 @@ import {
   isExplicitImplementationApproval,
   workflowError,
 } from './planning-state.mjs';
-import { DownloadManager } from './download-manager.mjs';
+import { DownloadManager, fetchPublic } from './download-manager.mjs';
 import { DocumentSnapshotManager } from './document-snapshot-manager.mjs';
 import { ArtifactStore } from './artifact-store.mjs';
 import { BrowserbaseFleet, normalizeBrowserbaseOverride, validateBrowserbaseCredentials } from './browserbase-session.mjs';
@@ -72,8 +72,17 @@ import { createIpcSecretStore } from './secret-store.mjs';
 import { handlePiToolDefinitions } from './pi/tool-schema.mjs';
 import { PiSubagentCapabilityRegistry } from './pi/subagent-capabilities.mjs';
 import { resolveHwpExtractor } from './reference-extractor.mjs';
-import { ReferenceStore } from './reference-store.mjs';
+import { defaultReferenceRoot } from './reference-store.mjs';
+import { createReferenceCatalog } from './reference-catalog.mjs';
 import { createReferenceHttpHandler, isAllowedStudioOrigin } from './reference-http.mjs';
+import { ProjectStore, defaultProjectsRoot } from './project-store.mjs';
+import { ProjectSettingsStore } from './project-settings.mjs';
+import { createProjectHttpHandler, isProjectPath } from './project-http.mjs';
+import { executeProjectTool } from './project-tools.mjs';
+import { normalizeMentions, projectPromptContext } from './project-context.mjs';
+import { createProjectIngest } from './project-ingest.mjs';
+import { createHomeSearch } from './home-search.mjs';
+import { createProjectLibrarian } from './project-librarian.mjs';
 import { createFontHttpHandler, isFontPath } from './hub-fonts.mjs';
 import {
   createUserQuestionInteraction,
@@ -352,7 +361,14 @@ const providerLimits = createProviderLimitsClient({
   },
   getCodexBin: () => cliSetupStatus.codex?.installed ? cliSetup.binPath('codex') : 'codex',
 });
-const referenceStore = await new ReferenceStore({ projectRoot: ROOT }).init();
+// 참고 자료: references/ 는 옛 빌드와 같은 형식으로 두고, 프로젝트 파일은 프로젝트 폴더 안에 둔다.
+const PROJECTS_ROOT = defaultProjectsRoot();
+const referenceStore = await createReferenceCatalog({
+  referencesRoot: defaultReferenceRoot(),
+  projectsRoot: PROJECTS_ROOT,
+  projectRoot: ROOT,
+  logger: log,
+}).init();
 const templateStore = await new TemplateStore().init();
 // .hwp/.hwpx/.hml 텍스트 추출은 rhwp 바이너리에 기댄다 — 없으면 첫 업로드가 아니라 기동 시점에 알린다.
 const hwpExtractor = await resolveHwpExtractor(ROOT);
@@ -363,6 +379,61 @@ const stagedReferenceCleanupTimer = setInterval(() => {
   void referenceStore.cleanupStaged().catch((error) => log(`staged reference cleanup failed: ${error?.message ?? error}`));
 }, 15 * 60 * 1000);
 stagedReferenceCleanupTimer.unref?.();
+// 연구 프로젝트: 설정 → 프로젝트 값은 호출할 때마다 읽으므로 재시작 없이 적용된다.
+const projectSettings = new ProjectSettingsStore({ root: PROJECTS_ROOT, logger: log });
+await projectSettings.load();
+const projectStore = await new ProjectStore({
+  root: PROJECTS_ROOT,
+  referenceStore,
+  settings: () => projectSettings.get(),
+  logger: log,
+}).init();
+// 홈 폴더 검색은 데스크톱 앱이 RHWP_HOME_ACCESS=1 로 허브를 띄웠을 때만 쓸 수 있다.
+const HOME_ACCESS = process.env.RHWP_HOME_ACCESS === '1';
+const homeSearch = createHomeSearch({
+  home: os.homedir(),
+  settings: () => projectSettings.get(),
+  access: HOME_ACCESS,
+});
+const projectIngest = createProjectIngest({
+  referenceStore,
+  projectStore,
+  settings: () => projectSettings.get(),
+  fetchPublic,
+  homeSearch,
+  logger: log,
+});
+// 정리 도우미가 쓸 공급자 경로를 고를 때 기준이 되는, 프로젝트에 마지막으로 묶인 채팅 기록.
+const projectRecords = new Map();
+// project-changed 는 프로젝트마다 150ms 에 한 번으로 묶는다. 세션 표가 생기기 전 이벤트는 기다린다.
+const projectChangeTimers = new Map();
+let projectEventsLive = false;
+const projectLibrarian = createProjectLibrarian({
+  projectStore,
+  referenceStore,
+  settings: () => projectSettings.get(),
+  routes: (projectId) => librarianRoutes(projectId),
+  emit: (projectId, status) => sendToProjectStudios(projectId, { v: 1, type: 'project-librarian-status', projectId, ...status }),
+  logger: log,
+});
+projectStore.setLibrarianStatusProvider((projectId) => projectLibrarian.status(projectId));
+projectStore.onItemsAdded((projectId, itemIds) => {
+  void projectLibrarian.enqueue(projectId, itemIds).catch((error) => log(`librarian enqueue failed: ${error?.message ?? error}`));
+});
+projectStore.onChange((projectId, details) => onProjectChanged(projectId, details));
+try {
+  const migrated = await projectStore.migrateDocumentReferences();
+  if (migrated > 0) log(`moved ${migrated} document reference file(s) into projects`);
+  const repaired = await projectStore.repairReferences();
+  if (repaired > 0) log(`linked ${repaired} stored project file(s) back to their projects`);
+} catch (error) {
+  log(`project storage startup work failed: ${error?.message ?? error}`);
+}
+const projectTrashTimer = setInterval(() => {
+  void projectStore.purgeExpired().catch((error) => log(`project trash purge failed: ${error?.message ?? error}`));
+}, 6 * 60 * 60 * 1000);
+projectTrashTimer.unref?.();
+void projectStore.purgeExpired().catch((error) => log(`project trash purge failed: ${error?.message ?? error}`));
 let writingStyleCalibrationOwner = null;
 // If a bounded provider cleanup cannot prove tree exit, retain the backend
 // object (and therefore its exact child/process-group identity) until this hub
@@ -446,6 +517,7 @@ const sessions = new HubSessionRegistry({
     };
   },
 });
+projectEventsLive = true;
 
 function hasAgentSessions() {
   return [...sessions.values()].some((record) => (
@@ -2417,17 +2489,155 @@ function referenceScopes(activeSession) {
   return referenceScopesForSession(activeSession);
 }
 
-function addReferenceContext(activeSession, query, prompt, messageAttachments = []) {
+/** 연구 프로젝트 요약(언급·발췌 포함)과 메시지 첨부를 사용자 메시지 앞에 붙인다. */
+async function addReferenceContext(activeSession, query, prompt, messageAttachments = [], mentions = []) {
   try {
-    const block = referenceStore.promptContext({ query, scopes: referenceScopes(activeSession) });
+    const block = await projectPromptContext({
+      projectStore,
+      referenceStore,
+      projectId: activeSession.projectId ?? null,
+      scopes: referenceScopes(activeSession),
+      query,
+      mentions,
+      settings: projectSettings.get(),
+    });
     const attached = messageAttachments.length > 0
-      ? `<message_attachments trust="untrusted-data">\n${JSON.stringify(messageAttachments.map(({ id, name, mimeType, kind }) => ({ fileId: id, name, mimeType, kind })))}\n</message_attachments>`
+      ? `<message_attachments trust="untrusted-data">\n${JSON.stringify(messageAttachments.map(({ id, itemId, name, mimeType, kind }) => ({
+        ...(itemId ? { itemId } : {}),
+        fileId: id,
+        name,
+        mimeType,
+        kind,
+      })))}\n</message_attachments>`
       : '';
     return [block, attached, prompt].filter(Boolean).join('\n\n');
   } catch (error) {
     log(`reference retrieval failed: ${error?.message ?? error}`);
     return prompt;
   }
+}
+
+/** MCP 등록·호출 게이트: 채팅의 프로젝트 변경 허용과 홈 폴더 검색 가능 여부. */
+function projectToolGates() {
+  return { chatMayEdit: projectSettings.get().agent.chatMayEdit, homeSearch: homeSearch.available };
+}
+
+function sendToProjectStudios(projectId, frame) {
+  if (!projectEventsLive) return;
+  for (const record of sessions.values()) {
+    if (record.boundProjectId === projectId) sendJson(record.studioSocket, frame);
+  }
+}
+
+async function sendProjectBound(record) {
+  const projectId = record.boundProjectId;
+  if (!projectId) return;
+  try {
+    const project = await projectStore.get(projectId);
+    if (record.boundProjectId !== projectId) return;
+    sendJson(record.studioSocket, { v: 1, type: 'project-bound', projectId, project });
+  } catch (error) {
+    log(`project-bound failed: ${error?.message ?? error}`);
+  }
+}
+
+function onProjectChanged(projectId, details = {}) {
+  // 합류·나가기·삭제는 문서가 가리키는 프로젝트를 바꾼다 — 묶인 세션을 다시 맞춘다.
+  if (details.reason === 'deleted' || details.reason === 'merged' || details.reason === 'members') {
+    setImmediate(() => {
+      void reconcileProjectBindings().catch((error) => log(`project rebind failed: ${error?.message ?? error}`));
+    });
+  }
+  if (details.reason === 'deleted' || details.reason === 'merged' || projectChangeTimers.has(projectId)) return;
+  const timer = setTimeout(() => {
+    projectChangeTimers.delete(projectId);
+    if (!projectEventsLive) return;
+    void projectStore.get(projectId)
+      .then((project) => sendToProjectStudios(projectId, {
+        v: 1,
+        type: 'project-changed',
+        projectId,
+        revision: project.revision,
+        project,
+      }))
+      .catch(() => {});
+  }, 150);
+  timer.unref?.();
+  projectChangeTimers.set(projectId, timer);
+}
+
+/** 문서(없으면 스레드) → 프로젝트. 실패해도 채팅은 프로젝트 없이 계속된다. */
+async function bindRecordProject(record, { threadId, documentId, documentName }) {
+  let projectId = null;
+  try {
+    projectId = await projectStore.bindSession({ threadId, documentId, documentName });
+  } catch (error) {
+    log(`project binding failed: ${error?.message ?? error}`);
+  }
+  record.boundProjectId = projectId;
+  record.boundDocumentId = documentId ?? null;
+  record.boundThreadId = threadId ?? null;
+  if (projectId) projectRecords.set(projectId, record);
+  return projectId;
+}
+
+async function rebindRecordProject(record) {
+  const projectId = await bindRecordProject(record, {
+    threadId: record.boundThreadId,
+    documentId: record.boundDocumentId,
+    documentName: record.agentSession?.documentName ?? null,
+  });
+  const activeSession = record.agentSession;
+  if (activeSession && activeSession.projectId !== projectId) {
+    activeSession.projectId = projectId;
+    const scopes = referenceScopesForSession(activeSession);
+    try { activeSession.releaseReferenceScopes?.(); } catch {}
+    activeSession.releaseReferenceScopes = referenceStore.retainScopes(scopes);
+    await referenceStore.activateScopes(scopes).catch((error) => log(`reference activation failed: ${error?.message ?? error}`));
+  }
+  await sendProjectBound(record);
+  resumeLibrarianFor(projectId);
+}
+
+async function reconcileProjectBindings() {
+  if (!projectEventsLive) return;
+  for (const record of sessions.values()) {
+    if (!record.boundProjectId) continue;
+    const expected = record.boundDocumentId
+      ? projectStore.projectIdForDocument(record.boundDocumentId)
+      : (projectStore.hasProject(record.boundProjectId) ? record.boundProjectId : null);
+    if (expected !== record.boundProjectId) await rebindRecordProject(record);
+  }
+}
+
+/** 허브가 멈춘 사이 대기열에 남은 정리 항목을, 그 프로젝트에 채팅이 다시 묶일 때 이어서 돌린다. */
+function resumeLibrarianFor(projectId) {
+  if (!projectId) return;
+  const status = projectLibrarian.status(projectId);
+  if (status.queued > 0 || status.running > 0) return;
+  void projectStore.itemsNeedingLibrarian(projectId)
+    .then((items) => (items.length > 0 ? projectLibrarian.retry(projectId) : null))
+    .catch((error) => log(`librarian resume failed: ${error?.message ?? error}`));
+}
+
+/** 정리 도우미의 공급자 경로 — 그 프로젝트에 마지막으로 묶인 채팅의 공급자를 먼저 쓴다. */
+async function librarianRoutes(projectId) {
+  let record = projectRecords.get(projectId);
+  if (!record || record.disposed || sessions.get(record.sessionId) !== record) {
+    record = [...sessions.values()].find((candidate) => candidate.boundProjectId === projectId && !candidate.disposed) ?? null;
+    if (record) projectRecords.set(projectId, record);
+    else projectRecords.delete(projectId);
+  }
+  if (!record) return { readiness: {} };
+  const health = providerHealth.cached() ?? await providerHealth.check().catch(() => null);
+  const { readiness, resolveCodexTitleModel, resolvePiTitleModel, signal: _signal, ...deps } = checkpointTitleDeps(record, health, undefined);
+  return {
+    readiness,
+    chatProvider: record.agentSession?.agent ?? record.lastAgent ?? null,
+    codexQuota: providerLimits.snapshot().codex,
+    resolveModel: { codex: resolveCodexTitleModel, pi: resolvePiTitleModel },
+    deps,
+  };
 }
 
 function addAgentInstructionsContext(prompt) {
@@ -2525,16 +2735,19 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
       agent: activeSession.agent,
       requestContext: liveDocumentBlock(liveDocument),
     }))
-    .then((prompt) => {
+    .then(async (prompt) => {
       // Skill context is loaded asynchronously. An interrupt can settle this
       // turn and a later message can start another turn on the same session
       // before the read completes, so session identity alone is insufficient.
       if (!providerTurnIsCurrent(record, providerTurn)) return;
-      // 스냅샷도 에이전트가 본 문서 상태다 — 읽기 도구 없이 세운 계획이 승인 때 stale 로 거절되지 않게 한다.
-      if (liveDocument) activeSession.lastObservedDocumentRevision = liveDocument.revision;
       if (activeSession.planning.phase === 'awaiting-approval') {
         prompt = `The current plan remains open for review. Answer questions and research normally. If this message requests concrete changes to the plan, revise it directly with present_implementation_plan; do not ask the user to request a draft again. Never treat discussion as approval to edit the document.\n\nCurrent plan:\n${JSON.stringify(activeSession.planning.latestPlan.plan)}\n\n${prompt}`;
       }
+      // 프로젝트 요약은 메모·발췌를 읽느라 비동기다 — 기다린 뒤 턴이 여전히 이 턴인지 다시 본다.
+      prompt = await addReferenceContext(activeSession, msg.text, prompt, messageAttachments, normalizeMentions(msg.mentions));
+      if (!providerTurnIsCurrent(record, providerTurn)) return;
+      // 스냅샷도 에이전트가 본 문서 상태다 — 읽기 도구 없이 세운 계획이 승인 때 stale 로 거절되지 않게 한다.
+      if (liveDocument) activeSession.lastObservedDocumentRevision = liveDocument.revision;
       activeSession.backend.sendUserMessage(addAgentInstructionsContext(addReopenedChatHistory(
         activeSession,
         addActiveDocumentContext(
@@ -2542,7 +2755,7 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
           addTemplateContext(
             record,
             activeSession,
-            addEditReportContext(record, activeSession, addReferenceContext(activeSession, msg.text, prompt, messageAttachments)),
+            addEditReportContext(record, activeSession, prompt),
           ),
         ),
       )));
@@ -2593,10 +2806,32 @@ async function dispatchStagedUserMessage(record, sock, msg, activeSession) {
     attachments: stageIds.map((stageId) => ({ stageId, status: 'processing' })),
   });
   const settled = await Promise.allSettled(
-    stageIds.map(async (stageId) => ({ stageId, file: await referenceStore.promoteStaged({ stageId, scopeId: activeSession.threadId }) })),
+    stageIds.map(async (stageId) => {
+      // 첨부는 채팅의 연구 프로젝트 파일로 바로 올린다. 프로젝트가 없으면 채팅 범위에 둔다.
+      const projectId = activeSession.projectId;
+      const promoted = await referenceStore.promoteStaged({
+        stageId,
+        scopeId: activeSession.threadId,
+        ...(projectId ? { to: { scope: 'project', scopeId: projectId } } : {}),
+      });
+      if (!projectId) return { stageId, file: promoted, item: null };
+      try {
+        const item = await projectStore.addFileItem(projectId, {
+          fileId: promoted.id,
+          scope: 'project',
+          source: { kind: 'chat-attachment', threadId: activeSession.threadId },
+          addedBy: { kind: 'user', threadId: activeSession.threadId },
+        });
+        return { stageId, file: { ...promoted, itemId: item.id }, item };
+      } catch (error) {
+        // 파일은 프로젝트에 들어갔다 — 항목은 다음 부팅의 복구가 붙인다.
+        log(`attachment item creation failed: ${error?.message ?? error}`);
+        return { stageId, file: promoted, item: null };
+      }
+    }),
   );
   const attachments = settled.map((entry, index) => entry.status === 'fulfilled'
-    ? { stageId: entry.value.stageId, status: 'ready', file: entry.value.file }
+    ? { stageId: entry.value.stageId, status: 'ready', file: entry.value.file, ...(entry.value.item ? { item: entry.value.item } : {}) }
     : {
       stageId: stageIds[index],
       status: 'error',
@@ -2675,7 +2910,15 @@ async function startSession(
   const continuing = !force && currentSession
     && currentSession.threadId === threadId && currentSession.documentId === documentId;
   if (!await disposeSession(record)) throw agentProcessCleanupUncertain();
-  const sessionReferenceScopes = referenceScopesForSession({ threadId, documentId });
+  // 세션은 문서의 연구 프로젝트(문서가 없으면 스레드 프로젝트)에 묶인다. 이 스레드의 옛 chat 범위
+  // 자료는 이제야 문서를 알 수 있어 여기서 프로젝트로 옮긴다.
+  const projectId = await bindRecordProject(record, { threadId, documentId, documentName });
+  if (projectId) {
+    await projectStore.migrateChatReferences(threadId, projectId)
+      .catch((error) => log(`chat reference migration failed: ${error?.message ?? error}`));
+  }
+  record.lastAgent = agent;
+  const sessionReferenceScopes = referenceScopesForSession({ threadId, documentId, projectId });
   await referenceStore.activateScopes(sessionReferenceScopes);
   const planning = new PlanningState({
     workflow,
@@ -2733,6 +2976,7 @@ async function startSession(
     piRoot: piManager.rootDir,
     openRouterApiKey: agent === 'pi' ? piManager.apiKey() ?? undefined : undefined,
     reasoning: agent === 'pi' ? Boolean(piModelConfig(model)?.reasoning) : false,
+    projectToolGates,
   };
   const createBackend = SESSION_FACTORIES[agent];
   if (!createBackend) throw unknownAgentError(agent);
@@ -2754,6 +2998,7 @@ async function startSession(
     threadId,
     documentId,
     documentName,
+    projectId,
     // Legacy download/browser code uses chatId. It is now the stable Studio
     // thread identity rather than an unrelated hub-generated UUID.
     chatId: threadId,
@@ -2920,6 +3165,12 @@ async function approveImplementationPlan(record, sock, msg) {
     }
     await activeSession.backend.setExecutionMode(providerModeRequest(activeSession, 'implementing'));
     if (record.agentSession !== activeSession || activeSession.planning.phase !== 'switching') return;
+    const approvedPrompt = await addReferenceContext(
+      activeSession,
+      JSON.stringify(transition.approvedPlan.plan),
+      buildApprovedPlanPrompt(transition.approvedPlan),
+    );
+    if (record.agentSession !== activeSession || activeSession.planning.phase !== 'switching') return;
     activeSession.planning.completeSwitch(transition.approvedPlan.planId);
     sendJson(sock, {
       v: 1,
@@ -2928,15 +3179,10 @@ async function approveImplementationPlan(record, sock, msg) {
       ...activeSession.planning.snapshot(),
     });
     beginAgentTurn(record, activeSession);
-    const approvedPrompt = buildApprovedPlanPrompt(transition.approvedPlan);
     activeSession.backend.sendUserMessage(addAgentInstructionsContext(addTemplateContext(
       record,
       activeSession,
-      addEditReportContext(record, activeSession, addReferenceContext(
-        activeSession,
-        JSON.stringify(transition.approvedPlan.plan),
-        approvedPrompt,
-      )),
+      addEditReportContext(record, activeSession, approvedPrompt),
     )));
   } catch (error) {
     if (record.agentSession === activeSession) {
@@ -2987,26 +3233,30 @@ async function requestImplementationPlanChanges(record, sock, msg, {
       ...activeSession.planning.snapshot(),
     });
     if (promptOverride) {
+      const referenced = await addReferenceContext(activeSession, promptOverride, promptOverride);
+      if (record.agentSession !== activeSession) return;
       beginAgentTurn(record, activeSession);
       activeSession.backend.sendUserMessage(addAgentInstructionsContext(addTemplateContext(
         record,
         activeSession,
-        addReferenceContext(activeSession, promptOverride, promptOverride),
+        referenced,
       )));
       return;
     }
     if (feedback) {
-      beginAgentTurn(record, activeSession);
       const revisionPrompt = [
         'The user requested changes, so the previous implementation plan is no longer authoritative.',
         'Re-read the affected document state and revise the plan directly from this feedback. Ask a focused question only if a missing answer blocks the revision. Present a complete replacement with present_implementation_plan and a concise changeSummary. The user does not need to ask you to draft it again.',
         `Previous plan: ${JSON.stringify(activeSession.planning.latestPlan.plan)}`,
         `Feedback: ${feedback}`,
       ].join('\n\n');
+      const referenced = await addReferenceContext(activeSession, feedback, revisionPrompt);
+      if (record.agentSession !== activeSession) return;
+      beginAgentTurn(record, activeSession);
       activeSession.backend.sendUserMessage(addAgentInstructionsContext(addTemplateContext(
         record,
         activeSession,
-        addReferenceContext(activeSession, feedback, revisionPrompt),
+        referenced,
       )));
     }
   } catch (error) {
@@ -3150,8 +3400,11 @@ async function handleStudioMessage(record, sock, msg) {
           threadId: s.threadId,
           documentId: s.documentId,
           documentName: s.documentName,
+          projectId: s.projectId ?? null,
           ...s.planning.snapshot(),
         });
+        await sendProjectBound(record);
+        resumeLibrarianFor(record.boundProjectId);
       } catch (e) {
         rejectStart(e, 'AGENT_SPAWN_FAILED');
       }
@@ -4501,6 +4754,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           if (msg.workflow && msg.workflow !== record.agentSession.planning.workflow) {
             throw workflowError('WORKFLOW_MISMATCH', `MCP call declared ${msg.workflow} but the active workflow is ${record.agentSession.planning.workflow}`);
           }
+          const gates = projectToolGates();
           authorizeToolCall({
             category: definition.category,
             tool,
@@ -4508,6 +4762,8 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
             phase: record.agentSession.planning.phase,
             expectedEpoch: record.agentSession.planning.capabilityEpoch,
             receivedEpoch: msg.capabilityEpoch,
+            chatMayEdit: gates.chatMayEdit,
+            homeSearch: gates.homeSearch,
           });
         }
       } catch (error) {
@@ -4897,9 +5153,29 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
         }
         return;
       }
+      if (definition.category === 'project-read' || definition.category === 'project-write' || definition.category === 'project-ingest') {
+        const session = record.agentSession;
+        if (session?.projectId) projectRecords.set(session.projectId, record);
+        void executeProjectTool({
+          tool,
+          args,
+          session: session ? { ...session, agent: sock.agentLabel ?? session.agent } : null,
+          projectStore,
+          ingest: projectIngest,
+          homeSearch,
+          allowedRoots: [record.workDir, record.downloadManager.baseDir],
+          sessionKey: record.sessionId,
+        })
+          .then(({ handled, result }) => {
+            if (!handled) throw workflowError('UNKNOWN_TOOL', `Unknown project tool: ${tool}`);
+            sendResult(result);
+          })
+          .catch((error) => sendError(error, 'PROJECT_TOOL_FAILED'));
+        return;
+      }
       const referenceImageViaStudio = referenceImageNeedsStudio(tool, args);
       if (definition.category === 'reference-read' && !referenceImageViaStudio) {
-        void executeReferenceTool({ tool, args, store: referenceStore, session: record.agentSession })
+        void executeReferenceTool({ tool, args, store: referenceStore, session: record.agentSession, projectStore })
           .then(({ handled, result }) => {
             if (!handled) throw workflowError('UNKNOWN_TOOL', `Unknown reference tool: ${tool}`);
             sendResult(result);
@@ -5174,7 +5450,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           sendError(workflowError('NO_STUDIO', 'Studio is not connected; open rhwp-studio in a browser'));
           return;
         }
-        void resolveReferenceImageArgs({ tool, args, store: referenceStore, session: record.agentSession })
+        void resolveReferenceImageArgs({ tool, args, store: referenceStore, session: record.agentSession, projectStore })
           .then((resolved) => {
             if (callSettled) return;
             if (providerTurn && !providerTurnIsActive(record, providerTurn)) {
@@ -5458,6 +5734,35 @@ const httpServer = http.createServer((req, res) => {
         if (await handleTemplateHttp(req, res, url)) return;
       }
     }
+    if (isProjectPath(url.pathname)) {
+      // 참고 자료와 같은 REFERENCE capability 로 인증한다. 세션은 자기 프로젝트만 다룬다.
+      let record = null;
+      if (req.method !== 'OPTIONS') {
+        record = sessions.require(authenticateHttpSession(req, url, {
+          audience: HUB_CAPABILITY_AUDIENCES.REFERENCE,
+        }));
+      }
+      const handleProjectHttp = createProjectHttpHandler({
+        projectStore,
+        referenceStore,
+        settingsStore: projectSettings,
+        librarian: projectLibrarian,
+        tokens: record ? [requestToken(req, url)] : [],
+        session: record ? {
+          projectId: record.boundProjectId ?? null,
+          documentId: record.boundDocumentId ?? null,
+          documentName: record.agentSession?.documentName ?? null,
+        } : null,
+        homeAccess: HOME_ACCESS,
+        platform: process.platform,
+        onBindingChanged: async () => {
+          if (record) await rebindRecordProject(record);
+          await reconcileProjectBindings();
+        },
+      });
+      if (record?.boundProjectId) projectRecords.set(record.boundProjectId, record);
+      if (await handleProjectHttp(req, res, url)) return;
+    }
     if (req.method === 'GET' && url.pathname === '/oauth/openrouter/callback') {
       const code = url.searchParams.get('code');
       const state = url.searchParams.get('state');
@@ -5704,7 +6009,16 @@ const httpServer = http.createServer((req, res) => {
       // Never trust a provider-supplied profile. The authenticated live
       // session/worker capability fixes the only catalog it may receive.
       authenticatedUrl.searchParams.set('profile', profile);
-      const { status, body } = handlePiToolDefinitions({ url: authenticatedUrl, token: TOKEN });
+      const gates = projectToolGates();
+      const workflow = candidateSession?.agentSession?.planning?.workflow;
+      const { status, body } = handlePiToolDefinitions({
+        url: authenticatedUrl,
+        token: TOKEN,
+        gates: {
+          projectWrites: !(workflow === 'question' && gates.chatMayEdit === false),
+          homeSearch: gates.homeSearch && !requestedWorkerJobId && !requestedSubagentId,
+        },
+      });
       sendHttpJson(res, status, body);
       return;
     }
@@ -6194,6 +6508,10 @@ function prepareShutdown(signal) {
   if (shutdownPreparationPromise) return shutdownPreparationPromise;
   shutdownPreparationPromise = (async () => {
     clearInterval(stagedReferenceCleanupTimer);
+    clearInterval(projectTrashTimer);
+    for (const timer of projectChangeTimers.values()) clearTimeout(timer);
+    projectChangeTimers.clear();
+    projectLibrarian.cancelAll();
     if (harnessUpdateTimer) clearTimeout(harnessUpdateTimer);
     if (ownerWatchdog) clearInterval(ownerWatchdog);
     log(`shutting down (${signal})`);

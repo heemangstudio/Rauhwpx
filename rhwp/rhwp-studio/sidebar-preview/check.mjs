@@ -506,7 +506,7 @@ try {
   await step('Reference upload, search, and deletion', async () => {
     await open();
     await page.click('.ag-references-btn');
-    await clickText('.ag-reference-tab', '모든 채팅');
+    await clickText('.ag-reference-tab', '공용');
     await page.waitForSelector('.ag-reference-file', { visible: true });
     await screenshot('references');
     const [chooser] = await Promise.all([

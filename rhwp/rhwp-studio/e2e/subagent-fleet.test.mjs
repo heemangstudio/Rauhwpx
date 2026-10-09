@@ -111,6 +111,13 @@ const viteUrl = `http://127.0.0.1:${vitePort}`;
 console.log('=== E2E: 서브에이전트 fleet (subagent-fleet) ===\n');
 console.log(`  [setup] 허브 포트=${hubPort}, vite 포트=${vitePort}, 가짜 claude=${stubBin}`);
 
+// 허브는 참고 자료·프로젝트를 앱 데이터에 두고 부팅 때 옮겨 쓴다 — 테스트는 늘 임시 폴더를 쓴다.
+fs.mkdirSync(path.join(repoRoot, 'target'), { recursive: true });
+const hubDataRoot = fs.mkdtempSync(path.join(repoRoot, 'target', 'rhwp-e2e-data-'));
+const hubDataEnv = {
+  RHWP_REFERENCES_DIR: path.join(hubDataRoot, 'references'),
+  RHWP_PROJECTS_DIR: path.join(hubDataRoot, 'projects'),
+};
 const hub = spawnLogged(
   process.execPath,
   [path.join(repoRoot, 'rhwp-agent', 'server.mjs')],
@@ -119,6 +126,7 @@ const hub = spawnLogged(
     RHWP_AGENT_PORT: String(hubPort),
     RHWP_AGENT_TOKEN: HUB_TOKEN,
     RHWP_CLI_DIR: stubCliDir,
+    ...hubDataEnv,
     PATH: `${stubBinDir}${path.delimiter}${process.env.PATH ?? ''}`,
   },
   path.join(repoRoot, 'target', 'rhwp-agent-fleet-e2e-hub.log'),

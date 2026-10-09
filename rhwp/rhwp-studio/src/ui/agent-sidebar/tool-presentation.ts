@@ -540,10 +540,19 @@ const SPECS: Record<string, ToolSpec> = {
   read_product_skill: { category: 'read', label: '스킬 읽기', summary: (a) => join([str(a['name']), str(a['resourcePath']) !== 'SKILL.md' ? str(a['resourcePath']) : '']) },
   commit_product_skill: { category: 'other', label: '스킬 변경', summary: (a) => join([str(a['name']), str(a['action'])]) },
   list_harness_skills: { category: 'read', label: '하네스 스킬 목록' },
-  list_reference_files: { category: 'read', label: '참고 자료 목록' },
   search_reference_files: { category: 'read', label: '참고 자료 검색', summary: (a) => quote(str(a['query'])) },
   read_reference_chunk: { category: 'read', label: '참고 자료 읽기' },
   read_reference_image: { category: 'read', label: '참고 그림 보기' },
+  project_read: { category: 'read', label: '프로젝트 읽기' },
+  project_edit: {
+    category: 'other', label: '프로젝트 정리',
+    summary: (a) => Array.isArray(a['ops']) ? `${a['ops'].length}건` : '',
+  },
+  project_import: {
+    category: 'other', label: '자료 가져오기',
+    summary: (a) => str(a['name']) || host(str(a['url'])),
+  },
+  find_home_files: { category: 'read', label: '홈 폴더 검색', summary: (a) => quote(str(a['query'])) },
 
   // 대화·계획·파일
   ask_user_question: {

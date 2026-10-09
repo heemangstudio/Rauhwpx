@@ -82,7 +82,8 @@ async function resolvePublicAddress(hostname) {
   return addresses[0];
 }
 
-async function safeNetworkFetch(url, { signal } = {}) {
+/** DNS-pinned http(s) GET that refuses local, private and reserved addresses on every hop. */
+export async function safeNetworkFetch(url, { signal } = {}) {
   const target = new URL(url);
   if (target.username || target.password) {
     throw downloadError('DOWNLOAD_URL_INVALID', 'Download URLs cannot contain embedded credentials');
@@ -261,6 +262,86 @@ async function fetchWithRedirects(url, { signal, maxRedirects, fetchImpl }) {
     current = new URL(location, current);
   }
   throw downloadError('DOWNLOAD_REDIRECT_LIMIT', `Download exceeded ${maxRedirects} redirects`);
+}
+
+/**
+ * Public-web GET shared by download_file and project imports: http(s) only, no embedded
+ * credentials, every redirect hop re-validated against private addresses, and the body
+ * buffered under a hard byte cap.
+ * @param {string | URL} url
+ * @param {{timeoutMs?: number, maxRedirects?: number, maxBytes?: number,
+ *   fetchImpl?: typeof safeNetworkFetch, signal?: AbortSignal}} [options]
+ * @returns {Promise<{bytes: Buffer, mime: string, size: number, source: string,
+ *   finalUrl: string, filename: string, checksum: string}>}
+ */
+export async function fetchPublic(url, {
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  maxRedirects = DEFAULT_MAX_REDIRECTS,
+  maxBytes = DEFAULT_MAX_BYTES,
+  fetchImpl = safeNetworkFetch,
+  signal,
+} = {}) {
+  let originalUrl;
+  try { originalUrl = new URL(url); }
+  catch { throw downloadError('DOWNLOAD_URL_INVALID', 'Download URL is not a valid absolute URL'); }
+  if (originalUrl.protocol !== 'http:' && originalUrl.protocol !== 'https:') {
+    throw downloadError('DOWNLOAD_URL_INVALID', 'Downloads must use http or https');
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const forwardAbort = () => controller.abort();
+  if (signal?.aborted) controller.abort();
+  else signal?.addEventListener?.('abort', forwardAbort, { once: true });
+  let response = null;
+  let responseBodyFinished = false;
+  try {
+    const fetched = await fetchWithRedirects(originalUrl, {
+      signal: controller.signal,
+      maxRedirects,
+      fetchImpl,
+    });
+    ({ response } = fetched);
+    const { finalUrl } = fetched;
+    if (!response.ok) throw downloadError('DOWNLOAD_HTTP_ERROR', `Download failed with HTTP ${response.status}`);
+    if (!response.body) throw downloadError('DOWNLOAD_EMPTY_RESPONSE', 'Download response had no body');
+    const declaredSize = Number(response.headers.get('content-length'));
+    if (Number.isFinite(declaredSize) && declaredSize > maxBytes) {
+      throw downloadError('DOWNLOAD_TOO_LARGE', `Download exceeds the ${maxBytes}-byte safety limit`);
+    }
+    const chunks = [];
+    const hash = crypto.createHash('sha256');
+    let size = 0;
+    for await (const rawChunk of response.body) {
+      const chunk = Buffer.from(rawChunk);
+      size += chunk.length;
+      if (size > maxBytes) throw downloadError('DOWNLOAD_TOO_LARGE', `Download exceeds the ${maxBytes}-byte safety limit`);
+      hash.update(chunk);
+      chunks.push(chunk);
+    }
+    responseBodyFinished = true;
+    return {
+      bytes: Buffer.concat(chunks, size),
+      mime: response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase() || 'application/octet-stream',
+      charset: response.headers.get('content-type')?.match(/charset=["']?([^;"'\s]+)/i)?.[1]?.toLowerCase() ?? null,
+      size,
+      source: originalUrl.href,
+      finalUrl,
+      filename: filenameFromResponse(response, finalUrl),
+      checksum: `sha256:${hash.digest('hex')}`,
+    };
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw signal?.aborted
+        ? downloadError('DOWNLOAD_ABORTED', 'Download was cancelled')
+        : downloadError('DOWNLOAD_TIMEOUT', `Download timed out after ${timeoutMs}ms`);
+    }
+    if (error?.code && String(error.code).startsWith('DOWNLOAD_')) throw error;
+    throw downloadError('DOWNLOAD_FAILED', String(error?.message ?? error));
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener?.('abort', forwardAbort);
+    if (!responseBodyFinished) await cancelResponseBody(response);
+  }
 }
 
 export class DownloadManager {

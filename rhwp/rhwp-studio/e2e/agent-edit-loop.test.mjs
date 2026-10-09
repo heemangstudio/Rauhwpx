@@ -222,6 +222,7 @@ const hub = spawnLogged(
   { NODE_ENV: 'test', RHWP_AGENT_MODE: 'development', RHWP_SECRET_BROKER: '',
     RHWP_AGENT_PORT: String(hubPort), RHWP_AGENT_TOKEN: HUB_TOKEN,
     RHWP_PI_DIR: piRoot, RHWP_WORK_DIR: fixtureRoot, RHWP_REFERENCES_DIR: referencesRoot,
+    RHWP_PROJECTS_DIR: path.join(fixtureRoot, 'projects'),
     RHWP_AGENT_INSTRUCTIONS_DIR: path.join(fixtureRoot, 'instructions'),
     RHWP_TEMPLATES_DIR: path.join(fixtureRoot, 'templates') },
   path.join(repoRoot, 'target', 'rhwp-agent-e2e-hub.log'),

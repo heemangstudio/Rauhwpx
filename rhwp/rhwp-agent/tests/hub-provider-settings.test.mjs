@@ -71,7 +71,7 @@ async function fixture(t, { holdStartupDelayMs = 0 } = {}) {
   const child = spawn(process.execPath, ['server.mjs'], {
     cwd: new URL('..', import.meta.url),
     env: { ...process.env, NODE_ENV: 'test', RHWP_AGENT_PORT: '0', RHWP_AGENT_TOKEN: token,
-      RHWP_LAUNCH_ID: launchId, RHWP_WORK_DIR: root, RHWP_PI_DIR: piRoot,
+      RHWP_LAUNCH_ID: launchId, RHWP_WORK_DIR: root, RHWP_REFERENCES_DIR: path.join(root, 'references'), RHWP_PROJECTS_DIR: path.join(root, 'projects'), RHWP_PI_DIR: piRoot,
       RHWP_TEMPLATES_DIR: path.join(root, 'templates'), RHWP_AGENT_INSTRUCTIONS_DIR: path.join(root, 'instructions') },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

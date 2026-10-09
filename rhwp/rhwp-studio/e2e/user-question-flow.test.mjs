@@ -156,11 +156,18 @@ const piRoot = prepareFakePi('rhwp-question-pi-');
 const targetDir = path.join(repoRoot, 'target', 'user-question-e2e');
 fs.mkdirSync(targetDir, { recursive: true });
 
+// 허브는 참고 자료·프로젝트를 앱 데이터에 두고 부팅 때 옮겨 쓴다 — 테스트는 늘 임시 폴더를 쓴다.
+fs.mkdirSync(path.join(repoRoot, 'target'), { recursive: true });
+const hubDataRoot = fs.mkdtempSync(path.join(repoRoot, 'target', 'rhwp-e2e-data-'));
+const hubDataEnv = {
+  RHWP_REFERENCES_DIR: path.join(hubDataRoot, 'references'),
+  RHWP_PROJECTS_DIR: path.join(hubDataRoot, 'projects'),
+};
 const hub = spawnLogged(
   process.execPath,
   [path.join(repoRoot, 'rhwp-agent', 'server.mjs')],
   path.join(repoRoot, 'rhwp-agent'),
-  { RHWP_AGENT_PORT: String(hubPort), RHWP_AGENT_TOKEN: HUB_TOKEN, RHWP_PI_DIR: piRoot },
+  { RHWP_AGENT_PORT: String(hubPort), RHWP_AGENT_TOKEN: HUB_TOKEN, RHWP_PI_DIR: piRoot, ...hubDataEnv },
   path.join(targetDir, 'hub.log'),
 );
 let vite;

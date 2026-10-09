@@ -8,6 +8,7 @@
  */
 
 import type { StructuredPlan, StructuredPlanStep } from '../../agent/types.ts';
+import { readWikilinkAt, type WikilinkAnchor } from './wikilinks.ts';
 
 /* ── DOM 최소 계약 ─────────────────────────────────────────
    실제 Document·HTMLElement 가 구조적으로 이 형태를 만족한다.
@@ -32,6 +33,8 @@ export interface MarkdownRenderOptions {
   renderMath?: (node: MarkdownNode, source: string, displayMode: boolean, raw: string) => boolean;
   /** 파일 경로처럼 보이는 인라인 코드에 확장자 배지를 붙인다. */
   fileChips?: boolean;
+  /** 인용 표기 `[[id…]]` 를 칩으로 그린다. 없거나 null 을 돌려주면 원문 그대로 둔다. */
+  citation?: (token: WikilinkToken) => MarkdownNode | null;
 }
 
 /* ── 한계값 ────────────────────────────────────────────────
@@ -57,7 +60,17 @@ export type InlineToken =
   | { kind: 'em'; text: string }
   | { kind: 'del'; text: string }
   | { kind: 'link'; text: string; href: string }
-  | { kind: 'math'; source: string; raw: string };
+  | { kind: 'math'; source: string; raw: string }
+  | WikilinkToken;
+
+/** 연구 프로젝트 인용. 문법은 wikilinks.ts 한 곳에서 정한다. */
+export interface WikilinkToken {
+  kind: 'wikilink';
+  raw: string;
+  id: string;
+  anchor: WikilinkAnchor | null;
+  label: string | null;
+}
 
 export interface ListItem {
   /** 항목 첫 줄. */
@@ -583,6 +596,14 @@ export function tokenizeInline(src: string): InlineToken[] {
         continue;
       }
     }
+    if (ch === '[' && src[i + 1] === '[') {
+      const cite = readWikilinkAt(src, i);
+      if (cite) {
+        push({ kind: 'wikilink', raw: src.slice(cite.start, cite.end), id: cite.id, anchor: cite.anchor, label: cite.label });
+        i = cite.end;
+        continue;
+      }
+    }
     if (ch === '[' || (ch === '!' && src[i + 1] === '[')) {
       const link = readInlineLink(src, i);
       if (link) {
@@ -710,6 +731,10 @@ function appendInline(
     }
     if (token.kind === 'math') {
       appendMath(host, parent, token.source, token.raw, false, options);
+      continue;
+    }
+    if (token.kind === 'wikilink') {
+      add(parent, options.citation?.(token) ?? host.createTextNode(token.raw));
       continue;
     }
     if (token.kind === 'link') {

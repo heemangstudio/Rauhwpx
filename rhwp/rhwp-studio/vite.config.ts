@@ -7,6 +7,7 @@ import { rhwpAgentHubPlugin } from './vite-plugin-agent-hub.mjs';
 import { rhwpPinnedDocumentPlugin } from './vite-plugin-pinned-document.mjs';
 import { rhwpDevFontPackPlugin } from './vite-plugin-dev-font-pack.mjs';
 import { rhwpLocalFontsPlugin } from './vite-plugin-local-fonts.mjs';
+import { rhwpPdfjsAssetsPlugin } from './vite-plugin-pdfjs-assets.mjs';
 
 const appPackage = JSON.parse(
   readFileSync(resolve(__dirname, '..', '..', 'package.json'), 'utf-8'),
@@ -133,6 +134,7 @@ export default defineConfig({
     rhwpPinnedDocumentPlugin(__dirname),
     rhwpDevFontPackPlugin(),
     rhwpLocalFontsPlugin(__dirname),
+    rhwpPdfjsAssetsPlugin(),
     {
       name: 'ignore-subsecond-patch-artifacts',
       handleHotUpdate(context) {

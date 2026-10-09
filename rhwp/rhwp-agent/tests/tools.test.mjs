@@ -16,18 +16,20 @@ import {
   TABLE_PROPS_KEYS,
   CELL_PROPS_KEYS,
   filterToolDefinitions,
+  projectToolGatesFromEnv,
   toToolContent,
   toolAnnotations,
 } from '../tools.mjs';
 import { toolDefinitionChars } from '../tool-telemetry.mjs';
+import { mcpCapabilityEnv } from '../agents/backend.mjs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 const byName = new Map(TOOL_DEFINITIONS.map((d) => [d.name, d]));
 
-test('도구는 정확히 88개, 이름 중복 없음', () => {
-  assert.equal(TOOL_DEFINITIONS.length, 88);
+test('도구는 정확히 91개, 이름 중복 없음', () => {
+  assert.equal(TOOL_DEFINITIONS.length, 91);
   assert.equal(byName.size, TOOL_DEFINITIONS.length, 'duplicate tool names');
 });
 
@@ -143,7 +145,7 @@ test('anchor 내부 필드는 validate 훅이 모양을 고정한다', () => {
 
 test('도구 프로필은 direct 호환성과 planning/implementing 가시성을 지킨다', () => {
   const direct = new Set(filterToolDefinitions('direct').map((definition) => definition.name));
-  assert.equal(direct.size, 76);
+  assert.equal(direct.size, 78);
   assert.equal(byName.get('commit_product_skill')?.category, 'instruction-write');
   assert.equal(byName.get('list_harness_skills')?.category, 'instruction-read');
   assert.ok(direct.has('commit_product_skill'));
@@ -198,7 +200,8 @@ test('도구 프로필은 direct 호환성과 planning/implementing 가시성을
   assert.ok(!question.has('insert_text'));
 
   const implementing = new Set(filterToolDefinitions('implementing').map((definition) => definition.name));
-  assert.equal(implementing.size, TOOL_DEFINITIONS.length - 4);
+  // 계획 제시·백그라운드 작업자 3개와, 데스크톱 게이트가 없으면 숨는 find_home_files 가 빠진다.
+  assert.equal(implementing.size, TOOL_DEFINITIONS.length - 5);
   assert.ok(implementing.has('insert_text'));
   assert.ok(implementing.has('download_file'));
   assert.ok(implementing.has('browserbase_act'));
@@ -224,6 +227,32 @@ test('도구 프로필은 direct 호환성과 planning/implementing 가시성을
   ]);
   assert.ok(!worker.includes('commit_product_skill'));
   assert.ok(!worker.includes('list_harness_skills'));
+});
+
+test('project tools reach every chat profile, chat edits and home search are gated', () => {
+  const projectTools = (profile, gates) => filterToolDefinitions(profile, gates)
+    .map((definition) => definition.name)
+    .filter((name) => name.startsWith('project_') || name === 'find_home_files');
+  for (const profile of ['direct', 'planning', 'question', 'awaiting-approval', 'implementing', 'doc-researcher']) {
+    assert.deepEqual(projectTools(profile), ['project_read', 'project_edit', 'project_import'], profile);
+  }
+  assert.deepEqual(projectTools('copy-layout-worker'), []);
+  assert.deepEqual(projectTools('question', { projectWrites: false }), ['project_read']);
+  assert.deepEqual(projectTools('direct', { homeSearch: true }), ['project_read', 'project_edit', 'project_import', 'find_home_files']);
+  // 허브가 MCP 프로세스 환경에 싣는 게이트: 채팅 변경 끔은 채팅(질문) 워크플로에만 걸린다.
+  const gated = { projectToolGates: () => ({ chatMayEdit: false, homeSearch: true }), capabilityEpoch: 1 };
+  const questionEnv = mcpCapabilityEnv({ ...gated, workflow: 'question', phase: 'questioning' });
+  assert.deepEqual(projectToolGatesFromEnv(questionEnv), { projectWrites: false, homeSearch: true });
+  assert.deepEqual(projectToolGatesFromEnv(mcpCapabilityEnv({ ...gated, workflow: 'direct' })), { projectWrites: true, homeSearch: true });
+  assert.deepEqual(projectToolGatesFromEnv(mcpCapabilityEnv({ workflow: 'direct', capabilityEpoch: 1 })), { projectWrites: true, homeSearch: false });
+  assert.equal(toolAnnotations('project-read').readOnlyHint, true);
+  // Codex 안전 모드는 destructive 도구를 거절한다 — 프로젝트 쓰기는 되돌릴 수 있어 표시하지 않는다.
+  assert.equal(toolAnnotations('project-write').destructiveHint, false);
+  const importTool = byName.get('project_import');
+  assert.throws(() => importTool.validate({ url: 'https://a.example', path: 'a.pdf' }), /exactly one/);
+  importTool.validate({ text: '본문', url: 'https://a.example' });
+  assert.ok(!byName.get('project_edit').shape.ops.safeParse([]).success);
+  assert.ok(!byName.get('project_edit').shape.ops.safeParse([{ op: 'graph-pin', id: 'fabcdef' }]).success);
 });
 
 test('app-only AGENTS.md tools separate reads from bounded revision-checked writes', () => {
@@ -312,9 +341,11 @@ test('full engine edit tools expose a bounded autonomous batch contract', () => 
 });
 
 test('reference tools are read-only and carry bounded schemas', () => {
-  for (const name of ['list_reference_files', 'search_reference_files', 'read_reference_chunk', 'read_reference_image']) {
+  for (const name of ['search_reference_files', 'read_reference_chunk', 'read_reference_image']) {
     assert.equal(byName.get(name)?.category, 'reference-read');
   }
+  assert.throws(() => byName.get('read_reference_chunk').validate({ chunkId: 'c0' }), /exactly one of itemId or fileId/);
+  assert.throws(() => byName.get('read_reference_image').validate({ itemId: 'fabcdef', fileId: 'x' }), /exactly one/);
   assert.ok(byName.get('search_reference_files').shape.maxResults.safeParse(20).success);
   assert.ok(!byName.get('search_reference_files').shape.maxResults.safeParse(21).success);
   assert.ok(byName.get('read_reference_chunk').shape.maxChars.safeParse(20_000).success);
@@ -1004,7 +1035,9 @@ test('표·셀 속성은 타입이 있는 객체이고 모르는 키는 올바�
 // 공유 규칙은 RHWP_TOOL_RULES 에 한 번만 두고, 새 도구도 이 한도 안에 들어와야 한다.
 // P0 기준선: 70개 106,936자 (edit_table 10,174자).
 // commit_version(전체 모드 버전 커밋) 추가분만큼 올렸다.
-const DIRECT_DEFINITION_TOTAL_LIMIT = 60_300;
+// 연구 프로젝트 도구(project_read·project_edit·project_import)가 모든 모드에 들어가며 다시 올렸다 —
+// list_reference_files 는 project_read 가 대신해 뺐다. find_home_files 는 데스크톱에서만 보여 여기서 빠진다.
+const DIRECT_DEFINITION_TOTAL_LIMIT = 63_000;
 const TOOL_DEFINITION_LIMIT = 3_000;
 
 test('direct 프로필 도구 정의 크기가 한도를 넘지 않는다', () => {

@@ -373,6 +373,23 @@ test('question mode can research but never write or present a plan', () => {
   }
 });
 
+test('project changes stay open in read-only modes unless chat edits are turned off', () => {
+  const call = (overrides) => authorizeToolCall({
+    category: 'project-write', tool: 'project_edit', workflow: 'question', phase: 'questioning',
+    expectedEpoch: 7, receivedEpoch: 7, ...overrides,
+  });
+  assert.equal(call({}), true);
+  assert.equal(call({ workflow: 'plan', phase: 'planning' }), true);
+  assert.equal(call({ category: 'project-ingest', tool: 'project_import' }), true);
+  assert.throws(() => call({ chatMayEdit: false }), (error) => error.code === 'PROJECT_CHAT_EDIT_DISABLED');
+  assert.throws(() => call({ chatMayEdit: false, category: 'project-ingest', tool: 'project_import' }), (error) => error.code === 'PROJECT_CHAT_EDIT_DISABLED');
+  // 끈 설정은 채팅 모드에만 걸린다.
+  assert.equal(call({ chatMayEdit: false, workflow: 'direct', phase: null, receivedEpoch: undefined }), true);
+  assert.equal(call({ chatMayEdit: false, category: 'project-read', tool: 'project_read' }), true);
+  assert.throws(() => call({ category: 'project-ingest', tool: 'find_home_files' }), (error) => error.code === 'HOME_SEARCH_DISABLED');
+  assert.equal(call({ category: 'project-ingest', tool: 'find_home_files', homeSearch: true }), true);
+});
+
 test('approved execution prompt contains only the authoritative plan record', () => {
   const prompt = buildApprovedPlanPrompt({ planId: 'plan-1', plan: plan() });
   assert.match(prompt, /Plan ID: plan-1/);

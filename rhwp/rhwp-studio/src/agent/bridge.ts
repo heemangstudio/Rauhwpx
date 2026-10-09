@@ -18,6 +18,7 @@ import {
   type RendererSessionContext,
 } from '../desktop-integration.ts';
 import { RevisionTracker, timeSeededRevision } from './revision.ts';
+import { createProjectService, createProjectStore, type ProjectClient } from './project-service.ts';
 import { AgentToolExecutor, isDocumentWriteTool, toolTraceNow, type ToolTraceTimings } from './tool-executor.ts';
 import { PendingEditManager, editReportNote } from './pending-edits.ts';
 import { PendingOverlayRenderer } from './pending-overlay.ts';
@@ -347,7 +348,11 @@ export interface AgentBridge {
     stagedReferenceIds?: string[],
     requireReceipt?: boolean,
     signal?: AbortSignal,
+    /** 입력기에서 @ 로 고른 프로젝트 항목 id (최대 20개). */
+    mentions?: string[],
   ): Promise<string | null>;
+  /** 이 채팅이 묶인 연구 프로젝트 — 참고자료와 같은 인증으로 허브에 묻는다. */
+  readonly projects: ProjectClient;
   listTemplates(): Promise<TemplateCatalog>;
   addTemplate(file: File, name?: string): Promise<DocumentTemplate>;
   renameTemplate(id: string, name: string): Promise<DocumentTemplate>;
@@ -1257,6 +1262,7 @@ export class AgentBridgeImpl implements AgentBridge {
   private httpBaseUrl = '';
   private readonly options?: AgentBridgeOptions;
   private readonly versionCommit?: (message: string) => Promise<void>;
+  readonly projects: ProjectClient;
   private ws: WebSocket | null = null;
   private state: ConnectionState = 'disconnected';
   /** 지금까지 실패한 연결 시도 수. 허브의 welcome 을 받으면 0 으로 돌아간다. */
@@ -1367,6 +1373,7 @@ export class AgentBridgeImpl implements AgentBridge {
     context: ReferenceScopeContext;
     messageId?: string;
     stagedReferenceIds?: string[];
+    mentions?: string[];
     resolve(messageId: string | null): void;
   }> = [];
   /** 사용자 메시지에 싣는 문서 읽기와, 이 채팅의 에이전트가 마지막으로 본 문서 상태. */
@@ -1385,6 +1392,14 @@ export class AgentBridgeImpl implements AgentBridge {
 
   constructor(deps: AgentBridgeDeps, opts?: AgentBridgeOptions) {
     this.versionCommit = deps.commitVersion;
+    const projectService = createProjectService({
+      url: (pathname, query) => this.referenceUrl(pathname, query),
+      fetch: (url, init) => fetch(url, {
+        ...init,
+        headers: { Authorization: `Bearer ${this.referenceToken}`, ...init?.headers },
+      }),
+    });
+    this.projects = { service: projectService, store: createProjectStore({ service: projectService }) };
     this.view = deps.view ?? null;
     this.editor = this.view?.inputHandler ?? deps.editor;
     this.editorHost = {
@@ -2531,6 +2546,12 @@ export class AgentBridgeImpl implements AgentBridge {
         this.emit({ type: 'reference-status', messageId: String(msg.messageId ?? ''), attachments });
         break;
       }
+      case 'project-bound':
+      case 'project-changed':
+      case 'project-librarian-status':
+        // 화면은 저장소를 구독한다 — 칸·참고자료 목록·인용 칩이 같은 스냅샷을 본다.
+        this.projects.store.applyEvent(msg);
+        break;
       case 'workflow-changed': {
         this.finishWorkflowSwitch();
         this.syncWorkflowState(msg, 'direct', 'planning');
@@ -3393,6 +3414,7 @@ export class AgentBridgeImpl implements AgentBridge {
     stagedReferenceIds: string[] = [],
     requireReceipt = false,
     signal?: AbortSignal,
+    mentions: string[] = [],
   ): Promise<string | null> {
     const context = this.referenceContext();
     const messageId = stagedReferenceIds.length > 0 || requireReceipt ? `message-${++this.requestSeq}` : undefined;
@@ -3413,7 +3435,11 @@ export class AgentBridgeImpl implements AgentBridge {
         signal?.removeEventListener('abort', cancel);
         resolve(result);
       };
-      message = { text, skillName, context, messageId, stagedReferenceIds: [...stagedReferenceIds], resolve: settle };
+      message = {
+        text, skillName, context, messageId, stagedReferenceIds: [...stagedReferenceIds],
+        ...(mentions.length ? { mentions: [...new Set(mentions)].slice(0, 20) } : {}),
+        resolve: settle,
+      };
       signal?.addEventListener('abort', cancel, { once: true });
       // 끊긴 소켓에 곧바로 보내면 sendJson 실패로 메시지가 조용히 사라진다 — 재연결이
       // 살릴 큐에 넣고, flushQueuedMessages 가 연결 뒤에 다시 보낸다.
@@ -3475,6 +3501,7 @@ export class AgentBridgeImpl implements AgentBridge {
       activeTemplateId: this.activeTemplateId,
       ...(message.skillName ? { skillName: message.skillName } : {}),
       ...(message.messageId ? { messageId: message.messageId, stagedReferenceIds: message.stagedReferenceIds } : {}),
+      ...(message.mentions?.length ? { mentions: message.mentions } : {}),
       ...(built ? { documentSnapshot: built.snapshot } : {}),
     });
     // 계획 승인 대기 중의 메시지는 허브가 승인으로 처리하면 스냅샷이 프로바이더에 닿지 않는다 — 본 것으로 치지 않는다.
@@ -3521,7 +3548,7 @@ export class AgentBridgeImpl implements AgentBridge {
     };
   }
 
-  private referenceUrl(pathname: string, params?: Record<string, string | number | undefined>): string {
+  private referenceUrl(pathname: string, params?: Record<string, string | number | boolean | undefined>): string {
     const url = new URL(pathname, `${this.httpBaseUrl}/`);
     url.searchParams.set('sessionId', this.sessionId);
     for (const [key, value] of Object.entries(params ?? {})) {

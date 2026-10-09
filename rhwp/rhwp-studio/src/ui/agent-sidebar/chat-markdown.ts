@@ -4,9 +4,20 @@ import {
   type Block,
   type MarkdownNode,
   type MarkdownRenderOptions,
+  type WikilinkToken,
 } from './plan-markdown.ts';
 import { createIcon } from './icons.ts';
+import { projectIcon, type ProjectIconName } from './project/project-ui.ts';
 import { parseCssTimeMs } from './motion-model.ts';
+import {
+  formatWikilinkAnchor,
+  readWikilinkAt,
+  type CitationHooks,
+  type CitationKind,
+  type CitationRequest,
+} from './wikilinks.ts';
+
+export type { CitationHooks, CitationKind, CitationRequest, CitationTarget } from './wikilinks.ts';
 
 type KatexModule = typeof import('katex');
 
@@ -36,6 +47,90 @@ export interface ChatMarkdownOptions {
   animate?: boolean;
   /** 새로 만들거나 바꾼 최상위 블록마다 한 번 부른다. 수식 모듈이 늦게 와 다시 그릴 때도 부른다. */
   decorate?: (node: HTMLElement) => void;
+  /** 연구 프로젝트 인용 `[[id…]]` 을 칩으로 그린다. 없으면 원문 그대로 둔다. */
+  citations?: CitationHooks;
+}
+
+/* ── 인용 칩 ───────────────────────────────────────────── */
+
+const CITATION_ICONS: Readonly<Record<CitationKind, ProjectIconName>> = {
+  file: 'file',
+  pdf: 'file',
+  image: 'image',
+  note: 'note',
+  document: 'documentNode',
+  web: 'web',
+  table: 'table',
+  slides: 'slides',
+};
+
+function citationRequest(token: WikilinkToken): CitationRequest {
+  return {
+    id: token.id,
+    anchor: token.anchor,
+    quote: token.anchor?.kind === 'chunk' ? token.label : null,
+  };
+}
+
+/** 인용 칩 하나를 만든다. 찾지 못한 항목은 흐린 `[[id]]` 글자로 남긴다. */
+export function createCitationNode(token: WikilinkToken, hooks: CitationHooks): HTMLElement {
+  const target = hooks.resolveItem(token.id, token.anchor);
+  if (!target) {
+    const missing = document.createElement('span');
+    missing.className = 'ag-cite-missing';
+    missing.dataset.citeRaw = token.raw;
+    missing.textContent = `[[${token.id}]]`;
+    return missing;
+  }
+  const chip = document.createElement('button');
+  chip.type = 'button';
+  chip.className = 'ag-cite';
+  chip.dataset.citeRaw = token.raw;
+  chip.dataset.citeKind = target.kind;
+  const anchor = formatWikilinkAnchor(token.anchor);
+  if (anchor) chip.dataset.citeAnchor = anchor;
+  const icon = projectIcon(CITATION_ICONS[target.kind] ?? 'file');
+  const title = document.createElement('span');
+  title.className = 'ag-cite-title';
+  title.textContent = target.title;
+  const page = document.createElement('span');
+  page.className = 'ag-cite-page';
+  chip.append(icon, title, page);
+  const showPage = (value: number | null | undefined) => {
+    page.textContent = value ? `p.${value}` : '';
+    page.hidden = !value;
+    chip.setAttribute('aria-label', value ? `${target.title} ${value}쪽 열기` : `${target.title} 열기`);
+  };
+  let pageValue = token.anchor?.kind === 'page' ? token.anchor.n : target.page ?? null;
+  if (!pageValue && token.anchor?.kind === 'chunk' && hooks.chunkPage) {
+    const found = hooks.chunkPage(token.id, token.anchor.n);
+    if (typeof found === 'number') pageValue = found;
+    else if (found) void found.then((value) => { if (value) showPage(value); }).catch(() => {});
+  }
+  showPage(pageValue);
+  const quote = token.anchor?.kind === 'chunk' ? token.label : null;
+  chip.title = quote ? `“${quote}”` : target.title;
+  chip.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    hooks.openCitation(citationRequest(token));
+  });
+  return chip;
+}
+
+/**
+ * 프로젝트 스냅샷이 바뀐 뒤 root 안의 칩 이름·쪽·찾음 여부를 다시 맞춘다.
+ * 블록 노드는 그대로 두고 칩만 바꾸므로 스트리밍 비교 키에는 영향이 없다.
+ */
+export function refreshCitations(root: ParentNode, hooks: CitationHooks): void {
+  for (const node of root.querySelectorAll<HTMLElement>('.ag-cite[data-cite-raw], .ag-cite-missing[data-cite-raw]')) {
+    const raw = node.dataset.citeRaw ?? '';
+    const link = readWikilinkAt(raw, 0);
+    if (!link) continue;
+    const next = createCitationNode({ kind: 'wikilink', raw, id: link.id, anchor: link.anchor, label: link.label }, hooks);
+    if (next.isEqualNode(node)) continue;
+    node.replaceWith(next);
+  }
 }
 
 /**
@@ -145,9 +240,21 @@ export function stableStreamingBlocks(
   return stable;
 }
 
-function renderBlockNode(block: Block): HTMLElement | null {
+const citationOptions = new WeakMap<CitationHooks, MarkdownRenderOptions>();
+
+function markdownOptionsFor(hooks: CitationHooks | undefined): MarkdownRenderOptions {
+  if (!hooks) return CHAT_MARKDOWN_OPTIONS;
+  let options = citationOptions.get(hooks);
+  if (!options) {
+    options = { ...CHAT_MARKDOWN_OPTIONS, citation: (token) => createCitationNode(token, hooks) };
+    citationOptions.set(hooks, options);
+  }
+  return options;
+}
+
+function renderBlockNode(block: Block, hooks?: CitationHooks): HTMLElement | null {
   const fragment = document.createDocumentFragment();
-  appendMarkdownBlocks(fragment, [block], document, CHAT_MARKDOWN_OPTIONS);
+  appendMarkdownBlocks(fragment, [block], document, markdownOptionsFor(hooks));
   let node = fragment.firstElementChild as HTMLElement | null;
   if (node && block.kind === 'code') node = wrapCodeBlock(node, block.lang, block.code);
   node?.setAttribute('data-md-block', '');
@@ -314,7 +421,7 @@ export function renderChatMarkdown(target: HTMLElement, source: string, opts: Ch
   const animate = opts.animate === true;
   keys.forEach((key, index) => {
     if (previous[index] === key) return;
-    const node = renderBlockNode(blocks[index]!);
+    const node = renderBlockNode(blocks[index]!, opts.citations);
     if (!node) return;
     const existing = nodes[index];
     if (

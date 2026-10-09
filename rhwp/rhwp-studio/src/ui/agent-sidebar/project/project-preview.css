@@ -1,0 +1,223 @@
+/* 프로젝트 미리보기 면. 머리 한 줄과 본문 하나뿐이다. */
+.ag-pp {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  background: var(--ag-bg);
+  color: var(--ag-text);
+  outline: none;
+}
+
+.ag-pp-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--ag-border);
+}
+
+.ag-pp-icon,
+.ag-pp-text-button {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  height: 28px;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: transparent;
+  color: var(--ag-text-secondary);
+  font: inherit;
+  font-size: var(--ag-fs-secondary);
+  transition: var(--ag-transition-color);
+}
+
+.ag-pp-icon {
+  width: 28px;
+  padding: 0;
+  font-size: var(--ag-fs-body);
+  line-height: 1;
+}
+
+.ag-pp-text-button {
+  padding: 0 10px;
+}
+
+.ag-pp-icon .ag-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.ag-pp-icon:hover:not(:disabled),
+.ag-pp-text-button:hover:not(:disabled) {
+  background: var(--ag-hover);
+  color: var(--ag-text);
+}
+
+.ag-pp-icon:focus-visible,
+.ag-pp-text-button:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: -2px;
+}
+
+.ag-pp-text-button.ag-pp-primary {
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
+}
+
+.ag-pp-text-button.ag-pp-primary:hover:not(:disabled) {
+  background: var(--ag-primary-bg-hover);
+  color: var(--ag-primary-fg);
+}
+
+.ag-pp-text-button:disabled {
+  opacity: 0.6;
+}
+
+.ag-pp-kind {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 18px;
+  color: var(--ag-text-secondary);
+}
+
+.ag-pp-kind .ag-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.ag-pp-kind:empty {
+  display: none;
+}
+
+.ag-pp-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
+  line-height: var(--ag-lh-tight);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-pp-meta {
+  flex: none;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-meta);
+  font-variant-numeric: var(--ag-numeric);
+  white-space: nowrap;
+}
+
+.ag-pp-meta:empty {
+  display: none;
+}
+
+.ag-pp-tools {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+
+.ag-pp-body {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.ag-pp[data-kind='pdf'] .ag-pp-body {
+  overflow: hidden;
+}
+
+.ag-pp-body[aria-busy='true']::after {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, var(--ag-hover), transparent) 0 0 / 40% 2px no-repeat;
+  animation: ag-pp-loading 1.1s var(--ag-ease-out) infinite;
+  content: '';
+}
+
+@keyframes ag-pp-loading {
+  from { background-position: -40% 0; }
+  to { background-position: 140% 0; }
+}
+
+.ag-pp-message {
+  margin: 32px 16px;
+  color: var(--ag-text-secondary);
+  font-size: var(--ag-fs-secondary);
+  text-align: center;
+}
+
+/* 허브가 뽑은 글자의 읽기 보기. 글자로만 그린다. */
+.ag-pp-reader {
+  margin: 0;
+  padding: 16px 20px 40px;
+  font-size: var(--ag-fs-body);
+  line-height: var(--ag-lh-body);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  word-break: keep-all;
+}
+
+.ag-pp-hit {
+  border-radius: 2px;
+  background: var(--ag-cite-hit);
+  color: inherit;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+.ag-pp-note {
+  padding: 16px 20px 40px;
+}
+
+.ag-pp-note-editor {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 16px 20px;
+  border: 0;
+  background: var(--ag-raised);
+  color: var(--ag-text);
+  font-family: var(--ag-mono);
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-body);
+  outline: none;
+  resize: none;
+}
+
+.ag-pp-image {
+  display: flex;
+  flex: 1 0 auto;
+  align-items: flex-start;
+  justify-content: center;
+  box-sizing: border-box;
+  padding: 16px;
+  background: var(--ag-bg-2);
+}
+
+.ag-pp-image img {
+  display: block;
+  max-width: none;
+  cursor: zoom-out;
+}
+
+.ag-pp-image-fit img {
+  max-width: 100%;
+  height: auto;
+  cursor: zoom-in;
+}

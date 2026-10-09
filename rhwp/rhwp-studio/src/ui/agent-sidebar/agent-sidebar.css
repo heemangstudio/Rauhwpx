@@ -159,6 +159,8 @@ body.ag-sidebar-resizing {
   --ag-link: color-mix(in oklab, var(--focus-ring) 72%, var(--n-ink));
   /* 문서 그림 미리보기는 종이 위에 그린다. */
   --ag-paper: var(--doc-paper);
+  /* 인용 구절 강조(PDF 텍스트 층·읽기 보기). 글자 위에 얹는 반투명 노랑. */
+  --ag-cite-hit: rgba(255, 196, 0, 0.34);
   --ui-surface: var(--n-surface);
   --ui-surface-raised: var(--n-surface-raised);
   --ui-text: var(--n-text);
@@ -352,6 +354,7 @@ body.ag-sidebar-resizing .ag-resize-handle::after {
   --ag-ok: #5cbb7f;
   --ag-err: #ff6b60;
   --ag-run: #f0c24b;
+  --ag-cite-hit: rgba(240, 194, 75, 0.34);
   box-shadow: var(--n-elev-2);
 }
 
@@ -4928,6 +4931,60 @@ button.ag-skill-copy {
   line-height: 1.55;
   letter-spacing: 0;
   vertical-align: 0.1em;
+}
+
+/* 연구 프로젝트 인용 칩 — 종류 아이콘 · 이름 · 쪽. 문장 안에 끼므로 글줄 높이를 넘지 않는다. */
+.ag-cite {
+  display: inline-flex;
+  max-width: min(100%, 240px);
+  align-items: center;
+  gap: 4px;
+  margin: 0 1px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--ag-r-chip);
+  background: var(--ag-hover);
+  color: var(--ag-text);
+  font: inherit;
+  font-size: 0.86em;
+  line-height: 1.6;
+  letter-spacing: 0;
+  vertical-align: 0.06em;
+  cursor: pointer;
+  transition: var(--ag-transition-color);
+}
+
+.ag-cite:hover {
+  background: var(--ag-selected);
+}
+
+.ag-cite:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: 1px;
+}
+
+.ag-cite .ag-icon {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  color: var(--ag-text-secondary);
+}
+
+.ag-cite-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-cite-page {
+  flex: none;
+  color: var(--ag-text-secondary);
+  font-variant-numeric: var(--ag-numeric);
+}
+
+.ag-cite-missing {
+  color: var(--ag-text-tertiary);
 }
 
 .ag-progress-milestone {

@@ -11,13 +11,13 @@ test('reference-bearing messages route through the staged-attachment gate only',
   assert.doesNotMatch(server, /chat-reference-uploads-complete/);
   assert.match(
     server,
-    /function dispatchUserMessage[\s\S]*addReferenceContext\(activeSession, msg\.text, prompt, messageAttachments\)/,
+    /function dispatchUserMessage[\s\S]*addReferenceContext\(activeSession, msg\.text, prompt, messageAttachments, normalizeMentions\(msg\.mentions\)\)/,
   );
 });
 
 test('pre-uploaded message attachments promote before agent dispatch and report status', () => {
   assert.match(server, /async function dispatchStagedUserMessage/);
-  assert.match(server, /referenceStore\.promoteStaged\(\{ stageId, scopeId: activeSession\.threadId \}\)/);
+  assert.match(server, /referenceStore\.promoteStaged\(\{\s*stageId,\s*scopeId: activeSession\.threadId,/);
   assert.match(server, /type: 'chat-reference-status'/);
   assert.match(server, /dispatchUserMessage\(record, sock, msg, activeSession, readyFiles\)/);
   assert.match(server, /<message_attachments trust="untrusted-data">/);

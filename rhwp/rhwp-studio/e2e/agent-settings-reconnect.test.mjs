@@ -104,13 +104,20 @@ const usageDir = fs.mkdtempSync(path.join(repoRoot, 'target', 'rhwp-usage-e2e-')
 console.log('=== E2E: 설정·재연결 수명주기 (agent-settings-reconnect) ===\n');
 console.log(`  [setup] 허브 포트=${hubPort}, vite 포트=${vitePort}`);
 
+// 허브는 참고 자료·프로젝트를 앱 데이터에 두고 부팅 때 옮겨 쓴다 — 테스트는 늘 임시 폴더를 쓴다.
+fs.mkdirSync(path.join(repoRoot, 'target'), { recursive: true });
+const hubDataRoot = fs.mkdtempSync(path.join(repoRoot, 'target', 'rhwp-e2e-data-'));
+const hubDataEnv = {
+  RHWP_REFERENCES_DIR: path.join(hubDataRoot, 'references'),
+  RHWP_PROJECTS_DIR: path.join(hubDataRoot, 'projects'),
+};
 let hub = null;
 function startHub() {
   hub = spawnLogged(
     process.execPath,
     [path.join(repoRoot, 'rhwp-agent', 'server.mjs')],
     path.join(repoRoot, 'rhwp-agent'),
-    { RHWP_AGENT_PORT: String(hubPort), RHWP_AGENT_TOKEN: HUB_TOKEN, RHWP_USAGE_DIR: usageDir },
+    { RHWP_AGENT_PORT: String(hubPort), RHWP_AGENT_TOKEN: HUB_TOKEN, RHWP_USAGE_DIR: usageDir, ...hubDataEnv },
     path.join(repoRoot, 'target', 'rhwp-agent-settings-e2e-hub.log'),
   );
   return waitForHttp(

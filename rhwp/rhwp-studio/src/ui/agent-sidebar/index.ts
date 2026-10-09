@@ -96,6 +96,7 @@ import {
   type ChatThread,
   type ThreadMessage,
   type ThreadAttachment,
+  type ThreadMention,
   type ThreadTaskRecord,
   type ThreadToolOutcome,
   type ThreadToolRecord,
@@ -160,6 +161,14 @@ import { beginInlineRename } from '../inline-rename.ts';
 import { loadInitialSetup, saveInitialSetup } from '../initial-setup/state.ts';
 import { summarizePendingDiffs } from './pending-diff-summary.ts';
 import { createReferenceLibrary } from './reference-library.ts';
+import {
+  createComposerMentions,
+  createProjectHost,
+  renderMessageMentions,
+  type ComposerMentions,
+  type ProjectHost,
+} from './project/project-host.ts';
+import type { ProjectPreviewTarget, ProjectTab } from './project/project-column.ts';
 import {
   createVersionManagerPage,
   type VersionManagerController,
@@ -260,6 +269,8 @@ export interface AgentSidebarDeps {
 export interface AgentSidebarHandle {
   root: HTMLElement;
   openVersions(): void;
+  /** 집중 보기로 들어가 프로젝트 칸을 연다. target 이 있으면 그 항목의 미리보기까지 연다. */
+  openProject(target?: ProjectPreviewTarget, tab?: ProjectTab): void;
   sendInlinePrompt(submission: InlinePromptSubmission): InlinePromptSendResponse;
   /** 화면에 붙인다 — 페이지 배치(펼침·폭·집중 모드·목록)를 이어받고 애니메이션은 다시 돌리지 않는다. */
   activate(): void;
@@ -823,7 +834,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let chatModeLockCheckQueued = false;
   /** 초안의 첫 메시지로 입력기가 잠깐 잠기면, 채팅이 열린 뒤 입력기에 초점을 돌려준다. */
   let refocusInputOnChatStart = false;
-  const threadComposerDrafts = new Map<string, { text: string; files: File[] }>();
+  const threadComposerDrafts = new Map<string, { text: string; files: File[]; mentions?: ThreadMention[] }>();
   let assistantBuffer = '';
   let assistantRenderFrame: number | null = null;
   let pendingAssistantBubble: HTMLElement | null = null;
@@ -853,8 +864,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let workingDiff: DiffItem[] = [];
   let compactChangesOpen = false;
   let changesRefreshTimer: ReturnType<typeof setTimeout> | undefined;
-  let reviewColCollapsed = true;
-  let planColCollapsed = true;
+  /** 집중 보기 오른쪽 칸 — 변경 사항, 계획, 프로젝트 가운데 하나만 연다. */
+  let detailColumn: 'changes' | 'plan' | 'project' | null = null;
+  let projectHost: ProjectHost | null = null;
+  let composerMentions: ComposerMentions | null = null;
   let planMinimized = false;
   /** 기록에서 연 계획은 표시 전용이며 현재 계획 workflow 상태를 절대 나타내지 않는다. */
   let activePlanHistorical = false;
@@ -1853,9 +1866,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       e.preventDefault();
       return;
     }
-    if (root.classList.contains('ag-detail-drawer-open')) {
-      if (root.classList.contains('ag-plan-drawer-open')) setPlanColCollapsed(true);
-      else setReviewColCollapsed(true);
+    if (root.classList.contains('ag-detail-drawer-open') || root.classList.contains('ag-project-drawer-open')) {
+      setDetailColumn(null);
       environmentToggle.focus();
       e.preventDefault();
       return;
@@ -2019,14 +2031,19 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function rememberThreadComposerDraft(): void {
     if (readOnlyDocLabel !== null) return;
     const files = referenceLibrary.snapshotDraftFiles();
-    if (input.value || files.length) threadComposerDrafts.set(currentThread.id, { text: input.value, files });
-    else threadComposerDrafts.delete(currentThread.id);
+    const mentions = composerMentions?.list() ?? [];
+    if (input.value || files.length || mentions.length) {
+      threadComposerDrafts.set(currentThread.id, { text: input.value, files, ...(mentions.length ? { mentions } : {}) });
+    } else {
+      threadComposerDrafts.delete(currentThread.id);
+    }
   }
 
   function restoreThreadComposerDraft(): void {
     const draft = threadComposerDrafts.get(currentThread.id);
     input.value = draft?.text ?? '';
     if (draft?.files.length) referenceLibrary.stageDraftFiles(draft.files);
+    composerMentions?.set(draft?.mentions ?? []);
     resizeComposerInput();
   }
 
@@ -2087,12 +2104,27 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   environmentChanges.append(environmentChangesLabel, environmentDiffSummary, environmentChangesChevron);
   environmentChangesSection.appendChild(environmentChanges);
 
+  // 연구 프로젝트 칸. 변경 사항 행과 같은 조리법(아이콘 · 이름 · 보조 값 · 꺾쇠)이다.
+  const environmentProjectSection = el('section', 'ag-environment-section ag-environment-project-section');
+  const environmentProject = el('button', 'ag-environment-changes ag-environment-project');
+  environmentProject.type = 'button';
+  environmentProject.setAttribute('aria-expanded', 'false');
+  environmentProject.appendChild(createIcon('references'));
+  const environmentProjectCount = el('span', 'ag-environment-diff-summary', '없음');
+  environmentProject.append(
+    el('span', 'ag-environment-changes-label', '자료'),
+    environmentProjectCount,
+    createChevron('ag-environment-changes-chevron'),
+  );
+  environmentProjectSection.appendChild(environmentProject);
+
   // TODO: 파일 첨부나 대화 브랜치 기능이 생기면 해당 source/branch 상태를 이 환경 패널에 표시한다.
   environmentPanel.append(
     environmentTitle,
     environmentFileRow,
     environmentPlanSection,
     environmentChangesSection,
+    environmentProjectSection,
   );
   environmentWrap.append(environmentToggle, environmentPanel);
 
@@ -2187,6 +2219,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     // 옮기지 않도록 스크롤 없이 초점만 옮긴다.
     window.requestAnimationFrame(() => reviewColumnClose.focus({ preventScroll: true }));
   });
+  environmentProject.addEventListener('click', () => {
+    if (detailColumn === 'project') {
+      setDetailColumn(null);
+      return;
+    }
+    setEnvironmentPanelOpen(false, { persist: !isCompactWorkspace() });
+    openProjectColumn();
+  });
   environmentPlan.addEventListener('click', () => {
     if (!activePlan) return;
     setPlanColCollapsed(false);
@@ -2266,6 +2306,25 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   });
 
   const messages = el('div', 'ag-messages');
+  projectHost = createProjectHost({
+    client: bridge.projects ?? null,
+    stage,
+    messages,
+    requestOpen: (then) => openProjectColumn(then),
+    requestClose: () => {
+      if (detailColumn === 'project') setDetailColumn(null);
+      environmentToggle.focus({ preventScroll: true });
+    },
+    openDocument: (documentId) => {
+      if (documentId === currentDocumentId) return;
+      const member = bridge.projects?.store.get()?.members.find((row) => row.documentId === documentId);
+      void moveToDocument({ documentId, fileName: member?.name ?? null });
+    },
+    onChange: (project) => {
+      const files = project?.items.length ?? 0;
+      environmentProjectCount.textContent = files ? `${files}개` : '없음';
+    },
+  });
   messages.setAttribute('role', 'log');
   messages.setAttribute('aria-live', 'polite');
   const messagesEnd = el('div', 'ag-messages-end');
@@ -2984,6 +3043,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   const referenceLibrary = createReferenceLibrary({
     bridge,
+    projects: bridge.projects ?? null,
+    openProject: (options) => projectHost?.open(options?.itemId ? { itemId: options.itemId } : undefined),
     getContext: () => ({
       threadId: currentThread.id,
       documentId: currentDocumentId,
@@ -3038,6 +3099,17 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   composerUtilityActions.insertBefore(referenceLibrary.trigger, modeMenu.root);
   composerField.insertBefore(referenceLibrary.quickAddButton, sendHint);
   composer.insertBefore(referenceLibrary.quickUploads, composerField);
+  composerMentions = createComposerMentions({
+    client: bridge.projects ?? null,
+    textarea: input,
+    row: referenceLibrary.quickUploads,
+    onChange: () => updateComposer(),
+  });
+  // 보드·그래프 같은 다른 화면이 올려 보내는 열기 요청.
+  root.addEventListener('ag-project-open', (event) => {
+    const itemId = (event as CustomEvent<{ itemId?: string }>).detail?.itemId;
+    projectHost?.open(itemId ? { itemId } : undefined);
+  });
 
   let attachmentDragDepth = 0;
   const canStageComposerAttachments = (): boolean => {
@@ -3198,6 +3270,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
      여기서 관리한다(스킬 페이지와 같은 계약). */
   const settingsPanel = createSettingsPanel({
     bridge,
+    projectSettings: bridge.projects?.service ?? null,
     eventBus,
     editorRuntime: editorSettingsRuntime ?? {
       preview: () => undefined,
@@ -3478,8 +3551,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     compactThreadsRailOpen = isCompactWorkspace() && open;
     if (!compactThreadsRailOpen) compactRailHoverOpen = false;
     if (compactThreadsRailOpen) {
-      reviewColCollapsed = true;
-      planColCollapsed = true;
+      detailColumn = null;
       applyReviewColState();
       if (environmentPanelOpen) setEnvironmentPanelOpen(false, { persist: false });
     }
@@ -3555,14 +3627,19 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function applyReviewColState(): void {
     // 나가는 애니메이션 중에도 전체 화면 DOM은 아직 유효하다.
     const focusLayoutActive = fullscreen || root.classList.contains('ag-fullscreen');
-    const planActive = focusLayoutActive && !planColCollapsed && activePlan !== null;
-    const changesActive = focusLayoutActive && !reviewColCollapsed && !planActive;
+    const planActive = focusLayoutActive && detailColumn === 'plan' && activePlan !== null;
+    const changesActive = focusLayoutActive && detailColumn === 'changes';
+    const projectActive = focusLayoutActive && detailColumn === 'project';
     const detailActive = changesActive || planActive;
     root.classList.toggle('ag-review-collapsed', focusLayoutActive && !changesActive);
     root.classList.toggle('ag-plan-collapsed', focusLayoutActive && !planActive);
     root.classList.toggle('ag-review-drawer-open', changesActive);
     root.classList.toggle('ag-plan-drawer-open', planActive);
     root.classList.toggle('ag-detail-drawer-open', detailActive);
+    root.classList.toggle('ag-project-drawer-open', projectActive);
+    environmentProject.classList.toggle('ag-active', projectActive);
+    environmentProject.setAttribute('aria-expanded', projectActive ? 'true' : 'false');
+    projectHost?.setActive(projectActive);
     environmentChanges.classList.toggle('ag-active', changesActive);
     environmentChanges.setAttribute('aria-expanded', changesActive ? 'true' : 'false');
     environmentPlan.classList.toggle('ag-active', planActive);
@@ -3582,22 +3659,32 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     applyPlanMinimizedState();
   }
 
-  function setReviewColCollapsed(collapsed: boolean): void {
-    reviewColCollapsed = collapsed;
-    if (!collapsed) {
-      planColCollapsed = true;
-      if (isCompactWorkspace()) setCompactThreadsRailOpen(false);
-    }
+  function setDetailColumn(next: typeof detailColumn): void {
+    detailColumn = next;
+    if (next && isCompactWorkspace()) setCompactThreadsRailOpen(false);
     applyReviewColState();
   }
 
+  function setReviewColCollapsed(collapsed: boolean): void {
+    setDetailColumn(collapsed ? (detailColumn === 'changes' ? null : detailColumn) : 'changes');
+  }
+
   function setPlanColCollapsed(collapsed: boolean): void {
-    planColCollapsed = collapsed;
-    if (!collapsed) {
-      reviewColCollapsed = true;
-      if (isCompactWorkspace()) setCompactThreadsRailOpen(false);
-    }
-    applyReviewColState();
+    setDetailColumn(collapsed ? (detailColumn === 'plan' ? null : detailColumn) : 'plan');
+  }
+
+  /**
+   * 프로젝트 칸을 연다 — 집중 보기가 아니면 먼저 들어간다. 참고자료 창은 닫고,
+   * 오른쪽의 다른 칸(변경·계획)과는 자리를 바꾼다.
+   */
+  function openProjectColumn(then?: () => void): void {
+    const show = () => {
+      if (referenceLibrary.isOpen()) referenceLibrary.setOpen(false);
+      setDetailColumn('project');
+      then?.();
+    };
+    if (fullscreen) show();
+    else setFullscreen(true, { then: show });
   }
 
   function dismissCompactDrawers(target: Node): void {
@@ -3612,10 +3699,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       || threadsBtn.contains(target);
     if (compactThreadsRailOpen && !threadsOwnFocus) setCompactThreadsRailOpen(false);
 
-    const detailOwnFocus = reviewColumn.contains(target) || planColumn.contains(target);
-    if (root.classList.contains('ag-detail-drawer-open') && !detailOwnFocus) {
-      reviewColCollapsed = true;
-      planColCollapsed = true;
+    const detailOwnFocus = reviewColumn.contains(target) || planColumn.contains(target)
+      || (projectHost?.contains(target) ?? false);
+    const detailOpen = root.classList.contains('ag-detail-drawer-open') || root.classList.contains('ag-project-drawer-open');
+    if (detailOpen && !detailOwnFocus) {
+      detailColumn = null;
       applyReviewColState();
     }
   }
@@ -3826,8 +3914,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     updateCompactChangesVisibility();
     changesDrawer.reviewSlot.appendChild(review);
     planColumn.appendChild(planSurface);
-    reviewColCollapsed = true;
-    planColCollapsed = true;
+    detailColumn = null;
     applyThreadsRailState();
     applyReviewColState();
 
@@ -4577,13 +4664,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (planningPhase === 'switching' || workflowTransitionPending || planActionPending
       || chatStartPendingThreadId !== null || attachmentsSending || referenceLibrary.hasBlockingDrafts()) return;
     let text = input.value.trim();
-    if ((!text && !activeComposerSkill && !referenceLibrary.hasDrafts()) || connState !== 'connected') return;
+    const hasMentions = (composerMentions?.list().length ?? 0) > 0;
+    if ((!text && !activeComposerSkill && !referenceLibrary.hasDrafts() && !hasMentions) || connState !== 'connected') return;
     if (referenceLibrary.hasImageDrafts() && !modelSupportsImages(selectedAgent, selectedModel)) {
       systemMessage(`${AGENT_LABEL[selectedAgent]} 현재 모델은 이미지 미지원 · 다른 모델 선택`);
       return;
     }
     if (!text && !activeComposerSkill) {
-      text = referenceLibrary.allDraftsAreImages()
+      text = !referenceLibrary.hasDrafts()
+        ? '언급한 자료 확인 필요'
+        : referenceLibrary.allDraftsAreImages()
         ? '첨부 이미지 확인 필요'
         : '첨부 파일 확인 필요';
     }
@@ -4718,6 +4808,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       ? `현재 계획(${revisionPlanId})을 다음 피드백에 맞게 수정해 주세요.\n\n${skillRequestText}`
       : skillRequestText;
     const staged = referenceLibrary.takeReadyDrafts();
+    const mentions = composerMentions?.take() ?? [];
     const messageAttachments: ThreadAttachment[] = staged.map((file) => ({
       stageId: file.id,
       name: file.name,
@@ -4730,6 +4821,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       undefined,
       skillNameForMessage,
       skillIconForMessage,
+      undefined,
+      mentions,
     );
     const userBubble = renderUserMessage(userMessage);
     userBubble.classList.add('ag-msg-enter');
@@ -4738,7 +4831,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     appendConversation(userBubble);
     updateTurnPending(selectedAgent);
     scrollConversationToMessage(userBubble, { smooth: true });
-    const messageSent = bridge.sendUserMessage(requestText, skillNameForMessage, staged.map((file) => file.id));
+    const mentionIds = mentions.map((mention) => mention.id);
+    const messageSent = bridge.sendUserMessage(requestText, skillNameForMessage, staged.map((file) => file.id), false, undefined, mentionIds);
     if (staged.length > 0) {
       attachmentsSending = true;
       updateComposer();
@@ -4795,8 +4889,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       compactRailHoverOpen = false;
       clearCompactRailHoverOpen();
       clearCompactRailHoverClose();
-      reviewColCollapsed = true;
-      planColCollapsed = true;
+      detailColumn = null;
       if (environmentPanelOpen) setEnvironmentPanelOpen(false, { persist: false });
       applyReviewColState();
     } else if (!workspaceCompact) {
@@ -4899,6 +4992,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     skillName?: string,
     skillIcon?: ProductSkillIcon,
     messageId?: string,
+    mentions: ThreadMention[] = [],
   ): ThreadMessage {
     const message: ThreadMessage = {
       role: 'user',
@@ -4907,6 +5001,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       ...(skillName ? { skillName } : {}),
       ...(skillName && skillIcon ? { skillIcon } : {}),
       ...(attachments.length ? { attachments } : {}),
+      ...(mentions.length ? { mentions } : {}),
       ...(selection ? { selection } : {}),
       ...(messageId ? { messageId } : {}),
     };
@@ -4996,6 +5091,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       }
       bubble.appendChild(row);
     }
+    if (message.mentions?.length && projectHost) {
+      bubble.appendChild(renderMessageMentions(message.mentions, projectHost.citations));
+    }
     return bubble;
   }
 
@@ -5053,7 +5151,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function renderAssistantMessage(bubble: HTMLElement, text: string, opts?: ChatMarkdownOptions): void {
     assistantBubbleSources.set(bubble, text);
     const wasEmpty = !hasRenderedBlocks(bubble);
-    renderChatMarkdown(bubble, text, { ...opts, decorate: decorateAssistantBlock });
+    renderChatMarkdown(bubble, text, {
+      ...opts,
+      decorate: decorateAssistantBlock,
+      ...(projectHost ? { citations: projectHost.citations } : {}),
+    });
     const empty = !hasRenderedBlocks(bubble);
     // 첫 문단을 보류하는 동안에는 복사 버튼도 달지 않아 빈 답변이 감춰진 채로 남는다.
     if (bubble.classList.contains('ag-msg-assistant') && !empty) {
@@ -8289,7 +8391,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         setPlanningPhase(e.phase);
         rebuildReview();
         // 전체 화면에서는 정리된 계획이 곧바로 옆 문서 패널로 열린다.
-        if (fullscreen && planColCollapsed) setPlanColCollapsed(false);
+        if (fullscreen && detailColumn !== 'plan') setPlanColCollapsed(false);
         return true;
       case 'plan-approved':
         // 서버가 승인했다고 말한 계획이 지금 카드와 다르면 표시를 건드리지 않는다.
@@ -8559,7 +8661,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     planSurface.hidden = !planShown;
     if (!planShown) {
       planMinimized = false;
-      planColCollapsed = true;
+      if (detailColumn === 'plan') detailColumn = null;
     }
     const changeSets = bridge.pendingEdits.getChangeSets();
     const reviewSets = changeSets.filter((set) => set.status !== 'open');
@@ -8945,6 +9047,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       setCollapsed(false);
       openConfiguredVersionControl();
     },
+    openProject(target?: ProjectPreviewTarget, tab?: ProjectTab): void {
+      if (root.dataset.disposed === 'true' || !projectHost) return;
+      projectHost.open(target, tab);
+    },
     sendInlinePrompt,
     activate,
     deactivate,
@@ -9058,6 +9164,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       root.removeEventListener('drop', onAttachmentDrop);
       input.removeEventListener('paste', onAttachmentPaste);
       referenceLibrary.dispose();
+      composerMentions?.dispose();
+      projectHost?.dispose();
       // 페이지 클래스는 화면에 붙어 있던 사이드바만 걷는다.
       if (active) {
         document.body.classList.remove(
