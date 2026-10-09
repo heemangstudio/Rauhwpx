@@ -536,3 +536,263 @@ export function showDocumentPalette(config: {
     searchList.setOptions(options());
   }).catch(() => { /* 최근 문서가 없으면 열기 줄만 남는다 */ });
 }
+
+// ── 끌어서 고정 · 순서 바꾸기 ─────────────────────────────
+//
+// 목록은 [고정됨 머리][고정한 행…][최근 머리][나머지 행…] 순서로 선다.
+// 행은 li.ag-threads-row[data-thread-id], 머리는 li.ag-threads-section[data-section]
+// 이다. 두 구역 어디에나 놓을 수 있고, 고정 구역에 놓으면 고정, 아래에 놓으면 풀린다.
+
+/** 놓은 구역과 그 자리의 이웃 — after 는 바로 위, before 는 바로 아래 채팅. */
+export interface ThreadDrop {
+  id: string;
+  pinned: boolean;
+  before: string | null;
+  after: string | null;
+}
+
+export interface ThreadDragOptions {
+  list: HTMLElement;
+  /** 끄는 행의 사본을 띄울 상자(사이드바 루트) */
+  host: HTMLElement;
+  onDrop(drop: ThreadDrop): void;
+  /** 놓거나 취소한 뒤 — 목록을 저장소 기준으로 다시 그린다. */
+  onDragEnd(): void;
+}
+
+const DRAG_THRESHOLD = 5;
+const AUTOSCROLL_EDGE = 32;
+const SETTLE_EASE = 'cubic-bezier(0.22, 1, 0.36, 1)';
+
+function reducedMotion(): boolean {
+  return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+}
+
+function isRow(node: Element | null): node is HTMLElement {
+  return node instanceof HTMLElement && node.classList.contains('ag-threads-row');
+}
+
+export function attachThreadDrag(options: ThreadDragOptions): { dragging(): boolean } {
+  const { list, host } = options;
+  let pending: { id: string; pointerId: number; x: number; y: number } | null = null;
+  let drag: {
+    row: HTMLElement;
+    /** 끌기 전 이웃 — 제자리에 놓으면 아무것도 바꾸지 않는다. */
+    origin: { prev: Element | null; next: Element | null };
+    ghost: HTMLElement;
+    pointerId: number;
+    pointerY: number;
+    grabOffset: number;
+    fixed: { x: number; y: number };
+    frame: number;
+  } | null = null;
+
+  const section = (name: 'pinned' | 'recent') =>
+    list.querySelector<HTMLElement>(`:scope > .ag-threads-section[data-section='${name}']`);
+
+  /** 목록 내용 좌표의 세로 위치 — 행의 offsetTop 과 같은 기준. */
+  const contentY = (clientY: number) =>
+    clientY - list.getBoundingClientRect().top - list.clientTop + list.scrollTop;
+
+  /** 행을 옮기고, 밀려난 이웃은 원래 자리에서 미끄러져 온다. */
+  const moveRow = (row: HTMLElement, before: Element | null) => {
+    if (row.nextElementSibling === before && (before !== null || list.lastElementChild === row)) return;
+    const others = [...list.children].filter((child): child is HTMLElement => child !== row && child instanceof HTMLElement);
+    const prior = new Map(others.map((child) => [child, child.offsetTop]));
+    list.insertBefore(row, before);
+    if (reducedMotion()) return;
+    for (const child of others) {
+      const dy = prior.get(child)! - child.offsetTop;
+      if (dy) {
+        child.animate(
+          [{ transform: `translateY(${dy}px)` }, { transform: 'none' }],
+          { duration: 160, easing: SETTLE_EASE },
+        );
+      }
+    }
+  };
+
+  const update = () => {
+    if (!drag) return;
+    const { row, ghost } = drag;
+    const rect = list.getBoundingClientRect();
+    const half = ghost.offsetHeight / 2;
+    const top = Math.max(rect.top - half, Math.min(rect.bottom - half, drag.pointerY - drag.grabOffset));
+    ghost.style.top = `${top - drag.fixed.y}px`;
+
+    const recent = section('recent');
+    const y = contentY(drag.pointerY);
+    const toPinned = !recent || y < recent.offsetTop + recent.offsetHeight / 2;
+    section('pinned')?.classList.toggle('ag-drop-target', toPinned);
+    recent?.classList.toggle('ag-drop-target', !toPinned);
+    // 놓일 구역 안에서 가운데를 넘은 첫 행 앞에 선다. 없으면 구역의 끝이다.
+    const start = toPinned ? section('pinned') : recent;
+    const end = toPinned ? recent : null;
+    let before: Element | null = end;
+    for (let node = start?.nextElementSibling ?? null; node && node !== end; node = node.nextElementSibling) {
+      if (node === row || !isRow(node)) continue;
+      if (y < node.offsetTop + node.offsetHeight / 2) {
+        before = node;
+        break;
+      }
+    }
+    moveRow(row, before);
+  };
+
+  /** 목록 위·아래 끝에 다가가면 그쪽으로 흘러간다 — 긴 목록에서 맨 위 고정 구역까지 끌고 간다. */
+  const autoscroll = () => {
+    if (!drag) return;
+    const rect = list.getBoundingClientRect();
+    const y = drag.pointerY;
+    const speed = y < rect.top + AUTOSCROLL_EDGE
+      ? -(rect.top + AUTOSCROLL_EDGE - y)
+      : y > rect.bottom - AUTOSCROLL_EDGE
+        ? y - (rect.bottom - AUTOSCROLL_EDGE)
+        : 0;
+    if (speed) {
+      const before = list.scrollTop;
+      list.scrollTop += Math.max(-14, Math.min(14, speed / 3));
+      if (list.scrollTop !== before) update();
+    }
+    drag.frame = requestAnimationFrame(autoscroll);
+  };
+
+  const begin = (start: NonNullable<typeof pending>) => {
+    const { pointerId } = start;
+    // 누른 뒤 목록이 다시 그려졌을 수 있다 — 지금 목록에서 같은 채팅의 행을 다시 찾는다.
+    const row = [...list.querySelectorAll<HTMLElement>(':scope > .ag-threads-row')]
+      .find((item) => item.dataset.threadId === start.id);
+    if (!row) {
+      finish(false);
+      return;
+    }
+    const rowRect = row.getBoundingClientRect();
+    const fixed = fixedOrigin(host);
+    const ghost = row.cloneNode(true) as HTMLElement;
+    ghost.classList.add('ag-threads-ghost');
+    ghost.setAttribute('aria-hidden', 'true');
+    ghost.inert = true;
+    ghost.style.width = `${rowRect.width}px`;
+    ghost.style.left = `${rowRect.left - fixed.x}px`;
+    ghost.style.top = `${rowRect.top - fixed.y}px`;
+    host.appendChild(ghost);
+    row.classList.add('ag-drag-placeholder');
+    list.classList.add('ag-dragging');
+    host.classList.add('ag-threads-dragging');
+    closeThreadRailSurfaces();
+    try {
+      list.setPointerCapture(pointerId);
+    } catch { /* 이미 떨어진 포인터 — 다음 이동에서 끝난다 */ }
+    drag = {
+      row,
+      origin: { prev: row.previousElementSibling, next: row.nextElementSibling },
+      ghost,
+      pointerId,
+      pointerY: start.y,
+      grabOffset: start.y - rowRect.top,
+      fixed,
+      frame: requestAnimationFrame(autoscroll),
+    };
+    pending = null;
+    update();
+  };
+
+  const readDrop = (row: HTMLElement, origin: { prev: Element | null; next: Element | null }): ThreadDrop | null => {
+    const next = row.nextElementSibling;
+    const prev = row.previousElementSibling;
+    if (prev === origin.prev && next === origin.next) return null;
+    const recent = section('recent');
+    return {
+      id: row.dataset.threadId!,
+      pinned: recent !== null && Boolean(row.compareDocumentPosition(recent) & Node.DOCUMENT_POSITION_FOLLOWING),
+      before: isRow(next) ? next.dataset.threadId ?? null : null,
+      after: isRow(prev) ? prev.dataset.threadId ?? null : null,
+    };
+  };
+
+  /** 끈 뒤에 따라오는 click 은 행을 열지 않는다. */
+  const swallowClick = () => {
+    const swallow = (event: Event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    window.addEventListener('click', swallow, { capture: true, once: true });
+    window.setTimeout(() => window.removeEventListener('click', swallow, true), 0);
+  };
+
+  const finish = (commit: boolean) => {
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('pointercancel', onCancel);
+    window.removeEventListener('keydown', onKey, true);
+    pending = null;
+    if (!drag) return;
+    const { row, ghost, fixed } = drag;
+    cancelAnimationFrame(drag.frame);
+    const drop = commit ? readDrop(row, drag.origin) : null;
+    drag = null;
+    swallowClick();
+    list.classList.remove('ag-dragging');
+    host.classList.remove('ag-threads-dragging');
+    for (const header of list.querySelectorAll('.ag-threads-section.ag-drop-target')) {
+      header.classList.remove('ag-drop-target');
+    }
+    if (drop) options.onDrop(drop);
+    options.onDragEnd();
+    // 다시 그린 목록의 제자리로 사본이 내려앉는다.
+    const id = row.dataset.threadId;
+    const landed = commit
+      ? [...list.querySelectorAll<HTMLElement>(':scope > .ag-threads-row')].find((item) => item.dataset.threadId === id)
+      : null;
+    if (!landed || reducedMotion()) {
+      ghost.remove();
+      return;
+    }
+    landed.classList.add('ag-drop-landing');
+    const settle = ghost.animate(
+      [{ top: ghost.style.top }, { top: `${landed.getBoundingClientRect().top - fixed.y}px` }],
+      { duration: 140, easing: SETTLE_EASE, fill: 'forwards' },
+    );
+    const done = () => {
+      ghost.remove();
+      landed.classList.remove('ag-drop-landing');
+    };
+    settle.addEventListener('finish', done);
+    settle.addEventListener('cancel', done);
+  };
+
+  const onMove = (event: PointerEvent) => {
+    if (drag && event.pointerId === drag.pointerId) {
+      drag.pointerY = event.clientY;
+      update();
+      return;
+    }
+    if (!pending || event.pointerId !== pending.pointerId) return;
+    if (Math.hypot(event.clientX - pending.x, event.clientY - pending.y) < DRAG_THRESHOLD) return;
+    begin(pending);
+  };
+  const onUp = (event: PointerEvent) => {
+    if (event.pointerId === (drag?.pointerId ?? pending?.pointerId)) finish(true);
+  };
+  const onCancel = () => finish(false);
+  const onKey = (event: KeyboardEvent) => {
+    if (!drag || event.key !== 'Escape') return;
+    // 끄는 중의 Esc 는 끌기만 거둔다 — 레일이나 집중 모드는 그대로다.
+    event.preventDefault();
+    event.stopPropagation();
+    finish(false);
+  };
+
+  list.addEventListener('pointerdown', (event) => {
+    if (drag || event.button !== 0 || event.pointerType === 'touch' || event.ctrlKey || event.metaKey) return;
+    const row = (event.target as Element).closest('.ag-threads-item')?.closest<HTMLElement>('.ag-threads-row');
+    if (!row || row.parentElement !== list || !row.dataset.threadId) return;
+    pending = { id: row.dataset.threadId, pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onCancel);
+    window.addEventListener('keydown', onKey, true);
+  });
+
+  return { dragging: () => drag !== null };
+}

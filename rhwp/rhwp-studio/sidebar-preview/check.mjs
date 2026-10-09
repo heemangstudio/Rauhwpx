@@ -838,6 +838,133 @@ try {
     await page.click('.ag-header .ag-threads-btn');
     assert.equal(await page.$eval('.ag-threads-item.ag-active', (element) => element.dataset.threadId), 'preview-chat-totals');
   });
+  await step('Dragging sorts any chat, and the pinned group pins what lands in it', async () => {
+    await open('chats=sample');
+    await page.click('.ag-header .ag-threads-btn');
+    await page.waitForSelector('.ag-root.ag-threads-open .ag-threads-item');
+    const group = (name) => page.$$eval('.ag-threads-list > *', (items, name) => {
+      const split = items.findIndex((item) => item.dataset.section === 'recent');
+      const rows = name === 'pinned' ? items.slice(0, split) : items.slice(split + 1);
+      return rows.filter((item) => item.dataset.threadId).map((item) => item.dataset.threadId);
+    }, name);
+    const pinned = () => group('pinned');
+    const recent = () => group('recent');
+    const sections = () => page.$$eval('.ag-threads-section', (items) => items
+      .filter((item) => item.checkVisibility()).map((item) => item.dataset.section));
+    const box = async (selector) => (await page.$(selector)).boundingBox();
+    // The thread store re-reads IndexedDB after the page loads and after each write, redrawing
+    // the list. Wait until the list has been quiet for a moment so element handles stay attached.
+    const settled = () => page.evaluate(() => new Promise((resolve) => {
+      const list = document.querySelector('.ag-threads-list');
+      const done = () => {
+        observer.disconnect();
+        resolve();
+      };
+      let timer = setTimeout(done, 400);
+      const observer = new MutationObserver(() => {
+        clearTimeout(timer);
+        timer = setTimeout(done, 400);
+      });
+      observer.observe(list, { childList: true });
+    }));
+    // Grabs a row, waits for the drag to reveal both groups, then drops at the y `target` picks.
+    async function drag(id, target) {
+      const from = await box(`.ag-threads-row[data-thread-id="${id}"] .ag-threads-item`);
+      const x = from.x + from.width / 2;
+      await page.mouse.move(x, from.y + from.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(x, from.y + from.height / 2 - 12, { steps: 4 });
+      await page.waitForSelector('.ag-threads-ghost');
+      await page.mouse.move(x, await target(), { steps: 14 });
+      await page.mouse.up();
+      await page.waitForFunction(() => !document.querySelector('.ag-threads-ghost'));
+      await settled();
+    }
+    const under = (selector) => async () => {
+      const header = await box(selector);
+      return header.y + header.height + 4;
+    };
+    // Just past a row's middle, so the dragged chat lands right after it.
+    const after = (id) => async () => {
+      const row = await box(`.ag-threads-row[data-thread-id="${id}"]`);
+      return row.y + row.height * 0.75;
+    };
+    const altKey = async (key) => {
+      await page.keyboard.down('Alt');
+      await page.keyboard.press(key);
+      await page.keyboard.up('Alt');
+      await settled();
+    };
+    await settled();
+    const active = () => page.$eval('.ag-threads-item.ag-active', (item) => item.dataset.threadId);
+    const openChat = await active();
+    assert.deepEqual(await sections(), [], 'No group headers until something is pinned');
+
+    // The top chat dragged down three rows stays there.
+    const start = await recent();
+    await drag(start[0], after(start[3]));
+    const sorted = [start[1], start[2], start[3], start[0], ...start.slice(4)];
+    assert.deepEqual(await recent(), sorted);
+    // Dropping is not a click: the open chat and its document stay put.
+    assert.equal(await active(), openChat);
+    assert.equal(await page.$eval('#document', (select) => select.value), 'proposal');
+
+    // Dropped into the pinned group, a chat pins at that spot.
+    await drag('preview-chat-totals', under('.ag-threads-section[data-section="pinned"]'));
+    assert.deepEqual(await pinned(), ['preview-chat-totals']);
+    assert.deepEqual(await sections(), ['pinned', 'recent']);
+    await drag('preview-chat-press', under('.ag-threads-section[data-section="pinned"]'));
+    assert.deepEqual(await pinned(), ['preview-chat-press', 'preview-chat-totals']);
+    await screenshot('chat-rail-pinned');
+
+    // Both orders survive a reload once they reach IndexedDB.
+    await page.waitForFunction(async (moved) => {
+      const db = await new Promise((resolve, reject) => {
+        const request = indexedDB.open('rhwpAgentThreads');
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      const rows = await new Promise((resolve) => {
+        const request = db.transaction('threads').objectStore('threads').getAll();
+        request.onsuccess = () => resolve(request.result);
+      });
+      db.close();
+      const row = (id) => rows.find((item) => item.id === id) ?? {};
+      return row('preview-chat-press').pinOrder === 0 && row('preview-chat-totals').pinOrder === 1
+        && typeof row(moved).listOrder === 'number';
+    }, {}, start[0]);
+    const unpinned = sorted.filter((id) => id !== 'preview-chat-totals' && id !== 'preview-chat-press');
+    await open('chats=sample');
+    await page.click('.ag-header .ag-threads-btn');
+    await page.waitForSelector('.ag-root.ag-threads-open .ag-threads-item');
+    await settled();
+    assert.deepEqual(await pinned(), ['preview-chat-press', 'preview-chat-totals']);
+    assert.deepEqual(await recent(), unpinned);
+
+    // Dragged out of the pinned group, a chat unpins where it was dropped.
+    await drag('preview-chat-totals', under('.ag-threads-section[data-section="recent"]'));
+    assert.deepEqual(await pinned(), ['preview-chat-press']);
+    assert.deepEqual(await recent(), ['preview-chat-totals', ...unpinned]);
+
+    // The hover pin button and Alt+arrow keys reach the same orders.
+    await page.hover('.ag-threads-row[data-thread-id="preview-chat-overview"]');
+    await page.click('.ag-threads-row[data-thread-id="preview-chat-overview"] .ag-thread-pin');
+    await settled();
+    assert.deepEqual(await pinned(), ['preview-chat-overview', 'preview-chat-press']);
+    await page.focus('.ag-threads-item[data-thread-id="preview-chat-overview"]');
+    await altKey('ArrowDown');
+    assert.deepEqual(await pinned(), ['preview-chat-press', 'preview-chat-overview']);
+    assert.equal(await page.evaluate(() => document.activeElement?.dataset.threadId), 'preview-chat-overview');
+    const [first, second] = await recent();
+    await page.focus(`.ag-threads-item[data-thread-id="${second}"]`);
+    await altKey('ArrowUp');
+    assert.deepEqual((await recent()).slice(0, 2), [second, first]);
+    for (const id of ['preview-chat-press', 'preview-chat-overview']) {
+      await page.click(`.ag-threads-row[data-thread-id="${id}"] .ag-thread-pin`);
+      await settled();
+    }
+    assert.deepEqual(await sections(), []);
+  });
   await step(
     'Document context, reset, clean canvas, and backend isolation',
     async () => {

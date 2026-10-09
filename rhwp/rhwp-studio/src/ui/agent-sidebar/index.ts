@@ -77,6 +77,11 @@ import {
   documentGroupKey,
   forgetDocumentThreads,
   listThreads,
+  orderPinnedThreads,
+  pinThread,
+  placeThread,
+  threadListKey,
+  unpinThread,
   threadActivityAt,
   removeThread,
   renameThread,
@@ -110,6 +115,7 @@ import { showContextMenu } from '../native-context-menu.ts';
 import { setMiddleTruncatedText } from '../middle-truncate.ts';
 import { createInkRing, createIcon, createStopIcon } from './icons.ts';
 import {
+  attachThreadDrag,
   closeThreadRailSurfaces,
   createThreadsToolbar,
   threadRailSurfaceOpen,
@@ -2714,6 +2720,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   });
   const threadsList = el('ul', 'ag-threads-list');
   threadsList.setAttribute('aria-label', '채팅');
+  // 끌어 놓은 자리에 채팅이 남는다. 고정 구역에 놓으면 고정, 아래 목록에 놓으면 고정 해제.
+  const threadDrag = attachThreadDrag({
+    list: threadsList,
+    host: root,
+    onDrop: (drop) => moveThread(drop.id, drop.pinned, { before: drop.before, after: drop.after }),
+    onDragEnd: () => rebuildThreadsList(),
+  });
   threadsPage.append(threadsHeader, threadsToolbar.root, threadsToolbar.filterChip, threadsList);
 
   const skillsPage = el('div', 'ag-skills-page');
@@ -5153,15 +5166,31 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     return true;
   }
 
+  /** 고정은 맨 위에 붙고, 풀면 아래 목록의 제자리로 돌아간다. */
+  function toggleThreadPin(thread: ChatThread): void {
+    if (thread.pinOrder !== undefined) unpinThread(thread.id);
+    else pinThread(thread.id);
+  }
+
+  /** 끌기와 Alt+↑/↓ 가 같이 쓴다 — 이웃 사이에 채팅을 놓는다. */
+  function moveThread(id: string, pinned: boolean, place: { before: string | null; after: string | null }): void {
+    if (pinned) pinThread(id, place);
+    else placeThread(id, place);
+  }
+
   async function openThreadMenu(thread: ChatThread, anchor: { x: number; y: number }): Promise<void> {
+    const pinned = thread.pinOrder !== undefined;
     const choice = await showContextMenu([
       { id: 'open', label: '열기', enabled: thread.id !== currentThread.id },
+      { id: 'pin', label: pinned ? '고정 해제' : '고정' },
       { id: 'rename', label: '이름 바꾸기' },
       { type: 'separator' },
       { id: 'delete', label: '삭제', danger: true, enabled: getChatStatus(thread.id) !== 'working' },
     ], anchor);
     if (choice === 'open') {
       openThread(thread.id);
+    } else if (choice === 'pin') {
+      toggleThreadPin(thread);
     } else if (choice === 'rename') {
       // 메뉴가 떠 있는 동안 목록이 다시 그려졌을 수 있다.
       const row = findThreadRow(thread.id);
@@ -5177,6 +5206,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
    */
   function buildThreadRow(thread: ChatThread): HTMLElement {
     const li = el('li', 'ag-threads-row');
+    li.dataset.threadId = thread.id;
     const isCurrent = thread.id === currentThread.id;
     const opening = thread.id === openingThreadId;
     if (isCurrent) li.classList.add('ag-current');
@@ -5225,6 +5255,19 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       beginThreadRename(thread, li);
     });
 
+    const pinned = thread.pinOrder !== undefined;
+    const pin = el('button', 'ag-thread-pin');
+    pin.type = 'button';
+    pin.tabIndex = -1;
+    pin.setAttribute('aria-pressed', pinned ? 'true' : 'false');
+    pin.setAttribute('aria-label', `${thread.title || '새 채팅'} ${pinned ? '고정 해제' : '고정'}`);
+    pin.title = pinned ? '고정 해제' : '고정';
+    pin.appendChild(createIcon('pin'));
+    pin.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleThreadPin(thread);
+    });
+
     li.addEventListener('contextmenu', (event) => {
       if (li.querySelector('.ag-thread-rename-form')) return;
       event.preventDefault();
@@ -5232,7 +5275,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       void openThreadMenu(thread, contextMenuAnchor(event, li));
     });
 
-    li.append(btn, rename);
+    li.append(btn, pin, rename);
     return li;
   }
 
@@ -5285,6 +5328,25 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       });
       return;
     }
+    // Alt+↑/↓ — 채팅을 제 구역 안에서 한 칸씩 옮긴다.
+    if (e.altKey && !e.metaKey && !e.ctrlKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+      const entry = threadRowTargets.get(target);
+      if (!entry) return;
+      e.preventDefault();
+      const rowId = (node: Element | null | undefined) => (
+        node instanceof HTMLElement && node.matches('.ag-threads-row') ? node.dataset.threadId ?? null : null
+      );
+      const prev = entry.row.previousElementSibling;
+      const next = entry.row.nextElementSibling;
+      const place = e.key === 'ArrowUp'
+        ? { after: rowId(prev?.previousElementSibling), before: rowId(prev) }
+        : { after: rowId(next), before: rowId(next?.nextElementSibling) };
+      // 구역 끝에서는 움직이지 않는다 — 고정을 넘나드는 건 끌기와 메뉴가 맡는다.
+      if (e.key === 'ArrowUp' ? place.before : place.after) {
+        moveThread(entry.thread.id, entry.thread.pinOrder !== undefined, place);
+      }
+      return;
+    }
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     let next: HTMLElement | undefined;
     if (e.key === 'ArrowDown') next = items[index + 1];
@@ -5296,11 +5358,22 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     next?.focus();
   });
 
+  /** 고정 구역과 아래 목록의 머리. 고정한 채팅이 없으면 끄는 동안에만 보인다. */
+  function buildThreadsSection(name: 'pinned' | 'recent', label: string): HTMLElement {
+    const section = el('li', 'ag-threads-section');
+    section.dataset.section = name;
+    section.appendChild(el('span', 'ag-threads-section-label', label));
+    return section;
+  }
+
   /**
-   * 채팅 목록 — 문서와 상관없이 마지막 대화 활동 순으로 한 줄로 선다.
-   * 검색어는 제목과 문서 이름에서 찾고, 문서 필터는 한 문서의 채팅만 남긴다.
+   * 채팅 목록 — 고정한 채팅이 놓인 순서대로 맨 위에 서고, 나머지는 문서와
+   * 상관없이 마지막 대화 활동 순이다. 끌어 놓은 채팅은 놓은 자리에 남는다. 검색어는 제목과 문서 이름에서 찾고,
+   * 문서 필터는 한 문서의 채팅만 남긴다.
    */
   function rebuildThreadsList(): void {
+    // 끄는 동안에는 행을 갈아 끼우지 않는다 — 놓을 때 한 번 다시 그린다.
+    if (threadDrag.dragging()) return;
     // 다시 그려도 키보드 포커스는 같은 행에 남는다.
     const focusedKey = threadNavKey(document.activeElement);
     threadsList.replaceChildren();
@@ -5324,7 +5397,17 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       ));
       return;
     }
-    threadsList.append(...visible.map(buildThreadRow));
+    const pinned = orderPinnedThreads(visible);
+    threadsList.classList.toggle('ag-has-pinned', pinned.length > 0);
+    threadsList.append(
+      buildThreadsSection('pinned', '고정됨'),
+      ...pinned.map(buildThreadRow),
+      buildThreadsSection('recent', '최근'),
+      ...visible
+        .filter((thread) => thread.pinOrder === undefined)
+        .sort((a, b) => threadListKey(b) - threadListKey(a))
+        .map(buildThreadRow),
+    );
     const restore = focusedKey
       ? threadNavItems().find((item) => threadNavKey(item) === focusedKey) ?? null
       : null;
