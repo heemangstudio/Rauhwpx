@@ -1,5 +1,5 @@
 /** 실제 WASM 편집 버스트의 프레임/렌더 비용. 절대 시간 임계값 없이 최종 텍스트를 검증한다.
- * node e2e/preview-frame-bench.mjs --label=after
+ * node bench/preview-frame-bench.mjs --label=after
  * BENCH_STUDIO_ROOT=/path/to/baseline/rhwp/rhwp-studio 로 같은 워크로드를 비교한다.
  * BENCH_MODES=multi-local BENCH_BURSTS=1 BENCH_BURST_SIZE=1: 두 페이지 동시 무효화.
  * BENCH_SAMPLES=biz_plan.hwp: 단일 문서. VITE_PORT=7784: 독립 서버 포트.
@@ -30,7 +30,7 @@ process.env.VITE_URL = url;
 process.env.CHROME_PATH ||= '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 process.argv = process.argv.filter(arg => !arg.startsWith('--mode='));
 process.argv.push('--mode=headless');
-const { launchBrowser, createPage, loadApp, loadHwpFile } = await import('./helpers.mjs');
+const { launchBrowser, createPage, loadApp, loadHwpFile } = await import('../e2e/helpers.mjs');
 await new Promise((resolve, reject) => {
   const probe = net.createServer();
   probe.once('error', reject);

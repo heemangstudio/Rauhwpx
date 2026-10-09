@@ -7,7 +7,7 @@
  * 턴이 끝나면 문서 스냅숏(또는 마지막 답)을 채점하고, 모델 요청·도구 호출·실패·병렬 묶음·토큰·비용을 함께 적는다.
  * 과제 목록과 채점 기준은 agent-live-tasks.mjs 에 있다. 모델 호출이 실제로 나가므로 사용량이 든다.
  *
- * 실행: node e2e/agent-live-suite.mjs --mode=headless --agent=pi --model=deepseek/deepseek-v4.1-flash --effort=medium
+ * 실행: node bench/agent-live-suite.mjs --mode=headless --agent=pi --model=deepseek/deepseek-v4.1-flash --effort=medium
  *        [--runs=1] [--tasks=typos,question] [--out=<json>] [--transcripts=<dir>] [--timeout-ms=600000]
  *        --agent=claude --model=claude-opus-5-5 --effort=medium 도 같은 과제를 돈다.
  */
@@ -16,7 +16,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { openSample } from './agent-bench-harness.mjs';
+import { openSample } from '../e2e/agent-bench-harness.mjs';
 import {
   analyzeTurn,
   arg,
@@ -50,7 +50,7 @@ const stack = await startLiveStack({ agent: AGENT, model: MODEL, tag: `suite-${A
 console.log(`  [setup] 허브=${stack.hubPort} vite=${stack.vitePort} agent=${AGENT} model=${MODEL ?? '(기본)'} effort=${EFFORT} runs=${RUNS}`);
 console.log(`  [setup] tasks: ${TASKS.map((t) => t.id).join(', ')}`);
 if (stack.pi) console.log(`  [setup] pi ${stack.pi.version}, ${stack.pi.model.name} (ctx ${stack.pi.model.contextLength}, $${round(stack.pi.model.pricing.prompt * 1e6, 3)}/$${round(stack.pi.model.pricing.completion * 1e6, 3)} per M in/out)`);
-const { runTest } = await import('./helpers.mjs');
+const { runTest } = await import('../e2e/helpers.mjs');
 
 const results = [];
 

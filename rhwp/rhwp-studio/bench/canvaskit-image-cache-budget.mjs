@@ -8,7 +8,7 @@ import {
   launchBrowser,
   loadApp,
   loadHwpFile,
-} from './helpers.mjs';
+} from '../e2e/helpers.mjs';
 
 const IMAGE_EDGE = 2048;
 const IMAGE_PIXELS = IMAGE_EDGE * IMAGE_EDGE;

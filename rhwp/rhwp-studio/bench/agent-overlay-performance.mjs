@@ -5,8 +5,8 @@
  * CSS are production modules. Run with --mode=headless on the Mac so Chrome keeps
  * its GPU process enabled (the generic e2e helper intentionally disables GPU).
  *
- *   node e2e/agent-overlay-performance.mjs
- *   BENCH_DURATION_MS=1000 BENCH_REPEATS=1 node e2e/agent-overlay-performance.mjs
+ *   node bench/agent-overlay-performance.mjs
+ *   BENCH_DURATION_MS=1000 BENCH_REPEATS=1 node bench/agent-overlay-performance.mjs
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -83,7 +83,7 @@ async function metrics(page, session) {
 }
 function delta(after, before) { return Object.fromEntries(Object.keys(after).map(k => [k, typeof after[k] === 'number' && typeof before[k] === 'number' ? after[k] - before[k] : after[k]])); }
 async function waitPort() {
-  for (let i = 0; i < 120; i++) { try { if ((await fetch(`http://127.0.0.1:${port}/e2e/agent-overlay-performance.html`)).ok) return; } catch {} await delay(100); }
+  for (let i = 0; i < 120; i++) { try { if ((await fetch(`http://127.0.0.1:${port}/bench/agent-overlay-performance.html`)).ok) return; } catch {} await delay(100); }
   throw new Error('Vite did not become ready');
 }
 async function runOne(implementation, iteration, server) {
@@ -98,7 +98,7 @@ async function runOne(implementation, iteration, server) {
   await session.send('Performance.enable');
   const errors = [];
   page.on('pageerror', e => errors.push(String(e)));
-  await page.goto(`${server}/e2e/agent-overlay-performance.html?implementation=${implementation}`, { waitUntil: 'networkidle0' });
+  await page.goto(`${server}/bench/agent-overlay-performance.html?implementation=${implementation}`, { waitUntil: 'networkidle0' });
   await page.waitForFunction(() => window.__overlayBenchReady === true);
   await delay(100);
   if (typeof global.gc === 'function') global.gc();

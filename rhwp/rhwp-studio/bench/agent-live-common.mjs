@@ -13,7 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { ensureChromePath, findAvailablePort, startHub, startVite, stats, stopServer } from './agent-bench-harness.mjs';
+import { ensureChromePath, findAvailablePort, startHub, startVite, stats, stopServer } from '../e2e/agent-bench-harness.mjs';
 import { analyzeProviderTurn, joinCalls, maxOverlap, readTraceRows, round } from './tool-trace-analysis.mjs';
 
 export const arg = (name) => process.argv.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? null;

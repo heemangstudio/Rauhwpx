@@ -11,7 +11,7 @@
  *   write:insert_text  | write:apply_edits                    — 같은 expectedRevision 병렬 쓰기(서로 다른 문단)
  *   mixed                                                     — 절반 읽기 + 절반 쓰기
  *
- * 실행: node e2e/agent-tool-concurrency-bench.mjs --mode=headless [--calls=24] [--levels=1,4,8]
+ * 실행: node bench/agent-tool-concurrency-bench.mjs --mode=headless [--calls=24] [--levels=1,4,8]
  *        [--scenario=<이름>] [--sample=biz_plan.hwp] [--profile] [--out=<json 경로>]
  * 결과: 표 + 마지막 줄 CONCURRENCY_BENCH_RESULT: {...}
  */
@@ -33,7 +33,7 @@ import {
   stats,
   stopServer,
   writeFakePi,
-} from './agent-bench-harness.mjs';
+} from '../e2e/agent-bench-harness.mjs';
 import { McpStdioClient, epochNow } from './mcp-stdio-client.mjs';
 import {
   callStages,
@@ -75,7 +75,7 @@ const hub = await startHub({
 });
 const vite = await startVite({ vitePort, hubPort, token: HUB_TOKEN, logName: 'rhwp-studio-concurrency-bench-vite.log' });
 process.env.VITE_URL = viteUrl;
-const { runTest } = await import('./helpers.mjs');
+const { runTest } = await import('../e2e/helpers.mjs');
 
 // ─── 호출 생성기 ─────────────────────────────────────────────
 

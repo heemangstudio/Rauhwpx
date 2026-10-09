@@ -1,7 +1,7 @@
 /**
  * agent-live-suite.mjs 결과(JSON) 여러 개를 과제별로 나란히 비교한다.
  *
- * 실행: node e2e/agent-live-compare.mjs a.json b.json [c.json …]
+ * 실행: node bench/agent-live-compare.mjs a.json b.json [c.json …]
  * 과제마다 실행 평균: 벽시계 초, 모델 요청, 도구 호출, 실패한 호출, 점수, 비용.
  */
 import fs from 'node:fs';
@@ -9,7 +9,7 @@ import path from 'node:path';
 
 const files = process.argv.slice(2).filter((a) => !a.startsWith('--'));
 if (files.length < 1) {
-  console.error('usage: node e2e/agent-live-compare.mjs a.json b.json [c.json …]');
+  console.error('usage: node bench/agent-live-compare.mjs a.json b.json [c.json …]');
   process.exit(2);
 }
 

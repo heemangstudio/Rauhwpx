@@ -10,7 +10,7 @@
  */
 import fs from 'node:fs';
 
-import { stats } from './agent-bench-harness.mjs';
+import { stats } from '../e2e/agent-bench-harness.mjs';
 
 export function readTraceRows(file) {
   let text = '';

@@ -12,7 +12,7 @@
  * --agent=pi 는 픽스처 Pi 루트(사용자 Pi prefix 를 빌리고 OpenRouter 키를 심는다)로 pi 를 돌린다.
  * 모델 요청 분해는 Pi 세션 JSONL(요청별 토큰·비용·멈춤 이유·블록 종류)에서 뽑는다.
  *
- * 실행: node e2e/agent-claude-live-bench.mjs --mode=headless [--runs=3] [--agent=claude|codex|pi] [--model=claude-sonnet-5]
+ * 실행: node bench/agent-claude-live-bench.mjs --mode=headless [--runs=3] [--agent=claude|codex|pi] [--model=claude-sonnet-5]
  *        [--effort=<low|medium|high>] [--sample=biz_plan.hwp] [--prompt="..."] [--followup="..."] [--out=<json>]
  *        [--transcripts=<dir>]  claude/pi 세션 기록(도구 인자·결과 포함)을 그 폴더에 남긴다 — 실패한 호출을 들여다볼 때.
  */
@@ -22,7 +22,7 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { readToolTelemetryRows } from '../../rhwp-agent/tool-telemetry.mjs';
-import { openSample, stats } from './agent-bench-harness.mjs';
+import { openSample, stats } from '../e2e/agent-bench-harness.mjs';
 import {
   analyzeTurn,
   arg,
@@ -54,7 +54,7 @@ const stack = await startLiveStack({ agent: AGENT, model: MODEL, tag: `${AGENT}-
 const { fixtureRoot, traceFile } = stack;
 console.log(`  [setup] 허브=${stack.hubPort} vite=${stack.vitePort} agent=${AGENT} model=${MODEL ?? '(기본)'} effort=${EFFORT ?? '(기본)'} runs=${RUNS} sample=${SAMPLE}`);
 console.log(`  [setup] prompt: ${PROMPT}`);
-const { runTest } = await import('./helpers.mjs');
+const { runTest } = await import('../e2e/helpers.mjs');
 
 let failed = false;
 const runs = [];

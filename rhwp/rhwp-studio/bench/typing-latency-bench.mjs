@@ -9,12 +9,12 @@
  * 각각 한글(IME 조합)과 영문.
  *
  * 사전 조건: WASM 빌드(pkg/) + Vite dev server
- * 실행: node e2e/typing-latency-bench.mjs --mode=headless [--json=out.json] [--only=body-mid]
+ * 실행: node bench/typing-latency-bench.mjs --mode=headless [--json=out.json] [--only=body-mid]
  *       [--profile=dir]  시나리오별 CPU 프로파일(.cpuprofile) 저장
  *       [--connect=http://127.0.0.1:9333]  떠 있는 앱(예: --remote-debugging-port 로 띄운 dev Electron)에 붙어 잰다
  */
 import { writeFileSync } from 'node:fs';
-import { runTest, createNewDocument, loadHwpFile } from './helpers.mjs';
+import { runTest, createNewDocument, loadHwpFile } from '../e2e/helpers.mjs';
 
 const args = new Map(process.argv.slice(2).map((arg) => {
   const [key, value = 'true'] = arg.replace(/^--/, '').split('=');
@@ -25,7 +25,7 @@ const JSON_OUT = args.get('json');
 const PROFILE_DIR = args.get('profile');
 const CONNECT = args.get('connect');
 
-const MID_DOC = 'issue2006/1790387_prep_final_report.hwpx';
+const MID_DOC = 'kps-ai.hwp';
 const TABLE_DOC = '복학원서.hwpx';
 const NESTED_DOC = 'basic/issue2007_nested_cell_pagination_42065.hwp';
 const GIANT_DOC = 'issue1949_giant_cell_nested_tables_perf.hwpx';
@@ -393,42 +393,30 @@ await withPage(async (page) => {
   await scenario(page, 'empty-ko', placeEmpty, koreanKeystrokes(KOREAN));
   await scenario(page, 'empty-en', placeEmpty, englishKeystrokes(ENGLISH));
 
-  const tLoad0 = Date.now();
   const mid = await loadHwpFile(page, MID_DOC);
-  console.log(`\n${MID_DOC}: ${mid.pageCount} pages (load+first render ${Date.now() - tLoad0}ms)`);
+  console.log(`\n${MID_DOC}: ${mid.pageCount} pages`);
   await installProbe(page);
-  // observe background work for up to 60s: count wasm calls happening while idle
-  for (let i = 0; i < 12; i += 1) {
-    const idle = await page.evaluate(() => new Promise((resolve) => {
-      const tl = window.__tl;
-      tl.buckets.clear();
-      setTimeout(() => {
-        const entries = [...tl.buckets.entries()].map(([k, v]) => `${k}:${v.calls}/${v.ms.toFixed(0)}ms`);
-        resolve(entries.join(' '));
-      }, 5000);
-    }));
-    console.log(`  [idle ${i * 5}-${i * 5 + 5}s] ${idle || 'quiet'}`);
-  }
-  await scenario(page, 'big-body-ko', () => placeBodyCaret(page), koreanKeystrokes(KOREAN));
-  await scenario(page, 'big-body-en', () => placeBodyCaret(page), englishKeystrokes(ENGLISH));
-  await scenario(page, 'big-page-bottom-ko', () => placeBodyCaret(page, { nearPageBottom: true }), koreanKeystrokes(KOREAN));
+  await scenario(page, 'body-mid-ko', () => placeBodyCaret(page), koreanKeystrokes(KOREAN));
+  await scenario(page, 'body-mid-en', () => placeBodyCaret(page), englishKeystrokes(ENGLISH));
+  await scenario(page, 'page-bottom-ko', () => placeBodyCaret(page, { nearPageBottom: true }), koreanKeystrokes(KOREAN));
+  await scenario(page, 'page-bottom-en', () => placeBodyCaret(page, { nearPageBottom: true }), englishKeystrokes(ENGLISH));
 
-  // direct wasm-call costs on the big doc (same calls the keystroke path uses)
-  const direct = await page.evaluate(() => {
-    const wasm = window.__wasm;
-    const times = {};
-    const time = (name, fn) => { const t0 = performance.now(); const r = fn(); times[name] = +(performance.now() - t0).toFixed(1); return r; };
-    const pos = window.__inputHandler.cursor.getPosition();
-    const len = wasm.getParagraphLength(pos.sectionIndex, pos.paragraphIndex);
-    time('insertText60', () => wasm.insertText(pos.sectionIndex, pos.paragraphIndex, Math.min(len, 10), '가'.repeat(60), false));
-    time('insertEquation', () => wasm.insertEquation(pos.sectionIndex, pos.paragraphIndex, 0, 'x^2', 10, 0));
-    time('getPageInfo', () => wasm.getPageInfo(0));
-    time('getAllPageInfo', () => wasm.getAllPageInfo?.());
-    time('getDocumentCharacterCount', () => wasm.getDocumentCharacterCount?.());
-    times.pageCount = wasm.pageCount;
-    return times;
-  }).catch((e) => ({ error: String(e) }));
-  console.log('  direct wasm calls:', JSON.stringify(direct));
+  const table = await loadHwpFile(page, TABLE_DOC);
+  console.log(`\n${TABLE_DOC}: ${table.pageCount} pages`);
+  await installProbe(page);
+  await scenario(page, 'cell-ko', () => placeCellCaret(page), koreanKeystrokes(KOREAN));
+  await scenario(page, 'cell-en', () => placeCellCaret(page), englishKeystrokes(ENGLISH));
+
+  const nested = await loadHwpFile(page, NESTED_DOC);
+  console.log(`\n${NESTED_DOC}: ${nested.pageCount} pages`);
+  await installProbe(page);
+  await scenario(page, 'nested-cell-ko', () => placeCellCaret(page, { nested: true }), koreanKeystrokes(KOREAN));
+  await scenario(page, 'nested-cell-en', () => placeCellCaret(page, { nested: true }), englishKeystrokes(ENGLISH));
+
+  const giant = await loadHwpFile(page, GIANT_DOC);
+  console.log(`\n${GIANT_DOC}: ${giant.pageCount} pages`);
+  await installProbe(page);
+  await scenario(page, 'giant-cell-ko', () => placeCellCaret(page), koreanKeystrokes(KOREAN));
 
   if (JSON_OUT) writeFileSync(JSON_OUT, JSON.stringify(results, null, 2));
 });

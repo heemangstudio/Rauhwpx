@@ -3,7 +3,7 @@
  * 모델 호출 없이 샘플 답변을 64자씩 재생하며, 레이아웃·페인트 시간은 포함하지 않는다.
  *
  * 먼저 npm run dev:sidebar를 실행한다.
- * 실행: node e2e/chat-stream-bench.mjs [--url=http://127.0.0.1:7715] [--json=out.json]
+ * 실행: node bench/chat-stream-bench.mjs [--url=http://127.0.0.1:7715] [--json=out.json]
  */
 import { writeFileSync } from 'node:fs';
 import puppeteer from 'puppeteer-core';

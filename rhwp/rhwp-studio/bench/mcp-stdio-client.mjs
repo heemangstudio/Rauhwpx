@@ -9,7 +9,7 @@ import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { createInterface } from 'node:readline';
 
-import { repoRoot } from './agent-bench-harness.mjs';
+import { repoRoot } from '../e2e/agent-bench-harness.mjs';
 
 export const epochNow = () => Math.round((performance.timeOrigin + performance.now()) * 1000) / 1000;
 

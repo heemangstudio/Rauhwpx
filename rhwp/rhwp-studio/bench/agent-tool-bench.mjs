@@ -12,7 +12,7 @@
  *   3. 도구 정의 크기: 모델이 매 요청 읽는 direct 프로필 설명 + 입력 스키마 글자 수와
  *      MCP 서버 instructions(공유 규칙) 글자 수.
  *
- * 실행: node e2e/agent-tool-bench.mjs --mode=headless [--tasks-only] [--task=<이름>]
+ * 실행: node bench/agent-tool-bench.mjs --mode=headless [--tasks-only] [--task=<이름>]
  * 결과: 마지막에 JSON 한 줄 (BENCH_RESULT: {...}) — 전후 비교용.
  */
 import fs from 'node:fs';
@@ -37,7 +37,7 @@ import {
   stats,
   stopServer,
   writeFakePi,
-} from './agent-bench-harness.mjs';
+} from '../e2e/agent-bench-harness.mjs';
 
 const LATENCY_SAMPLE = 'footnote-01.hwp';
 const HUB_TOKEN = 'bench';
@@ -509,7 +509,7 @@ const hub = await startHub({ hubPort, token: HUB_TOKEN, fixtureRoot, env: { RHWP
 const vite = await startVite({ vitePort, hubPort, token: HUB_TOKEN });
 
 process.env.VITE_URL = viteUrl;
-const helpers = await import('./helpers.mjs');
+const helpers = await import('../e2e/helpers.mjs');
 const { runTest } = helpers;
 
 let failed = false;

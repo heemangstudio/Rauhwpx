@@ -8,7 +8,7 @@ import {
   launchBrowser,
   loadApp,
   loadHwpFile,
-} from './helpers.mjs';
+} from '../e2e/helpers.mjs';
 
 const SAMPLE = '2025 행정업무운영 편람(최종).hwpx';
 

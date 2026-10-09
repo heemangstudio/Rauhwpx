@@ -1,5 +1,5 @@
 /** 실제 단일 줄 WASM 편집 버스트의 프레임/렌더 비용과 문서/페이지 해시를 기록한다.
- * node e2e/typeset-line-width-bench.mjs --label=after
+ * node bench/typeset-line-width-bench.mjs --label=after
  * BENCH_STUDIO_ROOT=/path/to/checkout/rhwp/rhwp-studio 로 비교할 엔진을 선택한다.
  * BENCH_SAMPLES=biz_plan.hwp BENCH_BURSTS=12 BENCH_BURST_SIZE=4
  * output/typeset-line-width-bench/<label>에 결과와 PNG를 기록한다.
@@ -29,7 +29,7 @@ process.env.VITE_URL = url;
 process.env.CHROME_PATH ||= '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 process.argv = process.argv.filter(arg => !arg.startsWith('--mode='));
 process.argv.push('--mode=headless');
-const { launchBrowser, createPage, loadApp, loadHwpFile } = await import('./helpers.mjs');
+const { launchBrowser, createPage, loadApp, loadHwpFile } = await import('../e2e/helpers.mjs');
 await new Promise((resolve, reject) => {
   const probe = net.createServer();
   probe.once('error', reject);

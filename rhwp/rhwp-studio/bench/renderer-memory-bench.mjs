@@ -1,13 +1,13 @@
 // 긴 그림 문서의 렌더러 메모리를 단계별로 잰다.
 //
-// 사용: VITE_URL=http://127.0.0.1:7700 node e2e/renderer-memory-bench.mjs --mode=headless
+// 사용: VITE_URL=http://127.0.0.1:7700 node bench/renderer-memory-bench.mjs --mode=headless
 //   [--sample=<samples 경로>] [--dpr=2] [--zoom=3] [--zoom-pages=24] [--output=<json>]
 // 렌더러 프로세스 phys_footprint(macOS footprint), JS 힙, WASM 선형 메모리, DOM canvas 픽셀,
 // 엔진 그림 캐시 통계를 문서 로드 → 전체 스크롤 → 확대 스크롤 순서로 기록한다.
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { closeBrowser, launchBrowser, loadApp, sampleFetchPath } from './helpers.mjs';
+import { closeBrowser, launchBrowser, loadApp, sampleFetchPath } from '../e2e/helpers.mjs';
 
 function arg(name, fallback) {
   const hit = process.argv.find((value) => value.startsWith(`--${name}=`));
