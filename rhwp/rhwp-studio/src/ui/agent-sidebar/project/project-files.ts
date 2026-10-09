@@ -3,20 +3,24 @@
  * 그래프를 볼 수 없는 사용자에게도 같은 항목과 연결 수를 전한다.
  * 영역 조각은 원본 파일 바로 아래에 들여 쓴다.
  */
-import { itemColumnId } from '../../../agent/project-service.ts';
-import type { ProjectService, ProjectStore } from '../../../agent/project-service.ts';
-import type { ProjectClipItem, ProjectItem, ProjectSnapshot } from '../../../agent/types.ts';
+import { itemColumnId, matchesOriginFilter, projectShowsWorktrees } from '../../../agent/project-service.ts';
+import type { ProjectOriginFilter, ProjectService, ProjectStore } from '../../../agent/project-service.ts';
+import type { ProjectClipItem, ProjectItem, ProjectSnapshot, ProjectWorktreeContext } from '../../../agent/types.ts';
 import { projectClipThumb } from './clip-thumbs.ts';
 import {
   button,
+  createProjectMenu,
   el,
   errorText,
   itemFailed,
   itemIconName,
   itemMeta,
   itemOrganizing,
+  ORIGIN_FILTERS,
   projectIcon,
   tagColor,
+  worktreeChip,
+  worktreeLabelActions,
 } from './project-ui.ts';
 
 export interface ProjectFilesDeps {
@@ -25,6 +29,8 @@ export interface ProjectFilesDeps {
   service?: Pick<ProjectService, 'fileBlob'> | null;
   openPreview(itemId: string): void;
   announce(message: string, tone?: 'error'): void;
+  /** 이 채팅 문서의 작업 공간. 둘 이상일 때만 표시·거르기를 보인다. */
+  worktrees?: () => ProjectWorktreeContext | null;
 }
 
 export interface ProjectFiles {
@@ -75,6 +81,8 @@ export function createProjectFiles(deps: ProjectFilesDeps): ProjectFiles {
   let project: ProjectSnapshot | null = null;
   let kindFilter: KindFilter = 'all';
   let tagFilter = '';
+  let originFilter: ProjectOriginFilter = 'all';
+  const worktrees = () => deps.worktrees?.() ?? null;
   let query = '';
   let renaming: string | null = null;
   let anchor: string | null = null;
@@ -94,7 +102,11 @@ export function createProjectFiles(deps: ProjectFilesDeps): ProjectFiles {
   for (const option of KIND_FILTERS) kind.add(new Option(option.label, option.id));
   const tag = el('select', 'ag-pfiles-select');
   tag.setAttribute('aria-label', '태그');
-  toolbar.append(searchWrap, kind, tag);
+  const origin = el('select', 'ag-pfiles-select');
+  origin.setAttribute('aria-label', '작업 공간');
+  for (const option of ORIGIN_FILTERS) origin.add(new Option(option.id === 'all' ? '모든 작업 공간' : option.label, option.id));
+  origin.hidden = true;
+  toolbar.append(searchWrap, kind, tag, origin);
 
   const selectionBar = el('div', 'ag-pfiles-selection');
   selectionBar.hidden = true;
@@ -113,14 +125,18 @@ export function createProjectFiles(deps: ProjectFilesDeps): ProjectFiles {
   const empty = el('p', 'ag-pfiles-empty');
   empty.hidden = true;
   element.append(toolbar, selectionBar, list, empty);
+  const menu = createProjectMenu(element);
 
   /** 걸러진 항목. 영역은 원본이 목록에 있으면 그 바로 아래(쪽·위치 순)에 온다. */
   function visibleItems(): ProjectItem[] {
     if (!project) return [];
     const snapshot = project;
     const needle = normalize(query.trim());
+    const context = worktrees();
+    const byOrigin = projectShowsWorktrees(context) ? originFilter : 'all';
     const matching = snapshot.items
       .filter((item) => !item.trashedAt)
+      .filter((item) => matchesOriginFilter(item, byOrigin, context))
       .filter((item) => matchesKind(item, kindFilter, snapshot))
       .filter((item) => !tagFilter || item.tags.includes(tagFilter))
       .filter((item) => {
@@ -205,6 +221,8 @@ export function createProjectFiles(deps: ProjectFilesDeps): ProjectFiles {
       if (color) chip.style.setProperty('--ag-ptag-color', color);
       tags.append(chip);
     }
+    const branch = worktreeChip(item.origin, worktrees());
+    if (branch) tags.append(branch);
     if (itemOrganizing(item)) tags.append(el('span', 'ag-pcard-state', '정리 중'));
     else if (itemFailed(item)) tags.append(el('span', 'ag-pcard-state ag-pcard-state-failed', '실패'));
     const rename = button('ag-pfile-rename', `${item.title} 이름 바꾸기`, { icon: 'pencil' });
@@ -318,6 +336,24 @@ export function createProjectFiles(deps: ProjectFilesDeps): ProjectFiles {
     openPreview(itemId);
   });
 
+  list.addEventListener('contextmenu', (event) => {
+    const row = (event.target as HTMLElement).closest<HTMLElement>('.ag-pfile');
+    const item = row?.dataset.item ? project?.items.find((entry) => entry.id === row.dataset.item) : null;
+    if (!row || !item || (event.target as HTMLElement).tagName === 'INPUT') return;
+    const actions = worktreeLabelActions(item, worktrees());
+    if (!actions.length) return;
+    event.preventDefault();
+    const rect = row.getBoundingClientRect();
+    menu.open(actions.map((action) => ({
+      label: action.label,
+      run: () => {
+        void store.edit([{ op: 'label', id: item.id, origin: action.origin }])
+          .then(() => announce(action.done), (error: unknown) => announce(errorText(error), 'error'));
+      },
+    })), event.clientX || rect.left + 40, event.clientY || rect.top + rect.height / 2, row);
+  });
+  list.addEventListener('scroll', () => menu.close(), { passive: true });
+
   list.addEventListener('dblclick', (event) => {
     const target = event.target as HTMLElement;
     if (!target.closest('.ag-pfile-title')) return;
@@ -378,6 +414,10 @@ export function createProjectFiles(deps: ProjectFilesDeps): ProjectFiles {
     tagFilter = tag.value;
     render();
   });
+  origin.addEventListener('change', () => {
+    originFilter = origin.value as ProjectOriginFilter;
+    render();
+  });
   selectAll.addEventListener('change', () => {
     for (const item of visibleItems()) {
       if (selectAll.checked) selected.add(item.id);
@@ -396,12 +436,17 @@ export function createProjectFiles(deps: ProjectFilesDeps): ProjectFiles {
     update(next) {
       project = next;
       renderTagOptions();
+      const shown = projectShowsWorktrees(worktrees());
+      origin.hidden = !shown;
+      if (!shown) originFilter = 'all';
+      origin.value = originFilter;
       if (renaming === null) render();
     },
     focusSearch() {
       search.focus();
     },
     dispose() {
+      menu.dispose();
       element.remove();
     },
   };

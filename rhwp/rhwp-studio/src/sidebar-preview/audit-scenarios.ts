@@ -58,6 +58,7 @@ export const auditScenarios: readonly AuditScenario[] = [
   scene('project-board', 'Research project', 'Project board', 'Drag cards between columns, use Alt+arrows, rename and add columns.', { project: 'board' }),
   scene('project-graph', 'Research project', 'Project graph', 'Hover to highlight neighbors, drag a node to pull its neighbors, right-click to pin, wheel to zoom, tune forces.', { project: 'graph' }),
   scene('project-files', 'Research project', 'Project files', 'Filter by kind and tag, rename inline, and move a selection to the trash.', { project: 'files' }),
+  scene('project-worktrees', 'Research project', 'Shared project across worktrees', 'Inspect 요약본 chips on cards, filter by 이 작업 공간 or 공통, right-click a card to relabel, and color the graph by 작업 공간.', { project: 'board', worktrees: '1' }),
   scene('clip-board', 'Research project', 'Region clips on the board', 'Inspect clip thumbnails cut from a scanned PDF at the top of 수집함.', { project: 'board' }),
   scene('clip-preview', 'Research project', 'Region clip in the preview', 'Inspect the outlined region on the scan, then use 영역 to drag a new one; drag or resize the outline, Esc cancels.', { project: 'board', item: 'rq7m3kd' }),
   scene('clip-chip', 'Research project', 'Region clip citations', 'Inspect clip chips with thumbnails and p.N; the period after a chip stays on its line. Click one to open its region.', { scenario: 'chat', play: '1', citations: 'clip' }),

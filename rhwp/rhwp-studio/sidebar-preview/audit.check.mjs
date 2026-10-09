@@ -56,6 +56,16 @@ try {
       assert.deepEqual(await page.$$eval('.ag-plan-actions button', (nodes) => nodes.map((node) => node.textContent)),
         ['수정 요청', '전체 접근으로 실행', '에이전트로 실행']);
     }
+    // 작업 공간: 다른 작업 공간의 카드에만 가지 칩이 붙고, 보드 위에 거르기가 보인다.
+    if (scene.id === 'project-worktrees') {
+      await page.waitForSelector('.ag-pboard-bar:not([hidden]) .ag-pboard-filter', { timeout: 10000 });
+      const chips = await page.$$eval('.ag-pcard .ag-pworktree-chip', (nodes) => nodes.map((node) => node.textContent));
+      assert.ok(chips.length > 0 && chips.every((text) => text === '요약본'), `worktree chips: ${chips.join(', ')}`);
+    }
+    if (scene.id === 'project-board') {
+      await page.waitForSelector('.ag-pcard', { timeout: 10000 });
+      assert.equal(await page.$('.ag-pboard-bar:not([hidden]), .ag-pworktree-chip'), null);
+    }
     // 영역 조각: 스캔 PDF 에서 그린 썸네일·미리보기 테두리·칩이 실제로 나타나야 한다.
     if (scene.id === 'clip-board') {
       await page.waitForFunction(() => document.querySelectorAll('.ag-pcard[data-kind="clip"] .ag-pcard-thumb[data-state="ready"]').length === 2, { timeout: 20000 });

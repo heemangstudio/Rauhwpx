@@ -1594,6 +1594,36 @@ export interface ProjectMember {
   name: string;
 }
 
+/**
+ * 항목을 모은 작업 공간(워크트리) 표시. 없거나 null 이면 모든 작업 공간의 공통 자료다.
+ * branch 는 표시를 붙일 때의 이름이라, 화면은 지금 작업 공간 목록에서 이름을 다시 찾는다.
+ */
+export interface ProjectOrigin {
+  worktreeId: string;
+  branch: string;
+}
+
+/** 버전 기록이 켜진 문서의 작업 공간 하나. */
+export interface ProjectWorktree {
+  id: string;
+  branch: string;
+  primary: boolean;
+}
+
+/** 이 채팅 문서가 속한 저장소와 작업 공간들. 버전 기록이 꺼진 문서에는 없다. */
+export interface ProjectWorktreeContext {
+  repositoryId: string;
+  current: ProjectWorktree;
+  /** 지금 있는 작업 공간 전부 (current 포함). */
+  worktrees: ProjectWorktree[];
+}
+
+/** 브리지가 허브에 보내는 작업 공간 묶음 — 어느 문서의 것인지와 작업 공간마다의 문서 id. */
+export interface ProjectWorktreeBinding extends ProjectWorktreeContext {
+  documentId: string;
+  worktrees: Array<ProjectWorktree & { documentId: string }>;
+}
+
 export type ProjectLibrarianState = 'idle' | 'running' | 'paused';
 export type ProjectItemLibrarianStatus = 'queued' | 'running' | 'done' | 'failed' | 'skipped';
 
@@ -1610,6 +1640,8 @@ export interface ProjectItemBase {
   updatedAt: number;
   addedBy: ProjectActor;
   trashedAt?: number;
+  /** 다른 작업 공간에서 모은 항목. 정리 도우미는 바꾸지 않는다. */
+  origin?: ProjectOrigin | null;
 }
 
 export type ProjectFileKind = 'text' | 'pdf' | 'docx' | 'hwp' | 'pptx' | 'xlsx' | 'html' | 'image' | 'other';
@@ -1670,6 +1702,8 @@ export interface ProjectLink {
   /** clip = 영역 조각 → 원본 파일 (허브가 스냅샷에서 만든다). */
   origin: 'explicit' | 'note' | 'clip';
   noteId?: string;
+  /** 연결을 만든 작업 공간 (항목의 origin 과 같은 뜻 — origin 이름은 연결 종류가 쓴다). */
+  worktreeOrigin?: ProjectOrigin | null;
 }
 
 export interface ProjectSnapshot {
@@ -1715,7 +1749,9 @@ export type ProjectOp =
   | { op: 'trash'; id: string }
   | { op: 'restore'; id: string }
   | { op: 'graph-pin'; id: string; x: number; y: number }
-  | { op: 'graph-unpin'; id: string };
+  | { op: 'graph-unpin'; id: string }
+  /** shared = 공통으로, current = 이 작업 공간 표시. 항목·노트·영역·연결에 쓴다. */
+  | { op: 'label'; id: string; origin: 'shared' | 'current' };
 
 export interface ProjectOpsResult {
   revision: number;

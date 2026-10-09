@@ -2,10 +2,13 @@
  * 프로젝트 화면 공용 조각: 요소 만들기, 종류 아이콘, 글자 형식.
  * 아이콘은 icons.ts 와 같은 규약(12 그리드, currentColor, 1.25 스트로크)을 따른다.
  */
+import { otherWorktreeBranch, projectShowsWorktrees, type ProjectOriginFilter } from '../../../agent/project-service.ts';
 import type {
   ProjectActor,
   ProjectItem,
+  ProjectOrigin,
   ProjectSnapshot,
+  ProjectWorktreeContext,
 } from '../../../agent/types.ts';
 
 const NS = 'http://www.w3.org/2000/svg';
@@ -174,4 +177,145 @@ export function reducedMotion(): boolean {
 /** 잠깐 보이는 짧은 상태 글. role=status 한 곳에 모은다. */
 export function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+// ── 작업 공간 ───────────────────────────────────────────
+
+export const ORIGIN_FILTERS: ReadonlyArray<{ id: ProjectOriginFilter; label: string }> = [
+  { id: 'all', label: '모두' },
+  { id: 'current', label: '이 작업 공간' },
+  { id: 'shared', label: '공통' },
+];
+
+/**
+ * 다른 작업 공간에서 모은 항목의 브랜치 이름 칩. 공통·이 작업 공간이면 null. 병합으로 사라진
+ * 작업 공간의 표시도 남은 이름으로 보인다 — 공통으로 돌릴 수 있게.
+ */
+export function worktreeChip(
+  origin: ProjectOrigin | null | undefined,
+  context: ProjectWorktreeContext | null,
+  className = 'ag-pcard-tag ag-pworktree-chip',
+): HTMLElement | null {
+  if (!context) return null;
+  const branch = otherWorktreeBranch(origin, context);
+  if (!branch) return null;
+  const chip = el('span', className, branch);
+  chip.title = `작업 공간: ${branch}`;
+  return chip;
+}
+
+export interface WorktreeLabelAction {
+  label: string;
+  origin: 'shared' | 'current';
+  done: string;
+}
+
+/** 항목 메뉴의 작업 공간 표시 바꾸기. 작업 공간이 하나뿐이고 표시도 없으면 비어 있다. */
+export function worktreeLabelActions(
+  item: { origin?: ProjectOrigin | null },
+  context: ProjectWorktreeContext | null,
+): WorktreeLabelAction[] {
+  if (!context || (!projectShowsWorktrees(context) && !item.origin)) return [];
+  const actions: WorktreeLabelAction[] = [];
+  if (item.origin) actions.push({ label: '공통으로 표시', origin: 'shared', done: '공통으로 표시했습니다.' });
+  if (item.origin?.worktreeId !== context.current.id) {
+    actions.push({ label: '이 작업 공간으로 표시', origin: 'current', done: '이 작업 공간으로 표시했습니다.' });
+  }
+  return actions;
+}
+
+export interface WorktreeColorEntry {
+  key: string;
+  label: string;
+  color: string;
+}
+
+/**
+ * 그래프의 작업 공간 색: 이 작업 공간은 첫 색, 다른 작업 공간은 그다음 색을 차례로, 공통은 흐린 색.
+ * 목록에 없는(지워진) 작업 공간의 표시는 항목에 붙은 이름으로 뒤에 잇는다.
+ */
+export function worktreeColors(
+  context: ProjectWorktreeContext,
+  items: readonly Pick<ProjectItem, 'origin' | 'trashedAt'>[],
+  shared: string,
+): { byId: Map<string, string>; legend: WorktreeColorEntry[] } {
+  const byId = new Map<string, string>();
+  const legend: WorktreeColorEntry[] = [];
+  const add = (id: string, label: string) => {
+    if (byId.has(id)) return;
+    const color = PROJECT_COLUMN_COLORS[byId.size % PROJECT_COLUMN_COLORS.length];
+    byId.set(id, color);
+    legend.push({ key: id, label, color });
+  };
+  add(context.current.id, `${context.current.branch} (이 작업 공간)`);
+  for (const worktree of context.worktrees) add(worktree.id, worktree.branch);
+  for (const item of items) if (item.origin && !item.trashedAt) add(item.origin.worktreeId, item.origin.branch);
+  legend.push({ key: '', label: '공통', color: shared });
+  return { byId, legend };
+}
+
+/** 항목 오른쪽 클릭 메뉴. host 는 position 이 있는 상자여야 한다. */
+export interface ProjectMenu {
+  open(entries: ReadonlyArray<{ label: string; run(): void }>, clientX: number, clientY: number, returnFocus?: HTMLElement | null): void;
+  close(): void;
+  dispose(): void;
+}
+
+export function createProjectMenu(host: HTMLElement): ProjectMenu {
+  const menu = el('div', 'ag-pgraph-menu ag-pmenu');
+  menu.setAttribute('role', 'menu');
+  menu.hidden = true;
+  host.append(menu);
+  let returnTo: HTMLElement | null = null;
+
+  function close(restore = false): void {
+    if (menu.hidden) return;
+    menu.hidden = true;
+    menu.replaceChildren();
+    if (restore) returnTo?.focus({ preventScroll: true });
+    returnTo = null;
+  }
+
+  menu.addEventListener('keydown', (event) => {
+    const rows = [...menu.querySelectorAll<HTMLButtonElement>('button')];
+    const index = rows.indexOf(document.activeElement as HTMLButtonElement);
+    if (event.key === 'Escape') close(true);
+    else if (event.key === 'ArrowDown') rows[(index + 1) % rows.length]?.focus();
+    else if (event.key === 'ArrowUp') rows[(index - 1 + rows.length) % rows.length]?.focus();
+    else return;
+    event.preventDefault();
+    event.stopPropagation();
+  });
+  const onOutside = (event: PointerEvent) => {
+    if (!menu.hidden && !menu.contains(event.target as Node | null)) close();
+  };
+  document.addEventListener('pointerdown', onOutside, true);
+
+  return {
+    open(entries, clientX, clientY, returnFocus = null) {
+      menu.replaceChildren();
+      returnTo = returnFocus;
+      for (const entry of entries) {
+        const row = el('button', 'ag-pgraph-menu-item', entry.label);
+        row.type = 'button';
+        row.setAttribute('role', 'menuitem');
+        row.addEventListener('click', () => {
+          close(true);
+          entry.run();
+        });
+        menu.append(row);
+      }
+      menu.hidden = false;
+      const bounds = host.getBoundingClientRect();
+      const box = menu.getBoundingClientRect();
+      menu.style.left = `${Math.max(4, Math.min(clientX - bounds.left, bounds.width - box.width - 8))}px`;
+      menu.style.top = `${Math.max(4, Math.min(clientY - bounds.top, bounds.height - box.height - 8))}px`;
+      menu.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true });
+    },
+    close: () => close(),
+    dispose() {
+      document.removeEventListener('pointerdown', onOutside, true);
+      menu.remove();
+    },
+  };
 }

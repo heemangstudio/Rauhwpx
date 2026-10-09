@@ -689,7 +689,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'project_read',
-    description: 'Read this chat\'s research project (app data, apart from the document and workspace). view: summary, items (filter column/tag/kind/query), item, note (body), links, activity.',
+    description: 'Read this chat\'s research project (app data, not the document). view: summary, items (filter column/tag/kind/query), item, note (body), links, activity.',
     shape: {
       view: z.enum(['summary', 'items', 'item', 'note', 'links', 'activity']),
       id: z.string().max(16).optional(),
@@ -704,10 +704,10 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'project_edit',
-    description: 'One atomic, user-undoable batch of research-project changes. Ops: rename{id,name} tag{id,tags,mode} move{id,column,index} pin{id,pinned} link{from,to,label,fromAnchor,toAnchor} unlink{id} note{id?,name,body,mode,column,tags} ([[id]] in body become links) clip{id?,source,page,rect,name} (PDF/image area) summary{id,summary} columns{columns} goal{body} trash{id} restore{id}. No id creates; new ids return by op index.',
+    description: 'Atomic, user-undoable research-project batch. Ops: rename{id,name} tag{id,tags,mode} move{id,column,index} pin{id,pinned} link{from,to,label,fromAnchor,toAnchor} unlink{id} note{id?,name,body,mode,column,tags} ([[id]] = links) clip{id?,source,page,rect,name} (PDF/image area) summary{id,summary} columns{columns} goal{body} trash{id} restore{id} label{id,origin} (worktree). No id creates; new ids by op index.',
     shape: {
       ops: z.array(z.object({
-        op: z.enum(['rename', 'tag', 'move', 'pin', 'link', 'unlink', 'note', 'clip', 'summary', 'columns', 'goal', 'trash', 'restore']),
+        op: z.enum(['rename', 'tag', 'move', 'pin', 'link', 'unlink', 'note', 'clip', 'summary', 'columns', 'goal', 'trash', 'restore', 'label']),
         id: z.string().max(16).optional(),
         name: z.string().max(200).optional(),
         tags: z.array(z.string().max(40)).max(20).optional(),
@@ -726,13 +726,14 @@ const BASE_TOOL_DEFINITIONS = [
         rect: rectParam().optional(),
         summary: z.string().max(300).optional(),
         columns: z.array(z.object({ id: z.string().max(24).optional(), name: z.string().max(40) })).max(12).optional(),
+        origin: z.enum(['shared', 'current']).optional(),
       })).min(1).max(50),
       expectedRevision: z.number().int().min(0).optional(),
     },
   },
   {
     name: 'project_import',
-    description: 'Copy one source into the research project as a file item: url (public page or file; pages become a text snapshot), path (workspace or chat downloads), homeHit (find_home_files) or text (content you have; url = its origin).',
+    description: 'Copy one source into the research project: url (public file, or a page saved as text), path (workspace or chat downloads), homeHit (find_home_files) or text (content you have; url = its origin).',
     shape: {
       url: z.string().max(2_000).optional(),
       path: z.string().max(1_000).optional(),

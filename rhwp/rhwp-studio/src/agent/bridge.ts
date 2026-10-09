@@ -18,7 +18,7 @@ import {
   type RendererSessionContext,
 } from '../desktop-integration.ts';
 import { RevisionTracker, timeSeededRevision } from './revision.ts';
-import { createProjectService, createProjectStore, type ProjectClient } from './project-service.ts';
+import { createProjectService, createProjectStore, createProjectWorktreeState, type ProjectClient } from './project-service.ts';
 import { AgentToolExecutor, isDocumentWriteTool, toolTraceNow, type ToolTraceTimings } from './tool-executor.ts';
 import { PendingEditManager, editReportNote } from './pending-edits.ts';
 import { PendingOverlayRenderer } from './pending-overlay.ts';
@@ -116,6 +116,7 @@ import type {
   UserQuestionAnswer,
   UserQuestionInteraction,
   UserQuestionOutcome,
+  ProjectWorktreeBinding,
 } from './types.ts';
 
 function isProductSkillIcon(value: unknown): value is ProductSkillIcon | null {
@@ -353,6 +354,11 @@ export interface AgentBridge {
   ): Promise<string | null>;
   /** 이 채팅이 묶인 연구 프로젝트 — 참고자료와 같은 인증으로 허브에 묻는다. */
   readonly projects: ProjectClient;
+  /**
+   * 이 채팅 문서의 작업 공간들(버전 기록이 꺼진 문서는 null). 문서의 모든 작업 공간이 한 프로젝트를
+   * 함께 쓰도록 채팅 시작 때 허브에 실어 보내고, 바뀌면 바로 다시 묶는다.
+   */
+  setProjectWorktrees(binding: ProjectWorktreeBinding | null): void;
   listTemplates(): Promise<TemplateCatalog>;
   addTemplate(file: File, name?: string): Promise<DocumentTemplate>;
   renameTemplate(id: string, name: string): Promise<DocumentTemplate>;
@@ -1383,6 +1389,10 @@ export class AgentBridgeImpl implements AgentBridge {
   private threadId = '';
   private documentId: string | null = null;
   private documentName: string | null = null;
+  /** 문서 세션이 알려 준 작업 공간 묶음. 이 채팅 문서의 것일 때만 허브에 싣는다. */
+  private projectWorktreeBinding: ProjectWorktreeBinding | null = null;
+  /** 보낸 chat-start 의 응답 전에 작업 공간이 바뀌었다 — 응답 뒤 다시 묶는다. */
+  private projectBindPending = false;
   private chatHistory: ChatHistoryEntry[] = [];
   private titleRequestSeq = 0;
   private requestSeq = 0;
@@ -1399,7 +1409,8 @@ export class AgentBridgeImpl implements AgentBridge {
         headers: { Authorization: `Bearer ${this.referenceToken}`, ...init?.headers },
       }),
     });
-    this.projects = { service: projectService, store: createProjectStore({ service: projectService }) };
+    const worktrees = createProjectWorktreeState();
+    this.projects = { service: projectService, store: createProjectStore({ service: projectService, worktrees }), worktrees };
     this.view = deps.view ?? null;
     this.editor = this.view?.inputHandler ?? deps.editor;
     this.editorHost = {
@@ -1852,6 +1863,8 @@ export class AgentBridgeImpl implements AgentBridge {
       }
       if (this.pendingChatStart !== null) {
         this.sendPendingChatStart();
+      } else {
+        this.sendProjectBind();
       }
     };
     ws.onmessage = (ev) => {
@@ -2282,6 +2295,7 @@ export class AgentBridgeImpl implements AgentBridge {
           if (sessionThreadId) this.threadId = sessionThreadId;
           if (typeof session.documentId === 'string' || session.documentId === null) this.documentId = session.documentId;
           if (typeof session.documentName === 'string' || session.documentName === null) this.documentName = session.documentName;
+          this.syncProjectWorktreeContext();
           this.turnRunning = session.status === 'running';
           this.activeProviderTurnId = this.turnRunning && typeof session.turnId === 'string'
             ? session.turnId
@@ -2497,6 +2511,11 @@ export class AgentBridgeImpl implements AgentBridge {
         if (typeof msg.threadId === 'string') this.threadId = msg.threadId;
         if (typeof msg.documentId === 'string' || msg.documentId === null) this.documentId = msg.documentId;
         if (typeof msg.documentName === 'string' || msg.documentName === null) this.documentName = msg.documentName;
+        this.syncProjectWorktreeContext();
+        if (this.projectBindPending) {
+          this.projectBindPending = false;
+          this.sendProjectBind();
+        }
         const fallbackWorkflow = this.workflow;
         const fallbackPhase = this.phase;
         this.finishWorkflowSwitch();
@@ -3318,6 +3337,7 @@ export class AgentBridgeImpl implements AgentBridge {
     this.threadId = threadId;
     this.documentId = documentId;
     this.documentName = documentName;
+    this.syncProjectWorktreeContext();
     this.chatHistory = history.map((entry) => ({ ...entry }));
     this.turnSnapshots?.reset();
     // 워크플로와 권한은 서버 상태가 기준이다. 요청값은 chat-started가 확인할 때까지
@@ -3488,6 +3508,72 @@ export class AgentBridgeImpl implements AgentBridge {
       v: AGENT_PROTOCOL_VERSION,
       type: 'chat-start',
       ...pending,
+      ...this.projectRepositoryFields(pending.documentId),
+    });
+  }
+
+  setProjectWorktrees(binding: ProjectWorktreeBinding | null): void {
+    const previous = this.projectWorktreeBinding;
+    this.projectWorktreeBinding = binding
+      ? {
+        ...binding,
+        current: { ...binding.current },
+        worktrees: binding.worktrees.map((worktree) => ({ ...worktree })),
+      }
+      : null;
+    this.syncProjectWorktreeContext();
+    if (JSON.stringify(previous) === JSON.stringify(this.projectWorktreeBinding)) return;
+    if (this.pendingChatStart && this.chatStartSent) {
+      this.projectBindPending = true;
+      return;
+    }
+    this.sendProjectBind();
+  }
+
+  /** 화면이 보는 작업 공간: 이 채팅 문서(초안이면 세션 문서)의 묶음만. */
+  private syncProjectWorktreeContext(): void {
+    const binding = this.projectWorktreeBinding;
+    const documentId = this.pendingChatStart?.documentId ?? this.documentId;
+    const visible = binding && (!documentId || binding.documentId === documentId)
+      ? {
+        repositoryId: binding.repositoryId,
+        current: { ...binding.current },
+        worktrees: binding.worktrees.map(({ id, branch, primary }) => ({ id, branch, primary })),
+      }
+      : null;
+    this.projects?.worktrees?.set(visible);
+  }
+
+  private projectRepositoryFields(documentId: string | null): Record<string, unknown> {
+    const binding = this.projectWorktreeBinding;
+    if (!binding || !documentId || binding.documentId !== documentId) return {};
+    return {
+      repositoryId: binding.repositoryId,
+      worktree: { id: binding.current.id, branch: binding.current.branch, primary: binding.current.primary },
+      worktrees: binding.worktrees.map(({ id, branch, primary, documentId: worktreeDocumentId }) => (
+        { id, branch, primary, documentId: worktreeDocumentId }
+      )),
+    };
+  }
+
+  /**
+   * 허브에 이 채팅의 프로젝트를 다시 묶어 달라고 한다. 허브가 다시 떠 세션이 비었거나 작업 공간이
+   * 바뀌었을 때, 다음 메시지를 기다리지 않고 프로젝트 칸의 HTTP 호출이 바로 통하게 한다.
+   * 허브는 이미 있는 프로젝트에만 묶는다 — 새 프로젝트는 첫 채팅이 만든다.
+   */
+  private sendProjectBind(): void {
+    if (this.state !== 'connected') return;
+    if (this.pendingChatStart && !this.chatStartSent) return;
+    const documentId = this.pendingChatStart?.documentId ?? this.documentId;
+    const threadId = this.pendingChatStart?.threadId ?? this.threadId;
+    if (!threadId && !documentId) return;
+    this.sendJson({
+      v: AGENT_PROTOCOL_VERSION,
+      type: 'project-bind',
+      threadId: threadId || null,
+      documentId,
+      documentName: this.pendingChatStart?.documentName ?? this.documentName,
+      ...this.projectRepositoryFields(documentId),
     });
   }
 

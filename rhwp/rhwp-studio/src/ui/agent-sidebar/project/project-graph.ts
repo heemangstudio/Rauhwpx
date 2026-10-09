@@ -11,9 +11,9 @@
  * 휠·핀치는 커서 쪽으로 부드럽게 확대한다.
  */
 import type { ForceCollide, ForceLink, ForceManyBody, ForceX, ForceY, Simulation, SimulationLinkDatum, SimulationNodeDatum } from 'd3-force';
-import { itemColumnId } from '../../../agent/project-service.ts';
+import { itemColumnId, otherWorktreeBranch, projectShowsWorktrees } from '../../../agent/project-service.ts';
 import type { ProjectService, ProjectStore } from '../../../agent/project-service.ts';
-import type { ProjectItem, ProjectSnapshot } from '../../../agent/types.ts';
+import type { ProjectItem, ProjectSnapshot, ProjectWorktreeContext } from '../../../agent/types.ts';
 import { cachedClipThumbUrl, clipThumbUrl } from './clip-thumbs.ts';
 import {
   DEFAULT_FORCE_SETTINGS,
@@ -34,6 +34,8 @@ import {
   el,
   errorText,
   reducedMotion,
+  worktreeColors,
+  worktreeLabelActions,
 } from './project-ui.ts';
 
 export interface ProjectGraphDeps {
@@ -44,6 +46,8 @@ export interface ProjectGraphDeps {
   /** 문서 노드를 눌렀을 때. 없으면 문서 노드는 누를 수 없다. */
   openDocument?(documentId: string): void;
   announce(message: string, tone?: 'error'): void;
+  /** 이 채팅 문서의 작업 공간. 둘 이상일 때만 작업 공간 색과 표시 메뉴를 보인다. */
+  worktrees?: () => ProjectWorktreeContext | null;
 }
 
 export interface ProjectGraph {
@@ -54,7 +58,7 @@ export interface ProjectGraph {
   dispose(): void;
 }
 
-type ColorMode = 'column' | 'tag';
+type ColorMode = 'column' | 'tag' | 'worktree';
 
 interface GraphNode extends SimulationNodeDatum {
   id: string;
@@ -177,6 +181,9 @@ function saveForces(projectId: string, settings: GraphForceSettings): void {
 
 export function createProjectGraph(deps: ProjectGraphDeps): ProjectGraph {
   const { store, announce } = deps;
+  const worktrees = () => deps.worktrees?.() ?? null;
+  /** 작업 공간 색 기준에서 작업 공간 id → 색. */
+  let worktreeColorById = new Map<string, string>();
   let project: ProjectSnapshot | null = null;
   let itemById = new Map<string, ProjectItem>();
   let active = false;
@@ -229,7 +236,7 @@ export function createProjectGraph(deps: ProjectGraphDeps): ProjectGraph {
   modes.setAttribute('role', 'radiogroup');
   modes.setAttribute('aria-label', '색 기준');
   const modeButtons = new Map<ColorMode, HTMLButtonElement>();
-  for (const [mode, label] of [['column', '열'], ['tag', '태그']] as const) {
+  for (const [mode, label] of [['column', '열'], ['tag', '태그'], ['worktree', '작업 공간']] as const) {
     const choice = el('button', 'ag-pgraph-mode', label);
     choice.type = 'button';
     choice.setAttribute('role', 'radio');
@@ -281,6 +288,10 @@ export function createProjectGraph(deps: ProjectGraphDeps): ProjectGraph {
   element.append(canvas, toolbar, forcesPanel, menu, legend, empty);
 
   function renderModes(): void {
+    // 작업 공간이 하나로 줄면 작업 공간 기준을 감추고 열로 돌아간다.
+    const showsWorktrees = projectShowsWorktrees(worktrees());
+    if (!showsWorktrees && colorMode === 'worktree') colorMode = 'column';
+    modeButtons.get('worktree')!.hidden = !showsWorktrees;
     for (const [mode, choice] of modeButtons) {
       const selected = mode === colorMode;
       choice.classList.toggle('ag-active', selected);
@@ -315,20 +326,28 @@ export function createProjectGraph(deps: ProjectGraphDeps): ProjectGraph {
     const item = itemById.get(node.id);
     if (!item) return palette.muted;
     if (colorMode === 'column') return columnColor(project, itemColumnId(project, item));
+    if (colorMode === 'worktree') return (item.origin && worktreeColorById.get(item.origin.worktreeId)) || palette.muted;
     const tag = item.tags.find((name) => project!.tags.some((entry) => entry.name === name));
     return tag ? project.tags.find((entry) => entry.name === tag)!.color : palette.muted;
   }
 
   function recolor(): void {
+    const context = worktrees();
+    const worktreeLegend = colorMode === 'worktree' && context && project
+      ? worktreeColors(context, project.items, palette.muted)
+      : null;
+    worktreeColorById = worktreeLegend?.byId ?? new Map();
     for (const node of nodes) node.color = nodeColor(node);
-    renderLegend();
+    renderLegend(worktreeLegend?.legend ?? null);
   }
 
-  function renderLegend(): void {
+  function renderLegend(worktreeLegend: Array<{ key: string; label: string; color: string }> | null): void {
     legend.replaceChildren();
     if (!project) return;
     const entries: Array<{ key: string; label: string; color: string }> = [];
-    if (colorMode === 'column') {
+    if (worktreeLegend) {
+      entries.push(...worktreeLegend);
+    } else if (colorMode === 'column') {
       for (const column of project.columns) entries.push({ key: column.id, label: column.name, color: columnColor(project, column.id) });
     } else {
       const used = new Map<string, number>();
@@ -990,7 +1009,8 @@ export function createProjectGraph(deps: ProjectGraphDeps): ProjectGraph {
       neighbors = neighborIds(node);
     }
     canvas.style.cursor = node ? 'pointer' : '';
-    canvas.title = node ? node.label : '';
+    const branch = node && node.kind !== 'doc' ? otherWorktreeBranch(itemById.get(node.id)?.origin, worktrees()) : null;
+    canvas.title = !node ? '' : branch && projectShowsWorktrees(worktrees()) ? `${node.label}\n작업 공간: ${branch}` : node.label;
     requestDraw();
   }
 
@@ -1063,6 +1083,13 @@ export function createProjectGraph(deps: ProjectGraphDeps): ProjectGraph {
     const entries: Array<[string, () => void]> = [];
     if (node.kind !== 'doc' || (node.documentId && deps.openDocument)) entries.push(['열기', () => openNode(node)]);
     entries.push(node.pinned ? ['고정 풀기', () => unpinNode(node)] : ['고정', () => pinNode(node)]);
+    const item = node.kind === 'doc' ? null : itemById.get(node.id);
+    for (const action of item ? worktreeLabelActions(item, worktrees()) : []) {
+      entries.push([action.label, () => {
+        void store.edit([{ op: 'label', id: node.id, origin: action.origin }])
+          .then(() => announce(action.done), (error: unknown) => announce(errorText(error), 'error'));
+      }]);
+    }
     menu.replaceChildren();
     for (const [label, run] of entries) {
       const row = el('button', 'ag-pgraph-menu-item', label);
@@ -1321,6 +1348,7 @@ export function createProjectGraph(deps: ProjectGraphDeps): ProjectGraph {
     element,
     update(next) {
       project = next;
+      renderModes();
       if (next) loadProjectForces(next.id);
       rebuild();
       if (!next) {

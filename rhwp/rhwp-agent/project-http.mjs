@@ -93,7 +93,8 @@ function contentDisposition(kind, name, fileKind) {
 /**
  * @param {{
  *   projectStore: any, referenceStore: any, settingsStore: any, librarian?: any,
- *   tokens: string[], session: {projectId: string|null, documentId: string|null, documentName?: string|null} | null,
+ *   tokens: string[], session: {projectId: string|null, documentId: string|null, documentName?: string|null,
+ *     labels?: {current: object|null, auto: object|null}} | null,
  *   homeAccess?: boolean, platform?: string,
  *   onBindingChanged?: (projectId: string|null) => void|Promise<void>,
  * }} options
@@ -111,6 +112,8 @@ export function createProjectHttpHandler({
 }) {
   const boundProjectId = session?.projectId ?? null;
   const documentId = session?.documentId ?? null;
+  // 작업 공간 표시: 이 세션의 작업 공간이 'current' 이고, 새로 올린 파일은 auto 표시를 받는다.
+  const labels = session?.labels ?? null;
 
   /** 세션이 다룰 수 있는 프로젝트인가 — 묶인 프로젝트 또는 세션 문서가 속한 프로젝트. */
   const assertOwned = (projectId) => {
@@ -250,6 +253,7 @@ export function createProjectHttpHandler({
             ops: body.ops,
             actor: { kind: 'user' },
             expectedRevision: body.expectedRevision,
+            labels,
           });
           return reply(200, result);
         }
@@ -320,6 +324,7 @@ export function createProjectHttpHandler({
           source: { kind: 'upload' },
           ...(column ? { column } : {}),
           addedBy: { kind: 'user' },
+          ...(labels?.auto ? { origin: labels.auto } : {}),
         });
         return reply(201, { item });
       }

@@ -8,7 +8,7 @@
  */
 import './project.css';
 import { confirmSheet } from '../sheet.ts';
-import type { ProjectService, ProjectStore } from '../../../agent/project-service.ts';
+import type { ProjectService, ProjectStore, ProjectWorktreeState } from '../../../agent/project-service.ts';
 import type {
   ProjectActivityEntry,
   ProjectItem,
@@ -50,6 +50,8 @@ const previewModules = import.meta.glob<typeof import('./project-preview.ts')>('
 export interface ProjectColumnDeps {
   store: ProjectStore;
   service?: ProjectService | null;
+  /** 이 채팅 문서의 작업 공간들. 바뀌면 보드·그래프·파일을 다시 그린다. */
+  worktrees?: ProjectWorktreeState | null;
   /** 칸 닫기 단추. 없으면 단추를 숨긴다. */
   onClose?(): void;
   /** 그래프의 문서 노드를 눌렀을 때. */
@@ -189,9 +191,10 @@ export function createProjectColumn(deps: ProjectColumnDeps): ProjectColumn {
     }, tone === 'error' ? 6000 : 3200);
   }
 
-  const board = createProjectBoard({ store, service, openPreview: (id) => openPreview(id), announce });
-  const graph = createProjectGraph({ store, service, openPreview: (id) => openPreview(id), openDocument: deps.openDocument, announce });
-  const files = createProjectFiles({ store, service, openPreview: (id) => openPreview(id), announce });
+  const worktrees = () => deps.worktrees?.get() ?? null;
+  const board = createProjectBoard({ store, service, openPreview: (id) => openPreview(id), announce, worktrees });
+  const graph = createProjectGraph({ store, service, openPreview: (id) => openPreview(id), openDocument: deps.openDocument, announce, worktrees });
+  const files = createProjectFiles({ store, service, openPreview: (id) => openPreview(id), announce, worktrees });
   panels.get('board')!.append(board.element);
   panels.get('graph')!.append(graph.element);
   panels.get('files')!.append(files.element);
@@ -613,6 +616,7 @@ export function createProjectColumn(deps: ProjectColumnDeps): ProjectColumn {
     render();
     if (previewOpen) preview?.refresh?.();
   });
+  const unsubscribeWorktrees = deps.worktrees?.subscribe(() => render()) ?? (() => undefined);
   render();
   if (!project && service) void store.refresh().catch((error: unknown) => announce(errorText(error), 'error'));
 
@@ -628,6 +632,7 @@ export function createProjectColumn(deps: ProjectColumnDeps): ProjectColumn {
     },
     dispose() {
       unsubscribe();
+      unsubscribeWorktrees();
       if (statusTimer !== null) clearTimeout(statusTimer);
       board.dispose();
       graph.dispose();

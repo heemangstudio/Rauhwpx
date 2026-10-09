@@ -329,6 +329,22 @@
 
 /* ── 보드 ── */
 
+.ag-pboard-frame {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.ag-pboard-bar {
+  display: flex;
+  flex: 0 0 auto;
+  padding: 10px 20px 0;
+}
+
+.ag-pboard-bar[hidden] { display: none; }
+
 .ag-pboard {
   flex: 1 1 auto;
   min-height: 0;
@@ -549,6 +565,13 @@
   white-space: nowrap;
 }
 
+/* 다른 작업 공간의 가지 이름: 태그와 구별되게 테두리만 둔 흐린 칩. */
+.ag-pworktree-chip {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--ag-border);
+  color: var(--ag-text-muted);
+}
+
 .ag-pcard-more {
   color: var(--ag-text-muted);
   font-size: var(--ag-fs-mono);
@@ -683,6 +706,8 @@
 
 .ag-pgraph-forces[hidden],
 .ag-pgraph-menu[hidden] { display: none; }
+
+.ag-pmenu { max-width: 220px; }
 
 @keyframes ag-pgraph-pop-in {
   from { opacity: 0; transform: translateY(-3px); }
@@ -839,6 +864,7 @@
 /* ── 파일 ── */
 
 .ag-pfiles {
+  position: relative;
   display: flex;
   flex: 1 1 auto;
   min-height: 0;

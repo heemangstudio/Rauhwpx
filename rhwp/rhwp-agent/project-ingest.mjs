@@ -124,6 +124,18 @@ function cleanTitle(value, fallback) {
   return text || fallback;
 }
 
+/** 화면에 보일 쪽 제목: 파일 이름에 못 쓰는 글자(:, / 등)도 그대로 둔다. */
+function displayTitle(value, fallback) {
+  const text = String(value ?? '')
+    .normalize('NFC')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MAX_TITLE_CHARS)
+    .trim();
+  return text || fallback;
+}
+
 /** Choose the stored extension from the signature, Content-Type, then the file name. */
 export function extensionForDownload({ mime, filename, bytes }) {
   const head = Buffer.from(bytes?.subarray?.(0, 512) ?? []);
@@ -276,7 +288,8 @@ export function createProjectIngest({
 } = {}) {
   const log = typeof logger === 'function' ? logger : (message) => logger?.info?.(message);
 
-  async function store({ projectId, bytes, name, ext, source, column, tags, actor, title }) {
+  /** snapshot: 웹 페이지·글 조각을 글로 저장한 것 — 제목은 저장 확장자 없이 쪽 제목만 쓴다. */
+  async function store({ projectId, bytes, name, ext, source, column, tags, actor, title, origin, snapshot = false }) {
     if (typeof projectId !== 'string' || !projectId) {
       throw new ProjectIngestError('PROJECT_INGEST_INVALID', 'projectId is required');
     }
@@ -292,7 +305,9 @@ export function createProjectIngest({
     const item = await projectStore.addFileItem(projectId, {
       fileId: file.id,
       scope: 'project',
-      title: title ? `${cleanTitle(title, 'file')}.${ext}` : fileName,
+      title: snapshot
+        ? displayTitle(title, cleanTitle(baseName(name), 'file'))
+        : (title ? `${cleanTitle(title, 'file')}.${ext}` : fileName),
       originalName: fileName,
       mimeType,
       size: bytes.length,
@@ -300,13 +315,14 @@ export function createProjectIngest({
       ...(typeof column === 'string' && column ? { column } : {}),
       ...(normalizeTags(tags) ? { tags: normalizeTags(tags) } : {}),
       addedBy: addedByOf(actor),
+      ...(origin ? { origin } : {}),
     });
     log(`project-ingest: ${source.kind} → ${projectId}/${item?.id ?? file.id} (${bytes.length} B)`);
     return { item };
   }
 
   return {
-    async importUrl({ projectId, url, name, column, tags, actor } = {}) {
+    async importUrl({ projectId, url, name, column, tags, actor, origin } = {}) {
       if (typeof fetchPublic !== 'function') throw new ProjectIngestError('PROJECT_INGEST_UNAVAILABLE', 'Web import is unavailable');
       const limits = ingestLimits(settings);
       const fetched = await fetchPublic(String(url ?? ''), { maxBytes: limits.maxBytes });
@@ -324,32 +340,34 @@ export function createProjectIngest({
         });
         const bytes = Buffer.from(markdown, 'utf8');
         const fallback = new URL(fetched.finalUrl ?? source.url).hostname;
+        const pageTitle = name ? baseName(name) : title;
         return store({
-          projectId, bytes, ext: 'md', source, column, tags, actor,
-          name: `${cleanTitle(name ? baseName(name) : title, fallback)}.md`,
+          projectId, bytes, ext: 'md', source, column, tags, actor, origin, snapshot: true,
+          name: `${cleanTitle(pageTitle, fallback)}.md`,
+          title: displayTitle(pageTitle, fallback),
         });
       }
       if (!ext) throw new ProjectIngestError('PROJECT_INGEST_TYPE', `Unsupported content type ${fetched.mime || '(none)'}`);
       assertTypeAllowed(ext, limits);
       const base = name || fetched.filename || new URL(fetched.finalUrl ?? source.url).hostname;
-      return store({ projectId, bytes: fetched.bytes, ext, source, column, tags, actor, name: `${baseName(base)}.${ext}` });
+      return store({ projectId, bytes: fetched.bytes, ext, source, column, tags, actor, origin, name: `${baseName(base)}.${ext}` });
     },
 
-    async importPath({ projectId, path: filePath, allowedRoots, name, column, tags, actor } = {}) {
+    async importPath({ projectId, path: filePath, allowedRoots, name, column, tags, actor, origin } = {}) {
       const limits = ingestLimits(settings);
       const real = await resolveAllowedPath(filePath, allowedRoots);
       const ext = extensionOf(real);
       assertTypeAllowed(ext, limits);
       const bytes = await readRegularFile(real, limits);
       return store({
-        projectId, bytes, ext, column, tags, actor,
+        projectId, bytes, ext, column, tags, actor, origin,
         name: path.basename(real),
         title: name ? baseName(name) : undefined,
         source: { kind: 'workspace' },
       });
     },
 
-    async importHomeHit({ projectId, hitId, sessionKey, name, column, tags, actor } = {}) {
+    async importHomeHit({ projectId, hitId, sessionKey, name, column, tags, actor, origin } = {}) {
       if (!homeSearch?.available) {
         throw new ProjectIngestError('PROJECT_INGEST_UNAVAILABLE', 'Home folder import is only available in the desktop app');
       }
@@ -361,14 +379,14 @@ export function createProjectIngest({
       assertTypeAllowed(ext, limits);
       const bytes = await readRegularFile(resolved.realPath, limits);
       return store({
-        projectId, bytes, ext, column, tags, actor,
+        projectId, bytes, ext, column, tags, actor, origin,
         name: path.basename(resolved.realPath),
         title: name ? baseName(name) : undefined,
         source: { kind: 'home', ...(resolved.homePath ? { homePath: resolved.homePath } : {}) },
       });
     },
 
-    async importText({ projectId, text, url, name, column, tags, actor } = {}) {
+    async importText({ projectId, text, url, name, column, tags, actor, origin } = {}) {
       const limits = ingestLimits(settings);
       if (typeof text !== 'string' || !text.trim()) throw new ProjectIngestError('PROJECT_INGEST_EMPTY', 'text is required');
       if (text.length > MAX_TEXT_CHARS) throw new ProjectIngestError('PROJECT_INGEST_TOO_LARGE', 'text is too long');
@@ -392,8 +410,9 @@ export function createProjectIngest({
       const bytes = Buffer.from(body.endsWith('\n') ? body : `${body}\n`, 'utf8');
       assertSize(bytes.length, limits);
       return store({
-        projectId, bytes, ext, column, tags, actor,
+        projectId, bytes, ext, column, tags, actor, origin, snapshot: true,
         name: `${title}.${ext}`,
+        title: displayTitle(baseName(name), title),
         source: { kind: 'text', ...(sourceUrl ? { url: sourceUrl } : {}) },
       });
     },

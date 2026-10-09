@@ -74,7 +74,11 @@ const OP_LABELS = {
   restore: '복원',
   'graph-pin': '그래프 배치',
   'graph-unpin': '그래프 배치',
+  label: '작업 공간 표시',
 };
+const MAX_WORKTREE_ID_CHARS = 128;
+const MAX_BRANCH_CHARS = 120;
+const REPOSITORY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const FILE_KINDS = {
   '.txt': 'text', '.md': 'text', '.markdown': 'text', '.csv': 'text', '.tsv': 'text', '.json': 'text', '.xml': 'text',
   '.pdf': 'pdf',
@@ -195,6 +199,54 @@ function normalizeActor(raw) {
   };
 }
 
+/** 작업 공간 표시 {worktreeId, branch}. 모양이 틀리면 null(공통). */
+export function normalizeOrigin(raw) {
+  if (!isPlainObject(raw)) return null;
+  const worktreeId = typeof raw.worktreeId === 'string' ? raw.worktreeId.trim().slice(0, MAX_WORKTREE_ID_CHARS) : '';
+  if (!worktreeId) return null;
+  const branch = cleanText(raw.branch ?? '', MAX_BRANCH_CHARS) ?? '';
+  return { worktreeId, branch };
+}
+
+/**
+ * 세션이 넘기는 저장소 정보 {id, worktree:{id,branch,primary}, worktrees:[{id,branch,primary,documentId}]}.
+ * 버전 기록이 없는 문서나 모양이 틀린 값은 null — 오늘처럼 문서마다 묶는다.
+ */
+export function normalizeRepository(raw) {
+  if (!isPlainObject(raw) || typeof raw.id !== 'string' || !REPOSITORY_ID_PATTERN.test(raw.id)) return null;
+  const worktreeOf = (entry) => {
+    if (!isPlainObject(entry)) return null;
+    const id = typeof entry.id === 'string' ? entry.id.trim().slice(0, MAX_WORKTREE_ID_CHARS) : '';
+    if (!id) return null;
+    return {
+      id,
+      branch: cleanText(entry.branch ?? '', MAX_BRANCH_CHARS) ?? '',
+      primary: entry.primary === true,
+      ...(typeof entry.documentId === 'string' && entry.documentId ? { documentId: entry.documentId.slice(0, 256) } : {}),
+    };
+  };
+  const worktree = worktreeOf(raw.worktree);
+  if (!worktree) return null;
+  const worktrees = [];
+  for (const entry of Array.isArray(raw.worktrees) ? raw.worktrees.slice(0, 64) : []) {
+    const normalized = worktreeOf(entry);
+    if (normalized && !worktrees.some((known) => known.id === normalized.id)) worktrees.push(normalized);
+  }
+  if (!worktrees.some((entry) => entry.id === worktree.id)) worktrees.push(worktree);
+  return { id: raw.id, worktree, worktrees };
+}
+
+/**
+ * 세션의 표시 규칙. current = 'current' 표시가 가리킬 작업 공간, auto = 새 항목이 받는 표시
+ * (기본이 아닌 작업 공간은 늘, 기본 작업 공간은 작업 공간이 둘 이상일 때만).
+ */
+export function originLabels(repository) {
+  if (!repository) return { current: null, auto: null };
+  const current = { worktreeId: repository.worktree.id, branch: repository.worktree.branch };
+  const auto = !repository.worktree.primary || repository.worktrees.length > 1 ? current : null;
+  return { current, auto };
+}
+
 function compareOrder(left, right) {
   return (left.order - right.order) || (left.createdAt - right.createdAt) || left.id.localeCompare(right.id);
 }
@@ -270,11 +322,13 @@ function restoreClipsOf(state, fileId, now) {
  * (그 연산 직후의 값)를 남긴다. 확인 값이 달라졌으면 되돌리기는 그 연산을 건너뛴다.
  */
 class OpApplier {
-  constructor(store, state, actor, { now, noteBodies }) {
+  constructor(store, state, actor, { now, noteBodies, labels = null }) {
     this.store = store;
     this.state = state;
     this.actor = actor;
     this.now = now;
+    // 정리 도우미는 표시를 붙이지도 바꾸지도 않는다.
+    this.labels = actor.kind === 'librarian' ? { current: null, auto: null } : (labels ?? { current: null, auto: null });
     this.noteBodies = noteBodies; // Map<noteId, string|null> — 이 배치가 쓰거나 지운 메모 본문
     this.groups = [];
     this.created = {};
@@ -471,6 +525,8 @@ class OpApplier {
     } else {
       id = this.store.newId(this.state, 'l', 8);
     }
+    // 되돌리기로 되살리는 연결은 원래 표시를 그대로 가져온다.
+    const worktreeOrigin = op.worktreeOrigin !== undefined ? normalizeOrigin(op.worktreeOrigin) : this.labels.auto;
     const link = {
       id,
       from,
@@ -479,6 +535,7 @@ class OpApplier {
       ...(op.toAnchor ? { toAnchor: op.toAnchor } : {}),
       ...(label ? { label } : {}),
       origin: 'explicit',
+      ...(worktreeOrigin ? { worktreeOrigin: { ...worktreeOrigin } } : {}),
     };
     this.state.links.push(link);
     this.created[index] = id;
@@ -526,6 +583,7 @@ class OpApplier {
         addedBy: this.actor,
         bytes: Buffer.byteLength(body, 'utf8'),
         bodySha: sha1(body),
+        ...(this.labels.auto ? { origin: { ...this.labels.auto } } : {}),
       };
       this.state.items.push(item);
       this.placeItem(item, op.column ?? this.state.columns[0].id, null);
@@ -617,6 +675,7 @@ class OpApplier {
       sourceId: source.id,
       page,
       rect,
+      ...(this.labels.auto ? { origin: { ...this.labels.auto } } : {}),
     };
     this.state.items.push(item);
     this.placeItem(item, column, null);
@@ -740,6 +799,41 @@ class OpApplier {
     return this.record(op, [{ op: 'trash', id: item.id }], [`item:${item.id}:trashed`]);
   }
 
+  /**
+   * 작업 공간 표시: 'shared' 는 공통으로, 'current' 는 이 채팅의 작업 공간으로. 되돌리기는
+   * 원래 표시 객체를 그대로 넘긴다. 항목(파일·메모·영역)과 직접 만든 연결에 쓴다.
+   */
+  op_label(op, index) {
+    let next;
+    if (op.origin === 'shared' || op.origin === null) next = null;
+    else if (op.origin === 'current') {
+      if (!this.labels.current) throw invalidOp(index, 'this chat has no worktree; use origin shared');
+      next = { ...this.labels.current };
+    } else if (isPlainObject(op.origin)) {
+      next = normalizeOrigin(op.origin);
+      if (!next) throw invalidOp(index, 'origin must be shared or current');
+    } else throw invalidOp(index, 'origin must be shared or current');
+    const resolved = resolveItemId(this.state, op.id);
+    const item = this.state.items.find((entry) => entry.id === resolved);
+    if (item) {
+      if (item.trashedAt) throw invalidOp(index, `item ${item.id} is in the trash; restore it first`);
+      const previous = item.origin ?? null;
+      if (sameJson(previous, next)) return undefined;
+      if (next) item.origin = next;
+      else delete item.origin;
+      item.updatedAt = this.now;
+      return this.record(op, [{ op: 'label', id: item.id, origin: previous ?? 'shared' }], [`item:${item.id}:origin`]);
+    }
+    const link = this.state.links.find((entry) => entry.id === op.id);
+    if (!link) throw projectError('PROJECT_ITEM_NOT_FOUND', `ops[${index}]: ${String(op.id)} was not found`);
+    if (link.origin !== 'explicit') throw invalidOp(index, 'links written in a note follow the note');
+    const previous = link.worktreeOrigin ?? null;
+    if (sameJson(previous, next)) return undefined;
+    if (next) link.worktreeOrigin = next;
+    else delete link.worktreeOrigin;
+    return this.record(op, [{ op: 'label', id: link.id, origin: previous ?? 'shared' }], [`link:${link.id}`]);
+  }
+
   op_graph_pin(op, index) {
     const id = this.nodeExists(op.id);
     if (!id) throw projectError('PROJECT_ITEM_NOT_FOUND', `ops[${index}]: ${String(op.id)} was not found`);
@@ -804,8 +898,32 @@ function validateProjectState(raw, projectId) {
     goal: typeof raw.goal === 'string' ? raw.goal : '',
     graph: { pinned: isPlainObject(raw.graph?.pinned) ? raw.graph.pinned : {} },
     aliases: isPlainObject(raw.aliases) ? raw.aliases : {},
+    repositories: Array.isArray(raw.repositories) ? raw.repositories.filter((id) => typeof id === 'string' && REPOSITORY_ID_PATTERN.test(id)) : [],
     activitySeq: Number.isSafeInteger(raw.activitySeq) ? raw.activitySeq : 0,
     revision: Number.isSafeInteger(raw.revision) ? raw.revision : 0,
+  };
+}
+
+/**
+ * index.json 의 모양.
+ * - repositoryProjects: 버전 저장소 id → 프로젝트. 저장소의 모든 작업 공간 문서가 이 프로젝트를 함께 쓴다.
+ * - repositories: 저장소마다 기본 문서와 작업 공간(지금 브랜치 이름 — 표시의 이름을 다시 찾는 데 쓴다).
+ * - documentRepositories: 문서 id → 저장소 id.
+ * - pendingMerges: 합치는 중인 프로젝트 { into, memberNode } — 멈췄다가 다시 떠도 이어서 합친다.
+ * - mergedProjects: 다른 프로젝트로 합쳐진 프로젝트 { into, at }.
+ */
+function emptyIndex() {
+  return {
+    schemaVersion: INDEX_SCHEMA_VERSION,
+    projects: {},
+    documentProjects: {},
+    threadProjects: {},
+    deletedProjects: {},
+    repositoryProjects: {},
+    repositories: {},
+    documentRepositories: {},
+    pendingMerges: {},
+    mergedProjects: {},
   };
 }
 
@@ -843,7 +961,7 @@ export class ProjectStore {
     this.maxNotes = maxNotes;
     this.maxClips = maxClips;
     this.maxLinks = maxLinks;
-    this.index = { schemaVersion: INDEX_SCHEMA_VERSION, projects: {}, documentProjects: {}, threadProjects: {}, deletedProjects: {} };
+    this.index = emptyIndex();
     this.projects = new Map();
     this.queues = new Map();
     this.indexQueue = Promise.resolve();
@@ -862,13 +980,11 @@ export class ProjectStore {
     try {
       const raw = JSON.parse(await readBoundedText(this.indexPath, MAX_INDEX_JSON_BYTES));
       if (!isPlainObject(raw) || raw.schemaVersion !== INDEX_SCHEMA_VERSION) throw new Error('unsupported index schema');
-      this.index = {
-        schemaVersion: INDEX_SCHEMA_VERSION,
-        projects: isPlainObject(raw.projects) ? raw.projects : {},
-        documentProjects: isPlainObject(raw.documentProjects) ? raw.documentProjects : {},
-        threadProjects: isPlainObject(raw.threadProjects) ? raw.threadProjects : {},
-        deletedProjects: isPlainObject(raw.deletedProjects) ? raw.deletedProjects : {},
-      };
+      const index = emptyIndex();
+      for (const key of Object.keys(index)) {
+        if (key !== 'schemaVersion' && isPlainObject(raw[key])) index[key] = raw[key];
+      }
+      this.index = index;
     } catch (error) {
       if (error?.code !== 'ENOENT') {
         // 색인이 깨져도 허브는 뜬다 — 원본을 옆에 남기고 프로젝트 폴더에서 다시 만든다.
@@ -892,6 +1008,8 @@ export class ProjectStore {
         for (const member of state.members) {
           if (typeof member?.documentId === 'string') this.index.documentProjects[member.documentId] = state.id;
         }
+        // 작업 공간 문서는 구성원이 아니다 — 다음 채팅이 저장소 id 로 다시 찾는다.
+        for (const repositoryId of state.repositories) this.index.repositoryProjects[repositoryId] = state.id;
       } catch (error) {
         this.logger?.(`project ${entry.name} skipped while rebuilding the index: ${error?.message ?? error}`);
       }
@@ -1057,7 +1175,7 @@ export class ProjectStore {
   }
 
   /** 새 프로젝트를 디스크와 색인에 만든다 (색인 잠금 안에서 부른다). */
-  async #createProjectLocked({ id = this.#newProjectId(), name, implicit, nameSource, members = [] }) {
+  async #createProjectLocked({ id = this.#newProjectId(), name, implicit, nameSource, members = [], repositories = [] }) {
     const createdAt = this.now();
     const state = {
       schemaVersion: PROJECT_SCHEMA_VERSION,
@@ -1075,6 +1193,7 @@ export class ProjectStore {
       links: [],
       graph: { pinned: {} },
       aliases: {},
+      repositories: [...repositories],
       activitySeq: 0,
       activityCount: 0,
     };
@@ -1091,12 +1210,12 @@ export class ProjectStore {
    * 문서가 속한 프로젝트. 없으면 그 문서만의 암묵 프로젝트를 만든다. 문서 이름이 오면
    * 구성원 이름과(사용자가 이름을 바꾸지 않은) 암묵 프로젝트 이름을 맞춘다.
    */
-  async projectForDocument(documentId, { name = null } = {}) {
+  async projectForDocument(documentId, { name = null, create = true } = {}) {
     if (typeof documentId !== 'string' || !documentId) throw projectError('PROJECT_OP_INVALID', 'documentId is required');
     const displayName = cleanText(name ?? '', MAX_PROJECT_NAME_CHARS);
     const projectId = await this.#withIndex(async () => {
       const existing = this.projectIdForDocument(documentId);
-      if (existing) return existing;
+      if (existing || !create) return existing;
       const state = await this.#createProjectLocked({
         name: displayName ? displayName.replace(/\.(hwpx?|hml)$/i, '') : '문서 자료',
         implicit: true,
@@ -1107,8 +1226,145 @@ export class ProjectStore {
       await this.#writeIndex();
       return state.id;
     });
-    if (displayName) await this.#syncDocumentName(projectId, documentId, displayName);
+    if (projectId && displayName) await this.#syncDocumentName(projectId, documentId, displayName);
     return projectId;
+  }
+
+  /**
+   * 버전 저장소가 있는 문서: 저장소의 모든 작업 공간이 한 프로젝트를 함께 쓴다. 기본 문서의 프로젝트가
+   * 이긴다. 작업 공간 문서가 예전에 따로 받은 암묵 프로젝트는 합친다(항목 id 유지). 작업 공간 문서는
+   * 구성원으로 넣지 않는다 — 그래프의 문서 노드는 기본 문서 하나다.
+   * @param {string} documentId
+   * @param {{id: string, worktree: object, worktrees: object[]}} repository normalizeRepository 결과
+   */
+  async projectForRepository(documentId, repository, { name = null, create = true } = {}) {
+    if (typeof documentId !== 'string' || !documentId) throw projectError('PROJECT_OP_INVALID', 'documentId is required');
+    const displayName = cleanText(name ?? '', MAX_PROJECT_NAME_CHARS);
+    const primaryDocumentId = repository.worktrees.find((entry) => entry.primary)?.documentId
+      ?? (repository.worktree.primary ? documentId : this.index.repositories[repository.id]?.primaryDocumentId ?? null);
+    const documents = [...new Set([
+      documentId,
+      ...(primaryDocumentId ? [primaryDocumentId] : []),
+      ...repository.worktrees.map((entry) => entry.documentId).filter(Boolean),
+    ])];
+    const projectId = await this.#withIndex(async () => {
+      const live = (id) => (id && this.index.projects[id] ? id : null);
+      const strays = new Map();
+      for (const candidate of documents) {
+        const mapped = this.projectIdForDocument(candidate);
+        if (mapped) strays.set(mapped, [...(strays.get(mapped) ?? []), candidate]);
+      }
+      let targetId = live(this.index.repositoryProjects[repository.id])
+        ?? (primaryDocumentId ? this.projectIdForDocument(primaryDocumentId) : null);
+      if (!targetId) {
+        // 사용자가 만든 프로젝트에 작업 공간 문서를 넣어 두었으면 그 프로젝트를 저장소 프로젝트로 쓴다.
+        for (const strayId of strays.keys()) {
+          if (!this.index.projects[strayId]?.implicit) { targetId = strayId; break; }
+        }
+      }
+      if (!targetId) {
+        if (!create && strays.size === 0) return null;
+        const memberDocument = primaryDocumentId ?? documentId;
+        const state = await this.#createProjectLocked({
+          name: displayName ? displayName.replace(/\.(hwpx?|hml)$/i, '') : '문서 자료',
+          implicit: true,
+          nameSource: displayName ? 'document' : 'default',
+          members: [{ documentId: memberDocument, name: displayName ?? '' }],
+          repositories: [repository.id],
+        });
+        targetId = state.id;
+      }
+      strays.delete(targetId);
+      const repositoryDocuments = new Set(documents);
+      const memberNode = primaryDocumentId ? documentNodeId(targetId, primaryDocumentId) : null;
+      for (const [strayId, strayDocuments] of strays) {
+        try {
+          const stray = await this.#load(strayId);
+          const outsiders = stray.members.filter((member) => !repositoryDocuments.has(member.documentId));
+          if (stray.implicit && outsiders.length === 0) {
+            await this.#mergeInto(strayId, targetId, { memberNode });
+          } else {
+            // 다른 문서와 함께 쓰는 프로젝트는 그대로 두고 이 저장소의 문서만 뺀다.
+            await this.#withProject(strayId, () => this.#mutateLocked(strayId, 'members', (draft) => {
+              const before = draft.members.length;
+              draft.members = draft.members.filter((member) => !strayDocuments.includes(member.documentId));
+              return draft.members.length !== before;
+            }));
+          }
+        } catch (error) {
+          // 합치기가 멈추면 pendingMerges 가 남아 다음 부팅에 이어서 합친다. 묶기는 계속한다.
+          this.logger?.(`worktree project merge ${strayId} → ${targetId} failed: ${error?.message ?? error}`);
+        }
+      }
+      await this.#withProject(targetId, () => this.#mutateLocked(targetId, 'members', (draft) => {
+        let changed = false;
+        if (!draft.repositories.includes(repository.id)) {
+          draft.repositories.push(repository.id);
+          changed = true;
+        }
+        if (primaryDocumentId && !draft.members.some((member) => member.documentId === primaryDocumentId)) {
+          draft.members.push({
+            documentId: primaryDocumentId,
+            nodeId: documentNodeId(targetId, primaryDocumentId),
+            name: documentId === primaryDocumentId ? displayName ?? '' : '',
+          });
+          changed = true;
+        }
+        return changed;
+      }));
+      const indexState = () => JSON.stringify([
+        this.index.repositoryProjects[repository.id] ?? null,
+        this.index.repositories[repository.id] ?? null,
+        documents.map((candidate) => [this.index.documentProjects[candidate] ?? null, this.index.documentRepositories[candidate] ?? null]),
+      ]);
+      const before = indexState();
+      const known = this.index.repositories[repository.id] ?? { primaryDocumentId: null, worktrees: {} };
+      const worktrees = { ...(isPlainObject(known.worktrees) ? known.worktrees : {}) };
+      for (const entry of repository.worktrees) {
+        worktrees[entry.id] = {
+          branch: entry.branch,
+          primary: entry.primary,
+          ...(entry.documentId ? { documentId: entry.documentId } : {}),
+        };
+      }
+      this.index.repositories[repository.id] = {
+        primaryDocumentId: primaryDocumentId ?? known.primaryDocumentId ?? null,
+        worktrees,
+      };
+      this.index.repositoryProjects[repository.id] = targetId;
+      for (const candidate of documents) {
+        this.index.documentProjects[candidate] = targetId;
+        this.index.documentRepositories[candidate] = repository.id;
+      }
+      // 다시 붙을 때마다 묶는다 — 바뀐 것이 없으면 색인을 다시 쓰지 않는다.
+      if (indexState() !== before) await this.#writeIndex();
+      return targetId;
+    });
+    if (projectId && displayName && documentId === primaryDocumentId) {
+      await this.#syncDocumentName(projectId, documentId, displayName);
+    }
+    return projectId;
+  }
+
+  /** 작업 공간의 지금 브랜치 이름 (표시의 이름은 붙일 때 것이라 바뀌었을 수 있다). 모르면 null. */
+  worktreeBranch(worktreeId) {
+    if (typeof worktreeId !== 'string' || !worktreeId) return null;
+    for (const repository of Object.values(this.index.repositories)) {
+      const branch = repository?.worktrees?.[worktreeId]?.branch;
+      if (typeof branch === 'string' && branch) return branch;
+    }
+    return null;
+  }
+
+  /** 문서가 속한 저장소의 문서들 (저장소가 없으면 그 문서 하나). */
+  #repositoryDocuments(documentId) {
+    const repositoryId = this.index.documentRepositories[documentId];
+    if (!repositoryId) return { repositoryId: null, documents: [documentId], memberDocument: documentId };
+    const documents = Object.entries(this.index.documentRepositories)
+      .filter(([, mapped]) => mapped === repositoryId)
+      .map(([candidate]) => candidate);
+    const memberDocument = this.index.repositories[repositoryId]?.primaryDocumentId ?? documentId;
+    return { repositoryId, documents: [...new Set([documentId, memberDocument, ...documents])], memberDocument };
   }
 
   async #syncDocumentName(projectId, documentId, displayName) {
@@ -1130,11 +1386,12 @@ export class ProjectStore {
   }
 
   /** 문서 없는 채팅의 암묵 프로젝트. */
-  async projectForThread(threadId) {
+  async projectForThread(threadId, { create = true } = {}) {
     if (typeof threadId !== 'string' || !threadId) throw projectError('PROJECT_OP_INVALID', 'threadId is required');
     return this.#withIndex(async () => {
       const existing = this.index.threadProjects[threadId];
       if (existing && this.index.projects[existing]) return existing;
+      if (!create) return null;
       const state = await this.#createProjectLocked({ name: '채팅 자료', implicit: true, nameSource: 'default' });
       this.index.threadProjects[threadId] = state.id;
       await this.#writeIndex();
@@ -1142,10 +1399,18 @@ export class ProjectStore {
     });
   }
 
-  /** 채팅 시작 때 세션이 묶일 프로젝트: 문서 → 문서 프로젝트, 아니면 스레드 암묵 프로젝트. */
-  async bindSession({ threadId = null, documentId = null, documentName = null } = {}) {
-    if (typeof documentId === 'string' && documentId) return this.projectForDocument(documentId, { name: documentName });
-    return this.projectForThread(threadId);
+  /**
+   * 채팅 시작 때 세션이 묶일 프로젝트: 버전 저장소가 있으면 저장소 프로젝트, 아니면 문서 프로젝트,
+   * 문서가 없으면 스레드 암묵 프로젝트. create:false 면 이미 있는 프로젝트에만 묶는다(없으면 null).
+   */
+  async bindSession({ threadId = null, documentId = null, documentName = null, repository = null, create = true } = {}) {
+    if (typeof documentId === 'string' && documentId) {
+      const normalized = normalizeRepository(repository);
+      if (normalized) return this.projectForRepository(documentId, normalized, { name: documentName, create });
+      return this.projectForDocument(documentId, { name: documentName, create });
+    }
+    if (!create && (typeof threadId !== 'string' || !threadId)) return null;
+    return this.projectForThread(threadId, { create });
   }
 
   // ─── 읽기 ─────────────────────────────────────────────────
@@ -1301,7 +1566,9 @@ export class ProjectStore {
   /** 최신 순. before 는 활동 id — 그보다 오래된 항목만. */
   async listActivity(projectId, { limit = 50, before = null } = {}) {
     await this.#load(projectId);
-    const entries = (await this.#readActivityLines(projectId)).sort((left, right) => right.seq - left.seq);
+    // 합쳐 온 기록은 뒤에 붙지만 시각으로 제자리를 찾는다.
+    const entries = (await this.#readActivityLines(projectId))
+      .sort((left, right) => ((right.at ?? 0) - (left.at ?? 0)) || ((right.seq ?? 0) - (left.seq ?? 0)));
     let start = 0;
     if (before) {
       const index = entries.findIndex((entry) => entry.id === before);
@@ -1374,6 +1641,21 @@ export class ProjectStore {
     }
   }
 
+  /** 여러 활동을 한 번에 덧붙인다 (합치기). 회전은 다음 기록 때 맞춘다. */
+  async #appendActivityEntries(state, entries) {
+    if (entries.length === 0) return;
+    try {
+      await fs.appendFile(
+        path.join(this.#projectDir(state.id), 'activity.jsonl'),
+        entries.map((entry) => `${JSON.stringify(entry)}\n`).join(''),
+        { encoding: 'utf8', mode: 0o600 },
+      );
+      state.activityCount = (state.activityCount ?? 0) + entries.length;
+    } catch (error) {
+      this.logger?.(`project activity append failed: ${error?.message ?? error}`);
+    }
+  }
+
   #activityEntry(state, actor, summary, groups, extra = {}) {
     state.activitySeq += 1;
     return {
@@ -1425,14 +1707,14 @@ export class ProjectStore {
    * 초안에 배치를 적용하고, 성공하면 메모 → project.json → 활동 기록 순으로 저장한다.
    * 어느 연산이든 실패하면 아무것도 바뀌지 않는다.
    */
-  async #commitBatch(projectId, { ops, actor, expectedRevision, extraEntry = {}, summaryPrefix = '', precheck = null }) {
+  async #commitBatch(projectId, { ops, actor, expectedRevision, extraEntry = {}, summaryPrefix = '', precheck = null, labels = null }) {
     const state = await this.#load(projectId);
     if (expectedRevision !== undefined && expectedRevision !== null && expectedRevision !== state.revision) {
       throw projectError('PROJECT_REVISION_MISMATCH', `Project revision is ${state.revision}, not ${expectedRevision}`, { revision: state.revision });
     }
     const draft = structuredClone(state);
     const noteBodies = new Map();
-    const applier = new OpApplier(this, draft, actor, { now: this.now(), noteBodies });
+    const applier = new OpApplier(this, draft, actor, { now: this.now(), noteBodies, labels });
     if (precheck) await precheck(applier);
     else {
       for (let index = 0; index < ops.length; index += 1) await applier.apply(ops[index], index);
@@ -1488,13 +1770,19 @@ export class ProjectStore {
    * 원자 배치 편집 (MCP project_edit 와 HTTP POST /projects/:pid/ops 가 함께 쓴다).
    * @returns {Promise<{revision: number, applied: number, created: Record<number,string>, unresolvedLinks: string[], skipped?: object[], activityId?: string}>}
    */
-  async applyOps(projectId, { ops, actor, expectedRevision } = {}) {
+  async applyOps(projectId, { ops, actor, expectedRevision, labels = null } = {}) {
     if (!Array.isArray(ops) || ops.length < 1 || ops.length > MAX_OPS) {
       throw projectError('PROJECT_OP_INVALID', `ops must list 1-${MAX_OPS} operations`);
     }
     const normalizedActor = normalizeActor(actor);
+    const normalizedLabels = {
+      current: normalizeOrigin(labels?.current),
+      auto: normalizeOrigin(labels?.auto),
+    };
     return this.#withProject(projectId, async () => {
-      const { result } = await this.#commitBatch(projectId, { ops, actor: normalizedActor, expectedRevision });
+      const { result } = await this.#commitBatch(projectId, {
+        ops, actor: normalizedActor, expectedRevision, labels: normalizedLabels,
+      });
       return result;
     });
   }
@@ -1627,6 +1915,7 @@ export class ProjectStore {
           source,
           librarian: { status: librarianStatus },
           locked: {},
+          ...(normalizeOrigin(raw?.origin) ? { origin: normalizeOrigin(raw.origin) } : {}),
         };
         draft.items.push(item);
         results.push(item);
@@ -1699,41 +1988,61 @@ export class ProjectStore {
 
   /**
    * 문서를 프로젝트에 합류시킨다. 문서가 혼자 쓰던 암묵 프로젝트는 대상에 합쳐진다
-   * (파일은 project 범위째 옮기고, 겹치는 id 는 별칭으로 남긴다).
+   * (파일은 project 범위째 옮기고, 겹치는 id 는 별칭으로 남긴다). 버전 저장소가 있는 문서는
+   * 저장소의 모든 작업 공간이 함께 옮겨 간다.
    */
   async join(projectId, documentId, { name = null } = {}) {
     if (typeof documentId !== 'string' || !documentId) throw projectError('PROJECT_OP_INVALID', 'documentId is required');
     const displayName = cleanText(name ?? '', MAX_PROJECT_NAME_CHARS) ?? '';
     return this.#withIndex(async () => {
       if (!this.hasProject(projectId)) throw projectError('PROJECT_NOT_FOUND', `Project ${String(projectId)} was not found`);
+      const { repositoryId, documents, memberDocument } = this.#repositoryDocuments(documentId);
       const currentId = this.projectIdForDocument(documentId);
       if (currentId === projectId) return { projectId, merged: null };
       let merged = null;
       if (currentId) {
         const current = await this.#load(currentId);
-        const remaining = current.members.filter((member) => member.documentId !== documentId);
+        const remaining = current.members.filter((member) => !documents.includes(member.documentId));
         if (current.implicit && remaining.length === 0) {
           merged = await this.#mergeInto(currentId, projectId);
         } else {
           await this.#withProject(currentId, () => this.#mutateLocked(currentId, 'members', (draft) => {
-            draft.members = draft.members.filter((member) => member.documentId !== documentId);
+            draft.members = draft.members.filter((member) => !documents.includes(member.documentId));
+            if (repositoryId) draft.repositories = draft.repositories.filter((id) => id !== repositoryId);
             return true;
           }));
         }
       }
       await this.#withProject(projectId, () => this.#mutateLocked(projectId, 'members', (draft) => {
-        if (draft.members.some((member) => member.documentId === documentId)) return false;
-        draft.members.push({ documentId, nodeId: documentNodeId(projectId, documentId), name: displayName });
-        return true;
+        let changed = false;
+        if (!draft.members.some((member) => member.documentId === memberDocument)) {
+          draft.members.push({ documentId: memberDocument, nodeId: documentNodeId(projectId, memberDocument), name: displayName });
+          changed = true;
+        }
+        if (repositoryId && !draft.repositories.includes(repositoryId)) {
+          draft.repositories.push(repositoryId);
+          changed = true;
+        }
+        return changed;
       }));
-      this.index.documentProjects[documentId] = projectId;
+      for (const candidate of documents) this.index.documentProjects[candidate] = projectId;
+      if (repositoryId) this.index.repositoryProjects[repositoryId] = projectId;
       await this.#writeIndex();
       return { projectId, merged };
     });
   }
 
-  /** 색인 잠금 안에서 부른다. source 를 target 에 합치고 source 를 지운다. */
-  async #mergeInto(sourceId, targetId) {
+  /**
+   * 색인 잠금 안에서 부른다. source 를 target 에 합치고 source 를 지운다. 항목 id·연결·메모·활동 기록을
+   * 옮기며, 다시 불러도 같은 결과다 — 중간에 멈추면 pendingMerges 가 남아 resumeMerges 가 이어서 합친다.
+   * memberNode 가 오면 source 의 문서 노드를 그 노드(저장소의 기본 문서)로 잇는다.
+   */
+  async #mergeInto(sourceId, targetId, { memberNode = null } = {}) {
+    const journal = { into: targetId, memberNode };
+    if (!sameJson(this.index.pendingMerges[sourceId], journal)) {
+      this.index.pendingMerges[sourceId] = journal;
+      await this.#writeIndex();
+    }
     const [first, second] = [sourceId, targetId].sort();
     return this.#withProject(first, () => this.#withProject(second, async () => {
       const source = await this.#load(sourceId);
@@ -1756,10 +2065,22 @@ export class ProjectStore {
         }
         throw error;
       }
+      for (const member of source.members) {
+        idMap.set(member.nodeId, memberNode ?? documentNodeId(targetId, member.documentId));
+      }
+      // 앞선 합치기가 이미 옮긴 항목: 같은 id(또는 별칭)·같은 종류·같은 생성 시각.
+      const copiedBefore = (item) => {
+        for (const id of [item.id, draft.aliases[item.id]]) {
+          const found = id ? draft.items.find((entry) => entry.id === id) : null;
+          if (found && found.kind === item.kind && found.createdAt === item.createdAt) return found;
+        }
+        return null;
+      };
       const copiedClips = [];
       for (const item of source.items) {
         const fileId = movedFiles.get(item.id)?.id ?? item.fileId;
-        const duplicate = item.kind === 'file' ? draft.items.find((entry) => entry.kind === 'file' && entry.fileId === fileId) : null;
+        const duplicate = (item.kind === 'file' ? draft.items.find((entry) => entry.kind === 'file' && entry.fileId === fileId) : null)
+          ?? copiedBefore(item);
         if (duplicate) {
           idMap.set(item.id, duplicate.id);
           continue;
@@ -1783,36 +2104,85 @@ export class ProjectStore {
         clip.sourceId = idMap.get(clip.sourceId) ?? clip.sourceId;
         if (clip.trashedWith) clip.trashedWith = idMap.get(clip.trashedWith) ?? clip.trashedWith;
       }
-      for (const [from, to] of idMap) if (from !== to) draft.aliases[from] = to;
+      for (const [from, to] of idMap) if (from !== to && ITEM_ID_PATTERN.test(from)) draft.aliases[from] = to;
       for (const [from, to] of Object.entries(source.aliases ?? {})) {
         if (!draft.aliases[from]) draft.aliases[from] = idMap.get(to) ?? to;
       }
       const remap = (id) => idMap.get(id) ?? id;
+      const sameLink = (left, right) => left.from === right.from && left.to === right.to && left.origin === right.origin
+        && (left.label ?? null) === (right.label ?? null) && (left.noteId ?? null) === (right.noteId ?? null)
+        && (left.fromAnchor ?? null) === (right.fromAnchor ?? null) && (left.toAnchor ?? null) === (right.toAnchor ?? null);
       for (const link of source.links) {
         if (draft.links.length >= this.maxLinks) break;
-        draft.links.push({
+        const moved = {
           ...link,
-          id: draft.links.some((entry) => entry.id === link.id) ? this.newId(draft, 'l', 8) : link.id,
           from: remap(link.from),
           to: remap(link.to),
           ...(link.noteId ? { noteId: remap(link.noteId) } : {}),
-        });
+        };
+        if (moved.from === moved.to || draft.links.some((entry) => sameLink(entry, moved))) continue;
+        moved.id = draft.links.some((entry) => entry.id === link.id) ? this.newId(draft, 'l', 8) : link.id;
+        draft.links.push(moved);
+      }
+      for (const [id, position] of Object.entries(source.graph?.pinned ?? {})) {
+        const mapped = remap(id);
+        if (!draft.graph.pinned[mapped]) draft.graph.pinned[mapped] = position;
+      }
+      for (const repositoryId of source.repositories ?? []) {
+        if (!draft.repositories.includes(repositoryId)) draft.repositories.push(repositoryId);
       }
       if (!draft.goal && source.goal) draft.goal = source.goal;
+      // 활동 기록도 옮긴다 — 합친 쪽 기록에서 그대로 보이고 되돌릴 수 있다. 한 번만 옮긴다.
+      const copiedActivity = [];
+      if (!(await this.#readActivityLines(targetId)).some((entry) => entry.mergedFrom === sourceId)) {
+        const entries = (await this.#readActivityLines(sourceId)).sort((left, right) => (left.seq ?? 0) - (right.seq ?? 0));
+        for (const entry of entries) {
+          draft.activitySeq += 1;
+          copiedActivity.push({ ...entry, seq: draft.activitySeq, mergedFrom: sourceId });
+        }
+        copiedActivity.push(this.#activityEntry(draft, { kind: 'user' }, `자료 합침: ${source.name}`.slice(0, 160), [], { mergedFrom: sourceId }));
+      }
       draft.revision += 1;
       draft.updatedAt = now;
       await this.#writeProject(draft);
       this.projects.set(targetId, draft);
+      await this.#appendActivityEntries(draft, copiedActivity);
       this.#emitChange(targetId, { revision: draft.revision, reason: 'merge' });
-      for (const [threadId, mapped] of Object.entries(this.index.threadProjects)) {
-        if (mapped === sourceId) this.index.threadProjects[threadId] = targetId;
+      for (const map of [this.index.documentProjects, this.index.threadProjects, this.index.repositoryProjects]) {
+        for (const [key, mapped] of Object.entries(map)) if (mapped === sourceId) map[key] = targetId;
       }
+      this.index.mergedProjects[sourceId] = { into: targetId, at: now };
+      delete this.index.pendingMerges[sourceId];
       await this.#dropProjectLocked(sourceId);
-      return { from: sourceId, items: idMap.size };
+      this.#emitChange(sourceId, { revision: null, reason: 'merged', into: targetId });
+      return { from: sourceId, items: source.items.length };
     }));
   }
 
-  /** 문서를 프로젝트에서 뺀다. 문서는 새 빈 암묵 프로젝트를 받는다. */
+  /** 멈췄던 합치기를 마저 끝낸다 (부팅 때, 자료 복구보다 먼저). */
+  async resumeMerges() {
+    let resumed = 0;
+    for (const sourceId of Object.keys(this.index.pendingMerges)) {
+      await this.#withIndex(async () => {
+        const journal = this.index.pendingMerges[sourceId];
+        if (!journal) return;
+        if (!this.hasProject(sourceId) || !this.hasProject(journal.into)) {
+          delete this.index.pendingMerges[sourceId];
+          await this.#writeIndex();
+          return;
+        }
+        try {
+          await this.#mergeInto(sourceId, journal.into, { memberNode: journal.memberNode ?? null });
+          resumed += 1;
+        } catch (error) {
+          this.logger?.(`project merge ${sourceId} → ${journal.into} still pending: ${error?.message ?? error}`);
+        }
+      });
+    }
+    return resumed;
+  }
+
+  /** 문서를 프로젝트에서 뺀다. 문서(저장소가 있으면 그 작업 공간 모두)는 새 빈 암묵 프로젝트를 받는다. */
   async leave(projectId, documentId) {
     return this.#withIndex(async () => {
       if (!this.hasProject(projectId)) throw projectError('PROJECT_NOT_FOUND', `Project ${String(projectId)} was not found`);
@@ -1821,19 +2191,25 @@ export class ProjectStore {
       }
       const state = await this.#load(projectId);
       if (state.implicit) throw projectError('PROJECT_OP_INVALID', 'A document cannot leave its own project');
-      const member = state.members.find((entry) => entry.documentId === documentId);
+      const { repositoryId, documents, memberDocument } = this.#repositoryDocuments(documentId);
+      const member = state.members.find((entry) => entry.documentId === memberDocument)
+        ?? state.members.find((entry) => entry.documentId === documentId);
       await this.#withProject(projectId, () => this.#mutateLocked(projectId, 'members', (draft) => {
-        draft.members = draft.members.filter((entry) => entry.documentId !== documentId);
-        if (member?.nodeId) delete draft.graph.pinned[member.nodeId];
+        const leaving = draft.members.filter((entry) => documents.includes(entry.documentId));
+        draft.members = draft.members.filter((entry) => !documents.includes(entry.documentId));
+        for (const entry of leaving) delete draft.graph.pinned[entry.nodeId];
+        if (repositoryId) draft.repositories = draft.repositories.filter((id) => id !== repositoryId);
         return true;
       }));
       const fresh = await this.#createProjectLocked({
         name: member?.name ? member.name.replace(/\.(hwpx?|hml)$/i, '') : '문서 자료',
         implicit: true,
         nameSource: member?.name ? 'document' : 'default',
-        members: [{ documentId, name: member?.name ?? '' }],
+        members: [{ documentId: memberDocument, name: member?.name ?? '' }],
+        repositories: repositoryId ? [repositoryId] : [],
       });
-      this.index.documentProjects[documentId] = fresh.id;
+      for (const candidate of documents) this.index.documentProjects[candidate] = fresh.id;
+      if (repositoryId) this.index.repositoryProjects[repositoryId] = fresh.id;
       await this.#writeIndex();
       return { projectId: fresh.id };
     });
@@ -1860,11 +2236,8 @@ export class ProjectStore {
 
   async #dropProjectLocked(projectId) {
     delete this.index.projects[projectId];
-    for (const [documentId, mapped] of Object.entries(this.index.documentProjects)) {
-      if (mapped === projectId) delete this.index.documentProjects[documentId];
-    }
-    for (const [threadId, mapped] of Object.entries(this.index.threadProjects)) {
-      if (mapped === projectId) delete this.index.threadProjects[threadId];
+    for (const map of [this.index.documentProjects, this.index.threadProjects, this.index.repositoryProjects]) {
+      for (const [key, mapped] of Object.entries(map)) if (mapped === projectId) delete map[key];
     }
     await this.#writeIndex();
     this.projects.delete(projectId);
@@ -1893,9 +2266,17 @@ export class ProjectStore {
    * 지우는 일은 묘비가 있을 때만 한다 — 색인이 망가져도 자료는 사라지지 않는다.
    */
   async repairReferences() {
+    await this.resumeMerges();
     let repaired = 0;
     for (const scope of this.referenceStore.listScopes('project')) {
       const projectId = scope.scopeId;
+      const merged = this.index.mergedProjects[projectId];
+      if (merged && !this.hasProject(projectId) && this.hasProject(merged.into)) {
+        // 합쳐진 프로젝트 범위에 남은 기록은 합친 프로젝트로 옮긴다.
+        const files = this.referenceStore.list({ scope: 'project', scopeId: projectId });
+        repaired += (await this.adoptReferences(merged.into, files, { source: { kind: 'migrated' }, librarian: 'skipped' })).length;
+        continue;
+      }
       if (this.index.deletedProjects[projectId]) {
         if (await this.#removeProjectReferences(projectId) === 0) {
           await this.#withIndex(async () => {

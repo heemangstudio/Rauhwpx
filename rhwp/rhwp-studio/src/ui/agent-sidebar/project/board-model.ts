@@ -2,9 +2,33 @@
  * 보드의 순서 계산과 편집 연산 만들기. DOM 을 모르는 순수 함수만 둔다.
  */
 import { columnItems, itemColumnId } from '../../../agent/project-service.ts';
-import type { ProjectOp, ProjectSnapshot } from '../../../agent/types.ts';
+import type { ProjectItem, ProjectOp, ProjectSnapshot } from '../../../agent/types.ts';
 
 export type BoardDirection = 'left' | 'right' | 'up' | 'down';
+
+/** 보드에 보이는 항목인가. 작업 공간으로 거르면 일부 카드가 숨는다. */
+export type BoardVisible = (item: ProjectItem) => boolean;
+
+const SHOW_ALL: BoardVisible = () => true;
+
+/**
+ * 보이는 카드 사이의 자리를 열 전체 순서의 자리로 바꾼다 (끄는 항목은 뺀 순서).
+ * 보이는 카드 바로 앞에, 맨 끝이면 마지막으로 보이는 카드 바로 뒤에 놓아 숨은 카드의 차례는 그대로 둔다.
+ */
+export function fullDropIndex(
+  project: ProjectSnapshot,
+  itemId: string,
+  columnId: string,
+  visibleIndex: number,
+  visible: BoardVisible = SHOW_ALL,
+): number {
+  const others = columnItems(project, columnId).filter((entry) => entry.id !== itemId);
+  const shown = others.filter(visible);
+  if (!shown.length) return others.length;
+  const at = Math.max(0, Math.trunc(visibleIndex));
+  if (at < shown.length) return others.indexOf(shown[at]);
+  return others.indexOf(shown[shown.length - 1]) + 1;
+}
 
 /**
  * 끌어 놓기 결과를 move 연산으로 바꾼다. index 는 끄는 항목을 뺀 뒤 대상 열에서의 자리다.
@@ -28,24 +52,29 @@ export function moveOpFor(
   return { op: 'move', id: itemId, column: columnId, index: at };
 }
 
-/** Alt+화살표: 옆 열로 같은 높이에, 또는 같은 열에서 한 칸 위·아래로. */
+/** Alt+화살표: 옆 열로 같은 높이에, 또는 같은 열에서 보이는 이웃을 한 칸 넘어 위·아래로. */
 export function keyboardMoveOp(
   project: ProjectSnapshot,
   itemId: string,
   direction: BoardDirection,
+  visible: BoardVisible = SHOW_ALL,
 ): Extract<ProjectOp, { op: 'move' }> | null {
   const item = project.items.find((entry) => entry.id === itemId);
   if (!item) return null;
   const columnId = itemColumnId(project, item);
   if (!columnId) return null;
   const columnIndex = project.columns.findIndex((column) => column.id === columnId);
-  const current = columnItems(project, columnId).findIndex((entry) => entry.id === itemId);
+  const shown = columnItems(project, columnId).filter((entry) => entry.id === itemId || visible(entry));
+  const current = shown.findIndex((entry) => entry.id === itemId);
   if (direction === 'up' || direction === 'down') {
-    return moveOpFor(project, itemId, columnId, current + (direction === 'up' ? -1 : 1));
+    const neighbor = shown[current + (direction === 'up' ? -1 : 1)];
+    if (!neighbor) return null;
+    const others = columnItems(project, columnId).filter((entry) => entry.id !== itemId);
+    return moveOpFor(project, itemId, columnId, others.indexOf(neighbor) + (direction === 'up' ? 0 : 1));
   }
   const target = project.columns[columnIndex + (direction === 'left' ? -1 : 1)];
   if (!target) return null;
-  return moveOpFor(project, itemId, target.id, current);
+  return moveOpFor(project, itemId, target.id, fullDropIndex(project, itemId, target.id, current, visible));
 }
 
 /** 열 목록 연산. 이름이 비면 null. */

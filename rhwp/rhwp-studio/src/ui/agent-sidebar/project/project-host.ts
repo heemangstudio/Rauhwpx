@@ -63,6 +63,7 @@ export function createProjectHost(deps: ProjectHostDeps): ProjectHost {
     column = createProjectColumn({
       store: client.store,
       service: client.service,
+      worktrees: client.worktrees ?? null,
       onClose: () => deps.requestClose(),
       openDocument: (documentId) => deps.openDocument(documentId),
     });

@@ -5,12 +5,14 @@
 import {
   applyProjectOps,
   createProjectStore,
+  createProjectWorktreeState,
   defaultProjectSettings,
   normalizeProjectSettings,
   ProjectRequestError,
   type ProjectClient,
   type ProjectService,
   type ProjectStore,
+  type ProjectWorktreeState,
 } from '../agent/project-service.ts';
 import type {
   ProjectActivityEntry,
@@ -22,9 +24,12 @@ import type {
   ProjectLink,
   ProjectNoteItem,
   ProjectOp,
+  ProjectOrigin,
   ProjectSettings,
   ProjectSnapshot,
   ProjectSummary,
+  ProjectWorktree,
+  ProjectWorktreeContext,
 } from '../agent/types.ts';
 import { citationProjectFixture, createCitationService } from './mock-citations.ts';
 
@@ -118,6 +123,33 @@ const LINK_PAIRS: Array<[string, string, string?, string?]> = [
   ['nd6h7k', 'fa2k7q', undefined, 'p91'], ['nc5g6j', 'fa2k7q', undefined, 'c40'], ['nd6h7k', 'fb3m2x', undefined, 'c7'],
   ['nd6h7k', 'fb3m2x', undefined, 'c9'], ['nb4f5i', 'fd5p6s', undefined, 'p12'], ['nb4f5i', 'fd5p6s', undefined, 'p20'],
 ];
+
+/** 작업 공간 장면(`?worktrees=1`): 기본 작업 공간 main 과 변형 요약본. */
+const PREVIEW_WORKTREES: ProjectWorktree[] = [
+  { id: 'wt-main', branch: 'main', primary: true },
+  { id: 'wt-summary', branch: '요약본', primary: false },
+];
+
+/** 작업 공간 표시를 붙일 항목. 나머지는 공통이다. */
+const WORKTREE_ORIGINS: Record<string, string> = {
+  fd5p6s: 'wt-summary', fe6q7t: 'wt-summary', nb4f5i: 'wt-summary', fi4u5x: 'wt-summary', ne7i2l: 'wt-summary', fh3t4w: 'wt-summary',
+  fa2k7q: 'wt-main', na3e4h: 'wt-main', fk6w7z: 'wt-main', nd6h7k: 'wt-main',
+};
+
+export type PreviewWorktreeView = 'main' | 'variant';
+
+export function previewWorktreeContext(view: PreviewWorktreeView = 'main'): ProjectWorktreeContext {
+  const current = PREVIEW_WORKTREES[view === 'variant' ? 1 : 0];
+  return { repositoryId: 'preview-repository', current: { ...current }, worktrees: PREVIEW_WORKTREES.map((worktree) => ({ ...worktree })) };
+}
+
+function withWorktreeOrigins(project: ProjectSnapshot): ProjectSnapshot {
+  const origin = (id: string): ProjectOrigin | null => {
+    const worktree = PREVIEW_WORKTREES.find((entry) => entry.id === WORKTREE_ORIGINS[id]);
+    return worktree ? { worktreeId: worktree.id, branch: worktree.branch } : null;
+  };
+  return { ...project, items: project.items.map((item) => (origin(item.id) ? { ...item, origin: origin(item.id) } : item)) };
+}
 
 export function sampleProject(now = Date.now()): ProjectSnapshot {
   const orderByColumn = new Map<string, number>();
@@ -302,16 +334,26 @@ function summarize(project: ProjectSnapshot, ops: ProjectOp[]): string {
     case 'columns': return '열 바꿈';
     case 'graph-pin': return `“${title(first.id)}” 그래프 위치 고정`;
     case 'graph-unpin': return `“${title(first.id)}” 그래프 고정 풀림`;
+    case 'label': return `“${title(first.id)}”을 ${first.origin === 'shared' ? '공통으로' : '이 작업 공간으로'} 표시`;
     default: return `${ops.length}개 변경`;
   }
 }
 
 export interface PreviewProjects extends ProjectClient {
+  worktrees: ProjectWorktreeState;
   /** 브라우저 미리보기에서도 홈 폴더 검색 줄을 켜 볼 수 있다. */
   setHomeAccess(enabled: boolean): void;
 }
 
-export function createPreviewProjects(options: { homeAccess?: boolean; latencyMs?: number; graphNodes?: number } = {}): PreviewProjects {
+export interface PreviewProjectsOptions {
+  homeAccess?: boolean;
+  latencyMs?: number;
+  graphNodes?: number;
+  /** 작업 공간 둘(main·요약본)과 표시 붙은 항목. 값은 이 채팅이 보는 작업 공간이다. */
+  worktrees?: PreviewWorktreeView | null;
+}
+
+export function createPreviewProjects(options: PreviewProjectsOptions = {}): PreviewProjects {
   const latency = options.latencyMs ?? 120;
   const now = Date.now();
   let project = sampleProject(now);
@@ -327,6 +369,8 @@ export function createPreviewProjects(options: { homeAccess?: boolean; latencyMs
     tags: [...project.tags, ...citations.tags.filter((tag) => !project.tags.some((known) => known.name === tag.name))],
   };
   project = withSyntheticGraph(project, options.graphNodes ?? 0);
+  if (options.worktrees) project = withWorktreeOrigins(project);
+  const worktrees = createProjectWorktreeState(options.worktrees ? previewWorktreeContext(options.worktrees) : null);
   let trashed: ProjectItem[] = [
     { ...project.items.find((item) => item.id === 'fp5b6e')!, id: 'fs2t4u', title: '중복 — 콜센터 매뉴얼 사본.hwp', trashedAt: now - 26 * HOUR },
     { ...project.items.find((item) => item.id === 'ne7i2l')!, id: 'nt3u5v', title: '지난 목차', trashedAt: now - 3 * 24 * HOUR },
@@ -384,7 +428,7 @@ export function createPreviewProjects(options: { homeAccess?: boolean; latencyMs
         trashed = [...gone.map((item) => ({ ...item, trashedAt: Date.now() })), ...trashed];
       }
     }
-    let next = applyProjectOps(before, ops, { tempId: () => newId('l', 8) });
+    let next = applyProjectOps(before, ops, { tempId: () => newId('l', 8), worktrees: worktrees.get() });
     for (const op of ops) {
       if (op.op !== 'restore') continue;
       const item = trashed.find((entry) => entry.id === op.id);
@@ -547,11 +591,12 @@ export function createPreviewProjects(options: { homeAccess?: boolean; latencyMs
     },
   };
 
-  store = createProjectStore({ service, reconcileDelayMs: 400 });
+  store = createProjectStore({ service, worktrees, reconcileDelayMs: 400 });
   store.replace(project);
   return {
     service,
     store,
+    worktrees,
     setHomeAccess(enabled) {
       capabilities = { ...capabilities, homeAccess: enabled };
     },

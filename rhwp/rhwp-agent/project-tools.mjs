@@ -1,3 +1,5 @@
+import { otherWorktreeOf } from './project-context.mjs';
+
 /**
  * 연구 프로젝트 MCP 도구를 허브에서 바로 실행한다 (reference-tools.mjs 와 같은 자리).
  * 세션은 채팅 시작 때 묶인 프로젝트 하나만 다룬다.
@@ -15,7 +17,9 @@ function projectToolError(code, message) {
   return error;
 }
 
-function itemRow(item) {
+/** context: 이 세션의 작업 공간 — 다른 작업 공간에서 모은 항목에 wt(브랜치)를 붙인다. */
+function itemRow(item, context = {}) {
+  const wt = otherWorktreeOf(item, context);
   return {
     id: item.id,
     kind: item.kind,
@@ -37,6 +41,7 @@ function itemRow(item) {
       : {}),
     ...(item.kind === 'clip' ? { source: item.sourceId, page: item.page } : {}),
     ...(item.trashedAt ? { trashedAt: item.trashedAt } : {}),
+    ...(wt ? { wt } : {}),
   };
 }
 
@@ -87,7 +92,7 @@ function matchesQuery(item, query) {
     .some((value) => typeof value === 'string' && value.normalize('NFKC').toLocaleLowerCase('ko-KR').includes(needle));
 }
 
-async function readProject({ args, projectId, projectStore, referenceStore }) {
+async function readProject({ args, projectId, projectStore, referenceStore, context }) {
   const view = args.view;
   if (view === 'summary') {
     const project = await projectStore.get(projectId);
@@ -129,7 +134,7 @@ async function readProject({ args, projectId, projectStore, referenceStore }) {
       revision: project.revision,
       total: filtered.length,
       offset,
-      items: filtered.slice(offset, offset + limit).map(itemRow),
+      items: filtered.slice(offset, offset + limit).map((item) => itemRow(item, context)),
     };
   }
   if (view === 'item' || view === 'note') {
@@ -171,6 +176,7 @@ function stripUndefined(value) {
  * @param {{
  *   tool: string, args: any, session: any, projectStore: any, referenceStore?: any,
  *   ingest?: any, homeSearch?: any, allowedRoots?: string[], sessionKey?: string,
+ *   labels?: {current: object|null, auto: object|null} | null,
  * }} input
  * @returns {Promise<{handled: boolean, result: any}>}
  */
@@ -184,6 +190,7 @@ export async function executeProjectTool({
   homeSearch = null,
   allowedRoots = [],
   sessionKey = null,
+  labels = null,
 }) {
   if (!PROJECT_TOOLS.has(tool)) return { handled: false, result: null };
   const projectId = session?.projectId;
@@ -193,8 +200,12 @@ export async function executeProjectTool({
     ...(typeof session.threadId === 'string' ? { threadId: session.threadId } : {}),
     ...(typeof session.agent === 'string' ? { agent: session.agent } : {}),
   };
+  const context = {
+    worktree: labels?.current ? { id: labels.current.worktreeId } : null,
+    worktreeBranch: (worktreeId) => projectStore.worktreeBranch?.(worktreeId) ?? null,
+  };
   if (tool === 'project_read') {
-    return { handled: true, result: await readProject({ args, projectId, projectStore, referenceStore }) };
+    return { handled: true, result: await readProject({ args, projectId, projectStore, referenceStore, context }) };
   }
   if (tool === 'project_edit') {
     return {
@@ -203,6 +214,7 @@ export async function executeProjectTool({
         ops: args.ops.map(stripUndefined),
         actor,
         expectedRevision: args.expectedRevision,
+        labels,
       }),
     };
   }
@@ -214,7 +226,7 @@ export async function executeProjectTool({
     };
   }
   if (!ingest) throw projectToolError('PROJECT_INGEST_UNAVAILABLE', 'Project import is unavailable');
-  const common = stripUndefined({ projectId, name: args.name, column: args.column, tags: args.tags, actor });
+  const common = stripUndefined({ projectId, name: args.name, column: args.column, tags: args.tags, actor, origin: labels?.auto ?? undefined });
   let imported;
   if (args.text !== undefined) imported = await ingest.importText({ ...common, text: args.text, url: args.url });
   else if (args.path !== undefined) imported = await ingest.importPath({ ...common, path: args.path, allowedRoots });
@@ -223,5 +235,5 @@ export async function executeProjectTool({
     imported = await ingest.importHomeHit({ ...common, hitId: args.homeHit, sessionKey });
   } else imported = await ingest.importUrl({ ...common, url: args.url });
   const item = imported?.item;
-  return { handled: true, result: { item: item ? itemRow(item) : null } };
+  return { handled: true, result: { item: item ? itemRow(item, context) : null } };
 }

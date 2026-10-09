@@ -4,6 +4,7 @@ import test from 'node:test';
 import { runOneShot as realRunOneShot } from '../agents/one-shot-llm.mjs';
 import {
   cleanLibrarianTitle,
+  librarianOpsFor,
   createProjectLibrarian,
   librarianCandidates,
   parseLibrarianOutput,
@@ -123,6 +124,12 @@ test('librarian output parsing keeps extensions and rejects malformed JSON', () 
   assert.equal(cleanLibrarianTitle('보고서.PDF', 'a.pdf'), '보고서.pdf');
   assert.equal(cleanLibrarianTitle('../../etc/passwd\n', 'a.md'), 'etc passwd.md');
   assert.equal(cleanLibrarianTitle('   ', 'a.md'), null);
+  // 글로 저장한 웹 페이지는 저장 확장자 없이 쪽 제목만 — 모델이 .md 를 붙여도 떼어 낸다.
+  const snapshot = { id: 'fsnap22', title: '기사', originalName: '기사.md', source: { kind: 'web', url: 'https://a.example/' }, locked: {}, tags: [], column: 'inbox' };
+  const ops = librarianOpsFor(snapshot, { id: 'fsnap22', title: '국토부 발표.md' }, {
+    project: { columns: [{ id: 'inbox' }] }, actions: { rename: true, classify: false, link: false }, knownIds: new Set(), linkedPairs: new Set(),
+  });
+  assert.deepEqual(ops.filter((op) => op.op === 'rename'), [{ op: 'rename', id: 'fsnap22', name: '국토부 발표' }]);
   assert.deepEqual(parseLibrarianOutput('```json\n{"items":[{"id":"fa","title":"x"}]}\n```'), [{ id: 'fa', title: 'x' }]);
   assert.equal(parseLibrarianOutput('no json here'), null);
   assert.equal(parseLibrarianOutput('{"items":[{"title":"no id"}]}'), null);

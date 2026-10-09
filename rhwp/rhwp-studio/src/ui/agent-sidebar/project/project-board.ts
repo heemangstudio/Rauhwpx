@@ -6,12 +6,13 @@
  * 끄는 동안 들어온 스냅샷은 놓은 뒤 한 번에 그린다.
  */
 import { confirmSheet } from '../sheet.ts';
-import { columnItems } from '../../../agent/project-service.ts';
-import type { ProjectService, ProjectStore } from '../../../agent/project-service.ts';
-import type { ProjectItem, ProjectOp, ProjectSnapshot } from '../../../agent/types.ts';
+import { columnItems, matchesOriginFilter, projectShowsWorktrees } from '../../../agent/project-service.ts';
+import type { ProjectOriginFilter, ProjectService, ProjectStore } from '../../../agent/project-service.ts';
+import type { ProjectItem, ProjectOp, ProjectSnapshot, ProjectWorktreeContext } from '../../../agent/types.ts';
 import {
   addColumnOp,
   dropIndexFor,
+  fullDropIndex,
   keyboardMoveOp,
   moveOpFor,
   removeColumnOp,
@@ -23,13 +24,17 @@ import { projectClipThumb } from './clip-thumbs.ts';
 import {
   button,
   columnColor,
+  createProjectMenu,
   el,
   errorText,
   itemFailed,
   itemIconName,
   itemOrganizing,
+  ORIGIN_FILTERS,
   projectIcon,
   tagColor,
+  worktreeChip,
+  worktreeLabelActions,
 } from './project-ui.ts';
 
 export interface ProjectBoardDeps {
@@ -39,6 +44,8 @@ export interface ProjectBoardDeps {
   openPreview(itemId: string): void;
   /** 짧은 상태 알림 (role=status). */
   announce(message: string, tone?: 'error'): void;
+  /** 이 채팅 문서의 작업 공간. 둘 이상일 때만 표시·거르기를 보인다. */
+  worktrees?: () => ProjectWorktreeContext | null;
 }
 
 export interface ProjectBoard {
@@ -88,8 +95,33 @@ export function createProjectBoard(deps: ProjectBoardDeps): ProjectBoard {
   const columnViews = new Map<string, ColumnView>();
   const cards = new Map<string, HTMLElement>();
   const uploads = new Map<string, HTMLElement[]>();
+  let originFilter: ProjectOriginFilter = 'all';
+  const worktrees = () => deps.worktrees?.() ?? null;
+
+  // 작업 공간 거르기 줄은 가로로 흐르는 보드 바깥(위)에 둔다.
+  const frame = el('div', 'ag-pboard-frame');
+  const bar = el('div', 'ag-pboard-bar');
+  bar.hidden = true;
+  const filter = el('div', 'ag-pgraph-modes ag-pboard-filter');
+  filter.setAttribute('role', 'radiogroup');
+  filter.setAttribute('aria-label', '작업 공간');
+  const filterButtons = new Map<ProjectOriginFilter, HTMLButtonElement>();
+  for (const option of ORIGIN_FILTERS) {
+    const choice = el('button', 'ag-pgraph-mode', option.label);
+    choice.type = 'button';
+    choice.setAttribute('role', 'radio');
+    choice.addEventListener('click', () => {
+      originFilter = option.id;
+      render();
+    });
+    filterButtons.set(option.id, choice);
+    filter.append(choice);
+  }
+  bar.append(filter);
+  const menu = createProjectMenu(frame);
 
   const element = el('div', 'ag-pboard');
+  frame.append(bar, element);
   element.setAttribute('role', 'group');
   element.setAttribute('aria-label', '보드');
   element.setAttribute('aria-roledescription', '보드');
@@ -99,6 +131,26 @@ export function createProjectBoard(deps: ProjectBoardDeps): ProjectBoard {
   addColumn.append(projectIcon('plus'), el('span', '', '열 추가'));
   track.append(addColumn);
   element.append(track);
+
+  /** 작업 공간 거르기에 맞는 항목인가. 작업 공간이 하나뿐이면 모두 보인다. */
+  function visible(item: ProjectItem): boolean {
+    const context = worktrees();
+    return !projectShowsWorktrees(context) || matchesOriginFilter(item, originFilter, context);
+  }
+
+  const boardItems = (snapshot: ProjectSnapshot, columnId: string) => columnItems(snapshot, columnId).filter(visible);
+
+  function renderFilter(): void {
+    const shown = projectShowsWorktrees(worktrees());
+    if (!shown) originFilter = 'all';
+    bar.hidden = !shown;
+    for (const [id, choice] of filterButtons) {
+      const selected = id === originFilter;
+      choice.classList.toggle('ag-active', selected);
+      choice.setAttribute('aria-checked', String(selected));
+      choice.tabIndex = selected ? 0 : -1;
+    }
+  }
 
   // ── 열 ────────────────────────────────────────────────
 
@@ -252,6 +304,8 @@ export function createProjectBoard(deps: ProjectBoardDeps): ProjectBoard {
       foot.append(chip);
     }
     if (item.tags.length > MAX_CARD_TAGS) foot.append(el('span', 'ag-pcard-more', `+${item.tags.length - MAX_CARD_TAGS}`));
+    const chip = worktreeChip(item.origin, worktrees());
+    if (chip) foot.append(chip);
     if (organizing) foot.append(el('span', 'ag-pcard-state', '정리 중'));
     else if (failed) foot.append(el('span', 'ag-pcard-state ag-pcard-state-failed', item.kind === 'file' && item.status === 'failed' ? '읽기 실패' : '정리 실패'));
     if (foot.childElementCount) card.append(foot);
@@ -278,6 +332,7 @@ export function createProjectBoard(deps: ProjectBoardDeps): ProjectBoard {
     const activeId = document.activeElement instanceof HTMLElement && element.contains(document.activeElement)
       ? document.activeElement.closest<HTMLElement>('.ag-pcard')?.dataset.item ?? null
       : null;
+    renderFilter();
     if (!snapshot) {
       for (const view of columnViews.values()) view.root.remove();
       columnViews.clear();
@@ -298,7 +353,7 @@ export function createProjectBoard(deps: ProjectBoardDeps): ProjectBoard {
       view.root.style.setProperty('--ag-pcol-color', columnColor(snapshot, column.id));
       if (editingColumn !== column.id) view.name.textContent = column.name;
       view.name.title = '이름 바꾸기';
-      const items = columnItems(snapshot, column.id);
+      const items = boardItems(snapshot, column.id);
       view.count.textContent = String(items.length);
       view.remove.hidden = snapshot.columns.length <= 1;
       view.remove.setAttribute('aria-label', `${column.name} 열 삭제`);
@@ -380,7 +435,7 @@ export function createProjectBoard(deps: ProjectBoardDeps): ProjectBoard {
     const columnIndex = project.columns.findIndex((column) => column.id === (item.column ?? project!.columns[0]?.id));
     const column = project.columns[columnIndex];
     if (!column) return null;
-    const list = columnItems(project, column.id);
+    const list = boardItems(project, column.id);
     const index = list.findIndex((entry) => entry.id === itemId);
     if (direction === 'up' || direction === 'down') {
       const next = list[index + (direction === 'up' ? -1 : 1)];
@@ -389,7 +444,7 @@ export function createProjectBoard(deps: ProjectBoardDeps): ProjectBoard {
     for (let step = 1; ; step++) {
       const target = project.columns[columnIndex + (direction === 'left' ? -step : step)];
       if (!target) return null;
-      const targetList = columnItems(project, target.id);
+      const targetList = boardItems(project, target.id);
       if (targetList.length) return cards.get(targetList[Math.min(index, targetList.length - 1)].id) ?? null;
     }
   }
@@ -403,7 +458,7 @@ export function createProjectBoard(deps: ProjectBoardDeps): ProjectBoard {
     const direction = ARROWS[event.key];
     if (direction && event.altKey) {
       event.preventDefault();
-      const op = keyboardMoveOp(store.get() ?? project, itemId, direction);
+      const op = keyboardMoveOp(store.get() ?? project, itemId, direction, visible);
       if (!op) return;
       focusAfterRender = itemId;
       void commit([op]).then((ok) => { if (ok) announce(moveAnnouncement(op)); });
@@ -546,7 +601,8 @@ export function createProjectBoard(deps: ProjectBoardDeps): ProjectBoard {
     for (const view of columnViews.values()) view.root.classList.remove('ag-drop-target');
     const snapshot = store.get();
     const op = commitMove && state.target && snapshot
-      ? moveOpFor(snapshot, state.itemId, state.target.columnId, state.target.index)
+      ? moveOpFor(snapshot, state.itemId, state.target.columnId,
+        fullDropIndex(snapshot, state.itemId, state.target.columnId, state.target.index, visible))
       : null;
     if (op) {
       focusAfterRender = state.itemId;
@@ -629,6 +685,26 @@ export function createProjectBoard(deps: ProjectBoardDeps): ProjectBoard {
   };
   document.addEventListener('keydown', onKeyDownCapture, true);
 
+  // ── 항목 메뉴 ─────────────────────────────────────────
+
+  track.addEventListener('contextmenu', (event) => {
+    const card = (event.target as HTMLElement).closest<HTMLElement>('.ag-pcard');
+    const item = card?.dataset.item ? project?.items.find((entry) => entry.id === card.dataset.item) : null;
+    if (!card || !item || drag?.active) return;
+    const actions = worktreeLabelActions(item, worktrees());
+    if (!actions.length) return;
+    event.preventDefault();
+    const rect = card.getBoundingClientRect();
+    // 키보드(메뉴 키)로 열면 좌표가 0 이라 카드 모서리에 띄운다.
+    const x = event.clientX || rect.left + 12;
+    const y = event.clientY || rect.top + rect.height / 2;
+    menu.open(actions.map((action) => ({
+      label: action.label,
+      run: () => void commit([{ op: 'label', id: item.id, origin: action.origin }], action.done),
+    })), x, y, card);
+  });
+  element.addEventListener('scroll', () => menu.close(), { passive: true });
+
   // ── 파일 놓기 ─────────────────────────────────────────
 
   const hasFiles = (event: DragEvent) => [...(event.dataTransfer?.types ?? [])].includes('Files');
@@ -686,7 +762,7 @@ export function createProjectBoard(deps: ProjectBoardDeps): ProjectBoard {
   });
 
   return {
-    element,
+    element: frame,
     update(next) {
       if (drag?.active || editingColumn) {
         deferred = next;
@@ -705,7 +781,8 @@ export function createProjectBoard(deps: ProjectBoardDeps): ProjectBoard {
     dispose() {
       endDrag(false);
       document.removeEventListener('keydown', onKeyDownCapture, true);
-      element.remove();
+      menu.dispose();
+      frame.remove();
     },
   };
 }

@@ -78,13 +78,23 @@ function extensionOf(name) {
   return match ? `.${match[1]}` : '';
 }
 
-/** Title with the original extension kept and path-hostile characters removed. */
-export function cleanLibrarianTitle(raw, originalName) {
+/**
+ * Title with the original extension kept and path-hostile characters removed. Text snapshots of
+ * web pages and pasted text (extension:false) keep a plain page title without the storage extension.
+ */
+export function cleanLibrarianTitle(raw, originalName, { extension = true } = {}) {
   const ext = extensionOf(originalName);
   let title = oneLine(raw, MAX_TITLE_CHARS + ext.length).replace(/[<>:"/\\|?*]/g, ' ').replace(/\s+/g, ' ').trim();
   if (ext && title.toLowerCase().endsWith(ext.toLowerCase())) title = title.slice(0, -ext.length).trim();
   title = title.replace(/^[.\s]+|[.\s]+$/g, '').slice(0, MAX_TITLE_CHARS).trim();
-  return title ? `${title}${ext}` : null;
+  if (!title) return null;
+  return extension ? `${title}${ext}` : title;
+}
+
+/** 웹 페이지·글 조각을 글로 저장한 항목 — 제목에 저장 확장자(.md/.txt)를 달지 않는다. */
+export function isTextSnapshot(item) {
+  const kind = item?.source?.kind;
+  return (kind === 'web' || kind === 'text') && /\.(md|txt)$/i.test(String(item?.originalName ?? ''));
 }
 
 function sourceLabel(source) {
@@ -160,7 +170,7 @@ export function librarianOpsFor(item, result, { project, actions, knownIds, link
   const ops = [];
   const locked = item.locked ?? {};
   if (actions.rename && !locked.title) {
-    const title = cleanLibrarianTitle(result.title, item.originalName ?? item.title);
+    const title = cleanLibrarianTitle(result.title, item.originalName ?? item.title, { extension: !isTextSnapshot(item) });
     if (title && title !== item.title) ops.push({ op: 'rename', id: item.id, name: title });
   }
   if (actions.classify) {

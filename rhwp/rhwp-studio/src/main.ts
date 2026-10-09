@@ -231,6 +231,7 @@ import { initInlinePrompt } from './agent/inline-prompt.ts';
 import { DocumentVersionController, persistActiveBranch, type VersionAgentView } from './versioning/controller.ts';
 import { WorktreeOwnership } from './versioning/worktree-ownership.ts';
 import type { VersionWorktree } from './versioning/types.ts';
+import type { ProjectWorktreeBinding } from './agent/types.ts';
 import {
   VersionGraphStore,
   documentId as versionDocumentId,
@@ -1372,7 +1373,30 @@ function installDocumentVersions(session: DocumentSession): DocumentVersionContr
       merge: (worktree) => runNavigation(() => mergeWorktreeSession(worktree)),
     },
   });
+  // 문서의 작업 공간이 바뀌면(열기·병합·이름 바꾸기) 채팅마다 같은 프로젝트에 다시 묶는다.
+  session.disposers.push(session.versions.subscribe(() => syncProjectWorktrees(session)));
   return session.versions;
+}
+
+/** 문서 세션의 작업 공간 묶음. 버전 기록이 꺼졌거나 작업 공간을 아직 모르면 null. */
+function projectWorktreeBinding(session: DocumentSession): ProjectWorktreeBinding | null {
+  const state = session.versions?.getState();
+  const worktree = session.worktree;
+  if (!state || !session.documentId || !worktree || worktree.documentId !== session.documentId) return null;
+  if (state.documentId !== session.documentId || !state.enabled) return null;
+  const current = state.worktrees.find((entry) => entry.isCurrent && entry.id === worktree.id);
+  if (!current) return null;
+  return {
+    documentId: session.documentId,
+    repositoryId: worktree.repositoryId,
+    current: { id: current.id, branch: current.branch, primary: current.primary },
+    worktrees: state.worktrees.map(({ id, branch, primary, documentId }) => ({ id, branch, primary, documentId })),
+  };
+}
+
+function syncProjectWorktrees(session: DocumentSession): void {
+  const binding = projectWorktreeBinding(session);
+  for (const chat of session.chats) chat.bridge.setProjectWorktrees(binding);
 }
 
 async function ensureWorktreeOwnership(session: DocumentSession, worktree: VersionWorktree): Promise<boolean> {
@@ -1788,6 +1812,7 @@ function installChatAgent(
   };
   chat = created;
   session.chats.push(created);
+  bridge.setProjectWorktrees(projectWorktreeBinding(session));
   if (active || !session.activeChat) session.activeChat = created;
   const taps = tapsFor(session);
   created.disposers.push(

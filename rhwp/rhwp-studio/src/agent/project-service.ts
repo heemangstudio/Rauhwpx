@@ -21,11 +21,13 @@ import type {
   ProjectNoteItem,
   ProjectOp,
   ProjectOpsResult,
+  ProjectOrigin,
   ProjectSettings,
   ProjectSettingsPayload,
   ProjectSnapshot,
   ProjectSummary,
   ProjectUndoResult,
+  ProjectWorktreeContext,
 } from './types.ts';
 
 // ── transport ───────────────────────────────────────────
@@ -447,6 +449,8 @@ export interface LocalOpsOptions {
   now?: number;
   /** 낙관 적용에서 아직 서버 id 가 없는 새 항목·연결의 id. */
   tempId?: () => string;
+  /** 이 채팅의 작업 공간 — label 'current' 와 새 항목 자동 표시에 쓴다. */
+  worktrees?: ProjectWorktreeContext | null;
 }
 
 /**
@@ -466,6 +470,8 @@ export function applyProjectOps(project: ProjectSnapshot, ops: readonly ProjectO
   const lock = (item: ProjectItem, field: 'title' | 'column' | 'tags') => {
     if (item.kind === 'file') item.locked = { ...item.locked, [field]: true };
   };
+  const autoOrigin = autoProjectOrigin(options.worktrees ?? null);
+  const labeled = autoOrigin ? { origin: { ...autoOrigin } } : {};
 
   for (const op of ops) {
     switch (op.op) {
@@ -513,6 +519,7 @@ export function applyProjectOps(project: ProjectSnapshot, ops: readonly ProjectO
           ...(op.label ? { label: op.label } : {}),
           ...(op.fromAnchor ? { fromAnchor: op.fromAnchor } : {}),
           ...(op.toAnchor ? { toAnchor: op.toAnchor } : {}),
+          ...(autoOrigin ? { worktreeOrigin: { ...autoOrigin } } : {}),
         });
         break;
       case 'unlink':
@@ -545,6 +552,7 @@ export function applyProjectOps(project: ProjectSnapshot, ops: readonly ProjectO
           updatedAt: now,
           addedBy: { kind: 'user' },
           bytes: op.body.length,
+          ...labeled,
         };
         for (const tag of note.tags) ensureTag(tag);
         next.items.push(note);
@@ -582,6 +590,7 @@ export function applyProjectOps(project: ProjectSnapshot, ops: readonly ProjectO
           sourceId: source.id,
           page: op.page ?? 1,
           rect: [...op.rect],
+          ...labeled,
         };
         for (const tag of clip.tags) ensureTag(tag);
         next.items.push(clip);
@@ -629,6 +638,19 @@ export function applyProjectOps(project: ProjectSnapshot, ops: readonly ProjectO
       case 'graph-unpin':
         delete next.graph.pinned[op.id];
         break;
+      case 'label': {
+        const current = options.worktrees?.current ?? null;
+        const origin = op.origin === 'current' && current ? { worktreeId: current.id, branch: current.branch } : null;
+        if (op.origin === 'current' && !origin) break;
+        const item = itemById(op.id);
+        if (item) {
+          item.origin = origin;
+          break;
+        }
+        const link = next.links.find((entry) => entry.id === op.id);
+        if (link) link.worktreeOrigin = origin;
+        break;
+      }
       default: {
         const _exhaustive: never = op;
         void _exhaustive;
@@ -636,6 +658,82 @@ export function applyProjectOps(project: ProjectSnapshot, ops: readonly ProjectO
     }
   }
   return next;
+}
+
+// ── 작업 공간 표시 ─────────────────────────────────────
+
+/** 작업 공간이 둘 이상일 때만 표시·거르기·색칠을 보인다. */
+export function projectShowsWorktrees(context: ProjectWorktreeContext | null | undefined): boolean {
+  return Boolean(context && context.worktrees.length > 1);
+}
+
+/**
+ * 이 채팅에서 새로 만든 항목이 받는 표시 (허브와 같은 규칙): 기본이 아닌 작업 공간은 늘,
+ * 기본 작업 공간은 작업 공간이 둘 이상일 때만 그 작업 공간을 붙인다.
+ */
+export function autoProjectOrigin(context: ProjectWorktreeContext | null | undefined): ProjectOrigin | null {
+  if (!context) return null;
+  if (context.current.primary && context.worktrees.length < 2) return null;
+  return { worktreeId: context.current.id, branch: context.current.branch };
+}
+
+/** 표시가 다른 작업 공간을 가리키면 그 작업 공간의 지금 이름(없어졌으면 붙일 때 이름). 공통·이 작업 공간이면 null. */
+export function otherWorktreeBranch(
+  origin: ProjectOrigin | null | undefined,
+  context: ProjectWorktreeContext | null | undefined,
+): string | null {
+  if (!origin) return null;
+  if (context && origin.worktreeId === context.current.id) return null;
+  return context?.worktrees.find((worktree) => worktree.id === origin.worktreeId)?.branch ?? origin.branch;
+}
+
+export type ProjectOriginFilter = 'all' | 'current' | 'shared';
+
+/** 보드·파일의 작업 공간 거르기. 이 작업 공간 = 이 작업 공간 표시가 붙은 항목, 공통 = 표시 없는 항목. */
+export function matchesOriginFilter(
+  item: Pick<ProjectItem, 'origin'>,
+  filter: ProjectOriginFilter,
+  context: ProjectWorktreeContext | null | undefined,
+): boolean {
+  if (filter === 'all') return true;
+  if (filter === 'shared') return !item.origin;
+  return Boolean(item.origin && context && item.origin.worktreeId === context.current.id);
+}
+
+export interface ProjectWorktreeState {
+  get(): ProjectWorktreeContext | null;
+  /** 같은 내용이면 알리지 않는다. 바뀌었으면 true. */
+  set(context: ProjectWorktreeContext | null): boolean;
+  subscribe(listener: (context: ProjectWorktreeContext | null) => void): () => void;
+}
+
+export function sameWorktreeContext(a: ProjectWorktreeContext | null, b: ProjectWorktreeContext | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const key = (context: ProjectWorktreeContext) => JSON.stringify([
+    context.repositoryId,
+    context.current.id, context.current.branch, context.current.primary,
+    context.worktrees.map((worktree) => [worktree.id, worktree.branch, worktree.primary]),
+  ]);
+  return key(a) === key(b);
+}
+
+export function createProjectWorktreeState(initial: ProjectWorktreeContext | null = null): ProjectWorktreeState {
+  let context = initial;
+  const listeners = new Set<(context: ProjectWorktreeContext | null) => void>();
+  return {
+    get: () => context,
+    set(next) {
+      if (sameWorktreeContext(context, next)) return false;
+      context = next;
+      for (const listener of [...listeners]) listener(context);
+      return true;
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
+  };
 }
 
 // ── 저장소 ──────────────────────────────────────────────
@@ -671,6 +769,8 @@ interface PendingBatch {
 export interface ProjectStoreOptions {
   service?: ProjectService | null;
   actor?: ProjectActor;
+  /** 이 채팅의 작업 공간 — 낙관 적용의 label·자동 표시가 읽는다. */
+  worktrees?: ProjectWorktreeState | null;
   /** 편집 응답 뒤 이 시간 안에 project-changed 가 오지 않으면 스냅샷을 다시 받는다. */
   reconcileDelayMs?: number;
 }
@@ -679,6 +779,7 @@ export function createProjectStore(options: ProjectStoreOptions = {}): ProjectSt
   const service = options.service ?? null;
   const actor = options.actor ?? USER_ACTOR;
   const reconcileDelayMs = options.reconcileDelayMs ?? 600;
+  const worktrees = options.worktrees ?? null;
   const listeners = new Set<ProjectStoreListener>();
   let confirmed: ProjectSnapshot | null = null;
   let view: ProjectSnapshot | null = null;
@@ -692,7 +793,7 @@ export function createProjectStore(options: ProjectStoreOptions = {}): ProjectSt
 
   function rebuild(): void {
     view = confirmed
-      ? batches.reduce((project, batch) => applyProjectOps(project, batch.ops, { tempId }), confirmed)
+      ? batches.reduce((project, batch) => applyProjectOps(project, batch.ops, { tempId, worktrees: worktrees?.get() ?? null }), confirmed)
       : null;
     for (const listener of [...listeners]) listener(view);
   }
@@ -783,7 +884,7 @@ export function createProjectStore(options: ProjectStoreOptions = {}): ProjectSt
       if (!service) {
         // 서비스가 없으면 화면에서만 적용한다 (미리보기·테스트).
         batches = batches.filter((entry) => entry !== batch);
-        confirmed = applyProjectOps(confirmed, ops, { tempId });
+        confirmed = applyProjectOps(confirmed, ops, { tempId, worktrees: worktrees?.get() ?? null });
         confirmed.revision += 1;
         rebuild();
         return { revision: confirmed.revision, applied: ops.length, created: {}, unresolvedLinks: [] };
@@ -829,6 +930,8 @@ export function createProjectStore(options: ProjectStoreOptions = {}): ProjectSt
 export interface ProjectClient {
   service: ProjectService;
   store: ProjectStore;
+  /** 이 채팅 문서의 작업 공간들. 버전 기록이 꺼진 문서면 get() 이 null 이다. */
+  worktrees?: ProjectWorktreeState;
 }
 
 /**

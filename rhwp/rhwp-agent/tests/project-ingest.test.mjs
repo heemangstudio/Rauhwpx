@@ -147,7 +147,9 @@ test('URL imports store HTML as .md and documents as-is with web source metadata
   });
   const actor = { kind: 'agent', threadId: 't1', agent: 'claude' };
   const { item: html } = await ingest.importUrl({ projectId: 'pabc', url: 'https://news.example/a', actor, tags: ['뉴스'] });
-  assert.equal(html.title, '기사.md');
+  // 글로 저장한 웹 페이지의 제목은 쪽 제목 그대로다 — 저장 확장자는 파일 이름에만 붙는다.
+  assert.equal(html.title, '기사');
+  assert.equal(html.originalName, '기사.md');
   assert.deepEqual(html.source, { kind: 'web', url: 'https://news.example/a', finalUrl: 'https://news.example/a?ref=1' });
   assert.deepEqual(html.addedBy, actor);
   assert.deepEqual(html.tags, ['뉴스']);
@@ -163,7 +165,8 @@ test('URL imports store HTML as .md and documents as-is with web source metadata
 
   // 에이전트가 붙인 이름의 점 뒤는 확장자가 아니다 — 날짜·도메인이 잘리지 않는다.
   const { item: named } = await ingest.importUrl({ projectId: 'pabc', url: 'https://news.example/a', actor, name: '보도자료: 현장점검 (2026.6.23)' });
-  assert.equal(named.title, '보도자료 현장점검 (2026.6.23).md');
+  assert.equal(named.title, '보도자료: 현장점검 (2026.6.23)');
+  assert.equal(named.originalName, '보도자료 현장점검 (2026.6.23).md');
   const { item: renamedPdf } = await ingest.importUrl({ projectId: 'pabc', url: 'https://files.example/r', actor, name: '안내서 v1.2.pdf' });
   assert.equal(renamedPdf.title, '안내서 v1.2.pdf');
 });
@@ -182,7 +185,8 @@ test('settings file types and size limits apply to every import', async () => {
     { code: 'PROJECT_INGEST_TOO_LARGE' },
   );
   const { item } = await ingest.importText({ projectId: 'p1', name: '회의 메모', url: 'https://x.example/m', text: '결정 사항' });
-  assert.equal(item.title, '회의 메모.md');
+  assert.equal(item.title, '회의 메모');
+  assert.equal(item.originalName, '회의 메모.md');
   assert.deepEqual(item.source, { kind: 'text', url: 'https://x.example/m' });
   assert.equal(stores.added[0].bytes.toString('utf8'), '원문: https://x.example/m\n\n결정 사항\n');
 });

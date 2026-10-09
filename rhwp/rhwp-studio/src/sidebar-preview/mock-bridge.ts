@@ -146,6 +146,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
   const projects = createPreviewProjects({
     homeAccess: projectParams.get('home') === '1',
     graphNodes: Number(projectParams.get('graphNodes')) || 0,
+    worktrees: projectParams.get('worktrees') === '1' ? (projectParams.get('worktree') === 'variant' ? 'variant' : 'main') : null,
   });
   let interrupts = 0;
   let threadId = '';
@@ -264,6 +265,15 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
   };
   const bridge: SidebarBridge = {
     projects,
+    setProjectWorktrees: (binding) => {
+      projects.worktrees.set(binding
+        ? {
+          repositoryId: binding.repositoryId,
+          current: { id: binding.current.id, branch: binding.current.branch, primary: binding.current.primary },
+          worktrees: binding.worktrees.map(({ id, branch, primary }) => ({ id, branch, primary })),
+        }
+        : null);
+    },
     pendingEdits: {
       getChangeSets: () => changes,
       onChange: (listener) => {

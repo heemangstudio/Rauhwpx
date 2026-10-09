@@ -75,7 +75,7 @@ import { resolveHwpExtractor } from './reference-extractor.mjs';
 import { defaultReferenceRoot } from './reference-store.mjs';
 import { createReferenceCatalog } from './reference-catalog.mjs';
 import { createReferenceHttpHandler, isAllowedStudioOrigin } from './reference-http.mjs';
-import { ProjectStore, defaultProjectsRoot } from './project-store.mjs';
+import { ProjectStore, defaultProjectsRoot, normalizeRepository, originLabels } from './project-store.mjs';
 import { ProjectSettingsStore } from './project-settings.mjs';
 import { createProjectHttpHandler, isProjectPath } from './project-http.mjs';
 import { executeProjectTool } from './project-tools.mjs';
@@ -2492,10 +2492,17 @@ function referenceScopes(activeSession) {
 /** 연구 프로젝트 요약(언급·발췌 포함)과 메시지 첨부를 사용자 메시지 앞에 붙인다. */
 async function addReferenceContext(activeSession, query, prompt, messageAttachments = [], mentions = []) {
   try {
+    const record = sessions.get(activeSession.hubSessionId ?? '') ?? null;
+    const repository = record ? repositoryContext(record) : null;
     const block = await projectPromptContext({
       projectStore,
       referenceStore,
       projectId: activeSession.projectId ?? null,
+      worktree: repository?.worktree ?? null,
+      worktreeCount: repository?.worktrees.length ?? 0,
+      worktreeBranch: (worktreeId) => (
+        repository?.worktrees.find((entry) => entry.id === worktreeId)?.branch ?? projectStore.worktreeBranch(worktreeId)
+      ),
       scopes: referenceScopes(activeSession),
       query,
       mentions,
@@ -2566,26 +2573,60 @@ function onProjectChanged(projectId, details = {}) {
   projectChangeTimers.set(projectId, timer);
 }
 
+/**
+ * Studio 가 보낸 저장소·작업 공간을 세션에 둔다 (chat-start·project-bind). 그 문서의 것일 때만
+ * 묶기·표시에 쓴다. 바뀌었으면 true.
+ */
+function applyRecordRepository(record, documentId, msg) {
+  const repository = typeof documentId === 'string' && documentId
+    ? normalizeRepository({ id: msg?.repositoryId, worktree: msg?.worktree, worktrees: msg?.worktrees })
+    : null;
+  const next = repository ? { documentId, repository } : null;
+  const changed = JSON.stringify(record.projectRepository ?? null) !== JSON.stringify(next);
+  record.projectRepository = next;
+  return changed;
+}
+
+/** 묶인 문서의 저장소 정보. 버전 기록이 없는 문서면 null. */
+function repositoryContext(record) {
+  const binding = record.projectRepository;
+  return binding && binding.documentId === record.boundDocumentId ? binding.repository : null;
+}
+
+/** 세션의 작업 공간 표시 규칙 ('current' 와 새 항목 자동 표시). */
+function recordLabels(record) {
+  return originLabels(repositoryContext(record));
+}
+
 /** 문서(없으면 스레드) → 프로젝트. 실패해도 채팅은 프로젝트 없이 계속된다. */
-async function bindRecordProject(record, { threadId, documentId, documentName }) {
+async function bindRecordProject(record, { threadId, documentId, documentName, create = true }) {
   let projectId = null;
+  const binding = record.projectRepository;
   try {
-    projectId = await projectStore.bindSession({ threadId, documentId, documentName });
+    projectId = await projectStore.bindSession({
+      threadId,
+      documentId,
+      documentName,
+      repository: binding && binding.documentId === documentId ? binding.repository : null,
+      create,
+    });
   } catch (error) {
     log(`project binding failed: ${error?.message ?? error}`);
   }
   record.boundProjectId = projectId;
   record.boundDocumentId = documentId ?? null;
+  record.boundDocumentName = documentName ?? null;
   record.boundThreadId = threadId ?? null;
   if (projectId) projectRecords.set(projectId, record);
   return projectId;
 }
 
-async function rebindRecordProject(record) {
+async function rebindRecordProject(record, { create = true } = {}) {
   const projectId = await bindRecordProject(record, {
     threadId: record.boundThreadId,
     documentId: record.boundDocumentId,
-    documentName: record.agentSession?.documentName ?? null,
+    documentName: record.agentSession?.documentName ?? record.boundDocumentName ?? null,
+    create,
   });
   const activeSession = record.agentSession;
   if (activeSession && activeSession.projectId !== projectId) {
@@ -2816,11 +2857,13 @@ async function dispatchStagedUserMessage(record, sock, msg, activeSession) {
       });
       if (!projectId) return { stageId, file: promoted, item: null };
       try {
+        const origin = recordLabels(record).auto;
         const item = await projectStore.addFileItem(projectId, {
           fileId: promoted.id,
           scope: 'project',
           source: { kind: 'chat-attachment', threadId: activeSession.threadId },
           addedBy: { kind: 'user', threadId: activeSession.threadId },
+          ...(origin ? { origin } : {}),
         });
         return { stageId, file: { ...promoted, itemId: item.id }, item };
       } catch (error) {
@@ -2999,6 +3042,8 @@ async function startSession(
     documentId,
     documentName,
     projectId,
+    // 프롬프트 맥락이 세션의 작업 공간을 찾을 때 쓴다.
+    hubSessionId: record.sessionId,
     // Legacy download/browser code uses chatId. It is now the stable Studio
     // thread identity rather than an unrelated hub-generated UUID.
     chatId: threadId,
@@ -3372,7 +3417,11 @@ async function handleStudioMessage(record, sock, msg) {
         });
         return;
       }
+      const previousRepository = record.projectRepository ?? null;
       try {
+        // 버전 저장소가 있는 문서는 모든 작업 공간이 한 프로젝트를 함께 쓴다.
+        const repositoryChanged = applyRecordRepository(record, msg.documentId, msg);
+        const reusable = record.agentSession;
         const s = await startSession(
           record,
           agent,
@@ -3387,6 +3436,8 @@ async function handleStudioMessage(record, sock, msg) {
           Boolean(msg.force),
           msg.serviceTier,
         );
+        // 같은 세션을 그대로 쓰면 묶기를 건너뛴다 — 작업 공간이 바뀌었으면 여기서 다시 묶는다.
+        if (repositoryChanged && s === reusable) await rebindRecordProject(record);
         sendJson(sock, {
           v: 1,
           type: 'chat-started',
@@ -3406,8 +3457,45 @@ async function handleStudioMessage(record, sock, msg) {
         await sendProjectBound(record);
         resumeLibrarianFor(record.boundProjectId);
       } catch (e) {
+        // 시작하지 못한 채팅의 작업 공간은 지금 세션의 표시에 쓰지 않는다.
+        if (!record.agentSession || record.agentSession.documentId !== msg.documentId) record.projectRepository = previousRepository;
         rejectStart(e, 'AGENT_SPAWN_FAILED');
       }
+      return;
+    }
+    case 'project-bind': {
+      // 허브가 다시 떠 세션이 비었거나 작업 공간이 바뀌었을 때 Studio 가 보낸다. 다음 메시지를
+      // 기다리지 않고 프로젝트를 다시 묶어 프로젝트 칸의 HTTP 호출이 바로 통하게 한다.
+      // 이미 있는 프로젝트에만 묶는다 — 새 프로젝트는 첫 채팅이 만든다.
+      const activeSession = record.agentSession;
+      const identity = activeSession
+        ? { threadId: activeSession.threadId, documentId: activeSession.documentId ?? null, documentName: activeSession.documentName ?? null }
+        : {
+          threadId: typeof msg.threadId === 'string' && msg.threadId ? msg.threadId : null,
+          documentId: typeof msg.documentId === 'string' && msg.documentId ? msg.documentId : null,
+          documentName: typeof msg.documentName === 'string' ? msg.documentName : null,
+        };
+      if (!identity.threadId && !identity.documentId) return;
+      if (msg.documentId === identity.documentId) applyRecordRepository(record, identity.documentId, msg);
+      const previous = record.boundProjectId ?? null;
+      const projectId = await bindRecordProject(record, { ...identity, create: false });
+      if (!projectId && previous && activeSession) {
+        // 묶여 있던 세션은 프로젝트를 잃지 않는다.
+        record.boundProjectId = previous;
+        return;
+      }
+      if (activeSession && activeSession.projectId !== projectId && projectId) {
+        activeSession.projectId = projectId;
+        const scopes = referenceScopesForSession(activeSession);
+        try { activeSession.releaseReferenceScopes?.(); } catch {}
+        activeSession.releaseReferenceScopes = referenceStore.retainScopes(scopes);
+        await referenceStore.activateScopes(scopes).catch((error) => log(`reference activation failed: ${error?.message ?? error}`));
+      } else if (!activeSession && projectId) {
+        await referenceStore.activateScopes(referenceScopesForSession({ ...identity, projectId }))
+          .catch((error) => log(`reference activation failed: ${error?.message ?? error}`));
+      }
+      await sendProjectBound(record);
+      resumeLibrarianFor(projectId);
       return;
     }
     case 'title-request': {
@@ -5165,6 +5253,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           homeSearch,
           allowedRoots: [record.workDir, record.downloadManager.baseDir],
           sessionKey: record.sessionId,
+          labels: recordLabels(record),
         })
           .then(({ handled, result }) => {
             if (!handled) throw workflowError('UNKNOWN_TOOL', `Unknown project tool: ${tool}`);
@@ -5753,6 +5842,7 @@ const httpServer = http.createServer((req, res) => {
           projectId: record.boundProjectId ?? null,
           documentId: record.boundDocumentId ?? null,
           documentName: record.agentSession?.documentName ?? null,
+          labels: recordLabels(record),
         } : null,
         homeAccess: HOME_ACCESS,
         platform: process.platform,

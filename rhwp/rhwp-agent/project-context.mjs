@@ -38,8 +38,24 @@ function shortTitle(title) {
   return text.length > MAX_TITLE_CHARS ? `${text.slice(0, MAX_TITLE_CHARS - 1)}…` : text;
 }
 
+/**
+ * 다른 작업 공간에서 모은 항목의 브랜치 이름. 공통·이 작업 공간 항목은 null 이라 wt 를 싣지 않는다.
+ * @param {{worktree?: {id: string}|null, worktreeBranch?: (worktreeId: string) => string|null}} [context]
+ */
+export function otherWorktreeOf(item, { worktree = null, worktreeBranch = null } = {}) {
+  const origin = item?.origin;
+  if (!origin || typeof origin.worktreeId !== 'string' || !origin.worktreeId) return null;
+  if (worktree && origin.worktreeId === worktree.id) return null;
+  return worktreeBranch?.(origin.worktreeId) || origin.branch || null;
+}
+
+function withWorktree(entry, item, context) {
+  const wt = otherWorktreeOf(item, context);
+  return wt ? { ...entry, wt } : entry;
+}
+
 /** 요약 칸을 예산에 맞춘다. 대표 제목 → 영역 → 메모 → 태그 → 고정 항목 순으로 덜어 낸다. */
-export function buildProjectSummary(snapshot, budget) {
+export function buildProjectSummary(snapshot, budget, context = {}) {
   const visible = snapshot.items.filter((item) => !item.trashedAt);
   const byColumn = new Map(snapshot.columns.map((column) => [column.id, []]));
   for (const item of visible) byColumn.get(item.column)?.push(item);
@@ -60,21 +76,21 @@ export function buildProjectSummary(snapshot, budget) {
         column: column.name,
         count: items.length,
         ...(top > 0 && items.length > 0
-          ? { top: items.slice(0, top).map((item) => ({ id: item.id, title: shortTitle(item.title) })) }
+          ? { top: items.slice(0, top).map((item) => withWorktree({ id: item.id, title: shortTitle(item.title) }, item, context)) }
           : {}),
       };
     }),
     ...(pinned > 0 && pinnedAll.length > 0
-      ? { pinned: pinnedAll.slice(0, pinned).map((item) => ({ id: item.id, kind: item.kind, title: shortTitle(item.title) })) }
+      ? { pinned: pinnedAll.slice(0, pinned).map((item) => withWorktree({ id: item.id, kind: item.kind, title: shortTitle(item.title) }, item, context)) }
       : {}),
     ...(clips > 0 && clipsAll.length > 0
       ? {
         clips: clipsAll.slice(0, clips)
-          .map((item) => ({ id: item.id, title: shortTitle(item.title), source: item.sourceId, page: item.page })),
+          .map((item) => withWorktree({ id: item.id, title: shortTitle(item.title), source: item.sourceId, page: item.page }, item, context)),
       }
       : {}),
     ...(notes > 0 && notesAll.length > 0
-      ? { notes: notesAll.slice(0, notes).map((item) => ({ id: item.id, title: shortTitle(item.title) })) }
+      ? { notes: notesAll.slice(0, notes).map((item) => withWorktree({ id: item.id, title: shortTitle(item.title) }, item, context)) }
       : {}),
     ...(snapshot.members?.length
       ? { documents: snapshot.members.map((member) => ({ id: member.nodeId, name: member.name })) }
@@ -112,7 +128,7 @@ export function buildProjectSummary(snapshot, budget) {
   return summary;
 }
 
-async function mentionEntries({ snapshot, mentions, projectStore, referenceStore, scopes, hits, budget }) {
+async function mentionEntries({ snapshot, mentions, projectStore, referenceStore, scopes, hits, budget, context }) {
   const ids = [...new Set((Array.isArray(mentions) ? mentions : []).filter((id) => typeof id === 'string'))].slice(0, MAX_MENTIONS);
   if (!snapshot || ids.length === 0) return [];
   const byId = new Map(snapshot.items.map((item) => [item.id, item]));
@@ -133,15 +149,15 @@ async function mentionEntries({ snapshot, mentions, projectStore, referenceStore
       entry = { id: member.nodeId, kind: 'document', title: member.name };
     } else if (item.kind === 'clip') {
       // 영역은 글이 아니라 그림이다 — 원본과 쪽만 알린다.
-      entry = { id: item.id, kind: 'clip', title: item.title, source: item.sourceId, page: item.page };
+      entry = withWorktree({ id: item.id, kind: 'clip', title: item.title, source: item.sourceId, page: item.page }, item, context);
     } else {
-      entry = {
+      entry = withWorktree({
         id: item.id,
         kind: item.kind,
         title: item.title,
         ...(item.summary ? { summary: item.summary } : {}),
         ...(item.tags?.length ? { tags: item.tags } : {}),
-      };
+      }, item, context);
       let text = '';
       try {
         if (item.kind === 'note') {
@@ -162,7 +178,7 @@ async function mentionEntries({ snapshot, mentions, projectStore, referenceStore
   return entries;
 }
 
-function excerptEntries({ snapshot, hits, budget }) {
+function excerptEntries({ snapshot, hits, budget, context }) {
   const itemByFile = new Map((snapshot?.items ?? [])
     .filter((item) => item.kind === 'file')
     .map((item) => [item.fileId, item]));
@@ -171,12 +187,12 @@ function excerptEntries({ snapshot, hits, budget }) {
   for (const hit of hits) {
     if (remaining <= 120) break;
     const item = itemByFile.get(hit.fileId);
-    const entry = {
+    const entry = withWorktree({
       ...(item ? { itemId: item.id } : { fileId: hit.fileId }),
       chunkId: hit.chunkId,
       ...(Number.isSafeInteger(hit.page) ? { page: hit.page } : {}),
       title: shortTitle(item?.title ?? hit.name),
-    };
+    }, item, context);
     const room = remaining - size(entry) - 12;
     if (room <= 40) break;
     entry.text = hit.text.slice(0, room);
@@ -190,6 +206,8 @@ function excerptEntries({ snapshot, hits, budget }) {
  * @param {{
  *   projectStore: any, referenceStore: any, projectId: string|null,
  *   scopes: {scope: string, scopeId: string}[], query?: string, mentions?: string[], settings?: any,
+ *   worktree?: {id: string, branch: string, primary: boolean}|null, worktreeCount?: number,
+ *   worktreeBranch?: (worktreeId: string) => string|null,
  * }} input
  * @returns {Promise<string>} 붙일 블록. 보일 것이 없으면 빈 문자열.
  */
@@ -201,8 +219,12 @@ export async function projectPromptContext({
   query = '',
   mentions = [],
   settings = null,
+  worktree = null,
+  worktreeCount = 0,
+  worktreeBranch = null,
 }) {
   const budgets = summaryBudgets(settings);
+  const context = { worktree, worktreeBranch };
   let snapshot = null;
   if (projectId && projectStore) {
     try { snapshot = await projectStore.get(projectId); } catch {}
@@ -213,15 +235,19 @@ export async function projectPromptContext({
       ? referenceStore.search({ query: String(query).slice(0, 20_000), scopes, maxResults: MAX_EXCERPTS })
       : [];
   } catch {}
-  const project = snapshot ? buildProjectSummary(snapshot, budgets.summary) : null;
+  const project = snapshot ? buildProjectSummary(snapshot, budgets.summary, context) : null;
   const mentioned = await mentionEntries({
-    snapshot, mentions, projectStore, referenceStore, scopes, hits, budget: budgets.mentions,
+    snapshot, mentions, projectStore, referenceStore, scopes, hits, budget: budgets.mentions, context,
   });
-  const excerpts = excerptEntries({ snapshot, hits, budget: budgets.excerpts });
+  const excerpts = excerptEntries({ snapshot, hits, budget: budgets.excerpts, context });
   const hasProjectContent = Boolean(snapshot && (snapshot.items.length > 0 || snapshot.goal));
   if (!hasProjectContent && mentioned.length === 0 && excerpts.length === 0) return '';
+  // 작업 공간이 하나뿐인 기본 문서에는 싣지 않는다 — 표시도 없다.
+  const labeled = Boolean(snapshot?.items.some((item) => item.origin));
+  const showWorktree = worktree && (!worktree.primary || worktreeCount > 1 || labeled);
   const payload = {
     instruction: INSTRUCTION,
+    ...(showWorktree ? { worktree: { branch: worktree.branch, primary: worktree.primary } } : {}),
     ...(project ? { project } : {}),
     ...(mentioned.length > 0 ? { mentioned } : {}),
     ...(excerpts.length > 0 ? { excerpts } : {}),
