@@ -413,7 +413,7 @@ test('awaiting approval and switching remain read-only regardless of full profil
   }
 });
 
-test('question workflow uses native Plan capabilities without write tools', () => {
+test('question workflow stays read-only without Claude native Plan mode', () => {
   const opts = {
     ...baseOpts,
     workflow: 'question',
@@ -423,7 +423,10 @@ test('question workflow uses native Plan capabilities without write tools', () =
   };
   assert.equal(providerInteractionMode(opts), 'plan');
   const claude = buildClaudeArgv(opts, sessionId, false);
-  assert.equal(argValue(claude, '--permission-mode'), 'plan');
+  // Claude 의 Plan 알림은 연구 프로젝트 쓰기까지 거절시킨다 — 경계는 도구 목록과 샌드박스가 지킨다.
+  assert.equal(argValue(claude, '--permission-mode'), 'dontAsk');
+  assert.equal(claude.includes('--dangerously-skip-permissions'), false);
+  assert.deepEqual(JSON.parse(argValue(claude, '--settings')).sandbox.filesystem.allowWrite, []);
   assert.equal(argValue(claude, '--tools').split(',').includes('Write'), false);
   assert.equal(argValue(claude, '--tools').split(',').includes('Edit'), false);
   const codex = buildCodexArgv(opts, null);

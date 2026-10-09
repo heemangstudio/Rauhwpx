@@ -207,10 +207,20 @@ export function writeClaudeAgentsFile(isolatedHome) {
   }
 }
 
+/**
+ * Claude 네이티브 Plan 모드를 쓸지. 채팅(question)은 쓰지 않는다 — Plan 알림이 "읽기 전용이 아닌 도구는
+ * 실행하지 말 것, 다른 지시보다 우선"이라서 모든 모드에 열린 연구 프로젝트 도구(project_edit,
+ * project_import)를 모델이 거절한다. 채팅의 읽기 전용 경계는 PLANNING_TOOLS, 샌드박스, MCP 워크플로
+ * 게이트가 그대로 지킨다.
+ */
+function usesNativePlanMode(opts) {
+  return providerInteractionMode(opts) === 'plan' && normalizeExecutionMode(opts).workflow !== 'question';
+}
+
 export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null } = {}) {
   const unrestricted = opts.permissionProfile === 'unrestricted';
   const planningRestricted = isPlanningRestricted(opts);
-  const interactionMode = providerInteractionMode(opts);
+  const nativePlan = usesNativePlanMode(opts);
   const copyLayoutWorker = opts.toolProfile === 'copy-layout-worker';
   const activeTools = copyLayoutWorker ? 'Read,Glob,Grep' : planningRestricted ? PLANNING_TOOLS : DIRECT_TOOLS;
   const capabilityEnv = mcpCapabilityEnv(opts);
@@ -271,9 +281,9 @@ export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null } =
     '--disable-slash-commands',
     '--tools', activeTools,
     '--settings', JSON.stringify(settings),
-    ...(interactionMode === 'plan'
+    ...(nativePlan
       ? ['--permission-mode', 'plan']
-      : unrestricted
+      : unrestricted && !planningRestricted
         ? ['--permission-mode', 'bypassPermissions', '--dangerously-skip-permissions']
         : ['--permission-mode', 'dontAsk']),
     '--append-system-prompt', systemBriefFor(opts),
@@ -291,7 +301,7 @@ export function buildClaudeArgv(opts, sessionId, resume, { agentsPath = null } =
 export function buildClaudeSdkOptions(opts, sessionId, resume, abortController) {
   const unrestricted = opts.permissionProfile === 'unrestricted';
   const planningRestricted = isPlanningRestricted(opts);
-  const interactionMode = providerInteractionMode(opts);
+  const nativePlan = usesNativePlanMode(opts);
   const copyLayoutWorker = opts.toolProfile === 'copy-layout-worker';
   const activeTools = copyLayoutWorker ? 'Read,Glob,Grep' : planningRestricted ? PLANNING_TOOLS : DIRECT_TOOLS;
   const capabilityEnv = mcpCapabilityEnv(opts);
@@ -351,10 +361,10 @@ export function buildClaudeSdkOptions(opts, sessionId, resume, abortController) 
     ...(opts.claudeBin && path.isAbsolute(opts.claudeBin)
       ? { pathToClaudeCodeExecutable: opts.claudeBin }
       : {}),
-    permissionMode: interactionMode === 'plan'
+    permissionMode: nativePlan
       ? 'plan'
-      : unrestricted ? 'bypassPermissions' : 'default',
-    ...(interactionMode !== 'plan' && unrestricted ? { allowDangerouslySkipPermissions: true } : {}),
+      : unrestricted && !planningRestricted ? 'bypassPermissions' : 'default',
+    ...(!nativePlan && unrestricted && !planningRestricted ? { allowDangerouslySkipPermissions: true } : {}),
     ...(resume ? { resume: sessionId } : { sessionId }),
     settingSources: [],
     settings,
