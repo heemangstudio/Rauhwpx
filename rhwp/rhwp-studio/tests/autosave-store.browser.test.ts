@@ -71,7 +71,7 @@ test('a full disk fails the draft write and the autosave status instead of fakin
           directError = (error as DOMException).name;
         }
         const manager = new AutosaveManager({
-          exportBytes: () => new Uint8Array([4, 5, 6]),
+          exportDraft: () => ({ bytes: new Uint8Array([4, 5, 6]), format: 'hwp' as const }),
           schedule: { recoveryEnabled: false, idleEnabled: false },
           retryDelayMs: 60_000,
           logger: { debug() {}, warn() {} },
@@ -186,7 +186,7 @@ test('a live window keeps its draft; closing it makes the draft recoverable at o
       const store = await import('/src/recovery/autosave-store.ts');
       const { AutosaveManager } = await import('/src/recovery/autosave-manager.ts');
       const manager = new AutosaveManager({
-        exportBytes: () => new Uint8Array([1, 2]),
+        exportDraft: () => ({ bytes: new Uint8Array([1, 2]), format: 'hwp' as const }),
         schedule: { recoveryEnabled: false, idleEnabled: false },
         idFactory: () => 'owned-draft',
         // Same sessionId as the observer, as after a reload or a duplicated tab.
@@ -221,5 +221,57 @@ test('a live window keeps its draft; closing it makes the draft recoverable at o
   } finally {
     if (!owner.isClosed()) await owner.close();
     await observer.close();
+  }
+});
+
+test('upgrading a v3 database keeps old drafts and stores browser file handles with new ones', { timeout: 30_000 }, async () => {
+  const page = await freshPage();
+  try {
+    const result = await page.evaluate(async () => {
+      // v3 스키마로 만든 예전 draft 하나.
+      await new Promise<void>((resolveOpen, reject) => {
+        const request = indexedDB.open('rhwpStudioAutosave', 3);
+        request.onupgradeneeded = () => {
+          const db = request.result;
+          db.createObjectStore('drafts', { keyPath: 'id' });
+          db.createObjectStore('sessions', { keyPath: 'sessionId' });
+          db.createObjectStore('draftMeta', { keyPath: 'id' });
+        };
+        request.onsuccess = () => {
+          const db = request.result;
+          const tx = db.transaction(['drafts', 'draftMeta'], 'readwrite');
+          const row = { id: 'v3', fileName: 'old.hwp', sourceFormat: 'hwp', savedAt: 1, byteLength: 1 };
+          tx.objectStore('drafts').put({ ...row, data: new Uint8Array([9]).buffer });
+          tx.objectStore('draftMeta').put(row);
+          tx.oncomplete = () => { db.close(); resolveOpen(); };
+          tx.onerror = () => reject(tx.error);
+        };
+        request.onerror = () => reject(request.error);
+      });
+      const store = await import('/src/recovery/autosave-store.ts');
+      const root = await navigator.storage.getDirectory();
+      const fileHandle = await root.getFileHandle('autosave-handle.hwp', { create: true });
+      await store.saveAutosaveDraft({
+        id: 'v4', fileName: 'autosave-handle.hwp', sourceFormat: 'hwp', savedAt: 2, byteLength: 1,
+        data: new Uint8Array([1]), documentId: 'doc', dataFormat: 'hwp',
+        base: { digest: 'blake3:b', byteLength: 2, mergeable: true },
+        fileHandle: fileHandle as never, handleKind: 'browser',
+      }, { locks: null, base: { digest: 'blake3:b', byteLength: 2, data: new Uint8Array([3, 4]) } });
+      const legacy = await store.getAutosaveDraft('v3');
+      const linked = await store.getAutosaveDraft('v4');
+      const listed = await store.listAutosaveDrafts();
+      return {
+        legacy: legacy ? { documentId: legacy.documentId ?? null, data: [...legacy.data] } : null,
+        sameEntry: linked?.fileHandle ? await (linked.fileHandle as unknown as FileSystemFileHandle).isSameEntry(fileHandle) : false,
+        metaHasHandle: listed.some((row) => 'fileHandle' in row),
+        base: [...((await store.getAutosaveDraftBase('v4'))?.data ?? [])],
+      };
+    });
+    assert.deepEqual(result.legacy, { documentId: null, data: [9] });
+    assert.equal(result.sameEntry, true);
+    assert.equal(result.metaHasHandle, false);
+    assert.deepEqual(result.base, [3, 4]);
+  } finally {
+    await page.close();
   }
 });

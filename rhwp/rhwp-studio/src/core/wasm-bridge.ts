@@ -768,6 +768,11 @@ export class WasmBridge {
     return this._documentDigest;
   }
 
+  /** 연 바이트가 원본 파일과 다를 때(자동 저장본 복구) 원본 파일의 digest 를 기준으로 삼는다. */
+  adoptSourceDigest(digest: string): void {
+    if (this.doc) this._documentDigest = digest;
+  }
+
   set fileName(name: string) {
     this.doc?.setFileName(name);
     this._fileName = name;

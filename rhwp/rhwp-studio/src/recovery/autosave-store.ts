@@ -7,8 +7,11 @@
  *
  * 문서 바이트는 `drafts`, 목록과 정리에 쓰는 메타데이터는 `draftMeta` 에 따로 둔다. 목록을
  * 읽거나 오래된 복구본을 정리할 때 모든 복구본의 바이트를 복제하지 않기 위해서다.
+ * `draftBases` 에는 draft 마다 그 창이 마지막으로 열거나 저장한 파일 바이트를 하나 둔다. 복구할 때
+ * 디스크 파일이 바뀌었는지 판단하고, 바뀌었으면 3-way 병합의 기준으로 쓴다.
  */
 
+import type { FileSystemFileHandleLike } from '../command/file-system-access.ts';
 import {
   openIndexedDatabase,
   requestResult,
@@ -18,9 +21,10 @@ import {
 } from '../core/idb-open.ts';
 
 const DB_NAME = 'rhwpStudioAutosave';
-const DB_VER = 3;
+const DB_VER = 4;
 const DRAFTS = 'drafts';
 const DRAFT_META = 'draftMeta';
+const DRAFT_BASES = 'draftBases';
 const SESSIONS = 'sessions';
 /** 사용자에게 한 번 보여 준 복구본은 이 개수를 넘으면 오래된 것부터 정리한다. */
 const MAX_DRAFTS = 12;
@@ -41,12 +45,35 @@ export interface AutosaveOwner {
   instanceId?: string;
 }
 
+export type AutosaveDataFormat = 'hwp' | 'hwpx' | 'hml';
+
+/** draft 를 만든 창이 마지막으로 열거나 저장한 파일 바이트의 요약. 바이트는 `draftBases` 에 있다. */
+export interface AutosaveDraftBaseSummary {
+  digest: string;
+  byteLength: number;
+  /** false 면 기준 바이트로 병합할 수 없다(.rhwpx 묶음 등). */
+  mergeable: boolean;
+}
+
+export interface AutosaveDraftBase {
+  digest: string;
+  byteLength: number;
+  data: Uint8Array;
+}
+
 export interface AutosaveDraftSummary {
   id: string;
   fileName: string;
   sourceFormat: string;
   savedAt: number;
   byteLength: number;
+  /** 논리 문서 ID. 없으면 v3 이전 draft 이다. */
+  documentId?: string;
+  /** data 의 형식. 없으면 HWP 이다. */
+  dataFormat?: AutosaveDataFormat;
+  base?: AutosaveDraftBaseSummary;
+  /** draft 를 만들 때 문서에 붙어 있던 파일 핸들의 종류. browser 핸들만 drafts 행에 저장한다. */
+  handleKind?: 'browser' | 'native-path';
   dirtyReason?: string;
   ownerLaunchId?: string;
   ownerSessionId?: string;
@@ -59,6 +86,8 @@ export interface AutosaveDraftSummary {
 
 export interface AutosaveDraft extends AutosaveDraftSummary {
   data: Uint8Array;
+  /** 원본 파일 핸들. 메타 저장소에는 넣지 않고, 브라우저 핸들만 drafts 행에 저장한다. */
+  fileHandle?: FileSystemFileHandleLike;
 }
 
 export interface AutosaveSessionHeartbeat extends AutosaveOwner {
@@ -81,9 +110,12 @@ export interface RecoverableAutosaveOptions {
 export interface SaveAutosaveDraftOptions {
   now?: number;
   locks?: AutosaveLockManagerLike | null;
+  /** 기준 바이트가 바뀌었을 때만 넘긴다. 같은 트랜잭션에서 draft 와 함께 기록한다. */
+  base?: AutosaveDraftBase;
 }
 
 type DraftRow = Omit<AutosaveDraft, 'data'> & { data?: ArrayBuffer };
+type DraftBaseRow = Omit<AutosaveDraftBase, 'data'> & { id: string; data: ArrayBuffer };
 
 interface OwnerLiveness {
   now: number;
@@ -93,6 +125,7 @@ interface OwnerLiveness {
 }
 
 const memory = new Map<string, AutosaveDraft>();
+const memoryBases = new Map<string, AutosaveDraftBase>();
 const memorySessions = new Map<string, AutosaveSessionHeartbeat>();
 
 export function autosaveInstanceLockName(instanceId: string): string {
@@ -140,6 +173,21 @@ function cloneDraft(draft: AutosaveDraft): AutosaveDraft {
   return { ...draft, data: cloneBytes(draft.data) };
 }
 
+/**
+ * IndexedDB 에 넣을 수 있는 핸들만 남긴다. Electron native-path 핸들은 복제할 수 없고,
+ * 재시작 뒤에는 메인 프로세스 북마크가 documentId 로 파일을 다시 찾는다.
+ */
+function persistableHandle(handle: FileSystemFileHandleLike | undefined): FileSystemFileHandleLike | undefined {
+  if (!handle || handle.identityKind === 'native-path') return undefined;
+  const BrowserHandle = (globalThis as { FileSystemFileHandle?: abstract new () => unknown }).FileSystemFileHandle;
+  if (BrowserHandle && !(handle instanceof BrowserHandle)) return undefined;
+  return handle;
+}
+
+function isDataFormat(value: unknown): value is AutosaveDataFormat {
+  return value === 'hwp' || value === 'hwpx' || value === 'hml';
+}
+
 function summaryOf(draft: AutosaveDraftSummary): AutosaveDraftSummary {
   const summary: AutosaveDraftSummary = {
     id: draft.id,
@@ -148,6 +196,16 @@ function summaryOf(draft: AutosaveDraftSummary): AutosaveDraftSummary {
     savedAt: draft.savedAt,
     byteLength: draft.byteLength,
   };
+  if (typeof draft.documentId === 'string' && draft.documentId) summary.documentId = draft.documentId;
+  if (isDataFormat(draft.dataFormat)) summary.dataFormat = draft.dataFormat;
+  if (draft.base && typeof draft.base.digest === 'string') {
+    summary.base = {
+      digest: draft.base.digest,
+      byteLength: draft.base.byteLength,
+      mergeable: draft.base.mergeable === true,
+    };
+  }
+  if (draft.handleKind === 'browser' || draft.handleKind === 'native-path') summary.handleKind = draft.handleKind;
   if (draft.dirtyReason !== undefined) summary.dirtyReason = draft.dirtyReason;
   if (draft.ownerLaunchId !== undefined) summary.ownerLaunchId = draft.ownerLaunchId;
   if (draft.ownerSessionId !== undefined) summary.ownerSessionId = draft.ownerSessionId;
@@ -172,6 +230,7 @@ function rowToDraft(row: DraftRow): AutosaveDraft {
 function draftToRow(draft: AutosaveDraft): DraftRow {
   return {
     ...summaryOf(draft),
+    ...(draft.fileHandle ? { fileHandle: draft.fileHandle } : {}),
     data: bytesToArrayBuffer(draft.data),
   };
 }
@@ -187,6 +246,9 @@ function openDb() {
     }
     if (!db.objectStoreNames.contains(SESSIONS)) {
       db.createObjectStore(SESSIONS, { keyPath: 'sessionId' });
+    }
+    if (!db.objectStoreNames.contains(DRAFT_BASES)) {
+      db.createObjectStore(DRAFT_BASES, { keyPath: 'id' });
     }
     if (!db.objectStoreNames.contains(DRAFT_META)) {
       const metaStore = db.createObjectStore(DRAFT_META, { keyPath: 'id' });
@@ -309,23 +371,37 @@ export async function saveAutosaveDraft(
   options: SaveAutosaveDraftOptions = {},
 ): Promise<void> {
   // 새로 저장한 내용은 아직 아무에게도 보여 주지 않았다.
-  const { offeredAt: _offeredAt, ...fresh } = draft;
+  const { offeredAt: _offeredAt, fileHandle: rawHandle, ...fresh } = draft;
+  const fileHandle = persistableHandle(rawHandle);
   const normalized = cloneDraft({
     ...fresh,
+    ...(fileHandle ? { fileHandle } : {}),
     byteLength: draft.data.byteLength,
   });
+  const base = options.base
+    ? { digest: options.base.digest, byteLength: options.base.data.byteLength, data: cloneBytes(options.base.data) }
+    : null;
   const now = options.now ?? Date.now();
   const heldLocks = await heldOwnerLocks(resolveLocks(options.locks));
 
   await withDraftDatabase(
     async (db) => {
-      const tx = db.transaction([DRAFTS, DRAFT_META, SESSIONS], 'readwrite');
+      const tx = db.transaction([DRAFTS, DRAFT_META, DRAFT_BASES, SESSIONS], 'readwrite');
       const done = transactionDone(tx);
       try {
         const draftsStore = tx.objectStore(DRAFTS);
         const metaStore = tx.objectStore(DRAFT_META);
+        const basesStore = tx.objectStore(DRAFT_BASES);
         draftsStore.put(draftToRow(normalized));
         metaStore.put(summaryOf(normalized));
+        if (base) {
+          basesStore.put({
+            id: normalized.id,
+            digest: base.digest,
+            byteLength: base.byteLength,
+            data: bytesToArrayBuffer(base.data),
+          } satisfies DraftBaseRow);
+        }
         // 메타만 읽어 정리 대상을 고른다. 바이트는 트랜잭션 안에서 복제하지 않는다.
         const [metas, sessions] = await Promise.all([
           requestResult(metaStore.getAll() as IDBRequest<AutosaveDraftSummary[]>),
@@ -340,6 +416,7 @@ export async function saveAutosaveDraft(
         for (const id of trimDraftIds(metas, liveness, normalized.id)) {
           draftsStore.delete(id);
           metaStore.delete(id);
+          basesStore.delete(id);
         }
       } catch (error) {
         // 요청을 만들거나 읽는 도중 실패하면 앞서 올린 put 만 커밋되지 않도록 되돌린다.
@@ -353,18 +430,23 @@ export async function saveAutosaveDraft(
       }
       await done;
       memory.delete(normalized.id);
+      memoryBases.delete(normalized.id);
     },
     async () => {
       memory.set(normalized.id, normalized);
+      if (base) memoryBases.set(normalized.id, base);
       const liveness: OwnerLiveness = {
         now,
         staleAfterMs: AUTOSAVE_SESSION_STALE_MS,
         sessions: memorySessions,
         heldLocks,
       };
-      for (const id of trimDraftIds([...memory.values()], liveness, normalized.id)) memory.delete(id);
+      for (const id of trimDraftIds([...memory.values()], liveness, normalized.id)) {
+        memory.delete(id);
+        memoryBases.delete(id);
+      }
     },
-    draftWriteTimeoutMs(normalized.byteLength),
+    draftWriteTimeoutMs(normalized.byteLength + (base?.byteLength ?? 0)),
   );
 }
 
@@ -381,6 +463,25 @@ export async function getAutosaveDraft(id: string): Promise<AutosaveDraft | null
       await transactionDone(tx);
       // IndexedDB 행이 항상 우선한다. 메모리에는 DB 없이 저장한 draft 만 남는다.
       return row ? rowToDraft(row) : fromMemory();
+    },
+    async () => fromMemory(),
+    DRAFT_READ_TIMEOUT_MS,
+  );
+}
+
+/** draft 를 만든 창이 마지막으로 열거나 저장한 파일 바이트. 없으면 null. */
+export async function getAutosaveDraftBase(id: string): Promise<AutosaveDraftBase | null> {
+  const fromMemory = () => {
+    const mem = memoryBases.get(id);
+    return mem ? { ...mem, data: cloneBytes(mem.data) } : null;
+  };
+  return withDraftDatabase(
+    async (db) => {
+      const tx = db.transaction(DRAFT_BASES, 'readonly');
+      const row = await requestResult(tx.objectStore(DRAFT_BASES).get(id) as IDBRequest<DraftBaseRow | undefined>);
+      await transactionDone(tx);
+      if (!row) return fromMemory();
+      return { digest: row.digest, byteLength: row.byteLength, data: new Uint8Array(row.data) };
     },
     async () => fromMemory(),
     DRAFT_READ_TIMEOUT_MS,
@@ -490,11 +591,13 @@ export async function releaseAutosaveSession(sessionId: string) {
 
 export async function deleteAutosaveDraft(id: string): Promise<void> {
   memory.delete(id);
+  memoryBases.delete(id);
   await withDb(
     async (db) => {
-      const tx = db.transaction([DRAFTS, DRAFT_META], 'readwrite');
+      const tx = db.transaction([DRAFTS, DRAFT_META, DRAFT_BASES], 'readwrite');
       tx.objectStore(DRAFTS).delete(id);
       tx.objectStore(DRAFT_META).delete(id);
+      tx.objectStore(DRAFT_BASES).delete(id);
       await transactionDone(tx);
     },
     async () => {},
@@ -510,11 +613,13 @@ export async function clearRecoverableAutosaveDrafts(options: RecoverableAutosav
 /** 명시적인 전체 초기화 API. 일반 복구 UI는 clearRecoverableAutosaveDrafts를 사용한다. */
 export async function clearAutosaveDrafts(): Promise<void> {
   memory.clear();
+  memoryBases.clear();
   await withDb(
     async (db) => {
-      const tx = db.transaction([DRAFTS, DRAFT_META], 'readwrite');
+      const tx = db.transaction([DRAFTS, DRAFT_META, DRAFT_BASES], 'readwrite');
       tx.objectStore(DRAFTS).clear();
       tx.objectStore(DRAFT_META).clear();
+      tx.objectStore(DRAFT_BASES).clear();
       await transactionDone(tx);
     },
     async () => {},

@@ -2111,12 +2111,22 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   workspaceTrailing.append(workspaceAgentContext, environmentWrap, workspaceSettingsBtn, workspaceExitBtn);
   workspaceBar.append(workspaceLeading, workspaceTitle, workspaceDocumentContext, workspaceTrailing);
 
-  const applyHancomGitVisibility = (enabled: boolean): void => {
-    versionsBtn.hidden = !enabled;
-    if (!enabled && versionsPanelOpen) closeVersionsPage();
+  // 전역 설정이 꺼져 있어도 이 문서에 버전 기록이 있으면(예: 자동 저장본 복구) 버전 창을 연다.
+  const versionsReachable = (): boolean => (
+    userSettings.getUseHancomGit() || versionController?.getState().enabled === true
+  );
+  const applyHancomGitVisibility = (): void => {
+    const reachable = versionsReachable();
+    versionsBtn.hidden = !reachable;
+    if (!reachable && versionsPanelOpen) closeVersionsPage();
   };
-  applyHancomGitVisibility(userSettings.getUseHancomGit());
-  const unsubscribeHancomGitVisibility = userSettings.subscribeUseHancomGit(applyHancomGitVisibility);
+  applyHancomGitVisibility();
+  const unsubscribeHancomGitSetting = userSettings.subscribeUseHancomGit(applyHancomGitVisibility);
+  const unsubscribeVersionState = versionController?.subscribe(applyHancomGitVisibility) ?? (() => {});
+  const unsubscribeHancomGitVisibility = (): void => {
+    unsubscribeHancomGitSetting();
+    unsubscribeVersionState();
+  };
 
   function updateEnvironmentFilename(name: string): void {
     // 긴 이름은 가운데를 줄여 확장자·버전 표기를 남긴다. 전체 이름은 행 title 이 맡는다.
@@ -4163,7 +4173,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function openConfiguredVersionControl(): void {
-    if (!userSettings.getUseHancomGit() && openClassicVersionControl) {
+    if (!versionsReachable() && openClassicVersionControl) {
       closeVersionsPage();
       openClassicVersionControl();
       return;

@@ -88,11 +88,16 @@ export function captureVersionSnapshot(wasm: WasmBridge): CapturedVersionSnapsho
 
 /** Export the same format-preserving payload used by checkpoints and dirty checks. */
 export function exportVersionContent(wasm: WasmBridge): Uint8Array {
+  return exportDraftContent(wasm).bytes;
+}
+
+/** 저장 대상 형식으로 내보내고, 실패해 HWP 로 대신 내보냈으면 실제 형식을 함께 알린다. */
+export function exportDraftContent(wasm: WasmBridge): { bytes: Uint8Array; format: 'hml' | 'hwp' | 'hwpx' } {
   const format = currentSaveFormat(wasm);
   try {
-    return exportDocumentForFormat(wasm, format);
+    return { bytes: exportDocumentForFormat(wasm, format), format };
   } catch {
-    return wasm.exportHwp();
+    return { bytes: wasm.exportHwp(), format: 'hwp' };
   }
 }
 

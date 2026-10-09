@@ -178,7 +178,7 @@ test('저장이 파일을 쓰는 동안 들어온 편집은 dirty·자동 저장
     const deleted: string[] = [];
     const drafts: number[] = [];
     const autosave = new AutosaveManager({
-      exportBytes: () => new Uint8Array([harness.exportedVersion]),
+      exportDraft: () => ({ bytes: new Uint8Array([harness.exportedVersion]), format: 'hwp' as const }),
       debounceMs: 5,
       minSaveIntervalMs: 60_000,
       idFactory: () => 'draft-1',

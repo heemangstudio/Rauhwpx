@@ -43,6 +43,7 @@ import type { EditorContext, CommandServices, EditorEditMode } from '@/command/t
 import {
   confirmSaveBeforeReplacingDocument,
   fileCommands,
+  locateRecoveryOriginal,
   runLibraryMove,
   runSaveBeforeLeaving,
   whenSavesIdle,
@@ -74,7 +75,13 @@ import { CommandPalette } from '@/ui/command-palette';
 import { showHmlImportWarning } from '@/ui/hml-import-warning';
 import { showLocalFontsModalIfNeeded } from '@/ui/local-fonts-modal';
 import { showToast } from '@/ui/toast';
-import { documentSourceDigest, resolveDocumentPreflight, type DocumentPreflightIdentity, type OpenDocumentBytesEvent, type VerifiedDocumentGrant } from '@/recent/document-preflight';
+import {
+  documentSourceDigest,
+  resolveDocumentPreflight,
+  type DocumentPreflightIdentity,
+  type OpenDocumentBytesEvent,
+  type VerifiedDocumentGrant,
+} from '@/recent/document-preflight';
 import { addRecentDoc, listRecentDocs } from '@/recent/recent-store';
 import { showDropConfirmDialog } from '@/ui/drop-confirm-dialog';
 import { showConfirm } from '@/ui/confirm-dialog';
@@ -126,13 +133,21 @@ import {
   repairLocalFontFacesFor, resolveLocalFont, setActiveDocumentFonts,
 } from '@/core/local-fonts';
 import { userSettings, type EditorScalarSettings } from '@/core/user-settings';
-import type { AutosaveManager, AutosaveScheduleSettings, AutosaveStatus } from '@/recovery/autosave-manager';
+import type {
+  AutosaveBaseInput,
+  AutosaveManager,
+  AutosaveScheduleSettings,
+  AutosaveStatus,
+} from '@/recovery/autosave-manager';
 import {
   clearRecoverableAutosaveDrafts,
   defaultAutosaveLocks,
+  deleteAutosaveDraft,
   getAutosaveDraft,
+  getAutosaveDraftBase,
   listRecoverableAutosaveDrafts,
   markAutosaveDraftsOffered,
+  type AutosaveDraft,
   type AutosaveDraftSummary,
 } from '@/recovery/autosave-store';
 import type { HostSaveTracker } from '@/recovery/host-save';
@@ -146,7 +161,15 @@ import {
   type ChatSession,
   type DocumentSession,
 } from './document-session.ts';
-import { offerAutosaveRecovery, restoreAutosaveDraft } from '@/recovery/recovery-flow';
+import {
+  BLOCKED_RESTORE_MESSAGE,
+  offerAutosaveRecovery,
+  restoreAutosaveDraft,
+  type FoundOriginal,
+  type MergeExternalResult,
+  type OpenDraftOutcome,
+  type OpenDraftTarget,
+} from '@/recovery/recovery-flow';
 import { showAutosaveRecoveryDialog } from '@/recovery/recovery-ui';
 import { isPinnedDocumentEnabled, startPinnedDocument } from '@/recovery/pinned-document';
 import { CellSelectionRenderer } from '@/engine/cell-selection-renderer';
@@ -2955,7 +2978,12 @@ function applySavedTextMarkSettings(): void {
 
 async function initializeDocument(
   docInfo: DocumentInfo,
-  options: { suppressDialogs?: boolean; fromDisk?: boolean } = {},
+  options: {
+    suppressDialogs?: boolean;
+    fromDisk?: boolean;
+    initialDirtyReason?: string;
+    autoEnableVersions?: boolean;
+  } = {},
 ): Promise<void> {
   const msg = sbMessage();
   try {
@@ -3048,10 +3076,15 @@ async function initializeDocument(
     msg.textContent = documentReadOnly ? '읽기 전용' : '';
     updateFontStatusButton();
 
-    // #2527: 자동 보정을 하지 않으므로 로드 직후 문서는 항상 clean.
-    documentState.markClean('document-initialized');
+    // #2527: 자동 보정을 하지 않으므로 로드 직후 문서는 clean 이다. 복구한 자동 저장본만 dirty 로 연다.
+    // 버전 기록이 문서를 저장된 기준으로 기록하지 않도록 documentLoaded 보다 먼저 정한다.
+    if (options.initialDirtyReason) documentState.markDirty(options.initialDirtyReason);
+    else documentState.markClean('document-initialized');
     try {
-      await attachedSession.versions?.documentLoaded({ fromDisk: options.fromDisk });
+      await attachedSession.versions?.documentLoaded({
+        fromDisk: options.fromDisk,
+        autoEnable: options.autoEnableVersions,
+      });
     } catch (error) {
       console.warn('[Hancom Git] Could not initialize document history', error);
       showToast({ message: '문서는 열렸지만 버전 기록을 준비하지 못했습니다.', durationMs: 4500 });
@@ -3168,8 +3201,7 @@ function prepareCanvasRendererDocument(): void {
 async function reserveDocumentOpen(
   data: Uint8Array,
   fileHandle: typeof wasm.currentFileHandle,
-  skipRecent = false,
-  grant?: VerifiedDocumentGrant | null,
+  { freshDocumentId = false, grant }: { freshDocumentId?: boolean; grant?: VerifiedDocumentGrant | null } = {},
 ): Promise<{ identity: DocumentPreflightIdentity; reservationId: string | null | undefined }> {
   const mainIssuedDocumentId = getNativeFileHandleVerifiedDocumentId(fileHandle);
   const verifiedGrant = grant ?? (mainIssuedDocumentId
@@ -3182,7 +3214,8 @@ async function reserveDocumentOpen(
     undefined,
     verifiedGrant,
   );
-  const identity = skipRecent && !verifiedGrant
+  // 확인된 문서 ID 가 있으면 그 ID 가 이긴다.
+  const identity = freshDocumentId && !verifiedGrant
     ? { ...resolved, documentId: createActiveDocumentId(), useSourceDigest: false }
     : resolved;
   const live = liveSessionForDocument(identity.documentId)
@@ -3303,14 +3336,29 @@ async function loadBytesNow(
     autosaveDraftId?: string;
     /** fileHandle 이 가리키는 파일 전체 바이트. data 가 그 안의 문서일 때(RHWPX) 넘긴다. */
     nativeSourceBytes?: Uint8Array;
+    /** grant 가 없을 때 최근 문서와 맞추지 않고 새 문서 ID 를 만든다. */
+    freshDocumentId?: boolean;
+    /**
+     * fileHandle 이 가리키는 파일의 디스크 바이트. data 가 디스크 내용과 다를 때(자동 저장본 복구)
+     * 넘긴다. 문서 식별·저장 충돌 기준·최근 문서 digest·자동 저장 기준은 이 바이트를 따른다.
+     */
+    diskBytes?: Uint8Array;
+    /** 있으면 문서를 clean 대신 이 이유로 dirty 로 연다. */
+    initialDirtyReason?: string;
+    /** 자동 저장 기준. 생략하면 연 파일 바이트, null 이면 기준 없이 시작한다. */
+    autosaveBase?: AutosaveBaseInput | null;
+    /** false 면 전역 설정과 상관없이 열 때 버전 기록을 켜지 않는다. 자동 저장본 병합이 직접 켠다. */
+    autoEnableVersions?: boolean;
+    /** 보관된 원본 작업 공간으로 바꾸지 않고 이 바이트를 그대로 연다 (자동 저장본 병합 전 디스크 내용). */
+    keepBytes?: boolean;
   } = {},
 ): Promise<void> {
   const target = attachedSession;
+  const sourceBytes = options.diskBytes ?? data;
   const ownership = await reserveDocumentOpen(
-    data,
+    sourceBytes,
     fileHandle,
-    options.skipRecent,
-    options.grant,
+    { freshDocumentId: options.freshDocumentId, grant: options.grant },
   );
   try {
     assertStillAttached(target);
@@ -3331,7 +3379,7 @@ async function loadBytesNow(
       target.worktreeWritable = false;
     }
     target.documentId = ownership.identity.documentId;
-    if (!options.worktreeSnapshot && !options.autosaveDraftId) {
+    if (!options.worktreeSnapshot && !options.autosaveDraftId && !options.keepBytes) {
       const persisted = await worktreeStore.findWorktreeByDocumentId(versionDocumentId(ownership.identity.documentId));
       if (persisted?.primary && String(persisted.blobId) !== String(persisted.savedFingerprint)) {
         // 원본 파일을 다시 열어도 닫기 전에 보관한 편집을 디스크의 이전 내용으로 덮지 않는다.
@@ -3382,6 +3430,12 @@ async function loadBytesNow(
       : consumeExactLocalFileRead(data, fileHandle)
         ? wasm.loadTrustedLocalFileOnce(data, fileName)
         : wasm.loadDocument(data, fileName);
+    if (options.diskBytes) {
+      // 화면에는 자동 저장본을 열었지만 파일은 디스크 내용 그대로다. 원본 digest 를 기준으로 삼고,
+      // 디스크 바이트를 읽을 때 붙은 일회성 신뢰 표시는 여기서 소비한다.
+      wasm.adoptSourceDigest(ownership.identity.sourceDigest);
+      consumeExactLocalFileRead(options.diskBytes, fileHandle);
+    }
     await commitDesktopDocument(ownership.reservationId, undefined, attachedSession.slotId);
     fileHandle?.adoptSaveTarget?.();
   } catch (error) {
@@ -3407,7 +3461,7 @@ async function loadBytesNow(
   )
     .catch((error) => console.warn('[desktop] native document bookmark failed:', error));
   // 같은 창에서 같은 파일을 다시 열면 핸들이 재사용된다. 방금 연 바이트를 저장 충돌 기준으로 삼는다.
-  await adoptLoadedNativeFileContent(fileHandle, options.nativeSourceBytes ?? data)
+  await adoptLoadedNativeFileContent(fileHandle, options.nativeSourceBytes ?? sourceBytes)
     .catch((error) => console.warn('[desktop] 네이티브 파일 저장 기준 갱신 실패:', error));
   await releaseReplacedNativeFileHandle(previousFileHandle, fileHandle)
     .catch((error) => console.warn('[desktop] 교체된 네이티브 파일 핸들 해제 실패:', error));
@@ -3421,7 +3475,7 @@ async function loadBytesNow(
   // 최근 문서 기록 — 문서 로드 성공 직후, 폰트/모달 등 블로킹 UI 단계 이전에 기록한다.
   // 핸들이 있으면 라이브 재열기용으로 함께 기록하고, 없으면(드롭/input/URL 로드)
   // 메타-only 로 기록한다 — 목록에는 남기되 자동 재열기는 핸들 있는 항목만 가능하다.
-  // 자동저장 복구본은 options.skipRecent 로 제외.
+  // 원본과 연결하지 않은 복구 문서는 options.skipRecent 로 제외.
   if (!options.skipRecent) {
     const sourceDigest = wasm.documentDigest;
     if (!sourceDigest) {
@@ -3441,13 +3495,27 @@ async function loadBytesNow(
     }
   }
 
+  const baseBytes = options.nativeSourceBytes ?? sourceBytes;
+  // 관리되는 워크트리는 파일이 아니라 공유 버전 저장소에 저장한다. 파일 기준을 남기지 않아야 복구할 때
+  // 원본 파일에 연결되지 않고, 같은 문서 ID 로 열려 그 워크트리로 돌아간다. 파일 핸들 없이 연
+  // 작업 공간 스냅숏도 디스크 파일과 이어지지 않는다.
+  const fileBacked = !isManagedWorktree(target) && !(options.worktreeSnapshot && !fileHandle);
   await autosaveManager.beginDocument(
     {
       fileName: wasm.fileName,
       sourceFormat: wasm.getSourceFormat(),
+      documentId: ownership.identity.documentId,
       ...(options.autosaveDraftId ? { draftId: options.autosaveDraftId } : {}),
     },
-    { discardPreviousDraft: true },
+    {
+      discardPreviousDraft: true,
+      base: options.autosaveBase !== undefined ? options.autosaveBase : fileBacked ? {
+        bytes: baseBytes,
+        digest: documentSourceDigest(baseBytes),
+        // .rhwpx 묶음은 문서 자체가 아니어서 병합 기준으로 쓸 수 없다.
+        mergeable: !isPortableHistoryBytes(baseBytes),
+      } : null,
+    },
   );
   await updateLoadProgress(50, '문서 초기화 중...');
   const elapsed = performance.now() - startTime;
@@ -3455,7 +3523,9 @@ async function loadBytesNow(
   loadingWorktreeSessions.delete(target);
   await initializeDocument(docInfo, {
     suppressDialogs: options.suppressDialogs,
-    fromDisk: !options.worktreeSnapshot && !options.autosaveDraftId,
+    fromDisk: !options.worktreeSnapshot && !options.autosaveDraftId && !options.keepBytes,
+    initialDirtyReason: options.initialDirtyReason,
+    autoEnableVersions: options.autoEnableVersions,
   });
 }
 
@@ -3573,7 +3643,9 @@ async function loadPinnedDocument(): Promise<void> {
       // 글꼴 구성은 서버 쪽 번들 글꼴을 그대로 쓰므로 기기별 로컬 글꼴 안내를 띄우지 않는다.
       loadBytes: (data, fileName) => loadBytes(data, fileName, null, performance.now(), {
         skipRecent: true,
+        freshDocumentId: true,
         suppressDialogs: true,
+        autosaveBase: null,
       }),
       exportBytes: () => wasm.exportHwp(),
       markSaved: () => {
@@ -3613,19 +3685,162 @@ async function offerAutosaveRecoveryAtStartup(): Promise<void> {
 }
 
 function restoreAutosaveDraftIntoEditor(draft: AutosaveDraftSummary): Promise<void> {
+  return runNavigation(() => restoreAutosaveDraftNow(draft));
+}
+
+/** 이 창의 세션이 아닌 다른 창이 이 문서의 워크트리 편집권을 쥐고 있다. */
+async function worktreeHeldElsewhere(documentId: string | undefined): Promise<boolean> {
+  if (!documentId || !navigator.locks?.query) return false;
+  if (liveSessions.some((session) => worktreeOwnership.owns(session, documentId))) return false;
+  try {
+    const state = await navigator.locks.query();
+    return (state.held ?? []).some((lock) => lock.name === `rhwp-worktree:${documentId}`);
+  } catch {
+    return false;
+  }
+}
+
+async function restoreAutosaveDraftNow(draft: AutosaveDraftSummary): Promise<void> {
+  // 다른 창이 이 문서를 편집 중이면 여기서 열어도 읽기 전용이다. 그 창에서 닫은 뒤 복구하게 한다.
+  if (await worktreeHeldElsewhere(draft.documentId)) {
+    showToast({ message: BLOCKED_RESTORE_MESSAGE, durationMs: 5000 });
+    return;
+  }
+  // 같은 문서가 이 창의 다른 세션에 열려 있으면 그 세션으로 넘어가 그 자리에서 복구한다.
+  const live = liveSessionForDocument(draft.documentId);
+  if (live && live !== attachedSession) {
+    if (await switchToLiveSession(live) !== 'ok') return;
+    if (!await canReplaceCurrentDocument()) return;
+  }
+  if (attachedSession.documentId && attachedSession.documentId === draft.documentId
+    && isDocumentSessionBusy(attachedSession)) {
+    showToast({ message: '에이전트가 작업을 마친 뒤 다시 복구하세요.', durationMs: 3200 });
+    return;
+  }
+  // 에이전트가 일하는 다른 문서는 뒤에 두고 새 세션에서 복구한다.
+  if (shouldOpenInNewSession()) {
+    await openInNewSession(() => {}, () => restoreAutosaveDraftInAttachedSession(draft));
+    return;
+  }
+  await restoreAutosaveDraftInAttachedSession(draft);
+}
+
+function restoreAutosaveDraftInAttachedSession(draft: AutosaveDraftSummary): Promise<void> {
   return restoreAutosaveDraft(draft, {
     readDraft: (id) => getAutosaveDraft(id),
+    locateOriginal: locateAutosaveOriginal,
+    digestOf: documentSourceDigest,
+    releaseHandle: async (handle) => {
+      await handle.releaseUnusedSaveTarget?.().catch(() => {});
+    },
+    canMerge: () => Boolean(attachedSession.versions || inputHandler),
     releaseCurrentDocument: () => {
       if (documentState.isDirty()) documentState.markClean('autosave-restore-replace');
     },
-    load: (bytes, fileName, draftId) => loadBytes(bytes, fileName, null, performance.now(), {
-      skipRecent: true,
-      autosaveDraftId: draftId,
-    }),
-    markDirty: () => documentState.markDirty('autosave-recovered'),
+    openDraft: openAutosaveDraft,
+    mergeExternal: mergeAutosaveDraft,
+    deleteDraft: (id) => deleteAutosaveDraft(id),
     flush: () => autosaveManager.flushNow('autosave-recovered'),
     toast: (message, durationMs) => showToast({ message, durationMs }),
   });
+}
+
+/**
+ * 복구할 문서를 지금 세션에 연다. 파일로 알아본 같은 문서가 다른 세션에 살아 있으면 그 세션으로
+ * 넘어가 바꿔도 되는지 다시 물은 뒤 그 자리에 연다 (openDocumentBytesNow 와 같은 규칙).
+ */
+async function loadRecoveredDocument(load: () => Promise<void>): Promise<'opened' | 'blocked' | 'cancelled'> {
+  try {
+    try {
+      await load();
+    } catch (error) {
+      if (!(error instanceof DocumentLiveInSessionError)) throw error;
+      if (await switchToLiveSession(error.session) !== 'ok') return 'cancelled';
+      if (!await canReplaceCurrentDocument()) return 'cancelled';
+      await load();
+    }
+    return 'opened';
+  } catch (error) {
+    if (error instanceof DocumentOwnedElsewhereError) return 'blocked';
+    if (error instanceof DocumentSessionChangedError) return 'cancelled';
+    throw error;
+  }
+}
+
+/** 자동 저장본의 원본 파일을 파일 선택 창 없이 찾는다. draft 에 남은 핸들, 최근 문서, 데스크톱 북마크 순이다. */
+async function locateAutosaveOriginal(draft: AutosaveDraft) {
+  const recents = await listRecentDocs().catch(() => []);
+  const recent = recents.find((row) => row.documentId === draft.documentId);
+  const digest = draft.base?.digest;
+  return locateRecoveryOriginal({
+    documentId: draft.documentId!,
+    displayName: draft.fileName,
+    knownDigest: digest?.startsWith('blake3:') ? digest as `blake3:${string}` : null,
+    liveHandle: draft.fileHandle ?? recent?.handle ?? null,
+    recentId: recent?.id ?? null,
+  });
+}
+
+/** 자동 저장본을 dirty 로 연다. */
+async function openAutosaveDraft(draft: AutosaveDraft, target: OpenDraftTarget): Promise<OpenDraftOutcome> {
+  const original = target.original;
+  const outcome = await loadRecoveredDocument(() => loadBytes(
+    draft.data, target.fileName, original?.handle ?? null, performance.now(), {
+      autosaveDraftId: draft.id,
+      initialDirtyReason: 'autosave-recovered',
+      ...(original
+        ? {
+          grant: { kind: 'verified' as const, documentId: target.documentId! },
+          diskBytes: original.bytes,
+        }
+        : {
+          // 원본과 연결하지 않은 문서는 최근 목록에 넣지 않는다. 문서 ID 는 그대로 둬 채팅과 기록을 잇는다.
+          skipRecent: true,
+          autosaveBase: null,
+          ...(target.documentId
+            ? { grant: { kind: 'verified' as const, documentId: target.documentId } }
+            : { freshDocumentId: true }),
+        }),
+    },
+  ));
+  if (outcome !== 'opened' && original) await original.handle.releaseUnusedSaveTarget?.().catch(() => {});
+  return outcome;
+}
+
+/**
+ * 디스크 파일이 바뀐 뒤의 자동 저장본. 디스크 내용을 깨끗한 원본으로 연 뒤 그 문서의 버전 기록에서
+ * 외부 변경으로 남기고 draft 와 병합한다. 버전 기록을 쓸 수 없으면 연결하지 않고 연다.
+ */
+async function mergeAutosaveDraft(draft: AutosaveDraft, original: FoundOriginal): Promise<MergeExternalResult> {
+  const base = await getAutosaveDraftBase(draft.id);
+  if (!base || !(attachedSession.versions || inputHandler)) {
+    await original.handle.releaseUnusedSaveTarget?.().catch(() => {});
+    const opened = await openAutosaveDraft(draft, {
+      fileName: draft.fileName,
+      original: null,
+      documentId: draft.documentId ?? null,
+    });
+    return opened === 'opened' ? { kind: 'detached' } : { kind: opened };
+  }
+  const outcome = await loadRecoveredDocument(() => loadBytes(
+    original.bytes, original.name, original.handle, performance.now(), {
+      grant: { kind: 'verified', documentId: draft.documentId! },
+      autoEnableVersions: false,
+      keepBytes: true,
+    },
+  ));
+  if (outcome !== 'opened') {
+    await original.handle.releaseUnusedSaveTarget?.().catch(() => {});
+    return { kind: outcome };
+  }
+  const controller = attachedSession.versions ?? installDocumentVersions(attachedSession);
+  await controller.whenIdle();
+  const recovery = await controller.recoverAutosaveDraft({
+    draftId: draft.id,
+    baseBytes: base.data,
+    draftBytes: draft.data,
+  });
+  return { kind: 'merging', ...recovery };
 }
 
 
@@ -3659,8 +3874,8 @@ async function createNewDocumentNow(): Promise<boolean> {
       .catch((error) => console.warn('[desktop] 새 문서 전환 핸들 해제 실패:', error));
     prepareCanvasRendererDocument();
     await autosaveManager.beginDocument(
-      { fileName: wasm.fileName, sourceFormat: wasm.getSourceFormat() },
-      { discardPreviousDraft: true },
+      { fileName: wasm.fileName, sourceFormat: wasm.getSourceFormat(), documentId: identity.documentId },
+      { discardPreviousDraft: true, base: null },
     );
     await initializeDocument(docInfo);
     return true;

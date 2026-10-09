@@ -129,6 +129,27 @@ interface CreateCheckpointOptions {
   onPersisted?: () => void;
 }
 
+interface MergeResolverPresentation {
+  title?: string;
+  labels?: { base: string; current: string; incoming: string };
+  onClosed?: (reason: 'saved' | 'discarded' | 'completed') => void;
+}
+
+export interface AutosaveRecoveryInput {
+  draftId: string;
+  /** 자동 저장 draft 를 만든 창이 마지막으로 열거나 저장한 파일 바이트. */
+  baseBytes: Uint8Array;
+  /** 자동 저장된 문서 바이트. */
+  draftBytes: Uint8Array;
+}
+
+export interface AutosaveRecoveryResult {
+  /** 이 문서에 버전 기록이 없어 이번 복구로 켰으면 true. */
+  enabledHistory: boolean;
+  /** 병합을 마치면 true, 병합 창을 그냥 닫으면 false. 이미 병합한 draft 면 바로 true. */
+  completion: Promise<boolean>;
+}
+
 interface WorkspaceToken {
   documentId: string;
   editorRevision: number;
@@ -313,6 +334,8 @@ export class DocumentVersionController implements VersionManagerController {
   #shelves: VersionShelf[] = [];
   #mergeDrafts: VersionMergeDraft[] = [];
   #activeBranch: BranchName | null = null;
+  /** 이 문서는 전역 설정이 켜져 있어도 열 때 버전 기록을 자동으로 켜지 않는다(자동 저장본 병합 전). */
+  #autoEnableBlockedFor: string | null = null;
   readonly #activeBranches = new Map<string, BranchName>();
   #editorRevision = 0;
   #semanticDirty = false;
@@ -412,9 +435,10 @@ export class DocumentVersionController implements VersionManagerController {
     return () => this.#listeners.delete(listener);
   }
 
-  async documentLoaded(options: { fromDisk?: boolean } = {}): Promise<void> {
+  async documentLoaded(options: { fromDisk?: boolean; autoEnable?: boolean } = {}): Promise<void> {
     this.#snapshotCache.clear();
     const id = this.#getDocumentId();
+    this.#autoEnableBlockedFor = options.autoEnable === false ? id : null;
     const existingWorktree = options.fromDisk && id
       ? await this.#store.findWorktreeByDocumentId(documentId(id)) : null;
     if (id && !this.#wasm.isNewDocument && !this.#documentState.isDirty()) {
@@ -1163,6 +1187,173 @@ export class DocumentVersionController implements VersionManagerController {
     });
   }
 
+  /**
+   * 디스크 파일이 바뀐 뒤 남은 자동 저장본을 병합한다. 열려 있는 문서는 디스크에서 막 읽은
+   * 깨끗한 원본(D)이어야 한다. 기준(B)에서 갈라진 복구 브랜치에 자동 저장 내용(R)을 두고,
+   * 현재 브랜치에는 D 를 "외부 변경"으로 남긴 뒤 B 를 공통 조상으로 병합 창을 연다.
+   * 같은 draft 로 다시 불러도 커밋을 중복으로 만들지 않는다.
+   */
+  async recoverAutosaveDraft(input: AutosaveRecoveryInput): Promise<AutosaveRecoveryResult> {
+    // 디스크 내용을 첫 커밋으로 자동 기록하지 않도록 먼저 막는다. 기준(B)이 첫 커밋이어야 한다.
+    this.#autoEnableBlockedFor = this.#getDocumentId();
+    return this.#enqueue(async () => {
+      await this.#refreshData(false);
+      await this.#guardMutation();
+      // 기록하는 동안 편집을 막는다. 병합 창이 열리면 그 창이 잠금을 이어받아 닫을 때 푼다.
+      this.#setMergeResolverLock(true);
+      let resolverOpened = false;
+      try {
+        const result = await this.#recoverAutosaveDraft(input, () => { resolverOpened = true; });
+        return result;
+      } finally {
+        this.#autoEnableBlockedFor = null;
+        if (!resolverOpened) this.#setMergeResolverLock(false);
+      }
+    });
+  }
+
+  async #recoverAutosaveDraft(
+    input: AutosaveRecoveryInput,
+    onResolverOpened: () => void,
+  ): Promise<AutosaveRecoveryResult> {
+    const id = this.#getDocumentId()!;
+    const fileName = this.#wasm.fileName;
+    const disk = this.#snapshotCache.capture(this.#wasm, id, this.#editorRevision);
+    const [base, recovered] = await Promise.all([
+      this.#captureDetached(input.baseBytes, fileName),
+      this.#captureDetached(input.draftBytes, fileName),
+    ]);
+    const workspace = this.#captureWorkspaceToken();
+
+    let enabledHistory = false;
+    if (!this.#repository) {
+      // 전역 설정과 상관없이 이 문서에만 버전 기록을 켠다. 첫 커밋은 기준(B)이다.
+      const existing = await this.#store.findRepositoryByDocumentId(documentId(id));
+      this.#assertWorkspaceToken(workspace, { editor: false, repository: false });
+      if (existing) {
+        this.#repository = existing;
+      } else {
+        const mergeManifestEntries = await this.#mergeWorker.buildDocumentManifest(base.bytes);
+        const created = await this.#store.createRepository({
+          documentId: documentId(id),
+          initialBranch: branchName('main'),
+          lastSavedFingerprint: disk.fingerprint,
+          initial: {
+            bytes: base.bytes,
+            compareSnapshot: base.compareSnapshot,
+            contentFingerprint: base.fingerprint,
+            title: '자동 저장 기준',
+            titleOrigin: 'manual',
+            titleRevision: 0,
+            author: { kind: 'system', label: '자동 저장' },
+            stats: analyzeVersionDiff(null, base.compareSnapshot).stats,
+            mergeManifestEntries,
+          },
+        });
+        this.#repository = created.repository;
+        this.#setActiveBranch(created.branch.name);
+        // 전역 설정이 켜져 있었으면 어차피 켜졌을 기록이다. 그때는 따로 알리지 않는다.
+        enabledHistory = !this.#autoEnable();
+      }
+      await this.#refreshData(false);
+    }
+
+    const repository = this.#requireRepository();
+    const recoveryName = branchName(`복구 ${input.draftId.slice(0, 8)}`);
+    const recoveredId = commitId(`autosave:${repository.id}:${input.draftId}`);
+    const baseId = commitId(`autosave-base:${repository.id}:${input.draftId}`);
+
+    const existingRecovered = await this.#store.getCommit(recoveredId);
+    let recoveryBranch = await this.#store.getBranch(repository.id, recoveryName);
+    let baseCommitId: CommitId;
+    if (existingRecovered) {
+      baseCommitId = existingRecovered.parents[0]!;
+      if (!recoveryBranch) {
+        const created = await this.#store.createBranch({
+          repositoryId: repository.id, name: recoveryName, target: recoveredId,
+          expectedRepositoryRevision: this.#requireRepository().revision,
+        });
+        this.#repository = created.repository;
+        recoveryBranch = created.branch;
+      }
+      const head = this.#requireActiveBranch().target;
+      const relation = await this.#store.getMergeRelation(repository.id, head, recoveryBranch.target);
+      if (relation.relation === 'already-integrated') {
+        // 이미 병합을 마친 draft 다. 그 결과는 더 새 자동 저장본이나 파일에 남아 있다.
+        await this.#refreshData(true);
+        return { enabledHistory, completion: Promise.resolve(true) };
+      }
+    } else {
+      const head = await this.#requireCommit(this.#requireActiveBranch().target);
+      const existingBase = await this.#store.getCommit(baseId);
+      if (!recoveryBranch) {
+        const created = await this.#store.createBranch({
+          repositoryId: repository.id,
+          name: recoveryName,
+          target: existingBase?.id ?? head.id,
+          expectedRepositoryRevision: this.#requireRepository().revision,
+        });
+        this.#repository = created.repository;
+        recoveryBranch = created.branch;
+      }
+      if (!existingBase && head.contentFingerprint === base.fingerprint && recoveryBranch.target === head.id) {
+        baseCommitId = head.id;
+      } else {
+        if (!existingBase) {
+          await this.#appendBranchSnapshot(recoveryBranch, base, '자동 저장 기준', baseId);
+          recoveryBranch = (await this.#store.getBranch(repository.id, recoveryName))!;
+        }
+        baseCommitId = baseId;
+      }
+      await this.#appendBranchSnapshot(recoveryBranch, recovered, '자동 저장된 변경', recoveredId);
+    }
+
+    // 디스크 내용(D)을 현재 브랜치에 남긴다. 기준(B)이 D 의 조상이어야 병합 기준이 B 가 된다.
+    await this.#refreshData(false);
+    const target = this.#requireActiveBranch();
+    const head = await this.#requireCommit(target.target);
+    const integrated = (await this.#store.getMergeRelation(repository.id, head.id, baseCommitId))
+      .relation === 'already-integrated';
+    // 이미 기록했으면(다시 복구) 커밋하지 않고 저장 기준만 디스크 내용으로 맞춘다. 원본 작업 공간이
+    // 있으면 그 작업 공간의 저장 기준도 함께 옮긴다.
+    const recorded = integrated && head.contentFingerprint === disk.fingerprint;
+    await this.#createCheckpoint({
+      reason: 'save',
+      message: '외부 변경',
+      allowSameContent: !recorded,
+      lastSaved: true,
+      parents: integrated ? [head.id] : [head.id, baseCommitId],
+      author: { kind: 'system', label: '자동 저장' },
+    }, disk);
+    await this.#refreshData(true);
+    // 열린 문서는 디스크 내용 그대로다. 열 때 이전 저장 기준과 비교해 붙은 dirty 를 걷는다.
+    this.#setDirtyForFingerprint(disk.fingerprint, 'autosave-recovery-disk', disk.fingerprint);
+
+    const previous = this.#mergeDrafts.find((draft) => (
+      draft.sourceBranch === recoveryName && draft.targetBranch === this.#activeBranch
+    ));
+    let settle!: (completed: boolean) => void;
+    const completion = new Promise<boolean>((resolve) => { settle = resolve; });
+    await this.#openMergeResolver(recoveryName, previous, undefined, {
+      title: '자동 저장본 복구',
+      labels: { base: '마지막으로 저장한 내용', current: '디스크의 파일', incoming: '복구한 변경' },
+      onClosed: (reason) => settle(reason === 'completed'),
+    });
+    onResolverOpened();
+    return { enabledHistory, completion };
+  }
+
+  async #captureDetached(bytes: Uint8Array, fileName: string): Promise<CapturedVersionSnapshot> {
+    const bridge = new WasmBridge();
+    try {
+      await bridge.initialize();
+      bridge.loadDocument(bytes, fileName);
+      return captureVersionSnapshot(bridge);
+    } finally {
+      bridge.releaseDocument();
+    }
+  }
+
   async resumeMerge(id: string): Promise<void> {
     await this.#enqueue(async () => {
       await this.#refreshData(false);
@@ -1511,6 +1702,7 @@ export class DocumentVersionController implements VersionManagerController {
     sourceName: BranchName,
     previousDraft?: VersionMergeDraft,
     shelfApply = previousDraft?.shelfApply,
+    presentation: MergeResolverPresentation = {},
   ): Promise<void> {
     const workspace = this.#captureWorkspaceToken();
     const repository = this.#requireRepository();
@@ -1687,11 +1879,20 @@ export class DocumentVersionController implements VersionManagerController {
         sourceBranch: sourceBranch.name,
         currentBranch: targetBranch.name,
         mode: storedDraft.mode,
-        title: shelfApply ? '보관한 변경 적용' : `${sourceBranch.name} → ${targetBranch.name} 병합`,
+        title: presentation.title
+          ?? (shelfApply ? '보관한 변경 적용' : `${sourceBranch.name} → ${targetBranch.name} 병합`),
         documents: {
-          base: { bytes: baseBytes, fileName: this.#wasm.fileName, label: '기준' },
-          current: { bytes: current.blob.bytes, fileName: this.#wasm.fileName, label: '현재' },
-          incoming: { bytes: incoming.blob.bytes, fileName: this.#wasm.fileName, label: '가져올 변경' },
+          base: { bytes: baseBytes, fileName: this.#wasm.fileName, label: presentation.labels?.base ?? '기준' },
+          current: {
+            bytes: current.blob.bytes,
+            fileName: this.#wasm.fileName,
+            label: presentation.labels?.current ?? '현재',
+          },
+          incoming: {
+            bytes: incoming.blob.bytes,
+            fileName: this.#wasm.fileName,
+            label: presentation.labels?.incoming ?? '가져올 변경',
+          },
         },
         canDeleteSource: !shelfApply && sourceBranch.name !== repository.defaultBranch
           && !this.#worktrees.some((worktree) => worktree.branch === sourceBranch.name),
@@ -1770,7 +1971,10 @@ export class DocumentVersionController implements VersionManagerController {
             }
           }
         },
-        onClosed: () => this.#setMergeResolverLock(false),
+        onClosed: (reason) => {
+          this.#setMergeResolverLock(false);
+          presentation.onClosed?.(reason);
+        },
       });
     } catch (error) {
       this.#setMergeResolverLock(false);
@@ -2338,7 +2542,8 @@ export class DocumentVersionController implements VersionManagerController {
       this.#savedBaseline = null;
       this.#maintenance.schedule(repository.id);
     }
-    if (!repository && this.#autoEnable() && (!this.#documentState.isDirty() || this.#savedBaseline?.documentId === id)
+    if (!repository && this.#autoEnable() && this.#autoEnableBlockedFor !== id
+      && (!this.#documentState.isDirty() || this.#savedBaseline?.documentId === id)
       && !this.#agentBridge.isTurnRunning()) {
       await this.#enableVersioning();
       return;
