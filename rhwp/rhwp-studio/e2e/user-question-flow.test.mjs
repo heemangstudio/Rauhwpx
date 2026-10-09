@@ -8,12 +8,12 @@
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
-import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 import { registerHubSession } from '../../../desktop/agent-hub.mjs';
+import { prepareFakePi, seedFakePiPrefs } from './fake-pi.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const studioRoot = path.resolve(__dirname, '..');
@@ -68,39 +68,6 @@ async function stop(child) {
     if (child.exitCode === null && !child.signalCode) child.kill('SIGKILL');
   }
   if (child._log !== undefined) fs.closeSync(child._log);
-}
-
-function prepareFakePi() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rhwp-question-pi-'));
-  const packageDir = path.join(root, 'prefix', 'node_modules', '@earendil-works', 'pi-coding-agent');
-  const binDir = path.join(root, 'prefix', 'node_modules', '.bin');
-  fs.mkdirSync(packageDir, { recursive: true });
-  fs.mkdirSync(binDir, { recursive: true });
-  fs.writeFileSync(path.join(packageDir, 'package.json'), JSON.stringify({ version: '0.0.0-e2e' }));
-  fs.writeFileSync(path.join(root, 'config.json'), JSON.stringify({
-    version: 1,
-    installedVersion: '0.0.0-e2e',
-    keyTail: null,
-    models: [{
-      id: 'mock-model', name: 'Mock model', reasoning: false, supportsImages: false,
-      efforts: [], defaultEffort: null, contextLength: 8_192,
-      pricing: { prompt: 0, completion: 0 },
-    }],
-    defaultModelId: 'mock-model',
-    setupComplete: true,
-  }));
-  const agentDir = path.join(root, 'agent');
-  fs.mkdirSync(agentDir, { recursive: true });
-  fs.writeFileSync(path.join(agentDir, 'models.json'), JSON.stringify({
-    providers: { openrouter: { apiKey: 'e2e-placeholder-key' } },
-  }));
-  const fake = path.join(binDir, process.platform === 'win32' ? 'pi.cmd' : 'pi');
-  if (process.platform === 'win32') {
-    fs.writeFileSync(fake, '@echo off\r\nnode -e "setInterval(() =^> {}, 1000)"\r\n');
-  } else {
-    fs.writeFileSync(fake, `#!/bin/sh\nexec "${process.execPath}" -e 'setInterval(() => {}, 1000)'\n`, { mode: 0o755 });
-  }
-  return root;
 }
 
 function connectQuestionProvider(hubPort, token, sessionId) {
@@ -185,7 +152,7 @@ if (!process.env.CHROME_PATH && !process.env.PUPPETEER_EXECUTABLE_PATH) {
 const hubPort = await availablePort(Number(process.env.RHWP_AGENT_PORT || 5791));
 const vitePort = await availablePort(Number(process.env.VITE_PORT || 7791));
 const viteUrl = `http://127.0.0.1:${vitePort}`;
-const piRoot = prepareFakePi();
+const piRoot = prepareFakePi('rhwp-question-pi-');
 const targetDir = path.join(repoRoot, 'target', 'user-question-e2e');
 fs.mkdirSync(targetDir, { recursive: true });
 
@@ -220,15 +187,19 @@ try {
     page.on('response', (response) => {
       if (response.status() >= 400) console.log(`  [browser:http ${response.status()}] ${response.url()}`);
     });
+    // 새 채팅은 첫 메시지를 보낼 때 사이드바의 선택으로 시작한다. 가짜 Pi 를
+    // 개인 기본값으로 두고 다시 불러 오면 빈 채팅이 그 선택을 들고 시작한다.
+    await seedFakePiPrefs(page);
+    await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => window.__agentBridge?.getConnectionState?.() === 'connected', { timeout: 20_000 });
     await screenshot(page, 'ask-user-question-before');
-    await page.evaluate(() => document.querySelector('.ag-threads-new')?.click());
-    await page.waitForFunction(() => window.__agentBridge?.getActiveAgent?.() !== null, { timeout: 10_000 });
-    await page.evaluate(() => window.__agentBridge.startChat(
-      'pi', 'mock-model', undefined, false, 'safe', 'direct',
-    ));
+    await page.type('.ag-input', 'Begin the mock blocking turn.');
+    await page.click('.ag-send');
     try {
-      await page.waitForFunction(() => window.__agentBridge?.getActiveAgent?.() === 'pi', { timeout: 20_000 });
+      await page.waitForFunction(
+        () => window.__agentBridge?.getActiveAgent?.() === 'pi' && window.__agentBridge?.isTurnRunning?.() === true,
+        { timeout: 20_000 },
+      );
     } catch (error) {
       const state = await page.evaluate(() => ({
         connection: window.__agentBridge?.getConnectionState?.(),
@@ -238,18 +209,21 @@ try {
       }));
       throw new Error(`${error.message}; bridge=${JSON.stringify(state)}`);
     }
-    await page.type('.ag-input', 'Begin the mock blocking turn.');
-    await page.click('.ag-send');
-    await page.waitForFunction(() => window.__agentBridge?.isTurnRunning?.() === true, { timeout: 10_000 });
 
-    const health = await (await fetch(`http://127.0.0.1:${hubPort}/healthz?token=${HUB_TOKEN}`)).json();
-    const sessionId = health.sessions?.[0]?.sessionId;
-    assert(Boolean(sessionId), 'Studio session registered with the hub');
-    const capabilities = await registerHubSession({
-      port: hubPort, token: HUB_TOKEN, launchId: health.launchId, sessionId,
-    });
-    provider = connectQuestionProvider(hubPort, capabilities.mcp, sessionId);
-    await provider.opened;
+    // 허브의 MCP 소켓은 연결된 순간의 턴 하나에만 묶인다. 턴이 끝나면 닫히므로,
+    // 모의 프로바이더는 새 턴(또는 새 세션)마다 다시 등록하고 연결한다.
+    async function attachProvider() {
+      const health = await (await fetch(`http://127.0.0.1:${hubPort}/healthz?token=${HUB_TOKEN}`)).json();
+      const sessionId = health.sessions?.[0]?.sessionId;
+      assert(Boolean(sessionId), 'Studio session registered with the hub');
+      const capabilities = await registerHubSession({
+        port: hubPort, token: HUB_TOKEN, launchId: health.launchId, sessionId,
+      });
+      provider?.ws?.close();
+      provider = connectQuestionProvider(hubPort, capabilities.mcp, sessionId);
+      await provider.opened;
+    }
+    await attachProvider();
 
     const providerResult = provider.call('ask_user_question', {
       questions: [
@@ -417,26 +391,67 @@ try {
     const recorded = await stopScreencast(recordingPath);
     console.log(recorded ? `  Recording: ${recordingPath}` : '  Recording skipped (ffmpeg unavailable)');
 
-    async function beginTurn(workflow, text) {
-      await page.evaluate((nextWorkflow) => window.__agentBridge.startChat(
-        'pi', 'mock-model', undefined, false, 'safe', nextWorkflow,
-      ), workflow);
+    // 입력기의 모드 메뉴로 모드를 고른다. 열린 채팅은 허브가 워크플로를 바꾸고,
+    // 아직 보내지 않은 채팅은 첫 메시지를 보낼 때 그 모드로 연다.
+    async function chooseMode(mode) {
+      await page.waitForSelector('.ag-mode-btn:not(:disabled)', { visible: true });
+      // 새 채팅은 집중 모드로 들어가는 전환 동안 화면 전체가 클릭을 가로챈다. 끝난 뒤에 누른다.
       await page.waitForFunction(
-        (nextWorkflow) => window.__agentBridge?.getActiveAgent?.() === 'pi'
-          && window.__agentBridge?.getWorkflowState?.().workflow === nextWorkflow,
+        () => !document.documentElement.classList.contains('ag-fs-vt'),
+        { timeout: 10_000 },
+      );
+      await page.click('.ag-mode-btn');
+      await page.waitForSelector(`.ag-mode-item[data-mode="${mode}"]`, { visible: true });
+      await page.click(`.ag-mode-item[data-mode="${mode}"]`);
+    }
+
+    // 카드가 자리를 잡고 버튼이 켜진 뒤에 누른다. 움직이는 버튼을 누르면 클릭이 빗나간다.
+    async function clickWhenSettled(selector) {
+      await page.waitForFunction((target) => new Promise((resolve) => {
+        const button = document.querySelector(target);
+        if (!(button instanceof HTMLButtonElement)) { resolve(false); return; }
+        let last = button.getBoundingClientRect().top;
+        let still = 0;
+        const tick = () => {
+          const now = button.getBoundingClientRect().top;
+          still = now === last && !button.disabled ? still + 1 : 0;
+          last = now;
+          if (still >= 8) resolve(true);
+          else requestAnimationFrame(tick);
+        };
+        tick();
+      }), { timeout: 10_000 }, selector);
+      await page.click(selector);
+    }
+
+    async function beginTurn(mode, workflow, text) {
+      await chooseMode(mode);
+      await page.waitForFunction(
+        (nextMode, nextWorkflow) => {
+          const sidebar = document.querySelector('#agent-sidebar');
+          return sidebar?.dataset.agentMode === nextMode && sidebar.dataset.workflow === nextWorkflow;
+        },
         { timeout: 20_000 },
+        mode,
         workflow,
       );
       await page.type('.ag-input', text);
       await page.click('.ag-send');
-      await page.waitForFunction(() => window.__agentBridge?.isTurnRunning?.() === true, { timeout: 10_000 });
+      await page.waitForFunction(
+        (nextWorkflow) => window.__agentBridge?.getActiveAgent?.() === 'pi'
+          && window.__agentBridge?.getWorkflowState?.().workflow === nextWorkflow
+          && window.__agentBridge?.isTurnRunning?.() === true,
+        { timeout: 20_000 },
+        workflow,
+      );
+      await attachProvider();
     }
 
     // The fake provider intentionally keeps turns open after a tool result.
     // End the answered turn, then verify the question card's own Stop path.
     await page.click('.ag-send');
     await page.waitForFunction(() => window.__agentBridge?.isTurnRunning?.() === false, { timeout: 10_000 });
-    await beginTurn('direct', 'Begin a second turn that will be stopped from the question card.');
+    await beginTurn('agent', 'direct', 'Begin a second turn that will be stopped from the question card.');
     const stoppedProviderResult = provider.call('ask_user_question', {
       questions: [{
         id: 'stop', header: 'Stop', question: 'Should this blocked turn be stopped?', allowOther: false,
@@ -503,7 +518,7 @@ try {
 
     // Planning uses the same indefinite Pi fallback but a different capability
     // profile. Supply the hub epoch exactly as the real MCP shim does.
-    await beginTurn('plan', 'Begin a planning turn that asks one blocking question.');
+    await beginTurn('plan', 'plan', 'Begin a planning turn that asks one blocking question.');
     const planningState = await page.evaluate(() => window.__agentBridge.getWorkflowState());
     assert(planningState.workflow === 'plan' && planningState.phase === 'planning', 'Planning phase is active');
     const planningProviderResult = provider.call('ask_user_question', {
@@ -520,7 +535,7 @@ try {
     });
     await page.waitForSelector('.ag-user-question[data-inactive="false"] .ag-question-option');
     await page.keyboard.press('1');
-    await page.click('.ag-question-next');
+    await clickWhenSettled('.ag-question-next');
     const planningResponse = await planningProviderResult;
     assert(planningResponse.ok === true && planningResponse.result?.answers?.plan?.selected?.[0] === 'Focused', 'Pi fallback answers within the planning turn');
     await page.click('.ag-send');
@@ -528,7 +543,7 @@ try {
 
     // Finally, sever the provider MCP transport while a question is live. The
     // transcript card must settle as expired with no idle timeout or stuck editing lease.
-    await beginTurn('direct', 'Begin a final turn whose provider connection will be lost.');
+    await beginTurn('agent', 'direct', 'Begin a final turn whose provider connection will be lost.');
     const lostProviderResult = provider.call('ask_user_question', {
       questions: [{
         id: 'loss', header: 'Loss', question: 'This request will lose its provider connection.', allowOther: false,
