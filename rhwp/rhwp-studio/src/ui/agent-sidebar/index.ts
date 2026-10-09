@@ -124,6 +124,7 @@ import { detectPlatformKind } from '../../engine/navigation-keymap.ts';
 import { AGENT_LABEL, createProviderIcon, PROVIDER_ORDER } from './providers.ts';
 import { createEffortSlider } from './effort-slider.ts';
 import { createComposerRestingMotion } from './composer-resting.ts';
+import { createFocusGreeting } from './focus-greeting.ts';
 import { createSubagentFleet, isSpawnToolName } from './subagent-fleet.ts';
 import { createToolRow, type ToolRowHandle } from './tool-row.ts';
 import {
@@ -1603,6 +1604,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     selectionContext.textContent = context?.selectionLabel || '선택 없음';
     workspaceDocumentName.textContent = currentDocumentName;
     workspaceDocumentName.title = context?.documentName || '';
+    focusGreeting.setDocumentName(context?.documentName || null);
     updateEnvironmentFilename(currentDocumentName);
     const nextKey = context?.documentName ?? null;
     const nextDocumentId = context?.documentId ?? null;
@@ -2181,6 +2183,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   messages.addEventListener('pointerdown', onMessagesPointerDown);
   const messagesMutationObserver = typeof MutationObserver === 'function'
     ? new MutationObserver(() => {
+        // 빈 채팅 배치가 먼저 풀려야 여백이 대화 영역의 최종 높이로 잰다.
+        syncFocusGreeting();
         syncConversationSpacer();
         if (followConversation) scrollConversationToEnd();
         scheduleLatestPillUpdate();
@@ -2639,7 +2643,20 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   // 사이드바에서는 변경 검토와 계획을 분리한다. 계획은 입력기 바로 위에
   // 머물러 접었을 때 작은 진행 표시로 이어지고, 변경 검토는 가려지지 않는다.
   // 질문 카드와 입력기는 인접 형제여야 하나의 입력 면으로 이어진다.
-  chatPage.append(header, messages, review, compactChanges, planSurface, planRestore, reconnectChip, calibrationChip, questionController.root, composer);
+  /* 전체 화면의 빈 채팅은 인사와 입력기를 가운데에 모은다. 첫 메시지를 보내면
+     같은 채팅 안에서만 입력기가 아래로 미끄러진다 — 채팅을 바꾸거나 전체 화면을
+     오갈 때는 즉시 바뀌고, 새 빈 채팅마다 새 문장을 고른다. */
+  const focusGreeting = createFocusGreeting({ page: chatPage, composer, conversation: messages });
+  let focusGreetingThreadId: string | null = null;
+  function syncFocusGreeting(): void {
+    const threadChanged = focusGreetingThreadId !== currentThread.id;
+    focusGreetingThreadId = currentThread.id;
+    focusGreeting.setActive(fullscreen && lastConversationContent() === null, {
+      animate: fullscreen && !threadChanged,
+      reroll: threadChanged,
+    });
+  }
+  chatPage.append(header, messages, focusGreeting.root, review, compactChanges, planSurface, planRestore, reconnectChip, calibrationChip, questionController.root, composer);
   messages.after(latestDock);
 
   /** 입력기 하단 한 줄이 겹치지 않고 붙는 폭을 재서 사이드바 최솟값으로 쓴다.
@@ -3535,6 +3552,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   function applyFullscreenLayout(on: boolean): void {
     root.classList.toggle('ag-fullscreen', on);
     document.body.classList.toggle('ag-fullscreen-open', on);
+    syncFocusGreeting();
     applyEnvironmentPanelState();
     fullscreenBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
     fullscreenBtn.setAttribute('aria-label', on ? '사이드바로 돌아가기' : '에이전트 집중 모드');
@@ -8173,6 +8191,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       messages.removeEventListener('wheel', onMessagesWheel);
       window.removeEventListener('focus', onWindowRefocus);
       composerRest.dispose();
+      focusGreeting.dispose();
       messages.removeEventListener('touchstart', onMessagesTouchStart);
       messages.removeEventListener('touchmove', onMessagesTouchMove);
       messages.removeEventListener('pointerdown', onMessagesPointerDown);
