@@ -387,12 +387,13 @@ function placeUnderToolbar(
   host: HTMLElement,
   trigger: HTMLElement,
   alignTo: HTMLElement,
+  centered = false,
 ): void {
   const origin = fixedOrigin(host);
   const align = alignTo.getBoundingClientRect();
   const anchor = trigger.getBoundingClientRect();
-  const width = Math.max(240, Math.min(320, align.width));
-  const left = Math.max(8, Math.min(align.left, window.innerWidth - width - 8));
+  const width = centered ? Math.min(320, window.innerWidth - 16) : Math.max(240, Math.min(320, align.width));
+  const left = Math.max(8, Math.min(centered ? anchor.left + (anchor.width - width) / 2 : align.left, window.innerWidth - width - 8));
   const top = anchor.bottom + 6;
   surface.style.width = `${width}px`;
   surface.style.left = `${left - origin.x}px`;
@@ -496,6 +497,8 @@ export function showDocumentPalette(config: {
   trigger: HTMLElement;
   alignTo: HTMLElement;
   recents: Promise<PaletteRecentDocument[]>;
+  selectedDocumentId?: string | null;
+  centered?: boolean;
   /** 빠진 동작은 줄을 만들지 않는다. */
   onCreate?: () => void;
   onOpenFile?: () => void;
@@ -531,11 +534,12 @@ export function showDocumentPalette(config: {
       label: doc.fileName,
       icon: 'document',
       trail: formatShortAge(doc.openedAt),
+      checked: doc.documentId === config.selectedDocumentId,
       section: '최근 문서',
     })),
   ];
   searchList.setOptions(options());
-  placeUnderToolbar(surface, config.host, config.trigger, config.alignTo);
+  placeUnderToolbar(surface, config.host, config.trigger, config.alignTo, config.centered);
   searchList.input.focus({ preventScroll: true });
 
   void config.recents.then((list) => {

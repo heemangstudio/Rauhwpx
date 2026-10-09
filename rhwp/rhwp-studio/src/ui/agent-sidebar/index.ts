@@ -3003,6 +3003,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
      같은 채팅 안에서만 입력기가 아래로 미끄러진다 — 채팅을 바꾸거나 전체 화면을
      오갈 때는 즉시 바뀌고, 새 빈 채팅마다 새 문장을 고른다. */
   const focusGreeting = createFocusGreeting({ page: chatPage, composer, conversation: messages });
+  focusGreeting.documentButton.addEventListener('click', () => {
+    openDocumentPalette(focusGreeting.documentButton);
+  });
   let focusGreetingThreadId: string | null = null;
   function syncFocusGreeting(): void {
     const threadChanged = focusGreetingThreadId !== currentThread.id;
@@ -5997,17 +6000,21 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
   }
 
-  function openDocumentPalette(): void {
-    if (threadsToolbar.openButton.getAttribute('aria-expanded') === 'true') {
+  function openDocumentPalette(trigger: HTMLElement = threadsToolbar.openButton): void {
+    if (trigger.getAttribute('aria-expanded') === 'true') {
       closeThreadRailSurfaces(root);
       return;
     }
     showDocumentPalette({
       host: root,
-      trigger: threadsToolbar.openButton,
-      alignTo: threadsToolbar.root,
+      trigger,
+      alignTo: trigger === threadsToolbar.openButton ? threadsToolbar.root : trigger,
+      centered: trigger !== threadsToolbar.openButton,
+      selectedDocumentId: trigger === threadsToolbar.openButton ? undefined : currentDocumentId,
       recents: (listRecentDocuments?.() ?? Promise.resolve([]))
-        .then((docs) => docs.filter((doc) => doc.documentId !== currentDocumentId)),
+        .then((docs) => trigger === threadsToolbar.openButton
+          ? docs.filter((doc) => doc.documentId !== currentDocumentId)
+          : docs),
       onCreate: createDocument,
       onOpenFile: openDocumentFile,
       onOpenRecent: moveToLibraryDocument
