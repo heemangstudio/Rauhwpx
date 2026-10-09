@@ -53,9 +53,7 @@ fn first_equation(document: &rhwp::model::document::Document) -> &rhwp::model::c
 
 #[test]
 fn equation_exports_canonically_escapes_and_reparses_edited_and_untouched_scripts() {
-    let mut core = DocumentCore::from_bytes(include_bytes!(
-        "fixtures/hml/exambank_math_equations_min.hml"
-    ))
+    let mut core = DocumentCore::from_bytes(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/hml/exambank_math_equations_min.hml")))
     .expect("equation fixture should import");
     core.set_equation_properties_native(
         0,
@@ -101,9 +99,7 @@ fn equation_attributes_preserve_asymmetric_color_and_optional_font() {
 
 #[test]
 fn equation_invalid_xml_and_stale_offsets_are_aggregated() {
-    let mut core = DocumentCore::from_bytes(include_bytes!(
-        "fixtures/hml/exambank_math_equations_min.hml"
-    ))
+    let mut core = DocumentCore::from_bytes(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/hml/exambank_math_equations_min.hml")))
     .expect("equation fixture should import");
     first_equation_mut(core.document_mut()).script.push('\u{1}');
     let paragraph = core.document_mut().sections[0]
@@ -476,8 +472,8 @@ fn add_redundant_char_shape(paragraph: &mut Paragraph) -> bool {
 #[test]
 fn lawful_hml_fixtures_export_and_reparse_with_equivalent_public_ir() {
     for bytes in [
-        include_bytes!("../samples/hml/aligns.hml").as_slice(),
-        include_bytes!("../samples/hml/formatting_table.hml").as_slice(),
+        include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/aligns.hml")).as_slice(),
+        include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/formatting_table.hml")).as_slice(),
     ] {
         let before = DocumentCore::from_bytes(bytes).expect("fixture should import");
         let exported = before.export_hml_native().expect("HML should export");
@@ -547,7 +543,7 @@ fn export_canonicalizes_version_and_retains_stored_root_attributes() {
 
 #[test]
 fn edited_hml_text_is_present_after_export_and_reparse() {
-    let mut core = DocumentCore::from_bytes(include_bytes!("../samples/hml/formatting_table.hml"))
+    let mut core = DocumentCore::from_bytes(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/formatting_table.hml")))
         .expect("fixture should import");
     let paragraph = &mut core.document_mut().sections[0].paragraphs[0];
     paragraph.text = paragraph.text.replacen("123", "ABC", 1);
@@ -566,7 +562,7 @@ fn table_text_wrap_is_read_back_from_hml() {
     // 표 SHAPEOBJECT 에 TextWrap 을 주입한 HML 을 파싱하면 표 common.text_wrap 으로
     // 되읽혀야 한다. 종전엔 reader 의 capture_shape_object 가 표를 처리하지 않아
     // (rectangle 만) 외부(한컴) HML 의 부동 표 TextWrap 이 기본값 Square 로 유실됐다.
-    let fixture = include_str!("../samples/hml/formatting_table.hml");
+    let fixture = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/formatting_table.hml"));
     let injected = fixture.replacen(
         r#"NumberingType="Table" TextFlow="BothSides" ZOrder="1""#,
         r#"NumberingType="Table" TextFlow="BothSides" TextWrap="TopAndBottom" ZOrder="1""#,
@@ -598,7 +594,7 @@ fn table_text_wrap_is_read_back_from_hml() {
 
 #[test]
 fn stale_offsets_after_unequal_direct_text_mutation_block_export() {
-    let mut core = DocumentCore::from_bytes(include_bytes!("../samples/hml/formatting_table.hml"))
+    let mut core = DocumentCore::from_bytes(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/formatting_table.hml")))
         .expect("fixture should import");
     let (section_index, paragraph_index) = core
         .document()
@@ -631,7 +627,7 @@ fn stale_offsets_after_unequal_direct_text_mutation_block_export() {
 
 #[test]
 fn legitimate_document_core_text_edit_keeps_control_offsets_savable() {
-    let mut core = DocumentCore::from_bytes(include_bytes!("../samples/hml/formatting_table.hml"))
+    let mut core = DocumentCore::from_bytes(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/formatting_table.hml")))
         .expect("fixture should import");
     let (section_index, paragraph_index) = core
         .document()
@@ -662,7 +658,7 @@ fn legitimate_document_core_text_edit_keeps_control_offsets_savable() {
 
 #[test]
 fn non_reconstructable_char_shape_runs_are_blocked_recursively() {
-    let mut core = DocumentCore::from_bytes(include_bytes!("../samples/hml/formatting_table.hml"))
+    let mut core = DocumentCore::from_bytes(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/formatting_table.hml")))
         .expect("fixture should import");
     let mut expected_paths = Vec::new();
     add_redundant_char_shapes_to_fixture(core.document_mut(), &mut expected_paths);
@@ -729,7 +725,7 @@ fn add_nested_redundant_char_shapes(
 
 #[test]
 fn stale_offsets_in_cell_and_textbox_paragraphs_are_aggregated() {
-    let mut core = DocumentCore::from_bytes(include_bytes!("../samples/hml/formatting_table.hml"))
+    let mut core = DocumentCore::from_bytes(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/formatting_table.hml")))
         .expect("fixture should import");
     let mut expected_paths = Vec::new();
     for (section_index, section) in core.document_mut().sections.iter_mut().enumerate() {
@@ -795,7 +791,7 @@ fn stale_offsets_in_cell_and_textbox_paragraphs_are_aggregated() {
 
 #[test]
 fn non_preserved_warning_blocks_hml_export_with_structured_path() {
-    let fixture = std::str::from_utf8(include_bytes!("../samples/hml/formatting_table.hml"))
+    let fixture = std::str::from_utf8(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/formatting_table.hml")))
         .expect("fixture is UTF-8");
     let bytes = fixture.replacen("Type=\"None\"", "Type=\"Dash\"", 1);
     let core = DocumentCore::from_bytes(bytes.as_bytes())
@@ -819,10 +815,10 @@ fn non_preserved_warning_blocks_hml_export_with_structured_path() {
 
 #[test]
 fn public_preflight_matches_every_export_error_variant_and_blocker() {
-    let non_hml = DocumentCore::from_bytes(include_bytes!("../samples/re-align-center-hancom.hwp"))
+    let non_hml = DocumentCore::from_bytes(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/re-align-center-hancom.hwp")))
         .expect("HWP fixture should import");
 
-    let fixture = std::str::from_utf8(include_bytes!("../samples/hml/formatting_table.hml"))
+    let fixture = std::str::from_utf8(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/formatting_table.hml")))
         .expect("fixture is UTF-8");
     let lossy_bytes = fixture.replacen("Type=\"None\"", "Type=\"Dash\"", 1);
     let lossy =
@@ -869,7 +865,7 @@ fn public_preflight_matches_every_export_error_variant_and_blocker() {
 
 #[test]
 fn import_warnings_and_current_ir_failures_are_reported_together() {
-    let fixture = std::str::from_utf8(include_bytes!("../samples/hml/formatting_table.hml"))
+    let fixture = std::str::from_utf8(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/formatting_table.hml")))
         .expect("fixture is UTF-8");
     let bytes = fixture.replacen("<CHAR>", "<PICTURE/><CHAR>", 1);
     let mut core = DocumentCore::from_bytes(bytes.as_bytes()).expect("synthetic HML should import");
@@ -892,7 +888,7 @@ fn import_warnings_and_current_ir_failures_are_reported_together() {
 
 #[test]
 fn reader_unsupported_border_value_blocks_instead_of_becoming_solid() {
-    let mut core = DocumentCore::from_bytes(include_bytes!("../samples/hml/aligns.hml"))
+    let mut core = DocumentCore::from_bytes(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/aligns.hml")))
         .expect("fixture should import");
     core.document_mut().doc_info.border_fills[0].borders[0].line_type = BorderLineType::Dash;
 
@@ -914,7 +910,7 @@ fn reader_unsupported_border_value_blocks_instead_of_becoming_solid() {
 
 #[test]
 fn section_break_blocks_instead_of_becoming_no_break() {
-    let mut core = DocumentCore::from_bytes(include_bytes!("../samples/hml/aligns.hml"))
+    let mut core = DocumentCore::from_bytes(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/aligns.hml")))
         .expect("fixture should import");
     core.document_mut().sections[0].paragraphs[0].column_type = ColumnBreakType::Section;
 
@@ -933,7 +929,7 @@ fn section_break_blocks_instead_of_becoming_no_break() {
 
 #[test]
 fn multi_column_break_blocks_instead_of_becoming_no_break() {
-    let mut core = DocumentCore::from_bytes(include_bytes!("../samples/hml/aligns.hml"))
+    let mut core = DocumentCore::from_bytes(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/aligns.hml")))
         .expect("fixture should import");
     core.document_mut().sections[0].paragraphs[0].column_type = ColumnBreakType::MultiColumn;
 
@@ -952,7 +948,7 @@ fn multi_column_break_blocks_instead_of_becoming_no_break() {
 
 #[test]
 fn omitted_head_resource_fields_are_aggregated() {
-    let mut core = DocumentCore::from_bytes(include_bytes!("../samples/hml/aligns.hml"))
+    let mut core = DocumentCore::from_bytes(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/aligns.hml")))
         .expect("fixture should import");
     let info = &mut core.document_mut().doc_info;
     info.char_shapes[0].bold = true;
@@ -988,7 +984,7 @@ fn omitted_head_resource_fields_are_aggregated() {
 
 #[test]
 fn omitted_document_resource_section_and_page_fields_are_aggregated() {
-    let mut core = DocumentCore::from_bytes(include_bytes!("../samples/hml/aligns.hml"))
+    let mut core = DocumentCore::from_bytes(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/aligns.hml")))
         .expect("fixture should import");
     let document = core.document_mut();
     document.doc_info.font_faces.pop();
@@ -1031,7 +1027,7 @@ fn omitted_document_resource_section_and_page_fields_are_aggregated() {
 
 #[test]
 fn omitted_rectangle_semantics_block_export() {
-    let mut core = DocumentCore::from_bytes(include_bytes!("../samples/hml/formatting_table.hml"))
+    let mut core = DocumentCore::from_bytes(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/formatting_table.hml")))
         .expect("fixture should import");
     let (expected_path, rectangle) =
         first_rectangle_mut(core.document_mut()).expect("fixture should contain a rectangle");
@@ -1091,7 +1087,7 @@ fn first_table_mut(
 
 #[test]
 fn omitted_table_and_cell_semantics_are_aggregated() {
-    let mut core = DocumentCore::from_bytes(include_bytes!("../samples/hml/formatting_table.hml"))
+    let mut core = DocumentCore::from_bytes(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/formatting_table.hml")))
         .expect("fixture should import");
     let mut expected_path = None;
     'outer: for (section_index, section) in core.document_mut().sections.iter_mut().enumerate() {
@@ -1125,7 +1121,7 @@ fn omitted_table_and_cell_semantics_are_aggregated() {
 #[test]
 fn table_attr_treat_as_char_mirror_is_not_a_false_preflight_blocker() {
     let mut mirrored =
-        DocumentCore::from_bytes(include_bytes!("../samples/hml/formatting_table.hml"))
+        DocumentCore::from_bytes(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/formatting_table.hml")))
             .expect("fixture should import");
     let (_, table) = first_table_mut(mirrored.document_mut()).expect("fixture table");
     assert!(table.common.treat_as_char);
@@ -1135,7 +1131,7 @@ fn table_attr_treat_as_char_mirror_is_not_a_false_preflight_blocker() {
         .expect("the modeled treat-as-char mirror bit is representable in HML");
 
     let mut common_only =
-        DocumentCore::from_bytes(include_bytes!("../samples/hml/formatting_table.hml"))
+        DocumentCore::from_bytes(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/formatting_table.hml")))
             .expect("fixture should import");
     let (_, table) = first_table_mut(common_only.document_mut()).expect("fixture table");
     table.attr = 0;
@@ -1148,7 +1144,7 @@ fn table_attr_treat_as_char_mirror_is_not_a_false_preflight_blocker() {
 fn contradictory_or_unknown_table_attr_bits_still_block_export() {
     for attr in [0x01, 0x02] {
         let mut core =
-            DocumentCore::from_bytes(include_bytes!("../samples/hml/formatting_table.hml"))
+            DocumentCore::from_bytes(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/formatting_table.hml")))
                 .expect("fixture should import");
         let (expected_path, table) =
             first_table_mut(core.document_mut()).expect("fixture should contain a table");
@@ -1247,7 +1243,7 @@ fn generic_head_body_and_tail_fragments_reinsert_at_modeled_anchors() {
 #[test]
 fn xml_1_0_illegal_characters_in_emitted_attributes_and_text_are_aggregated() {
     let mut parsed =
-        parse_document_with_metadata(include_bytes!("../samples/hml/formatting_table.hml"))
+        parse_document_with_metadata(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/formatting_table.hml")))
             .expect("fixture should import");
     parsed.document.doc_info.font_faces[0][0].name.push('\u{1}');
     let (section_index, paragraph_index, paragraph) = parsed
@@ -1289,7 +1285,7 @@ fn xml_1_0_illegal_characters_in_emitted_attributes_and_text_are_aggregated() {
 
 #[test]
 fn invalid_public_preserved_fragments_are_aggregated_before_raw_emission() {
-    let mut parsed = parse_document_with_metadata(include_bytes!("../samples/hml/aligns.hml"))
+    let mut parsed = parse_document_with_metadata(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/aligns.hml")))
         .expect("fixture should import");
     let metadata = parsed.hml_metadata.as_mut().expect("HML metadata");
     metadata.preserved_fragments.clear();
@@ -1381,7 +1377,7 @@ fn invalid_public_preserved_fragments_are_aggregated_before_raw_emission() {
 
 #[test]
 fn raw_fragment_depth_boundary_matches_secure_reparse() {
-    let mut parsed = parse_document_with_metadata(include_bytes!("../samples/hml/aligns.hml"))
+    let mut parsed = parse_document_with_metadata(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/aligns.hml")))
         .expect("fixture should import");
     let metadata = parsed.hml_metadata.as_mut().expect("HML metadata");
     metadata.preserved_fragments.clear();
@@ -1416,7 +1412,7 @@ fn table_with_non_default_text_wrap_round_trips_through_hml_save() {
     // preflight 의 validate_table 이 "table.common.text_wrap != Default" 를
     // 무조건 HML_UNSUPPORTED_IR 로 차단해 저장이 항상 실패했다. 이 값은 이미
     // 두 방향 모두 지원되므로 preflight 차단은 불필요하다(#2890).
-    let fixture = include_str!("../samples/hml/formatting_table.hml");
+    let fixture = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/formatting_table.hml"));
     let injected = fixture.replacen(
         r#"NumberingType="Table" TextFlow="BothSides" ZOrder="1""#,
         r#"NumberingType="Table" TextFlow="BothSides" TextWrap="TopAndBottom" ZOrder="1""#,

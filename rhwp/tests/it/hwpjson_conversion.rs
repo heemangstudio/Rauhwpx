@@ -5,7 +5,7 @@
 
 use rhwp::document_core::hwpjson::hwpjson_to_hwpx_parts;
 
-const SAMPLE: &str = include_str!("../samples/hwpjson/clipboard-model.json");
+const SAMPLE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hwpjson/clipboard-model.json"));
 
 /// 여는 태그 개수 — `<hp:tbl ` / `<hp:tbl>` 만 세고 `<hp:tblXxx` 는 세지 않는다.
 fn count_open(xml: &str, tag: &str) -> usize {

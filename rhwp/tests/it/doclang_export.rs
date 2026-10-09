@@ -141,7 +141,7 @@ fn hwpx_paragraph_sample_converts() {
 fn export_doclang_never_overwrites_a_symlink_to_its_input() {
     let input = unique_temp_path("cli_symlink_input").with_extension("hwp");
     let output = unique_temp_path("cli_symlink_output").with_extension("xml");
-    let original = include_bytes!("../samples/para-001.hwp");
+    let original = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/para-001.hwp"));
     std::fs::write(&input, original).expect("write HWP input");
     std::os::unix::fs::symlink(&input, &output).expect("create symlink output alias");
 
@@ -159,7 +159,7 @@ fn export_doclang_never_overwrites_a_symlink_to_its_input() {
 fn export_doclang_never_overwrites_a_hard_link_to_its_input() {
     let input = unique_temp_path("cli_hard_link_input").with_extension("hwp");
     let output = unique_temp_path("cli_hard_link_output").with_extension("xml");
-    let original = include_bytes!("../samples/para-001.hwp");
+    let original = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/para-001.hwp"));
     std::fs::write(&input, original).expect("write HWP input");
     std::fs::hard_link(&input, &output).expect("create hard-link output alias");
 

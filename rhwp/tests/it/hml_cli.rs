@@ -150,7 +150,7 @@ fn help_lists_hml_for_supported_document_commands() {
 
 #[test]
 fn export_hml_flags_preserve_edit_reparse_and_raw_fragment() {
-    let mut core = DocumentCore::from_bytes(include_bytes!("../samples/hml/formatting_table.hml"))
+    let mut core = DocumentCore::from_bytes(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/formatting_table.hml")))
         .expect("load lawful HML");
     let (section_index, paragraph_index) = first_non_empty_paragraph(&core);
     core.insert_text_native(section_index, paragraph_index, 0, "S3_EDIT_")
@@ -207,7 +207,7 @@ fn export_hml_refusals_are_nonzero_structured_and_write_nothing() {
         );
     }
 
-    let fixture = std::str::from_utf8(include_bytes!("../samples/hml/formatting_table.hml"))
+    let fixture = std::str::from_utf8(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/formatting_table.hml")))
         .expect("fixture is UTF-8");
     let lossy_bytes = fixture.replacen("Type=\"None\"", "Type=\"Dash\"", 1);
     let lossy_input = unique_temp_dir("cli_lossy_input").with_extension("hml");
@@ -234,7 +234,7 @@ fn export_hml_refusals_are_nonzero_structured_and_write_nothing() {
 #[test]
 fn export_hml_never_overwrites_its_input() {
     let input = unique_temp_dir("cli_same_path").with_extension("hml");
-    let original = include_bytes!("../samples/hml/formatting_table.hml");
+    let original = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/formatting_table.hml"));
     std::fs::write(&input, original).expect("write HML input");
 
     let output = run_export_hml(&input, &input, "-o");
@@ -251,7 +251,7 @@ fn export_hml_never_overwrites_its_input() {
 fn export_hml_never_overwrites_a_hard_link_to_its_input() {
     let input = unique_temp_dir("cli_hard_link_input").with_extension("hml");
     let output = unique_temp_dir("cli_hard_link_output").with_extension("hml");
-    let original = include_bytes!("../samples/hml/formatting_table.hml");
+    let original = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hml/formatting_table.hml"));
     std::fs::write(&input, original).expect("write HML input");
     std::fs::hard_link(&input, &output).expect("create hard-link output alias");
 

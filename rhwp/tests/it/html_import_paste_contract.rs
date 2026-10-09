@@ -145,7 +145,7 @@ fn oversized_markup_paste_falls_back_to_capped_paragraphs() {
 
 #[test]
 fn html_paste_enforces_absolute_input_ceiling_besides_markup_len() {
-    let src = include_str!("../src/document_core/commands/html_import.rs");
+    let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/document_core/commands/html_import.rs"));
     assert!(
         src.contains("HTML_PASTE_MAX_TOTAL_BYTES"),
         "data: 페이로드를 포함한 절대 상한이 있어야 한다"

@@ -96,9 +96,7 @@ fn find_text_bbox(node: &RenderNode, needle: &str) -> Option<BoundingBox> {
 
 #[test]
 fn parses_repo_equation_fixture_into_shared_ir_without_equation_warnings() {
-    let parsed = parse_hml(include_bytes!(
-        "fixtures/hml/exambank_math_equations_min.hml"
-    ))
+    let parsed = parse_hml(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/hml/exambank_math_equations_min.hml")))
     .expect("equation fixture should parse");
     let equations = equations(&parsed.document);
 
@@ -134,7 +132,7 @@ fn parses_repo_equation_fixture_into_shared_ir_without_equation_warnings() {
 
 #[test]
 fn repo_equation_fixture_contract_has_ordered_scripts_and_no_source_identifiers() {
-    let fixture = include_str!("fixtures/hml/exambank_math_equations_min.hml");
+    let fixture = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/hml/exambank_math_equations_min.hml"));
     let parsed = parse_hml(fixture.as_bytes()).expect("repo equation fixture should parse");
 
     assert_eq!(
@@ -163,9 +161,7 @@ fn repo_equation_fixture_contract_has_ordered_scripts_and_no_source_identifiers(
 
 #[test]
 fn imported_inline_equation_has_intrinsic_bbox_between_text_and_is_hittable() {
-    let core = DocumentCore::from_bytes(include_bytes!(
-        "fixtures/hml/exambank_math_equations_min.hml"
-    ))
+    let core = DocumentCore::from_bytes(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/hml/exambank_math_equations_min.hml")))
     .expect("equation fixture should open");
     let equation = equations(core.document())[0];
     assert!(equation.common.width > 0 && equation.common.height > 0);

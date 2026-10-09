@@ -86,17 +86,17 @@ fn native_hwpx_chart_passthrough_save_is_render_stable() {
 fn added_ooxml_family_fixtures_render_without_fallbacks() {
     let fixtures: &[(&str, OoxmlChartType, &str)] = &[
         (
-            include_str!("fixtures/p1_charts/area.xml"),
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/p1_charts/area.xml")),
             OoxmlChartType::Area,
             "hwp-chart-area-series",
         ),
         (
-            include_str!("fixtures/p1_charts/doughnut.xml"),
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/p1_charts/doughnut.xml")),
             OoxmlChartType::Doughnut,
             "hwp-chart-doughnut-hole",
         ),
         (
-            include_str!("fixtures/p1_charts/radar.xml"),
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/p1_charts/radar.xml")),
             OoxmlChartType::Radar,
             "hwp-chart-radar-series",
         ),
@@ -132,7 +132,7 @@ fn added_ooxml_family_fixtures_render_without_fallbacks() {
 
 #[test]
 fn area_grouping_is_preserved_and_percent_stacks_render_as_bands() {
-    let xml = include_str!("fixtures/p1_charts/area.xml")
+    let xml = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/p1_charts/area.xml"))
         .replace("val=\"standard\"", "val=\"percentStacked\"")
         .replace("</c:areaChart>", "<c:ser><c:tx><c:v>South</c:v></c:tx><c:val><c:numLit><c:pt idx=\"0\"><c:v>3</c:v></c:pt><c:pt idx=\"1\"><c:v>5</c:v></c:pt><c:pt idx=\"2\"><c:v>6</c:v></c:pt></c:numLit></c:val></c:ser></c:areaChart>");
     let chart = OoxmlChart::parse(xml.as_bytes()).expect("parse stacked area chart");
@@ -146,7 +146,7 @@ fn area_grouping_is_preserved_and_percent_stacks_render_as_bands() {
 
 #[test]
 fn point_data_label_overrides_are_not_promoted_to_the_whole_plot() {
-    let xml = include_str!("fixtures/p1_charts/area.xml").replace(
+    let xml = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/p1_charts/area.xml")).replace(
         "<c:showVal val=\"1\"/>",
         "<c:dLbl><c:idx val=\"0\"/><c:showVal val=\"1\"/></c:dLbl>",
     );

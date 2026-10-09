@@ -97,7 +97,7 @@ fn issue_1244_multiple_inserted_tabs_all_have_marker() {
 /// HWPX에서 파싱된 탭 확장 정보가 HWP 저장 경로에서도 유지되는지 확인한다.
 #[test]
 fn issue_1244_hwpx_to_hwp_save_preserves_tab_extended_marker() {
-    let hwpx_bytes = include_bytes!("../samples/hwpx/ref/ref_mixed.hwpx");
+    let hwpx_bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hwpx/ref/ref_mixed.hwpx"));
 
     let source_doc = rhwp::parser::hwpx::parse_hwpx(hwpx_bytes).expect("HWPX 파싱 실패");
     let source_ext = first_tab_extended(&source_doc);

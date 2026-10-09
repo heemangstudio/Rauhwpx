@@ -7,7 +7,7 @@ use quick_xml::Reader;
 use rhwp::parser::hwpx::parse_hwpx;
 use rhwp::serializer::hwpx::serialize_hwpx;
 
-const REFERENCE: &[u8] = include_bytes!("../samples/hwpx/ref/ref_empty.hwpx");
+const REFERENCE: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/hwpx/ref/ref_empty.hwpx"));
 
 fn compatibility_children(bytes: &[u8]) -> Vec<String> {
     let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();

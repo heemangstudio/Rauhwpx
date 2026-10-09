@@ -1,4 +1,4 @@
-const WEB_CANVAS_SOURCE: &str = include_str!("../src/renderer/web_canvas.rs");
+const WEB_CANVAS_SOURCE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/renderer/web_canvas.rs"));
 
 #[test]
 fn web_canvas_layer_leaf_replay_does_not_rebuild_render_nodes() {
