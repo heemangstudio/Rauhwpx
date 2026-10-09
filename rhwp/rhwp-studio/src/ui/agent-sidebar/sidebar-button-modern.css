@@ -81,10 +81,7 @@
   box-shadow: none;
 }
 
-.ag-root :is(
-  .ag-threads-new,
-  .ag-workspace-exit-btn
-) {
+.ag-root .ag-workspace-exit-btn {
   border-radius: var(--ag-button-radius);
   box-shadow: none;
 }
