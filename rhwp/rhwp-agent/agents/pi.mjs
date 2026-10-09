@@ -11,10 +11,10 @@ import {
   normalizeExecutionMode,
   providerReadOnlyRoots,
   redactDiagnosticText,
-  systemBriefFor,
   truncate,
   validateExecutionMode,
 } from './backend.mjs';
+import { normalizePiLoadout, piSystemPromptFor, piToolSelection } from './pi-prompt.mjs';
 import { applyManagedCliLaunch } from '../npm-cli-launch.mjs';
 import {
   PROCESS_TREE_CLEANUP_OUTCOME,
@@ -80,12 +80,22 @@ function toolProfileFor(opts) {
 }
 
 /**
+ * 이 실행의 로드아웃. opts.piLoadout 이 env(RHWP_PI_LOADOUT)보다 먼저다.
+ * @param {PiBackendOptions & { piLoadout?: string }} opts
+ * @param {NodeJS.ProcessEnv} [env]
+ */
+export function piLoadoutFor(opts, env = process.env) {
+  return normalizePiLoadout(opts?.piLoadout ?? env.RHWP_PI_LOADOUT);
+}
+
+/**
  * pi CLI 인자를 만든다. 프롬프트는 argv가 아니라 stdin으로 전달한다.
  *
- * @param {PiBackendOptions} opts
+ * @param {PiBackendOptions & { piLoadout?: string }} opts
  * @param {string} sessionId
+ * @param {NodeJS.ProcessEnv} [env] RHWP_PI_LOADOUT 을 읽는 환경
  */
-export function buildPiArgv(opts, sessionId) {
+export function buildPiArgv(opts, sessionId, env = process.env) {
   const piRoot = opts.piRoot ?? '';
   const modelId = String(opts.model ?? '').replace(/^openrouter\//, '');
   const argv = ['--mode', 'json', '--model', `openrouter/${modelId}`];
@@ -94,10 +104,15 @@ export function buildPiArgv(opts, sessionId) {
   argv.push(
     '--session-dir', path.join(piRoot, 'sessions'),
     '--session-id', sessionId,
-    // 'pi' 를 명시한다 — 미지정은 클로드 기본 브리프(스폰 지시 포함)를 낳았다.
-    '--append-system-prompt', systemBriefFor(opts, 'pi'),
+    // Pi 의 코딩 어시스턴트 기본 프롬프트(도구 목록·규칙·Pi 문서 절)를 통째로 대체한다.
+    '--system-prompt', piSystemPromptFor({ ...opts, piLoadout: piLoadoutFor(opts, env) }),
     // 워크스페이스의 CLAUDE.md/AGENTS.md 를 끌어오지 않는다.
     '--no-context-files',
+    // ~/.agents/skills 같은 사용자 전역 스킬은 문서 에이전트와 무관한 프롬프트 잡음이다.
+    // pi-manager 가 동기화한 rhwp 스킬만 명시적으로 싣는다.
+    '--no-skills',
+    '--skill', path.join(piRoot, 'agent', 'skills'),
+    '--tools', piToolSelection(piLoadoutFor(opts, env)),
   );
   // Safe Pi has no OS write sandbox. Never expose its general shell: even
   // a hub-private sibling path is writable by the same OS user. Background
@@ -147,6 +162,7 @@ export function buildPiEnv(opts, sourceEnv = process.env) {
     ...(opts.effort ? { RHWP_PI_EFFORT: String(opts.effort) } : {}),
     ...(opts.reasoning ? { RHWP_PI_REASONING: '1' } : {}),
     RHWP_PI_SESSION_DIR: path.join(piRoot, 'sessions'),
+    RHWP_PI_LOADOUT: piLoadoutFor(opts, sourceEnv),
     ...mcpCapabilityEnv(opts),
   };
 }
@@ -517,7 +533,7 @@ export function createPiSession(opts, {
         return;
       }
 
-      // 시스템 브리핑은 --append-system-prompt 로 매 스폰마다 붙는다.
+      // 시스템 프롬프트는 --system-prompt 로 매 스폰마다 새로 정한다(모드가 바뀌면 함께 바뀐다).
       // 프롬프트는 stdin 으로 넘긴다. argv 로 넘기면 Linux 의 인자당 128 KiB,
       // Windows 의 명령줄 32,767자 한계에 걸리고 '-'/'@' 로 시작하는 메시지가
       // 플래그나 첨부 파일로 파싱된다.

@@ -73,7 +73,9 @@ const IMAGE_EXTS = ['png', 'jpg', 'gif', 'bmp'];
 /** 계획 단계에서 막는 pi 내장 도구 (pi.mjs 의 --exclude-tools 와 이중 방어). */
 export const PLANNING_BLOCKED_TOOLS = Object.freeze(['bash', 'edit', 'write']);
 /** safe 프로필에서 경로 탈출을 검사하는 pi 내장 도구. */
-export const PATH_GUARDED_TOOLS = Object.freeze(['read', 'edit', 'write']);
+export const PATH_GUARDED_TOOLS = Object.freeze(['read', 'grep', 'find', 'ls', 'edit', 'write']);
+/** path 를 생략하면 작업 디렉터리를 뜻하는 읽기 전용 검색 도구. read 와 같은 루트를 읽는다. */
+export const SEARCH_TOOLS = Object.freeze(['grep', 'find', 'ls']);
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 
 function log(message: string): void {
@@ -598,14 +600,20 @@ export async function guardToolCall(
     };
   }
   if (config.permissionProfile === 'safe' && PATH_GUARDED_TOOLS.includes(toolName)) {
-    const target = (event?.input as any)?.path;
-    const readableRoots = toolName === 'read'
+    const search = SEARCH_TOOLS.includes(toolName);
+    const readLike = search || toolName === 'read';
+    const rawTarget = (event?.input as any)?.path;
+    // grep/find/ls 는 path 를 생략하면 cwd 를 본다 — 그 cwd 도 같은 경계 안이어야 한다.
+    const target = search && (rawTarget === undefined || rawTarget === null || rawTarget === '')
+      ? '.'
+      : rawTarget;
+    const readableRoots = readLike
       ? [config.rootDir, ...(config.readOnlyRoots ?? [])]
       : [config.rootDir];
     let canonicalTarget: string | null = null;
     if (typeof target === 'string' && target.length > 0) {
       try {
-        canonicalTarget = await approvedCanonicalPath(toolName, readableRoots, target, cwd);
+        canonicalTarget = await approvedCanonicalPath(readLike ? 'read' : toolName, readableRoots, target, cwd);
       } catch {
         canonicalTarget = null;
       }
@@ -613,7 +621,7 @@ export async function guardToolCall(
     if (!canonicalTarget) {
       return {
         block: true,
-        reason: toolName === 'read'
+        reason: readLike
           ? `Safe profile: "${String(target ?? '')}" could not be resolved inside the approved readable roots.`
           : `Safe profile: "${String(target ?? '')}" could not be resolved inside the workspace root ${config.rootDir}.`,
       };

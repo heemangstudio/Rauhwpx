@@ -12,6 +12,7 @@ import {
   formatPiExitError,
   isOpenRouterCreditError,
 } from '../agents/pi.mjs';
+import { RHWP_TOOL_RULES } from '../tool-rules.mjs';
 
 const baseOpts = {
   rootDir: '/tmp/rhwp',
@@ -385,9 +386,60 @@ test('argv carries the model, thinking level, session and system brief', () => {
   ]);
   assert.equal(argv[argv.indexOf('--session-dir') + 1], path.join('/pi', 'sessions'));
   assert.equal(argv[argv.indexOf('--session-id') + 1], 'sess-1');
-  assert.match(argv[argv.indexOf('--append-system-prompt') + 1], /rhwp MCP tools/);
+  assert.match(argv[argv.indexOf('--system-prompt') + 1], /rhwp MCP tools/);
   assert.ok(argv.includes('--no-context-files'));
   assert.equal(argv[argv.indexOf('--exclude-tools') + 1], 'bash');
+  assert.equal(argv.includes('--append-system-prompt'), false);
+  // 사용자 전역 스킬 대신 동기화된 rhwp 스킬만 싣는다.
+  assert.ok(argv.includes('--no-skills'));
+  assert.equal(argv[argv.indexOf('--skill') + 1], path.join('/pi', 'agent', 'skills'));
+});
+
+test('every mode adds the read-only search built-ins without replacing the default set', () => {
+  for (const mode of [
+    { workflow: 'direct', permissionProfile: 'safe' },
+    { workflow: 'direct', permissionProfile: 'unrestricted' },
+    { workflow: 'question', phase: 'questioning' },
+    { workflow: 'plan', phase: 'planning' },
+    { workflow: 'plan', phase: 'implementing' },
+    { toolProfile: 'copy-layout-worker' },
+  ]) {
+    const argv = buildPiArgv({ ...baseOpts, ...mode }, 'sess-1', {});
+    // `+이름` 만 쓰는 형식이어야 확장 도구가 살아남는다 (이름만 나열하면 허용 목록이 된다).
+    const tools = argv[argv.indexOf('--tools') + 1].split(',');
+    assert.ok(tools.every((entry) => entry.startsWith('+')), JSON.stringify(mode));
+    assert.deepEqual(tools.filter((entry) => ['+grep', '+find', '+ls'].includes(entry)).length, 3);
+    assert.equal(tools.includes('+tool_search'), false);
+  }
+});
+
+test('the core loadout enables tool_search and reaches the extension through the env', () => {
+  const argv = buildPiArgv(baseOpts, 'sess-1', { RHWP_PI_LOADOUT: 'core' });
+  assert.ok(argv[argv.indexOf('--tools') + 1].split(',').includes('+tool_search'));
+  assert.equal(buildPiEnv(baseOpts, { RHWP_PI_LOADOUT: 'core' }).RHWP_PI_LOADOUT, 'core');
+  assert.equal(buildPiEnv(baseOpts, { RHWP_PI_LOADOUT: 'bogus' }).RHWP_PI_LOADOUT, 'full');
+  assert.equal(buildPiEnv({ ...baseOpts, piLoadout: 'core' }, {}).RHWP_PI_LOADOUT, 'core');
+});
+
+test('the system prompt follows the mode and an explicit override replaces it', () => {
+  const promptOf = (opts) => {
+    const argv = buildPiArgv({ ...baseOpts, ...opts }, 'sess-1', {});
+    return argv[argv.indexOf('--system-prompt') + 1];
+  };
+  const prompts = [
+    promptOf({ workflow: 'question', phase: 'questioning' }),
+    promptOf({ workflow: 'plan', phase: 'planning' }),
+    promptOf({ workflow: 'direct', permissionProfile: 'safe' }),
+    promptOf({ workflow: 'direct', permissionProfile: 'unrestricted' }),
+    promptOf({ workflow: 'plan', phase: 'implementing', permissionProfile: 'safe' }),
+    promptOf({ workflow: 'plan', phase: 'implementing', permissionProfile: 'unrestricted' }),
+  ];
+  assert.equal(new Set(prompts).size, prompts.length);
+  for (const prompt of prompts) {
+    assert.doesNotMatch(prompt, /expert coding assistant/);
+    assert.ok(prompt.includes(RHWP_TOOL_RULES));
+  }
+  assert.equal(promptOf({ systemPromptOverride: 'AUTONOMOUS TEMPLATE WORKER' }), 'AUTONOMOUS TEMPLATE WORKER');
 });
 
 test('argv omits thinking for non-reasoning models and never doubles the provider prefix', () => {
@@ -405,7 +457,7 @@ test('pi gets its own subagent fleet instructions', () => {
     { workflow: 'plan', phase: 'implementing' },
   ]) {
     const argv = buildPiArgv({ ...baseOpts, ...mode }, 'sess-1');
-    const brief = argv[argv.indexOf('--append-system-prompt') + 1];
+    const brief = argv[argv.indexOf('--system-prompt') + 1];
     assert.doesNotMatch(brief, /Workflow tool/, mode.phase);
     assert.match(brief, /subagent_spawn/, mode.phase);
     assert.match(brief, /role=doc-editor/, mode.phase);
@@ -418,11 +470,11 @@ test('planning phases exclude the built-in write and shell tools', () => {
   for (const phase of ['planning', 'awaiting-approval', 'switching']) {
     const argv = buildPiArgv({ ...baseOpts, workflow: 'plan', phase }, 'sess-1');
     assert.equal(argv[argv.indexOf('--exclude-tools') + 1], 'bash,edit,write', phase);
-    assert.match(argv[argv.indexOf('--append-system-prompt') + 1], /플랜 \(plan\) mode|implementation mode/);
+    assert.match(argv[argv.indexOf('--system-prompt') + 1], /플랜 \(plan\) mode|implementation mode/);
   }
   const implementing = buildPiArgv({ ...baseOpts, workflow: 'plan', phase: 'implementing' }, 'x');
   assert.equal(implementing[implementing.indexOf('--exclude-tools') + 1], 'bash');
-  assert.match(implementing[implementing.indexOf('--append-system-prompt') + 1], /implementation mode/);
+  assert.match(implementing[implementing.indexOf('--system-prompt') + 1], /implementation mode/);
 
   const unrestricted = buildPiArgv({
     ...baseOpts,

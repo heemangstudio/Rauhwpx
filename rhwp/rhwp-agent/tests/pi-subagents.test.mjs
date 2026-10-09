@@ -13,6 +13,7 @@ import {
   LIVE_STDOUT_CAP,
   shouldRegisterSubagentTools,
 } from '../pi/extension/subagents.ts';
+import { RHWP_TOOL_RULES } from '../tool-rules.mjs';
 
 class FakeChild extends EventEmitter {
   stdout = new EventEmitter();
@@ -57,6 +58,32 @@ test('child argv uses an internal session id and excludes nested/root interactio
   // pi는 '-'로 시작하면 플래그, '@'로 시작하면 첨부 파일 경로로 해석한다.
   assert.equal(buildChildArgv({ ...base, prompt: '--help me' }).at(-1), ' --help me');
   assert.equal(buildChildArgv({ ...base, prompt: '@doc-editor fix it' }).at(-1), ' @doc-editor fix it');
+});
+
+test('child argv carries a Pi-owned prompt for its role and mode plus the rhwp skills only', () => {
+  const base = {
+    model: 'model', sessionDir: '/pi/sessions', sessionId: 'id', prompt: 'Edit p3-p9.', planningRestricted: false,
+  };
+  const promptOf = (extra) => {
+    const argv = buildChildArgv({ ...base, ...extra });
+    assert.equal(argv.includes('--append-system-prompt'), false);
+    return argv[argv.indexOf('--system-prompt') + 1];
+  };
+  const editorSafe = promptOf({ role: 'doc-editor', mode: { workflow: 'direct', permissionProfile: 'safe' } });
+  const editorFull = promptOf({ role: 'doc-editor', mode: { workflow: 'direct', permissionProfile: 'unrestricted' } });
+  const researcher = promptOf({ role: 'doc-researcher', mode: { workflow: 'direct', permissionProfile: 'safe' } });
+  const planning = promptOf({ role: 'general', planningRestricted: true });
+  assert.equal(new Set([editorSafe, editorFull, researcher, planning]).size, 4);
+  // 자식도 리비전 계약을 안다 — 예전에는 역할 문단만 받았다.
+  for (const prompt of [editorSafe, researcher, planning]) assert.ok(prompt.includes(RHWP_TOOL_RULES));
+  assert.doesNotMatch(editorSafe, /expert coding assistant/);
+
+  const argv = buildChildArgv({ ...base, role: 'general', skillsDir: '/pi/agent/skills', loadout: 'core' });
+  assert.ok(argv.includes('--no-skills'));
+  assert.equal(argv[argv.indexOf('--skill') + 1], '/pi/agent/skills');
+  assert.deepEqual(argv[argv.indexOf('--tools') + 1].split(','), ['+grep', '+find', '+ls', '+tool_search']);
+  assert.equal(argv.at(-1), 'Edit p3-p9.');
+  assert.equal(buildChildArgv({ ...base, role: 'general' }).includes('--skill'), false);
 });
 
 test('a child extension does not register another fleet surface', () => {
