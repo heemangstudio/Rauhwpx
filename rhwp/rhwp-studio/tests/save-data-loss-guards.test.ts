@@ -8,11 +8,13 @@ import { fileURLToPath } from 'node:url';
 import { DocumentDirtyState } from '../src/core/document-dirty-state.ts';
 import { EventBus } from '../src/core/event-bus.ts';
 import { createTestModuleServer } from './support/module-server.ts';
+import { trackAppTimers } from './support/app-timers.ts';
 
 type FileCommandsModule = typeof import('../src/command/commands/file.ts');
 
 const rootDir = fileURLToPath(new URL('..', import.meta.url));
 let vite: Awaited<ReturnType<typeof createTestModuleServer>>;
+let releaseAppTimers = () => {};
 let fileCommands: FileCommandsModule;
 const savedGlobals: Record<string, unknown> = {};
 
@@ -33,6 +35,7 @@ function anything(): any {
 }
 
 before(async () => {
+  releaseAppTimers = trackAppTimers();
   const g = globalThis as Record<string, unknown>;
   for (const key of ['window', 'document', 'alert', 'requestAnimationFrame']) savedGlobals[key] = g[key];
   g.window = { addEventListener() {}, removeEventListener() {}, innerWidth: 1024 };
@@ -46,6 +49,7 @@ before(async () => {
 });
 
 after(async () => {
+  releaseAppTimers();
   await vite?.close();
   const g = globalThis as Record<string, unknown>;
   for (const [key, value] of Object.entries(savedGlobals)) g[key] = value;

@@ -1,12 +1,16 @@
+import './support/wasm-liftoff.ts';
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { createServer } from 'vite';
 
 import { mergeResourceDependencyErrors } from '../src/versioning/merge-validation.ts';
+import { requireWasmPackage } from './browser-support.ts';
+import { createTestModuleServer } from './support/module-server.ts';
 
 const rootDir = fileURLToPath(new URL('..', import.meta.url));
+
+requireWasmPackage(resolve(rootDir, '../pkg'));
 
 test('merge resource validation rejects every unloaded external image dependency', () => {
   assert.deepEqual(mergeResourceDependencyErrors([
@@ -29,20 +33,7 @@ test('merge resource validation accepts embedded or successfully loaded dependen
 });
 
 test('external image dependency reports distinguish valid emptiness from unavailable data', async () => {
-  const vite = await createServer({
-    root: rootDir,
-    configFile: false,
-    appType: 'custom',
-    logLevel: 'silent',
-    resolve: {
-      alias: {
-        '@wasm/rhwp.js': resolve(rootDir, '../pkg/rhwp.js'),
-        '@wasm': resolve(rootDir, '../pkg'),
-        '@': resolve(rootDir, 'src'),
-      },
-    },
-    server: { middlewareMode: true, hmr: false },
-  });
+  const vite = await createTestModuleServer();
   try {
     const { WasmBridge } = await vite.ssrLoadModule('/src/core/wasm-bridge.ts');
     const references = (doc: unknown) => {

@@ -77,8 +77,9 @@ test('AgentBridge carries the renderer session on WebSocket and HTTP hub request
     constructor(url: string) { opened.push(url); }
     close() {}
   } as unknown as typeof WebSocket;
+  let bridge: any;
   try {
-    const bridge = Object.create(AgentBridgeImpl.prototype) as any;
+    bridge = Object.create(AgentBridgeImpl.prototype) as any;
     Object.assign(bridge, {
       disposed: false,
       url: 'ws://127.0.0.1:6123/',
@@ -100,6 +101,7 @@ test('AgentBridge carries the renderer session on WebSocket and HTTP hub request
     assert.equal(http.searchParams.get('sessionId'), 'window 2');
     assert.equal(http.searchParams.get('scope'), 'chat');
   } finally {
+    clearTimeout(bridge?.connectTimer);
     globalThis.WebSocket = realWebSocket;
   }
 });

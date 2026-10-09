@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { INSERTED_IMAGE_MAX_BYTES } from '../src/core/document-input-limits.ts';
 import { isDomDisplayableFlowImage } from '../src/view/flow-image-clip.ts';
 import { createTestModuleServer } from './support/module-server.ts';
+import { trackAppTimers } from './support/app-timers.ts';
 
 const rootDir = fileURLToPath(new URL('..', import.meta.url));
 
@@ -58,8 +59,10 @@ let imagesCreated = 0;
 const warnings: unknown[][] = [];
 const saved: Record<string, unknown> = {};
 let vite: Awaited<ReturnType<typeof createTestModuleServer>>;
+let releaseAppTimers = () => {};
 
 before(async () => {
+  releaseAppTimers = trackAppTimers();
   const g = globalThis as Record<string, unknown>;
   for (const key of ['document', 'window', 'Image', 'ClipboardItem', 'requestAnimationFrame']) saved[key] = g[key];
   g.document = new Proxy({}, {
@@ -90,6 +93,7 @@ before(async () => {
 });
 
 after(async () => {
+  releaseAppTimers();
   await vite?.close();
   const g = globalThis as Record<string, unknown>;
   for (const [key, value] of Object.entries(saved)) g[key] = value;

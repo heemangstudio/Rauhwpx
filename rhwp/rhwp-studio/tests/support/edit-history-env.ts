@@ -6,18 +6,20 @@
  * 만들고, 캐럿 그리기 같은 화면 갱신만 비워 둔다. 편집 라우터(executeOperation)와
  * handleUndo/handleRedo 는 실제 코드가 돈다.
  */
+import './wasm-liftoff.ts';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createServer, type ViteDevServer } from 'vite';
+import { loadStudioModule } from './module-server.ts';
+import { requireWasmPackage } from '../browser-support.ts';
 
 const studioRoot = fileURLToPath(new URL('../../', import.meta.url));
 const wasmPackageRoot = resolve(studioRoot, '../pkg');
+requireWasmPackage(wasmPackageRoot);
 
 export interface EditEngine {
-  vite: ViteDevServer;
   load: (path: string) => Promise<any>;
   /** src/engine/command.ts 모듈 */
   command: any;
@@ -43,21 +45,7 @@ function quietly<T>(run: () => T): T {
 }
 
 export async function startEditEngine(): Promise<EditEngine> {
-  const vite = await createServer({
-    root: studioRoot,
-    configFile: false,
-    appType: 'custom',
-    logLevel: 'silent',
-    resolve: {
-      alias: {
-        '@': resolve(studioRoot, 'src'),
-        '@wasm/rhwp.js': resolve(wasmPackageRoot, 'rhwp.js'),
-        '@wasm': wasmPackageRoot,
-      },
-    },
-    server: { middlewareMode: true, hmr: false },
-  });
-  const load = (path: string) => vite.ssrLoadModule(path);
+  const load = (path: string) => loadStudioModule(path);
   const engine = await load('@wasm/rhwp.js');
   engine.initSync({ module: readFileSync(resolve(wasmPackageRoot, 'rhwp_bg.wasm')) });
   const [
@@ -80,7 +68,6 @@ export async function startEditEngine(): Promise<EditEngine> {
   }
 
   return {
-    vite,
     load,
     command,
     CommandHistory,
@@ -130,7 +117,7 @@ export async function startEditEngine(): Promise<EditEngine> {
       });
       return host;
     },
-    close: () => vite.close(),
+    close: async () => {},
   };
 }
 
