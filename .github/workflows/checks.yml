@@ -105,9 +105,7 @@ jobs:
         if: contains(needs.changes.outputs.app, 'studio')
       - name: Test Studio
         if: contains(needs.changes.outputs.app, 'studio')
-        run: |
-          npm --prefix rhwp/rhwp-studio test
-          npm --prefix rhwp/rhwp-studio run e2e:check
+        run: npm --prefix rhwp/rhwp-studio test
       - name: Test agent hub
         if: contains(needs.changes.outputs.app, 'hub')
         run: |
@@ -167,6 +165,17 @@ jobs:
         run: |
           "$PUPPETEER_EXECUTABLE_PATH" --version
           npm --prefix rhwp/rhwp-studio run test:browser
+      - name: Run editor smoke flows
+        run: npm --prefix rhwp/rhwp-studio run e2e:smoke
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: smoke-server-logs
+          path: |
+            rhwp/target/smoke-hub.log
+            rhwp/target/smoke-vite.log
+          if-no-files-found: ignore
+          retention-days: 7
 
   docs:
     name: Docs

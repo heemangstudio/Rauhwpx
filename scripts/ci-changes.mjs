@@ -12,7 +12,7 @@ const ALL = [...JOBS, ...APP_PARTS];
 const RULES = [
   // Not read by any build or test.
   [/^(?:docs|research|promo|output|build|\.audit|\.claude|\.impeccable|\.commandcode)\//, []],
-  [/^rhwp\/(?:docs|pdf|pdf-large|bindings|typescript|rhwp-vscode)\//, []],
+  [/^rhwp\/(?:docs|pdf|pdf-large|bindings|typescript|rhwp-vscode|scripts)\//, []],
   [/^rhwp\/tools\/(?!rhwp-subsecond\/)/, []],
   [/(?:^|\/)(?:LICENSE[^/]*|THIRD_PARTY_LICENSES\.md|CHANGELOG\.md|SECURITY\.md)$/, []],
   // Publish docs, website and the tool list the docs must not hardcode.
@@ -27,8 +27,8 @@ const RULES = [
   [/^rhwp\/rhwp-studio\/src\/agent\//, ['studio', 'hub', 'browser']],
   [/^rhwp\/rhwp-studio\/tests\/desktop-/, ['studio', 'sessions']],
   [/^rhwp\/rhwp-studio\//, ['studio', 'browser']],
-  // Studio `npm test` runs the npm/editor tests and e2e:check reads rhwp/scripts.
-  [/^rhwp\/(?:npm|scripts)\//, ['studio']],
+  // Studio `npm test` runs the npm/editor tests.
+  [/^rhwp\/npm\//, ['studio']],
   [/^rhwp\/rhwp-agent\//, ['hub', 'studio', 'sessions']],
   // Root tests, packaging script tests, Studio desktop-* tests and the hub all import desktop modules.
   [/^(?:desktop|tests)\//, ['desktop', 'studio', 'hub', 'sessions']],

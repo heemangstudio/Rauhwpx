@@ -70,7 +70,7 @@ Studio `npm test` imports hub modules, so `rhwp/rhwp-agent/node_modules` must ex
 - `npm run dev` serves http://127.0.0.1:7700 and starts its own authenticated hub.
 - `npm test` runs fast Node tests and `../npm/editor/tests`; `npm run test:browser` runs browser integrations (see `tests/README.md`).
 - `npm run build` type-checks and builds.
-- E2E: `npm run e2e:<name>` (puppeteer-core, mostly `--mode=headless`). `npm run e2e:list` discovers scripts; `npm run e2e:check` validates references. See `e2e/README.md`.
+- Smoke: `npm run e2e:smoke` starts its own hub and Vite, runs eight user flows in headless Chrome (fake provider, offline) and exits nonzero on failure. Set `CHROME_PATH` if Chrome is not in `/Applications`. See `e2e/README.md`. Perf tools are `npm run bench:*` (see `bench/README.md`); the `*-quota` ones spend real provider quota.
 - To drive Studio and a real hub from a script, import `e2e/agent-bench-harness.mjs` (`findAvailablePort`, `startHub`, `startVite`, `ensureChromePath`, `stopServer`) instead of picking ports and env vars by hand.
 
 ## Hub (from `rhwp/rhwp-agent/`)

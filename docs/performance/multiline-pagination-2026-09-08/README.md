@@ -24,5 +24,5 @@ Use the benchmark script from the preview scheduling branch, a fresh checkout of
 BENCH_STUDIO_ROOT=/absolute/checkout/rhwp/rhwp-studio \
 BENCH_SAMPLES=hwpx/hancom-hwp/business_overview.hwp \
 BENCH_MODES=pending-multiline BENCH_BURSTS=1 BENCH_BURST_SIZE=1 \
-  node rhwp/rhwp-studio/e2e/preview-frame-bench.mjs --label=multiline
+  npm --prefix rhwp/rhwp-studio run bench:preview-frame -- --label=multiline
 ```
