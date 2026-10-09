@@ -563,17 +563,6 @@ const PLANNING_PHASE_LABEL: Record<AgentPhase, string> = {
   implementing: '실행 중',
 };
 
-/**
- * 계획 모드를 처음 켤 때 한 번만 띄우는 원격 브라우저 전체 제어 경고.
- * 개별 동작마다 다시 묻지 않으므로, 여기서 범위를 명확히 말해야 한다.
- */
-const BROWSERBASE_FULL_CONTROL_TITLE = '원격 브라우저 전체 제어';
-const BROWSERBASE_FULL_CONTROL_WARNING =
-  '에이전트가 묻지 않고 페이지를 열고, 양식을 제출하고, 로그인된 계정의 설정을 바꿀 수 있습니다. '
-  + '다운로드는 이 채팅 전용 다운로드 폴더에만 저장됩니다.';
-
-const BROWSERBASE_ENABLED_NOTICE = '플랜 모드 켜짐 · 원격 브라우저 전체 제어';
-
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
   className: string,
@@ -785,10 +774,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   let planApprovable = activePlan !== null && planningPhase === 'awaiting-approval';
   let planActionPending = false;
   let revisionPlanId: string | null = null;
-  /** 이 채팅에서 원격 브라우저 전체 제어 경고를 이미 받았는가. */
-  let browserbaseAcknowledged = chatWorkflow === 'plan' || chatWorkflow === 'question';
-  /** 계획 모드 전환이 서버에서 확인된 뒤에만 활성화 안내를 표시한다. */
-  let browserbaseNoticePending = false;
   let planHistory: StructuredPlan[] = initialWorkflowState.latestPlan ? [initialWorkflowState.latestPlan] : [];
   /** 채팅별 계획 기록/모드 — 목록에서 되돌아왔을 때 표시를 복원한다. */
   const planArchives = new Map<string, StructuredPlan[]>();
@@ -5666,7 +5651,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       docKey: currentDocKey,
       documentId: currentDocumentId,
     });
-    // 새 채팅은 기본 모드의 작업 방식으로 시작하고, 원격 브라우저 경고도 다시 받는다.
+    // 새 채팅은 기본 모드의 작업 방식으로 시작한다.
     threadWorkflows.set(nextThread.id, agentModeTarget(agentPrefs.defaultMode).workflow);
     restorePlanningForThread(nextThread.id, nextThread);
     if (previousThreadWasEmpty) {
@@ -7365,8 +7350,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   }
 
   /**
-   * 작업 방식 전환 요청. 계획·채팅 모드로 들어갈 때만 원격 브라우저 전체 제어를
-   * 한 번 경고하고, 검토 대기 중인 문서 편집이 있으면 계획 모드를 막는다.
+   * 작업 방식 전환 요청. 검토 대기 중인 문서 편집이 있으면 계획 모드를 막는다.
    * profile 이 있고 지금과 다르면 같은 전환 큐 뒤에 프로필 전환을 잇는다.
    */
   function requestWorkflow(next: AgentWorkflow, profile?: PermissionProfile): boolean {
@@ -7389,29 +7373,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       updateWorkflowControl();
       return false;
     }
-    if (next === 'plan' || next === 'question') {
-      if (next === 'plan' && hasPendingDocumentEdits()) {
-        systemMessage(
-          '검토 대기 중인 편집을 먼저 처리합니다.',
-        );
-        updateWorkflowControl();
-        return false;
-      }
-      if (!browserbaseAcknowledged) {
-        // 처음 한 번만 묻는다. 시트는 비동기라 여기서는 멈추고, 승인되면 다시 요청한다.
-        updateWorkflowControl();
-        void confirmSheet(root, BROWSERBASE_FULL_CONTROL_TITLE, BROWSERBASE_FULL_CONTROL_WARNING, { confirmLabel: '켜기' })
-          .then((confirmed) => {
-            if (!confirmed) {
-              input.focus();
-              return;
-            }
-            browserbaseAcknowledged = true;
-            browserbaseNoticePending = true;
-            requestWorkflow(next, profile);
-          });
-        return false;
-      }
+    if (next === 'plan' && hasPendingDocumentEdits()) {
+      systemMessage(
+        '검토 대기 중인 편집을 먼저 처리합니다.',
+      );
+      updateWorkflowControl();
+      return false;
     }
     workflowTransitionPending = true;
     bridge.setWorkflow(next);
@@ -7721,12 +7688,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
           recordPlan(e.latestPlan);
           rebuildReview();
         }
-        if ((e.workflow === 'plan' || e.workflow === 'question') && browserbaseNoticePending) {
-          browserbaseNoticePending = false;
-          systemMessage(BROWSERBASE_ENABLED_NOTICE);
-        } else if (e.workflow === 'direct') {
-          browserbaseNoticePending = false;
-        }
         return true;
       case 'plan-ready':
         planActionPending = false;
@@ -7826,7 +7787,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       planApprovable = state.phase === 'awaiting-approval';
       if (state.latestPlan.execution?.status === 'completed') markPlanExecuted(state.latestPlan.planId);
     }
-    if (chatWorkflow === 'plan' || chatWorkflow === 'question') browserbaseAcknowledged = true;
     threadWorkflows.set(currentThread.id, chatWorkflow);
     updateWorkflowControl();
     updateComposer();
@@ -7849,7 +7809,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
       : chatWorkflow === 'question'
         ? 'questioning'
         : 'direct';
-    browserbaseAcknowledged = chatWorkflow === 'plan' || chatWorkflow === 'question';
     updateWorkflowControl();
     updateComposer();
     rebuildReview();
