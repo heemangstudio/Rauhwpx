@@ -12,7 +12,8 @@ function source(path: string): string {
 
 function loadBytesBody(): string {
   const main = source('src/main.ts');
-  const start = main.indexOf('async function loadBytes(');
+  // loadBytes 는 열기 동안 세션 전환을 막는 얇은 감싸개이고, 본문은 loadBytesNow 에 있다.
+  const start = main.indexOf('async function loadBytesNow(');
   assert.notEqual(start, -1, 'loadBytes 를 찾지 못했다');
   const next = main.indexOf('\nasync function ', start + 1);
   const alt = main.indexOf('\nfunction ', start + 1);

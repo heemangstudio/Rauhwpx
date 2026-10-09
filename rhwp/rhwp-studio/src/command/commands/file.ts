@@ -86,8 +86,11 @@ import {
 async function openFileViaPicker(services: CommandServices): Promise<void> {
   let handle: FileSystemFileHandleLike | null | undefined;
   try {
-    const canReplace = await confirmSaveBeforeReplacingDocument(services);
-    if (!canReplace) return;
+    // 에이전트가 일하는 문서는 바꾸지 않고 뒤에 남기므로 저장을 묻지 않는다.
+    if (!services.opensDocumentsInNewSession?.()) {
+      const canReplace = await confirmSaveBeforeReplacingDocument(services);
+      if (!canReplace) return;
+    }
 
     const windowLike = window as FileSystemWindowLike;
     const desktopHandle = await services.pickOpenHandle?.();
@@ -126,7 +129,7 @@ async function openFileViaPicker(services: CommandServices): Promise<void> {
 async function importLegacyHistoryFolder(services: CommandServices): Promise<void> {
   let handle: FileSystemFileHandleLike | null | undefined;
   try {
-    if (!await confirmSaveBeforeReplacingDocument(services)) return;
+    if (!services.opensDocumentsInNewSession?.() && !await confirmSaveBeforeReplacingDocument(services)) return;
     handle = await pickDesktopLegacyHistoryFolder();
     if (handle === null) return;
 
@@ -502,6 +505,11 @@ const saveSession = new SaveSession();
  * 현재 문서를 저장한다. 진행 중인 저장이 있으면 그 결과를 기다리고, 그사이 편집이
  * 들어와 여전히 dirty 일 때만 한 번 더 저장한다.
  */
+/** 진행 중인 저장이 모두 끝날 때까지 기다린다. 저장 도중 다른 문서로 넘어가지 않게 한다. */
+export function whenSavesIdle(): Promise<void> {
+  return saveSession.whenIdle();
+}
+
 export function saveCurrentDocument(services: CommandServices): Promise<SaveCurrentDocumentResult> {
   return saveSession.save(
     () => runSaveCurrentDocument(services),
