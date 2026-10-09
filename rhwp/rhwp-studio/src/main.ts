@@ -1742,7 +1742,7 @@ function installChatAgent(
       return identity ? { branch: identity.branch, primary: identity.primary } : null;
     },
     commitVersion: async (message) => {
-      await versions.checkpoint(message);
+      await versions.checkpoint(message, { agentTurn: true });
     },
   }, hubSession ? { resolveSessionContext: hubSession.resolveContext } : undefined);
   let chat: ChatSession | undefined;

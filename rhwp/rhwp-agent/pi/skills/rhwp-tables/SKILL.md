@@ -90,7 +90,7 @@ description: Address table cells and change table structure in the live HWP/HWPX
 - 모든 `edit_table` op 은 호출 즉시 적용되고 `rowCount`/`colCount`/`cellCount` 를 돌려준다.
   행·열 삽입/삭제, 병합, 나누기 뒤에는 `cellIdx` 가 다시 매겨지므로 돌려받은 개수나 새 `get_structure` 로
   셀 주소를 잡는다. 표는 잠기지 않는다.
-- 모든 호출은 `expectedRevision` 이 필요하다. 편집을 여러 개 알고 있으면 `apply_edits` 로 묶는다 (`rhwp-editing` 참고).
+- 모든 호출은 `expectedRevision` 이 필요하다. 편집을 여러 개 알고 있으면 `apply_edits` 로 묶는다. 한 배치 안에서 행을 넣고 곧바로 새 셀을 채울 수 있다.
 - 폭·테두리·계산식·캡션 op 도 즉시 적용된다. 읽거나 렌더한 문서가 곧 승인 결과다.
 - 표 작업의 `after.warnings` 가 표의 쪽 넘침·폭 넘침을 알려 준다. 레이아웃은 `render: "crop"` 으로 보고,
   자세한 배치는 `get_table_layout` 으로 확인한다.

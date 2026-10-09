@@ -68,7 +68,7 @@ test('turn cancellation releases the editing lease before deferred tools settle'
     turnRunning: true,
     editingAgent: 'pi',
     activeToolRequests: 0,
-    activeToolRequestControllers: new Map(),
+    activeToolRequestControllers: new Map(), inFlightWrites: new Set(), versionCommitInFlight: null,
     editingLease: { active: false, agent: 'pi' },
     editingLeaseListeners: new Set(),
     pendingUserQuestionId: null, pendingChatPermissionRequest: null, pendingPermissionCancellation: null, chatPermissionGrants: [],
@@ -140,7 +140,7 @@ function interruptBridgeFixture(execute: (...args: any[]) => Promise<unknown> = 
   const responses: any[] = [];
   Object.assign(bridge, {
     activeProviderTurnId: 'turn-active', turnRunning: true,
-    activeToolRequests: 0, activeToolRequestControllers: new Map(),
+    activeToolRequests: 0, activeToolRequestControllers: new Map(), inFlightWrites: new Set(), versionCommitInFlight: null,
     pendingUserQuestion: null, pendingQuestionCancellation: null,
     pendingChatPermissionRequest: null, pendingPermissionCancellation: null, chatPermissionGrants: [],
     workflow: 'direct', phase: 'direct', activeAgent: 'codex',
@@ -177,7 +177,7 @@ test('plan completion follows the actual edit outcome and exact provider turn', 
       pendingChatPermissionRequest: null, pendingPermissionCancellation: null, chatPermissionGrants: [],
       latestPlan: { planId: 'plan-1', execution: { status: 'running', steps: [{ stepId: 'step-1', status: complete ? 'completed' : 'in-progress' }] } },
       planReview: null, planExecutionTurn: null, pendingTurnOpen: false,
-      activeToolRequestControllers: new Map(), permissionProfile: pending ? 'safe' : 'unrestricted',
+      activeToolRequestControllers: new Map(), inFlightWrites: new Set(), versionCommitInFlight: null, permissionProfile: pending ? 'safe' : 'unrestricted',
       pendingEdits: { getChangeSets: () => sets }, syncEditingLease: () => {}, emit: () => {},
       beginPendingTurn: () => { bridge.pendingTurnOpen = true; },
       endPendingTurn: () => {

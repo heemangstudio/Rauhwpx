@@ -17,6 +17,25 @@ import { fileURLToPath } from 'node:url';
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent, ToolCallEventResult }
   from '@earendil-works/pi-coding-agent';
 
+import {
+  SETTLE_CHECK_CUSTOM_TYPE,
+  afterWarnings,
+  assistantHasText,
+  createTurnWriteState,
+  currentRevisionFromMismatch,
+  fillExpectedRevision,
+  recordWriteOutcome,
+  repairToolArguments,
+  revisionFromPrompt,
+  revisionFromResult,
+  schemaTakesExpectedRevision,
+  settleNoteFor,
+  shouldRetryStaleWrite,
+  stripStaleToolImages,
+  toolAnnotationsFor,
+  toolExecutionModeFor,
+} from './harness.ts';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 타입
 // ─────────────────────────────────────────────────────────────────────────────
@@ -74,7 +93,9 @@ const IMAGE_EXTS = ['png', 'jpg', 'gif', 'bmp'];
 /** 계획 단계에서 막는 pi 내장 도구 (pi.mjs 의 --exclude-tools 와 이중 방어). */
 export const PLANNING_BLOCKED_TOOLS = Object.freeze(['bash', 'edit', 'write']);
 /** safe 프로필에서 경로 탈출을 검사하는 pi 내장 도구. */
-export const PATH_GUARDED_TOOLS = Object.freeze(['read', 'edit', 'write']);
+export const PATH_GUARDED_TOOLS = Object.freeze(['read', 'grep', 'find', 'ls', 'edit', 'write']);
+/** path 를 생략하면 작업 디렉터리를 뜻하는 읽기 전용 검색 도구. read 와 같은 루트를 읽는다. */
+export const SEARCH_TOOLS = Object.freeze(['grep', 'find', 'ls']);
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 
 function log(message: string): void {
@@ -608,14 +629,20 @@ export async function guardToolCall(
     };
   }
   if (!localExecution && config.permissionProfile === 'safe' && PATH_GUARDED_TOOLS.includes(toolName)) {
-    const target = (event?.input as any)?.path;
-    const readableRoots = toolName === 'read'
+    const search = SEARCH_TOOLS.includes(toolName);
+    const readLike = search || toolName === 'read';
+    const rawTarget = (event?.input as any)?.path;
+    // grep/find/ls 는 path 를 생략하면 cwd 를 본다 — 그 cwd 도 같은 경계 안이어야 한다.
+    const target = search && (rawTarget === undefined || rawTarget === null || rawTarget === '')
+      ? '.'
+      : rawTarget;
+    const readableRoots = readLike
       ? [config.rootDir, ...(config.readOnlyRoots ?? [])]
       : [config.rootDir];
     let canonicalTarget: string | null = null;
     if (typeof target === 'string' && target.length > 0) {
       try {
-        canonicalTarget = await approvedCanonicalPath(toolName, readableRoots, target, cwd);
+        canonicalTarget = await approvedCanonicalPath(readLike ? 'read' : toolName, readableRoots, target, cwd);
       } catch {
         canonicalTarget = null;
       }
@@ -623,7 +650,7 @@ export async function guardToolCall(
     if (!canonicalTarget) {
       return {
         block: true,
-        reason: toolName === 'read'
+        reason: readLike
           ? `Safe profile: "${String(target ?? '')}" could not be resolved inside the approved readable roots.`
           : `Safe profile: "${String(target ?? '')}" could not be resolved inside the workspace root ${config.rootDir}.`,
       };
@@ -880,9 +907,30 @@ async function loadUnsafeBuilder(): Promise<UnsafeBuilder | undefined> {
 // 확장 팩토리
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** 쓰기 결과 뒤에 붙이는 하니스 메모 한 줄씩. */
+function withNotes(content: ToolContentBlock[], notes: string[]): ToolContentBlock[] {
+  return notes.length > 0 ? [...content, { type: 'text', text: notes.join('\n') }] : content;
+}
+
 export default async function rhwpPiExtension(pi: ExtensionAPI): Promise<void> {
   const config = readExtensionConfig();
   const client = createHubClient(config);
+  // 질문·계획 단계와 copy-layout 워커는 마무리 점검으로 턴을 늘리지 않는다.
+  const settleCheckEnabled = !isPlanningRestricted(config.workflow, config.phase) && !config.copyLayoutJobId;
+
+  /** 이 에이전트가 마지막으로 본 문서 revision (성공한 도구 결과 또는 live_document). */
+  let latestRevision: number | null = null;
+  /** 이 에이전트의 마지막 성공한 문서 쓰기가 돌려준 revision. */
+  let lastOwnWriteRevision: number | null = null;
+  let turn = createTurnWriteState();
+  /**
+   * prepareArguments 가 채운 expectedRevision 을 execute 에 넘기는 칸 (도구 이름별).
+   * 문서 쓰기는 sequential 이라 Pi 가 호출마다 prepare → 검증 → execute 를 차례로 돌린다.
+   */
+  const pendingFills = new Map<string, number | null>();
+  /** execute 가 성공한 쓰기의 after.warnings — tool_execution_end 에서 결과와 합친다. */
+  const successWarnings = new Map<string, string[]>();
+  const writeTools = new Set<string>();
 
   // 내장 도구 가드는 허브 연결과 무관하게 항상 건다.
   pi.on('tool_call', (event: ToolCallEvent, ctx: ExtensionContext) =>
@@ -890,29 +938,112 @@ export default async function rhwpPiExtension(pi: ExtensionAPI): Promise<void> {
   pi.on('agent_settled', () => { client.dispose(); });
   pi.on('session_shutdown', () => { client.dispose(); });
 
+  // 사용자 턴마다 점검 상태를 새로 잡고, 허브가 붙인 live_document 의 revision 을 읽는다.
+  pi.on('before_agent_start', (event: any) => {
+    turn = createTurnWriteState();
+    const revision = revisionFromPrompt(event?.prompt);
+    if (revision !== null) latestRevision = revision;
+  });
+  pi.on('message_end', (event: any) => {
+    if (event?.message?.role === 'assistant') turn.finalHasText = assistantHasText(event.message);
+  });
+  // 검증 실패·가드 차단으로 execute 까지 오지 못한 쓰기도 여기서 센다.
+  pi.on('tool_execution_end', (event: any) => {
+    const tool = String(event?.toolName ?? '');
+    if (!writeTools.has(tool) || event?.parentToolCallId) return;
+    const callId = String(event?.toolCallId ?? '');
+    const warnings = successWarnings.get(callId) ?? [];
+    successWarnings.delete(callId);
+    if (event?.isError) {
+      const text = Array.isArray(event?.result?.content)
+        ? event.result.content.map((block: any) => String(block?.text ?? '')).join(' ').trim()
+        : '';
+      recordWriteOutcome(turn, { tool, ok: false, message: text.slice(0, 400) || 'unknown error' });
+    } else {
+      recordWriteOutcome(turn, { tool, ok: true, result: { after: { warnings } } });
+    }
+  });
+  pi.on('agent_before_settle', (event: any) => {
+    const note = settleNoteFor(turn, { outcome: String(event?.outcome ?? ''), enabled: settleCheckEnabled });
+    if (!note) return undefined;
+    turn.continuations += 1;
+    turn.writesAtLastContinuation = turn.writes;
+    turn.finalHasText = false;
+    log(`settle check: continuing (${turn.continuations})`);
+    return {
+      entries: [{ type: 'custom_message', customType: SETTLE_CHECK_CUSTOM_TYPE, content: note, display: false }],
+      continue: true,
+    };
+  });
+  // 이미 한 번 본 도구 결과 이미지는 다음 요청부터 짧은 글로 바꾼다.
+  pi.on('context', (event: any) => {
+    const messages = stripStaleToolImages(Array.isArray(event?.messages) ? event.messages : []);
+    return messages ? { messages } : undefined;
+  });
+
   const definitions = await fetchToolDefinitions(config);
   if (definitions.length === 0) return;
   const unsafe = await loadUnsafeBuilder();
+  /** 인자 복구용 순수 JSON Schema (배치 항목의 대상 도구 스키마 포함). */
+  const schemas = new Map(definitions.map((def) => [def.name, toParameterSchema(def.inputSchema)]));
 
   for (const def of definitions) {
+    const schema = schemas.get(def.name);
+    const documentWrite = def.category === 'document-write';
+    if (documentWrite) writeTools.add(def.name);
+    // 문서 revision 만 채운다 — update_agent_instructions 의 expectedRevision 은 AGENTS.md 의 것이다.
+    const fillsRevision = documentWrite && schemaTakesExpectedRevision(schema);
     pi.registerTool({
       name: def.name,
       label: def.name,
       description: def.description,
       parameters: toParameterSchema(def.inputSchema, unsafe),
-      async execute(_toolCallId: string, params: any, signal: AbortSignal | undefined) {
+      executionMode: toolExecutionModeFor(def.category),
+      annotations: toolAnnotationsFor(def.category),
+      prepareArguments(raw: unknown) {
+        const repaired = repairToolArguments(def.name, raw, schema, schemas);
+        if (!fillsRevision) return repaired as any;
+        const { args, filled } = fillExpectedRevision(repaired, latestRevision);
+        pendingFills.set(def.name, filled);
+        return args as any;
+      },
+      async execute(toolCallId: string, params: any, signal: AbortSignal | undefined) {
+        const filled = fillsRevision ? pendingFills.get(def.name) ?? null : null;
+        pendingFills.delete(def.name);
+        const notes: string[] = [];
+        if (filled !== null) notes.push(`note: expectedRevision filled with ${filled}`);
         try {
           const args = (params ?? {}) as Record<string, unknown>;
           const payload = def.name === 'insert_image'
             ? await prepareInsertImageArgs(args, readFile, config)
             : args;
-          const result = await client.call(def.name, payload, signal);
+          let result: unknown;
+          try {
+            result = await client.call(def.name, payload, signal);
+          } catch (error: any) {
+            const current = error?.code === 'REVISION_MISMATCH' ? currentRevisionFromMismatch(error?.message) : null;
+            const expected = typeof payload.expectedRevision === 'number' ? payload.expectedRevision : null;
+            if (!documentWrite || current === null || !shouldRetryStaleWrite({
+              tool: def.name, args: payload, expected, current, lastOwnWriteRevision,
+            })) {
+              throw error;
+            }
+            notes.push(`note: retried at revision ${current} after your stale expectedRevision ${expected}`);
+            log(`${def.name}: retrying a stale text-anchored write at revision ${current} (was ${expected})`);
+            result = await client.call(def.name, { ...payload, expectedRevision: current }, signal);
+          }
+          const revision = revisionFromResult(result);
+          if (revision !== null) {
+            latestRevision = revision;
+            if (documentWrite) lastOwnWriteRevision = revision;
+          }
+          if (documentWrite) successWarnings.set(toolCallId, afterWarnings(result));
           // details 는 세션 JSONL 과 stdout 이벤트마다 다시 직렬화된다. 결과는 content 에
           // 이미 있으므로 복제하지 않는다(이미지 base64 가 두 번 실리는 것을 막는다).
-          return { content: toToolContent(result), details: {} };
+          return { content: withNotes(toToolContent(result), notes), details: {} };
         } catch (e) {
           // pi 는 throw 한 에러만 isError 로 표시한다 — 코드가 앞에 붙은 한 줄로 던진다.
-          throw new Error(formatErrorText(e));
+          throw new Error([formatErrorText(e), ...notes].join('\n'));
         }
       },
     });

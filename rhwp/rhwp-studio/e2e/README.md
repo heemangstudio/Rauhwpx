@@ -37,10 +37,26 @@ because each one costs another model request.
 - `--followup="…"` sends a second message in the same chat and reports it separately.
 - `--agent=codex` drives Codex through the same path. It reports turn time, tool
   calls and failed calls only.
-- `--transcripts=<dir>` keeps the Claude session files, with tool arguments and
-  results, for reading what a failed call sent.
+- `--agent=pi --model=<openrouter id>` drives Pi. The bench seeds a temporary Pi
+  root that links the installed Pi (`~/Library/Application Support/rhwp/pi/prefix`,
+  or `RHWP_BENCH_PI_SOURCE=<pi root>`) and stores the OpenRouter key from
+  `OPENROUTER_API_KEY` or `~/.env`. Per-request tokens, cost, stop reasons and
+  content kinds come from the Pi session JSONL.
+- `--transcripts=<dir>` keeps the Claude or Pi session files, with tool arguments
+  and results, for reading what a failed call sent.
 
-Both start the hub with `RHWP_TOOL_TRACE=1`. The hub then writes one JSONL row
+## Agent task suite
+
+`npm run e2e:agent-live-suite -- --agent=pi --model=deepseek/deepseek-v4.1-flash --effort=medium`
+runs the editing tasks in `agent-live-suite.mjs`/`agent-live-tasks.mjs` (typo
+fixing against injected typos, subheading format, placed insertion, table row,
+replace-all, a read-only question, a staged 에이전트-mode edit, a real numbered
+list). Each run opens a fresh sample in a fresh chat and scores the resulting
+document from 0 to 1. `--tasks=a,b`, `--runs=N`, `--out=<json>` and
+`--transcripts=<dir>` are optional. `node e2e/agent-live-compare.mjs a.json b.json`
+prints the results side by side.
+
+The live benches start the hub with `RHWP_TOOL_TRACE=1`. The hub then writes one JSONL row
 per tool call (`RHWP_TOOL_TRACE_FILE`, default `<work dir>/tool-trace.jsonl`),
 and `mcp-stdio` and Studio add their own timestamps. Without the variable no
 trace fields are sent.

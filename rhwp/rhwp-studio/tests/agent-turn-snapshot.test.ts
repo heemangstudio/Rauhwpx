@@ -284,7 +284,7 @@ function bridgeFixture(doc = fakeDocument(), overrides: Record<string, unknown> 
     messageReceipts: new Map(), awaitingAcceptanceId: null,
     turnRunning: false, turnHadError: false, pendingTurnOpen: false, userEditedSincePlanningNotify: false,
     activeProviderTurnId: null, interruptedProviderTurnId: null,
-    activeToolRequests: 0, activeToolRequestControllers: new Map(),
+    activeToolRequests: 0, activeToolRequestControllers: new Map(), inFlightWrites: new Set(), versionCommitInFlight: null,
     pendingUserQuestion: null, pendingQuestionCancellation: null,
     pendingChatPermissionRequest: null, pendingPermissionCancellation: null, chatPermissionGrants: [], planExecutionTurn: null,
     pendingInterrupt: false,
