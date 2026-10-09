@@ -36,16 +36,16 @@ All completed combined scenarios passed exact final text and first-page pixel ch
 Run from the repository root. The script starts and stops its own Vite server on port 7784 and always launches fresh headless Chrome. Install Studio dependencies and provide a built `rhwp/pkg` first. Set `CHROME_PATH` when Chrome is not in its standard location. When comparing worktrees, copy `rhwp/pkg` into each checkout because Vite's filesystem policy can reject WASM reached through external symlinks.
 
 ```sh
-node rhwp/rhwp-studio/e2e/preview-frame-bench.mjs --label=current
+npm --prefix rhwp/rhwp-studio run bench:preview-frame -- --label=current
 
 BENCH_SAMPLES=biz_plan.hwp BENCH_MODES=typewriter BENCH_BURSTS=10 BENCH_BURST_SIZE=10 \
-  node rhwp/rhwp-studio/e2e/preview-frame-bench.mjs --label=typewriter
+  npm --prefix rhwp/rhwp-studio run bench:preview-frame -- --label=typewriter
 
 BENCH_SAMPLES=biz_plan.hwp BENCH_MODES=multi-local BENCH_BURSTS=1 BENCH_BURST_SIZE=1 \
-  node rhwp/rhwp-studio/e2e/preview-frame-bench.mjs --label=multi-local
+  npm --prefix rhwp/rhwp-studio run bench:preview-frame -- --label=multi-local
 
 BENCH_SAMPLES=kps-ai.hwp BENCH_MODES=engine-batch \
-  node rhwp/rhwp-studio/e2e/preview-frame-bench.mjs --label=engine-batch
+  npm --prefix rhwp/rhwp-studio run bench:preview-frame -- --label=engine-batch
 ```
 
 Set `BENCH_STUDIO_ROOT=/absolute/checkout/rhwp/rhwp-studio` to serve another revision with the same script. Results and screenshots are written under `rhwp/rhwp-studio/output/preview-frame-bench/<label>/`. Do not run competing browser benchmarks concurrently. `activeFps` counts animation callbacks during dispatch; `fps` summarizes intervals through the settling period. Long tasks use the browser PerformanceObserver API.
