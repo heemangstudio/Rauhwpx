@@ -22,7 +22,19 @@ class FakeWorker {
   terminated = false;
   request: MergeWorkerRequest | null = null;
 
-  postMessage(request: MergeWorkerRequest): void { this.request = request; }
+  readonly reportsReady: boolean;
+
+  constructor(reportsReady = true) { this.reportsReady = reportsReady; }
+
+  postMessage(request: MergeWorkerRequest): void {
+    this.request = request;
+    if (this.reportsReady) {
+      queueMicrotask(() => this.emitReady(request));
+    }
+  }
+  emitReady(request: MergeWorkerRequest): void {
+    this.emit({ id: request.id, type: 'progress', operation: request.operation, phase: 'ready' });
+  }
   addEventListener(type: 'message', listener: (event: MessageEvent<MergeWorkerResponse>) => void): void;
   addEventListener(type: 'error', listener: (event: ErrorEvent) => void): void;
   addEventListener(type: 'messageerror', listener: (event: MessageEvent<unknown>) => void): void;
@@ -318,6 +330,28 @@ test('requests without a conservative fallback hard-timeout and restart the work
   );
   assert.equal(workers[0].terminated, true);
   await assertFreshWorkerServesNextRequest(client, workers);
+  client.dispose();
+});
+
+test('a cold worker budget starts when it reports ready, within a bounded start-up allowance', async () => {
+  const workers: FakeWorker[] = [];
+  const client = new MergeWorkerClient(() => {
+    const worker = new FakeWorker(false);
+    workers.push(worker);
+    return worker;
+  }, 30_000, 200);
+  let settled = false;
+  const pending = client.buildDocumentManifest(new Uint8Array([1]), { softBudgetMs: 20 });
+  pending.catch(() => undefined).finally(() => { settled = true; });
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(settled, false, 'engine start-up does not count against the request budget');
+  workers[0].emitReady(workers[0].request!);
+  await assert.rejects(pending, /exceeded its time budget/);
+  assert.equal(workers[0].terminated, true);
+
+  const stuck = client.buildDocumentManifest(new Uint8Array([2]), { softBudgetMs: 20 });
+  await assert.rejects(stuck, /exceeded its time budget/);
+  assert.equal(workers[1].terminated, true, 'a worker that never becomes ready is still bounded');
   client.dispose();
 });
 

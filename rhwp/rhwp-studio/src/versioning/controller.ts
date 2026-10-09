@@ -1,7 +1,7 @@
 import type { AgentBridge } from '../agent/bridge.ts';
 import type { CheckpointTitleSummary } from '../agent/types.ts';
 import { CompareSessionStore } from '../compare/session.ts';
-import { buildSnapshotFromWasm, compareDocuments, compareSnapshots } from '../compare/diff-engine.ts';
+import { buildSnapshotFromWasmInSlices, compareDocuments, compareSnapshots } from '../compare/diff-engine.ts';
 import type { DiffItem } from '../compare/types.ts';
 import type { EventBus } from '../core/event-bus.ts';
 import type { DocumentDirtyState } from '../core/document-dirty-state.ts';
@@ -353,6 +353,7 @@ export class DocumentVersionController implements VersionManagerController {
   } | null = null;
   #operation = Promise.resolve();
   #mergeResolverActive = false;
+  #disposed = false;
   #mergeLockedHandler: InputHandler | null = null;
   #mergePreviousUserEditingLocked = false;
   readonly #pendingMergeFinalizers = new WeakMap<
@@ -553,16 +554,17 @@ export class DocumentVersionController implements VersionManagerController {
       if (captured) return captured;
     }
     // 저장 뒤에 편집했다면 저장된 바이트를 따로 열어 그 내용의 비교 스냅샷을 만든다.
+    // 사본은 아무도 고치지 않으므로 편집과 상관없이 조각으로 끝까지 만든다.
     const scratch = new WasmBridge();
     try {
       await scratch.initialize();
       scratch.loadDocument(saved.bytes, this.#wasm.fileName);
-      return {
-        ...saved,
-        compareSnapshot: buildSnapshotFromWasm(
-          scratch, this.#wasm.fileName, { ...VERSION_COMPARE_OPTIONS, refreshLayout: false },
-        ),
-      };
+      const compareSnapshot = await buildSnapshotFromWasmInSlices(
+        scratch, this.#wasm.fileName, { ...VERSION_COMPARE_OPTIONS, refreshLayout: false },
+        () => !this.#disposed && this.#getDocumentId() === id,
+      );
+      if (!compareSnapshot) throw new VersionError('STALE_WORKSPACE', 'The document changed before version history was enabled');
+      return { ...saved, compareSnapshot };
     } finally {
       scratch.releaseDocument();
     }
@@ -850,7 +852,8 @@ export class DocumentVersionController implements VersionManagerController {
     const requestedDocumentId = this.#getDocumentId();
     const requestedRevision = this.#editorRevision;
     return this.#enqueue(async () => {
-      if (this.#getDocumentId() !== requestedDocumentId) {
+      // 기다리는 동안 편집됐다면 뒤따르는 갱신이 있으므로 문서를 다시 내보내지 않는다.
+      if (this.#getDocumentId() !== requestedDocumentId || this.#editorRevision !== requestedRevision) {
         throw new VersionError('STALE_WORKSPACE', 'The document changed before comparison started');
       }
       // 문서 교체 직후 refresh 가 새 repository 를 채우기 전엔 이전 문서의 repository 가
@@ -1645,6 +1648,7 @@ export class DocumentVersionController implements VersionManagerController {
   }
 
   dispose(): void {
+    this.#disposed = true;
     if (this.#persistTimer) clearTimeout(this.#persistTimer);
     this.#persistTimer = null;
     for (const unsubscribe of this.#unsubscribers) unsubscribe();
