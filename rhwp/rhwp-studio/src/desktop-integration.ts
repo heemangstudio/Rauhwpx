@@ -101,6 +101,10 @@ export interface RhwpDesktopApi {
     extension: 'hwp' | 'hwpx' | 'hml' | 'rhwpx';
   }) => Promise<NativeFileHandleDescriptor | { owned: true } | null>;
   releaseNativeFile?: (handleId: string) => Promise<void>;
+  renameNativeFile?: (
+    handleId: string,
+    nextName: string,
+  ) => Promise<{ ok: true; descriptor: NativeFileHandleDescriptor } | { ok: false; reason: string }>;
   readNativeFile?: (handleId: string) => Promise<NativeFileReadResult>;
   getNativeFileSourcePath?: (handleId: string) => Promise<string | null>;
   validateNativeSave?: (
@@ -786,6 +790,40 @@ export function isLegacyPortableHistoryFolderHandle(
   handle: FileSystemFileHandleLike | null | undefined,
 ): boolean {
   return handle ? nativeHandleMetadata.get(handle)?.legacyPortableHistoryFolder === true : false;
+}
+
+/** 파일 이름 바꾸기를 데스크톱이 거절했다. reason 은 exists·open·saving·invalid·extension. */
+export class NativeRenameRefusedError extends Error {
+  constructor(readonly reason: string) {
+    super(`Native rename refused: ${reason}`);
+    this.name = 'NativeRenameRefusedError';
+  }
+}
+
+/** 이 핸들이 데스크톱에서 이름을 바꿀 수 있는 파일인지 */
+export function canRenameNativeFile(handle: FileSystemFileHandleLike | null | undefined): boolean {
+  const metadata = handle ? nativeHandleMetadata.get(handle) : null;
+  return Boolean(metadata?.api.renameNativeFile);
+}
+
+/**
+ * 열린 네이티브 문서 파일의 이름을 같은 폴더 안에서 바꾼다. 같은 파일을 가리키는 새 이름의
+ * 핸들을 돌려준다 (문서 점유와 정체성은 그대로 이어진다).
+ */
+export async function renameNativeDocumentFile(
+  handle: FileSystemFileHandleLike,
+  nextName: string,
+): Promise<FileSystemFileHandleLike> {
+  const metadata = nativeHandleMetadata.get(handle);
+  if (!metadata?.api.renameNativeFile) throw new Error('이 파일은 이름을 바꿀 수 없습니다.');
+  const result = await metadata.api.renameNativeFile(metadata.handleId, nextName);
+  // 이름이 이미 있는 등 고칠 수 있는 거절은 이유 코드로 온다 (exists·open·saving·invalid·extension).
+  if (!result.ok) throw new NativeRenameRefusedError(result.reason);
+  const renamed = createNativeFileHandle(result.descriptor, metadata.api);
+  renamed.adoptSaveTarget?.();
+  const renamedMetadata = nativeHandleMetadata.get(renamed);
+  if (renamedMetadata && metadata.identity) renamedMetadata.identity = { ...metadata.identity };
+  return renamed;
 }
 
 export function bindNativeFileHandleIdentity(

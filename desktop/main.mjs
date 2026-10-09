@@ -1134,6 +1134,27 @@ ipcMain.handle('desktop:pick-native-save-file', async (event, options = {}) => {
   }
   return { ...result.descriptor, saveTargetCreated: result.created };
 });
+ipcMain.handle('desktop:rename-native-file', async (event, handleId, nextName) => {
+  const session = sessionForEvent(event);
+  if (typeof handleId !== 'string' || !handleId) throw new Error('handleId required');
+  let renamed;
+  try {
+    renamed = await nativeFiles.renameHandle(session.sessionId, handleId, nextName);
+  } catch (error) {
+    // 이미 있는 이름처럼 사용자가 고칠 수 있는 거절은 결과로 돌려준다 (오류 로그가 아니다).
+    if (error?.renameRefusal) return { ok: false, reason: error.renameRefusal };
+    throw error;
+  }
+  // 문서 점유는 경로의 소유 키로 잡혀 있다. 같은 키 형식으로 옮겨야 다음 저장이 통과한다.
+  documentLeases.renamePath(session.sessionId, renamed.previousOwnershipPath, renamed.ownershipPath);
+  await persistNativeBookmarks();
+  try {
+    app.addRecentDocument(renamed.canonicalPath);
+  } catch (error) {
+    console.warn('[rauhwpx] recent document update failed:', error);
+  }
+  return { ok: true, descriptor: renamed.descriptor };
+});
 ipcMain.handle('desktop:release-native-file', (event, handleId) => {
   const session = sessionForEvent(event);
   nativeFiles.releaseHandle(session.sessionId, handleId);

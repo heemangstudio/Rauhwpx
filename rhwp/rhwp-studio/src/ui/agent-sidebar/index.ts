@@ -9,6 +9,7 @@
 import './motion.css';
 import './agent-sidebar.css';
 import './plan-presentation.css';
+import '../../styles/inline-rename.css';
 import { confirmSheet, dismissOpenSheets } from './sheet.ts';
 import { createChangesDrawer, createJumpButton, renderPendingOpDiff, renderPendingOpsDiff, summarizeDiffItems } from './changes-drawer.ts';
 import { TurnChanges, invalidatedMessage } from './turn-changes.ts';
@@ -155,6 +156,7 @@ import {
 } from './settings-contract.ts';
 import { createWritingStyleCalibration } from './writing-style-calibration.ts';
 import { maybeStartInitialSetup, type InitialSetupUi } from '../initial-setup/initial-setup.ts';
+import { beginInlineRename } from '../inline-rename.ts';
 import { loadInitialSetup, saveInitialSetup } from '../initial-setup/state.ts';
 import { summarizePendingDiffs } from './pending-diff-summary.ts';
 import { createReferenceLibrary } from './reference-library.ts';
@@ -251,6 +253,8 @@ export interface AgentSidebarDeps {
     get(): { reason: string } | null;
     subscribe(listener: () => void): () => void;
   };
+  /** 문서 이름을 바꾼다. 바뀐 파일 이름, 바꾸지 못했으면 null (이유는 편집기가 알린다). */
+  renameDocument?: (name: string) => Promise<string | null>;
 }
 
 export interface AgentSidebarHandle {
@@ -1616,6 +1620,35 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const selectionContext = el('span', 'ag-selection-context', '선택 없음');
   documentContext.append(documentName, selectionContext);
 
+  function isRenaming(target: HTMLElement): boolean {
+    return target.querySelector('.inline-rename-input') !== null;
+  }
+
+  /** 문서 이름을 두 번 눌러 그 자리에서 바꾼다. 파일이 있으면 디스크의 파일 이름도 바뀐다. */
+  function bindDocumentRename(target: HTMLElement): void {
+    const rename = deps.renameDocument;
+    if (!rename) return;
+    target.classList.add('ag-renamable');
+    target.addEventListener('dblclick', (event) => {
+      const name = getDocumentContext?.()?.documentName;
+      if (!name) return;
+      event.preventDefault();
+      beginInlineRename(target, {
+        value: name,
+        label: '문서 이름',
+        selectBaseName: true,
+        maxLength: 255,
+        commit: async (next) => {
+          const renamed = await rename(next);
+          // 줄임 표시와 다른 자리의 이름은 입력 칸이 걷힌 뒤 다시 그린다.
+          window.setTimeout(updateDocumentContext, 0);
+          return renamed;
+        },
+      });
+    });
+  }
+  bindDocumentRename(documentName);
+
   const headerActions = el('div', 'ag-header-actions');
   threadsBtn.classList.add('ag-header-icon-btn');
 
@@ -1696,9 +1729,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function updateDocumentContext(): void {
     const context = getDocumentContext?.();
     const currentDocumentName = context?.documentName || '문서 없음';
-    setMiddleTruncatedText(documentName, currentDocumentName, context?.documentName || '');
+    // 이름을 고치는 중인 칸은 다시 그리지 않는다 (입력 중인 글자가 사라진다).
+    if (!isRenaming(documentName)) {
+      setMiddleTruncatedText(documentName, currentDocumentName, context?.documentName || '');
+    }
     selectionContext.textContent = context?.selectionLabel || '선택 없음';
-    workspaceDocumentName.textContent = currentDocumentName;
+    if (!isRenaming(workspaceDocumentName)) workspaceDocumentName.textContent = currentDocumentName;
     workspaceDocumentName.title = context?.documentName || '';
     focusGreeting.setDocumentName(context?.documentName || null);
     updateEnvironmentFilename(currentDocumentName);
@@ -1916,6 +1952,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   workspaceSettingsBack.setAttribute('aria-label', '대화로 돌아가기');
   workspaceSettingsBack.title = '대화로 돌아가기';
   workspaceSettingsBack.appendChild(createIcon('close'));
+  // 레일 머리의 워드마크 — 편집기 도구 모음의 하마 마크와 제품 이름. 누르는 동작 없이
+  // 창 끌기 영역에 남고, 레일이 접히거나 덮개가 되면 레일과 함께 빠진다.
+  const workspaceBrand = el('span', 'ag-workspace-brand');
+  const workspaceBrandMark = el('span', 'ag-rau-icon ag-workspace-brand-mark');
+  workspaceBrandMark.setAttribute('aria-hidden', 'true');
+  const workspaceBrandLockup = el('span', 'ag-workspace-brand-lockup');
+  workspaceBrandLockup.append(workspaceBrandMark, el('span', 'ag-workspace-brand-name', 'Rauhwpx'));
+  workspaceBrand.appendChild(workspaceBrandLockup);
 
   // 제목 줄 — 채팅 이름과 문서 이름을 한 줄에 나란히 둔다. 레일이 열려 있으면
   // 대화 면의 왼쪽 끝에, 접히면 레일 토글 바로 뒤에 선다.
@@ -1925,14 +1969,43 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   workspaceTitleSeparator.setAttribute('aria-hidden', 'true');
   const workspaceDocumentName = el('span', 'ag-workspace-document-name', '문서 없음');
   workspaceDocumentContext.append(workspaceChatTitle, workspaceTitleSeparator, workspaceDocumentName);
-  workspaceLeading.append(workspaceSettingsBack, workspaceThreadsBtn);
+  workspaceLeading.append(workspaceSettingsBack, workspaceThreadsBtn, workspaceBrand);
 
   function updateWorkspaceChatTitle(): void {
+    if (isRenaming(workspaceChatTitle)) return;
     const title = currentThread.title || '새 채팅';
     workspaceChatTitle.textContent = title;
     workspaceChatTitle.title = title;
   }
   updateWorkspaceChatTitle();
+
+  // 집중 화면 제목 줄: 채팅 이름과 문서 이름을 두 번 눌러 그 자리에서 바꾼다.
+  workspaceChatTitle.classList.add('ag-renamable');
+  workspaceChatTitle.addEventListener('dblclick', (event) => {
+    event.preventDefault();
+    beginInlineRename(workspaceChatTitle, {
+      value: currentThread.title || '새 채팅',
+      label: '채팅 이름',
+      maxLength: 48,
+      commit: (next) => {
+        if (draftChat || currentThread.messages.length === 0) {
+          // 초안은 아직 저장되지 않는다. 첫 메시지를 보낼 때 이 이름으로 만들어진다.
+          currentThread.title = next.replace(/\s+/g, ' ').slice(0, 48);
+        } else {
+          const renamed = renameThread(currentThread.id, next);
+          if (!renamed) return null;
+          currentThread.title = renamed.title;
+        }
+        currentThread.titlePinned = true;
+        window.setTimeout(() => {
+          updateWorkspaceChatTitle();
+          if (threadsListVisible()) rebuildThreadsList();
+        }, 0);
+        return currentThread.title;
+      },
+    });
+  });
+  bindDocumentRename(workspaceDocumentName);
 
   // 대화 화면에서는 제목을 비운다 — 대화 위에 '대화'라고 적는 것은 정보가 없다.
   const workspaceTitle = el('div', 'ag-workspace-title');
