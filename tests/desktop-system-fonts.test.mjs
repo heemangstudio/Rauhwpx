@@ -256,8 +256,14 @@ test('indexes roots, caches parses, maps Hancom names and guards reads', async (
   );
 
   const bytes = await service.readFace(korean.id);
+  assert.deepEqual(Buffer.from(bytes), await extractCollectionFace(collection, 1));
   const reparsed = await parseSfntFaces(Buffer.from(bytes));
   assert.deepEqual(reparsed.faces[0].koreanNames, korean.koreanNames);
+  const streamed = await service.openFace(hancomTtf.id);
+  const parts = [];
+  for await (const chunk of streamed.chunks()) parts.push(chunk);
+  assert.equal(streamed.size, noto.length);
+  assert.deepEqual(Buffer.concat(parts), noto);
   await assert.rejects(service.readFace('0123456789abcdef'), /unknown font id/);
   await assert.rejects(service.readFace('../../etc/passwd'), /invalid font id/);
 

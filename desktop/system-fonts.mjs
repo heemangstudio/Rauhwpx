@@ -30,7 +30,7 @@ export { SYSTEM_FONT_INDEX_VERSION, decodeHancomText, decodeNameRecord, parseHan
 const CACHE_FORMAT = 2;
 const CACHE_FILE = 'system-font-index.json';
 const { maxDepth: MAX_DEPTH, maxFiles: MAX_FILES, maxDirs: MAX_DIRS } = FONT_SCAN_LIMITS;
-const PARSE_CONCURRENCY = 24;
+const PARSE_CONCURRENCY = 8;
 const HANCOM_FONT_DIR = /^(fonts|ttf|hft)$/i;
 const HANCOM_APP = /hancom|한컴|hwp/i;
 
@@ -43,7 +43,10 @@ function fileSource(handle, size) {
 }
 
 async function readExactly(handle, offset, length) {
-  const buffer = Buffer.allocUnsafe(length);
+  return readInto(handle, Buffer.allocUnsafe(length), length, offset);
+}
+
+async function readInto(handle, buffer, length, offset) {
   let filled = 0;
   while (filled < length) {
     const { bytesRead } = await handle.read(buffer, filled, length - filled, offset + filled);
@@ -60,6 +63,130 @@ function asBuffer(bytes) {
 /** 컬렉션의 faceIndex 번째 서브폰트를 독립 SFNT 로 재조립한다 (Buffer 로 돌려준다). */
 export async function extractCollectionFace(input, faceIndex, options) {
   return asBuffer(await extractCollectionFaceBytes(input, faceIndex, options));
+}
+
+// ---------------------------------------------------------------------------
+// face 조각 읽기
+// ---------------------------------------------------------------------------
+// 큰 글꼴을 통째로 Buffer 에 올리면 해제한 뒤에도 malloc 이 그만큼을 프로세스에 붙들고 있어
+// (허브에서 문서 세 개에 수백 MiB) 고정 크기 조각으로 읽어 흘려보낸다.
+
+const STREAM_CHUNK = 256 * 1024;
+const TTCF = 0x74746366;
+const SFNT_VERSIONS = new Set([0x00010000, 0x4f54544f /* OTTO */, 0x74727565 /* true */]);
+
+function pad4(length) {
+  return (length + 3) & ~3;
+}
+
+function wordSum(bytes, sum) {
+  for (let i = 0; i < bytes.length; i += 4) sum = (sum + bytes.readUInt32BE(i)) >>> 0;
+  return sum;
+}
+
+/** 파일의 [offset, offset + length) 를 조각으로 읽는다. padded 까지 남는 끝은 0 으로 채운다. */
+async function* readChunks(handle, offset, length, padded = length) {
+  for (let at = 0; at < padded; at += STREAM_CHUNK) {
+    const size = Math.min(STREAM_CHUNK, padded - at);
+    const real = Math.max(0, Math.min(size, length - at));
+    const chunk = await readInto(handle, Buffer.allocUnsafe(size), real, offset + at);
+    chunk.fill(0, real);
+    yield chunk;
+  }
+}
+
+/**
+ * 컬렉션 face 를 단독 SFNT 로 내보낼 머리말을 만든다. 공용 코어의 extractCollectionFace 와
+ * 같은 바이트(DSIG 제외, 태그 순, 4바이트 정렬, 다시 계산한 체크섬)가 나오도록 테이블을
+ * 조각으로 한 번 훑어 체크섬만 모은다.
+ */
+async function planCollectionFace(file, faceIndex) {
+  const handle = await fs.open(file.path, 'r');
+  try {
+    const source = fileSource(handle, file.size);
+    const top = await source.read(0, 12);
+    if (top.readUInt32BE(0) !== TTCF) throw new Error('not a font collection');
+    const numFonts = top.readUInt32BE(8);
+    if (numFonts === 0 || numFonts > 1024) throw new Error(`implausible collection size ${numFonts}`);
+    const offsets = await source.read(12, numFonts * 4);
+    if (!Number.isInteger(faceIndex) || faceIndex < 0 || faceIndex >= numFonts) {
+      throw new Error(`face index ${faceIndex} out of range (0..${numFonts - 1})`);
+    }
+    const faceOffset = offsets.readUInt32BE(faceIndex * 4);
+    const directory = await source.read(faceOffset, 12);
+    const sfntVersion = directory.readUInt32BE(0);
+    if (!SFNT_VERSIONS.has(sfntVersion)) {
+      throw new Error(`unsupported sfnt version 0x${sfntVersion.toString(16)} at ${faceOffset}`);
+    }
+    const declared = directory.readUInt16BE(4);
+    if (declared === 0 || declared > 512) throw new Error(`implausible table count ${declared}`);
+    const records = await source.read(faceOffset + 12, declared * 16);
+    const byTag = new Map();
+    for (let i = 0; i < declared; i += 1) {
+      const base = i * 16;
+      const tag = records.toString('latin1', base, base + 4);
+      const offset = records.readUInt32BE(base + 8);
+      const length = records.readUInt32BE(base + 12);
+      if (offset + length > file.size) throw new Error(`table ${tag} exceeds file size`);
+      byTag.set(tag, { tag, offset, length });
+    }
+    const tables = [...byTag.values()]
+      .filter((table) => table.tag !== 'DSIG')
+      .sort((a, b) => (a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0));
+    const numTables = tables.length;
+    const headerLength = 12 + numTables * 16;
+    const size = headerLength + tables.reduce((sum, table) => sum + pad4(table.length), 0);
+    if (size > MAX_FACE_BYTES) throw new Error(`too-large: extracted face is ${size} bytes (cap ${MAX_FACE_BYTES})`);
+    const header = Buffer.alloc(headerLength);
+    let entrySelector = 0;
+    while (2 ** (entrySelector + 1) <= numTables) entrySelector += 1;
+    const searchRange = 2 ** entrySelector * 16;
+    header.writeUInt32BE(sfntVersion, 0);
+    header.writeUInt16BE(numTables, 4);
+    header.writeUInt16BE(searchRange, 6);
+    header.writeUInt16BE(entrySelector, 8);
+    header.writeUInt16BE(numTables * 16 - searchRange, 10);
+    const scratch = Buffer.allocUnsafe(STREAM_CHUNK);
+    let cursor = headerLength;
+    let total = 0;
+    for (let i = 0; i < numTables; i += 1) {
+      const table = tables[i];
+      if (table.tag === 'head' && table.length < 12) throw new Error('head table is truncated');
+      const padded = pad4(table.length);
+      let sum = 0;
+      for (let at = 0; at < padded; at += STREAM_CHUNK) {
+        const length = Math.min(STREAM_CHUNK, padded - at);
+        const real = Math.max(0, Math.min(length, table.length - at));
+        await readInto(handle, scratch, real, table.offset + at);
+        scratch.fill(0, real, length);
+        if (at === 0 && table.tag === 'head') scratch.writeUInt32BE(0, 8);
+        sum = wordSum(scratch.subarray(0, length), sum);
+      }
+      const record = 12 + i * 16;
+      header.write(table.tag, record, 4, 'latin1');
+      header.writeUInt32BE(sum, record + 4);
+      header.writeUInt32BE(cursor, record + 8);
+      header.writeUInt32BE(table.length, record + 12);
+      total = (total + sum) >>> 0;
+      cursor += padded;
+    }
+    const checksumAdjustment = (0xb1b0afba - wordSum(header, total)) >>> 0;
+    return { size, header, tables, checksumAdjustment };
+  } finally {
+    await handle.close();
+  }
+}
+
+async function* collectionFaceChunks(handle, plan) {
+  yield plan.header;
+  for (const table of plan.tables) {
+    let first = true;
+    for await (const chunk of readChunks(handle, table.offset, table.length, pad4(table.length))) {
+      if (first && table.tag === 'head') chunk.writeUInt32BE(plan.checksumAdjustment, 8);
+      first = false;
+      yield chunk;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -509,7 +636,12 @@ export function createSystemFontService(options = {}) {
     return pending;
   }
 
-  async function readFace(id) {
+  /**
+   * face 를 통째로 메모리에 올리지 않고 조각으로 내보낼 준비를 한다. 크기와 오류는 여기서
+   * 정해지고, chunks() 는 파일을 다시 열어 같은 바이트를 순서대로 돌려준다.
+   * @returns {Promise<{ size: number, chunks(): AsyncGenerator<Buffer> }>}
+   */
+  async function openFace(id) {
     const started = performance.now();
     if (typeof id !== 'string' || !/^[0-9a-f]{16}$/.test(id)) throw new Error('invalid font id');
     if (!index) await list();
@@ -525,30 +657,41 @@ export function createSystemFontService(options = {}) {
     if (info.size !== file.size || info.mtimeMs !== file.mtimeMs) {
       throw staleError(id, 'font file changed since the index was built');
     }
-    let bytes;
-    const handle = await fs.open(file.path, 'r');
-    try {
-      if (face.format === 'ttc' || face.format === 'otc') {
-        bytes = await extractCollectionFaceBytes(fileSource(handle, file.size), face.faceIndex);
-      } else {
-        if (file.size > MAX_FACE_BYTES) {
-          throw new Error(`too-large: ${file.size} bytes (cap ${MAX_FACE_BYTES})`);
+    const collection = face.format === 'ttc' || face.format === 'otc';
+    if (!collection && file.size > MAX_FACE_BYTES) {
+      throw new Error(`too-large: ${file.size} bytes (cap ${MAX_FACE_BYTES})`);
+    }
+    const plan = collection ? await planCollectionFace(file, face.faceIndex) : null;
+    async function* chunks() {
+      const handle = await fs.open(file.path, 'r');
+      try {
+        const now = await handle.stat();
+        if (now.size !== file.size || now.mtimeMs !== file.mtimeMs) {
+          throw staleError(id, 'font file changed since the index was built');
         }
-        bytes = await readExactly(handle, 0, file.size);
+        yield* plan ? collectionFaceChunks(handle, plan) : readChunks(handle, 0, file.size);
+        log(`read ${id} ${face.families[0] ?? '?'} ${file.path}#${face.faceIndex} `
+          + `${plan ? plan.size : file.size} bytes ${Math.round(performance.now() - started)}ms`);
+      } finally {
+        await handle.close();
       }
-    } finally {
-      await handle.close();
     }
-    log(`read ${id} ${face.families[0] ?? '?'} ${file.path}#${face.faceIndex} `
-      + `${bytes.length} bytes ${Math.round(performance.now() - started)}ms`);
-    // IPC 직렬화는 뷰가 아니라 ArrayBuffer 전체를 복사하므로 공유 풀을 쓰는 버퍼는 떼어 낸다.
-    if (bytes.byteOffset !== 0 || bytes.buffer.byteLength !== bytes.byteLength) {
-      return new Uint8Array(bytes);
-    }
-    return new Uint8Array(bytes.buffer, 0, bytes.byteLength);
+    return { size: plan ? plan.size : file.size, chunks };
   }
 
-  return { list, readFace };
+  async function readFace(id) {
+    const { size, chunks } = await openFace(id);
+    // IPC 직렬화는 뷰가 아니라 ArrayBuffer 전체를 복사하므로 공유 풀이 아닌 단독 버퍼에 모은다.
+    const bytes = new Uint8Array(size);
+    let cursor = 0;
+    for await (const chunk of chunks()) {
+      bytes.set(chunk, cursor);
+      cursor += chunk.length;
+    }
+    return bytes;
+  }
+
+  return { list, readFace, openFace };
 }
 
 function staleError(id, detail) {

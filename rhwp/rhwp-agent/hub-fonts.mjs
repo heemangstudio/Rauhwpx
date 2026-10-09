@@ -8,6 +8,8 @@
  * 참고자료와 같은 세션 capability(REFERENCE)와 로컬 Studio origin만 받는다. 색인에 있는
  * face id만 읽으며 임의 경로는 받지 않는다.
  */
+import { pipeline } from 'node:stream/promises';
+
 import { isAllowedStudioOrigin } from './reference-http.mjs';
 
 const FACE_ID = /^[0-9a-f]{16}$/;
@@ -32,7 +34,10 @@ function sendJson(res, status, body, origin) {
 /**
  * @param {{
  *   authenticate: (req: import('node:http').IncomingMessage, url: URL) => unknown,
- *   loadService?: () => Promise<{ list(options?: { refresh?: boolean }): Promise<unknown>, readFace(id: string): Promise<Uint8Array> }>,
+ *   loadService?: () => Promise<{
+ *     list(options?: { refresh?: boolean }): Promise<unknown>,
+ *     openFace(id: string): Promise<{ size: number, chunks(): AsyncIterable<Uint8Array> }>,
+ *   }>,
  *   log?: (line: string) => void,
  * }} options
  */
@@ -99,9 +104,9 @@ export function createFontHttpHandler({ authenticate, loadService = loadDesktopF
       sendJson(res, 400, { status: 'invalid-id' }, origin);
       return true;
     }
-    let bytes;
+    let face;
     try {
-      bytes = await fonts.readFace(id);
+      face = await fonts.openFace(id);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       // stale은 Studio가 색인을 다시 받도록 409로 구분한다.
@@ -111,12 +116,19 @@ export function createFontHttpHandler({ authenticate, loadService = loadDesktopF
     }
     res.writeHead(200, {
       'content-type': 'application/octet-stream',
-      'content-length': bytes.byteLength,
+      'content-length': face.size,
       'cache-control': 'no-store, private',
       'x-content-type-options': 'nosniff',
       ...corsHeaders(origin),
     });
-    res.end(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+    // 큰 글꼴을 통째로 들지 않도록 조각으로 흘려보낸다. 도중에 실패하면 응답을 끊는다.
+    try {
+      await pipeline(face.chunks(), res);
+    } catch (error) {
+      if (error?.code !== 'ERR_STREAM_PREMATURE_CLOSE') {
+        log(`font read failed ${id}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     return true;
   };
 }
