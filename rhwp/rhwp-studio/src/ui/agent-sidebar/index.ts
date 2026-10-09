@@ -4791,10 +4791,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       compactRailHoverOpen = false;
       clearCompactRailHoverOpen();
       clearCompactRailHoverClose();
-      if (environmentPanelOpen !== desktopEnvironmentPanelOpen) {
-        environmentPanelOpen = desktopEnvironmentPanelOpen;
-        applyEnvironmentPanelState();
-      }
     }
     applyThreadsRailState();
     // 전체 화면은 도구 모음·상태바까지 덮는다 — 인라인 배치를 걷어낸다.
