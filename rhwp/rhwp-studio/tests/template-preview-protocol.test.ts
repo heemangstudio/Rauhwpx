@@ -62,6 +62,20 @@ test('read-only preview input handler blocks operations, snapshots, typing, keys
   assert.ok(textareaResets >= 3, 'typed text must not stay queued for a later edit');
 });
 
+test('entering read-only mode drops focus, pending formatting and the text cursor', () => {
+  const calls: string[] = [];
+  const handler: any = Object.create(inputHandlerProto);
+  Object.assign(handler, {
+    active: true,
+    textarea: { blur: () => calls.push('blur') },
+    container: { style: { cursor: 'text' } },
+    clearPendingCharFormat: () => calls.push('clear-format'),
+    eventBus: { emit: () => {} },
+  });
+  handler.setReadOnly(true);
+  assert.deepEqual(calls, ['blur', 'clear-format']);
+  assert.equal(handler.container.style.cursor, '');
+});
 
 // 남은 소스 가드: 템플릿 블록 전송은 실제 템플릿 문서·네이티브 importer 를 거쳐야 해서
 // 단위 테스트로 재현하기 어렵다. URL 플래그 배선은 main-entry-guards.test.ts 가 지킨다.
@@ -78,7 +92,7 @@ test('template block insertion transfers exact source bytes through the native i
 
 test('read-only dispatcher permits view/copy but rejects document and file mutations', () => {
   const executed: string[] = [];
-  const definitions = new Map(['edit:copy', 'view:zoom-in', 'insert:table', 'file:save'].map((id) => [
+  const definitions = new Map(['edit:copy', 'view:zoom-in', 'insert:table', 'format:bold', 'file:save'].map((id) => [
     id,
     { execute: () => executed.push(id) },
   ]));
@@ -90,6 +104,7 @@ test('read-only dispatcher permits view/copy but rejects document and file mutat
   assert.equal(dispatcherInstance.dispatch('edit:copy'), true);
   assert.equal(dispatcherInstance.dispatch('view:zoom-in'), true);
   assert.equal(dispatcherInstance.dispatch('insert:table'), false);
+  assert.equal(dispatcherInstance.dispatch('format:bold'), false);
   assert.equal(dispatcherInstance.dispatch('file:save'), false);
   assert.deepEqual(executed, ['edit:copy', 'view:zoom-in']);
 });
