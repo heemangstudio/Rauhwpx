@@ -156,7 +156,7 @@
   position: relative;
   min-width: 0;
   min-height: 30px;
-  padding: 0 12px;
+  padding: 0 9px;
   border: 0;
   border-radius: var(--ag-r-row);
   color: var(--ag-text-secondary);
@@ -906,4 +906,12 @@
   .ag-versions-subtitle {
     max-width: 140px;
   }
+}
+
+.ag-versions-worktree-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.ag-versions-worktree-row .ag-versions-ref-actions {
+  justify-content: flex-start;
 }

@@ -9,6 +9,7 @@ import puppeteer from 'puppeteer-core';
 import { checkSetupTerminal } from './setup-terminal.check.mjs';
 import { checkFleetPreview } from './fleet.check.mjs';
 import { checkChangesPreview } from './changes.check.mjs';
+import { checkWorktrees } from './worktrees.check.mjs';
 import { checkPlanPreview } from './plan.check.mjs';
 import { checkSessionsPreview } from './sessions.check.mjs';
 import { checkDraftChat, checkNewChatWhileRunning, checkChatModeLock } from './parallel-chats.check.mjs';
@@ -750,6 +751,7 @@ try {
     async () => {
       await open('page=versions');
       await page.waitForSelector('.ag-root.ag-versions-open');
+      await page.click('[data-tab="history"]');
       await screenshot('versions');
       await page.click('[aria-label="새 커밋 만들기"]');
       await page.waitForSelector('.ag-version-prompt-input', { visible: true });
@@ -781,8 +783,10 @@ try {
       });
     },
   );
+  await step('Worktree create, open, close, removal cancellation and merge', () => checkWorktrees({ page, open, screenshot }));
   await step('Branch commits keep their graph lane and move the branch label', async () => {
     await open('page=versions&history=branches&theme=dark&width=480');
+    await page.click('[data-tab="history"]');
     await screenshot('versions-dark');
     assert.equal(await page.$$eval('.ag-version-meta, .ag-version-time', (items) => items.length), 0);
     const initialRowHeight = await page.$eval('.ag-version-row', (row) => row.getBoundingClientRect().height);
@@ -791,7 +795,9 @@ try {
     assert.match(await page.$eval('.ag-version-date-tooltip', (tip) => tip.textContent), /월/);
     assert.equal(await page.$eval('.ag-version-row', (row) => row.getBoundingClientRect().height), initialRowHeight);
     await screenshot('versions-date-hover');
+    await page.keyboard.press('Tab');
     await page.focus('.ag-version-row');
+    await page.waitForSelector('.ag-version-date-tooltip.ag-visible', { visible: true });
     await page.keyboard.press('Escape');
     await page.waitForFunction(() => !document.querySelector('.ag-version-date-tooltip').classList.contains('ag-visible'));
     assert(await page.$eval('.ag-root', (root) => root.classList.contains('ag-versions-open')));
@@ -818,6 +824,7 @@ try {
     assert.deepEqual(result, { branchAtHead: true, parent: 'e8f21a0', separateLane: true, label: true, current: true, selected: 'true' });
     await screenshot('versions-branch-commit');
     await open('page=versions&history=branches&width=360');
+    await page.click('[data-tab="history"]');
     await screenshot('versions-light-narrow');
     assert(await page.$eval('.ag-versions-page', (el) => el.scrollWidth <= el.clientWidth), 'Narrow panel overflows');
     await open('width=480');

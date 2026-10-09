@@ -21,6 +21,7 @@ import { HostSaveTracker } from '@/recovery/host-save';
 import type { AgentBridge } from '@/agent/bridge';
 import type { AgentEditingLease } from '@/agent/types';
 import type { DocumentVersionController } from '@/versioning/controller';
+import type { VersionWorktree } from '@/versioning/types';
 import type { AgentHubSessionLease, RendererSessionContext } from '@/desktop-integration';
 import type { EditorEditMode } from '@/command/types';
 import type { initAgentSidebar } from '@/ui/agent-sidebar/index';
@@ -62,6 +63,9 @@ export interface DocumentSession {
   readonly editorHost: HeadlessEditorHost;
   viewState: CanvasViewState | null;
   documentId: string | null;
+  /** 버전 저장소의 영속 작업 공간. 기본 문서도 브랜치를 하나 점유한다. */
+  worktree: VersionWorktree | null;
+  worktreeWritable: boolean;
   editMode: EditorEditMode;
   /** 이 문서의 채팅들. 화면에는 activeChat 의 사이드바만 보인다. */
   readonly chats: ChatSession[];
@@ -126,6 +130,8 @@ export function createDocumentSessionCore(options: DocumentSessionCoreOptions): 
     }),
     viewState: null,
     documentId: null,
+    worktree: null,
+    worktreeWritable: false,
     editMode: 'normal',
     chats: [],
     activeChat: null,

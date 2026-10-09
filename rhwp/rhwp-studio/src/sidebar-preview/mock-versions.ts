@@ -117,6 +117,7 @@ export function createMockVersions(
         updatedAt: Date.parse(timestamp),
       },
     ],
+    worktrees: [{ id: 'primary', documentId: 'preview-proposal', branch: 'main', primary: true, isCurrent: true, isOpen: true, dirty: true }],
     shelves: [
       {
         id: 'shelf-sample',
@@ -157,6 +158,7 @@ export function createMockVersions(
       { name: '예산-검토', headId: 'b5c98f0', isActive: false, isDefault: false, updatedAt: Date.now() },
     ];
     state.activeBranch = '표지-디자인';
+    state.worktrees[0].branch = '표지-디자인';
   }
   let workingDiffs = [...workingDiffFixture];
   const committedDiffs = new Map<string, DiffItem[]>(state.commits.map((item, index) => [
@@ -202,6 +204,9 @@ export function createMockVersions(
       item.isHead =
         state.branches.find((branch) => branch.isActive)?.headId === item.id;
     }
+    for (const branch of state.branches) branch.worktreeId = state.worktrees.find((worktree) => worktree.branch === branch.name)?.id;
+    const currentWorktree = state.worktrees.find((worktree) => worktree.isCurrent);
+    if (currentWorktree) currentWorktree.dirty = state.dirty;
     listeners.forEach((listener) => listener(state));
   }
   function checkpoint(title = '문서 변경 사항을 저장했습니다.', additionalParents: string[] = []) {
@@ -218,6 +223,8 @@ export function createMockVersions(
   }
   function switchBranch(name: string) {
     state.activeBranch = name;
+    const currentWorktree = state.worktrees.find((worktree) => worktree.isCurrent);
+    if (currentWorktree) currentWorktree.branch = name;
     state.branches.forEach((branch) => {
       branch.isActive = branch.name === name;
     });
@@ -281,12 +288,80 @@ export function createMockVersions(
       });
       switchBranch(name);
     },
-    switchBranch: async (name) => switchBranch(name),
+    switchBranch: async (name) => {
+      if (state.worktrees.some((worktree) => worktree.branch === name && !worktree.isCurrent)) throw new Error('다른 워크트리에서 사용 중인 브랜치입니다.');
+      switchBranch(name);
+    },
+    createWorktree: async (sourceBranch, newBranchName) => {
+      const source = state.branches.find((branch) => branch.name === sourceBranch);
+      if (!source) throw new Error('브랜치를 찾을 수 없습니다.');
+      if (!newBranchName && state.worktrees.some((worktree) => worktree.branch === sourceBranch)) throw new Error('새 브랜치 이름이 필요합니다.');
+      if (newBranchName && state.branches.some((branch) => branch.name === newBranchName)) throw new Error('같은 이름의 브랜치가 이미 있습니다.');
+      if (state.dirty) checkpoint();
+      const branchName = newBranchName ?? sourceBranch;
+      if (newBranchName) state.branches.push({ ...source, name: branchName, isActive: false, isDefault: false, worktreeId: undefined });
+      state.worktrees.push({ id: crypto.randomUUID(), documentId: state.documentId!, branch: branchName,
+        primary: false, isCurrent: false, isOpen: true, dirty: false, mergeTarget: sourceBranch });
+      changed();
+    },
+    openWorktree: async (id) => {
+      const worktree = state.worktrees.find((item) => item.id === id);
+      if (!worktree) throw new Error('워크트리를 찾을 수 없습니다.');
+      state.worktrees.forEach((item) => { item.isCurrent = item.id === id; });
+      worktree.isOpen = true;
+      worktree.readOnly = false;
+      state.mutationBlockedReason = null;
+      state.dirty = Boolean(worktree.dirty);
+      switchBranch(worktree.branch);
+    },
+    closeWorktree: async (id) => {
+      const worktree = state.worktrees.find((item) => item.id === id);
+      if (!worktree || worktree.primary) throw new Error('기본 워크트리는 닫을 수 없습니다.');
+      if (worktree.isCurrent) {
+        const primary = state.worktrees.find((item) => item.primary)!;
+        worktree.isCurrent = false;
+        primary.isCurrent = true;
+        state.dirty = Boolean(primary.dirty);
+        switchBranch(primary.branch);
+      }
+      worktree.isOpen = false;
+      changed();
+    },
+    removeWorktree: async (id) => {
+      const worktree = state.worktrees.find((item) => item.id === id);
+      if (!worktree || worktree.primary) throw new Error('기본 워크트리는 삭제할 수 없습니다.');
+      if (worktree.busy) throw new Error('에이전트 작업 중입니다.');
+      if (worktree.isCurrent && state.dirty) checkpoint();
+      if (worktree.isCurrent) {
+        const primary = state.worktrees.find((item) => item.primary)!;
+        primary.isCurrent = true;
+        worktree.isCurrent = false;
+        state.dirty = Boolean(primary.dirty);
+        switchBranch(primary.branch);
+      }
+      state.worktrees = state.worktrees.filter((item) => item.id !== id);
+      changed();
+    },
+    mergeWorktree: async (id) => {
+      const worktree = state.worktrees.find((item) => item.id === id);
+      if (!worktree || worktree.primary) throw new Error('병합할 워크트리를 찾을 수 없습니다.');
+      if (worktree.busy) throw new Error('에이전트 작업 중입니다.');
+      const primary = state.worktrees.find((item) => item.primary)!;
+      const source = state.branches.find((branch) => branch.name === worktree.branch)!;
+      state.worktrees.forEach((item) => { item.isCurrent = item.primary; });
+      state.dirty = Boolean(primary.dirty);
+      switchBranch(primary.branch);
+      checkpoint(`${worktree.branch} 브랜치를 병합했습니다.`, [source.headId]);
+      state.worktrees = state.worktrees.filter((item) => item.id !== id);
+      changed();
+      report('Fixture worktree merged and removed');
+    },
     renameBranch: async (name, nextName) => {
       if (state.branches.some((branch) => branch.name === nextName))
         throw new Error('이미 존재하는 가지입니다.');
       state.branches.find((branch) => branch.name === name)!.name = nextName;
       if (state.activeBranch === name) state.activeBranch = nextName;
+      for (const worktree of state.worktrees) if (worktree.branch === name) worktree.branch = nextName;
       changed();
     },
     deleteBranch: async (name) => {
