@@ -3810,6 +3810,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       return;
     }
     fullscreen = on;
+    // 집중 화면은 늘 환경 패널을 닫은 채로 연다. 열고 싶으면 머리말의 토글로 연다.
+    if (on) environmentPanelOpen = false;
     closeThreadRailSurfaces(root);
     // 두 모드의 쉬는 모양이 달라서, 화면 전환은 펼친 입력기로 시작한다.
     composerRest.setResting(false);
@@ -5878,6 +5880,18 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /** 새 채팅 진입점 — 사용자가 새 채팅을 고르는 곳은 모두 이리 온다. */
   function requestNewChat(): void {
+    // 이 문서의 새 채팅 초안이 이미 열려 있으면 다시 만들지 않는다 — 초안 화면과 입력 칸으로만 간다.
+    // 그사이 문서가 바뀌었으면 초안의 문서가 달라지므로 새로 만든다.
+    if (
+      draftChat
+      && currentThread.messages.length === 0
+      && threadMatchesDocument(currentThread, currentDocumentId, currentDocKey)
+    ) {
+      chatChosen = true;
+      setThreadsPanelOpen(false);
+      setFullscreen(true, { then: () => input.focus({ preventScroll: true }) });
+      return;
+    }
     chatChosen = true;
     if (!openChat) {
       startNewChat();
