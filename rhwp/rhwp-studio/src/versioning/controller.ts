@@ -88,9 +88,23 @@ interface VersionControllerDeps {
   documentState: DocumentDirtyState;
   getInputHandler: () => InputHandler | null;
   getDocumentId: () => string | null;
-  agentBridge: AgentBridge;
+  agentBridge: VersionAgentView;
   autoEnable?: () => boolean;
 }
+
+/**
+ * 버전 기록이 보는 에이전트 상태. 한 문서에 채팅이 여럿이면 그 채팅들을 합친 모습이다
+ * (편집 잠금·턴·검토 대기는 문서를 잡은 채팅의 것).
+ */
+export type VersionAgentView = Pick<
+  AgentBridge,
+  'getEditingLease' | 'isTurnRunning' | 'onEvent' | 'requestCheckpointTitle'
+> & {
+  pendingEdits: Pick<
+    AgentBridge['pendingEdits'],
+    'approve' | 'reject' | 'getChangeSets' | 'hasPending' | 'onChange'
+  >;
+};
 
 interface CreateCheckpointOptions {
   reason: CheckpointReason;
@@ -251,7 +265,7 @@ export class DocumentVersionController implements VersionManagerController {
   readonly #documentState: DocumentDirtyState;
   readonly #getInputHandler: () => InputHandler | null;
   readonly #getDocumentId: () => string | null;
-  readonly #agentBridge: AgentBridge;
+  readonly #agentBridge: VersionAgentView;
   readonly #autoEnable: () => boolean;
   readonly #ownsStore: boolean;
   readonly #listeners = new Set<(state: VersionManagerState) => void>();

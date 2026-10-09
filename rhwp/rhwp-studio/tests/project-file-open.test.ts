@@ -387,3 +387,27 @@ test('기억된 위치는 바이트가 달라도 제자리 편집으로 연다',
   assert.equal(result.kind, 'opened');
   assert.deepEqual(calls.loaded, [{ name: '보고서.hwp', documentId: 'doc-1' }]);
 });
+
+test('디스크에 있던 적이 없는 문서는 기억한 위치가 없으면 파일 선택 창을 띄우지 않는다', async () => {
+  // 저장하지 않은 새 문서의 채팅: 최근 문서·digest·핸들이 없다. 고를 파일이 없으니 묻지 않는다.
+  const { deps, calls } = makeDeps({ reopenRemembered: async () => null });
+  const result = await openProjectFile(
+    claim({ recentId: null, knownDigest: null, liveHandle: null }),
+    deps,
+  );
+  assert.equal(result.kind, 'never-saved');
+  assert.equal(calls.picks, 0);
+  assert.equal(calls.searches, 0);
+});
+
+test('최근 문서에 없어도 기억한 위치가 있으면 그대로 연다', async () => {
+  const restored = handle('보고서.hwp', { identityKind: 'native-path' });
+  const { deps, calls } = makeDeps({ reopenRemembered: async () => restored });
+  const result = await openProjectFile(
+    claim({ recentId: null, knownDigest: null, liveHandle: null }),
+    deps,
+  );
+  assert.equal(result.kind, 'opened');
+  assert.equal(calls.picks, 0);
+  assert.deepEqual(calls.loaded, [{ name: '보고서.hwp', documentId: 'doc-1' }]);
+});

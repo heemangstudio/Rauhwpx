@@ -40,6 +40,7 @@ export const auditScenarios: readonly AuditScenario[] = [
   scene('mode-agent', 'Agent modes', '에이전트 mode', 'Inspect the default ink mode chip in the composer.', { mode: 'agent' }),
   scene('mode-full', 'Agent modes', '전체 mode', 'Inspect the red mode chip in the composer.', { mode: 'full' }),
   scene('menu-mode', 'Agent modes', 'Mode menu', 'Inspect the four modes, their colors, and keyboard focus.', { surface: 'mode-menu' }),
+  scene('mode-locked', 'Agent modes', 'Locked to 채팅', 'Another chat of this document is editing. Inspect the disabled modes and their tooltip.', { parallel: 'locked', scenario: 'chat', surface: 'mode-menu' }),
   scene('connection-ready', 'Connection and setup', 'Connected service', 'Inspect provider readiness and normal composer state.', { connection: 'connected' }),
   scene('connection-connecting', 'Connection and setup', 'Connecting service', 'Inspect the connecting indicator and disabled actions.', { connection: 'connecting' }),
   scene('connection-offline', 'Connection and setup', 'Disconnected service', 'Inspect offline guidance and reconnect controls.', { connection: 'disconnected' }),

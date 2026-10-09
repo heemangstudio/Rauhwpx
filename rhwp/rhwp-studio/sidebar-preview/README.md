@@ -86,6 +86,8 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?reset=1` | Clear preview storage before mounting |
 | `?chats=sample` | Restore sample chats across three documents and no document, one running and one finished |
 | `?sessions=2&chats=sample` | A second live document (회의록) with its own sidebar and mock agent; its chats switch sidebars without stopping the other agent |
+| `?parallel=1` | Several chats of one document: a new chat or another chat opened while the shown chat works gets its own sidebar and mock agent, and the busy agent keeps running |
+| `?parallel=locked` | The first chat edits with a held reply and a second, new chat opens beside it, locked to 채팅 |
 
 Parameters can be combined. Select **Next reply**, then type a message or press
 **Play sample conversation**. Connection and service controls expose disconnected,

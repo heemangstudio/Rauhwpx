@@ -44,6 +44,7 @@ import {
 import { launchRequest } from './launch-routing.mjs';
 import {
   NativeFileHandleRegistry,
+  StaleNativeHandleError,
   validateNativeDocumentBytes,
   writeNativeFileAtomically,
 } from './native-file-handles.mjs';
@@ -1189,13 +1190,24 @@ ipcMain.handle('desktop:release-native-file', (event, handleId) => {
   const session = sessionForEvent(event);
   nativeFiles.releaseHandle(session.sessionId, handleId);
 });
-ipcMain.handle('desktop:native-file-read', (event, handleId) => {
+ipcMain.handle('desktop:native-file-read', async (event, handleId) => {
   const session = sessionForEvent(event);
-  return nativeFiles.read(session.sessionId, handleId);
+  try {
+    return await nativeFiles.read(session.sessionId, handleId);
+  } catch (error) {
+    // 옛 핸들은 렌더러가 기억해 둔 위치로 다시 연다. 오류로 던지면 메인 로그만 어지럽힌다.
+    if (error instanceof StaleNativeHandleError) return { stale: true };
+    throw error;
+  }
 });
 ipcMain.handle('desktop:native-file-source-path', (event, handleId) => {
   const session = sessionForEvent(event);
-  return nativeFiles.sourcePathForSender(session.sessionId, handleId);
+  try {
+    return nativeFiles.sourcePathForSender(session.sessionId, handleId);
+  } catch (error) {
+    if (error instanceof StaleNativeHandleError) return null;
+    throw error;
+  }
 });
 ipcMain.handle('desktop:native-file-validate-save', (event, handleId, identity) => {
   const session = sessionForEvent(event);

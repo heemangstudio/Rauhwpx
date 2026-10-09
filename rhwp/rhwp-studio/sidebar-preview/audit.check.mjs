@@ -57,7 +57,7 @@ try {
         ['수정 요청', '전체 접근으로 실행', '에이전트로 실행']);
     }
     if (['chat-empty', 'chat-review', 'chat-changes-full',
-      'mode-chat', 'mode-plan', 'mode-agent', 'mode-full', 'menu-mode', 'plan-run-modes'].includes(scene.id))
+      'mode-chat', 'mode-plan', 'mode-agent', 'mode-full', 'menu-mode', 'mode-locked', 'plan-run-modes'].includes(scene.id))
       await page.screenshot({ path: resolve(artifacts, `audit-${scene.id}.png`) });
     console.log(`PASS ${scene.id}`);
   }

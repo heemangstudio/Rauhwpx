@@ -136,6 +136,12 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
   let running = false;
   let usageRefreshFailed = false;
   let generation = 0;
+  /** 채팅 시작 응답만 따로 센다 — 실제 브리지처럼 시작 직후 보낸 메시지가 시작을 덮지 않는다. */
+  let chatGeneration = 0;
+  /** 브라우저 검사가 읽는 호출 기록. */
+  const chatStarts: Array<{ threadId: string; workflow: T.AgentWorkflow; permissionProfile: T.PermissionProfile }> = [];
+  let messagesSent = 0;
+  let interrupts = 0;
   let threadId = '';
   let scenario: Scenario = 'chat';
   let holdReply = false;
@@ -550,7 +556,8 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       documentName,
     ) => {
       const continuing = !force && id === threadId && (mode ?? 'direct') === workflow.workflow;
-      const startGeneration = ++generation;
+      ++generation;
+      const startGeneration = ++chatGeneration;
       completeQuestion({ status: 'expired', reason: 'request-invalidated' });
       setRunning(false);
       agent = provider;
@@ -589,8 +596,9 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
         documentName,
         ...workflow,
       };
+      chatStarts.push({ threadId, workflow: workflow.workflow, permissionProfile: permission });
       later(() => {
-        if (generation === startGeneration) emit(started);
+        if (chatGeneration === startGeneration) emit(started);
       });
     },
     setChatStartContextProvider: (provider) => {
@@ -624,6 +632,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
     },
     stopChat: () => {
       generation++;
+      chatGeneration++;
       completeQuestion({ status: 'cancelled', reason: 'user-stop' });
       setRunning(false);
       emit({ type: 'chat-stopped' });
@@ -639,6 +648,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       ),
     requestCheckpointTitle: async () => null,
     sendUserMessage: async (_text, _skill, referenceIds = []) => {
+      messagesSent += 1;
       const messageId = crypto.randomUUID();
       const turnGeneration = ++generation;
       const reply =
@@ -1274,6 +1284,7 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
         finish();
       }),
     interrupt: () => {
+      interrupts += 1;
       generation++;
       completeQuestion({ status: 'cancelled', reason: 'user-stop' });
       if (running) finish('interrupted');
@@ -1395,6 +1406,9 @@ export function createMockBridge(report: (message: string) => void, onApproved?:
       bridge.listSkills();
     },
     snapshot: () => ({
+      chatStarts: chatStarts.map((start) => ({ ...start })),
+      messagesSent,
+      interrupts,
       scenario,
       connection,
       running,

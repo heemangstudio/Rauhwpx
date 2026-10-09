@@ -145,6 +145,111 @@ async function openThreadDocument(
   return moveDocument({ documentId: thread.documentId, fileName: thread.docKey }, { commit: true });
 }
 
+/*
+ * `parallel=1` gives the proposal document several chats, like the editor when a chat is busy:
+ * a new chat or another chat of the document opens in its own sidebar with its own mock agent,
+ * and the busy agent keeps running. While one chat edits, the others may only use 채팅.
+ * `parallel=locked` opens on that state: the first chat edits with a held reply and a second,
+ * locked new chat is shown.
+ */
+const parallel = params.get('parallel');
+const parallelChats = parallel === '1' || parallel === 'locked';
+interface PreviewChat {
+  sidebar: AgentSidebarHandle;
+  mock: ReturnType<typeof createMockBridge>;
+}
+type OpenChatRequest = { kind: 'new' } | { kind: 'thread'; threadId: string };
+const chats: PreviewChat[] = [];
+let shownChat = 0;
+const openChatCalls: Array<{ chat: number; request: OpenChatRequest }> = [];
+const modeLockListeners = new Set<() => void>();
+const CHAT_MODE_LOCK = { reason: '다른 채팅이 이 문서를 편집하고 있어요' };
+
+/** Busy as the editor counts it: a running turn, a question, or unreviewed edits. */
+function chatBusy(chat: PreviewChat): boolean {
+  const state = chat.mock.snapshot();
+  return state.running || state.pendingChanges > 0 || chat.mock.bridge.getPendingUserQuestion() !== null;
+}
+
+/** A chat holds the document while it edits or leaves edits to review. */
+function chatEditing(chat: PreviewChat): boolean {
+  const state = chat.mock.snapshot();
+  const writes = state.workflow.workflow === 'direct' || state.workflow.phase === 'implementing';
+  return (state.running && writes) || state.pendingChanges > 0;
+}
+
+function chatModeLockFor(index: number) {
+  return {
+    get: () => (chats.some((chat, other) => other !== index && chatEditing(chat)) ? CHAT_MODE_LOCK : null),
+    subscribe: (listener: () => void) => {
+      modeLockListeners.add(listener);
+      return () => { modeLockListeners.delete(listener); };
+    },
+  };
+}
+
+function watchChatModeLock(chat: PreviewChat): void {
+  const notify = () => { for (const listener of [...modeLockListeners]) listener(); };
+  chat.mock.bridge.onEditingLeaseChange(notify);
+  chat.mock.bridge.pendingEdits.onChange(notify);
+  chat.mock.bridge.onEvent((event) => {
+    if (event.type === 'workflow-changed' || event.type === 'chat-started') notify();
+  });
+}
+
+function showChat(index: number): void {
+  if (index === shownChat || !chats[index]) return;
+  chats[shownChat]!.sidebar.deactivate();
+  shownChat = index;
+  chats[index]!.sidebar.activate();
+}
+
+/** The editor's openChat: a busy chat stays put and the request opens in another chat. */
+async function openChatFrom(index: number, request: OpenChatRequest): Promise<'handled' | 'local'> {
+  openChatCalls.push({ chat: index, request });
+  if (request.kind === 'thread') {
+    const holder = chats.findIndex((chat, other) => (
+      other !== index && chat.sidebar.currentThreadId() === request.threadId
+    ));
+    if (holder >= 0) {
+      showChat(holder);
+      return 'handled';
+    }
+  }
+  if (!chatBusy(chats[index]!)) return 'local';
+  const fresh = createParallelChat();
+  showChat(chats.indexOf(fresh));
+  if (request.kind === 'new') fresh.sidebar.startDraftChat();
+  else fresh.sidebar.openThreadById(request.threadId);
+  return 'handled';
+}
+
+/** Another chat of the proposal document with its own sidebar and mock agent. */
+function createParallelChat(): PreviewChat {
+  const index = chats.length;
+  const chatMock = createMockBridge(report);
+  const chatBus = new EventBus();
+  for (const name of ['document-swapped', 'document-context-changed'] as const) {
+    eventBus.on(name, () => chatBus.emit(name));
+  }
+  const chatSidebar = initAgentSidebar({
+    bridge: chatMock.bridge,
+    eventBus: chatBus,
+    startActive: false,
+    getDocumentContext: () => ({ documentId, documentName, selectionLabel: null }),
+    moveToLibraryDocument: moveDocument,
+    listRecentDocuments: async () => recentDocuments.map((row) => ({ ...row })),
+    openChat: (request) => openChatFrom(index, request),
+    chatModeLock: chatModeLockFor(index),
+  });
+  chatMock.boot();
+  const chat = { sidebar: chatSidebar, mock: chatMock };
+  chats.push(chat);
+  watchChatModeLock(chat);
+  placeholderFocusButton(chatSidebar);
+  return chat;
+}
+
 const sidebar = initAgentSidebar({
   bridge: mock.bridge,
   eventBus,
@@ -155,6 +260,8 @@ const sidebar = initAgentSidebar({
   }),
   moveToLibraryDocument: moveDocument,
   openThreadDocument: multiSession ? openThreadDocument : undefined,
+  openChat: parallelChats ? (request) => openChatFrom(0, request) : undefined,
+  chatModeLock: parallelChats ? chatModeLockFor(0) : undefined,
   createDocument: () => {
     createdDocuments += 1;
     showMockDocument(`preview-new-${createdDocuments}`, `새 문서 ${createdDocuments}.hwpx`);
@@ -183,9 +290,10 @@ const sidebar = initAgentSidebar({
     },
   },
 });
-sidebar.root.querySelector<HTMLButtonElement>('.ag-threads-new')!.click();
 mock.boot();
 sessions.push({ sidebar, mock, documentId: () => documentId });
+chats.push({ sidebar, mock });
+if (parallelChats) watchChatModeLock(chats[0]!);
 if (multiSession) {
   const backgroundMock = createMockBridge(report);
   backgroundMock.setScenario('chat');
@@ -226,12 +334,14 @@ scenarioSelect.addEventListener('change', () => {
   url.searchParams.set('scenario', scenarioSelect.value);
   history.replaceState(null, '', url);
 });
-document.querySelector('#play')!.addEventListener('click', () => {
-  const input = sidebar.root.querySelector<HTMLTextAreaElement>('.ag-input')!;
+/** Sends the sample request from the shown chat's composer. */
+function playSample(): void {
+  const input = chats[shownChat]!.sidebar.root.querySelector<HTMLTextAreaElement>('.ag-input')!;
   input.value = '이 문서의 핵심 내용을 검토하고 개선해 주세요.';
   input.dispatchEvent(new Event('input', { bubbles: true }));
   input.form?.requestSubmit();
-});
+}
+document.querySelector('#play')!.addEventListener('click', playSample);
 const connection = document.querySelector<HTMLSelectElement>('#connection')!;
 connection.addEventListener('change', () =>
   mock.setConnection(
@@ -276,8 +386,8 @@ document.querySelector('#reset')!.addEventListener('click', () => {
   location.replace(url);
 });
 // Keep the production focus button visible while staying within the sidebar-only scope.
-for (const session of sessions) {
-  session.sidebar.root.querySelector('.ag-fullscreen-btn')!.addEventListener(
+function placeholderFocusButton(target: AgentSidebarHandle): void {
+  target.root.querySelector('.ag-fullscreen-btn')!.addEventListener(
     'click',
     (event) => {
       event.stopImmediatePropagation();
@@ -286,6 +396,7 @@ for (const session of sessions) {
     { capture: true },
   );
 }
+for (const session of sessions) placeholderFocusButton(session.sidebar);
 // External destinations are represented locally; never launch an OAuth page.
 window.open = () => {
   report('External page placeholder');
@@ -319,9 +430,32 @@ if (params.get('page') === 'settings')
   eventBus.emit('settings:open', { destination: normalizeSettingsDestination(params.get('destination')) ?? 'editing' });
 if (params.get('page') === 'versions') sidebar.openVersions();
 
+/** `parallel=locked`: the first chat edits with a held reply, then a new chat opens beside it. */
+async function openLockedParallelScene(): Promise<void> {
+  const until = async (ready: () => boolean) => {
+    while (!ready()) await new Promise((resolve) => setTimeout(resolve, 20));
+  };
+  await waitForThreadsPersistence();
+  const input = sidebar.root.querySelector<HTMLTextAreaElement>('.ag-input')!;
+  const modeButton = sidebar.root.querySelector<HTMLButtonElement>('.ag-mode-btn')!;
+  await until(() => !input.disabled && !modeButton.disabled);
+  // A restored chat may be in another mode; the first chat edits in 에이전트.
+  if (modeButton.dataset.mode !== 'agent') {
+    modeButton.click();
+    sidebar.root.querySelector<HTMLButtonElement>('.ag-mode-item[data-mode="agent"]')!.click();
+    await until(() => modeButton.dataset.mode === 'agent' && !input.disabled);
+  }
+  mock.setHold(true);
+  playSample();
+  await until(() => chatEditing(chats[0]!));
+  sidebar.root.querySelector<HTMLButtonElement>('.ag-threads-new')!.click();
+  await until(() => chats.length > 1 && chats[shownChat]!.sidebar.root.classList.contains('ag-fullscreen'));
+}
+if (parallel === 'locked') await openLockedParallelScene();
+
 // Typed hooks for browser checks and custom scenario scripts.
 const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoState, navigation,
-  sessions, attachSession,
+  sessions, attachSession, chats, showChat, openChatCalls,
   threadStore: { listThreads, getThread, waitForThreadsPersistence } };
 export type SidebarPreview = typeof preview;
 Object.assign(window, { sidebarPreview: preview });
@@ -393,6 +527,10 @@ window.addEventListener('pagehide', () => {
   for (const session of sessions) {
     session.sidebar.dispose();
     session.mock.bridge.dispose();
+  }
+  for (const chat of chats.slice(1)) {
+    chat.sidebar.dispose();
+    chat.mock.bridge.dispose();
   }
   versions.dispose?.();
 });
