@@ -1,10 +1,12 @@
 /**
  * 프로젝트 파일 목록 — 걸러 보기, 이름 바꾸기, 여러 개 휴지통으로.
  * 그래프를 볼 수 없는 사용자에게도 같은 항목과 연결 수를 전한다.
+ * 영역 조각은 원본 파일 바로 아래에 들여 쓴다.
  */
 import { itemColumnId } from '../../../agent/project-service.ts';
-import type { ProjectStore } from '../../../agent/project-service.ts';
-import type { ProjectItem, ProjectSnapshot } from '../../../agent/types.ts';
+import type { ProjectService, ProjectStore } from '../../../agent/project-service.ts';
+import type { ProjectClipItem, ProjectItem, ProjectSnapshot } from '../../../agent/types.ts';
+import { projectClipThumb } from './clip-thumbs.ts';
 import {
   button,
   el,
@@ -19,6 +21,8 @@ import {
 
 export interface ProjectFilesDeps {
   store: ProjectStore;
+  /** 영역 조각 썸네일의 원본을 받는다. 없으면 아이콘만 둔다. */
+  service?: Pick<ProjectService, 'fileBlob'> | null;
   openPreview(itemId: string): void;
   announce(message: string, tone?: 'error'): void;
 }
@@ -30,7 +34,7 @@ export interface ProjectFiles {
   dispose(): void;
 }
 
-type KindFilter = 'all' | 'pdf' | 'doc' | 'note' | 'image' | 'sheet' | 'web';
+type KindFilter = 'all' | 'pdf' | 'doc' | 'note' | 'image' | 'clip' | 'sheet' | 'web';
 
 const KIND_FILTERS: ReadonlyArray<{ id: KindFilter; label: string }> = [
   { id: 'all', label: '모든 종류' },
@@ -38,13 +42,20 @@ const KIND_FILTERS: ReadonlyArray<{ id: KindFilter; label: string }> = [
   { id: 'doc', label: '문서' },
   { id: 'note', label: '노트' },
   { id: 'image', label: '이미지' },
+  { id: 'clip', label: '영역' },
   { id: 'sheet', label: '표·슬라이드' },
   { id: 'web', label: '웹' },
 ];
 
-function matchesKind(item: ProjectItem, filter: KindFilter): boolean {
+function matchesKind(item: ProjectItem, filter: KindFilter, project: ProjectSnapshot): boolean {
   if (filter === 'all') return true;
   if (item.kind === 'note') return filter === 'note';
+  if (item.kind === 'clip') {
+    // 영역은 영역 거르기와, 원본이 걸리는 종류(PDF·이미지)에 함께 나온다.
+    const source = project.items.find((entry) => entry.id === item.sourceId);
+    return filter === 'clip' || (source !== undefined && source.kind === 'file' && matchesKind(source, filter, project));
+  }
+  if (filter === 'clip') return false;
   switch (filter) {
     case 'pdf': return item.fileKind === 'pdf';
     case 'doc': return ['docx', 'hwp', 'text', 'other'].includes(item.fileKind);
@@ -103,12 +114,14 @@ export function createProjectFiles(deps: ProjectFilesDeps): ProjectFiles {
   empty.hidden = true;
   element.append(toolbar, selectionBar, list, empty);
 
+  /** 걸러진 항목. 영역은 원본이 목록에 있으면 그 바로 아래(쪽·위치 순)에 온다. */
   function visibleItems(): ProjectItem[] {
     if (!project) return [];
+    const snapshot = project;
     const needle = normalize(query.trim());
-    return project.items
+    const matching = snapshot.items
       .filter((item) => !item.trashedAt)
-      .filter((item) => matchesKind(item, kindFilter))
+      .filter((item) => matchesKind(item, kindFilter, snapshot))
       .filter((item) => !tagFilter || item.tags.includes(tagFilter))
       .filter((item) => {
         if (!needle) return true;
@@ -116,6 +129,27 @@ export function createProjectFiles(deps: ProjectFilesDeps): ProjectFiles {
         return normalize(haystack).includes(needle);
       })
       .sort((a, b) => b.updatedAt - a.updatedAt || a.title.localeCompare(b.title, 'ko'));
+    const clipsBySource = new Map<string, ProjectClipItem[]>();
+    for (const item of matching) {
+      if (item.kind !== 'clip') continue;
+      const list = clipsBySource.get(item.sourceId) ?? [];
+      list.push(item);
+      clipsBySource.set(item.sourceId, list);
+    }
+    const ordered: ProjectItem[] = [];
+    const placed = new Set<string>();
+    for (const item of matching) {
+      if (item.kind === 'clip') continue;
+      ordered.push(item);
+      const clips = (clipsBySource.get(item.id) ?? [])
+        .sort((a, b) => a.page - b.page || a.rect[1] - b.rect[1] || a.rect[0] - b.rect[0]);
+      for (const clip of clips) {
+        ordered.push(clip);
+        placed.add(clip.id);
+      }
+    }
+    for (const item of matching) if (item.kind === 'clip' && !placed.has(item.id)) ordered.push(item);
+    return ordered;
   }
 
   function linkCounts(): Map<string, number> {
@@ -144,7 +178,7 @@ export function createProjectFiles(deps: ProjectFilesDeps): ProjectFiles {
     selectAll.indeterminate = visibleSelected > 0 && visibleSelected < visible.length;
   }
 
-  function renderRow(item: ProjectItem, links: Map<string, number>): HTMLElement {
+  function renderRow(item: ProjectItem, links: Map<string, number>, listed: ReadonlySet<string>): HTMLElement {
     const row = el('li', 'ag-pfile');
     row.dataset.item = item.id;
     row.tabIndex = -1;
@@ -153,7 +187,9 @@ export function createProjectFiles(deps: ProjectFilesDeps): ProjectFiles {
     check.type = 'checkbox';
     check.checked = selected.has(item.id);
     check.setAttribute('aria-label', `${item.title} 선택`);
-    const icon = projectIcon(itemIconName(item), 'ag-pfile-icon');
+    row.classList.toggle('ag-pfile-clip', item.kind === 'clip' && listed.has(item.sourceId));
+    const icon = (item.kind === 'clip' && project && projectClipThumb(project, item, 'chip', deps.service?.fileBlob, 'ag-pfile-thumb'))
+      || projectIcon(itemIconName(item), 'ag-pfile-icon');
     const copy = el('div', 'ag-pfile-copy');
     const title = el('span', 'ag-pfile-title', item.title);
     const column = project?.columns.find((entry) => entry.id === itemColumnId(project!, item))?.name;
@@ -183,7 +219,8 @@ export function createProjectFiles(deps: ProjectFilesDeps): ProjectFiles {
       : null;
     const visible = visibleItems();
     const links = linkCounts();
-    list.replaceChildren(...visible.map((item) => renderRow(item, links)));
+    const listed = new Set(visible.map((item) => item.id));
+    list.replaceChildren(...visible.map((item) => renderRow(item, links, listed)));
     const total = project?.items.filter((item) => !item.trashedAt).length ?? 0;
     empty.hidden = visible.length > 0;
     empty.textContent = total === 0 ? '항목이 없습니다.' : '조건에 맞는 항목이 없습니다.';

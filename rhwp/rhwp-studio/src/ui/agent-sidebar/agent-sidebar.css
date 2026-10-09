@@ -4987,6 +4987,18 @@ button.ag-skill-copy {
   color: var(--ag-text-tertiary);
 }
 
+/* 칩과 바로 뒤의 문장부호는 한 줄에 둔다 — 마침표만 다음 줄로 넘어가지 않게. */
+.ag-cite-group {
+  white-space: nowrap;
+}
+
+/* 영역 조각 칩은 아이콘 자리에 작은 썸네일을 둔다. */
+.ag-cite .ag-clip-thumb {
+  width: 20px;
+  height: 14px;
+  border-radius: var(--ag-r-code);
+}
+
 .ag-progress-milestone {
   white-space: normal;
   word-break: keep-all;

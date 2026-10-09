@@ -7,6 +7,7 @@ export const PROJECT_TOOL_NAMES = Object.freeze(['project_read', 'project_edit',
 const PROJECT_TOOLS = new Set(PROJECT_TOOL_NAMES);
 const DEFAULT_ITEM_LIMIT = 50;
 const MAX_LINKS = 500;
+const MAX_TEXTLESS_PAGES = 200;
 
 function projectToolError(code, message) {
   const error = new Error(message);
@@ -34,7 +35,48 @@ function itemRow(item) {
           : {}),
       }
       : {}),
+    ...(item.kind === 'clip' ? { source: item.sourceId, page: item.page } : {}),
     ...(item.trashedAt ? { trashedAt: item.trashedAt } : {}),
+  };
+}
+
+/** 글자가 거의 없는 쪽 — 에이전트가 그림으로 봐야 할 쪽이다. 알 수 없으면 아무것도 붙이지 않는다. */
+async function textlessFields(referenceStore, item) {
+  if (item.fileKind !== 'pdf' || typeof referenceStore?.textlessPages !== 'function') return {};
+  let result = null;
+  try { result = await referenceStore.textlessPages(item.fileId); } catch {}
+  if (!result) return {};
+  return {
+    textlessPages: result.pages.slice(0, MAX_TEXTLESS_PAGES),
+    ...(result.pages.length > MAX_TEXTLESS_PAGES ? { textlessTotal: result.pages.length } : {}),
+  };
+}
+
+/** 항목 하나를 자세히: 파일은 영역과 글 없는 쪽을, 영역은 원본 요약을 붙인다. */
+async function itemView({ projectId, projectStore, referenceStore, item }) {
+  const project = await projectStore.get(projectId, { trash: true });
+  const { locked: _locked, ...rest } = item;
+  const links = project.links.filter((link) => link.from === item.id || link.to === item.id);
+  if (item.kind === 'clip') {
+    const { sourceId, ...clip } = rest;
+    const source = project.items.find((entry) => entry.id === sourceId);
+    return {
+      ...clip,
+      source: source
+        ? { id: source.id, title: source.title, fileKind: source.fileKind, ...(source.pageCount ? { pageCount: source.pageCount } : {}) }
+        : { id: sourceId },
+      links,
+    };
+  }
+  if (item.kind !== 'file') return { ...rest, links };
+  const clips = project.items
+    .filter((entry) => entry.kind === 'clip' && entry.sourceId === item.id && !entry.trashedAt)
+    .map((clip) => ({ id: clip.id, title: clip.title, page: clip.page, rect: clip.rect }));
+  return {
+    ...rest,
+    ...(clips.length > 0 ? { clips } : {}),
+    ...(await textlessFields(referenceStore, item)),
+    links,
   };
 }
 
@@ -45,7 +87,7 @@ function matchesQuery(item, query) {
     .some((value) => typeof value === 'string' && value.normalize('NFKC').toLocaleLowerCase('ko-KR').includes(needle));
 }
 
-async function readProject({ args, projectId, projectStore }) {
+async function readProject({ args, projectId, projectStore, referenceStore }) {
   const view = args.view;
   if (view === 'summary') {
     const project = await projectStore.get(projectId);
@@ -65,6 +107,7 @@ async function readProject({ args, projectId, projectStore }) {
       counts: {
         files: project.items.filter((item) => item.kind === 'file').length,
         notes: project.items.filter((item) => item.kind === 'note').length,
+        clips: project.items.filter((item) => item.kind === 'clip').length,
         links: project.links.length,
         trash: trashed,
       },
@@ -96,12 +139,7 @@ async function readProject({ args, projectId, projectStore }) {
       if (item.kind !== 'note') throw projectToolError('INVALID_ARGS', `${item.id} is a ${item.kind}, not a note`);
       return projectStore.readNote(projectId, item.id);
     }
-    const project = await projectStore.get(projectId, { trash: true });
-    const { locked: _locked, ...rest } = item;
-    return {
-      ...rest,
-      links: project.links.filter((link) => link.from === item.id || link.to === item.id),
-    };
+    return itemView({ projectId, projectStore, referenceStore, item });
   }
   if (view === 'links') {
     const project = await projectStore.get(projectId);
@@ -131,7 +169,7 @@ function stripUndefined(value) {
 
 /**
  * @param {{
- *   tool: string, args: any, session: any, projectStore: any,
+ *   tool: string, args: any, session: any, projectStore: any, referenceStore?: any,
  *   ingest?: any, homeSearch?: any, allowedRoots?: string[], sessionKey?: string,
  * }} input
  * @returns {Promise<{handled: boolean, result: any}>}
@@ -141,6 +179,7 @@ export async function executeProjectTool({
   args,
   session,
   projectStore,
+  referenceStore = projectStore?.referenceStore ?? null,
   ingest = null,
   homeSearch = null,
   allowedRoots = [],
@@ -155,7 +194,7 @@ export async function executeProjectTool({
     ...(typeof session.agent === 'string' ? { agent: session.agent } : {}),
   };
   if (tool === 'project_read') {
-    return { handled: true, result: await readProject({ args, projectId, projectStore }) };
+    return { handled: true, result: await readProject({ args, projectId, projectStore, referenceStore }) };
   }
   if (tool === 'project_edit') {
     return {

@@ -10,6 +10,7 @@ import type {
   ProjectActivityEntry,
   ProjectActor,
   ProjectChunk,
+  ProjectClipItem,
   ProjectFileItem,
   ProjectFileText,
   ProjectItem,
@@ -549,6 +550,44 @@ export function applyProjectOps(project: ProjectSnapshot, ops: readonly ProjectO
         next.items.push(note);
         break;
       }
+      case 'clip': {
+        const existing = op.id ? itemById(op.id) : undefined;
+        if (existing) {
+          if (existing.kind !== 'clip') break;
+          if (op.name?.trim()) existing.title = op.name.trim();
+          if (op.page !== undefined) existing.page = op.page;
+          if (op.rect) existing.rect = [...op.rect];
+          if (op.tags) existing.tags = [...new Set(op.tags)];
+          if (op.column && next.columns.some((column) => column.id === op.column)) placeInColumn(next, existing, op.column);
+          existing.updatedAt = now;
+          break;
+        }
+        const source = op.source ? itemById(op.source) : undefined;
+        if (op.id || !op.rect || source?.kind !== 'file') break;
+        const columnId = op.column && next.columns.some((column) => column.id === op.column)
+          ? op.column
+          : next.columns[0]?.id ?? null;
+        const clip: ProjectClipItem = {
+          id: tempId(),
+          kind: 'clip',
+          title: op.name?.trim() || source.title,
+          column: columnId,
+          order: columnId ? columnItems(next, columnId).length : 0,
+          tags: [...new Set(op.tags ?? [])],
+          pinned: false,
+          summary: '',
+          createdAt: now,
+          updatedAt: now,
+          addedBy: { kind: 'user' },
+          sourceId: source.id,
+          page: op.page ?? 1,
+          rect: [...op.rect],
+        };
+        for (const tag of clip.tags) ensureTag(tag);
+        next.items.push(clip);
+        next.links.push({ id: tempId(), from: clip.id, to: source.id, origin: 'clip' });
+        break;
+      }
       case 'columns': {
         const columns = op.columns
           .map((column) => ({ id: column.id ?? tempId(), name: column.name.trim() }))
@@ -573,9 +612,12 @@ export function applyProjectOps(project: ProjectSnapshot, ops: readonly ProjectO
       case 'trash': {
         const item = itemById(op.id);
         if (!item) break;
-        const column = itemColumnId(next, item);
-        next.items = next.items.filter((entry) => entry.id !== op.id);
-        if (column) columnItems(next, column).forEach((entry, order) => { entry.order = order; });
+        // 파일을 버리면 그 파일의 영역 조각도 함께 휴지통으로 간다 (허브와 같다).
+        const gone = new Set([op.id, ...next.items.filter((entry) => entry.kind === 'clip' && entry.sourceId === op.id).map((entry) => entry.id)]);
+        const columns = new Set(next.items.filter((entry) => gone.has(entry.id)).map((entry) => itemColumnId(next, entry)));
+        next.items = next.items.filter((entry) => !gone.has(entry.id));
+        next.links = next.links.filter((link) => !gone.has(link.from) && !gone.has(link.to));
+        for (const column of columns) if (column) columnItems(next, column).forEach((entry, order) => { entry.order = order; });
         break;
       }
       case 'restore':

@@ -78,14 +78,14 @@ function boundedRawText(text, name) {
   return value;
 }
 
-function capText(text, name) {
+function capText(text, name, { allowEmpty = false } = {}) {
   // Reject before replace/normalization creates several additional full-size
   // strings. Format-specific extractors may return far more than 5M chars.
   const normalized = boundedRawText(text, name)
     .replace(/\r\n?/g, '\n')
     .replace(/\u0000/g, '')
     .normalize('NFKC');
-  if (!normalized.trim()) {
+  if (!allowEmpty && !normalized.trim()) {
     throw new ReferenceExtractionError('REFERENCE_EMPTY_TEXT', `${name} contains no searchable text`);
   }
   if (normalized.length > MAX_EXTRACTED_CHARS) {
@@ -1141,7 +1141,9 @@ export async function extractReferenceText({ bytes, filePath, name, mimeType, pr
   } else {
     throw new ReferenceExtractionError('REFERENCE_TYPE_UNSUPPORTED', `${name} is not supported`);
   }
-  const text = capText(result.text, name);
+  // 글자 층이 없는 스캔 PDF도 쪽은 있으니 받아 둡니다. 에이전트는 그 쪽을 그림으로 봅니다.
+  const scannedPdf = extension === '.pdf' && Array.isArray(result.pages) && result.pages.length > 0;
+  const text = capText(result.text, name, { allowEmpty: scannedPdf });
   let pages = null;
   if (Array.isArray(result.pages)) {
     let normalizedChars = 0;

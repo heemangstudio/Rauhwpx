@@ -210,6 +210,16 @@
   background: var(--ag-bg-2);
 }
 
+.ag-pp-image-page {
+  position: relative;
+  display: block;
+  flex: none;
+}
+
+.ag-pp-image-fit .ag-pp-image-page {
+  max-width: 100%;
+}
+
 .ag-pp-image img {
   display: block;
   max-width: none;
@@ -220,4 +230,22 @@
   max-width: 100%;
   height: auto;
   cursor: zoom-in;
+}
+
+/* 영역 도구 — 켜져 있는 동안 눌린 모양으로 둔다. */
+.ag-pp-clip-tool {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.ag-pp-clip-tool .ag-icon {
+  width: 13px;
+  height: 13px;
+}
+
+.ag-pp-clip-tool.ag-active,
+.ag-pp-clip-tool.ag-active:hover:not(:disabled) {
+  background: var(--ag-selected);
+  color: var(--ag-text);
 }

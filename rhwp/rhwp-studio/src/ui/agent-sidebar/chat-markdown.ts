@@ -62,6 +62,7 @@ const CITATION_ICONS: Readonly<Record<CitationKind, ProjectIconName>> = {
   web: 'web',
   table: 'table',
   slides: 'slides',
+  clip: 'clip',
 };
 
 function citationRequest(token: WikilinkToken): CitationRequest {
@@ -89,7 +90,9 @@ export function createCitationNode(token: WikilinkToken, hooks: CitationHooks): 
   chip.dataset.citeKind = target.kind;
   const anchor = formatWikilinkAnchor(token.anchor);
   if (anchor) chip.dataset.citeAnchor = anchor;
-  const icon = projectIcon(CITATION_ICONS[target.kind] ?? 'file');
+  // 영역 조각은 아이콘 대신 작은 썸네일을 단다.
+  const icon = (target.clip && hooks.clipThumb?.(target.clip.item, target.clip.source))
+    || projectIcon(CITATION_ICONS[target.kind] ?? 'file');
   const title = document.createElement('span');
   title.className = 'ag-cite-title';
   title.textContent = target.title;

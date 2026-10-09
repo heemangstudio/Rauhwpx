@@ -269,7 +269,9 @@ export function createPreviewProjects(options: { homeAccess?: boolean; latencyMs
   const citationService = createCitationService(citations);
   project = {
     ...project,
-    items: [...project.items, ...citations.items.map((item, index) => ({ ...item, order: 100 + index }))],
+    // 영역 조각은 수집함 맨 위에 두어 보드 장면에서 바로 보이게 한다.
+    items: [...project.items, ...citations.items.map((item, index) => ({ ...item, order: item.kind === 'clip' ? item.order : 100 + index }))],
+    links: [...project.links, ...citations.links],
     tags: [...project.tags, ...citations.tags.filter((tag) => !project.tags.some((known) => known.name === tag.name))],
   };
   let trashed: ProjectItem[] = [
@@ -313,7 +315,7 @@ export function createPreviewProjects(options: { homeAccess?: boolean; latencyMs
     if (projectId !== project.id) throw new ProjectRequestError('PROJECT_NOT_FOUND', '프로젝트를 찾을 수 없습니다.', 404);
   }
 
-  function commit(ops: ProjectOp[], actor: ProjectActor): number {
+  function commit(ops: ProjectOp[], actor: ProjectActor): { revision: number; created: Record<number, string> } {
     const before = project;
     for (const op of ops) {
       if ('id' in op && op.id && ['rename', 'tag', 'move', 'pin', 'trash', 'graph-pin', 'graph-unpin'].includes(op.op)
@@ -324,8 +326,9 @@ export function createPreviewProjects(options: { homeAccess?: boolean; latencyMs
     const inverse = ops.flatMap((op) => inverseOf(before, op)).reverse();
     for (const op of ops) {
       if (op.op === 'trash') {
-        const item = before.items.find((entry) => entry.id === op.id);
-        if (item) trashed = [{ ...item, trashedAt: Date.now() }, ...trashed];
+        // 파일을 버리면 그 파일의 영역도 함께 휴지통으로 간다 (허브와 같다).
+        const gone = before.items.filter((entry) => entry.id === op.id || (entry.kind === 'clip' && entry.sourceId === op.id));
+        trashed = [...gone.map((item) => ({ ...item, trashedAt: Date.now() })), ...trashed];
       }
     }
     let next = applyProjectOps(before, ops, { tempId: () => newId('l', 8) });
@@ -333,18 +336,34 @@ export function createPreviewProjects(options: { homeAccess?: boolean; latencyMs
       if (op.op !== 'restore') continue;
       const item = trashed.find((entry) => entry.id === op.id);
       if (!item) continue;
-      trashed = trashed.filter((entry) => entry.id !== op.id);
-      const { trashedAt: _trashedAt, ...restored } = item;
-      next = { ...next, items: [...next.items, { ...restored, order: 999 } as ProjectItem] };
+      const back = trashed.filter((entry) => entry.id === op.id
+        || (entry.kind === 'clip' && entry.sourceId === op.id && entry.trashedAt === item.trashedAt));
+      trashed = trashed.filter((entry) => !back.includes(entry));
+      for (const entry of back) {
+        const { trashedAt: _trashedAt, ...restored } = entry;
+        next = { ...next, items: [...next.items, { ...restored, order: 999 } as ProjectItem] };
+      }
     }
-    // 낙관 적용이 만든 임시 노트 id 를 허브 모양의 id 로 바꾼다.
-    next.items = next.items.map((item) => item.id.startsWith('tmp-') || /^l[a-z2-7]{8}$/.test(item.id) ? { ...item, id: newId('n') } : item);
+    // 낙관 적용이 만든 임시 노트·영역 id 를 허브 모양의 id 로 바꾸고, 만든 순서대로 연산 번호에 붙인다.
+    const renamed = new Map<string, string>();
+    next.items = next.items.map((item) => {
+      if (!item.id.startsWith('tmp-') && !/^l[a-z2-7]{8}$/.test(item.id)) return item;
+      const id = newId(item.kind === 'clip' ? 'r' : 'n');
+      renamed.set(item.id, id);
+      return { ...item, id };
+    });
+    next.links = next.links.map((link) => ({ ...link, from: renamed.get(link.from) ?? link.from, to: renamed.get(link.to) ?? link.to }));
+    const fresh = [...renamed.values()];
+    const created: Record<number, string> = {};
+    ops.forEach((op, index) => {
+      if ((op.op === 'note' || op.op === 'clip') && !op.id && fresh.length) created[index] = fresh.shift()!;
+    });
     project = { ...next, revision: before.revision + 1 };
     if (!ops.every((op) => op.op === 'graph-pin' || op.op === 'graph-unpin') || activity.length < 40) {
       activity = [{ id: newId('a', 4), at: Date.now(), actor, summary: summarize(before, ops), ops, inverse }, ...activity];
     }
     emit();
-    return project.revision;
+    return { revision: project.revision, created };
   }
 
   function settleLibrarian(itemId: string): void {
@@ -388,8 +407,8 @@ export function createPreviewProjects(options: { homeAccess?: boolean; latencyMs
     async applyOps(projectId, ops, opsOptions) {
       requireProject(projectId);
       await wait(null);
-      const revision = commit(ops, opsOptions?.actor ?? { kind: 'user' });
-      return { revision, applied: ops.length, created: {}, unresolvedLinks: [] };
+      const { revision, created } = commit(ops, opsOptions?.actor ?? { kind: 'user' });
+      return { revision, applied: ops.length, created, unresolvedLinks: [] };
     },
     async undo(projectId, activityId) {
       requireProject(projectId);
@@ -397,7 +416,7 @@ export function createPreviewProjects(options: { homeAccess?: boolean; latencyMs
       if (!entry) throw new ProjectRequestError('PROJECT_OP_INVALID', '기록을 찾을 수 없습니다.', 400);
       await wait(null);
       const applicable = entry.inverse.filter((op) => op.op !== 'goal' || entry.ops.length > 0);
-      const revision = applicable.length ? commit(applicable, { kind: 'user' }) : project.revision;
+      const revision = applicable.length ? commit(applicable, { kind: 'user' }).revision : project.revision;
       return { revision, applied: applicable.length, skipped: entry.inverse.length - applicable.length };
     },
     async activity(projectId) {

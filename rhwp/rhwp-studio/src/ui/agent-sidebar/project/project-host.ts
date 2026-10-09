@@ -13,6 +13,7 @@ import { refreshCitations } from '../chat-markdown.ts';
 import { createIcon } from '../icons.ts';
 import { createMentionPicker, renderMentionPill } from '../mention-picker.ts';
 import { projectCitationTarget, type CitationHooks, type CitationRequest } from '../wikilinks.ts';
+import { clipThumbElement } from './clip-thumbs.ts';
 import { createProjectColumn, type ProjectColumn, type ProjectPreviewTarget, type ProjectTab } from './project-column.ts';
 import { el, itemIconName, projectIcon } from './project-ui.ts';
 
@@ -93,6 +94,11 @@ export function createProjectHost(deps: ProjectHostDeps): ProjectHost {
   const citations: CitationHooks = {
     resolveItem: (id) => projectCitationTarget(project(), id),
     openCitation,
+    clipThumb(clip, source) {
+      const current = project();
+      if (!client || !current) return null;
+      return clipThumbElement({ projectId: current.id, clip, source, size: 'chip', load: client.service.fileBlob });
+    },
     chunkPage(id, n) {
       const current = project();
       const item = current?.items.find((row) => row.id === id);

@@ -18,6 +18,8 @@ import { EditJournal, type EditJournalEntry } from './edit-journal.ts';
 import { batchItemArgs } from './batch-item.ts';
 import { renderChartPng, validateChartSpec } from './chart-render.ts';
 import { cropImageOnCanvas, REFERENCE_READ_MAX_PIXELS, type ImageCropper, type PixelBox } from './image-crop.ts';
+import { renderPdfImage, type PdfImage, type PdfImageRenderer } from './pdf-render.ts';
+import { normalizeClipRect } from './clip-geometry.ts';
 import { describeObject, EDIT_OBJECT_ARG_KEYS, planInsertShape, planObjectEdit, type ObjectKind } from './object-edit-args.ts';
 import type { ChartSpec } from './chart-render.ts';
 import {
@@ -62,6 +64,10 @@ export interface AgentToolExecutorDeps {
   isReadOnly?: () => boolean;
   /** 참조 이미지 잘라내기 — 기본은 브라우저 캔버스 (테스트가 주입한다) */
   cropImage?: ImageCropper;
+  /** 연구 프로젝트 파일 원본 (PDF 쪽·영역 조각을 그릴 때). 브리지가 프로젝트 HTTP 로 채운다. */
+  loadProjectFile?: (projectId: string, itemId: string) => Promise<Uint8Array>;
+  /** PDF 쪽 영역 그리기 — 기본은 pdf.js (테스트가 주입한다) */
+  renderPdf?: PdfImageRenderer;
 }
 
 const DOC_NOT_LOADED_MESSAGE = '문서가 로드되지 않았습니다';
@@ -583,6 +589,53 @@ const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
 const IMAGE_MAX_BYTES = 5 * 1024 * 1024;
 const IMAGE_MAX_B64 = 7_200_000;
 const CROP_SOURCE_MAX_B64 = 28_000_000;
+
+/** insert_image clipId(PDF): 인쇄 해상도와 픽셀 상한 */
+const PRINT_DPI = 200;
+const PRINT_MAX_PIXELS = 16_777_216;
+
+/** insert_image 의 놓을 자리 (동기·잘라내기·PDF 조각 경로 공통) */
+interface ImagePlacement {
+  sectionIdx: number;
+  paraIdx: number;
+  charOffset: number;
+  cell?: CellAddr;
+  floating?: Record<string, unknown>;
+  afterObjects: boolean;
+}
+
+/** 허브가 채운 PDF 원본 — 세션 프로젝트의 파일 항목과 쪽 (reference-tools.mjs pdfSourceFor) */
+interface PdfSourceArgs {
+  projectId: string;
+  itemId: string;
+  fileId: string;
+  name: string;
+  page: number;
+}
+
+function optPdfSource(args: Record<string, unknown>): PdfSourceArgs | null {
+  const raw = args['pdfSource'];
+  if (raw === undefined || raw === null) return null;
+  const r = asRecord(raw);
+  const page = r['page'];
+  const text = (key: string) => (typeof r[key] === 'string' && r[key] ? r[key] as string : null);
+  const projectId = text('projectId');
+  const itemId = text('itemId');
+  const fileId = text('fileId');
+  if (!projectId || !itemId || !fileId || typeof page !== 'number' || !Number.isSafeInteger(page) || page < 1) {
+    throw new AgentToolError('INVALID_ARGS', 'pdfSource must carry projectId, itemId, fileId and a 1-based page');
+  }
+  return { projectId, itemId, fileId, name: text('name') ?? '', page };
+}
+
+/** 선택적 rect [x,y,w,h] (쪽 비율 0..1) */
+function optRect(args: Record<string, unknown>): [number, number, number, number] | undefined {
+  const v = args['rect'];
+  if (v === undefined || v === null) return undefined;
+  const rect = Array.isArray(v) && v.every((n) => typeof n === 'number') ? normalizeClipRect(v as number[]) : null;
+  if (!rect) throw new AgentToolError('INVALID_ARGS', 'rect must be [x, y, w, h] inside 0..1 with w and h of at least 0.01');
+  return rect;
+}
 
 /** 선택적 cropPx {x,y,width,height} (원본 px) */
 function optCropPx(args: Record<string, unknown>): PixelBox | undefined {
@@ -6797,6 +6850,9 @@ export class AgentToolExecutor {
         throw new AgentToolError('INVALID_ARGS', `${k} must be a positive number <= 500`);
       }
     }
+    const place = { sectionIdx, paraIdx, charOffset, cell, floating, afterObjects };
+    const pdf = optPdfSource(args);
+    if (pdf) return this.insertPdfClip(args, agent, capability, place, pdf);
     const cropPx = optCropPx(args);
     const b64 = reqString(args, 'imageBase64');
     const rawExt = typeof args['extension'] === 'string' ? args['extension'].toLowerCase().replace('jpeg', 'jpg') : undefined;
@@ -6813,7 +6869,6 @@ export class AgentToolExecutor {
       throw new AgentToolError('INVALID_ARGS', 'image too large — max 5MB');
     }
     const bytes = decodeBase64(b64, 'imageBase64');
-    const place = { sectionIdx, paraIdx, charOffset, cell, floating, afterObjects };
     if (!viaCanvas) {
       const naturalWidthPx = reqInt(args, 'naturalWidthPx');
       const naturalHeightPx = reqInt(args, 'naturalHeightPx');
@@ -6845,15 +6900,62 @@ export class AgentToolExecutor {
     })();
   }
 
+  /**
+   * PDF 영역 조각을 인쇄 해상도(200dpi, 16.7MP 이내)로 그려 넣는다. 기본 크기는 쪽 위의 실제 크기이고,
+   * 5MB 를 넘으면 JPEG·축소로 맞춘다.
+   */
+  private async insertPdfClip(
+    args: Record<string, unknown>,
+    agent: AgentName,
+    capability: ToolCapabilityContext | undefined,
+    place: ImagePlacement,
+    pdf: PdfSourceArgs,
+  ): Promise<unknown> {
+    const rect = optRect(args);
+    if (!rect) throw new AgentToolError('INVALID_ARGS', 'a PDF clip needs its rect');
+    const out = await this.renderProjectPdf(pdf, {
+      rect, zoom: PRINT_DPI / 96, maxPixels: PRINT_MAX_PIXELS, maxBytes: IMAGE_MAX_BYTES,
+    });
+    assertToolRequestActive(capability);
+    // await 동안 사용자가 편집했을 수 있다 — 삽입 직전 revision/주소를 재검증한다
+    this.requireRevision(args);
+    this.validateAddress(place.sectionIdx, place.paraIdx, place.charOffset, place.cell);
+    const result = this.stageImage(args, agent, place, {
+      bytes: out.bytes,
+      extension: out.mimeType === 'image/jpeg' ? 'jpg' : 'png',
+      naturalWidthPx: out.widthPx,
+      naturalHeightPx: out.heightPx,
+      // 96dpi 쪽 픽셀 1 = 75HU — 쪽에서 차지하던 크기 그대로 둔다.
+      naturalSizeHu: { width: out.crop.width * 75, height: out.crop.height * 75 },
+    }) as Record<string, unknown>;
+    return {
+      ...result,
+      ...(typeof args['clipId'] === 'string' ? { clipId: args['clipId'] } : {}),
+      source: { itemId: pdf.itemId, page: pdf.page, rect: out.rect, widthPx: out.widthPx, heightPx: out.heightPx },
+    };
+  }
+
+  /** 세션 프로젝트 PDF 의 쪽 영역을 그린다. 바이트는 프로젝트 HTTP 로 받고 fileId 로 잠시 붙든다. */
+  private renderProjectPdf(
+    pdf: PdfSourceArgs,
+    request: { rect?: readonly number[]; cropPx?: PixelBox; zoom?: number; maxPixels: number; maxBytes?: number },
+  ): Promise<PdfImage> {
+    const load = this.deps.loadProjectFile;
+    if (!load) throw new AgentToolError('RENDER_UNAVAILABLE', 'Project files are not reachable from this Studio tab');
+    const render = this.deps.renderPdf ?? renderPdfImage;
+    return render({ fileId: pdf.fileId, page: pdf.page, ...request }, () => load(pdf.projectId, pdf.itemId));
+  }
+
   /** 크기 결정 + insertImage 객체 op 등록 (insert_image 의 동기/잘라내기 경로 공통) */
   private stageImage(
     args: Record<string, unknown>,
     agent: AgentName,
-    place: {
-      sectionIdx: number; paraIdx: number; charOffset: number; cell?: CellAddr;
-      floating?: Record<string, unknown>; afterObjects: boolean;
+    place: ImagePlacement,
+    image: {
+      bytes: Uint8Array; extension: string; naturalWidthPx: number; naturalHeightPx: number; cropPx?: PixelBox;
+      /** 자연 크기(HU). 없으면 96dpi 픽셀 크기다. */
+      naturalSizeHu?: { width: number; height: number };
     },
-    image: { bytes: Uint8Array; extension: string; naturalWidthPx: number; naturalHeightPx: number; cropPx?: PixelBox },
   ): unknown {
     const { sectionIdx, paraIdx, charOffset, cell, floating, afterObjects } = place;
     const { naturalWidthPx, naturalHeightPx } = image;
@@ -6873,8 +6975,8 @@ export class AgentToolExecutor {
       heightHu = mmToHu(heightMm);
       widthHu = Math.round(heightHu / ratio);
     } else {
-      widthHu = naturalWidthPx * 75;
-      heightHu = naturalHeightPx * 75;
+      widthHu = Math.round(image.naturalSizeHu?.width ?? naturalWidthPx * 75);
+      heightHu = Math.round(image.naturalSizeHu?.height ?? naturalHeightPx * 75);
       let bodyHu = 42_520; // A4 기본 여백 근사 fallback
       try {
         const pd = this.deps.wasm.getPageDef(sectionIdx);
@@ -6911,15 +7013,43 @@ export class AgentToolExecutor {
     };
   }
 
-  /** read_reference_image cropPx/zoom — 허브가 넘긴 원본을 잘라 확대한다 (1.15MP 이내) */
+  /**
+   * read_reference_image — 허브가 넘긴 이미지를 잘라 확대하거나(cropPx/zoom), 프로젝트 PDF 의 쪽(영역)을
+   * pdf.js 로 그린다. 결과는 1.15MP 이내다. PDF 의 cropPx·pagePx 는 96dpi 쪽 픽셀이다.
+   */
   private async readReferenceImage(args: Record<string, unknown>): Promise<unknown> {
-    const b64 = reqString(args, 'imageBase64');
-    if (b64.length > CROP_SOURCE_MAX_B64) throw new AgentToolError('INVALID_ARGS', 'reference image is too large');
-    const mimeType = reqString(args, 'mimeType');
     const zoom = args['zoom'] ?? 1;
     if (typeof zoom !== 'number' || !(zoom >= 1) || zoom > 4) {
       throw new AgentToolError('INVALID_ARGS', 'zoom must be 1..4');
     }
+    const echo = {
+      ...(typeof args['itemId'] === 'string' ? { itemId: args['itemId'] } : {}),
+      ...(typeof args['clipId'] === 'string' ? { clipId: args['clipId'] } : {}),
+    };
+    const pdf = optPdfSource(args);
+    if (pdf) {
+      const out = await this.renderProjectPdf(pdf, {
+        rect: optRect(args), cropPx: optCropPx(args), zoom, maxPixels: REFERENCE_READ_MAX_PIXELS,
+      });
+      return {
+        itemId: pdf.itemId,
+        ...echo,
+        fileId: pdf.fileId,
+        name: pdf.name,
+        page: pdf.page,
+        pageCount: out.pageCount,
+        image: { data: bytesToBase64(out.bytes), mimeType: out.mimeType },
+        widthPx: out.widthPx,
+        heightPx: out.heightPx,
+        pagePx: out.pagePx,
+        cropPx: out.crop,
+        rect: out.rect,
+        zoom: out.scale,
+      };
+    }
+    const b64 = reqString(args, 'imageBase64');
+    if (b64.length > CROP_SOURCE_MAX_B64) throw new AgentToolError('INVALID_ARGS', 'reference image is too large');
+    const mimeType = reqString(args, 'mimeType');
     const crop = this.deps.cropImage ?? cropImageOnCanvas;
     const out = await crop({
       bytes: decodeBase64(b64, 'imageBase64'), mimeType, cropPx: optCropPx(args), zoom,
@@ -6927,6 +7057,7 @@ export class AgentToolExecutor {
       output: mimeType === 'image/jpeg' ? 'image/jpeg' : 'image/png',
     });
     return {
+      ...echo,
       ...(typeof args['fileId'] === 'string' ? { fileId: args['fileId'] } : {}),
       ...(typeof args['name'] === 'string' ? { name: args['name'] } : {}),
       image: { data: bytesToBase64(out.bytes), mimeType: out.mimeType },

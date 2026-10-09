@@ -19,7 +19,7 @@ import { defaultReferenceRoot, tokenizeReferenceText } from './reference-store.m
  */
 
 export const PROJECT_ID_PATTERN = /^p[a-z2-7]{10}$/;
-export const ITEM_ID_PATTERN = /^[fnd][a-z2-7]{6}$/;
+export const ITEM_ID_PATTERN = /^[fndr][a-z2-7]{6}$/;
 export const LINK_ID_PATTERN = /^l[a-z2-7]{8}$/;
 const COLUMN_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,23}$/;
 const ACTIVITY_ID_PATTERN = /^a[a-z2-7]{12}$/;
@@ -39,8 +39,12 @@ const MAX_COLUMNS = 12;
 const MAX_COLUMN_NAME_CHARS = 40;
 const MAX_PROJECT_NAME_CHARS = 120;
 const MAX_GRAPH_COORDINATE = 1_000_000;
+const MAX_CLIP_PAGE = 100_000;
+const CLIP_UNITS = 10_000; // 영역 좌표는 소수 넷째 자리까지 — 1만분의 1 단위
+const MIN_CLIP_UNITS = 100; // 0.01
 export const DEFAULT_MAX_PROJECT_FILE_ITEMS = 2_000;
 export const DEFAULT_MAX_PROJECT_NOTES = 2_000;
+export const DEFAULT_MAX_PROJECT_CLIPS = 2_000;
 export const DEFAULT_MAX_PROJECT_LINKS = 20_000;
 const MAX_PROJECT_JSON_BYTES = 32 * 1024 * 1024;
 const MAX_INDEX_JSON_BYTES = 8 * 1024 * 1024;
@@ -48,6 +52,8 @@ const ACTIVITY_ROTATE_ENTRIES = 5_000;
 const ACTIVITY_ROTATE_BYTES = 2 * 1024 * 1024;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const TAG_COLORS = ['#c2410c', '#0f766e', '#1d4ed8', '#7c3aed', '#be185d', '#4d7c0f', '#b45309', '#0e7490', '#9333ea', '#475569'];
+const ITEM_KINDS = new Set(['file', 'note', 'clip']);
+const CLIP_SOURCE_KINDS = new Set(['pdf', 'image']);
 const LIBRARIAN_STATUSES = new Set(['queued', 'running', 'done', 'failed', 'skipped']);
 const SOURCE_KINDS = new Set(['upload', 'chat-attachment', 'web', 'home', 'text', 'workspace', 'migrated']);
 const ACTOR_KINDS = new Set(['user', 'agent', 'librarian']);
@@ -60,6 +66,7 @@ const OP_LABELS = {
   link: '연결',
   unlink: '연결 해제',
   note: '메모',
+  clip: '영역',
   summary: '요약',
   columns: '열 편집',
   goal: '목표',
@@ -192,10 +199,70 @@ function compareOrder(left, right) {
   return (left.order - right.order) || (left.createdAt - right.createdAt) || left.id.localeCompare(right.id);
 }
 
-/** 바깥으로 내보내는 항목 모양 — 내부 필드(bodySha 등)는 뺀다. */
+/** 바깥으로 내보내는 항목 모양 — 내부 필드(bodySha·trashedWith)는 뺀다. */
 function publicItem(item) {
-  const { bodySha: _bodySha, ...rest } = item;
+  const { bodySha: _bodySha, trashedWith: _trashedWith, ...rest } = item;
   return structuredClone(rest);
+}
+
+/** 영역에서 원본 파일로 가는 연결. 저장하지 않고 스냅숏마다 만든다 — id 는 영역 id 에서 정해진다. */
+function clipLinkId(clipId) {
+  return `l${hashBase32(`clip\u0000${clipId}`, 8)}`;
+}
+
+/**
+ * 정규화 좌표 [x, y, w, h] 를 소수 넷째 자리로 맞추고 쪽 안에 들어오는지 본다. 비교는 1만분의 1
+ * 단위 정수로 해서 부동소수 오차가 없다. 한 단위까지 넘친 것은 크기를 지키고 자리를 당긴다.
+ */
+function normalizeClipRect(rect, index) {
+  if (!Array.isArray(rect) || rect.length !== 4 || !rect.every((value) => typeof value === 'number' && Number.isFinite(value))) {
+    throw invalidOp(index, 'rect must be [x, y, w, h] with four finite numbers');
+  }
+  let [x, y, w, h] = rect.map((value) => Math.round(value * CLIP_UNITS));
+  if (x < 0 || y < 0) throw invalidOp(index, 'rect x and y must be at least 0');
+  if (w < MIN_CLIP_UNITS || h < MIN_CLIP_UNITS) throw invalidOp(index, 'rect width and height must be at least 0.01');
+  if (x + w > CLIP_UNITS + 1 || y + h > CLIP_UNITS + 1) {
+    throw invalidOp(index, 'rect must stay inside the page (x + w and y + h at most 1)');
+  }
+  w = Math.min(w, CLIP_UNITS);
+  h = Math.min(h, CLIP_UNITS);
+  x = Math.min(x, CLIP_UNITS - w);
+  y = Math.min(y, CLIP_UNITS - h);
+  return [x, y, w, h].map((value) => value / CLIP_UNITS || 0);
+}
+
+function defaultClipTitle(source, page) {
+  const extension = path.extname(source.originalName ?? source.title);
+  const stripped = extension && source.title.toLowerCase().endsWith(extension.toLowerCase())
+    ? source.title.slice(0, -extension.length).trim()
+    : source.title;
+  const base = stripped || source.title;
+  const suffix = source.fileKind === 'pdf' ? ` p.${page} 영역` : ' 영역';
+  return `${base.slice(0, MAX_TITLE_CHARS - suffix.length)}${suffix}`;
+}
+
+/** 파일을 휴지통에 넣을 때 그 파일의 살아 있는 영역도 함께 넣는다. */
+function trashClipsOf(state, fileId, now) {
+  for (const clip of state.items) {
+    if (clip.kind !== 'clip' || clip.sourceId !== fileId || clip.trashedAt) continue;
+    clip.trashedAt = now;
+    clip.trashedWith = fileId;
+    clip.updatedAt = now;
+  }
+}
+
+/** 파일과 함께 휴지통에 들어갔던 영역을 꺼낸다. 꺼낸 영역을 돌려준다. */
+function restoreClipsOf(state, fileId, now) {
+  const restored = [];
+  for (const clip of state.items) {
+    if (clip.kind !== 'clip' || clip.trashedWith !== fileId) continue;
+    delete clip.trashedWith;
+    if (!clip.trashedAt) continue;
+    delete clip.trashedAt;
+    clip.updatedAt = now;
+    restored.push(clip);
+  }
+  return restored;
 }
 
 /**
@@ -420,6 +487,9 @@ class OpApplier {
 
   op_unlink(op, index) {
     const link = this.state.links.find((entry) => entry.id === op.id);
+    if (!link && this.state.items.some((item) => item.kind === 'clip' && clipLinkId(item.id) === op.id)) {
+      throw invalidOp(index, 'a clip stays linked to its source file; trash the clip instead');
+    }
     if (!link) throw projectError('PROJECT_ITEM_NOT_FOUND', `ops[${index}]: link ${String(op.id)} was not found`);
     if (link.origin !== 'explicit') throw invalidOp(index, 'links written in a note change with the note body');
     this.state.links = this.state.links.filter((entry) => entry !== link);
@@ -495,6 +565,96 @@ class OpApplier {
     return this.record(op, [inverse], paths);
   }
 
+  /** 영역의 원본: 휴지통에 없는 PDF·그림 파일 항목. */
+  clipSource(id, index) {
+    const source = this.item(id, index);
+    if (source.kind !== 'file' || !CLIP_SOURCE_KINDS.has(source.fileKind)) {
+      throw invalidOp(index, `${source.id} is not a PDF or image file`);
+    }
+    return source;
+  }
+
+  clipPage(source, page, index) {
+    if (source.fileKind === 'image') {
+      if (page !== undefined && page !== null && page !== 1) throw invalidOp(index, 'an image clip is always on page 1');
+      return 1;
+    }
+    const maximum = Number.isSafeInteger(source.pageCount) && source.pageCount > 0 ? source.pageCount : MAX_CLIP_PAGE;
+    if (!Number.isSafeInteger(page) || page < 1 || page > maximum) throw invalidOp(index, `page must be an integer from 1 to ${maximum}`);
+    return page;
+  }
+
+  /**
+   * 원본 PDF 쪽·그림의 한 영역. id 가 없으면 만들고, 있으면 쪽·영역·이름·열·태그를 바꾼다.
+   * 영역은 처음 원본에 묶이며 다른 파일로 옮기지 않는다.
+   */
+  op_clip(op, index) {
+    if (op.id !== undefined && op.id !== null) return this.updateClip(op, index);
+    if (op.source === undefined || op.source === null) throw invalidOp(index, 'source is required to create a clip');
+    const source = this.clipSource(op.source, index);
+    const page = this.clipPage(source, op.page, index);
+    const rect = normalizeClipRect(op.rect, index);
+    const name = op.name === undefined || op.name === null ? null : cleanText(op.name, MAX_TITLE_CHARS);
+    if (op.name !== undefined && op.name !== null && !name) throw invalidOp(index, `name must be 1-${MAX_TITLE_CHARS} characters`);
+    const tags = op.tags === undefined ? [] : this.normalizeTags(op.tags, index);
+    const column = op.column === undefined ? this.state.columns[0].id : this.requireColumn(op.column, index);
+    if (this.state.items.filter((item) => item.kind === 'clip').length >= this.store.maxClips) {
+      throw projectError('PROJECT_LIMIT', `a project can have up to ${this.store.maxClips} clips`);
+    }
+    const id = this.store.newId(this.state, 'r', 6);
+    const item = {
+      id,
+      kind: 'clip',
+      title: name ?? defaultClipTitle(source, page),
+      column,
+      order: 0,
+      tags,
+      pinned: false,
+      summary: '',
+      createdAt: this.now,
+      updatedAt: this.now,
+      addedBy: this.actor,
+      sourceId: source.id,
+      page,
+      rect,
+    };
+    this.state.items.push(item);
+    this.placeItem(item, column, null);
+    this.created[index] = id;
+    return this.record(op, [{ op: 'trash', id }], [`item:${id}:trashed`]);
+  }
+
+  updateClip(op, index) {
+    const clip = this.item(op.id, index);
+    if (clip.kind !== 'clip') throw invalidOp(index, `${clip.id} is not a clip`);
+    if (op.source !== undefined && op.source !== null && resolveItemId(this.state, op.source) !== clip.sourceId) {
+      throw invalidOp(index, 'a clip cannot move to another file; create a new clip instead');
+    }
+    const source = this.clipSource(clip.sourceId, index);
+    // 모두 검사한 뒤에 바꾼다 — 되돌리기는 실패한 연산을 건너뛰고 나머지를 저장한다.
+    const next = {};
+    if (op.page !== undefined) next.page = this.clipPage(source, op.page, index);
+    if (op.rect !== undefined) next.rect = normalizeClipRect(op.rect, index);
+    if (op.name !== undefined) {
+      next.title = cleanText(op.name, MAX_TITLE_CHARS);
+      if (!next.title) throw invalidOp(index, `name must be 1-${MAX_TITLE_CHARS} characters`);
+    }
+    if (op.tags !== undefined) next.tags = this.normalizeTags(op.tags, index);
+    if (op.column !== undefined) next.column = this.requireColumn(op.column, index);
+    const inverse = { op: 'clip', id: clip.id };
+    const paths = [];
+    for (const field of ['page', 'rect', 'title', 'tags', 'column']) {
+      if (next[field] === undefined || sameJson(next[field], clip[field])) continue;
+      inverse[field === 'title' ? 'name' : field] = structuredClone(clip[field]);
+      if (field === 'column') this.placeItem(clip, next.column, null);
+      else clip[field] = next[field];
+      paths.push(`item:${clip.id}:${field}`);
+    }
+    if (paths.length === 0) return undefined;
+    clip.updatedAt = this.now;
+    return this.record(op, [inverse], paths);
+  }
+
   /** 카드에 보이는 한두 문장 요약. 잠그는 필드가 아니다. {summary} 또는 {body} 로 받는다. */
   op_summary(op, index) {
     const item = this.item(op.id, index);
@@ -551,20 +711,32 @@ class OpApplier {
     return this.record(op, [{ op: 'goal', body: previous }], ['goal']);
   }
 
+  /** 파일을 넣으면 그 파일의 영역도 함께 들어가고, 파일을 꺼낼 때 같이 나온다. */
   op_trash(op, index) {
     const item = this.item(op.id, index, { allowTrashed: true });
     if (item.trashedAt) return undefined;
     item.trashedAt = this.now;
     item.updatedAt = this.now;
+    if (item.kind === 'file') trashClipsOf(this.state, item.id, this.now);
     return this.record(op, [{ op: 'restore', id: item.id }], [`item:${item.id}:trashed`]);
   }
 
   op_restore(op, index) {
     const item = this.item(op.id, index, { allowTrashed: true });
     if (!item.trashedAt) return undefined;
+    if (item.kind === 'clip') {
+      const source = this.state.items.find((entry) => entry.id === item.sourceId);
+      if (!source || source.trashedAt) {
+        throw invalidOp(index, `${item.id} comes from ${item.sourceId}, which is in the trash; restore its source first`);
+      }
+    }
     delete item.trashedAt;
+    delete item.trashedWith;
     item.updatedAt = this.now;
-    if (!this.state.columns.some((column) => column.id === item.column)) this.placeItem(item, this.state.columns[0].id, null);
+    const restored = item.kind === 'file' ? [item, ...restoreClipsOf(this.state, item.id, this.now)] : [item];
+    for (const entry of restored) {
+      if (!this.state.columns.some((column) => column.id === entry.column)) this.placeItem(entry, this.state.columns[0].id, null);
+    }
     return this.record(op, [{ op: 'trash', id: item.id }], [`item:${item.id}:trashed`]);
   }
 
@@ -621,7 +793,7 @@ function validateProjectState(raw, projectId) {
     throw projectError('PROJECT_STORE_CORRUPT', `project ${projectId} has an invalid schema`);
   }
   for (const item of raw.items) {
-    if (!isPlainObject(item) || !ITEM_ID_PATTERN.test(item.id) || (item.kind !== 'file' && item.kind !== 'note')) {
+    if (!isPlainObject(item) || !ITEM_ID_PATTERN.test(item.id) || !ITEM_KINDS.has(item.kind)) {
       throw projectError('PROJECT_STORE_CORRUPT', `project ${projectId} has an invalid item`);
     }
     // 허브가 멈춘 사이 진행 중이던 정리는 다시 대기열로 돌린다.
@@ -642,7 +814,7 @@ export class ProjectStore {
    * @param {{
    *   root?: string, referenceStore: any, settings?: () => any, now?: () => number,
    *   random?: (size: number) => Buffer, platform?: string, logger?: (line: string) => void,
-   *   maxFileItems?: number, maxNotes?: number, maxLinks?: number,
+   *   maxFileItems?: number, maxNotes?: number, maxClips?: number, maxLinks?: number,
    * }} options
    */
   constructor({
@@ -655,6 +827,7 @@ export class ProjectStore {
     logger = null,
     maxFileItems = DEFAULT_MAX_PROJECT_FILE_ITEMS,
     maxNotes = DEFAULT_MAX_PROJECT_NOTES,
+    maxClips = DEFAULT_MAX_PROJECT_CLIPS,
     maxLinks = DEFAULT_MAX_PROJECT_LINKS,
   } = {}) {
     if (!referenceStore) throw new Error('ProjectStore requires referenceStore');
@@ -668,6 +841,7 @@ export class ProjectStore {
     this.logger = logger;
     this.maxFileItems = maxFileItems;
     this.maxNotes = maxNotes;
+    this.maxClips = maxClips;
     this.maxLinks = maxLinks;
     this.index = { schemaVersion: INDEX_SCHEMA_VERSION, projects: {}, documentProjects: {}, threadProjects: {}, deletedProjects: {} };
     this.projects = new Map();
@@ -1011,6 +1185,9 @@ export class ProjectStore {
     const visibleIds = new Set([...visible.map((item) => item.id), ...state.members.map((member) => member.nodeId)]);
     const used = new Set();
     for (const item of visible) for (const tag of item.tags) used.add(tag);
+    const clipLinks = visible
+      .filter((item) => item.kind === 'clip' && visibleIds.has(item.sourceId))
+      .map((clip) => ({ id: clipLinkId(clip.id), from: clip.id, to: clip.sourceId, origin: 'clip' }));
     return {
       id: state.id,
       name: state.name,
@@ -1021,7 +1198,10 @@ export class ProjectStore {
       tags: [...used].sort((a, b) => a.localeCompare(b, 'ko')).map((name) => ({ name, color: tagColor(name) })),
       members: state.members.map((member) => ({ ...member })),
       items: visible.slice().sort(compareOrder).map(publicItem),
-      links: state.links.filter((link) => visibleIds.has(link.from) && visibleIds.has(link.to)).map((link) => ({ ...link })),
+      links: [
+        ...state.links.filter((link) => visibleIds.has(link.from) && visibleIds.has(link.to)).map((link) => ({ ...link })),
+        ...clipLinks,
+      ],
       graph: { pinned: structuredClone(state.graph.pinned) },
       librarian: this.#librarianSummary(state),
       usage: this.#usage(state),
@@ -1391,6 +1571,7 @@ export class ProjectStore {
           if (existing.trashedAt) {
             delete existing.trashedAt;
             existing.updatedAt = now;
+            restoreClipsOf(draft, existing.id, now);
             groups.push({
               op: { op: 'restore', id: existing.id },
               inverse: [{ op: 'trash', id: existing.id }],
@@ -1575,6 +1756,7 @@ export class ProjectStore {
         }
         throw error;
       }
+      const copiedClips = [];
       for (const item of source.items) {
         const fileId = movedFiles.get(item.id)?.id ?? item.fileId;
         const duplicate = item.kind === 'file' ? draft.items.find((entry) => entry.kind === 'file' && entry.fileId === fileId) : null;
@@ -1587,6 +1769,7 @@ export class ProjectStore {
         const column = draft.columns.some((entry) => entry.id === item.column) ? item.column : draft.columns[0].id;
         const copy = { ...structuredClone(item), id, column, order: draft.items.filter((entry) => entry.column === column).length, updatedAt: now };
         if (item.kind === 'file') copy.fileId = fileId;
+        if (item.kind === 'clip') copiedClips.push(copy);
         draft.items.push(copy);
         if (item.kind === 'note') {
           const body = await this.noteBody(source, item.id);
@@ -1594,6 +1777,11 @@ export class ProjectStore {
           await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
           await writeFileAtomically(file, body, this.platform);
         }
+      }
+      // 영역이 원본보다 먼저 옮겨졌을 수 있어 원본 id 는 다 옮긴 뒤에 맞춘다.
+      for (const clip of copiedClips) {
+        clip.sourceId = idMap.get(clip.sourceId) ?? clip.sourceId;
+        if (clip.trashedWith) clip.trashedWith = idMap.get(clip.trashedWith) ?? clip.trashedWith;
       }
       for (const [from, to] of idMap) if (from !== to) draft.aliases[from] = to;
       for (const [from, to] of Object.entries(source.aliases ?? {})) {
@@ -1769,6 +1957,10 @@ export class ProjectStore {
         } catch (error) {
           this.logger?.(`project purge kept ${item.id}: ${error?.message ?? error}`);
         }
+      }
+      // 원본이 지워지면 그 영역도 남기지 않는다.
+      for (const item of state.items) {
+        if (item.kind === 'clip' && purged.has(item.sourceId)) purged.add(item.id);
       }
       if (purged.size === 0) return { purged: 0 };
       const draft = structuredClone(state);

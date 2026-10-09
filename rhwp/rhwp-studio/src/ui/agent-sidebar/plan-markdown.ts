@@ -713,6 +713,9 @@ export function fileBadgeFor(code: string): string | null {
 /** 굵게·기울임 안의 코드처럼 한 겹 중첩된 인라인 마크업까지만 푼다. */
 const MAX_INLINE_DEPTH = 3;
 
+/** 인용 칩 바로 뒤에 붙는 닫는 문장부호 — 칩과 한 줄에 둔다. */
+const RE_TRAILING_PUNCTUATION = /^[.,;:!?)\]}%'"’”」』》〉…。、·]+/u;
+
 function appendInline(
   host: MarkdownHost,
   parent: MarkdownNode,
@@ -720,7 +723,9 @@ function appendInline(
   options: MarkdownRenderOptions,
   depth = 0,
 ): void {
-  for (const token of tokenizeInline(text)) {
+  const tokens = tokenizeInline(text);
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
     if (token.kind === 'text') {
       add(parent, host.createTextNode(token.text));
       continue;
@@ -734,7 +739,23 @@ function appendInline(
       continue;
     }
     if (token.kind === 'wikilink') {
-      add(parent, options.citation?.(token) ?? host.createTextNode(token.raw));
+      const chip = options.citation?.(token) ?? null;
+      if (!chip) {
+        add(parent, host.createTextNode(token.raw));
+        continue;
+      }
+      // 칩 뒤의 마침표·쉼표가 홀로 다음 줄로 넘어가지 않도록 칩과 함께 묶는다.
+      const next = tokens[index + 1];
+      const punctuation = next?.kind === 'text' ? RE_TRAILING_PUNCTUATION.exec(next.text)?.[0] : undefined;
+      if (!punctuation || next?.kind !== 'text') {
+        add(parent, chip);
+        continue;
+      }
+      const group = element(host, 'span', 'ag-cite-group');
+      add(group, chip);
+      add(group, host.createTextNode(punctuation));
+      add(parent, group);
+      tokens[index + 1] = { kind: 'text', text: next.text.slice(punctuation.length) };
       continue;
     }
     if (token.kind === 'link') {

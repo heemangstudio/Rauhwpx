@@ -4,6 +4,8 @@
  *
  * - PDF: pdf-viewer.ts 로 열고 인용 조각을 강조한다.
  * - 이미지: blob URL 로 띄우고 맞춤/원래 크기를 오간다.
+ * - PDF·이미지 위에는 영역 조각 층(clip-layer.ts)을 덮는다. 조각을 열면 원본의 그 쪽으로 가서
+ *   테두리로 보여 주고, 영역 도구로 새 조각을 그린다.
  * - 노트: 채팅과 같은 Markdown 렌더러로 그리고, 바로 고쳐 `note` 연산으로 저장한다.
  * - 그 밖의 문서: 허브가 뽑은 글자를 읽기 보기로 보여 주고 조각을 강조한다.
  * 어떤 경우에도 원문 HTML 을 해석하지 않는다.
@@ -12,12 +14,16 @@
 import './project-preview.css';
 import type {
   ProjectChunk,
+  ProjectClipItem,
   ProjectFileItem,
   ProjectItem,
   ProjectNoteItem,
   ProjectOp,
+  ProjectOpsResult,
   ProjectSnapshot,
 } from '../../../agent/types.ts';
+import { defaultClipTitle } from '../../../agent/clip-geometry.ts';
+import { createClipLayer, type ClipLayer } from './clip-layer.ts';
 import type { ProjectService } from '../../../agent/project-service.ts';
 import { refreshCitations, renderChatMarkdown } from '../chat-markdown.ts';
 import {
@@ -41,8 +47,8 @@ export interface ProjectPreviewDeps {
   service: Pick<ProjectService, 'fileBlob' | 'chunk' | 'fileText' | 'note' | 'applyOps'>;
   /** 지금 프로젝트 스냅샷 (ProjectStore.get). */
   project: () => ProjectSnapshot | null;
-  /** 노트 저장. ProjectStore.edit 를 넘기면 보드가 바로 따라온다. 없으면 service.applyOps 로 보낸다. */
-  edit?: (ops: ProjectOp[]) => Promise<unknown>;
+  /** 노트·영역 저장. ProjectStore.edit 를 넘기면 보드가 바로 따라온다. 없으면 service.applyOps 로 보낸다. */
+  edit?: (ops: ProjectOp[]) => Promise<ProjectOpsResult | unknown>;
   onClose: () => void;
   /** `d…` 문서 노드를 열 때. 없으면 미리보기가 안내만 한다. */
   openDocument?: (documentId: string) => void;
@@ -91,6 +97,7 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
   let current: ProjectPreviewRequest | null = null;
   let generation = 0;
   let viewer: PdfViewer | null = null;
+  let clipLayer: ClipLayer | null = null;
   let objectUrl: string | null = null;
   let cleanupView: (() => void) | null = null;
 
@@ -128,6 +135,8 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
   function resetView(): void {
     cleanupView?.();
     cleanupView = null;
+    clipLayer?.destroy();
+    clipLayer = null;
     viewer?.destroy();
     viewer = null;
     if (objectUrl) URL.revokeObjectURL(objectUrl);
@@ -175,7 +184,52 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
     }
   }
 
-  async function showPdf(projectId: string, item: ProjectFileItem, anchor: WikilinkAnchor | null, quote: string | null, token: number): Promise<void> {
+  function saveOps(projectId: string, ops: ProjectOp[]): Promise<ProjectOpsResult | unknown> {
+    return deps.edit ? deps.edit(ops) : deps.service.applyOps(projectId, ops);
+  }
+
+  /** 원본 위에 영역 조각 층을 깔고 머리에 영역 도구를 단다. */
+  function mountClipLayer(projectId: string, source: ProjectFileItem): ClipLayer {
+    const tool = button('ag-pp-text-button ag-pp-clip-tool', '영역 그리기', { icon: 'clip', text: '영역' });
+    tool.setAttribute('aria-pressed', 'false');
+    const layer = createClipLayer({
+      clips: () => (deps.project()?.items ?? []).filter((entry): entry is ProjectClipItem => (
+        entry.kind === 'clip' && entry.sourceId === source.id && !entry.trashedAt
+      )),
+      async create(page, rect) {
+        const name = defaultClipTitle(source.title, page, source.fileKind === 'pdf');
+        const result = await saveOps(projectId, [{ op: 'clip', source: source.id, page, rect, name }]) as ProjectOpsResult | undefined;
+        return result?.created?.[0] ?? null;
+      },
+      async update(clipId, rect) {
+        await saveOps(projectId, [{ op: 'clip', id: clipId, rect }]);
+      },
+      async rename(clipId, name) {
+        await saveOps(projectId, [{ op: 'rename', id: clipId, name }]);
+      },
+      async remove(clipId) {
+        await saveOps(projectId, [{ op: 'trash', id: clipId }]);
+      },
+      onDrawingChange(drawing) {
+        tool.setAttribute('aria-pressed', String(drawing));
+        tool.classList.toggle('ag-active', drawing);
+        root.dataset.clipDrawing = drawing ? 'true' : 'false';
+      },
+    });
+    tool.addEventListener('click', () => layer.setDrawing(!layer.drawing));
+    tools.prepend(tool);
+    clipLayer = layer;
+    return layer;
+  }
+
+  async function showPdf(
+    projectId: string,
+    item: ProjectFileItem,
+    anchor: WikilinkAnchor | null,
+    quote: string | null,
+    token: number,
+    focus: ProjectClipItem | null = null,
+  ): Promise<void> {
     root.dataset.kind = 'pdf';
     const pdf = createPdfViewer({
       onPageChange: (page, total) => { meta.textContent = `${page} / ${total}`; },
@@ -192,25 +246,33 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
     await pdf.load(new Uint8Array(await blob.arrayBuffer()));
     if (token !== generation) return;
     body.removeAttribute('aria-busy');
-    if (chunk?.page) {
+    const layer = mountClipLayer(projectId, item);
+    for (const page of pdf.pages()) layer.attach(page.page, page.element);
+    if (focus) {
+      pdf.scrollToRegion(focus.page, focus.rect);
+      layer.reveal(focus.id);
+    } else if (chunk?.page) {
       await pdf.highlight(chunk.page, { chunk, quote });
     } else if (anchor?.kind === 'page') {
       pdf.showPage(anchor.n);
     }
   }
 
-  async function showImage(projectId: string, item: ProjectFileItem, token: number): Promise<void> {
+  async function showImage(projectId: string, item: ProjectFileItem, token: number, focus: ProjectClipItem | null = null): Promise<void> {
     root.dataset.kind = 'image';
     busy();
     const blob = await deps.service.fileBlob(projectId, item.id);
     if (token !== generation) return;
     objectUrl = URL.createObjectURL(blob);
     const frame = el('div', 'ag-pp-image');
+    // 영역 층은 그림 상자와 같은 크기의 감싸개 위에 덮는다.
+    const page = el('span', 'ag-pp-image-page');
     const image = el('img');
     image.alt = item.title;
     image.decoding = 'async';
     image.src = objectUrl;
-    frame.append(image);
+    page.append(image);
+    frame.append(page);
     let zoom = 0; // 0 = 맞춤
     const apply = () => {
       frame.classList.toggle('ag-pp-image-fit', zoom === 0);
@@ -231,6 +293,17 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
     apply();
     body.replaceChildren(frame);
     body.removeAttribute('aria-busy');
+    const layer = mountClipLayer(projectId, item);
+    layer.attach(1, page);
+    if (focus) {
+      const reveal = () => {
+        if (token !== generation) return;
+        const box = layer.reveal(focus.id);
+        box?.scrollIntoView({ block: 'center', inline: 'center' });
+      };
+      if (image.complete) reveal();
+      else image.addEventListener('load', reveal, { once: true });
+    }
   }
 
   async function showReader(projectId: string, item: ProjectFileItem, anchor: WikilinkAnchor | null, quote: string | null, token: number): Promise<void> {
@@ -334,8 +407,11 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
       message('문서를 찾지 못했습니다.');
       return;
     }
-    const item = findItem(request.itemId);
-    if (!project || !item) {
+    // 영역 조각은 원본을 그 쪽에서 열고 테두리로 보여 준다.
+    const found = findItem(request.itemId);
+    const clip = found?.kind === 'clip' ? found : null;
+    const item = clip ? findItem(clip.sourceId) : found;
+    if (!project || !item || item.kind === 'clip') {
       setHeader('찾을 수 없음', 'file');
       message('항목을 찾지 못했습니다.');
       return;
@@ -350,8 +426,8 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
         message('파일을 처리하는 중입니다.');
         return;
       }
-      if (item.fileKind === 'pdf') await showPdf(project.id, item, anchor, quote, token);
-      else if (item.fileKind === 'image') await showImage(project.id, item, token);
+      if (item.fileKind === 'pdf') await showPdf(project.id, item, anchor, quote, token, clip);
+      else if (item.fileKind === 'image') await showImage(project.id, item, token, clip);
       else if (item.status === 'failed') message('글자를 읽지 못한 파일입니다.');
       else await showReader(project.id, item, anchor, quote, token);
     } catch (error) {
@@ -399,6 +475,11 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
   root.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented) return;
     event.preventDefault();
+    // 그리던 영역·영역 도구·고른 영역을 먼저 푼다.
+    if (clipLayer?.escape()) {
+      event.stopPropagation();
+      return;
+    }
     goBack();
   });
   syncBack();
@@ -408,11 +489,13 @@ export function createProjectPreview(deps: ProjectPreviewDeps): ProjectPreview {
     open,
     refresh() {
       if (!current) return;
-      const item = findItem(current.itemId);
+      const found = findItem(current.itemId);
+      const item = found?.kind === 'clip' ? findItem(found.sourceId) : found;
       if (item) {
         title.textContent = item.title;
         title.title = item.title;
       }
+      clipLayer?.refresh();
       refreshCitations(body, citations);
     },
     clear,

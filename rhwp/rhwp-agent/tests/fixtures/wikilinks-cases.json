@@ -331,6 +331,50 @@
           "label": null
         }
       ]
+    },
+    {
+      "name": "bare clip id",
+      "text": "그림 [[rabc234]] 참고",
+      "expect": [
+        {
+          "start": 3,
+          "end": 14,
+          "id": "rabc234",
+          "anchor": null,
+          "label": null
+        }
+      ]
+    },
+    {
+      "name": "labeled clip",
+      "text": "[[rabc234|그림 3]]",
+      "expect": [
+        {
+          "start": 0,
+          "end": 16,
+          "id": "rabc234",
+          "anchor": null,
+          "label": "그림 3"
+        }
+      ]
+    },
+    {
+      "name": "clip next to punctuation",
+      "text": "표는 [[rqwe234]].",
+      "expect": [
+        {
+          "start": 3,
+          "end": 14,
+          "id": "rqwe234",
+          "anchor": null,
+          "label": null
+        }
+      ]
+    },
+    {
+      "name": "uppercase clip id rejected",
+      "text": "[[rABC234]]",
+      "expect": []
     }
   ]
 }

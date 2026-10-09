@@ -1,0 +1,166 @@
+/* 미리보기 쪽 위의 영역 조각 층. 좌표는 쪽 비율(%)이라 확대에 따라 함께 움직인다. */
+.ag-clip-layer {
+  --ag-clip-color: var(--ag-focus-ring-color);
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.ag-clip-layer.ag-clip-drawing {
+  cursor: crosshair;
+  pointer-events: auto;
+  touch-action: none;
+  user-select: none;
+}
+
+.ag-clip-box {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1.5px solid var(--ag-clip-color);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--ag-clip-color) 7%, transparent);
+  cursor: move;
+  pointer-events: auto;
+  touch-action: none;
+  outline: none;
+  transition: background-color var(--ag-dur-fast) var(--ag-ease-out), opacity var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+.ag-clip-drawing .ag-clip-box {
+  pointer-events: none;
+}
+
+.ag-clip-box:hover,
+.ag-clip-box.ag-clip-selected {
+  background: color-mix(in srgb, var(--ag-clip-color) 12%, transparent);
+}
+
+.ag-clip-box.ag-clip-selected {
+  border-width: 2px;
+}
+
+.ag-clip-box:focus-visible {
+  box-shadow: 0 0 0 2px var(--ag-paper), 0 0 0 4px var(--ag-clip-color);
+}
+
+.ag-clip-box.ag-clip-draft {
+  border-style: dashed;
+  pointer-events: none;
+}
+
+.ag-clip-box.ag-clip-removing {
+  opacity: 0.4;
+}
+
+.ag-clip-label {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  max-width: calc(100% - 4px);
+  box-sizing: border-box;
+  padding: 0 6px;
+  overflow: hidden;
+  border-radius: var(--ag-r-code);
+  background: var(--ag-clip-color);
+  color: #ffffff;
+  font-size: var(--ag-fs-mono);
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+.ag-clip-box:hover .ag-clip-label,
+.ag-clip-selected .ag-clip-label {
+  opacity: 1;
+}
+
+.ag-clip-selected .ag-clip-label {
+  max-width: calc(100% - 32px);
+}
+
+.ag-clip-renaming .ag-clip-label {
+  visibility: hidden;
+}
+
+.ag-clip-handle {
+  position: absolute;
+  display: none;
+  width: 9px;
+  height: 9px;
+  box-sizing: border-box;
+  border: 1.5px solid var(--ag-clip-color);
+  border-radius: 2px;
+  background: #ffffff;
+}
+
+.ag-clip-selected .ag-clip-handle {
+  display: block;
+}
+
+.ag-clip-handle[data-handle='nw'] { top: -5px; left: -5px; cursor: nwse-resize; }
+.ag-clip-handle[data-handle='ne'] { top: -5px; right: -5px; cursor: nesw-resize; }
+.ag-clip-handle[data-handle='sw'] { bottom: -5px; left: -5px; cursor: nesw-resize; }
+.ag-clip-handle[data-handle='se'] { right: -5px; bottom: -5px; cursor: nwse-resize; }
+
+.ag-clip-delete {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: none;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ag-r-chip);
+  background: var(--ag-raised);
+  box-shadow: inset 0 0 0 1px var(--ag-border), var(--n-elev-1);
+  color: var(--ag-text-secondary);
+  cursor: pointer;
+}
+
+.ag-clip-delete:hover {
+  color: var(--ag-err);
+}
+
+.ag-clip-delete .ag-icon {
+  width: 13px;
+  height: 13px;
+}
+
+.ag-clip-selected .ag-clip-delete {
+  display: grid;
+}
+
+.ag-clip-title-input {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: max(160px, calc(100% - 34px));
+  max-width: 280px;
+  height: 24px;
+  box-sizing: border-box;
+  padding: 0 7px;
+  border: 1px solid var(--ag-clip-color);
+  border-radius: var(--ag-r-code);
+  background: var(--ag-raised);
+  color: var(--ag-text);
+  font: inherit;
+  font-size: var(--ag-fs-secondary);
+  outline: none;
+  box-shadow: var(--n-elev-1);
+  cursor: text;
+}
+
+.ag-clip-box.ag-clip-flash {
+  animation: ag-clip-flash 0.9s var(--ag-ease-out) 2;
+}
+
+@keyframes ag-clip-flash {
+  from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ag-clip-color) 55%, transparent); }
+  to { box-shadow: 0 0 0 12px color-mix(in srgb, var(--ag-clip-color) 0%, transparent); }
+}

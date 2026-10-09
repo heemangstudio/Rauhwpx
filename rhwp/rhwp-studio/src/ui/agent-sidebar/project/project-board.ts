@@ -19,6 +19,7 @@ import {
   shiftColumnOp,
   type BoardDirection,
 } from './board-model.ts';
+import { projectClipThumb } from './clip-thumbs.ts';
 import {
   button,
   columnColor,
@@ -228,7 +229,7 @@ export function createProjectBoard(deps: ProjectBoardDeps): ProjectBoard {
   function renderCard(card: HTMLElement, item: ProjectItem, snapshot: ProjectSnapshot): void {
     card.replaceChildren();
     card.dataset.item = item.id;
-    card.dataset.kind = item.kind === 'note' ? 'note' : item.fileKind;
+    card.dataset.kind = item.kind === 'file' ? item.fileKind : item.kind;
     const organizing = itemOrganizing(item);
     const failed = itemFailed(item);
     card.classList.toggle('ag-organizing', organizing);
@@ -239,6 +240,8 @@ export function createProjectBoard(deps: ProjectBoardDeps): ProjectBoard {
     const title = el('span', 'ag-pcard-title', item.title);
     head.append(icon, title);
     if (item.pinned) head.append(projectIcon('pin', 'ag-pcard-pin'));
+    const thumb = item.kind === 'clip' ? projectClipThumb(snapshot, item, 'card', deps.service?.fileBlob, 'ag-pcard-thumb') : null;
+    if (thumb) card.append(thumb);
     card.append(head);
     const foot = el('div', 'ag-pcard-foot');
     const visibleTags = item.tags.slice(0, MAX_CARD_TAGS);

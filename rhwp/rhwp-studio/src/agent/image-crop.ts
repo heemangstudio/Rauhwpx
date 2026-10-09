@@ -68,7 +68,7 @@ export function planImageCrop(
   };
 }
 
-function createCanvas(width: number, height: number): HTMLCanvasElement | OffscreenCanvas {
+export function createCanvas(width: number, height: number): HTMLCanvasElement | OffscreenCanvas {
   if (typeof document !== 'undefined') {
     const canvas = document.createElement('canvas');
     canvas.width = width;
@@ -79,7 +79,7 @@ function createCanvas(width: number, height: number): HTMLCanvasElement | Offscr
   throw new AgentToolError('RENDER_UNAVAILABLE', 'Image cropping needs a canvas (browser environment)');
 }
 
-async function encodeCanvas(
+export async function encodeCanvas(
   canvas: HTMLCanvasElement | OffscreenCanvas, type: CroppedImage['mimeType'],
 ): Promise<Uint8Array> {
   const quality = type === 'image/jpeg' ? 0.92 : undefined;

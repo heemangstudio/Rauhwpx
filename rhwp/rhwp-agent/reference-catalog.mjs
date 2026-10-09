@@ -245,6 +245,11 @@ export class ReferenceCatalog {
     return this.#storeForFile(options?.fileId).readPageText(options);
   }
 
+  /** 글자 층이 없는 쪽 (project_read item). 범위 검사 없이 기록을 따라간다. */
+  textlessPages(fileId, options) {
+    return this.#storeForFile(fileId).textlessPages(fileId, options);
+  }
+
   storageUsage() {
     return { legacy: this.legacy.storageUsage(), projects: this.projects.storageUsage() };
   }

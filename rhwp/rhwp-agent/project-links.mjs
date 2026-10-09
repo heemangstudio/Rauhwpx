@@ -4,7 +4,7 @@
  *
  * 문법
  * - `[[id]]`, `[[id|라벨]]`, `[[id#cN]]`, `[[id#cN|그대로 옮긴 인용]]`, `[[id#pN]]`, `[[id#pN|라벨]]`
- * - id = `[fnd][a-z2-7]{6}` (파일·노트·문서 노드). 대문자·공백이 섞이면 표기가 아니다.
+ * - id = `[fndr][a-z2-7]{6}` (파일·노트·문서 노드·영역). 대문자·공백이 섞이면 표기가 아니다.
  * - N 은 1~6자리 십진수. 라벨에는 `[`·`]`·줄바꿈이 없고, 앞뒤 공백을 지운 길이가
  *   80자(UTF-16) 이하여야 한다. 지운 결과가 비면 label 은 null 이다.
  * - 홀수 개의 백슬래시가 앞선 `[[` 는 표기가 아니다.
@@ -13,9 +13,9 @@
  */
 
 export const WIKILINK_LABEL_MAX = 80;
-export const PROJECT_ITEM_ID_PATTERN = /^[fnd][a-z2-7]{6}$/;
+export const PROJECT_ITEM_ID_PATTERN = /^[fndr][a-z2-7]{6}$/;
 
-const RE_WIKILINK = /\[\[([fnd][a-z2-7]{6})(?:#([cp])(\d{1,6}))?(?:\|([^[\]\n]*))?\]\]/y;
+const RE_WIKILINK = /\[\[([fndr][a-z2-7]{6})(?:#([cp])(\d{1,6}))?(?:\|([^[\]\n]*))?\]\]/y;
 const RE_FENCE_MARK = /^ {0,3}(```|~~~)/u;
 
 function oddBackslashes(src, index) {

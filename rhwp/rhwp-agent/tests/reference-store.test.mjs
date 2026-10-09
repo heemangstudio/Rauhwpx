@@ -13,6 +13,7 @@ import {
   scopesForReferenceSession,
   tokenizeReferenceText,
 } from '../reference-store.mjs';
+import { pagedPdf } from './fixtures/paged-pdf.mjs';
 
 async function storeFor(t, options = {}) {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-reference-test-'));
@@ -608,4 +609,39 @@ test('restart inventories orphan files and TTL cleanup reclaims them', async (t)
   await Promise.all([orphanBlob, orphanStage, orphanRoot].map(async (file) => {
     await assert.rejects(fs.stat(file), (error) => error.code === 'ENOENT');
   }));
+});
+
+test('scanned PDFs store without chunks, keep every page, and report text-less pages after a restart', async (t) => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-reference-scan-'));
+  t.after(() => fs.rm(parent, { recursive: true, force: true }));
+  const root = path.join(parent, 'files');
+  const scope = { scope: 'project', scopeId: 'pabcdefghij' };
+  const first = await new ReferenceStore({ format: 'project', root }).init();
+  const scan = await first.addBuffer({ ...scope, name: 'scan.pdf', mimeType: 'application/pdf', bytes: pagedPdf([null, null]) });
+  assert.equal(scan.status, 'ready');
+  assert.equal(scan.chunkCount, 0);
+  assert.equal(scan.pageCount, 2);
+  // 뒤쪽의 글 없는 쪽도 쪽 수에 든다.
+  const mixed = await first.addBuffer({
+    ...scope, name: 'mixed.pdf', mimeType: 'application/pdf', bytes: pagedPdf([null, 'Budget overview for the year 2026', 'p3']),
+  });
+  assert.equal(mixed.chunkCount, 2);
+  assert.equal(mixed.pageCount, 3);
+  await assert.rejects(
+    first.addBuffer({ ...scope, name: 'blank.txt', mimeType: 'text/plain', bytes: Buffer.from(' \n ') }),
+    (error) => error.code === 'REFERENCE_EMPTY_TEXT',
+  );
+
+  const restarted = await new ReferenceStore({ format: 'project', root }).init();
+  assert.equal(restarted.getFile(scan.id).pageCount, 2);
+  assert.deepEqual(await restarted.textlessPages(scan.id), { pageCount: 2, pages: [1, 2] });
+  assert.deepEqual(await restarted.textlessPages(mixed.id), { pageCount: 3, pages: [1, 3] });
+  assert.deepEqual(await restarted.textlessPages(mixed.id, { threshold: 1 }), { pageCount: 3, pages: [1] });
+  const page = await restarted.readPageText({ fileId: scan.id, scopes: [scope], page: 2 });
+  assert.equal(page.page, 2);
+  assert.equal(page.pageCount, 2);
+  assert.equal(page.text, '');
+  const text = await restarted.addBuffer({ ...scope, name: 'notes.txt', mimeType: 'text/plain', bytes: Buffer.from('본문') });
+  assert.equal(await restarted.textlessPages(text.id), null);
+  assert.equal(await restarted.textlessPages('missing'), null);
 });

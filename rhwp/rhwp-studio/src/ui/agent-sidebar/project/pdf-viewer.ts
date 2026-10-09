@@ -10,26 +10,10 @@
 
 import './pdf-viewer.css';
 import type { PDFDocumentLoadingTask, PDFDocumentProxy, RenderTask, TextLayer } from 'pdfjs-dist';
+import { loadPdfjs, pdfDocumentParams } from '../../../agent/pdf-render.ts';
 import { locatePassage, type PassageCitation, type PassageMatch, type PdfTextItem } from './passage-locate.ts';
 
 type Pdfjs = typeof import('pdfjs-dist');
-
-let pdfjsLoad: Promise<Pdfjs> | null = null;
-
-/** pdfjs 와 워커 주소를 한 번만 불러온다. 실패하면 다음 요청에서 다시 시도한다. */
-export function loadPdfjs(): Promise<Pdfjs> {
-  pdfjsLoad ??= Promise.all([
-    import('pdfjs-dist'),
-    import('pdfjs-dist/build/pdf.worker.min.mjs?url'),
-  ]).then(([pdfjs, worker]) => {
-    pdfjs.GlobalWorkerOptions.workerSrc = worker.default;
-    return pdfjs;
-  }).catch((error: unknown) => {
-    pdfjsLoad = null;
-    throw error;
-  });
-  return pdfjsLoad;
-}
 
 const PAGE_GAP = 12;
 const SIDE_PAD = 16;
@@ -79,6 +63,10 @@ export interface PdfViewer {
    */
   highlight(page: number, citation: PassageCitation): Promise<PassageMatch | null>;
   clearHighlight(): void;
+  /** 쪽 요소들 (영역 조각 층을 붙일 자리). load 뒤에 채워진다. */
+  pages(): Array<{ page: number; element: HTMLElement }>;
+  /** 쪽의 한 영역(쪽 비율 [x,y,w,h])이 화면 위쪽 1/4 즈음에 오도록 옮긴다. */
+  scrollToRegion(page: number, rect: readonly number[]): void;
   zoomIn(): void;
   zoomOut(): void;
   /** 1 = 폭 맞춤. */
@@ -386,15 +374,7 @@ export function createPdfViewer(options: PdfViewerOptions = {}): PdfViewer {
     const generation = docGeneration;
     pdfjs = await loadPdfjs();
     if (destroyed || generation !== docGeneration) throw new Error('closed');
-    const base = import.meta.env.BASE_URL ?? '/';
-    const task = pdfjs.getDocument({
-      data,
-      isEvalSupported: false,
-      cMapUrl: `${base}pdfjs/cmaps/`,
-      cMapPacked: true,
-      standardFontDataUrl: `${base}pdfjs/standard_fonts/`,
-      enableXfa: false,
-    });
+    const task = pdfjs.getDocument(pdfDocumentParams(data));
     loading = task;
     const opened = await task.promise;
     if (destroyed || generation !== docGeneration) {
@@ -457,6 +437,27 @@ export function createPdfViewer(options: PdfViewerOptions = {}): PdfViewer {
     clearHighlight() {
       active = null;
       clearMarks();
+    },
+    pages() {
+      return slots.map((slot) => ({ page: slot.number, element: slot.element }));
+    },
+    scrollToRegion(page, rect) {
+      const slot = clampPage(page);
+      if (!slot) return;
+      const [x, y, w, h] = rect as [number, number, number, number];
+      const width = slot.element.offsetWidth;
+      const height = slot.element.offsetHeight;
+      const top = slot.element.offsetTop + y * height;
+      const regionHeight = h * height;
+      // 영역이 화면보다 작으면 위쪽 1/4 에, 크면 영역의 위가 보이게 둔다.
+      scroller.scrollTop = Math.max(0, regionHeight < scroller.clientHeight * 0.7
+        ? top - scroller.clientHeight / 4
+        : top - PAGE_GAP);
+      const left = slot.element.offsetLeft + x * width;
+      const regionWidth = w * width;
+      if (left + regionWidth > scroller.scrollLeft + scroller.clientWidth || left < scroller.scrollLeft) {
+        scroller.scrollLeft = Math.max(0, left - Math.max(SIDE_PAD, (scroller.clientWidth - regionWidth) / 2));
+      }
     },
     zoomIn() {
       setZoom(ZOOM_STEPS.find((step) => step > zoom + 0.001) ?? zoom);

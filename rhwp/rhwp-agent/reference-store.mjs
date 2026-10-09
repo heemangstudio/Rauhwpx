@@ -534,6 +534,16 @@ function pageCountForChunks(chunks) {
   return maximum > 0 ? maximum : null;
 }
 
+/** 추출한 쪽 목록이 있으면 그 수(글 없는 뒤쪽까지), 없으면 청크로 센다. */
+function pageCountFor(extracted, chunks) {
+  return extracted?.pages?.length || pageCountForChunks(chunks);
+}
+
+/** 글자 층이 없는 스캔 PDF 는 청크 없이 쪽만으로 저장한다. 다른 형식의 빈 글은 실패다. */
+function isTextlessPdf(name, extracted) {
+  return path.extname(name).toLowerCase() === '.pdf' && Boolean(extracted?.pages?.length);
+}
+
 export class ReferenceStore {
   /**
    * @param {object} [options]
@@ -1659,7 +1669,9 @@ export class ReferenceStore {
       projectRoot: this.projectRoot,
     });
     const chunks = chunkReferenceText(extracted);
-    if (chunks.length === 0) throw new ReferenceExtractionError('REFERENCE_EMPTY_TEXT', `${record.name} contains no searchable chunks`);
+    if (chunks.length === 0 && !isTextlessPdf(record.name, extracted)) {
+      throw new ReferenceExtractionError('REFERENCE_EMPTY_TEXT', `${record.name} contains no searchable chunks`);
+    }
     const object = {
       schemaVersion: OBJECT_SCHEMA_VERSION,
       textVersion: this.textVersion,
@@ -2059,6 +2071,7 @@ export class ReferenceStore {
       const kind = referenceKindForName(safeName);
       let chunks;
       let extractedChars;
+      let extracted = null;
       let resolvedMime = normalizeMime(mimeType);
       if (kind === 'image') {
         const inspected = await inspectReferenceImage({ filePath: staging, name: safeName, mimeType });
@@ -2066,10 +2079,12 @@ export class ReferenceStore {
         extractedChars = 0;
         resolvedMime = inspected.mimeType;
       } else {
-        const extracted = await extractReferenceText({ filePath: staging, name: safeName, mimeType, projectRoot: this.projectRoot });
+        extracted = await extractReferenceText({ filePath: staging, name: safeName, mimeType, projectRoot: this.projectRoot });
         chunks = chunkReferenceText(extracted);
         extractedChars = extracted.text.length;
-        if (chunks.length === 0) throw new ReferenceExtractionError('REFERENCE_EMPTY_TEXT', `${safeName} contains no searchable chunks`);
+        if (chunks.length === 0 && !isTextlessPdf(safeName, extracted)) {
+          throw new ReferenceExtractionError('REFERENCE_EMPTY_TEXT', `${safeName} contains no searchable chunks`);
+        }
       }
 
       const prepared = await this.#exclusive(async () => {
@@ -2150,7 +2165,7 @@ export class ReferenceStore {
           if (!objectExisted) await this.#unlinkOrQuarantine(objectPath, objectBytes);
           throw error;
         }
-        const pageCount = pageCountForChunks(chunks);
+        const pageCount = pageCountFor(extracted, chunks);
         const record = {
           id: recordId,
           ...scoped,
@@ -2302,6 +2317,35 @@ export class ReferenceStore {
   getFile(fileId) {
     const record = this.metadata.files.find((file) => file.id === this.#resolveAlias(String(fileId ?? '')));
     return record ? publicFile(record) : null;
+  }
+
+  /**
+   * PDF 에서 글자가 threshold 자보다 적은 쪽(1부터). 스캔·그림 쪽을 알려 에이전트가 그림으로 보게 한다.
+   * getFile 처럼 범위 검사 없이 기록을 찾는다(허브 내부용, 별칭을 따라간다). PDF 가 아니거나
+   * 모르는 파일이면 null.
+   * @returns {Promise<{pageCount: number, pages: number[]}|null>}
+   */
+  async textlessPages(fileId, { threshold = 20 } = {}) {
+    const record = this.metadata.files.find((file) => file.id === this.#resolveAlias(String(fileId ?? '')));
+    if (!record || record.status !== 'ready' || path.extname(record.name).toLowerCase() !== '.pdf') return null;
+    const release = this.#beginScopeOperation([{ scope: record.scope, scopeId: record.scopeId }]);
+    try {
+      const object = await this.#currentObject(record.sha256, record);
+      const pageCount = Math.max(record.pageCount ?? 0, pageCountForChunks(object.chunks) ?? 0);
+      if (pageCount === 0) return null;
+      // 청크는 겹치므로 쪽마다 가장 긴 청크로 본다. 청크가 없는 쪽은 0자다.
+      const longest = new Map();
+      for (const chunk of object.chunks) {
+        if (Number.isSafeInteger(chunk.page)) longest.set(chunk.page, Math.max(longest.get(chunk.page) ?? 0, chunk.text.length));
+      }
+      const pages = [];
+      for (let page = 1; page <= pageCount; page += 1) {
+        if ((longest.get(page) ?? 0) < threshold) pages.push(page);
+      }
+      return { pageCount, pages };
+    } finally {
+      release();
+    }
   }
 
   async #deletePhysicalObject(sha256) {
@@ -2567,7 +2611,9 @@ export class ReferenceStore {
       if (cachePath && cacheTarget && await pathIsPlainFile(cachePath) && !await pathIsPlainFile(cacheTarget)) {
         await this.#linkOrCopy(cachePath, cacheTarget).catch(() => undefined);
       }
-      const pageCount = pageCountForChunks(object.chunks);
+      const pageCount = Number.isSafeInteger(record.pageCount) && record.pageCount > 0
+        ? record.pageCount
+        : pageCountForChunks(object.chunks);
       const imported = {
         id: record.id,
         ...target,
@@ -2874,10 +2920,11 @@ export class ReferenceStore {
         throw new ReferenceStoreError('REFERENCE_NOT_TEXT', 'Image references have no text');
       }
       const object = await this.#currentObject(record.sha256, record);
-      const pageCountFromChunks = pageCountForChunks(object.chunks);
-      const paged = pageCountFromChunks !== null;
+      // 기록의 쪽 수는 글 없는 쪽(스캔)까지 센다.
+      const knownPages = Math.max(record.pageCount ?? 0, pageCountForChunks(object.chunks) ?? 0);
+      const paged = knownPages > 0;
       const pageCount = paged
-        ? pageCountFromChunks
+        ? knownPages
         : Math.max(1, Math.ceil(object.chunks.length / VIRTUAL_PAGE_CHUNKS));
       const requested = Number.isSafeInteger(page) ? Math.min(pageCount, Math.max(1, page)) : 1;
       const selected = paged

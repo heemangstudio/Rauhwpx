@@ -1599,7 +1599,7 @@ export type ProjectItemLibrarianStatus = 'queued' | 'running' | 'done' | 'failed
 
 export interface ProjectItemBase {
   id: string;
-  kind: 'file' | 'note';
+  kind: 'file' | 'note' | 'clip';
   title: string;
   column: string | null;
   order: number;
@@ -1643,7 +1643,20 @@ export interface ProjectNoteItem extends ProjectItemBase {
   bytes: number;
 }
 
-export type ProjectItem = ProjectFileItem | ProjectNoteItem;
+/** 영역 [x, y, w, h] — 쪽(이미지)에 대한 0..1 비율, 소수 넷째 자리. */
+export type ProjectClipRect = [number, number, number, number];
+
+/** PDF 쪽이나 이미지의 네모난 영역 (`r…`). 스캔본·그림을 글자 대신 인용한다. */
+export interface ProjectClipItem extends ProjectItemBase {
+  kind: 'clip';
+  /** 원본 파일 항목 id. */
+  sourceId: string;
+  /** 1부터 센다. 이미지는 1. */
+  page: number;
+  rect: ProjectClipRect;
+}
+
+export type ProjectItem = ProjectFileItem | ProjectNoteItem | ProjectClipItem;
 
 export interface ProjectLink {
   id: string;
@@ -1654,7 +1667,8 @@ export interface ProjectLink {
   fromAnchor?: string;
   toAnchor?: string;
   label?: string;
-  origin: 'explicit' | 'note';
+  /** clip = 영역 조각 → 원본 파일 (허브가 스냅샷에서 만든다). */
+  origin: 'explicit' | 'note' | 'clip';
   noteId?: string;
 }
 
@@ -1695,6 +1709,7 @@ export type ProjectOp =
   | { op: 'link'; from: string; to: string; label?: string; fromAnchor?: string; toAnchor?: string }
   | { op: 'unlink'; id: string }
   | { op: 'note'; id?: string; name?: string; body: string; mode?: 'replace' | 'append'; column?: string; tags?: string[] }
+  | { op: 'clip'; id?: string; source?: string; page?: number; rect?: ProjectClipRect; name?: string; column?: string; tags?: string[] }
   | { op: 'columns'; columns: Array<{ id?: string; name: string }> }
   | { op: 'goal'; body: string }
   | { op: 'trash'; id: string }

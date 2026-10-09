@@ -106,8 +106,8 @@ import {
 } from './reference-session.mjs';
 import {
   executeReferenceTool,
-  referenceImageNeedsStudio,
-  resolveReferenceImageArgs,
+  planReferenceImageCall,
+  referenceImageCall,
 } from './reference-tools.mjs';
 import { TemplateStore } from './template-store.mjs';
 import { createTemplateHttpHandler } from './template-http.mjs';
@@ -5173,8 +5173,8 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           .catch((error) => sendError(error, 'PROJECT_TOOL_FAILED'));
         return;
       }
-      const referenceImageViaStudio = referenceImageNeedsStudio(tool, args);
-      if (definition.category === 'reference-read' && !referenceImageViaStudio) {
+      const referenceImage = referenceImageCall(tool, args);
+      if (definition.category === 'reference-read' && !referenceImage) {
         void executeReferenceTool({ tool, args, store: referenceStore, session: record.agentSession, projectStore })
           .then(({ handled, result }) => {
             if (!handled) throw workflowError('UNKNOWN_TOOL', `Unknown reference tool: ${tool}`);
@@ -5444,20 +5444,21 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           sendError(workflowError('NO_STUDIO', 'Studio disconnected before receiving the tool request'));
         }
       };
-      // 참조 이미지 잘라내기/삽입은 허브가 저장소 blob 을 읽어 인자를 채운 뒤 스튜디오로 넘긴다.
-      if (referenceImageViaStudio) {
-        if (!record.studioSocket || record.studioSocket.readyState !== record.studioSocket.OPEN) {
-          sendError(workflowError('NO_STUDIO', 'Studio is not connected; open rhwp-studio in a browser'));
-          return;
-        }
-        void resolveReferenceImageArgs({ tool, args, store: referenceStore, session: record.agentSession, projectStore })
-          .then((resolved) => {
+      // 참조 그림: 허브가 저장소를 읽어 바로 답하거나(자르지 않는 이미지), 인자를 채워 스튜디오로 넘긴다
+      // (잘라내기·확대·삽입, PDF 쪽과 영역 조각은 스튜디오가 HTTP 로 받아 그린다).
+      if (referenceImage) {
+        void planReferenceImageCall({ tool, args, store: referenceStore, session: record.agentSession, projectStore })
+          .then((plan) => {
             if (callSettled) return;
+            if (plan.result) {
+              sendResult(plan.result);
+              return;
+            }
             if (providerTurn && !providerTurnIsActive(record, providerTurn)) {
               sendError(noActiveProviderTurnError());
               return;
             }
-            forwardToStudio(resolved);
+            forwardToStudio(plan.forward);
           })
           .catch((error) => sendError(error, 'REFERENCE_READ_FAILED'));
         return;

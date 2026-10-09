@@ -56,7 +56,30 @@ try {
       assert.deepEqual(await page.$$eval('.ag-plan-actions button', (nodes) => nodes.map((node) => node.textContent)),
         ['수정 요청', '전체 접근으로 실행', '에이전트로 실행']);
     }
-    if (['chat-empty', 'chat-review', 'chat-changes-full',
+    // 영역 조각: 스캔 PDF 에서 그린 썸네일·미리보기 테두리·칩이 실제로 나타나야 한다.
+    if (scene.id === 'clip-board') {
+      await page.waitForFunction(() => document.querySelectorAll('.ag-pcard[data-kind="clip"] .ag-pcard-thumb[data-state="ready"]').length === 2, { timeout: 20000 });
+    }
+    if (scene.id === 'clip-preview') {
+      await page.waitForSelector('.ag-pdf-page[data-page="1"] .ag-clip-box.ag-clip-selected[data-clip="rq7m3kd"]', { timeout: 20000 });
+      assert.equal(await page.$eval('.ag-pp-clip-tool', (node) => node.getAttribute('aria-pressed')), 'false');
+    }
+    if (scene.id === 'clip-chip') {
+      await page.waitForFunction(() => document.querySelectorAll('.ag-cite[data-cite-kind="clip"] .ag-clip-thumb[data-state="ready"]').length === 2, { timeout: 20000 });
+      // 칩 바로 뒤의 마침표는 칩과 같은 줄에 남는다.
+      const sameLine = await page.$$eval('.ag-cite[data-cite-kind="clip"]', (chips) => chips.map((chip) => {
+        const next = chip.nextSibling;
+        if (next?.nodeType !== Node.TEXT_NODE || !/^[.,]/.test(next.textContent)) return null;
+        const range = document.createRange();
+        range.setStart(next, 0);
+        range.setEnd(next, 1);
+        const mark = range.getBoundingClientRect();
+        const box = chip.getBoundingClientRect();
+        return Math.abs((mark.top + mark.bottom) / 2 - (box.top + box.bottom) / 2) < box.height;
+      }).filter((value) => value !== null));
+      assert.ok(sameLine.length > 0 && sameLine.every(Boolean), 'punctuation after a clip chip stays on its line');
+    }
+    if (['chat-empty', 'chat-review', 'chat-changes-full', 'clip-board', 'clip-preview', 'clip-chip',
       'mode-chat', 'mode-plan', 'mode-agent', 'mode-full', 'menu-mode', 'mode-locked', 'plan-run-modes'].includes(scene.id))
       await page.screenshot({ path: resolve(artifacts, `audit-${scene.id}.png`) });
     console.log(`PASS ${scene.id}`);

@@ -1456,6 +1456,9 @@ export class AgentBridgeImpl implements AgentBridge {
       loadTemplateBytes: (template) => this.downloadTemplateBytes(template),
       getDocumentSourcePath: () => getNativeFileSourcePath(deps.wasm.currentFileHandle),
       isReadOnly: deps.isReadOnly,
+      loadProjectFile: async (projectId, itemId) => (
+        new Uint8Array(await (await projectService.fileBlob(projectId, itemId)).arrayBuffer())
+      ),
     });
     this.turnSnapshots = new TurnSnapshots({
       read: (args) => this.executor.structureSnapshot(args),

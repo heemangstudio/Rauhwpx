@@ -4,7 +4,7 @@
  *
  * 문법
  * - `[[id]]`, `[[id|라벨]]`, `[[id#cN]]`, `[[id#cN|그대로 옮긴 인용]]`, `[[id#pN]]`, `[[id#pN|라벨]]`
- * - id = `[fnd][a-z2-7]{6}` (파일·노트·문서 노드). 대문자·공백이 섞이면 표기가 아니다.
+ * - id = `[fndr][a-z2-7]{6}` (파일·노트·문서 노드·영역 조각). 대문자·공백이 섞이면 표기가 아니다.
  * - N 은 1~6자리 십진수. 라벨에는 `[`·`]`·줄바꿈이 없고, 앞뒤 공백을 지운 길이가
  *   80자(UTF-16) 이하여야 한다. 지운 결과가 비면 label 은 null 이다.
  * - 홀수 개의 백슬래시가 앞선 `[[` 는 표기가 아니다.
@@ -12,7 +12,7 @@
  *   펜스 코드(``` 또는 ~~~ 로 열고 같은 종류로 닫음, 닫지 않으면 끝까지) 안은 읽지 않는다.
  */
 
-import type { ProjectFileItem, ProjectSnapshot } from '../../agent/types.ts';
+import type { ProjectClipItem, ProjectFileItem, ProjectSnapshot } from '../../agent/types.ts';
 
 export interface WikilinkAnchor {
   kind: 'chunk' | 'page';
@@ -31,7 +31,7 @@ export interface Wikilink {
 
 export const WIKILINK_LABEL_MAX = 80;
 
-const RE_WIKILINK = /\[\[([fnd][a-z2-7]{6})(?:#([cp])(\d{1,6}))?(?:\|([^[\]\n]*))?\]\]/y;
+const RE_WIKILINK = /\[\[([fndr][a-z2-7]{6})(?:#([cp])(\d{1,6}))?(?:\|([^[\]\n]*))?\]\]/y;
 const RE_FENCE_MARK = /^ {0,3}(```|~~~)/u;
 
 function oddBackslashes(src: string, index: number): boolean {
@@ -141,13 +141,15 @@ export function formatWikilinkAnchor(anchor: WikilinkAnchor | null): string | nu
 /* ── 인용 칩 계약 (chat-markdown.ts 가 그린다) ─────────────── */
 
 /** 칩 아이콘 종류. 보드 카드(project-ui.ts itemIconName)와 같은 갈래다. */
-export type CitationKind = 'file' | 'pdf' | 'image' | 'note' | 'document' | 'web' | 'table' | 'slides';
+export type CitationKind = 'file' | 'pdf' | 'image' | 'note' | 'document' | 'web' | 'table' | 'slides' | 'clip';
 
 export interface CitationTarget {
   title: string;
   kind: CitationKind;
   /** 칩에 붙일 쪽 번호. 모르면 비운다. */
   page?: number | null;
+  /** 영역 조각이면 그 조각 — 칩이 작은 썸네일을 붙인다. */
+  clip?: { item: ProjectClipItem; source: ProjectFileItem };
 }
 
 export interface CitationRequest {
@@ -167,6 +169,8 @@ export interface CitationHooks {
   openCitation(request: CitationRequest): void;
   /** 조각 인용의 쪽 번호. 캐시해 두고, 아직 모르면 Promise 로 알려 준다. */
   chunkPage?(id: string, chunk: number): number | null | Promise<number | null>;
+  /** 영역 조각 칩의 썸네일. 없으면 아이콘만 둔다. */
+  clipThumb?(clip: ProjectClipItem, source: ProjectFileItem): HTMLElement | null;
 }
 
 function fileCitationKind(item: ProjectFileItem): CitationKind {
@@ -190,5 +194,10 @@ export function projectCitationTarget(project: ProjectSnapshot | null | undefine
   const item = project.items.find((row) => row.id === id);
   if (!item || item.trashedAt) return null;
   if (item.kind === 'note') return { title: item.title, kind: 'note' };
+  if (item.kind === 'clip') {
+    const source = project.items.find((row) => row.id === item.sourceId);
+    if (!source || source.kind !== 'file' || source.trashedAt) return null;
+    return { title: item.title, kind: 'clip', page: source.fileKind === 'pdf' ? item.page : null, clip: { item, source } };
+  }
   return { title: item.title, kind: fileCitationKind(item) };
 }

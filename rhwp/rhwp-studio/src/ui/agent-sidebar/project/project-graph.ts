@@ -8,8 +8,9 @@
  */
 import type { ForceLink, Simulation, SimulationLinkDatum, SimulationNodeDatum } from 'd3-force';
 import { itemColumnId } from '../../../agent/project-service.ts';
-import type { ProjectStore } from '../../../agent/project-service.ts';
+import type { ProjectService, ProjectStore } from '../../../agent/project-service.ts';
 import type { ProjectSnapshot } from '../../../agent/types.ts';
+import { cachedClipThumbUrl, clipThumbUrl } from './clip-thumbs.ts';
 import {
   button,
   columnColor,
@@ -20,6 +21,8 @@ import {
 
 export interface ProjectGraphDeps {
   store: ProjectStore;
+  /** 영역 조각 노드의 썸네일 원본. 없으면 색 상자로 둔다. */
+  service?: Pick<ProjectService, 'fileBlob'> | null;
   openPreview(itemId: string): void;
   /** 문서 노드를 눌렀을 때. 없으면 문서 노드는 누를 수 없다. */
   openDocument?(documentId: string): void;
@@ -39,7 +42,7 @@ type ColorMode = 'column' | 'tag';
 interface GraphNode extends SimulationNodeDatum {
   id: string;
   label: string;
-  kind: 'file' | 'note' | 'doc';
+  kind: 'file' | 'note' | 'doc' | 'clip';
   radius: number;
   color: string;
   degree: number;
@@ -50,6 +53,8 @@ interface GraphNode extends SimulationNodeDatum {
 interface GraphLink extends SimulationLinkDatum<GraphNode> {
   id: string;
   label?: string;
+  /** clip = 영역 → 원본. 점선으로 그린다. */
+  origin?: string;
 }
 
 type D3Force = typeof import('d3-force');
@@ -97,6 +102,8 @@ export function createProjectGraph(deps: ProjectGraphDeps): ProjectGraph {
   let height = 0;
   let dpr = 1;
   let palette = { text: '#000', muted: '#888', edge: '#ccc', bg: '#fff', font: 'system-ui' };
+  /** 영역 노드의 썸네일 그림. 불러오는 중이면 null. */
+  const thumbs = new Map<string, HTMLImageElement | null>();
 
   const element = el('div', 'ag-pgraph');
   const canvas = el('canvas', 'ag-pgraph-canvas');
@@ -230,11 +237,11 @@ export function createProjectGraph(deps: ProjectGraphDeps): ProjectGraph {
       nextNodes.push(node);
     };
     for (const member of project.members) add(member.nodeId, member.name, 'doc', member.documentId);
-    for (const item of project.items) if (!item.trashedAt) add(item.id, item.title, item.kind === 'note' ? 'note' : 'file');
+    for (const item of project.items) if (!item.trashedAt) add(item.id, item.title, item.kind === 'file' ? 'file' : item.kind);
     const nextLinks: GraphLink[] = [];
     for (const link of project.links) {
       if (!seen.has(link.from) || !seen.has(link.to) || link.from === link.to) continue;
-      nextLinks.push({ id: link.id, source: link.from, target: link.to, label: link.label });
+      nextLinks.push({ id: link.id, source: link.from, target: link.to, label: link.label, origin: link.origin });
     }
     const index = new Map(nextNodes.map((node) => [node.id, node]));
     for (const link of nextLinks) {
@@ -253,7 +260,7 @@ export function createProjectGraph(deps: ProjectGraphDeps): ProjectGraph {
       node.y = (neighbor?.y ?? 0) + Math.sin(angle) * 24;
     }
     for (const node of nextNodes) {
-      node.radius = node.kind === 'doc' ? 7 : 3.5 + Math.min(5, Math.sqrt(node.degree) * 1.6);
+      node.radius = node.kind === 'doc' ? 7 : node.kind === 'clip' ? 8 : 3.5 + Math.min(5, Math.sqrt(node.degree) * 1.6);
     }
     nodes = nextNodes;
     links = nextLinks;
@@ -338,6 +345,66 @@ export function createProjectGraph(deps: ProjectGraphDeps): ProjectGraph {
     });
   }
 
+  /** 영역 노드의 썸네일. 처음 부르면 불러오기 시작하고, 다 오면 다시 그린다. */
+  function clipThumb(id: string): HTMLImageElement | null {
+    const snapshot = project;
+    const clip = snapshot?.items.find((item) => item.id === id);
+    const source = clip?.kind === 'clip' ? snapshot?.items.find((item) => item.id === clip.sourceId) : undefined;
+    const load = deps.service?.fileBlob;
+    if (!snapshot || clip?.kind !== 'clip' || source?.kind !== 'file' || !load) return null;
+    // 영역을 옮기거나 키우면 새 그림이 필요하다.
+    const key = `${clip.id}:${clip.page}:${clip.rect.join(',')}`;
+    if (thumbs.has(key)) return thumbs.get(key) ?? null;
+    thumbs.set(key, null);
+    const request = { projectId: snapshot.id, clip, source, size: 'node' as const, load };
+    const url = cachedClipThumbUrl(request);
+    void (url ? Promise.resolve(url) : clipThumbUrl(request)).then((src) => {
+      const image = new Image();
+      image.decoding = 'async';
+      image.onload = () => {
+        if (disposed) return;
+        thumbs.set(key, image);
+        scheduleDraw();
+      };
+      image.src = src;
+    }, () => undefined);
+    return null;
+  }
+
+  /** 영역 노드: 썸네일을 담은 작은 네모. 그림이 오기 전에는 색 네모다. */
+  function drawClipNode(ctx: CanvasRenderingContext2D, node: GraphNode, focused: boolean): void {
+    const image = clipThumb(node.id);
+    const aspect = image?.naturalWidth && image.naturalHeight ? image.naturalWidth / image.naturalHeight : 1.3;
+    const w = node.radius * 2.6 * Math.min(1.6, Math.sqrt(aspect));
+    const h = Math.min(node.radius * 2.6, w / aspect);
+    const x = node.x! - w / 2;
+    const y = node.y! - h / 2;
+    ctx.beginPath();
+    ctx.roundRect(x, y, w, h, 1.5);
+    if (image) {
+      ctx.save();
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+      ctx.clip();
+      ctx.drawImage(image, x, y, w, h);
+      ctx.restore();
+      ctx.strokeStyle = node.color;
+      ctx.lineWidth = 1.5 / view.k;
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = node.color;
+      ctx.fill();
+    }
+    if (node.pinned || focused) {
+      ctx.strokeStyle = palette.text;
+      ctx.lineWidth = 1.2 / view.k;
+      ctx.beginPath();
+      const pad = 2.5 / view.k;
+      ctx.roundRect(x - pad, y - pad, w + pad * 2, h + pad * 2, 2.5);
+      ctx.stroke();
+    }
+  }
+
   function draw(): void {
     if (!active || !width) return;
     const ctx = canvas.getContext('2d');
@@ -357,15 +424,21 @@ export function createProjectGraph(deps: ProjectGraphDeps): ProjectGraph {
       ctx.globalAlpha = focus === null ? 0.4 : lit ? 0.9 : 0.08;
       ctx.strokeStyle = lit ? palette.text : palette.muted;
       ctx.lineWidth = (lit ? 1.4 : 1) / view.k;
+      ctx.setLineDash(link.origin === 'clip' ? [3 / view.k, 2.5 / view.k] : []);
       ctx.beginPath();
       ctx.moveTo(source.x, source.y!);
       ctx.lineTo(target.x, target.y!);
       ctx.stroke();
     }
+    ctx.setLineDash([]);
 
     for (const node of nodes) {
       if (node.x === undefined || node.y === undefined) continue;
       ctx.globalAlpha = dim(node.id) ? 0.18 : 1;
+      if (node.kind === 'clip') {
+        drawClipNode(ctx, node, node === focus);
+        continue;
+      }
       ctx.fillStyle = node.color;
       ctx.beginPath();
       if (node.kind === 'doc') {

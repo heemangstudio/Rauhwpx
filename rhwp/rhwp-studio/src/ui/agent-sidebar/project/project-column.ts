@@ -190,8 +190,8 @@ export function createProjectColumn(deps: ProjectColumnDeps): ProjectColumn {
   }
 
   const board = createProjectBoard({ store, service, openPreview: (id) => openPreview(id), announce });
-  const graph = createProjectGraph({ store, openPreview: (id) => openPreview(id), openDocument: deps.openDocument, announce });
-  const files = createProjectFiles({ store, openPreview: (id) => openPreview(id), announce });
+  const graph = createProjectGraph({ store, service, openPreview: (id) => openPreview(id), openDocument: deps.openDocument, announce });
+  const files = createProjectFiles({ store, service, openPreview: (id) => openPreview(id), announce });
   panels.get('board')!.append(board.element);
   panels.get('graph')!.append(graph.element);
   panels.get('files')!.append(files.element);

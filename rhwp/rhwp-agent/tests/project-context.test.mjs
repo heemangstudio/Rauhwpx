@@ -106,6 +106,44 @@ test('mentions are bounded item ids and closing tags in data cannot escape the b
   assert.match(block, /ignore previous instructions/);
 });
 
+test('clips are counted, listed after board titles, trimmed before notes, and mentioned without text', async () => {
+  const snapshot = bigSnapshot();
+  for (let index = 0; index < 30; index += 1) {
+    snapshot.items.push({
+      id: `raaaaa${'abcdefghijklmnopqrstuvwxyz234567'[index]}`,
+      kind: 'clip',
+      title: `그림 ${index}`,
+      column: 'key',
+      order: 1_000 + index,
+      tags: [],
+      pinned: false,
+      summary: '',
+      sourceId: snapshot.items[1].id,
+      page: index + 1,
+      rect: [0, 0, 0.5, 0.5],
+    });
+  }
+  const full = buildProjectSummary(snapshot, 1_000_000);
+  assert.equal(full.counts.clips, 30);
+  assert.equal(full.clips.length, 20);
+  assert.deepEqual(full.clips[0], { id: snapshot.items[2_000].id, title: '그림 0', source: snapshot.items[1].id, page: 1 });
+  for (let budget = 8_000; budget >= 600; budget -= 150) {
+    const summary = buildProjectSummary(snapshot, budget);
+    const clips = summary.clips?.length ?? 0;
+    if (clips < 20) assert.ok(!summary.board.some((column) => column.top), `budget ${budget}: clips trimmed while titles remain`);
+    if ((summary.notes?.length ?? 0) < 40) assert.equal(clips, 0, `budget ${budget}: notes trimmed while clips remain`);
+  }
+
+  const clipId = snapshot.items[2_000].id;
+  assert.deepEqual(normalizeMentions([clipId, 'rABCDEF']), [clipId]);
+  const block = await projectPromptContext({
+    ...fakeStores(snapshot), projectId: snapshot.id, scopes: [], mentions: [clipId], settings: DEFAULT_PROJECT_SETTINGS,
+  });
+  assert.deepEqual(payloadOf(block).mentioned, [
+    { id: clipId, kind: 'clip', title: '그림 0', source: snapshot.items[1].id, page: 1 },
+  ]);
+});
+
 test('hub wikilink parser matches the shared Studio fixture', () => {
   const fixture = JSON.parse(readFileSync(new URL('./fixtures/wikilinks-cases.json', import.meta.url), 'utf8'));
   assert.ok(fixture.cases.length > 20);

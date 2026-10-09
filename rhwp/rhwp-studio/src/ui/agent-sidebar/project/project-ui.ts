@@ -59,6 +59,7 @@ const PATHS = {
   check: 'M2.5 6.4 5 8.9l4.5-5.4',
   upload: 'M6 8.6V2.8M3.6 5.2 6 2.8l2.4 2.4M2.6 9.6h6.8',
   pencil: 'M2.1 9.9l.7-2.5 5-5 1.9 1.9-5 5zM7.1 3.1 9 5M2.8 7.4l1.9 1.9',
+  clip: 'M3.6 1.8v6.6h6.6M1.8 3.6h6.6v6.6',
 } as const;
 
 export type ProjectIconName = keyof typeof PATHS;
@@ -84,6 +85,7 @@ export function projectIcon(name: ProjectIconName, className = ''): SVGSVGElemen
 
 export function itemIconName(item: ProjectItem): ProjectIconName {
   if (item.kind === 'note') return 'note';
+  if (item.kind === 'clip') return 'clip';
   if (item.source.kind === 'web' || item.fileKind === 'html') return 'web';
   switch (item.fileKind) {
     case 'image': return 'image';
@@ -99,6 +101,7 @@ const KIND_LABEL: Record<string, string> = {
 
 export function itemKindLabel(item: ProjectItem): string {
   if (item.kind === 'note') return '노트';
+  if (item.kind === 'clip') return '영역';
   return KIND_LABEL[item.fileKind] ?? '파일';
 }
 
@@ -130,6 +133,7 @@ export function actorLabel(actor: ProjectActor): string {
 /** 항목 메타 한 줄: 종류 · 쪽수 · 크기. */
 export function itemMeta(item: ProjectItem): string {
   const parts = [itemKindLabel(item)];
+  if (item.kind === 'clip') parts.push(`p.${item.page}`);
   if (item.kind === 'file') {
     if (item.pageCount) parts.push(`${item.pageCount}쪽`);
     parts.push(formatBytes(item.size));
