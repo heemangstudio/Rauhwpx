@@ -55,9 +55,9 @@ export class ReferenceStoreError extends Error {
 
 export function defaultReferenceRoot(env = process.env, platform = process.platform, home = os.homedir()) {
   if (env.RHWP_REFERENCES_DIR) return path.resolve(env.RHWP_REFERENCES_DIR);
-  if (platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'rhwp', 'references');
-  if (platform === 'win32') return path.join(env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'rhwp', 'references');
-  return path.join(env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'rhwp', 'references');
+  if (platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'hamaeditor', 'references');
+  if (platform === 'win32') return path.join(env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'hamaeditor', 'references');
+  return path.join(env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'hamaeditor', 'references');
 }
 
 export function normalizeReferenceScope(scope, scopeId) {

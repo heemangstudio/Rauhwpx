@@ -1,6 +1,6 @@
 # 기여하기
 
-Rauhwpx는 Rust 문서 엔진, Studio 웹 편집기, 로컬 에이전트 허브와 Electron 앱으로 구성됩니다. [edwardkim/rhwp](https://github.com/edwardkim/rhwp)의 포크이며, 엔진과 패키지 경로에는 `rhwp` 이름을 유지합니다. 문서 호환성을 검증하는 `rhwp/samples/`와 PDF 기준 자료는 보존하세요.
+Hamaeditor는 Rust 문서 엔진, Studio 웹 편집기, 로컬 에이전트 허브와 Electron 앱으로 구성됩니다. [edwardkim/rhwp](https://github.com/edwardkim/rhwp)의 포크이며, 엔진과 패키지 경로에는 `rhwp` 이름을 유지합니다. 문서 호환성을 검증하는 `rhwp/samples/`와 PDF 기준 자료는 보존하세요.
 
 ## 처음 설정하기
 

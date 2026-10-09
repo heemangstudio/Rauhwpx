@@ -174,7 +174,7 @@ function setupContextMenus() {
   browser.contextMenus.removeAll(() => {
     browser.contextMenus.create({
       id: MENU_ID,
-      title: browser.i18n.getMessage('contextMenuOpen') || 'rhwp로 열기',
+      title: browser.i18n.getMessage('contextMenuOpen') || 'Hamaeditor로 열기',
       contexts: ['link'],
     });
   });

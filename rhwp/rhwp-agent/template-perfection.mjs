@@ -84,7 +84,7 @@ export function claimCopyLayoutSettlement(job) {
 }
 
 export function buildCopyLayoutWorkerPrompt({ jobId, binding, jobDir }) {
-  return `You are the dedicated autonomous copy-layout worker for Rauhwpx job ${jobId}.
+  return `You are the dedicated autonomous copy-layout worker for Hamaeditor job ${jobId}.
 
 This is a fresh independent provider process. It is not a provider-native subagent. Do not spawn, delegate, ask the user, request confirmation, or wait for human input. Work only on this job and call complete_copy_layout_job exactly once.
 

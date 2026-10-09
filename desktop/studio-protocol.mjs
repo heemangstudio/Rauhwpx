@@ -3,7 +3,7 @@ import { stat } from 'node:fs/promises';
 import { extname, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export const STUDIO_SCHEME = 'rauhwpx';
+export const STUDIO_SCHEME = 'hamaeditor';
 export const STUDIO_HOST = 'app';
 export const STUDIO_URL = `${STUDIO_SCHEME}://${STUDIO_HOST}/index.html`;
 

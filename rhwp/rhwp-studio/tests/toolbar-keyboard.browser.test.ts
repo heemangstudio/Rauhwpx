@@ -16,7 +16,7 @@ const executablePath = [
 ].find(path => path && existsSync(path));
 assert(executablePath, 'Set CHROME_PATH to a Chrome/Chromium executable.');
 
-const cacheDir = await mkdtemp(resolve(tmpdir(), 'rauhwpx-toolbar-keyboard-'));
+const cacheDir = await mkdtemp(resolve(tmpdir(), 'hamaeditor-toolbar-keyboard-'));
 const server = await createServer({
   cacheDir,
   configFile: resolve(studio, 'vite.sidebar.config.ts'),

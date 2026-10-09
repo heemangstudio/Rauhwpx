@@ -177,7 +177,7 @@ test('SkillRegistry creates, disables, reads, and recoverably deletes user skill
   const resource = await registry.readResource('my-skill');
   assert.match(resource.content, /name: my-skill/);
   assert.equal(resource.digest, enabled.digest);
-  assert.deepEqual(resource.files, ['.rhwp-origin.json', 'SKILL.md', 'scripts/check.js']);
+  assert.deepEqual(resource.files, ['.hamaeditor-origin.json', 'SKILL.md', 'scripts/check.js']);
   assert.throws(() => registry.parseChange({
     action: 'write',
     name: 'my-skill',

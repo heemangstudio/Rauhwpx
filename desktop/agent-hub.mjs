@@ -255,7 +255,7 @@ export async function ensureAgentHub({
   readyTimeoutMs = DEFAULT_READY_TIMEOUT_MS,
 } = {}) {
   if (await isHealthy(port, { fetchImpl })) {
-    log.log?.('[rauhwpx] agent hub already running');
+    log.log?.('[hamaeditor] agent hub already running');
     return { started: false, ready: true };
   }
 
@@ -272,7 +272,7 @@ export async function ensureAgentHub({
   if (ready) return { started, ready: true };
 
   if (!restartUnhealthy || typeof stop !== 'function') {
-    log.warn?.('[rauhwpx] agent hub did not become ready');
+    log.warn?.('[hamaeditor] agent hub did not become ready');
     return { started, ready: false };
   }
 
@@ -282,7 +282,7 @@ export async function ensureAgentHub({
     return { started: false, ready: false };
   }
   ready = await wait(port, { fetchImpl, isHealthy, timeoutMs: readyTimeoutMs });
-  if (!ready) log.warn?.('[rauhwpx] agent hub did not become ready after restart');
+  if (!ready) log.warn?.('[hamaeditor] agent hub did not become ready after restart');
   return { started: true, ready };
 }
 
@@ -513,7 +513,7 @@ function guardHostStream(stream, log) {
   guardedHostStreams.add(stream);
   stream.on('error', (error) => {
     if (EXPECTED_HOST_PIPE_CLOSURE_CODES.has(error?.code)) return;
-    log.warn?.('[rauhwpx] host stdio stream error:', error);
+    log.warn?.('[hamaeditor] host stdio stream error:', error);
   });
 }
 
@@ -565,7 +565,7 @@ export function spawnHubProcess(launch, {
     child.on('error', onError);
   } else {
     child.on('error', (error) => {
-      log.warn?.('[rauhwpx] agent hub spawn error:', error);
+      log.warn?.('[hamaeditor] agent hub spawn error:', error);
     });
   }
   if (typeof onExit === 'function') {
@@ -859,7 +859,7 @@ export async function startDetachedHub({
     // fixed development port. It is authenticated by this same ctl token, so
     // replace it before spawning instead of letting the new child die with
     // EADDRINUSE and surfacing only a readiness timeout.
-    log.log?.(`[rauhwpx] replacing protocol v${health.protocol ?? 'unknown'} agent hub with v${expectedProtocol}`);
+    log.log?.(`[hamaeditor] replacing protocol v${health.protocol ?? 'unknown'} agent hub with v${expectedProtocol}`);
     const stopped = await stopHubByPort(port, {
       pidPath: paths.pid,
       fetchImpl,
@@ -889,7 +889,7 @@ export async function startDetachedHub({
         error: 'hub-cleanup-unproven',
       };
     }
-    log.warn?.(`[rauhwpx] recovering from dead detached agent hub pid ${recordedPid}`);
+    log.warn?.(`[hamaeditor] recovering from dead detached agent hub pid ${recordedPid}`);
   }
   if (paths.pid) removePidFile(paths.pid);
 
@@ -916,7 +916,7 @@ export async function startDetachedHub({
     platform,
   });
   if (!launch) {
-    log.warn?.('[rauhwpx] agent hub launch command not found:', scriptPath);
+    log.warn?.('[hamaeditor] agent hub launch command not found:', scriptPath);
     return { started: false, ready: false, pid: null, log: paths.log };
   }
 
@@ -939,7 +939,7 @@ export async function startDetachedHub({
   }
 
   if (!child?.pid) {
-    log.warn?.('[rauhwpx] detached agent hub spawn produced no pid');
+    log.warn?.('[hamaeditor] detached agent hub spawn produced no pid');
     return { started: false, ready: false, pid: null, log: paths.log };
   }
 
@@ -956,7 +956,7 @@ export async function startDetachedHub({
   if (!ready) {
     const stopped = await stopHubChild(child, { platform, timeoutMs: DEFAULT_STOP_TIMEOUT_MS });
     if (stopped) removePidFile(paths.pid);
-    log.warn?.('[rauhwpx] detached agent hub did not become ready');
+    log.warn?.('[hamaeditor] detached agent hub did not become ready');
     return { started: true, ready: false, pid: child.pid, log: paths.log };
   }
   return { started: true, ready: true, pid: child.pid, log: paths.log };

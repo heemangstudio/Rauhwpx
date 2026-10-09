@@ -1,7 +1,7 @@
 /**
  * Cmd/Ctrl+Enter 쪽 나누기 뒤 새 쪽 캐럿과 편집 영역 viewport가 함께 이동하는 회귀.
  *
- * Rauhwpx 캐럿은 style.top 이 아니라 transform translate3d 로 배치된다.
+ * Hamaeditor 캐럿은 style.top 이 아니라 transform translate3d 로 배치된다.
  * 기존 helpers.mjs runTest 하네스를 쓰며, 전용 vite 러너는 추가하지 않는다.
  */
 import {
@@ -12,7 +12,7 @@ import {
   assert,
 } from './helpers.mjs';
 
-/** Ctrl+Enter — Rauhwpx shortcut map treats Ctrl and Meta as the same modifier. */
+/** Ctrl+Enter — Hamaeditor shortcut map treats Ctrl and Meta as the same modifier. */
 async function pressCommandEnter(page) {
   await page.keyboard.down('Control');
   await page.keyboard.press('Enter');

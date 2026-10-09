@@ -20,7 +20,7 @@ const params = new URLSearchParams(location.search);
 if (params.get('usage') === 'live') {
   const description = document.querySelector('#preview-controls > p');
   if (description) description.textContent = 'Live account usage. Sample chat and documents.';
-  document.title = 'Live usage audit · Rauhwpx';
+  document.title = 'Live usage audit · Hamaeditor';
 }
 const status = document.querySelector<HTMLOutputElement>('#preview-status')!;
 const report = (message: string) => {
@@ -43,7 +43,7 @@ if (!params.has('initial-setup'))
   });
 if (params.get('width'))
   localStorage.setItem(
-    'rhwp-agent-sidebar-width-v3',
+    'hamaeditor-agent-sidebar-width-v3',
     String(Math.min(900, Math.max(280, Number(params.get('width')) || 480))),
   );
 if (!localStorage.getItem('sidebar-preview-seeded')) {

@@ -21,7 +21,7 @@ await mkdir(artifacts, { recursive: true });
 const sampleFile = resolve(artifacts, 'sample.txt');
 await writeFile(sampleFile, '문서 디자인을 위한 샘플 참고자료입니다.');
 // Own server + fresh browser profile: checks do not need or alter a running app/preview.
-const cacheDir = await mkdtemp(resolve(tmpdir(), 'rauhwpx-sidebar-check-'));
+const cacheDir = await mkdtemp(resolve(tmpdir(), 'hamaeditor-sidebar-check-'));
 const server = await createServer({
   cacheDir,
   configFile: resolve(studio, 'vite.sidebar.config.ts'),

@@ -396,7 +396,7 @@ test('Browserbase launches the in-repo sidecar with a 512 MiB heap and Electron 
       GEMINI_API_KEY: 'model-key',
       ELECTRON_RUN_AS_NODE: '1',
     },
-    execPath: '/Applications/Rauhwpx.app/Contents/MacOS/Rauhwpx',
+    execPath: '/Applications/Hamaeditor.app/Contents/MacOS/Hamaeditor',
     sidecarPath: '/app/browserbase-sidecar.mjs',
     transportFactory(options) {
       launch = options;
@@ -406,7 +406,7 @@ test('Browserbase launches the in-repo sidecar with a 512 MiB heap and Electron 
   });
 
   await browser.ensureConnected();
-  assert.equal(launch.command, '/Applications/Rauhwpx.app/Contents/MacOS/Rauhwpx');
+  assert.equal(launch.command, '/Applications/Hamaeditor.app/Contents/MacOS/Hamaeditor');
   assert.deepEqual(launch.args, ['--max-old-space-size=512', '/app/browserbase-sidecar.mjs']);
   assert.equal(launch.env.ELECTRON_RUN_AS_NODE, '1');
   assert.equal(launch.env.BROWSERBASE_API_KEY, 'browser-key');

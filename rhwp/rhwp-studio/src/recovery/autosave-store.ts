@@ -1,7 +1,7 @@
 /**
  * 미저장 문서 복구용 자동 백업 저장소.
  *
- * 문서 비교 이력(`rhwpStudioDocHistory`)과 섞지 않기 위해 별도 IndexedDB를 사용한다.
+ * 문서 비교 이력(`hamaeditorDocHistory`)과 섞지 않기 위해 별도 IndexedDB를 사용한다.
  * IndexedDB 자체가 없는 테스트/제한 환경에서만 메모리 저장소로 폴백한다. IndexedDB 가 있는데
  * 기록이 실패하면 오류를 그대로 알린다. 메모리 사본은 크래시 뒤 복구에 쓸 수 없기 때문이다.
  *
@@ -17,7 +17,7 @@ import {
   withTimeout,
 } from '../core/idb-open.ts';
 
-const DB_NAME = 'rhwpStudioAutosave';
+const DB_NAME = 'hamaeditorAutosave';
 const DB_VER = 3;
 const DRAFTS = 'drafts';
 const DRAFT_META = 'draftMeta';
@@ -32,7 +32,7 @@ const DRAFT_WRITE_BASE_TIMEOUT_MS = 10_000;
 const DRAFT_WRITE_TIMEOUT_PER_MIB_MS = 250;
 const DRAFT_WRITE_MAX_TIMEOUT_MS = 60_000;
 const DRAFT_READ_TIMEOUT_MS = 30_000;
-const INSTANCE_LOCK_PREFIX = 'rhwp-autosave-owner:';
+const INSTANCE_LOCK_PREFIX = 'hamaeditor-autosave-owner:';
 
 export interface AutosaveOwner {
   launchId: string;

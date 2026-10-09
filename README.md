@@ -2,7 +2,7 @@
   <img src="rhwp/assets/logo/logo-256.png" alt="" width="96" />
 </p>
 
-<h1 align="center">Rauhwpx</h1>
+<h1 align="center">Hamaeditor</h1>
 
 <p align="center">
   AI가 직접 고치는 한글 문서 편집기
@@ -119,7 +119,7 @@ Node.js 22.18 이상, rustup으로 설치한 Rust, wasm-pack 0.15.0이 필요합
 
 ```sh
 git clone https://github.com/heemangstudio/Rauhwpx.git
-cd Rauhwpx
+cd Hamaeditor
 
 cargo install wasm-pack --version 0.15.0 --locked
 npm run setup

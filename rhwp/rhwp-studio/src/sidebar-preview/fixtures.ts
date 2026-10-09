@@ -223,7 +223,7 @@ export function createFixtures() {
     revision: 1,
     updatedAt: timestamp,
     maxChars: 20000,
-    scope: 'rauhwpx-app',
+    scope: 'hamaeditor-app',
   };
   return {
     providers,

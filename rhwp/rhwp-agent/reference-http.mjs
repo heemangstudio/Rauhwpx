@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 
 import { normalizeReferenceScope } from './reference-store.mjs';
 
-export const PACKAGED_STUDIO_ORIGIN = 'rauhwpx://app';
+export const PACKAGED_STUDIO_ORIGIN = 'hamaeditor://app';
 const LOCAL_STUDIO_ORIGIN = /^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d{1,5})?$/i;
 const CONFIGURED_STUDIO_ORIGINS = configuredStudioOrigins(process.env.RHWP_STUDIO_ORIGINS);
 

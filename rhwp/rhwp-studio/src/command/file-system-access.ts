@@ -116,7 +116,7 @@ export const HWP_DOCUMENT_ACCEPT: Record<string, string[]> = {
   'application/hwp+zip': ['.hwpx'],
   'application/xml': ['.hml'],
   'text/xml': ['.hml'],
-  'application/vnd.rauhwpx.history': ['.rhwpx'],
+  'application/vnd.hamaeditor.history': ['.rhwpx'],
 };
 
 const HWP_OPEN_PICKER_TYPES: FilePickerType[] = [{

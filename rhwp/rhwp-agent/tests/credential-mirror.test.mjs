@@ -93,8 +93,8 @@ test('concurrent mirrors preserve one bounded conflict and release both launch m
   await fs.mkdir(firstLaunch, { recursive: true });
   await fs.mkdir(secondLaunch, { recursive: true });
   await fs.writeFile(source, 'initial');
-  await fs.writeFile(path.join(firstLaunch, '.rauhwpx-owner.json'), '{}');
-  await fs.writeFile(path.join(secondLaunch, '.rauhwpx-owner.json'), '{}');
+  await fs.writeFile(path.join(firstLaunch, '.hamaeditor-owner.json'), '{}');
+  await fs.writeFile(path.join(secondLaunch, '.hamaeditor-owner.json'), '{}');
 
   const first = prepareCredentialMirrorSync(source, firstTarget, {
     platform: 'win32', pid: 2_222, symlink: deniedSymlink,
@@ -135,7 +135,7 @@ test('logout during a mirror is terminal and preserves only the refreshed copy',
   await fs.mkdir(path.dirname(source), { recursive: true });
   await fs.mkdir(launch, { recursive: true });
   await fs.writeFile(source, 'initial');
-  await fs.writeFile(path.join(launch, '.rauhwpx-owner.json'), '{}');
+  await fs.writeFile(path.join(launch, '.hamaeditor-owner.json'), '{}');
   const handle = prepareCredentialMirrorSync(source, target, {
     platform: 'win32', pid: 2_223, symlink: deniedSymlink,
   });
@@ -186,7 +186,7 @@ test('a launch retention marker protects a pending crash recovery target', async
   await fs.mkdir(path.dirname(source), { recursive: true });
   await fs.mkdir(launch, { recursive: true });
   await fs.writeFile(source, 'old');
-  await fs.writeFile(path.join(launch, '.rauhwpx-owner.json'), '{}');
+  await fs.writeFile(path.join(launch, '.hamaeditor-owner.json'), '{}');
 
   const handle = prepareCredentialMirrorSync(source, target, {
     platform: 'win32', pid: 555, now: () => 5_000, symlink: deniedSymlink,
@@ -422,7 +422,7 @@ test('journal publish retries a locked first rename on win32 then succeeds', asy
     delays: [0],
     symlink: deniedSymlink,
     renameFile(from, to) {
-      if (path.basename(to).includes('rauhwpx-copyback-') && to.endsWith('.json')) {
+      if (path.basename(to).includes('hamaeditor-copyback-') && to.endsWith('.json')) {
         attempts += 1;
         if (attempts === 1) throw Object.assign(new Error('busy'), { code: 'EBUSY' });
       }
@@ -540,7 +540,7 @@ test('journal publish does not retry a non-lock or unix lock error', async (t) =
       delays: [0],
       symlink: deniedSymlink,
       renameFile(from, to) {
-        if (path.basename(to).includes('rauhwpx-copyback-') && to.endsWith('.json')) {
+        if (path.basename(to).includes('hamaeditor-copyback-') && to.endsWith('.json')) {
           attempts += 1;
           throw Object.assign(new Error('no space'), { code: 'ENOSPC' });
         }
@@ -562,7 +562,7 @@ test('journal publish does not retry a non-lock or unix lock error', async (t) =
       pid: 2_006,
       delays: [0],
       renameFile(from, to) {
-        if (path.basename(to).includes('rauhwpx-copyback-') && to.endsWith('.json')) {
+        if (path.basename(to).includes('hamaeditor-copyback-') && to.endsWith('.json')) {
           unixAttempts += 1;
           throw Object.assign(new Error('locked'), { code: 'EPERM' });
         }

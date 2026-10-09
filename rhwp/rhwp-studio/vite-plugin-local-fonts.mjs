@@ -27,15 +27,15 @@ function publicFontsMaterialized(publicFontsPath) {
 export function rhwpLocalFontsPlugin(studioDir) {
   const publicFontsPath = resolve(studioDir, 'public', 'fonts');
   const assetsFontsDir = resolve(studioDir, '..', 'assets', 'fonts');
-  if (publicFontsMaterialized(publicFontsPath)) return { name: 'rhwp-local-fonts' };
+  if (publicFontsMaterialized(publicFontsPath)) return { name: 'hamaeditor-local-fonts' };
   try {
-    if (!statSync(assetsFontsDir).isDirectory()) return { name: 'rhwp-local-fonts' };
+    if (!statSync(assetsFontsDir).isDirectory()) return { name: 'hamaeditor-local-fonts' };
   } catch {
-    return { name: 'rhwp-local-fonts' };
+    return { name: 'hamaeditor-local-fonts' };
   }
 
   return {
-    name: 'rhwp-local-fonts',
+    name: 'hamaeditor-local-fonts',
     configureServer(server) {
       server.middlewares.use('/fonts', (req, res, next) => {
         if (req.method !== 'GET' && req.method !== 'HEAD') return next();

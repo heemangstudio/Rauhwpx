@@ -53,9 +53,9 @@ function minimalCfbBytes(fill = 0): Uint8Array {
 }
 
 function minimalPortableHistoryBytes(marker = 0): Uint8Array {
-  const magic = new TextEncoder().encode('RAUHWPX-HISTORY\0');
+  const magic = new TextEncoder().encode('HAMAEDITOR-HISTORY\0');
   const manifest = new TextEncoder().encode(JSON.stringify({
-    format: 'rauhwpx-history',
+    format: 'hamaeditor-history',
     version: 1,
     document: {},
     repository: {},
@@ -73,7 +73,7 @@ async function withTemporaryDirectory(run: (directory: string) => Promise<void>)
   // Nearby recovery intentionally searches both the document directory and
   // its parent. Nest each fixture below its own container so unrelated tests
   // creating .hwp files in the shared OS temp root cannot become candidates.
-  const container = await mkdtemp(join(tmpdir(), 'rauhwpx-native-save-'));
+  const container = await mkdtemp(join(tmpdir(), 'hamaeditor-native-save-'));
   const directory = join(container, 'workspace');
   await mkdir(directory);
   try {
@@ -868,7 +868,7 @@ test('a destination recreated after compare preserves both it and the recovery o
     );
     assert.equal(injected, true);
     assert.deepEqual(new Uint8Array(await readFs(target)), external);
-    assert.match(recoveryFile, /report\.rauhwpx-recovery-.*\.hwp$/);
+    assert.match(recoveryFile, /report\.hamaeditor-recovery-.*\.hwp$/);
     assert.deepEqual(new Uint8Array(await readFs(recoveryFile)), original);
     assert.deepEqual((await readdir(directory)).sort(), [basename(recoveryFile), 'report.hwp'].sort());
   });
@@ -1033,7 +1033,7 @@ test('a directory fsync failure after publish does not wedge later saves', async
     assert.deepEqual(new Uint8Array(await readFs(target)), minimalCfbBytes(2));
     const afterFailure = await readdir(directory);
     assert.equal(afterFailure.length, 2, 'the previous version stays as a recovery copy');
-    assert.ok(afterFailure.some((name) => /report\.rauhwpx-recovery-.*\.hwp$/.test(name)));
+    assert.ok(afterFailure.some((name) => /report\.hamaeditor-recovery-.*\.hwp$/.test(name)));
 
     await registry.write('session-a', opened.descriptor.handleId, minimalCfbBytes(3), active, leases);
     await registry.write('session-a', opened.descriptor.handleId, minimalCfbBytes(4), active, leases);
@@ -1138,7 +1138,7 @@ test('dual rollback failure retains an openable recovery document and reports it
       },
     );
     assert.equal(await statFs(target).catch((error) => error?.code), 'ENOENT');
-    assert.match(recoveryFile, /report\.rauhwpx-recovery-.*\.hwp$/);
+    assert.match(recoveryFile, /report\.hamaeditor-recovery-.*\.hwp$/);
     assert.equal(await readFs(recoveryFile, 'utf8'), 'previous');
     assert.deepEqual(await readdir(directory), [basename(recoveryFile)]);
   });
@@ -1387,7 +1387,7 @@ test('macOS replacement copies ACLs and extended attributes before writing the t
     assert.equal(commands[0].command, '/bin/cp');
     assert.deepEqual(commands[0].args.slice(0, 1), ['-p']);
     assert.equal(commands[0].args[1], target);
-    assert.match(commands[0].args[2], /\.rauhwpx-.*\.tmp$/);
+    assert.match(commands[0].args[2], /\.hamaeditor-.*\.tmp$/);
     assert.deepEqual(new Uint8Array(await readFs(target)), new Uint8Array([8, 9]));
   });
 });
@@ -1399,7 +1399,7 @@ test('real macOS replacement preserves an ACL and extended attribute', {
     const target = join(directory, 'report.hwp');
     await writeFs(target, 'previous');
     execFileSync('/usr/bin/xattr', [
-      '-w', 'com.rauhwpx.metadata-test', 'preserved', target,
+      '-w', 'com.hamaeditor.metadata-test', 'preserved', target,
     ]);
     execFileSync('/bin/chmod', ['+a', 'everyone deny execute', target]);
 
@@ -1409,7 +1409,7 @@ test('real macOS replacement preserves an ACL and extended attribute', {
 
     assert.equal(
       execFileSync('/usr/bin/xattr', [
-        '-p', 'com.rauhwpx.metadata-test', target,
+        '-p', 'com.hamaeditor.metadata-test', target,
       ], { encoding: 'utf8' }).trim(),
       'preserved',
     );
@@ -1503,11 +1503,11 @@ test('Windows replacement skips the DACL write when the temp file already matche
     for (const call of commandCalls) {
       assert.equal(call.command, 'C:\\Windows\\System32\\icacls.exe');
       assert.equal(call.args[1], '/save');
-      assert.match(call.args[2], /\.rauhwpx-.*\.tmp(\.target)?\.rauhwpx-dacl$/);
+      assert.match(call.args[2], /\.hamaeditor-.*\.tmp(\.target)?\.hamaeditor-dacl$/);
       assert.equal(call.args[3], '/q');
     }
     assert.equal(commandCalls[0].args[0], target);
-    assert.match(commandCalls[1].args[0], /\.rauhwpx-.*\.tmp$/);
+    assert.match(commandCalls[1].args[0], /\.hamaeditor-.*\.tmp$/);
     const env = commandCalls[0].options.env;
     assert.equal(env.SystemRoot, 'C:\\Windows');
     assert.equal(env.WINDIR, 'C:\\Windows');
@@ -1539,9 +1539,9 @@ test('Windows replacement applies a differing source DACL without icacls /restor
     const apply = commandCalls[2];
     assert.equal(apply.command, 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
     const script = Buffer.from(apply.args.at(-1)!, 'base64').toString('utf16le');
-    assert.match(script, /SetSecurityDescriptorSddlForm\(\$env:RAUHWPX_DACL_SDDL, 'Access'\)/);
-    assert.equal(apply.options.env.RAUHWPX_DACL_SDDL, 'D:PAI(A;;FA;;;BA)');
-    assert.match(apply.options.env.RAUHWPX_DACL_TARGET, /\.rauhwpx-.*\.tmp$/);
+    assert.match(script, /SetSecurityDescriptorSddlForm\(\$env:HAMAEDITOR_DACL_SDDL, 'Access'\)/);
+    assert.equal(apply.options.env.HAMAEDITOR_DACL_SDDL, 'D:PAI(A;;FA;;;BA)');
+    assert.match(apply.options.env.HAMAEDITOR_DACL_TARGET, /\.hamaeditor-.*\.tmp$/);
     assert.equal(apply.options.env.GITHUB_TOKEN, undefined);
     assert.equal(await readFs(target, 'utf8'), '\x07\x08');
     assert.deepEqual(await readdir(directory), ['report.hwp']);
@@ -1619,7 +1619,7 @@ test('a hung Windows metadata command is tree-killed and awaited before rejectio
   await assert.rejects(
     runNativeMetadataCommand(
       'C:\\Windows\\System32\\icacls.exe',
-      ['C:\\doc.hwp', '/save', 'C:\\doc.rauhwpx-dacl', '/q'],
+      ['C:\\doc.hwp', '/save', 'C:\\doc.hamaeditor-dacl', '/q'],
       {
         platform: 'win32',
         env: { SystemRoot: 'C:\\Windows', WINDIR: 'C:\\Windows' },
@@ -1707,7 +1707,7 @@ test('win32 post-publish backup rm retries a first lock then returns the save', 
       runCommandImpl: async () => {},
       sleep: async () => {},
       rmImpl: async (filePath: string, options?: { force?: boolean }) => {
-        if (String(filePath).includes('.rauhwpx-recovery-')) {
+        if (String(filePath).includes('.hamaeditor-recovery-')) {
           recoveryRmAttempts += 1;
           if (recoveryRmAttempts === 1) throw errorWithCode('EPERM');
         }

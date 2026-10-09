@@ -20,7 +20,7 @@ async function getThemeState(page) {
     const activeModes = Array.from(document.querySelectorAll('[data-theme-mode-choice].active'))
       .map((element) => element.dataset.themeModeChoice)
       .filter(Boolean);
-    const stored = JSON.parse(localStorage.getItem('rhwp-settings') || 'null');
+    const stored = JSON.parse(localStorage.getItem('hamaeditor-settings') || 'null');
     let hRulerAvg = null;
     if (hRuler instanceof HTMLCanvasElement) {
       const ctx = hRuler.getContext('2d');
@@ -88,7 +88,7 @@ runTest('보기 테마', async ({ page }) => {
   await loadApp(page);
 
   await page.evaluate(() => {
-    localStorage.removeItem('rhwp-settings');
+    localStorage.removeItem('hamaeditor-settings');
     window.__theme?.setThemeMode?.('system');
   });
   await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 200)));

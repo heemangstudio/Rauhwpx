@@ -47,9 +47,9 @@ export class TemplateStoreError extends Error {
 
 export function defaultTemplateDataRoot(env = process.env, platform = process.platform, home = os.homedir()) {
   if (env.RHWP_TEMPLATES_DIR) return path.resolve(env.RHWP_TEMPLATES_DIR);
-  if (platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'rhwp', 'templates');
-  if (platform === 'win32') return path.join(env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'rhwp', 'templates');
-  return path.join(env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'rhwp', 'templates');
+  if (platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'hamaeditor', 'templates');
+  if (platform === 'win32') return path.join(env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'hamaeditor', 'templates');
+  return path.join(env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'hamaeditor', 'templates');
 }
 
 export function normalizeTemplateName(value) {

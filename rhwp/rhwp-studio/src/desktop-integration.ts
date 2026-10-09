@@ -1082,7 +1082,7 @@ export function installDesktopAgentAttention(
       syncCount();
       if (succeeded) {
         api.notifyAgentTurnFinished?.({
-          title: source.documentTitle() || 'Rauhwpx',
+          title: source.documentTitle() || 'Hamaeditor',
           body: lastCount > 0 ? '검토할 변경이 있습니다' : '작업 완료',
         });
       }

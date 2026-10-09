@@ -14,7 +14,7 @@ const VITE_URL = process.env.VITE_URL || 'http://localhost:7700';
 
 runTest('초기 테마 bootstrap', async ({ page }) => {
   await page.evaluateOnNewDocument(() => {
-    localStorage.setItem('rhwp-settings', JSON.stringify({
+    localStorage.setItem('hamaeditor-settings', JSON.stringify({
       version: 1,
       theme: { mode: 'dark' },
     }));

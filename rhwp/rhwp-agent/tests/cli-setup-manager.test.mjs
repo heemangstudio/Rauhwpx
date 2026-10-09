@@ -76,9 +76,9 @@ function fakeSpawner(prefixDir, platform = process.platform) {
 
 test('CLI setup root follows the app data directory on each platform', () => {
   assert.equal(defaultCliSetupRoot({ RHWP_CLI_DIR: '/tmp/rhwp-cli' }), path.resolve('/tmp/rhwp-cli'));
-  assert.equal(defaultCliSetupRoot({}, 'darwin', '/Users/tester'), '/Users/tester/Library/Application Support/rhwp/cli');
-  assert.equal(defaultCliSetupRoot({ APPDATA: 'C:\\data' }, 'win32', 'C:\\Users\\tester'), path.win32.join('C:\\data', 'rhwp', 'cli'));
-  assert.equal(defaultCliSetupRoot({}, 'linux', '/home/tester'), '/home/tester/.local/share/rhwp/cli');
+  assert.equal(defaultCliSetupRoot({}, 'darwin', '/Users/tester'), '/Users/tester/Library/Application Support/hamaeditor/cli');
+  assert.equal(defaultCliSetupRoot({ APPDATA: 'C:\\data' }, 'win32', 'C:\\Users\\tester'), path.win32.join('C:\\data', 'hamaeditor', 'cli'));
+  assert.equal(defaultCliSetupRoot({}, 'linux', '/home/tester'), '/home/tester/.local/share/hamaeditor/cli');
 });
 
 test('only supported CLI agents can reach setup operations', async (t) => {
@@ -122,7 +122,7 @@ test('a rejected or cancelled API-key login leaves no stored key', async (t) => 
   const secretStore = {
     available: true,
     async get(key) { return stored.get(key) ?? null; },
-    async set(key, value) { if (key === 'rhwp.codex.api-key') await writeHeld; stored.set(key, value); return true; },
+    async set(key, value) { if (key === 'hamaeditor.codex.api-key') await writeHeld; stored.set(key, value); return true; },
     async delete(key) { return stored.delete(key); },
   };
   const manager = await createCliSetupManager({
@@ -132,7 +132,7 @@ test('a rejected or cancelled API-key login leaves no stored key', async (t) => 
 
   await assert.rejects(() => manager.authenticate('claude', 'api-key', 'sk-ant-rejected'), { code: 'AGENT_KEY_INVALID' });
   assert.equal((await manager.status('claude')).authenticated, false);
-  assert.equal(stored.has('rhwp.claude.api-key'), false);
+  assert.equal(stored.has('hamaeditor.claude.api-key'), false);
 
   const abort = new AbortController();
   let committed = false;
@@ -144,7 +144,7 @@ test('a rejected or cancelled API-key login leaves no stored key', async (t) => 
   releaseWrite();
   await assert.rejects(pending, { code: 'AGENT_AUTH_CANCELLED' });
   assert.equal(committed, false);
-  assert.equal(stored.has('rhwp.codex.api-key'), false);
+  assert.equal(stored.has('hamaeditor.codex.api-key'), false);
   assert.equal(manager.envFor('codex').OPENAI_API_KEY, undefined);
   assert.equal((await manager.status('codex')).authMethod, null);
 });
@@ -159,7 +159,7 @@ test('vault-backed API keys are bounded and never enter fallback files', async (
   );
   await manager.authenticate('claude', 'api-key', 'anthropic-only');
   await manager.authenticate('codex', 'api-key', 'openai-only');
-  assert.equal(await secretStore.get('rhwp.codex.api-key'), 'openai-only');
+  assert.equal(await secretStore.get('hamaeditor.codex.api-key'), 'openai-only');
   await assert.rejects(fs.access(path.join(rootDir, 'secrets.json')), { code: 'ENOENT' });
   assert.doesNotMatch(await fs.readFile(path.join(rootDir, 'config.json'), 'utf8'), /anthropic-only|openai-only/);
   assert.equal(manager.envFor('claude').ANTHROPIC_API_KEY, 'anthropic-only');
@@ -177,8 +177,8 @@ test('legacy config keys migrate before their public copy is removed', async (t)
   const secretStore = createMemorySecretStore();
   await createCliSetupManager({ rootDir, secretStore }).init();
 
-  assert.equal(await secretStore.get('rhwp.claude.api-key'), 'sk-ant-legacy-1234');
-  assert.equal(await secretStore.get('rhwp.codex.api-key'), 'sk-codex-legacy-5678');
+  assert.equal(await secretStore.get('hamaeditor.claude.api-key'), 'sk-ant-legacy-1234');
+  assert.equal(await secretStore.get('hamaeditor.codex.api-key'), 'sk-codex-legacy-5678');
   const config = await fs.readFile(path.join(rootDir, 'config.json'), 'utf8');
   assert.doesNotMatch(config, /sk-ant-legacy|sk-codex-legacy/);
   assert.match(config, /"keyTail": "1234"/);
@@ -325,7 +325,7 @@ test('a CLI that cannot be spawned fails its run instead of crashing the hub', a
 
 test('a transient secret-store failure at startup is retried instead of dropping the API key', async (t) => {
   const rootDir = await tmpRoot(t);
-  const stored = new Map([['rhwp.claude.api-key', 'sk-ant-api-retry-1234']]);
+  const stored = new Map([['hamaeditor.claude.api-key', 'sk-ant-api-retry-1234']]);
   let failures = 1;
   const secretStore = {
     available: true,

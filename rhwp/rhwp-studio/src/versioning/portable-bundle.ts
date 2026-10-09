@@ -13,8 +13,8 @@ import {
 import type { VersionRepositorySnapshot } from './store.ts';
 
 export const PORTABLE_HISTORY_EXTENSION = '.rhwpx';
-export const PORTABLE_HISTORY_MIME_TYPE = 'application/vnd.rauhwpx.history';
-export const PORTABLE_HISTORY_FORMAT = 'rauhwpx-history';
+export const PORTABLE_HISTORY_MIME_TYPE = 'application/vnd.hamaeditor.history';
+export const PORTABLE_HISTORY_FORMAT = 'hamaeditor-history';
 export const PORTABLE_HISTORY_VERSION = 1;
 export { PORTABLE_HISTORY_MAX_BYTES };
 export const PORTABLE_HISTORY_MAX_MANIFEST_BYTES = 32 * 1024 * 1024;
@@ -29,7 +29,7 @@ const PORTABLE_HISTORY_MAX_SNAPSHOT_TOKENS = 500_000;
 /** Payload name used by legacy `.rhwpx` folder bundles. New exports are single files. */
 export const PORTABLE_HISTORY_FOLDER_HISTORY_NAME = 'history';
 
-const MAGIC = new TextEncoder().encode('RAUHWPX-HISTORY\0');
+const MAGIC = new TextEncoder().encode('HAMAEDITOR-HISTORY\0');
 const PREFIX_LENGTH = MAGIC.byteLength + 4;
 
 type PortableSourceFormat = 'hwp' | 'hwpx' | 'hml';
@@ -336,7 +336,7 @@ function parseManifest(bytes: Uint8Array): { manifest: PortableHistoryManifest; 
     throw new PortableHistoryError('The history bundle is empty or exceeds the 128 MiB limit');
   }
   if (!bytesEqual(bytes.subarray(0, MAGIC.byteLength), MAGIC)) {
-    throw new PortableHistoryError('This is not a RauHWPX history bundle');
+    throw new PortableHistoryError('This is not a Hamaeditor history bundle');
   }
   const length = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
     .getUint32(MAGIC.byteLength, true);

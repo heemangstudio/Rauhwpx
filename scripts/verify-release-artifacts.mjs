@@ -300,8 +300,8 @@ export function verifyReleaseArtifacts({
 
     const dmg = requireOne(directory, /-arm64\.dmg$/, 'arm64 DMG');
     const zip = requireOne(directory, /-arm64\.zip$/, 'arm64 ZIP');
-    if (basename(dmg) !== `Rauhwpx-${releaseVersion}-arm64.dmg`
-      || basename(zip) !== `Rauhwpx-${releaseVersion}-arm64.zip`) {
+    if (basename(dmg) !== `Hamaeditor-${releaseVersion}-arm64.dmg`
+      || basename(zip) !== `Hamaeditor-${releaseVersion}-arm64.zip`) {
       fail(`macOS artifact names do not match package version ${releaseVersion}`);
     }
     verifyMacDistributable(dmg, 'DMG');
@@ -318,13 +318,13 @@ export function verifyReleaseArtifacts({
     const appDirectory = join(
       directory,
       'mac-arm64',
-      'Rauhwpx.app',
+      'Hamaeditor.app',
       'Contents',
     );
     verifyMacExecutable(join(
       appDirectory,
       'MacOS',
-      'Rauhwpx',
+      'Hamaeditor',
     ));
     verifyMacExecutable(join(appDirectory, 'Resources', 'bin', 'rhwp'));
     verifyMacExecutable(packagedStagedNativeExtractorPath(
@@ -340,7 +340,7 @@ export function verifyReleaseArtifacts({
     if (hostPlatform !== 'win32') fail('Windows artifacts must be checked on Windows');
 
     const installer = requireOne(directory, /-x64\.exe$/, 'x64 NSIS installer');
-    if (basename(installer) !== `Rauhwpx-${releaseVersion}-x64.exe`) {
+    if (basename(installer) !== `Hamaeditor-${releaseVersion}-x64.exe`) {
       fail(`Windows artifact name does not match package version ${releaseVersion}`);
     }
     verifyWindowsInstaller(installer);
@@ -350,7 +350,7 @@ export function verifyReleaseArtifacts({
       expectedArtifactNames: [basename(installer)],
     });
     const unpackedDirectory = join(directory, 'win-unpacked');
-    verifyWindowsExecutable(join(unpackedDirectory, 'Rauhwpx.exe'));
+    verifyWindowsExecutable(join(unpackedDirectory, 'Hamaeditor.exe'));
     verifyWindowsExecutable(join(unpackedDirectory, 'resources', 'bin', 'rhwp.exe'));
     verifyWindowsExecutable(packagedStagedNativeExtractorPath(
       join(unpackedDirectory, 'resources'),

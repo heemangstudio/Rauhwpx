@@ -12,7 +12,7 @@ Primary users are Korean office workers who already work in HWP/HWPX and are tir
 
 ## Product Purpose
 
-Rauhwpx is an independent open-source HWP/HWPX viewer/editor with agentic features built into the editing experience. Success means users can create full documents with AI and collaborate smoothly—both in the system (local agent ↔ open document) and in the UI (the AI feels like part of the program, not a bolted-on chat pane). New documents and exports default to HWPX for Korean office attachments; binary HWP 5.0 remains an explicit save choice.
+Hamaeditor is an independent open-source HWP/HWPX viewer/editor with agentic features built into the editing experience. Success means users can create full documents with AI and collaborate smoothly—both in the system (local agent ↔ open document) and in the UI (the AI feels like part of the program, not a bolted-on chat pane). New documents and exports default to HWPX for Korean office attachments; binary HWP 5.0 remains an explicit save choice.
 
 ## Positioning
 
@@ -20,7 +20,7 @@ An HWP/HWPX editor with agentic features as a first-class part of the product—
 
 ## Operating Context
 
-- Users open HWP/HWPX (and related formats) in `rhwp-studio` in the browser (PWA) or the Rauhwpx desktop app.
+- Users open HWP/HWPX (and related formats) in `rhwp-studio` in the browser (PWA) or the Hamaeditor desktop app.
 - The desktop app runs as one Electron process with multiple document windows. Every window owns an isolated agent session while settings, recent documents, skills, references, and provider credentials remain user-wide.
 - A local Node hub (`rhwp-agent`) bridges Claude, Codex, and Pi to Studio through session-scoped WebSocket and MCP routing.
 - AI writes run autonomously with editor undo history: semantic edits use a live staged preview and commit on successful turn completion; raw engine batches are atomic and restore the prior snapshot on failure.
@@ -39,7 +39,7 @@ An HWP/HWPX editor with agentic features as a first-class part of the product—
 
 ## Brand Commitments
 
-- Product name: **Rauhwpx**. Engine/studio/hub directories remain under `rhwp/` for historical layout only.
+- Product name: **Hamaeditor**. Engine/studio/hub directories remain under `rhwp/` for historical layout only.
 - Do not present this product as edwardkim/rhwp or as a Hancom product.
 - Voice: practical document-work tool; AI should feel native to the editor, not like a separate SaaS chat product.
 

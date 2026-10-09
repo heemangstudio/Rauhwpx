@@ -45,8 +45,8 @@ export const DEFAULT_CANVASKIT_SURFACE_REQUEST: CanvasKitSurfaceRequest = {
   requested: 'auto',
 };
 
-const CANVASKIT_MODE_STORAGE_KEY = 'rhwp.canvaskitMode';
-const RENDER_PROFILE_STORAGE_KEY = 'rhwp.renderProfile';
+const CANVASKIT_MODE_STORAGE_KEY = 'hamaeditor.canvaskitMode';
+const RENDER_PROFILE_STORAGE_KEY = 'hamaeditor.renderProfile';
 
 function readStorage(key: string): string | null {
   try {

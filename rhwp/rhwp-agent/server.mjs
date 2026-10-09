@@ -5217,7 +5217,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           if (!record.studioSocket || record.studioSocket.readyState !== record.studioSocket.OPEN) {
             throw workflowError(
               'INSTRUCTIONS_CONFIRMATION_UNAVAILABLE',
-              'Rauhwpx Studio must be connected so the user can confirm the instruction proposal.',
+              'Hamaeditor Studio must be connected so the user can confirm the instruction proposal.',
             );
           }
           if (record.pendingInstructionDraft) clearInstructionDraft(record, 'replaced');
@@ -5244,7 +5244,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
             record.pendingInstructionDraft = null;
             throw workflowError(
               'INSTRUCTIONS_CONFIRMATION_UNAVAILABLE',
-              'Rauhwpx Studio disconnected before the instruction proposal could be shown.',
+              'Hamaeditor Studio disconnected before the instruction proposal could be shown.',
             );
           }
           sendResult({
@@ -5828,7 +5828,7 @@ const httpServer = http.createServer((req, res) => {
       if (!code || !authRun || authRun.method !== 'oauth'
         || authRun.signal?.aborted || typeof authRun.commitCredentials !== 'function') {
         res.writeHead(400, { 'content-type': 'text/html; charset=utf-8' });
-        res.end('<!doctype html><meta charset="utf-8"><title>Rauhwpx</title><p>OpenRouter login did not return a code.</p>');
+        res.end('<!doctype html><meta charset="utf-8"><title>Hamaeditor</title><p>OpenRouter login did not return a code.</p>');
         return;
       }
       try {
@@ -5848,19 +5848,19 @@ const httpServer = http.createServer((req, res) => {
           log(`post-auth pi credit refresh failed: ${refreshError?.message ?? refreshError}`);
         });
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-        res.end('<!doctype html><meta charset="utf-8"><title>Rauhwpx</title><style>body{font:16px system-ui;margin:48px;color:#202124}</style><h1>OpenRouter connected</h1><p>You can return to Rauhwpx and close this tab.</p>');
+        res.end('<!doctype html><meta charset="utf-8"><title>Hamaeditor</title><style>body{font:16px system-ui;margin:48px;color:#202124}</style><h1>OpenRouter connected</h1><p>You can return to Hamaeditor and close this tab.</p>');
       } catch (error) {
         if (authRun.credentialsCommitted === true) {
           log(`post-auth pi status refresh failed: ${error?.message ?? error}`);
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-          res.end('<!doctype html><meta charset="utf-8"><title>Rauhwpx</title><h1>OpenRouter connected</h1><p>You can return to Rauhwpx and close this tab.</p>');
+          res.end('<!doctype html><meta charset="utf-8"><title>Hamaeditor</title><h1>OpenRouter connected</h1><p>You can return to Hamaeditor and close this tab.</p>');
           return;
         }
         if (error?.code !== 'OPENROUTER_OAUTH_INVALID') {
           sendAuthRunError(authRun, error, 'OPENROUTER_OAUTH_FAILED');
         }
         res.writeHead(400, { 'content-type': 'text/html; charset=utf-8' });
-        res.end('<!doctype html><meta charset="utf-8"><title>Rauhwpx</title><p>OpenRouter login could not be completed. Return to Rauhwpx and try again.</p>');
+        res.end('<!doctype html><meta charset="utf-8"><title>Hamaeditor</title><p>OpenRouter login could not be completed. Return to Hamaeditor and try again.</p>');
       }
       return;
     }

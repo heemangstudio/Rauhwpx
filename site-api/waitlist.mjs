@@ -54,7 +54,7 @@ export function createWaitlistService({
       const response = await fetchImpl(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: telegramChatId, text: `Rauhwpx 체험 신청: ${email}` }),
+        body: JSON.stringify({ chat_id: telegramChatId, text: `Hamaeditor 체험 신청: ${email}` }),
         signal: AbortSignal.timeout(NOTIFY_TIMEOUT_MS),
       });
       if (!response.ok) throw new Error(`Telegram HTTP ${response.status}`);

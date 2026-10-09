@@ -114,7 +114,7 @@ test('CanvasKit mode resolver exposes default and conservative compat direct mod
 test('CanvasKit mode request reports storage selection and lets URL override it', () => {
   const originalStorage = (globalThis as { localStorage?: unknown }).localStorage;
   (globalThis as { localStorage?: unknown }).localStorage = {
-    getItem: (key: string) => key === 'rhwp.canvaskitMode' ? 'compat' : null,
+    getItem: (key: string) => key === 'hamaeditor.canvaskitMode' ? 'compat' : null,
     setItem: () => undefined,
   };
   try {

@@ -6,7 +6,7 @@
  */
 import type { BrowserbaseOverride } from './types.ts';
 
-export const BROWSERBASE_OVERRIDE_STORAGE_KEY = 'rhwp-agent-browserbase-override';
+export const BROWSERBASE_OVERRIDE_STORAGE_KEY = 'hamaeditor-agent-browserbase-override';
 
 interface StorageLike {
   getItem(key: string): string | null;

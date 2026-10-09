@@ -163,7 +163,7 @@
   function createBadge(anchor) {
     const badge = document.createElement('span');
     badge.className = BADGE_CLASS;
-    badge.title = browser.i18n.getMessage('badgeTooltip') || 'rhwp로 열기';
+    badge.title = browser.i18n.getMessage('badgeTooltip') || 'Hamaeditor로 열기';
 
     badge.addEventListener('click', (e) => {
       e.preventDefault();
@@ -341,7 +341,7 @@
     // 풋터 바 — 카드 전체 클릭 영역 암시
     const footer = document.createElement('div');
     footer.className = 'rhwp-hover-action';
-    const footerLabel = createDiv('rhwp-hover-action-label', '▶\u2002rhwp로 열기');
+    const footerLabel = createDiv('rhwp-hover-action-label', '▶\u2002Hamaeditor로 열기');
     const footerArrow = createDiv('rhwp-hover-action-arrow', '→');
     footer.appendChild(footerLabel);
     footer.appendChild(footerArrow);
@@ -610,7 +610,7 @@
       flex-shrink: 0;
     `;
     const titleEl = document.createElement('span');
-    titleEl.textContent = filename || 'HWP Viewer';
+    titleEl.textContent = filename || 'Hamaeditor';
     const closeBtn = document.createElement('button');
     closeBtn.textContent = '\u2715';
     closeBtn.style.cssText = `

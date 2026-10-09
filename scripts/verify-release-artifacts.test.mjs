@@ -39,9 +39,9 @@ test('PE architecture reader rejects truncated and malformed headers', () => {
 });
 
 test('Windows artifact check reads an x64 PE header from disk', (t) => {
-  const directory = mkdtempSync(join(tmpdir(), 'rauhwpx-pe-check-'));
+  const directory = mkdtempSync(join(tmpdir(), 'hamaeditor-pe-check-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const executable = join(directory, 'Rauhwpx.exe');
+  const executable = join(directory, 'Hamaeditor.exe');
   writeFileSync(executable, peFixture(0x8664));
   assert.doesNotThrow(() => verifyWindowsExecutable(executable));
 
@@ -50,9 +50,9 @@ test('Windows artifact check reads an x64 PE header from disk', (t) => {
 });
 
 test('Windows installer check accepts NSIS bootstrap architectures only', (t) => {
-  const directory = mkdtempSync(join(tmpdir(), 'rauhwpx-installer-check-'));
+  const directory = mkdtempSync(join(tmpdir(), 'hamaeditor-installer-check-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const installer = join(directory, 'Rauhwpx.exe');
+  const installer = join(directory, 'Hamaeditor.exe');
 
   writeFileSync(installer, peFixture(0x014c));
   assert.doesNotThrow(() => verifyWindowsInstaller(installer));
@@ -92,9 +92,9 @@ function blockmapFixture(size) {
 }
 
 test('update descriptor digest and size must match the exact artifact entry', (t) => {
-  const directory = mkdtempSync(join(tmpdir(), 'rauhwpx-update-check-'));
+  const directory = mkdtempSync(join(tmpdir(), 'hamaeditor-update-check-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const name = 'Rauhwpx-1.2.3-x64.exe';
+  const name = 'Hamaeditor-1.2.3-x64.exe';
   const bytes = Buffer.from('installer bytes');
   const artifact = join(directory, name);
   const descriptor = join(directory, 'latest.yml');
@@ -136,10 +136,10 @@ test('update descriptor digest and size must match the exact artifact entry', (t
 });
 
 test('macOS descriptor authenticates a secondary DMG without making it primary', (t) => {
-  const directory = mkdtempSync(join(tmpdir(), 'rauhwpx-mac-update-check-'));
+  const directory = mkdtempSync(join(tmpdir(), 'hamaeditor-mac-update-check-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const zipName = 'Rauhwpx-1.2.3-arm64.zip';
-  const dmgName = 'Rauhwpx-1.2.3-arm64.dmg';
+  const zipName = 'Hamaeditor-1.2.3-arm64.zip';
+  const dmgName = 'Hamaeditor-1.2.3-arm64.dmg';
   const zipBytes = Buffer.from('zip bytes');
   const dmgBytes = Buffer.from('dmg bytes');
   const zip = join(directory, zipName);
@@ -174,9 +174,9 @@ test('macOS descriptor authenticates a secondary DMG without making it primary',
 });
 
 test('blockmap must be valid gzip JSON covering the complete artifact', (t) => {
-  const directory = mkdtempSync(join(tmpdir(), 'rauhwpx-blockmap-check-'));
+  const directory = mkdtempSync(join(tmpdir(), 'hamaeditor-blockmap-check-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const artifact = join(directory, 'Rauhwpx.zip');
+  const artifact = join(directory, 'Hamaeditor.zip');
   const blockmap = `${artifact}.blockmap`;
   writeFileSync(artifact, 'artifact');
   writeFileSync(blockmap, blockmapFixture(8));
@@ -189,16 +189,16 @@ test('blockmap must be valid gzip JSON covering the complete artifact', (t) => {
 });
 
 test('full Windows release check rejects a wrong-architecture native engine', (t) => {
-  const directory = mkdtempSync(join(tmpdir(), 'rauhwpx-win-release-check-'));
+  const directory = mkdtempSync(join(tmpdir(), 'hamaeditor-win-release-check-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const installerName = 'Rauhwpx-1.2.3-x64.exe';
+  const installerName = 'Hamaeditor-1.2.3-x64.exe';
   const installer = join(directory, installerName);
   const installerBytes = peFixture(0x014c);
   writeFileSync(installer, installerBytes);
   writeFileSync(`${installer}.blockmap`, blockmapFixture(installerBytes.length));
   writeFileSync(join(directory, 'latest.yml'), artifactDescriptor(installerName, installerBytes));
 
-  const app = join(directory, 'win-unpacked', 'Rauhwpx.exe');
+  const app = join(directory, 'win-unpacked', 'Hamaeditor.exe');
   const engine = join(directory, 'win-unpacked', 'resources', 'bin', 'rhwp.exe');
   const staged = packagedStagedNativeExtractorPath(
     join(directory, 'win-unpacked', 'resources'),
@@ -245,16 +245,16 @@ test('full Windows release check rejects a wrong-architecture native engine', (t
 });
 
 test('full Windows release check requires the staged Studio extractor', (t) => {
-  const directory = mkdtempSync(join(tmpdir(), 'rauhwpx-win-staged-extractor-'));
+  const directory = mkdtempSync(join(tmpdir(), 'hamaeditor-win-staged-extractor-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const installerName = 'Rauhwpx-1.2.3-x64.exe';
+  const installerName = 'Hamaeditor-1.2.3-x64.exe';
   const installer = join(directory, installerName);
   const installerBytes = peFixture(0x014c);
   writeFileSync(installer, installerBytes);
   writeFileSync(`${installer}.blockmap`, blockmapFixture(installerBytes.length));
   writeFileSync(join(directory, 'latest.yml'), artifactDescriptor(installerName, installerBytes));
 
-  const app = join(directory, 'win-unpacked', 'Rauhwpx.exe');
+  const app = join(directory, 'win-unpacked', 'Hamaeditor.exe');
   const engine = join(directory, 'win-unpacked', 'resources', 'bin', 'rhwp.exe');
   mkdirSync(join(directory, 'win-unpacked', 'resources', 'bin'), { recursive: true });
   writeFileSync(app, peFixture(0x8664));

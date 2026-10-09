@@ -220,14 +220,14 @@ export interface TemplateCatalog {
   templates: DocumentTemplate[];
 }
 
-/** Rauhwpx가 별도 보관하고 이 앱의 채팅에만 주입하는 AGENTS.md. */
+/** Hamaeditor가 별도 보관하고 이 앱의 채팅에만 주입하는 AGENTS.md. */
 export interface AgentInstructionsStatus {
   fileName: 'AGENTS.md';
   content: string;
   revision: number;
   updatedAt: string | null;
   maxChars: number;
-  scope: 'rauhwpx-app';
+  scope: 'hamaeditor-app';
 }
 
 /** 에이전트가 제안했지만 사용자가 아직 승인하지 않은 앱 지시 변경안. */

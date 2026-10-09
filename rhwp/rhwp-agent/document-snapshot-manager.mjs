@@ -120,7 +120,7 @@ export class DocumentSnapshotManager {
     if (writableRoot && pathsOverlap(rootDir, writableRoot)) {
       throw new Error('DocumentSnapshotManager storage must not overlap the provider-writable root');
     }
-    this.agentDir = path.resolve(rootDir, '.rhwp-agent');
+    this.agentDir = path.resolve(rootDir, '.hamaeditor-agent');
     this.baseDir = path.resolve(this.agentDir, 'document-snapshots');
     this.maxBytes = maxBytes;
     this.maxFilesPerChat = maxFilesPerChat;

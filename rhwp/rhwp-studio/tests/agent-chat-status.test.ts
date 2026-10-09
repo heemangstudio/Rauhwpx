@@ -11,7 +11,7 @@ import {
   subscribeChatStatus,
 } from '../src/agent/chat-status.ts';
 
-const STORAGE_KEY = 'rhwp-agent-chat-status';
+const STORAGE_KEY = 'hamaeditor-agent-chat-status';
 const mem = new Map<string, string>();
 const storage = {
   getItem: (k: string) => mem.get(k) ?? null,

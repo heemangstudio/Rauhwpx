@@ -1,10 +1,10 @@
 ---
 name: skill-creator
-description: Create or improve a reusable rhwp product skill with clear triggers, concise instructions, and optional scripts, references, or assets. Use when the user asks to create, define, or update a skill in rhwp.
+description: Create or improve a reusable Hamaeditor product skill with clear triggers, concise instructions, and optional scripts, references, or assets. Use when the user asks to create, define, or update a skill in Hamaeditor.
 icon: bot
 ---
 
-Create and refine rhwp product skills with the product skill tools. Do not write Claude, Codex, Cursor, or Pi global skill directories, and do not ask for a Studio form.
+Create and refine Hamaeditor product skills with the product skill tools. Do not write Claude, Codex, Cursor, or Pi global skill directories, and do not ask for a Studio form.
 
 1. Call `list_harness_skills` when the user wants to bring in a skill that already exists in a harness.
 2. Call `read_product_skill` before changing a skill that is already enabled.

@@ -576,7 +576,7 @@ const BROWSER_ID_ARG = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/, 'bro
 const BASE_TOOL_DEFINITIONS = [
   {
     name: 'read_agent_instructions',
-    description: 'Read the app-only AGENTS.md (durable user preferences for Rauhwpx chats): content, revision, updatedAt. Read before update_agent_instructions. Not a project AGENTS.md; never shared outside this app.',
+    description: 'Read the app-only AGENTS.md (durable user preferences for Hamaeditor chats): content, revision, updatedAt. Read before update_agent_instructions. Not a project AGENTS.md; never shared outside this app.',
     shape: {},
   },
   {
@@ -590,7 +590,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'read_product_skill',
-    description: 'Read an enabled rhwp product skill (start with SKILL.md) or one of its text resources; returns the directory digest and file list. Read only the referenced files you need.',
+    description: 'Read an enabled Hamaeditor product skill (start with SKILL.md) or one of its text resources; returns the directory digest and file list. Read only the referenced files you need.',
     shape: {
       name: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/),
       resourcePath: z.string().min(1).max(500).default('SKILL.md').optional(),
@@ -598,7 +598,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'commit_product_skill',
-    description: 'Change the rhwp product skill library: create, write one file, replace the body, import a harness skill or delete a user skill. Send only the fields for that action; pass the current digest as base for write/body/delete/replace. Never write provider-global skill directories.',
+    description: 'Change the Hamaeditor product skill library: create, write one file, replace the body, import a harness skill or delete a user skill. Send only the fields for that action; pass the current digest as base for write/body/delete/replace. Never write provider-global skill directories.',
     shape: {
       action: z.enum(['create', 'write', 'body', 'import', 'delete']),
       name: z.string().optional(),

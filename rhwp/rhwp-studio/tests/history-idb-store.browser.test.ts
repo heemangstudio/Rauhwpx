@@ -26,7 +26,7 @@ test('문서 이력 스냅샷 기록 실패는 기존 스냅샷을 지우지 않
     await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/version-store-idb.html`);
     const result = await page.evaluate(async () => {
       await new Promise<void>((resolve, reject) => {
-        const request = indexedDB.deleteDatabase('rhwpStudioDocHistory');
+        const request = indexedDB.deleteDatabase('hamaeditorDocHistory');
         request.onsuccess = () => resolve();
         request.onerror = () => reject(request.error);
       });

@@ -76,7 +76,7 @@ function isDarkPixel(pixel) {
 
 runTest('Chrome Auto Dark Mode 대응', async ({ page }) => {
   await loadApp(page);
-  await page.evaluate(() => localStorage.removeItem('rhwp-settings'));
+  await page.evaluate(() => localStorage.removeItem('hamaeditor-settings'));
   await setTheme(page, 'light');
   await createNewDocument(page);
 

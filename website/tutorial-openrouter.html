@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OpenRouter 연결 튜토리얼 | Rauhwpx</title>
-<meta name="description" content="OpenRouter 계정에 크레딧을 충전하고 Rauhwpx의 Pi를 OAuth로 연결하는 8단계 튜토리얼입니다.">
+<title>OpenRouter 연결 튜토리얼 | Hamaeditor</title>
+<meta name="description" content="OpenRouter 계정에 크레딧을 충전하고 Hamaeditor의 Pi를 OAuth로 연결하는 8단계 튜토리얼입니다.">
 <meta name="theme-color" content="#ececea">
-<link rel="icon" type="image/png" href="assets/rauhwpx-logo.png">
-<link rel="apple-touch-icon" href="assets/rauhwpx-logo.png">
+<link rel="icon" type="image/png" href="assets/hamaeditor-logo.png?v=hippo">
+<link rel="apple-touch-icon" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
@@ -46,11 +46,11 @@ img{display:block;max-width:100%}
 
 /* 머리글 */
 .masthead{position:sticky;top:0;z-index:40;height:60px;background:rgba(236,236,234,.9);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
-.masthead .wrap{height:100%;display:flex;align-items:center;justify-content:space-between;gap:24px;max-width:none}
+.masthead .wrap{height:100%;display:flex;align-items:center;justify-content:space-between;gap:24px;max-width:none;image-rendering:pixelated}
 .mast__rule{position:absolute;left:0;right:0;bottom:-3px;width:100%;height:6px;overflow:visible;color:var(--ink);pointer-events:none;filter:url(#cc0)}
 .brand{min-height:44px;display:inline-flex;align-items:center;gap:10px;font:700 18px/1 var(--serif);letter-spacing:-.03em;text-decoration:none}
 .tile{position:relative;width:30px;height:30px;border-radius:8px;overflow:hidden;flex:0 0 auto;background:#1c1c1b;box-shadow:0 1px 0 rgba(0,0,0,.35)}
-.tile img{position:absolute;left:-6%;top:-6%;width:112%;height:112%;max-width:none;filter:url(#logo)}
+.tile img{position:absolute;left:-6%;top:-6%;width:112%;height:112%;max-width:none;image-rendering:pixelated}
 .back{min-height:44px;display:inline-flex;align-items:center;gap:8px;color:var(--ink-2);font-size:15px;text-decoration:none}
 .back:hover{color:var(--ink);text-decoration:underline;text-underline-offset:5px;text-decoration-thickness:1px}
 .back svg{width:18px;height:18px}
@@ -149,7 +149,7 @@ img{display:block;max-width:100%}
   .shot-canvas{min-width:720px}
   .shot figcaption{align-items:flex-start;flex-direction:column;gap:5px}
   .marker b{width:31px;height:31px}.marker em{font-size:11px}
-  .finish-actions{max-width:none}.finish-actions .button{width:100%}
+  .finish-actions{max-width:none;image-rendering:pixelated}.finish-actions .button{width:100%}
   .foot .wrap>div{align-items:flex-start;flex-direction:column;gap:4px}
 }
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
@@ -159,7 +159,7 @@ img{display:block;max-width:100%}
 <!--
 THESIS: Eight actions read as one annotated setup ledger, refusing generic help-center cards and detached screenshots.
 OWN-WORLD: Paper white and charcoal black with the grays between, charcoal bands with torn edges, rough charcoal buttons, and browser captures pinned up as prints. Shares tokens with index.html.
-STORY: Fund OpenRouter first, return to Rauhwpx second, then finish Pi authentication through the highlighted OAuth control.
+STORY: Fund OpenRouter first, return to Hamaeditor second, then finish Pi authentication through the highlighted OAuth control.
 FIRST VIEWPORT: A large Korean title and two clear actions sit beside a compact two-part route summary.
 FORM: Sequential instruction ledger, grounded structure 3; seed 71cb648b.
 -->
@@ -190,15 +190,11 @@ FORM: Sequential instruction ledger, grounded structure 3; seed 71cb648b.
       <feTurbulence type="fractalNoise" baseFrequency="0.09" numOctaves="2" seed="3" result="w"/>
       <feDisplacementMap in="SourceGraphic" in2="w" scale="2.6" xChannelSelector="R" yChannelSelector="G"/>
     </filter>
-    <filter id="logo" color-interpolation-filters="sRGB">
-      <feColorMatrix type="saturate" values="0"/>
-      <feComponentTransfer><feFuncR type="linear" slope="1.56" intercept="-.6"/><feFuncG type="linear" slope="1.56" intercept="-.6"/><feFuncB type="linear" slope="1.56" intercept="-.6"/></feComponentTransfer>
-    </filter>
   </defs>
 </svg>
 <header class="masthead">
   <div class="wrap">
-    <a class="brand" href="index.html"><span class="tile"><img src="assets/rauhwpx-logo.png" width="1024" height="1024" alt=""></span>Rauhwpx</a>
+    <a class="brand" href="index.html"><span class="tile"><img src="assets/hamaeditor-logo.png?v=hippo" width="1024" height="1024" alt=""></span>Hamaeditor</a>
     <a class="back" href="index.html#connect">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7M8 12h12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
       연결로 돌아가기
@@ -221,7 +217,7 @@ FORM: Sequential instruction ledger, grounded structure 3; seed 71cb648b.
         </div>
         <ol class="route-summary" aria-label="연결 과정 요약">
           <li><span>1–6</span><div><strong>OpenRouter</strong><em>가입 · 크레딧 충전</em></div></li>
-          <li><span>7–8</span><div><strong>Rauhwpx</strong><em>Pi · OAuth 로그인</em></div></li>
+          <li><span>7–8</span><div><strong>Hamaeditor</strong><em>Pi · OAuth 로그인</em></div></li>
         </ol>
       </div>
 
@@ -235,7 +231,7 @@ FORM: Sequential instruction ledger, grounded structure 3; seed 71cb648b.
         <div class="phase-key"><span>1</span>OpenRouter</div>
         <div>
           <h2 id="openrouter-phase">계정을 만들고 크레딧을 충전합니다</h2>
-          <p>브라우저에서 OpenRouter 가입부터 결제까지 마친 뒤 Rauhwpx로 돌아오세요.</p>
+          <p>브라우저에서 OpenRouter 가입부터 결제까지 마친 뒤 Hamaeditor로 돌아오세요.</p>
         </div>
       </header>
 
@@ -311,11 +307,11 @@ FORM: Sequential instruction ledger, grounded structure 3; seed 71cb648b.
     </div>
   </section>
 
-  <section class="handoff coal" aria-label="Rauhwpx로 돌아가기">
+  <section class="handoff coal" aria-label="Hamaeditor로 돌아가기">
     <svg class="coal__edge coal__edge--t" viewBox="0 0 1440 34" preserveAspectRatio="none" aria-hidden="true"><path d="M0 34V20C90 17 170 22 260 18S420 14 520 19 700 23 810 18 980 14 1090 19 1300 22 1440 18V34Z" fill="currentColor" filter="url(#cc0)"/></svg>
     <div class="wrap">
       <div>
-        <h2>충전이 끝났다면 Rauhwpx로 돌아오세요</h2>
+        <h2>충전이 끝났다면 Hamaeditor로 돌아오세요</h2>
         <p>이제 앱의 에이전트 연결 설정에서 Pi를 OpenRouter 계정에 연결합니다.</p>
       </div>
       <a class="button button--fill" href="#step-7">Pi 연결로 이동</a>
@@ -323,13 +319,13 @@ FORM: Sequential instruction ledger, grounded structure 3; seed 71cb648b.
     <svg class="coal__edge coal__edge--b" viewBox="0 0 1440 34" preserveAspectRatio="none" aria-hidden="true"><path d="M0 34V19C100 16 180 22 290 18S450 14 560 19 740 22 850 17 1010 14 1120 18 1320 22 1440 17V34Z" fill="currentColor" filter="url(#cc1)"/></svg>
   </section>
 
-  <section class="phase" aria-labelledby="rauhwpx-phase">
+  <section class="phase" aria-labelledby="hamaeditor-phase">
     <div class="wrap">
       <header class="phase-head">
-        <div class="phase-key"><span>2</span>Rauhwpx</div>
+        <div class="phase-key"><span>2</span>Hamaeditor</div>
         <div>
-          <h2 id="rauhwpx-phase">Pi에서 OpenRouter OAuth로 로그인합니다</h2>
-          <p>Rauhwpx 설정의 에이전트 연결 목록에서 Pi를 열면 브라우저 로그인 버튼이 나타납니다.</p>
+          <h2 id="hamaeditor-phase">Pi에서 OpenRouter OAuth로 로그인합니다</h2>
+          <p>Hamaeditor 설정의 에이전트 연결 목록에서 Pi를 열면 브라우저 로그인 버튼이 나타납니다.</p>
         </div>
       </header>
 
@@ -342,14 +338,14 @@ FORM: Sequential instruction ledger, grounded structure 3; seed 71cb648b.
           </div>
         </div>
         <figure class="shot">
-          <div class="shot-viewport" tabindex="0" role="region" aria-label="Rauhwpx Pi 설정 화면 스크린샷. 좁은 화면에서는 가로로 스크롤할 수 있습니다.">
+          <div class="shot-viewport" tabindex="0" role="region" aria-label="Hamaeditor Pi 설정 화면 스크린샷. 좁은 화면에서는 가로로 스크롤할 수 있습니다.">
             <div class="shot-canvas">
-              <img src="assets/rauhwpx-pi-openrouter-oauth.webp" width="2200" height="1463" alt="Rauhwpx 설정 패널의 Pi 항목과 Pi 설정 창의 OpenRouter OAuth 브라우저 로그인 버튼이 보이는 화면" loading="lazy" decoding="async">
+              <img src="assets/hamaeditor-pi-openrouter-oauth.webp" width="2200" height="1463" alt="Hamaeditor 설정 패널의 Pi 항목과 Pi 설정 창의 OpenRouter OAuth 브라우저 로그인 버튼이 보이는 화면" loading="lazy" decoding="async">
               <span class="marker marker--west" style="--x:95%;--y:35%"><b>7</b><em>Pi</em></span>
               <span class="marker marker--west" style="--x:40%;--y:51%"><b>8</b><em>OpenRouter OAuth</em></span>
             </div>
           </div>
-          <figcaption><span>Pi 설정 창의 왼쪽 버튼이 OpenRouter OAuth 로그인입니다.</span><a href="assets/rauhwpx-pi-openrouter-oauth.webp" target="_blank">크게 보기</a></figcaption>
+          <figcaption><span>Pi 설정 창의 왼쪽 버튼이 OpenRouter OAuth 로그인입니다.</span><a href="assets/hamaeditor-pi-openrouter-oauth.webp" target="_blank">크게 보기</a></figcaption>
         </figure>
       </article>
     </div>
@@ -359,7 +355,7 @@ FORM: Sequential instruction ledger, grounded structure 3; seed 71cb648b.
     <div class="wrap finish-grid">
       <div>
         <h2 class="charcoal">연결이 끝났습니다</h2>
-        <p>OAuth 승인을 마치고 Rauhwpx로 돌아오면 Pi에서 OpenRouter 모델을 사용할 수 있습니다.</p>
+        <p>OAuth 승인을 마치고 Hamaeditor로 돌아오면 Pi에서 OpenRouter 모델을 사용할 수 있습니다.</p>
       </div>
       <div class="finish-actions">
         <a class="button button--fill" href="index.html#apply">체험 신청하기</a>
@@ -371,7 +367,7 @@ FORM: Sequential instruction ledger, grounded structure 3; seed 71cb648b.
 
 <footer class="foot">
   <div class="wrap"><div>
-    <span>Rauhwpx OpenRouter 연결 튜토리얼</span>
+    <span>Hamaeditor OpenRouter 연결 튜토리얼</span>
     <a href="https://openrouter.ai/docs/guides/overview/auth/oauth" target="_blank" rel="noopener">OpenRouter OAuth 문서</a>
   </div></div>
 </footer>

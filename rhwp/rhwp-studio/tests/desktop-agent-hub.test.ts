@@ -275,7 +275,7 @@ test('packaged launch always uses the bundled Electron Node runtime', () => {
   ]);
   const launch = resolveHubLaunch({
     packaged: true,
-    execPath: '/app/Rauhwpx',
+    execPath: '/app/Hamaeditor',
     scriptPath: '/app/rhwp-agent/server.mjs',
     agentDir: '/app/rhwp-agent',
     home: '/Users/dev',
@@ -284,7 +284,7 @@ test('packaged launch always uses the bundled Electron Node runtime', () => {
     platform: 'darwin',
   });
   assert.equal(launch?.via, 'electron-as-node');
-  assert.equal(launch?.command, '/app/Rauhwpx');
+  assert.equal(launch?.command, '/app/Hamaeditor');
   assert.deepEqual(launch?.args, ['/app/rhwp-agent/server.mjs']);
   assert.equal(launch?.env.ELECTRON_RUN_AS_NODE, '1');
 });
@@ -292,7 +292,7 @@ test('packaged launch always uses the bundled Electron Node runtime', () => {
 test('launch falls back to Electron-as-Node when npm and node are missing', () => {
   const launch = resolveHubLaunch({
     packaged: true,
-    execPath: '/app/Rauhwpx',
+    execPath: '/app/Hamaeditor',
     scriptPath: '/app/rhwp-agent/server.mjs',
     agentDir: '/app/rhwp-agent',
     home: '/Users/dev',
@@ -301,24 +301,24 @@ test('launch falls back to Electron-as-Node when npm and node are missing', () =
     platform: 'darwin',
   });
   assert.equal(launch?.via, 'electron-as-node');
-  assert.equal(launch?.command, '/app/Rauhwpx');
+  assert.equal(launch?.command, '/app/Hamaeditor');
   assert.equal(launch?.env.ELECTRON_RUN_AS_NODE, '1');
 });
 
 test('packaged Windows launch also keeps the sidecar on the bundled Node runtime', () => {
-  const scriptPath = 'C:\\Program Files\\Rauhwpx\\resources\\app.asar.unpacked\\rhwp\\rhwp-agent\\server.mjs';
+  const scriptPath = 'C:\\Program Files\\Hamaeditor\\resources\\app.asar.unpacked\\rhwp\\rhwp-agent\\server.mjs';
   const launch = resolveHubLaunch({
     packaged: true,
-    execPath: 'C:\\Program Files\\Rauhwpx\\Rauhwpx.exe',
+    execPath: 'C:\\Program Files\\Hamaeditor\\Hamaeditor.exe',
     scriptPath,
-    agentDir: 'C:\\Program Files\\Rauhwpx\\resources\\app.asar.unpacked\\rhwp\\rhwp-agent',
+    agentDir: 'C:\\Program Files\\Hamaeditor\\resources\\app.asar.unpacked\\rhwp\\rhwp-agent',
     home: 'C:\\Users\\dev',
     env: { PATH: 'C:\\Windows\\System32' },
     exists: (path) => path === scriptPath,
     platform: 'win32',
   });
   assert.equal(launch?.via, 'electron-as-node');
-  assert.equal(launch?.command, 'C:\\Program Files\\Rauhwpx\\Rauhwpx.exe');
+  assert.equal(launch?.command, 'C:\\Program Files\\Hamaeditor\\Hamaeditor.exe');
   assert.deepEqual(launch?.args, [scriptPath]);
   assert.equal(launch?.env.ELECTRON_RUN_AS_NODE, '1');
 });
