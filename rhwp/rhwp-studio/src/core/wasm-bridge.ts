@@ -246,6 +246,10 @@ import {
 
 let disconnectSubsecondDevtools: (() => void) | null = null;
 
+// pdf.js 가 PDF 내장 글꼴을 FontFace 로 올린 이름(g_d1_f3, g_d1_sf2). 이 글꼴은 글리프를 사설 영역으로
+// 다시 매핑하므로 다른 서체로 바꾸면 PDF 글자가 깨진다.
+const PDFJS_LOADED_FONT = /^g_d\d+_s?f\d+$/;
+
 /**
  * CSS font 문자열에서 font-family를 추출하여 폰트 치환을 적용한다.
  *
@@ -263,6 +267,7 @@ function substituteCssFontFamily(cssFont: string): string {
   if (!match) return cssFont;
 
   const fontName = match[1];
+  if (PDFJS_LOADED_FONT.test(fontName)) return cssFont;
   const substituted = fontFamilyChainForDisplay(fontName, 0, 0);
 
   // 엔진이 직접 만든 나머지 fallback 체인을 버리지 않는다.

@@ -157,3 +157,26 @@ test('filename walk covers Windows/Linux and a hung mdfind, with the same exclus
   assert.ok(Date.now() - started < 4_000);
   assert.deepEqual(fallback.hits.map((hit) => hit.name), ['보고서 초안.pdf']);
 });
+
+test('a folder whose opendir never returns (pending macOS privacy prompt) is skipped within the walk budget', async (t) => {
+  const { home } = await makeHome(t);
+  await fs.mkdir(path.join(home, 'Desktop'), { recursive: true });
+  await fs.writeFile(path.join(home, 'Desktop', '보고서 바탕.pdf'), '%PDF-1.4\n');
+  const opened = [];
+  const linux = createHomeSearch({
+    home, platform: 'linux', settings: settings(), access: true,
+    openDir: (dir) => {
+      opened.push(dir);
+      return dir.endsWith(`${path.sep}Desktop`) ? new Promise(() => {}) : fs.opendir(dir);
+    },
+  });
+  const started = Date.now();
+  const first = await linux.find({ query: '보고서', sessionKey: 's' });
+  assert.ok(Date.now() - started < 2_000);
+  assert.equal(first.complete, false);
+  assert.ok(first.hits.some((hit) => hit.name === '보고서 초안.pdf'));
+  assert.ok(!first.hits.some((hit) => hit.name === '보고서 바탕.pdf'));
+  // 아직 열리지 않은 폴더는 다시 열지 않는다 — 멈춘 호출이 스레드 풀을 더 묶지 않게.
+  await linux.find({ query: '초안', types: ['md'], sessionKey: 's' });
+  assert.equal(opened.filter((dir) => dir.endsWith(`${path.sep}Desktop`)).length, 1);
+});

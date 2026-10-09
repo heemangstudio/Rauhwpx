@@ -160,6 +160,12 @@ test('URL imports store HTML as .md and documents as-is with web source metadata
   assert.equal(pdf.title, 'report.pdf');
   assert.equal(stores.added[1].mimeType, 'application/pdf');
   await assert.rejects(ingest.importUrl({ projectId: 'pabc', url: 'https://files.example/zip', actor }), { code: 'PROJECT_INGEST_TYPE' });
+
+  // 에이전트가 붙인 이름의 점 뒤는 확장자가 아니다 — 날짜·도메인이 잘리지 않는다.
+  const { item: named } = await ingest.importUrl({ projectId: 'pabc', url: 'https://news.example/a', actor, name: '보도자료: 현장점검 (2026.6.23)' });
+  assert.equal(named.title, '보도자료 현장점검 (2026.6.23).md');
+  const { item: renamedPdf } = await ingest.importUrl({ projectId: 'pabc', url: 'https://files.example/r', actor, name: '안내서 v1.2.pdf' });
+  assert.equal(renamedPdf.title, '안내서 v1.2.pdf');
 });
 
 test('settings file types and size limits apply to every import', async () => {

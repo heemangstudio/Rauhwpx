@@ -15,6 +15,9 @@ export const HOME_SEARCH_MAX_PATHS = 500;
 export const HOME_WALK_MAX_DEPTH = 8;
 export const HOME_WALK_MAX_ENTRIES = 200_000;
 export const HOME_WALK_TIMEOUT_MS = 3_000;
+// 폴더 하나를 여는 데 쓰는 시간 상한. macOS 는 답하지 않은 개인정보 보호(TCC) 요청이 있는 폴더(데스크탑 등)를
+// 열 때 opendir 가 끝나지 않으므로, 그 폴더만 건너뛰고 나머지를 계속 훑는다.
+export const HOME_WALK_DIR_TIMEOUT_MS = 500;
 export const HOME_WALK_CACHE_MS = 5 * 60_000;
 export const HOME_HIT_TTL_MS = 30 * 60_000;
 const MAX_HITS = 10_000;
@@ -23,6 +26,15 @@ const MAX_WORD_CHARS = 64;
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 50;
 const STAT_BATCH = 32;
+const TIMED_OUT = Symbol('timed-out');
+
+/** promise 를 ms 안에 기다린다. 넘으면 TIMED_OUT. 멈춘 파일 시스템 호출은 취소할 수 없으므로 버린다. */
+function within(promise, ms) {
+  if (ms <= 0) return Promise.resolve(TIMED_OUT);
+  let timer;
+  const timeout = new Promise((resolve) => { timer = setTimeout(resolve, ms, TIMED_OUT); });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 const DEFAULT_FILE_TYPES = Object.freeze([
   'pdf', 'hwp', 'hwpx', 'hml', 'docx', 'pptx', 'xlsx', 'txt', 'md', 'csv', 'json', 'html', 'htm',
   'png', 'jpg', 'jpeg', 'webp',
@@ -143,12 +155,15 @@ export function createHomeSearch({
   terminateProcess = terminateProcessTree,
   mdfindPath = HOME_SEARCH_MDFIND,
   mdfindTimeoutMs = HOME_SEARCH_TIMEOUT_MS,
+  openDir = (dir) => fs.opendir(dir),
 } = {}) {
   if (!home || !path.isAbsolute(home)) throw new Error('createHomeSearch requires an absolute home');
   const pathApi = platform === 'win32' ? path.win32 : path.posix;
   const hits = new Map();
   let realHomePromise = null;
   let walkCache = null;
+  // 아직 끝나지 않은 opendir. 같은 폴더를 다시 열어 스레드 풀을 더 묶지 않고, 끝나면 다음 검색에서 다시 연다.
+  const pendingOpens = new Map();
 
   const realHome = () => {
     realHomePromise ??= fs.realpath(home).catch((error) => {
@@ -308,8 +323,20 @@ export function createHomeSearch({
         break;
       }
       const { dir, depth } = queue.shift();
-      let handle;
-      try { handle = await fs.opendir(dir); } catch { continue; }
+      if (pendingOpens.has(dir)) {
+        complete = false;
+        continue;
+      }
+      const opening = Promise.resolve().then(() => openDir(dir));
+      opening.catch(() => {});
+      const handle = await within(opening, Math.min(HOME_WALK_DIR_TIMEOUT_MS, deadline - now())).catch(() => null);
+      if (!handle) continue;
+      if (handle === TIMED_OUT) {
+        complete = false;
+        pendingOpens.set(dir, opening);
+        void opening.then((late) => late?.close?.()).catch(() => {}).finally(() => pendingOpens.delete(dir));
+        continue;
+      }
       try {
         for await (const entry of handle) {
           entries += 1;
@@ -380,12 +407,21 @@ export function createHomeSearch({
         excluded: excludedRoots(current, homeRoot),
         homeRoot,
       };
-      const { paths, complete } = await candidatePaths(words, allowed, homeRoot, current);
+      const found = await candidatePaths(words, allowed, homeRoot, current);
+      const { paths } = found;
+      let { complete } = found;
       const accepted = [];
       const seen = new Set();
+      // 검사도 멈춘 폴더 안의 경로에서 끝나지 않을 수 있다 — 시간 안에 답한 후보만 쓴다.
+      const deadline = now() + HOME_WALK_TIMEOUT_MS;
       for (let index = 0; index < paths.length; index += STAT_BATCH) {
         const batch = await Promise.all(paths.slice(index, index + STAT_BATCH)
-          .map((candidate) => validateCandidate(candidate, gate)));
+          .map(async (candidate) => {
+            const hit = await within(validateCandidate(candidate, gate), deadline - now());
+            if (hit !== TIMED_OUT) return hit;
+            complete = false;
+            return null;
+          }));
         for (const hit of batch) {
           if (!hit || seen.has(hit.realPath)) continue;
           seen.add(hit.realPath);

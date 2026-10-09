@@ -7299,8 +7299,13 @@ html.desktop-mac .ag-fullscreen .ag-workspace-bar :is(
 
 /* 집중 모드는 대화 화면을 계속 붙여 두므로 설정을 열 때 두 화면을
    시각 영역과 접근성 트리에서 함께 걷어낸다. */
+/* 오른쪽 칸(변경·계획·프로젝트)은 설정 면 위에 겹쳐 설정 항목을 가리므로 설정을 여는 동안 숨긴다. */
 .ag-fullscreen.ag-settings-open .ag-chat-page,
-.ag-fullscreen.ag-settings-open .ag-threads-page {
+.ag-fullscreen.ag-settings-open .ag-threads-page,
+.ag-root.ag-fullscreen.ag-settings-open .ag-review-column,
+.ag-root.ag-fullscreen.ag-settings-open .ag-plan-column,
+.ag-root.ag-fullscreen.ag-settings-open .ag-review-resize,
+.ag-root.ag-fullscreen.ag-settings-open .ag-project-column {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;

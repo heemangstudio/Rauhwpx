@@ -90,6 +90,15 @@ function extensionOf(name) {
   return path.extname(String(name ?? '')).slice(1).toLowerCase();
 }
 
+/**
+ * Drop a trailing file extension only when it is one we store. Agent-chosen titles such as
+ * "현장점검 (2026.6.23)" or host names like "www.mois.go.kr" keep their dotted tail.
+ */
+function baseName(name) {
+  const base = path.basename(String(name ?? ''));
+  return Object.hasOwn(MIME_FOR_EXTENSION, extensionOf(base)) ? base.slice(0, -path.extname(base).length) : base;
+}
+
 function assertTypeAllowed(ext, limits, label = ext) {
   if (!ext || !limits.types.has(ext)) {
     throw new ProjectIngestError('PROJECT_INGEST_TYPE', `.${label || '?'} files are not allowed in project settings`);
@@ -271,7 +280,7 @@ export function createProjectIngest({
     if (typeof projectId !== 'string' || !projectId) {
       throw new ProjectIngestError('PROJECT_INGEST_INVALID', 'projectId is required');
     }
-    const fileName = `${cleanTitle(path.basename(name, path.extname(name)), 'file')}.${ext}`;
+    const fileName = `${cleanTitle(baseName(name), 'file')}.${ext}`;
     const mimeType = MIME_FOR_EXTENSION[ext] ?? 'application/octet-stream';
     const file = await referenceStore.addBuffer({
       bytes,
@@ -317,13 +326,13 @@ export function createProjectIngest({
         const fallback = new URL(fetched.finalUrl ?? source.url).hostname;
         return store({
           projectId, bytes, ext: 'md', source, column, tags, actor,
-          name: `${cleanTitle(name ? path.basename(name, path.extname(name)) : title, fallback)}.md`,
+          name: `${cleanTitle(name ? baseName(name) : title, fallback)}.md`,
         });
       }
       if (!ext) throw new ProjectIngestError('PROJECT_INGEST_TYPE', `Unsupported content type ${fetched.mime || '(none)'}`);
       assertTypeAllowed(ext, limits);
       const base = name || fetched.filename || new URL(fetched.finalUrl ?? source.url).hostname;
-      return store({ projectId, bytes: fetched.bytes, ext, source, column, tags, actor, name: `${path.basename(base, path.extname(base))}.${ext}` });
+      return store({ projectId, bytes: fetched.bytes, ext, source, column, tags, actor, name: `${baseName(base)}.${ext}` });
     },
 
     async importPath({ projectId, path: filePath, allowedRoots, name, column, tags, actor } = {}) {
@@ -335,7 +344,7 @@ export function createProjectIngest({
       return store({
         projectId, bytes, ext, column, tags, actor,
         name: path.basename(real),
-        title: name ? path.basename(name, path.extname(name)) : undefined,
+        title: name ? baseName(name) : undefined,
         source: { kind: 'workspace' },
       });
     },
@@ -354,7 +363,7 @@ export function createProjectIngest({
       return store({
         projectId, bytes, ext, column, tags, actor,
         name: path.basename(resolved.realPath),
-        title: name ? path.basename(name, path.extname(name)) : undefined,
+        title: name ? baseName(name) : undefined,
         source: { kind: 'home', ...(resolved.homePath ? { homePath: resolved.homePath } : {}) },
       });
     },
@@ -378,7 +387,7 @@ export function createProjectIngest({
       const requestedExt = extensionOf(name);
       const ext = requestedExt === 'txt' ? 'txt' : 'md';
       assertTypeAllowed(ext, limits);
-      const title = cleanTitle(path.basename(String(name ?? ''), path.extname(String(name ?? ''))), sourceUrl ? new URL(sourceUrl).hostname : '메모');
+      const title = cleanTitle(baseName(name), sourceUrl ? new URL(sourceUrl).hostname : '메모');
       const body = sourceUrl && !text.includes(sourceUrl) ? `원문: ${sourceUrl}\n\n${text}` : text;
       const bytes = Buffer.from(body.endsWith('\n') ? body : `${body}\n`, 'utf8');
       assertSize(bytes.length, limits);

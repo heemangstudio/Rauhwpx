@@ -98,7 +98,12 @@ export async function safeNetworkFetch(url, { signal } = {}) {
       port: target.port || undefined,
       path: `${target.pathname}${target.search}`,
       method: 'GET',
-      lookup: (_hostname, _options, callback) => callback(null, resolved.address, resolved.family),
+      // Many servers answer 403 to requests without a User-Agent.
+      headers: { 'user-agent': 'Mozilla/5.0 (compatible; Rauhwpx)', accept: '*/*' },
+      // Node 20+ autoSelectFamily asks with all:true and expects an array; answer with the pinned address only.
+      lookup: (_hostname, lookupOptions, callback) => (lookupOptions?.all
+        ? callback(null, [{ address: resolved.address, family: resolved.family }])
+        : callback(null, resolved.address, resolved.family)),
       ...(target.protocol === 'https:' && net.isIP(hostname) === 0 ? { servername: hostname } : {}),
     };
     const request = transport.request(options, (response) => {
