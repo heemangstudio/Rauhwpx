@@ -308,7 +308,7 @@ let openRouterCreditsKey = null;
 
 /**
  * 준비 줄 뒤로 미룬 기동 작업: Claude 자격 증명 위치(Keychain), CLI 상태(--version),
- * pi 확장/스킬 동기화(fs.cp). 한 번만 돌고 실패해도 거절하지 않는다. 세션 시작처럼
+ * Pi 홈 설정 동기화. 한 번만 돌고 실패해도 거절하지 않는다. 세션 시작처럼
  * 결과에 기대는 경로는 이 약속을 기다린다.
  */
 let bootWorkPromise = null;
@@ -320,7 +320,7 @@ function ensureBootWork() {
     ...['claude', 'codex'].map((agent) => cliSetup.status(agent).then((status) => {
       if (cliSetupStatus[agent] === provisionalCliSetup[agent]) cliSetupStatus[agent] = status;
     }).catch((error) => log(`${agent} setup status failed: ${error?.message ?? error}`))),
-    // 저장소가 갱신되면 확장/스킬도 따라와야 한다 — 실패해도 허브는 그대로 뜬다.
+    // Pi 홈 설정을 다시 쓰고 예전 허브가 남긴 사본을 치운다 — 실패해도 허브는 그대로 뜬다.
     piStatus.installed
       ? piManager.syncAssets().catch((error) => log(`pi asset sync failed: ${error?.message ?? error}`))
       : null,

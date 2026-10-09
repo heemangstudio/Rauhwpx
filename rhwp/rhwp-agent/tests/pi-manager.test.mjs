@@ -390,13 +390,7 @@ test('install runs npm with a prefix, reports progress and syncs assets', async 
   assert.equal(settings.defaultProjectTrust, 'never');
   assert.equal(settings.enableSkillCommands, false);
   assert.equal(settings.enableInstallTelemetry, false);
-  assert.equal(settings.extensions.length, 2);
-  assert.equal(path.isAbsolute(settings.extensions[0]), true);
-  assert.match(settings.extensions[0], /rhwp-agent[/\\]pi[/\\]extension[/\\]rhwp\.ts$/);
-  assert.equal(settings.extensions[0], manager.extensionPath);
-  assert.equal(path.isAbsolute(settings.extensions[1]), true);
-  assert.match(settings.extensions[1], /rhwp-agent[/\\]pi[/\\]extension[/\\]subagents\.ts$/);
-  assert.equal(settings.extensions[1], manager.subagentExtensionPath);
+  assert.equal('extensions' in settings, false);
 
   await fs.stat(path.join(rootDir, 'sessions'));
   const config = await readJson(path.join(rootDir, 'config.json'));
@@ -1473,22 +1467,24 @@ test('Pi atomic settings writes remove staged files after replacement failure', 
   await fs.rm(rootDir, { recursive: true, force: true });
 });
 
-test('syncAssets rewrites settings.json without an install', async () => {
+test('syncAssets keeps app paths out of the Pi home and clears what older hubs left there', async () => {
   const rootDir = await tmpRoot();
+  const agentDir = path.join(rootDir, 'agent');
+  await fs.mkdir(path.join(agentDir, 'skills', 'rhwp-editing'), { recursive: true });
+  await fs.writeFile(path.join(agentDir, 'skills', 'rhwp-editing', 'SKILL.md'), 'old copy');
   const { spawns, spawnProcess } = fakeSpawner();
   const manager = createPiManager({ rootDir, spawnProcess, openRouter: fakeOpenRouter() });
 
   await manager.syncAssets();
-  const settings = await readJson(path.join(rootDir, 'agent', 'settings.json'));
-  assert.deepEqual(settings.extensions, [manager.extensionPath, manager.subagentExtensionPath]);
+  const settingsText = await fs.readFile(path.join(agentDir, 'settings.json'), 'utf8');
+  assert.deepEqual(JSON.parse(settingsText), {
+    defaultProjectTrust: 'never',
+    enableSkillCommands: false,
+    enableInstallTelemetry: false,
+  });
+  assert.equal(settingsText.includes(path.sep), false, 'settings.json holds no paths');
+  await assert.rejects(fs.stat(path.join(agentDir, 'skills')), { code: 'ENOENT' });
   assert.equal(spawns.length, 0);
-
-  // 두 번 불러도 그대로 덮어쓴다.
-  await manager.syncAssets();
-  assert.deepEqual(
-    (await readJson(path.join(rootDir, 'agent', 'settings.json'))).extensions,
-    [manager.extensionPath, manager.subagentExtensionPath],
-  );
 
   await fs.rm(rootDir, { recursive: true, force: true });
 });

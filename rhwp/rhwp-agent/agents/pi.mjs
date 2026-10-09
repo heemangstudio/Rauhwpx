@@ -20,6 +20,7 @@ import {
   piSystemPromptFor,
   piToolSelection,
 } from './pi-prompt.mjs';
+import { piResourceArgs } from '../pi/resources.mjs';
 import { applyManagedCliLaunch } from '../npm-cli-launch.mjs';
 import {
   PROCESS_TREE_CLEANUP_OUTCOME,
@@ -104,12 +105,8 @@ export function buildPiArgv(opts, sessionId, env = process.env, { systemPromptPa
     '--session-id', sessionId,
     // Pi 의 코딩 어시스턴트 기본 프롬프트(도구 목록·규칙·Pi 문서 절)를 통째로 대체한다.
     '--system-prompt', systemPromptPath ?? piSystemPromptFor(opts),
-    // 워크스페이스의 CLAUDE.md/AGENTS.md 를 끌어오지 않는다.
-    '--no-context-files',
-    // ~/.agents/skills 같은 사용자 전역 스킬은 문서 에이전트와 무관한 프롬프트 잡음이다.
-    // pi-manager 가 동기화한 rhwp 스킬만 명시적으로 싣는다.
-    '--no-skills',
-    '--skill', path.join(piRoot, 'agent', 'skills'),
+    // 앱 번들의 확장·스킬만 싣고 사용자 Pi 설정과 워크스페이스의 AGENTS.md/.pi 는 읽지 않는다.
+    ...piResourceArgs(),
     '--tools', piToolSelection(availableReadOnlyBuiltins({
       pathEnv: env.PATH ?? '',
       binDir: path.join(piRoot, 'agent', 'bin'),
@@ -172,6 +169,7 @@ export function buildPiEnv(opts, sourceEnv = process.env) {
     ...(opts.openRouterApiKey ? { OPENROUTER_API_KEY: String(opts.openRouterApiKey) } : {}),
     // 버전 확인/카탈로그 갱신 같은 기동 시 네트워크 동작을 끈다.
     PI_OFFLINE: '1',
+    PI_TELEMETRY: '0',
     RHWP_WS_URL: `ws://127.0.0.1:${opts.hubPort}/mcp`,
     RHWP_AGENT_TOKEN: String(opts.token ?? ''),
     RHWP_AGENT_NAME: 'pi',

@@ -24,6 +24,7 @@ import {
   processTreeSpawnOptions,
   terminateAndWaitForProcessTreeExitOutcome,
 } from '../../process-tree.mjs';
+import { piResourceArgs } from '../resources.mjs';
 
 const MAX_RUNNING = 4;
 const OUTPUT_CAP = 24 * 1024;
@@ -113,8 +114,6 @@ export function buildChildArgv(opts: {
   planningRestricted: boolean;
   /** 부모의 워크플로·단계·권한 — 자식 프롬프트의 모드 경계를 정한다. */
   mode?: ChildMode;
-  /** pi-manager 가 동기화한 rhwp 스킬 디렉터리. 없으면 스킬 없이 뜬다. */
-  skillsDir?: string | null;
   /** 선언할 읽기 전용 내장 도구 (rg/fd 를 찾을 수 있을 때만 grep/find). */
   builtins?: readonly string[];
 }): string[] {
@@ -130,9 +129,8 @@ export function buildChildArgv(opts: {
     '--session-id', opts.sessionId,
     // 루트와 같이 Pi 기본 코딩 프롬프트를 대체한다 (agents/pi.mjs buildPiArgv 참고).
     '--system-prompt', childSystemPrompt(opts.role, mode),
-    '--no-context-files',
-    '--no-skills',
-    ...(opts.skillsDir ? ['--skill', opts.skillsDir] : []),
+    // 부모와 같은 번들 확장·스킬만 싣는다. 설정 파일이나 사용자 Pi 설정에서 가져오는 것은 없다.
+    ...piResourceArgs(),
     '--tools', piToolSelection(opts.builtins ?? PI_READ_ONLY_BUILTINS),
     '--exclude-tools', childExcludeTools(opts.planningRestricted, opts.role),
     prompt,
@@ -492,7 +490,6 @@ export function createSubagentManager(opts: {
       role,
       planningRestricted: planningRestrictedFromEnv(env),
       mode: childModeFromEnv(env),
-      skillsDir: env.PI_CODING_AGENT_DIR ? path.join(env.PI_CODING_AGENT_DIR, 'skills') : null,
       builtins: availableReadOnlyBuiltins({
         pathEnv: env.PATH ?? '',
         binDir: env.PI_CODING_AGENT_DIR ? path.join(env.PI_CODING_AGENT_DIR, 'bin') : null,

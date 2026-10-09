@@ -75,7 +75,8 @@ export async function fetchOpenRouterModel(id, key) {
 
 /**
  * 픽스처 Pi 루트를 pi-manager 가 읽는 모양으로 채운다 (config.json + agent/models.json).
- * 허브는 기동 시 syncAssets 로 settings.json·확장·스킬을 쓰고 models.json 을 다시 만든다(키는 보존).
+ * 허브는 기동 시 syncAssets 로 settings.json 을 쓰고 models.json 을 다시 만든다(키는 보존).
+ * 확장·스킬은 스폰마다 앱 번들 경로로 넘어가므로 픽스처에 둘 필요가 없다.
  * 사용자 Pi 루트는 읽기만 한다 — prefix 는 심볼릭 링크라 허브의 자동 갱신도 링크 자체만 바꾼다.
  */
 export async function seedPiFixture({ piRoot, modelId, userPiRoot = process.env.RHWP_BENCH_PI_SOURCE || defaultUserPiRoot() }) {

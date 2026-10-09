@@ -395,12 +395,27 @@ test('argv carries the model, thinking level, session and system brief', () => {
   assert.equal(argv[argv.indexOf('--session-dir') + 1], path.join('/pi', 'sessions'));
   assert.equal(argv[argv.indexOf('--session-id') + 1], 'sess-1');
   assert.match(argv[argv.indexOf('--system-prompt') + 1], /^You are the document agent inside Rauhwpx/);
-  assert.ok(argv.includes('--no-context-files'));
   assert.equal(argv[argv.indexOf('--exclude-tools') + 1], 'bash');
   assert.equal(argv.includes('--append-system-prompt'), false);
-  // 사용자 전역 스킬 대신 동기화된 rhwp 스킬만 싣는다.
-  assert.ok(argv.includes('--no-skills'));
-  assert.equal(argv[argv.indexOf('--skill') + 1], path.join('/pi', 'agent', 'skills'));
+});
+
+test('argv loads only the extensions and skills shipped with the app', () => {
+  const argv = buildPiArgv({ ...baseOpts, workflow: 'direct', phase: 'implementing' }, 'sess-1');
+  for (const flag of ['--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes',
+    '--no-context-files', '--no-approve']) {
+    assert.ok(argv.includes(flag), flag);
+  }
+  const agentPackage = path.resolve(import.meta.dirname, '..');
+  const extensions = argv.flatMap((arg, index) => (arg === '-e' ? [argv[index + 1]] : []));
+  assert.deepEqual(extensions.map((file) => path.relative(agentPackage, file)), [
+    path.join('pi', 'extension', 'rhwp.ts'),
+    path.join('pi', 'extension', 'subagents.ts'),
+  ]);
+  const skills = argv.flatMap((arg, index) => (arg === '--skill' ? [argv[index + 1]] : []));
+  assert.deepEqual(skills, [path.join(agentPackage, 'pi', 'skills')]);
+  for (const file of [...extensions, ...skills]) assert.ok(fs.existsSync(file), file);
+  // Pi 홈(설정이 들어 있는 사용자 데이터 폴더)에서는 아무 리소스도 싣지 않는다.
+  assert.equal(argv.some((arg) => arg.startsWith(path.join('/pi', 'agent'))), false);
 });
 
 test('every mode adds the read-only search built-ins without replacing the default set', () => {
@@ -535,6 +550,7 @@ test('the child env is built from scratch without ambient provider keys', () => 
   assert.deepEqual(env.PATH, '/usr/bin');
   assert.equal(env.PI_CODING_AGENT_DIR, path.join('/pi', 'agent'));
   assert.equal(env.PI_OFFLINE, '1');
+  assert.equal(env.PI_TELEMETRY, '0');
   assert.equal(env.HOME, '/tmp/rhwp isolated home');
   assert.equal(env.USERPROFILE, '/tmp/rhwp isolated home');
   assert.equal(env.RHWP_SESSION_ID, 'studio-thread-pi');

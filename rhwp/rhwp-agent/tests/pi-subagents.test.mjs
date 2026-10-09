@@ -14,6 +14,7 @@ import {
   shouldRegisterSubagentTools,
 } from '../pi/extension/subagents.ts';
 import { RHWP_TOOL_RULES } from '../tool-rules.mjs';
+import { PI_EXTENSION_PATH, PI_SUBAGENT_EXTENSION_PATH, piResourceArgs } from '../pi/resources.mjs';
 
 class FakeChild extends EventEmitter {
   stdout = new EventEmitter();
@@ -60,7 +61,7 @@ test('child argv uses an internal session id and excludes nested/root interactio
   assert.equal(buildChildArgv({ ...base, prompt: '@doc-editor fix it' }).at(-1), ' @doc-editor fix it');
 });
 
-test('child argv carries a Pi-owned prompt for its role and mode plus the rhwp skills only', () => {
+test('child argv carries a Pi-owned prompt for its role and mode plus the bundled resources only', () => {
   const base = {
     model: 'model', sessionDir: '/pi/sessions', sessionId: 'id', prompt: 'Edit p3-p9.', planningRestricted: false,
   };
@@ -78,12 +79,14 @@ test('child argv carries a Pi-owned prompt for its role and mode plus the rhwp s
   for (const prompt of [editorSafe, researcher, planning]) assert.ok(prompt.includes(RHWP_TOOL_RULES));
   assert.doesNotMatch(editorSafe, /expert coding assistant/);
 
-  const argv = buildChildArgv({ ...base, role: 'general', skillsDir: '/pi/agent/skills' });
-  assert.ok(argv.includes('--no-skills'));
-  assert.equal(argv[argv.indexOf('--skill') + 1], '/pi/agent/skills');
+  const argv = buildChildArgv({ ...base, role: 'general' });
+  // 자식은 예전에 settings.json 으로 확장을 받았다. 이제 부모와 같은 번들 리소스를 argv 로 받는다.
+  const resources = piResourceArgs();
+  assert.deepEqual(argv.slice(argv.indexOf('--no-extensions'), argv.indexOf('--no-extensions') + resources.length), resources);
+  assert.deepEqual(argv.filter((arg, index) => argv[index - 1] === '-e'), [PI_EXTENSION_PATH, PI_SUBAGENT_EXTENSION_PATH]);
+  assert.equal(argv.filter((arg) => arg === '--skill').length, 1);
   assert.deepEqual(argv[argv.indexOf('--tools') + 1].split(','), ['+grep', '+find', '+ls']);
   assert.equal(argv.at(-1), 'Edit p3-p9.');
-  assert.equal(buildChildArgv({ ...base, role: 'general' }).includes('--skill'), false);
 });
 
 test('a child extension does not register another fleet surface', () => {

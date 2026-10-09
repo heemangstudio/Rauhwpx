@@ -3,9 +3,13 @@ import { promises as fs } from 'node:fs';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { readUtf8FileBounded } from './bounded-file.mjs';
+import {
+  PI_EXTENSION_PATH,
+  PI_SKILLS_DIR,
+  PI_SUBAGENT_EXTENSION_PATH,
+} from './pi/resources.mjs';
 import { createOpenRouter } from './openrouter.mjs';
 import {
   fetchLatestPackage,
@@ -76,11 +80,6 @@ const INSTALL_PROGRESS = Object.freeze({
   done: 100,
 });
 
-/** 이 파일 기준 경로 — 확장/스킬은 저장소 안에 있고, pi 홈은 그것을 가리키기만 한다. */
-const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
-const EXTENSION_PATH = path.join(MODULE_DIR, 'pi', 'extension', 'rhwp.ts');
-const SUBAGENT_EXTENSION_PATH = path.join(MODULE_DIR, 'pi', 'extension', 'subagents.ts');
-const SKILLS_SOURCE_DIR = path.join(MODULE_DIR, 'pi', 'skills');
 
 /**
  * @typedef {Object} PiModelConfig
@@ -265,7 +264,7 @@ export function defaultPiRoot(env = process.env, platform = process.platform, ho
 }
 
 /**
- * pi CLI 설치본과 그 에이전트 홈(모델·키·스킬)을 관리한다.
+ * pi CLI 설치본과 그 에이전트 홈(모델·키·설정)을 관리한다. 확장·스킬은 앱 번들에서 바로 싣는다.
  * 설치는 single-flight 이고, 루트가 없어도 status() 는 그냥 미설치로 답한다.
  *
  * @param {{ rootDir?: string, spawnProcess?: typeof spawn, fetchImpl?: typeof fetch,
@@ -309,7 +308,8 @@ export function createPiManager({
   const configPath = path.join(rootDir, CONFIG_FILE);
   const modelsPath = path.join(agentDir, 'models.json');
   const settingsPath = path.join(agentDir, 'settings.json');
-  const skillsDir = path.join(agentDir, 'skills');
+  /** 예전 허브가 번들 스킬을 복사해 두던 곳. 지금은 번들에서 바로 싣고 이 사본은 지운다. */
+  const legacySkillsDir = path.join(agentDir, 'skills');
   const piBin = path.join(prefixDir, 'node_modules', '.bin', platform === 'win32' ? 'pi.cmd' : 'pi');
   const packageJsonPath = (basePrefix = prefixDir) => path.join(
     basePrefix, 'node_modules', ...packageSpec.split('/'), 'package.json',
@@ -910,24 +910,18 @@ export function createPiManager({
   async function syncAssets(migrationCatalog = null) {
     await fs.mkdir(agentDir, { recursive: true });
     await fs.mkdir(sessionsDir, { recursive: true });
+    // 확장·스킬은 pi/resources.mjs 가 매 스폰마다 -e/--skill 로 넘긴다. 이 파일에는 경로를 두지 않아
+    // 개발 허브·벤치·패키지 앱이 같은 루트를 써도 서로의 설치 경로를 덮어쓰지 않는다.
     await writeAtomic(settingsPath, `${JSON.stringify({
       defaultProjectTrust: 'never',
       enableSkillCommands: false,
       enableInstallTelemetry: false,
-      extensions: [EXTENSION_PATH, SUBAGENT_EXTENSION_PATH],
     }, null, 2)}\n`);
     const migrated = enrichStoredModels(migrationCatalog);
     // Rebuild the provider file on every startup so settings stay in sync.
     await writeModelsJson();
     if (migrated) await persistConfig();
-    try {
-      // 허브가 소유한 폴더라 원본을 그대로 비춘다 — 저장소에서 지운 스킬이 남지 않게 먼저 비운다.
-      await fs.rm(skillsDir, { recursive: true, force: true });
-      await fs.cp(SKILLS_SOURCE_DIR, skillsDir, { recursive: true, force: true });
-    } catch (error) {
-      // 스킬 디렉터리는 아직 없을 수 있다 — 없으면 그냥 넘어간다.
-      if (error?.code !== 'ENOENT') throw error;
-    }
+    await fs.rm(legacySkillsDir, { recursive: true, force: true });
   }
 
   return {
@@ -939,8 +933,9 @@ export function createPiManager({
     modelsPath,
     settingsPath,
     piBin,
-    extensionPath: EXTENSION_PATH,
-    subagentExtensionPath: SUBAGENT_EXTENSION_PATH,
+    extensionPath: PI_EXTENSION_PATH,
+    subagentExtensionPath: PI_SUBAGENT_EXTENSION_PATH,
+    skillsDir: PI_SKILLS_DIR,
 
     /** 루트를 만들고 저장된 설정을 읽는다. 루트가 없어도 실패하지 않는다. */
     async init() {
@@ -959,7 +954,7 @@ export function createPiManager({
     },
 
     /**
-     * pi CLI 를 설치하고 확장/스킬/설정을 동기화한다. 동시에 부르면 하나만 돈다.
+     * pi CLI 를 설치하고 Pi 홈 설정을 쓴다. 동시에 부르면 하나만 돈다.
      *
      * @param {(progress: { state: string, detail?: string, percent?: number,
      *   receivedBytes?: number, totalBytes?: number|null, activity?: boolean }) => void} [onProgress]
@@ -1085,7 +1080,7 @@ export function createPiManager({
     },
 
     /**
-     * 확장 경로가 담긴 settings.json 과 models.json 을 쓰고 저장소 스킬을 pi 홈으로 복사한다.
+     * settings.json 과 models.json 을 다시 쓰고, 예전 허브가 남긴 스킬 사본을 지운다.
      * 예전 설정이면 카탈로그로 빠진 모델 필드를 채운다. 네트워크는 쓰기 큐 밖에서 기다린다.
      */
     async syncAssets() {
