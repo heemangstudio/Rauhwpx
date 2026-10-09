@@ -1,5 +1,6 @@
 name: Nightly verification
 
+# Independent jobs, so one failure never hides another suite's result.
 on:
   schedule:
     # 03:00 Asia/Seoul (GitHub Actions cron uses UTC).
@@ -14,34 +15,57 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  engine:
-    name: Rust engine and WASM build
+  rust-tests:
+    name: Rust tests
     runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: 90
-
     steps:
-      - name: Check out source
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
-
+          # rhwp/pdf and rhwp/pdf-large (300 MB) only feed local parity tools.
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /*
+            !/rhwp/pdf/
+            !/rhwp/pdf-large/
       - uses: ./.github/actions/setup-rust
         with:
-          wasm: 'true'
           cache: verification
-
       - name: Install pinned nextest
         uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
         with:
           tool: cargo-nextest@0.9.143
           fallback: none
+      - name: Test Rust workspace in parallel
+        working-directory: rhwp
+        run: cargo nextest run --locked --workspace --test-threads 8
+      - name: Test Rust doc examples
+        if: ${{ !cancelled() }}
+        working-directory: rhwp
+        run: cargo test --locked --workspace --doc
 
+  cargo-audit:
+    name: Cargo audit
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          # cargo audit reads only the lock file.
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /rhwp/Cargo.toml
+            /rhwp/Cargo.lock
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          toolchain: 1.93.1
       - name: Cache cargo-audit executable
         uses: actions/cache@v4
         with:
           path: ~/.cargo/bin/cargo-audit
           key: cargo-audit-${{ runner.os }}-${{ runner.arch }}-0.22.2
-
       - name: Install pinned cargo-audit
         run: |
           # Cargo's subcommand invocation can print cargo-audit-audit.
@@ -56,7 +80,6 @@ jobs:
             'cargo-audit 0.22.2'|'cargo-audit-audit 0.22.2') ;;
             *) echo "Unexpected cargo-audit version: $audit_version" >&2; exit 1 ;;
           esac
-
       - name: Reject RustSec vulnerabilities and new warnings
         working-directory: rhwp
         run: |
@@ -67,40 +90,26 @@ jobs:
             --ignore RUSTSEC-2026-0192 \
             --ignore RUSTSEC-2026-0206
 
-      - name: Test Rust workspace in parallel
-        working-directory: rhwp
-        run: |
-          cargo nextest run --locked --workspace --test-threads 8
-          cargo test --locked --workspace --doc
-
-      - uses: ./.github/actions/build-wasm
-        with:
-          setup-rust: 'false'
-      - name: Share tested WASM build
-        uses: actions/upload-artifact@v4
-        with:
-          name: tested-wasm
-          path: rhwp/pkg
-          if-no-files-found: error
-          retention-days: 1
+  dependencies:
+    name: Dependencies
+    uses: ./.github/workflows/dependencies.yml
 
   app:
-    needs: engine
+    name: App
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 45
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
-      PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
-    name: Desktop, agent, and Studio checks
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 90
-
     steps:
-      - name: Check out source
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v5
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /*
+            !/rhwp/pdf/
+            !/rhwp/pdf-large/
+      - uses: actions/setup-node@v5
         with:
           node-version: 22.23.3
           cache: npm
@@ -109,53 +118,93 @@ jobs:
             rhwp/rhwp-studio/package-lock.json
             rhwp/rhwp-agent/package-lock.json
             site-api/package-lock.json
-
-      - name: Use tested WASM build
-        uses: actions/download-artifact@v4
-        with:
-          name: tested-wasm
-          path: rhwp/pkg
-
       - name: Install dependencies
         run: npm run setup
-
-      - name: Audit high and critical production advisories
-        run: npm run audit:production
-
-      - name: Report all production advisories for triage
-        if: always()
-        run: node scripts/audit-production.mjs --report
-
-      - name: Check repository tooling and provider adapter types
+      - name: Test Studio
         run: |
-          npm run test:ci
-          npm --prefix rhwp/rhwp-agent run typecheck
+          npm --prefix rhwp/rhwp-studio test
           npm --prefix rhwp/rhwp-studio run e2e:check
-
-      - name: Test browser integration
+      - name: Test agent hub
+        if: ${{ !cancelled() }}
         run: |
-          "$PUPPETEER_EXECUTABLE_PATH" --version
-          npm --prefix rhwp/rhwp-studio run test:browser
-
-      - name: Test agent hub and process lifecycle
-        run: node --test --test-concurrency=1 rhwp/rhwp-agent/tests/*.test.mjs
-
-      - name: Test install counter and waitlist service
+          npm --prefix rhwp/rhwp-agent run typecheck
+          node --test rhwp/rhwp-agent/tests/*.test.mjs
+      - name: Test desktop main process and repository scripts
+        if: ${{ !cancelled() }}
+        run: |
+          npm run test:desktop
+          npm run test:ci
+      - name: Test site API
+        if: ${{ !cancelled() }}
         run: |
           npm --prefix site-api ci
           npm --prefix site-api test
 
-      - name: Test Studio
-        run: npm --prefix rhwp/rhwp-studio test
-
-      - name: Build Studio
+  browser:
+    name: Browser
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 45
+    env:
+      PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /*
+            !/rhwp/pdf/
+            !/rhwp/pdf-large/
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.23.3
+          cache: npm
+          cache-dependency-path: |
+            rhwp/rhwp-studio/package-lock.json
+            rhwp/rhwp-agent/package-lock.json
+      - uses: ./.github/actions/build-wasm
+      - name: Install Studio and hub dependencies
+        run: |
+          npm --prefix rhwp/rhwp-studio ci
+          npm --prefix rhwp/rhwp-agent ci --no-audit --no-fund
+      - name: Build and typecheck Studio
         run: npm --prefix rhwp/rhwp-studio run build
+      - name: Test browser integration
+        if: ${{ !cancelled() }}
+        run: |
+          "$PUPPETEER_EXECUTABLE_PATH" --version
+          npm --prefix rhwp/rhwp-studio run test:browser
 
+  sidebar:
+    name: Sidebar preview
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 30
+    env:
+      PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /*
+            !/rhwp/pdf/
+            !/rhwp/pdf-large/
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.23.3
+          cache: npm
+          cache-dependency-path: |
+            rhwp/rhwp-studio/package-lock.json
+            rhwp/rhwp-agent/package-lock.json
+      - name: Install Studio and hub dependencies
+        run: |
+          npm --prefix rhwp/rhwp-studio ci
+          npm --prefix rhwp/rhwp-agent ci --no-audit --no-fund
       - name: Test sidebar server setup and recovery
         run: npm run test:sidebar
-
       - name: Upload sidebar preview evidence
-        if: always()
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: sidebar-preview-evidence
@@ -163,24 +212,56 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Test document shortcuts, deletion, and agent table reveal
-        working-directory: rhwp/rhwp-studio
-        env:
-          VITE_URL: http://127.0.0.1:7700
-          RHWP_SKIP_AGENT_HUB: '1'
+  e2e:
+    name: Editor flows
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 30
+    env:
+      PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
+      VITE_URL: http://127.0.0.1:7700
+      RHWP_SKIP_AGENT_HUB: '1'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /*
+            !/rhwp/pdf/
+            !/rhwp/pdf-large/
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.23.3
+          cache: npm
+          cache-dependency-path: |
+            rhwp/rhwp-studio/package-lock.json
+            rhwp/rhwp-agent/package-lock.json
+      - uses: ./.github/actions/build-wasm
+      - name: Install Studio and hub dependencies
         run: |
-          node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 7700 --strictPort > "$RUNNER_TEMP/editor-vite.log" 2>&1 &
-          editor_pid=$!
-          trap 'kill "$editor_pid" 2>/dev/null || true' EXIT
-          for attempt in {1..60}; do
-            if curl --fail --silent "$VITE_URL" > /dev/null; then break; fi
-            if ! kill -0 "$editor_pid" 2>/dev/null; then
-              cat "$RUNNER_TEMP/editor-vite.log"
-              exit 1
-            fi
+          npm --prefix rhwp/rhwp-studio ci
+          npm --prefix rhwp/rhwp-agent ci --no-audit --no-fund
+      - name: Start Studio
+        id: studio
+        working-directory: rhwp/rhwp-studio
+        run: |
+          # The server keeps running for the remaining steps of this job.
+          nohup node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 7700 --strictPort > "$RUNNER_TEMP/editor-vite.log" 2>&1 &
+          for _ in {1..60}; do
+            if curl --fail --silent "$VITE_URL" > /dev/null; then exit 0; fi
             sleep 1
           done
-          curl --fail --silent "$VITE_URL" > /dev/null
-          node e2e/global-shortcut.test.mjs --mode=headless
-          node e2e/deletion-caret.test.mjs --mode=headless
-          node e2e/agent-table-reveal.test.mjs --mode=headless
+          cat "$RUNNER_TEMP/editor-vite.log"
+          exit 1
+      - name: Test document shortcuts
+        if: ${{ !cancelled() && steps.studio.outcome == 'success' }}
+        working-directory: rhwp/rhwp-studio
+        run: node e2e/global-shortcut.test.mjs --mode=headless
+      - name: Test deletion caret
+        if: ${{ !cancelled() && steps.studio.outcome == 'success' }}
+        working-directory: rhwp/rhwp-studio
+        run: node e2e/deletion-caret.test.mjs --mode=headless
+      - name: Test agent table reveal
+        if: ${{ !cancelled() && steps.studio.outcome == 'success' }}
+        working-directory: rhwp/rhwp-studio
+        run: node e2e/agent-table-reveal.test.mjs --mode=headless
