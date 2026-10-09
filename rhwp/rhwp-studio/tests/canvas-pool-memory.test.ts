@@ -32,24 +32,25 @@ function installFakeDocument() {
   };
 }
 
-test('released canvases are reused without keeping their backing stores', () => {
+test('released canvases keep DOM reuse while bounding retained backing stores', () => {
   const restore = installFakeDocument();
   try {
-    const pool = new CanvasPool();
+    const pool = new CanvasPool(100);
     const canvases = Array.from({ length: 3 }, (_, page) => {
       const canvas = pool.acquire(page) as unknown as FakeCanvas;
-      canvas.width = 2400;
-      canvas.height = 3400;
+      canvas.width = 8;
+      canvas.height = 8;
       return canvas;
     });
 
     for (let page = 0; page < canvases.length; page++) pool.release(page);
     assert.equal(pool.totalCount, 3);
-    assert.equal(pool.retainedBackingBytes, 0);
-    assert.ok(canvases.every((canvas) => canvas.width === 0 && canvas.height === 0));
+    assert.equal(pool.retainedBackingBytes, 8 * 8 * 4);
+    assert.equal(canvases.filter((canvas) => canvas.width === 0).length, 2);
 
     const reused = pool.acquire(9) as unknown as FakeCanvas;
-    assert.ok(canvases.includes(reused), 'a released canvas element should be reused');
+    assert.equal(reused.width, 8, 'retained backing canvas should be reused before cleared entries');
+    assert.equal(pool.retainedBackingBytes, 0);
   } finally {
     restore();
   }
@@ -86,14 +87,20 @@ test('CanvasKit replacement releases the detached original backing store', () =>
   }
 });
 
-test('long documents do not retain one canvas element per page', () => {
+test('long documents do not retain one zero-sized canvas per page', () => {
   const restore = installFakeDocument();
   try {
-    const pool = new CanvasPool();
-    for (let page = 0; page < 100; page++) pool.acquire(page);
-    for (let page = 0; page < 100; page++) pool.release(page);
+    const pool = new CanvasPool(1);
+    const canvases: FakeCanvas[] = [];
+    for (let page = 0; page < 100; page++) {
+      const canvas = pool.acquire(page) as unknown as FakeCanvas;
+      canvas.width = 32;
+      canvas.height = 32;
+      canvases.push(canvas);
+    }
+    for (let page = 0; page < canvases.length; page++) pool.release(page);
     assert.ok(pool.totalCount <= 8, `warm canvas pool grew to ${pool.totalCount}`);
-    assert.equal(pool.retainedBackingBytes, 0);
+    assert.equal(pool.retainedBackingBytes, 32 * 32 * 4);
   } finally {
     restore();
   }

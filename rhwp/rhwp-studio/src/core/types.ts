@@ -924,14 +924,6 @@ export interface BookmarkInfo {
 
 export type LayerRenderProfile = 'fastPreview' | 'screen' | 'print' | 'highQuality';
 
-/** 배율을 적용한 쪽 좌표계의 장치 픽셀 사각형. 쪽 일부 영역 렌더가 쓴다. */
-export interface CanvasDeviceRect {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
 export type CanvasKitDocumentPreflightStatus = 'eligible' | 'ineligible' | 'incomplete';
 
 export interface CanvasKitReplaySummary {

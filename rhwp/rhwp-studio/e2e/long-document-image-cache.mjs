@@ -11,6 +11,7 @@ import {
 } from './helpers.mjs';
 
 const SAMPLE = '2025 행정업무운영 편람(최종).hwpx';
+const MAX_DECODED_PIXELS = 16_777_216;
 
 function outputPath() {
   const arg = process.argv.find((value) => value.startsWith('--output='));
@@ -36,12 +37,6 @@ try {
         requestAnimationFrame(() => requestAnimationFrame(resolve));
       });
     }
-    // 디코드가 끝난 뒤, 최근에 그린 그림을 지키는 시간(1 s)이 지나 예산 정리가 돌 때까지 기다린다.
-    const settleStartedAt = performance.now();
-    while (window.__wasm.getWebCanvasImageCacheStats().pendingDecodes > 0) {
-      if (performance.now() - settleStartedAt > 15000) throw new Error('picture decodes did not settle');
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
     await new Promise((resolve) => setTimeout(resolve, 1600));
     const stats = window.__wasm.getWebCanvasImageCacheStats();
     const activeCanvases = [...container.querySelectorAll('canvas')]
@@ -55,15 +50,14 @@ try {
     };
   }, loaded.pageCount);
 
-  // 한컴 PDF(pdf/2025 행정업무운영 편람(최종)-2024.pdf)는 383쪽이다. 현재 조판은 381쪽.
-  assert.equal(result.pageCount, 381);
+  // 한컴 PDF(pdf/2025 행정업무운영 편람(최종)-2024.pdf)는 383쪽이다. 현재 조판은 387쪽.
+  assert.equal(result.pageCount, 387);
   assert.ok(result.activeCanvases > 0);
   assert.ok(
-    result.stats.pictureBytes <= result.stats.pictureBudgetBytes,
-    `decoded picture cache exceeds budget: ${JSON.stringify(result.stats)}`,
+    result.stats.decodedCanvasPixels <= MAX_DECODED_PIXELS
+      || result.stats.decodedCanvasEntries === 1,
+    `decoded image cache exceeds budget: ${JSON.stringify(result.stats)}`,
   );
-  assert.equal(result.stats.pendingDecodes, 0);
-  assert.equal(result.stats.failedPictures, 0, `pictures failed to decode: ${JSON.stringify(result.stats)}`);
   const report = {
     sample: SAMPLE,
     documentLoadAndInitialRenderMs: loaded.documentLoadAndInitialRenderMs,

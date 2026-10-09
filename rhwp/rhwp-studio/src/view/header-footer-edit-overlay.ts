@@ -1,5 +1,4 @@
-import type { CanvasDeviceRect, PageInfo } from '@/core/types';
-import { wholeCssPixelStep } from './render-backend.ts';
+import type { PageInfo } from '@/core/types';
 
 export interface HeaderFooterBandBox {
   x: number;
@@ -38,42 +37,49 @@ function resolveHeaderFooterGuideLineWidth(displayScale: number): number {
   return screenLineWidth / safeDisplayScale;
 }
 
-const SVG_NS = 'http://www.w3.org/2000/svg';
-
 /**
- * 머리말/꼬리말 밴드 네 모서리에 한컴형 바깥 꺾쇠를 그린다. 쪽 크기 canvas 대신 벡터로
- * 그려 확대 배율과 무관하게 비트맵 메모리를 쓰지 않는다.
+ * 머리말/꼬리말 밴드 네 모서리에 한컴형 바깥 꺾쇠를 그린다.
  * Rauhwpx 에는 page-margin-guides 모듈이 없으므로 HF 오버레이 전용으로 둔다.
  */
-export function createHeaderFooterGuideCorners(
+export function drawHeaderFooterGuideCorners(
   rect: HeaderFooterBandBox,
-  page: Pick<PageInfo, 'width' | 'height'>,
-  zoom: number,
-): SVGSVGElement {
+  canvas: HTMLCanvasElement,
+  scale: number,
+  displayScale = 1,
+): void {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
   const left = rect.x;
   const top = rect.y;
   const right = rect.x + rect.width;
   const bottom = rect.y + rect.height;
   const L = HF_GUIDE_LENGTH;
 
-  const svg = document.createElementNS(SVG_NS, 'svg');
-  svg.setAttribute('class', 'hf-edit-guide');
-  svg.setAttribute('viewBox', `0 0 ${page.width} ${page.height}`);
-  svg.setAttribute('preserveAspectRatio', 'none');
-  svg.style.width = `${page.width * zoom}px`;
-  svg.style.height = `${page.height * zoom}px`;
-  const path = document.createElementNS(SVG_NS, 'path');
-  path.setAttribute('d', [
-    `M${left} ${top - L}V${top}H${left - L}`,
-    `M${right + L} ${top}H${right}V${top - L}`,
-    `M${left - L} ${bottom}H${left}V${bottom + L}`,
-    `M${right} ${bottom + L}V${bottom}H${right + L}`,
-  ].join(''));
-  path.setAttribute('fill', 'none');
-  path.setAttribute('stroke', HF_GUIDE_COLOR);
-  path.setAttribute('stroke-width', String(resolveHeaderFooterGuideLineWidth(zoom)));
-  svg.appendChild(path);
-  return svg;
+  ctx.save();
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  ctx.strokeStyle = HF_GUIDE_COLOR;
+  ctx.lineWidth = resolveHeaderFooterGuideLineWidth(displayScale);
+  ctx.beginPath();
+
+  ctx.moveTo(left, top - L);
+  ctx.lineTo(left, top);
+  ctx.lineTo(left - L, top);
+
+  ctx.moveTo(right + L, top);
+  ctx.lineTo(right, top);
+  ctx.lineTo(right, top - L);
+
+  ctx.moveTo(left - L, bottom);
+  ctx.lineTo(left, bottom);
+  ctx.lineTo(left, bottom + L);
+
+  ctx.moveTo(right, bottom + L);
+  ctx.lineTo(right, bottom);
+  ctx.lineTo(right + L, bottom);
+
+  ctx.stroke();
+  ctx.restore();
 }
 
 /**
@@ -126,32 +132,14 @@ export function resolveHeaderFooterBandBox(
   };
 }
 
-/**
- * 대표 preview canvas 가 덮을 밴드 영역. 장치 픽셀 영역은 밴드를 바깥쪽으로 반올림하고 크기를
- * CSS px 정수로 맞춘 것이고, clip-path 는 그 canvas 상자 기준으로 밴드 밖을 잘라 낸다.
- */
-export function headerFooterPreviewRegion(
+export function headerFooterClipPath(
+  page: PageInfo,
   band: HeaderFooterBandBox,
   zoom: number,
-  scale: number,
-): { region: CanvasDeviceRect; clipPath: string } {
-  const cssPerDevice = zoom / scale;
-  const step = wholeCssPixelStep(cssPerDevice);
-  const x = Math.floor(band.x * scale);
-  const y = Math.floor(band.y * scale);
-  const extent = (start: number, end: number) =>
-    Math.max(step, Math.ceil((Math.ceil(end * scale) - start) / step) * step);
-  const region = {
-    x,
-    y,
-    width: extent(x, band.x + band.width),
-    height: extent(y, band.y + band.height),
-  };
-  const inset = [
-    band.y * zoom - region.y * cssPerDevice,
-    (region.x + region.width) * cssPerDevice - (band.x + band.width) * zoom,
-    (region.y + region.height) * cssPerDevice - (band.y + band.height) * zoom,
-    band.x * zoom - region.x * cssPerDevice,
-  ].map((value) => `${Math.max(0, value)}px`);
-  return { region, clipPath: `inset(${inset.join(' ')})` };
+): string {
+  const top = Math.max(0, band.y * zoom);
+  const right = Math.max(0, (page.width - band.x - band.width) * zoom);
+  const bottom = Math.max(0, (page.height - band.y - band.height) * zoom);
+  const left = Math.max(0, band.x * zoom);
+  return `inset(${top}px ${right}px ${bottom}px ${left}px)`;
 }
