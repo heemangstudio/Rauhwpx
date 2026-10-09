@@ -144,6 +144,52 @@ test('without a decode signal the fallback repaints once, and a reused static la
   assert.equal(result.carried, 2);
 });
 
+test('a detail region waiting on pictures is repainted when they decode, even when its page layers are settled', { timeout: 30_000 }, async () => {
+  const result = await withStudioPage((page) => page.evaluate(async () => {
+    const rendererModule = '/src/view/page-renderer.ts';
+    const { PageRenderer } = await import(rendererModule);
+    const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+    const pageInfo = {
+      width: 100, height: 100, marginLeft: 10, marginRight: 10, marginTop: 10, marginBottom: 10,
+      marginHeader: 5, marginFooter: 5,
+    };
+    const listeners = new Set<(pending: number) => void>();
+    const decoded = (pending: number) => { for (const listener of [...listeners]) listener(pending); };
+    let regionPending = 1;
+    const renderer = new PageRenderer({
+      getPageInfo: () => pageInfo,
+      renderPageRegionToCanvas(_pageIdx: number, canvas: HTMLCanvasElement) {
+        canvas.width = 50;
+        canvas.height = 50;
+        return regionPending;
+      },
+      onPictureDecoded(listener: (pending: number) => void) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    });
+    const repainted: number[] = [];
+    renderer.setPageRepaintListener((pageIdx: number) => repainted.push(pageIdx));
+    const region = { x: 0, y: 0, width: 50, height: 50 };
+
+    // 쪽 층은 이미 그림을 다 그렸고(재렌더 작업 없음), 더 큰 배율의 detail 영역만 디코드를 기다린다.
+    renderer.renderPageRegion(4, document.createElement('canvas'), 2, region);
+    regionPending = 0;
+    decoded(0);
+    await wait(100);
+    const afterDecode = [...repainted];
+
+    renderer.renderPageRegion(4, document.createElement('canvas'), 2, region);
+    decoded(0);
+    await wait(100);
+    const afterSettled = [...repainted];
+    renderer.dispose();
+    return { afterDecode, afterSettled };
+  }));
+  assert.deepEqual(result.afterDecode, [4]);
+  assert.deepEqual(result.afterSettled, [4], '기다리는 그림이 없는 영역은 다시 그리지 않는다');
+});
+
 test('flow images the browser cannot display are drawn by the engine flow-static canvas', { timeout: 30_000 }, async () => {
   const result = await withStudioPage((page) => page.evaluate(async () => {
     const rendererModule = '/src/view/page-renderer.ts';
