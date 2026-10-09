@@ -1,9 +1,9 @@
 // 긴 그림 문서의 렌더러 메모리를 단계별로 잰다.
 //
 // 사용: VITE_URL=http://127.0.0.1:7700 node e2e/renderer-memory-bench.mjs --mode=headless
-//   [--sample=<samples 경로>] [--dpr=2] [--output=<json>]
+//   [--sample=<samples 경로>] [--dpr=2] [--zoom=3] [--zoom-pages=24] [--output=<json>]
 // 렌더러 프로세스 phys_footprint(macOS footprint), JS 힙, WASM 선형 메모리, DOM canvas 픽셀,
-// 엔진 그림 캐시 통계를 문서 로드 → 전체 스크롤 → 300% 확대 스크롤 순서로 기록한다.
+// 엔진 그림 캐시 통계를 문서 로드 → 전체 스크롤 → 확대 스크롤 순서로 기록한다.
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -16,6 +16,7 @@ function arg(name, fallback) {
 
 const SAMPLE = arg('sample', '2025 행정업무운영 편람(최종).hwp');
 const DPR = Number(arg('dpr', '2'));
+const ZOOM = Number(arg('zoom', '3'));
 const ZOOM_PAGES = Number(arg('zoom-pages', '24'));
 const MiB = 1024 * 1024;
 
@@ -143,12 +144,12 @@ try {
   rows.push(await measure(browser, page, cdp, 'scrolled-100%'));
 
   await scrollPages(page, [0]);
-  await page.evaluate(() => window.__canvasView.viewportManager.setZoom(3));
+  await page.evaluate((zoom) => window.__canvasView.viewportManager.setZoom(zoom), ZOOM);
   await settle(page, 1500);
   const zoomed = Array.from({ length: Math.min(ZOOM_PAGES, loaded.pageCount) }, (_, index) => index);
   const zoomScrollMs = await scrollPages(page, zoomed);
   await settle(page, 2500);
-  rows.push(await measure(browser, page, cdp, 'scrolled-300%'));
+  rows.push(await measure(browser, page, cdp, `scrolled-${Math.round(ZOOM * 100)}%`));
 
   const report = {
     sample: SAMPLE,
