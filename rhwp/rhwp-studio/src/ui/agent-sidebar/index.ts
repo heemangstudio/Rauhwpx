@@ -76,7 +76,7 @@ import {
   expirePendingUserQuestion,
   fallbackTitle,
   getThread,
-  explorerGroupIsCurrent,
+  documentGroupKey,
   forgetDocumentThreads,
   listThreads,
   listThreadsByDocument,
@@ -98,7 +98,6 @@ import {
   threadMatchesDocument,
   upsertThread,
   type ChatThread,
-  type DocumentThreadGroup,
   type ThreadMessage,
   type ThreadTurnOutcome,
   type ThreadMarkerMessage,
@@ -111,6 +110,7 @@ import {
 import {
   clearChatStatus,
   getChatStatus,
+  getChatWorkingSince,
   markChatFinished,
   markChatNeedsInput,
   markChatWorking,
@@ -121,6 +121,15 @@ import { createChevron, createColumnIcon } from '../chevron.ts';
 import { showContextMenu } from '../native-context-menu.ts';
 import { setMiddleTruncatedText } from '../middle-truncate.ts';
 import { createInkRing, createIcon, createStopIcon } from './icons.ts';
+import {
+  closeThreadRailSurfaces,
+  createThreadsToolbar,
+  searchKey,
+  showDocumentFilter,
+  showDocumentPalette,
+  type DocumentFilterOption,
+} from './thread-rail.ts';
+import type { LibraryMoveResult } from '../../library/move-to-document.ts';
 import { detectPlatformKind } from '../../engine/navigation-keymap.ts';
 import { AGENT_LABEL, createProviderIcon, PROVIDER_ORDER } from './providers.ts';
 import { createEffortSlider } from './effort-slider.ts';
@@ -184,11 +193,25 @@ export interface AgentSidebarDeps {
     selectionLabel: string | null;
     pageCount?: number;
   };
-  /** 라이브러리 문서 그룹에서 "이동"을 골랐을 때. */
-  moveToLibraryDocument?: (target: {
-    documentId: string | null;
-    fileName: string | null;
-  }) => void;
+  /**
+   * 다른 문서로 옮겨 간다 — 바뀐 내용이 있으면 저장한 뒤 대상 문서를 연다.
+   * checkpointMessage 가 있으면 떠나기 전에 버전 기록 체크포인트를 남긴다
+   * (버전 기록이 켜져 있고 커밋하지 않은 변경이 있을 때만).
+   */
+  moveToLibraryDocument?: (
+    target: { documentId: string | null; fileName: string | null },
+    options?: { checkpointMessage?: string },
+  ) => Promise<LibraryMoveResult>;
+  /** 문서 열기 팔레트의 "새 문서"·"파일 열기…" — 편집기의 같은 명령을 부른다. */
+  createDocument?: () => void;
+  openDocumentFile?: () => void;
+  /** 문서 열기 팔레트와 문서 필터가 보여 줄 최근 문서. */
+  listRecentDocuments?: () => Promise<Array<{
+    documentId: string;
+    fileName: string;
+    sourceFormat: string;
+    openedAt: number;
+  }>>;
   /** 현재 문서의 로컬 커밋과 브랜치를 관리한다. */
   versionController?: VersionManagerController;
   getAgentUndoEntry?: () => object | null;
@@ -583,6 +606,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
     editorSettingsRuntime,
     getDocumentContext,
     moveToLibraryDocument,
+    createDocument,
+    openDocumentFile,
+    listRecentDocuments,
     versionController,
     openClassicVersionControl,
   } = deps;
@@ -693,8 +719,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): {
   let currentDocumentId: string | null = getDocumentContext?.().documentId ?? null;
   /** 읽기 전용으로 열람 중인 다른 문서 채팅의 문서 라벨 (null = 정상 모드). */
   let readOnlyDocLabel: string | null = null;
-  /** 문서 그룹 접힘/펼침 — 사용자가 손댄 그룹만 기억한다(키: documentId ?? docKey ?? ''). */
-  const docGroupToggles = new Map<string, boolean>();
+  /** 다른 문서의 채팅을 열려고 문서를 바꾸는 중 — 그 문서가 열리면 이 채팅을 잇는다. */
+  let pendingThreadSwitch: { threadId: string } | null = null;
+  /** 채팅 목록 검색어와 문서 필터(키: documentGroupKey). */
+  let threadQuery = '';
+  let threadDocFilter: { key: string; label: string; missing: boolean } | null = null;
   let currentThread = createEmptyThread({
     agent: selectedAgent,
     model: selectedModel,

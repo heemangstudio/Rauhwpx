@@ -193,7 +193,11 @@ export interface ChatThread {
   /** 사용자가 직접 붙인 이름 — 이후 자동 제목이 덮어쓰지 않는다 */
   titlePinned?: boolean;
   createdAt: number;
+  /** 저장 시계 — 탭 사이 충돌 판정에 쓰여 저장할 때마다 앞으로 간다. */
   updatedAt: number;
+  /** 대화가 마지막으로 움직인 시각 — 목록 순서. 채팅을 열고 닫기만 해서는 바뀌지 않는다.
+   *  이 필드가 생기기 전에 저장된 채팅은 updatedAt 을 쓴다. */
+  lastActivityAt?: number;
   agent: AgentName;
   model: string;
   effort: string;
@@ -1729,11 +1733,25 @@ export function createEmptyThread(draft: ThreadDraft): ChatThread {
   };
 }
 
-/** 메시지가 있는 스레드만 최신순으로. */
+/** 목록 순서의 기준 시각 — 마지막 대화 활동. */
+export function threadActivityAt(thread: Pick<ChatThread, 'updatedAt' | 'lastActivityAt'>): number {
+  return thread.lastActivityAt ?? thread.updatedAt;
+}
+
+/** 대화 내용이 움직였는지 가늠하는 지문 — 메시지 수와 마지막 메시지의 진행 상태. */
+function activityStamp(thread: ChatThread): string {
+  const last = thread.messages.at(-1);
+  if (!last) return '0';
+  const status = 'status' in last ? last.status : '';
+  const items = 'tools' in last ? last.tools.length : 'tasks' in last ? last.tasks.length : 0;
+  return `${thread.messages.length}|${last.role}|${last.kind ?? ''}|${last.text.length}|${status}|${items}`;
+}
+
+/** 메시지가 있는 스레드만 마지막 대화 활동 순으로. */
 export function listThreads(): ChatThread[] {
   return loadAll()
     .filter((t) => t.messages.length > 0)
-    .sort((a, b) => b.updatedAt - a.updatedAt);
+    .sort((a, b) => threadActivityAt(b) - threadActivityAt(a));
 }
 
 export interface DocumentThreadGroup {
@@ -1743,7 +1761,8 @@ export interface DocumentThreadGroup {
   threads: ChatThread[];
 }
 
-function documentGroupKey(thread: ChatThread): string {
+/** 문서 묶음 키 — ID가 있으면 ID로, 없으면 파일명으로 묶인 레거시 채팅이다. */
+export function documentGroupKey(thread: Pick<ChatThread, 'documentId' | 'docKey'>): string {
   return thread.documentId ? `id:${thread.documentId}` : `name:${thread.docKey ?? ''}`;
 }
 
@@ -1826,13 +1845,21 @@ export function upsertThread(thread: ChatThread): void {
     removeThread(thread.id);
     return;
   }
-  const previousUpdatedAt = (idbAvailable()
+  const previous = idbAvailable()
     ? cache.get(thread.id)
-    : readLegacyThreads().find((item) => item.id === thread.id))?.updatedAt ?? 0;
+    : readLegacyThreads().find((item) => item.id === thread.id);
+  const previousUpdatedAt = previous?.updatedAt ?? 0;
+  const updatedAt = Math.max(Date.now(), thread.updatedAt + 1, previousUpdatedAt + 1);
+  // 채팅을 열거나 떠날 때도 저장은 일어난다 — 대화가 움직였을 때만 목록에서 위로 올린다.
+  const messages = thread.messages.slice(-MAX_MESSAGES_PER_THREAD);
+  const lastActivityAt = previous && activityStamp(previous) === activityStamp({ ...thread, messages })
+    ? threadActivityAt(previous)
+    : updatedAt;
   const capped: ChatThread = {
     ...thread,
-    messages: thread.messages.slice(-MAX_MESSAGES_PER_THREAD),
-    updatedAt: Math.max(Date.now(), thread.updatedAt + 1, previousUpdatedAt + 1),
+    messages,
+    updatedAt,
+    lastActivityAt,
     title: thread.title.trim() || fallbackTitle(thread.messages),
     titleRequested: Boolean(thread.titleRequested),
     workflow: isAgentWorkflow(thread.workflow) ? thread.workflow : 'direct',

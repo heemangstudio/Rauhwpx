@@ -24,6 +24,8 @@ const SWEEP_MS = 5_000;
 interface StatusEntry {
   status: ChatRunStatus;
   updatedAt: number;
+  /** 작업을 시작한 시각 — 목록의 "작업 중 2분" 경과 표시. */
+  startedAt?: number;
 }
 
 const listeners = new Set<() => void>();
@@ -133,7 +135,7 @@ function syncHeartbeat(): void {
       const now = Date.now();
       for (const id of ownedWorking) {
         const entry = map.get(id);
-        if (entry?.status === 'working') map.set(id, { status: 'working', updatedAt: now });
+        if (entry?.status === 'working') map.set(id, { ...entry, updatedAt: now });
       }
     });
   }, HEARTBEAT_MS);
@@ -179,7 +181,13 @@ if (typeof window !== 'undefined') {
 export function markChatWorking(threadId: string): void {
   ownedWorking.add(threadId);
   syncHeartbeat();
-  mutate((map) => map.set(threadId, { status: 'working', updatedAt: Date.now() }));
+  mutate((map) => {
+    const now = Date.now();
+    const previous = map.get(threadId);
+    // 이미 일하는 채팅이면 시작 시각을 그대로 둔다 — 경과 시간이 되돌아가지 않는다.
+    const startedAt = previous?.status === 'working' && previous.startedAt ? previous.startedAt : now;
+    map.set(threadId, { status: 'working', updatedAt: now, startedAt });
+  });
 }
 
 /** 턴 완료 — 노란 불이 초록 점으로 바뀐다. 채팅을 열면 점이 걷힌다. */
@@ -206,6 +214,13 @@ export function clearChatStatus(threadId: string): void {
 export function getChatStatus(threadId: string): ChatRunStatus | null {
   const entry = readMap().get(threadId);
   return entry ? liveStatus(entry, Date.now()) : null;
+}
+
+/** 지금 일하는 채팅이 작업을 시작한 시각. 일하지 않으면 null. */
+export function getChatWorkingSince(threadId: string): number | null {
+  const entry = readMap().get(threadId);
+  if (!entry || liveStatus(entry, Date.now()) !== 'working') return null;
+  return entry.startedAt ?? entry.updatedAt;
 }
 
 export function subscribeChatStatus(listener: () => void): () => void {
