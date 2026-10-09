@@ -1,0 +1,25 @@
+/* 글자 자리에서 바로 고치는 이름 칸. 둘레 글꼴과 색을 그대로 물려받고, 테두리만 얇게 보인다. */
+.inline-rename-input {
+  box-sizing: border-box;
+  min-width: 6ch;
+  max-width: 100%;
+  margin: -2px -5px;
+  padding: 1px 4px;
+  border: 1px solid var(--ui-border-strong, rgba(127, 127, 127, 0.5));
+  border-radius: 5px;
+  background: var(--ui-surface-raised, transparent);
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  field-sizing: content;
+  outline: none;
+  -webkit-app-region: no-drag;
+}
+
+.inline-rename-input:focus-visible {
+  border-color: var(--ui-accent, #4f7cff);
+}
+
+.inline-rename-input:disabled {
+  opacity: 0.6;
+}

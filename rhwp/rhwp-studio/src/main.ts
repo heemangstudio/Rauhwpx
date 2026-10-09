@@ -190,12 +190,16 @@ import {
   releaseDesktopDocument,
   createAgentHubSession,
   supportsExtraAgentHubSessions,
+  canRenameNativeFile,
+  renameNativeDocumentFile,
+  NativeRenameRefusedError,
   type AgentHubSessionLease,
   releaseReplacedNativeFileHandle,
   rememberNativeDocument,
   reserveDesktopDocument,
 } from '@/desktop-integration';
 import { initAgentBridge } from './agent/bridge.ts';
+import { renameThreadsDocument } from './agent/threads.ts';
 import { initAgentSidebar } from './ui/agent-sidebar/index.ts';
 import { showEditingSettingsFallback } from './ui/agent-sidebar/settings-editing-fallback.ts';
 import { AGENT_LABEL } from './ui/agent-sidebar/providers.ts';
@@ -254,7 +258,7 @@ const wasmFacade = createAttachableFacade<WasmBridge>(firstSession.wasm, {
   stickyKeys: ['onFileNameChanged', 'onExternalImagesInjected'],
 });
 const wasm = wasmFacade.facade;
-installDocumentTitle(wasm);
+installDocumentTitle(wasm, { rename: (name) => renameAttachedDocument(name) });
 const eventBus = new AttachableEventBus(firstSession.bus);
 const documentStateFacade = createAttachableFacade<DocumentDirtyState>(firstSession.documentState);
 const documentState = documentStateFacade.facade;
@@ -1415,6 +1419,12 @@ function installChatAgent(
       { commit: true, threadId: thread.id },
     ),
     openChat: (request) => (chat ? openChatFromChat(chat, request) : Promise.resolve('handled' as const)),
+    renameDocument: async (name) => {
+      const result = await renameDocumentInSession(session, name);
+      if (result.ok) return result.fileName;
+      showToast({ message: result.message, durationMs: 3200 });
+      return null;
+    },
     chatModeLock: {
       // 사이드바는 만들어지는 동안 잠금을 한 번 읽는다. 그때는 채팅이 아직 없다 (잠금 없음).
       get: () => (chat ? chatModeLockFor(chat) : null),
@@ -1687,6 +1697,72 @@ async function liveSessionForFile(
       // 비교할 수 없는 핸들은 건너뛴다.
     }
   }
+  return null;
+}
+
+/**
+ * 문서 이름을 바꾼다. 파일이 있는 문서는 같은 폴더 안에서 디스크의 파일 이름을 바꾸고, 파일이
+ * 없는 문서는 저장할 때 쓸 이름만 바꾼다. 확장자는 그대로 둔다. 바뀐 파일 이름을 돌려준다.
+ */
+async function renameDocumentInSession(
+  session: DocumentSession,
+  requested: string,
+): Promise<{ ok: true; fileName: string } | { ok: false; message: string }> {
+  const doc = session.wasm;
+  if (!doc.hasLoadedDocument()) return { ok: false, message: '열린 문서가 없습니다.' };
+  const current = doc.fileName;
+  const extension = current.match(/\.[^./\\]+$/)?.[0] ?? '';
+  // eslint-disable-next-line no-control-regex
+  let base = requested.trim().replace(/[\\/:*?"<>|\u0000-\u001f]/g, '').trim();
+  if (extension && base.toLowerCase().endsWith(extension.toLowerCase())) {
+    base = base.slice(0, -extension.length).trim();
+  }
+  if (!base || base.startsWith('.')) return { ok: false, message: '쓸 수 있는 이름을 입력하세요.' };
+  const nextName = `${base}${extension}`;
+  if (nextName === current) return { ok: true, fileName: current };
+  const handle = doc.currentFileHandle;
+  try {
+    if (handle && canRenameNativeFile(handle)) {
+      doc.currentFileHandle = await renameNativeDocumentFile(handle, nextName);
+    } else if (handle) {
+      return { ok: false, message: '이 문서의 파일 이름은 여기서 바꿀 수 없습니다.' };
+    }
+  } catch (error) {
+    const reason = error instanceof NativeRenameRefusedError ? error.reason : null;
+    if (!reason) console.warn('[rename] 파일 이름을 바꾸지 못했습니다:', error);
+    const messages: Record<string, string> = {
+      exists: '같은 이름의 파일이 이미 있습니다.',
+      open: '같은 이름의 파일이 이미 열려 있습니다.',
+      saving: '저장이 끝난 뒤 다시 바꾸세요.',
+      invalid: '쓸 수 있는 이름을 입력하세요.',
+      extension: '확장자는 바꿀 수 없습니다.',
+    };
+    return { ok: false, message: (reason && messages[reason]) || '파일 이름을 바꾸지 못했습니다.' };
+  }
+  doc.fileName = nextName;
+  const documentId = session.documentId;
+  if (documentId) {
+    renameThreadsDocument(documentId, nextName);
+    const sourceDigest = doc.documentDigest;
+    if (sourceDigest && doc.currentFileHandle) {
+      await addRecentDoc({
+        documentId,
+        sourceDigest,
+        fileName: nextName,
+        sourceFormat: doc.getSourceFormat(),
+        handle: doc.currentFileHandle,
+      }).catch((error) => console.warn('[recent] 이름을 바꾼 문서를 기록하지 못했습니다:', error));
+    }
+  }
+  session.bus.emit('document-context-changed');
+  return { ok: true, fileName: nextName };
+}
+
+/** 화면에 붙은 문서의 이름을 바꾼다 (제목 막대). 못 바꾸면 알리고 null. */
+async function renameAttachedDocument(name: string): Promise<string | null> {
+  const result = await renameDocumentInSession(attachedSession, name);
+  if (result.ok) return result.fileName;
+  showToast({ message: result.message, durationMs: 3200 });
   return null;
 }
 
