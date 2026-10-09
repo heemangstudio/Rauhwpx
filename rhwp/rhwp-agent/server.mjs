@@ -6082,6 +6082,7 @@ httpServer.on('error', (err) => {
   process.exitCode = 1;
 });
 
+const PI_SETTINGS_FLUSH_TIMEOUT_MS = 3_000;
 let shutdownPreparationPromise = null;
 let shutdownPromise = null;
 let launchCleanupRetentionRequired = false;
@@ -6179,6 +6180,11 @@ function prepareShutdown(signal) {
       (record) => disposeRecord(record, 'hub shutdown'),
     );
     if (!cleanupProven) retainUncertainProcessCleanup(WORK_ROOT);
+    // 기동 동기화가 models.json 을 쓰는 도중에 process.exit 가 오면 `.tmp-*` 사본(키 포함 가능)이 남는다.
+    await Promise.race([
+      piManager.close().catch((error) => log(`pi settings flush failed: ${error?.message ?? error}`)),
+      new Promise((resolve) => setTimeout(resolve, PI_SETTINGS_FLUSH_TIMEOUT_MS).unref()),
+    ]);
     for (const wss of [studioWss, mcpWss]) {
       for (const sock of wss.clients) {
         try { sock.close(1001, 'server shutting down'); } catch {}

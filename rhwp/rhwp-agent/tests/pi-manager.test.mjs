@@ -1472,6 +1472,22 @@ test('syncAssets keeps app paths out of the Pi home and clears what older hubs l
   const agentDir = path.join(rootDir, 'agent');
   await fs.mkdir(path.join(agentDir, 'skills', 'rhwp-editing'), { recursive: true });
   await fs.writeFile(path.join(agentDir, 'skills', 'rhwp-editing', 'SKILL.md'), 'old copy');
+  const old = new Date(Date.now() - 10 * 60_000);
+  const staleTemps = [
+    path.join(agentDir, 'models.json.tmp-111-1790000000000-2'),
+    path.join(agentDir, 'settings.json.tmp-111-1790000000000-1'),
+    path.join(rootDir, 'config.json.tmp-111-1790000000000-3'),
+  ];
+  for (const file of staleTemps) {
+    await fs.writeFile(file, '{"providers":{"openrouter":{"apiKey":"sk-or-leaked"}}}');
+    await fs.utimes(file, old, old);
+  }
+  // 같은 루트를 쓰는 다른 허브가 방금 만든 임시 파일은 건드리지 않는다.
+  const liveTemp = path.join(agentDir, 'models.json.tmp-222-1790000000001-2');
+  await fs.writeFile(liveTemp, '');
+  const unrelated = path.join(agentDir, 'auth.json.tmp-old');
+  await fs.writeFile(unrelated, '');
+  await fs.utimes(unrelated, old, old);
   const { spawns, spawnProcess } = fakeSpawner();
   const manager = createPiManager({ rootDir, spawnProcess, openRouter: fakeOpenRouter() });
 
@@ -1484,7 +1500,44 @@ test('syncAssets keeps app paths out of the Pi home and clears what older hubs l
   });
   assert.equal(settingsText.includes(path.sep), false, 'settings.json holds no paths');
   await assert.rejects(fs.stat(path.join(agentDir, 'skills')), { code: 'ENOENT' });
+  for (const file of staleTemps) await assert.rejects(fs.stat(file), { code: 'ENOENT' });
+  await fs.stat(liveTemp);
+  await fs.stat(unrelated);
   assert.equal(spawns.length, 0);
+
+  await fs.rm(rootDir, { recursive: true, force: true });
+});
+
+test('close waits for a settings write in flight and refuses later writes', async () => {
+  const rootDir = await tmpRoot();
+  const replacing = deferred();
+  const release = deferred();
+  let stagedPath = null;
+  const manager = createPiManager({
+    rootDir,
+    openRouter: fakeOpenRouter(),
+    async replaceFile(tempPath, targetPath) {
+      if (!stagedPath) {
+        stagedPath = tempPath;
+        replacing.resolve();
+        await release.promise;
+      }
+      await fs.rename(tempPath, targetPath);
+    },
+  });
+
+  const sync = manager.syncAssets();
+  await replacing.promise;
+  let closed = false;
+  const closing = manager.close().then(() => { closed = true; });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(closed, false, 'close waits for the staged write');
+  release.resolve();
+  await closing;
+  await sync.catch(() => {});
+  await assert.rejects(fs.stat(stagedPath), { code: 'ENOENT' });
+  await assert.rejects(manager.setModels([{ id: 'deepseek/deepseek-chat-v3.1' }]));
+  assert.deepEqual((await fs.readdir(path.join(rootDir, 'agent'))).filter((name) => name.includes('.tmp-')), []);
 
   await fs.rm(rootDir, { recursive: true, force: true });
 });

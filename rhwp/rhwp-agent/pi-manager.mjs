@@ -80,6 +80,11 @@ const INSTALL_PROGRESS = Object.freeze({
   done: 100,
 });
 
+/** 허브가 쓰는 파일들. 쓰다 끊긴 `<이름>.tmp-*` 는 다음 동기화에서 지운다. */
+const HUB_OWNED_AGENT_FILES = ['models.json', 'settings.json'];
+const HUB_OWNED_ROOT_FILES = [CONFIG_FILE];
+/** 이보다 오래된 임시 파일만 지운다 — 같은 루트를 쓰는 다른 허브가 지금 쓰는 중일 수 있다. */
+const STALE_TEMP_MS = 60_000;
 
 /**
  * @typedef {Object} PiModelConfig
@@ -348,10 +353,23 @@ export function createPiManager({
   /** 설정 파일 쓰기는 직렬화한다 — 키/모델 갱신이 겹쳐도 순서가 흐트러지지 않도록. */
   let writeChain = Promise.resolve();
   let tempSeq = 0;
+  /** close() 뒤에는 새 쓰기를 받지 않는다 — 종료 중인 프로세스가 임시 파일을 남기지 않게. */
+  let closed = false;
+  /** @type {Set<Promise<void>>} 시작된 writeAtomic. close() 가 모두 끝나길 기다린다. */
+  const inflightWrites = new Set();
   /** 진행 중인 OpenRouter PKCE 로그인. 브라우저 콜백이 오면 한 번만 소비한다. */
   let oauthFlow = null;
 
-  async function writeAtomic(file, text, mode = 0o600) {
+  function writeAtomic(file, text, mode = 0o600) {
+    if (closed) return Promise.reject(piError('PI_MANAGER_CLOSED', 'Pi 설정은 허브 종료 중에 쓸 수 없어요'));
+    const write = writeAtomicNow(file, text, mode);
+    const settled = write.then(() => {}, () => {});
+    inflightWrites.add(settled);
+    void settled.then(() => inflightWrites.delete(settled));
+    return write;
+  }
+
+  async function writeAtomicNow(file, text, mode) {
     if (Buffer.byteLength(text, 'utf8') > PI_SETTINGS_MAX_BYTES) {
       throw piError(
         'PI_SETTINGS_TOO_LARGE',
@@ -907,6 +925,25 @@ export function createPiManager({
     return changed;
   }
 
+  /** 허브 파일의 `.tmp-*` 형제 중 STALE_TEMP_MS 보다 오래된 것을 지운다. 키 사본이 남지 않게. */
+  async function removeStaleTemps(dir, owners) {
+    let names;
+    try {
+      names = await fs.readdir(dir);
+    } catch (error) {
+      if (error?.code === 'ENOENT') return;
+      throw error;
+    }
+    const cutoff = now() - STALE_TEMP_MS;
+    await Promise.all(names
+      .filter((name) => owners.some((owner) => name.startsWith(`${owner}.tmp-`)))
+      .map(async (name) => {
+        const file = path.join(dir, name);
+        const stat = await fs.lstat(file).catch(() => null);
+        if (stat?.isFile() && stat.mtimeMs < cutoff) await fs.rm(file, { force: true }).catch(() => {});
+      }));
+  }
+
   async function syncAssets(migrationCatalog = null) {
     await fs.mkdir(agentDir, { recursive: true });
     await fs.mkdir(sessionsDir, { recursive: true });
@@ -922,6 +959,8 @@ export function createPiManager({
     await writeModelsJson();
     if (migrated) await persistConfig();
     await fs.rm(legacySkillsDir, { recursive: true, force: true });
+    await removeStaleTemps(agentDir, HUB_OWNED_AGENT_FILES);
+    await removeStaleTemps(rootDir, HUB_OWNED_ROOT_FILES);
   }
 
   return {
@@ -1080,14 +1119,24 @@ export function createPiManager({
     },
 
     /**
-     * settings.json 과 models.json 을 다시 쓰고, 예전 허브가 남긴 스킬 사본을 지운다.
+     * settings.json 과 models.json 을 다시 쓰고, 예전 허브가 남긴 스킬 사본과 임시 파일을 지운다.
      * 예전 설정이면 카탈로그로 빠진 모델 필드를 채운다. 네트워크는 쓰기 큐 밖에서 기다린다.
      */
     async syncAssets() {
       await load();
       const migrationCatalog = await catalogForMigration();
+      if (closed) return currentStatus();
       await serialized(() => syncAssets(migrationCatalog));
       return currentStatus();
+    },
+
+    /**
+     * 허브 종료 전에 부른다. 새 쓰기를 막고 이미 줄 선 쓰기가 끝나길 기다린다 — process.exit 가
+     * 임시 파일을 쓰는 도중에 프로세스를 끊어 `.tmp-*` 를 남기지 않게.
+     */
+    async close() {
+      closed = true;
+      await Promise.all([writeChain, ...inflightWrites]);
     },
 
     /**
