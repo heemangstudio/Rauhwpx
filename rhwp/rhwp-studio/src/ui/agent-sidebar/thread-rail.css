@@ -169,6 +169,8 @@
 /* ── 채팅 목록 ──────────────────────────────────────── */
 
 .ag-threads-list {
+  /* 끌기가 행의 offsetTop 을 목록 기준으로 잰다. */
+  position: relative;
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
@@ -256,7 +258,10 @@
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
+  justify-content: flex-end;
   gap: 5px;
+  /* hover 에서 고정·이름 바꾸기 두 버튼이 이 자리에 겹친다 — 제목이 그 밑으로 들어가지 않게 둔다. */
+  min-width: 36px;
   color: var(--ag-text-tertiary);
   font-size: var(--ag-fs-meta);
   font-variant-numeric: var(--ag-numeric);
@@ -360,9 +365,10 @@
   }
 }
 
-/* ── 이름 바꾸기 ────────────────────────────────────────
+/* ── 고정 · 이름 바꾸기 ─────────────────────────────────
    버튼 안에 버튼을 넣을 수 없어 형제로 두고, hover 에서 상태 자리에 겹친다. */
-.ag-thread-rename {
+.ag-thread-rename,
+.ag-thread-pin {
   position: absolute;
   top: 8px;
   right: 6px;
@@ -382,13 +388,20 @@
   transition: var(--ag-transition-color);
 }
 
-.ag-thread-rename .ag-icon {
+.ag-thread-pin {
+  right: 30px;
+}
+
+.ag-thread-rename .ag-icon,
+.ag-thread-pin .ag-icon {
   width: 12px;
   height: 12px;
 }
 
 .ag-threads-row:hover .ag-thread-rename,
-.ag-thread-rename:focus-visible {
+.ag-threads-row:hover .ag-thread-pin,
+.ag-thread-rename:focus-visible,
+.ag-thread-pin:focus-visible {
   opacity: 1;
   pointer-events: auto;
 }
@@ -397,11 +410,17 @@
   opacity: 0;
 }
 
-.ag-thread-rename:hover {
+.ag-thread-pin[aria-pressed='true'] {
+  color: var(--ag-text-secondary);
+}
+
+.ag-thread-rename:hover,
+.ag-thread-pin:hover {
   color: var(--ag-text);
 }
 
-.ag-thread-rename:focus-visible {
+.ag-thread-rename:focus-visible,
+.ag-thread-pin:focus-visible {
   outline: var(--ag-focus-ring);
   outline-offset: var(--ag-focus-offset);
 }
@@ -450,6 +469,93 @@
 
 .ag-root[data-agent='opencode'] .ag-thread-rename-input:focus {
   box-shadow: 0 0 0 3px var(--ag-opencode-wash);
+}
+
+/* ── 고정 구역 · 끌기 ─────────────────────────────────────
+   고정한 채팅이 있을 때만 머리가 서고, 끄는 동안에는 빈 고정 구역도 드러나
+   놓을 자리가 된다. 놓일 구역의 머리는 잉크로 짙어진다. */
+.ag-threads-section {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  height: 24px;
+  padding: 0 10px;
+  color: var(--ag-text-tertiary);
+  font-size: var(--ag-fs-meta);
+  transition: var(--ag-transition-color);
+}
+
+.ag-threads-section::after {
+  content: '';
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--ag-border);
+  transition: background-color var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+.ag-threads-section[data-section='recent'] {
+  margin-top: 6px;
+}
+
+.ag-threads-list:not(.ag-has-pinned):not(.ag-dragging) > .ag-threads-section {
+  display: none;
+}
+
+.ag-threads-section.ag-drop-target {
+  color: var(--ag-text);
+}
+
+.ag-threads-section.ag-drop-target::after {
+  background: var(--ag-text-tertiary);
+}
+
+/* 끄는 행이 떠난 자리 — 놓일 곳에 옅은 우물로 남는다. */
+.ag-threads-row.ag-drag-placeholder {
+  border-radius: var(--ag-r-row);
+  background: var(--ag-hover);
+}
+
+.ag-threads-row.ag-drag-placeholder > *,
+.ag-threads-row.ag-drop-landing > * {
+  visibility: hidden;
+}
+
+/* 끄는 동안 목록은 hover 에 반응하지 않는다. */
+.ag-threads-list.ag-dragging .ag-threads-item:not(.ag-active) {
+  background: transparent;
+}
+
+.ag-threads-list.ag-dragging .ag-thread-rename,
+.ag-threads-list.ag-dragging .ag-thread-pin {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.ag-threads-list.ag-dragging .ag-threads-row:hover .ag-threads-item-when {
+  opacity: 1;
+}
+
+.ag-threads-dragging,
+.ag-threads-dragging * {
+  cursor: grabbing !important;
+}
+
+/* 포인터를 따라 뜬 행 사본. */
+.ag-threads-ghost {
+  position: fixed;
+  z-index: 95;
+  margin: 0;
+  border-radius: var(--ag-r-row);
+  background: var(--ag-raised);
+  box-shadow: var(--ag-elev-popover);
+  list-style: none;
+  pointer-events: none;
+}
+
+.ag-threads-ghost .ag-thread-rename,
+.ag-threads-ghost .ag-thread-pin {
+  display: none;
 }
 
 /* ── 문서 팝오버(문서별로 보기 · 문서 열기) ───────────────── */
