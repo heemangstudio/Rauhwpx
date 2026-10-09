@@ -812,12 +812,16 @@ export function createChangesDrawer(options: ChangesDrawerOptions): ChangesDrawe
       options.onWorkingDiff?.(items);
     } catch (error) {
       if (disposed || request !== serial || controller.getState().documentId !== documentId) return;
+      // 비교하는 동안 편집이 끼었거나, 문서 교체 뒤 repository 갱신이 끝나기 전이면
+      // STALE_WORKSPACE 가 일시적으로 나온다. 곧 다음 갱신이 다시 채우므로 지금 목록을 둔다
+      // (문서 교체는 onState 가 이미 비웠다).
+      if (versionErrorCode(error) === 'STALE_WORKSPACE') {
+        workingError = null;
+        return;
+      }
       workingItems = [];
       options.onWorkingDiff?.([]);
-      // 문서 교체 동안 repository 갱신이 끝나기 전엔 STALE_WORKSPACE 가 일시적으로
-      // 나온다 — 곧 새 state refresh 가 다시 채우므로 오류 표시 없이 비워 둔다.
-      workingError = versionErrorCode(error) === 'STALE_WORKSPACE' ? null
-        : error instanceof Error ? error.message : String(error);
+      workingError = error instanceof Error ? error.message : String(error);
     } finally {
       if (!disposed && request === serial) {
         loading = false;

@@ -2,7 +2,7 @@ import type { AgentBridge } from '../agent/bridge.ts';
 import type { CheckpointTitleSummary } from '../agent/types.ts';
 import { CompareSessionStore } from '../compare/session.ts';
 import { buildSnapshotFromWasm, compareDocuments, compareSnapshots } from '../compare/diff-engine.ts';
-import type { CompareOptions, DiffItem } from '../compare/types.ts';
+import type { DiffItem } from '../compare/types.ts';
 import type { EventBus } from '../core/event-bus.ts';
 import type { DocumentDirtyState } from '../core/document-dirty-state.ts';
 import { INSERTED_IMAGE_MAX_BYTES, readBlobBytesWithLimit } from '../core/document-input-limits.ts';
@@ -542,9 +542,15 @@ export class DocumentVersionController implements VersionManagerController {
   }
 
   async #captureSavedContent(saved: VersionContent): Promise<CapturedVersionSnapshot> {
-    const live = this.#snapshotCache.content(this.#wasm, this.#getDocumentId(), this.#editorRevision);
+    const id = this.#getDocumentId();
+    const revision = this.#editorRevision;
+    const live = this.#snapshotCache.content(this.#wasm, id, revision);
     if (live.fingerprint === saved.fingerprint) {
-      return this.#snapshotCache.capture(this.#wasm, this.#getDocumentId(), this.#editorRevision);
+      // 문서를 열자마자 켜지는 첫 기록이다. 스냅샷을 조각으로 나눠 만들어 입력을 막지 않는다.
+      const captured = await this.#snapshotCache.captureInSlices(
+        this.#wasm, id, revision, () => this.#getDocumentId() === id && this.#editorRevision === revision,
+      );
+      if (captured) return captured;
     }
     // 저장 뒤에 편집했다면 저장된 바이트를 따로 열어 그 내용의 비교 스냅샷을 만든다.
     const scratch = new WasmBridge();
@@ -686,16 +692,16 @@ export class DocumentVersionController implements VersionManagerController {
     if (!worktree || worktree.documentId !== this.#getDocumentId()) return;
     if (this.#worktreeHost?.canMutate() === false) throw new Error('다른 창에서 이 워크트리를 편집하고 있습니다.');
     const workspace = this.#captureWorkspaceToken();
-    const capture = this.#snapshotCache.capture(this.#wasm, this.#getDocumentId(), this.#editorRevision);
+    const content = this.#snapshotCache.content(this.#wasm, this.#getDocumentId(), this.#editorRevision);
     const branch = this.#requireActiveBranch();
     const current = await this.#store.getWorktree(worktree.id);
     if (!current) throw new VersionError('STALE_WORKSPACE', '워크트리가 삭제되었습니다.');
     this.#assertWorkspaceToken(workspace);
     this.#worktree = await this.#store.saveWorktree({
-      id: current.id, expectedRevision: current.revision, bytes: capture.bytes,
-      fileName: this.#wasm.fileName, sourceFormat: worktreeSnapshotFormat(capture.bytes),
+      id: current.id, expectedRevision: current.revision, bytes: content.bytes,
+      fileName: this.#wasm.fileName, sourceFormat: worktreeSnapshotFormat(content.bytes),
       baseCommitId: branch.target,
-      ...(saved ? { savedFingerprint: capture.fingerprint } : {}),
+      ...(saved ? { savedFingerprint: content.fingerprint } : {}),
     });
   }
 
@@ -873,11 +879,21 @@ export class DocumentVersionController implements VersionManagerController {
         && cache.repositoryRevision === repository.revision) {
         return cache.items;
       }
-      // 실시간 '커밋 전' diff 는 강제 전체 재조판을 건너뛴다 — 대형 문서에서 한 번의
-      // 재조판이 입력을 수 분간 멈추게 한다 (페이지 라벨은 마지막 확정 트리 기준).
-      const compareOptions: CompareOptions = { ...VERSION_COMPARE_OPTIONS, refreshLayout: false };
-      const current = buildSnapshotFromWasm(this.#wasm, this.#wasm.fileName, compareOptions);
-      const diffs = compareSnapshots(stored.snapshot, current, compareOptions).diffItems;
+      // 지금 내용이 HEAD 와 같으면 비교 스냅샷을 만들지 않는다. 다르면 체크포인트와 같은
+      // revision 의 캡처(강제 재조판 없음)를 함께 쓰되, 캐시가 지금 내용과 다르면 버린다.
+      // 캡처는 입력을 막지 않게 조각으로 나눠 만들고, 그사이 편집이 끼면 stale 로 거절한다.
+      const revision = this.#editorRevision;
+      const live = this.#snapshotCache.reexport(this.#wasm, requestedDocumentId, revision);
+      let diffs: DiffItem[] = [];
+      if (live.fingerprint !== head.contentFingerprint) {
+        const current = await this.#snapshotCache.captureInSlices(
+          this.#wasm, requestedDocumentId, revision, () => this.#isWorkspaceTokenCurrent(workspace),
+        );
+        if (!current) throw new VersionError('STALE_WORKSPACE', 'The document changed during comparison');
+        diffs = compareSnapshots(
+          stored.snapshot, current.compareSnapshot, { ...VERSION_COMPARE_OPTIONS, refreshLayout: false },
+        ).diffItems;
+      }
       const latestBranch = await this.#store.getBranch(repository.id, branch.name);
       this.#assertWorkspaceToken(workspace);
       if (!latestBranch || latestBranch.revision !== freshBranch.revision || latestBranch.target !== freshBranch.target) {
@@ -885,7 +901,7 @@ export class DocumentVersionController implements VersionManagerController {
       }
       this.#workingDiffCache = {
         documentId: requestedDocumentId,
-        revision: this.#editorRevision,
+        revision,
         repositoryId: repository.id,
         repositoryRevision: repository.revision,
         items: diffs,

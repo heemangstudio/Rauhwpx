@@ -1,6 +1,6 @@
 import { exportDocumentForFormat } from '../command/save-document-format.ts';
 import { defaultFormatForSource, saveFormatForFileName } from '../command/save-target.ts';
-import { buildSnapshotFromWasm, compareSnapshots } from '../compare/diff-engine.ts';
+import { buildSnapshotFromWasm, buildSnapshotFromWasmInSlices, compareSnapshots } from '../compare/diff-engine.ts';
 import type { CompareDocumentSnapshot, CompareOptions } from '../compare/types.ts';
 import type { WasmBridge } from '../core/wasm-bridge.ts';
 import type { CheckpointTitleSummary } from '../agent/types.ts';
@@ -17,6 +17,11 @@ export const VERSION_COMPARE_OPTIONS: CompareOptions = {
     hardSegmentCells: 80_000,
   },
 };
+
+// 실시간 캡처(로드/저장 직후 베이스라인·더티 추적·커밋 전 diff)는 강제 전체 재조판을 건너뛴다.
+// 대형 문서에서 한 번의 재조판이 입력을 수 분간 멈추게 하며, 백그라운드에서
+// 진행 중인 지연 조판을 통째로 무효화한다.
+const LIVE_COMPARE_OPTIONS: CompareOptions = { ...VERSION_COMPARE_OPTIONS, refreshLayout: false };
 
 export interface VersionContent {
   bytes: Uint8Array;
@@ -83,6 +88,19 @@ export class VersionSnapshotCache {
     return this.#content;
   }
 
+  /** 문서를 다시 내보내 캐시와 맞춘다. 내용이 그대로면 캐시한 지문과 스냅샷을 그대로 쓴다. */
+  reexport(wasm: WasmBridge, documentId: string | null, revision: number): VersionContent {
+    this.#select(wasm, documentId, revision);
+    const bytes = exportVersionContent(wasm);
+    if (!this.#content || !sameBytes(this.#content.bytes, bytes)) {
+      this.#snapshot = null;
+      this.#content = { bytes, fingerprint: fingerprintBytes(bytes) };
+      this.#fingerprint = this.#content.fingerprint;
+    }
+    this.#scheduleRelease();
+    return this.#content;
+  }
+
   fingerprint(wasm: WasmBridge, documentId: string | null, revision: number): ContentFingerprint {
     this.#select(wasm, documentId, revision);
     return this.#fingerprint ?? this.content(wasm, documentId, revision).fingerprint;
@@ -90,16 +108,39 @@ export class VersionSnapshotCache {
 
   capture(wasm: WasmBridge, documentId: string | null, revision: number): CapturedVersionSnapshot {
     const content = this.content(wasm, documentId, revision);
-    // 실시간 캡처(로드/저장 직후 베이스라인·더티 추적)는 강제 전체 재조판을 건너뛴다.
-    // 대형 문서에서 한 번의 재조판이 입력을 수 분간 멈추게 하며, 백그라운드에서
-    // 진행 중인 지연 조판을 통째로 무효화한다.
     return this.#snapshot ??= {
       ...content,
-      compareSnapshot: buildSnapshotFromWasm(
-        wasm, wasm.fileName, { ...VERSION_COMPARE_OPTIONS, refreshLayout: false },
-      ),
+      compareSnapshot: buildSnapshotFromWasm(wasm, wasm.fileName, LIVE_COMPARE_OPTIONS),
     };
   }
+
+  /** `capture`와 같은 캡처를 입력을 막지 않게 조각으로 나눠 만든다. 그사이 문서가 바뀌면 null. */
+  async captureInSlices(
+    wasm: WasmBridge,
+    documentId: string | null,
+    revision: number,
+    isCurrent: () => boolean,
+  ): Promise<CapturedVersionSnapshot | null> {
+    const content = this.content(wasm, documentId, revision);
+    if (this.#snapshot) return this.#snapshot;
+    const key = this.#key;
+    const compareSnapshot = await buildSnapshotFromWasmInSlices(wasm, wasm.fileName, LIVE_COMPARE_OPTIONS, isCurrent);
+    if (!compareSnapshot) return null;
+    const captured = { ...content, compareSnapshot };
+    if (this.#key !== key) return captured;
+    this.#content ??= content;
+    this.#snapshot ??= captured;
+    this.#scheduleRelease();
+    return this.#snapshot;
+  }
+}
+
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) return false;
+  for (let index = 0; index < left.byteLength; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
 }
 
 export interface VersionDiffAnalysis {
