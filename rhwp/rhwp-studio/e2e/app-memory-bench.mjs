@@ -408,10 +408,6 @@ async function startTurn(page, index) {
   await page.waitForFunction(() => window.__documentSessions.attached().activeChat.bridge.isTurnRunning(), { timeout: 30_000 });
 }
 
-function hubProviderCount(hub, fixture) {
-  return descendants(processTable(), hub.pid).filter((entry) => hubKind(entry, fixture.script) !== 'other').length;
-}
-
 async function runOnce(runIndex, shared) {
   const fixture = prepareFixture();
   const hub = await launchHub(shared.hubPort, fixture, runIndex);
@@ -468,9 +464,8 @@ async function runOnce(runIndex, shared) {
     await delay(Math.max(0, turnsDoneAt + SETTLE_MS - Date.now()));
     rows.push(await measure(ctx, 'idle-settle'));
 
-    const reapDeadline = turnsDoneAt + IDLE_MS + REAP_GRACE_MS;
-    while (Date.now() < reapDeadline && hubProviderCount(hub, fixture) > 0) await delay(1000);
-    await delay(2000);
+    // 프로바이더 정리와 30 s 유휴 정리(병합 워커, 스냅샷 캐시)가 모두 지난 같은 시점에 잰다.
+    await delay(Math.max(0, turnsDoneAt + IDLE_MS + REAP_GRACE_MS - Date.now()));
     const reapRow = await measure(ctx, 'after-idle-reap');
     reapRow.reapedAfterMs = Date.now() - turnsDoneAt;
     rows.push(reapRow);
