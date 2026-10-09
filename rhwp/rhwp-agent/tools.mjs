@@ -999,7 +999,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'replace_range',
-    description: `Replace the text matched by find, or a coordinate range, with text. Keeps formatting; prefer it over delete_range + insert_text. ${WRITE_POINTER}`,
+    description: `Replace the text matched by find, or a coordinate range, with text ("" deletes). Keeps formatting; prefer it over delete_range + insert_text. ${WRITE_POINTER}`,
     shape: {
       expectedRevision: z.number().int(),
       render: renderParam(),

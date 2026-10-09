@@ -5570,6 +5570,8 @@ export class AgentToolExecutor {
   }
 
   private replaceRangeChecked(args: Record<string, unknown>, agent: AgentName, shift: number): unknown {
+    // 빈 text 로 바꾸기 = 지우기. 모델이 흔히 쓰는 꼴이라 거절하지 않고 delete_range 와 같은 길로 보낸다.
+    if (args['text'] === '') return this.deleteRangeChecked(args, agent, shift);
     const range = this.validateRange(args, shift);
     if (range.cell) this.guardNestedTableInCellRange(range);
     if (range.startParaIdx === range.endParaIdx && range.startCharOffset === range.endCharOffset) {
