@@ -425,51 +425,6 @@
 }
 
 /* 편집 중인 행은 행 전체가 입력 칸이 된다 — 행 높이를 그대로 쓴다. */
-.ag-thread-rename-form {
-  display: flex;
-  width: 100%;
-  min-width: 0;
-  padding: 0;
-}
-
-.ag-thread-rename-input {
-  width: 100%;
-  min-width: 0;
-  height: 52px;
-  padding: 0 10px;
-  border: 1px solid var(--ag-accent);
-  border-radius: var(--ag-r-row);
-  background: var(--ag-input-bg);
-  color: var(--ag-text);
-  font: inherit;
-  font-size: var(--ag-fs-secondary);
-}
-
-.ag-thread-rename-input:focus {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ag-claude-wash);
-}
-
-.ag-root[data-agent='codex'] .ag-thread-rename-input:focus {
-  box-shadow: 0 0 0 3px var(--ag-codex-wash);
-}
-
-.ag-root[data-agent='pi'] .ag-thread-rename-input:focus {
-  box-shadow: 0 0 0 3px var(--ag-pi-wash);
-}
-
-.ag-root[data-agent='grok'] .ag-thread-rename-input:focus {
-  box-shadow: 0 0 0 3px var(--ag-grok-wash);
-}
-
-.ag-root[data-agent='cursor'] .ag-thread-rename-input:focus {
-  box-shadow: 0 0 0 3px var(--ag-cursor-wash);
-}
-
-.ag-root[data-agent='opencode'] .ag-thread-rename-input:focus {
-  box-shadow: 0 0 0 3px var(--ag-opencode-wash);
-}
-
 /* ── 고정 구역 · 끌기 ─────────────────────────────────────
    고정한 채팅이 있을 때만 머리가 서고, 끄는 동안에는 빈 고정 구역도 드러나
    놓을 자리가 된다. 놓일 구역의 머리는 잉크로 짙어진다. */

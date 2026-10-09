@@ -5536,49 +5536,27 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    * 포커스 이탈 시 확정. 확정된 이름은 고정되어 자동 제목이 덮지 않는다.
    */
   function beginThreadRename(thread: ChatThread, row: HTMLElement): void {
-    const form = el('form', 'ag-thread-rename-form');
-    const field = el('input', 'ag-thread-rename-input') as HTMLInputElement;
-    field.type = 'text';
-    field.value = thread.title || '';
-    field.maxLength = 48;
-    field.setAttribute('aria-label', '채팅 이름');
-    form.appendChild(field);
-
-    let settled = false;
-    const commit = (): void => {
-      if (settled) return;
-      settled = true;
-      const next = renameThread(thread.id, field.value);
-      if (next && thread.id === currentThread.id) {
-        currentThread.title = next.title;
-        currentThread.titlePinned = true;
-        updateWorkspaceChatTitle();
-      }
-      rebuildThreadsList();
-    };
-    const cancel = (): void => {
-      if (settled) return;
-      settled = true;
-      rebuildThreadsList();
-    };
-
-    form.addEventListener('submit', (e) => {
-      e.preventDefault();
-      commit();
+    const title = row.querySelector<HTMLElement>('.ag-threads-item-title');
+    if (!title) return;
+    beginInlineRename(title, {
+      value: thread.title || '새 채팅',
+      label: '채팅 이름',
+      maxLength: 48,
+      commit: (value) => {
+        const next = renameThread(thread.id, value);
+        if (next && thread.id === currentThread.id) {
+          currentThread.title = next.title;
+          currentThread.titlePinned = true;
+          updateWorkspaceChatTitle();
+        }
+        return next?.title ?? null;
+      },
     });
-    field.addEventListener('blur', commit);
-    field.addEventListener('keydown', (e) => {
-      // Esc 는 패널 전체를 닫는 핸들러가 위에 있다 — 여기서 멈춘다.
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        e.stopPropagation();
-        cancel();
-      }
+    window.requestAnimationFrame(() => {
+      const input = title.querySelector<HTMLInputElement>('.inline-rename-input');
+      input?.focus({ preventScroll: true });
+      input?.select();
     });
-
-    row.replaceChildren(form);
-    field.focus();
-    field.select();
   }
 
   function docGroupLabel(docKey: string | null): string {
@@ -5756,7 +5734,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     btn.append(top, meta);
     // 두 번 누르기로는 열지 않는다 — 첫 클릭이 이미 대화를 열어버리므로
     // 이름 바꾸기는 연필 버튼과 우클릭 메뉴로 들어간다.
-    btn.addEventListener('click', () => requestOpenThread(thread.id));
+    btn.addEventListener('click', () => {
+      if (!btn.querySelector('.inline-rename-input')) requestOpenThread(thread.id);
+    });
     threadRowTargets.set(btn, { thread, row: li });
 
     const rename = el('button', 'ag-thread-rename');
@@ -5785,7 +5765,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     });
 
     li.addEventListener('contextmenu', (event) => {
-      if (li.querySelector('.ag-thread-rename-form')) return;
+      if (li.querySelector('.inline-rename-input')) return;
       event.preventDefault();
       event.stopPropagation();
       void openThreadMenu(thread, contextMenuAnchor(event, li));
@@ -5889,7 +5869,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    */
   function rebuildThreadsList(): void {
     // 끄는 동안에는 행을 갈아 끼우지 않는다 — 놓을 때 한 번 다시 그린다.
-    if (threadDrag.dragging()) return;
+    if (threadDrag.dragging() || threadsList.querySelector('.inline-rename-input')) return;
     // 다시 그려도 키보드 포커스는 같은 행에 남는다.
     const focusedKey = threadNavKey(document.activeElement);
     threadsList.replaceChildren();
