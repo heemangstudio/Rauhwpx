@@ -27,7 +27,6 @@
     "bench:chat-stream": "node bench/chat-stream-bench.mjs",
     "bench:preview-frame": "node bench/preview-frame-bench.mjs",
     "bench:typeset-line-width": "node bench/typeset-line-width-bench.mjs",
-    "bench:renderer-memory": "node bench/renderer-memory-bench.mjs",
     "bench:long-document-image-cache": "node bench/long-document-image-cache.mjs",
     "bench:canvaskit-image-cache": "node bench/canvaskit-image-cache-budget.mjs",
     "bench:agent-overlay": "node bench/agent-overlay-performance.mjs",

@@ -75,7 +75,7 @@ function makeEnv() {
       controls: tables.map((t) => ({ type: 'table', secIdx: 0, paraIdx: t.paraIdx, controlIdx: t.controlIdx, x: 0, y: 0, w: 10, h: 10 })),
     }),
     getCursorRect: () => ({ pageIndex: 0, x: 0, y: 0, height: 10 }),
-    renderPageToCanvasWithPictures: async (page: number, canvas: { width: number; height: number }, _scale: number) => {
+    renderPageToCanvas: (page: number, canvas: { width: number; height: number }, _scale: number) => {
       // 승인 후 상태로 렌더됐는지 검증할 수 있도록 렌더 시점의 본문을 기록한다
       record('renderPageToCanvas', page, body[0]);
       canvas.width = 100;

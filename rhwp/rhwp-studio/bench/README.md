@@ -11,7 +11,6 @@ Benches marked *dev server* need `npm run dev` running and `VITE_URL` pointing a
 - `npm run bench:chat-stream`: Markdown streaming cost in the sidebar (needs `npm run dev:sidebar`, `--url=`).
 - `npm run bench:preview-frame`: document preview frame cost (`--label=`).
 - `npm run bench:typeset-line-width`: typeset line-width measurement cost (`--label=`).
-- `npm run bench:renderer-memory`: renderer memory on long documents (*dev server*).
 - `npm run bench:long-document-image-cache`: picture cache on a long picture document (*dev server*).
 - `npm run bench:canvaskit-image-cache`: CanvasKit picture cache budget (*dev server*).
 - `npm run bench:agent-overlay`: pending-edit overlay renderer against a baseline commit, with power samples on macOS.
