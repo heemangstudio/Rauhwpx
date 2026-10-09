@@ -158,6 +158,8 @@ test('a tool call outside a running turn holds the lease until it settles', asyn
     editingAgent: 'claude',
     activeToolRequests: 0,
     activeToolRequestControllers: new Map(),
+    inFlightWrites: new Set(),
+    versionCommitInFlight: null,
     editingLease: { active: false, agent: 'claude' },
     editingLeaseListeners: new Set(),
     pendingUserQuestionId: null,
