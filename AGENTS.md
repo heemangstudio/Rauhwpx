@@ -52,6 +52,19 @@ Studio `npm test` imports hub modules, so `rhwp/rhwp-agent/node_modules` must ex
 
 # Commands
 
+## Test map
+
+| Layer | Command | PR check |
+| --- | --- | --- |
+| Engine | `cargo test` from `rhwp/` | Engine |
+| Studio unit | `npm --prefix rhwp/rhwp-studio test` | App |
+| Hub | `node --test rhwp/rhwp-agent/tests/*.test.mjs` | App |
+| Desktop | `npm run test:desktop` | App, Session tests (macOS, Windows) |
+| Browser | `npm --prefix rhwp/rhwp-studio run test:browser`, then `run e2e:smoke` | Browser |
+| Sidebar | `npm run test:sidebar` | nightly only |
+
+PR checks run only for the paths a change touches (`scripts/ci-changes.mjs`). Nightly adds the corpus sweeps, Skia rendering, cargo and npm audits, and the 3-OS production dependency check.
+
 ## Rust engine (from `rhwp/`)
 
 - Toolchain is pinned by `rust-toolchain.toml` and includes `wasm32-unknown-unknown`.

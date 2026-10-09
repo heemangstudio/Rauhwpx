@@ -67,4 +67,4 @@ jobs:
       - name: Build the engine test targets that pull requests run
         if: steps.rust.outputs.cache-hit != 'true'
         working-directory: rhwp
-        run: cargo test --locked --no-run --lib --bin rhwp --test issue_2743_hml_resource_id_limit
+        run: cargo test --locked --no-run

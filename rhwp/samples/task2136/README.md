@@ -10,4 +10,4 @@
   fit 으로 pi1 이 1쪽 말미 과적 (1쪽).
 - 기대(한글 정합): 상한 2500HU 로 리셋 인식 → pi1 새 쪽 시작 (2쪽).
 - 검증: `rhwp dump-pages samples/task2136/neartop_reset_sb2500.hwpx` /
-  `cargo test --test issue_2136_neartop_reset_sb2500`
+  `cargo test --test it page_count_pins::issue_2136_sb2500`

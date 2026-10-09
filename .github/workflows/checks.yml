@@ -52,11 +52,15 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           cache: parser
-      - name: Test parser limits, bounded ingestion, and hostile HML identifiers
+      - name: Test engine
+        working-directory: rhwp
+        # Unit tests and the single `it` integration binary. Corpus sweeps run nightly.
+        run: cargo test --locked
+      - name: Check that the hostile-input gates still exist
         working-directory: rhwp
         run: |
           set -euo pipefail
-          # Fail when a filter matches no tests so renames cannot silently skip a gate.
+          # Fail when a filter matches no tests so renames cannot silently drop a gate.
           run_nonempty() {
             local output
             output="$(mktemp)"
@@ -69,7 +73,7 @@ jobs:
           }
           run_nonempty --lib parser::
           run_nonempty --bin rhwp cli_reader_rejects_oversized_files_before_unbounded_reading
-          run_nonempty --test issue_2743_hml_resource_id_limit
+          run_nonempty --test it issue_2743
 
   app:
     name: App
